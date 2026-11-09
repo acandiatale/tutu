@@ -4184,3 +4184,74 @@ registry. Contract:
   it at startup, the Worker again before running; the selected LLM credential (`LLM_APP_TOKEN` with `LLM_TOKEN_URL`, else `LLM_API_KEY`) and every
   Maven credential settings.xml references must be bound. The template binds `LLM_APP_TOKEN` → `/data/secret-revisions/LLM_APP_TOKEN`; README §3
   step 4 has the file command and the rotation order (new immutable Secret → template + Deployment names → revision file → re-apply).
+
+## v2.1z-ac — production hardening of the Job dispatch, built here from the deployment team's spec (2026-11-09)
+
+The company's deployment engineer had an AI write a Main/Worker hardening on a company branch (persistent queue, ownership, hash
+pinning, result verification, secret scrubbing) and left on holiday with it unverified; the closed network cannot export it. The user's
+decision: build the same spec in flow-v2, where it can be tested and shipped as the image, and park the company branch. The earlier
+"Secret revision bindings" bullet above is superseded — our Main does not read revision files; Secrets are simply immutable and versioned
+by name. Contract:
+
+- **`sbmig/web/contract.py`** — the Main ↔ Worker file contract. Only Main writes `<run dir>/control/`: `request.json`
+  (`RequestRecord`: run_id, accepted_at, upload, configs, `zip_sha256`, `config_digests` = sha256 of `config/default.yml` + each selected
+  yml, `sbmig_version`, mode, stop_after, llm_provider, `attempt` = 1) written once at intake, and `state.json` (`ControlState`: state
+  `queued → creating → created → running → finished | stopped | lost | failed`, `job`, `owner` = 16-hex per-request token, `attempt`,
+  `accepted_at`, `updated_at`, `exit_code`, `error`) rewritten atomically (temp file + `os.replace`) on every transition. The Worker
+  writes the run's outputs and `job-status.json` (`JobStatus`: `exit_code`, `finished_at`, `run_id`, `attempt`, `sbmig_version`,
+  optional `error`); `JobStatus.matches(run_id, attempt)` is what Main trusts (a run-job.sh style file without ids still matches).
+  Labels `sbmig-run-id` / `sbmig-owner` (`RUN_LABEL` / `OWNER_LABEL`), `WORKER_COMMAND = ["python", "-m", "sbmig.web.worker"]`,
+  `LLM_RECORDS_ENV = "SBMIG_WORKER_LLM_RECORDS"`, `secret_env_names()` / `secret_values()` (env names containing TOKEN / PASSWORD /
+  PASSWD / SECRET / API_KEY, values ≥ 6 chars, longest first), `verify_request(record, repo_root, zip_path, run_id) -> [problems]`.
+- **`sbmig/web/worker.py`** (`python -m sbmig.web.worker`, the Job template's `command`; `main(argv=None, *, environ=None,
+  run_child=None) -> int`): env `SBMIG_SOURCE_ZIP` / `SBMIG_OUT` / `SBMIG_RUN_ID` (required), `SBMIG_CONFIG` (paths or names; default =
+  `request.json` configs under `<repo root>/config/`), `SBMIG_STOP_AFTER`, `SBMIG_LLM_PROVIDER`, `SBMIG_KB_DIR`, `SBMIG_WORKER_LLM_RECORDS`
+  ("1" keeps `llm.record_dir`; otherwise `worker-paths.yml` forces `record_dir: ""`), `SBMIG_FAIL_JOB_ON_BUILD_FAIL`, `SBMIG_PYTHON`,
+  `SBMIG_APP_DIR`. Steps: read `request.json` (missing → refused), `verify_request` (any mismatch → journal `worker_refused`,
+  `job-status.json {exit_code: 3, error}`, exit 3), journal `worker_started`, run `python -m sbmig.cli run <zip> --config … --config
+  worker-paths.yml --out <out> --run-id <id> [--stop-after] [--llm-provider]` with cwd = repo root, redact the run dir
+  (`sbmig/web/redact.py`: secret values + URL userinfo → `***` in top-level `*.md|json|jsonl|log|txt|yml` and `logs/`; never `control/`,
+  `source.zip`, `result.zip`, `project/`), print the last `SBMIG-RESULT` line, journal `worker_finished`, write `JobStatus(exit_code=rc,
+  run_id, attempt, sbmig_version)`; exit 3 for rc 3, 2 for rc 2 only with `SBMIG_FAIL_JOB_ON_BUILD_FAIL=1`, else 0. A child crash still
+  writes a status file (exit 3). `deploy/docker/run-job.sh` keeps its shared-volume branch for manual use; the infra one-Job model (git
+  clone / push, `80-build-job.template.yaml`) is unchanged.
+- **`sbmig/web/k8s.py`**: `render_job(template, run_id, env, namespace=None, owner=None)` labels the Job and the pod template with
+  `sbmig-run-id` and (when given) `sbmig-owner`; `JobState.labels` (from the Job's `metadata.labels`); `K8sClient.can_i(verb, resource,
+  group="")` = one SelfSubjectAccessReview; `validate_worker_template(template, out_dir) -> dict` raises `K8sError("MIGRATION_TEMPLATE_INVALID:
+  …")` for: unreadable / not `batch/v1 Job`; ≠ 1 container or init/ephemeral containers; `backoffLimit` ≠ 0, `parallelism` / `completions` ≠ 1,
+  `restartPolicy` ≠ Never; container without name / image; `envFrom`; env `LLM_RECORD_DIR` / `SBMIG_WEB_TOKEN` / `WEB_API_TOKEN`, or a
+  secret-named env with a literal `value`; with `out_dir` given: not exactly one writable whole-PVC mount containing it, or any mount under it
+  (`out_dir=None` skips the mount rules — injected test clients). Constants `TEMPLATE_INVALID`, `FORBIDDEN_WORKER_ENV`, `REQUIRED_PERMISSIONS`,
+  `STATUS_GRACE_ENV`.
+- **`sbmig/web/runs.py`** (`RunManager`): **startup** in `k8s-job` — `K8sClient.connect()` now (not lazily), `validate_worker_template(template,
+  out_dir)` (the validated dict is what Jobs are rendered from), RBAC self-check (create/get/list/watch/delete `jobs`, get/list/watch `pods`);
+  any failure is a `ValueError` and the app does not start (the message names the rule / the denied verbs). **Intake** writes `request.json` +
+  `queued` before the worker thread. **Create**: render with the owner label → write `creating` + job name → `create_job`; `HTTP 409` or a
+  transport error (`RequestException` / `ConnectionError` / `Timeout` / `ChunkedEncodingError` / `ProtocolError`) → look the Job up: present
+  and ours → adopt (journal `job_adopted`), present but another owner → error, absent → re-raise; then `created`; `running` when the pod
+  runs. **Result**: `job-status.json` accepted only when it matches run id + attempt (a foreign file is ignored with one warning); after the
+  Job ends, Main waits `SBMIG_JOB_STATUS_GRACE_S` (90 s; NFS attribute cache) for the file before falling back to the container exit code
+  with `verified: false`; `Missing` → `lost`; `success` comes from `report.json` only for a verified result (else `None` and the error says
+  "result not verified"). **Stop**: after `SBMIG_JOB_STOP_GRACE_S`, delete only a Job whose `sbmig-owner` / `sbmig-run-id` labels are ours
+  (else `job_delete_refused`), then wait until it is `Missing` / terminal (bounded by `SBMIG_JOB_API_GRACE_S`) → `stopped`. **Shutdown** leaves
+  the Job and its on-disk state (`created` / `running` / `queued`) for the next Main. **`recover()`** at startup (k8s-job, local-job): every
+  non-terminal `control/state.json` with a readable `request.json`, in `accepted_at` order — `queued` creates, `creating` probes then adopts
+  or creates, `created` / `running` adopts and watches; local-job marks them `lost` (`LOCAL_LOST`). `status()` adds `attempt`, `verified`,
+  `control` and answers directory-only runs from the control state first. Journal events: `web_run`, `job_created` (+ `attempt`),
+  `job_adopted`, `stop_request_sent`, `job_deleted`, `job_delete_refused`; Worker: `worker_started`, `worker_refused`, `worker_finished`.
+- **`sbmig/web/localjob.py`**: the dev "pod" runs `python -m sbmig.web.worker` (env passthrough + `SBMIG_APP_DIR`), so the Worker path is
+  exercised on a laptop too; its `job-status.json` fallback is written only when the Worker left none.
+- **Manifests**: `81-web-job.template.yaml` `command: ["python", "-m", "sbmig.web.worker"]`, no `envFrom` (explicit `valueFrom`, secrets via
+  `secretKeyRef`), no revision annotation; `30-secret.example.yaml` `immutable: true`; `SBMIG_WORKER_LLM_RECORDS` / `SBMIG_JOB_STATUS_GRACE_S`
+  in `deploy/ENV.md`; README §3 "Main 이 지키는 것"; `docs/v2/JOB-RUN-STATE-CONTRACT-KO.md` §1 / §2 / §4 / §6 / §7 updated.
+- Tests: `tests/web/test_contract.py` (4), `test_worker.py` (14), `test_redact.py` (9), `test_jobmode_hardening.py` (33), plus the adjusted
+  `test_job_mode.py` / `test_local_job_mode.py`.
+- **`sbmig.web.app.app` is lazy (PEP 562 `__getattr__`)** — found by the kind end-to-end test: `sbmig serve` imports the module and builds its
+  own app from `--out`; the import-time app (default `out/web`) ran the new k8s-job startup validation first and failed
+  (`exactly one volume mount must contain the output directory /app/out/web`), so the pod crash-looped. Plain `uvicorn sbmig.web.app:app`
+  still works (built on first access). `SBMIG_JOB_STATUS_GRACE_S` (90 s): after the Job ends Main waits that long for the Worker's
+  `job-status.json` before calling the result unverified — NFS attribute caching shows new files late.
+- Verified end to end on a local kind cluster (2026-11-09): namespace `agent`, our RBAC, the shipped Deployment / template overlaid with
+  the kind storage class and a locally built image — Main's startup validation + SelfSubjectAccessReview, a Job per upload with the owner
+  labels, the Worker's request verification, `job-status.json` with run id + attempt, Main's `finished` + `verified: true`.
+

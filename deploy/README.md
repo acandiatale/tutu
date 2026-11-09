@@ -198,7 +198,7 @@ env 가 아닌 것: `artifacts.yml` 과 `settings.xml`(ConfigMap `sbmig-config`,
 
 | | 웹 파드 (Agent) | 빌드 Job 파드 |
 |---|---|---|
-| 프로그램 | `sbmig serve --mode k8s-job` (FastAPI + uvicorn, 워커 1, 큐 = 한 번에 하나) | `docker/run-job.sh` → `sbmig run` (LangGraph, LLM, OpenRewrite, Maven, 수정 루프 전부) |
+| 프로그램 | `sbmig serve --mode k8s-job` (FastAPI + uvicorn, 워커 1, 큐 = 한 번에 하나; 시작 때 틀·권한 검증, `control/` 상태 파일, 재시작 복구) | `python -m sbmig.web.worker` → `sbmig run` (LangGraph, LLM, OpenRewrite, Maven, 수정 루프 전부; 앞뒤로 입력 digest 검증과 비밀값 정제) |
 | 이미지 | `docker/Dockerfile` (같은 이미지, JDK 는 쓰지 않는다) | 같은 이미지 |
 | 자원 | CPU 1, 메모리 1~2 GiB | CPU 2~4, 메모리 6~8 GiB (OpenRewrite `-Xmx4g`) |
 | 볼륨 | PVC `sbmig-data` → `/data` (업로드, 실행 폴더, KB), **ReadWriteMany** | 같은 PVC 같은 경로 + `sbmig-m2`(또는 emptyDir) |
@@ -208,6 +208,22 @@ env 가 아닌 것: `artifacts.yml` 과 `settings.xml`(ConfigMap `sbmig-config`,
 회사 클러스터(2026-11-09): namespace **`agent`**, 스토리지 클래스 **`nfs-csi`**(NFS CSI 드라이버, ReadWriteMany 지원) — 매니페스트에 들어 있다. NFS 라서 볼 것:
 uid 1000 으로 쓰기가 되는지(export 의 squash), 웹 화면의 로그 지연이 거슬리면 클래스 `mountOptions` 에 `actimeo=1`, `.m2` 가 느리면 그 PVC 만 노드 로컬로.
 PVC 가 RWO 만 되는 클러스터라면 Job 템플릿과 Deployment 의 hostname `nodeSelector` 로 같은 노드에 고정해야 한다(두 파드가 동시에 마운트하기 때문).
+
+### Main 이 지키는 것 (v2.1z-ac, 2026-11-09 — 배포팀 명세를 우리 코드로)
+
+- **입력 고정**: 접수 때 `<run dir>/control/request.json` 에 zip 의 sha256, 설정 파일의 digest, sbmig 버전을 적는다. Worker(`python -m sbmig.web.worker`)는
+  시작할 때 같은 값을 다시 계산해 다르면 돌지 않는다(exit 3, `job-status.json` 의 `error`, 저널 `worker_refused`). Main 과 Worker 가 같은 이미지·같은 ConfigMap
+  이어야 하는 이유가 여기 있다.
+- **생성 의도 먼저**: Job 을 만들기 전에 `control/state.json` 을 `creating` + Job 이름으로 쓴다. 생성 응답이 끊겨도(타임아웃, 409) 같은 이름의 Job 을 찾아
+  이어받는다 — 같은 요청으로 Job 이 두 개 뜨지 않는다. 상태는 `queued → creating → created → running → finished | stopped | lost | failed`.
+- **재시작 복구**: Main 이 다시 뜨면 끝나지 않은 `control/state.json` 을 찾아 `queued` 는 접수 순서로 다시 줄에 세우고, `created` / `running` 은 Job 을 이어서
+  감시한다(멈춤·삭제도 된다). 개발 PC 의 local-job 은 복구하지 못하고 `lost` 로 적는다.
+- **소유권**: Job 과 파드에 라벨 `sbmig-run-id` 와 `sbmig-owner`(요청마다 난수). Main 은 라벨이 자기 것인 Job 만 지우고, 지운 뒤에도 Job 이 실제로 사라질 때까지
+  기다린 뒤 끝낸다(삭제 요청 수락 = 끝남이 아니다).
+- **결과 검증**: `job-status.json` 에 `run_id` 와 `attempt` 가 들어 있고 Main 은 지금 시도의 파일만 받는다. 상태 파일 없이 파드만 끝났으면 `verified: false`
+  로 표시하고 성공으로 적지 않는다.
+- **비밀값 정제**: Worker 가 끝날 때 보고서·로그·저널에서 비밀 env(이름에 TOKEN / PASSWORD / SECRET / API_KEY)의 값과 URL 의 `user:pass@` 를 `***` 로 지운다.
+  원본 LLM 기록(`llm.record_dir`)은 Worker 에서 기본으로 끈다 — 진단이 필요할 때만 Job 틀 env `SBMIG_WORKER_LLM_RECORDS: "1"`.
 
 ### 켜는 법
 
@@ -219,21 +235,15 @@ PVC 가 RWO 만 되는 클러스터라면 Job 템플릿과 Deployment 의 hostna
 3. `k8s/40-deployment.yaml` 과 `k8s/81-web-job.template.yaml` 의 `image:` 에 인프라팀이 push 한 이미지의 전체 이름을 **같은 값**으로 넣는다(§1,
    `imagePullPolicy: IfNotPresent`; pull 인증이 필요하면 `imagePullSecrets`). 설정 파일 이름(`artifacts.yml`)과 마운트는 Deployment 와 같게.
 4. 채운 Job 틀을 ConfigMap 으로 올린다 — 웹 파드는 `/templates/81-web-job.template.yaml`(`SBMIG_JOB_TEMPLATE`, Deployment 의 env)을 읽는다.
-   회사 Worker(`sbmig.web.worker`)는 이 틀을 "business template" 로 받아 시작 때 검증한다: 컨테이너 하나(backoffLimit 0, restartPolicy Never), **envFrom 금지**(변수마다
-   `valueFrom`), 비밀 env 는 `secretKeyRef` 만, `LLM_RECORD_DIR` / `SBMIG_WEB_TOKEN` 없음, `/data` 는 PVC 전체를 쓰기 가능으로 정확히 하나. 틀은 그 규칙대로 쓰여 있고,
-   비밀 env 는 annotation `sbmig-secret-revision-paths`(env 이름 → 공유 볼륨의 revision 파일)로 묶인다: 파일 내용이 그 env 의 `secretKeyRef.name`(= immutable
-   Secret 의 이름)과 같아야 Main 이 뜨고 Worker 가 돈다. 틀의 기본은 `LLM_APP_TOKEN` 하나(Nexus 로그인을 쓰면 `NEXUS_USER` / `NEXUS_PASSWORD` 도). 파일은 웹 파드가
-   뜬 뒤(또는 PVC 를 마운트한 아무 파드에서) 한 번 만든다 — 값은 Secret 의 **이름**이지 토큰이 아니다:
-   ```bash
-   kubectl -n agent exec deploy/sbmig -- sh -c 'mkdir -p /data/secret-revisions && printf sbmig-llm > /data/secret-revisions/LLM_APP_TOKEN'
-   ```
-   토큰을 바꿀 때: 새 immutable Secret(`sbmig-llm-2`) 생성 → 틀의 `secretKeyRef.name` 과 `40-deployment.yaml` 의 `secretRef` 를 그 이름으로 → revision 파일에 그 이름을
-   쓴다 → ConfigMap 틀 다시 apply → 파드 재시작. 세 곳이 어긋나면 Main 이 `MIGRATION_TEMPLATE_INVALID: Secret revision references could not be verified` 로 멈춘다.
-   이미지 안의 사본은 `CHANGE_ME` 그대로라 쓰지 않는다. 바꿀 때마다 같은 명령(`apply`)이면 된다; ConfigMap 이 없으면 파드는 뜨고 첫 업로드가
-   `job template not found` 로 멈춰 알려 준다.
+   Main 은 **시작할 때** 틀을 검증하고 어긋나면 뜨지 않는다(`MIGRATION_TEMPLATE_INVALID: …`): 컨테이너 하나(backoffLimit 0, restartPolicy Never),
+   **envFrom 금지**(변수마다 `valueFrom`), 비밀 env 는 `secretKeyRef` 만, `LLM_RECORD_DIR` / `SBMIG_WEB_TOKEN` 없음, `/data` 는 PVC 전체를 쓰기 가능으로
+   정확히 하나. 권한도 그때 확인한다(SelfSubjectAccessReview: jobs create/get/list/watch/delete, pods get/list/watch — 모자라면 어떤 동사인지 적고 멈춘다).
+   이미지 안의 틀 사본은 `CHANGE_ME` 그대로라 쓰지 않는다. 틀을 바꿀 때마다 같은 명령(`apply`)이면 된다.
    ```bash
    kubectl -n agent create configmap sbmig-job-template --from-file=deploy/k8s/81-web-job.template.yaml --dry-run=client -o yaml | kubectl apply -f -
    ```
+   Secret 은 immutable 로 두는 걸 권한다(`30-secret.example.yaml`). 토큰을 바꿀 때: 새 이름의 Secret(`sbmig-llm-2`) → 틀의 `secretKeyRef.name` 과
+   `40-deployment.yaml` 의 `secretRef` → ConfigMap 틀 다시 apply → 파드 재시작.
 5. LLM 게이트웨이 주소가 사내 DNS 로 안 풀리면(인프라팀 임시 명세의 `hostAliases`) Deployment 와 Job 틀 **양쪽**의 `hostAliases` 주석을 같은 값으로 푼다 —
    LLM 을 부르는 쪽은 Job 파드다.
 6. ConfigMap `sbmig-env` 에 `SBMIG_WEB_MODE: "k8s-job"` (필요하면 `SBMIG_K8S_NAMESPACE`). 파드 재시작.
@@ -247,7 +257,8 @@ PVC 가 RWO 만 되는 클러스터라면 Job 템플릿과 Deployment 의 hostna
 | `sbmig serve --mode k8s-job`: 업로드 → 실행 폴더 + Job 생성 → 상태 감시 → 화면 → 멈춤(stop.request / 삭제) | 있음 (`sbmig/web/runs.py`, `sbmig/web/k8s.py`) |
 | 쿠버네티스 API 클라이언트(requests, 서비스 계정 토큰·CA; `kubernetes` 패키지 없음) | 있음 (`sbmig/web/k8s.py`) |
 | Job 템플릿(공유 볼륨) | 있음 (`k8s/81-web-job.template.yaml`) |
-| `run-job.sh` 공유 볼륨 모드(`SBMIG_SOURCE_ZIP`, `SBMIG_OUT`/`SBMIG_RUN_ID`, `SBMIG_KB_DIR`, `job-status.json`) | 있음 |
+| `run-job.sh` 공유 볼륨 모드(`SBMIG_SOURCE_ZIP`, `SBMIG_OUT`/`SBMIG_RUN_ID`, `SBMIG_KB_DIR`, `job-status.json`) | 있음 (호환용 — 틀의 command 는 아래 Worker) |
+| Python Worker `sbmig.web.worker`(입력 digest 검증, 비밀 정제, attempt 가 든 job-status) + Main 의 `control/` 상태 파일·재시작 복구·소유권 라벨·결과 검증·시작 때 틀/권한 검증 | 있음 (v2.1z-ac, 2026-11-09) |
 | 엔진: 노드마다 `graph_node_end` 저널(화면의 node 이벤트), `stop.request` 로 노드 사이 멈춤 | 있음 (`sbmig/graph/engine.py`) |
 | 가짜 클라이언트 테스트 | 있음 (`tests/web/test_job_mode.py`, `tests/deploy/test_run_job_sh.py`) |
 | 클러스터 값 | namespace `agent`, `nfs-csi` ReadWriteMany, 이미지는 인프라팀 레지스트리에 push — 매니페스트에 반영(2026-11-09). 첫 apply 와 권한 실측은 **다음** |

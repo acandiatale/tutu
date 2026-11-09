@@ -8,3 +8,5 @@ import pytest
 @pytest.fixture(autouse=True)
 def _no_developer_kubeconfig(monkeypatch):
     monkeypatch.delenv("KUBECONFIG", raising=False)
+    # the NFS grace for a late job-status.json (90 s in production) would make every "pod ended without a status file" test wait
+    monkeypatch.setenv("SBMIG_JOB_STATUS_GRACE_S", "0.2")

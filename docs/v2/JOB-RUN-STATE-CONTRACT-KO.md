@@ -1,6 +1,6 @@
 # Job 실행 상태 계약 — Main 파드(FastAPI)와 요청별 Job 파드 사이의 약속
 
-> 2026-11-06. 용도: remediation 쪽이 보낸 통합 계획(Main 파드 하나 + 요청별 build Job, `/api/runs` 와 `/api/remediations` 가 같은
+> 2026-11-06, v2.1z-ac(2026-11-09: `control/` 상태 파일 · 입력 고정 · 재시작 복구 · 소유권 라벨 · 결과 검증 · Python Worker) 반영. 용도: remediation 쪽이 보낸 통합 계획(Main 파드 하나 + 요청별 build Job, `/api/runs` 와 `/api/remediations` 가 같은
 > 디스패처를 쓴다)의 **1단계 "실행 상태 계약 문서화"** 에 해당하는 sbmig 쪽 사실이다. 여기 적힌 것은 지금 코드가 하는 일이고
 > (`sbmig/web/runs.py`, `sbmig/web/k8s.py`, `sbmig/web/localjob.py`, `deploy/docker/run-job.sh`, `deploy/k8s/81-web-job.template.yaml`),
 > §11 은 통합하면서 양쪽이 **정해야 할 것**이다. 계약이 바뀌면 이 파일과 `docs/INTERFACES.md` "k8s Job dispatch mode" 절을 같이 고친다.
@@ -12,8 +12,8 @@ Main 과 Worker 는 **공유 PVC 의 실행 폴더** `<out>/<run id>/`(운영: `
 
 | 쪽 | 쓰는 것 | 읽는 것 |
 |---|---|---|
-| **Main**(웹 파드, `RunManager`) | `source.zip`(업로드 원본), `journal.jsonl` 의 첫 줄 `web_run` 과 `job_created` / `stop_request_sent` 줄, `stop.request`(멈춤 요청), 메모리의 `Run`(큐 상태·마지막 이벤트) | `journal.jsonl`, `sbmig.log`, `report.json` / `report.md`, `job-status.json`, 쿠버네티스 Job / Pod 상태 |
-| **Worker**(Job 파드, `run-job.sh` → `sbmig run --run-id`) | `journal.jsonl` 의 나머지 전부(`graph_node` / `graph_node_end` …), `sbmig.log`, `project/`(git 작업 복사본), `logs/`, `report.*`, `errors.*`, `result.zip`, `changes.patch`, **`job-status.json`**(마지막에) | `source.zip`, `stop.request`(노드 사이·빌드 라운드 사이), 설정 yml, `settings.xml`, KB(`SBMIG_KB_DIR`, 운영 `/data/kb-v2`) |
+| **Main**(웹 파드, `RunManager`) | `source.zip`(업로드 원본), **`control/request.json`**(접수 때 고정한 입력: zip sha256 · 설정 digest · sbmig 버전 · attempt)과 **`control/state.json`**(제어 상태, 전이마다 원자적으로 다시 씀 — `control/` 은 Main 만 쓴다), `journal.jsonl` 의 첫 줄 `web_run` 과 `job_created` / `stop_request_sent` 줄, `stop.request`(멈춤 요청), 메모리의 `Run`(큐 상태·마지막 이벤트) | `journal.jsonl`, `sbmig.log`, `report.json` / `report.md`, `job-status.json`, 쿠버네티스 Job / Pod 상태 |
+| **Worker**(Job 파드, `python -m sbmig.web.worker` → `sbmig run --run-id`; 시작 때 `control/request.json` 의 digest 를 대조, 끝날 때 비밀값 정제) | `journal.jsonl` 의 나머지 전부(`graph_node` / `graph_node_end` …), `sbmig.log`, `project/`(git 작업 복사본), `logs/`, `report.*`, `errors.*`, `result.zip`, `changes.patch`, **`job-status.json`**(마지막에) | `source.zip`, `stop.request`(노드 사이·빌드 라운드 사이), 설정 yml, `settings.xml`, KB(`SBMIG_KB_DIR`, 운영 `/data/kb-v2`) |
 
 Worker 는 Main 의 존재를 모른다. Main 이 죽어도 Job 은 끝까지 돌고 파일을 남긴다. Main 은 Worker 의 프로세스를 모른다. 파일과 Job 상태만 본다.
 
@@ -24,8 +24,9 @@ Worker 는 Main 의 존재를 모른다. Main 이 죽어도 Job 은 끝까지 �
 | run id | `web-<yyyymmdd>-<hhmmss>-<6 hex>` (`RunManager.start_file`) | 실행 폴더 이름, 모든 저널 줄의 `run_id`, `SBMIG-RESULT` 줄 |
 | Job 이름 | `sbmig-<run id>` 를 RFC 1123 로 (`job_name`: 소문자·숫자·`-`, 63자) | `metadata.name`; 저널 `job_created` 의 `job` |
 | 파드 라벨 | `sbmig-run-id=<run id>` (Job 과 파드 템플릿 둘 다), 쿠버네티스가 붙이는 `job-name=<Job 이름>` | `kubectl get pods -l sbmig-run-id=…` |
+| 소유 라벨 | `sbmig-owner=<요청마다 난수 16 hex>` (Job 과 파드 템플릿; `control/state.json` 의 `owner`) | Main 은 두 라벨이 자기 것인 Job 만 지운다 |
 | 외부 요청 id | 외부 접수 API 의 `Idempotency-Key` / `project_name` (`<run dir>/migration.json`, `<out>/_idempotency/<sha256(key)>.json`) — `API-MIGRATIONS-KO.md` §3 | Main 만 쓴다 |
-| 실행 시도 id | **sbmig 에는 없다.** 한 run id = 한 폴더 = 한 Job. 재시도·재개는 **새 run id**(새 폴더, 새 Job)로 하고 외부 요청 id 와의 연결은 `migration.json` 같은 Main 쪽 기록이 맡는다 | §11-2 |
+| 실행 시도 id | `attempt`(지금은 늘 1) — `control/request.json` · `control/state.json` · `job-status.json` 에 들어 있어 Main 은 **같은 run id · 같은 attempt** 의 결과만 받는다. 재시도·재개는 여전히 **새 run id**(새 폴더, 새 Job); 외부 요청 id 와의 연결은 Main 쪽 기록 | §11-2 |
 
 같은 실행 폴더로 Job 을 다시 만들면 안 된다. `job-status.json` 이 남아 있으면 Main 은 새 Job 을 보기도 전에 "끝남" 으로 읽고(`_read_job_status` 는 신선도를 보지 않는다), `stop.request` 가 남아 있으면 새 Job 이 첫 노드에서 멈춘다. 둘 다 Main 이 지우지 않는다(의도: 기록 보존).
 
@@ -54,7 +55,7 @@ Job 템플릿이 받는 실행별 env(Main 이 첫 컨테이너의 env 에 덧�
 | 컨테이너(`run-job.sh`) | 0 | sbmig 0 **또는 2** (보고서가 나왔으면 Job 은 성공) — `SBMIG_FAIL_JOB_ON_BUILD_FAIL=1` 이면 2 를 그대로 |
 | | 3 | sbmig 3 |
 | | 4 | (git 모델) 결과 push 실패 |
-| `job-status.json` | `{"exit_code": <sbmig 코드>, "finished_at": …}` | **sbmig 의 코드 그대로.** Main 은 이 파일을 Job 상태보다 먼저 읽는다 |
+| `job-status.json` | `{"exit_code": <sbmig 코드>, "finished_at": …, "run_id", "attempt", "sbmig_version", "error"?}` | **sbmig 의 코드 그대로.** Main 은 이 파일을 Job 상태보다 먼저 읽되 `run_id` · `attempt` 가 지금 시도와 같을 때만 받는다(다른 시도의 파일은 경고하고 무시). Worker 가 입력 검증에서 거부하면 `exit_code: 3` 과 `error` |
 
 "실패를 성공으로 표시하지 않음" 은 **`job-status.json` 의 `exit_code` 와 `report.json` 의 `success` 로 판정**해야 지켜진다. 컨테이너 종료
 코드 0 은 "보고서가 있다" 는 뜻일 뿐이다. `report.json` 에는 `success`, `blocked[]`, `unresolved[]`, `error_entries[]`, `llm_usage.calls`
@@ -77,14 +78,15 @@ Failed / Missing 인데 `job-status.json` 이 없으면 종료 코드 3 과 `err
 Main 이 `<run dir>/stop.request` 를 쓴다(저널 `stop_request_sent`). Worker 의 엔진은 **그래프 노드 사이**와 **수정 루프의 빌드 라운드 사이**에서
 그 파일을 보고 멈춘다(최종 빌드 생략, exit 3, 저널 `stop_request`). 진행 중인 Maven 빌드·LLM 호출 하나는 끊지 않는다. 2700초
 (`SBMIG_JOB_STOP_GRACE_S`, Maven 빌드 + OpenRewrite 한 번보다 길어야 한다) 안에 안 끝나면 Main 이 Job 을 지운다(`propagationPolicy Foreground`,
-파드도 함께). 서버 종료는 Job 을 지우지 않는다. 멈춤이 큐에서 기다리는 실행에 오면 Job 을 만들지 않고 끝낸다.
+파드도 함께). 서버 종료는 Job 을 지우지 않는다. 멈춤이 큐에서 기다리는 실행에 오면 Job 을 만들지 않고 끝낸다. 지우기 전에 Job 의 라벨(`sbmig-run-id`, `sbmig-owner`)이
+자기 것인지 보고, 아니면 지우지 않는다; 지운 뒤에는 Job 이 실제로 사라질(`Missing`) 때까지 기다린 뒤에야 `stopped` 로 끝낸다(삭제 요청 수락 = 끝남이 아니다).
 
 ## 7. 재시작과 장애 복구 — 되는 것과 안 되는 것
 
 | 상황 | 지금 동작 |
 |---|---|
-| Main 재시작, Job 은 돌고 있음 | 저널 `job_created`(6시간 이내)로 `running` 으로 보이고 화면이 폴더를 tail 한다. 끝나면 `job-status.json` 으로 `finished`. **Job 을 다시 감시(stop / 삭제)하는 스레드는 없다** — 멈춤은 `stop.request` 를 손으로 쓰거나 `kubectl delete job` |
-| Main 재시작, 요청은 큐에 있었음(Job 미생성) | **복구되지 않는다.** 폴더에 `web_run` 줄과 `source.zip` 만 있고 `status` 는 `unknown`. 다시 올려야 한다 |
+| Main 재시작, Job 은 돌고 있음 | `control/state.json` 이 `created` / `running` 이면 다시 뜬 Main 이 그 Job 을 **이어받아 감시한다**(`RunManager.recover`): 멈춤·삭제·결과 검증이 그대로 된다. `creating`(생성 응답이 끊긴 구간)이면 같은 이름의 Job 이 있는지 보고 있으면 이어받고 없으면 만든다 |
+| Main 재시작, 요청은 큐에 있었음(Job 미생성) | `control/state.json` 이 `queued` 면 접수 순서대로 **다시 줄에 선다**(`source.zip` 과 `request.json` 이 있으니 그대로 만든다). 개발 PC 의 local-job 은 프로세스가 서버와 함께 죽어 복구하지 못한다 → `lost` |
 | Job 파드가 죽음(OOM·노드 교체) | `backoffLimit: 0` → 재시도 없음. Main 은 Failed + `job-status.json` 없음 → 종료 코드 3, `error` 에 사유 |
 | Job 이 4시간을 넘김 | `activeDeadlineSeconds: 14400` → 쿠버네티스가 끊는다 → 위와 같음 |
 | 쿠버네티스 API 일시 장애 | 300초까지 재시도, 그 뒤 실행을 오류로 끝낸다(Job 자체는 돈다) |

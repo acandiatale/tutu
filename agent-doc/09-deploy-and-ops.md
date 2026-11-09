@@ -120,17 +120,21 @@ kubectl exec deploy/sbmig -- python -m sbmig.cli llm-probe
 ### ② Job 디스패치 모드 — 웹 파드가 "Agent", 업로드마다 빌드 Job (있음, 2026-11-05)
 
 `sbmig serve --mode k8s-job`(또는 ConfigMap 의 `SBMIG_WEB_MODE=k8s-job`): 업로드된 zip 을 자기 프로세스에서 돌리는 대신 Job 을 만든다.
-**전달·결과·KB 는 전부 공유 PVC**(`sbmig-data`, ReadWriteMany, 두 파드가 `/data` 에 마운트): 웹이 `/data/out/<run id>/source.zip` 을 두고
-`deploy/k8s/81-web-job.template.yaml` 에 실행별 env(`SBMIG_SOURCE_ZIP`, `SBMIG_OUT`, `SBMIG_RUN_ID`, `SBMIG_CONFIG`, 고급 설정의
-`SBMIG_STOP_AFTER` / `SBMIG_LLM_PROVIDER`)를 채워 Job 을 만든다 → 파드의 `run-job.sh` 가 `sbmig run --out /data/out --run-id <run id>` 를 돌려 같은
-실행 폴더에 저널·로그·보고서·`result.zip` 을 쓴다 → 웹은 그 폴더를 tail 해 SSE 로 보낸다(`graph_node_end` 저널 줄 → 화면 `node` 이벤트, 레일 앞에
-'파드' 단계: 생성 중 → 준비됨) → 끝나면 파드가 `job-status.json {exit_code}` 를 쓴다. 멈춤 = 웹이 `<run dir>/stop.request` 를 쓰고 엔진이 노드
-사이에서 멈춘다(최종 빌드 없음, 종료 3); `SBMIG_JOB_STOP_GRACE_S`(600) 뒤에도 돌면 Job 삭제. 웹 파드 재시작 때 Job 은 그대로 돈다.
+**전달·결과·KB 는 전부 공유 PVC**(`sbmig-data`, ReadWriteMany, 두 파드가 `/data` 에 마운트): 웹(Main)이 `/data/out/<run id>/source.zip` 을 두고
+`control/request.json`(zip sha256 · 설정 digest · sbmig 버전 — 접수 때 고정)과 `control/state.json`(제어 상태)을 쓴 뒤, 틀
+`deploy/k8s/81-web-job.template.yaml` 에 실행별 env(`SBMIG_SOURCE_ZIP`, `SBMIG_OUT`, `SBMIG_RUN_ID`, `SBMIG_CONFIG`, 고급 설정의 `SBMIG_STOP_AFTER` /
+`SBMIG_LLM_PROVIDER`)와 라벨(`sbmig-run-id`, `sbmig-owner`)을 채워 Job 을 만든다(만들기 전에 `creating` 을 적어 응답이 끊겨도 같은 이름의 Job 을 이어받는다)
+→ 파드의 `python -m sbmig.web.worker`(`sbmig/web/worker.py`)가 request.json 의 digest 를 대조하고(다르면 exit 3, 저널 `worker_refused`) `sbmig run --out /data/out
+--run-id <run id>` 를 돌려 같은 실행 폴더에 저널·로그·보고서·`result.zip` 을 쓰고, 끝나면 비밀값을 지우고(`sbmig/web/redact.py`) `job-status.json
+{exit_code, run_id, attempt}` 를 쓴다 → 웹은 그 폴더를 tail 해 SSE 로 보낸다(`graph_node_end` 저널 줄 → 화면 `node` 이벤트, 레일 앞에 '파드' 단계) → Main 은
+지금 attempt 의 상태 파일만 결과로 받는다(없으면 `verified: false`, 성공으로 적지 않는다). 멈춤 = 웹이 `<run dir>/stop.request` 를 쓰고 엔진이 노드
+사이에서 멈춘다(최종 빌드 없음, 종료 3); `SBMIG_JOB_STOP_GRACE_S` 뒤에도 돌면 자기 라벨의 Job 만 지우고 사라질 때까지 기다린다. 웹 파드 재시작 때 Job 은
+그대로 돌고, 다시 뜬 Main 이 `control/state.json` 으로 `queued` 는 다시 줄에 세우고 `created` / `running` 은 이어서 감시한다.
 큐는 그대로라 Job 도 한 번에 하나(병렬 3 개는 다음 단계). 쿠버네티스 API 는 `sbmig/web/k8s.py`(requests, `kubernetes` 패키지 없음)로
-Job 생성·상태·삭제만 부른다 — 인증은 `KUBECONFIG` 가 가리키는 kubeconfig 파일(인프라팀이 Secret 으로 주는 `/etc/kube/config`; token / 클라이언트
-인증서 사용자, `exec` 는 거절)이 있으면 그것, 없으면 파드의 서비스 계정 토큰·CA(권한은 `deploy/k8s/45-web-rbac.yaml`). Job 틀은 채운 것을 ConfigMap
-`sbmig-job-template` 으로 `/templates` 에 마운트해 `SBMIG_JOB_TEMPLATE` 로 읽는다(이미지 안 사본은 자리표시자 그대로; 없으면 첫 업로드가 `job template
-not found` 로 멈춘다). 켜는 순서는 `deploy/README.md` §3 "켜는 법".
+Job 생성·상태·삭제와 권한 자기 점검(SelfSubjectAccessReview)만 부른다 — 인증은 `KUBECONFIG` 가 가리키는 kubeconfig 파일(인프라팀이 Secret 으로 주는
+`/etc/kube/config`; token / 클라이언트 인증서 사용자, `exec` 는 거절)이 있으면 그것, 없으면 파드의 서비스 계정 토큰·CA(권한은 `deploy/k8s/45-web-rbac.yaml`).
+Job 틀은 채운 것을 ConfigMap `sbmig-job-template` 으로 `/templates` 에 마운트해 `SBMIG_JOB_TEMPLATE` 로 읽고, Main 은 **시작할 때** 틀(컨테이너 하나,
+envFrom 없음, 비밀 env 는 valueFrom, `/data` PVC 마운트 하나)과 권한을 검증해 어긋나면 뜨지 않는다. 켜는 순서는 `deploy/README.md` §3 "켜는 법".
 개발 PC: `k8s-job` 인데 클러스터 밖이면 자동으로 `local-job`(`sbmig/web/localjob.py`, 파드 자리에 로컬 서브프로세스 `sbmig run --run-id …`)으로
 내려가 같은 흐름이 파드 없이 돈다(`--mode local-job` 으로 직접 고를 수도 있다).
 

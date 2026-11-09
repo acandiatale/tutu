@@ -37,9 +37,11 @@
 | `SBMIG_WEB_MODE` | `in-process` (기본) / `k8s-job` / `local-job` | `k8s-job` = 업로드마다 Job 하나(공유 PVC), README §3 "켜는 법" 뒤에 켠다. 개발 PC 에서는 `k8s-job` 이 자동으로 `local-job`(파드 자리에 로컬 서브프로세스)으로 내려간다 |
 | `SBMIG_K8S_NAMESPACE` | (비움 = 파드의 namespace, kubeconfig 면 그 context 의 namespace) | Job 을 다른 namespace 에 만들 때만 |
 | `SBMIG_JOB_TEMPLATE` | `/templates/81-web-job.template.yaml` (Deployment 의 env) | 채운 Job 틀을 ConfigMap `sbmig-job-template` 으로 `/templates` 에 마운트한다(README §3). 이미지 안의 `deploy/k8s/81-web-job.template.yaml` 은 자리표시자 그대로라 쓰지 않는다 |
+| `SBMIG_WORKER_LLM_RECORDS` | (없음) / `"1"` (Job 틀의 env) | Worker 가 설정의 `llm.record_dir` 을 그대로 둘지. 기본은 끈다(원본 프롬프트 = 소스 코드가 공유 볼륨에 더 남지 않게). 진단 때만 `"1"` |
 | `KUBECONFIG` | (없음) / `/etc/kube/config` (Deployment 의 env) | 인프라팀이 서비스 계정 대신 kubeconfig Secret 을 주는 방식일 때. 파일이 있으면 서비스 계정 토큰 대신 이것으로 쿠버네티스 API 를 부른다(token / 클라이언트 인증서 사용자; `exec` 는 거절). 개발 PC 에서 `k8s-job` 이 `local-job` 으로 내려가지 않게도 한다 |
 | `SBMIG_JOB_POLL_S` | `2` | Job 상태 조회 간격(초) |
-| `SBMIG_JOB_STOP_GRACE_S` | `600` | 멈춤 요청(stop.request) 뒤 Job 을 지우기까지 기다리는 시간(초) |
+| `SBMIG_JOB_STOP_GRACE_S` | `2700` | 멈춤 요청(stop.request) 뒤 Job 을 지우기까지 기다리는 시간(초) — Maven 빌드 + OpenRewrite 한 번보다 길게 |
+| `SBMIG_JOB_STATUS_GRACE_S` | `90` | Job 이 끝난 뒤 Worker 의 `job-status.json` 이 보일 때까지 기다리는 초. NFS 의 속성 캐시(기본 최대 60초)보다 길어야 끝난 결과를 "검증 안 됨" 으로 잘못 적지 않는다 |
 | `SBMIG_LOCAL_JOB_ECHO` | `1` | 개발 PC 의 `local-job` 에서 서브프로세스 출력을 서버 콘솔에도 `[job <run id>]` 로 흘릴지. `0` = 파일(job-local.log)에만 |
 | `SBMIG_LOCAL_JOB_COLUMNS` | `160` | `local-job` 서브프로세스의 콘솔 줄 폭(파이프라 기본 80칸으로 접힌다). 자식은 항상 UTF-8 로 쓴다 |
 
@@ -53,7 +55,7 @@
 | `LLM_TOKEN_URL` | `https://<게이트웨이 호스트>/<토큰 발급 경로>` | 앱 토큰 → 접근 토큰 교환 주소 |
 | `LLM_MODEL` | `build_error_fixer` | `params.role` — 수정 1~2회차와 구조 리뷰. 게이트웨이가 모델에 매핑 |
 | `LLM_ESCALATION_MODEL` | `escalation_fixer` | `params.role` — 케이스 3회차부터 / 정체 뒤. 비우면 상위 모델 없음 |
-| `LLM_RECORD_DIR` | (비움) | 요청·응답 기록(비밀 없음). **회사 Worker 는 기록이 켜진 설정을 거부한다**("without raw recording") — Job 모드에서는 비워 두고, in-process 진단 때만 `/data/llm-records` |
+| `LLM_RECORD_DIR` | (비움) | 요청·응답 기록(비밀 없음). Job 모드의 Worker 는 기본으로 기록을 끈다(`SBMIG_WORKER_LLM_RECORDS=1` 로 켠다); in-process 진단 때만 `/data/llm-records` |
 | `LLM_RESPONSE_PATH` | (비움) | `sbmig llm-probe` 가 응답 본문을 못 찾을 때만 |
 
 ## 4. Secret — 여기에만 둔다 (ConfigMap·이미지·로그 금지)

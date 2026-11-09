@@ -472,8 +472,22 @@ def create_app(out_dir: Path, repo_root: Path = PACKAGE_ROOT, max_upload_mb: int
     return app
 
 
-# 모듈을 읽는 순간 앱을 만든다: ``uvicorn sbmig.web.app:app`` 이 가리키는 객체. 출력 폴더·저장소 루트는 환경
-# 변수(.env 포함)에서, 없으면 ``out/web`` 과 이 패키지 루트
-load_dotenv_files()            # plain `uvicorn sbmig.web.app:app`: SBMIG_WEB_OUT / SBMIG_WEB_REPO_ROOT from .env as well
-app = create_app(Path(os.environ.get("SBMIG_WEB_OUT", "out/web")),
-                 Path(os.environ.get("SBMIG_WEB_REPO_ROOT", str(PACKAGE_ROOT))))
+# ``uvicorn sbmig.web.app:app`` 이 가리키는 객체는 **처음 찾을 때** 만든다(PEP 562 ``__getattr__``). ``sbmig serve`` 는 이 모듈을 import 만 하고
+# 자기 인자(--out 등)로 create_app 을 따로 부르므로, import 시점에 기본 경로(out/web)로 앱을 하나 더 만들면 안 된다 — v2.1z-ac 의 시작 검증
+# (틀의 PVC 마운트가 출력 폴더를 품는지)이 그 엉뚱한 앱에서 먼저 실패해 파드가 뜨지 못했다(kind 테스트, 2026-11-09). 출력 폴더·저장소 루트는
+# 환경 변수(.env 포함)에서, 없으면 ``out/web`` 과 이 패키지 루트.
+_module_app: FastAPI | None = None
+
+
+def __getattr__(name: str) -> Any:
+    """``sbmig.web.app.app`` — 플레인 uvicorn 용 앱을 첫 접근 때 만들어 돌려준다(그 밖의 이름은 AttributeError).
+
+    Lazy module attribute `app` for plain `uvicorn sbmig.web.app:app`; built on first access, never at import."""
+    global _module_app
+    if name != "app":
+        raise AttributeError(name)
+    if _module_app is None:
+        load_dotenv_files()        # plain `uvicorn sbmig.web.app:app`: SBMIG_WEB_OUT / SBMIG_WEB_REPO_ROOT from .env as well
+        _module_app = create_app(Path(os.environ.get("SBMIG_WEB_OUT", "out/web")),
+                                 Path(os.environ.get("SBMIG_WEB_REPO_ROOT", str(PACKAGE_ROOT))))
+    return _module_app

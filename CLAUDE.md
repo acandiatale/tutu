@@ -296,7 +296,13 @@ Then the final build again, the report (Handover first, "Structure review", fix 
   users, `exec` refused) else the in-cluster service account; an explicit `KUBECONFIG` also keeps `k8s-job` from degrading to `local-job` on a dev PC.
   The filled Job template reaches the web pod as ConfigMap `sbmig-job-template` at `/templates` (`SBMIG_JOB_TEMPLATE`; the image's copy keeps its
   placeholders — `.dockerignore` no longer drops `deploy/k8s/`, only the filled `30-secret.yaml`). Company values in the manifests: namespace `agent`,
-  `nfs-csi` ReadWriteMany, the image name from the infra team's registry (per push). Real company hostnames / IPs never go into the repo — placeholders.
+  `nfs-csi` ReadWriteMany, the image name from the infra team's registry (per push). Real company hostnames / IPs never go into the repo — placeholders. **v2.1z-ac (2026-11-09, the deployment team's spec built here — their own
+  AI-written Main/Worker stays parked on a company branch, unverified)**: `sbmig/web/contract.py` is the Main ↔ Worker file contract (`control/request.json`
+  pins zip sha256 / config digests / sbmig version at intake, `control/state.json` is Main's atomic control state with intent-before-create and an
+  owner token, `job-status.json` carries run id + attempt); `sbmig/web/worker.py` (`python -m sbmig.web.worker`, the Job command) verifies the pins, runs
+  `sbmig run`, redacts secrets (`sbmig/web/redact.py`), turns raw LLM records off unless `SBMIG_WORKER_LLM_RECORDS=1`; `RunManager` validates the template and
+  its RBAC at startup (`validate_worker_template`, `can_i`), adopts an existing Job on 409 / transport errors, recovers queued / running runs after a restart,
+  deletes only Jobs carrying its own `sbmig-owner` label and waits for them to vanish, and never reports an unverified result as success.
 - **Company convention (2026-10-20): agents run on LangGraph under uvicorn.** `loop.engine: graph` (default) drives
   the phases from a LangGraph `StateGraph` (`sbmig/graph/`, nodes intake → analyze → plan → phase×N → finalize;
   `inline` is the old loop, reports are identical by test); the web UI is FastAPI (`uvicorn sbmig.web.app:app` or

@@ -70,19 +70,38 @@ from typing import Any
 
 from sbmig.core.config import PACKAGE_ROOT
 from sbmig.core.workspace import STOP_REQUEST_FILE
+from sbmig.web.contract import (
+    CONTROL_DIR,
+    OWNER_LABEL,
+    RUN_LABEL,
+    STATE_FILE,
+    ControlState,
+    JobStatus,
+    RequestRecord,
+    RunState,
+    config_digests,
+    sbmig_version,
+    sha256_file,
+    utc_now,
+)
 from sbmig.web.k8s import (
     DEFAULT_TEMPLATE,
     MODE_ENV,
     MODES,
     POLL_ENV,
+    REQUIRED_PERMISSIONS,
+    STATUS_GRACE_ENV,
     STOP_GRACE_ENV,
     TEMPLATE_ENV,
+    JobState,
     K8sClient,
     K8sError,
     cluster_host_present,
     in_cluster_available,
+    job_name,
     kubeconfig_path,
     render_job,
+    validate_worker_template,
 )
 
 log = logging.getLogger("sbmig.web")
@@ -106,6 +125,9 @@ JOB_STATUS_FILE = "job-status.json"   # k8s Job mode: run-job.sh writes {exit_co
 SOURCE_ZIP = "source.zip"             # k8s Job mode: the uploaded zip, in the run dir on the shared volume
 JOB_STALE_S = 6 * 3600                # a job run of an earlier server process older than this with no status file is "unknown"
 DEFAULT_MAX_FINISHED_RUNS = 200
+LOCAL_LOST = "the local job did not survive the server restart"
+# Job 생성 요청의 응답이 불확실한 경우(이미 있음 / 전송 오류): 같은 이름의 Job 이 있으면 이어받는다 — 두 번 만들지 않게
+_UNCERTAIN_CREATE_RE = re.compile(r"HTTP 409|RequestException|ConnectionError|Timeout|ChunkedEncodingError|ProtocolError")
 
 
 @dataclass
@@ -137,6 +159,26 @@ class Run:
     job_name: str | None = None
     job_phase: str | None = None
     job_pod: str | None = None
+    # v2.1z-ac: 접수 때 고정한 입력(control/request.json)과 Main 의 제어 상태(control/state.json)
+    request: Any = None
+    control: Any = None
+    verified: bool | None = None          # True = 이 실행·시도의 job-status.json 을 받았다
+    result_source: str | None = None      # "status" (job-status.json) | "container" (컨테이너 종료 코드만)
+    final_state: str | None = None        # _run_job 이 정한 끝 상태(없으면 결과 검증으로 finished / lost)
+    keep_state: bool = False              # 서버 종료: Job 은 계속 돈다 — state.json 을 그대로 두어 다음 Main 이 이어받게
+    recover: str | None = None            # 재시작 복구: None (새로 만듦) | "probe" (creating: 있으면 이어받음) | "adopt"
+    status_warned: bool = False
+    success: bool | None = None
+
+    @property
+    def attempt(self) -> int:
+        """이 실행의 시도 번호(제어 상태의 값, 없으면 1). / The attempt number (from the control state; 1 without one)."""
+        return int(self.control.attempt) if self.control is not None else 1
+
+    @property
+    def owner(self) -> str | None:
+        """Job 라벨 ``sbmig-owner`` 의 값(요청마다 난수). / The per-request owner token (label `sbmig-owner`)."""
+        return self.control.owner if self.control is not None else None
 
 
 class _FifoTurns:
@@ -240,6 +282,9 @@ class RunManager:
         # (build.timeout_minutes 30) plus an OpenRewrite run before the Job is deleted (review 2026-11-05: 600 s lost the report)
         self.job_stop_grace_s = max(0.0, float(os.environ.get(STOP_GRACE_ENV, "2700") or 2700))
         self.job_api_grace_s = max(0.0, float(os.environ.get("SBMIG_JOB_API_GRACE_S", "300") or 300))
+        # v2.1z-ac: 파드가 끝났는데 job-status.json 이 아직 안 보이면 잠시 기다린다 — NFS 의 속성 캐시(기본 최대 60초)가 Worker 가 마지막에 쓴
+        # 파일을 Main 에 늦게 보여 줄 수 있다. 끝난 결과를 "검증 안 됨" 으로 잘못 적지 않으려면 이 유예가 캐시보다 길어야 한다
+        self.job_status_grace_s = max(0.0, float(os.environ.get(STATUS_GRACE_ENV, "90") or 90))
         # 서버가 정한 기본 설정 파일 이름들(sbmig serve --config / SBMIG_WEB_CONFIGS): 화면은 이것으로 돈다
         self._default_configs = [c.strip() for c in (default_configs or []) if c and c.strip()]
         self._missing_warned: set[str] = set()
@@ -247,6 +292,129 @@ class RunManager:
         self._lock = threading.Lock()
         self._turns = _FifoTurns()             # one migration at a time, in upload order (shared file KB)
         self.closing = threading.Event()       # server shutdown: open SSE streams end, running runs are asked to stop
+        self._job_template_doc: dict | None = None   # k8s-job: the template validated at startup (Jobs are rendered from it)
+        self.recovered: list[str] = []         # run ids picked up from control/state.json at startup (recover())
+        # v2.1z-ac: 운영(k8s-job)은 잘못된 틀·권한·접속을 첫 업로드가 아니라 시작 때 거부한다(앱이 뜨지 않는다)
+        if self.effective_mode == "k8s-job":
+            self._startup_k8s(constructed=job_client is None)
+        if self.effective_mode in ("k8s-job", "local-job"):
+            self.recover()
+
+    # ---- k8s-job startup (v2.1z-ac)
+    def _startup_k8s(self, constructed: bool) -> None:
+        """k8s-job 시작 검증: 클라이언트를 지금 만들고(토큰·kubeconfig 가 없으면 여기서 실패), Worker 틀을 검사하고, 권한을 스스로
+        점검한다. 어느 것이든 실패하면 ValueError(앱이 뜨지 않는다). 테스트가 클라이언트를 넣었으면 만들기를 건너뛰고, 틀은 파일이
+        있을 때만 마운트 규칙 없이 검사한다.
+
+        k8s-job startup: build the client now, validate the Worker template, self-check RBAC; any failure is a ValueError.
+        An injected client skips the construction; its template is validated (mount rules aside) only when the file exists."""
+        if constructed:
+            try:
+                self._job_client = K8sClient.connect()
+            except K8sError as e:
+                raise ValueError(f"{MODE_ENV}=k8s-job cannot reach the Kubernetes API: {e}") from e
+        if constructed or Path(self.job_template).is_file():
+            try:
+                self._job_template_doc = validate_worker_template(self.job_template, self.out_dir if constructed else None)
+            except K8sError as e:
+                raise ValueError(str(e)) from e
+        self._check_permissions(self._job_client)
+
+    def _check_permissions(self, client: Any) -> None:
+        """시작 때 권한 자가 점검: Job 만들기·보기·목록·watch·지우기, 파드 보기·목록·watch(deploy/k8s/45-web-rbac.yaml 과 같은 목록).
+        ``can_i`` 가 없는 클라이언트(가짜, 로컬)는 건너뛴다. 하나라도 거부되면 ValueError 로 무엇이 막혔는지 이름을 댄다.
+
+        Startup RBAC self-check through `client.can_i` (skipped when the client has none); any denial → ValueError naming it."""
+        can_i = getattr(client, "can_i", None)
+        if not callable(can_i):
+            return
+        ns = getattr(client, "namespace", None) or "?"
+        denied: list[str] = []
+        for verb, resource, group in REQUIRED_PERMISSIONS:
+            try:
+                if not can_i(verb, resource, group):
+                    denied.append(f"{verb} {resource}")
+            except K8sError as e:
+                raise ValueError(f"cannot check the web pod's permissions in {ns} ({verb} {resource}): {e}") from e
+        if denied:
+            raise ValueError(f"the web pod may not {', '.join(denied)} in {ns} — RBAC: deploy/k8s/45-web-rbac.yaml or the kubeconfig's user")
+
+    # ---- restart recovery (v2.1z-ac)
+    def recover(self) -> list[str]:
+        """재시작 복구: ``<out>/*/control/state.json`` 중 끝나지 않은 실행을 찾는다(``_`` 폴더 제외). **k8s-job**: 접수 기록
+        (request.json)을 읽어 ``Run`` 을 다시 세우고 ``accepted_at`` 순서로 FIFO 줄에 넣는다 — ``queued`` 는 평소대로 Job 을 만들고,
+        ``creating`` 은 같은 이름의 Job 이 있으면 이어받고 없으면 만들고, ``created`` / ``running`` 은 이어받아 지켜보기만 한다. **local-job**:
+        서브프로세스는 서버와 함께 죽었으므로 ``lost`` 로 적는다. 깨진 파일은 로그만 남기고 건너뛴다 — 절대 예외를 내지 않는다.
+
+        Restart recovery from the control states on disk (k8s-job: re-register and watch / create in `accepted_at` order;
+        local-job: mark `lost`). Never raises; returns `self.recovered`."""
+        if self.effective_mode not in ("k8s-job", "local-job"):
+            return self.recovered
+        try:
+            paths = sorted(self.out_dir.glob(f"*/{CONTROL_DIR}/{STATE_FILE}"))
+        except OSError as e:
+            log.warning("recovery: cannot scan %s: %s", self.out_dir, e)
+            return self.recovered
+        pending: list[tuple[str, Path, ControlState, RequestRecord]] = []
+        for sp in paths:
+            rd = sp.parent.parent
+            try:
+                if rd.name.startswith("_") or rd.name in self.runs:
+                    continue
+                cs = ControlState.read(rd)
+                if cs is None:
+                    log.warning("recovery: %s is unreadable — skipped", sp)
+                    continue
+                if cs.terminal:
+                    continue
+                if cs.run_id != rd.name:
+                    log.warning("recovery: %s names run %s, not its folder %s — skipped", sp, cs.run_id, rd.name)
+                    continue
+                if self.effective_mode == "local-job":
+                    # 로컬 "파드" 는 이 서버의 자식이었다 — 서버가 죽으면 함께 죽어 이어받을 것이 없다
+                    cs.transition(RunState.LOST, exit_code=EXIT_ABORTED, error=LOCAL_LOST).write(rd)
+                    self.recovered.append(cs.run_id)
+                    log.warning("recovery: run %s was %s — marked lost (%s)", cs.run_id, "in progress", LOCAL_LOST)
+                    continue
+                rec = RequestRecord.read(rd)
+                if rec is None:
+                    log.warning("recovery: run %s (state %s) has no readable control/request.json — skipped", cs.run_id, cs.state)
+                    continue
+                if cs.state not in (RunState.QUEUED.value, RunState.CREATING.value, RunState.CREATED.value, RunState.RUNNING.value):
+                    log.warning("recovery: run %s has an unknown state %r — skipped", cs.run_id, cs.state)
+                    continue
+                pending.append((rec.accepted_at or cs.accepted_at or "", rd, cs, rec))
+            except Exception as e:  # noqa: BLE001 — recovery must never keep the web app from starting
+                log.warning("recovery: %s skipped (%s: %s)", sp, type(e).__name__, e)
+        for _at, rd, cs, rec in sorted(pending, key=lambda t: (t[0], t[1].name)):
+            try:
+                self._resume(rd, cs, rec)
+            except Exception as e:  # noqa: BLE001 — recovery must never keep the web app from starting
+                log.warning("recovery: run %s not resumed (%s: %s)", cs.run_id, type(e).__name__, e)
+        return self.recovered
+
+    def _resume(self, rd: Path, cs: ControlState, rec: RequestRecord) -> None:
+        """복구한 실행 하나를 메모리에 다시 세우고 감시 스레드를 띄운다(줄은 지금 선다 — accepted_at 순서). / Re-register one run."""
+        mode = {RunState.QUEUED.value: None, RunState.CREATING.value: "probe"}.get(cs.state, "adopt")
+        run = Run(rd.name, rd, rd / SOURCE_ZIP, list(rec.configs or []), rec.stop_after, rec.llm_provider, job=True,
+                  request=rec, control=cs, recover=mode)
+        if cs.state != RunState.QUEUED.value:
+            run.job_name = cs.job or job_name(run.run_id)
+        run.thread = threading.Thread(target=self._worker, args=(run,), name=f"sbmig-job-{run.run_id}", daemon=True)
+        with self._lock:
+            self.runs[run.run_id] = run
+            self._turns.join(run.run_id)
+        try:
+            run.thread.start()
+        except RuntimeError:
+            self._turns.leave(run.run_id)
+            with self._lock:
+                self.runs.pop(run.run_id, None)
+            raise
+        self.recovered.append(run.run_id)
+        log.info("recovery: run %s resumed from state %s (job %s, attempt %d) — %s", run.run_id, cs.state, run.job_name or "-",
+                 run.attempt, {None: "will create its job", "probe": "adopts the job if it exists, else creates it",
+                               "adopt": "adopts the job and watches it"}[mode])
 
     # ---- paths
     def run_dir(self, run_id: str) -> Path:
@@ -380,7 +548,21 @@ class RunManager:
         run_dir.mkdir(parents=True, exist_ok=True)
         zip_path = run_dir / SOURCE_ZIP
         Path(incoming).replace(zip_path)
-        run = Run(run_id, run_dir, zip_path, configs, stop_after, llm_provider, job=True)
+        # v2.1z-ac: 입력을 접수 때 고정한다(request.json — Worker 가 digest 를 대조한다)와 제어 상태 queued — 작업 스레드보다 먼저,
+        # 그래야 이 프로세스가 곧 죽어도 다음 Main 이 같은 요청을 이어받는다
+        try:
+            request = RequestRecord(run_id=run_id, accepted_at=utc_now(), upload=safe_name, configs=list(configs),
+                                    zip_sha256=sha256_file(zip_path), config_digests=config_digests(self.repo_root, configs),
+                                    sbmig_version=sbmig_version(), mode=self.effective_mode, stop_after=stop_after,
+                                    llm_provider=llm_provider, attempt=1)
+            request.write(run_dir)
+            control = ControlState(run_id=run_id, state=RunState.QUEUED.value, attempt=request.attempt,
+                                   accepted_at=request.accepted_at)
+            control.write(run_dir)
+        except OSError:                        # no run was started: leave no half-accepted run dir behind
+            shutil.rmtree(run_dir, ignore_errors=True)
+            raise
+        run = Run(run_id, run_dir, zip_path, configs, stop_after, llm_provider, job=True, request=request, control=control)
         _append_journal(run_dir, {"event": "web_run", "run_id": run_id, "mode": self.effective_mode, "upload": safe_name,
                                   "configs": configs, "stop_after": stop_after, "llm_provider": llm_provider})
         run.thread = threading.Thread(target=self._worker, args=(run,), name=f"sbmig-job-{run_id}", daemon=True)
@@ -432,6 +614,8 @@ class RunManager:
             log.exception("run %s failed", run.run_id)
             run.error = f"{type(e).__name__}: {e}"
             run.exit_code = EXIT_ABORTED
+            if run.job:
+                run.final_state = run.final_state or RunState.FAILED.value
             self._push(run, "error", {"message": run.error})
         finally:
             self._turns.leave(run.run_id)      # already left after a turn; this covers a failure before it
@@ -439,11 +623,11 @@ class RunManager:
             log.info("run %s finished: exit code %s", run.run_id, run.exit_code)
             if log_path is not None:
                 _detach_file_log(log_path)
-            success = getattr(run.report, "success", None)
-            if run.job and success is None:
-                success = _report_success(run.run_dir)
+            success = self._settle_job_run(run) if run.job else getattr(run.report, "success", None)
+            run.success = success
             self._push(run, "finished", {"exit_code": run.exit_code, "success": success})
-            _write_web_status(run)
+            if not run.keep_state:             # a Job left running at shutdown: its state.json speaks for it, not web-status.json
+                _write_web_status(run)
             run.done.set()
             with run.cond:
                 run.cond.notify_all()
@@ -459,104 +643,296 @@ class RunManager:
                 self._job_client = K8sClient.connect()
         return self._job_client
 
-    def _run_job(self, run: Run) -> int:
-        """k8s Job 모드의 본체: Job 생성 → 상태 감시(``node`` 이벤트 ``job`` 으로 파드 생성 중 / 준비됨을 화면에) →
-        끝나면 종료 코드. 멈춤 요청은 실행 폴더에 ``stop.request`` 를 써서(엔진이 노드 사이에서 멈춤) 전하고, 유예
-        (``SBMIG_JOB_STOP_GRACE_S``)가 지나도 안 끝나면 Job 을 지운다. 서버 종료 때는 Job 을 그대로 두고 빠진다(결과는
-        볼륨에 쌓이고, 다음 서버가 폴더로 답한다). 저널·로그·보고서는 파드가 같은 실행 폴더에 쓰므로 SSE 는 그대로 읽는다.
+    def _settle_job_run(self, run: Run) -> bool | None:
+        """Job 실행의 마무리(작업 스레드의 finally): 결과를 믿을 수 있나 — 이 실행·시도의 ``job-status.json`` 을 받았거나, 컨테이너
+        종료 코드가 있고 ``report.json`` 이 있을 때만 report.json 의 success 를 읽는다. 아니면 success=None 이고 오류에 "result not
+        verified". 그리고 제어 상태를 끝 상태로 적는다(서버 종료로 Job 을 두고 나갈 때는 그대로 둔다).
 
-        Create the Job, watch it (pushing `node` events named `job` for the pod's state), return the exit code: from
-        `job-status.json` the pod wrote, else the container's. A stop request writes `stop.request` into the run dir;
-        after the grace period the Job is deleted. A server shutdown leaves the Job running."""
-        name: str | None = None
+        Settle a job run: success only from a verified result; write the terminal control state (left as is at shutdown)."""
+        has_report = (run.run_dir / "report.json").is_file()
+        trusted = bool(run.verified) or (run.result_source == "container" and has_report)
+        success = _report_success(run.run_dir) if trusted else None
+        expected_result = not run.keep_state and run.final_state not in (RunState.STOPPED.value, RunState.FAILED.value)
+        if not trusted and expected_result:
+            note = "result not verified"
+            run.error = (f"{run.error} ({note})" if run.error
+                         else f"{note}: no job-status.json for run {run.run_id} attempt {run.attempt} and no report.json")
+        if run.control is not None and not run.keep_state and not run.control.terminal:
+            final = run.final_state or (RunState.FINISHED.value if trusted else RunState.LOST.value)
+            try:
+                self._transition(run, final, exit_code=run.exit_code, error=run.error)
+            except OSError as e:               # the in-memory status still answers; the next Main sees the last state written
+                log.error("run %s: control state %s not written: %s", run.run_id, final, e)
+        return success
+
+    def _transition(self, run: Run, state: RunState | str, **changes: Any) -> None:
+        """제어 상태를 바꾸고 바로 ``control/state.json`` 에 원자적으로 쓴다(OSError 는 부른 쪽 몫 — creating 은 못 쓰면 Job 을 만들지
+        않는다). / Transition the control state and write it atomically."""
+        if run.control is None:                # a run built without intake records (embedding callers): nothing to persist
+            run.control = ControlState(run_id=run.run_id)
+        run.control.transition(state, **changes).write(run.run_dir)
+
+    def _owned(self, run: Run, st: JobState) -> bool:
+        """이 Job 이 이 요청의 것인가: 라벨을 모르는 클라이언트(빈 dict)면 참, 아니면 ``sbmig-owner`` 와 ``sbmig-run-id`` 가 둘 다 맞아야."""
+        labels = getattr(st, "labels", None) or {}
+        if not labels:
+            return True
+        return labels.get(OWNER_LABEL) == run.owner and labels.get(RUN_LABEL) == run.run_id
+
+    def _accept_status(self, run: Run) -> int | None:
+        """``job-status.json`` 을 읽어 **이 실행·이 시도**의 것이면 종료 코드(그리고 verified), 아니면 None. 다른 실행·시도의 파일은 한
+        번 경고하고 무시한다(옛 시도의 성공을 지금 성공으로 읽지 않게).
+
+        The Worker's exit code when `job-status.json` matches this run and attempt; a foreign file is ignored (one warning)."""
+        status = JobStatus.read(run.run_dir)
+        if status is None:
+            return None
+        if not status.matches(run.run_id, run.attempt):
+            if not run.status_warned:
+                run.status_warned = True
+                log.warning("run %s: job-status.json belongs to another run/attempt (run %s, attempt %s; expected attempt %d) — ignored",
+                            run.run_id, status.run_id, status.attempt, run.attempt)
+            return None
+        run.verified = True
+        run.result_source = "status"
+        if status.error and not run.error:
+            run.error = status.error
+        return int(status.exit_code)
+
+    def _run_job(self, run: Run) -> int:
+        """k8s Job 모드의 본체: Job 생성(또는 재시작 복구 때 이어받기) → ``_watch_job``. 만들기 전에 제어 상태를 ``creating`` + Job
+        이름으로 적고(응답이 끊겨도 다음 Main 이 같은 이름을 찾는다), 응답이 409 이거나 전송 오류면 같은 이름의 Job 을 찾아 있으면
+        이어받는다(두 번 만들지 않는다). 대기 중에 멈춤·서버 종료가 오면 Job 을 만들지 않는다.
+
+        Create the Job (intent recorded first; an uncertain answer adopts an existing Job of the same name) or adopt it on
+        recovery, then watch it. A stop or shutdown that arrived while queued never creates a Job."""
+        name = run.job_name or job_name(run.run_id)
         try:
-            # a stop or a server shutdown that arrived while this run was queued: never create the Job (review 2026-11-05: the
-            # shutdown cascaded through the queue and created every queued Job)
-            if run.cancel.is_set():
-                run.error = "stopped before the job was created"
-                return EXIT_ABORTED
-            if self.closing.is_set():
-                run.error = "web server shut down before the job was created"
-                return EXIT_ABORTED
-            client = self._job_client_or_fail()
-            env = {"SBMIG_SOURCE_ZIP": str(run.zip_path), "SBMIG_OUT": str(self.out_dir), "SBMIG_RUN_ID": run.run_id,
-                   "SBMIG_CONFIG": " ".join(str(self.repo_root / "config" / c) for c in run.configs)}
-            if run.stop_after:
-                env["SBMIG_STOP_AFTER"] = run.stop_after
-            if run.llm_provider:
-                env["SBMIG_LLM_PROVIDER"] = run.llm_provider
-            template: Any = self.job_template
-            if self.effective_mode == "k8s-job" and not Path(self.job_template).is_file():
-                # 이미지 안의 틀은 CHANGE_ME 그대로라 쓰지 않는다 — 운영은 ConfigMap sbmig-job-template 을 /templates 에 마운트한다(README §3)
-                raise K8sError(f"job template not found: {self.job_template} — mount the ConfigMap sbmig-job-template at /templates "
-                               f"(deploy/README.md §3) or point {TEMPLATE_ENV} at the filled template")
-            if self.effective_mode == "local-job" and not Path(self.job_template).is_file():
-                # the local "pod" needs only the env: a minimal manifest stands in for a template the checkout may lack
-                template = {"kind": "Job", "metadata": {}, "spec": {"template": {"spec": {"containers": [{"name": "build"}]}}}}
-            manifest = render_job(template, run.run_id, env, getattr(client, "namespace", None))
-            name = client.create_job(manifest)
-            run.job_name = name
-            _append_journal(run.run_dir, {"event": "job_created", "run_id": run.run_id, "job": name,
-                                          "namespace": getattr(client, "namespace", None)})
-            self._push(run, "node", {"node": "job", "update": {"state": "created", "job": name}})
-            last: tuple[str, str | None] | None = None
-            stop_sent: float | None = None
-            api_failing_since: float | None = None
-            while True:
-                saved = _read_job_status(run.run_dir)
-                if saved is not None:                  # the pod finished and said so on the volume (needs no API)
-                    return int(saved.get("exit_code", EXIT_ABORTED))
-                try:
-                    st = client.job_state(name)
-                    api_failing_since = None
-                except K8sError as e:                  # a transient API hiccup must not abort a 40-minute build (review 2026-11-05)
-                    now = time.monotonic()
-                    api_failing_since = api_failing_since or now
-                    if now - api_failing_since > self.job_api_grace_s:
-                        raise
-                    log.warning("run %s: job %s state unavailable (%s) — retrying for up to %.0fs", run.run_id, name, e,
-                                self.job_api_grace_s)
-                    with run.cond:
-                        run.cond.wait(self.job_poll_s)
-                    continue
-                if (st.phase, st.pod) != last:
-                    last = (st.phase, st.pod)
-                    run.job_phase, run.job_pod = st.phase, st.pod
-                    self._push(run, "node", {"node": "job", "update": {"state": st.phase.lower(), "job": name,
-                                                                        "pod": st.pod, "message": st.message}})
-                    log.info("run %s: job %s %s%s%s", run.run_id, name, st.phase, f" pod {st.pod}" if st.pod else "",
-                             f" ({st.message})" if st.message else "")
-                if st.finished:
-                    if st.phase == "Missing":
-                        run.error = f"job {name} disappeared (deleted outside sbmig?)"
-                        return EXIT_ABORTED
-                    if st.exit_code is not None:
-                        return int(st.exit_code)
-                    run.error = st.message or f"job {name} {st.phase.lower()} without a container exit code"
-                    return EXIT_ABORTED
-                if self.closing.is_set():              # server shutdown: the Job goes on, the next server answers from files
-                    run.error = "web server shut down while the job was running — the job continues in the cluster"
-                    return EXIT_ABORTED
+            if run.recover is None:
+                # a stop or a server shutdown that arrived while this run was queued: never create the Job (review 2026-11-05: the
+                # shutdown cascaded through the queue and created every queued Job)
                 if run.cancel.is_set():
-                    if stop_sent is None:
-                        (run.run_dir / STOP_REQUEST_FILE).write_text("stop requested from the web UI\n", encoding="utf-8")
-                        stop_sent = time.monotonic()
-                        _append_journal(run.run_dir, {"event": "stop_request_sent", "run_id": run.run_id, "job": name})
-                        log.info("run %s: stop requested — %s written for job %s", run.run_id, STOP_REQUEST_FILE, name)
-                    elif time.monotonic() - stop_sent > self.job_stop_grace_s:
-                        log.warning("run %s: job %s still running %.0fs after the stop request — deleting it",
-                                    run.run_id, name, self.job_stop_grace_s)
-                        client.delete_job(name)
-                        _append_journal(run.run_dir, {"event": "job_deleted", "run_id": run.run_id, "job": name})
-                        run.error = "stopped: the job was deleted after the grace period"
-                        return EXIT_ABORTED
-                with run.cond:
-                    run.cond.wait(self.job_poll_s)
+                    run.error = "stopped before the job was created"
+                    run.final_state = RunState.STOPPED.value
+                    return EXIT_ABORTED
+                if self.closing.is_set():
+                    run.error = "web server shut down before the job was created"
+                    run.keep_state = True          # still queued on disk: the next Main creates it
+                    return EXIT_ABORTED
+            client = self._job_client_or_fail()
+            if run.recover == "adopt":
+                self._adopt(run, name, "restart: the job was created by an earlier web process")
+            elif run.recover == "probe" and self._job_exists(run, client, name):
+                self._adopt(run, name, "restart: the job was being created when the earlier web process stopped")
+            else:
+                self._create_job(run, client, name)
+            return self._watch_job(run, client, name)
         except (K8sError, OSError) as e:
             run.error = f"{type(e).__name__}: {e}"
-            log.error("run %s: k8s job %s failed: %s", run.run_id, name or "-", run.error)
+            run.final_state = RunState.FAILED.value
+            log.error("run %s: k8s job %s failed: %s", run.run_id, name, run.error)
             self._push(run, "error", {"message": run.error})
             return EXIT_ABORTED
+
+    def _job_env(self, run: Run) -> dict[str, str]:
+        env = {"SBMIG_SOURCE_ZIP": str(run.zip_path), "SBMIG_OUT": str(self.out_dir), "SBMIG_RUN_ID": run.run_id,
+               "SBMIG_CONFIG": " ".join(str(self.repo_root / "config" / c) for c in run.configs)}
+        if run.stop_after:
+            env["SBMIG_STOP_AFTER"] = run.stop_after
+        if run.llm_provider:
+            env["SBMIG_LLM_PROVIDER"] = run.llm_provider
+        return env
+
+    def _create_job(self, run: Run, client: Any, name: str) -> None:
+        """틀을 렌더하고(owner 라벨 포함) ``creating`` 을 적은 뒤 Job 을 만든다. 409 / 전송 오류 → 같은 이름의 Job 이 있고 우리 것이면
+        이어받고, 없으면 원래 오류를 다시 낸다. 성공하면 ``created``.
+
+        Render, record `creating`, create; an uncertain answer adopts an existing Job of ours, else re-raises."""
+        template: Any = self._job_template_doc if self._job_template_doc is not None else self.job_template
+        if self._job_template_doc is None and not Path(self.job_template).is_file():
+            if self.effective_mode == "k8s-job":
+                # 시작 검증을 건너뛴 경우(테스트가 넣은 클라이언트)에만 여기 온다 — 빈 틀로 Job 을 만들지 않는다
+                raise K8sError(f"job template not found: {self.job_template} — mount the ConfigMap sbmig-job-template at /templates "
+                               f"(deploy/README.md §3) or point {TEMPLATE_ENV} at the filled template")
+            # the local "pod" needs only the env: a minimal manifest stands in for a template the checkout may lack
+            template = {"kind": "Job", "metadata": {}, "spec": {"template": {"spec": {"containers": [{"name": "build"}]}}}}
+        manifest = render_job(template, run.run_id, self._job_env(run), getattr(client, "namespace", None), owner=run.owner)
+        # 의도를 먼저 적는다: 이 줄 뒤에 프로세스가 죽어도 다음 Main 은 creating + 이름을 보고 Job 을 찾는다
+        self._transition(run, RunState.CREATING, job=name)
+        run.job_name = name
+        try:
+            created = client.create_job(manifest)
+        except K8sError as e:
+            if not _UNCERTAIN_CREATE_RE.search(str(e)):
+                raise
+            try:
+                st = client.job_state(name)
+            except K8sError:
+                raise e from None
+            if st.phase == "Missing":
+                raise
+            if not self._owned(run, st):
+                raise K8sError(f"job {name} already exists but is not owned by this request ({e})") from e
+            log.warning("run %s: creating job %s answered %s — the job exists, adopting it", run.run_id, name, e)
+            self._adopt(run, name, f"create answered: {e}")
+            return
+        if created and created != name:        # the API named it differently (it never should: the name is deterministic)
+            log.warning("run %s: job created as %s, expected %s", run.run_id, created, name)
+            run.job_name = name = str(created)
+        _append_journal(run.run_dir, {"event": "job_created", "run_id": run.run_id, "job": name, "attempt": run.attempt,
+                                      "namespace": getattr(client, "namespace", None)})
+        self._transition(run, RunState.CREATED, job=name)
+        self._push(run, "node", {"node": "job", "update": {"state": "created", "job": name}})
+
+    def _job_exists(self, run: Run, client: Any, name: str) -> bool:
+        """복구한 ``creating``: 같은 이름의 Job 이 있나(API 가 잠시 안 되면 ``job_api_grace_s`` 동안 다시 묻는다). / Does the Job exist?"""
+        deadline = time.monotonic() + self.job_api_grace_s
+        while True:
+            try:
+                st = client.job_state(name)
+                break
+            except K8sError as e:
+                if time.monotonic() > deadline:
+                    raise
+                log.warning("run %s: job %s state unavailable (%s) — retrying", run.run_id, name, e)
+                with run.cond:
+                    run.cond.wait(self.job_poll_s)
+        if st.phase == "Missing":
+            return False
+        if not self._owned(run, st):
+            raise K8sError(f"job {name} exists but is not owned by this request — not adopted")
+        return True
+
+    def _adopt(self, run: Run, name: str, reason: str) -> None:
+        """이미 있는 Job 을 이 실행의 것으로 이어받는다: 저널 ``job_adopted``, 제어 상태 queued / creating → created, '파드' 단계 이벤트.
+
+        Adopt an existing Job: journal `job_adopted`, control state → `created` (a `running` state stays), a `job` node event."""
+        run.job_name = name
+        _append_journal(run.run_dir, {"event": "job_adopted", "run_id": run.run_id, "job": name, "attempt": run.attempt,
+                                      "reason": reason})
+        log.info("run %s: adopted job %s (%s)", run.run_id, name, reason)
+        if run.control is None or run.control.state in (RunState.QUEUED.value, RunState.CREATING.value):
+            self._transition(run, RunState.CREATED, job=name)
+        self._push(run, "node", {"node": "job", "update": {"state": "created", "job": name, "adopted": True}})
+
+    def _watch_job(self, run: Run, client: Any, name: str) -> int:
+        """Job 을 끝까지 지켜본다(생성 직후와 이어받기가 함께 쓴다): '파드' 단계 이벤트, 파드가 Running 이 되면 ``running``, 끝나면
+        종료 코드 — 이 실행·시도의 ``job-status.json`` 이 먼저, 없으면 컨테이너 종료 코드(검증 안 됨), Job 이 사라졌으면 ``lost``. 멈춤
+        요청은 ``stop.request`` 를 쓰고, 유예가 지나면 우리 라벨의 Job 만 지우고 사라질 때까지 기다린다. 서버 종료 때는 Job 을 두고 빠진다.
+
+        Watch the Job to its end (shared by a fresh create and an adoption)."""
+        last: tuple[str, str | None] | None = None
+        stop_sent: float | None = None
+        api_failing_since: float | None = None
+        while True:
+            code = self._accept_status(run)
+            if code is not None:                   # the pod finished and said so on the volume (needs no API)
+                return code
+            try:
+                st = client.job_state(name)
+                api_failing_since = None
+            except K8sError as e:                  # a transient API hiccup must not abort a 40-minute build (review 2026-11-05)
+                now = time.monotonic()
+                api_failing_since = api_failing_since or now
+                if now - api_failing_since > self.job_api_grace_s:
+                    raise
+                log.warning("run %s: job %s state unavailable (%s) — retrying for up to %.0fs", run.run_id, name, e,
+                            self.job_api_grace_s)
+                with run.cond:
+                    run.cond.wait(self.job_poll_s)
+                continue
+            if (st.phase, st.pod) != last:
+                last = (st.phase, st.pod)
+                run.job_phase, run.job_pod = st.phase, st.pod
+                self._push(run, "node", {"node": "job", "update": {"state": st.phase.lower(), "job": name,
+                                                                    "pod": st.pod, "message": st.message}})
+                log.info("run %s: job %s %s%s%s", run.run_id, name, st.phase, f" pod {st.pod}" if st.pod else "",
+                         f" ({st.message})" if st.message else "")
+            if st.phase == "Running" and run.control is not None and run.control.state in (
+                    RunState.QUEUED.value, RunState.CREATING.value, RunState.CREATED.value):
+                self._transition(run, RunState.RUNNING, job=name)
+            if st.finished:
+                code = self._await_status(run, name, st)   # the Worker writes job-status.json just before the pod ends — NFS may show it late
+                if code is not None:
+                    return code
+                run.verified = False
+                if st.phase == "Missing":
+                    run.error = f"job {name} disappeared (deleted outside sbmig?) — no job-status.json for this run/attempt"
+                    run.final_state = RunState.LOST.value
+                    return EXIT_ABORTED
+                if st.exit_code is not None:
+                    run.result_source = "container"
+                    log.warning("run %s: job %s ended (exit %s) without a job-status.json for attempt %d — result not verified",
+                                run.run_id, name, st.exit_code, run.attempt)
+                    return int(st.exit_code)
+                run.error = st.message or f"job {name} {st.phase.lower()} without a container exit code"
+                run.final_state = RunState.LOST.value
+                return EXIT_ABORTED
+            if self.closing.is_set():              # server shutdown: the Job goes on, the next server answers from files
+                run.error = "web server shut down while the job was running — the job continues in the cluster"
+                run.keep_state = True
+                return EXIT_ABORTED
+            if run.cancel.is_set():
+                if stop_sent is None:
+                    (run.run_dir / STOP_REQUEST_FILE).write_text("stop requested from the web UI\n", encoding="utf-8")
+                    stop_sent = time.monotonic()
+                    _append_journal(run.run_dir, {"event": "stop_request_sent", "run_id": run.run_id, "job": name})
+                    log.info("run %s: stop requested — %s written for job %s", run.run_id, STOP_REQUEST_FILE, name)
+                elif time.monotonic() - stop_sent > self.job_stop_grace_s:
+                    run.final_state = RunState.STOPPED.value
+                    if not self._owned(run, st):
+                        # 같은 이름이라도 라벨이 다르면 다른 요청의 Job 이다 — 지우지 않는다
+                        run.error = f"job {name} is not owned by this request — not deleted"
+                        log.error("run %s: %s (labels %s)", run.run_id, run.error, st.labels)
+                        _append_journal(run.run_dir, {"event": "job_delete_refused", "run_id": run.run_id, "job": name})
+                        return EXIT_ABORTED
+                    log.warning("run %s: job %s still running %.0fs after the stop request — deleting it",
+                                run.run_id, name, self.job_stop_grace_s)
+                    client.delete_job(name)
+                    _append_journal(run.run_dir, {"event": "job_deleted", "run_id": run.run_id, "job": name})
+                    run.error = "stopped: the job was deleted after the grace period"
+                    if not self._wait_gone(run, client, name):
+                        run.error += f" (still present {self.job_api_grace_s:.0f}s after the delete)"
+                    return EXIT_ABORTED
+            with run.cond:
+                run.cond.wait(self.job_poll_s)
+
+    def _await_status(self, run: Run, name: str, st: JobState) -> int | None:
+        """Job 이 끝난 직후: 이 실행·시도의 ``job-status.json`` 이 보일 때까지 ``job_status_grace_s``(기본 90초) 동안 다시 읽는다 — Worker 는
+        파드가 끝나기 직전에 그 파일을 쓰는데, NFS 의 속성 캐시는 새 파일을 최대 1분 늦게 보여 줄 수 있다(끝난 결과를 "검증 안 됨" 으로
+        잘못 적지 않게). Missing(지워진 Job)은 기다리지 않는다.
+
+        After the Job ended, re-read `job-status.json` for up to `job_status_grace_s` (NFS attribute caching); None when it never shows."""
+        code = self._accept_status(run)
+        if code is not None or st.phase == "Missing" or self.job_status_grace_s <= 0:
+            return code
+        deadline = time.monotonic() + self.job_status_grace_s
+        log.info("run %s: job %s ended (%s) but job-status.json is not visible yet — waiting up to %.0fs for the shared volume",
+                 run.run_id, name, st.phase, self.job_status_grace_s)
+        while time.monotonic() < deadline:
+            with run.cond:
+                run.cond.wait(min(self.job_poll_s, 1.0))
+            code = self._accept_status(run)
+            if code is not None:
+                return code
+        return None
+
+    def _wait_gone(self, run: Run, client: Any, name: str) -> bool:
+        """삭제 뒤 Job 이 사라지거나 끝날 때까지(``job_api_grace_s`` 까지) 지켜본다 — 파드가 아직 볼륨에 쓰는 동안 끝났다고 하지 않게.
+
+        After a delete, poll until the Job is Missing / terminal (bounded by `job_api_grace_s`)."""
+        deadline = time.monotonic() + self.job_api_grace_s
+        while True:
+            try:
+                if client.job_state(name).finished:
+                    return True
+            except K8sError as e:
+                log.debug("run %s: job %s state after delete unavailable: %s", run.run_id, name, e)
+            if time.monotonic() > deadline:
+                log.warning("run %s: job %s still present %.0fs after the delete", run.run_id, name, self.job_api_grace_s)
+                return False
+            with run.cond:
+                run.cond.wait(self.job_poll_s)
 
     def _prune_locked(self) -> None:
         """끝난 실행이 ``max_finished_runs`` 를 넘으면 오래된 것부터 메모리에서 뺀다(호출자가 ``self._lock``
@@ -670,13 +1046,34 @@ class RunManager:
             info["node"] = run.last_node
             if run.job:
                 info["job"] = {"name": run.job_name, "phase": run.job_phase, "pod": run.job_pod}
+                info["attempt"] = run.attempt
+                info["verified"] = run.verified
+                if run.control is not None:
+                    info["control"] = run.control.state
             if run.cancel.is_set():
                 info["stop_requested"] = True
             if run.error:
                 info["error"] = run.error
         else:   # evicted, or a run of an earlier server process: only the directory is known
+            control = ControlState.read(rd) if rd.is_dir() else None     # v2.1z-ac: Main's control state speaks first
             saved = _read_web_status(rd) or _read_job_status(rd)      # the pod's job-status.json also ends a run
-            if saved is not None:
+            if control is not None:
+                info["attempt"] = control.attempt
+                info["control"] = control.state
+                if not control.terminal:
+                    info["state"] = "queued" if control.state == RunState.QUEUED.value else "running"
+                    info["job"] = {"name": control.job, "phase": None, "pod": None}
+                    info["exit_code"] = None
+                else:
+                    info["state"] = "finished"
+                    info["exit_code"] = control.exit_code
+                    if control.error:
+                        info["error"] = control.error
+                    if (saved or {}).get("stop_requested"):
+                        info["stop_requested"] = True
+                    if control.job:
+                        info["job"] = {"name": control.job, "phase": None, "pod": None}
+            elif saved is not None:
                 info["state"] = "finished"
                 info["exit_code"] = saved.get("exit_code")
                 if saved.get("stop_requested"):
@@ -781,7 +1178,7 @@ class RunManager:
 
         while True:
             # 끝났는지는 비우기 *전에* 본다: done 이 선 뒤의 비우기라면 실행이 쓴 것이 모두 파일에 들어 있다
-            finished = run.done.is_set() if run is not None else self.status(run_id)["state"] != "running"
+            finished = run.done.is_set() if run is not None else self.status(run_id)["state"] not in ("running", "queued")
             emitted = False
             for item in drain():
                 emitted = True
@@ -817,7 +1214,7 @@ def _write_web_status(run: Run) -> None:
     try:
         data = {"run_id": run.run_id, "exit_code": run.exit_code, "error": run.error,
                 "stop_requested": run.cancel.is_set(), "last_node": run.last_node,
-                "success": getattr(run.report, "success", None)}
+                "success": run.success if run.success is not None else getattr(run.report, "success", None)}
         (run.run_dir / WEB_STATUS_FILE).write_text(json.dumps(data, default=str), encoding="utf-8")
     except (OSError, TypeError, ValueError) as e:   # the status file is a convenience; never fail the run on it
         log.debug("cannot write %s for %s: %s", WEB_STATUS_FILE, run.run_id, e)

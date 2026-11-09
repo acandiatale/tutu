@@ -144,12 +144,37 @@ def test_child_output_is_echoed_to_the_console_and_kept_in_the_file(tmp_path: Pa
     assert LocalJobClient(repo).echo is True
 
 
-def test_the_real_command_is_what_run_job_sh_runs(repo: Path):
+def test_the_real_command_is_the_worker_the_pod_runs(repo: Path, tmp_path: Path, monkeypatch):
+    """v2.1z-ac: the local "pod" runs the same Worker as the Job pod (`python -m sbmig.web.worker`); the run's values travel as
+    SBMIG_* env (plus SBMIG_APP_DIR = the repo the Main pinned the config digests from), not as arguments."""
     jc = LocalJobClient(repo)
     cmd = jc._command({"SBMIG_SOURCE_ZIP": "/d/out/r1/source.zip", "SBMIG_OUT": "/d/out", "SBMIG_RUN_ID": "r1",
                        "SBMIG_CONFIG": "/app/config/a.yml /app/config/b.yml", "SBMIG_STOP_AFTER": "plan", "SBMIG_LLM_PROVIDER": "fake"})
-    assert cmd[1:] == ["-m", "sbmig.cli", "run", "/d/out/r1/source.zip", "--out", "/d/out", "--run-id", "r1",
-                       "--config", "/app/config/a.yml", "--config", "/app/config/b.yml", "--stop-after", "plan", "--llm-provider", "fake"]
+    assert cmd == [sys.executable, "-m", "sbmig.web.worker"]
+    seen: dict = {}
+
+    class _P:
+        pid, stdout = 4242, None
+
+        def poll(self):
+            return 0
+    def popen(cmd, **kw):
+        seen.update(kw["env"])
+        return _P()
+    import subprocess
+    monkeypatch.setattr(subprocess, "Popen", popen)
+    monkeypatch.setattr(LocalJobClient, "_pump", lambda self, proc, log_path, run_id: None)
+    name = jc.create_job({"metadata": {"name": "sbmig-r1"}, "spec": {"template": {"spec": {"containers": [{"name": "b", "env": [
+        {"name": "SBMIG_SOURCE_ZIP", "value": "x.zip"}, {"name": "SBMIG_OUT", "value": str(tmp_path / "out")},
+        {"name": "SBMIG_RUN_ID", "value": "r1"}, {"name": "SBMIG_STOP_AFTER", "value": "plan"}]}]}}}})
+    assert seen["SBMIG_RUN_ID"] == "r1" and seen["SBMIG_STOP_AFTER"] == "plan" and seen["SBMIG_APP_DIR"] == str(repo)
+    # the Worker left no job-status.json: the client writes the fallback (with the run id); one the Worker wrote is kept
+    st = jc.job_state(name)
+    status = tmp_path / "out" / "r1" / "job-status.json"
+    assert st.phase == "Succeeded" and json.loads(status.read_text())["run_id"] == "r1"
+    status.write_text(json.dumps({"exit_code": 0, "run_id": "r1", "attempt": 1, "sbmig_version": "w"}))
+    jc.job_state(name)
+    assert json.loads(status.read_text())["sbmig_version"] == "w"
 
 
 def test_stop_request_reaches_the_local_pod(tmp_path: Path, repo: Path, fake_cmd, monkeypatch):

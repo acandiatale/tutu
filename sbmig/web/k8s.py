@@ -16,12 +16,14 @@ import logging
 import os
 import re
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import requests
 import yaml
+
+from .contract import OWNER_LABEL, RUN_LABEL, SECRET_NAME_WORDS
 
 log = logging.getLogger("sbmig.web.k8s")
 
@@ -30,11 +32,18 @@ NAMESPACE_ENV = "SBMIG_K8S_NAMESPACE"
 TEMPLATE_ENV = "SBMIG_JOB_TEMPLATE"
 POLL_ENV = "SBMIG_JOB_POLL_S"
 STOP_GRACE_ENV = "SBMIG_JOB_STOP_GRACE_S"
+STATUS_GRACE_ENV = "SBMIG_JOB_STATUS_GRACE_S"   # Job 이 끝난 뒤 Worker 의 job-status.json 이 보일 때까지 기다리는 초(NFS 속성 캐시 — 기본 90)
 KUBECONFIG_ENV = "KUBECONFIG"              # 인프라팀 모델(2026-11-09): Agent 파드에 Secret 으로 마운트한 kubeconfig(/etc/kube/config)
 DEFAULT_TEMPLATE = "deploy/k8s/81-web-job.template.yaml"
 SA_DIR = Path("/var/run/secrets/kubernetes.io/serviceaccount")
 MODES = ("in-process", "k8s-job", "local-job")    # local-job: the Job-mode flow with a local subprocess as the "pod" (development)
 TERMINAL_PHASES = ("Succeeded", "Failed", "Missing")
+TEMPLATE_INVALID = "MIGRATION_TEMPLATE_INVALID"   # 시작 검증이 거부할 때 메시지의 첫 말(배포팀이 로그에서 찾는 값)
+# Worker 에 있으면 안 되는 env: 원문 LLM 기록(공유 볼륨에 소스가 남는다)과 웹 토큰(빌드 파드가 웹 API 를 부를 일이 없다)
+FORBIDDEN_WORKER_ENV = ("LLM_RECORD_DIR", "SBMIG_WEB_TOKEN", "WEB_API_TOKEN")
+# 시작 때 확인하는 권한(deploy/k8s/45-web-rbac.yaml 과 같은 목록): (verb, resource, group)
+REQUIRED_PERMISSIONS = tuple([(v, "jobs", "batch") for v in ("create", "get", "list", "watch", "delete")]
+                             + [(v, "pods", "") for v in ("get", "list", "watch")])
 
 
 def cluster_host_present() -> bool:
@@ -84,6 +93,8 @@ class JobState:
     pod: str | None = None
     exit_code: int | None = None
     message: str = ""
+    # Job 의 metadata.labels (v2.1z-ac): 지우기 전에 소유(sbmig-owner / sbmig-run-id)를 확인한다. 라벨을 모르는 클라이언트(가짜, 로컬)는 빈 dict
+    labels: dict[str, str] = field(default_factory=dict)
 
     @property
     def finished(self) -> bool:
@@ -98,11 +109,14 @@ def job_name(run_id: str) -> str:
     return (base[:63].rstrip("-")) or "sbmig-run"
 
 
-def render_job(template: str | Path | dict, run_id: str, env: dict[str, str], namespace: str | None = None) -> dict:
+def render_job(template: str | Path | dict, run_id: str, env: dict[str, str], namespace: str | None = None,
+               owner: str | None = None) -> dict:
     """틀(yaml 경로 또는 dict)에 실행 하나를 채운다: ``metadata.name`` = job_name, ``generateName`` 제거, 라벨
-    ``sbmig-run-id``, namespace(주어지면), 첫 컨테이너의 env 에 ``env`` 를 같은 이름은 바꾸고 없는 것은 덧붙인다. 틀은 손대지 않는다.
+    ``sbmig-run-id``(와 ``owner`` 가 주어지면 ``sbmig-owner`` — Job 과 파드 틀 둘 다), namespace(주어지면), 첫 컨테이너의 env 에 ``env`` 를
+    같은 이름은 바꾸고 없는 것은 덧붙인다. 틀은 손대지 않는다.
 
-    Fill the template for one run: name, labels, namespace, and the first container's env (same names replaced)."""
+    Fill the template for one run: name, labels (run id, and the per-request owner token when given — on the Job and its
+    pod template), namespace, and the first container's env (same names replaced)."""
     data = yaml.safe_load(Path(template).read_text(encoding="utf-8")) if not isinstance(template, dict) else template
     if not isinstance(data, dict) or data.get("kind") != "Job":
         raise K8sError(f"job template is not a Job manifest: {template}")
@@ -113,16 +127,97 @@ def render_job(template: str | Path | dict, run_id: str, env: dict[str, str], na
     if namespace:
         meta["namespace"] = namespace
     labels = meta.setdefault("labels", {})
-    labels["sbmig-run-id"] = re.sub(r"[^A-Za-z0-9._-]+", "-", run_id)[:63]
+    labels[RUN_LABEL] = _label_value(run_id)
+    if owner:
+        labels[OWNER_LABEL] = _label_value(owner)
     containers = job.get("spec", {}).get("template", {}).get("spec", {}).get("containers") or []
     if not containers:
         raise K8sError("job template has no container")
     pod_labels = job["spec"]["template"].setdefault("metadata", {}).setdefault("labels", {})
-    pod_labels["sbmig-run-id"] = labels["sbmig-run-id"]
+    pod_labels[RUN_LABEL] = labels[RUN_LABEL]
+    if owner:
+        pod_labels[OWNER_LABEL] = labels[OWNER_LABEL]
     items = [e for e in (containers[0].get("env") or []) if isinstance(e, dict) and e.get("name") not in env]
     items += [{"name": k, "value": str(v)} for k, v in env.items()]
     containers[0]["env"] = items
     return job
+
+
+def _label_value(value: str) -> str:
+    # 라벨 값 규칙(영숫자·``-_.``, 63자 이하) — run id 와 owner 토큰은 이미 맞지만 틀린 값이 API 에서 422 로 죽지 않게
+    return re.sub(r"[^A-Za-z0-9._-]+", "-", str(value))[:63]
+
+
+def _invalid(reason: str) -> K8sError:
+    return K8sError(f"{TEMPLATE_INVALID}: {reason}")
+
+
+def validate_worker_template(template: str | Path | dict, out_dir: Path | None) -> dict:
+    """Worker Job 틀을 시작 때 검사한다(배포팀 명세, v2.1z-ac — 회사 Main 의 worker_template 과 같은 규칙). 어기면
+    ``K8sError("MIGRATION_TEMPLATE_INVALID: <이유>")``: 읽을 수 없음 / ``batch/v1`` ``Job`` 아님; 컨테이너가 정확히 하나가 아니거나
+    initContainers·ephemeralContainers 있음; ``backoffLimit``(기본 0) ≠ 0, ``parallelism`` / ``completions``(기본 1) ≠ 1,
+    ``restartPolicy``(기본 Never) ≠ Never; 컨테이너에 name / image 없음; ``envFrom`` 있음; ``out_dir`` 를 품는 마운트가 쓰기 가능한 PVC
+    전체(readOnly·subPath 없음) 하나가 아니거나 ``out_dir`` 아래 마운트가 있음; ``LLM_RECORD_DIR`` / ``SBMIG_WEB_TOKEN`` / ``WEB_API_TOKEN``
+    env, 또는 이름에 TOKEN / PASSWORD / SECRET / API_KEY 가 든 env 에 literal ``value``. ``out_dir`` 가 None 이면(테스트가 주입한 클라이언트
+    — 출력 폴더가 파드 경로가 아니다) 마운트 규칙만 건너뛴다. 통과하면 읽은 dict 를 돌려준다(Main 은 그것으로 Job 을 만든다).
+
+    Validate the Worker Job template at startup; raises `K8sError("MIGRATION_TEMPLATE_INVALID: …")`, returns the parsed dict.
+    `out_dir=None` skips the mount rules only (an injected test client: the output dir is not a pod path)."""
+    if isinstance(template, dict):
+        data: Any = template
+    else:
+        try:
+            data = yaml.safe_load(Path(template).read_text(encoding="utf-8"))
+        except (OSError, yaml.YAMLError) as e:
+            raise _invalid(f"job template {template} is not readable ({type(e).__name__}: {e}) — mount the ConfigMap "
+                           f"sbmig-job-template at /templates (deploy/README.md §3) or point {TEMPLATE_ENV} at the filled template") from e
+    if not isinstance(data, dict) or data.get("apiVersion") != "batch/v1" or data.get("kind") != "Job":
+        where = "" if isinstance(template, dict) else f" {template}"
+        raise _invalid(f"the job template{where} is not a batch/v1 Job")
+    spec = data.get("spec") or {}
+    pspec = ((spec.get("template") or {}).get("spec")) or {}
+    containers = pspec.get("containers") or []
+    if not isinstance(containers, list) or len(containers) != 1:
+        raise _invalid(f"the Worker pod must have exactly one container, the template has {len(containers) if isinstance(containers, list) else 0}")
+    for extra in ("initContainers", "ephemeralContainers"):
+        if pspec.get(extra):
+            raise _invalid(f"{extra} are not allowed in the Worker pod")
+    if int(spec.get("backoffLimit", 0) or 0) != 0:
+        raise _invalid("spec.backoffLimit must be 0 (a migration is never retried blindly)")
+    for key in ("parallelism", "completions"):
+        if int(spec.get(key) if spec.get(key) is not None else 1) != 1:
+            raise _invalid(f"spec.{key} must be 1")
+    if (pspec.get("restartPolicy") or "Never") != "Never":
+        raise _invalid("spec.template.spec.restartPolicy must be Never")
+    c = containers[0] if isinstance(containers[0], dict) else {}
+    if not c.get("name") or not c.get("image"):
+        raise _invalid("the Worker container needs a name and an image")
+    if c.get("envFrom"):
+        raise _invalid("envFrom is not allowed — Worker environment references must be explicit (one env entry per variable)")
+    for e in c.get("env") or []:
+        if not isinstance(e, dict):
+            continue
+        name = str(e.get("name") or "")
+        if name in FORBIDDEN_WORKER_ENV:
+            raise _invalid(f"env {name} is not allowed in the Worker")
+        if any(w in name.upper() for w in SECRET_NAME_WORDS) and "value" in e:
+            raise _invalid(f"env {name} has a literal value — credentials require valueFrom bindings (secretKeyRef)")
+    if out_dir is not None:
+        out = Path(out_dir)
+        volumes = {v.get("name"): v for v in pspec.get("volumes") or [] if isinstance(v, dict)}
+        mounts = [m for m in c.get("volumeMounts") or [] if isinstance(m, dict) and m.get("mountPath")]
+        holding = [m for m in mounts if out.is_relative_to(Path(str(m["mountPath"])))]
+        if len(holding) != 1:
+            raise _invalid(f"exactly one volume mount must contain the output directory {out}, found {len(holding)}")
+        m = holding[0]
+        if "persistentVolumeClaim" not in (volumes.get(m.get("name")) or {}):
+            raise _invalid(f"the mount {m['mountPath']} holding {out} must be a persistentVolumeClaim volume (shared with the web pod)")
+        if m.get("readOnly") or m.get("subPath") or m.get("subPathExpr"):
+            raise _invalid(f"the mount {m['mountPath']} holding {out} must be the whole claim, writable (no readOnly / subPath)")
+        below = [str(x["mountPath"]) for x in mounts if x is not m and Path(str(x["mountPath"])).is_relative_to(out)]
+        if below:
+            raise _invalid(f"no mount may sit under the output directory {out}: {', '.join(below)}")
+    return data
 
 
 class K8sClient:
@@ -279,7 +374,9 @@ class K8sClient:
         r = self._req("GET", f"{self._jobs()}/{name}", ok=(200, 404))
         if r.status_code == 404:
             return JobState("Missing", message="job not found (deleted?)")
-        status = (r.json() or {}).get("status") or {}
+        body = r.json() or {}
+        status = body.get("status") or {}
+        labels = {str(k): str(v) for k, v in (((body.get("metadata") or {}).get("labels")) or {}).items()}
         pods = self._req("GET", f"/api/v1/namespaces/{self.namespace}/pods",
                          params={"labelSelector": f"job-name={name}"}).json().get("items") or []
         pods.sort(key=lambda p: ((p.get("metadata") or {}).get("creationTimestamp") or ""), reverse=True)
@@ -296,20 +393,30 @@ class K8sClient:
                 w = state["waiting"]
                 message = " ".join(x for x in (w.get("reason"), w.get("message")) if x)[:300]
         if (status.get("succeeded") or 0) > 0:
-            return JobState("Succeeded", pod_name, exit_code if exit_code is not None else 0, message)
+            return JobState("Succeeded", pod_name, exit_code if exit_code is not None else 0, message, labels)
         if (status.get("failed") or 0) > 0:
             cond = next((c for c in status.get("conditions") or [] if c.get("type") == "Failed"), {})
             why = " ".join(x for x in (cond.get("reason"), cond.get("message")) if x)[:300]
-            return JobState("Failed", pod_name, exit_code, why or message or "job failed")
+            return JobState("Failed", pod_name, exit_code, why or message or "job failed", labels)
         if pod is None:
-            return JobState("Creating", None, None, "no pod yet")
+            return JobState("Creating", None, None, "no pod yet", labels)
         phase = pstatus.get("phase") or "Pending"
         if phase in ("Succeeded", "Failed"):          # the pod ended, the Job status lags a moment behind
-            return JobState(phase, pod_name, exit_code, message)
-        return JobState(phase, pod_name, None, message)
+            return JobState(phase, pod_name, exit_code, message, labels)
+        return JobState(phase, pod_name, None, message, labels)
 
     def delete_job(self, name: str) -> None:
         """Job 과 그 파드를 지운다(propagationPolicy Foreground). 이미 없으면 조용히."""
         self._req("DELETE", f"{self._jobs()}/{name}", ok=(200, 202, 404),
                   json={"apiVersion": "v1", "kind": "DeleteOptions", "propagationPolicy": "Foreground"})
         log.info("k8s: job %s deleted", name)
+
+    def can_i(self, verb: str, resource: str, group: str = "") -> bool:
+        """이 클라이언트의 사용자가 namespace 안에서 ``verb`` ``resource`` 를 할 수 있나 — SelfSubjectAccessReview 한 번(시작 때 권한
+        자가 점검; 누구나 부를 수 있는 API 라 따로 권한이 필요 없다). API 가 거부·불통이면 K8sError.
+
+        One SelfSubjectAccessReview: may this client's user `verb` `resource` (API `group`) in its namespace?"""
+        body = {"apiVersion": "authorization.k8s.io/v1", "kind": "SelfSubjectAccessReview",
+                "spec": {"resourceAttributes": {"namespace": self.namespace, "verb": verb, "resource": resource, "group": group}}}
+        r = self._req("POST", "/apis/authorization.k8s.io/v1/selfsubjectaccessreviews", json=body)
+        return bool(((r.json() or {}).get("status") or {}).get("allowed"))

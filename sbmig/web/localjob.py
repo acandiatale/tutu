@@ -3,14 +3,15 @@
 
 ``SBMIG_WEB_MODE=local-job``(또는 ``k8s-job`` 인데 클러스터 밖) 이면 ``RunManager`` 가 ``K8sClient`` 대신 이 클라이언트를 쓴다. 같은
 세 호출: ``create_job`` 은 렌더된 Job 매니페스트의 env(SBMIG_SOURCE_ZIP, SBMIG_OUT, SBMIG_RUN_ID, SBMIG_CONFIG, SBMIG_STOP_AFTER,
-SBMIG_LLM_PROVIDER)에서 run-job.sh 가 돌릴 바로 그 명령 ``python -m sbmig.cli run <zip> --config … --out <out> --run-id <id>`` 을
-만들어 띄우고(표준 출력은 ``<run dir>/job-local.log``), ``job_state`` 는 프로세스 상태를 Pending / Running / Succeeded / Failed 로,
-``delete_job`` 은 프로세스를 끝낸다. 끝나면 run-job.sh 처럼 ``<run dir>/job-status.json`` 을 쓴다. 그래서 웹의 Job 모드 코드(실행 폴더,
-저널 tail, '파드' 단계, stop.request)가 쿠버네티스 없이 노트북에서 전부 돈다.
+SBMIG_LLM_PROVIDER)를 그대로 넘겨 파드가 돌릴 바로 그 Worker ``python -m sbmig.web.worker`` 를 띄운다(v2.1z-ac — Worker 가
+``control/request.json`` 의 digest 를 대조하고 ``sbmig.cli run`` 을 돌리고 비밀 값을 지우고 ``job-status.json`` 을 쓴다; 표준 출력은
+``<run dir>/job-local.log``). ``job_state`` 는 프로세스 상태를 Running / Succeeded / Failed 로, ``delete_job`` 은 프로세스를 끝낸다.
+Worker 가 ``job-status.json`` 을 남기지 않고 끝났을 때만(죽었거나 가짜 명령) 대신 쓴다. 그래서 웹의 Job 모드 코드(실행 폴더, 저널 tail,
+'파드' 단계, stop.request)가 쿠버네티스 없이 노트북에서 전부 돈다.
 
 The developer's "pod": the Job-mode flow with a local subprocess in place of a Kubernetes Job — the same three calls as
-`K8sClient`, the command run-job.sh would run, `job-status.json` at the end. Everything else of the Job mode (run dir,
-journal tailing, the '파드' step, stop.request) runs unchanged on a laptop."""
+`K8sClient`, running the same Worker the pod runs (`python -m sbmig.web.worker`, which verifies the pinned request, runs
+`sbmig.cli run` and writes `job-status.json`); a fallback `job-status.json` only when the Worker left none."""
 from __future__ import annotations
 
 import json
@@ -24,6 +25,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .contract import WORKER_MODULE
 from .k8s import JobState, K8sError
 
 log = logging.getLogger("sbmig.web.localjob")
@@ -74,17 +76,12 @@ class LocalJobClient:
         self.echo = (os.environ.get(self.ECHO_ENV, "1").strip().lower() not in ("0", "false", "no", "off")) if echo is None else echo
         self._procs: dict[str, tuple[subprocess.Popen, Path, dict[str, str]]] = {}
 
-    # ---- the command run-job.sh would run
+    # ---- the command the Job pod runs
     def _command(self, env: dict[str, str]) -> list[str]:
-        cmd = [self.python, "-m", "sbmig.cli", "run", env["SBMIG_SOURCE_ZIP"], "--out", env["SBMIG_OUT"],
-               "--run-id", env["SBMIG_RUN_ID"]]
-        for c in (env.get("SBMIG_CONFIG") or "").split():
-            cmd += ["--config", c]
-        if env.get("SBMIG_STOP_AFTER"):
-            cmd += ["--stop-after", env["SBMIG_STOP_AFTER"]]
-        if env.get("SBMIG_LLM_PROVIDER"):
-            cmd += ["--llm-provider", env["SBMIG_LLM_PROVIDER"]]
-        return cmd
+        """파드와 같은 Worker 명령. 실행별 값(zip, out, run id, 설정 …)은 인자가 아니라 env 로 간다 — Worker 가 ``SBMIG_*`` 를 읽는다.
+
+        The Worker command the pod runs; the run's values travel as `SBMIG_*` env, not as arguments."""
+        return [self.python, "-m", WORKER_MODULE]
 
     @staticmethod
     def _env_of(manifest: dict) -> dict[str, str]:
@@ -108,6 +105,9 @@ class LocalJobClient:
         child_env = {"PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1",
                      "COLUMNS": os.environ.get(self.COLUMNS_ENV, "") or self.DEFAULT_COLUMNS,
                      **os.environ, **{k: v for k, v in env.items() if k.startswith("SBMIG_")}}
+        # Worker 는 SBMIG_APP_DIR 의 config/ 로 digest 를 다시 계산한다 — Main 이 고정한 것과 같은 폴더여야 대조가 맞는다
+        if self.repo_root is not None and "SBMIG_APP_DIR" not in env:
+            child_env["SBMIG_APP_DIR"] = str(self.repo_root)
         # its own process group / session: delete_job must take the Maven / Java grandchildren with it (review 2026-11-05)
         group: dict[str, Any] = ({"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)} if os.name == "nt"
                                  else {"start_new_session": True})
@@ -144,11 +144,14 @@ class LocalJobClient:
             log.debug("local job output pump for %s ended: %s", run_id, e)
 
     def job_state(self, name: str) -> JobState:
-        """프로세스 상태 → JobState. 끝났으면 ``job-status.json`` 을 쓴다(run-job.sh 와 같은 신호). 모르는 이름 → Missing."""
+        """프로세스 상태 → JobState. 끝났는데 Worker 가 ``job-status.json`` 을 남기지 않았으면 대신 쓴다(run id 포함, attempt 없음 = 대조
+        생략). 모르는 이름 → Missing.
+
+        The process state as a JobState; a fallback `job-status.json` only when the Worker left none."""
         hit = self._procs.get(name)
         if hit is None:
             return JobState("Missing", message="no such local job")
-        proc, run_dir, _env = hit
+        proc, run_dir, env = hit
         rc = proc.poll()
         pod = f"local-{proc.pid}"
         if rc is None:
@@ -156,8 +159,8 @@ class LocalJobClient:
         status = run_dir / "job-status.json"
         if not status.is_file():
             try:
-                status.write_text(json.dumps({"exit_code": rc, "finished_at": datetime.now(timezone.utc).isoformat()}),
-                                  encoding="utf-8")
+                status.write_text(json.dumps({"exit_code": rc, "finished_at": datetime.now(timezone.utc).isoformat(),
+                                              "run_id": env.get("SBMIG_RUN_ID") or None}), encoding="utf-8")
             except OSError as e:
                 log.debug("local job %s: job-status.json not written: %s", name, e)
         return JobState("Succeeded" if rc in (0, 2) else "Failed", pod=pod, exit_code=rc,

@@ -246,16 +246,14 @@ def test_server_shutdown_leaves_the_job_running(tmp_path: Path, repo: Path, monk
 
 
 def test_outside_a_cluster_the_run_fails_readably(tmp_path: Path, repo: Path, monkeypatch):
-    """A pod that says it is in a cluster (KUBERNETES_SERVICE_HOST) but has no usable service account: the run fails readably
-    (outside a cluster the mode degrades to local-job instead — tests/web/test_local_job_mode.py)."""
+    """A pod that says it is in a cluster (KUBERNETES_SERVICE_HOST) but has no usable service account: the web app refuses to
+    start readably (v2.1z-ac: the client is built at startup, no longer on the first upload; outside a cluster the mode degrades
+    to local-job instead — tests/web/test_local_job_mode.py)."""
     import sbmig.web.runs as runs_mod
     monkeypatch.setattr(runs_mod, "in_cluster_available", lambda: True)              # no degrade …
     monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)                        # … but in_cluster() cannot build a client
-    mgr = RunManager(tmp_path / "out", repo, mode="k8s-job", job_template=TEMPLATE)
-    rid = mgr.start(b"PK\x05\x06" + b"\0" * 18, "p.zip", ["artifacts.local-e2e.yml"])
-    assert mgr.runs[rid].done.wait(5)
-    assert mgr.runs[rid].exit_code == 3 and "not inside a Kubernetes cluster" in (mgr.runs[rid].error or "")
-    assert any(k == "error" for k, _ in mgr.runs[rid].history)
+    with pytest.raises(ValueError, match="not inside a Kubernetes cluster"):
+        RunManager(tmp_path / "out", repo, mode="k8s-job", job_template=TEMPLATE)
 
 
 def test_bad_mode_is_rejected(tmp_path: Path, repo: Path):
@@ -404,16 +402,38 @@ def test_a_kubeconfig_with_relative_ca_path_insecure_or_exec(tmp_path: Path):
 
 def test_a_kubeconfig_outside_a_cluster_keeps_the_job_mode(tmp_path: Path, repo: Path, monkeypatch):
     """Development without a kubeconfig degrades to local-job (tests/web/test_local_job_mode.py); an explicit KUBECONFIG means a real
-    cluster — the Mac Studio's colima from the laptop, or the infra team's agent pod."""
+    cluster — the Mac Studio's colima from the laptop, or the infra team's agent pod. v2.1z-ac: the startup builds the client from the
+    kubeconfig, validates the template against the output dir and asks the API (SelfSubjectAccessReview) for the RBAC verbs."""
     monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
     monkeypatch.setenv("KUBECONFIG", str(_kubeconfig(tmp_path, {"token": "t"})))
-    mgr = RunManager(tmp_path / "out", repo, mode="k8s-job", job_template=TEMPLATE)
-    assert mgr.effective_mode == "k8s-job"
+    reviews: list[dict] = []
+
+    def ssar(kw):
+        reviews.append(kw["json"]["spec"]["resourceAttributes"])
+        return _Resp(201, {"status": {"allowed": True}})
+    session = _Session({("POST", "https://k8s.example:6443/apis/authorization.k8s.io/v1/selfsubjectaccessreviews"): ssar})
+    real_connect = K8sClient.connect.__func__
+    monkeypatch.setattr(K8sClient, "connect", classmethod(lambda cls, namespace=None, session_=None: real_connect(cls, namespace, session)))
+    job = yaml.safe_load(TEMPLATE.read_text(encoding="utf-8"))
+    for m in job["spec"]["template"]["spec"]["containers"][0]["volumeMounts"]:
+        if m["mountPath"] == "/data":
+            m["mountPath"] = str(tmp_path.resolve())                  # the PVC mount holds this test's output dir
+    tpl = tmp_path / "tpl.yaml"
+    tpl.write_text(yaml.safe_dump(job), encoding="utf-8")
+    mgr = RunManager(tmp_path / "out", repo, mode="k8s-job", job_template=tpl)
+    assert mgr.effective_mode == "k8s-job" and isinstance(mgr._job_client, K8sClient)
+    assert {(r["verb"], r["resource"], r["group"]) for r in reviews} >= {("create", "jobs", "batch"), ("watch", "pods", "")}
 
 
 def test_a_missing_job_template_fails_the_run_readably(tmp_path: Path, repo: Path, monkeypatch):
     """The image's copy of the template keeps its CHANGE_ME placeholders; the pod mounts the filled one as a ConfigMap. A missing
-    file must not create a Job from nothing."""
+    file must not create a Job from nothing — v2.1z-ac: the web app refuses to start (MIGRATION_TEMPLATE_INVALID). With an injected
+    client (tests) the startup check is skipped and the run still fails readably without creating anything."""
+    import sbmig.web.runs as runs_mod
+    monkeypatch.setattr(runs_mod, "in_cluster_available", lambda: True)
+    monkeypatch.setattr(K8sClient, "connect", classmethod(lambda cls, **kw: FakeJobClient()))
+    with pytest.raises(ValueError, match="MIGRATION_TEMPLATE_INVALID.*sbmig-job-template"):
+        RunManager(tmp_path / "out0", repo, mode="k8s-job", job_template=tmp_path / "templates" / "nope.yaml")
     monkeypatch.setenv("SBMIG_JOB_POLL_S", "0.05")
     jc = FakeJobClient()
     mgr = RunManager(tmp_path / "out", repo, mode="k8s-job", job_client=jc, job_template=tmp_path / "templates" / "nope.yaml")
@@ -449,9 +469,13 @@ def test_the_worker_template_follows_the_company_worker_contract():
     assert len(shared) == 1 and "persistentVolumeClaim" in volumes[shared[0]["name"]]
     assert not shared[0].get("readOnly") and not shared[0].get("subPath")
     assert not [m for m in c["volumeMounts"] if Path(m["mountPath"]).is_relative_to(out_dir)]
-    # secret bindings: annotation env → revision file; every listed env is a secretKeyRef; paths absolute, on the shared volume, outside the run dirs
-    paths = json.loads(job["metadata"]["annotations"]["sbmig-secret-revision-paths"])
-    assert isinstance(paths, dict) and "LLM_APP_TOKEN" in paths
+    # v2.1z-ac: Main's own startup validator accepts the shipped template against the pods' output dir
+    from sbmig.web.k8s import validate_worker_template
+    assert validate_worker_template(TEMPLATE, out_dir)["kind"] == "Job"
+    # secret bindings (when the template carries them): annotation env → revision file; every listed env is a secretKeyRef; paths
+    # absolute, on the shared volume, outside the run dirs
+    paths = json.loads(((job["metadata"].get("annotations") or {}).get("sbmig-secret-revision-paths")) or "{}")
+    assert isinstance(paths, dict)
     for env_name, path in paths.items():
         assert next(e for e in c["env"] if e["name"] == env_name)["valueFrom"]["secretKeyRef"]["name"]
         assert Path(path).is_absolute() and Path(path).is_relative_to(Path("/data")) and not Path(path).is_relative_to(out_dir)

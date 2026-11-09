@@ -11,7 +11,8 @@
 # 비밀값(GIT_TOKEN, LLM_*)은 환경에서만 읽고 URL 에 메모리 안에서만 붙인다 — 로그와 push 되는 파일에 남지 않는다.
 # SBMIG_PYTHON(기본 python), SBMIG_WORKSPACE(기본 /workspace)는 이미지 밖에서 모의 실행할 때 쓴다.
 #
-# 공유 볼륨 모드 (2026-11-05, 웹 파드의 Job 디스패치 — deploy/k8s/81-web-job.template.yaml): 웹 파드와 이 파드가 같은 PVC(/data)를 쓴다.
+# 공유 볼륨 모드 (2026-11-05, 웹 파드의 Job 디스패치): 웹 파드와 이 파드가 같은 PVC(/data)를 쓴다. v2.1z-ac(2026-11-09)부터 81-web-job.template 의
+# command 는 `python -m sbmig.web.worker`(입력 digest 검증·비밀 정제·attempt 가 든 job-status.json)다 — 아래 분기는 손으로 돌릴 때와 호환용으로 남긴다.
 #   SBMIG_SOURCE_ZIP=/data/out/<run id>/source.zip   웹이 둔 업로드 zip (git / URL 대신)
 #   SBMIG_OUT=/data/out  SBMIG_RUN_ID=<run id>       sbmig run --out/--run-id → 실행 폴더 = 웹이 만든 그 폴더(저널·로그·보고서·result.zip 이 거기 쌓인다)
 #   SBMIG_KB_DIR=/data/kb-v2                         파일 KB (git 없이); 없으면 설정 파일의 kb.dir
