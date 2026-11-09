@@ -728,3 +728,17 @@ the log: two LLM answers, the second a decline (`declined 1/1`), then `blocked (
 | Decline rejected, edits applied | `_note_contradiction` first in `_decline_contradiction`; a rejected decline that carries edits / a script is applied as an ordinary answer (`decline_rejected.applied`) | `sbmig/loop/fixloop.py` | done |
 | The note's three new rules | never `<blocked>`; compat classes under the project's package, never `org.springframework.mobile.*`; one answer = files + imports + pom | `knowledge/notes/spring-mobile.md`, `config/default.yml` comments | done |
 | Tests | `tests/triage/test_blocked.py`, `tests/loop/test_v21z_jakarta.py` (2), `tests/fix/test_fix_notes.py`; loop + triage + fix + docs + kb + report 1,266 passed | — | done |
+
+## Status — 2026-11-09, deploy: the company cluster's values in the manifests
+
+User (2026-11-09): the namespace is `agent`, the StorageClass is `nfs-csi` (NFS CSI driver → ReadWriteMany), and the infra team will push the
+image to their own registry after all (2026-11-06 we had heard there was none). Manifests only — no contract change.
+
+| Increment | Deliverable | Where | Status |
+|---|---|---|---|
+| Namespace | `namespace: agent` on every resource (PVCs, ConfigMaps, Secrets, Deployment, Service, RBAC, both Job templates) — `kubectl apply -f` without `-n`, the later commands with `-n agent` | `deploy/k8s/*.yaml`, `deploy/README.md` §2 | done |
+| Storage | both PVCs `ReadWriteMany` + `storageClassName: nfs-csi`; NFS notes (uid 1000 squash, `actimeo=1` for the UI tail, `.m2` slow on NFS) | `deploy/k8s/10-storage.yaml`, README §3 | done |
+| Registry again | `image: CHANGE_ME_REGISTRY/sbmig:CHANGE_ME_TAG` + `imagePullPolicy: IfNotPresent` in the Deployment and both Job templates; `imagePullSecrets` comment on all three; §1.1 (node import) kept as the alternative; `save-image.sh` prints both paths | `deploy/k8s/40-*`, `80-*`, `81-*`, `deploy/docker/save-image.sh`, README §1 | done |
+| Job dispatch prerequisites on | `serviceAccountName: sbmig-web` uncommented (45-web-rbac applied first) | `deploy/k8s/40-deployment.yaml`, `45-web-rbac.yaml` | done |
+| Still to fill | the pushed image's full name (both files, same value) and whether pull needs a Secret; `SBMIG_WEB_MODE: "k8s-job"` in the ConfigMap when switching on | — | waiting for the infra team |
+| Docs | `agent-doc/09-deploy-and-ops.md` §4 paragraph | — | done |

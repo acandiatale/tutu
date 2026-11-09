@@ -31,11 +31,18 @@ docker run --rm <registry>/sbmig:<tag> python -m sbmig.cli --help      # 확인
 docker push <registry>/sbmig:<tag>
 ```
 
-### 1.1 레지스트리가 없을 때 — `docker save` tar 를 노드에 직접 적재 (회사 클러스터, 2026-11-06)
+**회사(2026-11-09)**: 인프라팀이 자기 레지스트리에 push 해 준다. PC 에서는 `deploy/docker/save-image.sh <tag>` 로 amd64 tar 를 만들어 넘기면 인프라팀이
+`docker load -i` → `docker tag sbmig:<tag> <registry>/sbmig:<tag>` → `docker push` 한다(Dockerfile 을 넘겨 그쪽에서 빌드해도 같다). push 된 이미지의
+**전체 이름**을 받아 `k8s/40-deployment.yaml` 과 `k8s/81-web-job.template.yaml` 의 `image:` 두 줄(`CHANGE_ME_REGISTRY/sbmig:CHANGE_ME_TAG` 자리)에 글자
+그대로, 같은 값으로 넣는다(`imagePullPolicy: IfNotPresent`). 레지스트리가 pull 에 인증을 요구하면 인프라팀이 준 Secret 이름으로 양쪽의 `imagePullSecrets`
+주석을 푼다. 태그는 빌드마다 새로(`latest` 금지 — 노드에 남은 옛 이미지가 그대로 돈다). 첫 파드가 `ImagePullBackOff` 면 대개 노드가 그 레지스트리의
+인증서를 신뢰하지 않는 것이다(인프라팀 몫).
 
-회사 클러스터에는 이미지 레지스트리가 없다. 이미지는 PC 에서 만들어 tar 로 넘기고, 인프라팀이 **파드가 뜰 수 있는 모든 노드**에 적재한다.
-그래서 매니페스트(`40-deployment.yaml`, `80-` / `81-*.template.yaml`)의 이미지는 레지스트리 없는 이름 `sbmig:<tag>` 이고
-`imagePullPolicy: Never` 다(노드에 적재된 것만 쓴다 — 어디로도 pull 하러 가지 않는다).
+### 1.1 레지스트리 없이 노드에 직접 적재해야 할 때 — `docker save` tar (대안; 2026-11-06 에 레지스트리가 없다고 들었다가 11-09 에 push 로 정리됨)
+
+레지스트리를 못 쓰는 클러스터라면 이미지를 tar 로 넘기고 인프라팀이 **파드가 뜰 수 있는 모든 노드**에 적재한다. 그때는 매니페스트
+(`40-deployment.yaml`, `80-` / `81-*.template.yaml`)의 이미지를 레지스트리 없는 이름 `sbmig:<tag>` 로, `imagePullPolicy` 를 `Never` 로 바꾼다
+(노드에 적재된 것만 쓴다 — 어디로도 pull 하러 가지 않는다). 지금 매니페스트는 레지스트리 형태다.
 
 ```bash
 deploy/docker/save-image.sh <tag>       # docker build --platform linux/amd64 … + docker save → out/images/sbmig-<tag>.tar (+ .sha256) + 적재 명령 출력
@@ -69,13 +76,14 @@ tar 는 1 GB 안팎(JDK + Maven). gzip 해서 보내면 `docker load` 는 그대
 ## 2. ① 웹 UI 에이전트로 올리기
 
 ```bash
+# 매니페스트마다 namespace: agent 가 들어 있다(회사 값, 2026-11-09) — apply 에 -n 이 필요 없고, 그 뒤의 조회·exec 는 -n agent
 kubectl apply -f deploy/k8s/10-storage.yaml
 kubectl apply -f deploy/k8s/20-configmap.yaml      # <…> 자리를 회사 값으로 채운 뒤
 cp deploy/k8s/30-secret.example.yaml deploy/k8s/30-secret.yaml && $EDITOR deploy/k8s/30-secret.yaml
 kubectl apply -f deploy/k8s/30-secret.yaml
 kubectl apply -f deploy/k8s/40-deployment.yaml -f deploy/k8s/50-service.yaml
-kubectl rollout status deploy/sbmig
-kubectl exec deploy/sbmig -- python -m sbmig.cli llm-probe             # token exchange: ok … HTTP 200
+kubectl -n agent rollout status deploy/sbmig
+kubectl -n agent exec deploy/sbmig -- python -m sbmig.cli llm-probe             # token exchange: ok … HTTP 200
 ```
 
 브라우저는 Service 를 통해 `http://<host>:8765/` 로 연다. 사내망 전용 페이지라(2026-11-05 결정) Deployment 가 `SBMIG_WEB_OPEN=1`
@@ -105,7 +113,7 @@ Secret 의 `SBMIG_WEB_TOKEN` 을 채운다 — 그때는 `http://<host>:8765/?to
 설정의 원본은 세 층이다. `config/default.yml`(이미지 안, 모든 키의 기본값) → ConfigMap 의 `company.yml`(회사 사실: 부모·필수·선택
 아티팩트, 레이아웃, 컨테이너 경로) → **환경 변수**(가장 뒤에 적용, 이긴다). `SBMIG_<섹션>__<키>` 는 어떤 설정 키든 덮어쓰고(밑줄 두 개가
 한 단계 아래, 값은 YAML 로 읽음), `company.yml` 안에서는 `${VAR}` / `${VAR:-기본}` 으로 환경 변수를 참조할 수 있다. 그래서 **구조적인
-사실은 `company.yml`, 시험 운영 중 자주 손대는 숫자와 스위치는 env** 로 나눈다. 바꾼 뒤에는 파드 재시작(`kubectl rollout restart deploy/sbmig`).
+사실은 `company.yml`, 시험 운영 중 자주 손대는 숫자와 스위치는 env** 로 나눈다. 바꾼 뒤에는 파드 재시작(`kubectl -n agent rollout restart deploy/sbmig`).
 모르는 키 이름(철자·들여쓰기)은 시작 로그에 `config: … is not a known key` 로 뜬다.
 
 | 변수 | 어디에 | 기본 / 예 | 언제 바꾸나 |
@@ -185,16 +193,18 @@ env 가 아닌 것: `company.yml` 과 `settings.xml`(ConfigMap `sbmig-config`, �
 | 권한 | ServiceAccount `sbmig-web` (`k8s/45-web-rbac.yaml`: jobs create/get/list/watch/delete, pods get/list/watch) | 없음 |
 | 네트워크 | → 쿠버네티스 API | → LLM 게이트웨이, Nexus |
 
-PVC 가 RWO 만 된다면 Job 템플릿에 웹 파드와 같은 노드의 `nodeAffinity` 를 넣어야 한다(두 파드가 동시에 마운트하기 때문).
+회사 클러스터(2026-11-09): namespace **`agent`**, 스토리지 클래스 **`nfs-csi`**(NFS CSI 드라이버, ReadWriteMany 지원) — 매니페스트에 들어 있다. NFS 라서 볼 것:
+uid 1000 으로 쓰기가 되는지(export 의 squash), 웹 화면의 로그 지연이 거슬리면 클래스 `mountOptions` 에 `actimeo=1`, `.m2` 가 느리면 그 PVC 만 노드 로컬로.
+PVC 가 RWO 만 되는 클러스터라면 Job 템플릿과 Deployment 의 hostname `nodeSelector` 로 같은 노드에 고정해야 한다(두 파드가 동시에 마운트하기 때문).
 
 ### 켜는 법
 
-1. `k8s/10-storage.yaml` 의 `sbmig-data` 를 `ReadWriteMany` 로(스토리지 클래스 확인).
-2. `k8s/45-web-rbac.yaml` 적용, `k8s/40-deployment.yaml` 의 `serviceAccountName: sbmig-web` 주석을 푼다.
-3. `k8s/81-web-job.template.yaml` 의 namespace·image 태그(웹 파드와 같은 것; 레지스트리가 없으니 `sbmig:<tag>` + `imagePullPolicy: Never`, §1.1)를
-   채운다. 설정 파일 이름(`artifacts.yml`)과 마운트는 Deployment 와 같게.
+1. `k8s/10-storage.yaml`: 회사 값이 들어 있다(`storageClassName: nfs-csi`, 두 PVC 모두 `ReadWriteMany`, namespace `agent`). 다른 클러스터면 이 세 값만 바꾼다.
+2. `k8s/45-web-rbac.yaml` 을 먼저 apply(namespace `agent`). `k8s/40-deployment.yaml` 의 `serviceAccountName: sbmig-web` 은 풀려 있다.
+3. `k8s/40-deployment.yaml` 과 `k8s/81-web-job.template.yaml` 의 `image:` 에 인프라팀이 push 한 이미지의 전체 이름을 **같은 값**으로 넣는다(§1,
+   `imagePullPolicy: IfNotPresent`; pull 인증이 필요하면 `imagePullSecrets`). 설정 파일 이름(`artifacts.yml`)과 마운트는 Deployment 와 같게.
 4. ConfigMap `sbmig-env` 에 `SBMIG_WEB_MODE: "k8s-job"` (필요하면 `SBMIG_K8S_NAMESPACE`, `SBMIG_JOB_TEMPLATE`). 파드 재시작.
-5. 확인: 시작 로그 `sbmig web UI ready (… mode k8s-job — job template …)`, 업로드 뒤 `kubectl get jobs -l app=sbmig,kind=run`, 화면 레일의 '파드' 단계,
+5. 확인: 시작 로그 `sbmig web UI ready (… mode k8s-job — job template …)`, 업로드 뒤 `kubectl -n agent get jobs -l app=sbmig,kind=run`, 화면 레일의 '파드' 단계,
    실행 폴더에 파드가 쓴 `sbmig.log` / `job-status.json`.
 
 ### 있는 것 / 다음 것
@@ -207,14 +217,14 @@ PVC 가 RWO 만 된다면 Job 템플릿에 웹 파드와 같은 노드의 `nodeA
 | `run-job.sh` 공유 볼륨 모드(`SBMIG_SOURCE_ZIP`, `SBMIG_OUT`/`SBMIG_RUN_ID`, `SBMIG_KB_DIR`, `job-status.json`) | 있음 |
 | 엔진: 노드마다 `graph_node_end` 저널(화면의 node 이벤트), `stop.request` 로 노드 사이 멈춤 | 있음 (`sbmig/graph/engine.py`) |
 | 가짜 클라이언트 테스트 | 있음 (`tests/web/test_job_mode.py`, `tests/deploy/test_run_job_sh.py`) |
-| 클러스터 실측(RWX, 이미지, 권한) | **다음** — 인프라팀과 |
+| 클러스터 값 | namespace `agent`, `nfs-csi` ReadWriteMany, 이미지는 인프라팀 레지스트리에 push — 매니페스트에 반영(2026-11-09). 첫 apply 와 권한 실측은 **다음** |
 | 동시 Job 3 개(큐 폭 + KB 잠금 확인) | **다음** |
 | 외부 접수 API(remediation 과 같은 계약: zip + `project_name` / `name` + `Idempotency-Key`) | **다음** — 구현 지시서 `docs/v2/API-MIGRATIONS-KO.md`(사내 LLM 에 인계) |
 | Main 파드 ↔ Job 파드의 실행 상태 계약(책임·id·폴더·종료 코드·멈춤·복구·슬롯; remediation 통합 1단계) | 있음 — `docs/v2/JOB-RUN-STATE-CONTRACT-KO.md` |
 
 ### 회의에서 정할 것 (남은 것)
 
-1. **PVC 접근 모드.** `sbmig-data` 가 ReadWriteMany 인지. 아니면 Job 을 웹 파드 노드에 고정.
+1. ~~PVC 접근 모드~~ 정해짐(2026-11-09): `nfs-csi`, ReadWriteMany. **이미지**: 인프라팀 레지스트리의 전체 이름과 pull 인증(Secret) 여부를 받는다.
 2. **네트워크.** 빌드 노드 → LLM 게이트웨이(토큰 URL + 호출 URL), Nexus. 웹 파드 → 쿠버네티스 API.
 3. **Job 자원 상한.** `81-web-job.template.yaml` 의 requests/limits, `activeDeadlineSeconds`(4 시간).
 
@@ -231,8 +241,8 @@ PVC 가 RWO 만 된다면 Job 템플릿에 웹 파드와 같은 노드의 `nodeA
 
 ### 템플릿에서 바꿀 자리 (가이드 2절 그대로 + sbmig 용)
 
-`namespace`, `nodeSelector` 라벨, `image`(레지스트리 없이 노드에 적재한 이미지면 `sbmig:<tag>` + `imagePullPolicy: Never` — §1.1; `imagePullSecrets` 는
-레지스트리를 쓸 때만); `activeDeadlineSeconds`(이관 한 번이 1~3 시간 — **4 시간** 권장),
+`namespace`(회사 값 `agent` 가 들어 있다), `nodeSelector` 라벨, `image`(인프라팀 레지스트리의 전체 이름 — §1; 레지스트리 없이 노드에 적재한 이미지면
+`sbmig:<tag>` + `imagePullPolicy: Never` — §1.1; `imagePullSecrets` 는 pull 에 인증이 필요할 때만); `activeDeadlineSeconds`(이관 한 번이 1~3 시간 — **4 시간** 권장),
 `ttlSecondsAfterFinished`(로그 보존), emptyDir `sizeLimit`(작업 공간 20 Gi, `~/.m2` 10 Gi); 요청 환경 변수 `SBMIG_SOURCE_GIT_URL` /
 `_REF`(또는 `SBMIG_SOURCE_ZIP_URL`), `SBMIG_KB_GIT_URL`, `SBMIG_RESULT_GIT_URL`; Secret `sbmig-llm`(LLM_*)과 `sbmig-git`(`GIT_TOKEN`, 선택
 `GIT_USER`). 토큰은 환경에서만 읽고 URL 에 메모리 안에서만 붙이며 로그·push 파일에 남지 않는다.

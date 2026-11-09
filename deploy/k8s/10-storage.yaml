@@ -1,26 +1,30 @@
-# 에이전트의 영속 상태 — 이미지 안에는 두지 않는다. 웹 UI 에이전트(40-deployment)가 쓴다. ① 자기 안에서 돌릴 때는 RWO 로 충분하다.
-# Job 디스패치 모드(README §3, 2026-11-05 결정: zip·실행 폴더·KB 전부 이 볼륨)에서는 웹 파드와 Job 파드가 동시에 마운트하므로
-# sbmig-data 는 ReadWriteMany 여야 한다(안 되면 Job 템플릿에 웹 파드 노드의 nodeAffinity). sbmig-m2 도 Job 템플릿이 함께 쓴다.
+# 에이전트의 영속 상태 — 이미지 안에는 두지 않는다. 웹 UI 에이전트(40-deployment)와 Job 파드(81-web-job.template)가 같이 쓴다.
+# 회사 값(2026-11-09, 인프라팀): namespace `agent`, 스토리지 클래스 `nfs-csi`(NFS CSI 드라이버 — ReadWriteMany 지원). Job 디스패치 모드
+# (README §3)에서는 웹 파드와 Job 파드가 두 볼륨을 동시에 마운트하므로 둘 다 ReadWriteMany 다. 다른 클러스터면 이 세 값만 바꾼다
+# (RWX 가 안 되는 클래스면 RWO 로 두고 Job 템플릿과 Deployment 의 hostname nodeSelector 로 같은 노드에 고정).
+# NFS 라서 볼 것: uid 1000(fsGroup) 으로 쓰기가 되는지(export 의 squash), 웹 화면의 로그 지연이 거슬리면 클래스의 mountOptions 에 actimeo=1.
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: sbmig-data            # /data: 업로드, 실행 디렉터리(out/), KB(kb.dir), LLM 기록
+  namespace: agent
   labels: {app: sbmig}
 spec:
-  accessModes: [ReadWriteOnce]
+  accessModes: [ReadWriteMany]
   resources:
     requests:
-      storage: 100Gi
-  # storageClassName: <회사 스토리지 클래스>
+      storage: 100Gi             # NFS 는 PVC 별 용량을 강제하지 않는다 — 이름뿐인 값
+  storageClassName: nfs-csi
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: sbmig-m2              # ~/.m2: Maven 로컬 저장소 — 없으면 실행마다 Nexus 에서 전부 다시 받는다
+  namespace: agent
   labels: {app: sbmig}
 spec:
-  accessModes: [ReadWriteOnce]
+  accessModes: [ReadWriteMany]
   resources:
     requests:
       storage: 50Gi
-  # storageClassName: <회사 스토리지 클래스>
+  storageClassName: nfs-csi    # .m2 는 작은 파일이 많아 NFS 에서 느릴 수 있다 — 빌드가 눈에 띄게 느리면 이것만 노드 로컬 클래스 / emptyDir 로

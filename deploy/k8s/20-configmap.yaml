@@ -5,6 +5,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: sbmig-config
+  namespace: agent
   labels: {app: sbmig}
 data:
   company.yml: |
@@ -56,6 +57,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: sbmig-env
+  namespace: agent
   labels: {app: sbmig}
 data:
   # ── 1. 웹 파드 ──────────────────────────────────────────────────────────────────────────────────

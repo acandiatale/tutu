@@ -1,10 +1,12 @@
-# 웹 UI 에이전트(`sbmig serve`): replica 1(한 번에 한 이관 — 큐가 프로세스 안에 있다), Recreate(RWO 볼륨이 파드와 함께 옮겨간다).
+# 웹 UI 에이전트(`sbmig serve`): replica 1(한 번에 한 이관 — 큐가 프로세스 안에 있다), Recreate(볼륨과 파드가 같이 옮겨간다).
 # Job 디스패치 모드(README §3, ConfigMap 의 SBMIG_WEB_MODE=k8s-job)에서는 이 파드가 Agent 다: 업로드마다 Job 을 만들고 공유 PVC 로 결과를 받는다 —
-# 그때 아래 serviceAccountName 주석을 풀고(45-web-rbac.yaml) sbmig-data 를 ReadWriteMany 로 둔다.
+# serviceAccountName(45-web-rbac.yaml 을 먼저 apply)과 ReadWriteMany PVC(10-storage.yaml, nfs-csi)가 그 전제다.
+# 회사 값(2026-11-09): namespace agent. 이미지는 인프라팀이 자기 레지스트리에 push 한 전체 이름을 받아 image: 에 넣는다(README §1).
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: sbmig
+  namespace: agent
   labels: {app: sbmig}
 spec:
   replicas: 1
@@ -15,8 +17,9 @@ spec:
     metadata:
       labels: {app: sbmig}
     spec:
-      # serviceAccountName: sbmig-web        # Job 디스패치 모드(SBMIG_WEB_MODE=k8s-job)일 때: 45-web-rbac.yaml 의 권한으로 Job 을 만든다
-      # nodeSelector: {kubernetes.io/hostname: CHANGE_ME_NODE}   # 이미지를 노드 하나에만 적재했거나 PVC 가 RWO 면 그 노드에 고정(Job 틀도 같은 노드로)
+      serviceAccountName: sbmig-web          # Job 디스패치 모드(SBMIG_WEB_MODE=k8s-job): 45-web-rbac.yaml 의 권한으로 Job 을 만든다. 안에서 돌리는 모드면 없어도 된다
+      # nodeSelector: {kubernetes.io/hostname: CHANGE_ME_NODE}   # 레지스트리 없이 이미지를 노드 하나에만 적재했거나 PVC 가 RWO 일 때만 그 노드에 고정(Job 틀도 같은 노드로)
+      # imagePullSecrets: [{name: CHANGE_ME_REGISTRY_PULL_SECRET}]   # 레지스트리가 pull 에 인증을 요구할 때만 — 인프라팀이 준 Secret 이름(81-web-job.template 도 같이)
       securityContext:
         runAsUser: 1000
         runAsGroup: 1000
@@ -24,8 +27,8 @@ spec:
       terminationGracePeriodSeconds: 60      # --graceful-timeout 30 + Maven 자식 프로세스(sbmig 이 트리를 정리한다)
       containers:
         - name: agent
-          image: sbmig:CHANGE_ME_TAG             # 레지스트리가 없으면 이 이름 그대로(docker save 한 tar 를 인프라팀이 노드마다 적재 — README §1.1); 있으면 <registry>/sbmig:<tag>
-          imagePullPolicy: Never                 # 노드에 적재된 이미지만 쓴다(없으면 ErrImageNeverPull 로 바로 드러난다); 레지스트리를 쓰면 IfNotPresent
+          image: CHANGE_ME_REGISTRY/sbmig:CHANGE_ME_TAG   # 인프라팀이 push 한 전체 이름 그대로(README §1); 81-web-job.template 과 같은 값. 태그는 빌드마다 새로(latest 금지)
+          imagePullPolicy: IfNotPresent          # 노드에 그 태그가 없을 때만 레지스트리에서 받는다. 레지스트리 없이 노드에 직접 적재하면 Never (README §1.1)
           ports:
             - {name: http, containerPort: 8765}
           # 환경 변수는 전부 두 곳에서: ConfigMap sbmig-env(비밀 아닌 것 — 웹 파드 동작, LLM 게이트웨이 주소·role, SBMIG_<섹션>__<키> 설정

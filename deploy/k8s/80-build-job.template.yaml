@@ -3,12 +3,12 @@
 # 작업 공간은 emptyDir(파드와 함께 사라짐)이라 파드보다 오래 살아야 하는 것은 deploy/docker/run-job.sh 가 끝나기 전에 밖으로 push 한다:
 # 이관된 프로젝트(소스 저장소의 브랜치 sbmig/<run id>), 보고서 / 로그(결과 저장소 또는 RESULT_PUSH_CMD), 파일 KB(KB 저장소).
 # Agent 쪽: `kubectl --kubeconfig=/etc/kube/config create -f`(generateName 이라 apply 가 아니라 create); deploy/k8s/submit-job.sh.
-# CHANGE_ME_*: namespace, nodeSelector 라벨, image, Secret 이름. 그 밖의 값은 프로젝트 크기에 맞춰 조정한다.
+# CHANGE_ME_*: nodeSelector 라벨, image(인프라팀 레지스트리의 전체 이름), Secret 이름. namespace 는 회사 값 agent(2026-11-09). 그 밖의 값은 프로젝트 크기에 맞춰 조정한다.
 apiVersion: batch/v1
 kind: Job
 metadata:
   generateName: sbmig-run-
-  namespace: CHANGE_ME_NAMESPACE
+  namespace: agent
   labels: {app: sbmig, kind: run}
 spec:
   backoffLimit: 0                       # 이관을 무턱대고 재시도하지 않는다(실패한 실행의 보고서가 곧 결과)
@@ -22,11 +22,11 @@ spec:
       nodeSelector:
         customer.example.com/build-worker: "true"     # CHANGE_ME: 빌드 워커 노드의 라벨
       securityContext: {runAsUser: 1000, runAsGroup: 1000, fsGroup: 1000}
-      # imagePullSecrets: [{name: CHANGE_ME_REGISTRY_PULL_SECRET}]      # 레지스트리를 쓸 때만
+      # imagePullSecrets: [{name: CHANGE_ME_REGISTRY_PULL_SECRET}]      # 레지스트리가 pull 에 인증을 요구할 때만
       containers:
         - name: build
-          image: sbmig:CHANGE_ME_TAG                                    # deploy/docker/Dockerfile; 레지스트리가 없으면 이 이름(빌드 워커 노드마다 적재 — README §1.1), 있으면 <registry>/sbmig:<tag>
-          imagePullPolicy: Never                                        # 적재된 이미지만; 레지스트리를 쓰면 IfNotPresent
+          image: CHANGE_ME_REGISTRY/sbmig:CHANGE_ME_TAG                 # deploy/docker/Dockerfile 을 인프라팀이 레지스트리에 push 한 전체 이름(README §1); 레지스트리 없이 노드에 적재하면 sbmig:<tag> (§1.1)
+          imagePullPolicy: IfNotPresent                                 # 레지스트리 없이 노드에 직접 적재하면 Never
           command: ["/app/deploy/docker/run-job.sh"]
           env:
             # --- 요청 값(Agent 가 Job 마다 채운다: submit-job.sh 가 아래 SBMIG_* 의 value 를 바꿔 넣는다) ---
