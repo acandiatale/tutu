@@ -26,10 +26,22 @@ sbmig 체크아웃 루트에서(회사 레포에서는 `src/migration-agent/` �
 
 ```bash
 docker build -f deploy/docker/Dockerfile -t <registry>/sbmig:<tag> .
-# 사내 미러:  --build-arg PIP_INDEX_URL=https://nexus.company/repository/pypi/simple --build-arg PIP_TRUSTED_HOST=nexus.company
 docker run --rm <registry>/sbmig:<tag> python -m sbmig.cli --help      # 확인
 docker push <registry>/sbmig:<tag>
 ```
+
+Windows PC(PowerShell, Docker Desktop)에서도 같은 세 줄이다(`-f deploy\docker\Dockerfile`). 빌드가 밖으로 못 나가는 망이면 Dockerfile 머리의 빌드 인자를
+준다 — 전부 선택이고 비우면 공개 저장소를 쓴다:
+
+| 인자 | 예 | 뜻 |
+|---|---|---|
+| `PYTHON_IMAGE` | `<harbor>/<proxy project>/library/python:3.11-slim-trixie` | 베이스 이미지를 사내 Harbor 의 Docker Hub 프록시에서 |
+| `APT_MIRROR` | `https://nexus.company/repository` | `deb.debian.org` 대신 쓸 주소(뒤에 `/debian`, `/debian-security` 가 붙는다 — JDK 21·Maven·git 을 apt 로 받는다) |
+| `PIP_INDEX_URL` / `PIP_TRUSTED_HOST` | `https://nexus.company/repository/pypi/simple` / `nexus.company` | PyPI 대신 사내 미러 |
+| `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` | 회사 프록시 | 프록시로만 나가는 망 — 빌드 중에만 쓰인다 |
+
+예: `docker build --build-arg APT_MIRROR=https://nexus.company/repository --build-arg PIP_INDEX_URL=… -f deploy\docker\Dockerfile -t sbmig:<tag> .`
+셸 스크립트(`run-job.sh`)는 `.gitattributes` 가 LF 로 고정하고 Dockerfile 이 한 번 더 LF 로 되돌리므로 Windows 체크아웃에서 빌드해도 된다.
 
 **회사(2026-11-09)**: 인프라팀이 자기 레지스트리에 push 해 준다. PC 에서는 `deploy/docker/save-image.sh <tag>` 로 amd64 tar 를 만들어 넘기면 인프라팀이
 `docker load -i` → `docker tag sbmig:<tag> <registry>/sbmig:<tag>` → `docker push` 한다(Dockerfile 을 넘겨 그쪽에서 빌드해도 같다). push 된 이미지의

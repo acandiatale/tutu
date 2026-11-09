@@ -2,15 +2,20 @@
 # (빌드-수정 루프가 시도마다 mvn 을 부르므로 같은 컨테이너의 Maven 이 가장 단순하고 빠르다).
 # 빌드(sbmig 체크아웃 루트에서):   docker build -f deploy/docker/Dockerfile -t sbmig:<tag> .
 # (회사 레포에서는 체크아웃이 src/migration-agent/ 이므로 그 디렉터리에서 빌드하거나 COPY 두 줄을 `COPY src/migration-agent/… …` 로)
+# 폐쇄망 빌드 인자(전부 선택, 비우면 공개 저장소):
+#   --build-arg PYTHON_IMAGE=<harbor>/<proxy project>/library/python:3.11-slim-trixie   베이스 이미지를 사내 Harbor 프록시에서
+#   --build-arg APT_MIRROR=https://nexus.company/repository                              deb.debian.org 를 대신할 주소(뒤에 /debian, /debian-security 가 붙는다)
+#   --build-arg PIP_INDEX_URL=https://nexus.company/repository/pypi/simple --build-arg PIP_TRUSTED_HOST=nexus.company
+#   프록시로 나가는 망이면 --build-arg HTTP_PROXY=… HTTPS_PROXY=… NO_PROXY=… (docker 가 빌드 중에만 쓴다)
 ARG PYTHON_IMAGE=python:3.11-slim-trixie
 FROM ${PYTHON_IMAGE}
 
-# 사내 미러(선택): --build-arg PIP_INDEX_URL=https://nexus.company/repository/pypi/simple
-#                   --build-arg PIP_TRUSTED_HOST=nexus.company
+ARG APT_MIRROR=
 ARG PIP_INDEX_URL=
 ARG PIP_TRUSTED_HOST=
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN if [ -n "$APT_MIRROR" ]; then sed -i "s|http://deb.debian.org|${APT_MIRROR%/}|g" /etc/apt/sources.list.d/debian.sources; fi \
+    && apt-get update && apt-get install -y --no-install-recommends \
         openjdk-21-jdk-headless maven git ca-certificates unzip curl \
     && rm -rf /var/lib/apt/lists/* \
     # /opt/java21 → 이 아키텍처의 JDK (amd64 / arm64 경로가 다르다); JAVA_HOME 은 여기를 가리킨다
@@ -35,6 +40,9 @@ RUN python /tmp/pip-deps.py /tmp/pyproject.toml \
 # 앱: config/, knowledge/, sbmig/ 가 같은 루트에 있어야 한다 (config.py 가 자기 위치에서 레포 루트를 잡는다 —
 # pip install 로 site-packages 에 넣으면 config/ 와 knowledge/ 를 못 찾으므로 /app 에 두고 PYTHONPATH 로 돈다)
 COPY --chown=sbmig:sbmig . /app/
+# Windows 체크아웃 방어: CRLF 로 바뀐 셸 스크립트는 컨테이너에서 못 돈다(`$'\r': command not found`) → LF 로 되돌리고 실행 권한을 보장한다
+# (.gitattributes 가 LF 를 강제하지만, 이미 CRLF 로 받은 체크아웃도 있을 수 있다)
+RUN sed -i 's/\r$//' /app/deploy/docker/*.sh && chmod 755 /app/deploy/docker/*.sh
 WORKDIR /app
 USER sbmig
 

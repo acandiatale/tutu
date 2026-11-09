@@ -1,0 +1,6 @@
+# 셸 스크립트는 어디서 체크아웃해도 LF (Windows 의 core.autocrlf 가 CRLF 로 바꾸면 컨테이너에서 `bash\r` / `$'\r': command not found` 로 죽는다 —
+# deploy/docker/run-job.sh 가 Job 파드의 command 다). Dockerfile 도 같다. 그 밖의 텍스트는 git 기본 규칙.
+*.sh          text eol=lf
+Dockerfile    text eol=lf
+*.yaml        text eol=lf
+*.yml         text eol=lf
