@@ -28,10 +28,13 @@ ls -lh "$OUT/sbmig-$TAG.tar" | awk '{print "size:", $5}'
 cat "$OUT/sbmig-$TAG.tar.sha256"
 cat <<EOF
 
-인프라팀이 노드마다(웹 파드와 Job 파드가 뜰 수 있는 모든 노드) — 런타임에 맞는 한 줄:
+레지스트리가 있으면(회사, 2026-11-09): 세 줄 뒤 매니페스트(deploy/k8s/40-deployment.yaml, 81-web-job.template.yaml)의 image: 를 그 전체 이름으로.
+  docker load -i sbmig-$TAG.tar
+  docker tag $IMG <registry>/<project>/$IMG
+  docker push <registry>/<project>/$IMG
+레지스트리가 없으면(README §1.1): 인프라팀이 노드마다(웹 파드와 Job 파드가 뜰 수 있는 모든 노드) 런타임에 맞는 한 줄로 적재하고,
+매니페스트의 image: 를 $IMG 로, imagePullPolicy 를 Never 로 바꿔 kubectl apply.
   containerd : sudo ctr -n k8s.io images import sbmig-$TAG.tar     확인: sudo crictl images | grep sbmig
   k3s / RKE2 : sudo k3s ctr images import sbmig-$TAG.tar
   docker     : docker load -i sbmig-$TAG.tar
-레지스트리가 있으면(회사): docker load -i $TAR && docker tag $IMG <registry>/$IMG && docker push <registry>/$IMG 뒤 매니페스트의 image: 를 그 전체 이름으로.
-레지스트리가 없으면: deploy/k8s/40-deployment.yaml 과 80-/81-*.template.yaml 의 image: 를 $IMG 로, imagePullPolicy 를 Never 로 → kubectl apply.
 EOF
