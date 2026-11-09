@@ -124,7 +124,7 @@ Secret 의 `SBMIG_WEB_TOKEN` 을 채운다 — 그때는 `http://<host>:8765/?to
 
 설정의 원본은 세 층이다. `config/default.yml`(이미지 안, 모든 키의 기본값) → ConfigMap 의 `artifacts.yml`(회사 사실: 부모·필수·선택
 아티팩트, 레이아웃, 컨테이너 경로) → **환경 변수**(가장 뒤에 적용, 이긴다). `SBMIG_<섹션>__<키>` 는 어떤 설정 키든 덮어쓰고(밑줄 두 개가
-한 단계 아래, 값은 YAML 로 읽음), `artifacts.yml` 안에서는 `${VAR}` / `${VAR:-기본}` 으로 환경 변수를 참조할 수 있다. 그래서 **구조적인
+한 단계 아래, 값은 YAML 로 읽음), `artifacts.yml` 안에서는 `${VAR}` / `${VAR:-기본}` 으로 환경 변수를 참조할 수 있다(단, Job 모드의 회사 Worker 는 공유 설정의 변수 참조·비밀값·원본 LLM 기록을 `CONFIG_INVALID` 로 거부한다 — ENV.md §1). 그래서 **구조적인
 사실은 `artifacts.yml`, 시험 운영 중 자주 손대는 숫자와 스위치는 env** 로 나눈다. 바꾼 뒤에는 파드 재시작(`kubectl -n agent rollout restart deploy/sbmig`).
 모르는 키 이름(철자·들여쓰기)은 시작 로그에 `config: … is not a known key` 로 뜬다.
 
@@ -139,7 +139,7 @@ Secret 의 `SBMIG_WEB_TOKEN` 을 채운다 — 그때는 `http://<host>:8765/?to
 | `LLM_ASSET_ID` | ConfigMap | 에셋 id | 에셋 교체 |
 | `LLM_TOKEN_URL` | ConfigMap | 토큰 발급 URL | 발급 경로 변경 |
 | `LLM_MODEL` / `LLM_ESCALATION_MODEL` | ConfigMap | `build_error_fixer` / `escalation_fixer` | 게이트웨이의 role 이름이 바뀌거나 상위 모델을 끌 때(비움) |
-| `LLM_RECORD_DIR` | ConfigMap | `/data/llm-records` | 기록을 끄거나(비움) 위치를 바꿀 때 |
+| `LLM_RECORD_DIR` | ConfigMap | (비움) | 회사 Worker 는 기록이 켜진 설정을 거부한다 — in-process 진단 때만 `/data/llm-records` |
 | `LLM_APP_TOKEN` (또는 `LLM_API_KEY`) | **Secret** | 앱 토큰 | 토큰 교체 |
 | `NEXUS_USER` / `NEXUS_PASSWORD` | **Secret** | — | Nexus 그룹이 로그인을 요구할 때(settings.xml 의 `${env.…}` 가 읽음) |
 | `SBMIG_WEB_TOKEN` | **Secret**, 선택 | — | 토큰 보호를 켤 때만 |

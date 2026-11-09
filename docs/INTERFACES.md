@@ -4166,3 +4166,10 @@ registry. Contract:
   `tests/web/conftest.py` hides a developer's `KUBECONFIG` from every web test.
 - **One config file (same day, user)**: the company edits only `artifacts.yml` — the ConfigMap key, the Deployment mount (`/app/config/artifacts.yml`),
   `SBMIG_WEB_CONFIGS=artifacts.yml` and the Job template's `SBMIG_CONFIG` all name it; `company.yml` (the 2026-11-04 name) is gone from `deploy/`.
+- **Company Worker contract (same day, from photos of the company repo's `sbmig/web/worker_contract.py` / `k8s.py`)**: the colleague's Main overlays
+  `python -m sbmig.web.worker` on the supplied business template (`SBMIG_JOB_TEMPLATE` is mandatory in k8s-job; `worker_template` sets
+  `automountServiceAccountToken=False`), pins config / knowledge / code digests per request and verifies them in the Worker, and rejects shared
+  configuration that enables raw LLM recording, custom hooks / plugins, unresolved `${VAR}`, secret interpolation or credential values
+  (`CONFIG_INVALID`). Consequences here: `llm.record_dir` / `LLM_RECORD_DIR` are commented out in `20-configmap.yaml`; both Job templates
+  carry `automountServiceAccountToken: false`; the same `SBMIG_*` env names (their Worker reads `kb.dir` from the config, not `SBMIG_KB_DIR`).
+  Their `k8s.py` has no kubeconfig support, so v2.1z-ab is additive, and `sbmig/web/{k8s,runs,app}.py` are now edited on both sides.

@@ -15,7 +15,9 @@
 
 환경 변수 `SBMIG_<섹션>__<키>` 는 어떤 설정 키든 덮어쓴다. 밑줄 두 개(`__`)가 한 단계 아래를 뜻하고, 값은 YAML 로 읽는다
 (`"20"` → 숫자, `"true"` → 참, `'["-Xmx4g"]'` → 목록). 예: `SBMIG_LOOP__PHASES__VERIFY__MAX_ITERATIONS=50` = `loop.phases.verify.max_iterations: 50`.
-`artifacts.yml` 안에서도 `${VAR}` / `${VAR:-기본값}` 으로 환경 변수를 참조할 수 있다.
+`artifacts.yml` 안에서도 `${VAR}` / `${VAR:-기본값}` 으로 환경 변수를 참조할 수 있지만, **Job 모드의 회사 Worker 는 공유 설정 안의 변수 참조와 비밀값을
+거부한다**(`CONFIG_INVALID`: "unresolved variables", "secret interpolation is not allowed", "credential values cannot be stored") — 회사 artifacts.yml 은 값을
+그대로 적고, 비밀은 Secret 과 settings.xml 의 `${env.…}` 참조로만 둔다("Maven settings must reference credentials, not contain them").
 
 나누는 기준: **구조적인 회사 사실은 `artifacts.yml`, 시험 운영 중 자주 손대는 숫자·스위치는 env, 토큰·비밀번호는 Secret.**
 
@@ -51,7 +53,7 @@
 | `LLM_TOKEN_URL` | `https://<게이트웨이 호스트>/<토큰 발급 경로>` | 앱 토큰 → 접근 토큰 교환 주소 |
 | `LLM_MODEL` | `build_error_fixer` | `params.role` — 수정 1~2회차와 구조 리뷰. 게이트웨이가 모델에 매핑 |
 | `LLM_ESCALATION_MODEL` | `escalation_fixer` | `params.role` — 케이스 3회차부터 / 정체 뒤. 비우면 상위 모델 없음 |
-| `LLM_RECORD_DIR` | `/data/llm-records` | 요청·응답 기록(비밀 없음). 비우면 기록 안 함 |
+| `LLM_RECORD_DIR` | (비움) | 요청·응답 기록(비밀 없음). **회사 Worker 는 기록이 켜진 설정을 거부한다**("without raw recording") — Job 모드에서는 비워 두고, in-process 진단 때만 `/data/llm-records` |
 | `LLM_RESPONSE_PATH` | (비움) | `sbmig llm-probe` 가 응답 본문을 못 찾을 때만 |
 
 ## 4. Secret — 여기에만 둔다 (ConfigMap·이미지·로그 금지)
