@@ -30,7 +30,16 @@ docker run --rm <registry>/sbmig:<tag> python -m sbmig.cli --help      # 확인
 docker push <registry>/sbmig:<tag>
 ```
 
-Windows PC(PowerShell, Docker Desktop)에서도 같은 세 줄이다(`-f deploy\docker\Dockerfile`). 빌드가 밖으로 못 나가는 망이면 Dockerfile 머리의 빌드 인자를
+Windows PC(PowerShell, Docker Desktop)에서도 같은 세 줄이다(`-f deploy\docker\Dockerfile`).
+
+**회사 레포 구조**(2026-11-09: 코드는 `src/migration-agent/`, `deploy/` 는 레포 루트)에서는 **루트에서** 두 인자를 주고 빌드한다. `.dockerignore` 는
+컨텍스트 루트의 것만 읽히므로 견본 `deploy/docker/root.dockerignore.example` 을 루트에 `.dockerignore` 로 먼저 복사한다(안 하면 `.venv`·`out/` 이 이미지에
+딸려 들어간다). 이미지 안 배치는 우리 레포에서 빌드한 것과 똑같다(`/app` = sbmig 체크아웃, `/app/deploy`).
+```powershell
+Copy-Item deploy\docker\root.dockerignore.example .dockerignore
+docker build --build-arg APP_DIR=src/migration-agent --build-arg DEPLOY_DIR=deploy -f deploy\docker\Dockerfile -t sbmig:<tag> .
+```
+`src\migration-agent\pyproject.toml` 이 있어야 한다(의존성 목록). 없으면 우리 레포의 것을 그 자리에 복사한다. 빌드가 밖으로 못 나가는 망이면 Dockerfile 머리의 빌드 인자를
 준다 — 전부 선택이고 비우면 공개 저장소를 쓴다:
 
 | 인자 | 예 | 뜻 |

@@ -1,0 +1,34 @@
+# 회사 레포(코드 src/migration-agent/, deploy/ 는 루트)의 **루트**에 .dockerignore 로 복사해 쓰는 견본. .dockerignore 는 빌드 컨텍스트
+# 루트의 것만 읽히므로 src/migration-agent/.dockerignore 는 루트에서 빌드할 때 무시된다. 빼는 기준은 같다: 실행 중인 에이전트가 읽지 않는 것.
+# 안 빼면 .venv 와 out/ 이 이미지에 딸려 들어가 수 GB 가 된다.
+.git
+**/.git
+.venv
+**/.venv
+**/__pycache__
+**/*.pyc
+**/out/
+**/kb-v2/
+**/.env
+**/.env.*
+!**/.env.example
+**/*.egg-info
+.scratch
+.ruff_cache
+.pytest_cache
+**/.pytest_cache
+**/.ruff_cache
+.vscode
+.github
+tests/
+**/tests/
+docs/
+**/docs/
+guide/
+oss/
+agent_files/
+agent-doc/
+**/coding/
+**/examples/
+**/fixtures/
+deploy/k8s/30-secret.yaml
