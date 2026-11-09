@@ -449,4 +449,10 @@ def test_the_worker_template_follows_the_company_worker_contract():
     assert len(shared) == 1 and "persistentVolumeClaim" in volumes[shared[0]["name"]]
     assert not shared[0].get("readOnly") and not shared[0].get("subPath")
     assert not [m for m in c["volumeMounts"] if Path(m["mountPath"]).is_relative_to(out_dir)]
+    # secret bindings: annotation env → revision file; every listed env is a secretKeyRef; paths absolute, on the shared volume, outside the run dirs
+    paths = json.loads(job["metadata"]["annotations"]["sbmig-secret-revision-paths"])
+    assert isinstance(paths, dict) and "LLM_APP_TOKEN" in paths
+    for env_name, path in paths.items():
+        assert next(e for e in c["env"] if e["name"] == env_name)["valueFrom"]["secretKeyRef"]["name"]
+        assert Path(path).is_absolute() and Path(path).is_relative_to(Path("/data")) and not Path(path).is_relative_to(out_dir)
 

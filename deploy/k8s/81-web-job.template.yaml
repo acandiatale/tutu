@@ -16,8 +16,14 @@ metadata:
   name: sbmig-RUN_ID                     # the web pod replaces this (sbmig-<run id>, lower-case)
   namespace: agent
   labels: {app: sbmig, kind: run}
-  # annotations:                          # 회사 Worker 계약(worker_secret_bindings): 비밀 env 이름 → revision 파일 경로(공유 볼륨). 파일 내용 = 그 env 가 가리키는
-  #   <SECRET_REVISIONS_ANNOTATION>: '{"LLM_APP_TOKEN": "CHANGE_ME_/data/<control>/LLM_APP_TOKEN.revision"}'   #   Secret 의 이름(immutable Secret, 바꾸면 새 이름). 키 이름·경로 규칙은 회사 k8s-deploy.md
+  annotations:
+    # 회사 Worker 계약(sbmig.web.k8s worker_secret_bindings / worker_contract validate_dependencies): 비밀 env 이름 → 공유 볼륨의 revision 파일(절대 경로,
+    # 심볼릭 링크 불가). 파일 내용 = 그 env 의 secretKeyRef 가 가리키는 Secret 의 **이름**(값이나 해시를 넣으면 거부). Secret 은 immutable 이라 값을 바꾸면 새 이름
+    # (sbmig-llm-2 …)으로 만들고 ① 아래 secretKeyRef 의 name, ② revision 파일 내용, ③ 40-deployment.yaml 의 secretRef 를 함께 바꾼다. 여기 적은 env 는 Main 이
+    # 시작 때, Worker 가 실행 때 다시 확인한다. 반드시 있어야 하는 것: 선택한 LLM 자격(LLM_TOKEN_URL 이 있으면 LLM_APP_TOKEN, 없으면 LLM_API_KEY)과
+    # settings.xml 이 ${env.…} 로 참조하는 Maven 자격(NEXUS_USER / NEXUS_PASSWORD). 적은 파일이 없으면 Main 이 뜨지 않는다 — 파일 만들기는 README §3 4번.
+    sbmig-secret-revision-paths: '{"LLM_APP_TOKEN": "/data/secret-revisions/LLM_APP_TOKEN"}'
+    # Nexus 로그인을 쓰면:  '{"LLM_APP_TOKEN": "/data/secret-revisions/LLM_APP_TOKEN", "NEXUS_USER": "/data/secret-revisions/NEXUS_USER", "NEXUS_PASSWORD": "/data/secret-revisions/NEXUS_PASSWORD"}'
 spec:
   backoffLimit: 0                       # 이관을 무턱대고 재시도하지 않는다(실패한 실행의 보고서가 곧 결과)
   activeDeadlineSeconds: 14400          # 4 시간

@@ -4179,3 +4179,8 @@ registry. Contract:
   TOKEN / PASSWORD / SECRET / API_KEY must be `valueFrom`; secret envs are bound to revision files through a metadata annotation (env name →
   path whose content is the immutable Secret's name). `81-web-job.template.yaml` now follows these rules (explicit `configMapKeyRef` /
   `secretKeyRef` entries with `optional: true`); the annotation key and the revision-file convention are still to be copied from the company doc.
+- **Secret revision bindings (same day)**: the annotation is `sbmig-secret-revision-paths` = JSON `{<env>: <absolute revision-file path on the shared
+  volume>}`; the file's content must equal that env's `secretKeyRef.name` (the immutable Secret's name — a value or its hash is refused); Main checks
+  it at startup, the Worker again before running; the selected LLM credential (`LLM_APP_TOKEN` with `LLM_TOKEN_URL`, else `LLM_API_KEY`) and every
+  Maven credential settings.xml references must be bound. The template binds `LLM_APP_TOKEN` → `/data/secret-revisions/LLM_APP_TOKEN`; README §3
+  step 4 has the file command and the rotation order (new immutable Secret → template + Deployment names → revision file → re-apply).
