@@ -10,10 +10,12 @@ A thin in-cluster client for the three calls the Job dispatch needs — create a
 Logs, the zip and the results travel over the shared PVC, not over this client."""
 from __future__ import annotations
 
+import base64
 import copy
 import logging
 import os
 import re
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -28,6 +30,7 @@ NAMESPACE_ENV = "SBMIG_K8S_NAMESPACE"
 TEMPLATE_ENV = "SBMIG_JOB_TEMPLATE"
 POLL_ENV = "SBMIG_JOB_POLL_S"
 STOP_GRACE_ENV = "SBMIG_JOB_STOP_GRACE_S"
+KUBECONFIG_ENV = "KUBECONFIG"              # 인프라팀 모델(2026-11-09): Agent 파드에 Secret 으로 마운트한 kubeconfig(/etc/kube/config)
 DEFAULT_TEMPLATE = "deploy/k8s/81-web-job.template.yaml"
 SA_DIR = Path("/var/run/secrets/kubernetes.io/serviceaccount")
 MODES = ("in-process", "k8s-job", "local-job")    # local-job: the Job-mode flow with a local subprocess as the "pod" (development)
@@ -41,10 +44,32 @@ def cluster_host_present() -> bool:
 
 def in_cluster_available() -> bool:
     """이 프로세스가 클러스터 안 파드인가(``KUBERNETES_SERVICE_HOST`` + 서비스 계정 토큰). 개발 PC 에서는 False —
-    ``k8s-job`` 모드가 자동으로 ``local-job`` 으로 내려가는 기준.
+    ``kubeconfig_path()`` 도 없으면 ``k8s-job`` 모드가 자동으로 ``local-job`` 으로 내려가는 기준.
 
     Are we a pod inside a cluster (`KUBERNETES_SERVICE_HOST` + the service-account token)? False on a developer PC."""
     return bool(os.environ.get("KUBERNETES_SERVICE_HOST")) and (SA_DIR / "token").is_file()
+
+
+def kubeconfig_path() -> Path | None:
+    """``KUBECONFIG`` 가 가리키는 파일이 있으면 그 경로(2026-11-09, 인프라팀 모델: Agent 파드에 kubeconfig Secret 을 ``/etc/kube/config`` 로
+    마운트하고 ``KUBECONFIG`` 를 준다). 명시된 것만 본다 — ``~/.kube/config`` 는 개발 PC 의 다른 클러스터일 수 있어 저절로 쓰지 않는다.
+    여러 경로(os.pathsep)면 첫 번째 있는 파일.
+
+    The file `KUBECONFIG` points at, when it exists; nothing implicit (`~/.kube/config` is never picked up on its own)."""
+    raw = (os.environ.get(KUBECONFIG_ENV) or "").strip()
+    for part in raw.split(os.pathsep) if raw else []:
+        p = Path(part.strip()).expanduser()
+        if part.strip() and p.is_file():
+            return p
+    return None
+
+
+def cluster_access_available() -> bool:
+    """쿠버네티스 API 를 부를 수단이 있나 — 파드 안의 서비스 계정 토큰이거나 ``KUBECONFIG`` 파일. ``K8sClient.connect()`` 가 그 순서의
+    반대로(kubeconfig 가 명시됐으면 그것부터) 고른다.
+
+    A service-account token inside a pod, or an explicit kubeconfig: either lets `k8s-job` create real Jobs."""
+    return in_cluster_available() or kubeconfig_path() is not None
 
 
 class K8sError(RuntimeError):
@@ -107,14 +132,18 @@ class K8sClient:
     In-cluster API client (`in_cluster()`); tests pass a fake `session`."""
 
     def __init__(self, base_url: str, token: str, namespace: str, verify: str | bool = True,
-                 session: Any = None, timeout_s: float = 15.0) -> None:
+                 session: Any = None, timeout_s: float = 15.0, cert: tuple[str, str] | None = None) -> None:
         self.base_url = base_url.rstrip("/")
         self.namespace = namespace
         self.verify = verify
+        self.cert = cert                        # (client.crt, client.key) — kubeconfig 의 클라이언트 인증서 사용자일 때
         self.timeout_s = timeout_s
         self.session = session or requests.Session()
-        self._headers = {"Authorization": f"Bearer {token}", "Accept": "application/json",
-                         "Content-Type": "application/json"}
+        self.source = ""                        # 사람이 읽을 출처: "in-cluster service account" / "kubeconfig <경로> (context <이름>)"
+        self._tmp: Any = None                   # kubeconfig 의 base64 인증서를 풀어 둔 임시 폴더 — 클라이언트와 같이 산다
+        self._headers = {"Accept": "application/json", "Content-Type": "application/json"}
+        if token:
+            self._headers["Authorization"] = f"Bearer {token}"
 
     @classmethod
     def in_cluster(cls, namespace: str | None = None, session: Any = None) -> K8sClient:
@@ -127,11 +156,103 @@ class K8sClient:
                            "SBMIG_WEB_MODE=k8s-job needs the web pod to run in the cluster")
         ns = (namespace or os.environ.get(NAMESPACE_ENV, "") or
               (ns_file.read_text(encoding="utf-8").strip() if ns_file.is_file() else "")).strip() or "default"
-        return cls(f"https://{host}:{port}", token_file.read_text(encoding="utf-8").strip(), ns,
-                   verify=str(ca_file) if ca_file.is_file() else True, session=session)
+        c = cls(f"https://{host}:{port}", token_file.read_text(encoding="utf-8").strip(), ns,
+                verify=str(ca_file) if ca_file.is_file() else True, session=session)
+        c.source = "in-cluster service account"
+        return c
+
+    @classmethod
+    def from_kubeconfig(cls, path: str | Path | None = None, namespace: str | None = None, session: Any = None) -> K8sClient:
+        """kubeconfig 파일로 만든다(2026-11-09, 인프라팀 모델: Secret ``agent-kubeconfig`` → ``/etc/kube/config``, env ``KUBECONFIG``).
+        ``current-context`` 의 cluster(server, certificate-authority[-data], insecure-skip-tls-verify)와 user(token / tokenFile,
+        client-certificate[-data] + client-key[-data], username + password)를 읽는다. base64 ``*-data`` 는 임시 폴더에 0600 파일로 풀어
+        requests 에 경로로 준다; 상대 경로는 kubeconfig 파일이 있는 폴더 기준(kubectl 과 같다). ``exec`` / ``auth-provider`` 사용자는 못
+        쓴다(외부 명령을 부르지 않는다 — 토큰이나 인증서가 든 kubeconfig 를 달라고 K8sError). namespace: 인자 → ``SBMIG_K8S_NAMESPACE`` →
+        context 의 namespace → default.
+
+        Build the client from a kubeconfig (current-context's cluster + user; token, client certificate or basic auth; `exec` refused)."""
+        p = Path(path) if path else kubeconfig_path()
+        if p is None or not Path(p).is_file():
+            raise K8sError(f"kubeconfig not found: {p or (KUBECONFIG_ENV + ' is not set')}")
+        p = Path(p)
+        try:
+            data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+        except (OSError, yaml.YAMLError) as e:
+            raise K8sError(f"kubeconfig {p}: {type(e).__name__}: {e}") from e
+
+        def named(kind: str, name: Any, inner: str) -> dict:
+            for it in data.get(kind) or []:
+                if isinstance(it, dict) and it.get("name") == name:
+                    return it.get(inner) or {}
+            return {}
+
+        ctx_name = data.get("current-context") or next((c.get("name") for c in data.get("contexts") or [] if isinstance(c, dict)), None)
+        ctx = named("contexts", ctx_name, "context")
+        cluster, user = named("clusters", ctx.get("cluster"), "cluster"), named("users", ctx.get("user"), "user")
+        server = str(cluster.get("server") or "").strip()
+        if not server:
+            raise K8sError(f"kubeconfig {p}: context {ctx_name!r} names no cluster server")
+        tmp = tempfile.TemporaryDirectory(prefix="sbmig-kube-")
+
+        def materialize(b64: Any, file: Any, name: str) -> str | None:
+            # ``*-data`` 는 base64 PEM → 임시 파일(0600); ``*`` 는 경로(상대면 kubeconfig 폴더 기준)
+            if b64:
+                out = Path(tmp.name) / name
+                out.write_bytes(base64.b64decode(str(b64)))
+                out.chmod(0o600)
+                return str(out)
+            if file:
+                f = Path(str(file)).expanduser()
+                return str(f if f.is_absolute() else (p.parent / f))
+            return None
+
+        verify: str | bool = True
+        if cluster.get("insecure-skip-tls-verify"):
+            verify = False
+        else:
+            ca = materialize(cluster.get("certificate-authority-data"), cluster.get("certificate-authority"), "ca.crt")
+            if ca:
+                verify = ca
+        token = str(user.get("token") or "").strip()
+        if not token and user.get("tokenFile"):
+            tf = Path(str(user["tokenFile"])).expanduser()
+            tf = tf if tf.is_absolute() else p.parent / tf
+            token = tf.read_text(encoding="utf-8").strip() if tf.is_file() else ""
+        crt = materialize(user.get("client-certificate-data"), user.get("client-certificate"), "client.crt")
+        key = materialize(user.get("client-key-data"), user.get("client-key"), "client.key")
+        cert = (crt, key) if crt and key else None
+        basic = ""
+        if not token and cert is None:
+            if user.get("exec") or user.get("auth-provider"):
+                raise K8sError(f"kubeconfig {p}: user {ctx.get('user')!r} authenticates through exec / auth-provider — sbmig runs no "
+                               "external command; give the web pod a kubeconfig with a token or a client certificate")
+            if user.get("username") and user.get("password") is not None:
+                basic = base64.b64encode(f"{user['username']}:{user['password']}".encode()).decode("ascii")
+            else:
+                raise K8sError(f"kubeconfig {p}: user {ctx.get('user')!r} has no token, client certificate or password")
+        ns = (namespace or os.environ.get(NAMESPACE_ENV, "") or str(ctx.get("namespace") or "")).strip() or "default"
+        c = cls(server, token, ns, verify=verify, session=session, cert=cert)
+        if basic:
+            c._headers["Authorization"] = f"Basic {basic}"
+        c._tmp = tmp
+        c.source = f"kubeconfig {p} (context {ctx_name})"
+        log.info("k8s: %s → %s, namespace %s", c.source, server, ns)
+        return c
+
+    @classmethod
+    def connect(cls, namespace: str | None = None, session: Any = None) -> K8sClient:
+        """``KUBECONFIG`` 파일이 있으면 그것으로(명시된 쪽이 이긴다), 없으면 파드 안 서비스 계정으로. 둘 다 없으면 K8sError
+        (``in_cluster`` 의 메시지).
+
+        Explicit kubeconfig first, else the in-cluster service account."""
+        if kubeconfig_path() is not None:
+            return cls.from_kubeconfig(namespace=namespace, session=session)
+        return cls.in_cluster(namespace=namespace, session=session)
 
     # ---- http
     def _req(self, method: str, path: str, *, ok: tuple[int, ...] = (200, 201, 202), **kw: Any) -> Any:
+        if self.cert:
+            kw.setdefault("cert", self.cert)
         try:
             r = self.session.request(method, self.base_url + path, headers=self._headers, verify=self.verify,
                                      timeout=self.timeout_s, **kw)

@@ -190,7 +190,7 @@ env 가 아닌 것: `company.yml` 과 `settings.xml`(ConfigMap `sbmig-config`, �
 | 이미지 | `docker/Dockerfile` (같은 이미지, JDK 는 쓰지 않는다) | 같은 이미지 |
 | 자원 | CPU 1, 메모리 1~2 GiB | CPU 2~4, 메모리 6~8 GiB (OpenRewrite `-Xmx4g`) |
 | 볼륨 | PVC `sbmig-data` → `/data` (업로드, 실행 폴더, KB), **ReadWriteMany** | 같은 PVC 같은 경로 + `sbmig-m2`(또는 emptyDir) |
-| 권한 | ServiceAccount `sbmig-web` (`k8s/45-web-rbac.yaml`: jobs create/get/list/watch/delete, pods get/list/watch) | 없음 |
+| 권한 | ServiceAccount `sbmig-web` (`k8s/45-web-rbac.yaml`: jobs create/get/list/watch/delete, pods get/list/watch) **또는** 인프라팀이 Secret 으로 주는 kubeconfig(`/etc/kube/config`, env `KUBECONFIG` — 2026-11-09 임시 명세의 방식; 있으면 이것을 먼저 쓴다) | 없음 |
 | 네트워크 | → 쿠버네티스 API | → LLM 게이트웨이, Nexus |
 
 회사 클러스터(2026-11-09): namespace **`agent`**, 스토리지 클래스 **`nfs-csi`**(NFS CSI 드라이버, ReadWriteMany 지원) — 매니페스트에 들어 있다. NFS 라서 볼 것:
@@ -200,11 +200,22 @@ PVC 가 RWO 만 되는 클러스터라면 Job 템플릿과 Deployment 의 hostna
 ### 켜는 법
 
 1. `k8s/10-storage.yaml`: 회사 값이 들어 있다(`storageClassName: nfs-csi`, 두 PVC 모두 `ReadWriteMany`, namespace `agent`). 다른 클러스터면 이 세 값만 바꾼다.
-2. `k8s/45-web-rbac.yaml` 을 먼저 apply(namespace `agent`). `k8s/40-deployment.yaml` 의 `serviceAccountName: sbmig-web` 은 풀려 있다.
+2. 권한, 둘 중 하나. (a) `k8s/45-web-rbac.yaml` 을 먼저 apply — `k8s/40-deployment.yaml` 의 `serviceAccountName: sbmig-web` 은 풀려 있다.
+   (b) 인프라팀이 kubeconfig Secret(임시 명세의 `agent-kubeconfig`)을 주면 `serviceAccountName` 줄을 지우고 Deployment 의 세 자리(`KUBECONFIG` env,
+   `/etc/kube` 마운트, `kubeconfig` 볼륨) 주석을 푼다. 코드는 `KUBECONFIG` 파일이 있으면 그것으로, 없으면 서비스 계정으로 API 를 부른다
+   (`sbmig/web/k8s.py` `K8sClient.connect`; kubeconfig 의 token / 클라이언트 인증서 사용자만 — `exec` 방식은 거절한다).
 3. `k8s/40-deployment.yaml` 과 `k8s/81-web-job.template.yaml` 의 `image:` 에 인프라팀이 push 한 이미지의 전체 이름을 **같은 값**으로 넣는다(§1,
    `imagePullPolicy: IfNotPresent`; pull 인증이 필요하면 `imagePullSecrets`). 설정 파일 이름(`artifacts.yml`)과 마운트는 Deployment 와 같게.
-4. ConfigMap `sbmig-env` 에 `SBMIG_WEB_MODE: "k8s-job"` (필요하면 `SBMIG_K8S_NAMESPACE`, `SBMIG_JOB_TEMPLATE`). 파드 재시작.
-5. 확인: 시작 로그 `sbmig web UI ready (… mode k8s-job — job template …)`, 업로드 뒤 `kubectl -n agent get jobs -l app=sbmig,kind=run`, 화면 레일의 '파드' 단계,
+4. 채운 Job 틀을 ConfigMap 으로 올린다 — 웹 파드는 `/templates/81-web-job.template.yaml`(`SBMIG_JOB_TEMPLATE`, Deployment 의 env)을 읽는다.
+   이미지 안의 사본은 `CHANGE_ME` 그대로라 쓰지 않는다. 바꿀 때마다 같은 명령(`apply`)이면 된다; ConfigMap 이 없으면 파드는 뜨고 첫 업로드가
+   `job template not found` 로 멈춰 알려 준다.
+   ```bash
+   kubectl -n agent create configmap sbmig-job-template --from-file=deploy/k8s/81-web-job.template.yaml --dry-run=client -o yaml | kubectl apply -f -
+   ```
+5. LLM 게이트웨이 주소가 사내 DNS 로 안 풀리면(인프라팀 임시 명세의 `hostAliases`) Deployment 와 Job 틀 **양쪽**의 `hostAliases` 주석을 같은 값으로 푼다 —
+   LLM 을 부르는 쪽은 Job 파드다.
+6. ConfigMap `sbmig-env` 에 `SBMIG_WEB_MODE: "k8s-job"` (필요하면 `SBMIG_K8S_NAMESPACE`). 파드 재시작.
+7. 확인: 시작 로그 `sbmig web UI ready (… mode k8s-job — job template …)`, 업로드 뒤 `kubectl -n agent get jobs -l app=sbmig,kind=run`, 화면 레일의 '파드' 단계,
    실행 폴더에 파드가 쓴 `sbmig.log` / `job-status.json`.
 
 ### 있는 것 / 다음 것
@@ -236,8 +247,8 @@ PVC 가 RWO 만 되는 클러스터라면 Job 템플릿과 Deployment 의 hostna
 | "소스 처리 · 빌드 · 분석 · 결과 저장 · 커밋 뒤 종료" | `docker/run-job.sh`: zip(또는 git) → KB clone → `sbmig run` → 결과 전달 → 종료 코드 |
 | "결과 저장", "저장소 커밋" | 결과 POST(웹 파드) 또는 결과 저장소 push(`SBMIG_RESULT_GIT_URL`); 프로젝트 브랜치 `sbmig/<run id>` push |
 | `/workspace` emptyDir | `sbmig run --out /workspace/out`; 파드가 죽기 전에 밖으로 보낸 것만 남는다 |
-| Agent: `kubectl create -f /templates/build-job.yaml` | 웹 파드의 디스패치 모드(만들 것); 손으로는 `k8s/submit-job.sh` |
-| `/etc/kube/config` 는 Agent 에만 | 그대로. 빌드 파드는 쿠버네티스 API 를 부르지 않는다 |
+| Agent: `kubectl create -f /templates/build-job.yaml` | 웹 파드의 디스패치 모드(있음) — 같은 자리: ConfigMap `sbmig-job-template` 을 `/templates` 에 마운트, `SBMIG_JOB_TEMPLATE`; 손으로는 `k8s/submit-job.sh` |
+| `/etc/kube/config` 는 Agent 에만 | 그대로 — 웹 파드가 `KUBECONFIG` 로 그 파일을 읽어 API 를 부른다(서비스 계정 대신, 2026-11-09). 빌드 파드는 쿠버네티스 API 를 부르지 않는다 |
 
 ### 템플릿에서 바꿀 자리 (가이드 2절 그대로 + sbmig 용)
 

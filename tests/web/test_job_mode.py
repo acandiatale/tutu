@@ -5,6 +5,7 @@ run dir, and ends on `job-status.json` / the Job's terminal state. A stop writes
 is deleted. No migration runs in this process."""
 from __future__ import annotations
 
+import base64
 import json
 import shutil
 import time
@@ -12,11 +13,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
+import yaml
 from fastapi.testclient import TestClient
 
 from sbmig.core.config import PACKAGE_ROOT
 from sbmig.web import create_app
-from sbmig.web.k8s import JobState, K8sClient, K8sError, job_name, render_job
+from sbmig.web.k8s import NAMESPACE_ENV, JobState, K8sClient, K8sError, job_name, render_job
 from sbmig.web.runs import RunManager
 
 from .test_app import _manager, _sse, _start
@@ -334,3 +336,88 @@ def test_k8s_client_three_calls(tmp_path: Path):
         c.job_state("sbmig-r1")
     with pytest.raises(K8sError, match="not inside a Kubernetes cluster"):
         K8sClient.in_cluster()
+
+
+# ---- 2026-11-09: the infra team's agent model — a kubeconfig Secret at /etc/kube/config instead of a service account
+
+def _kubeconfig(tmp_path: Path, user: dict, cluster_extra: dict | None = None, ns: str | None = "agent") -> Path:
+    ca = base64.b64encode(b"-----BEGIN CERTIFICATE-----\nabc\n-----END CERTIFICATE-----\n").decode("ascii")
+    cluster = {"server": "https://k8s.example:6443", "certificate-authority-data": ca}
+    cluster.update(cluster_extra or {})
+    if "certificate-authority" in cluster or cluster.get("insecure-skip-tls-verify"):
+        cluster.pop("certificate-authority-data", None)
+    ctx: dict = {"cluster": "c1", "user": "u1"}
+    if ns:
+        ctx["namespace"] = ns
+    doc = {"apiVersion": "v1", "kind": "Config", "current-context": "x1",
+           "clusters": [{"name": "c1", "cluster": cluster}], "users": [{"name": "u1", "user": user}],
+           "contexts": [{"name": "x1", "context": ctx}]}
+    p = tmp_path / "kube" / "config"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(yaml.safe_dump(doc), encoding="utf-8")
+    return p
+
+
+def test_a_kubeconfig_with_a_token_user_is_preferred_over_the_service_account(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv(NAMESPACE_ENV, raising=False)
+    monkeypatch.setenv("KUBECONFIG", str(_kubeconfig(tmp_path, {"token": "t0k"})))
+    monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "10.0.0.1")           # a pod, but the explicit kubeconfig wins
+    s = _Session({})
+    c = K8sClient.connect(session=s)
+    assert c.base_url == "https://k8s.example:6443" and c.namespace == "agent"       # the context's namespace
+    assert c._headers["Authorization"] == "Bearer t0k" and c.cert is None
+    assert isinstance(c.verify, str) and Path(c.verify).read_text().startswith("-----BEGIN CERTIFICATE-----")
+    assert c.source.startswith("kubeconfig ") and "context x1" in c.source
+    assert c.job_state("sbmig-x").phase == "Missing"
+    assert s.calls[0][2]["verify"] == c.verify and "cert" not in s.calls[0][2]
+    monkeypatch.setenv(NAMESPACE_ENV, "other")                          # the env still wins over the context
+    assert K8sClient.connect(session=_Session({})).namespace == "other"
+
+
+def test_a_kubeconfig_with_a_client_certificate_user(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv(NAMESPACE_ENV, raising=False)
+    crt, key = base64.b64encode(b"CRT").decode(), base64.b64encode(b"KEY").decode()
+    path = _kubeconfig(tmp_path, {"client-certificate-data": crt, "client-key-data": key}, ns=None)
+    s = _Session({})
+    c = K8sClient.from_kubeconfig(path, session=s)
+    assert c.namespace == "default" and "Authorization" not in c._headers
+    assert c.cert is not None and Path(c.cert[0]).read_text() == "CRT" and Path(c.cert[1]).read_text() == "KEY"
+    assert (Path(c.cert[1]).stat().st_mode & 0o777) == 0o600
+    c.job_state("sbmig-x")
+    assert s.calls[0][2]["cert"] == c.cert
+
+
+def test_a_kubeconfig_with_relative_ca_path_insecure_or_exec(tmp_path: Path):
+    (tmp_path / "kube").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "kube" / "ca.pem").write_text("CA", encoding="utf-8")
+    c = K8sClient.from_kubeconfig(_kubeconfig(tmp_path, {"token": "t"}, {"certificate-authority": "ca.pem"}), session=_Session({}))
+    assert c.verify == str(tmp_path / "kube" / "ca.pem")                # relative to the kubeconfig's folder, like kubectl
+    c = K8sClient.from_kubeconfig(_kubeconfig(tmp_path, {"token": "t"}, {"insecure-skip-tls-verify": True}), session=_Session({}))
+    assert c.verify is False
+    with pytest.raises(K8sError, match="exec / auth-provider"):
+        K8sClient.from_kubeconfig(_kubeconfig(tmp_path, {"exec": {"command": "aws"}}))
+    with pytest.raises(K8sError, match="no token, client certificate or password"):
+        K8sClient.from_kubeconfig(_kubeconfig(tmp_path, {}))
+    with pytest.raises(K8sError, match="kubeconfig not found"):
+        K8sClient.from_kubeconfig(tmp_path / "nope")
+
+
+def test_a_kubeconfig_outside_a_cluster_keeps_the_job_mode(tmp_path: Path, repo: Path, monkeypatch):
+    """Development without a kubeconfig degrades to local-job (tests/web/test_local_job_mode.py); an explicit KUBECONFIG means a real
+    cluster — the Mac Studio's colima from the laptop, or the infra team's agent pod."""
+    monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
+    monkeypatch.setenv("KUBECONFIG", str(_kubeconfig(tmp_path, {"token": "t"})))
+    mgr = RunManager(tmp_path / "out", repo, mode="k8s-job", job_template=TEMPLATE)
+    assert mgr.effective_mode == "k8s-job"
+
+
+def test_a_missing_job_template_fails_the_run_readably(tmp_path: Path, repo: Path, monkeypatch):
+    """The image's copy of the template keeps its CHANGE_ME placeholders; the pod mounts the filled one as a ConfigMap. A missing
+    file must not create a Job from nothing."""
+    monkeypatch.setenv("SBMIG_JOB_POLL_S", "0.05")
+    jc = FakeJobClient()
+    mgr = RunManager(tmp_path / "out", repo, mode="k8s-job", job_client=jc, job_template=tmp_path / "templates" / "nope.yaml")
+    rid = mgr.start(b"PK\x05\x06" + b"\0" * 18, "p.zip", ["artifacts.local-e2e.yml"])
+    assert mgr.runs[rid].done.wait(5)
+    assert mgr.runs[rid].exit_code == 3 and "job template not found" in (mgr.runs[rid].error or "")
+    assert "sbmig-job-template" in (mgr.runs[rid].error or "") and jc.created == []

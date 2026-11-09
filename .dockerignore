@@ -13,5 +13,7 @@ sbmig.egg-info/
 .env
 .env.*
 !.env.example
-deploy/k8s/
+# 채워 넣은 Secret 은 이미지에 절대 안 들어간다(예제 30-secret.example.yaml 은 들어간다). deploy/k8s/ 의 나머지는 들어간다 —
+# 81-web-job.template.yaml 이 Job 모드의 기본 틀 경로(운영은 ConfigMap 으로 덮는다, README §3)
+deploy/k8s/30-secret.yaml
 kb-v2/

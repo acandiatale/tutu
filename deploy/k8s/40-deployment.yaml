@@ -18,6 +18,11 @@ spec:
       labels: {app: sbmig}
     spec:
       serviceAccountName: sbmig-web          # Job 디스패치 모드(SBMIG_WEB_MODE=k8s-job): 45-web-rbac.yaml 의 권한으로 Job 을 만든다. 안에서 돌리는 모드면 없어도 된다
+      # ── 인프라팀이 서비스 계정 대신 kubeconfig 를 주는 방식(가이드 / 2026-11-09 임시 명세: Secret 을 /etc/kube 에 마운트, env KUBECONFIG)이면 위
+      #    serviceAccountName 줄을 지우고 아래 세 자리의 주석을 푼다 — env KUBECONFIG, volumeMounts 의 kubeconfig, volumes 의 kubeconfig.
+      #    코드는 KUBECONFIG 파일이 있으면 그것으로, 없으면 서비스 계정 토큰으로 쿠버네티스 API 를 부른다(sbmig/web/k8s.py K8sClient.connect).
+      # hostAliases:                           # 사내 DNS 가 못 푸는 주소(LLM 게이트웨이 등)가 있을 때 — 인프라팀 임시 명세에 있던 항목. Job 틀에도 같은 값
+      #   - {ip: CHANGE_ME_IP, hostnames: [CHANGE_ME_GATEWAY_HOST]}
       # nodeSelector: {kubernetes.io/hostname: CHANGE_ME_NODE}   # 레지스트리 없이 이미지를 노드 하나에만 적재했거나 PVC 가 RWO 일 때만 그 노드에 고정(Job 틀도 같은 노드로)
       # imagePullSecrets: [{name: CHANGE_ME_REGISTRY_PULL_SECRET}]   # 레지스트리가 pull 에 인증을 요구할 때만 — 인프라팀이 준 Secret 이름(81-web-job.template 도 같이)
       securityContext:
@@ -33,6 +38,10 @@ spec:
             - {name: http, containerPort: 8765}
           # 환경 변수는 전부 두 곳에서: ConfigMap sbmig-env(비밀 아닌 것 — 웹 파드 동작, LLM 게이트웨이 주소·role, SBMIG_<섹션>__<키> 설정
           # 덮어쓰기)와 Secret sbmig-llm(토큰·비밀번호). 뒤의 것이 이기므로 Secret 을 뒤에 둔다. 값은 20-configmap.yaml 의 설명을 본다
+          env:
+            # Job 틀은 ConfigMap sbmig-job-template 로 들어온다(아래 volumes; README §3). 이미지 안의 사본은 CHANGE_ME 그대로라 쓰지 않는다
+            - {name: SBMIG_JOB_TEMPLATE, value: /templates/81-web-job.template.yaml}
+            # - {name: KUBECONFIG, value: /etc/kube/config}   # kubeconfig 방식일 때(위 설명)
           envFrom:
             - configMapRef: {name: sbmig-env}
             - secretRef: {name: sbmig-llm}
@@ -41,6 +50,8 @@ spec:
             - {name: m2, mountPath: /home/sbmig/.m2}
             - {name: config, mountPath: /app/config/company.yml, subPath: company.yml, readOnly: true}
             - {name: config, mountPath: /etc/sbmig/settings.xml, subPath: settings.xml, readOnly: true}
+            - {name: job-template, mountPath: /templates, readOnly: true}
+            # - {name: kubeconfig, mountPath: /etc/kube, readOnly: true}   # kubeconfig 방식일 때
           resources:
             requests: {cpu: "2", memory: 6Gi}
             limits: {cpu: "4", memory: 8Gi}      # Maven / OpenRewrite 가 -Xmx4g(build.jvm_args) + Python
@@ -59,3 +70,7 @@ spec:
           persistentVolumeClaim: {claimName: sbmig-m2}
         - name: config
           configMap: {name: sbmig-config}
+        - name: job-template                    # kubectl -n agent create configmap sbmig-job-template --from-file=deploy/k8s/81-web-job.template.yaml
+          configMap: {name: sbmig-job-template, optional: true}   # 없어도 파드는 뜬다(빈 폴더) — 첫 업로드가 "job template not found" 로 멈춰 알려 준다
+        # - name: kubeconfig                    # kubeconfig 방식일 때: 인프라팀이 준 Secret 이름
+        #   secret: {secretName: agent-kubeconfig, defaultMode: 0400}

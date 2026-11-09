@@ -33,8 +33,9 @@
 | `SBMIG_MAX_UPLOAD_MB` | `1024` | 업로드 zip 상한(MB). 기본 512, `0` = 없음 |
 | `NO_PROXY` | `<게이트웨이 호스트>,<nexus 호스트>,localhost,127.0.0.1` | 클러스터에 HTTP 프록시가 걸려 있을 때만 |
 | `SBMIG_WEB_MODE` | `in-process` (기본) / `k8s-job` / `local-job` | `k8s-job` = 업로드마다 Job 하나(공유 PVC), README §3 "켜는 법" 뒤에 켠다. 개발 PC 에서는 `k8s-job` 이 자동으로 `local-job`(파드 자리에 로컬 서브프로세스)으로 내려간다 |
-| `SBMIG_K8S_NAMESPACE` | (비움 = 파드의 namespace) | Job 을 다른 namespace 에 만들 때만 |
-| `SBMIG_JOB_TEMPLATE` | `deploy/k8s/81-web-job.template.yaml` | 템플릿을 다른 경로에 둘 때 |
+| `SBMIG_K8S_NAMESPACE` | (비움 = 파드의 namespace, kubeconfig 면 그 context 의 namespace) | Job 을 다른 namespace 에 만들 때만 |
+| `SBMIG_JOB_TEMPLATE` | `/templates/81-web-job.template.yaml` (Deployment 의 env) | 채운 Job 틀을 ConfigMap `sbmig-job-template` 으로 `/templates` 에 마운트한다(README §3). 이미지 안의 `deploy/k8s/81-web-job.template.yaml` 은 자리표시자 그대로라 쓰지 않는다 |
+| `KUBECONFIG` | (없음) / `/etc/kube/config` (Deployment 의 env) | 인프라팀이 서비스 계정 대신 kubeconfig Secret 을 주는 방식일 때. 파일이 있으면 서비스 계정 토큰 대신 이것으로 쿠버네티스 API 를 부른다(token / 클라이언트 인증서 사용자; `exec` 는 거절). 개발 PC 에서 `k8s-job` 이 `local-job` 으로 내려가지 않게도 한다 |
 | `SBMIG_JOB_POLL_S` | `2` | Job 상태 조회 간격(초) |
 | `SBMIG_JOB_STOP_GRACE_S` | `600` | 멈춤 요청(stop.request) 뒤 Job 을 지우기까지 기다리는 시간(초) |
 | `SBMIG_LOCAL_JOB_ECHO` | `1` | 개발 PC 의 `local-job` 에서 서브프로세스 출력을 서버 콘솔에도 `[job <run id>]` 로 흘릴지. `0` = 파일(job-local.log)에만 |

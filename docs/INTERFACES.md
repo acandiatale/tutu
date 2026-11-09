@@ -4130,3 +4130,37 @@ blocked the neighbouring cases without an LLM call ("blocked (needs_owner): same
 - Tests: `tests/triage/test_blocked.py::test_a_replacement_note_lifts_the_library_block`,
   `tests/loop/test_v21z_jakarta.py::test_a_decline_on_a_library_a_replacement_note_knows_is_rejected` /
   `::test_a_rejected_decline_that_carries_edits_applies_them`, `tests/fix/test_fix_notes.py::test_replacement_flag_…`.
+
+## v2.1z-ab — the infra team's agent model: kubeconfig access, the Job template as a ConfigMap, company cluster values (2026-11-09)
+
+The infra team's temporary manifest for "the agent" (deployed 2026-11-05 in namespace `agent`) showed their model: the agent pod gets a
+**kubeconfig Secret** mounted at `/etc/kube/config` (env `KUBECONFIG`) instead of a ServiceAccount, the Job template as a **ConfigMap** mounted
+at `/templates` (env `JOB_TEMPLATE_PATH`), `hostAliases` for a gateway host the cluster DNS does not resolve, the image from their Harbor
+registry. Contract:
+
+- **`sbmig.web.k8s.kubeconfig_path()`** = the file `KUBECONFIG` names, when it exists (first existing entry of an `os.pathsep` list); nothing
+  implicit — `~/.kube/config` is never picked up on its own. **`cluster_access_available()`** = `in_cluster_available() or kubeconfig_path()`.
+- **`K8sClient.from_kubeconfig(path=None, namespace=None, session=None)`**: current-context's cluster (`server`, `certificate-authority[-data]`,
+  `insecure-skip-tls-verify`) and user (`token` / `tokenFile`, `client-certificate[-data]` + `client-key[-data]`, `username` + `password`);
+  base64 `*-data` is written to a 0600 file in a `TemporaryDirectory` the client keeps alive (`_tmp`), relative paths resolve against the
+  kubeconfig's folder (as kubectl does); an `exec` / `auth-provider` user is refused with `K8sError` (sbmig runs no external command).
+  Namespace: argument → `SBMIG_K8S_NAMESPACE` → the context's namespace → `default`. `K8sClient.cert` (a `(crt, key)` pair) is passed to every
+  request; the `Authorization` header is only set when there is a token (Bearer) or a password (Basic). `K8sClient.source` says which
+  ("in-cluster service account" / "kubeconfig <path> (context <name>)").
+- **`K8sClient.connect(namespace=None, session=None)`**: explicit kubeconfig first, else `in_cluster()`. `RunManager` uses it for the first Job;
+  `SBMIG_WEB_MODE=k8s-job` degrades to `local-job` only when **neither** a service-account token nor a `KUBECONFIG` file is present (so a developer
+  can point the web at a real cluster — the Mac Studio's colima — by exporting `KUBECONFIG`). Inside a cluster without either the start still fails
+  (message names both).
+- **Job template**: in `k8s-job` a missing template file is a readable run failure (`job template not found: <path> — mount the ConfigMap
+  sbmig-job-template at /templates (deploy/README.md §3) …`, exit 3, no Job created). The Deployment mounts ConfigMap `sbmig-job-template`
+  (`optional: true`) at `/templates` and sets `SBMIG_JOB_TEMPLATE=/templates/81-web-job.template.yaml`; the operator fills the template and runs
+  `kubectl -n agent create configmap sbmig-job-template --from-file=deploy/k8s/81-web-job.template.yaml --dry-run=client -o yaml | kubectl apply -f -`.
+  `.dockerignore` no longer drops `deploy/k8s/` (the default template path exists in the image again), only the filled `deploy/k8s/30-secret.yaml`.
+- **Manifests** (`deploy/k8s/`): `namespace: agent` on every resource; both PVCs `ReadWriteMany` + `storageClassName: nfs-csi`; image
+  `CHANGE_ME_REGISTRY/sbmig:CHANGE_ME_TAG` + `imagePullPolicy: IfNotPresent` (the registry exists after all; the node-import path is README §1.1);
+  `serviceAccountName: sbmig-web` on, with the kubeconfig alternative (env + mount + Secret volume) and `hostAliases` as commented placeholders
+  in the Deployment and the Job template (the Job pod is the one calling the LLM gateway). Real company hostnames / IPs stay out of the repo.
+- Tests: `tests/web/test_job_mode.py::test_a_kubeconfig_with_a_token_user_is_preferred_over_the_service_account`,
+  `::test_a_kubeconfig_with_a_client_certificate_user`, `::test_a_kubeconfig_with_relative_ca_path_insecure_or_exec`,
+  `::test_a_kubeconfig_outside_a_cluster_keeps_the_job_mode`, `::test_a_missing_job_template_fails_the_run_readably`;
+  `tests/web/conftest.py` hides a developer's `KUBECONFIG` from every web test.

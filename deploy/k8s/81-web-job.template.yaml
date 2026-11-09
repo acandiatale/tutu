@@ -26,6 +26,8 @@ spec:
       # nodeSelector: {customer.example.com/build-worker: "true"}      # CHANGE_ME: 빌드 워커 노드가 따로 있을 때
       # nodeSelector: {kubernetes.io/hostname: CHANGE_ME_NODE}         # 레지스트리 없이 이미지를 노드 하나에만 적재했을 때: 웹 파드(40-deployment.yaml)와 같은 노드
       # imagePullSecrets: [{name: CHANGE_ME_REGISTRY_PULL_SECRET}]      # 레지스트리가 pull 에 인증을 요구할 때만(인프라팀이 준 Secret 이름; Deployment 도 같이)
+      # hostAliases:                                                    # 사내 DNS 가 못 푸는 주소(LLM 게이트웨이 등) — Deployment 와 같은 값. 이 파드가 LLM 을 부른다
+      #   - {ip: CHANGE_ME_IP, hostnames: [CHANGE_ME_GATEWAY_HOST]}
       containers:
         - name: build
           image: CHANGE_ME_REGISTRY/sbmig:CHANGE_ME_TAG                 # 웹 파드와 같은 이미지·같은 태그(40-deployment.yaml) — 인프라팀이 push 한 전체 이름

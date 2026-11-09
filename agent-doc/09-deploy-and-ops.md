@@ -126,8 +126,11 @@ kubectl exec deploy/sbmig -- python -m sbmig.cli llm-probe
 실행 폴더에 저널·로그·보고서·`result.zip` 을 쓴다 → 웹은 그 폴더를 tail 해 SSE 로 보낸다(`graph_node_end` 저널 줄 → 화면 `node` 이벤트, 레일 앞에
 '파드' 단계: 생성 중 → 준비됨) → 끝나면 파드가 `job-status.json {exit_code}` 를 쓴다. 멈춤 = 웹이 `<run dir>/stop.request` 를 쓰고 엔진이 노드
 사이에서 멈춘다(최종 빌드 없음, 종료 3); `SBMIG_JOB_STOP_GRACE_S`(600) 뒤에도 돌면 Job 삭제. 웹 파드 재시작 때 Job 은 그대로 돈다.
-큐는 그대로라 Job 도 한 번에 하나(병렬 3 개는 다음 단계). 쿠버네티스 API 는 `sbmig/web/k8s.py`(requests + 서비스 계정 토큰·CA, `kubernetes`
-패키지 없음)로 Job 생성·상태·삭제만 부른다 — 권한은 `deploy/k8s/45-web-rbac.yaml`. 켜는 순서는 `deploy/README.md` §3 "켜는 법".
+큐는 그대로라 Job 도 한 번에 하나(병렬 3 개는 다음 단계). 쿠버네티스 API 는 `sbmig/web/k8s.py`(requests, `kubernetes` 패키지 없음)로
+Job 생성·상태·삭제만 부른다 — 인증은 `KUBECONFIG` 가 가리키는 kubeconfig 파일(인프라팀이 Secret 으로 주는 `/etc/kube/config`; token / 클라이언트
+인증서 사용자, `exec` 는 거절)이 있으면 그것, 없으면 파드의 서비스 계정 토큰·CA(권한은 `deploy/k8s/45-web-rbac.yaml`). Job 틀은 채운 것을 ConfigMap
+`sbmig-job-template` 으로 `/templates` 에 마운트해 `SBMIG_JOB_TEMPLATE` 로 읽는다(이미지 안 사본은 자리표시자 그대로; 없으면 첫 업로드가 `job template
+not found` 로 멈춘다). 켜는 순서는 `deploy/README.md` §3 "켜는 법".
 개발 PC: `k8s-job` 인데 클러스터 밖이면 자동으로 `local-job`(`sbmig/web/localjob.py`, 파드 자리에 로컬 서브프로세스 `sbmig run --run-id …`)으로
 내려가 같은 흐름이 파드 없이 돈다(`--mode local-job` 으로 직접 고를 수도 있다).
 

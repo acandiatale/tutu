@@ -65,9 +65,9 @@ data:
   SBMIG_WEB_OPEN: "1"                   # 사내망 전용 페이지(2026-11-05 결정): 토큰 없이 연다. 토큰을 쓰려면 지우고 Secret 의 SBMIG_WEB_TOKEN
   SBMIG_MAX_UPLOAD_MB: "1024"           # 업로드 zip 상한(MB). 0 = 없음. 기본 512
   # NO_PROXY: "<게이트웨이 호스트>,<nexus 호스트>,localhost,127.0.0.1"   # 클러스터에 HTTP 프록시가 걸려 있을 때
-  # SBMIG_WEB_MODE: "k8s-job"           # 업로드마다 Job 하나(공유 PVC) — README §3 "켜는 법"(RWX PVC, serviceAccountName, 81-web-job.template)
-  # SBMIG_K8S_NAMESPACE: ""             # 비우면 파드의 namespace
-  # SBMIG_JOB_TEMPLATE: "/app/deploy/k8s/81-web-job.template.yaml"
+  # SBMIG_WEB_MODE: "k8s-job"           # 업로드마다 Job 하나(공유 PVC) — README §3 "켜는 법"(RWX PVC, 권한, Job 틀 ConfigMap) 뒤에 켠다
+  # SBMIG_K8S_NAMESPACE: ""             # 비우면 파드의 namespace(서비스 계정) 또는 kubeconfig context 의 namespace
+  # SBMIG_JOB_TEMPLATE 은 Deployment 의 env 가 /templates/81-web-job.template.yaml 로 정한다(ConfigMap sbmig-job-template) — 여기서는 안 건드린다
   # SBMIG_JOB_STOP_GRACE_S: "600"       # 멈춤 요청 뒤 Job 삭제까지
   # ── 2. LLM 게이트웨이(비밀 아닌 것) ─────────────────────────────────────────────────────────────
   LLM_GATEWAY: "agent"                  # 사내 GPT 에이전트 게이트웨이 페이로드. 옛 모양이면 지운다(legacy)

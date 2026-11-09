@@ -81,6 +81,7 @@ from sbmig.web.k8s import (
     K8sError,
     cluster_host_present,
     in_cluster_available,
+    kubeconfig_path,
     render_job,
 )
 
@@ -222,15 +223,17 @@ class RunManager:
         # 개발 PC(2026-11-05, 사용자: "개발 모드일 때는 파드 생성 없이"): k8s-job 으로 설정돼 있어도 클러스터 밖이면 local-job —
         # 같은 Job 모드 흐름, 파드 자리는 로컬 서브프로세스. 운영 파드에서는 KUBERNETES_SERVICE_HOST 가 항상 있어 내려가지 않는다
         self.effective_mode = self.mode
-        if self.mode == "k8s-job" and job_client is None and not in_cluster_available():
+        # 2026-11-09: 서비스 계정 토큰 또는 KUBECONFIG 파일(인프라팀이 Secret 으로 주는 /etc/kube/config) — 둘 중 하나면 실제 Job 을 만든다
+        if self.mode == "k8s-job" and job_client is None and not (in_cluster_available() or kubeconfig_path() is not None):
             if cluster_host_present():
                 # inside a cluster but without a usable service account: do NOT silently run migrations in the web pod
                 raise ValueError(f"{MODE_ENV}=k8s-job inside a cluster needs the web pod's service account token "
-                                 "(serviceAccountName sbmig-web, deploy/k8s/45-web-rbac.yaml; automountServiceAccountToken on)")
+                                 "(serviceAccountName sbmig-web, deploy/k8s/45-web-rbac.yaml; automountServiceAccountToken on) "
+                                 "or a kubeconfig file named by KUBECONFIG (the infra team's /etc/kube/config Secret)")
             self.effective_mode = "local-job"
             log.warning("%s=k8s-job but this process is not inside a Kubernetes cluster — running the Job mode with LOCAL "
                         "subprocesses instead (development); status.mode says local-job", MODE_ENV)
-        self._job_client = job_client                     # None → K8sClient.in_cluster() / LocalJobClient on the first Job
+        self._job_client = job_client                     # None → K8sClient.connect() / LocalJobClient on the first Job
         self.job_template = Path(job_template or os.environ.get(TEMPLATE_ENV, "") or (self.repo_root / DEFAULT_TEMPLATE))
         self.job_poll_s = max(0.05, float(os.environ.get(POLL_ENV, "2") or 2))
         # the engine stops between nodes and the fix loop between build rounds — the grace must outlast one Maven build
@@ -453,7 +456,7 @@ class RunManager:
                 from sbmig.web.localjob import LocalJobClient
                 self._job_client = LocalJobClient(self.repo_root)
             else:
-                self._job_client = K8sClient.in_cluster()
+                self._job_client = K8sClient.connect()
         return self._job_client
 
     def _run_job(self, run: Run) -> int:
@@ -483,6 +486,10 @@ class RunManager:
             if run.llm_provider:
                 env["SBMIG_LLM_PROVIDER"] = run.llm_provider
             template: Any = self.job_template
+            if self.effective_mode == "k8s-job" and not Path(self.job_template).is_file():
+                # 이미지 안의 틀은 CHANGE_ME 그대로라 쓰지 않는다 — 운영은 ConfigMap sbmig-job-template 을 /templates 에 마운트한다(README §3)
+                raise K8sError(f"job template not found: {self.job_template} — mount the ConfigMap sbmig-job-template at /templates "
+                               f"(deploy/README.md §3) or point {TEMPLATE_ENV} at the filled template")
             if self.effective_mode == "local-job" and not Path(self.job_template).is_file():
                 # the local "pod" needs only the env: a minimal manifest stands in for a template the checkout may lack
                 template = {"kind": "Job", "metadata": {}, "spec": {"template": {"spec": {"containers": [{"name": "build"}]}}}}

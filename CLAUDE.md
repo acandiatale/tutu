@@ -291,7 +291,12 @@ Then the final build again, the report (Handover first, "Structure review", fix 
   the pod runs `sbmig run --run-id` into the same run dir, the web tails its journal / log (engine `graph_node_end` lines → UI `node`
   events, a '파드' step first), `stop.request` stops it between nodes; `sbmig/web/k8s.py` is a requests-based in-cluster client
   (no `kubernetes` wheel). One Job at a time; three in parallel and the remediation-style `/api/migrations` are next. Comments in `deploy/` are Korean (the company's
-  reviewers asked). `deploy/README.md` is the operator text.
+  reviewers asked). `deploy/README.md` is the operator text. **2026-11-09 (the infra team's agent model, their temporary manifest)**: `K8sClient.connect()`
+  uses the kubeconfig named by `KUBECONFIG` when present (the infra team mounts a kubeconfig Secret at `/etc/kube/config`; token / client-certificate
+  users, `exec` refused) else the in-cluster service account; an explicit `KUBECONFIG` also keeps `k8s-job` from degrading to `local-job` on a dev PC.
+  The filled Job template reaches the web pod as ConfigMap `sbmig-job-template` at `/templates` (`SBMIG_JOB_TEMPLATE`; the image's copy keeps its
+  placeholders — `.dockerignore` no longer drops `deploy/k8s/`, only the filled `30-secret.yaml`). Company values in the manifests: namespace `agent`,
+  `nfs-csi` ReadWriteMany, the image name from the infra team's registry (per push). Real company hostnames / IPs never go into the repo — placeholders.
 - **Company convention (2026-10-20): agents run on LangGraph under uvicorn.** `loop.engine: graph` (default) drives
   the phases from a LangGraph `StateGraph` (`sbmig/graph/`, nodes intake → analyze → plan → phase×N → finalize;
   `inline` is the old loop, reports are identical by test); the web UI is FastAPI (`uvicorn sbmig.web.app:app` or
