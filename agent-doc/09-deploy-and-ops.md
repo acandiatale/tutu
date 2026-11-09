@@ -93,7 +93,7 @@ docker run --rm <registry>/sbmig:<tag> python -m sbmig.cli --help
 `ctr -n k8s.io images import`, k3s 는 `k3s ctr images import`, docker 는 `docker load`) 이미지를 `sbmig:<tag>` + `imagePullPolicy: Never` 로 바꾼다;
 노드 하나에만 적재했으면 Deployment 와 Job 틀의 `nodeSelector: {kubernetes.io/hostname: <node>}` 를 푼다(이미지가 없는 노드에서는 `ErrImageNeverPull`).
 
-설정과 비밀값은 이미지 밖: ConfigMap `deploy/k8s/20-configmap.yaml`(회사 yml 이 `/app/config/company.yml` 로 들어가 UI 의 설정 목록에 나옴,
+설정과 비밀값은 이미지 밖: ConfigMap `deploy/k8s/20-configmap.yaml`(회사 yml 이 `/app/config/artifacts.yml` 로 들어가 UI 의 설정 목록에 나옴,
 컨테이너 경로 — `kb.dir: /data/kb-v2`, `build.settings_file: /etc/sbmig/settings.xml`, `build.repository_url`, `llm.record_dir` — + settings.xml),
 Secret 견본 `deploy/k8s/30-secret.example.yaml`(복사해 `deploy/k8s/30-secret.yaml` 로 채움, git-ignore): `sbmig-llm`(= PC 의 `.env` + `SBMIG_WEB_TOKEN`),
 `sbmig-git`(저장소 토큰). 자원: OpenRewrite 가 `openrewrite.jvm_args`(`-Xmx4g`)로 돌므로 메모리 6~8 GiB, CPU 2~4.

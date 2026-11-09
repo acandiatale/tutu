@@ -48,7 +48,7 @@ spec:
           volumeMounts:
             - {name: data, mountPath: /data}
             - {name: m2, mountPath: /home/sbmig/.m2}
-            - {name: config, mountPath: /app/config/company.yml, subPath: company.yml, readOnly: true}
+            - {name: config, mountPath: /app/config/artifacts.yml, subPath: artifacts.yml, readOnly: true}
             - {name: config, mountPath: /etc/sbmig/settings.xml, subPath: settings.xml, readOnly: true}
             - {name: job-template, mountPath: /templates, readOnly: true}
             # - {name: kubeconfig, mountPath: /etc/kube, readOnly: true}   # kubeconfig 방식일 때

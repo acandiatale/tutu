@@ -51,7 +51,7 @@
 | `sbmig fleet run <manifest>` | 여러 프로젝트를 KB 하나로 차례로. `--out`, `--order manifest|simple-first`, `--max-projects`, `--retry-failed`, `--stop-on-abort`, `--max-llm-calls-total`, `--dry-run`, `--llm-provider`. 이어 돌리기 `sbmig fleet resume <out>`, 진행표 `sbmig fleet status [out] [--attention] [--json]` |
 | 그 밖 | `sbmig rewrite`(OpenRewrite 단독), `sbmig recipes …`, `sbmig advisories …`, `sbmig version` |
 
-예: `sbmig run D:\in\app.zip -c config\company.yml -o D:\sbmig\out`. 웹 UI 는 `sbmig serve` 가 곧 uvicorn 이다(`uvicorn sbmig.web.app:app` 도 같은 앱).
+예: `sbmig run D:\in\app.zip -c config\artifacts.yml -o D:\sbmig\out`. 웹 UI 는 `sbmig serve` 가 곧 uvicorn 이다(`uvicorn sbmig.web.app:app` 도 같은 앱).
 플릿은 `<out>/fleet/` 에 `state.json`, `summary.md`, `summary.csv`(attention 칸), `fleet/sbmig.log` 를 쓴다. 플릿 시작 전 점검은
 `preflight: <점검> ok|FAIL|skip …` 줄(disk / maven / java / settings / repository / llm, `sbmig/fleet/preflight.py`)이다.
 

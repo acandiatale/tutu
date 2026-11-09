@@ -4164,3 +4164,5 @@ registry. Contract:
   `::test_a_kubeconfig_with_a_client_certificate_user`, `::test_a_kubeconfig_with_relative_ca_path_insecure_or_exec`,
   `::test_a_kubeconfig_outside_a_cluster_keeps_the_job_mode`, `::test_a_missing_job_template_fails_the_run_readably`;
   `tests/web/conftest.py` hides a developer's `KUBECONFIG` from every web test.
+- **One config file (same day, user)**: the company edits only `artifacts.yml` — the ConfigMap key, the Deployment mount (`/app/config/artifacts.yml`),
+  `SBMIG_WEB_CONFIGS=artifacts.yml` and the Job template's `SBMIG_CONFIG` all name it; `company.yml` (the 2026-11-04 name) is gone from `deploy/`.

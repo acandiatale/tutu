@@ -9,15 +9,15 @@
 설정은 세 층으로 읽힌다. 뒤가 앞을 이긴다.
 
 1. `config/default.yml` — 이미지 안. 모든 키의 기본값.
-2. `company.yml` — ConfigMap `sbmig-config` 의 파일. 회사 사실(부모·필수·선택 아티팩트, 레이아웃, 컨테이너 경로 `kb.dir` /
+2. `artifacts.yml` — ConfigMap `sbmig-config` 의 파일. 회사 사실(부모·필수·선택 아티팩트, 레이아웃, 컨테이너 경로 `kb.dir` /
    `build.settings_file` / `llm.record_dir`).
 3. **환경 변수** — ConfigMap `sbmig-env` + Secret. 가장 뒤에 적용된다.
 
 환경 변수 `SBMIG_<섹션>__<키>` 는 어떤 설정 키든 덮어쓴다. 밑줄 두 개(`__`)가 한 단계 아래를 뜻하고, 값은 YAML 로 읽는다
 (`"20"` → 숫자, `"true"` → 참, `'["-Xmx4g"]'` → 목록). 예: `SBMIG_LOOP__PHASES__VERIFY__MAX_ITERATIONS=50` = `loop.phases.verify.max_iterations: 50`.
-`company.yml` 안에서도 `${VAR}` / `${VAR:-기본값}` 으로 환경 변수를 참조할 수 있다.
+`artifacts.yml` 안에서도 `${VAR}` / `${VAR:-기본값}` 으로 환경 변수를 참조할 수 있다.
 
-나누는 기준: **구조적인 회사 사실은 `company.yml`, 시험 운영 중 자주 손대는 숫자·스위치는 env, 토큰·비밀번호는 Secret.**
+나누는 기준: **구조적인 회사 사실은 `artifacts.yml`, 시험 운영 중 자주 손대는 숫자·스위치는 env, 토큰·비밀번호는 Secret.**
 
 - 바꾼 뒤에는 파드를 재시작한다: `kubectl rollout restart deploy/sbmig`.
 - 키 이름이 틀리면(철자, 들여쓰기) 시작 로그에 `config: … is not a known key and is ignored` 로 뜬다. env 이름이 틀려도 같은 줄이
@@ -28,7 +28,7 @@
 
 | 변수 | 값 | 언제 바꾸나 |
 |---|---|---|
-| `SBMIG_WEB_CONFIGS` | `company.yml` | 모든 업로드가 이 설정으로 돈다(= `sbmig serve --config`). 쉼표로 여러 개 |
+| `SBMIG_WEB_CONFIGS` | `artifacts.yml` | 모든 업로드가 이 설정으로 돈다(= `sbmig serve --config`). 쉼표로 여러 개 |
 | `SBMIG_WEB_OPEN` | `1` | 사내망 전용 페이지라 토큰 없이 연다. 토큰 보호를 켜려면 이 변수를 지우고 Secret 의 `SBMIG_WEB_TOKEN` 을 채운다 |
 | `SBMIG_MAX_UPLOAD_MB` | `1024` | 업로드 zip 상한(MB). 기본 512, `0` = 없음 |
 | `NO_PROXY` | `<게이트웨이 호스트>,<nexus 호스트>,localhost,127.0.0.1` | 클러스터에 HTTP 프록시가 걸려 있을 때만 |
@@ -65,7 +65,7 @@
 
 ## 5. ConfigMap `sbmig-env` — 자주 조정하는 설정 키 (선택, 기본값을 적어 둠)
 
-20-configmap.yaml 에 주석으로 들어 있다. 필요한 줄의 주석을 풀면 `company.yml` 보다 우선한다.
+20-configmap.yaml 에 주석으로 들어 있다. 필요한 줄의 주석을 풀면 `artifacts.yml` 보다 우선한다.
 
 | 변수 | 기본 | 뜻 |
 |---|---|---|
@@ -81,7 +81,7 @@
 | `SBMIG_LLM__MAX_OUTPUT_TOKENS` | `8000` | 응답 길이 상한 |
 | `SBMIG_LLM__TEMPERATURE` | `0.0` | |
 | `SBMIG_BUILD__TIMEOUT_MINUTES` | `30` | `mvn clean package` 한 번의 상한 |
-| `SBMIG_BUILD__REPOSITORY_URL` | `company.yml` 값 | 환경별(개발/운영) Nexus 그룹 URL 이 다를 때 |
+| `SBMIG_BUILD__REPOSITORY_URL` | `artifacts.yml` 값 | 환경별(개발/운영) Nexus 그룹 URL 이 다를 때 |
 | `SBMIG_BUILD__REPOSITORY_TIMEOUT_SECONDS` | `10` | sbmig 의 Nexus 조회(메타데이터 / pom) 대기 |
 | `SBMIG_OPENREWRITE__TIMEOUT_MINUTES` | `40` | 레시피 실행 상한 |
 | `SBMIG_OPENREWRITE__JVM_ARGS` | `'["-Xmx4g"]'` | 레시피 Maven 의 힙. 파드 memory limit 보다 2 GiB 이상 작게 |
@@ -96,7 +96,7 @@
 
 | 항목 | 어디에 | 비고 |
 |---|---|---|
-| `company.yml` | ConfigMap `sbmig-config` → `/app/config/company.yml` | 회사 아티팩트·레이아웃·컨테이너 경로. 틀은 `config/artifacts.example.yml` |
+| `artifacts.yml` | ConfigMap `sbmig-config` → `/app/config/artifacts.yml` | 회사 아티팩트·레이아웃·컨테이너 경로. 틀은 `config/artifacts.example.yml` |
 | `settings.xml` | ConfigMap `sbmig-config` → `/etc/sbmig/settings.xml` | Maven 미러(`mirrorOf *` 또는 `external:*`) → Nexus 그룹. 로그인은 `${env.NEXUS_USER}` |
 | `<kb.dir>/jar_names.yml` | KB 볼륨 `/data/kb-v2` | jar 파일 이름 → Nexus 좌표(이관팀이 채움). 이미지와 무관 |
 | `<kb.dir>/libraries.yml` | KB 볼륨 `/data/kb-v2` | 사람이 승인한 라이브러리 표(javax → jakarta 좌표 등) |

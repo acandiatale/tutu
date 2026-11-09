@@ -175,7 +175,7 @@ pre-9c 레이아웃(`module/boot-jar` + `module/comp-jar`, front 없음, Boot �
 
 ## 10. 규칙을 바꾸는 법
 
-1. 회사 값·스위치는 설정(`config/artifacts.yml` 또는 `config/company.yml`)에서 바꾼다. 새 키가 필요하면 `sbmig/core/config.py` 에 기본값과 함께
+1. 회사 값·스위치는 설정(`config/artifacts.yml`)에서 바꾼다. 새 키가 필요하면 `sbmig/core/config.py` 에 기본값과 함께
    더하고 `config/default.yml` 에도 적는다([07-config-and-knowledge.md](07-config-and-knowledge.md)).
 2. 규칙 로직은 `sbmig/restructure/restructurer.py`(거대한 파일 — 메서드 이름으로 찾는다: `_layout`, `_boot_pom`, `_msa`, `_pin_asis_versions`,
    `_drop_managed_versions`, `_drop_bom_property_overrides`, `_drop_orphan_version_properties`, `_wire_bundled_jars`, `_manages_boot`).

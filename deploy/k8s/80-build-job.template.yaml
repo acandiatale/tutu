@@ -36,7 +36,7 @@ spec:
             - {name: SBMIG_RESULT_BRANCH_PREFIX, value: "sbmig/"}                 # 이관된 프로젝트는 <prefix><run id> 브랜치로 push
             - {name: SBMIG_RESULT_GIT_URL, value: ""}                              # 선택: report.md / 로그를 모으는 저장소
             - {name: SBMIG_KB_GIT_URL, value: "CHANGE_ME_https://git.company/<group>/sbmig-kb.git"}   # 파일 KB 는 git 에(실행마다 pull / push)
-            - {name: SBMIG_CONFIG, value: "/etc/sbmig/company.yml"}
+            - {name: SBMIG_CONFIG, value: "/etc/sbmig/artifacts.yml"}
             - {name: SBMIG_FAIL_JOB_ON_BUILD_FAIL, value: "0"}                      # 1 → 빌드 실패도 0 아닌 종료(Job Failed)
             - {name: GIT_AUTHOR_NAME, value: "sbmig"}
             - {name: GIT_AUTHOR_EMAIL, value: "sbmig@company.example"}
@@ -49,7 +49,7 @@ spec:
           volumeMounts:
             - {name: workspace, mountPath: /workspace}
             - {name: m2, mountPath: /home/sbmig/.m2}
-            - {name: config, mountPath: /etc/sbmig/company.yml, subPath: company.yml, readOnly: true}
+            - {name: config, mountPath: /etc/sbmig/artifacts.yml, subPath: artifacts.yml, readOnly: true}
             - {name: config, mountPath: /etc/sbmig/settings.xml, subPath: settings.xml, readOnly: true}
           resources:
             requests: {cpu: "2", memory: 6Gi}

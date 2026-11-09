@@ -1,4 +1,4 @@
-# 회사 설정 두 파일(+ 아래 두 번째 문서 = 환경 변수 ConfigMap). company.yml 은 웹 UI 가 실행마다 고르는 config(<레포 루트>/config/*.yml 을 나열한다) 이자 Job 의 --config 이고,
+# 회사 설정 두 파일(+ 아래 두 번째 문서 = 환경 변수 ConfigMap). artifacts.yml 은 웹 UI 가 실행마다 고르는 config(<레포 루트>/config/*.yml 을 나열한다) 이자 Job 의 --config 이고,
 # settings.xml 은 Maven 이 Nexus 를 보게 하는 미러 설정이다. subPath 로 마운트해 이미지의 config/default.yml 등은 그대로 둔다.
 # <…> 자리를 회사 값으로 바꾼다. 키·토큰은 여기 두지 않는다(Secret 으로).
 apiVersion: v1
@@ -8,7 +8,7 @@ metadata:
   namespace: agent
   labels: {app: sbmig}
 data:
-  company.yml: |
+  artifacts.yml: |
     # 회사 artifacts.yml(config/artifacts.example.yml 이 틀) + 컨테이너 경로
     artifacts:
       parent: {group_id: <회사 group>, artifact_id: base-parent, version: 4.0.0}
@@ -50,9 +50,9 @@ data:
 ---
 # 환경 변수 ConfigMap — 비밀이 아닌 설정 전부. Deployment / Job 이 envFrom 으로 읽는다(토큰·비밀번호는 Secret sbmig-llm / sbmig-git).
 # 바꾸고 나면 파드를 재시작해야 한다(kubectl rollout restart deploy/sbmig).
-#   그룹 1 — 웹 파드 동작.   그룹 2 — LLM 게이트웨이(비밀 아닌 것).   그룹 3 — company.yml / default.yml 의 설정 키를 덮어쓰는
+#   그룹 1 — 웹 파드 동작.   그룹 2 — LLM 게이트웨이(비밀 아닌 것).   그룹 3 — artifacts.yml / default.yml 의 설정 키를 덮어쓰는
 #   SBMIG_<섹션>__<키>(밑줄 두 개 = 한 단계 아래; 값은 YAML 로 읽으므로 숫자·true/false·["목록"] 그대로). 시험 운영 중 자주 손대는
-#   키만 적었고, 주석을 풀면 그 값이 company.yml 보다 우선한다. 모르는 키 이름은 시작 로그에 `config: … is not a known key` 로 뜬다.
+#   키만 적었고, 주석을 풀면 그 값이 artifacts.yml 보다 우선한다. 모르는 키 이름은 시작 로그에 `config: … is not a known key` 로 뜬다.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -61,7 +61,7 @@ metadata:
   labels: {app: sbmig}
 data:
   # ── 1. 웹 파드 ──────────────────────────────────────────────────────────────────────────────────
-  SBMIG_WEB_CONFIGS: "company.yml"      # 모든 업로드가 이 config 로 돈다(= sbmig serve --config). 쉼표로 여러 개
+  SBMIG_WEB_CONFIGS: "artifacts.yml"      # 모든 업로드가 이 config 로 돈다(= sbmig serve --config). 쉼표로 여러 개
   SBMIG_WEB_OPEN: "1"                   # 사내망 전용 페이지(2026-11-05 결정): 토큰 없이 연다. 토큰을 쓰려면 지우고 Secret 의 SBMIG_WEB_TOKEN
   SBMIG_MAX_UPLOAD_MB: "1024"           # 업로드 zip 상한(MB). 0 = 없음. 기본 512
   # NO_PROXY: "<게이트웨이 호스트>,<nexus 호스트>,localhost,127.0.0.1"   # 클러스터에 HTTP 프록시가 걸려 있을 때
@@ -91,7 +91,7 @@ data:
   # SBMIG_LLM__MAX_OUTPUT_TOKENS: "8000"
   # SBMIG_LLM__TEMPERATURE: "0.0"
   # SBMIG_BUILD__TIMEOUT_MINUTES: "30"               # mvn clean package 한 번의 상한
-  # SBMIG_BUILD__REPOSITORY_URL: "https://<nexus>/repository/maven-public/"   # company.yml 의 값을 덮어쓸 때(환경별 Nexus)
+  # SBMIG_BUILD__REPOSITORY_URL: "https://<nexus>/repository/maven-public/"   # artifacts.yml 의 값을 덮어쓸 때(환경별 Nexus)
   # SBMIG_BUILD__REPOSITORY_TIMEOUT_SECONDS: "10"    # sbmig 의 Nexus 조회(메타데이터 / pom) 대기
   # SBMIG_OPENREWRITE__TIMEOUT_MINUTES: "40"
   # SBMIG_OPENREWRITE__JVM_ARGS: '["-Xmx4g"]'        # 파드 memory limit 보다 2 GiB 이상 작게
