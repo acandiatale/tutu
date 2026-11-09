@@ -4173,3 +4173,9 @@ registry. Contract:
   (`CONFIG_INVALID`). Consequences here: `llm.record_dir` / `LLM_RECORD_DIR` are commented out in `20-configmap.yaml`; both Job templates
   carry `automountServiceAccountToken: false`; the same `SBMIG_*` env names (their Worker reads `kb.dir` from the config, not `SBMIG_KB_DIR`).
   Their `k8s.py` has no kubeconfig support, so v2.1z-ab is additive, and `sbmig/web/{k8s,runs,app}.py` are now edited on both sides.
+- **Worker template rules (same day, from `worker_template` / `worker_secret_bindings`)**: one container, `backoffLimit 0`, `restartPolicy Never`,
+  parallelism / completions 1, no init / ephemeral containers; **no `envFrom`**; exactly one writable whole-PVC mount that contains the output dir
+  (`/data` ⊇ `/data/out`), no mount under it; env named `LLM_RECORD_DIR` / `SBMIG_WEB_TOKEN` / `WEB_API_TOKEN` forbidden, any name containing
+  TOKEN / PASSWORD / SECRET / API_KEY must be `valueFrom`; secret envs are bound to revision files through a metadata annotation (env name →
+  path whose content is the immutable Secret's name). `81-web-job.template.yaml` now follows these rules (explicit `configMapKeyRef` /
+  `secretKeyRef` entries with `optional: true`); the annotation key and the revision-file convention are still to be copied from the company doc.

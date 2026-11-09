@@ -116,7 +116,7 @@ def test_upload_creates_a_job_and_the_ui_sees_pod_then_nodes_then_files(client: 
     assert len(job_client.created) == 1
     m = job_client.created[0]
     assert m["metadata"]["name"] == job_name(rid) and m["metadata"]["namespace"] == "sbmig-ns"
-    env = {e["name"]: e["value"] for e in m["spec"]["template"]["spec"]["containers"][0]["env"]}
+    env = {e["name"]: e.get("value") for e in m["spec"]["template"]["spec"]["containers"][0]["env"]}   # valueFrom entries → None
     run_dir = tmp_path / "out" / rid
     assert env["SBMIG_SOURCE_ZIP"] == str(run_dir / "source.zip") and env["SBMIG_OUT"] == str(tmp_path / "out")
     assert env["SBMIG_RUN_ID"] == rid and env["SBMIG_CONFIG"].endswith("config/artifacts.local-e2e.yml")
@@ -270,7 +270,7 @@ def test_job_name_and_render_job():
     job = render_job(TEMPLATE, "web-1", {"SBMIG_RUN_ID": "web-1", "SBMIG_KB_DIR": "/other/kb"}, namespace="ns1")
     assert job["metadata"]["name"] == "sbmig-web-1" and job["metadata"]["namespace"] == "ns1"
     assert "generateName" not in job["metadata"] and job["metadata"]["labels"]["sbmig-run-id"] == "web-1"
-    env = {e["name"]: e["value"] for e in job["spec"]["template"]["spec"]["containers"][0]["env"]}
+    env = {e["name"]: e.get("value") for e in job["spec"]["template"]["spec"]["containers"][0]["env"]}   # valueFrom entries → None
     assert env["SBMIG_KB_DIR"] == "/other/kb" and env["SBMIG_RUN_ID"] == "web-1" and env["SBMIG_FAIL_JOB_ON_BUILD_FAIL"] == "0"
     assert job["spec"]["template"]["metadata"]["labels"]["sbmig-run-id"] == "web-1"
     with pytest.raises(K8sError):
@@ -421,3 +421,32 @@ def test_a_missing_job_template_fails_the_run_readably(tmp_path: Path, repo: Pat
     assert mgr.runs[rid].done.wait(5)
     assert mgr.runs[rid].exit_code == 3 and "job template not found" in (mgr.runs[rid].error or "")
     assert "sbmig-job-template" in (mgr.runs[rid].error or "") and jc.created == []
+
+
+def test_the_worker_template_follows_the_company_worker_contract():
+    """2026-11-09: the company's Main (sbmig.web.worker_template) validates the business template at startup — one non-restarting
+    container, no envFrom, credentials only through valueFrom, no LLM_RECORD_DIR / SBMIG_WEB_TOKEN, exactly one writable whole-PVC mount
+    that contains the output dir. The shipped template must keep passing those rules."""
+    job = yaml.safe_load(TEMPLATE.read_text(encoding="utf-8"))
+    spec, pspec = job["spec"], job["spec"]["template"]["spec"]
+    assert job["apiVersion"] == "batch/v1" and job["metadata"]["namespace"]
+    assert spec.get("backoffLimit", 0) == 0 and spec.get("parallelism", 1) == 1 and spec.get("completions", 1) == 1
+    assert pspec["restartPolicy"] == "Never" and pspec["automountServiceAccountToken"] is False
+    assert len(pspec["containers"]) == 1 and not pspec.get("initContainers")
+    c = pspec["containers"][0]
+    assert c["name"] and c["image"] and "envFrom" not in c
+    names = [e["name"] for e in c["env"]]
+    assert not ({"LLM_RECORD_DIR", "SBMIG_WEB_TOKEN", "WEB_API_TOKEN"} & set(names))
+    for e in c["env"]:
+        if any(w in e["name"] for w in ("TOKEN", "PASSWORD", "SECRET", "API_KEY")):
+            assert "value" not in e and "valueFrom" in e, e["name"]
+    for key in ("LLM_APP_TOKEN", "LLM_API_KEY", "NEXUS_USER", "NEXUS_PASSWORD"):
+        ref = next(e for e in c["env"] if e["name"] == key)["valueFrom"]["secretKeyRef"]
+        assert ref["name"] and ref["key"] == key
+    volumes = {v["name"]: v for v in pspec["volumes"]}
+    out_dir = Path("/data/out")
+    shared = [m for m in c["volumeMounts"] if out_dir.is_relative_to(Path(m["mountPath"]))]
+    assert len(shared) == 1 and "persistentVolumeClaim" in volumes[shared[0]["name"]]
+    assert not shared[0].get("readOnly") and not shared[0].get("subPath")
+    assert not [m for m in c["volumeMounts"] if Path(m["mountPath"]).is_relative_to(out_dir)]
+

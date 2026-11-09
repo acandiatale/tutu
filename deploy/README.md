@@ -219,6 +219,9 @@ PVC 가 RWO 만 되는 클러스터라면 Job 템플릿과 Deployment 의 hostna
 3. `k8s/40-deployment.yaml` 과 `k8s/81-web-job.template.yaml` 의 `image:` 에 인프라팀이 push 한 이미지의 전체 이름을 **같은 값**으로 넣는다(§1,
    `imagePullPolicy: IfNotPresent`; pull 인증이 필요하면 `imagePullSecrets`). 설정 파일 이름(`artifacts.yml`)과 마운트는 Deployment 와 같게.
 4. 채운 Job 틀을 ConfigMap 으로 올린다 — 웹 파드는 `/templates/81-web-job.template.yaml`(`SBMIG_JOB_TEMPLATE`, Deployment 의 env)을 읽는다.
+   회사 Worker(`sbmig.web.worker`)는 이 틀을 "business template" 로 받아 시작 때 검증한다: 컨테이너 하나(backoffLimit 0, restartPolicy Never), **envFrom 금지**(변수마다
+   `valueFrom`), 비밀 env 는 `secretKeyRef` 만, `LLM_RECORD_DIR` / `SBMIG_WEB_TOKEN` 없음, `/data` 는 PVC 전체를 쓰기 가능으로 정확히 하나. 틀은 그 규칙대로 쓰여 있고,
+   비밀 env 의 revision 파일 annotation(이름·경로)은 회사 `k8s-deploy.md` 를 따른다.
    이미지 안의 사본은 `CHANGE_ME` 그대로라 쓰지 않는다. 바꿀 때마다 같은 명령(`apply`)이면 된다; ConfigMap 이 없으면 파드는 뜨고 첫 업로드가
    `job template not found` 로 멈춰 알려 준다.
    ```bash

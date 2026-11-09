@@ -4,6 +4,9 @@
 #   SBMIG_STOP_AFTER / SBMIG_LLM_PROVIDER(고급 설정일 때만) — 그 밖의 값은 이 파일 그대로.
 # 웹 파드(40-deployment.yaml)와 같은 이미지, 같은 ConfigMap / Secret, 같은 PVC 를 같은 경로(/data)에 마운트해야 한다. 두 파드가 동시에
 # 마운트하므로 PVC 는 ReadWriteMany 여야 한다(회사: nfs-csi, 10-storage.yaml; RWO 만 되면 hostname nodeSelector 로 웹 파드와 같은 노드에).
+# 회사 Worker(sbmig.web.worker, 2026-11-09)가 이 틀을 "business template" 로 받아 command 와 identity 만 덮어쓴다. 그 검증(worker_template): 컨테이너 하나,
+# backoffLimit 0 · restartPolicy Never · parallelism/completions 1, envFrom 없음, /data(출력 폴더를 품는) 마운트는 PVC 전체를 쓰기 가능으로 정확히 하나,
+# /data/out 아래 마운트 없음, 비밀 env 는 valueFrom 만. 이 파일은 그 규칙대로 쓰여 있다 — 고칠 때 지킨다.
 # 멈춤: 웹이 <run dir>/stop.request 를 쓰면 엔진이 노드 사이에서 멈춘다(최종 빌드 없음); 그래도 안 끝나면 웹이 Job 을 지운다.
 # CHANGE_ME_*: image(인프라팀이 레지스트리에 push 한 전체 이름 — 웹 파드 40-deployment.yaml 과 같은 값, README §1), (필요하면) nodeSelector /
 # imagePullSecrets. namespace 는 회사 값 agent(2026-11-09). 설정 파일 이름(artifacts.yml)은 ConfigMap 의 키와 같아야 한다.
@@ -13,6 +16,8 @@ metadata:
   name: sbmig-RUN_ID                     # the web pod replaces this (sbmig-<run id>, lower-case)
   namespace: agent
   labels: {app: sbmig, kind: run}
+  # annotations:                          # 회사 Worker 계약(worker_secret_bindings): 비밀 env 이름 → revision 파일 경로(공유 볼륨). 파일 내용 = 그 env 가 가리키는
+  #   <SECRET_REVISIONS_ANNOTATION>: '{"LLM_APP_TOKEN": "CHANGE_ME_/data/<control>/LLM_APP_TOKEN.revision"}'   #   Secret 의 이름(immutable Secret, 바꾸면 새 이름). 키 이름·경로 규칙은 회사 k8s-deploy.md
 spec:
   backoffLimit: 0                       # 이관을 무턱대고 재시도하지 않는다(실패한 실행의 보고서가 곧 결과)
   activeDeadlineSeconds: 14400          # 4 시간
@@ -35,12 +40,27 @@ spec:
           imagePullPolicy: IfNotPresent                                 # 노드에 그 태그가 없을 때만 pull. 레지스트리 없이 노드에 직접 적재하면 Never (README §1.1)
           command: ["/app/deploy/docker/run-job.sh"]
           env:
-            # 실행별 값(SBMIG_SOURCE_ZIP, SBMIG_OUT, SBMIG_RUN_ID, SBMIG_CONFIG …)은 웹이 Job 을 만들 때 여기에 덧붙인다
-            - {name: SBMIG_KB_DIR, value: "/data/kb-v2"}                 # 파일 KB — 웹 파드의 company/artifacts yml 의 kb.dir 과 같은 곳
+            # ── 회사 Worker 계약(sbmig.web.k8s worker_template, 2026-11-09): envFrom 금지 — 변수마다 출처를 적는다. 이름에 TOKEN / PASSWORD / SECRET /
+            #    API_KEY 가 든 변수는 value 가 아니라 valueFrom 이어야 하고, LLM_RECORD_DIR · SBMIG_WEB_TOKEN 은 Worker 에 있으면 안 된다. ConfigMap / Secret 키가
+            #    없으면 optional: true 라 그 변수만 빠진다. 실행별 값(SBMIG_SOURCE_ZIP, SBMIG_OUT, SBMIG_RUN_ID, SBMIG_CONFIG …)은 웹이 Job 을 만들 때 덧붙인다.
+            - {name: SBMIG_KB_DIR, value: "/data/kb-v2"}                 # run-job.sh 경로용. 회사 Worker 는 설정의 kb.dir(같은 값)을 읽는다
             - {name: SBMIG_FAIL_JOB_ON_BUILD_FAIL, value: "0"}
-          envFrom:
-            - configMapRef: {name: sbmig-env}
-            - secretRef: {name: sbmig-llm}
+            # 비밀 아닌 LLM 게이트웨이 값 — ConfigMap sbmig-env 의 키 하나씩(20-configmap.yaml 2절). SBMIG_<섹션>__<키> 덮어쓰기는 Main 이 고정한 설정 안에 들어 있어 되풀이하지 않는다
+            - {name: LLM_GATEWAY, valueFrom: {configMapKeyRef: {name: sbmig-env, key: LLM_GATEWAY, optional: true}}}
+            - {name: LLM_BASE_URL, valueFrom: {configMapKeyRef: {name: sbmig-env, key: LLM_BASE_URL, optional: true}}}
+            - {name: LLM_ASSET_ID, valueFrom: {configMapKeyRef: {name: sbmig-env, key: LLM_ASSET_ID, optional: true}}}
+            - {name: LLM_TOKEN_URL, valueFrom: {configMapKeyRef: {name: sbmig-env, key: LLM_TOKEN_URL, optional: true}}}
+            - {name: LLM_MODEL, valueFrom: {configMapKeyRef: {name: sbmig-env, key: LLM_MODEL, optional: true}}}
+            - {name: LLM_ESCALATION_MODEL, valueFrom: {configMapKeyRef: {name: sbmig-env, key: LLM_ESCALATION_MODEL, optional: true}}}
+            - {name: LLM_RESPONSE_PATH, valueFrom: {configMapKeyRef: {name: sbmig-env, key: LLM_RESPONSE_PATH, optional: true}}}
+            - {name: NO_PROXY, valueFrom: {configMapKeyRef: {name: sbmig-env, key: NO_PROXY, optional: true}}}
+            - {name: HTTP_PROXY, valueFrom: {configMapKeyRef: {name: sbmig-env, key: HTTP_PROXY, optional: true}}}
+            - {name: HTTPS_PROXY, valueFrom: {configMapKeyRef: {name: sbmig-env, key: HTTPS_PROXY, optional: true}}}
+            # 비밀 — Secret 의 키를 valueFrom 으로만. 회사 Worker 는 Secret 이름이 revision 파일과 같은지 본다(아래 metadata.annotations 설명)
+            - {name: LLM_APP_TOKEN, valueFrom: {secretKeyRef: {name: sbmig-llm, key: LLM_APP_TOKEN, optional: true}}}
+            - {name: LLM_API_KEY, valueFrom: {secretKeyRef: {name: sbmig-llm, key: LLM_API_KEY, optional: true}}}
+            - {name: NEXUS_USER, valueFrom: {secretKeyRef: {name: sbmig-llm, key: NEXUS_USER, optional: true}}}
+            - {name: NEXUS_PASSWORD, valueFrom: {secretKeyRef: {name: sbmig-llm, key: NEXUS_PASSWORD, optional: true}}}
           volumeMounts:
             - {name: data, mountPath: /data}                             # 웹 파드와 같은 PVC, 같은 경로
             - {name: m2, mountPath: /home/sbmig/.m2}
