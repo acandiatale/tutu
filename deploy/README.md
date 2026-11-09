@@ -246,8 +246,14 @@ PVC 가 RWO 만 되는 클러스터라면 Job 템플릿과 Deployment 의 hostna
    `40-deployment.yaml` 의 `secretRef` → ConfigMap 틀 다시 apply → 파드 재시작.
 5. LLM 게이트웨이 주소가 사내 DNS 로 안 풀리면(인프라팀 임시 명세의 `hostAliases`) Deployment 와 Job 틀 **양쪽**의 `hostAliases` 주석을 같은 값으로 푼다 —
    LLM 을 부르는 쪽은 Job 파드다.
-6. ConfigMap `sbmig-env` 에 `SBMIG_WEB_MODE: "k8s-job"` (필요하면 `SBMIG_K8S_NAMESPACE`). 파드 재시작.
-7. 확인: 시작 로그 `sbmig web UI ready (… mode k8s-job — job template …)`, 업로드 뒤 `kubectl -n agent get jobs -l app=sbmig,kind=run`, 화면 레일의 '파드' 단계,
+6. **KB 를 먼저 올린다.** `/data/kb-v2` 는 비워 두고 시작하면 안 된다 — 케이스 스크립트뿐 아니라 회사 지식 파일 `jar_names.yml`(번들 jar 이름 → Nexus
+   좌표)과 `libraries.yml`(승인한 라이브러리 표)이 거기 산다. 빈 KB 로 돌리면 어제 되던 프로젝트가 vendor jar(IBSheet 류)를 못 묶어 `package … does not
+   exist` 로 끝날 수 있다(2026-11-09 회사 PC 에서 확인). 회사 PC 의 KB 폴더를 통째로(비밀값 없음):
+   ```powershell
+   kubectl -n agent cp .\kb-v2 <웹 파드 이름>:/data/kb-v2
+   ```
+7. ConfigMap `sbmig-env` 에 `SBMIG_WEB_MODE: "k8s-job"` (필요하면 `SBMIG_K8S_NAMESPACE`). 파드 재시작.
+8. 확인: 시작 로그 `sbmig web UI ready (… mode k8s-job — job template …)`, 업로드 뒤 `kubectl -n agent get jobs -l app=sbmig,kind=run`, 화면 레일의 '파드' 단계,
    실행 폴더에 파드가 쓴 `sbmig.log` / `job-status.json`.
 
 ### 있는 것 / 다음 것
