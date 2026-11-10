@@ -44,11 +44,11 @@
 | `SBMIG_MAX_UPLOAD_MB` | `1024` | 업로드 zip 상한(MB). 기본 512, `0` = 없음 |
 | `HTTP_PROXY` / `HTTPS_PROXY` | `http://<프록시 호스트>:<포트>` | 클러스터에서 프록시로 나가야 할 때만(웹 파드와 Job 파드가 같이 읽는다) |
 | `NO_PROXY` | `<게이트웨이 호스트>,<nexus 호스트>,localhost,127.0.0.1` | 프록시를 켰을 때 사내 주소를 빼는 목록 |
-| `SBMIG_WEB_MODE` | `k8s-job` (매니페스트 값) / `in-process` (변수가 없을 때) / `local-job` | `k8s-job` = 업로드마다 Job 하나(공유 PVC). 켜진 채로 나가므로 권한(45)과 Job 틀 ConfigMap 이 웹 파드보다 먼저 있어야 한다(README §3 "켜는 법"); 줄을 주석 처리하면 웹 파드가 직접 돌린다. 개발 PC 에서는 `k8s-job` 이 자동으로 `local-job`(파드 자리에 로컬 서브프로세스)으로 내려간다 |
-| `SBMIG_K8S_NAMESPACE` | (비움 = 파드의 namespace, kubeconfig 면 그 context 의 namespace) | Job 을 다른 namespace 에 만들 때만 |
+| `SBMIG_WEB_MODE` | `k8s-job` (매니페스트 값) / `in-process` (변수가 없을 때) / `local-job` | `k8s-job` = 업로드마다 Job 하나(공유 PVC). 켜진 채로 나가므로 권한(회사: kubeconfig Secret, 없는 클러스터: 45)과 Job 틀 ConfigMap 이 웹 파드보다 먼저 있어야 한다(README §3 "켜는 법"); 줄을 주석 처리하면 웹 파드가 직접 돌린다. 개발 PC 에서는 `k8s-job` 이 자동으로 `local-job`(파드 자리에 로컬 서브프로세스)으로 내려간다 |
+| `SBMIG_K8S_NAMESPACE` | `agent` (매니페스트 값) | Job 을 만드는 namespace. 줄이 없으면 kubeconfig 방식은 그 context 의 namespace, 그것도 없으면 `default`(PVC `sbmig-data` 를 못 찾는다); 서비스 계정 방식은 파드의 namespace |
 | `SBMIG_JOB_TEMPLATE` | `/templates/81-web-job.template.yaml` (Deployment 의 env) | 채운 Job 틀을 ConfigMap `sbmig-job-template` 으로 `/templates` 에 마운트한다(README §3). 이미지 안의 `deploy/k8s/81-web-job.template.yaml` 은 자리표시자 그대로라 쓰지 않는다 |
 | `SBMIG_WORKER_LLM_RECORDS` | (없음) / `"1"` (Job 틀의 env) | Worker 가 LLM 원문 기록을 허용할지. 기본은 끈다(원본 프롬프트 = 소스 코드가 공유 볼륨에 더 남지 않게). 진단 때만 틀의 두 줄을 같이 푼다: 이 스위치 + `SBMIG_LLM__RECORD_DIR: "/data/llm-records"`. 스위치 없이 폴더만 주면 Worker 가 그 변수를 넘기지 않는다 |
-| `KUBECONFIG` | (없음) / `/etc/kube/config` (Deployment 의 env) | 인프라팀이 서비스 계정 대신 kubeconfig Secret 을 주는 방식일 때. 파일이 있으면 서비스 계정 토큰 대신 이것으로 쿠버네티스 API 를 부른다(token / 클라이언트 인증서 사용자; `exec` 는 거절). 개발 PC 에서 `k8s-job` 이 `local-job` 으로 내려가지 않게도 한다 |
+| `KUBECONFIG` | `/etc/kube/config` (Deployment 의 env, 매니페스트 값) | 회사 방식: 인프라팀이 준 kubeconfig Secret(`agent-kubeconfig`, 키 `config`)을 `/etc/kube` 에 마운트한다. 파일이 있으면 서비스 계정 토큰 대신 이것으로 쿠버네티스 API 를 부른다(token / 클라이언트 인증서 사용자; `exec` 는 거절). 개발 PC 에서 `k8s-job` 이 `local-job` 으로 내려가지 않게도 한다 |
 | `SBMIG_JOB_POLL_S` | `2` | Job 상태 조회 간격(초) |
 | `SBMIG_JOB_STOP_GRACE_S` | `2700` | 멈춤 요청(stop.request) 뒤 Job 을 지우기까지 기다리는 시간(초) — Maven 빌드 + OpenRewrite 한 번보다 길게 |
 | `SBMIG_JOB_EXIT_GRACE_S` | `120` | Worker 가 결과(`job-status.json`)를 쓴 뒤에도 파드가 남아 있으면 이 초 뒤에 그 Job(우리 라벨인 것만)을 지우고 사라질 때까지 기다린다. 다음 업로드는 Job 이 끝난 것을 확인한 뒤에 시작한다 |

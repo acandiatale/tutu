@@ -1,6 +1,6 @@
 # 웹 UI 에이전트(`sbmig serve`): replica 1(한 번에 한 이관 — 큐가 프로세스 안에 있다), Recreate(볼륨과 파드가 같이 옮겨간다).
 # Job 디스패치 모드(README §3, ConfigMap 의 SBMIG_WEB_MODE=k8s-job)에서는 이 파드가 Agent 다: 업로드마다 Job 을 만들고 공유 PVC 로 결과를 받는다 —
-# serviceAccountName(45-web-rbac.yaml 을 먼저 apply)과 ReadWriteMany PVC(10-storage.yaml, nfs-csi)가 그 전제다.
+# 쿠버네티스 API 권한(회사: 인프라팀의 kubeconfig Secret — 아래 spec 의 설명)과 ReadWriteMany PVC(10-storage.yaml, nfs-csi)가 그 전제다.
 # 회사 값(2026-11-09): namespace agent. 이미지는 인프라팀이 자기 레지스트리에 push 한 전체 이름을 받아 image: 에 넣는다(README §1).
 # 회사 artifacts.yml 은 이미지에 굽는다(2026-11-10) — ConfigMap 으로 오는 파일은 settings.xml 하나다(20-configmap.yaml).
 apiVersion: apps/v1
@@ -18,10 +18,13 @@ spec:
     metadata:
       labels: {app: sbmig}
     spec:
-      serviceAccountName: sbmig-web          # Job 디스패치 모드(SBMIG_WEB_MODE=k8s-job): 45-web-rbac.yaml 의 권한으로 Job 을 만든다. 안에서 돌리는 모드면 없어도 된다
-      # ── 인프라팀이 서비스 계정 대신 kubeconfig 를 주는 방식(가이드 / 2026-11-09 임시 명세: Secret 을 /etc/kube 에 마운트, env KUBECONFIG)이면 위
-      #    serviceAccountName 줄을 지우고 아래 세 자리의 주석을 푼다 — env KUBECONFIG, volumeMounts 의 kubeconfig, volumes 의 kubeconfig.
+      # ── 쿠버네티스 API 권한(Job 을 만들고 지켜본다), 둘 중 하나.
+      #    회사(인프라팀 명세, 2026-11-09): kubeconfig Secret 을 /etc/kube 에 마운트하고 env KUBECONFIG 로 가리킨다 — 아래 세 자리가 켜져 있다
+      #    (env KUBECONFIG, volumeMounts 의 kubeconfig, volumes 의 kubeconfig). Secret 이름이 다르면 volumes 의 secretName 만, 그 안의 키 이름이
+      #    config 가 아니면 env KUBECONFIG 의 파일 이름만 바꾼다. namespace 는 ConfigMap 의 SBMIG_K8S_NAMESPACE 가 정한다.
+      #    kubeconfig 가 없는 클러스터(연습용 kind 등): 그 세 자리를 주석 처리하고 45-web-rbac.yaml 을 먼저 apply 한 뒤 아래 줄의 주석을 푼다.
       #    코드는 KUBECONFIG 파일이 있으면 그것으로, 없으면 서비스 계정 토큰으로 쿠버네티스 API 를 부른다(sbmig/web/k8s.py K8sClient.connect).
+      # serviceAccountName: sbmig-web
       # hostAliases:                           # 사내 DNS 가 못 푸는 주소(LLM 게이트웨이 등)가 있을 때 — 인프라팀 임시 명세에 있던 항목. Job 틀에도 같은 값
       #   - {ip: CHANGE_ME_IP, hostnames: [CHANGE_ME_GATEWAY_HOST]}
       # nodeSelector: {kubernetes.io/hostname: CHANGE_ME_NODE}   # 레지스트리 없이 이미지를 노드 하나에만 적재했거나 PVC 가 RWO 일 때만 그 노드에 고정(Job 틀도 같은 노드로)
@@ -43,7 +46,7 @@ spec:
           env:
             # Job 틀은 ConfigMap sbmig-job-template 로 들어온다(아래 volumes; README §3). 이미지 안의 사본은 CHANGE_ME 그대로라 쓰지 않는다
             - {name: SBMIG_JOB_TEMPLATE, value: /templates/81-web-job.template.yaml}
-            # - {name: KUBECONFIG, value: /etc/kube/config}   # kubeconfig 방식일 때(위 설명)
+            - {name: KUBECONFIG, value: /etc/kube/config}   # 회사 방식(위 설명): 아래 kubeconfig 볼륨의 파일
             # ── 회사 artifacts.yml 은 이미지에 구워져 있다(/app/config/artifacts.yml — PC 에서 시험한 파일 그대로, README §1). 그 안의 PC 경로를 컨테이너
             #    값으로 덮어쓴다: 환경 변수 SBMIG_<섹션>__<키> 가 yml 보다 우선하고, yml 에 그 키가 없어도 해가 없다. 81-web-job.template.yaml 에도 같은 줄이 있다
             - {name: SBMIG_KB__DIR, value: /data/kb-v2}                            # kb.dir — 볼륨의 파일 KB(이미지 안 kb-v2/ 는 비어 있다)
@@ -65,7 +68,7 @@ spec:
             # - {name: config, mountPath: /app/config/artifacts.yml, subPath: artifacts.yml, readOnly: true}   # artifacts.yml 을 ConfigMap 으로 줄 때만(20-configmap.yaml 맨 아래) — 이미지에 구운 파일을 가린다
             - {name: config, mountPath: /etc/sbmig/settings.xml, subPath: settings.xml, readOnly: true}
             - {name: job-template, mountPath: /templates, readOnly: true}
-            # - {name: kubeconfig, mountPath: /etc/kube, readOnly: true}   # kubeconfig 방식일 때
+            - {name: kubeconfig, mountPath: /etc/kube, readOnly: true}   # 회사 방식: Secret 의 키 config → /etc/kube/config
           resources:
             requests: {cpu: "2", memory: 6Gi}
             limits: {cpu: "4", memory: 8Gi}      # Maven / OpenRewrite 가 -Xmx4g(build.jvm_args) + Python
@@ -86,5 +89,5 @@ spec:
           configMap: {name: sbmig-config}
         - name: job-template                    # kubectl -n agent create configmap sbmig-job-template --from-file=deploy/k8s/81-web-job.template.yaml
           configMap: {name: sbmig-job-template, optional: true}   # Job 모드(sbmig-env 의 SBMIG_WEB_MODE=k8s-job, 기본)에서는 이 ConfigMap 이 없으면 시작 검증이 MIGRATION_TEMPLATE_INVALID 로 멈춘다 — 40 보다 먼저 만든다
-        # - name: kubeconfig                    # kubeconfig 방식일 때: 인프라팀이 준 Secret 이름
-        #   secret: {secretName: agent-kubeconfig, defaultMode: 0400}
+        - name: kubeconfig                      # 회사 방식: 인프라팀이 준 Secret 이름(없으면 파드가 ContainerCreating 에서 기다린다)
+          secret: {secretName: agent-kubeconfig, defaultMode: 0400}

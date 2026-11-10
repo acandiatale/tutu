@@ -12,7 +12,7 @@
 | `k8s/20-configmap.yaml` | Nexus `settings.xml`(`sbmig-config`) + 비밀 아닌 환경 변수(`sbmig-env`). 회사 설정 `artifacts.yml` 은 이미지에 굽는다(§1) |
 | `k8s/30-secret.example.yaml` | 비밀값 예시 — `sbmig-llm`(= PC 의 `.env` + 웹 토큰), `sbmig-git`(저장소 토큰). **복사해 채우고 커밋하지 않는다**(`30-secret.yaml` 은 git-ignore) |
 | `k8s/40-deployment.yaml`, `k8s/50-service.yaml` | 웹 UI 에이전트(`sbmig serve`) Deployment(replica 1, Recreate) + Service — Job 모델만 쓰면 불필요 |
-| `k8s/45-web-rbac.yaml` | 웹 파드가 Job 을 만들고 지켜보는 최소 권한(ServiceAccount + Role + RoleBinding). 디스패치 모드용 |
+| `k8s/45-web-rbac.yaml` | 웹 파드가 Job 을 만들고 지켜보는 최소 권한(ServiceAccount + Role + RoleBinding). kubeconfig Secret 이 없는 클러스터용 — 회사는 인프라팀의 kubeconfig 로 권한을 받으므로 쓰지 않는다 |
 | `k8s/80-build-job.template.yaml`, `k8s/submit-job.sh` | **인프라 가이드(2026-11-05) 모델**: 요청별 Job 템플릿 + 템플릿을 손으로 돌려 보는 제출 스크립트(운영 방식이 아니라 검증 도구) |
 
 **운영 방식은 하나다**: 에이전트가 웹 화면을 띄우고, 이관 대상 프로젝트의 담당자가 그 화면에 프로젝트 zip 을 올리면 에이전트가
@@ -122,7 +122,7 @@ kubectl apply -f deploy/k8s/20-configmap.yaml      # <…> 자리를 회사 값�
 cp deploy/k8s/30-secret.example.yaml deploy/k8s/30-secret.yaml && $EDITOR deploy/k8s/30-secret.yaml
 kubectl apply -f deploy/k8s/30-secret.yaml
 # Job 모드가 켜져 있다(sbmig-env 의 SBMIG_WEB_MODE) — 권한과 Job 틀이 먼저다(§3 "켜는 법" 2·3·4). 없으면 웹 파드가 시작 검증에서 멈춘다
-kubectl apply -f deploy/k8s/45-web-rbac.yaml
+kubectl -n agent describe secret agent-kubeconfig   # 회사: 인프라팀의 kubeconfig Secret, Data 에 config 가 보여야 한다(없는 클러스터는 §3 "켜는 법" 2 의 b)
 kubectl -n agent create configmap sbmig-job-template --from-file=deploy/k8s/81-web-job.template.yaml --dry-run=client -o yaml | kubectl apply -f -
 kubectl apply -f deploy/k8s/40-deployment.yaml -f deploy/k8s/50-service.yaml
 kubectl -n agent rollout status deploy/sbmig
@@ -256,7 +256,7 @@ env 가 아닌 것: `artifacts.yml`(이미지에 구운 파일), `settings.xml`(
 | 이미지 | `docker/Dockerfile` (같은 이미지, JDK 는 쓰지 않는다) | 같은 이미지 |
 | 자원 | CPU 1, 메모리 1~2 GiB | CPU 2~4, 메모리 6~8 GiB (OpenRewrite `-Xmx4g`) |
 | 볼륨 | PVC `sbmig-data` → `/data` (업로드, 실행 폴더, KB), **ReadWriteMany** | 같은 PVC 같은 경로 + `sbmig-m2`(또는 emptyDir) |
-| 권한 | ServiceAccount `sbmig-web` (`k8s/45-web-rbac.yaml`: jobs create/get/list/watch/delete, pods get/list/watch) **또는** 인프라팀이 Secret 으로 주는 kubeconfig(`/etc/kube/config`, env `KUBECONFIG` — 2026-11-09 임시 명세의 방식; 있으면 이것을 먼저 쓴다) | 없음 |
+| 권한 | 인프라팀이 Secret 으로 주는 kubeconfig(`/etc/kube/config`, env `KUBECONFIG` — 회사 방식, 매니페스트에 켜져 있다; 있으면 이것을 먼저 쓴다) **또는** ServiceAccount `sbmig-web` (`k8s/45-web-rbac.yaml`: jobs create/get/list/watch/delete, pods get/list/watch). 어느 쪽이든 그 사용자에게 이 동사들이 있어야 한다 | 없음 |
 | 네트워크 | → 쿠버네티스 API | → LLM 게이트웨이, Nexus |
 
 회사 클러스터(2026-11-09): namespace **`agent`**, 스토리지 클래스 **`nfs-csi`**(NFS CSI 드라이버, ReadWriteMany 지원) — 매니페스트에 들어 있다. NFS 라서 볼 것:
@@ -321,9 +321,12 @@ PVC 가 RWO 만 되는 클러스터라면 Job 템플릿과 Deployment 의 hostna
 ### 켜는 법
 
 1. `k8s/10-storage.yaml`: 회사 값이 들어 있다(`storageClassName: nfs-csi`, 두 PVC 모두 `ReadWriteMany`, namespace `agent`). 다른 클러스터면 이 세 값만 바꾼다.
-2. 권한, 둘 중 하나. (a) `k8s/45-web-rbac.yaml` 을 먼저 apply — `k8s/40-deployment.yaml` 의 `serviceAccountName: sbmig-web` 은 풀려 있다.
-   (b) 인프라팀이 kubeconfig Secret(임시 명세의 `agent-kubeconfig`)을 주면 `serviceAccountName` 줄을 지우고 Deployment 의 세 자리(`KUBECONFIG` env,
-   `/etc/kube` 마운트, `kubeconfig` 볼륨) 주석을 푼다. 코드는 `KUBECONFIG` 파일이 있으면 그것으로, 없으면 서비스 계정으로 API 를 부른다
+2. 권한, 둘 중 하나. (a) **회사**: 인프라팀이 준 kubeconfig Secret(`agent-kubeconfig`, 키 이름 `config`) — `k8s/40-deployment.yaml` 의 세 자리
+   (`KUBECONFIG` env, `/etc/kube` 마운트, `kubeconfig` 볼륨)가 **켜진 채로 나간다**(2026-11-10). `kubectl -n agent describe secret agent-kubeconfig` 의
+   Data 에 `config` 가 보이면 된다; Secret 이름이 다르면 볼륨의 `secretName`, 키 이름이 다르면 env 의 파일 이름을 맞춘다. namespace 는 `sbmig-env` 의
+   `SBMIG_K8S_NAMESPACE: "agent"` 가 정한다(없으면 kubeconfig context 의 namespace, 그것도 없으면 `default`).
+   (b) kubeconfig 가 없는 클러스터(연습용 kind 등): 그 세 자리를 주석 처리하고 `k8s/45-web-rbac.yaml` 을 먼저 apply 한 뒤 `serviceAccountName:
+   sbmig-web` 줄의 주석을 푼다. 코드는 `KUBECONFIG` 파일이 있으면 그것으로, 없으면 서비스 계정으로 API 를 부른다
    (`sbmig/web/k8s.py` `K8sClient.connect`; kubeconfig 의 token / 클라이언트 인증서 사용자만 — `exec` 방식은 거절한다).
 3. `k8s/40-deployment.yaml` 과 `k8s/81-web-job.template.yaml` 의 `image:` 에 인프라팀이 push 한 이미지의 전체 이름을 **같은 값**으로 넣는다(§1,
    `imagePullPolicy: IfNotPresent`; pull 인증이 필요하면 `imagePullSecrets`). 회사 설정이 이미지 안에 있으므로 두 이미지가 다르면 Worker 가 digest 불일치로 거절한다.
@@ -350,8 +353,9 @@ PVC 가 RWO 만 되는 클러스터라면 Job 템플릿과 Deployment 의 hostna
    목적지는 `/data/` 로 적는다 — `/data/kb-v2` 로 적으면 그 폴더가 이미 있을 때 `/data/kb-v2/kb-v2` 로 한 겹 더 들어가 KB 가 빈 것처럼 돈다(kind 에서
    확인, 2026-11-10). 그래서 PC 쪽 폴더 이름이 `kb-v2` 여야 하고, 그 폴더가 보이는 곳에서 상대 경로로 친다(`C:\…` 의 `:` 을 kubectl 이 파드 이름
    구분자로 읽을 수 있다). 둘째 줄에 `cases` 와 `jar_names.yml` 이 바로 보이면 된 것이다. 같은 명령을 다시 치면 같은 자리에 덮어쓴다.
-7. ConfigMap `sbmig-env` 의 `SBMIG_WEB_MODE: "k8s-job"` 은 **켜진 채로 나간다**(2026-11-10; 필요하면 `SBMIG_K8S_NAMESPACE`). 그 전의 파일로 올린
-   클러스터는 그 줄의 주석을 풀고 `kubectl apply -f deploy/k8s/20-configmap.yaml` 뒤 `kubectl -n agent rollout restart deploy/sbmig`.
+7. ConfigMap `sbmig-env` 의 `SBMIG_WEB_MODE: "k8s-job"` 과 `SBMIG_K8S_NAMESPACE: "agent"` 는 **켜진 채로 나간다**(2026-11-10). 그 전의 파일로 올린
+   클러스터는 두 줄을 넣고 `kubectl apply -f deploy/k8s/20-configmap.yaml`, Deployment 를 고쳤으면 `kubectl apply -f deploy/k8s/40-deployment.yaml`
+   (`unchanged` 로 나오면 `kubectl -n agent rollout restart deploy/sbmig`).
 8. 확인: 시작 로그 `sbmig web UI ready (… mode k8s-job — job template …)`, 업로드 뒤 `kubectl -n agent get jobs -l app=sbmig,kind=run`, 화면 레일의 '파드' 단계,
    실행 폴더에 파드가 쓴 `sbmig.log` / `job-status.json`.
 

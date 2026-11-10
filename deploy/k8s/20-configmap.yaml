@@ -66,10 +66,10 @@ data:
   # HTTP_PROXY: "http://<프록시 호스트>:<포트>"
   # HTTPS_PROXY: "http://<프록시 호스트>:<포트>"
   # NO_PROXY: "<게이트웨이 호스트>,<nexus 호스트>,localhost,127.0.0.1"
-  # 회사 운영 방식(2026-11-10): 업로드마다 Job 하나(공유 PVC). 켜 둔 채로 나간다 — 웹 파드는 시작할 때 권한(45-web-rbac.yaml)과 Job 틀
+  # 회사 운영 방식(2026-11-10): 업로드마다 Job 하나(공유 PVC). 켜 둔 채로 나간다 — 웹 파드는 시작할 때 권한(kubeconfig Secret)과 Job 틀
   # (ConfigMap sbmig-job-template, README §3 "켜는 법" 4)을 검사하고 어긋나면 뜨지 않는다. 웹 파드가 직접 돌리게 하려면 이 줄을 주석 처리
   SBMIG_WEB_MODE: "k8s-job"
-  # SBMIG_K8S_NAMESPACE: ""             # 비우면 파드의 namespace(서비스 계정) 또는 kubeconfig context 의 namespace
+  SBMIG_K8S_NAMESPACE: "agent"          # Job 을 만드는 namespace(회사 값). 이 줄이 없으면 kubeconfig context 의 namespace, 그것도 없으면 default 로 간다
   # SBMIG_JOB_TEMPLATE 은 Deployment 의 env 가 /templates/81-web-job.template.yaml 로 정한다(ConfigMap sbmig-job-template) — 여기서는 안 건드린다
   # SBMIG_JOB_STOP_GRACE_S: "2700"      # 멈춤 요청 뒤 Job 삭제까지(초). Maven 빌드 한 번 + OpenRewrite 보다 길어야 보고서를 잃지 않는다
   # SBMIG_JOB_EXIT_GRACE_S: "120"       # 결과 파일(job-status.json)을 쓴 뒤에도 파드가 남아 있으면 이 초 뒤에 그 Job 을 지운다

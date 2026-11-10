@@ -138,7 +138,7 @@ kubectl exec deploy/sbmig -- python -m sbmig.cli llm-probe
 그대로 돌고, 다시 뜬 Main 이 `control/state.json` 으로 `queued` 는 다시 줄에 세우고 `created` / `running` 은 이어서 감시한다.
 큐는 그대로라 Job 도 한 번에 하나(병렬 3 개는 다음 단계). 쿠버네티스 API 는 `sbmig/web/k8s.py`(requests, `kubernetes` 패키지 없음)로
 Job 생성·상태·삭제와 권한 자기 점검(SelfSubjectAccessReview)만 부른다 — 인증은 `KUBECONFIG` 가 가리키는 kubeconfig 파일(인프라팀이 Secret 으로 주는
-`/etc/kube/config`; token / 클라이언트 인증서 사용자, `exec` 는 거절)이 있으면 그것, 없으면 파드의 서비스 계정 토큰·CA(권한은 `deploy/k8s/45-web-rbac.yaml`).
+`/etc/kube/config`; token / 클라이언트 인증서 사용자, `exec` 는 거절)이 있으면 그것, 없으면 파드의 서비스 계정 토큰·CA(권한은 `deploy/k8s/45-web-rbac.yaml`). 매니페스트는 kubeconfig 쪽이 켜진 채로 나간다(`sbmig-env` 의 `SBMIG_K8S_NAMESPACE` 가 Job 의 namespace).
 Job 틀은 채운 것을 ConfigMap `sbmig-job-template` 으로 `/templates` 에 마운트해 `SBMIG_JOB_TEMPLATE` 로 읽고, Main 은 **시작할 때** 틀(컨테이너 하나,
 envFrom 없음, 비밀 env 는 valueFrom — 설정 덮어쓰기 `SBMIG_<섹션>__<키>` 는 비밀 이름으로 보지 않는다 — , `/data` PVC 마운트 하나)과 권한을 검증해 어긋나면 뜨지 않는다. 켜는 순서는 `deploy/README.md` §3 "켜는 법".
 개발 PC: `k8s-job` 인데 클러스터 밖이면 자동으로 `local-job`(`sbmig/web/localjob.py`, 파드 자리에 로컬 서브프로세스 `sbmig run --run-id …`)으로

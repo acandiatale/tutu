@@ -4392,9 +4392,14 @@ redaction. A local-job regression found while testing is fixed in the same round
     the web pod — else the next Job is refused within seconds, naming the keys. After changing the Job template, re-create ConfigMap
     `sbmig-job-template` and restart the web pod too (Main validates the template and keeps it from startup, v2.1z-ac).
   - **Shipped mode (2026-11-10)**: `deploy/k8s/20-configmap.yaml` carries `SBMIG_WEB_MODE: "k8s-job"` as an active key (it had been a
-    commented line; the company's first web pod ran migrations itself). Applying the manifests therefore needs `45-web-rbac.yaml` and
-    ConfigMap `sbmig-job-template` before the Deployment — the startup validation stops the web pod otherwise. Commenting the line out
-    is the in-process mode. The mode is a web-pod knob and stays outside the env pins.
+    commented line; the company's first web pod ran migrations itself). Applying the manifests therefore needs the web pod's
+    Kubernetes access and ConfigMap `sbmig-job-template` before the Deployment — the startup validation stops the web pod otherwise.
+    Commenting the line out is the in-process mode. The mode is a web-pod knob and stays outside the env pins. **Access (same day)**:
+    the company's model is the shipped one — `40-deployment.yaml` has env `KUBECONFIG=/etc/kube/config`, the `kubeconfig` mount at
+    `/etc/kube` and the Secret volume `agent-kubeconfig` (key `config`, mode 0400, readable through `fsGroup`) switched on, no
+    `serviceAccountName`, and `sbmig-env` carries `SBMIG_K8S_NAMESPACE: "agent"` (with a kubeconfig the namespace is argument → that
+    variable → the context's → `default`). `45-web-rbac.yaml` + the commented `serviceAccountName: sbmig-web` line are the alternative
+    for a cluster without a kubeconfig Secret. The Job template (81) needs neither: only the web pod calls the Kubernetes API.
   - Known limits: secret-looking names are not compared — among them `LLM_TOKEN_URL` (its name contains TOKEN; a wrong URL fails at the
     token exchange) and `LLM_APP_TOKEN` / `LLM_API_KEY` / `NEXUS_*`; proxy variables (`HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY`) are not
     compared; an override left empty (`SBMIG_X__Y=""`) is YAML null for `_apply_env_overrides` and replaces the yml value with None — it

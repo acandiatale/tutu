@@ -264,13 +264,23 @@ def test_every_documented_key_switched_on_is_pinned_on_both_sides():
 def test_the_shipped_configmap_runs_the_company_operating_mode():
     """The company runs one Job per upload: sbmig-env ships with the mode switched on (user, 2026-11-10 — the web pod had come
     up running migrations itself because the line was a commented "later" step). What the mode needs at startup is in the
-    same set of manifests: the service account of 45 on the Deployment, the template mount and its path."""
+    same set of manifests: the template mount and its path, and the company's way to the Kubernetes API — the infra team's
+    kubeconfig Secret at /etc/kube/config (same day: those three places had shipped commented too), with the namespace named
+    in sbmig-env because a kubeconfig context without one means `default`. The service account of 45 is the commented alternative."""
     assert _sbmig_env_data().get("SBMIG_WEB_MODE") == "k8s-job"
     assert "SBMIG_WEB_MODE" not in _commented_keys()
     spec = next(d for d in _docs(WEB) if d["kind"] == "Deployment")["spec"]["template"]["spec"]
-    assert spec["serviceAccountName"] == "sbmig-web"
+    assert "serviceAccountName" not in spec
+    assert "# serviceAccountName: sbmig-web" in WEB.read_text(encoding="utf-8")
     env = {e["name"]: e.get("value") for e in spec["containers"][0]["env"]}
     mounts = {m["name"]: m["mountPath"] for m in spec["containers"][0]["volumeMounts"]}
+    assert env["KUBECONFIG"] == mounts["kubeconfig"] + "/config" == "/etc/kube/config"
+    secret = next(v for v in spec["volumes"] if v["name"] == "kubeconfig")["secret"]
+    assert secret["secretName"] == "agent-kubeconfig" and secret["defaultMode"] == 0o400
+    assert spec["securityContext"]["fsGroup"] == spec["securityContext"]["runAsGroup"]     # how uid 1000 reads a 0400 Secret file
+    assert _sbmig_env_data().get("SBMIG_K8S_NAMESPACE") == "agent" and "SBMIG_K8S_NAMESPACE" not in _commented_keys()
+    # the Job pod calls no Kubernetes API: no kubeconfig, no service account in the template
+    assert "kubeconfig" not in WEB_JOB.read_text(encoding="utf-8").lower() and "KUBECONFIG" not in _literals(WEB_JOB)
     assert env["SBMIG_JOB_TEMPLATE"].startswith(mounts["job-template"] + "/")
     volume = next(v for v in spec["volumes"] if v["name"] == "job-template")
     assert volume["configMap"]["name"] == "sbmig-job-template"

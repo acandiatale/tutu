@@ -327,6 +327,11 @@ Then the final build again, the report (Handover first, "Structure review", fix 
   files other than `sbmig.log` / `journal.jsonl` answer HTTP 409 until the final pass is over. A `local-job` Worker takes only
   `contract.RUN_ENV` values from the template (container paths had leaked into the local run). An override value must never be left
   empty (`SBMIG_X__Y: ""` is YAML null and wipes the yml value). `LLM_RECIPE_MODEL` is forwarded by 81 like the other LLM keys.
+  **Shipped defaults (2026-11-10, the user twice: "내가 다 줬는데 안채워놨엉")**: the manifests go out with what the company runs with
+  switched on — `SBMIG_WEB_MODE: "k8s-job"` and `SBMIG_K8S_NAMESPACE: "agent"` in `sbmig-env`, the kubeconfig model in 40 (env
+  `KUBECONFIG=/etc/kube/config`, the `/etc/kube` mount, Secret volume `agent-kubeconfig`); `45-web-rbac.yaml` + the commented
+  `serviceAccountName` line are the alternative for a cluster without a kubeconfig Secret. A value or mode the user has given is
+  never left as a commented "later" line; only hosts, IPs and secrets stay placeholders, and the reply lists them (file + key).
 - **Company convention (2026-10-20): agents run on LangGraph under uvicorn.** `loop.engine: graph` (default) drives
   the phases from a LangGraph `StateGraph` (`sbmig/graph/`, nodes intake → analyze → plan → phase×N → finalize;
   `inline` is the old loop, reports are identical by test); the web UI is FastAPI (`uvicorn sbmig.web.app:app` or
