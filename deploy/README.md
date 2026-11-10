@@ -60,10 +60,14 @@ docker build --build-arg APP_DIR=src/migration-agent --build-arg DEPLOY_DIR=depl
 |---|---|---|
 | `PYTHON_IMAGE` | `<harbor>/<proxy project>/library/python:3.11-slim-trixie` | 베이스 이미지를 사내 Harbor 의 Docker Hub 프록시에서 |
 | `APT_MIRROR` | `https://nexus.company/repository` | `deb.debian.org` 대신 쓸 주소(뒤에 `/debian`, `/debian-security` 가 붙는다 — JDK 21·Maven·git 을 apt 로 받는다) |
-| `PIP_INDEX_URL` / `PIP_TRUSTED_HOST` | `https://nexus.company/repository/pypi/simple` / `nexus.company` | PyPI 대신 사내 미러 |
+| `PIP_INDEX_URL` / `PIP_TRUSTED_HOST` | `https://nexus.company/repository/pypi/simple` / `nexus.company` | PyPI 대신 사내 미러. `PIP_TRUSTED_HOST` 는 인증서를 검증하지 않을 호스트 — 여러 개면 빈칸으로 나눈다 |
 | `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` | 회사 프록시 | 프록시로만 나가는 망 — 빌드 중에만 쓰인다 |
 
 예: `docker build --build-arg APT_MIRROR=https://nexus.company/repository --build-arg PIP_INDEX_URL=… -f deploy\docker\Dockerfile -t sbmig:<tag> .`
+**PC 의 pip 는 받는데 빌드의 `pip install` 만 `SSLError` 로 멈출 때**: 회사망이 HTTPS 를 중간에서 검사하고, 그 검사용 인증서가 PC 의 인증서
+저장소에는 있지만 컨테이너 안에는 없는 것이다. 사내 PyPI 미러가 있으면 위 두 인자로 그쪽을 쓰고, 없으면 공개 호스트 둘을 믿게 한다(빌드 중의 pip 에만 적용):
+`docker build --build-arg "PIP_TRUSTED_HOST=pypi.org files.pythonhosted.org" …`. PC 가 쓰는 주소는 `pip config list` 로 본다.
+
 셸 스크립트(`run-job.sh`)는 `.gitattributes` 가 LF 로 고정하고 Dockerfile 이 한 번 더 LF 로 되돌리므로 Windows 체크아웃에서 빌드해도 된다.
 
 **회사(2026-11-09)**: 인프라팀이 자기 레지스트리에 push 해 준다. PC 에서는 `deploy/docker/save-image.sh <tag>` 로 amd64 tar 를 만들어 넘기면 인프라팀이

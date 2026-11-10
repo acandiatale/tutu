@@ -11,6 +11,9 @@
 #   --build-arg PYTHON_IMAGE=<harbor>/<proxy project>/library/python:3.11-slim-trixie   베이스 이미지를 사내 Harbor 프록시에서
 #   --build-arg APT_MIRROR=https://nexus.company/repository                              deb.debian.org 를 대신할 주소(뒤에 /debian, /debian-security 가 붙는다)
 #   --build-arg PIP_INDEX_URL=https://nexus.company/repository/pypi/simple --build-arg PIP_TRUSTED_HOST=nexus.company
+#   PC 의 pip 는 받는데 빌드만 `SSLError` 로 멈추면 회사망이 HTTPS 를 검사하는 것이다(검사용 인증서가 PC 에는 있고 컨테이너에는 없다).
+#   사내 PyPI 미러가 없으면 공개 호스트 둘을 믿게 한다 — 호스트 여러 개는 빈칸으로:
+#   --build-arg "PIP_TRUSTED_HOST=pypi.org files.pythonhosted.org"
 #   프록시로 나가는 망이면 --build-arg HTTP_PROXY=… HTTPS_PROXY=… NO_PROXY=… (docker 가 빌드 중에만 쓴다)
 ARG PYTHON_IMAGE=python:3.11-slim-trixie
 FROM ${PYTHON_IMAGE}
@@ -39,10 +42,11 @@ ENV JAVA_HOME=/opt/java21 \
 # UID 1000: 데이터 볼륨의 파일 소유자를 모든 컨테이너에서 같게
 RUN useradd --create-home --uid 1000 sbmig && mkdir -p /app /data /workspace && chown -R sbmig:sbmig /app /data /workspace
 
-# 의존성 먼저(캐시 레이어); 목록은 pyproject.toml 그 자체
+# 의존성 먼저(캐시 레이어); 목록은 pyproject.toml 그 자체. PIP_TRUSTED_HOST 는 빈칸으로 나눈 호스트마다 --trusted-host 하나씩
 COPY ${APP_DIR}/pyproject.toml ${DEPLOY_DIR}/docker/pip-deps.py /tmp/
 RUN python /tmp/pip-deps.py /tmp/pyproject.toml \
-    | xargs pip install ${PIP_INDEX_URL:+--index-url "$PIP_INDEX_URL"} ${PIP_TRUSTED_HOST:+--trusted-host "$PIP_TRUSTED_HOST"} \
+    | xargs pip install ${PIP_INDEX_URL:+--index-url "$PIP_INDEX_URL"} \
+        $(for h in $PIP_TRUSTED_HOST; do printf -- '--trusted-host %s ' "$h"; done) \
     && rm -f /tmp/pyproject.toml /tmp/pip-deps.py
 
 # 앱: config/, knowledge/, sbmig/ 가 같은 루트에 있어야 한다 (config.py 가 자기 위치에서 레포 루트를 잡는다 —
