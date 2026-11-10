@@ -193,6 +193,8 @@ class Run:
     keep_state: bool = False              # 서버 종료: Job 은 계속 돈다 — state.json 을 그대로 두어 다음 Main 이 이어받게
     recover: str | None = None            # 재시작 복구: None (새로 만듦) | "probe" (creating: 있으면 이어받음) | "adopt"
     status_warned: bool = False
+    status_error: str | None = None       # 받은 job-status.json 의 error(Worker 가 실행 자체를 못 했다: 요청 거부, sbmig 를 못 띄움)
+    pod_step_closed: bool = False         # 이 감시에서 '파드' 단계를 닫는 이벤트(completed / failed)를 이미 보냈다 — 한 번만
     # Kubernetes API 가 답하지 않는 동안(리뷰 2026-11-10): 처음 실패한 때, 마지막으로 크게 알린 때(monotonic), 화면에 보일 한 줄
     api_down_since: float | None = None
     api_down_reported: float | None = None
@@ -758,6 +760,7 @@ class RunManager:
             return None
         run.verified = True
         run.result_source = "status"
+        run.status_error = status.error or None
         if status.error and not run.error:
             run.error = status.error
         return int(status.exit_code)
@@ -1037,24 +1040,32 @@ class RunManager:
         종료 코드 — 이 실행·시도의 ``job-status.json`` 이 먼저, 없으면 컨테이너 종료 코드(검증 안 됨), Job 이 사라졌으면 ``lost``. 멈춤
         요청은 ``stop.request`` 를 쓰고, 유예가 지나면 우리 라벨의 Job 만 지운다. 서버 종료 때는 Job 을 두고 빠진다.
         **이 함수는 Job 이 끝난 것을 확인하고서야 돌아온다**(리뷰 2026-11-10; 서버 종료와 남의 Job 만 예외): 결과 파일을 받았어도 파드가
-        끝날 때까지 ``_hold_until_ended``, API 가 답하지 않으면 답할 때까지 기다린다(실패로 끝내지 않는다).
+        끝날 때까지 ``_hold_until_ended``, API 가 답하지 않으면 답할 때까지 기다린다(실패로 끝내지 않는다). '파드' 단계는 Job 의 Failed 를
+        그대로 보내지 않는다: 결과 파일을 받으면 ``completed``, 유예 안에 못 받으면 그때 ``failed``(``_close_pod_step``).
 
         Watch the Job to its end (shared by a fresh create and an adoption). Returns only once the Job is confirmed ended,
-        except at server shutdown or for a Job that is not this request's."""
+        except at server shutdown or for a Job that is not this request's. The pod step's `Failed` is decided by the
+        status file, not pushed as the raw phase (`_close_pod_step`)."""
         last: tuple[str, str | None] | None = None
         stop_sent: float | None = None
+        run.pod_step_closed = False                # one closing event for the pod step per watch (fresh create or adoption alike)
         while True:
             code = self._accept_status(run)
             if code is not None:                   # the pod said it finished, on the volume — the turn waits until it really ended
+                self._close_pod_step(run, name, code=code)
                 self._hold_until_ended(run, client, name, delete_after=self.job_exit_grace_s, why="the result is on the volume")
+                self._log_failed_phase_explained(run, name, code)
                 return code
             st = self._poll_job(run, client, name)   # None: the API does not answer — keep the turn, ask again
             if st is not None:
                 if (st.phase, st.pod) != last:
                     last = (st.phase, st.pod)
                     run.job_phase, run.job_pod = st.phase, st.pod
-                    self._push(run, "node", {"node": "job", "update": {"state": st.phase.lower(), "job": name,
-                                                                        "pod": st.pod, "message": st.message}})
+                    # Failed 는 아직 화면에 보내지 않는다: Worker 가 sbmig 의 종료 코드 3(ADF 거부 …)을 그대로 내면 Job 은 Failed 가 되지만
+                    # 파드는 제 일을 다 했다 — 파드가 죽었는지는 결과 파일을 기다린 뒤(_await_status) 가린다
+                    if st.phase != "Failed":
+                        self._push(run, "node", {"node": "job", "update": {"state": st.phase.lower(), "job": name,
+                                                                            "pod": st.pod, "message": st.message}})
                     log.info("run %s: job %s %s%s%s", run.run_id, name, st.phase, f" pod {st.pod}" if st.pod else "",
                              f" ({st.message})" if st.message else "")
                 if st.phase == "Running" and run.control is not None and run.control.state in (
@@ -1063,7 +1074,11 @@ class RunManager:
                 if st.finished:
                     code = self._await_status(run, name, st)   # the Worker writes job-status.json just before the pod ends — NFS may show it late
                     if code is not None:
+                        self._close_pod_step(run, name, code=code)
+                        self._log_failed_phase_explained(run, name, code)
                         return code
+                    if st.phase == "Failed":       # no verified result within the grace: the pod died (OOMKilled, deadline, eviction …)
+                        self._close_pod_step(run, name, ended=st)
                     run.verified = False
                     if st.phase == "Missing":
                         if run.cancel.is_set() or (run.run_dir / STOP_REQUEST_FILE).is_file():
@@ -1112,6 +1127,42 @@ class RunManager:
                     return EXIT_ABORTED
             with run.cond:
                 run.cond.wait(self.job_poll_s)
+
+    def _close_pod_step(self, run: Run, name: str, *, code: int | None = None, ended: JobState | None = None) -> None:
+        """'파드' 단계를 닫는 이벤트를 **이 감시에서 한 번만** 보낸다. '파드' 는 "파드가 제 일을 했나" 이지 이관의 종료 코드가 아니다
+        (2026-11-10 회사 실행: ADF 프로젝트를 분석에서 멈춘 실행(종료 코드 3)의 Job 이 Failed 가 되자 화면이 '파드' 를 X 로 그렸다).
+        ``code`` = 이 실행·시도의 ``job-status.json`` 을 받았다: ``error`` 가 없으면 ``completed``(종료 코드가 무엇이든), 있으면 — Worker 가
+        요청을 거부했거나 sbmig 를 띄우지 못했다 — ``failed`` + 그 오류. ``ended`` = 결과 파일 없이 Job 이 Failed 로 끝났다(유예가 지났다):
+        파드가 죽었다 — ``failed`` + 쿠버네티스 메시지(예전 모양 그대로).
+
+        Push the pod step's closing event, at most once per watch: a verified status without `error` → `completed` (whatever
+        the exit code), with `error` → `failed` carrying it; `ended` (the Job ended Failed, no verified status within the
+        grace) → `failed` with the Kubernetes message, the pod died."""
+        if run.pod_step_closed:
+            return
+        update: dict[str, Any]
+        if code is not None:
+            update = {"state": "failed" if run.status_error else "completed", "job": name, "pod": run.job_pod,
+                      "exit_code": code}
+            if run.status_error:
+                update["message"] = run.status_error
+            if run.job_phase:                  # the raw Kubernetes phase when one was seen (Failed, Running …)
+                update["phase"] = run.job_phase
+        elif ended is not None:
+            update = {"state": "failed", "job": name, "pod": ended.pod, "message": ended.message}
+        else:
+            return
+        run.pod_step_closed = True
+        self._push(run, "node", {"node": "job", "update": update})
+
+    def _log_failed_phase_explained(self, run: Run, name: str, code: int) -> None:
+        """Job 이 Failed 로 끝났지만 그 까닭이 검증된 결과 파일의 종료 코드일 때 로그 한 줄 — 운영자가 sbmig.log 에서 "파드 실패" 로
+        잘못 읽지 않게(Worker 는 sbmig 의 종료 코드 3 을 컨테이너 종료 코드로 그대로 낸다).
+
+        One log line when a verified result explains a `Failed` Job phase (the Worker's own exit code, not a pod failure)."""
+        if run.job_phase == "Failed" and run.verified and not run.status_error:
+            log.info("run %s: job %s: Failed is the Worker's exit code %s (job-status.json verified) — not a pod failure",
+                     run.run_id, name, code)
 
     def _await_status(self, run: Run, name: str, st: JobState) -> int | None:
         """Job 이 끝난 직후: 이 실행·시도의 ``job-status.json`` 이 보일 때까지 ``job_status_grace_s``(기본 90초) 동안 다시 읽는다 — Worker 는

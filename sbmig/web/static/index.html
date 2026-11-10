@@ -489,14 +489,17 @@
     const ko = KO[node] || label;
     return `<div class="step" role="listitem" data-node="${esc(node)}"${extra || ''}><div class="dot"></div><div class="label">${esc(ko)}<span class="en">${esc(label)}</span></div></div>`;
   }
+  // 엔진이 멈춘 까닭(`중단: …`)은 끝까지 남긴다: 뒤에 오는 파드 안내(ending · api-back)가 그 한 줄을 덮으면 왜 멈췄는지가 사라진다
+  let abortNote = '';
   function resetRail() {
-    const g = $('rail'); g.innerHTML = '';
+    const g = $('rail'); g.innerHTML = ''; abortNote = '';
     for (const n of FIXED) g.insertAdjacentHTML('beforeend', stepHtml(n, n));
     g.insertAdjacentHTML('beforeend', stepHtml('phase', 'phases', ' data-pending="1" data-placeholder="1"'));
     g.insertAdjacentHTML('beforeend', stepHtml('finalize', 'finalize'));
     $('railnote').textContent = '';
   }
   function railSteps() { return [...$('rail').querySelectorAll('.step')]; }
+  function engineSeen() { return railSteps().some((n) => n.dataset.node !== 'job' && (n.classList.contains('done') || n.classList.contains('failed'))); }
   function setCurrent(el) {
     for (const n of railSteps()) n.classList.remove('current');
     if (el) el.classList.add('current');
@@ -514,15 +517,23 @@
     if (name === 'job') {                                       // 쿠버네티스 Job 모드: 파드 생성 중 → 준비됨
       el = jobStep();
       const s = u.state || '';
-      if (s === 'running') { el.classList.add('done'); setCurrent(railSteps()[1]); $('railnote').textContent = '파드가 준비됐습니다. 이관을 시작합니다.'; }
-      else if (s === 'failed' || s === 'missing') { el.classList.add('failed'); setCurrent(null); $('railnote').textContent = `파드 실패: ${u.message || s}`; }
-      else if (s === 'succeeded') { el.classList.add('done'); }
+      // 늦게 온 running 은 이미 시작한 엔진 단계의 표시(현재 단계·안내 줄)를 되돌리지 않는다
+      if (s === 'running') { el.classList.add('done'); if (!engineSeen()) { setCurrent(railSteps()[1]); $('railnote').textContent = '파드가 준비됐습니다. 이관을 시작합니다.'; } }
+      else if (s === 'failed' || s === 'missing') { el.classList.remove('done'); el.classList.add('failed'); setCurrent(null); $('railnote').textContent = `파드 실패: ${u.message || s}`; }
+      // completed: 이 실행의 결과 파일을 받았다 = 파드는 제 일을 했다(이관의 종료 코드가 3 이어도). 안내 줄·현재 단계는 엔진 쪽 몫
+      else if (s === 'succeeded' || s === 'completed') { el.classList.remove('failed'); el.classList.add('done'); }
       // 아래 셋은 단계 표시를 바꾸지 않는다(안내 한 줄만): API 가 답하지 않는 동안에도, 파드가 끝나기를 기다리는 동안에도 이 실행이 차례를 지킨다
       else if (s === 'api-unavailable') { $('railnote').textContent = `쿠버네티스 API 가 응답하지 않습니다. 응답할 때까지 이 이관이 차례를 유지하고 다음 이관은 기다립니다${u.message ? ' (' + u.message + ')' : ''}`; }
-      else if (s === 'api-back') { $('railnote').textContent = '쿠버네티스 API 가 다시 응답합니다.'; }
-      else if (s === 'ending') { $('railnote').textContent = '파드가 끝나기를 기다립니다. 끝난 것을 확인한 뒤 다음 이관을 시작합니다.'; }
+      else if (s === 'api-back') { $('railnote').textContent = abortNote || '쿠버네티스 API 가 다시 응답합니다.'; }
+      else if (s === 'ending') { $('railnote').textContent = abortNote || '파드가 끝나기를 기다립니다. 끝난 것을 확인한 뒤 다음 이관을 시작합니다.'; }
       else { setCurrent(el); $('railnote').textContent = s === 'created' ? '파드 생성 중…' : `파드 생성 중 (${s}${u.message ? ': ' + u.message : ''})`; }
       return;
+    }
+    // 엔진 단계가 왔다 = 파드가 돌고 있다: running 을 못 본 빠른 실행, job 이벤트 없이 저널로 다시 보는 끝난 실행도 '파드' 에 체크
+    const pod = rail.querySelector('.step[data-node="job"]');
+    if (pod && !pod.classList.contains('failed') && !pod.classList.contains('done')) {
+      if (pod.classList.contains('current')) $('railnote').textContent = '파드가 준비됐습니다. 이관을 시작합니다.';   // '파드 생성 중' 안내가 남지 않게
+      pod.classList.add('done');
     }
     if (name === 'plan' && Array.isArray(u.phases)) {          // 계획이 단계 묶음을 정한다: 하나씩 점으로
       for (const p of rail.querySelectorAll('.step[data-phase], .step[data-placeholder]')) p.remove();
@@ -543,7 +554,7 @@
       if (!el) { rail.insertAdjacentHTML('beforeend', stepHtml(name, name)); el = rail.lastElementChild; }
     }
     el.classList.add(u.aborted ? 'failed' : 'done');
-    if (u.aborted) $('railnote').textContent = `중단: ${u.aborted}`;
+    if (u.aborted) { abortNote = `중단: ${u.aborted}`; $('railnote').textContent = abortNote; }
     else if (u.stopped) $('railnote').textContent = '요청한 단계까지만 실행하고 멈췄습니다.';
     const steps = railSteps(); let last = -1;
     steps.forEach((n, i) => { if (n.classList.contains('done') || n.classList.contains('failed')) last = i; });

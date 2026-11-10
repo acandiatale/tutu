@@ -485,6 +485,15 @@ def test_page_has_no_v21i_switches(client):
     assert "no_kb" not in html and "KB off" not in html and 'id="start"' in html and 'id="stop"' in html
 
 
+def test_page_pod_step_states(client):
+    """2026-11-10 (an ADF run rejected at analyze showed the pod step as failed): the pod step closes on `completed` (the
+    verified job-status.json) as done; `failed` / `missing` still mark it failed; an engine abort reason stays on the rail note."""
+    html = client.get("/").text
+    assert "s === 'completed'" in html
+    assert "s === 'failed' || s === 'missing'" in html and "파드 실패: " in html
+    assert "abortNote" in html and "abortNote = ''" in html                         # sticky abort reason, reset with the rail
+
+
 # ---------------------------------------------------------------- 2026-11-05: the server decides the config files
 def test_default_configs_argument_env_and_fallback(tmp_path, repo, monkeypatch):
     """The page runs every upload with the server's config choice: `sbmig serve --config` (create_app argument) →

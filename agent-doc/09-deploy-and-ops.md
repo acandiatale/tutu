@@ -132,7 +132,7 @@ kubectl exec deploy/sbmig -- python -m sbmig.cli llm-probe
 `SBMIG_LLM_PROVIDER`)와 라벨(`sbmig-run-id`, `sbmig-owner`)을 채워 Job 을 만든다(만들기 전에 `creating` 을 적어 응답이 끊겨도 같은 이름의 Job 을 이어받는다)
 → 파드의 `python -m sbmig.web.worker`(`sbmig/web/worker.py`)가 request.json 의 digest 를 대조하고(다르면 exit 3, 저널 `worker_refused`) `sbmig run --out /data/out
 --run-id <run id>` 를 돌려 같은 실행 폴더에 저널·로그·보고서·`result.zip` 을 쓰고, 끝나면 비밀값을 지우고(`sbmig/web/redact.py`) `job-status.json
-{exit_code, run_id, attempt}` 를 쓴다 → 웹은 그 폴더를 tail 해 SSE 로 보낸다(`graph_node_end` 저널 줄 → 화면 `node` 이벤트, 레일 앞에 '파드' 단계) → Main 은
+{exit_code, run_id, attempt}` 를 쓴다 → 웹은 그 폴더를 tail 해 SSE 로 보낸다(`graph_node_end` 저널 줄 → 화면 `node` 이벤트, 레일 앞에 '파드' 단계: 결과 파일을 받으면 종료 코드가 3 이어도 `completed`, 파드가 결과 없이 죽었거나 Worker 가 거부했을 때만 `failed`) → Main 은
 지금 attempt 의 상태 파일만 결과로 받는다(없으면 `verified: false`, 성공으로 적지 않는다). 멈춤 = 웹이 `<run dir>/stop.request` 를 쓰고 엔진이 노드
 사이에서 멈춘다(최종 빌드 없음, 종료 3); `SBMIG_JOB_STOP_GRACE_S` 뒤에도 돌면 자기 라벨의 Job 만 지우고 사라질 때까지 기다린다. 웹 파드 재시작 때 Job 은
 그대로 돌고, 다시 뜬 Main 이 `control/state.json` 으로 `queued` 는 다시 줄에 세우고 `created` / `running` 은 이어서 감시한다.

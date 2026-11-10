@@ -85,7 +85,10 @@ def test_local_job_mode_runs_the_pod_as_a_subprocess_and_the_ui_sees_the_same_ev
     events = _sse(client, rid)
     nodes = [d for k, d in events if k == "node"]
     job_states = [d["update"]["state"] for d in nodes if d["node"] == "job"]
-    assert job_states[0] == "created" and "running" in job_states and job_states[-1] == "succeeded"
+    # the pod step closes on the verified job-status.json (2026-11-10): `completed` after the phase, once
+    assert job_states[0] == "created" and "running" in job_states and job_states[-2:] == ["succeeded", "completed"]
+    closing = [d["update"] for d in nodes if d["node"] == "job" and d["update"]["state"] == "completed"]
+    assert len(closing) == 1 and closing[0]["exit_code"] == 0 and closing[0]["phase"] == "Succeeded" and "failed" not in job_states
     assert [d["node"] for d in nodes if d["node"] != "job"] == ["intake", "analyze", "plan", "phase", "finalize"]
     st = [d for k, d in events if k == "status"][-1]
     assert st["state"] == "finished" and st["exit_code"] == 0 and st["mode"] == "local-job" and st["job"]["pod"].startswith("local-")

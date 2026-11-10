@@ -91,8 +91,14 @@ ConfigMap `sbmig-env` 를 시작할 때 한 번, Job 파드는 만들어질 때 
 4. `report.json` 만 있으면 `finished`, 폴더만 있으면 `unknown`, 폴더도 없으면 `missing`.
 
 Job 감시 루프(`_run_job`, 2초 주기 `SBMIG_JOB_POLL_S`): 매 번 **`job-status.json` 먼저**, 그다음 Job/파드 상태. 상태 변화마다 화면에
-`node` 이벤트 `{"node": "job", "update": {"state": created|creating|pending|running|succeeded|failed|missing, "job", "pod", "message"}}`
-(v2.1z-ad: 단계 표시를 바꾸지 않는 안내 `ending` · `api-unavailable` · `api-back` 이 더해졌다). Job 이
+`node` 이벤트 `{"node": "job", "update": {"state": created|creating|pending|running|succeeded|completed|failed|missing, "job", "pod", "message"}}`
+(v2.1z-ad: 단계 표시를 바꾸지 않는 안내 `ending` · `api-unavailable` · `api-back` 이 더해졌다).
+**'파드' 단계의 뜻(2026-11-10)**: "파드가 제 일을 했나" 이지 이관의 종료 코드가 아니다. Worker 는 sbmig 의 종료 코드 3(ADF 거부, intake 거절 …)을
+컨테이너 종료 코드로 그대로 내므로 그런 실행의 Job 은 쿠버네티스에서 `Failed` 가 된다. 그 `Failed` 는 화면에 그대로 보내지 않는다:
+이 실행·시도의 `job-status.json` 을 받으면 `completed`(`exit_code`, 본 적이 있으면 원래 `phase` 포함; 감시 한 번에 한 번만) → 화면은 '파드' 에 체크하고
+멈춘 까닭(`중단: …`)은 엔진 단계 쪽에 남긴다. `failed` 는 둘뿐이다: Job 이 `Failed` 로 끝났는데 유예(`SBMIG_JOB_STATUS_GRACE_S`) 안에 결과 파일이
+없다(파드가 죽었다: OOMKilled, 기한 초과, 축출) 또는 받은 결과 파일에 `error` 가 있다(Worker 가 요청을 거부했거나 sbmig 를 띄우지 못했다).
+`status().job.phase` 는 쿠버네티스의 원래 값 그대로다. Job 이
 Failed / Missing 인데 `job-status.json` 이 없으면 종료 코드 3 과 `error` 문구. **Job 종료 확인(v2.1z-ad)**: 이 시도의 `job-status.json` 을 받아도
 실행은 Job 이 끝났거나(Succeeded / Failed) 사라진(Missing) 것을 API 로 확인한 뒤에야 끝난다. 파일을 쓴 뒤 120초(`SBMIG_JOB_EXIT_GRACE_S`) 넘게 파드가
 남아 있으면 우리 라벨의 Job 을 지우고 사라질 때까지 기다린다(Worker 는 그 파일을 맨 마지막에 쓰므로 잃는 것이 없다). 쿠버네티스 API 가 답하지 않으면
