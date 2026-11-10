@@ -4040,7 +4040,7 @@ company PC keeps Maven off PATH (`build.mvn` = the full path of `mvn.cmd`) and t
 * **k8s Job dispatch mode (2026-11-05 night, built — the user's decisions: everything on one shared PVC, one Job at a time now,
   three later, the remediation-style API as a later md).** `sbmig serve --mode k8s-job` / `SBMIG_WEB_MODE=k8s-job`
   (`RunManager(mode=, job_client=, job_template=)`; `SBMIG_JOB_TEMPLATE` default `deploy/k8s/81-web-job.template.yaml`,
-  `SBMIG_K8S_NAMESPACE`, `SBMIG_JOB_POLL_S` 2, `SBMIG_JOB_STOP_GRACE_S` 600). Upload → `<out>/<run id>/source.zip` + a `web_run`
+  `SBMIG_K8S_NAMESPACE`, `SBMIG_JOB_POLL_S` 2, `SBMIG_JOB_STOP_GRACE_S` 600 — 2700 since the review round of the same night). Upload → `<out>/<run id>/source.zip` + a `web_run`
   journal line (mode k8s-job) → the FIFO queue (still one at a time) → `_run_job`: `render_job` (metadata.name `job_name(run id)`
   = `sbmig-<run id>` RFC 1123, label `sbmig-run-id`, env SBMIG_SOURCE_ZIP / SBMIG_OUT / SBMIG_RUN_ID / SBMIG_CONFIG
   (`<repo root>/config/<name>` — same image, same mounts) + SBMIG_STOP_AFTER / SBMIG_LLM_PROVIDER) → `K8sClient.create_job` →
@@ -4197,7 +4197,8 @@ by name. Contract:
   (`RequestRecord`: run_id, accepted_at, upload, configs, `zip_sha256`, `config_digests` = sha256 of `config/default.yml` + each selected
   yml, `sbmig_version`, mode, stop_after, llm_provider, `attempt` = 1) written once at intake, and `state.json` (`ControlState`: state
   `queued → creating → created → running → finished | stopped | lost | failed`, `job`, `owner` = 16-hex per-request token, `attempt`,
-  `accepted_at`, `updated_at`, `exit_code`, `error`) rewritten atomically (temp file + `os.replace`) on every transition. The Worker
+  `accepted_at`, `updated_at`, `exit_code`, `error`; v2.1z-ad adds `env_pins` / `env_pin_policy`, see below) rewritten atomically (temp
+  file + `os.replace`) on every transition. The Worker
   writes the run's outputs and `job-status.json` (`JobStatus`: `exit_code`, `finished_at`, `run_id`, `attempt`, `sbmig_version`,
   optional `error`); `JobStatus.matches(run_id, attempt)` is what Main trusts (a run-job.sh style file without ids still matches).
   Labels `sbmig-run-id` / `sbmig-owner` (`RUN_LABEL` / `OWNER_LABEL`), `WORKER_COMMAND = ["python", "-m", "sbmig.web.worker"]`,
@@ -4211,12 +4212,15 @@ by name. Contract:
   `job-status.json {exit_code: 3, error}`, exit 3), journal `worker_started`, run `python -m sbmig.cli run <zip> --config … --config
   worker-paths.yml --out <out> --run-id <id> [--stop-after] [--llm-provider]` with cwd = repo root, redact the run dir
   (`sbmig/web/redact.py`: secret values + URL userinfo → `***` in top-level `*.md|json|jsonl|log|txt|yml` and `logs/`; never `control/`,
-  `source.zip`, `result.zip`, `project/`), print the last `SBMIG-RESULT` line, journal `worker_finished`, write `JobStatus(exit_code=rc,
-  run_id, attempt, sbmig_version)`; exit 3 for rc 3, 2 for rc 2 only with `SBMIG_FAIL_JOB_ON_BUILD_FAIL=1`, else 0. A child crash still
+  `source.zip`, `result.zip`, `project/`; changed in v2.1z-ad, see below: this is now the final pass after write-time redaction, and an
+  environment check runs before `worker_started`), print the last `SBMIG-RESULT` line, journal `worker_finished`, write
+  `JobStatus(exit_code=rc, run_id, attempt, sbmig_version)`; exit 3 for rc 3, 2 for rc 2 only with `SBMIG_FAIL_JOB_ON_BUILD_FAIL=1`, else
+  0. A child crash still
   writes a status file (exit 3). `deploy/docker/run-job.sh` keeps its shared-volume branch for manual use; the infra one-Job model (git
   clone / push, `80-build-job.template.yaml`) is unchanged.
 - **`sbmig/web/k8s.py`**: `render_job(template, run_id, env, namespace=None, owner=None)` labels the Job and the pod template with
-  `sbmig-run-id` and (when given) `sbmig-owner`; `JobState.labels` (from the Job's `metadata.labels`); `K8sClient.can_i(verb, resource,
+  `sbmig-run-id` and (when given) `sbmig-owner`; `JobState.labels` (from the Job's `metadata.labels`; changed in v2.1z-ad, see below:
+  `None` = a client that cannot report labels, `{}` = a Job without labels, which is not ours); `K8sClient.can_i(verb, resource,
   group="")` = one SelfSubjectAccessReview; `validate_worker_template(template, out_dir) -> dict` raises `K8sError("MIGRATION_TEMPLATE_INVALID:
   …")` for: unreadable / not `batch/v1 Job`; ≠ 1 container or init/ephemeral containers; `backoffLimit` ≠ 0, `parallelism` / `completions` ≠ 1,
   `restartPolicy` ≠ Never; container without name / image; `envFrom`; env `LLM_RECORD_DIR` / `SBMIG_WEB_TOKEN` / `WEB_API_TOKEN`, or a
@@ -4228,19 +4232,25 @@ by name. Contract:
   any failure is a `ValueError` and the app does not start (the message names the rule / the denied verbs). **Intake** writes `request.json` +
   `queued` before the worker thread. **Create**: render with the owner label → write `creating` + job name → `create_job`; `HTTP 409` or a
   transport error (`RequestException` / `ConnectionError` / `Timeout` / `ChunkedEncodingError` / `ProtocolError`) → look the Job up: present
-  and ours → adopt (journal `job_adopted`), present but another owner → error, absent → re-raise; then `created`; `running` when the pod
-  runs. **Result**: `job-status.json` accepted only when it matches run id + attempt (a foreign file is ignored with one warning); after the
+  and ours → adopt (journal `job_adopted`), present but another owner → error, absent → re-raise (changed in v2.1z-ad, see below:
+  "ours" = both labels, the lookup asks until the API answers); then `created`; `running` when the pod runs. **Result**: `job-status.json`
+  accepted only when it matches run id + attempt (a foreign file is ignored with one warning); after the
   Job ends, Main waits `SBMIG_JOB_STATUS_GRACE_S` (90 s; NFS attribute cache) for the file before falling back to the container exit code
-  with `verified: false`; `Missing` → `lost`; `success` comes from `report.json` only for a verified result (else `None` and the error says
-  "result not verified"). **Stop**: after `SBMIG_JOB_STOP_GRACE_S`, delete only a Job whose `sbmig-owner` / `sbmig-run-id` labels are ours
-  (else `job_delete_refused`), then wait until it is `Missing` / terminal (bounded by `SBMIG_JOB_API_GRACE_S`) → `stopped`. **Shutdown** leaves
+  with `verified: false`; `Missing` → `lost` (after a stop request `stopped`, v2.1z-ad); `success` comes from `report.json` only for a
+  verified result (else `None` and the error says "result not verified"). **Stop**: after `SBMIG_JOB_STOP_GRACE_S`, delete only a Job
+  whose `sbmig-owner` / `sbmig-run-id` labels are ours
+  (else `job_delete_refused`; both labels must match — changed in v2.1z-ad, see below), then wait until it is `Missing` / terminal
+  (bounded by `SBMIG_JOB_API_GRACE_S` until v2.1z-ad; now without a deadline, and an API outage no longer fails the run or frees the slot —
+  see below) → `stopped`. **Shutdown** leaves
   the Job and its on-disk state (`created` / `running` / `queued`) for the next Main. **`recover()`** at startup (k8s-job, local-job): every
   non-terminal `control/state.json` with a readable `request.json`, in `accepted_at` order — `queued` creates, `creating` probes then adopts
-  or creates, `created` / `running` adopts and watches; local-job marks them `lost` (`LOCAL_LOST`). `status()` adds `attempt`, `verified`,
-  `control` and answers directory-only runs from the control state first. Journal events: `web_run`, `job_created` (+ `attempt`),
+  or creates, `created` / `running` adopts and watches (v2.1z-ad: only a Job carrying this request's labels, see below);
+  local-job marks them `lost` (`LOCAL_LOST`). `status()` adds `attempt`, `verified`, `control` and answers directory-only runs from the
+  control state first. Journal events: `web_run`, `job_created` (+ `attempt`),
   `job_adopted`, `stop_request_sent`, `job_deleted`, `job_delete_refused`; Worker: `worker_started`, `worker_refused`, `worker_finished`.
-- **`sbmig/web/localjob.py`**: the dev "pod" runs `python -m sbmig.web.worker` (env passthrough + `SBMIG_APP_DIR`), so the Worker path is
-  exercised on a laptop too; its `job-status.json` fallback is written only when the Worker left none.
+- **`sbmig/web/localjob.py`**: the dev "pod" runs `python -m sbmig.web.worker` (env passthrough + `SBMIG_APP_DIR`; changed in v2.1z-ad, see
+  below: only the manifest's per-run `contract.RUN_ENV` values), so the Worker path is exercised on a laptop too; its `job-status.json`
+  fallback is written only when the Worker left none.
 - **Manifests**: `81-web-job.template.yaml` `command: ["python", "-m", "sbmig.web.worker"]`, no `envFrom` (explicit `valueFrom`, secrets via
   `secretKeyRef`), no revision annotation; `30-secret.example.yaml` `immutable: true`; `SBMIG_WORKER_LLM_RECORDS` / `SBMIG_JOB_STATUS_GRACE_S`
   in `deploy/ENV.md`; README §3 "Main 이 지키는 것"; `docs/v2/JOB-RUN-STATE-CONTRACT-KO.md` §1 / §2 / §4 / §6 / §7 updated.
@@ -4285,3 +4295,181 @@ is the image's file — one copy, no hand-kept twin in a ConfigMap.
   `test_worker.py`, `test_jobmode_hardening.py`. Docs: `deploy/README.md` §1 / §2 / §3, `deploy/ENV.md` (§6 new), agent-doc 07 / 09,
   `docs/v2/JOB-RUN-STATE-CONTRACT-KO.md` §3 / §10.
 
+## v2.1z-ad — review of the Job dispatch code: four findings (2026-11-10)
+
+A reviewer read the Job dispatch code (Main = `RunManager` in the web pod, Worker = `python -m sbmig.web.worker` in the Job pod) and
+listed four findings, all judged real: (1) the next run could start before the previous Job had ended, (2) a Job without labels was
+treated as ours, (3) a difference between the two pods' environments went unnoticed, (4) secrets were visible before the post-run
+redaction. A local-job regression found while testing is fixed in the same round. Contract:
+
+- **(1) Job end confirmation — the single slot is handed on only after the Job is confirmed ended.** The turn (`RunManager._turns`, one
+  migration at a time) passes to the next run when `_run_job` returns. `_watch_job` now returns only once the Kubernetes API confirmed
+  the Job terminal (`Succeeded` / `Failed`) or gone (`Missing`) — `_hold_until_ended(run, client, name, *, delete_after, why)` — with
+  two exceptions: a server shutdown (`run.keep_state = True`; `control/state.json` stays as it is and the next Main adopts and watches
+  the Job) and a Job that is not this request's (left alone and not waited for, see (2)).
+  - *Result first, then the pod*: a matching `job-status.json` is still the result, but the run ends only after the pod ended too. A
+    pod still present `SBMIG_JOB_EXIT_GRACE_S` (new, default 120 s) after its `job-status.json` appeared is deleted (our labels only;
+    the Worker writes that file last, so nothing is lost) and waited for until it is gone. UI `node` update `ending` meanwhile.
+  - *Stop*: after `SBMIG_JOB_STOP_GRACE_S` the delete is followed by a wait **without a deadline** (v2.1z-ac bounded it by
+    `SBMIG_JOB_API_GRACE_S`); a delete request that fails is retried every `DELETE_RETRY_S` (15 s), a WARNING every `HOLD_WARN_S` (60 s)
+    while the Job has not ended. A Job that vanished after a stop request ends `stopped`, not `lost`.
+  - *A failure in the web process* (any exception in `_run_job`, not only `K8sError` / `OSError`) still fails the run (`failed`), but
+    first deletes our Job and waits until it is gone.
+  - **A Kubernetes API outage never fails a run and never frees the slot** (v2.1z-ac failed the run after `SBMIG_JOB_API_GRACE_S` and
+    handed the slot on while the pod could still be running). `_poll_job` returns nothing while the API does not answer. Past
+    `SBMIG_JOB_API_GRACE_S` (default 300 s — **its meaning changed: a notice only**) one loud notice: log ERROR, journal
+    `job_api_unavailable` {job, seconds, error}, UI `node` update `api-unavailable`, `status()["job"]["note"]`; then a log reminder every
+    `API_REMIND_S` (600 s). When the API answers again: journal `job_api_back` {job, seconds}, UI `api-back`. Every decision that needs
+    the API's answer (the uncertain create, the restart probe / adopt) asks until it answers (`_state_when_answered`, no deadline); a
+    shutdown meanwhile leaves the control state for the next Main.
+  - *Uncertain create* (HTTP 409 / transport error): the lookup asks until the API answers and, while the Job is absent,
+    `CREATE_CONFIRM_POLLS` (3) times in total one poll interval apart (a lost request may land late); present + ours → adopt, absent →
+    the original error.
+  - Control-state writes once the Job exists (`created`, `running`) go through `_transition_soft`: an `OSError` is logged, never raised
+    (stopping the watch over a write error would hand the slot on with a live pod). `creating` is still written strictly before the
+    create (not written → no Job).
+  - Known limits: a create request that lands after the last confirm poll makes a Job nobody watches (it runs with its own labels next to
+    the next run's Job); an API that never answers again holds the queue until Main's access is repaired — deliberate: two migrations
+    overlapping on the shared KB and volume is worse than waiting.
+- **(2) Ownership — both labels.** `RunManager._owned(run, st)`: a Job is this request's only when `sbmig-owner` equals the request's
+  token (`control/state.json` `owner`) **and** `sbmig-run-id` equals the run id. `JobState.labels` is `dict | None`: `None` = the
+  client cannot report labels (the local subprocess client, test fakes) — only then is the name trusted; `K8sClient.job_state` always
+  answers a dict (`{}` for a Job without labels and for `Missing`), and `{}` is **not** ours (v2.1z-ac read an empty dict as "unknown" →
+  ours). A same-name Job without our labels is neither adopted (create 409, restart probe, restart adopt — `_job_exists` now runs before
+  an adopt too) nor deleted (stop → `job_delete_refused`; exit grace and failure cleanup → left alone, logged, not waited for); the
+  create and restart cases fail the run with a message naming the Job.
+- **(3) Environment pins — the Worker compares its environment with the Main that created its Job.** The configuration is not only
+  files: the `${VAR}` placeholders of the yml files and the `SBMIG_<SECTION>__<KEY>` overrides take their values from the pod's
+  environment. The web pod reads ConfigMap `sbmig-env` once at start (`envFrom`), a Job pod when it is created (one `configMapKeyRef` per
+  key in `81-web-job.template.yaml`); a changed ConfigMap, a stale `sbmig-job-template` or a hand-edited manifest made the two pods run
+  with different settings and nothing said so. The contract lives in `sbmig/web/contract.py`:
+  - *What is pinned*: `env_pin_names(repo_root, configs, environ=None)` = the placeholders of `config/default.yml` + the run's selected
+    configs (`config_env_names`; yml values only, via `sbmig.core.config.placeholder_names`), every `SBMIG_<SECTION>__<KEY>` override
+    present in the environment and the placeholders inside its value, a whole-section override `SBMIG_<SECTION>` (one word that names a
+    top-level config section — `_apply_env_overrides` replaces that section with its value; `SBMIG_WEB_MODE`, `SBMIG_OUT` … name no section
+    and are not pinned), and an alias-only name (below). **Never pinned**: secret-looking
+    names (`is_secret_name` — no fingerprint of a credential on the shared volume; a wrong credential fails loudly at the gateway or Nexus
+    anyway), `ENV_PIN_SKIP` (`SBMIG_LLM__RECORD_DIR`, `LLM_RECORD_DIR` — may differ per pod), proxy variables (not sbmig configuration, no
+    config reads them; they can carry userinfo), and whatever the configuration does not read (`SBMIG_WEB_*`, `SBMIG_JOB_*`, the per-run `RUN_ENV`). With the
+    shipped `default.yml` that is `LLM_ASSET_ID`, `LLM_BASE_URL`, `LLM_ESCALATION_MODEL`, `LLM_GATEWAY`, `LLM_MODEL`, `LLM_RECIPE_MODEL`,
+    `LLM_RESPONSE_PATH` plus the overrides the pod sets.
+  - *Fingerprint*: `env_pins(repo_root, configs, environ=None)` = `{name: sha256(value)[:ENV_PIN_HASH_LEN]}` (16 hex, UTF-8) for the
+    names that are **set** (set to `""` is a value; unset is absent). Names and hashes only — never a value.
+    `compare_env_pins(pinned, actual)` → `{"differs", "main_only", "worker_only"}` (sorted name lists).
+  - *KB-dir alias*: `ENV_PIN_ALIASES = {"SBMIG_KB__DIR": ("SBMIG_KB_DIR",)}` — the web pod sets the KB dir as the override
+    `SBMIG_KB__DIR` (40), the Job pod as `SBMIG_KB_DIR` (81, written into `worker-paths.yml`); `env_pin_value` reads the alias when the
+    name itself is unset, so both compare as `SBMIG_KB__DIR`. A template without its KB line shows up as `main_only` (the Worker would
+    otherwise write the KB to the baked yml's path inside the pod and lose it with the pod).
+  - *Where*: `control/state.json` (`ControlState`) gained `env_pins: {name: hash} | null` and `env_pin_policy: "refuse" | "warn" | "off" |
+    null`, written by `RunManager._create_job` **with the `creating` transition** — by the Main that creates the Job, from its own
+    environment at that moment, not at intake: a queued run carried across a Main restart is pinned by the new Main. A run adopted or
+    probed after a restart (the Job exists) keeps the pins on disk; later transitions keep the fields. Not in `request.json`, because
+    that file is the immutable intake record and the reference is the Main that renders the Job (same ConfigMap generation as the Job
+    pod). `env_pins` is null when the policy is `off` or when computing the pins failed (a WARNING; the Job is created anyway — an
+    unreadable config is caught by the config digests of `request.json`). One INFO line per Job: the number of pinned names and the
+    policy (no values, no hashes). Older readers ignore the two fields (`ControlState.from_json` drops unknown keys).
+  - *Policy*: env `SBMIG_JOB_ENV_PIN` on the **web pod** (`ENV_PIN_POLICY_ENV`), read once when `RunManager` starts
+    (`contract.env_pin_policy(value, default)`, case-insensitive) → `RunManager.env_pin_policy`. Default `refuse` in `k8s-job`, `off` in
+    `local-job` (the local Worker inherits Main's environment; a `.env` edit between accept and spawn would only raise false alarms). A
+    non-empty unknown value → WARNING naming it, the default applies.
+  - *Worker*: right after `verify_request` passed and before `worker_started`, the Worker reads `ControlState` (read-only; it never
+    writes under `control/`). No state, `env_pins` null or policy `off` → no check (runs created by an older Main, local-job). Pins
+    without a policy count as `refuse`. Checked: (a) the pins, recomputed from the Worker's own environment for `request.json`'s
+    configs; (b) the per-run values against `request.json` — the config files `SBMIG_CONFIG` resolves to (`resolve_configs`) must be
+    the same files, in the same order, as `<repo root>/config/<name>` of the request (`realpath` + `normcase`; the digests cover the
+    request's names only, another `SBMIG_CONFIG` would run unverified files), and `SBMIG_STOP_AFTER` / `SBMIG_LLM_PROVIDER` (empty =
+    unset) must equal the request's `stop_after` / `llm_provider`. The problem text names variables (and config file names) only, never
+    a value or a hash, and passes the Worker's redactor. An exception inside the check is a problem under the same policy (its type
+    only): `refuse` stays fail-closed, `warn` goes on.
+  - *Outcomes*: `refuse` → the existing refusal path: journal `worker_refused` {run_id, reason}, `job-status.json` {exit_code: 3, error},
+    exit 3 — Main records a verified exit 3 with the reason as the run's error. The reason lists the names per category, ends with a
+    fixed hint (restart the web pod / re-create `sbmig-job-template`; `SBMIG_JOB_ENV_PIN=warn` or `off` on the web pod relaxes the check)
+    and names no namespace or Deployment. `warn` → a `WARNING:` line in the pod log, journal `worker_env_differs` {run_id, policy,
+    differs, main_only, worker_only, run_values} (names only), and the run goes on with the Worker's own values. No difference → silent.
+    `worker_started` carries `env_pin: <policy>` whenever a check ran (absent = no check); when the check itself failed,
+    `worker_env_differs` also has `check_error` (the exception's type name, never its message).
+  - **Operator rule (replaces "the Job pod picks the new value up at the next upload")**: after changing ConfigMap `sbmig-env`, restart
+    the web pod — else the next Job is refused within seconds, naming the keys. After changing the Job template, re-create ConfigMap
+    `sbmig-job-template` and restart the web pod too (Main validates the template and keeps it from startup, v2.1z-ac).
+  - Known limits: secret-looking names are not compared — among them `LLM_TOKEN_URL` (its name contains TOKEN; a wrong URL fails at the
+    token exchange) and `LLM_APP_TOKEN` / `LLM_API_KEY` / `NEXUS_*`; proxy variables (`HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY`) are not
+    compared; an override left empty (`SBMIG_X__Y=""`) is YAML null for `_apply_env_overrides` and replaces the yml value with None — it
+    is pinned like any value (empty on both sides = equal), so leave an unused key commented out (`20-configmap.yaml` says so); only the
+    names THIS run's configs read are compared.
+- **(4) Write-time redaction.** Before: the child's console output reached the pod log as it was and the run dir was redacted only after
+  the run, while the pod log and the web UI's log tab follow those files live. Now:
+  - *Switch*: `SBMIG_REDACT_OUTPUT=1` (`scrub.REDACT_OUTPUT_ENV`). The entry points install the hook — the CLI callback
+    (`sbmig.cli.install_redaction_if_requested()`, before logging is set up; when it cannot be installed: one stderr line and exit 3,
+    never a run without it) and, under plain `uvicorn`, the web app's lifespan (`_ensure_console_logging`; a failure keeps the server
+    from starting). Installed = `sbmig.web.redact.install_output_redaction()` (a live `Redactor(live_secret_values, refresh_s=1)`;
+    `live_secret_values` = `contract.secret_values()` + the noted secrets) + `scrub.install_scrubbed_excepthooks()`.
+  - *Core hook* `sbmig/core/scrub.py` (core never imports web): `set_output_scrubber`, `output_scrubbing()`, `scrub(text)`,
+    `scrub_json(obj)` (value by value, keys included — the JSON stays valid), `note_secret(value)`, `refresh_secrets()`,
+    `install_scrubbed_excepthooks()`. What passes through it: every formatted log line (`StageFormatter.format` / `formatMessage` — the
+    run's `sbmig.log`, the console, the pod log; rich tracebacks are off under the switch so tracebacks pass the formatter),
+    `Workspace.journal` and Main's own journal lines (`runs._append_journal`), Main's SSE events (`RunManager._push`), the error text of
+    a run whose worker thread crashed, uncaught tracebacks (`sys.excepthook`, `threading.excepthook`).
+  - *Fail closed*: a scrubber exception yields `scrub.WITHHELD` instead of the line; a journal line becomes
+    `{"event": "output_withheld", "message": WITHHELD}` (`Workspace.journal` keeps its `ts` / `run_id`). Never the raw text.
+  - *Derived secrets*: `redact.expand_values(values)` adds the spellings a value takes in output — stripped, JSON-escaped (ASCII and
+    not), percent-encoded, `repr`-escaped, each line ≥ `MIN_LINE_LEN` (12) of a multi-line value; derived spellings shorter than
+    `contract.MIN_SECRET_LEN` (6) are dropped. Secrets born during the run: the exchanged gateway token (`TokenManager` →
+    `note_secret`); a `.env` read later (`load_dotenv_files` → `refresh_secrets`).
+  - *Worker*: forces `SBMIG_REDACT_OUTPUT=1` on its child (`child_environ`; not optional under the Worker) and `COLUMNS=200` when unset
+    (fewer wrapped console lines); redacts the child's stdout / stderr pipe line by line before the pod log (`Redactor.line` with
+    `contract.secret_values(env)`; unchanged bytes pass as they are, a line that cannot be redacted → `WITHHELD`); its own echo and error
+    texts pass the same redactor; the final `redact_run_dir` stays. `sbmig run` does its own final pass (`sbmig.cli.final_redaction`,
+    a no-op without the switch).
+  - *Web*: `LIVE_FILES = ("sbmig.log", "journal.jsonl")` (redacted as written) are served at any time; the other `SERVED_FILES` answer
+    **HTTP 409** on `GET /api/runs/{run_id}/files/{name}` (`RunManager.file_withheld`) and are left out of `status()["files"]` until
+    the final pass is over — for a Job run until it is finished, for an in-process run only while this process redacts output, for a
+    run not in memory while its `control/state.json` is not terminal. The final pass is the Worker's (before `job-status.json`); Main
+    does it itself for an in-process run under the switch and for a Job run that ended (terminal / `Missing`) without a verified
+    result — never for a Job left running at shutdown or one that is not ours.
+  - *Manifests*: `SBMIG_REDACT_OUTPUT=1` literal in `deploy/k8s/40-deployment.yaml` (web pod) and `80-build-job.template.yaml` (one-Job
+    model); 81 needs none (the Worker forces it on its child).
+  - Known limits: a secret split across wrapped console lines; a token the child obtains itself is unknown to the Worker's pipe redactor
+    (the child's own hook covers its log lines); values shorter than 6 characters are never redacted as text (a short / numeric secret);
+    Maven output under `logs/` is cleaned by the final pass only (it is not served); uvicorn's access log is not scrubbed; `run-job.sh`'s
+    own shell output is not sbmig's; `LLM_TOKEN_URL`'s value is masked because its name matches the secret-name rule; under plain
+    `uvicorn sbmig.web.app:app` the hook is installed at lifespan start, after `create_app` / `RunManager.__init__` logged (startup
+    validation, recovery) — `sbmig serve` installs it first.
+- **(5) local-job regression.** `LocalJobClient._env_of(manifest)` passes only the `contract.RUN_ENV` names with a literal value
+  (`SBMIG_SOURCE_ZIP`, `SBMIG_OUT`, `SBMIG_RUN_ID`, `SBMIG_CONFIG`, `SBMIG_STOP_AFTER`, `SBMIG_LLM_PROVIDER`) on top of the PC's own
+  environment, and `SBMIG_APP_DIR` is always this Main's repo root. Before, every `SBMIG_*` entry of the template reached the local
+  Worker: since the container paths entered the template (2026-11-10) `SBMIG_KB_DIR=/data/kb-v2`, `SBMIG_BUILD__JAVA_HOME=/opt/java21`
+  … ran a PC migration with pod paths, and the `configMapKeyRef` entries arrived as `""` (an empty `SBMIG_<A>__<B>` overrides the yml
+  value with None).
+- **Deliberately not changed**: `_apply_env_overrides` still reads an empty value as YAML null (documented, not "fixed"); the secret-name
+  rule has no `_URL` exemption (`LLM_TOKEN_URL` stays masked and unpinned); the uvicorn access log is not scrubbed.
+
+Operator-visible names of this round:
+
+| Name | Where | Meaning |
+|---|---|---|
+| `SBMIG_JOB_EXIT_GRACE_S` (new, 120) | web pod env | seconds a pod may linger after its `job-status.json` before Main deletes the Job |
+| `SBMIG_JOB_API_GRACE_S` (300) | web pod env | changed: seconds of API silence before one loud notice — no longer fails the run |
+| `SBMIG_JOB_ENV_PIN` (new) | web pod env | `refuse` / `warn` / `off`; default `refuse` in k8s-job, `off` in local-job |
+| `SBMIG_REDACT_OUTPUT` (new) | env of any sbmig process | `1` = log / journal lines redacted as written; 40 / 80 set it, the Worker forces it on its child |
+| `env_pins`, `env_pin_policy` (new) | `control/state.json` | the creating Main's fingerprints (name → 16 hex) and policy; `env_pins: null` = no check |
+| `job_api_unavailable`, `job_api_back` (new) | journal (Main) | the API was silent past the grace / answers again |
+| `job_deleted` (+ `reason`) | journal (Main) | also written after the exit grace and after a failure in the web process |
+| `worker_env_differs` (new) | journal (Worker) | `warn`: the names that differ; the run goes on |
+| `worker_refused` | journal (Worker) | also for `refuse`: the reason names the differing keys, exit 3 |
+| `output_withheld` (new) | journal | a journal line that could not be redacted |
+| `ending`, `api-unavailable`, `api-back` (new) | UI `node` updates (`node: job`) | waiting for the pod to end / API silent / API back — the run keeps its turn |
+| `job.note` (new) | `GET /api/runs/{run_id}` | why the run still holds its turn (API silent) |
+| HTTP 409 (new) | `GET /api/runs/{run_id}/files/{name}` | that file waits for the end-of-run redaction pass |
+
+- Tests: `tests/web/test_jobmode_hardening.py` (`test_the_next_run_waits_until_the_pod_of_a_finished_run_really_ended`,
+  `test_a_pod_that_lingers_after_its_result_is_deleted_after_the_exit_grace`, `test_restart_waits_for_the_api_instead_of_failing_the_run`,
+  `test_only_both_labels_make_a_job_ours`, `test_a_409_on_an_unlabelled_job_of_the_same_name_is_not_adopted`, …),
+  `tests/web/test_job_mode.py`, `tests/web/test_local_job_mode.py::test_the_pod_settings_of_the_job_template_never_reach_the_local_worker`,
+  `tests/core/test_scrub.py`, `tests/core/test_cli_redaction.py`, `tests/web/test_output_redaction.py`, `tests/web/test_redact.py`,
+  `tests/web/test_worker.py`, `tests/web/test_contract.py`; the environment pins: `tests/web/test_env_pins.py` (the contract functions),
+  `tests/web/test_env_pin_main.py` (Main writes the pins with `creating`), `tests/web/test_worker_env_pin.py` (the Worker's check and its
+  three outcomes), `tests/deploy/test_manifests.py` (the shipped 20 / 40 / 81 pass their own check, as shipped and with every commented
+  key switched on); counts in `docs/PLAN.md` "v2.1z-ad".
+- Docs: this section, `docs/PLAN.md` "v2.1z-ad", `docs/v2/JOB-RUN-STATE-CONTRACT-KO.md` §1–§3 / §5–§10, the
+  `20-configmap.yaml` comments, `deploy/README.md` §2 / §3 ("환경 변수 대조와 그 밖에 바뀐 것"), `deploy/ENV.md` §1 / §2 / §3 / §6 / §8,
+  `agent-doc/09-deploy-and-ops.md` ("Job 모드가 지키는 넷"), `agent-doc/10-open-items-and-history.md`, `CLAUDE.md`.

@@ -2,8 +2,10 @@
 파드 생성이 들어가면 안 돌거니까 … 개발 모드일 때는 파드 생성 없이").
 
 ``SBMIG_WEB_MODE=local-job``(또는 ``k8s-job`` 인데 클러스터 밖) 이면 ``RunManager`` 가 ``K8sClient`` 대신 이 클라이언트를 쓴다. 같은
-세 호출: ``create_job`` 은 렌더된 Job 매니페스트의 env(SBMIG_SOURCE_ZIP, SBMIG_OUT, SBMIG_RUN_ID, SBMIG_CONFIG, SBMIG_STOP_AFTER,
-SBMIG_LLM_PROVIDER)를 그대로 넘겨 파드가 돌릴 바로 그 Worker ``python -m sbmig.web.worker`` 를 띄운다(v2.1z-ac — Worker 가
+세 호출: ``create_job`` 은 렌더된 Job 매니페스트의 env 가운데 **실행별 값만**(``contract.RUN_ENV``: SBMIG_SOURCE_ZIP, SBMIG_OUT,
+SBMIG_RUN_ID, SBMIG_CONFIG, SBMIG_STOP_AFTER, SBMIG_LLM_PROVIDER) 넘겨 파드가 돌릴 바로 그 Worker ``python -m sbmig.web.worker`` 를
+띄운다. 틀의 나머지 env 는 **파드**의 설정이라(컨테이너 경로 ``/etc/sbmig/settings.xml`` · ``/opt/java21`` · ``/data/kb-v2``, ConfigMap 에서
+오는 조정 키) 넘기지 않는다 — 로컬 Worker 의 설정은 개발자의 셸과 ``.env`` 가 정한다(v2.1z-ac — Worker 가
 ``control/request.json`` 의 digest 를 대조하고 ``sbmig.cli run`` 을 돌리고 비밀 값을 지우고 ``job-status.json`` 을 쓴다; 표준 출력은
 ``<run dir>/job-local.log``). ``job_state`` 는 프로세스 상태를 Running / Succeeded / Failed 로, ``delete_job`` 은 프로세스를 끝낸다.
 Worker 가 ``job-status.json`` 을 남기지 않고 끝났을 때만(죽었거나 가짜 명령) 대신 쓴다. 그래서 웹의 Job 모드 코드(실행 폴더, 저널 tail,
@@ -25,7 +27,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .contract import WORKER_MODULE
+from .contract import RUN_ENV, WORKER_MODULE
 from .k8s import JobState, K8sError
 
 log = logging.getLogger("sbmig.web.localjob")
@@ -85,9 +87,18 @@ class LocalJobClient:
 
     @staticmethod
     def _env_of(manifest: dict) -> dict[str, str]:
+        """매니페스트에서 로컬 Worker 로 넘길 env: ``contract.RUN_ENV`` 의 이름이고 값이 리터럴인 것만.
+
+        틀은 **파드**를 적은 것이다. 그 리터럴(``SBMIG_BUILD__SETTINGS_FILE=/etc/sbmig/settings.xml``, ``SBMIG_KB_DIR=/data/kb-v2`` …)과
+        ``valueFrom`` 항목(ConfigMap / Secret — 로컬에서는 값이 없어 ``""`` 가 되고, 빈 ``SBMIG_<A>__<B>`` 는 설정 값을 ``None`` 으로
+        덮어 ``load_config`` 가 죽는다)은 개발 PC 의 것이 아니다. 2026-11-10 에 확인한 회귀: 이전에는 틀의 env 를 통째로 넘겼다.
+
+        The env the local Worker gets from the manifest: the per-run names with a literal value only. The template describes
+        the POD — its container paths and its ConfigMap / Secret references are not the developer machine's."""
         containers = manifest.get("spec", {}).get("template", {}).get("spec", {}).get("containers") or []
         items = containers[0].get("env") if containers else []
-        return {e["name"]: str(e.get("value", "")) for e in (items or []) if isinstance(e, dict) and e.get("name")}
+        return {e["name"]: str(e["value"]) for e in (items or [])
+                if isinstance(e, dict) and e.get("name") in RUN_ENV and "valueFrom" not in e and e.get("value") is not None}
 
     def create_job(self, manifest: dict) -> str:
         """매니페스트의 env 로 명령을 만들어 서브프로세스를 띄운다. 이름 = 매니페스트의 이름."""
@@ -104,9 +115,10 @@ class LocalJobClient:
         # (job-local.log 도 UTF-8, `—` 로 죽는 "Logging error" 없음) 폭을 넉넉히 준다. 셸이 이미 정한 값은 그대로 둔다
         child_env = {"PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1",
                      "COLUMNS": os.environ.get(self.COLUMNS_ENV, "") or self.DEFAULT_COLUMNS,
-                     **os.environ, **{k: v for k, v in env.items() if k.startswith("SBMIG_")}}
+                     **os.environ, **env}
         # Worker 는 SBMIG_APP_DIR 의 config/ 로 digest 를 다시 계산한다 — Main 이 고정한 것과 같은 폴더여야 대조가 맞는다
-        if self.repo_root is not None and "SBMIG_APP_DIR" not in env:
+        # (틀의 값이 아니라 이 Main 의 저장소: 틀의 것은 컨테이너 경로다)
+        if self.repo_root is not None:
             child_env["SBMIG_APP_DIR"] = str(self.repo_root)
         # its own process group / session: delete_job must take the Maven / Java grandchildren with it (review 2026-11-05)
         group: dict[str, Any] = ({"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)} if os.name == "nt"

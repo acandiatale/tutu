@@ -90,7 +90,11 @@ def setup_logging(verbose: bool = False) -> None:
     root = logging.getLogger("sbmig")
     root.setLevel(logging.DEBUG)                       # handlers filter: console INFO (or DEBUG), file always DEBUG
     if not any(isinstance(h, RichHandler) for h in root.handlers):
-        h = RichHandler(rich_tracebacks=True, show_path=False, markup=False, show_time=True, show_level=True)
+        # 출력 정제가 걸려 있으면 rich traceback 을 끈다: rich 는 예외를 포매터 밖에서 직접 그려서 정제기를 지나지 않는다
+        # (꺼 두면 traceback 이 포매터가 만든 글에 들어가 함께 정제된다)
+        from sbmig.core.scrub import output_scrubbing
+        h = RichHandler(rich_tracebacks=not output_scrubbing(), show_path=False, markup=False, show_time=True,
+                        show_level=True)
         h.setFormatter(stage_formatter("[%(stage)s] %(message)s", datefmt=None))   # v2.1: the pipeline stage
         root.addHandler(h)
     for h in root.handlers:
@@ -179,7 +183,48 @@ def detach_file_log(path: Path, thread_id: Any = _ANY_THREAD) -> int:
     return n
 
 
-# 모든 명령 앞에 도는 콜백: 콘솔 인코딩 보호, 로그 설정, --log-file.
+def install_redaction_if_requested() -> bool:
+    """`SBMIG_REDACT_OUTPUT=1` 이면 이 프로세스의 출력 정제기를 건다(로그 줄·저널 줄·잡히지 않은 예외의 traceback 에서 비밀 값을
+    쓰는 순간 지운다 — `sbmig.core.scrub`). 이미 걸려 있으면 그대로 둔다. 걸었거나 걸려 있으면 True. 요청했는데 걸 수 없으면
+    예외를 그대로 낸다: 정제 없이 돌지 않는다.
+
+    Install this process's output redaction when `SBMIG_REDACT_OUTPUT=1` (idempotent); returns whether it is active.
+    A failure to install propagates: a run that asked for redaction does not go on without it."""
+    from sbmig.core.scrub import install_scrubbed_excepthooks, output_scrubbing, redaction_requested
+
+    if output_scrubbing():
+        return True
+    if not redaction_requested():
+        return False
+    from sbmig.web.redact import install_output_redaction
+
+    install_output_redaction()
+    install_scrubbed_excepthooks()
+    return True
+
+
+def final_redaction(run_dir: Path) -> int:
+    """출력 정제가 걸려 있으면 실행 폴더의 텍스트 출력을 한 번 더 훑어 지운다(바뀐 파일 수) — 쓰는 순간의 정제가 닿지 않는 파일
+    (Maven 출력 `logs/`, 보고서)과 실행 중에 생긴 비밀(교환해서 받은 토큰)을 위한 마지막 단계. 정제가 없으면 아무것도 하지 않는다.
+
+    With output redaction active: one last pass over the run dir's text outputs (the files write-time redaction does
+    not reach — Maven output under `logs/`, the reports); returns the number of files rewritten. A no-op otherwise."""
+    from sbmig.core.scrub import output_scrubbing
+
+    if not output_scrubbing():
+        return 0
+    try:
+        from sbmig.web.redact import redact_run_dir
+
+        n = redact_run_dir(run_dir)
+        log.debug("output redaction: the final pass rewrote %d file(s) under %s", n, run_dir)
+        return n
+    except Exception:  # noqa: BLE001 — 마지막 정리일 뿐: 실패를 남기고 결과 줄은 그대로 낸다
+        log.exception("output redaction: the final pass over %s failed", run_dir)
+        return 0
+
+
+# 모든 명령 앞에 도는 콜백: 콘솔 인코딩 보호, 출력 정제(요청했을 때), 로그 설정, --log-file.
 # Typer 앱 도움말이 바뀌지 않게 docstring 은 달지 않는다.
 @app.callback()
 def _main(verbose: bool = typer.Option(False, "--verbose", "-v", help="debug logging"),
@@ -187,6 +232,12 @@ def _main(verbose: bool = typer.Option(False, "--verbose", "-v", help="debug log
                                                   help="also append DEBUG logs to this file (runs always log to "
                                                        "<run dir>/sbmig.log)")) -> None:
     harden_console_streams()
+    try:
+        install_redaction_if_requested()     # 로그 핸들러를 만들기 전에: 핸들러가 rich traceback 을 쓸지 여기서 갈린다
+    except Exception as e:  # noqa: BLE001
+        typer.echo(f"ERROR: SBMIG_REDACT_OUTPUT=1 but the output redaction could not be installed "
+                   f"({type(e).__name__}) - refusing to run without it", err=True)
+        raise typer.Exit(EXIT_ABORTED) from None
     setup_logging(verbose)
     if log_file:
         attach_file_log(log_file)
@@ -322,7 +373,9 @@ def run(
         line = result_line(ws.run_id, 1, False, attention=["crash"])
         typer.echo(line)
         log.info("%s", line, extra=NO_CONSOLE)
+        final_redaction(ws.run_dir)
         raise
+    final_redaction(ws.run_dir)                      # no-op unless SBMIG_REDACT_OUTPUT=1 (container runs)
     console_summary(report)
     typer.echo(f"log: {log_path}   (share this file + report.md when asking for help)")
     code = run_exit_code(report)

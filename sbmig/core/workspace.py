@@ -43,6 +43,8 @@ from typing import Any, Iterable, Optional
 
 from pydantic import BaseModel
 
+from .scrub import output_scrubbing, scrub_json
+
 log = logging.getLogger("sbmig.core.workspace")
 
 # 2026-11-05 (k8s Job 모드): 웹 파드가 다른 파드의 실행을 멈추려고 실행 폴더에 쓰는 파일 — 엔진은 노드 사이에서, 수정 루프는 빌드 라운드
@@ -600,8 +602,17 @@ class Workspace:
     def journal(self, event: dict[str, Any]) -> None:
         """journal.jsonl 에 이벤트 한 줄을 덧붙인다(웹 화면 스트림과 사후 분석의 원본)."""
         rec = {"ts": datetime.now(timezone.utc).isoformat(), "run_id": self.run_id, **event}
+        line = json.dumps(rec, ensure_ascii=False, default=_json_default)
+        if output_scrubbing():
+            # 웹 화면이 이 파일을 실행 중에 따라 읽는다: 쓰는 순간에 비밀 값을 지운다. 줄을 통째로 바꾸지 않고 값 단위로 —
+            # JSON 이 깨지지 않게(sbmig.core.scrub)
+            clean = scrub_json(json.loads(line))
+            # 정제에 실패하면 줄 전체가 고정 모양으로 바뀐다: 언제·어느 실행의 줄이었는지는 남긴다(둘 다 sbmig 가 만든 값)
+            clean.setdefault("ts", rec["ts"])
+            clean.setdefault("run_id", self.run_id)
+            line = json.dumps(clean, ensure_ascii=False)
         with open(self.journal_path, "a", encoding="utf-8") as fh:
-            fh.write(json.dumps(rec, ensure_ascii=False, default=_json_default) + "\n")
+            fh.write(line + "\n")
 
     def save_model(self, name: str, model: BaseModel) -> Path:
         """pydantic 모델을 실행 디렉토리의 JSON 파일로 저장한다(profile.json, plan.json …)."""

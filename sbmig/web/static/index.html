@@ -517,6 +517,10 @@
       if (s === 'running') { el.classList.add('done'); setCurrent(railSteps()[1]); $('railnote').textContent = '파드가 준비됐습니다. 이관을 시작합니다.'; }
       else if (s === 'failed' || s === 'missing') { el.classList.add('failed'); setCurrent(null); $('railnote').textContent = `파드 실패: ${u.message || s}`; }
       else if (s === 'succeeded') { el.classList.add('done'); }
+      // 아래 셋은 단계 표시를 바꾸지 않는다(안내 한 줄만): API 가 답하지 않는 동안에도, 파드가 끝나기를 기다리는 동안에도 이 실행이 차례를 지킨다
+      else if (s === 'api-unavailable') { $('railnote').textContent = `쿠버네티스 API 가 응답하지 않습니다. 응답할 때까지 이 이관이 차례를 유지하고 다음 이관은 기다립니다${u.message ? ' (' + u.message + ')' : ''}`; }
+      else if (s === 'api-back') { $('railnote').textContent = '쿠버네티스 API 가 다시 응답합니다.'; }
+      else if (s === 'ending') { $('railnote').textContent = '파드가 끝나기를 기다립니다. 끝난 것을 확인한 뒤 다음 이관을 시작합니다.'; }
       else { setCurrent(el); $('railnote').textContent = s === 'created' ? '파드 생성 중…' : `파드 생성 중 (${s}${u.message ? ': ' + u.message : ''})`; }
       return;
     }

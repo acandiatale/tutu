@@ -84,6 +84,7 @@ class FakeJobClient:
                           if e["name"] == "SBMIG_RUN_ID")
             self.pod.run(self.out_dir / run_id)
             self.pod = None                                  # once
+            self.phases = ["Succeeded"]                      # the pod exits after its status file: the next poll says so
         return JobState(phase, pod=f"{name}-x1" if phase != "Creating" else None,
                         exit_code=0 if phase == "Succeeded" else None,
                         message="ContainerCreating" if phase == "Pending" else "")
@@ -195,13 +196,42 @@ def test_a_transient_api_error_does_not_end_the_run(tmp_path: Path, repo: Path, 
     mgr = RunManager(tmp_path / "out", repo, mode="k8s-job", job_client=jc, job_template=TEMPLATE)
     rid = mgr.start(b"PK\x05\x06" + b"\0" * 18, "p.zip", ["artifacts.local-e2e.yml"])
     assert mgr.runs[rid].done.wait(10) and mgr.runs[rid].exit_code == 0 and mgr.runs[rid].error is None
-    # a persistent outage ends the run after the grace
+    # a persistent outage does not end the run either (review 2026-11-10: failing it handed the turn on while the pod might still
+    # be alive): past the grace it is reported once, the run keeps its turn — the next upload stays queued, no second Job — and
+    # when the API answers again the run goes on to its result
     monkeypatch.setenv("SBMIG_JOB_API_GRACE_S", "0.1")
-    jc2 = FakeJobClient(phases=["Running"], pod=None)
-    jc2.job_state = lambda name: (_ for _ in ()).throw(K8sError("GET jobs: HTTP 503"))
-    mgr2 = RunManager(tmp_path / "out2", repo, mode="k8s-job", job_client=jc2, job_template=TEMPLATE)
+    out2 = tmp_path / "out2"
+    jc2 = FakeJobClient(pod=FakePod(exit_code=2), out_dir=out2)
+    real2, down = jc2.job_state, {"on": True}
+
+    def outage(name):
+        if down["on"]:
+            raise K8sError("GET jobs: HTTP 503")
+        return real2(name)
+    jc2.job_state = outage
+    mgr2 = RunManager(out2, repo, mode="k8s-job", job_client=jc2, job_template=TEMPLATE)
     rid2 = mgr2.start(b"PK\x05\x06" + b"\0" * 18, "p.zip", ["artifacts.local-e2e.yml"])
-    assert mgr2.runs[rid2].done.wait(10) and mgr2.runs[rid2].exit_code == 3 and "HTTP 503" in (mgr2.runs[rid2].error or "")
+    waiting = mgr2.start(b"PK\x05\x06" + b"\0" * 18, "q.zip", ["artifacts.local-e2e.yml"])
+    run2 = mgr2.runs[rid2]
+    deadline = time.time() + 5
+    while time.time() < deadline and not run2.job_note:
+        time.sleep(0.02)
+    time.sleep(0.3)                                     # well past the grace: still held
+    assert not run2.done.is_set() and run2.error is None and run2.exit_code is None
+    note = mgr2.status(rid2)["job"]["note"]
+    assert "Kubernetes API unavailable" in note and "HTTP 503" in note and "keeps its turn" in note
+    assert mgr2.status(waiting)["state"] == "queued" and len(jc2.created) == 1
+
+    def events2() -> list[str]:
+        return [json.loads(ln)["event"] for ln in (out2 / rid2 / "journal.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert events2().count("job_api_unavailable") == 1 and "job_api_back" not in events2()
+    assert [u["state"] for k, d in run2.history if k == "node" and d["node"] == "job"
+            for u in [d["update"]]].count("api-unavailable") == 1
+    down["on"] = False
+    assert run2.done.wait(10) and run2.exit_code == 2 and run2.error is None
+    assert run2.job_note is None and "note" not in mgr2.status(rid2)["job"]
+    assert events2().count("job_api_back") == 1
+    assert mgr2.runs[waiting].done.wait(10) and len(jc2.created) == 2
 
 
 def test_a_job_of_an_earlier_server_process_is_still_running(tmp_path: Path, repo: Path):

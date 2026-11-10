@@ -141,7 +141,8 @@ Job 생성·상태·삭제와 권한 자기 점검(SelfSubjectAccessReview)만 �
 Job 틀은 채운 것을 ConfigMap `sbmig-job-template` 으로 `/templates` 에 마운트해 `SBMIG_JOB_TEMPLATE` 로 읽고, Main 은 **시작할 때** 틀(컨테이너 하나,
 envFrom 없음, 비밀 env 는 valueFrom — 설정 덮어쓰기 `SBMIG_<섹션>__<키>` 는 비밀 이름으로 보지 않는다 — , `/data` PVC 마운트 하나)과 권한을 검증해 어긋나면 뜨지 않는다. 켜는 순서는 `deploy/README.md` §3 "켜는 법".
 개발 PC: `k8s-job` 인데 클러스터 밖이면 자동으로 `local-job`(`sbmig/web/localjob.py`, 파드 자리에 로컬 서브프로세스 `sbmig run --run-id …`)으로
-내려가 같은 흐름이 파드 없이 돈다(`--mode local-job` 으로 직접 고를 수도 있다).
+내려가 같은 흐름이 파드 없이 돈다(`--mode local-job` 으로 직접 고를 수도 있다). 로컬 Worker 에는 틀의 env 중 실행별 값(`RUN_ENV`)만 넘기고 나머지
+설정은 PC 의 셸·`.env` 가 정한다(틀의 컨테이너 경로가 PC 실행에 새지 않게).
 
 조각:
 
@@ -154,6 +155,36 @@ envFrom 없음, 비밀 env 는 valueFrom — 설정 덮어쓰기 `SBMIG_<섹션>
 | `deploy/k8s/81-web-job.template.yaml` | 웹이 채우는 Job 틀(공유 PVC) — `80-build-job.template.yaml` 은 git 모델(인프라팀 수동 제출용) |
 | `deploy/k8s/45-web-rbac.yaml` | 웹 파드의 최소 권한(jobs create / get / list / watch / delete, pods get / list / watch, pods/log get) |
 | `deploy/k8s/submit-job.sh` | git 모델 템플릿을 **손으로 시험해 보는 도구**. 운영 모델이 아니다 |
+
+**Job 모드가 지키는 넷** (코드: `sbmig/web/runs.py`, `sbmig/web/worker.py`, `sbmig/web/contract.py`, `sbmig/web/redact.py`, `sbmig/core/scrub.py`)
+
+1. **차례는 Job 이 끝난 것을 확인한 뒤 넘어간다.** 큐의 차례는 `RunManager._run_job` 이 돌아올 때 넘어가고, `_watch_job` 은 `job-status.json` 을 받아도
+   `_hold_until_ended` 로 Job 이 `Succeeded` / `Failed` / `Missing` 인 것을 API 로 확인한 뒤에야 돌아온다. 결과를 쓴 뒤 남은 파드는 `SBMIG_JOB_EXIT_GRACE_S`
+   (120초) 뒤 지우고 사라질 때까지 기다린다. 웹 쪽 실패(`_run_job` 의 예외)도 만든 Job 을 지우고 확인한 뒤 끝난다. API 장애(`_poll_job` 이 None)는 실패가
+   아니다: `SBMIG_JOB_API_GRACE_S`(300초) 뒤 한 번 크게 알리고(로그 ERROR, 저널 `job_api_unavailable`, `status()` 의 `job.note`) `API_REMIND_S` 마다 다시
+   로그, 돌아오면 `job_api_back`. 기한이 없어 영구 장애는 큐를 멈춘다(겹치는 것보다 낫다는 결정). 불확실한 생성 응답(409 / 전송 오류)은 API 가 답할 때까지
+   같은 이름을 찾고 `CREATE_CONFIRM_POLLS` 번 묻는다. 예외는 둘: 서버 종료(`_ServerClosing`, `keep_state` — 다음 Main 이 이어받음)와 우리 것이 아닌 Job.
+2. **소유는 라벨 둘 다.** `_owned`: `sbmig-owner`(요청마다 난수)와 `sbmig-run-id` 가 둘 다 맞아야 우리 Job 이다. 라벨이 없는 Job(빈 dict)은 남의 것 —
+   이어받지도 지우지도 않고 그 실행은 오류로 끝난다(운영자가 확인 후 손으로 지운다). `JobState.labels is None` 은 라벨을 알려 줄 수 없는 클라이언트
+   (`sbmig/web/localjob.py`, 테스트 가짜)뿐이고 그때만 이름을 믿는다.
+3. **환경 대조.** zip·설정 파일·버전(`control/request.json`)이 같아도 두 파드의 환경 변수가 다르면 다른 설정으로 돈다. Job 을 **만드는** Main 이
+   `creating` 전이와 함께 `control/state.json` 에 `env_pins`(`env_pins()`: 설정 파일의 `${VAR}` 이름 + 그 환경의 `SBMIG_<섹션>__<키>`·섹션째 바꾸는 `SBMIG_<섹션>` + 별칭
+   `SBMIG_KB__DIR` ↔ `SBMIG_KB_DIR` → 값 sha256 앞 16자; `is_secret_name` 에 걸리는 이름 — `LLM_TOKEN_URL` 포함 —, `ENV_PIN_SKIP`, 프록시 변수는 빠짐)와
+   `env_pin_policy` 를 적는다. 정책 = 웹 파드의 `SBMIG_JOB_ENV_PIN`(시작 때 한 번): `refuse`(k8s-job 기본) / `warn` / `off`(local-job 기본). Worker 는
+   `verify_request` 통과 뒤 자기 환경으로 다시 계산해 `compare_env_pins`(`differs` / `main_only` / `worker_only`, 이름만)를 보고, 실행별 값(`SBMIG_CONFIG` 가
+   고르는 파일, `SBMIG_STOP_AFTER`, `SBMIG_LLM_PROVIDER`)을 `request.json` 과 맞춘다. `refuse` → exit 3, 저널 `worker_refused`, `job-status.json` 의 `error`
+   에 키 이름과 재시작 안내; `warn` → 저널 `worker_env_differs` 를 남기고 Worker 의 값으로 돈다. `env_pins` 가 없으면(옛 Main, `off`) 보지 않는다.
+   구별: digest 거절은 zip sha256·설정 파일 이름·sbmig 버전을 말하고, 환경 거절은 환경 변수 이름을 늘어놓고 `SBMIG_JOB_ENV_PIN` 을 안내한다. 운영 규칙:
+   `sbmig-env` 를 바꾸면 웹 파드 재시작, 81 틀을 바꾸면 ConfigMap `sbmig-job-template` 을 다시 만들고 재시작(Main 은 틀을 시작 때 읽어 둔다).
+   `main_only` 에 나온 키는 대개 81 틀에 그 줄이 없다는 뜻이다.
+4. **쓰는 순간 정제.** `SBMIG_REDACT_OUTPUT=1`(40 · 80 의 literal; Worker 는 `child_environ` 으로 자식에 늘 켠다)이면 진입점(CLI 콜백의
+   `install_redaction_if_requested`, 웹의 `_ensure_console_logging`)이 `install_output_redaction` 으로 `scrub.py` 에 `Redactor` 를 건다. 지나는 곳: 로그
+   포매터 `StageFormatter`, `Workspace.journal`, Main 의 `_append_journal` 과 SSE 이벤트(`_push`), 잡히지 않은 예외(`install_scrubbed_excepthooks`; rich
+   traceback 은 끈다). 지우는 값: `secret_values`(비밀 이름의 값, 6자 이상)와 그 표기(`expand_values`: JSON·퍼센트 인코딩·repr·줄마다), URL `user:pass@`,
+   실행 중에 받은 토큰(`note_secret` — `TokenManager`). Fail closed: 실패한 줄은 `WITHHELD` 고정 문구(저널은 `output_withheld` 이벤트), 걸 수 없으면 CLI
+   exit 3·웹은 뜨지 않는다. Worker 는 자식의 파이프도 `Redactor.line` 으로 줄마다 지운다. 마지막 단계 `redact_run_dir`(Worker; `sbmig run` 의
+   `final_redaction`; Main — 정제가 걸린 in-process 실행과 결과 없이 끝난 Job)만 닿는 것: 보고서·`logs/` 의 Maven 출력. 그래서 끝나기 전에는 `LIVE_FILES`(`sbmig.log`,
+   `journal.jsonl`)만 내주고 나머지는 HTTP 409(`file_withheld`). 남은 한계는 [10-open-items-and-history.md](10-open-items-and-history.md).
 
 다음: 클러스터 실측(RWX·이미지·권한), 동시 Job 3 개, 외부 접수 API(remediation 과 같은 계약 — 구현 지시서 `docs/v2/API-MIGRATIONS-KO.md`).
 Main 파드와 Job 파드 사이의 파일·id·종료 코드·멈춤·복구 약속은 `docs/v2/JOB-RUN-STATE-CONTRACT-KO.md` 에 한 장으로 있다.
@@ -243,6 +274,9 @@ KB 를 쓸 때의 프로세스 간 잠금, `kb.lock_timeout_seconds`).
 .venv/bin/python -m sbmig.cli serve --help              # --host / --token / --max-upload-mb / --graceful-timeout
 sed -n 1,40p sbmig/web/app.py                           # 라우트, 토큰 규칙
 grep -n "queued" sbmig/web/runs.py
+grep -n "def _hold_until_ended\|def _owned\|def _poll_job\|def file_withheld\|GRACE_ENV\|API_GRACE" sbmig/web/runs.py
+grep -n "ENV_PIN\|def env_pins\|def compare_env_pins\|RUN_ENV =" sbmig/web/contract.py
+grep -n "REDACT_OUTPUT_ENV\|WITHHELD" sbmig/core/scrub.py; grep -n "def install_output_redaction\|def expand_values" sbmig/web/redact.py
 .venv/bin/python -m sbmig.cli fleet --help && .venv/bin/python -m sbmig.cli kb --help && .venv/bin/python -m sbmig.cli clean --help
 grep -n "PACKAGE_ROOT\s*=" sbmig/core/config.py         # 레포 루트를 자기 위치에서 잡는 줄
 grep -o 'SBMIG_[A-Z_]*' deploy/docker/run-job.sh | sort -u

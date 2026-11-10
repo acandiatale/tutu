@@ -202,3 +202,35 @@ def test_k8s_job_outside_a_cluster_falls_back_to_local_job_with_a_warning(tmp_pa
         namespace = "ns"
     mgr2 = RunManager(tmp_path / "out2", repo, mode="k8s-job", job_client=_C(), job_template=TEMPLATE)
     assert mgr2.effective_mode == "k8s-job"
+
+
+def test_the_pod_settings_of_the_job_template_never_reach_the_local_worker(tmp_path: Path, repo: Path, monkeypatch):
+    """2026-11-10 (regression found while reviewing the Job code): the template describes the POD. Its literals are container
+    paths (`SBMIG_BUILD__SETTINGS_FILE=/etc/sbmig/settings.xml`, `SBMIG_BUILD__JAVA_HOME=/opt/java21`, `SBMIG_KB_DIR=/data/kb-v2`)
+    and its ConfigMap / Secret references have no value outside a cluster — handed to the local Worker they became `""`, and an
+    empty `SBMIG_<SECTION>__<KEY>` overrides the config value with None (`load_config` dies on a pydantic error). Only the
+    per-run values (`contract.RUN_ENV`) cross; the local Worker's settings are the developer's shell / `.env`."""
+    import yaml
+
+    from sbmig.web.contract import RUN_ENV
+    template_env = yaml.safe_load(TEMPLATE.read_text(encoding="utf-8"))["spec"]["template"]["spec"]["containers"][0]["env"]
+    names = [e["name"] for e in template_env]
+    assert "SBMIG_BUILD__SETTINGS_FILE" in names and "SBMIG_KB_DIR" in names and any("valueFrom" in e for e in template_env)
+    for name in names:                                       # hermetic: a developer shell may export some of them
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("SBMIG_APP_DIR", "/somewhere/else")   # nor does a stray shell value move the digest folder
+    dump = tmp_path / "child-env.json"
+    script = tmp_path / "dump_env.py"
+    script.write_text("import json, os, sys\njson.dump(dict(os.environ), open(sys.argv[1], 'w'))\n", encoding="utf-8")
+    monkeypatch.setenv("SBMIG_JOB_POLL_S", "0.05")
+    jc = LocalJobClient(repo, command_factory=lambda env: [sys.executable, str(script), str(dump)], echo=False)
+    mgr = RunManager(tmp_path / "out", repo, mode="local-job", job_client=jc, job_template=TEMPLATE)
+    rid = mgr.start(b"PK\x05\x06" + b"\0" * 18, "p.zip", ["artifacts.local-e2e.yml"], stop_after="plan")
+    assert mgr.runs[rid].done.wait(10)
+    child = json.loads(dump.read_text(encoding="utf-8"))
+    leaked = sorted(n for n in names if n in child and n not in RUN_ENV)
+    assert leaked == [], f"pod settings of the template reached the local Worker: {leaked}"
+    assert not [k for k, v in child.items() if k.startswith("SBMIG_") and "__" in k and v == ""]
+    assert child["SBMIG_RUN_ID"] == rid and child["SBMIG_OUT"] == str(tmp_path / "out") and child["SBMIG_STOP_AFTER"] == "plan"
+    assert child["SBMIG_CONFIG"] == str(repo / "config" / "artifacts.local-e2e.yml")
+    assert child["SBMIG_SOURCE_ZIP"].endswith("source.zip") and child["SBMIG_APP_DIR"] == str(repo)

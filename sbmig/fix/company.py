@@ -57,6 +57,7 @@ from typing import Any, Callable, Optional
 import requests
 
 from sbmig.core.interfaces import ChatMessage, LLMResponse
+from sbmig.core.scrub import note_secret
 
 from .client import RETRY_STATUS, LLMError, _retry_after_seconds, extract_reply, messages_hash
 
@@ -213,6 +214,7 @@ class TokenManager:
         except (TypeError, ValueError):
             ttl = 3600.0
         self._token, self._expires_at, self.expires_in = str(tok), self._clock() + ttl, ttl
+        note_secret(self._token)     # 환경 변수에 없는 비밀: 출력 정제기가 걸려 있으면 로그·저널에서 이 값도 지운다
         self.refreshes += 1
         log.info("llm token refreshed: expires in %.0fs (refreshed again %.0fs before expiry)", ttl, self.margin_s)
 

@@ -29,6 +29,7 @@ v1 이 실패한 이전 사내 에이전트의 두 원인(빌드를 돌리지 �
 | **수정 사다리** | 재사용 → 보강 → 신규, 케이스당 LLM 20회 / 보강 15회(넉넉히 잡고 줄여 갈 값), 거절 1회면 `needs_owner`, 직접 편집 4회, 비교용 스위치(`fix.mode`, `--no-kb`) 삭제, 리액터 artifactId 를 케이스 키에서 `<module>` 로 가림, 진동 상한 설정화 | v2.1i(삭제된 것), v2.1z |
 | **LLM 게이트웨이** | legacy 모양 `{model, messages, need_origin}` → 사내 GPT **agent 게이트웨이**(`llm.gateway: agent`: asset id, `params.role`, 토큰 교환) → 게이트웨이가 돌려준 `session_id` 를 다시 보내 세션을 잇는 배관(`thread_id` 폐기) → **케이스 스레드**(`llm.case_thread`, 기본 꺼짐: 케이스의 보강은 같은 세션에 변화분만) → URL 안의 asset id → 세션은 모델을 못 바꾸므로 모델이 바뀌는 요청은 새 세션 | v2.1z-m, v2.1z-n, v2.1z-o, v2.1z-p, v2.1z-q, v2.1z-x |
 | **배포** | 이미지 하나(`deploy/docker/Dockerfile`), 웹 UI Deployment, 인프라 가이드의 요청별 Job(`deploy/docker/run-job.sh`, `deploy/k8s/80-build-job.template.yaml`), 실행 전후 훅. 빌더 파드에 exec 하던 레이아웃은 Job 모델이 나오며 삭제, `deploy/` 주석 한국어 | v2.1z-r, v2.1z-s, v2.1z-t, v2.1z-u |
+| **Job 디스패치 검토** (2026-11-10) | 배포팀 명세를 옮긴 Main / Worker 코드(v2.1z-ac)의 리뷰에서 나온 네 지적과 회귀 하나: ① 다음 실행은 앞 Job 이 **끝난 것을 API 로 확인한 뒤**(`job-status.json` 만으로 끝내지 않는다; API 장애는 실패가 아니라 줄을 붙잡고 `SBMIG_JOB_API_GRACE_S` 는 알림만, 새 `SBMIG_JOB_EXIT_GRACE_S`) ② 라벨 없는 Job 은 남의 것(`sbmig-owner` 와 `sbmig-run-id` 둘 다 맞아야) ③ Worker 가 자기 환경 변수를 그 Job 을 만든 Main 의 것과 대조(`control/state.json` 의 `env_pins` / `env_pin_policy`, `SBMIG_JOB_ENV_PIN` refuse / warn / off, 거절은 저널 `worker_refused`, 경고는 `worker_env_differs`) — 운영 규칙 "`sbmig-env` 를 바꾸면 웹 파드 재시작, 81 틀을 바꾸면 `sbmig-job-template` 을 다시 만들고 재시작" ④ 비밀 값은 끝난 뒤가 아니라 **쓰는 순간** 지운다(`sbmig/core/scrub.py`, `SBMIG_REDACT_OUTPUT`, 실행 중에는 `sbmig.log` / `journal.jsonl` 만 내려받기). 회귀: local-job 이 Job 틀의 컨테이너 경로를 PC 실행에 넘기던 것 → 실행별 값만 | v2.1z-ac, v2.1z-ad |
 | **KB 학습 기록** | 시도가 왜 실패했는지, 수정 전·후 코드, 시도 없이 해결된 오류의 해결자 | v2.1e, v2.1f |
 
 ## 3. 회사 실행에서 배운 것 — 진단의 실제 예
@@ -78,7 +79,8 @@ git 기록)로 했다. 아래 사례는 모두 그런 줄에서 출발했다. �
 |---|---|
 | **케이스 스레드 측정** | 만들어졌고 기본 꺼짐. 세션의 이전 턴이 어떻게 과금되는지 문서가 없어 턴마다 `sent N chars → prompt_tokens=K` 를 로그로 남겨 측정 중. 켤지는 회사 실행의 수치를 보고 |
 | **KB 매칭 `kb reindex --resign`** | 케이스 id 가 L2 해시라 서명 규칙을 바꾸면 저장 케이스가 고아가 된다. 제안: 저장된 원문에서 L2 를 다시 만들고 옛 id 별칭 유지. `compile|cannot_find_symbol|<단순 이름>` 키가 다른 문제를 합치는 문제는 이것 다음에만 고칠 수 있다 (`docs/PLAN.md` v2.1z 표 아래 "Open items") |
-| **웹 UI 의 Job 디스패치 모드** | 웹 파드가 Agent 가 되어 업로드마다 Job 생성 → 로그 스트리밍 → 결과 표시. 아직 없음. 인프라 회의(2026-11-05)의 답 — zip 전달 경로, 결과 회수, KB 영속성(git 또는 PVC), `~/.m2` — 을 보고 증분으로 |
+| **웹 UI 의 Job 디스패치 모드** | 있음(2026-11-05: 웹 파드가 업로드마다 Job, 공유 PVC; 지키는 규칙 v2.1z-ac 2026-11-09, v2.1z-ad 2026-11-10). 남은 것: 회사 클러스터에서의 첫 실측(RWX·이미지·권한), 동시 Job 3 개, 외부 접수 API(`docs/v2/API-MIGRATIONS-KO.md`) |
+| **Job 모드의 알려진 한계** (2026-11-10 검토 뒤) | (1) 끊긴 생성 요청이 확인 질의(`CREATE_CONFIRM_POLLS`) 뒤에 늦게 닿으면, Main 이 실패로 끝내고 차례를 넘긴 뒤에 Job 이 생길 수 있다 (2) 영구히 닿지 않는 쿠버네티스 API 는 Main 의 접근을 고칠 때까지 큐를 멈춘다(의도 — 두 이관이 겹치는 것보다 낫다) (3) 콘솔에서 접혀 두 줄에 걸친 비밀 값은 줄 단위 정제가 놓친다(Worker 는 자식에 넓은 `COLUMNS`) (4) 자식 안에서 생긴 토큰은 Worker 의 파이프 정제기가 모른다(자식의 자기 훅이 로그 줄은 지운다) (5) 6자 미만·짧은 숫자 비밀은 지우지 않는다 (6) `logs/` 의 Maven 출력은 끝날 때의 마지막 단계에서만 지운다 (7) uvicorn 접근 로그는 정제하지 않는다 (8) `deploy/docker/run-job.sh` 자신의 셸 출력은 sbmig 가 정제하지 않는다 (9) 환경 대조는 비밀로 보이는 이름(`LLM_TOKEN_URL` 포함 — 같은 이름 규칙으로 그 값은 출력에서 `***` 로 가려진다)과 프록시 변수를 비교하지 않는다 |
 | **LLM 에게 as-is 보기** | 첫 커밋(as-is 스냅샷)의 파일을 `asis:<path>` 로 보여 주고 오류 파일의 as-is → 지금 diff 를 자동으로 주는 아이디어. 케이스 스레드 증분에 포함 예정 |
 | **소스 채택(트리 프로필)** | 속 빈 리액터처럼 소스가 모듈 밖(`DEV/`, `STATIC/`)에 있는 트리를 모듈에 매핑하는 증분. 다음 증분으로 합의됨 |
 | **MSA 의 비-Boot WAR 서비스** | 지금은 boot 부모만 주고 Boot 앱·레이아웃 분할은 안 함. "비-boot war 는 일단 그대로" — 실제 프로젝트를 먼저 본다 |
@@ -105,6 +107,7 @@ grep -n "^## v2" docs/INTERFACES.md
 grep -n "PARENT_NO_BOOT_BOM_FLAG\s*=" sbmig/restructure/restructurer.py
 grep -n "def stray_pom_copies" sbmig/analyze/pom_parser.py
 grep -n "case_thread\|thread_fallback_full" sbmig/core/config.py
+grep -n "CREATE_CONFIRM_POLLS\|API_REMIND_S\|HOLD_WARN_S" sbmig/web/runs.py; grep -n "ENV_PIN_POLICY_ENV" sbmig/web/contract.py
 grep -n "as-is view for the LLM" docs/INTERFACES.md
 grep -n "Open items" -A12 docs/PLAN.md | tail -14
 ls knowledge/notes/spring-mobile.md knowledge/notes/spring-removed-artifacts.md fixtures/projects/webapp-bundled-jar

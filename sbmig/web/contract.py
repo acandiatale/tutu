@@ -8,10 +8,17 @@ lost | failed; 전이마다 원자적으로 다시 쓴다; Job 을 만들기 **�
 zip·설정·코드를 대조해 다르면 돌지 않는다(exit 3). Job 의 소유는 라벨 ``sbmig-run-id`` + ``sbmig-owner``(요청마다 난수)로 확인한다 —
 Main 은 자기 라벨이 맞는 Job 만 지운다.
 
+리뷰 2026-11-10 — **환경 변수 고정**: zip·설정 파일·버전이 같아도 두 파드의 환경 변수가 다르면 다른 설정으로 돈다(설정 파일의
+``${VAR}`` 자리표시자와 덮어쓰기 ``SBMIG_<섹션>__<키>`` 는 환경 변수가 값을 정한다). Job 을 만드는 Main 이 그 이름들의 값 지문
+(``env_pins`` — 비밀로 보이는 이름은 빼고, sha256 앞 16자)과 정책(``SBMIG_JOB_ENV_PIN``: refuse | warn | off)을 ``state.json`` 에
+creating 전이와 함께 적고, Worker 가 자기 환경으로 다시 계산해 대조한다(``compare_env_pins``).
+
 The file contract between the Main pod and the Worker pod on the shared volume: `control/request.json` (inputs pinned at
 intake), `control/state.json` (Main's control state, written atomically, intent recorded before the Job is created),
 `job-status.json` (the Worker's result for *this* attempt), the ownership labels, the Worker command, and the digest /
-secret-name helpers both sides use. Only Main writes under `control/`; only the Worker writes the run's outputs."""
+secret-name helpers both sides use. Only Main writes under `control/`; only the Worker writes the run's outputs.
+Review 2026-11-10: the Main that creates the Job also records fingerprints of the environment values the configuration
+reads (`env_pins`, no secret-looking names) and a policy in `state.json`; the Worker recomputes and compares them."""
 from __future__ import annotations
 
 import hashlib
@@ -32,9 +39,21 @@ WORKER_MODULE = "sbmig.web.worker"
 WORKER_COMMAND = ["python", "-m", WORKER_MODULE]      # Job 틀(81-web-job.template.yaml)과 LocalJobClient 의 명령
 RUN_LABEL = "sbmig-run-id"                  # Job / 파드 라벨: 실행 id
 OWNER_LABEL = "sbmig-owner"                 # Job / 파드 라벨: 요청마다 난수 — Main 이 자기 Job 만 지우게
+# Main 이 Job 마다 끼워 넣는 실행별 값의 이름(RunManager._job_env). 그 밖의 env 는 파드의 것이다 — 틀의 리터럴·ConfigMap·Secret 이 채운다
+RUN_ENV = ("SBMIG_SOURCE_ZIP", "SBMIG_OUT", "SBMIG_RUN_ID", "SBMIG_CONFIG", "SBMIG_STOP_AFTER", "SBMIG_LLM_PROVIDER")
 LLM_RECORDS_ENV = "SBMIG_WORKER_LLM_RECORDS"  # "1" 이면 Worker 가 설정의 llm.record_dir 을 그대로 둔다(기본: 끈다 — 소스가 공유 볼륨에 더 남지 않게)
 SECRET_NAME_WORDS = ("TOKEN", "PASSWORD", "PASSWD", "SECRET", "API_KEY")   # 이 말이 든 env 는 비밀로 다룬다(값은 로그·보고서에서 지운다)
 MIN_SECRET_LEN = 6                          # 이보다 짧은 값은 지우지 않는다(우연한 부분 일치로 로그를 망치지 않게)
+# ── 환경 변수 고정(리뷰 2026-11-10) ──
+ENV_PIN_POLICY_ENV = "SBMIG_JOB_ENV_PIN"    # Main 의 env: Worker 의 환경이 다를 때 refuse(돌지 않는다) | warn(저널에 적고 돈다) | off(안 본다)
+ENV_PIN_REFUSE, ENV_PIN_WARN, ENV_PIN_OFF = "refuse", "warn", "off"
+ENV_PIN_POLICIES = (ENV_PIN_REFUSE, ENV_PIN_WARN, ENV_PIN_OFF)
+# 파드마다 달라도 되는 이름: LLM 원문 기록 폴더(웹 파드 안에서 도는 실행의 진단용 — Worker 는 SBMIG_WORKER_LLM_RECORDS 로 따로 켠다)
+ENV_PIN_SKIP = frozenset({"SBMIG_LLM__RECORD_DIR", "LLM_RECORD_DIR"})
+# 같은 설정을 정하는 다른 이름: Worker 는 KB 위치를 SBMIG_KB_DIR 로 받는다(worker-paths.yml 의 kb.dir) — 웹 파드의 덮어쓰기
+# SBMIG_KB__DIR 과 같은 값이어야 한다(틀에 그 줄이 없으면 Worker 는 구운 yml 의 PC 경로에 KB 를 쓰고 파드와 함께 잃는다)
+ENV_PIN_ALIASES: dict[str, tuple[str, ...]] = {"SBMIG_KB__DIR": ("SBMIG_KB_DIR",)}
+ENV_PIN_HASH_LEN = 16
 
 
 class RunState(str, Enum):
@@ -152,6 +171,98 @@ def secret_values(environ: dict[str, str] | None = None, min_len: int = MIN_SECR
     return sorted(vals, key=len, reverse=True)
 
 
+def env_pin_policy(value: str | None, default: str = ENV_PIN_REFUSE) -> str:
+    """``SBMIG_JOB_ENV_PIN`` 의 값을 정책 이름으로(앞뒤 공백·대소문자 무시). 비었거나 모르는 값이면 ``default``.
+
+    Normalize a `SBMIG_JOB_ENV_PIN` value to `refuse` / `warn` / `off`; empty or unknown → `default`."""
+    v = value.strip().lower() if isinstance(value, str) else ""      # 깨진 state.json 의 값(숫자·목록)도 예외 없이 default
+    return v if v in ENV_PIN_POLICIES else default
+
+
+def config_env_names(repo_root: Path, configs: list[str]) -> set[str]:
+    """``config/default.yml`` 과 선택한 설정 파일들이 ``${VAR}`` 자리표시자로 읽는 환경 변수 이름들(주석 속의 것은 세지 않는다 —
+    yml 을 읽은 값만 본다; yml 로 읽히지 않는 파일은 글 전체에서 찾는다). 없는 파일은 건너뛴다.
+
+    The env names the `${VAR}` placeholders of `config/default.yml` and the selected configs read (values only, not
+    comments; a file that is not valid YAML is scanned as text; a missing file is skipped)."""
+    import yaml          # 늦은 import: 이 모듈은 설정 스택 없이도 읽힌다(k8s 클라이언트, 테스트)
+
+    from sbmig.core.config import placeholder_names
+    names: set[str] = set()
+    for name in ["default.yml", *configs]:
+        try:
+            text = (Path(repo_root) / "config" / name).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        try:
+            data: Any = yaml.safe_load(text)
+        except yaml.YAMLError:
+            data = text
+        names |= placeholder_names(data)
+    return names
+
+
+def env_pin_value(name: str, environ: dict[str, str] | None = None) -> str | None:
+    """고정할 이름 하나의 값: 그 이름의 환경 변수, 없으면 ``ENV_PIN_ALIASES`` 의 다른 이름(설정이 실제로 적용되는 순서와 같다).
+    어느 것도 없으면 None(빈 값으로 **설정된** 변수는 ``""`` — 없는 것과 다르다).
+
+    The value pinned for one name: the variable itself, else its alias (`ENV_PIN_ALIASES`); None when unset (a variable
+    set to the empty string is `""`, not None)."""
+    env = os.environ if environ is None else environ
+    for key in (name, *ENV_PIN_ALIASES.get(name, ())):
+        if key in env:
+            return env[key]
+    return None
+
+
+def env_pin_names(repo_root: Path, configs: list[str], environ: dict[str, str] | None = None) -> list[str]:
+    """고정할 환경 변수 이름들(정렬): 설정 파일의 자리표시자(``config_env_names``) + 이 환경의 설정 덮어쓰기
+    ``SBMIG_<섹션>__<키>``(와 섹션 하나를 통째로 바꾸는 ``SBMIG_<섹션>`` — ``load_config`` 가 같은 규칙으로 읽는다)와 그 값 안의
+    자리표시자 + 다른 이름으로만 설정된 ``ENV_PIN_ALIASES`` 의 이름. 비밀로 보이는 이름(``is_secret_name`` — 그 값의 지문을 공유
+    볼륨에 남기지 않는다)과 ``ENV_PIN_SKIP`` 은 뺀다. 프록시 변수는 대상이 아니다.
+
+    The env names to pin: the configs' placeholders, this environment's `SBMIG_<SECTION>__<KEY>` overrides (and a
+    whole-section `SBMIG_<SECTION>`, which `load_config` reads by the same rule) and the placeholders inside their
+    values, and an alias-only name; never a secret-looking name nor `ENV_PIN_SKIP`."""
+    from sbmig.core.config import Config, placeholder_names
+    env = os.environ if environ is None else environ
+    names = config_env_names(repo_root, configs)
+    sections = frozenset(Config.model_fields)
+    for key, val in env.items():
+        if not key.startswith("SBMIG_"):
+            continue
+        # 밑줄 두 개 = 설정 키 하나. 밑줄 두 개가 없으면 최상위 섹션 이름일 때만 설정이다(SBMIG_WEB_MODE · SBMIG_OUT 류는 아니다)
+        if "__" in key or key[len("SBMIG_"):].lower() in sections:
+            names.add(key)
+            names |= placeholder_names(val)
+    names |= {name for name, aliases in ENV_PIN_ALIASES.items() if any(a in env for a in aliases)}
+    return sorted(n for n in names if n not in ENV_PIN_SKIP and not is_secret_name(n))
+
+
+def env_pins(repo_root: Path, configs: list[str], environ: dict[str, str] | None = None) -> dict[str, str]:
+    """이 환경의 고정 지문: ``env_pin_names`` 중 **설정된** 이름 → 값의 sha256 앞 ``ENV_PIN_HASH_LEN`` 자(값 자체는 적지 않는다).
+    설정되지 않은 이름은 빠진다 — 한쪽에만 있는 이름은 ``compare_env_pins`` 가 따로 알려 준다.
+
+    This environment's pins: each set name of `env_pin_names` → the first `ENV_PIN_HASH_LEN` hex of its value's sha256."""
+    out: dict[str, str] = {}
+    for name in env_pin_names(repo_root, configs, environ):
+        val = env_pin_value(name, environ)
+        if val is not None:
+            out[name] = hashlib.sha256(val.encode("utf-8", errors="replace")).hexdigest()[:ENV_PIN_HASH_LEN]
+    return out
+
+
+def compare_env_pins(pinned: dict[str, str], actual: dict[str, str]) -> dict[str, list[str]]:
+    """Main 이 적은 지문과 Worker 가 계산한 지문의 차이 — **이름만**(정렬): ``differs``(양쪽에 있고 값이 다름), ``main_only``
+    (Main 에만 설정됨), ``worker_only``(Worker 에만 설정됨). 차이가 없는 항목은 빈 목록.
+
+    The differences between Main's pins and the Worker's, names only: `differs`, `main_only`, `worker_only`."""
+    pinned, actual = dict(pinned or {}), dict(actual or {})
+    return {"differs": sorted(k for k in pinned.keys() & actual.keys() if pinned[k] != actual[k]),
+            "main_only": sorted(pinned.keys() - actual.keys()),
+            "worker_only": sorted(actual.keys() - pinned.keys())}
+
+
 @dataclass
 class RequestRecord:
     """접수 때 고정한 입력(``control/request.json``). Worker 는 ``zip_sha256`` / ``config_digests`` / ``sbmig_version`` 을 자기 쪽에서 다시
@@ -197,9 +308,11 @@ class RequestRecord:
 @dataclass
 class ControlState:
     """Main 의 제어 상태(``control/state.json``). ``job`` 은 결정적 이름(``job_name(run_id)``), ``owner`` 는 라벨 ``sbmig-owner`` 의 값.
-    전이할 때마다 ``write`` 로 통째로 다시 쓴다(원자적).
+    전이할 때마다 ``write`` 로 통째로 다시 쓴다(원자적). ``env_pins`` / ``env_pin_policy`` 는 Job 을 **만드는** Main 이 creating 전이와
+    함께 적는다(접수한 Main 이 아니다 — 대기 중에 웹 파드가 재시작되면 새 Main 의 환경이 기준이다). Worker 는 이 파일을 읽기만 한다.
 
-    Main's control state for one run (atomic rewrite on every transition)."""
+    Main's control state for one run (atomic rewrite on every transition). `env_pins` / `env_pin_policy` are written by
+    the Main that creates the Job, with the `creating` transition; the Worker only reads this file."""
     run_id: str
     state: str = RunState.QUEUED.value
     attempt: int = 1
@@ -209,6 +322,8 @@ class ControlState:
     updated_at: str = field(default_factory=utc_now)
     exit_code: int | None = None
     error: str | None = None
+    env_pins: dict[str, str] | None = None      # Job 을 만드는 Main 의 환경 지문(creating 전이 때 적는다; None = 대조 안 함)
+    env_pin_policy: str | None = None           # refuse | warn | off — Main 의 SBMIG_JOB_ENV_PIN (Worker 는 이 값을 따른다)
 
     @property
     def terminal(self) -> bool:

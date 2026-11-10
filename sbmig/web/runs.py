@@ -6,7 +6,9 @@
 줄)에서 줄을 서고, 기다리는 실행은 ``queued``. (2) 멈춤은 그래프 노드 사이에서만 — LangGraph 는 진행 중인
 동기 노드(Maven, OpenRewrite, LLM 호출)를 끊지 못한다. (3) 실행 로그는 스레드 필터로 나눈다 — 각
 ``sbmig.log`` 에는 그 실행 스레드의 줄만. (4) 메모리에는 끝난 실행을 ``max_finished_runs`` 개만 두고,
-나머지는 실행 폴더의 파일로 답한다.
+나머지는 실행 폴더의 파일로 답한다. (5) Job 모드에서는 Job 을 **만드는** Main 이 설정이 읽는 환경 변수의 값 지문(``env_pins``)과
+정책 ``SBMIG_JOB_ENV_PIN``(k8s-job 기본 refuse, local-job 기본 off)을 ``control/state.json`` 의 creating 전이에 함께 적는다 —
+Worker 가 자기 환경과 대조한다(리뷰 2026-11-10).
 
 In-process run manager for the web app: one worker thread per migration, events for the SSE stream.
 
@@ -47,6 +49,11 @@ Memory (round 9): `runs` keeps at most `max_finished_runs` finished runs; when a
 ones are dropped from memory (running / queued runs never are). An evicted run is still answered from its run
 directory: `report.json` and `web-status.json` (exit code / error / stop flag, written when the worker finishes).
 
+Environment pins (review 2026-11-10): in the Job modes the Main that creates a Job writes fingerprints of the environment
+values the configuration reads (`env_pins`, never a secret-looking name) and the policy `SBMIG_JOB_ENV_PIN` (default
+`refuse` in k8s-job, `off` in local-job) into `control/state.json` with the `creating` transition; the Worker compares
+them with its own environment. A run adopted after a restart keeps the pins already on disk.
+
 
 """
 from __future__ import annotations
@@ -69,7 +76,9 @@ from pathlib import Path
 from typing import Any
 
 from sbmig.core.config import PACKAGE_ROOT
+from sbmig.core.scrub import output_scrubbing, scrub, scrub_json
 from sbmig.core.workspace import STOP_REQUEST_FILE
+from sbmig.web import contract
 from sbmig.web.contract import (
     CONTROL_DIR,
     OWNER_LABEL,
@@ -86,6 +95,7 @@ from sbmig.web.contract import (
 )
 from sbmig.web.k8s import (
     DEFAULT_TEMPLATE,
+    EXIT_GRACE_ENV,
     MODE_ENV,
     MODES,
     POLL_ENV,
@@ -93,6 +103,7 @@ from sbmig.web.k8s import (
     STATUS_GRACE_ENV,
     STOP_GRACE_ENV,
     TEMPLATE_ENV,
+    TERMINAL_PHASES,
     JobState,
     K8sClient,
     K8sError,
@@ -114,6 +125,9 @@ SERVED_FILES = {"report.md": "text/markdown; charset=utf-8", "report.json": "app
                 # v2.1: the run's error list — every error with its tries, the LLM's answer and the applied diff
                 "errors.md": "text/markdown; charset=utf-8",
                 "errors.jsonl": "application/x-ndjson; charset=utf-8"}
+# 리뷰 2026-11-10 — 쓰는 순간 비밀 값이 지워지는 파일: 실행 중에도 내려받을 수 있다. 나머지(보고서, 오류 목록, plan …)는
+# 실행이 끝날 때의 마지막 정제를 지난 뒤에만 내준다(`RunManager.file_withheld`)
+LIVE_FILES = ("sbmig.log", "journal.jsonl")
 # 파일 꼬리(journal / sbmig.log)는 알림이 없으므로 0.5 초마다 다시 본다. 15 초 조용하면 ping: 몇 분짜리 Maven
 # 빌드 동안 브라우저·프록시가 연결을 끊지 않게
 POLL_S = 0.5
@@ -128,6 +142,17 @@ DEFAULT_MAX_FINISHED_RUNS = 200
 LOCAL_LOST = "the local job did not survive the server restart"
 # Job 생성 요청의 응답이 불확실한 경우(이미 있음 / 전송 오류): 같은 이름의 Job 이 있으면 이어받는다 — 두 번 만들지 않게
 _UNCERTAIN_CREATE_RE = re.compile(r"HTTP 409|RequestException|ConnectionError|Timeout|ChunkedEncodingError|ProtocolError")
+# 리뷰 2026-11-10 — "한 번에 하나" 는 Job 이 끝난 것을 확인한 뒤에야 차례를 넘겨야 지켜진다(_hold_until_ended). 그 기다림의 박자:
+HOLD_WARN_S = 60.0                 # 끝나지 않는 Job 을 기다리는 동안 이 간격으로 경고를 남긴다
+DELETE_RETRY_S = 15.0              # Job 삭제 요청이 실패하면 이 간격으로 다시 보낸다
+API_REMIND_S = 600.0               # Kubernetes API 가 계속 답하지 않으면 이 간격으로 로그에 다시 남긴다
+CREATE_CONFIRM_POLLS = 3           # 생성 응답이 불확실한데 Job 이 안 보이면 이만큼 더 묻는다(요청이 늦게 닿았을 수 있다)
+
+
+class _ServerClosing(Exception):
+    """Kubernetes API 의 답을 기다리는 중에 서버가 내려간다 — 실행을 실패로 적지 않고 제어 상태를 그대로 둔다(다음 Main 이 이어받는다).
+
+    The server shuts down while a run waits for the Kubernetes API: the control state is kept for the next Main."""
 
 
 @dataclass
@@ -168,6 +193,10 @@ class Run:
     keep_state: bool = False              # 서버 종료: Job 은 계속 돈다 — state.json 을 그대로 두어 다음 Main 이 이어받게
     recover: str | None = None            # 재시작 복구: None (새로 만듦) | "probe" (creating: 있으면 이어받음) | "adopt"
     status_warned: bool = False
+    # Kubernetes API 가 답하지 않는 동안(리뷰 2026-11-10): 처음 실패한 때, 마지막으로 크게 알린 때(monotonic), 화면에 보일 한 줄
+    api_down_since: float | None = None
+    api_down_reported: float | None = None
+    job_note: str | None = None
     success: bool | None = None
 
     @property
@@ -281,10 +310,24 @@ class RunManager:
         # the engine stops between nodes and the fix loop between build rounds — the grace must outlast one Maven build
         # (build.timeout_minutes 30) plus an OpenRewrite run before the Job is deleted (review 2026-11-05: 600 s lost the report)
         self.job_stop_grace_s = max(0.0, float(os.environ.get(STOP_GRACE_ENV, "2700") or 2700))
+        # Kubernetes API 가 이만큼 답하지 않으면 한 번 크게 알린다(로그 error, 저널, 화면). **실행을 실패로 끝내지는 않는다**(리뷰
+        # 2026-11-10): 파드가 살아 있는지 모르는 채로 차례를 넘기면 다음 이관과 겹친다 — API 가 답할 때까지 이 실행이 차례를 지킨다
         self.job_api_grace_s = max(0.0, float(os.environ.get("SBMIG_JOB_API_GRACE_S", "300") or 300))
+        # 결과 파일(job-status.json)을 받은 뒤 파드가 스스로 끝나기를 기다리는 시간. 넘기면 그 Job 을 지우고 사라질 때까지 기다린다 —
+        # Worker 는 그 파일을 맨 마지막에 쓰므로 지워도 잃는 것이 없고, 끝나지 않는 파드가 줄을 막지 않는다
+        self.job_exit_grace_s = max(0.0, float(os.environ.get(EXIT_GRACE_ENV, "120") or 120))
         # v2.1z-ac: 파드가 끝났는데 job-status.json 이 아직 안 보이면 잠시 기다린다 — NFS 의 속성 캐시(기본 최대 60초)가 Worker 가 마지막에 쓴
         # 파일을 Main 에 늦게 보여 줄 수 있다. 끝난 결과를 "검증 안 됨" 으로 잘못 적지 않으려면 이 유예가 캐시보다 길어야 한다
         self.job_status_grace_s = max(0.0, float(os.environ.get(STATUS_GRACE_ENV, "90") or 90))
+        # 리뷰 2026-11-10 — 환경 변수 고정의 정책(SBMIG_JOB_ENV_PIN, 시작 때 한 번 읽는다). k8s-job 의 기본은 refuse(Worker 의 환경이
+        # 다르면 돌지 않는다), local-job 은 off(로컬 Worker 는 이 프로세스의 환경을 물려받는다 — 접수와 시작 사이의 .env 수정은 잘못된
+        # 경보만 낸다). recover() 가 Job 을 만들 수 있으므로 그보다 먼저 정한다
+        pin_default = contract.ENV_PIN_REFUSE if self.effective_mode == "k8s-job" else contract.ENV_PIN_OFF
+        pin_raw = (os.environ.get(contract.ENV_PIN_POLICY_ENV) or "").strip()
+        self.env_pin_policy = contract.env_pin_policy(pin_raw, pin_default)
+        if pin_raw and pin_raw.lower() not in contract.ENV_PIN_POLICIES:
+            log.warning("%s=%r is not one of %s — using the default %s", contract.ENV_PIN_POLICY_ENV, pin_raw,
+                        " | ".join(contract.ENV_PIN_POLICIES), self.env_pin_policy)
         # 서버가 정한 기본 설정 파일 이름들(sbmig serve --config / SBMIG_WEB_CONFIGS): 화면은 이것으로 돈다
         self._default_configs = [c.strip() for c in (default_configs or []) if c and c.strip()]
         self._missing_warned: set[str] = set()
@@ -612,7 +655,7 @@ class RunManager:
                     log.info("%s", report_result_line(report, run.exit_code, run_id=run.run_id))
         except Exception as e:  # the orchestrator never raises; a crash here is a bug in the engine / this module
             log.exception("run %s failed", run.run_id)
-            run.error = f"{type(e).__name__}: {e}"
+            run.error = scrub(f"{type(e).__name__}: {e}")
             run.exit_code = EXIT_ABORTED
             if run.job:
                 run.final_state = run.final_state or RunState.FAILED.value
@@ -623,6 +666,21 @@ class RunManager:
             log.info("run %s finished: exit code %s", run.run_id, run.exit_code)
             if log_path is not None:
                 _detach_file_log(log_path)
+            # 마지막 정제: 쓰는 순간의 정제가 닿지 않는 파일(Maven 출력 logs/, 보고서)을 훑는다. done 을 세우기 전에 — 그 전에는
+            # file_withheld 가 그 파일들을 내주지 않는다. 이 프로세스 안에서 돈 실행은 출력 정제가 걸려 있을 때 여기서 한다. Job 실행은
+            # Worker 가 끝에 하지만(job-status.json 을 쓰기 직전), 그 파일 없이 끝난 Job(파드가 죽었다)은 그 단계를 못 지났을 수 있어
+            # Main 이 자기 환경의 비밀 값으로 대신한다 — Job 이 끝난 것을 확인했을 때만(아직 돌 수 있는 Job 의 파일은 건드리지 않는다:
+            # 서버 종료로 두고 나가는 Job, 우리 것이 아닌 Job)
+            if run.job:
+                final_pass = run.verified is not True and run.job_phase in TERMINAL_PHASES and not run.keep_state
+            else:
+                final_pass = output_scrubbing()
+            if final_pass:
+                try:
+                    from sbmig.web.redact import redact_run_dir
+                    redact_run_dir(run.run_dir)
+                except Exception:  # noqa: BLE001
+                    log.exception("run %s: the final output redaction failed", run.run_id)
             success = self._settle_job_run(run) if run.job else getattr(run.report, "success", None)
             run.success = success
             self._push(run, "finished", {"exit_code": run.exit_code, "success": success})
@@ -673,9 +731,14 @@ class RunManager:
         run.control.transition(state, **changes).write(run.run_dir)
 
     def _owned(self, run: Run, st: JobState) -> bool:
-        """이 Job 이 이 요청의 것인가: 라벨을 모르는 클라이언트(빈 dict)면 참, 아니면 ``sbmig-owner`` 와 ``sbmig-run-id`` 가 둘 다 맞아야."""
-        labels = getattr(st, "labels", None) or {}
-        if not labels:
+        """이 Job 이 이 요청의 것인가: ``sbmig-owner`` 와 ``sbmig-run-id`` 라벨이 **둘 다** 이 요청의 값이어야 한다. 라벨이 하나도 없는
+        Job 은 우리 것이 아니다(같은 이름으로 손으로 만든 Job, 다른 도구의 Job) — 이어받지도 지우지도 않는다. 라벨을 아예 알려 주지
+        못하는 클라이언트(``labels is None``: 로컬 서브프로세스, 테스트용 가짜)만 이름을 믿는다.
+
+        Is this Job this request's: both labels must match. An unlabelled Job is NOT ours (review 2026-11-10); only a client
+        that cannot report labels at all (`labels is None`: the local subprocess, test fakes) is trusted by name."""
+        labels = getattr(st, "labels", None)
+        if labels is None:
             return True
         return labels.get(OWNER_LABEL) == run.owner and labels.get(RUN_LABEL) == run.run_id
 
@@ -703,10 +766,15 @@ class RunManager:
         """k8s Job 모드의 본체: Job 생성(또는 재시작 복구 때 이어받기) → ``_watch_job``. 만들기 전에 제어 상태를 ``creating`` + Job
         이름으로 적고(응답이 끊겨도 다음 Main 이 같은 이름을 찾는다), 응답이 409 이거나 전송 오류면 같은 이름의 Job 을 찾아 있으면
         이어받는다(두 번 만들지 않는다). 대기 중에 멈춤·서버 종료가 오면 Job 을 만들지 않는다.
+        **차례(``_turns``)는 이 함수가 돌아올 때 넘어간다** — 그래서 Job 을 만들려 했거나 이어받은 뒤에는 그 Job 이 끝났거나 없는 것을
+        API 로 확인하고서야 돌아온다(리뷰 2026-11-10): 실패로 끝날 때도 우리 Job 을 지우고 사라질 때까지 기다린다. 예외는 서버 종료
+        (제어 상태를 그대로 두어 다음 Main 이 이어받는다)와 우리 것이 아닌 Job(건드리지 않는다)뿐이다.
 
         Create the Job (intent recorded first; an uncertain answer adopts an existing Job of the same name) or adopt it on
-        recovery, then watch it. A stop or shutdown that arrived while queued never creates a Job."""
+        recovery, then watch it. A stop or shutdown that arrived while queued never creates a Job. The turn is handed on
+        when this returns, so once a Job was asked for it returns only after the API confirmed that Job ended or is gone."""
         name = run.job_name or job_name(run.run_id)
+        client: Any = None
         try:
             if run.recover is None:
                 # a stop or a server shutdown that arrived while this run was queued: never create the Job (review 2026-11-05: the
@@ -721,17 +789,30 @@ class RunManager:
                     return EXIT_ABORTED
             client = self._job_client_or_fail()
             if run.recover == "adopt":
+                # 이름만으로 이어받지 않는다: 같은 이름의 Job 이 있으면 라벨이 이 요청의 것이어야 한다(아니면 여기서 실패). 없으면 — 끝난 뒤
+                # 지워진 Job — 그대로 이어받아 볼륨의 결과 파일이 답하게 한다
+                self._job_exists(run, client, name)
                 self._adopt(run, name, "restart: the job was created by an earlier web process")
             elif run.recover == "probe" and self._job_exists(run, client, name):
                 self._adopt(run, name, "restart: the job was being created when the earlier web process stopped")
             else:
                 self._create_job(run, client, name)
             return self._watch_job(run, client, name)
-        except (K8sError, OSError) as e:
+        except _ServerClosing:
+            run.error = "web server shut down while waiting for the Kubernetes API — the next web process picks this run up"
+            run.keep_state = True
+            return EXIT_ABORTED
+        except Exception as e:  # noqa: BLE001 — whatever broke here, the turn is not handed on while our Job may be alive
             run.error = f"{type(e).__name__}: {e}"
             run.final_state = RunState.FAILED.value
-            log.error("run %s: k8s job %s failed: %s", run.run_id, name, run.error)
+            if isinstance(e, (K8sError, OSError)):
+                log.error("run %s: k8s job %s failed: %s", run.run_id, name, run.error)
+            else:
+                log.exception("run %s: k8s job %s failed", run.run_id, name)
             self._push(run, "error", {"message": run.error})
+            if client is not None and run.job_name:
+                # 생성을 시도했거나 이어받은 Job 이 있을 수 있다: 우리 것이면 지우고, 끝난(없는) 것을 확인한 뒤에야 차례를 넘긴다
+                self._hold_until_ended(run, client, run.job_name, delete_after=0.0, why="the run failed in the web process")
             return EXIT_ABORTED
 
     def _job_env(self, run: Run) -> dict[str, str]:
@@ -743,11 +824,30 @@ class RunManager:
             env["SBMIG_LLM_PROVIDER"] = run.llm_provider
         return env
 
-    def _create_job(self, run: Run, client: Any, name: str) -> None:
-        """틀을 렌더하고(owner 라벨 포함) ``creating`` 을 적은 뒤 Job 을 만든다. 409 / 전송 오류 → 같은 이름의 Job 이 있고 우리 것이면
-        이어받고, 없으면 원래 오류를 다시 낸다. 성공하면 ``created``.
+    def _env_pins(self, run: Run) -> dict[str, str] | None:
+        """Job 을 만드는 지금, 이 프로세스 환경의 지문(``contract.env_pins`` — 이름 → 값의 sha256 앞부분; 비밀로 보이는 이름은 없다).
+        정책이 off 면 None(Worker 가 대조하지 않는다). 계산이 실패해도 Job 만들기를 막지 않는다: 경고만 남기고 None — 읽히지 않는
+        설정 파일은 Worker 가 request.json 의 digest 로 따로 잡는다.
 
-        Render, record `creating`, create; an uncertain answer adopts an existing Job of ours, else re-raises."""
+        This process's environment pins at Job creation; None when the policy is off or when computing them failed (a
+        warning, never a failed create — an unreadable config is caught by the Worker's config digests)."""
+        if self.env_pin_policy == contract.ENV_PIN_OFF:
+            return None
+        try:
+            return contract.env_pins(self.repo_root, list(run.configs))
+        except Exception as e:  # noqa: BLE001 — computing the pins must never fail the Job creation
+            log.warning("run %s: the job environment is not pinned (%s: %s) — the Worker will not compare its environment",
+                        run.run_id, type(e).__name__, scrub(str(e)))
+            return None
+
+    def _create_job(self, run: Run, client: Any, name: str) -> None:
+        """틀을 렌더하고(owner 라벨 포함) ``creating`` 을 적은 뒤 Job 을 만든다. ``creating`` 에는 이 Main 의 환경 지문(``env_pins``)과
+        정책(``env_pin_policy``)도 함께 적는다 — Worker 가 자기 환경과 대조한다(Job 을 만드는 곳은 여기뿐이다). 409 / 전송 오류 → API 가
+        답할 때까지 같은 이름의 Job 을 찾아, 있고 우리 것이면 이어받고, 없으면(몇 번 더 물어도) 원래 오류를 다시 낸다. 성공하면 ``created``.
+
+        Render, record `creating` together with this Main's `env_pins` / `env_pin_policy` (the Worker compares them with its
+        own environment; this is the only place a Job is created), create; an uncertain answer asks (until the API answers)
+        for a Job of that name and adopts ours, else re-raises the original error."""
         template: Any = self._job_template_doc if self._job_template_doc is not None else self.job_template
         if self._job_template_doc is None and not Path(self.job_template).is_file():
             if self.effective_mode == "k8s-job":
@@ -757,18 +857,28 @@ class RunManager:
             # the local "pod" needs only the env: a minimal manifest stands in for a template the checkout may lack
             template = {"kind": "Job", "metadata": {}, "spec": {"template": {"spec": {"containers": [{"name": "build"}]}}}}
         manifest = render_job(template, run.run_id, self._job_env(run), getattr(client, "namespace", None), owner=run.owner)
-        # 의도를 먼저 적는다: 이 줄 뒤에 프로세스가 죽어도 다음 Main 은 creating + 이름을 보고 Job 을 찾는다
-        self._transition(run, RunState.CREATING, job=name)
+        # 의도를 먼저 적는다: 이 줄 뒤에 프로세스가 죽어도 다음 Main 은 creating + 이름을 보고 Job 을 찾는다. 환경 지문도 같은 전이로 —
+        # 기준은 접수한 Main 이 아니라 Job 을 **만드는** 이 Main 의 지금 환경이다(대기 중에 재시작했으면 새 Main 의 것)
+        pins = self._env_pins(run)
+        self._transition(run, RunState.CREATING, job=name, env_pins=pins, env_pin_policy=self.env_pin_policy)
+        if pins is not None:
+            log.info("run %s: %d environment value(s) pinned for job %s (%s=%s)", run.run_id, len(pins), name,
+                     contract.ENV_PIN_POLICY_ENV, self.env_pin_policy)
         run.job_name = name
         try:
             created = client.create_job(manifest)
         except K8sError as e:
             if not _UNCERTAIN_CREATE_RE.search(str(e)):
                 raise
-            try:
-                st = client.job_state(name)
-            except K8sError:
-                raise e from None
+            # 응답이 불확실하다: Job 이 있는지 API 가 답할 때까지 묻는다(모르는 채로 실패 처리하면 만들어진 파드를 두고 차례를 넘긴다).
+            # 안 보여도 몇 번 더 묻는다 — 끊긴 요청이 뒤늦게 닿아 Job 이 생길 수 있다
+            st = self._state_when_answered(run, client, name)
+            for _ in range(CREATE_CONFIRM_POLLS - 1):
+                if st.phase != "Missing":
+                    break
+                with run.cond:
+                    run.cond.wait(self.job_poll_s)
+                st = self._state_when_answered(run, client, name)
             if st.phase == "Missing":
                 raise
             if not self._owned(run, st):
@@ -781,27 +891,82 @@ class RunManager:
             run.job_name = name = str(created)
         _append_journal(run.run_dir, {"event": "job_created", "run_id": run.run_id, "job": name, "attempt": run.attempt,
                                       "namespace": getattr(client, "namespace", None)})
-        self._transition(run, RunState.CREATED, job=name)
+        self._transition_soft(run, RunState.CREATED, job=name)
         self._push(run, "node", {"node": "job", "update": {"state": "created", "job": name}})
 
-    def _job_exists(self, run: Run, client: Any, name: str) -> bool:
-        """복구한 ``creating``: 같은 이름의 Job 이 있나(API 가 잠시 안 되면 ``job_api_grace_s`` 동안 다시 묻는다). / Does the Job exist?"""
-        deadline = time.monotonic() + self.job_api_grace_s
-        while True:
-            try:
-                st = client.job_state(name)
-                break
-            except K8sError as e:
-                if time.monotonic() > deadline:
-                    raise
+    def _poll_job(self, run: Run, client: Any, name: str) -> JobState | None:
+        """Job 상태를 한 번 묻는다. API 가 답하지 않으면 None — **실행을 실패로 끝내지 않는다**: 파드가 살아 있는지 모르는 채로 차례를
+        넘기면 그 파드가 다음 이관과 겹친다(리뷰 2026-11-10). ``job_api_grace_s`` 를 넘기면 한 번 크게 알리고(로그 error, 저널
+        ``job_api_unavailable``, 화면의 한 줄 ``job.note``) 그 뒤로는 ``API_REMIND_S`` 마다 로그에 다시 남긴다. 다시 답하면 ``job_api_back``.
+
+        One state poll; None while the API does not answer — reported once past `job_api_grace_s`, never a failure."""
+        try:
+            st = client.job_state(name)
+        except K8sError as e:
+            now = time.monotonic()
+            if run.api_down_since is None:
+                run.api_down_since = now
+            down = now - run.api_down_since
+            if run.api_down_reported is None and down <= self.job_api_grace_s:
                 log.warning("run %s: job %s state unavailable (%s) — retrying", run.run_id, name, e)
-                with run.cond:
-                    run.cond.wait(self.job_poll_s)
+                return None
+            if run.api_down_reported is not None and now - run.api_down_reported < API_REMIND_S:
+                return None
+            first = run.api_down_reported is None
+            run.api_down_reported = now
+            run.job_note = (f"Kubernetes API unavailable for {down:.0f}s ({e}) — this run keeps its turn until the API answers, "
+                            "the next migration waits")
+            log.error("run %s: job %s: %s", run.run_id, name, run.job_note)
+            if first:
+                _append_journal(run.run_dir, {"event": "job_api_unavailable", "run_id": run.run_id, "job": name,
+                                              "seconds": round(down, 1), "error": str(e)})
+                self._push(run, "node", {"node": "job", "update": {"state": "api-unavailable", "job": name, "message": str(e)}})
+            return None
+        if run.api_down_since is not None:
+            if run.api_down_reported is not None:
+                down = time.monotonic() - run.api_down_since
+                log.warning("run %s: job %s: the Kubernetes API answers again after %.0fs", run.run_id, name, down)
+                _append_journal(run.run_dir, {"event": "job_api_back", "run_id": run.run_id, "job": name, "seconds": round(down, 1)})
+                self._push(run, "node", {"node": "job", "update": {"state": "api-back", "job": name}})
+            run.api_down_since, run.api_down_reported, run.job_note = None, None, None
+        return st
+
+    def _state_when_answered(self, run: Run, client: Any, name: str) -> JobState:
+        """API 가 답할 때까지 Job 상태를 묻는다(기한 없음 — Job 이 있는지 모르는 채로는 차례를 넘기지 않는다). 기다리는 중에 서버가
+        내려가면 ``_ServerClosing``.
+
+        Poll until the API answers (no deadline); raises `_ServerClosing` when the server shuts down meanwhile."""
+        while True:
+            st = self._poll_job(run, client, name)
+            if st is not None:
+                return st
+            if self.closing.is_set():
+                raise _ServerClosing(name)
+            with run.cond:
+                run.cond.wait(self.job_poll_s)
+
+    def _job_exists(self, run: Run, client: Any, name: str) -> bool:
+        """재시작 복구: 같은 이름의 Job 이 있나(API 가 답할 때까지 묻는다). 있는데 라벨이 이 요청의 것이 아니면 — 라벨이 아예 없는 Job 도 —
+        이어받지 않고 오류를 낸다.
+
+        Recovery: does a Job of that name exist (asked until the API answers)? One that is not this request's raises."""
+        st = self._state_when_answered(run, client, name)
         if st.phase == "Missing":
             return False
         if not self._owned(run, st):
             raise K8sError(f"job {name} exists but is not owned by this request — not adopted")
         return True
+
+    def _transition_soft(self, run: Run, state: RunState | str, **changes: Any) -> None:
+        """Job 이 이미 있는 뒤의 상태 기록: 파일을 못 써도 예외를 내지 않는다(로그만) — 기록 실패로 감시를 그만두면 도는 파드를 두고 차례를
+        넘기게 된다. 메모리의 상태는 바뀌어 있고, 디스크에는 직전 상태가 남아 다음 Main 이 그 상태로 이어받는다.
+
+        A control-state write once the Job exists: an `OSError` is logged, never raised (the Job must be watched on)."""
+        try:
+            self._transition(run, state, **changes)
+        except OSError as e:
+            log.error("run %s: control state %s not written (%s) — the job is watched on", run.run_id,
+                      state.value if isinstance(state, RunState) else state, e)
 
     def _adopt(self, run: Run, name: str, reason: str) -> None:
         """이미 있는 Job 을 이 실행의 것으로 이어받는다: 저널 ``job_adopted``, 제어 상태 queued / creating → created, '파드' 단계 이벤트.
@@ -812,73 +977,126 @@ class RunManager:
                                       "reason": reason})
         log.info("run %s: adopted job %s (%s)", run.run_id, name, reason)
         if run.control is None or run.control.state in (RunState.QUEUED.value, RunState.CREATING.value):
-            self._transition(run, RunState.CREATED, job=name)
+            self._transition_soft(run, RunState.CREATED, job=name)
         self._push(run, "node", {"node": "job", "update": {"state": "created", "job": name, "adopted": True}})
+
+    def _hold_until_ended(self, run: Run, client: Any, name: str, *, delete_after: float | None, why: str) -> bool:
+        """**차례를 넘기기 전의 문**(리뷰 2026-11-10): Job 과 그 파드가 끝났거나 사라진 것을 API 로 확인할 때까지 이 실행이 줄 맨 앞을
+        지킨다 — "한 번에 하나" 는 파드가 실제로 끝나야 지켜진다(파일 KB·공유 볼륨을 다음 이관과 함께 쓰지 않게). ``delete_after`` 초가
+        지나도 남아 있으면 우리 라벨의 Job 을 지우고 계속 기다린다(None = 지우지 않는다). 기한은 없다: API 가 답하지 않으면 답할 때까지,
+        파드가 안 끝나면 끝날 때까지(``HOLD_WARN_S`` 마다 경고). 돌려주는 값: True = 끝난 것을 확인했다; False = 확인하지 못하고 빠진다 —
+        서버 종료(제어 상태를 그대로 두어 다음 Main 이 이어서 지켜본다)이거나 우리 Job 이 아니다(건드리지 않는다).
+
+        The gate before the turn is handed on: wait until the API confirms the Job terminal / gone, deleting our Job once
+        `delete_after` seconds passed. False = left unconfirmed (server shutdown: state kept; or a foreign Job: untouched)."""
+        started = warned = time.monotonic()
+        announced = deleted = False
+        delete_retry_at = 0.0
+        while True:
+            st = self._poll_job(run, client, name)
+            now = time.monotonic()
+            if st is not None:
+                if st.finished:
+                    run.job_phase, run.job_pod = st.phase, st.pod or run.job_pod
+                    if announced:
+                        log.info("run %s: job %s ended (%s) %.0fs after %s", run.run_id, name, st.phase, now - started, why)
+                    return True
+                if not self._owned(run, st):
+                    log.error("run %s: job %s is not owned by this request (labels %s) — left alone, not waited for",
+                              run.run_id, name, st.labels)
+                    return False
+                if not announced:
+                    announced = True
+                    log.info("run %s: %s — waiting for job %s (%s) to end before the next migration starts", run.run_id, why,
+                             name, st.phase)
+                    self._push(run, "node", {"node": "job", "update": {"state": "ending", "job": name, "message": why}})
+                if delete_after is not None and not deleted and now - started >= delete_after and now >= delete_retry_at:
+                    try:
+                        client.delete_job(name)
+                    except K8sError as e:
+                        delete_retry_at = now + DELETE_RETRY_S
+                        log.warning("run %s: job %s not deleted (%s) — retrying in %.0fs", run.run_id, name, e, DELETE_RETRY_S)
+                    else:
+                        deleted = True
+                        _append_journal(run.run_dir, {"event": "job_deleted", "run_id": run.run_id, "job": name, "reason": why})
+                        log.warning("run %s: job %s deleted (%s) — waiting until it is gone", run.run_id, name, why)
+            if self.closing.is_set():              # server shutdown: the next Main reads the state on disk and watches the Job on
+                run.keep_state = True
+                log.warning("run %s: web server shutting down while job %s has not ended — the next web process watches it",
+                            run.run_id, name)
+                return False
+            if now - warned >= HOLD_WARN_S:
+                warned = now
+                log.warning("run %s: job %s has not ended %.0fs after %s — this run keeps its turn, the next migration waits",
+                            run.run_id, name, now - started, why)
+            with run.cond:
+                run.cond.wait(self.job_poll_s)
 
     def _watch_job(self, run: Run, client: Any, name: str) -> int:
         """Job 을 끝까지 지켜본다(생성 직후와 이어받기가 함께 쓴다): '파드' 단계 이벤트, 파드가 Running 이 되면 ``running``, 끝나면
         종료 코드 — 이 실행·시도의 ``job-status.json`` 이 먼저, 없으면 컨테이너 종료 코드(검증 안 됨), Job 이 사라졌으면 ``lost``. 멈춤
-        요청은 ``stop.request`` 를 쓰고, 유예가 지나면 우리 라벨의 Job 만 지우고 사라질 때까지 기다린다. 서버 종료 때는 Job 을 두고 빠진다.
+        요청은 ``stop.request`` 를 쓰고, 유예가 지나면 우리 라벨의 Job 만 지운다. 서버 종료 때는 Job 을 두고 빠진다.
+        **이 함수는 Job 이 끝난 것을 확인하고서야 돌아온다**(리뷰 2026-11-10; 서버 종료와 남의 Job 만 예외): 결과 파일을 받았어도 파드가
+        끝날 때까지 ``_hold_until_ended``, API 가 답하지 않으면 답할 때까지 기다린다(실패로 끝내지 않는다).
 
-        Watch the Job to its end (shared by a fresh create and an adoption)."""
+        Watch the Job to its end (shared by a fresh create and an adoption). Returns only once the Job is confirmed ended,
+        except at server shutdown or for a Job that is not this request's."""
         last: tuple[str, str | None] | None = None
         stop_sent: float | None = None
-        api_failing_since: float | None = None
         while True:
             code = self._accept_status(run)
-            if code is not None:                   # the pod finished and said so on the volume (needs no API)
+            if code is not None:                   # the pod said it finished, on the volume — the turn waits until it really ended
+                self._hold_until_ended(run, client, name, delete_after=self.job_exit_grace_s, why="the result is on the volume")
                 return code
-            try:
-                st = client.job_state(name)
-                api_failing_since = None
-            except K8sError as e:                  # a transient API hiccup must not abort a 40-minute build (review 2026-11-05)
-                now = time.monotonic()
-                api_failing_since = api_failing_since or now
-                if now - api_failing_since > self.job_api_grace_s:
-                    raise
-                log.warning("run %s: job %s state unavailable (%s) — retrying for up to %.0fs", run.run_id, name, e,
-                            self.job_api_grace_s)
-                with run.cond:
-                    run.cond.wait(self.job_poll_s)
-                continue
-            if (st.phase, st.pod) != last:
-                last = (st.phase, st.pod)
-                run.job_phase, run.job_pod = st.phase, st.pod
-                self._push(run, "node", {"node": "job", "update": {"state": st.phase.lower(), "job": name,
-                                                                    "pod": st.pod, "message": st.message}})
-                log.info("run %s: job %s %s%s%s", run.run_id, name, st.phase, f" pod {st.pod}" if st.pod else "",
-                         f" ({st.message})" if st.message else "")
-            if st.phase == "Running" and run.control is not None and run.control.state in (
-                    RunState.QUEUED.value, RunState.CREATING.value, RunState.CREATED.value):
-                self._transition(run, RunState.RUNNING, job=name)
-            if st.finished:
-                code = self._await_status(run, name, st)   # the Worker writes job-status.json just before the pod ends — NFS may show it late
-                if code is not None:
-                    return code
-                run.verified = False
-                if st.phase == "Missing":
-                    run.error = f"job {name} disappeared (deleted outside sbmig?) — no job-status.json for this run/attempt"
+            st = self._poll_job(run, client, name)   # None: the API does not answer — keep the turn, ask again
+            if st is not None:
+                if (st.phase, st.pod) != last:
+                    last = (st.phase, st.pod)
+                    run.job_phase, run.job_pod = st.phase, st.pod
+                    self._push(run, "node", {"node": "job", "update": {"state": st.phase.lower(), "job": name,
+                                                                        "pod": st.pod, "message": st.message}})
+                    log.info("run %s: job %s %s%s%s", run.run_id, name, st.phase, f" pod {st.pod}" if st.pod else "",
+                             f" ({st.message})" if st.message else "")
+                if st.phase == "Running" and run.control is not None and run.control.state in (
+                        RunState.QUEUED.value, RunState.CREATING.value, RunState.CREATED.value):
+                    self._transition_soft(run, RunState.RUNNING, job=name)
+                if st.finished:
+                    code = self._await_status(run, name, st)   # the Worker writes job-status.json just before the pod ends — NFS may show it late
+                    if code is not None:
+                        return code
+                    run.verified = False
+                    if st.phase == "Missing":
+                        if run.cancel.is_set() or (run.run_dir / STOP_REQUEST_FILE).is_file():
+                            # 멈춤을 요청한 실행의 Job 이 사라졌다(이전 Main 이 지우다 내려갔거나 밖에서 지웠다) — lost 가 아니라 stopped
+                            run.error = f"stopped: job {name} is gone after the stop request — no job-status.json for this run/attempt"
+                            run.final_state = RunState.STOPPED.value
+                            return EXIT_ABORTED
+                        run.error = f"job {name} disappeared (deleted outside sbmig?) — no job-status.json for this run/attempt"
+                        run.final_state = RunState.LOST.value
+                        return EXIT_ABORTED
+                    if st.exit_code is not None:
+                        run.result_source = "container"
+                        log.warning("run %s: job %s ended (exit %s) without a job-status.json for attempt %d — result not verified",
+                                    run.run_id, name, st.exit_code, run.attempt)
+                        return int(st.exit_code)
+                    run.error = st.message or f"job {name} {st.phase.lower()} without a container exit code"
                     run.final_state = RunState.LOST.value
                     return EXIT_ABORTED
-                if st.exit_code is not None:
-                    run.result_source = "container"
-                    log.warning("run %s: job %s ended (exit %s) without a job-status.json for attempt %d — result not verified",
-                                run.run_id, name, st.exit_code, run.attempt)
-                    return int(st.exit_code)
-                run.error = st.message or f"job {name} {st.phase.lower()} without a container exit code"
-                run.final_state = RunState.LOST.value
-                return EXIT_ABORTED
             if self.closing.is_set():              # server shutdown: the Job goes on, the next server answers from files
                 run.error = "web server shut down while the job was running — the job continues in the cluster"
                 run.keep_state = True
                 return EXIT_ABORTED
             if run.cancel.is_set():
                 if stop_sent is None:
-                    (run.run_dir / STOP_REQUEST_FILE).write_text("stop requested from the web UI\n", encoding="utf-8")
-                    stop_sent = time.monotonic()
-                    _append_journal(run.run_dir, {"event": "stop_request_sent", "run_id": run.run_id, "job": name})
-                    log.info("run %s: stop requested — %s written for job %s", run.run_id, STOP_REQUEST_FILE, name)
-                elif time.monotonic() - stop_sent > self.job_stop_grace_s:
+                    try:
+                        (run.run_dir / STOP_REQUEST_FILE).write_text("stop requested from the web UI\n", encoding="utf-8")
+                    except OSError as e:           # the volume hiccuped: ask again on the next poll, never drop the watch
+                        log.warning("run %s: %s not written (%s) — retrying", run.run_id, STOP_REQUEST_FILE, e)
+                    else:
+                        stop_sent = time.monotonic()
+                        _append_journal(run.run_dir, {"event": "stop_request_sent", "run_id": run.run_id, "job": name})
+                        log.info("run %s: stop requested — %s written for job %s", run.run_id, STOP_REQUEST_FILE, name)
+                elif st is not None and time.monotonic() - stop_sent > self.job_stop_grace_s:
                     run.final_state = RunState.STOPPED.value
                     if not self._owned(run, st):
                         # 같은 이름이라도 라벨이 다르면 다른 요청의 Job 이다 — 지우지 않는다
@@ -888,11 +1106,9 @@ class RunManager:
                         return EXIT_ABORTED
                     log.warning("run %s: job %s still running %.0fs after the stop request — deleting it",
                                 run.run_id, name, self.job_stop_grace_s)
-                    client.delete_job(name)
-                    _append_journal(run.run_dir, {"event": "job_deleted", "run_id": run.run_id, "job": name})
                     run.error = "stopped: the job was deleted after the grace period"
-                    if not self._wait_gone(run, client, name):
-                        run.error += f" (still present {self.job_api_grace_s:.0f}s after the delete)"
+                    # 지운 뒤 사라질 때까지 기다린다(기한 없음) — 파드가 아직 볼륨에 쓰는 동안 다음 이관을 시작하지 않게
+                    self._hold_until_ended(run, client, name, delete_after=0.0, why="the stop grace period is over")
                     return EXIT_ABORTED
             with run.cond:
                 run.cond.wait(self.job_poll_s)
@@ -916,23 +1132,6 @@ class RunManager:
             if code is not None:
                 return code
         return None
-
-    def _wait_gone(self, run: Run, client: Any, name: str) -> bool:
-        """삭제 뒤 Job 이 사라지거나 끝날 때까지(``job_api_grace_s`` 까지) 지켜본다 — 파드가 아직 볼륨에 쓰는 동안 끝났다고 하지 않게.
-
-        After a delete, poll until the Job is Missing / terminal (bounded by `job_api_grace_s`)."""
-        deadline = time.monotonic() + self.job_api_grace_s
-        while True:
-            try:
-                if client.job_state(name).finished:
-                    return True
-            except K8sError as e:
-                log.debug("run %s: job %s state after delete unavailable: %s", run.run_id, name, e)
-            if time.monotonic() > deadline:
-                log.warning("run %s: job %s still present %.0fs after the delete", run.run_id, name, self.job_api_grace_s)
-                return False
-            with run.cond:
-                run.cond.wait(self.job_poll_s)
 
     def _prune_locked(self) -> None:
         """끝난 실행이 ``max_finished_runs`` 를 넘으면 오래된 것부터 메모리에서 뺀다(호출자가 ``self._lock``
@@ -988,7 +1187,10 @@ class RunManager:
         return orch.report
 
     def _push(self, run: Run, kind: str, data: Any) -> None:
-        """실행 기록에 이벤트를 붙이고 기다리는 SSE 스트림을 깨운다(``node`` 면 마지막 노드 이름도 갱신)."""
+        """실행 기록에 이벤트를 붙이고 기다리는 SSE 스트림을 깨운다(``node`` 면 마지막 노드 이름도 갱신). 출력 정제가 걸려 있으면
+        이벤트의 문자열도 지나간다 — 화면으로 가는 또 하나의 출력이다."""
+        if output_scrubbing():
+            data = scrub_json(data)
         with run.cond:
             run.history.append((kind, data))
             if kind == "node":
@@ -1032,6 +1234,29 @@ class RunManager:
                  ", ".join(stopped) or "-", killed)
         return {"stopped": stopped, "killed": killed}
 
+    @staticmethod
+    def _final_pass_pending(run: Run | None, control: ControlState | None) -> bool:
+        # 끝날 때의 마지막 정제가 아직 남았는가. 메모리의 실행: 끝나지 않았고, Job 이거나(Worker 가 끝에 지운다) 이 프로세스에
+        # 출력 정제가 걸려 있다. 메모리에 없는 실행: Main 의 control 상태가 아직 끝나지 않았다(Job 이 돌고 있을 수 있다)
+        if run is not None:
+            return not run.done.is_set() and bool(run.job or output_scrubbing())
+        return control is not None and not control.terminal
+
+    def file_withheld(self, run_id: str, name: str) -> bool:
+        """이 실행의 ``name`` 을 아직 내주면 안 되는가 — 마지막 정제(실행이 끝날 때 실행 폴더를 훑어 비밀 값을 지우는 단계)가 남았고
+        ``name`` 이 쓰는 순간 정제되는 파일(``LIVE_FILES``)이 아닐 때 True.
+
+        Must `name` of this run still be withheld: the end-of-run redaction pass is still to come and `name` is not one of
+        the files redacted as they are written (`LIVE_FILES`)."""
+        if name in LIVE_FILES:
+            return False
+        run = self.runs.get(run_id)
+        control = None
+        if run is None:
+            rd = self.run_dir(run_id)
+            control = ControlState.read(rd) if rd.is_dir() else None
+        return self._final_pass_pending(run, control)
+
     def status(self, run_id: str) -> dict[str, Any]:
         """실행 상태 dict. 메모리에 있으면 queued / running / finished, 없으면(밀려남·이전 프로세스)
         web-status.json → report.json → 폴더 유무 순으로 finished / unknown / missing.
@@ -1040,12 +1265,15 @@ class RunManager:
         rd = self.run_dir(run_id)
         info: dict[str, Any] = {"run_id": run_id, "run_dir": str(rd), "exists": rd.is_dir() or run is not None,
                                 "mode": self.effective_mode}
+        control: ControlState | None = None
         if run is not None:
             info["state"] = "finished" if run.done.is_set() else ("running" if run.active.is_set() else "queued")
             info["exit_code"] = run.exit_code
             info["node"] = run.last_node
             if run.job:
                 info["job"] = {"name": run.job_name, "phase": run.job_phase, "pod": run.job_pod}
+                if run.job_note:               # e.g. the Kubernetes API does not answer: why this run still holds its turn
+                    info["job"]["note"] = run.job_note
                 info["attempt"] = run.attempt
                 info["verified"] = run.verified
                 if run.control is not None:
@@ -1101,8 +1329,9 @@ class RunManager:
                 info["open"], info["resolved"] = entry_counts(data.get("error_entries") or [])   # v2.1 error list
             except (OSError, ValueError):
                 pass
+        pending = self._final_pass_pending(run, control)       # 마지막 정제 전: 쓰는 순간 정제되는 파일만 목록에 올린다
         for name in SERVED_FILES:
-            if (rd / name).is_file():
+            if (rd / name).is_file() and (not pending or name in LIVE_FILES):
                 info.setdefault("files", []).append(name)
         return info
 
@@ -1271,8 +1500,11 @@ def _append_journal(rd: Path, event: dict[str, Any]) -> None:
     """실행 폴더의 journal.jsonl 에 한 줄(ts 포함) — Job 모드에서 웹이 쓰는 몇 줄(web_run, job_created, stop_request_sent)."""
     try:
         line = {"ts": datetime.now(timezone.utc).isoformat(), **event}
+        text = json.dumps(line, default=str)
+        if output_scrubbing():                    # 값 단위로: 직렬화한 줄을 통째로 바꾸면 JSON 이 깨질 수 있다
+            text = json.dumps(scrub_json(json.loads(text)))
         with open(rd / "journal.jsonl", "a", encoding="utf-8") as fh:
-            fh.write(json.dumps(line, default=str) + "\n")
+            fh.write(text + "\n")
     except (OSError, TypeError, ValueError) as e:
         log.debug("journal line %s not written: %s", event.get("event"), e)
 

@@ -53,6 +53,9 @@ spec:
             - {name: SBMIG_BUILD__LOCAL_REPO, value: "null"}                       # null = Maven 기본 ~/.m2/repository(아래 m2 볼륨)
             - {name: SBMIG_SCRIPT__PYTHON, value: "null"}                          # null = sbmig 를 돌리는 그 python
             - {name: SBMIG_LLM__RECORD_DIR, value: "${LLM_RECORD_DIR:-}"}          # yml 의 PC 경로 대신 sbmig-env 의 LLM_RECORD_DIR 만 따른다(없으면 기록 안 함). sbmig 가 푸는 자리표시 — 그대로 둔다
+            # 출력 정제: 로그 줄·저널 줄·예외 traceback 에서 비밀 값(Secret 으로 들어온 값, 실행 중 받은 토큰)을 **쓰는 순간** *** 로 바꾼다 —
+            # 파드 로그(kubectl logs)와 화면의 로그 탭에 값이 보이지 않게. 켜져 있으면 report.md 같은 결과 파일은 실행이 끝난 뒤(마지막 정제 뒤)에만 내려받을 수 있다
+            - {name: SBMIG_REDACT_OUTPUT, value: "1"}
           envFrom:
             - configMapRef: {name: sbmig-env}
             - secretRef: {name: sbmig-llm}

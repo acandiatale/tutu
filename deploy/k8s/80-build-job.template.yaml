@@ -50,6 +50,9 @@ spec:
             - {name: SBMIG_BUILD__MVN, value: "mvn"}
             - {name: SBMIG_BUILD__LOCAL_REPO, value: "null"}                        # null = Maven 기본 ~/.m2/repository(아래 m2 볼륨)
             - {name: SBMIG_SCRIPT__PYTHON, value: "null"}                           # null = sbmig 를 돌리는 그 python
+            # 출력 정제: sbmig 가 로그 줄·저널 줄·예외 traceback 에서 비밀 값(아래 Secret 의 값, 실행 중 받은 토큰)을 쓰는 순간 *** 로 바꾸고,
+            # 끝날 때 실행 폴더의 나머지 파일(Maven 출력, 보고서)을 한 번 더 훑는다 — 파드 로그와 push 되는 보고서에 값이 남지 않게
+            - {name: SBMIG_REDACT_OUTPUT, value: "1"}
           envFrom:
             - configMapRef: {name: sbmig-env}     # LLM_* 중 비밀 아닌 것(게이트웨이 주소, 에셋 id, 토큰 URL, role 이름) + SBMIG_<섹션>__<키> 덮어쓰기
             - secretRef: {name: sbmig-llm}        # LLM_APP_TOKEN(또는 LLM_API_KEY), NEXUS_USER / NEXUS_PASSWORD — 뒤에 두어 Secret 이 이긴다

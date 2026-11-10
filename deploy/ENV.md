@@ -1,6 +1,6 @@
 # sbmig 쿠버네티스 환경 변수 목록 (인프라팀 전달용)
 
-작성 2026-11-05, 고침 2026-11-10(회사 설정을 이미지에 굽는다). 기준 매니페스트: `deploy/k8s/20-configmap.yaml`(ConfigMap `sbmig-config` =
+작성 2026-11-05, 고침 2026-11-10(회사 설정을 이미지에 굽는다; Job 모드의 환경 변수 대조·Job 종료 확인·출력 정제). 기준 매니페스트: `deploy/k8s/20-configmap.yaml`(ConfigMap `sbmig-config` =
 `settings.xml`, ConfigMap `sbmig-env` = 환경 변수), `deploy/k8s/30-secret.example.yaml`(Secret `sbmig-llm`, `sbmig-git`),
 `deploy/k8s/40-deployment.yaml`(웹 UI 에이전트), `deploy/k8s/81-web-job.template.yaml`(웹 파드가 업로드마다 만드는 Job 의 틀),
 `deploy/k8s/80-build-job.template.yaml`(git 으로 받는 요청별 빌드 Job). 자세한 운영 설명은 `deploy/README.md`.
@@ -21,13 +21,19 @@
 
 나누는 기준: **구조적인 회사 사실은 `artifacts.yml`, 시험 운영 중 자주 손대는 숫자·스위치는 env, 토큰·비밀번호는 Secret.**
 
-- `sbmig-env` 를 바꾼 뒤: 웹 파드는 재시작한다(`kubectl -n agent rollout restart deploy/sbmig`). Job 파드는 만들어질 때 읽으므로 다음 업로드부터 적용된다.
+- `sbmig-env` 를 바꾼 뒤에는 **웹 파드를 재시작한다**(`kubectl -n agent rollout restart deploy/sbmig`). 웹 파드는 시작할 때 한 번 읽고 Job 파드는
+  만들어질 때 읽는다 — Job 모드에서는 Worker 가 자기 환경을 그 Job 을 만든 웹 파드의 것과 대조해, 다르면 몇 초 만에 다른 키 이름을 적고
+  멈춘다(기본; §2 `SBMIG_JOB_ENV_PIN`, README §3 "환경 변수 대조"). 81 틀을 새로 받았으면 ConfigMap `sbmig-job-template` 도 다시 만든 뒤
+  재시작한다(웹 파드는 시작할 때 틀을 읽어 둔다; §8).
+- **값을 비워 두지 않는다.** `SBMIG_<섹션>__<키>: ""` 는 YAML null 로 읽혀 구운 yml 의 값을 "없음" 으로 덮는다(기본값으로 돌아가지 않고,
+  키에 따라 실행이 시작부터 실패한다). 안 쓸 키는 값을 지우지 말고 줄째 주석으로 둔다.
 - 키 이름이 틀리면(철자, 들여쓰기) 시작 로그에 `config: … is not a known key and is ignored` 로 뜬다. env 이름이 틀려도 같은 줄이
   `config: env override SBMIG_*__*: …` 로 뜬다. 이 줄이 없으면 이름은 모두 맞은 것이다.
 - 웹 파드(40)와 80 의 Job 은 `envFrom: [configMapRef sbmig-env, secretRef sbmig-llm]` 순서로 읽는다. 같은 이름이 양쪽에 있으면 Secret 이 이기고,
   매니페스트의 `env` 에 직접 적힌 이름은 둘 다 이긴다.
 - **웹 파드가 만드는 Job(81 틀)은 `envFrom` 을 쓰지 않는다**(Main 이 시작할 때 틀을 검증하고 거절한다). 변수마다 `configMapKeyRef` / `secretKeyRef` 한 줄이며,
-  §3 의 LLM 값과 §5 의 키는 전부 틀에 들어 있다. `sbmig-env` 에 표에 없는 새 키를 더하면 81 틀에도 한 줄 더해야 Job 파드에 닿는다.
+  §3 의 LLM 값과 §5 의 키는 전부 틀에 들어 있다. `sbmig-env` 에 표에 없는 새 키를 더하면 81 틀에도 한 줄 더해야 Job 파드에 닿는다 — 설정 키
+  (`SBMIG_<섹션>__<키>`, 설정 파일이 읽는 LLM 값)라면 그 줄 없이는 대조가 "웹 파드에만 있음" 으로 Job 을 멈춘다.
 
 ## 2. ConfigMap `sbmig-env` — 웹 파드 동작
 
@@ -45,6 +51,9 @@
 | `KUBECONFIG` | (없음) / `/etc/kube/config` (Deployment 의 env) | 인프라팀이 서비스 계정 대신 kubeconfig Secret 을 주는 방식일 때. 파일이 있으면 서비스 계정 토큰 대신 이것으로 쿠버네티스 API 를 부른다(token / 클라이언트 인증서 사용자; `exec` 는 거절). 개발 PC 에서 `k8s-job` 이 `local-job` 으로 내려가지 않게도 한다 |
 | `SBMIG_JOB_POLL_S` | `2` | Job 상태 조회 간격(초) |
 | `SBMIG_JOB_STOP_GRACE_S` | `2700` | 멈춤 요청(stop.request) 뒤 Job 을 지우기까지 기다리는 시간(초) — Maven 빌드 + OpenRewrite 한 번보다 길게 |
+| `SBMIG_JOB_EXIT_GRACE_S` | `120` | Worker 가 결과(`job-status.json`)를 쓴 뒤에도 파드가 남아 있으면 이 초 뒤에 그 Job(우리 라벨인 것만)을 지우고 사라질 때까지 기다린다. 다음 업로드는 Job 이 끝난 것을 확인한 뒤에 시작한다 |
+| `SBMIG_JOB_API_GRACE_S` | `300` | **알림만**(2026-11-10 부터): 쿠버네티스 API 가 이 초 동안 답하지 않으면 로그 ERROR 한 줄·저널 `job_api_unavailable`·화면 안내로 한 번 알리고 그 뒤 10분마다 로그에 다시 남긴다. 실행을 실패로 끝내지도, 차례를 넘기지도 않는다 — API 가 다시 답해(`job_api_back`) Job 이 끝난 것을 확인할 때까지 다음 업로드는 `queued` 로 기다린다 |
+| `SBMIG_JOB_ENV_PIN` | `refuse` (k8s-job 기본) / `warn` / `off` (local-job 기본) | Job 파드의 환경 변수(설정 파일의 `${…}` 변수, `SBMIG_<섹션>__<키>`)가 그 Job 을 만든 웹 파드와 다를 때: `refuse` = 그 Job 은 돌지 않고 다른 키 이름을 적고 끝난다, `warn` = 저널 `worker_env_differs` 에 적고 Job 파드의 값으로 돈다, `off` = 대조하지 않는다. 웹 파드가 시작할 때 읽는다(바꾸면 재시작). 81 틀에는 줄이 필요 없다 — Worker 는 웹 파드가 `control/state.json` 에 적은 정책을 따른다. `warn` 은 개발 PC 가 `KUBECONFIG` 로 클러스터에 Job 을 만들 때처럼 두 환경이 원래 다른 경우에만 |
 | `SBMIG_JOB_STATUS_GRACE_S` | `90` | Job 이 끝난 뒤 Worker 의 `job-status.json` 이 보일 때까지 기다리는 초. NFS 의 속성 캐시(기본 최대 60초)보다 길어야 끝난 결과를 "검증 안 됨" 으로 잘못 적지 않는다 |
 | `SBMIG_LOCAL_JOB_ECHO` | `1` | 개발 PC 의 `local-job` 에서 서브프로세스 출력을 서버 콘솔에도 `[job <run id>]` 로 흘릴지. `0` = 파일(job-local.log)에만 |
 | `SBMIG_LOCAL_JOB_COLUMNS` | `160` | `local-job` 서브프로세스의 콘솔 줄 폭(파이프라 기본 80칸으로 접힌다). 자식은 항상 UTF-8 로 쓴다 |
@@ -59,6 +68,7 @@
 | `LLM_TOKEN_URL` | `https://<게이트웨이 호스트>/<토큰 발급 경로>` | 앱 토큰 → 접근 토큰 교환 주소 |
 | `LLM_MODEL` | `build_error_fixer` | `params.role` — 수정 1~2회차와 구조 리뷰. 게이트웨이가 모델에 매핑 |
 | `LLM_ESCALATION_MODEL` | `escalation_fixer` | `params.role` — 케이스 3회차부터 / 정체 뒤. 비우면 상위 모델 없음 |
+| `LLM_RECIPE_MODEL` | (주석) | 계획 검토(`plan.advisor: llm`)의 값싼 모델. 비우면 `LLM_MODEL`; 기본 흐름은 쓰지 않는다. 81 틀에 키 줄이 있다(두 파드의 값을 대조하므로) |
 | `LLM_RECORD_DIR` | (비움) | 요청·응답 기록(비밀 없음, 프로젝트 소스가 들어간다). 웹 파드 안에서 돌리는 in-process 진단 때만 `/data/llm-records`. Job 틀에는 넣을 수 없다(위 `SBMIG_WORKER_LLM_RECORDS` 줄) |
 | `LLM_RESPONSE_PATH` | (비움) | `sbmig llm-probe` 가 응답 본문을 못 찾을 때만 |
 
@@ -114,6 +124,13 @@
 | `SBMIG_BUILD__LOCAL_REPO` | `null` (`~/.m2` 볼륨) | 40 · 81 · 80 |
 | `SBMIG_SCRIPT__PYTHON` | `null` (이미지의 python) | 40 · 81 · 80 |
 | `SBMIG_LLM__RECORD_DIR` | `${LLM_RECORD_DIR:-}` | 40 — `LLM_RECORD_DIR` 가 있을 때만 기록한다 |
+| `SBMIG_REDACT_OUTPUT` | `1` | 40 · 80 (81 은 없음 — Worker 가 자식 `sbmig run` 에 언제나 켠다) |
+
+`SBMIG_REDACT_OUTPUT` 은 경로가 아니라 스위치다(2026-11-10). `1` 이면 sbmig 가 로그 줄·저널 줄·예외 traceback·화면 이벤트에서 비밀 값
+(이름에 TOKEN / PASSWORD / SECRET / API_KEY 가 든 환경 변수의 값, 실행 중에 교환해 받은 게이트웨이 토큰, URL 의 `user:pass@`)을 **쓰는 순간**
+`***` 로 바꾼다 — 파드 로그와 화면의 로그 탭에도 값이 나가지 않는다. 실행이 끝날 때 실행 폴더(보고서, `logs/` 의 Maven 출력)를 한 번 더 훑으므로
+실행 중에는 `sbmig.log` / `journal.jsonl` 만 내려받을 수 있다(나머지는 HTTP 409). 실패하면 닫힌다: 정제기를 걸 수 없으면 `sbmig` 은 exit 3, 웹 서버는
+뜨지 않고, 한 줄을 지우다 실패하면 그 줄 대신 `line withheld` 가 든 고정 문구가 나간다. 끄지 않는다.
 
 ## 7. 환경 변수가 아닌 것
 
@@ -133,7 +150,8 @@
 kubectl apply -f deploy/k8s/20-configmap.yaml                 # sbmig-config(settings.xml) + sbmig-env (<…> 자리를 채운 뒤)
 cp deploy/k8s/30-secret.example.yaml deploy/k8s/30-secret.yaml && $EDITOR deploy/k8s/30-secret.yaml
 kubectl apply -f deploy/k8s/30-secret.yaml
-kubectl -n agent rollout restart deploy/sbmig && kubectl -n agent rollout status deploy/sbmig
+kubectl -n agent create configmap sbmig-job-template --from-file=deploy/k8s/81-web-job.template.yaml --dry-run=client -o yaml | kubectl apply -f -   # Job 모드: 81 틀을 새로 받았을 때
+kubectl -n agent rollout restart deploy/sbmig && kubectl -n agent rollout status deploy/sbmig   # sbmig-env / Job 틀을 바꾼 뒤에는 언제나
 kubectl -n agent logs deploy/sbmig | grep -E "config: |sbmig web UI ready|open to the network"   # 틀린 키 이름 / 시작 상태
 kubectl -n agent exec deploy/sbmig -- ls /app/config/artifacts.yml                               # 회사 설정이 이미지에 들어 있는지
 kubectl -n agent exec deploy/sbmig -- python -m sbmig.cli llm-probe                              # 게이트웨이 토큰 교환 … HTTP 200

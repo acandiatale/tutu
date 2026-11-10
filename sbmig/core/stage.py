@@ -22,6 +22,8 @@ import contextvars
 import logging
 from typing import Iterator
 
+from .scrub import scrub
+
 _STAGE: contextvars.ContextVar[str] = contextvars.ContextVar("sbmig_stage", default="-")
 
 LOG_FORMAT = "%(asctime)s %(levelname)-7s [%(stage)s] %(message)s"
@@ -79,10 +81,16 @@ class StageFormatter(logging.Formatter):
     A formatter whose format string may use `%(stage)s`: records from any logger get the current stage."""
 
     def format(self, record: logging.LogRecord) -> str:
-        """stage 를 채운 뒤 일반 포맷."""
+        """stage 를 채운 뒤 일반 포맷. 완성된 줄(예외 traceback 포함)은 출력 정제 훅을 지난다(`sbmig.core.scrub`)."""
         if not hasattr(record, "stage"):
             record.stage = _STAGE.get()
-        return super().format(record)
+        return scrub(super().format(record))
+
+    def formatMessage(self, record: logging.LogRecord) -> str:  # noqa: N802 — logging.Formatter 의 이름
+        """메시지 부분만 포맷. RichHandler 는 예외가 달린 레코드에서 `format` 을 건너뛰고 이것만 부르므로 여기서도 정제한다."""
+        if not hasattr(record, "stage"):
+            record.stage = _STAGE.get()
+        return scrub(super().formatMessage(record))
 
 
 def install_stage_filter(target: logging.Logger | logging.Handler | None = None) -> None:

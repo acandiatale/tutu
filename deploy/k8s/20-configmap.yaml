@@ -43,7 +43,10 @@ data:
 # 환경 변수 ConfigMap — 비밀이 아닌 설정 전부(토큰·비밀번호는 Secret sbmig-llm / sbmig-git).
 # 누가 읽나: 웹 파드(40-deployment.yaml)와 one-Job 모델(80-build-job.template.yaml)은 envFrom 으로 전부 읽는다. 웹이 만드는 Job(81-web-job.template.yaml)은
 #   envFrom 을 못 써서 그 틀에 키마다 configMapKeyRef 가 적혀 있다 — 그룹 2 · 3 의 키는 전부 81 에 있다(여기 새 키를 더하면 81 에도 한 줄; tests/deploy 가 본다).
-# 언제 읽나: 웹 파드는 재시작해야 읽고(kubectl -n agent rollout restart deploy/sbmig), Job 파드는 만들어질 때 읽는다(다음 업로드부터).
+# 언제 읽나: 웹 파드는 시작할 때, Job 파드는 만들어질 때 읽는다. 그래서 이 ConfigMap 을 고친 뒤에는 웹 파드를 재시작한다
+#   (kubectl -n agent rollout restart deploy/sbmig) — 안 하면 다음 Job 이 몇 초 만에 웹 파드와 값이 다른 키 이름을 적고 멈춘다(Worker 가 자기
+#   환경을 웹 파드의 것과 대조한다; 그룹 1 의 SBMIG_JOB_ENV_PIN 을 warn / off 로 두면 완화된다). 81(Job 틀)을 고쳤을 때도 ConfigMap
+#   sbmig-job-template 을 다시 만들고 웹 파드를 재시작한다(웹 파드는 시작할 때 틀을 읽어 둔다).
 #   그룹 1 — 웹 파드 동작.   그룹 2 — LLM 게이트웨이(비밀 아닌 것).   그룹 3 — 이미지에 구운 artifacts.yml / default.yml 의 설정 키를 덮어쓰는
 #   SBMIG_<섹션>__<키>(밑줄 두 개 = 한 단계 아래; 값은 YAML 로 읽으므로 숫자·true/false·["목록"] 그대로). 시험 운영 중 자주 손대는
 #   키만 적었고, 주석을 풀면 그 값이 artifacts.yml 보다 우선한다. 모르는 키 이름은 시작 로그에 `config: … is not a known key` 로 뜬다.
@@ -66,7 +69,13 @@ data:
   # SBMIG_WEB_MODE: "k8s-job"           # 업로드마다 Job 하나(공유 PVC) — README §3 "켜는 법"(RWX PVC, 권한, Job 틀 ConfigMap) 뒤에 켠다
   # SBMIG_K8S_NAMESPACE: ""             # 비우면 파드의 namespace(서비스 계정) 또는 kubeconfig context 의 namespace
   # SBMIG_JOB_TEMPLATE 은 Deployment 의 env 가 /templates/81-web-job.template.yaml 로 정한다(ConfigMap sbmig-job-template) — 여기서는 안 건드린다
-  # SBMIG_JOB_STOP_GRACE_S: "600"       # 멈춤 요청 뒤 Job 삭제까지
+  # SBMIG_JOB_STOP_GRACE_S: "2700"      # 멈춤 요청 뒤 Job 삭제까지(초). Maven 빌드 한 번 + OpenRewrite 보다 길어야 보고서를 잃지 않는다
+  # SBMIG_JOB_EXIT_GRACE_S: "120"       # 결과 파일(job-status.json)을 쓴 뒤에도 파드가 남아 있으면 이 초 뒤에 그 Job 을 지운다
+  # SBMIG_JOB_API_GRACE_S: "300"        # 쿠버네티스 API 가 이 초 동안 답하지 않으면 로그·화면에 크게 알린다. 실행은 실패로 끝나지 않고
+  #                                     # 다음 업로드는 API 가 다시 답해 그 Job 이 끝난 것을 확인할 때까지 기다린다(두 이관이 겹치지 않게)
+  # SBMIG_JOB_ENV_PIN: "refuse"         # Job 파드의 환경(그룹 2 · 3 의 값, 설정 파일이 읽는 ${…} 변수)이 이 파드와 다를 때: refuse = 그 Job 은
+  #                                     # 돌지 않고 다른 키 이름을 적고 멈춘다(k8s-job 기본) | warn = 저널에 적고 Job 파드의 값으로 돈다 |
+  #                                     # off = 대조하지 않는다(local-job 기본). 값은 비교하지 않고 지문만 — 비밀(토큰·비밀번호)은 대조 대상이 아니다
   # ── 2. LLM 게이트웨이(비밀 아닌 것) ─────────────────────────────────────────────────────────────
   LLM_GATEWAY: "agent"                  # 사내 GPT 에이전트 게이트웨이 페이로드. 옛 모양이면 지운다(legacy)
   LLM_BASE_URL: "https://<게이트웨이 호스트>/api/serv/v1/agents/{asset_id}/chat/completions"   # {asset_id} 는 아래 값으로 채워진다
@@ -74,10 +83,13 @@ data:
   LLM_TOKEN_URL: "https://<게이트웨이 호스트>/<토큰 발급 경로>"
   LLM_MODEL: "build_error_fixer"        # params.role — 수정 1~2회차 + 구조 리뷰(게이트웨이가 모델에 매핑)
   LLM_ESCALATION_MODEL: "escalation_fixer"   # params.role — 케이스 3회차부터 / 정체 뒤
+  # LLM_RECIPE_MODEL: ""                # 계획 검토(plan.advisor: llm)의 값싼 모델. 비우면 LLM_MODEL; 기본 흐름(advisor: none)은 안 쓴다.
+  #                                     # default.yml 이 읽는 변수라 두 파드의 값을 대조한다 — 81 에도 같은 키 줄이 있다
   # LLM_RECORD_DIR: "/data/llm-records" # 요청·응답 기록(비밀 없음; 프로젝트 소스가 들어간다) — 웹 파드 안에서 돌리는 in-process 모드의 진단용.
   #                                     # Job 모드는 이 변수를 읽지 않는다: 81-web-job.template.yaml 의 SBMIG_WORKER_LLM_RECORDS 두 줄을 푼다
   # LLM_RESPONSE_PATH: ""               # llm-probe 가 응답 본문을 못 찾을 때만
   # ── 3. 자주 조정하는 설정 키(SBMIG_<섹션>__<키>) — 기본값을 적어 두었다 ─────────────────────────
+  #    값을 비워 두지 않는다: SBMIG_<섹션>__<키>: "" 는 YAML null 로 읽혀 yml 의 값을 없앤다 — 안 쓸 키는 주석으로 둔다
   # SBMIG_SCRIPT__MAX_LLM_TRIES_PER_CASE: "20"       # 케이스당 LLM 요청 상한(넘으면 BLOCKED repeated_failure). 회사 실행을 보며 줄인다
   # SBMIG_SCRIPT__MAX_AUGMENTS_PER_CASE: "15"        # 그중 보강(augment) 상한
   # SBMIG_SCRIPT__MAX_DECLINES_PER_CASE: "1"         # LLM 거절 몇 번에 needs_owner 로 넘기나

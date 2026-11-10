@@ -26,6 +26,7 @@ from pydantic import BaseModel, Field, PrivateAttr, ValidationInfo, field_valida
 log = logging.getLogger("sbmig.config")
 
 from .models import GAV
+from .scrub import refresh_secrets
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[2]          # repo root when running from source
 DEFAULT_CONFIG_PATH = PACKAGE_ROOT / "config" / "default.yml"
@@ -994,6 +995,22 @@ def _expand_env(value: Any) -> Any:
     return value
 
 
+def placeholder_names(value: Any) -> set[str]:
+    """값(문자열 / 목록 / dict — yml 을 읽은 구조) 안의 ``${VAR}`` / ``${VAR:-기본값}`` 자리표시자가 가리키는 환경 변수 이름들.
+    ``_expand_env`` 가 펼치는 자리와 같다(dict 의 키는 보지 않는다). 웹의 Main 이 "이 설정이 읽는 환경 변수"를 알아내는 데 쓴다
+    (``sbmig.web.contract.env_pin_names``).
+
+    The env names the `${VAR}` / `${VAR:-default}` placeholders inside a loaded yml structure refer to (the places
+    `_expand_env` expands; dict keys are not looked at)."""
+    if isinstance(value, str):
+        return {m.group(1) for m in _ENV_RE.finditer(value)}
+    if isinstance(value, list):
+        return set().union(*(placeholder_names(v) for v in value)) if value else set()
+    if isinstance(value, dict):
+        return set().union(*(placeholder_names(v) for v in value.values())) if value else set()
+    return set()
+
+
 def deep_merge(base: dict, override: dict) -> dict:
     """dict 를 깊게 합친다: 뒤의 것이 이기고, 양쪽이 dict 면 재귀, 나머지는 통째로 바꾼다."""
     out = dict(base)
@@ -1110,6 +1127,7 @@ def load_dotenv_files(*extra: str | Path) -> list[Path]:
             if k and (k not in os.environ or (k in _DOTENV_SET and os.environ[k] == _DOTENV_SET[k])):
                 os.environ[k] = v
                 _DOTENV_SET[k] = v
+    refresh_secrets()          # 방금 읽은 .env 에 비밀 값이 있을 수 있다: 출력 정제기가 걸려 있으면 바로 알게(sbmig.core.scrub)
     return found
 
 

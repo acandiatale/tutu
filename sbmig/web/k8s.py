@@ -16,7 +16,7 @@ import logging
 import os
 import re
 import tempfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +33,7 @@ TEMPLATE_ENV = "SBMIG_JOB_TEMPLATE"
 POLL_ENV = "SBMIG_JOB_POLL_S"
 STOP_GRACE_ENV = "SBMIG_JOB_STOP_GRACE_S"
 STATUS_GRACE_ENV = "SBMIG_JOB_STATUS_GRACE_S"   # Job 이 끝난 뒤 Worker 의 job-status.json 이 보일 때까지 기다리는 초(NFS 속성 캐시 — 기본 90)
+EXIT_GRACE_ENV = "SBMIG_JOB_EXIT_GRACE_S"       # 결과 파일을 받은 뒤 파드가 스스로 끝나기를 기다리는 초(넘기면 그 Job 을 지운다 — 기본 120)
 KUBECONFIG_ENV = "KUBECONFIG"              # 인프라팀 모델(2026-11-09): Agent 파드에 Secret 으로 마운트한 kubeconfig(/etc/kube/config)
 DEFAULT_TEMPLATE = "deploy/k8s/81-web-job.template.yaml"
 SA_DIR = Path("/var/run/secrets/kubernetes.io/serviceaccount")
@@ -93,8 +94,10 @@ class JobState:
     pod: str | None = None
     exit_code: int | None = None
     message: str = ""
-    # Job 의 metadata.labels (v2.1z-ac): 지우기 전에 소유(sbmig-owner / sbmig-run-id)를 확인한다. 라벨을 모르는 클라이언트(가짜, 로컬)는 빈 dict
-    labels: dict[str, str] = field(default_factory=dict)
+    # Job 의 metadata.labels: 이어받거나 지우기 전에 소유(sbmig-owner / sbmig-run-id)를 확인한다. **None = 이 클라이언트는 라벨을 알려 주지
+    # 못한다**(로컬 서브프로세스, 테스트용 가짜) — 그때만 이름을 믿는다. dict 는 API 가 답한 라벨 그대로이고, 비어 있으면(라벨 없는 Job)
+    # 우리 것이 아니다(리뷰 2026-11-10: 빈 dict 를 "모름" 으로 읽어 라벨 없는 Job 을 자기 것으로 다뤘다)
+    labels: dict[str, str] | None = None
 
     @property
     def finished(self) -> bool:
@@ -373,7 +376,7 @@ class K8sClient:
         아니면 파드 phase(Pending / Running; 대기 이유를 메시지로), 파드가 아직 없으면 Creating."""
         r = self._req("GET", f"{self._jobs()}/{name}", ok=(200, 404))
         if r.status_code == 404:
-            return JobState("Missing", message="job not found (deleted?)")
+            return JobState("Missing", message="job not found (deleted?)", labels={})
         body = r.json() or {}
         status = body.get("status") or {}
         labels = {str(k): str(v) for k, v in (((body.get("metadata") or {}).get("labels")) or {}).items()}

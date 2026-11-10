@@ -67,6 +67,7 @@ spec:
             - {name: LLM_TOKEN_URL, valueFrom: {configMapKeyRef: {name: sbmig-env, key: LLM_TOKEN_URL, optional: true}}}
             - {name: LLM_MODEL, valueFrom: {configMapKeyRef: {name: sbmig-env, key: LLM_MODEL, optional: true}}}
             - {name: LLM_ESCALATION_MODEL, valueFrom: {configMapKeyRef: {name: sbmig-env, key: LLM_ESCALATION_MODEL, optional: true}}}
+            - {name: LLM_RECIPE_MODEL, valueFrom: {configMapKeyRef: {name: sbmig-env, key: LLM_RECIPE_MODEL, optional: true}}}
             - {name: LLM_RESPONSE_PATH, valueFrom: {configMapKeyRef: {name: sbmig-env, key: LLM_RESPONSE_PATH, optional: true}}}
             - {name: NO_PROXY, valueFrom: {configMapKeyRef: {name: sbmig-env, key: NO_PROXY, optional: true}}}
             - {name: HTTP_PROXY, valueFrom: {configMapKeyRef: {name: sbmig-env, key: HTTP_PROXY, optional: true}}}

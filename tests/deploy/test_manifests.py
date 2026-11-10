@@ -1,7 +1,9 @@
 """2026-11-10 (the user: "일단 굽자" — the company artifacts.yml is baked into the image): what the k8s manifests promise about
 configuration. `sbmig-config` carries only settings.xml; the machine paths of a PC-tested yml are overridden by literal
 `SBMIG_<SECTION>__<KEY>` env lines in each manifest; every tuning key of `sbmig-env` reaches the Job pod through an explicit
-`configMapKeyRef` in the Worker template (it has no `envFrom`); the image build can refuse a context without the company yml."""
+`configMapKeyRef` in the Worker template (it has no `envFrom`); the image build can refuse a context without the company yml.
+Review 2026-11-10: the Worker compares its environment with the web pod's (`sbmig.web.contract.env_pins`) — the manifests as
+shipped, and with every documented key switched on, must pass that check, and a ConfigMap edit after the web pod started must not."""
 from __future__ import annotations
 
 import re
@@ -12,6 +14,7 @@ import yaml
 
 from sbmig.core import config as config_mod
 from sbmig.core.config import PACKAGE_ROOT, load_config
+from sbmig.web import contract
 
 K8S = PACKAGE_ROOT / "deploy" / "k8s"
 CONFIGMAP = K8S / "20-configmap.yaml"
@@ -25,6 +28,11 @@ PATHS = {"SBMIG_BUILD__SETTINGS_FILE": "/etc/sbmig/settings.xml", "SBMIG_BUILD__
 # sbmig-env keys (active or commented) the Job pod needs: config overrides, the LLM endpoint values, proxies
 FORWARDED = re.compile(r"^\s*#?\s*(SBMIG_[A-Z0-9_]+__[A-Z0-9_]+|LLM_[A-Z_]+|[A-Z]+_PROXY):", re.M)
 WEB_ONLY = {"LLM_RECORD_DIR"}        # in-process diagnostics only; the Worker template may not carry it
+# env pin simulation: config/artifacts.yml is git-ignored, the local e2e config stands in for the baked company file
+PIN_CONFIGS = ["artifacts.local-e2e.yml"]
+COMMENTED_KEY = re.compile(r"^\s*#\s*([A-Z][A-Z0-9_]+:\s.*)$")      # `# KEY: "value"   # explanation` (YAML once the `#` is gone)
+GROUP_HEADER = re.compile(r"^\s*# ── (\d)\.")
+NO_DIFF = {"differs": [], "main_only": [], "worker_only": []}
 
 
 def _docs(path: Path) -> list[dict]:
@@ -145,3 +153,163 @@ def test_the_image_build_can_require_the_company_config():
     for ignore in (PACKAGE_ROOT / ".dockerignore", PACKAGE_ROOT / "deploy" / "docker" / "root.dockerignore.example"):
         lines = [ln.strip() for ln in ignore.read_text(encoding="utf-8").splitlines()]
         assert not [ln for ln in lines if ln and not ln.startswith(("#", "!")) and "artifacts" in ln], ignore.name
+
+
+# ── env pin (review 2026-11-10): the web pod's environment vs a Job pod's, simulated from the manifests ──────────────────
+def _sbmig_env_data() -> dict[str, str]:
+    return dict(next(d for d in _docs(CONFIGMAP) if d["metadata"]["name"] == "sbmig-env")["data"])
+
+
+def _commented_keys() -> dict[str, tuple[str, str]]:
+    """Every commented `# KEY: "value"` line of sbmig-env → (group number, documented value)."""
+    out: dict[str, tuple[str, str]] = {}
+    group = ""
+    for line in _env_doc_text().splitlines():
+        header = GROUP_HEADER.match(line)
+        if header:
+            group = header.group(1)
+            continue
+        m = COMMENTED_KEY.match(line)
+        if m:
+            ((name, value),) = yaml.safe_load(m.group(1)).items()
+            assert isinstance(value, str), (name, value)        # ConfigMap data values are strings
+            out[name] = (group, value)
+    return out
+
+
+def _configmap(all_on: bool) -> dict[str, str]:
+    """sbmig-env as shipped, or with every commented key of every group switched on with its documented value."""
+    data = _sbmig_env_data()
+    if all_on:
+        data.update({name: value for name, (_, value) in _commented_keys().items()})
+    return data
+
+
+def _secrets() -> dict[str, str]:
+    """Placeholder values for the keys of Secret sbmig-llm (the web pod reads it by envFrom, the Job pod by secretKeyRef)."""
+    names = [e["name"] for e in _container(WEB_JOB)["env"] if "secretKeyRef" in (e.get("valueFrom") or {})]
+    assert names
+    return {n: f"CHANGE_ME_{n}" for n in names}
+
+
+def _main_env(cm: dict[str, str], secrets: dict[str, str] | None = None) -> dict[str, str]:
+    """The web pod's environment: envFrom sbmig-env then the Secret, the Deployment's literal env on top (env beats envFrom)."""
+    env = {**cm, **(secrets if secrets is not None else _secrets())}
+    env.update(_literals(WEB))
+    return env
+
+
+def _worker_env(cm: dict[str, str], secrets: dict[str, str] | None = None, drop: str | None = None) -> dict[str, str]:
+    """A Job pod's environment: the template's literals, each configMapKeyRef whose key the ConfigMap carries, each
+    secretKeyRef, plus the per-run values Main adds. `drop` leaves one template entry out (a stale template)."""
+    secrets = secrets if secrets is not None else _secrets()
+    env = {name: f"<{name.lower()}>" for name in contract.RUN_ENV}
+    for e in _container(WEB_JOB)["env"]:
+        if e["name"] == drop:
+            continue
+        ref = e.get("valueFrom") or {}
+        if "value" in e:
+            env[e["name"]] = e["value"]
+        elif "configMapKeyRef" in ref and ref["configMapKeyRef"]["key"] in cm:
+            env[e["name"]] = cm[ref["configMapKeyRef"]["key"]]
+        elif "secretKeyRef" in ref and ref["secretKeyRef"]["key"] in secrets:
+            env[e["name"]] = secrets[ref["secretKeyRef"]["key"]]
+    return env
+
+
+def _pins(env: dict[str, str]) -> dict[str, str]:
+    return contract.env_pins(PACKAGE_ROOT, PIN_CONFIGS, env)
+
+
+def _compare(main_env: dict[str, str], worker_env: dict[str, str]) -> dict[str, list[str]]:
+    return contract.compare_env_pins(_pins(main_env), _pins(worker_env))
+
+
+@pytest.mark.parametrize("all_on", [False, True], ids=["as-shipped", "every-commented-key-on"])
+def test_the_shipped_manifests_pass_their_own_env_pin_check(all_on: bool):
+    """Main (40 + sbmig-env + Secret) and a Job pod (81 + the same ConfigMap / Secret) pin the same names to the same values.
+    With every commented key switched on the web pod gets more variables than the Job pod (group 1, LLM_RECORD_DIR): none of
+    them may be pinned, or every upload would be refused."""
+    cm = _configmap(all_on)
+    main_env, worker_env = _main_env(cm), _worker_env(cm)
+    main, worker = _pins(main_env), _pins(worker_env)
+    assert contract.compare_env_pins(main, worker) == NO_DIFF
+    # the KB dir: an override in the web pod, the alias SBMIG_KB_DIR in the Job pod
+    assert "SBMIG_KB__DIR" in main and "SBMIG_KB__DIR" in worker
+    assert "SBMIG_KB__DIR" not in worker_env and "SBMIG_KB_DIR" in worker_env
+    for pins in (main, worker):
+        assert not [n for n in pins if contract.is_secret_name(n)]
+        assert not {"LLM_TOKEN_URL", "LLM_API_KEY", "LLM_APP_TOKEN", "NEXUS_PASSWORD"} & set(pins)
+        assert not {"LLM_RECORD_DIR", "SBMIG_LLM__RECORD_DIR"} & set(pins)
+        assert not {"HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY"} & set(pins)
+        assert all(re.fullmatch(r"[0-9a-f]{16}", v) for v in pins.values())
+
+
+def test_every_documented_key_switched_on_is_pinned_on_both_sides():
+    shipped, all_on = _pins(_main_env(_configmap(False))), _configmap(True)
+    main, worker = _pins(_main_env(all_on)), _pins(_worker_env(all_on))
+    assert len(main) >= len(shipped) + 20, (len(shipped), len(main))
+    commented = _commented_keys()
+    overrides = sorted(n for n, (group, _) in commented.items() if group == "3")
+    assert len(overrides) >= 20 and all(n.startswith("SBMIG_") and "__" in n for n in overrides)
+    expected = {*overrides, "LLM_RECIPE_MODEL", "LLM_RESPONSE_PATH"}        # group 3 + the group 2 placeholders of default.yml
+    assert sorted(expected - set(main)) == [] and sorted(expected - set(worker)) == []
+    # group 1 is the web pod's own behaviour (and proxies): never pinned
+    web_knobs = {n for n, (group, _) in commented.items() if group == "1"}
+    assert {"SBMIG_JOB_ENV_PIN", "SBMIG_JOB_EXIT_GRACE_S", "SBMIG_JOB_API_GRACE_S", "SBMIG_WEB_MODE"} <= web_knobs
+    assert sorted(web_knobs & set(main)) == []
+
+
+def test_a_job_pod_without_the_kb_dir_is_named():
+    cm = _configmap(False)
+    worker_env = _worker_env(cm)
+    del worker_env["SBMIG_KB_DIR"]
+    assert _compare(_main_env(cm), worker_env) == {**NO_DIFF, "main_only": ["SBMIG_KB__DIR"]}
+
+
+@pytest.mark.parametrize(("all_on", "key"), [(False, "LLM_MODEL"), (True, "SBMIG_LOOP__MAX_TOTAL_MINUTES"),
+                                             (True, "LLM_RECIPE_MODEL")])
+def test_a_configmap_value_changed_after_the_web_pod_started_differs(all_on: bool, key: str):
+    """The web pod read sbmig-env at its start; the Job pod reads the edited ConfigMap when it is created."""
+    cm = _configmap(all_on)
+    edited = {**cm, key: cm[key] + "-edited"}
+    assert _compare(_main_env(cm), _worker_env(edited)) == {**NO_DIFF, "differs": [key]}
+
+
+def test_a_key_switched_on_after_the_web_pod_started_is_worker_only():
+    cm = _configmap(False)
+    assert "SBMIG_LOOP__STALL_LIMIT" not in cm
+    edited = {**cm, "SBMIG_LOOP__STALL_LIMIT": "3"}
+    assert _compare(_main_env(cm), _worker_env(edited)) == {**NO_DIFF, "worker_only": ["SBMIG_LOOP__STALL_LIMIT"]}
+
+
+@pytest.mark.parametrize(("all_on", "key"), [(False, "LLM_ESCALATION_MODEL"), (True, "SBMIG_SCRIPT__MAX_LLM_TRIES_PER_CASE"),
+                                             (True, "LLM_RECIPE_MODEL")])
+def test_a_key_the_job_template_does_not_forward_is_main_only(all_on: bool, key: str):
+    """A key added to sbmig-env without its configMapKeyRef line in 81 (or a stale sbmig-job-template ConfigMap)."""
+    cm = _configmap(all_on)
+    assert _compare(_main_env(cm), _worker_env(cm, drop=key)) == {**NO_DIFF, "main_only": [key]}
+
+
+def test_secrets_are_never_compared():
+    """By design: no fingerprint of a credential on the shared volume — a wrong credential fails at the gateway instead."""
+    cm = _configmap(False)
+    other = {n: v + "-rotated" for n, v in _secrets().items()}
+    assert _compare(_main_env(cm), _worker_env(cm, secrets=other)) == NO_DIFF
+
+
+def test_sbmig_env_header_tells_the_operator_to_restart_the_web_pod():
+    text = CONFIGMAP.read_text(encoding="utf-8")
+    header = text[text.index("\n---\n"):text.index("name: sbmig-env")]
+    assert "rollout restart" in header and "SBMIG_JOB_ENV_PIN" in header
+    assert "kubectl -n agent rollout restart deploy/sbmig" in header
+    assert "sbmig-job-template" in header                     # a changed Job template needs the same restart
+    commented = _commented_keys()
+    assert commented["SBMIG_JOB_ENV_PIN"] == ("1", contract.ENV_PIN_REFUSE)
+
+
+def test_no_override_in_sbmig_env_is_left_empty():
+    """`SBMIG_X__Y: ""` is read as YAML null and replaces the yml value with nothing: a key is commented out, never emptied."""
+    data = _sbmig_env_data()
+    assert not [k for k, v in data.items() if k.startswith("SBMIG_") and "__" in k and not v.strip()]
+    assert not [n for n, (_, v) in _commented_keys().items() if n.startswith("SBMIG_") and "__" in n and not v.strip()]

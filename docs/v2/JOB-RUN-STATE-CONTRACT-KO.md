@@ -1,6 +1,7 @@
 # Job 실행 상태 계약 — Main 파드(FastAPI)와 요청별 Job 파드 사이의 약속
 
-> 2026-11-06, v2.1z-ac(2026-11-09: `control/` 상태 파일 · 입력 고정 · 재시작 복구 · 소유권 라벨 · 결과 검증 · Python Worker) 반영. 용도: remediation 쪽이 보낸 통합 계획(Main 파드 하나 + 요청별 build Job, `/api/runs` 와 `/api/remediations` 가 같은
+> 2026-11-06, v2.1z-ac(2026-11-09: `control/` 상태 파일 · 입력 고정 · 재시작 복구 · 소유권 라벨 · 결과 검증 · Python Worker),
+> v2.1z-ad(2026-11-10: Job 종료 확인 뒤에만 차례를 넘김 · 두 라벨이 다 맞아야 우리 Job · 환경 지문 · 쓰는 순간의 비밀값 정제) 반영. 용도: remediation 쪽이 보낸 통합 계획(Main 파드 하나 + 요청별 build Job, `/api/runs` 와 `/api/remediations` 가 같은
 > 디스패처를 쓴다)의 **1단계 "실행 상태 계약 문서화"** 에 해당하는 sbmig 쪽 사실이다. 여기 적힌 것은 지금 코드가 하는 일이고
 > (`sbmig/web/runs.py`, `sbmig/web/k8s.py`, `sbmig/web/localjob.py`, `deploy/docker/run-job.sh`, `deploy/k8s/81-web-job.template.yaml`),
 > §11 은 통합하면서 양쪽이 **정해야 할 것**이다. 계약이 바뀌면 이 파일과 `docs/INTERFACES.md` "k8s Job dispatch mode" 절을 같이 고친다.
@@ -12,8 +13,8 @@ Main 과 Worker 는 **공유 PVC 의 실행 폴더** `<out>/<run id>/`(운영: `
 
 | 쪽 | 쓰는 것 | 읽는 것 |
 |---|---|---|
-| **Main**(웹 파드, `RunManager`) | `source.zip`(업로드 원본), **`control/request.json`**(접수 때 고정한 입력: zip sha256 · 설정 digest · sbmig 버전 · attempt)과 **`control/state.json`**(제어 상태, 전이마다 원자적으로 다시 씀 — `control/` 은 Main 만 쓴다), `journal.jsonl` 의 첫 줄 `web_run` 과 `job_created` / `stop_request_sent` 줄, `stop.request`(멈춤 요청), 메모리의 `Run`(큐 상태·마지막 이벤트) | `journal.jsonl`, `sbmig.log`, `report.json` / `report.md`, `job-status.json`, 쿠버네티스 Job / Pod 상태 |
-| **Worker**(Job 파드, `python -m sbmig.web.worker` → `sbmig run --run-id`; 시작 때 `control/request.json` 의 digest 를 대조, 끝날 때 비밀값 정제) | `journal.jsonl` 의 나머지 전부(`graph_node` / `graph_node_end` …), `sbmig.log`, `project/`(git 작업 복사본), `logs/`, `report.*`, `errors.*`, `result.zip`, `changes.patch`, **`job-status.json`**(마지막에) | `source.zip`, `stop.request`(노드 사이·빌드 라운드 사이), 설정 yml, `settings.xml`, KB(`SBMIG_KB_DIR`, 운영 `/data/kb-v2`) |
+| **Main**(웹 파드, `RunManager`) | `source.zip`(업로드 원본), **`control/request.json`**(접수 때 고정한 입력: zip sha256 · 설정 digest · sbmig 버전 · attempt)과 **`control/state.json`**(제어 상태, 전이마다 원자적으로 다시 씀 — `control/` 은 Main 만 쓴다. Job 을 만드는 Main 이 `creating` 전이와 함께 환경 지문 `env_pins` · 정책 `env_pin_policy` 도 적는다, §3), `journal.jsonl` 의 첫 줄 `web_run` 과 `job_created` / `stop_request_sent` 줄, `stop.request`(멈춤 요청), 메모리의 `Run`(큐 상태·마지막 이벤트) | `journal.jsonl`, `sbmig.log`, `report.json` / `report.md`, `job-status.json`, 쿠버네티스 Job / Pod 상태 |
+| **Worker**(Job 파드, `python -m sbmig.web.worker` → `sbmig run --run-id`; 시작 때 `control/request.json` 의 digest 와 `control/state.json` 의 환경 지문을 대조, 비밀값은 쓰는 순간 지우고 끝날 때 한 번 더 훑는다) | `journal.jsonl` 의 나머지 전부(`graph_node` / `graph_node_end` …), `sbmig.log`, `project/`(git 작업 복사본), `logs/`, `report.*`, `errors.*`, `result.zip`, `changes.patch`, **`job-status.json`**(마지막에) | `source.zip`, `control/request.json` · `control/state.json`(읽기만), `stop.request`(노드 사이·빌드 라운드 사이), 설정 yml, `settings.xml`, KB(`SBMIG_KB_DIR`, 운영 `/data/kb-v2`) |
 
 Worker 는 Main 의 존재를 모른다. Main 이 죽어도 Job 은 끝까지 돌고 파일을 남긴다. Main 은 Worker 의 프로세스를 모른다. 파일과 Job 상태만 본다.
 
@@ -24,7 +25,7 @@ Worker 는 Main 의 존재를 모른다. Main 이 죽어도 Job 은 끝까지 �
 | run id | `web-<yyyymmdd>-<hhmmss>-<6 hex>` (`RunManager.start_file`) | 실행 폴더 이름, 모든 저널 줄의 `run_id`, `SBMIG-RESULT` 줄 |
 | Job 이름 | `sbmig-<run id>` 를 RFC 1123 로 (`job_name`: 소문자·숫자·`-`, 63자) | `metadata.name`; 저널 `job_created` 의 `job` |
 | 파드 라벨 | `sbmig-run-id=<run id>` (Job 과 파드 템플릿 둘 다), 쿠버네티스가 붙이는 `job-name=<Job 이름>` | `kubectl get pods -l sbmig-run-id=…` |
-| 소유 라벨 | `sbmig-owner=<요청마다 난수 16 hex>` (Job 과 파드 템플릿; `control/state.json` 의 `owner`) | Main 은 두 라벨이 자기 것인 Job 만 지운다 |
+| 소유 라벨 | `sbmig-owner=<요청마다 난수 16 hex>` (Job 과 파드 템플릿; `control/state.json` 의 `owner`) | Main 은 `sbmig-owner` 와 `sbmig-run-id` 가 **둘 다** 자기 값인 Job 만 이어받고 지운다. 라벨이 없는 Job(`{}`)은 남의 것이다 — 같은 이름이어도 이어받지도 지우지도 않고, 만들기(409)·재시작 복구에서 만나면 그 실행을 오류로 끝낸다. 라벨을 알려 주지 못하는 클라이언트(로컬 서브프로세스·테스트 가짜, `labels` 가 None)만 이름을 믿는다 |
 | 외부 요청 id | 외부 접수 API 의 `Idempotency-Key` / `project_name` (`<run dir>/migration.json`, `<out>/_idempotency/<sha256(key)>.json`) — `API-MIGRATIONS-KO.md` §3 | Main 만 쓴다 |
 | 실행 시도 id | `attempt`(지금은 늘 1) — `control/request.json` · `control/state.json` · `job-status.json` 에 들어 있어 Main 은 **같은 run id · 같은 attempt** 의 결과만 받는다. 재시도·재개는 여전히 **새 run id**(새 폴더, 새 Job); 외부 요청 id 와의 연결은 Main 쪽 기록 | §11-2 |
 
@@ -45,6 +46,26 @@ Worker 는 Main 의 존재를 모른다. Main 이 죽어도 Job 은 끝까지 �
 Job 템플릿이 받는 실행별 env(Main 이 첫 컨테이너의 env 에 덧붙인다, 같은 이름은 바꾼다): `SBMIG_SOURCE_ZIP`, `SBMIG_OUT`, `SBMIG_RUN_ID`,
 `SBMIG_CONFIG`(공백으로 나눈 yml 경로들), 고급 설정일 때만 `SBMIG_STOP_AFTER`, `SBMIG_LLM_PROVIDER`. 나머지(이미지, 마운트, 자원,
 `SBMIG_KB_DIR`, 컨테이너 경로 덮어쓰기 `SBMIG_BUILD__*` / `SBMIG_SCRIPT__PYTHON`, 변수마다 `configMapKeyRef` / `secretKeyRef` — `envFrom` 은 검증이 거절한다)는 템플릿 그대로다. 템플릿 자체는 `render_job` 이 바꾸지 않는다.
+개발 PC 의 local-job 에서는 틀의 env 가운데 이 실행별 값(`contract.RUN_ENV`, 리터럴만)만 로컬 Worker 에 넘어가고, 나머지는 PC 의 환경이 정한다 — 컨테이너 경로·ConfigMap 참조는 파드의 것이다(2026-11-10 회귀 수정).
+
+**환경 지문(v2.1z-ad).** 설정은 파일만이 아니다: yml 의 `${VAR}` 자리표시자와 덮어쓰기 `SBMIG_<섹션>__<키>` 는 파드의 환경 변수가 값을 정한다. 웹 파드는
+ConfigMap `sbmig-env` 를 시작할 때 한 번, Job 파드는 만들어질 때 읽으므로 두 파드의 값이 갈릴 수 있다. 그래서:
+
+- **누가 언제 적나**: Job 을 **만드는** Main 이 `creating` 전이와 함께 `control/state.json` 에 `env_pins`(이름 → 값의 sha256 앞 16자; 값 자체는 적지 않는다)와
+  `env_pin_policy`(refuse | warn | off)를 적는다(`RunManager._create_job`). 접수 때가 아니다 — 대기 중에 웹 파드가 재시작되면 새 Main 의 환경이 기준이다.
+  이미 있는 Job 을 이어받은 실행은 디스크의 지문을 그대로 쓴다. `request.json` 에 두지 않는 까닭: 그 파일은 접수 기록이라 바뀌지 않고, 기준은 Job 을
+  렌더한 Main 이다. 정책이 off 이거나 지문 계산이 실패하면(경고만, Job 은 만든다) `env_pins` 는 null — Worker 가 대조하지 않는다.
+- **대상 이름**: `config/default.yml` 과 이번 실행의 설정 파일이 읽는 `${VAR}` 이름 + 그 파드에 있는 `SBMIG_<섹션>__<키>` 덮어쓰기와 섹션을 통째로 바꾸는 `SBMIG_<섹션>`(`contract.env_pin_names`).
+  비밀로 보이는 이름(TOKEN / PASSWORD / PASSWD / SECRET / API_KEY — `LLM_TOKEN_URL` 도 여기 걸린다), `SBMIG_LLM__RECORD_DIR` / `LLM_RECORD_DIR`,
+  프록시 변수는 대조하지 않는다. 웹 파드의 `SBMIG_KB__DIR` 와 Job 파드의 `SBMIG_KB_DIR` 은 같은 키로 대조한다(`ENV_PIN_ALIASES`).
+- **정책**: 웹 파드의 `SBMIG_JOB_ENV_PIN`(시작 때 한 번 읽는다). 기본은 k8s-job 이면 `refuse`, local-job 이면 `off`(로컬 Worker 는 Main 의 환경을 물려받는다).
+- **Worker**: `request.json` 대조를 통과한 뒤 `worker_started` 전에 `state.json` 을 읽어(쓰지 않는다) 지문을 자기 환경으로 다시 계산해 대조하고, 실행별 값
+  (`SBMIG_CONFIG` 가 가리키는 파일, `SBMIG_STOP_AFTER`, `SBMIG_LLM_PROVIDER`)도 `request.json` 과 맞춰 본다. 지문이 없으면(옛 Main, local-job) 대조하지 않는다.
+  `refuse` → 거절(exit 3, 저널 `worker_refused` 에 다른 키 **이름**, `job-status.json` 의 `error`), `warn` → 저널 `worker_env_differs` 를 적고 Job 파드의 값으로 돈다.
+  글에는 이름만 들어간다(값·지문은 없다).
+- **운영 규칙**: `sbmig-env` 를 고친 뒤에는 **웹 파드를 재시작한다**(안 하면 다음 Job 이 몇 초 만에 거절된다). Job 틀을 고친 뒤에는 ConfigMap
+  `sbmig-job-template` 을 다시 만들고 웹 파드를 재시작한다(Main 은 시작할 때 틀을 검증해 들고 있다). 덮어쓰기 값을 빈 문자열로 두지 않는다 —
+  `SBMIG_X__Y=""` 는 YAML null 로 읽혀 yml 의 값을 없애고, 두 파드가 똑같이 비어 있으면 대조도 잡지 못한다.
 
 ## 4. 종료 코드와 결과 판정
 
@@ -70,9 +91,13 @@ Job 템플릿이 받는 실행별 env(Main 이 첫 컨테이너의 env 에 덧�
 4. `report.json` 만 있으면 `finished`, 폴더만 있으면 `unknown`, 폴더도 없으면 `missing`.
 
 Job 감시 루프(`_run_job`, 2초 주기 `SBMIG_JOB_POLL_S`): 매 번 **`job-status.json` 먼저**, 그다음 Job/파드 상태. 상태 변화마다 화면에
-`node` 이벤트 `{"node": "job", "update": {"state": created|creating|pending|running|succeeded|failed|missing, "job", "pod", "message"}}`. Job 이
-Failed / Missing 인데 `job-status.json` 이 없으면 종료 코드 3 과 `error` 문구. 쿠버네티스 API 가 잠깐 안 되면 300초(`SBMIG_JOB_API_GRACE_S`)까지
-참는다. SSE 는 그대로다: Worker 가 쓰는 `journal.jsonl` / `sbmig.log` 를 tail 하고, `graph_node_end` 줄을 화면의 `node` 이벤트로 바꾼다.
+`node` 이벤트 `{"node": "job", "update": {"state": created|creating|pending|running|succeeded|failed|missing, "job", "pod", "message"}}`
+(v2.1z-ad: 단계 표시를 바꾸지 않는 안내 `ending` · `api-unavailable` · `api-back` 이 더해졌다). Job 이
+Failed / Missing 인데 `job-status.json` 이 없으면 종료 코드 3 과 `error` 문구. **Job 종료 확인(v2.1z-ad)**: 이 시도의 `job-status.json` 을 받아도
+실행은 Job 이 끝났거나(Succeeded / Failed) 사라진(Missing) 것을 API 로 확인한 뒤에야 끝난다. 파일을 쓴 뒤 120초(`SBMIG_JOB_EXIT_GRACE_S`) 넘게 파드가
+남아 있으면 우리 라벨의 Job 을 지우고 사라질 때까지 기다린다(Worker 는 그 파일을 맨 마지막에 쓰므로 잃는 것이 없다). 쿠버네티스 API 가 답하지 않으면
+**실행을 실패로 끝내지 않고 답할 때까지 기다린다**. 300초(`SBMIG_JOB_API_GRACE_S`)는 이제 알림 기준일 뿐이다(로그 ERROR, 저널 `job_api_unavailable`,
+화면 안내, `status().job.note`; 이후 600초마다 로그; 다시 답하면 `job_api_back`). SSE 는 그대로다: Worker 가 쓰는 `journal.jsonl` / `sbmig.log` 를 tail 하고, `graph_node_end` 줄을 화면의 `node` 이벤트로 바꾼다.
 
 ## 6. 멈춤
 
@@ -80,17 +105,22 @@ Main 이 `<run dir>/stop.request` 를 쓴다(저널 `stop_request_sent`). Worker
 그 파일을 보고 멈춘다(최종 빌드 생략, exit 3, 저널 `stop_request`). 진행 중인 Maven 빌드·LLM 호출 하나는 끊지 않는다. 2700초
 (`SBMIG_JOB_STOP_GRACE_S`, Maven 빌드 + OpenRewrite 한 번보다 길어야 한다) 안에 안 끝나면 Main 이 Job 을 지운다(`propagationPolicy Foreground`,
 파드도 함께). 서버 종료는 Job 을 지우지 않는다. 멈춤이 큐에서 기다리는 실행에 오면 Job 을 만들지 않고 끝낸다. 지우기 전에 Job 의 라벨(`sbmig-run-id`, `sbmig-owner`)이
-자기 것인지 보고, 아니면 지우지 않는다; 지운 뒤에는 Job 이 실제로 사라질(`Missing`) 때까지 기다린 뒤에야 `stopped` 로 끝낸다(삭제 요청 수락 = 끝남이 아니다).
+**둘 다** 자기 것인지 보고, 아니면 지우지 않는다(`job_delete_refused`); 지운 뒤에는 Job 이 실제로 사라질(`Missing`) 때까지 기다린 뒤에야 `stopped` 로 끝낸다(삭제 요청 수락 = 끝남이 아니다).
+이 기다림에는 기한이 없다(v2.1z-ad — 예전에는 `SBMIG_JOB_API_GRACE_S` 까지): 삭제 요청이 실패하면 15초마다 다시 보내고, 끝나지 않는 동안 60초마다 경고한다.
+멈춤을 요청한 실행의 Job 이 사라졌으면 `lost` 가 아니라 `stopped` 다.
 
 ## 7. 재시작과 장애 복구 — 되는 것과 안 되는 것
 
 | 상황 | 지금 동작 |
 |---|---|
-| Main 재시작, Job 은 돌고 있음 | `control/state.json` 이 `created` / `running` 이면 다시 뜬 Main 이 그 Job 을 **이어받아 감시한다**(`RunManager.recover`): 멈춤·삭제·결과 검증이 그대로 된다. `creating`(생성 응답이 끊긴 구간)이면 같은 이름의 Job 이 있는지 보고 있으면 이어받고 없으면 만든다 |
+| Main 재시작, Job 은 돌고 있음 | `control/state.json` 이 `created` / `running` 이면 다시 뜬 Main 이 그 Job 을 **이어받아 감시한다**(`RunManager.recover`): 멈춤·삭제·결과 검증이 그대로 된다. `creating`(생성 응답이 끊긴 구간)이면 같은 이름의 Job 이 있는지 보고 있으면 이어받고 없으면 만든다. 어느 쪽이든 그 Job 의 두 라벨이 이 요청의 것일 때만 이어받고(아니면 그 실행은 오류), Job 이 있는지는 API 가 답할 때까지 묻는다 |
 | Main 재시작, 요청은 큐에 있었음(Job 미생성) | `control/state.json` 이 `queued` 면 접수 순서대로 **다시 줄에 선다**(`source.zip` 과 `request.json` 이 있으니 그대로 만든다). 개발 PC 의 local-job 은 프로세스가 서버와 함께 죽어 복구하지 못한다 → `lost` |
 | Job 파드가 죽음(OOM·노드 교체) | `backoffLimit: 0` → 재시도 없음. Main 은 Failed + `job-status.json` 없음 → 종료 코드 3, `error` 에 사유 |
 | Job 이 4시간을 넘김 | `activeDeadlineSeconds: 14400` → 쿠버네티스가 끊는다 → 위와 같음 |
-| 쿠버네티스 API 일시 장애 | 300초까지 재시도, 그 뒤 실행을 오류로 끝낸다(Job 자체는 돈다) |
+| 쿠버네티스 API 장애 | 실행을 실패로 끝내지 않고 차례도 넘기지 않는다(v2.1z-ad): API 가 다시 답할 때까지 감시를 이어 가고 다음 업로드는 기다린다. 300초(`SBMIG_JOB_API_GRACE_S`) 뒤 한 번 크게 알린다(저널 `job_api_unavailable`), 다시 답하면 `job_api_back`. 끝내 답하지 않으면 Main 의 접속을 고칠 때까지 줄이 멈춘다(두 이관이 겹치는 것보다 낫다는 결정) |
+| 결과 파일을 쓴 뒤에도 파드가 안 끝남 | 120초(`SBMIG_JOB_EXIT_GRACE_S`) 뒤 우리 Job 을 지우고 사라질 때까지 기다린 다음 차례를 넘긴다 |
+| Job 파드의 환경이 웹 파드와 다름(`sbmig-env` 를 고치고 웹 파드를 재시작하지 않음, 낡은 Job 틀) | `refuse`(k8s-job 기본): Worker 가 몇 초 만에 거절, exit 3, `worker_refused` 에 다른 키 이름. `warn`: `worker_env_differs` 를 적고 Job 파드의 값으로 돈다(§3) |
+| 같은 이름의 Job 이 있는데 라벨이 없거나 다름 | 이어받지도 지우지도 않는다. 만들기·재시작 복구에서 만나면 그 실행은 오류로 끝난다 |
 | PVC 가 RWX 가 아님 | Job 이 다른 노드에 뜨면 마운트 못 해 Pending 에 멈춘다 → `nodeSelector` 로 웹 파드 노드에 고정해야 한다 |
 
 "대기 요청도 복구" 가 필수라면 Main 시작 때 `web_run` 은 있고 `job_created` / `web-status.json` / `job-status.json` 은 없는 폴더를 다시 줄에 세우는
@@ -99,6 +129,8 @@ Main 이 `<run dir>/stop.request` 를 쓴다(저널 `stop_request_sent`). Worker
 ## 8. 순차 슬롯
 
 `RunManager` 는 **한 번에 하나**, 올린 순서(FIFO, `_FifoTurns`)로 Job 을 만든다. 이유는 하나다: **모든 Job 이 같은 파일 KB(`/data/kb-v2`)에 쓴다.**
+차례는 앞 Job 이 끝났거나 사라진 것을 API 로 확인한 뒤에야 넘어간다(v2.1z-ad) — 결과 파일을 받았을 때도, 멈춤으로 지웠을 때도, 웹 쪽 오류로 실패했을 때도
+(그때는 우리 Job 을 먼저 지운다). 예외는 서버 종료(`state.json` 을 그대로 두어 다음 Main 이 이어서 지켜본다)와 남의 Job(건드리지 않는다)뿐이다.
 remediation 이 KB 를 건드리지 않으면 같은 슬롯을 쓸 이유가 없다 — 같은 슬롯을 쓰면 remediation 한 건이 이관 한 건을(또는 반대로) 몇십 분
 기다리게 한다. 병렬(3개)로 넓히는 일은 KB 잠금(케이스 폴더 단위)과 함께 가야 하고, 그건 sbmig 쪽 "다음" 항목이다.
 
@@ -108,7 +140,7 @@ remediation 이 KB 를 건드리지 않으면 같은 슬롯을 쓸 이유가 없
 |---|---|
 | `RunManager(out_dir, repo_root, mode=, job_client=, job_template=)` | `mode` in-process / local-job / k8s-job (`SBMIG_WEB_MODE`); 클러스터 밖의 k8s-job 은 WARNING 과 함께 local-job 으로; 클러스터 안인데 서비스 계정이 없으면 시작 거부 |
 | `render_job(template, run_id, env, namespace)` | 틀(yaml 경로 또는 dict)에 이름·라벨·namespace·첫 컨테이너 env 만 채운다. **다른 종류의 Job = 다른 틀 + 다른 env** 로 충분하다(명령은 틀의 `command`) |
-| `K8sClient.create_job / job_state / delete_job` | requests 기반, 서비스 계정 토큰·CA 자동. `JobState(phase, pod, exit_code, message)` |
+| `K8sClient.create_job / job_state / delete_job` | requests 기반, 서비스 계정 토큰·CA 자동. `JobState(phase, pod, exit_code, message, labels)` — `labels` 는 API 가 답한 라벨 그대로(라벨 없는 Job 은 `{}`), None 은 라벨을 모르는 클라이언트뿐 |
 | `LocalJobClient(repo_root, command_factory=…)` | 개발 모드의 서브프로세스 "파드". `command_factory(env) -> argv` 로 **다른 종류의 Worker 명령**을 끼울 수 있다. `job-status.json` 을 run-job.sh 와 같은 모양으로 쓴다 |
 | `run-job.sh`(공유 볼륨 모드) | `SBMIG_SOURCE_ZIP` + `SBMIG_OUT` + `SBMIG_RUN_ID` → `sbmig run … --run-id`, 끝에 `job-status.json`. remediation Worker 는 **자기 진입점**을 두되 같은 파일 규약(§4)을 지키면 Main 은 구분할 필요가 없다 |
 | RBAC(`45-web-rbac.yaml`) | jobs: create get list watch delete / pods: get list watch / pods/log: get. `pods/exec` 없음 |
@@ -126,6 +158,11 @@ remediation 이 KB 를 건드리지 않으면 같은 슬롯을 쓸 이유가 없
   `app=sbmig, kind=run` 에 egress 를 열어야 한다.
 - ConfigMap(`sbmig-env`: 비밀 아닌 값 + `SBMIG_<SECTION>__<KEY>` 손잡이) / Secret(`sbmig-llm`: `GIT_TOKEN`, `LLM_APP_TOKEN`/`LLM_API_KEY`, `NEXUS_*`,
   선택 `SBMIG_WEB_TOKEN`) / 파일 ConfigMap(`sbmig-config`: `settings.xml`) / 이미지(`/app/config/artifacts.yml`, 비밀 없음). 목록은 `deploy/ENV.md`.
+- **비밀값 정제는 쓰는 순간에(v2.1z-ad).** `SBMIG_REDACT_OUTPUT=1`(40·80 에 리터럴, 81 은 Worker 가 자식에 강제)이면 로그 줄·저널 줄·화면 이벤트·잡히지 않은
+  예외의 traceback 에서 비밀 env 의 값(실행 중에 받은 게이트웨이 토큰 포함)을 쓰기 전에 `***` 로 바꾼다(`sbmig/core/scrub.py`). 지우다 실패한 줄은 원문 대신
+  고정 문구로 나간다. Worker 는 자식의 콘솔 출력도 한 줄씩 지워 파드 로그로 넘기고, 끝날 때 실행 폴더를 한 번 더 훑는다. 실행 중에는 `sbmig.log` /
+  `journal.jsonl` 만 내려받을 수 있고 나머지 파일(보고서·오류 목록·result.zip …)은 마지막 정제가 끝날 때까지 HTTP 409 다. 환경 지문(§3)도 비밀로 보이는 이름은
+  다루지 않는다 — 비밀 값의 지문을 공유 볼륨에 남기지 않는다.
 
 ## 11. 통합하면서 정할 것 (sbmig 쪽 의견 포함)
 

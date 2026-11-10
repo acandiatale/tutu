@@ -235,7 +235,7 @@ Then the final build again, the report (Handover first, "Structure review", fix 
   commits happen in the main session. Per round: append a "Status" table to `docs/PLAN.md`, update
   `docs/INTERFACES.md` on contract changes, add a fixture + `expected.json` (+ `replay/`) for every new scenario.
 - Setup: `uv venv && source .venv/bin/activate && uv pip install -e ".[dev]"` (plain `pip install -e ".[dev]"` works too).
-- Fast check (Python only, ~6 min): `python -m pytest -m "not integration"` → ≈ 2,930 passed, ≈ 50 deselected (2026-11-04)
+- Fast check (Python only, ~10 min): `python -m pytest -m "not integration"` → ≈ 3,300 passed, ≈ 50 deselected (2026-11-10)
   (`-q` on top of the `-q` in pyproject hides the summary line).
   `ruff check sbmig tests` has pre-existing style findings (mostly `UP045`); lint is not a gate here, so fix only what
   you touch and never run a repo-wide `ruff --fix` inside a feature round.
@@ -310,7 +310,23 @@ Then the final build again, the report (Handover first, "Structure review", fix 
   `SBMIG_LLM__RECORD_DIR=${LLM_RECORD_DIR:-}` in 40 only — never in `sbmig-env`, which 80 reads by `envFrom`). The 81 template has one
   `configMapKeyRef` per `sbmig-env` key (no `envFrom` there): a new key in the ConfigMap needs its line in 81, `tests/deploy/test_manifests.py`
   pins this. `contract.is_secret_name` exempts config overrides (`…__MAX_OUTPUT_TOKENS` is not a secret); the Worker drops the record-dir
-  variables from the child unless `SBMIG_WORKER_LLM_RECORDS=1`. No secret goes into the baked file.
+  variables from the child unless `SBMIG_WORKER_LLM_RECORDS=1`. No secret goes into the baked file. **v2.1z-ad (2026-11-10, a review of the Job
+  dispatch code — four findings, all real)**: (1) `_watch_job` returns only once the Job is confirmed ended: a Kubernetes API outage never
+  fails the run or frees the single slot (journal `job_api_unavailable` / `job_api_back`; `SBMIG_JOB_API_GRACE_S` is a notice only), a pod
+  lingering after its `job-status.json` is deleted after `SBMIG_JOB_EXIT_GRACE_S` (120); (2) a Job is ours only with BOTH the `sbmig-owner`
+  and the run label — an unlabelled same-name Job is neither adopted nor deleted; (3) **env pins**: the Main that creates the Job writes
+  `env_pins` (`sha256[:16]` per name: every `${VAR}` placeholder of the run's config files + every `SBMIG_<SECTION>__<KEY>` override and whole-section `SBMIG_<SECTION>`;
+  secret-looking names and the record dir never; `SBMIG_KB__DIR` ↔ `SBMIG_KB_DIR` alias) and `env_pin_policy` into `control/state.json`
+  with the `creating` transition, and the Worker compares its own environment (plus `SBMIG_CONFIG` / `SBMIG_STOP_AFTER` /
+  `SBMIG_LLM_PROVIDER` against `request.json`) before it runs anything — `SBMIG_JOB_ENV_PIN = refuse | warn | off` on the web pod
+  (default refuse in `k8s-job`, off elsewhere; refuse = exit 3 `worker_refused` naming the keys, warn = journal `worker_env_differs`).
+  **Operator rule: after changing ConfigMap `sbmig-env` restart the web pod; after a new Job template re-create ConfigMap
+  `sbmig-job-template`.** (4) redaction at write time: `SBMIG_REDACT_OUTPUT=1` (literal in 40 / 80, forced by the Worker on its child)
+  hooks `sbmig/core/scrub.py` into every log / journal line (`sbmig.web.redact.install_output_redaction`; fail closed — a line that cannot
+  be cleaned is withheld, the CLI exits 3 when the hook cannot be installed), the Worker redacts the child's pipe line by line, and result
+  files other than `sbmig.log` / `journal.jsonl` answer HTTP 409 until the final pass is over. A `local-job` Worker takes only
+  `contract.RUN_ENV` values from the template (container paths had leaked into the local run). An override value must never be left
+  empty (`SBMIG_X__Y: ""` is YAML null and wipes the yml value). `LLM_RECIPE_MODEL` is forwarded by 81 like the other LLM keys.
 - **Company convention (2026-10-20): agents run on LangGraph under uvicorn.** `loop.engine: graph` (default) drives
   the phases from a LangGraph `StateGraph` (`sbmig/graph/`, nodes intake → analyze → plan → phase×N → finalize;
   `inline` is the old loop, reports are identical by test); the web UI is FastAPI (`uvicorn sbmig.web.app:app` or

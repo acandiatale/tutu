@@ -262,9 +262,12 @@ def _ensure_console_logging() -> None:
     보인다. 파일 핸들러(실행별 sbmig.log)만 있을 때도 콘솔 핸들러를 하나 붙인다.
 
     Under plain `uvicorn sbmig.web.app:app` nobody configured the sbmig logger: show INFO on the console."""
-    from sbmig.cli import harden_console_streams
+    from sbmig.cli import harden_console_streams, install_redaction_if_requested
 
     harden_console_streams()                 # a cp949 console must not turn every em dash into "--- Logging error ---"
+    # SBMIG_REDACT_OUTPUT=1(웹 파드): 이 프로세스의 로그·저널 줄에서 비밀 값을 쓰는 순간 지운다. `sbmig serve` 는 CLI 콜백이
+    # 이미 걸었고, uvicorn 으로 바로 띄운 경우 여기서 건다(걸 수 없으면 서버가 뜨지 않는다 — 정제 없이 돌지 않는다)
+    install_redaction_if_requested()
     root = logging.getLogger("sbmig")
     if not any(not isinstance(h, logging.FileHandler) for h in root.handlers):
         h = logging.StreamHandler()
@@ -457,7 +460,13 @@ def create_app(out_dir: Path, repo_root: Path = PACKAGE_ROOT, max_upload_mb: int
         # 내려받을 수 있는 것은 SERVED_FILES 의 이름뿐(경로 조작 차단). zip / csv / jsonl 은 첨부로 내려준다
         if name not in SERVED_FILES:
             return JSONResponse({"error": "unknown file"}, status_code=404)
-        path = mgr.run_dir(_check_id(run_id)) / name
+        # 리뷰 2026-11-10: 마지막 정제(끝날 때 실행 폴더를 훑어 비밀 값을 지우는 단계)가 남은 실행은 쓰는 순간 정제되는 파일
+        # (sbmig.log / journal.jsonl)만 내준다 — 보고서·오류 목록은 실행이 끝난 뒤에
+        rid = _check_id(run_id)
+        if mgr.file_withheld(rid, name):
+            return JSONResponse({"error": f"{name} is available once the run has finished (its outputs are redacted "
+                                          f"at the end of the run)"}, status_code=409)
+        path = mgr.run_dir(rid) / name
         if not path.is_file():
             return JSONResponse({"error": f"{name} not found"}, status_code=404)
         attach = download is not None or name.endswith((".zip", ".csv", ".jsonl"))

@@ -16,6 +16,7 @@ import yaml
 
 import sbmig.web.runs as runs_mod
 from sbmig.core.config import PACKAGE_ROOT
+from sbmig.core.workspace import STOP_REQUEST_FILE
 from sbmig.web import contract
 from sbmig.web.contract import OWNER_LABEL, RUN_LABEL, ControlState, JobStatus, RequestRecord, RunState
 from sbmig.web.k8s import JobState, K8sClient, K8sError, job_name, validate_worker_template
@@ -61,6 +62,7 @@ class Cluster:
         self.deleted: list[str] = []
         self.create_mode: str | None = None          # None | "conflict" | "transport-created" | "transport-lost"
         self.polls_after_delete = 0
+        self.linger = ["Running", "Running", "Missing"]   # what a deleted Job reports until it is gone (["Running"] = stays)
 
     def add(self, name: str, labels: dict[str, str], phases: list[str] | None = None) -> None:
         self.jobs[name] = {"labels": dict(labels), "phases": list(phases or self.phases), "pod_done": False}
@@ -100,7 +102,7 @@ class Cluster:
     def delete_job(self, name: str) -> None:
         self.deleted.append(name)
         if name in self.jobs:                        # the API accepts the delete; the Job lingers for two more polls
-            self.jobs[name].update(deleting=True, phases=["Running", "Running", "Missing"])
+            self.jobs[name].update(deleting=True, phases=list(self.linger))
 
 
 def _wait(cond, timeout: float = 10.0) -> bool:
@@ -533,3 +535,288 @@ def test_a_status_file_that_appears_after_the_job_ended_is_still_accepted(tmp_pa
     assert mgr.runs[rid].done.wait(5)
     st = mgr.status(rid)
     assert st["exit_code"] == 0 and st["verified"] is True and st["control"] == "finished"
+
+
+# ---- review 2026-11-10 (1): the turn is handed on only when the API confirmed that the Job ended
+def _job_events(run) -> list[str]:
+    return [d["update"]["state"] for k, d in run.history if k == "node" and d["node"] == "job"]
+
+
+def test_the_next_run_waits_until_the_pod_of_a_finished_run_really_ended(tmp_path: Path, repo: Path, monkeypatch):
+    """The Worker writes job-status.json before its pod exits: the result alone must not start the next migration."""
+    monkeypatch.setenv("SBMIG_JOB_EXIT_GRACE_S", "60")
+    out = tmp_path / "out"
+    cluster = Cluster(out, phases=["Running"])                      # the pod wrote its result and is still running
+    mgr = _mgr(tmp_path, repo, cluster)
+    first = mgr.start(ZIP, "a.zip", ["artifacts.local-e2e.yml"])
+    assert _wait(lambda: (out / first / "job-status.json").is_file())
+    second = mgr.start(ZIP, "b.zip", ["artifacts.local-e2e.yml"])
+    time.sleep(0.4)
+    assert not mgr.runs[first].done.is_set() and mgr.status(second)["state"] == "queued"
+    assert len(cluster.created) == 1 and cluster.deleted == [] and "ending" in _job_events(mgr.runs[first])
+    cluster.phases = ["Running", "Succeeded"]                       # what the second Job will do
+    cluster.jobs[job_name(first)]["phases"] = ["Succeeded"]         # the first pod exits
+    assert mgr.runs[first].done.wait(10) and mgr.runs[second].done.wait(10)
+    assert mgr.runs[first].exit_code == 0 and mgr.status(first)["verified"] is True and _state(out, first).state == "finished"
+    assert [m["metadata"]["labels"][RUN_LABEL] for m in cluster.created] == [first, second] and cluster.deleted == []
+    assert mgr.runs[second].exit_code == 0
+
+
+def test_a_pod_that_lingers_after_its_result_is_deleted_after_the_exit_grace(tmp_path: Path, repo: Path):
+    out = tmp_path / "out"
+    cluster = Cluster(out, phases=["Running"])                      # never exits by itself; conftest: SBMIG_JOB_EXIT_GRACE_S=0.3
+    mgr = _mgr(tmp_path, repo, cluster)
+    rid = mgr.start(ZIP, "p.zip", ["artifacts.local-e2e.yml"])
+    assert mgr.runs[rid].done.wait(10)
+    assert cluster.deleted == [job_name(rid)] and job_name(rid) not in cluster.jobs and cluster.polls_after_delete >= 3
+    # the result was on the volume before the delete: it stays the verified result of the run
+    assert mgr.runs[rid].exit_code == 0 and mgr.status(rid)["verified"] is True and mgr.status(rid)["success"] is True
+    assert _state(out, rid).state == "finished"
+    gone = [e for e in _journal(out, rid) if e["event"] == "job_deleted"]
+    assert len(gone) == 1 and gone[0]["reason"] == "the result is on the volume" and gone[0]["job"] == job_name(rid)
+
+
+def test_a_stopped_job_keeps_the_turn_until_it_is_gone(tmp_path: Path, repo: Path, monkeypatch):
+    monkeypatch.setenv("SBMIG_JOB_STOP_GRACE_S", "0.1")
+    out = tmp_path / "out"
+    cluster = Cluster(out, phases=["Running"], pod_attempt=False)
+    cluster.linger = ["Running"]                                    # the delete is accepted, the pod takes its time to terminate
+    mgr = _mgr(tmp_path, repo, cluster)
+    first = mgr.start(ZIP, "a.zip", ["artifacts.local-e2e.yml"])
+    assert _wait(lambda: _state(out, first).state == "running")
+    second = mgr.start(ZIP, "b.zip", ["artifacts.local-e2e.yml"])
+    assert mgr.stop(first) and _wait(lambda: cluster.deleted == [job_name(first)])
+    time.sleep(0.4)                                                 # far past the old give-up: the turn is still the first run's
+    assert not mgr.runs[first].done.is_set() and mgr.status(second)["state"] == "queued" and len(cluster.created) == 1
+    cluster.phases, cluster.pod_attempt = ["Running", "Succeeded"], 1
+    cluster.jobs[job_name(first)]["phases"] = ["Missing"]
+    assert mgr.runs[first].done.wait(10) and mgr.runs[second].done.wait(10)
+    assert _state(out, first).state == "stopped" and "deleted after the grace period" in (mgr.runs[first].error or "")
+    assert "still present" not in (mgr.runs[first].error or "")
+    assert mgr.runs[second].exit_code == 0 and cluster.deleted == [job_name(first)]      # asked once, not on every poll
+
+
+def test_a_failed_delete_is_retried_and_the_turn_is_kept(tmp_path: Path, repo: Path, monkeypatch):
+    monkeypatch.setenv("SBMIG_JOB_STOP_GRACE_S", "0.1")
+    monkeypatch.setattr(runs_mod, "DELETE_RETRY_S", 0.1)
+    out = tmp_path / "out"
+    cluster = Cluster(out, phases=["Running"], pod_attempt=False)
+    refused = {"n": 2}
+    real_delete = cluster.delete_job
+
+    def delete_job(name):
+        if refused["n"]:
+            refused["n"] -= 1
+            raise K8sError("DELETE jobs: HTTP 500")
+        real_delete(name)
+    cluster.delete_job = delete_job
+    mgr = _mgr(tmp_path, repo, cluster)
+    rid = mgr.start(ZIP, "p.zip", ["artifacts.local-e2e.yml"])
+    assert _wait(lambda: _state(out, rid).state == "running")
+    assert mgr.stop(rid) and mgr.runs[rid].done.wait(10)
+    assert refused["n"] == 0 and cluster.deleted == [job_name(rid)] and job_name(rid) not in cluster.jobs
+    assert _state(out, rid).state == "stopped"
+
+
+def test_shutdown_while_the_pod_has_not_ended_keeps_the_control_state_for_the_next_main(tmp_path: Path, repo: Path, monkeypatch):
+    monkeypatch.setenv("SBMIG_JOB_EXIT_GRACE_S", "60")
+    out = tmp_path / "out"
+    cluster = Cluster(out, phases=["Running"])
+    mgr = _mgr(tmp_path, repo, cluster)
+    rid = mgr.start(ZIP, "p.zip", ["artifacts.local-e2e.yml"])
+    assert _wait(lambda: "ending" in _job_events(mgr.runs[rid]))    # the result is read, the pod has not ended
+    mgr.shutdown()
+    assert mgr.runs[rid].done.wait(10)
+    assert cluster.deleted == [] and _state(out, rid).state == "running" and not (out / rid / "web-status.json").is_file()
+    # the next Main adopts the Job and still waits for its end before it calls the run finished
+    mgr2 = _mgr(tmp_path, repo, cluster)
+    assert mgr2.recovered == [rid]
+    time.sleep(0.3)
+    assert not mgr2.runs[rid].done.is_set()
+    cluster.jobs[job_name(rid)]["phases"] = ["Succeeded"]
+    assert mgr2.runs[rid].done.wait(10) and mgr2.runs[rid].exit_code == 0 and mgr2.status(rid)["verified"] is True
+    assert _state(out, rid).state == "finished" and cluster.deleted == [] and len(cluster.created) == 1
+
+
+def test_an_uncertain_create_asks_until_the_api_answers_and_adopts_a_job_that_shows_up_late(tmp_path: Path, repo: Path, monkeypatch):
+    """The create answer was lost AND the API is down: failing here would hand the turn on with a pod possibly running."""
+    monkeypatch.setenv("SBMIG_JOB_API_GRACE_S", "0.1")
+    out = tmp_path / "out"
+    cluster = Cluster(out, phases=["Running", "Succeeded"])
+    cluster.create_mode = "transport-created"
+    answers = {"down": 6, "missing": 1}
+    real = cluster.job_state
+
+    def job_state(name):
+        if answers["down"]:
+            answers["down"] -= 1
+            raise K8sError("GET jobs: HTTP 503")
+        if answers["missing"]:                                       # the request landed, the Job is not listed yet
+            answers["missing"] -= 1
+            return JobState("Missing", message="job not found", labels={})
+        return real(name)
+    cluster.job_state = job_state
+    mgr = _mgr(tmp_path, repo, cluster)
+    rid = mgr.start(ZIP, "p.zip", ["artifacts.local-e2e.yml"])
+    assert mgr.runs[rid].done.wait(10) and mgr.runs[rid].exit_code == 0 and mgr.runs[rid].error is None
+    events = [e["event"] for e in _journal(out, rid)]
+    assert len(cluster.created) == 1 and events.count("job_adopted") == 1
+    assert events.count("job_api_unavailable") == 1 and events.count("job_api_back") == 1
+    assert _state(out, rid).state == "finished"
+
+
+def test_restart_waits_for_the_api_instead_of_failing_the_run(tmp_path: Path, repo: Path, monkeypatch):
+    monkeypatch.setenv("SBMIG_JOB_API_GRACE_S", "0.1")
+    out = tmp_path / "out"
+    _seed(out, "web-p", "creating")
+    cluster = Cluster(out, phases=["Running", "Succeeded"])
+    cluster.add(job_name("web-p"), {RUN_LABEL: "web-p", OWNER_LABEL: "own3r"})
+    down = {"on": True}
+    real = cluster.job_state
+
+    def job_state(name):
+        if down["on"]:
+            raise K8sError("GET jobs: ConnectionError: connection refused")
+        return real(name)
+    cluster.job_state = job_state
+    mgr = _mgr(tmp_path, repo, cluster)
+    time.sleep(0.5)                                                 # far past the grace
+    run = mgr.runs["web-p"]
+    assert not run.done.is_set() and run.error is None and cluster.created == [] and _state(out, "web-p").state == "creating"
+    assert "Kubernetes API unavailable" in (mgr.status("web-p")["job"].get("note") or "")
+    down["on"] = False
+    assert run.done.wait(10) and run.exit_code == 0 and cluster.created == []
+    assert any(e["event"] == "job_adopted" for e in _journal(out, "web-p")) and _state(out, "web-p").state == "finished"
+
+
+def test_shutdown_while_the_api_is_down_leaves_the_run_to_the_next_main(tmp_path: Path, repo: Path, monkeypatch):
+    out = tmp_path / "out"
+    _seed(out, "web-s", "creating")
+    cluster = Cluster(out, phases=["Running", "Succeeded"])
+
+    def job_state(name):
+        raise K8sError("GET jobs: ConnectionError: connection refused")
+    cluster.job_state = job_state
+    mgr = _mgr(tmp_path, repo, cluster)
+    time.sleep(0.2)
+    mgr.shutdown()
+    run = mgr.runs["web-s"]
+    assert run.done.wait(10) and "shut down while waiting for the Kubernetes API" in (run.error or "")
+    assert cluster.created == [] and cluster.deleted == [] and _state(out, "web-s").state == "creating"
+    assert not (out / "web-s" / "web-status.json").is_file()
+
+
+def test_a_failure_in_the_web_process_deletes_its_job_before_the_turn_is_handed_on(tmp_path: Path, repo: Path, monkeypatch):
+    out = tmp_path / "out"
+    cluster = Cluster(out, phases=["Running"], pod_attempt=False)
+    mgr = _mgr(tmp_path, repo, cluster)
+
+    def broken(self, run):
+        raise RuntimeError("status reader broke")
+    monkeypatch.setattr(RunManager, "_accept_status", broken)
+    rid = mgr.start(ZIP, "p.zip", ["artifacts.local-e2e.yml"])
+    assert mgr.runs[rid].done.wait(10)
+    assert mgr.runs[rid].exit_code == 3 and "RuntimeError: status reader broke" in (mgr.runs[rid].error or "")
+    assert cluster.deleted == [job_name(rid)] and job_name(rid) not in cluster.jobs and cluster.polls_after_delete >= 3
+    assert _state(out, rid).state == "failed"
+    gone = [e for e in _journal(out, rid) if e["event"] == "job_deleted"]
+    assert len(gone) == 1 and gone[0]["reason"] == "the run failed in the web process"
+
+
+def test_a_job_that_vanished_after_a_stop_request_is_stopped_not_lost(tmp_path: Path, repo: Path, monkeypatch):
+    monkeypatch.setenv("SBMIG_JOB_STOP_GRACE_S", "60")
+    out = tmp_path / "out"
+    cluster = Cluster(out, phases=["Running"], pod_attempt=False)
+    mgr = _mgr(tmp_path, repo, cluster)
+    rid = mgr.start(ZIP, "p.zip", ["artifacts.local-e2e.yml"])
+    assert _wait(lambda: _state(out, rid).state == "running")
+    assert mgr.stop(rid) and _wait(lambda: (out / rid / STOP_REQUEST_FILE).is_file())
+    cluster.jobs.pop(job_name(rid))                                 # deleted outside sbmig
+    assert mgr.runs[rid].done.wait(10)
+    assert _state(out, rid).state == "stopped" and "gone after the stop request" in (mgr.runs[rid].error or "")
+    assert cluster.deleted == []
+    # the same after a restart: the earlier Main went down between its delete and the Job's end
+    rd = _seed(out, "web-g", "running")
+    (rd / STOP_REQUEST_FILE).write_text("stop requested from the web UI\n", encoding="utf-8")
+    mgr2 = _mgr(tmp_path, repo, Cluster(out))
+    assert mgr2.runs["web-g"].done.wait(10) and _state(out, "web-g").state == "stopped"
+
+
+# ---- review 2026-11-10 (2): a Job without this request's labels is not this request's
+def test_only_both_labels_make_a_job_ours(tmp_path: Path, repo: Path):
+    out = tmp_path / "out"
+    mgr = _mgr(tmp_path, repo, Cluster(out, phases=["Running", "Succeeded"]))
+    rid = mgr.start(ZIP, "p.zip", ["artifacts.local-e2e.yml"])
+    run = mgr.runs[rid]
+    assert run.done.wait(10) and run.owner
+    mine = {RUN_LABEL: rid, OWNER_LABEL: run.owner}
+    assert mgr._owned(run, JobState("Running", labels=mine)) is True
+    assert mgr._owned(run, JobState("Running", labels={**mine, "app": "sbmig"})) is True
+    assert mgr._owned(run, JobState("Running", labels={})) is False                      # a Job nobody labelled
+    assert mgr._owned(run, JobState("Running", labels={RUN_LABEL: rid})) is False        # the run id alone is a guessable name
+    assert mgr._owned(run, JobState("Running", labels={OWNER_LABEL: run.owner})) is False
+    assert mgr._owned(run, JobState("Running", labels={**mine, OWNER_LABEL: "someone-else"})) is False
+    # a client that cannot report labels at all (the local subprocess) is trusted by name
+    assert mgr._owned(run, JobState("Running")) is True and JobState("Running").labels is None
+
+
+def test_a_409_on_an_unlabelled_job_of_the_same_name_is_not_adopted(tmp_path: Path, repo: Path):
+    out = tmp_path / "out"
+    cluster = Cluster(out, phases=["Running"], pod_attempt=False)
+    real_create = cluster.create_job
+
+    def create_job(manifest):
+        cluster.add(manifest["metadata"]["name"], {})               # a hand-made Job of the same name, no labels
+        return real_create(manifest)                                # → HTTP 409
+    cluster.create_job = create_job
+    mgr = _mgr(tmp_path, repo, cluster)
+    rid = mgr.start(ZIP, "p.zip", ["artifacts.local-e2e.yml"])
+    assert mgr.runs[rid].done.wait(10)
+    assert mgr.runs[rid].exit_code == 3 and "is not owned by this request" in (mgr.runs[rid].error or "")
+    assert cluster.deleted == [] and job_name(rid) in cluster.jobs  # neither adopted nor deleted
+    assert not any(e.get("event") in ("job_adopted", "job_deleted") for e in _journal(out, rid))
+    assert _state(out, rid).state == "failed"
+
+
+@pytest.mark.parametrize(("state", "labels"), [
+    ("creating", {}),
+    ("created", {}),
+    ("running", {}),
+    ("created", {RUN_LABEL: "web-u"}),
+    ("running", {OWNER_LABEL: "own3r"}),
+    ("created", {RUN_LABEL: "web-u", OWNER_LABEL: "an-older-request"}),
+])
+def test_restart_never_adopts_a_job_without_this_requests_labels(tmp_path: Path, repo: Path, state: str, labels: dict):
+    out = tmp_path / "out"
+    _seed(out, "web-u", state)
+    cluster = Cluster(out, phases=["Running"], pod_attempt=False)
+    cluster.add(job_name("web-u"), labels)
+    mgr = _mgr(tmp_path, repo, cluster)
+    run = mgr.runs["web-u"]
+    assert run.done.wait(10)
+    assert run.exit_code == 3 and "is not owned by this request — not adopted" in (run.error or "")
+    assert cluster.created == [] and cluster.deleted == [] and job_name("web-u") in cluster.jobs
+    journal = out / "web-u" / "journal.jsonl"
+    assert not journal.is_file() or not any(e.get("event") in ("job_adopted", "job_deleted") for e in _journal(out, "web-u"))
+    assert _state(out, "web-u").state == "failed"
+
+
+def test_stop_refuses_to_delete_a_job_that_lost_its_labels(tmp_path: Path, repo: Path, monkeypatch):
+    monkeypatch.setenv("SBMIG_JOB_STOP_GRACE_S", "0.1")
+    out = tmp_path / "out"
+    cluster = Cluster(out, phases=["Running"], pod_attempt=False)
+    mgr = _mgr(tmp_path, repo, cluster)
+    rid = mgr.start(ZIP, "p.zip", ["artifacts.local-e2e.yml"])
+    assert _wait(lambda: _state(out, rid).state == "running")
+    cluster.jobs[job_name(rid)]["labels"].clear()                   # re-created by hand under the same name, without labels
+    assert mgr.stop(rid) and mgr.runs[rid].done.wait(10)
+    assert cluster.deleted == [] and "is not owned by this request — not deleted" in (mgr.runs[rid].error or "")
+    assert any(e["event"] == "job_delete_refused" for e in _journal(out, rid)) and _state(out, rid).state == "stopped"
+
+
+def test_job_state_of_an_unlabelled_job_reports_empty_labels_not_none():
+    base = "https://10.0.0.1:443"
+    s = _Session({("GET", f"{base}/apis/batch/v1/namespaces/ns/jobs/sbmig-bare"): _Resp(200, {"metadata": {"name": "sbmig-bare"}, "status": {}}),
+                  ("GET", f"{base}/api/v1/namespaces/ns/pods"): _Resp(200, {"items": []})})
+    c = K8sClient(base, "tok", "ns", session=s)
+    assert c.job_state("sbmig-bare").labels == {} and c.job_state("sbmig-nope").labels == {}

@@ -106,7 +106,11 @@ def test_record_dir_variables_reach_the_child_only_with_the_switch(setup):
     assert worker.main(environ={**setup["env"], **extra, contract.LLM_RECORDS_ENV: "1"}, run_child=fake_child(0, calls)) == 0
     child = calls[0][2]
     assert child["SBMIG_LLM__RECORD_DIR"] == "/data/llm-records" and child["LLM_RECORD_DIR"] == "/data/other"
-    assert worker.child_environ({"sbmig_llm__record_dir": "x", "A": "1"}) == {"A": "1"}
+    # 2026-11-10: the child always redacts its own output (no off switch) and gets a wide console unless one is set
+    assert worker.child_environ({"sbmig_llm__record_dir": "x", "A": "1"}) == {
+        "A": "1", "SBMIG_REDACT_OUTPUT": "1", "COLUMNS": worker.CHILD_COLUMNS}
+    assert worker.child_environ({"SBMIG_REDACT_OUTPUT": "0", "COLUMNS": "120"}) == {
+        "SBMIG_REDACT_OUTPUT": "1", "COLUMNS": "120"}
 
 
 @pytest.mark.parametrize("child_rc,flag,expected", [(2, None, 0), (2, "1", 2), (3, None, 3), (1, "1", 0)])
@@ -168,3 +172,40 @@ def test_default_run_child_streams(tmp_path, capfd):
     rc = worker.default_run_child([sys.executable, "-c", "print('hello'); import sys; sys.exit(5)"], tmp_path, {})
     assert rc == 5
     assert "hello" in capfd.readouterr().out
+
+
+# ---- 2026-11-10 (review: "the child's output goes to the pod log as it is"): redacted line by line, before it is printed
+
+def test_default_run_child_redacts_each_line(tmp_path, capfd):
+    import sys
+    code = ("import os, sys\n"
+            "print('token=' + os.environ['LLM_APP_TOKEN'])\n"
+            "print('clone https://bob:hunter2@git.example/r.git')\n"
+            "sys.stderr.write('Traceback: bad key ' + os.environ['LLM_APP_TOKEN'] + '\\n')\n"
+            "print('plain line')\n")
+    rc = worker.default_run_child([sys.executable, "-c", code], tmp_path, {"LLM_APP_TOKEN": SECRET})
+    out = capfd.readouterr().out
+    assert rc == 0
+    assert SECRET not in out and "hunter2" not in out
+    assert "token=***" in out and "https://***@git.example/r.git" in out and "Traceback: bad key ***" in out
+    assert "plain line" in out
+
+
+def test_child_always_runs_with_output_redaction(setup):
+    calls: list = []
+    assert worker.main(environ={**setup["env"], "SBMIG_REDACT_OUTPUT": "0"}, run_child=fake_child(0, calls)) == 0
+    env = calls[0][2]
+    assert env["SBMIG_REDACT_OUTPUT"] == "1" and env["COLUMNS"] == worker.CHILD_COLUMNS
+
+
+def test_a_launch_error_carrying_a_secret_is_redacted_everywhere(setup, capsys):
+    def boom(cmd, cwd, env):
+        raise OSError(f"cannot exec: bad credential {SECRET} for https://svc:pw12345@nexus.example/repo")
+    assert worker.main(environ=setup["env"], run_child=boom) == 3
+    rd = setup["run_dir"]
+    status = contract.JobStatus.read(rd)
+    assert "could not run sbmig" in status.error and "***" in status.error
+    printed = capsys.readouterr()
+    for text in (status.error, (rd / "job-status.json").read_text(encoding="utf-8"),
+                 (rd / "journal.jsonl").read_text(encoding="utf-8"), printed.out, printed.err):
+        assert SECRET not in text and "pw12345" not in text
