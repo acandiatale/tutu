@@ -340,8 +340,12 @@ PVC 가 RWO 만 되는 클러스터라면 Job 템플릿과 Deployment 의 hostna
    좌표)과 `libraries.yml`(승인한 라이브러리 표)이 거기 산다. 빈 KB 로 돌리면 어제 되던 프로젝트가 vendor jar(IBSheet 류)를 못 묶어 `package … does not
    exist` 로 끝날 수 있다(2026-11-09 회사 PC 에서 확인). 회사 PC 의 KB 폴더를 통째로(비밀값 없음):
    ```powershell
-   kubectl -n agent cp .\kb-v2 <웹 파드 이름>:/data/kb-v2
+   kubectl -n agent cp .\kb-v2 <웹 파드 이름>:/data/
+   kubectl -n agent exec <웹 파드 이름> -- ls /data/kb-v2
    ```
+   목적지는 `/data/` 로 적는다 — `/data/kb-v2` 로 적으면 그 폴더가 이미 있을 때 `/data/kb-v2/kb-v2` 로 한 겹 더 들어가 KB 가 빈 것처럼 돈다(kind 에서
+   확인, 2026-11-10). 그래서 PC 쪽 폴더 이름이 `kb-v2` 여야 하고, 그 폴더가 보이는 곳에서 상대 경로로 친다(`C:\…` 의 `:` 을 kubectl 이 파드 이름
+   구분자로 읽을 수 있다). 둘째 줄에 `cases` 와 `jar_names.yml` 이 바로 보이면 된 것이다. 같은 명령을 다시 치면 같은 자리에 덮어쓴다.
 7. ConfigMap `sbmig-env` 에 `SBMIG_WEB_MODE: "k8s-job"` (필요하면 `SBMIG_K8S_NAMESPACE`). 파드 재시작.
 8. 확인: 시작 로그 `sbmig web UI ready (… mode k8s-job — job template …)`, 업로드 뒤 `kubectl -n agent get jobs -l app=sbmig,kind=run`, 화면 레일의 '파드' 단계,
    실행 폴더에 파드가 쓴 `sbmig.log` / `job-status.json`.
