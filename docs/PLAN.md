@@ -801,3 +801,16 @@ Contract + "As built": `docs/INTERFACES.md` "v2.1z-ad".
 | Docs / manifests | `20-configmap.yaml` (`SBMIG_JOB_EXIT_GRACE_S` / `SBMIG_JOB_API_GRACE_S` / `SBMIG_JOB_ENV_PIN` rows, the restart rule, "never leave an override empty", `LLM_RECIPE_MODEL`) and its 81 line; INTERFACES "v2.1z-ad" (+ pointers in the v2.1z-ac text), `docs/v2/JOB-RUN-STATE-CONTRACT-KO.md` §1–§3 / §5–§10; operator text `deploy/README.md` (the 2026-11-10 review subsection, the restart rule, stop grace 2700) and `deploy/ENV.md` (§1 / §2 / §3 / §6 / §8); `agent-doc/09-deploy-and-ops.md` (the four Job-mode guarantees + checks) and `agent-doc/10-open-items-and-history.md` (history row, known limits); `CLAUDE.md` | `deploy/`, `docs/`, `agent-doc/` | done |
 | Not changed (decided) | `_apply_env_overrides` keeps reading an empty value as YAML null (documented: leave unused keys commented); no `_URL` exemption in the secret-name rule (`LLM_TOKEN_URL` stays masked and unpinned); the uvicorn access log is not scrubbed | — | decided |
 | Verification | offline suite **3,298 passed** (53 deselected, 9 min 52 s); `tests/web` + `tests/core` + `tests/deploy` + `tests/docs` 674 passed | — | done |
+
+## Status — 2026-11-10, deploy: Job mode on in the shipped ConfigMap
+
+The user's first web pod at the company came up running migrations itself: `SBMIG_WEB_MODE: "k8s-job"` was a commented
+"switch on later" line in `20-configmap.yaml`, although the company's operating model (one Job per upload) and its values
+(namespace, storage class) had been given. Rule from here on: what the company runs with is switched on in the manifests.
+
+| Increment | Deliverable | Where | Status |
+|---|---|---|---|
+| Shipped default | `sbmig-env` carries `SBMIG_WEB_MODE: "k8s-job"` as an active key (comment: the web pod checks the 45 permissions and ConfigMap `sbmig-job-template` at startup and does not start without them; comment the line out for the in-process mode) | `deploy/k8s/20-configmap.yaml` | done |
+| Apply order | README §2 applies `45-web-rbac.yaml` and creates ConfigMap `sbmig-job-template` before 40; the header and §3 "켜는 법" 7 say the mode ships on and how a cluster applied from the older file switches (uncomment, apply 20, `rollout restart`); the 40 comment on the optional template volume no longer says the pod starts without it; ENV.md row; agent-doc 09 §5 | `deploy/README.md`, `deploy/ENV.md`, `deploy/k8s/40-deployment.yaml`, `agent-doc/09-deploy-and-ops.md` | done |
+| Test | `test_the_shipped_configmap_runs_the_company_operating_mode` (active key, never a commented one, service account + template mount / path on the Deployment); the mode stays unpinned | `tests/deploy/test_manifests.py` | done |
+| Verification | `tests/deploy` + `tests/docs` + `tests/web` **533 passed** | — | done |

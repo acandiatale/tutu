@@ -44,7 +44,7 @@
 | `SBMIG_MAX_UPLOAD_MB` | `1024` | 업로드 zip 상한(MB). 기본 512, `0` = 없음 |
 | `HTTP_PROXY` / `HTTPS_PROXY` | `http://<프록시 호스트>:<포트>` | 클러스터에서 프록시로 나가야 할 때만(웹 파드와 Job 파드가 같이 읽는다) |
 | `NO_PROXY` | `<게이트웨이 호스트>,<nexus 호스트>,localhost,127.0.0.1` | 프록시를 켰을 때 사내 주소를 빼는 목록 |
-| `SBMIG_WEB_MODE` | `in-process` (기본) / `k8s-job` / `local-job` | `k8s-job` = 업로드마다 Job 하나(공유 PVC), README §3 "켜는 법" 뒤에 켠다. 개발 PC 에서는 `k8s-job` 이 자동으로 `local-job`(파드 자리에 로컬 서브프로세스)으로 내려간다 |
+| `SBMIG_WEB_MODE` | `k8s-job` (매니페스트 값) / `in-process` (변수가 없을 때) / `local-job` | `k8s-job` = 업로드마다 Job 하나(공유 PVC). 켜진 채로 나가므로 권한(45)과 Job 틀 ConfigMap 이 웹 파드보다 먼저 있어야 한다(README §3 "켜는 법"); 줄을 주석 처리하면 웹 파드가 직접 돌린다. 개발 PC 에서는 `k8s-job` 이 자동으로 `local-job`(파드 자리에 로컬 서브프로세스)으로 내려간다 |
 | `SBMIG_K8S_NAMESPACE` | (비움 = 파드의 namespace, kubeconfig 면 그 context 의 namespace) | Job 을 다른 namespace 에 만들 때만 |
 | `SBMIG_JOB_TEMPLATE` | `/templates/81-web-job.template.yaml` (Deployment 의 env) | 채운 Job 틀을 ConfigMap `sbmig-job-template` 으로 `/templates` 에 마운트한다(README §3). 이미지 안의 `deploy/k8s/81-web-job.template.yaml` 은 자리표시자 그대로라 쓰지 않는다 |
 | `SBMIG_WORKER_LLM_RECORDS` | (없음) / `"1"` (Job 틀의 env) | Worker 가 LLM 원문 기록을 허용할지. 기본은 끈다(원본 프롬프트 = 소스 코드가 공유 볼륨에 더 남지 않게). 진단 때만 틀의 두 줄을 같이 푼다: 이 스위치 + `SBMIG_LLM__RECORD_DIR: "/data/llm-records"`. 스위치 없이 폴더만 주면 Worker 가 그 변수를 넘기지 않는다 |

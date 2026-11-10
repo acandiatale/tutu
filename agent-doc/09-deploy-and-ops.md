@@ -124,7 +124,8 @@ kubectl exec deploy/sbmig -- python -m sbmig.cli llm-probe
 
 ### ② Job 디스패치 모드 — 웹 파드가 "Agent", 업로드마다 빌드 Job (있음, 2026-11-05)
 
-`sbmig serve --mode k8s-job`(또는 ConfigMap 의 `SBMIG_WEB_MODE=k8s-job`): 업로드된 zip 을 자기 프로세스에서 돌리는 대신 Job 을 만든다.
+`sbmig serve --mode k8s-job`(또는 ConfigMap 의 `SBMIG_WEB_MODE=k8s-job` — `deploy/k8s/20-configmap.yaml` 은 이 줄이 켜진 채로 나간다. 주석
+처리하면 ① 로 돈다): 업로드된 zip 을 자기 프로세스에서 돌리는 대신 Job 을 만든다.
 **전달·결과·KB 는 전부 공유 PVC**(`sbmig-data`, ReadWriteMany, 두 파드가 `/data` 에 마운트): 웹(Main)이 `/data/out/<run id>/source.zip` 을 두고
 `control/request.json`(zip sha256 · 설정 digest · sbmig 버전 — 접수 때 고정)과 `control/state.json`(제어 상태)을 쓴 뒤, 틀
 `deploy/k8s/81-web-job.template.yaml` 에 실행별 env(`SBMIG_SOURCE_ZIP`, `SBMIG_OUT`, `SBMIG_RUN_ID`, `SBMIG_CONFIG`, 고급 설정의 `SBMIG_STOP_AFTER` /

@@ -17,8 +17,9 @@
 
 **운영 방식은 하나다**: 에이전트가 웹 화면을 띄우고, 이관 대상 프로젝트의 담당자가 그 화면에 프로젝트 zip 을 올리면 에이전트가
 이관을 돌린다. 담당자가 sbmig 명령을 직접 치는 일은 없다.
-**목표 구성(§3)** 은 인프라 가이드대로 웹 파드가 업로드마다 빌드 Job 을 만드는 것이다(`sbmig serve` 의 Job 디스패치 모드, 만들 것).
-**지금 바로 올릴 수 있는 구성(§2)** 은 웹 파드가 자기 프로세스 안에서 돌리는 것이다(코드 그대로). 화면·이미지·설정 파일은 둘이 같다.
+**회사 구성(§3)** 은 인프라 가이드대로 웹 파드가 업로드마다 빌드 Job 을 만드는 것이다(`sbmig serve` 의 Job 디스패치 모드). 매니페스트는
+**이 모드가 켜진 채로** 나간다(`sbmig-env` 의 `SBMIG_WEB_MODE: "k8s-job"`, 2026-11-10) — §2 의 apply 전에 §3 "켜는 법" 2·3·4 를 한다.
+그 줄을 주석 처리하면 웹 파드가 자기 프로세스 안에서 돌린다(§2 만으로 뜬다). 화면·이미지·설정 파일은 둘이 같다.
 
 ## 1. 이미지 만들기
 
@@ -120,6 +121,9 @@ kubectl apply -f deploy/k8s/10-storage.yaml
 kubectl apply -f deploy/k8s/20-configmap.yaml      # <…> 자리를 회사 값으로 채운 뒤
 cp deploy/k8s/30-secret.example.yaml deploy/k8s/30-secret.yaml && $EDITOR deploy/k8s/30-secret.yaml
 kubectl apply -f deploy/k8s/30-secret.yaml
+# Job 모드가 켜져 있다(sbmig-env 의 SBMIG_WEB_MODE) — 권한과 Job 틀이 먼저다(§3 "켜는 법" 2·3·4). 없으면 웹 파드가 시작 검증에서 멈춘다
+kubectl apply -f deploy/k8s/45-web-rbac.yaml
+kubectl -n agent create configmap sbmig-job-template --from-file=deploy/k8s/81-web-job.template.yaml --dry-run=client -o yaml | kubectl apply -f -
 kubectl apply -f deploy/k8s/40-deployment.yaml -f deploy/k8s/50-service.yaml
 kubectl -n agent rollout status deploy/sbmig
 kubectl -n agent exec deploy/sbmig -- python -m sbmig.cli llm-probe             # token exchange: ok … HTTP 200
@@ -346,7 +350,8 @@ PVC 가 RWO 만 되는 클러스터라면 Job 템플릿과 Deployment 의 hostna
    목적지는 `/data/` 로 적는다 — `/data/kb-v2` 로 적으면 그 폴더가 이미 있을 때 `/data/kb-v2/kb-v2` 로 한 겹 더 들어가 KB 가 빈 것처럼 돈다(kind 에서
    확인, 2026-11-10). 그래서 PC 쪽 폴더 이름이 `kb-v2` 여야 하고, 그 폴더가 보이는 곳에서 상대 경로로 친다(`C:\…` 의 `:` 을 kubectl 이 파드 이름
    구분자로 읽을 수 있다). 둘째 줄에 `cases` 와 `jar_names.yml` 이 바로 보이면 된 것이다. 같은 명령을 다시 치면 같은 자리에 덮어쓴다.
-7. ConfigMap `sbmig-env` 에 `SBMIG_WEB_MODE: "k8s-job"` (필요하면 `SBMIG_K8S_NAMESPACE`). 파드 재시작.
+7. ConfigMap `sbmig-env` 의 `SBMIG_WEB_MODE: "k8s-job"` 은 **켜진 채로 나간다**(2026-11-10; 필요하면 `SBMIG_K8S_NAMESPACE`). 그 전의 파일로 올린
+   클러스터는 그 줄의 주석을 풀고 `kubectl apply -f deploy/k8s/20-configmap.yaml` 뒤 `kubectl -n agent rollout restart deploy/sbmig`.
 8. 확인: 시작 로그 `sbmig web UI ready (… mode k8s-job — job template …)`, 업로드 뒤 `kubectl -n agent get jobs -l app=sbmig,kind=run`, 화면 레일의 '파드' 단계,
    실행 폴더에 파드가 쓴 `sbmig.log` / `job-status.json`.
 

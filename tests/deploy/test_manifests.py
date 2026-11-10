@@ -256,8 +256,24 @@ def test_every_documented_key_switched_on_is_pinned_on_both_sides():
     assert sorted(expected - set(main)) == [] and sorted(expected - set(worker)) == []
     # group 1 is the web pod's own behaviour (and proxies): never pinned
     web_knobs = {n for n, (group, _) in commented.items() if group == "1"}
-    assert {"SBMIG_JOB_ENV_PIN", "SBMIG_JOB_EXIT_GRACE_S", "SBMIG_JOB_API_GRACE_S", "SBMIG_WEB_MODE"} <= web_knobs
+    assert {"SBMIG_JOB_ENV_PIN", "SBMIG_JOB_EXIT_GRACE_S", "SBMIG_JOB_API_GRACE_S"} <= web_knobs
     assert sorted(web_knobs & set(main)) == []
+    assert "SBMIG_WEB_MODE" not in main and "SBMIG_WEB_MODE" not in worker        # shipped switched on (below), still never pinned
+
+
+def test_the_shipped_configmap_runs_the_company_operating_mode():
+    """The company runs one Job per upload: sbmig-env ships with the mode switched on (user, 2026-11-10 — the web pod had come
+    up running migrations itself because the line was a commented "later" step). What the mode needs at startup is in the
+    same set of manifests: the service account of 45 on the Deployment, the template mount and its path."""
+    assert _sbmig_env_data().get("SBMIG_WEB_MODE") == "k8s-job"
+    assert "SBMIG_WEB_MODE" not in _commented_keys()
+    spec = next(d for d in _docs(WEB) if d["kind"] == "Deployment")["spec"]["template"]["spec"]
+    assert spec["serviceAccountName"] == "sbmig-web"
+    env = {e["name"]: e.get("value") for e in spec["containers"][0]["env"]}
+    mounts = {m["name"]: m["mountPath"] for m in spec["containers"][0]["volumeMounts"]}
+    assert env["SBMIG_JOB_TEMPLATE"].startswith(mounts["job-template"] + "/")
+    volume = next(v for v in spec["volumes"] if v["name"] == "job-template")
+    assert volume["configMap"]["name"] == "sbmig-job-template"
 
 
 def test_a_job_pod_without_the_kb_dir_is_named():

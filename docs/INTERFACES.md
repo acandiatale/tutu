@@ -4391,6 +4391,10 @@ redaction. A local-job regression found while testing is fixed in the same round
   - **Operator rule (replaces "the Job pod picks the new value up at the next upload")**: after changing ConfigMap `sbmig-env`, restart
     the web pod — else the next Job is refused within seconds, naming the keys. After changing the Job template, re-create ConfigMap
     `sbmig-job-template` and restart the web pod too (Main validates the template and keeps it from startup, v2.1z-ac).
+  - **Shipped mode (2026-11-10)**: `deploy/k8s/20-configmap.yaml` carries `SBMIG_WEB_MODE: "k8s-job"` as an active key (it had been a
+    commented line; the company's first web pod ran migrations itself). Applying the manifests therefore needs `45-web-rbac.yaml` and
+    ConfigMap `sbmig-job-template` before the Deployment — the startup validation stops the web pod otherwise. Commenting the line out
+    is the in-process mode. The mode is a web-pod knob and stays outside the env pins.
   - Known limits: secret-looking names are not compared — among them `LLM_TOKEN_URL` (its name contains TOKEN; a wrong URL fails at the
     token exchange) and `LLM_APP_TOKEN` / `LLM_API_KEY` / `NEXUS_*`; proxy variables (`HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY`) are not
     compared; an override left empty (`SBMIG_X__Y=""`) is YAML null for `_apply_env_overrides` and replaces the yml value with None — it
