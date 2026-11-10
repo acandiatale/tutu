@@ -4400,6 +4400,9 @@ redaction. A local-job regression found while testing is fixed in the same round
     `serviceAccountName`, and `sbmig-env` carries `SBMIG_K8S_NAMESPACE: "agent"` (with a kubeconfig the namespace is argument → that
     variable → the context's → `default`). `45-web-rbac.yaml` + the commented `serviceAccountName: sbmig-web` line are the alternative
     for a cluster without a kubeconfig Secret. The Job template (81) needs neither: only the web pod calls the Kubernetes API.
+    **Retention (same day)**: the template's `ttlSecondsAfterFinished` is 3600 (was 86400). A finished Job is deleted by nobody — the pod
+    exits and stays listed until Kubernetes' TTL controller removes Job and pod; with tens of runs a day an hour keeps the namespace
+    listing short. The web pod deletes its own Job only after the stop grace, after the exit grace, or after a failure in the web process.
   - Known limits: secret-looking names are not compared — among them `LLM_TOKEN_URL` (its name contains TOKEN; a wrong URL fails at the
     token exchange) and `LLM_APP_TOKEN` / `LLM_API_KEY` / `NEXUS_*`; proxy variables (`HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY`) are not
     compared; an override left empty (`SBMIG_X__Y=""`) is YAML null for `_apply_env_overrides` and replaces the yml value with None — it

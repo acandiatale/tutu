@@ -117,6 +117,7 @@ Main 이 `<run dir>/stop.request` 를 쓴다(저널 `stop_request_sent`). Worker
 | Main 재시작, 요청은 큐에 있었음(Job 미생성) | `control/state.json` 이 `queued` 면 접수 순서대로 **다시 줄에 선다**(`source.zip` 과 `request.json` 이 있으니 그대로 만든다). 개발 PC 의 local-job 은 프로세스가 서버와 함께 죽어 복구하지 못한다 → `lost` |
 | Job 파드가 죽음(OOM·노드 교체) | `backoffLimit: 0` → 재시도 없음. Main 은 Failed + `job-status.json` 없음 → 종료 코드 3, `error` 에 사유 |
 | Job 이 4시간을 넘김 | `activeDeadlineSeconds: 14400` → 쿠버네티스가 끊는다 → 위와 같음 |
+| Job 이 끝남(성공이든 실패든) | 파드는 꺼진 채 목록에 남는다(삭제 명령은 없다). `ttlSecondsAfterFinished: 3600` → 1 시간 뒤 쿠버네티스가 Job 과 파드를 지운다. 결과는 볼륨에 남는다. 그 사이 Main 이 내려가 있었어도 `job-status.json` 이 결과다 |
 | 쿠버네티스 API 장애 | 실행을 실패로 끝내지 않고 차례도 넘기지 않는다(v2.1z-ad): API 가 다시 답할 때까지 감시를 이어 가고 다음 업로드는 기다린다. 300초(`SBMIG_JOB_API_GRACE_S`) 뒤 한 번 크게 알린다(저널 `job_api_unavailable`), 다시 답하면 `job_api_back`. 끝내 답하지 않으면 Main 의 접속을 고칠 때까지 줄이 멈춘다(두 이관이 겹치는 것보다 낫다는 결정) |
 | 결과 파일을 쓴 뒤에도 파드가 안 끝남 | 120초(`SBMIG_JOB_EXIT_GRACE_S`) 뒤 우리 Job 을 지우고 사라질 때까지 기다린 다음 차례를 넘긴다 |
 | Job 파드의 환경이 웹 파드와 다름(`sbmig-env` 를 고치고 웹 파드를 재시작하지 않음, 낡은 Job 틀) | `refuse`(k8s-job 기본): Worker 가 몇 초 만에 거절, exit 3, `worker_refused` 에 다른 키 이름. `warn`: `worker_env_differs` 를 적고 Job 파드의 값으로 돈다(§3) |

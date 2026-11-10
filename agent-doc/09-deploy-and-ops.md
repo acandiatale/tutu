@@ -161,7 +161,7 @@ envFrom 없음, 비밀 env 는 valueFrom — 설정 덮어쓰기 `SBMIG_<섹션>
 
 1. **차례는 Job 이 끝난 것을 확인한 뒤 넘어간다.** 큐의 차례는 `RunManager._run_job` 이 돌아올 때 넘어가고, `_watch_job` 은 `job-status.json` 을 받아도
    `_hold_until_ended` 로 Job 이 `Succeeded` / `Failed` / `Missing` 인 것을 API 로 확인한 뒤에야 돌아온다. 결과를 쓴 뒤 남은 파드는 `SBMIG_JOB_EXIT_GRACE_S`
-   (120초) 뒤 지우고 사라질 때까지 기다린다. 웹 쪽 실패(`_run_job` 의 예외)도 만든 Job 을 지우고 확인한 뒤 끝난다. API 장애(`_poll_job` 이 None)는 실패가
+   (120초) 뒤 지우고 사라질 때까지 기다린다. 정상으로 끝난 Job 과 파드는 아무도 지우지 않는다: 꺼진 채 남았다가 틀의 `ttlSecondsAfterFinished`(1시간) 뒤 쿠버네티스가 지운다. 웹 쪽 실패(`_run_job` 의 예외)도 만든 Job 을 지우고 확인한 뒤 끝난다. API 장애(`_poll_job` 이 None)는 실패가
    아니다: `SBMIG_JOB_API_GRACE_S`(300초) 뒤 한 번 크게 알리고(로그 ERROR, 저널 `job_api_unavailable`, `status()` 의 `job.note`) `API_REMIND_S` 마다 다시
    로그, 돌아오면 `job_api_back`. 기한이 없어 영구 장애는 큐를 멈춘다(겹치는 것보다 낫다는 결정). 불확실한 생성 응답(409 / 전송 오류)은 API 가 답할 때까지
    같은 이름을 찾고 `CREATE_CONFIRM_POLLS` 번 묻는다. 예외는 둘: 서버 종료(`_ServerClosing`, `keep_state` — 다음 Main 이 이어받음)와 우리 것이 아닌 Job.

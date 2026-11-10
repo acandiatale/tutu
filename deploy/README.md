@@ -359,6 +359,13 @@ PVC 가 RWO 만 되는 클러스터라면 Job 템플릿과 Deployment 의 hostna
 8. 확인: 시작 로그 `sbmig web UI ready (… mode k8s-job — job template …)`, 업로드 뒤 `kubectl -n agent get jobs -l app=sbmig,kind=run`, 화면 레일의 '파드' 단계,
    실행 폴더에 파드가 쓴 `sbmig.log` / `job-status.json`.
 
+**빌드 파드는 언제 사라지나.** 한 번에 도는 빌드 파드는 하나다(업로드는 줄을 선다). 이관이 끝나면 파드의 프로세스가 끝날 뿐 아무도 삭제 명령을 내리지
+않는다: 파드는 `Completed`(거절·중단처럼 종료 코드 3 이면 `Error`)로 **꺼진 채** 목록에 남고 CPU·메모리는 그때 반납된다. 그 기록(Job 과 파드, 파드 로그)은
+81 틀의 `ttlSecondsAfterFinished`(3600 = 1 시간) 뒤 쿠버네티스가 지운다 — 하루 수십 건이 돌아도 목록에는 방금 끝난 한두 개만 보인다. 결과와 `sbmig.log` 는
+볼륨(`/data/out/<run id>/`)에 남는다. 웹 파드가 Job 을 지우는 것은 예외 셋뿐이고 자기 라벨 둘이 붙은 Job 만 지운다: 중단을 눌렀는데 `SBMIG_JOB_STOP_GRACE_S`
+(2700초) 뒤에도 돌 때, 결과 파일을 쓰고도 파드가 `SBMIG_JOB_EXIT_GRACE_S`(120초) 넘게 남을 때, 웹 쪽 오류로 실행이 끝났는데 Job 이 남았을 때. 4 시간을 넘긴
+Job 은 쿠버네티스가 끊는다(`activeDeadlineSeconds`). 틀의 값을 바꾸면 ConfigMap `sbmig-job-template` 을 다시 만들고 웹 파드를 재시작한다(새 Job 부터 적용).
+
 ### 있는 것 / 다음 것
 
 | 조각 | 상태 |

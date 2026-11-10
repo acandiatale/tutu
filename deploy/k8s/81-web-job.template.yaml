@@ -24,7 +24,9 @@ metadata:
 spec:
   backoffLimit: 0                       # 이관을 무턱대고 재시도하지 않는다(실패한 실행의 보고서가 곧 결과)
   activeDeadlineSeconds: 14400          # 4 시간
-  ttlSecondsAfterFinished: 86400        # 파드 로그를 하루 보존(결과는 볼륨에 있다)
+  ttlSecondsAfterFinished: 3600         # 끝난 Job 과 그 파드를 1 시간 뒤 쿠버네티스가 지운다(삭제 명령은 아무도 내리지 않는다). 끝난 파드는 CPU·메모리를
+                                        # 쓰지 않고 목록에 이름과 로그만 남는다 — 하루 수십 건이 돌아도 목록에 한두 개만 보이게 1 시간. 결과·sbmig.log 는
+                                        # 볼륨에 남는다. `kubectl logs` 를 더 오래 보려면 늘린다(86400 = 하루).
   template:
     metadata:
       labels: {app: sbmig, kind: run}
