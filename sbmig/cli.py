@@ -485,7 +485,8 @@ def serve_cmd(host: str = typer.Option("127.0.0.1", "--host", help="bind address
               ) -> None:
     """웹 UI 를 띄운다(FastAPI + uvicorn): 프로젝트 zip 업로드 → 이관 실행 → 진행 실시간 보기 → 결과 내려받기.
 
-    이관은 프로세스 안에서 한 번에 하나(나머지는 대기열), LangGraph 엔진으로 돈다. 127.0.0.1 이 아닌 주소로
+    이관은 프로세스 안에서는 한 번에 하나, Job 모드(--mode k8s-job / local-job)에서는 SBMIG_JOB_MAX_PARALLEL 개까지
+    (기본 1; 나머지는 올린 순서대로 대기열), LangGraph 엔진으로 돈다. 127.0.0.1 이 아닌 주소로
     열려면 토큰(SBMIG_WEB_TOKEN 또는 --token)이 필요하다 — 없으면 네트워크의 누구나 result.zip(회사 소스)을
     받을 수 있어 시작을 거부한다. 사내망 전용 페이지(2026-11-05 결정)는 --open(또는 SBMIG_WEB_OPEN=1)으로
     토큰 없이 연다 — 시작 때 경고 한 줄.

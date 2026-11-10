@@ -16,6 +16,7 @@ import logging
 import os
 import re
 import tempfile
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -225,9 +226,12 @@ def validate_worker_template(template: str | Path | dict, out_dir: Path | None) 
 
 class K8sClient:
     """클러스터 안 API 클라이언트. ``in_cluster()`` 가 서비스 계정 파일과 ``KUBERNETES_SERVICE_HOST`` 로 만든다; 테스트는
-    ``session`` 에 가짜를 넣는다.
+    ``session`` 에 가짜를 넣는다. v2.1z-ae: 여러 Job 을 동시에 지켜보는 스레드들이 한 클라이언트를 함께 쓴다 — ``requests.Session``
+    은 스레드 사이에서 안전하다고 약속하지 않으므로, 넣어 준 세션이 없으면 **스레드마다** 세션을 하나씩 만든다(헤더·verify·cert 는
+    요청마다 넘기므로 동작은 같다). 넣어 준 세션은 그대로 쓴다.
 
-    In-cluster API client (`in_cluster()`); tests pass a fake `session`."""
+    In-cluster API client (`in_cluster()`); tests pass a fake `session`, used as is. Without one each thread gets its own
+    `requests.Session` (several watcher threads share the client; headers / verify / cert travel with every request)."""
 
     def __init__(self, base_url: str, token: str, namespace: str, verify: str | bool = True,
                  session: Any = None, timeout_s: float = 15.0, cert: tuple[str, str] | None = None) -> None:
@@ -236,7 +240,8 @@ class K8sClient:
         self.verify = verify
         self.cert = cert                        # (client.crt, client.key) — kubeconfig 의 클라이언트 인증서 사용자일 때
         self.timeout_s = timeout_s
-        self.session = session or requests.Session()
+        self._injected_session = session       # None → one requests.Session per thread (the `session` property)
+        self._local = threading.local()
         self.source = ""                        # 사람이 읽을 출처: "in-cluster service account" / "kubeconfig <경로> (context <이름>)"
         self._tmp: Any = None                   # kubeconfig 의 base64 인증서를 풀어 둔 임시 폴더 — 클라이언트와 같이 산다
         self._headers = {"Accept": "application/json", "Content-Type": "application/json"}
@@ -346,6 +351,22 @@ class K8sClient:
         if kubeconfig_path() is not None:
             return cls.from_kubeconfig(namespace=namespace, session=session)
         return cls.in_cluster(namespace=namespace, session=session)
+
+    @property
+    def session(self) -> Any:
+        """이 스레드가 쓸 세션: 넣어 준 것이 있으면 그것, 없으면 이 스레드 전용 ``requests.Session`` (처음 부를 때 만든다).
+
+        The injected session, else this thread's own `requests.Session` (created on first use)."""
+        if self._injected_session is not None:
+            return self._injected_session
+        s = getattr(self._local, "session", None)
+        if s is None:
+            s = self._local.session = requests.Session()
+        return s
+
+    @session.setter
+    def session(self, value: Any) -> None:
+        self._injected_session = value
 
     # ---- http
     def _req(self, method: str, path: str, *, ok: tuple[int, ...] = (200, 201, 202), **kw: Any) -> Any:

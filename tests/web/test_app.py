@@ -110,7 +110,7 @@ def test_page_static_configs_and_empty_runs(client):
     d = client.get("/api/configs").json()
     assert d["configs"] == ["artifacts.local-e2e.yml"]          # default.yml hidden
     assert d["default"] == ["artifacts.local-e2e.yml"]          # nothing configured → the fallback name that exists
-    assert client.get("/api/runs").json() == {"runs": []}
+    assert client.get("/api/runs").json() == {"runs": [], "parallel": {"slots": 1, "running": 0, "waiting": 0}}
     assert client.get("/api/runs/nope").status_code == 404
     assert client.get("/api/runs/nope/events").status_code == 404
     assert client.get("/api/runs/..%2Fetc").status_code in (400, 404)
@@ -176,7 +176,7 @@ def test_rejects_bad_requests(client):
     assert r.status_code == 400
     r = client.post("/api/runs?name=a.zip&stop_after=nowhere", content=_zip_bytes())
     assert r.status_code == 400 and "stop_after" in r.json()["error"]
-    assert client.get("/api/runs").json() == {"runs": []}
+    assert client.get("/api/runs").json() == {"runs": [], "parallel": {"slots": 1, "running": 0, "waiting": 0}}
 
 
 def test_worker_error_is_streamed(client, monkeypatch):

@@ -16,8 +16,10 @@ Routes:
     GET  /api/configs                    config/*.yml names ("configs") and the server's default choice ("default":
                                          `sbmig serve --config` / $SBMIG_WEB_CONFIGS, else artifacts.yml /
                                          artifacts.local-e2e.yml when present) — the page runs with the default and
-                                         shows the full list only under "고급 설정"
-    GET  /api/runs                       known runs (newest first) with status
+                                         shows the full list only under "고급 설정"; "max_parallel" = how many
+                                         migrations run at a time (v2.1z-ae: Job modes, else 1)
+    GET  /api/runs                       known runs (newest first) with status ("runs"; a waiting run carries "queue",
+                                         a Job run its "slot") and "parallel": {slots, running, waiting}
     POST /api/runs?name=<file.zip>[&configs=a.yml,b.yml][&stop_after=…][&llm_provider=…]
          body = the zip bytes                                       → 202 {"run_id", "status"}
          `configs` omitted = the server default; `configs=` (empty) = default.yml only
@@ -315,7 +317,8 @@ async def _stream(events: Iterator[tuple[str, Any]]) -> AsyncIterator[bytes]:
 
 def create_app(out_dir: Path, repo_root: Path = PACKAGE_ROOT, max_upload_mb: int | None = None,
                token: str | None = None, default_configs: list[str] | None = None,
-               open_network: bool | None = None, mode: str | None = None, job_client: Any = None) -> FastAPI:
+               open_network: bool | None = None, mode: str | None = None, job_client: Any = None,
+               max_parallel: int | None = None) -> FastAPI:
     """웹 앱을 만든다: 실행 관리자, 업로드 상한, 토큰(인자 → ``$SBMIG_WEB_TOKEN``), 기본 설정 파일(인자 →
     ``$SBMIG_WEB_CONFIGS``, 쉼표로 구분한 ``config/*.yml`` 이름), 라우트, 정적 파일, 수명 주기. 토큰이 있으면
     모든 요청에 요구하고, 없으면 루프백 클라이언트만 받는다 — 단 ``open_network``(인자 → ``$SBMIG_WEB_OPEN``)이면
@@ -324,11 +327,13 @@ def create_app(out_dir: Path, repo_root: Path = PACKAGE_ROOT, max_upload_mb: int
     `token` (else `$SBMIG_WEB_TOKEN`): required on every request; without one only loopback clients are served,
     unless `open_network` (else `$SBMIG_WEB_OPEN`): every client, no token, one WARNING at start (intranet only).
     `default_configs` (else `$SBMIG_WEB_CONFIGS`): the config names every upload runs with unless the request
-    names its own (`RunManager.default_configs`)."""
+    names its own (`RunManager.default_configs`). `max_parallel` (else `$SBMIG_JOB_MAX_PARALLEL`): migrations at a
+    time in the Job modes (`RunManager.max_parallel`; in-process always 1)."""
     load_dotenv_files()        # server-start variables (SBMIG_MAX_UPLOAD_MB) may live in .env too; the shell wins
     if default_configs is None:
         default_configs = [c.strip() for c in os.environ.get(CONFIGS_ENV, "").split(",") if c.strip()]
-    mgr = RunManager(Path(out_dir), Path(repo_root), default_configs=default_configs, mode=mode, job_client=job_client)
+    mgr = RunManager(Path(out_dir), Path(repo_root), default_configs=default_configs, mode=mode, job_client=job_client,
+                     max_parallel=max_parallel)
     max_upload = resolve_max_upload(max_upload_mb)       # bytes; 0 = unlimited
     token = (token if token is not None else os.environ.get(TOKEN_ENV, "")).strip() or None
     open_network = open_network_requested() if open_network is None else bool(open_network)
@@ -376,11 +381,13 @@ def create_app(out_dir: Path, repo_root: Path = PACKAGE_ROOT, max_upload_mb: int
     @app.get("/api/configs")
     def configs() -> dict:
         return {"configs": mgr.configs(), "default": mgr.default_configs(), "repo_root": str(mgr.repo_root),
-                "out_dir": str(mgr.out_dir), "max_upload_mb": max_upload // (1024 * 1024)}       # 0 = no limit
+                "out_dir": str(mgr.out_dir), "max_upload_mb": max_upload // (1024 * 1024),      # 0 = no limit
+                "max_parallel": mgr.max_parallel}
 
+    # v2.1z-ae: 목록과 함께 지금의 동시 실행 모습 — 화면이 "자리가 다 찼다" 알림과 새 업로드가 받을 대기 번호를 여기서 읽는다
     @app.get("/api/runs")
     def runs() -> dict:
-        return {"runs": mgr.list_runs()}
+        return {"runs": mgr.list_runs(), "parallel": mgr.parallel()}
 
     @app.get("/api/threads", response_class=PlainTextResponse)
     def threads() -> str:

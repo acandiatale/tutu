@@ -8,7 +8,7 @@
 ## 0. 한 문단 요약과 규칙
 
 sbmig 웹 서버(`sbmig serve` / `uvicorn sbmig.web.app:app`)는 업로드한 zip 하나를 실행(run) 하나로 돌린다. 실행은 `RunManager`
-가 만들고(`sbmig/web/runs.py`), 한 번에 하나씩 FIFO 로 돌며, 모드에 따라 이 프로세스 안(in-process), 서브프로세스(local-job),
+가 만들고(`sbmig/web/runs.py`), FIFO 로 동시에 `SBMIG_JOB_MAX_PARALLEL` 건까지(기본 1; in-process 는 1) 돌며, 모드에 따라 이 프로세스 안(in-process), 서브프로세스(local-job),
 쿠버네티스 Job(k8s-job)에서 돈다. 진행과 결과는 전부 **실행 폴더** `<out>/<run id>/` 의 파일(`journal.jsonl`, `sbmig.log`,
 `report.md`, `report.json`, `result.zip`, `web-status.json` 또는 `job-status.json`)로 남고, 상태 조회는 그 파일을 읽는다.
 이 작업은 그 위에 다음을 더한다: `POST /api/migrations`(접수, `Idempotency-Key`), `GET /api/migrations/{id}`(remediation
@@ -101,7 +101,7 @@ Authorization: Bearer <SBMIG_WEB_TOKEN>        (서버에 토큰이 설정돼 �
 
 | `status()` 의 `state` | `exit_code` / 그 밖 | API `state` | 뜻 |
 |---|---|---|---|
-| `queued` | – | `queued` | 접수됨, 앞 실행을 기다림(한 번에 하나) |
+| `queued` | – | `queued` | 접수됨, 자리를 기다림(`status()` 의 `queue.position` 이 대기 순번) |
 | `running` | – | `running` | 돌고 있음(`node` 가 지금 단계, k8s 면 `job.phase` 도) |
 | `finished` | 0 | `succeeded` | 최종 `mvn clean package` 통과, 차단 없음 |
 | `finished` | 2 | `finished_with_issues` | 끝났지만 차단·미해결 오류 있음 — 보고서 필요(`blocked`, `unresolved`, `open`) |

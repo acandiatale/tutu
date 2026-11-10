@@ -40,7 +40,11 @@ WORKER_COMMAND = ["python", "-m", WORKER_MODULE]      # Job 틀(81-web-job.templ
 RUN_LABEL = "sbmig-run-id"                  # Job / 파드 라벨: 실행 id
 OWNER_LABEL = "sbmig-owner"                 # Job / 파드 라벨: 요청마다 난수 — Main 이 자기 Job 만 지우게
 # Main 이 Job 마다 끼워 넣는 실행별 값의 이름(RunManager._job_env). 그 밖의 env 는 파드의 것이다 — 틀의 리터럴·ConfigMap·Secret 이 채운다
-RUN_ENV = ("SBMIG_SOURCE_ZIP", "SBMIG_OUT", "SBMIG_RUN_ID", "SBMIG_CONFIG", "SBMIG_STOP_AFTER", "SBMIG_LLM_PROVIDER")
+# SBMIG_JOB_SLOT: 동시에 도는 Job 가운데 이 Job 의 자리 번호(1 부터) — Worker 가 자리마다 다른 Maven 로컬 저장소를 쓰게 한다
+RUN_ENV = ("SBMIG_SOURCE_ZIP", "SBMIG_OUT", "SBMIG_RUN_ID", "SBMIG_CONFIG", "SBMIG_STOP_AFTER", "SBMIG_LLM_PROVIDER",
+           "SBMIG_JOB_SLOT")
+SLOT_ENV = "SBMIG_JOB_SLOT"                 # 위 RUN_ENV 의 한 이름: Main 이 적고(_job_env) Worker 가 읽는다
+MAX_PARALLEL_ENV = "SBMIG_JOB_MAX_PARALLEL"  # 웹 파드만 읽는다: 동시에 도는 Job 의 최대 수(기본 1; k8s-job / local-job 에서만)
 LLM_RECORDS_ENV = "SBMIG_WORKER_LLM_RECORDS"  # "1" 이면 Worker 가 설정의 llm.record_dir 을 그대로 둔다(기본: 끈다 — 소스가 공유 볼륨에 더 남지 않게)
 SECRET_NAME_WORDS = ("TOKEN", "PASSWORD", "PASSWD", "SECRET", "API_KEY")   # 이 말이 든 env 는 비밀로 다룬다(값은 로그·보고서에서 지운다)
 MIN_SECRET_LEN = 6                          # 이보다 짧은 값은 지우지 않는다(우연한 부분 일치로 로그를 망치지 않게)
@@ -310,6 +314,7 @@ class ControlState:
     """Main 의 제어 상태(``control/state.json``). ``job`` 은 결정적 이름(``job_name(run_id)``), ``owner`` 는 라벨 ``sbmig-owner`` 의 값.
     전이할 때마다 ``write`` 로 통째로 다시 쓴다(원자적). ``env_pins`` / ``env_pin_policy`` 는 Job 을 **만드는** Main 이 creating 전이와
     함께 적는다(접수한 Main 이 아니다 — 대기 중에 웹 파드가 재시작되면 새 Main 의 환경이 기준이다). Worker 는 이 파일을 읽기만 한다.
+    ``slot`` 도 같은 전이 때 적는다: 동시에 도는 Job 가운데 이 Job 의 자리 번호 — 재시작한 Main 이 같은 자리를 다시 잡는다.
 
     Main's control state for one run (atomic rewrite on every transition). `env_pins` / `env_pin_policy` are written by
     the Main that creates the Job, with the `creating` transition; the Worker only reads this file."""
@@ -324,6 +329,7 @@ class ControlState:
     error: str | None = None
     env_pins: dict[str, str] | None = None      # Job 을 만드는 Main 의 환경 지문(creating 전이 때 적는다; None = 대조 안 함)
     env_pin_policy: str | None = None           # refuse | warn | off — Main 의 SBMIG_JOB_ENV_PIN (Worker 는 이 값을 따른다)
+    slot: int | None = None                     # 이 Job 이 차지한 자리 번호(creating 전이 때 적는다; None = 자리 개념 이전에 만든 Job = 1번 자리)
 
     @property
     def terminal(self) -> bool:

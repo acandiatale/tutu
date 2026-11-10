@@ -235,7 +235,7 @@ Then the final build again, the report (Handover first, "Structure review", fix 
   commits happen in the main session. Per round: append a "Status" table to `docs/PLAN.md`, update
   `docs/INTERFACES.md` on contract changes, add a fixture + `expected.json` (+ `replay/`) for every new scenario.
 - Setup: `uv venv && source .venv/bin/activate && uv pip install -e ".[dev]"` (plain `pip install -e ".[dev]"` works too).
-- Fast check (Python only, ~10 min): `python -m pytest -m "not integration"` → ≈ 3,300 passed, ≈ 50 deselected (2026-11-10)
+- Fast check (Python only, ~10 min): `python -m pytest -m "not integration"` → ≈ 3,400 passed, ≈ 50 deselected (2026-11-10)
   (`-q` on top of the `-q` in pyproject hides the summary line).
   `ruff check sbmig tests` has pre-existing style findings (mostly `UP045`); lint is not a gate here, so fix only what
   you touch and never run a repo-wide `ruff --fix` inside a feature round.
@@ -290,7 +290,7 @@ Then the final build again, the report (Handover first, "Structure review", fix 
   `SBMIG_WEB_MODE=k8s-job`): upload → `/data/out/<run id>/source.zip` on the shared RWX PVC → Job from `81-web-job.template.yaml` →
   the pod runs `sbmig run --run-id` into the same run dir, the web tails its journal / log (engine `graph_node_end` lines → UI `node`
   events, a '파드' step first), `stop.request` stops it between nodes; `sbmig/web/k8s.py` is a requests-based in-cluster client
-  (no `kubernetes` wheel). One Job at a time; three in parallel and the remediation-style `/api/migrations` are next. Comments in `deploy/` are Korean (the company's
+  (no `kubernetes` wheel). Up to `SBMIG_JOB_MAX_PARALLEL` Jobs at a time since v2.1z-ae (below); the remediation-style `/api/migrations` is next. Comments in `deploy/` are Korean (the company's
   reviewers asked). `deploy/README.md` is the operator text. **2026-11-09 (the infra team's agent model, their temporary manifest)**: `K8sClient.connect()`
   uses the kubeconfig named by `KUBECONFIG` when present (the infra team mounts a kubeconfig Secret at `/etc/kube/config`; token / client-certificate
   users, `exec` refused) else the in-cluster service account; an explicit `KUBECONFIG` also keeps `k8s-job` from degrading to `local-job` on a dev PC.
@@ -312,7 +312,7 @@ Then the final build again, the report (Handover first, "Structure review", fix 
   pins this. `contract.is_secret_name` exempts config overrides (`…__MAX_OUTPUT_TOKENS` is not a secret); the Worker drops the record-dir
   variables from the child unless `SBMIG_WORKER_LLM_RECORDS=1`. No secret goes into the baked file. **v2.1z-ad (2026-11-10, a review of the Job
   dispatch code — four findings, all real)**: (1) `_watch_job` returns only once the Job is confirmed ended: a Kubernetes API outage never
-  fails the run or frees the single slot (journal `job_api_unavailable` / `job_api_back`; `SBMIG_JOB_API_GRACE_S` is a notice only), a pod
+  fails the run or frees its slot (journal `job_api_unavailable` / `job_api_back`; `SBMIG_JOB_API_GRACE_S` is a notice only), a pod
   lingering after its `job-status.json` is deleted after `SBMIG_JOB_EXIT_GRACE_S` (120); (2) a Job is ours only with BOTH the `sbmig-owner`
   and the run label — an unlabelled same-name Job is neither adopted nor deleted; (3) **env pins**: the Main that creates the Job writes
   `env_pins` (`sha256[:16]` per name: every `${VAR}` placeholder of the run's config files + every `SBMIG_<SECTION>__<KEY>` override and whole-section `SBMIG_<SECTION>`;
@@ -332,6 +332,18 @@ Then the final build again, the report (Handover first, "Structure review", fix 
   `KUBECONFIG=/etc/kube/config`, the `/etc/kube` mount, Secret volume `agent-kubeconfig`); `45-web-rbac.yaml` + the commented
   `serviceAccountName` line are the alternative for a cluster without a kubeconfig Secret. A value or mode the user has given is
   never left as a commented "later" line; only hosts, IPs and secrets stay placeholders, and the reply lists them (file + key).
+  **v2.1z-ae (2026-11-10, the user: "초반엔 무서우니까 3명까지는 빌드파드가 돌아가는 구조 … 나머지는 대기하라고 알림")**: `SBMIG_JOB_MAX_PARALLEL`
+  (web pod, read at startup; code default 1, shipped `"3"` in `sbmig-env`; `in-process` is always 1 — process-global LLM counter, per-thread log)
+  is the number of build Jobs at a time; `runs._FifoTurns(slots)` keeps upload order and hands out slot numbers (lowest free, from 1):
+  `ControlState.slot`, Job env `SBMIG_JOB_SLOT`, re-occupied as recorded after a web-pod restart (`occupy`, over the limit allowed). The
+  Worker gives slot k ≥ 2 its own Maven local repository `<base>-slot<k>` (inside PVC `sbmig-m2`; `SBMIG_BUILD__LOCAL_REPO` in the child's
+  environment only, after the env-pin check; never fails a run; journal `worker_slot`) — one repository written by several Maven
+  processes is the thing avoided. `status()` carries `parallel {slots, running, waiting}` and, for a waiting run, `queue {position, ahead}`;
+  the page shows the place in line and a notice on the upload card when every slot is busy. The shared file KB stays one folder: every
+  write goes through `<kb>/.lock` (re-read + atomic replace inside), hardened for several pods (exclusive creates for a new case and for
+  `fix_v<N>.py`, lock age on the KB file system's clock, exclusive LLM record files). Not in the 81 template, not an env pin; the 80 model (`run-job.sh`, git KB) stays
+  sequential. Contract: `docs/INTERFACES.md` "v2.1z-ae"; operator text: `deploy/README.md` §3 "동시에 여러 건". Not measured on the
+  company cluster / NFS yet; the gateway's concurrency limit for one app token is the company's to confirm.
 - **Company convention (2026-10-20): agents run on LangGraph under uvicorn.** `loop.engine: graph` (default) drives
   the phases from a LangGraph `StateGraph` (`sbmig/graph/`, nodes intake → analyze → plan → phase×N → finalize;
   `inline` is the old loop, reports are identical by test); the web UI is FastAPI (`uvicorn sbmig.web.app:app` or
@@ -342,7 +354,7 @@ Then the final build again, the report (Handover first, "Structure review", fix 
   pane keeps a ring buffer and renders ≤ 1,500 lines, the fix for the browser lag). The config files every upload runs with
   are the server's choice (`sbmig serve --config` / `SBMIG_WEB_CONFIGS`, else `artifacts.yml` / `artifacts.local-e2e.yml`;
   `GET /api/configs` → `default`); the page shows the list only under 고급 설정. Stop takes effect between graph nodes
-  only. One migration at a time: further uploads are `queued` (shared file KB).
+  only. In-process: one migration at a time, further uploads are `queued`; Job mode: `SBMIG_JOB_MAX_PARALLEL` at a time (v2.1z-ae).
 - Cloud sessions may lack JDK / Maven (the 2026-10-18 cloud image had JDK 21 at `/usr/lib/jvm/java-21-openjdk-amd64`
   and Maven at `/opt/maven`); without JDK 8/11 run `fixtures/libs/install.sh` with `JAVA8_HOME=$JAVA21_HOME` (JDK 21
   compiles the 1.8-target lib with a warning) and skip the `-m integration` as-is builds. Commit and push to a

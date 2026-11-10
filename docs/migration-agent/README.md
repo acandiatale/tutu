@@ -164,7 +164,7 @@ CLI(`sbmig/cli.py`, typer), 웹 UI(`sbmig/web/app.py`, FastAPI on uvicorn), Pyth
 | `sbmig/report` | `report.md`(en / ko), `report.json`, Handover, 비용, inventory 보고서 | `markdown.py`, `writer.py`, `handover.py`, `cost.py`, `i18n.py`, `inventory.py` |
 | `sbmig/kb` | 파일 KB: 사례, 인덱스, 레시피 후보 / 활성, harvest, 라벨, ledger | `store.py`, `harvest.py`, `labels.py`, `ledger.py`, `recipes.py` |
 | `sbmig/fleet` | 매니페스트, 순차 실행, 상태, 요약 | `manifest.py`, `runner.py`, `summary.py` |
-| `sbmig/web` | FastAPI 앱, 실행 관리자(한 번에 하나), 정적 페이지 | `app.py`, `runs.py`, `static/index.html` |
+| `sbmig/web` | FastAPI 앱, 실행 관리자(Job 모드는 동시에 N 건, 그 밖은 한 번에 하나), 정적 페이지 | `app.py`, `runs.py`, `static/index.html` |
 | `sbmig/llm` | 플러그인 어댑터(tier 1 `llm.plugin`) | `adapter.py`, `registry.py` |
 
 ### 2.2 데이터 저장소
@@ -791,7 +791,7 @@ sequenceDiagram
   M-->>A: run_id, state queued 또는 running
   A-->>B: 202 {run_id, status}
   B->>A: GET /api/runs/{id}/events (SSE)
-  M->>W: 앞 실행이 끝나면 시작 (한 번에 하나)
+  M->>W: 자리가 나면 시작 (Job 모드: 동시에 N 건)
   W->>G: stream_graph(orch)
   loop 그래프 노드마다
     G-->>W: (node, state update)
@@ -818,9 +818,10 @@ sequenceDiagram
 | `report` | 최종 보고서 요약 |
 | `error`, `ping`, `end` | 오류, 연결 유지, 스트림 종료 |
 
-웹 실행은 한 번에 하나만 돕니다.
-KB가 공유 파일이기 때문입니다.
-뒤에 올린 업로드는 `queued` 상태로 기다립니다.
+웹 서버가 직접 돌리는 실행은 한 번에 하나만 돕니다.
+Job 모드에서는 `SBMIG_JOB_MAX_PARALLEL` 건까지 같이 돕니다.
+자리가 없으면 뒤에 올린 업로드는 `queued` 상태로 기다리고, 화면에 대기 순번이 보입니다.
+KB는 공유 파일이라 쓰기는 잠금 파일 하나로 차례를 지킵니다.
 중단(`POST /api/runs/{id}/stop`)은 그래프 노드 사이에서만 효과가 있습니다.
 verify 전에 멈추면 최종 빌드 없이 중단되고, 보고서가 그 사실을 적습니다.
 verify 뒤에 멈추면 실행은 정상적으로 끝납니다.

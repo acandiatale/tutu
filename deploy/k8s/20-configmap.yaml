@@ -70,11 +70,16 @@ data:
   # (ConfigMap sbmig-job-template, README §3 "켜는 법" 4)을 검사하고 어긋나면 뜨지 않는다. 웹 파드가 직접 돌리게 하려면 이 줄을 주석 처리
   SBMIG_WEB_MODE: "k8s-job"
   SBMIG_K8S_NAMESPACE: "agent"          # Job 을 만드는 namespace(회사 값). 이 줄이 없으면 kubeconfig context 의 namespace, 그것도 없으면 default 로 간다
+  # 동시에 도는 빌드 파드(Job) 수(회사 값 2026-11-10: 처음에는 3). 넘는 업로드는 올린 순서대로 기다리고 화면에 대기 순번이 보인다.
+  # 자리(1 · 2 · 3)마다 Maven 로컬 저장소를 따로 쓴다(PVC sbmig-m2 안의 repository, repository-slot2, repository-slot3 — 한 저장소에
+  # 여러 Maven 이 동시에 쓰면 깨질 수 있다). 1 로 두면 예전처럼 한 번에 하나. 바꾼 뒤에는 웹 파드를 다시 띄운다(시작할 때 한 번 읽는다).
+  # 파드 하나가 CPU 2 / 메모리 6Gi 를 요청한다(81 의 resources) — 3 이면 노드에 CPU 6 / 메모리 18Gi 여유가 있어야 셋이 같이 돈다
+  SBMIG_JOB_MAX_PARALLEL: "3"
   # SBMIG_JOB_TEMPLATE 은 Deployment 의 env 가 /templates/81-web-job.template.yaml 로 정한다(ConfigMap sbmig-job-template) — 여기서는 안 건드린다
   # SBMIG_JOB_STOP_GRACE_S: "2700"      # 멈춤 요청 뒤 Job 삭제까지(초). Maven 빌드 한 번 + OpenRewrite 보다 길어야 보고서를 잃지 않는다
   # SBMIG_JOB_EXIT_GRACE_S: "120"       # 결과 파일(job-status.json)을 쓴 뒤에도 파드가 남아 있으면 이 초 뒤에 그 Job 을 지운다
   # SBMIG_JOB_API_GRACE_S: "300"        # 쿠버네티스 API 가 이 초 동안 답하지 않으면 로그·화면에 크게 알린다. 실행은 실패로 끝나지 않고
-  #                                     # 다음 업로드는 API 가 다시 답해 그 Job 이 끝난 것을 확인할 때까지 기다린다(두 이관이 겹치지 않게)
+  #                                     # 그 자리는 API 가 다시 답해 그 Job 이 끝난 것을 확인할 때까지 비지 않는다(같은 자리에 두 이관이 겹치지 않게)
   # SBMIG_JOB_ENV_PIN: "refuse"         # Job 파드의 환경(그룹 2 · 3 의 값, 설정 파일이 읽는 ${…} 변수)이 이 파드와 다를 때: refuse = 그 Job 은
   #                                     # 돌지 않고 다른 키 이름을 적고 멈춘다(k8s-job 기본) | warn = 저널에 적고 Job 파드의 값으로 돈다 |
   #                                     # off = 대조하지 않는다(local-job 기본). 값은 비교하지 않고 지문만 — 비밀(토큰·비밀번호)은 대조 대상이 아니다

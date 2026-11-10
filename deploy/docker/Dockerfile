@@ -70,7 +70,8 @@ USER sbmig
 VOLUME ["/data", "/home/sbmig/.m2"]
 EXPOSE 8765
 
-# `sbmig serve` 가 곧 uvicorn 이다(프로세스 안에서 uvicorn.run; 워커 하나 — 한 번에 한 이관, 큐가 프로세스 안에 있다).
+# `sbmig serve` 가 곧 uvicorn 이다(프로세스 안에서 uvicorn.run; 워커 하나 — 대기 줄이 프로세스 안에 있다. Job 모드에서 동시에 도는
+# 빌드 파드 수는 SBMIG_JOB_MAX_PARALLEL 이 정한다).
 # 루프백이 아닌 --host 는 SBMIG_WEB_TOKEN(Secret) 또는 SBMIG_WEB_OPEN=1(사내망 전용 페이지 — Deployment 의 env, 2026-11-05 결정)
 # 둘 중 하나가 있어야 뜬다. 이미지에는 둘 다 없다. --graceful-timeout 은 종료 때 SSE 스트림을 닫는 여유.
 # 요청별 Job 모델은 이 CMD 대신 /app/deploy/docker/run-job.sh 를 command 로 쓴다.

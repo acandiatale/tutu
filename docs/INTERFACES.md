@@ -4486,3 +4486,101 @@ Operator-visible names of this round:
 - Docs: this section, `docs/PLAN.md` "v2.1z-ad", `docs/v2/JOB-RUN-STATE-CONTRACT-KO.md` §1–§3 / §5–§10, the
   `20-configmap.yaml` comments, `deploy/README.md` §2 / §3 ("환경 변수 대조와 그 밖에 바뀐 것"), `deploy/ENV.md` §1 / §2 / §3 / §6 / §8,
   `agent-doc/09-deploy-and-ops.md` ("Job 모드가 지키는 넷"), `agent-doc/10-open-items-and-history.md`, `CLAUDE.md`.
+
+## v2.1z-ae — up to N build Jobs at a time; the rest wait with a notice (2026-11-10)
+
+The user: "초반엔 무서우니까 3명까지는 빌드파드가 돌아가는 구조 … 나머지는 대기하라고 알림" and "3명이 동시에 시작하면 … 코드 쓰기나 케이스 쓰기
+파일 락 생기지 않을까?". Until now one migration ran at a time (`RunManager._turns`, a FIFO of one). Contract:
+
+- **`SBMIG_JOB_MAX_PARALLEL`** (web pod, read once at startup; code default **1**; shipped **`"3"`** in ConfigMap `sbmig-env`). An
+  integer ≥ 1; anything else → 1 with a WARNING. It counts only in `k8s-job` / `local-job`: an `in-process` server always runs one
+  migration at a time (the LLM call counter and the log filter are process-wide) and logs a WARNING when more was asked.
+  `RunManager(…, max_parallel: int | None = None)` (the argument wins over the environment; tests use it) → `RunManager.max_parallel`
+  = the effective number. The key is the web pod's alone: no line in `81-web-job.template.yaml`, not part of the environment pins.
+  **Operator rule unchanged: restart the web pod after changing `sbmig-env`.**
+- **Slots** (`runs._FifoTurns(slots=1)`): a waiting line plus the runs that hold a slot. `turn(key)` (context manager) waits until
+  `key` is the **head of the line** and fewer than `slots` runs hold one (strict FIFO, nobody overtakes), then **yields the slot
+  number**; slot numbers are the lowest free ones from 1, unique among the runs holding one. `occupy(key, prefer=None) -> int` takes a
+  slot **at once, whatever the limit** — restart recovery only: a Job that exists (or may exist) in the cluster already runs and must
+  be counted; `prefer` (the recorded slot) is kept when free. `turn()` on a key that already holds a slot yields it without waiting.
+  `leave(key)` drops the key from both and wakes the waiters. `position(key)` = 1-based place among the waiting (None when not
+  waiting), `slot_of(key)`, `counts() -> (running, waiting)`. A limit lowered while Jobs run: more runs than `slots` may hold one after
+  a restart; the waiting ones wait until the count is below the limit. With `slots == 1` the behaviour is the old one.
+- **A run's slot**: `Run.slot` (memory), **`ControlState.slot: int | None`** (written with the `creating` transition, beside
+  `env_pins`; a `state.json` without it reads as `None` = a Job created before this section = slot 1's repository),
+  **`SBMIG_JOB_SLOT`** in the Job's env (`RunManager._job_env`; the name joins `contract.RUN_ENV`, so the local Worker gets it too; a
+  Job template needs no line for it, `render_job` appends it). Recovery (`_resume`): `creating` / `created` / `running` → `occupy(run,
+  prefer=cs.slot or 1)` synchronously in `recover()` (before any upload can take the number), `queued` → the line, in `accepted_at`
+  order as before. Everything of v2.1z-ad (1) holds per slot: a slot is handed on only after its Job is confirmed ended, a Kubernetes
+  API outage frees no slot.
+- **One Maven local repository per slot** (the Worker; Maven's default setup does not promise that several processes can write one
+  local repository, and the three pods share PVC `sbmig-m2`). Slot 1, or no `SBMIG_JOB_SLOT`: nothing changes — today's repository,
+  byte-identical command lines. Slot k ≥ 2: a sibling directory `<base>.parent / f"{base.name}-slot{k}"` (`…/.m2/repository-slot2`),
+  where `<base>` is the repository the run would use otherwise: the Worker's own `SBMIG_BUILD__LOCAL_REPO` when it is a non-empty
+  string after `yaml.safe_load`, else `sbmig.build.mvn.local_repo_path(load_config(<the run's configs>, <worker-paths.yml>))`
+  (`build.local_repo` → settings.xml `<localRepository>` → `~/.m2/repository`). The Worker creates the directory and sets
+  `SBMIG_BUILD__LOCAL_REPO=<that path>` **in the child's environment only**, after its environment-pin check (the pins compare the
+  pod's own environment, where 81 keeps the literal `"null"`). It never fails a run over this: when the base cannot be resolved or the
+  directory cannot be created, the run goes on with the shared repository and says so (stdout line + journal). Journal event
+  **`worker_slot`** `{slot, local_repo, shared: bool, note?}` (only when `SBMIG_JOB_SLOT` is set). A slot's first runs download
+  everything once; the repositories persist on the PVC.
+- **Status** (`RunManager.status`): every answer carries `parallel: {slots, running, waiting}`; a run waiting in this process's line
+  carries `queue: {position, ahead}` (`position` 1 = next, `ahead = position - 1`); a Job run that holds or held a slot carries `slot`
+  (memory, else `ControlState.slot`). `GET /api/runs` → `{runs: [...], parallel: {...}}` (each listed run as before, plus `queue` /
+  `slot` when known); `GET /api/configs` adds `max_parallel`. **SSE**: `events()` sent `status` only when a stream opened and when the
+  run ended; it now sends `status` again whenever the run's `(state, queue position)` changes — a waiting page sees itself move up
+  and start without a reload.
+- **The page** (`sbmig/web/static/index.html`, the operator-visible texts): after an upload that waits, the toast says how many are
+  being migrated and how many are ahead; the title of a waiting run is `대기 중 — 다음 차례입니다` or `대기 중 — 앞에 N건이 기다립니다`;
+  the note under the stage rail says `동시에 N건까지 이관합니다. …` (or the old one-at-a-time sentence when `slots == 1`); the upload
+  card shows a notice while every slot is taken (`parallel.running >= parallel.slots`, from `/api/runs`, polled every 15 s): how many
+  are running, the limit, and the waiting number a new upload would get; the run list labels a waiting run `대기 N번`.
+- **Knowledge base — what three pods writing at once rely on, and what this round hardens.** Unchanged: every mutation of the KB
+  takes the one cross-process lock (`<kb>/.lock`, `sbmig/kb/lock.py`), re-reads the file inside the lock and writes by temp file +
+  `os.replace`; a script's version number is chosen inside the lock from `case.json` and the `fix_v*.py` on disk; reads take no lock.
+  Hardened: (a) **a new case met by two pods** — an NFS client may still answer "no such file" from its cache for a `case.json`
+  another pod just created; inside the lock, a missing case is confirmed by exclusive creates, which the server decides, not the
+  client's cache (`CaseStore._confirm_new`): `mkdir` of the case folder (made = really new); when the folder exists, an `O_EXCL`
+  create of `case.json` (removed at once when it succeeds); when the file is there it is read again (up to `CONFIRM_SECONDS` 1 s)
+  and that case is used — no case file is overwritten blind. A folder holding only per-error files is a new case quietly; a folder
+  a writer left without `case.json` gets a fresh one with a WARNING and its scripts keep their numbers; (b) **staleness on one
+  clock** — a lock looked stale when `time.time()` (the pod) minus the file's mtime (the NFS server) passed `kb.lock_timeout_seconds`;
+  with skewed clocks every lock would look stale. A lock's age is now measured on the file system's clock: a waiter writes a probe
+  file beside the lock (`.lock.probe.<pid>.<random>`, removed at once), reads its mtime and keeps the offset to its own clock per KB
+  directory for 60 s (only a waiter probes: an uncontended acquire costs nothing extra; an offset over 2 s is said once at INFO);
+  when the probe fails the old comparison stays. A same-host lock of a dead pid is stale without an age, as before. Two edges closed
+  on the way: a lock that turns stale within 2 s of the waiter's deadline (the lock of a pod killed inside its section, seen from
+  its first moment) is waited for instead of "going on without it", and `_break` reads the token again right before it moves the
+  lock aside (a lock taken after the judgement is left alone); (c) **LLM records** —
+  `_Recorder` chose `llm-NNNN.json` by `exists()` and then wrote; two pods sharing one record directory could pick one number. The
+  file is now created exclusively (`open(…, "x")`), the next number on `FileExistsError`; (d) **script files** — `fix_v<N>.py` is
+  claimed by a hard link of a temp file in the case folder (`CaseStore._claim_script`: atomic, fails when the name exists), so a
+  number taken by a writer that went on without the lock is never replaced (WARNING, the next number); where the file system has
+  no hard links the atomic replace stays (the lock picked the number). Not changed: two runs that meet the same
+  new case in the same minute both ask the LLM and store `fix_v1.py` / `fix_v2.py`; a pod killed inside a locked section makes the
+  others wait once, about `kb.lock_timeout_seconds` (300 s, + ≤ 2.25 s at the edge); a pod frozen (not dead) longer than that has its
+  lock broken and may overwrite a `case.json` written meanwhile when it wakes (the limit of a lease lock); `sbmig kb import --replace`
+  swaps the KB directory, lock file included, and must not run while Jobs run; `errors.jsonl` is appended in place under the lock (a
+  reader without the lock may see a partial last line, which the parser skips). Relied on, not testable here: the NFS mount keeps
+  close-to-open consistency (the default, no `nocto`), `mkdir` / `O_EXCL` / `link` / `rename` are decided atomically by the server,
+  pod hostnames are unique.
+- **Not changed**: a stop on a waiting run still takes effect when its turn comes (no Job is created); the Job template; the env pins;
+  `in-process` mode; `sbmig fleet` (sequential).
+- **As built** (what the code added to the text above). Web: `create_app(…, max_parallel=None)` passes the value on (tests; the
+  server reads the variable); the rows of `GET /api/runs` do not repeat `parallel` (the route adds it once, beside `runs`); the Job
+  environment always carries `SBMIG_JOB_SLOT` (1 with the default limit); the Kubernetes client is built once under the manager's lock
+  and uses one `requests.Session` per thread (three watcher threads share the client); after a web-pod restart the runs that held a
+  slot (`creating` / `created` / `running`) are resumed before the queued ones, each group in `accepted_at` order; on shutdown a
+  waiting thread stays blocked until the running ones leave. Worker: a blank `SBMIG_JOB_SLOT` is "not set" (no line, no journal); a
+  value that is not an integer ≥ 1 gives `worker_slot {slot: null, local_repo: null, shared: true, note}` + a WARNING and the shared
+  repository; a relative base is resolved against the child's working directory; a `${VAR}` placeholder in the Worker's own
+  `SBMIG_BUILD__LOCAL_REPO` is left to the config resolver; a resolver failure is reported by exception type only (no value in the
+  note). Page: the upload toast leaves out the "지금 N건이 이관 중이라" clause when nothing is running; the notice on the upload card is
+  an empty `#busynote` paragraph when a slot is free (hidden by `:empty`); the place in line is taken at upload on the server, so
+  closing the page does not lose it.
+- Tests: `tests/web/test_parallel_jobs.py` (slots, FIFO order, the fourth waits, recovery re-occupies recorded slots, status / SSE
+  fields), `tests/web/test_worker_slot.py` (the child's repository per slot, slot 1 untouched, the fallbacks),
+  `tests/web/test_page_queue.py` (the page's texts and its use of `parallel` / `queue`), `tests/kb/test_kb_parallel_writers.py`
+  (several processes writing one KB: no lost update, no duplicate version, no torn file; the new-case probe; the script claim; the
+  one-clock staleness, the deadline edge, `_break`), `tests/fix/test_recorder_exclusive.py` (the recorder's exclusive numbering), `tests/deploy/test_manifests.py` (the key ships switched on); counts in
+  `docs/PLAN.md`.

@@ -286,6 +286,29 @@ def test_the_shipped_configmap_runs_the_company_operating_mode():
     assert volume["configMap"]["name"] == "sbmig-job-template"
 
 
+def test_the_shipped_configmap_runs_three_build_pods_at_a_time():
+    """The user gave the number (2026-11-10: "3명까지는 빌드파드가 돌아가는 구조"): it ships switched on, in the web pod's group,
+    and is the web pod's own knob — never pinned, never forwarded to the Job pod (the Job gets its slot number from Main).
+    Every slot's Maven repository lives inside the one `sbmig-m2` volume both manifests mount at the same path, and the
+    template leaves `SBMIG_BUILD__LOCAL_REPO` unset so the Worker derives the slot's sibling directory itself."""
+    data = _sbmig_env_data()
+    assert data.get(contract.MAX_PARALLEL_ENV) == "3" and contract.MAX_PARALLEL_ENV not in _commented_keys()
+    assert contract.MAX_PARALLEL_ENV not in _pins(_main_env(_configmap(False)))
+    names = {e["name"] for e in _container(WEB_JOB)["env"]}
+    assert contract.MAX_PARALLEL_ENV not in names
+    assert contract.SLOT_ENV in contract.RUN_ENV and contract.SLOT_ENV not in _literals(WEB_JOB)   # Main adds it per Job
+    assert _literals(WEB_JOB)["SBMIG_BUILD__LOCAL_REPO"] == "null"
+    web = next(d for d in _docs(WEB) if d["kind"] == "Deployment")["spec"]["template"]["spec"]
+    job = _docs(WEB_JOB)[0]["spec"]["template"]["spec"]
+
+    def m2(spec: dict) -> tuple[str, str]:
+        mount = next(m for m in spec["containers"][0]["volumeMounts"] if m["mountPath"].endswith("/.m2"))
+        volume = next(v for v in spec["volumes"] if v["name"] == mount["name"])
+        return mount["mountPath"], volume["persistentVolumeClaim"]["claimName"]
+
+    assert m2(web) == m2(job) == ("/home/sbmig/.m2", "sbmig-m2")
+
+
 def test_a_job_pod_without_the_kb_dir_is_named():
     cm = _configmap(False)
     worker_env = _worker_env(cm)

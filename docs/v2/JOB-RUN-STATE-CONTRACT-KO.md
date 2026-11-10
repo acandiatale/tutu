@@ -37,8 +37,8 @@ Worker 는 Main 의 존재를 모른다. Main 이 죽어도 Job 은 끝까지 �
 /data/out/<run id>/          실행 폴더(위 표의 파일들). Main 과 Job 파드가 같은 PVC(sbmig-data, ReadWriteMany) 를 /data 에 마운트
 /data/out/_uploads/          Main 의 임시 업로드(.incoming-*.part) — in-process 모드의 zip 보관도 여기
 /data/out/_idempotency/      외부 접수 API 의 멱등 기록(만들 것)         ← `_` 로 시작하는 폴더는 실행이 아니다(list_runs 가 무시)
-/data/kb-v2/                 파일 KB(SBMIG_KB_DIR). 모든 Job 이 같은 KB 에 쓴다 → 한 번에 하나(§8)
-/home/sbmig/.m2/             Maven 로컬 저장소 PVC(sbmig-m2, 선택; 없으면 emptyDir)
+/data/kb-v2/                 파일 KB(SBMIG_KB_DIR). 모든 Job 이 같은 KB 에 쓴다 → 쓰기는 `.lock` 으로 차례(§8)
+/home/sbmig/.m2/             Maven 로컬 저장소 PVC(sbmig-m2, 선택; 없으면 emptyDir). 자리마다 repository / repository-slot<k> (§8)
 /app/config/artifacts.yml    이미지에 구운 회사 설정(Main 과 Job 파드가 같은 이미지 → 같은 파일; 2026-11-10)
 /etc/sbmig/settings.xml      ConfigMap sbmig-config 의 파일. Job 파드도 같은 경로에 마운트
 ```
@@ -133,13 +133,18 @@ Main 이 `<run dir>/stop.request` 를 쓴다(저널 `stop_request_sent`). Worker
 "대기 요청도 복구" 가 필수라면 Main 시작 때 `web_run` 은 있고 `job_created` / `web-status.json` / `job-status.json` 은 없는 폴더를 다시 줄에 세우는
 증분이 필요하다(`source.zip` 이 있으니 가능). 이건 sbmig 쪽에서 만들 수 있다 — §11-4.
 
-## 8. 순차 슬롯
+## 8. 슬롯 (동시에 N 개, 2026-11-10 부터)
 
-`RunManager` 는 **한 번에 하나**, 올린 순서(FIFO, `_FifoTurns`)로 Job 을 만든다. 이유는 하나다: **모든 Job 이 같은 파일 KB(`/data/kb-v2`)에 쓴다.**
-차례는 앞 Job 이 끝났거나 사라진 것을 API 로 확인한 뒤에야 넘어간다(v2.1z-ad) — 결과 파일을 받았을 때도, 멈춤으로 지웠을 때도, 웹 쪽 오류로 실패했을 때도
+`RunManager` 는 올린 순서(FIFO, `_FifoTurns`)로, **동시에 `SBMIG_JOB_MAX_PARALLEL` 개까지**(기본 1, 매니페스트 값 3; `in-process` 모드는 언제나 1) Job 을
+만든다. 도는 Job 마다 자리 번호(1 부터, 비어 있는 가장 작은 수)가 있다: `control/state.json` 의 `slot`(`creating` 전이 때 적는다; 없으면 1), Job env
+`SBMIG_JOB_SLOT`. Worker 는 2 번 자리부터 Maven 로컬 저장소를 그 자리의 것(`<저장소>-slot<k>`)으로 바꿔 자식 실행에 넘긴다 — 같은 저장소에 Maven 둘이
+쓰지 않게. 모든 Job 이 같은 파일 KB(`/data/kb-v2`)에 쓰는 것은 그대로이고, 쓰기는 `<kb>/.lock` 하나로 차례를 지킨다(잠금 안에서 다시 읽기 + 원자적 교체).
+재시작 복구는 `creating` / `created` / `running` 을 적힌 자리 번호로 먼저 앉히고(`occupy`; 한도보다 많아도 그대로) `queued` 를 접수 순서로 줄 세운다.
+`status()` 는 `parallel {slots, running, waiting}` 과 기다리는 실행의 `queue {position, ahead}` 를 준다(계약: `docs/INTERFACES.md` "v2.1z-ae").
+자리는 그 Job 이 끝났거나 사라진 것을 API 로 확인한 뒤에야 넘어간다(v2.1z-ad) — 결과 파일을 받았을 때도, 멈춤으로 지웠을 때도, 웹 쪽 오류로 실패했을 때도
 (그때는 우리 Job 을 먼저 지운다). 예외는 서버 종료(`state.json` 을 그대로 두어 다음 Main 이 이어서 지켜본다)와 남의 Job(건드리지 않는다)뿐이다.
 remediation 이 KB 를 건드리지 않으면 같은 슬롯을 쓸 이유가 없다 — 같은 슬롯을 쓰면 remediation 한 건이 이관 한 건을(또는 반대로) 몇십 분
-기다리게 한다. 병렬(3개)로 넓히는 일은 KB 잠금(케이스 폴더 단위)과 함께 가야 하고, 그건 sbmig 쪽 "다음" 항목이다.
+기다리게 한다(자리를 나눠 쓰더라도 한도는 둘을 합쳐 센다).
 
 ## 9. 디스패처를 두 가지 Job 에 쓰는 법 (포크하지 않기)
 

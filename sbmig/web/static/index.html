@@ -62,6 +62,14 @@
   .actions { display: flex; align-items: center; gap: 12px; margin-top: 16px; flex-wrap: wrap; }
   .actions .note { color: var(--muted); font-size: 12.5px; }
   .actions .spacer { flex: 1; }
+  /* 자리가 다 찼다는 안내(v2.1z-ae): 막는 것이 아니라 알리는 것이라 빨강이 아닌 파랑(정보). 비어 있으면 보이지 않는다 —
+     요소는 늘 그 자리에 두고 글만 바꾼다(role=status 가 바뀐 글을 화면 낭독기에 한 번 읽어 주게) */
+  .busynote { display: flex; align-items: flex-start; gap: 10px; margin: 0 0 14px; padding: 10px 14px; border: 1px solid var(--line);
+              border-left: 3px solid var(--blue); border-radius: var(--radius-s); background: var(--blue-soft); color: var(--blue-deep); font-size: 13px;
+              word-break: keep-all; overflow-wrap: anywhere; }
+  .busynote::before { content: ""; flex: none; width: 16px; height: 16px; margin-top: 2px;
+                      background: no-repeat center / contain url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%231F5BD8' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='8' cy='8' r='6.3'/%3E%3Cpath d='M8 4.7V8l2.3 1.5'/%3E%3C/svg%3E"); }
+  .busynote:empty { display: none; }
   .btn { display: inline-flex; align-items: center; gap: 8px; padding: 10px 18px; border-radius: var(--radius-s); border: 1px solid var(--blue);
          background: var(--blue); color: #fff; font-weight: 600; cursor: pointer; text-decoration: none; white-space: nowrap; }
   .btn:hover { background: #1A4FC0; border-color: #1A4FC0; text-decoration: none; }
@@ -116,7 +124,7 @@
   .rail .step.current .label { color: var(--blue-deep); font-weight: 700; }
   .rail .step.done .label { color: var(--ink); }
   .rail .label .en { display: block; color: var(--faint); font-family: var(--mono); font-size: 11px; margin-top: 1px; }
-  .railnote { color: var(--muted); font-size: 12.5px; margin: 4px 0 0; min-height: 1.4em; }
+  .railnote { color: var(--muted); font-size: 12.5px; margin: 4px 0 0; min-height: 1.4em; word-break: keep-all; overflow-wrap: anywhere; }   /* 한글은 낱말 단위로 줄을 바꾼다 */
 
   /* 진행 기록 / 로그 탭 */
   .tabs { display: flex; align-items: center; gap: 4px; border-bottom: 1px solid var(--line-soft); margin-top: 18px; }
@@ -204,6 +212,7 @@
   <!-- 1. 올리는 자리 -->
   <section class="card intake" aria-labelledby="intake-title">
     <h2 id="intake-title" class="muted small" style="font-weight:600; margin-bottom:12px;">새 마이그레이션</h2>
+    <p class="busynote" id="busynote" role="status"></p>
     <label class="drop" id="drop" for="zip">
       <input type="file" id="zip" accept=".zip,application/zip,application/x-zip-compressed" aria-label="프로젝트 zip 파일">
       <svg class="icon" viewBox="0 0 44 44" fill="none" aria-hidden="true">
@@ -334,9 +343,52 @@
 
   // ---------------------------------------------------------------- 알림
   let toastTimer = null;
-  function toast(msg, bad) {
+  function toast(msg, bad, ms) {
     const t = $('toast'); t.textContent = msg; t.className = 'toast show' + (bad ? ' bad' : '');
-    clearTimeout(toastTimer); toastTimer = setTimeout(() => { t.className = 'toast'; }, bad ? 8000 : 4000);
+    clearTimeout(toastTimer); toastTimer = setTimeout(() => { t.className = 'toast'; }, ms || (bad ? 8000 : 4000));
+  }
+  // 같은 값이면 다시 쓰지 않는다: status 가 한 흐름에 여러 번 와도(v2.1z-ae) 깜빡이거나 화면 낭독기가 같은 말을 되풀이하지 않게
+  function setText(id, s) { const el = $(id); if (el.textContent !== s) el.textContent = s; }
+
+  // ---------------------------------------------------------------- 동시에 도는 이관 (v2.1z-ae)
+  // 서버가 slots 건까지 동시에 옮기고 나머지는 올린 순서대로 기다리게 한다. 옛 서버는 parallel / queue 를 보내지 않는다 → null,
+  // 그때는 예전 문장 그대로
+  function par(p) {                                  // parallel {slots, running, waiting}
+    if (!p || typeof p !== 'object') return null;
+    const slots = Number(p.slots), running = Number(p.running), waiting = Number(p.waiting);
+    if (!Number.isInteger(slots) || slots < 1 || !Number.isFinite(running) || running < 0) return null;
+    return { slots, running, waiting: Number.isFinite(waiting) && waiting > 0 ? waiting : 0 };
+  }
+  function qpos(q) {                                 // queue {position, ahead}: position 1 = 다음 차례, ahead = 앞에서 기다리는 건수
+    const position = q && typeof q === 'object' ? Number(q.position) : NaN;
+    if (!Number.isInteger(position) || position < 1) return null;
+    const ahead = Number(q.ahead);
+    return { position, ahead: Number.isInteger(ahead) && ahead >= 0 ? ahead : position - 1 };
+  }
+  // 올리는 자리 위의 안내: 자리가 다 찼으면 올리기 전에 미리 알린다(막지는 않는다). /api/runs(15초마다)·status 이벤트가 부른다
+  function setParallel(p0) {
+    const p = par(p0);
+    let s = '';
+    if (p && p.running >= p.slots) {
+      s = (p.slots > 1 ? `지금 ${p.running}건이 이관 중입니다(동시에 최대 ${p.slots}건). ` : '지금 다른 프로젝트를 이관 중입니다. ')
+        + `지금 올리면 대기 ${p.waiting + 1}번째로 기다렸다가 자동으로 시작합니다.`;
+    }
+    setText('busynote', s);
+  }
+  function uploadToast(st) {
+    if (!st || st.state !== 'queued') return '올렸습니다. 마이그레이션을 시작합니다.';
+    const p = par(st.parallel), q = qpos(st.queue);
+    if (!p || !q) return '올렸습니다. 앞의 실행이 끝나면 시작합니다.';
+    // 막 자리가 빈 순간(이관 중 0건)에는 '0건이 이관 중이라' 라고 하지 않는다
+    const busy = p.running > 0 ? `지금 ${p.running}건이 이관 중이라 기다립니다. ` : '';
+    return '올렸습니다. ' + busy + (q.ahead > 0 ? `앞에 ${q.ahead}건이 있습니다. 차례가 오면 자동으로 시작합니다.`
+                                                : '다음 차례입니다. 자리가 나면 자동으로 시작합니다.');
+  }
+  // 기다리는 실행의 레일 아래 안내. 이 창을 닫아도 차례는 남는다: 줄은 업로드를 받을 때 서버(start_file)에 서고, 화면 연결과 상관없다
+  function queueNote(st) {
+    const p = par(st.parallel);
+    if (p && p.slots > 1) return `동시에 ${p.slots}건까지 이관합니다. 지금 ${p.running}건이 진행 중이고, 자리가 나면 올린 순서대로 자동으로 시작합니다. 이 창을 닫아도 차례는 유지됩니다.`;
+    return '한 번에 한 프로젝트만 옮깁니다. 차례가 오면 자동으로 시작합니다.';
   }
   // 접근 토큰: 서버가 SBMIG_WEB_TOKEN 으로 떠 있으면 /?token=<토큰> 으로 한 번 열 때 HttpOnly 쿠키가 심어지고,
   // 그 뒤의 fetch / EventSource 는 같은 출처라 쿠키가 자동으로 붙는다. 401 / 403 이면 안내만 한다.
@@ -426,9 +478,12 @@
       let d = {}; try { d = await r.json(); } catch (e) {}
       if (authProblem(r, d)) return;
       if (!r.ok) { toast('시작하지 못했습니다: ' + (d.error || r.status), true); return; }
-      toast(d.status && d.status.state === 'queued' ? '올렸습니다. 앞의 실행이 끝나면 시작합니다.' : '올렸습니다. 마이그레이션을 시작합니다.');
+      const st = d.status || {};
+      if (st.parallel) setParallel(st.parallel);
+      toast(uploadToast(st), false, st.state === 'queued' ? 8000 : 0);   // 기다린다는 안내는 조금 더 오래 (화면에도 남는다)
       setFile(null); $('zip').value = '';
       attach(d.run_id);
+      if (st.state) setStatus(st);                     // SSE 가 붙기 전에도 '대기 중' 을 바로 보인다 (같은 status 가 다시 와도 그대로)
       $('runcard').scrollIntoView({ behavior: 'smooth', block: 'start' });
     } catch (e) {
       toast('서버에 보내지 못했습니다: ' + e, true);
@@ -440,7 +495,11 @@
   // ---------------------------------------------------------------- 2. 실행 카드
   // 상태 한 줄: 담당자가 읽는 말로. (state / success / exit_code 는 /api/runs 의 status dict)
   function describe(st) {
-    if (st.state === 'queued') return { cls: '', text: '대기 중 — 앞의 실행이 끝나면 시작합니다', short: '대기' };
+    if (st.state === 'queued') {
+      const q = qpos(st.queue);
+      if (!q) return { cls: '', text: '대기 중 — 앞의 실행이 끝나면 시작합니다', short: '대기' };   // 옛 서버
+      return { cls: '', text: q.ahead > 0 ? `대기 중 — 앞에 ${q.ahead}건이 기다립니다` : '대기 중 — 다음 차례입니다', short: `대기 ${q.position}번` };
+    }
     if (st.state === 'running') return { cls: '', text: '마이그레이션 진행 중', short: '진행 중' };
     if (st.state === 'finished') {
       if (st.stop_requested && st.exit_code === 3) return { cls: 'bad', text: '중단되었습니다', short: '중단' };
@@ -457,22 +516,36 @@
     }
     return { cls: '', text: st.state || '', short: st.state || '' };
   }
+  function setTitle(cls, text, live) {
+    const t = $('title'), key = `${cls}|${live ? 1 : 0}|${text}`;
+    if (t.dataset.key === key) return;               // 같은 제목이면 그대로 (맥박 점의 애니메이션이 처음부터 다시 돌지 않게)
+    t.dataset.key = key; t.className = 'title ' + cls;
+    t.innerHTML = (live ? '<span class="pulse" aria-hidden="true"></span>' : '') + esc(text);
+  }
+  // status 는 한 흐름에 여러 번 온다(v2.1z-ae: 처음, 줄에서 앞으로 오거나 시작할 때마다, 끝): 몇 번 와도 레일·기록·로그를 되돌리지 않는다
+  let queueText = '', statusKey = '';
   function setStatus(st) {
     const d = describe(st);
     const live = st.state === 'running' || st.state === 'queued';
-    $('title').className = 'title ' + d.cls;
-    $('title').innerHTML = (live ? '<span class="pulse" aria-hidden="true"></span>' : '') + esc(d.text);
+    setTitle(d.cls, d.text, live);
     const bits = [];
     if (st.llm_calls != null) bits.push(`LLM 호출 ${st.llm_calls}회`);
     if (st.resolved) bits.push(`해결한 오류 ${st.resolved}건`);
-    $('summary').textContent = bits.join(' · ');
+    setText('summary', bits.join(' · '));
     $('stop').disabled = !live || !!st.stop_requested;
     $('stop').hidden = !live;
-    $('stop').textContent = st.stop_requested ? '중단 요청됨' : '중단';
+    setText('stop', st.stop_requested ? '중단 요청됨' : '중단');
+    if (st.parallel) setParallel(st.parallel);
     if (st.mode === 'k8s-job' || st.mode === 'local-job') jobStep();   // Job 모드(개발 PC 의 local-job 포함): 접수 앞에 '파드' 단계 — 첫 current 보다 먼저
     if (st.state === 'finished') { setCurrent(null); showResult(st, d); }
     else if (st.state === 'running' && !railSteps().some((n) => n.classList.contains('done'))) setCurrent(railSteps()[0]);
-    if (st.state === 'queued') $('railnote').textContent = '한 번에 한 프로젝트만 옮깁니다 (지식 베이스를 함께 쓰기 때문). 차례가 오면 자동으로 시작합니다.';
+    // 기다리는 안내는 기다리는 동안만: 차례가 와서 시작하거나 끝나면 이 안내만 지운다(그 사이 다른 안내가 썼으면 두고)
+    if (st.state === 'queued') { queueText = queueNote(st); setText('railnote', queueText); }
+    else if (queueText) { if ($('railnote').textContent === queueText) $('railnote').textContent = ''; queueText = ''; }
+    // 줄에서 앞으로 왔거나 시작했다: 지난 실행 목록의 '대기 N번' 도 맞춘다 (끝은 end 이벤트가 목록을 다시 읽는다)
+    const q = qpos(st.queue), key = `${st.state}|${q ? q.position : ''}`;
+    if (statusKey && key !== statusKey && st.state !== 'finished') loadRuns();
+    statusKey = key;
   }
   function jobStep() {
     const rail = $('rail');
@@ -496,7 +569,7 @@
     for (const n of FIXED) g.insertAdjacentHTML('beforeend', stepHtml(n, n));
     g.insertAdjacentHTML('beforeend', stepHtml('phase', 'phases', ' data-pending="1" data-placeholder="1"'));
     g.insertAdjacentHTML('beforeend', stepHtml('finalize', 'finalize'));
-    $('railnote').textContent = '';
+    $('railnote').textContent = ''; queueText = '';
   }
   function railSteps() { return [...$('rail').querySelectorAll('.step')]; }
   function engineSeen() { return railSteps().some((n) => n.dataset.node !== 'job' && (n.classList.contains('done') || n.classList.contains('failed'))); }
@@ -522,10 +595,10 @@
       else if (s === 'failed' || s === 'missing') { el.classList.remove('done'); el.classList.add('failed'); setCurrent(null); $('railnote').textContent = `파드 실패: ${u.message || s}`; }
       // completed: 이 실행의 결과 파일을 받았다 = 파드는 제 일을 했다(이관의 종료 코드가 3 이어도). 안내 줄·현재 단계는 엔진 쪽 몫
       else if (s === 'succeeded' || s === 'completed') { el.classList.remove('failed'); el.classList.add('done'); }
-      // 아래 셋은 단계 표시를 바꾸지 않는다(안내 한 줄만): API 가 답하지 않는 동안에도, 파드가 끝나기를 기다리는 동안에도 이 실행이 차례를 지킨다
-      else if (s === 'api-unavailable') { $('railnote').textContent = `쿠버네티스 API 가 응답하지 않습니다. 응답할 때까지 이 이관이 차례를 유지하고 다음 이관은 기다립니다${u.message ? ' (' + u.message + ')' : ''}`; }
+      // 아래 셋은 단계 표시를 바꾸지 않는다(안내 한 줄만): API 가 답하지 않는 동안에도, 파드가 끝나기를 기다리는 동안에도 이 실행이 제 자리를 지킨다
+      else if (s === 'api-unavailable') { $('railnote').textContent = `쿠버네티스 API 가 응답하지 않습니다. 응답할 때까지 이 이관은 자리를 유지합니다${u.message ? ' (' + u.message + ')' : ''}`; }
       else if (s === 'api-back') { $('railnote').textContent = abortNote || '쿠버네티스 API 가 다시 응답합니다.'; }
-      else if (s === 'ending') { $('railnote').textContent = abortNote || '파드가 끝나기를 기다립니다. 끝난 것을 확인한 뒤 다음 이관을 시작합니다.'; }
+      else if (s === 'ending') { $('railnote').textContent = abortNote || '파드가 끝나기를 기다립니다. 끝난 것을 확인한 뒤 기다리는 이관에 자리를 넘깁니다.'; }
       else { setCurrent(el); $('railnote').textContent = s === 'created' ? '파드 생성 중…' : `파드 생성 중 (${s}${u.message ? ': ' + u.message : ''})`; }
       return;
     }
@@ -672,7 +745,7 @@
     $('runcard').hidden = false; $('resultcard').hidden = true;
     $('runid').textContent = runId; $('summary').textContent = '';
     $('timeline').innerHTML = ''; $('log').replaceChildren(); $('report').textContent = ''; $('logfull').hidden = true;
-    $('title').textContent = '연결하는 중…'; $('title').className = 'title';
+    setTitle('', '연결하는 중…', false); statusKey = '';
     resetRail();
     try { history.replaceState(null, '', '#' + encodeURIComponent(runId)); } catch (e) {}
     es = new EventSource(`/api/runs/${encodeURIComponent(runId)}/events`);
@@ -687,7 +760,7 @@
     es.addEventListener('error', (e) => {
       if (e.data) { logLine('error', '[실행 오류] ' + JSON.parse(e.data).message); toast('실행 오류: ' + JSON.parse(e.data).message, true); return; }
       logLine('console', '[연결이 끊겼습니다 — 서버가 내려갔거나 네트워크 문제입니다. 지난 실행에서 다시 고르면 다시 붙습니다]');
-      $('title').textContent = '연결이 끊겼습니다'; $('title').className = 'title warn';
+      setTitle('warn', '연결이 끊겼습니다', false);
       if (es) { es.close(); es = null; }
     });
     loadRuns();
@@ -704,6 +777,7 @@
   async function loadRuns() {
     const r = await fetch('/api/runs'); const d = await r.json();
     if (authProblem(r, d)) return;
+    setParallel(d.parallel);                           // 옛 서버(parallel 없음)면 안내를 숨긴다
     const ul = $('runs'); ul.innerHTML = '';
     $('runcount').textContent = d.runs.length ? `${d.runs.length}건` : '';
     if (!d.runs.length) { ul.innerHTML = '<li class="empty">아직 실행이 없습니다.</li>'; return; }

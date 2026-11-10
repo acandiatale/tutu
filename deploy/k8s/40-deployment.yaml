@@ -1,4 +1,5 @@
-# 웹 UI 에이전트(`sbmig serve`): replica 1(한 번에 한 이관 — 큐가 프로세스 안에 있다), Recreate(볼륨과 파드가 같이 옮겨간다).
+# 웹 UI 에이전트(`sbmig serve`): replica 1(대기 줄이 이 프로세스 안에 있다 — 동시에 도는 빌드 파드 수는 ConfigMap 의
+# SBMIG_JOB_MAX_PARALLEL 이 정하고, 웹 파드는 늘리지 않는다), Recreate(볼륨과 파드가 같이 옮겨간다).
 # Job 디스패치 모드(README §3, ConfigMap 의 SBMIG_WEB_MODE=k8s-job)에서는 이 파드가 Agent 다: 업로드마다 Job 을 만들고 공유 PVC 로 결과를 받는다 —
 # 쿠버네티스 API 권한(회사: 인프라팀의 kubeconfig Secret — 아래 spec 의 설명)과 ReadWriteMany PVC(10-storage.yaml, nfs-csi)가 그 전제다.
 # 회사 값(2026-11-09): namespace agent. 이미지는 인프라팀이 자기 레지스트리에 push 한 전체 이름을 받아 image: 에 넣는다(README §1).

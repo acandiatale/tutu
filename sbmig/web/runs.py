@@ -2,8 +2,9 @@
 흐름상 위치: app.py 라우트 → :meth:`RunManager.start_file` (검사·설정·워크스페이스·오케스트레이터를 동기로
 만들어 잘못된 요청은 400) → 작업 스레드 ``_worker`` → ``stream_graph`` 노드마다 기록 →
 :meth:`RunManager.events` 가 그 기록과 ``journal.jsonl`` / ``sbmig.log`` 의 새 줄을 SSE 이벤트로 바꾼다.
-지켜야 할 것: (1) 이관은 한 번에 하나 — KB 파일을 모두 함께 쓰므로 ``_turns`` (올린 순서대로의 FIFO
-줄)에서 줄을 서고, 기다리는 실행은 ``queued``. (2) 멈춤은 그래프 노드 사이에서만 — LangGraph 는 진행 중인
+지켜야 할 것: (1) 동시에 도는 이관은 Job 모드(k8s-job / local-job)에서 ``SBMIG_JOB_MAX_PARALLEL`` 개까지(기본 1), 프로세스
+안(in-process)에서는 한 번에 하나 — ``_turns`` (올린 순서대로의 FIFO 줄 + 번호 붙은 자리)에서 줄을 서고, 기다리는 실행은
+``queued`` 이고 줄의 몇 번째인지(``queue``)를 상태로 알린다. (2) 멈춤은 그래프 노드 사이에서만 — LangGraph 는 진행 중인
 동기 노드(Maven, OpenRewrite, LLM 호출)를 끊지 못한다. (3) 실행 로그는 스레드 필터로 나눈다 — 각
 ``sbmig.log`` 에는 그 실행 스레드의 줄만. (4) 메모리에는 끝난 실행을 ``max_finished_runs`` 개만 두고,
 나머지는 실행 폴더의 파일로 답한다. (5) Job 모드에서는 Job 을 **만드는** Main 이 설정이 읽는 환경 변수의 값 지문(``env_pins``)과
@@ -34,12 +35,15 @@ after the current node and is then finalized as aborted ("stopped by user"; exit
 `mvn clean package` (the report says so). A stop that arrives once the verify phase has run changes nothing: the run
 finishes normally. With the inline fallback engine there are no intermediate updates and the flag has no effect.
 
-One migration at a time: the knowledge base under `kb/` is file-based and shared by every run (CLAUDE.md: one agent
-migrates projects strictly sequentially), so worker threads queue on `RunManager._turns`; a run waiting for
-its turn reports state ``queued``. The queue is FIFO in upload order (2026-10-28, A10): a run takes its place
-in the line when `start_file` accepts it (before its thread starts) and starts when it is first in line — a
-plain `threading.Lock` (the earlier `_run_lock`) does not hand itself over in arrival order, so with two or
-more uploads waiting the later one could start first.
+Up to `SBMIG_JOB_MAX_PARALLEL` migrations at a time in Job mode (default 1), one at a time in-process (v2.1z-ae): worker
+threads queue on `RunManager._turns`, a FIFO line plus numbered slots. In-process the LLM call counter and the per-run
+log filter are process-wide, so that mode always runs one; in Job mode each migration is its own pod, the shared file
+KB takes its cross-process lock for every write, and each slot builds with its own Maven local repository (the Worker,
+from `SBMIG_JOB_SLOT`). A run waiting for its turn reports state ``queued`` and its place in the line (`queue`). The
+queue is FIFO in upload order (2026-10-28, A10): a run takes its place in the line when `start_file` accepts it
+(before its thread starts) and starts when it is first in line and a slot is free — a plain `threading.Lock` (the
+earlier `_run_lock`) does not hand itself over in arrival order, so with two or more uploads waiting the later one
+could start first.
 
 Every run uses the normal file KB (v2.1z: the v2.1i `fix_mode` / `no_kb` switches are gone). The run's
 `sbmig.log` and `journal.jsonl` (event `web_run`) name its configs / stop_after / LLM provider at the start; a
@@ -142,7 +146,8 @@ DEFAULT_MAX_FINISHED_RUNS = 200
 LOCAL_LOST = "the local job did not survive the server restart"
 # Job 생성 요청의 응답이 불확실한 경우(이미 있음 / 전송 오류): 같은 이름의 Job 이 있으면 이어받는다 — 두 번 만들지 않게
 _UNCERTAIN_CREATE_RE = re.compile(r"HTTP 409|RequestException|ConnectionError|Timeout|ChunkedEncodingError|ProtocolError")
-# 리뷰 2026-11-10 — "한 번에 하나" 는 Job 이 끝난 것을 확인한 뒤에야 차례를 넘겨야 지켜진다(_hold_until_ended). 그 기다림의 박자:
+# 리뷰 2026-11-10 — 자리 수의 한도(Job 모드 SBMIG_JOB_MAX_PARALLEL, 기본 1)는 Job 이 끝난 것을 확인한 뒤에야 자리를 넘겨야 지켜진다
+# (_hold_until_ended, 자리마다 따로). 그 기다림의 박자:
 HOLD_WARN_S = 60.0                 # 끝나지 않는 Job 을 기다리는 동안 이 간격으로 경고를 남긴다
 DELETE_RETRY_S = 15.0              # Job 삭제 요청이 실패하면 이 간격으로 다시 보낸다
 API_REMIND_S = 600.0               # Kubernetes API 가 계속 답하지 않으면 이 간격으로 로그에 다시 남긴다
@@ -200,6 +205,8 @@ class Run:
     api_down_reported: float | None = None
     job_note: str | None = None
     success: bool | None = None
+    # v2.1z-ae: 이 Job 실행이 쥔(쥐었던) 자리 번호 — Job 의 env SBMIG_JOB_SLOT, control/state.json 의 slot
+    slot: int | None = None
 
     @property
     def attempt(self) -> int:
@@ -213,47 +220,117 @@ class Run:
 
 
 class _FifoTurns:
-    """이관 차례 줄(FIFO): 한 번에 하나, 올린 순서대로. ``join`` 으로 줄 끝에 서고(업로드를 받을 때, 작업
-    스레드 시작 전), ``turn`` 이 줄 맨 앞이 될 때까지 기다렸다가 끝나면(예외여도) 줄에서 빠지며 다음을 깨운다.
-    ``threading.Lock`` 은 기다리는 스레드 중 누구에게 넘어갈지 정하지 않아 순서가 뒤바뀔 수 있었다(A10).
+    """이관 차례 줄(FIFO) + 번호 붙은 자리(v2.1z-ae): 올린 순서대로, 동시에 ``slots`` 개까지. ``join`` 으로 줄 끝에 서고(업로드를
+    받을 때, 작업 스레드 시작 전), ``turn`` 이 **줄 맨 앞이고 빈 자리가 있을 때까지** 기다렸다가 비어 있는 가장 작은 번호(1 부터)를
+    차지하고 그 번호를 내준다 — 아무도 앞사람을 앞지르지 못한다. 블록을 떠나면(예외여도) 자리를 비우고 기다리는 스레드를 깨운다.
+    ``occupy`` 는 재시작 복구 전용: 클러스터에 이미 있는(있을 수 있는) Job 은 이미 돌고 있으므로 한도와 상관없이 지금 자리를 잡는다.
+    ``threading.Lock`` 은 기다리는 스레드 중 누구에게 넘어갈지 정하지 않아 순서가 뒤바뀔 수 있었다(A10). ``slots == 1`` 이면 예전과 같다.
 
-    One migration at a time, in upload order: `join` takes a place at the end of the line (when the upload
-    is accepted, before the worker thread starts); `turn(key)` waits until `key` is first, and leaving it
-    (even by an exception) removes `key` and wakes the next one. A plain `threading.Lock` does not grant
-    waiters in order."""
+    Upload-order line plus numbered slots: `join` takes a place at the end of the line (when the upload is accepted,
+    before the worker thread starts); `turn(key)` waits until `key` is first in line AND fewer than `slots` keys hold a
+    slot (strict FIFO), takes the lowest free slot number from 1 and yields it; leaving the block (even by an exception)
+    frees the slot and wakes the waiters. `occupy` (restart recovery only) takes a slot at once, whatever the limit. A
+    plain `threading.Lock` does not grant waiters in order. With `slots == 1` the behaviour is the old one-at-a-time."""
 
-    def __init__(self) -> None:
+    def __init__(self, slots: int = 1) -> None:
+        self.slots = max(1, int(slots))
         self._cond = threading.Condition()
         self._line: deque[str] = deque()
+        self._active: dict[str, int] = {}       # key → slot number, unique among the holders
+
+    def _lowest_free(self, prefer: int | None = None) -> int:
+        # 호출자가 _cond 를 쥐고 있다. 번호는 자리를 쥔 실행들 사이에서만 겹치지 않으면 된다(한도보다 많이 쥘 수 있다: 복구)
+        used = set(self._active.values())
+        if prefer is not None and prefer >= 1 and prefer not in used:
+            return prefer
+        n = 1
+        while n in used:
+            n += 1
+        return n
 
     def join(self, key: str) -> None:
-        """줄 끝에 선다(같은 키가 이미 있으면 그대로)."""
+        """줄 끝에 선다(같은 키가 이미 줄에 있거나 자리를 쥐고 있으면 그대로).
+
+        Take a place at the end of the line (no-op when `key` is already waiting or holds a slot)."""
         with self._cond:
-            if key not in self._line:
+            if key not in self._line and key not in self._active:
                 self._line.append(key)
 
     def leave(self, key: str) -> None:
-        """줄에서 빠지고(어디에 있든) 기다리는 스레드를 깨운다. 없는 키면 아무 일도 없다."""
+        """줄과 자리 어디에 있든 빠지고 기다리는 스레드를 깨운다. 없는 키면 아무 일도 없다.
+
+        Leave the line and the slot, wherever `key` is, and wake the waiters; an unknown key is harmless."""
         with self._cond:
             try:
                 self._line.remove(key)
             except ValueError:
                 pass
+            self._active.pop(key, None)
             self._cond.notify_all()
 
-    @contextmanager
-    def turn(self, key: str) -> Iterator[None]:
-        """``key`` 차례가 올 때까지 기다린 뒤 블록을 돌리고, 끝나면 줄에서 뺀다. ``join`` 없이 불렀으면 지금
-        줄 끝에 선다(늦게 온 만큼 뒤에서 기다린다)."""
-        with self._cond:
-            if key not in self._line:
-                self._line.append(key)
-            while self._line[0] != key:       # `key` stays in line until this block leaves: never empty
-                self._cond.wait()
+    def occupy(self, key: str, prefer: int | None = None) -> int:
+        """재시작 복구 전용: 한도와 상관없이 **지금** 자리를 잡고 그 번호를 돌려준다(줄에 있었으면 줄에서 빠진다). ``prefer`` (state.json 에
+        적힌 번호)가 비어 있으면 그것, 아니면 비어 있는 가장 작은 번호. 이미 자리를 쥔 키면 그 번호.
+
+        Restart recovery only: take a slot now whatever the limit (a Job that exists already runs and must be counted);
+        `prefer` (the recorded number) when it is free, else the lowest free one. A key already holding a slot keeps it."""
         try:
-            yield
+            want: int | None = int(prefer) if prefer is not None else None
+        except (TypeError, ValueError):
+            want = None
+        with self._cond:
+            if key in self._active:
+                return self._active[key]
+            try:
+                self._line.remove(key)
+            except ValueError:
+                pass
+            slot = self._lowest_free(want)
+            self._active[key] = slot
+            self._cond.notify_all()            # the places of the waiting ones changed
+            return slot
+
+    @contextmanager
+    def turn(self, key: str) -> Iterator[int]:
+        """``key`` 차례가 올 때까지(줄 맨 앞 + 빈 자리) 기다린 뒤 자리 번호를 내주고 블록을 돌리고, 끝나면 자리를 비운다. ``join`` 없이
+        불렀으면 지금 줄 끝에 선다(늦게 온 만큼 뒤에서 기다린다). ``occupy`` 로 이미 자리를 쥔 키면 기다리지 않고 그 번호를 내준다.
+
+        Wait until `key` is first in line and a slot is free, yield the slot number, free it when the block leaves. A key
+        that already holds a slot (`occupy`) gets it at once; a key that never joined joins now (at the end)."""
+        with self._cond:
+            slot = self._active.get(key)
+            if slot is None:
+                if key not in self._line:
+                    self._line.append(key)
+                while self._line[0] != key or len(self._active) >= self.slots:   # `key` is in line until it gets a slot
+                    self._cond.wait()
+                self._line.popleft()
+                slot = self._lowest_free()
+                self._active[key] = slot
+                # 자리가 둘 이상이면 다음 맨 앞도 곧바로 들어갈 수 있다 — 깨워서 스스로 보게 한다
+                self._cond.notify_all()
+        try:
+            yield slot
         finally:
             self.leave(key)
+
+    def position(self, key: str) -> int | None:
+        """기다리는 줄에서의 자리(1 = 다음 차례). 기다리고 있지 않으면 None. / 1-based place among the waiting; None when not waiting."""
+        with self._cond:
+            try:
+                return self._line.index(key) + 1
+            except ValueError:
+                return None
+
+    def slot_of(self, key: str) -> int | None:
+        """이 키가 쥔 자리 번호(없으면 None). / The slot number `key` holds, or None."""
+        with self._cond:
+            return self._active.get(key)
+
+    def counts(self) -> tuple[int, int]:
+        """(자리를 쥔 수, 기다리는 수). / (running, waiting)."""
+        with self._cond:
+            return len(self._active), len(self._line)
 
 
 _LOG_TS_RE = re.compile(r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)(?:[,.](\d{3}))?\b")
@@ -277,15 +354,44 @@ def _event_time(kind: str, data: Any) -> float | None:
     return None
 
 
+def _resolve_max_parallel(value: int | str | None, mode: str) -> int:
+    """동시에 도는 Job 의 수(v2.1z-ae): 인자가 이기고, 없으면 ``SBMIG_JOB_MAX_PARALLEL``. 1 이상의 정수만 — 아니면 그 값을 이름 대어
+    경고하고 1. ``k8s-job`` / ``local-job`` 에서만 듣는다: in-process 는 늘 1(더 달라고 했으면 경고).
+
+    The number of Jobs at a time: the argument wins over `SBMIG_JOB_MAX_PARALLEL`; an integer ≥ 1, anything else → 1 with a
+    WARNING naming the value. Only the Job modes count it — in-process always runs one (a WARNING when more was asked)."""
+    raw: Any = value if value is not None else os.environ.get(contract.MAX_PARALLEL_ENV, "")
+    asked = 1
+    if not (isinstance(raw, str) and not raw.strip()):
+        try:
+            n = int(raw.strip()) if isinstance(raw, str) else (int(raw) if not isinstance(raw, bool) and int(raw) == raw else 0)
+        except (TypeError, ValueError):
+            n = 0
+        if n >= 1:
+            asked = n
+        else:
+            log.warning("%s=%r is not an integer ≥ 1 — running 1 migration job at a time", contract.MAX_PARALLEL_ENV, raw)
+    if mode not in ("k8s-job", "local-job"):
+        if asked > 1:
+            # 같은 프로세스 안의 이관 둘은 LLM 호출 수와 실행별 로그(스레드 필터)를 함께 쓴다 — 한도는 Job 모드에서만 듣는다
+            log.warning("%s=%d is ignored in %s mode — one migration at a time (the LLM call counter and the per-run log "
+                        "filter are process-wide); set SBMIG_WEB_MODE=k8s-job or local-job to run several",
+                        contract.MAX_PARALLEL_ENV, asked, mode)
+        return 1
+    return asked
+
+
 class RunManager:
     """이관을 작업 스레드로 시작하고, 상태·이벤트 질문에 메모리 + 실행 폴더로 답한다.
-    ``_lock`` 은 ``runs`` dict 를, ``_turns`` 는 이관 자체를 올린 순서대로 직렬화한다(파일 KB 공유).
+    ``_lock`` 은 ``runs`` dict 를 지키고, ``_turns`` 는 이관을 올린 순서대로 ``max_parallel`` 개까지 들여보낸다(Job 모드; in-process 는 하나).
 
-    Starts migrations in worker threads and answers status / event questions from memory + the run directory."""
+    Starts migrations in worker threads and answers status / event questions from memory + the run directory;
+    `_turns` lets them in in upload order, up to `max_parallel` at a time (Job modes; one in-process)."""
 
     def __init__(self, out_dir: Path, repo_root: Path = PACKAGE_ROOT, *,
                  max_finished_runs: int = DEFAULT_MAX_FINISHED_RUNS, default_configs: list[str] | None = None,
-                 mode: str | None = None, job_client: Any = None, job_template: str | Path | None = None):
+                 mode: str | None = None, job_client: Any = None, job_template: str | Path | None = None,
+                 max_parallel: int | None = None):
         self.out_dir = Path(out_dir).resolve()
         self.repo_root = Path(repo_root).resolve()
         self.max_finished_runs = max(0, int(max_finished_runs))
@@ -335,7 +441,15 @@ class RunManager:
         self._missing_warned: set[str] = set()
         self.runs: dict[str, Run] = {}
         self._lock = threading.Lock()
-        self._turns = _FifoTurns()             # one migration at a time, in upload order (shared file KB)
+        # v2.1z-ae: 동시에 도는 Job 의 수 — 인자 → SBMIG_JOB_MAX_PARALLEL → 1. 실행 모드가 정해진 뒤(k8s-job 이 local-job 으로 내려간
+        # 뒤)에 정한다: in-process 는 늘 1(LLM 호출 수·실행별 로그 필터가 프로세스 전체에 하나뿐이다). recover() 가 자리를 잡으므로 그보다 먼저
+        self.max_parallel = _resolve_max_parallel(max_parallel, self.effective_mode)
+        self._turns = _FifoTurns(self.max_parallel)   # upload order; up to max_parallel Jobs at a time (one in-process)
+        if self.effective_mode in ("k8s-job", "local-job"):
+            log.info("web: up to %d migration job(s) at a time (%s), the rest wait in upload order", self.max_parallel,
+                     contract.MAX_PARALLEL_ENV)
+        else:
+            log.info("web: one migration at a time (%s mode)", self.effective_mode)
         self.closing = threading.Event()       # server shutdown: open SSE streams end, running runs are asked to stop
         self._job_template_doc: dict | None = None   # k8s-job: the template validated at startup (Jobs are rendered from it)
         self.recovered: list[str] = []         # run ids picked up from control/state.json at startup (recover())
@@ -391,8 +505,13 @@ class RunManager:
         ``creating`` 은 같은 이름의 Job 이 있으면 이어받고 없으면 만들고, ``created`` / ``running`` 은 이어받아 지켜보기만 한다. **local-job**:
         서브프로세스는 서버와 함께 죽었으므로 ``lost`` 로 적는다. 깨진 파일은 로그만 남기고 건너뛴다 — 절대 예외를 내지 않는다.
 
+        v2.1z-ae: Job 이 있는(있을 수 있는) ``creating`` / ``created`` / ``running`` 을 **먼저** 모두 되살려 적힌 자리(``slot``, 없으면 1)를
+        한도와 상관없이 지금 잡고(``_turns.occupy``), 그다음에야 ``queued`` 를 줄에 세운다 — 기다리던 실행의 스레드가 도는 Job 의 번호를
+        먼저 가져가지 못하게.
+
         Restart recovery from the control states on disk (k8s-job: re-register and watch / create in `accepted_at` order;
-        local-job: mark `lost`). Never raises; returns `self.recovered`."""
+        local-job: mark `lost`). Runs whose Job exists or may exist re-occupy their recorded slot first, before any queued
+        run joins the line. Never raises; returns `self.recovered`."""
         if self.effective_mode not in ("k8s-job", "local-job"):
             return self.recovered
         try:
@@ -431,7 +550,11 @@ class RunManager:
                 pending.append((rec.accepted_at or cs.accepted_at or "", rd, cs, rec))
             except Exception as e:  # noqa: BLE001 — recovery must never keep the web app from starting
                 log.warning("recovery: %s skipped (%s: %s)", sp, type(e).__name__, e)
-        for _at, rd, cs, rec in sorted(pending, key=lambda t: (t[0], t[1].name)):
+        ordered = sorted(pending, key=lambda t: (t[0], t[1].name))
+        # 자리를 쥔 실행(Job 이 이미 돈다)을 먼저, 기다리던 실행은 그 뒤에 — 각 무리 안에서는 accepted_at 순서
+        holding = [t for t in ordered if t[2].state != RunState.QUEUED.value]
+        waiting = [t for t in ordered if t[2].state == RunState.QUEUED.value]
+        for _at, rd, cs, rec in holding + waiting:
             try:
                 self._resume(rd, cs, rec)
             except Exception as e:  # noqa: BLE001 — recovery must never keep the web app from starting
@@ -439,7 +562,11 @@ class RunManager:
         return self.recovered
 
     def _resume(self, rd: Path, cs: ControlState, rec: RequestRecord) -> None:
-        """복구한 실행 하나를 메모리에 다시 세우고 감시 스레드를 띄운다(줄은 지금 선다 — accepted_at 순서). / Re-register one run."""
+        """복구한 실행 하나를 메모리에 다시 세우고 감시 스레드를 띄운다. ``queued`` 는 줄 끝에 서고(accepted_at 순서), Job 이 있는(있을 수
+        있는) 실행은 적힌 자리를 지금 잡는다(``occupy`` — 한도와 상관없이; ``slot`` 이 없는 state.json 은 1번).
+
+        Re-register one run: a queued one joins the line; one whose Job exists or may exist re-occupies its recorded slot
+        now, whatever the limit (no `slot` on disk = slot 1)."""
         mode = {RunState.QUEUED.value: None, RunState.CREATING.value: "probe"}.get(cs.state, "adopt")
         run = Run(rd.name, rd, rd / SOURCE_ZIP, list(rec.configs or []), rec.stop_after, rec.llm_provider, job=True,
                   request=rec, control=cs, recover=mode)
@@ -448,7 +575,12 @@ class RunManager:
         run.thread = threading.Thread(target=self._worker, args=(run,), name=f"sbmig-job-{run.run_id}", daemon=True)
         with self._lock:
             self.runs[run.run_id] = run
-            self._turns.join(run.run_id)
+            if mode is None:
+                self._turns.join(run.run_id)
+            else:
+                # 클러스터의 Job 은 이미 돈다: 자리를 세어야 새 업로드가 같은 번호(같은 Maven 로컬 저장소)를 받지 않는다. probe 가 결국
+                # Job 을 스스로 만들면 이 번호를 creating 전이에 적는다
+                run.slot = self._turns.occupy(run.run_id, prefer=cs.slot or 1)
         try:
             run.thread.start()
         except RuntimeError:
@@ -457,9 +589,10 @@ class RunManager:
                 self.runs.pop(run.run_id, None)
             raise
         self.recovered.append(run.run_id)
-        log.info("recovery: run %s resumed from state %s (job %s, attempt %d) — %s", run.run_id, cs.state, run.job_name or "-",
-                 run.attempt, {None: "will create its job", "probe": "adopts the job if it exists, else creates it",
-                               "adopt": "adopts the job and watches it"}[mode])
+        log.info("recovery: run %s resumed from state %s (job %s, attempt %d%s) — %s", run.run_id, cs.state, run.job_name or "-",
+                 run.attempt, f", slot {run.slot}" if run.slot is not None else "",
+                 {None: "will create its job", "probe": "adopts the job if it exists, else creates it",
+                  "adopt": "adopts the job and watches it"}[mode])
 
     # ---- paths
     def run_dir(self, run_id: str) -> Path:
@@ -627,19 +760,26 @@ class RunManager:
         return run_id
 
     def _worker(self, run: Run) -> None:
-        """작업 스레드 본체. ``_turns`` 줄 맨 앞이 될 때까지 ``queued``, 차례가 오면 ``active`` → 이
-        스레드 전용 ``sbmig.log`` 를 붙이고 이관을 돌린 뒤 ``SBMIG-RESULT`` 줄을 남긴다. 무슨 일이
+        """작업 스레드 본체. ``_turns`` 줄 맨 앞이고 빈 자리가 생길 때까지 ``queued``, 차례가 오면 ``active`` (Job 실행은 자리 번호를
+        ``run.slot`` 에) → 이 스레드 전용 ``sbmig.log`` 를 붙이고 이관을 돌린 뒤 ``SBMIG-RESULT`` 줄을 남긴다. 무슨 일이
         있어도 finally 에서 로그를 떼고 ``finished`` 이벤트·web-status.json 을 쓰고 ``done`` 을 세워
-        기다리는 SSE 를 깨운다."""
+        기다리는 SSE 를 깨운다.
+
+        The worker thread: `queued` until first in line with a free slot, then `active` (a Job run keeps its slot number in
+        `run.slot`); whatever happens, the finally block writes the end of the run and wakes the streams."""
         log_path: Path | None = None
         try:
             # import 도 try 안에서: 여기서 죽어도 finally 가 줄에서 빼야 뒤의 실행이 영원히 기다리지 않는다
             from sbmig.cli import attach_file_log, run_exit_code
 
-            # 한 번에 하나: 파일 KB 를 모든 실행이 함께 쓴다. 차례는 올린 순서(FIFO 줄, start_file 에서 섬) —
-            # 예전의 threading.Lock 은 기다리는 스레드에게 넘겨주는 순서를 보장하지 않았다(A10)
-            with self._turns.turn(run.run_id):         # one migration at a time, in upload order (docstring)
+            # Job 모드는 max_parallel 개까지(파드마다 따로, KB 쓰기는 파일 잠금, 자리마다 Maven 로컬 저장소), in-process 는 하나. 차례는
+            # 올린 순서(FIFO 줄, start_file 에서 섬) — 예전의 threading.Lock 은 기다리는 스레드에게 넘겨주는 순서를 보장하지 않았다(A10)
+            with self._turns.turn(run.run_id) as slot:  # upload order; up to max_parallel Jobs at a time (docstring)
+                if run.job:
+                    run.slot = slot
                 run.active.set()
+                with run.cond:                         # the run's SSE streams see queued → running at once, not on the next tick
+                    run.cond.notify_all()
                 if run.job:                            # k8s Job mode: the pod writes this run's sbmig.log — not this process
                     run.exit_code = self._run_job(run)
                     return
@@ -695,13 +835,25 @@ class RunManager:
                 self._prune_locked()
 
     def _job_client_or_fail(self) -> Any:
-        if self._job_client is None:
-            if self.effective_mode == "local-job":
-                from sbmig.web.localjob import LocalJobClient
-                self._job_client = LocalJobClient(self.repo_root)
-            else:
-                self._job_client = K8sClient.connect()
-        return self._job_client
+        """Job 클라이언트(처음 부를 때 만든다). v2.1z-ae: 여러 감시 스레드가 동시에 부를 수 있어 ``_lock`` 안에서 한 번만 만든다 —
+        둘이 따로 만들면 로컬 클라이언트의 프로세스 목록이 갈라진다.
+
+        The Job client, built once under `_lock` on first use (several watcher threads may ask at the same time)."""
+        with self._lock:
+            if self._job_client is None:
+                if self.effective_mode == "local-job":
+                    from sbmig.web.localjob import LocalJobClient
+                    self._job_client = LocalJobClient(self.repo_root)
+                else:
+                    self._job_client = K8sClient.connect()
+            return self._job_client
+
+    def _turn_words(self, run: Run) -> tuple[str, str]:
+        # 끝나지 않은 Job 이 무엇을 막고 있는지 알리는 말 (무엇을 쥐고 있나, 뒤에 붙일 말): 자리가 하나면 예전 문장 그대로(다음 이관이
+        # 기다린다), 여럿이면 그 자리 하나만 막힌다
+        if self.max_parallel <= 1:
+            return "its turn", ", the next migration waits"
+        return (f"its slot {run.slot}" if run.slot is not None else "its slot"), ""
 
     def _settle_job_run(self, run: Run) -> bool | None:
         """Job 실행의 마무리(작업 스레드의 finally): 결과를 믿을 수 있나 — 이 실행·시도의 ``job-status.json`` 을 받았거나, 컨테이너
@@ -825,6 +977,8 @@ class RunManager:
             env["SBMIG_STOP_AFTER"] = run.stop_after
         if run.llm_provider:
             env["SBMIG_LLM_PROVIDER"] = run.llm_provider
+        if run.slot is not None:               # v2.1z-ae: the Worker builds with one Maven local repository per slot
+            env[contract.SLOT_ENV] = str(run.slot)
         return env
 
     def _env_pins(self, run: Run) -> dict[str, str] | None:
@@ -863,7 +1017,8 @@ class RunManager:
         # 의도를 먼저 적는다: 이 줄 뒤에 프로세스가 죽어도 다음 Main 은 creating + 이름을 보고 Job 을 찾는다. 환경 지문도 같은 전이로 —
         # 기준은 접수한 Main 이 아니라 Job 을 **만드는** 이 Main 의 지금 환경이다(대기 중에 재시작했으면 새 Main 의 것)
         pins = self._env_pins(run)
-        self._transition(run, RunState.CREATING, job=name, env_pins=pins, env_pin_policy=self.env_pin_policy)
+        # 자리 번호도 같은 전이로: 재시작한 Main 이 같은 번호를 다시 잡는다(v2.1z-ae)
+        self._transition(run, RunState.CREATING, job=name, env_pins=pins, env_pin_policy=self.env_pin_policy, slot=run.slot)
         if pins is not None:
             log.info("run %s: %d environment value(s) pinned for job %s (%s=%s)", run.run_id, len(pins), name,
                      contract.ENV_PIN_POLICY_ENV, self.env_pin_policy)
@@ -893,7 +1048,7 @@ class RunManager:
             log.warning("run %s: job created as %s, expected %s", run.run_id, created, name)
             run.job_name = name = str(created)
         _append_journal(run.run_dir, {"event": "job_created", "run_id": run.run_id, "job": name, "attempt": run.attempt,
-                                      "namespace": getattr(client, "namespace", None)})
+                                      "namespace": getattr(client, "namespace", None), "slot": run.slot})
         self._transition_soft(run, RunState.CREATED, job=name)
         self._push(run, "node", {"node": "job", "update": {"state": "created", "job": name}})
 
@@ -917,8 +1072,8 @@ class RunManager:
                 return None
             first = run.api_down_reported is None
             run.api_down_reported = now
-            run.job_note = (f"Kubernetes API unavailable for {down:.0f}s ({e}) — this run keeps its turn until the API answers, "
-                            "the next migration waits")
+            noun, waits = self._turn_words(run)
+            run.job_note = f"Kubernetes API unavailable for {down:.0f}s ({e}) — this run keeps {noun} until the API answers{waits}"
             log.error("run %s: job %s: %s", run.run_id, name, run.job_note)
             if first:
                 _append_journal(run.run_dir, {"event": "job_api_unavailable", "run_id": run.run_id, "job": name,
@@ -984,13 +1139,14 @@ class RunManager:
         self._push(run, "node", {"node": "job", "update": {"state": "created", "job": name, "adopted": True}})
 
     def _hold_until_ended(self, run: Run, client: Any, name: str, *, delete_after: float | None, why: str) -> bool:
-        """**차례를 넘기기 전의 문**(리뷰 2026-11-10): Job 과 그 파드가 끝났거나 사라진 것을 API 로 확인할 때까지 이 실행이 줄 맨 앞을
-        지킨다 — "한 번에 하나" 는 파드가 실제로 끝나야 지켜진다(파일 KB·공유 볼륨을 다음 이관과 함께 쓰지 않게). ``delete_after`` 초가
+        """**자리를 넘기기 전의 문**(리뷰 2026-11-10; v2.1z-ae 부터 자리마다): Job 과 그 파드가 끝났거나 사라진 것을 API 로 확인할 때까지
+        이 실행이 자기 자리를 지킨다 — 자리 수의 한도는 파드가 실제로 끝나야 지켜진다(그 자리의 Maven 로컬 저장소·공유 볼륨을 다음 이관과
+        함께 쓰지 않게). ``delete_after`` 초가
         지나도 남아 있으면 우리 라벨의 Job 을 지우고 계속 기다린다(None = 지우지 않는다). 기한은 없다: API 가 답하지 않으면 답할 때까지,
         파드가 안 끝나면 끝날 때까지(``HOLD_WARN_S`` 마다 경고). 돌려주는 값: True = 끝난 것을 확인했다; False = 확인하지 못하고 빠진다 —
         서버 종료(제어 상태를 그대로 두어 다음 Main 이 이어서 지켜본다)이거나 우리 Job 이 아니다(건드리지 않는다).
 
-        The gate before the turn is handed on: wait until the API confirms the Job terminal / gone, deleting our Job once
+        The gate before the slot is handed on: wait until the API confirms the Job terminal / gone, deleting our Job once
         `delete_after` seconds passed. False = left unconfirmed (server shutdown: state kept; or a foreign Job: untouched)."""
         started = warned = time.monotonic()
         announced = deleted = False
@@ -1030,8 +1186,8 @@ class RunManager:
                 return False
             if now - warned >= HOLD_WARN_S:
                 warned = now
-                log.warning("run %s: job %s has not ended %.0fs after %s — this run keeps its turn, the next migration waits",
-                            run.run_id, name, now - started, why)
+                log.warning("run %s: job %s has not ended %.0fs after %s — this run keeps %s%s",
+                            run.run_id, name, now - started, why, *self._turn_words(run))
             with run.cond:
                 run.cond.wait(self.job_poll_s)
 
@@ -1311,16 +1467,27 @@ class RunManager:
     def status(self, run_id: str) -> dict[str, Any]:
         """실행 상태 dict. 메모리에 있으면 queued / running / finished, 없으면(밀려남·이전 프로세스)
         web-status.json → report.json → 폴더 유무 순으로 finished / unknown / missing.
-        report.json 이 있으면 성공·차단·미해결·LLM 호출·오류 목록 개수, 그리고 내려받을 수 있는 파일 목록."""
+        report.json 이 있으면 성공·차단·미해결·LLM 호출·오류 목록 개수, 그리고 내려받을 수 있는 파일 목록.
+        v2.1z-ae: 늘 ``parallel`` {slots, running, waiting}; 이 프로세스의 줄에서 기다리는 실행은 ``queue`` {position, ahead};
+        자리를 쥔(쥐었던) Job 실행은 ``slot`` (메모리, 없으면 control/state.json).
+
+        The run's status dict (memory first, else the run directory). Always `parallel`; `queue` for a run waiting in this
+        process's line; `slot` for a Job run that holds or held one."""
         run = self.runs.get(run_id)
         rd = self.run_dir(run_id)
         info: dict[str, Any] = {"run_id": run_id, "run_dir": str(rd), "exists": rd.is_dir() or run is not None,
-                                "mode": self.effective_mode}
+                                "mode": self.effective_mode, "parallel": self.parallel()}
         control: ControlState | None = None
         if run is not None:
-            info["state"] = "finished" if run.done.is_set() else ("running" if run.active.is_set() else "queued")
+            info["state"] = self._mem_state(run)
             info["exit_code"] = run.exit_code
             info["node"] = run.last_node
+            if info["state"] == "queued":
+                pos = self._turns.position(run_id)
+                if pos is not None:            # None: it took a slot a moment ago, `active` follows at once
+                    info["queue"] = {"position": pos, "ahead": pos - 1}
+            if run.job and run.slot is not None:
+                info["slot"] = run.slot
             if run.job:
                 info["job"] = {"name": run.job_name, "phase": run.job_phase, "pod": run.job_pod}
                 if run.job_note:               # e.g. the Kubernetes API does not answer: why this run still holds its turn
@@ -1339,6 +1506,8 @@ class RunManager:
             if control is not None:
                 info["attempt"] = control.attempt
                 info["control"] = control.state
+                if control.slot is not None:
+                    info["slot"] = control.slot
                 if not control.terminal:
                     info["state"] = "queued" if control.state == RunState.QUEUED.value else "running"
                     info["job"] = {"name": control.job, "phase": None, "pod": None}
@@ -1386,14 +1555,35 @@ class RunManager:
                 info.setdefault("files", []).append(name)
         return info
 
+    def _mem_state(self, run: Run) -> str:
+        # 메모리 실행의 상태: 자리를 쥐었으면 running 이다 — 작업 스레드가 active 를 세우기 직전의 찰나(그리고 복구 직후 자리를 다시 잡은
+        # 실행)에 자리 번호 없는 queued 로 보이지 않게
+        if run.done.is_set():
+            return "finished"
+        if run.active.is_set() or self._turns.slot_of(run.run_id) is not None:
+            return "running"
+        return "queued"
+
+    def parallel(self) -> dict[str, int]:
+        """동시 실행의 지금 모습(v2.1z-ae): ``slots`` = 한도(``max_parallel``), ``running`` = 자리를 쥔 실행 수(복구 직후에는 한도보다
+        많을 수 있다), ``waiting`` = 줄에서 기다리는 수.
+
+        The parallel picture: the limit, the runs holding a slot (may exceed the limit right after a restart), the waiting."""
+        running, waiting = self._turns.counts()
+        return {"slots": self.max_parallel, "running": running, "waiting": waiting}
+
     def list_runs(self) -> list[dict[str, Any]]:
-        """메모리와 출력 폴더의 모든 실행(``_`` 로 시작하는 폴더 제외)의 상태를 최신순으로."""
+        """메모리와 출력 폴더의 모든 실행(``_`` 로 시작하는 폴더 제외)의 상태를 최신순으로. 줄마다 ``parallel`` 은 빼고(라우트가 한 번
+        붙인다) ``queue`` / ``slot`` 은 아는 만큼 남는다.
+
+        Every run's status, newest first; `parallel` is left to the route (once), `queue` / `slot` stay when known."""
         ids = set(self.runs)
         if self.out_dir.is_dir():
             ids |= {p.name for p in self.out_dir.iterdir() if p.is_dir() and not p.name.startswith("_")}
         rows = []
         for rid in ids:
             st = self.status(rid)
+            st.pop("parallel", None)
             run = self.runs.get(rid)
             try:
                 st["started"] = run.started if run else self.run_dir(rid).stat().st_mtime
@@ -1407,15 +1597,19 @@ class RunManager:
         """SSE 로 흘릴 (이벤트, 데이터)를 실행이 끝나고 다 비울 때까지 내는 막히는 생성기(스레드풀에서 돈다).
         처음 ``status`` → 노드·오류 기록과 journal·로그 파일의 새 줄(한 번에 모아 시간순) → 조용하면 ``ping``
         → 끝나면 ``report`` / ``status`` / ``end``. 서버 종료 때는 ``end`` (reason) 로 연결을
-        놓는다(브라우저가 나중에 다시 붙는다).
+        놓는다(브라우저가 나중에 다시 붙는다). v2.1z-ae: 끝나기 전에도 (상태, 줄의 자리)가 바뀌면 ``status`` 를 다시 보낸다 — 기다리는
+        화면이 새로 고침 없이 3 → 2 → 1 → 시작을 본다(박자는 ``POLL_S`` 마다 보는 값싼 비교, 시작할 때는 실행의 조건 변수가 바로 깨운다).
 
-        Yield (event, data) until the run is finished and everything has been drained (blocking generator)."""
+        Yield (event, data) until the run is finished and everything has been drained (blocking generator). `status` is
+        sent again whenever the run's (state, queue position) changes before it finished."""
         rd = self.run_dir(run_id)
         run = self.runs.get(run_id)
         offsets: dict[Path, int] = {}
         seen = 0
         last_beat = time.monotonic()
-        yield "status", self.status(run_id)
+        first = self.status(run_id)
+        last_sig = _queue_sig(first)
+        yield "status", first
 
         def drain() -> Iterator[tuple[str, Any]]:
             nonlocal seen
@@ -1458,7 +1652,12 @@ class RunManager:
 
         while True:
             # 끝났는지는 비우기 *전에* 본다: done 이 선 뒤의 비우기라면 실행이 쓴 것이 모두 파일에 들어 있다
-            finished = run.done.is_set() if run is not None else self.status(run_id)["state"] not in ("running", "queued")
+            now_st: dict[str, Any] | None = None
+            if run is not None:
+                finished = run.done.is_set()
+            else:
+                now_st = self.status(run_id)
+                finished = now_st["state"] not in ("running", "queued")
             emitted = False
             for item in drain():
                 emitted = True
@@ -1475,6 +1674,15 @@ class RunManager:
                 yield "status", self.status(run_id)
                 yield "end", {"run_id": run_id, "reason": "server shutdown"}
                 return
+            # v2.1z-ae: 기다리는 실행의 자리가 바뀌었거나 시작했다 — 값싼 비교로 먼저 보고, 바뀌었을 때만 status() 를 만든다
+            if run is not None:
+                state = self._mem_state(run)
+                if (state, self._turns.position(run_id) if state == "queued" else None) != last_sig:
+                    now_st = self.status(run_id)
+            if now_st is not None and now_st.get("state") in ("running", "queued") and _queue_sig(now_st) != last_sig:
+                last_sig = _queue_sig(now_st)
+                yield "status", now_st
+                emitted = True
             if emitted:
                 last_beat = time.monotonic()
             elif time.monotonic() - last_beat > KEEPALIVE_S:
@@ -1486,6 +1694,11 @@ class RunManager:
                         run.cond.wait(POLL_S)
             else:
                 time.sleep(POLL_S)
+
+
+def _queue_sig(st: dict[str, Any]) -> tuple[Any, Any]:
+    # SSE 가 status 를 다시 보낼지 정하는 값: (상태, 줄의 자리). 자리는 이 프로세스의 줄에서 기다릴 때만 있다
+    return st.get("state"), (st.get("queue") or {}).get("position")
 
 
 def _write_web_status(run: Run) -> None:

@@ -21,7 +21,7 @@ UI 에 올리면** 에이전트가 이관을 돌린다. 담당자는 sbmig 를 �
   (여러 번) 또는 `SBMIG_WEB_CONFIGS=a.yml,b.yml`, 없으면 `config/artifacts.yml` → `artifacts.local-e2e.yml` 중 있는 것(`GET /api/configs` 의
   `default`). 담당자는 고르지 않고, 개발자는 "고급 설정"을 펼쳐 설정 파일 / LLM(fake) / 여기까지만 실행을 바꾼다. 로그 탭은 마지막 1,500 줄만
   그린다(전체는 `sbmig.log` 링크). 화면은 `sbmig/web/static/index.html` 한 파일(HTML + CSS + JS, 웹 폰트·CDN 없음 — 사내망).
-- **한 번에 하나의 이관.** 그 사이 올라온 zip 은 `queued` 로 기다린다(파일 KB 를 공유하기 때문, 순차 이관이 운영 모델).
+- **웹 파드가 직접 돌리면 한 번에 하나, Job 모드는 동시에 `SBMIG_JOB_MAX_PARALLEL` 건**(기본 1, 매니페스트 값 3). 넘는 zip 은 `queued` 로 기다리고 화면에 순번이 보인다.
 - **중지**는 그래프 노드 사이에서만 먹힌다(지금 노드가 끝난 뒤).
 - **접근 제어**: 사내망 전용 페이지라 기본 배포는 `SBMIG_WEB_OPEN=1`(또는 `--open`)로 토큰 없이 모든 클라이언트를 받는다 — 시작 때
   `open to the network WITHOUT a token` 경고 한 줄. 토큰을 두려면 `SBMIG_WEB_TOKEN`(또는 `--token`): 결과 zip 에 회사 소스가 들어가므로
@@ -136,7 +136,7 @@ kubectl exec deploy/sbmig -- python -m sbmig.cli llm-probe
 지금 attempt 의 상태 파일만 결과로 받는다(없으면 `verified: false`, 성공으로 적지 않는다). 멈춤 = 웹이 `<run dir>/stop.request` 를 쓰고 엔진이 노드
 사이에서 멈춘다(최종 빌드 없음, 종료 3); `SBMIG_JOB_STOP_GRACE_S` 뒤에도 돌면 자기 라벨의 Job 만 지우고 사라질 때까지 기다린다. 웹 파드 재시작 때 Job 은
 그대로 돌고, 다시 뜬 Main 이 `control/state.json` 으로 `queued` 는 다시 줄에 세우고 `created` / `running` 은 이어서 감시한다.
-큐는 그대로라 Job 도 한 번에 하나(병렬 3 개는 다음 단계). 쿠버네티스 API 는 `sbmig/web/k8s.py`(requests, `kubernetes` 패키지 없음)로
+Job 은 자리 번호(`SBMIG_JOB_SLOT`)를 받고 2 번부터 Maven 저장소 `repository-slot<k>` 를 따로 쓴다. KB 쓰기는 `<kb>/.lock` 으로 차례. 쿠버네티스 API 는 `sbmig/web/k8s.py`(requests, `kubernetes` 패키지 없음)로
 Job 생성·상태·삭제와 권한 자기 점검(SelfSubjectAccessReview)만 부른다 — 인증은 `KUBECONFIG` 가 가리키는 kubeconfig 파일(인프라팀이 Secret 으로 주는
 `/etc/kube/config`; token / 클라이언트 인증서 사용자, `exec` 는 거절)이 있으면 그것, 없으면 파드의 서비스 계정 토큰·CA(권한은 `deploy/k8s/45-web-rbac.yaml`). 매니페스트는 kubeconfig 쪽이 켜진 채로 나간다(`sbmig-env` 의 `SBMIG_K8S_NAMESPACE` 가 Job 의 namespace).
 Job 틀은 채운 것을 ConfigMap `sbmig-job-template` 으로 `/templates` 에 마운트해 `SBMIG_JOB_TEMPLATE` 로 읽고, Main 은 **시작할 때** 틀(컨테이너 하나,

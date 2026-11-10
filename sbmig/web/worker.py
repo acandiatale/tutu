@@ -10,6 +10,9 @@ Worker 는 자식의 출력을 한 줄씩 지워서 파드 로그로 넘긴다. 
 환경 대조(리뷰 2026-11-10): Job 을 만든 Main 이 ``control/state.json`` 에 환경 지문(``env_pins``)과 정책을 적었으면 자기 환경으로 다시
 계산해 대조하고 실행별 값(``SBMIG_CONFIG`` / ``SBMIG_STOP_AFTER`` / ``SBMIG_LLM_PROVIDER``)도 ``request.json`` 과 맞춰 본다 — refuse 면
 거절(exit 3), warn 이면 저널에 ``worker_env_differs`` 를 적고 돈다. 글에는 이름만 적는다(값·지문은 적지 않는다).
+자리(v2.1z-ae): Job 이 여러 개 동시에 돌면 Main 이 ``SBMIG_JOB_SLOT``(1 부터)을 준다. 2번 자리부터는 Maven 로컬 저장소를 따로
+쓴다 — 이 실행이 원래 쓸 저장소 옆의 ``<이름>-slot<k>`` 폴더를 만들어 환경 대조가 끝난 뒤 **자식의 env 에만** ``SBMIG_BUILD__LOCAL_REPO`` 로
+넘긴다. 1번 자리·변수 없음은 그대로이고, 정하지 못하면 공유 저장소로 돌며 그렇게 적는다(파드 로그 한 줄 + 저널 ``worker_slot``).
 종료 코드: 3 = 중단(거절 / sbmig exit 3 / 자식을 못 띄움), 2 = 빌드 실패이고 ``SBMIG_FAIL_JOB_ON_BUILD_FAIL=1``, 그 밖에는 0 — 빌드가
 실패해도 보고서가 결과다(run-job.sh 와 같다).
 
@@ -19,7 +22,10 @@ log), redact the run dir, write `job-status.json` for this attempt. Exit 3 = sto
 `SBMIG_FAIL_JOB_ON_BUILD_FAIL=1`, else 0. Review 2026-11-10: when the Main that created the Job pinned its environment
 (`env_pins` + policy in `control/state.json`), the Worker recomputes the pins and checks the per-run values against
 `request.json` before it starts — refuse → exit 3, warn → journal `worker_env_differs` and go on; names only, never a
-value or a hash."""
+value or a hash. Slots (v2.1z-ae): with several Jobs at once Main passes `SBMIG_JOB_SLOT` (1-based); slot k ≥ 2 gets its own
+Maven local repository, the sibling `<base>-slot<k>` of the one the run would use otherwise, through `SBMIG_BUILD__LOCAL_REPO`
+in the child's environment only (after the environment check); slot 1 / no slot = unchanged; when it cannot be set up the
+run goes on with the shared repository and says so (journal `worker_slot`)."""
 from __future__ import annotations
 
 import json
@@ -29,6 +35,8 @@ import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+
+import yaml
 
 from sbmig.core import scrub
 from sbmig.core.config import PACKAGE_ROOT
@@ -55,7 +63,14 @@ RUN_VALUE_FIELDS = (("SBMIG_STOP_AFTER", "stop_after"), ("SBMIG_LLM_PROVIDER", "
 ENV_PIN_HINT = ("after changing ConfigMap sbmig-env or the Job template, restart the web pod and re-create ConfigMap "
                 f"sbmig-job-template; {contract.ENV_PIN_POLICY_ENV}=warn (or off) on the web pod relaxes this check")
 
+# ── 자리마다 Maven 로컬 저장소 하나(v2.1z-ae, 2026-11-10) ──
+# 세 파드가 PVC 하나(~/.m2)를 나눠 쓴다. Maven 기본 설정은 여러 프로세스가 한 로컬 저장소에 동시에 쓰는 것을 약속하지 않는다
+LOCAL_REPO_ENV = "SBMIG_BUILD__LOCAL_REPO"    # 자식의 build.local_repo 를 정하는 설정 덮어쓰기(load_config 가 값을 yaml 로 읽는다)
+SLOT_EVENT = "worker_slot"
+
 RunChild = Callable[[list[str], Path, dict[str, str]], int]
+# (자식에게 넘길 설정 파일들, worker-paths.yml) → 이 실행이 자리 없이 쓸 로컬 저장소
+RepoResolver = Callable[[list[str], Path], Path]
 
 
 def _say(msg: str) -> None:
@@ -152,6 +167,138 @@ def child_environ(environ: dict[str, str]) -> dict[str, str]:
     if not (out.get("COLUMNS") or "").strip():
         out["COLUMNS"] = CHILD_COLUMNS
     return out
+
+
+def slot_number(environ: dict[str, str]) -> int | None:
+    """``SBMIG_JOB_SLOT`` 의 자리 번호(1 부터). 없거나 비었으면 None(자리 개념 없음 — 예전 Main, ``sbmig run`` 직접 실행). 양의 정수가
+    아니면 ``ValueError`` — 부르는 쪽이 "자리 없음"으로 다루고 그렇게 적는다.
+
+    The 1-based slot number from `SBMIG_JOB_SLOT`; None when unset or blank; `ValueError` when it is not a positive integer."""
+    raw = (environ.get(contract.SLOT_ENV) or "").strip()
+    if not raw:
+        return None
+    n = int(raw)                     # ValueError for "abc", "2.0"
+    if n < 1:
+        raise ValueError(f"{contract.SLOT_ENV} must be a positive integer")
+    return n
+
+
+def slot_local_repo(base: Path, slot: int) -> Path:
+    """자리 ``slot`` 의 로컬 저장소: ``base`` 옆의 ``<base 이름>-slot<k>``(예: ``/home/sbmig/.m2/repository-slot2``) — 같은 PVC
+    안에 남아 다음 실행이 다시 받지 않는다.
+
+    Slot `slot`'s local repository: the sibling `<base name>-slot<k>` of `base`."""
+    return Path(base).parent / f"{Path(base).name}-slot{slot}"
+
+
+def default_repo_resolver(configs: list[str], paths_yml: Path) -> Path:
+    """자리가 없을 때 자식이 쓸 로컬 저장소를 자식과 같은 설정 파일들(같은 순서, ``worker-paths.yml`` 이 마지막)로 계산한다:
+    ``build.local_repo`` → settings.xml 의 ``<localRepository>`` → ``~/.m2/repository``(``sbmig.build.mvn.local_repo_path``).
+    ``load_config`` 는 덮어쓰기를 ``os.environ`` 에서 읽는다 — 파드에서는 Worker 의 env 와 같다(테스트는 다른 resolver 를 넣는다).
+
+    The repository the child would use without a slot, from the same config files in the same order (the Worker's paths
+    file last): `build.local_repo` → settings.xml `<localRepository>` → `~/.m2/repository`. `load_config` reads its
+    overrides from `os.environ` (the Worker's own environment in the pod)."""
+    # 늦게 import: sbmig.build 는 Maven 실행기 전체를 끌고 온다 — 자리 2 부터만 필요하다
+    from sbmig.build.mvn import local_repo_path
+    from sbmig.core.config import load_config
+    return local_repo_path(load_config(*configs, paths_yml))
+
+
+def base_local_repo(environ: dict[str, str], configs: list[str], paths_yml: Path,
+                    resolver: RepoResolver | None = None) -> Path:
+    """이 실행이 자리 없이 쓸 로컬 저장소(자리 저장소의 기준): Worker 자신의 ``SBMIG_BUILD__LOCAL_REPO`` 가 yaml 로 읽어 비지 않은
+    문자열이면 그것(Job 틀의 리터럴 ``"null"`` 은 "정하지 않음"), 아니면 ``resolver``(기본 ``default_repo_resolver``). 예외는 그대로
+    올린다 — 부르는 쪽이 공유 저장소로 물러선다.
+
+    The repository the run would use without a slot: the Worker's own `SBMIG_BUILD__LOCAL_REPO` when it loads as a
+    non-empty string (the template's literal "null" means unset), else `resolver`. Raises what the resolver raises."""
+    raw = environ.get(LOCAL_REPO_ENV)
+    if raw is not None:
+        try:
+            val = yaml.safe_load(raw)
+        except yaml.YAMLError:
+            val = None               # 자식의 load_config 도 이 값에서 깨진다 — resolver 가 같은 이유로 실패해 공유 저장소로 간다
+        # ${VAR} 자리표시자는 자식의 load_config 가 펼친다 — 펼치지 않은 글자를 경로로 쓰지 않고 resolver(같은 load_config)에 맡긴다
+        if isinstance(val, str) and val.strip() and "${" not in val:
+            return Path(val).expanduser()
+    return Path((resolver or default_repo_resolver)(list(configs), Path(paths_yml)))
+
+
+def yaml_env_value(text: str) -> str:
+    """``SBMIG_<섹션>__<키>`` 로 넘길 값: 자식의 ``load_config`` 는 값을 ``yaml.safe_load`` 로 읽으므로, 그대로 읽어 같은 문자열이면
+    그대로, 아니면(``: `` · `` #`` · 예약 기호로 시작 …) JSON 따옴표 문자열(YAML 이 같은 문자열로 읽는다). 어느 쪽도 되돌아오지
+    않으면 ``ValueError``.
+
+    The value to pass as an `SBMIG_<SECTION>__<KEY>` override so that the child's `yaml.safe_load` returns `text`: as
+    is when it round-trips, else JSON-quoted; `ValueError` when neither form does."""
+    for candidate in (text, json.dumps(text, ensure_ascii=False)):
+        try:
+            if yaml.safe_load(candidate) == text:
+                return candidate
+        except yaml.YAMLError:
+            continue
+    raise ValueError("the path does not survive the YAML reading of an env override")
+
+
+def apply_slot_repo(child_env: dict[str, str], environ: dict[str, str], configs: list[str], paths_yml: Path, *,
+                    cwd: Path, resolver: RepoResolver | None = None) -> dict | None:
+    """자리 규칙을 자식의 env(``child_env``, 그 자리에서 고친다)에 적용하고 저널 ``worker_slot`` 의 데이터를 돌려준다.
+    ``SBMIG_JOB_SLOT`` 이 없으면 None(아무것도 하지 않고 적지도 않는다). 1번 자리 → 그대로 ``{slot: 1, local_repo: None, shared:
+    False}``. k ≥ 2 → 기준 저장소(``base_local_repo``; 상대 경로면 자식의 작업 폴더 ``cwd`` 기준) 옆의 ``-slot<k>`` 폴더를 만들고
+    ``SBMIG_BUILD__LOCAL_REPO`` 를 넣는다 → ``{slot: k, local_repo: <경로>, shared: False}``. 번호가 틀렸거나 기준을 못 정했거나 폴더를
+    못 만들면 env 는 그대로(공유 저장소) → ``{…, local_repo: None, shared: True, note: <이유>}``. 예외를 내지 않는다 — 이것 때문에
+    실행이 실패하는 일은 없다. Worker 의 env(``environ``)는 건드리지 않는다(환경 대조는 파드 자신의 env 를 본다).
+
+    Apply the slot rule to the child's environment (`child_env`, changed in place) and return the `worker_slot` journal
+    data; None when `SBMIG_JOB_SLOT` is unset. Slot 1 = unchanged; slot k ≥ 2 = its own repository, created, passed as
+    `SBMIG_BUILD__LOCAL_REPO`; any failure (bad number, base not resolvable, directory not creatable) = the shared
+    repository with a note. Never raises; `environ` is never changed."""
+    raw = (environ.get(contract.SLOT_ENV) or "").strip()
+    if not raw:
+        return None
+    try:
+        slot = slot_number(environ)
+    except ValueError:
+        return {"slot": None, "local_repo": None, "shared": True,
+                "note": f"{contract.SLOT_ENV}={raw[:40]!r} is not a positive integer — treated as no slot"}
+    if slot == 1:
+        return {"slot": 1, "local_repo": None, "shared": False}
+
+    def shared(note: str) -> dict:
+        return {"slot": slot, "local_repo": None, "shared": True, "note": note}
+
+    try:
+        try:
+            base = base_local_repo(environ, configs, paths_yml, resolver)
+        except Exception as e:  # noqa: BLE001 — 기준을 못 정해도 실행은 공유 저장소로 간다
+            # 형식 이름만: 설정 검증 오류의 글은 값을 담을 수 있다
+            return shared(f"the base Maven local repository could not be resolved ({type(e).__name__})")
+        if not base.is_absolute():
+            base = Path(cwd) / base          # 자식은 cwd 에서 돌고 거기서 상대 경로를 푼다(mvn.base_command 의 absolute())
+        path = slot_local_repo(base, slot)
+        try:
+            value = yaml_env_value(str(path))
+        except ValueError as e:
+            return shared(f"{path}: {e}")
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            return shared(f"cannot create {path} ({e.strerror or type(e).__name__})")
+        child_env[LOCAL_REPO_ENV] = value
+        return {"slot": slot, "local_repo": str(path), "shared": False}
+    except Exception as e:  # noqa: BLE001 — 어떤 예외도 실행을 막지 않는다
+        return shared(f"the slot repository could not be set up ({type(e).__name__})")
+
+
+def slot_message(data: dict) -> str:
+    """``apply_slot_repo`` 결과를 파드 로그 한 줄로. / One pod-log line for an `apply_slot_repo` result."""
+    if data.get("shared"):
+        where = f"job slot {data['slot']}: " if data.get("slot") else ""
+        return f"WARNING: {where}{data.get('note')}; the run uses the shared Maven local repository"
+    if data.get("local_repo"):
+        return f"job slot {data['slot']}: own Maven local repository {data['local_repo']}"
+    return f"job slot {data.get('slot')}: the Maven local repository is unchanged"
 
 
 def build_command(python: str, zip_path: str, configs: list[str], paths_yml: Path, out: str, run_id: str,
@@ -300,10 +447,13 @@ def _refuse(run_dir: Path, run_id: str, reason: str, record: contract.RequestRec
     return 3
 
 
-def main(argv: list[str] | None = None, *, environ: dict[str, str] | None = None, run_child: RunChild | None = None) -> int:
+def main(argv: list[str] | None = None, *, environ: dict[str, str] | None = None, run_child: RunChild | None = None,
+         repo_resolver: RepoResolver | None = None) -> int:
     """Worker 진입점: 환경 변수로 받은 요청 하나를 검증하고 돌리고 결과 상태 파일을 쓴다. 종료 코드는 모듈 설명 참고.
+    ``repo_resolver`` 는 자리 저장소의 기준을 정하는 함수(테스트용; None = ``default_repo_resolver``).
 
-    The Worker entry point (`python -m sbmig.web.worker`); see the module docstring for the exit codes."""
+    The Worker entry point (`python -m sbmig.web.worker`); see the module docstring for the exit codes. `repo_resolver`
+    finds the base of a slot's repository (tests; None = `default_repo_resolver`)."""
     del argv                                           # no options: the Job template passes everything through env
     env = dict(os.environ if environ is None else environ)
     run_child = run_child or default_run_child
@@ -340,11 +490,18 @@ def main(argv: list[str] | None = None, *, environ: dict[str, str] | None = None
     rc: int | None = None
     try:
         paths_yml = write_paths_yml(run_dir, env)
-        cmd = build_command(env.get("SBMIG_PYTHON") or sys.executable, zip_path, resolve_configs(env, record, repo_root),
+        configs = resolve_configs(env, record, repo_root)
+        cmd = build_command(env.get("SBMIG_PYTHON") or sys.executable, zip_path, configs,
                             paths_yml, out, run_id, env.get("SBMIG_STOP_AFTER") or None,
                             env.get("SBMIG_LLM_PROVIDER") or None)
+        child_env = child_environ(env)
+        # v2.1z-ae: 2번 자리부터 자기 Maven 로컬 저장소 — 환경 대조가 끝난 뒤, 자식의 env 에만(대조는 파드 자신의 env 를 본다)
+        slot = apply_slot_repo(child_env, env, configs, paths_yml, cwd=repo_root, resolver=repo_resolver)
+        if slot is not None:
+            _say(clean(slot_message(slot)))
+            _journal(run_dir, SLOT_EVENT, {k: clean(v) if isinstance(v, str) else v for k, v in slot.items()})
         _say(clean("sbmig run " + " ".join(cmd[4:])))
-        rc = int(run_child(cmd, repo_root, child_environ(env)))
+        rc = int(run_child(cmd, repo_root, child_env))
     except (Exception, KeyboardInterrupt) as e:  # noqa: BLE001 — whatever broke, Main must still get a status file
         error = clean(f"the Worker could not run sbmig: {type(e).__name__}: {e}")
         _say(f"ERROR: {error}")

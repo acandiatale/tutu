@@ -65,10 +65,12 @@ class LLMConfigError(ValueError):
 
 # --------------------------------------------------------------------------- LLM calls in flight (round 10)
 # 수정 루프 watchdog 은 LLM 호출이 진행 중이면 조용히 있는다(클라이언트가 heartbeat·재시도 줄을 따로 남긴다).
-# 마이그레이션은 한 번에 하나만 돌기 때문에(웹은 대기열, fleet 은 순차) 프로세스 전역 카운터로 충분하다.
+# 프로세스 전역 카운터로 충분하다: 한 프로세스 안에서는 마이그레이션이 한 번에 하나만 돈다 — Job 모드에서는 동시에
+# 도는 마이그레이션마다 자기 프로세스(자기 파드)라 카운터도 따로이고, in-process 웹 서버는 대기열로 하나씩, fleet 은 순차다.
 # The fix loop's watchdog stays silent while an LLM HTTP call is in progress (the clients log their own heartbeat /
 # retry lines); `LLMFixer._call`, the HTTP clients and `RecordingClient` mark their calls. Process-wide on purpose:
-# one migration runs at a time (web runs are queued, the fleet is sequential).
+# one migration runs at a time per process — in Job mode every migration running at once is its own process (its own
+# pod, its own counter); the in-process web server queues its runs and the fleet is sequential.
 _IN_FLIGHT = 0
 _IN_FLIGHT_LOCK = threading.Lock()
 
@@ -494,9 +496,14 @@ def _jsonable(value: Any) -> Any:
         return json.loads(json.dumps(value, default=str))
 
 
+_RECORD_TRIES = 10000               # numbers tried past ones another writer took (never spins forever)
+
+
 class _Recorder:
     """`llm-NNNN.json` 을 하나씩 쓰는 기록기(번호는 디렉토리의 기존 파일 다음부터, 이미 있으면 건너뜀).
-    메시지·응답·모델·사용량·지연·프롬프트 해시·오류·role·metadata 를 담는다 — 키·헤더는 담지 않는다."""
+    메시지·응답·모델·사용량·지연·프롬프트 해시·오류·role·metadata 를 담는다 — 키·헤더는 담지 않는다.
+    v2.1z-ae: 파일은 배타적으로 만든다(``open(…, "x")``) — 한 기록 디렉토리를 같이 쓰는 파드 둘이 같은 번호를
+    골라도 하나는 다음 번호로 가고, 어느 기록도 덮이지 않는다."""
     def __init__(self, record_dir: str | Path, ws: Any = None):
         self.dir = Path(record_dir)
         self.dir.mkdir(parents=True, exist_ok=True)
@@ -507,11 +514,6 @@ class _Recorder:
               error: Optional[str] = None, *, role: Optional[str] = None, metadata: Optional[dict] = None) -> Path:
         """호출 하나를 기록하고, ws 가 있으면 `llm_call` 저널
         이벤트를 남긴다(저널 실패는 호출을 깨지 않는다)."""
-        self._n += 1
-        path = self.dir / f"llm-{self._n:04d}.json"
-        while path.exists():
-            self._n += 1
-            path = self.dir / f"llm-{self._n:04d}.json"
         rec = {
             "messages": [m.model_dump() for m in messages],
             "response": resp.content if resp else None,
@@ -525,7 +527,20 @@ class _Recorder:
             "role": role,
             "metadata": _jsonable(metadata) if metadata else None,   # caller-supplied context only, never secrets
         }
-        path.write_text(json.dumps(rec, ensure_ascii=False, indent=2), encoding="utf-8")
+        text = json.dumps(rec, ensure_ascii=False, indent=2)
+        # 번호는 배타적 생성으로 잡는다: exists() 뒤에 쓰면 같은 디렉토리를 쓰는 다른 프로세스와 한 번호를 고를 수 있다
+        for _ in range(_RECORD_TRIES):
+            self._n += 1
+            path = self.dir / f"llm-{self._n:04d}.json"
+            try:
+                with open(path, "x", encoding="utf-8") as fh:
+                    fh.write(text)
+                break
+            except FileExistsError:
+                continue
+        else:  # pragma: no cover - ten thousand numbers taken in a row
+            log.warning("LLM record not written: %d numbers in a row were taken in %s", _RECORD_TRIES, self.dir)
+            return path
         if self.ws is not None:
             try:
                 self.ws.journal({"event": "llm_call", "record": str(path), "role": role, "model": rec["model"],

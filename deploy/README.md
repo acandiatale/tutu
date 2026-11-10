@@ -1,6 +1,6 @@
 # sbmig 컨테이너 / 쿠버네티스 배포
 
-이 폴더는 sbmig 을 이미지로 만들고 쿠버네티스에 올리는 파일들이다. 운영 방식은 PC 와 같다: **한 번에 프로젝트 하나**를 이관하고,
+이 폴더는 sbmig 을 이미지로 만들고 쿠버네티스에 올리는 파일들이다. 이관 한 건이 도는 방식은 PC 와 같고(Job 모드에서는 동시에 `SBMIG_JOB_MAX_PARALLEL` 건까지 — §3 "동시에 여러 건"),
 상태(실행 디렉터리 `out/`, 파일 KB `kb-v2/`, LLM 기록)는 이미지 밖에 둔다.
 
 | 파일 | 역할 |
@@ -252,7 +252,7 @@ env 가 아닌 것: `artifacts.yml`(이미지에 구운 파일), `settings.xml`(
 
 | | 웹 파드 (Agent) | 빌드 Job 파드 |
 |---|---|---|
-| 프로그램 | `sbmig serve --mode k8s-job` (FastAPI + uvicorn, 워커 1, 큐 = 한 번에 하나; 시작 때 틀·권한 검증, `control/` 상태 파일, 재시작 복구) | `python -m sbmig.web.worker` → `sbmig run` (LangGraph, LLM, OpenRewrite, Maven, 수정 루프 전부; 앞뒤로 입력 digest 검증과 비밀값 정제) |
+| 프로그램 | `sbmig serve --mode k8s-job` (FastAPI + uvicorn, 워커 1, 대기 줄 = 동시에 `SBMIG_JOB_MAX_PARALLEL` 건; 시작 때 틀·권한 검증, `control/` 상태 파일, 재시작 복구) | `python -m sbmig.web.worker` → `sbmig run` (LangGraph, LLM, OpenRewrite, Maven, 수정 루프 전부; 앞뒤로 입력 digest 검증과 비밀값 정제) |
 | 이미지 | `docker/Dockerfile` (같은 이미지, JDK 는 쓰지 않는다) | 같은 이미지 |
 | 자원 | CPU 1, 메모리 1~2 GiB | CPU 2~4, 메모리 6~8 GiB (OpenRewrite `-Xmx4g`) |
 | 볼륨 | PVC `sbmig-data` → `/data` (업로드, 실행 폴더, KB), **ReadWriteMany** | 같은 PVC 같은 경로 + `sbmig-m2`(또는 emptyDir) |
@@ -274,8 +274,8 @@ PVC 가 RWO 만 되는 클러스터라면 Job 템플릿과 Deployment 의 hostna
   감시한다(멈춤·삭제도 된다). 개발 PC 의 local-job 은 복구하지 못하고 `lost` 로 적는다.
 - **소유권**: Job 과 파드에 라벨 `sbmig-run-id` 와 `sbmig-owner`(요청마다 난수). Main 은 두 라벨이 다 자기 것인 Job 만 이어받거나 지우고, 지운 뒤에도 Job 이
   실제로 사라질 때까지 기다린 뒤 끝낸다(삭제 요청 수락 = 끝남이 아니다). 라벨이 없는 같은 이름의 Job 은 남의 것으로 본다(2026-11-10, 아래 표).
-- **한 번에 하나 = Job 이 끝난 것을 확인한 뒤**(2026-11-10): 다음 업로드는 앞 Job 과 그 파드가 끝났거나 없어진 것을 쿠버네티스 API 로 확인한 뒤에
-  시작한다. 결과 파일을 받았어도 파드가 남아 있으면 기다리고, API 가 답하지 않으면 답할 때까지 기다린다(실행을 실패로 끝내지 않는다).
+- **자리는 Job 이 끝난 것을 확인한 뒤에 넘긴다**(2026-11-10): 기다리는 업로드는 앞 Job 과 그 파드가 끝났거나 없어진 것을 쿠버네티스 API 로 확인한 뒤에
+  그 자리에서 시작한다(자리 수 = `SBMIG_JOB_MAX_PARALLEL`, 아래 "동시에 여러 건"). 결과 파일을 받았어도 파드가 남아 있으면 기다리고, API 가 답하지 않으면 답할 때까지 기다린다(실행을 실패로 끝내지 않는다).
 - **결과 검증**: `job-status.json` 에 `run_id` 와 `attempt` 가 들어 있고 Main 은 지금 시도의 파일만 받는다. 상태 파일 없이 파드만 끝났으면 `verified: false`
   로 표시하고 성공으로 적지 않는다.
 - **비밀값 정제**: 비밀 env(이름에 TOKEN / PASSWORD / SECRET / API_KEY)의 값, 실행 중에 교환해 받은 게이트웨이 토큰, URL 의 `user:pass@` 를 `***` 로 지운다.
@@ -312,11 +312,38 @@ PVC 가 RWO 만 되는 클러스터라면 Job 템플릿과 Deployment 의 hostna
 
 | 바뀐 것 | 보이는 것 | 할 일 |
 |---|---|---|
-| 다음 업로드는 앞 Job 이 **끝난 것을 확인한 뒤** 시작한다 | 결과가 나온 뒤에도 파드가 남으면 화면 레일에 "파드가 끝나기를 기다립니다", 1분마다 로그 경고. `SBMIG_JOB_EXIT_GRACE_S`(120 초) 뒤 웹 파드가 그 Job 을 지우고(저널 `job_deleted`) 사라질 때까지 기다린다 | 대개 없음. 오래 가면 `kubectl -n agent describe job sbmig-<run id>` |
-| 쿠버네티스 API 장애는 실행을 **실패로 끝내지 않고** 줄을 붙잡는다 | `SBMIG_JOB_API_GRACE_S`(300 초, 이제 알림만) 넘게 답이 없으면 로그 ERROR 한 줄, 저널 `job_api_unavailable`, 화면 안내(그 뒤 10분마다 로그). 다음 업로드는 `queued`. 다시 답하면 저널 `job_api_back`, 줄이 저절로 풀린다 | 웹 파드의 API 접근(kubeconfig Secret 의 토큰·인증서, 서비스 계정, 네트워크)을 고친다. 자격 증명을 바꿨으면 웹 파드를 재시작해 다시 읽게 한다 — 고치기 전의 재시작은 소용없다(시작 검증이 API 를 불러 웹 파드가 뜨지 않는다) |
+| 자리는 그 Job 이 **끝난 것을 확인한 뒤** 다음 업로드로 넘어간다 | 결과가 나온 뒤에도 파드가 남으면 화면 레일에 "파드가 끝나기를 기다립니다", 1분마다 로그 경고. `SBMIG_JOB_EXIT_GRACE_S`(120 초) 뒤 웹 파드가 그 Job 을 지우고(저널 `job_deleted`) 사라질 때까지 기다린다 | 대개 없음. 오래 가면 `kubectl -n agent describe job sbmig-<run id>` |
+| 쿠버네티스 API 장애는 실행을 **실패로 끝내지 않고** 자리를 붙잡는다 | `SBMIG_JOB_API_GRACE_S`(300 초, 이제 알림만) 넘게 답이 없으면 로그 ERROR 한 줄, 저널 `job_api_unavailable`, 화면 안내(그 뒤 10분마다 로그). 자리가 다 찼으면 다음 업로드는 `queued`. 다시 답하면 저널 `job_api_back`, 줄이 저절로 풀린다 | 웹 파드의 API 접근(kubeconfig Secret 의 토큰·인증서, 서비스 계정, 네트워크)을 고친다. 자격 증명을 바꿨으면 웹 파드를 재시작해 다시 읽게 한다 — 고치기 전의 재시작은 소용없다(시작 검증이 API 를 불러 웹 파드가 뜨지 않는다) |
 | 우리 라벨(`sbmig-owner` + `sbmig-run-id`)이 없는 같은 이름의 Job 은 **이어받지도 지우지도 않는다** | Job 을 만들 때나 웹 파드 재시작 뒤에 만나면 그 실행이 오류로 끝난다(이유에 그 Job 이 이 요청의 것이 아니라는 말). 멈춤 때는 지우지 않고 저널에 `job_delete_refused` | `kubectl -n agent get job sbmig-<run id> --show-labels` 로 누가 만든 Job 인지 보고, 지워도 되면 `kubectl -n agent delete job sbmig-<run id>` 뒤 다시 올린다 |
 | 결과 파일은 **실행이 끝난 뒤에** | 실행 중 파일 목록에는 `sbmig.log` / `journal.jsonl` 만, 그 밖의 파일(`report.md` …)을 주소로 직접 받으면 HTTP 409 | 끝날 때까지 기다린다 |
 | 로그·저널은 **쓰는 순간** 정제 | 파드 로그·화면 로그 탭·`sbmig.log`·저널에서 비밀 값이 `***`. 한 줄을 지우다 실패하면 그 줄 대신 `line withheld` 가 든 고정 문구 | 그 문구가 보이면 알린다: `Select-String -Path <받은 sbmig.log> -Pattern "line withheld" -Encoding UTF8` |
+
+### 동시에 여러 건 (2026-11-10)
+
+`sbmig-env` 의 **`SBMIG_JOB_MAX_PARALLEL`**(매니페스트 값 `"3"`)이 동시에 도는 빌드 파드 수다. 웹 파드가 시작할 때 한 번 읽는다 — 바꾸면
+`kubectl -n agent rollout restart deploy/sbmig`. 줄이 없거나 `"1"` 이면 예전처럼 한 번에 하나다. 웹 파드 안에서 직접 돌리는 `in-process` 모드는 값과 상관없이
+하나다. 81 틀에는 줄이 필요 없다(Job 파드는 자기 자리 번호만 받는다).
+
+| 무엇 | 어떻게 |
+|---|---|
+| 차례 | 올린 순서. 자리가 다 찼으면 `queued` 로 기다리고, 화면 제목에 "대기 중 — 앞에 N건", 업로드 칸에는 지금 올리면 몇 번째로 기다리는지가 보인다. 자리가 나면 저절로 시작한다(창을 닫아도 차례는 그대로) |
+| 자리 번호 | 도는 Job 마다 1 · 2 · 3 중 하나: `control/state.json` 의 `slot`, Job env `SBMIG_JOB_SLOT`, 저널 `job_created` / `worker_slot`. 자리는 그 Job 과 파드가 **끝난 것을 확인한 뒤**에 다음 이관으로 넘어간다 |
+| Maven 로컬 저장소 | 자리마다 따로 쓴다. 1 번은 지금까지의 `/home/sbmig/.m2/repository`, 2 · 3 번은 같은 PVC(`sbmig-m2`) 안의 `repository-slot2` / `repository-slot3`(Worker 가 만든다). 한 저장소에 Maven 여럿이 동시에 쓰는 일을 없앤다. 2 · 3 번 자리의 첫 이관은 의존성을 처음부터 받아 느리다(자리마다 한 번) |
+| KB (`/data/kb-v2`) | 세 파드가 같은 폴더를 읽고 쓴다. 쓰기는 `<kb>/.lock` 파일 하나로 차례를 지킨다: 잠금 안에서 다시 읽고, 임시 파일에 쓴 뒤 이름을 바꿔 넣는다. 한 번의 쓰기는 짧아서(수십 밀리초) 서로 기다리는 시간은 보이지 않는다. 새 케이스 폴더와 스크립트 파일(`fix_v<N>.py`)은 "없을 때만 만들기"로 만들어서 두 파드가 같은 케이스를 동시에 처음 만나도 서로 덮어쓰지 않는다(둘 다 LLM 을 부르고 v1 · v2 로 나란히 남는다). 파드가 잠금을 쥔 채 죽으면 다른 파드는 `kb.lock_timeout_seconds`(300 초)까지 한 번 기다린 뒤 이어 간다(실행이 잠금 때문에 실패하지는 않는다). **KB 를 통째로 바꾸는 `sbmig kb import --replace` 는 도는 Job 이 없을 때만** 한다(폴더를 바꿔 끼우면서 잠금 파일도 같이 옮겨진다) |
+| 웹 파드 재시작 | 돌던 Job 은 그대로 돈다. 다시 뜬 웹 파드가 적어 둔 자리 번호 그대로 이어받고, 기다리던 업로드는 접수 순서로 다시 줄을 선다 |
+| 멈춤 | 도는 이관은 지금처럼 노드 사이에서 멈춘다. 기다리는 이관에 누른 멈춤은 차례가 왔을 때 먹힌다(Job 을 만들지 않고 끝난다) |
+
+**인프라팀에 확인할 것.** 빌드 파드 하나가 CPU 2 / 메모리 6Gi 를 요청한다(상한 4 / 8Gi, 81 의 `resources`). 셋이 같이 돌려면 CPU 6 / 메모리 18Gi 의 여유가
+있어야 한다. 모자라면 그 파드는 `Pending` 으로 서 있고 화면의 '파드' 단계가 넘어가지 않는다(`kubectl -n agent describe pod <파드 이름>` 의 Events).
+namespace 에 ResourceQuota 가 있으면 파드가 만들어지지 않을 수 있다(`kubectl -n agent describe job sbmig-<run id>` 의 Events). `sbmig-m2`(50Gi)에는
+저장소가 셋 생기므로 용량을 본다: `kubectl -n agent exec deploy/sbmig -- du -sh /home/sbmig/.m2`. KB 가 있는 NFS 는 마운트 옵션에
+`nocto` 가 없어야 한다(기본값이면 된다: 잠금을 잡은 뒤 연 파일이 앞 파드가 쓴 내용을 보여 준다는 보장). 하드 링크가 안 되는 저장소면 스크립트 파일은 예전 방식(바꿔 넣기)으로 쓴다.
+
+**LLM 게이트웨이.** 세 파드가 같은 앱 토큰으로 동시에 호출한다. 동시 호출 한도는 게이트웨이 담당에게 확인한다 — 한도에 걸리는 응답(429 / 503)이 늘면
+값을 `"2"` 로 낮춘다.
+
+**되돌리기.** `SBMIG_JOB_MAX_PARALLEL: "1"` 로 고쳐 apply 하고 웹 파드를 재시작한다. 돌던 Job 은 끝까지 돌고(한도보다 많아도 그대로 둔다), 기다리던
+업로드는 도는 수가 한도 아래로 내려온 뒤에 시작한다.
 
 ### 켜는 법
 
@@ -359,10 +386,10 @@ PVC 가 RWO 만 되는 클러스터라면 Job 템플릿과 Deployment 의 hostna
 8. 확인: 시작 로그 `sbmig web UI ready (… mode k8s-job — job template …)`, 업로드 뒤 `kubectl -n agent get jobs -l app=sbmig,kind=run`, 화면 레일의 '파드' 단계,
    실행 폴더에 파드가 쓴 `sbmig.log` / `job-status.json`.
 
-**빌드 파드는 언제 사라지나.** 한 번에 도는 빌드 파드는 하나다(업로드는 줄을 선다). 이관이 끝나면 파드의 프로세스가 끝날 뿐 아무도 삭제 명령을 내리지
+**빌드 파드는 언제 사라지나.** 동시에 도는 빌드 파드는 `SBMIG_JOB_MAX_PARALLEL` 개까지다(넘는 업로드는 줄을 선다). 이관이 끝나면 파드의 프로세스가 끝날 뿐 아무도 삭제 명령을 내리지
 않는다: 파드는 `Completed`(거절·중단처럼 종료 코드 3 이면 `Error`)로 **꺼진 채** 목록에 남고 CPU·메모리는 그때 반납된다. `Error` 여도 결과 파일을 남겼으면
 화면의 '파드' 단계는 체크다(파드는 제 일을 했다. '파드' 가 X 인 것은 파드가 결과 없이 죽었거나 Worker 가 요청을 거부한 때뿐이다). 그 기록(Job 과 파드, 파드 로그)은
-81 틀의 `ttlSecondsAfterFinished`(3600 = 1 시간) 뒤 쿠버네티스가 지운다 — 하루 수십 건이 돌아도 목록에는 방금 끝난 한두 개만 보인다. 결과와 `sbmig.log` 는
+81 틀의 `ttlSecondsAfterFinished`(3600 = 1 시간) 뒤 쿠버네티스가 지운다 — 하루 수십 건이 돌아도 목록에는 지난 한 시간에 끝난 것만 보인다. 결과와 `sbmig.log` 는
 볼륨(`/data/out/<run id>/`)에 남는다. 웹 파드가 Job 을 지우는 것은 예외 셋뿐이고 자기 라벨 둘이 붙은 Job 만 지운다: 중단을 눌렀는데 `SBMIG_JOB_STOP_GRACE_S`
 (2700초) 뒤에도 돌 때, 결과 파일을 쓰고도 파드가 `SBMIG_JOB_EXIT_GRACE_S`(120초) 넘게 남을 때, 웹 쪽 오류로 실행이 끝났는데 Job 이 남았을 때. 4 시간을 넘긴
 Job 은 쿠버네티스가 끊는다(`activeDeadlineSeconds`). 틀의 값을 바꾸면 ConfigMap `sbmig-job-template` 을 다시 만들고 웹 파드를 재시작한다(새 Job 부터 적용).
@@ -380,7 +407,7 @@ Job 은 쿠버네티스가 끊는다(`activeDeadlineSeconds`). 틀의 값을 바
 | 엔진: 노드마다 `graph_node_end` 저널(화면의 node 이벤트), `stop.request` 로 노드 사이 멈춤 | 있음 (`sbmig/graph/engine.py`) |
 | 가짜 클라이언트 테스트 | 있음 (`tests/web/test_job_mode.py`, `tests/deploy/test_run_job_sh.py`) |
 | 클러스터 값 | namespace `agent`, `nfs-csi` ReadWriteMany, 이미지는 인프라팀 레지스트리에 push — 매니페스트에 반영(2026-11-09). 첫 apply 와 권한 실측은 **다음** |
-| 동시 Job 3 개(큐 폭 + KB 잠금 확인) | **다음** |
+| 동시 Job N 개(`SBMIG_JOB_MAX_PARALLEL`, 매니페스트 값 3): 자리 번호, 자리별 Maven 저장소, 대기 순번 화면, KB 동시 쓰기 보강 | 있음 (2026-11-10; `sbmig/web/runs.py`, `sbmig/web/worker.py`, `sbmig/kb/lock.py`, `sbmig/errors/cases.py`) — 회사 클러스터·NFS 에서의 실측은 **다음** |
 | 외부 접수 API(remediation 과 같은 계약: zip + `project_name` / `name` + `Idempotency-Key`) | **다음** — 구현 지시서 `docs/v2/API-MIGRATIONS-KO.md`(사내 LLM 에 인계) |
 | Main 파드 ↔ Job 파드의 실행 상태 계약(책임·id·폴더·종료 코드·멈춤·복구·슬롯; remediation 통합 1단계) | 있음 — `docs/v2/JOB-RUN-STATE-CONTRACT-KO.md` |
 
