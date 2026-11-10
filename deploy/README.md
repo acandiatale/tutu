@@ -9,7 +9,7 @@
 | `docker/pip-deps.py` | 이미지가 설치할 의존성을 `pyproject.toml` 에서 읽는다(목록을 두 곳에 두지 않기 위해) |
 | `docker/run-job.sh` | 요청별 Job 파드의 진입 스크립트: 소스 → KB → `sbmig run` → 결과 push → 종료 코드 |
 | `k8s/10-storage.yaml` | PVC 둘: `/data`(웹 UI 에이전트의 업로드·실행·KB·LLM 기록), `~/.m2`(Maven 로컬 저장소) |
-| `k8s/20-configmap.yaml` | 회사 설정 `artifacts.yml` + Nexus `settings.xml` |
+| `k8s/20-configmap.yaml` | Nexus `settings.xml`(`sbmig-config`) + 비밀 아닌 환경 변수(`sbmig-env`). 회사 설정 `artifacts.yml` 은 이미지에 굽는다(§1) |
 | `k8s/30-secret.example.yaml` | 비밀값 예시 — `sbmig-llm`(= PC 의 `.env` + 웹 토큰), `sbmig-git`(저장소 토큰). **복사해 채우고 커밋하지 않는다**(`30-secret.yaml` 은 git-ignore) |
 | `k8s/40-deployment.yaml`, `k8s/50-service.yaml` | 웹 UI 에이전트(`sbmig serve`) Deployment(replica 1, Recreate) + Service — Job 모델만 쓰면 불필요 |
 | `k8s/45-web-rbac.yaml` | 웹 파드가 Job 을 만들고 지켜보는 최소 권한(ServiceAccount + Role + RoleBinding). 디스패치 모드용 |
@@ -37,8 +37,22 @@ Windows PC(PowerShell, Docker Desktop)에서도 같은 세 줄이다(`-f deploy\
 딸려 들어간다). 이미지 안 배치는 우리 레포에서 빌드한 것과 똑같다(`/app` = sbmig 체크아웃, `/app/deploy`).
 ```powershell
 Copy-Item deploy\docker\root.dockerignore.example .dockerignore
-docker build --build-arg APP_DIR=src/migration-agent --build-arg DEPLOY_DIR=deploy -f deploy\docker\Dockerfile -t sbmig:<tag> .
+docker build --build-arg APP_DIR=src/migration-agent --build-arg DEPLOY_DIR=deploy --build-arg REQUIRE_CONFIG=artifacts.yml -f deploy\docker\Dockerfile -t sbmig:<tag> .
 ```
+
+**회사 설정 `artifacts.yml` 은 이미지에 굽는다**(2026-11-10 결정). PC 에서 시험한 `config/artifacts.yml` 이 `COPY` 로 `/app/config/artifacts.yml` 이 되고,
+매니페스트는 그 파일을 이름으로 가리킨다(`SBMIG_WEB_CONFIGS=artifacts.yml`). ConfigMap 에 같은 내용을 다시 적지 않는다.
+
+* `config/artifacts.yml` 은 git 이 무시하는 파일이라 새로 받은 체크아웃에는 없다. `--build-arg REQUIRE_CONFIG=artifacts.yml` 을 붙이면 없을 때 빌드가
+  `ERROR: config/artifacts.yml is missing from the build context` 로 멈춘다. 안 붙이면 회사 설정 없는 이미지가 조용히 만들어진다.
+* PC 경로는 고치지 않아도 된다. 아래 일곱 키는 매니페스트의 env 가 컨테이너 값으로 덮어쓴다(§2 "컨테이너 경로"): `kb.dir`, `build.settings_file`,
+  `build.java_home`, `build.mvn`, `build.local_repo`, `script.python`, `llm.record_dir`. 그 밖에 PC 에만 맞는 값이 있으면 지우고 굽는다.
+  확인: `Select-String -Path src\migration-agent\config\artifacts.yml -Pattern '[A-Za-z]:[\\/]'`
+* 파일에 키·토큰·비밀번호를 적지 않는다(이미지를 받는 누구나 읽는다). 비밀은 Secret `sbmig-llm` 으로만 온다.
+* 내용을 바꾸면 이미지를 다시 만들고 새 태그를 `40-deployment.yaml` 과 `81-web-job.template.yaml` 에 같이 넣는다. 숫자·스위치만 바꿀 때는
+  이미지 대신 `sbmig-env` 의 `SBMIG_<섹션>__<키>` 를 쓴다(§2 env 목록).
+* 이미지를 다시 만들지 않고 설정 파일을 바꾸고 싶으면 `20-configmap.yaml` 맨 아래 "ConfigMap 으로 줄 때" 의 주석을 푼다(구운 파일을 마운트가 가린다).
+
 `src\migration-agent\pyproject.toml` 이 있어야 한다(의존성 목록). 없으면 우리 레포의 것을 그 자리에 복사한다. 빌드가 밖으로 못 나가는 망이면 Dockerfile 머리의 빌드 인자를
 준다 — 전부 선택이고 비우면 공개 저장소를 쓴다:
 
@@ -115,10 +129,22 @@ Secret 의 `SBMIG_WEB_TOKEN` 을 채운다 — 그때는 `http://<host>:8765/?to
 * **환경 변수는 두 곳**(2026-11-05, 인프라팀의 ConfigMap 목록 요청): ConfigMap **`sbmig-env`** 에 비밀 아닌 것 전부(웹 파드 동작,
   LLM 게이트웨이 주소·에셋 id·role 이름, 설정 덮어쓰기 `SBMIG_<섹션>__<키>`), Secret **`sbmig-llm`** 에 비밀만(`LLM_APP_TOKEN` 또는
   `LLM_API_KEY`, 필요하면 `NEXUS_USER` / `NEXUS_PASSWORD`, 선택 `SBMIG_WEB_TOKEN`). 목록은 아래 "env 목록" 절.
-* **ConfigMap `sbmig-config`**: `artifacts.yml` 은 `/app/config/artifacts.yml` 로 들어가고, Deployment 의 `SBMIG_WEB_CONFIGS=artifacts.yml`
+* **회사 설정**: 이미지 안 `/app/config/artifacts.yml`(§1 에서 구운 파일)이고, `sbmig-env` 의 `SBMIG_WEB_CONFIGS=artifacts.yml`
   (= `sbmig serve --config artifacts.yml`) 이 **모든 업로드를 이 설정으로 돌린다** — 담당자는 화면에서 설정을 고르지 않는다(고급 설정을
-  펼쳐야 목록이 보인다). 컨테이너 경로를 여기 적는다 — `kb.dir: /data/kb-v2`(기본 `kb-v2` 는 이미지 안이라 재시작 때 사라진다),
-  `build.settings_file: /etc/sbmig/settings.xml`, `build.repository_url`, `llm.record_dir`.
+  펼쳐야 목록이 보인다). 그 이름의 파일이 이미지에 없으면 웹 파드는 경고 한 줄만 남기고 회사 설정 없이 돈다 — 그래서 빌드에 `REQUIRE_CONFIG` 를 붙인다.
+* **ConfigMap `sbmig-config`**: `settings.xml` 하나(`/etc/sbmig/settings.xml`, Nexus 미러).
+* **컨테이너 경로**: 구운 파일은 PC 에서 시험한 것이라 PC 경로가 들어 있을 수 있다. 매니페스트(40 / 81 / 80)의 `env` 가 그 키들을 덮어쓴다 —
+  환경 변수는 어떤 yml 보다 뒤에 적용된다. `sbmig-env` 가 아니라 매니페스트에 두는 이유: 80 모델은 KB 폴더와 기록 폴더를 `run-job.sh` 가 정한다.
+
+  | env (매니페스트에 고정) | 값 | 어디에 |
+  |---|---|---|
+  | `SBMIG_KB__DIR` | `/data/kb-v2` | 40 (81 은 `SBMIG_KB_DIR`, 80 은 `run-job.sh`) |
+  | `SBMIG_BUILD__SETTINGS_FILE` | `/etc/sbmig/settings.xml` | 40 · 81 · 80 |
+  | `SBMIG_BUILD__JAVA_HOME` | `/opt/java21` | 40 · 81 · 80 |
+  | `SBMIG_BUILD__MVN` | `mvn` | 40 · 81 · 80 |
+  | `SBMIG_BUILD__LOCAL_REPO` | `null` (= `~/.m2` 볼륨) | 40 · 81 · 80 |
+  | `SBMIG_SCRIPT__PYTHON` | `null` (= 이미지의 python) | 40 · 81 · 80 |
+  | `SBMIG_LLM__RECORD_DIR` | `${LLM_RECORD_DIR:-}` (= 그 변수가 있을 때만 기록) | 40 |
 * **화면**(2026-11-05 새 디자인, 회사 블루): zip 을 끌어다 놓거나 파일 선택 → `마이그레이션 시작` → 단계 레일(접수 → 분석 → 계획 →
   단계들 → 마무리)과 진행 기록 / 로그 탭 → 끝나면 `보고서 받기(report.md)` / `변환된 프로젝트 받기(result.zip)` 두 버튼. 로그는 화면에
   마지막 1,500 줄만 그린다(전체는 `sbmig.log` 링크) — 몇 만 줄이 쌓여 브라우저가 느려지던 문제의 답. 사내망이라 웹 폰트·CDN 없음.
@@ -131,24 +157,29 @@ Secret 의 `SBMIG_WEB_TOKEN` 을 채운다 — 그때는 `http://<host>:8765/?to
 
 인프라팀에 넘기는 자급자족 문서는 **`deploy/ENV.md`** (같은 내용 + 적용·확인 명령). 아래는 요약.
 
-설정의 원본은 세 층이다. `config/default.yml`(이미지 안, 모든 키의 기본값) → ConfigMap 의 `artifacts.yml`(회사 사실: 부모·필수·선택
-아티팩트, 레이아웃, 컨테이너 경로) → **환경 변수**(가장 뒤에 적용, 이긴다). `SBMIG_<섹션>__<키>` 는 어떤 설정 키든 덮어쓰고(밑줄 두 개가
-한 단계 아래, 값은 YAML 로 읽음), `artifacts.yml` 안에서는 `${VAR}` / `${VAR:-기본}` 으로 환경 변수를 참조할 수 있다(단, Job 모드의 회사 Worker 는 공유 설정의 변수 참조·비밀값·원본 LLM 기록을 `CONFIG_INVALID` 로 거부한다 — ENV.md §1). 그래서 **구조적인
-사실은 `artifacts.yml`, 시험 운영 중 자주 손대는 숫자와 스위치는 env** 로 나눈다. 바꾼 뒤에는 파드 재시작(`kubectl -n agent rollout restart deploy/sbmig`).
-모르는 키 이름(철자·들여쓰기)은 시작 로그에 `config: … is not a known key` 로 뜬다.
+설정의 원본은 세 층이다. `config/default.yml`(이미지 안, 모든 키의 기본값) → 이미지에 구운 `artifacts.yml`(회사 사실: 부모·필수·선택
+아티팩트, 레이아웃, Nexus 주소) → **환경 변수**(가장 뒤에 적용, 이긴다). `SBMIG_<섹션>__<키>` 는 어떤 설정 키든 덮어쓰고(밑줄 두 개가
+한 단계 아래, 값은 YAML 로 읽음), `artifacts.yml` 안에서는 `${VAR}` / `${VAR:-기본}` 으로 환경 변수를 참조할 수 있다. 그래서 **구조적인
+사실은 `artifacts.yml`, 시험 운영 중 자주 손대는 숫자와 스위치는 env** 로 나눈다. 모르는 키 이름(철자·들여쓰기)은 시작 로그에
+`config: … is not a known key` 로 뜬다.
+
+`sbmig-env` 를 누가 읽나: 웹 파드(40)와 80 모델은 `envFrom` 으로 통째로, **Job 파드(81)는 틀에 적힌 키만**(틀에 `envFrom` 을 쓸 수 없다 —
+키마다 `configMapKeyRef` 한 줄). 아래 표의 LLM 값과 `SBMIG_<섹션>__<키>` 는 전부 81 틀에 들어 있다. 표에 없는 새 키를 `sbmig-env` 에 더하면 81 틀에도
+한 줄 더해야 Job 파드에 닿는다(`tests/deploy/test_manifests.py` 가 둘을 맞춰 본다). 바꾼 뒤: 웹 파드는 재시작
+(`kubectl -n agent rollout restart deploy/sbmig`), Job 파드는 만들어질 때 읽으므로 다음 업로드부터 적용된다.
 
 | 변수 | 어디에 | 기본 / 예 | 언제 바꾸나 |
 |---|---|---|---|
-| `SBMIG_WEB_CONFIGS` | ConfigMap | `artifacts.yml` | 업로드가 돌 설정 파일을 바꿀 때(쉼표로 여러 개) |
+| `SBMIG_WEB_CONFIGS` | ConfigMap | `artifacts.yml` | 업로드가 돌 설정 파일 — 이미지 `/app/config/` 아래 이름(쉼표로 여러 개) |
 | `SBMIG_WEB_OPEN` | ConfigMap | `1` | 사내망 전용이라 토큰 없이 연다. 토큰을 쓰면 지우고 `SBMIG_WEB_TOKEN` |
 | `SBMIG_MAX_UPLOAD_MB` | ConfigMap | `1024` (기본 512) | 큰 프로젝트 zip 이 거절될 때. 0 = 없음 |
-| `NO_PROXY` | ConfigMap | 게이트웨이·Nexus 호스트 | 클러스터에 HTTP 프록시가 걸려 있을 때 |
+| `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` | ConfigMap(선택) | 프록시 주소 / 게이트웨이·Nexus 호스트 | 클러스터에서 프록시로 나가야 할 때만 |
 | `LLM_GATEWAY` | ConfigMap | `agent` | 게이트웨이 모양이 바뀔 때(옛 모양 = 지움) |
 | `LLM_BASE_URL` | ConfigMap | `https://…/agents/{asset_id}/chat/completions` | 게이트웨이 주소 변경 |
 | `LLM_ASSET_ID` | ConfigMap | 에셋 id | 에셋 교체 |
 | `LLM_TOKEN_URL` | ConfigMap | 토큰 발급 URL | 발급 경로 변경 |
 | `LLM_MODEL` / `LLM_ESCALATION_MODEL` | ConfigMap | `build_error_fixer` / `escalation_fixer` | 게이트웨이의 role 이름이 바뀌거나 상위 모델을 끌 때(비움) |
-| `LLM_RECORD_DIR` | ConfigMap | (비움) | 회사 Worker 는 기록이 켜진 설정을 거부한다 — in-process 진단 때만 `/data/llm-records` |
+| `LLM_RECORD_DIR` | ConfigMap | (비움) | in-process 진단 때만 `/data/llm-records`. Job 모드는 81 틀의 두 줄(`SBMIG_WORKER_LLM_RECORDS` + `SBMIG_LLM__RECORD_DIR`)을 푼다 |
 | `LLM_APP_TOKEN` (또는 `LLM_API_KEY`) | **Secret** | 앱 토큰 | 토큰 교체 |
 | `NEXUS_USER` / `NEXUS_PASSWORD` | **Secret** | — | Nexus 그룹이 로그인을 요구할 때(settings.xml 의 `${env.…}` 가 읽음) |
 | `SBMIG_WEB_TOKEN` | **Secret**, 선택 | — | 토큰 보호를 켤 때만 |
@@ -163,15 +194,16 @@ Secret 의 `SBMIG_WEB_TOKEN` 을 채운다 — 그때는 `http://<host>:8765/?to
 | `SBMIG_LLM__CASE_THREAD` | ConfigMap(선택) | `false` | 세션 이어 쓰기 — 첫 측정 실행 뒤 `true` |
 | `SBMIG_LLM__TIMEOUT_SECONDS` / `MAX_OUTPUT_TOKENS` / `TEMPERATURE` | ConfigMap(선택) | `180` / `8000` / `0.0` | 게이트웨이 특성에 맞출 때 |
 | `SBMIG_BUILD__TIMEOUT_MINUTES` | ConfigMap(선택) | `30` | 큰 프로젝트의 `mvn clean package` 가 잘릴 때 |
-| `SBMIG_BUILD__REPOSITORY_URL` | ConfigMap(선택) | Nexus 그룹 URL | 환경별(개발/운영) Nexus 가 다를 때 — `artifacts.yml` 값보다 우선 |
+| `SBMIG_BUILD__REPOSITORY_URL` | ConfigMap(선택) | Nexus 그룹 URL | 환경별(개발/운영) Nexus 가 다를 때 — 구운 `artifacts.yml` 값보다 우선 |
 | `SBMIG_BUILD__REPOSITORY_TIMEOUT_SECONDS` | ConfigMap(선택) | `10` | Nexus 가 느릴 때 |
 | `SBMIG_OPENREWRITE__TIMEOUT_MINUTES` / `JVM_ARGS` | ConfigMap(선택) | `40` / `'["-Xmx4g"]'` | 레시피 실행 시간·힙(limit 보다 2 GiB 이상 작게) |
 | `SBMIG_INTAKE__ADF_POLICY` | ConfigMap(선택) | `stop` | ADF 프로젝트를 멈출지(stop) 경고만 할지(warn) |
 | `SBMIG_LAYOUT__WIRE_BUNDLED_JARS` | ConfigMap(선택) | `true` | WEB-INF/lib 의 선언 없는 jar 연결을 끌 때 |
 | `SBMIG_LIBRARIES__NEXUS_SEARCH` / `INCLUDE_PRERELEASE` | ConfigMap(선택) | `true` / `false` | jakarta 빌드 탐색 범위 |
 | `SBMIG_REVIEW__FIX_CRITICAL` | ConfigMap(선택) | `true` | 구조 리뷰의 critical 자동 수정을 끌 때 |
+| `SBMIG_FLEET__MIN_FREE_GB` | ConfigMap(선택) | `5` | 실행 전 디스크 여유 하한 |
 
-env 가 아닌 것: `artifacts.yml` 과 `settings.xml`(ConfigMap `sbmig-config`, 파일), 이관팀이 고치는 회사 지식 **`<kb.dir>/jar_names.yml`**(jar
+env 가 아닌 것: `artifacts.yml`(이미지에 구운 파일), `settings.xml`(ConfigMap `sbmig-config`, 파일), 이관팀이 고치는 회사 지식 **`<kb.dir>/jar_names.yml`**(jar
 이름 → 좌표)과 **`<kb.dir>/libraries.yml`**(사람이 승인한 라이브러리 표) — KB 볼륨(`/data/kb-v2`)에 있어 이미지와 무관하게 바꾼다. 이미지
 안의 `knowledge/`(노트, 자문, 레시피 카탈로그)는 이미지를 다시 만들어야 바뀐다.
 
@@ -221,8 +253,8 @@ PVC 가 RWO 만 되는 클러스터라면 Job 템플릿과 Deployment 의 hostna
 ### Main 이 지키는 것 (v2.1z-ac, 2026-11-09 — 배포팀 명세를 우리 코드로)
 
 - **입력 고정**: 접수 때 `<run dir>/control/request.json` 에 zip 의 sha256, 설정 파일의 digest, sbmig 버전을 적는다. Worker(`python -m sbmig.web.worker`)는
-  시작할 때 같은 값을 다시 계산해 다르면 돌지 않는다(exit 3, `job-status.json` 의 `error`, 저널 `worker_refused`). Main 과 Worker 가 같은 이미지·같은 ConfigMap
-  이어야 하는 이유가 여기 있다.
+  시작할 때 같은 값을 다시 계산해 다르면 돌지 않는다(exit 3, `job-status.json` 의 `error`, 저널 `worker_refused`). Main 과 Worker 가 같은 이미지
+  여야 하는 이유가 여기 있다(설정 파일이 이미지에 있다. ConfigMap 으로 줄 때는 고친 뒤 웹 파드도 재시작해야 digest 가 맞는다).
 - **생성 의도 먼저**: Job 을 만들기 전에 `control/state.json` 을 `creating` + Job 이름으로 쓴다. 생성 응답이 끊겨도(타임아웃, 409) 같은 이름의 Job 을 찾아
   이어받는다 — 같은 요청으로 Job 이 두 개 뜨지 않는다. 상태는 `queued → creating → created → running → finished | stopped | lost | failed`.
 - **재시작 복구**: Main 이 다시 뜨면 끝나지 않은 `control/state.json` 을 찾아 `queued` 는 접수 순서로 다시 줄에 세우고, `created` / `running` 은 Job 을 이어서
@@ -232,7 +264,9 @@ PVC 가 RWO 만 되는 클러스터라면 Job 템플릿과 Deployment 의 hostna
 - **결과 검증**: `job-status.json` 에 `run_id` 와 `attempt` 가 들어 있고 Main 은 지금 시도의 파일만 받는다. 상태 파일 없이 파드만 끝났으면 `verified: false`
   로 표시하고 성공으로 적지 않는다.
 - **비밀값 정제**: Worker 가 끝날 때 보고서·로그·저널에서 비밀 env(이름에 TOKEN / PASSWORD / SECRET / API_KEY)의 값과 URL 의 `user:pass@` 를 `***` 로 지운다.
-  원본 LLM 기록(`llm.record_dir`)은 Worker 에서 기본으로 끈다 — 진단이 필요할 때만 Job 틀 env `SBMIG_WORKER_LLM_RECORDS: "1"`.
+  설정 덮어쓰기 `SBMIG_<섹션>__<키>` 는 비밀이 아니라 지우지 않는다(`llm.max_output_tokens` 의 숫자가 보고서에서 사라지지 않게).
+  원본 LLM 기록(`llm.record_dir`)은 Worker 에서 기본으로 끈다 — 진단이 필요할 때만 Job 틀의 두 줄 `SBMIG_WORKER_LLM_RECORDS: "1"` +
+  `SBMIG_LLM__RECORD_DIR: "/data/llm-records"` 을 푼다. 스위치 없이 폴더만 주면 Worker 가 그 변수를 자식 실행에 넘기지 않는다.
 
 ### 켜는 법
 
@@ -242,10 +276,10 @@ PVC 가 RWO 만 되는 클러스터라면 Job 템플릿과 Deployment 의 hostna
    `/etc/kube` 마운트, `kubeconfig` 볼륨) 주석을 푼다. 코드는 `KUBECONFIG` 파일이 있으면 그것으로, 없으면 서비스 계정으로 API 를 부른다
    (`sbmig/web/k8s.py` `K8sClient.connect`; kubeconfig 의 token / 클라이언트 인증서 사용자만 — `exec` 방식은 거절한다).
 3. `k8s/40-deployment.yaml` 과 `k8s/81-web-job.template.yaml` 의 `image:` 에 인프라팀이 push 한 이미지의 전체 이름을 **같은 값**으로 넣는다(§1,
-   `imagePullPolicy: IfNotPresent`; pull 인증이 필요하면 `imagePullSecrets`). 설정 파일 이름(`artifacts.yml`)과 마운트는 Deployment 와 같게.
+   `imagePullPolicy: IfNotPresent`; pull 인증이 필요하면 `imagePullSecrets`). 회사 설정이 이미지 안에 있으므로 두 이미지가 다르면 Worker 가 digest 불일치로 거절한다.
 4. 채운 Job 틀을 ConfigMap 으로 올린다 — 웹 파드는 `/templates/81-web-job.template.yaml`(`SBMIG_JOB_TEMPLATE`, Deployment 의 env)을 읽는다.
    Main 은 **시작할 때** 틀을 검증하고 어긋나면 뜨지 않는다(`MIGRATION_TEMPLATE_INVALID: …`): 컨테이너 하나(backoffLimit 0, restartPolicy Never),
-   **envFrom 금지**(변수마다 `valueFrom`), 비밀 env 는 `secretKeyRef` 만, `LLM_RECORD_DIR` / `SBMIG_WEB_TOKEN` 없음, `/data` 는 PVC 전체를 쓰기 가능으로
+   **envFrom 금지**(변수마다 `valueFrom`), 비밀 env 는 `secretKeyRef` 만(설정 덮어쓰기 `SBMIG_<섹션>__<키>` 는 literal 가능), `LLM_RECORD_DIR` / `SBMIG_WEB_TOKEN` 없음, `/data` 는 PVC 전체를 쓰기 가능으로
    정확히 하나. 권한도 그때 확인한다(SelfSubjectAccessReview: jobs create/get/list/watch/delete, pods get/list/watch — 모자라면 어떤 동사인지 적고 멈춘다).
    이미지 안의 틀 사본은 `CHANGE_ME` 그대로라 쓰지 않는다. 틀을 바꿀 때마다 같은 명령(`apply`)이면 된다.
    ```bash
@@ -325,8 +359,9 @@ preflight / ADF / 내부 오류)이면 3. `SBMIG_FAIL_JOB_ON_BUILD_FAIL=1` 이�
 ## 4. Nexus 주소
 
 두 곳에 들어간다. (1) `settings.xml` 의 `<mirror><url>` — mvn 이 모든 저장소를 그쪽으로 돌린다(`mirrorOf *`). (2) `artifacts.yml` 의
-`build.repository_url` — sbmig 가 메타데이터 / pom 을 직접 읽어 릴리스 목록과 jakarta 빌드를 찾는 주소. 둘 다 `k8s/20-configmap.yaml` 의
-`<https://nexus.company/…>` 자리다. Nexus 에 인증이 필요하면 `settings.xml` 의 `<servers>` 는 Secret 으로 빼서 마운트한다.
+`build.repository_url` — sbmig 가 메타데이터 / pom 을 직접 읽어 릴리스 목록과 jakarta 빌드를 찾는 주소. (1) 은 `k8s/20-configmap.yaml` 의
+`<https://nexus.company/…>` 자리, (2) 는 이미지에 구운 `artifacts.yml` 의 값이다(클러스터에서 다른 주소를 써야 하면 `sbmig-env` 의
+`SBMIG_BUILD__REPOSITORY_URL`). Nexus 에 인증이 필요하면 `settings.xml` 의 `<servers>` 는 Secret 으로 빼서 마운트한다.
 미러는 꼭 둔다: Maven 3.8 이상은 http:// 저장소를 기본 차단 미러(`maven-default-http-blocker`)로 막는데, Job 파드는 `~/.m2` 캐시가
 없어서 미러 없이 http Nexus 만 믿으면 사내 아티팩트마다 `Blocked mirror for repositories` 로 실패한다. `mirrorOf *` 미러가
 그 차단보다 먼저 적용되므로 Nexus 가 http 여도 미러를 두면 된다(이관 PC 에서 2026-11-05 에 실제로 겪은 일: `config/settings.nexus.example.xml` 주석).
@@ -335,7 +370,7 @@ preflight / ADF / 내부 오류)이면 3. `SBMIG_FAIL_JOB_ON_BUILD_FAIL=1` 이�
 
 * 웹 토큰 환경 변수는 `WEB_API_TOKEN` 이 아니라 **`SBMIG_WEB_TOKEN`** 이다 — 그리고 사내망 전용이라 기본 배포는 토큰 없이
   `SBMIG_WEB_OPEN=1` 로 연다(2026-11-05).
-* `kb.dir` 기본값은 이미지 안 `/app/kb-v2` 라 파드가 바뀌면 KB 가 사라진다 → `artifacts.yml` 에서 `/data/kb-v2`(웹 UI) / Job 모델은 KB 저장소.
+* `kb.dir` 기본값은 이미지 안 `/app/kb-v2` 라 파드가 바뀌면 KB 가 사라진다 → 매니페스트의 env 로 `/data/kb-v2`(웹 UI: `SBMIG_KB__DIR`, Job 파드: `SBMIG_KB_DIR`) / 80 모델은 KB 저장소.
 * 의존성 목록을 Dockerfile 에 다시 적지 않는다(`pip-deps.py` 가 `pyproject.toml` 을 읽는다). `python-multipart` 는 필요 없다 — 업로드는
   zip 본문을 그대로 스트리밍한다.
 * `JAVA_HOME` 은 아키텍처별 경로 대신 `/opt/java21` 심볼릭 링크(팀원 아이디어, 인용부호만 고침).

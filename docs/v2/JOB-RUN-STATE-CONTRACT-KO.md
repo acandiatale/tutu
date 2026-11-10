@@ -38,12 +38,13 @@ Worker 는 Main 의 존재를 모른다. Main 이 죽어도 Job 은 끝까지 �
 /data/out/_idempotency/      외부 접수 API 의 멱등 기록(만들 것)         ← `_` 로 시작하는 폴더는 실행이 아니다(list_runs 가 무시)
 /data/kb-v2/                 파일 KB(SBMIG_KB_DIR). 모든 Job 이 같은 KB 에 쓴다 → 한 번에 하나(§8)
 /home/sbmig/.m2/             Maven 로컬 저장소 PVC(sbmig-m2, 선택; 없으면 emptyDir)
-/app/config/artifacts.yml, /etc/sbmig/settings.xml   ConfigMap sbmig-config 의 파일. Job 파드도 같은 경로에 마운트
+/app/config/artifacts.yml    이미지에 구운 회사 설정(Main 과 Job 파드가 같은 이미지 → 같은 파일; 2026-11-10)
+/etc/sbmig/settings.xml      ConfigMap sbmig-config 의 파일. Job 파드도 같은 경로에 마운트
 ```
 
 Job 템플릿이 받는 실행별 env(Main 이 첫 컨테이너의 env 에 덧붙인다, 같은 이름은 바꾼다): `SBMIG_SOURCE_ZIP`, `SBMIG_OUT`, `SBMIG_RUN_ID`,
 `SBMIG_CONFIG`(공백으로 나눈 yml 경로들), 고급 설정일 때만 `SBMIG_STOP_AFTER`, `SBMIG_LLM_PROVIDER`. 나머지(이미지, 마운트, 자원,
-`SBMIG_KB_DIR`, `envFrom` ConfigMap/Secret)는 템플릿 그대로다. 템플릿 자체는 `render_job` 이 바꾸지 않는다.
+`SBMIG_KB_DIR`, 컨테이너 경로 덮어쓰기 `SBMIG_BUILD__*` / `SBMIG_SCRIPT__PYTHON`, 변수마다 `configMapKeyRef` / `secretKeyRef` — `envFrom` 은 검증이 거절한다)는 템플릿 그대로다. 템플릿 자체는 `render_job` 이 바꾸지 않는다.
 
 ## 4. 종료 코드와 결과 판정
 
@@ -124,7 +125,7 @@ remediation 이 KB 를 건드리지 않으면 같은 슬롯을 쓸 이유가 없
 - Job 파드가 나가야 하는 곳: LLM 게이트웨이(토큰 URL + 호출 URL), Nexus, (remediation 이 쓰는 외부 서비스가 있으면 그것도). NetworkPolicy 가 있으면 Job 파드 라벨
   `app=sbmig, kind=run` 에 egress 를 열어야 한다.
 - ConfigMap(`sbmig-env`: 비밀 아닌 값 + `SBMIG_<SECTION>__<KEY>` 손잡이) / Secret(`sbmig-llm`: `GIT_TOKEN`, `LLM_APP_TOKEN`/`LLM_API_KEY`, `NEXUS_*`,
-  선택 `SBMIG_WEB_TOKEN`) / 파일 ConfigMap(`sbmig-config`: `artifacts.yml`, `settings.xml`). 목록은 `deploy/ENV.md`.
+  선택 `SBMIG_WEB_TOKEN`) / 파일 ConfigMap(`sbmig-config`: `settings.xml`) / 이미지(`/app/config/artifacts.yml`, 비밀 없음). 목록은 `deploy/ENV.md`.
 
 ## 11. 통합하면서 정할 것 (sbmig 쪽 의견 포함)
 

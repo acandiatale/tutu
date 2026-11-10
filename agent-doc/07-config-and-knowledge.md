@@ -87,7 +87,7 @@
 |---|---|---|
 | `config/default.yml` | 있음 | 모든 기본값. 회사 값을 여기 쓰지 않는다 |
 | `config/artifacts.example.yml` | 있음 | 회사 yml 의 견본. 좌표는 **전부 자리표시자**(`com.company.platform:base-parent:4.0.0`, `company-core`, `lib-auth` …) |
-| `config/artifacts.yml` | 없음(git-ignore) | 회사 PC 에서 `cp config/artifacts.example.yml config/artifacts.yml` 로 만들고 실제 좌표를 채운다. 컨테이너에서는 같은 파일이 ConfigMap `sbmig-config` 의 키 `artifacts.yml` 로 `/app/config/artifacts.yml` 에 들어간다(`deploy/k8s/20-configmap.yaml`; 컨테이너 경로 `kb.dir: /data/kb-v2` 등 포함). 회사는 이 한 파일만 고치며 쓴다(2026-11-09) |
+| `config/artifacts.yml` | 없음(git-ignore) | 회사 PC 에서 `cp config/artifacts.example.yml config/artifacts.yml` 로 만들고 실제 좌표를 채운다. 컨테이너에서는 같은 파일을 이미지에 굽는다(`docker build --build-arg REQUIRE_CONFIG=artifacts.yml` → `/app/config/artifacts.yml`; 파일이 없으면 빌드가 멈춘다). PC 경로가 들어 있는 키(`kb.dir`, `build.settings_file`, `build.java_home`, `build.mvn`, `build.local_repo`, `script.python`, `llm.record_dir`)는 매니페스트의 `SBMIG_<섹션>__<키>` 환경 변수가 컨테이너 값으로 덮어쓴다. 비밀은 적지 않는다. 회사는 이 한 파일만 고치며 쓴다 |
 | `config/artifacts.local-e2e.yml` | 있음 | 로컬 e2e 용 **공개 대역**: 부모 = `spring-boot-starter-parent` 4.1.0, 필수·선택 = 공개 라이브러리, 예전 레이아웃(`module/boot-jar` + `module/comp-jar`), `llm.provider: fake`, `kb.dir: out/e2e/kb` |
 | `config/llm-anthropic.yml` | 있음 | Anthropic API 로 검증할 때 겹쳐 쓰는 yml(`llm.provider: anthropic`, 키는 여전히 `LLM_API_KEY` 환경 변수) |
 | `config/llm-plugin.example.yml` | 있음 | 사내 LLM 어댑터(`llm.plugin: "pkg.module:attr"`)와 수정기 플러그인(`fix.plugin`)을 꽂는 견본 |

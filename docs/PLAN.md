@@ -766,3 +766,19 @@ than whose code it is → "저분이 했던 프롬프트대로만 우리가 작�
 | Not built (the colleague's extras we chose not to adopt) | refusing configs with `llm.plugin` / `fix.plugin` / `build.setup_command` (those are our adapter seams), the Secret revision-file mechanism (Secrets are immutable + versioned by name instead), a separate remediation API | — | decided |
 | Verification | full offline suite 3,121 passed; `tests/web` + `tests/deploy` + `tests/docs` with the new tests; amd64 image `sbmig:2026-11-09-2` (tar 651 MB) smoke-tested (`sbmig.web.worker` import + readable no-env error); **kind end-to-end** (real apiserver, RBAC, Job, PVC, the image's Worker) — its first run found the import-time app bug above, fixed and re-run | `out/images/`, scratchpad `kind-e2e/` | done |
 
+## Status — 2026-11-10, deploy: the company config is baked into the image
+
+User: "Configmap에 artifacts.yml을 넣어야해? 이거 어차피 도커 빌드 할 때 파일로 복사 되지 않아?" → "일단 굽자!". The Dockerfile already copies
+`config/` into `/app/config`, so the ConfigMap copy was a second, hand-kept twin of the file the migration team tests on the PC.
+Contract: `docs/INTERFACES.md` "deploy — the company config is baked into the image".
+
+| Increment | Deliverable | Where | Status |
+|---|---|---|---|
+| Baked config | ConfigMap `sbmig-config` = `settings.xml` only; the `artifacts.yml` key and its mounts are commented alternatives; `SBMIG_CONFIG=/app/config/artifacts.yml` in 80 | `deploy/k8s/20-*`, `40-*`, `80-*`, `81-*` | done |
+| Container paths | literal env overrides per manifest (`SBMIG_BUILD__SETTINGS_FILE` / `JAVA_HOME` / `MVN` / `LOCAL_REPO`, `SBMIG_SCRIPT__PYTHON` in 40 / 80 / 81; `SBMIG_KB__DIR`, `SBMIG_LLM__RECORD_DIR=${LLM_RECORD_DIR:-}` in 40) — a PC-tested yml keeps its Windows paths, env beats yml | `deploy/k8s/40-*`, `80-*`, `81-*` | done |
+| `sbmig-env` reaches the Job pod | 81 has no `envFrom` → one `configMapKeyRef {optional: true}` per documented key (LLM values, proxies, the tuning keys); the new test found `HTTP_PROXY` / `HTTPS_PROXY` forwarded but undocumented → documented in the ConfigMap | `deploy/k8s/81-*`, `20-*` | done |
+| Build guard | `--build-arg REQUIRE_CONFIG=artifacts.yml`: the build stops when the git-ignored file is not in the context (ASCII message, ARG declared after the app COPY) | `deploy/docker/Dockerfile`, `save-image.sh` | done |
+| Secret names | `contract.is_secret_name`: `SBMIG_<A>__<B>` overrides are not secrets (template validator + redaction) — `…__MAX_OUTPUT_TOKENS` was refused as a literal and its value redacted | `sbmig/web/contract.py`, `k8s.py` | done |
+| Worker records | `worker.child_environ`: without `SBMIG_WORKER_LLM_RECORDS=1` the record-dir variables do not reach the child `sbmig run` | `sbmig/web/worker.py` | done |
+| Docs | README §1 (build + the baked-config block) / §2 (path table, who reads `sbmig-env`) / §3, ENV.md (§6 new, stale `CONFIG_INVALID` paragraph removed), agent-doc 07 / 09, run-state contract §3 / §10, CLAUDE.md | `deploy/`, `agent-doc/`, `docs/` | done |
+| Verification | offline suite **3,137 passed** (53 deselected); `tests/deploy` + `tests/web` + `tests/docs` 390 passed; docker (amd64, a scratch context shaped like the company repo — `src/migration-agent/` + `deploy/` + root `.dockerignore`): without `config/artifacts.yml` the build stops with the guard's message; with a PC-style `artifacts.yml` (Windows paths in all seven keys) the image builds, and inside it the config resolves to the container values under the 40 env and under the 81 env + the Worker's `worker-paths.yml` (`llm.record_dir` empty unless the switch is on) | — | done |

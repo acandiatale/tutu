@@ -2,6 +2,7 @@
 # Job 디스패치 모드(README §3, ConfigMap 의 SBMIG_WEB_MODE=k8s-job)에서는 이 파드가 Agent 다: 업로드마다 Job 을 만들고 공유 PVC 로 결과를 받는다 —
 # serviceAccountName(45-web-rbac.yaml 을 먼저 apply)과 ReadWriteMany PVC(10-storage.yaml, nfs-csi)가 그 전제다.
 # 회사 값(2026-11-09): namespace agent. 이미지는 인프라팀이 자기 레지스트리에 push 한 전체 이름을 받아 image: 에 넣는다(README §1).
+# 회사 artifacts.yml 은 이미지에 굽는다(2026-11-10) — ConfigMap 으로 오는 파일은 settings.xml 하나다(20-configmap.yaml).
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -36,19 +37,29 @@ spec:
           imagePullPolicy: IfNotPresent          # 노드에 그 태그가 없을 때만 레지스트리에서 받는다. 레지스트리 없이 노드에 직접 적재하면 Never (README §1.1)
           ports:
             - {name: http, containerPort: 8765}
-          # 환경 변수는 전부 두 곳에서: ConfigMap sbmig-env(비밀 아닌 것 — 웹 파드 동작, LLM 게이트웨이 주소·role, SBMIG_<섹션>__<키> 설정
-          # 덮어쓰기)와 Secret sbmig-llm(토큰·비밀번호). 뒤의 것이 이기므로 Secret 을 뒤에 둔다. 값은 20-configmap.yaml 의 설명을 본다
+          # 운영자가 고치는 환경 변수는 두 곳에서: ConfigMap sbmig-env(비밀 아닌 것 — 웹 파드 동작, LLM 게이트웨이 주소·role, SBMIG_<섹션>__<키> 설정
+          # 덮어쓰기)와 Secret sbmig-llm(토큰·비밀번호). 뒤의 것이 이기므로 Secret 을 뒤에 둔다. 값은 20-configmap.yaml 의 설명을 본다.
+          # 아래 env 는 이 파드에 고정인 값(틀 위치, 컨테이너 경로)이고 같은 이름이 envFrom 에 있어도 env 가 이긴다
           env:
             # Job 틀은 ConfigMap sbmig-job-template 로 들어온다(아래 volumes; README §3). 이미지 안의 사본은 CHANGE_ME 그대로라 쓰지 않는다
             - {name: SBMIG_JOB_TEMPLATE, value: /templates/81-web-job.template.yaml}
             # - {name: KUBECONFIG, value: /etc/kube/config}   # kubeconfig 방식일 때(위 설명)
+            # ── 회사 artifacts.yml 은 이미지에 구워져 있다(/app/config/artifacts.yml — PC 에서 시험한 파일 그대로, README §1). 그 안의 PC 경로를 컨테이너
+            #    값으로 덮어쓴다: 환경 변수 SBMIG_<섹션>__<키> 가 yml 보다 우선하고, yml 에 그 키가 없어도 해가 없다. 81-web-job.template.yaml 에도 같은 줄이 있다
+            - {name: SBMIG_KB__DIR, value: /data/kb-v2}                            # kb.dir — 볼륨의 파일 KB(이미지 안 kb-v2/ 는 비어 있다)
+            - {name: SBMIG_BUILD__SETTINGS_FILE, value: /etc/sbmig/settings.xml}   # ConfigMap sbmig-config 의 settings.xml(아래 마운트)
+            - {name: SBMIG_BUILD__JAVA_HOME, value: /opt/java21}                   # 이미지의 JDK 21
+            - {name: SBMIG_BUILD__MVN, value: mvn}                                 # 이미지의 Maven(PATH)
+            - {name: SBMIG_BUILD__LOCAL_REPO, value: "null"}                       # null = Maven 기본 ~/.m2/repository(아래 m2 볼륨)
+            - {name: SBMIG_SCRIPT__PYTHON, value: "null"}                          # null = sbmig 를 돌리는 그 python
+            - {name: SBMIG_LLM__RECORD_DIR, value: "${LLM_RECORD_DIR:-}"}          # yml 의 PC 경로 대신 sbmig-env 의 LLM_RECORD_DIR 만 따른다(없으면 기록 안 함). sbmig 가 푸는 자리표시 — 그대로 둔다
           envFrom:
             - configMapRef: {name: sbmig-env}
             - secretRef: {name: sbmig-llm}
           volumeMounts:
             - {name: data, mountPath: /data}
             - {name: m2, mountPath: /home/sbmig/.m2}
-            - {name: config, mountPath: /app/config/artifacts.yml, subPath: artifacts.yml, readOnly: true}
+            # - {name: config, mountPath: /app/config/artifacts.yml, subPath: artifacts.yml, readOnly: true}   # artifacts.yml 을 ConfigMap 으로 줄 때만(20-configmap.yaml 맨 아래) — 이미지에 구운 파일을 가린다
             - {name: config, mountPath: /etc/sbmig/settings.xml, subPath: settings.xml, readOnly: true}
             - {name: job-template, mountPath: /templates, readOnly: true}
             # - {name: kubeconfig, mountPath: /etc/kube, readOnly: true}   # kubeconfig 방식일 때
@@ -68,7 +79,7 @@ spec:
           persistentVolumeClaim: {claimName: sbmig-data}
         - name: m2
           persistentVolumeClaim: {claimName: sbmig-m2}
-        - name: config
+        - name: config                          # settings.xml
           configMap: {name: sbmig-config}
         - name: job-template                    # kubectl -n agent create configmap sbmig-job-template --from-file=deploy/k8s/81-web-job.template.yaml
           configMap: {name: sbmig-job-template, optional: true}   # 없어도 파드는 뜬다(빈 폴더) — 첫 업로드가 "job template not found" 로 멈춰 알려 준다

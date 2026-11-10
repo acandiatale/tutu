@@ -23,7 +23,7 @@ from typing import Any
 import requests
 import yaml
 
-from .contract import OWNER_LABEL, RUN_LABEL, SECRET_NAME_WORDS
+from .contract import OWNER_LABEL, RUN_LABEL, is_secret_name
 
 log = logging.getLogger("sbmig.web.k8s")
 
@@ -158,7 +158,7 @@ def validate_worker_template(template: str | Path | dict, out_dir: Path | None) 
     initContainers·ephemeralContainers 있음; ``backoffLimit``(기본 0) ≠ 0, ``parallelism`` / ``completions``(기본 1) ≠ 1,
     ``restartPolicy``(기본 Never) ≠ Never; 컨테이너에 name / image 없음; ``envFrom`` 있음; ``out_dir`` 를 품는 마운트가 쓰기 가능한 PVC
     전체(readOnly·subPath 없음) 하나가 아니거나 ``out_dir`` 아래 마운트가 있음; ``LLM_RECORD_DIR`` / ``SBMIG_WEB_TOKEN`` / ``WEB_API_TOKEN``
-    env, 또는 이름에 TOKEN / PASSWORD / SECRET / API_KEY 가 든 env 에 literal ``value``. ``out_dir`` 가 None 이면(테스트가 주입한 클라이언트
+    env, 또는 이름에 TOKEN / PASSWORD / SECRET / API_KEY 가 든 env(설정 덮어쓰기 ``SBMIG_<섹션>__<키>`` 제외)에 literal ``value``. ``out_dir`` 가 None 이면(테스트가 주입한 클라이언트
     — 출력 폴더가 파드 경로가 아니다) 마운트 규칙만 건너뛴다. 통과하면 읽은 dict 를 돌려준다(Main 은 그것으로 Job 을 만든다).
 
     Validate the Worker Job template at startup; raises `K8sError("MIGRATION_TEMPLATE_INVALID: …")`, returns the parsed dict.
@@ -200,7 +200,7 @@ def validate_worker_template(template: str | Path | dict, out_dir: Path | None) 
         name = str(e.get("name") or "")
         if name in FORBIDDEN_WORKER_ENV:
             raise _invalid(f"env {name} is not allowed in the Worker")
-        if any(w in name.upper() for w in SECRET_NAME_WORDS) and "value" in e:
+        if is_secret_name(name) and "value" in e:
             raise _invalid(f"env {name} has a literal value — credentials require valueFrom bindings (secretKeyRef)")
     if out_dir is not None:
         out = Path(out_dir)

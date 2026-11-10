@@ -4,6 +4,7 @@
 # 레지스트리가 없으면 노드마다 적재하고 매니페스트를 `sbmig:<tag>` + imagePullPolicy Never 로 바꾼다(README §1.1).
 #   사용:  deploy/docker/save-image.sh <tag> [docker build 추가 인자…]     (sbmig 체크아웃 루트에서; 회사 레포는 src/migration-agent/ 에서)
 #          예) deploy/docker/save-image.sh 2026-11-06 --build-arg PIP_INDEX_URL=https://nexus.company/repository/pypi/simple
+#          회사 이미지는 --build-arg REQUIRE_CONFIG=artifacts.yml 을 붙인다 — config/artifacts.yml 이 없으면 회사 설정 없는 이미지가 나오는 대신 빌드가 멈춘다.
 #   결과:  out/images/sbmig-<tag>.tar 와 sbmig-<tag>.tar.sha256 (SBMIG_IMAGE_OUT 으로 폴더 변경), 그리고 노드에서 칠 적재 명령.
 #   항상 linux/amd64 로 만든다 — 노드가 amd64 다(Apple silicon / arm64 PC 에서 만든 arm64 이미지는 노드에서 exec format error).
 #   buildx 가 있으면 --provenance=false --sbom=false: attestation 이 붙은 인덱스는 `ctr images import` 가 거부할 수 있다.

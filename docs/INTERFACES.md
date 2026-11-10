@@ -4255,3 +4255,33 @@ by name. Contract:
   the kind storage class and a locally built image — Main's startup validation + SelfSubjectAccessReview, a Job per upload with the owner
   labels, the Worker's request verification, `job-status.json` with run id + attempt, Main's `finished` + `verified: true`.
 
+## deploy — the company config is baked into the image; container paths come from the manifests (2026-11-10)
+
+User ("일단 굽자!"): the Dockerfile already copies `config/` into `/app/config`, so the `artifacts.yml` the migration team tested on the PC
+is the image's file — one copy, no hand-kept twin in a ConfigMap.
+
+- **Image**: `ARG REQUIRE_CONFIG=` (declared after the app `COPY`, so its value never breaks the apt / pip layers): every name in it must
+  exist under `/app/config/`, else the build stops (`ERROR: config/<name> is missing from the build context (REQUIRE_CONFIG)…`). The
+  company build passes `--build-arg REQUIRE_CONFIG=artifacts.yml` (the file is git-ignored — a fresh checkout would silently build an image
+  without the company config, and `RunManager.default_configs()` only warns about a missing `SBMIG_WEB_CONFIGS` name). Empty = no check.
+- **ConfigMap `sbmig-config`** carries `settings.xml` only (the `artifacts.yml` key and its mounts are commented alternatives in 20 / 40 /
+  80 / 81). The baked file must hold no secret (an image is readable by whoever pulls it).
+- **Machine paths** of a PC-tested yml are overridden by literal `env` lines in each manifest (env beats every yml):
+  `SBMIG_BUILD__SETTINGS_FILE=/etc/sbmig/settings.xml`, `SBMIG_BUILD__JAVA_HOME=/opt/java21`, `SBMIG_BUILD__MVN=mvn`,
+  `SBMIG_BUILD__LOCAL_REPO=null`, `SBMIG_SCRIPT__PYTHON=null` in 40 / 80 / 81; `SBMIG_KB__DIR=/data/kb-v2` and
+  `SBMIG_LLM__RECORD_DIR=${LLM_RECORD_DIR:-}` in 40 only (the 81 Worker and the 80 `run-job.sh` write `kb.dir` / `llm.record_dir` into their
+  own last `--config`). They are not in `sbmig-env`, because 80 reads that ConfigMap with `envFrom`.
+- **`sbmig-env` → the 81 Job pod**: the template has no `envFrom`, so every key the ConfigMap documents (LLM gateway values, proxies, the
+  `SBMIG_<SECTION>__<KEY>` tuning keys — active or commented) has one `configMapKeyRef {optional: true}` line in the template. A new key in
+  the ConfigMap needs its line in 81.
+- **`contract.is_secret_name(name)`** (new; `secret_env_names` and `k8s.validate_worker_template` use it): a config override
+  `SBMIG_<A>__<B>` (double underscore) is never a secret name — no config key holds a secret value, and `…__MAX_OUTPUT_TOKENS` /
+  `…__TOKEN_URL` would otherwise be refused as a literal `value` in the template and redacted out of the logs.
+- **`worker.child_environ(environ)`** (new): without `SBMIG_WORKER_LLM_RECORDS=1` the Worker drops `LLM_RECORD_DIR` and
+  `SBMIG_LLM__RECORD_DIR` from the child `sbmig run` (an env override would beat the `llm.record_dir: ""` of `worker-paths.yml`). Raw
+  records in Job mode = the switch plus `SBMIG_LLM__RECORD_DIR` in the template (two commented lines there).
+- Tests: `tests/deploy/test_manifests.py` (new: ConfigMap content, path overrides + mounts per manifest, `sbmig-env` ↔ 81 sync, every
+  override name is a known config key, a PC-style yml under the web pod's env, the `REQUIRE_CONFIG` guard), `tests/web/test_contract.py`,
+  `test_worker.py`, `test_jobmode_hardening.py`. Docs: `deploy/README.md` §1 / §2 / §3, `deploy/ENV.md` (§6 new), agent-doc 07 / 09,
+  `docs/v2/JOB-RUN-STATE-CONTRACT-KO.md` §3 / §10.
+

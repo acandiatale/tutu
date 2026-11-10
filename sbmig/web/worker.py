@@ -26,6 +26,7 @@ from sbmig.web.redact import redact_run_dir
 
 REQUIRED_ENV = ("SBMIG_SOURCE_ZIP", "SBMIG_OUT", "SBMIG_RUN_ID")
 PATHS_FILE = "worker-paths.yml"
+RECORD_DIR_ENV = ("LLM_RECORD_DIR", "SBMIG_LLM__RECORD_DIR")    # LLM 원문 기록 폴더를 정하는 변수들 — 기록을 켜지 않았으면 자식에게 넘기지 않는다
 JOURNAL_FILE = "journal.jsonl"
 RESULT_MARK = "SBMIG-RESULT"
 REFUSE_NO_REQUEST = "control/request.json missing — the Worker runs only requests Main accepted"
@@ -104,6 +105,18 @@ def write_paths_yml(run_dir: Path, environ: dict[str, str]) -> Path:
     return p
 
 
+def child_environ(environ: dict[str, str]) -> dict[str, str]:
+    """자식 ``sbmig run`` 의 환경. LLM 원문 기록을 켜지 않았으면(``SBMIG_WORKER_LLM_RECORDS`` ≠ 1) 기록 폴더를 정하는 변수
+    (``LLM_RECORD_DIR``, 설정 덮어쓰기 ``SBMIG_LLM__RECORD_DIR``)를 뺀다 — 환경 변수는 yml 보다 우선하므로 ``worker-paths.yml`` 의
+    ``llm.record_dir: ""`` 만으로는 덮어쓰기를 못 끈다. 켰으면 그대로 넘긴다(회사 yml 이 이미지에 구워져 있으면 그 덮어쓰기가 기록 폴더를 정한다).
+
+    The child's environment: without `SBMIG_WORKER_LLM_RECORDS=1` the variables that choose the raw-record directory are dropped
+    (an env override beats the paths yml); with it everything passes through."""
+    if (environ.get(contract.LLM_RECORDS_ENV) or "").strip() == "1":
+        return dict(environ)
+    return {k: v for k, v in environ.items() if k.upper() not in RECORD_DIR_ENV}
+
+
 def build_command(python: str, zip_path: str, configs: list[str], paths_yml: Path, out: str, run_id: str,
                   stop_after: str | None, llm_provider: str | None) -> list[str]:
     """자식 명령: ``python -m sbmig.cli run <zip> --config … --config <worker-paths.yml> --out <out> --run-id <id>
@@ -172,7 +185,7 @@ def main(argv: list[str] | None = None, *, environ: dict[str, str] | None = None
                             paths_yml, out, run_id, env.get("SBMIG_STOP_AFTER") or None,
                             env.get("SBMIG_LLM_PROVIDER") or None)
         _say("sbmig run " + " ".join(cmd[4:]))
-        rc = int(run_child(cmd, repo_root, env))
+        rc = int(run_child(cmd, repo_root, child_environ(env)))
     except (Exception, KeyboardInterrupt) as e:  # noqa: BLE001 — whatever broke, Main must still get a status file
         error = f"the Worker could not run sbmig: {type(e).__name__}: {e}"
         _say(f"ERROR: {error}")

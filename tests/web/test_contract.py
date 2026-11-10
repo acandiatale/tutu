@@ -84,3 +84,15 @@ def test_secret_env_names_and_values():
     assert secret_env_names(env) == ["LLM_APP_TOKEN", "MY_API_KEY", "NEXUS_PASSWORD", "SBMIG_WEB_TOKEN"]
     vals = secret_values(env)
     assert vals == ["pw-secret-1", "key-12345", "abcdefgh"] and "t" not in vals and "https://x" not in vals
+
+
+def test_config_overrides_are_not_secret_names():
+    """2026-11-10: `SBMIG_<SECTION>__<KEY>` is a config override — no config key holds a credential, so a name that merely
+    contains TOKEN (`llm.max_output_tokens`, `llm.token_url`) is neither redacted from the reports nor refused as a literal."""
+    from sbmig.web.contract import is_secret_name
+    for name in ("SBMIG_LLM__MAX_OUTPUT_TOKENS", "SBMIG_LLM__TOKEN_URL", "sbmig_llm__token_refresh_margin_s", "LLM_BASE_URL"):
+        assert not is_secret_name(name), name
+    for name in ("LLM_APP_TOKEN", "LLM_API_KEY", "SBMIG_WEB_TOKEN", "nexus_password", "SBMIG_TOKEN", "MY__SECRET"):
+        assert is_secret_name(name), name
+    env = {"SBMIG_LLM__MAX_OUTPUT_TOKENS": "128000", "LLM_APP_TOKEN": "abcdefgh"}
+    assert secret_env_names(env) == ["LLM_APP_TOKEN"] and secret_values(env) == ["abcdefgh"]

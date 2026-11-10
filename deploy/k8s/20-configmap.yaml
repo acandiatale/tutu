@@ -1,6 +1,10 @@
-# 회사 설정 두 파일(+ 아래 두 번째 문서 = 환경 변수 ConfigMap). artifacts.yml 은 웹 UI 가 실행마다 고르는 config(<레포 루트>/config/*.yml 을 나열한다) 이자 Job 의 --config 이고,
-# settings.xml 은 Maven 이 Nexus 를 보게 하는 미러 설정이다. subPath 로 마운트해 이미지의 config/default.yml 등은 그대로 둔다.
-# <…> 자리를 회사 값으로 바꾼다. 키·토큰은 여기 두지 않는다(Secret 으로).
+# Maven 설정(+ 아래 두 번째 문서 = 환경 변수 ConfigMap). settings.xml 은 Maven 이 Nexus 를 보게 하는 미러 설정이고 파드의 /etc/sbmig/settings.xml 로
+# 마운트된다. <…> 자리를 회사 값으로 바꾼다. 키·토큰은 여기 두지 않는다(Secret 으로).
+# 회사 artifacts.yml 은 여기 없다(2026-11-10): PC 에서 시험한 config/artifacts.yml 을 이미지에 굽는다 — docker build 가 /app/config/ 로 복사한다
+# (README §1; --build-arg REQUIRE_CONFIG=artifacts.yml 이 그 파일 없는 빌드를 막는다). 그 파일에 적힌 PC 경로(kb.dir, build.settings_file,
+# build.java_home, build.mvn, build.local_repo, script.python, llm.record_dir)는 각 매니페스트의 env SBMIG_<섹션>__<키> 가 컨테이너 값으로 덮어쓴다
+# (환경 변수가 yml 보다 우선). 값 하나를 바꾸려면 아래 sbmig-env 의 그룹 3 을 쓰고, 파일 전체를 이미지 재빌드 없이 바꾸려면 이 ConfigMap 맨 아래의
+# "ConfigMap 으로 줄 때" 를 따른다. 구운 파일에도 키·토큰은 넣지 않는다(이미지는 레지스트리에 올라간다).
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -8,26 +12,6 @@ metadata:
   namespace: agent
   labels: {app: sbmig}
 data:
-  artifacts.yml: |
-    # 회사 artifacts.yml(config/artifacts.example.yml 이 틀) + 컨테이너 경로
-    artifacts:
-      parent: {group_id: <회사 group>, artifact_id: base-parent, version: 4.0.0}
-      boot_parent: {group_id: <회사 group>, artifact_id: boot-jar, version: 4.0.0}
-      comp_parent: {group_id: <회사 group>, artifact_id: comp-jar, version: 4.0.0}
-      parent_manages_spring_boot: auto
-      mandatory: []        # 필수 사내 아티팩트 2개
-      optional: []         # 선택 사내 아티팩트 8개
-    build:
-      settings_file: /etc/sbmig/settings.xml
-      repository_url: <https://nexus.company/repository/maven-public/>   # sbmig 가 메타데이터 / pom 을 직접 읽는 주소
-    openrewrite:
-      jvm_args: ["-Xmx4g"]   # OpenRewrite 를 돌리는 Maven 의 힙(MAVEN_OPTS). 파드 메모리 limit 보다 2 GiB 이상 작게
-    kb:
-      dir: /data/kb-v2     # 웹 UI 에이전트: 볼륨의 파일 KB (이미지 안 kb-v2/ 는 쓰기 상태가 아니다). Job 모델은 run-job.sh 가 덮어쓴다
-    llm:
-      # record_dir: /data/llm-records   # 회사 Worker(sbmig.web.worker, 2026-11-09)는 원본 LLM 기록이 켜진 설정을 거부한다(CONFIG_INVALID: "without raw recording").
-      #                                  # 비워 둔다. 웹 파드 안에서 돌리는 in-process 모드에서 진단용으로만 켠다
-      # case_thread: true  # 케이스 스레드(첫 측정 실행 뒤에 켠다)
   settings.xml: |
     <settings>
       <mirrors>
@@ -48,12 +32,22 @@ data:
       </servers>
       -->
     </settings>
+  # ── ConfigMap 으로 줄 때(이미지를 다시 굽지 않고 artifacts.yml 전체를 바꿔야 할 때만): 아래 주석을 풀어 회사 artifacts.yml 내용을 붙이고,
+  #    40-deployment.yaml · 81-web-job.template.yaml(· 80-build-job.template.yaml)의 artifacts.yml 마운트 줄 주석을 푼다 — 마운트가 이미지 안의 파일을 가린다.
+  #    웹 파드와 Job 파드가 같은 내용을 봐야 한다(접수 때 적은 sha256 을 Worker 가 대조한다): 이 키를 고치면 웹 파드를 재시작한다.
+  # artifacts.yml: |
+  #   artifacts:
+  #     parent: {group_id: <회사 group>, artifact_id: base-parent, version: 4.0.0}
+  #     …(config/artifacts.example.yml 이 틀)
 ---
-# 환경 변수 ConfigMap — 비밀이 아닌 설정 전부. Deployment / Job 이 envFrom 으로 읽는다(토큰·비밀번호는 Secret sbmig-llm / sbmig-git).
-# 바꾸고 나면 파드를 재시작해야 한다(kubectl rollout restart deploy/sbmig).
-#   그룹 1 — 웹 파드 동작.   그룹 2 — LLM 게이트웨이(비밀 아닌 것).   그룹 3 — artifacts.yml / default.yml 의 설정 키를 덮어쓰는
+# 환경 변수 ConfigMap — 비밀이 아닌 설정 전부(토큰·비밀번호는 Secret sbmig-llm / sbmig-git).
+# 누가 읽나: 웹 파드(40-deployment.yaml)와 one-Job 모델(80-build-job.template.yaml)은 envFrom 으로 전부 읽는다. 웹이 만드는 Job(81-web-job.template.yaml)은
+#   envFrom 을 못 써서 그 틀에 키마다 configMapKeyRef 가 적혀 있다 — 그룹 2 · 3 의 키는 전부 81 에 있다(여기 새 키를 더하면 81 에도 한 줄; tests/deploy 가 본다).
+# 언제 읽나: 웹 파드는 재시작해야 읽고(kubectl -n agent rollout restart deploy/sbmig), Job 파드는 만들어질 때 읽는다(다음 업로드부터).
+#   그룹 1 — 웹 파드 동작.   그룹 2 — LLM 게이트웨이(비밀 아닌 것).   그룹 3 — 이미지에 구운 artifacts.yml / default.yml 의 설정 키를 덮어쓰는
 #   SBMIG_<섹션>__<키>(밑줄 두 개 = 한 단계 아래; 값은 YAML 로 읽으므로 숫자·true/false·["목록"] 그대로). 시험 운영 중 자주 손대는
 #   키만 적었고, 주석을 풀면 그 값이 artifacts.yml 보다 우선한다. 모르는 키 이름은 시작 로그에 `config: … is not a known key` 로 뜬다.
+#   컨테이너 경로(SBMIG_KB__DIR, SBMIG_BUILD__SETTINGS_FILE …)는 여기 두지 않는다 — 파드마다 값이 달라 40 / 81 / 80 의 env 에 직접 적혀 있다.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -65,7 +59,10 @@ data:
   SBMIG_WEB_CONFIGS: "artifacts.yml"      # 모든 업로드가 이 config 로 돈다(= sbmig serve --config). 쉼표로 여러 개
   SBMIG_WEB_OPEN: "1"                   # 사내망 전용 페이지(2026-11-05 결정): 토큰 없이 연다. 토큰을 쓰려면 지우고 Secret 의 SBMIG_WEB_TOKEN
   SBMIG_MAX_UPLOAD_MB: "1024"           # 업로드 zip 상한(MB). 0 = 없음. 기본 512
-  # NO_PROXY: "<게이트웨이 호스트>,<nexus 호스트>,localhost,127.0.0.1"   # 클러스터에 HTTP 프록시가 걸려 있을 때
+  # 클러스터에서 프록시로 나가야 할 때만(웹 파드와 Job 파드가 같이 읽는다). 사내 게이트웨이 / Nexus 는 보통 NO_PROXY 에 둔다
+  # HTTP_PROXY: "http://<프록시 호스트>:<포트>"
+  # HTTPS_PROXY: "http://<프록시 호스트>:<포트>"
+  # NO_PROXY: "<게이트웨이 호스트>,<nexus 호스트>,localhost,127.0.0.1"
   # SBMIG_WEB_MODE: "k8s-job"           # 업로드마다 Job 하나(공유 PVC) — README §3 "켜는 법"(RWX PVC, 권한, Job 틀 ConfigMap) 뒤에 켠다
   # SBMIG_K8S_NAMESPACE: ""             # 비우면 파드의 namespace(서비스 계정) 또는 kubeconfig context 의 namespace
   # SBMIG_JOB_TEMPLATE 은 Deployment 의 env 가 /templates/81-web-job.template.yaml 로 정한다(ConfigMap sbmig-job-template) — 여기서는 안 건드린다
@@ -77,7 +74,8 @@ data:
   LLM_TOKEN_URL: "https://<게이트웨이 호스트>/<토큰 발급 경로>"
   LLM_MODEL: "build_error_fixer"        # params.role — 수정 1~2회차 + 구조 리뷰(게이트웨이가 모델에 매핑)
   LLM_ESCALATION_MODEL: "escalation_fixer"   # params.role — 케이스 3회차부터 / 정체 뒤
-  # LLM_RECORD_DIR: "/data/llm-records" # 요청·응답 기록(비밀 없음). 회사 Worker 는 기록이 켜진 설정을 거부하므로 Job 모드에서는 비워 둔다(in-process 진단용)
+  # LLM_RECORD_DIR: "/data/llm-records" # 요청·응답 기록(비밀 없음; 프로젝트 소스가 들어간다) — 웹 파드 안에서 돌리는 in-process 모드의 진단용.
+  #                                     # Job 모드는 이 변수를 읽지 않는다: 81-web-job.template.yaml 의 SBMIG_WORKER_LLM_RECORDS 두 줄을 푼다
   # LLM_RESPONSE_PATH: ""               # llm-probe 가 응답 본문을 못 찾을 때만
   # ── 3. 자주 조정하는 설정 키(SBMIG_<섹션>__<키>) — 기본값을 적어 두었다 ─────────────────────────
   # SBMIG_SCRIPT__MAX_LLM_TRIES_PER_CASE: "20"       # 케이스당 LLM 요청 상한(넘으면 BLOCKED repeated_failure). 회사 실행을 보며 줄인다
@@ -92,10 +90,10 @@ data:
   # SBMIG_LLM__MAX_OUTPUT_TOKENS: "8000"
   # SBMIG_LLM__TEMPERATURE: "0.0"
   # SBMIG_BUILD__TIMEOUT_MINUTES: "30"               # mvn clean package 한 번의 상한
-  # SBMIG_BUILD__REPOSITORY_URL: "https://<nexus>/repository/maven-public/"   # artifacts.yml 의 값을 덮어쓸 때(환경별 Nexus)
+  # SBMIG_BUILD__REPOSITORY_URL: "https://<nexus>/repository/maven-public/"   # 구운 artifacts.yml 의 값을 덮어쓸 때(환경별 Nexus) — sbmig 가 메타데이터 / pom 을 직접 읽는 주소
   # SBMIG_BUILD__REPOSITORY_TIMEOUT_SECONDS: "10"    # sbmig 의 Nexus 조회(메타데이터 / pom) 대기
   # SBMIG_OPENREWRITE__TIMEOUT_MINUTES: "40"
-  # SBMIG_OPENREWRITE__JVM_ARGS: '["-Xmx4g"]'        # 파드 memory limit 보다 2 GiB 이상 작게
+  # SBMIG_OPENREWRITE__JVM_ARGS: '["-Xmx4g"]'        # OpenRewrite 를 돌리는 Maven 의 힙(MAVEN_OPTS). 파드 memory limit 보다 2 GiB 이상 작게
   # SBMIG_INTAKE__ADF_POLICY: "stop"                 # ADF(JDeveloper) 프로젝트: stop(변환 불가로 끝) | warn
   # SBMIG_LAYOUT__WIRE_BUNDLED_JARS: "true"          # WEB-INF/lib 의 선언 없는 jar 를 재구성 때 연결
   # SBMIG_LIBRARIES__NEXUS_SEARCH: "true"            # jakarta 빌드 탐색에 Nexus 검색 API 사용

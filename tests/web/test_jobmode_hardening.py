@@ -458,6 +458,17 @@ def test_validate_worker_template_rules(tmp_path: Path, mutate, reason):
         validate_worker_template(tmp_path / "nope.yaml", out)
 
 
+def test_validate_worker_template_accepts_a_literal_config_override(tmp_path: Path):
+    """2026-11-10: a config override whose name merely contains TOKEN is not a credential — a literal value is fine; a real
+    credential name still needs valueFrom."""
+    out = tmp_path.resolve() / "out"
+    ok = _template(tmp_path, lambda j: _container(j)["env"].append({"name": "SBMIG_LLM__MAX_OUTPUT_TOKENS", "value": "16000"}))
+    assert validate_worker_template(ok, out)["kind"] == "Job"
+    bad = _template(tmp_path, lambda j: _container(j)["env"].append({"name": "LLM_APP_TOKEN_2", "value": "hunter22"}))
+    with pytest.raises(K8sError, match="MIGRATION_TEMPLATE_INVALID.*valueFrom"):
+        validate_worker_template(bad, out)
+
+
 # ---- the client: labels and the access review
 class _Resp:
     def __init__(self, status_code: int, body: dict | None = None):

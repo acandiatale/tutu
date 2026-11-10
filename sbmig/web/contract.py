@@ -99,7 +99,7 @@ def sha256_file(path: Path, chunk: int = 1 << 20) -> str:
 
 def config_digests(repo_root: Path, configs: list[str]) -> dict[str, str]:
     """``config/default.yml`` 과 선택한 설정 파일들의 sha256 — 이름 → digest. 없는 파일은 ``"missing"``. Main 이 접수 때 적고 Worker 가
-    같은 경로(같은 이미지·같은 ConfigMap 마운트)에서 다시 계산해 대조한다.
+    같은 경로(같은 이미지 — 회사 yml 을 ConfigMap 으로 줄 때는 같은 마운트)에서 다시 계산해 대조한다.
 
     sha256 of `config/default.yml` and each selected config, by file name (`"missing"` when absent)."""
     d = Path(repo_root) / "config"
@@ -124,10 +124,23 @@ def new_owner_token() -> str:
     return secrets.token_hex(8)
 
 
+def is_secret_name(name: str) -> bool:
+    """환경 변수 이름이 비밀로 보이는가 — 이름에 ``SECRET_NAME_WORDS`` 가 들어 있으면 그렇다. 설정 덮어쓰기 ``SBMIG_<섹션>__<키>``(밑줄 두 개)는
+    예외다: 설정 키는 비밀을 담지 않는다(키·토큰은 환경 변수 이름으로만 가리킨다 — ``llm.api_key_env``). 그래서 ``SBMIG_LLM__MAX_OUTPUT_TOKENS``
+    의 값이 보고서에서 지워지거나 Worker 틀에서 literal 이라고 거절되지 않는다.
+
+    Whether an env name looks like a secret (contains one of `SECRET_NAME_WORDS`). A config override `SBMIG_<SECTION>__<KEY>` never
+    is: no config key holds a credential, so `SBMIG_LLM__MAX_OUTPUT_TOKENS` is neither redacted nor refused as a literal."""
+    up = str(name).upper()
+    if up.startswith("SBMIG_") and "__" in up:
+        return False
+    return any(w in up for w in SECRET_NAME_WORDS)
+
+
 def secret_env_names(environ: dict[str, str] | None = None) -> list[str]:
-    """이름에 ``SECRET_NAME_WORDS`` 가 든 환경 변수 이름들(정렬). / Env names that look like secrets."""
+    """비밀로 보이는 환경 변수 이름들(``is_secret_name``, 정렬). / Env names that look like secrets."""
     env = os.environ if environ is None else environ
-    return sorted(k for k in env if any(w in k.upper() for w in SECRET_NAME_WORDS))
+    return sorted(k for k in env if is_secret_name(k))
 
 
 def secret_values(environ: dict[str, str] | None = None, min_len: int = MIN_SECRET_LEN) -> list[str]:

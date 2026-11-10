@@ -93,8 +93,12 @@ docker run --rm <registry>/sbmig:<tag> python -m sbmig.cli --help
 `ctr -n k8s.io images import`, k3s 는 `k3s ctr images import`, docker 는 `docker load`) 이미지를 `sbmig:<tag>` + `imagePullPolicy: Never` 로 바꾼다;
 노드 하나에만 적재했으면 Deployment 와 Job 틀의 `nodeSelector: {kubernetes.io/hostname: <node>}` 를 푼다(이미지가 없는 노드에서는 `ErrImageNeverPull`).
 
-설정과 비밀값은 이미지 밖: ConfigMap `deploy/k8s/20-configmap.yaml`(회사 yml 이 `/app/config/artifacts.yml` 로 들어가 UI 의 설정 목록에 나옴,
-컨테이너 경로 — `kb.dir: /data/kb-v2`, `build.settings_file: /etc/sbmig/settings.xml`, `build.repository_url`, `llm.record_dir` — + settings.xml),
+회사 설정 `config/artifacts.yml` 은 **이미지에 굽는다**: git 이 무시하는 파일이라 빌드에 `--build-arg REQUIRE_CONFIG=artifacts.yml` 을 붙여, 파일이 컨텍스트에
+없으면 빌드를 멈춘다(`/app/config/artifacts.yml` 로 들어가 UI 의 설정 목록에 나옴). PC 에서 시험한 파일 그대로이므로 PC 경로가 든 키는 매니페스트의 `env` 가
+덮어쓴다 — `SBMIG_KB__DIR=/data/kb-v2`(웹 파드), `SBMIG_BUILD__SETTINGS_FILE=/etc/sbmig/settings.xml`, `SBMIG_BUILD__JAVA_HOME=/opt/java21`,
+`SBMIG_BUILD__MVN=mvn`, `SBMIG_BUILD__LOCAL_REPO=null`, `SBMIG_SCRIPT__PYTHON=null`, 웹 파드의 `SBMIG_LLM__RECORD_DIR=${LLM_RECORD_DIR:-}`. 이 값들은
+`tests/deploy/test_manifests.py` 가 세 매니페스트에서 지킨다. 설정을 바꾸려면 이미지를 다시 만든다(숫자 손잡이는 `sbmig-env` 로 충분).
+비밀값과 settings.xml 은 이미지 밖: ConfigMap `deploy/k8s/20-configmap.yaml`(`sbmig-config` = settings.xml 하나, `sbmig-env` = 환경 변수),
 Secret 견본 `deploy/k8s/30-secret.example.yaml`(복사해 `deploy/k8s/30-secret.yaml` 로 채움, git-ignore): `sbmig-llm`(= PC 의 `.env` + `SBMIG_WEB_TOKEN`),
 `sbmig-git`(저장소 토큰). 자원: OpenRewrite 가 `openrewrite.jvm_args`(`-Xmx4g`)로 돌므로 메모리 6~8 GiB, CPU 2~4.
 
@@ -104,7 +108,8 @@ Secret 견본 `deploy/k8s/30-secret.example.yaml`(복사해 `deploy/k8s/30-secre
 
 환경 변수는 ConfigMap `sbmig-env`(비밀 아닌 것: 웹 파드 동작 `SBMIG_WEB_*` / `SBMIG_MAX_UPLOAD_MB`, LLM 게이트웨이 주소·에셋 id·role
 이름, 설정 덮어쓰기 `SBMIG_<섹션>__<키>` — 예 `SBMIG_SCRIPT__MAX_LLM_TRIES_PER_CASE`, `SBMIG_LLM__CASE_THREAD`)와 Secret `sbmig-llm`(토큰,
-`NEXUS_USER` / `NEXUS_PASSWORD`)에 나눠 둔다. 전체 표는 `deploy/ENV.md`(인프라팀 전달용) 와 `deploy/README.md` 의 "env 목록" 절. 모르는 키 이름은 시작 로그에
+`NEXUS_USER` / `NEXUS_PASSWORD`)에 나눠 둔다. 웹 파드와 `80` 의 Job 은 `envFrom` 으로 통째로 읽고, 웹 파드가 만드는 Job(`81` 틀)은 `envFrom` 을 쓸 수 없어
+키마다 `configMapKeyRef` / `secretKeyRef` 한 줄이다 — `sbmig-env` 에 새 키를 더하면 `81` 틀에도 한 줄 더한다(같은 테스트가 본다). 전체 표는 `deploy/ENV.md`(인프라팀 전달용) 와 `deploy/README.md` 의 "env 목록" 절. 모르는 키 이름은 시작 로그에
 `config: … is not a known key` 로 뜬다.
 
 `deploy/k8s/10-storage.yaml`(PVC 둘: `/data` = 업로드·실행·KB·LLM 기록, `~/.m2`), `20-configmap`, `30-secret`, `deploy/k8s/40-deployment.yaml`
@@ -134,7 +139,7 @@ kubectl exec deploy/sbmig -- python -m sbmig.cli llm-probe
 Job 생성·상태·삭제와 권한 자기 점검(SelfSubjectAccessReview)만 부른다 — 인증은 `KUBECONFIG` 가 가리키는 kubeconfig 파일(인프라팀이 Secret 으로 주는
 `/etc/kube/config`; token / 클라이언트 인증서 사용자, `exec` 는 거절)이 있으면 그것, 없으면 파드의 서비스 계정 토큰·CA(권한은 `deploy/k8s/45-web-rbac.yaml`).
 Job 틀은 채운 것을 ConfigMap `sbmig-job-template` 으로 `/templates` 에 마운트해 `SBMIG_JOB_TEMPLATE` 로 읽고, Main 은 **시작할 때** 틀(컨테이너 하나,
-envFrom 없음, 비밀 env 는 valueFrom, `/data` PVC 마운트 하나)과 권한을 검증해 어긋나면 뜨지 않는다. 켜는 순서는 `deploy/README.md` §3 "켜는 법".
+envFrom 없음, 비밀 env 는 valueFrom — 설정 덮어쓰기 `SBMIG_<섹션>__<키>` 는 비밀 이름으로 보지 않는다 — , `/data` PVC 마운트 하나)과 권한을 검증해 어긋나면 뜨지 않는다. 켜는 순서는 `deploy/README.md` §3 "켜는 법".
 개발 PC: `k8s-job` 인데 클러스터 밖이면 자동으로 `local-job`(`sbmig/web/localjob.py`, 파드 자리에 로컬 서브프로세스 `sbmig run --run-id …`)으로
 내려가 같은 흐름이 파드 없이 돈다(`--mode local-job` 으로 직접 고를 수도 있다).
 

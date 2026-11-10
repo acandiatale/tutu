@@ -302,7 +302,15 @@ Then the final build again, the report (Handover first, "Structure review", fix 
   owner token, `job-status.json` carries run id + attempt); `sbmig/web/worker.py` (`python -m sbmig.web.worker`, the Job command) verifies the pins, runs
   `sbmig run`, redacts secrets (`sbmig/web/redact.py`), turns raw LLM records off unless `SBMIG_WORKER_LLM_RECORDS=1`; `RunManager` validates the template and
   its RBAC at startup (`validate_worker_template`, `can_i`), adopts an existing Job on 409 / transport errors, recovers queued / running runs after a restart,
-  deletes only Jobs carrying its own `sbmig-owner` label and waits for them to vanish, and never reports an unverified result as success.
+  deletes only Jobs carrying its own `sbmig-owner` label and waits for them to vanish, and never reports an unverified result as success. **2026-11-10 (user: "일단 굽자!")**:
+  the company `config/artifacts.yml` is **baked into the image** (the Dockerfile copies `config/`; the company build adds
+  `--build-arg REQUIRE_CONFIG=artifacts.yml`, which stops the build when the git-ignored file is missing), ConfigMap `sbmig-config` carries
+  `settings.xml` only, and the machine paths of a PC-tested yml are overridden by literal `SBMIG_<SECTION>__<KEY>` env lines in each manifest
+  (`SBMIG_BUILD__SETTINGS_FILE` / `JAVA_HOME` / `MVN` / `LOCAL_REPO`, `SBMIG_SCRIPT__PYTHON` in 40 / 80 / 81; `SBMIG_KB__DIR` and
+  `SBMIG_LLM__RECORD_DIR=${LLM_RECORD_DIR:-}` in 40 only — never in `sbmig-env`, which 80 reads by `envFrom`). The 81 template has one
+  `configMapKeyRef` per `sbmig-env` key (no `envFrom` there): a new key in the ConfigMap needs its line in 81, `tests/deploy/test_manifests.py`
+  pins this. `contract.is_secret_name` exempts config overrides (`…__MAX_OUTPUT_TOKENS` is not a secret); the Worker drops the record-dir
+  variables from the child unless `SBMIG_WORKER_LLM_RECORDS=1`. No secret goes into the baked file.
 - **Company convention (2026-10-20): agents run on LangGraph under uvicorn.** `loop.engine: graph` (default) drives
   the phases from a LangGraph `StateGraph` (`sbmig/graph/`, nodes intake → analyze → plan → phase×N → finalize;
   `inline` is the old loop, reports are identical by test); the web UI is FastAPI (`uvicorn sbmig.web.app:app` or

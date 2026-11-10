@@ -19,7 +19,7 @@ spec:
       labels: {app: sbmig, kind: run}
     spec:
       restartPolicy: Never
-      automountServiceAccountToken: false   # 빌드 파드는 쿠버네티스 API 를 부르지 않는다(회사 Worker 의 worker_template 도 같은 값을 강제한다)
+      automountServiceAccountToken: false   # 빌드 파드는 쿠버네티스 API 를 부르지 않는다
       nodeSelector:
         customer.example.com/build-worker: "true"     # CHANGE_ME: 빌드 워커 노드의 라벨
       securityContext: {runAsUser: 1000, runAsGroup: 1000, fsGroup: 1000}
@@ -37,12 +37,19 @@ spec:
             - {name: SBMIG_RESULT_BRANCH_PREFIX, value: "sbmig/"}                 # 이관된 프로젝트는 <prefix><run id> 브랜치로 push
             - {name: SBMIG_RESULT_GIT_URL, value: ""}                              # 선택: report.md / 로그를 모으는 저장소
             - {name: SBMIG_KB_GIT_URL, value: "CHANGE_ME_https://git.company/<group>/sbmig-kb.git"}   # 파일 KB 는 git 에(실행마다 pull / push)
-            - {name: SBMIG_CONFIG, value: "/etc/sbmig/artifacts.yml"}
+            - {name: SBMIG_CONFIG, value: "/app/config/artifacts.yml"}             # 이미지에 구운 회사 artifacts.yml(README §1). 공백으로 여러 개
             - {name: SBMIG_FAIL_JOB_ON_BUILD_FAIL, value: "0"}                      # 1 → 빌드 실패도 0 아닌 종료(Job Failed)
             - {name: GIT_AUTHOR_NAME, value: "sbmig"}
             - {name: GIT_AUTHOR_EMAIL, value: "sbmig@company.example"}
             - {name: GIT_COMMITTER_NAME, value: "sbmig"}
             - {name: GIT_COMMITTER_EMAIL, value: "sbmig@company.example"}
+            # --- 이미지에 구운 artifacts.yml 의 PC 경로를 컨테이너 값으로 덮어쓴다(환경 변수 SBMIG_<섹션>__<키> 가 yml 보다 우선; env 는 envFrom 도 이긴다).
+            #     kb.dir / llm.record_dir 은 run-job.sh 가 마지막 --config 로 정한다(KB 저장소 clone, 실행 폴더 옆 기록)
+            - {name: SBMIG_BUILD__SETTINGS_FILE, value: "/etc/sbmig/settings.xml"}
+            - {name: SBMIG_BUILD__JAVA_HOME, value: "/opt/java21"}
+            - {name: SBMIG_BUILD__MVN, value: "mvn"}
+            - {name: SBMIG_BUILD__LOCAL_REPO, value: "null"}                        # null = Maven 기본 ~/.m2/repository(아래 m2 볼륨)
+            - {name: SBMIG_SCRIPT__PYTHON, value: "null"}                           # null = sbmig 를 돌리는 그 python
           envFrom:
             - configMapRef: {name: sbmig-env}     # LLM_* 중 비밀 아닌 것(게이트웨이 주소, 에셋 id, 토큰 URL, role 이름) + SBMIG_<섹션>__<키> 덮어쓰기
             - secretRef: {name: sbmig-llm}        # LLM_APP_TOKEN(또는 LLM_API_KEY), NEXUS_USER / NEXUS_PASSWORD — 뒤에 두어 Secret 이 이긴다
@@ -50,7 +57,7 @@ spec:
           volumeMounts:
             - {name: workspace, mountPath: /workspace}
             - {name: m2, mountPath: /home/sbmig/.m2}
-            - {name: config, mountPath: /etc/sbmig/artifacts.yml, subPath: artifacts.yml, readOnly: true}
+            # - {name: config, mountPath: /app/config/artifacts.yml, subPath: artifacts.yml, readOnly: true}   # artifacts.yml 을 ConfigMap 으로 줄 때만(20-configmap.yaml 맨 아래)
             - {name: config, mountPath: /etc/sbmig/settings.xml, subPath: settings.xml, readOnly: true}
           resources:
             requests: {cpu: "2", memory: 6Gi}
@@ -60,5 +67,5 @@ spec:
           emptyDir: {sizeLimit: 20Gi}
         - name: m2                              # emptyDir = Job 마다 Boot 4 / OpenRewrite / 플러그인을 Nexus 에서 다시 받는다
           emptyDir: {sizeLimit: 10Gi}           # (PVC 가 가능하면 persistentVolumeClaim: {claimName: sbmig-m2} 로 — README §3)
-        - name: config
+        - name: config                          # settings.xml
           configMap: {name: sbmig-config}

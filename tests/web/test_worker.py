@@ -93,6 +93,22 @@ def test_llm_records_kept(setup):
     assert "record_dir" not in paths and "kb:" not in paths
 
 
+def test_record_dir_variables_reach_the_child_only_with_the_switch(setup):
+    """2026-11-10: the company yml is baked into the image, so the record directory arrives as an env override — which beats the
+    `llm.record_dir: ""` of worker-paths.yml. Without SBMIG_WORKER_LLM_RECORDS=1 the Worker drops those variables."""
+    extra = {"SBMIG_LLM__RECORD_DIR": "/data/llm-records", "LLM_RECORD_DIR": "/data/other", "SBMIG_LLM__TIMEOUT_SECONDS": "200"}
+    calls: list = []
+    assert worker.main(environ={**setup["env"], **extra}, run_child=fake_child(0, calls)) == 0
+    child = calls[0][2]
+    assert "SBMIG_LLM__RECORD_DIR" not in child and "LLM_RECORD_DIR" not in child
+    assert child["SBMIG_LLM__TIMEOUT_SECONDS"] == "200" and child["LLM_APP_TOKEN"] == SECRET and child["SBMIG_KB_DIR"]
+    calls.clear()
+    assert worker.main(environ={**setup["env"], **extra, contract.LLM_RECORDS_ENV: "1"}, run_child=fake_child(0, calls)) == 0
+    child = calls[0][2]
+    assert child["SBMIG_LLM__RECORD_DIR"] == "/data/llm-records" and child["LLM_RECORD_DIR"] == "/data/other"
+    assert worker.child_environ({"sbmig_llm__record_dir": "x", "A": "1"}) == {"A": "1"}
+
+
 @pytest.mark.parametrize("child_rc,flag,expected", [(2, None, 0), (2, "1", 2), (3, None, 3), (1, "1", 0)])
 def test_exit_codes(setup, child_rc, flag, expected):
     env = dict(setup["env"])
