@@ -49,7 +49,9 @@
 
 ### 2.3 전송·재시도
 
-- 재시도: 전송 오류와 재시도 상태(408, 409, 425, 429, 5xx 일부)만 `llm.max_retries`(3)번. `Retry-After` 우선(최대 120초), 없으면 1·2·4…초.
+- 재시도: 전송 오류와 재시도 상태(408, 409, 425, 429, 5xx 일부)만 `llm.max_retries`(3)번. `Retry-After` 우선(최대 120초), 없으면 1·2·4…초(조금씩 흩뜨림).
+- 바쁨은 고장이 아니다: 429 와 `Retry-After` 가 붙은 502 / 503 / 504 는 `llm.busy_wait_seconds`(600)초까지 그 호출을 줄 세워 다시 보낸다(로그 `llm gateway busy` / `still busy`; 0 이면 위 재시도 규칙만). 빌드 파드 여럿이 한 게이트웨이를 같이 쓸 때를 위한 것.
+- 토큰을 새로 받아 보냈는데 또 401 이면 1~5초 쉬고 `llm.auth_retries`(2)번 더 받아 보낸다. 그때 WARNING `LLM gateway rejected a token right after it was exchanged` 가 프로세스당 한 번 — 다른 파드가 같은 앱 토큰을 교환해 이 파드의 토큰이 무효가 됐을 수 있다는 뜻.
   호출 하나의 벽시계 상한은 대략 `llm.timeout_seconds`(180) + 30초.
 - 실패 문구는 루프가 분류한다(형식을 바꾸지 말 것): 전송 장애 `cause=<예외 클래스>: <ASCII 메시지>`, HTTP 실패 `status=<코드>`, 빈 답 +
   `finish_reason=length` 는 요청 거절. 전송·설정 실패 연속 2번이면 실행에서 처음 한 번 `llm.cooldown_seconds`(60) 쉬고, 다시 그러면 `llm_unavailable`.

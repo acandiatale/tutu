@@ -3,12 +3,16 @@ record directory (two pods, two threads) never write one number twice and lose n
 writes exactly as before."""
 from __future__ import annotations
 
+import errno
 import json
+import logging
 import os
 import subprocess
 import sys
 import threading
 from pathlib import Path
+
+import pytest
 
 from sbmig.core.interfaces import ChatMessage, LLMResponse
 from sbmig.fix.client import _Recorder
@@ -95,3 +99,60 @@ def test_processes_sharing_one_directory_lose_no_record(tmp_path):
                 p.kill()
     assert sorted(p.name for p in d.glob("llm-*.json")) == [f"llm-{n:04d}.json" for n in range(1, 61)]
     assert sorted(users(d)) == sorted(f"{i}-{n}" for i in range(3) for n in range(20))
+
+
+class _Inner:
+    model = "m"
+
+    def __init__(self, fail: bool = False):
+        self.fail = fail
+
+    def complete(self, messages, **kw):
+        if self.fail:
+            raise ValueError("gateway said no")
+        return LLMResponse(content="the paid-for answer", model="m")
+
+
+def _full_disk(monkeypatch, d: Path, *, after_create: bool) -> None:
+    """Writing a record fails with ENOSPC (at the create, or after it — a partly written file of ours)."""
+    import builtins
+
+    from sbmig.fix import client as clientmod
+    real_open = builtins.open
+
+    def full(path, mode="r", *a, **kw):
+        if str(path).startswith(str(d)) and "x" in mode:
+            if not after_create:
+                raise OSError(errno.ENOSPC, "No space left on device")
+            fh = real_open(path, mode, *a, **kw)
+            fh.write = lambda text: (_ for _ in ()).throw(OSError(errno.ENOSPC, "No space left on device"))
+            return fh
+        return real_open(path, mode, *a, **kw)
+    monkeypatch.setattr(clientmod, "open", full, raising=False)
+
+
+@pytest.mark.parametrize("after_create", [False, True])
+def test_a_record_that_cannot_be_written_never_loses_the_answer(tmp_path, monkeypatch, caplog, after_create):
+    from sbmig.fix.client import RecordingClient
+
+    d = tmp_path / "rec"
+    rc = RecordingClient(_Inner(), d)
+    _full_disk(monkeypatch, d, after_create=after_create)
+    with caplog.at_level(logging.WARNING, logger="sbmig"):
+        resp = rc.complete(msgs("call"), role="fix")
+    assert resp.content == "the paid-for answer"
+    assert any("not written" in r.getMessage() and "the call itself is not affected" in r.getMessage()
+               for r in caplog.records)
+    assert not list(d.glob("llm-*.json"))                    # no half-written record of ours left
+    monkeypatch.undo()
+    assert _Recorder(d).write(msgs("later"), None, 0.0).name == "llm-0001.json"   # numbering goes on as before
+
+
+def test_a_failed_record_never_hides_the_calls_own_error(tmp_path, monkeypatch):
+    from sbmig.fix.client import RecordingClient
+
+    d = tmp_path / "rec"
+    rc = RecordingClient(_Inner(fail=True), d)
+    _full_disk(monkeypatch, d, after_create=False)
+    with pytest.raises(ValueError, match="gateway said no"):
+        rc.complete(msgs("call"))

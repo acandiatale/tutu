@@ -340,6 +340,7 @@
   let maxUploadMb = 0;          // 0 = 한도 없음
   let defaultConfigs = [];      // 서버가 정한 설정 파일들: 담당자는 고르지 않는다
   let es = null, current = null, file = null;
+  let lastState = '';           // 지금 보이는 실행의 마지막 status.state: 끊겼을 때 다시 붙을지(끝난 실행이면 안 붙는다)를 가른다
 
   // ---------------------------------------------------------------- 알림
   let toastTimer = null;
@@ -525,6 +526,7 @@
   // status 는 한 흐름에 여러 번 온다(v2.1z-ae: 처음, 줄에서 앞으로 오거나 시작할 때마다, 끝): 몇 번 와도 레일·기록·로그를 되돌리지 않는다
   let queueText = '', statusKey = '';
   function setStatus(st) {
+    lastState = st.state || '';
     const d = describe(st);
     const live = st.state === 'running' || st.state === 'queued';
     setTitle(d.cls, d.text, live);
@@ -738,45 +740,142 @@
   }
 
   // ---------------------------------------------------------------- 실행에 붙기 (SSE)
-  function attach(runId) {
+  // resume = 끊긴 같은 실행에 다시 붙기(아래 '다시 붙기'). 담당자가 고른 실행이면 진행 중인 재연결을 그만둔다.
+  // 화면(레일·기록·로그·결과)은 매번 비우고 서버가 처음부터 다시 보내는 것으로 채운다: 다시 붙어도 줄이 겹치지 않는다
+  function attach(runId, resume) {
+    if (!resume) cancelRetry();
     if (es) { es.close(); es = null; }
-    current = runId;
+    current = runId; lastState = '';
     logBuf = []; logTotal = 0; logDropped = 0; renderLog();
     $('runcard').hidden = false; $('resultcard').hidden = true;
     $('runid').textContent = runId; $('summary').textContent = '';
     $('timeline').innerHTML = ''; $('log').replaceChildren(); $('report').textContent = ''; $('logfull').hidden = true;
-    setTitle('', '연결하는 중…', false); statusKey = '';
+    setTitle('', resume ? '다시 연결하는 중…' : '연결하는 중…', false); statusKey = '';
+    $('stop').disabled = true;                         // 이 실행의 status 가 오기 전에는 누를 수 없다 (앞 실행의 상태가 남지 않게)
     resetRail();
     try { history.replaceState(null, '', '#' + encodeURIComponent(runId)); } catch (e) {}
-    es = new EventSource(`/api/runs/${encodeURIComponent(runId)}/events`);
-    es.addEventListener('status', (e) => setStatus(JSON.parse(e.data)));
-    es.addEventListener('node', (e) => onNode(JSON.parse(e.data)));
-    es.addEventListener('journal', (e) => journalRow(JSON.parse(e.data)));
-    es.addEventListener('log', (e) => logLine('log', JSON.parse(e.data)));
-    es.addEventListener('console', (e) => logLine('console', JSON.parse(e.data)));
-    es.addEventListener('report', (e) => { $('report').textContent = JSON.parse(e.data); });
-    es.addEventListener('end', () => { es.close(); es = null; loadRuns(); });
-    // `error` 는 서버의 실행 오류 이벤트(data 있음)이기도, EventSource 의 연결 오류(data 없음)이기도 하다
-    es.addEventListener('error', (e) => {
+    const src = new EventSource(`/api/runs/${encodeURIComponent(runId)}/events`);
+    es = src;
+    const mine = () => es === src;                   // 닫은 뒤에 늦게 온 이벤트는 버린다
+    src.addEventListener('status', (e) => { if (!mine()) return; retry.delay = 0; retry.gone = 0; setStatus(JSON.parse(e.data)); });
+    src.addEventListener('node', (e) => { if (mine()) onNode(JSON.parse(e.data)); });
+    src.addEventListener('journal', (e) => { if (mine()) journalRow(JSON.parse(e.data)); });
+    src.addEventListener('log', (e) => { if (mine()) logLine('log', JSON.parse(e.data)); });
+    src.addEventListener('console', (e) => { if (mine()) logLine('console', JSON.parse(e.data)); });
+    src.addEventListener('report', (e) => { if (mine()) $('report').textContent = JSON.parse(e.data); });
+    // end 에 reason 이 있으면(웹 파드 재시작 등) 실행이 끝난 것이 아니다: 같은 실행에 다시 붙는다
+    src.addEventListener('end', (e) => {
+      if (!mine()) return;
+      let d = {}; try { d = e.data ? JSON.parse(e.data) : {}; } catch (x) {}
+      if (d && d.reason) { lost(runId, 'shutdown'); return; }
+      src.close(); es = null; loadRuns();
+    });
+    // `error` 는 서버의 실행 오류 이벤트(data 있음)이기도, EventSource 의 연결 오류(data 없음)이기도 하다.
+    // 연결 오류면 브라우저의 자동 재연결을 쓰지 않고 닫는다: 다시 붙는 길은 retry 하나뿐이라 두 번 붙지 않는다
+    src.addEventListener('error', (e) => {
+      if (!mine()) return;
       if (e.data) { logLine('error', '[실행 오류] ' + JSON.parse(e.data).message); toast('실행 오류: ' + JSON.parse(e.data).message, true); return; }
-      logLine('console', '[연결이 끊겼습니다 — 서버가 내려갔거나 네트워크 문제입니다. 지난 실행에서 다시 고르면 다시 붙습니다]');
-      setTitle('warn', '연결이 끊겼습니다', false);
-      if (es) { es.close(); es = null; }
+      lost(runId, 'network');
     });
     loadRuns();
   }
+
+  // ---- 다시 붙기: 웹 파드가 다시 뜨면(ConfigMap 을 바꿀 때마다) 서버는 같은 실행 id 를 되살린다. 2초, 4초, 8초 … 최대 30초 간격으로
+  //      GET /api/runs/<id> 를 물어 답이 오면 다시 붙고, 연달아 RETRY_GONE 번 404 면 그만둔다. 다른 실행을 고르면 그만둔다.
+  const RETRY_MIN_MS = 2000, RETRY_MAX_MS = 30000, RETRY_GONE = 3;
+  const retry = { run: null, timer: null, delay: 0, gone: 0, gen: 0 };
+  function cancelRetry() {
+    clearTimeout(retry.timer);
+    retry.timer = null; retry.run = null; retry.delay = 0; retry.gone = 0; retry.gen++;
+  }
+  function lost(runId, why) {
+    if (es) { es.close(); es = null; }
+    if (current !== runId) return;
+    if (lastState === 'finished') { loadRuns(); return; }   // 끝난 실행: 결과는 이미 보인다
+    setTitle('warn', why === 'shutdown' ? '서버가 다시 시작되는 중입니다' : '서버와 연결이 끊겼습니다', false);
+    $('stop').disabled = true;
+    scheduleRetry(runId);
+  }
+  function scheduleRetry(runId) {
+    clearTimeout(retry.timer);
+    retry.run = runId;
+    retry.delay = retry.delay ? Math.min(retry.delay * 2, RETRY_MAX_MS) : RETRY_MIN_MS;
+    setText('railnote', `자동으로 다시 연결합니다 (${Math.round(retry.delay / 1000)}초 뒤).`);
+    const gen = retry.gen;
+    retry.timer = setTimeout(() => probe(runId, gen), retry.delay);
+  }
+  async function probe(runId, gen) {
+    retry.timer = null;
+    if (gen !== retry.gen || current !== runId) return;
+    let r = null, st = null;
+    try { r = await fetch(`/api/runs/${encodeURIComponent(runId)}`); try { st = await r.json(); } catch (e) {} } catch (e) {}
+    if (gen !== retry.gen || current !== runId) return;      // 그 사이 다른 실행을 골랐다
+    if (r && authProblem(r, st)) { cancelRetry(); return; }
+    if (r && r.status === 404) {
+      if (++retry.gone >= RETRY_GONE) {
+        cancelRetry();
+        setTitle('bad', '서버가 이 실행을 더 이상 알지 못합니다', false);
+        setText('railnote', '다시 연결하지 않습니다. 지난 실행 목록에서 확인해 주세요.');
+        $('stop').disabled = true; $('stop').hidden = true;
+        loadRuns();
+        return;
+      }
+    } else if (r && r.ok) {
+      retry.gone = 0;
+      attach(runId, true);                          // 끝난 실행이어도 한 번은 붙는다: 결과 파일이 그 흐름으로 온다
+      return;
+    }
+    scheduleRetry(runId);                            // 서버가 아직 안 떴다(연결 실패·5xx)
+  }
+
   $('stop').addEventListener('click', async () => {
-    if (!current) return;
-    const r = await fetch(`/api/runs/${encodeURIComponent(current)}/stop`, { method: 'POST' });
-    $('stop').disabled = true; $('stop').textContent = '중단 요청됨';
-    logLine('error', '[중단 요청 — 지금 돌고 있는 단계(빌드 또는 LLM 호출)가 끝나면 멈춥니다]');
-    toast(r.ok ? '중단을 요청했습니다. 지금 돌고 있는 단계가 끝나면 멈춥니다.' : '중단 요청이 실패했습니다.', !r.ok);
+    const runId = current;                           // 답을 기다리는 사이 다른 실행을 골라도 그 실행에는 손대지 않는다
+    if (!runId) return;
+    const wasQueued = lastState === 'queued';
+    $('stop').disabled = true;                       // 두 번 누르지 않게
+    let r = null, d = {};
+    try { r = await fetch(`/api/runs/${encodeURIComponent(runId)}/stop`, { method: 'POST' }); try { d = await r.json(); } catch (e) {} } catch (e) {}
+    const here = current === runId && !!es;
+    if (r && authProblem(r, d)) { if (here) $('stop').disabled = false; return; }
+    if (!r || !r.ok) { toast('중단 요청이 실패했습니다.', true); if (here) $('stop').disabled = false; return; }
+    if (d && d.stopped === false) {                  // 서버가 멈출 것이 없다고 했다: 요청됨으로 표시하지 않는다
+      toast('이미 끝난 이관입니다. 중단할 것이 없습니다.');
+      loadRuns(); if (current === runId) refreshStatus(runId);
+      return;
+    }
+    if (!here) { toast('중단을 요청했습니다.'); loadRuns(); return; }
+    setText('stop', '중단 요청됨');
+    if (wasQueued) { toast('중단을 요청했습니다.'); }
+    else {
+      logLine('error', '[중단 요청 — 지금 돌고 있는 단계(빌드 또는 LLM 호출)가 끝나면 멈춥니다]');
+      toast('중단을 요청했습니다. 지금 돌고 있는 단계가 끝나면 멈춥니다.');
+    }
   });
+  // 지금 보이는 실행의 상태를 한 번 다시 읽는다 (흐름이 이미 끝난 실행의 중단 버튼을 바로잡을 때)
+  async function refreshStatus(runId) {
+    try {
+      const r = await fetch(`/api/runs/${encodeURIComponent(runId)}`);
+      const st = await r.json();
+      if (r.ok && current === runId && st && st.state) setStatus(st);
+    } catch (e) {}
+  }
 
   // ---------------------------------------------------------------- 4. 지난 실행
-  async function loadRuns() {
-    const r = await fetch('/api/runs'); const d = await r.json();
+  // 여러 곳(15초 주기·status 변화·attach·end)이 부른다: RUNS_COALESCE_MS 안의 부름은 한 번으로 묶고,
+  // 늦게 온 옛 답이 새 답을 덮지 않게 마지막으로 보낸 요청의 답만 쓴다
+  const RUNS_COALESCE_MS = 300;
+  let runsSeq = 0, runsTimer = null;
+  function loadRuns() {
+    if (runsTimer) return;
+    runsTimer = setTimeout(() => { runsTimer = null; fetchRuns(); }, RUNS_COALESCE_MS);
+  }
+  async function fetchRuns() {
+    const seq = ++runsSeq;
+    let r, d;
+    try { r = await fetch('/api/runs'); d = await r.json(); } catch (e) { return; }   // 서버가 다시 뜨는 중: 다음 주기에
+    if (seq !== runsSeq) return;
     if (authProblem(r, d)) return;
+    if (!d || !Array.isArray(d.runs)) return;
     setParallel(d.parallel);                           // 옛 서버(parallel 없음)면 안내를 숨긴다
     const ul = $('runs'); ul.innerHTML = '';
     $('runcount').textContent = d.runs.length ? `${d.runs.length}건` : '';
@@ -792,7 +891,7 @@
       ul.appendChild(li);
     }
   }
-  $('refresh').addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); loadRuns(); });
+  $('refresh').addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); fetchRuns(); });
 
   // ---------------------------------------------------------------- 시작
   resetRail(); loadConfigs(); loadRuns(); setInterval(loadRuns, 15000);

@@ -110,7 +110,7 @@ Failed / Missing 인데 `job-status.json` 이 없으면 종료 코드 3 과 `err
 Main 이 `<run dir>/stop.request` 를 쓴다(저널 `stop_request_sent`). Worker 의 엔진은 **그래프 노드 사이**와 **수정 루프의 빌드 라운드 사이**에서
 그 파일을 보고 멈춘다(최종 빌드 생략, exit 3, 저널 `stop_request`). 진행 중인 Maven 빌드·LLM 호출 하나는 끊지 않는다. 2700초
 (`SBMIG_JOB_STOP_GRACE_S`, Maven 빌드 + OpenRewrite 한 번보다 길어야 한다) 안에 안 끝나면 Main 이 Job 을 지운다(`propagationPolicy Foreground`,
-파드도 함께). 서버 종료는 Job 을 지우지 않는다. 멈춤이 큐에서 기다리는 실행에 오면 Job 을 만들지 않고 끝낸다. 지우기 전에 Job 의 라벨(`sbmig-run-id`, `sbmig-owner`)이
+파드도 함께). 서버 종료는 Job 을 지우지 않는다. 멈춤이 큐에서 기다리는 실행에 오면 그 자리에서 줄에서 빼고 Job 을 만들지 않고 끝낸다(뒤의 실행들의 순번이 당겨진다). 지우기 전에 Job 의 라벨(`sbmig-run-id`, `sbmig-owner`)이
 **둘 다** 자기 것인지 보고, 아니면 지우지 않는다(`job_delete_refused`); 지운 뒤에는 Job 이 실제로 사라질(`Missing`) 때까지 기다린 뒤에야 `stopped` 로 끝낸다(삭제 요청 수락 = 끝남이 아니다).
 이 기다림에는 기한이 없다(v2.1z-ad — 예전에는 `SBMIG_JOB_API_GRACE_S` 까지): 삭제 요청이 실패하면 15초마다 다시 보내고, 끝나지 않는 동안 60초마다 경고한다.
 멈춤을 요청한 실행의 Job 이 사라졌으면 `lost` 가 아니라 `stopped` 다.

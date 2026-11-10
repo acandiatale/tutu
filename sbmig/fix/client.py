@@ -511,9 +511,10 @@ class _Recorder:
         self._n = len(list(self.dir.glob("llm-*.json")))
 
     def write(self, messages: list[ChatMessage], resp: Optional[LLMResponse], latency: float,
-              error: Optional[str] = None, *, role: Optional[str] = None, metadata: Optional[dict] = None) -> Path:
+              error: Optional[str] = None, *, role: Optional[str] = None,
+              metadata: Optional[dict] = None) -> Optional[Path]:
         """호출 하나를 기록하고, ws 가 있으면 `llm_call` 저널
-        이벤트를 남긴다(저널 실패는 호출을 깨지 않는다)."""
+        이벤트를 남긴다(저널 실패는 호출을 깨지 않는다). 기록 파일을 못 쓰면(디스크 가득, EIO …) WARNING 후 None."""
         rec = {
             "messages": [m.model_dump() for m in messages],
             "response": resp.content if resp else None,
@@ -532,15 +533,27 @@ class _Recorder:
         for _ in range(_RECORD_TRIES):
             self._n += 1
             path = self.dir / f"llm-{self._n:04d}.json"
+            made = False
             try:
                 with open(path, "x", encoding="utf-8") as fh:
+                    made = True
                     fh.write(text)
                 break
             except FileExistsError:
                 continue
+            except OSError as e:
+                # 기록을 못 쓴 것은 호출 실패가 아니다(답은 이미 받음) — 경고만, 반쯤 쓴 우리 파일은 지운다
+                log.warning("LLM record %s not written (%s: %s) — the call itself is not affected", path,
+                            type(e).__name__, e)
+                if made:
+                    try:
+                        path.unlink()
+                    except OSError:
+                        pass
+                return None
         else:  # pragma: no cover - ten thousand numbers taken in a row
             log.warning("LLM record not written: %d numbers in a row were taken in %s", _RECORD_TRIES, self.dir)
-            return path
+            return None
         if self.ws is not None:
             try:
                 self.ws.journal({"event": "llm_call", "record": str(path), "role": role, "model": rec["model"],
@@ -568,17 +581,24 @@ class RecordingClient:
         return self._rec.dir
 
     def complete(self, messages: list[ChatMessage], **kw: Any) -> LLMResponse:
-        """안쪽 클라이언트를 부르고 성공·실패 모두 기록한다(예외는 그대로 다시 던진다)."""
+        """안쪽 클라이언트를 부르고 성공·실패 모두 기록한다(예외는 그대로 다시 던진다). 기록 쓰기의 실패는
+        WARNING 일 뿐 — 이미 돈을 낸 답을 잃거나 원래 예외를 가리지 않는다."""
         role, metadata = kw.get("role"), kw.get("metadata")
         t0 = time.monotonic()
         try:
             with llm_call_in_flight():
                 resp = self.inner.complete(messages, **kw)
         except Exception as exc:
-            self._rec.write(messages, None, time.monotonic() - t0, error=str(exc)[:500], role=role, metadata=metadata)
+            self._write(messages, None, time.monotonic() - t0, error=str(exc)[:500], role=role, metadata=metadata)
             raise
-        self._rec.write(messages, resp, time.monotonic() - t0, role=role, metadata=metadata)
+        self._write(messages, resp, time.monotonic() - t0, role=role, metadata=metadata)
         return resp
+
+    def _write(self, *args: Any, **kw: Any) -> None:
+        try:
+            self._rec.write(*args, **kw)
+        except Exception as e:  # noqa: BLE001 - a record that cannot be written never fails the call
+            log.warning("LLM record not written (%s: %s) — the call itself is not affected", type(e).__name__, e)
 
     def close(self) -> None:
         """안쪽 클라이언트에 `close()` 가 있으면 부른다."""
@@ -776,7 +796,9 @@ def make_llm_client(cfg: Config, *, ws: Any = None, transport: Optional[httpx.Ba
                                    response_path=llm.response_path or None, timeout=float(llm.timeout_seconds),
                                    max_retries=llm.max_retries, extra_headers=llm.extra_headers, gateway=gateway,
                                    asset_id=asset_id, token_manager=tokens,
-                                   agent_extra=dict(getattr(llm, "agent_extra", None) or {}))
+                                   agent_extra=dict(getattr(llm, "agent_extra", None) or {}),
+                                   # 파드 여럿이 한 게이트웨이를 같이 쓸 때: 바쁨(429)은 줄 서서 기다리고, 갓 받은 토큰의 401 은 다시 받는다
+                                   busy_wait_s=float(llm.busy_wait_seconds), auth_retries=int(llm.auth_retries))
         else:  # pragma: no cover - non-builtin providers are routed to sbmig.llm above
             raise LLMConfigError(f"unknown llm.provider: {llm.provider}")
     if llm.record_dir:

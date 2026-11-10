@@ -33,7 +33,7 @@ from sbmig.core.models import CaseAction, CaseHit, ErrorCluster, ErrorEntry, KBM
 from sbmig.errors.cases import CASES_DIR, CASES_MD, KB_ERRORS, CaseStore
 from sbmig.errors.common import atomic_write, case_id_of
 
-from .lock import LOCK_NAME, kb_lock
+from .lock import LOCK_NAME, kb_lock, keep_alive
 
 log = logging.getLogger("sbmig.kb")
 
@@ -193,6 +193,7 @@ class FileKnowledgeBase:
             with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zf:
                 if existed:
                     for p in sorted(self.root.rglob("*")):
+                        keep_alive(self.root)              # a big KB over NFS: keep the lock fresh (throttled)
                         if p.is_dir() or p.name.startswith(".") or p.suffix == ".tmp":
                             continue
                         rel = p.relative_to(self.root)
@@ -264,9 +265,9 @@ class FileKnowledgeBase:
                     os.replace(old, backup)
                 try:
                     os.replace(build_dir, old)
-                except OSError:
+                except OSError as e:
                     if backup is not None:                # put the previous KB back where it was
-                        os.replace(backup, old)
+                        self._restore_backup(old, backup, stamp, e)
                     raise
                 if backup is not None:
                     # 우리가 잡은 잠금 파일이 예전 KB 와 함께 .bak 로 옮겨졌으므로 거기서 지운다
@@ -278,3 +279,37 @@ class FileKnowledgeBase:
                 raise
             self._cases = None
         return counters
+
+    @staticmethod
+    def _restore_backup(old: Path, backup: Path, stamp: str, cause: OSError) -> None:
+        """교체 가져오기의 두 번째 rename 이 실패했을 때: 그 사이 다른 파드(잠금·원자적 쓰기의 mkdir)가 빈 ``<kb>`` 를
+        다시 만들었을 수 있다 — 그 폴더를 ``<kb>.intruder-<시각>`` 으로 치우고 예전 KB 를 제자리로 되돌린다. 무엇이 어디
+        있는지 ERROR 한 줄로 정확히 말한다(되돌리기마저 실패하면 손으로 옮길 경로를).
+
+        The second rename of ``import --replace`` failed: a pod may have re-created an empty ``<kb>`` meanwhile (its
+        lock / an atomic write makes the parents) — move that folder to ``<kb>.intruder-<stamp>`` and put the previous
+        KB back; one ERROR line says exactly where everything is (and what to move by hand if even that fails)."""
+        intruder: Optional[Path] = None
+        if old.exists():
+            intruder = old.parent / f"{old.name}.intruder-{stamp}"
+            n = 1
+            while intruder.exists():
+                n += 1
+                intruder = old.parent / f"{old.name}.intruder-{stamp}-{n}"
+            try:
+                os.replace(old, intruder)
+            except OSError as e:
+                log.error("kb import --replace failed (%s) and %s, created there meanwhile, could not be moved aside "
+                          "(%s) — the previous KB is in %s: stop the pods, then move it back to %s by hand", cause, old,
+                          e, backup, old)
+                return
+        try:
+            os.replace(backup, old)
+        except OSError as e:
+            log.error("kb import --replace failed (%s) and the previous KB could not be put back (%s) — it is in %s: "
+                      "stop the pods, then move it back to %s by hand%s", cause, e, backup, old,
+                      f" (what was created there meanwhile is in {intruder})" if intruder else "")
+            return
+        log.error("kb import --replace failed (%s) — the previous KB is back in %s%s", cause, old,
+                  f"; {intruder} holds what a running pod created there meanwhile (look there for errors.jsonl lines "
+                  "or cases before deleting it)" if intruder else "")

@@ -344,6 +344,17 @@ Then the final build again, the report (Handover first, "Structure review", fix 
   `fix_v<N>.py`, lock age on the KB file system's clock, exclusive LLM record files). Not in the 81 template, not an env pin; the 80 model (`run-job.sh`, git KB) stays
   sequential. Contract: `docs/INTERFACES.md` "v2.1z-ae"; operator text: `deploy/README.md` §3 "동시에 여러 건". Not measured on the
   company cluster / NFS yet; the gateway's concurrency limit for one app token is the company's to confirm.
+  **v2.1z-af (same day, the user: "코드 검토 동시성 이슈 될만한거 … 찾아봐줘", five read-only reviews, every finding reproduced first)**:
+  a Job run's terminal `control/state.json` is written while its slot is still held; recovery keeps the recorded slot number even when
+  two runs recorded the same one (a new run only gets a number nobody holds); any failing API poll is "API unavailable"; a `Failed`
+  Job whose pod is still terminating has not ended; **a stop on a waiting Job run leaves the line at once** (`_FifoTurns.withdraw`).
+  The Worker handles SIGTERM (stops the child's whole process tree, Maven included, writes `job-status.json` with the reason) and
+  falls back to a pod-local Maven repository (`pod_local: true`), not the shared one. KB: `_confirm_new` never overwrites a
+  `case.json` the server says exists (`CaseUnreadable`, waits up to 75 s for the NFS cache), stale-lock breaking is serialized by
+  `<kb>/.lock.breaker`, `kb.lock.keep_alive` refreshes the lock in long sections, `_claim_script` never replaces. LLM client:
+  `llm.busy_wait_seconds` (600: a 429 / 5xx with Retry-After queues instead of failing) and `llm.auth_retries` (2: a 401 right after
+  an exchange). The page re-attaches by itself after a web-pod restart. Contract: `docs/INTERFACES.md` "v2.1z-af". To ask the gateway
+  team: the concurrency limit per app token, and whether a new token exchange revokes earlier tokens.
 - **Company convention (2026-10-20): agents run on LangGraph under uvicorn.** `loop.engine: graph` (default) drives
   the phases from a LangGraph `StateGraph` (`sbmig/graph/`, nodes intake → analyze → plan → phase×N → finalize;
   `inline` is the old loop, reports are identical by test); the web UI is FastAPI (`uvicorn sbmig.web.app:app` or

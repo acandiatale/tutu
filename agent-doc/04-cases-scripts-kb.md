@@ -148,7 +148,7 @@ KB 는 파일뿐이다(DB 금지). 위치 `kb.dir`(기본 `kb-v2`). 원본은 `e
 | `kb-v2/cases/<case_id>/case.json` | `CaseInfo`: `case_id`, `l2`, `name`, `kind`, `projects`, `seen`, `resolved`, `scripts[]`, `last_analysis`, `last_solution`, `updated_at` + 모델 밖 키 `pin`(`block[:<reason>]`), `last_result` |
 | `kb-v2/cases/<case_id>/fix_v<N>.py` | 저장 스크립트(같은 코드는 한 번만) |
 | `kb-v2/cases/<case_id>/errors/<run id>-<entry id>.json` | 오류 한 건씩 읽기 쉬운 JSON(`errors.json_files`); 케이스 없는 항목은 `cases/_other/` |
-| `kb-v2/.lock` | 프로세스 간 쓰기 잠금(웹·플릿·`sbmig kb`·동시에 도는 빌드 파드가 공유, `kb.lock_timeout_seconds`). 옆에 잠깐 생기는 `.lock.probe.*`(파일 시스템 시계 재기)와 케이스 폴더의 `.fix.*.tmp` 는 임시 파일이다 |
+| `kb-v2/.lock` | 프로세스 간 쓰기 잠금(웹·플릿·`sbmig kb`·동시에 도는 빌드 파드가 공유, `kb.lock_timeout_seconds`). 옆에 잠깐 생기는 `.lock.probe.*`(파일 시스템 시계 재기), `.lock.breaker`(낡은 잠금을 깨는 차례)와 케이스 폴더의 `.fix.*.tmp` 는 임시 파일이다. 0 이하의 `kb.lock_timeout_seconds` 는 300 으로 읽는다 |
 | `kb-v2/libraries.yml`, `kb-v2/jar_names.yml` | 사람이 더하는 라이브러리 표 / jar 이름 표(`libraries.company_file`, `intake.company_jar_names_file`) |
 
 `scripts[]` 한 칸 = `CaseScript`: `version`, `file`, `status`(`unverified` 저장 시 → `proven` 만든 프로젝트가 **아닌** 곳에서 재사용으로 해결했을 때 → `retired`

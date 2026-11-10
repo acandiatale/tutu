@@ -3,7 +3,8 @@
 저장하고(``add_script``) 채점 결과를 적는다(``credit``). 실행 끝에 ``record_run`` 이 오류 목록을 덧붙이고,
 ``sbmig kb reindex`` 는 ``recount`` 를 부른다. 바깥 창구는 ``sbmig.kb.FileKnowledgeBase``, 사람 창구는 ``sbmig
 kb`` CLI. 케이스 폴더 이름은 케이스 ID(sha1(L2)[:10]): 매칭은 L2 문자열로 하고 폴더 이름은 키일 뿐이다(사람용
-이름은 case.json 의 ``name`` 과 cases.md). 스크립트 상태: 저장하면 unverified → 만든 프로젝트가 아닌 곳에서
+이름은 case.json 의 ``name`` 과 cases.md). 여러 파드가 같이 쓸 때: 서버에는 있는데 이 클라이언트가 끝내 못 읽는
+case.json 위에는 새 파일을 쓰지 않는다(``CaseUnreadable`` — 그 KB 쓰기만 건너뜀). 스크립트 상태: 저장하면 unverified → 만든 프로젝트가 아닌 곳에서
 케이스를 해결하면 proven → 사람이 끄면 retired. 쓰기는 모두 KB 잠금 + 원자적 쓰기, 텍스트는 마스킹; 읽기는
 잠그지 않고 깨진 파일에 예외를 내지 않는다(파일뿐, DB 금지: 불변조건 3). ``errors.jsonl`` 이 원본이고
 case.json·cases.md·에러별 JSON 은 파생이다 — 기록을 손으로 맞추지 말고 ``kb reindex`` 로 다시 만든다.
@@ -37,13 +38,18 @@ Several writers (v2.1z-ae: up to three build pods on one NFS volume): inside the
 again from disk before it writes. A case that reads as missing is confirmed by exclusive creates — ``mkdir`` of its
 folder, then an ``O_EXCL`` probe of its ``case.json`` (:meth:`CaseStore._confirm_new`: an NFS client may answer "no
 such file" from its cache for a ``case.json`` another pod has just written; the server decides an exclusive create):
-when it is there the case is read again, never overwritten blind. A script file is claimed by a hard link of a temp file (exclusive: an existing ``fix_v<N>.py`` is
-never replaced — the next number is taken), with the old atomic replace where the file system has no hard links.
+when it is there the case is read again, never overwritten blind — the folder is listed and the file read by ``open()``
+for up to ``CONFIRM_SECONDS`` (an NFS client trusts a cached "no such file" until the directory's attributes are
+checked again), and a case.json the server has but this client never sees raises :class:`CaseUnreadable` (that one
+KB write is skipped with a WARNING; nothing is written over it). A script file is claimed by a hard link of a temp file
+(exclusive: an existing ``fix_v<N>.py`` is never replaced — the next number is taken), by an exclusive create where
+the file system has no hard links; any other link error is raised.
 
 
 """
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import logging
@@ -83,8 +89,33 @@ _RAN_THEN_EDITS = "did not apply → applying the answer's edits"      # it ran,
 SECRET_HEADER = "# sbmig: retired at once — the code held a secret value (stored masked; not the code that ran)\n"
 _CASE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$")
 _SCRIPT_RE = re.compile(r"^fix_v([1-9][0-9]{0,8})\.py$")
-CONFIRM_SECONDS = 1.0             # a case.json the server has but that does not read yet is read again this long
+CONFIRM_SECONDS = 75.0            # a case.json the server has but this client does not see is looked for this long
+#                                   (longer than an NFS client's directory attribute cache may lie: acdirmax 60 s)
+REPAIR_SECONDS = 1.0              # a case.json that opens but stays empty / does not parse this long is written fresh
+CONFIRM_MAX_DELAY = 2.0           # the longest pause between two looks while confirming
 CLAIM_TRIES = 1000                # script numbers tried past one taken by another writer
+# os.link 의 이 오류들만 '하드 링크가 없는 파일 시스템' 이다 — EIO / ESTALE / EACCES / ENOSPC 는 진짜 오류
+_NO_LINK_ERRNOS = frozenset(e for e in (getattr(errno, n, None) for n in
+                                        ("EPERM", "EOPNOTSUPP", "ENOTSUP", "ENOSYS", "EMLINK", "EXDEV")) if e)
+# Windows: ERROR_INVALID_FUNCTION(1), ERROR_NOT_SAME_DEVICE(17), ERROR_NOT_SUPPORTED(50), ERROR_TOO_MANY_LINKS(1142)
+_NO_LINK_WINERRORS = frozenset({1, 17, 50, 1142})
+
+
+class CaseUnreadable(OSError):
+    """서버는 case.json 이 있다고 하는데(배타적 생성이 EEXIST) 이 클라이언트가 ``CONFIRM_SECONDS`` 동안 읽지 못했다 —
+    새 case.json 을 그 위에 쓰지 않고 이 KB 쓰기를 건너뛴다. OSError 라서 KB 를 부르는 쪽(수정 루프의 어댑터,
+    ``FileKnowledgeBase.record_run`` / ``reindex``)이 이미 잡아 WARNING 으로 끝낸다.
+
+    The server says ``case.json`` exists (an exclusive create answered EEXIST) but this client could not read it for
+    ``CONFIRM_SECONDS``: no fresh file is written over it, this KB write is skipped. An OSError, so every KB caller
+    that already survives an I/O error survives this one."""
+
+
+def _no_hard_links(e: OSError) -> bool:
+    # 이 파일 시스템에 하드 링크가 없다는 뜻의 오류인가(그 밖의 오류는 진짜 실패)
+    if getattr(e, "winerror", None) in _NO_LINK_WINERRORS:
+        return True
+    return e.errno in _NO_LINK_ERRNOS
 
 
 def valid_case_id(case_id: Optional[str]) -> bool:
@@ -272,26 +303,55 @@ class CaseStore:
         """(케이스, case.json 의 추가 키) — 없거나 못 읽거나 다른 케이스를 가리키면 경고 후 None(예외 없음).
         ``quiet`` 는 경고 대신 DEBUG(:meth:`_confirm_new` 의 다시 읽기가 같은 경고를 여러 번 내지 않게).
 
-        (case, extra keys of case.json) — None when there is no readable case file."""
-        if not valid_case_id(case_id):
-            return None
+        (case, extra keys of case.json) — None when there is no readable case file. An empty (0-byte) file is "not
+        there yet" (DEBUG): a lock-free reader may open it in another pod's confirmation probe window."""
+        hit, state, detail = self._load(case_id)
+        if hit is not None:
+            return hit
         path = self.cases_dir / case_id / CASE_FILE
-        if not path.is_file():
-            return None
-        say = log.debug if quiet else log.warning
+        if state == "empty":
+            log.debug("kb: %s is empty (being created?) — not there yet", path)
+        elif state in ("damaged", "error"):
+            (log.debug if quiet else log.warning)("kb: %s %s — skipped (`sbmig kb validate`)", path, detail)
+        return None
+
+    def _load(self, case_id: str) -> tuple[Optional[tuple[CaseInfo, dict[str, Any]]], str, str]:
+        """case.json 을 ``open()`` 으로 바로 읽는다(먼저 ``is_file()`` 을 믿지 않는다 — NFS 의 캐시된 '없음' 은 그
+        lookup 에서 나온다). (결과, 상태, 설명): 상태 ok / missing(열리지 않음: 없음) / empty(0 바이트) /
+        damaged(열리지만 JSON·CaseInfo 가 아니거나 다른 케이스) / error(다른 OSError — EACCES, EIO, 폴더 …).
+
+        Read ``case.json`` by ``open()`` (no prior ``is_file()``: a cached negative lookup is what lies on NFS).
+        (hit, state, detail): ok / missing / empty (0 bytes) / damaged (opens, does not parse or names another
+        case) / error (any other OSError)."""
+        if not valid_case_id(case_id):
+            return None, "missing", ""
+        path = self.cases_dir / case_id / CASE_FILE
+        try:
+            raw = path.read_bytes()
+        except (FileNotFoundError, NotADirectoryError):
+            return None, "missing", ""
+        except OSError as e:
+            return None, "error", f"does not read ({type(e).__name__})"
+        if not raw.strip():
+            return None, "empty", ""
         try:
             # utf-8-sig: 사람이 메모장으로 고쳐 BOM 이 붙은 case.json 도 읽는다
-            data = json.loads(path.read_text(encoding="utf-8-sig"))
+            data = json.loads(raw.decode("utf-8-sig"))
             case = CaseInfo.model_validate(data)
-        except (OSError, ValueError) as e:
-            say("kb: %s does not read (%s) — skipped (`sbmig kb validate`)", path, type(e).__name__)
-            return None
+        except ValueError as e:                           # UnicodeDecodeError / JSONDecodeError / ValidationError
+            return None, "damaged", f"does not read ({type(e).__name__})"
         if case.case_id != case_id:
-            say("kb: %s names case %s — skipped", path, case.case_id)
-            return None
+            return None, "damaged", f"names case {case.case_id}"
         # CaseInfo 에 없는 키(pin, last_result, 사람이 넣은 것)는 따로 들고 있다가 저장 때 되돌려 넣는다
         extra = {k: v for k, v in data.items() if k not in CaseInfo.model_fields}
-        return case, extra
+        return (case, extra), "ok", ""
+
+    def _keep_alive(self) -> None:
+        """긴 구간(재색인·가져오기·case.json 확인 대기)에서 KB 잠금이 낡아 깨지지 않게 mtime 을 새로 찍는다(잠금
+        모듈이 몇 초에 한 번으로 줄인다 — 항목마다 불러도 싸다)."""
+        from sbmig.kb.lock import keep_alive
+
+        keep_alive(self.root)
 
     def _save(self, case: CaseInfo, extra: Optional[dict[str, Any]] = None) -> None:
         """case.json 을 원자적으로 다시 쓴다; 추가 키는 모델 필드를 덮지 않고 뒤에 붙인다."""
@@ -344,17 +404,23 @@ class CaseStore:
         """잠금 안에서 '케이스 없음' 을 확인한다. NFS 클라이언트는 다른 파드가 방금 만든 case.json 을 캐시 때문에
         아직 '없음' 으로 답할 수 있다 — 그래서 '만들기' 로 서버에 묻는다(배타적 생성은 클라이언트 캐시가 아니라 서버가
         판정한다). 케이스 폴더를 ``mkdir`` 해 보고 만들어지면 정말 새 케이스(None). 폴더가 있으면 case.json 을
-        ``O_EXCL`` 로 만들어 본다(만들어지면 바로 지운다): 이미 있으면 다시 읽어서 그 케이스를 돌려준다(``CONFIRM_SECONDS``
-        동안 읽히지 않으면 예전처럼 경고 후 새로 씀); 없으면 에러별 JSON(``errors/``)만 있는 폴더는 조용히, 다른 것이
-        있는 폴더(case.json 을 쓰기 전에 멈춘 실행)는 경고와 함께 None — 이미 있는 스크립트 파일은 번호를 지킨다.
+        ``O_EXCL`` 로 만들어 본다(만들어지면 바로 지운다): 이미 있으면 폴더를 열어(목록 읽기 — NFS 가 폴더 속성을 다시
+        가져와 캐시된 '없음' 을 버린다) ``open()`` 으로 다시 읽기를 백오프로 ``CONFIRM_SECONDS`` 동안 반복하고(그동안
+        :func:`keep_alive` 로 잠금을 살려 둠), 읽히면 그 케이스를 돌려준다. 열리지만 ``REPAIR_SECONDS`` 동안 비어 있거나
+        깨져 있으면 예전처럼 경고 후 None(새로 씀 — 죽은 쓰기가 남긴 파일). 끝내 보이지 않으면 아무것도 쓰지 않고
+        :class:`CaseUnreadable`. 없으면 에러별 JSON(``errors/``)만 있는 폴더는 조용히, 다른 것이 있는 폴더(case.json 을
+        쓰기 전에 멈춘 실행)는 경고와 함께 None — 이미 있는 스크립트 파일은 번호를 지킨다.
 
         Inside the lock, confirm that a case reading as missing really is new: an NFS client may still answer "no
         such file" from its cache for a ``case.json`` another pod has just written, while an exclusive create is
         decided by the server. ``mkdir`` of the case folder: made → new (None). The folder exists → an ``O_EXCL``
-        create of ``case.json`` (removed at once when it succeeds): it exists → read it again and return that case (a
-        WARNING and None when it does not read for ``CONFIRM_SECONDS``: a fresh one is written, as before); it does not
-        → None, quietly for a folder of per-error files (``errors/``), with a WARNING for one a writer left before
-        saving its case.json (the scripts already there keep their numbers)."""
+        create of ``case.json`` (removed at once when it succeeds). It exists → list the folder (close-to-open: the
+        directory's attributes are fetched again, a cached negative entry goes) and read by ``open()``, with backoff,
+        for up to ``CONFIRM_SECONDS`` (the lock kept alive meanwhile); the case read is returned. A file that opens but
+        stays empty / does not parse for ``REPAIR_SECONDS`` → WARNING and None (a fresh one is written, as before: a
+        crashed writer's file). Never seen → nothing is written, :class:`CaseUnreadable` is raised (WARNING). It does
+        not exist → None, quietly for a folder of per-error files (``errors/``), with a WARNING for one a writer left
+        before saving its case.json (the scripts already there keep their numbers)."""
         d = self.case_dir(case_id)
         try:
             self.cases_dir.mkdir(parents=True, exist_ok=True)
@@ -376,24 +442,51 @@ class CaseStore:
                 log.warning("kb: cases/%s holds no %s (a writer stopped before saving it?) — a fresh %s is written; "
                             "the scripts already there keep their numbers", case_id, CASE_FILE, CASE_FILE)
             return None
-        # 있다(또는 모름): 실패한 배타적 생성이 캐시의 '없음' 을 지웠으니 다시 읽는다. 바꿔 넣는 중일 수 있어 잠깐 반복
-        deadline, delay = time.monotonic() + CONFIRM_SECONDS, 0.05
+        # 있다(또는 모름): 실패한 배타적 생성이 이 클라이언트의 캐시를 고친다는 보장은 없다(NFS 는 폴더 속성이 다시
+        # 확인될 때까지 캐시된 '없음' 을 믿는다) — 폴더를 열어 속성을 다시 가져오게 하고 open() 으로 읽기를 반복한다
+        start = time.monotonic()
+        deadline = start + (CONFIRM_SECONDS if there else REPAIR_SECONDS)
+        delay, bad_since, state, detail, said = 0.05, None, "missing", "", False
         while True:
+            try:
+                os.listdir(d)                             # close-to-open on the directory: its attributes again
+            except OSError:
+                pass
             hit = self._read(case_id, quiet=True)
             if hit is not None:
                 log.info("kb: cases/%s was created by another writer meanwhile — that case is used, not a fresh one",
                          case_id)
                 return hit
-            left = deadline - time.monotonic()
-            if left <= 0:
+            _, state, detail = self._load(case_id)
+            now = time.monotonic()
+            # 열리지만 비었거나 깨진 파일: 원자적 교체 중에는 이렇게 보이지 않는다 — 잠깐 뒤에도 그러면 고친다
+            if state in ("empty", "damaged"):
+                bad_since = now if bad_since is None else bad_since
+                if now - bad_since >= REPAIR_SECONDS:
+                    break
+            else:
+                bad_since = None
+            if now >= deadline:
                 break
-            time.sleep(min(delay, left))
-            delay *= 2
-        if there is None and not (d / CASE_FILE).is_file():
+            if not said and now - start >= 2.0:
+                said = True
+                log.info("kb: cases/%s/%s exists on the server but this client does not see it yet — looking again "
+                         "for up to %.0f s", case_id, CASE_FILE, CONFIRM_SECONDS)
+            self._keep_alive()                            # inside the KB lock: nobody may break it as stale meanwhile
+            time.sleep(max(0.01, min(delay, deadline - now)))
+            delay = min(delay * 2, CONFIRM_MAX_DELAY)
+        if state in ("empty", "damaged"):
+            log.warning("kb: cases/%s/%s is there but %s after %.0f s — a fresh one is written over it", case_id,
+                        CASE_FILE, "stays empty" if state == "empty" else detail or "does not read", REPAIR_SECONDS)
+            return None
+        if there is None and state == "missing":
             return None                                   # could not ask the server and nothing reads: as before
-        log.warning("kb: cases/%s/%s is there but does not read after %.0f s — a fresh one is written over it",
-                    case_id, CASE_FILE, CONFIRM_SECONDS)
-        return None
+        # 서버는 있다고 하는데 끝내 못 읽음: 새 파일을 그 위에 쓰면 다른 파드의 스크립트 목록·실적이 사라진다 — 안 쓴다
+        log.warning("kb: cases/%s/%s exists on the server but this client could not read it for %.0f s (%s) — nothing "
+                    "is written over it; this KB write is skipped", case_id, CASE_FILE, time.monotonic() - start,
+                    detail or state)
+        raise CaseUnreadable(errno.EAGAIN, f"cases/{case_id}/{CASE_FILE} exists but does not read on this client "
+                                           f"({detail or state}) — not overwritten")
 
     def _case_file_on_server(self, case_id: str) -> Optional[bool]:
         """case.json 이 정말 있나 — ``O_EXCL`` 생성으로 서버에 묻는다(만들어지면 바로 지움). 모르면 None.
@@ -550,7 +643,9 @@ class CaseStore:
 
         Create ``fix_v<version>.py`` exclusively — a temp file in the folder, then a hard link to the name (fails
         when the name exists: atomic, never overwrites); a number already taken (a write outside the lock) → a
-        WARNING and the next one. Without hard links: the atomic replace as before. Returns the number written."""
+        WARNING and the next one. Without hard links (EPERM / EOPNOTSUPP / ENOSYS / EMLINK / EXDEV, Windows' "not
+        supported", ``NotImplementedError``): an exclusive create of the name (``O_EXCL``) — an existing file is never
+        replaced there either. Any other link error (EIO, ESTALE, EACCES, ENOSPC …) is raised."""
         d = self.case_dir(case_id)
         d.mkdir(parents=True, exist_ok=True)
         fd, tmp = tempfile.mkstemp(prefix=".fix.", suffix=".tmp", dir=str(d))
@@ -558,32 +653,68 @@ class CaseStore:
             with os.fdopen(fd, "wb") as fh:
                 fh.write(data)
             v = int(version)
+            linked = True
             for _ in range(CLAIM_TRIES):
                 target = d / f"fix_v{v}.py"
-                try:
-                    os.link(tmp, target)
-                    return v
-                except FileExistsError:
-                    # NFS: 응답을 잃어 다시 보낸 LINK 는 성공했어도 EEXIST 로 답할 수 있다 — 링크 수가 2 면 우리 것
+                if linked:
                     try:
-                        if os.stat(tmp).st_nlink >= 2:
-                            return v
-                    except OSError:
-                        pass
-                    log.warning("kb: cases/%s/fix_v%d.py already exists (written outside the lock?) — v%d is used",
-                                case_id, v, v + 1)
-                    v += 1
-                except (OSError, NotImplementedError):
-                    # 하드 링크가 없는 파일 시스템(일부 공유 폴더): 예전 방식 — 잠금 안에서 고른 번호라 안전하다
-                    atomic_write_bytes(target, data)
+                        os.link(tmp, target)
+                        return v
+                    except FileExistsError:
+                        # NFS: 응답을 잃어 다시 보낸 LINK 는 성공했어도 EEXIST 로 답할 수 있다 — 링크 수가 2 면 우리 것
+                        try:
+                            if os.stat(tmp).st_nlink >= 2:
+                                return v
+                        except OSError:
+                            pass
+                        self._number_taken(case_id, v)
+                        v += 1
+                        continue
+                    except NotImplementedError:
+                        linked = False
+                    except OSError as e:
+                        # '하드 링크 없음' 만 대체 경로로: EIO·ESTALE·EACCES·ENOSPC 에 덮어쓰면 남의 파일을 잃는다
+                        if not _no_hard_links(e):
+                            raise
+                        linked = False
+                        log.debug("kb: cases/%s: no hard links here (%s) — exclusive create instead", case_id, e)
+                if self._create_exclusive(target, data):
                     return v
-            atomic_write_bytes(d / f"fix_v{v}.py", data)  # pragma: no cover - CLAIM_TRIES numbers taken
-            return v
+                self._number_taken(case_id, v)
+                v += 1
+            raise FileExistsError(errno.EEXIST, f"cases/{case_id}: {CLAIM_TRIES} script numbers in a row are taken")
         finally:
             try:
                 os.unlink(tmp)
             except OSError:
                 pass
+
+    @staticmethod
+    def _number_taken(case_id: str, v: int) -> None:
+        log.warning("kb: cases/%s/fix_v%d.py already exists (written outside the lock?) — v%d is used",
+                    case_id, v, v + 1)
+
+    @staticmethod
+    def _create_exclusive(target: Path, data: bytes) -> bool:
+        """하드 링크가 없는 곳의 대체: ``O_EXCL`` 로 이름을 만들고 쓴다(이미 있으면 False — 덮어쓰지 않음). 쓰다 실패하면
+        우리가 만든 그 파일을 지우고 예외를 그대로 올린다.
+
+        Without hard links: create the name with ``O_EXCL`` and write it (False when it exists — never replaced); a
+        failed write removes the file we made and raises."""
+        try:
+            fd = os.open(str(target), os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_BINARY", 0), 0o644)
+        except FileExistsError:
+            return False
+        try:
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(data)
+        except BaseException:
+            try:
+                os.unlink(str(target))                    # ours: created exclusively a moment ago
+            except OSError:
+                pass
+            raise
+        return True
 
     def _reason(self, text: str | None) -> str:
         """저장용 이유: 마스킹, 한 줄, 최대 REASON_CHARS 자.
@@ -800,7 +931,14 @@ class CaseStore:
                         and (e.l2 or (self.cases_dir / e.case_id / CASE_FILE).is_file()):
                     by_case.setdefault(e.case_id, []).append(e)
             for cid, es in by_case.items():
-                case, extra = self._case_or_new(cid, es[0].l2, case_name(es[0].message, es[0].l2), es[0].kind)
+                self._keep_alive()
+                try:
+                    case, extra = self._case_or_new(cid, es[0].l2, case_name(es[0].message, es[0].l2), es[0].kind)
+                except CaseUnreadable as ex:
+                    # 이 케이스만 건너뛴다: errors.jsonl 에는 이미 적혔으니 `sbmig kb reindex` 가 나중에 다시 센다
+                    log.warning("kb: case %s not updated by this run (%s) — `sbmig kb reindex` recounts it from %s",
+                                cid, ex, KB_ERRORS)
+                    continue
                 self._apply(case, extra, es)
                 self._save(case, extra)
             self._write_entry_files(fresh)
@@ -833,6 +971,7 @@ class CaseStore:
             return 0
         n = 0
         for e in entries:
+            self._keep_alive()                            # reindex rewrites thousands of these over NFS
             try:
                 atomic_write(self.entry_file(e), json.dumps(e.model_dump(mode="json"), ensure_ascii=False, indent=2) + "\n")
                 n += 1
@@ -932,12 +1071,18 @@ class CaseStore:
                     groups.setdefault(e.case_id, []).append(e)
             ids = set(self.case_ids()) | {cid for cid, es in groups.items() if any(x.l2 for x in es)}
             rebuilt = 0
+            self._keep_alive()
             for cid in sorted(ids):
+                self._keep_alive()                        # every case.json is rewritten: keep the lock fresh
                 es = groups.get(cid, [])
                 first = es[0] if es else None
-                case, extra = self._case_or_new(cid, first.l2 if first else "",
-                                                case_name(first.message, first.l2) if first else "",
-                                                first.kind if first else None)
+                try:
+                    case, extra = self._case_or_new(cid, first.l2 if first else "",
+                                                    case_name(first.message, first.l2) if first else "",
+                                                    first.kind if first else None)
+                except CaseUnreadable as ex:
+                    log.warning("kb reindex: case %s skipped (%s) — run `sbmig kb reindex` again later", cid, ex)
+                    continue
                 # 처음부터 다시 센다: 실행별로 묶어 _apply 하면
                 # record_run 이 실행 끝마다 센 것과 같은 결과가 된다
                 case.seen, case.resolved, case.projects = 0, 0, []
@@ -1174,6 +1319,7 @@ class CaseStore:
             log.warning("kb reindex: %d line(s) of %s are no ErrorEntry — skipped (`sbmig kb validate`)", bad,
                         KB_ERRORS)
         if changed:
+            self._keep_alive()
             atomic_write_bytes(self.errors_path, b"\n".join(out))
             self._write_entry_files(changed)
         return hunks, fixers
@@ -1291,13 +1437,20 @@ class CaseStore:
                 lines = [e.model_dump_json() for e in other.iter_errors() if e.id not in known]
                 counters["errors_added"] = append_lines(self.errors_path, lines)
             for cid in other.case_ids():
+                self._keep_alive()                        # an import copies many cases over NFS
                 theirs = other._read(cid)
                 if theirs is None:
                     continue
                 t_case, t_extra = theirs
                 mine = self._read(cid)
                 if mine is None:
-                    mine = self._confirm_new(cid)        # never copy over a case another writer just made
+                    try:
+                        mine = self._confirm_new(cid)    # never copy over a case another writer just made
+                    except CaseUnreadable as ex:
+                        # 이 케이스만 건너뛴다(가져오기는 다시 해도 같은 결과 — 나중에 다시 하면 합쳐진다)
+                        log.warning("kb import: case %s skipped (%s) — import the same file again later", cid, ex)
+                        counters["cases_skipped"] = counters.get("cases_skipped", 0) + 1
+                        continue
                 if mine is None and not self._disk_versions(cid):
                     for s in t_case.scripts:
                         code = other.code(cid, s.version)

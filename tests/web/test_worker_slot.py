@@ -1,8 +1,9 @@
 """v2.1z-ae: up to N build Jobs at once share one `~/.m2` PVC, so each slot gets its own Maven local repository. Main passes
 `SBMIG_JOB_SLOT` (1-based); the Worker leaves slot 1 (and no slot) byte-identical to before and gives slot k >= 2 the sibling
 `<base>-slot<k>` through `SBMIG_BUILD__LOCAL_REPO` in the CHILD's environment only, after the environment-pin check. It never
-fails a run over this: a bad slot number, an unresolvable base or an uncreatable directory -> the shared repository + a note.
-Journal event `worker_slot` {slot, local_repo, shared, note?} only when `SBMIG_JOB_SLOT` is set."""
+fails a run over this: an unresolvable base or an uncreatable / unwritable directory -> a pod-local repository under the temp
+directory (`pod_local: true` + note; review 2026-11-10), and only when that fails too (or the slot number is bad) the shared
+repository + a note. Journal event `worker_slot` {slot, local_repo, shared, pod_local?, note?} only when `SBMIG_JOB_SLOT` is set."""
 from __future__ import annotations
 
 import json
@@ -16,6 +17,15 @@ from sbmig.web import contract, worker
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SECRET = "abcdef123456"
 RUN_ID = "20261110-130000-cafe"
+
+
+@pytest.fixture(autouse=True)
+def pod_tmp(tmp_path, monkeypatch):
+    """The pod-local fallback lives under tempfile.gettempdir(): point it into the test's own folder."""
+    root = tmp_path / "pod-tmp"
+    root.mkdir()
+    monkeypatch.setattr(worker.tempfile, "gettempdir", lambda: str(root))
+    return root
 
 
 @pytest.fixture()
@@ -190,41 +200,50 @@ def test_slot_local_repo_shape():
     assert worker.slot_local_repo(Path("/data/m2/repo/"), 3) == Path("/data/m2/repo-slot3")
 
 
-# ---- 3. fallbacks: the run goes on with the shared repository and says so
+# ---- 3. fallbacks: a pod-local repository first (never shared), the shared repository only when that fails too
 
 @pytest.mark.parametrize("local_repo", ["null", None])
-def test_resolver_failure_falls_back_to_the_shared_repository(setup, capsys, local_repo):
+def test_resolver_failure_falls_back_to_a_pod_local_repository(setup, capsys, pod_tmp, local_repo):
     env = {**setup["env"], contract.SLOT_ENV: "2", "SBMIG_FAIL_JOB_ON_BUILD_FAIL": "1"}
     if local_repo is not None:
         env[worker.LOCAL_REPO_ENV] = local_repo
     resolver = Resolver(exc=RuntimeError("config broken near secret-ish-value-777"))
     code, cmd, _, child = run_once(setup, env, resolver, rc=2)
+    want = pod_tmp / "sbmig-m2-slot2"
     assert code == 2                                          # the child's exit code still counts
-    assert child == worker.child_environ(env) and child.get(worker.LOCAL_REPO_ENV) == local_repo
+    assert child[worker.LOCAL_REPO_ENV] == str(want) and want.is_dir()
+    assert {k: v for k, v in child.items() if k != worker.LOCAL_REPO_ENV} == \
+        {k: v for k, v in worker.child_environ(env).items() if k != worker.LOCAL_REPO_ENV}
+    assert env.get(worker.LOCAL_REPO_ENV) == local_repo       # the Worker's own environment is untouched
     assert cmd == expected_cmd(setup)
     assert contract.JobStatus.read(setup["run_dir"]).exit_code == 2
     (ev,) = slot_events(setup["run_dir"])
-    assert ev["slot"] == 2 and ev["local_repo"] is None and ev["shared"] is True
-    assert "could not be resolved (RuntimeError)" in ev["note"]
+    assert ev["slot"] == 2 and ev["local_repo"] == str(want) and ev["shared"] is False and ev["pod_local"] is True
+    assert ev["note"] == "pod-local repository: the base Maven local repository could not be resolved (RuntimeError)"
     out = capsys.readouterr().out
-    assert "[worker] WARNING: job slot 2: the base Maven local repository could not be resolved (RuntimeError); " \
-           "the run uses the shared Maven local repository" in out
+    assert "[worker] WARNING: job slot 2: pod-local repository: the base Maven local repository could not be resolved " \
+           f"(RuntimeError); the run uses the pod-local Maven local repository {want} and downloads all its dependencies " \
+           "again" in out
+    assert "shared Maven local repository" not in out
     for text in (out, (setup["run_dir"] / "journal.jsonl").read_text(encoding="utf-8")):
         assert "secret-ish-value-777" not in text             # the type name only, never the message
 
 
-def test_uncreatable_directory_falls_back_to_the_shared_repository(setup, capsys):
+def test_uncreatable_directory_falls_back_to_a_pod_local_repository(setup, capsys, pod_tmp):
     base = setup["tmp"] / "m2" / "repository"
     base.parent.mkdir(parents=True)
     (base.parent / "repository-slot2").write_text("a file in the way", encoding="utf-8")
     env = {**setup["env"], contract.SLOT_ENV: "2", worker.LOCAL_REPO_ENV: str(base)}
     code, _, _, child = run_once(setup, env)
+    want = pod_tmp / "sbmig-m2-slot2"
     assert code == 0
-    assert child == worker.child_environ(env) and child[worker.LOCAL_REPO_ENV] == str(base)
+    assert child[worker.LOCAL_REPO_ENV] == str(want) and want.is_dir()
     (ev,) = slot_events(setup["run_dir"])
-    assert ev["shared"] is True and ev["local_repo"] is None and ev["slot"] == 2
-    assert ev["note"].startswith(f"cannot create {base.parent / 'repository-slot2'}")
-    assert "WARNING: job slot 2: cannot create" in capsys.readouterr().out
+    assert ev["shared"] is False and ev["pod_local"] is True and ev["local_repo"] == str(want) and ev["slot"] == 2
+    assert ev["note"].startswith(f"pod-local repository: cannot create {base.parent / 'repository-slot2'}")
+    out = capsys.readouterr().out
+    assert "WARNING: job slot 2: pod-local repository: cannot create" in out
+    assert "PVC sbmig-m2" in out
 
 
 @pytest.mark.parametrize("raw", ["abc", "0", "-1", "2.0", "1e3"])
@@ -251,12 +270,22 @@ def test_slot_number():
 
 
 def test_apply_slot_repo_never_raises(tmp_path):
-    """Whatever the resolver raises (a plain Exception subclass), the function answers the shared repository."""
+    """Whatever the resolver raises (a plain Exception subclass), the function answers: the pod-local repository when it
+    can be made, else the shared repository."""
     for exc in (OSError("x"), ValueError("x"), KeyError("x"), TypeError("x")):
         child: dict = {}
         data = worker.apply_slot_repo(child, {contract.SLOT_ENV: "2"}, [], tmp_path / "p.yml", cwd=tmp_path,
-                                      resolver=Resolver(exc=exc))
+                                      resolver=Resolver(exc=exc), local_root=tmp_path / "pod")
+        assert data["shared"] is False and data["pod_local"] is True and type(exc).__name__ in data["note"]
+        assert child == {worker.LOCAL_REPO_ENV: str(tmp_path / "pod" / "sbmig-m2-slot2")}
+        blocked = tmp_path / "blocked"
+        blocked.write_text("a file, not a folder", encoding="utf-8")
+        child = {}
+        data = worker.apply_slot_repo(child, {contract.SLOT_ENV: "2"}, [], tmp_path / "p.yml", cwd=tmp_path,
+                                      resolver=Resolver(exc=exc), local_root=blocked)
         assert child == {} and data["shared"] is True and type(exc).__name__ in data["note"]
+        assert "pod-local fallback: cannot create" in data["note"]
+        blocked.unlink()
 
 
 # ---- 4. the value survives the child's yaml.safe_load (SBMIG_<SECTION>__<KEY> overrides are read as YAML)

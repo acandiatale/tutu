@@ -4584,3 +4584,79 @@ The user: "초반엔 무서우니까 3명까지는 빌드파드가 돌아가는 
   (several processes writing one KB: no lost update, no duplicate version, no torn file; the new-case probe; the script claim; the
   one-clock staleness, the deadline edge, `_break`), `tests/fix/test_recorder_exclusive.py` (the recorder's exclusive numbering), `tests/deploy/test_manifests.py` (the key ships switched on); counts in
   `docs/PLAN.md`.
+
+## v2.1z-af — review of the parallel round: what three pods at a time broke, fixed (2026-11-10)
+
+The user, after v2.1z-ae: "서브에이전트 돌리면서 코드 검토 동시성 이슈 될만한거나 로직에서 문제 생길법한거 찾아봐줘!" Five independent
+read-only reviews (the slot scheduler, the Worker + Kubernetes client, the KB lock + case store, every other shared location of
+a run, the page + SSE), each finding reproduced before it was fixed. Where this section contradicts v2.1z-ae, this section counts.
+
+- **Slots (Main).** Invariant: two live pods never use one slot number, and the number a run holds in memory is the one its pod was
+  started with. (1) A Job run's terminal `control/state.json` is written **while its slot is still held** (`_close_job_run` inside
+  the turn); a failed write is logged and the slot is still freed. Before, the slot was freed first: a web-pod death in between
+  left two non-terminal states with one slot. (2) Recovery honours the recorded slot **even when another recovered run holds it**
+  (`_FifoTurns.occupy`; WARNING `recovery: run A and run B both recorded slot N — both keep it …`); a new run only gets a number no
+  run holds; `parallel.running` counts runs. This replaces v2.1z-ae's "numbers unique among the holders". (3) A poll of the
+  Kubernetes API that fails in ANY way is "API unavailable" (never a failed run, never a freed slot): `K8sClient` turns an
+  unreadable / oddly shaped body into `K8sError`, `_poll_job` and the hold loop catch every exception; a 2xx create with an
+  unreadable body counts as created (WARNING). (4) A Job is ENDED only when its phase is terminal AND no pod of it is still running
+  or terminating (`JobState.active_pods`: pods not Succeeded / Failed, `status.active`, `status.terminating`); a `Failed` Job whose
+  pod is inside its termination grace is held (`ending`, INFO `job … is Failed but N pod(s) of it are still running or terminating`),
+  bounded by `SBMIG_JOB_EXIT_GRACE_S` and then the usual delete-and-wait. No new RBAC verb. (5) **A stop on a WAITING Job run takes
+  effect at once** (`_FifoTurns.withdraw`): it leaves the line, ends `stopped` (exit 3, error `stopped before the job was created`,
+  no Job), and the runs behind it move up. This replaces v2.1z-ae's "takes effect when its turn comes" for the Job modes;
+  `in-process` is unchanged. (6) Shutdown no longer waits for a just-ended Job's result file (`keep_state`: the next Main reads it).
+- **Worker.** (1) **SIGTERM / SIGINT**: the Worker is PID 1 and ignored SIGTERM, so a deleted pod or a Job past its deadline kept
+  Maven running until SIGKILL. Now it stops the whole process tree of its child (the signal to every descendant and its process
+  group, 5 s, then SIGKILL, 3 s — Maven runs in its own session, so the tree is found from the process table), redacts, and writes
+  `job-status.json {exit_code: 3, error: "the Worker was terminated by SIGTERM (pod deleted, Job deadline or stop) before sbmig
+  finished — …"}` and journal `worker_finished {…, terminated: "SIGTERM"}`; a signal before the child starts means the child never
+  starts; one after it ended is only noted. (2) **Slot repository fallback**: when `<base>-slot<k>` cannot be created or written
+  (write-tested with a probe file), or the base cannot be resolved, slot k ≥ 2 uses a **pod-local** repository
+  `<tempdir>/sbmig-m2-slot<k>` (`worker_slot {…, shared: false, pod_local: true, note}` + a WARNING that names the fix: ownership /
+  `fsGroup` of the folder on PVC `sbmig-m2`); the shared repository only when that fails too. This replaces v2.1z-ae's "the run goes
+  on with the shared repository".
+- **Knowledge base.** (1) `_confirm_new` never writes a fresh `case.json` over one the server says exists: the case folder is listed
+  and the file opened directly (no `is_file()` first) for up to `CONFIRM_SECONDS` **75** (longer than an NFS attribute cache can
+  answer "no such file"), the lock kept alive meanwhile; a file that opens but stays empty / does not parse for 1 s is repaired as
+  before; "exists on the server, never readable here" raises `CaseUnreadable(OSError)` and nothing is written — `add_script` then
+  returns None through the loop's wrapper (the script runs unstored, the migration goes on), `record_run` / `recount` / `merge_from`
+  skip that case with a WARNING (`kb import` counter `cases_skipped`). An empty `case.json` reads as "not there yet" (DEBUG).
+  (2) **Breaking a stale lock is serialized** by `<kb>/.lock.breaker` (`O_EXCL`): only its holder re-reads, judges again and moves
+  the lock aside, verifies what it moved (dev, inode, mtime, token) and puts a wrongly moved lock back by an exclusive link, never
+  a replace. Before, three contenders around a stale lock could end with two holders. A breaker of another host expires after 30 s
+  on the file system's clock, one of this host only when its pid is dead. Windows that remain are listed in the module docstring.
+  (3) A stale lock that cannot be moved (EACCES / EPERM) is waited for like a live one (it spun at 100 % CPU forever). (4)
+  `_claim_script` falls back from the hard link only on "hard links unsupported" errors, and the fallback is an exclusive create;
+  EIO / ESTALE / EACCES / ENOSPC propagate (they replaced an existing `fix_v<N>.py`). (5) `_release` removes the lock only when it
+  reads our token. (6) **Heartbeat**: `kb.lock.keep_alive(root)` refreshes the lock's mtime (at most every 10 s, only while the
+  token is ours) from the long sections (`recount`, `record_run`, `merge_from`, `export_zip`, the wait in (1)); a
+  `kb.lock_timeout_seconds` ≤ 0 means the default 300 with one WARNING (it made every lock instantly stale). (7) A clock probe that
+  itself took more than 1 s is discarded. (8) An LLM record that cannot be written is a WARNING, never a lost answer. (9) A failed
+  `kb import --replace` swap restores the previous KB and says where everything is (`<kb>.intruder-<stamp>` holds what a pod
+  created meanwhile); the rule "not while Jobs run" stays.
+- **LLM gateway, shared by the pods** (`sbmig/fix/company.py`; what the gateway really does is the company's to confirm).
+  **`llm.busy_wait_seconds`** (600; 0 = the old behaviour): a 429, or a 502 / 503 / 504 carrying `Retry-After`, means busy — that
+  call is re-sent with capped backoff + jitter (2 … 60 s; `Retry-After` honoured up to 120 s) until that many seconds were slept,
+  apart from `max_retries`; INFO `llm gateway busy (HTTP N): waiting for a free slot …`, `llm gateway still busy: waited …` about
+  once a minute, then the same `LLMError` as before (the fix loop's cool-down / `llm_unavailable` rules are unchanged; before, a
+  third pod exhausted its retries in 7 s and its whole run ended "LLM unavailable"). The waiting call counts as in flight for the
+  watchdog. **`llm.auth_retries`** (2): a 401 right after a fresh token exchange → 1–5 s pause, another exchange, up to that many
+  extra rounds; WARNING once per process `LLM gateway rejected a token right after it was exchanged — another client may be
+  exchanging the same app token (parallel build pods?)`. A rejected token is dropped only if it is still the one held. The other
+  retry sleeps carry jitter. Not covered: the token endpoint itself answering 429.
+- **The page.** After `end` with a `reason` (web-pod restart) or a dropped stream the card says `서버가 다시 시작되는 중입니다` /
+  `서버와 연결이 끊겼습니다`, and re-attaches by itself after 2, 4, 8 … 30 s (probe `GET /api/runs/<id>`; three 404s → `서버가 이 실행을
+  더 이상 알지 못합니다`); it stayed "진행 중" forever. A stop is bound to the run it was clicked on, and `{"stopped": false}` is said
+  as such (`이미 끝난 이관입니다. 중단할 것이 없습니다.`). `/api/runs` answers are applied in request order and calls within 300 ms are
+  one request.
+- **Reviewed, nothing to fix**: every Maven invocation and every direct reader of the local repository follows the slot repository;
+  no other shared file with a fixed name outside the run directory; process-level caches are per pod; XSS / path traversal on the
+  page and routes.
+- **Known, not changed**: Main and the Worker both append to `journal.jsonl` from different hosts (NFS appends are not atomic
+  across clients; lines may interleave); a fresh slot repository has no parent poms yet, so parent-chain facts come from the remote
+  lookup only on a slot's first runs; a browser on HTTP/1.1 allows six connections per host, each open run tab holds one; a signal
+  that arrives after the child wrote a successful report still shows exit 3 with `success` from the report.
+- Tests: `tests/web/test_slot_review_fixes.py`, `tests/web/test_worker_review_fixes.py`, `tests/kb/test_kb_review_fixes.py`,
+  `tests/fix/test_company_busy.py`, additions in `tests/fix/test_recorder_exclusive.py` / `tests/web/test_page_queue.py`; counts in
+  `docs/PLAN.md`.

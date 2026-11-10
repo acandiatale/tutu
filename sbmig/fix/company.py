@@ -47,6 +47,7 @@ from __future__ import annotations
 import contextvars
 import json
 import logging
+import random
 import re
 import threading
 import uuid
@@ -149,6 +150,33 @@ def finish_reason_of(data: Any) -> Optional[str]:
     return finish or data.get("finish_reason") or data.get("stop_reason")
 
 
+# 2026-11-10: 빌드 파드 여러 개가 같은 게이트웨이를 부른다 — "바쁨" 은 고장이 아니다(CompanyClient._complete)
+BUSY_WITH_RETRY_AFTER = frozenset({502, 503, 504})   # Retry-After 가 붙었을 때만 바쁨(없으면 max_retries 의 일반 5xx)
+BUSY_FIRST_DELAY = 2.0          # Retry-After 없는 바쁨: 2·4·8…초(절반~전부 사이 무작위)
+BUSY_MAX_DELAY = 60.0           # 그 상한
+BUSY_RETRY_AFTER_CAP = 120.0    # Retry-After 를 따르되 이보다 오래는 한 번에 쉬지 않는다
+BUSY_MIN_DELAY = 1.0            # Retry-After: 0 이 와도 최소 이만큼(빈 루프 방지)
+BUSY_LOG_EVERY = 60.0           # "still busy" 줄 간격(쉰 시간 기준)
+AUTH_PAUSE_MIN, AUTH_PAUSE_MAX = 1.0, 5.0   # 교환 직후의 401 뒤 다시 교환하기 전 쉬는 무작위 초
+
+TOKEN_RACE_WARNING = ("LLM gateway rejected a token right after it was exchanged \u2014 another client may be exchanging "
+                      "the same app token (parallel build pods?)")
+_TOKEN_RACE_WARNED = False
+_TOKEN_RACE_LOCK = threading.Lock()
+
+
+def _warn_token_race_once() -> None:
+    """교환 직후 401 경고를 프로세스에서 한 번만 남긴다(운영자가 옮겨 적어 게이트웨이 팀에 묻는 줄).
+
+    Log the "rejected right after the exchange" WARNING once per process."""
+    global _TOKEN_RACE_WARNED
+    with _TOKEN_RACE_LOCK:
+        if _TOKEN_RACE_WARNED:
+            return
+        _TOKEN_RACE_WARNED = True
+    log.warning(TOKEN_RACE_WARNING)
+
+
 class TokenManager:
     """v2.1z-m: 사내 GPT 에이전트 게이트웨이의 토큰 교환 — ``POST <token_url>`` 에 ``Authorization: Bearer <앱 토큰>`` 을 보내면
     ``{access_token, token_type, expires_in}`` 이 온다. 받은 토큰을 메모리에 들고 있다가(프로세스 안, 스레드 안전) 만료
@@ -192,9 +220,16 @@ class TokenManager:
             self._refresh_locked()
             return self._token
 
-    def invalidate(self) -> None:
-        """다음 ``token()`` 이 다시 받게 한다. / Make the next `token()` fetch again."""
+    def invalidate(self, rejected: Optional[str] = None) -> None:
+        """다음 ``token()`` 이 다시 받게 한다. ``rejected`` 를 주면 지금 들고 있는 토큰이 바로 그 거절된 토큰일 때만 버린다 —
+        같은 프로세스의 다른 호출이 그 사이 이미 새로 받아 왔다면 그 새 토큰을 버리고 또 교환하지 않는다(교환할 때마다
+        이전 토큰이 무효가 되는 게이트웨이에서 서로의 토큰을 죽이는 핑퐁을 막는다).
+
+        Make the next `token()` fetch again. With `rejected`, only when the held token IS that rejected token: a newer
+        token another call of this process already fetched is kept (no second exchange that would kill it)."""
         with self._lock:
+            if rejected is not None and self._token and self._token != rejected:
+                return
             self._token, self._expires_at = "", 0.0
 
     def _refresh_locked(self) -> None:
@@ -230,8 +265,15 @@ class CompanyClient:
                  extra_headers: Optional[dict[str, str]] = None, post: Optional[PostFn] = None,
                  sleep: Callable[[float], None] = time.sleep, heartbeat_s: float = 30.0,
                  hard_deadline_s: Optional[float] = None, gateway: str = "legacy", asset_id: Optional[str] = None,
-                 token_manager: Optional[TokenManager] = None, agent_extra: Optional[dict] = None):
+                 token_manager: Optional[TokenManager] = None, agent_extra: Optional[dict] = None,
+                 busy_wait_s: float = 600.0, auth_retries: int = 2,
+                 rand: Callable[[float, float], float] = random.uniform):
         self.url = (url or "").strip()
+        # 2026-11-10: 빌드 파드 여러 개가 같은 게이트웨이·같은 앱 토큰을 쓴다 — 바쁨(429 …)은 이 초까지 기다리고,
+        # 교환 직후의 401 은 auth_retries 번 더 교환해 본다. rand 는 지터(테스트가 고정값을 넣는다)
+        self.busy_wait_s = max(0.0, float(busy_wait_s or 0))
+        self.auth_retries = max(0, int(auth_retries or 0))
+        self._rand = rand
         # v2.1z-m: legacy = {model, messages, **payload_extra}; agent = the in-house GPT agent gateway (asset id as
         # `model`, the chosen model name as `params.role`, Bearer = the exchanged access token)
         self.gateway = (gateway or "legacy").strip().lower()
@@ -263,8 +305,11 @@ class CompanyClient:
     def headers(self) -> dict[str, str]:
         """보낼 헤더: `Authorization: Bearer <키>` + `llm.extra_headers`. 이 dict 는 로그·기록·화면에 내보내지
         말 것(키가 들어 있다)."""
+        return self._auth_headers()[0]
+
+    def _auth_headers(self) -> tuple[dict[str, str], str]:
         key = self._tokens.token() if self._tokens is not None else self._api_key
-        return {"Authorization": f"Bearer {key}", **self.extra_headers}
+        return {"Authorization": f"Bearer {key}", **self.extra_headers}, key
 
     def payload(self, messages: list[ChatMessage], model: Optional[str] = None, *, max_tokens: Optional[int] = None,
                 temperature: Optional[float] = None, metadata: Optional[dict] = None) -> dict[str, Any]:
@@ -301,13 +346,17 @@ class CompanyClient:
         extra = f" params.role={payload.get('params', {}).get('role')}" if self.gateway == "agent" else ""
         return f"role={role or '-'} model={payload['model']}{extra}"
 
-    def post_once(self, payload: dict[str, Any]) -> Any:
-        """정확히 그 호출 모양의 ``requests.post`` 한 번(probe 와 재시도 루프가 함께 쓴다).
+    def post_once(self, payload: dict[str, Any], _sent: Optional[dict] = None) -> Any:
+        """정확히 그 호출 모양의 ``requests.post`` 한 번(probe 와 재시도 루프가 함께 쓴다). ``_sent`` 에는 보낸 토큰을
+        적어 둔다(401 뒤 그 토큰만 버리려고; 로그에는 절대 쓰지 않는다).
 
         One ``requests.post`` with the exact call shape; returns the ``requests.Response``."""
-        return self._post(self.url, headers=self.headers(), json=payload, timeout=self.timeout)
+        headers, key = self._auth_headers()
+        if _sent is not None:
+            _sent["token"] = key
+        return self._post(self.url, headers=headers, json=payload, timeout=self.timeout)
 
-    def _post_with_heartbeat(self, payload: dict[str, Any], label: str) -> Any:
+    def _post_with_heartbeat(self, payload: dict[str, Any], label: str, sent: Optional[dict] = None) -> Any:
         """post_once 를 작업 스레드에서 돌리고, 답이 없는 동안 `heartbeat_s` 마다 INFO 한 줄(운영자가 느린
         답과 멈춘 실행을 구별). `hard_deadline_s` 가 지나면 스레드를 버려 두고 LLMHardDeadline 을 던진다.
 
@@ -332,7 +381,7 @@ class CompanyClient:
 
         def call() -> None:
             try:
-                result["resp"] = self.post_once(payload)
+                result["resp"] = self.post_once(payload, sent)
             except BaseException as exc:  # noqa: BLE001 - handed back to the caller's except clause
                 result["exc"] = exc
 
@@ -363,10 +412,31 @@ class CompanyClient:
         with _in_flight():                      # the fix loop's watchdog stays quiet while the gateway is working
             return self._complete(messages, payload, role)
 
+    def _is_busy(self, resp: Any) -> bool:
+        """게이트웨이가 "바쁨" 이라고 답했나: 429, 또는 Retry-After 가 붙은 502 / 503 / 504.
+
+        The gateway said "busy": 429, or 502 / 503 / 504 carrying `Retry-After`."""
+        if resp.status_code == 429:
+            return True
+        return resp.status_code in BUSY_WITH_RETRY_AFTER and _retry_after_seconds(resp) is not None
+
+    def _busy_delay(self, n: int, retry_after: Optional[float]) -> float:
+        """바쁨 n 번째(0부터) 다음에 쉴 초. Retry-After 가 있으면 그 값(상한 BUSY_RETRY_AFTER_CAP)에 0~10 % 를 더하고,
+        없으면 2·4·8…초(상한 BUSY_MAX_DELAY)의 절반~전부 사이 무작위 — 파드들이 같은 순간에 다시 몰리지 않게.
+
+        Seconds to wait after the n-th busy answer: Retry-After (capped) + 0-10 %, else capped exponential backoff
+        with equal jitter (half to all of it), so parallel pods do not come back in lockstep."""
+        if retry_after is not None:
+            return max(BUSY_MIN_DELAY, min(retry_after, BUSY_RETRY_AFTER_CAP)) * self._rand(1.0, 1.1)
+        base = min(BUSY_MAX_DELAY, BUSY_FIRST_DELAY * 2.0 ** min(n, 16))
+        return self._rand(base / 2.0, base)
+
     def _complete(self, messages: list[ChatMessage], payload: dict[str, Any], role: Optional[str]) -> LLMResponse:
         """재시도 루프: 시도마다 INFO 한 줄(URL·프롬프트 글자 수·timeout). 전송 오류(`cause=` 계산)와
-        RETRY_STATUS(503 등)는 다시(Retry-After 우선 최대 120초, 없으면 1·2·4…초, 최대 30초), 그 밖의 HTTP
-        오류는 즉시 LLMError. 포기 문구에는 마지막이 전송 장애면 `cause=`, HTTP 면 본문 앞부분이 들어간다."""
+        RETRY_STATUS(503 등)는 다시(Retry-After 우선 최대 120초, 없으면 1·2·4…초에 0~25 % 지터, 최대 30초), 그 밖의 HTTP
+        오류는 즉시 LLMError. 포기 문구에는 마지막이 전송 장애면 `cause=`, HTTP 면 본문 앞부분이 들어간다.
+        바쁨(429, Retry-After 붙은 502/503/504)은 `busy_wait_s` 초를 쉬는 동안 max_retries 와 따로 다시 보낸다(0 = 예전대로).
+        401 은 토큰을 새로 받아 한 번 더, 그래도 401 이면 1~5초 쉬고 `auth_retries` 번까지 더."""
         t0 = time.monotonic()
         last_status: Optional[int] = None
         last_body = ""
@@ -374,15 +444,26 @@ class CompanyClient:
         chars = sum(len(m.content) for m in messages)
         cause: Optional[str] = None             # `<Class>: <message>` of the last transport failure (None after an HTTP answer)
         auth_retried = False                    # v2.1z-m: one extra attempt after a 401 with a fresh token
-        total = self.max_retries + 1            # grows by one only when that 401 happens (other failures keep max_retries)
+        auth_rounds = 0                         # 2026-11-10: further rounds after a 401 that followed a fresh exchange
+        total = self.max_retries + 1            # grows by one only when a 401 round happens (other failures keep max_retries)
+        busy_tries = 0                          # 2026-11-10: busy answers of this call (they do not use max_retries)
+        busy_waited = 0.0                       # seconds slept on busy answers (the llm.busy_wait_seconds budget)
+        busy_logged = 0.0                       # busy_waited when the last "busy" line was written
+        posts = 0
+        quiet_start = False                     # the next POST re-sends after a busy answer
         attempt = -1
         while attempt + 1 < total:
             attempt += 1
             wait: Optional[float] = None
-            log.info("llm call provider=company %s attempt %d/%d → POST %s (prompt %d chars, timeout %.0fs)", label,
-                     attempt + 1, self.max_retries + 1, self.url, chars, self.timeout)
+            posts += 1
+            # 바쁨 재시도의 시작 줄은 DEBUG — 운영자에게는 1분에 한 줄 "still busy" 만 보인다
+            log.log(logging.DEBUG if quiet_start else logging.INFO,
+                    "llm call provider=company %s attempt %d/%d → POST %s (prompt %d chars, timeout %.0fs)", label,
+                    attempt + 1, self.max_retries + 1, self.url, chars, self.timeout)
+            quiet_start = False
+            sent: dict[str, str] = {}
             try:
-                resp = self._post_with_heartbeat(payload, label)
+                resp = self._post_with_heartbeat(payload, label, sent)
             except (requests.RequestException, LLMHardDeadline) as exc:
                 cause = transport_cause(exc)
                 last_status, last_body = None, f"{type(exc).__name__}: {exc}"
@@ -396,6 +477,9 @@ class CompanyClient:
                     except ValueError as exc:
                         raise LLMError(resp.status_code, resp.text[:500], f"invalid JSON from LLM: {exc}") from exc
                     out = self._parse(data, payload["model"])
+                    if busy_tries:
+                        log.info("llm gateway answered after waiting %.0fs on busy (%d busy answer(s)) - %s",
+                                 busy_waited, busy_tries, label)
                     log.info("llm call provider=company model=%s in=%d out=%d latency=%.1fs finish=%s", out.model,
                              out.input_tokens, out.output_tokens, time.monotonic() - t0, out.finish_reason)
                     return out
@@ -403,9 +487,45 @@ class CompanyClient:
                 if resp.status_code == 401 and self._tokens is not None and not auth_retried:
                     auth_retried = True
                     total += 1
-                    self._tokens.invalidate()
+                    # 보낸 그 토큰일 때만 버린다: 같은 프로세스의 다른 호출이 이미 새로 받아 왔으면 또 교환하지 않는다
+                    self._tokens.invalidate(sent.get("token"))
                     log.warning("llm company HTTP 401: the access token is refreshed and the call retried once")
                     continue
+                if resp.status_code == 401 and self._tokens is not None and auth_rounds < self.auth_retries:
+                    # 막 교환한 토큰도 거절됨: 같은 앱 토큰을 다른 파드가 교환해 이 토큰을 무효로 만들었을 수 있다 —
+                    # 잠깐(무작위) 쉬어 상대의 교환이 끝나게 한 뒤 다시 받아 보낸다
+                    auth_rounds += 1
+                    total += 1
+                    _warn_token_race_once()
+                    pause = self._rand(AUTH_PAUSE_MIN, AUTH_PAUSE_MAX)
+                    log.warning("llm company HTTP 401 again after a fresh token: exchanging once more in %.0fs "
+                                "(round %d/%d, llm.auth_retries)", pause, auth_rounds, self.auth_retries)
+                    self._sleep(pause)
+                    self._tokens.invalidate(sent.get("token"))
+                    continue
+                if self.busy_wait_s > 0 and self._is_busy(resp):
+                    remaining = self.busy_wait_s - busy_waited
+                    if remaining > 0:
+                        delay = min(self._busy_delay(busy_tries, _retry_after_seconds(resp)), remaining)
+                        if busy_tries == 0:
+                            log.info("llm gateway busy (HTTP %d): waiting for a free slot, up to %.0fs "
+                                     "(llm.busy_wait_seconds) - %s", resp.status_code, self.busy_wait_s, label)
+                            busy_logged = 0.0
+                        elif busy_waited - busy_logged >= BUSY_LOG_EVERY:
+                            log.info("llm gateway still busy: waited %.0fs of %.0fs, last HTTP %d (%d busy answer(s)) - %s",
+                                     busy_waited, self.busy_wait_s, resp.status_code, busy_tries, label)
+                            busy_logged = busy_waited
+                        busy_tries += 1
+                        self._sleep(delay)
+                        busy_waited += delay
+                        attempt -= 1            # 바쁨은 max_retries 를 쓰지 않는다
+                        quiet_start = True
+                        continue
+                    log.error("llm company giving up: gateway busy for %.0fs (llm.busy_wait_seconds=%.0f, %d busy "
+                              "answer(s)) status=%s body=%s", busy_waited, self.busy_wait_s, busy_tries, last_status,
+                              ascii_safe(last_body, 300))
+                    raise LLMError(last_status, last_body,
+                                   f"LLM request failed after {posts} attempt(s) (status={last_status}): {last_body[:200]}")
                 if resp.status_code not in RETRY_STATUS:
                     log.error("llm company HTTP %d: %s", resp.status_code, last_body[:300].replace("\n", " "))
                     raise LLMError(resp.status_code, last_body)
@@ -413,7 +533,8 @@ class CompanyClient:
                 log.warning("llm company HTTP %d (attempt %d/%d)", resp.status_code, attempt + 1,
                             self.max_retries + 1)
             if attempt + 1 < total:
-                delay = min(wait, 120.0) if wait is not None else min(30.0, 2.0 ** attempt)
+                # Retry-After 는 그대로 따르고, 1·2·4…초에는 0~25 % 지터 — 여러 파드가 같은 박자로 재시도하지 않게
+                delay = min(wait, 120.0) if wait is not None else min(30.0, 2.0 ** attempt) * self._rand(1.0, 1.25)
                 log.info("llm call retrying in %.0fs (attempt %d/%d failed: status=%s%s)", delay, attempt + 1,
                          self.max_retries + 1, last_status, f" cause={cause}" if cause else "")
                 self._sleep(delay)

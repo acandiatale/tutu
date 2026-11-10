@@ -73,7 +73,7 @@ import uuid
 from collections import deque
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
@@ -160,6 +160,12 @@ class _ServerClosing(Exception):
     The server shuts down while a run waits for the Kubernetes API: the control state is kept for the next Main."""
 
 
+class _LeftLine(Exception):
+    """기다리던 실행이 멈춤 요청으로 줄에서 빠졌다(``_FifoTurns.withdraw``) — 자리를 받지 않았고 Job 도 만들지 않는다.
+
+    A waiting run was taken out of the line by a stop (`_FifoTurns.withdraw`): no slot, no Job."""
+
+
 @dataclass
 class Run:
     """이 서버 프로세스가 시작한 실행 하나의 메모리 상태: 이벤트 기록(``history``), 멈춤 요청(``cancel``),
@@ -223,26 +229,30 @@ class _FifoTurns:
     """이관 차례 줄(FIFO) + 번호 붙은 자리(v2.1z-ae): 올린 순서대로, 동시에 ``slots`` 개까지. ``join`` 으로 줄 끝에 서고(업로드를
     받을 때, 작업 스레드 시작 전), ``turn`` 이 **줄 맨 앞이고 빈 자리가 있을 때까지** 기다렸다가 비어 있는 가장 작은 번호(1 부터)를
     차지하고 그 번호를 내준다 — 아무도 앞사람을 앞지르지 못한다. 블록을 떠나면(예외여도) 자리를 비우고 기다리는 스레드를 깨운다.
-    ``occupy`` 는 재시작 복구 전용: 클러스터에 이미 있는(있을 수 있는) Job 은 이미 돌고 있으므로 한도와 상관없이 지금 자리를 잡는다.
+    ``occupy`` 는 재시작 복구 전용: 클러스터에 이미 있는(있을 수 있는) Job 은 이미 돌고 있으므로 한도와 상관없이 지금 자리를 잡는다 —
+    적힌 번호 그대로(다른 키가 쥐었어도; 새 실행은 어느 키도 쥐지 않은 번호만 받는다). ``withdraw`` 는 멈춘 대기 실행을 줄에서 뺀다.
     ``threading.Lock`` 은 기다리는 스레드 중 누구에게 넘어갈지 정하지 않아 순서가 뒤바뀔 수 있었다(A10). ``slots == 1`` 이면 예전과 같다.
 
     Upload-order line plus numbered slots: `join` takes a place at the end of the line (when the upload is accepted,
     before the worker thread starts); `turn(key)` waits until `key` is first in line AND fewer than `slots` keys hold a
     slot (strict FIFO), takes the lowest free slot number from 1 and yields it; leaving the block (even by an exception)
-    frees the slot and wakes the waiters. `occupy` (restart recovery only) takes a slot at once, whatever the limit. A
+    frees the slot and wakes the waiters. `occupy` (restart recovery only) takes a slot at once, whatever the limit, and
+    keeps the recorded number even when another key holds it (a new run only gets a number no key holds); `withdraw`
+    takes a stopped waiting key out of the line. A
     plain `threading.Lock` does not grant waiters in order. With `slots == 1` the behaviour is the old one-at-a-time."""
 
     def __init__(self, slots: int = 1) -> None:
         self.slots = max(1, int(slots))
         self._cond = threading.Condition()
         self._line: deque[str] = deque()
-        self._active: dict[str, int] = {}       # key → slot number, unique among the holders
+        # key → slot number. 새 실행(turn)이 받는 번호는 어느 키도 쥐지 않은 번호뿐이다. 복구(occupy)만 적힌 번호를 그대로 지켜 두 키가
+        # 한 번호를 쥘 수 있다 — 두 파드가 실제로 그 번호로 돌고 있으므로(리뷰 2026-11-10)
+        self._active: dict[str, int] = {}
+        self._withdrawn: set[str] = set()       # 기다리다 줄에서 빠진 키(멈춤) — turn() 이 깨어나 _LeftLine 을 낸다
 
-    def _lowest_free(self, prefer: int | None = None) -> int:
-        # 호출자가 _cond 를 쥐고 있다. 번호는 자리를 쥔 실행들 사이에서만 겹치지 않으면 된다(한도보다 많이 쥘 수 있다: 복구)
+    def _lowest_free(self) -> int:
+        # 호출자가 _cond 를 쥐고 있다. 어느 키도 쥐지 않은 가장 작은 번호(1 부터)
         used = set(self._active.values())
-        if prefer is not None and prefer >= 1 and prefer not in used:
-            return prefer
         n = 1
         while n in used:
             n += 1
@@ -266,17 +276,40 @@ class _FifoTurns:
             except ValueError:
                 pass
             self._active.pop(key, None)
+            self._withdrawn.discard(key)
             self._cond.notify_all()
+
+    def withdraw(self, key: str) -> bool:
+        """기다리는 키를 지금 줄에서 뺀다(멈춤 요청, 리뷰 2026-11-10). 그 키의 ``turn()`` 은 깨어나 ``_LeftLine`` 을 낸다 — 자리를 받지
+        않는다. 줄에 없으면(이미 자리를 받았거나 모르는 키) False 이고 아무것도 바꾸지 않는다. 자리를 받는 일과 같은 잠금 안이라 둘 중
+        하나만 일어난다. 뒤의 실행들은 한 칸씩 앞으로(``notify_all``).
+
+        Take a waiting key out of the line now; its `turn()` wakes up and raises `_LeftLine` instead of taking a slot. False
+        (and nothing changed) when `key` is not waiting — it already holds a slot, or it is unknown. Decided under the same
+        lock as taking a slot, so exactly one of the two happens."""
+        with self._cond:
+            if key in self._active or key not in self._line:
+                return False
+            self._line.remove(key)
+            self._withdrawn.add(key)
+            self._cond.notify_all()
+            return True
 
     def occupy(self, key: str, prefer: int | None = None) -> int:
         """재시작 복구 전용: 한도와 상관없이 **지금** 자리를 잡고 그 번호를 돌려준다(줄에 있었으면 줄에서 빠진다). ``prefer`` (state.json 에
-        적힌 번호)가 비어 있으면 그것, 아니면 비어 있는 가장 작은 번호. 이미 자리를 쥔 키면 그 번호.
+        적힌 번호)가 있으면 **다른 키가 이미 쥐었어도 그 번호** — 그 Job 의 파드는 env 로 받은 그 번호(그 번호의 Maven 로컬 저장소)로 돌고
+        있으므로 메모리에서 다른 번호를 주면 나중에 그 번호가 새 실행에 넘어간다(리뷰 2026-11-10). 겹치면 두 실행을 이름 대어 WARNING.
+        ``prefer`` 가 없거나 읽을 수 없으면 비어 있는 가장 작은 번호. 이미 자리를 쥔 키면 그 번호.
 
-        Restart recovery only: take a slot now whatever the limit (a Job that exists already runs and must be counted);
-        `prefer` (the recorded number) when it is free, else the lowest free one. A key already holding a slot keeps it."""
+        Restart recovery only: take a slot now whatever the limit (a Job that exists already runs and must be counted).
+        `prefer` (the recorded number) is honoured even when another key holds it — the pod really uses it — with a
+        WARNING naming both runs; a number is free for a new run only when no key holds it. Without a readable `prefer`:
+        the lowest free number. A key already holding a slot keeps it."""
         try:
             want: int | None = int(prefer) if prefer is not None else None
         except (TypeError, ValueError):
+            want = None
+        if want is not None and want < 1:
             want = None
         with self._cond:
             if key in self._active:
@@ -285,7 +318,15 @@ class _FifoTurns:
                 self._line.remove(key)
             except ValueError:
                 pass
-            slot = self._lowest_free(want)
+            self._withdrawn.discard(key)
+            if want is None:
+                slot = self._lowest_free()
+            else:
+                slot = want
+                others = sorted(k for k, s in self._active.items() if s == slot)
+                if others:
+                    log.warning("recovery: run %s and run %s both recorded slot %d — both keep it (their pods use it); "
+                                "a new run gets slot %d only after both ended", key, ", ".join(others), slot, slot)
             self._active[key] = slot
             self._cond.notify_all()            # the places of the waiting ones changed
             return slot
@@ -294,19 +335,33 @@ class _FifoTurns:
     def turn(self, key: str) -> Iterator[int]:
         """``key`` 차례가 올 때까지(줄 맨 앞 + 빈 자리) 기다린 뒤 자리 번호를 내주고 블록을 돌리고, 끝나면 자리를 비운다. ``join`` 없이
         불렀으면 지금 줄 끝에 선다(늦게 온 만큼 뒤에서 기다린다). ``occupy`` 로 이미 자리를 쥔 키면 기다리지 않고 그 번호를 내준다.
+        기다리는 중에 ``withdraw`` 로 줄에서 빠졌으면(멈춤) 자리를 받지 않고 ``_LeftLine`` 을 낸다.
 
         Wait until `key` is first in line and a slot is free, yield the slot number, free it when the block leaves. A key
-        that already holds a slot (`occupy`) gets it at once; a key that never joined joins now (at the end)."""
+        that already holds a slot (`occupy`) gets it at once; a key that never joined joins now (at the end). A key taken
+        out of the line by `withdraw` (a stop while waiting) raises `_LeftLine` without a slot."""
         with self._cond:
             slot = self._active.get(key)
             if slot is None:
+                if key in self._withdrawn:         # withdrawn before this thread reached the line
+                    self._withdrawn.discard(key)
+                    raise _LeftLine(key)
                 if key not in self._line:
                     self._line.append(key)
-                while self._line[0] != key or len(self._active) >= self.slots:   # `key` is in line until it gets a slot
+                while True:
+                    held = self._active.get(key)
+                    if held is not None:           # occupy() gave it a slot meanwhile (recovery)
+                        slot = held
+                        break
+                    if key not in self._line:      # withdraw(): left the line while waiting
+                        self._withdrawn.discard(key)
+                        raise _LeftLine(key)
+                    if self._line[0] == key and len(self._active) < self.slots:
+                        self._line.popleft()
+                        slot = self._lowest_free()
+                        self._active[key] = slot
+                        break
                     self._cond.wait()
-                self._line.popleft()
-                slot = self._lowest_free()
-                self._active[key] = slot
                 # 자리가 둘 이상이면 다음 맨 앞도 곧바로 들어갈 수 있다 — 깨워서 스스로 보게 한다
                 self._cond.notify_all()
         try:
@@ -328,7 +383,7 @@ class _FifoTurns:
             return self._active.get(key)
 
     def counts(self) -> tuple[int, int]:
-        """(자리를 쥔 수, 기다리는 수). / (running, waiting)."""
+        """(자리를 쥔 키의 수, 기다리는 수) — 복구로 두 키가 한 번호를 쥐면 둘로 센다. / (keys holding a slot, waiting)."""
         with self._cond:
             return len(self._active), len(self._line)
 
@@ -768,63 +823,66 @@ class RunManager:
         The worker thread: `queued` until first in line with a free slot, then `active` (a Job run keeps its slot number in
         `run.slot`); whatever happens, the finally block writes the end of the run and wakes the streams."""
         log_path: Path | None = None
+        settled = False                        # a Job run's terminal control state was written (or tried) inside its turn
         try:
             # import 도 try 안에서: 여기서 죽어도 finally 가 줄에서 빼야 뒤의 실행이 영원히 기다리지 않는다
             from sbmig.cli import attach_file_log, run_exit_code
 
             # Job 모드는 max_parallel 개까지(파드마다 따로, KB 쓰기는 파일 잠금, 자리마다 Maven 로컬 저장소), in-process 는 하나. 차례는
             # 올린 순서(FIFO 줄, start_file 에서 섬) — 예전의 threading.Lock 은 기다리는 스레드에게 넘겨주는 순서를 보장하지 않았다(A10)
-            with self._turns.turn(run.run_id) as slot:  # upload order; up to max_parallel Jobs at a time (docstring)
-                if run.job:
-                    run.slot = slot
-                run.active.set()
-                with run.cond:                         # the run's SSE streams see queued → running at once, not on the next tick
-                    run.cond.notify_all()
-                if run.job:                            # k8s Job mode: the pod writes this run's sbmig.log — not this process
-                    run.exit_code = self._run_job(run)
-                    return
-                # thread_id: 이 스레드(와 그 컨텍스트를 물려받은 LangGraph 실행기 스레드)의 로그만 이 파일로 —
-                # 같은 프로세스의 다른 실행·서버 로그가 섞이지 않게
-                log_path = attach_file_log(run.run_dir / "sbmig.log", thread_id=threading.get_ident())
-                # 이 실행 sbmig.log 의 첫 줄: 어떤 설정으로 돌았는지
-                log.info("run %s: configs=%s stop_after=%s llm_provider=%s", run.run_id,
-                         ",".join(run.configs) or "-", run.stop_after or "-", run.llm_provider or "-")
-                report = self._run_thread_body(run)
-                run.report = report
-                run.exit_code = run_exit_code(report) if report is not None else EXIT_ABORTED
-                if report is not None:          # the line operators retype (round 10), also in this run's sbmig.log
-                    from sbmig.report.result_line import report_result_line
-                    log.info("%s", report_result_line(report, run.exit_code, run_id=run.run_id))
-        except Exception as e:  # the orchestrator never raises; a crash here is a bug in the engine / this module
-            log.exception("run %s failed", run.run_id)
-            run.error = scrub(f"{type(e).__name__}: {e}")
-            run.exit_code = EXIT_ABORTED
-            if run.job:
-                run.final_state = run.final_state or RunState.FAILED.value
-            self._push(run, "error", {"message": run.error})
+            try:
+                with self._turns.turn(run.run_id) as slot:  # upload order; up to max_parallel Jobs at a time (docstring)
+                    if run.job:
+                        run.slot = slot
+                    run.active.set()
+                    with run.cond:                         # the run's SSE streams see queued → running at once, not on the next tick
+                        run.cond.notify_all()
+                    if run.job:                            # k8s Job mode: the pod writes this run's sbmig.log — not this process
+                        try:
+                            run.exit_code = self._run_job(run)
+                        except Exception as e:  # noqa: BLE001 — _run_job catches everything itself; a bug here must still settle
+                            self._record_crash(run, e)
+                        finally:
+                            # 리뷰 2026-11-10: 끝 상태(control/state.json)를 **자리를 쥔 채로** 적는다. 자리를 먼저 비우면 그 사이(웹 파드가
+                            # 죽거나 쓰기가 실패하면) 다음 실행이 같은 번호를 적고, 재시작 뒤 끝나지 않은 두 상태가 한 번호를 갖는다.
+                            # 쓰기가 실패해도(로그만) 블록을 떠나며 자리는 비운다 — 새지 않는다
+                            settled = True
+                            self._close_job_run(run)
+                        return
+                    # thread_id: 이 스레드(와 그 컨텍스트를 물려받은 LangGraph 실행기 스레드)의 로그만 이 파일로 —
+                    # 같은 프로세스의 다른 실행·서버 로그가 섞이지 않게
+                    log_path = attach_file_log(run.run_dir / "sbmig.log", thread_id=threading.get_ident())
+                    # 이 실행 sbmig.log 의 첫 줄: 어떤 설정으로 돌았는지
+                    log.info("run %s: configs=%s stop_after=%s llm_provider=%s", run.run_id,
+                             ",".join(run.configs) or "-", run.stop_after or "-", run.llm_provider or "-")
+                    report = self._run_thread_body(run)
+                    run.report = report
+                    run.exit_code = run_exit_code(report) if report is not None else EXIT_ABORTED
+                    if report is not None:          # the line operators retype (round 10), also in this run's sbmig.log
+                        from sbmig.report.result_line import report_result_line
+                        log.info("%s", report_result_line(report, run.exit_code, run_id=run.run_id))
+            except _LeftLine:
+                # 리뷰 2026-11-10: 기다리던 Job 실행이 멈춤으로 줄에서 빠졌다 — 차례가 와서 cancel 을 본 것과 똑같이 끝낸다(Job 없음)
+                log.info("run %s: stopped while waiting — left the line", run.run_id)
+                run.exit_code = self._stopped_before_create(run)
+        except Exception as e:  # noqa: BLE001 — the orchestrator never raises; a crash here is a bug (logged in _record_crash)
+            self._record_crash(run, e)
         finally:
             self._turns.leave(run.run_id)      # already left after a turn; this covers a failure before it
             run.active.set()
             log.info("run %s finished: exit code %s", run.run_id, run.exit_code)
             if log_path is not None:
                 _detach_file_log(log_path)
-            # 마지막 정제: 쓰는 순간의 정제가 닿지 않는 파일(Maven 출력 logs/, 보고서)을 훑는다. done 을 세우기 전에 — 그 전에는
-            # file_withheld 가 그 파일들을 내주지 않는다. 이 프로세스 안에서 돈 실행은 출력 정제가 걸려 있을 때 여기서 한다. Job 실행은
-            # Worker 가 끝에 하지만(job-status.json 을 쓰기 직전), 그 파일 없이 끝난 Job(파드가 죽었다)은 그 단계를 못 지났을 수 있어
-            # Main 이 자기 환경의 비밀 값으로 대신한다 — Job 이 끝난 것을 확인했을 때만(아직 돌 수 있는 Job 의 파일은 건드리지 않는다:
-            # 서버 종료로 두고 나가는 Job, 우리 것이 아닌 Job)
             if run.job:
-                final_pass = run.verified is not True and run.job_phase in TERMINAL_PHASES and not run.keep_state
+                if not settled:                # no slot was taken (left the line, or a failure before the turn)
+                    self._close_job_run(run)
+                success = run.success
             else:
-                final_pass = output_scrubbing()
-            if final_pass:
-                try:
-                    from sbmig.web.redact import redact_run_dir
-                    redact_run_dir(run.run_dir)
-                except Exception:  # noqa: BLE001
-                    log.exception("run %s: the final output redaction failed", run.run_id)
-            success = self._settle_job_run(run) if run.job else getattr(run.report, "success", None)
-            run.success = success
+                # 마지막 정제(이 프로세스 안의 실행): 출력 정제가 걸려 있을 때. done 을 세우기 전에 — 그 전에는 file_withheld 가 내주지 않는다
+                if output_scrubbing():
+                    self._final_redaction(run)
+                success = getattr(run.report, "success", None)
+                run.success = success
             self._push(run, "finished", {"exit_code": run.exit_code, "success": success})
             if not run.keep_state:             # a Job left running at shutdown: its state.json speaks for it, not web-status.json
                 _write_web_status(run)
@@ -833,6 +891,45 @@ class RunManager:
                 run.cond.notify_all()
             with self._lock:
                 self._prune_locked()
+
+    def _record_crash(self, run: Run, e: BaseException) -> None:
+        # 작업 스레드 안의 예상 못 한 예외(엔진·이 모듈의 버그): 실행을 실패로 적고 화면에 알린다
+        log.exception("run %s failed", run.run_id)
+        run.error = scrub(f"{type(e).__name__}: {e}")
+        run.exit_code = EXIT_ABORTED
+        if run.job:
+            run.final_state = run.final_state or RunState.FAILED.value
+        self._push(run, "error", {"message": run.error})
+
+    def _final_redaction(self, run: Run) -> None:
+        # 마지막 정제: 쓰는 순간의 정제가 닿지 않는 파일(Maven 출력 logs/, 보고서)을 훑는다. 실패해도 실행을 막지 않는다(로그만)
+        try:
+            from sbmig.web.redact import redact_run_dir
+            redact_run_dir(run.run_dir)
+        except Exception:  # noqa: BLE001
+            log.exception("run %s: the final output redaction failed", run.run_id)
+
+    def _close_job_run(self, run: Run) -> None:
+        """Job 실행의 마무리 — 마지막 정제(필요할 때)와 끝 상태 기록(``_settle_job_run``) 후 ``run.success``. 자리를 쥔 실행은 **자리를
+        비우기 전에** 부른다(리뷰 2026-11-10). 무슨 일이 있어도 예외를 내지 않는다(자리는 부른 쪽의 블록이 비운다).
+        Job 실행의 마지막 정제는 Worker 가 끝에 하지만(job-status.json 을 쓰기 직전), 그 파일 없이 끝난 Job(파드가 죽었다)은 그 단계를 못
+        지났을 수 있어 Main 이 자기 환경의 비밀 값으로 대신한다 — Job 이 끝난 것을 확인했을 때만(서버 종료로 두고 나가는 Job, 우리 것이
+        아닌 Job 의 파일은 건드리지 않는다).
+
+        Close a Job run: the final redaction when Main must do it, then the terminal control state (`_settle_job_run`);
+        sets `run.success`. Called before the slot is freed; never raises."""
+        try:
+            if run.verified is not True and run.job_phase in TERMINAL_PHASES and not run.keep_state:
+                self._final_redaction(run)
+            run.success = self._settle_job_run(run)
+        except Exception:  # the slot must still be freed by the caller's block
+            log.exception("run %s: settling the job run failed", run.run_id)
+
+    def _stopped_before_create(self, run: Run) -> int:
+        # 대기 중에 온 멈춤: Job 을 만들지 않고 stopped 로 끝낸다(차례가 와서 본 경우와 줄에서 빠진 경우가 같은 길)
+        run.error = "stopped before the job was created"
+        run.final_state = RunState.STOPPED.value
+        return EXIT_ABORTED
 
     def _job_client_or_fail(self) -> Any:
         """Job 클라이언트(처음 부를 때 만든다). v2.1z-ae: 여러 감시 스레드가 동시에 부를 수 있어 ``_lock`` 안에서 한 번만 만든다 —
@@ -935,9 +1032,7 @@ class RunManager:
                 # a stop or a server shutdown that arrived while this run was queued: never create the Job (review 2026-11-05: the
                 # shutdown cascaded through the queue and created every queued Job)
                 if run.cancel.is_set():
-                    run.error = "stopped before the job was created"
-                    run.final_state = RunState.STOPPED.value
-                    return EXIT_ABORTED
+                    return self._stopped_before_create(run)
                 if self.closing.is_set():
                     run.error = "web server shut down before the job was created"
                     run.keep_state = True          # still queued on disk: the next Main creates it
@@ -1057,10 +1152,14 @@ class RunManager:
         넘기면 그 파드가 다음 이관과 겹친다(리뷰 2026-11-10). ``job_api_grace_s`` 를 넘기면 한 번 크게 알리고(로그 error, 저널
         ``job_api_unavailable``, 화면의 한 줄 ``job.note``) 그 뒤로는 ``API_REMIND_S`` 마다 로그에 다시 남긴다. 다시 답하면 ``job_api_back``.
 
-        One state poll; None while the API does not answer — reported once past `job_api_grace_s`, never a failure."""
+        One state poll; None while the API does not answer — reported once past `job_api_grace_s`, never a failure. ANY
+        exception of the client counts as "API unavailable" (review 2026-11-10: a 200 with a non-JSON body from a proxy
+        raised ValueError past this handler, failed the run and freed the slot while the Job ran)."""
         try:
             st = client.job_state(name)
-        except K8sError as e:
+        except Exception as e:  # noqa: BLE001 — 어떤 예외든 'API 가 답하지 않는다': 실행을 실패로 끝내지도, 자리를 비우지도 않는다
+            if not isinstance(e, K8sError):
+                e = K8sError(f"{type(e).__name__}: {e}")
             now = time.monotonic()
             if run.api_down_since is None:
                 run.api_down_since = now
@@ -1172,7 +1271,7 @@ class RunManager:
                 if delete_after is not None and not deleted and now - started >= delete_after and now >= delete_retry_at:
                     try:
                         client.delete_job(name)
-                    except K8sError as e:
+                    except Exception as e:  # noqa: BLE001 — 어떤 실패든 다시 보낸다; 끝난 것을 확인하기 전에는 빠지지 않는다
                         delete_retry_at = now + DELETE_RETRY_S
                         log.warning("run %s: job %s not deleted (%s) — retrying in %.0fs", run.run_id, name, e, DELETE_RETRY_S)
                     else:
@@ -1227,8 +1326,24 @@ class RunManager:
                 if st.phase == "Running" and run.control is not None and run.control.state in (
                         RunState.QUEUED.value, RunState.CREATING.value, RunState.CREATED.value):
                     self._transition_soft(run, RunState.RUNNING, job=name)
+                if st.phase in ("Succeeded", "Failed") and not st.finished:
+                    # 리뷰 2026-11-10: Job 은 끝났다고 하지만(activeDeadlineSeconds 로 Failed …) 파드가 아직 돌거나 종료 유예 중이다 — Maven 이
+                    # 아직 쓸 수 있다. 파드가 끝날 때까지(종료 유예 SBMIG_JOB_EXIT_GRACE_S 가 지나면 우리 Job 을 지우고 사라질 때까지) 자리를 지킨다
+                    log.info("run %s: job %s is %s but %d pod(s) of it are still running or terminating — waiting for them",
+                             run.run_id, name, st.phase, st.active_pods)
+                    ended = self._hold_until_ended(run, client, name, delete_after=self.job_exit_grace_s,
+                                                   why=f"the job is {st.phase} while its pod is still terminating")
+                    if not ended and run.keep_state:   # server shutdown: the next Main watches the Job on
+                        run.error = "web server shut down while the job was running — the job continues in the cluster"
+                        return EXIT_ABORTED
+                    st = replace(st, active_pods=0)    # its pods ended (or the Job is not ours: left alone, as before)
                 if st.finished:
                     code = self._await_status(run, name, st)   # the Worker writes job-status.json just before the pod ends — NFS may show it late
+                    if code is None and self.closing.is_set() and st.phase != "Missing" and self.job_status_grace_s > 0:
+                        # 서버 종료 중에는 결과 파일을 기다리지 않는다: 제어 상태를 그대로 두면 다음 Main 이 이어받아 그 파일을 읽는다
+                        run.error = "web server shut down while waiting for the job's result — the next web process reads it"
+                        run.keep_state = True
+                        return EXIT_ABORTED
                     if code is not None:
                         self._close_pod_step(run, name, code=code)
                         self._log_failed_phase_explained(run, name, code)
@@ -1325,14 +1440,15 @@ class RunManager:
         파드가 끝나기 직전에 그 파일을 쓰는데, NFS 의 속성 캐시는 새 파일을 최대 1분 늦게 보여 줄 수 있다(끝난 결과를 "검증 안 됨" 으로
         잘못 적지 않게). Missing(지워진 Job)은 기다리지 않는다.
 
-        After the Job ended, re-read `job-status.json` for up to `job_status_grace_s` (NFS attribute caching); None when it never shows."""
+        After the Job ended, re-read `job-status.json` for up to `job_status_grace_s` (NFS attribute caching); None when it
+        never shows. A server shutdown ends the wait at once (None; the caller keeps the control state for the next Main)."""
         code = self._accept_status(run)
-        if code is not None or st.phase == "Missing" or self.job_status_grace_s <= 0:
+        if code is not None or st.phase == "Missing" or self.job_status_grace_s <= 0 or self.closing.is_set():
             return code
         deadline = time.monotonic() + self.job_status_grace_s
         log.info("run %s: job %s ended (%s) but job-status.json is not visible yet — waiting up to %.0fs for the shared volume",
                  run.run_id, name, st.phase, self.job_status_grace_s)
-        while time.monotonic() < deadline:
+        while time.monotonic() < deadline and not self.closing.is_set():   # shutdown notifies run.cond: leave at once
             with run.cond:
                 run.cond.wait(min(self.job_poll_s, 1.0))
             code = self._accept_status(run)
@@ -1406,14 +1522,21 @@ class RunManager:
 
     def stop(self, run_id: str) -> bool:
         """지금 그래프 노드가 끝나면 멈추라고 요청한다(진행 중인 Maven·LLM 호출은 끊지 않는다).
-        모르는 실행이거나 이미 끝났으면 False. 대기 중인 실행은 차례가 와서 첫 노드를 마친 뒤 멈춘다.
+        모르는 실행이거나 이미 끝났으면 False. Job 모드에서 아직 기다리는 실행은 **지금** 줄에서 빠져 stopped 로 끝난다(Job 을 만들지
+        않는다; 리뷰 2026-11-10 — 예전에는 차례가 올 때까지 줄의 자리를 지켜 뒤의 실행들의 순번을 부풀렸다). in-process 의 대기 실행은
+        예전처럼 차례가 와서 첫 노드를 마친 뒤 멈춘다.
 
-        Ask a running run to stop after the current graph node. False if the run is unknown or finished."""
+        Ask a running run to stop after the current graph node. False if the run is unknown or finished. In the Job modes a
+        run still waiting leaves the line at once and ends stopped (no Job is created); in-process it stops after its first
+        node when its turn comes, as before."""
         run = self.runs.get(run_id)
         if run is None or run.done.is_set():
             return False
-        run.cancel.set()
-        log.info("run %s: stop requested", run_id)
+        run.cancel.set()                       # first: a turn that arrives in the meantime sees it and creates no Job
+        if run.job and self._turns.withdraw(run_id):
+            log.info("run %s: stop requested while waiting — it leaves the line", run_id)
+        else:
+            log.info("run %s: stop requested", run_id)
         return True
 
     def shutdown(self, reason: str = "server shutdown") -> dict[str, Any]:

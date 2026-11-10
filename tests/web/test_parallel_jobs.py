@@ -138,13 +138,14 @@ def test_strict_fifo_among_several_waiters():
         t.join(5)
 
 
-def test_occupy_ignores_the_limit_and_keeps_numbers_unique():
+def test_occupy_ignores_the_limit_and_honours_the_recorded_number():
     turns = _FifoTurns(1)
     turns.join("w")
     assert turns.occupy("x", prefer=2) == 2
-    assert turns.occupy("y", prefer=2) == 1                              # 2 is taken: the lowest free one
-    assert turns.occupy("z") == 3 and turns.occupy("x", prefer=7) == 2   # a holder keeps its number
-    assert turns.occupy("v", prefer="junk") == 4                         # an unreadable recorded number is ignored
+    # review 2026-11-10: 2 is taken, but y's pod uses 2 — both keep it (a WARNING); new runs never get a held number
+    assert turns.occupy("y", prefer=2) == 2
+    assert turns.occupy("z") == 1 and turns.occupy("x", prefer=7) == 2   # no prefer: the lowest number nobody holds
+    assert turns.occupy("v", prefer="junk") == 3                         # an unreadable recorded number is ignored
     assert turns.counts() == (4, 1) and turns.position("w") == 1
     got: list[tuple[str, int]] = []
     release: dict[str, threading.Event] = {}

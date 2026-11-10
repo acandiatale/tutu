@@ -99,10 +99,16 @@ class JobState:
     # 못한다**(로컬 서브프로세스, 테스트용 가짜) — 그때만 이름을 믿는다. dict 는 API 가 답한 라벨 그대로이고, 비어 있으면(라벨 없는 Job)
     # 우리 것이 아니다(리뷰 2026-11-10: 빈 dict 를 "모름" 으로 읽어 라벨 없는 Job 을 자기 것으로 다뤘다)
     labels: dict[str, str] | None = None
+    # 리뷰 2026-11-10: Job 이 Succeeded / Failed 라고 해도 아직 돌거나 종료 유예 중인 파드의 수(status.active / terminating, 파드 목록).
+    # activeDeadlineSeconds 로 Failed 가 된 Job 의 파드는 종료 유예 동안 Maven 이 아직 쓸 수 있다 — 0 이 될 때까지 끝난 것이 아니다
+    active_pods: int = 0
 
     @property
     def finished(self) -> bool:
-        return self.phase in TERMINAL_PHASES
+        """끝났나 — 끝 상태(Succeeded / Failed / Missing)이고 돌거나 종료 중인 파드가 없을 때만(자리를 넘겨도 되는가).
+
+        Ended: a terminal phase AND no pod of it still running or terminating (may its slot be handed on)."""
+        return self.phase in TERMINAL_PHASES and not self.active_pods
 
 
 def job_name(run_id: str) -> str:
@@ -384,25 +390,63 @@ class K8sClient:
     def _jobs(self) -> str:
         return f"/apis/batch/v1/namespaces/{self.namespace}/jobs"
 
+    @staticmethod
+    def _body(r: Any, what: str) -> dict:
+        # 2xx 인데 본문이 JSON 객체가 아니다(API 서버 앞의 프록시가 HTML 을 돌려준다 …): "나쁜 답" 도 API 문제다 — K8sError
+        try:
+            body = r.json()
+        except Exception as e:  # requests' JSONDecodeError, a fake's ValueError …
+            raise K8sError(f"{what}: HTTP {getattr(r, 'status_code', '?')}: the answer is not JSON ({type(e).__name__})") from e
+        if body is None:
+            return {}
+        if not isinstance(body, dict):
+            raise K8sError(f"{what}: HTTP {getattr(r, 'status_code', '?')}: the answer is not a JSON object ({type(body).__name__})")
+        return body
+
     # ---- the three calls
     def create_job(self, manifest: dict) -> str:
-        """Job 을 만들고 이름을 돌려준다(이미 있으면 409 → K8sError)."""
+        """Job 을 만들고 이름을 돌려준다(이미 있으면 409 → K8sError). 2xx 인데 본문을 읽을 수 없으면 만든 것은 성공했으므로 틀의 이름을
+        돌려준다(경고 한 줄).
+
+        Create the Job and return its name; a 2xx whose body cannot be read still created it (the manifest's name, a warning)."""
         r = self._req("POST", self._jobs(), json=manifest)
-        name = ((r.json() or {}).get("metadata") or {}).get("name") or manifest["metadata"]["name"]
+        try:
+            name = ((self._body(r, "POST jobs").get("metadata") or {}).get("name")) or manifest["metadata"]["name"]
+        except (K8sError, AttributeError) as e:
+            log.warning("k8s: job %s created but the answer is unreadable (%s) — using the manifest's name",
+                        manifest["metadata"]["name"], e)
+            name = manifest["metadata"]["name"]
         log.info("k8s: job %s created in %s", name, self.namespace)
         return str(name)
 
     def job_state(self, name: str) -> JobState:
         """Job + 그 파드의 상태 하나로: 없음 → Missing; status.succeeded / failed → Succeeded / Failed(컨테이너 종료 코드 포함);
-        아니면 파드 phase(Pending / Running; 대기 이유를 메시지로), 파드가 아직 없으면 Creating."""
+        아니면 파드 phase(Pending / Running; 대기 이유를 메시지로), 파드가 아직 없으면 Creating. 끝 상태라도 아직 돌거나 종료 중인 파드의
+        수를 ``active_pods`` 에 담는다(그동안 ``finished`` 는 False). 본문이 JSON 이 아니거나 모양이 이상하면 K8sError(API 문제로 다룬다).
+
+        One state of the Job and its pod; `active_pods` counts pods still running / terminating even when the Job is
+        terminal. A body that is not JSON or has an odd shape raises K8sError (an API problem, never another exception)."""
         r = self._req("GET", f"{self._jobs()}/{name}", ok=(200, 404))
         if r.status_code == 404:
             return JobState("Missing", message="job not found (deleted?)", labels={})
-        body = r.json() or {}
+        body = self._body(r, f"GET job {name}")
+        pods_r = self._req("GET", f"/api/v1/namespaces/{self.namespace}/pods", params={"labelSelector": f"job-name={name}"})
+        pods_body = self._body(pods_r, f"GET pods of job {name}")
+        try:
+            return self._job_state_of(body, pods_body)
+        except (AttributeError, KeyError, TypeError, ValueError, IndexError) as e:
+            raise K8sError(f"GET job {name}: unexpected answer ({type(e).__name__}: {e})") from e
+
+    @staticmethod
+    def _job_state_of(body: dict, pods_body: dict) -> JobState:
+        # job_state 의 본문 해석(모양이 이상하면 부른 쪽이 K8sError 로 바꾼다)
         status = body.get("status") or {}
         labels = {str(k): str(v) for k, v in (((body.get("metadata") or {}).get("labels")) or {}).items()}
-        pods = self._req("GET", f"/api/v1/namespaces/{self.namespace}/pods",
-                         params={"labelSelector": f"job-name={name}"}).json().get("items") or []
+        pods = list(pods_body.get("items") or [])
+        # 아직 돌거나 종료 중인 파드: phase 가 Succeeded / Failed 가 아닌 것(종료 중인 파드는 deletionTimestamp 가 있어도 Running 이다).
+        # Job 의 status.active / status.terminating(있는 클러스터만)도 함께 본다 — 둘 중 큰 쪽
+        live = sum(1 for p in pods if ((p.get("status") or {}).get("phase") or "Pending") not in ("Succeeded", "Failed"))
+        active_pods = max(live, int(status.get("active") or 0), int(status.get("terminating") or 0))
         pods.sort(key=lambda p: ((p.get("metadata") or {}).get("creationTimestamp") or ""), reverse=True)
         pod = pods[0] if pods else None
         pod_name = ((pod or {}).get("metadata") or {}).get("name")
@@ -417,16 +461,16 @@ class K8sClient:
                 w = state["waiting"]
                 message = " ".join(x for x in (w.get("reason"), w.get("message")) if x)[:300]
         if (status.get("succeeded") or 0) > 0:
-            return JobState("Succeeded", pod_name, exit_code if exit_code is not None else 0, message, labels)
+            return JobState("Succeeded", pod_name, exit_code if exit_code is not None else 0, message, labels, active_pods)
         if (status.get("failed") or 0) > 0:
             cond = next((c for c in status.get("conditions") or [] if c.get("type") == "Failed"), {})
             why = " ".join(x for x in (cond.get("reason"), cond.get("message")) if x)[:300]
-            return JobState("Failed", pod_name, exit_code, why or message or "job failed", labels)
+            return JobState("Failed", pod_name, exit_code, why or message or "job failed", labels, active_pods)
         if pod is None:
             return JobState("Creating", None, None, "no pod yet", labels)
         phase = pstatus.get("phase") or "Pending"
         if phase in ("Succeeded", "Failed"):          # the pod ended, the Job status lags a moment behind
-            return JobState(phase, pod_name, exit_code, message, labels)
+            return JobState(phase, pod_name, exit_code, message, labels, live)
         return JobState(phase, pod_name, None, message, labels)
 
     def delete_job(self, name: str) -> None:
@@ -443,4 +487,7 @@ class K8sClient:
         body = {"apiVersion": "authorization.k8s.io/v1", "kind": "SelfSubjectAccessReview",
                 "spec": {"resourceAttributes": {"namespace": self.namespace, "verb": verb, "resource": resource, "group": group}}}
         r = self._req("POST", "/apis/authorization.k8s.io/v1/selfsubjectaccessreviews", json=body)
-        return bool(((r.json() or {}).get("status") or {}).get("allowed"))
+        st = self._body(r, "POST selfsubjectaccessreviews").get("status") or {}
+        if not isinstance(st, dict):
+            raise K8sError(f"POST selfsubjectaccessreviews: unexpected answer (status is {type(st).__name__})")
+        return bool(st.get("allowed"))

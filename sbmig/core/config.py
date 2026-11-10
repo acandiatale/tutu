@@ -617,6 +617,16 @@ class LLMConfig(BaseModel):
     max_context_chars: int = 60000           # budget for packed context per request
     timeout_seconds: int = 180
     max_retries: int = 3
+    # 2026-11-10 (빌드 파드 여러 개가 같은 게이트웨이를 부른다): 429, 그리고 Retry-After 가 붙은 502 / 503 / 504 는
+    # "바쁨" 이지 "고장" 이 아니다 — 그 호출을 이 초(쉰 시간의 합)까지 기다리며 다시 보낸다. 0 = 예전처럼 max_retries 로만.
+    # 429 (and 502 / 503 / 504 with Retry-After) = the gateway is busy, not broken: keep retrying that call (capped
+    # backoff + jitter) for up to this many seconds of waiting, independent of max_retries. 0 = max_retries only.
+    busy_wait_seconds: int = 600
+    # 토큰 교환 직후에도 401 이면(다른 파드가 같은 앱 토큰을 교환해 이 토큰이 무효가 됐을 수 있다) 잠깐 쉬고 다시
+    # 교환해 보내는 추가 횟수. 0 = 예전처럼 401 뒤 한 번만.
+    # extra refresh-and-retry rounds after a 401 that follows a fresh exchange (another client exchanging the same app
+    # token may have invalidated it). 0 = one refresh after a 401, as before.
+    auth_retries: int = 2
     # round 9 (L5): the second consecutive transport/config failure pauses the loop once per run for this long and
     # retries; only a second streak marks the LLM unavailable for the rest of the run. 0 = no cool-down (old behaviour)
     # 전송·설정 실패가 두 번 연속이면 실행당 한 번 이만큼 쉬고
