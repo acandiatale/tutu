@@ -559,6 +559,9 @@ class FakeRunManager:
         self.withheld: set[str] = set()
         self.stopped: list[str] = []
         self.runs: dict = {}
+        self.resumed = []
+        self.active_resumes: set[str] = set()
+        self.resume_stops: list[str] = []
 
     def run_dir(self, run_id):
         return self.out_dir / run_id
@@ -572,6 +575,37 @@ class FakeRunManager:
     def stop(self, run_id):
         self.stopped.append(run_id)
         return True
+
+    # the remediation resume in a new build pod (RunManager.resume_remediation & co, wave 4)
+    resumed: list
+    refuse: Exception | None = None
+
+    def resume_remediation(self, run_id):
+        if self.refuse is not None:
+            raise self.refuse
+        self.resumed.append(run_id)
+        self.active_resumes.add(run_id)
+        return self.remediation_job(run_id)
+
+    def remediation_job(self, run_id):
+        if run_id not in self.active_resumes and run_id not in self.resumed:
+            return None
+        active = run_id in self.active_resumes
+        out = {"state": "queued" if active else "finished", "active": active, "attempt": 1 + len(self.resumed),
+               "job": f"sbmig-{run_id}-rem2"}
+        if active:
+            out["queue"] = {"position": 1, "ahead": 0}
+        return out
+
+    def remediation_active(self, run_id):
+        return run_id in self.active_resumes
+
+    def stop_remediation(self, run_id):
+        if run_id not in self.active_resumes:
+            return None
+        self.active_resumes.discard(run_id)
+        self.resume_stops.append(run_id)
+        return "withdrawn"
 
 
 def chained(tmp_path: Path, cfg, run_id: str = RUN_ID, status: str = AWAITING_APPROVAL, configs=None,
@@ -650,7 +684,7 @@ def test_job_mode_chained_reads_and_approvals(tmp_path, base_cfg):
     st = mgr.status(RUN_ID)
     assert st["kind"] == "chained" and st["run_id"] == RUN_ID and st["id"] == RUN_ID
     assert st["status"] == AWAITING_APPROVAL and st["pending_approvals"] == 1 and "stale" not in st
-    assert st["resume"]["available"] is False and "next increment" in st["resume"]["note"]
+    assert st["resume"]["available"] is False and "제안이 1건 남아" in st["resume"]["note"]
     assert st["links"]["self"] == f"/api/remediations/{RUN_ID}"
     assert {"source.zip", "plan-r1.json", "journal.jsonl"} <= set(st["files"])
     rows = mgr.list()["items"]
@@ -667,9 +701,7 @@ def test_job_mode_chained_reads_and_approvals(tmp_path, base_cfg):
     assert loader.calls == []
     assert RoundPlan.from_dict(read_json(paths.plan(1))).proposals[0].decision == D_APPROVED
     assert json.loads(paths.approvals.read_text().splitlines()[0])["by"] == "alice"
-    with pytest.raises(service_mod.NotAvailable) as ei:
-        mgr.resume(RUN_ID)
-    assert ei.value.code == "not_available" and "next increment" in str(ei.value)
+    assert mgr.status(RUN_ID)["resume"] == {"available": True, "note": ""}       # decided: a new build pod can resume it
     with pytest.raises(StateConflict):
         mgr.stop(RUN_ID)                                         # not running
     with pytest.raises(StateConflict) as ei:
@@ -816,3 +848,178 @@ def test_in_process_chained_resume_rules(tmp_path, base_cfg, monkeypatch):
     mgr.resume(RUN_ID)
     assert mgr.wait(RUN_ID, WAIT)
     assert len(fake.calls) == 1 and mgr.status(RUN_ID)["status"] == SUCCEEDED
+
+
+# ---------------------------------------------------------------------------- wave 4: resume in a NEW build pod (Job modes)
+def test_job_mode_resume_dispatches_a_build_pod_and_reports_the_resume_job(tmp_path, base_cfg):
+    paths = chained(tmp_path, base_cfg)
+    rm = FakeRunManager(tmp_path / "out")
+    mgr = job_manager(tmp_path, base_cfg, rm=rm)
+    p = mgr.proposals(RUN_ID)["proposals"][0]
+    with pytest.raises(StateConflict) as ei:
+        mgr.resume(RUN_ID)                                       # a proposal still waits for a decision
+    assert ei.value.details["pending"] == 1 and rm.resumed == []
+    mgr.decide(RUN_ID, [_decision(p)], "")                       # no approver name needed
+    out = mgr.resume(RUN_ID)
+    assert rm.resumed == [RUN_ID] and mgr._worker is None        # nothing runs in the web pod
+    assert out["resume_job"]["state"] == "queued" and out["resume_job"]["queue"] == {"position": 1, "ahead": 0}
+    assert out["resume"] == {"available": False, "note": service_mod.RESUME_ACTIVE_NOTE}
+    assert out["status"] == AWAITING_APPROVAL and out["withheld"] is True       # the build pod owns the files now
+    with pytest.raises(StateConflict):
+        mgr.resume(RUN_ID)                                       # one resume at a time
+    stopped = mgr.stop(RUN_ID)
+    assert stopped["resume"] == "withdrawn" and rm.resume_stops == [RUN_ID]
+    events = [json.loads(x) for x in paths.journal.read_text().splitlines()]
+    assert any(e["event"] == "resume" and e.get("runs_in") == "build_pod" for e in events)
+
+
+def test_job_mode_refused_dispatch_restores_the_state_file(tmp_path, base_cfg):
+    paths = chained(tmp_path, base_cfg, status=RUNNING)          # stale: its pod is gone, the migration finished
+    rm = FakeRunManager(tmp_path / "out", state="finished")
+    rm.refuse = StateConflict("the web server is shutting down")
+    mgr = job_manager(tmp_path, base_cfg, rm=rm)
+    before = paths.state.read_bytes()
+    with pytest.raises(StateConflict):
+        mgr.resume(RUN_ID)
+    assert paths.state.read_bytes() == before                    # restored: the next resume starts from the same file
+    events = [json.loads(x)["event"] for x in paths.journal.read_text().splitlines()]
+    assert events[-1] == "resume_refused"
+    rm.refuse = None
+    mgr.resume(RUN_ID)                                           # the explicit resume writes INTERRUPTED, then dispatches
+    assert read_json(paths.state)["status"] == INTERRUPTED and rm.resumed == [RUN_ID]
+    st = mgr.status(RUN_ID)
+    assert "stale" not in st and st["resume_job"]["active"] is True
+
+
+def test_job_mode_resume_refusals(tmp_path, base_cfg):
+    chained(tmp_path, base_cfg)
+    rm = FakeRunManager(tmp_path / "out")
+    mgr = job_manager(tmp_path, base_cfg, rm=rm)
+    p = mgr.proposals(RUN_ID)["proposals"][0]
+    rm.active_resumes.add(RUN_ID)                                # a resume pod (of another request) owns the state
+    with pytest.raises(StateConflict):
+        mgr.decide(RUN_ID, [_decision(p)], "")
+    with pytest.raises(StateConflict):
+        mgr.resume(RUN_ID)
+    assert mgr.status(RUN_ID)["resume"]["note"] == service_mod.RESUME_ACTIVE_NOTE
+    rm.active_resumes.clear()
+
+    class NoDispatch(FakeRunManager):
+        resume_remediation = None                                # an older RunManager without the feature
+    mgr2 = job_manager(tmp_path, base_cfg, rm=NoDispatch(tmp_path / "out"))
+    assert mgr2.status(RUN_ID)["resume"]["available"] is False
+    with pytest.raises(service_mod.NotAvailable):
+        mgr2.resume(RUN_ID)
+
+
+def test_job_mode_receipt_is_written_before_the_job_and_the_new_pod_never_reuploads(tmp_path, monkeypatch):
+    """End to end without a cluster: RemediationManager (receipt) → RunManager (k8s-job, fake cluster) → the Worker's action
+    in the "pod" → chain.resume with fake components: the resumed baseline scan polls the receipt — zero re-uploads."""
+    import os
+
+    from sbmig.remediations import chain
+    from sbmig.web import contract, worker
+    from sbmig.web.contract import RUN_LABEL, ControlState, JobStatus, RequestRecord
+    from sbmig.web.k8s import job_name
+    from sbmig.web.localjob import LocalJobClient
+    from sbmig.web.runs import RunManager, resume_job_name
+    from tests.web.test_jobmode_hardening import TEMPLATE, Cluster
+
+    from .fakes import POM, make_cfg
+
+    monkeypatch.setenv("SBMIG_JOB_POLL_S", "0.05")
+    cfg_name = "artifacts.local-e2e.yml"
+    repo = tmp_path / "repo"
+    (repo / "config").mkdir(parents=True)
+    shutil.copy(PACKAGE_ROOT / "config" / cfg_name, repo / "config" / cfg_name)
+    (repo / "config" / "default.yml").write_text("x: 1\n")
+    out = tmp_path / "out"
+    rd = out / RUN_ID
+    project = rd / "project"
+    for rel, text in {"pom.xml": POM, "src/main/java/App.java": "class App {}\n"}.items():
+        (project / rel).parent.mkdir(parents=True, exist_ok=True)
+        (project / rel).write_text(text, encoding="utf-8")
+
+    def comps(scan):
+        plan = ScriptedPlanner([RoundPlan(round=1, source_tree_hash="", policy_hash="", proposals=[proposal()])])
+        return make_components(scan=scan, plan=plan)
+    # the first build pod: the baseline upload's result is unknown → AWAITING_CONFIRMATION, saved, pod ends
+    first = chain.run_after_migration(rd, project, make_cfg(after_migration=True), run_id=RUN_ID, journal=lambda e: None,
+                                      stop=lambda: False, components=comps(FakeScanner({"baseline": [UNCERTAIN]})))
+    assert first.status == AWAITING_CONFIRMATION
+    sha = first.pending_upload["baseline"]
+    # the migration's own Job-mode records: finished, BUILD SUCCESS
+    (rd / "source.zip").write_bytes(b"PK\x05\x06" + b"\0" * 18)
+    RequestRecord(run_id=RUN_ID, accepted_at="2026-11-11T01:00:00Z", upload="p.zip", configs=[cfg_name],
+                  zip_sha256=contract.sha256_file(rd / "source.zip"), config_digests=contract.config_digests(repo, [cfg_name]),
+                  sbmig_version=contract.sbmig_version(), mode="k8s-job").write(rd)
+    ControlState(run_id=RUN_ID, state="finished", owner="mig", job=job_name(RUN_ID), exit_code=0).write(rd)
+    JobStatus(exit_code=0, run_id=RUN_ID, attempt=1).write(rd)
+    (rd / "report.md").write_text("# report\n")
+    (rd / "report.json").write_text(json.dumps({"success": True}))
+    (rd / "result.zip").write_bytes(b"PK\x05\x06" + b"\1" * 18)
+    keep = ("report.md", "report.json", "result.zip", "job-status.json", "control/state.json")
+    before = {n: (rd / n).read_bytes() for n in keep}
+
+    scan2 = FakeScanner({"baseline": [scan_result(finding())], "final-r1": [scan_result()]})
+    pod_runs: list = []
+
+    def child(cmd, cwd, env):                                   # what `sbmig remediation-resume` does in the new pod
+        pod_runs.append(cmd)
+        chain.resume(Path(cmd[cmd.index("--run-dir") + 1]), make_cfg(), journal=lambda e: None, stop=lambda: False,
+                     components=comps(scan2))
+        return 0
+
+    class PodCluster(Cluster):
+        def __init__(self):
+            super().__init__(out, phases=["Pending", "Running", "Running", "Succeeded"], pod_attempt=False)
+            self.manifests: dict = {}
+            self.seen_state: dict | None = None
+
+        def create_job(self, manifest):
+            # intent before create: the confirmation is on disk before the Job exists
+            self.seen_state = read_json(rd / service_mod.CHAIN_DIR / "state.json")
+            name = super().create_job(manifest)
+            self.manifests[name] = manifest
+            return name
+
+        def job_state(self, name):
+            st = super().job_state(name)
+            j = self.jobs.get(name)
+            if st.phase == "Running" and j is not None and not j.get("ran"):
+                j["ran"] = True
+                env = {**os.environ, **LocalJobClient._env_of(self.manifests[name]), "SBMIG_APP_DIR": str(repo),
+                       "SBMIG_PYTHON": "py"}
+                assert worker.main(environ=env, run_child=child, install_signals=lambda h: (lambda: None)) == 0
+            return st
+
+    cluster = PodCluster()
+    rm = RunManager(out, repo, mode="k8s-job", job_client=cluster, job_template=TEMPLATE)
+    mgr = RemediationManager(out, repo, components_factory=Factory(), config_loader=lambda names: make_cfg(),
+                             mode="k8s-job", run_manager=rm)
+    try:
+        with pytest.raises(StateConflict):
+            mgr.resume(RUN_ID)                                   # AWAITING_CONFIRMATION needs a confirmation
+        st = mgr.resume(RUN_ID, confirm="receipt", project_id="prj-9", analysis_id="anl-9")
+        assert st["resume_job"]["attempt"] == 2
+        assert rm.resumes[RUN_ID].done.wait(WAIT)
+        assert cluster.seen_state["pending_upload"] == {}
+        assert cluster.seen_state["pending_receipt"]["baseline"]["analysis_id"] == "anl-9"
+        assert cluster.seen_state["pending_receipt"]["baseline"]["zip_sha256"] == sha
+        [m] = cluster.created
+        assert m["metadata"]["name"] == resume_job_name(RUN_ID, 2) and m["metadata"]["labels"][RUN_LABEL] == RUN_ID
+        assert len(pod_runs) == 1 and pod_runs[0][3] == "remediation-resume"
+        # the uncertain baseline is never uploaded again: it is polled by the confirmed receipt (the final scan of the new
+        # delivery ZIP is the one upload of this pod)
+        assert scan2.calls[0].label == "baseline" and not scan2.calls[0].uploaded
+        assert scan2.calls[0].receipt.analysis_id == "anl-9"
+        assert [c.label for c in scan2.calls if c.uploaded] == ["final-r1"] and scan2.uploads == 1
+        assert read_json(rd / service_mod.CHAIN_DIR / "state.json")["status"] == SUCCEEDED
+        assert {n: (rd / n).read_bytes() for n in keep} == before          # the migration's results are untouched
+        assert rm.status(RUN_ID)["state"] == "finished" and rm.status(RUN_ID)["success"] is True
+        rst = mgr.status(RUN_ID)
+        assert rst["status"] == SUCCEEDED and rst["resume_job"]["state"] == "finished" and "withheld" not in rst
+        assert JobStatus.read(rd, contract.RESUME_STATUS_FILE).attempt == 2
+    finally:
+        mgr.shutdown()
+        rm.shutdown("test teardown")

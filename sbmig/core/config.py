@@ -944,6 +944,12 @@ class RemediationConfig(BaseModel):
     # 조치의 성패는 이관의 성공 판정·종료 코드를 바꾸지 않는다. IVAS 값이 없으면 건너뛰고 기록만 남긴다.
     # 이 경로에서는 trusted_projects 를 묻지 않는다(이관이 이미 그 프로젝트를 빌드했다).
     after_migration: bool = False
+    # 이어 타는 조치가 빌드 파드에서 쓸 수 있는 시간(분). 넘기면 다음 workflow 경계에서 STOPPED 로 멈춘다(재개하면 새 파드가 이어 간다) —
+    # 파드 수명 한도(activeDeadlineSeconds)에 걸려 끝난 이관까지 중단으로 보이는 일을 막는다. 0 = 한도 없음.
+    chain_budget_minutes: int = 90
+    # IVAS 조치 구분(action.actionDivCd) 가운데 "더 고칠 것이 아닌" 값. 이 값의 발견 항목은 기록·보고서에는 남지만 계획 대상과 성공
+    # 판정(남은 취약점)에서 뺀다. IVAS 문서: NE 조치 필요 / NP 조치계획 미등록 / PL 조치예정 / OT 조치일 경과 / PC 패치 완료 / IG 조치 예외.
+    ignore_actions: list[str] = Field(default_factory=lambda: ["PC", "IG"])
     max_upload_mb: int = 1024                # 업로드 ZIP 한도(MiB)
     max_entries: int = 200_000               # ZIP 항목 수 한도
     max_unpacked_mb: int = 4096              # 풀었을 때 전체 크기 한도(MiB)

@@ -13,6 +13,10 @@ Main 은 자기 라벨이 맞는 Job 만 지운다.
 (``env_pins`` — 비밀로 보이는 이름은 빼고, sha256 앞 16자)과 정책(``SBMIG_JOB_ENV_PIN``: refuse | warn | off)을 ``state.json`` 에
 creating 전이와 함께 적고, Worker 가 자기 환경으로 다시 계산해 대조한다(``compare_env_pins``).
 2026-11-11: 비밀로 다루는 이름에 낱말 규칙 밖의 ``SECRET_NAMES``(IVAS 계정 아이디)가 더해졌다 — 지우는 대상이 되고 지문에서는 빠진다.
+2026-11-11 (wave 4) — **조치 재개 시도**: 빌드 파드에서 승인·확인을 기다리며 끝난 이어 돈 조치를 새 빌드 파드에서 잇는 것은 같은 실행의
+**다른 행동(action)을 가진 새 시도**다. Main 은 그 시도의 제어 상태를 ``control/remediation-resume.json`` 에(같은 ``ControlState``, ``action``
+이 채워짐, creating 을 먼저 적는 규칙도 같다), Worker 는 결과를 ``remediation-job-status.json`` 에 쓴다 — 이관의 ``control/state.json`` ·
+``job-status.json`` 은 재개가 절대 건드리지 않는다(이관은 "끝남, 빌드 성공" 그대로). Job env ``SBMIG_WORKER_ACTION`` 이 Worker 에게 행동을 알린다.
 ``IVAS_BASE_URL`` 은 비밀이 아니지만 ``SBMIG_`` 덮어쓰기도 설정 파일의 ``${VAR}`` 도 아니라 지문 대상이 아니다.
 
 The file contract between the Main pod and the Worker pod on the shared volume: `control/request.json` (inputs pinned at
@@ -21,7 +25,11 @@ intake), `control/state.json` (Main's control state, written atomically, intent 
 secret-name helpers both sides use. Only Main writes under `control/`; only the Worker writes the run's outputs.
 Review 2026-11-10: the Main that creates the Job also records fingerprints of the environment values the configuration
 reads (`env_pins`, no secret-looking names) and a policy in `state.json`; the Worker recomputes and compares them.
-2026-11-11: `SECRET_NAMES` (the IVAS user id) is secret regardless of the name words — redacted, never pinned."""
+2026-11-11: `SECRET_NAMES` (the IVAS user id) is secret regardless of the name words — redacted, never pinned.
+2026-11-11 (wave 4): a chained remediation is resumed in a NEW build pod as another attempt of the same run with a distinct
+action (`SBMIG_WORKER_ACTION=remediation-resume`): Main keeps that attempt's control state in `control/remediation-resume.json`
+(same `ControlState`, `action` set, same intent-before-create discipline) and the Worker writes `remediation-job-status.json` —
+the migration's `control/state.json` / `job-status.json` are never touched by a resume."""
 from __future__ import annotations
 
 import hashlib
@@ -44,9 +52,16 @@ RUN_LABEL = "sbmig-run-id"                  # Job / 파드 라벨: 실행 id
 OWNER_LABEL = "sbmig-owner"                 # Job / 파드 라벨: 요청마다 난수 — Main 이 자기 Job 만 지우게
 # Main 이 Job 마다 끼워 넣는 실행별 값의 이름(RunManager._job_env). 그 밖의 env 는 파드의 것이다 — 틀의 리터럴·ConfigMap·Secret 이 채운다
 # SBMIG_JOB_SLOT: 동시에 도는 Job 가운데 이 Job 의 자리 번호(1 부터) — Worker 가 자리마다 다른 Maven 로컬 저장소를 쓰게 한다
+# SBMIG_WORKER_ACTION: 이 Job 이 할 일(없음 = 이관, "remediation-resume" = 이어 돈 조치 재개) — 2026-11-11 wave 4
 RUN_ENV = ("SBMIG_SOURCE_ZIP", "SBMIG_OUT", "SBMIG_RUN_ID", "SBMIG_CONFIG", "SBMIG_STOP_AFTER", "SBMIG_LLM_PROVIDER",
-           "SBMIG_JOB_SLOT")
+           "SBMIG_JOB_SLOT", "SBMIG_WORKER_ACTION")
 SLOT_ENV = "SBMIG_JOB_SLOT"                 # 위 RUN_ENV 의 한 이름: Main 이 적고(_job_env) Worker 가 읽는다
+# ── 이어 돈 조치의 재개 시도(2026-11-11 wave 4) ──
+ACTION_ENV = "SBMIG_WORKER_ACTION"          # 위 RUN_ENV 의 한 이름: 비었으면 이관(sbmig run), 아니면 아래 행동 중 하나
+ACTION_REMEDIATION_RESUME = "remediation-resume"
+WORKER_ACTIONS = (ACTION_REMEDIATION_RESUME,)
+RESUME_STATE_FILE = "remediation-resume.json"         # control/ 안: 재개 시도의 Main 제어 상태(Main 만 쓴다)
+RESUME_STATUS_FILE = "remediation-job-status.json"    # 실행 폴더: 재개 Worker 의 결과(이관의 job-status.json 과 따로)
 MAX_PARALLEL_ENV = "SBMIG_JOB_MAX_PARALLEL"  # 웹 파드만 읽는다: 동시에 도는 Job 의 최대 수(기본 1; k8s-job / local-job 에서만)
 LLM_RECORDS_ENV = "SBMIG_WORKER_LLM_RECORDS"  # "1" 이면 Worker 가 설정의 llm.record_dir 을 그대로 둔다(기본: 끈다 — 소스가 공유 볼륨에 더 남지 않게)
 SECRET_NAME_WORDS = ("TOKEN", "PASSWORD", "PASSWD", "SECRET", "API_KEY")   # 이 말이 든 env 는 비밀로 다룬다(값은 로그·보고서에서 지운다)
@@ -84,6 +99,20 @@ class RunState(str, Enum):
 
 
 TERMINAL_STATES = frozenset({RunState.FINISHED, RunState.STOPPED, RunState.LOST, RunState.FAILED})
+
+
+def state_file_for(action: str | None) -> str:
+    """행동별 Main 제어 상태 파일 이름(``control/`` 안): 이관(None) = ``state.json``, 조치 재개 = ``remediation-resume.json``.
+
+    The control-state file name of an action: the migration's `state.json`, a remediation resume's own file."""
+    return RESUME_STATE_FILE if action == ACTION_REMEDIATION_RESUME else STATE_FILE
+
+
+def status_file_for(action: str | None) -> str:
+    """행동별 Worker 결과 파일 이름(실행 폴더): 이관 = ``job-status.json``, 조치 재개 = ``remediation-job-status.json``.
+
+    The Worker's result file name of an action (the resume never overwrites the migration's `job-status.json`)."""
+    return RESUME_STATUS_FILE if action == ACTION_REMEDIATION_RESUME else JOB_STATUS_FILE
 
 
 def utc_now() -> str:
@@ -343,6 +372,7 @@ class ControlState:
     env_pins: dict[str, str] | None = None      # Job 을 만드는 Main 의 환경 지문(creating 전이 때 적는다; None = 대조 안 함)
     env_pin_policy: str | None = None           # refuse | warn | off — Main 의 SBMIG_JOB_ENV_PIN (Worker 는 이 값을 따른다)
     slot: int | None = None                     # 이 Job 이 차지한 자리 번호(creating 전이 때 적는다; None = 자리 개념 이전에 만든 Job = 1번 자리)
+    action: str | None = None                   # None = 이관 시도, "remediation-resume" = 이어 돈 조치 재개 시도(파일도 따로)
 
     @property
     def terminal(self) -> bool:
@@ -367,14 +397,14 @@ class ControlState:
         known = set(cls.__dataclass_fields__)
         return cls(**{k: v for k, v in data.items() if k in known})
 
-    def write(self, run_dir: Path) -> Path:
-        p = control_dir(run_dir) / STATE_FILE
+    def write(self, run_dir: Path, name: str = STATE_FILE) -> Path:
+        p = control_dir(run_dir) / name
         atomic_write_json(p, self.to_json())
         return p
 
     @classmethod
-    def read(cls, run_dir: Path) -> ControlState | None:
-        data = read_json(Path(run_dir) / CONTROL_DIR / STATE_FILE)
+    def read(cls, run_dir: Path, name: str = STATE_FILE) -> ControlState | None:
+        data = read_json(Path(run_dir) / CONTROL_DIR / name)
         if not data or not data.get("run_id"):
             return None
         try:
@@ -395,6 +425,7 @@ class JobStatus:
     attempt: int | None = None
     error: str | None = None
     sbmig_version: str | None = None
+    action: str | None = None                   # 조치 재개 시도의 결과면 그 행동 이름(이관이면 없음)
 
     def matches(self, run_id: str, attempt: int) -> bool:
         return (self.run_id is None or self.run_id == run_id) and (self.attempt is None or int(self.attempt) == int(attempt))
@@ -402,20 +433,20 @@ class JobStatus:
     def to_json(self) -> dict[str, Any]:
         return {k: v for k, v in asdict(self).items() if v is not None}
 
-    def write(self, run_dir: Path) -> Path:
-        p = Path(run_dir) / JOB_STATUS_FILE
+    def write(self, run_dir: Path, name: str = JOB_STATUS_FILE) -> Path:
+        p = Path(run_dir) / name
         atomic_write_json(p, self.to_json())
         return p
 
     @classmethod
-    def read(cls, run_dir: Path) -> JobStatus | None:
-        data = read_json(Path(run_dir) / JOB_STATUS_FILE)
+    def read(cls, run_dir: Path, name: str = JOB_STATUS_FILE) -> JobStatus | None:
+        data = read_json(Path(run_dir) / name)
         if not data or "exit_code" not in data:
             return None
         try:
             return cls(exit_code=int(data["exit_code"]), finished_at=str(data.get("finished_at") or ""),
                        run_id=data.get("run_id"), attempt=data.get("attempt"), error=data.get("error"),
-                       sbmig_version=data.get("sbmig_version"))
+                       sbmig_version=data.get("sbmig_version"), action=data.get("action"))
         except (TypeError, ValueError):
             return None
 

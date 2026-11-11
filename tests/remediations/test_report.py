@@ -181,3 +181,23 @@ def test_proposal_note_reaches_the_report(tmp_path):
     assert "the owners must remove the override" in build_report_md(state, paths)
     plans = build_report_json(state, paths)
     assert "the owners must remove the override" in str(plans)
+
+
+def test_ignored_findings_table_uses_the_given_codes(tmp_path):
+    ignored = finding(ga="example:patched", cve="CVE-2026-0009")
+    ignored.action = "PC"
+    scan = FakeScanner({"baseline": [scan_result(finding(), ignored)], "final-r1": [scan_result(ignored)]})
+    out, paths = _run(tmp_path, **{**_fixing(), "scan": scan})
+    assert out.status == SUCCEEDED and out.counts["final_ignored"] == 1
+    md = paths.report_md.read_text(encoding="utf-8")
+    assert "조치 대상 1건, 조치 대상에서 뺀 항목 1건" in md
+    assert "| CVE-2026-0009 | library | `example:patched` | 1.0 | PC | 패치 완료 |" in md
+    # the service renders report.json without the cfg: default codes; an explicit empty list ignores nothing
+    assert report.build_report_json(out, paths)["ignored_findings"][0]["meaning"] == "패치 완료"
+    data = report.build_report_json(out, paths, ignore_actions=[])
+    assert data["ignored_findings"] == [] and data["final_scan"]["actionable"] == 1
+
+
+def test_chain_budget_reason_has_a_korean_text():
+    meaning, step = report._REASON_KO["chain_budget"]
+    assert "chain_budget_minutes" in meaning and "재개" in step

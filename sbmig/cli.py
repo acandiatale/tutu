@@ -385,6 +385,67 @@ def run(
     raise typer.Exit(code)
 
 
+REMEDIATION_MARK = "SBMIG-REMEDIATION"      # the remediation resume's result line (the migration's stays SBMIG-RESULT)
+
+
+@app.command("remediation-resume")
+def remediation_resume(
+    run_dir: Path = typer.Option(..., "--run-dir", exists=True, file_okay=False, help="the migration run directory"),
+    config: Optional[List[Path]] = ConfigOpt,
+    repo_root: Optional[Path] = typer.Option(None, "--repo-root", help="sbmig repo root (kb/, knowledge/)"),
+) -> None:
+    """이관 뒤에 이어 돈 취약점 조치를 그 실행 폴더에서 다시 잇는다(``chain.resume`` — 새 빌드 파드의 Worker 가 부른다, 2026-11-11 wave 4).
+
+    로그는 실행 폴더의 sbmig.log 에, 저널은 journal.jsonl 에 덧붙인다(이관의 보고서·결과 줄은 건드리지 않는다). 멈춤은 실행 폴더의
+    stop.request(다음 경계에서). 끝에 SBMIG-REMEDIATION 줄. 종료 코드 0 = 조치가 어느 상태로든 끝을 맺었다(결과는 remediation/state.json),
+    3 = 재개할 수 없는 상태 / 조치 기능을 불러오지 못함.
+
+    Continue a chained remediation in its migration run directory (`chain.resume`; called by the Worker of a new build pod).
+    Exit 0 = the remediation reached a state (see remediation/state.json), 3 = not resumable / not available."""
+    from sbmig.core.scrub import output_scrubbing, scrub_json
+    from sbmig.core.workspace import STOP_REQUEST_FILE
+
+    cfg = _load(config, None, repo_root)
+    run_dir = run_dir.resolve()
+    run_id = run_dir.name
+    log_path = attach_file_log(run_dir / "sbmig.log")
+    log.info("remediation resume %s (new build pod)", run_id)
+
+    def journal(event: dict) -> None:
+        # Workspace.journal 과 같은 모양(ts, run_id) — 웹이 이 파일을 따라 읽는다; 정제가 걸려 있으면 값 단위로 지운다
+        from datetime import datetime, timezone
+        rec = {"ts": datetime.now(timezone.utc).isoformat(), "run_id": run_id, **event}
+        line = json.dumps(rec, ensure_ascii=False, default=str)
+        if output_scrubbing():
+            line = json.dumps(scrub_json(json.loads(line)), ensure_ascii=False)
+        with open(run_dir / "journal.jsonl", "a", encoding="utf-8") as fh:
+            fh.write(line + "\n")
+
+    def stop() -> bool:
+        return (run_dir / STOP_REQUEST_FILE).is_file()
+
+    def finish(status: str, reason: str, code: int) -> None:
+        final_redaction(run_dir)
+        line = f"{REMEDIATION_MARK} run={run_id} status={status} reason={reason or '-'}"
+        typer.echo(line)
+        log.info("%s", line, extra=NO_CONSOLE)
+        typer.echo(f"log: {log_path}")
+        raise typer.Exit(code)
+
+    try:
+        from sbmig.remediations import chain
+        from sbmig.remediations.models import StateConflict
+    except ImportError as e:
+        log.error("remediation resume %s: the remediation package is not available (%s)", run_id, type(e).__name__)
+        finish("NOT_AVAILABLE", "import_error", EXIT_ABORTED)
+    try:
+        st = chain.resume(run_dir, cfg, journal=journal, stop=stop)
+    except StateConflict as e:
+        log.error("remediation resume %s refused: %s", run_id, e)
+        finish("REFUSED", "state_conflict", EXIT_ABORTED)
+    finish(st.status, st.reason, 0)
+
+
 def _mask_headers(headers) -> dict:
     """출력용 헤더 사본: Authorization / API 키 값은 앞 10자와 길이만 남긴다(키를 화면·로그에 내지 않는다)."""
     out = {}

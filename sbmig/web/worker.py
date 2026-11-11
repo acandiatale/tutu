@@ -25,6 +25,11 @@ exit 3 과 "terminated by SIGTERM" 오류를 쓰고(저널 ``worker_finished`` �
 ``IVAS_PASSWORD``, Job 틀의 secretKeyRef)도 닿는다. 마지막 정제는 ``remediation/`` 의 텍스트 파일도 훑고(ZIP·프로젝트 트리·원본은 빼고),
 ``IVAS_USER_ID`` 는 이름에 비밀 낱말이 없어도 비밀로 지운다(``contract.SECRET_NAMES``). 조치 도중 종료 신호로 끊기면 이관의 결과 줄을
 오류 글에 붙인다.
+조치 재개 행동(2026-11-11 wave 4): Job env ``SBMIG_WORKER_ACTION=remediation-resume`` 이면 같은 실행의 **새 시도**로 이어 돈 조치를 잇는다.
+그 시도의 제어 상태 ``control/remediation-resume.json`` (Main 이 적는다; 없거나 행동이 다르면 거절)과 ``request.json`` 의 설정 digest ·
+sbmig 버전 · 환경 지문을 대조하고(이관 zip 의 sha256 은 보지 않는다 — 재개는 그 zip 을 읽지 않는다), ``sbmig run`` 대신 자식
+``python -m sbmig.cli remediation-resume --run-dir <run dir>`` (``chain.resume``)을 같은 규칙(자리 저장소, 줄 단위 정제, SIGTERM 처리, 마지막
+정제)으로 돌리고, 결과는 ``remediation-job-status.json`` 에 쓴다 — 이관의 ``job-status.json`` · 보고서 · ``SBMIG-RESULT`` 줄은 건드리지 않는다.
 
 The Job pod's whole life in shared-volume mode: verify the request Main pinned, run `sbmig.cli run` as a child (which
 redacts its own log / journal lines as it writes them; its console output is redacted line by line on the way to the pod
@@ -43,7 +48,12 @@ exit 3 + a "terminated" error to `job-status.json` and exits 3. Remediation (202
 SUCCESS with `remediation.after_migration` on continues into the remediation inside the same child (`<run dir>/remediation/`);
 the child inherits the IVAS variables from the Worker's environment, the final redaction pass covers `remediation/`'s text files
 (never its ZIPs, project trees or `original/`), and a stop signal during the remediation keeps the migration's result line in
-the error text."""
+the error text. Remediation resume (2026-11-11, wave 4): with `SBMIG_WORKER_ACTION=remediation-resume` the Worker runs a NEW
+attempt that continues the chained remediation: it checks `control/remediation-resume.json` (written by Main; refused when
+missing or for another action), the config digests / sbmig version / env pins of `request.json` (not the migration zip's
+hash), runs `python -m sbmig.cli remediation-resume --run-dir <run dir>` (`chain.resume`) under the same rules (slot
+repository, redacted pipe, SIGTERM, final redaction) and writes `remediation-job-status.json` — the migration's
+`job-status.json`, reports and result line are never touched."""
 from __future__ import annotations
 
 import json
@@ -72,6 +82,10 @@ RECORD_DIR_ENV = ("LLM_RECORD_DIR", "SBMIG_LLM__RECORD_DIR")    # LLM 원문 기
 JOURNAL_FILE = "journal.jsonl"
 RESULT_MARK = "SBMIG-RESULT"
 REFUSE_NO_REQUEST = "control/request.json missing — the Worker runs only requests Main accepted"
+REFUSE_NO_RESUME = (f"control/{contract.RESUME_STATE_FILE} missing or not for {contract.ACTION_REMEDIATION_RESUME} — the Worker "
+                    "resumes a remediation only when Main recorded that attempt")
+REFUSE_NO_CHAIN = "no chained remediation in this run directory (remediation/state.json missing)"
+REMEDIATION_MARK = "SBMIG-REMEDIATION"       # 재개 자식이 끝에 내는 결과 줄(sbmig.cli remediation-resume)
 # 자식 콘솔의 줄 폭(COLUMNS 가 없을 때): 파이프는 터미널이 아니라 rich 가 80 칸에서 줄을 접는다 — 접힌 줄에 걸친 값은
 # 줄 단위 정제가 놓친다. 넓게 잡아 접히는 일을 줄인다
 CHILD_COLUMNS = "200"
@@ -670,6 +684,16 @@ def build_command(python: str, zip_path: str, configs: list[str], paths_yml: Pat
     return cmd
 
 
+def build_resume_command(python: str, run_dir: Path, configs: list[str], paths_yml: Path) -> list[str]:
+    """조치 재개 자식 명령: ``python -m sbmig.cli remediation-resume --run-dir <run dir> --config … --config <worker-paths.yml>``.
+
+    The remediation resume child command (the Worker's paths file as the last `--config`)."""
+    cmd = [python, "-m", "sbmig.cli", "remediation-resume", "--run-dir", str(run_dir)]
+    for c in configs:
+        cmd += ["--config", c]
+    return cmd + ["--config", str(paths_yml)]
+
+
 def last_result_line(run_dir: Path) -> str | None:
     """``<run dir>/sbmig.log`` 의 마지막 ``SBMIG-RESULT`` 줄(운영자가 옮겨 적는 줄). / The log's last SBMIG-RESULT line."""
     try:
@@ -780,10 +804,12 @@ def check_environment(record: contract.RequestRecord, state: contract.ControlSta
 
 
 def _env_check(run_dir: Path, record: contract.RequestRecord, environ: dict[str, str],
-               repo_root: Path) -> EnvCheck | None:
-    # Worker 는 control/ 을 읽기만 한다. 읽다가 깨지면(있을 수 없는 일이지만) 정책을 모르니 닫힌 쪽(refuse)으로
+               repo_root: Path, state_name: str = contract.STATE_FILE) -> EnvCheck | None:
+    # Worker 는 control/ 을 읽기만 한다. 읽다가 깨지면(있을 수 없는 일이지만) 정책을 모르니 닫힌 쪽(refuse)으로.
+    # 조치 재개 시도는 자기 제어 상태(remediation-resume.json)의 지문 — 그 Job 을 만든 Main 의 환경이 기준이다
     try:
-        state = contract.ControlState.read(run_dir)
+        state = (contract.ControlState.read(run_dir) if state_name == contract.STATE_FILE
+                 else contract.ControlState.read(run_dir, state_name))
     except Exception as e:  # noqa: BLE001
         check = EnvCheck(policy=contract.ENV_PIN_REFUSE)
         check._failed(e)
@@ -791,11 +817,11 @@ def _env_check(run_dir: Path, record: contract.RequestRecord, environ: dict[str,
     return check_environment(record, state, environ, repo_root)
 
 
-def _refuse(run_dir: Path, run_id: str, reason: str, record: contract.RequestRecord | None) -> int:
+def _refuse(run_dir: Path, run_id: str, reason: str, attempt: int | None, action: str | None = None) -> int:
     _say(f"REFUSED: {reason}")
-    _journal(run_dir, "worker_refused", {"run_id": run_id, "reason": reason})
-    contract.JobStatus(exit_code=3, run_id=run_id, attempt=record.attempt if record else None, error=reason,
-                       sbmig_version=contract.sbmig_version()).write(run_dir)
+    _journal(run_dir, "worker_refused", {"run_id": run_id, "reason": reason, **({"action": action} if action else {})})
+    contract.JobStatus(exit_code=3, run_id=run_id, attempt=attempt, error=reason, sbmig_version=contract.sbmig_version(),
+                       action=action).write(run_dir, contract.status_file_for(action))
     return 3
 
 
@@ -807,21 +833,26 @@ def terminated_error(signum: int) -> str:
             "— sbmig and its Maven processes were stopped; this run has no result")
 
 
-def _finish_terminated(run_dir: Path, run_id: str, record: contract.RequestRecord, version: str, env: dict[str, str],
-                       signum: int) -> int:
+def _finish_terminated(run_dir: Path, run_id: str, attempt: int, version: str, env: dict[str, str],
+                       signum: int, action: str | None = None) -> int:
     # 진짜 결과처럼 보이면 안 된다: exit 3(Main 이 아는 "중단") + 오류 글. 정제를 먼저 — Main 은 받은 상태 파일을 믿고 자기 정제를 건너뛴다
     error = terminated_error(signum)
-    # 2026-11-11: 이관 뒤에 취약점 조치가 이어 돌면 이관은 이미 끝났는데 조치 중에(Job 기한 등) 끊길 수 있다 — 운영자가 이관의 결과
-    # 줄(SBMIG-RESULT)과 보고서는 남아 있다는 것을 알게 그 줄을 오류 글에 붙인다(종료 코드는 그대로 3: 자식이 끝을 맺지 못했다)
-    finished = last_result_line(run_dir)
-    if finished:
-        error += f" — the migration itself had finished before (its report is in the run dir): {finished}"
+    if action:
+        # 조치 재개 시도: 조치는 다음 재개 때 그 경계부터 다시 간다(상태 파일이 남아 있다). 이관의 결과는 이 시도와 상관없다
+        error += (" — the remediation resume stopped where its state was last saved; the migration's results are untouched"
+                  " (a running IVAS analysis is not cancelled)")
+    else:
+        # 2026-11-11: 이관 뒤에 취약점 조치가 이어 돌면 이관은 이미 끝났는데 조치 중에(Job 기한 등) 끊길 수 있다 — 운영자가 이관의 결과
+        # 줄(SBMIG-RESULT)과 보고서는 남아 있다는 것을 알게 그 줄을 오류 글에 붙인다(종료 코드는 그대로 3: 자식이 끝을 맺지 못했다)
+        finished = last_result_line(run_dir)
+        if finished:
+            error += f" — the migration itself had finished before (its report is in the run dir): {finished}"
     _say(f"ERROR: {error}")
     redacted = redact_run_dir(run_dir, contract.secret_values(env))
     _journal(run_dir, "worker_finished", {"exit_code": TERMINATED_EXIT, "redacted_files": redacted, "error": error,
-                                          "terminated": signal_name(signum)})
-    contract.JobStatus(exit_code=TERMINATED_EXIT, run_id=run_id, attempt=record.attempt, error=error,
-                       sbmig_version=version).write(run_dir)
+                                          "terminated": signal_name(signum), **({"action": action} if action else {})})
+    contract.JobStatus(exit_code=TERMINATED_EXIT, run_id=run_id, attempt=attempt, error=error,
+                       sbmig_version=version, action=action).write(run_dir, contract.status_file_for(action))
     return TERMINATED_EXIT
 
 
@@ -848,23 +879,47 @@ def main(argv: list[str] | None = None, *, environ: dict[str, str] | None = None
     repo_root = Path(env.get("SBMIG_APP_DIR") or PACKAGE_ROOT)
 
     clean = Redactor(lambda: contract.secret_values(env))      # Worker 자신이 쓰는 글(파드 로그 줄, 저널·상태 파일의 오류 글)용
+    # 2026-11-11 wave 4: 이 Job 이 할 일 — 비었으면 이관(sbmig run), "remediation-resume" 이면 이어 돈 조치 재개
+    action = (env.get(contract.ACTION_ENV) or "").strip() or None
+    if action is not None and action not in contract.WORKER_ACTIONS:
+        # 모르는 행동: 어느 결과 파일에도 쓰지 않는다(이관의 job-status.json 을 덮지 않게) — Main 은 컨테이너 종료 코드로 끝을 안다
+        reason = f"unknown {contract.ACTION_ENV}={clean(action[:40])!r} — expected one of {', '.join(contract.WORKER_ACTIONS)}"
+        _say(f"REFUSED: {reason}")
+        _journal(run_dir, "worker_refused", {"run_id": run_id, "reason": reason})
+        return 3
     record = contract.RequestRecord.read(run_dir)
     if record is None:
-        return _refuse(run_dir, run_id, REFUSE_NO_REQUEST, None)
-    problems = contract.verify_request(record, repo_root, Path(zip_path), run_id)
+        return _refuse(run_dir, run_id, REFUSE_NO_REQUEST, None, action)
+    if action == contract.ACTION_REMEDIATION_RESUME:
+        try:
+            resume_state = contract.ControlState.read(run_dir, contract.RESUME_STATE_FILE)
+        except Exception:  # noqa: BLE001 — unreadable = not recorded by Main: refuse
+            resume_state = None
+        if resume_state is None or resume_state.action != action:
+            return _refuse(run_dir, run_id, REFUSE_NO_RESUME, None, action)
+        attempt = int(resume_state.attempt)
+        # 이관 zip 의 sha256 은 보지 않는다: 재개는 그 zip 을 읽지 않는다(그리고 결과 파일이 생긴 실행 폴더에서 돈다)
+        problems = contract.verify_request(record, repo_root, None, run_id)
+        if not (run_dir / "remediation" / "state.json").is_file():
+            problems.append(REFUSE_NO_CHAIN)
+    else:
+        attempt = int(record.attempt)
+        problems = contract.verify_request(record, repo_root, Path(zip_path), run_id)
     if problems:
-        return _refuse(run_dir, run_id, "; ".join(problems), record)
+        return _refuse(run_dir, run_id, "; ".join(problems), attempt, action)
     # 리뷰 2026-11-10: 파일이 같아도 env 가 다르면 다른 설정으로 돈다 — Job 을 만든 Main 의 환경 지문과 대조(이름만 적는다)
-    check = _env_check(run_dir, record, env, repo_root)
+    check = _env_check(run_dir, record, env, repo_root, contract.state_file_for(action))
     if check is not None and check.problems:
         reason = clean(check.reason())
         if check.policy != contract.ENV_PIN_WARN:          # refuse (그리고 알 수 없는 값) — 닫힌 쪽
-            return _refuse(run_dir, run_id, reason, record)
+            return _refuse(run_dir, run_id, reason, attempt, action)
         _say(f"WARNING: {reason}")
         _journal(run_dir, ENV_DIFFERS_EVENT, check.journal_data(run_id, clean))
 
     version = contract.sbmig_version()
-    started = {"run_id": run_id, "attempt": record.attempt, "sbmig_version": version, "pid": os.getpid()}
+    started = {"run_id": run_id, "attempt": attempt, "sbmig_version": version, "pid": os.getpid()}
+    if action:
+        started["action"] = action
     if check is not None:
         started["env_pin"] = check.policy
     _journal(run_dir, "worker_started", started)
@@ -872,51 +927,60 @@ def main(argv: list[str] | None = None, *, environ: dict[str, str] | None = None
     stops = StopSignals()
     restore = (install_signals or install_stop_signals)(stops.handle)
     try:
-        return _run(env, record, run_dir, run_id, zip_path, out, repo_root, version, clean, run_child, repo_resolver, stops)
+        return _run(env, record, run_dir, run_id, zip_path, out, repo_root, version, clean, run_child, repo_resolver, stops,
+                    attempt=attempt, action=action)
     finally:
         restore()
 
 
 def _run(env: dict[str, str], record: contract.RequestRecord, run_dir: Path, run_id: str, zip_path: str, out: str,
          repo_root: Path, version: str, clean: Redactor, run_child: RunChild, repo_resolver: RepoResolver | None,
-         stops: StopSignals) -> int:
+         stops: StopSignals, *, attempt: int, action: str | None = None) -> int:
     # from here on a status file must exist whatever happens (Main waits for it)
     rc: int | None = None
+    status_name = contract.status_file_for(action)
+    tagged: dict = {"action": action} if action else {}
     try:
         paths_yml = write_paths_yml(run_dir, env)
         configs = resolve_configs(env, record, repo_root)
-        cmd = build_command(env.get("SBMIG_PYTHON") or sys.executable, zip_path, configs,
-                            paths_yml, out, run_id, env.get("SBMIG_STOP_AFTER") or None,
-                            env.get("SBMIG_LLM_PROVIDER") or None)
+        python = env.get("SBMIG_PYTHON") or sys.executable
+        if action == contract.ACTION_REMEDIATION_RESUME:
+            cmd = build_resume_command(python, run_dir, configs, paths_yml)
+        else:
+            cmd = build_command(python, zip_path, configs, paths_yml, out, run_id, env.get("SBMIG_STOP_AFTER") or None,
+                                env.get("SBMIG_LLM_PROVIDER") or None)
         child_env = child_environ(env)
         # v2.1z-ae: 2번 자리부터 자기 Maven 로컬 저장소 — 환경 대조가 끝난 뒤, 자식의 env 에만(대조는 파드 자신의 env 를 본다)
         slot = apply_slot_repo(child_env, env, configs, paths_yml, cwd=repo_root, resolver=repo_resolver)
         if slot is not None:
             _say(clean(slot_message(slot)))
             _journal(run_dir, SLOT_EVENT, {k: clean(v) if isinstance(v, str) else v for k, v in slot.items()})
-        _say(clean("sbmig run " + " ".join(cmd[4:])))
+        _say(clean(" ".join(["sbmig", *cmd[3:]])))
         stops.arm()                                   # 이미 신호가 왔으면 자식을 띄우지 않는다
         try:
             rc = int(run_child(cmd, repo_root, child_env))
         finally:
             stops.disarm()                            # 자식이 끝난 뒤의 신호는 기억만 — 정제·상태 파일 쓰기를 끊지 않는다
     except WorkerTerminated as t:
-        return _finish_terminated(run_dir, run_id, record, version, env, t.signum)
+        return _finish_terminated(run_dir, run_id, attempt, version, env, t.signum, action)
     except (Exception, KeyboardInterrupt) as e:  # noqa: BLE001 — whatever broke, Main must still get a status file
         error = clean(f"the Worker could not run sbmig: {type(e).__name__}: {e}")
         _say(f"ERROR: {error}")
         redacted = redact_run_dir(run_dir, contract.secret_values(env))
-        _journal(run_dir, "worker_finished", {"exit_code": 3, "redacted_files": redacted, "error": error})
-        contract.JobStatus(exit_code=3, run_id=run_id, attempt=record.attempt, error=error, sbmig_version=version).write(run_dir)
+        _journal(run_dir, "worker_finished", {"exit_code": 3, "redacted_files": redacted, "error": error, **tagged})
+        contract.JobStatus(exit_code=3, run_id=run_id, attempt=attempt, error=error, sbmig_version=version,
+                           action=action).write(run_dir, status_name)
         return 3
 
     _say(f"sbmig exit {rc} — run dir {run_dir}")
     redacted = redact_run_dir(run_dir, contract.secret_values(env))
-    line = last_result_line(run_dir)
+    # 재개 시도는 이관의 SBMIG-RESULT 줄을 다시 내지 않는다(이 시도의 결과가 아니다) — 자식이 낸 SBMIG-REMEDIATION 줄이 파드 로그에 있다
+    line = None if action else last_result_line(run_dir)
     if line:
         print(line, flush=True)
-    _journal(run_dir, "worker_finished", {"exit_code": rc, "redacted_files": redacted})
-    contract.JobStatus(exit_code=rc, run_id=run_id, attempt=record.attempt, sbmig_version=version).write(run_dir)
+    _journal(run_dir, "worker_finished", {"exit_code": rc, "redacted_files": redacted, **tagged})
+    contract.JobStatus(exit_code=rc, run_id=run_id, attempt=attempt, sbmig_version=version,
+                       action=action).write(run_dir, status_name)
     if rc == 3:
         return 3
     if rc == 2 and (env.get("SBMIG_FAIL_JOB_ON_BUILD_FAIL") or "").strip() == "1":

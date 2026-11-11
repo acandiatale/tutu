@@ -327,6 +327,14 @@ def test_policy_hash_sensitivity():
     assert P.policy_hash(_cfg(always_approve=["bom", "major"])) == P.policy_hash(_cfg(always_approve=["major", "bom"]))
 
 
+def test_policy_hash_covers_ignore_actions_sorted_and_upper_cased():
+    base = P.policy_hash(_cfg())                                   # default: PC, IG
+    assert base == P.policy_hash(_cfg(ignore_actions=[" ig", "pc"]))
+    assert base != P.policy_hash(_cfg(ignore_actions=["PC"]))
+    assert base != P.policy_hash(_cfg(ignore_actions=[]))
+    assert P.policy_hash(_cfg(ignore_actions=["PC"])) != P.policy_hash(_cfg(ignore_actions=[]))
+
+
 # ------------------------------------------------------------------------------------------------- validate_decision
 
 

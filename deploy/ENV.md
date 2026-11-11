@@ -116,6 +116,8 @@
 | `SBMIG_REMEDIATION__REQUIRE_APPROVAL` | `false` | `true` = 모든 버전 변경에 사람 승인 |
 | `SBMIG_REMEDIATION__FAILED_CANDIDATE` | `include` | 빌드가 실패한 수정본도 `result.zip` 으로 낸다 / `discard` |
 | `SBMIG_REMEDIATION__IVAS_ANALYSIS_TIMEOUT_MINUTES` | `30` | IVAS 분석 한 번의 대기 한도(넘으면 검사 미완료 — 0건이 아니다) |
+| `SBMIG_REMEDIATION__CHAIN_BUDGET_MINUTES` | `90` | 빌드 파드에서 이관에 이어 돈 조치의 시간 한도(분, 0 = 없음). 넘으면 다음 경계에서 `STOPPED` `chain_budget` — 재개하면 새 빌드 파드가 이어 간다 |
+| `SBMIG_REMEDIATION__IGNORE_ACTIONS` | `'["PC","IG"]'` | 계획에서 뺄 IVAS 조치 구분 코드(PC 패치 완료, IG 조치 예외). 뺀 항목은 보고서 표에 남는다. 바꾸면 열린 제안은 다시 만들어진다 |
 
 ## 6. 매니페스트에 고정된 컨테이너 경로 (채울 것 없음)
 

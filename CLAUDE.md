@@ -365,9 +365,19 @@ Then the final build again, the report (Handover first, "Structure review", fix 
   Job modes: it serves status / proposals / approvals / files for chained runs (`kind: chained`), the page shows a `취약점 조치` stage
   and a result block with 승인 / 거절 buttons; the standalone ZIP upload (`POST /api/remediations`, worker thread, own Maven repository
   `<build.local_repo>-remediation`, needs `trusted_projects`) works in `in-process` mode only (409 `not_available` in Job modes).
-  A build pod cannot wait for a human: it saves `AWAITING_APPROVAL` / `AWAITING_CONFIRMATION` and ends — **resuming in a new build pod
-  is not built yet** (409 `not_available`), so today only proposals that need no approval run to the end. A chained approval is
-  checked against the policy hash the build pod recorded. Flow: source ZIP → `baseline_build → baseline_scan → inventory → plan →
+  A build pod cannot wait for a human: it saves `AWAITING_APPROVAL` / `AWAITING_CONFIRMATION` (or `STOPPED` reason `chain_budget` after
+  `remediation.chain_budget_minutes`, 90) and ends. **Resume = a NEW build pod** (same evening): `RunManager.resume_remediation` records
+  the attempt in its own `control/remediation-resume.json` (action `remediation-resume`, intent before create, env pins, slot), takes a
+  turn in the same FIFO line / slots as uploads, creates Job `<migration job>-rem<attempt>` with `SBMIG_WORKER_ACTION`; the Worker runs
+  `sbmig remediation-resume --run-dir` (→ `chain.resume`), writes `remediation-job-status.json`, and never touches the migration's own
+  files / verdict. The state on the shared volume carries the IVAS projectId / analysisId (no re-upload); an
+  `AWAITING_CONFIRMATION` answer (`reupload` or `receipt` + ids) is written into state.json by the web pod before the Job exists.
+  Page (user: "체크박스로 선택해서 승인 … 승인자는 필요 없고"): a checkbox list + ONE button `선택한 항목 적용` → one
+  `POST …/approvals` with every pending proposal (checked = approved, unchecked = rejected, `"resume": true`, no `by`) → the new pod
+  continues; the word "재개" does not appear. A chained approval is checked against the policy hash the build pod recorded.
+  IVAS `actionDivCd` (company document): NE 조치 필요 / NP 조치계획 미등록 / PL 조치예정 / OT 조치일 경과 / PC 패치 완료 / IG 조치 예외 —
+  `remediation.ignore_actions` (default PC, IG) are reported but neither planned nor counted as remaining (part of the policy hash).
+  A matched-files component id may contain `|` (`11560|934982`), sent as one encoded path segment. Flow: source ZIP → `baseline_build → baseline_scan → inventory → plan →
   apply → build → freeze_delivery → rescan → evaluate → report` with the company's scanner **IVAS** (LabradorLabs; env
   `IVAS_BASE_URL` / `IVAS_USER_ID` / `IVAS_PASSWORD`, Secret only). Hard rules: only approved Maven **version text** changes in existing
   poms, plus ONE exception — a `managed_override` proposal inserts one fixed-shape `<dependency>` entry into the root pom's

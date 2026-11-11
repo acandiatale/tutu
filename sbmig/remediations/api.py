@@ -7,7 +7,12 @@ ZIP 서명(PK)을 본다. 막히는 일(ZIP 검사·상태 파일 읽기)은 스
 The `/api/remediations` router (contract: API.md). Error mapping: IntakeRejected → 400, NotReady → 503,
 ApprovalMismatch / StateConflict / NotAvailable → 409, unknown id → 404, bad id → 400.
 Job 모드(k8s-job / local-job)의 웹 파드는 조치를 돌리지 않는다: 단독 업로드는 본문을 받기 전에 409 ``not_available``,
-이어 돈 조치(``<out>/<이관 실행 id>/remediation/``)는 같은 라우트로 읽고 승인한다.
+이어 돈 조치(``<out>/<이관 실행 id>/remediation/``)는 같은 라우트로 읽고 승인하고, 재개하면 새 빌드 파드가 잇는다(2026-11-11 wave 4).
+승인 요청에 ``"resume": true`` 를 주면 결정을 쓴 뒤 곧바로 재개한다(화면의 한 버튼 "선택한 항목 적용") — 재개가 거절돼도 결정은 쓰인
+채로 남고 응답의 ``resumed: false`` + ``resume_error`` {code, error} 가 그 까닭을 말한다. ``by`` (승인자 이름)는 비워도 된다.
+
+Approvals with `"resume": true` resume right after the decisions are written; a refused resume keeps the decisions and is
+reported as `resumed: false` + `resume_error`. `by` is optional.
 """
 from __future__ import annotations
 
@@ -168,7 +173,20 @@ def create_router(manager: RemediationManager, max_upload_bytes: int | None = No
             if not isinstance(items, list) or not all(isinstance(x, dict) for x in items):
                 raise ValueError("decisions must be a list of objects")
             decisions = [Decision.from_dict({**x, "by": by}) for x in items]
-            return JSONResponse(await _call(manager.decide, rid, decisions, by))
+            then_resume = body.get("resume")
+            if then_resume is not None and not isinstance(then_resume, bool):
+                raise ValueError("resume must be true or false")
+            out = await _call(manager.decide, rid, decisions, by)
+            if not then_resume:
+                return JSONResponse(out)
+            # 결정은 이미 쓰였다: 재개가 거절돼도 그대로 두고, 거절의 모양(code / error)만 응답에 싣는다
+            try:
+                await _call(manager.resume, rid, None, None, None, None, by)
+            except Exception as e:  # noqa: BLE001 — the decisions stay written; the refusal is part of the answer
+                refused = json.loads(error_response(e).body)
+                return JSONResponse({**out, "resumed": False,
+                                     "resume_error": {"code": refused.get("code"), "error": refused.get("error")}})
+            return JSONResponse({**out, "resumed": True, "resume_error": None})
         except TypeError:
             return JSONResponse({"error": "each decision needs proposal_id and decision", "code": "bad_request"},
                                 status_code=400)

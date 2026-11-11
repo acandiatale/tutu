@@ -7,7 +7,9 @@
 준비 확인은 IVAS 환경 변수 + Maven 준비뿐이다 — ``remediation.trusted_projects`` 는 묻지 않는다(이관이 이미 이 프로젝트를 빌드했다).
 Maven 로컬 저장소는 이 파드의 이관과 같은 것(``cfg.build.local_repo``, 슬롯 저장소 포함)을 쓴다 — ``-remediation`` 접미사를 붙이지
 않는다(웹 파드에서 돌던 시절의 규칙). 빌드 파드는 사람을 기다릴 수 없다: AWAITING_APPROVAL / AWAITING_CONFIRMATION 은 저장하고 끝난다;
-새 빌드 파드에서 이어 가기(``resume``)는 다음 단계의 일이다.
+재개는 새 빌드 파드가 ``resume`` 을 부른다(Worker 동작 remediation-resume). 시간 한도: ``remediation.chain_budget_minutes`` (0 = 없음) —
+이 파드에서 이번 호출이 그만큼 돌면 ``stop`` 이 참이 되어 다음 경계에서 STOPPED, 이유 ``chain_budget`` (재개 가능; 진행 중인 검사의 영수증은
+남아 재개가 같은 IVAS 분석을 이어서 조회한다).
 
 Chained remediation: runs in the build pod after a migration that ended in BUILD SUCCESS. The migration graph's
 `remediation` node calls `run_after_migration`; the remediation graph stays a separate feature. Its outcome never changes
@@ -39,6 +41,9 @@ from .models import (
 log = logging.getLogger("sbmig.remediations.chain")
 
 CHAIN_DIR = "remediation"
+# 시간 한도로 멈춘 STOPPED 의 이유(models.R_* 는 이 파일이 고치지 않는다 — 이어서 도는 조치에만 있는 이유라 여기 둔다)
+R_CHAIN_BUDGET = "chain_budget"
+_monotonic = time.monotonic               # 시험이 바꿔 끼우는 시계(경과 시간만 잰다)
 SCOPE = "remediation"                     # 이관 저널에 섞이는 조치 줄의 표시("scope": "remediation")
 SOURCE_NAME = "source.zip"
 ZIP_DATE = (1980, 1, 1, 0, 0, 0)          # 결정적 ZIP: 시각을 고정한다(ZIP 이 표현하는 가장 이른 값)
@@ -172,6 +177,60 @@ def _safe_stop(stop: StopCheck | None) -> StopCheck:
     return check
 
 
+class _Budget:
+    """이번 호출의 시간 한도(분, 0 이하 = 없음). ``wrap(stop)`` 은 진짜 중지 요청이거나 한도를 넘었으면 참인 stop 을 돌려준다.
+    한도를 처음 넘을 때 저널 ``remediation_budget`` 을 한 번 쓴다. ``exhausted`` = 한도 때문에 참이 된 적이 있다.
+
+    The wall-time budget of one chained invocation; `wrap(stop)` also turns true once it is used up."""
+
+    def __init__(self, cfg: Any, jr: Journal):
+        rem = getattr(cfg, "remediation", None)
+        try:
+            minutes = float(getattr(rem, "chain_budget_minutes", 0) or 0)
+        except (TypeError, ValueError):
+            minutes = 0.0
+        self.minutes = minutes
+        self.started = _monotonic()
+        self.exhausted = False
+        self._jr = jr
+
+    def over(self) -> bool:
+        if self.minutes <= 0:
+            return False
+        if self.exhausted:
+            return True
+        if _monotonic() - self.started >= self.minutes * 60.0:
+            self.exhausted = True
+            self._jr({"event": "remediation_budget", "minutes": self.minutes})
+            log.warning("chained remediation: time budget of %g minute(s) used up — stopping at the next boundary",
+                        self.minutes)
+            return True
+        return False
+
+    def wrap(self, stop: StopCheck) -> StopCheck:
+        def check() -> bool:
+            return bool(stop()) or self.over()
+        return check
+
+
+def _budget_outcome(paths: RunPaths, state: RemediationState, budget: _Budget, real_stop: StopCheck) -> RemediationState:
+    """한도 때문에 멈춘 STOPPED 의 이유를 ``chain_budget`` 으로 바꿔 저장한다(진짜 중지 요청이 있으면 그대로 stop_requested).
+    UI 가 "시간 한도로 멈춤 — 재개하면 이어서" 를 말할 수 있게 하려는 것이다."""
+    from .models import R_STOP_REQUESTED, STOPPED
+    if state.status != STOPPED or state.reason != R_STOP_REQUESTED or real_stop() or not budget.over():
+        return state
+    detail = state.message or ""
+    state.reason, state.reasons = R_CHAIN_BUDGET, [R_CHAIN_BUDGET]
+    state.stop_requested = False
+    state.message = (f"the chained remediation used its time budget of {budget.minutes:g} minute(s) in this pod; "
+                     "resume continues from the stopped node"
+                     + (" (the remote IVAS analysis keeps running and is polled again without a new upload)"
+                        if state.pending_receipt else "")
+                     + (f" | {detail}" if detail else ""))
+    _try_save(paths, state)
+    return state
+
+
 def _saver(paths: RunPaths) -> Callable[[RemediationState], None]:
     owner = f"chain-{os.getpid()}"
 
@@ -226,6 +285,7 @@ def run_after_migration(run_dir: Path | str, project_dir: Path | str, cfg: Any, 
     jr = _scoped(journal)
     state: RemediationState | None = None
     try:
+        budget = _Budget(cfg, jr)            # 시간 한도는 이 호출이 시작된 때부터 잰다
         rem = getattr(cfg, "remediation", None)
         if rem is None or not bool(getattr(rem, "after_migration", False)):
             return None
@@ -245,14 +305,16 @@ def run_after_migration(run_dir: Path | str, project_dir: Path | str, cfg: Any, 
             jr({"event": "remediation_skipped", "reason": "not_ready", "missing": missing})
             log.warning("vulnerability remediation skipped (not ready): %s", "; ".join(missing))
             return None
-        return _start(paths, Path(project_dir), cfg, comps, run_id=run_id, jr=jr, stop=_safe_stop(stop),
-                      exclude_dirs=exclude_dirs)
+        real_stop = _safe_stop(stop)
+        return _start(paths, Path(project_dir), cfg, comps, run_id=run_id, jr=jr, stop=budget.wrap(real_stop),
+                      exclude_dirs=exclude_dirs, budget=budget, real_stop=real_stop)
     except Exception as e:  # noqa: BLE001 — the migration's verdict must never depend on the remediation
         return _error(paths, jr, e, run_id, state)
 
 
 def _start(paths: RunPaths, project_dir: Path, cfg: Any, comps: Components, *, run_id: str, jr: Journal,
-           stop: StopCheck, exclude_dirs: Iterable[str]) -> RemediationState:
+           stop: StopCheck, exclude_dirs: Iterable[str], budget: _Budget | None = None,
+           real_stop: StopCheck | None = None) -> RemediationState:
     from . import intake as intake_mod
     from . import planner as planner_mod
     from .models import IntakeRejected
@@ -277,24 +339,27 @@ def _start(paths: RunPaths, project_dir: Path, cfg: Any, comps: Components, *, r
     state = graph_mod.new_state(run_id, SOURCE_NAME, cfg, result, [], policy_hash=policy)
     save = _saver(paths)
     save(state)
-    return _drive(paths, state, cfg, comps, jr=jr, stop=stop)
+    return _drive(paths, state, cfg, comps, jr=jr, stop=stop, budget=budget, real_stop=real_stop)
 
 
 def _drive(paths: RunPaths, state: RemediationState, cfg: Any, comps: Components, *, jr: Journal,
-           stop: StopCheck) -> RemediationState:
+           stop: StopCheck, budget: _Budget | None = None, real_stop: StopCheck | None = None) -> RemediationState:
     save = _saver(paths)
     try:
         state = graph_mod.run_remediation(state, paths, cfg, comps, save=save, journal=jr, stop=stop)
     except Exception as e:  # noqa: BLE001 — run_remediation turns node errors into FAILED; this guards the rest
         return _error(paths, jr, e, state.id, state)
+    if budget is not None:
+        state = _budget_outcome(paths, state, budget, real_stop or (lambda: False))
     _ended(jr, state)
     return state
 
 
 def resume(run_dir: Path | str, cfg: Any, *, journal: Journal | None, stop: StopCheck | None,
            components: Components | None = None) -> RemediationState:
-    """이어서 돈 조치를 다시 잇는다(다음 단계의 재개 파드용): 상태를 읽고, 재개할 수 있는 상태가 아니면 ``StateConflict``,
-    ``stop_requested`` 를 지우고 그래프를 ``next_node`` 부터 돌린다. 그래프 안의 예외는 FAILED 상태로 돌아온다.
+    """이어서 돈 조치를 다시 잇는다(새 빌드 파드의 Worker 동작 remediation-resume 이 부른다): 상태를 읽고, 재개할 수 있는 상태가 아니면 ``StateConflict``,
+    ``stop_requested`` 를 지우고 그래프를 ``next_node`` 부터 돌린다. 그래프 안의 예외는 FAILED 상태로 돌아온다. 시간 한도
+    (``chain_budget_minutes``)는 이 호출부터 다시 잰다.
 
     Continue a RESUMABLE chained remediation (`StateConflict` otherwise)."""
     paths = chain_paths(run_dir)
@@ -305,10 +370,12 @@ def resume(run_dir: Path | str, cfg: Any, *, journal: Journal | None, stop: Stop
     if not graph_mod.can_resume(state):
         raise StateConflict(f"chained remediation {state.id} cannot be resumed from {state.status}")
     try:
+        budget = _Budget(cfg, jr)            # 재개한 이 파드에서 다시 처음부터 잰다
         comps = components if components is not None else graph_mod.default_components(cfg, journal=jr)
         state.stop_requested = False
         jr({"event": "remediation_resume", "remediation": state.id, "next_node": state.next_node})
-        return _drive(paths, state, cfg, comps, jr=jr, stop=_safe_stop(stop))
+        real_stop = _safe_stop(stop)
+        return _drive(paths, state, cfg, comps, jr=jr, stop=budget.wrap(real_stop), budget=budget, real_stop=real_stop)
     except Exception as e:  # noqa: BLE001
         return _error(paths, jr, e, state.id, state)
 

@@ -280,7 +280,7 @@ def test_job_mode_routes(tmp_path, base_cfg):
     assert body["total"] == 1 and body["items"][0]["kind"] == "chained" and body["items"][0]["run_id"] == RUN_ID
     st = c.get(f"/api/remediations/{RUN_ID}").json()
     assert STATUS_KEYS <= set(st) and st["kind"] == "chained" and st["status"] == AWAITING_APPROVAL
-    assert st["resume"]["available"] is False and "next increment" in st["resume"]["note"]
+    assert st["resume"]["available"] is False and "결정하지 않은 제안" in st["resume"]["note"]
     assert str(tmp_path) not in c.get(f"/api/remediations/{RUN_ID}").text
     assert c.get(f"/api/remediations/{RUN_ID}/files/plan-r1.json").status_code == 200
     rm.withheld.add(RUN_ID)
@@ -293,7 +293,10 @@ def test_job_mode_routes(tmp_path, base_cfg):
     r = c.post(f"/api/remediations/{RUN_ID}/approvals", json={"by": "alice", "decisions": [dec]})
     assert r.status_code == 200 and r.json() == {"accepted": [p["id"]], "pending": 0}
     r = c.post(f"/api/remediations/{RUN_ID}/resume", json={})
-    assert r.status_code == 409 and r.json()["code"] == "not_available" and "next increment" in r.json()["error"]
+    assert r.status_code == 202 and r.json()["resume_job"]["state"] == "queued" and rm.resumed == [RUN_ID]
+    r = c.post(f"/api/remediations/{RUN_ID}/resume", json={})              # one resume at a time
+    assert r.status_code == 409 and r.json()["code"] == "state_conflict"
+    rm.active_resumes.clear()
     r = c.delete(f"/api/remediations/{RUN_ID}")
     assert r.status_code == 409 and r.json()["code"] == "state_conflict" and paths.state.is_file()
     assert c.post(f"/api/remediations/{RUN_ID}/stop").status_code == 409
@@ -317,3 +320,39 @@ def test_web_app_in_local_job_mode_runs_no_remediation(tmp_path, monkeypatch):
         assert r.status_code == 409 and r.json()["code"] == "not_available"
         assert c.get("/api/remediations/readiness").json()["runs_in"] == "build_pod"
     assert factory.comps is None
+
+
+# ---------------------------------------------------------------------------- wave 4: approvals + resume in one request
+def test_approvals_with_resume_true_resume_and_a_refusal_keeps_the_decisions(tmp_path, base_cfg):
+    from sbmig.remediations.models import RoundPlan, StateConflict, read_json
+    paths = chained(tmp_path, base_cfg)
+    rm = FakeRunManager(tmp_path / "out")
+    rm.refuse = StateConflict("the web server is shutting down")
+    mgr = job_manager(tmp_path, base_cfg, rm=rm)
+    c = make_client(mgr)
+    p = c.get(f"/api/remediations/{RUN_ID}/proposals").json()["proposals"][0]
+    dec = _decision(p).to_dict()
+    r = c.post(f"/api/remediations/{RUN_ID}/approvals", json={"decisions": [dec], "resume": True})      # no "by"
+    assert r.status_code == 200
+    body = r.json()
+    assert body["accepted"] == [p["id"]] and body["pending"] == 0 and body["resumed"] is False
+    assert body["resume_error"] == {"code": "state_conflict", "error": "the web server is shutting down"}
+    assert RoundPlan.from_dict(read_json(paths.plan(1))).proposals[0].decision == D_APPROVED     # decisions stay written
+    rm.refuse = None
+    r = c.post(f"/api/remediations/{RUN_ID}/resume", json={})
+    assert r.status_code == 202 and rm.resumed == [RUN_ID]
+
+
+def test_approvals_with_resume_true_dispatches(tmp_path, base_cfg):
+    chained(tmp_path, base_cfg)
+    rm = FakeRunManager(tmp_path / "out")
+    mgr = job_manager(tmp_path, base_cfg, rm=rm)
+    c = make_client(mgr)
+    p = c.get(f"/api/remediations/{RUN_ID}/proposals").json()["proposals"][0]
+    r = c.post(f"/api/remediations/{RUN_ID}/approvals", json={"by": "", "decisions": [_decision(p).to_dict()], "resume": True})
+    assert r.status_code == 200 and r.json() == {"accepted": [p["id"]], "pending": 0, "resumed": True, "resume_error": None}
+    assert rm.resumed == [RUN_ID]
+    st = c.get(f"/api/remediations/{RUN_ID}").json()
+    assert st["resume_job"]["state"] == "queued" and st["resume"]["available"] is False
+    r = c.post(f"/api/remediations/{RUN_ID}/approvals", json={"decisions": [_decision(p).to_dict()], "resume": "yes"})
+    assert r.status_code == 400

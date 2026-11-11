@@ -12,15 +12,19 @@ Maven 로컬 저장소: 설정의 ``build.local_repo`` 가 있으면 조치 실�
 Job 모드(``k8s-job`` / ``local-job``)에서는 이 프로세스가 **아무것도 실행하지 않는다** — 단독 업로드(``submit``)·재개는
 ``NotAvailable`` (HTTP 409 ``not_available``), 준비 확인은 Maven 을 재 보지 않고 "빌드 파드에서 이관 성공 뒤에 돈다"고만 답한다.
 이어 돈 조치(chained): 빌드 파드가 이관 성공 뒤 ``<out>/<이관 실행 id>/remediation/`` 에 남긴 조치(상태 id = 이관 실행 id)도
-같은 API 로 보인다 — 상태·목록·제안·결과·파일·승인은 모든 모드에서, 재개는 in-process 에서만(``chain.resume``), 삭제는 거절(폴더의
+같은 API 로 보인다 — 상태·목록·제안·결과·파일·승인은 모든 모드에서, 재개는 in-process 에서는 이 프로세스의 작업 스레드가
+(``chain.resume``), Job 모드에서는 **새 빌드 파드**가(2026-11-11 wave 4: 확인 응답을 state.json 에 먼저 적고
+``RunManager.resume_remediation`` 이 행동 ``remediation-resume`` 의 Job 을 업로드와 같은 줄·자리로 만든다), 삭제는 거절(폴더의
 주인은 이관 실행). 시작 때의 재시작 규칙은 단독 조치 폴더만 본다(이어 돈 조치는 빌드 파드의 것). 이관 실행이 이미 끝났는데
-QUEUED / RUNNING 으로 남은 이어 돈 조치는 파일을 고치지 않고 INTERRUPTED (``stale: true``)로 **보여 준다**.
+QUEUED / RUNNING 으로 남은 이어 돈 조치는 파일을 고치지 않고 INTERRUPTED (``stale: true``)로 **보여 준다** — 재개 Job 이 줄에 있거나
+도는 동안은 그 Job 이 상태 파일의 주인이라 stale 이 아니다.
 
 The remediation job manager: worker threads of this process (one remediation at a time), `state.json` per run,
 approvals (all-or-nothing hash checks), resume / stop / delete, and the restart rule (QUEUED / RUNNING of an earlier
 process → INTERRUPTED, never resumed automatically). File-based only. In the Job modes nothing runs here (submit /
 resume → `NotAvailable`); chained remediations (`<out>/<run id>/remediation/`, written by the build pod after a
-successful migration) are visible through the same API in every mode.
+successful migration) are visible through the same API in every mode; in the Job modes they are resumed in a NEW build
+pod (`RunManager.resume_remediation`, wave 4) after the confirmation has been written to `state.json` here.
 """
 from __future__ import annotations
 
@@ -92,8 +96,9 @@ LIVE_FILES = ("journal.jsonl",)               # 마지막 정제 전에도 내�
 _RUN_ENDED = ("finished", "unknown", "missing")
 NOT_AVAILABLE_MESSAGE = ("remediation runs in the build pod after a successful migration (remediation.after_migration); "
                          "the web pod runs nothing in {mode} mode")
-RESUME_NEXT_STEP = ("resuming a chained remediation in a new build pod is the next increment; in {mode} mode it cannot "
-                    "be resumed from the web pod yet")
+RESUME_UNSUPPORTED = ("this web server cannot dispatch a build pod for the resume ({mode} mode without a run manager that "
+                      "resumes remediations)")
+RESUME_ACTIVE_NOTE = "이미 새 빌드 파드에서 이어서 진행 중이거나 자리를 기다리고 있습니다."      # 화면에 그대로 보이는 문장
 CONFIG_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$")
 FALLBACK_CONFIGS = ("artifacts.yml", "artifacts.local-e2e.yml")       # RunManager.FALLBACK_CONFIGS 와 같은 규칙
 LOCAL_REPO_SUFFIX = "-remediation"
@@ -421,8 +426,41 @@ class RemediationManager:
     def _migration_ended(self, run_id: str) -> bool:
         return self._migration_state(run_id) in _RUN_ENDED
 
+    # ---- chained: the resume Job of RunManager (2026-11-11 wave 4)
+    def _resume_job(self, run_id: str) -> dict[str, Any] | None:
+        """이 이어 돈 조치의 재개 Job(``RunManager.remediation_job``)의 모습. 관리자가 그 기능이 없거나 읽기가 실패하면 None."""
+        fn = getattr(self.run_manager, "remediation_job", None) if self.run_manager is not None else None
+        if not callable(fn):
+            return None
+        try:
+            out = fn(run_id)
+        except Exception:  # noqa: BLE001 — an unreadable resume job is "not known", never a crash of a read
+            log.debug("remediation_job(%s) failed", run_id, exc_info=True)
+            return None
+        return out if isinstance(out, dict) else None
+
+    def _resume_active(self, run_id: str) -> bool:
+        """재개 Job 이 줄에 있거나 돌고 있나 — 그동안 조치 상태 파일의 주인은 그 빌드 파드다(승인·재개 거절, stale 아님, 파일 보류)."""
+        fn = getattr(self.run_manager, "remediation_active", None) if self.run_manager is not None else None
+        if not callable(fn):
+            return False
+        try:
+            return bool(fn(run_id))
+        except Exception:  # noqa: BLE001 — when in doubt the build pod may own the state: refuse rather than race it
+            log.debug("remediation_active(%s) failed", run_id, exc_info=True)
+            return True
+
+    def _can_dispatch(self) -> bool:
+        # Job 모드에서 새 빌드 파드로 재개할 수 있는가: RunManager 가 재개 Job 을 만들 줄 알아야 한다
+        return self.run_manager is not None and callable(getattr(self.run_manager, "resume_remediation", None))
+
     def _withheld(self, run_id: str) -> bool:
-        """이관 실행의 마지막 정제가 아직 남았는가(``RunManager.file_withheld`` — 쓰는 순간 정제되지 않는 파일 기준)."""
+        """이관 실행의 마지막 정제가 아직 남았는가(``RunManager.file_withheld`` — 쓰는 순간 정제되지 않는 파일 기준). 재개 Job 이
+        줄에 있거나 도는 동안에도 그렇다 — 그 파드의 마지막 정제가 끝나야 조치 파일을 내준다.
+
+        Whether chained files must wait: the migration run's final pass, or a resume Job that is queued / running."""
+        if self._resume_active(run_id):
+            return True
         rm = self.run_manager
         if rm is None or not hasattr(rm, "file_withheld"):
             return False
@@ -439,6 +477,8 @@ class RemediationManager:
         with self._lock:
             if rid in self._active:
                 return False
+        if self._resume_active(rid):          # 새 빌드 파드의 재개 Job 이 이 상태를 쓰는 중이다
+            return False
         return self._migration_ended(rid)
 
     def _recorded_configs(self, run_id: str) -> list[str]:
@@ -810,16 +850,21 @@ class RemediationManager:
             except ValueError:
                 return None
 
-    def _resume_info(self, rid: str, st: RemediationState, chained: bool, shown: str) -> dict[str, Any]:
-        # 화면의 재개 버튼: 누를 수 있는가와 못 누르는 까닭(Job 모드 = 다음 단계, 결정 대기, 끝 상태 …)
-        if self.job_mode:
-            note = RESUME_NEXT_STEP.format(mode=self.mode) if chained else NOT_AVAILABLE_MESSAGE.format(mode=self.mode)
-            return {"available": False, "note": note}
+    def _resume_info(self, rid: str, st: RemediationState, chained: bool, shown: str, pending: int = 0) -> dict[str, Any]:
+        # 화면의 재개 버튼: 누를 수 있는가와 못 누르는 까닭(단독 조치의 Job 모드, 재개 Job 이 이미 있음, 결정 대기, 끝 상태 …)
+        if self.job_mode and not chained:
+            return {"available": False, "note": "이 서버에서는 단독 조치를 돌리지 않습니다. 조치는 이관이 성공한 뒤 빌드 파드에서 돕니다."}
+        if self.job_mode and not self._can_dispatch():
+            return {"available": False, "note": "이 서버는 이어서 진행할 빌드 파드를 띄울 수 없습니다."}
+        if chained and self.job_mode and self._resume_active(rid):
+            return {"available": False, "note": RESUME_ACTIVE_NOTE}
         if shown not in RESUMABLE or not graph_mod.can_resume(dataclasses.replace(st, status=shown)):
-            return {"available": False, "note": f"{shown} cannot be resumed"}
+            return {"available": False, "note": f"지금 상태({shown})에서는 이어서 진행할 수 없습니다."}
         with self._lock:
             if rid in self._active:
-                return {"available": False, "note": "already queued or running"}
+                return {"available": False, "note": "이미 진행 중이거나 자리를 기다리고 있습니다."}
+        if shown == AWAITING_APPROVAL and pending:
+            return {"available": False, "note": f"결정하지 않은 제안이 {pending}건 남아 있습니다."}
         return {"available": True, "note": ""}
 
     def _shown(self, rid: str, st: RemediationState, chained: bool) -> tuple[str, bool]:
@@ -856,12 +901,16 @@ class RemediationManager:
                       "resume": f"{base}/resume", "stop": f"{base}/stop", "result": f"{base}/result",
                       "files": f"{base}/files/"},
             "kind": KIND_CHAINED if chained else KIND_STANDALONE, "mode": self.mode,
-            "resume": self._resume_info(rid, st, chained, shown),
+            "resume": self._resume_info(rid, st, chained, shown, pending),
         }
         if chained:
             out["run_id"] = rid
             if withheld:
                 out["withheld"] = True
+            # 새 빌드 파드의 재개 Job(마지막 하나): state queued / running / finished, active, queue {position, ahead}, slot …
+            rjob = self._resume_job(rid)
+            if rjob is not None:
+                out["resume_job"] = rjob
         if stale:
             out["stale"] = True
             out["recorded_status"] = st.status
@@ -1013,6 +1062,8 @@ class RemediationManager:
             st = self._load(rid)
             if st.status != AWAITING_APPROVAL or rid in self._active:
                 raise StateConflict(f"remediation {rid} is {st.status}, not {AWAITING_APPROVAL}", status=st.status)
+            if chained and self._resume_active(rid):
+                raise StateConflict(RESUME_ACTIVE_NOTE, status=st.status)
             if chained and self._withheld(rid):
                 raise self._withheld_error(rid, "plan.json")
             plan = self._current_plan(paths, st)
@@ -1080,18 +1131,29 @@ class RemediationManager:
         업로드 확인 대기에 ``confirm`` 이 없으면 ``StateConflict``. ``reupload`` = 업로드가 IVAS 에 닿지 않았음을 사람이 확인 →
         다시 올린다. ``receipt`` = 사람이 IVAS 에서 찾은 프로젝트·분석 ID 로 이어서 조회한다(다시 올리지 않는다).
 
-        Job 모드에서는 늘 ``NotAvailable`` (이어 돈 조치를 새 빌드 파드에서 재개하는 것은 다음 단계). in-process 의 이어 돈 조치는
-        상태를 그대로 둔 채(``chain.resume`` 은 재개할 수 있는 상태를 받는다) 이 프로세스의 작업 스레드가 ``chain.resume`` 을 부른다.
+        in-process 의 이어 돈 조치는 상태를 그대로 둔 채(``chain.resume`` 은 재개할 수 있는 상태를 받는다) 이 프로세스의 작업
+        스레드가 ``chain.resume`` 을 부른다. Job 모드(2026-11-11 wave 4): 단독 조치는 ``NotAvailable``; 이어 돈 조치는 같은 검사 뒤
+        확인 응답(``reupload`` = ``pending_upload`` 에서 지움, ``receipt`` = ``pending_receipt[label]`` 에 프로젝트·분석 ID 와 그 ZIP 의
+        sha256)을 **Job 을 만들기 전에** 이 웹 파드가 state.json 에 적고 저널에 남긴 뒤 ``RunManager.resume_remediation`` 으로 새 빌드
+        파드를 줄에 세운다(이미 줄에 있거나 돌면 ``StateConflict``). 파드가 사라져 RUNNING 으로 남은 상태는 이 재개가 먼저 INTERRUPTED
+        로 적는다(자동으로는 절대 안 한다). 줄에 세우지 못하면 state.json 을 재개 전의 내용으로 되돌린다.
 
         Explicit resume. `confirm` is required in AWAITING_CONFIRMATION: "reupload" or "receipt" (+ project / analysis id).
-        Job modes: always `NotAvailable`. In-process, a chained state is resumed through `chain.resume` in a worker thread."""
+        In-process, a chained state is resumed through `chain.resume` in a worker thread. Job modes: a standalone one is
+        `NotAvailable`; a chained one gets the confirmation written to its `state.json` here, then
+        `RunManager.resume_remediation` queues a new build pod (the state file is restored when that is refused)."""
         paths, chained = self._locate(rid)
         lock = self._run_lock(rid)
+        dispatch = self.job_mode
         with lock:
             st = self._load(rid)
-            if self.job_mode:
-                msg = RESUME_NEXT_STEP if chained else NOT_AVAILABLE_MESSAGE
-                raise NotAvailable(msg.format(mode=self.mode), mode=self.mode, status=st.status)
+            if dispatch:
+                if not chained:
+                    raise NotAvailable(NOT_AVAILABLE_MESSAGE.format(mode=self.mode), mode=self.mode, status=st.status)
+                if not self._can_dispatch():
+                    raise NotAvailable(RESUME_UNSUPPORTED.format(mode=self.mode), mode=self.mode, status=st.status)
+                if self._resume_active(rid):
+                    raise StateConflict(RESUME_ACTIVE_NOTE, status=st.status)
             with self._lock:
                 alive = rid in self._active
             if chained and not alive:
@@ -1131,6 +1193,8 @@ class RemediationManager:
             elif confirm is not None:
                 raise StateConflict(f"confirm applies to {AWAITING_CONFIRMATION} only (status {st.status})",
                                     status=st.status)
+            if chained and dispatch:
+                return self._dispatch_chained(rid, paths, st, event)
             if chained:
                 self._chain_module()                  # 없으면 여기서 NotAvailable — 상태 파일을 고치기 전에
                 st.stop_requested = False
@@ -1154,6 +1218,33 @@ class RemediationManager:
                 if self._closing.is_set():
                     raise StateConflict("the server is shutting down")
                 self._enqueue_locked(rid)
+        return self.status(rid)
+
+    def _dispatch_chained(self, rid: str, paths: RunPaths, st: RemediationState, event: dict[str, Any]) -> dict[str, Any]:
+        """Job 모드의 이어 돈 조치 재개(부르는 쪽이 이 조치의 잠금을 쥐고 있다): 확인 응답이 반영된 ``st`` 를 저장하고 저널에 남긴 뒤
+        ``RunManager.resume_remediation``. 거절되면 state.json 을 이 재개 전의 내용으로 되돌리고 저널 ``resume_refused`` 뒤 그 예외를 낸다.
+
+        Job modes: save the confirmed state, journal it, queue the resume pod; restore the file when the dispatch is refused."""
+        before = read_json(paths.state)
+        st.stop_requested = False
+        st.message = ""
+        st.updated = _now()
+        self._save(paths, st)
+        self._journal_safe(paths, {**event, "kind": KIND_CHAINED, "runs_in": "build_pod"})
+        try:
+            job = self.run_manager.resume_remediation(rid)
+        except Exception as e:
+            # 재개를 줄에 세우지 못했다: 확인 응답을 적용하기 전의 상태로 — 다음 재개가 같은 확인으로 다시 시작할 수 있게
+            if isinstance(before, dict):
+                try:
+                    write_json_atomic(paths.state, before)
+                except OSError:
+                    log.warning("remediation %s: state.json not restored after a refused resume", rid, exc_info=True)
+            self._journal_safe(paths, {"event": "resume_refused", "kind": KIND_CHAINED, "error": type(e).__name__,
+                                       "code": getattr(e, "code", None)})
+            raise
+        log.info("remediation %s (chained): resume queued for a new build pod (attempt %s, job %s)", rid,
+                 (job or {}).get("attempt"), (job or {}).get("job"))
         return self.status(rid)
 
     def stop(self, rid: str) -> dict[str, Any]:
@@ -1191,6 +1282,13 @@ class RemediationManager:
         lock = self._run_lock(rid)
         with lock:
             st = self._load(rid)
+            # 새 빌드 파드의 재개 Job(wave 4): 기다리면 줄에서 빠지고, 돌면 stop.request 만(Job 을 지우지 않는다)
+            stop_resume = getattr(self.run_manager, "stop_remediation", None) if self.run_manager is not None else None
+            if callable(stop_resume) and self._resume_active(rid):
+                how = stop_resume(rid)
+                if how is not None:
+                    self._journal_safe(paths, {"event": "stop_requested", "kind": KIND_CHAINED, "resume": how})
+                    return {"stop_requested": True, "note": STOP_NOTE, "resume": how}
             with self._lock:
                 alive = rid in self._active
                 ev = self._events.get(rid)

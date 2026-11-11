@@ -216,6 +216,7 @@ Secret 의 `SBMIG_WEB_TOKEN` 을 채운다 — 그때는 `http://<host>:8765/?to
 | `SBMIG_FLEET__MIN_FREE_GB` | ConfigMap(선택) | `5` | 실행 전 디스크 여유 하한 |
 | `SBMIG_REMEDIATION__AFTER_MIGRATION` | ConfigMap | `true` (켜서 내보냄; 코드 기본 false) | BUILD SUCCESS 뒤 빌드 파드에서 취약점 조치를 이어 돌릴지(§6). 끄면 `"false"` + 웹 파드 재시작 |
 | `SBMIG_REMEDIATION__REQUIRE_APPROVAL` / `FAILED_CANDIDATE` / `IVAS_ANALYSIS_TIMEOUT_MINUTES` | ConfigMap(선택) | `false` / `include` / `30` | 조치의 승인 범위·실패한 수정본·IVAS 분석 대기(§6). 40 에만 literal 로 넣지 않는다(Job 이 멈춘다) |
+| `SBMIG_REMEDIATION__CHAIN_BUDGET_MINUTES` / `IGNORE_ACTIONS` | ConfigMap(선택) | `90` / `'["PC","IG"]'` | 빌드 파드 안 조치의 시간 한도(0 = 없음)·계획에서 뺄 IVAS 조치 코드(§6) |
 
 env 가 아닌 것: `artifacts.yml`(이미지에 구운 파일), `settings.xml`(ConfigMap `sbmig-config`, 파일), 이관팀이 고치는 회사 지식 **`<kb.dir>/jar_names.yml`**(jar
 이름 → 좌표)과 **`<kb.dir>/libraries.yml`**(사람이 승인한 라이브러리 표) — KB 볼륨(`/data/kb-v2`)에 있어 이미지와 무관하게 바꾼다. 이미지
@@ -501,8 +502,15 @@ preflight / ADF / 내부 오류)이면 3. `SBMIG_FAIL_JOB_ON_BUILD_FAIL=1` 이�
   (빠진 것의 **이름**만)를 남긴다. 이관이 BUILD SUCCESS 가 아니면 조치는 돌지 않는다. `remediation.trusted_projects` 는 이 경로에서 묻지 않는다
   (이관이 이미 그 프로젝트를 빌드했다) — 단독 업로드만 막는 스위치다.
 * **사람이 정할 것이 생기면**: 빌드 파드는 사람을 기다리지 못한다. `AWAITING_APPROVAL`(승인 대기) / `AWAITING_CONFIRMATION`(업로드 결과 확인)이면
-  상태를 저장하고 파드가 끝난다. **새 빌드 파드에서 이어 돌리는 재개는 아직 없다(다음 단계)** — 그때까지 Job 모드에서 이관에 이어 돈 조치의
-  `resume` 은 409 `not_available` 이다. 승인·제안·결과 파일은 웹 파드에서 본다.
+  상태를 저장하고 파드가 끝난다. 승인·제안·결과 파일은 웹 파드에서 본다. 화면의 승인은 체크박스 목록과 버튼 하나 **`선택한 항목 적용`** 이다:
+  체크한 제안 = 승인, 체크하지 않은 제안 = 거절, 확인 창("N건 적용, M건은 적용하지 않음") 뒤 **재개가 자동으로** 일어난다(API 로는
+  `POST …/approvals` 에 `"resume": true` — 답에 `resumed` 또는 `resume_error`, 결정은 어느 쪽이든 기록된다; 승인자 이름 `by` 는 비워도 된다).
+  거절한 제안은 그 작업에서 다시 제안하지 않는다.
+* **재개 = 새 빌드 파드**: Job 모드에서 이관에 이어 돈 조치의 `resume` 은 같은 Job 틀로 **새 Job** 을 같은 실행 폴더에 띄운다(Worker 동작
+  `remediation-resume` → `chain.resume`). 업로드와 **같은 FIFO 줄**에서 `SBMIG_JOB_MAX_PARALLEL` 자리 하나를 기다린다(§3 "동시에 여러 건").
+  필요한 것은 모두 공유 볼륨의 `state.json` 에 있다 — 검사 중에 멈췄으면 IVAS `projectId` / `analysisId`(`pending_receipt`)가 있어 **다시 올리지
+  않고** 같은 분석을 이어서 조회한다. 업로드 결과 확인 대기면 웹 파드가 요청의 `confirm` / `label` / `project_id` / `analysis_id` 를 Job 을 만들기
+  **전에** `state.json` 에 쓴다.
 * **웹 파드가 하는 일**: 상태·제안·승인 기록·파일 내려받기만(`/api/remediations/<이관 run id>/…`). 웹 파드는 조치를 돌리지 않으므로 Job 모드에서
   IVAS 값을 쓰지 않는다(Secret 을 envFrom 으로 통째로 받기는 한다). 단독 업로드 `POST /api/remediations` 는 **in-process 모드에서만** 받고
   Job 모드(`k8s-job` / `local-job`)에서는 409 `not_available` 이다. in-process 모드의 단독 조치는 예전 그대로다: 웹 파드 안의 작업 스레드, 한 번에 한 건,
@@ -511,7 +519,8 @@ preflight / ADF / 내부 오류)이면 3. `SBMIG_FAIL_JOB_ON_BUILD_FAIL=1` 이�
   설정 덮어쓰기라 Worker 의 환경 대조(§3) 대상이고, 웹 파드와 Job 파드의 값이 다르거나 한쪽에만 있으면 그 Job 은 `refuse` 로 멈춘다. `sbmig-env`
   한 곳에 두면 웹 파드(40, `envFrom`)·웹이 만드는 Job(81, 그 키의 `configMapKeyRef` 한 줄)·80 모델(`envFrom`)이 같은 값을 받는다. 40 / 81 의
   literal env 로 두면 두 파일을 늘 같이 고쳐야 하고 하나를 빠뜨리면 모든 업로드가 멈춘다 — 그래서 literal 로 두지 않았다. 끄려면 `"false"` 로 바꾸고
-  웹 파드를 재시작한다. 같은 이유로 조치 설정(`SBMIG_REMEDIATION__REQUIRE_APPROVAL`, `…__FAILED_CANDIDATE`, `…__IVAS_ANALYSIS_TIMEOUT_MINUTES`)도
+  웹 파드를 재시작한다. 같은 이유로 조치 설정(`SBMIG_REMEDIATION__REQUIRE_APPROVAL`, `…__FAILED_CANDIDATE`, `…__IVAS_ANALYSIS_TIMEOUT_MINUTES`,
+  `…__CHAIN_BUDGET_MINUTES`, `…__IGNORE_ACTIONS`)도
   `sbmig-env` 그룹 3 에 주석으로 있고 81 에 키 줄이 있다. **40 에만 literal 로 넣으면 Job 이 멈춘다**(예전 안내 "40 의 env 에 한 줄" 은 이제 틀리다).
 * **Secret 에 넣을 것**: `sbmig-llm` 에 `IVAS_BASE_URL`(https 주소, 끝의 `/` 없이, 주소 안에 계정·쿼리 금지), `IVAS_USER_ID`, `IVAS_PASSWORD`
   (`k8s/30-secret.example.yaml`). 81 은 세 키를 `secretKeyRef`(`optional: true` — IVAS 가 없는 클러스터에서도 이관은 돈다)로, 80 은 `envFrom` 으로 받는다.
@@ -525,15 +534,22 @@ preflight / ADF / 내부 오류)이면 3. `SBMIG_FAIL_JOB_ON_BUILD_FAIL=1` 이�
   `max_rounds` 3 → 60 + 60 + 3 × 120 = 약 8시간 — 이고, 이관 자체의 상한(`loop.max_total_minutes` 240분)이 이미 4시간이라 최악끼리는 어떤 숫자로도
   다 담기지 않는다. 기한에 걸리면 Worker 가 종료 신호를 받아 exit 3 으로 끝나고(이관 보고서는 남는다; `job-status.json` 의 오류 글에 이관의
   `SBMIG-RESULT` 줄이 붙는다), 웹은 그 실행을 "중단" 으로 보인다. 큰 프로젝트가 기한에 자주 걸리면 81 의 숫자를 늘리고 ConfigMap
-  `sbmig-job-template` 을 다시 만든다.
+  `sbmig-job-template` 을 다시 만든다. **조치의 시간 한도** `remediation.chain_budget_minutes`(기본 90분, 0 = 없음): 이 파드에서 조치가 그만큼
+  돌면 다음 경계에서 `STOPPED`, 이유 **`chain_budget`** 으로 멈추고(저널 `remediation_budget`) 파드는 정상으로 끝난다 — 재개하면 새 빌드 파드가
+  이어 간다(한도는 파드마다 다시 잰다). 진행 중이던 IVAS 분석은 IVAS 에서 계속 돌고 재개가 같은 분석을 이어서 조회한다. 바꾸려면
+  `sbmig-env` 의 `SBMIG_REMEDIATION__CHAIN_BUDGET_MINUTES` 주석을 풀고 웹 파드를 재시작한다.
+* **IVAS 조치 구분 코드**(`action.actionDivCd`): NE 조치 필요 / NP 조치계획 미등록 / PL 조치예정 / OT 조치일 경과 / PC 패치 완료 / IG 조치 예외.
+  `remediation.ignore_actions`(기본 PC, IG)의 항목은 검사 파일과 보고서의 "조치 대상에서 뺀 항목" 표에 남지만 계획하지 않고 남은 취약점으로
+  세지 않는다. 빈 코드·모르는 코드는 조치 대상이다. 바꾸면(`SBMIG_REMEDIATION__IGNORE_ACTIONS`, 예 `'["PC"]'`) 정책 해시가 바뀌어 열린 제안은
+  다시 만들어진다.
 * **80 모델(요청별 Job, emptyDir)**: 같은 스위치·Secret 이 `envFrom` 으로 닿아 조치도 돈다. 그러나 작업 공간이 파드와 함께 사라지므로
   `run-job.sh` 는 결과 저장소에 `remediation/` 의 글로 된 요약(`report.md`, `report.json`, `state.json`, `journal.jsonl`, `delivery.json`)만 보낸다.
   `result.zip` 은 git 에 넣지 않는다 — 필요하면 `RESULT_PUSH_CMD` 로 실행 폴더째 내보낸다. 이 모델에는 승인 화면도 없다.
 * **후보 빌드가 실패하면**(`remediation.failed_candidate`, 기본 `include`): 실패한 수정본도 `result.zip` 으로 나온다 — 상태 `FAILED`
   `candidate_build_failed`, `delivery.build_ok` 가 `false`, IVAS 재검사 없음, `report.md` 첫 줄에 "빌드가 실패한 수정본" 경고. 앞 라운드에서 검증을
   마친 ZIP 이 있으면 `result-verified.zip`. `discard` 면 내지 않는다. "계획한 것만 바뀌었나"·해석 검증에 걸린 후보는 어느 값이든 내지 않는다.
-* **업로드 결과를 모를 때**(`AWAITING_CONFIRMATION`): 자동 재업로드는 없다. IVAS 화면에서 그 분석이 있는지 본다. 재개(`{"confirm": "reupload"}` /
-  `{"confirm": "receipt", …}`)는 in-process 모드의 단독 조치에서만 지금 된다(빌드 파드 재개는 다음 단계).
+* **업로드 결과를 모를 때**(`AWAITING_CONFIRMATION`): 자동 재업로드는 없다. IVAS 화면에서 그 분석이 있는지 보고 재개한다(`{"confirm": "reupload"}` /
+  `{"confirm": "receipt", …}`) — Job 모드면 위의 새 빌드 파드로.
 * **채울 자리**: `k8s/30-secret.example.yaml` 의 `IVAS_BASE_URL`(`https://CHANGE_ME_IVAS_HOST[:port]/<base path>`), `IVAS_USER_ID`(`<IVAS 계정>`),
   `IVAS_PASSWORD`(`<IVAS 비밀번호>`). 그 밖에 조치만을 위한 자리는 없다(`settings.xml` 의 Nexus 주소는 §4 그대로).
 

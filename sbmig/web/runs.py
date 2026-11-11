@@ -9,7 +9,10 @@
 ``sbmig.log`` 에는 그 실행 스레드의 줄만. (4) 메모리에는 끝난 실행을 ``max_finished_runs`` 개만 두고,
 나머지는 실행 폴더의 파일로 답한다. (5) Job 모드에서는 Job 을 **만드는** Main 이 설정이 읽는 환경 변수의 값 지문(``env_pins``)과
 정책 ``SBMIG_JOB_ENV_PIN``(k8s-job 기본 refuse, local-job 기본 off)을 ``control/state.json`` 의 creating 전이에 함께 적는다 —
-Worker 가 자기 환경과 대조한다(리뷰 2026-11-10).
+Worker 가 자기 환경과 대조한다(리뷰 2026-11-10). (6) 이어 돈 조치의 재개(2026-11-11 wave 4, ``resume_remediation``): 같은 실행의
+새 시도를 **다른 행동**(``SBMIG_WORKER_ACTION=remediation-resume``)의 Job 으로 만든다 — 업로드와 같은 FIFO 줄·자리를 쓰고, 제어 상태는
+``control/remediation-resume.json``, 결과는 ``remediation-job-status.json``, Job 이름은 ``<이관 Job 이름>-rem<시도>``. 이관의 상태·보고서·
+web-status 는 그대로 "끝남" 이고, ``status()`` 는 ``remediation_job`` 으로 재개 Job 을 따로 보인다. 재시작 복구도 같은 규칙으로 이어받는다.
 
 In-process run manager for the web app: one worker thread per migration, events for the SSE stream.
 
@@ -58,7 +61,12 @@ values the configuration reads (`env_pins`, never a secret-looking name) and the
 `refuse` in k8s-job, `off` in local-job) into `control/state.json` with the `creating` transition; the Worker compares
 them with its own environment. A run adopted after a restart keeps the pins already on disk.
 
-
+Remediation resume (2026-11-11, wave 4): `resume_remediation(run_id)` dispatches a NEW attempt of a finished Job-mode run with
+the action `remediation-resume` — the same template, run dir, labels (owner token of its own), FIFO line and slots as an upload;
+its control state lives in `control/remediation-resume.json`, its result in `remediation-job-status.json`, its Job is named
+`<migration job name>-rem<attempt>`. The migration's own state, report and `web-status.json` are never touched: `status()` keeps
+the run finished and adds `remediation_job` {state, attempt, slot, queue …}. Recovery after a restart re-attaches to a resume
+Job exactly like to a migration Job. At most one active resume per run.
 """
 from __future__ import annotations
 
@@ -84,8 +92,10 @@ from sbmig.core.scrub import output_scrubbing, scrub, scrub_json
 from sbmig.core.workspace import STOP_REQUEST_FILE
 from sbmig.web import contract
 from sbmig.web.contract import (
+    ACTION_REMEDIATION_RESUME,
     CONTROL_DIR,
     OWNER_LABEL,
+    RESUME_STATE_FILE,
     RUN_LABEL,
     STATE_FILE,
     ControlState,
@@ -213,6 +223,25 @@ class Run:
     success: bool | None = None
     # v2.1z-ae: 이 Job 실행이 쥔(쥐었던) 자리 번호 — Job 의 env SBMIG_JOB_SLOT, control/state.json 의 slot
     slot: int | None = None
+    # 2026-11-11 wave 4: None = 이관, "remediation-resume" = 이어 돈 조치 재개 시도(제어 상태·결과 파일·줄의 키가 따로)
+    action: str | None = None
+
+    @property
+    def key(self) -> str:
+        """차례 줄(``_turns``)의 키: 이관은 실행 id, 재개 시도는 ``<실행 id>#<행동>`` — 같은 실행의 두 시도가 서로를 막지 않게.
+
+        The turn key: the run id for a migration, `<run id>#<action>` for a resume attempt."""
+        return f"{self.run_id}#{self.action}" if self.action else self.run_id
+
+    @property
+    def control_file(self) -> str:
+        """이 시도의 제어 상태 파일 이름(``control/`` 안). / This attempt's control-state file name."""
+        return contract.state_file_for(self.action)
+
+    @property
+    def status_file(self) -> str:
+        """이 시도의 Worker 결과 파일 이름(실행 폴더). / This attempt's Worker result file name."""
+        return contract.status_file_for(self.action)
 
     @property
     def attempt(self) -> int:
@@ -436,6 +465,14 @@ def _resolve_max_parallel(value: int | str | None, mode: str) -> int:
     return asked
 
 
+def resume_job_name(run_id: str, attempt: int) -> str:
+    """조치 재개 시도의 Job 이름: 이관 Job 이름(``job_name``)에 ``-rem<시도>`` — 63자 안, 이관 Job 과 겹치지 않는다.
+
+    The Job name of a remediation resume attempt: the migration's Job name + `-rem<attempt>` (≤ 63 characters)."""
+    suffix = f"-rem{int(attempt)}"
+    return job_name(run_id)[:63 - len(suffix)].rstrip("-") + suffix
+
+
 class RunManager:
     """이관을 작업 스레드로 시작하고, 상태·이벤트 질문에 메모리 + 실행 폴더로 답한다.
     ``_lock`` 은 ``runs`` dict 를 지키고, ``_turns`` 는 이관을 올린 순서대로 ``max_parallel`` 개까지 들여보낸다(Job 모드; in-process 는 하나).
@@ -495,6 +532,8 @@ class RunManager:
         self._default_configs = [c.strip() for c in (default_configs or []) if c and c.strip()]
         self._missing_warned: set[str] = set()
         self.runs: dict[str, Run] = {}
+        # 2026-11-11 wave 4: 실행 id → 이 프로세스가 아는 조치 재개 시도(마지막 하나). 이관의 runs 와 따로 — status 가 섞이지 않게
+        self.resumes: dict[str, Run] = {}
         self._lock = threading.Lock()
         # v2.1z-ae: 동시에 도는 Job 의 수 — 인자 → SBMIG_JOB_MAX_PARALLEL → 1. 실행 모드가 정해진 뒤(k8s-job 이 local-job 으로 내려간
         # 뒤)에 정한다: in-process 는 늘 1(LLM 호출 수·실행별 로그 필터가 프로세스 전체에 하나뿐이다). recover() 가 자리를 잡으므로 그보다 먼저
@@ -570,17 +609,23 @@ class RunManager:
         if self.effective_mode not in ("k8s-job", "local-job"):
             return self.recovered
         try:
+            # 2026-11-11 wave 4: 조치 재개 시도의 제어 상태도 같은 규칙으로 — 그 Job 도 클러스터에서 돌고 있을 수 있다
             paths = sorted(self.out_dir.glob(f"*/{CONTROL_DIR}/{STATE_FILE}"))
+            paths += sorted(self.out_dir.glob(f"*/{CONTROL_DIR}/{RESUME_STATE_FILE}"))
         except OSError as e:
             log.warning("recovery: cannot scan %s: %s", self.out_dir, e)
             return self.recovered
         pending: list[tuple[str, Path, ControlState, RequestRecord]] = []
         for sp in paths:
             rd = sp.parent.parent
+            resume = sp.name == RESUME_STATE_FILE
             try:
-                if rd.name.startswith("_") or rd.name in self.runs:
+                if rd.name.startswith("_") or rd.name in (self.resumes if resume else self.runs):
                     continue
-                cs = ControlState.read(rd)
+                cs = ControlState.read(rd, sp.name)
+                if cs is not None and resume and cs.action != ACTION_REMEDIATION_RESUME:
+                    log.warning("recovery: %s does not name the action %s — skipped", sp, ACTION_REMEDIATION_RESUME)
+                    continue
                 if cs is None:
                     log.warning("recovery: %s is unreadable — skipped", sp)
                     continue
@@ -591,8 +636,8 @@ class RunManager:
                     continue
                 if self.effective_mode == "local-job":
                     # 로컬 "파드" 는 이 서버의 자식이었다 — 서버가 죽으면 함께 죽어 이어받을 것이 없다
-                    cs.transition(RunState.LOST, exit_code=EXIT_ABORTED, error=LOCAL_LOST).write(rd)
-                    self.recovered.append(cs.run_id)
+                    cs.transition(RunState.LOST, exit_code=EXIT_ABORTED, error=LOCAL_LOST).write(rd, sp.name)
+                    self.recovered.append(f"{cs.run_id}#{cs.action}" if resume else cs.run_id)
                     log.warning("recovery: run %s was %s — marked lost (%s)", cs.run_id, "in progress", LOCAL_LOST)
                     continue
                 rec = RequestRecord.read(rd)
@@ -602,7 +647,9 @@ class RunManager:
                 if cs.state not in (RunState.QUEUED.value, RunState.CREATING.value, RunState.CREATED.value, RunState.RUNNING.value):
                     log.warning("recovery: run %s has an unknown state %r — skipped", cs.run_id, cs.state)
                     continue
-                pending.append((rec.accepted_at or cs.accepted_at or "", rd, cs, rec))
+                # 재개 시도는 자기 접수 시각(그 시도의 accepted_at)으로 줄을 선다 — 이관의 접수 시각이 아니다
+                at = (cs.accepted_at or "") if resume else (rec.accepted_at or cs.accepted_at or "")
+                pending.append((at, rd, cs, rec))
             except Exception as e:  # noqa: BLE001 — recovery must never keep the web app from starting
                 log.warning("recovery: %s skipped (%s: %s)", sp, type(e).__name__, e)
         ordered = sorted(pending, key=lambda t: (t[0], t[1].name))
@@ -623,27 +670,31 @@ class RunManager:
         Re-register one run: a queued one joins the line; one whose Job exists or may exist re-occupies its recorded slot
         now, whatever the limit (no `slot` on disk = slot 1)."""
         mode = {RunState.QUEUED.value: None, RunState.CREATING.value: "probe"}.get(cs.state, "adopt")
+        action = cs.action or None
         run = Run(rd.name, rd, rd / SOURCE_ZIP, list(rec.configs or []), rec.stop_after, rec.llm_provider, job=True,
-                  request=rec, control=cs, recover=mode)
-        if cs.state != RunState.QUEUED.value:
+                  request=rec, control=cs, recover=mode, action=action)
+        if action:                             # 재개 시도의 Job 이름은 줄을 설 때부터 정해져 있다(시도 번호에서)
+            run.job_name = cs.job or resume_job_name(run.run_id, run.attempt)
+        elif cs.state != RunState.QUEUED.value:
             run.job_name = cs.job or job_name(run.run_id)
-        run.thread = threading.Thread(target=self._worker, args=(run,), name=f"sbmig-job-{run.run_id}", daemon=True)
+        run.thread = threading.Thread(target=self._worker, args=(run,), name=f"sbmig-job-{run.key}", daemon=True)
+        table = self.resumes if action else self.runs
         with self._lock:
-            self.runs[run.run_id] = run
+            table[run.run_id] = run
             if mode is None:
-                self._turns.join(run.run_id)
+                self._turns.join(run.key)
             else:
                 # 클러스터의 Job 은 이미 돈다: 자리를 세어야 새 업로드가 같은 번호(같은 Maven 로컬 저장소)를 받지 않는다. probe 가 결국
                 # Job 을 스스로 만들면 이 번호를 creating 전이에 적는다
-                run.slot = self._turns.occupy(run.run_id, prefer=cs.slot or 1)
+                run.slot = self._turns.occupy(run.key, prefer=cs.slot or 1)
         try:
             run.thread.start()
         except RuntimeError:
-            self._turns.leave(run.run_id)
+            self._turns.leave(run.key)
             with self._lock:
-                self.runs.pop(run.run_id, None)
+                table.pop(run.run_id, None)
             raise
-        self.recovered.append(run.run_id)
+        self.recovered.append(run.key)
         log.info("recovery: run %s resumed from state %s (job %s, attempt %d%s) — %s", run.run_id, cs.state, run.job_name or "-",
                  run.attempt, f", slot {run.slot}" if run.slot is not None else "",
                  {None: "will create its job", "probe": "adopts the job if it exists, else creates it",
@@ -831,7 +882,7 @@ class RunManager:
             # Job 모드는 max_parallel 개까지(파드마다 따로, KB 쓰기는 파일 잠금, 자리마다 Maven 로컬 저장소), in-process 는 하나. 차례는
             # 올린 순서(FIFO 줄, start_file 에서 섬) — 예전의 threading.Lock 은 기다리는 스레드에게 넘겨주는 순서를 보장하지 않았다(A10)
             try:
-                with self._turns.turn(run.run_id) as slot:  # upload order; up to max_parallel Jobs at a time (docstring)
+                with self._turns.turn(run.key) as slot:  # upload order; up to max_parallel Jobs at a time (docstring)
                     if run.job:
                         run.slot = slot
                     run.active.set()
@@ -868,9 +919,9 @@ class RunManager:
         except Exception as e:  # noqa: BLE001 — the orchestrator never raises; a crash here is a bug (logged in _record_crash)
             self._record_crash(run, e)
         finally:
-            self._turns.leave(run.run_id)      # already left after a turn; this covers a failure before it
+            self._turns.leave(run.key)         # already left after a turn; this covers a failure before it
             run.active.set()
-            log.info("run %s finished: exit code %s", run.run_id, run.exit_code)
+            log.info("run %s%s finished: exit code %s", run.run_id, f" ({run.action})" if run.action else "", run.exit_code)
             if log_path is not None:
                 _detach_file_log(log_path)
             if run.job:
@@ -884,7 +935,8 @@ class RunManager:
                 success = getattr(run.report, "success", None)
                 run.success = success
             self._push(run, "finished", {"exit_code": run.exit_code, "success": success})
-            if not run.keep_state:             # a Job left running at shutdown: its state.json speaks for it, not web-status.json
+            # 재개 시도는 web-status.json 을 쓰지 않는다: 그 파일은 이관의 결과다(재개가 이관의 끝 상태를 바꾸면 안 된다)
+            if not run.keep_state and not run.action:   # a Job left running at shutdown: its state.json speaks for it
                 _write_web_status(run)
             run.done.set()
             with run.cond:
@@ -958,14 +1010,21 @@ class RunManager:
         verified". 그리고 제어 상태를 끝 상태로 적는다(서버 종료로 Job 을 두고 나갈 때는 그대로 둔다).
 
         Settle a job run: success only from a verified result; write the terminal control state (left as is at shutdown)."""
-        has_report = (run.run_dir / "report.json").is_file()
-        trusted = bool(run.verified) or (run.result_source == "container" and has_report)
-        success = _report_success(run.run_dir) if trusted else None
+        if run.action:
+            # 재개 시도: 이관의 report.json 은 이 시도의 결과가 아니다 — 결과 파일이나 컨테이너 종료 코드만 본다. 조치의 결과는 조치
+            # 상태(remediation/state.json)에 있고 이관의 success 는 바뀌지 않는다
+            trusted = bool(run.verified) or run.result_source == "container"
+            success = None
+        else:
+            has_report = (run.run_dir / "report.json").is_file()
+            trusted = bool(run.verified) or (run.result_source == "container" and has_report)
+            success = _report_success(run.run_dir) if trusted else None
         expected_result = not run.keep_state and run.final_state not in (RunState.STOPPED.value, RunState.FAILED.value)
         if not trusted and expected_result:
             note = "result not verified"
             run.error = (f"{run.error} ({note})" if run.error
-                         else f"{note}: no job-status.json for run {run.run_id} attempt {run.attempt} and no report.json")
+                         else f"{note}: no {run.status_file} for run {run.run_id} attempt {run.attempt}"
+                              + ("" if run.action else " and no report.json"))
         if run.control is not None and not run.keep_state and not run.control.terminal:
             final = run.final_state or (RunState.FINISHED.value if trusted else RunState.LOST.value)
             try:
@@ -978,8 +1037,10 @@ class RunManager:
         """제어 상태를 바꾸고 바로 ``control/state.json`` 에 원자적으로 쓴다(OSError 는 부른 쪽 몫 — creating 은 못 쓰면 Job 을 만들지
         않는다). / Transition the control state and write it atomically."""
         if run.control is None:                # a run built without intake records (embedding callers): nothing to persist
-            run.control = ControlState(run_id=run.run_id)
-        run.control.transition(state, **changes).write(run.run_dir)
+            run.control = ControlState(run_id=run.run_id, action=run.action)
+        cs = run.control.transition(state, **changes)
+        # 이관 시도는 예전 그대로의 호출(state.json), 재개 시도만 자기 파일 이름을 준다
+        cs.write(run.run_dir, run.control_file) if run.action else cs.write(run.run_dir)
 
     def _owned(self, run: Run, st: JobState) -> bool:
         """이 Job 이 이 요청의 것인가: ``sbmig-owner`` 와 ``sbmig-run-id`` 라벨이 **둘 다** 이 요청의 값이어야 한다. 라벨이 하나도 없는
@@ -998,7 +1059,7 @@ class RunManager:
         번 경고하고 무시한다(옛 시도의 성공을 지금 성공으로 읽지 않게).
 
         The Worker's exit code when `job-status.json` matches this run and attempt; a foreign file is ignored (one warning)."""
-        status = JobStatus.read(run.run_dir)
+        status = JobStatus.read(run.run_dir, run.status_file) if run.action else JobStatus.read(run.run_dir)
         if status is None:
             return None
         if not status.matches(run.run_id, run.attempt):
@@ -1074,6 +1135,8 @@ class RunManager:
             env["SBMIG_LLM_PROVIDER"] = run.llm_provider
         if run.slot is not None:               # v2.1z-ae: the Worker builds with one Maven local repository per slot
             env[contract.SLOT_ENV] = str(run.slot)
+        if run.action:                         # 2026-11-11 wave 4: the Worker runs this action instead of `sbmig run`
+            env[contract.ACTION_ENV] = run.action
         return env
 
     def _env_pins(self, run: Run) -> dict[str, str] | None:
@@ -1109,6 +1172,8 @@ class RunManager:
             # the local "pod" needs only the env: a minimal manifest stands in for a template the checkout may lack
             template = {"kind": "Job", "metadata": {}, "spec": {"template": {"spec": {"containers": [{"name": "build"}]}}}}
         manifest = render_job(template, run.run_id, self._job_env(run), getattr(client, "namespace", None), owner=run.owner)
+        # 재개 시도의 Job 은 이름이 다르다(<이관 Job>-rem<시도>) — 라벨(실행 id + 이 시도의 owner)은 render_job 이 붙인 그대로
+        manifest.setdefault("metadata", {})["name"] = name
         # 의도를 먼저 적는다: 이 줄 뒤에 프로세스가 죽어도 다음 Main 은 creating + 이름을 보고 Job 을 찾는다. 환경 지문도 같은 전이로 —
         # 기준은 접수한 Main 이 아니라 Job 을 **만드는** 이 Main 의 지금 환경이다(대기 중에 재시작했으면 새 Main 의 것)
         pins = self._env_pins(run)
@@ -1143,7 +1208,8 @@ class RunManager:
             log.warning("run %s: job created as %s, expected %s", run.run_id, created, name)
             run.job_name = name = str(created)
         _append_journal(run.run_dir, {"event": "job_created", "run_id": run.run_id, "job": name, "attempt": run.attempt,
-                                      "namespace": getattr(client, "namespace", None), "slot": run.slot})
+                                      "namespace": getattr(client, "namespace", None), "slot": run.slot,
+                                      **({"action": run.action} if run.action else {})})
         self._transition_soft(run, RunState.CREATED, job=name)
         self._push(run, "node", {"node": "job", "update": {"state": "created", "job": name}})
 
@@ -1231,7 +1297,7 @@ class RunManager:
         Adopt an existing Job: journal `job_adopted`, control state → `created` (a `running` state stays), a `job` node event."""
         run.job_name = name
         _append_journal(run.run_dir, {"event": "job_adopted", "run_id": run.run_id, "job": name, "attempt": run.attempt,
-                                      "reason": reason})
+                                      "reason": reason, **({"action": run.action} if run.action else {})})
         log.info("run %s: adopted job %s (%s)", run.run_id, name, reason)
         if run.control is None or run.control.state in (RunState.QUEUED.value, RunState.CREATING.value):
             self._transition_soft(run, RunState.CREATED, job=name)
@@ -1540,6 +1606,159 @@ class RunManager:
             log.info("run %s: stop requested", run_id)
         return True
 
+    # ---- remediation resume in a new build pod (2026-11-11, wave 4)
+    def resume_remediation(self, run_id: str) -> dict[str, Any]:
+        """끝난 Job 모드 실행의 이어 돈 조치를 **새 빌드 파드**에서 잇는 시도를 줄에 세운다(``chain.resume`` 은 그 파드의 Worker 가 부른다).
+        검사: Job 모드, 실행이 있고 접수 기록(request.json)이 있고 이관이 끝났고(``finished``), 이 실행의 재개가 지금 줄에 있거나 돌고 있지
+        않다(메모리·디스크 둘 다) — 아니면 ``StateConflict``. 그러면: 이관 뒤에 남은 ``stop.request`` 를 지우고(새 시도를 바로 멈추지 않게),
+        새 시도 번호(이관·이전 재개보다 하나 큰 수)로 ``control/remediation-resume.json`` 에 queued 를 **먼저** 적고, 업로드와 같은 FIFO 줄
+        끝에 서는 감시 스레드를 띄운다. Job 생성·이어받기·감시·자리 반납은 이관 Job 과 같은 코드다. 돌려주는 값 = ``remediation_job``.
+
+        Queue a NEW attempt of a finished Job-mode run that resumes its chained remediation in a new build pod. `StateConflict`
+        when not in a Job mode, the run is unknown / not accepted in a Job mode / not finished, or a resume of it is already
+        queued or running. Clears a leftover `stop.request`, records `queued` in `control/remediation-resume.json` first, then
+        joins the same FIFO line as uploads. Returns `remediation_job(run_id)`."""
+        from sbmig.remediations.models import StateConflict
+
+        if self.effective_mode not in ("k8s-job", "local-job"):
+            raise StateConflict(f"resuming a remediation in a build pod needs a Job mode (this server runs {self.effective_mode})",
+                                mode=self.effective_mode)
+        if not isinstance(run_id, str) or not RUN_ID_RE.match(run_id) or ".." in run_id:
+            raise ValueError("bad run id")
+        if self.closing.is_set():
+            raise StateConflict("the web server is shutting down")
+        rd = self.run_dir(run_id)
+        rec = RequestRecord.read(rd) if rd.is_dir() else None
+        if rec is None:
+            raise StateConflict(f"run {run_id} has no control/request.json — only a run accepted in a Job mode can resume its "
+                                "remediation in a build pod")
+        mig = self.status(run_id).get("state")
+        if mig != "finished":
+            raise StateConflict(f"the migration run {run_id} is {mig}, not finished", status=mig)
+        with self._lock:
+            cur = self.resumes.get(run_id)
+            disk = ControlState.read(rd, RESUME_STATE_FILE)
+            if cur is not None and not cur.done.is_set():
+                raise StateConflict(f"a remediation resume of run {run_id} is already {self._mem_state(cur)}",
+                                    status=self._mem_state(cur))
+            if cur is None and disk is not None and not disk.terminal:
+                # 다른(이전) 웹 프로세스가 적은 끝나지 않은 재개 — 복구가 이어받지 않았으면 그 Job 이 아직 돌 수 있다
+                raise StateConflict(f"a remediation resume of run {run_id} is recorded as {disk.state}", status=disk.state)
+            mig_cs = ControlState.read(rd)
+            attempt = max(int(rec.attempt or 1), int(mig_cs.attempt) if mig_cs else 1, int(disk.attempt) if disk else 0) + 1
+            stop_file = rd / STOP_REQUEST_FILE
+            try:
+                if stop_file.is_file():
+                    # 이관은 끝났다: 남은 멈춤 요청은 이관의 것이다 — 새 재개 시도가 첫 경계에서 바로 멈추지 않게 지운다
+                    stop_file.unlink()
+                    log.info("run %s: a leftover %s removed before the remediation resume", run_id, STOP_REQUEST_FILE)
+                control = ControlState(run_id=run_id, state=RunState.QUEUED.value, attempt=attempt,
+                                       action=ACTION_REMEDIATION_RESUME)
+                control.write(rd, RESUME_STATE_FILE)          # intent first: the next Main picks the request up
+            except OSError as e:
+                raise StateConflict(f"the resume request could not be recorded ({type(e).__name__})") from None
+            run = Run(run_id, rd, rd / SOURCE_ZIP, list(rec.configs or []), rec.stop_after, rec.llm_provider, job=True,
+                      request=rec, control=control, action=ACTION_REMEDIATION_RESUME)
+            run.job_name = resume_job_name(run_id, attempt)
+            run.thread = threading.Thread(target=self._worker, args=(run,), name=f"sbmig-job-{run.key}", daemon=True)
+            self.resumes[run_id] = run
+            self._turns.join(run.key)          # the same line as uploads, in request order
+        _append_journal(rd, {"event": "remediation_resume_queued", "run_id": run_id, "attempt": attempt,
+                             "job": run.job_name, "action": ACTION_REMEDIATION_RESUME})
+        try:
+            run.thread.start()
+        except RuntimeError:
+            self._turns.leave(run.key)
+            with self._lock:
+                self.resumes.pop(run_id, None)
+            raise
+        log.info("run %s: remediation resume queued (attempt %d, job %s)", run_id, attempt, run.job_name)
+        return self.remediation_job(run_id) or {}
+
+    def remediation_job(self, run_id: str) -> dict[str, Any] | None:
+        """이 실행의 조치 재개 시도(마지막 하나)의 모습: ``state`` (queued / running / finished), ``active``, ``attempt``, ``job``,
+        ``control``(제어 상태), 있으면 ``slot`` · ``queue`` {position, ahead} · ``exit_code`` · ``verified`` · ``error`` · ``note`` ·
+        ``stop_requested``. 메모리에 없으면 ``control/remediation-resume.json`` 으로. 재개를 한 번도 안 했으면 None.
+
+        The last remediation resume attempt of `run_id` (memory first, else its control file); None when there was none."""
+        run = self.resumes.get(run_id)
+        if run is not None:
+            state = self._mem_state(run)
+            info: dict[str, Any] = {"state": state, "active": state != "finished", "attempt": run.attempt,
+                                    "action": run.action, "job": run.job_name,
+                                    "control": run.control.state if run.control is not None else None}
+            if run.slot is not None:
+                info["slot"] = run.slot
+            if state == "queued":
+                pos = self._turns.position(run.key)
+                if pos is not None:
+                    info["queue"] = {"position": pos, "ahead": pos - 1}
+            if run.job_phase:
+                info["phase"] = run.job_phase
+            if run.job_note:
+                info["note"] = run.job_note
+            if state == "finished":
+                info["exit_code"] = run.exit_code
+                info["verified"] = run.verified
+            if run.error:
+                info["error"] = run.error
+            if run.cancel.is_set() or (state != "finished" and (run.run_dir / STOP_REQUEST_FILE).is_file()):
+                info["stop_requested"] = True
+            return info
+        rd = self.run_dir(run_id)
+        cs = ControlState.read(rd, RESUME_STATE_FILE) if rd.is_dir() else None
+        if cs is None:
+            return None
+        active = not cs.terminal
+        info = {"state": ("queued" if cs.state == RunState.QUEUED.value else "running") if active else "finished",
+                "active": active, "attempt": cs.attempt, "action": cs.action, "job": cs.job, "control": cs.state}
+        if cs.slot is not None:
+            info["slot"] = cs.slot
+        if not active:
+            info["exit_code"] = cs.exit_code
+        if cs.error:
+            info["error"] = cs.error
+        return info
+
+    def remediation_active(self, run_id: str) -> bool:
+        """이 실행의 조치 재개 시도가 지금 줄에 있거나 돌고 있나(그동안 조치 상태 파일의 주인은 그 시도다 — 승인·재개를 막고, 끝날 때의
+        마지막 정제 전이라 조치 파일을 내주지 않는다).
+
+        Whether a remediation resume of `run_id` is queued or running now."""
+        try:
+            return bool((self.remediation_job(run_id) or {}).get("active"))
+        except Exception:  # noqa: BLE001 — unreadable = assume it may run (refuse rather than race the build pod)
+            log.debug("remediation_job(%s) failed", run_id, exc_info=True)
+            return True
+
+    def stop_remediation(self, run_id: str) -> str | None:
+        """조치 재개 시도를 멈춘다. 줄에서 기다리면 **지금** 빠지고 Job 없이 stopped 로 끝난다(``"withdrawn"``). Job 을 아직 만들지 않았으면
+        만들지 않게 한다. Job 이 이미 있으면 ``stop.request`` 만 쓴다(``"requested"``) — 조치는 다음 경계에서 멈추고, 도는 IVAS 분석을
+        취소했다고 하지 않으며, Job 을 유예 뒤에 지우지도 않는다(이관 뒤 조치의 멈춤 규칙과 같다). 도는 재개가 없으면 None.
+
+        Stop a remediation resume attempt: a waiting one leaves the line now (`"withdrawn"`); one whose Job exists gets
+        `stop.request` only (`"requested"`, never a Job deletion); None when no resume is queued or running."""
+        run = self.resumes.get(run_id)
+        if run is None or run.done.is_set():
+            return None
+        if self._turns.withdraw(run.key):
+            run.cancel.set()
+            log.info("run %s: remediation resume stopped while waiting — it leaves the line", run_id)
+            return "withdrawn"
+        if run.control is None or run.control.state == RunState.QUEUED.value:
+            run.cancel.set()                   # its turn came but no Job exists yet: _run_job creates none
+            return "requested"
+        try:
+            (run.run_dir / STOP_REQUEST_FILE).write_text("stop requested from the web UI (remediation resume)\n",
+                                                         encoding="utf-8")
+        except OSError as e:
+            from sbmig.remediations.models import StateConflict
+            raise StateConflict(f"the stop request could not be written ({type(e).__name__})") from None
+        _append_journal(run.run_dir, {"event": "stop_request_sent", "run_id": run_id, "job": run.job_name,
+                                      "action": run.action})
+        log.info("run %s: remediation resume — %s written for job %s", run_id, STOP_REQUEST_FILE, run.job_name)
+        return "requested"
+
     def shutdown(self, reason: str = "server shutdown") -> dict[str, Any]:
         """서버 종료(lifespan): 열린 SSE 스트림을 모두 끝내고, 실행 중·대기 중인 실행에 멈춤을 요청하고,
         아직 도는 Maven / OpenRewrite 프로세스를 죽인다. 안 하면 uvicorn 이 SSE 연결을 기다리고, 윈도우에서는
@@ -1552,7 +1771,7 @@ class RunManager:
 
         self.closing.set()
         stopped: list[str] = []
-        for run in list(self.runs.values()):
+        for run in list(self.runs.values()) + list(self.resumes.values()):
             if run.done.is_set():
                 continue
             if not run.job:                       # a k8s Job keeps running; its watcher thread just wakes up and leaves
@@ -1661,6 +1880,10 @@ class RunManager:
                 else:
                     info["state"] = "finished" if (rd / "report.json").is_file() else ("unknown" if rd.is_dir() else "missing")
                 info["exit_code"] = None
+        # 2026-11-11 wave 4: 이어 돈 조치의 재개 Job(있으면) — 이관의 state 는 그대로 두고 따로 보인다
+        rjob = self.remediation_job(run_id)
+        if rjob is not None:
+            info["remediation_job"] = rjob
         rep = rd / "report.json"
         if rep.is_file():
             try:
@@ -1684,7 +1907,7 @@ class RunManager:
         # 실행)에 자리 번호 없는 queued 로 보이지 않게
         if run.done.is_set():
             return "finished"
-        if run.active.is_set() or self._turns.slot_of(run.run_id) is not None:
+        if run.active.is_set() or self._turns.slot_of(run.key) is not None:
             return "running"
         return "queued"
 

@@ -4,6 +4,8 @@
 지켜야 할 것: 비밀 값·토큰·서버 절대 경로를 쓰지 않는다(실행 폴더 기준 상대 경로만); 같은 입력이면 같은 글자(시각을 새로
 찍지 않는다, 정렬 고정); 맨 앞 줄에 상태·이유·다음에 할 일. 결과 ZIP 이 빌드가 실패한 수정본이면(``delivery.build_ok`` 거짓,
 ``remediation.failed_candidate: include``) 제목 바로 아래 첫 줄들에 그 사실·라운드·제안·빌드 로그·재검사 없음·원본 보존을 쓴다.
+``remediation.ignore_actions`` 코드(기본 PC 패치 완료 · IG 조치 예외)의 항목은 "조치 대상에서 뺀 항목" 표에 코드의 뜻(``ivas.ACTION_MEANINGS``)과
+함께 따로 쓰고, 발견·잔여 개수에는 넣지 않는다.
 
 Remediation report: `report.json` (the state, the scan summaries, per-round plan summaries) and `report.md` (Korean, for
 operators: status, reasons and next steps first). Deterministic for the same input; no secret, no absolute server path.
@@ -11,6 +13,7 @@ operators: status, reasons and next steps first). Deterministic for the same inp
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable
 from typing import Any
 
 from sbmig.core import scrub as _scrub
@@ -75,6 +78,9 @@ _REASON_KO: dict[str, tuple[str, str]] = {
     "stop_requested": ("중지 요청으로 멈췄습니다. 진행 중이던 원격 IVAS 분석은 IVAS 에서 계속 진행됩니다.",
                        "재개하면 멈춘 노드부터 이어서 합니다."),
     "internal_error": ("도구 내부 오류로 멈췄습니다.", "remediation.log 를 운영자에게 전달하세요."),
+    "chain_budget": (("이관 빌드 파드에서 이어서 돈 조치가 시간 한도(remediation.chain_budget_minutes)를 다 써서 멈췄습니다. "
+                      "진행 중이던 원격 IVAS 분석은 IVAS 에서 계속 진행됩니다."),
+                     "재개하면 새 빌드 파드에서 멈춘 노드부터 이어서 합니다(검사 중이었다면 다시 올리지 않고 같은 분석을 이어서 조회)."),
 }
 # 정책 include 로 실패한 수정본을 결과 ZIP 으로 냈을 때의 candidate_build_failed 문구
 _FAILED_INCLUDED_KO = (("버전을 바꾼 후보가 빌드되지 않았습니다. 결과 ZIP(delivery/result.zip)은 빌드가 실패한 그 수정본이며 IVAS "
@@ -124,12 +130,36 @@ def _load_plan(paths: RunPaths, n: int) -> RoundPlan | None:
     return RoundPlan.from_dict(data) if isinstance(data, dict) else None
 
 
-def _scan_summary(scan: ScanResult | None, rel: str) -> dict[str, Any] | None:
+def _ignore(ignore_actions: Iterable[str] | None) -> frozenset[str]:
+    from .ivas import ignore_set
+    return ignore_set(None if ignore_actions is None else list(ignore_actions))
+
+
+def _split(scan: ScanResult | None, ignore: frozenset[str]) -> tuple[list[Any], list[Any]]:
+    if scan is None:
+        return [], []
+    from .ivas import split_findings
+    return split_findings(list(scan.findings), ignore)
+
+
+def _scan_summary(scan: ScanResult | None, rel: str, ignore: frozenset[str] = frozenset()) -> dict[str, Any] | None:
     if scan is None:
         return None
+    from .ivas import unknown_actions
+    act, ign = _split(scan, ignore)
     return {"file": rel, "label": scan.label, "complete": scan.complete, "zip_sha256": scan.zip_sha256,
-            "findings": len(scan.findings), "counts": dict(sorted(scan.counts.items())),
+            "findings": len(scan.findings), "actionable": len(act), "ignored": len(ign),
+            "unknown_actions": unknown_actions(list(scan.findings)), "counts": dict(sorted(scan.counts.items())),
             "incomplete_reasons": list(scan.incomplete_reasons), "status_code": scan.status_code}
+
+
+def _ignored_rows(scan: ScanResult | None, ignore: frozenset[str]) -> list[dict[str, Any]]:
+    """조치 대상에서 뺀 항목들(정렬 고정): 취약점·종류·대상·버전·코드·뜻."""
+    from .ivas import action_meaning
+    _act, ign = _split(scan, ignore)
+    return [{"id": f.id, "kind": f.kind, "identifier": f.identifier, "version": f.version, "action": f.action,
+             "meaning": action_meaning(f.action)}
+            for f in sorted(ign, key=lambda x: (x.identifier, x.version, x.id, x.kind))]
 
 
 def _plan_summary(plan: RoundPlan | None) -> dict[str, Any] | None:
@@ -174,10 +204,13 @@ def _delivery_dict(state: RemediationState) -> dict[str, Any] | None:
             "scanned": d.scanned}
 
 
-def build_report_json(state: RemediationState, paths: RunPaths) -> dict[str, Any]:
-    """``report.json`` 의 내용(dict): 상태 전부, 기준·최종 검사 요약, 라운드별 계획 요약, 전달 ZIP 일치 여부.
+def build_report_json(state: RemediationState, paths: RunPaths, *,
+                      ignore_actions: Iterable[str] | None = None) -> dict[str, Any]:
+    """``report.json`` 의 내용(dict): 상태 전부, 기준·최종 검사 요약(조치 대상 / 뺀 항목 개수), 라운드별 계획 요약, 전달 ZIP
+    일치 여부, 조치 대상에서 뺀 항목(``ignored_findings``). ``ignore_actions`` 가 None 이면 기본값(PC, IG).
 
-    The content of `report.json`."""
+    The content of `report.json`; `ignore_actions` None = the default codes."""
+    ignore = _ignore(ignore_actions)
     base = _load_scan(paths, state.baseline_scan)
     final = _load_scan(paths, state.final_scan)
     rounds = []
@@ -186,8 +219,10 @@ def build_report_json(state: RemediationState, paths: RunPaths) -> dict[str, Any
                        "applied": list(rs.applied), "build": rs.build.to_dict() if rs.build else None,
                        "verify": list(rs.verify_problems), "committed": rs.committed, "scan_label": rs.scan_label})
     data = {"schema": REPORT_SCHEMA, "state_schema": SCHEMA, "state": state.to_dict(),
-            "baseline_scan": _scan_summary(base, state.baseline_scan),
-            "final_scan": _scan_summary(final, state.final_scan),
+            "baseline_scan": _scan_summary(base, state.baseline_scan, ignore),
+            "final_scan": _scan_summary(final, state.final_scan, ignore),
+            "ignore_actions": sorted(ignore),
+            "ignored_findings": _ignored_rows(final if final is not None else base, ignore),
             "delivery_matches_scanned_zip": _delivery_matches(state, final), "delivery": _delivery_dict(state),
             "verified_delivery": _verified_kept(paths), "rounds": rounds}
     return _clean_json(data, _roots(paths))
@@ -222,11 +257,12 @@ def _next_steps(state: RemediationState) -> list[str]:
     return list(dict.fromkeys(out)) or ["보고서와 remediation.log 를 확인하세요."]
 
 
-def build_report_md(state: RemediationState, paths: RunPaths) -> str:
-    """``report.md`` 의 글(한국어). 맨 앞: 상태·이유·다음에 할 일 → 기준 빌드 → 기준 검사 → 라운드별 → 전달 ZIP → 잔여 →
-    실행 경계 → 바꾸지 않은 것.
+def build_report_md(state: RemediationState, paths: RunPaths, *, ignore_actions: Iterable[str] | None = None) -> str:
+    """``report.md`` 의 글(한국어). 맨 앞: 상태·이유·다음에 할 일 → 기준 빌드 → 기준 검사 → 라운드별 → 전달 ZIP →
+    조치 대상에서 뺀 항목 → 잔여 → 실행 경계 → 바꾸지 않은 것. ``ignore_actions`` 가 None 이면 기본값(PC, IG).
 
     The Korean `report.md` text."""
+    ignore = _ignore(ignore_actions)
     roots = _roots(paths)
     base = _load_scan(paths, state.baseline_scan)
     final = _load_scan(paths, state.final_scan)
@@ -282,7 +318,9 @@ def build_report_md(state: RemediationState, paths: RunPaths) -> str:
         L.append("- 검사하지 않았습니다(또는 결과가 없습니다).")
     else:
         L.append(f"- 완료: {'예' if base.complete else '아니오 — 미완료 검사는 0건이 아닙니다'}")
-        L.append(f"- 발견 항목: {len(base.findings)}건 · 검사한 ZIP sha256: `{base.zip_sha256}`")
+        b_act, b_ign = _split(base, ignore)
+        L.append(f"- 발견 항목: {len(base.findings)}건 (조치 대상 {len(b_act)}건, 조치 대상에서 뺀 항목 {len(b_ign)}건) · "
+                 f"검사한 ZIP sha256: `{base.zip_sha256}`")
         if base.incomplete_reasons:
             L.append("- 미완료 이유: " + ", ".join(base.incomplete_reasons))
         if base.counts:
@@ -338,15 +376,39 @@ def build_report_md(state: RemediationState, paths: RunPaths) -> str:
             L.append(f"- 주의: 이 ZIP 은 라운드 {d.round} 에서 빌드·재검사를 마친 상태입니다. 라운드 {last} 의 실패한 변경은 "
                      "들어 있지 않습니다(그 변경은 rounds/<n>/candidate.patch 에만 남습니다).")
     if final is not None:
-        L.append(f"- 최종 검사: `{state.final_scan}` · 완료 {'예' if final.complete else '아니오'} · 발견 {len(final.findings)}건")
+        f_act, f_ign = _split(final, ignore)
+        L.append(f"- 최종 검사: `{state.final_scan}` · 완료 {'예' if final.complete else '아니오'} · 발견 {len(final.findings)}건"
+                 f" (조치 대상 {len(f_act)}건, 조치 대상에서 뺀 항목 {len(f_ign)}건)")
         if _failed_delivery(state):
             L.append("  - 이 검사는 앞 라운드의 ZIP 을 검사한 것이며, 빌드가 실패한 지금의 결과 ZIP 을 검사한 것이 아닙니다.")
-        if final.findings:
+        if f_act:
             L.append("")
-            L.append("| 취약점 | 종류 | 대상 | 버전 |")
-            L.append("|---|---|---|---|")
-            for f in sorted(final.findings, key=lambda x: (x.identifier, x.version, x.id, x.kind)):
-                L.append(f"| {_md_cell(f.id)} | {_md_cell(f.kind)} | `{_md_cell(f.identifier)}` | {_md_cell(f.version)} |")
+            L.append("| 취약점 | 종류 | 대상 | 버전 | 조치 코드 |")
+            L.append("|---|---|---|---|---|")
+            for f in sorted(f_act, key=lambda x: (x.identifier, x.version, x.id, x.kind)):
+                L.append(f"| {_md_cell(f.id)} | {_md_cell(f.kind)} | `{_md_cell(f.identifier)}` | {_md_cell(f.version)} "
+                         f"| {_md_cell(f.action)} |")
+    L.append("")
+
+    from .ivas import unknown_actions
+    shown = final if final is not None else base
+    L.append("## 조치 대상에서 뺀 항목")
+    L.append(f"- 뺀 조치 코드(`remediation.ignore_actions`): {', '.join(sorted(ignore)) or '없음'} — 이 항목들은 검사 파일과 "
+             "이 표에 남지만 계획하지 않고 남은 취약점으로 세지 않습니다.")
+    rows = _ignored_rows(shown, ignore)
+    if not rows:
+        L.append("- 없음")
+    else:
+        L.append(f"- 기준: `{state.final_scan if final is not None else state.baseline_scan}`")
+        L.append("")
+        L.append("| 취약점 | 종류 | 대상 | 버전 | 조치 코드 | 뜻 |")
+        L.append("|---|---|---|---|---|---|")
+        for r in rows:
+            L.append(f"| {_md_cell(r['id'])} | {_md_cell(r['kind'])} | `{_md_cell(r['identifier'])}` | {_md_cell(r['version'])} "
+                     f"| {_md_cell(r['action'])} | {_md_cell(r['meaning'])} |")
+    unknown = unknown_actions(list(shown.findings)) if shown is not None else []
+    if unknown:
+        L.append(f"- 알 수 없는 조치 코드(조치 대상으로 다룸): {', '.join(unknown)}")
     L.append("")
 
     L.append("## 잔여·수동 검토")
@@ -377,12 +439,13 @@ def build_report_md(state: RemediationState, paths: RunPaths) -> str:
     return "\n".join(_clean(x, roots) for x in L)
 
 
-def write_report(state: RemediationState, paths: RunPaths) -> None:
-    """``report.json`` 과 ``report.md`` 를 실행 폴더에 쓴다(원자적 교체). 같은 입력이면 같은 내용.
+def write_report(state: RemediationState, paths: RunPaths, *, ignore_actions: Iterable[str] | None = None) -> None:
+    """``report.json`` 과 ``report.md`` 를 실행 폴더에 쓴다(원자적 교체). 같은 입력이면 같은 내용. ``ignore_actions`` 는
+    그래프가 설정 값을 넘긴다(None = 기본값 PC, IG).
 
     Write `report.json` and `report.md` into the run directory."""
-    write_json_atomic(paths.report_json, build_report_json(state, paths))
-    text = build_report_md(state, paths)
+    write_json_atomic(paths.report_json, build_report_json(state, paths, ignore_actions=ignore_actions))
+    text = build_report_md(state, paths, ignore_actions=ignore_actions)
     tmp = paths.report_md.with_name(paths.report_md.name + ".tmp")
     tmp.write_text(text, encoding="utf-8")
     tmp.replace(paths.report_md)

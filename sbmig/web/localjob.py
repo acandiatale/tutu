@@ -13,7 +13,8 @@ Worker 가 ``job-status.json`` 을 남기지 않고 끝났을 때만(죽었거�
 
 The developer's "pod": the Job-mode flow with a local subprocess in place of a Kubernetes Job — the same three calls as
 `K8sClient`, running the same Worker the pod runs (`python -m sbmig.web.worker`, which verifies the pinned request, runs
-`sbmig.cli run` and writes `job-status.json`); a fallback `job-status.json` only when the Worker left none."""
+`sbmig.cli run` and writes `job-status.json`); a fallback `job-status.json` only when the Worker left none. A remediation
+resume Job (`SBMIG_WORKER_ACTION`, 2026-11-11) gets its fallback in `remediation-job-status.json` instead."""
 from __future__ import annotations
 
 import json
@@ -27,7 +28,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .contract import RUN_ENV, WORKER_MODULE
+from .contract import ACTION_ENV, RUN_ENV, WORKER_MODULE, status_file_for
 from .k8s import JobState, K8sError
 
 log = logging.getLogger("sbmig.web.localjob")
@@ -168,11 +169,14 @@ class LocalJobClient:
         pod = f"local-{proc.pid}"
         if rc is None:
             return JobState("Running", pod=pod, message="")
-        status = run_dir / "job-status.json"
+        # 조치 재개 Job(SBMIG_WORKER_ACTION)의 결과 파일은 따로다 — 이관의 job-status.json 은 이미 있고 건드리지 않는다
+        status = run_dir / status_file_for(env.get(ACTION_ENV) or None)
         if not status.is_file():
             try:
                 status.write_text(json.dumps({"exit_code": rc, "finished_at": datetime.now(timezone.utc).isoformat(),
-                                              "run_id": env.get("SBMIG_RUN_ID") or None}), encoding="utf-8")
+                                              "run_id": env.get("SBMIG_RUN_ID") or None,
+                                              **({"action": env[ACTION_ENV]} if env.get(ACTION_ENV) else {})}),
+                                  encoding="utf-8")
             except OSError as e:
                 log.debug("local job %s: job-status.json not written: %s", name, e)
         return JobState("Succeeded" if rc in (0, 2) else "Failed", pod=pod, exit_code=rc,

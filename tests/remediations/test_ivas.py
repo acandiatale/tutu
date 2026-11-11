@@ -17,14 +17,19 @@ from urllib3.exceptions import MaxRetryError, NewConnectionError
 from sbmig.core.config import RemediationConfig
 from sbmig.remediations import interfaces
 from sbmig.remediations.ivas import (
+    ACTION_MEANINGS,
     IvasHttpClient,
     IvasSettings,
+    action_meaning,
+    ignore_set,
     ivas_settings,
     project_name,
     readiness,
     run_scan,
+    split_findings,
+    unknown_actions,
 )
-from sbmig.remediations.models import IvasError, IvasUploadUncertain, UploadReceipt
+from sbmig.remediations.models import Finding, IvasError, IvasUploadUncertain, UploadReceipt
 
 BASE = "https://ivas.invalid/api"
 TOKEN = "tok-SECRET-9f8e7d"
@@ -637,3 +642,63 @@ def test_request_errors_before_sending_are_ivas_errors_not_crashes():
     with pytest.raises(IvasError) as e:
         IvasHttpClient(settings(), session=s).status(P, A)
     assert e.value.code == "http_error"
+
+
+# ---------------------------------------------------------------------------- file component ids with "|" (company: ossId)
+def test_pipe_component_id_is_one_encoded_path_segment():
+    s = FakeSession().on("GET", res("filecomponent/11560%7C934982/matchedfiles"),
+                         page([{"file": {"fullPath": "a.js"}}], 1))
+    pg = IvasHttpClient(settings(), session=s).page(P, A, "matched_files", 0, 100, component_id="11560|934982")
+    assert pg.total == 1
+    assert s.calls[-1]["path"].endswith("/filecomponent/11560%7C934982/matchedfiles")
+
+
+def test_pipe_component_id_round_trips_into_the_finding(zip_file):
+    s = results_session(done(FakeSession()), summary=summary_body(fileComponents=1),
+                        main=[page([file_item("CVE-1", "11560|934982")], 1)],
+                        matched={"11560%7C934982": [page([{"file": {"fullPath": "web/lib.js"}}], 1)]})
+    r = scan(s, zip_file)
+    assert r.complete, r.notes
+    f = r.findings[0]
+    assert f.component_id == "11560|934982" and f.locations == ["web/lib.js"]
+    assert not any("ossId" in n for n in r.notes)
+
+
+@pytest.mark.parametrize("item", [
+    {"id": "CVE-1", "fileComponent": {"ossId": "11560|934982", "version": "1.0"}, "action": {"actionDivCd": "NE"}},
+    {"id": "CVE-1", "ossId": "11560|934982", "fileComponent": {"version": "1.0"}, "action": {"actionDivCd": "NE"}},
+])
+def test_oss_id_is_used_only_without_file_component_id_and_noted(zip_file, item):
+    s = results_session(done(FakeSession()), summary=summary_body(fileComponents=1), main=[page([item], 1)],
+                        matched={"11560%7C934982": [page([{"file": {"fullPath": "web/lib.js"}}], 1)]})
+    r = scan(s, zip_file)
+    assert r.complete, r.notes
+    assert r.findings[0].component_id == "11560|934982"
+    assert any("ossId" in n and "no fileComponent.id" in n for n in r.notes)
+
+
+def test_file_component_id_wins_over_oss_id(zip_file):
+    item = file_item("CVE-1", "comp-1")
+    item["fileComponent"]["ossId"] = "11560|934982"
+    s = results_session(done(FakeSession()), summary=summary_body(fileComponents=1), main=[page([item], 1)],
+                        matched={"comp-1": [page([{"file": {"fullPath": "a.js"}}], 1)]})
+    r = scan(s, zip_file)
+    assert r.complete and r.findings[0].component_id == "comp-1"
+
+
+# ---------------------------------------------------------------------------- action codes
+def test_action_code_table_and_helpers():
+    assert ACTION_MEANINGS == {"NE": "조치 필요", "NP": "조치계획 미등록", "PL": "조치예정", "OT": "조치일 경과",
+                               "PC": "패치 완료", "IG": "조치 예외"}
+    assert action_meaning(" pc ") == "패치 완료" and action_meaning("") == "코드 없음"
+    assert action_meaning("ZZ") == "알 수 없는 코드"
+    assert ignore_set(None) == {"PC", "IG"} and ignore_set([" ig ", "", "pc"]) == {"PC", "IG"}
+    assert ignore_set([]) == frozenset()
+    assert ignore_set(SimpleNamespace(remediation=RemediationConfig(ignore_actions=["ne"]))) == {"NE"}
+    fs = [Finding(id="a", kind="library", identifier="x", action="NE"),
+          Finding(id="b", kind="library", identifier="x", action=" pc"),
+          Finding(id="c", kind="library", identifier="x", action=""),
+          Finding(id="d", kind="library", identifier="x", action="zz")]
+    act, ign = split_findings(fs, ignore_set(None))
+    assert [f.id for f in act] == ["a", "c", "d"] and [f.id for f in ign] == ["b"]
+    assert unknown_actions(fs) == ["(empty)", "ZZ"]

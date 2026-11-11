@@ -154,6 +154,7 @@ class _Holder:
         self.state, self.paths, self.cfg, self.c = state, paths, cfg, components
         self._save, self._journal, self._stop = save, journal, stop
         self._paths_list: list[str] | None = None
+        self._unknown_noted: set[str] = set()
 
     # -- plumbing
     def save(self) -> None:
@@ -352,16 +353,42 @@ class _Holder:
             "proposals_rejected": sum(1 for p in props if p.decision == D_REJECTED),
             "proposals_pending": sum(1 for p in props if p.decision == D_PENDING),
         }
+        # *_findings = 조치 대상만(ignore_actions 코드는 *_ignored 로 따로 센다)
+        base_act: list[Any] = []
         if base is not None and base.complete:
-            counts["baseline_findings"] = len(base.findings)
+            base_act, base_ign = self.split(base)
+            counts["baseline_findings"] = len(base_act)
+            counts["baseline_ignored"] = len(base_ign)
         if final is not None and final.complete:
-            counts["final_findings"] = len(final.findings)
+            final_act, final_ign = self.split(final)
+            counts["final_findings"] = len(final_act)
+            counts["final_ignored"] = len(final_ign)
             if base is not None and base.complete:
                 def k(f: Any) -> str:
                     return f"{f.kind}|{f.id}|{f.identifier}"
-                left = {k(f) for f in final.findings}
-                counts["fixed"] = len({k(f) for f in base.findings} - left)
+                left = {k(f) for f in final_act}
+                counts["fixed"] = len({k(f) for f in base_act} - left)
         st.counts = counts
+
+    # -- action codes (remediation.ignore_actions)
+    @property
+    def ignored_codes(self) -> frozenset[str]:
+        from .ivas import ignore_set
+        return ignore_set(getattr(self.rcfg, "ignore_actions", None))
+
+    def split(self, scan: ScanResult) -> tuple[list[Any], list[Any]]:
+        """검사의 (조치 대상, 조치 대상에서 뺀 항목). 뺀 항목(``ignore_actions`` 코드, 기본 PC·IG)은 검사 파일·보고서에는 남지만
+        인벤토리·계획에 가지 않고 남은 취약점으로 세지 않는다. 표에 없는 코드·빈 코드는 조치 대상 — 한 번만 저널에 남긴다.
+
+        (actionable, ignored) findings of a scan; unknown / empty codes stay actionable and are journaled once."""
+        from .ivas import split_findings, unknown_actions
+        act, ign = split_findings(list(scan.findings), self.ignored_codes)
+        new = [c for c in unknown_actions(list(scan.findings)) if c not in self._unknown_noted]
+        if new:
+            self._unknown_noted.update(new)
+            log.info("IVAS action codes outside the known table treated as actionable: %s", ", ".join(new))
+            self.journal({"event": "ivas_action_unknown", "codes": new, "label": scan.label})
+        return act, ign
 
     # -- the original ZIP as the delivery (nothing changed)
     def deliver_original(self) -> None:
@@ -482,7 +509,9 @@ def _baseline_scan(h: _Holder) -> str | None:
         return h.finish(INCOMPLETE, R_SCAN_INCOMPLETE, "baseline scan incomplete: " + ", ".join(res.incomplete_reasons))
     if res.zip_sha256 != sha:
         return h.finish(FAILED, R_ZIP_HASH_MISMATCH, "IVAS scanned a ZIP whose sha256 differs from the original")
-    if not res.findings:
+    actionable, _ignored = h.split(res)
+    if not actionable:
+        # 조치 대상이 없다(0건, 또는 모두 ignore_actions 코드): 바꿀 것이 없으니 원본 그대로를 전달한다
         h.deliver_original()
         return "evaluate"
     st.round = max(st.round, 1)
@@ -503,7 +532,8 @@ def _inventory(h: _Holder) -> str | None:
     if scan is None or not scan.complete:
         # 읽을 수 없거나 미완료인 검사는 0건이 아니다 — 빈 발견 목록으로 계획하지 않는다
         return h.finish(INCOMPLETE, R_SCAN_INCOMPLETE, "the scan this round plans from is missing or incomplete")
-    findings = list(scan.findings)
+    # ignore_actions 코드(기본 PC 패치 완료 · IG 조치 예외)의 항목은 인벤토리·계획에 넘기지 않는다
+    findings, _ignored = h.split(scan)
     inv = c.inventory(h.project(p.accepted), findings, before)
     write_json_atomic(rd / "inventory.json", inv.to_dict())
     if not inv.complete:
@@ -742,7 +772,8 @@ def _evaluate(h: _Holder) -> str | None:
     st = h.state
     final = h.load_scan(st.final_scan)
     complete = final is not None and final.complete
-    remaining = len(final.findings) if complete else 0
+    # 남은 취약점 = 조치 대상만(ignore_actions 코드는 성공 판정·다음 라운드 판단에 넣지 않는다)
+    remaining = len(h.split(final)[0]) if complete else 0
     last = next((rs for rs in st.rounds if rs.round == st.round), None)
     committed_last = bool(last and last.committed)
     max_rounds = int(h.rcfg.max_rounds)
@@ -791,7 +822,7 @@ def _evaluate(h: _Holder) -> str | None:
 
 def _report(h: _Holder) -> str | None:
     from . import report as report_mod  # report.py 는 그래프만 쓴다 — 늦게 불러도 된다
-    report_mod.write_report(h.state, h.paths)
+    report_mod.write_report(h.state, h.paths, ignore_actions=sorted(h.ignored_codes))
     return None
 
 

@@ -11,11 +11,15 @@ ZIP 업로드(multipart: ``analysisRequest`` + 파일), ``…/analysis/{id}/stat
 - TLS 검증은 끄지 않는다(``verify=False`` 없음; ``REQUESTS_CA_BUNDLE`` 은 requests 가 그대로 따른다).
 - 검사 결과는 빠진 페이지·바뀐 전체 개수·중복 항목·요약과 맞지 않는 개수·지원하지 않는 범주(SW)·HTTP 오류가 하나라도 있으면
   ``complete=False`` — 그때 ``findings`` 가 비어 있어도 "0건"이 아니다.
+- 조치 구분 코드(``action.actionDivCd``)의 뜻은 ``ACTION_MEANINGS`` 한 곳에 있다. 검사 파일에는 모든 항목을 그대로 두고, 조치
+  대상에서 뺄 코드(``remediation.ignore_actions``)는 그래프가 ``split_findings`` 로 가른다. 빈 코드·모르는 코드는 조치 대상이다.
+- 파일 컴포넌트 ID 에는 ``|`` 가 들어 있을 수 있다(``11560|934982``): matchedfiles 경로에 경로 조각 하나로 인코딩해 보낸다.
 
 IVAS HTTP client and scan procedure. Only the HTTP contract the company gave is used; anything unknown makes the
 scan incomplete instead of being guessed. An upload is never retried automatically: any ambiguity after the body may
 have left raises `IvasUploadUncertain`. Tokens / passwords never reach a log line, an exception message or a repr.
-TLS verification is never disabled.
+TLS verification is never disabled. Action-code meanings live in `ACTION_MEANINGS`; the graph splits the findings by
+`remediation.ignore_actions` (`split_findings`), an empty / unknown code stays actionable.
 """
 from __future__ import annotations
 
@@ -53,6 +57,18 @@ SUMMARY_CATEGORIES = ("components", "swComponents", "fileComponents", "codeSnipp
                       "ospkgComponents", "binaryComponents")
 # 분석 ID 의 필드 이름 — 회사 문서에 lbrdAnlId 와 lbrdrAnlId 가 둘 다 적혀 있어 셋 다 받는다
 ANALYSIS_ID_KEYS = ("lbrdAnlId", "lbrdrAnlId", "analysisId")
+
+# 조치 구분 코드(action.actionDivCd) → 뜻 — 회사 IVAS 문서의 표. 코드의 뜻은 이 표 한 곳에만 둔다(보고서도 여기서 읽는다).
+# 어떤 코드를 조치 대상에서 뺄지는 설정(``remediation.ignore_actions``)이 정한다 — 이 표는 뜻만 말한다
+ACTION_MEANINGS: dict[str, str] = {
+    "NE": "조치 필요",
+    "NP": "조치계획 미등록",
+    "PL": "조치예정",
+    "OT": "조치일 경과",
+    "PC": "패치 완료",
+    "IG": "조치 예외",
+}
+DEFAULT_IGNORE_ACTIONS = ("PC", "IG")
 
 # 결과 종류 → URL 꼬리(analysis/{id}/ 뒤)
 PAGE_PATHS = {
@@ -259,6 +275,71 @@ def _analysis_id(data: Mapping[str, Any]) -> str:
 
 def _is_int(v: Any) -> bool:
     return isinstance(v, int) and not isinstance(v, bool)
+
+
+# ---------------------------------------------------------------------------- 조치 구분 / action codes
+def normalize_action(code: Any) -> str:
+    """조치 구분 코드를 비교용으로: 앞뒤 공백을 지우고 대문자로. 문자열이 아니면 빈 값.
+
+    An action code for comparison: trimmed, upper-cased ('' for a non-string)."""
+    return code.strip().upper() if isinstance(code, str) else ""
+
+
+def action_meaning(code: Any) -> str:
+    """코드의 한국어 뜻(표에 없으면 "알 수 없는 코드", 비었으면 "코드 없음").
+
+    The Korean meaning of an action code."""
+    norm = normalize_action(code)
+    if not norm:
+        return "코드 없음"
+    return ACTION_MEANINGS.get(norm, "알 수 없는 코드")
+
+
+def ignore_set(value: Any) -> frozenset[str]:
+    """설정 값(``cfg`` / ``cfg.remediation`` / 코드 목록 / None)에서 조치 대상에서 뺄 코드 집합(정규화). None 이나 설정이 없는
+    객체 = 기본값(PC, IG). 빈 문자열 항목은 버린다 — 빈 코드는 절대 '뺄 코드'가 되지 않는다.
+
+    The normalized set of ignored action codes from a config object, a code list or None (= the default)."""
+    if value is not None and not isinstance(value, (list, tuple, set, frozenset, str)):
+        rem = getattr(value, "remediation", value)
+        value = getattr(rem, "ignore_actions", None)
+    if value is None:
+        value = DEFAULT_IGNORE_ACTIONS
+    if isinstance(value, str):
+        value = [value]
+    return frozenset(n for n in (normalize_action(x) for x in value) if n)
+
+
+def is_ignored(finding: Finding, ignore: frozenset[str]) -> bool:
+    """이 항목의 조치 코드가 '뺄 코드'인가. 빈 코드는 늘 조치 대상이다(조용히 빼지 않는다).
+
+    True when the finding's action code is in the ignored set; an empty code never is."""
+    norm = normalize_action(finding.action)
+    return bool(norm) and norm in ignore
+
+
+def split_findings(findings: list[Finding], ignore: frozenset[str]) -> tuple[list[Finding], list[Finding]]:
+    """(조치 대상, 조치 대상에서 뺀 항목). 순서는 그대로.
+
+    (actionable, ignored), order kept."""
+    act: list[Finding] = []
+    ign: list[Finding] = []
+    for f in findings:
+        (ign if is_ignored(f, ignore) else act).append(f)
+    return act, ign
+
+
+def unknown_actions(findings: list[Finding]) -> list[str]:
+    """표에 없는 조치 코드(빈 코드는 "(empty)")들 — 정렬, 중복 없음. 이런 항목은 조치 대상으로 다룬다(설정에 그 코드를 직접
+    적은 경우만 뺀다).
+
+    Action codes outside the known table ('(empty)' for a missing one), sorted."""
+    out = set()
+    for f in findings:
+        norm = normalize_action(f.action)
+        if norm not in ACTION_MEANINGS:
+            out.add(norm or "(empty)")
+    return sorted(out)
 
 
 # ---------------------------------------------------------------------------- HTTP 클라이언트 / client
@@ -619,14 +700,28 @@ def _library_finding(item: Any) -> Finding | None:
                    locations=locations, action=_action(item), score=_max_score(item))
 
 
+def _file_component_id(item: Mapping[str, Any]) -> tuple[str, str]:
+    """파일 컴포넌트 ID 와 그 출처 필드. ``fileComponent.id`` 가 늘 먼저다(지금까지의 규칙). 그것이 없을 때만
+    ``fileComponent.ossId`` → 최상위 ``ossId`` 를 쓴다 — 회사는 matchedfiles 경로의 ID 를 ossId 라고 부르지만 어느 필드가 맞는지는
+    아직 확인되지 않았다(추측해 바꾸지 않는다). ID 에 ``|`` 가 들어 있을 수 있다(예: ``11560|934982``) — 그대로 둔다."""
+    comp = item.get("fileComponent")
+    comp = comp if isinstance(comp, dict) else {}
+    for where, value in (("fileComponent.id", comp.get("id")), ("fileComponent.ossId", comp.get("ossId")),
+                         ("ossId", item.get("ossId"))):
+        v = _scalar_id(value)
+        if v:
+            return v, where
+    return "", ""
+
+
 def _file_finding(item: Any, kind: str) -> Finding | None:
     if not isinstance(item, dict) or not _scalar_id(item.get("id")):
         return None
-    comp = item.get("fileComponent")
-    if not isinstance(comp, dict) or not _scalar_id(comp.get("id")):
+    comp_id, _where = _file_component_id(item)
+    if not comp_id:
         return None
+    comp = item.get("fileComponent") if isinstance(item.get("fileComponent"), dict) else {}
     info = comp.get("info") if isinstance(comp.get("info"), dict) else {}
-    comp_id = _scalar_id(comp["id"])
     # 이름 필드가 있으면 그것을, 없으면 컴포넌트 ID 를 식별자로 둔다(필드 이름은 회사 문서에 없다 — 지어내지 않는다)
     identifier = _text(comp, "identifier") or _text(comp, "name") or comp_id
     return Finding(id=_scalar_id(item["id"]), kind=kind, identifier=identifier, version=_text(comp, "version"),
@@ -775,6 +870,10 @@ def run_scan(client: Any, zip_path: Path, zip_sha256: str, label: str, project_n
             if f is None:
                 malformed(kind, i)
                 continue
+            _cid, where = _file_component_id(item)
+            if where != "fileComponent.id":
+                # fileComponent.id 가 없어 ossId 를 matchedfiles 의 ID 로 썼다 — 어느 필드가 맞는지 회사 확인 전이라 기록한다
+                col.note(f"{kind}: file component id taken from {where} (no fileComponent.id)")
             if f.component_id not in matched_cache:
                 paths: list[str] = []
                 mitems, mtotal, mpages = _all_pages(client, receipt, "matched_files", size, col,

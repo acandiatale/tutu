@@ -105,16 +105,20 @@ def _policy_dict(policy: Any) -> dict[str, Any]:
 
 
 def policy_hash(cfg: Any) -> str:
-    """서버 정책의 해시: ``remediation.policy`` 전부 + ``require_approval`` + ``always_approve``(정렬) + ``failed_candidate``.
-    무엇을 제안하는지·무엇이 승인을 기다리는지를 바꾸는 값이 하나라도 바뀌면 해시가 바뀌어, 전에 만든 승인 후보는 무효가 된다.
+    """서버 정책의 해시: ``remediation.policy`` 전부 + ``require_approval`` + ``always_approve``(정렬) + ``failed_candidate``
+    + ``ignore_actions`` (정렬·대문자 — 어떤 IVAS 항목을 계획에 넣는지를 바꾼다).
+    무엇을 제안하는지·무엇이 승인을 기다리는지를 바꾸는 값이 하나라도 바뀌면 해시가 바뀌어, 전에 만든 승인 후보는 무효가 된다
+    (``ignore_actions`` 가 해시에 들어가기 전에 저장된 계획도 이 때문에 한 번 낡은 계획이 된다).
 
-    Hash of everything that changes what is proposed or what needs approval."""
+    Hash of everything that changes what is proposed or what needs approval (incl. `ignore_actions`)."""
+    from .ivas import ignore_set
     rem = _rem(cfg)
     return sha256_text(canonical_json({
         "policy": _policy_dict(rem.policy),
         "require_approval": bool(rem.require_approval),
         "always_approve": sorted(str(x) for x in (rem.always_approve or [])),
         "failed_candidate": str(rem.failed_candidate),
+        "ignore_actions": sorted(ignore_set(getattr(rem, "ignore_actions", None))),
     }))
 
 

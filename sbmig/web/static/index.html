@@ -176,16 +176,53 @@
   .remed .downloads:empty { display: none; }
   .badge { display: inline-block; margin-left: 4px; padding: 1px 8px; border-radius: 999px; font-size: 11.5px; font-weight: 700; }
   .badge.bad { background: var(--bad); color: #fff; }
-  .remed .approvals { margin-top: 16px; }
-  .remed .approvals .head { font-weight: 700; font-size: 13.5px; margin: 0 0 6px; }
-  .remed .by { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
-  .remed .by input { padding: 6px 10px; border: 1px solid var(--line); border-radius: var(--radius-s); background: #fff; width: 180px; }
-  .prop { border: 1px solid var(--line); border-radius: var(--radius-s); padding: 12px 14px; margin-top: 10px; background: #fff; }
-  .prop .prophead { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
-  .prop .prophead .mono { color: var(--ink); font-weight: 600; word-break: break-all; }
-  .prop .actions { margin-top: 10px; }
-  pre.diff { margin: 8px 0 0; max-height: 280px; overflow: auto; background: var(--paper); border: 1px solid var(--line-soft);
+  /* 상태마다 바뀌는 조치 칸(승인 목록·확인 칸·이어서 진행). 한 덩어리로 다시 그린다 */
+  .remed .act { margin-top: 16px; }
+  .remed .act:empty { display: none; }
+  .remed .act .head { font-weight: 700; font-size: 13.5px; margin: 0 0 4px; }
+  .remed .act .lead { margin: 0 0 10px; color: var(--muted); font-size: 13px; word-break: keep-all; overflow-wrap: anywhere; }
+  .remed .act .err { margin: 10px 0 0; padding: 8px 12px; border-radius: var(--radius-s); background: var(--bad-tint); color: var(--bad);
+                     font-size: 13px; overflow-wrap: anywhere; }
+  .remed .act .err:empty { display: none; }
+  .selbar { display: flex; align-items: center; gap: 8px 16px; flex-wrap: wrap; padding: 8px 12px; border: 1px solid var(--line);
+            border-radius: var(--radius-s); background: var(--blue-soft); font-size: 13px; }
+  .selbar label { display: inline-flex; align-items: center; gap: 8px; font-weight: 600; cursor: pointer; }
+  .selbar .count { color: var(--blue-deep); margin-left: auto; }
+  input[type=checkbox].pick { width: 18px; height: 18px; margin: 0; accent-color: var(--blue); flex: none; cursor: pointer; }
+  .prop { border: 1px solid var(--line); border-radius: var(--radius-s); padding: 12px 14px; margin-top: 10px; background: #fff; min-width: 0; }
+  .prop.on { border-color: var(--blue-mid); background: var(--blue-soft); }
+  .prop .prophead { display: flex; gap: 10px; align-items: flex-start; cursor: pointer; }
+  .prop .prophead input { margin-top: 2px; }
+  .prop .what { min-width: 0; flex: 1; }
+  .prop .ga { display: block; font-family: var(--mono); font-size: 13px; font-weight: 600; color: var(--ink); overflow-wrap: anywhere; }
+  .prop .ver { display: block; font-family: var(--mono); font-size: 12.5px; color: var(--muted); overflow-wrap: anywhere; }
+  .prop .ver b { color: var(--blue-deep); font-weight: 700; }
+  .prop .tags { display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0 0 28px; }
+  .tag { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 11.5px; font-weight: 600; border: 1px solid var(--line); color: var(--muted); background: #fff; }
+  .tag.risk { border-color: transparent; background: var(--warn-tint); color: var(--warn); }
+  .prop .facts { margin: 6px 0 0 28px; font-size: 12.5px; color: var(--muted); overflow-wrap: anywhere; }
+  .prop .pnote { margin: 4px 0 0 28px; font-size: 12.5px; color: var(--ink); overflow-wrap: anywhere; white-space: pre-wrap; }
+  .prop details { margin: 8px 0 0 28px; min-width: 0; }
+  .prop details summary { cursor: pointer; color: var(--blue); font-size: 12.5px; font-weight: 600; width: fit-content; }
+  pre.diff { margin: 8px 0 0; max-height: 320px; max-width: 100%; overflow: auto; background: var(--paper); border: 1px solid var(--line-soft);
              border-radius: var(--radius-s); padding: 10px 12px; font: 12px/1.5 var(--mono); white-space: pre; }
+  pre.diff .add { color: var(--ok); background: var(--ok-tint); display: inline-block; min-width: 100%; }
+  pre.diff .del { color: var(--bad); background: var(--bad-tint); display: inline-block; min-width: 100%; }
+  pre.diff .hunk { color: var(--blue); } pre.diff .meta { color: var(--faint); }
+  .remed .act .actions { margin-top: 14px; }
+  .confirm { margin-top: 14px; padding: 14px 16px; border: 1px solid var(--blue); border-left-width: 3px; border-radius: var(--radius-s);
+             background: var(--blue-soft); }
+  .confirm p { margin: 0; color: var(--blue-deep); font-size: 13.5px; word-break: keep-all; overflow-wrap: anywhere; }
+  .confirm .actions { margin-top: 12px; }
+  .going { display: flex; gap: 10px; align-items: flex-start; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--radius-s);
+           background: var(--blue-soft); color: var(--blue-deep); font-size: 13.5px; }
+  .going .pulse { margin-top: 5px; flex: none; }
+  .going p { margin: 0; } .going .small { color: var(--muted); margin-top: 2px; }
+  .rform { display: grid; grid-template-columns: 1fr 1fr auto; gap: 10px; align-items: end; margin-top: 8px; }
+  .rform label { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; font-weight: 600; color: var(--muted); min-width: 0; }
+  .rform input { padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--radius-s); background: #fff; font-family: var(--mono); font-size: 13px; min-width: 0; }
+  .choice { border: 1px solid var(--line); border-radius: var(--radius-s); padding: 12px 14px; margin-top: 10px; background: #fff; }
+  .choice .head { margin: 0 0 8px; }
 
   /* ---- 4. 지난 실행 */
   details.history summary { cursor: pointer; padding: 14px 22px; font-weight: 700; font-size: 15px; display: flex; align-items: center; gap: 10px; }
@@ -215,6 +252,10 @@
     .rail .label .en { display: none; }
     .tabs { flex-wrap: wrap; } .tabs .tools { width: 100%; margin: 0; padding: 6px 12px 8px; }
     .runhead .right { margin-left: 0; }
+    .prop { padding: 10px 12px; } .prop .tags, .prop .facts, .prop .pnote, .prop details { margin-left: 0; }
+    .selbar .count { margin-left: 0; width: 100%; }
+    .rform { grid-template-columns: 1fr; }
+    .remed .act .actions .btn { flex: 1 1 auto; justify-content: center; }
   }
   @media (prefers-reduced-motion: reduce) { .pulse, .rail .step.current .dot::after { animation: none; } .drop { transition: none; } }
 </style>
@@ -332,24 +373,17 @@
     </div>
     <div class="otherfiles" id="otherfiles"></div>
     <!-- 취약점 조치: 이 이관 실행에 이어 돈 조치가 있을 때만(/api/remediations/<실행 id>, 404 면 숨김) -->
-    <div class="remed" id="remed" hidden aria-live="polite">
+    <div class="remed" id="remed" hidden>
       <div class="line">
         <h2>취약점 조치</h2>
-        <span class="chip" id="remed-status"></span>
+        <span class="chip" id="remed-status" role="status"></span>
         <span class="counts" id="remed-counts"></span>
       </div>
       <p class="msg" id="remed-msg"></p>
       <div class="counts reasons" id="remed-reasons"></div>
       <div class="downloads" id="remed-dl"></div>
-      <div class="approvals" id="remed-approvals" hidden>
-        <p class="head">승인을 기다리는 변경</p>
-        <label class="by">승인자 <input id="remed-by" type="text" maxlength="80" autocomplete="name" placeholder="이름"></label>
-        <div id="remed-props"></div>
-        <div class="actions">
-          <button class="btn quiet" id="remed-resume" type="button" disabled>재개</button>
-          <span class="note" id="remed-resume-note"></span>
-        </div>
-      </div>
+      <!-- 상태마다 하는 일: 승인 대기 = 체크해서 한 번에 적용, 업로드 확인 대기 = 두 갈래, 멈춤 = 이어서 진행 -->
+      <div class="act" id="remed-act"></div>
     </div>
     <details class="preview" id="preview">
       <summary>보고서 미리보기</summary>
@@ -790,43 +824,77 @@
   }
 
   // ---------------------------------------------------------------- 3b. 취약점 조치
-  // 빌드 파드가 이관 성공 뒤 이어 돌린 조치(상태 id = 이관 실행 id). 서버 글(이유 코드·diff·메시지)은 모두 textContent 로만 넣는다 —
-  // diff 에는 '<' 가 들어 있다
+  // 빌드 파드가 이관 성공 뒤 이어 돌린 조치(상태 id = 이관 실행 id). 서버 글(이유 코드·diff·메시지·라이브러리 이름)은 모두
+  // textContent 로만 넣는다 — diff 에는 '<dependency>' 같은 태그 글자가 그대로 들어 있다
   const REM_KO = { QUEUED: '대기', RUNNING: '진행 중', AWAITING_APPROVAL: '승인 대기', AWAITING_CONFIRMATION: '업로드 확인 대기',
                    STOPPED: '중지됨', INTERRUPTED: '중단됨', SUCCEEDED: '조치 완료', INCOMPLETE: '일부만 조치됨', FAILED: '실패' };
   const REM_CLS = { SUCCEEDED: 'ok', INCOMPLETE: 'warn', AWAITING_APPROVAL: 'warn', AWAITING_CONFIRMATION: 'warn', STOPPED: 'warn',
                     INTERRUPTED: 'bad', FAILED: 'bad' };
+  // 이유 코드(sbmig/remediations/models.py R_*) → 담당자가 읽는 말. 모르는 코드는 코드 그대로(칩의 title 에는 늘 코드)
+  const REM_REASON_KO = {
+    baseline_build_failed: '조치 전 빌드 실패', candidate_build_failed: '조치 후보 빌드 실패', scan_incomplete: 'IVAS 검사 미완료',
+    upload_uncertain: 'IVAS 업로드 결과 불확실', zip_hash_mismatch: '검사한 zip 과 결과 zip 이 다름', text_only_violation: '버전 글자 밖의 변경',
+    resolution_mismatch: '해석 결과가 계획과 다름', execution_boundary_refused: '실행 경계 거부(.mvn·저장소)', not_ready: '설정 부족(IVAS·Maven)',
+    pending_approval: '승인 대기 중', rejected_proposals: '적용하지 않은 제안 있음', residual_findings: '남은 취약점 있음',
+    manual_review: '수동 검토 필요', no_candidate_version: '올릴 버전 없음', rounds_exhausted: '라운드 한도 도달',
+    stop_requested: '중지 요청', internal_error: '내부 오류', policy_denied: '서버 정책이 막음', unknown_provenance: '관리 출처 불명',
+    stale_location: '파일이 바뀌어 버전 자리를 못 찾음', inventory_incomplete: '의존성 목록 미완성', chain_budget: '빌드 파드 시간 한도' };
+  // 제안의 종류(K_*)·위험 표시(RISK_*)
+  const KIND_KO = { direct_version: '직접 버전', property_version: '속성 값', own_management_version: '관리 버전',
+                    managed_override: '관리 버전 override 추가', parent_version: '부모 버전', bom_version: 'BOM 버전' };
+  const RISK_KO = { major: '메이저 변경', parent: '부모', bom: 'BOM', managed_override: 'override' };
+  const ACTIVE_JOB_DONE = ['succeeded', 'failed', 'completed', 'finished', 'done', 'missing', 'ended'];
+  const REM_POLL_MS = 4000;
+  // 화면 쪽 기억: 고른 칸(제안 id → 체크), 지금 그린 조치 칸의 열쇠(같으면 다시 그리지 않아 체크·확인 칸이 그대로 남는다),
+  // 요청 중(두 번 보내지 않게), 마지막 오류 한 줄
+  const rem = { run: null, sel: new Map(), propKey: '', viewKey: '', busy: false, err: '', resumeErr: '', poll: null, last: null };
   let remSeq = 0;
   function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = String(text); return e; }
   function remUrl(id, tail) { return `/api/remediations/${encodeURIComponent(id)}` + (tail || ''); }
-  function hideRemediation() { remSeq++; $('remed').hidden = true; $('remed-props').replaceChildren(); }
+  function stopRemPoll() { clearTimeout(rem.poll); rem.poll = null; }
+  function hideRemediation() {
+    remSeq++; stopRemPoll(); $('remed').hidden = true; $('remed-act').replaceChildren();
+    rem.run = null; rem.sel = new Map(); rem.propKey = ''; rem.viewKey = ''; rem.busy = false; rem.err = ''; rem.resumeErr = ''; rem.last = null;
+  }
   function remStep() {
     const rail = $('rail');
     let s = rail.querySelector('.step[data-node="remediation"]');
     if (!s) { rail.insertAdjacentHTML('beforeend', stepHtml('remediation', 'remediation')); s = rail.lastElementChild; }
     return s;
   }
-  async function loadRemediation(runId) {
+  // 서버가 active 를 주면 그것이 기준이다(resume_job 은 끝난 뒤에도 남는다). 없을 때만 state 로 미룬다
+  function jobActive(j) {
+    if (!j || typeof j !== 'object') return false;
+    if (typeof j.active === 'boolean') return j.active;
+    return !!(j.state && !ACTIVE_JOB_DONE.includes(String(j.state).toLowerCase()));
+  }
+  function remActive(st) { return st.status === 'RUNNING' || st.status === 'QUEUED' || jobActive(st.resume_job); }
+  async function loadRemediation(runId, force) {
     const seq = ++remSeq;
     let r = null, st = null;
     try { r = await fetch(remUrl(runId)); try { st = await r.json(); } catch (e) {} } catch (e) { return; }
     if (seq !== remSeq || current !== runId) return;              // 그 사이 다른 실행을 골랐다
     if (!r.ok || !st || !st.status) { $('remed').hidden = true; return; }   // 404 = 이 실행에는 이어 돈 조치가 없다
+    if (rem.run !== runId) { rem.run = runId; rem.sel = new Map(); rem.propKey = ''; rem.viewKey = ''; rem.err = ''; rem.resumeErr = ''; }
     const step = remStep();
-    if (st.status === 'RUNNING' || st.status === 'QUEUED') setCurrent(step);
+    if (remActive(st)) setCurrent(step);
     else { step.classList.add('done'); step.classList.remove('current'); }
     let props = null;
     if (st.status === 'AWAITING_APPROVAL') {
       try { const pr = await fetch(remUrl(runId, '/proposals')); if (pr.ok) props = await pr.json(); } catch (e) {}
       if (seq !== remSeq || current !== runId) return;
     }
-    renderRemediation(runId, st, props);
+    renderRemediation(runId, st, props, force);
+    // 새 빌드 파드에서 이어 도는 동안(대기·진행)만 몇 초마다 다시 읽는다
+    stopRemPoll();
+    if (remActive(st)) rem.poll = setTimeout(() => { if (current === runId) loadRemediation(runId); }, REM_POLL_MS);
   }
-  function renderRemediation(runId, st, props) {
+  function renderRemediation(runId, st, props, force) {
     $('remed').hidden = false;
+    rem.last = st;
     const chip = $('remed-status');
     chip.className = 'chip ' + (REM_CLS[st.status] || '');
-    chip.textContent = (REM_KO[st.status] || st.status) + (st.stale ? ' (빌드 파드 종료)' : '');
+    setText('remed-status', (REM_KO[st.status] || st.status) + (st.stale ? ' (빌드 파드 종료)' : ''));
     const c = st.counts || {}, counts = $('remed-counts');
     counts.replaceChildren();
     if (c.baseline_findings != null) counts.appendChild(el('span', 'chip', `취약점 ${c.baseline_findings}건 → ${c.final_findings != null ? c.final_findings + '건' : '검사 전'}`));
@@ -837,7 +905,7 @@
     const reasons = $('remed-reasons');
     reasons.replaceChildren();
     const codes = Array.isArray(st.reasons) && st.reasons.length ? st.reasons : (st.reason ? [st.reason] : []);
-    for (const code of codes) reasons.appendChild(el('span', 'chip', code));
+    for (const code of codes) { const ch = el('span', 'chip', REM_REASON_KO[code] || code); ch.title = String(code); reasons.appendChild(ch); }
     // 내려받기: 조치 보고서, 조치 결과 zip(빌드가 실패한 후보면 '빌드 실패본' 표시), 앞 라운드의 검증된 zip
     const files = Array.isArray(st.files) ? st.files : [], dl = $('remed-dl');
     dl.replaceChildren();
@@ -854,71 +922,275 @@
     link('result.zip', '조치 결과 받기', failed ? 'ghost' : 'quiet', failed ? '빌드 실패본' : '');
     link('result-verified.zip', '검증된 앞 라운드 받기', 'quiet');
     if (st.withheld) dl.appendChild(el('span', 'note', '이관 실행이 끝나면(마지막 정제 뒤) 받을 수 있습니다.'));
-    // 승인 대기: 결정을 기다리는 제안마다 diff 와 승인 / 거절. 결정은 재개하지 않는다
-    const ap = $('remed-approvals'), list = $('remed-props');
-    list.replaceChildren();
-    ap.hidden = st.status !== 'AWAITING_APPROVAL';
+    // 상태마다 하는 일. 같은 그림이면 다시 그리지 않는다(같은 상태가 여러 번 와도 고른 칸·열린 확인 칸이 사라지지 않게)
     const pending = props && Array.isArray(props.proposals) ? props.proposals.filter((p) => p && p.decision === 'pending') : [];
-    for (const p of pending) list.appendChild(proposalCard(runId, p));
-    if (st.status === 'AWAITING_APPROVAL' && !pending.length) list.appendChild(el('p', 'small muted', '모든 제안에 결정을 남겼습니다. 이어서 진행하려면 재개가 필요합니다.'));
     const rs = (st.resume && typeof st.resume === 'object') ? st.resume : {};
-    $('remed-resume').disabled = !rs.available || pend > 0;
-    $('remed-resume-note').textContent = !rs.available ? (rs.note || '지금은 재개할 수 없습니다.')
-                                       : (pend > 0 ? '모든 제안에 결정을 남기면 재개할 수 있습니다.' : '');
+    const j = (st.resume_job && typeof st.resume_job === 'object') ? st.resume_job : {};
+    const q = qpos(j.queue);
+    const key = JSON.stringify([st.status, !!st.stale, st.reason || '', !!rs.available, rs.note || '', jobActive(j), j.state || '',
+                                q ? q.ahead : null, st.queue_position || null, pending.map((p) => p.id + ':' + (p.proposal_hash || ''))]);
+    if (rem.busy) return;                                       // 요청 중: 답이 오면 다시 그린다
+    if (!force && key === rem.viewKey) return;
+    rem.viewKey = key;
+    const act = $('remed-act');
+    if (remActive(st)) act.replaceChildren(goingView(st));
+    else if (st.status === 'AWAITING_APPROVAL') act.replaceChildren(pending.length ? approvalsView(runId, pending) : decidedView(runId, rs));
+    else if (st.status === 'AWAITING_CONFIRMATION') act.replaceChildren(confirmationView(runId, st, rs));
+    else if (st.status === 'STOPPED' || st.status === 'INTERRUPTED') act.replaceChildren(stoppedView(runId, st, rs));
+    else act.replaceChildren();
   }
-  function proposalCard(runId, p) {
-    const card = el('div', 'prop');
-    const head = el('div', 'prophead');
-    head.appendChild(el('span', 'mono', p.ga || p.id || ''));
-    head.appendChild(el('span', 'muted small', `${p.from_version || '?'} → ${p.to_version || '?'}`));
-    if (Array.isArray(p.risks) && p.risks.length) head.appendChild(el('span', 'chip warn', p.risks.join(', ')));
-    head.appendChild(el('span', 'muted small mono', p.id || ''));
-    card.appendChild(head);
-    if (p.note) card.appendChild(el('p', 'small muted', p.note));
-    const pre = el('pre', 'diff'); pre.textContent = p.diff || ''; card.appendChild(pre);
+
+  // ---- 새 빌드 파드에서 이어 도는 중(대기·진행)
+  function goingView(st) {
+    const j = (st.resume_job && typeof st.resume_job === 'object') ? st.resume_job : {};
+    const box = el('div', 'going');
+    box.appendChild(el('span', 'pulse'));
+    const txt = el('div');
+    txt.appendChild(el('p', null, '이어서 진행 중'));
+    txt.appendChild(el('p', 'small', '새 빌드 파드에서 적용 · 빌드 · 재검사를 합니다. 이 창을 닫아도 계속됩니다.'));
+    const q = qpos(j.queue);
+    const ahead = q ? q.ahead : (st.status === 'QUEUED' && Number.isInteger(st.queue_position) ? st.queue_position - 1 : null);
+    if (ahead != null) txt.appendChild(el('p', 'small', `자리가 날 때까지 대기 중 (앞에 ${ahead}건)`));
+    box.appendChild(txt);
+    return box;
+  }
+
+  // ---- 승인 대기: 제안마다 체크 칸 하나. 체크 = 적용, 체크 안 함 = 적용하지 않음. 버튼 하나로 결정과 이어서 진행을 함께 보낸다
+  function approvalsView(runId, pending) {
+    const key = pending.map((p) => p.id + ':' + (p.proposal_hash || '')).join('|');
+    if (key !== rem.propKey) { rem.propKey = key; rem.sel = new Map(); }   // 제안이 바뀌면 고른 것을 비운다
+    const wrap = el('div');
+    wrap.appendChild(el('p', 'head', '적용할 변경을 고르세요'));
+    wrap.appendChild(el('p', 'lead', '체크한 변경만 적용하고, 체크하지 않은 변경은 적용하지 않습니다. 적용하면 새 빌드 파드에서 빌드와 IVAS 재검사까지 이어서 합니다.'));
+    const bar = el('div', 'selbar');
+    const allLab = el('label');
+    const all = el('input', 'pick'); all.type = 'checkbox'; all.id = 'remed-all';
+    allLab.append(all, document.createTextNode('전체 선택'));
+    const count = el('span', 'count'); count.id = 'remed-selcount'; count.setAttribute('aria-live', 'polite');
+    bar.append(allLab, count);
+    wrap.appendChild(bar);
+    const list = el('div'); list.id = 'remed-props';
+    const boxes = [];
+    pending.forEach((p, i) => {
+      const card = proposalRow(p, i);
+      boxes.push(card.querySelector('input'));
+      list.appendChild(card);
+    });
+    wrap.appendChild(list);
+    const err = el('p', 'err', rem.err); err.setAttribute('role', 'alert'); wrap.appendChild(err);
     const row = el('div', 'actions');
-    const yes = el('button', 'btn', '승인'), no = el('button', 'btn ghost', '거절');
-    yes.type = 'button'; no.type = 'button';
-    yes.addEventListener('click', () => decide(runId, p, 'approved', [yes, no]));
-    no.addEventListener('click', () => decide(runId, p, 'rejected', [yes, no]));
-    row.append(yes, no); card.appendChild(row);
+    const apply = el('button', 'btn', '선택한 항목 적용'); apply.type = 'button'; apply.id = 'remed-apply';
+    row.appendChild(apply);
+    wrap.appendChild(row);
+    const confirmSlot = el('div'); wrap.appendChild(confirmSlot);
+    const chosen = () => pending.filter((p) => rem.sel.get(p.id)).length;
+    const sync = () => {
+      const n = chosen(), m = pending.length;
+      count.textContent = `${n}건 선택 / 전체 ${m}건`;
+      all.checked = n === m && m > 0; all.indeterminate = n > 0 && n < m;
+      boxes.forEach((b, i) => { b.checked = !!rem.sel.get(pending[i].id); b.closest('.prop').classList.toggle('on', b.checked); });
+    };
+    boxes.forEach((b, i) => b.addEventListener('change', () => { rem.sel.set(pending[i].id, b.checked); sync(); }));
+    all.addEventListener('change', () => { for (const p of pending) rem.sel.set(p.id, all.checked); sync(); });
+    const lock = (on) => { for (const b of [all, ...boxes, apply]) b.disabled = on; };
+    apply.addEventListener('click', () => {
+      if (rem.busy || confirmSlot.firstChild) return;
+      const n = chosen(), m = pending.length - n;
+      const text = n === 0 ? `${pending.length}건 전부 적용하지 않습니다. 적용하지 않은 제안은 이 작업에서 다시 나오지 않습니다.`
+                 : (m === 0 ? `${n}건을 모두 적용합니다.` : `${n}건을 적용하고 ${m}건은 적용하지 않습니다. 적용하지 않은 제안은 이 작업에서 다시 나오지 않습니다.`);
+      const panel = el('div', 'confirm'); panel.setAttribute('role', 'group'); panel.setAttribute('aria-label', '적용 확인');
+      panel.appendChild(el('p', null, text));
+      const prow = el('div', 'actions');
+      const ok = el('button', 'btn', '적용'), cancel = el('button', 'btn ghost', '취소');
+      ok.type = 'button'; cancel.type = 'button'; ok.id = 'remed-confirm-ok';
+      prow.append(ok, cancel); panel.appendChild(prow);
+      const close = () => { confirmSlot.replaceChildren(); lock(false); apply.focus(); };
+      cancel.addEventListener('click', close);
+      panel.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !rem.busy) { e.preventDefault(); close(); } });
+      ok.addEventListener('click', () => submitDecisions(runId, pending, [ok, cancel]));
+      lock(true);
+      confirmSlot.replaceChildren(panel);
+      ok.focus();
+    });
+    sync();
+    return wrap;
+  }
+  function proposalRow(p, i) {
+    const card = el('div', 'prop');
+    const id = 'remed-pick-' + i;
+    const head = el('label', 'prophead'); head.htmlFor = id;
+    const cb = el('input', 'pick'); cb.type = 'checkbox'; cb.id = id; cb.value = String(p.id || '');
+    const what = el('span', 'what');
+    what.appendChild(el('span', 'ga', p.ga || p.id || ''));
+    const ver = el('span', 'ver', (p.from_version || '?') + ' → ');
+    ver.appendChild(el('b', null, p.to_version || '?'));
+    what.appendChild(ver);
+    head.append(cb, what);
+    card.appendChild(head);
+    const tags = el('div', 'tags');
+    if (p.kind) tags.appendChild(el('span', 'tag', KIND_KO[p.kind] || p.kind));
+    for (const r of Array.isArray(p.risks) ? p.risks : []) tags.appendChild(el('span', 'tag risk', RISK_KO[r] || r));
+    if (tags.childElementCount) card.appendChild(tags);
+    if (p.evidence) card.appendChild(el('p', 'facts', '근거: ' + evidenceText(p.evidence)));
+    if (p.note) card.appendChild(el('p', 'pnote', p.note));
+    const det = el('details');
+    det.appendChild(el('summary', null, '변경 내용 보기'));
+    det.appendChild(diffPre(p.diff || ''));
+    card.appendChild(det);
     return card;
   }
-  // 승인 한 건: 서버는 제안 해시·원본 트리 해시·정책 해시·diff 가 저장된 제안과 모두 같을 때만 받는다(하나라도 틀리면 409, 아무것도 쓰지 않음)
-  async function decide(runId, p, decision, btns) {
-    const by = $('remed-by').value.trim();
-    if (!by) { toast('승인자 이름을 적어 주세요.', true); $('remed-by').focus(); return; }
+  function evidenceText(ev) {
+    const s = String(ev);
+    if (s.startsWith('policy:')) return '서버 정책 (' + s.slice(7) + ')';
+    if (s.startsWith('repository:')) return '승인된 저장소 ' + s.slice(11);
+    return s;
+  }
+  // 정확한 diff 를 그대로: 줄마다 span 하나(textContent), 앞 글자로 더한 줄·뺀 줄만 색을 입힌다
+  function diffPre(text) {
+    const pre = el('pre', 'diff');
+    pre.setAttribute('tabindex', '0');                          // 가로로 긴 줄을 키보드로도 밀어 볼 수 있게
+    const lines = String(text).split('\n');
+    if (lines.length && lines[lines.length - 1] === '') lines.pop();
+    for (const ln of lines) {
+      const cls = /^(\+\+\+|---)( |$)/.test(ln) ? 'meta' : ln.startsWith('@@') ? 'hunk' : ln.startsWith('+') ? 'add' : ln.startsWith('-') ? 'del' : '';
+      pre.appendChild(el('span', cls || null, ln));
+      pre.appendChild(document.createTextNode('\n'));
+    }
+    return pre;
+  }
+  // 결정 한 번: 기다리는 제안 전부를 한 요청에(체크 = approved, 아니면 rejected). 서버는 제안 해시·원본 트리 해시·정책 해시·diff 가
+  // 저장된 제안과 모두 같을 때만 받는다(하나라도 틀리면 409 approval_mismatch, 아무것도 쓰지 않음). resume: true = 저장 뒤 이어서 진행
+  async function submitDecisions(runId, pending, btns) {
+    if (rem.busy) return;
+    rem.busy = true; rem.err = '';
     for (const b of btns) b.disabled = true;
-    const body = { by, decisions: [{ proposal_id: p.id, decision, proposal_hash: p.proposal_hash, source_tree_hash: p.source_tree_hash,
-                                     policy_hash: p.policy_hash, diff: p.diff, comment: '' }] };
+    const body = {
+      decisions: pending.map((p) => ({ proposal_id: p.id, decision: rem.sel.get(p.id) ? 'approved' : 'rejected', proposal_hash: p.proposal_hash,
+                                        source_tree_hash: p.source_tree_hash, policy_hash: p.policy_hash, diff: p.diff })),
+      resume: true,
+    };
     let r = null, d = {};
     try {
       r = await fetch(remUrl(runId, '/approvals'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
       try { d = await r.json(); } catch (e) {}
     } catch (e) {}
-    if (r && authProblem(r, d)) { for (const b of btns) b.disabled = false; return; }
-    if (!r || !r.ok) {
-      toast('결정을 저장하지 못했습니다: ' + ((d && d.error) || (r ? r.status : '연결 실패')), true);
-      for (const b of btns) b.disabled = false;
-    } else {
-      toast((decision === 'approved' ? '승인했습니다.' : '거절했습니다.') + (d.pending === 0 ? ' 모든 제안에 결정을 남겼습니다. 이어서 진행하려면 재개가 필요합니다.' : ''));
+    rem.busy = false;
+    if (current !== runId) return;
+    if (r && authProblem(r, d)) { rem.err = '접근이 거부되었습니다.'; loadRemediation(runId, true); return; }
+    if (!r) { rem.err = '서버에 보내지 못했습니다. 연결을 확인하고 다시 눌러 주세요.'; loadRemediation(runId, true); return; }
+    if (r.status === 409 && d && d.code === 'approval_mismatch') {
+      rem.err = '제안이 바뀌었습니다. 목록을 새로 불러왔습니다.'; rem.sel = new Map(); rem.propKey = '';
+      loadRemediation(runId, true); return;
     }
-    if (current === runId) loadRemediation(runId);
+    if (!r.ok) { rem.err = '적용하지 못했습니다: ' + ((d && d.error) || r.status); loadRemediation(runId, true); return; }
+    const n = body.decisions.filter((x) => x.decision === 'approved').length;
+    if (d.resumed) {
+      rem.resumeErr = '';
+      toast(`결정을 저장했습니다(적용 ${n}건). 새 빌드 파드에서 이어서 진행합니다.`);
+      if (rem.last) $('remed-act').replaceChildren(goingView({ ...rem.last, status: 'QUEUED' }));   // 다음 상태가 오기 전에도 바로
+    } else {
+      const re = d.resume_error && typeof d.resume_error === 'object' ? d.resume_error : null;
+      rem.resumeErr = (re && re.error) || '이어서 진행하지 못했습니다.';
+      toast('결정은 저장했습니다. 이어서 진행은 하지 못했습니다.', true);
+    }
+    loadRemediation(runId, true);
   }
-  $('remed-resume').addEventListener('click', async () => {
-    const runId = current;
-    if (!runId) return;
-    $('remed-resume').disabled = true;
+  // ---- 모든 제안에 결정이 남았는데 이어서 진행하지 못했다(위 요청이 거절됐거나 옛 서버): 이 경우에만 '이어서 진행' 버튼
+  function decidedView(runId, rs) {
+    const wrap = el('div');
+    wrap.appendChild(el('p', 'head', '결정을 저장했습니다'));
+    wrap.appendChild(el('p', 'lead', '모든 제안에 결정이 남아 있습니다. 아래 버튼으로 새 빌드 파드에서 적용 · 빌드 · 재검사를 이어서 합니다.'));
+    const err = el('p', 'err', rem.err || rem.resumeErr); err.setAttribute('role', 'alert'); wrap.appendChild(err);
+    wrap.appendChild(resumeRow(runId, rs, {}, '이어서 진행'));
+    return wrap;
+  }
+  // ---- 업로드 확인 대기: 사람이 IVAS 에서 확인한 사실을 고른다(자동으로 다시 올리지 않는다)
+  function confirmationView(runId, st, rs) {
+    const labels = Array.isArray(st.pending_uploads) ? st.pending_uploads : [];
+    const label = labels.length ? String(labels[0]) : null;
+    const extra = label != null && labels.length > 1 ? { label } : {};
+    const wrap = el('div');
+    wrap.appendChild(el('p', 'head', 'IVAS 업로드 결과를 확인해 주세요'));
+    wrap.appendChild(el('p', 'lead', 'IVAS 에 검사할 파일을 올렸지만 접수됐다는 답을 받지 못했습니다. 같은 파일이 두 번 접수되지 않도록 자동으로 다시 올리지 않으니, IVAS 화면에서 접수 여부를 확인한 뒤 아래에서 골라 주세요.'
+                                       + (labels.length > 1 ? ` (대상: ${label})` : '')));
+    const err = el('p', 'err', rem.err); err.setAttribute('role', 'alert'); wrap.appendChild(err);
+    const can = !!rs.available;
+    const a = el('div', 'choice');
+    const re = el('button', 'btn quiet', 'IVAS 에서 확인했고, 접수되지 않았다 → 다시 올리기'); re.type = 'button'; re.id = 'remed-reupload';
+    re.style.whiteSpace = 'normal';
+    re.disabled = !can;
+    re.addEventListener('click', () => postResume(runId, { confirm: 'reupload', ...extra }, [re]));
+    a.appendChild(re);
+    wrap.appendChild(a);
+    const b = el('form', 'choice'); b.id = 'remed-receipt'; b.noValidate = true;
+    b.appendChild(el('p', 'head', '접수되어 있다 → projectId / analysisId 입력 후 이어가기'));
+    const grid = el('div', 'rform');
+    const field = (id, text) => {
+      const lab = el('label', null, text); lab.htmlFor = id;
+      const inp = el('input'); inp.id = id; inp.type = 'text'; inp.required = true; inp.autocomplete = 'off'; inp.spellcheck = false; inp.maxLength = 200;
+      lab.appendChild(inp); grid.appendChild(lab);
+      return inp;
+    };
+    const pid = field('remed-project-id', 'projectId'), aid = field('remed-analysis-id', 'analysisId');
+    const go = el('button', 'btn', '이어가기'); go.type = 'submit';
+    grid.appendChild(go);
+    b.appendChild(grid);
+    const ready = () => { go.disabled = !can || !pid.value.trim() || !aid.value.trim(); };
+    pid.addEventListener('input', ready); aid.addEventListener('input', ready);
+    b.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const project_id = pid.value.trim(), analysis_id = aid.value.trim();
+      if (!can || !project_id || !analysis_id) { ready(); return; }
+      postResume(runId, { confirm: 'receipt', project_id, analysis_id, ...extra }, [go, re, pid, aid]);
+    });
+    ready();
+    wrap.appendChild(b);
+    if (!can) wrap.appendChild(el('p', 'lead', rs.note || '지금은 이어서 진행할 수 없습니다.'));
+    return wrap;
+  }
+  // ---- 중지됨 / 중단됨(빌드 파드가 사라진 stale, 시간 한도 chain_budget 포함): 까닭 한 줄 + 이어서 진행
+  function stoppedView(runId, st, rs) {
+    let why;
+    if (st.stale) why = '이관 실행의 빌드 파드가 끝나면서 조치가 멈춘 채 남았습니다. 자동으로 다시 보내지 않으니, 이어서 진행하면 새 빌드 파드에서 멈춘 곳부터 계속합니다.';
+    else if (st.reason === 'chain_budget') why = '빌드 파드에서 조치에 쓸 수 있는 시간을 다 써서 멈췄습니다. 이어서 진행하면 새 빌드 파드에서 멈춘 곳부터 계속합니다.';
+    else if (st.reason === 'stop_requested' || st.stop_requested) why = '중지 요청으로 멈췄습니다. 이어서 진행하면 멈춘 곳부터 계속합니다.';
+    else if (st.status === 'INTERRUPTED') why = '서버가 다시 시작되면서 조치가 멈췄습니다. 자동으로 다시 보내지 않으니, 이어서 진행하면 멈춘 곳부터 계속합니다.';
+    else why = '조치가 멈췄습니다. 이어서 진행하면 멈춘 곳부터 계속합니다.';
+    const wrap = el('div');
+    wrap.appendChild(el('p', 'lead', why));
+    const err = el('p', 'err', rem.err); err.setAttribute('role', 'alert'); wrap.appendChild(err);
+    wrap.appendChild(resumeRow(runId, rs, {}, '이어서 진행'));
+    return wrap;
+  }
+  function resumeRow(runId, rs, body, label) {
+    const row = el('div', 'actions');
+    if (rs.available) {
+      const b = el('button', 'btn', label); b.type = 'button'; b.id = 'remed-resume';
+      b.addEventListener('click', () => postResume(runId, body, [b]));
+      row.appendChild(b);
+    } else {
+      row.appendChild(el('span', 'note', rs.note || '지금은 이어서 진행할 수 없습니다.'));
+    }
+    return row;
+  }
+  // POST /resume: 새 빌드 파드에서 이어서(웹 파드가 Job 을 만든다). 답이 오면 상태를 다시 읽는다
+  async function postResume(runId, body, ctrls) {
+    if (rem.busy) return;
+    rem.busy = true; rem.err = '';
+    for (const c of ctrls) c.disabled = true;
     let r = null, d = {};
     try {
-      r = await fetch(remUrl(runId, '/resume'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+      r = await fetch(remUrl(runId, '/resume'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
       try { d = await r.json(); } catch (e) {}
     } catch (e) {}
-    if (r && authProblem(r, d)) return;
-    if (!r || !r.ok) toast('재개하지 못했습니다: ' + ((d && d.error) || (r ? r.status : '연결 실패')), true);
-    else toast('재개했습니다.');
-    if (current === runId) loadRemediation(runId);
-  });
+    rem.busy = false;
+    if (current !== runId) return;
+    if (r && authProblem(r, d)) { rem.err = '접근이 거부되었습니다.'; }
+    else if (!r) rem.err = '서버에 보내지 못했습니다. 연결을 확인하고 다시 눌러 주세요.';
+    else if (!r.ok) rem.err = '이어서 진행하지 못했습니다: ' + ((d && d.error) || r.status);
+    else { rem.resumeErr = ''; toast('새 빌드 파드에서 이어서 진행합니다.'); if (rem.last) $('remed-act').replaceChildren(goingView({ ...rem.last, status: 'QUEUED' })); }
+    loadRemediation(runId, true);
+  }
 
   // ---------------------------------------------------------------- 실행에 붙기 (SSE)
   // resume = 끊긴 같은 실행에 다시 붙기(아래 '다시 붙기'). 담당자가 고른 실행이면 진행 중인 재연결을 그만둔다.

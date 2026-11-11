@@ -17,7 +17,9 @@ from sbmig.remediations.models import (
     SUCCEEDED,
     RemediationState,
     RoundPlan,
+    ScanResult,
     StateConflict,
+    UploadReceipt,
     read_json,
     write_json_atomic,
 )
@@ -261,3 +263,76 @@ def test_resume_rules(tmp_path, ivas_env):
 def test_summary_of_a_skip():
     s = chain.summary(None, "/x", skipped={"event": "remediation_skipped", "reason": "not_ready", "missing": ["A"]})
     assert s == {"status": "skipped", "dir": "remediation", "reason": "not_ready", "missing": ["A"]}
+
+
+# ---------------------------------------------------------------------------- time budget
+class Clock:
+    def __init__(self):
+        self.t = 0.0
+
+    def __call__(self):
+        return self.t
+
+
+@pytest.fixture()
+def clock(monkeypatch):
+    c = Clock()
+    monkeypatch.setattr(chain, "_monotonic", c)
+    return c
+
+
+def test_budget_stops_at_the_next_boundary_as_chain_budget_and_resume_continues(tmp_path, ivas_env, clock):
+    comps = one_fix_components(maven=FakeMaven(on_package=lambda _p: setattr(clock, "t", 31 * 60.0)))
+    run_dir, root = project(tmp_path)
+    out, j = go(run_dir, root, cfg=make_cfg(after_migration=True, chain_budget_minutes=30), comps=comps)
+    assert out.status == STOPPED and out.reason == chain.R_CHAIN_BUDGET and out.reasons == [chain.R_CHAIN_BUDGET]
+    assert out.next_node == "baseline_scan" and not out.stop_requested
+    assert "time budget of 30 minute(s)" in out.message
+    saved = chain.load_state(run_dir)
+    assert saved.reason == chain.R_CHAIN_BUDGET and saved.status == STOPPED
+    assert j.names().count("remediation_budget") == 1
+    assert next(e for e in j.events if e["event"] == "remediation_end")["reason"] == chain.R_CHAIN_BUDGET
+    # a new pod resumes: the budget is measured again from this call
+    clock.t = 1000 * 60.0
+    out = chain.resume(run_dir, make_cfg(chain_budget_minutes=30), journal=Journal(), stop=lambda: False,
+                       components=one_fix_components())
+    assert out.status == SUCCEEDED, (out.reason, out.message)
+
+
+def test_budget_during_a_scan_keeps_the_receipt_and_resume_polls_without_upload(tmp_path, ivas_env, clock):
+    def in_flight(*, zip_path, zip_sha256, label, receipt, on_receipt):
+        r = UploadReceipt(project_id="prj-1", analysis_id="anl-1", zip_sha256=zip_sha256, project_name="n")
+        on_receipt(r)
+        clock.t = 91 * 60.0                      # the budget runs out while sbmig polls IVAS
+        return ScanResult(label=label, zip_sha256=zip_sha256, complete=False, receipt=r,
+                          incomplete_reasons=["stop_requested"])
+    from .fakes import FakeScanner
+    scan = FakeScanner({"baseline": [in_flight]})
+    run_dir, root = project(tmp_path)
+    out, _ = go(run_dir, root, comps=one_fix_components(scan=scan))      # default budget: 90 minutes
+    assert out.status == STOPPED and out.reason == chain.R_CHAIN_BUDGET
+    assert out.pending_receipt["baseline"]["analysis_id"] == "anl-1" and "polled again" in out.message
+    scan2 = FakeScanner({"baseline": [scan_result(finding())], "final-r1": [scan_result()]})
+    out = chain.resume(run_dir, make_cfg(), journal=Journal(), stop=lambda: False,
+                       components=one_fix_components(scan=scan2))
+    assert out.status == SUCCEEDED
+    assert scan2.calls[0].label == "baseline" and not scan2.calls[0].uploaded
+    assert scan2.calls[0].receipt.analysis_id == "anl-1"
+
+
+def test_a_real_stop_stays_stop_requested_even_when_the_budget_ran_out(tmp_path, ivas_env, clock):
+    flag = {"on": False}
+
+    def late(_p):
+        clock.t = 999 * 60.0
+        flag["on"] = True
+    run_dir, root = project(tmp_path)
+    out, _ = go(run_dir, root, comps=one_fix_components(maven=FakeMaven(on_package=late)), stop=lambda: flag["on"])
+    assert out.status == STOPPED and out.reason == "stop_requested"
+
+
+def test_zero_budget_means_no_limit(tmp_path, ivas_env, clock):
+    comps = one_fix_components(maven=FakeMaven(on_package=lambda _p: setattr(clock, "t", 10 ** 9)))
+    run_dir, root = project(tmp_path)
+    out, j = go(run_dir, root, cfg=make_cfg(after_migration=True, chain_budget_minutes=0), comps=comps)
+    assert out.status == SUCCEEDED and "remediation_budget" not in j.names()
