@@ -28,7 +28,7 @@ Tomcat, and the Handover line `web.xml (2.3) → WebXmlRegistrations: 2 servlet(
 Expected (v2, `expected.json` → `expect`): BUILD SUCCESS (the generated class compiles against Spring Boot 4.1), exit 0,
 **1 LLM call** (the structure review, verdict `ok`), no fix script, flag
 `web-xml-registered`, journal `web_xml_registrations` (servlets 2, filters 2, listeners 1, error pages 2),
-`legacy-boot/target/*.war`. Catalog id W1 (`docs/ERROR-HANDLING.md`).
+`legacy-boot/target/*.war`. Scenario label W1.
 
 As-is build (JDK 8):
 

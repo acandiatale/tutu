@@ -13,7 +13,8 @@ and (v2, flow-v2) a `sbmig.e2e.yml` with a **replayed fake LLM** (`replay/llm-NN
 
 ## Matrix (v2)
 
-Catalog IDs refer to `docs/ERROR-HANDLING.md`. "LLM" = `llm_usage.calls` of the run (the structure review is always
+Catalog IDs are the fixtures' scenario labels (kept from the first error catalog; the IDs still cited by the code are in
+`docs/ERROR-HANDLING.md`). "LLM" = `llm_usage.calls` of the run (the structure review is always
 one of them); "scripts" = the fix-script attempts by mode (`new` = the LLM writes v1, `augment` = the LLM extends the
 previous version, `reuse` = a stored version runs again without an LLM call). Measured on real Maven, 2026-10-27.
 
@@ -169,8 +170,7 @@ Top-level helpers: `catalog` (IDs), `requires_libs` (`g:a:v` that must be in the
 1. Create `fixtures/projects/<name>/` (≤ 10 Java files, realistic usages), verify the as-is build with its JDK
    (`JAVA_HOME=… mvn -q -DskipTests package`, plus whatever the scenario needs) and record the command in its
    `README.md`.
-2. Write `expected.json` with the analyze keys and an `expect` block; add the catalog ID to `catalog` and to the
-   "Fixture" column of `docs/ERROR-HANDLING.md`. If the scenario needs a different artifact policy, add a
+2. Write `expected.json` with the analyze keys and an `expect` block; add the scenario label to `catalog`. If the scenario needs a different artifact policy, add a
    `sbmig.e2e.yml` override (lists replace — keep exactly 8 optional artifacts).
    Every fixture's `sbmig.e2e.yml` sets the replayed LLM (`llm.provider: fake`, `llm.base_url:
    "replay:fixtures/projects/<name>/replay"`) and its own `kb.dir: out/e2e/kb-<name>` (= `expect.kb.dir`); the replay

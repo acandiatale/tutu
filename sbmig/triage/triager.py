@@ -46,7 +46,7 @@ class Triager:
         """이번 라운드의 처리 순서(우선순위 순, 같은 모듈의 해결형 오류가 컴파일 오류를 가린다)."""
         return plan_iteration(clusters)
 
-    # run-wide blocked state (ERROR-HANDLING §1/§3) -----------------------------
+    # run-wide blocked state (ERROR-HANDLING §5/§6) -----------------------------
     def attach_run(self, blocked_registry=None, ws=None, cases=None, notes=None) -> None:
         """실행 전체의 차단 목록(BlockedRegistry), 작업 공간(프로젝트 클래스 판별용), KB 케이스
         저장소(``kb.cases``, v2.1), 지식 노트 목록(``notes``: ``knowledge/notes`` 의 NoteEntry, v2.1z-aa — ``replacement: true`` 노트가

@@ -20,7 +20,7 @@ file blocked before the move stays blocked after it (:meth:`canonical_file` maps
 ``BlockedItem.suggestion`` is composed by :func:`compose_suggestion` from the reason, the attributed artifact
 (``sbmig.build.classpath`` — optional, lazily imported) and ``cfg.artifacts.optional``. After the final build,
 :func:`fill_via` adds the library that drags a javax API jar in (``BlockedItem.via`` / ``via_direct``, from the
-``sbmig.build.deptree`` inventory) and recomposes the suggestion (ladder (1)–(5), docs/ERROR-HANDLING.md X1).
+``sbmig.build.deptree`` inventory) and recomposes the suggestion (the suggestion ladder, docs/ERROR-HANDLING.md §5 X1).
 
 
 """

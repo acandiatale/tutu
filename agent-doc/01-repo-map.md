@@ -11,10 +11,10 @@
 | `sbmig/` | 에이전트 본체(Python 패키지). 아래 §2 |
 | `config/` | 설정. `config/default.yml`(모든 키의 기본값), `config/artifacts.example.yml`(회사 좌표 자리표시자 — 회사는 복사해 `config/artifacts.yml` 을 만든다), `config/artifacts.local-e2e.yml`(로컬 e2e 용 공개 대역 좌표), `config/llm-anthropic.yml`, `config/llm-plugin.example.yml`, `config/settings.nexus.example.xml` |
 | `knowledge/` | 코드와 함께 배포되는 지식 데이터(YAML / md): 레시피 카탈로그 `knowledge/recipes/catalog.yml`, 라이브러리 표·권고 `knowledge/libraries/`, 마이그레이션 노트 `knowledge/notes/`, 규칙 표 `knowledge/config/`, 마스킹 규칙 `knowledge/kb/redact.yml` |
-| `docs/` | 설계·계약 문서(영어 위주). `docs/INTERFACES.md`(계약), `docs/PLAN.md`(라운드별 상태), `docs/v2/PLAN-v2.md`, `docs/migration-agent/README.md`(한국어 설계), `docs/handbook/`(운영자용 한국어 핸드북 — 요청이 있을 때만 고친다) |
+| `docs/` | 설계·계약 문서(영어 위주). `docs/INTERFACES.md`(계약), `docs/PLAN.md`(라운드별 상태), `docs/v2/PLAN-v2.md`, `docs/migration-agent/README.md`(한국어 설계), `docs/PROGRESS.md`(진행 내역 체크리스트) |
 | `tests/` | pytest. `tests/<패키지>/` 가 `sbmig/<패키지>/` 를 따라간다. 아래 §6 |
 | `fixtures/` | 테스트용 실제 Maven 프로젝트(`fixtures/projects/`), 가짜 사내 라이브러리(`fixtures/libs/`), pom 없는 웹앱(`fixtures/webapps/`), 플릿 매니페스트 예(`fixtures/fleet/manifest.example.yml`) |
-| `scripts/` | e2e(`scripts/e2e.sh`, `scripts/e2e.py`), KB 데모(`scripts/demo-kb/run.sh`), 플릿 데모(`scripts/fleet-demo.sh`), 핸드북 빌드(`scripts/handbook/`) |
+| `scripts/` | e2e(`scripts/e2e.sh`, `scripts/e2e.py`), KB 데모(`scripts/demo-kb/run.sh`), 플릿 데모(`scripts/fleet-demo.sh`), 흐름 안내 덱 · KB 지도 빌드(`scripts/handbook/`) |
 | `deploy/` | 컨테이너·Kubernetes: 이미지 `deploy/docker/Dockerfile`, Job 실행 `deploy/docker/run-job.sh`, 매니페스트 `deploy/k8s/`, 운영자 설명 `deploy/README.md` |
 | `coding/` | 같은 게이트웨이 계약을 쓰는 독립 코딩 에이전트(`coding/agent.py`, `coding/README.md`). `sbmig` 의 일부가 아니다 |
 | `examples/` | 어댑터 예제: `examples/adapters/company_gateway_adapter.py`(1단 LLM), `examples/adapters/agent_fixer.py`(2단 수정기) |
@@ -141,7 +141,7 @@
 - `tests/<패키지>/` 가 `sbmig/<패키지>/` 를 따라간다: `tests/analyze/`, `tests/build/`, `tests/loop/`, `tests/restructure/`,
   `tests/review/`, `tests/fix/`, `tests/script/`, `tests/triage/`, `tests/report/`, `tests/kb/`, `tests/fleet/`, `tests/graph/`,
   `tests/web/` … 공용 준비는 `tests/conftest.py`.
-- `tests/docs/` 는 문서 검사: `tests/docs/test_agent_doc.py`(이 묶음), `tests/docs/test_handbook.py`(핸드북),
+- `tests/docs/` 는 문서 검사: `tests/docs/test_agent_doc.py`(이 묶음),
   `tests/docs/test_korean_comments.py`(한국어 docstring 규약).
 - `tests/fixtures/` 는 fixture 프로젝트 자체를 검사한다(`tests/fixtures/test_fixture_projects.py`, `tests/fixtures/test_e2e_script.py`).
 - fixture 프로젝트: `fixtures/projects/<이름>/` 마다 `README.md`(as-is 빌드 명령), `expected.json`(분석 기대값 + `expect`

@@ -4,7 +4,7 @@
 > v2.1z-ad(2026-11-10: Job 종료 확인 뒤에만 차례를 넘김 · 두 라벨이 다 맞아야 우리 Job · 환경 지문 · 쓰는 순간의 비밀값 정제) 반영. 용도: remediation 쪽이 보낸 통합 계획(Main 파드 하나 + 요청별 build Job, `/api/runs` 와 `/api/remediations` 가 같은
 > 디스패처를 쓴다)의 **1단계 "실행 상태 계약 문서화"** 에 해당하는 sbmig 쪽 사실이다. 여기 적힌 것은 지금 코드가 하는 일이고
 > (`sbmig/web/runs.py`, `sbmig/web/k8s.py`, `sbmig/web/localjob.py`, `deploy/docker/run-job.sh`, `deploy/k8s/81-web-job.template.yaml`),
-> §11 은 통합하면서 양쪽이 **정해야 할 것**이다. 계약이 바뀌면 이 파일과 `docs/INTERFACES.md` "k8s Job dispatch mode" 절을 같이 고친다.
+> §11 은 아직 **정하지 않은 것**이다. 계약이 바뀌면 이 파일과 `docs/INTERFACES.md` "k8s Job dispatch mode" 절을 같이 고친다.
 > 외부 접수 API 의 계약은 `docs/v2/API-MIGRATIONS-KO.md`, 환경 변수 전체는 `deploy/ENV.md`, 켜는 법은 `deploy/README.md` §3.
 
 ## 1. 책임 분담 — 누가 무엇을 쓰는가
@@ -27,7 +27,7 @@ Worker 는 Main 의 존재를 모른다. Main 이 죽어도 Job 은 끝까지 �
 | 파드 라벨 | `sbmig-run-id=<run id>` (Job 과 파드 템플릿 둘 다), 쿠버네티스가 붙이는 `job-name=<Job 이름>` | `kubectl get pods -l sbmig-run-id=…` |
 | 소유 라벨 | `sbmig-owner=<요청마다 난수 16 hex>` (Job 과 파드 템플릿; `control/state.json` 의 `owner`) | Main 은 `sbmig-owner` 와 `sbmig-run-id` 가 **둘 다** 자기 값인 Job 만 이어받고 지운다. 라벨이 없는 Job(`{}`)은 남의 것이다 — 같은 이름이어도 이어받지도 지우지도 않고, 만들기(409)·재시작 복구에서 만나면 그 실행을 오류로 끝낸다. 라벨을 알려 주지 못하는 클라이언트(로컬 서브프로세스·테스트 가짜, `labels` 가 None)만 이름을 믿는다 |
 | 외부 요청 id | 외부 접수 API 의 `Idempotency-Key` / `project_name` (`<run dir>/migration.json`, `<out>/_idempotency/<sha256(key)>.json`) — `API-MIGRATIONS-KO.md` §3 | Main 만 쓴다 |
-| 실행 시도 id | `attempt`(지금은 늘 1) — `control/request.json` · `control/state.json` · `job-status.json` 에 들어 있어 Main 은 **같은 run id · 같은 attempt** 의 결과만 받는다. 재시도·재개는 여전히 **새 run id**(새 폴더, 새 Job); 외부 요청 id 와의 연결은 Main 쪽 기록 | §11-2 |
+| 실행 시도 id | `attempt`(지금은 늘 1) — `control/request.json` · `control/state.json` · `job-status.json` 에 들어 있어 Main 은 **같은 run id · 같은 attempt** 의 결과만 받는다. 이관의 재시도는 **새 run id**(새 폴더, 새 Job); 취약점 조치의 재개만 같은 실행 폴더에 새 Job(§8) | §8 |
 
 같은 실행 폴더로 Job 을 다시 만들면 안 된다. `job-status.json` 이 남아 있으면 Main 은 새 Job 을 보기도 전에 "끝남" 으로 읽고(`_read_job_status` 는 신선도를 보지 않는다), `stop.request` 가 남아 있으면 새 Job 이 첫 노드에서 멈춘다. 둘 다 Main 이 지우지 않는다(의도: 기록 보존).
 
@@ -130,8 +130,6 @@ Main 이 `<run dir>/stop.request` 를 쓴다(저널 `stop_request_sent`). Worker
 | 같은 이름의 Job 이 있는데 라벨이 없거나 다름 | 이어받지도 지우지도 않는다. 만들기·재시작 복구에서 만나면 그 실행은 오류로 끝난다 |
 | PVC 가 RWX 가 아님 | Job 이 다른 노드에 뜨면 마운트 못 해 Pending 에 멈춘다 → `nodeSelector` 로 웹 파드 노드에 고정해야 한다 |
 
-"대기 요청도 복구" 가 필수라면 Main 시작 때 `web_run` 은 있고 `job_created` / `web-status.json` / `job-status.json` 은 없는 폴더를 다시 줄에 세우는
-증분이 필요하다(`source.zip` 이 있으니 가능). 이건 sbmig 쪽에서 만들 수 있다 — §11-4.
 
 ## 8. 슬롯 (동시에 N 개, 2026-11-10 부터)
 
@@ -143,8 +141,8 @@ Main 이 `<run dir>/stop.request` 를 쓴다(저널 `stop_request_sent`). Worker
 `status()` 는 `parallel {slots, running, waiting}` 과 기다리는 실행의 `queue {position, ahead}` 를 준다(계약: `docs/INTERFACES.md` "v2.1z-ae").
 자리는 그 Job 이 끝났거나 사라진 것을 API 로 확인한 뒤에야 넘어간다(v2.1z-ad) — 결과 파일을 받았을 때도, 멈춤으로 지웠을 때도, 웹 쪽 오류로 실패했을 때도
 (그때는 우리 Job 을 먼저 지운다). 예외는 서버 종료(`state.json` 을 그대로 두어 다음 Main 이 이어서 지켜본다)와 남의 Job(건드리지 않는다)뿐이다.
-remediation 이 KB 를 건드리지 않으면 같은 슬롯을 쓸 이유가 없다 — 같은 슬롯을 쓰면 remediation 한 건이 이관 한 건을(또는 반대로) 몇십 분
-기다리게 한다(자리를 나눠 쓰더라도 한도는 둘을 합쳐 센다).
+취약점 조치(remediation)는 이관이 BUILD SUCCESS 로 끝난 **같은 빌드 파드** 안에서 이어 돌므로 따로 자리를 잡지 않는다. 승인 뒤 재개는 같은 Job 틀·
+같은 실행 폴더로 새 빌드 파드를 띄우고(Worker 동작 `remediation-resume`), 업로드와 같은 FIFO 줄에서 자리를 기다린다(`agent-doc/11-remediations.md` §1.1).
 
 ## 9. 디스패처를 두 가지 Job 에 쓰는 법 (포크하지 않기)
 
@@ -157,14 +155,14 @@ remediation 이 KB 를 건드리지 않으면 같은 슬롯을 쓸 이유가 없
 | `run-job.sh`(공유 볼륨 모드) | `SBMIG_SOURCE_ZIP` + `SBMIG_OUT` + `SBMIG_RUN_ID` → `sbmig run … --run-id`, 끝에 `job-status.json`. remediation Worker 는 **자기 진입점**을 두되 같은 파일 규약(§4)을 지키면 Main 은 구분할 필요가 없다 |
 | RBAC(`45-web-rbac.yaml`) | jobs: create get list watch delete / pods: get list watch / pods/log: get. `pods/exec` 없음 |
 
-권장 모양: Job 종류마다 템플릿 한 장(`81-web-job.template.yaml`, `82-remediation-job.template.yaml`)과 Worker 진입점 하나, 디스패처는 하나.
-`RunManager` 에 "종류" 를 넘기는 인자(템플릿·명령 팩토리·종료 코드 표)를 더하는 쪽이 디스패처를 복사하는 쪽보다 유지가 쉽다.
+지금 모양: Job 틀은 `81-web-job.template.yaml` 한 장, Worker 진입점 `python -m sbmig.web.worker` 하나, 디스패처는 하나. 이관과 조치 재개는 같은 틀을 쓰고
+Worker 가 받은 동작으로 갈린다.
 
 ## 10. 인증·네트워크·보안
 
 - **TokenGuard 는 앱 전체에 걸린다.** `SBMIG_WEB_TOKEN` 이 있으면 모든 경로가 Bearer 토큰, 없고 `SBMIG_WEB_OPEN=1` 이면 모든 경로가 열림(사내망 전용 결정),
   둘 다 없으면 루프백만. remediation 라우터를 **같은 FastAPI 앱에 붙이면 같은 규칙**을 받는다. 다른 인증(헤더·JWT)이 필요하면 그 라우터 전용 의존성으로
-  얹되, TokenGuard 와 겹치지 않게 결정해야 한다(§11-5).
+  얹되, TokenGuard 와 겹치지 않게 결정해야 한다(§11-1).
 - TLS 는 Ingress / Service 앞단의 일이다. 파드 안은 평문 HTTP(uvicorn 8765).
 - Job 파드가 나가야 하는 곳: LLM 게이트웨이(토큰 URL + 호출 URL), Nexus, (remediation 이 쓰는 외부 서비스가 있으면 그것도). NetworkPolicy 가 있으면 Job 파드 라벨
   `app=sbmig, kind=run` 에 egress 를 열어야 한다.
@@ -176,20 +174,10 @@ remediation 이 KB 를 건드리지 않으면 같은 슬롯을 쓸 이유가 없
   `journal.jsonl` 만 내려받을 수 있고 나머지 파일(보고서·오류 목록·result.zip …)은 마지막 정제가 끝날 때까지 HTTP 409 다. 환경 지문(§3)도 비밀로 보이는 이름은
   다루지 않는다 — 비밀 값의 지문을 공유 볼륨에 남기지 않는다.
 
-## 11. 통합하면서 정할 것 (sbmig 쪽 의견 포함)
+## 11. 아직 정하지 않은 것
 
-1. **API 하나인가 둘인가.** 외부 접수는 `/api/migrations`(`API-MIGRATIONS-KO.md`) 로 설계돼 있고, 계획서는 `/api/remediations` 를 말한다. 이름과 필드(`project_name`, `name`,
-   `Idempotency-Key`), 상태 어휘를 한 번에 정한다. 상태 번역표는 한 곳(dict)에 두는 것이 조건.
-2. **재시도·재개 = 새 run id.** 승인 뒤 재개를 "새 Job" 으로 한다는 계획과 맞는다. 단 **새 실행 폴더**여야 한다(§2). 외부 요청 id ↔ 시도 run id 들의 연결은 Main 의 기록(`migration.json`
-   의 `attempts[]` 같은 것)으로.
-3. **종료 코드 10(승인 대기).** sbmig 에는 없다. remediation Worker 가 `job-status.json` 에 `exit_code: 10` 을 쓰고 컨테이너는 0 으로 끝나면, Main 의 번역표에
-   `10 → awaiting_approval` 한 줄로 끝난다. 컨테이너 코드로 전달하면 Job 이 Failed 로 보여 `backoffLimit`·화면과 충돌한다.
-4. **대기 요청 복구.** 지금은 안 된다(§7). 필수면 sbmig 쪽에서 시작 시 재큐 증분을 만든다 — 그 전에 "Main 이 죽는 동안 올라온 요청" 은 어차피 없으니 범위를 확인.
-5. **인증 모델.** 사내망 전용(토큰 없음)으로 가면 remediation 쪽 호출도 토큰 없이 들어온다. 그래도 될지, 아니면 토큰을 켜고 remediation 서비스에도 토큰을 줄지.
-6. **슬롯 공유 여부.** §8. remediation 이 KB 를 안 쓰면 **별도 슬롯(또는 슬롯 없음)** 을 권한다.
-7. **이미지.** 하나의 이미지에 두 코드가 들어가면 `deploy/docker/pip-deps.py` 에 의존성을 합치고(오프라인), 코드는 `/app` 아래 `sbmig/` 옆에 둔다. `config/` / `knowledge/` 는
-   `sbmig/` 옆에 있어야 하므로 pip install 하지 않는다(Dockerfile 주석).
-8. **IVAS 가 무엇인지.** 계획서의 Worker 구성 요소에 있는데 sbmig 에는 없다. Job 파드의 네트워크·자원 요구에 들어가야 하면 템플릿에 반영.
+1. **외부 접수 API.** 사람 대신 다른 서비스가 이관을 접수하는 `/api/migrations` 는 설계만 있다(`docs/v2/API-MIGRATIONS-KO.md`). 이름·필드·상태 어휘·인증은
+   그 문서의 §2.8 질문에 답이 오면 정한다.
 
 ## 12. 테스트 자산
 

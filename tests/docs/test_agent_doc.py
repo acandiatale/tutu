@@ -1,8 +1,8 @@
 """The Korean document pack for in-house LLMs (agent-doc/) must not drift from the code: every backticked repo
 path it names exists, every backticked `section.key` config key is a real Config key, every `sbmig <command>` is a
 registered CLI command, every relative link resolves, and every file stays small enough for a Haiku-class context
-window (the pack is fed to models that cannot see the code — a wrong path there is worse than none). Stricter
-than tests/docs/test_handbook.py: no v1-era exceptions, run-time paths must use placeholders (`out/<run id>/…`)."""
+window (the pack is fed to models that cannot see the code — a wrong path there is worse than none). No v1-era
+exceptions; run-time paths must use placeholders (`out/<run id>/…`)."""
 from __future__ import annotations
 
 import re
@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.docs.test_handbook import _LINK, _SKIP_CHARS, _config_paths, _tokens
+from tests.docs.doc_checks import _LINK, _SKIP_CHARS, _config_paths, _tokens
 
 REPO = Path(__file__).resolve().parents[2]
 PACK = REPO / "agent-doc"

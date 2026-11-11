@@ -168,8 +168,7 @@ settings.xml 의 Nexus 그룹 URL 과 `build.repository_url`(같은 Nexus — �
 - **버전 숫자를 코드·프롬프트에 박기**: 버전은 부모 체인·Boot BOM·as-is 빌드·저장소에서 사실로 읽는다. 표에 적는 것은 사람이 확인한 값뿐이다.
 - 회사 KB 데이터(`kb-v2/`)는 git-ignore 이다. 테스트·데모 실행은 `out/` 아래 KB 만 쓴다(`out/e2e/kb-<fixture>`).
 
-문서가 코드에서 떨어지지 않게 지키는 테스트는 `tests/docs/test_handbook.py`(한국어 핸드북의 경로·설정 키·CLI·링크)와 이 팩용
-`tests/docs/test_agent_doc.py`, 레시피 쪽은 `tests/plan/test_catalog.py` 이다.
+문서가 코드에서 떨어지지 않게 지키는 테스트는 이 팩용 `tests/docs/test_agent_doc.py`, 레시피 쪽은 `tests/plan/test_catalog.py` 이다.
 
 ## 확인하는 법
 

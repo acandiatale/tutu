@@ -1,4 +1,4 @@
-"""Failure-case handling in the loop/orchestrator (docs/ERROR-HANDLING.md §1, §3), v2 fix scripts: blocked cases,
+"""Failure-case handling in the loop/orchestrator (docs/ERROR-HANDLING.md §5, §6), v2 fix scripts: blocked cases,
 loop safety (oscillation, structural regression, garbage / unavailable LLM, budgets), optional_bump dispatch,
 intake effective-pom capture, aborts and exit codes."""
 from __future__ import annotations

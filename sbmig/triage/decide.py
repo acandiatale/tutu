@@ -7,7 +7,7 @@
 루프는 차단 항목을 남긴 채 나머지 케이스를 계속 고친다. ``plan_iteration`` 은 같은 모듈에 해결형 오류(parent /
 pom / 의존성 / 플러그인)가 있으면 컴파일 케이스를 이번 라운드에서 가린다.
 
-Decision engine (ARCHITECTURE §4, ERROR-HANDLING §1/§3; v2: docs/INTERFACES.md "Script fix loop (L)").
+Decision engine (ARCHITECTURE §4, ERROR-HANDLING §5/§6; v2: docs/INTERFACES.md "Script fix loop (L)").
 
 v2 (flow-v2) / v2.1 — one decision per case (L2) and round, the ladder of `sbmig.triage.scripts`:
 

@@ -34,8 +34,7 @@
 - **폴더 이름 규칙을 Python 에 두지 않는다.** 판정은 내용 기반이다(pom 의 g:a 가 겹치는 복사본, jar 안의 pom.properties·패키지,
   BC4J XML 같은 증거). `bin/`, `WEB-INF/lib` 같은 이름으로 가르지 않는다.
 - **차단(block) 정책은 없다.** EOL 라이브러리도 빌드는 시도한다. 권고는 안내 + 인수인계뿐이다.
-- KB 는 파일, 테스트는 `out/` 만, **`docs/handbook/` 은 사용자가 요청할 때만** 고친다(기능 라운드에서는 `tests/docs` 가 깨지지 않을
-  만큼의 최소 참조 수정만). 운영자에게 보이는 변경(CLI, 설정 키, 보고서 섹션, 로그 줄)은 `docs/PLAN.md` / `docs/INTERFACES.md` 에 적는다.
+- KB 는 파일, 테스트는 `out/` 만. 운영자에게 보이는 변경(CLI, 설정 키, 보고서 섹션, 로그 줄)은 `docs/PLAN.md` / `docs/INTERFACES.md` 에 적는다.
 - 테스트(프로젝트의 단위 테스트)는 범위 밖: 모든 빌드가 `-Dmaven.test.skip=true`.
 
 ## 3. 한국어 주석 규약 (`sbmig/` 만)
@@ -54,7 +53,7 @@
 |---|---|
 | `tests/<패키지>/` | `sbmig/<패키지>/` 를 그대로 따라간다(`tests/loop`, `tests/fix`, `tests/restructure`, `tests/analyze`, `tests/kb`, `tests/web` …) |
 | `tests/conftest.py` | 공용 픽스처: `cfg`(= `config/artifacts.local-e2e.yml` + 가짜 LLM), `make_ws`, `fixture_project`, 리액터 모듈 레지스트리 초기화, LLM 쿨다운 잠재우기 |
-| `tests/docs/` | 문서-코드 동기화: `test_handbook.py`, `test_korean_comments.py`, `test_agent_doc.py`(이 팩) |
+| `tests/docs/` | 문서-코드 동기화: `test_korean_comments.py`, `test_agent_doc.py`(이 팩) |
 | `tests/fixtures/test_fixture_projects.py` | 픽스처 목록(`HAPPY`, `SCENARIOS`)과 메타데이터 스키마, 그리고 `BUILD_MATRIX`(픽스처, 빌드할 하위 폴더, as-is JDK, 필요 조건) — 통합 테스트가 각 픽스처를 as-is 로 빌드해 본다. `BUILD_MATRIX` 는 모든 픽스처 이름을 덮어야 한다(테스트가 검사) |
 | `tests/fixtures/test_e2e_script.py` | e2e 스크립트(`scripts/e2e.py`)의 판정 로직 단위 테스트 |
 | `fixtures/projects/<이름>/` | 작지만 진짜인 Maven(또는 Ant) 프로젝트 + `expected.json` + `sbmig.e2e.yml` + `replay/llm-NNN.json` + README |
@@ -110,7 +109,7 @@ ruff check sbmig/loop/fixloop.py
 | 계약(모델 필드, 설정 키, CLI, 보고서 섹션, 로그 줄, 저널 이벤트) | `docs/INTERFACES.md` — 새 절 |
 | 결정·현황·후속 과제 | `CLAUDE.md` |
 | 운영자 텍스트 | `docs/RUNBOOK.md`, 배포는 `deploy/README.md` |
-| 한국어 핸드북 | 사용자가 요청할 때만 (`docs/handbook/`) |
+| 진행 내역 체크리스트 | `docs/PROGRESS.md` (큰 작업을 마칠 때) |
 
 ## 8. git 습관
 

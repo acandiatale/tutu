@@ -1,6 +1,6 @@
 """sbmig — 사내 JDK 21 + Spring Boot 4.1 이관 에이전트 (v2.1, 브랜치 ``flow-v2``). 인수인계용 패키지 지도.
 
-흐름(자세한 설명: ``docs/v2/KB-AND-FLOW.md``): 접수(intake) → 분석(analyze) → 계획(plan) → 변환(OpenRewrite
+흐름(자세한 설명: ``docs/migration-agent/README.md``): 접수(intake) → 분석(analyze) → 계획(plan) → 변환(OpenRewrite
 1회) → 변환 후 컴파일 → 재구성(회사 레이아웃) → 구조 검토(LLM) → 검증 빌드(``mvn clean package``) → 수정
 루프(케이스별 스크립트, 재빌드로 채점) → 최종 빌드 → 보고서 + 지식베이스(KB). 핵심 규칙: Maven 이 BUILD
 SUCCESS 라고 해야 끝난다. 루프의 주인은 오케스트레이터이지 LLM 이 아니다.

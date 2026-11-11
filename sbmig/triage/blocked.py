@@ -1,4 +1,4 @@
-"""차단 판정 — 이 빌드 오류가 프로젝트 안에서는 고칠 수 없는 것인지 분류한다(ERROR-HANDLING §1, X1–X6).
+"""차단 판정 — 이 빌드 오류가 프로젝트 안에서는 고칠 수 없는 것인지 분류한다(ERROR-HANDLING §5, X1–X6).
 흐름상 위치: ``DecisionEngine.decide`` 의 2단계에서 ``classify_blocked`` 를 부른다. 분류만 하고, 그 이유에 LLM
 시도를 몇 번 줄지는 ``cfg.loop.blocked_policy`` 가 정한다. 차단된 케이스는 인수인계의 Blocked 로 간다. X1
 의존성 API 가 아직 javax 타입 / X2 의존성 API 변경 / X3·X4 아티팩트·parent 가 저장소에 없음 / X5 JDK 21 에서
@@ -9,7 +9,7 @@ target/ 의 파일을 다른 프로세스가 잡음 — 빌드 PC 환경 문제)
 몫이고, 프로젝트가 아직 그 javax 를 import 하거나 소유 클래스가 프로젝트 것이면 X1 이 아니다. 주의: 이것은
 "빌드 오류" 의 차단이다. EOL 라이브러리 권고에는 차단 정책이 없다(권고는 안내만, CLAUDE.md).
 
-Blocked-cluster classification (docs/ERROR-HANDLING.md §1, X1–X6).
+Blocked-cluster classification (docs/ERROR-HANDLING.md §5, X1–X6).
 
 A cluster is *blocked* when the fix is not inside this project: a dependency still exposes ``javax.*`` types in its
 API (X1), a dependency API changed (X2), an artifact / parent is not in any repository (X3/X4), a build plugin is

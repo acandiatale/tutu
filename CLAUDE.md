@@ -11,18 +11,20 @@ beside it, rebuilt by `scripts/handbook/build_migration_agent_deck.js`) → `doc
 "v2 — flow-v2" section is the one that counts, the older sections are history) → `docs/PLAN.md` (one "Status" table
 per round, newest at the bottom) → the doc for the area you touch (`ARCHITECTURE`, `ERROR-HANDLING`, `FLEET`,
 `ADAPTERS`, `RECIPES`, `ADVISORIES`, `RUNBOOK`).
-The Korean handbook for the company (`docs/handbook/`, README → 01…09 + `sbmig-overview.pptx` + `sbmig-reference.xlsx`)
-explains the same system for operators; `tests/docs/test_handbook.py` keeps its paths / config keys / CLI names /
-links in sync with the code, and `scripts/handbook/` regenerates the xlsx / pptx. The KB data map for the business
+**Docs describe the deployed flow-v2 system only (user, 2026-11-11: "v1 시절거는 문서 필요 없어! 현행 버전만 중요해!")**: the
+v1-era handbook (`docs/handbook/`, its xlsx / pptx, scripts and test) and the dated review snapshots under `docs/v2/` were
+deleted, every `docs/*.md` was cut to present behaviour (v1 history = git tag `company-v1`). State what the code does now;
+no "round N / formerly" narratives, no dated change notes appended to a doc. `docs/PROGRESS.md` is the Korean checklist of
+what is done (validation level per area, open items): keep it current when a larger piece of work lands.
+`scripts/handbook/` builds only the flow deck and the KB map. The KB data map for the business
 team is `docs/kb-map/` (`kb-map.html` source, `index.html` single file, `kb-map.md`; `scripts/handbook/build_kb_map.py`).
 **`agent-doc/` (2026-11-04)** is the Korean document pack the company feeds to its in-house LLMs (Sonnet / Haiku / GPT
 class) so other engineers can diagnose runs and change the code with them: README = index + rules for the LLM, 00…11 one
 topic each, ≤ 350 lines / 30 KB per file, no version tags or dates except in 10; `tests/docs/test_agent_doc.py` checks
-paths / config keys / CLI names / links / sizes. Update it with the code (unlike the handbook). The comments of `config/*.yml`
+paths / config keys / CLI names / links / sizes. Update it with the code. The comments of `config/*.yml`
 are Korean explanations for a human deciding a value (not technical notes, no version tags); keys / values are the contract.
-**The handbook is updated only when the user asks for it** (2026-10-27: the code keeps changing, one tidy-up pass
-later); record operator-visible changes (CLI, config keys, report sections, log lines) in `docs/PLAN.md` /
-`docs/INTERFACES.md` meanwhile, and keep `tests/docs` green with minimal reference fixes only.
+Record operator-visible changes (CLI, config keys, report sections, log lines) in `docs/PLAN.md` / `docs/INTERFACES.md`
+and keep `tests/docs` green.
 
 ## Why this exists
 - The user takes this code into their company to test it there. Company source code is **not** reachable from here.

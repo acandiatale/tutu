@@ -1,6 +1,8 @@
 # sbmig v2.1 — "추적되는 로그, 에러 목록 하나, LLM이 직접 고친다"
 
 브랜치 `flow-v2`, 2026-10-27 시작. v2(`docs/v2/PLAN-v2.md`)를 회사에서 처음 돌려 본 현업의 피드백을 반영합니다.
+§3.3(오류 목록)·§3.4(KB)·§3.5(실행 디렉터리)·§3.6(답변 계약)은 지금 코드의 계약입니다(`sbmig/errors/`, `sbmig/core/workspace.py` 가 이 절을 가리킴).
+그 뒤 바뀐 것은 줄마다 "이후" 로 적었습니다.
 
 ## 1. 현업 피드백 (원문 요약)
 
@@ -17,11 +19,11 @@
 
 | 항목 | 결정 |
 |---|---|
-| 구조 점검 | 유지. LLM이 pom·의존성·모듈을 검증하고 문제가 있으면 **직접 수정**(`<edits>`). 스크립트도 받아 KB에 저장 |
+| 구조 점검 | 유지. LLM이 pom·의존성·모듈을 검증하고 문제가 있으면 **직접 수정**(`<edits>`). **이후(v2.1y):** 스크립트는 받지 않음(`review.ask_script: false`) |
 | KB | `kb-v2/errors.jsonl` 하나(에러 내용 + LLM 답변 + 어떻게 고쳤는지 + 결과) + `kb-v2/cases/<case_id>/`(스크립트 파일, `case.json`). 카탈로그·뷰·audit·quarantine·reviews·fix_attempts·meta.json 삭제. 연관 키는 `case_id`(L2) · `run_id` · 에러 id · 스크립트 버전만 |
 | 답변 형식 | `<analysis>`(원인) `<solution>`(해결 방법) `<edits>`(수정, JSON) `<script>`(스크립트) [`<no_script>`(코드로 안 되는 이유)] |
 | 순서 | KB 탐색 → 저장 스크립트 실행 → 실패하면 보강 요청 → 코드로 안 되면 이유 + 직접 수정 → 처음 보는 케이스는 직접 수정 + 스크립트 저장 |
-| 한도 | 빌드 라운드 50회. LLM 호출 수 제한 없음(`loop.max_llm_calls: 0`). 케이스당 저장본 1 + LLM 3회는 유지 (v2.1z, 2026-11-02: 저장본 1 + LLM 20회, 그중 보강 15회 — `docs/INTERFACES.md` "v2.1z") |
+| 한도 | 빌드 라운드 50회. LLM 호출 수 제한 없음(`loop.max_llm_calls: 0`). 케이스당: 저장본 재사용 + LLM 20회, 그중 보강 15회(v2.1z — `docs/INTERFACES.md` "v2.1z") |
 | 게이트웨이 | tool calling 없음(messages만) → 수정은 답변 형식으로 받아 sbmig가 적용 |
 
 ## 3. 흐름
@@ -29,14 +31,16 @@
 ```mermaid
 flowchart TD
   IN["intake"] --> AN["analyze"] --> PL["plan"] --> RW["rewrite: OpenRewrite 한 번"]
-  RW --> CP["compile: mvn compile 한 번 → 에러 목록 (seen=compile)"]
-  CP --> RS["restructure: 회사 구조화 → pom 정정 내역을 목록에 pom-verify 로"]
-  RS --> RV["review: LLM이 pom·의존성·모듈 검증, 문제는 직접 수정(edits) + 스크립트 저장"]
+  RW --> RS["restructure: 회사 구조화 → pom 정정 내역을 목록에 pom-verify 로"]
+  RS --> RV["review: LLM이 pom·의존성·모듈 검증, 문제는 직접 수정(edits)"]
   RV --> B1["build: mvn clean package → 새 에러만 목록에 추가, pom-verify 는 검증"]
   B1 -->|"성공"| REP["report"]
   B1 -->|"실패"| LOOP["fix loop: 목록의 open 에러를 케이스별로 (라운드 ≤ 50)"]
   LOOP --> BF["final build"] --> REP
 ```
+
+피드백 2 의 "변환 뒤 compile 한 번" 은 v2.1o(2026-10-30)부터 기본으로 꺼져 있습니다(`plan.compile_after_rewrite: false` — 재구성 전의
+빌드는 as-is 클래스패스라 의미가 없었음). 켜면 `transform.compile` 단계가 돌고 그 오류가 `seen=compile` 로 목록에 들어갑니다.
 
 ### 3.1 수정 루프 (케이스 하나)
 
@@ -56,6 +60,7 @@ flowchart TD
 
 - 라운드마다 빌드 1회. 채점·롤백은 round 10 규칙 그대로(improved / partial / no_change / regressed → 되돌림 / inconclusive).
 - 같은 라운드에서 pom 을 고친 뒤의 같은 모듈 케이스는 다음 빌드까지 미룸(v2 step 4).
+- 사다리 앞에 LLM 없는 pre-try 네 가지(`sbmig-version` / `sbmig-resources` / `sbmig-jakarta` / `sbmig-bundled`)가 있고, 보강이 다 떨어지면 새 스크립트를 한 번 더 받습니다. 자세히: `agent-doc/04-cases-scripts-kb.md`.
 - 저장 스크립트 상태: `unverified`(처음 저장) → `proven`(다른 프로젝트에서 재사용 성공) → `retired`(사람). 재사용 순서: proven 최신 → unverified 최신.
 
 ### 3.2 로그 (`sbmig.log`, 콘솔 동일)
@@ -63,7 +68,6 @@ flowchart TD
 `시각 레벨 [단계] 메시지`. 단계: `intake` `analyze` `plan` `rewrite` `compile` `restructure` `review` `build` `fix r3` `fix r3 7a52b1cea8`(라운드 + 케이스) `kb` `report` `fleet`.
 
 ```
-10:12:03 INFO  [compile] mvn compile: 23 error(s) → 목록에 23건 (seen=compile)
 10:12:40 INFO  [restructure] module/comp-jar/pom.xml: parent → base-parent 4.0.0 (pom-verify #24)
 10:13:10 INFO  [review] 3 pom, 2 module; LLM 판정: issues (critical 1, warning 2)
 10:13:11 INFO  [review] 수정: module/comp-jar/pom.xml (+1 −1) — project.build.sourceEncoding=MS949 … diff 4 lines
@@ -125,17 +129,7 @@ def fix(p): …            # 같은 케이스를 다른 프로젝트에서 고�
 - `<script>` 가 없으면 `<no_script>이유</no_script>` 를 쓴다(코드로 해결이 안 되는 이유). 보강 요청에서 스크립트 대신 edits 로 답해도 같다.
 - `<need_files>` / `<need_grep>` 라운드는 그대로.
 
-## 4. 작업 (에이전트, 디렉터리 분리)
-
-| 담당 | 범위 |
-|---|---|
-| PM | 이 플랜, 계약(`ErrorEntry`, `FixTry`, `CaseInfo`, `FixAnswer`/`Edit`, 로그 단계 컨텍스트, 설정), 통합·e2e·커밋 |
-| E1 에러 목록·KB | `sbmig/errors/`(새 패키지: 실행 목록 + KB 적재 + cases 폴더 + `errors.md`/`cases.md` 뷰 + `sbmig kb` CLI 축소) — `sbmig/kb/`, `sbmig/loop/error_tracker.py` 대체, 관련 테스트 |
-| E2 흐름·루프 | 오케스트레이터(compile 단계, pom-verify, 새 에러 병합, 점검 결과 반영), fixloop(사다리: 탐색 → 저장본 → 보강 → 직접 수정, 로그 줄, 단계 컨텍스트), triage/scripts, graph, plan(compile 단계), 테스트 |
-| E3 LLM 답변·점검 | `sbmig/fix`(새 형식 파서·프롬프트, edits → 스크립트 합성 적용), `sbmig/script`(edits 적용 API), `sbmig/review`(검증 + 직접 수정), 테스트 |
-| E4 로그·리포트·파일 | `sbmig/core/diag.py` 단계 컨텍스트 + 포맷, `sbmig/cli.py`·웹 로그 설정, `sbmig/report`(errors 기반 슬림 리포트), 실행 디렉터리 파일 축소(`workspace`, `build`, `rewrite` 출력 경로), 플릿 요약, 테스트 |
-
-## 5. 상태
+## 4. 상태
 
 | 단계 | 상태 |
 |---|---|
@@ -147,4 +141,3 @@ def fix(p): …            # 같은 케이스를 다른 프로젝트에서 고�
 | v2.1e (2026-10-28) | 완료: KB 학습 기록 — 수정마다 as-is / to-be 코드(`EditNote.hunks`, 캡 없음 `errors.snippet_lines: 0`), 저장 스크립트 버전마다 실행 이력 `runs[]`(결과 + 왜 실패했는지 + 오류 수 + 파일) · `parent` · `reason`(어느 버전이 왜 보강됐는지) · `last_failure`; `sbmig kb reindex` 가 과거 errors.jsonl 에서 소급; `kb cases show` / `kb errors show` 에 코드 블록. 계약·as built: `docs/INTERFACES.md` "v2.1e" |
 | v2.1f (2026-10-28) | 완료: 시도 없이 빌드로 사라진 오류(`resolved: build`)에 "무엇이 고쳤는지" — 같은 라운드에 그 파일/모듈 pom 을 바꾼 시도를 `resolved_by` 로 기록 (`build ← 7a52b1cea8 r1 try 1`), errors.md · report · cases.md · `kb cases show` 에 표시, `kb reindex` 소급 |
 | v2.1g (2026-10-28) | 완료: 정적 리소스 전부 front 로 — web root 안의 `<resource>` 디렉토리 파일(미디어·템플릿·css·exe)은 comp classpath 에 남기고 front 의 `static/<web 경로>` 에 **복사**(`layout.front_copy_resource_dirs: true`); WEB-INF 의 설정 아닌 파일(html/js/css 조각·뷰)은 front jar 의 `META-INF/resources/WEB-INF/` 아래 같은 경로 (설정 xml/properties 는 boot 보관함 그대로) |
-| 문서 | 대기 (핸드북·설계 문서는 사용자가 요청할 때) |

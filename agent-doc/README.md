@@ -10,7 +10,7 @@ sbmig 는 사내 Maven(Ant 포함) 프로젝트를 **JDK 21 + Spring Boot 4.1** 
 사내 LLM**(Claude Sonnet / Haiku 급, GPT 급 — 채팅창이든 에이전트 프레임워크든) 에게 설명하기 위해 쓴 한국어 문서 묶음이다. 담당자가
 이 파일들을 LLM 에 붙여 넣고 "이 실행이 왜 이렇게 끝났나", "이 규칙을 바꾸려면 어디를 고치나" 를 같이 보게 하는 용도다.
 
-사람이 읽는 긴 설명서는 따로 있다. 운영자용 핸드북 `docs/handbook/`, 설계서 `docs/migration-agent/README.md`, 결정 기록
+사람이 읽는 긴 설명서는 따로 있다. 설계서 `docs/migration-agent/README.md`, 결정 기록
 `docs/v2/PLAN-v2.md` 와 `docs/PLAN.md`, 계약 `docs/INTERFACES.md`. 이 묶음은 그것들을 **LLM 한 번에 들어가는 크기**(파일마다 350 줄 /
 30 KB 아래)로 다시 쓴 것이고, 모든 경로·설정 키·명령 이름이 코드와 맞는지 `tests/docs/test_agent_doc.py` 가 검사한다.
 

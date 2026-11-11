@@ -2,12 +2,10 @@
 // Run from scripts/handbook:  NODE_PATH=$PWD/node_modules APPLY_THEME_JS=<pptx skill>/scripts/apply_theme.js node build_migration_agent_deck.js ../../docs/migration-agent/migration-agent.pptx
 // 흐름도는 전부 파워포인트 도형(둥근 네모 + 선)으로 그린다 — 파워포인트에서 글자·칸을 바로 고칠 수 있다. 그림 파일을 쓰지 않는다.
 const path = require("path");
-const sizeOf = require("image-size");
 const pptxgen = require("pptxgenjs");
 let applyTheme = null;
 if (process.env.APPLY_THEME_JS) { try { ({ applyTheme } = require(process.env.APPLY_THEME_JS)); } catch (e) { console.warn("apply_theme.js not loadable:", e.message); } }
 const OUT = process.argv[2] || "migration-agent.pptx";
-const DIAG = path.resolve(__dirname, "../../docs/migration-agent/diagrams");
 const pres = new pptxgen();
 pres.layout = "LAYOUT_16x9";               // 10 x 5.625 in
 const THEME = { name: "sbmig Forest", headFontFace: "Cambria", bodyFontFace: "Calibri",
@@ -32,7 +30,7 @@ pres.defineSlideMaster({ title: "CONTENT", background: { color: K.lt1 }, objects
   { text: { text: "마이그레이션 에이전트 · 흐름 안내", options: { ...FOOT } } },
 ], slideNumber: { x: 9.0, y: 5.25, w: 0.5, h: 0.25, fontSize: 9, color: "8A8F8A", align: "right" } });
 
-// ---------------------------------------------------------------- helpers (from build_deck.js)
+// ---------------------------------------------------------------- helpers
 function content(title, section, notes) { const s = pres.addSlide({ masterName: "CONTENT", sectionTitle: section }); s.addText(title, { placeholder: "title" }); if (notes) s.addNotes(notes); return s; }
 function box(s, x, y, w, h, o = {}) {
   const opts = { x, y, w, h, fill: { color: o.fill || K.lt2 }, line: { color: o.line || o.fill || K.lt2, width: 0.75 }, rectRadius: 0.08 };
@@ -72,33 +70,6 @@ function table(s, rows, x, y, w, colW, o = {}) {
 }
 function mono(s, text, x, y, w, h, o = {}) { s.addText(text, { x, y, w, h, fontSize: o.size || 10, fontFace: "Courier New", color: o.color || C.text1, margin: 0.08, isTextBox: true, valign: "top", fill: o.fill ? { color: o.fill } : undefined }); }
 
-// ---------------------------------------------------------------- diagram helpers
-function fitImage(s, name, x, y, w, h) {
-  const file = path.join(DIAG, name + ".png");
-  const d = sizeOf(file);
-  const k = Math.min(w / d.width, h / d.height);
-  const iw = d.width * k, ih = d.height * k;
-  s.addImage({ path: file, x: x + (w - iw) / 2, y: y + (h - ih) / 2, w: iw, h: ih });
-  return { iw, ih };
-}
-// Wide pictures (ratio ≥ 2.2) span the slide with the bullets underneath; the others sit left with bullets right.
-function diagram(title, section, name, items, notes, o = {}) {
-  const s = content(title, section, notes);
-  const d = sizeOf(path.join(DIAG, name + ".png"));
-  const ratio = d.width / d.height;
-  if (ratio >= 2.2 && !o.side) {
-    const bh = o.bulletH || 1.15;
-    const area = 5.15 - 1.1 - bh - 0.1;
-    fitImage(s, name, 0.5, 1.1, 9, area);
-    bullets(s, items, 0.5, 5.15 - bh, 9, bh, o.size || 11);
-  } else {
-    const iw = o.imgW || 6.0;
-    fitImage(s, name, 0.4, 1.1, iw, 4.05);
-    bullets(s, items, 0.4 + iw + 0.2, 1.2, 9.6 - (0.4 + iw + 0.2), 3.9, o.size || 11.5);
-  }
-  if (o.after) o.after(s);
-  return s;
-}
 let CUR = "";
 function addSec(t) { pres.addSection({ title: t }); CUR = t; }
 

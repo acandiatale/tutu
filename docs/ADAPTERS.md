@@ -1,22 +1,79 @@
 # Adapters: plugging in an in-house LLM gateway or coding agent
 
-sbmig has two adapter tiers. Pick the one that matches what you already have.
+sbmig has a built-in client for the company gateway (`llm.provider: company`) and two plugin seams (invariant 4).
 
 | Tier | Replaces | You implement | Config |
 |---|---|---|---|
-| 1. LLM adapter | our clients (`company` = requests.post to the gateway, `openai_compatible`, `anthropic`) | `complete(request: LLMRequest) -> LLMResponse` | `llm.provider: plugin` + `llm.plugin` (or an entry point) |
-| 2. Fixer adapter | `LLMFixer` (our SEARCH/REPLACE protocol over a chat completion) | `propose(ws, cluster, ctx) -> FixProposal` [+ `apply`] | `fix.plugin` |
+| 1. LLM adapter | the built-in clients (`company`, `openai_compatible`, `anthropic`) | `complete(request: LLMRequest) -> LLMResponse` | `llm.provider: plugin` + `llm.plugin` (or an entry point) |
+| 2. Fixer adapter | `LLMFixer` (sbmig's fix-script prompts over a chat completion) | `propose_script(ws, cluster, ctx) -> ScriptProposal` | `fix.plugin` (CLI `--fix-plugin`) |
 
-With tier 1, sbmig keeps building the prompts, parsing the patches, validating them and running the feedback
-rounds. Your adapter only moves one request to your gateway and brings back the text.
-With tier 2, your agent decides what to change for one error cluster. sbmig still owns clustering, triage,
-deterministic handlers, the KB, budgets, git commits and rollbacks, rebuilds and the report.
-
-The two tiers can be combined. A tier-2 fixer receives sbmig's LLM client (your tier-1 adapter, if one is
+With tier 1, sbmig keeps building the prompts, parsing the answers and running the context / feedback rounds; your
+adapter only moves one request to your gateway and brings back the text. With tier 2, your agent answers one error
+case with a fix script and / or edits; sbmig still owns clustering, triage, the KB, budgets, the script runtime, git
+commits and rollbacks, rebuilds and the report. A tier-2 fixer receives sbmig's LLM client (your tier-1 adapter, if
 configured) as its `llm` argument.
 
-Working examples: `examples/adapters/` (`company_gateway_adapter.py`, `agent_fixer.py`, README).
-Example config: `config/llm-plugin.example.yml`.
+Working examples: `examples/adapters/` (`company_gateway_adapter.py`, `agent_fixer.py`, README). Example config:
+`config/llm-plugin.example.yml`. Loading code: `sbmig/llm/registry.py`.
+
+## The built-in company client (`llm.provider: company`, default)
+
+`sbmig/fix/company.py`: one plain `requests.post(url, headers={Authorization: Bearer …}, json=…, timeout=…)` per
+call — no yml profile, no LangChain, no session pool. Values come from `.env` (git-ignored; read from the package
+folder and the cwd up to the git root, nearest first; shell variables win) through `${VAR}` placeholders in
+`config/default.yml`. Keys are read from the environment only and never written to yml, logs or records.
+
+| Variable | Config key | Meaning |
+|---|---|---|
+| `LLM_BASE_URL` | `llm.base_url` | the full endpoint URL, used verbatim (`{asset_id}` is filled in agent mode) |
+| `LLM_API_KEY` | `llm.api_key_env` names it | bearer key (or the app token for the token exchange) |
+| `LLM_MODEL` | `llm.model` | fix model (agent mode: the `params.role` value, e.g. `build_error_fixer`) |
+| `LLM_ESCALATION_MODEL` | `llm.escalation_model` | stronger model (third ask of a case, or a stall); empty → `LLM_MODEL` |
+| `LLM_RECIPE_MODEL` | `llm.recipe_model` | the optional plan advisor's model |
+| `LLM_RESPONSE_PATH` | `llm.response_path` | where the reply text sits in the JSON, only when auto-detection fails (`data.result.content`) |
+| `LLM_RECORD_DIR` | `llm.record_dir` | one `llm-NNNN.json` per call (no keys / headers) |
+| `LLM_GATEWAY` | `llm.gateway` | `legacy` (default) or `agent` |
+| `LLM_ASSET_ID` | `llm.asset_id` | agent mode: the top-level `model` |
+| `LLM_TOKEN_URL` | `llm.token_url` | agent mode: token exchange endpoint (empty = static key) |
+| `LLM_APP_TOKEN` | `llm.app_token_env` names it | app token for the exchange (unset → `LLM_API_KEY`) |
+
+**`llm.gateway: legacy`** — body `{model: LLM_MODEL, messages, **llm.payload_extra}` (default `need_origin: true`);
+max_tokens / temperature are left to the gateway. The reply is found at `choices[0].message.content`, `content`,
+`response`, `data.content`, … or `LLM_RESPONSE_PATH`.
+
+**`llm.gateway: agent`** (the company GPT agent gateway) — body `{model: LLM_ASSET_ID, messages, stream: false,
+async: false, params: {role: <LLM_MODEL or LLM_ESCALATION_MODEL>}, trace_id, max_tokens, temperature,
+**llm.agent_extra}`; the gateway maps the role names to its models. With `LLM_TOKEN_URL` set, `TokenManager` first
+exchanges the app token for an access token, refreshes it `llm.token_refresh_margin_s` (300 s) before expiry and
+once more after a 401 (`llm.auth_retries`). **Sessions:** sbmig sends no `session_id` (and never `thread_id`); the
+gateway creates a session and returns its id (`LLMResponse.session_id`). A call that passes
+`metadata["session_id"]` continues that session.
+
+**Case thread** (`llm.case_thread`, default false; agent mode only): a case's augments continue the base attempt's
+session and send only the delta (`LLMFixer.build_thread_turn`: the base script's result, the current errors, source
+excerpts, pom, version facts); context / feedback rounds send one message in the session. An open session cannot
+change its model, so the escalation step and the way back open a new session with the full prompt (the session's
+model travels as `ScriptProposal.session_model` → `FixAttempt.llm_session_model`). A rejected continuation falls back
+to the full prompt (`llm.thread_fallback_full`). Every turn logs `sent N chars → prompt_tokens=T` to measure billing.
+
+**Transport:** transport errors and retryable statuses are retried `llm.max_retries` (3) times; a 429 / 5xx with
+`Retry-After` is "busy" and queued for up to `llm.busy_wait_seconds` (600). The failure text carries
+`status=<code>` / `cause=<ExceptionClass>: …`, which the loop classifies (below).
+
+## `sbmig llm-probe` — run it first on a new gateway
+
+Prints the resolved provider / model / URL / key variable name, the exact payload, the token exchange, the sent
+headers (token masked), the proxies in effect, the HTTP status and response JSON, the extracted reply, and a last
+line `LLM-PROBE ok …` / `LLM-PROBE FAIL <kind> …`. Options: `--prompt`, `--model`, `--llm-provider`,
+`--payload-extra '<json>'` (replaces `payload_extra`), `--no-system`, `--bare` (the same payload via plain
+`requests.post`, bypassing sbmig's client). The fleet preflight makes the same call.
+
+## Offline: the replay provider
+
+`llm.provider: fake` + `llm.base_url: replay:<dir>` answers from `<dir>/llm-NNN.json` (`response`, optional
+`replay_role: fix | structure_review | verify_guide`, optional `match` regex, e.g. `match: "case:<case_id>"`) instead
+of by position. The fixtures' `sbmig.e2e.yml` use it, and recordings from `llm.record_dir` can be replayed the same
+way. `config/llm-anthropic.yml` is kept for Anthropic validation runs (key in `LLM_API_KEY`).
 
 ## Contracts (`sbmig/core/interfaces.py`, `sbmig/core/models.py`)
 
@@ -27,12 +84,12 @@ class ChatMessage(BaseModel):
 
 class LLMRequest(BaseModel):
     messages: list[ChatMessage]
-    model: Optional[str] = None          # llm.model / recipe_model / escalation_model, or None = your default
+    model: Optional[str] = None          # llm.model / escalation_model / recipe_model, or None = your default
     max_tokens: Optional[int] = None
-    temperature: Optional[float] = None  # None = your default
+    temperature: Optional[float] = None
     stop: Optional[list[str]] = None
-    role: LLMRole = "other"              # see the role table below
-    metadata: dict = {}                  # run_id, project, phase, iteration, cluster_id, ... (never secrets)
+    role: LLMRole = "other"              # fix | fix_escalation | plan_advisor | structure_review | verify_guide | other
+    metadata: dict = {}                  # run_id, project, phase, cluster_id, case_id, session_id … (never secrets)
 
 class LLMResponse(BaseModel):
     content: str
@@ -40,155 +97,109 @@ class LLMResponse(BaseModel):
     input_tokens: int = 0
     output_tokens: int = 0
     finish_reason: Optional[str] = None
+    session_id: Optional[str] = None     # the gateway session the answer came from, if any
 
 class LLMAdapterLike(Protocol):          # tier 1
     def complete(self, request: LLMRequest) -> LLMResponse: ...
 
 class FixerLike(Protocol):               # tier 2
-    def propose(self, ws: Workspace, cluster: ErrorCluster, ctx: FixContext) -> FixProposal: ...
-    def apply(self, ws: Workspace, changes: list[FileChange]) -> tuple[list[FileChange], list[str]]: ...
+    def propose_script(self, ws: Workspace, cluster: ErrorCluster, ctx: FixContext) -> ScriptProposal: ...
 
-class FixContext(BaseModel):
-    phase: Phase; iteration: int; stall_level: int = 0
-    profile_summary: str = ""; plan_notes: list[str] = []; kb_hints: list[str] = []
-    previous_attempts: list[FixAttempt] = []; other_errors_summary: str = ""
-    use_escalation_model: bool = False
-
-class FileChange(BaseModel):             # modify = search/replace (search must match exactly once)
-    path: str
-    op: Literal["modify", "create", "delete", "rename"]
-    search: Optional[str] = None; replace: Optional[str] = None
-    content: Optional[str] = None; new_path: Optional[str] = None
-
-class FixProposal(BaseModel):
-    changes: list[FileChange]
-    analysis: str = ""; confidence: float = 0.5; model: str = ""; prompt_hash: str = ""
-    llm_usage: LLMUsage = LLMUsage(); requested_files: list[str] = []; raw_response: str = ""
+class ScriptProposal(BaseModel):         # the answer
+    code: str = ""                       # the <script> body defining `def fix(p)`; "" = no script
+    analysis: str = ""; solution: str = ""
+    edits: list[Edit] = []               # applied directly to this project
+    changes: list[EditNote] = []         # what the fix modifies where
+    no_script_reason: str = ""           # then `edits` is the whole fix (recorded as edits, never stored)
+    verify: str = ""                     # operator check after a major upgrade / library replacement
+    blocked_reason: str = ""             # the case cannot be fixed inside the project → declined
+    error: str = ""                      # transport / parse failure (never raise)
+    model: str = ""; llm_usage: LLMUsage; session_id: Optional[str]; session_model: str = ""; ...
 ```
 
-A message-based `LLMClientLike` (`complete(messages, *, model, max_tokens, temperature, stop, role, metadata)`)
-also works as a tier-1 plugin. If its `complete` does not accept `role`/`metadata`, sbmig drops those keywords
-for you.
+`FixContext` carries `script_mode` (`new` | `augment`), `case_id`, `script_base` (augment: the version to extend and
+what it did in this project), `profile_summary`, `plan_notes`, `layout_facts`, `kb_hints`, `advisory_hints`,
+`library_hints`, `previous_attempts`, `other_errors_summary`, `reference_files` and `use_escalation_model`.
 
-Optional base class: `sbmig.llm.LLMAdapter` (abstract `complete(request)`, `name` property, no-op `close()`).
+A message-based `LLMClientLike` (`complete(messages, *, model, max_tokens, temperature, stop, role, metadata)`) also
+works as a tier-1 plugin; if its `complete` does not accept `role` / `metadata`, sbmig drops them. Optional base
+class: `sbmig.llm.LLMAdapter` (abstract `complete(request)`, `name`, no-op `close()`).
 
 ## Tier 1: resolution order
 
-`make_llm_client(cfg)` picks the client like this:
+`make_llm_client(cfg)` (`sbmig/fix/client.py`):
 
-1. `llm.provider` is `company` (default), `openai_compatible`, `anthropic` or `fake`: a builtin client
-   (`api_key_env` names the environment variable holding the key). `company` is the in-house gateway done the
-   plain way — `requests.post(LLM_BASE_URL, headers={Authorization: Bearer LLM_API_KEY}, json={model, messages,
-   need_origin}, timeout=…)` (`sbmig/fix/company.py`); URL / key / model / optional `LLM_RESPONSE_PATH` come from
-   `.env`, nothing else to configure. `sbmig llm-probe` shows the exact request and the raw response.
-2. `llm.provider: plugin`: load `llm.plugin` (`"pkg.module:attr"`; `"pkg.module.attr"` also works).
-3. Any other provider name: the entry point with that name in group `sbmig.llm_adapters`. If there is none,
-   `llm.plugin` is used when set. Otherwise loading fails with `PluginLoadError`, which names the provider and
-   both ways to register it.
+1. `llm.provider` is `company`, `openai_compatible`, `anthropic` or `fake`: a built-in client.
+2. `llm.provider: plugin`: load `llm.plugin` (`"pkg.module:attr"`).
+3. Any other name: the entry point of that name in group `sbmig.llm_adapters`, else `llm.plugin`; otherwise
+   `PluginLoadError` naming both ways to register it.
 
-The loaded object can be:
+The loaded object may be a class / factory (called with as many of `(options, cfg)` as it takes) or an instance with
+`complete`. `options` = `llm.plugin_options`, plus `options["api_key"]` from the `llm.api_key_env` variable when set
+(in memory only). Adapters (a subclass of `LLMAdapter`, `adapter_kind = "request"`, or a `complete` whose first
+parameter is `request` / annotated `LLMRequest`) are wrapped in `AdapterClient`.
 
-* a **class or factory**: called with as many of `(options, cfg)` as its signature takes. `(options, cfg)`,
-  `(options)` and `()` all work.
-* an **instance** that already has `complete`: used as is.
-
-`options` is `llm.plugin_options`. When the environment variable named by `llm.api_key_env` is set, its value
-is added as `options["api_key"]`. This happens in memory only: the key is never written to config, records or
-the journal. Plugins don't need a key, so a missing variable is not an error.
-
-sbmig wraps the result in `AdapterClient` when it is an adapter. It tells an adapter from a client by checking,
-in order:
-
-1. a subclass of `sbmig.llm.LLMAdapter`;
-2. `adapter_kind = "request"` (or `"client"`);
-3. the first parameter of `complete` is named `request` or annotated `LLMRequest`.
-
-Anything else is treated as a message-based client.
-
-Entry-point registration, in **your** package's `pyproject.toml`:
+Entry-point registration in **your** package's `pyproject.toml`:
 
 ```toml
 [project.entry-points."sbmig.llm_adapters"]
 mygateway = "mypkg.adapter:make_adapter"
 ```
 
-Then `pip install` your package into the sbmig environment and set `llm.provider: mygateway`.
-
 ### What sbmig guarantees (tier 1)
 
-* **Recording**: when `llm.record_dir` is set, every call goes through `RecordingClient`, including plugin
-  calls. Each call writes `llm-NNNN.json` with the messages, response, model, usage, latency, `role` and
-  `metadata`, and journals an `llm_call` event. Recordings can be replayed with `provider: fake` +
-  `base_url: replay:<dir>`.
-* **Budgets**: `loop.max_llm_calls`, `loop.max_llm_attempts_per_cluster` and `fleet.max_llm_calls_total` still apply.
-  They count calls; a tier-2 `propose()` is charged `max(1, proposal.llm_usage.calls)`, so fill `llm_usage` when your
-  agent makes several calls and you want the budget to reflect them.
-* **Validation**: the result is coerced to `LLMResponse`. A dict with `content`, a `str`, or an object with
-  `.content` are accepted. Anything else raises `LLMError`. An empty `model` is filled in with the requested
-  model.
-* **Error mapping**: any exception your adapter raises becomes `sbmig.fix.client.LLMError` (with `status` kept
-  when the exception has one) whose text reads `LLM adapter <name> failed (status=<status>, cause=<ExceptionClass>):
-  …`. The build-fix loop classifies failures by these explicit tokens only (round 10): `status=None|401|403|404|408|
-  429|5xx`, `cause=…` or a known transport exception class name count as transport / configuration failures; two in a
-  row pause the loop once for `llm.cooldown_seconds`, the next streak marks the LLM unavailable (`llm_unavailable`) —
-  from then on the clusters that needed it are reported as blocked, and handlers and recipes keep running.
-  `status=400|413|422`, a content filter and `finish_reason=length` are rejections of that one request and never
-  count; the same HTTP 400 body for two different prompts is a configuration error (flag `llm-config-error`, no more
-  LLM calls in the run).
+- **Recording**: with `llm.record_dir`, every call (plugins included) goes through `RecordingClient` and writes
+  `llm-NNNN.json` (messages, response, session id, model, usage, latency, role, metadata, error) and a journal
+  `llm_call` event.
+- **Budgets**: `loop.max_llm_calls` (0 = no cap), `script.max_llm_tries_per_case` / `script.max_augments_per_case`
+  and `fleet.max_llm_calls_total` apply. A tier-2 `propose_script()` is charged `max(1, proposal.llm_usage.calls)`.
+- **Validation**: the result is coerced to `LLMResponse` (a dict with `content`, a `str`, or an object with
+  `.content`); an empty `model` is filled with the requested one.
+- **Error mapping**: an exception from your adapter becomes `sbmig.fix.client.LLMError` reading
+  `LLM adapter <name> failed (status=<status>, cause=<ExceptionClass>): …`. `status=None|401|403|404|408|429|5xx`,
+  `cause=…` or a transport exception class name are transport / configuration failures: two in a row pause the loop
+  once for `llm.cooldown_seconds`, the next streak marks the LLM unavailable (`llm_unavailable`; stored-script reuse
+  and the zero-LLM pre-tries keep running). `status=400|413|422`, a content filter and `finish_reason=length` reject
+  only that request; the same HTTP 400 body for two different prompts is a configuration error (flag
+  `llm-config-error`, no more LLM calls in the run).
 
 ### What the plugin must do (tier 1)
 
-* Return an `LLMResponse`, or raise. Never return an error text as `content`.
-* Handle retries, rate limiting, auth and timeouts itself. sbmig's HTTP retry logic only covers the builtin
-  clients.
-* Never log or persist the key. Read it from `options["api_key"]` or from your own environment variable.
+- Return an `LLMResponse`, or raise. Never return an error text as `content`.
+- Handle retries, rate limiting, auth and timeouts itself (sbmig's retry logic covers the built-in clients only).
+- Never log or persist the key.
 
 ## Roles
 
 | `role` | Caller | Model sbmig asks for |
 |---|---|---|
-| `fix` | `LLMFixer` (build-fix loop) | `llm.model` |
-| `fix_escalation` | `LLMFixer` after a stall (`ctx.use_escalation_model`) | `llm.escalation_model` (else `llm.model`) |
-| `plan_advisor` | plan advisor (`plan.advisor: llm`) | `llm.recipe_model` (else `llm.model`) |
-| `structure_review` | structure review (`restructure.review`, `sbmig.review`): the review, at most one format retry and at most one apply-failure retry — up to 3 calls per run | `llm.model` |
-| `verify_guide` | `LLMFixer.verify_guide` (v2.1d): ONE call after an applied fix raised a dependency's major version / replaced a library without a `<verify>` in its answer — the 운영자 확인 사항; `metadata["purpose"] = "verify_guide"` (+ `case_id`) | `llm.model` (`llm.escalation_model` when the try used it) |
+| `fix` | `LLMFixer.propose_script` (fix loop, new / augment) | `llm.model` |
+| `fix_escalation` | the same, with `ctx.use_escalation_model` (third ask of a case, or a stall) | `llm.escalation_model` (else `llm.model`) |
+| `structure_review` | the structure review after the restructure (review + at most one format / apply retry) | `llm.model` |
+| `verify_guide` | `LLMFixer.verify_guide`: one call after an applied fix changed a major version / replaced a library without `<verify>` | `llm.model` |
+| `plan_advisor` | the optional plan advisor (`plan.advisor: llm`) | `llm.recipe_model` (else `llm.model`) |
 | `other` | anything else (`sbmig llm-probe`, …) | as passed |
 
-v2.1h (A21): `verify_guide` is a member of `LLMRole`, so plugin adapters receive `request.role == "verify_guide"`
-(before, it arrived as `other` with `metadata["role_detail"] = "verify_guide"`). `recipe_candidate` (v1 KB harvest) is
-not sent in v2. Replay files (`provider: fake`, `base_url: replay:<dir>`) answer this call with an entry that has
-`replay_role: verify_guide` or no `replay_role` at all; a `replay_role: fix` entry never answers it (it answers `fix`
-and `fix_escalation` only), so recorded fix answers are not mistaken for an operator guide.
-
-Unknown roles become `other`, with the original value kept in `metadata["role_detail"]`. Fixer calls carry
-`metadata = {"run_id", "project", "phase", "iteration", "cluster_id"}` (`run_id` / `project` since round 10;
-`project` is the workspace directory name). Your adapter can route on `request.role` to override the model, as
-`company_gateway_adapter.py` does with its `models` table.
+Unknown roles become `other` with the original value in `metadata["role_detail"]`. Your adapter can route on
+`request.role`, as `company_gateway_adapter.py` does with its `models` table.
 
 ## Tier 2: fixer plugin
 
-`fix.plugin: "pkg.module:attr"` (a bare name is looked up in the entry-point group `sbmig.fixers`). It works as
-follows:
+`fix.plugin: "pkg.module:attr"` (a bare name is looked up in the entry-point group `sbmig.fixers`):
 
-* The plugin can be a class, a factory, or an instance with `propose`. It is called with as many of
-  `(options, cfg, llm)` as it takes, where `options` = `fix.plugin_options` and `llm` = sbmig's LLM client.
-  `llm` is `None` when no provider is configured or the provider fails to load. A `notes_dir` keyword is passed
-  when the factory declares one.
-* If the object has no `apply`, sbmig adds one that delegates to `sbmig.fix.PatchApplier(ws).apply(changes)`.
-  It is atomic per file, and `modify` blocks must match exactly once. So an agent that only proposes
-  `FileChange`s works.
-* The fixer is created lazily, the first time a cluster needs an LLM fix. sbmig journals
-  `{"event": "fixer", "plugin": spec}` at that point, or the same event with `"error"` if loading fails.
-* The context we give our LLM is available to you: `ContextPacker(cfg).pack(ws, cluster, ctx,
-  ctx.profile_summary)` returns a `PackedContext` (`.sections`, `.files_included`, `.render()`, which gives
-  markdown).
-* Return `FixProposal(changes=[], analysis="llm-error: ...")` (or raise) when your agent is unreachable. Since round
-  10 such a text counts as a transport failure (cool-down, then `llm_unavailable` after repeats) only when it carries
-  an explicit marker: `status=None` / `status=<401|403|404|408|429|5xx>`, `cause=<ExceptionClass>: …`, or the
-  exception class name itself (`ConnectionError`, `ReadTimeout`, …); a raised exception is classified by its class
-  name and message the same way. Anything else is an ordinary failed attempt of that cluster. An empty `changes`
-  with a normal analysis means "no safe fix".
-* Don't edit files in `propose`. Return changes, so that sbmig can apply, commit, rebuild and roll back.
+- The plugin can be a class, a factory, or an instance with `propose_script`. It is called with as many of
+  `(options, cfg, llm)` as it takes (`options` = `fix.plugin_options`, `llm` = sbmig's client or `None`), plus a
+  `notes_dir` keyword when declared.
+- It is created lazily, the first time a case needs an LLM; journal `{"event": "fixer", "plugin": spec}` (with
+  `"error"` when loading fails).
+- `ctx.script_mode == "augment"`: the answer must be the **complete** new script; it replaces `ctx.script_base` and
+  runs on a tree where the base was rolled back.
+- Never edit files in `propose_script`. Return the script and / or edits; sbmig runs the script through
+  `sbmig.script` (static check, `python -I` child process, helper API `p` limited to the project, timeout), applies
+  edits through `sbmig.script.apply_edits`, commits, rebuilds, scores and rolls back.
+- Report unreachability as `ScriptProposal(error="… status=<code> …")` or `cause=<ExceptionClass>: …`; those markers
+  count as transport failures. An answer with neither script nor edits and a `blocked_reason` is a decline.
+- The prompt sbmig would send is available: `ContextPacker(cfg)` in `sbmig/fix/context.py`.
 
 ## Embedding: `sbmig.api`
 
@@ -196,36 +207,27 @@ follows:
 from sbmig.api import migrate, exit_code
 from mypkg.adapter import MyGatewayAdapter       # an LLMAdapter subclass
 
-report = migrate("path/to/project", configs=["config/artifacts.company.yml"], out="out",
+report = migrate("path/to/project", configs=["config/artifacts.yml"], out="out",
                  llm=MyGatewayAdapter(...),       # adapter or client; adapters are wrapped automatically
                  fixer=None,                      # or your FixerLike (overrides fix.plugin)
                  kb=None,                         # None/True = file KB, False = no KB, or a KnowledgeBaseLike
-                 stop_after=None, dry_run=False)
+                 stop_after=None, dry_run=False)  # stop_after: intake|analyze|plan|transform|restructure
 print(report.success, exit_code(report))         # 0 ok / 2 incomplete / 3 aborted
 ```
 
-`overrides={...}` is merged like CLI options (for example `{"llm": {"record_dir": "out/rec"}}`).
-`components={...}` passes extra `Orchestrator` collaborators (`build_runner`, `rewrite_runner`, ...).
+`overrides={...}` is merged like CLI options (e.g. `{"llm": {"record_dir": "out/rec"}}`); `components={...}` passes
+extra `Orchestrator` collaborators (`build_runner`, `rewrite_runner`, `edit_applier`, …). An `edit_applier` has the
+shape `fn(ws, edits, *, cfg, errors=None) -> ScriptRunResult`; `errors` is passed only when the function takes it.
 
 ## Troubleshooting
 
 | Symptom | Cause and fix |
 |---|---|
-| `PluginLoadError: cannot import plugin module` | The package is not installed in sbmig's venv and not on `PYTHONPATH`. The `sbmig` console script does not add the current directory, so run `PYTHONPATH=. sbmig run ...` for the repo-local `examples.adapters.*`. |
-| `unknown llm.provider 'x' ... no entry point` | The entry point is not installed (`pip install -e yourpkg`), or the name differs. The message lists the installed names. |
-| `requires N positional argument(s)` | Your factory takes more than `(options, cfg)` (tier 1) or `(options, cfg, llm)` (tier 2). Give the extra parameters defaults. |
-| `failed to initialise: ...` | Your factory raised. Usually a missing option such as `base_url`, or a missing key env var. |
+| `PluginLoadError: cannot import plugin module` | The package is not installed in sbmig's venv and not on `PYTHONPATH` (`PYTHONPATH=. sbmig run …` for the repo-local `examples.adapters.*`). |
+| `unknown llm.provider 'x' ... no entry point` | The entry point is not installed or the name differs; the message lists the installed names. |
+| `requires N positional argument(s)` | Your factory takes more than `(options, cfg)` (tier 1) or `(options, cfg, llm)` (tier 2); give the extras defaults. |
 | `LLM adapter X returned int, expected LLMResponse` | Return an `LLMResponse`, a dict with `content`, or a `str`. |
-| Run reports `llm-unavailable` | Two transport / configuration failures in a row after the one cool-down. Check the `llm_call` / `llm_fix` journal events, the `status=` / `cause=` part of the error and the `error` field in `llm-NNNN.json`. |
-| Run reports `llm-config-error` | The gateway answered the same HTTP 400 body to two different prompts (model name, a payload field). The follow-up quotes the body; fix the setting in `.env` / `llm.*` and rerun. |
-| Gateway gets `role: other` | The call site predates role tagging. Route on `metadata` instead, or default to your general model. |
-| Fixer plugin is never called | Every cluster was resolved by handlers, recipes or KB patch replay first. That is expected. Look for `fixer` / `llm_fix` events in `journal.jsonl`. |
-
-## Edit applier (tier 2b, v2.1h / A4)
-
-The fix loop applies the LLM's `<edits>` through one function: `sbmig.script.apply_edits` by default, or the
-`edit_applier` passed to `Orchestrator` / `BuildFixLoop`. Its shape is `fn(ws, edits, *, cfg, errors=None) ->
-ScriptRunResult`. `errors` (the case's `BuildError`s, for context) is optional: the loop inspects the signature
-(`sbmig.loop.fixloop.call_edit_applier`) and passes it only when the function takes `errors` or `**kwargs`, so an
-applier written as `fn(ws, edits, *, cfg)` keeps working. A callable whose signature cannot be inspected receives it.
-
+| Run reports `llm-unavailable` | Two transport / configuration failures in a row after the one cool-down. Check the `llm_call` journal events and the `error` field in `llm-NNNN.json`; rerun `sbmig llm-probe`. |
+| Run reports `llm-config-error` | The gateway answered the same HTTP 400 body to two different prompts (model name, a payload field). Fix `.env` / `llm.*` and rerun. |
+| `LLM-PROBE FAIL` with a reply in an unexpected field | Set `LLM_RESPONSE_PATH` to the field the probe's response JSON shows. |
+| Fixer plugin is never called | Every case was fixed by a stored script (reuse) or a zero-LLM pre-try first. Look for `fixer` / `llm_script` events in `journal.jsonl`. |
