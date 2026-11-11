@@ -771,10 +771,15 @@ remediation:
   require_approval: false
   # 설정과 무관하게 늘 승인이 필요한 부류: major(메이저 버전 변경), parent(부모 pom 버전),
   # bom(가져온 BOM 버전), managed_override(부모·BOM 이 관리하는 버전을 프로젝트에서 덮어쓰기)
+  # managed_override 는 간접 의존성이나 부모·BOM 이 관리하는 버전을 고치려고 루트 pom 에 항목을 넣는 제안이다.
+  # 이 목록에서 빼더라도 늘 승인을 기다린다(파일에 새 항목을 넣는 일은 자동으로 하지 않는다).
   always_approve: [major, parent, bom, managed_override]
   max_rounds: 3                    # 계획 → 적용 → 빌드 → 재검사를 되풀이하는 횟수 한도
-  # 후보 빌드가 실패했을 때. discard = 실패한 후보는 결과 ZIP 에 넣지 않는다(원본 보존, 상태 FAILED).
-  failed_candidate: discard
+  # 후보 빌드가 실패했을 때.
+  # include = 실패한 수정본도 결과 ZIP 으로 낸다(상태 FAILED, 보고서 첫 줄에 "빌드가 실패한 수정본" 표시, 재검사 없음).
+  # discard = 실패한 수정본은 결과 ZIP 에 넣지 않는다(변경 내용은 patch 파일로만 남는다).
+  # 어느 쪽이든 올린 원본 ZIP 은 따로 보존된다.
+  failed_candidate: include
   # 프로젝트가 서버의 Maven 설정을 우회할 수 있는 요소를 가졌을 때: refuse(거부) / ignore(기록만)
   project_maven_config: refuse     # .mvn/maven.config, .mvn/jvm.config, .mvn/extensions.xml
   maven_wrapper: ignore            # mvnw, .mvn/wrapper (서버 Maven 만 쓰므로 실행되지 않는다)
@@ -784,7 +789,7 @@ remediation:
   ivas_timeout_seconds: 60         # IVAS 요청 하나의 한도
   ivas_upload_timeout_seconds: 1800   # ZIP 업로드의 한도
   ivas_poll_seconds: 15            # 분석 상태를 묻는 간격
-  ivas_analysis_timeout_minutes: 120   # 이 시간 안에 분석이 끝나지 않으면 검사 미완료로 본다(0건이 아니다)
+  ivas_analysis_timeout_minutes: 30    # 이 시간(1,800초) 안에 분석이 끝나지 않으면 검사 미완료로 본다(0건이 아니다)
   ivas_page_size: 100              # 결과 한 쪽의 크기
   ivas_project_prefix: sbmig       # IVAS 프로젝트 이름의 앞머리: <앞머리>-<작업 ID>-<baseline 또는 final-rN>
   policy:                          # 서버 정책: 버전 후보의 근거. 바뀌면 전에 만든 승인 후보는 무효가 된다

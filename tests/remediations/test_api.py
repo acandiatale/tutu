@@ -70,6 +70,8 @@ def test_post_returns_202_and_runs(tmp_path, base_cfg):
     st = c.get(body["url"])
     assert st.status_code == 200 and STATUS_KEYS <= set(st.json())
     assert st.json()["status"] == SUCCEEDED
+    d = st.json()["delivery"]
+    assert d["build_ok"] is True and d["scanned"] is True and set(d) >= {"sha256", "size", "round"}
     assert str(tmp_path) not in st.text
 
 
@@ -202,7 +204,7 @@ def test_files_whitelist(tmp_path, base_cfg):
     r = c.get(f"/api/remediations/{rid}/files/result.zip")
     assert r.status_code == 200 and r.content[:2] == b"PK" and "attachment" in r.headers["content-disposition"]
     assert c.get(f"/api/remediations/{rid}/files/plan-r1.json").status_code == 200
-    for name in ("state.json", "%2E%2E", "approvals.jsonl", "plan-r9.json", "..%2Fstate.json"):
+    for name in ("state.json", "%2E%2E", "approvals.jsonl", "plan-r9.json", "..%2Fstate.json", "result-verified.zip"):
         assert c.get(f"/api/remediations/{rid}/files/{name}").status_code == 404, name
     assert c.get("/api/remediations/r20000101-000000-abcdef/files/report.md").status_code == 404
     assert c.get("/api/remediations/bad/files/report.md").status_code == 400

@@ -1,6 +1,6 @@
 # 취약점 조치 (remediations)
 
-> 다루는 것: 이관과 별개인 두 번째 기능 — 올린 Maven 프로젝트를 IVAS 로 검사하고 취약한 라이브러리의 **버전 글자만** 고쳐 다시 빌드·재검사하는 흐름. 노드별 동작, 상태와 운영자가 할 일, HTTP API, 진단 순서, 설정 키, 고칠 자리.
+> 다루는 것: 이관과 별개인 두 번째 기능 — 올린 Maven 프로젝트를 IVAS 로 검사하고 취약한 라이브러리의 **버전 글자만** 고쳐(예외 하나: 승인받은 관리 버전 override 항목) 다시 빌드·재검사하는 흐름. 노드별 동작, 상태와 운영자가 할 일, HTTP API, 진단 순서, 설정 키, 고칠 자리.
 > 언제 읽나: `/api/remediations` 작업이 왜 그렇게 끝났는지 볼 때, 조치 규칙·IVAS 연동을 바꾸기 전에.
 > 함께 읽을 파일: [00-what-sbmig-is.md](00-what-sbmig-is.md), [07-config-and-knowledge.md](07-config-and-knowledge.md), [09-deploy-and-ops.md](09-deploy-and-ops.md)
 
@@ -14,12 +14,20 @@ Maven 이 실제로 고른 의존성과 pom 의 버전 줄에 연결 → 새 버
 절대 규칙(회사 결정):
 
 - 바뀌는 것은 **기존 pom.xml 안의 버전 글자뿐**이다. 소스·구조·다른 파일은 그대로, 결과 ZIP 의 파일 집합 = 원본의 파일 집합.
-  변경 하나 = pom 한 줄에서 버전 글자 `old` → `new`(태그·`${…}` 없음). 인코딩·BOM·CRLF·마지막 줄바꿈도 그대로 둔다.
+  변경 하나(`TextEdit`, `op="replace"`) = pom 한 줄에서 버전 글자 `old` → `new`(태그·`${…}` 없음). 인코딩·BOM·CRLF·마지막 줄바꿈도 그대로 둔다.
+- **예외는 하나**: `managed_override` 제안은 루트 `pom.xml` 의 최상위 `<dependencyManagement><dependencies>` 안에 `<dependency>` 항목 하나
+  (groupId / artifactId / version 만)를 넣는다. 그 절이 없으면 그 항목 하나를 담은 `<dependencyManagement>` 절 전체를 최상위 `<dependencies>`
+  → `<build>` → `</project>` 중 처음 있는 줄 앞에 넣는다. `TextEdit` 의 `op="insert"`, `old=""`, `line`(이 줄 앞에), `anchor`(그 줄의 지금 글자,
+  적용할 때 다시 확인), `override`(`{groupId, artifactId, version}`). 넣는 글자는 `render_override` 가 만드는 모양과 정확히 같아야 한다
+  (들여쓰기는 형제 항목에서 복사, 줄 끝은 파일 것). 이 제안은 **설정과 무관하게 늘 승인을 기다린다**(XML 넣기는 절대 자동이 아니다).
+- "계획한 것만 바뀌었나" 검사(`verify_text_only`): edit 을 받지 않은 파일은 바이트가 같고, 받은 pom 은 원본에 계획한 replace·insert 를
+  (같은 줄 앞 insert 는 제안 ID 순서로) 적용한 바이트와 같고, XML 구조는 계획한 override 요소만큼만 늘어야 한다.
 - 원본 ZIP·원본 파일 목록(manifest)·작업 트리 `accepted/` 를 따로 둔다. 변경은 후보 사본에 먼저 하고, 빌드되고 해석 결과가 계획과 같을 때만
   `accepted/` 로 확정한다. 빌드 산출물(`target/`)은 해시·복사·전달 어디에도 들어가지 않는다(manifest 경로만).
 - 기준 빌드가 실패하면 검사·계획으로 가지 않는다.
 - IVAS 업로드 결과가 불확실하면 **자동으로 다시 올리지 않는다**. 미완료 검사·빠진 쪽·중복·ZIP 해시 불일치는 "0건" 이 아니다.
-- 새 버전의 근거는 서버 정책(`remediation.policy.pins`) 또는 승인된 저장소가 실제로 가진 버전뿐이다. IVAS 의 patched 버전은 하한 힌트일 뿐이다.
+- 새 버전의 근거는 서버 정책(`remediation.policy.pins`) 또는 승인된 저장소가 실제로 가진 버전뿐이다. IVAS 의 patched 버전은 하한 힌트일 뿐이고,
+  pin 이 없으면 그 힌트가 있어야 제안한다(없으면 `no_candidate_version`).
 - 서버가 다시 떠도 아무것도 자동으로 재개·재전송하지 않는다(`INTERRUPTED` + 명시적 resume).
 - IVAS 아이디·비밀번호·토큰, Nexus 자격증명은 코드·설정·로그·보고서·예외 문장 어디에도 쓰지 않는다.
 
@@ -34,8 +42,8 @@ Maven 이 실제로 고른 의존성과 pom 의 버전 줄에 연결 → 새 버
 | `baseline_scan` | 원본 ZIP sha256 재확인, IVAS 검사(라벨 `baseline`) | 발견 0건(완전한 검사) → 원본 바이트 사본이 전달 ZIP, `evaluate`. 미완료 → INCOMPLETE `scan_incomplete`. 업로드 불확실 → AWAITING_CONFIRMATION |
 | `inventory` | 전 트리의 `dependency:tree`, 발견 항목 → `Inventory`(출처 판정) | 해석·인벤토리 불완전 → INCOMPLETE `manual_review` |
 | `plan` | 제안·잔여, 승인 부류, 해시 세 개. 트리·정책 해시가 바뀐 옛 계획은 `rounds/<n>/plan.stale.json` 으로 두고 새로 만든다 | 승인 대기 제안 → AWAITING_APPROVAL. 적용할 것 없음 → `evaluate` |
-| `apply` | `accepted/` → 후보 사본, 자동+승인 제안 적용, `rounds/<n>/candidate.patch`, "버전 글자만 바뀌었나" 검사 | 위반 → FAILED `text_only_violation` |
-| `build` | 후보 빌드, 다시 해석, 산출물 안 jar 목록, "해석 결과 = 계획" 검사, 통과하면 `accepted/` 로 확정 | 빌드 실패 → FAILED `candidate_build_failed`, 불일치 → FAILED `resolution_mismatch` |
+| `apply` | `accepted/` → 후보 사본, 자동+승인 제안 적용, `rounds/<n>/candidate.patch`, "계획한 것만 바뀌었나" 검사 | 위반 → FAILED `text_only_violation`(결과 ZIP 에 넣지 않음) |
+| `build` | 후보 빌드, 다시 해석, 산출물 안 jar 목록, "해석 결과 = 계획" 검사, 통과하면 `accepted/` 로 확정 | 빌드 실패 → FAILED `candidate_build_failed`(include 면 실패한 수정본을 결과 ZIP 으로 고정, 재검사 없음), 불일치 → FAILED `resolution_mismatch`(넣지 않음) |
 | `freeze_delivery` | `accepted/` 로 결정적인 전달 ZIP(`delivery/result.zip`) | — |
 | `rescan` | 전달 ZIP sha256 재확인, 같은 바이트를 IVAS 검사(라벨 `final-r<n>`) | 미완료 → INCOMPLETE, sha 다름 → FAILED `zip_hash_mismatch`, 불확실 → AWAITING_CONFIRMATION |
 | `evaluate` | 취약점이 남았고 이번 라운드가 확정됐고 라운드 < `remediation.max_rounds` → 다음 라운드 | `inventory` 로 돌아가거나 성공 판정 |
@@ -45,26 +53,50 @@ Maven 이 실제로 고른 의존성과 pom 의 버전 줄에 연결 → 새 버
 저장한다. 재개 때 영수증이 있으면 올리지 않고 그 분석을 이어서 조회한다. `pending_upload` 만 남아 있으면 확인 없이는 다시 멈춘다.
 
 **SUCCEEDED 조건**(전부): 기준 빌드 통과, 무엇을 적용한 라운드는 모두 빌드·검증·확정, 최종 검사 완전, 전달 ZIP sha256 = 최종 검사 ZIP sha256,
-pending·rejected 제안 없음, 잔여(수동 검토·출처 불명·정책 deny·후보 없음·적용 안 된 제안) 없음, 최종 검사에 발견 항목 없음. 아니면 INCOMPLETE
-(이유 전부를 `state.reasons` 에).
+전달 ZIP 의 `build_ok`(빌드가 실패한 수정본이 아님)와 `scanned`(완전한 최종 검사가 이 바이트를 검사함)가 참, pending·rejected 제안 없음,
+잔여(수동 검토·출처 불명·정책 deny·후보 없음·적용 안 된 제안) 없음, 최종 검사에 발견 항목 없음. 아니면 INCOMPLETE 또는 FAILED
+(이유 전부를 `state.reasons` 에; `build_ok` 거짓 → `candidate_build_failed`, `scanned` 거짓 → `zip_hash_mismatch` 또는 `scan_incomplete`).
 
-**실패한 후보**(`remediation.failed_candidate: discard`): 실패한 후보는 결과 ZIP 에 들어가지 않는다. `accepted/` 와 원본은 그대로, 상태 FAILED,
-실패한 변경은 `rounds/<n>/candidate.patch` 로만 남는다. 앞 라운드에서 이미 빌드·검증·확정·재검사된 전달물은 그대로 남는다.
+**실패한 후보**(`remediation.failed_candidate`, 값 `include`(기본) 또는 `discard`, 사용자 결정):
+
+- `include`: 후보 **빌드**가 실패하면 그 수정본을 `delivery/result.zip` 으로 고정한다(`build_ok=false`, `scanned=false`, IVAS 재검사 없음).
+  상태 FAILED, 이유 `candidate_build_failed`. `accepted/` 와 원본 ZIP 은 그대로, `candidate.patch` · `build.log` 도 남는다. `report.md` 는 제목
+  바로 아래에 "결과 ZIP 은 빌드가 실패한 수정본" 이라는 경고(라운드, 적용한 제안, 빌드 로그, 재검사 없음, 원본 보존)로 시작한다.
+  앞 라운드에서 빌드·확정·재검사까지 마친 전달 ZIP 이 있으면 지우지 않고 `delivery/result-r<k>-verified.zip`(+ `.json`)으로 옮겨 두고,
+  내려받기 이름은 `result-verified.zip` 이다. journal: `failed_candidate_delivered`, `verified_delivery_kept`.
+- `discard`: 실패한 후보는 결과 ZIP 에 넣지 않는다(변경은 `candidate.patch` 로만). 앞 라운드의 검증된 전달 ZIP 이 있으면 그것이 그대로
+  `result.zip` 이다(journal `earlier_delivery_kept`), 없으면 전달 ZIP 없음.
+- 어느 값이든 "계획한 것만 바뀌었나" 위반(`text_only_violation`)·해석 불일치(`resolution_mismatch`) 후보는 결과 ZIP 에 넣지 않는다(`discard` 와 같이).
 
 ## 3. 승인 규칙
 
 `remediation.require_approval` 기본값은 **false**. 이때 승인 없이 적용되는 것: 버전 글자가 프로젝트 자신의 pom 에 있는 제안
 (`direct_version` · `property_version` · `own_management_version`) 중 **같은 메이저 안**의 변경. 설정과 무관하게 늘 승인을 기다리는 것:
-`remediation.always_approve` 의 부류 — 기본 `major`(메이저 변경), `parent`(부모 pom 버전), `bom`(가져온 BOM 버전), `managed_override`.
-부모·BOM 변경은 서버가 그 부모·BOM 자체를 `remediation.policy.pins` 로 정해 둔 경우에만 제안된다. `managed_override` 는 정의만 있고 지금
-planner 가 만들지 않는다. 자동으로 하지 않는 것(잔여·수동 검토): `transitive`(새 `<dependencyManagement>` 를 더해야 함 = 구조 변경), pin 없는
-부모·BOM 관리 버전, `plugin`, `vendored`, `unmapped`, `remediation.policy.deny` 에 걸린 것, `remediation.policy.allow_major` 가 false 일 때의 메이저.
+`remediation.always_approve` 의 부류 — 기본 `major`(메이저 변경), `parent`(부모 pom 버전), `bom`(가져온 BOM 버전), `managed_override` —
+그리고 planner 의 고정 규칙으로 **모든 `managed_override` 제안**(운영자가 `always_approve` 에서 빼도 승인을 기다린다).
+부모·BOM 버전 글자 변경은 서버가 그 부모·BOM 자체를 `remediation.policy.pins` 로 정해 둔 경우에만 제안된다(pin 된 관리자는 override 가 아니라
+`parent_version` / `bom_version` 길로 간다).
+
+**관리 버전 override**: `transitive` · `parent_managed` · `bom_managed` 항목은 (관리자 pin 이 없으면) 직접 의존성과 같은 규칙으로 버전을 고른다 —
+pin 이 없으면 IVAS patched 힌트 필수, 근거는 정책 또는 승인된 저장소 호스트, 같은 메이저 우선, deny 목록·`remediation.policy.allow_major` 적용.
+버전이 있으면 루트 pom 에 항목 하나를 넣는 `managed_override` 제안 하나(같은 g:a 의 발견 항목은 한 항목을 같이 쓴다). 루트 pom 에 그 g:a 의 관리
+항목이 이미 있으면 두 번째 항목은 절대 넣지 않는다: 최상위 항목 하나이고 그 버전 글자(글자 또는 프로젝트 속성)가 해석된 버전과 같으면 기존 글자를
+바꾸는 길(`own_management_version` / `property_version`), 아니면 잔여. override 대신 잔여(`manual_review` / `no_candidate_version`)로 남는 경우:
+힌트·후보 버전 없음, 해석된 의존성이 jar 가 아니거나 분류자가 있음, 그 의존성을 가진 모듈이 루트 pom 을 상속하지 않음, 모듈이 그 의존성을 자기
+버전과 함께 선언함(선언 버전이 관리 버전을 이긴다), 안전하게 넣을 줄이 없음(기준 태그가 자기 줄에 혼자 있지 않은 한 줄짜리 XML 등), 루트 pom 을
+읽을 수 없음. 제안의 `note` 에는 무엇을 고정하는지(간접 경로 또는 관리자)와 함께 늘 "이후 부모·BOM·직접 의존성을 올려도 이 버전은 더 이상 따라
+움직이지 않으니, 그쪽이 따라잡으면 담당 팀이 override 를 지워야 한다" 와 "늘 승인 필요" 가 들어가고, `report.md` 는 제안 표 아래에 각 제안의 note 를
+그대로 보여 준다.
+
+자동으로 하지 않고 제안도 하지 않는 것(잔여·수동 검토): `plugin`, `vendored`, `unmapped`, `remediation.policy.deny` 에 걸린 것,
+`remediation.policy.allow_major` 가 false 일 때의 메이저.
 `true` 로 두면 모든 제안이 승인을 기다린다. 운영에서 모든 변경에 사람 승인이 필요하면 환경 변수 `SBMIG_REMEDIATION__REQUIRE_APPROVAL=true` 로 명시한다.
 
 승인 요청은 **제안 해시 · 원본 트리 해시 · 정책 해시 · diff** 가 저장된 제안과 모두 같고, 제안이 지금의 `accepted/` 와 정책에도 맞고(낡지 않음),
 아직 `pending` 일 때만 받아들인다. 하나라도 다르면 요청 전체가 409 `approval_mismatch`(+ `fields`), 아무것도 쓰지 않는다(전부 아니면 전무).
 정책 해시에는 `remediation.policy` 전부 + `require_approval` + `always_approve` + `failed_candidate` 가 들어간다 — 하나만 바꿔도 열린 제안은 모두
-무효가 되어 계획을 다시 만든다. 거절한 (g:a, 버전)은 다음 라운드에서 다시 제안하지 않는다(잔여 `rejected_proposals`). 승인은 재개가 아니다.
+무효가 되어 계획을 다시 만든다. 제안 해시는 edit 전부(`op` · `anchor` · `override` 포함)를 덮으므로, override 가 생기기 전에 저장된 계획의
+제안은 자기 해시와 맞지 않아 승인이 409 `approval_mismatch`(`proposal_hash`)로 거부된다 — 그런 작업은 다시 올린다. 거절한 (g:a, 버전)은 다음 라운드에서 다시 제안하지 않는다(잔여 `rejected_proposals`). 승인은 재개가 아니다.
 
 ## 4. 상태와 운영자가 할 일
 
@@ -77,7 +109,7 @@ planner 가 만들지 않는다. 자동으로 하지 않는 것(잔여·수동 �
 | `INTERRUPTED` | 서버가 실행 중에 내려갔다 | 상태를 보고 resume — 자동 재개 없음 |
 | `SUCCEEDED` | 성공 조건 전부 | `result.zip` 전달 |
 | `INCOMPLETE` | 끝났지만 성공 아님 | 보고서의 잔여 표를 담당 팀에 넘긴다 |
-| `FAILED` | 빌드·검증 실패, 경계 거부, 준비 안 됨, 내부 오류 | 이유 코드대로(아래 5절) |
+| `FAILED` | 빌드·검증 실패, 경계 거부, 준비 안 됨, 내부 오류 | 이유 코드대로(아래 6절). `candidate_build_failed` 이고 상태 dict 의 `delivery.build_ok` 가 false 면 `result.zip` 은 빌드가 실패한 수정본이다 — 그대로 배포하지 않는다(검증된 앞 라운드 ZIP 은 `result-verified.zip`) |
 
 이유 코드(문자열 그대로가 API 계약): `baseline_build_failed`, `candidate_build_failed`, `scan_incomplete`, `upload_uncertain`, `zip_hash_mismatch`,
 `text_only_violation`, `resolution_mismatch`, `execution_boundary_refused`, `not_ready`, `pending_approval`, `rejected_proposals`,
@@ -91,13 +123,13 @@ planner 가 만들지 않는다. 자동으로 하지 않는 것(잔여·수동 �
 | `POST /api/remediations?name=<file.zip>` (본문 = ZIP) | 202 `{id, status, url}` / 400 접수 거부(코드) / 413 크기 초과 / 503 `not_ready` + `missing` |
 | `GET /api/remediations?page=&size=` | 목록, 최신 먼저 |
 | `GET /api/remediations/readiness` | `{ready, missing}` — 이름만, 값은 절대 없음 |
-| `GET /api/remediations/<id>` | 상태 dict(status, reason, reasons, node, next_node, round, counts, pending_approvals, delivery, files, links …) |
-| `GET /api/remediations/<id>/result` | 끝 상태면 report.json 내용, 아니면 409 `not_finished` |
+| `GET /api/remediations/<id>` | 상태 dict(status, reason, reasons, node, next_node, round, counts, pending_approvals, delivery `{sha256, size, round, build_ok, scanned}`, files, links …) |
+| `GET /api/remediations/<id>/result` | 끝 상태면 report.json 내용(`delivery`, `verified_delivery` 포함), 아니면 409 `not_finished` |
 | `GET /api/remediations/<id>/proposals` | 지금 라운드의 제안 전부(diff, 해시 세 개, 결정)와 잔여. `?all=1` 이면 모든 라운드 |
 | `POST /api/remediations/<id>/approvals` | 결정 목록 → `{accepted, pending}` / 409 `approval_mismatch` / 409 `state_conflict` |
 | `POST /api/remediations/<id>/resume` | 재개(확인 대기면 `confirm` 필수) |
 | `POST /api/remediations/<id>/stop` | 다음 경계에서 멈춤 |
-| `GET /api/remediations/<id>/files/<name>` | 정해진 파일만: 보고서 두 개, result.zip, source.zip, manifest.json, journal.jsonl, remediation.log, delivery.json, `plan-r<n>.json`, `candidate-r<n>.patch`, `build-r<n>.log`, baseline-build.log, `scan-<label>.json` |
+| `GET /api/remediations/<id>/files/<name>` | 정해진 파일만: 보고서 두 개, result.zip, source.zip, manifest.json, journal.jsonl, remediation.log, delivery.json, `result-verified.zip`(include 로 옮겨 둔 앞 라운드의 검증된 ZIP, 없으면 404), `plan-r<n>.json`, `candidate-r<n>.patch`, `build-r<n>.log`, baseline-build.log, `scan-<label>.json` |
 | `DELETE /api/remediations/<id>` | 원본까지 폴더 전체 삭제(실행 중이면 409) |
 
 작업 관리자와 라우터는 같은 패키지의 service.py 와 api.py 다.
@@ -110,7 +142,8 @@ planner 가 만들지 않는다. 자동으로 하지 않는 것(잔여·수동 �
    `pending_receipt`(검사 중 멈춘 자리), `boundary`(경계 검사 결과), `residuals`.
 2. **`journal.jsonl`** — 이벤트 한 줄씩: `node_start` / `node_end`, `scan_receipt`, `scan_resume`, `upload_uncertain`, `scan_stopped`, `scan_done`,
    `ivas_upload`, `ivas_status`, `ivas_pages`, `ivas_scan_done`, `plan_written`, `plan_reused`, `plan_stale`, `policy_hash_differs`,
-   `round_committed`, `next_round`, `maven_project_config`.
+   `round_committed`, `next_round`, `maven_project_config`, `failed_candidate_delivered`, `verified_delivery_kept`, `earlier_delivery_kept`.
+   `delivery/delivery.json` 의 `build_ok` · `scanned` 로 결과 ZIP 이 무엇인지 본다.
 3. **remediation.log** — 로그(비밀 값 없음). Maven 원문은 `baseline/build.log`, `rounds/<n>/build.log`.
 4. **`scans/<label>.json`** — 검사 하나: `complete`, `incomplete_reasons`(`analysis_failed`, `analysis_timeout`, `page_missing`, `total_mismatch`,
    `duplicate_result`, `summary_mismatch`, `unsupported_sw`, `zip_hash_mismatch`, `id_mismatch`, `http_error`, `stop_requested`), `findings`, `counts`, `notes`.
@@ -118,10 +151,11 @@ planner 가 만들지 않는다. 자동으로 하지 않는 것(잔여·수동 �
    (적용·건너뜀), `candidate.patch`, `resolved.json`(후보 해석 결과).
 6. **`approvals.jsonl`** — 누가 언제 무엇을 승인·거절했나(덧붙이기만).
 
-자주 보는 경우: `not_ready` → readiness 의 `missing`(IVAS 세 값, JDK 21, Maven, settings.xml, 승인된 저장소 호스트). `execution_boundary_refused` →
+자주 보는 경우: `not_ready` → readiness 의 `missing`(`remediation.trusted_projects` 미확인, IVAS 세 값, JDK 21, Maven, settings.xml, 승인된 저장소 호스트). `execution_boundary_refused` →
 `state.boundary` 의 `code`(`project_maven_config`, `maven_extensions`, `maven_wrapper`, `symlink`, `foreign_repository`,
-`foreign_plugin_repository`, `unparsable_pom`). `manual_review` 만 남음 → `inventory.json` 의 `origin` 이 `transitive` / `plugin` / `vendored` /
-`unmapped` 이거나 부모·BOM 관리. `no_candidate_version` → 잔여의 `detail` 에 저장소가 준 버전 목록과 제외 이유가 있다.
+`foreign_plugin_repository`, `unparsable_pom`). `manual_review` 만 남음 → `inventory.json` 의 `origin` 이 `plugin` / `vendored` / `unmapped` 이거나,
+`transitive` / 부모·BOM 관리인데 override 를 막은 사실이 잔여의 `detail` 에 있다(분류자·jar 아님, 루트 pom 비상속 모듈, 모듈의 직접 선언 버전,
+넣을 줄 없음, 이미 있는 관리 항목). `no_candidate_version` → 잔여의 `detail` 에 저장소가 준 버전 목록과 제외 이유(힌트 없음 포함)가 있다.
 
 ## 7. 설정 키 (`remediation:` 절, `config/default.yml` 에 한국어 설명)
 
@@ -132,17 +166,17 @@ planner 가 만들지 않는다. 자동으로 하지 않는 것(잔여·수동 �
 |---|---|
 | `remediation.max_upload_mb` / `remediation.max_entries` / `remediation.max_unpacked_mb` / `remediation.max_entry_mb` / `remediation.max_compression_ratio` | ZIP 한도(압축률은 풀린 크기 1 MiB 이상 항목만) |
 | `remediation.trusted_projects` | 신뢰 프로젝트 확인. Maven 이 올라온 프로젝트의 플러그인 코드를 서버에서 실행하므로, 운영자가 확인하고 true 로 바꿔야 접수한다(기본 false = 접수 안 함) |
-| `remediation.require_approval` | false = 위험 부류만 승인 대기, true = 모든 제안 |
-| `remediation.always_approve` | 늘 승인이 필요한 부류 |
-| `remediation.max_rounds` | 계획 → 적용 → 빌드 → 재검사 반복 한도 |
-| `remediation.failed_candidate` | 후보 빌드 실패 정책(지금은 `discard` 하나) |
+| `remediation.require_approval` | false(기본) = 위험 부류만 승인 대기, true = 모든 제안 |
+| `remediation.always_approve` | 늘 승인이 필요한 부류(기본 major, parent, bom, managed_override). `managed_override` 제안은 여기서 빼도 승인을 기다린다 |
+| `remediation.max_rounds` | 계획 → 적용 → 빌드 → 재검사 반복 한도(기본 3) |
+| `remediation.failed_candidate` | 후보 빌드 실패 정책: `include`(기본, 실패한 수정본도 결과 ZIP 으로) / `discard`(넣지 않음). 2절 |
 | `remediation.project_maven_config` | `.mvn/maven.config` · `jvm.config` · `extensions.xml` 발견 시 refuse / ignore(Maven 3.9 는 끌 수 없어 기본 refuse) |
 | `remediation.maven_wrapper` | `mvnw` 발견 시(서버 Maven 만 쓰므로 기본 ignore) |
 | `remediation.allowed_repository_hosts` | 승인된 저장소 호스트. 비우면 서버 settings.xml 의 미러·저장소 호스트 |
 | `remediation.foreign_repository` | pom 이 승인되지 않은 호스트 저장소를 선언했을 때 |
 | `remediation.build_timeout_minutes` | package 빌드 한 번의 한도 |
 | `remediation.ivas_timeout_seconds` / `remediation.ivas_upload_timeout_seconds` | IVAS 요청 / 업로드 한도 |
-| `remediation.ivas_poll_seconds` / `remediation.ivas_analysis_timeout_minutes` | 상태 조회 간격 / 분석 대기 한도(넘으면 미완료) |
+| `remediation.ivas_poll_seconds` / `remediation.ivas_analysis_timeout_minutes` | 상태 조회 간격 / 분석 대기 한도(기본 30분 = 1,800초, 넘으면 미완료 — 0건이 아니다) |
 | `remediation.ivas_page_size` | 결과 한 쪽 크기 |
 | `remediation.ivas_project_prefix` | IVAS 프로젝트 이름 앞머리 |
 | `remediation.policy.pins` | "g:a" → 이 버전으로만(부모·BOM 좌표면 그 버전 변경 제안) |
@@ -159,8 +193,9 @@ Maven 쪽은 이관과 같은 키를 쓴다: `build.mvn`, `build.java_home`, `bu
 | IVAS 응답 필드·경로·상태 코드·완전성 규칙 | `sbmig/remediations/ivas.py` (`PAGE_PATHS`, `ANALYSIS_ID_KEYS`, `IN_PROGRESS`, `_library_finding`, `_reconcile`) |
 | ZIP 접수 규칙, 실행 경계, 전달 ZIP 모양 | `sbmig/remediations/intake.py` (`check_boundary`, `freeze_delivery`) |
 | 새 출처(origin) 판정, 발견 항목 ↔ pom 줄 연결 | `sbmig/remediations/inventory.py` |
-| 버전 고르기, 승인 부류, 정책 해시, 승인 검증 | `sbmig/remediations/planner.py` (`_choose_target`, `plan_round`, `policy_hash`, `validate_decision`) |
-| 글자 치환, "버전 글자만" · "해석 = 계획" 검증 | `sbmig/remediations/apply.py` |
+| 버전 고르기, 승인 부류, override 를 낼지·잔여로 둘지, 정책 해시, 승인 검증 | `sbmig/remediations/planner.py` (`_choose_target`, `_override_change`, `plan_round`, `policy_hash`, `validate_decision`) |
+| 글자 치환, override 항목의 모양·자리, "계획한 것만" · "해석 = 계획" 검증 | `sbmig/remediations/apply.py` (`render_override`, `locate_override`, `verify_text_only`) |
+| 실패한 후보를 낼지(include / discard), 검증된 ZIP 보존 | `sbmig/remediations/graph.py` (`_build`, `deliver_failed_candidate`, `discard_candidate`) |
 | Maven 명령·준비 조건·해석 읽기 | `sbmig/remediations/maven.py` |
 | 노드 순서, 멈춤·재개, 성공 판정 | `sbmig/remediations/graph.py` (`_evaluate`, `_Holder.scan`) |
 | 보고서 문장·다음 할 일 | `sbmig/remediations/report.py` |

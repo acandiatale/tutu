@@ -6,13 +6,34 @@ import types
 import pytest
 
 from sbmig.core.config import RemediationConfig, RemediationPolicyConfig
+from sbmig.remediations import apply as A
 from sbmig.remediations import planner as P
 from sbmig.remediations.interfaces import VersionSource
-from sbmig.remediations.models import (D_AUTO, D_PENDING, K_BOM_VERSION, K_DIRECT_VERSION, K_OWN_MANAGEMENT_VERSION,
-                                       K_PARENT_VERSION, K_PROPERTY_VERSION, O_BOM_MANAGED, O_DIRECT_LITERAL,
-                                       O_DIRECT_PROPERTY, O_OWN_MANAGEMENT, O_PARENT_MANAGED, O_PLUGIN, O_TRANSITIVE,
-                                       O_UNMAPPED, O_VENDORED, ApprovalMismatch, Decision, Inventory, InventoryItem,
-                                       PomLocation)
+from sbmig.remediations.models import (
+    D_AUTO,
+    D_PENDING,
+    E_INSERT,
+    K_BOM_VERSION,
+    K_DIRECT_VERSION,
+    K_MANAGED_OVERRIDE,
+    K_OWN_MANAGEMENT_VERSION,
+    K_PARENT_VERSION,
+    K_PROPERTY_VERSION,
+    O_BOM_MANAGED,
+    O_DIRECT_LITERAL,
+    O_DIRECT_PROPERTY,
+    O_OWN_MANAGEMENT,
+    O_PARENT_MANAGED,
+    O_PLUGIN,
+    O_TRANSITIVE,
+    O_UNMAPPED,
+    O_VENDORED,
+    ApprovalMismatch,
+    Decision,
+    Inventory,
+    InventoryItem,
+    PomLocation,
+)
 
 POM = """<project>
   <parent>
@@ -190,21 +211,25 @@ def test_own_management_kinds(project):
     assert _plan(project, [prop], source=src).proposals[0].kind == K_PROPERTY_VERSION
 
 
-def test_transitive_is_manual(project):
+def test_transitive_gets_an_override_proposal(project):
     item = InventoryItem(ga="example:t", version="1.0", origin=O_TRANSITIVE, patched_versions=["1.1"],
-                         via=["example:lib:1.2.3"])
-    r = _plan(project, [item], source=FakeSource({"example:t": ["1.1"]})).residuals[0]
-    assert r.reason == "manual_review" and "transitive via example:lib:1.2.3" in r.detail
+                         via=["example:lib:1.2.3"], finding_ids=["CVE-T"])
+    (p,) = _plan(project, [item], source=FakeSource({"example:t": ["1.1"]})).proposals
+    assert (p.kind, p.from_version, p.to_version, p.risks) == (K_MANAGED_OVERRIDE, "1.0", "1.1", ["managed_override"])
+    assert p.requires_approval and p.decision == D_PENDING and p.evidence == "repository:nexus.invalid"
+    assert "pins the transitive dependency brought by example:lib:1.2.3" in p.note
+    assert "will NOT move this version any more" in p.note and "must remove the override" in p.note
 
 
-def test_managed_without_pin_is_residual(project):
+def test_managed_without_pin_gets_an_override_proposal(project):
     known = InventoryItem(ga="example:m", version="1.0", origin=O_PARENT_MANAGED, patched_versions=["1.1"],
                           manager="example:parent:1.0.0", manager_location=PomLocation("pom.xml", L_PARENT, "1.0.0"))
     unknown = InventoryItem(ga="example:n", version="1.0", origin=O_BOM_MANAGED, patched_versions=["1.1"])
     plan = _plan(project, [known, unknown], source=FakeSource({"example:m": ["1.1"], "example:n": ["1.1"]}))
-    assert not plan.proposals
-    reasons = {r.ga: r.reason for r in plan.residuals}
-    assert reasons == {"example:m": "manual_review", "example:n": "unknown_provenance"}
+    assert [(p.ga, p.kind, p.decision) for p in plan.proposals] == [
+        ("example:m", K_MANAGED_OVERRIDE, D_PENDING), ("example:n", K_MANAGED_OVERRIDE, D_PENDING)]
+    assert "overrides the version managed by example:parent:1.0.0" in plan.proposals[0].note
+    assert "a parent / BOM outside the project" in plan.proposals[1].note and not plan.residuals
 
 
 def test_managed_with_pinned_manager_proposes_parent_version(project):
@@ -450,3 +475,180 @@ def test_range_hint_is_no_candidate_naming_the_raw_hint(project):
     assert not plan.proposals
     r = plan.residuals[0]
     assert r.reason == "no_candidate_version" and "[1.2.5,2.0)" in r.detail
+
+
+# ------------------------------------------------------------------------------------------------- managed overrides
+DM_POM = """<project>
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>example</groupId>
+  <artifactId>app</artifactId>
+  <version>1.0.0</version>
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>example</groupId>
+        <artifactId>bom</artifactId>
+        <version>1.0</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+  <dependencies>
+    <dependency>
+      <groupId>example</groupId>
+      <artifactId>lib</artifactId>
+    </dependency>
+  </dependencies>
+</project>
+"""
+
+
+def _trans(ga="example:t", version="1.0", hints=("1.1",), modules=(), via=("example:lib:1.2.3",), fid="CVE-T", reason=""):
+    return InventoryItem(ga=ga, version=version, origin=O_TRANSITIVE, patched_versions=list(hints), via=list(via),
+                         finding_ids=[fid], modules=list(modules), reason=reason)
+
+
+def _write(tmp_path, text, name="pom.xml"):
+    f = tmp_path / name
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text(text)
+    return tmp_path
+
+
+def test_override_into_existing_management_section(tmp_path):
+    proj = _write(tmp_path, DM_POM)
+    (p,) = _plan(proj, [_trans()], source=FakeSource({"example:t": ["1.1"]})).proposals
+    (e,) = p.edits
+    assert (e.op, e.pom, e.line, e.old, e.anchor) == (E_INSERT, "pom.xml", 15, "", "</dependencies>")
+    assert e.override == {"groupId": "example", "artifactId": "t", "version": "1.1"}
+    assert e.new == ("      <dependency>\n        <groupId>example</groupId>\n        <artifactId>t</artifactId>\n"
+                     "        <version>1.1</version>\n      </dependency>\n")
+    assert p.diff == A.render_diff(proj, [e]) and "+        <version>1.1</version>" in p.diff
+    assert p.proposal_hash == p.compute_hash()
+    assert (proj / "pom.xml").read_text() == DM_POM                    # planning never writes
+
+
+def test_override_section_before_dependencies_build_or_project_end(tmp_path):
+    src = FakeSource({"example:t": ["1.1"]})
+    (p,) = _plan(_write(tmp_path, POM), [_trans()], source=src).proposals       # POM: <dependencies> at line 10
+    e = p.edits[0]
+    assert (e.line, e.anchor) == (10, "<dependencies>") and e.new.startswith("  <dependencyManagement>\n    <dependencies>\n")
+    build = "<project>\n  <modelVersion>4.0.0</modelVersion>\n  <build>\n  </build>\n</project>\n"
+    e = _plan(_write(tmp_path, build), [_trans()], source=src).proposals[0].edits[0]
+    assert (e.line, e.anchor) == (3, "<build>")
+    bare = "<project>\n\t<modelVersion>4.0.0</modelVersion>\n</project>\n"
+    e = _plan(_write(tmp_path, bare), [_trans()], source=src).proposals[0].edits[0]
+    assert (e.line, e.anchor) == (3, "</project>") and e.new.startswith("\t<dependencyManagement>\n\t\t<dependencies>\n")
+
+
+def test_existing_root_entry_uses_the_replace_route(tmp_path):
+    pom = DM_POM.replace("      <dependency>\n        <groupId>example</groupId>\n        <artifactId>bom</artifactId>",
+                         "      <dependency>\n        <groupId>example</groupId>\n        <artifactId>t</artifactId>"
+                         "\n        <version>1.0</version>\n      </dependency>\n"
+                         "      <dependency>\n        <groupId>example</groupId>\n        <artifactId>bom</artifactId>")
+    proj = _write(tmp_path, pom)
+    (p,) = _plan(proj, [_trans()], source=FakeSource({"example:t": ["1.1"]})).proposals
+    assert p.kind == K_OWN_MANAGEMENT_VERSION and p.edits[0].op == "replace" and p.edits[0].line == 11
+    assert p.decision == D_AUTO and "existing <dependencyManagement> entry" in p.note
+    # an entry with a version that is not the resolved plain text: never a second entry
+    proj = _write(tmp_path, pom.replace("<version>1.0</version>\n      </dependency>", "<version>${ext}</version>\n      </dependency>", 1))
+    plan = _plan(proj, [_trans()], source=FakeSource({"example:t": ["1.1"]}))
+    assert not plan.proposals and plan.residuals[0].reason == "manual_review"
+    assert "a second entry is never added" in plan.residuals[0].detail
+
+
+def test_override_always_needs_approval(tmp_path):
+    proj = _write(tmp_path, DM_POM)
+    cfg = _cfg(always_approve=[], require_approval=False)
+    (p,) = _plan(proj, [_trans()], cfg=cfg, source=FakeSource({"example:t": ["1.1"]})).proposals
+    assert p.requires_approval and p.decision == D_PENDING and p.risks == ["managed_override"]
+    assert "never applied automatically" in p.note
+
+
+def test_override_major_flag(tmp_path):
+    proj = _write(tmp_path, DM_POM)
+    (p,) = _plan(proj, [_trans(hints=("2.0",))], source=FakeSource({"example:t": ["2.0"]})).proposals
+    assert p.risks == ["major", "managed_override"] and p.to_version == "2.0"
+
+
+def test_override_without_hint_or_candidate_is_residual(tmp_path):
+    proj = _write(tmp_path, DM_POM)
+    plan = _plan(proj, [_trans(hints=())], source=FakeSource({"example:t": ["1.1"]}))
+    assert not plan.proposals and plan.residuals[0].reason == "no_candidate_version"
+    plan = _plan(proj, [_trans(hints=("1.2",))], source=FakeSource({"example:t": ["1.1"]}))
+    assert not plan.proposals and plan.residuals[0].reason == "no_candidate_version"
+
+
+def test_single_line_pom_is_residual(tmp_path):
+    proj = _write(tmp_path, "<project><modelVersion>4.0.0</modelVersion></project>\n")
+    plan = _plan(proj, [_trans()], source=FakeSource({"example:t": ["1.1"]}))
+    assert not plan.proposals and plan.residuals[0].reason == "manual_review"
+    assert "cannot place an override entry safely" in plan.residuals[0].detail
+    one = DM_POM.replace("      </dependency>\n    </dependencies>", "      </dependency></dependencies>")
+    plan = _plan(_write(tmp_path, one), [_trans()], source=FakeSource({"example:t": ["1.1"]}))
+    assert "cannot place an override entry safely" in plan.residuals[0].detail
+
+
+ROOT = ("<project>\n  <modelVersion>4.0.0</modelVersion>\n  <groupId>example</groupId>\n  <artifactId>root</artifactId>\n"
+        "  <version>1.0.0</version>\n  <packaging>pom</packaging>\n  <modules>\n    <module>core</module>\n"
+        "    <module>other</module>\n  </modules>\n</project>\n")
+
+
+def _mod(name, parent="root", deps=""):
+    return (f"<project>\n  <parent>\n    <groupId>example</groupId>\n    <artifactId>{parent}</artifactId>\n"
+            f"    <version>1.0.0</version>\n  </parent>\n  <artifactId>{name}</artifactId>\n"
+            f"  <dependencies>\n{deps}  </dependencies>\n</project>\n")
+
+
+def test_module_not_inheriting_from_the_root_is_residual(tmp_path):
+    _write(tmp_path, ROOT)
+    _write(tmp_path, _mod("core"), "core/pom.xml")
+    _write(tmp_path, _mod("other", parent="external-parent"), "other/pom.xml")
+    src = FakeSource({"example:t": ["1.1"]})
+    (p,) = _plan(tmp_path, [_trans(modules=["core"])], source=src).proposals
+    assert p.kind == K_MANAGED_OVERRIDE and p.edits[0].pom == "pom.xml" and p.edits[0].anchor == "</project>"
+    plan = _plan(tmp_path, [_trans(modules=["core", "other"])], source=src)
+    assert not plan.proposals and "other do not inherit from the root pom.xml" in plan.residuals[0].detail
+
+
+def test_declared_version_in_a_module_is_residual(tmp_path):
+    _write(tmp_path, ROOT)
+    dep = ("    <dependency>\n      <groupId>example</groupId>\n      <artifactId>m</artifactId>\n"
+           "      <version>${ext.version}</version>\n    </dependency>\n")
+    _write(tmp_path, _mod("core", deps=dep), "core/pom.xml")
+    _write(tmp_path, _mod("other"), "other/pom.xml")
+    item = InventoryItem(ga="example:m", version="1.0", origin=O_PARENT_MANAGED, patched_versions=["1.1"], modules=["core"])
+    plan = _plan(tmp_path, [item], source=FakeSource({"example:m": ["1.1"]}))
+    assert not plan.proposals and "a declared version wins" in plan.residuals[0].detail
+
+
+def test_classifier_variant_is_residual(tmp_path):
+    proj = _write(tmp_path, DM_POM)
+    plan = _plan(proj, [_trans(reason="type/classifier variant (test-jar/tests)")], source=FakeSource({"example:t": ["1.1"]}))
+    assert not plan.proposals and "non-jar type or with a classifier" in plan.residuals[0].detail
+
+
+def test_two_overrides_in_one_round(tmp_path):
+    src = FakeSource({"example:t": ["1.1"], "example:u": ["2.1"]})
+    for text in (DM_POM, POM):
+        proj = _write(tmp_path, text)
+        plan = _plan(proj, [_trans(), _trans(ga="example:u", version="2.0", hints=("2.1",), fid="CVE-U")], source=src)
+        a, b = plan.proposals
+        assert [a.id, b.id] == ["p-1-1", "p-1-2"] and a.edits[0].line == b.edits[0].line      # both against the original
+        assert a.diff == A.render_diff(proj, a.edits) and b.diff == A.render_diff(proj, b.edits)
+        for p in (a, b):
+            p.decision = "approved"
+        res = A.apply_proposals(proj, [b, a])                            # order given does not matter: by proposal id
+        assert res.applied == ["p-1-2", "p-1-1"] and not res.skipped
+        out = (proj / "pom.xml").read_text()
+        assert out.count("<dependencyManagement>") == 1
+        assert out.index("<artifactId>t</artifactId>") < out.index("<artifactId>u</artifactId>")
+
+
+def test_same_artifact_at_two_versions_is_one_override(tmp_path):
+    proj = _write(tmp_path, DM_POM)
+    src = FakeSource({"example:t": ["1.1", "1.2"]})
+    plan = _plan(proj, [_trans(), _trans(version="1.0.5", hints=("1.2",), fid="CVE-T2")], source=src)
+    (p,) = plan.proposals
+    assert p.to_version == "1.2" and p.edits[0].override["version"] == "1.2" and p.finding_ids == ["CVE-T", "CVE-T2"]

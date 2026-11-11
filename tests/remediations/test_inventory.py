@@ -416,3 +416,18 @@ def test_patched_versions_normalized_per_finding(tmp_path):
     it = only(build_inventory(p, fs, model({".": [], "core": [rdep(LIB, "1.2.3")]})))
     # one entry per distinct finding hint (findings AND together); the versions inside one entry are alternatives
     assert it.patched_versions == ["1.2.7.1, 1.3.4.2", "1.2.9", "[1.2.5,2.0)"]
+
+
+def test_classifier_or_type_variant_is_marked_for_the_planner(tmp_path):
+    from sbmig.remediations.inventory import VARIANT_MARK
+    p = write(tmp_path, {"pom.xml": root_pom(modules=("core", "web")),
+                         "core/pom.xml": module_pom("core", dep("example", "a", "1")),
+                         "web/pom.xml": module_pom("web", dep("example", "b", "1"))})
+    variant = rdep(LIB, "1.2.3", direct=False, path=["example:b:1"])
+    variant.type, variant.classifier = "test-jar", "tests"
+    resolved = model({"core": [rdep(LIB, "1.2.3", direct=False, path=["example:a:1"])], "web": [variant]})
+    it = only(build_inventory(p, [finding("CVE-1")], resolved))
+    assert it.origin == O_TRANSITIVE and VARIANT_MARK in it.reason and "web" in it.reason
+    # a plain jar everywhere: no mark
+    resolved = model({"core": [rdep(LIB, "1.2.3", direct=False, path=["example:a:1"])]})
+    assert VARIANT_MARK not in only(build_inventory(p, [finding("CVE-1")], resolved)).reason

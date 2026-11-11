@@ -7,8 +7,18 @@ import os
 import pytest
 
 from sbmig.remediations import apply as A
-from sbmig.remediations.models import (K_DIRECT_VERSION, K_PROPERTY_VERSION, ModuleResolution, PackagedLib, Proposal,
-                                       ResolvedDep, ResolvedModel, TextEdit)
+from sbmig.remediations.models import (
+    E_INSERT,
+    K_DIRECT_VERSION,
+    K_MANAGED_OVERRIDE,
+    K_PROPERTY_VERSION,
+    ModuleResolution,
+    PackagedLib,
+    Proposal,
+    ResolvedDep,
+    ResolvedModel,
+    TextEdit,
+)
 
 POM = """<?xml version="1.0" encoding="UTF-8"?>
 <project>
@@ -297,3 +307,178 @@ def test_verify_resolution_packaged_libs():
     assert any("still packages" in x for x in A.verify_resolution([p], before, after, by_name))
     other = [PackagedLib("app/target/app.war", "WEB-INF/lib/lib-1.2.3.jar", "lib-1.2.3.jar", "other:lib", "1.2.3")]
     assert A.verify_resolution([p], before, after, other) == []
+
+
+# ------------------------------------------------------------------------------------------------- override inserts
+DM = """<?xml version="1.0" encoding="UTF-8"?>
+<project>
+  <modelVersion>4.0.0</modelVersion>
+  <properties>
+    <lib.version>2.14.0</lib.version>
+  </properties>
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>example</groupId>
+        <artifactId>managed</artifactId>
+        <version>3.0</version>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+  <dependencies>
+    <dependency>
+      <groupId>example</groupId>
+      <artifactId>lib</artifactId>
+      <version>1.2.3</version>
+    </dependency>
+  </dependencies>
+</project>
+"""
+ENTRY = ("      <dependency>\n        <groupId>example</groupId>\n        <artifactId>t</artifactId>\n"
+         "        <version>1.1</version>\n      </dependency>\n")
+
+
+def _override(pid, project, g="example", a="t", v="1.1"):
+    return Proposal(id=pid, round=1, ga=f"{g}:{a}", from_version="1.0", to_version=v, kind=K_MANAGED_OVERRIDE,
+                    edits=[A.locate_override(project, g, a, v)])
+
+
+@pytest.mark.parametrize("newline,bom", [("\n", b""), ("\r\n", b""), ("\n", codecs.BOM_UTF8), ("\r\n", codecs.BOM_UTF8)])
+def test_insert_keeps_line_endings_and_bom(tmp_path, newline, bom):
+    p = _write(tmp_path / "pom.xml", DM, newline=newline, bom=bom)
+    before = p.read_bytes()
+    prop = _override("p-1-1", tmp_path)
+    e = prop.edits[0]
+    assert (e.line, e.anchor, e.op) == (14, "</dependencies>", E_INSERT)
+    res = A.apply_proposals(tmp_path, [prop])
+    assert res.applied == ["p-1-1"], res.skipped
+    anchor = "    </dependencies>" + newline
+    expected = before.replace(anchor.encode(), (ENTRY.replace("\n", newline) + anchor).encode(), 1)
+    assert p.read_bytes() == expected and p.read_bytes().startswith(bom)
+
+
+def test_render_override_shapes():
+    assert A.render_override("example", "t", "1.1", "      ", "\n", False, "  ") == ENTRY
+    sec = A.render_override("g", "a", "1", "\t", "\r\n", True, "\t")
+    assert sec == ("\t<dependencyManagement>\r\n\t\t<dependencies>\r\n\t\t\t<dependency>\r\n\t\t\t\t<groupId>g</groupId>\r\n"
+                   "\t\t\t\t<artifactId>a</artifactId>\r\n\t\t\t\t<version>1</version>\r\n\t\t\t</dependency>\r\n"
+                   "\t\t</dependencies>\r\n\t</dependencyManagement>\r\n")
+    for bad in (("g<", "a", "1"), ("g", "a b", "1"), ("g", "a", "${v}"), ("g", "a", '1"')):
+        with pytest.raises(A.EditError):
+            A.render_override(*bad, "  ", "\n", False, "  ")
+
+
+@pytest.mark.parametrize("tamper", [
+    lambda e: setattr(e, "new", e.new.replace("<version>1.1</version>", "<version>1.1</version><scope>test</scope>")),
+    lambda e: setattr(e, "new", e.new + "      <!-- extra -->\n"),
+    lambda e: setattr(e, "new", e.new.replace("example</groupId>", "other</groupId>")),
+    lambda e: e.override.update(version="1.1 "),
+    lambda e: e.override.update(extra="x"),
+    lambda e: setattr(e, "old", "1.0"),
+    lambda e: setattr(e, "pom", "sub/pom.xml"),
+    lambda e: setattr(e, "op", "delete"),
+])
+def test_tampered_insert_is_rejected(tmp_path, tamper):
+    p = _write(tmp_path / "pom.xml", DM)
+    _write(tmp_path / "sub" / "pom.xml", DM)
+    prop = _override("p-1-1", tmp_path)
+    tamper(prop.edits[0])
+    res = A.apply_proposals(tmp_path, [prop])
+    assert res.applied == [] and "p-1-1" in res.skipped
+    assert p.read_text() == DM and (tmp_path / "sub" / "pom.xml").read_text() == DM
+
+
+def test_insert_with_moved_anchor_is_skipped(tmp_path):
+    p = _write(tmp_path / "pom.xml", DM)
+    prop = _override("p-1-1", tmp_path)
+    p.write_text(DM.replace("<modelVersion>4.0.0</modelVersion>\n", "<modelVersion>4.0.0</modelVersion>\n  <!-- x -->\n"))
+    changed = p.read_text()
+    res = A.apply_proposals(tmp_path, [prop])
+    assert res.applied == [] and "anchor line changed" in res.skipped["p-1-1"]
+    assert p.read_text() == changed
+
+
+def test_insert_needs_a_managed_override_proposal_and_no_existing_entry(tmp_path):
+    _write(tmp_path / "pom.xml", DM)
+    prop = _override("p-1-1", tmp_path)
+    prop.kind = K_DIRECT_VERSION
+    assert "managed_override proposal only" in A.apply_proposals(tmp_path, [prop]).skipped["p-1-1"]
+    with pytest.raises(A.EditError, match="already has"):
+        A.locate_override(tmp_path, "example", "managed", "3.1")
+    forged = _override("p-1-2", tmp_path)
+    forged.edits[0].override["artifactId"] = "managed"
+    forged.edits[0].new = forged.edits[0].new.replace("<artifactId>t<", "<artifactId>managed<")
+    assert "already has" in A.apply_proposals(tmp_path, [forged]).skipped["p-1-2"]
+
+
+def test_combined_replace_and_inserts_in_one_pom(tmp_path):
+    orig, cand = tmp_path / "orig", tmp_path / "cand"
+    for base in (orig, cand):
+        _write(base / "pom.xml", DM)
+    rep = _prop("p-1-1", [TextEdit("pom.xml", 20, "1.2.3", "1.2.4")])
+    o2, o3 = _override("p-1-2", cand), _override("p-1-3", cand, a="u", v="2.1")
+    assert o2.edits[0].line == o3.edits[0].line == 14                    # both computed against the original file
+    res = A.apply_proposals(cand, [o3, rep, o2])
+    assert sorted(res.applied) == ["p-1-1", "p-1-2", "p-1-3"] and not res.skipped
+    text = (cand / "pom.xml").read_text()
+    assert "<version>1.2.4</version>" in text and text.index("<artifactId>t<") < text.index("<artifactId>u<")
+    assert A.verify_text_only(orig, cand, [rep, o2, o3], ["pom.xml"]) == []
+    # a proposal set missing one insert: the candidate has more than planned
+    assert A.verify_text_only(orig, cand, [rep, o2], ["pom.xml"])
+
+
+def test_two_section_inserts_become_one_section(tmp_path):
+    orig, cand = tmp_path / "orig", tmp_path / "cand"
+    for base in (orig, cand):
+        _write(base / "pom.xml", POM, newline="\r\n")
+    a, b = _override("p-1-1", cand), _override("p-1-2", cand, a="u", v="2.1")
+    assert a.edits[0].anchor == "<dependencies>" and a.edits[0].new.startswith("  <dependencyManagement>\r\n")
+    assert A.apply_proposals(cand, [a, b]).applied == ["p-1-1", "p-1-2"]
+    text = (cand / "pom.xml").read_bytes().decode()
+    assert text.count("<dependencyManagement>") == 1 and text.count("<dependency>") == 3
+    assert A.verify_text_only(orig, cand, [a, b], ["pom.xml"]) == []
+    # only one of them approved: its own section, exactly its diff
+    cand2 = tmp_path / "cand2"
+    _write(cand2 / "pom.xml", POM, newline="\r\n")
+    A.apply_proposals(cand2, [b])
+    assert A.verify_text_only(orig, cand2, [b], ["pom.xml"]) == []
+    assert A.render_diff(orig, b.edits).replace("\r\n", "\n") == A._unified(
+        "pom.xml", (orig / "pom.xml").read_text(), (cand2 / "pom.xml").read_text()).replace("\r\n", "\n")
+
+
+def test_verify_text_only_catches_one_extra_inserted_element(tmp_path):
+    orig, cand = tmp_path / "orig", tmp_path / "cand"
+    for base in (orig, cand):
+        _write(base / "pom.xml", DM)
+    prop = _override("p-1-1", cand)
+    A.apply_proposals(cand, [prop])
+    assert A.verify_text_only(orig, cand, [prop], ["pom.xml"]) == []
+    p = cand / "pom.xml"
+    p.write_text(p.read_text().replace("<version>1.1</version>\n", "<version>1.1</version>\n        <scope>test</scope>\n"))
+    problems = A.verify_text_only(orig, cand, [prop], ["pom.xml"])
+    assert any("more than the planned" in x for x in problems)
+    # the structure check alone also names it (bytes aside)
+    ovs = A._overrides(prop.edits)
+    assert any("not exactly groupId / artifactId / version" in x
+               for x in A._structure_problems("pom.xml", (orig / "pom.xml").read_bytes(), p.read_bytes(), ovs))
+    extra = (orig / "pom.xml").read_text().replace("    </dependencies>\n  </dependencyManagement>",
+                                                   ENTRY + ENTRY.replace(">t<", ">x<") + "    </dependencies>\n"
+                                                   "  </dependencyManagement>")
+    assert A._structure_problems("pom.xml", (orig / "pom.xml").read_bytes(), extra.encode(), ovs) == [
+        "pom.xml: XML element structure changed"]
+
+
+def test_verify_resolution_for_an_override():
+    p = Proposal(id="p-1-1", round=1, ga="example:t", from_version="1.0", to_version="1.1", kind=K_MANAGED_OVERRIDE)
+    before = ResolvedModel(modules=[
+        ModuleResolution(dir="a", group_id="e", artifact_id="a", version="1", dependencies=[_dep("example:t", "1.0", False)]),
+        ModuleResolution(dir="b", group_id="e", artifact_id="b", version="1", dependencies=[_dep("example:x", "3.0")])])
+    good = ResolvedModel(modules=[
+        ModuleResolution(dir="a", group_id="e", artifact_id="a", version="1", dependencies=[_dep("example:t", "1.1", False)]),
+        ModuleResolution(dir="b", group_id="e", artifact_id="b", version="1", dependencies=[_dep("example:x", "3.0")])])
+    assert A.verify_resolution([p], before, good, []) == []
+    still = ResolvedModel.from_dict(before.to_dict())
+    assert any("still resolves at 1.0" in x for x in A.verify_resolution([p], before, still, []))
+    moved = ResolvedModel.from_dict(good.to_dict())
+    moved.modules[1].dependencies = [_dep("example:x", "3.1")]
+    assert any("example:x" in x and not x.startswith("info:") for x in A.verify_resolution([p], before, moved, []))

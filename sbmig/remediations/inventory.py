@@ -69,6 +69,9 @@ _FULL_PROP = re.compile(r"^\$\{([^}]+)\}$")
 _BUILTIN_PREFIXES = ("project.", "pom.", "env.", "settings.", "maven.")
 _BUILTIN_NAMES = {"version", "groupId", "artifactId", "basedir"}
 FILE_KINDS = ("file_component", "file_component_potential")
+# 해석된 의존성이 jar 가 아니거나 분류자(classifier)가 있을 때 reason 에 붙는 표시. planner 는 이 표시가 있는 항목에 관리 버전
+# override 항목(groupId / artifactId / version 뿐인 jar 항목)을 넣지 않는다 — 그 항목은 그 변종을 다스리지 못한다.
+VARIANT_MARK = "type/classifier variant"
 
 
 # ---------------------------------------------------------------------------- lxml 도우미
@@ -743,10 +746,19 @@ def build_inventory(project: Path, findings: list[Finding], resolved: ResolvedMo
                         inv.notes.append(note)
                     results.append((m.dir, _Res(O_UNMAPPED, reason=note)))
                     continue
-                results.append((m.dir, _classify(pp, pf, dep, managed_by)))
+                res = _classify(pp, pf, dep, managed_by)
+                variants = sorted({f"{d.type or 'jar'}/{d.classifier}" for d in m.dependencies
+                                   if d.ga == ga and d.version == version and ((d.type or "jar") != "jar" or d.classifier)})
+                if variants and not res.editable:
+                    res.reason = "; ".join(x for x in [res.reason, f"{VARIANT_MARK} ({', '.join(variants)})"] if x)
+                results.append((m.dir, res))
                 break                                   # 모듈마다 한 번(분류자만 다른 같은 g:a 는 같은 자리)
         if results:
+            marked = sorted({m for m, r in results if VARIANT_MARK in r.reason})
             for it in _group(ga, version, results):
+                # 왜: 다른 모듈의 결과가 이 항목에 합쳐지면 그 모듈의 reason 은 사라진다 — 변종 표시는 남겨야 override 를 막는다
+                if it.origin not in EDITABLE and VARIANT_MARK not in it.reason and set(marked) & set(it.modules):
+                    it.reason = "; ".join(x for x in [it.reason, f"{VARIANT_MARK} in {', '.join(marked)}"] if x)
                 items.append(decorate(it, fs))
             continue
         items.append(decorate(_unresolved(project, resolved, ga, version, fs), fs))

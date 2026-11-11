@@ -948,11 +948,14 @@ class RemediationConfig(BaseModel):
     require_approval: bool = False
     # 설정과 무관하게 늘 승인이 필요한 부류: major(메이저 변경) / parent(부모 pom 버전) / bom(가져온 BOM 버전) /
     # managed_override(부모·BOM 이 관리하는 버전을 프로젝트에서 덮어씀)
+    # managed_override(루트 pom 에 관리 버전 override 항목을 넣는 제안)는 이 목록에서 빼도 늘 승인을 기다린다 — XML 넣기는 자동 적용하지 않는다.
     always_approve: list[str] = Field(default_factory=lambda: ["major", "parent", "bom", "managed_override"])
     max_rounds: int = 3                      # 계획 → 적용 → 빌드 → 재검사 반복 횟수 한도
-    # 후보 빌드가 실패했을 때: discard = 실패한 후보는 결과 ZIP 에 넣지 않는다(전달 ZIP 없음, 원본 보존, 상태 FAILED,
-    # 실패한 변경은 candidate.patch 로만 남긴다). 다른 값은 아직 없다 — 정책을 바꾸려면 여기에 값을 추가한다.
-    failed_candidate: Literal["discard"] = "discard"
+    # 후보 빌드가 실패했을 때(사용자 결정 2026-11-11: 기존 사내 구현처럼 "실패한 수정본도 ZIP 에 포함"):
+    # include(기본) = 실패한 후보 트리를 결과 ZIP 으로 낸다 — 상태는 FAILED, delivery.build_ok=false, 보고서 첫 줄에 "빌드가
+    #   실패한 수정본" 이라고 적고, IVAS 재검사는 하지 않는다. accepted/ 와 원본 ZIP 은 그대로다.
+    # discard = 실패한 후보는 결과 ZIP 에 넣지 않는다(실패한 변경은 candidate.patch 로만; 앞 라운드의 검증된 결과 ZIP 은 남는다).
+    failed_candidate: Literal["include", "discard"] = "include"
     # Maven 실행 경계: 프로젝트가 서버 설정을 우회할 수 있는 요소를 발견했을 때 refuse(거부) / ignore(무시하고 기록)
     project_maven_config: Literal["refuse", "ignore"] = "refuse"     # .mvn/maven.config, jvm.config, extensions.xml
     maven_wrapper: Literal["refuse", "ignore"] = "ignore"            # mvnw / .mvn/wrapper — 서버 Maven 만 쓰므로 실행되지 않는다
@@ -965,7 +968,7 @@ class RemediationConfig(BaseModel):
     ivas_timeout_seconds: int = 60           # 요청 하나의 한도(업로드는 ivas_upload_timeout_seconds)
     ivas_upload_timeout_seconds: int = 1800
     ivas_poll_seconds: int = 15              # 분석 상태를 묻는 간격
-    ivas_analysis_timeout_minutes: int = 120  # 이 시간 안에 끝나지 않으면 검사 미완료(0건이 아니다)
+    ivas_analysis_timeout_minutes: int = 30   # 이 시간(1,800초) 안에 끝나지 않으면 검사 미완료(0건이 아니다)
     ivas_page_size: int = 100
     ivas_project_prefix: str = "sbmig"       # IVAS projectNm = <prefix>-<작업 ID>-<baseline|final-rN>
     policy: RemediationPolicyConfig = Field(default_factory=RemediationPolicyConfig)

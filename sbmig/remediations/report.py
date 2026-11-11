@@ -2,7 +2,8 @@
 흐름상 위치: 그래프의 마지막 노드 ``report`` 가 끝 상태(SUCCEEDED / INCOMPLETE / FAILED)에서만 ``write_report`` 를 부른다
 (대기 상태에서는 쓰지 않는다). API 목록은 ``summary`` 의 작은 dict 를 쓴다.
 지켜야 할 것: 비밀 값·토큰·서버 절대 경로를 쓰지 않는다(실행 폴더 기준 상대 경로만); 같은 입력이면 같은 글자(시각을 새로
-찍지 않는다, 정렬 고정); 맨 앞 줄에 상태·이유·다음에 할 일.
+찍지 않는다, 정렬 고정); 맨 앞 줄에 상태·이유·다음에 할 일. 결과 ZIP 이 빌드가 실패한 수정본이면(``delivery.build_ok`` 거짓,
+``remediation.failed_candidate: include``) 제목 바로 아래 첫 줄들에 그 사실·라운드·제안·빌드 로그·재검사 없음·원본 보존을 쓴다.
 
 Remediation report: `report.json` (the state, the scan summaries, per-round plan summaries) and `report.md` (Korean, for
 operators: status, reasons and next steps first). Deterministic for the same input; no secret, no absolute server path.
@@ -75,6 +76,11 @@ _REASON_KO: dict[str, tuple[str, str]] = {
                        "재개하면 멈춘 노드부터 이어서 합니다."),
     "internal_error": ("도구 내부 오류로 멈췄습니다.", "remediation.log 를 운영자에게 전달하세요."),
 }
+# 정책 include 로 실패한 수정본을 결과 ZIP 으로 냈을 때의 candidate_build_failed 문구
+_FAILED_INCLUDED_KO = (("버전을 바꾼 후보가 빌드되지 않았습니다. 결과 ZIP(delivery/result.zip)은 빌드가 실패한 그 수정본이며 IVAS "
+                        "재검사는 하지 않았습니다. 원본은 original/source.zip 으로 그대로 보존됩니다."),
+                       ("rounds/<n>/build.log 와 candidate.patch 를 보고 빌드를 고치거나 버전을 사람이 정하세요. 실패한 수정본을 "
+                        "그대로 배포하지 마세요."))
 _DECISION_KO = {D_AUTO: "자동", D_PENDING: "승인 대기", D_APPROVED: "승인됨", D_REJECTED: "거절됨"}
 
 
@@ -131,13 +137,41 @@ def _plan_summary(plan: RoundPlan | None) -> dict[str, Any] | None:
         return None
     return {"round": plan.round, "source_tree_hash": plan.source_tree_hash, "policy_hash": plan.policy_hash,
             "proposals": [{"id": p.id, "ga": p.ga, "from": p.from_version, "to": p.to_version, "kind": p.kind,
-                           "risks": sorted(p.risks), "decision": p.decision, "evidence": p.evidence,
+                           "risks": sorted(p.risks), "decision": p.decision, "evidence": p.evidence, "note": p.note,
                            "finding_ids": list(p.finding_ids), "proposal_hash": p.proposal_hash} for p in plan.proposals],
             "residuals": [r.to_dict() for r in plan.residuals], "notes": list(plan.notes)}
 
 
 def _delivery_matches(state: RemediationState, final: ScanResult | None) -> bool:
     return bool(state.delivery and final is not None and final.zip_sha256 == state.delivery.sha256)
+
+
+def _failed_delivery(state: RemediationState) -> bool:
+    """결과 ZIP 이 빌드가 실패한 수정본인가(정책 include)."""
+    return bool(state.delivery is not None and not state.delivery.build_ok)
+
+
+def _verified_kept(paths: RunPaths) -> dict[str, Any] | None:
+    """실패한 수정본에 result.zip 자리를 내준 앞 라운드의 검증된 ZIP(``delivery/result-r<k>-verified.zip``) 정보."""
+    from .graph import find_verified_zip  # graph 가 이 모듈을 늦게 부른다 — 여기서도 늦게 불러 순환을 피한다
+    z = find_verified_zip(paths)
+    if z is None:
+        return None
+    data = read_json(z.with_suffix(".json"))
+    data = data if isinstance(data, dict) else {}
+    try:
+        rel = paths.rel(z)
+    except ValueError:
+        rel = z.name
+    return {"path": rel, "sha256": data.get("sha256", ""), "round": data.get("round", 0), "size": data.get("size", 0)}
+
+
+def _delivery_dict(state: RemediationState) -> dict[str, Any] | None:
+    d = state.delivery
+    if d is None:
+        return None
+    return {"path": d.path, "sha256": d.sha256, "size": d.size, "round": d.round, "build_ok": d.build_ok,
+            "scanned": d.scanned}
 
 
 def build_report_json(state: RemediationState, paths: RunPaths) -> dict[str, Any]:
@@ -154,7 +188,8 @@ def build_report_json(state: RemediationState, paths: RunPaths) -> dict[str, Any
     data = {"schema": REPORT_SCHEMA, "state_schema": SCHEMA, "state": state.to_dict(),
             "baseline_scan": _scan_summary(base, state.baseline_scan),
             "final_scan": _scan_summary(final, state.final_scan),
-            "delivery_matches_scanned_zip": _delivery_matches(state, final), "rounds": rounds}
+            "delivery_matches_scanned_zip": _delivery_matches(state, final), "delivery": _delivery_dict(state),
+            "verified_delivery": _verified_kept(paths), "rounds": rounds}
     return _clean_json(data, _roots(paths))
 
 
@@ -170,6 +205,8 @@ def _earlier_delivery(state: RemediationState) -> bool:
 
 def _reason_text(state: RemediationState, code: str) -> tuple[str, str]:
     meaning, step = _REASON_KO[code]
+    if code == "candidate_build_failed" and _failed_delivery(state):
+        return _FAILED_INCLUDED_KO
     if _earlier_delivery(state) and code in ("candidate_build_failed", "text_only_violation", "resolution_mismatch"):
         d = state.delivery
         meaning = (meaning.split(".")[0] + ". 실패한 라운드의 후보는 버렸습니다. 전달 ZIP(delivery/result.zip)은 라운드 "
@@ -196,6 +233,20 @@ def build_report_md(state: RemediationState, paths: RunPaths) -> str:
     L: list[str] = []
     L.append(f"# 취약점 조치 보고서 — {state.name or state.id}")
     L.append("")
+    if _failed_delivery(state):
+        d = state.delivery
+        rs = next((x for x in state.rounds if x.round == d.round), None)
+        ids = ", ".join(rs.applied) if rs and rs.applied else "-"
+        blog = (rs.build.log if rs and rs.build and rs.build.log else f"rounds/{d.round}/build.log")
+        L.append(f"> **주의: 결과 ZIP(`{d.path}`)은 빌드가 실패한 수정본입니다.** 라운드 {d.round} 의 후보 빌드가 실패했고, "
+                 f"그 수정본(적용한 제안: {ids})을 그대로 담았습니다. 빌드 로그: `{blog}`.")
+        L.append("> 이 ZIP 은 IVAS 재검사를 하지 않았습니다. 올린 원본은 `original/source.zip` (내려받기 이름 source.zip)으로 "
+                 "그대로 보존됩니다.")
+        kept = _verified_kept(paths)
+        if kept:
+            L.append(f"> 앞 라운드 {kept['round']} 에서 빌드·재검사를 마친 ZIP 은 `{kept['path']}` "
+                     "(내려받기 이름 result-verified.zip)으로 남아 있습니다.")
+        L.append("")
     L.append(f"- 상태: **{state.status}** ({_STATUS_KO.get(state.status, state.status)})")
     codes = state.reasons or ([state.reason] if state.reason else [])
     if codes:
@@ -250,6 +301,11 @@ def build_report_md(state: RemediationState, paths: RunPaths) -> str:
                 L.append(f"| {_md_cell(p.id)} | `{_md_cell(p.ga)}` | {_md_cell(p.from_version)} → {_md_cell(p.to_version)} "
                          f"| {_md_cell(p.kind)} | {_md_cell(', '.join(sorted(p.risks)))} "
                          f"| {_md_cell(_DECISION_KO.get(p.decision, p.decision))} | {_md_cell(p.evidence)} |")
+            # 제안의 주의 문장(note)은 표 아래에 그대로: 속성 하나가 다른 라이브러리도 정한다는 사실, override 항목은 부모·BOM 이
+            # 따라잡으면 담당자가 지워야 한다는 안내가 여기로 온다 — 표 칸에 넣기에는 길다
+            for p in plan.proposals:
+                if p.note:
+                    L.append(f"- 주의 `{_md_cell(p.id)}`: {_md_cell(p.note)}")
         L.append(f"- 적용한 제안: {', '.join(rs.applied) if rs.applied else '없음'}")
         if rs.build is not None:
             L.append(f"- 후보 빌드: {'성공' if rs.build.ok else '실패'}" + (f" (로그 `{rs.build.log}`)" if rs.build.log else ""))
@@ -271,13 +327,20 @@ def build_report_md(state: RemediationState, paths: RunPaths) -> str:
     else:
         L.append(f"- 파일: `{d.path}` ({d.size} 바이트, 파일 {d.files}개, 라운드 {d.round})")
         L.append(f"- sha256: `{d.sha256}`")
+        L.append(f"- 빌드 성공(build_ok): {'예' if d.build_ok else '아니오 — 빌드가 실패한 수정본입니다'}")
+        L.append(f"- 이 ZIP 을 재검사했는가(scanned): {'예' if d.scanned else '아니오'}")
         L.append(f"- 최종 검사한 ZIP 과 sha256 이 같은가: {'예' if _delivery_matches(state, final) else '아니오'}")
+        kept = _verified_kept(paths)
+        if kept:
+            L.append(f"- 앞 라운드 {kept['round']} 의 검증된 ZIP: `{kept['path']}` (sha256 `{kept['sha256']}`)")
         if _earlier_delivery(state):
             last = max(rs.round for rs in state.rounds)
             L.append(f"- 주의: 이 ZIP 은 라운드 {d.round} 에서 빌드·재검사를 마친 상태입니다. 라운드 {last} 의 실패한 변경은 "
                      "들어 있지 않습니다(그 변경은 rounds/<n>/candidate.patch 에만 남습니다).")
     if final is not None:
         L.append(f"- 최종 검사: `{state.final_scan}` · 완료 {'예' if final.complete else '아니오'} · 발견 {len(final.findings)}건")
+        if _failed_delivery(state):
+            L.append("  - 이 검사는 앞 라운드의 ZIP 을 검사한 것이며, 빌드가 실패한 지금의 결과 ZIP 을 검사한 것이 아닙니다.")
         if final.findings:
             L.append("")
             L.append("| 취약점 | 종류 | 대상 | 버전 |")
@@ -334,7 +397,8 @@ def summary(state: RemediationState) -> dict[str, Any]:
             "reasons": list(state.reasons), "node": state.node, "next_node": state.next_node, "round": state.round,
             "created": state.created, "updated": state.updated, "counts": dict(sorted(state.counts.items())),
             "require_approval": state.require_approval,
-            "delivery": {"sha256": d.sha256, "size": d.size, "round": d.round} if d else None}
+            "delivery": {"sha256": d.sha256, "size": d.size, "round": d.round, "build_ok": d.build_ok,
+                         "scanned": d.scanned} if d else None}
 
 
 __all__ = ["build_report_json", "build_report_md", "summary", "write_report"]

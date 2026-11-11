@@ -131,3 +131,53 @@ def test_report_scrubs_secret_env_values_without_the_output_hook(tmp_path, monke
     report.write_report(state, paths)
     text = paths.report_md.read_text(encoding="utf-8") + paths.report_json.read_text(encoding="utf-8")
     assert "s3cr3t-report-value" not in text and "nexus.invalid" in text
+
+
+def test_failed_candidate_included_report_says_so_first(tmp_path):
+    out, paths = _run(tmp_path, **_fixing(maven=FakeMaven(outcomes=[True, False])))
+    assert out.status == FAILED and out.delivery is not None and not out.delivery.build_ok
+    md = paths.report_md.read_text(encoding="utf-8")
+    lines = md.splitlines()
+    assert lines[0].startswith("# 취약점 조치 보고서")
+    head = "\n".join(lines[1:5])
+    assert "빌드가 실패한 수정본" in head and "라운드 1" in head and "p-1-1" in head
+    assert "rounds/1/build.log" in head and "재검사를 하지 않았습니다" in head and "source.zip" in head
+    assert "빌드 성공(build_ok): 아니오" in md and "재검사했는가(scanned): 아니오" in md
+    assert "결과 ZIP 은 없고" not in md
+    data = json.loads(paths.report_json.read_text(encoding="utf-8"))
+    assert data["delivery"]["build_ok"] is False and data["delivery"]["scanned"] is False
+    assert data["verified_delivery"] is None
+    s = report.summary(out)
+    assert s["delivery"]["build_ok"] is False and s["delivery"]["scanned"] is False
+
+
+def test_failed_candidate_discarded_report_has_no_warning_block(tmp_path):
+    out, paths = _run(tmp_path, cfg=make_cfg(failed_candidate="discard"),
+                      **_fixing(maven=FakeMaven(outcomes=[True, False])))
+    assert out.status == FAILED and out.delivery is None
+    md = paths.report_md.read_text(encoding="utf-8")
+    assert "빌드가 실패한 수정본" not in md and "결과 ZIP 은 없고" in md
+    assert json.loads(paths.report_json.read_text(encoding="utf-8"))["delivery"] is None
+
+
+def test_succeeded_report_shows_build_ok_and_scanned(tmp_path):
+    _out, paths = _run(tmp_path, **_fixing())
+    md = paths.report_md.read_text(encoding="utf-8")
+    assert "빌드 성공(build_ok): 예" in md and "재검사했는가(scanned): 예" in md
+    data = json.loads(paths.report_json.read_text(encoding="utf-8"))
+    assert data["delivery"]["build_ok"] is True and data["delivery"]["scanned"] is True
+
+
+def test_proposal_note_reaches_the_report(tmp_path):
+    """A proposal's note (property governs other artifacts / the override must be removed later) is shown under the table."""
+    from sbmig.remediations.models import K_MANAGED_OVERRIDE, Proposal, RoundPlan, RoundState, RunPaths, RemediationState
+    from sbmig.remediations.models import write_json_atomic
+    from sbmig.remediations.report import build_report_json, build_report_md
+    paths = RunPaths(tmp_path)
+    prop = Proposal(id="p-1-1", round=1, ga="example:lib", from_version="1.0.0", to_version="1.0.1", kind=K_MANAGED_OVERRIDE,
+                    decision="approved", note="the owners must remove the override when the parent catches up")
+    write_json_atomic(paths.plan(1), RoundPlan(round=1, source_tree_hash="t", policy_hash="p", proposals=[prop]).to_dict())
+    state = RemediationState(id="r1", status="INCOMPLETE", rounds=[RoundState(round=1, applied=["p-1-1"])])
+    assert "the owners must remove the override" in build_report_md(state, paths)
+    plans = build_report_json(state, paths)
+    assert "the owners must remove the override" in str(plans)

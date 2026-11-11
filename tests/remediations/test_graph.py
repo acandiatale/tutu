@@ -19,6 +19,7 @@ from sbmig.remediations.models import (
     STOPPED,
     SUCCEEDED,
     BoundaryFinding,
+    BuildOutcome,
     Inventory,
     Residual,
     RoundPlan,
@@ -339,13 +340,128 @@ def test_candidate_build_failure_discards_the_candidate(tmp_path):
     state, paths = make_run(tmp_path)
     before = tree_hash(paths)
     comps = one_fix_components(maven=FakeMaven(outcomes=[True, False]))
-    out, _ = run(state, paths, comps)
+    out, _ = run(state, paths, comps, cfg=make_cfg(failed_candidate="discard"))
     assert out.status == FAILED and out.reason == "candidate_build_failed"
     assert out.delivery is None and not paths.delivery_zip.exists()
     assert tree_hash(paths) == before
     assert "1.1" in paths.patch(1).read_text()
     assert paths.report_md.is_file()
     assert [c.label for c in comps.scan.calls] == ["baseline"]
+
+
+def _zip_files(path):
+    import zipfile
+    with zipfile.ZipFile(path) as zf:
+        return {n: zf.read(n) for n in zf.namelist()}
+
+
+@pytest.mark.parametrize("failure", ["failure", "timeout"])
+def test_candidate_build_failure_is_delivered_by_default(tmp_path, failure):
+    state, paths = make_run(tmp_path)
+    before = tree_hash(paths)
+    orig = paths.original_zip.read_bytes()
+    bad = BuildOutcome(ok=False, exit_code=1, timed_out=failure == "timeout", summary="[ERROR] COMPILATION ERROR")
+    comps = one_fix_components(maven=FakeMaven(outcomes=[True, bad]))
+    out, rec = run(state, paths, comps)
+    assert out.status == FAILED and out.reason == "candidate_build_failed" and out.reasons == ["candidate_build_failed"]
+    d = out.delivery
+    assert d is not None and d.build_ok is False and d.scanned is False and d.round == 1
+    assert paths.delivery_zip.is_file() and file_sha(paths.delivery_zip) == d.sha256
+    files = _zip_files(paths.delivery_zip)
+    assert set(files) == {"pom.xml", "src/main/java/App.java"}
+    assert b"<version>1.1</version>" in files["pom.xml"] and b"<version>1.0</version>" not in files["pom.xml"]
+    assert read_json(paths.delivery_json)["build_ok"] is False
+    # accepted/ stays the last committed state (the original here); the original ZIP is byte-identical
+    assert tree_hash(paths) == before and "<version>1.0</version>" in (paths.accepted / "pom.xml").read_text()
+    assert paths.original_zip.read_bytes() == orig
+    # no rescan of a failed candidate
+    assert [c.label for c in comps.scan.calls] == ["baseline"] and out.final_scan == ""
+    assert "1.1" in paths.patch(1).read_text() and paths.build_log(1).is_file()
+    assert "FAILED" in out.message and "not rescanned" in out.message and "source.zip" in out.message
+    assert any(e.get("event") == "failed_candidate_delivered" for e in rec.events)
+    assert not out.rounds[0].committed
+
+
+def _two_round_components(fail_round_two=True):
+    scan = FakeScanner({"baseline": [scan_result(finding(), finding("example:other", "2.0"))],
+                        "final-r1": [scan_result(finding("example:other", "2.0"))],
+                        "final-r2": [scan_result()]})
+    plan = ScriptedPlanner([
+        RoundPlan(round=1, source_tree_hash="", policy_hash="", proposals=[proposal(1)]),
+        RoundPlan(round=2, source_tree_hash="", policy_hash="",
+                  proposals=[proposal(1, round=2, ga="example:other", old="2.0", new="2.1")])])
+    return make_components(scan=scan, plan=plan, maven=FakeMaven(outcomes=[True, True, not fail_round_two]))
+
+
+def test_round_two_failure_include_keeps_the_verified_round_one_zip(tmp_path):
+    state, paths = make_run(tmp_path, {"pom.xml": POM2})
+    comps = _two_round_components()
+    out, rec = run(state, paths, comps)
+    assert out.status == FAILED and out.reason == "candidate_build_failed"
+    assert out.delivery.round == 2 and not out.delivery.build_ok and not out.delivery.scanned
+    pom = _zip_files(paths.delivery_zip)["pom.xml"]
+    assert b"<version>2.1</version>" in pom and b"<version>1.1</version>" in pom
+    verified = graph.verified_zip_path(paths, 1)
+    assert verified.name == "result-r1-verified.zip" and graph.find_verified_zip(paths) == verified
+    final_r1 = ScanResult.from_dict(read_json(paths.scan("final-r1")))
+    assert file_sha(verified) == final_r1.zip_sha256
+    assert read_json(verified.with_suffix(".json"))["round"] == 1
+    assert b"<version>2.0</version>" in _zip_files(verified)["pom.xml"]
+    # accepted/ is round 1's committed state, not the failed round 2
+    acc = (paths.accepted / "pom.xml").read_text()
+    assert "<version>1.1</version>" in acc and "<version>2.0</version>" in acc
+    assert out.final_scan == "scans/final-r1.json"
+    assert [c.label for c in comps.scan.calls] == ["baseline", "final-r1"]
+    kept = [e for e in rec.events if e.get("event") == "verified_delivery_kept"]
+    assert kept and kept[0]["file"] == "delivery/result-r1-verified.zip"
+    assert "delivery/result-r1-verified.zip" in out.message
+
+
+def test_round_two_failure_discard_keeps_round_one_as_result(tmp_path):
+    state, paths = make_run(tmp_path, {"pom.xml": POM2})
+    comps = _two_round_components()
+    out, rec = run(state, paths, comps, cfg=make_cfg(failed_candidate="discard"))
+    assert out.status == FAILED and out.reason == "candidate_build_failed"
+    assert out.delivery.round == 1 and out.delivery.build_ok and out.delivery.scanned
+    assert file_sha(paths.delivery_zip) == ScanResult.from_dict(read_json(paths.scan("final-r1"))).zip_sha256
+    assert graph.find_verified_zip(paths) is None
+    assert any(e.get("event") == "earlier_delivery_kept" for e in rec.events)
+
+
+def test_text_only_violation_is_never_delivered_under_include(tmp_path):
+    state, paths = make_run(tmp_path)
+    comps = one_fix_components(apply=FakeApply(text_violations=["x changed"]))
+    out, _ = run(state, paths, comps, cfg=make_cfg(failed_candidate="include"))
+    assert out.status == FAILED and out.delivery is None and not paths.delivery_zip.exists()
+
+
+def test_succeeded_delivery_is_built_and_scanned(tmp_path):
+    state, paths = make_run(tmp_path)
+    out, _ = run(state, paths, one_fix_components())
+    assert out.status == SUCCEEDED and out.delivery.build_ok and out.delivery.scanned
+    assert read_json(paths.delivery_json)["scanned"] is True
+
+
+def test_zero_findings_shortcut_is_scanned(tmp_path):
+    state, paths = make_run(tmp_path)
+    out, _ = run(state, paths, make_components())
+    assert out.status == SUCCEEDED and out.delivery.scanned and out.delivery.build_ok
+
+
+@pytest.mark.parametrize("flip", ["build_ok", "scanned_sha"])
+def test_evaluate_requires_build_ok_and_scanned(tmp_path, flip):
+    state, paths = make_run(tmp_path)
+    out, rec = run(state, paths, one_fix_components())
+    assert out.status == SUCCEEDED
+    if flip == "build_ok":
+        out.delivery.build_ok = False
+        expected = "candidate_build_failed"
+    else:
+        out.delivery.sha256 = "0" * 64     # the final scan no longer covers exactly this delivery
+        expected = "zip_hash_mismatch"
+    h = graph._Holder(out, paths, make_cfg(), one_fix_components(), rec.save, rec.journal, rec.stop)
+    assert graph._evaluate(h) == "report"
+    assert out.status == INCOMPLETE and expected in out.reasons and not out.delivery.scanned
 
 
 def test_text_only_violation(tmp_path):

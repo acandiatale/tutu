@@ -483,7 +483,8 @@ preflight / ADF / 내부 오류)이면 3. `SBMIG_FAIL_JOB_ON_BUILD_FAIL=1` 이�
 ## 6. 취약점 조치 (/api/remediations)
 
 올린 Maven 프로젝트 ZIP 을 그대로 빌드하고 IVAS 로 검사한 뒤, 프로젝트 pom 에 적힌 취약 라이브러리의 **버전 글자만** 고쳐 다시 빌드·재검사하고
-결과 ZIP 과 보고서를 낸다(소스·구조는 건드리지 않는다). 계약은 `docs/INTERFACES.md` "remediations (취약점 조치)", LLM 용 설명은
+결과 ZIP 과 보고서를 낸다(소스·구조는 건드리지 않는다). 예외는 하나 — 간접 의존성·부모/BOM 이 관리하는 버전은 루트 pom 의
+`<dependencyManagement>` 에 `<dependency>` 항목 하나(groupId / artifactId / version)를 넣는 제안으로 고치고, 이 제안은 설정과 무관하게 늘 사람 승인을 기다린다. 계약은 `docs/INTERFACES.md` "remediations (취약점 조치)", LLM 용 설명은
 `agent-doc/11-remediations.md`. 지금은 **API 만** 있다(화면 없음).
 
 * **어디서 도나**: 웹 파드(40) 프로세스 안의 작업 스레드다. 빌드 Job(81)을 만들지 않고, 한 번에 한 건만 돌며 나머지는 `QUEUED` 로 기다린다.
@@ -497,12 +498,17 @@ preflight / ADF / 내부 오류)이면 3. `SBMIG_FAIL_JOB_ON_BUILD_FAIL=1` 이�
 * **신뢰 프로젝트 확인(필수)**: Maven 빌드는 올라온 프로젝트의 플러그인 코드를 웹 파드에서 실행한다(보안 격리가 아니다). 운영자가
   "여기에 올라오는 ZIP 은 실행해도 되는 신뢰된 프로젝트" 라고 확인한 뒤 40 의 env 에 `SBMIG_REMEDIATION__TRUSTED_PROJECTS: "true"` 한 줄을
   넣어야 요청을 받는다. 기본은 `false` 이고 매니페스트에는 일부러 넣어 두지 않았다(운영자의 결정).
-* **준비 확인**: `GET /api/remediations/readiness` → `{"ready": …, "missing": [...]}` (값은 절대 보여 주지 않고 이름만: IVAS 세 값, JDK 21, Maven,
+* **준비 확인**: `GET /api/remediations/readiness` → `{"ready": …, "missing": [...]}` (값은 절대 보여 주지 않고 이름만: 신뢰 프로젝트 확인, IVAS 세 값, JDK 21, Maven,
   settings.xml, 승인된 저장소 호스트). 준비가 안 되면 업로드는 503 `not_ready`.
 * **설정**: `config/default.yml` 의 `remediation:` 절(한국어 설명) → 구운 `artifacts.yml` → `SBMIG_REMEDIATION__<키>` env. 사람 승인 스위치
-  `SBMIG_REMEDIATION__REQUIRE_APPROVAL` 는 기본 `false` 다 — 같은 메이저 안의 프로젝트 pom 버전 변경은 승인 없이 적용되고, 메이저·부모·BOM 변경만
-  승인을 기다린다. **운영에서 모든 변경에 사람 승인이 필요하면 `true` 로 명시한다**(아직 정하지 않아 매니페스트에 넣지 않았다. 넣을 때는 웹 파드만
+  `SBMIG_REMEDIATION__REQUIRE_APPROVAL` 는 기본 `false` 다 — 같은 메이저 안의 프로젝트 pom 버전 변경은 승인 없이 적용되고, 메이저·부모·BOM 변경과
+  관리 버전 override 항목 넣기만 승인을 기다린다(override 는 `true` / `false` 와 무관하게 늘). **운영에서 모든 변경에 사람 승인이 필요하면 `true` 로 명시한다**(아직 정하지 않아 매니페스트에 넣지 않았다. 넣을 때는 웹 파드만
   쓰므로 40 의 `env` 에 literal 한 줄로 둔다 — `sbmig-env` 에 넣으면 81 틀에도 줄이 필요해진다).
+* **후보 빌드가 실패하면**(`SBMIG_REMEDIATION__FAILED_CANDIDATE`, 기본 `include`): 실패한 수정본도 `result.zip` 으로 나온다 — 상태 `FAILED`
+  `candidate_build_failed`, 상태 dict 의 `delivery.build_ok` 가 `false`, IVAS 재검사 없음, `report.md` 첫 줄에 "빌드가 실패한 수정본" 경고.
+  올린 원본은 `source.zip` 으로 그대로 남고, 앞 라운드에서 검증을 마친 ZIP 이 있으면 `result-verified.zip` 으로 내려받는다. 실패한 수정본을
+  아예 내지 않으려면 `discard`(값을 정하면 40 의 `env` 에 literal 한 줄). 어느 값이든 "계획한 것만 바뀌었나"·해석 검증에 걸린 후보는 내지 않는다.
+* **IVAS 분석 대기 한도**: `remediation.ivas_analysis_timeout_minutes` 기본 30분(1,800초). 넘으면 검사 미완료(0건이 아니다), 원격 분석은 계속 돈다.
 * **채울 자리**: `k8s/30-secret.example.yaml` 의 `IVAS_BASE_URL`(`https://CHANGE_ME_IVAS_HOST[:port]/<base path>`), `IVAS_USER_ID`(`<IVAS 계정>`),
   `IVAS_PASSWORD`(`<IVAS 비밀번호>`). 그 밖에 조치만을 위한 자리는 없다(`settings.xml` 의 Nexus 주소는 §4 그대로).
 * **재시작**: 웹 파드가 다시 뜨면 `QUEUED` / `RUNNING` 이던 조치는 `INTERRUPTED` 가 된다. 아무것도 자동으로 다시 돌리거나 IVAS 에 다시 올리지

@@ -360,18 +360,25 @@ Then the final build again, the report (Handover first, "Structure review", fix 
   own Maven local repository `<build.local_repo>-remediation`). Upload ZIP → `baseline_build → baseline_scan → inventory → plan →
   apply → build → freeze_delivery → rescan → evaluate → report` with the company's scanner **IVAS** (LabradorLabs; env
   `IVAS_BASE_URL` / `IVAS_USER_ID` / `IVAS_PASSWORD`, Secret only). Hard rules: only approved Maven **version text** changes in existing
-  poms (no source / structure change; transitive, parent- / BOM-managed, plugin, vendored, unmapped → residual / manual review); original
-  ZIP + manifest + `accepted/` kept apart, changes on an isolated candidate first; a failed baseline build never reaches the scan; an
-  uncertain IVAS upload is never re-sent (`AWAITING_CONFIRMATION`), an incomplete scan is never "0 findings"; the frozen delivery ZIP's
-  exact bytes are rescanned; approvals bind proposal hash + source tree hash + policy hash + diff (`AWAITING_APPROVAL` → approvals →
-  resume); a restart turns running jobs into `INTERRUPTED` (explicit resume only); a failed candidate is never in result.zip
-  (`remediation.failed_candidate: discard`). `remediation.trusted_projects` (default false) must be set true by the operator before
-  anything is accepted; `remediation.require_approval` default false (major / parent / bom / managed_override always wait).
-  Contract: `sbmig/remediations/models.py` + `interfaces.py`, `docs/INTERFACES.md` "remediations"; operators: `agent-doc/11-remediations.md`,
-  `deploy/README.md` §6. Tests use fakes only (`tests/remediations/`, no IVAS / Nexus / mvn). Not run against the real IVAS yet. The
-  company has an older implementation with different policies (failed candidate included in the ZIP, risky classes automatic without
-  approval, managed-override XML added for transitives, Nexus candidates without an IVAS patched version) — which of the four to adopt
-  is the user's pending decision (asked 2026-11-11).
+  poms, plus ONE exception — a `managed_override` proposal inserts one fixed-shape `<dependency>` entry into the root pom's
+  `<dependencyManagement>` for a transitive / parent- / BOM-managed library and ALWAYS waits for approval (whatever `require_approval` /
+  `always_approve` say); no source / structure change; plugin, vendored, unmapped → residual / manual review; original ZIP + manifest +
+  `accepted/` kept apart, changes on an isolated candidate first; a failed baseline build never reaches the scan; an uncertain IVAS
+  upload is never re-sent (`AWAITING_CONFIRMATION`), an incomplete scan is never "0 findings"; the frozen delivery ZIP's exact bytes are
+  rescanned; approvals bind proposal hash + source tree hash + policy hash + diff (`AWAITING_APPROVAL` → approvals → resume); a restart
+  turns running jobs into `INTERRUPTED` (explicit resume only). `remediation.trusted_projects` (default false) must be set true by the
+  operator before anything is accepted (Maven runs the project's plugins; not a sandbox); `remediation.require_approval` default false
+  (major / parent / bom always wait). No version is chosen without an IVAS patched-version hint AND evidence from the policy or an
+  approved repository host. Contract: `sbmig/remediations/models.py` + `interfaces.py`, `docs/INTERFACES.md` "remediations"; operators:
+  `agent-doc/11-remediations.md`, `deploy/README.md` §6. Tests use fakes only (`tests/remediations/`, no IVAS / Nexus / mvn). Not run
+  against the real IVAS yet; no UI page. **User decisions 2026-11-11** (after comparing with the company's older implementation —
+  `pipeline.py` / `self_ivas.py`, not in this repo): a candidate whose build failed IS delivered (`failed_candidate: include`:
+  result.zip = the failing change set, `delivery.build_ok=false`, status FAILED, not rescanned, an earlier verified delivery kept as
+  `result-verified.zip`); risky classes always need approval (the old code applied them automatically with `require_approval=false`);
+  override entries for transitives as above; upload limit 1024 MiB, analysis wait 1,800 s, poll 15 s. IVAS facts confirmed by that
+  code: multipart file field `file`, analysis id `lbrdrAnlId` else `analysisId`; the user tested 2026-11-11: three separate logins →
+  three tokens → three uploads at once all accepted (a new login does not revoke earlier tokens; one login per pod is fine). Still open with IVAS: token lifetime, how to check an
+  uncertain upload, `patchedVersion` shape, `actionDivCd` values, what `components.total` counts.
 - **Company convention (2026-10-20): agents run on LangGraph under uvicorn.** `loop.engine: graph` (default) drives
   the phases from a LangGraph `StateGraph` (`sbmig/graph/`, nodes intake → analyze → plan → phase×N → finalize;
   `inline` is the old loop, reports are identical by test); the web UI is FastAPI (`uvicorn sbmig.web.app:app` or

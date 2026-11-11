@@ -155,6 +155,7 @@ def test_submit_runs_to_succeeded_with_fakes(tmp_path, base_cfg):
     st = submit_and_wait(mgr, tmp_path)
     assert st["status"] == SUCCEEDED, st
     assert st["delivery"]["sha256"] and st["pending_approvals"] == 0
+    assert st["delivery"]["build_ok"] is True and st["delivery"]["scanned"] is True
     assert {"report.md", "report.json", "result.zip", "source.zip", "manifest.json", "journal.jsonl",
             "plan-r1.json", "candidate-r1.patch", "scan-baseline.json", "scan-final-r1.json"} <= set(st["files"])
     paths = mgr.paths(st["id"])
@@ -450,6 +451,31 @@ def test_file_whitelist_never_leaves_the_run_dir(tmp_path, base_cfg):
         mgr.file_path("r20000101-000000-abcdef", "report.md")
     log_text = mgr.file_path(rid, "remediation.log").read_text()
     assert "pw-for-tests-only" not in log_text and str(root) not in log_text
+
+
+def test_failed_candidate_is_the_result_zip_and_the_verified_one_is_downloadable(tmp_path, base_cfg):
+    scan = FakeScanner({"baseline": [scan_result(finding(), finding("example:lib", "1.1"))],
+                        "final-r1": [scan_result(finding("example:lib", "1.1"))]})
+    plan = ScriptedPlanner([RoundPlan(round=1, source_tree_hash="", policy_hash="", proposals=[proposal()]),
+                            RoundPlan(round=2, source_tree_hash="", policy_hash="",
+                                      proposals=[proposal(1, round=2, old="1.1", new="1.2")])],
+                           policy_hash=planner_mod.policy_hash(base_cfg))
+    f = Factory(scan=scan, plan=plan, maven=FakeMaven(outcomes=[True, True, False]))
+    mgr = manager(tmp_path, base_cfg, f)
+    st = submit_and_wait(mgr, tmp_path)
+    assert st["status"] == "FAILED" and st["reason"] == "candidate_build_failed", st
+    assert st["delivery"]["build_ok"] is False and st["delivery"]["scanned"] is False and st["delivery"]["round"] == 2
+    assert {"result.zip", "result-verified.zip", "source.zip"} <= set(st["files"])
+    paths = mgr.paths(st["id"])
+    verified = mgr.file_path(st["id"], "result-verified.zip")
+    assert verified is not None and verified.name == "result-r1-verified.zip"
+    assert verified.read_bytes() != paths.delivery_zip.read_bytes()
+
+
+def test_result_verified_is_absent_without_a_failed_candidate(tmp_path, base_cfg):
+    mgr = manager(tmp_path, base_cfg, one_fix(decision="auto", cfg=base_cfg))
+    st = submit_and_wait(mgr, tmp_path)
+    assert "result-verified.zip" not in st["files"] and mgr.file_path(st["id"], "result-verified.zip") is None
 
 
 def test_list_pages_newest_first(tmp_path, base_cfg):

@@ -735,18 +735,14 @@ PLUGIN = ("  <build>\n    <plugins>\n      <plugin>\n        <groupId>example</g
           "  </build>\n")
 
 
-@pytest.mark.parametrize("kind", ["transitive", "bom", "vendored", "vendored-no-top", "plugin"])
+@pytest.mark.parametrize("kind", ["vendored", "vendored-no-top", "plugin"])
 def test_non_editable_findings_are_residual_and_nothing_changes(tmp_path, kind):
+    # transitive / BOM- / parent-managed findings get a managed-override proposal now (test_override_* below)
     world = World(catalog={"example:lib:1.2.3": ["example:deep:0.5"]}, boms={"example:bom:1.0": {"example:lib": "1.2.3"}})
     files: dict[str, str | bytes] = {"pom.xml": war_pom(), **APP}
     vulns: dict[str, Vuln] = {}
     file_vulns = None
-    if kind == "transitive":
-        vulns = {"example:deep:0.5": Vuln("CVE-2026-3003", "0.6")}
-    elif kind == "bom":
-        files["pom.xml"] = BOM_ROOT
-        vulns = dict(LIB_VULN)
-    elif kind.startswith("vendored"):
+    if kind.startswith("vendored"):
         files["src/main/webapp/WEB-INF/lib/vendor-1.0.jar"] = _inner_jar("example", "vendor", "1.0")
         file_vulns = {"WEB-INF/lib/vendor-1.0.jar": ("example:vendor", "1.0", Vuln("CVE-2026-4004", "1.1"))}
     else:
@@ -759,12 +755,83 @@ def test_non_editable_findings_are_residual_and_nothing_changes(tmp_path, kind):
     before = env.tree_hash()
     out = env.run()
     assert out.status == INCOMPLETE and out.reasons == ["residual_findings", "manual_review"], (out.reasons, out.message)
-    expected = {"transitive": "transitive", "bom": "bom_managed", "vendored": "vendored", "vendored-no-top": "vendored",
-                "plugin": "plugin"}[kind]
+    expected = {"vendored": "vendored", "vendored-no-top": "vendored", "plugin": "plugin"}[kind]
     assert [r.origin for r in out.residuals] == [expected], [r.to_dict() for r in out.residuals]
     assert env.tree_hash() == before
     assert env.paths.delivery_zip.read_bytes() == env.upload and out.delivery.sha256 == sha(env.upload)
     assert len(env.ivas.uploads) == 1 and not env.paths.patch(1).exists()
+    assert_clean_artifacts(env)
+
+
+# ---------------------------------------------------------------------------- managed-version override (2026-11-11)
+CORP_ROOT = ("<project>\n  <modelVersion>4.0.0</modelVersion>\n  <parent>\n    <groupId>example</groupId>\n"
+             "    <artifactId>corp-parent</artifactId>\n    <version>1.0</version>\n  </parent>\n"
+             "  <artifactId>app</artifactId>\n  <packaging>war</packaging>\n"
+             "  <dependencies>\n" + dep("example", "lib", None) + "  </dependencies>\n</project>\n")
+OVERRIDE_CASES = {
+    # kind: (root pom, world, vulns, versions, ga, from → to, origin)
+    "transitive": (war_pom(), World(catalog={"example:lib:1.2.3": ["example:deep:0.5"]}),
+                   {"example:deep:0.5": Vuln("CVE-2026-3003", "0.6")}, {"example:deep": ["0.4", "0.6", "0.7"]},
+                   "example:deep", "0.5", "0.6", "transitive"),
+    "bom": (BOM_ROOT, World(boms={"example:bom:1.0": {"example:lib": "1.2.3"}}), dict(LIB_VULN), LIB_VERSIONS,
+            "example:lib", "1.2.3", "1.2.4", "bom_managed"),
+    "parent": (CORP_ROOT, World(ext_parents={"example:corp-parent:1.0": {"example:lib": "1.2.3"}}), dict(LIB_VULN),
+               LIB_VERSIONS, "example:lib", "1.2.3", "1.2.4", "parent_managed"),
+}
+
+
+def assert_only_inserted_lines(env: Env, pom: str) -> list[str]:
+    """The delivered ZIP has the original's file set; only `pom` differs, and only by inserted lines. Returns them."""
+    import difflib
+    orig, got = zip_contents(env.upload), zip_contents(env.paths.delivery_zip.read_bytes())
+    assert set(got) == set(orig)
+    assert [n for n in orig if orig[n] != got[n]] == [pom]
+    a, b = orig[pom].decode().splitlines(keepends=True), got[pom].decode().splitlines(keepends=True)
+    ops = difflib.SequenceMatcher(None, a, b, autojunk=False).get_opcodes()
+    assert {op for op, *_ in ops} <= {"equal", "insert"}, ops
+    return [ln for op, _i1, _i2, j1, j2 in ops if op == "insert" for ln in b[j1:j2]]
+
+
+@pytest.mark.parametrize("kind", sorted(OVERRIDE_CASES))
+def test_override_waits_for_approval_then_inserts_the_entry(tmp_path, kind):
+    root, world, vulns, versions, ga, frm, to, origin = OVERRIDE_CASES[kind]
+    # require_approval false and managed_override removed from always_approve: the override still waits
+    env = start(tmp_path, {"pom.xml": root, **APP}, vulns=vulns, versions=versions, world=world,
+                always_approve=["major"])
+    before = env.tree_hash()
+    out = env.run()
+    assert out.status == AWAITING_APPROVAL and out.next_node == "plan", (out.reason, out.reasons, out.message)
+    plan = RoundPlan.from_dict(read_json(env.paths.plan(1)))
+    (p,) = plan.proposals
+    assert (p.ga, p.from_version, p.to_version, p.kind, p.risks, p.decision) == (
+        ga, frm, to, "managed_override", ["managed_override"], D_PENDING)
+    assert p.edits[0].op == "insert" and p.edits[0].pom == "pom.xml"
+    assert f"+        <version>{to}</version>" in p.diff or f"+      <version>{to}</version>" in p.diff
+    assert "will NOT move this version any more" in p.note
+    assert env.tree_hash() == before and len(env.ivas.uploads) == 1
+    _approve_or_reject(env, D_APPROVED)
+    out = env.run()
+    assert_succeeded_delivery(env, out)
+    inserted = assert_only_inserted_lines(env, "pom.xml")
+    assert [ln.strip() for ln in inserted if "Id>" in ln or "<version>" in ln] == [
+        f"<groupId>{ga.split(':')[0]}</groupId>", f"<artifactId>{ga.split(':')[1]}</artifactId>", f"<version>{to}</version>"]
+    resolved = read_json(env.paths.resolved(1))
+    assert {d["version"] for m in resolved["modules"] for d in m["dependencies"]
+            if f"{d['group_id']}:{d['artifact_id']}" == ga} == {to}
+    assert out.counts["final_findings"] == 0 and out.residuals == []
+
+
+@pytest.mark.parametrize("kind", sorted(OVERRIDE_CASES))
+def test_override_rejected_is_incomplete_and_nothing_changes(tmp_path, kind):
+    root, world, vulns, versions, *_ = OVERRIDE_CASES[kind]
+    env = start(tmp_path, {"pom.xml": root, **APP}, vulns=vulns, versions=versions, world=world)
+    before = env.tree_hash()
+    assert env.run().status == AWAITING_APPROVAL
+    _approve_or_reject(env, D_REJECTED)
+    out = env.run()
+    assert out.status == INCOMPLETE and out.reason == "rejected_proposals", (out.reason, out.reasons)
+    assert env.paths.delivery_zip.read_bytes() == env.upload and env.tree_hash() == before
+    assert len(env.ivas.uploads) == 1
     assert_clean_artifacts(env)
 
 
@@ -780,7 +847,7 @@ def test_baseline_build_failure_never_scans(tmp_path):
 
 def test_candidate_build_failure_discards_the_candidate(tmp_path):
     env = start(tmp_path, {"pom.xml": war_pom(), **APP}, vulns=LIB_VULN, versions=LIB_VERSIONS,
-                fail_on={"example:lib:1.2.4"})
+                fail_on={"example:lib:1.2.4"}, failed_candidate="discard")
     before = env.tree_hash()
     out = env.run()
     assert out.status == FAILED and out.reason == "candidate_build_failed"
@@ -788,13 +855,36 @@ def test_candidate_build_failure_discards_the_candidate(tmp_path):
     assert env.tree_hash() == before and len(env.ivas.uploads) == 1
     assert "+      <version>1.2.4</version>" in env.paths.patch(1).read_text()
     assert out.rounds[0].build.log == "rounds/1/build.log"
+    assert "결과 ZIP 은 없고" in env.paths.report_md.read_text(encoding="utf-8")
+    assert_clean_artifacts(env)
+
+
+def test_candidate_build_failure_is_delivered_with_include(tmp_path):
+    env = start(tmp_path, {"pom.xml": war_pom(), **APP}, vulns=LIB_VULN, versions=LIB_VERSIONS,
+                fail_on={"example:lib:1.2.4"})
+    before = env.tree_hash()
+    out = env.run()
+    assert out.status == FAILED and out.reason == "candidate_build_failed"
+    assert out.delivery is not None and not out.delivery.build_ok and not out.delivery.scanned
+    assert out.delivery.sha256 == sha(env.paths.delivery_zip.read_bytes())
+    # the failed change set is in result.zip (same file set, one version line), never rescanned
+    _old, new = assert_one_line_changed(env, "pom.xml")
+    assert "1.2.4" in new
+    assert len(env.ivas.uploads) == 1 and out.final_scan == ""
+    assert env.tree_hash() == before
+    assert "+      <version>1.2.4</version>" in env.paths.patch(1).read_text()
+    report = env.paths.report_md.read_text(encoding="utf-8")
+    first = "\n".join(report.splitlines()[:6])
+    assert "빌드가 실패한 수정본" in first and "rounds/1/build.log" in first and "source.zip" in first
+    assert "재검사를 하지 않았습니다" in first
+    assert json.loads(env.paths.report_json.read_text(encoding="utf-8"))["delivery"]["build_ok"] is False
     assert_clean_artifacts(env)
 
 
 def test_round_two_candidate_failure_keeps_the_verified_round_one_delivery(tmp_path):
     vulns = {"example:lib:1.2.3": Vuln("CVE-2026-1001", "1.2.4"), "example:lib:1.2.4": Vuln("CVE-2026-1002", "1.2.5")}
     env = start(tmp_path, {"pom.xml": war_pom(), **APP}, vulns=vulns, versions=LIB_VERSIONS,
-                fail_on={"example:lib:1.2.5"})
+                fail_on={"example:lib:1.2.5"}, failed_candidate="discard")
     out = env.run()
     assert out.status == FAILED and out.reason == "candidate_build_failed"
     assert [(r.round, r.committed) for r in out.rounds] == [(1, True), (2, False)]
@@ -810,6 +900,27 @@ def test_round_two_candidate_failure_keeps_the_verified_round_one_delivery(tmp_p
     report = env.paths.report_md.read_text(encoding="utf-8")
     assert "라운드 1 에서 빌드·재검사를 마친 상태" in report and "결과 ZIP 은 없고" not in report
     assert "verified state of round 1" in out.message
+    assert_clean_artifacts(env)
+
+
+def test_round_two_candidate_failure_with_include_keeps_round_one_as_verified_file(tmp_path):
+    vulns = {"example:lib:1.2.3": Vuln("CVE-2026-1001", "1.2.4"), "example:lib:1.2.4": Vuln("CVE-2026-1002", "1.2.5")}
+    env = start(tmp_path, {"pom.xml": war_pom(), **APP}, vulns=vulns, versions=LIB_VERSIONS,
+                fail_on={"example:lib:1.2.5"})
+    out = env.run()
+    assert out.status == FAILED and out.reason == "candidate_build_failed"
+    assert [(r.round, r.committed) for r in out.rounds] == [(1, True), (2, False)]
+    assert out.delivery.round == 2 and not out.delivery.build_ok and not out.delivery.scanned
+    _old, new = assert_one_line_changed(env, "pom.xml")
+    assert "1.2.5" in new
+    verified = env.paths.delivery_zip.with_name("result-r1-verified.zip")
+    assert verified.is_file() and sha(verified.read_bytes()) == sha(env.ivas.uploads[1])
+    assert len(env.ivas.uploads) == 2
+    assert "<version>1.2.4</version>" in (env.paths.accepted / "pom.xml").read_text()
+    assert env.events("verified_delivery_kept")
+    report = env.paths.report_md.read_text(encoding="utf-8")
+    assert "빌드가 실패한 수정본" in "\n".join(report.splitlines()[:6])
+    assert "delivery/result-r1-verified.zip" in report
     assert_clean_artifacts(env)
 
 

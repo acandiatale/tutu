@@ -6,7 +6,10 @@
 holder 에 있다. 부품은 ``Components`` 로만 받는다(테스트는 가짜, 운영은 ``default_components``).
 지켜야 할 것: 노드 경계마다 state 저장; 기준 빌드가 실패하면 검사·계획으로 가지 않는다; 불확실한 업로드는 다시 올리지 않는다;
 원격 IVAS 분석을 "취소됨" 이라고 쓰지 않는다; 후보는 격리 사본에서 빌드·검증된 뒤에만 accepted/ 로 확정한다; 전달 ZIP 과
-같은 바이트(sha256)를 다시 검사한다; SUCCEEDED 는 evaluate 의 모든 조건을 만족할 때만.
+같은 바이트(sha256)를 다시 검사한다; SUCCEEDED 는 evaluate 의 모든 조건(전달 ZIP 의 build_ok · scanned 포함)을 만족할 때만.
+후보 빌드가 실패하면(``remediation.failed_candidate``): include(기본, 사용자 결정 2026-11-11) = 실패한 후보 트리를 결과 ZIP 으로
+고정한다(build_ok=False, 재검사 없음, 상태 FAILED; 앞 라운드의 검증된 ZIP 은 ``delivery/result-r<k>-verified.zip`` 으로 남긴다);
+discard = 실패한 후보는 ZIP 에 넣지 않는다. 글자 밖 변경·해석 불일치 후보는 어느 설정이든 내지 않는다.
 
 Independent LangGraph of the remediation feature (not the migration graph). Only small JSON values live in the graph
 state; the `RemediationState`, the run paths and the `Components` live in a holder closed over by the node functions.
@@ -244,21 +247,62 @@ class _Holder:
             if p.exists():
                 p.unlink()
 
-    def discard_candidate(self, r: int) -> None:
-        """라운드 ``r`` 의 후보를 버린다(정책 discard). 앞 라운드에서 이미 빌드·확정·재검사(완료, 같은 sha256)까지 마친 전달
-        ZIP 이 있으면 그것은 남긴다 — 그 바이트는 검증을 마친 상태이고 실패한 변경은 들어 있지 않다. 없으면(라운드 1) 전달 ZIP 없음.
-
-        Discard round `r`'s candidate; an earlier round's built, committed and rescanned delivery stays."""
+    def verified_earlier(self, r: int) -> bool:
+        """라운드 ``r`` 앞에서 빌드·확정·재검사(완료, 같은 sha256)까지 마친 전달 ZIP 이 지금 delivery/result.zip 인가."""
         st = self.state
         d = st.delivery
         committed = [rs.round for rs in st.rounds if rs.committed and rs.round < r]
         final = self.load_scan(st.final_scan)
-        if (d is not None and committed and d.round == max(committed) and final is not None and final.complete
-                and final.zip_sha256 == d.sha256 and self.paths.delivery_zip.is_file()
-                and sha256_file(self.paths.delivery_zip) == d.sha256):
-            self.journal({"event": "earlier_delivery_kept", "round": r, "delivery_round": d.round})
+        return bool(d is not None and d.build_ok and committed and d.round == max(committed) and final is not None
+                    and final.complete and final.zip_sha256 == d.sha256 and self.paths.delivery_zip.is_file()
+                    and sha256_file(self.paths.delivery_zip) == d.sha256)
+
+    def discard_candidate(self, r: int) -> None:
+        """라운드 ``r`` 의 후보를 버린다(정책 discard, 또는 글자 밖 변경·해석 불일치). 앞 라운드에서 이미 빌드·확정·재검사
+        (완료, 같은 sha256)까지 마친 전달 ZIP 이 있으면 그것은 남긴다 — 그 바이트는 검증을 마친 상태이고 실패한 변경은 들어 있지
+        않다. 없으면(라운드 1) 전달 ZIP 없음.
+
+        Discard round `r`'s candidate; an earlier round's built, committed and rescanned delivery stays."""
+        if self.verified_earlier(r):
+            self.journal({"event": "earlier_delivery_kept", "round": r, "delivery_round": self.state.delivery.round})
             return
         self.discard_delivery()
+
+    def deliver_failed_candidate(self, r: int) -> str:
+        """정책 include: 빌드가 실패한 라운드 ``r`` 의 후보 트리를 결과 ZIP 으로 고정한다(build_ok=False, scanned=False).
+        accepted/ 는 바꾸지 않는다(마지막 확정 상태 그대로). 앞 라운드의 검증된 전달 ZIP 이 있으면 지우지 않고
+        ``delivery/result-r<k>-verified.zip`` (+ ``.json``) 으로 옮겨 둔다 — 사람이 검증된 쪽을 고를 수 있게. 돌려주는 값 = 옮긴
+        파일의 실행 폴더 기준 경로(없으면 빈 글자).
+
+        Policy include: freeze the failed candidate tree as the delivery; keep an earlier verified ZIP beside it."""
+        st, p = self.state, self.paths
+        kept = ""
+        if self.verified_earlier(r):
+            d = st.delivery
+            vz = verified_zip_path(p, d.round)
+            os.replace(p.delivery_zip, vz)
+            info = DeliveryInfo.from_dict(d.to_dict())
+            info.path, info.scanned = self.rel(vz), True
+            write_json_atomic(vz.with_suffix(".json"), info.to_dict())
+            kept = self.rel(vz)
+            self.journal({"event": "verified_delivery_kept", "round": r, "delivery_round": d.round, "file": kept,
+                          "sha256": d.sha256})
+        else:
+            self.discard_delivery()
+        info = self.c.intake.freeze_delivery(p.candidate(r), p.delivery_zip, r, self.paths_list)
+        info.build_ok, info.scanned = False, False
+        st.delivery = info
+        write_json_atomic(p.delivery_json, info.to_dict())
+        self.journal({"event": "failed_candidate_delivered", "round": r, "sha256": info.sha256})
+        return kept
+
+    def mark_scanned(self) -> None:
+        """최종 검사가 완료됐고 그 ZIP sha256 이 지금 전달 ZIP 과 같으면 ``delivery.scanned`` 를 켠다(아니면 끈다)."""
+        d = self.state.delivery
+        if d is None:
+            return
+        final = self.load_scan(self.state.final_scan)
+        d.scanned = bool(d.build_ok and final is not None and final.complete and final.zip_sha256 == d.sha256)
 
     # -- data helpers
     def load_scan(self, rel: str) -> ScanResult | None:
@@ -329,8 +373,10 @@ class _Holder:
         st.delivery = DeliveryInfo(path=self.rel(p.delivery_zip), sha256=sha, size=p.delivery_zip.stat().st_size,
                                    files=st.intake.files if st.intake else 0,
                                    tree_hash=st.intake.tree_hash if st.intake else "", round=0)
-        write_json_atomic(p.delivery_json, st.delivery.to_dict())
         st.final_scan = st.baseline_scan
+        # 전달 ZIP = 원본 바이트, 최종 검사 = 그 바이트의 기준 검사 → 같은 sha256 을 완전히 검사했다면 scanned
+        self.mark_scanned()
+        write_json_atomic(p.delivery_json, st.delivery.to_dict())
 
     # -- one IVAS scan with the upload-safety rules
     def scan(self, node: str, label: str, zip_path: Path, sha: str, project_name: str) -> ScanResult | None:
@@ -623,6 +669,17 @@ def _build(h: _Holder) -> str | None:
         if h.stop():
             h.halt(STOPPED, R_STOP_REQUESTED, "build", f"stop requested during the round {r} candidate build")
             return None
+        if getattr(h.rcfg, "failed_candidate", "include") == "include":
+            # 정책 include(사용자 결정 2026-11-11): 실패한 수정본도 결과 ZIP 으로 낸다 — 성공일 수 없으니 재검사(IVAS 한 번)는
+            # 하지 않는다. accepted/ 와 원본 ZIP 은 그대로, candidate.patch · build.log 도 그대로 남는다
+            kept = h.deliver_failed_candidate(r)
+            ids = ", ".join(rs.applied) or "-"
+            msg = (f"delivery/result.zip contains the round {r} change set whose candidate build FAILED "
+                   f"(proposals: {ids}; build log {h.rel(p.build_log(r))}); it was not rescanned; "
+                   "the original is preserved as original/source.zip")
+            if kept:
+                msg += f"; the verified delivery of an earlier round is kept as {kept}"
+            return h.finish(FAILED, R_CANDIDATE_BUILD_FAILED, f"{msg} | {outcome.summary}")
         # 정책 discard: 실패한 후보는 결과 ZIP 에 넣지 않는다 — accepted/ 는 그대로, candidate.patch 는 남긴다
         # (앞 라운드에서 검증을 마친 전달 ZIP 이 있으면 그것은 남는다)
         h.discard_candidate(r)
@@ -672,6 +729,8 @@ def _rescan(h: _Holder) -> str | None:
         return None
     h.round_state(r).scan_label = label
     st.final_scan = h.rel(p.scan(label))
+    h.mark_scanned()
+    write_json_atomic(p.delivery_json, st.delivery.to_dict())
     if R_ZIP_HASH_MISMATCH in res.incomplete_reasons or (res.zip_sha256 and res.zip_sha256 != st.delivery.sha256):
         return h.finish(FAILED, R_ZIP_HASH_MISMATCH, "IVAS scanned a ZIP whose sha256 differs from the delivery ZIP")
     if not res.complete:
@@ -702,6 +761,13 @@ def _evaluate(h: _Holder) -> str | None:
         reasons.add(R_SCAN_INCOMPLETE)
     if st.delivery is None or final is None or final.zip_sha256 != st.delivery.sha256:
         reasons.add(R_ZIP_HASH_MISMATCH)
+    if st.delivery is not None:
+        # 재개된 예전 state(scanned 필드 없음)도 같은 규칙으로 다시 판정한다
+        h.mark_scanned()
+        if not st.delivery.build_ok:
+            reasons.add(R_CANDIDATE_BUILD_FAILED)
+        elif not st.delivery.scanned:
+            reasons.add(R_ZIP_HASH_MISMATCH if complete else R_SCAN_INCOMPLETE)
     props = [x for pl in h.all_plans() for x in pl.proposals]
     if any(x.decision == D_PENDING for x in props):
         reasons.add(R_PENDING_APPROVAL)
@@ -835,6 +901,28 @@ def run_remediation(state: RemediationState, paths: RunPaths, cfg: Any, componen
 
 
 # ---------------------------------------------------------------------------- service helpers
+def verified_zip_path(paths: RunPaths, round: int) -> Path:
+    """정책 include 로 실패한 수정본이 result.zip 을 차지할 때, 앞 라운드 ``round`` 의 검증된 ZIP 을 옮겨 두는 자리.
+
+    Where an earlier round's verified delivery is kept when a failed candidate takes result.zip."""
+    return paths.delivery_zip.with_name(f"result-r{int(round)}-verified.zip")
+
+
+def find_verified_zip(paths: RunPaths) -> Path | None:
+    """``delivery/result-r<k>-verified.zip`` 이 있으면 그 경로(여럿이면 가장 큰 k), 없으면 None.
+
+    The kept verified delivery ZIP of this run, if any (highest round)."""
+    folder = paths.delivery_zip.parent
+    if not folder.is_dir():
+        return None
+    found = []
+    for f in folder.glob("result-r*-verified.zip"):
+        m = re.fullmatch(r"result-r([0-9]{1,4})-verified\.zip", f.name)
+        if m and f.is_file() and not f.is_symlink():
+            found.append((int(m.group(1)), f))
+    return max(found)[1] if found else None
+
+
 def new_state(remediation_id: str, name: str, cfg: Any, intake: IntakeResult, configs: list[str], *,
               policy_hash: str) -> RemediationState:
     """접수가 끝난 작업의 첫 상태: QUEUED, 라운드 1, 첫 노드부터, 정책 해시·승인 설정을 묶는다.

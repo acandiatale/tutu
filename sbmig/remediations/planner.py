@@ -6,15 +6,23 @@
 - 새 버전은 **근거가 있는 곳에서만** 고른다: 서버 정책 ``policy.pins`` 또는 승인된 저장소(``VersionSource``)가 실제로 가진 버전.
   IVAS 의 patched 버전은 힌트일 뿐이다 — 저장소가 그 버전을 갖고 있지 않으면 고르지 않고, 힌트가 없으면 고를 근거가 없다(잔여).
 - 같은 메이저 안의 가장 낮은 수정 버전을 먼저, 없을 때만 더 높은 메이저(``allow_major`` 일 때, 승인 부류 major).
-- 부모·BOM 이 관리하는 버전은 바꾸지 않는다(어느 부모·BOM 버전이 고쳐 주는지 근거가 없다). 단 서버가 그 부모·BOM 자체를
-  ``pins`` 로 정해 두었으면 그 버전으로 부모·BOM 버전 글자를 바꾸는 제안(승인 부류 parent / bom)을 낸다. 전이 의존성은
-  ``<dependencyManagement>`` 를 **더해야** 하므로(구조 변경) 자동으로 하지 않는다.
+- 부모·BOM 버전 글자는 서버가 그 부모·BOM 자체를 ``pins`` 로 정해 두었을 때만 바꾼다(승인 부류 parent / bom).
+- 간접(transitive) 의존성과, pin 이 없는 부모·BOM 관리 버전은 (사용자 결정 2026-11-11) **관리 버전 override 항목을 더해서**
+  고친다: 직접 의존성과 같은 규칙(힌트 필수·승인된 저장소 근거·같은 메이저 우선·deny 목록)으로 고른 버전을 루트 ``pom.xml`` 의
+  ``<dependencyManagement>`` 에 ``<dependency>`` 항목 하나로 넣는 제안(종류 ``managed_override``, 위험 ``managed_override``).
+  이 제안은 **언제나 승인을 기다린다** — ``require_approval`` 이 false 여도, 운영자가 ``always_approve`` 에서
+  ``managed_override`` 를 빼도 마찬가지다(XML 을 넣는 변경은 절대 자동으로 적용하지 않는다는 고정 규칙).
+  루트 pom 에 그 g:a 의 관리 항목이 이미 있으면 두 번째 항목을 넣지 않고 기존 버전 글자를 바꾸는 길로 간다(안 되면 잔여).
+  모듈이 루트 pom 을 상속하지 않거나, 모듈이 그 의존성을 버전과 함께 직접 선언했거나(선언 버전이 관리 버전을 이긴다),
+  해석된 의존성이 jar 가 아니거나 분류자가 있거나, 루트 pom 에 항목을 안전하게 넣을 줄을 못 찾으면 잔여로 남긴다.
 - 승인은 제안 해시·원본 트리 해시·정책 해시·diff 가 **모두** 같을 때만 받아들인다(``validate_decision``).
 
 Planning for the remediation feature: proposals + residuals from the inventory, approval classes, and the hashes that
 bind a proposal to the current tree and policy. A target version comes only from `policy.pins` or a version the approved
-repository lists (IVAS patched versions are hints, never evidence). Parent / BOM managed versions are never changed
-except when the server pins the parent / BOM itself; transitive items stay manual (adding XML is out of scope).
+repository lists (IVAS patched versions are hints, never evidence). A parent / BOM version text changes only when the
+server pins that parent / BOM. Transitive items and parent / BOM managed versions without such a pin get a
+managed-version override entry in the root pom (user decision 2026-11-11); such a proposal ALWAYS waits for approval,
+whatever `require_approval` / `always_approve` say — inserting XML is never automatic.
 """
 from __future__ import annotations
 
@@ -28,20 +36,60 @@ from urllib.parse import urlsplit
 from sbmig.build.repo_versions import is_prerelease, parse_version
 
 from . import apply as _apply
+from . import inventory as _inv
 from .inventory import split_patched_versions as split_hints
-from .models import (D_APPROVED, D_AUTO, D_PENDING, D_REJECTED, K_BOM_VERSION, K_DIRECT_VERSION,
-                     K_OWN_MANAGEMENT_VERSION, K_PARENT_VERSION, K_PROPERTY_VERSION, MANUAL_ORIGINS, O_BOM_MANAGED,
-                     O_DIRECT_LITERAL, O_DIRECT_PROPERTY, O_OWN_MANAGEMENT, O_PARENT_MANAGED, O_TRANSITIVE,
-                     R_INVENTORY_INCOMPLETE, R_MANUAL_REVIEW, R_NO_CANDIDATE_VERSION, R_POLICY_DENIED,
-                     R_REJECTED_PROPOSALS, R_STALE_LOCATION, R_UNKNOWN_PROVENANCE, RISK_BOM, RISK_MAJOR, RISK_PARENT,
-                     ApprovalMismatch, Decision, Inventory, InventoryItem, PomLocation, Proposal, Residual, RoundPlan,
-                     TextEdit, canonical_json, sha256_text)
+from .models import (
+    D_APPROVED,
+    D_AUTO,
+    D_PENDING,
+    D_REJECTED,
+    E_INSERT,
+    K_BOM_VERSION,
+    K_DIRECT_VERSION,
+    K_MANAGED_OVERRIDE,
+    K_OWN_MANAGEMENT_VERSION,
+    K_PARENT_VERSION,
+    K_PROPERTY_VERSION,
+    MANUAL_ORIGINS,
+    O_BOM_MANAGED,
+    O_DIRECT_LITERAL,
+    O_DIRECT_PROPERTY,
+    O_OWN_MANAGEMENT,
+    O_PARENT_MANAGED,
+    O_TRANSITIVE,
+    R_INVENTORY_INCOMPLETE,
+    R_MANUAL_REVIEW,
+    R_NO_CANDIDATE_VERSION,
+    R_POLICY_DENIED,
+    R_REJECTED_PROPOSALS,
+    R_STALE_LOCATION,
+    R_UNKNOWN_PROVENANCE,
+    RISK_BOM,
+    RISK_MAJOR,
+    RISK_MANAGED_OVERRIDE,
+    RISK_PARENT,
+    ApprovalMismatch,
+    Decision,
+    Inventory,
+    InventoryItem,
+    PomLocation,
+    Proposal,
+    Residual,
+    RoundPlan,
+    TextEdit,
+    canonical_json,
+    sha256_text,
+)
 
 log = logging.getLogger("sbmig.remediations.planner")
 
 # 잔여 이유 코드 R_POLICY_DENIED / R_UNKNOWN_PROVENANCE / R_STALE_LOCATION / R_INVENTORY_INCOMPLETE 는 models 의 것을
 # 그대로 다시 내보낸다(예전 import 경로 ``planner.R_…`` 도 계속 쓸 수 있게)
 EVIDENCE_PINS = "policy:pins"
+# override 제안의 note 에 늘 들어가는 문장(보고서로 간다): 넣은 항목은 그 뒤로 부모·BOM·직접 의존성을 올려도 움직이지 않는다
+OVERRIDE_WARNING = ("later upgrades of the parent / BOM / direct dependency will NOT move this version any more — "
+                    "the owners must remove the override when the parent / BOM / direct dependency catches up")
+OVERRIDE_APPROVAL = "always needs approval: an inserted <dependencyManagement> entry is never applied automatically"
 _LIST_CAP = 20                       # 잔여 설명에 늘어놓는 버전 수 한도(문장이 끝없이 길어지지 않게)
 
 
@@ -329,19 +377,17 @@ def _choose_target(item: InventoryItem, policy: Any, source: Any, current: str) 
     return target, evidence, "", []
 
 
-def _change_for(project: Path, item: InventoryItem, policy: Any, source: Any) -> _Change | Residual:
+def _change_for(project: Path, item: InventoryItem, policy: Any, source: Any, poms: _Poms) -> _Change | Residual:
     """인벤토리 항목 하나 → 변경 하나 또는 잔여 하나."""
     if item.origin in MANUAL_ORIGINS:
         return _residual(item, R_MANUAL_REVIEW, item.reason or f"{item.origin}: not changed automatically")
     if _denied(item.ga, policy.deny):
         return _residual(item, R_POLICY_DENIED, f"{item.ga} matches policy.deny")
     if item.origin in (O_PARENT_MANAGED, O_BOM_MANAGED):
-        return _managed_change(project, item, policy)
+        got = _managed_change(project, item, policy)
+        return got if got is not None else _override_change(project, item, policy, source, poms)
     if item.origin == O_TRANSITIVE:
-        chain = " → ".join(item.via) or "another dependency"
-        return _residual(item, R_MANUAL_REVIEW,
-                         f"transitive via {chain}: raise the direct dependency or add a managed override "
-                         "(adding <dependencyManagement> is a structure change, not done automatically)")
+        return _override_change(project, item, policy, source, poms)
     if item.origin not in (O_DIRECT_LITERAL, O_DIRECT_PROPERTY, O_OWN_MANAGEMENT):
         return _residual(item, R_MANUAL_REVIEW, f"unknown origin {item.origin!r}")
     loc = item.location
@@ -371,21 +417,22 @@ def _change_for(project: Path, item: InventoryItem, policy: Any, source: Any) ->
                    finding_ids=list(item.finding_ids), risks=risks, notes=notes, origin=item.origin)
 
 
-def _managed_change(project: Path, item: InventoryItem, policy: Any) -> _Change | Residual:
-    """부모·BOM 이 관리하는 항목: 서버가 그 부모·BOM 자체를 pin 한 경우만 그 버전 글자를 바꾸는 제안, 아니면 잔여.
-    왜: 어느 부모·BOM 버전이 이 취약점을 고쳐 주는지 오프라인으로는 근거가 없고, override 는 관리자의 속성 이름을 모른다."""
+def _managed_change(project: Path, item: InventoryItem, policy: Any) -> _Change | Residual | None:
+    """부모·BOM 이 관리하는 항목: 서버가 그 부모·BOM 자체를 pin 했으면 그 버전 글자를 바꾸는 제안(또는 pin 을 쓸 수 없는 이유의
+    잔여). pin 이 없으면(관리자를 모르는 경우 포함) None — 부르는 쪽이 관리 버전 override 길로 간다.
+    왜: 어느 부모·BOM 버전이 이 취약점을 고쳐 주는지 오프라인으로는 근거가 없다 — 서버 pin 만 근거다."""
     kind_word = "parent" if item.origin == O_PARENT_MANAGED else "BOM"
-    manual = _residual(item, R_UNKNOWN_PROVENANCE if not item.manager else R_MANUAL_REVIEW,
-                       f"managed by {item.manager or 'an unknown ' + kind_word}: raise the parent/BOM version or add an "
-                       "override — needs a human decision")
     mloc = item.manager_location
     parts = item.manager.split(":") if item.manager else []
-    if len(parts) < 2 or mloc is None:
-        return manual
+    if len(parts) < 2:
+        return None
     mga = f"{parts[0]}:{parts[1]}"
     pin = (policy.pins or {}).get(mga)
     if not pin:
-        return manual
+        return None
+    if mloc is None:
+        return _residual(item, R_UNKNOWN_PROVENANCE,
+                         f"policy pins the {kind_word} {mga} at {pin}, but its version text is not in the project poms")
     if _denied(mga, policy.deny):
         return _residual(item, R_POLICY_DENIED, f"the {kind_word} {mga} matches policy.deny")
     if not _apply.is_version_text(mloc.text):
@@ -410,7 +457,133 @@ def _managed_change(project: Path, item: InventoryItem, policy: Any) -> _Change 
                            "the versions it manages may change too")])
 
 
-def _merge(group: list[_Change]) -> _Change:
+class _Poms:
+    """루트 pom 과 reactor 의 lxml 모델(``inventory.ProjectPoms``)을 처음 필요할 때 한 번 읽는다."""
+
+    def __init__(self, project: Path):
+        self.project = project
+        self._pp: Any = None
+
+    @property
+    def pp(self) -> Any:
+        if self._pp is None:
+            self._pp = _inv.ProjectPoms(self.project)
+        return self._pp
+
+
+def _root_entries(pp: Any, ga: str) -> list[tuple[Any, str]]:
+    """루트 pom 의 ``<dependencyManagement>`` (최상위 "" / 프로필 "profile <id>")에 있는 이 g:a 의 항목(import 아닌 것)."""
+    root = pp.poms.get(".")
+    out = []
+    for dep, where in _inv._deps(root, management=True):
+        if _inv._text(_inv._kid(dep, "scope")) == "import":
+            continue
+        g = pp.interp(root, _inv._text(_inv._kid(dep, "groupId")))
+        a = pp.interp(root, _inv._text(_inv._kid(dep, "artifactId")))
+        if f"{g}:{a}" == ga:
+            out.append((dep, where))
+    return out
+
+
+def _existing_entry_change(project: Path, item: InventoryItem, policy: Any, source: Any, pp: Any,
+                           entries: list[tuple[Any, str]]) -> _Change | Residual:
+    """루트 pom 이 이 g:a 를 이미 관리할 때: 두 번째 항목은 넣지 않는다. 최상위 항목의 버전 글자(글자 또는 프로젝트 속성)가
+    해석된 버전과 같으면 그 글자를 바꾸는 제안(own_management_version / property_version), 아니면 잔여."""
+    root = pp.poms.get(".")
+    dep, where = entries[0]
+    if where or len(entries) > 1:
+        places = ", ".join(w or "top level" for _d, w in entries)
+        return _residual(item, R_MANUAL_REVIEW, f"the root pom.xml already has <dependencyManagement> entries for "
+                                                f"{item.ga} ({places}); a second entry is never added")
+    vel = _inv._kid(dep, "version")
+    ref = pp.resolve_version(root, _inv._text(vel))
+    loc = None
+    if ref.kind == "literal":
+        loc = _inv.location_of(root, vel, "management")
+    elif ref.kind == "property" and ref.pom is not None:
+        loc = _inv.location_of(ref.pom, ref.el, "property", ref.prop)
+    if loc is None or ref.value != item.version or not _apply.is_version_text(loc.text):
+        return _residual(item, R_MANUAL_REVIEW,
+                         f"the root pom.xml already has a <dependencyManagement> entry for {item.ga} whose version "
+                         f"({_inv._text(vel) or 'none'}) is not the resolved {item.version} as plain text; "
+                         "a second entry is never added")
+    stale = _stale(project, loc)
+    if stale:
+        return _residual(item, R_STALE_LOCATION, stale)
+    target, evidence, reason, notes = _choose_target(item, policy, source, item.version)
+    if not target:
+        return _residual(item, reason, "; ".join(notes))
+    kind = K_PROPERTY_VERSION if loc.property else K_OWN_MANAGEMENT_VERSION
+    if loc.property:
+        notes.append(f"property ${{{loc.property}}} may govern other artifacts")
+    notes.append("uses the existing <dependencyManagement> entry of the root pom.xml")
+    risks = [RISK_MAJOR] if _major(target) != _major(item.version) else []
+    return _Change(ga=item.ga, from_version=item.version, to_version=target, kind=kind,
+                   edit=TextEdit(pom=loc.pom, line=loc.line, old=loc.text, new=target), evidence=evidence,
+                   finding_ids=list(item.finding_ids), risks=risks, notes=notes, origin=item.origin)
+
+
+def _override_note(item: InventoryItem, target: str) -> str:
+    what = f"adds a <dependencyManagement> entry {item.ga}:{target} to the root pom.xml"
+    if item.origin == O_TRANSITIVE:
+        chain = " → ".join(item.via) or "another dependency"
+        return f"{what}: pins the transitive dependency brought by {chain} ({item.version} → {target})"
+    manager = item.manager or "a parent / BOM outside the project"
+    return f"{what}: overrides the version managed by {manager} ({item.version} → {target})"
+
+
+def _override_change(project: Path, item: InventoryItem, policy: Any, source: Any, poms: _Poms) -> _Change | Residual:
+    """간접 의존성·부모/BOM 관리 버전 → 루트 pom 의 관리 버전 override 항목 하나(insert edit). 막는 사실이 있으면 잔여.
+    순서: 변종(jar 아님 / 분류자) → 루트 pom 을 읽을 수 있는가 → 이미 있는 관리 항목(→ 기존 글자 바꾸기) → 모듈이 루트 pom 을
+    상속하는가 → 모듈의 직접 선언 버전 → 새 버전 고르기(직접 의존성과 같은 규칙) → 넣을 줄 정하기."""
+    kind_word = "transitive dependency" if item.origin == O_TRANSITIVE else "managed version"
+    if _inv.VARIANT_MARK in (item.reason or ""):
+        return _residual(item, R_MANUAL_REVIEW,
+                         f"{kind_word} {item.ga} resolves as a non-jar type or with a classifier ({item.reason}); "
+                         "a plain override entry would not govern it")
+    pp = poms.pp
+    root = pp.poms.get(".")
+    if root is None or not root.ok:
+        return _residual(item, R_MANUAL_REVIEW, "cannot place an override entry safely: the root pom.xml is not readable")
+    entries = _root_entries(pp, item.ga)
+    if entries:
+        return _existing_entry_change(project, item, policy, source, pp, entries)
+    outside = []
+    for mdir in item.modules:
+        pf = pp.poms.get(mdir)
+        if pf is None or not pf.ok or root not in pp.chain(pf):
+            outside.append(mdir)
+    if outside:
+        return _residual(item, R_MANUAL_REVIEW,
+                         f"module(s) {', '.join(sorted(outside))} do not inherit from the root pom.xml: an override "
+                         "entry there would not reach them")
+    declared = []
+    for mdir in item.modules:
+        hit = _inv._find_decl(pp, pp.poms[mdir], item.ga, management=False)
+        if hit is not None and _inv._text(_inv._kid(hit[1], "version")):
+            declared.append(f"{hit[0].rel} ({_inv._text(_inv._kid(hit[1], 'version'))})")
+    if declared:
+        return _residual(item, R_MANUAL_REVIEW,
+                         f"{item.ga} is declared with a version in {', '.join(sorted(set(declared)))}: a declared "
+                         "version wins over <dependencyManagement>, so an override entry would not change it")
+    current = item.version
+    if not _apply.is_version_text(current or ""):
+        return _residual(item, R_MANUAL_REVIEW, f"resolved version {current!r} is not a plain version")
+    target, evidence, reason, notes = _choose_target(item, policy, source, current)
+    if not target:
+        return _residual(item, reason, "; ".join(notes))
+    g, a = _ga_parts(item.ga)
+    try:
+        edit = _apply.locate_override(project, g, a, target)
+    except (_apply.EditError, OSError) as e:
+        return _residual(item, R_MANUAL_REVIEW, f"cannot place an override entry safely: {e}")
+    risks = [RISK_MANAGED_OVERRIDE] + ([RISK_MAJOR] if _major(target) != _major(current) else [])
+    return _Change(ga=item.ga, from_version=current, to_version=target, kind=K_MANAGED_OVERRIDE, edit=edit,
+                   evidence=evidence, finding_ids=list(item.finding_ids), risks=risks, origin=item.origin,
+                   notes=[_override_note(item, target), *notes, OVERRIDE_WARNING, OVERRIDE_APPROVAL])
+
+
+def _merge(group: list[_Change], project: Path | None = None) -> _Change:
     """같은 pom 줄을 고치는 변경들을 하나로: 발견 ID 합집합, 목표는 가장 높은 것, ga 는 첫 번째, 나머지는 메모에."""
     first = group[0]
     if len(group) == 1:
@@ -421,13 +594,19 @@ def _merge(group: list[_Change]) -> _Change:
         ids += [i for i in c.finding_ids if i not in ids]
     notes = list(dict.fromkeys(n for c in group for n in c.notes))
     others = sorted({f"{c.ga}:{c.from_version}" for c in group[1:]})
-    notes.append(f"one edit also covers {', '.join(others)} (same version line)")
+    insert = first.edit.op == E_INSERT
+    notes.append(f"one {'override entry' if insert else 'edit'} also covers {', '.join(others)} "
+                 f"({'same artifact' if insert else 'same version line'})")
     if best is not first:
         notes.append(f"target {best.to_version} chosen for {best.ga} (highest of the merged targets)")
     risks = sorted({r for c in group for r in c.risks if r != RISK_MAJOR})
     if _major(best.to_version) != _major(first.from_version):
         risks.append(RISK_MAJOR)
-    edit = TextEdit(pom=first.edit.pom, line=first.edit.line, old=first.edit.old, new=best.to_version)
+    if insert:
+        g, a = _ga_parts(first.ga)
+        edit = _apply.locate_override(Path(project or "."), g, a, best.to_version)
+    else:
+        edit = TextEdit(pom=first.edit.pom, line=first.edit.line, old=first.edit.old, new=best.to_version)
     return _Change(ga=first.ga, from_version=first.from_version, to_version=best.to_version, kind=first.kind, edit=edit,
                    evidence=best.evidence, finding_ids=ids, risks=sorted(risks), notes=notes, origin=first.origin)
 
@@ -452,15 +631,19 @@ def plan_round(project: Path, inventory: Inventory, cfg: Any, source: Any, *, ro
         plan.residuals = [_residual(i, R_INVENTORY_INCOMPLETE, "inventory incomplete") for i in items]
         return plan
     changes: list[_Change] = []
+    poms = _Poms(project)
     for item in items:
-        got = _change_for(project, item, policy, source)
+        got = _change_for(project, item, policy, source, poms)
         if isinstance(got, Residual):
             plan.residuals.append(got)
         else:
             changes.append(got)
-    groups: dict[tuple[str, int], list[_Change]] = {}
+    # 같은 pom 줄을 고치는 replace 끼리, 같은 g:a 의 override 끼리 합친다. override 의 자리는 모두 **원래 파일** 기준으로
+    # 정했고(같은 기준 줄을 여럿이 가질 수 있다), apply 가 그것들을 제안 ID 순서로 한 번에 넣는다.
+    groups: dict[tuple[str, int, str], list[_Change]] = {}
     for c in changes:
-        groups.setdefault((c.edit.pom, c.edit.line), []).append(c)
+        key = (c.edit.pom, 0, c.ga) if c.edit.op == E_INSERT else (c.edit.pom, c.edit.line, "")
+        groups.setdefault(key, []).append(c)
     merged: list[tuple[_Change, list[_Change]]] = []
     for key in sorted(groups):
         group = groups[key]
@@ -470,7 +653,13 @@ def plan_round(project: Path, inventory: Inventory, cfg: Any, source: Any, *, ro
                                                detail=f"{key[0]}:{key[1]}: inventory names different version texts "
                                                       "for one line", finding_ids=list(c.finding_ids)))
             continue
-        merged.append((_merge(group), group))
+        try:
+            merged.append((_merge(group, project), group))
+        except (_apply.EditError, OSError) as e:
+            for c in group:
+                plan.residuals.append(Residual(ga=c.ga, version=c.from_version, origin=c.origin, reason=R_MANUAL_REVIEW,
+                                               detail=f"cannot place an override entry safely: {e}",
+                                               finding_ids=list(c.finding_ids)))
     always = set(rem.always_approve or [])
     n = 0
     for change, group in merged:
@@ -489,7 +678,9 @@ def plan_round(project: Path, inventory: Inventory, cfg: Any, source: Any, *, ro
                                                detail=str(e), finding_ids=list(c.finding_ids)))
             continue
         n += 1
-        needs = bool(rem.require_approval) or any(r in always for r in change.risks)
+        # 고정 규칙: override 항목(XML 넣기)은 설정과 무관하게 늘 승인을 기다린다
+        needs = (change.kind == K_MANAGED_OVERRIDE or bool(rem.require_approval)
+                 or any(r in always for r in change.risks))
         p = Proposal(id=f"p-{round}-{n}", round=round, ga=change.ga, from_version=change.from_version,
                      to_version=change.to_version, kind=change.kind, risks=sorted(change.risks), requires_approval=needs,
                      decision=D_PENDING if needs else D_AUTO, evidence=change.evidence,

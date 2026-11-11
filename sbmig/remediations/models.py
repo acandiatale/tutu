@@ -8,6 +8,7 @@ JSON 파일에 오간다(파일 기반: 데이터베이스 없음). 비밀 값(I
     accepted/                  작업 트리(원본을 푼 것; 승인·적용된 변경만 들어온다)
     rounds/<n>/candidate/      n 번째 라운드의 격리된 후보 사본          rounds/<n>/{plan.json, candidate.patch, build.log, resolved.json}
     scans/<label>.json         검사 결과(baseline / final-r<n>)          delivery/result.zip + delivery.json
+                               (+ delivery/result-r<k>-verified.zip: 뒤 라운드의 빌드 실패본이 result.zip 이 될 때 남기는 앞 라운드의 검증본)
     state.json                 작업 상태(원자적으로 교체)               approvals.jsonl          승인·거절 기록(덧붙이기만)
     journal.jsonl / remediation.log / report.md / report.json
 
@@ -234,6 +235,9 @@ class DeliveryInfo(Record):
     files: int
     tree_hash: str                    # ZIP 에 담은 트리의 해시
     round: int = 0
+    # False = 빌드가 실패한 수정본(remediation.failed_candidate: include). 이 ZIP 은 재검사하지 않았고 성공 판정에 쓰이지 않는다
+    build_ok: bool = True
+    scanned: bool = False             # 이 ZIP 과 같은 sha256 을 IVAS 가 검사했고 그 검사가 완전했는가
 
 
 # ---------------------------------------------------------------------------- IVAS 검사 / scan
@@ -412,7 +416,7 @@ class Inventory(Record):
 K_DIRECT_VERSION = "direct_version"               # 의존성의 <version> 글자
 K_PROPERTY_VERSION = "property_version"           # 프로젝트 pom 의 속성 값
 K_OWN_MANAGEMENT_VERSION = "own_management_version"   # 프로젝트 <dependencyManagement> 의 버전 글자
-K_MANAGED_OVERRIDE = "managed_override"           # 부모·BOM 이 관리하는 버전을 프로젝트 속성 값으로 덮어씀(이미 있는 속성 정의의 값만)
+K_MANAGED_OVERRIDE = "managed_override"           # 간접 의존성·부모/BOM 관리 버전: 루트 pom 의 <dependencyManagement> 에 override 항목을 넣음(늘 승인)
 K_PARENT_VERSION = "parent_version"               # <parent><version>
 K_BOM_VERSION = "bom_version"                     # import 한 BOM 의 <version>
 # 위험 표시(승인 부류) / risk flags = `remediation.always_approve` 의 값들
@@ -425,14 +429,28 @@ D_APPROVED = "approved"
 D_REJECTED = "rejected"
 
 
+E_REPLACE = "replace"     # 기존 버전 글자 바꾸기
+E_INSERT = "insert"       # 관리 버전 override 항목 넣기 (K_MANAGED_OVERRIDE 제안에서만)
+
+
 @dataclass
 class TextEdit(Record):
-    """글자 변경 하나: ``pom`` 의 ``line`` 번째 줄에서 ``old`` 를 ``new`` 로(그 줄에 ``old`` 가 정확히 한 번 있어야 한다).
-    ``old`` / ``new`` 는 버전 글자뿐이다 — 태그나 다른 글자를 포함하지 않는다."""
+    """글자 변경 하나. ``op`` 가 replace(기본)면 ``pom`` 의 ``line`` 번째 줄에서 ``old`` 를 ``new`` 로 바꾼다(그 줄에 ``old`` 가
+    정확히 한 번 있어야 하고, ``old`` / ``new`` 는 버전 글자뿐이다 — 태그나 다른 글자를 포함하지 않는다).
+
+    ``op`` 가 insert 면 (사용자 결정 2026-11-11: 간접 의존성·부모/BOM 관리 버전은 "관리 버전 override 항목 추가" 로 고치되 늘
+    승인을 받는다) ``line`` 번째 줄 **앞에** ``new`` (온전한 줄들, 줄 끝 포함)를 끼워 넣는다. ``old`` 는 빈 글자열이고 ``anchor`` 는
+    그 ``line`` 번째 줄의 지금 글자(앞뒤 공백 뺀 것) — 적용할 때 그 줄이 그대로인지 확인한다. 넣는 글자는 ``override`` 의
+    g / a / version 으로만 만들어진 정해진 모양이어야 한다: 루트 pom 의 ``<dependencyManagement><dependencies>`` 안의
+    ``<dependency>`` 항목 하나(groupId / artifactId / version 만), 또는 그 절이 없을 때 그 항목 하나를 담은
+    ``<dependencyManagement>`` 절 전체. 다른 어떤 XML 도 넣지 않는다."""
     pom: str
     line: int
     old: str
     new: str
+    op: str = E_REPLACE
+    anchor: str = ""
+    override: dict[str, str] = field(default_factory=dict)    # insert 일 때 {"groupId", "artifactId", "version"}
 
 
 @dataclass

@@ -90,6 +90,8 @@ _FIXED_FILES: dict[str, Callable[[RunPaths], Path]] = {
     "journal.jsonl": lambda p: p.journal,
     "remediation.log": lambda p: p.log,
     "delivery.json": lambda p: p.delivery_json,
+    # 정책 include 로 실패한 수정본이 result.zip 을 차지했을 때 앞 라운드의 검증된 ZIP(delivery/result-r<k>-verified.zip)
+    "result-verified.zip": lambda p: graph_mod.find_verified_zip(p) or p.delivery_zip.with_name("result-verified.zip"),
     "baseline-build.log": lambda p: p.baseline_log,
 }
 _ROUND_FILES: dict[str, Callable[[RunPaths, int], Path]] = {
@@ -589,7 +591,8 @@ class RemediationManager:
             "message": st.message, "node": st.node, "next_node": st.next_node, "round": st.round,
             "counts": dict(sorted(st.counts.items())), "created": st.created, "updated": st.updated,
             "stop_requested": st.stop_requested, "pending_approvals": pending,
-            "delivery": {"sha256": st.delivery.sha256, "size": st.delivery.size} if st.delivery else None,
+            "delivery": {"sha256": st.delivery.sha256, "size": st.delivery.size, "round": st.delivery.round,
+                         "build_ok": st.delivery.build_ok, "scanned": st.delivery.scanned} if st.delivery else None,
             "files": self._available_files(paths),
             "links": {"self": base, "proposals": f"{base}/proposals", "approvals": f"{base}/approvals",
                       "resume": f"{base}/resume", "stop": f"{base}/stop", "result": f"{base}/result",
