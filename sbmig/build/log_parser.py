@@ -979,11 +979,50 @@ def _artifacts_in(msg: str) -> list[GAV]:
     out: list[GAV] = []
     for rx in (r"Could not find artifact (" + _COORDS + ")", r"Failure to find (" + _COORDS + ")",
                r"Could not transfer artifact (" + _COORDS + ")",
-               r"The following artifacts could not be resolved: (" + _COORDS + ")"):
+               r"The following artifacts could not be resolved: (" + _COORDS + ")",
+               r"Failed to read artifact descriptor for (" + _COORDS + ")"):
         for m in re.finditer(rx, msg):
             g = parse_coords(m.group(1))
             if all(o.coordinates != g.coordinates for o in out):
                 out.append(g)
+    return out
+
+
+_PARENT_SPLIT_RE = re.compile(r"Non-resolvable parent POM")
+_PARENT_HINT_RE = re.compile(r"(?i)\bparent\b")
+
+
+def parent_coordinates_in(text: str) -> list[GAV]:
+    """Maven 문장에서 해석하지 못한 parent pom 의 좌표(g:a:v, 순서대로, 중복 없이). ``Non-resolvable parent POM for …:``
+    뒤의 ``Could not find artifact g:a:pom:v`` / ``The following artifacts could not be resolved: g:a:pom:v`` /
+    ``Failed to read artifact descriptor for g:a:pom:v`` / ``Could not transfer artifact g:a:pom:v`` 를 읽는다
+    (``'parent.relativePath' points at …`` 꼬리가 있든 없든). 그 머리말이 없으면 "parent" 를 말하는 문장의 pom 형식 좌표만.
+    버전 없는 좌표도 그대로 돌려준다. 예외 없음.
+
+    The coordinates (g:a:v, in order, de-duplicated) of the parent poms Maven could not resolve: the four message shapes
+    after `Non-resolvable parent POM for …:`, with or without the relativePath tail; without that head, only pom-typed
+    coordinates of a text that mentions a parent. Never raises."""
+    out: list[GAV] = []
+    try:
+        text = text or ""
+        chunks = []
+        heads = list(_PARENT_SPLIT_RE.finditer(text))
+        for i, m in enumerate(heads):
+            end = heads[i + 1].start() if i + 1 < len(heads) else len(text)
+            line_end = text.find("\n", m.end())
+            chunks.append(text[m.end():min(end, line_end) if line_end != -1 else end])
+        if not heads and _PARENT_HINT_RE.search(text):
+            chunks = [text]
+        for ch in chunks:
+            arts = [a for a in _artifacts_in(ch) if a.type in (None, "pom")]
+            if not heads:
+                arts = [a for a in arts if a.type == "pom"]
+            for a in arts[:1] if heads else arts:
+                g = GAV(group_id=a.group_id, artifact_id=a.artifact_id, version=a.version)
+                if all(o.coordinates != g.coordinates for o in out):
+                    out.append(g)
+    except Exception:  # noqa: BLE001 - a parser helper never raises
+        return out
     return out
 
 

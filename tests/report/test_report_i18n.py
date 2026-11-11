@@ -342,6 +342,15 @@ def test_every_handover_pattern_matches_a_real_handover_line(tmp_path, cfg):
     from sbmig.restructure.bundled_jars import unused_jar_followup
     lines.append(unused_jar_followup("unused-tool-1.0.jar"))
 
+    # v2.1z-ag: the as-is parent lines (transform alignment, fix-loop alignment, rewrite without recipes)
+    from sbmig.core.models import GAV as _GAV
+    from sbmig.restructure.asis_parent import ParentMiss, aligned_followup, loop_aligned_followup, skipped_followup
+    pm = ParentMiss(gav=_GAV.parse("com.c:base-parent:1.0.0-SNAPSHOT"), kind="asis-version",
+                    target=_GAV.parse("com.c:base-parent:4.0.0"), spec_name="artifacts.parent")
+    lines.append(aligned_followup(pm, ["pom.xml", "a/pom.xml"]))
+    lines.append(loop_aligned_followup(pm, ["pom.xml"]))
+    lines.append(skipped_followup(ParentMiss(gav=_GAV.parse("com.acme:acme-parent:9.9"), kind="foreign")))
+
     translated = {x: tr_line("ko", x) for x in lines}
     for rx, _ in PATTERNS["ko"]:
         assert any(rx.match(x) for x in lines), f"pattern never matched a handover line: {rx.pattern}"

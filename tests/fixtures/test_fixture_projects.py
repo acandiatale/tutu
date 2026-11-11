@@ -46,6 +46,7 @@ SCENARIOS = ["boot2-javax-lib", "boot2-javax-lib-optional", "euckr-legacy", "enf
              "servlet-javax-grid",                      # v2.1z-e: a vendor javax library whose -jakarta build is found and applied
              "boot-stray-pom-copy",                     # v2.1z-h: a stray copy of a Boot module in shop-boot/bin (ignored at intake)
              "webapp-bundled-jar",                      # v2.1z-i: an undeclared vendor jar in WEB-INF/lib, wired by sbmig-bundled
+             "boot-asis-parent-unpublished",            # v2.1z-ag: the as-is version of the company parent is in no repository
              "adf-jdev"]                                # v2.1z-d: an Oracle ADF (JDeveloper) workspace — recognised, sized, stopped
 NAMES = HAPPY + SCENARIOS
 CP949_FIXTURES = {"euckr-legacy"}
@@ -53,7 +54,8 @@ ANT_FIXTURES = {"ant-webapp"}            # v2.1j: build.xml, no pom.xml — the 
 
 # (fixture, sub-directory to build, JDK, needs) — mirrors the README of each fixture.
 # needs: "libs" = legacy-web-lib installed (tail repo), "ghost" = ghost-lib tail repo, "ms949" = platform encoding,
-# "fails" = the as-is Maven build fails by design (v2.1z-i: a jar the IDE build saw, no pom declares) — asserted to fail
+# "fails" = the as-is Maven build fails by design (v2.1z-i: a jar the IDE build saw, no pom declares) — asserted to fail;
+# "noparent" = the as-is parent version is in no repository (v2.1z-ag) — asserted to fail on parent resolution
 BUILD_MATRIX = [
     ("pure-java", ".", "8", ""),
     ("servlet-tomcat", ".", "8", ""),
@@ -99,6 +101,8 @@ BUILD_MATRIX = [
     ("boot-stray-pom-copy", ".", "11", ""),           # v2.1z-h: Boot 2.7 aggregator + shop-boot; shop-boot/bin is a stray copy
     ("webapp-bundled-jar", ".", "11", "fails"),       # v2.1z-i: WEB-INF/lib/acme-seed-1.0.jar is declared by no pom → the
                                                       # as-is Maven build fails by design (`package com.acme.seed does not exist`)
+    ("boot-asis-parent-unpublished", ".", "11", "noparent"),   # v2.1z-ag: the parent version exists nowhere → the
+                                                      # as-is build fails by design (`Non-resolvable parent POM`)
     ("adf-jdev", "APP", "8", ""),                      # v2.1z-d: APP packages the JDeveloper / ADF workspace in DEV/s10 (nothing to compile)
 ]
 REQUIRED_KEYS = {
@@ -649,7 +653,8 @@ COMPANY_OVERRIDES = {name: {"layout": {"module_dir", "boot_module", "comp_module
                                   "ear-sibling-poms", "servlet-war-overlay", "ant-webapp", "sibling-aggregator-dup",
                                   "legacy-external-parent", "filtered-binary-resources", "spring5-legacy-startup",
                                   "rootless-unlisted-module", "hollow-reactor", "adf-jdev",
-                                  "servlet-javax-grid", "boot-stray-pom-copy", "webapp-bundled-jar")}
+                                  "servlet-javax-grid", "boot-stray-pom-copy", "webapp-bundled-jar",
+                                  "boot-asis-parent-unpublished")}
 COMPANY_OVERRIDES["ant-webapp"]["intake"] = {"jar_lookup"}      # v2.1j: no sha1 lookup on Maven Central during e2e
 COMPANY_OVERRIDES["legacy-external-parent"]["artifacts"] = {"boot_parent", "comp_parent", "optional"}   # v2.1n trigger
 
@@ -1037,6 +1042,9 @@ def test_fixture_builds_as_is(name: str, subdir: str, jdk: str, needs: str, tmp_
         env["JAVA_TOOL_OPTIONS"] = "-Dfile.encoding=MS949"
     t0 = time.monotonic()
     cp = _build(src / subdir, jdk, args, env)
+    if needs == "noparent":          # v2.1z-ag: the parent version exists in no repository
+        assert cp.returncode != 0 and "Non-resolvable parent POM" in cp.stdout + cp.stderr, cp.stdout[-4000:]
+        return
     if needs == "fails":             # v2.1z-i: the undeclared WEB-INF/lib jar is not on Maven's compile classpath
         print(f"\nAS-IS {name}/{subdir} JDK {jdk}: FAILS as designed {time.monotonic() - t0:.1f}s")
         assert cp.returncode != 0, f"{name}: the as-is build must fail (the bundled jar is declared by no pom)"

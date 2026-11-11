@@ -1,0 +1,190 @@
+{
+  "case_type": "spring_boot",
+  "java_version": "11",
+  "spring_boot_version": "2.7.18-NOT-PUBLISHED",
+  "spring_version": null,
+  "packaging": "jar",
+  "is_multi_module": false,
+  "libraries": [
+    "tomcat-embed",
+    "spring-webmvc"
+  ],
+  "optional_artifacts_in_use": [],
+  "main_classes": [
+    "com.example.shop.ShopApplication"
+  ],
+  "catalog": [],
+  "expect": {
+    "success": true,
+    "exit_code": 0,
+    "max_llm_calls": 1,
+    "blocked": [],
+    "unresolved_max": 0,
+    "journal_events": [
+      {
+        "event": "asis_parent_aligned",
+        "parent": "org.springframework.boot:spring-boot-starter-parent",
+        "from": "2.7.18-NOT-PUBLISHED",
+        "to": "4.1.0",
+        "poms": [
+          "pom.xml"
+        ],
+        "where": "rewrite"
+      },
+      {
+        "event": "rewrite",
+        "ok": true
+      },
+      {
+        "event": "restructure",
+        "mode": "boot_pom",
+        "ok": true
+      }
+    ],
+    "phases": {
+      "transform": "ok",
+      "restructure": "ok"
+    },
+    "structure_review": {
+      "verdict": "ok",
+      "critical": 0,
+      "llm_calls_max": 1
+    },
+    "scripts": {
+      "attempts": {
+        "new": 0,
+        "augment": 0,
+        "reuse": 0
+      }
+    },
+    "kb": {
+      "dir": "out/e2e/kb-boot-asis-parent-unpublished"
+    },
+    "post_checks": [
+      {
+        "pom_parent": {
+          "path": "pom.xml",
+          "group_id": "org.springframework.boot",
+          "artifact_id": "spring-boot-starter-parent",
+          "version": "4.1.0"
+        }
+      },
+      {
+        "pom_packaging": {
+          "path": "pom.xml",
+          "packaging": "pom"
+        }
+      },
+      {
+        "pom_module_list": {
+          "path": "pom.xml",
+          "modules": [
+            "shop-boot"
+          ]
+        }
+      },
+      {
+        "pom_dependency_present": {
+          "path": "pom.xml",
+          "artifacts": [
+            "org.springframework.boot:spring-boot-starter-validation",
+            "org.springframework.boot:spring-boot-starter-actuator"
+          ]
+        }
+      },
+      {
+        "pom_parent": {
+          "path": "shop-boot/pom.xml",
+          "group_id": "org.springframework.boot",
+          "artifact_id": "spring-boot-starter-parent",
+          "version": "4.1.0"
+        }
+      },
+      {
+        "pom_packaging": {
+          "path": "shop-boot/pom.xml",
+          "packaging": "jar"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "shop-boot/pom.xml",
+          "contains": "<relativePath/>"
+        }
+      },
+      {
+        "pom_dependency_absent": {
+          "path": "shop-boot/pom.xml",
+          "artifacts": [
+            "org.springframework.boot:spring-boot-starter-validation",
+            "org.springframework.boot:spring-boot-starter-actuator"
+          ]
+        }
+      },
+      {
+        "file_contains": {
+          "path": "shop-boot/pom.xml",
+          "contains": "<groupId>com.example</groupId>"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "shop-boot/pom.xml",
+          "contains": "<version>1.0.0-SNAPSHOT</version>"
+        }
+      },
+      {
+        "file_exists": {
+          "path": "shop-boot/src/main/java/com/example/shop/ShopApplication.java"
+        }
+      },
+      {
+        "file_exists": {
+          "path": "shop-boot/src/main/java/com/example/shop/web/ProductController.java"
+        }
+      },
+      {
+        "file_exists": {
+          "path": "shop-boot/src/main/java/com/example/shop/service/ProductService.java"
+        }
+      },
+      {
+        "file_exists": {
+          "path": "shop-boot/src/main/resources/application.properties"
+        }
+      },
+      {
+        "file_absent": {
+          "path": "src"
+        }
+      },
+      {
+        "file_absent": {
+          "path": "module"
+        }
+      },
+      {
+        "file_absent": {
+          "path": "shop-back"
+        }
+      },
+      {
+        "file_absent": {
+          "path": "shop-front"
+        }
+      }
+    ],
+    "flags": [
+      "asis-parent-aligned"
+    ],
+    "forbidden_flags": [
+      "aborted:parent-not-found",
+      "rewrite-skipped-asis-parent",
+      "infra:repository",
+      "regex:^aborted"
+    ],
+    "followups_contains": [
+      "regex:^as-is parent `org\\.springframework\\.boot:spring-boot-starter-parent:2\\.7\\.18-NOT-PUBLISHED` is not in the repository: sbmig set the configured `org\\.springframework\\.boot:spring-boot-starter-parent:4\\.1\\.0` \\(artifacts\\.parent\\) in pom\\.xml before the recipes — the recipes ran on the target parent's classpath, not the as-is one .*"
+    ]
+  }
+}

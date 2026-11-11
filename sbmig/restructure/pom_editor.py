@@ -665,6 +665,16 @@ class PomEditor:
             self._set_child_text(p, "relativePath", relative_path)
 
     @_mutator
+    def set_parent_version(self, version: str) -> None:
+        """기존 <parent> 의 <version> 글자만 바꾼다(groupId·artifactId·relativePath 그대로, 부모가 없으면 아무것도 안 함).
+
+        Only change the <version> text of an existing <parent> (nothing else; no parent → no change)."""
+        p = self.child(self._root, "parent")
+        if p is None:
+            return
+        self._set_child_text(p, "version", version)
+
+    @_mutator
     def remove_parent(self) -> None:
         """<parent> 를 지운다."""
         p = self.child(self._root, "parent")

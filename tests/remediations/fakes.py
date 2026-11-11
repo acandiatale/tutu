@@ -221,6 +221,7 @@ class FakeMaven:
         self.on_package = on_package
         self.package_calls: list[Path] = []
         self.resolve_calls: list[Path] = []
+        self.targets_seen: list[tuple[str, list[str] | None]] = []     # (call, targets kw) — None = not passed
 
     def readiness(self) -> list[str]:
         return list(self._readiness)
@@ -228,8 +229,10 @@ class FakeMaven:
     def allowed_hosts(self) -> list[str]:
         return ["nexus.invalid"]
 
-    def package(self, project: Path, log_path: Path, stop: Callable[[], bool] | None = None) -> BuildOutcome:
+    def package(self, project: Path, log_path: Path, stop: Callable[[], bool] | None = None,
+                targets: list[str] | None = None) -> BuildOutcome:
         self.package_calls.append(project)
+        self.targets_seen.append(("package", targets))
         if self.on_package is not None:
             self.on_package(project)
         (project / "target").mkdir(parents=True, exist_ok=True)
@@ -242,11 +245,13 @@ class FakeMaven:
         return BuildOutcome(ok=bool(item), exit_code=0 if item else 1, log=log_path.name,
                             summary="" if item else "[ERROR] COMPILATION ERROR")
 
-    def resolve(self, project: Path, work: Path) -> ResolvedModel:
+    def resolve(self, project: Path, work: Path, targets: list[str] | None = None) -> ResolvedModel:
         self.resolve_calls.append(project)
+        self.targets_seen.append(("resolve", targets))
         return self.models.pop(0) if self.models else ResolvedModel()
 
-    def packaged(self, project: Path) -> list[PackagedLib]:
+    def packaged(self, project: Path, targets: list[str] | None = None) -> list[PackagedLib]:
+        self.targets_seen.append(("packaged", targets))
         return list(self._packaged)
 
 

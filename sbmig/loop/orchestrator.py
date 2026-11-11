@@ -1514,6 +1514,9 @@ class Orchestrator:
             unresolved = self._unresolved_versions(res)
         if unresolved:
             self._report_unresolved_versions(pr, step, res, unresolved)
+        # v2.1z-ag: 사내 부모 g:a 의 as-is 버전이 저장소에 없어 실패 → 설정 버전으로 맞추고 한 번 더(LLM 없음)
+        if not res.ok and not self._dry_run:
+            res = self._align_asis_parent_and_retry(pr, step, res, pre, clean_before)
         pr.rewrite_results.append(res)
         sha = None
         if not self._dry_run and self.ws.is_dirty():
@@ -1632,18 +1635,105 @@ class Orchestrator:
             # an extension failure is never a parent-resolution failure: Maven's location tail (`@ <parent gav>, <pom>`) names the
             # parent that DECLARES it, which the parent regex below would mistake for an unresolvable parent
             return
-        if not _PARENT_UNRESOLVABLE_RE.search(err) or not any(k in err for k in keys):
+        if not _PARENT_UNRESOLVABLE_RE.search(err):
             return
-        key = next(k for k in keys if k in err)
-        spec = next((s for s in self.cfg.artifacts.parent_specs() if key in (s.key, *s.aliases)),
-                    self.cfg.artifacts.parent)
-        m = re.search(re.escape(key) + r":(?:pom:)?([\w.\-]+)", err)
-        gav = GAV.parse(key + (f":{m.group(1)}" if m else (f":{spec.version}" if spec.version else "")))
-        e = BuildError(kind=ErrorKind.PARENT_RESOLUTION, message=err.splitlines()[0][:500], raw=err[:2000],
-                       artifact=gav, signature=f"parent_resolution|{gav.coordinates}", module=step.target)
-        br = BuildResult(ok=False, goal="rewrite", command=[], exit_code=1, duration_s=0.0, log_path="", errors=[e])
-        self.loop._parent_abort(pr, step.phase, br, 0)   # noqa: SLF001 - same package
-        self._merge_blocked(pr, [it for it in self.blocked.items() if it.reason.value == "parent_not_found"])
+        from sbmig.restructure.asis_parent import classify_parent_misses
+        misses = classify_parent_misses(err, self.cfg, self.ws)
+        if not misses and any(k in err for k in keys):
+            # Maven 의 문장에서 좌표를 못 읽었는데 사내 부모 g:a 가 보인다 → 예전처럼(설정 버전을 못 찾은 것으로) 판정
+            from sbmig.restructure.asis_parent import classify_gav
+            key = next(k for k in keys if k in err)
+            misses = [classify_gav(GAV.parse(key), self.cfg, self.ws)]
+        policy = getattr(self.cfg.openrewrite, "unresolvable_asis_parent", "align")
+        abort = [m for m in misses if m.kind == "configured" or (m.kind == "asis-version" and policy == "abort")]
+        if abort:
+            m = abort[0]
+            e = BuildError(kind=ErrorKind.PARENT_RESOLUTION, message=err.splitlines()[0][:500], raw=err[:2000],
+                           artifact=m.gav, signature=f"parent_resolution|{m.coordinates}", module=step.target)
+            br = BuildResult(ok=False, goal="rewrite", command=[], exit_code=1, duration_s=0.0, log_path="", errors=[e])
+            self.loop._parent_abort(pr, step.phase, br, 0)   # noqa: SLF001 - same package
+            self._merge_blocked(pr, [it for it in self.blocked.items() if it.reason.value == "parent_not_found"])
+            return
+        # 중단하지 않는 경우(as-is 버전 — continue 이거나 맞춘 뒤에도 남음 / 사내 부모가 아닌 부모): 레시피가 돌지 않았다는 사실을 남긴다
+        for m in misses:
+            self._report_rewrite_skipped_parent(pr, step, m)
+
+    REWRITE_SKIPPED_PARENT_FLAG = "rewrite-skipped-asis-parent"
+    ASIS_PARENT_ALIGNED_FLAG = "asis-parent-aligned"
+
+    def _report_rewrite_skipped_parent(self, pr: PhaseResult, step: PlanStep, miss: Any) -> None:
+        """v2.1z-ag (경우 c 와 continue): as-is 부모가 저장소에 없어 레시피가 돌지 않았다 — 플래그
+        ``rewrite-skipped-asis-parent``, 저널 ``rewrite_skipped_asis_parent``, 단계 메모, 인수인계 한 줄. 중단하지 않는다.
+
+        The recipes did not run because the as-is parent is not in the repository: flag, journal, note, one Handover line."""
+        company = miss.kind == "asis-version"
+        self.ws.journal({"event": "rewrite_skipped_asis_parent", "step": step.id, "parent": miss.coordinates,
+                         "company_parent": company,
+                         "policy": getattr(self.cfg.openrewrite, "unresolvable_asis_parent", "align")})
+        self._flag(self.REWRITE_SKIPPED_PARENT_FLAG)
+        what = (f"the as-is version of the company parent ({miss.spec_name} = {miss.target.coordinates})"
+                if company and miss.target is not None else "a parent that is not a company parent")
+        pr.notes.append(f"{step.id}: {self.REWRITE_SKIPPED_PARENT_FLAG} — the recipes did not run because the as-is parent "
+                        f"`{miss.coordinates}` is not in the repository ({what}); the restructure replaces the parent and "
+                        "the fix loop covers what the recipes would have changed")
+        log.warning("%s: the recipes did not run — the as-is parent %s is not in the repository (%s)", step.id,
+                    miss.coordinates, what)
+        from sbmig.restructure.asis_parent import skipped_followup
+        fu = skipped_followup(miss)
+        if self.report is not None and fu not in self.report.manual_followups:
+            self.report.manual_followups.append(fu)
+
+    def _align_asis_parent_and_retry(self, pr: PhaseResult, step: PlanStep, res: Any, pre: Optional[str],
+                                     clean_before: bool) -> Any:
+        """v2.1z-ag 경우 b: OpenRewrite 가 사내 부모 g:a 의 as-is 버전(설정 버전이 아님)을 저장소에서 못 받아 실패했다 →
+        (``openrewrite.unresolvable_asis_parent: align`` 일 때) 그 g:a·버전을 부모로 둔 pom 전부에 설정 버전을 적고 커밋
+        (``transform: as-is parent <g:a> <old> → <configured> (as-is version not in the repository)``), 저널
+        ``asis_parent_aligned``, 플래그 ``asis-parent-aligned``, 단계 메모와 인수인계 한 줄, 그리고 OpenRewrite 를 한 번 더.
+        설정 버전 자체를 못 찾은 경우가 섞여 있거나 바꿀 pom 이 없으면 그대로 돌려준다(뒤의 판정이 맡음). 다시 돈 결과를 돌려준다.
+
+        Case b: align every pom whose parent is that g:a at that version to the configured version, commit, journal, flag,
+        note + one Handover line, run OpenRewrite once more and return that result. Returns `res` unchanged when the
+        switch is not `align`, a configured parent is missing too, or no pom could be changed."""
+        policy = getattr(self.cfg.openrewrite, "unresolvable_asis_parent", "align")
+        if policy != "align":
+            return res
+        err = res.error or ""
+        if not _PARENT_UNRESOLVABLE_RE.search(err):
+            return res
+        from sbmig.restructure.asis_parent import align_asis_parent, classify_parent_misses
+        misses = classify_parent_misses(err, self.cfg, self.ws)
+        asis = [m for m in misses if m.kind == "asis-version"]
+        if not asis or any(m.kind == "configured" for m in misses):
+            return res
+        if clean_before and self.ws.is_dirty():
+            self.ws.revert_to(pre)                     # a failed run normally leaves nothing; never commit half of one
+        aligned = []
+        for m in asis:
+            r = align_asis_parent(self.ws, m)
+            if not r.poms:
+                continue
+            old, new = m.gav.version, m.target.version
+            sha = self.ws.commit(f"transform: as-is parent {m.gav.key} {old} → {new} (as-is version not in the repository)")
+            self.ws.journal({"event": "asis_parent_aligned", "step": step.id, "parent": m.gav.key, "from": old, "to": new,
+                             "target": m.target.coordinates, "spec": m.spec_name, "poms": list(r.poms),
+                             "properties": dict(r.properties), "commit": sha, "where": "rewrite"})
+            log.warning("%s: as-is parent %s:%s is not in the repository → set to the configured %s (%s) in %s; "
+                        "OpenRewrite runs once more on the target parent's classpath", step.id, m.gav.key, old,
+                        m.target.coordinates, m.spec_name, ", ".join(r.poms))
+            aligned.append((m, r))
+        if not aligned:
+            return res
+        self._flag(self.ASIS_PARENT_ALIGNED_FLAG)
+        for m, r in aligned:
+            how = "".join(f" (property `{p}` in {pom})" for pom, p in r.properties.items())
+            pr.notes.append(f"{step.id}: {self.ASIS_PARENT_ALIGNED_FLAG} — the as-is parent `{m.coordinates}` is not in the "
+                            f"repository; set to the configured `{m.target.coordinates}` ({m.spec_name}) in "
+                            f"{', '.join(r.poms)}{how}; OpenRewrite ran once more")
+            from sbmig.restructure.asis_parent import aligned_followup
+            fu = aligned_followup(m, r.poms)
+            if self.report is not None and fu not in self.report.manual_followups:
+                self.report.manual_followups.append(fu)
+        return self._run_rewrite_once(self.rewrite_runner, step)
 
     def _merge_blocked(self, pr: PhaseResult, items: list[BlockedItem]) -> None:
         for it in items:

@@ -33,6 +33,7 @@ scored like any attempt.
 
 | Source | Matches | Does |
 |---|---|---|
+| `sbmig-parent` | a `Non-resolvable parent POM` whose g:a is a configured company parent (`artifacts.parent` / `boot_parent` / `comp_parent`, or an alias) at another version than the configured one (`openrewrite.unresolvable_asis_parent: align`) | sets the configured version in every pom whose `<parent>` is that g:a at that version (`sbmig/restructure/asis_parent.py`, text-preserving); journal `asis_parent_aligned` (`where: fix loop`), flag `asis-parent-aligned`, one Handover line. Tried even though triage blocks the case as `parent_not_found` |
 | `sbmig-version` | L2 `pom_invalid\|missing_version` | fills the version: managed by the new parent chain → no version; else the as-is build's version; a dependency just added → the repository's newest release |
 | `sbmig-resources` | resources / war plugin fails on a binary under filtering (`MalformedInputException`, `Input length = 1`) | adds the extension to `nonFilteredFileExtensions` in the pom that declares the filtering (`sbmig/restructure/resources_filtering.py`) |
 | `sbmig-bundled` | a package the case misses is provided by a jar in the tree no pom declares (`logs/bundled-jars.json`) | plain dependency when the jar's own coordinates are in the repository, else copied to `<module>/lib/` and declared `system` scope + `includeSystemScope` on the boot module (`sbmig/restructure/system_jars.py`); a jar whose g:a the target chain manages (superseded) is never wired |
@@ -99,7 +100,7 @@ go to the report's "Blocked" section with a suggestion composed by `compose_sugg
 | X1 | `external_javax_api` | a dependency's API still takes `javax.*` types (`… cannot be converted to javax…`, `required: javax… found: jakarta…`), the project no longer imports that javax package and the owner class is not a project class | 2 | via the dependency tree: (1) a library in `knowledge/libraries/jakarta_libraries.yml` → raise / relocate to its jakarta release; (2) an in-house artifact → needs a Jakarta build, add it to `artifacts.optional`; (3) another library → upgrade or replace; (4) the javax API jar declared in a pom → remove it; else `mvn dependency:tree -Dincludes=<api jar>` |
 | X2 | `external_api_incompatible` | a library API changed (non-javax `cannot find symbol` / `cannot be applied` with a library owner) | 2 | upgrade the library or adapt the call |
 | X3 | `artifact_not_found` | `Could not find artifact g:a:v` | 2 | proxy it in Nexus or fix the coordinates; the LLM never invents versions |
-| X4 | `parent_not_found` | `Non-resolvable parent POM` | 0 | settings / mirror / `artifacts.parent`; an unresolvable company parent aborts the run (`aborted:parent-not-found`) |
+| X4 | `parent_not_found` | `Non-resolvable parent POM` | 0 | settings / mirror / `artifacts.parent`. Only the configured coordinates themselves (g:a and the configured version) abort the run (`aborted:parent-not-found`; the message names the coordinates Maven could not resolve, says that this is the configured version and names the settings file). A company parent g:a at another (as-is) version is aligned by `sbmig-parent` (§2) under `openrewrite.unresolvable_asis_parent: align`, blocked without abort under `continue`, and aborts only under `abort`; a foreign parent is blocked without abort |
 | X5 | `plugin_incompatible` | a build plugin fails on JDK 21 | 2 | raise the plugin version or remove it |
 | X6 | `unsupported_source` | Kotlin / Groovy / Scala or source-generator plugin failures | 0 | migrate by hand |
 | X7 | `reactor_duplicate` | `Project … is duplicated in the reactor` that the intake could not de-duplicate | 0 | fix the `<module>` lists; never sent to the LLM |
@@ -131,14 +132,25 @@ cap ends it instead.
   (`openrewrite.download_retry`); literal `4.0.x`-style versions left in a pom → reset and rerun once, else flag
   `rewrite-unresolved-versions`; files the plugin could not parse → flag `rewrite-parse-problems`. The run continues — the
   build shows what is left.
+* **OpenRewrite and an unresolvable parent** (the recipes run on the as-is poms, before the restructure sets the company
+  parents): the configured parent coordinates missing → abort as in §5 X4. A company parent g:a at an as-is version the
+  repository lacks → `openrewrite.unresolvable_asis_parent` (`align` by default: the poms are set to the configured version,
+  committed `transform: as-is parent <g:a> <old> → <configured> (as-is version not in the repository)`, journal
+  `asis_parent_aligned`, flag `asis-parent-aligned`, one Handover line, OpenRewrite runs once more — on the target parent's
+  classpath; a retry that fails on the configured version aborts; `continue` = as for a foreign parent; `abort` = stop). A
+  foreign parent → the run continues without recipes: flag `rewrite-skipped-asis-parent`, journal
+  `rewrite_skipped_asis_parent`, one Handover line. The intake's as-is `help:effective-pom` fails for the same reason; it stays
+  non-fatal and logs `the parent <g:a:v> is not in the repository` (journal `effective_pom.reason`).
 * **Server shutdown**: open SSE streams are ended and every registered Maven process tree is killed
   (`sbmig.build.mvn.kill_live_processes`).
 
 ## 7. Infrastructure outcomes
 
 At finalize a run that ended for an infrastructure reason gets `infra:<kind>`: `llm` (LLM unavailable / configuration error on a
-failed run), `maven` (`mvn-not-found`), `jdk` (Maven on another JDK), `repository` (parent not found, or every error of the failed
-final build is a resolution error with network / repository text), `disk` (no space left), `file-lock`. The code appears in
+failed run), `maven` (`mvn-not-found`), `jdk` (Maven on another JDK), `repository` (the configured parent not found —
+`aborted:parent-not-found` — or every error of the failed final build is a resolution error with network / repository text;
+an as-is parent version that sbmig aligned leaves no `infra:repository` on a run that then builds), `disk` (no space left),
+`file-lock`. The code appears in
 `SBMIG-RESULT … attn=` and the fleet's breaker defers such projects (`docs/FLEET.md`).
 
 ## 8. Analyzer warnings (never blocking)

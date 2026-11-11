@@ -326,6 +326,8 @@ class ResolvedModel(Record):
     modules: list[ModuleResolution] = field(default_factory=list)
     complete: bool = True
     notes: list[str] = field(default_factory=list)
+    # reactor 의 뿌리 폴더들(프로젝트 루트 기준). 빈 목록 = 루트 pom 하나(".") — 이관이 서비스마다 빌드한 프로젝트만 여럿이다
+    roots: list[str] = field(default_factory=list)
     _nested = {"modules": ModuleResolution}
 
     def versions_of(self, ga: str) -> set[str]:
@@ -589,6 +591,9 @@ class RemediationState(Record):
     residuals: list[Residual] = field(default_factory=list)
     reasons: list[str] = field(default_factory=list)          # 성공이 아닌 모든 이유(evaluate 가 채운다)
     counts: dict[str, int] = field(default_factory=dict)      # baseline / final / fixed / residual …
+    # 이관의 최종 빌드가 돈 대상 폴더(프로젝트 루트 기준). 빈 목록 = 루트에서 한 번(이관과 같다). 루트 aggregator 가 없는 MSA 는
+    # 이관이 서비스마다 빌드했으므로 조치도 같은 폴더에서 같은 방식으로 빌드한다(``maven.ServerMaven`` 의 ``targets``)
+    build_targets: list[str] = field(default_factory=list)
     schema: int = SCHEMA
     _nested = {"intake": IntakeResult, "boundary": BoundaryFinding, "baseline_build": BuildOutcome,
                "rounds": RoundState, "delivery": DeliveryInfo, "residuals": Residual}

@@ -401,10 +401,12 @@ class ChainSpy:
         self.calls = []
         self.status, self.raises, self.ret_none = status, raises, ret_none
 
-    def __call__(self, run_dir, project_dir, cfg, *, run_id, journal, stop, components=None, exclude_dirs=()):
+    def __call__(self, run_dir, project_dir, cfg, *, run_id, journal, stop, components=None, exclude_dirs=(),
+                 build_targets=()):
         from sbmig.remediations.models import RemediationState
         self.calls.append({"run_dir": run_dir, "project_dir": project_dir, "run_id": run_id, "stop": stop(),
-                           "project_files": sorted(p.name for p in project_dir.iterdir())})
+                           "project_files": sorted(p.name for p in project_dir.iterdir()),
+                           "build_targets": list(build_targets)})
         if self.raises:
             raise self.raises
         if self.ret_none:
@@ -447,6 +449,8 @@ def test_remediation_runs_after_build_success_and_leaves_the_verdict(cfg, tmp_pa
     call = chain_spy.calls[0]
     assert call["run_dir"] == ws.run_dir and call["project_dir"] == ws.root and call["run_id"] == ws.run_id
     assert call["stop"] is False and "pom.xml" in call["project_files"]
+    # the migration's final-build targets are handed over (a root build = ["."]); the remediation builds the same way
+    assert call["build_targets"] == [str(s.target or ".") for s in orch._verify_steps()]
     assert report.success and run_exit_code(report) == 0
     assert report.remediation["status"] == "SUCCEEDED" and report.remediation["dir"] == "remediation"
     line = report_result_line(report)

@@ -186,6 +186,19 @@ def remediation_enabled(cfg: Any) -> bool:
     return bool(getattr(rem, "after_migration", False)) if rem is not None else False
 
 
+def migration_build_targets(orch: Any) -> list[str]:
+    """이관의 최종 빌드(``verify.build`` 단계들)가 돈 대상 폴더들 — 대상 없는 단계는 ``"."`` (루트). 조치가 같은 대상을 같은 방식으로
+    빌드하도록 넘긴다(루트 aggregator 가 없는 MSA = 서비스마다). 계획을 읽을 수 없으면 빈 목록(루트 한 번).
+
+    The target directories of the migration's final builds (`"."` for the root); [] when the plan cannot be read."""
+    try:
+        steps = orch._verify_steps()
+    except Exception:  # an unreadable plan means "the root", as before
+        log.debug("migration build targets not read", exc_info=True)
+        return []
+    return [str(getattr(s, "target", None) or ".") for s in steps]
+
+
 def _chain_remediation(orch: Orchestrator, report: RunReport, state: MigrationState, *, planned: bool,
                        user_stopped: bool) -> dict | None:
     """조치를 이어서 돌릴 조건을 보고, 맞으면 ``chain.run_after_migration`` 을 불러 요약을 ``report.remediation`` 에 둔다.
@@ -220,7 +233,8 @@ def _chain_remediation(orch: Orchestrator, report: RunReport, state: MigrationSt
         t0 = orch.clock()
         rs = chain.run_after_migration(orch.ws.run_dir, orch.ws.root, orch.cfg, run_id=orch.ws.run_id, journal=journal,
                                        stop=lambda: stop_requested(orch),
-                                       exclude_dirs=list(getattr(orch.ws, "ignored_dirs", None) or []))
+                                       exclude_dirs=list(getattr(orch.ws, "ignored_dirs", None) or []),
+                                       build_targets=migration_build_targets(orch))
         report.timings_s["remediation"] = round(orch.clock() - t0, 3)
         if rs is None and not skipped:            # disabled after all (cannot happen with the switch on) — no token
             return None

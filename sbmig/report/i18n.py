@@ -317,6 +317,16 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
     "each application's directory":
         "프로젝트 루트에 pom.xml 이 없고 sbmig 가 만들 수도 없었다(최상위 pom 들이 한 애플리케이션도, MSA 서비스도 아님) — "
         "Maven 을 부르기 전에 실행을 멈췄다: 루트 pom.xml 을 추가하거나 애플리케이션 폴더마다 따로 sbmig 를 돌릴 것",
+    # v2.1z-ag: 사내 부모의 as-is 버전이 저장소에 없음(markdown.FLAG_HELP — 바꾸면 함께)
+    "the project's own version of the company parent was not in the repository: sbmig set the configured version in those "
+    "poms (openrewrite.unresolvable_asis_parent: align) — the recipes ran on the target parent's classpath, not the as-is "
+    "one (see the Handover)":
+        "프로젝트가 쓰던 사내 부모 버전이 저장소에 없었다: sbmig 가 그 pom 들에 설정된 버전을 적었다(openrewrite.unresolvable_asis_parent: "
+        "align) — 레시피는 as-is 가 아니라 목표 부모의 클래스패스로 돌았다(인수인계 참조)",
+    "OpenRewrite did not run because an as-is parent pom is not in the repository: no recipe changed the code, the "
+    "restructure replaced the parent and the fix loop did the rest (see the Handover)":
+        "as-is 부모 pom 이 저장소에 없어 OpenRewrite 가 돌지 못했다: 레시피가 바꾼 코드는 없고, 재구성이 부모를 바꾼 뒤 나머지는 "
+        "수정 루프가 맡았다(인수인계 참조)",
     # v2.1z-c: 속 빈 리액터 / 리액터 밖 소스 플래그 설명(markdown.FLAG_HELP)
     # v2.1z-h: 플래그 stray-pom-ignored 설명(sbmig/report/markdown.py — 바꾸면 함께)
     "a pom.xml with the same coordinates as a module that no pom lists (a stray copy in an IDE output / backup folder such as "
@@ -596,6 +606,20 @@ PATTERNS: dict[str, list[tuple[re.Pattern[str], str]]] = {"ko": [(re.compile(p),
      (r"pom 복사본 무시: `\g<p>` 은(는) `\g<q>` 와 좌표가 같고(`\g<c>`), 모듈 `\g<q2>` 옆에 있으며, 어느 pom 도 모듈로 나열하지 "
       r"않는다 — 떠도는 복사본(IDE 출력·백업 폴더)으로 보고 빌드도 이관도 하지 않고 그 자리에 둔다; 원본에서 지우거나, 진짜 모듈이면 "
       r"다른 좌표를 주고 <modules> 에 나열하라")),
+    # v2.1z-ag: 사내 부모의 as-is 버전 / 레시피 없이 계속 줄(sbmig/loop/orchestrator.py · fixloop.py — 바꾸면 함께)
+    ((r"^as-is parent `(?P<o>[^`]+)` is not in the repository: sbmig set the configured `(?P<t>[^`]+)` \((?P<s>[\w.]+)\) in "
+      r"(?P<p>.+?) before the recipes — the recipes ran on the target parent's classpath, not the as-is one \(code that only "
+      r"compiled against the old parent was fixed by the build loop\)$"),
+     (r"as-is 부모 `\g<o>` 이(가) 저장소에 없다: 레시피 전에 sbmig 가 \g<p> 에 설정된 `\g<t>` (\g<s>) 를 적었다 — 레시피는 as-is 가 "
+      r"아니라 목표 부모의 클래스패스로 돌았다(옛 부모로만 컴파일되던 코드는 빌드 루프가 고쳤다)")),
+    ((r"^as-is parent `(?P<o>[^`]+)` is not in the repository: sbmig set the configured `(?P<t>[^`]+)` \((?P<s>[\w.]+)\) in "
+      r"(?P<p>.+?) \(fix loop, sbmig-parent\)$"),
+     (r"as-is 부모 `\g<o>` 이(가) 저장소에 없다: sbmig 가 \g<p> 에 설정된 `\g<t>` (\g<s>) 를 적었다(수정 루프, sbmig-parent)")),
+    ((r"^OpenRewrite did not run: the as-is parent `(?P<o>[^`]+)` is not in the repository — no recipe changed the code; the "
+      r"restructure replaced the parent and the fix loop did the rest \(check the repository / settings if that parent "
+      r"should be there\)$"),
+     (r"OpenRewrite 가 돌지 못했다: as-is 부모 `\g<o>` 이(가) 저장소에 없다 — 레시피가 바꾼 코드는 없고, 재구성이 부모를 바꾼 뒤 "
+      r"나머지는 수정 루프가 맡았다(그 부모가 있어야 한다면 저장소·settings 를 확인)")),
     # v2.1z-i: 동봉 jar 연결 줄(sbmig/restructure/system_jars.py bundled_jar_followup — 바꾸면 함께; 루프가 앞에 ⚠ 를 붙일 수 있다)
     ((r"^(?P<w>⚠ ?)?bundled jar `(?P<n>[^`]+)` \(Maven coordinates unknown — no pom\.properties, not in the jar name table\) "
       r"wired into `(?P<p>[^`]+)` as a system dependency `(?P<c>[^`]+)` — wired by sbmig so the build sees the classes the "

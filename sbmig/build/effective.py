@@ -196,6 +196,11 @@ def capture_effective_depmgmt(ws: Workspace, cfg: Config, module: Optional[str] 
                 pr = run_logged([*cmd, "-U"], cwd=ws.root, env=mvn_env(cfg), log_path=log_path, timeout_s=EFFECTIVE_TIMEOUT_S)
         if pr.exit_code != 0 or not xml_path.is_file():
             why = pr.error or ("timed out" if pr.timed_out else _last_error(pr.text) or f"exit {pr.exit_code}")
+            # v2.1z-ag: 부모 pom 을 저장소에서 못 받아 실패했으면 그 사실을 한 줄로(실행은 계속 — 버전 이어받기만 빠진다)
+            from .log_parser import parent_coordinates_in
+            parents = parent_coordinates_in(pr.text or "")
+            if parents:
+                why = f"the parent {parents[0].coordinates} is not in the repository"
             log.warning("effective-pom of the as-is project failed (%s): %s — managed versions of the old parent "
                         "cannot be carried over (see %s)", module or "root", why, log_path)
             ws.journal({"event": "effective_pom", "ok": False, "module": module, "file": name, "reason": why,

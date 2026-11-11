@@ -404,6 +404,22 @@ Then the final build again, the report (Handover first, "Structure review", fix 
   code: multipart file field `file`, analysis id `lbrdrAnlId` else `analysisId`; the user tested 2026-11-11: three separate logins →
   three tokens → three uploads at once all accepted (a new login does not revoke earlier tokens; one login per pod is fine). Still open with IVAS: token lifetime, how to check an
   uncertain upload, `patchedVersion` shape, `actionDivCd` values, what `components.total` counts.
+- **An as-is version of the company parent that the repository does not have (v2.1z-ag, company run 2026-11-11)**: the
+  transform runs OpenRewrite on the AS-IS poms; a project that already uses the company parent's g:a (or an alias) at another
+  version Nexus lacks (`…:1.0.0-SNAPSHOT`) used to abort `aborted:parent-not-found` because the checks compared only g:a
+  (`_check_parent_in_rewrite`, `BuildFixLoop._parent_abort`). Now `sbmig/restructure/asis_parent.py` sorts the missing parent:
+  configured version → abort (the message names both facts); another version / alias → set the configured coordinates in the
+  `<parent>` (text-preserving), commit, journal `asis_parent_aligned`, flag `asis-parent-aligned`, one Handover line, OpenRewrite
+  once more — and the zero-LLM pre-try `sbmig-parent` in the build loop; a foreign parent → continue with flag
+  `rewrite-skipped-asis-parent`. Switch `openrewrite.unresolvable_asis_parent: align | continue | abort` (default align).
+  Fixture `boot-asis-parent-unpublished`. Open: the user says the same test project used to continue before — why it aborted now
+  is not explained yet (the abort condition has not changed since October; asked for the old run's `"event": "rewrite"` ok value
+  and the `is not resolvable` line).
+- **Remediation, first real-Maven runs (2026-11-11, ~15 chained runs on fixtures with a fake IVAS server)**: the remediation now
+  builds the migration's own verify targets (`RemediationState.build_targets`; per-service MSA trees without a root pom are
+  accepted), refuses insecure-TLS / `-s` / `-f` arguments in `build.extra_args` as a readiness problem instead of dropping them,
+  retries a cached resolution failure once with `-U`, logs every `remediation mvn …` call, and explains a baseline failure that
+  follows a successful migration build. Known gap: a project using git-commit-id fails the baseline (the build copy has no `.git`).
 - **Company convention (2026-10-20): agents run on LangGraph under uvicorn.** `loop.engine: graph` (default) drives
   the phases from a LangGraph `StateGraph` (`sbmig/graph/`, nodes intake → analyze → plan → phase×N → finalize;
   `inline` is the old loop, reports are identical by test); the web UI is FastAPI (`uvicorn sbmig.web.app:app` or

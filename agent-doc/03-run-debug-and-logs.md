@@ -159,14 +159,14 @@ verify_guide …), `metadata`(run_id, 케이스 등). 키·헤더는 들어가�
 | `intake`, `preflight`, `build_tool`, `pom_synthesized`, `aggregator_generated`, `no_root_pom`, `reactor_dedupe`, `stray_pom_ignored` | 접수: 입력, 점검, 빌드 도구, Ant pom 합성, 루트 집계 pom 생성, 리액터 중복 제거, 떠도는 pom 복사본 무시 |
 | `analyze`, `hollow_reactor`, `sources_outside_reactor`, `adf_project`, `adf_traces`, `bundled_jars`, `advisories` | 분석 판정 |
 | `plan`, `step_start`, `step_end`, `phase_start`, `phase_end`, `graph_node`, `stop_after` | 계획과 단계 진행 |
-| `rewrite`, `rewrite_download_retry(_result)`, `rewrite_oom_retry(_result)`, `rewrite_parse_problems` | OpenRewrite |
+| `rewrite`, `rewrite_download_retry(_result)`, `rewrite_oom_retry(_result)`, `rewrite_parse_problems`, `asis_parent_aligned` (`where: rewrite`), `rewrite_skipped_asis_parent` | OpenRewrite (as-is 부모가 저장소에 없음: 설정 버전으로 맞춤 / 레시피 없이 계속) |
 | `restructure`, `restructure_moves`, `restructure_failed`, `versions_pinned`, `parent_chain_facts`, `parent_chain_no_boot_bom`, `bom_property_overrides`, `non_filtered_extensions`, `jsp_jakarta`, `bundled_jar_wired` (`stage: restructure`), `bundled_jars_skipped` | 재구성 결과(건너뛴 jar 의 이유: superseded / container / unused / declared / skip) |
 | `structure_review` | 구조 검토 판정 |
 | `verify`, `verify_loop_start`, `loop_start`, `build`, `build_file_lock_retry`, `build_negative_cache_retry` | 빌드 |
 | `triage` | 라운드의 케이스 목록과 순서 |
 | `decision` | 케이스별 SCRIPT / BLOCKED 와 `rationale`(사다리 단계, KB 탐색 결과) |
 | `library_hints` (`lines` = LLM 이 받은 사실), `library_lookup`, `library_mapped`, `library_unmapped` | 라이브러리 → 저장소 조회 |
-| `version_try`, `resources_try`, `jakarta_try`, `bundled_jar_wired` (`stage: loop`) | LLM 없는 사전 시도 |
+| `version_try`, `resources_try`, `jakarta_try`, `bundled_jar_wired` (`stage: loop`), `asis_parent_aligned` (`where: fix loop`) | LLM 없는 사전 시도 |
 | `llm_call`, `llm_script`, `llm_verify_guide`, `llm_cooldown`, `llm_unavailable`, `llm_config_error` | LLM 호출과 장애 |
 | `attempt`, `attempt_scored`, `script_stored`, `script_credit`, `script_non_idempotent` | 시도, 재빌드 채점, KB 저장·실적 |
 | `revert`, `script_rollback`, `script_rollback_undone`, `reround` | 되돌림, 같은 빌드로 다음 단계 묻기 |
@@ -180,7 +180,7 @@ verify_guide …), `metadata`(run_id, 케이스 등). 키·헤더는 들어가�
 ## 5. 종료 코드, `attn=` 코드, 차단 사유
 
 종료 코드(`sbmig/report/result_line.py` `report_exit_code`): **0** = 최종 `mvn clean package` 성공이고 차단 없음, **2** = 끝났지만 차단·미해결
-오류가 남음, **3** = 중단(플래그 `aborted[:…]` 또는 `mvn-not-found`: Maven 없음, Maven/Ant 프로젝트 아님, 사내 parent 해석 불가, ADF 프로젝트),
+오류가 남음, **3** = 중단(플래그 `aborted[:…]` 또는 `mvn-not-found`: Maven 없음, Maven/Ant 프로젝트 아님, 설정된 사내 parent 좌표 해석 불가, ADF 프로젝트),
 **1** = 예외로 죽음(`SBMIG-RESULT … exit=1 … attn=crash`) 또는 명령 인자 오류.
 
 `attn=` 코드는 중요한 것부터 쉼표로(`-` = 볼 것 없음): `infra:<kind>`(llm / maven / jdk / repository / file-lock …; 초록 실행에는 안 붙음),
@@ -197,7 +197,7 @@ verify_guide …), `metadata`(run_id, 케이스 등). 키·헤더는 들어가�
 | `external_api_incompatible` | 의존성 API 변경(javax 아님) | 2 |
 | `artifact_not_found` | 의존성·플러그인이 어느 저장소에도 없음 | 2 |
 | `plugin_incompatible` | JDK 21 에서 깨지는 빌드 플러그인 | 2 |
-| `parent_not_found` | 사내 parent 해석 불가(settings / Nexus 문제) | 0 — 실행 중단 사유이기도 |
+| `parent_not_found` | parent 해석 불가. 설정 버전이면 중단(`run aborted: Maven cannot resolve the parent <g:a:v>, which is the configured version (artifacts.parent = …)`), 사내 부모의 as-is 버전이면 `sbmig-parent` 가 먼저 맞춘다(`openrewrite.unresolvable_asis_parent`) | 0 |
 | `unsupported_source`, `encoding` | Java 아닌 소스, 인코딩 판정 불가 | 0 |
 | `reactor_duplicate` | 리액터에 같은 모듈 두 번(`duplicated in the reactor`) | 0 |
 | `file_lock` | Windows 에서 `target/` 이 잠김(재시도 `build.file_lock_retries` 뒤) | 0 → `infra:file-lock` |

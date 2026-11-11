@@ -95,6 +95,7 @@ MSA: 공유 라이브러리 루트 먼저, 그다음 서비스마다 `transform.
 | 쓰는 것 | 커밋 `rewrite: transform.rewrite`, 로그 `logs/NNN-…log`, 합성 레시피 `logs/rewrite-<n>.yml`, 저널 `rewrite` |
 | 설정 | `openrewrite.plugin_version`, `openrewrite.recipe_bom_version`(3.37.0), `openrewrite.timeout_minutes`, `openrewrite.jvm_args`, `openrewrite.download_retry` |
 | 실패 | 멈추지 않는다 — "빌드가 진짜 문제를 보여 준다". 레시피가 `4.0.x` 같은 글자 그대로의 버전을 남기면 되돌리고 한 번 재시도(플래그 `rewrite-unresolved-versions`). 레시피 id 를 못 찾으면 설정 오류로 그 묶음을 중단 |
+| 부모를 못 찾음 | 레시피는 as-is pom 위에서 돌므로 as-is 부모가 저장소에 없으면 실패한다(`sbmig/restructure/asis_parent.py` 가 셋으로 가른다). ① 설정된 좌표 자체(g:a + 설정 버전) → 중단(`aborted:parent-not-found`). ② 사내 부모 g:a(또는 별칭)의 다른 버전(as-is) → `openrewrite.unresolvable_asis_parent`: `align`(기본) = 그 pom 들의 부모 버전을 설정 버전으로 바꿔 커밋 `transform: as-is parent <g:a> <옛> → <설정> (as-is version not in the repository)`, 저널 `asis_parent_aligned`, 플래그 `asis-parent-aligned`, 인수인계 한 줄, 레시피를 한 번 더(목표 부모의 클래스패스로; 다시 돈 것이 설정 버전에서 실패하면 중단) / `continue` = ③처럼 / `abort` = 중단. ③ 사내 부모가 아닌 부모 → 레시피 없이 계속, 플래그 `rewrite-skipped-asis-parent`, 저널 `rewrite_skipped_asis_parent`, 인수인계 한 줄 |
 
 ## 5. 재구성 (restructure) — `_step_restructure`
 
@@ -186,7 +187,8 @@ KB 쪽: 실행의 오류 목록이 `kb-v2/errors.jsonl` 에 덧붙고, 케이스
 
 | 플래그 | 어디서 | 종료 코드 영향 |
 |---|---|---|
-| `aborted`, `aborted:parent-not-found` | `_abort`, 사내 부모 해석 불가 | 3 |
+| `aborted`, `aborted:parent-not-found` | `_abort`, 설정된 사내 부모 좌표(설정 버전) 해석 불가 | 3 |
+| `asis-parent-aligned`, `rewrite-skipped-asis-parent` | 변환·수정 루프(사내 부모의 as-is 버전 / 다른 부모가 저장소에 없음) | 기록만 |
 | `mvn-not-found`, `jdk-not-21`, `unsupported-build-tool:<x>`, `ear-without-modules`, `no-root-pom` | 접수·분석 | 3 |
 | `adf-project` | 분석(ADF 2계열 이상, `stop`) | 3 |
 | `hollow-reactor` | 분석 | 2 (빌드가 통과해도) |

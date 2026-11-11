@@ -59,6 +59,13 @@ FLAG_HELP = {
                        "listed as blocked (llm_unavailable) — stored scripts and the final build still ran",
     "aborted:parent-not-found": "the configured in-house parent POM (or a build extension it declares) is not resolvable — nothing can build until it is "
                                 "(see Blocked)",
+    # v2.1z-ag: 사내 부모 g:a 의 as-is 버전이 저장소에 없음 — 설정 버전으로 맞추고 레시피를 다시 돌림 / 레시피 없이 계속
+    "asis-parent-aligned": "the project's own version of the company parent was not in the repository: sbmig set the "
+                           "configured version in those poms (openrewrite.unresolvable_asis_parent: align) — the recipes "
+                           "ran on the target parent's classpath, not the as-is one (see the Handover)",
+    "rewrite-skipped-asis-parent": "OpenRewrite did not run because an as-is parent pom is not in the repository: no "
+                                   "recipe changed the code, the restructure replaced the parent and the fix loop did "
+                                   "the rest (see the Handover)",
     "rewrite-parse-problems": "OpenRewrite could not parse some source files (see the phase notes / rewrite log): "
                               "recipes that need type information skipped them; the fix loop covered what the build "
                               "found",

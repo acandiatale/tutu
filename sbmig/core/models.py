@@ -116,7 +116,7 @@ EntryStatus = Literal["open", "pom-verify", "resolved", "blocked", "unresolved",
 # v2.1l 누락된 의존성 버전을 sbmig 가 as-is 빌드·저장소에서 채운 시도(LLM 호출 없음), sbmig-resources = v2.1m
 # 필터링되는 바이너리 리소스의 확장자를 sbmig 가 nonFilteredFileExtensions 에 적은 시도(LLM 호출 없음).
 TrySource = Literal["kb-script", "llm-new", "llm-augment", "llm-edit", "review", "sbmig-version", "sbmig-resources",
-                    "sbmig-jakarta", "sbmig-bundled"]
+                    "sbmig-jakarta", "sbmig-bundled", "sbmig-parent"]
 # kb-script = a stored version run without an LLM call; llm-new = first answer for the case; llm-augment = the LLM
 # extended a failed script; llm-edit = the LLM said the fix cannot be a script and gave edits; review = the
 # structure review's own fix; sbmig-version = v2.1l: sbmig wrote the missing dependency versions itself (the as-is
@@ -126,6 +126,8 @@ TrySource = Literal["kb-script", "llm-new", "llm-augment", "llm-edit", "review",
 # call, no stored script
 # sbmig-bundled = v2.1z-i: sbmig wired a jar bundled in the tree (declared by no pom) that provides the missing package —
 #   real coordinates when the repository has them, else system scope at <module>/lib + includeSystemScope; no LLM
+# sbmig-parent = v2.1z-ag: sbmig set the configured version of a company parent whose as-is version the repository does
+#   not have (사내 부모의 as-is 버전이 저장소에 없어 설정 버전으로 맞춘 시도) — no LLM call, no stored script
 TryApplied = Literal["script", "edits", "none"]  # 실제로 적용된 것: 스크립트 / 편집 목록 / 없음
 
 

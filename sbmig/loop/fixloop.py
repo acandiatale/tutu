@@ -462,9 +462,10 @@ SBMIG_VERSION_SOURCE = "sbmig-version"               # FixAttempt.source of the 
 SBMIG_RESOURCES_SOURCE = "sbmig-resources"           # v2.1m: … of the nonFilteredFileExtensions try
 SBMIG_JAKARTA_SOURCE = "sbmig-jakarta"               # v2.1z-e: … of the jakarta-build swap of a javax-era dependency
 SBMIG_BUNDLED_SOURCE = "sbmig-bundled"               # v2.1z-i: … of the wiring of a jar bundled in the tree
+SBMIG_PARENT_SOURCE = "sbmig-parent"                 # v2.1z-ag: … of the alignment of an as-is company parent version
 RESOURCE_FACTS_FILES = 10                             # binary files named in the v2.1m prompt facts
 PRE_TRY_SOURCES = frozenset({SBMIG_VERSION_SOURCE, SBMIG_RESOURCES_SOURCE, SBMIG_JAKARTA_SOURCE,
-                             SBMIG_BUNDLED_SOURCE})   # zero-LLM pre-tries
+                             SBMIG_BUNDLED_SOURCE, SBMIG_PARENT_SOURCE})   # zero-LLM pre-tries
 JAKARTA_SEARCH_PREFIX = "repository search for a jakarta build of"   # BlockedItem.suggestion / notes evidence (v2.1z-e)
 UNMAPPED_PREFIX = "the library behind"                                # … "<owner class> could not be matched to a dependency"
 # 소유 클래스의 패키지 토큰을 선언된 의존성과 맞출 때 뜻이 없는 조각 / tokens that identify nothing when matching a class
@@ -1525,8 +1526,10 @@ class BuildFixLoop:
 
         The configured in-house parent is not resolvable → nothing can build: abort the run with a clear item."""
         keys = set(self.cfg.artifacts.parent_keys())           # root parent + boot_parent / comp_parent (round 9b)
+        # v2.1z-ag: 사내 부모 g:a 라도 설정 버전이 아닌 as-is 버전을 못 찾은 것은 중단이 아니다(사전 시도 sbmig-parent 가 맞춘다) —
+        # 설정 버전 자체(또는 버전을 모름)일 때만, 또는 openrewrite.unresolvable_asis_parent: abort 일 때만 중단
         errs = [e for e in build.errors if e.kind == ErrorKind.PARENT_RESOLUTION
-                and e.artifact is not None and e.artifact.key in keys]
+                and e.artifact is not None and e.artifact.key in keys and self._parent_miss_aborts(e)]
         # 2026-11-05 (회사 PC): 사내 부모(base-parent 4.0.0)가 <build><extensions> 에 선언한 wagon-webdav 를 Maven 이 못 받는다 —
         # 상속된 확장은 프로젝트에서 뺄 수 없고 어떤 goal 도 돌지 않으니 부모 해석 실패와 같은 종류: LLM 을 부르지 않고 중단한다
         ext_errs = self._inherited_extension_errors(build) if not errs else []
@@ -1540,11 +1543,25 @@ class BuildFixLoop:
                                 repositories=repositories_in("\n".join(f"{e.message}\n{e.raw}" for e in target)),
                                 evidence=[target[0].message[:300]])
         if errs:
-            self._register_blocked(phase, iteration, c, cand, f"blocked: parent_not_found — configured parent {coords} "
-                                                              "is not resolvable; run aborted")
-            self.aborted = (f"the configured in-house parent {coords} is not resolvable (settings: "
-                            f"{self.cfg.build.settings_file or 'default'}) — fix the repository/settings or "
-                            "artifacts.parent / boot_parent / comp_parent and rerun")
+            from sbmig.restructure.asis_parent import classify_gav
+            miss = classify_gav(target[0].artifact, self.cfg, self.ws)
+            settings = self.cfg.build.settings_file or "default"
+            if miss.kind == "configured":
+                coords = miss.coordinates
+                self._register_blocked(phase, iteration, c, cand, f"blocked: parent_not_found — configured parent {coords} "
+                                                                  "is not resolvable; run aborted")
+                self.aborted = (f"Maven cannot resolve the parent {coords}, which is the configured version "
+                                f"({miss.spec_name} = {miss.target.coordinates if miss.target else coords}) — the repository "
+                                f"does not serve it (settings: {settings}); fix the repository / settings, or the version "
+                                f"in {miss.spec_name}, and rerun")
+            else:                                           # an as-is version under `unresolvable_asis_parent: abort`
+                self._register_blocked(phase, iteration, c, cand, f"blocked: parent_not_found — as-is parent {coords} "
+                                                                  "is not resolvable; run aborted "
+                                                                  "(openrewrite.unresolvable_asis_parent: abort)")
+                self.aborted = (f"Maven cannot resolve the as-is parent {coords}; the configured version is "
+                                f"{miss.target.coordinates if miss.target else '?'} ({miss.spec_name}) — the run stops because "
+                                f"openrewrite.unresolvable_asis_parent is abort (settings: {settings}); set it to align "
+                                "to use the configured version instead")
         else:
             declared = self._extension_declarer(coords)
             cand.suggestion = (f"build extension `{coords}` declared by the company parent `{declared}` cannot be downloaded: make "
@@ -1562,6 +1579,22 @@ class BuildFixLoop:
         pr.notes.append(f"build {iteration}: {self.aborted}")
         self.ws.journal({"event": "abort", "phase": phase.value, "iteration": iteration, "reason": self.aborted})
         return True
+
+    def _parent_miss_aborts(self, e: BuildError) -> bool:
+        """v2.1z-ag: 사내 부모 g:a 의 해석 실패 하나가 실행을 멈추게 하는가 — 설정 버전 자체(또는 버전을 모름)면 예, as-is
+        버전이면 ``openrewrite.unresolvable_asis_parent: abort`` 일 때만.
+
+        Does this company-parent resolution failure abort the run? The configured version (or an unknown one): yes; an as-is
+        version: only under `openrewrite.unresolvable_asis_parent: abort`."""
+        try:
+            from sbmig.restructure.asis_parent import classify_gav
+            kind = classify_gav(e.artifact, self.cfg, self.ws).kind
+        except Exception as ex:  # noqa: BLE001 - unknown → the old behaviour (abort)
+            log.debug("parent miss classification failed: %s", ex)
+            return True
+        if kind == "asis-version":
+            return getattr(self.cfg.openrewrite, "unresolvable_asis_parent", "align") == "abort"
+        return kind == "configured"
 
     def _chain_extensions(self) -> dict[str, str]:
         """사내 부모 체인이 선언한 빌드 확장: {g:a: g:a:v}, 선언한 pom 은 ``_extension_declarer``. 못 읽으면 {}."""
@@ -4705,7 +4738,8 @@ class BuildFixLoop:
 
         The zero-LLM pre-tries, in order (the first that matches a case is the one): v2.1l versions, v2.1m resources,
         v2.1z-i bundled jars, v2.1z-e jakarta builds."""
-        return (_PreTry(SBMIG_VERSION_SOURCE, self._version_targets, self._version_attempt),
+        return (_PreTry(SBMIG_PARENT_SOURCE, self._parent_targets, self._parent_attempt),        # v2.1z-ag, first
+                _PreTry(SBMIG_VERSION_SOURCE, self._version_targets, self._version_attempt),
                 _PreTry(SBMIG_RESOURCES_SOURCE, self._resources_targets, self._resources_attempt),
                 _PreTry(SBMIG_BUNDLED_SOURCE, self._bundled_targets, self._bundled_attempt),     # v2.1z-i, before jakarta
                 _PreTry(SBMIG_JAKARTA_SOURCE, self._jakarta_targets, self._jakarta_attempt))
@@ -4719,11 +4753,15 @@ class BuildFixLoop:
         only for the LLM (unavailable / budget exhausted); else (None, [])."""
         if self.dry_run:
             return None, []
+        tries = self._pre_tries()
         if d.kind != DecisionKind.SCRIPT:
             m = _BLOCKED_RAT_RE.search(d.rationale or "") if d.kind == DecisionKind.BLOCKED else None
-            if m is None or m.group("r") not in (BlockReason.LLM_UNAVAILABLE.value, BlockReason.BUDGET_EXHAUSTED.value):
+            # v2.1z-ag: 부모를 못 찾은 케이스(트리아지는 parent_not_found 로 차단)도 sbmig-parent 사전 시도만은 먼저 해 본다
+            if m is not None and m.group("r") == BlockReason.PARENT_NOT_FOUND.value:
+                tries = tuple(t for t in tries if t.source == SBMIG_PARENT_SOURCE)
+            elif m is None or m.group("r") not in (BlockReason.LLM_UNAVAILABLE.value, BlockReason.BUDGET_EXHAUSTED.value):
                 return None, []
-        for pre in self._pre_tries():
+        for pre in tries:
             try:
                 poms = pre.targets(c)
             except Exception as e:  # noqa: BLE001 - a broken matcher only means "no pre-try"
@@ -4732,6 +4770,83 @@ class BuildFixLoop:
             if poms is not None:
                 return pre, poms
         return None, []
+
+    def _parent_misses(self, c: ErrorCluster) -> list[Any]:
+        """v2.1z-ag: 이 케이스의 부모 해석 실패 중 사전 시도가 맞출 것 — 사내 부모 g:a 의 as-is 버전(설정 버전 아님),
+        ``openrewrite.unresolvable_asis_parent: align`` 일 때만, 이 실행에서 아직 안 해 본 것.
+
+        The as-is company-parent versions of this case's parent-resolution errors the pre-try would align (switch
+        `align` only, not tried in this run yet)."""
+        if getattr(self.cfg.openrewrite, "unresolvable_asis_parent", "align") != "align":
+            return []
+        from sbmig.restructure.asis_parent import classify_gav
+        out = []
+        for e in c.errors:
+            if e.kind != ErrorKind.PARENT_RESOLUTION or e.artifact is None:
+                continue
+            m = classify_gav(e.artifact, self.cfg, self.ws)
+            if m.kind == "asis-version" and (SBMIG_PARENT_SOURCE, m.coordinates, "") not in self._pre_tried \
+                    and all(x.coordinates != m.coordinates for x in out):
+                out.append(m)
+        return out
+
+    def _parent_targets(self, c: ErrorCluster) -> list[str] | None:
+        """v2.1z-ag: 사내 부모의 as-is 버전을 못 찾은 케이스면 그 부모를 둔 pom 들, 아니면 None."""
+        if not any(e.kind == ErrorKind.PARENT_RESOLUTION for e in c.errors):
+            return None
+        misses = self._parent_misses(c)
+        if not misses:
+            return None
+        from sbmig.restructure.asis_parent import declared_parents
+        keys = {(m.gav.key, m.gav.version) for m in misses}
+        return [rel for rel, g, _p in declared_parents(self.ws) if (g.key, g.version) in keys] or None
+
+    def _parent_attempt(self, pr: PhaseResult, st: _Round, c: ErrorCluster) -> bool:
+        """v2.1z-ag 사전 시도 ``sbmig-parent`` (LLM 0회): 사내 부모 g:a 의 as-is 버전이 저장소에 없다 → 그 부모를 둔 pom 전부에
+        설정 버전을 적는다(``align_asis_parent``) — ``_apply_edits`` 와 같은 커밋·채점·롤백 길, 커밋
+        ``fix(sbmig-parent): <cluster id>``, 저널 ``asis_parent_aligned`` (where = fix loop), 플래그 ``asis-parent-aligned``,
+        인수인계 한 줄. (부모 좌표)마다 실행당 한 번. 맞출 것이 없으면 False(평소 길: parent_not_found 차단).
+
+        The zero-LLM `sbmig-parent` pre-try: set the configured version in every pom whose parent is the missing as-is
+        version of a company parent (commit `fix(sbmig-parent): <cluster id>`, scored and rolled back like any try), once
+        per parent coordinates per run. False when there is nothing to align."""
+        from sbmig.restructure.asis_parent import align_asis_parent
+        misses = self._parent_misses(c)
+        if not misses:
+            return False
+        results: list[tuple[Any, Any]] = []
+
+        def apply() -> ScriptRunResult:
+            changed: list[str] = []
+            for m in misses:
+                r = align_asis_parent(self.ws, m)
+                results.append((m, r))
+                changed += [p for p in r.poms if p not in changed]
+            return ScriptRunResult(status="ok", changed_files=changed)
+
+        what = ", ".join(f"{m.coordinates} → {m.target.version} ({m.spec_name})" for m in misses)
+        log.info("sbmig 부모 버전 맞춤 (LLM 0회): %s", what)
+        applied = self._pre_attempt(
+            pr, st, c, source=SBMIG_PARENT_SOURCE, apply_fn=apply,
+            notes=[f"as-is parent {m.coordinates} is not in the repository → the configured {m.target.coordinates} "
+                   f"({m.spec_name})" for m in misses],
+            keys=[(SBMIG_PARENT_SOURCE, m.coordinates, "") for m in misses],
+            rationale=f"sbmig-parent: the as-is version of the company parent is not in the repository ({what}) — no LLM call",
+            analysis="the build cannot resolve an as-is version of a configured company parent: "
+                     + ", ".join(m.coordinates for m in misses),
+            solution="sbmig sets the configured parent version in those poms — no LLM call")
+        for m, r in results:
+            if not r.poms:
+                continue
+            self.ws.journal({"event": "asis_parent_aligned", "phase": st.phase.value, "iteration": st.iteration,
+                             "parent": m.gav.key, "from": m.gav.version, "to": m.target.version,
+                             "target": m.target.coordinates, "spec": m.spec_name, "poms": list(r.poms),
+                             "properties": dict(r.properties), "where": "fix loop", "applied": applied})
+            if applied:
+                self._flag("asis-parent-aligned")
+                from sbmig.restructure.asis_parent import loop_aligned_followup
+                self._followup(loop_aligned_followup(m, r.poms))
+        return applied
 
     def _version_targets(self, c: ErrorCluster) -> list[str] | None:
         """누락 버전 케이스면 오류의 pom 들(없으면 빈 목록), 아니면 None."""

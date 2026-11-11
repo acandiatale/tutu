@@ -152,6 +152,19 @@ def _norm_dir(base: str, rel: str) -> str | None:
     return "." if joined in ("", ".") else joined
 
 
+def normalize_roots(roots: list[str] | None) -> list[str]:
+    """reactor 뿌리 목록을 프로젝트 기준 폴더로 고르게 한다: 빈 값·None → ``["."]``, 프로젝트 밖(``..``)·절대 경로는 버린다,
+    중복 없이 순서 유지. 남는 것이 없으면 ``["."]``.
+
+    Normalize reactor root directories (project-relative; empty → ["."], outside paths dropped, order kept)."""
+    out: list[str] = []
+    for r in roots or []:
+        nd = _norm_dir(".", str(r).strip().strip("/") or ".")
+        if nd is not None and nd not in out:
+            out.append(nd)
+    return out or ["."]
+
+
 def parse_pom_file(project: Path, d: str) -> PomFile:
     """``project/<d>/pom.xml`` 하나를 읽는다. 읽지 못하면 ``error`` 가 채워진 PomFile(예외 없음).
 
@@ -200,13 +213,15 @@ class ProjectPoms:
     The project's poms: the reactor reached from the root `<modules>` (profiles included) plus project-internal
     parents reached by relativePath / reactor coordinates. External parents / BOMs are never read."""
 
-    def __init__(self, project: Path):
+    def __init__(self, project: Path, roots: list[str] | None = None):
         self.project = Path(project)
         self.poms: dict[str, PomFile] = {}
         self.reactor: list[str] = []
         self.notes: list[str] = []
         self.complete = True
         self._linked: set[str] = set()
+        # reactor 의 뿌리들: 기본은 루트 pom 하나. 이관이 서비스마다 빌드한 프로젝트(루트 aggregator 없음)는 그 폴더들이다
+        self.roots: list[str] = normalize_roots(roots)
         self._discover()
 
     # -- discovery
@@ -220,10 +235,16 @@ class ProjectPoms:
         return self.poms[d]
 
     def _discover(self) -> None:
-        root = self._load(".")
-        if not root.ok:
+        queue: list[str] = []
+        for r in self.roots:
+            if r != "." and not (self.project / _pom_rel(r)).is_file():
+                self.complete = False
+                self.notes.append(f"build target {r}: no pom.xml")
+                continue
+            if self._load(r).ok:
+                queue.append(r)
+        if not queue:
             return
-        queue = ["."]
         seen: set[str] = set()
         while queue:
             d = queue.pop(0)
@@ -699,7 +720,8 @@ def build_inventory(project: Path, findings: list[Finding], resolved: ResolvedMo
 
     Findings → inventory. Deterministic order; `complete=False` when the resolution is incomplete or a pom is unreadable."""
     project = Path(project)
-    pp = ProjectPoms(project)
+    # 해석 결과가 서비스마다의 reactor 에서 왔으면(루트 aggregator 없음) 같은 뿌리들로 pom 을 읽는다
+    pp = ProjectPoms(project, roots=list(getattr(resolved, "roots", None) or []) or None)
     inv = Inventory(complete=bool(resolved.complete) and pp.complete)
     inv.notes += list(resolved.notes) + list(pp.notes)
     if not resolved.complete and not resolved.notes:

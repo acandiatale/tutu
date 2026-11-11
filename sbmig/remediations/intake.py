@@ -114,7 +114,8 @@ def _entry_mode(info: zipfile.ZipInfo) -> int:
     return (info.external_attr >> 16) & 0xFFFF
 
 
-def _validate(zf: zipfile.ZipFile, limits: IntakeLimits) -> tuple[list[tuple[zipfile.ZipInfo, str]], list[str], str]:
+def _validate(zf: zipfile.ZipFile, limits: IntakeLimits,
+              build_targets: list[str] | None = None) -> tuple[list[tuple[zipfile.ZipInfo, str]], list[str], str]:
     """풀기 전 검사 전부. (파일 항목과 경로, 폴더 경로, project_root) 를 돌려준다."""
     infos = zf.infolist()
     if not infos:
@@ -162,7 +163,7 @@ def _validate(zf: zipfile.ZipFile, limits: IntakeLimits) -> tuple[list[tuple[zip
     _check_collisions([p for _, p in files], dirs)
     if not files:
         raise _reject("the ZIP has no files", "empty")
-    return files, dirs, _project_root([p for _, p in files], dirs)
+    return files, dirs, _project_root([p for _, p in files], dirs, build_targets)
 
 
 def _check_collisions(files: list[str], dirs: list[str]) -> None:
@@ -191,8 +192,12 @@ def _check_collisions(files: list[str], dirs: list[str]) -> None:
                 raise _reject(f"a file and a directory share a name: {_safe_display(file_keys[k])}", "normalized_collision")
 
 
-def _project_root(files: list[str], dirs: list[str]) -> str:
+def _project_root(files: list[str], dirs: list[str], build_targets: list[str] | None = None) -> str:
     if "pom.xml" in files:
+        return "."
+    # 이관이 서비스마다 빌드한 트리(루트 aggregator 없음): 모든 빌드 대상 폴더에 pom.xml 이 있으면 ZIP 뿌리가 프로젝트 루트다
+    targets = [t.strip("/") for t in (build_targets or []) if t.strip("/") not in ("", ".")]
+    if targets and all(f"{t}/pom.xml" in files for t in targets):
         return "."
     tops = {p.split("/")[0] for p in [*files, *dirs]} - set(NOISE_TOP)
     if len(tops) == 1:
@@ -263,13 +268,18 @@ def _make_writable_and_remove(path: Path) -> None:
             pass
 
 
-def accept_zip(zip_path: Path, run_dir: Path, limits: IntakeLimits) -> IntakeResult:
+def accept_zip(zip_path: Path, run_dir: Path, limits: IntakeLimits, *,
+               build_targets: list[str] | None = None) -> IntakeResult:
     """올린 ZIP 을 검사하고 실행 폴더에 원본(읽기 전용)·manifest·accepted/ 트리를 만든다. 규칙을 어기면 ``IntakeRejected``
     (코드는 그 docstring 의 목록) — 이때 이 함수가 만든 것은 모두 지운다. ``zip_path`` 가 이미 ``original/source.zip`` 이면
     그 자리에서 쓰고(거부되어도 지우지 않는다), 아니면 복사한다(올린 임시 파일은 호출한 쪽이 지운다).
 
+    ``build_targets`` (이관에서 이어서 돌 때만): 이관이 최종 빌드를 돈 폴더들 — 루트 pom 이 없어도 그 폴더들에 pom.xml 이 모두
+    있으면 받아들인다(루트 aggregator 가 없는 MSA).
+
     Validate the uploaded ZIP and lay out `original/source.zip` (read-only), `original/manifest.json` and `accepted/`.
-    Everything this call created is removed on rejection."""
+    Everything this call created is removed on rejection. `build_targets` lets a tree without a root pom in (the
+    migration's per-service build targets)."""
     zip_path = Path(zip_path)
     paths = RunPaths(run_dir)
     if paths.accepted.exists():
@@ -303,7 +313,7 @@ def accept_zip(zip_path: Path, run_dir: Path, limits: IntakeLimits) -> IntakeRes
         except (zipfile.BadZipFile, OSError, ValueError, EOFError):
             raise _reject("not a ZIP file or unreadable central directory", "not_zip") from None
         with zf:
-            files, dirs, project_root = _validate(zf, limits)
+            files, dirs, project_root = _validate(zf, limits, build_targets)
             if partial.exists():
                 shutil.rmtree(partial)
             created.append(partial)

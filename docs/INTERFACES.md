@@ -3535,6 +3535,56 @@ a run, the page + SSE), each finding reproduced before it was fixed. Where this 
   lookup only on a slot's first runs; a browser on HTTP/1.1 allows six connections per host, each open run tab holds one; a signal
   that arrives after the child wrote a successful report still shows exit 3 with `success` from the report.
 
+## v2.1z-ag — an as-is version of the company parent that the repository does not have
+
+OpenRewrite runs on the as-is poms, before the restructure sets the company parents. A project that already inherits a
+configured company parent g:a (`artifacts.parent` / `boot_parent` / `comp_parent`, or one of their `aliases`) at another
+version — e.g. an old `1.0.0-SNAPSHOT` left by an earlier in-house tool — fails there when the repository lacks that version.
+That is not the configured parent missing, and it no longer aborts the run.
+
+- **Classification** (`sbmig/restructure/asis_parent.py`): `classify_parent_misses(text, cfg, ws)` reads the unresolvable
+  parent coordinates from Maven's text (`sbmig.build.log_parser.parent_coordinates_in`: `Non-resolvable parent POM for …:`
+  followed by `Could not find artifact g:a:pom:v`, `The following artifacts could not be resolved: g:a:pom:v`, `Failed to read
+  artifact descriptor for g:a:pom:v` or `Could not transfer artifact g:a:pom:v`, with or without the `'parent.relativePath'
+  points at …` tail) and gives one `ParentMiss` per parent: `configured` (the g:a of a spec at its configured version; also when
+  no version can be read and the poms on disk declare the configured one, and when the spec has no version) · `asis-version`
+  (a spec's g:a at another version, or an alias g:a at any version) · `foreign` (not a company parent). `ParentMiss.target` is
+  the configured coordinates (root parent first when several specs share a g:a), `spec_name` the config key
+  (`artifacts.parent` …).
+- **Switch** `openrewrite.unresolvable_asis_parent: align | continue | abort` (`OpenRewriteConfig`, default `align`) decides
+  `asis-version`; `configured` always aborts, `foreign` never does.
+- **Alignment** `align_asis_parent(ws, miss)`: every pom whose `<parent>` is that g:a at that version (version resolved
+  against the pom's properties, then any project pom's) gets the configured version through `PomEditor.set_parent_version`
+  (only the `<version>` text; CRLF, comments and `relativePath` unchanged). An alias g:a gets all three coordinates. A `${prop}`
+  version defined in a project pom and referenced by nothing but parent versions is aligned at the property; a property used
+  elsewhere too, or defined outside the poms (`.mvn/maven.config`, `-D`), gets the literal. Returns `AlignResult(poms,
+  properties)`.
+- **Transform** (`Orchestrator._step_rewrite`): a failed run with `asis-version` misses only, under `align` → the poms are
+  aligned and committed `transform: as-is parent <g:a> <old> → <configured> (as-is version not in the repository)`, journal
+  `{"event": "asis_parent_aligned", "step", "parent": g:a, "from", "to", "target", "spec", "poms", "properties", "commit",
+  "where": "rewrite"}`, flag `asis-parent-aligned`, phase note, one Handover line (`as-is parent `<g:a:old>` is not in the
+  repository: sbmig set the configured `<g:a:v>` (artifacts.parent) in <poms> before the recipes — the recipes ran on the target
+  parent's classpath, not the as-is one …`), then OpenRewrite runs once more. That run failing on the configured version →
+  abort; failing otherwise → the usual "continuing" note. A miss left unaligned (`continue`, nothing to change) or a `foreign`
+  one → journal `{"event": "rewrite_skipped_asis_parent", "step", "parent", "company_parent", "policy"}`, flag
+  `rewrite-skipped-asis-parent`, phase note, Handover line `OpenRewrite did not run: the as-is parent `<g:a:v>` is not in the
+  repository — …`; the run continues.
+- **Fix loop**: `BuildFixLoop._parent_abort` aborts only for `configured` (or `asis-version` under `abort`). The zero-LLM pre-try
+  `sbmig-parent` (first in `_pre_tries`, `TrySource` `sbmig-parent`, commit `fix(sbmig-parent): <cluster id>`, once per parent
+  coordinates per run) aligns an `asis-version` miss under `align`, although triage blocks the case `parent_not_found`; journal
+  `asis_parent_aligned` with `where: fix loop`, `phase`, `iteration`, `applied`.
+- **Abort wording** (`aborted:parent-not-found`, follow-up `run aborted: …`): `Maven cannot resolve the parent <g:a:v>, which is
+  the configured version (artifacts.parent = <g:a:v>) — the repository does not serve it (settings: <file>); fix the repository
+  / settings, or the version in artifacts.parent, and rerun`; under `abort` for an as-is version: `Maven cannot resolve the as-is
+  parent <g:a:v>; the configured version is <g:a:v> (artifacts.parent) — the run stops because
+  openrewrite.unresolvable_asis_parent is abort …`.
+- **Neighbours**: `infra:repository` comes from `aborted:parent-not-found` or a failed final build only, so an aligned run that
+  builds carries none. Triage (`sbmig/triage/blocked.py`) still classifies every parent-resolution case as `parent_not_found`
+  (it has no config; the pre-try runs before the block is registered). The intake's as-is `help:effective-pom` stays non-fatal;
+  its reason reads `the parent <g:a:v> is not in the repository` (journal `effective_pom.reason`, one WARNING).
+  `sbmig repo-probe g:a:v` shows whether the repository has a parent version.
+- Fixture `boot-asis-parent-unpublished` (the company-parent stand-in g:a at `2.7.18-NOT-PUBLISHED`).
+
 ## remediations (취약점 조치) — `/api/remediations`, IVAS, version-text fixes + approved managed overrides (2026-11-11)
 
 A second, independent flow beside the migration: an uploaded Maven project ZIP is built as it is (baseline), scanned by
@@ -3557,6 +3607,15 @@ It never touches the migration KB; since the later decision of the same day it i
   side only is refused.
 - **Files**: `<migration run dir>/remediation/` (`RunPaths` below, rooted there); the remediation id = the migration run id. The chain
   zips the migrated project tree itself and feeds it through `intake.accept_zip`.
+- **Same build targets** (2026-11-11, real-Maven run): the node passes `build_targets=migration_build_targets(orch)` (the `target`
+  of every `verify.build` step, `"."` for the root); `chain.clean_targets` stores `[]` for a root build and the directories otherwise
+  (`RemediationState.build_targets`, journal `remediation_build_targets`). An MSA without a root aggregator (the migration built
+  each service in its own directory) is accepted without a root pom (`accept_zip(…, build_targets=…)`: every target has a
+  pom.xml) and built / resolved per service; an override entry then has no root pom to go to (residual `manual_review`).
+- **Baseline failed although the migration passed**: the message starts `the migration's final build passed on this same tree, but
+  the remediation's baseline build failed …`, names the two logs and what the build copy lacks (`.git/`, `.sbmig/`, `target/`
+  output, ignored folders — e.g. git-commit-id-maven-plugin fails with `.git directory is not found!`); journal
+  `remediation_baseline_differs`.
 - **Verdict**: the remediation's outcome never changes the migration's success, exit code or report verdict; no exception escapes the
   node. `SBMIG-RESULT … remediation=<STATUS|skipped>`. Skipped (journal `remediation_skipped`, names only) when disabled or not
   ready: readiness on this path = the three IVAS values + Maven readiness; `remediation.trusted_projects` is **not** required here
@@ -3892,9 +3951,21 @@ once (journal `ivas_action_unknown`, a line in the report).
 
 The server's Maven only (`build.mvn`; a wrapper path is "not ready"; the project's `mvnw` is never run), JDK 21, the server
 `settings.xml` passed with `-s` and required, approved repository hosts / mirrors only (a pom `<repository>` /
-`<pluginRepository>` on another host → `remediation.foreign_repository`, default refuse), insecure-TLS properties and other
-`-s` / `-f` stripped from `build.extra_args`, tests never run (`-Dmaven.test.skip=true` on every command), `clean package` as the
-gate, `dependency:tree` per module for resolution. The standalone (in-process) path uses its own Maven local repository,
+`<pluginRepository>` on another host → `remediation.foreign_repository`, default refuse), tests never run (`-Dmaven.test.skip=true`
+on every command), `clean package` as the gate, `dependency:tree` per module for resolution.
+**Same command as the migration (first real-Maven run, 2026-11-11)**: the command base is `sbmig.build.mvn.base_command` (the
+migration's: `build.extra_args`, `-s`, `-Dmaven.repo.local`, `-o`) and the environment `mvn_env` minus `IVAS_*` / `LLM_*`.
+Insecure-TLS properties and another `-s` / `-f` in `build.extra_args` are **refused, never dropped** (`maven.unsafe_build_args`:
+a readiness problem naming the arguments — `build.extra_args contains argument(s) the remediation never passes to Maven: …`; the
+chained run is then `remediation_skipped not_ready`), because a silent drop made the remediation build differently and fail as
+"artifact not found". A cached resolution failure (`negative_cache_hits`, incl. `Non-resolvable parent POM … Could not find artifact`)
+is retried once with `-U` like `MavenRunner.run` (journal `remediation_negative_cache_retry`, log `<name>-U.log`). Every call logs
+`remediation mvn <args> (cwd=<dir>)` beside the migration's `mvn … (cwd=…)` lines. **Build targets**: `MavenGateway.package /
+resolve / packaged` take `targets` (the migration's final-build target dirs, `RemediationState.build_targets`; the graph passes
+them only when non-empty): per target like `fixloop.build_target_args` — the root pom lists it → root with `-pl <t> -am`, else
+cwd = `<t>`; one log per target (`build-<t>.log`, the failing one in `BuildOutcome.log`, summary `build target <t>: …`), first
+failure stops; `resolve` runs one `dependency:tree` per target (`deptree-<t>.txt`) and records `ResolvedModel.roots`, which
+`inventory.ProjectPoms(project, roots=…)` reads as its reactor roots. The standalone (in-process) path uses its own Maven local repository,
 `<local repo>-remediation`, so a remediation build never shares a repository with a migration running in the same pod; the chained
 path uses the build pod's slot repository (the migration in that pod has finished).
 **`.mvn/` cannot be disabled on Maven 3.9** (the launcher always reads `.mvn/maven.config`, `.mvn/jvm.config` and

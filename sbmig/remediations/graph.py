@@ -208,9 +208,17 @@ class _Holder:
         prefix = pr.rstrip("/") + "/"
         return [p for p in self.paths_list if not p.startswith(prefix)]
 
+    @property
+    def target_kw(self) -> dict[str, Any]:
+        """Maven 게이트웨이에 넘길 빌드 대상(이관의 최종 빌드 대상 폴더들). 비어 있으면 넘기지 않는다(루트에서 한 번 — 예전 그대로)."""
+        targets = list(getattr(self.state, "build_targets", None) or [])
+        return {"targets": targets} if targets else {}
+
     def build_outcome(self, outcome: Any, log_path: Path) -> Any:
-        """빌드 결과를 state 에 넣기 전에: 로그 경로는 실행 폴더 기준 상대 경로로(계약), 요약은 비밀·절대 경로를 지운다."""
-        outcome.log = self.rel(log_path)
+        """빌드 결과를 state 에 넣기 전에: 로그 경로는 실행 폴더 기준 상대 경로로(계약), 요약은 비밀·절대 경로를 지운다.
+        게이트웨이가 다른 로그 파일을 알려 주면(빌드 대상이 여럿일 때 실패한 대상의 로그) 그것을 쓴다."""
+        given = Path(outcome.log) if getattr(outcome, "log", "") else None
+        outcome.log = self.rel(given if given is not None and given.is_absolute() and given.exists() else log_path)
         outcome.summary = scrub_message(outcome.summary or "", self.paths.root, 4000)
         return outcome
 
@@ -481,7 +489,7 @@ def _baseline_build(h: _Holder) -> str | None:
     tree = h.baseline_tree
     _safe_rmtree(tree)
     c.intake.copy_tree(h.paths.accepted, tree, h.paths_list)
-    outcome = h.build_outcome(c.maven.package(h.project(tree), h.paths.baseline_log, h.stop), h.paths.baseline_log)
+    outcome = h.build_outcome(c.maven.package(h.project(tree), h.paths.baseline_log, h.stop, **h.target_kw), h.paths.baseline_log)
     st.baseline_build = outcome
     if not outcome.ok:
         if h.stop():
@@ -524,7 +532,7 @@ def _inventory(h: _Holder) -> str | None:
     st.round = r
     rd = p.round_dir(r)
     rd.mkdir(parents=True, exist_ok=True)
-    before = c.maven.resolve(h.project(h.before_tree(r)), rd / "work-before")
+    before = c.maven.resolve(h.project(h.before_tree(r)), rd / "work-before", **h.target_kw)
     write_json_atomic(rd / "before.json", before.to_dict())
     if not before.complete:
         return h.finish(INCOMPLETE, R_MANUAL_REVIEW, "Maven resolution incomplete: " + "; ".join(before.notes))
@@ -693,7 +701,7 @@ def _build(h: _Holder) -> str | None:
     r = st.round
     rs = h.round_state(r)
     cand = p.candidate(r)
-    outcome = h.build_outcome(c.maven.package(h.project(cand), p.build_log(r), h.stop), p.build_log(r))
+    outcome = h.build_outcome(c.maven.package(h.project(cand), p.build_log(r), h.stop, **h.target_kw), p.build_log(r))
     rs.build = outcome
     if not outcome.ok:
         if h.stop():
@@ -718,9 +726,9 @@ def _build(h: _Holder) -> str | None:
             msg = (f"round {r} candidate discarded; delivery/result.zip is the verified state of round "
                    f"{st.delivery.round}, without the failed change | {msg}")
         return h.finish(FAILED, R_CANDIDATE_BUILD_FAILED, msg)
-    after = c.maven.resolve(h.project(cand), p.round_dir(r) / "work-after")
+    after = c.maven.resolve(h.project(cand), p.round_dir(r) / "work-after", **h.target_kw)
     write_json_atomic(p.resolved(r), after.to_dict())
-    packaged = list(c.maven.packaged(h.project(cand)))
+    packaged = list(c.maven.packaged(h.project(cand), **h.target_kw))
     before_data = read_json(p.round_dir(r) / "before.json")
     before = ResolvedModel.from_dict(before_data) if isinstance(before_data, dict) else ResolvedModel(complete=False)
     lines = list(c.apply.verify_resolution(_applied_proposals(h, r), before, after, packaged))

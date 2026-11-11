@@ -166,15 +166,24 @@ def test_package_command_and_success(tmp_path):
     assert call["timeout_s"] == cfg.remediation.build_timeout_minutes * 60
 
 
-def test_package_strips_insecure_and_settings_overrides_from_extra_args(tmp_path):
+def test_package_refuses_insecure_and_settings_overrides_in_extra_args(tmp_path):
+    # real-Maven review 2026-11-11: dropping these silently made the remediation build differently from the migration
+    # (surfacing as "artifact not found"); now it is a readiness problem naming the arguments, and nothing runs
     cfg = make_cfg(tmp_path, extra_args=["-B", "-Dmaven.wagon.http.ssl.insecure=true", "-Dmaven.wagon.http.ssl.allowall=true",
                                          "-s", "/elsewhere/settings.xml", "--file=other.xml",
                                          "-Daether.connector.https.securityMode=insecure", TEST_SKIP])
     runner = FakeRunner()
-    ServerMaven(cfg, runner, maven_probe=ok_probe).package(write_project(tmp_path / "p"), tmp_path / "b.log")
-    cmd = runner.calls[0]["cmd"]
-    assert_safe(cmd, cfg.build.settings_file)
-    assert "/elsewhere/settings.xml" not in cmd and "--file=other.xml" not in cmd and "-B" in cmd
+    gw = ServerMaven(cfg, runner, maven_probe=ok_probe)
+    out = gw.package(write_project(tmp_path / "p"), tmp_path / "b.log")
+    assert runner.calls == [] and not out.ok
+    for name in ("-Dmaven.wagon.http.ssl.insecure", "-Dmaven.wagon.http.ssl.allowall", "-s", "--file",
+                 "-Daether.connector.https.securityMode"):
+        assert name in out.summary
+    assert "=true" not in out.summary and "/elsewhere" not in out.summary          # names only, never values
+    problems = gw.readiness()
+    assert any("build.extra_args contains argument(s) the remediation never passes" in p for p in problems)
+    model = gw.resolve(tmp_path / "p", tmp_path / "w")
+    assert not model.complete and runner.calls == []
 
 
 def test_strip_unsafe_args():

@@ -96,6 +96,32 @@ def strip_unsafe_args(args: list[str]) -> tuple[list[str], list[str]]:
     return kept, dropped
 
 
+def unsafe_build_args(cfg: Any) -> list[str]:
+    """이관의 Maven 명령에는 들어가지만 조치가 절대 넘기지 않는 인자들(``build.extra_args`` 의 TLS 검증 끄기, 다른 ``-s`` /
+    ``-f``). 하나라도 있으면 조치는 이관과 같은 방식으로 빌드할 수 없다 — 조용히 빼면 "artifact not found" 같은 엉뚱한 실패로
+    드러나므로 준비 문제로 거절한다(``ServerMaven.readiness`` / ``_command``). 이름만 돌려준다(``-D…=값`` 의 값은 뺀다).
+
+    Arguments the migration's Maven command carries but the remediation never passes (insecure TLS / settings / pom
+    overrides in `build.extra_args`); names only (values of `-D…=` dropped)."""
+    try:
+        _kept, dropped = strip_unsafe_args([str(a) for a in (cfg.build.extra_args or [])])
+    except Exception:                                    # noqa: BLE001 - an unreadable config is checked elsewhere
+        return []
+    names: list[str] = []
+    for a in dropped:
+        name = a.split("=", 1)[0] if a.startswith("-") else ""
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
+def _unsafe_problem(names: list[str]) -> str:
+    return ("build.extra_args contains argument(s) the remediation never passes to Maven: " + " ".join(names)
+            + " (insecure TLS / settings / pom overrides) — the migration's builds use them, so the remediation would not "
+              "build like the migration; remove them from build.extra_args (put the repository certificate into the JDK "
+              "trust store instead)")
+
+
 def summarize(text: str, project: Path | None = None) -> str:
     """빌드 로그 요약 몇 줄: 서로 다른 ``[ERROR]`` 줄(최대 12) + 마지막 6줄. 프로젝트 절대경로와 URL 자격증명은 지운다.
 
@@ -189,6 +215,9 @@ class ServerMaven:
                             "report a Java version)")
         elif major != want:
             problems.append(f"JDK {want} required, found Java {major}")
+        unsafe = unsafe_build_args(self.cfg)
+        if unsafe:
+            problems.append(_unsafe_problem(unsafe))
         if _blank(b.settings_file):
             problems.append("server settings.xml not configured (build.settings_file)")
         else:
@@ -237,11 +266,10 @@ class ServerMaven:
         exe, extra, rest = base[0], base[1:1 + n], base[1 + n:]
         if Path(exe).name.lower().startswith("mvnw"):
             return None, "build.mvn points at a Maven wrapper (mvnw); refused"
-        extra, dropped = strip_unsafe_args(list(extra))
-        if dropped:
-            log.warning("remediation build: dropped %d argument(s) from build.extra_args (insecure TLS / settings / "
-                        "pom overrides): %s", len(dropped), " ".join(a for a in dropped if not a.startswith("-D")) or
-                        ", ".join(a.split("=", 1)[0] for a in dropped))
+        # 이관과 다른 명령으로는 빌드하지 않는다: 빼야 할 인자가 있으면 조용히 빼지 않고 거절한다(이유에 인자 이름)
+        unsafe = unsafe_build_args(self.cfg)
+        if unsafe:
+            return None, _unsafe_problem(unsafe)
         rest = [a for a in rest if not _INSECURE_RE.match(a)]
         # 테스트 건너뛰기는 늘 맨 끝에 한 번(resolve 가 이 자리를 기준으로 목표를 끼운다)
         cmd = [a for a in [exe, *extra, *rest, *goals] if a != TEST_SKIP] + [TEST_SKIP]
@@ -270,59 +298,134 @@ class ServerMaven:
         return
 
     def _run(self, cmd: list[str], project: Path, log_path: Path, timeout_s: float) -> ProcessResult:
+        # 이관의 빌드 줄(``mvn … (cwd=…)``)과 나란히 비교할 수 있게 조치의 명령·폴더도 한 줄 남긴다(운영자가 찾는 줄)
+        log.info("remediation mvn %s (cwd=%s)", " ".join(cmd[1:]), Path(project).as_posix())
         return self.runner(cmd, cwd=Path(project), env=build_env(self.cfg), log_path=Path(log_path), timeout_s=timeout_s)
 
+    def _may_force_update(self, cmd: list[str]) -> bool:
+        """이관의 ``MavenRunner`` 와 같은 규칙: -U 는 온라인에서 한 번만(``build.retry_negative_cache``, 기본 켬)."""
+        if not getattr(self.cfg.build, "retry_negative_cache", True):
+            return False
+        return not any(a in ("-U", "--update-snapshots", "-o", "--offline") for a in cmd)
+
+    def _run_with_update_retry(self, cmd: list[str], cwd: Path, log_path: Path, timeout_s: float) -> ProcessResult:
+        """한 번 돌리고, 로컬 저장소에 '캐시된 해결 실패'(묵은 ``*.lastUpdated`` 표식 — 부모 / import POM 의 "Non-resolvable … Could
+        not find artifact" 포함) 때문에 실패했으면 ``-U`` 를 붙여 한 번 더 — 이관의 ``MavenRunner.run`` 과 같은 규칙이다(그쪽은
+        통과하고 조치만 같은 표식에 걸려 실패하지 않게). 두 번째 결과를 돌려준다. 저널 ``remediation_negative_cache_retry``."""
+        from sbmig.build.runner import negative_cache_hits
+        pr = self._run(cmd, cwd, log_path, timeout_s)
+        ok = pr.exit_code == 0 and not pr.timed_out and "BUILD SUCCESS" in (pr.text or "")
+        if ok or pr.timed_out or not self._may_force_update(cmd):
+            return pr
+        hits = negative_cache_hits(pr.text or "")
+        if not hits:
+            return pr
+        log.info("remediation maven: negative cache hit for %s → retrying once with -U", ", ".join(hits[:3]))
+        if self.journal:
+            try:
+                self.journal({"event": "remediation_negative_cache_retry", "artifacts": hits[:10],
+                              "first_log": Path(log_path).as_posix()})
+            except Exception:                           # journal is best effort
+                log.debug("negative-cache journal line not written", exc_info=True)
+        lp = Path(log_path)
+        return self._run([*cmd[:-1], "-U", cmd[-1]], cwd, lp.with_name(f"{lp.stem}-U{lp.suffix}"), timeout_s)
+
+    # ------------------------------------------------------------------ build targets
+    def target_runs(self, project: Path, targets: list[str] | None) -> list[tuple[str, Path, list[str]]]:
+        """빌드 대상 폴더들 → (대상, 작업 폴더, 덧붙일 인자) 목록. 이관의 ``fixloop.build_target_args`` 와 같은 규칙:
+        대상이 없으면 루트에서 한 번, 루트 pom 의 ``<modules>`` 가 그 대상을 나열하면 루트에서 ``-pl <대상> -am``, 아니면 그 폴더 안에서.
+
+        (target, cwd, extra args) per build target, decided like the migration's `build_target_args`."""
+        project = Path(project)
+        from .inventory import normalize_roots, parse_pom_file
+        roots = normalize_roots(targets)
+        if roots == ["."]:
+            return [(".", project, [])]
+        root_pom = parse_pom_file(project, ".") if (project / "pom.xml").is_file() else None
+        listed = {m.strip("/").removeprefix("./") for m in (root_pom.modules if root_pom is not None and root_pom.ok else [])}
+        out: list[tuple[str, Path, list[str]]] = []
+        for t in roots:
+            if t == ".":
+                out.append((t, project, []))
+            elif t in listed:
+                out.append((t, project, ["-pl", t, "-am"]))
+            else:
+                out.append((t, project / t, []))
+        return out
+
     # ------------------------------------------------------------------ package
-    def package(self, project: Path, log_path: Path, stop: StopCheck | None = None) -> BuildOutcome:
+    def package(self, project: Path, log_path: Path, stop: StopCheck | None = None,
+                targets: list[str] | None = None) -> BuildOutcome:
         """``mvn clean package -Dmaven.test.skip=true`` (서버 명령). ``ok`` 는 종료 코드 0 이고 로그에 BUILD SUCCESS 가
         있을 때만. 실패해도 예외 없음. ``stop`` 은 시작 전에만 본다(빌드 도중에는 끊지 않는다 — 경계에서 멈춘다).
+        ``targets`` (이관의 최종 빌드 대상 폴더들; 없으면 루트 한 번)는 ``target_runs`` 의 규칙대로 대상마다 한 번씩 — 모두 성공해야
+        ok, 첫 실패에서 멈춘다. 대상이 여럿이면 로그는 ``<이름>-<대상>.log`` 로 나뉘고 결과의 ``log`` 는 실패한(없으면 마지막) 것.
+        로컬 저장소의 캐시된 해결 실패는 이관처럼 ``-U`` 로 한 번 더 돌린다.
 
-        One package build with the server command; never raises."""
+        One package build per build target (the migration's targets; the root when none); never raises."""
         log_str = Path(log_path).as_posix()
         if stop is not None and stop():
             return BuildOutcome(ok=False, log=log_str, summary="stop requested before the build started")
-        cmd, problem = self._command(["clean", "package"])
-        if cmd is None:
+        cmd0, problem = self._command(["clean", "package"])
+        if cmd0 is None:
             return BuildOutcome(ok=False, log=log_str, summary=f"not run: {problem}")
         self._check_project_mvn(project)
         timeout_s = float(self.cfg.remediation.build_timeout_minutes) * 60.0
-        t0 = time.monotonic()
-        try:
-            pr = self._run(cmd, project, Path(log_path), timeout_s)
-        except Exception as exc:                        # noqa: BLE001 - the gateway never raises for a build
-            log.warning("remediation build could not run: %s", type(exc).__name__)
-            return BuildOutcome(ok=False, log=log_str, summary=f"build could not run: {type(exc).__name__}",
-                                seconds=round(time.monotonic() - t0, 3))
-        text = pr.text or ""
-        ok = pr.exit_code == 0 and not pr.timed_out and "BUILD SUCCESS" in text
-        summary = "" if ok else summarize(text, Path(project))
-        if pr.timed_out:
-            summary = f"timed out after {timeout_s:.0f}s\n{summary}".strip()
-        elif pr.error:
-            summary = f"{_scrub(pr.error)}\n{summary}".strip()
-        return BuildOutcome(ok=ok, exit_code=pr.exit_code, log=log_str, summary=summary,
-                            seconds=round(float(pr.duration_s or 0.0), 3), timed_out=bool(pr.timed_out))
+        runs = self.target_runs(Path(project), targets)
+        lp0 = Path(log_path)
+        total = 0.0
+        out: BuildOutcome | None = None
+        for target, cwd, args in runs:
+            lp = lp0 if len(runs) == 1 else lp0.with_name(f"{lp0.stem}-{target.replace('/', '_')}{lp0.suffix}")
+            cmd = [*cmd0[:-1], *args, cmd0[-1]]
+            t0 = time.monotonic()
+            try:
+                pr = self._run_with_update_retry(cmd, cwd, lp, timeout_s)
+            except Exception as exc:                    # noqa: BLE001 - the gateway never raises for a build
+                log.warning("remediation build could not run: %s", type(exc).__name__)
+                return BuildOutcome(ok=False, log=lp.as_posix(), summary=f"build could not run: {type(exc).__name__}",
+                                    seconds=round(total + time.monotonic() - t0, 3))
+            text = pr.text or ""
+            ok = pr.exit_code == 0 and not pr.timed_out and "BUILD SUCCESS" in text
+            summary = "" if ok else summarize(text, Path(project))
+            if pr.timed_out:
+                summary = f"timed out after {timeout_s:.0f}s\n{summary}".strip()
+            elif pr.error:
+                summary = f"{_scrub(pr.error)}\n{summary}".strip()
+            if not ok and len(runs) > 1:
+                summary = f"build target {target}:\n{summary}".strip()
+            total += float(pr.duration_s or 0.0)
+            out = BuildOutcome(ok=ok, exit_code=pr.exit_code, log=lp.as_posix(), summary=summary,
+                               seconds=round(total, 3), timed_out=bool(pr.timed_out))
+            if not ok:
+                break
+        assert out is not None
+        return out
 
     # ------------------------------------------------------------------ resolve
-    def resolve(self, project: Path, work: Path) -> ResolvedModel:
-        """모듈마다 Maven 이 실제로 고른 의존성(``dependency:tree`` 를 루트에서 한 번, 모든 모듈이 한 파일에 이어 쓴다)과
-        pom 에 선언된 플러그인. 트리가 나오지 않은 모듈이 있으면 ``complete=False`` + 그 모듈 이름(조용히 짧아지지 않는다).
+    def resolve(self, project: Path, work: Path, targets: list[str] | None = None) -> ResolvedModel:
+        """모듈마다 Maven 이 실제로 고른 의존성(``dependency:tree`` 를 빌드 대상마다 한 번 — 대상이 없으면 루트에서 한 번, 모든 모듈이
+        한 파일에 이어 쓴다)과 pom 에 선언된 플러그인. 대상은 ``package`` 와 같은 규칙(``target_runs``)으로 돈다 — 이관이 서비스마다
+        빌드했으면 조치도 서비스마다 해석한다(``roots`` 에 기록). 트리가 나오지 않은 모듈이 있으면 ``complete=False`` + 그 모듈
+        이름(조용히 짧아지지 않는다). 캐시된 해결 실패는 ``-U`` 로 한 번 더(이관과 같은 규칙).
 
-        Resolved dependencies per module (one root `dependency:tree` run appending every module's tree) + declared
+        Resolved dependencies per module (one `dependency:tree` run per build target, the root when none) + declared
         plugins. A module without a tree makes the model incomplete (named in `notes`)."""
         project, work = Path(project), Path(work)
         work.mkdir(parents=True, exist_ok=True)
         model = ResolvedModel(complete=True)
-        pp = ProjectPoms(project)
+        runs = self.target_runs(project, targets)
+        if [r[0] for r in runs] != ["."]:
+            model.roots = [r[0] for r in runs]
+        pp = ProjectPoms(project, roots=model.roots or None)
         if not pp.complete:
             model.complete = False
             model.notes += pp.notes
         mods = [pp.poms[d] for d in pp.reactor if pp.poms[d].ok]
         if not mods:
             model.complete = False
-            model.notes.append("no readable root pom.xml")
+            model.notes.append("no readable root pom.xml" if not model.roots else "no readable pom.xml in the build targets")
             return model
-        out_file = (work / "deptree.txt").resolve()
         roots: list[TreeNode] = []
         cmd0, problem = self._command([])
         if cmd0 is None:
@@ -330,29 +433,34 @@ class ServerMaven:
             model.notes.append(f"dependency:tree not run: {problem}")
         else:
             self._check_project_mvn(project)
-            ok = False
             pkg = ["package", *[x for x in PACKAGE_SKIPS if x != TEST_SKIP]]
-            for attempt, extra in enumerate(([], pkg)):
-                out_file.unlink(missing_ok=True)
-                cmd = [*cmd0[:-1], *extra, f"{DEPENDENCY_PLUGIN}:tree", f"-DoutputFile={out_file}",
-                       "-DappendOutput=true", TEST_SKIP]
-                try:
-                    pr = self._run(cmd, project, work / f"deptree-{attempt + 1}.log", RESOLVE_TIMEOUT_S)
-                except Exception as exc:        # noqa: BLE001
-                    log.warning("dependency:tree could not run: %s", type(exc).__name__)
-                    break
-                if pr.exit_code == 0 and out_file.is_file():
-                    ok = True
-                    break
-                if len(mods) == 1:              # 형제 모듈이 없으면 package 를 곁들여도 달라질 것이 없다
-                    break
-            if ok:
-                try:
-                    roots = parse_tree(out_file.read_text(encoding="utf-8", errors="replace"))
-                except OSError as exc:
-                    model.notes.append(f"dependency:tree output unreadable: {type(exc).__name__}")
-            else:
-                model.notes.append("dependency:tree failed (see deptree-*.log)")
+            for i, (target, cwd, args) in enumerate(runs):
+                tag = "" if len(runs) == 1 else f"-{target.replace('/', '_')}"
+                out_file = (work / f"deptree{tag}.txt").resolve()
+                ok = False
+                for attempt, extra in enumerate(([], pkg)):
+                    out_file.unlink(missing_ok=True)
+                    cmd = [*cmd0[:-1], *args, *extra, f"{DEPENDENCY_PLUGIN}:tree", f"-DoutputFile={out_file}",
+                           "-DappendOutput=true", TEST_SKIP]
+                    try:
+                        pr = self._run_with_update_retry(cmd, cwd, work / f"deptree{tag}-{attempt + 1}.log",
+                                                         RESOLVE_TIMEOUT_S)
+                    except Exception as exc:    # noqa: BLE001
+                        log.warning("dependency:tree could not run: %s", type(exc).__name__)
+                        break
+                    if pr.exit_code == 0 and out_file.is_file():
+                        ok = True
+                        break
+                    if len(mods) == 1:          # 형제 모듈이 없으면 package 를 곁들여도 달라질 것이 없다
+                        break
+                if ok:
+                    try:
+                        roots += parse_tree(out_file.read_text(encoding="utf-8", errors="replace"))
+                    except OSError as exc:
+                        model.notes.append(f"dependency:tree output unreadable: {type(exc).__name__}")
+                else:
+                    where = "" if len(runs) == 1 else f" for build target {target}"
+                    model.notes.append(f"dependency:tree failed{where} (see deptree{tag}-*.log)")
         by_ga: dict[str, TreeNode] = {}
         by_aid: dict[str, list[TreeNode]] = {}
         for r in roots:
@@ -379,14 +487,16 @@ class ServerMaven:
         return model
 
     # ------------------------------------------------------------------ packaged
-    def packaged(self, project: Path) -> list[PackagedLib]:
+    def packaged(self, project: Path, targets: list[str] | None = None) -> list[PackagedLib]:
         """모듈들의 ``target/*.war`` / ``target/*.jar`` 안 ``WEB-INF/lib/*.jar`` / ``BOOT-INF/lib/*.jar``. g:a·버전은 안쪽
         jar 의 ``META-INF/maven/**/pom.properties`` 에서만(파일 이름으로 추측하지 않는다). 안쪽 jar 는 크기 한도 안에서
-        메모리로 읽는다.
+        메모리로 읽는다. ``targets`` 는 ``package`` 와 같은 빌드 대상(그 reactor 들의 모듈을 본다).
 
         Jars inside the built war / executable jar of every module; coordinates from pom.properties only."""
         project = Path(project)
-        pp = ProjectPoms(project)
+        from .inventory import normalize_roots
+        roots = normalize_roots(targets)
+        pp = ProjectPoms(project, roots=None if roots == ["."] else roots)
         dirs = list(pp.reactor) or ["."]
         out: list[PackagedLib] = []
         for d in dirs:

@@ -407,6 +407,11 @@ class OpenRewriteConfig(BaseModel):
     # JSP / HTML 은 파싱하지 않는다(어느 레시피도 건드리지 않고 ANTLR 경고만 쏟아짐). 그래서 JSP 안의 javax 는
     # v2 에서 바뀌지 않는다 — 인수인계 섹션이 안내한다.
     exclusions: list[str] = Field(default_factory=lambda: ["**/*.jsp", "**/*.jspx", "**/*.html", "**/*.htm"])
+    # v2.1z-ag: 사내 부모 g:a 의 as-is 버전이 저장소에 없어 레시피 실행이 실패했을 때 — align = 설정 버전으로 맞추고 한 번 더
+    # (수정 루프는 sbmig-parent 사전 시도), continue = 레시피 없이 계속, abort = 예전처럼 중단. 설정 버전 자체가 없으면 늘 중단.
+    # v2.1z-ag: the as-is version of a company parent g:a is not in the repository — align (set the configured version,
+    # rewrite once more; the fix loop's `sbmig-parent` pre-try), continue (no recipes, go on), abort (the old behaviour)
+    unresolvable_asis_parent: Literal["align", "continue", "abort"] = "align"
     # (현재 코드에서 읽지 않는 키)
     fail_on_dry_run_results: bool = False
     plugin_goal: str = "run"                            # run | dryRun

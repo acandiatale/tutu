@@ -184,7 +184,8 @@ DEFAULT_ORDER = ["pure-java", "servlet-tomcat", "spring5-xml", "boot2", "boot3",
                  "boot2-hystrix-command", "multi-module-merge", "legacy-external-config", "java6-legacy",
                  "multi-module-conflict", "legacy-ibatis", "legacy-role-parents", "company-boot-single",
                  "company-spring5-web", "webapp-bundled-jar", "company-servlet-jsp",
-                 "legacy-external-parent", "filtered-binary-resources", "boot-stray-pom-copy"]
+                 "legacy-external-parent", "filtered-binary-resources", "boot-stray-pom-copy",
+                 "boot-asis-parent-unpublished"]
 ARROW = "→"
 NS = "{http://maven.apache.org/POM/4.0.0}"
 

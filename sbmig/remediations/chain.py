@@ -266,6 +266,40 @@ def _error(paths: RunPaths, jr: Journal, e: BaseException, run_id: str,
     return st
 
 
+def clean_targets(targets: Iterable[str] | None) -> list[str]:
+    """이관의 최종 빌드 대상 폴더들을 조치 상태에 넣을 모양으로: 프로젝트 기준 상대 경로, 순서 유지, 중복·빈 값·프로젝트 밖 제외.
+    루트 하나뿐이면(``["."]`` / 빈 목록) 빈 목록 — 조치는 늘 하던 대로 루트에서 한 번 빌드한다.
+
+    The migration's final-build target directories as stored in the state; [] when that is the root alone."""
+    from .inventory import normalize_roots
+    roots = normalize_roots([str(t) for t in (targets or []) if t is not None])
+    return [] if roots == ["."] else roots
+
+
+def _baseline_outcome(paths: RunPaths, state: RemediationState, jr: Journal, excluded: Iterable[str]) -> RemediationState:
+    """이관의 최종 빌드가 방금 같은 트리에서 통과했는데 조치의 baseline 빌드가 실패했으면 그 사실을 첫머리에 분명히 적는다:
+    같은 Maven 설정(명령 앞부분·settings.xml·로컬 저장소, 환경에서는 IVAS_* / LLM_* 만 뺐다)인데 실패했다는 것, 비교할 두 로그,
+    조치가 빌드하는 사본에서 빠진 것들(.git / .sbmig / target 산출물 / 접수가 무시한 폴더). 저널 ``remediation_baseline_differs``.
+    이관의 판정은 그대로다."""
+    from .models import R_BASELINE_BUILD_FAILED
+    if state.status != FAILED or state.reason != R_BASELINE_BUILD_FAILED or "migration's final build passed" in (state.message or ""):
+        return state
+    left_out = ".git/, .sbmig/, target/ build output" + (f", ignored folders {', '.join(excluded)}" if excluded else "")
+    where = (f" (build targets: {', '.join(state.build_targets)})" if state.build_targets else " (at the project root)")
+    detail = state.message or ""
+    state.message = ("the migration's final build passed on this same tree, but the remediation's baseline build failed"
+                     f"{where} with the same Maven command base, settings.xml and local repository (only IVAS_* / LLM_* "
+                     "variables are removed from its environment) — compare remediation/baseline/build.log with the "
+                     "migration's final build log (logs/*-build-verify*.log); the remediation builds a copy "
+                     f"(remediation/baseline/tree) without {left_out}"
+                     + (f" | {detail}" if detail else ""))
+    jr({"event": "remediation_baseline_differs", "remediation": state.id, "targets": list(state.build_targets or [])})
+    log.warning("vulnerability remediation %s: the baseline build failed although the migration's final build passed on the "
+                "same tree — see remediation/baseline/build.log", state.id)
+    _try_save(paths, state)
+    return state
+
+
 def _ended(jr: Journal, st: RemediationState) -> None:
     jr({"event": "remediation_end", "remediation": st.id, "status": st.status, "reason": st.reason})
     log.info("chained remediation %s: %s %s", st.id, st.status, st.reason)
@@ -273,11 +307,13 @@ def _ended(jr: Journal, st: RemediationState) -> None:
 
 def run_after_migration(run_dir: Path | str, project_dir: Path | str, cfg: Any, *, run_id: str, journal: Journal | None,
                         stop: StopCheck | None, components: Components | None = None,
-                        exclude_dirs: Iterable[str] = ()) -> RemediationState | None:
+                        exclude_dirs: Iterable[str] = (), build_targets: Iterable[str] = ()) -> RemediationState | None:
     """빌드에 성공한 이관 뒤 취약점 조치 한 번. None = 건너뜀(꺼져 있음: 조용히 / 준비 안 됨: 저널 ``remediation_skipped`` +
     WARNING 한 줄). 이미 이어서 돈 조치가 있으면(재시도 등) 새로 시작하지 않고 저널 ``remediation_exists`` 뒤 그 상태를 그대로 돌려준다.
     그 밖에는 원본 ZIP → ``intake.accept_zip`` → 첫 상태 → ``graph.run_remediation`` 의 끝 상태. 접수 거부는 FAILED 상태(이유 = 거부 코드),
     다른 예외는 FAILED internal_error — 어떤 예외도 밖으로 나가지 않는다. 저널 줄은 이관 저널로(``"scope": "remediation"``).
+    ``build_targets`` = 이관의 최종 빌드가 돈 대상 폴더들(루트 한 번이면 비움) — 조치는 같은 대상을 같은 방식으로 빌드한다
+    (``state.build_targets``; 루트 aggregator 가 없는 MSA 는 서비스마다).
 
     One remediation after a successful migration. None = skipped (disabled / not ready); an existing chained state is
     returned untouched; otherwise the final state. Never raises."""
@@ -307,14 +343,14 @@ def run_after_migration(run_dir: Path | str, project_dir: Path | str, cfg: Any, 
             return None
         real_stop = _safe_stop(stop)
         return _start(paths, Path(project_dir), cfg, comps, run_id=run_id, jr=jr, stop=budget.wrap(real_stop),
-                      exclude_dirs=exclude_dirs, budget=budget, real_stop=real_stop)
+                      exclude_dirs=exclude_dirs, budget=budget, real_stop=real_stop, build_targets=build_targets)
     except Exception as e:  # noqa: BLE001 — the migration's verdict must never depend on the remediation
         return _error(paths, jr, e, run_id, state)
 
 
 def _start(paths: RunPaths, project_dir: Path, cfg: Any, comps: Components, *, run_id: str, jr: Journal,
            stop: StopCheck, exclude_dirs: Iterable[str], budget: _Budget | None = None,
-           real_stop: StopCheck | None = None) -> RemediationState:
+           real_stop: StopCheck | None = None, build_targets: Iterable[str] = ()) -> RemediationState:
     from . import intake as intake_mod
     from . import planner as planner_mod
     from .models import IntakeRejected
@@ -326,9 +362,15 @@ def _start(paths: RunPaths, project_dir: Path, cfg: Any, comps: Components, *, r
     policy = planner_mod.policy_hash(cfg)
     jr({"event": "remediation_start", "remediation": run_id})
     log.info("vulnerability remediation %s: start (after the migration's BUILD SUCCESS)", run_id)
-    source_zip(project_dir, paths.original_zip, exclude_dirs=exclude_dirs, journal=jr)
+    targets = clean_targets(build_targets)
+    excluded = sorted({str(d).replace("\\", "/").strip("/") for d in exclude_dirs if str(d).strip("/")})
+    if targets:
+        jr({"event": "remediation_build_targets", "targets": targets})
+        log.info("vulnerability remediation %s: building the migration's targets %s", run_id, ", ".join(targets))
+    source_zip(project_dir, paths.original_zip, exclude_dirs=excluded, journal=jr)
     try:
-        result = intake_mod.accept_zip(paths.original_zip, paths.root, intake_mod.limits_from_config(cfg))
+        result = intake_mod.accept_zip(paths.original_zip, paths.root, intake_mod.limits_from_config(cfg),
+                                       **({"build_targets": targets} if targets else {}))
     except IntakeRejected as e:
         st = _failed_state(run_id, e.code, graph_mod.scrub_message(str(e), paths.root, 500), policy)
         _try_save(paths, st)
@@ -337,18 +379,21 @@ def _start(paths: RunPaths, project_dir: Path, cfg: Any, comps: Components, *, r
         _ended(jr, st)
         return st
     state = graph_mod.new_state(run_id, SOURCE_NAME, cfg, result, [], policy_hash=policy)
+    state.build_targets = targets
     save = _saver(paths)
     save(state)
-    return _drive(paths, state, cfg, comps, jr=jr, stop=stop, budget=budget, real_stop=real_stop)
+    return _drive(paths, state, cfg, comps, jr=jr, stop=stop, budget=budget, real_stop=real_stop, excluded=excluded)
 
 
 def _drive(paths: RunPaths, state: RemediationState, cfg: Any, comps: Components, *, jr: Journal,
-           stop: StopCheck, budget: _Budget | None = None, real_stop: StopCheck | None = None) -> RemediationState:
+           stop: StopCheck, budget: _Budget | None = None, real_stop: StopCheck | None = None,
+           excluded: Iterable[str] = ()) -> RemediationState:
     save = _saver(paths)
     try:
         state = graph_mod.run_remediation(state, paths, cfg, comps, save=save, journal=jr, stop=stop)
     except Exception as e:  # noqa: BLE001 — run_remediation turns node errors into FAILED; this guards the rest
         return _error(paths, jr, e, state.id, state)
+    state = _baseline_outcome(paths, state, jr, excluded)
     if budget is not None:
         state = _budget_outcome(paths, state, budget, real_stop or (lambda: False))
     _ended(jr, state)

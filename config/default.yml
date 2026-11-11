@@ -313,6 +313,14 @@ openrewrite:
   # OpenRewrite 가 읽지 않을 파일. JSP·HTML 은 어느 레시피도 건드리지 않고 파서 경고만 쏟아지므로 뺀다.
   # (JSP 안의 javax 이름은 재구성이 바꾼다: layout.jsp_jakarta_rename)
   exclusions: ["**/*.jsp", "**/*.jspx", "**/*.html", "**/*.htm"]
+  # 프로젝트가 이미 사내 부모(artifacts.parent / boot_parent / comp_parent 의 g:a)를 쓰는데 그 버전(예: 옛 도구가 남긴
+  # 1.0.0-SNAPSHOT)이 저장소에 없어 레시피 실행이 실패했을 때 어떻게 할지.
+  #   align    : 그 pom 들의 부모 버전을 설정된 버전으로 바꿔 커밋하고 레시피를 한 번 더 돌린다(LLM 없음). 레시피는
+  #              새 부모의 클래스패스로 돈다. 빌드 중에 같은 일이 생기면 수정 루프가 sbmig-parent 로 똑같이 맞춘다.
+  #   continue : 바꾸지 않고 레시피 없이 계속 간다(재구성이 부모를 바꾸고, 남은 일은 수정 루프가 맡는다).
+  #   abort    : 설정된 부모를 못 찾은 것처럼 실행을 멈춘다.
+  # 설정된 버전 자체가 저장소에 없으면 이 값과 상관없이 멈춘다(settings·Nexus 를 고쳐야 함).
+  unresolvable_asis_parent: align
 
 # --------------------------------------------------------------------------------------
 # build — Maven 실행 (검증 빌드, 수정 루프의 재빌드, 레시피 실행, effective-pom 조회)

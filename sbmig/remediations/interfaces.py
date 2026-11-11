@@ -73,16 +73,19 @@ class MavenGateway(Protocol):
         """승인된 저장소 호스트(설정 + 서버 settings.xml 의 미러·저장소)."""
         ...
 
-    def package(self, project: Path, log_path: Path, stop: StopCheck | None = None) -> BuildOutcome:
-        """``mvn clean package -Dmaven.test.skip=true``. 실패해도 예외를 내지 않는다."""
+    def package(self, project: Path, log_path: Path, stop: StopCheck | None = None,
+                targets: list[str] | None = None) -> BuildOutcome:
+        """``mvn clean package -Dmaven.test.skip=true``. 실패해도 예외를 내지 않는다. ``targets`` = 이관의 최종 빌드 대상 폴더들
+        (없으면 루트 한 번; 그래프는 비어 있지 않을 때만 넘긴다)."""
         ...
 
-    def resolve(self, project: Path, work: Path) -> ResolvedModel:
-        """모듈마다 실제 해석 결과(dependency:tree)와 플러그인. ``work`` 는 중간 파일을 둘 폴더."""
+    def resolve(self, project: Path, work: Path, targets: list[str] | None = None) -> ResolvedModel:
+        """모듈마다 실제 해석 결과(dependency:tree)와 플러그인. ``work`` 는 중간 파일을 둘 폴더. ``targets`` 는 ``package`` 와 같다
+        (대상이 있으면 결과의 ``roots`` 에 기록)."""
         ...
 
-    def packaged(self, project: Path) -> list[PackagedLib]:
-        """방금 빌드한 산출물(war / 실행 jar) 안에 든 jar 목록."""
+    def packaged(self, project: Path, targets: list[str] | None = None) -> list[PackagedLib]:
+        """방금 빌드한 산출물(war / 실행 jar) 안에 든 jar 목록. ``targets`` 는 ``package`` 와 같다."""
         ...
 
 
