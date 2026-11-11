@@ -1012,7 +1012,12 @@ class RemediationManager:
         data = read_json(paths.report_json)
         if isinstance(data, dict):
             return data
-        return report_mod.build_report_json(st, paths)
+        # report.json 이 없을 때만 여기서 다시 만든다 — 그래프가 쓴 것과 같은 "조치 대상에서 뺄 값"(ignore_actions)으로
+        try:
+            ignore = list(self._config(self._configs_for(rid, st, chained)).remediation.ignore_actions)
+        except Exception:  # noqa: BLE001 — 설정을 못 읽어도 보고서는 준다(기본값: 빼지 않음)
+            ignore = None
+        return report_mod.build_report_json(st, paths, ignore_actions=ignore)
 
     def file_path(self, rid: str, name: str) -> Path | None:
         """화이트리스트 이름 → 작업 폴더 안의 실제 파일. 모르는 이름·없는 파일·폴더 밖(링크 포함)은 None.

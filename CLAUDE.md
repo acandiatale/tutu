@@ -376,7 +376,10 @@ Then the final build again, the report (Handover first, "Structure review", fix 
   `POST …/approvals` with every pending proposal (checked = approved, unchecked = rejected, `"resume": true`, no `by`) → the new pod
   continues; the word "재개" does not appear. A chained approval is checked against the policy hash the build pod recorded.
   IVAS `actionDivCd` (company document): NE 조치 필요 / NP 조치계획 미등록 / PL 조치예정 / OT 조치일 경과 / PC 패치 완료 / IG 조치 예외 —
-  `remediation.ignore_actions` (default PC, IG) are reported but neither planned nor counted as remaining (part of the policy hash).
+  `remediation.ignore_actions` (default EMPTY since the user relayed that the older implementation does not filter PC / IG) lists codes
+  that are reported but neither planned nor counted as remaining (part of the policy hash). `remediation.ivas_summary_check: exact`
+  (default): `summary.components.total` must equal the library-vulnerability rows over all pages, else the scan is incomplete
+  (`nonzero` relaxes it; the older implementation compares the same way).
   A matched-files component id may contain `|` (`11560|934982`), sent as one encoded path segment. Flow: source ZIP → `baseline_build → baseline_scan → inventory → plan →
   apply → build → freeze_delivery → rescan → evaluate → report` with the company's scanner **IVAS** (LabradorLabs; env
   `IVAS_BASE_URL` / `IVAS_USER_ID` / `IVAS_PASSWORD`, Secret only). Hard rules: only approved Maven **version text** changes in existing

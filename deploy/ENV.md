@@ -117,7 +117,8 @@
 | `SBMIG_REMEDIATION__FAILED_CANDIDATE` | `include` | 빌드가 실패한 수정본도 `result.zip` 으로 낸다 / `discard` |
 | `SBMIG_REMEDIATION__IVAS_ANALYSIS_TIMEOUT_MINUTES` | `30` | IVAS 분석 한 번의 대기 한도(넘으면 검사 미완료 — 0건이 아니다) |
 | `SBMIG_REMEDIATION__CHAIN_BUDGET_MINUTES` | `90` | 빌드 파드에서 이관에 이어 돈 조치의 시간 한도(분, 0 = 없음). 넘으면 다음 경계에서 `STOPPED` `chain_budget` — 재개하면 새 빌드 파드가 이어 간다 |
-| `SBMIG_REMEDIATION__IGNORE_ACTIONS` | `'["PC","IG"]'` | 계획에서 뺄 IVAS 조치 구분 코드(PC 패치 완료, IG 조치 예외). 뺀 항목은 보고서 표에 남는다. 바꾸면 열린 제안은 다시 만들어진다 |
+| `SBMIG_REMEDIATION__IGNORE_ACTIONS` | 비어 있음(예 `'["PC","IG"]'`) | 계획에서 뺄 IVAS 조치 구분 코드. 기본은 비어 있음 = 모든 조치 구분을 고칠 대상(기존 사내 구현과 같다). 보안팀 예외(PC 패치 완료, IG 조치 예외)를 빼려면 적는다. 뺀 항목은 보고서 표에 남는다. 바꾸면 열린 제안은 다시 만들어진다 |
+| `SBMIG_REMEDIATION__IVAS_SUMMARY_CHECK` | `exact` | `exact` = IVAS 요약의 components 건수와 라이브러리 취약점 상세 행 수가 같아야 검사 완료(기존 사내 구현의 대조) / `nonzero` = 0 인지 아닌지만 — 실제 건수 뜻이 다르면 바꾼다 |
 
 ## 6. 매니페스트에 고정된 컨테이너 경로 (채울 것 없음)
 

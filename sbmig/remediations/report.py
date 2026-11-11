@@ -4,7 +4,7 @@
 지켜야 할 것: 비밀 값·토큰·서버 절대 경로를 쓰지 않는다(실행 폴더 기준 상대 경로만); 같은 입력이면 같은 글자(시각을 새로
 찍지 않는다, 정렬 고정); 맨 앞 줄에 상태·이유·다음에 할 일. 결과 ZIP 이 빌드가 실패한 수정본이면(``delivery.build_ok`` 거짓,
 ``remediation.failed_candidate: include``) 제목 바로 아래 첫 줄들에 그 사실·라운드·제안·빌드 로그·재검사 없음·원본 보존을 쓴다.
-``remediation.ignore_actions`` 코드(기본 PC 패치 완료 · IG 조치 예외)의 항목은 "조치 대상에서 뺀 항목" 표에 코드의 뜻(``ivas.ACTION_MEANINGS``)과
+``remediation.ignore_actions`` 코드(기본은 없음; 예 PC 패치 완료 · IG 조치 예외)의 항목은 "조치 대상에서 뺀 항목" 표에 코드의 뜻(``ivas.ACTION_MEANINGS``)과
 함께 따로 쓰고, 발견·잔여 개수에는 넣지 않는다.
 
 Remediation report: `report.json` (the state, the scan summaries, per-round plan summaries) and `report.md` (Korean, for
@@ -207,7 +207,7 @@ def _delivery_dict(state: RemediationState) -> dict[str, Any] | None:
 def build_report_json(state: RemediationState, paths: RunPaths, *,
                       ignore_actions: Iterable[str] | None = None) -> dict[str, Any]:
     """``report.json`` 의 내용(dict): 상태 전부, 기준·최종 검사 요약(조치 대상 / 뺀 항목 개수), 라운드별 계획 요약, 전달 ZIP
-    일치 여부, 조치 대상에서 뺀 항목(``ignored_findings``). ``ignore_actions`` 가 None 이면 기본값(PC, IG).
+    일치 여부, 조치 대상에서 뺀 항목(``ignored_findings``). ``ignore_actions`` 가 None 이면 기본값(빈 목록).
 
     The content of `report.json`; `ignore_actions` None = the default codes."""
     ignore = _ignore(ignore_actions)
@@ -259,7 +259,7 @@ def _next_steps(state: RemediationState) -> list[str]:
 
 def build_report_md(state: RemediationState, paths: RunPaths, *, ignore_actions: Iterable[str] | None = None) -> str:
     """``report.md`` 의 글(한국어). 맨 앞: 상태·이유·다음에 할 일 → 기준 빌드 → 기준 검사 → 라운드별 → 전달 ZIP →
-    조치 대상에서 뺀 항목 → 잔여 → 실행 경계 → 바꾸지 않은 것. ``ignore_actions`` 가 None 이면 기본값(PC, IG).
+    조치 대상에서 뺀 항목 → 잔여 → 실행 경계 → 바꾸지 않은 것. ``ignore_actions`` 가 None 이면 기본값(빈 목록).
 
     The Korean `report.md` text."""
     ignore = _ignore(ignore_actions)
@@ -441,7 +441,7 @@ def build_report_md(state: RemediationState, paths: RunPaths, *, ignore_actions:
 
 def write_report(state: RemediationState, paths: RunPaths, *, ignore_actions: Iterable[str] | None = None) -> None:
     """``report.json`` 과 ``report.md`` 를 실행 폴더에 쓴다(원자적 교체). 같은 입력이면 같은 내용. ``ignore_actions`` 는
-    그래프가 설정 값을 넘긴다(None = 기본값 PC, IG).
+    그래프가 설정 값을 넘긴다(None = 기본값, 빈 목록).
 
     Write `report.json` and `report.md` into the run directory."""
     write_json_atomic(paths.report_json, build_report_json(state, paths, ignore_actions=ignore_actions))

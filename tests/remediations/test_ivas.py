@@ -497,7 +497,7 @@ def done(s):
 
 def test_multi_page_library(zip_file):
     items = [lib_item(f"CVE-2026-{i}") for i in range(5)]
-    s = results_session(done(FakeSession()), summary=summary_body(components=1),
+    s = results_session(done(FakeSession()), summary=summary_body(components=5),
                         library=[page(items[0:2], 5), page(items[2:4], 5), page(items[4:], 5)])
     r = scan(s, zip_file)
     assert r.complete, r.notes
@@ -507,7 +507,7 @@ def test_multi_page_library(zip_file):
         ("library", "example:lib", "1.0.0", "1.0.1", "NE", 8.0, ["pom.xml"])
     params = [c["params"]["page"] for c in s.calls if c["path"] == res("libraryvulnerabilities")]
     assert params == [0, 1, 2]
-    assert r.counts["components"] == 1
+    assert r.counts["components"] == 5
 
 
 def test_file_components_with_matched_files_pagination(zip_file):
@@ -567,7 +567,8 @@ def test_total_mismatch_when_more_items_than_total(zip_file):
 
 
 def test_duplicate_result_across_pages(zip_file):
-    s = results_session(done(FakeSession()), summary=summary_body(components=1),
+    # the summary is compared with the rows RETURNED (3, before de-duplication): only duplicate_result
+    s = results_session(done(FakeSession()), summary=summary_body(components=3),
                         library=[page([lib_item("A"), lib_item("B")], 3), page([lib_item("A")], 3)])
     r = scan(s, zip_file)
     assert r.incomplete_reasons == ["duplicate_result"] and len(r.findings) == 2
@@ -593,7 +594,38 @@ def test_summary_mismatch(zip_file):
     s = results_session(done(FakeSession()), summary=summary_body(components=0), library=[page([lib_item()], 1)])
     r = scan(s, zip_file)
     assert r.incomplete_reasons == ["summary_mismatch"]
-    assert any("compared zero / non-zero only" in n for n in r.notes)
+    assert any("summary check (exact)" in n and "not confirmed" in n for n in r.notes)
+
+
+def test_summary_components_must_equal_library_rows_exactly(zip_file):
+    s = results_session(done(FakeSession()), summary=summary_body(components=2), library=[page([lib_item()], 1)])
+    r = scan(s, zip_file)
+    assert r.incomplete_reasons == ["summary_mismatch"] and not r.complete
+    assert any("components.total=2" in n and "1 library vulnerability rows" in n for n in r.notes)
+
+
+def test_summary_check_nonzero_relaxes_components(zip_file):
+    s = results_session(done(FakeSession()), summary=summary_body(components=2), library=[page([lib_item()], 1)])
+    r = scan(s, zip_file, summary_check="nonzero")
+    assert r.complete, r.notes
+    assert any("summary check (nonzero)" in n for n in r.notes)
+    s = results_session(done(FakeSession()), summary=summary_body(components=0), library=[page([lib_item()], 1)])
+    assert scan(s, zip_file, summary_check="nonzero").incomplete_reasons == ["summary_mismatch"]
+
+
+def test_file_and_sw_summary_stay_zero_vs_nonzero_in_exact_mode(zip_file):
+    # fileComponents.total=5 vs 1 row: the mapping is not confirmed, only zero / non-zero is compared
+    s = results_session(done(FakeSession()), summary=summary_body(fileComponents=5), main=[page([file_item()], 1)],
+                        matched={"comp-1": [page([{"file": {"fullPath": "a.js"}}], 1)]})
+    r = scan(s, zip_file)
+    assert r.complete, r.notes
+
+
+def test_ivas_settings_reads_summary_check():
+    from sbmig.remediations.ivas import ivas_settings
+    assert ivas_settings(SimpleNamespace(remediation=RemediationConfig()), env={}).summary_check == "exact"
+    cfg = SimpleNamespace(remediation=RemediationConfig(ivas_summary_check="nonzero"))
+    assert ivas_settings(cfg, env={}).summary_check == "nonzero"
 
 
 def test_summary_category_without_endpoint(zip_file):
@@ -610,7 +642,7 @@ def test_summary_unreadable_is_http_error(zip_file):
 
 
 def test_malformed_item_is_not_dropped_silently(zip_file):
-    s = results_session(done(FakeSession()), summary=summary_body(components=1),
+    s = results_session(done(FakeSession()), summary=summary_body(components=2),
                         library=[page([lib_item("A"), {"library": {"identifier": "x:y"}}], 2)])
     r = scan(s, zip_file)
     assert r.incomplete_reasons == ["http_error"] and any("malformed" in n for n in r.notes)
@@ -692,13 +724,16 @@ def test_action_code_table_and_helpers():
                                "PC": "패치 완료", "IG": "조치 예외"}
     assert action_meaning(" pc ") == "패치 완료" and action_meaning("") == "코드 없음"
     assert action_meaning("ZZ") == "알 수 없는 코드"
-    assert ignore_set(None) == {"PC", "IG"} and ignore_set([" ig ", "", "pc"]) == {"PC", "IG"}
+    assert ignore_set(None) == frozenset() and ignore_set([" ig ", "", "pc"]) == {"PC", "IG"}
+    assert ignore_set(SimpleNamespace(remediation=RemediationConfig())) == frozenset()     # default: nothing ignored
     assert ignore_set([]) == frozenset()
     assert ignore_set(SimpleNamespace(remediation=RemediationConfig(ignore_actions=["ne"]))) == {"NE"}
     fs = [Finding(id="a", kind="library", identifier="x", action="NE"),
           Finding(id="b", kind="library", identifier="x", action=" pc"),
           Finding(id="c", kind="library", identifier="x", action=""),
           Finding(id="d", kind="library", identifier="x", action="zz")]
-    act, ign = split_findings(fs, ignore_set(None))
+    act, ign = split_findings(fs, ignore_set(["PC", "IG"]))
     assert [f.id for f in act] == ["a", "c", "d"] and [f.id for f in ign] == ["b"]
+    act, ign = split_findings(fs, ignore_set(None))                 # default: every code is actionable
+    assert [f.id for f in act] == ["a", "b", "c", "d"] and ign == []
     assert unknown_actions(fs) == ["(empty)", "ZZ"]

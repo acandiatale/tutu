@@ -76,17 +76,21 @@ LLM 을 부르지 않는다. 이관 그래프(`sbmig/graph/`)와는 노드 하�
 검사 기록: 올리기 전에 `state.pending_upload[라벨]` 을 저장하고, 영수증(프로젝트·분석 ID)을 받으면 곧바로 `state.pending_receipt[라벨]` 로 옮겨
 저장한다. 재개 때 영수증이 있으면 올리지 않고 그 분석을 이어서 조회한다. `pending_upload` 만 남아 있으면 확인 없이는 다시 멈춘다.
 파일 컴포넌트 ID 에는 `|` 가 있을 수 있다(`11560|934982`): matchedfiles 경로에 조각 하나로 인코딩(`11560%7C934982`)해 보낸다.
-ID 는 `fileComponent.id`, 그것이 없을 때만 `ossId`(검사 메모를 남긴다).
+ID 는 `fileComponent.id`, 없을 때만 `ossId`(메모).
+요약 대조(`remediation.ivas_summary_check`): `exact`(기본, 기존 사내 구현의 대조) = 요약 `components.total` 이 모든 쪽에서 돌려받은
+라이브러리 취약점 행 수(중복 제거 전)와 같아야 하고, 다르면 `summary_mismatch`(두 수를 메모에). `swComponents` · `fileComponents` 는 대응이
+확인되지 않아 0 / 0 아님만 본다. `nonzero` = components 도 그렇게(건수 뜻이 다를 때).
 
 **조치 구분 코드**(`action.actionDivCd`, 뜻의 표는 ivas.py 의 `ACTION_MEANINGS` 한 곳): NE 조치 필요, NP 조치계획 미등록, PL 조치예정,
-OT 조치일 경과, PC 패치 완료, IG 조치 예외. `remediation.ignore_actions`(기본 PC, IG; 공백·대소문자 무시)의 항목은 검사 파일과 보고서 표
+OT 조치일 경과, PC 패치 완료, IG 조치 예외. `remediation.ignore_actions`(기본 비어 있음 = 모두 조치 대상 — 기존 사내 구현도 PC·IG 를 거르지 않는다; 보안팀 예외를 빼려면
+`[PC, IG]`; 공백·대소문자 무시)에 적힌 코드의 항목은 검사 파일과 보고서 표
 "조치 대상에서 뺀 항목"에 남지만 인벤토리·계획에 가지 않고 남은 취약점으로 세지 않는다(`counts` 의 `*_findings` 는 조치 대상만,
 `baseline_ignored` / `final_ignored` 따로). 빈 코드·모르는 코드는 조치 대상이고 한 번 기록한다(저널 `ivas_action_unknown`).
 
 **SUCCEEDED 조건**(전부): 기준 빌드 통과, 무엇을 적용한 라운드는 모두 빌드·검증·확정, 최종 검사 완전, 전달 ZIP sha256 = 최종 검사 ZIP sha256,
 전달 ZIP 의 `build_ok`(빌드가 실패한 수정본이 아님)와 `scanned`(완전한 최종 검사가 이 바이트를 검사함)가 참, pending·rejected 제안 없음,
 잔여(수동 검토·출처 불명·정책 deny·후보 없음·적용 안 된 제안) 없음, 최종 검사에 조치 대상 항목 없음. 아니면 INCOMPLETE 또는 FAILED
-(이유 전부를 `state.reasons` 에; `build_ok` 거짓 → `candidate_build_failed`, `scanned` 거짓 → `zip_hash_mismatch` 또는 `scan_incomplete`).
+(이유 전부 `state.reasons`; `build_ok` 거짓 → `candidate_build_failed`, `scanned` 거짓 → `zip_hash_mismatch` 또는 `scan_incomplete`).
 
 **실패한 후보**(`remediation.failed_candidate`, 값 `include`(기본) 또는 `discard`, 사용자 결정):
 
@@ -112,21 +116,18 @@ OT 조치일 경과, PC 패치 완료, IG 조치 예외. `remediation.ignore_act
 pin 이 없으면 IVAS patched 힌트 필수, 근거는 정책 또는 승인된 저장소 호스트, 같은 메이저 우선, deny 목록·`remediation.policy.allow_major` 적용.
 버전이 있으면 루트 pom 에 항목 하나를 넣는 `managed_override` 제안 하나(같은 g:a 의 발견 항목은 한 항목을 같이 쓴다). 루트 pom 에 그 g:a 의 관리
 항목이 이미 있으면 두 번째 항목은 절대 넣지 않는다: 최상위 항목 하나이고 그 버전 글자(글자 또는 프로젝트 속성)가 해석된 버전과 같으면 기존 글자를
-바꾸는 길(`own_management_version` / `property_version`), 아니면 잔여. override 대신 잔여(`manual_review` / `no_candidate_version`)로 남는 경우:
-힌트·후보 버전 없음, 해석된 의존성이 jar 가 아니거나 분류자가 있음, 그 의존성을 가진 모듈이 루트 pom 을 상속하지 않음, 모듈이 그 의존성을 자기
-버전과 함께 선언함(선언 버전이 관리 버전을 이긴다), 안전하게 넣을 줄이 없음(기준 태그가 자기 줄에 혼자 있지 않은 한 줄짜리 XML 등), 루트 pom 을
-읽을 수 없음. 제안의 `note` 는 무엇을 고정하는지, "부모·BOM 이 따라잡으면 담당 팀이 override 를 지워야 한다", "늘 승인 필요" 를 말하고
+바꾸는 길(`own_management_version` / `property_version`), 아니면 잔여. override 대신 잔여(`manual_review` / `no_candidate_version`)로 남는
+경우는 6절 "자주 보는 경우"(+ 힌트·후보 없음, 루트 pom 을 읽을 수 없음). 제안의 `note` 는 무엇을 고정하는지, "부모·BOM 이 따라잡으면 담당 팀이 override 를 지워야 한다", "늘 승인 필요" 를 말하고
 `report.md` 가 제안 표 아래에 보여 준다.
 
 자동으로 하지 않고 제안도 하지 않는 것(잔여·수동 검토): `plugin`, `vendored`, `unmapped`, `remediation.policy.deny` 에 걸린 것,
 `remediation.policy.allow_major` 가 false 일 때의 메이저.
-`true` 로 두면 모든 제안이 승인을 기다린다. 운영에서 모든 변경에 사람 승인이 필요하면 환경 변수 `SBMIG_REMEDIATION__REQUIRE_APPROVAL=true` 로 명시한다.
+`true` = 모든 제안이 승인 대기(운영에서는 `SBMIG_REMEDIATION__REQUIRE_APPROVAL=true` 로 명시).
 
 승인 요청은 **제안 해시 · 원본 트리 해시 · 정책 해시 · diff** 가 저장된 제안과 모두 같고, 제안이 지금의 `accepted/` 와 정책에도 맞고(낡지 않음),
 아직 `pending` 일 때만 받아들인다. 하나라도 다르면 요청 전체가 409 `approval_mismatch`(+ `fields`), 아무것도 쓰지 않는다(전부 아니면 전무).
 정책 해시에는 `remediation.policy` 전부 + `require_approval` + `always_approve` + `failed_candidate` + `ignore_actions` 가 들어간다 — 하나만 바꿔도 열린 제안은 모두
-무효가 되어 계획을 다시 만든다. 제안 해시는 edit 전부(`op` · `anchor` · `override` 포함)를 덮으므로, override 가 생기기 전에 저장된 계획의
-제안은 자기 해시와 맞지 않아 승인이 409 `approval_mismatch`(`proposal_hash`)로 거부된다 — 그런 작업은 다시 올린다. 거절한 (g:a, 버전)은 그 작업의 다음 라운드에서 다시 제안하지 않는다(잔여 `rejected_proposals`). `by` 는 비워도 된다. 화면의 승인은 체크박스 목록과
+무효가 되어 계획을 다시 만든다(`ivas_summary_check` 는 안 들어간다). 제안 해시는 edit 전부(`op` · `anchor` · `override` 포함)를 덮는다. 거절한 (g:a, 버전)은 그 작업의 다음 라운드에서 다시 제안하지 않는다(잔여 `rejected_proposals`). `by` 는 비워도 된다. 화면의 승인은 체크박스 목록과
 버튼 하나 `선택한 항목 적용`: 체크 = approved, 안 함 = rejected, 그다음 자동 재개(`"resume": true`). 그 값이 없으면 승인은 재개가 아니다.
 
 ## 4. 상태와 운영자가 할 일
@@ -153,7 +154,7 @@ pin 이 없으면 IVAS patched 힌트 필수, 근거는 정책 또는 승인된 
 |---|---|
 | `POST /api/remediations?name=<file.zip>` (본문 = ZIP) | `in-process` 모드만: 202 `{id, status, url}` / 400 접수 거부(코드) / 413 크기 초과 / 503 `not_ready` + `missing`. Job 모드는 409 `not_available` |
 | `GET /api/remediations?page=&size=` | 목록, 최신 먼저 |
-| `GET /api/remediations/readiness` | `{ready, missing}` — 이름만, 값은 절대 없음 |
+| `GET /api/remediations/readiness` | `{ready, missing}` — 이름만, 값 없음 |
 | `GET /api/remediations/<id>` | 상태 dict(status, reason, reasons, node, next_node, round, counts, pending_approvals, delivery `{sha256, size, round, build_ok, scanned}`, files, links …) |
 | `GET /api/remediations/<id>/result` | 끝 상태면 report.json 내용(`delivery`, `verified_delivery` 포함), 아니면 409 `not_finished` |
 | `GET /api/remediations/<id>/proposals` | 지금 라운드의 제안 전부(diff, 해시 세 개, 결정)와 잔여. `?all=1` 이면 모든 라운드 |
@@ -173,7 +174,7 @@ pin 이 없으면 IVAS patched 힌트 필수, 근거는 정책 또는 승인된 
 2. **`journal.jsonl`** — 이벤트 한 줄씩: `node_start` / `node_end`, `scan_receipt`, `scan_resume`, `upload_uncertain`, `scan_stopped`, `scan_done`,
    `ivas_upload`, `ivas_status`, `ivas_pages`, `ivas_scan_done`, `plan_written`, `plan_reused`, `plan_stale`, `policy_hash_differs`,
    `round_committed`, `next_round`, `maven_project_config`, `ivas_action_unknown`, `remediation_budget`, `failed_candidate_delivered`, `verified_delivery_kept`, `earlier_delivery_kept`.
-   `delivery/delivery.json` 의 `build_ok` · `scanned` 로 결과 ZIP 이 무엇인지 본다.
+   결과 ZIP 의 정체는 `delivery/delivery.json` 의 `build_ok` · `scanned`.
 3. **remediation.log** — 로그(비밀 값 없음). Maven 원문은 `baseline/build.log`, `rounds/<n>/build.log`.
 4. **`scans/<label>.json`** — 검사 하나: `complete`, `incomplete_reasons`(`analysis_failed`, `analysis_timeout`, `page_missing`, `total_mismatch`,
    `duplicate_result`, `summary_mismatch`, `unsupported_sw`, `zip_hash_mismatch`, `id_mismatch`, `http_error`, `stop_requested`), `findings`, `counts`, `notes`.
@@ -201,7 +202,7 @@ pin 이 없으면 IVAS patched 힌트 필수, 근거는 정책 또는 승인된 
 | `remediation.always_approve` | 늘 승인이 필요한 부류(기본 major, parent, bom, managed_override). `managed_override` 제안은 여기서 빼도 승인을 기다린다 |
 | `remediation.max_rounds` | 계획 → 적용 → 빌드 → 재검사 반복 한도(기본 3) |
 | `remediation.failed_candidate` | 후보 빌드 실패 정책: `include`(기본, 실패한 수정본도 결과 ZIP 으로) / `discard`(넣지 않음). 2절 |
-| `remediation.ignore_actions` | 계획에서 뺄 IVAS 조치 코드(기본 PC, IG). 정책 해시에 들어간다 |
+| `remediation.ignore_actions` | 계획에서 뺄 IVAS 조치 코드(기본 없음, 예 `[PC, IG]`). 정책 해시에 들어간다 |
 | `remediation.chain_budget_minutes` | 이관에 이어 돈 조치의 파드당 시간 한도(기본 90분, 0 = 없음) |
 | `remediation.project_maven_config` | `.mvn/maven.config` · `jvm.config` · `extensions.xml` 발견 시 refuse / ignore(Maven 3.9 는 끌 수 없어 기본 refuse) |
 | `remediation.maven_wrapper` | `mvnw` 발견 시(서버 Maven 만 쓰므로 기본 ignore) |
@@ -209,9 +210,9 @@ pin 이 없으면 IVAS patched 힌트 필수, 근거는 정책 또는 승인된 
 | `remediation.foreign_repository` | pom 이 승인되지 않은 호스트 저장소를 선언했을 때 |
 | `remediation.build_timeout_minutes` | package 빌드 한 번의 한도 |
 | `remediation.ivas_timeout_seconds` / `remediation.ivas_upload_timeout_seconds` | IVAS 요청 / 업로드 한도 |
-| `remediation.ivas_poll_seconds` / `remediation.ivas_analysis_timeout_minutes` | 상태 조회 간격 / 분석 대기 한도(기본 30분 = 1,800초, 넘으면 미완료 — 0건이 아니다) |
-| `remediation.ivas_page_size` | 결과 한 쪽 크기 |
-| `remediation.ivas_project_prefix` | IVAS 프로젝트 이름 앞머리 |
+| `remediation.ivas_poll_seconds` / `remediation.ivas_analysis_timeout_minutes` | 상태 조회 간격 / 분석 대기 한도(기본 30분, 넘으면 미완료 — 0건이 아니다) |
+| `remediation.ivas_page_size` / `remediation.ivas_project_prefix` | 결과 한 쪽 크기 / IVAS 프로젝트 이름 앞머리 |
+| `remediation.ivas_summary_check` | `exact`(기본) / `nonzero`. 2절 요약 대조 |
 | `remediation.policy.pins` | "g:a" → 이 버전으로만(부모·BOM 좌표면 그 버전 변경 제안) |
 | `remediation.policy.deny` / `remediation.policy.deny_versions` | 자동 변경 금지 / 후보에서 뺄 버전 |
 | `remediation.policy.allow_prerelease` / `remediation.policy.allow_major` | 시험판 허용 / 메이저 변경 제안 허용 |

@@ -949,7 +949,9 @@ class RemediationConfig(BaseModel):
     chain_budget_minutes: int = 90
     # IVAS 조치 구분(action.actionDivCd) 가운데 "더 고칠 것이 아닌" 값. 이 값의 발견 항목은 기록·보고서에는 남지만 계획 대상과 성공
     # 판정(남은 취약점)에서 뺀다. IVAS 문서: NE 조치 필요 / NP 조치계획 미등록 / PL 조치예정 / OT 조치일 경과 / PC 패치 완료 / IG 조치 예외.
-    ignore_actions: list[str] = Field(default_factory=lambda: ["PC", "IG"])
+    # 기본은 비어 있다 = 모든 조치 구분을 고칠 대상으로 본다(기존 사내 구현도 PC·IG 를 거르지 않는다, 2026-11-11). 보안팀이 예외
+    # 처리한 항목을 빼려면 [PC, IG] 처럼 적는다.
+    ignore_actions: list[str] = Field(default_factory=list)
     max_upload_mb: int = 1024                # 업로드 ZIP 한도(MiB)
     max_entries: int = 200_000               # ZIP 항목 수 한도
     max_unpacked_mb: int = 4096              # 풀었을 때 전체 크기 한도(MiB)
@@ -982,6 +984,9 @@ class RemediationConfig(BaseModel):
     ivas_analysis_timeout_minutes: int = 30   # 이 시간(1,800초) 안에 끝나지 않으면 검사 미완료(0건이 아니다)
     ivas_page_size: int = 100
     ivas_project_prefix: str = "sbmig"       # IVAS projectNm = <prefix>-<작업 ID>-<baseline|final-rN>
+    # 요약 대조: exact = 요약 components 건수 == 라이브러리 취약점 상세 행 수(기존 사내 구현의 대조) / nonzero = 0 인지 아닌지만.
+    # 무엇을 제안하는지는 바꾸지 않으므로 정책 해시에 들어가지 않는다.
+    ivas_summary_check: Literal["exact", "nonzero"] = "exact"
     policy: RemediationPolicyConfig = Field(default_factory=RemediationPolicyConfig)
 
 

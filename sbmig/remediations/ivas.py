@@ -10,7 +10,9 @@ ZIP 업로드(multipart: ``analysisRequest`` + 파일), ``…/analysis/{id}/stat
 - 토큰은 메모리에만 두고, 토큰·비밀번호는 로그·예외 문장·repr 어디에도 나오지 않는다(응답 본문을 인용할 때도 지우고 300자로 자른다).
 - TLS 검증은 끄지 않는다(``verify=False`` 없음; ``REQUESTS_CA_BUNDLE`` 은 requests 가 그대로 따른다).
 - 검사 결과는 빠진 페이지·바뀐 전체 개수·중복 항목·요약과 맞지 않는 개수·지원하지 않는 범주(SW)·HTTP 오류가 하나라도 있으면
-  ``complete=False`` — 그때 ``findings`` 가 비어 있어도 "0건"이 아니다.
+  ``complete=False`` — 그때 ``findings`` 가 비어 있어도 "0건"이 아니다. 요약 대조: ``components.total`` 은 모든 쪽에서 돌려받은
+  라이브러리 취약점 행 수(중복 제거 전)와 같아야 한다(``remediation.ivas_summary_check: exact``, 기존 사내 구현과 같은 대조);
+  swComponents / fileComponents 는 대응이 확인되지 않아 0 / 0 아님만 본다. ``nonzero`` 면 components 도 0 / 0 아님만 본다.
 - 조치 구분 코드(``action.actionDivCd``)의 뜻은 ``ACTION_MEANINGS`` 한 곳에 있다. 검사 파일에는 모든 항목을 그대로 두고, 조치
   대상에서 뺄 코드(``remediation.ignore_actions``)는 그래프가 ``split_findings`` 로 가른다. 빈 코드·모르는 코드는 조치 대상이다.
 - 파일 컴포넌트 ID 에는 ``|`` 가 들어 있을 수 있다(``11560|934982``): matchedfiles 경로에 경로 조각 하나로 인코딩해 보낸다.
@@ -18,7 +20,8 @@ ZIP 업로드(multipart: ``analysisRequest`` + 파일), ``…/analysis/{id}/stat
 IVAS HTTP client and scan procedure. Only the HTTP contract the company gave is used; anything unknown makes the
 scan incomplete instead of being guessed. An upload is never retried automatically: any ambiguity after the body may
 have left raises `IvasUploadUncertain`. Tokens / passwords never reach a log line, an exception message or a repr.
-TLS verification is never disabled. Action-code meanings live in `ACTION_MEANINGS`; the graph splits the findings by
+TLS verification is never disabled. `components.total` must equal the library rows returned (`ivas_summary_check: exact`).
+Action-code meanings live in `ACTION_MEANINGS`; the graph splits the findings by
 `remediation.ignore_actions` (`split_findings`), an empty / unknown code stays actionable.
 """
 from __future__ import annotations
@@ -68,7 +71,9 @@ ACTION_MEANINGS: dict[str, str] = {
     "PC": "패치 완료",
     "IG": "조치 예외",
 }
-DEFAULT_IGNORE_ACTIONS = ("PC", "IG")
+# 기본은 비어 있다(2026-11-11, 기존 사내 구현도 PC·IG 를 거르지 않는다) — 모든 조치 구분을 고칠 대상으로 본다
+DEFAULT_IGNORE_ACTIONS: tuple[str, ...] = ()
+SUMMARY_CHECKS = ("exact", "nonzero")
 
 # 결과 종류 → URL 꼬리(analysis/{id}/ 뒤)
 PAGE_PATHS = {
@@ -101,6 +106,8 @@ class IvasSettings:
     analysis_timeout_seconds: float = 120 * 60.0
     page_size: int = 100
     project_prefix: str = "sbmig"
+    # exact = 요약 components 건수 == 라이브러리 취약점 상세 행 수(기존 사내 구현의 대조) / nonzero = 0 인지 아닌지만
+    summary_check: str = "exact"
 
 
 def ivas_settings(cfg: Any, env: Mapping[str, str] = os.environ) -> IvasSettings:
@@ -121,6 +128,7 @@ def ivas_settings(cfg: Any, env: Mapping[str, str] = os.environ) -> IvasSettings
         analysis_timeout_seconds=float(rem.ivas_analysis_timeout_minutes) * 60.0,
         page_size=int(rem.ivas_page_size),
         project_prefix=str(rem.ivas_project_prefix),
+        summary_check=str(getattr(rem, "ivas_summary_check", "exact")),
     )
 
 
@@ -297,7 +305,7 @@ def action_meaning(code: Any) -> str:
 
 def ignore_set(value: Any) -> frozenset[str]:
     """설정 값(``cfg`` / ``cfg.remediation`` / 코드 목록 / None)에서 조치 대상에서 뺄 코드 집합(정규화). None 이나 설정이 없는
-    객체 = 기본값(PC, IG). 빈 문자열 항목은 버린다 — 빈 코드는 절대 '뺄 코드'가 되지 않는다.
+    객체 = 기본값(빈 집합 — 아무것도 빼지 않는다). 빈 문자열 항목은 버린다 — 빈 코드는 절대 '뺄 코드'가 되지 않는다.
 
     The normalized set of ignored action codes from a config object, a code list or None (= the default)."""
     if value is not None and not isinstance(value, (list, tuple, set, frozenset, str)):
@@ -828,6 +836,7 @@ def run_scan(client: Any, zip_path: Path, zip_sha256: str, label: str, project_n
     findings: list[Finding] = []
     seen_keys: set[str] = set()
     page_totals: dict[str, int | None] = {}
+    rows_returned: dict[str, int] = {}
 
     def add(f: Finding, what: str) -> None:
         if f.key in seen_keys:
@@ -842,6 +851,10 @@ def run_scan(client: Any, zip_path: Path, zip_sha256: str, label: str, project_n
     # library
     items, total, pages = _all_pages(client, receipt, "library", size, col)
     page_totals["library"] = total
+    if total is not None and len(items) == total:
+        # 중복을 빼기 전의 돌려받은 행 수 — 요약 대조는 이 수로 한다. 쪽 읽기가 이미 어긋났으면(page_missing /
+        # total_mismatch) 그 이유가 이미 남았으니 같은 어긋남을 summary_mismatch 로 한 번 더 세지 않는다
+        rows_returned["library"] = len(items)
     emit({"event": "ivas_pages", "label": label, "kind": "library", "items": len(items), "total": total, "pages": pages})
     for i, item in enumerate(items):
         f = _library_finding(item)
@@ -895,27 +908,44 @@ def run_scan(client: Any, zip_path: Path, zip_sha256: str, label: str, project_n
 
     # ---- 요약 대조 / summary reconciliation ----
     if counts:
-        _reconcile(counts, page_totals, col)
+        _reconcile(counts, page_totals, col, rows_returned=rows_returned, mode=st.summary_check)
     return result(True, last, findings, counts)
 
 
-# 요약 범주 ↔ 상세 페이지: 0 / 0 아님만 대조한다(개수의 단위 — 컴포넌트인지 취약점인지 — 는 회사 문서에 없다)
+# 요약 범주 ↔ 상세 페이지. components ↔ 라이브러리 취약점 행 수는 기존 사내 구현이 같은지 대조한다(exact 모드).
+# 나머지 둘의 대응은 회사 확인 전이라 0 / 0 아님만 대조한다(개수의 단위 — 컴포넌트인지 취약점인지 — 가 문서에 없다)
 _RECONCILE = (("components", ("library",)), ("swComponents", ("sw",)), ("fileComponents", ("file_main", "file_potential")))
+_EXACT = {"components": "library"}
 
 
-def _reconcile(counts: dict[str, int], page_totals: dict[str, int | None], col: _Collector) -> None:
+def _reconcile(counts: dict[str, int], page_totals: dict[str, int | None], col: _Collector, *,
+               rows_returned: Mapping[str, int] | None = None, mode: str = "exact") -> None:
+    rows = dict(rows_returned or {})
+    exact_mode = str(mode).strip().lower() != "nonzero"
     compared = []
     for cat, kinds in _RECONCILE:
         totals = [page_totals.get(k) for k in kinds]
         if any(t is None for t in totals):
             continue           # 그 페이지를 읽지 못했다: 이미 page_missing
+        exact_kind = _EXACT.get(cat) if exact_mode else None
+        if exact_kind is not None and exact_kind not in rows:
+            compared.append(f"{cat}: not compared ({exact_kind} pages incomplete)")
+            continue
+        if exact_kind is not None:
+            n = rows[exact_kind]
+            compared.append(f"{cat}=={exact_kind} rows (exact)")
+            if counts.get(cat, 0) != n:
+                col.bad("summary_mismatch", f"summary {cat}.total={counts.get(cat, 0)} but {n} {exact_kind} vulnerability "
+                                            "rows were returned over all pages (remediation.ivas_summary_check: exact)")
+            continue
         pages_total = sum(t or 0 for t in totals)
-        compared.append(f"{cat}↔{'+'.join(kinds)}")
+        compared.append(f"{cat}↔{'+'.join(kinds)} (zero / non-zero)")
         if (counts.get(cat, 0) > 0) != (pages_total > 0):
             col.bad("summary_mismatch", f"summary {cat}.total={counts.get(cat, 0)} but the {'+'.join(kinds)} pages "
                                         f"report {pages_total} items")
     uncovered = [c for c in SUMMARY_CATEGORIES if c not in {r[0] for r in _RECONCILE}]
-    col.note("summary check: compared zero / non-zero only for " + (", ".join(compared) or "nothing")
+    col.note("summary check (" + ("exact" if exact_mode else "nonzero") + "): " + (", ".join(compared) or "nothing")
+             + "; the swComponents / fileComponents mapping is not confirmed, so only zero / non-zero is compared there"
              + "; categories without a detail endpoint must be 0: " + ", ".join(uncovered))
     for cat in uncovered:
         if counts.get(cat, 0) > 0:

@@ -666,7 +666,7 @@ def test_ignored_action_codes_are_not_planned_and_not_remaining(tmp_path):
     final = [coded("CVE-2", "PC", ga="example:other"), coded("CVE-3", "IG", ga="example:third")]
     scan = FakeScanner({"baseline": [scan_result(*base)], "final-r1": [scan_result(*final)]})
     comps = one_fix_components(scan=scan)
-    out, _ = run(state, paths, comps)
+    out, _ = run(state, paths, comps, cfg=make_cfg(ignore_actions=["PC", "IG"]))
     assert out.status == SUCCEEDED, (out.reason, out.reasons)
     assert [f.id for f in comps.inventory.calls[0]] == ["CVE-1"]
     assert out.counts["baseline_findings"] == 1 and out.counts["baseline_ignored"] == 2
@@ -683,7 +683,7 @@ def test_ignored_action_codes_are_not_planned_and_not_remaining(tmp_path):
 def test_only_ignored_findings_deliver_the_original(tmp_path):
     state, paths = make_run(tmp_path)
     comps = one_fix_components(scan=FakeScanner({"baseline": [scan_result(coded("CVE-9", "IG"))]}))
-    out, _ = run(state, paths, comps)
+    out, _ = run(state, paths, comps, cfg=make_cfg(ignore_actions=["PC", "IG"]))
     assert out.status == SUCCEEDED and comps.plan.calls == [] and comps.inventory.calls == []
     assert paths.delivery_zip.read_bytes() == paths.original_zip.read_bytes()
 
@@ -700,10 +700,12 @@ def test_unknown_or_empty_action_codes_stay_actionable_and_are_noted_once(tmp_pa
     assert "알 수 없는 조치 코드(조치 대상으로 다룸): ZZ" in paths.report_md.read_text(encoding="utf-8")
 
 
-def test_ignore_actions_empty_list_ignores_nothing(tmp_path):
+@pytest.mark.parametrize("explicit", [True, False])
+def test_ignore_actions_empty_list_ignores_nothing(tmp_path, explicit):
+    # the default (2026-11-11) is the empty list: PC / IG findings are planned like any other
     state, paths = make_run(tmp_path)
     scan = FakeScanner({"baseline": [scan_result(coded("CVE-1", "PC"))], "final-r1": [scan_result()]})
     comps = one_fix_components(scan=scan)
-    out, _ = run(state, paths, comps, cfg=make_cfg(ignore_actions=[]))
+    out, _ = run(state, paths, comps, cfg=make_cfg(ignore_actions=[]) if explicit else None)
     assert out.status == SUCCEEDED and [f.id for f in comps.inventory.calls[0]] == ["CVE-1"]
     assert out.counts["baseline_findings"] == 1 and out.counts["baseline_ignored"] == 0

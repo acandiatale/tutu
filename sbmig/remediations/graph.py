@@ -377,7 +377,7 @@ class _Holder:
         return ignore_set(getattr(self.rcfg, "ignore_actions", None))
 
     def split(self, scan: ScanResult) -> tuple[list[Any], list[Any]]:
-        """검사의 (조치 대상, 조치 대상에서 뺀 항목). 뺀 항목(``ignore_actions`` 코드, 기본 PC·IG)은 검사 파일·보고서에는 남지만
+        """검사의 (조치 대상, 조치 대상에서 뺀 항목). 뺀 항목(``ignore_actions`` 코드, 기본은 없음)은 검사 파일·보고서에는 남지만
         인벤토리·계획에 가지 않고 남은 취약점으로 세지 않는다. 표에 없는 코드·빈 코드는 조치 대상 — 한 번만 저널에 남긴다.
 
         (actionable, ignored) findings of a scan; unknown / empty codes stay actionable and are journaled once."""
@@ -532,7 +532,7 @@ def _inventory(h: _Holder) -> str | None:
     if scan is None or not scan.complete:
         # 읽을 수 없거나 미완료인 검사는 0건이 아니다 — 빈 발견 목록으로 계획하지 않는다
         return h.finish(INCOMPLETE, R_SCAN_INCOMPLETE, "the scan this round plans from is missing or incomplete")
-    # ignore_actions 코드(기본 PC 패치 완료 · IG 조치 예외)의 항목은 인벤토리·계획에 넘기지 않는다
+    # ignore_actions 코드(기본은 없음; 예 PC 패치 완료 · IG 조치 예외)의 항목은 인벤토리·계획에 넘기지 않는다
     findings, _ignored = h.split(scan)
     inv = c.inventory(h.project(p.accepted), findings, before)
     write_json_atomic(rd / "inventory.json", inv.to_dict())

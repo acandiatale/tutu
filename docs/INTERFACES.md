@@ -4950,11 +4950,12 @@ built on this server — Maven runs the project's plugin code, this is not a san
 readiness names it; set `SBMIG_REMEDIATION__TRUSTED_PROJECTS=true` explicitly), `max_upload_mb`, `max_entries`, `max_unpacked_mb`, `max_entry_mb`,
 `max_compression_ratio` (intake limits; the ratio applies to entries ≥ 1 MiB unpacked), `require_approval` (default false),
 `always_approve` (default `[major, parent, bom, managed_override]`; `managed_override` proposals wait even if it is removed),
-`max_rounds` (3), `failed_candidate` (`include` default | `discard`, see "Failed candidate"), `ignore_actions` (default `[PC, IG]`,
+`max_rounds` (3), `failed_candidate` (`include` default | `discard`, see "Failed candidate"), `ignore_actions` (default `[]`,
 see "IVAS action codes"; part of the policy hash), `chain_budget_minutes` (90; 0 = none; chained path only), `project_maven_config` /
 `maven_wrapper` / `foreign_repository` (`refuse` | `ignore`), `allowed_repository_hosts`, `build_timeout_minutes`,
 `ivas_timeout_seconds`, `ivas_upload_timeout_seconds`, `ivas_poll_seconds`, `ivas_analysis_timeout_minutes` (default **30** =
-1,800 s; past it the scan is incomplete, never 0 findings), `ivas_page_size`, `ivas_project_prefix` (IVAS project name `<prefix>-<id>-<label>`), and
+1,800 s; past it the scan is incomplete, never 0 findings), `ivas_page_size`, `ivas_project_prefix` (IVAS project name `<prefix>-<id>-<label>`),
+`ivas_summary_check` (`exact` default | `nonzero`, see "Completeness"), and
 `policy.pins` / `policy.deny` / `policy.deny_versions` / `policy.allow_prerelease` / `policy.allow_major`.
 
 Secret (Kubernetes Secret, environment only, never in yml): `IVAS_USER_ID`, `IVAS_PASSWORD`; `IVAS_BASE_URL` travels with them
@@ -4965,7 +4966,7 @@ The deployment puts the three `IVAS_*` keys into Secret `sbmig-llm`: the Job tem
 `secretKeyRef` (optional), the 80 model and the web pod by `envFrom` (the web pod uses them only in `in-process` mode). They are not
 in ConfigMap `sbmig-env`. Remediation overrides that must reach the build pod (`SBMIG_REMEDIATION__AFTER_MIGRATION`, and if set
 `…__REQUIRE_APPROVAL` / `…__FAILED_CANDIDATE` / `…__IVAS_ANALYSIS_TIMEOUT_MINUTES` / `…__CHAIN_BUDGET_MINUTES` /
-`…__IGNORE_ACTIONS`, the last five shipped as commented lines) live in `sbmig-env` with a line each in 81 —
+`…__IGNORE_ACTIONS` / `…__IVAS_SUMMARY_CHECK`, the last six shipped as commented lines) live in `sbmig-env` with a line each in 81 —
 a literal in 40 only would be a `main_only` env-pin difference and stop every Job.
 
 Readiness (`GET …/readiness`, also checked on upload and at `baseline_build`): `remediation.trusted_projects` true (named first
@@ -4989,8 +4990,13 @@ repository host (`remediation.allowed_repository_hosts`, else the mirrors / repo
 
 Completeness: pages start at 0 and are read until `totalElements` items arrived (safety cap total/size + 2); a page that cannot be
 read, an early empty page, a `totalElements` that changes between pages, more or fewer items than announced, a duplicate
-`(kind, id, identifier, version)` or matched path, an item without id → incomplete. The summary is compared zero / non-zero only
-(`components` ↔ library, `swComponents` ↔ sw, `fileComponents` ↔ file main + potential); the five categories without a detail
+`(kind, id, identifier, version)` or matched path, an item without id → incomplete. Summary reconciliation
+(`remediation.ivas_summary_check`, default `exact`; the company's existing IVAS client compares `components.total` with the number
+of `libraryvulnerabilities` detail rows, user 2026-11-11): `components.total` must EQUAL the library rows returned over all pages
+(counted before de-duplication; skipped when the library pages already failed — `page_missing` / `total_mismatch`), else
+`summary_mismatch` with both numbers in the note. `swComponents` ↔ sw and `fileComponents` ↔ file main + potential are compared
+zero / non-zero only (that mapping is not confirmed; the note says so). `nonzero` compares `components` zero / non-zero as well —
+the operator's switch if the real count means something else; not in the policy hash. The five categories without a detail
 route must be 0. GETs retry up to 3 times on connection errors / timeouts / 5xx / 429; three status polls failing in a row, or no
 `DONE` within `remediation.ivas_analysis_timeout_minutes`, make the scan incomplete (the remote analysis keeps running). The
 upload is sent **once**: a failure clearly before the body left (login refused, file unreadable, connection never opened) or a
@@ -4999,8 +5005,9 @@ without ids or not JSON) is `IvasUploadUncertain` → `AWAITING_CONFIRMATION`, n
 (`REQUESTS_CA_BUNDLE` is honoured by requests for an internal CA).
 
 **IVAS action codes** (`action.actionDivCd`, the company's document; the table lives once in `ivas.ACTION_MEANINGS`): `NE` 조치 필요,
-`NP` 조치계획 미등록, `PL` 조치예정, `OT` 조치일 경과, `PC` 패치 완료, `IG` 조치 예외. `remediation.ignore_actions` (default `[PC, IG]`,
-compared trimmed and case-insensitively): such a finding is KEPT in `scans/<label>.json` and shown in the report (own table
+`NP` 조치계획 미등록, `PL` 조치예정, `OT` 조치일 경과, `PC` 패치 완료, `IG` 조치 예외. `remediation.ignore_actions` (default **empty**
+since 2026-11-11 — the company's existing IVAS client does not filter PC / IG either, so every code is actionable; `[PC, IG]` leaves
+out what the security team closed; compared trimmed and case-insensitively): a finding whose code it names is KEPT in `scans/<label>.json` and shown in the report (own table
 "조치 대상에서 뺀 항목" with the code's meaning; `report.json` `ignored_findings`, `ignore_actions`, per scan `actionable` / `ignored`)
 but is not handed to the inventory / planner and does not count as a remaining finding (SUCCEEDED, the next-round decision,
 `counts`). Counts: `baseline_findings` / `final_findings` = actionable only, plus `baseline_ignored` / `final_ignored`. An empty or
@@ -5026,16 +5033,17 @@ Symlinks are always refused; a `settings.xml` inside the project is recorded and
 Answered by the user (2026-11-11), no longer open: the failed-candidate policy (`include`, `discard` kept as an option); which
 classes need approval (shipped `always_approve`, `managed_override` always); the multipart file field (`file`); the analysis id
 field (`lbrdrAnlId`, else `analysisId`); transitive / managed findings (approved override entries in the root pom); the meaning
-of the action codes (`actionDivCd`, table above); several logins / tokens at once (they work).
+of the action codes (`actionDivCd`, table above); several logins / tokens at once (they work); whether PC / IG are left out (no:
+`ignore_actions` is empty by default, like the existing client).
 
 1. IVAS: which field is the matched-files id — `fileComponent.id` (used today) or `ossId` (the company's word; used only when
    `fileComponent.id` is missing); the shape of `patchedVersion` (one version, a list, a range?); what `components.total` counts
-   (components or vulnerabilities — only zero / non-zero is compared); the complete list of `anlStatusDivCd` values, the SW
+   (assumed = library vulnerability rows, as the older in-house implementation compares; relax with
+   `remediation.ivas_summary_check: nonzero` if wrong); the complete list of `anlStatusDivCd` values, the SW
    vulnerability fields (today any SW item makes the scan incomplete), the display-name field of a file component, whether pages
    are 0-based.
 2. IVAS: how an operator checks whether an uncertain upload arrived (search by project name?), the token lifetime, rate limits /
    concurrent analyses per account, whether one IVAS project per scan (`<prefix>-<id>-<label>`) is acceptable, the internal CA.
-   Whether `PC` (패치 완료) and `IG` (조치 예외) are right to leave out of the plan (`ignore_actions` default).
 3. Which repository is "the approved internal repository" for version evidence, and who owns `remediation.policy` (pins / deny).
 4. Approval in production: `require_approval: true`? Who may approve (`by` is free text behind the TokenGuard)?
 5. Managed overrides: may two approved overrides share one newly created `<dependencyManagement>` section in one round (today:
