@@ -7,8 +7,8 @@ reused on later projects. The v1 flow (deterministic handlers, KB recipes, SEARC
 **`company-v1`** on `main`; its code is deleted here (PLAN-v2 step 4).
 Read in this order: `README.md` → `docs/v2/PLAN-v2.md` (the business request, the decisions, the step table) →
 `docs/migration-agent/README.md` (the design in one place: Mermaid per flow / node, Korean; `migration-agent.pptx`
-beside it, rebuilt by `scripts/handbook/build_migration_agent_deck.js`) → `docs/INTERFACES.md` (contracts; the
-"v2 — flow-v2" section is the one that counts, the older sections are history) → `docs/PLAN.md` (one "Status" table
+beside it, rebuilt by `scripts/handbook/build_migration_agent_deck.js`) → `docs/INTERFACES.md` (contracts of the deployed
+system: a topic → section map on top, "Base contracts" = what v2 still runs from before, then one section per increment) → `docs/PLAN.md` (one "Status" table
 per round, newest at the bottom) → the doc for the area you touch (`ARCHITECTURE`, `ERROR-HANDLING`, `FLEET`,
 `ADAPTERS`, `RECIPES`, `ADVISORIES`, `RUNBOOK`).
 **Docs describe the deployed flow-v2 system only (user, 2026-11-11: "v1 시절거는 문서 필요 없어! 현행 버전만 중요해!")**: the

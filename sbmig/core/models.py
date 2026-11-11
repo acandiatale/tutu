@@ -1467,7 +1467,7 @@ class KBMatch(BaseModel):
 # Error cases (2026-10-23, business requirement): every build error of a run is recorded on its own — what it was,
 # what was tried, how it was resolved (with the code applied) or why it was not — and every fix attempt, failed
 # ones included. kb/errors.jsonl + kb/fix_attempts.jsonl (append-only), kb/error_hints.json (hints index),
-# <run dir>/error_cases.jsonl | fix_attempts.jsonl | error_cases.csv. See docs/INTERFACES.md "Error cases".
+# <run dir>/error_cases.jsonl | fix_attempts.jsonl | error_cases.csv (record models kept for reading older files).
 # ---------------------------------------------------------------------------
 # who / what made the change: a deterministic handler, an OpenRewrite recipe (plan recipe ids or KB recipes), a
 # replayed KB patch, the LLM, a plan step outside the fix loop (rewrite / restructure / pre-emptive handlers / bump)
@@ -1653,7 +1653,7 @@ class ErrorCaseRecord(BaseModel):
 # Case catalog (2026-10-23): ONE reusable case per error signature (L2 = the case key), variants by the owner class /
 # L1 — kb/catalog/<kind>/<class>/<symbol>--<id>.yml. Built from the error-case events (kb/errors.jsonl,
 # fix_attempts.jsonl), the KB recipes and patch cases; the `human` block is never overwritten by the KB, every other
-# field is recomputed. A hit at triage applies the case's action (see docs/INTERFACES.md "Case catalog").
+# field is recomputed. A hit at triage applies the case's action.
 # ---------------------------------------------------------------------------
 CaseStatus = Literal["observed", "candidate", "active", "rejected"]
 CaseActionKind = Literal["hint", "block", "script"]
