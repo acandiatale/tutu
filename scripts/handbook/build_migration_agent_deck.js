@@ -139,16 +139,40 @@ function label(s, x, y, text, o = {}) {
   s.addText(text, { x: x - w / 2, y: y - h / 2, w, h, fontSize: o.size || 8.5, color: "4A4F4A", align: "center", valign: "middle", margin: 0, isTextBox: true, fill: { color: "FFFFFF" }, fontFace: THEME.bodyFontFace });
 }
 
+// ---------------------------------------------------------------- 단계별 쪽 (2026-11-11): 단계 하나 = 한 쪽, 그림은 steps/<key>.js 가 도형으로 그린다
+// steps/<key>.js 는 { title, notes, lines, draw(s, H) } 를 내보낸다. draw 는 AREA 안에만 그린다. 위의 띠와 아래 글은 여기서 놓는다.
+const STEPS = [["pod", "파드 준비"], ["intake", "접수"], ["analyze", "분석"], ["plan", "계획"], ["transform", "자동 변환"], ["restructure", "구조 정리"],
+               ["review", "구조 검토"], ["verify", "빌드와 수정"], ["finalize", "마무리"]];
+const AREA = { x: 0.5, y: 1.4, w: 9, h: 2.75, l: 0.5, r: 9.5, t: 1.4, b: 4.15 };
+const H = { node, seg, route, label, para, AREA, KIND };
+// 지금 어느 단계인지 보여 주는 띠: 아홉 칸 가운데 하나만 진하게.
+function strip(s, cur) {
+  const gap = 0.06, w = (9 - gap * (STEPS.length - 1)) / STEPS.length;
+  STEPS.forEach(([key, name], i) => {
+    const on = key === cur;
+    s.addText(name, { shape: pres.shapes.ROUNDED_RECTANGLE, rectRadius: 0.04, x: 0.5 + i * (w + gap), y: 1.03, w, h: 0.22, fontSize: 8.5, bold: on,
+      color: on ? "FFFFFF" : "6B726B", fill: { color: on ? K.dk2 : K.lt2 }, line: { color: on ? K.dk2 : K.lt2, width: 0.5 }, align: "center", valign: "middle", margin: 0, fontFace: THEME.bodyFontFace });
+  });
+}
+function stepSlide(key, section) {
+  const m = require("./steps/" + key + ".js");
+  const s = content(m.title, section, m.notes);
+  strip(s, key);
+  m.draw(s, H);
+  bullets(s, m.lines, 0.5, 4.3, 9, 0.88, 10.5);
+  return s;
+}
+
 // 1. 전체 흐름 — 3줄 (4 · 3 · 4)
 function drawOverview(s) {
   const w = 2.0, h = 0.78, gx = 0.333, ys = [1.08, 2.18, 3.28];
   const col = i => 0.5 + i * (w + gx);
   const n = {};
-  n.a = node(s, col(0), ys[0], w, h, "① 접수", "작업용 사본을 만듭니다. Ant 프로젝트면 pom.xml 을 만들어 받습니다", "auto");
-  n.b = node(s, col(1), ys[0], w, h, "② 분석", "프로젝트 종류와 쓰는 라이브러리를 읽어 둡니다", "auto");
-  n.c = node(s, col(2), ys[0], w, h, "③ 계획", "종류에 맞춰 돌릴 단계와 순서를 정합니다", "auto");
-  n.e = node(s, col(3), ys[0], w, h, "④ 자동 변환", "JDK 21, jakarta, Spring Boot 4 규칙을 한 번에 적용합니다", "auto");
-  n.f = node(s, col(0), ys[1], w, h, "⑤ 1차 컴파일", "지금 보이는 오류를 전부 목록에 적어 둡니다", "build");
+  n.a = node(s, col(0), ys[0], w, h, "① 파드 준비", "업로드마다 빌드 파드를 하나 띄웁니다. 자리가 없으면 줄을 섭니다", "auto");
+  n.b = node(s, col(1), ys[0], w, h, "② 접수", "작업용 사본을 만듭니다. Ant 프로젝트면 pom.xml 을 만들어 받습니다", "auto");
+  n.c = node(s, col(2), ys[0], w, h, "③ 분석", "프로젝트 종류와 쓰는 라이브러리를 읽어 둡니다", "auto");
+  n.e = node(s, col(3), ys[0], w, h, "④ 계획", "종류에 맞춰 돌릴 단계와 순서를 정합니다", "auto");
+  n.f = node(s, col(0), ys[1], w, h, "⑤ 자동 변환", "JDK 21, jakarta, Spring Boot 4 규칙을 한 번에 적용합니다", "auto");
   n.g = node(s, col(1), ys[1], w, h, "⑥ 구조 정리", "회사 표준 구조로 모듈과 pom.xml 을 다시 짭니다", "auto");
   n.h = node(s, col(2), ys[1], w, h, "⑦ 구조 검토", "LLM 이 회사 규칙에 맞는지 보고 꼭 필요한 것만 고칩니다", "llm");
   n.i = node(s, col(0), ys[2], w, h, "⑧ 검증 빌드", "mvn clean package. 성공이면 바로 마무리로", "build");
@@ -157,7 +181,7 @@ function drawOverview(s) {
   n.l = node(s, col(3), ys[2], w, h, "⑪ 마무리", "보고서를 쓰고 수정 방법을 지식베이스에 저장합니다", "done");
   const hz = (p, q) => seg(s, p.r, p.cy, q.l, q.cy, { head: true });
   hz(n.a, n.b); hz(n.b, n.c); hz(n.c, n.e); hz(n.f, n.g); hz(n.g, n.h); hz(n.j, n.k); hz(n.k, n.l);
-  // 줄 바꿈: ④ → ⑤, ⑦ → ⑧ (아래로 내려와 왼쪽 끝으로)
+  // 줄 바꿈: ④ → ⑤, ⑦ → ⑧ (번호는 2026-11-11 판) (아래로 내려와 왼쪽 끝으로)
   const gap1 = (n.e.b + n.f.t) / 2, gap2 = (n.h.b + n.i.t) / 2;
   route(s, [[n.e.cx, n.e.b], [n.e.cx, gap1], [n.f.cx, gap1], [n.f.cx, n.f.t]]);
   route(s, [[n.h.cx, n.h.b], [n.h.cx, gap2], [n.i.cx, gap2], [n.i.cx, n.i.t]]);
@@ -176,16 +200,16 @@ function drawLoop(s) {
   const sc = node(s, col(1), y, w, h, "채점", "직전 수정이 효과 있었나? 나빠졌으면 되돌림", "auto");
   const t = node(s, col(2), y, w, h, "오류 묶기", "같은 원인끼리 케이스로, 근본 원인부터", "auto");
   const q = node(s, col(3), y, w, h, "방금 손댄 파일?", "그러면 다음 빌드까지 보류", "ask");
-  const f = node(s, col(4), y, w, h, "고치기", "저장된 방법 먼저, 없으면 LLM 에게 요청", "loop");
-  const ok = node(s, col(0), y + 1.25, w, h, "최종 빌드로", "더 고칠 것이 없습니다", "done");
+  const f = node(s, col(4), y, w, h, "고치기", "LLM 없이 먼저, 안 되면 LLM 에게 요청", "loop");
+  const ok = node(s, col(0), y + 1.25, w, h, "최종 빌드로", "더 고칠 것이 없거나 한도에 닿았습니다", "done");
   const hold = node(s, col(3), y + 1.25, w, h, "보류", "다음 빌드 뒤에 다시 봅니다", "auto");
   const hz = (p, q2) => seg(s, p.r, p.cy, q2.l, q2.cy, { head: true });
-  hz(b, sc); hz(sc, t); hz(t, q); hz(q, f); label(s, (q.r + f.l) / 2, q.cy - 0.2, "아니오", { w: 0.5 });
+  hz(b, sc); hz(sc, t); hz(t, q); hz(q, f); label(s, (q.r + f.l) / 2, q.t - 0.12, "아니오", { w: 0.5 });
   seg(s, q.cx, q.b, hold.cx, hold.t, { head: true }); label(s, q.cx + 0.25, (q.b + hold.t) / 2, "예", { w: 0.3 });
-  seg(s, b.cx, b.b, ok.cx, ok.t, { head: true }); label(s, b.cx + 0.45, (b.b + ok.t) / 2, "빌드 성공", { w: 0.7 });
+  seg(s, b.cx, b.b, ok.cx, ok.t, { head: true }); label(s, b.cx + 0.45, (b.b + ok.t) / 2, "성공 또는 한도", { w: 0.85 });
   const top = y - 0.25;
   route(s, [[f.cx, f.t], [f.cx, top], [b.cx, top], [b.cx, b.t]]);
-  label(s, (f.cx + b.cx) / 2, top, "다음 바퀴, 최대 50번", { w: 1.5 });
+  label(s, (f.cx + b.cx) / 2, top, "다음 바퀴, 기본 50번", { w: 1.5 });
 }
 
 // 3. 오류 하나가 고쳐지는 길
@@ -194,19 +218,19 @@ function drawLadder(s) {
   const col = i => 0.5 + i * (w + gx);
   const q = node(s, col(0), ys[1], w, h, "저장된 방법이 있나?", "지식베이스에서 같은 케이스를 찾습니다", "ask");
   const r = node(s, col(1), ys[0], w, h, "저장된 방법 적용", "앞 프로젝트의 스크립트 그대로, LLM 없이", "auto");
-  const ok = node(s, col(2), ys[0], w, h, "해결", "성공 횟수 +1", "done");
+  const ok = node(s, col(2), ys[0], w, h, "고쳐지면 해결", "성공 횟수 +1", "done");
   const l = node(s, col(2), ys[1], w, h, "LLM 에게 요청", "오류·파일·pom·버전 정보, 실패 이유까지 줍니다", "llm");
-  const c = node(s, col(3), ys[1], w, h, "빌드로 확인", "고쳐졌나? 한 케이스에 최대 3번", "ask");
-  const st = node(s, col(4), ys[0], w, h, "해결하고 저장", "새 스크립트를 케이스 폴더에 저장", "done");
+  const c = node(s, col(3), ys[1], w, h, "빌드로 확인", "고쳐졌나? 안 되면 보강해 다시", "ask");
+  const st = node(s, col(4), ys[0], w, h, "해결, 성공 기록", "저장해 둔 스크립트에 성공 +1", "done");
   const ho = node(s, col(4), ys[2], w, h, "사람에게 인계", "보고서 맨 앞에 적어 넘깁니다", "loop");
   // 있음: Q 위로 올라가 R 로
   route(s, [[q.cx, q.t], [q.cx, r.cy], [r.l, r.cy]]); label(s, q.cx + 0.35, (q.t + r.cy) / 2, "있음", { w: 0.45 });
   seg(s, q.r, q.cy, l.l, l.cy, { head: true }); label(s, (q.r + l.l) / 2, q.cy + 0.22, "없음", { w: 0.45 });
-  seg(s, r.r, r.cy, ok.l, ok.cy, { head: true }); label(s, (r.r + ok.l) / 2, r.cy - 0.2, "고쳐짐", { w: 0.55 });
+  seg(s, r.r, r.cy, ok.l, ok.cy, { head: true });
   route(s, [[r.cx, r.b], [r.cx, l.cy - 0.2], [l.l, l.cy - 0.2]]); label(s, r.cx + 0.4, (r.b + l.cy) / 2, "안 통함", { w: 0.6 });
   seg(s, l.r, l.cy, c.l, c.cy, { head: true });
   route(s, [[c.cx, c.t], [c.cx, st.cy], [st.l, st.cy]]); label(s, c.cx + 0.4, (c.t + st.cy) / 2, "고쳐짐", { w: 0.55 });
-  route(s, [[c.cx, c.b], [c.cx, ho.cy], [ho.l, ho.cy]]); label(s, c.cx + 0.45, (c.b + ho.cy) / 2, "3번 실패", { w: 0.65 });
+  route(s, [[c.cx, c.b], [c.cx, ho.cy], [ho.l, ho.cy]]); label(s, c.cx + 0.45, (c.b + ho.cy) / 2, "한도 소진", { w: 0.65 });
   const under = l.b + 0.3;
   route(s, [[c.cx - 0.5, c.b], [c.cx - 0.5, under], [l.cx, under], [l.cx, l.b]]); label(s, (c.cx - 0.5 + l.cx) / 2, under, "다시", { w: 0.4 });
 }
@@ -214,7 +238,7 @@ function drawLadder(s) {
 // 4. 지식베이스 순환
 function drawKB(s) {
   const p1 = node(s, 0.5, 1.1, 2.5, 0.8, "프로젝트 1", "처음 보는 오류, LLM 이 고치고 저장", "auto");
-  const hu = node(s, 0.5, 2.6, 2.5, 0.9, "사람", "버전 표를 적어 주거나, 잘못 배운 케이스를 지우거나, 고치지 말라고 표시", "llm");
+  const hu = node(s, 0.5, 2.6, 2.5, 0.9, "사람", "버전 표를 적어 주거나, 잘못된 스크립트를 끄거나, 고치지 말라고 표시", "llm");
   const kb = node(s, 3.6, 1.75, 2.8, 1.05, "지식베이스", "케이스마다 스크립트, 성공·실패 기록, 실패 이유, 고치기 전·후 코드", "done", { titleSize: 13, descSize: 9 });
   const p2 = node(s, 7.0, 1.1, 2.5, 0.8, "프로젝트 2", "같은 오류, 저장된 스크립트로 바로 해결", "auto");
   const p3 = node(s, 7.0, 2.6, 2.5, 0.9, "프로젝트 3 …", "안 통하면 보강해서 새 버전으로. 돌수록 LLM 호출이 줄어듭니다", "auto");
@@ -224,8 +248,8 @@ function drawKB(s) {
   seg(s, kb.r, kb.cy + 0.2, p3.l, p3.cy, { head: true, tail: true });
 }
 // ---------------------------------------------------------------- 도형 흐름도 슬라이드: 위에 도형, 아래 두세 줄
-function drawn(title, draw, lines, notes, o = {}) {
-  const s = content(title, "흐름", notes);
+function drawnIn(section, title, draw, lines, notes, o = {}) {
+  const s = content(title, section, notes);
   draw(s);
   const lh = o.linesH || 1.0;
   bullets(s, lines, 0.5, 5.15 - lh, 9, lh, o.size || 11.5);
@@ -241,6 +265,9 @@ function legend(s, y) {
   });
 }
 
+// ONLY=intake,analyze 를 주면 그 단계 쪽만 만든다(그림을 고칠 때 빨리 보려고).
+const ONLY = (process.env.ONLY || "").split(",").map(v => v.trim()).filter(Boolean);
+function buildAll() {
 addSec("흐름");
 { const s = pres.addSlide({ masterName: "TITLE", sectionTitle: "흐름" });
   s.addText("마이그레이션 에이전트, 이렇게 돌아갑니다", { placeholder: "title" });
@@ -252,28 +279,13 @@ addSec("흐름");
   legend(s, 4.55);
   para(s, "LLM 이 개입하는 곳은 두 곳(⑦, ⑨)뿐이고, 고쳐졌는지는 언제나 다음 빌드 결과로 판단합니다.", 0.5, 4.88, 9, 0.3, { size: 11, italic: true }); }
 
-{ const s = content("접수와 분석", "흐름", "원본은 건드리지 않습니다. 작업용 사본에서 모든 단계를 git 으로 기록하므로 언제든 되돌릴 수 있습니다.");
-  card(s, 0.5, 1.15, 4.4, 3.9, "① 접수", [
-    "프로젝트 폴더나 zip 을 받으면 먼저 빌드 방식을 봅니다. Maven 은 그대로, Ant(build.xml)는 pom.xml 을 만들어 받습니다. Gradle 이거나 빌드 파일 없이 소스만 있는 폴더는 받지 않고 이유를 적어 돌려줍니다.",
-    "원본은 그대로 두고 작업용 사본을 만듭니다. 이후 모든 수정은 git 으로 기록해서 언제든 되돌릴 수 있습니다.",
-    "Maven, JDK 21, 사내 parent 가 준비돼 있는지 미리 점검하고, 없으면 여기서 멈춥니다."], { bodySize: 11.5 });
-  card(s, 5.1, 1.15, 4.4, 3.9, "② 분석", [
-    "어떤 종류의 프로젝트인지 가립니다: 순수 Java, Spring, Spring Boot, 서블릿, MSA.",
-    "어떤 라이브러리를 어떤 버전으로 쓰는지, web.xml 이 있는지, JSP 가 javax 를 쓰는지 읽어 둡니다.",
-    "지원이 끝난 라이브러리가 있으면 메모해 두었다가 보고서에 안내합니다. 빌드를 막지는 않습니다."], { bodySize: 11.5, fill: "EEF3EA" }); }
 
-{ const s = content("계획과 자동 변환", "흐름", "변환 규칙을 최소한만 쓰는 이유: 무엇을 바꿀지 모르는 규칙은 돌리지 않는다는 원칙입니다. 나머지는 오류가 나면 그때 고칩니다.");
-  card(s, 0.5, 1.15, 4.4, 3.9, "③ 계획", [
-    "프로젝트 종류에 따라 돌릴 단계가 정해집니다. 예를 들어 Spring Boot 프로젝트는 Boot 4 규칙을 쓰고, 서블릿 프로젝트는 구조 정리에서 WAR 로 만듭니다.",
-    "여기에는 사람이나 LLM 의 판단이 들어가지 않습니다. 같은 프로젝트를 다시 넣으면 같은 계획이 나옵니다.",
-    "계획은 파일로 남아서, 왜 이 단계가 돌았는지 나중에 확인할 수 있습니다."], { bodySize: 11.5 });
-  card(s, 5.1, 1.15, 4.4, 3.9, "④ 자동 변환", [
-    "OpenRewrite 라는 도구로 정해진 규칙만 적용합니다: JDK 21 문법, javax → jakarta 패키지 이름, Spring Boot 4 로 가는 변경.",
-    "그 밖의 라이브러리 규칙은 일부러 넣지 않았습니다. 그런 것은 오류로 드러나면 수정 루프에서 고칩니다.",
-    "변환은 한 번만 돌리고 중간에 빌드하지 않습니다. 결과는 git 에 기록됩니다."], { bodySize: 11.5, fill: "EEF3EA" }); }
+addSec("단계별");
+["pod", "intake", "analyze", "plan", "transform", "restructure", "review", "verify"].forEach(k => stepSlide(k, "단계별"));
 
-{ const s = content("오류는 한 번에 다 보이지 않습니다", "흐름", "그래서 수정 루프가 필요합니다. 고칠 때마다 다시 빌드해서 새로 드러나는 오류를 이어서 처리합니다.");
-  para(s, "⑤ 1차 컴파일: 변환이 끝나면 한 번 컴파일해서 지금 보이는 오류를 전부 목록에 적습니다. 이때는 아직 고치지 않습니다. 이 목록이 이후 모든 수정의 출발점입니다.", 0.5, 1.15, 9, 0.7, { size: 12.5 });
+addSec("수정 루프");
+{ const s = content("오류는 한 번에 다 보이지 않습니다", "수정 루프", "그래서 수정 루프가 필요합니다. 고칠 때마다 다시 빌드해서 새로 드러나는 오류를 이어서 처리합니다.");
+  para(s, "변환과 구조 정리가 끝난 뒤 ⑧ 검증 빌드에서 처음으로 전체를 빌드합니다. 이때 보이는 오류가 전부는 아닙니다. 고치고 다시 빌드할 때마다 뒤에 숨어 있던 오류가 차례로 드러납니다.", 0.5, 1.15, 9, 0.7, { size: 12.5 });
   card(s, 0.5, 2.0, 4.4, 3.05, "왜 한 번에 다 안 보이나", [
     "Maven 은 모듈을 하나씩 순서대로 빌드하다가 실패하면 거기서 멈춥니다. 뒤 모듈의 오류는 앞 모듈이 통과해야 보입니다.",
     "자바 컴파일러도 단계별로 봅니다. 문법 오류가 있으면 타입 오류는 알려 주지 않고, 한 번에 100개까지만 보고합니다."], { bodySize: 11.5 });
@@ -281,41 +293,37 @@ addSec("흐름");
     "'오류 하나 고치면 다른 오류가 나오는' 일을 정상으로 봅니다. 고칠 때마다 다시 빌드해서 새로 드러난 오류를 이어서 처리합니다.",
     "오류가 안 보인다고 고쳐진 것으로 치지 않습니다. 빌드가 그 오류가 나던 단계까지 갔을 때만 해결로 셉니다."], { bodySize: 11.5, fill: "EEF3EA" }); }
 
-{ const s = content("구조 정리와 구조 검토", "흐름", "이미 Spring Boot 인 프로젝트는 폴더를 그대로 두고 pom.xml 만 바꿉니다. 구조 검토의 LLM 호출은 최대 3번입니다.");
-  card(s, 0.5, 1.15, 4.4, 3.9, "⑥ 구조 정리", [
-    "회사 표준에 맞춰 모듈을 나눕니다: 실행 설정만 있는 boot 모듈, 소스가 들어가는 back 모듈, 화면 파일이 있을 때만 front 모듈.",
-    "pom.xml 의 parent 를 사내 parent 로 바꾸고, 필수 라이브러리를 넣고, 이미 쓰고 있던 사내 라이브러리만 새 버전으로 올립니다.",
-    "JSP 와 정적 파일(html, js, css, 영상)을 제자리로 옮기고, JSP 안의 javax 도 jakarta 로 바꿉니다."], { bodySize: 11.5 });
-  card(s, 5.1, 1.15, 4.4, 3.9, "⑦ 구조 검토", [
-    "정리된 결과를 LLM 이 회사 규칙으로 한 번 더 봅니다: pom.xml, 모듈 구성, 소스 인코딩, 빌드 중 깨질 수 있는 바이너리 파일.",
-    "꼭 고쳐야 하는 것만 바로 고치고 git 에 기록합니다. 나머지는 보고서에 적어 담당자가 판단하게 합니다.",
-    "호출은 많아야 3번: 검토 1번, 답이 깨졌을 때 1번, 고친 것이 적용되지 않았을 때 1번."], { bodySize: 11.5, fill: "EEF3EA" }); }
+drawnIn("수정 루프", "검증 빌드와 수정 루프", drawLoop, [
+  "⑧ mvn clean package 가 성공하면 바로 마무리합니다. 실패하면 ⑨ 수정 루프에 들어가 빌드가 되거나 한도에 닿을 때까지 돕니다.",
+  "한 바퀴는 고치기 → 다시 빌드 → 채점입니다. 나아지지 않은 수정은 되돌립니다. 기본 50바퀴.",
+  "근본 원인부터 고치므로, 이번 바퀴에 이미 손댄 파일과 pom 의 오류는 다음 빌드 뒤에 봅니다."],
+  "라운드 수와 LLM 호출 수는 설정으로 조절합니다. 한 바퀴에 다루는 케이스는 기본 8개입니다.", { linesH: 1.25, size: 11.5 });
 
-drawn("검증 빌드와 수정 루프", drawLoop, [
-  "⑧ mvn clean package 가 성공하면 바로 마무리합니다. 실패하면 ⑨ 수정 루프에 들어가 빌드가 될 때까지 돕니다.",
-  "한 바퀴는 고치기 → 다시 빌드 → 채점입니다. 고친 뒤 빌드가 더 나빠지면 그 수정은 되돌립니다. 최대 50바퀴.",
-  "두 수정이 같은 파일을 동시에 건드리지 않도록, 방금 손댄 파일의 오류는 다음 빌드 뒤에 봅니다."],
-  "라운드 수와 LLM 호출 수는 설정으로 조절합니다. 한 바퀴에 다루는 케이스는 최대 8개입니다.", { linesH: 1.25, size: 11.5 });
-
-drawn("오류 하나가 고쳐지는 길", drawLadder, [
-  "먼저 지식베이스를 봅니다. 다른 프로젝트에서 이미 고친 적 있는 오류면 그때의 스크립트를 그대로 써서 LLM 을 부르지 않습니다.",
-  "없거나 안 통하면 LLM 에게 오류와 관련 파일, pom.xml, 라이브러리 버전 정보를 주고 수정을 받습니다. 한 케이스에 최대 3번.",
-  "3번 해도 안 되면 그 케이스는 사람 몫입니다. 보고서 맨 앞에 무엇을 시도했는지까지 적어 넘깁니다."],
+drawnIn("수정 루프", "오류 하나가 고쳐지는 길", drawLadder, [
+  "아는 종류의 오류는 먼저 LLM 없이 고쳐 보고, 그다음 지식베이스를 봅니다. 다른 프로젝트에서 고친 적 있으면 그때의 스크립트를 그대로 씁니다.",
+  "없거나 안 통하면 LLM 에게 오류와 관련 파일, pom.xml, 라이브러리 버전 정보를 주고 수정을 받습니다. 한 번 받은 스크립트는 실패 결과를 붙여 보강합니다.",
+  "정한 횟수(기본 LLM 20번)를 넘기면 그 케이스는 사람 몫입니다. 보고서 맨 앞에 무엇을 시도했는지까지 적어 넘깁니다."],
   "LLM 이 받는 것: 오류 메시지, 오류가 난 파일의 해당 부분, pom.xml 발췌, 저장소에서 조회한 라이브러리 버전 사실, 이전 시도와 실패 이유. 메이저 버전을 올리는 변경은 보고서에 '운영자 확인 필요' 로 따로 적습니다.", { linesH: 1.25, size: 11.5 });
 
-{ const s = content("고쳐졌는지는 빌드가 판정합니다", "흐름", "LLM 이 '고쳤다' 고 말해도 믿지 않습니다. 다음 빌드 결과만 봅니다.");
+{ const s = content("고쳐졌는지는 빌드가 판정합니다", "수정 루프", "LLM 이 '고쳤다' 고 말해도 믿지 않습니다. 다음 빌드 결과만 봅니다.");
   table(s, [["다음 빌드 결과", "뜻", "그 다음"],
     ["좋아짐", "노리던 오류가 전부 사라졌고, 빌드가 그 단계까지 갔습니다", "수정을 유지하고 지식베이스에 성공으로 기록"],
-    ["일부 좋아짐", "일부만 사라졌고, 손댄 파일에 새 오류는 없습니다", "수정을 유지하고 같은 케이스를 이어서 시도"],
+    ["일부 좋아짐", "일부만 사라졌고, 손댄 파일에 새 오류는 없습니다", "사라진 오류는 해결로 적고, 되돌린 뒤 보강해 다시 시도"],
     ["변화 없음", "오류가 그대로입니다", "수정을 되돌리고 다음 방법으로"],
-    ["나빠짐", "손댄 파일에 새 오류가 생겼거나 오류가 크게 늘었습니다", "수정을 되돌리고 다시 빌드"],
-    ["알 수 없음", "빌드가 시간 초과 등으로 끝까지 가지 못했습니다", "수정을 되돌리고 다음 빌드에서 다시 판정"]], 0.5, 1.15, 9, [1.6, 4.2, 3.2], { size: 11 });
+    ["나빠짐", "손댄 파일에 새 오류가 생겼거나 오류가 크게 늘었습니다", "되돌리고 다시 빌드 (뒤 수정이 기대면 유지)"],
+    ["알 수 없음", "시간 초과이거나 그 오류 단계 전에 멈춰 알 수 없습니다", "지식베이스에 남기지 않고, 다음 시도 전에 되돌림"]], 0.5, 1.15, 9, [1.6, 4.2, 3.2], { size: 11 });
   para(s, "'오류가 안 보인다' 와 '고쳐졌다' 는 다릅니다. 앞 단계에서 빌드가 멈추면 뒤 단계의 오류는 보이지 않을 뿐이므로, 빌드가 그 단계까지 갔을 때만 해결로 셉니다. 시도 없이 사라진 오류는 같은 바퀴에서 그 파일을 고친 수정 덕분으로 기록합니다.", 0.5, 4.2, 9, 0.9, { size: 11, italic: true }); }
 
-drawn("한 번 고친 방법은 다음 프로젝트에서 다시 씁니다", drawKB, [
+
+addSec("마무리");
+stepSlide("finalize", "마무리");
+drawnIn("마무리", "한 번 고친 방법은 다음 프로젝트에서 다시 씁니다", drawKB, [
   "같은 모양의 오류는 어느 프로젝트에서 나와도 같은 케이스로 모입니다. 케이스마다 수정 스크립트와 성공·실패 횟수, 실패한 이유, 고치기 전·후 코드가 쌓입니다.",
   "프로젝트를 순서대로 돌리면 뒤로 갈수록 LLM 을 덜 부릅니다. 끝나면 보고서 맨 앞에 사람이 확인하거나 이어서 할 일이 적혀 있습니다.",
-  "사람이 개입할 수 있습니다: 라이브러리 버전 표를 적어 주기, 잘못 배운 케이스 지우기, 고치지 말라고 표시하기."],
+  "사람이 개입할 수 있습니다: 라이브러리 버전 표 적기, 잘못된 스크립트 끄기, 고치지 말라고 표시하기."],
   "지식베이스는 파일 폴더입니다. 데이터베이스가 없으므로 복사해서 다른 PC 로 옮길 수 있습니다.", { linesH: 1.45, size: 11 });
+
+}
+if (ONLY.length) { addSec("단계별"); ONLY.forEach(k => stepSlide(k, "단계별")); } else buildAll();
 
 (async () => { await pres.writeFile({ fileName: OUT }); if (applyTheme) await applyTheme(OUT, THEME); console.log("written", OUT); })().catch(e => { console.error(e); process.exit(1); });
