@@ -356,8 +356,18 @@ Then the final build again, the report (Handover first, "Structure review", fix 
   an exchange). The page re-attaches by itself after a web-pod restart. Contract: `docs/INTERFACES.md` "v2.1z-af". To ask the gateway
   team: the concurrency limit per app token, and whether a new token exchange revokes earlier tokens.
 - **Vulnerability remediation (2026-11-11, `sbmig/remediations/`, `/api/remediations`)**: a LangGraph flow SEPARATE from the migration
-  graph, run in worker threads of the web app process (one at a time; the web pod needs JDK 21 / Maven / the server settings.xml; its
-  own Maven local repository `<build.local_repo>-remediation`). Upload ZIP → `baseline_build → baseline_scan → inventory → plan →
+  graph. **Where it runs (user, same day: "웹파드는 안돼고 빌드 파드로 … 마이그레이션이 build 성공인 경우는 해당 취약점 노드를 타면")**: in
+  the BUILD POD, chained after a migration that ended BUILD SUCCESS — the migration graph's last node `remediation` (after `finalize`)
+  calls `sbmig/remediations/chain.py` when `remediation.after_migration` is on (code default false, shipped `"true"` in `sbmig-env` +
+  its 81 line) and `Orchestrator.build_succeeded(report)`; files under `<run dir>/remediation/`, state id = the migration run id; the
+  migration's exit code / verdict never change (`SBMIG-RESULT … remediation=<STATUS|skipped>`, one report section); skipped with a
+  journal line when the IVAS values are missing; 81 reads the three IVAS keys from the Secret (optional). The web pod never builds in
+  Job modes: it serves status / proposals / approvals / files for chained runs (`kind: chained`), the page shows a `취약점 조치` stage
+  and a result block with 승인 / 거절 buttons; the standalone ZIP upload (`POST /api/remediations`, worker thread, own Maven repository
+  `<build.local_repo>-remediation`, needs `trusted_projects`) works in `in-process` mode only (409 `not_available` in Job modes).
+  A build pod cannot wait for a human: it saves `AWAITING_APPROVAL` / `AWAITING_CONFIRMATION` and ends — **resuming in a new build pod
+  is not built yet** (409 `not_available`), so today only proposals that need no approval run to the end. A chained approval is
+  checked against the policy hash the build pod recorded. Flow: source ZIP → `baseline_build → baseline_scan → inventory → plan →
   apply → build → freeze_delivery → rescan → evaluate → report` with the company's scanner **IVAS** (LabradorLabs; env
   `IVAS_BASE_URL` / `IVAS_USER_ID` / `IVAS_PASSWORD`, Secret only). Hard rules: only approved Maven **version text** changes in existing
   poms, plus ONE exception — a `managed_override` proposal inserts one fixed-shape `<dependency>` entry into the root pom's

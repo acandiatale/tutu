@@ -108,7 +108,7 @@ Secret 견본 `deploy/k8s/30-secret.example.yaml`(복사해 `deploy/k8s/30-secre
 
 환경 변수는 ConfigMap `sbmig-env`(비밀 아닌 것: 웹 파드 동작 `SBMIG_WEB_*` / `SBMIG_MAX_UPLOAD_MB`, LLM 게이트웨이 주소·에셋 id·role
 이름, 설정 덮어쓰기 `SBMIG_<섹션>__<키>` — 예 `SBMIG_SCRIPT__MAX_LLM_TRIES_PER_CASE`, `SBMIG_LLM__CASE_THREAD`)와 Secret `sbmig-llm`(토큰,
-`NEXUS_USER` / `NEXUS_PASSWORD`)에 나눠 둔다. 웹 파드와 `80` 의 Job 은 `envFrom` 으로 통째로 읽고, 웹 파드가 만드는 Job(`81` 틀)은 `envFrom` 을 쓸 수 없어
+`NEXUS_USER` / `NEXUS_PASSWORD`, 빌드 파드의 취약점 조치용 `IVAS_*` 세 값 — 11 문서)에 나눠 둔다. 웹 파드와 `80` 의 Job 은 `envFrom` 으로 통째로 읽고, 웹 파드가 만드는 Job(`81` 틀)은 `envFrom` 을 쓸 수 없어
 키마다 `configMapKeyRef` / `secretKeyRef` 한 줄이다 — `sbmig-env` 에 새 키를 더하면 `81` 틀에도 한 줄 더한다(같은 테스트가 본다). 전체 표는 `deploy/ENV.md`(인프라팀 전달용) 와 `deploy/README.md` 의 "env 목록" 절. 모르는 키 이름은 시작 로그에
 `config: … is not a known key` 로 뜬다.
 

@@ -939,6 +939,11 @@ class RemediationConfig(BaseModel):
     # 신뢰 프로젝트 확인: Maven 빌드는 올라온 프로젝트의 플러그인 코드를 이 서버에서 실행한다(보안 샌드박스가 아니다).
     # 운영자가 "여기에 올라오는 ZIP 은 실행해도 되는 신뢰된 프로젝트" 라고 확인했을 때만 true 로 둔다. false 면 접수하지 않는다(not_ready).
     trusted_projects: bool = False
+    # 사용자 결정 2026-11-11: 조치는 웹 파드가 아니라 **빌드 파드**에서 돈다 — 이관이 BUILD SUCCESS 로 끝나면 같은 프로세스가 이어서
+    # 취약점 조치 단계를 탄다(이관 그래프의 `remediation` 노드가 별도의 조치 그래프를 부른다). 결과는 <실행 폴더>/remediation/ 에.
+    # 조치의 성패는 이관의 성공 판정·종료 코드를 바꾸지 않는다. IVAS 값이 없으면 건너뛰고 기록만 남긴다.
+    # 이 경로에서는 trusted_projects 를 묻지 않는다(이관이 이미 그 프로젝트를 빌드했다).
+    after_migration: bool = False
     max_upload_mb: int = 1024                # 업로드 ZIP 한도(MiB)
     max_entries: int = 200_000               # ZIP 항목 수 한도
     max_unpacked_mb: int = 4096              # 풀었을 때 전체 크기 한도(MiB)

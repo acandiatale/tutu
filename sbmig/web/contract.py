@@ -12,13 +12,16 @@ Main 은 자기 라벨이 맞는 Job 만 지운다.
 ``${VAR}`` 자리표시자와 덮어쓰기 ``SBMIG_<섹션>__<키>`` 는 환경 변수가 값을 정한다). Job 을 만드는 Main 이 그 이름들의 값 지문
 (``env_pins`` — 비밀로 보이는 이름은 빼고, sha256 앞 16자)과 정책(``SBMIG_JOB_ENV_PIN``: refuse | warn | off)을 ``state.json`` 에
 creating 전이와 함께 적고, Worker 가 자기 환경으로 다시 계산해 대조한다(``compare_env_pins``).
+2026-11-11: 비밀로 다루는 이름에 낱말 규칙 밖의 ``SECRET_NAMES``(IVAS 계정 아이디)가 더해졌다 — 지우는 대상이 되고 지문에서는 빠진다.
+``IVAS_BASE_URL`` 은 비밀이 아니지만 ``SBMIG_`` 덮어쓰기도 설정 파일의 ``${VAR}`` 도 아니라 지문 대상이 아니다.
 
 The file contract between the Main pod and the Worker pod on the shared volume: `control/request.json` (inputs pinned at
 intake), `control/state.json` (Main's control state, written atomically, intent recorded before the Job is created),
 `job-status.json` (the Worker's result for *this* attempt), the ownership labels, the Worker command, and the digest /
 secret-name helpers both sides use. Only Main writes under `control/`; only the Worker writes the run's outputs.
 Review 2026-11-10: the Main that creates the Job also records fingerprints of the environment values the configuration
-reads (`env_pins`, no secret-looking names) and a policy in `state.json`; the Worker recomputes and compares them."""
+reads (`env_pins`, no secret-looking names) and a policy in `state.json`; the Worker recomputes and compares them.
+2026-11-11: `SECRET_NAMES` (the IVAS user id) is secret regardless of the name words — redacted, never pinned."""
 from __future__ import annotations
 
 import hashlib
@@ -48,6 +51,10 @@ MAX_PARALLEL_ENV = "SBMIG_JOB_MAX_PARALLEL"  # 웹 파드만 읽는다: 동시�
 LLM_RECORDS_ENV = "SBMIG_WORKER_LLM_RECORDS"  # "1" 이면 Worker 가 설정의 llm.record_dir 을 그대로 둔다(기본: 끈다 — 소스가 공유 볼륨에 더 남지 않게)
 SECRET_NAME_WORDS = ("TOKEN", "PASSWORD", "PASSWD", "SECRET", "API_KEY")   # 이 말이 든 env 는 비밀로 다룬다(값은 로그·보고서에서 지운다)
 MIN_SECRET_LEN = 6                          # 이보다 짧은 값은 지우지 않는다(우연한 부분 일치로 로그를 망치지 않게)
+# 이름에 위 낱말이 없어도 비밀로 다루는 env(2026-11-11): IVAS 계정 아이디 — 회사 규칙은 IVAS 의 사용자·비밀번호·토큰을 모두 비밀로 본다.
+# 취약점 조치가 빌드 파드에서 돌게 되어 이 값이 Job 파드의 로그·보고서에 닿을 수 있다. 아이디는 짧을 수 있어 하한을 따로 둔다
+SECRET_NAMES = frozenset({"IVAS_USER_ID"})
+MIN_NAMED_SECRET_LEN = 4                    # SECRET_NAMES 의 값은 이 길이부터 지운다(remediations.graph.scrub_message 와 같은 하한)
 # ── 환경 변수 고정(리뷰 2026-11-10) ──
 ENV_PIN_POLICY_ENV = "SBMIG_JOB_ENV_PIN"    # Main 의 env: Worker 의 환경이 다를 때 refuse(돌지 않는다) | warn(저널에 적고 돈다) | off(안 본다)
 ENV_PIN_REFUSE, ENV_PIN_WARN, ENV_PIN_OFF = "refuse", "warn", "off"
@@ -150,14 +157,15 @@ def new_owner_token() -> str:
 def is_secret_name(name: str) -> bool:
     """환경 변수 이름이 비밀로 보이는가 — 이름에 ``SECRET_NAME_WORDS`` 가 들어 있으면 그렇다. 설정 덮어쓰기 ``SBMIG_<섹션>__<키>``(밑줄 두 개)는
     예외다: 설정 키는 비밀을 담지 않는다(키·토큰은 환경 변수 이름으로만 가리킨다 — ``llm.api_key_env``). 그래서 ``SBMIG_LLM__MAX_OUTPUT_TOKENS``
-    의 값이 보고서에서 지워지거나 Worker 틀에서 literal 이라고 거절되지 않는다.
+    의 값이 보고서에서 지워지거나 Worker 틀에서 literal 이라고 거절되지 않는다. ``SECRET_NAMES``(IVAS 계정 아이디)는 낱말이 없어도 비밀이다.
 
-    Whether an env name looks like a secret (contains one of `SECRET_NAME_WORDS`). A config override `SBMIG_<SECTION>__<KEY>` never
-    is: no config key holds a credential, so `SBMIG_LLM__MAX_OUTPUT_TOKENS` is neither redacted nor refused as a literal."""
+    Whether an env name looks like a secret (contains one of `SECRET_NAME_WORDS`, or is one of `SECRET_NAMES`). A config override
+    `SBMIG_<SECTION>__<KEY>` never is: no config key holds a credential, so `SBMIG_LLM__MAX_OUTPUT_TOKENS` is neither redacted nor
+    refused as a literal."""
     up = str(name).upper()
     if up.startswith("SBMIG_") and "__" in up:
         return False
-    return any(w in up for w in SECRET_NAME_WORDS)
+    return up in SECRET_NAMES or any(w in up for w in SECRET_NAME_WORDS)
 
 
 def secret_env_names(environ: dict[str, str] | None = None) -> list[str]:
@@ -168,10 +176,15 @@ def secret_env_names(environ: dict[str, str] | None = None) -> list[str]:
 
 def secret_values(environ: dict[str, str] | None = None, min_len: int = MIN_SECRET_LEN) -> list[str]:
     """비밀로 보이는 환경 변수의 값들(``min_len`` 이상, 긴 것부터 — 긴 값을 먼저 지워야 부분 문자열이 남지 않는다).
+    ``SECRET_NAMES`` 의 값은 ``MIN_NAMED_SECRET_LEN`` 부터(``min_len`` 이 더 작으면 그것) — 짧은 계정 아이디도 지운다.
 
-    The values of secret-looking env vars, longest first."""
+    The values of secret-looking env vars, longest first; a `SECRET_NAMES` value from `MIN_NAMED_SECRET_LEN` characters on."""
     env = os.environ if environ is None else environ
-    vals = {env[k] for k in secret_env_names(env) if len(env.get(k) or "") >= min_len}
+    vals = set()
+    for k in secret_env_names(env):
+        floor = min(min_len, MIN_NAMED_SECRET_LEN) if k.upper() in SECRET_NAMES else min_len
+        if len(env.get(k) or "") >= floor:
+            vals.add(env[k])
     return sorted(vals, key=len, reverse=True)
 
 

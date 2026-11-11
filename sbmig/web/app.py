@@ -28,8 +28,10 @@ Routes:
     POST /api/runs/{id}/stop             stop after the current graph node
     GET  /api/runs/{id}/files/{name}     report.md | report.json | result.zip | sbmig.log | journal.jsonl |
                                          changes.patch | plan.json | profile.json | errors.md | errors.jsonl
-    /api/remediations…                   vulnerability remediation (separate LangGraph flow, worker threads of this
-                                         process, one at a time): POST (zip body) / GET list / GET readiness /
+    /api/remediations…                   vulnerability remediation (separate LangGraph flow; in-process: worker threads
+                                         of this process, one at a time; Job modes: runs in the build pod after a
+                                         successful migration, chained ones read here by run id):
+                                         POST (zip body) / GET list / GET readiness /
                                          GET {id} / result / proposals / POST approvals / resume / stop /
                                          GET files/{name} / DELETE {id} — `sbmig.remediations.api` (contract API.md)
 
@@ -338,10 +340,12 @@ def create_app(out_dir: Path, repo_root: Path = PACKAGE_ROOT, max_upload_mb: int
         default_configs = [c.strip() for c in os.environ.get(CONFIGS_ENV, "").split(",") if c.strip()]
     mgr = RunManager(Path(out_dir), Path(repo_root), default_configs=default_configs, mode=mode, job_client=job_client,
                      max_parallel=max_parallel)
-    # 취약점 조치(/api/remediations): 같은 프로세스의 작업 스레드, 기본 설정은 이관과 같은 규칙(RunManager.default_configs)
+    # 취약점 조치(/api/remediations): 기본 설정은 이관과 같은 규칙(RunManager.default_configs). in-process 만 이 프로세스의 작업
+    # 스레드로 돌리고, Job 모드에서는 빌드 파드가 이관 성공 뒤에 돌린 조치(<run>/remediation/)를 읽고 승인만 한다(2026-11-11)
     from sbmig.remediations.api import create_router as create_remediation_router
     from sbmig.remediations.service import RemediationManager
-    rem_mgr = RemediationManager(Path(out_dir), Path(repo_root), default_configs=mgr.default_configs)
+    rem_mgr = RemediationManager(Path(out_dir), Path(repo_root), default_configs=mgr.default_configs,
+                                 mode=mgr.effective_mode, run_manager=mgr)
     max_upload = resolve_max_upload(max_upload_mb)       # bytes; 0 = unlimited
     token = (token if token is not None else os.environ.get(TOKEN_ENV, "")).strip() or None
     open_network = open_network_requested() if open_network is None else bool(open_network)

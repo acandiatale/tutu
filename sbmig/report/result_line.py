@@ -9,13 +9,17 @@
 One-line results and attention codes (round 10, operators retype them from a cp949 console).
 
     SBMIG-RESULT run=<id> exit=<n> build=<ok|FAIL> unresolved=<n> blocked=<n> open=<n> resolved=<n> llm=<calls>
-                 attn=<codes>[ review=<v>][ major=<n>]
+                 attn=<codes>[ review=<v>][ major=<n>][ remediation=<STATUS|skipped>]
 
 v2: ` review=<ok|issues|skipped|failed>` is appended when the run has a structure review (`report.structure_review`;
 fleet lines and runs without a review keep the round-10 format).
 v2.1: `open=` / `resolved=` count the run's error list (`report.error_entries`): open = status open or unresolved
 (finalize turns open into unresolved), resolved = status resolved (pom-verify / note / blocked in neither; blocked
 items are `blocked=`). Present whenever the line is made from a report or a fleet result, absent on a crash line.
+2026-11-11: ` remediation=<STATUS|skipped>` is appended when a vulnerability remediation was chained after the
+migration's BUILD SUCCESS (`report.remediation`: SUCCEEDED / INCOMPLETE / FAILED / AWAITING_APPROVAL / …) or the switch
+`remediation.after_migration` was on and the chain was skipped (not ready, stop request, inline engine). It never changes
+`exit=` / `build=` / `attn=`.
 v2.1d: ` major=<n>` is appended when the run made n > 0 major upgrades / library replacements that are still in the
 final tree (`report.operator_checks`, Handover "운영자 확인 필요"); the build passed, the runtime needs a look.
 
@@ -158,10 +162,11 @@ def result_attention(r: Any) -> list[str]:
 
 def result_line(run_id: Any, exit_code: Any, build_ok: bool, *, unresolved: int = 0, blocked: int = 0,
                 llm_calls: int = 0, attention: Iterable[str] = (), review: Optional[str] = None,
-                open_errors: Optional[int] = None, resolved_errors: Optional[int] = None, major: int = 0) -> str:
+                open_errors: Optional[int] = None, resolved_errors: Optional[int] = None, major: int = 0,
+                remediation: Optional[str] = None) -> str:
     """``SBMIG-RESULT`` 한 줄을 조립한다. ``open=`` / ``resolved=`` 는 오류 목록이 있을 때만(충돌 줄에는
     없음), ``review=`` 는 구조 검토가 있었을 때만, ``major=`` 는 1 이상일 때만
-    붙인다 — 예전 형식을 읽는 쪽이 깨지지 않게."""
+    붙인다 — 예전 형식을 읽는 쪽이 깨지지 않게. ``remediation=`` 은 이어서 돈(또는 스위치가 켜진 채 건너뛴) 취약점 조치가 있을 때만."""
     codes = ",".join(attention) or "-"
     errs = ""
     if open_errors is not None or resolved_errors is not None:
@@ -169,7 +174,8 @@ def result_line(run_id: Any, exit_code: Any, build_ok: bool, *, unresolved: int 
     return (f"SBMIG-RESULT run={_ascii_token(run_id or '-')} exit={'-' if exit_code is None else exit_code} "
             f"build={'ok' if build_ok else 'FAIL'} unresolved={unresolved} blocked={blocked}{errs} llm={llm_calls} "
             f"attn={_ascii_token(codes)}" + (f" review={_ascii_token(review)}" if review else "")
-            + (f" major={int(major)}" if major and int(major) > 0 else ""))
+            + (f" major={int(major)}" if major and int(major) > 0 else "")
+            + (f" remediation={_ascii_token(remediation)}" if remediation else ""))
 
 
 OPEN_STATUSES = ("open", "unresolved")
@@ -223,4 +229,16 @@ def report_result_line(report: Any, exit_code: Optional[int] = None, run_id: Opt
                        llm_calls=getattr(getattr(report, "llm_usage", None), "calls", 0) or 0,
                        attention=report_attention(report, code),
                        review=getattr(getattr(report, "structure_review", None), "verdict", None),
-                       open_errors=o, resolved_errors=r, major=len(getattr(report, "operator_checks", None) or []))
+                       open_errors=o, resolved_errors=r, major=len(getattr(report, "operator_checks", None) or []),
+                       remediation=remediation_token(report))
+
+
+def remediation_token(report: Any) -> Optional[str]:
+    """``remediation=`` 의 값: 이어서 돈 조치의 상태(SUCCEEDED …) 또는 "skipped". 조치 요약이 없으면 None(토큰 없음).
+
+    The `remediation=` value of a report (`report.remediation["status"]`), None without a chained remediation."""
+    rem = getattr(report, "remediation", None)
+    if not isinstance(rem, dict):
+        return None
+    status = str(rem.get("status") or "").strip()
+    return status or None

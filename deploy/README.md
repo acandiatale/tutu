@@ -194,7 +194,7 @@ Secret 의 `SBMIG_WEB_TOKEN` 을 채운다 — 그때는 `http://<host>:8765/?to
 | `LLM_APP_TOKEN` (또는 `LLM_API_KEY`) | **Secret** | 앱 토큰 | 토큰 교체 |
 | `NEXUS_USER` / `NEXUS_PASSWORD` | **Secret** | — | Nexus 그룹이 로그인을 요구할 때(settings.xml 의 `${env.…}` 가 읽음) |
 | `SBMIG_WEB_TOKEN` | **Secret**, 선택 | — | 토큰 보호를 켤 때만 |
-| `IVAS_BASE_URL` / `IVAS_USER_ID` / `IVAS_PASSWORD` | **Secret** `sbmig-llm` (웹 파드만) | — | 취약점 조치(§6)를 쓸 때. `sbmig-env` 와 81 틀에는 넣지 않는다 |
+| `IVAS_BASE_URL` / `IVAS_USER_ID` / `IVAS_PASSWORD` | **Secret** `sbmig-llm` | — | 취약점 조치(§6, 빌드 파드에서 이관에 이어). 81 틀은 `secretKeyRef`(optional), 80 은 `envFrom`. `sbmig-env` 에는 넣지 않는다 |
 | `GIT_TOKEN` (+ `GIT_USER`) | **Secret `sbmig-git`** | — | Job 모델만: 소스 clone / 결과·KB push |
 | `SBMIG_SCRIPT__MAX_LLM_TRIES_PER_CASE` | ConfigMap(선택) | `20` | 케이스당 LLM 상한 — 회사 실행 결과를 보며 줄인다 |
 | `SBMIG_SCRIPT__MAX_AUGMENTS_PER_CASE` | ConfigMap(선택) | `15` | 그중 보강 상한 |
@@ -214,6 +214,8 @@ Secret 의 `SBMIG_WEB_TOKEN` 을 채운다 — 그때는 `http://<host>:8765/?to
 | `SBMIG_LIBRARIES__NEXUS_SEARCH` / `INCLUDE_PRERELEASE` | ConfigMap(선택) | `true` / `false` | jakarta 빌드 탐색 범위 |
 | `SBMIG_REVIEW__FIX_CRITICAL` | ConfigMap(선택) | `true` | 구조 리뷰의 critical 자동 수정을 끌 때 |
 | `SBMIG_FLEET__MIN_FREE_GB` | ConfigMap(선택) | `5` | 실행 전 디스크 여유 하한 |
+| `SBMIG_REMEDIATION__AFTER_MIGRATION` | ConfigMap | `true` (켜서 내보냄; 코드 기본 false) | BUILD SUCCESS 뒤 빌드 파드에서 취약점 조치를 이어 돌릴지(§6). 끄면 `"false"` + 웹 파드 재시작 |
+| `SBMIG_REMEDIATION__REQUIRE_APPROVAL` / `FAILED_CANDIDATE` / `IVAS_ANALYSIS_TIMEOUT_MINUTES` | ConfigMap(선택) | `false` / `include` / `30` | 조치의 승인 범위·실패한 수정본·IVAS 분석 대기(§6). 40 에만 literal 로 넣지 않는다(Job 이 멈춘다) |
 
 env 가 아닌 것: `artifacts.yml`(이미지에 구운 파일), `settings.xml`(ConfigMap `sbmig-config`, 파일), 이관팀이 고치는 회사 지식 **`<kb.dir>/jar_names.yml`**(jar
 이름 → 좌표)과 **`<kb.dir>/libraries.yml`**(사람이 승인한 라이브러리 표) — KB 볼륨(`/data/kb-v2`)에 있어 이미지와 무관하게 바꾼다. 이미지
@@ -480,38 +482,70 @@ preflight / ADF / 내부 오류)이면 3. `SBMIG_FAIL_JOB_ON_BUILD_FAIL=1` 이�
 * 에이전트 + 빌더 파드를 `kubectl exec` 로 잇는 레이아웃은 인프라 가이드의 Job 모델이 나오면서 뺐다(이력: `docs/INTERFACES.md` v2.1z-r/s).
   sbmig 에 남아 있는 `build.setup_command` / `teardown_command` 훅은 그 레이아웃용이었고 Job 모델에서는 비워 둔다.
 
-## 6. 취약점 조치 (/api/remediations)
+## 6. 취약점 조치 — 빌드 파드에서 이관에 이어서 (2026-11-11)
 
-올린 Maven 프로젝트 ZIP 을 그대로 빌드하고 IVAS 로 검사한 뒤, 프로젝트 pom 에 적힌 취약 라이브러리의 **버전 글자만** 고쳐 다시 빌드·재검사하고
+이관된 Maven 프로젝트를 그대로 빌드하고 IVAS 로 검사한 뒤, 프로젝트 pom 에 적힌 취약 라이브러리의 **버전 글자만** 고쳐 다시 빌드·재검사하고
 결과 ZIP 과 보고서를 낸다(소스·구조는 건드리지 않는다). 예외는 하나 — 간접 의존성·부모/BOM 이 관리하는 버전은 루트 pom 의
-`<dependencyManagement>` 에 `<dependency>` 항목 하나(groupId / artifactId / version)를 넣는 제안으로 고치고, 이 제안은 설정과 무관하게 늘 사람 승인을 기다린다. 계약은 `docs/INTERFACES.md` "remediations (취약점 조치)", LLM 용 설명은
-`agent-doc/11-remediations.md`. 지금은 **API 만** 있다(화면 없음).
+`<dependencyManagement>` 에 `<dependency>` 항목 하나(groupId / artifactId / version)를 넣는 제안으로 고치고, 이 제안은 설정과 무관하게 늘 사람 승인을
+기다린다. 계약은 `docs/INTERFACES.md` "remediations (취약점 조치)", LLM 용 설명은 `agent-doc/11-remediations.md`.
 
-* **어디서 도나**: 웹 파드(40) 프로세스 안의 작업 스레드다. 빌드 Job(81)을 만들지 않고, 한 번에 한 건만 돌며 나머지는 `QUEUED` 로 기다린다.
-  그래서 웹 파드의 JDK 21(`/opt/java21`), Maven, ConfigMap `sbmig-config` 의 `settings.xml`(필수 — 승인된 저장소·미러가 여기서 나온다)을 쓴다.
-  Maven 로컬 저장소는 이관과 섞이지 않게 따로 쓴다: `<local repo>-remediation`(매니페스트 그대로면 m2 볼륨 안 `~/.m2/repository` 옆).
-  테스트는 늘 건너뛴다(`-Dmaven.test.skip=true`), TLS 검증은 끄지 않는다(사내 CA 면 이미지·환경의 CA 묶음으로 푼다).
+* **어디서 도나(사용자 결정 2026-11-11)**: 웹 파드가 아니라 **빌드 파드**다. 이관이 **BUILD SUCCESS** 로 끝나고 `remediation.after_migration` 이
+  켜져 있으면 같은 `sbmig run` 프로세스가 이관 그래프의 `remediation` 노드(finalize 뒤)에서 별도의 조치 그래프를 부른다
+  (sbmig/remediations/chain.py). 결과는 그 실행 폴더의 **`<run dir>/remediation/`**(`/data/out/<run id>/remediation/` — 원본 ZIP, `state.json`,
+  `report.md` / `report.json`, `delivery/result.zip`, 라운드별 계획·패치·빌드 로그, 검사 결과)이고 조치의 id 는 **이관 run id** 와 같다.
+  빌드 파드의 JDK 21(`/opt/java21`), Maven, ConfigMap `sbmig-config` 의 `settings.xml`(필수 — 승인된 저장소·미러가 여기서 나온다)을 쓴다. Maven 로컬
+  저장소는 **그 파드의 자리 저장소**다(1번 자리 `~/.m2/repository`, k번 자리 `repository-slot<k>` — §3 "동시에 여러 건"; `-remediation` 접미사는
+  in-process 모드의 단독 업로드에만 붙는다). 테스트는 늘 건너뛴다(`-Dmaven.test.skip=true`), TLS 검증은 끄지 않는다.
+* **이관 판정은 그대로**: 조치의 성패는 이관의 성공 판정·종료 코드·보고서 판정을 바꾸지 않는다. 운영자가 옮겨 적는 줄 끝에
+  `SBMIG-RESULT … remediation=<상태|skipped>` 가 붙는다. IVAS 세 값(또는 Maven 준비)이 없으면 조치를 건너뛰고 저널에 `remediation_skipped`
+  (빠진 것의 **이름**만)를 남긴다. 이관이 BUILD SUCCESS 가 아니면 조치는 돌지 않는다. `remediation.trusted_projects` 는 이 경로에서 묻지 않는다
+  (이관이 이미 그 프로젝트를 빌드했다) — 단독 업로드만 막는 스위치다.
+* **사람이 정할 것이 생기면**: 빌드 파드는 사람을 기다리지 못한다. `AWAITING_APPROVAL`(승인 대기) / `AWAITING_CONFIRMATION`(업로드 결과 확인)이면
+  상태를 저장하고 파드가 끝난다. **새 빌드 파드에서 이어 돌리는 재개는 아직 없다(다음 단계)** — 그때까지 Job 모드에서 이관에 이어 돈 조치의
+  `resume` 은 409 `not_available` 이다. 승인·제안·결과 파일은 웹 파드에서 본다.
+* **웹 파드가 하는 일**: 상태·제안·승인 기록·파일 내려받기만(`/api/remediations/<이관 run id>/…`). 웹 파드는 조치를 돌리지 않으므로 Job 모드에서
+  IVAS 값을 쓰지 않는다(Secret 을 envFrom 으로 통째로 받기는 한다). 단독 업로드 `POST /api/remediations` 는 **in-process 모드에서만** 받고
+  Job 모드(`k8s-job` / `local-job`)에서는 409 `not_available` 이다. in-process 모드의 단독 조치는 예전 그대로다: 웹 파드 안의 작업 스레드, 한 번에 한 건,
+  결과는 `/data/out/_remediations/<id>/`, `remediation.trusted_projects: true` 가 있어야 접수, 웹 파드가 다시 뜨면 `INTERRUPTED` + 명시적 재개.
+* **스위치를 어디에 두었나** — `SBMIG_REMEDIATION__AFTER_MIGRATION: "true"` 는 ConfigMap **`sbmig-env` 의 그룹 3** 에 켜져 있다(코드 기본값은 false).
+  설정 덮어쓰기라 Worker 의 환경 대조(§3) 대상이고, 웹 파드와 Job 파드의 값이 다르거나 한쪽에만 있으면 그 Job 은 `refuse` 로 멈춘다. `sbmig-env`
+  한 곳에 두면 웹 파드(40, `envFrom`)·웹이 만드는 Job(81, 그 키의 `configMapKeyRef` 한 줄)·80 모델(`envFrom`)이 같은 값을 받는다. 40 / 81 의
+  literal env 로 두면 두 파일을 늘 같이 고쳐야 하고 하나를 빠뜨리면 모든 업로드가 멈춘다 — 그래서 literal 로 두지 않았다. 끄려면 `"false"` 로 바꾸고
+  웹 파드를 재시작한다. 같은 이유로 조치 설정(`SBMIG_REMEDIATION__REQUIRE_APPROVAL`, `…__FAILED_CANDIDATE`, `…__IVAS_ANALYSIS_TIMEOUT_MINUTES`)도
+  `sbmig-env` 그룹 3 에 주석으로 있고 81 에 키 줄이 있다. **40 에만 literal 로 넣으면 Job 이 멈춘다**(예전 안내 "40 의 env 에 한 줄" 은 이제 틀리다).
 * **Secret 에 넣을 것**: `sbmig-llm` 에 `IVAS_BASE_URL`(https 주소, 끝의 `/` 없이, 주소 안에 계정·쿼리 금지), `IVAS_USER_ID`, `IVAS_PASSWORD`
-  (`k8s/30-secret.example.yaml`). 웹 파드는 이 Secret 을 `envFrom` 으로 통째로 읽으므로 40 을 고칠 필요가 없다. `sbmig-env` 와 81 틀에는 넣지 않는다
-  (Job 파드는 조치를 돌리지 않고, 81 틀은 `sbmig-env` 키마다 한 줄을 요구한다). Secret 은 `immutable` 이라 키를 더하면 새 이름으로 만들고
-  40 의 `secretRef` 와 81 의 `secretKeyRef` 이름을 함께 바꾼다(위 Secret 설명). Nexus 계정은 지금처럼 `settings.xml` 의 `${env.NEXUS_USER}` 등.
-* **신뢰 프로젝트 확인(필수)**: Maven 빌드는 올라온 프로젝트의 플러그인 코드를 웹 파드에서 실행한다(보안 격리가 아니다). 운영자가
-  "여기에 올라오는 ZIP 은 실행해도 되는 신뢰된 프로젝트" 라고 확인한 뒤 40 의 env 에 `SBMIG_REMEDIATION__TRUSTED_PROJECTS: "true"` 한 줄을
-  넣어야 요청을 받는다. 기본은 `false` 이고 매니페스트에는 일부러 넣어 두지 않았다(운영자의 결정).
-* **준비 확인**: `GET /api/remediations/readiness` → `{"ready": …, "missing": [...]}` (값은 절대 보여 주지 않고 이름만: 신뢰 프로젝트 확인, IVAS 세 값, JDK 21, Maven,
-  settings.xml, 승인된 저장소 호스트). 준비가 안 되면 업로드는 503 `not_ready`.
-* **설정**: `config/default.yml` 의 `remediation:` 절(한국어 설명) → 구운 `artifacts.yml` → `SBMIG_REMEDIATION__<키>` env. 사람 승인 스위치
-  `SBMIG_REMEDIATION__REQUIRE_APPROVAL` 는 기본 `false` 다 — 같은 메이저 안의 프로젝트 pom 버전 변경은 승인 없이 적용되고, 메이저·부모·BOM 변경과
-  관리 버전 override 항목 넣기만 승인을 기다린다(override 는 `true` / `false` 와 무관하게 늘). **운영에서 모든 변경에 사람 승인이 필요하면 `true` 로 명시한다**(아직 정하지 않아 매니페스트에 넣지 않았다. 넣을 때는 웹 파드만
-  쓰므로 40 의 `env` 에 literal 한 줄로 둔다 — `sbmig-env` 에 넣으면 81 틀에도 줄이 필요해진다).
-* **후보 빌드가 실패하면**(`SBMIG_REMEDIATION__FAILED_CANDIDATE`, 기본 `include`): 실패한 수정본도 `result.zip` 으로 나온다 — 상태 `FAILED`
-  `candidate_build_failed`, 상태 dict 의 `delivery.build_ok` 가 `false`, IVAS 재검사 없음, `report.md` 첫 줄에 "빌드가 실패한 수정본" 경고.
-  올린 원본은 `source.zip` 으로 그대로 남고, 앞 라운드에서 검증을 마친 ZIP 이 있으면 `result-verified.zip` 으로 내려받는다. 실패한 수정본을
-  아예 내지 않으려면 `discard`(값을 정하면 40 의 `env` 에 literal 한 줄). 어느 값이든 "계획한 것만 바뀌었나"·해석 검증에 걸린 후보는 내지 않는다.
-* **IVAS 분석 대기 한도**: `remediation.ivas_analysis_timeout_minutes` 기본 30분(1,800초). 넘으면 검사 미완료(0건이 아니다), 원격 분석은 계속 돈다.
+  (`k8s/30-secret.example.yaml`). 81 은 세 키를 `secretKeyRef`(`optional: true` — IVAS 가 없는 클러스터에서도 이관은 돈다)로, 80 은 `envFrom` 으로 받는다.
+  비밀은 환경 대조의 지문에 들어가지 않는다(`IVAS_BASE_URL` 도 덮어쓰기·설정 자리표시자가 아니라 대상이 아니다). 로그·보고서에서는 `IVAS_PASSWORD`,
+  **`IVAS_USER_ID`**(이름에 비밀 낱말이 없어도 — 4자 이상), 로그인 토큰이 `***` 로 지워진다. Worker 의 마지막 정제는 `remediation/` 의 텍스트 파일도
+  훑고 ZIP(`original/source.zip`, `delivery/*.zip`)·프로젝트 트리(`accepted/`, `rounds/<n>/candidate/`)·`original/` 은 건드리지 않는다.
+  IVAS 로그인은 파드마다 따로 해도 된다(여러 로그인이 동시에 유효함을 사용자가 세 개로 확인했다) — 빌드 파드 셋이 함께 돌아도 된다.
+* **시간**: Job 의 `activeDeadlineSeconds` 는 14400(4시간) 그대로다. 조치가 더하는 것: 기준 빌드 1회 + IVAS 업로드·분석(대기 한도
+  `remediation.ivas_analysis_timeout_minutes` 30분) + 라운드마다 후보 빌드 + 재검사(업로드·분석 다시). 보통(빌드 수 분, 분석 수십 분, 1라운드)은
+  20~75분이다. 최악은 설정 상한의 합 — 빌드 한 번 `remediation.build_timeout_minutes` 60분, 업로드 `ivas_upload_timeout_seconds` 30분, 분석 30분,
+  `max_rounds` 3 → 60 + 60 + 3 × 120 = 약 8시간 — 이고, 이관 자체의 상한(`loop.max_total_minutes` 240분)이 이미 4시간이라 최악끼리는 어떤 숫자로도
+  다 담기지 않는다. 기한에 걸리면 Worker 가 종료 신호를 받아 exit 3 으로 끝나고(이관 보고서는 남는다; `job-status.json` 의 오류 글에 이관의
+  `SBMIG-RESULT` 줄이 붙는다), 웹은 그 실행을 "중단" 으로 보인다. 큰 프로젝트가 기한에 자주 걸리면 81 의 숫자를 늘리고 ConfigMap
+  `sbmig-job-template` 을 다시 만든다.
+* **80 모델(요청별 Job, emptyDir)**: 같은 스위치·Secret 이 `envFrom` 으로 닿아 조치도 돈다. 그러나 작업 공간이 파드와 함께 사라지므로
+  `run-job.sh` 는 결과 저장소에 `remediation/` 의 글로 된 요약(`report.md`, `report.json`, `state.json`, `journal.jsonl`, `delivery.json`)만 보낸다.
+  `result.zip` 은 git 에 넣지 않는다 — 필요하면 `RESULT_PUSH_CMD` 로 실행 폴더째 내보낸다. 이 모델에는 승인 화면도 없다.
+* **후보 빌드가 실패하면**(`remediation.failed_candidate`, 기본 `include`): 실패한 수정본도 `result.zip` 으로 나온다 — 상태 `FAILED`
+  `candidate_build_failed`, `delivery.build_ok` 가 `false`, IVAS 재검사 없음, `report.md` 첫 줄에 "빌드가 실패한 수정본" 경고. 앞 라운드에서 검증을
+  마친 ZIP 이 있으면 `result-verified.zip`. `discard` 면 내지 않는다. "계획한 것만 바뀌었나"·해석 검증에 걸린 후보는 어느 값이든 내지 않는다.
+* **업로드 결과를 모를 때**(`AWAITING_CONFIRMATION`): 자동 재업로드는 없다. IVAS 화면에서 그 분석이 있는지 본다. 재개(`{"confirm": "reupload"}` /
+  `{"confirm": "receipt", …}`)는 in-process 모드의 단독 조치에서만 지금 된다(빌드 파드 재개는 다음 단계).
 * **채울 자리**: `k8s/30-secret.example.yaml` 의 `IVAS_BASE_URL`(`https://CHANGE_ME_IVAS_HOST[:port]/<base path>`), `IVAS_USER_ID`(`<IVAS 계정>`),
   `IVAS_PASSWORD`(`<IVAS 비밀번호>`). 그 밖에 조치만을 위한 자리는 없다(`settings.xml` 의 Nexus 주소는 §4 그대로).
-* **재시작**: 웹 파드가 다시 뜨면 `QUEUED` / `RUNNING` 이던 조치는 `INTERRUPTED` 가 된다. 아무것도 자동으로 다시 돌리거나 IVAS 에 다시 올리지
-  않는다 — 상태를 확인하고 `POST /api/remediations/<id>/resume` 으로 명시적으로 재개한다. 결과·원본은 `/data/out/_remediations/<id>/` (볼륨)에 남는다.
-* **업로드 결과를 모를 때**(`AWAITING_CONFIRMATION`): 자동 재업로드는 없다. IVAS 화면에서 그 분석이 있는지 보고, 없으면
-  `{"confirm": "reupload"}`, 있으면 `{"confirm": "receipt", "label", "project_id", "analysis_id"}` 로 resume 한다.
+
+### 이 변경을 받은 뒤 운영자 점검표
+
+1. **이미지**: 새 태그로 빌드·push 하고(§1) 40 과 81 의 `image:` 를 그 태그로 바꾼다(두 파드가 같은 이미지여야 Worker 의 버전 대조가 맞는다).
+2. **Secret**: `30-secret.yaml` 에 IVAS 세 키를 넣고 **새 이름**(예: `sbmig-llm-2` — Secret 이 `immutable` 이라 키를 더할 수 없다)으로 만든다.
+   40 의 `secretRef`, 81 의 `secretKeyRef` 일곱 줄(`LLM_APP_TOKEN` … `IVAS_PASSWORD`)의 `name`, (80 을 쓰면) 80 의 `secretRef` 를 새 이름으로 바꾼다.
+3. **ConfigMap `sbmig-env`**: `kubectl apply -f deploy/k8s/20-configmap.yaml`(그룹 3 의 `SBMIG_REMEDIATION__AFTER_MIGRATION: "true"`).
+4. **ConfigMap `sbmig-job-template`** 를 다시 만든다:
+   `kubectl -n agent delete configmap sbmig-job-template` → `kubectl -n agent create configmap sbmig-job-template --from-file=deploy/k8s/81-web-job.template.yaml`.
+5. **웹 파드**: `kubectl apply -f deploy/k8s/40-deployment.yaml` 뒤 `kubectl -n agent rollout restart deploy/sbmig` — 웹 파드는 시작할 때
+   `sbmig-env` 와 Job 틀을 읽는다. 재시작하지 않으면 다음 Job 이 `SBMIG_REMEDIATION__AFTER_MIGRATION` 을 "set in the Job pod only" 로 적고 멈춘다.
+6. **확인**: 작은 프로젝트 하나를 올려 Job 파드 로그의 `SBMIG-RESULT … remediation=…` 줄을 본다. `remediation=skipped` 면 저널의
+   `remediation_skipped` 줄이 빠진 값의 이름을 알려 준다(대개 Secret 이름을 81 에서 바꾸지 않은 경우).

@@ -552,6 +552,18 @@ class Orchestrator:
                          "iterations": pr.iterations, "attempts": 0, "remaining_errors": len(pr.remaining_errors),
                          "blocked": [], "after_abort": True})
 
+    def build_succeeded(self, report: RunReport) -> bool:
+        """이관의 성공 판정(``report.success`` 의 정의): 계획된 최종 빌드가 전부 돌았고 전부 성공, 재구성 실패·속 빈 리액터·중단 없음.
+        ``_finalize`` 와 그래프의 ``remediation`` 노드(``_finalize`` 보다 먼저 돈다)가 같은 판정을 쓴다 — 루프의 플래그도 본다
+        (``_finalize`` 가 보고서에 옮기기 전이어도 같은 답이 나오게).
+
+        The migration's success predicate (`report.success`): every planned final build ran and passed, no
+        restructure failure, no hollow reactor, not aborted. Shared by `_finalize` and the graph's `remediation` node."""
+        flags = list(report.flags) + (list(self.loop.flags) if self.loop is not None else [])
+        return bool(self._verify_results) and all(r.ok for r in self._verify_results) \
+            and "restructure-failed" not in flags and "hollow-reactor" not in flags \
+            and not _aborted(flags) and not self._verify_missing()
+
     def _abort(self, report: RunReport, why: str) -> None:
         """실행 중단 기록: ``aborted`` 플래그, 후속 조치, ERROR 한 줄(운영자가 찾는 줄), 저널."""
         if "aborted" not in report.flags:
@@ -592,6 +604,22 @@ class Orchestrator:
         if self._stop_file_abort(report, "finalize"):
             return
         self.step_finish(report, stop_after)
+        self._note_inline_remediation(report, stop_after, dry_run)
+
+    def _note_inline_remediation(self, report: RunReport, stop_after: Phase | None, dry_run: bool) -> None:
+        # 2026-11-11: 취약점 조치는 그래프 엔진의 remediation 노드에서만 이어서 돈다. inline 엔진은 잇지 않고, 스위치가 켜져 있고
+        # 그래프였다면 돌았을 실행(빌드 성공·끝까지)에만 그 사실을 한 줄 남긴다 — 스위치가 꺼진 실행에는 아무 줄도 없다
+        rem = getattr(self.cfg, "remediation", None)
+        if rem is None or not bool(getattr(rem, "after_migration", False)):
+            return
+        if dry_run or stop_after is not None or not self.build_succeeded(report):
+            return
+        try:
+            self.ws.journal({"event": "remediation_skipped", "reason": "inline_engine", "scope": "remediation"})
+        except Exception:  # noqa: BLE001 - a journal line never decides a run
+            log.debug("remediation_skipped journal line not written", exc_info=True)
+        report.remediation = {"status": "skipped", "reason": "inline_engine", "dir": "remediation"}
+        log.info("vulnerability remediation not chained: loop.engine is inline (the graph engine chains it)")
 
     def _stop_file_abort(self, report: RunReport, before: str) -> bool:
         """2026-11-05 (k8s Job 모드): 실행 폴더의 ``stop.request`` 를 노드 사이에서 본다 — 그래프 엔진의 ``user_stop`` 과 같은 뜻
@@ -2968,9 +2996,7 @@ class Orchestrator:
         # round 10 (invariant 1, A7): an aborted run is never a success, and every planned final build must have
         # run — an MSA run whose svc-a verify passed before svc-b's step crashed used to say BUILD SUCCESS
         # v2.1z-c: 속 빈 리액터(소스가 모듈 밖에 있어 이관되지 않음)는 빌드가 통과해도 성공이 아니다
-        report.success = bool(self._verify_results) and all(r.ok for r in self._verify_results) \
-            and "restructure-failed" not in report.flags and "hollow-reactor" not in report.flags \
-            and not _aborted(report.flags) and not self._verify_missing()
+        report.success = self.build_succeeded(report)
         # unresolved: what the as-is owner must look at
         unresolved: list[BuildError] = []
         for r in self._verify_results:

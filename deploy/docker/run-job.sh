@@ -120,6 +120,13 @@ if [ -n "${SBMIG_RESULT_GIT_URL:-}" ]; then
     [ -f "$RUN_DIR/$f" ] && cp "$RUN_DIR/$f" "$RES/"
   done
   [ -d "$RUN_DIR/logs" ] && cp -r "$RUN_DIR/logs" "$RES/logs"
+  # 이관 뒤 이어 돈 취약점 조치(README §6): 글로 된 요약만 — ZIP·프로젝트 트리는 git 에 넣지 않는다(파드와 함께 사라진다; 필요하면 RESULT_PUSH_CMD)
+  if [ -d "$RUN_DIR/remediation" ]; then
+    mkdir -p "$RES/remediation"
+    for f in report.md report.json state.json journal.jsonl delivery/delivery.json; do
+      [ -f "$RUN_DIR/remediation/$f" ] && cp "$RUN_DIR/remediation/$f" "$RES/remediation/$(basename "$f")"
+    done
+  fi
   log "push: 보고서 / 로그 → ${SBMIG_RESULT_GIT_URL} 브랜치 $RUN_ID"
   ( cd "$RES" && git init -q && git checkout -q -b "$RUN_ID" && git add -A && git commit -q -m "sbmig $RUN_ID" \
     && git push --quiet "$(auth_url "$SBMIG_RESULT_GIT_URL")" "HEAD:refs/heads/$RUN_ID" ) || { log "WARN: 결과 push 실패"; push_fail=1; }

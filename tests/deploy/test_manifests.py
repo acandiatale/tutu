@@ -357,6 +357,66 @@ def test_sbmig_env_header_tells_the_operator_to_restart_the_web_pod():
     assert commented["SBMIG_JOB_ENV_PIN"] == ("1", contract.ENV_PIN_REFUSE)
 
 
+IVAS_KEYS = ("IVAS_BASE_URL", "IVAS_USER_ID", "IVAS_PASSWORD")
+AFTER_MIGRATION = "SBMIG_REMEDIATION__AFTER_MIGRATION"
+
+
+def test_the_remediation_runs_in_the_build_pod_switched_on():
+    """User, 2026-11-11: the remediation runs in the BUILD POD, chained after a migration that ended BUILD SUCCESS. The switch
+    ships on in sbmig-env (one place: the web pod reads it by envFrom, the 81 Job pod by its configMapKeyRef line, the 80 Job
+    by envFrom) — the same value on both sides of the env pin check, and the loaded config says true in both pods."""
+    data = _sbmig_env_data()
+    assert data.get(AFTER_MIGRATION) == "true" and AFTER_MIGRATION not in _commented_keys()
+    assert not [n for n in (WEB, WEB_JOB, BUILD_JOB) if AFTER_MIGRATION in _literals(n)]     # no second, diverging source
+    cm = _configmap(False)
+    main_env, worker_env = _main_env(cm), _worker_env(cm)
+    assert main_env[AFTER_MIGRATION] == worker_env[AFTER_MIGRATION] == "true"
+    main, worker = _pins(main_env), _pins(worker_env)
+    assert AFTER_MIGRATION in main and AFTER_MIGRATION in worker and contract.compare_env_pins(main, worker) == NO_DIFF
+    # the knobs an operator may want for the build pod are documented next to it and forwarded by 81
+    commented = _commented_keys()
+    for key in ("SBMIG_REMEDIATION__REQUIRE_APPROVAL", "SBMIG_REMEDIATION__FAILED_CANDIDATE",
+                "SBMIG_REMEDIATION__IVAS_ANALYSIS_TIMEOUT_MINUTES"):
+        assert commented[key][0] == "3", key
+    for name in (WEB, BUILD_JOB):
+        refs = next(d for d in _docs(name) if d["kind"] in ("Deployment", "Job"))["spec"]["template"]["spec"]
+        assert {"configMapRef": {"name": "sbmig-env"}} in refs["containers"][0]["envFrom"], name.name
+    # a ConfigMap value turned off after the web pod started is caught like any other key
+    off = {**cm, AFTER_MIGRATION: "false"}
+    assert _compare(_main_env(cm), _worker_env(off)) == {**NO_DIFF, "differs": [AFTER_MIGRATION]}
+
+
+def test_the_switch_loads_as_true_in_the_job_pod(monkeypatch):
+    for key in [k for k in config_mod.os.environ if k.startswith("SBMIG_") and "__" in k]:
+        monkeypatch.delenv(key)
+    for name, value in _worker_env(_configmap(False)).items():
+        if name.startswith("SBMIG_") and "__" in name:
+            monkeypatch.setenv(name, value)
+    assert load_config(PACKAGE_ROOT / "config" / "artifacts.local-e2e.yml").remediation.after_migration is True
+
+
+def test_the_job_pod_gets_the_ivas_values_optionally_from_the_llm_secret():
+    """81 reads the three IVAS keys from the same Secret as its other secrets, optional (a cluster without IVAS still
+    migrates — the remediation is skipped); 80 gets them through its envFrom of that Secret. Never pinned: rotating a value
+    (or the host) after the web pod started does not stop a Job."""
+    refs = {e["name"]: e["valueFrom"]["secretKeyRef"] for e in _container(WEB_JOB)["env"]
+            if "secretKeyRef" in (e.get("valueFrom") or {})}
+    other = {r["name"] for n, r in refs.items() if n not in IVAS_KEYS}
+    assert other == {"sbmig-llm"}
+    for key in IVAS_KEYS:
+        assert refs[key] == {"name": "sbmig-llm", "key": key, "optional": True}, key
+    assert not [k for k in IVAS_KEYS if k in _literals(WEB_JOB) or k in _sbmig_env_data() or k in _commented_keys()]
+    job = next(d for d in _docs(BUILD_JOB) if d["kind"] == "Job")["spec"]["template"]["spec"]["containers"][0]
+    assert {"secretRef": {"name": "sbmig-llm"}} in job["envFrom"]
+    secret_example = next(d for d in _docs(K8S / "30-secret.example.yaml") if d["metadata"]["name"] == "sbmig-llm")
+    assert set(IVAS_KEYS) <= set(secret_example["stringData"])
+    cm = _configmap(True)
+    main, worker = _pins(_main_env(cm)), _pins(_worker_env(cm))
+    assert not [n for n in {*main, *worker} if n.startswith("IVAS_")]
+    rotated = {**_secrets(), "IVAS_BASE_URL": "https://other.invalid", "IVAS_USER_ID": "someone-else"}
+    assert _compare(_main_env(cm), _worker_env(cm, secrets=rotated)) == NO_DIFF
+
+
 def test_no_override_in_sbmig_env_is_left_empty():
     """`SBMIG_X__Y: ""` is read as YAML null and replaces the yml value with nothing: a key is commented out, never emptied."""
     data = _sbmig_env_data()

@@ -3,6 +3,8 @@ restart rule — driven by fakes (no IVAS, Nexus, Maven or network; tmp_path onl
 from __future__ import annotations
 
 import json
+import shutil
+import sys
 import threading
 from pathlib import Path
 
@@ -28,6 +30,7 @@ from sbmig.remediations.models import (
     Decision,
     IntakeRejected,
     NotReady,
+    RemediationState,
     RoundPlan,
     RunPaths,
     StateConflict,
@@ -514,9 +517,13 @@ def test_local_repo_gets_the_remediation_suffix(tmp_path, base_cfg):
 
 def test_bad_ids_are_refused_before_the_file_system(tmp_path, base_cfg):
     mgr = manager(tmp_path, base_cfg)
-    for bad in ("..", "../x", "r2026", "R20261111-000000-abcdef", "r20261111-000000-ABCDEF"):
+    for bad in ("..", "../x", "a/b", "a\\b", "-x", ".hidden", "_remediations", "a b", "x" * 90, "a..b", "", None):
         with pytest.raises(BadRemediationId):
             mgr.status(bad)
+    # the migration run id format (chained remediations) is a valid id: unknown, not bad
+    for ok in ("r2026", "R20261111-000000-abcdef", "web-20261111-101010-abc123", "run.1_x"):
+        with pytest.raises(UnknownRemediation):
+            mgr.status(ok)
 
 
 def test_untrusted_projects_setting_blocks_submit(tmp_path, base_cfg):
@@ -536,3 +543,276 @@ def test_untrusted_projects_setting_blocks_submit(tmp_path, base_cfg):
         assert not any((tmp_path / "out" / "_remediations").glob("r*"))
     finally:
         mgr.shutdown()
+
+
+# ---------------------------------------------------------------------------- web modes / chained remediations
+RUN_ID = "web-20261111-101010-abc123"
+
+
+class FakeRunManager:
+    """What RemediationManager uses of RunManager: out_dir, run_dir, status, file_withheld, stop, runs."""
+
+    def __init__(self, out_dir: Path, state: str = "finished"):
+        self.out_dir = out_dir
+        self.states: dict[str, str] = {}
+        self.default_state = state
+        self.withheld: set[str] = set()
+        self.stopped: list[str] = []
+        self.runs: dict = {}
+
+    def run_dir(self, run_id):
+        return self.out_dir / run_id
+
+    def status(self, run_id):
+        return {"run_id": run_id, "state": self.states.get(run_id, self.default_state)}
+
+    def file_withheld(self, run_id, name):
+        return run_id in self.withheld and name not in ("sbmig.log", "journal.jsonl")
+
+    def stop(self, run_id):
+        self.stopped.append(run_id)
+        return True
+
+
+def chained(tmp_path: Path, cfg, run_id: str = RUN_ID, status: str = AWAITING_APPROVAL, configs=None,
+            owner: str = "a-build-pod") -> RunPaths:
+    """A chained remediation as the build pod leaves it: built by a throw-away in-process manager under build/ up to
+    AWAITING_APPROVAL (one pending proposal), then moved to out/<run id>/remediation/ with the run id as state id."""
+    builder = RemediationManager(tmp_path / "build", tmp_path / "repo", components_factory=one_fix(cfg=cfg),
+                                 config_loader=lambda names: cfg)
+    sid = builder.submit(upload(tmp_path), "app.zip", None).id
+    assert builder.wait(sid, WAIT)
+    builder.shutdown()
+    run_dir = tmp_path / "out" / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    target = run_dir / service_mod.CHAIN_DIR
+    shutil.move(str(tmp_path / "build" / REMEDIATIONS_DIR / sid), str(target))
+    paths = RunPaths(target)
+    data = read_json(paths.state)
+    assert data["status"] == AWAITING_APPROVAL
+    data.update({"id": run_id, "status": status, "owner": owner})
+    write_json_atomic(paths.state, data)
+    if configs is not None:
+        write_json_atomic(run_dir / "control" / "request.json", {"run_id": run_id, "configs": configs})
+    return paths
+
+
+class Loader:
+    """config_loader that records the names it was asked for."""
+
+    def __init__(self, cfg):
+        self.cfg = cfg
+        self.calls: list[list[str]] = []
+
+    def __call__(self, names):
+        self.calls.append(list(names))
+        return self.cfg
+
+
+def job_manager(tmp_path: Path, cfg, rm=None, factory=None, mode="k8s-job", loader=None) -> RemediationManager:
+    repo = tmp_path / "repo"
+    (repo / "config").mkdir(parents=True, exist_ok=True)
+    return RemediationManager(tmp_path / "out", repo, components_factory=factory or Factory(),
+                              config_loader=loader or (lambda names: cfg), mode=mode,
+                              run_manager=rm if rm is not None else FakeRunManager(tmp_path / "out"))
+
+
+@pytest.mark.parametrize("mode", ["k8s-job", "local-job"])
+def test_job_mode_never_runs_anything_here(tmp_path, base_cfg, mode):
+    f = Factory()
+    mgr = job_manager(tmp_path, base_cfg, factory=f, mode=mode)
+    assert mgr.job_mode
+    with pytest.raises(service_mod.NotAvailable) as ei:
+        mgr.submit(upload(tmp_path), "a.zip", None)
+    assert ei.value.code == "not_available" and "build pod" in str(ei.value) and "remediation.after_migration" in str(ei.value)
+    assert run_dirs(tmp_path) == []
+    info = mgr.readiness_info()
+    assert info["ready"] is False and info["runs_in"] == "build_pod" and info["mode"] == mode
+    assert "build pod" in info["missing"][0]
+    assert f.comps is None                       # Maven was never probed, no component was built
+    assert mgr._worker is None
+    with pytest.raises(service_mod.NotAvailable):
+        mgr._enqueue_locked("r20261111-000000-abcdef")
+    assert mgr._worker is None
+
+
+def test_in_process_readiness_says_where_it_runs(tmp_path, base_cfg):
+    info = manager(tmp_path, base_cfg).readiness_info()
+    assert info == {"ready": True, "missing": [], "mode": "in-process", "runs_in": "web"}
+
+
+def test_job_mode_chained_reads_and_approvals(tmp_path, base_cfg):
+    paths = chained(tmp_path, base_cfg, configs=["company.yml"])
+    loader = Loader(base_cfg)
+    mgr = job_manager(tmp_path, base_cfg, loader=loader)
+    (mgr.repo_root / "config" / "company.yml").write_text("x: 1\n")
+    assert mgr.is_chained(RUN_ID) and mgr.paths(RUN_ID).root == paths.root
+    st = mgr.status(RUN_ID)
+    assert st["kind"] == "chained" and st["run_id"] == RUN_ID and st["id"] == RUN_ID
+    assert st["status"] == AWAITING_APPROVAL and st["pending_approvals"] == 1 and "stale" not in st
+    assert st["resume"]["available"] is False and "next increment" in st["resume"]["note"]
+    assert st["links"]["self"] == f"/api/remediations/{RUN_ID}"
+    assert {"source.zip", "plan-r1.json", "journal.jsonl"} <= set(st["files"])
+    rows = mgr.list()["items"]
+    assert [(r["id"], r["kind"], r.get("run_id")) for r in rows] == [(RUN_ID, "chained", RUN_ID)]
+    assert mgr.file_path(RUN_ID, "plan-r1.json").is_file()
+    assert mgr.file_path(RUN_ID, "../state.json") is None
+    p = mgr.proposals(RUN_ID)["proposals"][0]
+    with pytest.raises(NotFinished):
+        mgr.result(RUN_ID)
+    out = mgr.decide(RUN_ID, [_decision(p)], "alice")
+    assert out == {"accepted": [p["id"]], "pending": 0}
+    # a chained approval is checked against the policy hash the BUILD POD recorded in state.json — the web pod does not
+    # recompute it from its own environment (a differing env value would refuse a valid approval)
+    assert loader.calls == []
+    assert RoundPlan.from_dict(read_json(paths.plan(1))).proposals[0].decision == D_APPROVED
+    assert json.loads(paths.approvals.read_text().splitlines()[0])["by"] == "alice"
+    with pytest.raises(service_mod.NotAvailable) as ei:
+        mgr.resume(RUN_ID)
+    assert ei.value.code == "not_available" and "next increment" in str(ei.value)
+    with pytest.raises(StateConflict):
+        mgr.stop(RUN_ID)                                         # not running
+    with pytest.raises(StateConflict) as ei:
+        mgr.delete(RUN_ID)
+    assert "owns its directory" in str(ei.value) and paths.state.is_file()
+    assert mgr._worker is None
+
+
+def test_chained_configs_fall_back_to_the_server_default(tmp_path, base_cfg):
+    chained(tmp_path, base_cfg, configs=["gone.yml"])
+    mgr = job_manager(tmp_path, base_cfg)
+    (mgr.repo_root / "config" / "artifacts.yml").write_text("x: 1\n")
+    assert mgr.chained_configs(RUN_ID) == ["artifacts.yml"]
+    # in-process runs record their configs in the journal's web_run line
+    rd = tmp_path / "out" / RUN_ID
+    (rd / "control" / "request.json").unlink()
+    (mgr.repo_root / "config" / "mine.yml").write_text("x: 1\n")
+    (rd / "journal.jsonl").write_text(json.dumps({"event": "web_run", "configs": ["mine.yml"]}) + "\n")
+    assert mgr.chained_configs(RUN_ID) == ["mine.yml"]
+
+
+def test_chained_list_merges_newest_first(tmp_path, base_cfg):
+    chained(tmp_path, base_cfg)
+    mgr = manager(tmp_path, base_cfg)
+    sid = submit_and_wait(mgr, tmp_path)["id"]
+    rows = mgr.list()["items"]
+    assert [(r["id"], r["kind"]) for r in rows] == [(sid, "standalone"), (RUN_ID, "chained")]
+    assert mgr.list()["total"] == 2 and "run_id" not in rows[0]
+    assert mgr.status(sid)["kind"] == "standalone"
+
+
+def test_stale_chained_state_is_shown_interrupted_without_rewriting(tmp_path, base_cfg):
+    paths = chained(tmp_path, base_cfg, status=RUNNING)
+    before = paths.state.read_bytes()
+    rm = FakeRunManager(tmp_path / "out", state="finished")
+    mgr = job_manager(tmp_path, base_cfg, rm=rm)
+    st = mgr.status(RUN_ID)
+    assert st["status"] == INTERRUPTED and st["stale"] is True and st["recorded_status"] == RUNNING
+    assert "build pod" in st["message"]
+    row = mgr.list()["items"][0]
+    assert row["status"] == INTERRUPTED and row["stale"] is True
+    with pytest.raises(StateConflict):
+        mgr.stop(RUN_ID)
+    assert paths.state.read_bytes() == before and not (tmp_path / "out" / RUN_ID / "stop.request").exists()
+
+
+def test_running_chained_stop_writes_the_stop_request(tmp_path, base_cfg):
+    paths = chained(tmp_path, base_cfg, status=RUNNING)
+    before = paths.state.read_bytes()
+    rm = FakeRunManager(tmp_path / "out", state="running")
+    mgr = job_manager(tmp_path, base_cfg, rm=rm)
+    assert mgr.status(RUN_ID)["status"] == RUNNING and mgr.status(RUN_ID)["stop_requested"] is False
+    out = mgr.stop(RUN_ID)
+    assert out["stop_requested"] is True and "not cancelled" in out["note"]
+    assert (tmp_path / "out" / RUN_ID / "stop.request").is_file()
+    assert rm.stopped == []                                     # a Job run is not RunManager.stop()ed (it deletes the Job)
+    assert paths.state.read_bytes() == before                   # the build pod's state file is left alone
+    assert mgr.status(RUN_ID)["stop_requested"] is True
+    with pytest.raises(StateConflict):
+        mgr.delete(RUN_ID)
+
+
+def test_startup_never_rewrites_chained_states(tmp_path, base_cfg):
+    paths = chained(tmp_path, base_cfg, status=RUNNING, owner="another-pod")
+    before = paths.state.read_bytes()
+    for mode in ("in-process", "k8s-job"):
+        mgr = job_manager(tmp_path, base_cfg, rm=FakeRunManager(tmp_path / "out", state="running"), mode=mode)
+        assert mgr.interrupted == [] and paths.state.read_bytes() == before
+        assert mgr.status(RUN_ID)["status"] == RUNNING
+
+
+def test_chained_files_are_withheld_until_the_final_pass(tmp_path, base_cfg):
+    chained(tmp_path, base_cfg)
+    rm = FakeRunManager(tmp_path / "out")
+    rm.withheld.add(RUN_ID)
+    mgr = job_manager(tmp_path, base_cfg, rm=rm)
+    st = mgr.status(RUN_ID)
+    assert st["files"] == ["journal.jsonl"] and st["withheld"] is True
+    assert mgr.file_path(RUN_ID, "journal.jsonl").is_file()
+    for name in ("plan-r1.json", "source.zip", "manifest.json"):
+        with pytest.raises(service_mod.Withheld) as ei:
+            mgr.file_path(RUN_ID, name)
+        assert ei.value.code == "withheld"
+    assert mgr.file_path(RUN_ID, "nope.txt") is None            # unknown names stay 404, not 409
+    p = mgr.proposals(RUN_ID)["proposals"][0]
+    with pytest.raises(service_mod.Withheld):
+        mgr.decide(RUN_ID, [_decision(p)], "alice")
+    rm.withheld.clear()
+    assert mgr.file_path(RUN_ID, "plan-r1.json").is_file()
+
+
+class FakeChain:
+    """Stands in for sbmig.remediations.chain: resume() finishes the state as SUCCEEDED."""
+
+    def __init__(self):
+        self.calls: list[dict] = []
+
+    def resume(self, run_dir, cfg, *, journal, stop, components=None):
+        self.calls.append({"run_dir": Path(run_dir), "stop": stop(), "components": components})
+        paths = RunPaths(Path(run_dir) / "remediation")
+        data = read_json(paths.state)
+        data["status"] = SUCCEEDED
+        write_json_atomic(paths.state, data)
+        journal({"event": "fake_chain_resumed"})
+        return RemediationState.from_dict(data)
+
+
+def test_in_process_chained_resume_goes_through_chain(tmp_path, base_cfg, monkeypatch):
+    paths = chained(tmp_path, base_cfg, status=STOPPED)
+    fake = FakeChain()
+    monkeypatch.setitem(sys.modules, "sbmig.remediations.chain", fake)
+    rm = FakeRunManager(tmp_path / "out", state="finished")
+    f = Factory()
+    mgr = job_manager(tmp_path, base_cfg, rm=rm, factory=f, mode="in-process")
+    assert mgr.status(RUN_ID)["resume"]["available"] is True
+    out = mgr.resume(RUN_ID)
+    assert out["kind"] == "chained"
+    assert mgr.wait(RUN_ID, WAIT)
+    assert len(fake.calls) == 1 and fake.calls[0]["run_dir"] == paths.root.parent and fake.calls[0]["stop"] is False
+    assert fake.calls[0]["components"] is f.comps
+    assert mgr.status(RUN_ID)["status"] == SUCCEEDED
+    events = [json.loads(x)["event"] for x in paths.journal.read_text().splitlines()]
+    assert "resume" in events and "fake_chain_resumed" in events
+
+
+def test_in_process_chained_resume_rules(tmp_path, base_cfg, monkeypatch):
+    paths = chained(tmp_path, base_cfg, status=STOPPED)
+    rm = FakeRunManager(tmp_path / "out", state="running")
+    mgr = job_manager(tmp_path, base_cfg, rm=rm, mode="in-process")
+    with pytest.raises(StateConflict):
+        mgr.resume(RUN_ID)                                      # the migration run is still going
+    rm.default_state = "finished"
+    before = paths.state.read_bytes()
+    monkeypatch.setitem(sys.modules, "sbmig.remediations.chain", None)   # chain.py not there (yet)
+    with pytest.raises(service_mod.NotAvailable):
+        mgr.resume(RUN_ID)
+    assert paths.state.read_bytes() == before and mgr._worker is None
+    # a stale RUNNING one is written INTERRUPTED only when a person resumes it
+    data = read_json(paths.state)
+    data["status"] = RUNNING
+    write_json_atomic(paths.state, data)
+    fake = FakeChain()
+    monkeypatch.setitem(sys.modules, "sbmig.remediations.chain", fake)
+    mgr.resume(RUN_ID)
+    assert mgr.wait(RUN_ID, WAIT)
+    assert len(fake.calls) == 1 and mgr.status(RUN_ID)["status"] == SUCCEEDED

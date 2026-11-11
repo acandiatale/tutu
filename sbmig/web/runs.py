@@ -1491,7 +1491,8 @@ class RunManager:
                 if not run.cancel.is_set():
                     continue
                 # 최종 빌드가 이미 돌았으면 이관은 끝난 것: 여기서 멈추면 성공을 중단으로 잘못 적을 뿐이다
-                if not update.get("aborted") and (name == "finalize"
+                # 2026-11-11: 이관 뒤에 이어 도는 remediation 노드도 최종 빌드 뒤다 — 여기서의 중지가 성공한 이관을 중단으로 적으면 안 된다
+                if not update.get("aborted") and (name in ("finalize", "remediation")
                                                   or (name == "phase" and update.get("phase") == Phase.VERIFY.value)):
                     # the final build already ran: the migration is complete, a stop now would only mislabel it
                     log.warning("run %s: stop requested after the final build — finishing normally", run.run_id)

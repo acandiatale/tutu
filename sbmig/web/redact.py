@@ -2,8 +2,9 @@
 
 비밀로 보이는 환경 변수(``contract.secret_values``: 이름에 TOKEN / PASSWORD / SECRET / API_KEY …, 6자 이상)의 값을 ``***`` 로 바꾸고, URL 의
 사용자 정보(``https://user:pass@host``)도 가린다. 손대는 곳은 실행 폴더 최상위의 텍스트 파일(``*.md`` / ``*.json`` / ``*.jsonl`` / ``*.log`` /
-``*.txt`` / ``*.yml``)과 ``logs/`` 아래뿐이다 — ``control/``(Main 의 파일), ``source.zip`` / ``result.zip``, ``project/``(이관된 소스)는 건드리지
-않는다. 바뀐 것이 있을 때만 다시 쓴다.
+``*.txt`` / ``*.yml``)과 ``logs/`` 아래, 그리고 이관에 이어 돈 취약점 조치의 ``remediation/`` 아래 텍스트 파일(2026-11-11 — 그 안의
+프로젝트 트리 ``accepted/`` · ``rounds/<n>/candidate/`` 와 원본 ``original/`` 은 빼고)뿐이다 — ``control/``(Main 의 파일), ZIP(``source.zip`` /
+``result.zip``), ``project/``(이관된 소스)는 건드리지 않는다. 바뀐 것이 있을 때만 다시 쓴다(임시 파일 → 원자적 교체).
 
 리뷰 2026-11-10: 끝난 뒤에 지우는 것만으로는 실행 중의 출력(파드 로그, 웹 화면이 따라 읽는 ``sbmig.log`` / ``journal.jsonl``)이
 지워지기 전에 보인다. 그래서 같은 규칙을 **쓰는 순간**에도 적용한다 — ``Redactor`` 는 미리 펼쳐 둔 값으로 한 줄씩 지우는 객체이고,
@@ -11,14 +12,16 @@
 비밀 값은 적힌 그대로만 나오지 않는다: JSON 문자열 안에서는 이스케이프되고 URL 안에서는 퍼센트 인코딩되고 여러 줄짜리 값은 줄마다
 따로 찍힌다 — ``expand_values`` 가 그 표기들을 함께 지울 값으로 펼친다.
 
-Redact secret values (and URL userinfo) from a run directory's text outputs: top-level text files and `logs/`; never
-`control/`, the zips or `project/`. A file is rewritten only when something changed. Review 2026-11-10: the same rule
+Redact secret values (and URL userinfo) from a run directory's text outputs: top-level text files, `logs/` and the text
+files of a chained remediation under `remediation/` (not its project trees `accepted/` / `rounds/<n>/candidate/` nor
+`original/`); never `control/`, the zips or `project/`. A file is rewritten only when something changed. Review 2026-11-10: the same rule
 also runs at write time — `Redactor` (pre-expanded values, one line at a time) and `install_output_redaction` (hooks it
 into this process's log / journal output); `expand_values` adds the spellings a secret takes in output."""
 from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import threading
 import time
@@ -32,6 +35,10 @@ from sbmig.web import contract
 log = logging.getLogger(__name__)
 
 TEXT_SUFFIXES = frozenset({".md", ".json", ".jsonl", ".log", ".txt", ".yml"})
+# 이관에 이어 돈 취약점 조치의 폴더(2026-11-11: <run dir>/remediation/ — sbmig.remediations.chain 의 CHAIN_DIR 와 같은 이름)
+REMEDIATION_DIR = "remediation"
+REMEDIATION_SUFFIXES = TEXT_SUFFIXES | {".patch"}
+REMEDIATION_SKIP_TOP = frozenset({"accepted", "original"})     # 프로젝트 트리와 원본(읽기 전용 ZIP + manifest) — 정제하지 않는다
 # scheme://userinfo@ — userinfo never holds "/", "@" or whitespace; any scheme (https, git+ssh, jdbc:…:// …)
 _URL_USERINFO = re.compile(r"(?P<scheme>[A-Za-z][A-Za-z0-9+.\-]*://)(?P<userinfo>[^\s/@:'\"<>]+(?::[^\s/@'\"<>]*)?)@")
 # 여러 줄짜리 비밀(PEM 키, JSON 자격 증명)은 출력에서 줄마다 따로 찍힌다: 이 길이 이상인 줄만 따로 지운다 — "}" 같은 짧은 줄이
@@ -162,11 +169,40 @@ def redact_file(path: Path, values: list[str], mask: str = "***") -> bool:
         new = redact_text(text, values, mask)
         if new == text:
             return False
-        path.write_text(new, encoding="utf-8", errors="replace")
+        # 임시 파일 → os.replace: 웹 파드가 같은 순간 state.json 을 읽어도 반쪽짜리 JSON 을 보지 않게(권한 비트는 원래 파일 것)
+        tmp = path.with_name(f".{path.name}.{os.getpid()}.redact.tmp")
+        try:
+            tmp.write_text(new, encoding="utf-8", errors="replace")
+            try:
+                os.chmod(tmp, path.stat().st_mode & 0o7777)
+            except OSError:
+                pass
+            os.replace(tmp, path)
+        finally:
+            if tmp.exists():
+                tmp.unlink()
         return True
     except OSError as e:
         log.debug("redact: cannot rewrite %s: %s", path, e)
         return False
+
+
+def _remediation_targets(root: Path) -> list[Path]:
+    # 이관에 이어 돈 취약점 조치의 텍스트 출력(state.json, 저널, 로그, 보고서, 계획, 검사 결과, candidate.patch). 프로젝트 트리
+    # (accepted/, rounds/<n>/candidate/)와 원본(original/ — 읽기 전용 source.zip + 해시가 걸린 manifest.json)은 건드리지 않는다:
+    # 조치는 트리의 해시로 승인을 대조한다. ZIP 은 확장자로 빠진다(result.zip / source.zip 과 같은 규칙). 링크는 따라가지 않는다
+    out: list[Path] = []
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        here = Path(dirpath)
+        rel = here.relative_to(root).parts
+        dirnames[:] = sorted(d for d in dirnames
+                             if not (not rel and d in REMEDIATION_SKIP_TOP)
+                             and not (len(rel) == 2 and rel[0] == "rounds" and d == "candidate"))
+        for name in sorted(filenames):
+            p = here / name
+            if p.suffix.lower() in REMEDIATION_SUFFIXES and not p.is_symlink() and p.is_file():
+                out.append(p)
+    return out
 
 
 def _targets(run_dir: Path) -> list[Path]:
@@ -178,13 +214,16 @@ def _targets(run_dir: Path) -> list[Path]:
         logs = run_dir / "logs"
         if logs.is_dir():
             out.extend(p for p in sorted(logs.rglob("*")) if p.is_file())
+        rem = run_dir / REMEDIATION_DIR
+        if rem.is_dir() and not rem.is_symlink():
+            out.extend(_remediation_targets(rem))
     except OSError as e:
         log.debug("redact: cannot list %s: %s", run_dir, e)
     return out
 
 
 def redact_run_dir(run_dir: Path, values: list[str] | None = None) -> int:
-    """실행 폴더의 텍스트 출력(최상위 텍스트 파일 + ``logs/``)에서 비밀을 지우고 바뀐 파일 수를 돌려준다. ``values=None`` 이면
+    """실행 폴더의 텍스트 출력(최상위 텍스트 파일 + ``logs/`` + ``remediation/`` 의 텍스트)에서 비밀을 지우고 바뀐 파일 수를 돌려준다. ``values=None`` 이면
     ``live_secret_values()``(지금 프로세스의 환경 + 실행 중에 알려진 값). 지울 값이 없으면 파일을 읽지도 않고 곧바로 0 — 비밀 env 가 없는 실행에서 큰
     로그를 훑는 비용을 들이지 않으려고.
 

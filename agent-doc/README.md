@@ -29,7 +29,7 @@ sbmig 는 사내 Maven(Ant 포함) 프로젝트를 **JDK 21 + Spring Boot 4.1** 
 | [08-dev-conventions-and-tests.md](08-dev-conventions-and-tests.md) | 코드를 고칠 때의 규약(한국어 주석, 불변식, YAML 우선), 테스트, 체크리스트 | 코드를 고칠 때 |
 | [09-deploy-and-ops.md](09-deploy-and-ops.md) | PC·리눅스·컨테이너·쿠버네티스 두 모양, 플릿, KB 이동, 문제 보고 | 설치·운영할 때 |
 | [10-open-items-and-history.md](10-open-items-and-history.md) | 지금까지 온 길, 회사 실행에서 겪은 사례, 열린 결정 | 배경이 필요할 때 |
-| [11-remediations.md](11-remediations.md) | 이관과 별개인 취약점 조치(`/api/remediations`, IVAS, 버전 글자만 수정): 노드, 상태별 할 일, 승인, 진단, 설정 키, 고칠 자리 | 조치 작업을 볼 때 |
+| [11-remediations.md](11-remediations.md) | 이관이 BUILD SUCCESS 로 끝난 빌드 파드에서 이어 도는 취약점 조치(별도 그래프, `/api/remediations`, IVAS, 버전 글자만 수정): 노드, 상태별 할 일, 승인, 진단, 설정 키, 고칠 자리 | 조치 작업을 볼 때 |
 
 새 주제는 다음 번호(12, 13 …)로 더하고 이 표와 아래 "일 종류별" 표에 한 줄씩 적는다. 날짜·버전 꼬리표는 여전히 10 번에만 쓴다.
 

@@ -1,7 +1,7 @@
 """report.md 그리기 — 에이전트가 못 고친 것을 이어받는 as-is 담당팀을 위해 쓴다.
 흐름상 위치: 보고서 단계에서 writer.py 의 ``write_report`` 가 ``render_markdown`` 을 부른다. 섹션 순서(v2.1):
 머리 표(``SBMIG-RESULT`` 줄 포함) → 인수인계(운영자 확인 필요 → Ant pom.xml 합성(v2.1j) → 교체된 버전 → 주의
-라이브러리 → 이제부터 할 일) → Error list(단계별 표) → Fixes by case → Structure review → Bundled jars(v2.1z-i) → Blocked →
+라이브러리 → 이제부터 할 일) → Error list(단계별 표) → Fixes by case → Structure review → Bundled jars(v2.1z-i) → 취약점 조치(2026-11-11) → Blocked →
 javax API jar →
 Manual follow-ups → Flags → What we changed → LLM usage and cost → Notes → Outputs.
 인수인계가 맨 앞인 이유: 담당팀은 그 섹션만 읽는다. 모든 문장은 ``tr`` / ``tr_line`` 을 거쳐
@@ -928,6 +928,40 @@ def bundled_jars_lines(r: RunReport, lang: str = "en") -> list[str]:
     return L
 
 
+def remediation_lines(r: RunReport, lang: str = "en") -> list[str]:
+    """``## Vulnerability remediation`` (취약점 조치, 2026-11-11): 이관의 BUILD SUCCESS 뒤 이어서 돈 조치의 상태·이유·개수와 그 파일들
+    (이관 실행 폴더 기준 상대 경로), 또는 건너뛴 까닭. 조치가 없으면 []. 이관 판정은 바꾸지 않는다는 문장을 함께 둔다.
+
+    The chained remediation's status, reason, counts and files (relative to the run directory), or why it was skipped;
+    [] when none ran."""
+    rem = getattr(r, "remediation", None)
+    if not isinstance(rem, dict) or not rem.get("status"):
+        return []
+    L = [f"## {tr(lang, 'Vulnerability remediation')}", "",
+         tr(lang, "Chained after the migration's BUILD SUCCESS (remediation.after_migration); it does not change the "
+                  "migration result above."), ""]
+    status = str(rem.get("status"))
+    if status == "skipped":
+        L.append(tr(lang, "- Not run: `{reason}`", reason=_cell(rem.get("reason") or "-", 80)))
+        for m in list(rem.get("missing") or [])[:10]:
+            L.append(f"  - {_cell(m, 200)}")
+        L.append("")
+        return L
+    reason = rem.get("reason") or ""
+    L.append(tr(lang, "- Status: `{status}`{reason}", status=_cell(status, 40),
+                reason=f" (`{_cell(reason, 80)}`)" if reason else ""))
+    counts = rem.get("counts") or {}
+    if counts:
+        L.append(tr(lang, "- Counts: {counts}", counts=", ".join(f"{k} {v}" for k, v in sorted(counts.items()))))
+    if rem.get("message"):
+        L.append(f"- {_cell(rem.get('message'), 300)}")
+    files = rem.get("files") or {}
+    if files:
+        L.append(tr(lang, "- Files: {files}", files=", ".join(f"`{_cell(v, 120)}`" for v in files.values())))
+    L.append("")
+    return L
+
+
 def _cost_summary(c: Any, lang: str = "en") -> str:
     """머리 표의 LLM 비용 칸: 합계 + 단가 없는 모델 + 토큰 수 누락 표시."""
     from .cost import fmt_money
@@ -1079,6 +1113,8 @@ def render_markdown(report: RunReport, language: str = "en", cfg: Any = None) ->
     L += structure_review_lines(r, lang)
     # v2.1z-i: 동봉 jar(어느 pom 도 선언하지 않은 트리 안 jar) — 구조 검토 바로 뒤
     L += bundled_jars_lines(r, lang)
+    # 2026-11-11: 이관 빌드 성공 뒤 이어서 돈 취약점 조치(짧은 한 절; 자세한 것은 remediation/report.md)
+    L += remediation_lines(r, lang)
 
     # 차단 = 프로젝트 밖(라이브러리·저장소·환경)이라 일부러 손대지 않은 것. 나머지 마이그레이션은 계속했다
     # ---- blocked: deliberately skipped, each row says what a human / the library owner must do

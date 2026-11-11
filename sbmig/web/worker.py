@@ -20,6 +20,11 @@ Worker 는 자식의 출력을 한 줄씩 지워서 파드 로그로 넘긴다. 
 exit 3 과 "terminated by SIGTERM" 오류를 쓰고(저널 ``worker_finished`` 에 ``terminated``) 3 으로 끝난다.
 종료 코드: 3 = 중단(거절 / 종료 신호 / sbmig exit 3 / 자식을 못 띄움), 2 = 빌드 실패이고 ``SBMIG_FAIL_JOB_ON_BUILD_FAIL=1``, 그 밖에는
 0 — 빌드가 실패해도 보고서가 결과다(run-job.sh 와 같다).
+취약점 조치(2026-11-11): 이관이 BUILD SUCCESS 로 끝나고 ``remediation.after_migration`` 이 켜져 있으면 자식 ``sbmig run`` 이 같은 프로세스에서
+조치를 이어 돌린다(``<run dir>/remediation/``). 자식은 Worker 의 env 를 그대로 받으므로 IVAS 값(``IVAS_BASE_URL`` / ``IVAS_USER_ID`` /
+``IVAS_PASSWORD``, Job 틀의 secretKeyRef)도 닿는다. 마지막 정제는 ``remediation/`` 의 텍스트 파일도 훑고(ZIP·프로젝트 트리·원본은 빼고),
+``IVAS_USER_ID`` 는 이름에 비밀 낱말이 없어도 비밀로 지운다(``contract.SECRET_NAMES``). 조치 도중 종료 신호로 끊기면 이관의 결과 줄을
+오류 글에 붙인다.
 
 The Job pod's whole life in shared-volume mode: verify the request Main pinned, run `sbmig.cli run` as a child (which
 redacts its own log / journal lines as it writes them; its console output is redacted line by line on the way to the pod
@@ -34,7 +39,11 @@ written (or the base is unknown) a pod-local repository under the temp directory
 and only when that fails too the shared repository, said so either way (journal `worker_slot`). Stop signals (review
 2026-11-10): as the pod's PID 1 the Worker would ignore SIGTERM without a handler; on SIGTERM / SIGINT it forwards the
 signal to the child's whole tree (Maven in its own session included), SIGKILLs what is left after `TERM_GRACE_S`, writes
-exit 3 + a "terminated" error to `job-status.json` and exits 3."""
+exit 3 + a "terminated" error to `job-status.json` and exits 3. Remediation (2026-11-11): a migration that ended BUILD
+SUCCESS with `remediation.after_migration` on continues into the remediation inside the same child (`<run dir>/remediation/`);
+the child inherits the IVAS variables from the Worker's environment, the final redaction pass covers `remediation/`'s text files
+(never its ZIPs, project trees or `original/`), and a stop signal during the remediation keeps the migration's result line in
+the error text."""
 from __future__ import annotations
 
 import json
@@ -802,6 +811,11 @@ def _finish_terminated(run_dir: Path, run_id: str, record: contract.RequestRecor
                        signum: int) -> int:
     # 진짜 결과처럼 보이면 안 된다: exit 3(Main 이 아는 "중단") + 오류 글. 정제를 먼저 — Main 은 받은 상태 파일을 믿고 자기 정제를 건너뛴다
     error = terminated_error(signum)
+    # 2026-11-11: 이관 뒤에 취약점 조치가 이어 돌면 이관은 이미 끝났는데 조치 중에(Job 기한 등) 끊길 수 있다 — 운영자가 이관의 결과
+    # 줄(SBMIG-RESULT)과 보고서는 남아 있다는 것을 알게 그 줄을 오류 글에 붙인다(종료 코드는 그대로 3: 자식이 끝을 맺지 못했다)
+    finished = last_result_line(run_dir)
+    if finished:
+        error += f" — the migration itself had finished before (its report is in the run dir): {finished}"
     _say(f"ERROR: {error}")
     redacted = redact_run_dir(run_dir, contract.secret_values(env))
     _journal(run_dir, "worker_finished", {"exit_code": TERMINATED_EXIT, "redacted_files": redacted, "error": error,

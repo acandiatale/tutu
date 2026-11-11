@@ -64,7 +64,7 @@
 | `sbmig/advisory/` | EOL 라이브러리 권고(안내만) | `catalog.py` 권고 목록 합치기 · `evaluate.py` 프로젝트에 맞는 권고 · `hints.py` 프롬프트 힌트 · `verify.py` 마무리 검증 · `cli.py` `sbmig advisories …` |
 | `sbmig/report/` | 보고서 | `writer.py` `write_report` · `markdown.py` `render_markdown`(절 순서) · `handover.py` 인수인계 데이터 · `result_line.py` `SBMIG-RESULT` 줄·종료 코드 · `i18n.py` 한국어 문구 · `errors.py` 오류 목록 가공 · `cost.py` LLM 비용 · `inventory.py` `sbmig inventory` 산출물 |
 | `sbmig/fleet/` | 순차 일괄 실행 | `runner.py` `FleetRunner` · `manifest.py` 매니페스트 · `preflight.py` 인프라 점검 · `summary.py` 요약 파일 · `cleanup.py` 디스크 정리 · `cli.py` `sbmig fleet …` |
-| `sbmig/graph/` | LangGraph 엔진 | `engine.py` 노드 intake → analyze → plan → phase → finalize |
+| `sbmig/graph/` | LangGraph 엔진 | `engine.py` 노드 intake → analyze → plan → phase → finalize (→ remediation, 켜졌을 때) |
 | `sbmig/web/` | 웹 UI | `app.py` 라우트(`/api/runs`, `/api/runs/{run_id}/events` …) · `runs.py` 실행 관리자·SSE 이벤트 · `static/index.html` 화면(바닐라 JS) |
 
 모듈마다 docstring 맨 앞에 한국어 블록(요약 → 흐름상 위치 → 진입점 → 지킬 것)이 있다. 규약: `docs/v2/CODE-COMMENTS-KO.md`.

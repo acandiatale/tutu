@@ -761,6 +761,10 @@ remediation:
   # 운영자가 "여기에 올라오는 ZIP 은 실행해도 되는 신뢰된 프로젝트" 라고 확인했을 때만 true 로 바꾼다.
   # false 면 취약점 조치 요청을 받지 않는다.
   trusted_projects: false
+  # 이관이 BUILD SUCCESS 로 끝나면 같은 빌드 파드에서 이어서 취약점 조치를 돌릴지.
+  # true 면 이관 결과물을 IVAS 로 검사하고 고친 결과를 실행 폴더의 remediation/ 아래에 둔다.
+  # 조치가 실패해도 이관의 성공 여부는 바뀌지 않는다. IVAS 접속 값이 없으면 건너뛴다.
+  after_migration: false
   max_upload_mb: 1024              # 올릴 수 있는 ZIP 크기(MiB)
   max_entries: 200000              # ZIP 안의 파일 수 한도
   max_unpacked_mb: 4096            # 풀었을 때 전체 크기 한도(MiB)

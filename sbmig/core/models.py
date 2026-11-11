@@ -2085,6 +2085,9 @@ class RunReport(BaseModel):
     error_entries: list[ErrorEntry] = Field(default_factory=list)    # v2.1: the run's error list (diffs capped)
     operator_checks: list[OperatorCheck] = Field(default_factory=list)   # v2.1d: 운영자 확인 필요 (major upgrades /
                                                    # library replacements still in the final tree, with their guide)
+    # 2026-11-11: 빌드 성공 뒤 이어서 돈 취약점 조치의 작은 요약(status / reason / files …; ``sbmig.remediations.chain.summary``).
+    # 이관의 성공·종료 코드에는 쓰이지 않는다 — 보고서 "취약점 조치" 절과 SBMIG-RESULT 의 remediation= 만 읽는다
+    remediation: Optional[dict[str, Any]] = None
     outputs: dict[str, str] = Field(default_factory=dict)        # project_dir, zip, diff, journal, report_md, report_json
     timings_s: dict[str, float] = Field(default_factory=dict)
 

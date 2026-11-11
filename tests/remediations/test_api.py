@@ -15,7 +15,7 @@ from sbmig.remediations.api import create_router
 from sbmig.remediations.models import AWAITING_APPROVAL, D_APPROVED, SUCCEEDED
 
 from .fakes import DEFAULT_FILES, FakeMaven, deterministic_zip
-from .test_service import WAIT, Factory, Gate, manager, one_fix
+from .test_service import RUN_ID, WAIT, Factory, FakeRunManager, Gate, _decision, chained, job_manager, manager, one_fix
 
 STATUS_KEYS = {"id", "name", "status", "reason", "reasons", "message", "node", "next_node", "round", "counts", "created",
                "updated", "stop_requested", "pending_approvals", "delivery", "files", "links"}
@@ -107,7 +107,8 @@ def test_post_not_ready_is_503_with_names(tmp_path, base_cfg, monkeypatch):
     assert body["code"] == "not_ready" and "IVAS_USER_ID is not set" in body["missing"]
     assert "tester" not in r.text and "pw-for-tests-only" not in r.text
     r = c.get("/api/remediations/readiness")
-    assert r.status_code == 200 and r.json() == {"ready": False, "missing": ["IVAS_USER_ID is not set"]}
+    assert r.status_code == 200 and r.json() == {"ready": False, "missing": ["IVAS_USER_ID is not set"], "mode": "in-process",
+                                                 "runs_in": "web"}
 
 
 def test_post_unknown_config_is_400(tmp_path, base_cfg):
@@ -120,7 +121,7 @@ def test_post_unknown_config_is_400(tmp_path, base_cfg):
 def test_readiness_route_is_not_taken_for_an_id(tmp_path, base_cfg):
     c = make_client(manager(tmp_path, base_cfg))
     r = c.get("/api/remediations/readiness")
-    assert r.status_code == 200 and r.json() == {"ready": True, "missing": []}
+    assert r.status_code == 200 and r.json() == {"ready": True, "missing": [], "mode": "in-process", "runs_in": "web"}
 
 
 def test_list_status_ids(tmp_path, base_cfg):
@@ -133,8 +134,10 @@ def test_list_status_ids(tmp_path, base_cfg):
     assert body["total"] == 2 and [x["id"] for x in body["items"]] == [b]
     assert c.get("/api/remediations?size=1000").json()["size"] == 100
     assert c.get("/api/remediations/r20000101-000000-abcdef").status_code == 404
-    bad = c.get("/api/remediations/not-an-id")
-    assert bad.status_code == 400 and bad.json()["code"] == "bad_id"
+    assert c.get("/api/remediations/not-an-id").status_code == 404        # a migration run id shape: unknown
+    for b in ("-not-an-id", "_remediations", "a..b", "a%20b"):
+        bad = c.get(f"/api/remediations/{b}")
+        assert bad.status_code == 400 and bad.json()["code"] == "bad_id", b
     assert c.get(f"/api/remediations/{a}").json()["links"]["self"] == f"/api/remediations/{a}"
 
 
@@ -207,7 +210,7 @@ def test_files_whitelist(tmp_path, base_cfg):
     for name in ("state.json", "%2E%2E", "approvals.jsonl", "plan-r9.json", "..%2Fstate.json", "result-verified.zip"):
         assert c.get(f"/api/remediations/{rid}/files/{name}").status_code == 404, name
     assert c.get("/api/remediations/r20000101-000000-abcdef/files/report.md").status_code == 404
-    assert c.get("/api/remediations/bad/files/report.md").status_code == 400
+    assert c.get("/api/remediations/-bad/files/report.md").status_code == 400
 
 
 # ---------------------------------------------------------------------------- the real web app
@@ -223,7 +226,8 @@ def test_web_app_includes_the_router_and_keeps_api_runs(tmp_path, monkeypatch):
     app = create_app(tmp_path / "out", repo)
     with TestClient(app) as c:
         r = c.get("/api/remediations/readiness")
-        assert r.status_code == 200 and r.json() == {"ready": True, "missing": []}
+        assert r.status_code == 200 and r.json() == {"ready": True, "missing": [], "mode": "in-process", "runs_in": "web"}
+        assert app.state.remediations.run_manager is app.state.manager and app.state.remediations.mode == "in-process"
         assert c.get("/api/remediations").json()["total"] == 0
         assert c.get("/api/runs").status_code == 200
         assert c.get("/api/configs").status_code == 200
@@ -258,3 +262,58 @@ def test_restart_between_apps_interrupts(tmp_path, base_cfg):
     gate.release.set()
     assert mgr.wait(rid, WAIT)
     assert mgr2.wait_idle(1.0)                          # mgr2 never ran anything
+
+
+# ---------------------------------------------------------------------------- Job modes / chained remediations
+def test_job_mode_routes(tmp_path, base_cfg):
+    paths = chained(tmp_path, base_cfg)
+    rm = FakeRunManager(tmp_path / "out")
+    mgr = job_manager(tmp_path, base_cfg, rm=rm)
+    c = make_client(mgr)
+    r = post_zip(c)
+    assert r.status_code == 409 and r.json()["code"] == "not_available" and r.json()["mode"] == "k8s-job"
+    assert "build pod" in r.json()["error"] and "remediation.after_migration" in r.json()["error"]
+    assert not list((tmp_path / "out" / "_remediations" / ".incoming").glob("*"))
+    r = c.get("/api/remediations/readiness")
+    assert r.status_code == 200 and r.json()["ready"] is False and r.json()["runs_in"] == "build_pod"
+    body = c.get("/api/remediations").json()
+    assert body["total"] == 1 and body["items"][0]["kind"] == "chained" and body["items"][0]["run_id"] == RUN_ID
+    st = c.get(f"/api/remediations/{RUN_ID}").json()
+    assert STATUS_KEYS <= set(st) and st["kind"] == "chained" and st["status"] == AWAITING_APPROVAL
+    assert st["resume"]["available"] is False and "next increment" in st["resume"]["note"]
+    assert str(tmp_path) not in c.get(f"/api/remediations/{RUN_ID}").text
+    assert c.get(f"/api/remediations/{RUN_ID}/files/plan-r1.json").status_code == 200
+    rm.withheld.add(RUN_ID)
+    r = c.get(f"/api/remediations/{RUN_ID}/files/plan-r1.json")
+    assert r.status_code == 409 and r.json()["code"] == "withheld"
+    assert c.get(f"/api/remediations/{RUN_ID}/files/journal.jsonl").status_code == 200
+    rm.withheld.clear()
+    p = c.get(f"/api/remediations/{RUN_ID}/proposals").json()["proposals"][0]
+    dec = _decision(p).to_dict()
+    r = c.post(f"/api/remediations/{RUN_ID}/approvals", json={"by": "alice", "decisions": [dec]})
+    assert r.status_code == 200 and r.json() == {"accepted": [p["id"]], "pending": 0}
+    r = c.post(f"/api/remediations/{RUN_ID}/resume", json={})
+    assert r.status_code == 409 and r.json()["code"] == "not_available" and "next increment" in r.json()["error"]
+    r = c.delete(f"/api/remediations/{RUN_ID}")
+    assert r.status_code == 409 and r.json()["code"] == "state_conflict" and paths.state.is_file()
+    assert c.post(f"/api/remediations/{RUN_ID}/stop").status_code == 409
+    assert c.get("/api/remediations/web-20000101-000000-000000").status_code == 404
+    assert mgr._worker is None
+
+
+def test_web_app_in_local_job_mode_runs_no_remediation(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    (repo / "config").mkdir(parents=True)
+    shutil.copy(PACKAGE_ROOT / "config" / "artifacts.local-e2e.yml", repo / "config" / "artifacts.local-e2e.yml")
+    monkeypatch.delenv("KUBECONFIG", raising=False)
+    factory = Factory()
+    monkeypatch.setattr(service_mod, "default_components_factory", factory)
+    from sbmig.web import create_app
+    from sbmig.web.localjob import LocalJobClient
+    app = create_app(tmp_path / "out", repo, mode="local-job", job_client=LocalJobClient(repo))
+    with TestClient(app) as c:
+        assert app.state.remediations.mode == "local-job" and app.state.remediations.job_mode
+        r = post_zip(c)
+        assert r.status_code == 409 and r.json()["code"] == "not_available"
+        assert c.get("/api/remediations/readiness").json()["runs_in"] == "build_pod"
+    assert factory.comps is None

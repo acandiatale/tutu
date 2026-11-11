@@ -135,3 +135,19 @@ def test_adf_project_is_an_attention_code():
     line = report_result_line(r, 3)
     assert "exit=3" in line and "adf-project" in line.split("attn=")[1]
     assert flag_help("adf-project") and "ADF" in flag_help("adf-project")
+
+
+def test_remediation_token_is_last_and_never_changes_the_verdict():
+    """2026-11-11: ` remediation=<STATUS|skipped>` after every other token, only when a chained remediation ran or was
+    skipped with the switch on; exit / build / attn stay the migration's."""
+    base = report_result_line(_report(llm=1), 0)
+    for status in ("SUCCEEDED", "FAILED", "AWAITING_APPROVAL", "skipped"):
+        r = _report(llm=1, remediation={"status": status, "dir": "remediation"})
+        assert report_result_line(r, 0) == f"{base} remediation={status}"
+        assert report_exit_code(r) == 0
+    failed = _report(success=False, remediation={"status": "SUCCEEDED"})
+    assert report_exit_code(failed) == 2 and " build=FAIL " in report_result_line(failed)
+    assert "remediation=" not in report_result_line(_report(remediation=None), 0)
+    assert "remediation=" not in report_result_line(_report(remediation={"status": ""}), 0)
+    assert result_line("r", 0, True, review="ok", major=2, remediation="INCOMPLETE").endswith(
+        " review=ok major=2 remediation=INCOMPLETE")

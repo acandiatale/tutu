@@ -81,7 +81,7 @@
 | `LLM_APP_TOKEN` | `sbmig-llm` | 토큰 교환에 쓰는 앱 토큰. 교환이 없는 게이트웨이면 대신 `LLM_API_KEY` 에 Bearer 값 |
 | `NEXUS_USER` / `NEXUS_PASSWORD` | `sbmig-llm` | Nexus 그룹이 로그인을 요구할 때만. `settings.xml` 의 `<server>` 가 `${env.NEXUS_USER}` / `${env.NEXUS_PASSWORD}` 로 읽는다 |
 | `SBMIG_WEB_TOKEN` | `sbmig-llm` (선택) | 웹 토큰 보호를 켤 때만. 켜면 브라우저는 `http://<host>:8765/?token=<값>` 으로 한 번 연다 |
-| `IVAS_BASE_URL` / `IVAS_USER_ID` / `IVAS_PASSWORD` | `sbmig-llm` (선택) | 취약점 조치(`/api/remediations`, README §6)를 쓸 때만. 웹 파드만 읽는다 — `sbmig-env`·81 Job 틀에 넣지 않는다. 주소는 `https://CHANGE_ME_IVAS_HOST[:port]/<base path>` 모양(https, 끝의 `/` 없이) |
+| `IVAS_BASE_URL` / `IVAS_USER_ID` / `IVAS_PASSWORD` | `sbmig-llm` (선택) | 취약점 조치(README §6). 이관이 BUILD SUCCESS 로 끝난 **빌드 파드**가 이어서 쓴다 — 81 Job 틀이 `secretKeyRef`(optional) 세 줄로, 80 이 `envFrom` 으로 받는다(웹 파드도 envFrom 으로 받지만 Job 모드에서는 쓰지 않는다). 없으면 조치만 건너뛴다(저널 `remediation_skipped`). `sbmig-env` 에는 넣지 않는다. 로그·보고서에서 `IVAS_USER_ID` 도 비밀로 지운다. 주소는 `https://CHANGE_ME_IVAS_HOST[:port]/<base path>` 모양(https, 끝의 `/` 없이) |
 | `GIT_TOKEN` (+ `GIT_USER`) | `sbmig-git` | 요청별 Job 모델만: 소스 clone, 결과·KB push |
 
 ## 5. ConfigMap `sbmig-env` — 자주 조정하는 설정 키 (선택, 기본값을 적어 둠)
@@ -112,6 +112,10 @@
 | `SBMIG_LIBRARIES__INCLUDE_PRERELEASE` | `false` | 프리릴리스 버전도 후보로 |
 | `SBMIG_REVIEW__FIX_CRITICAL` | `true` | 구조 리뷰의 critical 을 자동 수정 |
 | `SBMIG_FLEET__MIN_FREE_GB` | `5` | 실행 전 디스크 여유 하한 |
+| `SBMIG_REMEDIATION__AFTER_MIGRATION` | **`true` (켜진 채 나감)**, 코드 기본 `false` | BUILD SUCCESS 뒤 같은 빌드 파드에서 취약점 조치를 이어 돈다(README §6). 웹 파드와 Job 파드가 같은 값을 받도록 `sbmig-env` 에 둔다 — 한쪽에만 있으면 환경 대조로 Job 이 멈춘다 |
+| `SBMIG_REMEDIATION__REQUIRE_APPROVAL` | `false` | `true` = 모든 버전 변경에 사람 승인 |
+| `SBMIG_REMEDIATION__FAILED_CANDIDATE` | `include` | 빌드가 실패한 수정본도 `result.zip` 으로 낸다 / `discard` |
+| `SBMIG_REMEDIATION__IVAS_ANALYSIS_TIMEOUT_MINUTES` | `30` | IVAS 분석 한 번의 대기 한도(넘으면 검사 미완료 — 0건이 아니다) |
 
 ## 6. 매니페스트에 고정된 컨테이너 경로 (채울 것 없음)
 

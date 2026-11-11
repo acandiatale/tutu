@@ -23,7 +23,7 @@ metadata:
   # 함께 바꾼 뒤 이 ConfigMap 을 다시 apply 한다.
 spec:
   backoffLimit: 0                       # 이관을 무턱대고 재시도하지 않는다(실패한 실행의 보고서가 곧 결과)
-  activeDeadlineSeconds: 14400          # 4 시간
+  activeDeadlineSeconds: 14400          # 4 시간 — 이관 + (BUILD SUCCESS 면) 이어 도는 취약점 조치까지. 조치가 보태는 시간은 README §6 "시간"
   ttlSecondsAfterFinished: 3600         # 끝난 Job 과 그 파드를 1 시간 뒤 쿠버네티스가 지운다(삭제 명령은 아무도 내리지 않는다). 끝난 파드는 CPU·메모리를
                                         # 쓰지 않고 목록에 이름과 로그만 남는다 — 하루 수십 건이 돌아도 목록에 한두 개만 보이게 1 시간. 결과·sbmig.log 는
                                         # 볼륨에 남는다. `kubectl logs` 를 더 오래 보려면 늘린다(86400 = 하루).
@@ -98,11 +98,22 @@ spec:
             - {name: SBMIG_LIBRARIES__INCLUDE_PRERELEASE, valueFrom: {configMapKeyRef: {name: sbmig-env, key: SBMIG_LIBRARIES__INCLUDE_PRERELEASE, optional: true}}}
             - {name: SBMIG_REVIEW__FIX_CRITICAL, valueFrom: {configMapKeyRef: {name: sbmig-env, key: SBMIG_REVIEW__FIX_CRITICAL, optional: true}}}
             - {name: SBMIG_FLEET__MIN_FREE_GB, valueFrom: {configMapKeyRef: {name: sbmig-env, key: SBMIG_FLEET__MIN_FREE_GB, optional: true}}}
+            # 취약점 조치(2026-11-11): 이관이 BUILD SUCCESS 로 끝나면 이 파드에서 이어 돈다(README §6). 스위치는 sbmig-env 에 켜져 있다 — 웹 파드와
+            # 같은 값이 와야 Worker 의 환경 대조를 통과한다
+            - {name: SBMIG_REMEDIATION__AFTER_MIGRATION, valueFrom: {configMapKeyRef: {name: sbmig-env, key: SBMIG_REMEDIATION__AFTER_MIGRATION, optional: true}}}
+            - {name: SBMIG_REMEDIATION__REQUIRE_APPROVAL, valueFrom: {configMapKeyRef: {name: sbmig-env, key: SBMIG_REMEDIATION__REQUIRE_APPROVAL, optional: true}}}
+            - {name: SBMIG_REMEDIATION__FAILED_CANDIDATE, valueFrom: {configMapKeyRef: {name: sbmig-env, key: SBMIG_REMEDIATION__FAILED_CANDIDATE, optional: true}}}
+            - {name: SBMIG_REMEDIATION__IVAS_ANALYSIS_TIMEOUT_MINUTES, valueFrom: {configMapKeyRef: {name: sbmig-env, key: SBMIG_REMEDIATION__IVAS_ANALYSIS_TIMEOUT_MINUTES, optional: true}}}
             # 비밀 — Secret 의 키를 valueFrom 으로만(값을 바꿀 때: 위 metadata 의 immutable Secret 설명)
             - {name: LLM_APP_TOKEN, valueFrom: {secretKeyRef: {name: sbmig-llm, key: LLM_APP_TOKEN, optional: true}}}
             - {name: LLM_API_KEY, valueFrom: {secretKeyRef: {name: sbmig-llm, key: LLM_API_KEY, optional: true}}}
             - {name: NEXUS_USER, valueFrom: {secretKeyRef: {name: sbmig-llm, key: NEXUS_USER, optional: true}}}
             - {name: NEXUS_PASSWORD, valueFrom: {secretKeyRef: {name: sbmig-llm, key: NEXUS_PASSWORD, optional: true}}}
+            # IVAS 접속 값(취약점 조치가 이 빌드 파드에서 돈다, 2026-11-11). optional: true — IVAS 가 없는 클러스터에서도 이관은 돈다(조치는
+            # 저널 remediation_skipped 로 건너뛴다). IVAS_BASE_URL 은 비밀이 아니지만 사내 호스트라 같은 Secret 에 둔다. 비밀은 지문 대상이 아니다
+            - {name: IVAS_BASE_URL, valueFrom: {secretKeyRef: {name: sbmig-llm, key: IVAS_BASE_URL, optional: true}}}
+            - {name: IVAS_USER_ID, valueFrom: {secretKeyRef: {name: sbmig-llm, key: IVAS_USER_ID, optional: true}}}
+            - {name: IVAS_PASSWORD, valueFrom: {secretKeyRef: {name: sbmig-llm, key: IVAS_PASSWORD, optional: true}}}
           volumeMounts:
             - {name: data, mountPath: /data}                             # 웹 파드와 같은 PVC, 같은 경로
             - {name: m2, mountPath: /home/sbmig/.m2}

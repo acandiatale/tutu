@@ -113,6 +113,13 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
     "Last build log: `{path}`": "마지막 빌드 로그: `{path}`",
     # ---- v2 structure review (sbmig.review)
     "Structure review": "구조 점검",
+    "Vulnerability remediation": "취약점 조치",
+    "Chained after the migration's BUILD SUCCESS (remediation.after_migration); it does not change the migration result "
+    "above.": "이관의 BUILD SUCCESS 뒤 이어서 돌았습니다(remediation.after_migration). 위의 이관 결과는 바뀌지 않습니다.",
+    "- Not run: `{reason}`": "- 실행 안 함: `{reason}`",
+    "- Status: `{status}`{reason}": "- 상태: `{status}`{reason}",
+    "- Counts: {counts}": "- 개수: {counts}",
+    "- Files: {files}": "- 파일: {files}",
     "| Structure review | {summary} |": "| 구조 점검 | {summary} |",
     "After the restructure and before the first build, the LLM checked the poms, dependencies and module layout "
     "against the company rules. It fixes critical issues itself (committed, revertible) and leaves a script for the "

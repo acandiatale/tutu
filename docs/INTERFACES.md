@@ -4670,7 +4670,46 @@ get a new **version text** on an isolated candidate copy (transitive / parent- /
 verified, the frozen delivery ZIP is rescanned, and a report + `result.zip` come out. Package `sbmig/remediations/` (package map in its `__init__.py`); the
 contract types are `sbmig/remediations/models.py` and `sbmig/remediations/interfaces.py`; settings `cfg.remediation.*`
 (`RemediationConfig` / `RemediationPolicyConfig` in `sbmig/core/config.py`, section `remediation:` of `config/default.yml`).
-It never touches the migration graph, the migration KB, `/api/runs` or the Job dispatch.
+It never touches the migration KB; since the later decision of the same day it is **chained after a migration in the build pod**
+(below), the migration graph calling it through one node.
+
+### Execution model — the build pod, chained after BUILD SUCCESS (user, 2026-11-11, later the same day)
+
+- **Where**: in the BUILD POD, not the web pod. When a migration ended BUILD SUCCESS and `remediation.after_migration` is true, the
+  migration LangGraph's `remediation` node (after `finalize`) calls the separate remediation graph (`run_after_migration` in
+  sbmig/remediations/chain.py) inside the same `sbmig run` process. Code default false; the k8s manifests ship it **true** in
+  ConfigMap `sbmig-env` (group 3), so the web pod (40, `envFrom`), the Job pod (81, one `configMapKeyRef` line) and the 80 model
+  (`envFrom`) carry the same value — it is a config override and therefore env-pinned (`SBMIG_JOB_ENV_PIN`): an override on one
+  side only is refused.
+- **Files**: `<migration run dir>/remediation/` (`RunPaths` below, rooted there); the remediation id = the migration run id. The chain
+  zips the migrated project tree itself and feeds it through `intake.accept_zip`.
+- **Verdict**: the remediation's outcome never changes the migration's success, exit code or report verdict; no exception escapes the
+  node. `SBMIG-RESULT … remediation=<STATUS|skipped>`. Skipped (journal `remediation_skipped`, names only) when disabled or not
+  ready: readiness on this path = the three IVAS values + Maven readiness; `remediation.trusted_projects` is **not** required here
+  (the migration already built the project) — it gates the standalone upload only.
+- **Waiting states**: a build pod cannot wait for a human. `AWAITING_APPROVAL` / `AWAITING_CONFIRMATION` are saved and the pod ends.
+  Resuming a chained remediation in a NEW build pod is the **next increment**; until then `POST …/resume` on a chained remediation
+  answers 409 `not_available` in a Job mode.
+- **Web pod**: status, proposals, approvals, files only (`/api/remediations/<migration run id>/…`). The standalone
+  `POST /api/remediations` runs only in `in-process` mode (the web pod then runs it as before, under `<web out dir>/_remediations/<id>/`);
+  in `k8s-job` / `local-job` it answers 409 `not_available`.
+- **Environment in the Job pod**: `IVAS_BASE_URL` / `IVAS_USER_ID` / `IVAS_PASSWORD` come from Secret `sbmig-llm` — 81 by three
+  `secretKeyRef` lines (`optional: true`: a cluster without IVAS still migrates), 80 by `envFrom`. The Worker passes them to its
+  child unchanged (`sbmig.web.worker.child_environ` drops only the record-dir variables). `IVAS_USER_ID` is a secret name although
+  it holds no secret word (`sbmig.web.contract.SECRET_NAMES`, redacted from 4 characters on — `MIN_NAMED_SECRET_LEN`); the IVAS
+  token is registered through `scrub.note_secret` in the child. No `IVAS_*` value is ever env-pinned (two are secret names;
+  `IVAS_BASE_URL` is neither an `SBMIG_` override nor a `${VAR}` placeholder of a config file). The Worker's final redaction pass
+  (`sbmig.web.redact.redact_run_dir`) also walks `remediation/` (text suffixes + `.patch`; atomic replace) and skips its project trees
+  (`accepted/`, `rounds/<n>/candidate/`), `original/` (the read-only `source.zip` + the hash-bound `manifest.json`), every ZIP and
+  every symlink. A stop signal during the chained remediation (the Job deadline) still ends the Worker with exit 3; the error text then
+  carries the migration's `SBMIG-RESULT` line (the migration report is in the run dir).
+- **Maven**: on this path the local repository is the pod's slot repository (slot 1 `~/.m2/repository`, slot k `repository-slot<k>`);
+  the `-remediation` suffix applies to the in-process standalone path only.
+- **Time**: the Job's `activeDeadlineSeconds` stays 14400. A chained remediation adds a baseline build, an IVAS upload + analysis
+  (≤ `remediation.ivas_analysis_timeout_minutes`, 30) and per round a candidate build + rescan; typical 20–75 min, worst case of the
+  configured caps ≈ 8 h (60-min builds, 30-min uploads and analyses, 3 rounds) — beyond any deadline, like the migration's own
+  240-min cap. `deploy/README.md` §6.
+- **IVAS logins**: several logins / tokens at once work (the user tested three) — one login per pod is fine with three build pods.
 
 ### Hard rules (company, all bind)
 
@@ -4716,7 +4755,8 @@ It never touches the migration graph, the migration KB, `/api/runs` or the Job d
 
 ### Run directory (`RunPaths`)
 
-`<web out dir>/_remediations/<id>/` (the leading `_` keeps it out of the migration run list):
+Chained (build pod): `<migration run dir>/remediation/`. Standalone (in-process mode only): `<web out dir>/_remediations/<id>/`
+(the leading `_` keeps it out of the migration run list):
 
 | Path | What |
 |---|---|
@@ -4862,8 +4902,10 @@ given; identity is whatever the app's TokenGuard admits.
 
 ### HTTP API
 
-In-process: worker threads of the existing FastAPI app (the web pod), never a Kubernetes Job; separate from `/api/runs`; one
-remediation runs at a time, further uploads wait `QUEUED`. All routes sit behind the app's TokenGuard. Errors are
+Served by the existing FastAPI app (the web pod), separate from `/api/runs`. A chained remediation's id is the migration run id
+(read-only status / proposals / files + approvals; its resume is 409 `not_available` in a Job mode until the next increment). The
+standalone upload runs in worker threads of the web pod in `in-process` mode only (one at a time, further uploads wait `QUEUED`);
+in `k8s-job` / `local-job` it is 409 `not_available`. All routes sit behind the app's TokenGuard. Errors are
 `{"error": "<message>", "code": "<code>", …}`.
 
 | Route | Result |
@@ -4904,11 +4946,14 @@ Secret (Kubernetes Secret, environment only, never in yml): `IVAS_USER_ID`, `IVA
 (it is a company host, not a credential, but it must not land in the repo or the baked yml). Nexus credentials stay where the
 migration has them: the server `settings.xml` `<server>` entries reading `${env.NEXUS_USER}` / `${env.NEXUS_PASSWORD}`. Plain
 config: every `remediation.*` key, `build.settings_file`, `build.java_home`, `build.mvn`, `build.local_repo`, `build.extra_args`.
-The deployment puts the three `IVAS_*` keys into Secret `sbmig-llm`, which only the web pod reads (`envFrom`); they are not in
-ConfigMap `sbmig-env` and not in the Job template `81-web-job.template.yaml` (Job pods never run remediations).
+The deployment puts the three `IVAS_*` keys into Secret `sbmig-llm`: the Job template `81-web-job.template.yaml` reads them by
+`secretKeyRef` (optional), the 80 model and the web pod by `envFrom` (the web pod uses them only in `in-process` mode). They are not
+in ConfigMap `sbmig-env`. Remediation overrides that must reach the build pod (`SBMIG_REMEDIATION__AFTER_MIGRATION`, and if set
+`…__REQUIRE_APPROVAL` / `…__FAILED_CANDIDATE` / `…__IVAS_ANALYSIS_TIMEOUT_MINUTES`) live in `sbmig-env` with a line each in 81 —
+a literal in 40 only would be a `main_only` env-pin difference and stop every Job.
 
 Readiness (`GET …/readiness`, also checked on upload and at `baseline_build`): `remediation.trusted_projects` true (named first
-when not); `IVAS_BASE_URL` set, a valid `https` URL (plain
+when not; standalone path only — the chained path does not ask it); `IVAS_BASE_URL` set, a valid `https` URL (plain
 `http` only for loopback), no credentials / query / fragment in it; `IVAS_USER_ID` and `IVAS_PASSWORD` set; Maven runnable and
 not a wrapper; JDK 21 at `build.java_home` / `JAVA_HOME`; `build.settings_file` set, present and readable; at least one approved
 repository host (`remediation.allowed_repository_hosts`, else the mirrors / repositories of the server settings.xml).
@@ -4943,8 +4988,9 @@ The server's Maven only (`build.mvn`; a wrapper path is "not ready"; the project
 `settings.xml` passed with `-s` and required, approved repository hosts / mirrors only (a pom `<repository>` /
 `<pluginRepository>` on another host → `remediation.foreign_repository`, default refuse), insecure-TLS properties and other
 `-s` / `-f` stripped from `build.extra_args`, tests never run (`-Dmaven.test.skip=true` on every command), `clean package` as the
-gate, `dependency:tree` per module for resolution. The web pod uses its own Maven local repository for remediations,
-`<local repo>-remediation`, so a remediation build never shares a repository with a migration running in the same pod.
+gate, `dependency:tree` per module for resolution. The standalone (in-process) path uses its own Maven local repository,
+`<local repo>-remediation`, so a remediation build never shares a repository with a migration running in the same pod; the chained
+path uses the build pod's slot repository (the migration in that pod has finished).
 **`.mvn/` cannot be disabled on Maven 3.9** (the launcher always reads `.mvn/maven.config`, `.mvn/jvm.config` and
 `.mvn/extensions.xml` from the first ancestor holding `.mvn`), so the intake boundary refuses them by default
 (`remediation.project_maven_config: refuse`); with `ignore` every build logs a WARNING and journal `maven_project_config`.
@@ -4969,5 +5015,5 @@ field (`lbrdrAnlId`, else `analysisId`); transitive / managed findings (approved
    sbmig later learn which parent / BOM version fixes a finding (so the override can be dropped)?
 6. Retention: how long original ZIPs, delivery ZIPs and scans stay on the volume; `DELETE` removes everything.
 
-Not built yet: a page in the web UI (API only); more than one remediation at a time; Job-pod execution; plugin / vendored fixes;
+Not built yet: resuming a chained remediation (after approval / confirmation) in a new build pod; plugin / vendored fixes;
 a run against the real IVAS and Nexus.

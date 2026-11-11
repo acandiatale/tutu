@@ -167,6 +167,26 @@
   .report { margin-top: 10px; white-space: pre-wrap; font: 12.5px/1.5 var(--mono); max-height: 420px; overflow: auto;
             background: var(--paper); border: 1px solid var(--line-soft); border-radius: var(--radius-s); padding: 12px 14px; }
 
+  /* ---- 3b. 취약점 조치(빌드 파드가 이관 성공 뒤 이어 돌린 조치): 결과 카드 아래 한 칸 */
+  .remed { margin-top: 18px; border-top: 1px solid var(--line-soft); padding-top: 16px; }
+  .remed .msg { margin: 8px 0 0; color: var(--muted); font-size: 12.5px; word-break: keep-all; overflow-wrap: anywhere; }
+  .remed .msg:empty { display: none; }
+  .remed .reasons { margin-top: 8px; } .remed .reasons:empty { display: none; }
+  .remed .reasons .chip { font-family: var(--mono); font-size: 12px; }
+  .remed .downloads:empty { display: none; }
+  .badge { display: inline-block; margin-left: 4px; padding: 1px 8px; border-radius: 999px; font-size: 11.5px; font-weight: 700; }
+  .badge.bad { background: var(--bad); color: #fff; }
+  .remed .approvals { margin-top: 16px; }
+  .remed .approvals .head { font-weight: 700; font-size: 13.5px; margin: 0 0 6px; }
+  .remed .by { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
+  .remed .by input { padding: 6px 10px; border: 1px solid var(--line); border-radius: var(--radius-s); background: #fff; width: 180px; }
+  .prop { border: 1px solid var(--line); border-radius: var(--radius-s); padding: 12px 14px; margin-top: 10px; background: #fff; }
+  .prop .prophead { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+  .prop .prophead .mono { color: var(--ink); font-weight: 600; word-break: break-all; }
+  .prop .actions { margin-top: 10px; }
+  pre.diff { margin: 8px 0 0; max-height: 280px; overflow: auto; background: var(--paper); border: 1px solid var(--line-soft);
+             border-radius: var(--radius-s); padding: 10px 12px; font: 12px/1.5 var(--mono); white-space: pre; }
+
   /* ---- 4. 지난 실행 */
   details.history summary { cursor: pointer; padding: 14px 22px; font-weight: 700; font-size: 15px; display: flex; align-items: center; gap: 10px; }
   details.history summary .n { color: var(--muted); font-weight: 400; font-size: 13px; }
@@ -311,6 +331,26 @@
       </a>
     </div>
     <div class="otherfiles" id="otherfiles"></div>
+    <!-- 취약점 조치: 이 이관 실행에 이어 돈 조치가 있을 때만(/api/remediations/<실행 id>, 404 면 숨김) -->
+    <div class="remed" id="remed" hidden aria-live="polite">
+      <div class="line">
+        <h2>취약점 조치</h2>
+        <span class="chip" id="remed-status"></span>
+        <span class="counts" id="remed-counts"></span>
+      </div>
+      <p class="msg" id="remed-msg"></p>
+      <div class="counts reasons" id="remed-reasons"></div>
+      <div class="downloads" id="remed-dl"></div>
+      <div class="approvals" id="remed-approvals" hidden>
+        <p class="head">승인을 기다리는 변경</p>
+        <label class="by">승인자 <input id="remed-by" type="text" maxlength="80" autocomplete="name" placeholder="이름"></label>
+        <div id="remed-props"></div>
+        <div class="actions">
+          <button class="btn quiet" id="remed-resume" type="button" disabled>재개</button>
+          <span class="note" id="remed-resume-note"></span>
+        </div>
+      </div>
+    </div>
     <details class="preview" id="preview">
       <summary>보고서 미리보기</summary>
       <div class="report" id="report"></div>
@@ -558,7 +598,8 @@
 
   // ---- 단계 레일: intake → analyze → plan → phase × N → finalize. `node` 이벤트가 켠다.
   const KO = { job: '파드', intake: '접수', analyze: '분석', plan: '계획', finalize: '마무리',
-               transform: '레시피 적용', restructure: '재구성', verify: '빌드 검증', report: '보고서', jdk21: 'JDK 21', spring: 'Spring' };
+               transform: '레시피 적용', restructure: '재구성', verify: '빌드 검증', report: '보고서', jdk21: 'JDK 21', spring: 'Spring',
+               remediation: '취약점 조치' };
   const FIXED = ['intake', 'analyze', 'plan'];
   function stepHtml(node, label, extra) {
     const ko = KO[node] || label;
@@ -633,7 +674,10 @@
     else if (u.stopped) $('railnote').textContent = '요청한 단계까지만 실행하고 멈췄습니다.';
     const steps = railSteps(); let last = -1;
     steps.forEach((n, i) => { if (n.classList.contains('done') || n.classList.contains('failed')) last = i; });
-    setCurrent(name === 'finalize' || u.aborted ? null : steps[last + 1]);
+    // finalize 뒤에는 이어 도는 취약점 조치(빌드 파드의 remediation 노드)만 남는다: 이미 시작했으면 그것이 현재 단계
+    const remRunning = rail.querySelector('.step[data-node="remediation"]:not(.done):not(.failed)');
+    setCurrent(u.aborted ? null : (name === 'finalize' ? remRunning : steps[last + 1]));
+    if (name === 'remediation' && current) loadRemediation(current);
   }
 
   // ---- 진행 기록(journal): 화면에는 마지막 MAX_ROWS 줄만 둔다
@@ -656,6 +700,11 @@
       bits.push(`${k}=${s}`);
     }
     if (name === 'phase_start' && ev.phase) $('railnote').textContent = `지금 단계: ${KO[ev.phase] || ev.phase}`;
+    // 이관 성공 뒤 빌드 파드가 취약점 조치 노드를 시작했다(graph_node … node=remediation): 레일 끝에 한 칸, 현재 단계로
+    if (name === 'graph_node' && ev.node === 'remediation') {
+      const step = remStep();
+      if (!step.classList.contains('done')) { setCurrent(step); $('railnote').textContent = '취약점 조치 중 — IVAS 검사와 승인된 버전 수정을 합니다.'; }
+    }
     if (name === 'phase_end' && ev.phase) {
       $('railnote').textContent = `${KO[ev.phase] || ev.phase} ${ev.ok === false ? '단계가 실패로 끝났습니다' : '단계 끝'}`;
       const step = $('rail').querySelector(`.step[data-phase="${CSS.escape(ev.phase)}"]`);
@@ -737,7 +786,139 @@
     $('otherfiles').innerHTML = others.length ? '<span>그 밖의 파일</span>' + others.map((f) => `<a href="${fileUrl(f)}" target="_blank" rel="noopener">${esc(f)}</a>`).join('') : '';
     if (!files.includes('result.zip')) $('otherfiles').insertAdjacentHTML('afterbegin', '<span class="muted">변환 결과 zip 이 없습니다 (중단되었거나 report.zip_result 가 꺼져 있음).</span>');
     if (files.includes('sbmig.log')) { $('logfull').href = fileUrl('sbmig.log'); $('logfull').hidden = false; }
+    if (current) loadRemediation(current);
   }
+
+  // ---------------------------------------------------------------- 3b. 취약점 조치
+  // 빌드 파드가 이관 성공 뒤 이어 돌린 조치(상태 id = 이관 실행 id). 서버 글(이유 코드·diff·메시지)은 모두 textContent 로만 넣는다 —
+  // diff 에는 '<' 가 들어 있다
+  const REM_KO = { QUEUED: '대기', RUNNING: '진행 중', AWAITING_APPROVAL: '승인 대기', AWAITING_CONFIRMATION: '업로드 확인 대기',
+                   STOPPED: '중지됨', INTERRUPTED: '중단됨', SUCCEEDED: '조치 완료', INCOMPLETE: '일부만 조치됨', FAILED: '실패' };
+  const REM_CLS = { SUCCEEDED: 'ok', INCOMPLETE: 'warn', AWAITING_APPROVAL: 'warn', AWAITING_CONFIRMATION: 'warn', STOPPED: 'warn',
+                    INTERRUPTED: 'bad', FAILED: 'bad' };
+  let remSeq = 0;
+  function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = String(text); return e; }
+  function remUrl(id, tail) { return `/api/remediations/${encodeURIComponent(id)}` + (tail || ''); }
+  function hideRemediation() { remSeq++; $('remed').hidden = true; $('remed-props').replaceChildren(); }
+  function remStep() {
+    const rail = $('rail');
+    let s = rail.querySelector('.step[data-node="remediation"]');
+    if (!s) { rail.insertAdjacentHTML('beforeend', stepHtml('remediation', 'remediation')); s = rail.lastElementChild; }
+    return s;
+  }
+  async function loadRemediation(runId) {
+    const seq = ++remSeq;
+    let r = null, st = null;
+    try { r = await fetch(remUrl(runId)); try { st = await r.json(); } catch (e) {} } catch (e) { return; }
+    if (seq !== remSeq || current !== runId) return;              // 그 사이 다른 실행을 골랐다
+    if (!r.ok || !st || !st.status) { $('remed').hidden = true; return; }   // 404 = 이 실행에는 이어 돈 조치가 없다
+    const step = remStep();
+    if (st.status === 'RUNNING' || st.status === 'QUEUED') setCurrent(step);
+    else { step.classList.add('done'); step.classList.remove('current'); }
+    let props = null;
+    if (st.status === 'AWAITING_APPROVAL') {
+      try { const pr = await fetch(remUrl(runId, '/proposals')); if (pr.ok) props = await pr.json(); } catch (e) {}
+      if (seq !== remSeq || current !== runId) return;
+    }
+    renderRemediation(runId, st, props);
+  }
+  function renderRemediation(runId, st, props) {
+    $('remed').hidden = false;
+    const chip = $('remed-status');
+    chip.className = 'chip ' + (REM_CLS[st.status] || '');
+    chip.textContent = (REM_KO[st.status] || st.status) + (st.stale ? ' (빌드 파드 종료)' : '');
+    const c = st.counts || {}, counts = $('remed-counts');
+    counts.replaceChildren();
+    if (c.baseline_findings != null) counts.appendChild(el('span', 'chip', `취약점 ${c.baseline_findings}건 → ${c.final_findings != null ? c.final_findings + '건' : '검사 전'}`));
+    if (c.proposals_applied) counts.appendChild(el('span', 'chip ok', `적용 ${c.proposals_applied}건`));
+    const pend = Number(st.pending_approvals || 0);
+    if (pend) counts.appendChild(el('span', 'chip warn', `승인 대기 ${pend}건`));
+    $('remed-msg').textContent = st.message || '';
+    const reasons = $('remed-reasons');
+    reasons.replaceChildren();
+    const codes = Array.isArray(st.reasons) && st.reasons.length ? st.reasons : (st.reason ? [st.reason] : []);
+    for (const code of codes) reasons.appendChild(el('span', 'chip', code));
+    // 내려받기: 조치 보고서, 조치 결과 zip(빌드가 실패한 후보면 '빌드 실패본' 표시), 앞 라운드의 검증된 zip
+    const files = Array.isArray(st.files) ? st.files : [], dl = $('remed-dl');
+    dl.replaceChildren();
+    const link = (name, text, cls, badge) => {
+      if (!files.includes(name)) return;
+      const a = el('a', 'btn ' + cls);
+      a.href = remUrl(runId, '/files/' + name); a.setAttribute('download', name);
+      const lab = el('span', null, text + ' '); lab.appendChild(el('span', 'sub', name)); a.appendChild(lab);
+      if (badge) a.appendChild(el('span', 'badge bad', badge));
+      dl.appendChild(a);
+    };
+    const failed = !!(st.delivery && st.delivery.build_ok === false);
+    link('report.md', '조치 보고서', 'quiet');
+    link('result.zip', '조치 결과 받기', failed ? 'ghost' : 'quiet', failed ? '빌드 실패본' : '');
+    link('result-verified.zip', '검증된 앞 라운드 받기', 'quiet');
+    if (st.withheld) dl.appendChild(el('span', 'note', '이관 실행이 끝나면(마지막 정제 뒤) 받을 수 있습니다.'));
+    // 승인 대기: 결정을 기다리는 제안마다 diff 와 승인 / 거절. 결정은 재개하지 않는다
+    const ap = $('remed-approvals'), list = $('remed-props');
+    list.replaceChildren();
+    ap.hidden = st.status !== 'AWAITING_APPROVAL';
+    const pending = props && Array.isArray(props.proposals) ? props.proposals.filter((p) => p && p.decision === 'pending') : [];
+    for (const p of pending) list.appendChild(proposalCard(runId, p));
+    if (st.status === 'AWAITING_APPROVAL' && !pending.length) list.appendChild(el('p', 'small muted', '모든 제안에 결정을 남겼습니다. 이어서 진행하려면 재개가 필요합니다.'));
+    const rs = (st.resume && typeof st.resume === 'object') ? st.resume : {};
+    $('remed-resume').disabled = !rs.available || pend > 0;
+    $('remed-resume-note').textContent = !rs.available ? (rs.note || '지금은 재개할 수 없습니다.')
+                                       : (pend > 0 ? '모든 제안에 결정을 남기면 재개할 수 있습니다.' : '');
+  }
+  function proposalCard(runId, p) {
+    const card = el('div', 'prop');
+    const head = el('div', 'prophead');
+    head.appendChild(el('span', 'mono', p.ga || p.id || ''));
+    head.appendChild(el('span', 'muted small', `${p.from_version || '?'} → ${p.to_version || '?'}`));
+    if (Array.isArray(p.risks) && p.risks.length) head.appendChild(el('span', 'chip warn', p.risks.join(', ')));
+    head.appendChild(el('span', 'muted small mono', p.id || ''));
+    card.appendChild(head);
+    if (p.note) card.appendChild(el('p', 'small muted', p.note));
+    const pre = el('pre', 'diff'); pre.textContent = p.diff || ''; card.appendChild(pre);
+    const row = el('div', 'actions');
+    const yes = el('button', 'btn', '승인'), no = el('button', 'btn ghost', '거절');
+    yes.type = 'button'; no.type = 'button';
+    yes.addEventListener('click', () => decide(runId, p, 'approved', [yes, no]));
+    no.addEventListener('click', () => decide(runId, p, 'rejected', [yes, no]));
+    row.append(yes, no); card.appendChild(row);
+    return card;
+  }
+  // 승인 한 건: 서버는 제안 해시·원본 트리 해시·정책 해시·diff 가 저장된 제안과 모두 같을 때만 받는다(하나라도 틀리면 409, 아무것도 쓰지 않음)
+  async function decide(runId, p, decision, btns) {
+    const by = $('remed-by').value.trim();
+    if (!by) { toast('승인자 이름을 적어 주세요.', true); $('remed-by').focus(); return; }
+    for (const b of btns) b.disabled = true;
+    const body = { by, decisions: [{ proposal_id: p.id, decision, proposal_hash: p.proposal_hash, source_tree_hash: p.source_tree_hash,
+                                     policy_hash: p.policy_hash, diff: p.diff, comment: '' }] };
+    let r = null, d = {};
+    try {
+      r = await fetch(remUrl(runId, '/approvals'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      try { d = await r.json(); } catch (e) {}
+    } catch (e) {}
+    if (r && authProblem(r, d)) { for (const b of btns) b.disabled = false; return; }
+    if (!r || !r.ok) {
+      toast('결정을 저장하지 못했습니다: ' + ((d && d.error) || (r ? r.status : '연결 실패')), true);
+      for (const b of btns) b.disabled = false;
+    } else {
+      toast((decision === 'approved' ? '승인했습니다.' : '거절했습니다.') + (d.pending === 0 ? ' 모든 제안에 결정을 남겼습니다. 이어서 진행하려면 재개가 필요합니다.' : ''));
+    }
+    if (current === runId) loadRemediation(runId);
+  }
+  $('remed-resume').addEventListener('click', async () => {
+    const runId = current;
+    if (!runId) return;
+    $('remed-resume').disabled = true;
+    let r = null, d = {};
+    try {
+      r = await fetch(remUrl(runId, '/resume'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+      try { d = await r.json(); } catch (e) {}
+    } catch (e) {}
+    if (r && authProblem(r, d)) return;
+    if (!r || !r.ok) toast('재개하지 못했습니다: ' + ((d && d.error) || (r ? r.status : '연결 실패')), true);
+    else toast('재개했습니다.');
+    if (current === runId) loadRemediation(runId);
+  });
 
   // ---------------------------------------------------------------- 실행에 붙기 (SSE)
   // resume = 끊긴 같은 실행에 다시 붙기(아래 '다시 붙기'). 담당자가 고른 실행이면 진행 중인 재연결을 그만둔다.
@@ -747,7 +928,7 @@
     if (es) { es.close(); es = null; }
     current = runId; lastState = '';
     logBuf = []; logTotal = 0; logDropped = 0; renderLog();
-    $('runcard').hidden = false; $('resultcard').hidden = true;
+    $('runcard').hidden = false; $('resultcard').hidden = true; hideRemediation();
     $('runid').textContent = runId; $('summary').textContent = '';
     $('timeline').innerHTML = ''; $('log').replaceChildren(); $('report').textContent = ''; $('logfull').hidden = true;
     setTitle('', resume ? '다시 연결하는 중…' : '연결하는 중…', false); statusKey = '';

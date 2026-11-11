@@ -55,7 +55,9 @@ spec:
             - {name: SBMIG_REDACT_OUTPUT, value: "1"}
           envFrom:
             - configMapRef: {name: sbmig-env}     # LLM_* 중 비밀 아닌 것(게이트웨이 주소, 에셋 id, 토큰 URL, role 이름) + SBMIG_<섹션>__<키> 덮어쓰기
-            - secretRef: {name: sbmig-llm}        # LLM_APP_TOKEN(또는 LLM_API_KEY), NEXUS_USER / NEXUS_PASSWORD — 뒤에 두어 Secret 이 이긴다
+                                                  # (취약점 조치 스위치 SBMIG_REMEDIATION__AFTER_MIGRATION 포함 — README §6)
+            - secretRef: {name: sbmig-llm}        # LLM_APP_TOKEN(또는 LLM_API_KEY), NEXUS_USER / NEXUS_PASSWORD, IVAS_BASE_URL / IVAS_USER_ID / IVAS_PASSWORD
+                                                  # (이관 뒤 취약점 조치용) — 뒤에 두어 Secret 이 이긴다. 조치의 요약은 run-job.sh 가 결과 저장소의 remediation/ 로 보낸다
             - secretRef: {name: sbmig-git}        # GIT_TOKEN (+ 선택 GIT_USER): 저장소 자격 증명 — 이미지·로그에 넣지 않는다
           volumeMounts:
             - {name: workspace, mountPath: /workspace}

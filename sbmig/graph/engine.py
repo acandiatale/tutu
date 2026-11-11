@@ -1,4 +1,6 @@
-"""LangGraph 실행 엔진 — 노드 intake → analyze → plan → phase(×N) → finalize → END 로 이관 한 번을 몬다.
+"""LangGraph 실행 엔진 — 노드 intake → analyze → plan → phase(×N) → finalize → remediation → END 로 이관 한 번을 몬다.
+마지막 ``remediation`` 노드(2026-11-11)는 이관이 BUILD SUCCESS 로 끝났고 ``remediation.after_migration`` 이 켜졌을 때만 별개의
+취약점 조치 그래프(``sbmig.remediations.chain``)를 부른다 — 그 결과는 이관의 성공·종료 코드를 바꾸지 않고, 예외도 밖으로 나가지 않는다.
 회사 관례(에이전트는 LangGraph 그래프)를 따르는 기본 엔진(`loop.engine: graph`)이다. 노드마다 오케스트레이터의
 같은 `step_*` 메서드 하나를 부르므로 inline 엔진과 보고서·저널·종료 코드가 똑같다(테스트로 보장). 그래프
 상태에는 작은 JSON 값만 두고 무거운 객체(RunReport, 단계 묶음, 수정 루프)는 오케스트레이터에 남긴다. 노드는
@@ -6,7 +8,12 @@
 지켜진다. 진입점: build_graph, run_graph(CLI), stream_graph(웹
 UI 의 SSE). 웹 UI 의 중지(Stop)는 노드 사이에서만 반영된다.
 
-LangGraph engine: intake → analyze → plan → phase (×N) → finalize → END.
+LangGraph engine: intake → analyze → plan → phase (×N) → finalize → remediation → END.
+
+2026-11-11: the `remediation` node chains the separate vulnerability-remediation graph (`sbmig.remediations.chain`)
+after a migration whose final build succeeded, when `remediation.after_migration` is on; otherwise it returns at
+once. It runs before the run guard's `_finalize` (report.md, result.zip, KB), so its summary lands on
+`RunReport.remediation` and the report renders it; it never changes the migration's verdict and never raises.
 
 Only small, JSON-able values live in the graph state (`MigrationState`); the heavy run objects (the `RunReport`,
 the phase groups with their `PlanStep`s, the `BuildFixLoop`) stay on the `Orchestrator` and on a per-run holder
@@ -47,7 +54,7 @@ if TYPE_CHECKING:
 log = logging.getLogger("sbmig.graph")
 
 # 그래프 노드 이름(웹 UI 가 이 이름으로 진행 상황을 그린다).
-NODES = ("intake", "analyze", "plan", "phase", "finalize")
+NODES = ("intake", "analyze", "plan", "phase", "finalize", "remediation")
 # one graph step per node invocation; MSA plans may repeat a phase per target (transform@<svc>, verify@<svc>), so the
 # number of `phase` invocations grows with the services — keep generous headroom (LangGraph's default is 25)
 # 노드 호출 한 번 = 그래프 한 걸음. MSA 는 서비스마다 phase 를 되풀이하므로(transform@<svc>, verify@<svc>)
@@ -66,6 +73,7 @@ class MigrationState(TypedDict, total=False):
     aborted: str | None             # abort reason (intake / analyze) — phase aborts raise instead
     stopped: bool                      # `stop_after` reached
     summary: dict                      # small JSON-able digest for the UI
+    remediation: dict                  # chained remediation {status, reason} (only when it ran / was skipped)
 
 
 # ---------------------------------------------------------------------------- helpers
@@ -169,6 +177,58 @@ def _staged(name: str | Callable[[MigrationState], str], fn: Callable[[Migration
     return node
 
 
+# ---------------------------------------------------------------------------- remediation (2026-11-11)
+def remediation_enabled(cfg: Any) -> bool:
+    """``remediation.after_migration`` 이 켜졌나(설정에 그 절이 없으면 False).
+
+    Is `remediation.after_migration` on?"""
+    rem = getattr(cfg, "remediation", None)
+    return bool(getattr(rem, "after_migration", False)) if rem is not None else False
+
+
+def _chain_remediation(orch: Orchestrator, report: RunReport, state: MigrationState, *, planned: bool,
+                       user_stopped: bool) -> dict | None:
+    """조치를 이어서 돌릴 조건을 보고, 맞으면 ``chain.run_after_migration`` 을 불러 요약을 ``report.remediation`` 에 둔다.
+    조건: 스위치 켜짐, dry-run 아님, ``stop_after`` 없음, 계획까지 감, 사용자 멈춤·중단 없음, 그리고 이관의 성공 판정
+    (``Orchestrator.build_succeeded`` — ``_finalize`` 의 ``report.success`` 와 같은 정의). 하나라도 아니면 None(아무 기록 없음).
+    ``stop.request`` 가 이 노드 직전에 생겼으면 조치는 시작하지 않는다(이관 판정은 그대로 — 최종 빌드는 이미 끝났다).
+
+    Chain the remediation when every condition holds; the summary goes to `report.remediation`. None = not chained."""
+    if not remediation_enabled(orch.cfg):
+        return None
+    if state.get("dry_run") or "dry-run" in report.flags or state.get("stop_after"):
+        return None
+    if not planned or user_stopped or state.get("aborted") or state.get("stopped") or "aborted" in report.flags:
+        return None
+    if not orch.build_succeeded(report):
+        return None
+    from sbmig.remediations import chain
+
+    skipped: dict[str, Any] = {}
+
+    def journal(event: dict) -> None:
+        if event.get("event") == "remediation_skipped":
+            skipped.update(event)
+        orch.ws.journal(event)
+
+    if stop_requested(orch):
+        journal({"event": "remediation_skipped", "reason": "stop_requested", "scope": chain.SCOPE})
+        log.warning("vulnerability remediation not started: %s is present", STOP_REQUEST_FILE)
+        rs = None
+    else:
+        _journal_node(orch, "remediation", None)
+        t0 = orch.clock()
+        rs = chain.run_after_migration(orch.ws.run_dir, orch.ws.root, orch.cfg, run_id=orch.ws.run_id, journal=journal,
+                                       stop=lambda: stop_requested(orch),
+                                       exclude_dirs=list(getattr(orch.ws, "ignored_dirs", None) or []))
+        report.timings_s["remediation"] = round(orch.clock() - t0, 3)
+        if rs is None and not skipped:            # disabled after all (cannot happen with the switch on) — no token
+            return None
+    summary = chain.summary(rs, orch.ws.run_dir, skipped=skipped)
+    report.remediation = summary
+    return summary
+
+
 # ---------------------------------------------------------------------------- graph
 def build_graph(orch: Orchestrator) -> Any:
     """`orch` 의 단계를 모는 컴파일된 StateGraph(MigrationState). 그래프는 `orch` 에 묶여 있고 오케스트레이터
@@ -259,6 +319,21 @@ def build_graph(orch: Orchestrator) -> Any:
             orch.step_finish(report, _stop_phase(state))
         return {"phase": None, "summary": _summary(orch, report)}
 
+    def remediation(state: MigrationState) -> dict:
+        """취약점 조치 노드: 스위치가 켜졌고 이관이 끝까지 가서 최종 빌드에 성공했을 때만 별개의 조치 그래프를 부른다.
+        그 밖에는 곧바로 돌아온다(스위치가 꺼진 실행에는 저널 줄도 없다). 조치의 결과·예외는 이관 판정을 바꾸지 않는다."""
+        report = _report(orch)
+        try:
+            summary = _chain_remediation(orch, report, state, planned=holder["planned"],
+                                         user_stopped=holder["user_stopped"])
+        except Exception:  # noqa: BLE001 — never let the remediation touch the migration's verdict
+            log.exception("vulnerability remediation node failed (the migration result is unchanged)")
+            summary = None
+        out: dict = {"phase": None}
+        if summary is not None:
+            out["remediation"] = {k: summary.get(k) for k in ("status", "reason")}
+        return out
+
     # 라우팅: 중지(stopped)나 중단(aborted)이면 남은 노드를 건너뛰고 곧장 finalize 로 간다. phase 는 남은 단계
     # 묶음이 없을 때까지 자기 자신으로 돌아온다(MSA 는 서비스마다 한 번씩).
     def after_step(state: MigrationState) -> str:
@@ -282,12 +357,15 @@ def build_graph(orch: Orchestrator) -> Any:
     g.add_node("plan", _staged("plan", plan, orch))
     g.add_node("phase", _staged(phase_stage, phase, orch))
     g.add_node("finalize", _staged("report", finalize, orch))
+    # 스위치가 꺼진 실행에는 graph_node_end 줄도 남기지 않는다(모든 로컬 실행에 소음이 되지 않게)
+    g.add_node("remediation", _staged("remediation", remediation, orch if remediation_enabled(orch.cfg) else None))
     g.add_edge(START, "intake")
     g.add_conditional_edges("intake", after_step, {"next": "analyze", "finalize": "finalize"})
     g.add_conditional_edges("analyze", after_step, {"next": "plan", "finalize": "finalize"})
     g.add_conditional_edges("plan", after_plan, {"phase": "phase", "finalize": "finalize"})
     g.add_conditional_edges("phase", after_phase, {"phase": "phase", "finalize": "finalize"})
-    g.add_edge("finalize", END)
+    g.add_edge("finalize", "remediation")
+    g.add_edge("remediation", END)
     return g.compile()
 
 
@@ -323,11 +401,15 @@ def stream_graph(orch: Orchestrator, stop_after: Phase | None = None,
     끝나거나 일찍 닫혀도 guard 가 보고서를 마무리한다.
 
     Run the migration through the graph, yielding ``(node_name, state_update)`` after each node (LangGraph
-    ``stream_mode="updates"``). The final, finalized report is `orch.report` once the iterator is exhausted (or
+    ``stream_mode="updates"``; a `remediation` node that did nothing is not yielded). The final, finalized report is
+    `orch.report` once the iterator is exhausted (or
     closed early: the guard still finalizes it)."""
     with _guard(orch, dry_run):
         graph = build_graph(orch)
         for chunk in graph.stream(_initial_state(orch, stop_after, dry_run), stream_mode="updates",
                                   config={"recursion_limit": RECURSION_LIMIT}):
             for node, update in chunk.items():
+                # 아무것도 하지 않은 remediation 노드(스위치 꺼짐·빌드 실패 …)는 화면에 내보내지 않는다 — 웹의 노드 목록이 그대로
+                if node == "remediation" and "remediation" not in (update or {}):
+                    continue
                 yield node, dict(update or {})

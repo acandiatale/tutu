@@ -1,15 +1,37 @@
 # 취약점 조치 (remediations)
 
-> 다루는 것: 이관과 별개인 두 번째 기능 — 올린 Maven 프로젝트를 IVAS 로 검사하고 취약한 라이브러리의 **버전 글자만** 고쳐(예외 하나: 승인받은 관리 버전 override 항목) 다시 빌드·재검사하는 흐름. 노드별 동작, 상태와 운영자가 할 일, HTTP API, 진단 순서, 설정 키, 고칠 자리.
-> 언제 읽나: `/api/remediations` 작업이 왜 그렇게 끝났는지 볼 때, 조치 규칙·IVAS 연동을 바꾸기 전에.
+> 다루는 것: 이관이 BUILD SUCCESS 로 끝난 빌드 파드에서 이어 도는 두 번째 기능(별도 그래프) — 이관된 Maven 프로젝트를 IVAS 로 검사하고 취약한 라이브러리의 **버전 글자만** 고쳐(예외 하나: 승인받은 관리 버전 override 항목) 다시 빌드·재검사하는 흐름. 노드별 동작, 상태와 운영자가 할 일, HTTP API, 진단 순서, 설정 키, 고칠 자리.
+> 언제 읽나: 이관 실행 폴더의 `remediation/` 이나 `/api/remediations` 작업이 왜 그렇게 끝났는지 볼 때, 조치 규칙·IVAS 연동을 바꾸기 전에.
 > 함께 읽을 파일: [00-what-sbmig-is.md](00-what-sbmig-is.md), [07-config-and-knowledge.md](07-config-and-knowledge.md), [09-deploy-and-ops.md](09-deploy-and-ops.md)
 
 ## 1. 무엇을 하나
 
 입력은 Maven 프로젝트 ZIP 하나, 출력은 결과 ZIP(`result.zip`)과 보고서. 순서: 그대로 빌드(기준 빌드) → IVAS 검사(기준 검사) → 발견 항목을
 Maven 이 실제로 고른 의존성과 pom 의 버전 줄에 연결 → 새 버전 제안 → 격리된 후보 사본에 적용 → 후보 빌드·검증 → 전달 ZIP 고정 → **같은 바이트**
-재검사 → 판정 → 보고서. 코드는 `sbmig/remediations/` 한 패키지(지도는 `sbmig/remediations/__init__.py`), 이관 그래프(`sbmig/graph/`)·이관 KB·
-`/api/runs` 와 섞이지 않는다. LLM 을 부르지 않는다.
+재검사 → 판정 → 보고서. 코드는 `sbmig/remediations/` 한 패키지(지도는 `sbmig/remediations/__init__.py`), 이관 KB 와 섞이지 않고
+LLM 을 부르지 않는다. 이관 그래프(`sbmig/graph/`)와는 노드 하나로만 이어진다(아래 1.1).
+
+### 1.1 어디서 도나 — 빌드 파드, 이관에 이어서
+
+- 이관이 **BUILD SUCCESS** 로 끝나고 `remediation.after_migration` 이 true 면, 이관 그래프의 `remediation` 노드(`finalize` 뒤)가 같은
+  `sbmig run` 프로세스 안에서 조치 그래프를 부른다(진입점: sbmig/remediations/chain.py 의 `run_after_migration`). 코드 기본값은 false,
+  쿠버네티스 매니페스트는 ConfigMap `sbmig-env` 에 `SBMIG_REMEDIATION__AFTER_MIGRATION: "true"` 로 켜서 내보낸다(웹 파드·Job 파드가 같은
+  값을 받아야 환경 대조를 통과한다 — 09 문서).
+- 파일은 **`<이관 실행 폴더>/remediation/`**, 조치 id = 이관 run id. 체인이 이관된 프로젝트 트리로 ZIP 을 만들어 접수(`intake.accept_zip`)에 넣는다.
+- 조치의 결과는 이관의 성공 판정·종료 코드·보고서 판정을 **바꾸지 않는다**. `SBMIG-RESULT … remediation=<상태|skipped>`.
+  IVAS 세 값이나 Maven 준비가 없으면 건너뛰고 저널에 `remediation_skipped`(빠진 것의 이름만). 이 경로는
+  `remediation.trusted_projects` 를 묻지 않는다(이관이 이미 그 프로젝트를 빌드했다) — 그 스위치는 단독 업로드만 막는다.
+- 빌드 파드는 사람을 기다리지 못한다: `AWAITING_APPROVAL` / `AWAITING_CONFIRMATION` 이면 상태를 저장하고 파드가 끝난다. 새 빌드 파드에서
+  이어 돌리는 재개는 **아직 없다**(다음 단계) — 그때까지 Job 모드에서 이관에 이어 돈 조치의 resume 은 409 `not_available`.
+- 웹 파드는 상태·제안·승인·파일만 맡는다. 단독 업로드 `POST /api/remediations` 는 `in-process` 모드에서만 받고(웹 파드가 직접 돌림,
+  폴더 `<웹 out>/_remediations/<id>/`) Job 모드에서는 409 `not_available`.
+- Job 파드의 환경: IVAS 세 값은 Secret `sbmig-llm` 에서(81 틀의 `secretKeyRef` 세 줄, optional). Worker 는 그대로 자식에게 넘긴다.
+  `IVAS_USER_ID` 는 이름에 비밀 낱말이 없어도 비밀로 지운다(`sbmig/web/contract.py` 의 `SECRET_NAMES`, 4자부터). IVAS 값은 환경 대조 지문에
+  들어가지 않는다. Worker 의 마지막 정제는 `remediation/` 의 텍스트 파일도 훑고 ZIP·`accepted/`·`rounds/<n>/candidate/`·`original/` 은 건드리지 않는다.
+- Maven 로컬 저장소는 그 파드의 자리 저장소(1번 자리 `~/.m2/repository`, k번 `repository-slot<k>`). `-remediation` 접미사는 in-process 단독 경로에만.
+- IVAS 로그인은 여러 개가 동시에 유효하다(사용자가 셋으로 확인) — 빌드 파드마다 로그인해도 된다.
+- 시간: Job 기한(4시간)은 이관과 조치가 나눠 쓴다. 조치는 보통 20~75분을 더한다(기준 빌드, IVAS 업로드·분석 ≤ 30분, 후보 빌드, 재검사).
+  기한에 걸리면 Worker 는 exit 3 이고 그 오류 글에 이관의 `SBMIG-RESULT` 줄이 붙는다.
 
 절대 규칙(회사 결정):
 
@@ -102,8 +124,8 @@ pin 이 없으면 IVAS patched 힌트 필수, 근거는 정책 또는 승인된 
 
 | 상태 | 뜻 | 할 일 |
 |---|---|---|
-| `QUEUED` / `RUNNING` | 대기 / 실행 중(한 번에 한 건) | 기다린다. 멈추려면 stop(다음 경계에서) |
-| `AWAITING_APPROVAL` | 승인 대기 제안이 있다 | `GET …/proposals` 로 diff 와 해시 세 개를 보고 → `POST …/approvals` 에 그대로 돌려보내며 approved / rejected → `POST …/resume` |
+| `QUEUED` / `RUNNING` | 대기 / 실행 중(단독 업로드는 한 번에 한 건) | 기다린다. 멈추려면 stop(다음 경계에서) |
+| `AWAITING_APPROVAL` | 승인 대기 제안이 있다 | `GET …/proposals` 로 diff 와 해시 세 개를 보고 → `POST …/approvals` 에 그대로 돌려보내며 approved / rejected → `POST …/resume`(이관에 이어 돈 조치는 Job 모드에서 아직 409 `not_available` — 1.1) |
 | `AWAITING_CONFIRMATION` | 업로드를 보냈는데 결과를 모른다 | IVAS 화면에서 그 프로젝트 이름(`<앞머리>-<작업 ID>-<라벨>`)의 분석이 있는지 본다. 없으면 resume `{"confirm": "reupload"}`, 있으면 `{"confirm": "receipt", "label", "project_id", "analysis_id"}` |
 | `STOPPED` | 중지 요청을 경계에서 처리했다. 원격 IVAS 분석은 취소되지 않았다 | resume(영수증이 있으면 다시 올리지 않고 이어서 조회) |
 | `INTERRUPTED` | 서버가 실행 중에 내려갔다 | 상태를 보고 resume — 자동 재개 없음 |
@@ -116,11 +138,11 @@ pin 이 없으면 IVAS patched 힌트 필수, 근거는 정책 또는 승인된 
 `residual_findings`, `manual_review`, `no_candidate_version`, `rounds_exhausted`, `stop_requested`, `internal_error`, `policy_denied`,
 `unknown_provenance`, `stale_location`, `inventory_incomplete`. 정의는 `sbmig/remediations/models.py`.
 
-## 5. HTTP API (웹 파드 안, TokenGuard 뒤)
+## 5. HTTP API (웹 파드, TokenGuard 뒤 — 이관에 이어 돈 조치의 id 는 이관 run id)
 
 | 경로 | 결과 |
 |---|---|
-| `POST /api/remediations?name=<file.zip>` (본문 = ZIP) | 202 `{id, status, url}` / 400 접수 거부(코드) / 413 크기 초과 / 503 `not_ready` + `missing` |
+| `POST /api/remediations?name=<file.zip>` (본문 = ZIP) | `in-process` 모드만: 202 `{id, status, url}` / 400 접수 거부(코드) / 413 크기 초과 / 503 `not_ready` + `missing`. Job 모드는 409 `not_available` |
 | `GET /api/remediations?page=&size=` | 목록, 최신 먼저 |
 | `GET /api/remediations/readiness` | `{ready, missing}` — 이름만, 값은 절대 없음 |
 | `GET /api/remediations/<id>` | 상태 dict(status, reason, reasons, node, next_node, round, counts, pending_approvals, delivery `{sha256, size, round, build_ok, scanned}`, files, links …) |
@@ -136,7 +158,8 @@ pin 이 없으면 IVAS patched 힌트 필수, 근거는 정책 또는 승인된 
 
 ## 6. 진단 순서
 
-실행 폴더는 `out/_remediations/<id>/` (웹 out 폴더 아래, 쿠버네티스에서는 `/data/out/_remediations/<id>/`).
+실행 폴더는 이관에 이어 돈 조치면 `<이관 실행 폴더>/remediation/`(쿠버네티스 `/data/out/<run id>/remediation/`), in-process 단독 업로드면
+`out/_remediations/<id>/`. 조치가 아예 없으면 이관의 `journal.jsonl` 에서 `remediation_skipped` 를 찾는다.
 
 1. **`state.json`** — `status`, `reason`, `reasons`, `message`, `node`(마지막 노드), `next_node`(재개 지점), `round`, `pending_upload` /
    `pending_receipt`(검사 중 멈춘 자리), `boundary`(경계 검사 결과), `residuals`.
@@ -165,7 +188,8 @@ pin 이 없으면 IVAS patched 힌트 필수, 근거는 정책 또는 승인된 
 | 키 | 뜻 |
 |---|---|
 | `remediation.max_upload_mb` / `remediation.max_entries` / `remediation.max_unpacked_mb` / `remediation.max_entry_mb` / `remediation.max_compression_ratio` | ZIP 한도(압축률은 풀린 크기 1 MiB 이상 항목만) |
-| `remediation.trusted_projects` | 신뢰 프로젝트 확인. Maven 이 올라온 프로젝트의 플러그인 코드를 서버에서 실행하므로, 운영자가 확인하고 true 로 바꿔야 접수한다(기본 false = 접수 안 함) |
+| `remediation.after_migration` | 이관이 BUILD SUCCESS 로 끝나면 같은 빌드 파드에서 조치를 이어 돌릴지(코드 기본 false, 매니페스트는 true) |
+| `remediation.trusted_projects` | (단독 업로드만) 신뢰 프로젝트 확인. Maven 이 올라온 프로젝트의 플러그인 코드를 서버에서 실행하므로, 운영자가 확인하고 true 로 바꿔야 접수한다(기본 false = 접수 안 함) |
 | `remediation.require_approval` | false(기본) = 위험 부류만 승인 대기, true = 모든 제안 |
 | `remediation.always_approve` | 늘 승인이 필요한 부류(기본 major, parent, bom, managed_override). `managed_override` 제안은 여기서 빼도 승인을 기다린다 |
 | `remediation.max_rounds` | 계획 → 적용 → 빌드 → 재검사 반복 한도(기본 3) |
@@ -184,7 +208,8 @@ pin 이 없으면 IVAS patched 힌트 필수, 근거는 정책 또는 승인된 
 | `remediation.policy.allow_prerelease` / `remediation.policy.allow_major` | 시험판 허용 / 메이저 변경 제안 허용 |
 
 Maven 쪽은 이관과 같은 키를 쓴다: `build.mvn`, `build.java_home`, `build.settings_file`(조치에서는 필수), `build.local_repo`, `build.extra_args`
-(TLS 끄기·다른 `-s` / `-f` 는 빠진다). 웹 파드는 조치용 로컬 저장소를 따로 쓴다: `<local repo>-remediation`.
+(TLS 끄기·다른 `-s` / `-f` 는 빠진다). in-process 단독 경로는 조치용 로컬 저장소를 따로 쓴다: `<local repo>-remediation`. 이관에 이어 돌 때는
+그 빌드 파드의 자리 저장소다.
 
 ## 8. 고칠 자리
 
@@ -202,6 +227,8 @@ Maven 쪽은 이관과 같은 키를 쓴다: `build.mvn`, `build.java_home`, `bu
 | 상태·이유 코드·자료형(계약) | `sbmig/remediations/models.py` — 바꾸면 `docs/INTERFACES.md` 의 remediations 절도 |
 | 새 설정 키 | `sbmig/core/config.py` 의 `RemediationConfig` + `config/default.yml` (한국어 설명) |
 | HTTP 경로·작업 관리 | 같은 패키지의 api.py / service.py |
+| 이관 뒤 이어 돌기(건너뜀 조건, 폴더, 재개) | 같은 패키지의 chain.py, 이관 그래프의 `remediation` 노드 |
+| Job 파드의 IVAS env·정제 범위 | `deploy/k8s/81-web-job.template.yaml`, `sbmig/web/contract.py` (`SECRET_NAMES`), `sbmig/web/redact.py` (`_remediation_targets`) |
 
 시험은 `tests/remediations/` (가짜 IVAS·Maven·저장소, 합성 ZIP, 네트워크·`mvn` 없음).
 

@@ -200,7 +200,7 @@ KB 쪽: 실행의 오류 목록이 `kb-v2/errors.jsonl` 에 덧붙고, 케이스
 ## 11. LangGraph 엔진, inline 엔진, 웹 UI
 
 - 기본 엔진은 `loop.engine: graph`: `build_graph`(`sbmig/graph/engine.py`)가 `StateGraph` 노드 `intake` → `analyze` → `plan` →
-  `phase`(phase 묶음마다 반복) → `finalize` → END 를 만든다. 노드마다 오케스트레이터의 같은 `step_*` 메서드를 하나씩 부르고,
+  `phase`(phase 묶음마다 반복) → `finalize` (→ `remediation`: `remediation.after_migration` 이고 BUILD SUCCESS 일 때 취약점 조치, 11 문서) → END 를 만든다. 노드마다 오케스트레이터의 같은 `step_*` 메서드를 하나씩 부르고,
   그래프 상태에는 작은 JSON 값만 둔다(무거운 객체는 오케스트레이터에). 노드는 오류를 처리하지 않는다 — 예외는 run guard 로 올라간다.
 - `loop.engine: inline` 은 같은 순서를 `Orchestrator._run` 이 그래프 없이 돈다. 보고서·저널·종료 코드가 같다(테스트로 보장).
 - 웹 UI: `sbmig serve`(= uvicorn `sbmig.web.app:app`). zip 업로드 → `RunManager`(`sbmig/web/runs.py`)가 실행마다 작업 스레드

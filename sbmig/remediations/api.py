@@ -5,7 +5,9 @@ ZIP 서명(PK)을 본다. 막히는 일(ZIP 검사·상태 파일 읽기)은 스
 ``{"error", "code", …}`` 모양이고 비밀 값·서버 절대 경로는 응답에 넣지 않는다. 계약: API.md (``docs/INTERFACES.md`` "remediations").
 
 The `/api/remediations` router (contract: API.md). Error mapping: IntakeRejected → 400, NotReady → 503,
-ApprovalMismatch / StateConflict → 409, unknown id → 404, bad id → 400.
+ApprovalMismatch / StateConflict / NotAvailable → 409, unknown id → 404, bad id → 400.
+Job 모드(k8s-job / local-job)의 웹 파드는 조치를 돌리지 않는다: 단독 업로드는 본문을 받기 전에 409 ``not_available``,
+이어 돈 조치(``<out>/<이관 실행 id>/remediation/``)는 같은 라우트로 읽고 승인한다.
 """
 from __future__ import annotations
 
@@ -19,12 +21,12 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from starlette.concurrency import run_in_threadpool
 
 from .models import ApprovalMismatch, Decision, IntakeRejected, NotReady, StateConflict
-from .service import BadRemediationId, RemediationManager, UnknownRemediation
+from .service import BadRemediationId, NotAvailable, RemediationManager, UnknownRemediation
 
 log = logging.getLogger("sbmig.remediations.api")
 
 # 응답에 실어도 되는 오류 세부 항목(그 밖의 details 는 내보내지 않는다 — 경로·내부 값이 섞이지 않게)
-_SAFE_DETAILS = ("missing", "fields", "proposals", "status", "pending", "proposal_id")
+_SAFE_DETAILS = ("missing", "fields", "proposals", "status", "pending", "proposal_id", "mode")
 _MEDIA = {".md": "text/markdown; charset=utf-8", ".json": "application/json", ".zip": "application/zip",
           ".jsonl": "application/x-ndjson", ".log": "text/plain; charset=utf-8", ".patch": "text/plain; charset=utf-8"}
 _ATTACH = (".zip", ".jsonl", ".patch")
@@ -42,7 +44,7 @@ def error_response(exc: BaseException) -> JSONResponse:
         status = 400
     elif isinstance(exc, NotReady):
         status = 503
-    elif isinstance(exc, (ApprovalMismatch, StateConflict)):
+    elif isinstance(exc, (ApprovalMismatch, StateConflict, NotAvailable)):
         status = 409
     elif isinstance(exc, ValueError):
         return JSONResponse({"error": str(exc), "code": "bad_request"}, status_code=400)
@@ -88,6 +90,8 @@ def create_router(manager: RemediationManager, max_upload_bytes: int | None = No
 
     @r.post("", status_code=202)
     async def submit(request: Request, name: str = "project.zip", configs: str | None = None) -> JSONResponse:
+        if manager.job_mode:          # Job 모드: 본문(1 GiB 가까운 ZIP)을 받기 전에 거절한다 — 조치는 빌드 파드에서 돈다
+            return error_response(NotAvailable(manager.readiness()[0], mode=manager.mode))
         length = request.headers.get("content-length")
         if limit and length and length.isdigit() and int(length) > limit:
             return too_large()
@@ -131,8 +135,7 @@ def create_router(manager: RemediationManager, max_upload_bytes: int | None = No
     # /{id} 보다 먼저 선언해야 "readiness" 가 ID 로 잡히지 않는다
     @r.get("/readiness")
     async def readiness() -> JSONResponse:
-        missing = await _call(manager.readiness)
-        return JSONResponse({"ready": not missing, "missing": list(missing)})
+        return JSONResponse(await _call(manager.readiness_info))
 
     @r.get("/{rid}")
     async def status(rid: str) -> JSONResponse:

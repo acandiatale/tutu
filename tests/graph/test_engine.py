@@ -391,3 +391,190 @@ def test_staged_resets_the_stage_when_a_node_raises():
     with pytest.raises(RuntimeError):
         _staged("plan", boom)({})
     assert current_stage() == "-"
+
+
+# ------------------------------------------------------------------------------- 2026-11-11 chained remediation
+class ChainSpy:
+    """Stands in for `sbmig.remediations.chain.run_after_migration` (no IVAS / Maven)."""
+
+    def __init__(self, status="SUCCEEDED", raises=None, ret_none=False):
+        self.calls = []
+        self.status, self.raises, self.ret_none = status, raises, ret_none
+
+    def __call__(self, run_dir, project_dir, cfg, *, run_id, journal, stop, components=None, exclude_dirs=()):
+        from sbmig.remediations.models import RemediationState
+        self.calls.append({"run_dir": run_dir, "project_dir": project_dir, "run_id": run_id, "stop": stop(),
+                           "project_files": sorted(p.name for p in project_dir.iterdir())})
+        if self.raises:
+            raise self.raises
+        if self.ret_none:
+            journal({"event": "remediation_skipped", "reason": "not_ready", "missing": ["IVAS_BASE_URL is not set"],
+                     "scope": "remediation"})
+            return None
+        journal({"event": "remediation_end", "status": self.status, "scope": "remediation"})
+        return RemediationState(id=run_id, status=self.status, reason="", counts={"baseline": 1, "final": 0})
+
+
+def chain_cfg(cfg, on=True, engine="graph"):
+    c = cfg.model_copy(deep=True)
+    c.remediation.after_migration = on
+    c.loop.engine = engine
+    return c
+
+
+@pytest.fixture()
+def chain_spy(monkeypatch):
+    from sbmig.remediations import chain
+    spy = ChainSpy()
+    monkeypatch.setattr(chain, "run_after_migration", spy)
+    return spy
+
+
+def test_remediation_node_comes_after_finalize(cfg, tmp_path):
+    assert NODES[-1] == "remediation" and NODES[-2] == "finalize"
+    g = build_graph(make_orch(cfg, new_ws(tmp_path, "rshape"))).get_graph()
+    edges = {(e.source, e.target) for e in g.edges}
+    assert ("finalize", "remediation") in edges and ("remediation", "__end__") in edges
+    assert ("finalize", "__end__") not in edges
+
+
+def test_remediation_runs_after_build_success_and_leaves_the_verdict(cfg, tmp_path, chain_spy):
+    from sbmig.report.markdown import render_markdown
+    from sbmig.report.result_line import report_result_line
+    c = chain_cfg(cfg)
+    orch, ws, report = run_engine(c, tmp_path, "graph")
+    assert len(chain_spy.calls) == 1
+    call = chain_spy.calls[0]
+    assert call["run_dir"] == ws.run_dir and call["project_dir"] == ws.root and call["run_id"] == ws.run_id
+    assert call["stop"] is False and "pom.xml" in call["project_files"]
+    assert report.success and run_exit_code(report) == 0
+    assert report.remediation["status"] == "SUCCEEDED" and report.remediation["dir"] == "remediation"
+    line = report_result_line(report)
+    assert line.endswith(" remediation=SUCCEEDED") and " build=ok " in line and "exit=0" in line
+    md = render_markdown(report)
+    assert "## Vulnerability remediation" in md and "`SUCCEEDED`" in md
+    assert "## 취약점 조치" in render_markdown(report, "ko")
+    assert (ws.run_dir / "report.md").read_text(encoding="utf-8").count("## Vulnerability remediation") == 1
+    ev = journal_events(ws)
+    names = [e["event"] for e in ev]
+    # the chain ran before the run guard's _finalize wrote the report / result.zip
+    assert names.index("remediation_end") < names.index("report")
+    assert [e["node"] for e in ev if e["event"] == "graph_node"][-1] == "remediation"
+    assert [e["node"] for e in ev if e["event"] == "graph_node_end"][-1] == "remediation"
+    assert "remediation" in report.timings_s
+
+
+def test_remediation_failed_status_never_changes_the_migration(cfg, tmp_path, monkeypatch):
+    from sbmig.remediations import chain
+    from sbmig.report.result_line import report_result_line
+    _, _, base = run_engine(chain_cfg(cfg, on=False), tmp_path, "graph", name="base")
+    monkeypatch.setattr(chain, "run_after_migration", ChainSpy(status="FAILED"))
+    _, _, report = run_engine(chain_cfg(cfg), tmp_path, "graph")
+    assert report.success and run_exit_code(report) == 0 and report.flags == base.flags
+    line = report_result_line(report)
+    assert line == report_result_line(base, run_id=report.run_id) + " remediation=FAILED"
+
+
+def test_remediation_exception_never_changes_the_migration(cfg, tmp_path, monkeypatch):
+    from sbmig.remediations import chain
+    from sbmig.report.result_line import report_result_line
+    _, _, base = run_engine(chain_cfg(cfg, on=False), tmp_path, "graph", name="base")
+    spy = ChainSpy(raises=RuntimeError("chain exploded"))
+    monkeypatch.setattr(chain, "run_after_migration", spy)
+    _, _, report = run_engine(chain_cfg(cfg), tmp_path, "graph")
+    assert spy.calls and report.success and run_exit_code(report) == 0
+    assert report.flags == base.flags and report.remediation is None
+    assert "remediation=" not in report_result_line(report)
+
+
+def test_remediation_not_ready_is_a_skip_token(cfg, tmp_path, monkeypatch):
+    from sbmig.remediations import chain
+    from sbmig.report.markdown import render_markdown
+    from sbmig.report.result_line import report_result_line
+    monkeypatch.setattr(chain, "run_after_migration", ChainSpy(ret_none=True))
+    _, _, report = run_engine(chain_cfg(cfg), tmp_path, "graph")
+    assert report.remediation == {"status": "skipped", "dir": "remediation", "reason": "not_ready",
+                                  "missing": ["IVAS_BASE_URL is not set"]}
+    assert report_result_line(report).endswith(" remediation=skipped") and run_exit_code(report) == 0
+    assert "IVAS_BASE_URL is not set" in render_markdown(report)
+
+
+def test_remediation_switch_off_is_silent(cfg, tmp_path, chain_spy):
+    from sbmig.report.result_line import report_result_line
+    orch, ws, report = run_engine(chain_cfg(cfg, on=False), tmp_path, "graph")
+    assert chain_spy.calls == [] and report.remediation is None
+    assert "remediation" not in report_result_line(report)
+    assert not any(e.get("node") == "remediation" or str(e["event"]).startswith("remediation")
+                   for e in journal_events(ws))
+
+
+def test_remediation_not_chained_after_a_build_failure(cfg, tmp_path, chain_spy):
+    from ..loop.fakes import compile_error
+    c = chain_cfg(cfg)
+    c.loop.max_llm_calls = 1
+    build = lambda w: FakeBuildRunner(w, fn=lambda *_: bad_build(compile_error()))
+    _, ws, report = run_engine(c, tmp_path, "graph", build=build,
+                               fixer=FakeFixer(fn=lambda w, cc, ctx: write_fix(None, "class F { broken 2 }")))
+    assert not report.success and chain_spy.calls == [] and report.remediation is None
+    assert not any(str(e["event"]).startswith("remediation") for e in journal_events(ws))
+
+
+@pytest.mark.parametrize("stop", [Phase.TRANSFORM, Phase.VERIFY])
+def test_remediation_not_chained_with_stop_after(cfg, tmp_path, chain_spy, stop):
+    _, _, report = run_engine(chain_cfg(cfg), tmp_path, "graph", stop_after=stop)
+    assert chain_spy.calls == [] and report.remediation is None
+
+
+def test_remediation_not_chained_on_dry_run(cfg, tmp_path, chain_spy):
+    ws = new_ws(tmp_path, "dry")
+    orch = make_orch(chain_cfg(cfg), ws, build=FakeBuildRunner(ws, fn=files_build), rewrite=FakeRewriteRunner(ws))
+    orch.run(dry_run=True)
+    assert chain_spy.calls == []
+
+
+def test_remediation_not_chained_after_an_abort(cfg, tmp_path, chain_spy, monkeypatch):
+    import sbmig.build as b
+    monkeypatch.setattr(b, "maven_available", lambda *a, **k: False)
+    ws = new_ws(tmp_path, "abort")
+    orch = make_orch(chain_cfg(cfg), ws)
+    orch._build_runner = None
+    report = orch.run()
+    assert "aborted" in report.flags and chain_spy.calls == []
+
+
+def test_remediation_not_chained_after_a_user_stop(cfg, tmp_path, chain_spy):
+    from sbmig.graph.engine import STOP_REQUEST_FILE
+    ws = new_ws(tmp_path, "rstop")
+    orch = make_orch(chain_cfg(cfg), ws, build=FakeBuildRunner(ws, fn=files_build), rewrite=FakeRewriteRunner(ws))
+    orig_phase = orch.step_phase
+
+    def phase_then_stop(report, ph, items, stop):
+        out = orig_phase(report, ph, items, stop)
+        if ph == Phase.VERIFY:
+            (ws.run_dir / STOP_REQUEST_FILE).write_text("stop\n", encoding="utf-8")
+        return out
+    orch.step_phase = phase_then_stop
+    orch.run()
+    assert chain_spy.calls == [] and "aborted" in orch.report.flags
+
+
+def test_remediation_stream_yields_the_node_only_when_it_ran(cfg, tmp_path, chain_spy):
+    ws = new_ws(tmp_path, "rstream")
+    orch = make_orch(chain_cfg(cfg), ws, build=FakeBuildRunner(ws, fn=files_build), rewrite=FakeRewriteRunner(ws))
+    seen = list(stream_graph(orch))
+    assert seen[-1][0] == "remediation" and seen[-1][1]["remediation"]["status"] == "SUCCEEDED"
+    ws2 = new_ws(tmp_path, "rstream-off")
+    orch2 = make_orch(chain_cfg(cfg, on=False), ws2, build=FakeBuildRunner(ws2, fn=files_build),
+                      rewrite=FakeRewriteRunner(ws2))
+    assert [n for n, _ in stream_graph(orch2)][-1] == "finalize"
+
+
+def test_inline_engine_notes_the_skip_only_with_the_switch_on(cfg, tmp_path, chain_spy):
+    from sbmig.report.result_line import report_result_line
+    _, ws, report = run_engine(chain_cfg(cfg, engine="inline"), tmp_path, "inline")
+    assert chain_spy.calls == [] and report.success and run_exit_code(report) == 0
+    skips = [e for e in journal_events(ws) if e["event"] == "remediation_skipped"]
+    assert len(skips) == 1 and skips[0]["reason"] == "inline_engine" and skips[0]["scope"] == "remediation"
+    assert report_result_line(report).endswith(" remediation=skipped")
+    _, ws2, report2 = run_engine(chain_cfg(cfg, on=False, engine="inline"), tmp_path, "inline", name="inline-off")
+    assert not any(e["event"] == "remediation_skipped" for e in journal_events(ws2)) and report2.remediation is None

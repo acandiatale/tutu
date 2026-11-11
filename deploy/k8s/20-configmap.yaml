@@ -119,3 +119,11 @@ data:
   # SBMIG_LIBRARIES__INCLUDE_PRERELEASE: "false"
   # SBMIG_REVIEW__FIX_CRITICAL: "true"               # 구조 리뷰의 critical 을 자동 수정
   # SBMIG_FLEET__MIN_FREE_GB: "5"                    # 디스크 여유 하한(실행 전 확인)
+  #    취약점 조치(README §6, 2026-11-11): 이관이 BUILD SUCCESS 로 끝나면 같은 빌드 파드에서 IVAS 검사 → 버전 글자 수정 → 재검사를 이어 돈다.
+  #    결과는 실행 폴더의 remediation/ 아래. 조치의 성패는 이관의 판정·종료 코드를 바꾸지 않고, Secret 에 IVAS 세 값이 없으면 건너뛴다.
+  #    여기(sbmig-env)에 두는 까닭: 웹 파드(40, envFrom)와 Job 파드(81, 아래 키 줄)가 같은 값을 받아야 Worker 의 환경 대조를 통과한다
+  #    (한쪽에만 있으면 그 Job 이 refuse 로 멈춘다). 끄려면 "false" 로 바꾸고 웹 파드를 재시작한다 — 줄을 지워도 된다(코드 기본값 false)
+  SBMIG_REMEDIATION__AFTER_MIGRATION: "true"
+  # SBMIG_REMEDIATION__REQUIRE_APPROVAL: "false"     # true = 모든 버전 변경에 사람 승인(기본: 메이저·부모·BOM·관리 버전 override 만 기다린다)
+  # SBMIG_REMEDIATION__FAILED_CANDIDATE: "include"   # 빌드가 실패한 수정본도 result.zip 으로 낸다 | discard = 내지 않는다
+  # SBMIG_REMEDIATION__IVAS_ANALYSIS_TIMEOUT_MINUTES: "30"   # IVAS 분석 한 번을 기다리는 한도(분). 넘으면 검사 미완료(0건이 아니다)
