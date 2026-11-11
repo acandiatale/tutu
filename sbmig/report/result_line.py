@@ -32,10 +32,11 @@ Codes, most important first:
     infra:<kind>          the run ended for an infrastructure reason (llm | maven | jdk | repository | disk |
                           file-lock | …): flags `infra:<kind>` (+ the older `llm-unavailable`, `llm-config-error`,
                           `mvn-not-found`, `jdk-not-21`; v2.1r: a `file_lock` BLOCKED item → `infra:file-lock`, a
-                          Windows file lock on target/); a green run (exit 0) never gets it
+                          Windows file lock on target/; v2.1z-ah: `infra:http-blocked` — Maven's HTTP repository
+                          blocker refused a repository, flag `aborted:http-blocked`); a green run (exit 0) never gets it
     skipped:<why>         fleet only: not migrated (`skipped:gradle`, `skipped:input`)
     crash                 the run raised (fleet `error: crash: …`, CLI traceback)
-    aborted[:<reason>]    exit 3 (`aborted:parent-not-found`, stopped by the user, …)
+    aborted[:<reason>]    exit 3 (`aborted:parent-not-found`, `aborted:http-blocked`, stopped by the user, …)
     owner-decision        v2.1y: a `needs_owner` BLOCKED item — the LLM named a blocker outside the project (a library
                           without a jakarta build, a framework to replace, a missing artifact); the owning team
                           decides (소유팀 결정 필요). Followed by `blocked:needs_owner`

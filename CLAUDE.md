@@ -412,9 +412,16 @@ Then the final build again, the report (Handover first, "Structure review", fix 
   `<parent>` (text-preserving), commit, journal `asis_parent_aligned`, flag `asis-parent-aligned`, one Handover line, OpenRewrite
   once more — and the zero-LLM pre-try `sbmig-parent` in the build loop; a foreign parent → continue with flag
   `rewrite-skipped-asis-parent`. Switch `openrewrite.unresolvable_asis_parent: align | continue | abort` (default align).
-  Fixture `boot-asis-parent-unpublished`. Open: the user says the same test project used to continue before — why it aborted now
-  is not explained yet (the abort condition has not changed since October; asked for the old run's `"event": "rewrite"` ok value
-  and the `is not resolvable` line).
+  Fixture `boot-asis-parent-unpublished`.
+- **Maven's HTTP repository blocker (v2.1z-ah, the real cause of that company run)**: Maven ≥ 3.8.1 routes `http://` repositories to
+  the blocked mirror `maven-default-http-blocker`; the company settings.xml exempts repositories in that mirror's `mirrorOf`
+  (`external:http:*,!<id>`) and had exempted only the release repository, so the snapshots repository (where the as-is parent
+  SNAPSHOT lives) was refused — even the copy in `.m2`, because Maven ties a cached file to the repository id it came from. The
+  user's fix: every repository id used goes into the exception list (PC settings.xml AND the pod's settings.xml in ConfigMap
+  `sbmig-config`). sbmig never edits settings; it passes `-s` only when `build.settings_file` is set. `Blocked mirror for
+  repositories` is now its own environment abort: `attn=infra:http-blocked,aborted:http-blocked`, journal `maven_http_blocked`, a
+  Handover line naming the repository, the settings file and the fix; no parent alignment / pre-try / retry / LLM runs for it; a
+  preflight WARNING `maven_http_blocker_active` when the settings already route an http repository to a blocking mirror.
 - **Remediation, first real-Maven runs (2026-11-11, ~15 chained runs on fixtures with a fake IVAS server)**: the remediation now
   builds the migration's own verify targets (`RemediationState.build_targets`; per-service MSA trees without a root pom are
   accepted), refuses insecure-TLS / `-s` / `-f` arguments in `build.extra_args` as a readiness problem instead of dropping them,

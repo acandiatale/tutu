@@ -1383,6 +1383,32 @@ class Orchestrator:
                 checks[f"artifacts.{name}"] = f"{spec.key}:{spec.version or '-'}"
         checks["java_home"] = self.cfg.build.java_home or "(inherited)"
         self.ws.journal({"event": "preflight", **checks})
+        if self._build_runner is None:
+            self._check_http_blocker()
+
+    def _check_http_blocker(self) -> None:
+        """v2.1z-ah 사전 점검: Maven 이 쓸 settings(사용자 + 전역)에서 차단 미러가 ``http://`` 저장소를 덮고 있으면 WARNING 한 줄과
+        저널 ``maven_http_blocker_active`` (저장소들). 중단하지 않는다 — 그 저장소에서 받을 것이 없을 수도 있다; 중단은 Maven 이 실제로
+        거부했을 때만(``BuildFixLoop.http_blocked_abort``).
+
+        Preflight: one WARNING + journal `maven_http_blocker_active` when the effective Maven settings route an `http://`
+        repository to a blocked mirror. Never aborts — the abort happens only when Maven really reports the block."""
+        try:
+            from sbmig.build.env_errors import active_http_blockers
+            found = active_http_blockers(self.cfg, self.ws.root)
+        except Exception as e:  # noqa: BLE001 - a preflight check never fails a run
+            log.debug("http blocker preflight: %s", e)
+            return
+        if not found:
+            return
+        repos = ", ".join(f"{b.repo_id} ({b.url})" for b in found)
+        mirrors = ", ".join(dict.fromkeys(f"{b.mirror_id} from {b.mirror_origin}" for b in found))
+        log.warning("preflight: Maven's HTTP blocker covers %s (mirror %s) — Maven >= 3.8.1 will refuse to download from it; "
+                    "if the build needs it, the run stops: use an https URL or override the mirror in the settings.xml",
+                    repos, mirrors)
+        self.ws.journal({"event": "maven_http_blocker_active",
+                         "repositories": [{"id": b.repo_id, "url": b.url, "declared": b.declared, "mirror": b.mirror_id,
+                                           "mirror_origin": b.mirror_origin} for b in found]})
 
     _mvn_java_problem = ""
     _jdk_problem = ""
@@ -1514,8 +1540,10 @@ class Orchestrator:
             unresolved = self._unresolved_versions(res)
         if unresolved:
             self._report_unresolved_versions(pr, step, res, unresolved)
+        # v2.1z-ah: Maven 의 HTTP 차단 미러가 저장소를 거부했다 → 부모 맞추기도 재시도도 소용없다(아래에서 실행을 멈춘다)
+        http_blocked = not res.ok and self._http_blocked_text(res)
         # v2.1z-ag: 사내 부모 g:a 의 as-is 버전이 저장소에 없어 실패 → 설정 버전으로 맞추고 한 번 더(LLM 없음)
-        if not res.ok and not self._dry_run:
+        if not res.ok and not self._dry_run and not http_blocked:
             res = self._align_asis_parent_and_retry(pr, step, res, pre, clean_before)
         pr.rewrite_results.append(res)
         sha = None
@@ -1526,6 +1554,9 @@ class Orchestrator:
                          "error": res.error, "log": res.log_path, "dry_run": self._dry_run})
         if getattr(res, "parse_problems", None):
             self._report_parse_problems(pr, step, res)
+        if not res.ok and http_blocked and self.loop is not None:
+            self.loop.http_blocked_abort(pr, step.phase, res, 0, where=step.id)
+            return True
         if not res.ok:
             err = res.error or "OpenRewrite run failed"
             self._check_parent_in_rewrite(pr, step, err)
@@ -1611,6 +1642,12 @@ class Orchestrator:
         pr.notes.append(f"{step.id}: OpenRewrite could not parse {len(files)} source file(s) ({shown}) — recipes "
                         "that need type information skipped them; the fix scripts cover what the build finds")
         log.warning("%s: rewrite parse problems in %d file(s): %s", step.id, len(files), shown)
+
+    @staticmethod
+    def _http_blocked_text(res: Any) -> bool:
+        """v2.1z-ah: 실패한 OpenRewrite 실행(오류 문장 + 로그)에 Maven 의 HTTP 차단 미러가 보이는가."""
+        from sbmig.build.env_errors import http_blocker_hit
+        return http_blocker_hit(BuildFixLoop.build_text(res)) is not None
 
     def _check_parent_in_rewrite(self, pr: PhaseResult, step: PlanStep, err: str) -> None:
         """사내 parent 가 해석되지 않아 OpenRewrite 가 실패했다 → 수정 루프와 똑같이 실행을 중단한다.
@@ -2520,9 +2557,12 @@ class Orchestrator:
 
         res = _final_build()
         self._observe_build(goal, res, step.target)
+        # v2.1z-ah: Maven 의 HTTP 차단 미러 — 수정 루프(사전 시도·LLM)를 열지 않고 실행을 멈춘다
+        blocked_http = (not res.ok and self.loop is not None and not getattr(self, "_after_abort", False)
+                        and self.loop.http_blocked_abort(pr, step.phase, res, 1, where=step.id))
         # 실패한 첫 빌드가 곧 수정 루프의 빌드 1 이다(같은 트리를
         # 다시 빌드하지 않음). 루프가 끝나면 무조건 다시 빌드
-        if not res.ok and self._verify_fix_loop(pr, step, res):
+        if not res.ok and not blocked_http and self._verify_fix_loop(pr, step, res):
             if self.loop is not None and self.loop.aborted:
                 pr.notes.append(f"{step.id}: final fix loop aborted the run ({self.loop.aborted}); the failed build stands")
             else:
@@ -3010,7 +3050,11 @@ class Orchestrator:
             add.append("infra:jdk" if self._mvn_java_problem else "infra:maven")
         if "jdk-not-21" in flags:
             add.append("infra:jdk")
-        if "aborted:parent-not-found" in flags or self._repository_trouble():
+        # v2.1z-ah: Maven 의 HTTP 차단 미러 — infra:repository 보다 구체적인 원인(운영자가 고칠 곳은 Maven settings)
+        http_blocked = "aborted:http-blocked" in flags or (not report.success and self._http_blocker_trouble())
+        if http_blocked:
+            add.insert(0, "infra:http-blocked")
+        elif "aborted:parent-not-found" in flags or self._repository_trouble():
             add.append("infra:repository")
         if not report.success and self._disk_full():
             add.append("infra:disk")                # the fleet pauses instead of failing the next projects too
@@ -3026,6 +3070,13 @@ class Orchestrator:
         from sbmig.build.env_errors import file_lock_hit
 
         return any(file_lock_hit(f"{e.message}\n{e.raw}", self.cfg) is not None for r in self._verify_results
+                   if not r.ok for e in r.errors)
+
+    def _http_blocker_trouble(self) -> bool:
+        """v2.1z-ah: 실패한 최종 빌드 중 하나라도 Maven 의 HTTP 차단 미러(``http_blocker_hit``)를 보였는가."""
+        from sbmig.build.env_errors import http_blocker_hit
+
+        return any(http_blocker_hit(f"{e.message}\n{e.raw}") is not None for r in self._verify_results
                    if not r.ok for e in r.errors)
 
     def _disk_full(self) -> bool:

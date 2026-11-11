@@ -183,11 +183,13 @@ verify_guide …), `metadata`(run_id, 케이스 등). 키·헤더는 들어가�
 오류가 남음, **3** = 중단(플래그 `aborted[:…]` 또는 `mvn-not-found`: Maven 없음, Maven/Ant 프로젝트 아님, 설정된 사내 parent 좌표 해석 불가, ADF 프로젝트),
 **1** = 예외로 죽음(`SBMIG-RESULT … exit=1 … attn=crash`) 또는 명령 인자 오류.
 
-`attn=` 코드는 중요한 것부터 쉼표로(`-` = 볼 것 없음): `infra:<kind>`(llm / maven / jdk / repository / file-lock …; 초록 실행에는 안 붙음),
+`attn=` 코드는 중요한 것부터 쉼표로(`-` = 볼 것 없음): `infra:<kind>`(llm / maven / jdk / repository / file-lock / http-blocked …; 초록 실행에는 안 붙음),
 `crash`, `aborted[:<reason>]`, `owner-decision`(needs_owner 차단이 있음 = 소유팀 결정 필요), `blocked:<reason>`(사유마다), `unresolved:<n>`,
 같은 이름의 플래그 `restructure-failed`, `llm-budget-exhausted`, `time-budget-exhausted`, `javax-api-on-classpath`, `tests-skipped`,
 `test-compile-skipped`, `tests-not-compiled`, `major-upgrade`, `jar-coordinates-unknown`, `parent-chain-no-boot-bom`, `hollow-reactor`,
 `adf-project`, 그 무엇도 아니면 `incomplete`. 플릿은 `skipped:<why>` 도 쓴다.
+
+`infra:http-blocked,aborted:http-blocked`(exit 3): Maven 3.8.1+ 의 차단 미러(`maven-default-http-blocker`)가 `http://` 저장소를 거부했다(`Blocked mirror for repositories`). 프로젝트·sbmig 탓이 아니라 부모 맞추기·재시도·LLM 없이 바로 멈춘다. 인수인계 첫 줄대로 settings 를 고친다: https URL, 또는 그 미러 id 를 `<mirrorOf>none</mirrorOf>` 로 재정의. 저널 `maven_http_blocked`, 사전 점검 경고 `maven_http_blocker_active`.
 
 차단 사유 = `BlockReason`(`sbmig/core/models.py`). LLM 시도 허용 횟수는 `loop.blocked_policy`:
 

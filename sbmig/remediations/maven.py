@@ -34,6 +34,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from sbmig.build.deptree import DEPENDENCY_PLUGIN, TreeNode, parse_tree
+from sbmig.build.env_errors import http_blocked_followup, http_blocker_hit
 from sbmig.build.mvn import ProcessResult, base_command, maven_available, mvn_env, run_logged
 from sbmig.build.repo_versions import is_blocking_mirror, read_settings
 
@@ -138,6 +139,20 @@ def summarize(text: str, project: Path | None = None) -> str:
         for prefix in {str(project), str(Path(project).resolve())}:
             body = body.replace(prefix + os.sep, "").replace(prefix, ".")
     return _scrub(body)
+
+
+def _http_blocker_line(text: str, cfg: Any) -> str:
+    """v2.1z-ah: 로그에 Maven 의 HTTP 차단 미러가 보이면 이관의 인수인계와 같은 문장(``http_blocked_followup``), 아니면 "".
+
+    The migration's Handover wording for Maven's HTTP blocker when the log shows one, else ""."""
+    hit = http_blocker_hit(text or "")
+    return http_blocked_followup(hit, cfg) if hit is not None else ""
+
+
+def _with_http_blocker(summary: str, text: str, cfg: Any) -> str:
+    """요약 맨 앞에 HTTP 차단 문장(있을 때만) — 조치 메시지가 이 요약을 그대로 보여 준다."""
+    line = _http_blocker_line(text, cfg)
+    return f"{line}\n{summary}".strip() if line else summary
 
 
 def _java_major_of(version: str) -> int | None:
@@ -317,6 +332,8 @@ class ServerMaven:
         ok = pr.exit_code == 0 and not pr.timed_out and "BUILD SUCCESS" in (pr.text or "")
         if ok or pr.timed_out or not self._may_force_update(cmd):
             return pr
+        if http_blocker_hit(pr.text or "") is not None:      # v2.1z-ah: Maven's HTTP blocker — -U cannot change it
+            return pr
         hits = negative_cache_hits(pr.text or "")
         if not hits:
             return pr
@@ -388,6 +405,8 @@ class ServerMaven:
             text = pr.text or ""
             ok = pr.exit_code == 0 and not pr.timed_out and "BUILD SUCCESS" in text
             summary = "" if ok else summarize(text, Path(project))
+            if not ok:
+                summary = _with_http_blocker(summary, text, self.cfg)
             if pr.timed_out:
                 summary = f"timed out after {timeout_s:.0f}s\n{summary}".strip()
             elif pr.error:
@@ -438,6 +457,7 @@ class ServerMaven:
                 tag = "" if len(runs) == 1 else f"-{target.replace('/', '_')}"
                 out_file = (work / f"deptree{tag}.txt").resolve()
                 ok = False
+                last_text = ""
                 for attempt, extra in enumerate(([], pkg)):
                     out_file.unlink(missing_ok=True)
                     cmd = [*cmd0[:-1], *args, *extra, f"{DEPENDENCY_PLUGIN}:tree", f"-DoutputFile={out_file}",
@@ -451,6 +471,9 @@ class ServerMaven:
                     if pr.exit_code == 0 and out_file.is_file():
                         ok = True
                         break
+                    last_text = pr.text or ""
+                    if http_blocker_hit(last_text) is not None:     # v2.1z-ah: a package run would be refused the same way
+                        break
                     if len(mods) == 1:          # 형제 모듈이 없으면 package 를 곁들여도 달라질 것이 없다
                         break
                 if ok:
@@ -461,6 +484,9 @@ class ServerMaven:
                 else:
                     where = "" if len(runs) == 1 else f" for build target {target}"
                     model.notes.append(f"dependency:tree failed{where} (see deptree{tag}-*.log)")
+                    blocked = _http_blocker_line(last_text, self.cfg)
+                    if blocked and blocked not in model.notes:
+                        model.notes.append(blocked)
         by_ga: dict[str, TreeNode] = {}
         by_aid: dict[str, list[TreeNode]] = {}
         for r in roots:

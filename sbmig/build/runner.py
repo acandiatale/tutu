@@ -22,7 +22,7 @@ from sbmig.core.config import Config
 from sbmig.core.models import BuildError, BuildResult, ErrorKind
 from sbmig.core.workspace import Workspace
 
-from .env_errors import file_lock_hit
+from .env_errors import file_lock_hit, http_blocker_hit
 from .log_parser import (
     _is_boilerplate,
     _root_prefixes,
@@ -172,6 +172,10 @@ class MavenRunner:
         extra_args = list(extra_args)
         result, text = self._run_once(goal, module=module, extra_args=extra_args, label=label,
                                       skip_test_compile=skip_test_compile, skip_tests=skip_tests)
+        # v2.1z-ah: Maven 의 HTTP 차단 미러는 기다려도 -U 를 붙여도 그대로다 — 다시 돌리지 않는다(루프가 실행을 멈춘다)
+        if not result.ok and http_blocker_hit(text) is not None:
+            log.warning("maven: Maven's HTTP repository blocker refused a repository — not retried (fix the Maven settings)")
+            return result
         # v2.1r: Windows 파일 잠금(target/)은 환경 문제 — 기다렸다 같은 빌드를 다시(수정 루프·LLM 까지 가지 않게)
         result, text = self._retry_file_lock(goal, module=module, extra_args=extra_args, label=label,
                                              skip_test_compile=skip_test_compile, skip_tests=skip_tests,

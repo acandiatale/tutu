@@ -32,6 +32,7 @@ from .errors import (
     where,
 )
 from .handover import (
+    HTTP_BLOCKED_PREFIX,
     is_jsp_jakarta_note,
     jsp_jakarta_counts,
     pom_synthesis_counts,
@@ -59,6 +60,9 @@ FLAG_HELP = {
                        "listed as blocked (llm_unavailable) — stored scripts and the final build still ran",
     "aborted:parent-not-found": "the configured in-house parent POM (or a build extension it declares) is not resolvable — nothing can build until it is "
                                 "(see Blocked)",
+    # v2.1z-ah: Maven(3.8.1+)의 HTTP 차단 미러가 저장소를 거부 — 프로젝트·sbmig 가 아니라 Maven settings 를 고칠 일
+    "aborted:http-blocked": "Maven (3.8.1+) refused an HTTP repository through its blocker mirror (maven-default-http-blocker): "
+                            "the project and sbmig are not the cause — fix the Maven settings (see the Handover's first line)",
     # v2.1z-ag: 사내 부모 g:a 의 as-is 버전이 저장소에 없음 — 설정 버전으로 맞추고 레시피를 다시 돌림 / 레시피 없이 계속
     "asis-parent-aligned": "the project's own version of the company parent was not in the repository: sbmig set the "
                            "configured version in those poms (openrewrite.unresolvable_asis_parent: align) — the recipes "
@@ -608,7 +612,9 @@ def handover_lines(r: RunReport, lang: str = "en", cfg: Any = None) -> list[str]
         from .handover import operator_checks_item
         items = [operator_checks_item(len(r.operator_checks)), *items]
     if items:
-        L += [f"{i}. {_cell(tr_line(lang, x), 500)}" for i, x in enumerate(items, 1)]
+        # v2.1z-ah: the HTTP-blocker line carries two settings paths — never cut (an operator retypes from it)
+        L += [f"{i}. {_cell(tr_line(lang, x), 1000 if x.startswith(HTTP_BLOCKED_PREFIX) else 500)}"
+              for i, x in enumerate(items, 1)]
     else:
         L.append(tr(lang, "Nothing beyond the usual review — the migrated project builds with the versions above."))
     L.append("")

@@ -349,6 +349,10 @@ class OpenRewriteRunner:
         res = self._run_once(recipes, extra_recipe_files=extra_recipe_files, module=module, dry_run=dry_run,
                              label=label, fork=fork)
         jvm_args: list[str] | None = None
+        # v2.1z-ah: Maven 의 HTTP 차단 미러 — 다운로드 대기·-U·runNoFork 어느 재시도도 통하지 않는다(오케스트레이터가 실행을 멈춘다)
+        if not res.ok and self._http_blocked(res):
+            log.warning("rewrite: Maven's HTTP repository blocker refused a repository — no retry (fix the Maven settings)")
+            return res
         # catalog E8: the recipe run itself ran out of heap → one retry with the bigger oom_retry_jvm_args
         if not res.ok and self._is_oom(res):
             jvm_args = list(self.cfg.openrewrite.oom_retry_jvm_args)
@@ -392,6 +396,11 @@ class OpenRewriteRunner:
             except OSError:
                 pass
         return text
+
+    def _http_blocked(self, res: RewriteResult) -> bool:
+        """v2.1z-ah: 실패 글에 Maven 의 HTTP 차단 미러가 보이는가(``sbmig.build.env_errors.http_blocker_hit``)."""
+        from sbmig.build.env_errors import http_blocker_hit
+        return http_blocker_hit(self._failure_text(res)) is not None
 
     def _is_oom(self, res: RewriteResult) -> bool:
         return bool(self._OOM_RE.search(self._failure_text(res)))

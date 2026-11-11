@@ -73,6 +73,10 @@ def test_infra_kinds_and_green_runs():
     assert attention_codes(flags=["aborted:parent-not-found"], exit_code=3) == ["aborted:parent-not-found"]
     assert attention_codes(flags=["aborted"], exit_code=3) == ["aborted"]
     assert attention_codes(exit_code=2) == ["incomplete"]
+    # v2.1z-ah: Maven's HTTP blocker — the infra kind first, then the abort reason
+    assert attention_codes(flags=["aborted:http-blocked", "infra:http-blocked"], exit_code=3) == \
+        ["infra:http-blocked", "aborted:http-blocked"]
+    assert report_exit_code(_report(success=False, flags=["aborted:http-blocked"])) == 3
 
 
 def test_fleet_result_attention():

@@ -141,6 +141,14 @@ cap ends it instead.
   foreign parent → the run continues without recipes: flag `rewrite-skipped-asis-parent`, journal
   `rewrite_skipped_asis_parent`, one Handover line. The intake's as-is `help:effective-pom` fails for the same reason; it stays
   non-fatal and logs `the parent <g:a:v> is not in the repository` (journal `effective_pom.reason`).
+* **Maven's HTTP repository blocker** (Maven ≥ 3.8.1 ships the blocked mirror `maven-default-http-blocker`, mirrorOf
+  `external:http:*`, in `<maven home>/conf/settings.xml`; any mirror with `<blocked>true</blocked>` behaves the same): a failed
+  OpenRewrite run or build whose text shows `Blocked mirror for repositories: [...]` or that mirror id aborts the run at once —
+  before the as-is parent alignment, `_check_parent_in_rewrite`, `_parent_abort`, the zero-LLM pre-tries and the LLM. Neither
+  runner retries it (no download wait, no `-U`, no runNoFork, no file-lock wait). Flag `aborted:http-blocked`, exit 3, journal
+  `maven_http_blocked` (the mirror id and the blocked repositories — ids and URLs without credentials), one Handover line saying
+  what to change in the Maven settings. At preflight a blocked mirror that the effective settings select for an `http://`
+  repository (settings active profiles or the poms) logs one WARNING and journals `maven_http_blocker_active`; it does not abort.
 * **Server shutdown**: open SSE streams are ended and every registered Maven process tree is killed
   (`sbmig.build.mvn.kill_live_processes`).
 
@@ -150,7 +158,8 @@ At finalize a run that ended for an infrastructure reason gets `infra:<kind>`: `
 failed run), `maven` (`mvn-not-found`), `jdk` (Maven on another JDK), `repository` (the configured parent not found —
 `aborted:parent-not-found` — or every error of the failed final build is a resolution error with network / repository text;
 an as-is parent version that sbmig aligned leaves no `infra:repository` on a run that then builds), `disk` (no space left),
-`file-lock`. The code appears in
+`file-lock`, `http-blocked` (Maven's HTTP repository blocker refused a repository, flag `aborted:http-blocked`; it replaces
+`infra:repository`: the fix is in the Maven settings, not in the repository). The code appears in
 `SBMIG-RESULT … attn=` and the fleet's breaker defers such projects (`docs/FLEET.md`).
 
 ## 8. Analyzer warnings (never blocking)

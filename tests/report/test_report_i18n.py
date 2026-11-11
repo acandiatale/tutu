@@ -350,6 +350,11 @@ def test_every_handover_pattern_matches_a_real_handover_line(tmp_path, cfg):
     lines.append(aligned_followup(pm, ["pom.xml", "a/pom.xml"]))
     lines.append(loop_aligned_followup(pm, ["pom.xml"]))
     lines.append(skipped_followup(ParentMiss(gav=_GAV.parse("com.acme:acme-parent:9.9"), kind="foreign")))
+    # v2.1z-ah: the Maven HTTP blocker line (one repository / several)
+    from sbmig.build.env_errors import http_blocked_followup, http_blocker_hit
+
+    from ..build.test_http_blocker import DEP_LOG, PARENT_LOG
+    lines += [http_blocked_followup(http_blocker_hit(t), cfg) for t in (DEP_LOG, PARENT_LOG)]
 
     translated = {x: tr_line("ko", x) for x in lines}
     for rx, _ in PATTERNS["ko"]:

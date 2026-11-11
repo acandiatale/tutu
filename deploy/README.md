@@ -140,7 +140,9 @@ Secret 의 `SBMIG_WEB_TOKEN` 을 채운다 — 그때는 `http://<host>:8765/?to
 * **회사 설정**: 이미지 안 `/app/config/artifacts.yml`(§1 에서 구운 파일)이고, `sbmig-env` 의 `SBMIG_WEB_CONFIGS=artifacts.yml`
   (= `sbmig serve --config artifacts.yml`) 이 **모든 업로드를 이 설정으로 돌린다** — 담당자는 화면에서 설정을 고르지 않는다(고급 설정을
   펼쳐야 목록이 보인다). 그 이름의 파일이 이미지에 없으면 웹 파드는 경고 한 줄만 남기고 회사 설정 없이 돈다 — 그래서 빌드에 `REQUIRE_CONFIG` 를 붙인다.
-* **ConfigMap `sbmig-config`**: `settings.xml` 하나(`/etc/sbmig/settings.xml`, Nexus 미러).
+* **ConfigMap `sbmig-config`**: `settings.xml` 하나(`/etc/sbmig/settings.xml`, Nexus 미러). 이미지의 Maven 3.9 도 `http://` 저장소를
+  막는 기본 미러 `maven-default-http-blocker` 를 갖고 있다 — Nexus 주소가 `http://` 면 차단 미러의 `<mirrorOf>` 에 `,!<저장소 ID>` 를 붙여 그 저장소를 예외로 빼거나(회사 settings.xml 이 쓰는 방식 — 쓰는 저장소 ID 를 모두 적는다),
+  Nexus 미러에 `<blocked>false</blocked>` 를 둔다(아니면 실행이 `attn=infra:http-blocked` 로 멈춘다).
 * **컨테이너 경로**: 구운 파일은 PC 에서 시험한 것이라 PC 경로가 들어 있을 수 있다. 매니페스트(40 / 81 / 80)의 `env` 가 그 키들을 덮어쓴다 —
   환경 변수는 어떤 yml 보다 뒤에 적용된다. `sbmig-env` 가 아니라 매니페스트에 두는 이유: 80 모델은 KB 폴더와 기록 폴더를 `run-job.sh` 가 정한다.
 

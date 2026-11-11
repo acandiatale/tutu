@@ -92,6 +92,9 @@ HOLLOW_FLAG = "hollow-reactor"
 # v2.1z-d: Oracle ADF(변환 불가) — sbmig.analyze.adf 의 ADF_PREFIX / ADF_FLAG 와 같은 문자열
 ADF_PREFIX = "ADF project (Oracle JDeveloper / ADF): conversion is not possible —"
 ADF_FLAG = "adf-project"
+# v2.1z-ah: Maven 의 HTTP 차단 미러로 멈춘 실행 — sbmig.build.env_errors 의 HTTP_BLOCKED_PREFIX / HTTP_BLOCKED_FLAG 와 같은 문자열
+HTTP_BLOCKED_PREFIX = "Maven (3.8.1+) refuses the HTTP repositor"
+HTTP_BLOCKED_FLAG = "aborted:http-blocked"
 _TRIGGER_ADDED_RE = re.compile(r"([^\s;:]+:[^\s;:]+) → \S+ \(for ([^()]*)\)")
 _TRIGGER_REPLACED_RE = re.compile(r"([^\s;:]+:[^\s;:]+) removed from \S+ → ([^\s;:]+:[^\s;:]+)")
 
@@ -753,6 +756,11 @@ def _from_here(h: HandoverSummary, report: RunReport, cfg: Any, view: Any = None
     adv_cfg = getattr(cfg, "advisories", None) if cfg is not None else None
     out: list[str] = []
     findings = list(report.advisories or [])
+    # (-4) v2.1z-ah: Maven 의 HTTP 차단 미러로 멈춤 — 운영자가 고칠 곳(Maven settings)이 다른 무엇보다 먼저
+    if HTTP_BLOCKED_FLAG in (report.flags or []):
+        first = next((m for m in report.manual_followups if m.startswith(HTTP_BLOCKED_PREFIX)), None)
+        if first:
+            _dedupe_add(out, first)
     # (-3) v2.1z-d: ADF 프로젝트(변환 불가) — 그 사실과 규모가 맨 앞 / a rejected ADF project: the message and the sizing first
     if ADF_FLAG in (report.flags or []):
         first = next((m for m in report.manual_followups if m.startswith(ADF_PREFIX)), None)

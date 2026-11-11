@@ -527,3 +527,20 @@ Contract: `docs/INTERFACES.md` "v2.1z-ag".
 | Neighbours | intake `help:effective-pom` reason `the parent <g:a:v> is not in the repository` (non-fatal); `infra:repository` unchanged (aborts / failed final builds only); triage unchanged; `repo-probe` unchanged; flag help + Korean texts | `sbmig/build/effective.py`, `sbmig/report/markdown.py`, `sbmig/report/i18n.py` | done |
 | Tests + fixture | `tests/loop/test_asis_parent.py` (20); fixture `boot-asis-parent-unpublished` (stand-in parent at `2.7.18-NOT-PUBLISHED`), real-Maven e2e PASS | `tests/`, `fixtures/projects/` | done |
 | Docs | ERROR-HANDLING §2 / §5 / §6 / §7, INTERFACES "v2.1z-ag", agent-doc 02 / 03, PROGRESS | `docs/`, `agent-doc/` | done |
+
+## Status — 2026-11-11, v2.1z-ah: Maven's HTTP repository blocker is an environment abort of its own
+
+Company run: `exit=3 attn=infra:repository,aborted:parent-not-found,blocked:parent_not_found`, "configured parent … is not
+resolvable". The real cause was Maven's built-in blocked mirror `maven-default-http-blocker` (Maven ≥ 3.8.1, global settings)
+refusing the company repository's `http://` URL; sbmig's message pointed at the parent. Contract: `docs/INTERFACES.md` "v2.1z-ah".
+
+| Item | Deliverable | Where | Status |
+|---|---|---|---|
+| Classifier | `http_blocker_hit` (mirror id + blocked repositories from `Blocked mirror for repositories: [...]`, credentials removed), `http_blocked_reason`, `http_blocked_followup`; the exact Maven 3.9.10 texts (parent wrapper, dependency descriptor) pinned in the tests | `sbmig/build/env_errors.py` | done |
+| Precedence | `BuildFixLoop.http_blocked_abort` before as-is parent alignment / `_check_parent_in_rewrite` (transform), before the fix loop (final build), before `_parent_abort` / pre-tries / LLM (loop); no file-lock / `-U` retry in `MavenRunner`, no OOM / download / `-U` / runNoFork retry in `OpenRewriteRunner` | `sbmig/loop/fixloop.py`, `sbmig/loop/orchestrator.py`, `sbmig/build/runner.py`, `sbmig/rewrite/runner.py` | done |
+| Outcome | flag `aborted:http-blocked` (exit 3), `infra:http-blocked` instead of `infra:repository`, journal `maven_http_blocked`, one Handover line first (Korean in i18n), flag help | `sbmig/loop/orchestrator.py`, `sbmig/report/handover.py`, `markdown.py`, `i18n.py`, `result_line.py` | done |
+| Preflight | `active_http_blockers` (user + global settings merged and mirrors selected like Maven; settings and pom `http://` repositories) → WARNING + journal `maven_http_blocker_active`, never an abort | `sbmig/build/env_errors.py`, `Orchestrator._check_http_blocker` | done |
+| Remediation | the same sentence first in `BuildOutcome.summary` / `ResolvedModel.notes`; no `-U` retry, no package-assisted deptree retry | `sbmig/remediations/maven.py` | done |
+| Tests | `tests/build/test_http_blocker.py`, `tests/loop/test_http_blocker_flow.py`, pins in `test_result_line.py` / `test_report_i18n.py` | `tests/` | done |
+| Not done | e2e fixture: `scripts/e2e.sh` passes no per-fixture settings file (a blocked run needs one, or a global-settings blocker on the e2e host) | — | open |
+| Docs | ERROR-HANDLING §6 / §7, INTERFACES "v2.1z-ah", RUNBOOK §0, agent-doc 03, deploy README, PROGRESS | `docs/`, `agent-doc/`, `deploy/` | done |

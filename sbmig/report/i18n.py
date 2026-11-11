@@ -482,6 +482,10 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
         "표시했다 — 저장된 스크립트와 최종 빌드는 그대로 실행했다",
     "the configured in-house parent POM (or a build extension it declares) is not resolvable — nothing can build until it is (see Blocked)":
         "설정한 사내 parent POM(또는 그 부모가 선언한 빌드 확장)을 해석할 수 없다 — 해결될 때까지 아무것도 빌드되지 않는다('차단됨' 참조)",
+    "Maven (3.8.1+) refused an HTTP repository through its blocker mirror (maven-default-http-blocker): the project and "
+    "sbmig are not the cause — fix the Maven settings (see the Handover's first line)":
+        "Maven(3.8.1 이상)이 차단 미러(maven-default-http-blocker)로 HTTP 저장소를 거부했다: 프로젝트나 sbmig 탓이 아니다 — "
+        "Maven settings 를 고칠 것(인수인계 첫 줄 참조)",
     "the run was stopped on purpose after this phase (--stop-after)":
         "이 단계 뒤에서 의도적으로 실행을 멈췄다(--stop-after)",
     "the run stopped early (see Blocked / follow-ups)": "실행이 일찍 멈췄다('차단됨' / 후속 조치 참조)",
@@ -606,6 +610,15 @@ PATTERNS: dict[str, list[tuple[re.Pattern[str], str]]] = {"ko": [(re.compile(p),
      (r"pom 복사본 무시: `\g<p>` 은(는) `\g<q>` 와 좌표가 같고(`\g<c>`), 모듈 `\g<q2>` 옆에 있으며, 어느 pom 도 모듈로 나열하지 "
       r"않는다 — 떠도는 복사본(IDE 출력·백업 폴더)으로 보고 빌드도 이관도 하지 않고 그 자리에 둔다; 원본에서 지우거나, 진짜 모듈이면 "
       r"다른 좌표를 주고 <modules> 에 나열하라")),
+    # v2.1z-ah: Maven 의 HTTP 차단 미러 줄(sbmig/build/env_errors.py http_blocked_followup — 바꾸면 함께)
+    ((r"^Maven \(3\.8\.1\+\) refuses the HTTP repositor(?:y|ies) (?P<r>.+?) via the blocked mirror `(?P<m>[^`]+)` — not a "
+      r"project or sbmig problem\. Fix the Maven settings: \(a\) an https URL, or \(b\) in (?P<s>.+?) \((?P<o>[\w.]+)\) "
+      r"exempt (?P<i0>.+?) from mirror `(?P<m2>[^`]+)` \(append `,!<repository id>` to its `<mirrorOf>`\), or add a mirror "
+      r"for (?P<i>.+?) \(same URL, "
+      r"`<blocked>false</blocked>`\); blocker from (?P<g>.+)$"),
+     (r"Maven(3.8.1 이상)이 HTTP 저장소 \g<r> 를 차단 미러 `\g<m>` 로 거부합니다 — 프로젝트·sbmig 문제가 아닙니다. Maven settings "
+      r"를 고치세요: (a) https URL 로, 또는 (b) \g<s> (\g<o>)에서 차단 미러 `\g<m2>` 의 `<mirrorOf>` 끝에 `,!<저장소 ID>` 를 붙여 \g<i0> 를 예외로 빼거나 "
+      r"\g<i> 용 미러 추가(같은 URL, `<blocked>false</blocked>`). 차단 미러 출처: \g<g>")),
     # v2.1z-ag: 사내 부모의 as-is 버전 / 레시피 없이 계속 줄(sbmig/loop/orchestrator.py · fixloop.py — 바꾸면 함께)
     ((r"^as-is parent `(?P<o>[^`]+)` is not in the repository: sbmig set the configured `(?P<t>[^`]+)` \((?P<s>[\w.]+)\) in "
       r"(?P<p>.+?) before the recipes — the recipes ran on the target parent's classpath, not the as-is one \(code that only "

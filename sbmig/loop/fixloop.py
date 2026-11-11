@@ -1201,6 +1201,9 @@ class BuildFixLoop:
                     log.warning("stop requested (stop.request) — leaving the fix loop after build %d (no further fix)", build_no)
                     self.ws.journal({"event": "stop_request", "phase": phase.value, "iteration": build_no, "where": "fix loop"})
                     break
+                # v2.1z-ah: Maven 의 HTTP 차단 미러가 저장소를 거부했다 → 부모 맞추기·사전 시도·LLM 어느 것도 못 고친다: 바로 중단
+                if self.http_blocked_abort(pr, phase, build, build_no):
+                    break
                 # 사내 parent 가 해석되지 않으면 아무것도 빌드할 수 없다 → 실행 중단(코드 수정으로는 못 고침)
                 if self._parent_abort(pr, phase, build, build_no):
                     break
@@ -1518,6 +1521,55 @@ class BuildFixLoop:
                "time(s) within loop.oscillation_window (loop.oscillation_limit)")
         pr.notes.append(f"build {iteration}: oscillation repeated → blocking {len(involved)} cluster(s)")
         self._block_remaining(pr, phase, iteration, involved, BlockReason.OSCILLATION, why)
+
+    @staticmethod
+    def build_text(build: Any) -> str:
+        """실패한 빌드(또는 OpenRewrite 실행)의 글: 오류들의 메시지·원문, 요약/오류 문장, 그리고 로그 파일(있으면).
+
+        The text of a failed build (or OpenRewrite run): the errors' message / raw, the summary / error text, the log file."""
+        parts = [f"{e.message}\n{e.raw or ''}" for e in (getattr(build, "errors", None) or [])]
+        parts += [str(getattr(build, "summary", "") or ""), str(getattr(build, "error", "") or "")]
+        lp = getattr(build, "log_path", "") or ""
+        if lp:
+            try:
+                p = Path(lp)
+                if p.is_file():
+                    parts.append(p.read_text(encoding="utf-8", errors="replace"))
+            except OSError:
+                pass
+        return "\n".join(parts)
+
+    def http_blocked_abort(self, pr: Optional[PhaseResult], phase: Phase, build: Any, iteration: int, *,
+                           where: str = "build") -> bool:
+        """v2.1z-ah: 실패한 Maven 실행(빌드 / OpenRewrite)에 HTTP 차단 미러(``Blocked mirror for repositories`` /
+        ``maven-default-http-blocker``)가 보이면 실행을 한 번에 멈춘다 — 플래그 ``aborted:http-blocked``, 저널
+        ``maven_http_blocked`` (저장소들, 자격증명 없음) + ``abort``, ERROR 한 줄, 인수인계 한 줄(``http_blocked_followup``). 부모
+        맞추기·``sbmig-parent`` / ``sbmig-version`` / ``sbmig-jakarta`` 사전 시도·LLM 어느 것도 이 실패를 고칠 수 없다. 이미 멈췄으면
+        True 만. 보이지 않으면 False.
+
+        Maven's HTTP repository blocker in a failed build / OpenRewrite run → abort the run once: flag `aborted:http-blocked`,
+        journal `maven_http_blocked` (repositories, no credentials) + `abort`, one ERROR line, one Handover line. No parent
+        alignment, zero-LLM pre-try or LLM call can change it. False when the text shows no blocker."""
+        from sbmig.build.env_errors import HTTP_BLOCKED_FLAG, http_blocked_followup, http_blocked_reason, http_blocker_hit
+        if build is None or getattr(build, "ok", False):
+            return False
+        hit = http_blocker_hit(self.build_text(build))
+        if hit is None:
+            return False
+        if self.aborted:
+            return True
+        self.aborted = f"{http_blocked_reason(hit)} — run aborted: fix the Maven settings (see the Handover)"
+        settings = self.cfg.build.settings_file or "~/.m2/settings.xml (default)"
+        log.error("%s; Maven settings: %s", self.aborted, settings)
+        self.ws.journal({"event": "maven_http_blocked", "phase": phase.value, "iteration": iteration, "where": where,
+                         **hit.as_json(), "settings": settings,
+                         "log": getattr(build, "log_path", None) or None})
+        self._flag(HTTP_BLOCKED_FLAG)
+        self._followup(http_blocked_followup(hit, self.cfg))
+        if pr is not None:
+            pr.notes.append(f"{where} {iteration}: {self.aborted}")
+        self.ws.journal({"event": "abort", "phase": phase.value, "iteration": iteration, "reason": self.aborted})
+        return True
 
     def _parent_abort(self, pr: PhaseResult, phase: Phase, build: BuildResult, iteration: int) -> bool:
         """설정된 사내 parent(root / boot / comp)가 해석되지 않는다 → 아무것도 빌드할 수 없으니 실행을

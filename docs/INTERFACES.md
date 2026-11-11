@@ -3585,6 +3585,48 @@ That is not the configured parent missing, and it no longer aborts the run.
   `sbmig repo-probe g:a:v` shows whether the repository has a parent version.
 - Fixture `boot-asis-parent-unpublished` (the company-parent stand-in g:a at `2.7.18-NOT-PUBLISHED`).
 
+## v2.1z-ah — Maven's HTTP repository blocker is an environment abort of its own
+
+Maven ≥ 3.8.1 ships the mirror `maven-default-http-blocker` (mirrorOf `external:http:*`, url `http://0.0.0.0/`, blocked) in
+`<maven home>/conf/settings.xml`. A repository declared with an `http://` URL is then refused — even for an artifact already in
+the local repository (cached under the repository's id; the request now goes to the blocker). Maven 3.9.10 prints:
+`Could not transfer artifact g:a:pom:v from/to maven-default-http-blocker (http://0.0.0.0/): Blocked mirror for repositories:
+[company-nexus (http://nexus.invalid/repository/maven-public/, default, releases+snapshots), …]` (inside the `Non-resolvable
+parent POM …` wrapper for a parent, after `Failed to read artifact descriptor for …` for a dependency). Neither the project nor
+sbmig can change that.
+
+- **Classifier** (`sbmig/build/env_errors.py`): `http_blocker_hit(text) -> HttpBlockerHit | None` — `mirror_id` (the mirror
+  named after `from/to`, else `maven-default-http-blocker`) and `repositories: [BlockedRepository(id, url)]` from every bracket
+  list in the text (deduplicated by id; `user:password@` removed by `strip_userinfo`). Matches `Blocked mirror for repositories`
+  or the bare blocker id. `http_blocked_reason(hit)` (one sentence) and `http_blocked_followup(hit, cfg)` (the Handover line:
+  `Maven (3.8.1+) refuses the HTTP repository `<id>` (<url>) via the blocked mirror `<mirror>` — not a project or sbmig problem.
+  Fix the Maven settings: (a) an https URL, or (b) in <settings file> (build.settings_file | default) exempt `<id>` from mirror
+  `<mirror>` (append `,!<repository id>` to its `<mirrorOf>`), or add a mirror for `<id>` (same URL, `<blocked>false</blocked>`); blocker from <file>` —
+  the file that defines the mirror, for the default blocker `global_settings_file(cfg)` or `<maven home>/conf/settings.xml`).
+  Korean in `sbmig/report/i18n.py` PATTERNS.
+- **Precedence**: `BuildFixLoop.http_blocked_abort(pr, phase, build_or_rewrite_result, iteration, where=…)` runs first —
+  in `Orchestrator._step_rewrite` before `_align_asis_parent_and_retry` / `_check_parent_in_rewrite`, in `_step_verify` before
+  `_verify_fix_loop`, and in the loop before `_parent_abort`, clustering, the pre-tries and the LLM. `MavenRunner.run` returns a
+  blocked build without the file-lock / `-U` retries; `OpenRewriteRunner.run` returns a blocked run without the OOM / download /
+  `-U` / runNoFork retries.
+- **Outcome**: `loop.aborted` = the reason + `— run aborted: fix the Maven settings (see the Handover)` (one ERROR line), flag
+  `aborted:http-blocked` (exit 3), journal `{"event": "maven_http_blocked", "phase", "iteration", "where", "mirror",
+  "repositories": [{"id", "url"}], "settings", "log"}` + `abort`, ONE manual follow-up (the Handover line; no `run aborted: …`
+  line), no BlockedItem. Finalize adds `infra:http-blocked` first (also when a failed final build shows the blocker without the
+  loop) and then no `infra:repository`. `SBMIG-RESULT … exit=3 … attn=infra:http-blocked,aborted:http-blocked`. The Handover
+  puts the line first (`handover.HTTP_BLOCKED_PREFIX`) and never cuts it; flag help in "Flags".
+- **Preflight** (`Orchestrator._check_http_blocker`, real Maven only): `active_http_blockers(cfg, project_root)` merges the user
+  settings (`build.settings_file`, else `~/.m2/settings.xml`) and the global settings like Maven (user mirrors first; a global
+  mirror whose id the user settings redefine is dropped), selects the mirror per repository like Maven (mirrorOf equal to the
+  repository id first, then the first pattern match) for every `http://` repository of the settings' active profiles
+  (repositories + pluginRepositories) and the project poms, and returns those whose mirror is blocking → one WARNING
+  `preflight: Maven's HTTP blocker covers <id> (<url>) (mirror … from …) …` + journal `{"event": "maven_http_blocker_active",
+  "repositories": [{"id", "url", "declared", "mirror", "mirror_origin"}]}`. Never aborts: an artifact may never be requested
+  from that repository.
+- **Remediation** (`sbmig/remediations/maven.py`): a blocked baseline / candidate build gets the same Handover sentence as the
+  first line of `BuildOutcome.summary` (and so of the remediation message); a blocked `dependency:tree` adds it to
+  `ResolvedModel.notes` and skips the package-assisted second attempt; no `-U` retry.
+
 ## remediations (취약점 조치) — `/api/remediations`, IVAS, version-text fixes + approved managed overrides (2026-11-11)
 
 A second, independent flow beside the migration: an uploaded Maven project ZIP is built as it is (baseline), scanned by
