@@ -4660,3 +4660,255 @@ a run, the page + SSE), each finding reproduced before it was fixed. Where this 
 - Tests: `tests/web/test_slot_review_fixes.py`, `tests/web/test_worker_review_fixes.py`, `tests/kb/test_kb_review_fixes.py`,
   `tests/fix/test_company_busy.py`, additions in `tests/fix/test_recorder_exclusive.py` / `tests/web/test_page_queue.py`; counts in
   `docs/PLAN.md`.
+
+## remediations (취약점 조치) — `/api/remediations`, IVAS, version-text-only fixes (2026-11-11)
+
+A second, independent flow beside the migration: an uploaded Maven project ZIP is built as it is (baseline), scanned by
+**IVAS** (the company's vulnerability scanner), the vulnerable libraries whose version is written in the project's own poms
+get a new **version text** on an isolated candidate copy, the candidate is built and verified, the frozen delivery ZIP is
+rescanned, and a report + `result.zip` come out. Package `sbmig/remediations/` (package map in its `__init__.py`); the
+contract types are `sbmig/remediations/models.py` and `sbmig/remediations/interfaces.py`; settings `cfg.remediation.*`
+(`RemediationConfig` / `RemediationPolicyConfig` in `sbmig/core/config.py`, section `remediation:` of `config/default.yml`).
+It never touches the migration graph, the migration KB, `/api/runs` or the Job dispatch.
+
+### Hard rules (company, all bind)
+
+- Only **approved Maven version text** is changed. Application sources, the project structure and every non-pom file are
+  never modified; the delivery ZIP has exactly the original's file set, only version text inside existing `pom.xml` files differs.
+  An edit is one line of one pom, `old` → `new`, both plain version strings (no tag, no `${…}`); bytes outside the replaced span
+  (encoding, BOM, CRLF, final newline) are preserved. `verify_text_only` refuses a candidate with any other difference.
+- The original ZIP (`original/source.zip`, never rewritten), the original-file manifest (`original/manifest.json`: path, size,
+  sha256 per file) and the working tree `accepted/` are kept apart. Changes go to `rounds/<n>/candidate/` first; only a candidate
+  that built and whose resolved dependencies + packaged jars match the plan is committed into `accepted/` (copy, then two renames;
+  a crash between them is recovered at the next start). Build output (`target/`) is never hashed, copied or delivered: every
+  tree hash / copy / delivery ZIP is restricted to the manifest's path list.
+- A failed baseline build ends the run (`FAILED baseline_build_failed`); it never proceeds to the scan or a plan.
+- IVAS: an **uncertain upload is never re-sent automatically**. An incomplete scan, a missing page, a changed `totalElements`,
+  a duplicate result, a summary that disagrees with the pages, an unsupported category or a ZIP hash mismatch are never read as
+  "0 findings": `ScanResult.complete=False` and neither planning nor success uses it.
+- Findings are linked to what Maven **actually resolved** (`dependency:tree` per module) and to the exact pom line that sets the
+  version. Vendored files, build plugins and anything unmappable stay residual / manual review.
+- A target version comes only from the server policy (`remediation.policy.pins`) or a version the approved repository lists
+  (evidence `policy:pins` / `repository:<host>` / `repository:local` on the proposal; never a URL with credentials). IVAS's
+  patched version is a hint (a floor), never evidence. A parent / BOM of unknown provenance is never changed.
+- The delivery ZIP is frozen (deterministic entry order, fixed timestamps) and **the same bytes** (same sha256) are uploaded for
+  the final scan; the receipt's sha256 is computed over the bytes actually sent.
+- Stop takes effect at the next workflow boundary; a running remote IVAS analysis is never reported as cancelled (sbmig only
+  stops polling; resume continues polling the same analysis).
+- A server restart never re-sends or resumes anything: jobs left QUEUED / RUNNING by an earlier process become `INTERRUPTED`;
+  only an explicit resume continues them.
+- No secret (IVAS user / password / token, Nexus credentials) is written to code, config, state, journal, log, report or an
+  exception message; the IVAS token lives in memory only, response bodies quoted in errors are scrubbed and cut to 300 chars.
+
+### Run directory (`RunPaths`)
+
+`<web out dir>/_remediations/<id>/` (the leading `_` keeps it out of the migration run list):
+
+| Path | What |
+|---|---|
+| `original/source.zip`, `original/manifest.json` | the upload as received; the manifest (paths, sizes, sha256) that defines the file set |
+| `accepted/` | working tree: the original plus committed (built + verified) version edits only |
+| `baseline/build.log` | baseline `package` build (run on a throw-away copy, so `accepted/` never gets `target/`) |
+| `rounds/<n>/` | `candidate/` (isolated copy), `before.json` / `inventory.json`, `plan.json` (+ `plan.stale.json` when a plan was invalidated), `apply.json`, `candidate.patch` (accepted → candidate), `build.log`, `resolved.json` |
+| `scans/<label>.json` | one `ScanResult` per scan; labels `baseline`, `final-r<n>` |
+| `delivery/result.zip`, `delivery/delivery.json` | the frozen delivery (`DeliveryInfo`: sha256, size, files, tree hash, round) |
+| `state.json` | `RemediationState`, replaced atomically at every node boundary |
+| `approvals.jsonl` | append-only decision log |
+| `journal.jsonl`, `remediation.log`, `report.md`, `report.json` | events, log, Korean operator report, machine report (terminal states only) |
+
+### Statuses and reason codes (exact strings; `models.py`)
+
+| Status | Meaning | Next |
+|---|---|---|
+| `QUEUED` / `RUNNING` | accepted, waiting for / held by the worker thread | stop → `STOPPED` at the next boundary |
+| `AWAITING_APPROVAL` | proposals of the current round are `pending` | `GET …/proposals` → `POST …/approvals` → `POST …/resume` |
+| `AWAITING_CONFIRMATION` | an IVAS upload was sent but its outcome is unknown (`upload_uncertain`) | operator checks IVAS → `resume` with `confirm` |
+| `STOPPED` | a stop was honoured at a boundary | `resume` |
+| `INTERRUPTED` | the server went down while the job was QUEUED / RUNNING | explicit `resume` only |
+| `SUCCEEDED` | every success condition holds (below) | terminal |
+| `INCOMPLETE` | finished, not a success (residuals, manual review, incomplete scan, rejected / pending proposals …) | terminal |
+| `FAILED` | baseline / candidate build failed, verification failed, boundary refused, not ready, internal error | terminal |
+
+`TERMINAL = SUCCEEDED, INCOMPLETE, FAILED`; `RESUMABLE = AWAITING_APPROVAL, AWAITING_CONFIRMATION, STOPPED, INTERRUPTED`.
+`state.reason` is the first reason, `state.reasons` all of them (ordered: `baseline_build_failed`, `scan_incomplete`,
+`zip_hash_mismatch`, `candidate_build_failed`, `pending_approval`, `rejected_proposals`, `residual_findings`, `manual_review`,
+`no_candidate_version`, the rest sorted, `rounds_exhausted` last). Reason codes: `baseline_build_failed`,
+`candidate_build_failed`, `scan_incomplete`, `upload_uncertain`, `zip_hash_mismatch`, `text_only_violation`,
+`resolution_mismatch`, `execution_boundary_refused`, `not_ready`, `pending_approval`, `rejected_proposals`,
+`residual_findings`, `manual_review`, `no_candidate_version`, `rounds_exhausted`, `stop_requested`, `internal_error`,
+`policy_denied`, `unknown_provenance`, `stale_location`, `inventory_incomplete`. Scan `incomplete_reasons`: `analysis_failed`,
+`analysis_timeout`, `page_missing`, `total_mismatch`, `duplicate_result`, `summary_mismatch`, `unsupported_sw`,
+`zip_hash_mismatch`, `id_mismatch`, `http_error`, `stop_requested`. Intake rejection codes (HTTP 400): `not_zip`, `encrypted`,
+`path_traversal`, `absolute_path`, `symlink`, `special_file`, `duplicate_entry`, `normalized_collision`, `too_many_entries`,
+`too_large`, `compression_ratio`, `no_pom`, `empty`. Boundary finding codes: `project_maven_config`, `maven_extensions`,
+`maven_wrapper`, `symlink`, `foreign_repository`, `foreign_plugin_repository`, `settings_in_project`, `unparsable_pom`.
+
+Inventory origins: `direct_literal`, `direct_property`, `own_management`, `parent_managed`, `bom_managed`, `transitive`
+(may be planned or left residual) and `plugin`, `vendored`, `unmapped` (never automatic). Change kinds: `direct_version`,
+`property_version`, `own_management_version`, `managed_override`, `parent_version`, `bom_version`. Risk flags (= values of
+`remediation.always_approve`): `major`, `parent`, `bom`, `managed_override`. Decisions: `auto`, `pending`, `approved`, `rejected`.
+
+### The graph (`sbmig/remediations/graph.py`, a LangGraph separate from `sbmig/graph/`)
+
+Ten nodes, state saved at every boundary; an entry router jumps to `state.next_node` (= resume). A stop request is checked
+before every node and inside builds / IVAS polling.
+
+| Node | Does | Goes to |
+|---|---|---|
+| `baseline_build` | Maven readiness (else `FAILED not_ready`); boundary check of `accepted/` (any `refuse` → `FAILED execution_boundary_refused`); `package` on a copy | `baseline_scan`; build failed → `FAILED baseline_build_failed` |
+| `baseline_scan` | original ZIP sha256 re-checked; IVAS scan of `original/source.zip` | findings → `inventory`; none → delivery = byte copy of the original, `evaluate`; incomplete → `INCOMPLETE scan_incomplete`; uncertain upload → `AWAITING_CONFIRMATION` |
+| `inventory` | `dependency:tree` of the before-tree; findings → `Inventory` | `plan`; resolution / inventory incomplete → `INCOMPLETE manual_review` |
+| `plan` | proposals + residuals, approval classes, hashes; a plan whose tree / policy hash no longer matches is kept as `plan.stale.json` and re-made | pending → `AWAITING_APPROVAL`; something to apply → `apply`; nothing → `evaluate` |
+| `apply` | copy `accepted/` → candidate, apply auto + approved edits, write `candidate.patch`, text-only check | `build`; violation → `FAILED text_only_violation`; nothing applied → `evaluate` |
+| `build` | `package` the candidate, resolve again, list packaged jars, `verify_resolution`; then commit into `accepted/` | `freeze_delivery`; build failed → `FAILED candidate_build_failed`; mismatch → `FAILED resolution_mismatch` |
+| `freeze_delivery` | deterministic `delivery/result.zip` from `accepted/` (manifest paths only) | `rescan` |
+| `rescan` | delivery sha256 re-checked; IVAS scan of the same bytes (`final-r<n>`) | `evaluate`; incomplete → `INCOMPLETE scan_incomplete`; sha differs → `FAILED zip_hash_mismatch`; uncertain → `AWAITING_CONFIRMATION` |
+| `evaluate` | findings remain, last round committed and `round < remediation.max_rounds` → next round | `inventory` (round + 1) or the success decision → `report` |
+| `report` | `report.md` / `report.json` (terminal states only) | end |
+
+Scan bookkeeping: before an upload `state.pending_upload[label] = sha` is saved; on the receipt it moves to
+`state.pending_receipt[label]` (saved at once); both are cleared when the scan ends. A resume with a pending receipt polls that
+analysis without uploading; a resume with a pending upload and no confirmation halts again in `AWAITING_CONFIRMATION`.
+
+### SUCCEEDED
+
+Only when all hold: the baseline build passed; every round that applied something built, verified and committed; the final scan
+is complete; `delivery.sha256 == final scan zip_sha256`; no proposal is `pending` or `rejected`; no residual (manual review,
+unknown provenance, policy denied, no candidate version, stale location, skipped proposal); no finding left in the final scan.
+Anything else is `INCOMPLETE` (or `FAILED` from a node) with every reason listed.
+
+### Failed candidate (`remediation.failed_candidate: discard`, the only value)
+
+A candidate that does not build (or fails text-only / resolution verification) is discarded: it is never in `result.zip`,
+`accepted/` and the original stay as they were, the status is `FAILED`, and the failing change is kept as
+`rounds/<n>/candidate.patch` (+ `rounds/<n>/build.log`). The delivery of an earlier round that was already built, verified,
+committed and rescanned stays the delivery; the failing round adds nothing to it.
+
+### Approval
+
+`remediation.require_approval` defaults to **false**. What is then applied without approval: a proposal of kind
+`direct_version`, `property_version` or `own_management_version` (the version text sits in the project's own poms) whose target
+stays **within the same major** version. Always waiting for approval regardless of `require_approval`: every proposal carrying a
+risk flag listed in `remediation.always_approve` — shipped: `major` (major change), `parent` (`<parent><version>`), `bom` (an
+imported BOM's version), `managed_override`. Parent / BOM changes are proposed only when the server pins that parent / BOM itself
+in `policy.pins`; `managed_override` is a defined class the planner does not produce yet. Never automatic, never proposed:
+`transitive` (would need a new `<dependencyManagement>` entry = structure change), parent- or BOM-managed versions without a
+server pin, `plugin`, `vendored`, `unmapped`, `policy.deny` matches, majors when `policy.allow_major` is false → residual /
+manual review. A `property_version` proposal notes that the property may govern other artifacts; it is still automatic when
+same-major. With `require_approval: true` every proposal waits. **A production deployment that needs human approval of every
+change must set `SBMIG_REMEDIATION__REQUIRE_APPROVAL=true` (or `remediation.require_approval: true` in the company yml)
+explicitly** — the shipped default applies same-major own-pom changes on its own.
+
+A decision is accepted only when the **proposal hash, the source tree hash, the policy hash and the diff** all equal the stored
+proposal's, the stored proposal still matches its own hash, the current `accepted/` tree hash and policy hash (not stale), it is
+still `pending`, and the decision is `approved` or `rejected`. `proposal_hash` = sha256 of the canonical JSON of
+`{ga, from, to, kind, sorted risks, edits, diff}`; `source_tree_hash` = hash of `accepted/` over the manifest paths when the
+plan was made; `policy_hash` = sha256 of `remediation.policy` + `require_approval` + sorted `always_approve` + `failed_candidate`
+(changing any of them invalidates every open proposal). A request is **all-or-nothing**: one mismatching decision → HTTP 409
+`approval_mismatch` naming the `fields`, nothing written. Decisions are appended to `approvals.jsonl`; approving does not resume.
+A rejected `(g:a, version)` is not proposed again in later rounds (residual `rejected_proposals`). The `by` field is recorded as
+given; identity is whatever the app's TokenGuard admits.
+
+### HTTP API
+
+In-process: worker threads of the existing FastAPI app (the web pod), never a Kubernetes Job; separate from `/api/runs`; one
+remediation runs at a time, further uploads wait `QUEUED`. All routes sit behind the app's TokenGuard. Errors are
+`{"error": "<message>", "code": "<code>", …}`.
+
+| Route | Result |
+|---|---|
+| `POST /api/remediations?name=<file.zip>[&configs=a.yml,b.yml]`, body = zip bytes | 202 `{id, status, url}`; 400 intake rejection (code as above); 413 over `remediation.max_upload_mb`; 503 `not_ready` + `missing` (names only) |
+| `GET /api/remediations?page=1&size=20` | `{items, page, size, total}`, newest first, size ≤ 100 |
+| `GET /api/remediations/readiness` | `{ready, missing}` — names of what is missing, never values |
+| `GET /api/remediations/{id}` | status: id, name, status, reason, reasons, message, node, next_node, round, counts, created, updated, stop_requested, pending_approvals, delivery `{sha256, size}` or null, files, links |
+| `GET /api/remediations/{id}/result` | 200 `report.json` when terminal; else 409 `not_finished` + status |
+| `GET /api/remediations/{id}/proposals[?all=1]` | `{status, round, source_tree_hash, policy_hash, proposals, residuals}` for the current round (all rounds with `all=1`); proposals in full incl. diff, the three hashes and the decision |
+| `POST /api/remediations/{id}/approvals` | body `{by, decisions: [{proposal_id, decision, proposal_hash, source_tree_hash, policy_hash, diff, comment}]}` → 200 `{accepted, pending}`; 409 `approval_mismatch` (+ `fields`), 409 `state_conflict` outside `AWAITING_APPROVAL`; does not resume |
+| `POST /api/remediations/{id}/resume` | body optional `{"confirm": "reupload"}` or `{"confirm": "receipt", label, project_id, analysis_id}` → 202 status; 409 `state_conflict` when not resumable, when proposals are still pending, or when `AWAITING_CONFIRMATION` without `confirm` |
+| `POST /api/remediations/{id}/stop` | 202 `{stop_requested: true, note}` (takes effect at the next boundary; a running IVAS analysis is not cancelled); 409 unless QUEUED / RUNNING |
+| `GET /api/remediations/{id}/files/{name}` | whitelist: `report.md`, `report.json`, `result.zip`, `source.zip`, `manifest.json`, `journal.jsonl`, `remediation.log`, `delivery.json`, `plan-r<n>.json`, `candidate-r<n>.patch`, `build-r<n>.log`, `baseline-build.log`, `scan-<label>.json`; 404 otherwise |
+| `DELETE /api/remediations/{id}` | 204; 409 `state_conflict` while QUEUED / RUNNING; removes the whole directory incl. the original ZIP |
+
+Confirmation after an uncertain upload: `reupload` = the operator checked IVAS and no analysis of that ZIP exists → sbmig uploads
+once more; `receipt` = the operator found the analysis → sbmig records that project / analysis id for the scan `label` and
+continues polling it without uploading. Restart rule: at manager start every `state.json` that is QUEUED / RUNNING with another
+process's `owner` token is rewritten to `INTERRUPTED` (reason kept, message: the server restarted); nothing is resumed or re-sent.
+
+### Configuration
+
+Precedence as for every sbmig key: `config/default.yml` → the company yml (`artifacts.yml`, baked into the image) →
+`SBMIG_REMEDIATION__<KEY>` environment overrides (e.g. `SBMIG_REMEDIATION__REQUIRE_APPROVAL=true`,
+`SBMIG_REMEDIATION__POLICY__ALLOW_MAJOR=false`). Keys: `trusted_projects` (the operator's confirmation that uploaded projects may be
+built on this server — Maven runs the project's plugin code, this is not a sandbox; default **false** = nothing is accepted,
+readiness names it; set `SBMIG_REMEDIATION__TRUSTED_PROJECTS=true` explicitly), `max_upload_mb`, `max_entries`, `max_unpacked_mb`, `max_entry_mb`,
+`max_compression_ratio` (intake limits; the ratio applies to entries ≥ 1 MiB unpacked), `require_approval`, `always_approve`,
+`max_rounds`, `failed_candidate`, `project_maven_config` / `maven_wrapper` / `foreign_repository` (`refuse` | `ignore`),
+`allowed_repository_hosts`, `build_timeout_minutes`, `ivas_timeout_seconds`, `ivas_upload_timeout_seconds`, `ivas_poll_seconds`,
+`ivas_analysis_timeout_minutes`, `ivas_page_size`, `ivas_project_prefix` (IVAS project name `<prefix>-<id>-<label>`), and
+`policy.pins` / `policy.deny` / `policy.deny_versions` / `policy.allow_prerelease` / `policy.allow_major`.
+
+Secret (Kubernetes Secret, environment only, never in yml): `IVAS_USER_ID`, `IVAS_PASSWORD`; `IVAS_BASE_URL` travels with them
+(it is a company host, not a credential, but it must not land in the repo or the baked yml). Nexus credentials stay where the
+migration has them: the server `settings.xml` `<server>` entries reading `${env.NEXUS_USER}` / `${env.NEXUS_PASSWORD}`. Plain
+config: every `remediation.*` key, `build.settings_file`, `build.java_home`, `build.mvn`, `build.local_repo`, `build.extra_args`.
+The deployment puts the three `IVAS_*` keys into Secret `sbmig-llm`, which only the web pod reads (`envFrom`); they are not in
+ConfigMap `sbmig-env` and not in the Job template `81-web-job.template.yaml` (Job pods never run remediations).
+
+Readiness (`GET …/readiness`, also checked on upload and at `baseline_build`): `IVAS_BASE_URL` set, a valid `https` URL (plain
+`http` only for loopback), no credentials / query / fragment in it; `IVAS_USER_ID` and `IVAS_PASSWORD` set; Maven runnable and
+not a wrapper; JDK 21 at `build.java_home` / `JAVA_HOME`; `build.settings_file` set, present and readable; at least one approved
+repository host (`remediation.allowed_repository_hosts`, else the mirrors / repositories of the server settings.xml).
+
+### IVAS HTTP contract (as given by the company; `sbmig/remediations/ivas.py`)
+
+| Call | Request | Used from the answer |
+|---|---|---|
+| login | `POST {IVAS_BASE_URL}/session`, JSON `{userId, password}` | `token` → header `X-API-KEY` on every later call; a fresh login right before each upload |
+| upload | `POST /projects/SELF/sourcecode`, multipart: part `analysisRequest` (JSON `{"projectNm": "<prefix>-<id>-<label>", "source": {"type": "ZIP_FILE"}}`) + part `file` (the ZIP, streamed with Content-Length) | `projectId` + analysis id (`lbrdAnlId`, `lbrdrAnlId` or `analysisId` — the company document spells it two ways) |
+| status | `GET /projects/SELF/{projectId}/analysis/{analysisId}/status` | `anlStatusDivCd`: `PREPARING` / `WAITING` / `ANALYSIS` = in progress, `DONE`, `FAILED` / `ERROR` / `CANCELED` / `CANCELLED` = failed; ids in the answer must equal the request (`id_mismatch`) |
+| summary | `GET …/analysis/{analysisId}/result/summary` | `summary.resultCount.vulnerabilities.<cat>.total` for `components`, `swComponents`, `fileComponents`, `codeSnippets`, `file`, `functionComponents`, `ospkgComponents`, `binaryComponents` (all eight must be integers) |
+| library | `GET …/result/libraryvulnerabilities?page=&size=` | `content[]`: `id`, `library.identifier` (Maven `g:a`), `library.version`, `library.info.patchedVersion`, `detectedLocations[].filePath`, ratings, action; `totalElements` |
+| sw | `GET …/result/swvulnerabilities?page=&size=` | any item → scan incomplete (`unsupported_sw`) |
+| file components | `GET …/result/filecomponentvulnerabilities/main` and `/potential` `?page=&size=` | `id`, `fileComponent.id`, version, patched version; always `vendored` |
+| matched files | `GET …/result/filecomponent/{componentId}/matchedfiles?page=&size=` | `content[].file.fullPath` |
+
+Completeness: pages start at 0 and are read until `totalElements` items arrived (safety cap total/size + 2); a page that cannot be
+read, an early empty page, a `totalElements` that changes between pages, more or fewer items than announced, a duplicate
+`(kind, id, identifier, version)` or matched path, an item without id → incomplete. The summary is compared zero / non-zero only
+(`components` ↔ library, `swComponents` ↔ sw, `fileComponents` ↔ file main + potential); the five categories without a detail
+route must be 0. GETs retry up to 3 times on connection errors / timeouts / 5xx / 429; three status polls failing in a row, or no
+`DONE` within `remediation.ivas_analysis_timeout_minutes`, make the scan incomplete (the remote analysis keeps running). The
+upload is sent **once**: a failure clearly before the body left (login refused, file unreadable, connection never opened) or a
+clear 4xx is `IvasError` (scan incomplete); every ambiguity after the body may have left (timeout, dropped connection, 5xx, a 2xx
+without ids or not JSON) is `IvasUploadUncertain` → `AWAITING_CONFIRMATION`, never a retry. TLS verification is never disabled
+(`REQUESTS_CA_BUNDLE` is honoured by requests for an internal CA).
+
+### Maven boundary (`sbmig/remediations/maven.py`, `intake.check_boundary`)
+
+The server's Maven only (`build.mvn`; a wrapper path is "not ready"; the project's `mvnw` is never run), JDK 21, the server
+`settings.xml` passed with `-s` and required, approved repository hosts / mirrors only (a pom `<repository>` /
+`<pluginRepository>` on another host → `remediation.foreign_repository`, default refuse), insecure-TLS properties and other
+`-s` / `-f` stripped from `build.extra_args`, tests never run (`-Dmaven.test.skip=true` on every command), `clean package` as the
+gate, `dependency:tree` per module for resolution. The web pod uses its own Maven local repository for remediations,
+`<local repo>-remediation`, so a remediation build never shares a repository with a migration running in the same pod.
+**`.mvn/` cannot be disabled on Maven 3.9** (the launcher always reads `.mvn/maven.config`, `.mvn/jvm.config` and
+`.mvn/extensions.xml` from the first ancestor holding `.mvn`), so the intake boundary refuses them by default
+(`remediation.project_maven_config: refuse`); with `ignore` every build logs a WARNING and journal `maven_project_config`.
+Symlinks are always refused; a `settings.xml` inside the project is recorded and ignored.
+
+### Open questions for the company
+
+1. IVAS: the analysis id field name (`lbrdAnlId` vs `lbrdrAnlId` — both accepted), the complete list of `anlStatusDivCd` values,
+   whether summary totals count components or vulnerabilities (only zero / non-zero is compared), the SW vulnerability fields
+   (today any SW item makes the scan incomplete), the display-name field of a file component, whether pages are 0-based.
+2. IVAS: how an operator finds out whether an uncertain upload arrived (search by project name?), token lifetime, rate limits /
+   concurrent analyses per account, whether one IVAS project per scan (`<prefix>-<id>-<label>`) is acceptable, the internal CA.
+3. Which repository is "the approved internal repository" for version evidence, and who owns `remediation.policy` (pins / deny).
+4. Approval in production: `require_approval: true`? Should a `property_version` change (the property may govern several
+   artifacts) always wait for approval? Who may approve (`by` is free text behind the TokenGuard)?
+5. Transitive and parent / BOM-managed findings: is adding a `<dependencyManagement>` override ever acceptable (today: never;
+   manual), and may sbmig learn which parent / BOM version fixes a finding?
+6. Retention: how long original ZIPs, delivery ZIPs and scans stay on the volume; `DELETE` removes everything.
+
+Not built yet: a page in the web UI (API only); more than one remediation at a time; Job-pod execution; automatic transitive /
+managed fixes; a run against the real IVAS and Nexus.

@@ -194,6 +194,7 @@ Secret 의 `SBMIG_WEB_TOKEN` 을 채운다 — 그때는 `http://<host>:8765/?to
 | `LLM_APP_TOKEN` (또는 `LLM_API_KEY`) | **Secret** | 앱 토큰 | 토큰 교체 |
 | `NEXUS_USER` / `NEXUS_PASSWORD` | **Secret** | — | Nexus 그룹이 로그인을 요구할 때(settings.xml 의 `${env.…}` 가 읽음) |
 | `SBMIG_WEB_TOKEN` | **Secret**, 선택 | — | 토큰 보호를 켤 때만 |
+| `IVAS_BASE_URL` / `IVAS_USER_ID` / `IVAS_PASSWORD` | **Secret** `sbmig-llm` (웹 파드만) | — | 취약점 조치(§6)를 쓸 때. `sbmig-env` 와 81 틀에는 넣지 않는다 |
 | `GIT_TOKEN` (+ `GIT_USER`) | **Secret `sbmig-git`** | — | Job 모델만: 소스 clone / 결과·KB push |
 | `SBMIG_SCRIPT__MAX_LLM_TRIES_PER_CASE` | ConfigMap(선택) | `20` | 케이스당 LLM 상한 — 회사 실행 결과를 보며 줄인다 |
 | `SBMIG_SCRIPT__MAX_AUGMENTS_PER_CASE` | ConfigMap(선택) | `15` | 그중 보강 상한 |
@@ -478,3 +479,33 @@ preflight / ADF / 내부 오류)이면 3. `SBMIG_FAIL_JOB_ON_BUILD_FAIL=1` 이�
 * `JAVA_HOME` 은 아키텍처별 경로 대신 `/opt/java21` 심볼릭 링크(팀원 아이디어, 인용부호만 고침).
 * 에이전트 + 빌더 파드를 `kubectl exec` 로 잇는 레이아웃은 인프라 가이드의 Job 모델이 나오면서 뺐다(이력: `docs/INTERFACES.md` v2.1z-r/s).
   sbmig 에 남아 있는 `build.setup_command` / `teardown_command` 훅은 그 레이아웃용이었고 Job 모델에서는 비워 둔다.
+
+## 6. 취약점 조치 (/api/remediations)
+
+올린 Maven 프로젝트 ZIP 을 그대로 빌드하고 IVAS 로 검사한 뒤, 프로젝트 pom 에 적힌 취약 라이브러리의 **버전 글자만** 고쳐 다시 빌드·재검사하고
+결과 ZIP 과 보고서를 낸다(소스·구조는 건드리지 않는다). 계약은 `docs/INTERFACES.md` "remediations (취약점 조치)", LLM 용 설명은
+`agent-doc/11-remediations.md`. 지금은 **API 만** 있다(화면 없음).
+
+* **어디서 도나**: 웹 파드(40) 프로세스 안의 작업 스레드다. 빌드 Job(81)을 만들지 않고, 한 번에 한 건만 돌며 나머지는 `QUEUED` 로 기다린다.
+  그래서 웹 파드의 JDK 21(`/opt/java21`), Maven, ConfigMap `sbmig-config` 의 `settings.xml`(필수 — 승인된 저장소·미러가 여기서 나온다)을 쓴다.
+  Maven 로컬 저장소는 이관과 섞이지 않게 따로 쓴다: `<local repo>-remediation`(매니페스트 그대로면 m2 볼륨 안 `~/.m2/repository` 옆).
+  테스트는 늘 건너뛴다(`-Dmaven.test.skip=true`), TLS 검증은 끄지 않는다(사내 CA 면 이미지·환경의 CA 묶음으로 푼다).
+* **Secret 에 넣을 것**: `sbmig-llm` 에 `IVAS_BASE_URL`(https 주소, 끝의 `/` 없이, 주소 안에 계정·쿼리 금지), `IVAS_USER_ID`, `IVAS_PASSWORD`
+  (`k8s/30-secret.example.yaml`). 웹 파드는 이 Secret 을 `envFrom` 으로 통째로 읽으므로 40 을 고칠 필요가 없다. `sbmig-env` 와 81 틀에는 넣지 않는다
+  (Job 파드는 조치를 돌리지 않고, 81 틀은 `sbmig-env` 키마다 한 줄을 요구한다). Secret 은 `immutable` 이라 키를 더하면 새 이름으로 만들고
+  40 의 `secretRef` 와 81 의 `secretKeyRef` 이름을 함께 바꾼다(위 Secret 설명). Nexus 계정은 지금처럼 `settings.xml` 의 `${env.NEXUS_USER}` 등.
+* **신뢰 프로젝트 확인(필수)**: Maven 빌드는 올라온 프로젝트의 플러그인 코드를 웹 파드에서 실행한다(보안 격리가 아니다). 운영자가
+  "여기에 올라오는 ZIP 은 실행해도 되는 신뢰된 프로젝트" 라고 확인한 뒤 40 의 env 에 `SBMIG_REMEDIATION__TRUSTED_PROJECTS: "true"` 한 줄을
+  넣어야 요청을 받는다. 기본은 `false` 이고 매니페스트에는 일부러 넣어 두지 않았다(운영자의 결정).
+* **준비 확인**: `GET /api/remediations/readiness` → `{"ready": …, "missing": [...]}` (값은 절대 보여 주지 않고 이름만: IVAS 세 값, JDK 21, Maven,
+  settings.xml, 승인된 저장소 호스트). 준비가 안 되면 업로드는 503 `not_ready`.
+* **설정**: `config/default.yml` 의 `remediation:` 절(한국어 설명) → 구운 `artifacts.yml` → `SBMIG_REMEDIATION__<키>` env. 사람 승인 스위치
+  `SBMIG_REMEDIATION__REQUIRE_APPROVAL` 는 기본 `false` 다 — 같은 메이저 안의 프로젝트 pom 버전 변경은 승인 없이 적용되고, 메이저·부모·BOM 변경만
+  승인을 기다린다. **운영에서 모든 변경에 사람 승인이 필요하면 `true` 로 명시한다**(아직 정하지 않아 매니페스트에 넣지 않았다. 넣을 때는 웹 파드만
+  쓰므로 40 의 `env` 에 literal 한 줄로 둔다 — `sbmig-env` 에 넣으면 81 틀에도 줄이 필요해진다).
+* **채울 자리**: `k8s/30-secret.example.yaml` 의 `IVAS_BASE_URL`(`https://CHANGE_ME_IVAS_HOST[:port]/<base path>`), `IVAS_USER_ID`(`<IVAS 계정>`),
+  `IVAS_PASSWORD`(`<IVAS 비밀번호>`). 그 밖에 조치만을 위한 자리는 없다(`settings.xml` 의 Nexus 주소는 §4 그대로).
+* **재시작**: 웹 파드가 다시 뜨면 `QUEUED` / `RUNNING` 이던 조치는 `INTERRUPTED` 가 된다. 아무것도 자동으로 다시 돌리거나 IVAS 에 다시 올리지
+  않는다 — 상태를 확인하고 `POST /api/remediations/<id>/resume` 으로 명시적으로 재개한다. 결과·원본은 `/data/out/_remediations/<id>/` (볼륨)에 남는다.
+* **업로드 결과를 모를 때**(`AWAITING_CONFIRMATION`): 자동 재업로드는 없다. IVAS 화면에서 그 분석이 있는지 보고, 없으면
+  `{"confirm": "reupload"}`, 있으면 `{"confirm": "receipt", "label", "project_id", "analysis_id"}` 로 resume 한다.

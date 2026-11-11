@@ -749,3 +749,47 @@ externalized:
   rules_file: knowledge/config/externalized.yml   # JNDI / context-param / 시스템 속성 → Boot 키 대응 규칙과 안내
   include_test_refs: true          # 테스트만 읽는 키에도 자리표시자를 쓸지
   max_refs_per_key: 3              # 인수인계에서 키마다 보여 줄 참조 위치 수
+
+# --------------------------------------------------------------------------------------
+# remediation — 취약점 조치 (/api/remediations)
+# --------------------------------------------------------------------------------------
+# 올린 Maven 프로젝트를 IVAS 로 검사하고, 취약한 라이브러리의 버전 글자만 고쳐 다시 빌드·재검사한다.
+# 소스와 프로젝트 구조는 건드리지 않는다. IVAS 주소·아이디·비밀번호는 여기 적지 않는다:
+# 환경 변수 IVAS_BASE_URL / IVAS_USER_ID / IVAS_PASSWORD (쿠버네티스에서는 Secret) 로만 받는다.
+remediation:
+  # 신뢰 프로젝트 확인. Maven 빌드는 올라온 프로젝트의 플러그인 코드를 이 서버에서 실행한다(보안 격리가 아니다).
+  # 운영자가 "여기에 올라오는 ZIP 은 실행해도 되는 신뢰된 프로젝트" 라고 확인했을 때만 true 로 바꾼다.
+  # false 면 취약점 조치 요청을 받지 않는다.
+  trusted_projects: false
+  max_upload_mb: 1024              # 올릴 수 있는 ZIP 크기(MiB)
+  max_entries: 200000              # ZIP 안의 파일 수 한도
+  max_unpacked_mb: 4096            # 풀었을 때 전체 크기 한도(MiB)
+  max_entry_mb: 1024               # 파일 하나의 풀린 크기 한도(MiB)
+  max_compression_ratio: 200       # 파일 하나의 압축률 한도(압축 폭탄 방지)
+  # 사람 승인. false = 위험한 부류(always_approve)만 승인을 기다리고 나머지 제안은 바로 적용한다.
+  # true = 모든 제안이 승인을 기다린다. 운영에서 사람 승인이 필요하면 true 로 명시한다.
+  require_approval: false
+  # 설정과 무관하게 늘 승인이 필요한 부류: major(메이저 버전 변경), parent(부모 pom 버전),
+  # bom(가져온 BOM 버전), managed_override(부모·BOM 이 관리하는 버전을 프로젝트에서 덮어쓰기)
+  always_approve: [major, parent, bom, managed_override]
+  max_rounds: 3                    # 계획 → 적용 → 빌드 → 재검사를 되풀이하는 횟수 한도
+  # 후보 빌드가 실패했을 때. discard = 실패한 후보는 결과 ZIP 에 넣지 않는다(원본 보존, 상태 FAILED).
+  failed_candidate: discard
+  # 프로젝트가 서버의 Maven 설정을 우회할 수 있는 요소를 가졌을 때: refuse(거부) / ignore(기록만)
+  project_maven_config: refuse     # .mvn/maven.config, .mvn/jvm.config, .mvn/extensions.xml
+  maven_wrapper: ignore            # mvnw, .mvn/wrapper (서버 Maven 만 쓰므로 실행되지 않는다)
+  allowed_repository_hosts: []     # 승인된 저장소 호스트. 비우면 서버 settings.xml 의 호스트만 승인된 것으로 본다
+  foreign_repository: refuse       # pom 이 승인되지 않은 호스트의 저장소를 선언했을 때
+  build_timeout_minutes: 60        # package 빌드 한 번의 한도
+  ivas_timeout_seconds: 60         # IVAS 요청 하나의 한도
+  ivas_upload_timeout_seconds: 1800   # ZIP 업로드의 한도
+  ivas_poll_seconds: 15            # 분석 상태를 묻는 간격
+  ivas_analysis_timeout_minutes: 120   # 이 시간 안에 분석이 끝나지 않으면 검사 미완료로 본다(0건이 아니다)
+  ivas_page_size: 100              # 결과 한 쪽의 크기
+  ivas_project_prefix: sbmig       # IVAS 프로젝트 이름의 앞머리: <앞머리>-<작업 ID>-<baseline 또는 final-rN>
+  policy:                          # 서버 정책: 버전 후보의 근거. 바뀌면 전에 만든 승인 후보는 무효가 된다
+    pins: {}                       # "g:a": "버전" — 이 버전으로만 올린다
+    deny: []                       # "g:a" 또는 "g:*" — 자동으로 바꾸지 않는다(수동 검토로 남긴다)
+    deny_versions: {}              # "g:a": [버전, …] — 후보에서 뺀다
+    allow_prerelease: false        # 시험판(alpha, beta, RC, SNAPSHOT)을 후보로 쓸지
+    allow_major: true              # false = 메이저 변경은 제안하지 않고 수동 검토로 남긴다

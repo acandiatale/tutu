@@ -81,6 +81,7 @@
 | `LLM_APP_TOKEN` | `sbmig-llm` | 토큰 교환에 쓰는 앱 토큰. 교환이 없는 게이트웨이면 대신 `LLM_API_KEY` 에 Bearer 값 |
 | `NEXUS_USER` / `NEXUS_PASSWORD` | `sbmig-llm` | Nexus 그룹이 로그인을 요구할 때만. `settings.xml` 의 `<server>` 가 `${env.NEXUS_USER}` / `${env.NEXUS_PASSWORD}` 로 읽는다 |
 | `SBMIG_WEB_TOKEN` | `sbmig-llm` (선택) | 웹 토큰 보호를 켤 때만. 켜면 브라우저는 `http://<host>:8765/?token=<값>` 으로 한 번 연다 |
+| `IVAS_BASE_URL` / `IVAS_USER_ID` / `IVAS_PASSWORD` | `sbmig-llm` (선택) | 취약점 조치(`/api/remediations`, README §6)를 쓸 때만. 웹 파드만 읽는다 — `sbmig-env`·81 Job 틀에 넣지 않는다. 주소는 `https://CHANGE_ME_IVAS_HOST[:port]/<base path>` 모양(https, 끝의 `/` 없이) |
 | `GIT_TOKEN` (+ `GIT_USER`) | `sbmig-git` | 요청별 Job 모델만: 소스 clone, 결과·KB push |
 
 ## 5. ConfigMap `sbmig-env` — 자주 조정하는 설정 키 (선택, 기본값을 적어 둠)

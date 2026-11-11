@@ -28,6 +28,10 @@ Routes:
     POST /api/runs/{id}/stop             stop after the current graph node
     GET  /api/runs/{id}/files/{name}     report.md | report.json | result.zip | sbmig.log | journal.jsonl |
                                          changes.patch | plan.json | profile.json | errors.md | errors.jsonl
+    /api/remediations…                   vulnerability remediation (separate LangGraph flow, worker threads of this
+                                         process, one at a time): POST (zip body) / GET list / GET readiness /
+                                         GET {id} / result / proposals / POST approvals / resume / stop /
+                                         GET files/{name} / DELETE {id} — `sbmig.remediations.api` (contract API.md)
 
 Runs execute in worker threads of this process (see `sbmig.web.runs`); the SSE generator blocks on the run's events
 in a threadpool thread, never on the event loop.
@@ -334,6 +338,10 @@ def create_app(out_dir: Path, repo_root: Path = PACKAGE_ROOT, max_upload_mb: int
         default_configs = [c.strip() for c in os.environ.get(CONFIGS_ENV, "").split(",") if c.strip()]
     mgr = RunManager(Path(out_dir), Path(repo_root), default_configs=default_configs, mode=mode, job_client=job_client,
                      max_parallel=max_parallel)
+    # 취약점 조치(/api/remediations): 같은 프로세스의 작업 스레드, 기본 설정은 이관과 같은 규칙(RunManager.default_configs)
+    from sbmig.remediations.api import create_router as create_remediation_router
+    from sbmig.remediations.service import RemediationManager
+    rem_mgr = RemediationManager(Path(out_dir), Path(repo_root), default_configs=mgr.default_configs)
     max_upload = resolve_max_upload(max_upload_mb)       # bytes; 0 = unlimited
     token = (token if token is not None else os.environ.get(TOKEN_ENV, "")).strip() or None
     open_network = open_network_requested() if open_network is None else bool(open_network)
@@ -361,16 +369,19 @@ def create_app(out_dir: Path, repo_root: Path = PACKAGE_ROOT, max_upload_mb: int
                         "result.zip (company source) and upload poms whose plugins Maven runs here — trusted intranet only",
                         OPEN_ENV)
         yield
+        log.info("remediations shut down: %s", rem_mgr.shutdown())     # 먼저: 뒤의 RunManager.shutdown 이 남은 Maven 을 죽인다
         info = mgr.shutdown()
         log.info("sbmig web UI shut down: %s", info)
 
     app = FastAPI(title="sbmig", summary="JDK 21 + Spring Boot 4.1 migration agent — web UI", lifespan=lifespan)
     app.state.manager = mgr
+    app.state.remediations = rem_mgr
     app.state.max_upload_bytes = max_upload
     app.state.token_required = bool(token)
     app.state.open_network = bool(open_network and not token)
     app.add_middleware(TokenGuard, token=token, open_network=open_network)
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+    app.include_router(create_remediation_router(rem_mgr))
 
     @app.get("/", include_in_schema=False)
     @app.get("/index.html", include_in_schema=False)

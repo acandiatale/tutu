@@ -62,7 +62,7 @@ spec:
             - {name: SBMIG_REDACT_OUTPUT, value: "1"}
           envFrom:
             - configMapRef: {name: sbmig-env}
-            - secretRef: {name: sbmig-llm}
+            - secretRef: {name: sbmig-llm}     # 취약점 조치의 IVAS_BASE_URL / IVAS_USER_ID / IVAS_PASSWORD 도 여기로 — 이 파드에만 닿는다(README §6)
           volumeMounts:
             - {name: data, mountPath: /data}
             - {name: m2, mountPath: /home/sbmig/.m2}

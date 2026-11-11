@@ -29,6 +29,9 @@ sbmig 는 사내 Maven(Ant 포함) 프로젝트를 **JDK 21 + Spring Boot 4.1** 
 | [08-dev-conventions-and-tests.md](08-dev-conventions-and-tests.md) | 코드를 고칠 때의 규약(한국어 주석, 불변식, YAML 우선), 테스트, 체크리스트 | 코드를 고칠 때 |
 | [09-deploy-and-ops.md](09-deploy-and-ops.md) | PC·리눅스·컨테이너·쿠버네티스 두 모양, 플릿, KB 이동, 문제 보고 | 설치·운영할 때 |
 | [10-open-items-and-history.md](10-open-items-and-history.md) | 지금까지 온 길, 회사 실행에서 겪은 사례, 열린 결정 | 배경이 필요할 때 |
+| [11-remediations.md](11-remediations.md) | 이관과 별개인 취약점 조치(`/api/remediations`, IVAS, 버전 글자만 수정): 노드, 상태별 할 일, 승인, 진단, 설정 키, 고칠 자리 | 조치 작업을 볼 때 |
+
+새 주제는 다음 번호(12, 13 …)로 더하고 이 표와 아래 "일 종류별" 표에 한 줄씩 적는다. 날짜·버전 꼬리표는 여전히 10 번에만 쓴다.
 
 ## 일 종류별로 넣을 파일
 
@@ -41,6 +44,7 @@ sbmig 는 사내 Maven(Ant 포함) 프로젝트를 **JDK 21 + Spring Boot 4.1** 
 | 코드 고치기 전 온보딩 | 00, 01, 02, 08 |
 | 설치·배포·쿠버네티스 | 00, 09 (+ `deploy/README.md`) |
 | "왜 이렇게 만들었나" 배경 | 00, 10 (+ `docs/v2/PLAN-v2.md`) |
+| 취약점 조치 작업 진단·규칙 변경 | 00, 11 (+ 실행 폴더의 `state.json`, `journal.jsonl`, 검사 파일 발췌), 배포는 + 09 |
 
 Haiku 급 모델은 한 번에 세 파일 안팎이 안전하고, Sonnet / GPT 급은 묶음 전체를 넣어도 된다.
 

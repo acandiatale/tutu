@@ -855,3 +855,26 @@ on disjoint files. Nothing critical; the list below is what was real. Contract: 
 | To ask the gateway team | the concurrency limit per app token; whether a new token exchange revokes earlier tokens | — | the company's |
 | Docs | INTERFACES "v2.1z-af"; `deploy/README.md` §3 (stop on a waiting run, pod-local fallback, `.lock.breaker`, gateway keys, restart behaviour); `docs/v2/JOB-RUN-STATE-CONTRACT-KO.md` §6; `agent-doc` 04 / 05 / 10; `CLAUDE.md` | `docs/`, `deploy/`, `agent-doc/` | done |
 | Verification | offline suite **3,509 passed** (53 deselected, 10 min 41 s); not run on a real cluster, NFS or Linux `/proc` (the process-tree tests ran on macOS) | — | done |
+
+## Status — 2026-11-11, remediations: /api/remediations, IVAS
+
+The company asked for a second feature beside the migration: take an uploaded Maven project, scan it with IVAS, raise only the
+**version text** of the vulnerable libraries the project's own poms declare, rebuild, rescan the same bytes and hand back the ZIP
+with a report — sources and structure untouched, every risky change approved on its exact diff. Built as an independent
+LangGraph flow in `sbmig/remediations/`, served by the existing web app. Contract: `docs/INTERFACES.md` "remediations (취약점 조치)".
+
+| Increment | Deliverable | Where | Status |
+|---|---|---|---|
+| Contract | statuses, reason codes, dataclasses (`RemediationState`, `Proposal`, `ScanResult` …), hash rules, `RunPaths`; Protocols + `Components` bundle; `RemediationConfig` / `RemediationPolicyConfig`, `remediation:` in `config/default.yml` (Korean comments) | `sbmig/remediations/models.py`, `sbmig/remediations/interfaces.py`, `sbmig/core/config.py`, `config/default.yml` | done |
+| Intake | ZIP validated before extraction (traversal, absolute paths, links, special files, encryption, duplicates / normalized collisions, entry count, sizes, ratio), original kept read-only, manifest, `accepted/`, boundary check (`.mvn` config / extensions, wrapper, links, foreign repositories, unparsable poms), deterministic delivery ZIP | `sbmig/remediations/intake.py` | done |
+| IVAS | requests client on the company's contract (login → `X-API-KEY`, multipart upload streamed once, status, summary, paged library / sw / file-component / matched-file routes), completeness rules, uncertain upload never re-sent, token never logged, TLS never off | `sbmig/remediations/ivas.py` | done |
+| Maven | server Maven + JDK 21 + required server settings.xml, insecure / override args stripped, tests skipped, `package`, `dependency:tree` per module, jars inside the built war / jar | `sbmig/remediations/maven.py` | done |
+| Inventory / plan / apply | findings linked to resolved dependencies and the exact pom line; target only from `policy.pins` or the approved repository; approval classes; three hashes; line-level text edits, text-only and resolution verification | `sbmig/remediations/inventory.py`, `sbmig/remediations/planner.py`, `sbmig/remediations/apply.py` | done |
+| Graph + report | ten nodes, waiting states (`AWAITING_APPROVAL`, `AWAITING_CONFIRMATION`, `STOPPED`), rounds up to `remediation.max_rounds`, success decision, discard of a failing candidate; Korean `report.md` + `report.json` | `sbmig/remediations/graph.py`, `sbmig/remediations/report.py` | done |
+| Service + API | job manager (worker thread, `state.json`, approvals / resume / stop / delete, restart → `INTERRUPTED`) and the `/api/remediations` router behind the TokenGuard | service.py, api.py in `sbmig/remediations/` | done |
+| Tests | fakes for IVAS / Maven / repository, synthetic ZIPs, `tmp_path` only — no network, no `mvn` | `tests/remediations/` | 375 passed (incl. 25 end-to-end tests over the real modules with fake IVAS / Maven / repository) |
+| Deploy | `IVAS_BASE_URL` / `IVAS_USER_ID` / `IVAS_PASSWORD` in Secret `sbmig-llm` (web pod only: not `sbmig-env`, not the 81 Job template); `deploy/README.md` §6 | `deploy/k8s/30-secret.example.yaml`, `deploy/README.md` | done |
+| Docs | INTERFACES "remediations (취약점 조치)"; `agent-doc/11-remediations.md` + README index | `docs/INTERFACES.md`, `agent-doc/` | done |
+| Decided | `remediation.failed_candidate: discard` (a failing candidate is never in `result.zip`, original kept, `FAILED`, change kept as `candidate.patch`); `require_approval` default **false** (same-major own-pom changes apply on their own; `major` / `parent` / `bom` / `managed_override` always wait; production that wants every change approved sets `SBMIG_REMEDIATION__REQUIRE_APPROVAL=true`); `.mvn` refused at intake (cannot be disabled on Maven 3.9) | — | decided |
+| Not built yet | no web UI page (API only); in-process only, one remediation at a time (no Job pod); transitive and parent- / BOM-managed fixes stay manual (no `<dependencyManagement>` added, `managed_override` never produced); not run against the real IVAS or Nexus | — | open |
+| To ask the company | IVAS: analysis id field spelling, the full `anlStatusDivCd` list, what summary totals count, SW item fields, file-component name field, how to check an uncertain upload, token lifetime / rate limits, internal CA; which repository is "approved"; who owns `remediation.policy`; `require_approval` in production and for `property_version`; retention of ZIPs / scans | — | the company's |

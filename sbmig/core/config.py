@@ -922,6 +922,55 @@ class ExternalizedConfig(BaseModel):
     max_refs_per_key: int = 3                         # references shown per key in the Handover
 
 
+class RemediationPolicyConfig(BaseModel):
+    """취약점 조치의 서버 정책(버전 후보의 근거 중 하나). 이 값들의 해시(policy hash)가 승인 후보에 묶인다 — 정책이 바뀌면
+    전에 만든 승인 후보는 더 이상 승인할 수 없다."""
+    pins: dict[str, str] = Field(default_factory=dict)        # "g:a" → 이 버전으로만 올린다 (서버가 정한 버전)
+    deny: list[str] = Field(default_factory=list)             # "g:a" 또는 "g:*": 자동 변경하지 않는다 (잔여·수동 검토)
+    deny_versions: dict[str, list[str]] = Field(default_factory=dict)   # "g:a" → 후보에서 빼는 버전
+    allow_prerelease: bool = False                            # 시험판(alpha / beta / RC / SNAPSHOT)을 후보로 쓰는가
+    allow_major: bool = True                                  # false = 메이저 변경은 제안조차 하지 않는다 (잔여)
+
+
+class RemediationConfig(BaseModel):
+    """취약점 조치(remediation) 설정. 비밀이 아닌 값만 여기 둔다 — IVAS 주소·아이디·비밀번호는 환경 변수
+    (``IVAS_BASE_URL`` / ``IVAS_USER_ID`` / ``IVAS_PASSWORD``, Secret)로만 받는다. 우선순위는 다른 설정과 같다:
+    default.yml → 회사 yml → ``SBMIG_REMEDIATION__<KEY>`` 환경 변수."""
+    # 신뢰 프로젝트 확인: Maven 빌드는 올라온 프로젝트의 플러그인 코드를 이 서버에서 실행한다(보안 샌드박스가 아니다).
+    # 운영자가 "여기에 올라오는 ZIP 은 실행해도 되는 신뢰된 프로젝트" 라고 확인했을 때만 true 로 둔다. false 면 접수하지 않는다(not_ready).
+    trusted_projects: bool = False
+    max_upload_mb: int = 1024                # 업로드 ZIP 한도(MiB)
+    max_entries: int = 200_000               # ZIP 항목 수 한도
+    max_unpacked_mb: int = 4096              # 풀었을 때 전체 크기 한도(MiB)
+    max_entry_mb: int = 1024                 # 항목 하나의 풀린 크기 한도(MiB)
+    max_compression_ratio: int = 200         # 항목 하나의 압축률(풀린 크기 ÷ 압축 크기) 한도 — zip 폭탄 방지
+    # 사람 승인: false(기본) = 위험 부류(아래 always_approve)만 승인을 기다리고 나머지는 자동 적용. true = 모든 제안이 승인 대기.
+    require_approval: bool = False
+    # 설정과 무관하게 늘 승인이 필요한 부류: major(메이저 변경) / parent(부모 pom 버전) / bom(가져온 BOM 버전) /
+    # managed_override(부모·BOM 이 관리하는 버전을 프로젝트에서 덮어씀)
+    always_approve: list[str] = Field(default_factory=lambda: ["major", "parent", "bom", "managed_override"])
+    max_rounds: int = 3                      # 계획 → 적용 → 빌드 → 재검사 반복 횟수 한도
+    # 후보 빌드가 실패했을 때: discard = 실패한 후보는 결과 ZIP 에 넣지 않는다(전달 ZIP 없음, 원본 보존, 상태 FAILED,
+    # 실패한 변경은 candidate.patch 로만 남긴다). 다른 값은 아직 없다 — 정책을 바꾸려면 여기에 값을 추가한다.
+    failed_candidate: Literal["discard"] = "discard"
+    # Maven 실행 경계: 프로젝트가 서버 설정을 우회할 수 있는 요소를 발견했을 때 refuse(거부) / ignore(무시하고 기록)
+    project_maven_config: Literal["refuse", "ignore"] = "refuse"     # .mvn/maven.config, jvm.config, extensions.xml
+    maven_wrapper: Literal["refuse", "ignore"] = "ignore"            # mvnw / .mvn/wrapper — 서버 Maven 만 쓰므로 실행되지 않는다
+    # 승인된 저장소 호스트(비어 있으면 서버 settings.xml 의 미러·저장소 호스트만 승인된 것으로 본다)
+    allowed_repository_hosts: list[str] = Field(default_factory=list)
+    # pom 이 승인되지 않은 호스트의 <repositories> 를 선언했을 때
+    foreign_repository: Literal["refuse", "ignore"] = "refuse"
+    build_timeout_minutes: int = 60          # package 빌드 한 번의 한도
+    # IVAS 호출
+    ivas_timeout_seconds: int = 60           # 요청 하나의 한도(업로드는 ivas_upload_timeout_seconds)
+    ivas_upload_timeout_seconds: int = 1800
+    ivas_poll_seconds: int = 15              # 분석 상태를 묻는 간격
+    ivas_analysis_timeout_minutes: int = 120  # 이 시간 안에 끝나지 않으면 검사 미완료(0건이 아니다)
+    ivas_page_size: int = 100
+    ivas_project_prefix: str = "sbmig"       # IVAS projectNm = <prefix>-<작업 ID>-<baseline|final-rN>
+    policy: RemediationPolicyConfig = Field(default_factory=RemediationPolicyConfig)
+
+
 class Config(BaseModel):
     """전체 설정(load_config 가 default.yml → --config yml → overrides → SBMIG_* 환경 변수 순으로 합친
     결과). 회사 고유 값(사내 좌표 등)은 코드가 아니라 yml 에 있다(불변조건 2)."""
@@ -944,6 +993,7 @@ class Config(BaseModel):
     report: ReportConfig = Field(default_factory=ReportConfig)
     advisories: AdvisoryConfig = Field(default_factory=AdvisoryConfig)
     externalized: ExternalizedConfig = Field(default_factory=ExternalizedConfig)
+    remediation: RemediationConfig = Field(default_factory=RemediationConfig)   # 취약점 조치(/api/remediations)
     repo_root: str = str(PACKAGE_ROOT)
     # 2026-11-05: load_config 가 찍은 `config: …` 경고 문장들 — 실행 로그(sbmig.log)는 설정을 읽은 뒤에 붙으므로 접수 단계가 다시 적는다
     _config_warnings: list[str] = PrivateAttr(default_factory=list)

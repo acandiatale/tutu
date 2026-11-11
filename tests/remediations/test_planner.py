@@ -1,0 +1,452 @@
+"""planner.py: target choice, change kinds, approval classes, merge, hashes, validate_decision."""
+from __future__ import annotations
+
+import types
+
+import pytest
+
+from sbmig.core.config import RemediationConfig, RemediationPolicyConfig
+from sbmig.remediations import planner as P
+from sbmig.remediations.interfaces import VersionSource
+from sbmig.remediations.models import (D_AUTO, D_PENDING, K_BOM_VERSION, K_DIRECT_VERSION, K_OWN_MANAGEMENT_VERSION,
+                                       K_PARENT_VERSION, K_PROPERTY_VERSION, O_BOM_MANAGED, O_DIRECT_LITERAL,
+                                       O_DIRECT_PROPERTY, O_OWN_MANAGEMENT, O_PARENT_MANAGED, O_PLUGIN, O_TRANSITIVE,
+                                       O_UNMAPPED, O_VENDORED, ApprovalMismatch, Decision, Inventory, InventoryItem,
+                                       PomLocation)
+
+POM = """<project>
+  <parent>
+    <groupId>example</groupId>
+    <artifactId>parent</artifactId>
+    <version>1.0.0</version>
+  </parent>
+  <properties>
+    <lib.version>2.14.0</lib.version>
+  </properties>
+  <dependencies>
+    <dependency>
+      <groupId>example</groupId>
+      <artifactId>lib</artifactId>
+      <version>1.2.3</version>
+    </dependency>
+  </dependencies>
+</project>
+"""
+# line numbers in POM
+L_PARENT, L_PROP, L_DEP = 5, 8, 14
+
+
+class FakeSource:
+    def __init__(self, versions: dict[str, list[str]], host="nexus.invalid"):
+        self.data = versions
+        self.host = host
+        self.asked: list[str] = []
+
+    def versions(self, g, a):
+        self.asked.append(f"{g}:{a}")
+        return list(self.data.get(f"{g}:{a}", []))
+
+    def evidence(self, g, a, v):
+        return f"repository:{self.host}" if v in self.data.get(f"{g}:{a}", []) else ""
+
+
+def _cfg(**kw):
+    policy = kw.pop("policy", {})
+    return types.SimpleNamespace(remediation=RemediationConfig(policy=RemediationPolicyConfig(**policy), **kw))
+
+
+@pytest.fixture
+def project(tmp_path):
+    (tmp_path / "pom.xml").write_text(POM)
+    return tmp_path
+
+
+def _direct(version="1.2.3", hints=("1.2.5",), ga="example:lib", fid="CVE-1"):
+    return InventoryItem(ga=ga, version=version, origin=O_DIRECT_LITERAL, finding_ids=[fid], patched_versions=list(hints),
+                         location=PomLocation("pom.xml", L_DEP, version))
+
+
+def _prop_item(ga="example:core", hints=("2.14.3",), fid="CVE-2"):
+    return InventoryItem(ga=ga, version="2.14.0", origin=O_DIRECT_PROPERTY, finding_ids=[fid], patched_versions=list(hints),
+                         location=PomLocation("pom.xml", L_PROP, "2.14.0", property="lib.version", element="property"))
+
+
+def _plan(project, items, cfg=None, source=None, rejected=None, round=1, tree="t" * 64):
+    return P.plan_round(project, Inventory(items=items), cfg or _cfg(), source or FakeSource({}), round=round,
+                        source_tree_hash=tree, rejected=rejected)
+
+
+# ------------------------------------------------------------------------------------------------- target choice
+
+
+def test_fake_source_satisfies_protocol():
+    assert isinstance(FakeSource({}), VersionSource)
+
+
+def test_direct_literal_lowest_same_major_at_or_above_hint(project):
+    src = FakeSource({"example:lib": ["1.2.3", "1.2.4", "1.2.5", "1.2.6", "1.3.0", "2.0.0"]})
+    plan = _plan(project, [_direct()], source=src)
+    (p,) = plan.proposals
+    assert (p.kind, p.from_version, p.to_version, p.evidence) == (K_DIRECT_VERSION, "1.2.3", "1.2.5", "repository:nexus.invalid")
+    assert p.risks == [] and p.decision == D_AUTO and not p.requires_approval
+    assert p.id == "p-1-1" and p.edits[0].line == L_DEP and p.edits[0].old == "1.2.3" and p.edits[0].new == "1.2.5"
+    assert "+      <version>1.2.5</version>" in p.diff and p.diff.startswith("--- a/pom.xml")
+    assert p.proposal_hash == p.compute_hash() and p.policy_hash == plan.policy_hash == P.policy_hash(_cfg())
+    assert p.source_tree_hash == "t" * 64
+    assert (project / "pom.xml").read_text() == POM            # planning never writes
+
+
+def test_highest_hint_wins_with_several_cves(project):
+    src = FakeSource({"example:lib": ["1.2.4", "1.2.5", "1.2.7"]})
+    plan = _plan(project, [_direct(hints=("1.2.4", "1.2.7", "1.2.5"))], source=src)
+    assert plan.proposals[0].to_version == "1.2.7"
+
+
+def test_no_hint_is_no_candidate(project):
+    src = FakeSource({"example:lib": ["1.2.4"]})
+    plan = _plan(project, [_direct(hints=())], source=src)
+    assert not plan.proposals
+    assert plan.residuals[0].reason == "no_candidate_version" and "no patched version known" in plan.residuals[0].detail
+
+
+def test_hint_not_in_repository_is_not_chosen(project):
+    src = FakeSource({"example:lib": ["1.2.3", "1.2.4"]})
+    plan = _plan(project, [_direct(hints=("1.2.5",))], source=src)
+    assert not plan.proposals
+    r = plan.residuals[0]
+    assert r.reason == "no_candidate_version" and "1.2.5 is not in the repository" in r.detail
+    assert "1.2.4 (< patched hint 1.2.5)" in r.detail
+
+
+def test_deny_versions_and_prerelease_excluded(project):
+    src = FakeSource({"example:lib": ["1.2.5", "1.2.6-RC1", "1.2.7"]})
+    cfg = _cfg(policy={"deny_versions": {"example:lib": ["1.2.5"]}})
+    assert _plan(project, [_direct()], cfg=cfg, source=src).proposals[0].to_version == "1.2.7"
+    cfg = _cfg(policy={"deny_versions": {"example:lib": ["1.2.5"]}, "allow_prerelease": True})
+    assert _plan(project, [_direct()], cfg=cfg, source=src).proposals[0].to_version == "1.2.6-RC1"
+
+
+def test_nothing_left_lists_the_facts(project):
+    src = FakeSource({"example:lib": ["1.2.2", "1.2.5", "1.2.6-RC1"]})
+    cfg = _cfg(policy={"deny_versions": {"example:lib": ["1.2.5"]}})
+    r = _plan(project, [_direct()], cfg=cfg, source=src).residuals[0]
+    assert r.reason == "no_candidate_version"
+    assert "1.2.5 (deny_versions)" in r.detail and "1.2.6-RC1 (prerelease)" in r.detail and "1.2.2" in r.detail
+
+
+def test_major_fallback_and_allow_major_false(project):
+    src = FakeSource({"example:lib": ["1.2.3", "2.0.0", "2.1.0", "3.0.0"]})
+    (p,) = _plan(project, [_direct()], source=src).proposals
+    assert p.to_version == "2.0.0" and p.risks == ["major"] and p.requires_approval and p.decision == D_PENDING
+    plan = _plan(project, [_direct()], cfg=_cfg(policy={"allow_major": False}), source=src)
+    assert not plan.proposals
+    assert plan.residuals[0].reason == "no_candidate_version" and "allow_major is false" in plan.residuals[0].detail
+
+
+def test_pin_wins_and_needs_to_be_newer(project):
+    src = FakeSource({"example:lib": ["1.2.5"]})
+    cfg = _cfg(policy={"pins": {"example:lib": "1.2.9"}})
+    (p,) = _plan(project, [_direct(hints=())], cfg=cfg, source=src).proposals
+    assert p.to_version == "1.2.9" and p.evidence == "policy:pins"
+    cfg = _cfg(policy={"pins": {"example:lib": "1.2.3"}})
+    r = _plan(project, [_direct()], cfg=cfg, source=src).residuals[0]
+    assert r.reason == "no_candidate_version" and "not newer" in r.detail
+
+
+def test_deny_by_ga_and_group_wildcard(project):
+    src = FakeSource({"example:lib": ["1.2.5"]})
+    for deny in (["example:lib"], ["example:*"]):
+        plan = _plan(project, [_direct()], cfg=_cfg(policy={"deny": deny}), source=src)
+        assert not plan.proposals and plan.residuals[0].reason == "policy_denied"
+    assert _plan(project, [_direct()], cfg=_cfg(policy={"deny": ["other:*"]}), source=src).proposals
+
+
+# ------------------------------------------------------------------------------------------------- origins / kinds
+
+
+@pytest.mark.parametrize("origin", [O_PLUGIN, O_VENDORED, O_UNMAPPED])
+def test_manual_origins(project, origin):
+    item = InventoryItem(ga="example:lib", version="1.2.3", origin=origin, finding_ids=["CVE-1"], patched_versions=["1.2.5"])
+    src = FakeSource({"example:lib": ["1.2.5"]})
+    plan = _plan(project, [item], source=src)
+    assert not plan.proposals and plan.residuals[0].reason == "manual_review"
+    assert src.asked == []
+
+
+def test_property_kind_has_note(project):
+    src = FakeSource({"example:core": ["2.14.3"]})
+    (p,) = _plan(project, [_prop_item()], source=src).proposals
+    assert p.kind == K_PROPERTY_VERSION and "${lib.version} may govern other artifacts" in p.note
+    assert "+    <lib.version>2.14.3</lib.version>" in p.diff
+
+
+def test_own_management_kinds(project):
+    src = FakeSource({"example:lib": ["1.2.5"], "example:core": ["2.14.3"]})
+    lit = _direct()
+    lit.origin = O_OWN_MANAGEMENT
+    assert _plan(project, [lit], source=src).proposals[0].kind == K_OWN_MANAGEMENT_VERSION
+    prop = _prop_item()
+    prop.origin = O_OWN_MANAGEMENT
+    assert _plan(project, [prop], source=src).proposals[0].kind == K_PROPERTY_VERSION
+
+
+def test_transitive_is_manual(project):
+    item = InventoryItem(ga="example:t", version="1.0", origin=O_TRANSITIVE, patched_versions=["1.1"],
+                         via=["example:lib:1.2.3"])
+    r = _plan(project, [item], source=FakeSource({"example:t": ["1.1"]})).residuals[0]
+    assert r.reason == "manual_review" and "transitive via example:lib:1.2.3" in r.detail
+
+
+def test_managed_without_pin_is_residual(project):
+    known = InventoryItem(ga="example:m", version="1.0", origin=O_PARENT_MANAGED, patched_versions=["1.1"],
+                          manager="example:parent:1.0.0", manager_location=PomLocation("pom.xml", L_PARENT, "1.0.0"))
+    unknown = InventoryItem(ga="example:n", version="1.0", origin=O_BOM_MANAGED, patched_versions=["1.1"])
+    plan = _plan(project, [known, unknown], source=FakeSource({"example:m": ["1.1"], "example:n": ["1.1"]}))
+    assert not plan.proposals
+    reasons = {r.ga: r.reason for r in plan.residuals}
+    assert reasons == {"example:m": "manual_review", "example:n": "unknown_provenance"}
+
+
+def test_managed_with_pinned_manager_proposes_parent_version(project):
+    item = InventoryItem(ga="example:m", version="1.0", origin=O_PARENT_MANAGED, finding_ids=["CVE-9"],
+                         manager="example:parent:1.0.0",
+                         manager_location=PomLocation("pom.xml", L_PARENT, "1.0.0", element="parent"))
+    cfg = _cfg(policy={"pins": {"example:parent": "1.0.4"}})
+    (p,) = _plan(project, [item], cfg=cfg).proposals
+    assert (p.kind, p.ga, p.from_version, p.to_version) == (K_PARENT_VERSION, "example:parent", "1.0.0", "1.0.4")
+    assert p.risks == ["parent"] and p.decision == D_PENDING and p.evidence == "policy:pins"
+    assert "example:m:1.0" in p.note
+    item.origin = O_BOM_MANAGED
+    (p,) = _plan(project, [item], cfg=cfg).proposals
+    assert p.kind == K_BOM_VERSION and p.risks == ["bom"]
+
+
+# ------------------------------------------------------------------------------------------------- approval classes
+
+
+def test_require_approval_true_makes_everything_pending(project):
+    src = FakeSource({"example:lib": ["1.2.5"]})
+    (p,) = _plan(project, [_direct()], cfg=_cfg(require_approval=True), source=src).proposals
+    assert p.requires_approval and p.decision == D_PENDING
+    (p,) = _plan(project, [_direct()], cfg=_cfg(require_approval=False), source=src).proposals
+    assert not p.requires_approval and p.decision == D_AUTO
+
+
+def test_always_approve_controls_major(project):
+    src = FakeSource({"example:lib": ["2.0.0"]})
+    (p,) = _plan(project, [_direct()], cfg=_cfg(always_approve=[]), source=src).proposals
+    assert p.risks == ["major"] and p.decision == D_AUTO
+
+
+# ------------------------------------------------------------------------------------------------- merge / rejected / stale
+
+
+def test_merge_on_one_property_line(project):
+    src = FakeSource({"example:core": ["2.14.3", "2.15.0"], "example:databind": ["2.14.3", "2.15.0"]})
+    a = _prop_item(ga="example:core", hints=("2.14.3",), fid="CVE-A")
+    b = _prop_item(ga="example:databind", hints=("2.15.0",), fid="CVE-B")
+    plan = _plan(project, [b, a], source=src)
+    (p,) = plan.proposals
+    assert p.ga == "example:core" and p.to_version == "2.15.0" and p.finding_ids == ["CVE-A", "CVE-B"]
+    assert "example:databind:2.14.0" in p.note and len(p.edits) == 1
+
+
+def test_rejected_is_not_proposed_again(project):
+    src = FakeSource({"example:lib": ["1.2.5"]})
+    plan = _plan(project, [_direct()], source=src, rejected={("example:lib", "1.2.5")})
+    assert not plan.proposals and plan.residuals[0].reason == "rejected_proposals"
+
+
+def test_stale_location(project):
+    item = _direct()
+    item.location = PomLocation("pom.xml", L_DEP, "1.2.2")
+    plan = _plan(project, [item], source=FakeSource({"example:lib": ["1.2.5"]}))
+    assert not plan.proposals and plan.residuals[0].reason == "stale_location"
+    item.location = PomLocation("pom.xml", 999, "1.2.3")
+    assert _plan(project, [item]).residuals[0].reason == "stale_location"
+
+
+def test_incomplete_inventory_plans_nothing(project):
+    inv = Inventory(items=[_direct()], complete=False, notes=["x"])
+    plan = P.plan_round(project, inv, _cfg(), FakeSource({"example:lib": ["1.2.5"]}), round=1, source_tree_hash="t")
+    assert not plan.proposals and plan.residuals[0].reason == "inventory_incomplete" and plan.notes
+
+
+# ------------------------------------------------------------------------------------------------- hashes
+
+
+def test_plan_is_deterministic_and_hash_sensitive(project):
+    src = FakeSource({"example:lib": ["1.2.5", "1.2.6"], "example:core": ["2.14.3"]})
+    items = [_direct(), _prop_item()]
+    p1 = _plan(project, items, source=src)
+    p2 = _plan(project, list(reversed(items)), source=src)
+    assert p1.to_dict() == p2.to_dict()
+    assert [p.id for p in p1.proposals] == ["p-1-1", "p-1-2"]
+    a = p1.proposals[0]
+    h = a.proposal_hash
+    a.to_version = "1.2.6"
+    assert a.compute_hash() != h
+    a.to_version, a.note, a.decision = p2.proposals[0].to_version, "other", "approved"
+    assert a.compute_hash() == h                        # decision / note are not hashed
+
+
+def test_policy_hash_sensitivity():
+    base = P.policy_hash(_cfg())
+    assert base == P.policy_hash(_cfg())
+    variants = [_cfg(require_approval=True), _cfg(always_approve=["major"]),
+                _cfg(policy={"pins": {"example:lib": "1.2.5"}}), _cfg(policy={"deny": ["example:*"]}),
+                _cfg(policy={"deny_versions": {"example:lib": ["1.0"]}}), _cfg(policy={"allow_prerelease": True}),
+                _cfg(policy={"allow_major": False})]
+    hashes = {P.policy_hash(c) for c in variants}
+    assert base not in hashes and len(hashes) == len(variants)
+    assert P.policy_hash(_cfg(always_approve=["bom", "major"])) == P.policy_hash(_cfg(always_approve=["major", "bom"]))
+
+
+# ------------------------------------------------------------------------------------------------- validate_decision
+
+
+@pytest.fixture
+def pending(project):
+    src = FakeSource({"example:lib": ["1.2.5"]})
+    (p,) = _plan(project, [_direct()], cfg=_cfg(require_approval=True), source=src).proposals
+    return p
+
+
+def _decision(p, **kw):
+    d = Decision(proposal_id=p.id, decision="approved", proposal_hash=p.proposal_hash,
+                 source_tree_hash=p.source_tree_hash, policy_hash=p.policy_hash, diff=p.diff)
+    for k, v in kw.items():
+        setattr(d, k, v)
+    return d
+
+
+def _check(p, d, tree=None, policy=None):
+    P.validate_decision(p, d, current_tree_hash=tree or p.source_tree_hash, current_policy_hash=policy or p.policy_hash)
+
+
+def test_validate_decision_accepts_exact_match_and_crlf_diff(pending):
+    _check(pending, _decision(pending))
+    _check(pending, _decision(pending, decision="rejected"))
+    _check(pending, _decision(pending, diff=pending.diff.replace("\n", "\r\n")))
+
+
+@pytest.mark.parametrize("field,value,needle", [
+    ("proposal_hash", "0" * 64, "proposal hash"),
+    ("source_tree_hash", "0" * 64, "source tree hash"),
+    ("policy_hash", "0" * 64, "policy hash"),
+    ("diff", "something else", "diff"),
+    ("decision", "maybe", "decision must be"),
+    ("proposal_id", "p-9-9", "proposal id"),
+])
+def test_validate_decision_each_mismatch(pending, field, value, needle):
+    with pytest.raises(ApprovalMismatch) as e:
+        _check(pending, _decision(pending, **{field: value}))
+    assert needle in str(e.value)
+
+
+def test_validate_decision_stale_proposal(pending):
+    with pytest.raises(ApprovalMismatch, match="accepted tree changed"):
+        _check(pending, _decision(pending), tree="1" * 64)
+    with pytest.raises(ApprovalMismatch, match="policy changed"):
+        _check(pending, _decision(pending), policy="1" * 64)
+
+
+def test_validate_decision_not_pending_or_tampered(pending):
+    pending.decision = D_AUTO
+    with pytest.raises(ApprovalMismatch, match="not pending"):
+        _check(pending, _decision(pending))
+    pending.decision = D_PENDING
+    pending.to_version = "9.9.9"                         # stored proposal no longer matches its own hash
+    with pytest.raises(ApprovalMismatch, match="no longer matches its own hash"):
+        _check(pending, _decision(pending))
+
+
+# ------------------------------------------------------------------------------------------------- RepositoryVersionSource
+
+
+class FakeLookup:
+    def __init__(self, versions, answered=None, trace=None):
+        self._v = versions
+        self._answered = answered or {}
+        self._trace = trace or []
+
+    def versions(self, g, a):
+        return list(self._v)
+
+    def lookup_trace(self, g, a):
+        return list(self._trace)
+
+
+def test_repository_source_sorts_and_names_host_only():
+    lk = FakeLookup(["1.10.0", "1.2.0", "1.9.0"],
+                    answered={("example", "lib"): "https://user:secret@nexus.invalid:8443/repository/public/"})
+    src = P.RepositoryVersionSource(None, lookup=lk, allowed_hosts=["Nexus.invalid"])
+    assert src.versions("example", "lib") == ["1.2.0", "1.9.0", "1.10.0"]
+    ev = src.evidence("example", "lib", "1.9.0")
+    assert ev == "repository:nexus.invalid" and "secret" not in ev
+    assert src.evidence("example", "lib", "7.0") == ""
+
+
+def test_repository_source_local_and_unknown_are_no_evidence():
+    local = FakeLookup(["1.0"], trace=[("/m2/example/lib", "ok (1 release(s), local repository)")])
+    assert P.RepositoryVersionSource(None, lookup=local, allowed_hosts=["nexus.invalid"]).evidence(
+        "example", "lib", "1.0") == ""
+    assert P.RepositoryVersionSource(None, lookup=FakeLookup(["1.0"])).evidence("example", "lib", "1.0") == ""
+
+
+def test_repository_source_unapproved_host_is_no_evidence():
+    lk = FakeLookup(["1.0"], answered={("example", "lib"): "https://repo.other.invalid/maven2/"})
+    assert P.RepositoryVersionSource(None, lookup=lk, allowed_hosts=["nexus.invalid"]).evidence("example", "lib", "1.0") == ""
+    # a callable (ServerMaven.allowed_hosts) is read lazily, once
+    calls = []
+    src = P.RepositoryVersionSource(None, lookup=lk, allowed_hosts=lambda: calls.append(1) or ["repo.other.invalid"])
+    assert src.evidence("example", "lib", "1.0") == "repository:repo.other.invalid"
+    assert src.evidence("example", "lib", "1.0") == "repository:repo.other.invalid" and calls == [1]
+    # nothing configured and no cfg: no approved host at all
+    assert P.RepositoryVersionSource(None, lookup=lk).evidence("example", "lib", "1.0") == ""
+
+
+def test_repository_source_hosts_from_config_and_server_settings(tmp_path):
+    from sbmig.core.config import BuildConfig
+    settings = tmp_path / "settings.xml"
+    settings.write_text("<settings><mirrors><mirror><id>m</id><url>https://nexus.invalid/repo/</url>"
+                        "<mirrorOf>*</mirrorOf></mirror></mirrors></settings>")
+    lk = FakeLookup(["1.0"], answered={("example", "lib"): "https://nexus.invalid/repo/"})
+    cfg = types.SimpleNamespace(build=BuildConfig(settings_file=str(settings)), remediation=RemediationConfig())
+    assert P.RepositoryVersionSource(cfg, lookup=lk).evidence("example", "lib", "1.0") == "repository:nexus.invalid"
+    cfg2 = types.SimpleNamespace(build=BuildConfig(settings_file=str(settings)),
+                                 remediation=RemediationConfig(allowed_repository_hosts=["approved.invalid"]))
+    assert P.RepositoryVersionSource(cfg2, lookup=lk).evidence("example", "lib", "1.0") == ""
+
+
+# ------------------------------------------------------------------------------------------------- several hints in one
+def test_several_versions_in_one_hint_prefer_the_current_line(project):
+    item = _direct(version="1.2.3", hints=("1.2.7.1, 1.3.4.2",))
+    src = FakeSource({"example:lib": ["1.2.5", "1.2.7.1", "1.2.8", "1.3.4.2", "1.3.5"]})
+    assert _plan(project, [item], source=src).proposals[0].to_version == "1.2.7.1"
+    # nothing at or above the hint on the current line: the other line's hint is the floor
+    src = FakeSource({"example:lib": ["1.2.5", "1.3.0", "1.3.4.2", "1.3.5"]})
+    assert _plan(project, [item], source=src).proposals[0].to_version == "1.3.4.2"
+    # 1.2.8 is on the current line and ≥ 1.2.7.1 — chosen over 1.3.x even when 1.2.7.1 itself is missing
+    src = FakeSource({"example:lib": ["1.2.8", "1.3.4.2"]})
+    assert _plan(project, [item], source=src).proposals[0].to_version == "1.2.8"
+
+
+def test_split_hint_shapes(project):
+    from sbmig.remediations.inventory import split_patched_versions as split
+    assert split("2.12.7.1, 2.13.4.2") == ["2.12.7.1", "2.13.4.2"]
+    assert split(" 1.0;1.1  1.2,,") == ["1.0", "1.1", "1.2"]
+    assert split("[2.0,3.0)") == ["[2.0,3.0)"]
+    assert split("") == [] and split("1.0, 1.0") == ["1.0"]
+    # separate findings (separate list items) must ALL be fixed; "1.3.0" alone on another line does not fix "1.2.9"
+    item = _direct(version="1.2.3", hints=("1.2.9", "1.2.5"))
+    src = FakeSource({"example:lib": ["1.2.5", "1.2.9", "1.3.0"]})
+    assert _plan(project, [item], source=src).proposals[0].to_version == "1.2.9"
+
+
+def test_range_hint_is_no_candidate_naming_the_raw_hint(project):
+    item = _direct(version="1.2.3", hints=("[1.2.5,2.0)",))
+    plan = _plan(project, [item], source=FakeSource({"example:lib": ["1.2.5"]}))
+    assert not plan.proposals
+    r = plan.residuals[0]
+    assert r.reason == "no_candidate_version" and "[1.2.5,2.0)" in r.detail

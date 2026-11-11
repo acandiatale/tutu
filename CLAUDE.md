@@ -16,7 +16,7 @@ explains the same system for operators; `tests/docs/test_handbook.py` keeps its 
 links in sync with the code, and `scripts/handbook/` regenerates the xlsx / pptx. The KB data map for the business
 team is `docs/kb-map/` (`kb-map.html` source, `index.html` single file, `kb-map.md`; `scripts/handbook/build_kb_map.py`).
 **`agent-doc/` (2026-11-04)** is the Korean document pack the company feeds to its in-house LLMs (Sonnet / Haiku / GPT
-class) so other engineers can diagnose runs and change the code with them: README = index + rules for the LLM, 00…10 one
+class) so other engineers can diagnose runs and change the code with them: README = index + rules for the LLM, 00…11 one
 topic each, ≤ 350 lines / 30 KB per file, no version tags or dates except in 10; `tests/docs/test_agent_doc.py` checks
 paths / config keys / CLI names / links / sizes. Update it with the code (unlike the handbook). The comments of `config/*.yml`
 are Korean explanations for a human deciding a value (not technical notes, no version tags); keys / values are the contract.
@@ -355,6 +355,23 @@ Then the final build again, the report (Handover first, "Structure review", fix 
   `llm.busy_wait_seconds` (600: a 429 / 5xx with Retry-After queues instead of failing) and `llm.auth_retries` (2: a 401 right after
   an exchange). The page re-attaches by itself after a web-pod restart. Contract: `docs/INTERFACES.md` "v2.1z-af". To ask the gateway
   team: the concurrency limit per app token, and whether a new token exchange revokes earlier tokens.
+- **Vulnerability remediation (2026-11-11, `sbmig/remediations/`, `/api/remediations`)**: a LangGraph flow SEPARATE from the migration
+  graph, run in worker threads of the web app process (one at a time; the web pod needs JDK 21 / Maven / the server settings.xml; its
+  own Maven local repository `<build.local_repo>-remediation`). Upload ZIP → `baseline_build → baseline_scan → inventory → plan →
+  apply → build → freeze_delivery → rescan → evaluate → report` with the company's scanner **IVAS** (LabradorLabs; env
+  `IVAS_BASE_URL` / `IVAS_USER_ID` / `IVAS_PASSWORD`, Secret only). Hard rules: only approved Maven **version text** changes in existing
+  poms (no source / structure change; transitive, parent- / BOM-managed, plugin, vendored, unmapped → residual / manual review); original
+  ZIP + manifest + `accepted/` kept apart, changes on an isolated candidate first; a failed baseline build never reaches the scan; an
+  uncertain IVAS upload is never re-sent (`AWAITING_CONFIRMATION`), an incomplete scan is never "0 findings"; the frozen delivery ZIP's
+  exact bytes are rescanned; approvals bind proposal hash + source tree hash + policy hash + diff (`AWAITING_APPROVAL` → approvals →
+  resume); a restart turns running jobs into `INTERRUPTED` (explicit resume only); a failed candidate is never in result.zip
+  (`remediation.failed_candidate: discard`). `remediation.trusted_projects` (default false) must be set true by the operator before
+  anything is accepted; `remediation.require_approval` default false (major / parent / bom / managed_override always wait).
+  Contract: `sbmig/remediations/models.py` + `interfaces.py`, `docs/INTERFACES.md` "remediations"; operators: `agent-doc/11-remediations.md`,
+  `deploy/README.md` §6. Tests use fakes only (`tests/remediations/`, no IVAS / Nexus / mvn). Not run against the real IVAS yet. The
+  company has an older implementation with different policies (failed candidate included in the ZIP, risky classes automatic without
+  approval, managed-override XML added for transitives, Nexus candidates without an IVAS patched version) — which of the four to adopt
+  is the user's pending decision (asked 2026-11-11).
 - **Company convention (2026-10-20): agents run on LangGraph under uvicorn.** `loop.engine: graph` (default) drives
   the phases from a LangGraph `StateGraph` (`sbmig/graph/`, nodes intake → analyze → plan → phase×N → finalize;
   `inline` is the old loop, reports are identical by test); the web UI is FastAPI (`uvicorn sbmig.web.app:app` or
