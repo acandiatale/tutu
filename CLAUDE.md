@@ -473,14 +473,18 @@ Then the final build again, the report (Handover first, "Structure review", fix 
   Such an item is a residual with reason `inhouse_artifact` (never a proposal or override; exception: a `policy.pins` entry for
   the parent still yields the parent-version proposal), `counts.residual_inhouse`, the in-house keys are in the policy hash, the
   run stays `INCOMPLETE`. The report prints `remediation.inhouse_message` ("해당 아티팩트는 예외처리가 가능합니다. 담당자에게 연락
-  부탁드립니다.") over a section grouped by in-house artifact. **`report.md` is Korean and built to be scanned** (same request):
-  result line → 한눈에 보기 → 다음에 할 일 → 고친 것 → 승인을 기다리는 것 → 사내 라이브러리에서 온 취약점 → 사람이 확인할 것 (grouped
-  by reason + kind of detail, the explanation once per group) → 진행 기록. Stored data / API keep codes and English sentences;
+  부탁드립니다.") over a section grouped by in-house artifact. **`report.md` is Korean** — rewritten the same day after the
+  user read the first real one ("기계번역처럼 되어서 보는 것도 힘들고 읽는 것도 힘들다"): workplace Korean, not the code vocabulary
+  word for word (glossary in `agent-doc/12-remediation-report.md`; particles attached, none after a data value unless
+  invariant; `tests/remediations/test_report.py` rejects the old words and stand-alone particles). Sections, empty ones left
+  out: result block → 요약 → 해야 할 일 → 조치 완료 → 승인 대기 → 사내 라이브러리에서 발생한 취약점 → 직접 확인이 필요한 취약점
+  (grouped by reason, the explanation once per group) → 조치 대상에서 제외한 항목 → 변경하지 않은 것 → 처리 기록 (collapsed;
+  the only place with status / reason codes). Stored data / API keep codes and English sentences;
   `sbmig/remediations/i18n.py` translates for display (`ko_text` rules, unknown text unchanged; a new English sentence in the
   remediation code needs a rule + a sample in `tests/remediations/test_i18n.py`). Operator doc: `agent-doc/12-remediation-report.md`.
   Severity marks (user, same day: "취약점 옆에 위험도 빨강 주황 노랑 … 눈이 가게"): 🔴 / 🟠 / 🟡 by `remediation.severity_red` /
   `severity_orange` / `severity_yellow` (9.0 / 7.0 / 4.0 on the IVAS score, nothing below yellow), a 위험도 column first in every
-  library table with the worst rows on top, per-level counts in 한눈에 보기. Emoji because Markdown has no colour — whether the
+  library table with the worst rows on top, per-level counts (before / after) in 요약. Emoji because Markdown has no colour — whether the
   company PC's Windows renders 🟠 / 🟡 is to be checked there.
   Still the user's to decide: transitives under a dependency the project itself declares, in modules outside the root's reach.
 - **Company convention (2026-10-20): agents run on LangGraph under uvicorn.** `loop.engine: graph` (default) drives

@@ -137,6 +137,15 @@ _SCAN_FILE_RE = re.compile(r"^scan-(baseline|final-r[0-9]{1,4})\.json$")
 _ABS_PATH = re.compile(r"(?<![\w:/\\.])(?:[A-Za-z]:[\\/]|/)[^\s()'\"]+")
 
 
+
+def _status_ko(status: str) -> str:
+    """상태 코드 → 보고서 결과 줄의 굵은 문장(그림 글자·굵게 표시 없이). 모르는 코드는 그대로.
+
+    The report's verdict sentence for a status, without the mark and the bold markers."""
+    from .report import _VERDICT
+    v = _VERDICT.get(status, "")
+    return v.split(" ", 1)[1].replace("**", "") if v else str(status or "")
+
 class UnknownRemediation(RemediationError):
     """그런 ID 의 작업이 없다(HTTP 404)."""
     code = "not_found"
@@ -922,6 +931,9 @@ class RemediationManager:
         pos = self._queue_position(rid) if shown == QUEUED else None
         if pos is not None:
             out["queue_position"] = pos
+        # 화면용 한국어(덧붙임만, 2026-11-12): 영어 message 는 그대로 두고 message_ko · status_ko 를 더한다
+        out["message_ko"] = i18n_mod.ko_display(out["message"]) if out["message"] else ""
+        out["status_ko"] = _status_ko(shown)
         return out
 
     def _chained_ids(self) -> list[str]:

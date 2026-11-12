@@ -69,7 +69,7 @@ LLM 을 부르지 않는다. 이관 그래프(`sbmig/graph/`)와는 노드 하�
 | `inventory` | 빌드 대상마다 `dependency:tree`, 발견 항목 → `Inventory`(출처 판정) | 해석·인벤토리 불완전 → INCOMPLETE `manual_review` |
 | `plan` | 제안·잔여, 승인 부류, 해시 세 개. 트리·정책 해시가 바뀐 옛 계획은 `rounds/<n>/plan.stale.json` 으로 두고 새로 만든다 | 승인 대기 제안 → AWAITING_APPROVAL. 적용할 것 없음 → `evaluate` |
 | `apply` | `accepted/` → 후보 사본, 자동+승인 제안 적용, `rounds/<n>/candidate.patch`, "계획한 것만 바뀌었나" 검사 | 위반 → FAILED `text_only_violation`(결과 ZIP 에 넣지 않음) |
-| `build` | 후보 빌드, 다시 해석, 산출물 안 jar 목록, "해석 결과 = 계획" 검사(다스리는 모듈), 통과하면 `accepted/` 로 확정 | 빌드 실패 → FAILED `candidate_build_failed`(include 면 실패한 수정본이 결과 ZIP, 재검사 없음), 불일치 → FAILED `resolution_mismatch` |
+| `build` | 후보 빌드, 다시 해석, 산출물 안 jar 목록, "해석 결과 = 계획" 검사(적용 범위), 통과하면 `accepted/` 로 확정 | 빌드 실패 → FAILED `candidate_build_failed`(include 면 실패한 수정본이 결과 ZIP, 재검사 없음), 불일치 → FAILED `resolution_mismatch` |
 | `freeze_delivery` | `accepted/` 로 결정적인 전달 ZIP(`delivery/result.zip`) | — |
 | `rescan` | 전달 ZIP sha256 재확인, 같은 바이트를 IVAS 검사(라벨 `final-r<n>`) | 미완료 → INCOMPLETE, sha 다름 → FAILED `zip_hash_mismatch`, 불확실 → AWAITING_CONFIRMATION |
 | `evaluate` | 조치 대상 취약점이 남았고 이번 라운드가 확정됐고 라운드 < `remediation.max_rounds` → 다음 라운드 | `inventory` 로 돌아가거나 성공 판정 |
@@ -83,10 +83,10 @@ ID 는 `fileComponent.id`, 없을 때만 `ossId`(메모).
 라이브러리 취약점 행 수(중복 제거 전), 다르면 `summary_mismatch`. `swComponents` · `fileComponents` 는 대응이
 확인되지 않아 0 / 0 아님만 본다. `nonzero` = components 도 그렇게(건수 뜻이 다를 때).
 
-**조치 구분 코드**(`action.actionDivCd`, 뜻의 표는 ivas.py 의 `ACTION_MEANINGS` 한 곳): NE 조치 필요, NP 조치계획 미등록, PL 조치예정,
+**조치 구분 코드**(`action.actionDivCd`, 뜻은 ivas.py 의 `ACTION_MEANINGS`): NE 조치 필요, NP 조치계획 미등록, PL 조치예정,
 OT 조치일 경과, PC 패치 완료, IG 조치 예외. `remediation.ignore_actions`(기본 비어 있음 = 모두 조치 대상 — 기존 사내 구현도 PC·IG 를 거르지 않는다; 보안팀 예외를 빼려면
 `[PC, IG]`; 공백·대소문자 무시)에 적힌 코드의 항목은 검사 파일과 보고서 표
-"조치 대상에서 뺀 항목"에 남지만 인벤토리·계획에 가지 않고 남은 취약점으로 세지 않는다(`counts` 의 `*_findings` 는 조치 대상만,
+"조치 대상에서 제외한 항목"에 남지만 인벤토리·계획에 가지 않고 남은 취약점으로 세지 않는다(`counts` 의 `*_findings` 는 조치 대상만,
 `*_ignored` 따로). 빈·모르는 코드는 조치 대상, 한 번 기록(저널 `ivas_action_unknown`).
 
 **SUCCEEDED 조건**(전부): 기준 빌드 통과, 무엇을 적용한 라운드는 모두 빌드·검증·확정, 최종 검사 완전, 전달 ZIP sha256 = 최종 검사 ZIP sha256,
@@ -188,7 +188,7 @@ pin 이 없으면 IVAS patched 힌트 필수, 근거는 정책 또는 승인된 
 `state.boundary` 의 `code`(`project_maven_config`, `maven_extensions`, `maven_wrapper`, `symlink`, `foreign_repository`,
 `foreign_plugin_repository`, `unparsable_pom`). `manual_review` 만 남음 → `inventory.json` 의 `origin` 이 `plugin` / `vendored` / `unmapped` 이거나,
 `transitive` / 부모·BOM 관리인데 override 를 막은 사실이 잔여의 `detail` 에 있다(분류자·jar 아님, 루트 pom 비상속·루트 pom 없음, 직접 선언 버전,
-넣을 줄 없음, 이미 있는 관리 항목). `resolution_mismatch` → 제안이 다스리는 모듈이 계획 버전이 아니다(12 의 4절). `no_candidate_version` → 잔여의 `detail` 에 저장소가 준 버전 목록과 제외 이유(힌트 없음 포함)가 있다.
+넣을 줄 없음, 이미 있는 관리 항목). `resolution_mismatch` → 제안의 적용 범위 모듈이 계획 버전이 아니다(12 의 4절). `no_candidate_version` → 잔여의 `detail` 에 저장소가 준 버전 목록과 제외 이유(힌트 없음 포함)가 있다.
 
 ## 7. 설정 키 (`remediation:` 절, `config/default.yml` 에 한국어 설명)
 

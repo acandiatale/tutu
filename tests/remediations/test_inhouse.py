@@ -229,6 +229,6 @@ def test_migration_report_names_the_inhouse_count():
                                            "counts": {"residual": 2, "residual_inhouse": 2}})
     en = "\n".join(remediation_lines(r))
     assert "In-house artifacts (exception possible, contact their owners): 2" in en
-    assert "사내 아티팩트(예외 처리 가능, 담당자에게 연락): 2건" in "\n".join(remediation_lines(r, "ko"))
+    assert "사내 라이브러리 (담당자 요청): 라이브러리 2개" in "\n".join(remediation_lines(r, "ko"))
     r.remediation["counts"]["residual_inhouse"] = 0
     assert "In-house artifacts" not in "\n".join(remediation_lines(r))

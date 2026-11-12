@@ -3923,18 +3923,29 @@ are part of the policy hash. A run whose remaining findings are all in-house is 
 its reasons.
 
 Presentation (`sbmig/remediations/i18n.py`, `report.py`): stored data and API answers keep their codes and English
-sentences; `report.md` is Korean throughout — label tables for origin / kind / risk / decision / reason, `ko_text` (pattern
-rules, identifiers kept verbatim, an unknown sentence returned unchanged), `detail_group` (residuals grouped by reason and
-kind of detail, the explanation printed once per group). Section order: result line → 한눈에 보기 → 다음에 할 일 → 고친 것 →
-승인을 기다리는 것 → 사내 라이브러리에서 온 취약점 (`remediation.inhouse_message` first, grouped by in-house artifact) →
-사람이 확인할 것 → 조치 대상에서 뺀 항목 → 진행 기록 → 바꾸지 않은 것. `report.json` keeps every earlier key and adds
-`inhouse {message, artifacts[{ga, libraries[{ga, version, modules, via, finding_ids}]}]}`. `GET …/proposals` adds `note_ko`
-per proposal and `detail_ko` / `origin_ko` / `reason_ko` per residual.
+sentences; `report.md` is Korean throughout, written as a Korean engineer writes a result report for colleagues — not a
+word-for-word rendering of the code vocabulary. The glossary (code word → the word the report uses) is the table in
+`agent-doc/12-remediation-report.md`: fixed = 조치 완료, pending = 승인 대기, manual review = 직접 확인 필요, in-house = 사내
+라이브러리 담당자 요청, baseline / final = 조치 전 / 조치 후, candidate = 수정본, delivery = 결과 ZIP, governed modules = 적용
+범위, path = 의존 경로, version text = 버전 표기. A particle is attached to the word before it and never follows a value
+filled from data unless its form is the same after any sound (`tests/remediations/test_report.py` checks the rejected words
+and stand-alone particles). Label tables for origin / kind / risk / decision / reason, `ko_text` (pattern rules,
+identifiers kept verbatim, an unknown sentence returned unchanged; the report prints such a sentence as `원문: …`),
+`detail_group` (residuals grouped by reason and kind of detail, the explanation printed once per group).
+Sections, an empty one left out: the result block (one bold verdict per status, then the numbers or the cause) → 요약 (a
+`구분 | 취약점 | 라이브러리` table, the severity table 조치 전 / 조치 후, the result file) → 해야 할 일 (numbered, only the
+actions this state has) → 조치 완료 → 승인 대기 → 사내 라이브러리에서 발생한 취약점 (`remediation.inhouse_message` first, one
+table per in-house artifact, the module list once above a table when every row shares it, 의존 경로 as artifactIds) → 직접
+확인이 필요한 취약점 (one group per reason) → 조치 대상에서 제외한 항목 → 변경하지 않은 것 → 처리 기록 (collapsed: job id,
+status and reason codes, the counts, 조치 전 빌드, 조치 전 검사, each round, 결과 파일, 빌드 설정 점검) → 남은 취약점 전체
+목록 (collapsed). Status and reason codes appear only in the collapsed record. `report.json` keeps every earlier key and
+adds `inhouse {message, artifacts[{ga, libraries[{ga, version, modules, via, finding_ids}]}]}`. `GET …/proposals` adds
+`note_ko` per proposal and `detail_ko` / `origin_ko` / `reason_ko` per residual; the status payload adds `message_ko`.
 Severity marks: a finding whose IVAS score (`Finding.score`, rounded to one decimal) is ≥ `remediation.severity_red` /
 `severity_orange` / `severity_yellow` carries 🔴 심각 / 🟠 높음 / 🟡 보통 in `report.md`; below yellow or without a score it
-carries none. Every library table opens with a 위험도 column (the row's highest score) and sorts its rows by it, each CVE id
-has its mark (ordered by score, the first three shown), 한눈에 보기 has the per-level counts of the baseline and of what the
-final scan still reports, a legend line names the configured bounds. `report.json` adds
+carries none (낮음·점수 없음 in the summary). Every library table opens with a 위험도 column (the row's highest score) and
+sorts its rows by it, each CVE id has its mark and its score in parentheses (ordered by score, the first three shown), 요약
+has the per-level counts before and after with the configured bounds. `report.json` adds
 `severity {thresholds{red, orange, yellow}, baseline{red, orange, yellow, none}, final | null}` (counts only).
 
 ### The graph (`sbmig/remediations/graph.py`, a LangGraph separate from `sbmig/graph/`)

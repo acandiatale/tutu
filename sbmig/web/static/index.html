@@ -832,18 +832,18 @@
                     INTERRUPTED: 'bad', FAILED: 'bad' };
   // 이유 코드(sbmig/remediations/models.py R_*) → 담당자가 읽는 말. 모르는 코드는 코드 그대로(칩의 title 에는 늘 코드)
   const REM_REASON_KO = {
-    baseline_build_failed: '조치 전 빌드 실패', candidate_build_failed: '조치 후보 빌드 실패', scan_incomplete: 'IVAS 검사 미완료',
-    upload_uncertain: 'IVAS 업로드 결과 불확실', zip_hash_mismatch: '검사한 zip 과 결과 zip 이 다름', text_only_violation: '버전 글자 밖의 변경',
-    resolution_mismatch: '해석 결과가 계획과 다름', execution_boundary_refused: '실행 경계 거부(.mvn·저장소)', not_ready: '설정 부족(IVAS·Maven)',
-    pending_approval: '승인 대기 중', rejected_proposals: '적용하지 않은 제안 있음', residual_findings: '남은 취약점 있음',
-    manual_review: '수동 검토 필요', no_candidate_version: '올릴 버전 없음', rounds_exhausted: '라운드 한도 도달',
-    stop_requested: '중지 요청', internal_error: '내부 오류', policy_denied: '서버 정책이 막음', unknown_provenance: '관리 출처 불명',
-    stale_location: '파일이 바뀌어 버전 자리를 못 찾음', inventory_incomplete: '의존성 목록 미완성', chain_budget: '빌드 파드 시간 한도',
-    inhouse_artifact: '사내 라이브러리 경유(예외 처리 가능)' };
+    baseline_build_failed: '조치 전 빌드 실패', candidate_build_failed: '수정본 빌드 실패', scan_incomplete: 'IVAS 검사 미완료',
+    upload_uncertain: '업로드 결과 확인 불가', zip_hash_mismatch: '검사한 파일 불일치', text_only_violation: '버전 표기 외 변경 감지',
+    resolution_mismatch: '적용 결과가 계획과 다름', execution_boundary_refused: '빌드 설정 점검에서 중단', not_ready: '실행 환경 미비',
+    pending_approval: '승인 대기', rejected_proposals: '적용하지 않은 변경 있음', residual_findings: '남은 취약점 있음',
+    manual_review: '직접 확인 필요', no_candidate_version: '올릴 수 있는 버전 없음', rounds_exhausted: '반복 횟수 한도 도달',
+    stop_requested: '중지 요청', internal_error: '내부 오류', policy_denied: '정책상 허용되지 않음', unknown_provenance: '버전을 지정한 곳을 찾지 못함',
+    stale_location: 'pom이 그 사이 변경됨', inventory_incomplete: '의존성 목록을 다 읽지 못함', chain_budget: '제한 시간 초과',
+    inhouse_artifact: '사내 라이브러리 (담당자 요청)' };
   // 제안의 종류(K_*)·위험 표시(RISK_*)
-  const KIND_KO = { direct_version: '직접 버전', property_version: '속성 값', own_management_version: '관리 버전',
-                    managed_override: '관리 버전 override 추가', parent_version: '부모 버전', bom_version: 'BOM 버전' };
-  const RISK_KO = { major: '메이저 변경', parent: '부모', bom: 'BOM', managed_override: 'override' };
+  const KIND_KO = { direct_version: 'pom의 버전 표기 수정', property_version: 'property 값 수정', own_management_version: 'dependencyManagement의 버전 수정',
+                    managed_override: 'dependencyManagement에 버전 지정 추가', parent_version: '부모 pom 버전 변경', bom_version: 'BOM 버전 변경' };
+  const RISK_KO = { major: '메이저 버전 변경', parent: '부모 pom 변경', bom: 'BOM 변경', managed_override: 'dependencyManagement 항목 추가' };
   const ACTIVE_JOB_DONE = ['succeeded', 'failed', 'completed', 'finished', 'done', 'missing', 'ended'];
   const REM_POLL_MS = 4000;
   // 화면 쪽 기억: 고른 칸(제안 id → 체크), 지금 그린 조치 칸의 열쇠(같으면 다시 그리지 않아 체크·확인 칸이 그대로 남는다),
@@ -902,7 +902,7 @@
     if (c.proposals_applied) counts.appendChild(el('span', 'chip ok', `적용 ${c.proposals_applied}건`));
     const pend = Number(st.pending_approvals || 0);
     if (pend) counts.appendChild(el('span', 'chip warn', `승인 대기 ${pend}건`));
-    $('remed-msg').textContent = st.message || '';
+    $('remed-msg').textContent = st.message_ko || st.message || '';   // 한국어(서버가 덧붙인 message_ko)가 먼저
     const reasons = $('remed-reasons');
     reasons.replaceChildren();
     const codes = Array.isArray(st.reasons) && st.reasons.length ? st.reasons : (st.reason ? [st.reason] : []);
@@ -919,9 +919,9 @@
       dl.appendChild(a);
     };
     const failed = !!(st.delivery && st.delivery.build_ok === false);
-    link('report.md', '조치 보고서', 'quiet');
-    link('result.zip', '조치 결과 받기', failed ? 'ghost' : 'quiet', failed ? '빌드 실패본' : '');
-    link('result-verified.zip', '검증된 앞 라운드 받기', 'quiet');
+    link('report.md', '조치 결과 보고서', 'quiet');
+    link('result.zip', '결과 ZIP 받기', failed ? 'ghost' : 'quiet', failed ? '빌드 실패본' : '');
+    link('result-verified.zip', '검증된 이전 라운드 결과 받기', 'quiet');
     if (st.withheld) dl.appendChild(el('span', 'note', '이관 실행이 끝나면(마지막 정제 뒤) 받을 수 있습니다.'));
     // 상태마다 하는 일. 같은 그림이면 다시 그리지 않는다(같은 상태가 여러 번 와도 고른 칸·열린 확인 칸이 사라지지 않게)
     const pending = props && Array.isArray(props.proposals) ? props.proposals.filter((p) => p && p.decision === 'pending') : [];
@@ -1032,7 +1032,7 @@
     if (p.kind) tags.appendChild(el('span', 'tag', KIND_KO[p.kind] || p.kind));
     for (const r of Array.isArray(p.risks) ? p.risks : []) tags.appendChild(el('span', 'tag risk', RISK_KO[r] || r));
     if (tags.childElementCount) card.appendChild(tags);
-    if (p.evidence) card.appendChild(el('p', 'facts', '근거: ' + evidenceText(p.evidence)));
+    if (p.evidence) card.appendChild(el('p', 'facts', '버전 확인: ' + evidenceText(p.evidence)));
     if (p.note_ko || p.note) card.appendChild(el('p', 'pnote', p.note_ko || p.note));
     const det = el('details');
     det.appendChild(el('summary', null, '변경 내용 보기'));
@@ -1042,8 +1042,9 @@
   }
   function evidenceText(ev) {
     const s = String(ev);
-    if (s.startsWith('policy:')) return '서버 정책 (' + s.slice(7) + ')';
-    if (s.startsWith('repository:')) return '승인된 저장소 ' + s.slice(11);
+    if (s === 'policy:pins') return '서버 정책에 지정한 버전';
+    if (s.startsWith('policy:')) return '서버 정책 ' + s.slice(7);
+    if (s.startsWith('repository:')) return '저장소 ' + s.slice(11);
     return s;
   }
   // 정확한 diff 를 그대로: 줄마다 span 하나(textContent), 앞 글자로 더한 줄·뺀 줄만 색을 입힌다

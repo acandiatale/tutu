@@ -602,3 +602,22 @@ a rule change, so those were built (contract: `docs/INTERFACES.md` "v2.1z-ai").
 
 Also this day: the chained remediation ran to its report on the company PC against the real IVAS after one more Windows fix —
 `freeze_delivery` re-opened the finished ZIP read-only for `os.fsync`, which Windows refuses with EBADF (`115d537`).
+
+## Status — 2026-11-12, remediations: the report rewritten in workplace Korean
+
+After the first complete run against the real IVAS the user read the Korean `report.md` built earlier the same day: "기계번역처럼
+되어서 보는 것도 힘들고 읽는 것도 힘들다". It was a word-for-word rendering of the code vocabulary (govern → 다스리다, path → 들어온
+길, version text → 버전 글자, residual → 남긴 항목) with the step log and the codes on the first screen.
+
+| Item | Deliverable | Where | Status |
+|---|---|---|---|
+| Wording | every label, rule output and report sentence rewritten with a glossary (조치 완료, 승인 대기, 직접 확인 필요, 사내 라이브러리 담당자 요청, 조치 전 / 조치 후, 수정본, 결과 ZIP, 적용 범위, 의존 경로, 버전 표기); particles attached to the word before them, none after a data value unless its form never changes | `sbmig/remediations/i18n.py`, `report.py` | done |
+| Layout | result block (one verdict per status) → 요약 (two small tables) → 해야 할 일 → 조치 완료 → 승인 대기 → 사내 라이브러리에서 발생한 취약점 → 직접 확인이 필요한 취약점 → 변경하지 않은 것 → 처리 기록 (collapsed; the only place with codes); empty sections left out; the module list once above a table; 의존 경로 as artifactIds; sizes in MB | `sbmig/remediations/report.py` | done |
+| Rule coverage | rules for the sentences that still came out in English (Maven readiness, resolution notes, build-setting check details, incomplete-scan reasons); a sentence without a rule is printed as `원문: …` | `sbmig/remediations/i18n.py` | done |
+| Page and migration report | `message_ko` / `status_ko` in the status payload, shown by the page; the migration report's remediation section in Korean lines instead of raw count keys | `sbmig/remediations/service.py`, `sbmig/web/static/index.html`, `sbmig/report/markdown.py` | done |
+| Guards | tests reject the old words, infrastructure words before the collapsed record, and stand-alone particles — over three sample states, the status × reason matrix and every rule sample | `tests/remediations/test_report.py`, `test_i18n.py`, `tests/report/test_remediation_section_ko.py` | done |
+| Docs | INTERFACES "remediations" (presentation), agent-doc 12 (glossary, sections), PROGRESS | `docs/`, `agent-doc/` | done |
+| Not aligned yet | the operator chapters still use the earlier coinages (기준 빌드, 후보 빌드, 전달 ZIP, 버전 글자): agent-doc 11, deploy/README §6 — after the user's feedback on the wording | — | open |
+| Waiting | the user's read of the new samples; photos of the real report's hardest parts | — | open |
+
+Also this day: pod sizes as the company set them (CPU 2 / 8Gi for the web pod and each of three build pods, `a56116f`).

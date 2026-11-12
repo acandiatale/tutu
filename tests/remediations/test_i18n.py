@@ -7,6 +7,7 @@ import pytest
 
 from sbmig.remediations import apply as apply_mod
 from sbmig.remediations import i18n
+from sbmig.remediations import maven as maven_mod
 from sbmig.remediations import planner as planner_mod
 from sbmig.remediations.models import ModuleResolution, PackagedLib, Proposal, ResolvedDep, ResolvedModel
 
@@ -19,12 +20,12 @@ SAMPLES: list[tuple[str, str, list[str]]] = [
     ("policy_deny", f"{GA} matches policy.deny", [GA]),
     ("unknown_origin", "unknown origin 'weird'", ["weird"]),
     ("no_location", "no version location in the project poms", []),
-    ("not_plain_text", "app-domain/pom.xml:12 version text '${v}' is not a plain version", ["app-domain/pom.xml:12", "${v}"]),
-    ("parent_not_plain", "pom.xml:7 parent version '${p}' is not plain", ["pom.xml:7", "${p}"]),
+    ("not_plain_text", "app-domain/pom.xml:12 version text '${v}' is not a plain version", ["app-domain/pom.xml 12행", "${v}"]),
+    ("parent_not_plain", "pom.xml:7 parent version '${p}' is not plain", ["pom.xml 7행", "${p}"]),
     ("resolved_not_plain", "resolved version '1.0-${x}' is not a plain version", ["1.0-${x}"]),
-    ("stale_gone", "pom.xml:30 no longer exists or cannot be read", ["pom.xml:30"]),
-    ("stale_count", "pom.xml:30 contains '1.0' 2 time(s), expected exactly once (file changed?)", ["pom.xml:30", "1.0"]),
-    ("different_texts", "pom.xml:30: inventory names different version texts for one line", ["pom.xml:30"]),
+    ("stale_gone", "pom.xml:30 no longer exists or cannot be read", ["pom.xml 30행"]),
+    ("stale_count", "pom.xml:30 contains '1.0' 2 time(s), expected exactly once (file changed?)", ["pom.xml 30행", "1.0"]),
+    ("different_texts", "pom.xml:30: inventory names different version texts for one line", ["pom.xml 30행"]),
     ("pin_not_newer", "policy pin 1.2.3 is not newer than the current 1.2.4", ["1.2.3", "1.2.4"]),
     ("pin_denied", "policy pin 1.2.3 is also listed in policy.deny_versions", ["1.2.3"]),
     ("pin_major", "policy pin 2.0.0 is a major change and policy.allow_major is false", ["2.0.0"]),
@@ -153,7 +154,7 @@ SAMPLES: list[tuple[str, str, list[str]]] = [
     ("ivas_bytes_differ", "IVAS analysed bytes whose sha256 differs from the original ZIP", []),
     ("ivas_scanned_orig", "IVAS scanned a ZIP whose sha256 differs from the original", []),
     ("ivas_scanned_delivery", "IVAS scanned a ZIP whose sha256 differs from the delivery ZIP", []),
-    ("scan_incomplete", "final scan incomplete: page_missing, total_mismatch", ["page_missing", "total_mismatch"]),
+    ("scan_incomplete", "final scan incomplete: page_missing, total_mismatch", ["결과 페이지 누락", "전체 개수가 바뀜"]),
     ("maven_incomplete", "Maven resolution incomplete: build target svc-a: no pom.xml", ["svc-a"]),
     ("scan_missing", "the scan this round plans from is missing or incomplete", []),
     ("pending_halt", "3 proposal(s) of round 2 wait for approval", ["3", "2"]),
@@ -173,10 +174,45 @@ SAMPLES: list[tuple[str, str, list[str]]] = [
      "final build log (logs/*-build-verify*.log); the remediation builds a copy (remediation/baseline/tree) without .git/, "
      ".sbmig/, target/ build output"), ["svc-a", "svc-b", "remediation/baseline/build.log"]),
     ("restarted", ("the server restarted while this remediation was RUNNING; nothing is re-sent automatically — check the "
-     "state and resume it explicitly"), ["RUNNING"]),
+     "state and resume it explicitly"), ["진행 중"]),
     ("shutdown", ("the server shut down while this remediation was running; nothing is re-sent automatically — resume it "
      "explicitly"), []),
     ("cannot_start", "cannot start: RuntimeError: boom", ["RuntimeError"]),
+    ("no_root_pom", "no readable root pom.xml", []),
+    ("no_target_pom", "no readable pom.xml in the build targets", []),
+    ("deptree_not_run", "dependency:tree not run: build.mvn points at a Maven wrapper (mvnw); refused", []),
+    ("deptree_failed", "dependency:tree failed for build target svc-a (see deptree-svc-a-*.log)",
+     ["svc-a", "deptree-svc-a-*.log"]),
+    ("deptree_unreadable", "dependency:tree output unreadable: OSError", ["OSError"]),
+    ("module_no_tree", f"module app-x ({GA}): no dependency tree", ["app-x", GA]),
+    ("plugins_declared", "plugin versions are declared in the poms, not resolved", []),
+    ("ready_mvnw", "build.mvn points at a Maven wrapper (mvnw); the server Maven installation is required", []),
+    ("ready_mvnw_refused", "build.mvn points at a Maven wrapper (mvnw); refused", []),
+    ("ready_no_maven", "Maven not available (FileNotFoundError)", ["FileNotFoundError"]),
+    ("ready_no_jdk", ("JDK 21 not found (build.java_home / JAVA_HOME has no release file and Maven did not report a Java "
+     "version)"), ["21"]),
+    ("ready_jdk_wrong", "JDK 21 required, found Java 17", ["21", "17"]),
+    ("ready_unsafe_args", maven_mod._unsafe_problem(["-Dmaven.wagon.http.ssl.insecure", "-s"]),
+     ["-Dmaven.wagon.http.ssl.insecure", "-s"]),
+    ("ready_settings_unset", "server settings.xml not configured (build.settings_file)", []),
+    ("ready_settings_missing", "server settings.xml not found (/etc/maven/settings.xml)", ["/etc/maven/settings.xml"]),
+    ("ready_settings_unreadable", "server settings.xml cannot be read (/etc/maven/settings.xml)", ["/etc/maven/settings.xml"]),
+    ("ready_no_hosts", ("no approved repository host (remediation.allowed_repository_hosts is empty and the server "
+     "settings.xml declares no mirror / repository)"), []),
+    ("components_unbuilt", "remediation components cannot be built (RuntimeError)", ["RuntimeError"]),
+    ("boundary_symlink", "symbolic link in the project", []),
+    ("boundary_settings", "the server's settings.xml is the only one used", []),
+    ("boundary_wrapper", "the server's Maven is used; the wrapper is never run", []),
+    ("boundary_host", "host repo.example.invalid not approved: https://repo.example.invalid/maven2",
+     ["repo.example.invalid", "https://repo.example.invalid/maven2"]),
+    ("boundary_unresolved", "unresolved property in url ${repo.url}/maven2", ["${repo.url}/maven2"]),
+    ("boundary_non_https", "non-https (http)", ["http"]),
+    ("boundary_no_url", "no url", []),
+    ("boundary_bad_url", "unparsable url", []),
+    ("boundary_repo_id", "id=company-snapshots", ["company-snapshots"]),
+    ("report_not_written", "report not written: OSError: disk full", ["OSError: disk full"]),
+    ("stale_run", ("the migration run has ended while this remediation was AWAITING_APPROVAL (its build pod is gone); "
+     "nothing is re-sent automatically"), ["승인 대기"]),
 ]
 
 
@@ -201,10 +237,15 @@ def test_unknown_text_is_returned_unchanged_and_pieces_are_translated_separately
     assert i18n.ko_text("something only Maven says") == "something only Maven says"
     assert i18n.ko_text("") == "" and i18n.ko_text(None) is None
     mixed = i18n.ko_text("something unknown; managed by org.example:bom:5")
-    assert mixed.startswith("something unknown; ") and "org.example:bom:5 가 버전을 관리합니다." in mixed
+    assert mixed.startswith("something unknown; ") and "org.example:bom:5에서 버전을 지정합니다." in mixed
     # Maven's own build summary after " | " stays as it is
     out = i18n.ko_text("stop requested during the baseline build | [ERROR] Failed to execute goal")
-    assert out.endswith(" | [ERROR] Failed to execute goal") and "기준 빌드" in out
+    assert out.endswith(" | [ERROR] Failed to execute goal") and "조치 전 빌드" in out
+    # the report shows an unknown piece once, after the Korean, as the original text in backticks
+    assert i18n.ko_display("something only Maven says") == "원문: `something only Maven says`"
+    assert i18n.ko_display("something unknown; managed by org.example:bom:5") == (
+        "org.example:bom:5에서 버전을 지정합니다. 원문: `something unknown`")
+    assert i18n.ko_display("") == "" and i18n.ko_display(None) == ""
 
 
 def test_real_verify_lines_translate():
@@ -237,12 +278,12 @@ def test_detail_group_has_a_stable_key_and_one_explanation():
     kb, tb = i18n.detail_group(b)
     assert ka == kb == "not_inheriting_root" and ta == tb
     assert "a-boot" not in ta and HANGUL.search(ta)
-    assert i18n.group_meta(ka) == ("루트 pom 을 상속하지 않는 모듈", False)
+    assert i18n.group_meta(ka) == ("루트 pom을 상속하지 않는 모듈", False)
     k, t = i18n.detail_group("version property ${x} is not defined in the project poms; managed by g:p:1")
     assert k == "external_property+external_manager" and "g:p:1" not in t
     assert i18n.group_meta(k)[1] is True
     raw = "an unknown detail"
-    assert i18n.detail_group(raw) == (raw, raw) and i18n.group_meta(raw) == ("", False)
+    assert i18n.detail_group(raw) == (raw, "원문: `an unknown detail`") and i18n.group_meta(raw) == ("", False)
 
 
 def test_inhouse_gas_reads_old_details():
@@ -253,10 +294,11 @@ def test_inhouse_gas_reads_old_details():
 
 def test_labels():
     assert i18n.label(i18n.ORIGIN_KO, "transitive") == "간접 의존성"
-    assert i18n.label(i18n.REASON_KO, "inhouse_artifact") == "사내 라이브러리 경유"
-    assert i18n.label(i18n.REASON_KO, "manual_review") == "사람 검토"
+    assert i18n.label(i18n.REASON_KO, "inhouse_artifact") == "사내 라이브러리 (담당자 요청)"
+    assert i18n.label(i18n.REASON_KO, "manual_review") == "직접 확인 필요"
     assert i18n.label(i18n.KIND_KO, "unknown_kind") == "unknown_kind"
-    assert i18n.evidence_ko("policy:pins") == "서버 정책 pin"
+    assert i18n.evidence_ko("policy:pins") == "서버 정책에 지정한 버전"
+    assert i18n.loc_ko("app/pom.xml:41") == "app/pom.xml 41행" and i18n.loc_ko("pom.xml") == "pom.xml"
     assert i18n.evidence_ko("repository:nexus.invalid") == "저장소 nexus.invalid"
     from sbmig.remediations import models
     codes = {v for k, v in vars(models).items() if k.startswith("R_") and isinstance(v, str)} | {"chain_budget"}
@@ -266,15 +308,42 @@ def test_labels():
 def test_variant_reason_is_said_once():
     out = i18n.ko_text(f"transitive dependency {GA} resolves as a non-jar type or with a classifier (type/classifier "
                        "variant (jar/linux-x86_64)); a plain override entry would not govern it")
-    assert out == (f"간접 의존성 {GA} 는 jar 가 아닌 종류이거나 분류자가 붙어 들어옵니다(jar/linux-x86_64). 일반 override "
-                   "항목으로는 고칠 수 없습니다.")
+    assert out == (f"간접 의존성 {GA}의 형식이 jar가 아니거나 classifier가 붙어 있습니다(jar/linux-x86_64). "
+                   "dependencyManagement의 버전 지정으로는 조치할 수 없습니다.")
     out = i18n.ko_text(f"managed version {GA} resolves as a non-jar type or with a classifier (managed by g:p:1; "
                        "type/classifier variant in app-a); a plain override entry would not govern it")
-    assert "(app-a 모듈)" in out and "g:p:1 가 버전을 관리합니다." in out and out.count("분류자") == 1
+    assert "(app-a 모듈)" in out and "g:p:1에서 버전을 지정합니다." in out and out.count("classifier") == 1
+    detail = (f"transitive dependency {GA} resolves as a non-jar type or with a classifier (type/classifier variant "
+              "(jar/linux-x86_64, test-jar/tests, pom/)); a plain override entry would not govern it")
+    assert i18n.variant_label(detail) == "linux-x86_64, test-jar, tests, pom"
+    assert i18n.row_memo(detail) == ""                       # the variant fact goes next to the coordinates
+    assert i18n.row_memo(f"managed version {GA} resolves as a non-jar type or with a classifier (managed by g:p:1; "
+                         "type/classifier variant in app-a); a plain override entry would not govern it") == (
+        "g:p:1에서 버전을 지정합니다.")
 
 
 def test_nested_reasons_are_not_wrapped_in_parentheses_twice():
     out = i18n.ko_text("inventory incomplete: nothing planned (module app: pom not readable (missing))")
-    assert out == "의존성 목록(인벤토리)이 완전하지 않아 아무것도 계획하지 않았습니다. 이유: app 모듈의 pom 을 읽을 수 없습니다(missing)."
+    assert out == "의존성 목록을 다 읽지 못해 조치 계획을 세우지 않았습니다. 이유: app 모듈의 pom을 읽을 수 없습니다(missing)."
     assert i18n.ko_text("Maven resolution incomplete: Maven resolution is incomplete") == (
-        "Maven 해석이 완전하지 않습니다. 이유: Maven 해석이 완전하지 않습니다.")
+        "Maven 의존성 분석이 완전하지 않습니다. 이유: Maven 의존성 분석이 완전하지 않습니다.")
+    # an inner reason no rule knows is shown as the original text, not as half-translated Korean
+    assert i18n.ko_text("inventory incomplete: something new") == (
+        "의존성 목록을 다 읽지 못했습니다. 원문: `something new`")
+
+
+DETACHED = re.compile(r"[A-Za-z0-9`)\]] (은|는|이|가|을|를|과|와|로|으로|의|에|에서|도|만|이라|라)(?=[\s,.)]|$)")
+
+
+@pytest.mark.parametrize("key,sentence,ids", SAMPLES, ids=[s[0] for s in SAMPLES])
+def test_every_rule_attaches_its_particles(key, sentence, ids):
+    for out in (i18n.ko_text(sentence), i18n.ko_display(sentence)):
+        assert not DETACHED.search(out), out
+
+
+def test_labels_and_groups_attach_their_particles():
+    texts = [g.title + " " + g.text for g in i18n.GROUPS.values()]
+    for name in ("ORIGIN_KO", "ORIGIN_ALL_KO", "KIND_KO", "RISK_KO", "DECISION_KO", "REASON_KO", "COUNT_KO", "SCAN_REASON_KO",
+                 "BOUNDARY_KO"):
+        texts += list(getattr(i18n, name).values())
+    assert [t for t in texts if DETACHED.search(t)] == []

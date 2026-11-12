@@ -950,6 +950,8 @@ def remediation_lines(r: RunReport, lang: str = "en") -> list[str]:
     rem = getattr(r, "remediation", None)
     if not isinstance(rem, dict) or not rem.get("status"):
         return []
+    if normalize(lang) == "ko":
+        return _remediation_lines_ko(rem)
     L = [f"## {tr(lang, 'Vulnerability remediation')}", "",
          tr(lang, "Chained after the migration's BUILD SUCCESS (remediation.after_migration); it does not change the "
                   "migration result above."), ""]
@@ -975,6 +977,57 @@ def remediation_lines(r: RunReport, lang: str = "en") -> list[str]:
     files = rem.get("files") or {}
     if files:
         L.append(tr(lang, "- Files: {files}", files=", ".join(f"`{_cell(v, 120)}`" for v in files.values())))
+    L.append("")
+    return L
+
+
+def _remediation_lines_ko(rem: dict) -> list[str]:
+    """한국어 이관 보고서의 ``## 취약점 조치`` 절(2026-11-12): 결과 문장 + 상태 코드, 취약점 개수 한 줄, 승인 대기, 사내 라이브러리,
+    상태 메시지의 한국어(``sbmig.remediations.i18n.ko_display``), 자세한 결과 파일. 집계 키 이름은 쓰지 않는다.
+
+    The Korean remediation section: verdict + code, counts in words, the message in Korean, the files."""
+    # 늦게 부른다: sbmig.remediations 가 보고서 모듈보다 먼저 올라오지 않아도 되게(순환 import 방지)
+    from sbmig.remediations.i18n import REASON_KO, ko_display, label
+    from sbmig.remediations.report import _VERDICT
+    L = [f"## {tr('ko', 'Vulnerability remediation')}", "",
+         tr("ko", "Chained after the migration's BUILD SUCCESS (remediation.after_migration); it does not change the "
+                  "migration result above."), ""]
+    status = str(rem.get("status"))
+    if status == "skipped":
+        reason = str(rem.get("reason") or "-")
+        L.append(f"- 실행하지 않았습니다(사유: `{_cell(reason, 80)}`).")
+        for m in list(rem.get("missing") or [])[:10]:
+            L.append(f"  - {_cell(ko_display(str(m)) or m, 200)}")
+        L.append("")
+        return L
+    verdict = _VERDICT.get(status, "")
+    verdict = verdict.split(" ", 1)[1].replace("**", "") if verdict else status
+    reasons = [str(x) for x in (rem.get("reasons") or ([rem["reason"]] if rem.get("reason") else []))]
+    why = f" (사유: {', '.join(label(REASON_KO, x) for x in reasons)})" if reasons else ""
+    L.append(f"- 결과: {verdict} `{_cell(status, 40)}`{why}")
+    counts = rem.get("counts") or {}
+    counts = counts if isinstance(counts, dict) else {}
+    parts = [f"{name} {counts[key]:,}건" for key, name in (("baseline_findings", "조치 전"), ("fixed", "조치 완료"),
+                                                         ("final_findings", "조치 후 남은 취약점"))
+             if isinstance(counts.get(key), int)]
+    if parts:
+        L.append("- 취약점: " + ", ".join(parts))
+    pending = counts.get("proposals_pending")
+    if isinstance(pending, int) and pending > 0:
+        L.append(f"- 승인 대기: 제안 {pending}건")
+    n_inhouse = counts.get("residual_inhouse")
+    if isinstance(n_inhouse, int) and n_inhouse > 0:
+        L.append(tr("ko", "- In-house artifacts (exception possible, contact their owners): {n}", n=n_inhouse))
+    if rem.get("message"):
+        L.append(f"- 상세: {_cell(ko_display(str(rem.get('message'))), 400)}")
+    files = rem.get("files") or {}
+    if isinstance(files, dict) and files:
+        report_md = files.get("report_md")
+        if report_md:
+            L.append(f"- 자세한 결과: `{_cell(report_md, 120)}`")
+        others = [v for k, v in files.items() if k != "report_md"]
+        if others:
+            L.append("- 다른 파일: " + ", ".join(f"`{_cell(v, 120)}`" for v in others))
     L.append("")
     return L
 

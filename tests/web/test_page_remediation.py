@@ -47,7 +47,7 @@ def test_status_labels_counts_and_downloads() -> None:
     render = _function("renderRemediation")
     for token in ("c.baseline_findings", "c.final_findings", "c.proposals_applied", "st.pending_approvals", "st.reasons",
                   "'report.md'", "'result.zip'", "'result-verified.zip'", "'빌드 실패본'", "st.delivery.build_ok === false",
-                  "st.resume", "rs.note", "st.stale"):
+                  "st.resume", "rs.note", "st.stale", "st.message_ko || st.message"):
         assert token in render, token
 
 
@@ -79,9 +79,10 @@ def test_checkbox_list_select_all_and_count() -> None:
     row = _function("proposalRow")
     assert "cb.type = 'checkbox'" in row and "head.htmlFor = id" in row and "el('label', 'prophead')" in row
     assert "'변경 내용 보기'" in row and "el('details')" in row
-    for code, label in (("direct_version", "직접 버전"), ("property_version", "속성 값"), ("managed_override", "관리 버전 override 추가"),
-                        ("parent_version", "부모 버전"), ("bom_version", "BOM 버전"), ("major", "메이저 변경"), ("parent", "부모"),
-                        ("bom", "BOM")):
+    for code, label in (("direct_version", "pom의 버전 표기 수정"), ("property_version", "property 값 수정"),
+                        ("managed_override", "dependencyManagement에 버전 지정 추가"), ("parent_version", "부모 pom 버전 변경"),
+                        ("bom_version", "BOM 버전 변경"), ("major", "메이저 버전 변경"), ("parent", "부모 pom 변경"),
+                        ("bom", "BOM 변경")):
         assert f"{code}: '{label}'" in SCRIPT, code
     assert "RISK_KO" in row and "KIND_KO" in row and "p.evidence" in row and "p.note" in row
 

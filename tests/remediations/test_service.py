@@ -743,6 +743,9 @@ def test_stale_chained_state_is_shown_interrupted_without_rewriting(tmp_path, ba
     st = mgr.status(RUN_ID)
     assert st["status"] == INTERRUPTED and st["stale"] is True and st["recorded_status"] == RUNNING
     assert "build pod" in st["message"]
+    # additive Korean for the page: the English message stays, message_ko / status_ko are added
+    assert st["message_ko"].startswith("이관 실행이 끝나면서 조치가 진행 중 상태로 남았습니다.")
+    assert st["status_ko"] == "조치가 중단되었습니다." and "파드" not in st["message_ko"]
     row = mgr.list()["items"][0]
     assert row["status"] == INTERRUPTED and row["stale"] is True
     with pytest.raises(StateConflict):
@@ -1042,8 +1045,8 @@ def test_proposals_carry_korean_display_fields(tmp_path, base_cfg):
     write_json_atomic(paths.plan(1), plan.to_dict())
     out = mgr.proposals(rid)
     p, r = out["proposals"][0], out["residuals"][0]
-    assert p["note"].startswith("uses the existing") and p["note_ko"].startswith("루트 pom.xml 에 이미 있는")
-    assert r["detail"].startswith("module(s)") and "app-a 모듈은 루트 pom.xml 을 상속하지 않습니다" in r["detail_ko"]
-    assert r["origin_ko"] == "간접 의존성" and r["reason_ko"] == "사람 검토"
+    assert p["note"].startswith("uses the existing") and p["note_ko"].startswith("루트 pom.xml의 dependencyManagement에 이미 있는")
+    assert r["detail"].startswith("module(s)") and "app-a 모듈은 루트 pom.xml을 상속하지 않습니다" in r["detail_ko"]
+    assert r["origin_ko"] == "간접 의존성" and r["reason_ko"] == "직접 확인 필요"
     every = mgr.proposals(rid, all_rounds=True)
-    assert every["residuals"][0]["reason_ko"] == "사람 검토"
+    assert every["residuals"][0]["reason_ko"] == "직접 확인 필요"

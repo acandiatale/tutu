@@ -674,7 +674,7 @@ def test_ignored_action_codes_are_not_planned_and_not_remaining(tmp_path):
     # the scan files keep every finding
     assert len(ScanResult.from_dict(read_json(paths.root / out.final_scan)).findings) == 2
     md = paths.report_md.read_text(encoding="utf-8")
-    assert "## 조치 대상에서 뺀 항목" in md and "| PC | 패치 완료 |" in md and "| IG | 조치 예외 |" in md
+    assert "## 조치 대상에서 제외한 항목 — 2건" in md and "| 패치 완료 (PC) |" in md and "| 조치 예외 (IG) |" in md
     rj = json.loads(paths.report_json.read_text(encoding="utf-8"))
     assert rj["ignore_actions"] == ["IG", "PC"] and len(rj["ignored_findings"]) == 2
     assert rj["final_scan"]["actionable"] == 0 and rj["final_scan"]["ignored"] == 2
@@ -697,7 +697,7 @@ def test_unknown_or_empty_action_codes_stay_actionable_and_are_noted_once(tmp_pa
     assert out.counts["final_findings"] == 1 and out.counts["final_ignored"] == 0
     noted = [e for e in rec.events if e["event"] == "ivas_action_unknown"]
     assert [e["codes"] for e in noted] == [["(empty)", "ZZ"]]
-    assert "알 수 없는 조치 코드(조치 대상으로 다룸): ZZ" in paths.report_md.read_text(encoding="utf-8")
+    assert "알 수 없는 IVAS 조치 상태 코드(ZZ)는 조치 대상으로 처리했습니다." in paths.report_md.read_text(encoding="utf-8")
 
 
 @pytest.mark.parametrize("explicit", [True, False])

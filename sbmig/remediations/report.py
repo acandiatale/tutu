@@ -1,18 +1,22 @@
-"""취약점 조치 보고서 — ``report.json`` (기계용: 상태 전부 + 검사 요약 + 라운드별 계획 요약) 과 ``report.md`` (운영자용, 한국어).
+"""취약점 조치 보고서 — ``report.json`` (기계용: 상태 전부 + 검사 요약 + 라운드별 계획 요약) 과 ``report.md`` (사람용, 한국어).
 흐름상 위치: 그래프의 마지막 노드 ``report`` 가 끝 상태(SUCCEEDED / INCOMPLETE / FAILED)에서만 ``write_report`` 를 부른다
 (대기 상태에서는 쓰지 않는다). API 목록은 ``summary`` 의 작은 dict 를 쓴다.
 지켜야 할 것: 비밀 값·토큰·서버 절대 경로를 쓰지 않는다(실행 폴더 기준 상대 경로만); 같은 입력이면 같은 글자(시각을 새로
-찍지 않는다, 정렬 고정); 맨 앞에 결과 한 줄·한눈에 보기·다음에 할 일. report.md 는 사람용 한국어다: 조치 코드가 만든 영어 문장은
-``i18n.ko_text`` 로 바꿔 보여 주고, 같은 설명의 잔여는 묶어서 설명을 한 번만 쓴다(report.json 은 영어 문장·코드 그대로 — 계약).
-사내 아티팩트(사내 라이브러리·회사 부모 pom)를 거쳐 온 잔여(``inhouse_artifact``)는 아티팩트별로 따로 묶고
+찍지 않는다, 정렬 고정). report.md 는 프로젝트 담당 개발자와 관리자가 읽는 결과 보고서다(사용자 요청 2026-11-12: "기계번역처럼
+읽힌다" → 다시 씀): 첫 화면에 결과 한 줄 · 요약 표 · 해야 할 일, 그 아래 조치 완료 → 승인 대기 → 사내 라이브러리에서 발생한
+취약점 → 직접 확인이 필요한 취약점 → (있을 때) 조치 대상에서 제외한 항목 → 변경하지 않은 것 → 처리 기록(접힘). 빈 절은 쓰지
+않는다. 상태·이유 코드는 접힌 처리 기록에만 쓴다(문의할 때 쓰도록). 조치 코드가 만든 영어 문장은 ``i18n.ko_display`` 로 바꿔
+보여 주고(모르는 조각은 "원문: `…`"), 같은 설명의 잔여는 묶어서 설명을 한 번만 쓴다(report.json 은 영어 문장·코드 그대로 —
+계약). 사내 아티팩트(사내 라이브러리·회사 부모 pom)를 거쳐 온 잔여(``inhouse_artifact``)는 아티팩트별로 묶고
 ``remediation.inhouse_message`` 를 붙인다. 결과 ZIP 이 빌드가 실패한 수정본이면(``delivery.build_ok`` 거짓,
-``remediation.failed_candidate: include``) 제목 바로 아래 첫 줄들에 그 사실·라운드·제안·빌드 로그·재검사 없음·원본 보존을 쓴다.
-``remediation.ignore_actions`` 코드(기본은 없음; 예 PC 패치 완료 · IG 조치 예외)의 항목은 "조치 대상에서 뺀 항목" 표에 코드의 뜻(``ivas.ACTION_MEANINGS``)과
-함께 따로 쓰고, 발견·잔여 개수에는 넣지 않는다.
+``remediation.failed_candidate: include``) 결과 줄 바로 아래 주의 문단에 그 사실·제안·빌드 로그·재검사 없음·원본 보관을 쓴다.
+``remediation.ignore_actions`` 코드(기본은 없음; 예 PC 패치 완료 · IG 조치 예외)의 항목은 "조치 대상에서 제외한 항목" 절에
+IVAS 조치 상태(``ivas.ACTION_MEANINGS``)와 함께 따로 쓰고, 취약점·남은 취약점 개수에는 넣지 않는다.
 
 Remediation report: `report.json` (the state, the scan summaries, per-round plan summaries) and `report.md` (Korean, for
-operators: a result line, an overview and next steps first; English sentences shown translated, residuals grouped by
-explanation, in-house residuals grouped per in-house artifact). Deterministic for the same input; no secret, no absolute server path.
+the project owners: a result line, a summary and the actions first; English sentences shown translated, residuals grouped by
+explanation, in-house residuals grouped per in-house artifact, codes only in the folded record). Deterministic for the same
+input; no secret, no absolute server path.
 """
 from __future__ import annotations
 
@@ -24,18 +28,21 @@ from sbmig.core import scrub as _scrub
 
 from . import i18n
 from .i18n import (
+    BOUNDARY_KO,
     COUNT_KO,
     DECISION_KO,
     FINDING_KIND_KO,
     KIND_KO,
+    ORIGIN_ALL_KO,
     ORIGIN_KO,
     REASON_KO,
     RISK_KO,
+    SEVERITY_NONE_KO,
     evidence_ko,
+    ko_display,
+    label,
     severity_of,
     severity_thresholds,
-    ko_text,
-    label,
 )
 from .models import (
     AWAITING_APPROVAL,
@@ -45,6 +52,8 @@ from .models import (
     FAILED,
     INCOMPLETE,
     INTERRUPTED,
+    K_DIRECT_VERSION,
+    K_MANAGED_OVERRIDE,
     QUEUED,
     R_INHOUSE_ARTIFACT,
     RUNNING,
@@ -66,51 +75,80 @@ log = logging.getLogger("sbmig.remediations.report")
 
 REPORT_SCHEMA = "sbmig.remediation.report/1"
 
+# 상태 코드 → 짧은 한국어 이름(처리 기록·다른 화면용)
 _STATUS_KO = {
-    SUCCEEDED: "성공", INCOMPLETE: "미완료(성공 아님)", FAILED: "실패", AWAITING_APPROVAL: "승인 대기",
-    AWAITING_CONFIRMATION: "업로드 확인 대기", STOPPED: "중지됨", INTERRUPTED: "서버 재시작으로 중단됨",
-    QUEUED: "대기열", RUNNING: "실행 중",
+    SUCCEEDED: "조치 완료", INCOMPLETE: "일부만 조치됨", FAILED: "조치 실패", AWAITING_APPROVAL: "승인 대기",
+    AWAITING_CONFIRMATION: "업로드 확인 필요", STOPPED: "중지됨", INTERRUPTED: "중단됨", QUEUED: "대기 중", RUNNING: "진행 중",
 }
-# 이유 코드 → (뜻, 다음에 할 일)
+# 결과 줄의 굵은 한 문장
+_VERDICT = {
+    SUCCEEDED: "✅ **조치를 마쳤습니다.**", INCOMPLETE: "⚠️ **일부만 조치되었습니다.**", FAILED: "❌ **조치하지 못했습니다.**",
+    AWAITING_APPROVAL: "⏸ **승인을 기다리고 있습니다.**", AWAITING_CONFIRMATION: "⏸ **확인이 필요합니다.**",
+    STOPPED: "⏹ **조치를 멈췄습니다.**", INTERRUPTED: "⏹ **조치가 중단되었습니다.**",
+    QUEUED: "⏳ **조치를 기다리고 있습니다.**", RUNNING: "⏳ **조치를 진행하고 있습니다.**",
+}
+# 이유 코드 → (무슨 일이 있었는지 — 결과 줄, 해야 할 일 — "**제목** — 설명 ~해 주세요."). "<n>" 은 마지막 라운드 번호로 바뀐다.
+# 개수가 붙는 할 일(승인·사내·직접 확인)은 _next_steps 가 개수를 넣는다
 _REASON_KO: dict[str, tuple[str, str]] = {
-    "baseline_build_failed": ("올린 프로젝트가 그대로는 빌드되지 않았습니다(기준 빌드 실패). 검사·계획은 하지 않았습니다.",
-                              "baseline/build.log 를 보고 프로젝트 담당 팀이 빌드를 고친 뒤 다시 올리세요."),
-    "candidate_build_failed": ("버전을 바꾼 후보가 빌드되지 않아 버렸습니다(정책 discard). 결과 ZIP 은 없고 원본은 그대로입니다.",
-                               "rounds/<n>/build.log 와 candidate.patch 를 보고 버전을 사람이 정하세요."),
-    "scan_incomplete": ("IVAS 검사가 끝까지 완료되지 않았습니다. 미완료 검사는 0건이 아닙니다.",
-                        "IVAS 상태를 확인한 뒤 다시 실행하세요."),
-    "upload_uncertain": ("IVAS 업로드를 보냈지만 결과를 모릅니다. 자동으로 다시 올리지 않습니다.",
-                         "IVAS 에서 업로드 여부를 확인한 뒤 확인 결과와 함께 재개하세요."),
-    "zip_hash_mismatch": ("검사한 ZIP 의 sha256 이 전달(또는 원본) ZIP 과 다릅니다.",
-                          "전달 ZIP 을 쓰지 말고 운영자에게 알리세요."),
-    "text_only_violation": ("후보에 버전 글자 밖의 변경이 있어 버렸습니다.", "rounds/<n>/candidate.patch 를 확인하세요(도구 오류)."),
-    "resolution_mismatch": ("후보의 Maven 해석·패키징 결과가 계획과 다릅니다. 후보를 버렸습니다.",
-                            "rounds/<n>/resolved.json 과 검증 메모를 보고 사람이 판단하세요."),
-    "execution_boundary_refused": ("프로젝트가 서버 Maven 실행 경계를 우회할 수 있는 요소를 가졌습니다(작업 거부).",
-                                   "아래 '실행 경계 점검' 항목을 프로젝트에서 없앤 뒤 다시 올리세요."),
-    "not_ready": ("서버 준비 조건(IVAS 설정, settings.xml, JDK 21, Maven)이 없습니다.", "운영자가 서버 설정을 확인하세요."),
-    "pending_approval": ("승인을 기다리는 제안이 있습니다.", "제안의 diff 를 검토해 승인·거절한 뒤 재개하세요."),
-    "rejected_proposals": ("거절된 제안이 있어 해당 취약점은 남았습니다.", "거절한 항목을 담당 팀이 직접 조치하세요."),
-    "residual_findings": ("최종 검사에 취약점이 남았습니다.", "'사람이 확인할 것' 과 진행 기록의 최종 검사 표를 보고 담당 팀이 조치하세요."),
-    "manual_review": ("자동으로 바꿀 수 없는 항목(프로젝트에 든 파일·빌드 플러그인·출처 불명·적용하지 못한 제안 등)이 있습니다.",
-                      "'사람이 확인할 것' 의 항목을 사람이 확인하세요."),
-    "no_candidate_version": ("승인된 저장소·정책에 쓸 수 있는 새 버전이 없는 항목이 있습니다.", "서버 정책(pins) 또는 저장소를 확인하세요."),
-    "rounds_exhausted": ("반복 라운드 한도(max_rounds)에 닿았습니다.", "남은 항목을 사람이 확인하세요."),
-    "stop_requested": ("중지 요청으로 멈췄습니다. 진행 중이던 원격 IVAS 분석은 IVAS 에서 계속 진행됩니다.",
-                       "재개하면 멈춘 노드부터 이어서 합니다."),
-    "internal_error": ("도구 내부 오류로 멈췄습니다.", "remediation.log 를 운영자에게 전달하세요."),
-    R_INHOUSE_ARTIFACT: (("사내 아티팩트(사내 라이브러리·회사 부모 pom)를 거쳐 들어온 취약점이 있습니다. 그 아티팩트의 pom 은 "
-                          "담당자만 고칠 수 있어 프로젝트에서는 바꾸지 않았습니다."),
-                         "'사내 라이브러리에서 온 취약점' 의 아티팩트별 담당자(아키텍처 담당)에게 연락하세요."),
-    "chain_budget": (("이관 빌드 파드에서 이어서 돈 조치가 시간 한도(remediation.chain_budget_minutes)를 다 써서 멈췄습니다. "
-                      "진행 중이던 원격 IVAS 분석은 IVAS 에서 계속 진행됩니다."),
-                     "재개하면 새 빌드 파드에서 멈춘 노드부터 이어서 합니다(검사 중이었다면 다시 올리지 않고 같은 분석을 이어서 조회)."),
+    "baseline_build_failed": ("올린 프로젝트가 조치 전 빌드에서 실패했습니다. 빌드되지 않는 프로젝트는 검사하지 않습니다.",
+                              "**빌드 오류 고치기** — `baseline/build.log` 파일을 확인해 빌드 오류를 고친 뒤 프로젝트를 다시 "
+                              "올려 주세요."),
+    "candidate_build_failed": ("버전을 바꾼 수정본이 빌드에 실패해 수정본을 버렸습니다. 결과 ZIP은 만들지 않았고 원본은 그대로입니다.",
+                               "**빌드 로그 확인하기** — `rounds/<n>/build.log` 파일과 `rounds/<n>/candidate.patch` 파일을 확인하고, "
+                               "올릴 버전은 담당 팀에서 정해 주세요."),
+    "scan_incomplete": ("IVAS 검사가 끝나지 않았습니다. 끝나지 않은 검사는 취약점 0건으로 보지 않습니다.",
+                        "**IVAS 검사 상태 확인하기** — IVAS에서 분석 상태를 확인한 뒤 조치를 다시 실행해 주세요."),
+    "upload_uncertain": ("IVAS에 파일을 올렸지만 접수 여부를 확인하지 못했습니다. 같은 파일이 두 번 접수되지 않도록 자동으로 다시 "
+                         "올리지 않습니다.",
+                         "**IVAS 접수 여부 확인하기** — IVAS 화면에서 파일이 접수됐는지 확인하고, 조치 화면에서 확인 결과를 "
+                         "선택해 주세요."),
+    "zip_hash_mismatch": ("IVAS가 검사한 파일이 결과 ZIP 또는 원본 ZIP과 다릅니다.",
+                          "**결과 ZIP 사용 보류하기** — 결과 ZIP을 사용하지 말고 운영 담당자에게 알려 주세요."),
+    "text_only_violation": ("수정본에서 버전 표기 외의 변경이 발견되어 수정본을 버렸습니다. 도구 오류일 가능성이 높습니다.",
+                            "**운영 담당자에게 알리기** — `rounds/<n>/candidate.patch` 파일을 첨부해 운영 담당자에게 알려 주세요."),
+    "resolution_mismatch": ("수정본을 빌드해 보니 의존성 버전이 계획과 다르게 적용되어 수정본을 버렸습니다.",
+                            "**적용 결과 확인하기** — 「처리 기록」의 검증 내용과 `rounds/<n>/resolved.json` 파일을 확인하고, "
+                            "올릴 버전은 담당 팀에서 정해 주세요."),
+    "execution_boundary_refused": ("프로젝트에 서버의 Maven 실행 설정을 바꿀 수 있는 파일이 있어 작업을 중단했습니다.",
+                                   "**빌드 설정 파일 정리하기** — 「처리 기록」의 빌드 설정 점검에 나온 파일을 프로젝트에서 "
+                                   "제거한 뒤 다시 올려 주세요."),
+    "not_ready": ("조치 서버의 실행 환경(IVAS 설정, settings.xml, JDK 21, Maven)이 준비되지 않았습니다.",
+                  "**운영 담당자에게 알리기** — 운영 담당자에게 서버 설정 확인을 요청해 주세요."),
+    "pending_approval": ("승인을 기다리는 변경이 있습니다.",
+                         "**변경 승인하기** — 「승인 대기」의 변경을 확인한 뒤, 조치 화면의 체크박스 목록에서 적용할 변경을 "
+                         "골라 「선택한 항목 적용」을 눌러 주세요."),
+    "rejected_proposals": ("적용하지 않기로 한 변경이 있어 그 취약점은 남아 있습니다.",
+                           "**적용하지 않은 변경 조치하기** — 적용하지 않기로 한 변경의 취약점은 담당 팀에서 직접 조치해 "
+                           "주세요."),
+    "residual_findings": ("조치 후 검사에서 취약점이 남아 있습니다.",
+                          "**남은 취약점 확인하기** — 「처리 기록」의 남은 취약점 전체 목록을 확인하고 담당 팀에서 조치해 "
+                          "주세요."),
+    "manual_review": ("자동으로 조치할 수 없는 항목이 있습니다.",
+                      "**직접 확인하기** — 「직접 확인이 필요한 취약점」의 항목은 자동으로 조치할 수 없습니다. 항목별 사유를 "
+                      "확인하고 담당 팀에서 조치해 주세요."),
+    "no_candidate_version": ("승인된 저장소나 서버 정책에서 올릴 수 있는 버전을 찾지 못한 항목이 있습니다.",
+                             "**올릴 버전 정하기** — 버전을 찾지 못한 항목은 담당 팀에서 버전을 정하거나, 운영 담당자에게 "
+                             "서버 정책에 버전 지정을 추가해 달라고 요청해 주세요."),
+    "rounds_exhausted": ("반복 횟수 한도에 도달해 조치를 멈췄습니다.",
+                         "**남은 취약점 확인하기** — 남은 취약점은 담당 팀에서 직접 확인해 주세요."),
+    "stop_requested": ("중지 요청을 받아 조치를 멈췄습니다. 진행 중이던 IVAS 분석은 IVAS에서 계속됩니다.",
+                       "**이어서 진행하기** — 계속하려면 조치 화면에서 「이어서 진행」을 눌러 주세요."),
+    "internal_error": ("도구 내부 오류로 조치를 멈췄습니다.",
+                       "**운영 담당자에게 알리기** — `remediation.log` 파일을 운영 담당자에게 전달해 주세요."),
+    R_INHOUSE_ARTIFACT: ("사내 라이브러리에서 발생한 취약점이 있습니다. 사내 라이브러리의 pom은 담당자만 수정할 수 있어 이 "
+                         "프로젝트에서는 변경하지 않았습니다.",
+                         "**사내 라이브러리 담당자에게 요청하기** — 「사내 라이브러리에서 발생한 취약점」에 아티팩트별로 "
+                         "정리했습니다. 각 아티팩트의 아키텍처 담당자에게 연락해 주세요."),
+    "chain_budget": ("조치에 쓸 수 있는 시간을 다 써서 멈췄습니다. 진행 중이던 IVAS 분석은 IVAS에서 "
+                     "계속됩니다. 이어서 진행하면 멈춘 단계부터 다시 시작하고, 검사 중이었다면 파일을 다시 "
+                     "올리지 않고 같은 분석 결과를 조회합니다.",
+                     "**이어서 진행하기** — 계속하려면 조치 화면에서 「이어서 진행」을 눌러 주세요."),
 }
-# 정책 include 로 실패한 수정본을 결과 ZIP 으로 냈을 때의 candidate_build_failed 문구
-_FAILED_INCLUDED_KO = (("버전을 바꾼 후보가 빌드되지 않았습니다. 결과 ZIP(delivery/result.zip)은 빌드가 실패한 그 수정본이며 IVAS "
-                        "재검사는 하지 않았습니다. 원본은 original/source.zip 으로 그대로 보존됩니다."),
-                       ("rounds/<n>/build.log 와 candidate.patch 를 보고 빌드를 고치거나 버전을 사람이 정하세요. 실패한 수정본을 "
-                        "그대로 배포하지 마세요."))
+# 정책 include 로 빌드에 실패한 수정본을 결과 ZIP 으로 냈을 때의 candidate_build_failed (결과 줄 아래 주의 문단이 자세히 쓴다)
+_FAILED_INCLUDED_KO = ("버전을 바꾼 수정본이 빌드에 실패했습니다.",
+                       "**빌드 오류 확인하기** — 빌드에 실패한 결과 ZIP은 배포하지 말고, `rounds/<n>/build.log` 파일과 "
+                       "`rounds/<n>/candidate.patch` 파일을 확인해 빌드 오류를 고치거나 올릴 버전을 다시 정해 주세요.")
+_SUCCEEDED_STEP = "**결과 ZIP 받기** — 재검사를 마친 `delivery/result.zip` 파일을 받아 사용해 주세요."
 _DECISION_KO = DECISION_KO          # 예전 이름(다른 곳이 import 해도 깨지지 않게)
 
 
@@ -281,53 +319,77 @@ def _md_cell(text: Any) -> str:
 
 
 def _earlier_delivery(state: RemediationState) -> bool:
-    """실패로 끝났지만 앞 라운드에서 검증을 마친 전달 ZIP 이 남아 있는가(실패한 라운드의 후보만 버렸다)."""
+    """실패로 끝났지만 앞 라운드에서 검증을 마친 결과 ZIP 이 남아 있는가(실패한 라운드의 수정본만 버렸다)."""
     last = max((rs.round for rs in state.rounds), default=0)
     return bool(state.status == FAILED and state.delivery is not None and state.delivery.round < last)
 
 
+def _last_round(state: RemediationState) -> int:
+    return max((rs.round for rs in state.rounds), default=1)
+
+
 def _reason_text(state: RemediationState, code: str) -> tuple[str, str]:
-    meaning, step = _REASON_KO[code]
+    """이유 코드 → (무슨 일이 있었는지, 해야 할 일). 실패한 수정본을 낸 경우·앞 라운드의 결과 ZIP 이 남은 경우는 문장을 바꾼다."""
+    what, step = _REASON_KO[code]
     if code == "candidate_build_failed" and _failed_delivery(state):
-        return _FAILED_INCLUDED_KO
-    if _earlier_delivery(state) and code in ("candidate_build_failed", "text_only_violation", "resolution_mismatch"):
+        what, step = _FAILED_INCLUDED_KO
+    elif _earlier_delivery(state) and code in ("candidate_build_failed", "text_only_violation", "resolution_mismatch"):
         d = state.delivery
-        meaning = (meaning.split(".")[0] + ". 실패한 라운드의 후보는 버렸습니다. 전달 ZIP(delivery/result.zip)은 라운드 "
-                   f"{d.round} 에서 빌드·재검사를 마친 상태이며 실패한 변경은 들어 있지 않습니다.")
-    return meaning, step
+        head = {"candidate_build_failed": "수정본이 빌드에 실패했습니다.",
+                "text_only_violation": "수정본에서 버전 표기 외의 변경이 발견되었습니다.",
+                "resolution_mismatch": "수정본에서 의존성 버전이 계획과 다르게 적용되었습니다."}[code]
+        what = (f"라운드 {_last_round(state)}의 {head} 그 라운드의 변경은 버렸습니다. 결과 ZIP은 라운드 {d.round}에서 "
+                "빌드와 재검사를 마친 상태이며, 실패한 변경은 들어 있지 않습니다.")
+    n = str(_last_round(state))
+    return what.replace("<n>", n), step.replace("<n>", n)
 
 
 def _codes(state: RemediationState) -> list[str]:
     return list(state.reasons or ([state.reason] if state.reason else []))
 
 
-def _next_steps(state: RemediationState) -> list[str]:
+def _with_count(step: str, count: int | None, unit: str = "건") -> str:
+    """"**제목** — 설명" 의 제목 뒤에 "(N건)" 을 붙인다(개수를 모르거나 0 이면 그대로)."""
+    if not count:
+        return step
+    head, sep, rest = step.partition("** — ")
+    return f"{head} ({count}{unit}){sep}{rest}" if sep else step
+
+
+def _next_steps(state: RemediationState, fx: "_Facts | None" = None) -> list[str]:
+    """해야 할 일(순서 고정): 결과 ZIP 받기(성공) → 변경 승인 → 사내 라이브러리 담당자 요청 → 직접 확인 → 나머지 이유 코드 순서.
+    이 상태에서 실제로 할 수 있는 일만 쓴다. ``fx`` 가 있으면 개수를 붙인다.
+
+    The actions for this state, in a fixed order; counts when the report facts are given."""
     inhouse = [r for r in state.residuals if r.reason == R_INHOUSE_ARTIFACT]
-    if state.status == SUCCEEDED and not inhouse:
-        return ["전달 ZIP(delivery/result.zip)을 받아 쓰면 됩니다. 최종 검사는 이 ZIP 과 같은 바이트로 했습니다."]
+    manual = [r for r in state.residuals if r.reason != R_INHOUSE_ARTIFACT]
     codes = [c for c in _codes(state) if c in _REASON_KO]
-    # 운영자가 먼저 할 일부터: 승인 → 사내 아티팩트 담당자 연락 → 사람 검토 → 나머지(이유 코드 순서)
     out: list[str] = []
-    if "pending_approval" in codes:
-        out.append(_reason_text(state, "pending_approval")[1])
+    if state.status == SUCCEEDED:
+        out.append(_SUCCEEDED_STEP)
+    others = [_reason_text(state, c)[1] for c in codes
+              if c not in ("pending_approval", R_INHOUSE_ARTIFACT, "manual_review", "residual_findings")]
+    if state.status in (FAILED, STOPPED, INTERRUPTED, AWAITING_CONFIRMATION):
+        # 실패·중단·확인 대기: 그 원인부터 처리해야 다음이 있다
+        out += others
+        others = []
+    pending = fx.pending if fx is not None else []
+    if "pending_approval" in codes or pending:
+        out.append(_with_count(_reason_text(state, "pending_approval")[1], len(pending), "건"))
     if inhouse or R_INHOUSE_ARTIFACT in codes:
         # 왜: 사내 아티팩트 항목은 evaluate 의 이유 코드에 없어도(다른 이유가 앞설 때) 담당자 연락이 늘 할 일이다
-        out.append(_REASON_KO[R_INHOUSE_ARTIFACT][1])
-    review = [c for c in ("manual_review", "residual_findings") if c in codes]
-    if len(review) == 2:
-        # 두 이유의 할 일은 같은 표를 본다 — 한 줄로 합친다
-        out.append(_REVIEW_BOTH)
-    elif review:
-        out.append(_reason_text(state, review[0])[1])
-    out += [_reason_text(state, c)[1] for c in codes
-            if c not in ("pending_approval", R_INHOUSE_ARTIFACT, "manual_review", "residual_findings")]
-    if state.status == SUCCEEDED:
-        out.insert(0, "전달 ZIP(delivery/result.zip)을 받아 쓰면 됩니다. 최종 검사는 이 ZIP 과 같은 바이트로 했습니다.")
-    return list(dict.fromkeys(out)) or ["보고서와 remediation.log 를 확인하세요."]
-
-
-_REVIEW_BOTH = ("'사람이 확인할 것' 의 항목을 사람이 확인하고, 진행 기록의 최종 검사 표에 남은 취약점은 담당 팀이 "
-                "조치하세요.")
+        out.append(_with_count(_reason_text(state, R_INHOUSE_ARTIFACT)[1],
+                               fx.matching(fx.inhouse) if fx is not None else None))
+    if manual or "manual_review" in codes:
+        out.append(_with_count(_reason_text(state, "manual_review")[1],
+                               fx.matching(fx.manual) if fx is not None else None))
+    elif "residual_findings" in codes:
+        out.append(_with_count(_reason_text(state, "residual_findings")[1],
+                               len(fx.f_act) if fx is not None and fx.final_ok else None))
+    out += others
+    if state.status == INTERRUPTED and not out:
+        out.append("**이어서 진행하기** — 상태를 확인한 뒤 조치 화면에서 「이어서 진행」을 눌러 주세요.")
+    return list(dict.fromkeys(out)) or ["**처리 기록 확인하기** — 「처리 기록」과 `remediation.log` 파일을 확인해 주세요."]
 
 
 def _default_inhouse_message() -> str:
@@ -368,6 +430,28 @@ def _mods(mods: Iterable[str]) -> str:
     return _cut(sorted(set(mods)))
 
 
+def _mods_code(mods: Iterable[str]) -> str:
+    """본문 줄의 모듈 목록: `a`, `b`, `c` 외 N개."""
+    xs = sorted(set(m for m in mods if m))
+    shown = [f"`{m}`" for m in xs[:3]] if len(xs) > 4 else [f"`{m}`" for m in xs]
+    return ", ".join(shown) + (f" 외 {len(xs) - 3}개" if len(xs) > 4 else "") if xs else "-"
+
+
+def _aid(coord: str) -> str:
+    """"g:a[:v]" → "a" (모양이 다르면 그대로)."""
+    parts = str(coord or "").split(":")
+    return parts[1] if len(parts) >= 2 and parts[1] else str(coord or "")
+
+
+def _num(n: int) -> str:
+    return f"{n:,}"
+
+
+def _mb(size: int) -> str:
+    mb = (size or 0) / (1024 * 1024)
+    return "0.1 MB 미만" if 0 < mb < 0.05 else f"{mb:.1f} MB"
+
+
 def _key(f: Any) -> tuple[str, str]:
     return (f.identifier, f.version)
 
@@ -394,8 +478,8 @@ class _Facts:
         self.inhouse = [r for r in state.residuals if r.reason == R_INHOUSE_ARTIFACT]
         self.manual = [r for r in state.residuals if r.reason != R_INHOUSE_ARTIFACT]
         self.final_ok = self.final is not None and self.final.complete
-        # 취약점 ID 의 점수: 완료된 최종 검사 먼저, 그다음 기준 검사(고친 취약점은 최종 검사에 없다). 같은 ID 가 여러
-        # 라이브러리에 보고됐으면 (ID, 대상, 버전)이 맞는 것, 아니면 그 ID 의 가장 높은 점수
+        # 취약점 ID 의 점수: 완료된 조치 후 검사 먼저, 그다음 조치 전 검사(조치한 취약점은 조치 후 검사에 없다). 같은 ID 가
+        # 여러 라이브러리에 보고됐으면 (ID, 대상, 버전)이 맞는 것, 아니면 그 ID 의 가장 높은 점수
         self._exact: list[dict[tuple[str, str, str], float]] = []
         self._by_id: list[dict[str, float]] = []
         for scan in ([self.final] if self.final_ok else []) + ([self.base] if self.base is not None else []):
@@ -410,15 +494,15 @@ class _Facts:
             self._exact.append(exact)
             self._by_id.append(by_id)
 
-    def matching(self, residuals: list[Residual]) -> int:
-        """이 잔여들에 해당하는 기준 검사의 조치 대상 발견 항목 수(기준 검사가 없으면 잔여의 취약점 ID 수)."""
-        keys = {(r.ga, r.version) for r in residuals}
+    def matching(self, items: list[Any]) -> int:
+        """이 잔여(또는 제안)들에 해당하는 조치 전 검사의 조치 대상 취약점 수(조치 전 검사가 없으면 취약점 ID 수)."""
+        keys = {(getattr(r, "ga", ""), getattr(r, "version", None) or getattr(r, "from_version", "")) for r in items}
         if self.base is not None:
             return sum(1 for f in self.b_act if _key(f) in keys)
-        return sum(len(set(r.finding_ids)) for r in residuals)
+        return sum(len(set(r.finding_ids)) for r in items)
 
     def fixed(self) -> int | None:
-        """기준 검사의 조치 대상 중 최종 검사(완료)에 없는 것의 수. 최종 검사가 없거나 미완료면 None(모른다)."""
+        """조치 전 검사의 조치 대상 중 조치 후 검사(완료)에 없는 것의 수. 조치 후 검사가 없거나 미완료면 None(모른다)."""
         if self.base is None or not self.final_ok:
             return None
         left = {f.key for f in self.f_act}
@@ -447,7 +531,7 @@ class _Facts:
         return f"{mark} {score:.1f}" if mark else f"{score:.1f}"
 
     def cve_cell(self, ga: str, version: str, ids: Iterable[str]) -> str:
-        """취약점 칸: 점수가 높은 것부터 표시·ID·점수, 셋까지 + "외 N건"."""
+        """취약점 칸: 점수가 높은 것부터 "표시 ID (점수)", 셋까지 + "외 N건"."""
         scored = [(i, self.cve_score(i, ga, version)) for i in sorted(set(ids))]
         if not scored:
             return "-"
@@ -455,43 +539,15 @@ class _Facts:
         parts = []
         for cve, sc in scored[:3]:
             mark = severity_of(sc, self.th)[1]
-            parts.append(" ".join(x for x in (mark, cve, f"{sc:.1f}" if sc is not None else "") if x))
+            parts.append(" ".join(x for x in (mark, cve, f"({sc:.1f})" if sc is not None else "") if x))
         return ", ".join(parts) + (f" 외 {len(scored) - 3}건" if len(scored) > 3 else "")
 
     def order(self, score: float | None, ga: str, version: str) -> tuple:
         """행 순서: 점수 높은 것 먼저(점수 없음은 맨 뒤), 그다음 g:a, 버전."""
         return (score is None, -(score or 0.0), ga, version)
 
-    def breakdown(self, findings: Iterable[Any]) -> str:
-        """위험도별 개수 글: "🔴 심각 3건 · 🟠 높음 5건 · 표시 없음 1건"(0 인 수준은 뺀다)."""
-        c = _sev_counts(findings, self.th)
-        parts = [f"{mark} {name} {c[key]}건" for key, mark, name in i18n.SEVERITY_LEVELS if c[key]]
-        if c["none"]:
-            parts.append(f"표시 없음 {c['none']}건")
-        return " · ".join(parts) or "0건"
-
-
-def _result_sentence(state: RemediationState, fx: _Facts) -> str:
-    codes = _codes(state)
-    if state.status == FAILED or fx.base is None or not fx.base.complete:
-        if codes and codes[0] in _REASON_KO:
-            return _reason_text(state, codes[0])[0]
-        return ko_text(state.message) or _STATUS_KO.get(state.status, state.status)
-    total = len(fx.b_act)
-    if total == 0:
-        return "기준 검사에서 조치할 취약점이 없었습니다."
-    fixed = fx.fixed()
-    head = f"취약점 {total}건 중 {fixed}건을 고쳤" if fixed is not None else f"취약점 {total}건을 찾았"
-    hand = []
-    n_in, n_man = fx.matching(fx.inhouse), fx.matching(fx.manual)
-    if n_in:
-        hand.append(f"{n_in}건은 사내 라이브러리 담당자에게")
-    if n_man:
-        hand.append(f"{n_man}건은 사람 검토로")
-    text = head + ("고, " + ", ".join(hand) + " 넘깁니다." if hand else "습니다.")
-    if fx.pending:
-        text += f" 승인을 기다리는 제안이 {len(fx.pending)}건 있습니다."
-    return text
+    def sev_counts(self, findings: Iterable[Any]) -> dict[str, int]:
+        return _sev_counts(findings, self.th)
 
 
 def _folded(L: list[str], table: list[str], summary: str) -> None:
@@ -506,77 +562,180 @@ def _folded(L: list[str], table: list[str], summary: str) -> None:
         L.append("</details>")
 
 
-def _counts_text(counts: dict[str, int]) -> str:
-    """집계 dict → "라운드 1, 남긴 항목 12, …"(아는 키는 정해진 순서, 모르는 키는 이름 그대로 뒤에 정렬)."""
-    known = [k for k in COUNT_KO if k in counts]
-    rest = sorted(k for k in counts if k not in COUNT_KO)
-    return ", ".join([f"{COUNT_KO[k]} {counts[k]}" for k in known] + [f"{k} {counts[k]}" for k in rest])
+def _known_and_raw(text: str) -> tuple[list[str], str]:
+    """상태 메시지 → (번역된 문장들, 규칙이 모르는 조각의 원문 — 없으면 "")."""
+    ko, raw = i18n.split_known(str(text or ""))
+    return ko, " | ".join(raw)
 
 
-def _mark(state: RemediationState) -> str:
-    return {SUCCEEDED: "✅", FAILED: "❌"}.get(state.status, "⚠️")
+# 상태 메시지를 결과 줄에 옮기지 않는 이유 코드: 메시지가 Maven 빌드 요약이거나(처리 기록에 있다) 결과 줄이 이미 같은 말을 한다
+_MESSAGE_ELSEWHERE = ("baseline_build_failed", "candidate_build_failed", "pending_approval", "text_only_violation",
+                      "resolution_mismatch")
+# 상태 메시지가 결과 줄의 일반 문장을 대신하는 이유 코드(메시지가 같은 일을 구체적으로 말한다)
+_MESSAGE_SAYS_IT = ("chain_budget", "upload_uncertain", "stop_requested")
+# 결과 줄의 숫자 문장이 이미 설명하는 이유 코드(따로 무슨 일이 있었는지 쓰지 않는다)
+_NUMBERS_EXPLAIN = ("manual_review", "residual_findings", R_INHOUSE_ARTIFACT, "pending_approval")
+
+
+def _numbers(state: RemediationState, fx: _Facts) -> list[str]:
+    """결과 줄의 숫자 문장들(조치 전 검사가 끝났을 때만)."""
+    if fx.base is None or not fx.base.complete:
+        return []
+    total = len(fx.b_act)
+    if total == 0:
+        return ["조치 전 검사에서 조치할 취약점이 없었습니다."]
+    fixed = fx.fixed()
+    left = len(fx.f_act) if fx.final_ok else None
+    if fixed is None:
+        out = [f"조치 전 검사에서 취약점 {_num(total)}건을 찾았습니다."]
+    elif left == 0:
+        out = [f"취약점 {_num(total)}건을 모두 조치했고, 재검사에서 남은 취약점이 없습니다."]
+    elif fixed == 0:
+        out = [f"취약점 {_num(total)}건 가운데 조치한 취약점은 없고 {_num(left or 0)}건이 남았습니다."]
+    else:
+        out = [f"취약점 {_num(total)}건 가운데 {_num(fixed)}건을 조치했고 {_num(left or 0)}건이 남았습니다."]
+    n_in, n_man = fx.matching(fx.inhouse), fx.matching(fx.manual)
+    if n_in or n_man:
+        whole = left is not None and left == n_in + n_man
+        lead = f"남은 {_num(left or 0)}건" if whole else "남은 취약점"
+        to_in = f"{_num(n_in)}건은 사내 라이브러리 담당자에게 요청해야" if n_in else ""
+        to_man = f"{_num(n_man)}건은 프로젝트에서 직접 확인해야" if n_man else ""
+        if n_in and n_man:
+            out.append(f"{lead} 중 {to_in} 하고, {to_man} 합니다.")
+        elif whole:
+            out.append(f"{lead}은 모두 " + ("사내 라이브러리 담당자에게 요청해야 합니다." if n_in
+                                            else "프로젝트에서 직접 확인해야 합니다."))
+        else:
+            out.append(f"{lead} 중 {to_in or to_man} 합니다.")
+    return out
+
+
+def _result_lines(state: RemediationState, fx: _Facts) -> list[str]:
+    """결과 블록의 줄들(앞의 "> " 없이): 굵은 한 문장, 무슨 일이 있었는지, 숫자."""
+    codes = [c for c in _codes(state) if c in _REASON_KO]
+    out = [_VERDICT.get(state.status, f"**{_STATUS_KO.get(state.status, state.status)}**")]
+    body: list[str] = []
+    if state.status == AWAITING_APPROVAL:
+        n = len(fx.pending)
+        body += _numbers(state, fx)[:1]
+        body.append((f"제안 {n}건이 승인을 기다립니다." if n else "승인을 기다리는 변경이 있습니다.")
+                    + " 조치 화면에서 적용할 변경을 고르면 이어서 진행합니다.")
+    elif state.status == INTERRUPTED:
+        ko, _raw = _known_and_raw(state.message)
+        body += ko or ["서버가 다시 시작되면서 조치가 멈췄습니다. 자동으로 다시 실행하지 않습니다."]
+        return out + [" ".join(body)]
+    elif state.status in (SUCCEEDED, INCOMPLETE):
+        body += _numbers(state, fx)
+        body += [_reason_text(state, c)[0] for c in codes if c not in _NUMBERS_EXPLAIN]
+        if state.status == INCOMPLETE and not body:
+            body += [_reason_text(state, c)[0] for c in codes]
+    else:
+        ko, raw = _known_and_raw(state.message)
+        if codes[:1] and codes[0] in _MESSAGE_SAYS_IT and ko and not raw:
+            # 메시지가 같은 일을 더 자세히(검사 이름·시간 한도) 말한다 — 일반 문장 대신 그것을 쓴다
+            return out + [" ".join(ko)]
+        body += [_reason_text(state, c)[0] for c in codes[:1]]
+    if state.message and not (set(codes) & set(_MESSAGE_ELSEWHERE)):
+        ko, _raw = _known_and_raw(state.message)
+        if ko:
+            body.append("상세: " + " ".join(ko))
+    if fx.pending and state.status not in (AWAITING_APPROVAL,):
+        body.append(f"승인을 기다리는 제안이 {len(fx.pending)}건 있습니다.")
+    return out + ([" ".join(dict.fromkeys(body))] if body else [])
 
 
 def _place(p: Proposal) -> str:
-    """제안이 바꾼 곳: 한국어 종류 + pom:줄(넣는 항목은 "줄 앞에 추가")."""
+    """제안이 수정한(할) 곳: "`pom` 41행"(넣는 항목은 "41행 앞에 추가")."""
     where = []
     for e in p.edits:
-        where.append(f"{e.pom}:{e.line} 앞에 추가" if e.op == E_INSERT else f"{e.pom}:{e.line}")
-    return label(KIND_KO, p.kind) + (" · " + ", ".join(where) if where else "")
+        where.append(f"`{_md_cell(e.pom)}` {e.line}행" + (" 앞에 추가" if e.op == E_INSERT else ""))
+    return ", ".join(where) or "-"
 
 
-def _proposal_rows(L: list[str], fx: _Facts, props: list[Proposal], *, risks: bool) -> None:
-    head = ("| 위험도 | 라이브러리 | 버전(전 → 후) | 바꾼 곳 | 근거 |" + (" 위험 부류 |" if risks else "")
-            + " 해소 대상 취약점 |")
-    L.append(head)
-    L.append("|" + "---|" * (7 if risks else 6))
+def _note_lines(text: str) -> list[str]:
+    """제안 메모 → 한국어 문장들(규칙 하나의 출력 = 한 줄, 모르는 조각은 마지막 줄에 원문으로)."""
+    ko, raw = _known_and_raw(text)
+    return [k for k in ko if k] + ([f"원문: `{raw.replace('`', chr(39))}`"] if raw else [])
+
+
+def _proposal_section(L: list[str], fx: _Facts, props: list[Proposal], *, pending: bool) -> None:
+    head = (["위험도", "라이브러리", "버전 변경", "수정할 곳", "주의", "해결할 취약점"] if pending
+            else ["위험도", "라이브러리", "버전 변경", "수정한 곳", "해결된 취약점"])
+    L.append("| " + " | ".join(head) + " |")
+    L.append("|" + "---|" * len(head))
     scores = {p.id: fx.row_score(p.finding_ids, p.ga, p.from_version) for p in props}
     props = sorted(props, key=lambda p: (*fx.order(scores[p.id], p.ga, p.from_version), p.id))
     for p in props:
-        cells = [fx.sev_cell(scores[p.id]), f"`{_md_cell(p.ga)}`", f"{_md_cell(p.from_version)} → {_md_cell(p.to_version)}", _md_cell(_place(p)),
-                 _md_cell(evidence_ko(p.evidence))]
-        if risks:
+        cells = [fx.sev_cell(scores[p.id]), f"`{_md_cell(p.ga)}`", f"{_md_cell(p.from_version)} → {_md_cell(p.to_version)}",
+                 _place(p)]
+        if pending:
             cells.append(_md_cell(", ".join(label(RISK_KO, r) for r in sorted(p.risks)) or "-"))
         cells.append(_md_cell(fx.cve_cell(p.ga, p.from_version, p.finding_ids)))
         L.append("| " + " | ".join(cells) + " |")
-    details = [p for p in props if p.note or p.modules]
-    if details:
-        L.append("")
-        for p in details:
-            L.append(f"- `{_md_cell(p.id)}` `{_md_cell(p.ga)}`")
-            if p.note:
-                L.append(f"  - 메모: {_md_cell(ko_text(p.note))}")
-            if p.modules:
-                L.append(f"  - 다스리는 모듈: {_md_cell(_mods(p.modules))}")
-                if p.also_modules:
-                    L.append("  - 이 수정이 닿지 않을 수 있는 모듈(같은 버전이 다른 길로 들어옴): "
-                             f"{_md_cell(_mods(p.also_modules))}")
+    L.append("")
+    for p in props:
+        L.append(f"- **`{_md_cell(_aid(p.ga))}` {_md_cell(p.from_version)} → {_md_cell(p.to_version)}** "
+                 f"(제안 `{_md_cell(p.id)}`)")
+        if p.evidence:
+            L.append(f"  - 버전 확인: {_md_cell(evidence_ko(p.evidence))}")
+        if p.kind and p.kind != K_DIRECT_VERSION:
+            L.append(f"  - 수정 방식: {_md_cell(label(KIND_KO, p.kind))}")
+        if p.modules:
+            L.append(f"  - 적용 범위: {_md_cell(_mods_code(p.modules))}")
+        notes = _note_lines(p.note) if p.note else []
+        if len(notes) == 1:
+            L.append(f"  - 참고: {_md_cell(notes[0])}")
+        elif notes:
+            L.append("  - 참고:")
+            L += [f"    - {_md_cell(n)}" for n in notes]
+        if p.also_modules and "also_resolved_edit" not in i18n.rule_keys(p.note):
+            L.append(f"  - 적용되지 않을 수 있는 모듈: {_md_cell(_mods_code(p.also_modules))} — 같은 라이브러리를 다른 경로로 "
+                     "가져옵니다.")
 
 
-def _chain(via: list[str]) -> str:
-    """의존성 사슬 a → b → c. 길면(셋 이상) artifactId:version 만."""
-    if len(via) > 2:
-        return " → ".join(":".join(x.split(":")[1:]) if x.count(":") >= 2 else x for x in via)
-    return " → ".join(via)
-
-
-def _came(r: Residual, owner: str) -> str:
-    """사내 아티팩트 표의 '들어온 길': 사슬이 있으면 사슬, 없으면 출처 이름표(부모 pom 이 관리 등)."""
+def _dep_path(r: Residual, owner: str) -> str:
+    """사내 라이브러리 표의 '의존 경로': artifactId 를 " → " 로 잇고 취약한 라이브러리로 끝낸다(버전은 버전 칸에)."""
     if r.via:
-        return _chain(r.via)
+        aids = [_aid(x) for x in r.via]
+        if aids[-1] != _aid(r.ga):
+            aids.append(_aid(r.ga))
+        return " → ".join(aids)
     if r.ga == owner:
-        return "사내 아티팩트 자체"
-    return label(ORIGIN_KO, r.origin)
+        return "사내 라이브러리 자체"
+    if r.origin in ("parent_managed", "bom_managed"):
+        return label(ORIGIN_KO, r.origin)
+    return "-"
+
+
+def _is_parent_group(rows: list[Residual]) -> bool:
+    """묶음이 회사 부모 pom 몫인가: 의존 경로 없이 부모 pom·BOM 에서 버전을 지정하는 행이 있다."""
+    return any(not r.via and r.origin in ("parent_managed", "bom_managed") for r in rows)
+
+
+def _common_modules(rows: list[Residual]) -> str | None:
+    """모든 행의 모듈 목록이 같으면 그 목록(본문용), 아니면 None. 모듈이 하나도 없으면 ""."""
+    sets = {tuple(sorted(set(r.modules))) for r in rows}
+    if len(sets) == 1:
+        only = next(iter(sets))
+        return _mods_code(only) if only else ""
+    return None
+
+
+def _lib_cell(r: Residual) -> str:
+    lib = f"`{_md_cell(r.ga)}`"
+    variant = i18n.variant_label(r.detail)
+    if variant:
+        lib += f" ({_md_cell(variant)})"
+    return lib
 
 
 def _inhouse_section(L: list[str], fx: _Facts, message: str) -> None:
-    L.append("## 사내 라이브러리에서 온 취약점")
+    L.append(f"## 사내 라이브러리에서 발생한 취약점 — {_num(fx.matching(fx.inhouse))}건")
     L.append("")
     L.append(f"> {message}")
     L.append("")
-    L.append("아래 라이브러리는 사내 라이브러리를 거쳐 들어오거나 회사 부모 pom 에서 버전이 정해집니다. 그 아티팩트의 pom 은 "
-             "담당자(아키텍처 담당)만 고칠 수 있어 이 프로젝트에서는 바꾸지 않았습니다(이유 코드 "
-             f"`{R_INHOUSE_ARTIFACT}`).")
+    L.append("사내 라이브러리가 가져오는 의존성이거나, 회사 부모 pom에서 버전을 지정하는 라이브러리입니다. 사내 라이브러리의 "
+             "pom은 담당자만 수정할 수 있어 이 프로젝트에서는 변경하지 않았습니다.")
     groups: dict[str, list[Residual]] = {}
     for r in fx.inhouse:
         for ga in _inhouse_of(r):
@@ -584,88 +743,94 @@ def _inhouse_section(L: list[str], fx: _Facts, message: str) -> None:
     for ga in sorted(groups, key=lambda g: (-len(groups[g]), g)):
         rows = sorted(groups[ga], key=lambda r: fx.order(fx.row_score(r.finding_ids, r.ga, r.version), r.ga, r.version))
         L.append("")
-        L.append(f"### `{_md_cell(ga)}` — {len(rows)}개")
+        tag = " (회사 부모 pom)" if _is_parent_group(rows) else ""
+        L.append(f"### `{_md_cell(ga)}`{tag} — 라이브러리 {len(rows)}개")
         L.append("")
-        L.append("| 위험도 | 취약 라이브러리 | 버전 | 들어온 길 | 모듈 | 취약점 |")
-        L.append("|---|---|---|---|---|---|")
+        common = _common_modules(rows)
+        if common:
+            L.append(f"사용 모듈: {_md_cell(common)}")
+            L.append("")
+        cols = ["위험도", "취약한 라이브러리", "버전", "의존 경로"] + ([] if common is not None else ["사용 모듈"]) + ["취약점"]
+        L.append("| " + " | ".join(cols) + " |")
+        L.append("|" + "---|" * len(cols))
         for r in rows:
-            L.append(f"| {fx.sev_cell(fx.row_score(r.finding_ids, r.ga, r.version))} | `{_md_cell(r.ga)}` | {_md_cell(r.version)} | {_md_cell(_came(r, ga))} | {_md_cell(_mods(r.modules))} "
-                     f"| {_md_cell(fx.cve_cell(r.ga, r.version, r.finding_ids))} |")
+            cells = [fx.sev_cell(fx.row_score(r.finding_ids, r.ga, r.version)), _lib_cell(r), _md_cell(r.version),
+                     _md_cell(_dep_path(r, ga))]
+            if common is None:
+                cells.append(_md_cell(_mods(r.modules)))
+            cells.append(_md_cell(fx.cve_cell(r.ga, r.version, r.finding_ids)))
+            L.append("| " + " | ".join(cells) + " |")
 
 
-def _people_section(L: list[str], fx: _Facts) -> None:
-    L.append("## 사람이 확인할 것")
-    if not fx.manual:
-        L.append("")
-        L.append("- 없음")
-        return
+def _manual_section(L: list[str], fx: _Facts) -> None:
+    L.append(f"## 직접 확인이 필요한 취약점 — {_num(fx.matching(fx.manual))}건")
     groups: dict[tuple[str, str], list[Residual]] = {}
     texts: dict[tuple[str, str], str] = {}
     for r in fx.manual:
         key, text = i18n.detail_group(r.detail)
         groups.setdefault((r.reason, key), []).append(r)
         texts[(r.reason, key)] = text
-    per_reason: dict[str, int] = {}
-    for reason, _k in groups:
-        per_reason[reason] = per_reason.get(reason, 0) + 1
-    seen_reason: set[str] = set()
-    unknown_n = 0
-    for gk in sorted(groups, key=lambda k: (-len(groups[k]), k[0], k[1])):
+    order = sorted(groups, key=lambda k: (-len(groups[k]), k[0], k[1]))
+    titles: dict[tuple[str, str], str] = {}
+    other_n = 0
+    for gk in order:
+        title = i18n.group_meta(gk[1])[0]
+        if not title:
+            if gk[0] != "manual_review" and gk[0] in REASON_KO:
+                title = label(REASON_KO, gk[0])
+            else:
+                other_n += 1
+                title = "기타 사유"
+        titles[gk] = title
+    if other_n > 1:
+        n = 0
+        for gk in order:
+            if titles[gk] == "기타 사유":
+                n += 1
+                titles[gk] = f"기타 사유 {n}"
+    dup = {t for t in titles.values() if list(titles.values()).count(t) > 1}
+    for gk in order:
         reason, key = gk
         rows = sorted(groups[gk], key=lambda r: (*fx.order(fx.row_score(r.finding_ids, r.ga, r.version), r.ga, r.version),
                                                  r.origin))
-        title, memo = i18n.group_meta(key)
-        short = label(REASON_KO, reason)
-        if per_reason[reason] > 1:
-            if not title:
-                unknown_n += 1
-                title = f"그 밖의 사유 {unknown_n}"
-            head = f"### {short} · {title} — {len(rows)}개"
-        else:
-            head = f"### {short} — {len(rows)}개"
+        title = titles[gk] + (f" ({label(REASON_KO, reason)})" if titles[gk] in dup else "")
+        memo = i18n.group_meta(key)[1]
         L.append("")
-        L.append(head)
+        L.append(f"### {title} — 라이브러리 {len(rows)}개")
         L.append("")
-        expl = texts[gk] or _md_cell("-")
-        if reason not in seen_reason:
-            expl += f" (이유 코드 `{reason}`)"
-            seen_reason.add(reason)
-        L.append(_md_cell(expl))
-        # 모든 행이 같은 값인 칸은 표에서 빼고 한 줄로 올린다(같은 글자를 행마다 되풀이하지 않는다)
-        origins = {label(ORIGIN_KO, r.origin) for r in rows}
-        modules = {_mods(r.modules) for r in rows}
+        L.append(_md_cell(texts[gk] or "-"))
+        # 모든 행이 같은 값인 칸은 표에서 빼고 표 위에 한 번 쓴다(같은 글자를 행마다 되풀이하지 않는다)
+        origins = {r.origin for r in rows}
         lift_origin = len(rows) > 1 and len(origins) == 1
-        lift_mods = len(rows) > 1 and len(modules) == 1
-        memos = [ko_text(r.detail) or "-" for r in rows]
+        common = _common_modules(rows) if len(rows) > 1 else None
+        no_mods = all(not r.modules for r in rows)
+        memos = [i18n.row_memo(r.detail) if memo else "" for r in rows]
         memo_col = memo and len(set(memos)) > 1
-        common = []
+        above: list[str] = []
         if lift_origin:
-            common.append(f"출처: {next(iter(origins))}")
-        if lift_mods:
-            common.append(f"모듈: {next(iter(modules))}")
-        if memo and not memo_col and memos[0] != "-" and len(rows) > 1:
-            common.append(f"내용: {memos[0]}")
+            o = next(iter(origins))
+            above.append(ORIGIN_ALL_KO.get(o, f"구분: {label(ORIGIN_KO, o)}"))
         if common:
+            above.append(f"사용 모듈: {common}")
+        if memo and not memo_col and memos and memos[0]:
+            above.append(f"내용: {memos[0]}")
+        for a in above:
             L.append("")
-            for c in common:
-                L.append(f"- 모든 항목 공통 — {_md_cell(c)}")
-        elif memo and len(rows) == 1 and memos[0] != "-":
-            # 한 행뿐인 묶음은 '공통' 이라 하지 않는다 — 그 행의 내용으로 쓴다
-            L.append("")
-            L.append(f"- 내용: {_md_cell(memos[0])}")
-        cols = ["위험도", "라이브러리", "버전"] + ([] if lift_origin else ["출처"]) + ([] if lift_mods else ["모듈"]) + ["취약점"]
-        cols += ["메모"] if memo_col else []
+            L.append(_md_cell(a))
+        cols = ["위험도", "라이브러리", "버전"] + ([] if lift_origin else ["구분"])
+        cols += [] if (common is not None or no_mods) else ["사용 모듈"]
+        cols += ["취약점"] + (["내용"] if memo_col else [])
         L.append("")
         L.append("| " + " | ".join(cols) + " |")
         L.append("|" + "---|" * len(cols))
         for r, m in zip(rows, memos):
-            lib = f"`{_md_cell(r.ga)}`"
+            lib = _lib_cell(r)
             if r.inhouse:
-                lib += " · 일부 모듈은 사내 라이브러리 경유"
+                lib += " — 일부 모듈은 사내 라이브러리에서 가져옴"
             cells = [fx.sev_cell(fx.row_score(r.finding_ids, r.ga, r.version)), lib, _md_cell(r.version)]
             if not lift_origin:
                 cells.append(_md_cell(label(ORIGIN_KO, r.origin)))
-            if not lift_mods:
+            if common is None and not no_mods:
                 cells.append(_md_cell(_mods(r.modules)))
             cells.append(_md_cell(fx.cve_cell(r.ga, r.version, r.finding_ids)))
             if memo_col:
@@ -673,283 +838,389 @@ def _people_section(L: list[str], fx: _Facts) -> None:
             L.append("| " + " | ".join(cells) + " |")
 
 
-def _round_block(L: list[str], state: RemediationState, fx: _Facts, rs: RoundState) -> None:
-    L.append(f"### 라운드 {rs.round}")
+def _ivas_action(code: str) -> str:
+    """IVAS 조치 상태 칸: "조치 필요 (NE)"."""
+    from .ivas import action_meaning
+    c = str(code or "")
+    return f"{action_meaning(c)} ({c})" if c else action_meaning(c)
+
+
+def _ident_cell(identifier: str, kind: str) -> str:
+    cell = f"`{_md_cell(identifier)}`"
+    return cell if kind in ("library", "") else f"{cell} ({_md_cell(label(FINDING_KIND_KO, kind))})"
+
+
+def _excluded_section(L: list[str], state: RemediationState, fx: _Facts, ignore: frozenset[str]) -> None:
+    shown = fx.final if fx.final is not None else fx.base
+    rows = _ignored_rows(shown, ignore)
+    if not rows:
+        return
+    from .ivas import action_meaning
+    L.append(f"## 조치 대상에서 제외한 항목 — {_num(len(rows))}건")
+    L.append("")
+    codes = ", ".join(f"{action_meaning(c)}({c})" for c in sorted(ignore))
+    L.append(f"IVAS 조치 상태가 {codes} 인 항목은 조치 대상에서 제외했습니다. 검사 결과에는 남아 있지만 남은 취약점으로 세지 "
+             "않습니다.")
+    table = ["| 위험도 | 취약점 | 라이브러리 | 버전 | IVAS 조치 상태 |", "|---|---|---|---|---|"]
+    ign_scores: dict[tuple[str, str, str, str], float] = {}
+    for f in _split(shown, ignore)[1]:
+        if f.score is not None:
+            k = (f.id, f.kind, f.identifier, f.version)
+            ign_scores[k] = max(ign_scores.get(k, f.score), f.score)
+    keyed = [(ign_scores.get((r["id"], r["kind"], r["identifier"], r["version"])), r) for r in rows]
+    keyed.sort(key=lambda x: (*fx.order(x[0], x[1]["identifier"], x[1]["version"]), x[1]["id"], x[1]["kind"]))
+    for sc, r in keyed:
+        table.append(f"| {fx.sev_cell(sc)} | {_md_cell(r['id'])} | {_ident_cell(r['identifier'], r['kind'])} "
+                     f"| {_md_cell(r['version'])} | {_md_cell(_ivas_action(r['action']))} |")
+    _folded(L, table, f"제외한 항목 전체 — {_num(len(rows))}건" if len(rows) > 10 else "")
+    L.append("")
+
+
+def _summary_section(L: list[str], state: RemediationState, fx: _Facts, paths: RunPaths) -> None:
+    base, final = fx.base, fx.final
+    L.append("## 요약")
+    L.append("")
+    if base is None:
+        L.append("조치 전 검사를 하지 않아 취약점 개수를 알 수 없습니다.")
+    else:
+        libs = len({_key(f) for f in fx.b_act})
+        found = f"{_num(len(fx.b_act))}건" + ("" if base.complete else " (검사 미완료)")
+        fixed = fx.fixed()
+        fixed_n = fixed if fixed is not None else fx.matching(fx.committed)
+        L.append("| 구분 | 취약점 | 라이브러리 |")
+        L.append("|---|---|---|")
+        L.append(f"| 조치 전 | {found} | {_num(libs)}개 |")
+        n_lib = len({p.ga for p in fx.committed})
+        L.append(f"| 조치 완료 | {_num(fixed_n)}건 | " + (f"{_num(n_lib)}개 |" if n_lib else "- |"))
+        n_pend = fx.matching(fx.pending)
+        if fx.pending:
+            L.append(f"| 승인 대기 | {_num(n_pend)}건 | {_num(len({p.ga for p in fx.pending}))}개 |")
+        if fx.inhouse:
+            L.append(f"| 사내 라이브러리 담당자 요청 | {_num(fx.matching(fx.inhouse))}건 | {_num(len(fx.inhouse))}개 |")
+        if fx.manual:
+            L.append(f"| 직접 확인 필요 | {_num(fx.matching(fx.manual))}건 | {_num(len(fx.manual))}개 |")
+        n_ign = len(fx.f_ign if final is not None else fx.b_ign)
+        if n_ign:
+            L.append(f"| 조치 대상에서 제외 | {_num(n_ign)}건 | - |")
+        if final is None:
+            left = "재검사하지 않음"
+        elif not final.complete:
+            left = "재검사 미완료"
+        else:
+            left = f"{_num(len(fx.f_act))}건"
+        L.append(f"| 조치 후 남은 취약점 | {left} | - |")
+        L.append("")
+        red, orange, yellow = fx.th
+        bc = fx.sev_counts(fx.b_act)
+        fc = fx.sev_counts(fx.f_act) if fx.final_ok else None
+        L.append("| 위험도 | 기준 (IVAS 점수) | 조치 전 | 조치 후 |")
+        L.append("|---|---|---|---|")
+        for (key, mark, name), bound in zip(i18n.SEVERITY_LEVELS, (red, orange, yellow)):
+            after = f"{_num(fc[key])}건" if fc is not None else "-"
+            L.append(f"| {mark} {name} | {bound:.1f} 이상 | {_num(bc[key])}건 | {after} |")
+        after = f"{_num(fc['none'])}건" if fc is not None else "-"
+        L.append(f"| {SEVERITY_NONE_KO} | {yellow:.1f} 미만 | {_num(bc['none'])}건 | {after} |")
+    L.append("")
+    L.append("결과 파일: " + _delivery_text(state, final))
+    L.append("")
+
+
+def _delivery_text(state: RemediationState, final: ScanResult | None) -> str:
+    d = state.delivery
+    if d is None:
+        return "없음 — 원본은 `original/source.zip`에 그대로 있습니다."
+    head = f"`{_md_cell(d.path)}` — "
+    if not d.build_ok:
+        return head + "⚠️ 빌드에 실패한 수정본, 재검사하지 않음"
+    if not d.scanned:
+        text = head + "빌드 성공, 재검사하지 않음"
+    elif _delivery_matches(state, final):
+        text = head + "빌드 성공, 재검사 완료"
+    else:
+        text = head + "빌드 성공, 재검사한 파일과 다름"
+    if _earlier_delivery(state):
+        text += f" (라운드 {d.round}에서 검증한 상태)"
+    return text
+
+
+def _failed_delivery_block(L: list[str], state: RemediationState, paths: RunPaths) -> None:
+    d = state.delivery
+    rs = next((x for x in state.rounds if x.round == d.round), None)
+    ids = ", ".join(rs.applied) if rs and rs.applied else "-"
+    blog = (rs.build.log if rs and rs.build and rs.build.log else f"rounds/{d.round}/build.log")
+    L.append(">")
+    L.append(f"> **주의:** 결과 ZIP(`{d.path}`)에는 라운드 {d.round}에서 빌드에 실패한 수정본(제안 {ids})이 들어 있고, "
+             f"재검사는 하지 않았습니다. 빌드 로그는 `{blog}`에 있습니다. 이 ZIP을 그대로 배포하지 마세요.")
+    L.append("> 원본은 `original/source.zip`에 그대로 보관합니다(내려받기 이름 source.zip).")
+    kept = _verified_kept(paths)
+    if kept:
+        L.append(f"> 라운드 {kept['round']}에서 빌드와 재검사를 마친 결과 ZIP은 `{kept['path']}`에 있습니다(내려받기 이름 "
+                 "result-verified.zip).")
+
+
+def _build_line(b: Any) -> str:
+    """빌드 한 번: "성공 (212초)" / "실패 (종료 코드 1, 30초, 시간 초과)"."""
+    if b.ok:
+        return f"성공 ({b.seconds:.0f}초)" if b.seconds else "성공"
+    parts = [f"종료 코드 {b.exit_code}"] + ([f"{b.seconds:.0f}초"] if b.seconds else []) + (["시간 초과"] if b.timed_out else [])
+    return f"실패 ({', '.join(parts)})"
+
+
+def _code_block(L: list[str], text: str) -> None:
+    L.append("")
+    L.append("```text")
+    L.extend(str(text).replace("```", "'''").splitlines())
+    L.append("```")
+    L.append("")
+
+
+def _record_section(L: list[str], state: RemediationState, fx: _Facts, paths: RunPaths) -> None:
+    base, final = fx.base, fx.final
+    codes = _codes(state)
+    L.append("## 처리 기록")
+    L.append("")
+    L.append("<details><summary>단계별 기록 (문의할 때 필요한 정보)</summary>")
+    L.append("")
+    L.append(f"- 작업 ID: `{state.id}`")
+    L.append(f"- 상태 코드: `{state.status}`" + (" · 사유 코드: " + ", ".join(f"`{c}`" for c in codes) if codes else ""))
+    L.append(f"- 진행한 라운드: {len(state.rounds)}회")
+    if state.message and not {"baseline_build_failed", "candidate_build_failed"} & set(codes):
+        # 빌드 실패의 메시지는 Maven 빌드 요약이다 — 아래 빌드 단계에 그대로 있다
+        _ko, raw = _known_and_raw(state.message)
+        if raw:
+            L.append(f"- 실행 메시지 원문: `{_md_cell(raw).replace('`', chr(39))}`")
+    if state.counts:
+        known = [k for k in COUNT_KO if k in state.counts]
+        rest = sorted(k for k in state.counts if k not in COUNT_KO)
+        L.append("")
+        L.append("| 집계 | 값 |")
+        L.append("|---|---|")
+        for k in known:
+            L.append(f"| {COUNT_KO[k]} | {_num(state.counts[k]) if isinstance(state.counts[k], int) else state.counts[k]} |")
+        for k in rest:
+            L.append(f"| {_md_cell(k)} | {_md_cell(state.counts[k])} |")
+    L.append("")
+    step = 1
+    bb = state.baseline_build
+    if bb is None:
+        L.append(f"**{step}. 조치 전 빌드** — 실행하지 않음")
+    else:
+        L.append(f"**{step}. 조치 전 빌드** — {_build_line(bb)}" + (f" · 로그 `{bb.log}`" if bb.log else ""))
+        if bb.summary and not bb.ok:
+            _code_block(L, bb.summary)
+    L.append("")
+    step += 1
+    if base is None:
+        L.append(f"**{step}. 조치 전 검사 (IVAS)** — 검사하지 않음")
+    else:
+        head = (f"**{step}. 조치 전 검사 (IVAS)** — " + ("검사 완료" if base.complete else "검사 미완료")
+                + f" · 취약점 {_num(len(fx.b_act))}건" + (f" (제외 {_num(len(fx.b_ign))}건 별도)" if fx.b_ign else "")
+                + f" · 검사한 ZIP sha256 `{base.zip_sha256}`")
+        L.append(head)
+        if base.incomplete_reasons:
+            L.append("- 미완료 사유: " + ", ".join(label(i18n.SCAN_REASON_KO, c) for c in base.incomplete_reasons))
+        kinds = dict(sorted(base.counts.items()))
+        if kinds and (len(kinds) > 1 or "library" not in kinds):
+            L.append("- 종류별: " + ", ".join(f"{label(FINDING_KIND_KO, k)} {_num(v)}건" for k, v in kinds.items()))
+    L.append("")
+    for rs in sorted(state.rounds, key=lambda x: x.round):
+        step += 1
+        _round_block(L, state, fx, rs, step)
+    step += 1
+    _delivery_block(L, state, fx, paths, step)
+    step += 1
+    L.append(f"**{step}. 빌드 설정 점검** — " + ("이상 없음" if not state.boundary else f"{len(state.boundary)}건"))
+    for b in state.boundary:
+        act = "작업 중단" if b.action == "refuse" else "기록만 함"
+        detail = ko_display(b.detail) if b.detail else ""
+        L.append(f"- `{_md_cell(b.path)}` — {_md_cell(label(BOUNDARY_KO, b.code))}: {act}"
+                 + (f" — {_md_cell(detail)}" if detail else ""))
+    from .ivas import unknown_actions
+    shown = final if final is not None else base
+    unknown = unknown_actions(list(shown.findings)) if shown is not None else []
+    if unknown:
+        L.append("")
+        shown_codes = ", ".join("빈 값" if c == "(empty)" else c for c in unknown)
+        L.append(f"- 알 수 없는 IVAS 조치 상태 코드({shown_codes})는 조치 대상으로 처리했습니다.")
+    L.append("")
+    L.append("</details>")
+    if final is not None and fx.f_act:
+        table = ["| 위험도 | 취약점 | 라이브러리 | 버전 | IVAS 조치 상태 |", "|---|---|---|---|---|"]
+        for f in sorted(fx.f_act, key=lambda x: (*fx.order(x.score, x.identifier, x.version), x.id, x.kind)):
+            table.append(f"| {fx.sev_cell(f.score)} | {_md_cell(f.id)} | {_ident_cell(f.identifier, f.kind)} "
+                         f"| {_md_cell(f.version)} | {_md_cell(_ivas_action(f.action))} |")
+        _folded(L, table, f"남은 취약점 전체 목록 — {_num(len(fx.f_act))}건")
+    L.append("")
+
+
+def _shown_above(fx: _Facts) -> set[str]:
+    return {p.id for p in fx.committed} | {p.id for p in fx.pending}
+
+
+def _round_block(L: list[str], state: RemediationState, fx: _Facts, rs: RoundState, step: int) -> None:
+    L.append(f"**{step}. 라운드 {rs.round}**")
     L.append("")
     plan = fx.plans.get(rs.round)
+    above = _shown_above(fx)
     if plan is None or not plan.proposals:
         L.append("- 제안 없음")
     else:
-        L.append("| 제안 | 라이브러리 | 버전 | 종류 | 위험 | 결정 | 근거 |")
-        L.append("|---|---|---|---|---|---|---|")
+        risky = any(p.risks for p in plan.proposals)
+        cols = ["제안", "라이브러리", "버전 변경", "수정 방식", "처리", "버전 확인"] + (["주의"] if risky else [])
+        L.append("| " + " | ".join(cols) + " |")
+        L.append("|" + "---|" * len(cols))
         for p in plan.proposals:
-            L.append(f"| {_md_cell(p.id)} | `{_md_cell(p.ga)}` | {_md_cell(p.from_version)} → {_md_cell(p.to_version)} "
-                     f"| {_md_cell(label(KIND_KO, p.kind))} "
-                     f"| {_md_cell(', '.join(label(RISK_KO, r) for r in sorted(p.risks)))} "
-                     f"| {_md_cell(label(DECISION_KO, p.decision))} | {_md_cell(evidence_ko(p.evidence))} |")
+            cells = [_md_cell(p.id), f"`{_md_cell(p.ga)}`", f"{_md_cell(p.from_version)} → {_md_cell(p.to_version)}",
+                     _md_cell(label(KIND_KO, p.kind)), _md_cell(label(DECISION_KO, p.decision)),
+                     _md_cell(evidence_ko(p.evidence))]
+            if risky:
+                cells.append(_md_cell(", ".join(label(RISK_KO, r) for r in sorted(p.risks))))
+            L.append("| " + " | ".join(cells) + " |")
         L.append("")
         # 감사 기록이므로 모듈 목록을 줄이지 않는다
         for p in plan.proposals:
-            if p.note:
-                L.append(f"- 메모 `{_md_cell(p.id)}`: {_md_cell(ko_text(p.note))}")
             if p.modules:
-                L.append(f"- 다스리는 모듈 `{_md_cell(p.id)}`: {_md_cell(', '.join(p.modules))}")
+                L.append(f"- 적용 범위 ({_md_cell(p.id)}): {_md_cell(', '.join(p.modules))}")
                 if p.also_modules:
-                    L.append(f"- 이 수정이 닿지 않을 수 있는 모듈 `{_md_cell(p.id)}`: {_md_cell(', '.join(p.also_modules))}")
+                    L.append(f"- 적용되지 않을 수 있는 모듈 ({_md_cell(p.id)}): {_md_cell(', '.join(p.also_modules))}")
+            if p.note and p.id not in above:
+                L.append(f"- 참고 ({_md_cell(p.id)}): {_md_cell(' '.join(_note_lines(p.note)))}")
     if plan is not None:
         for n in plan.notes:
-            L.append(f"- 계획 메모: {_md_cell(ko_text(n))}")
-    L.append(f"- 적용한 제안: {', '.join(rs.applied) if rs.applied else '없음'}")
+            L.append(f"- 계획 참고: {_md_cell(ko_display(n))}")
+    planned = {p.id for p in plan.proposals} if plan is not None else set()
+    if set(rs.applied) != {p.id for p in (plan.proposals if plan else []) if p.decision != "rejected"} or not planned:
+        L.append(f"- 적용한 제안: {', '.join(rs.applied) if rs.applied else '없음'}")
     if rs.build is not None:
-        L.append(f"- 후보 빌드: {'성공' if rs.build.ok else '실패'}" + (f" (로그 `{rs.build.log}`)" if rs.build.log else ""))
+        L.append(f"- 수정본 빌드: {_build_line(rs.build)}" + (f" · 로그 `{rs.build.log}`" if rs.build.log else ""))
         if rs.build.summary and not rs.build.ok:
-            L.append(f"  - 요약: {rs.build.summary}")
-    L.append(f"- 확정(accepted 로 반영): {'예' if rs.committed else '아니오'}")
-    if rs.verify_problems:
-        L.append("- 검증 메모:")
-        for v in rs.verify_problems:
-            L.append(f"  - {ko_text(v)}")
+            _code_block(L, rs.build.summary)
+    if rs.build is not None or rs.committed:
+        L.append(f"- 수정본 채택: {'예' if rs.committed else '아니오'}")
+    for v in rs.verify_problems:
+        text = ko_display(v)
+        if text.startswith("참고: "):
+            L.append(f"- 검증 참고: {_md_cell(text[len('참고: '):])}")
+        else:
+            L.append(f"- 검증 문제: {_md_cell(text)}")
     if rs.scan_label:
         L.append(f"- 재검사: `{rs.scan_label}`")
     L.append("")
 
 
+def _delivery_block(L: list[str], state: RemediationState, fx: _Facts, paths: RunPaths, step: int) -> None:
+    d, final = state.delivery, fx.final
+    if d is None:
+        why = (" — 빌드에 실패한 수정본은 결과 ZIP으로 만들지 않았습니다. 원본은 그대로입니다."
+               if state.status == FAILED else "")
+        L.append(f"**{step}. 결과 파일** — 없음{why}")
+    else:
+        facts = [f"{_mb(d.size)}", f"파일 {_num(d.files)}개"] + ([f"라운드 {d.round}"] if len(state.rounds) > 1 else [])
+        status = ["빌드 성공" if d.build_ok else "빌드 실패", "재검사 완료" if d.scanned else "재검사하지 않음"]
+        if d.scanned:
+            status.append("재검사한 파일과 일치" if _delivery_matches(state, final) else "재검사한 파일과 다름")
+        L.append(f"**{step}. 결과 파일** — `{d.path}` ({', '.join(facts)}) · " + " · ".join(status))
+        L.append(f"- sha256 `{d.sha256}`")
+        kept = _verified_kept(paths)
+        if kept:
+            L.append(f"- 라운드 {kept['round']}에서 검증한 결과 ZIP: `{kept['path']}` (sha256 `{kept['sha256']}`)")
+        if _earlier_delivery(state):
+            L.append(f"- 이 ZIP은 라운드 {d.round}에서 빌드와 재검사를 마친 상태입니다. 라운드 {_last_round(state)}의 실패한 "
+                     "변경은 들어 있지 않습니다(그 변경은 rounds/<n>/candidate.patch 에만 있습니다).")
+    if final is not None:
+        L.append(f"- 조치 후 검사: `{state.final_scan}` — " + ("검사 완료" if final.complete else "검사 미완료")
+                 + f", {_num(len(fx.f_act))}건" + (f" (제외 {_num(len(fx.f_ign))}건 별도)" if fx.f_ign else ""))
+        if final.incomplete_reasons:
+            L.append("  - 미완료 사유: " + ", ".join(label(i18n.SCAN_REASON_KO, c) for c in final.incomplete_reasons))
+        if _failed_delivery(state):
+            L.append("  - 이 검사는 이전 라운드의 결과 ZIP을 검사한 것입니다. 빌드에 실패한 지금의 결과 ZIP은 검사하지 "
+                     "않았습니다.")
+    L.append("")
+
+
+def _unchanged_section(L: list[str], state: RemediationState, fx: _Facts) -> None:
+    L.append("## 변경하지 않은 것")
+    L.append("")
+    L.append("- 애플리케이션 소스와 프로젝트 구조(파일·폴더)는 변경하지 않았습니다.")
+    if state.delivery is not None:
+        extra = ("와 dependencyManagement에 추가한 버전 지정" if any(p.kind == K_MANAGED_OVERRIDE for p in fx.committed)
+                 else "")
+        L.append(f"- 결과 ZIP의 파일 목록은 원본과 같습니다. 달라진 것은 적용된 pom.xml의 버전 표기{extra}뿐입니다.")
+    L.append("- 원본 ZIP은 `original/source.zip`에 그대로 보관합니다.")
+    L.append("")
+
+
 def build_report_md(state: RemediationState, paths: RunPaths, *, ignore_actions: Iterable[str] | None = None,
                     inhouse_message: str | None = None, severity: tuple[float, float, float] | None = None) -> str:
-    """``report.md`` 의 글(한국어, 훑어보기 좋게). 순서: 제목 + 결과 한 줄(+ 실패한 수정본 경고) → 한눈에 보기 → 다음에 할 일
-    → 고친 것 → 승인을 기다리는 것 → 사내 라이브러리에서 온 취약점 → 사람이 확인할 것 → 조치 대상에서 뺀 항목 → 진행 기록 →
-    바꾸지 않은 것. 영어 문장은 ``i18n.ko_text`` 로 바꿔 보여 주고(저장된 자료는 그대로), 같은 설명은 묶음마다 한 번만 쓴다.
+    """``report.md`` 의 글(한국어 결과 보고서). 순서: 제목 + 결과 블록(+ 빌드에 실패한 결과 ZIP 주의) → 요약(개수 표, 위험도 표,
+    결과 파일) → 해야 할 일 → 조치 완료 → 승인 대기 → 사내 라이브러리에서 발생한 취약점 → 직접 확인이 필요한 취약점 → 조치
+    대상에서 제외한 항목 → 변경하지 않은 것 → 처리 기록(접힘: 코드, 단계별 기록, 남은 취약점 전체 목록). 빈 절은 쓰지 않는다.
+    영어 문장은 ``i18n.ko_display`` 로 바꿔 보여 주고(저장된 자료는 그대로), 같은 설명은 묶음마다 한 번만 쓴다.
     ``ignore_actions`` 가 None 이면 기본값(빈 목록), ``inhouse_message`` 가 None 이면 설정 기본 문구, ``severity`` (빨강·주황·
     노랑의 아래 경계)가 None 이면 설정 기본값 — 취약점 옆에 🔴 / 🟠 / 🟡 를 붙이고 행을 점수 높은 것부터 놓는다.
 
-    The Korean `report.md` text, built to be scanned; English sentences are shown translated, grouped explanations once."""
+    The Korean `report.md` text: the result, a summary and the actions first; codes only in the folded record."""
     ignore = _ignore(ignore_actions)
     roots = _roots(paths)
     message = inhouse_message if inhouse_message else _default_inhouse_message()
     fx = _Facts(state, paths, ignore, severity)
-    base, final = fx.base, fx.final
-    codes = _codes(state)
     L: list[str] = []
 
-    # 1. 제목과 결과 한 줄
-    L.append(f"# 취약점 조치 보고서 — {state.name or state.id}")
+    # 1. 제목과 결과 블록
+    L.append(f"# 취약점 조치 결과 — {state.name or state.id}")
     L.append("")
-    L.append(f"> {_mark(state)} **{_STATUS_KO.get(state.status, state.status)}** (`{state.status}`) — "
-             f"{_md_cell(_result_sentence(state, fx))}")
+    for line in _result_lines(state, fx):
+        L.append(f"> {_md_cell(line)}")
     if _failed_delivery(state):
-        d = state.delivery
-        rs = next((x for x in state.rounds if x.round == d.round), None)
-        ids = ", ".join(rs.applied) if rs and rs.applied else "-"
-        blog = (rs.build.log if rs and rs.build and rs.build.log else f"rounds/{d.round}/build.log")
-        L.append("")
-        L.append(f"> **주의: 결과 ZIP(`{d.path}`)은 빌드가 실패한 수정본입니다.** 라운드 {d.round} 의 후보 빌드가 실패했고, "
-                 f"그 수정본(적용한 제안: {ids})을 그대로 담았습니다. 빌드 로그: `{blog}`.")
-        L.append("> 이 ZIP 은 IVAS 재검사를 하지 않았습니다. 올린 원본은 `original/source.zip` (내려받기 이름 source.zip)으로 "
-                 "그대로 보존됩니다.")
-        kept = _verified_kept(paths)
-        if kept:
-            L.append(f"> 앞 라운드 {kept['round']} 에서 빌드·재검사를 마친 ZIP 은 `{kept['path']}` "
-                     "(내려받기 이름 result-verified.zip)으로 남아 있습니다.")
+        _failed_delivery_block(L, state, paths)
     L.append("")
 
-    # 2. 한눈에 보기 — 모든 줄을 늘 쓴다(없으면 0)
-    L.append("## 한눈에 보기")
-    L.append("")
-    L.append("| 항목 | 내용 |")
-    L.append("|---|---|")
-    if base is None:
-        found = "검사하지 않음"
-    else:
-        found = (f"{len(fx.b_act)}건 (라이브러리 {len({_key(f) for f in fx.b_act})}개)"
-                 + ("" if base.complete else " — 검사 미완료"))
-    L.append(f"| 기준 검사에서 찾은 취약점 | {found} |")
-    if base is not None:
-        L.append(f"| 위험도별 | {fx.breakdown(fx.b_act)} |")
-    fixed = fx.fixed()
-    fixed_ids = {i for p in fx.committed for i in p.finding_ids}
-    L.append(f"| 고친 것 | 라이브러리 {len({p.ga for p in fx.committed})}개 "
-             f"(취약점 {fixed if fixed is not None else len(fixed_ids)}건) |")
-    L.append(f"| 승인을 기다리는 것 | 제안 {len(fx.pending)}건 |")
-    L.append(f"| 사내 라이브러리 경유(예외 처리 가능) | 라이브러리 {len(fx.inhouse)}개 (취약점 {fx.matching(fx.inhouse)}건) |")
-    L.append(f"| 사람이 확인할 것 | 라이브러리 {len(fx.manual)}개 (취약점 {fx.matching(fx.manual)}건) |")
-    if final is None:
-        left = "최종 검사 없음"
-    elif not final.complete:
-        left = "최종 검사 미완료(0건이 아닙니다)"
-    else:
-        left = f"{len(fx.f_act)}건" + (f" ({fx.breakdown(fx.f_act)})" if fx.f_act else "")
-    L.append(f"| 최종 검사에 남은 것 | {left} |")
-    d = state.delivery
-    if d is None:
-        zip_text = "❌ 없음"
-    elif not d.build_ok:
-        zip_text = "⚠️ 있음 — 빌드가 실패한 수정본, 재검사 안 함"
-    elif d.scanned and _delivery_matches(state, final):
-        zip_text = "✅ 있음 — 빌드 성공, 재검사함"
-    else:
-        zip_text = "⚠️ 있음 — 빌드 성공, " + ("재검사함" if d.scanned else "재검사 안 함")
-    L.append(f"| 결과 ZIP | {zip_text} |")
-    L.append("")
-    red, orange, yellow = fx.th
-    L.append(f"위험도 표시: 🔴 {red:.1f} 이상 · 🟠 {orange:.1f} 이상 · 🟡 {yellow:.1f} 이상 (IVAS 점수 기준, 그보다 낮거나 점수가 "
-             "없으면 표시 없음)")
-    L.append("")
+    # 2. 요약
+    _summary_section(L, state, fx, paths)
 
-    # 3. 다음에 할 일
-    L.append("## 다음에 할 일")
+    # 3. 해야 할 일
+    L.append("## 해야 할 일")
     L.append("")
-    for i, s in enumerate(_next_steps(state), 1):
+    for i, s in enumerate(_next_steps(state, fx), 1):
         L.append(f"{i}. {s}")
-    if codes or state.message:
-        L.append("")
-        L.append("이 상태가 된 이유:")
-        L.append("")
-        for c in codes:
-            meaning = _reason_text(state, c)[0] if c in _REASON_KO else ""
-            L.append(f"- {label(REASON_KO, c)} (`{c}`)" + (f": {meaning}" if meaning else ""))
-        if state.message:
-            L.append(f"- 실행 메시지: {ko_text(state.message)}")
     L.append("")
 
-    # 4. 고친 것
-    L.append("## 고친 것")
-    L.append("")
+    # 4. 조치 완료
     if fx.committed:
-        _proposal_rows(L, fx, fx.committed, risks=False)
-    else:
-        L.append("- 없음 (확정한 변경이 없습니다)")
-    L.append("")
+        fixed = fx.fixed()
+        n = fixed if fixed is not None else fx.matching(fx.committed)
+        L.append(f"## 조치 완료 — {_num(n)}건")
+        L.append("")
+        _proposal_section(L, fx, fx.committed, pending=False)
+        L.append("")
 
-    # 5. 승인을 기다리는 것
+    # 5. 승인 대기
     if fx.pending:
-        L.append("## 승인을 기다리는 것")
+        L.append(f"## 승인 대기 — 제안 {len(fx.pending)}건")
         L.append("")
-        L.append("승인은 조치 화면의 체크박스 목록에서 합니다(선택한 항목 적용). 승인하면 이어서 진행합니다.")
+        L.append("아래 변경은 승인해야 적용됩니다. 적용하면 빌드와 재검사를 이어서 진행합니다.")
         L.append("")
-        _proposal_rows(L, fx, fx.pending, risks=True)
+        _proposal_section(L, fx, fx.pending, pending=True)
         L.append("")
 
-    # 6. 사내 라이브러리에서 온 취약점
+    # 6. 사내 라이브러리에서 발생한 취약점
     if fx.inhouse:
         _inhouse_section(L, fx, message)
         L.append("")
 
-    # 7. 사람이 확인할 것
-    _people_section(L, fx)
-    L.append("")
+    # 7. 직접 확인이 필요한 취약점
+    if fx.manual:
+        _manual_section(L, fx)
+        L.append("")
 
-    # 8. 조치 대상에서 뺀 항목
-    from .ivas import unknown_actions
-    shown = final if final is not None else base
-    L.append("## 조치 대상에서 뺀 항목")
-    L.append("")
-    L.append(f"- 뺀 조치 코드(`remediation.ignore_actions`): {', '.join(sorted(ignore)) or '없음'} — 이 항목들은 검사 파일과 "
-             "이 표에 남지만 계획하지 않고 남은 취약점으로 세지 않습니다.")
-    rows = _ignored_rows(shown, ignore)
-    if not rows:
-        L.append("- 뺀 항목 없음")
-    else:
-        L.append(f"- 기준: `{state.final_scan if final is not None else state.baseline_scan}`")
-        table = ["| 위험도 | 취약점 | 종류 | 대상 | 버전 | 조치 코드 | 뜻 |", "|---|---|---|---|---|---|---|"]
-        ign_scores: dict[tuple[str, str, str, str], float] = {}
-        for f in _split(shown, ignore)[1]:
-            if f.score is not None:
-                k = (f.id, f.kind, f.identifier, f.version)
-                ign_scores[k] = max(ign_scores.get(k, f.score), f.score)
-        keyed = [(ign_scores.get((r["id"], r["kind"], r["identifier"], r["version"])), r) for r in rows]
-        keyed.sort(key=lambda x: (*fx.order(x[0], x[1]["identifier"], x[1]["version"]), x[1]["id"], x[1]["kind"]))
-        for sc, r in keyed:
-            table.append(f"| {fx.sev_cell(sc)} | {_md_cell(r['id'])} | {_md_cell(label(FINDING_KIND_KO, r['kind']))} "
-                         f"| `{_md_cell(r['identifier'])}` | {_md_cell(r['version'])} | {_md_cell(r['action'])} "
-                         f"| {_md_cell(r['meaning'])} |")
-        _folded(L, table, f"조치 대상에서 뺀 항목 전체 — {len(rows)}건" if len(rows) > 10 else "")
-    unknown = unknown_actions(list(shown.findings)) if shown is not None else []
-    if unknown:
-        L.append(f"- 알 수 없는 조치 코드(조치 대상으로 다룸): {', '.join(unknown)}")
-    L.append("")
+    # 8. 조치 대상에서 제외한 항목
+    _excluded_section(L, state, fx, ignore)
 
-    # 9. 진행 기록
-    L.append("## 진행 기록")
-    L.append("")
-    L.append(f"- 작업 ID: `{state.id}` · 라운드: {len(state.rounds)}")
-    if state.counts:
-        L.append("- 집계: " + _counts_text(state.counts))
-    L.append("")
-    L.append("### 기준 빌드")
-    L.append("")
-    bb = state.baseline_build
-    if bb is None:
-        L.append("- 실행하지 않았습니다.")
-    else:
-        L.append(f"- 결과: {'성공' if bb.ok else '실패'} (종료 코드 {bb.exit_code}, {bb.seconds:.0f}초"
-                 f"{', 시간 초과' if bb.timed_out else ''})")
-        if bb.log:
-            L.append(f"- 로그: `{bb.log}`")
-        if bb.summary and not bb.ok:
-            L.append(f"- 요약: {bb.summary}")
-    L.append("")
-    L.append("### 기준 검사 (IVAS)")
-    L.append("")
-    if base is None:
-        L.append("- 검사하지 않았습니다(또는 결과가 없습니다).")
-    else:
-        L.append(f"- 완료: {'예' if base.complete else '아니오 — 미완료 검사는 0건이 아닙니다'}")
-        L.append(f"- 발견 항목: {len(base.findings)}건 (조치 대상 {len(fx.b_act)}건, 조치 대상에서 뺀 항목 {len(fx.b_ign)}건) · "
-                 f"검사한 ZIP sha256: `{base.zip_sha256}`")
-        if base.incomplete_reasons:
-            L.append("- 미완료 이유: " + ", ".join(base.incomplete_reasons))
-        if base.counts:
-            L.append("- 범주별: " + ", ".join(f"{label(FINDING_KIND_KO, k)} {v}건" for k, v in sorted(base.counts.items())))
-    L.append("")
-    for rs in state.rounds:
-        _round_block(L, state, fx, rs)
+    # 9. 변경하지 않은 것
+    _unchanged_section(L, state, fx)
 
-    L.append("### 전달 ZIP")
-    L.append("")
-    if d is None:
-        L.append("- 없습니다" + (" (실패한 후보는 결과 ZIP 에 넣지 않습니다 — 원본은 그대로)." if state.status == FAILED else "."))
-    else:
-        L.append(f"- 파일: `{d.path}` ({d.size} 바이트, 파일 {d.files}개, 라운드 {d.round})")
-        L.append(f"- sha256: `{d.sha256}`")
-        L.append(f"- 빌드 성공(build_ok): {'예' if d.build_ok else '아니오 — 빌드가 실패한 수정본입니다'}")
-        L.append(f"- 이 ZIP 을 재검사했는가(scanned): {'예' if d.scanned else '아니오'}")
-        L.append(f"- 최종 검사한 ZIP 과 sha256 이 같은가: {'예' if _delivery_matches(state, final) else '아니오'}")
-        kept = _verified_kept(paths)
-        if kept:
-            L.append(f"- 앞 라운드 {kept['round']} 의 검증된 ZIP: `{kept['path']}` (sha256 `{kept['sha256']}`)")
-        if _earlier_delivery(state):
-            last = max(rs.round for rs in state.rounds)
-            L.append(f"- 주의: 이 ZIP 은 라운드 {d.round} 에서 빌드·재검사를 마친 상태입니다. 라운드 {last} 의 실패한 변경은 "
-                     "들어 있지 않습니다(그 변경은 rounds/<n>/candidate.patch 에만 남습니다).")
-    if final is not None:
-        L.append(f"- 최종 검사: `{state.final_scan}` · 완료 {'예' if final.complete else '아니오'} · 발견 {len(final.findings)}건"
-                 f" (조치 대상 {len(fx.f_act)}건, 조치 대상에서 뺀 항목 {len(fx.f_ign)}건)")
-        if _failed_delivery(state):
-            L.append("  - 이 검사는 앞 라운드의 ZIP 을 검사한 것이며, 빌드가 실패한 지금의 결과 ZIP 을 검사한 것이 아닙니다.")
-        if fx.f_act:
-            table = ["| 위험도 | 취약점 | 종류 | 대상 | 버전 | 조치 코드 |", "|---|---|---|---|---|---|"]
-            for f in sorted(fx.f_act, key=lambda x: (*fx.order(x.score, x.identifier, x.version), x.id, x.kind)):
-                table.append(f"| {fx.sev_cell(f.score)} | {_md_cell(f.id)} | {_md_cell(label(FINDING_KIND_KO, f.kind))} | `{_md_cell(f.identifier)}` "
-                             f"| {_md_cell(f.version)} | {_md_cell(f.action)} |")
-            _folded(L, table, f"남은 취약점 전체 목록 — {len(fx.f_act)}건")
-    L.append("")
-    L.append("### 실행 경계 점검")
-    L.append("")
-    if not state.boundary:
-        L.append("- 발견 없음")
-    else:
-        for b in state.boundary:
-            act = "거부" if b.action == "refuse" else "기록만"
-            L.append(f"- `{b.code}` `{b.path}` → {act}" + (f" — {ko_text(b.detail)}" if b.detail else ""))
-    L.append("")
-
-    # 10. 바꾸지 않은 것
-    L.append("## 바꾸지 않은 것")
-    L.append("")
-    L.append("- 애플리케이션 소스, 프로젝트 구조(파일 목록·폴더)는 바꾸지 않았습니다. 전달 ZIP 의 파일 집합은 원본과 같고,")
-    L.append("  다른 것은 승인·적용된 pom.xml 안의 버전 글자(와 승인된 관리 버전 항목)뿐입니다.")
-    L.append("- 원본 ZIP(`original/source.zip`)은 그대로 보존합니다.")
-    L.append("")
+    # 10. 처리 기록(접힘)
+    _record_section(L, state, fx, paths)
     return "\n".join(_clean(x, roots) for x in L)
 
 

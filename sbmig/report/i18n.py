@@ -115,12 +115,13 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
     "Structure review": "구조 점검",
     "Vulnerability remediation": "취약점 조치",
     "Chained after the migration's BUILD SUCCESS (remediation.after_migration); it does not change the migration result "
-    "above.": "이관의 BUILD SUCCESS 뒤 이어서 돌았습니다(remediation.after_migration). 위의 이관 결과는 바뀌지 않습니다.",
-    "- Not run: `{reason}`": "- 실행 안 함: `{reason}`",
-    "- Status: `{status}`{reason}": "- 상태: `{status}`{reason}",
-    "- Counts: {counts}": "- 개수: {counts}",
+    "above.": "이관 빌드가 성공한 뒤 이어서 실행했습니다. 위의 이관 결과에는 영향이 없습니다. 자세한 결과는 아래 파일의 "
+              "report.md에 있습니다.",
+    "- Not run: `{reason}`": "- 실행하지 않음: `{reason}`",
+    "- Status: `{status}`{reason}": "- 상태 코드: `{status}`{reason}",
+    "- Counts: {counts}": "- 집계: {counts}",
     "- In-house artifacts (exception possible, contact their owners): {n}":
-        "- 사내 아티팩트(예외 처리 가능, 담당자에게 연락): {n}건",
+        "- 사내 라이브러리 (담당자 요청): 라이브러리 {n}개 — 담당자에게 예외 처리를 요청할 수 있습니다.",
     "- Files: {files}": "- 파일: {files}",
     "| Structure review | {summary} |": "| 구조 점검 | {summary} |",
     "After the restructure and before the first build, the LLM checked the poms, dependencies and module layout "

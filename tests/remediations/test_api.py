@@ -281,6 +281,7 @@ def test_job_mode_routes(tmp_path, base_cfg):
     assert body["total"] == 1 and body["items"][0]["kind"] == "chained" and body["items"][0]["run_id"] == RUN_ID
     st = c.get(f"/api/remediations/{RUN_ID}").json()
     assert STATUS_KEYS <= set(st) and st["kind"] == "chained" and st["status"] == AWAITING_APPROVAL
+    assert st["status_ko"] == "승인을 기다리고 있습니다." and isinstance(st["message_ko"], str)
     assert st["resume"]["available"] is False and "결정하지 않은 제안" in st["resume"]["note"]
     assert str(tmp_path) not in c.get(f"/api/remediations/{RUN_ID}").text
     assert c.get(f"/api/remediations/{RUN_ID}/files/plan-r1.json").status_code == 200

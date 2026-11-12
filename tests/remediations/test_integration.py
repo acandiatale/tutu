@@ -855,7 +855,7 @@ def test_candidate_build_failure_discards_the_candidate(tmp_path):
     assert env.tree_hash() == before and len(env.ivas.uploads) == 1
     assert "+      <version>1.2.4</version>" in env.paths.patch(1).read_text()
     assert out.rounds[0].build.log == "rounds/1/build.log"
-    assert "결과 ZIP 은 없고" in env.paths.report_md.read_text(encoding="utf-8")
+    assert "결과 ZIP은 만들지 않았고" in env.paths.report_md.read_text(encoding="utf-8")
     assert_clean_artifacts(env)
 
 
@@ -874,9 +874,9 @@ def test_candidate_build_failure_is_delivered_with_include(tmp_path):
     assert env.tree_hash() == before
     assert "+      <version>1.2.4</version>" in env.paths.patch(1).read_text()
     report = env.paths.report_md.read_text(encoding="utf-8")
-    first = "\n".join(report.splitlines()[:6])
-    assert "빌드가 실패한 수정본" in first and "rounds/1/build.log" in first and "source.zip" in first
-    assert "재검사를 하지 않았습니다" in first
+    first = "\n".join(report.splitlines()[:8])
+    assert "빌드에 실패한 수정본" in first and "rounds/1/build.log" in first and "source.zip" in first
+    assert "재검사는 하지 않았습니다" in first
     assert json.loads(env.paths.report_json.read_text(encoding="utf-8"))["delivery"]["build_ok"] is False
     assert_clean_artifacts(env)
 
@@ -898,7 +898,7 @@ def test_round_two_candidate_failure_keeps_the_verified_round_one_delivery(tmp_p
     assert "1.2.5" in env.paths.patch(2).read_text()
     assert env.events("earlier_delivery_kept")
     report = env.paths.report_md.read_text(encoding="utf-8")
-    assert "라운드 1 에서 빌드·재검사를 마친 상태" in report and "결과 ZIP 은 없고" not in report
+    assert "라운드 1에서 빌드와 재검사를 마친 상태" in report and "결과 ZIP은 만들지 않았고" not in report
     assert "verified state of round 1" in out.message
     assert_clean_artifacts(env)
 
@@ -919,7 +919,7 @@ def test_round_two_candidate_failure_with_include_keeps_round_one_as_verified_fi
     assert "<version>1.2.4</version>" in (env.paths.accepted / "pom.xml").read_text()
     assert env.events("verified_delivery_kept")
     report = env.paths.report_md.read_text(encoding="utf-8")
-    assert "빌드가 실패한 수정본" in "\n".join(report.splitlines()[:6])
+    assert "빌드에 실패한 수정본" in "\n".join(report.splitlines()[:6])
     assert "delivery/result-r1-verified.zip" in report
     assert_clean_artifacts(env)
 
