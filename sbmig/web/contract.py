@@ -42,6 +42,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
+from sbmig.core.models import FLOW_FULL
+
 CONTROL_DIR = "control"                     # <run dir>/control/ — Main 만 쓴다
 REQUEST_FILE = "request.json"               # 접수 때 고정한 입력(불변)
 STATE_FILE = "state.json"                   # Main 의 제어 상태(전이마다 원자적으로 다시 쓴다)
@@ -53,8 +55,10 @@ OWNER_LABEL = "sbmig-owner"                 # Job / 파드 라벨: 요청마다 
 # Main 이 Job 마다 끼워 넣는 실행별 값의 이름(RunManager._job_env). 그 밖의 env 는 파드의 것이다 — 틀의 리터럴·ConfigMap·Secret 이 채운다
 # SBMIG_JOB_SLOT: 동시에 도는 Job 가운데 이 Job 의 자리 번호(1 부터) — Worker 가 자리마다 다른 Maven 로컬 저장소를 쓰게 한다
 # SBMIG_WORKER_ACTION: 이 Job 이 할 일(없음 = 이관, "remediation-resume" = 이어 돈 조치 재개) — 2026-11-11 wave 4
+# SBMIG_FLOW: 실행 방식(v2.1z-aj) — full(이관 전체) | remediation(이관 없이 취약점 조치만). Main 이 Job 마다 늘 적는다(full 도)
 RUN_ENV = ("SBMIG_SOURCE_ZIP", "SBMIG_OUT", "SBMIG_RUN_ID", "SBMIG_CONFIG", "SBMIG_STOP_AFTER", "SBMIG_LLM_PROVIDER",
-           "SBMIG_JOB_SLOT", "SBMIG_WORKER_ACTION")
+           "SBMIG_JOB_SLOT", "SBMIG_WORKER_ACTION", "SBMIG_FLOW")
+FLOW_ENV = "SBMIG_FLOW"                     # 위 RUN_ENV 의 한 이름: Main 이 적고(_job_env) Worker 가 request.json 의 flow 와 대조한다
 SLOT_ENV = "SBMIG_JOB_SLOT"                 # 위 RUN_ENV 의 한 이름: Main 이 적고(_job_env) Worker 가 읽는다
 # ── 이어 돈 조치의 재개 시도(2026-11-11 wave 4) ──
 ACTION_ENV = "SBMIG_WORKER_ACTION"          # 위 RUN_ENV 의 한 이름: 비었으면 이관(sbmig run), 아니면 아래 행동 중 하나
@@ -326,6 +330,10 @@ class RequestRecord:
     stop_after: str | None = None
     llm_provider: str | None = None
     attempt: int = 1
+    # v2.1z-aj: 실행 방식(sbmig.core.models.RUN_FLOWS). 이 키가 없는 옛 request.json 은 full 로 읽힌다(기본값)
+    flow: str = FLOW_FULL
+    # 2026-11-12: 사람이 올린 파일 이름 그대로(한글 등 유니코드 유지; ``upload`` 는 파일 시스템용으로 다듬은 이름). 옛 기록에는 없다
+    upload_name: str | None = None
 
     def to_json(self) -> dict[str, Any]:
         return asdict(self)
@@ -333,7 +341,10 @@ class RequestRecord:
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> RequestRecord:
         known = set(cls.__dataclass_fields__)                   # tolerate extra keys from a newer writer
-        return cls(**{k: v for k, v in data.items() if k in known})
+        rec = cls(**{k: v for k, v in data.items() if k in known})
+        if not rec.flow:                                        # "flow": null / "" = 옛 기록과 같다
+            rec.flow = FLOW_FULL
+        return rec
 
     def write(self, run_dir: Path) -> Path:
         p = control_dir(run_dir) / REQUEST_FILE

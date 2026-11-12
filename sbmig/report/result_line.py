@@ -9,7 +9,7 @@
 One-line results and attention codes (round 10, operators retype them from a cp949 console).
 
     SBMIG-RESULT run=<id> exit=<n> build=<ok|FAIL> unresolved=<n> blocked=<n> open=<n> resolved=<n> llm=<calls>
-                 attn=<codes>[ review=<v>][ major=<n>][ remediation=<STATUS|skipped>]
+                 attn=<codes>[ review=<v>][ major=<n>][ flow=remediation][ remediation=<STATUS|skipped>]
 
 v2: ` review=<ok|issues|skipped|failed>` is appended when the run has a structure review (`report.structure_review`;
 fleet lines and runs without a review keep the round-10 format).
@@ -20,6 +20,14 @@ items are `blocked=`). Present whenever the line is made from a report or a flee
 migration's BUILD SUCCESS (`report.remediation`: SUCCEEDED / INCOMPLETE / FAILED / AWAITING_APPROVAL / …) or the switch
 `remediation.after_migration` was on and the chain was skipped (not ready, stop request, inline engine). It never changes
 `exit=` / `build=` / `attn=`.
+v2.1z-aj: ` flow=remediation` (just before `remediation=`) marks a run of the `remediation` flow (no migration; `exit=` 0 =
+SUCCEEDED, 2 = any other saved status, 3 = not started). Its `build=` says what was built, not whether the remediation
+succeeded (`remediation_build_ok`): `ok` when the baseline build of the project as uploaded ran and passed
+(`report.remediation["baseline_build_ok"]` is true), neither `reason` nor `reasons` names `baseline_build_failed` /
+`candidate_build_failed`, and no delivery says `build_ok: false`; `FAIL` otherwise — not started (`remediation=skipped`,
+no summary, an intake refusal), stopped / rejected before the baseline build ran, or a build that failed. So an
+INCOMPLETE / AWAITING_* / STOPPED-after-baseline run or a FAILED `resolution_mismatch` after a passed build prints
+`build=ok` with `exit=2`. A `full` run never prints `flow=` and its line is the one it always was.
 v2.1d: ` major=<n>` is appended when the run made n > 0 major upgrades / library replacements that are still in the
 final tree (`report.operator_checks`, Handover "운영자 확인 필요"); the build passed, the runtime needs a look.
 
@@ -46,7 +54,8 @@ Codes, most important first:
     test-compile-skipped, tests-not-compiled, major-upgrade (v2.1d: 운영자 확인 필요),
     jar-coordinates-unknown (v2.1j: Ant 합성 pom 의 좌표 미상 jar),
     parent-chain-no-boot-bom (v2.1s: 사내 부모 체인이 Boot BOM 을 import 하지 않음),
-    hollow-reactor (v2.1z-c: 리액터가 컴파일하는 소스가 없음 — 소스는 모듈 밖, 이관 안 됨)   the flags of the same name
+    hollow-reactor (v2.1z-c: 리액터가 컴파일하는 소스가 없음 — 소스는 모듈 밖, 이관 안 됨),
+    remediation:not-ready (v2.1z-aj: 조치만 하는 실행이 IVAS 값·Maven 준비가 없어 시작하지 못함)   the flags of the same name
     incomplete            exit 2 with none of the above
 
 
@@ -62,7 +71,8 @@ ATTENTION_FLAGS = ("restructure-failed", "llm-budget-exhausted", "time-budget-ex
                    "tests-skipped", "test-compile-skipped", "tests-not-compiled", "major-upgrade",
                    "jar-coordinates-unknown", "parent-chain-no-boot-bom",
                    "hollow-reactor",                 # v2.1z-c: the reactor compiles nothing — sources were not migrated
-                   "adf-project")                    # v2.1z-d: Oracle ADF application — not a target of this flow
+                   "adf-project",                    # v2.1z-d: Oracle ADF application — not a target of this flow
+                   "remediation:not-ready")          # v2.1z-aj: a remediation-only run could not start (IVAS / Maven)
 INFRA_PREFIX = "infra:"
 FILE_LOCK_REASON = "file_lock"          # BlockReason.FILE_LOCK (v2.1r)
 FILE_LOCK_KIND = "file-lock"            # its infra kind: `infra:file-lock`
@@ -164,10 +174,14 @@ def result_attention(r: Any) -> list[str]:
 def result_line(run_id: Any, exit_code: Any, build_ok: bool, *, unresolved: int = 0, blocked: int = 0,
                 llm_calls: int = 0, attention: Iterable[str] = (), review: Optional[str] = None,
                 open_errors: Optional[int] = None, resolved_errors: Optional[int] = None, major: int = 0,
-                remediation: Optional[str] = None) -> str:
+                remediation: Optional[str] = None, flow: Optional[str] = None) -> str:
     """``SBMIG-RESULT`` 한 줄을 조립한다. ``open=`` / ``resolved=`` 는 오류 목록이 있을 때만(충돌 줄에는
     없음), ``review=`` 는 구조 검토가 있었을 때만, ``major=`` 는 1 이상일 때만
-    붙인다 — 예전 형식을 읽는 쪽이 깨지지 않게. ``remediation=`` 은 이어서 돈(또는 스위치가 켜진 채 건너뛴) 취약점 조치가 있을 때만."""
+    붙인다 — 예전 형식을 읽는 쪽이 깨지지 않게. ``remediation=`` 은 이어서 돈(또는 스위치가 켜진 채 건너뛴) 취약점 조치가 있을 때만.
+    ``flow=`` 는 실행 방식이 ``full`` 이 아닐 때만(``remediation=`` 바로 앞).
+
+    Assemble one `SBMIG-RESULT` line; optional fields appear only when they have a value (`flow=` only for a flow other
+    than `full`)."""
     codes = ",".join(attention) or "-"
     errs = ""
     if open_errors is not None or resolved_errors is not None:
@@ -176,6 +190,7 @@ def result_line(run_id: Any, exit_code: Any, build_ok: bool, *, unresolved: int 
             f"build={'ok' if build_ok else 'FAIL'} unresolved={unresolved} blocked={blocked}{errs} llm={llm_calls} "
             f"attn={_ascii_token(codes)}" + (f" review={_ascii_token(review)}" if review else "")
             + (f" major={int(major)}" if major and int(major) > 0 else "")
+            + (f" flow={_ascii_token(flow)}" if flow and flow != "full" else "")
             + (f" remediation={_ascii_token(remediation)}" if remediation else ""))
 
 
@@ -224,14 +239,16 @@ def report_result_line(report: Any, exit_code: Optional[int] = None, run_id: Opt
     to `report_exit_code(report)`)."""
     code = report_exit_code(report) if exit_code is None else exit_code
     o, r = entry_counts(getattr(report, "error_entries", None) or [])
-    return result_line(run_id or getattr(report, "run_id", "-"), code, bool(getattr(report, "success", False)),
+    flow = getattr(report, "flow", None)
+    build_ok = remediation_build_ok(report) if flow == "remediation" else bool(getattr(report, "success", False))
+    return result_line(run_id or getattr(report, "run_id", "-"), code, build_ok,
                        unresolved=len(getattr(report, "unresolved", []) or []),
                        blocked=len(getattr(report, "blocked", []) or []),
                        llm_calls=getattr(getattr(report, "llm_usage", None), "calls", 0) or 0,
                        attention=report_attention(report, code),
                        review=getattr(getattr(report, "structure_review", None), "verdict", None),
                        open_errors=o, resolved_errors=r, major=len(getattr(report, "operator_checks", None) or []),
-                       remediation=remediation_token(report))
+                       remediation=remediation_token(report), flow=flow)
 
 
 def remediation_token(report: Any) -> Optional[str]:
@@ -243,3 +260,25 @@ def remediation_token(report: Any) -> Optional[str]:
         return None
     status = str(rem.get("status") or "").strip()
     return status or None
+
+
+BUILD_FAILED_REASONS = ("baseline_build_failed", "candidate_build_failed")
+
+
+def remediation_build_ok(report: Any) -> bool:
+    """실행 방식 remediation 의 ``build=`` 값: 올린 그대로의 baseline 빌드가 돌았고 통과했으며, 이유에 baseline / 후보 빌드 실패가 없고,
+    전달 ZIP 이 build_ok=false 가 아니면 True. 시작하지 않은 실행(skipped·요약 없음·접수 거부)과 baseline 빌드 전에 멈춘 실행은 False.
+    조치의 성공 여부(종료 코드)와는 따로다.
+
+    `build=` of a remediation-flow line: the baseline build ran and passed, no build-failure reason, no delivery with
+    `build_ok: false`. Independent of the remediation's verdict (the exit code)."""
+    rem = getattr(report, "remediation", None)
+    if not isinstance(rem, dict) or str(rem.get("status") or "") in ("", "skipped"):
+        return False
+    if rem.get("baseline_build_ok") is not True:
+        return False
+    reasons = {str(rem.get("reason") or "")} | {str(x) for x in (rem.get("reasons") or [])}
+    if reasons & set(BUILD_FAILED_REASONS):
+        return False
+    delivery = rem.get("delivery")
+    return not (isinstance(delivery, dict) and delivery.get("build_ok") is False)

@@ -1,6 +1,6 @@
 # sbmig Architecture
 
-Goal: take an as-is Maven (or Ant) project, as a zip or a directory, and produce a JDK 21 + Spring Boot 4.1.0 project in the
+Goal: take an as-is Maven project, as a zip or a directory, and produce a JDK 21 + Spring Boot 4.1.0 project in the
 company layout that **builds** (`mvn clean package` → BUILD SUCCESS). OpenRewrite runs the mechanical migration once; every
 build error that remains is fixed by an LLM-written Python fix script that the knowledge base stores per error case and reuses
 on later projects. A run never ends without a final build and a report that lists what is still broken. Runtime behaviour and
@@ -17,7 +17,7 @@ intake ─► analyze ─► plan ─► transform ─► restructure ─► str
 
 | Node | What runs | Stops the run when |
 |---|---|---|
-| intake | copy the input into `out/<run id>/project/`, `git init`, commit `sbmig: as-is snapshot`; preflight (Maven runs, `mvn -v` reports Java `build.require_java_major`, company parents set); build-tool check (Ant → pom.xml synthesized by `sbmig/analyze/ant.py`); stray pom copies ignored, a root aggregator generated for a tree without a root pom, duplicate reactor listings removed, deploy transport extensions removed; as-is effective dependencyManagement captured to `logs/effective-depmgmt.json` | `mvn-not-found`, `jdk-not-21`, `unsupported-build-tool:<tool>`, `ear-without-modules` (exit 3) |
+| intake | copy the input into `out/<run id>/project/`, `git init`, commit `sbmig: as-is snapshot`; preflight (Maven runs, `mvn -v` reports Java `build.require_java_major`, company parents set); build-tool check (an Ant project is refused with `intake.ant_message` "Maven 변환 후 신청 부탁드립니다."; with `intake.ant_to_maven: true` a pom.xml is synthesized by `sbmig/analyze/ant.py` instead); stray pom copies ignored, a root aggregator generated for a tree without a root pom, duplicate reactor listings removed, deploy transport extensions removed; as-is effective dependencyManagement captured to `logs/effective-depmgmt.json` | `mvn-not-found`, `jdk-not-21`, `unsupported-build-tool:<tool>` (Gradle, no build file, Ant), `ear-without-modules` (exit 3) |
 | analyze | pom graph (`sbmig/analyze/pom_parser.py`, no Maven) + regex source scan → `ProjectProfile` (case type, versions, libraries, MSA services, bundled jars, externalized settings, warnings); EOL advisories matched (guide only) | Oracle ADF with two or more evidence families (`intake.adf_policy: stop`), no root pom (exit 3); a hollow reactor goes on but is never a success |
 | plan | rules only (`sbmig/plan/planner.py`) → ordered `PlanStep`s: `transform.rewrite`, `restructure.apply` / `restructure.boot_pom` / `restructure.pom_only` / `restructure.msa_pom`, `restructure.review`, `verify.build` (MSA: per service) | – |
 | transform | one OpenRewrite run of every planned recipe on the as-is classpath, no build (`sbmig/rewrite/runner.py`) | never (the build shows what is left) |
@@ -26,6 +26,12 @@ intake ─► analyze ─► plan ─► transform ─► restructure ─► str
 | verify | `mvn clean package -Dmaven.test.skip=true`; on failure the script fix loop (§3), then the final build again | never |
 | finalize | success verdict, advisories verified on the final tree, Handover, error list, KB records, `report.md` / `report.json`, then `changes.patch` / `result.zip` | – |
 | remediation | only when `remediation.after_migration` is on and the final build succeeded: the vulnerability-remediation graph (§11) | – |
+
+The run flow `remediation` (`sbmig run --flow remediation`, web `?flow=remediation`) uses only `intake → remediation → finalize`:
+intake as far as it changes nothing in the project (workspace, preflight, the build-tool check with its refusals), then the
+remediation of the project as uploaded (`chain.run_only`; its own baseline build is the build gate), then a short report. No
+analyze / plan / transform / restructure / review / verify, no LLM call, no KB access. Exit 0 = remediation `SUCCEEDED`, 2 = any
+other saved status, 3 = not started (refusal, or `remediation:not-ready`). The default flow `full` is the table above.
 
 Why the recipes run **before** the restructure: OpenRewrite needs type attribution against the as-is classpath (javax types,
 Boot 2/3 classes). Swapping the parent first would resolve a Boot 4.1 classpath and leave old types unattributed, so many
@@ -249,7 +255,7 @@ also written here.
 
 ## 9. Outputs
 
-* `report.md` — header table and `SBMIG-RESULT` line, then **Handover** (operator checks → Ant pom synthesis → versions
+* `report.md` — header table and `SBMIG-RESULT` line, then **Handover** (operator checks → Ant pom synthesis (only with `intake.ant_to_maven` on) → versions
   replaced (⚠ carried over) → libraries needing attention → "From here on, your team"), then Error list, Fixes by case,
   Structure review, Bundled jars, Blocked, javax API jars, Manual follow-ups, Flags, What we changed, LLM usage and cost, Notes,
   Outputs (`sbmig/report/markdown.py`). `report.language: ko` for the company.
@@ -273,6 +279,10 @@ modes (`SBMIG_WEB_MODE`):
   (in-cluster service account or `KUBECONFIG`).
 * `local-job` — the same dispatch with local processes (dev PCs).
 
+Every upload carries its run flow (`POST /api/runs?flow=full|remediation`, the page's 전체 진행 / 취약점 해결 choice): pinned in
+`request.json`, passed to the Job as `SBMIG_FLOW`, same queue and slots. A run directory is named `<slug>-YYYYMMDD-HHMMSS-<6 hex>`,
+the slug made from the uploaded file's name (lowercase letters, digits, hyphens; long names cut; `web` when nothing is left).
+
 The Main / Worker file contract (`sbmig/web/contract.py`): only Main writes `<run dir>/control/` — `request.json` pins the zip
 sha256, config digests and sbmig version at intake; `state.json` is the control state (queued → creating → created → running →
 finished | stopped | lost | failed), written atomically with the intent recorded before the Job is created, plus `env_pins`
@@ -291,6 +301,6 @@ folder under `<kb>/.lock`. Operator text: `deploy/README.md`; contract detail: `
 `sbmig/remediations/` is a separate LangGraph (`graph.py`) that scans a project with the company's IVAS service, applies approved
 Maven version-text fixes and managed-version overrides, rebuilds, rescans and delivers a report + `result.zip`. It runs in the
 build pod as the migration graph's last node when `remediation.after_migration` is on and the migration ended BUILD SUCCESS
-(`sbmig/remediations/chain.py`); its outcome never changes the migration's verdict (`SBMIG-RESULT … remediation=<status>`). The web
+(`sbmig/remediations/chain.py`), or alone as the run flow `remediation` (§1); its outcome never changes the migration's verdict (`SBMIG-RESULT … remediation=<status>`). The web
 pod serves status, proposals and approvals under `/api/remediations/…`, and resumes an approved remediation in a new build pod.
 Settings `remediation.*`. Contract: `docs/INTERFACES.md` section "remediations"; Korean: `agent-doc/11-remediations.md`.

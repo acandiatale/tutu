@@ -932,7 +932,9 @@ class RemediationManager:
         if pos is not None:
             out["queue_position"] = pos
         # 화면용 한국어(덧붙임만, 2026-11-12): 영어 message 는 그대로 두고 message_ko · status_ko 를 더한다
-        out["message_ko"] = i18n_mod.ko_display(out["message"]) if out["message"] else ""
+        # 화면은 Markdown 이 아니다: 규칙이 모르는 조각은 보고서처럼 "원문: `…`" 으로 감싸지 않고 원문 그대로 뒤에 붙인다
+        ko, raw = i18n_mod.split_known(out["message"]) if out["message"] else ([], [])
+        out["message_ko"] = " ".join([*ko, *raw])
         out["status_ko"] = _status_ko(shown)
         return out
 

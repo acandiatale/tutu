@@ -490,7 +490,8 @@ def test_page_pod_step_states(client):
     verified job-status.json) as done; `failed` / `missing` still mark it failed; an engine abort reason stays on the rail note."""
     html = client.get("/").text
     assert "s === 'completed'" in html
-    assert "s === 'failed' || s === 'missing'" in html and "파드 실패: " in html
+    # v2.1z-aj: the sentence for project owners no longer says 파드 (only the stage label does)
+    assert "s === 'failed' || s === 'missing'" in html and "실행 환경을 준비하지 못했습니다: " in html
     assert "abortNote" in html and "abortNote = ''" in html                         # sticky abort reason, reset with the rail
 
 

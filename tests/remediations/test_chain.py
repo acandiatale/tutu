@@ -366,3 +366,74 @@ def test_end_log_line_without_message_is_unchanged(tmp_path, ivas_env, caplog):
     out, _ = go(run_dir, root, comps=one_fix_components())
     assert out.status == SUCCEEDED and not out.message
     assert _end_lines(caplog) == ["chained remediation run-1: SUCCEEDED "]
+
+
+# ---------------------------------------------------------------------------- run_only (flow remediation, v2.1z-aj)
+def _zip(tmp_path, files, name="app.zip"):
+    from .fakes import deterministic_zip
+    z = tmp_path / "up" / name
+    z.parent.mkdir(parents=True, exist_ok=True)
+    z.write_bytes(deterministic_zip({k: v.encode("utf-8") for k, v in files.items()}))
+    return z
+
+
+def only(run_dir, source, cfg=None, comps=None, journal=None, **kw):
+    journal = journal if journal is not None else Journal()
+    out = chain.run_only(run_dir, source, cfg or make_cfg(), run_id="run-1", journal=journal, stop=lambda: False,
+                         components=comps, **kw)
+    return out, journal
+
+
+def test_run_only_feeds_the_zip_bytes_and_ignores_the_switches(tmp_path, ivas_env):
+    z = _zip(tmp_path, {"pom.xml": POM, "src/main/java/App.java": "class App {}\n"})
+    run_dir = tmp_path / "run"
+    out, j = only(run_dir, z, cfg=make_cfg(after_migration=False, trusted_projects=False), comps=one_fix_components())
+    assert out.status == SUCCEEDED and out.id == "run-1" and out.name == "app.zip"
+    paths = chain.chain_paths(run_dir)
+    assert paths.original_zip.read_bytes() == z.read_bytes()
+    assert j.names()[0] == "remediation_start" and j.events[0]["flow"] == "remediation"
+    assert all(e["scope"] == "remediation" for e in j.events)
+
+
+def test_run_only_not_ready_raises_without_a_state(tmp_path, monkeypatch):
+    for k in ENV:
+        monkeypatch.delenv(k, raising=False)
+    run_dir = tmp_path / "run"
+    with pytest.raises(chain.RemediationNotReady) as ei:
+        only(run_dir, _zip(tmp_path, {"pom.xml": POM}), comps=one_fix_components(), journal=(j := Journal()))
+    assert any("IVAS_BASE_URL" in m for m in ei.value.missing) and ENV["IVAS_PASSWORD"] not in str(ei.value)
+    assert j.names() == ["remediation_skipped"] and j.events[0]["reason"] == "not_ready"
+    assert not (run_dir / "remediation").exists()
+
+
+def test_run_only_directory_source_and_existing_state(tmp_path, ivas_env):
+    run_dir, root = project(tmp_path)
+    out, _ = only(run_dir, root, comps=one_fix_components())
+    assert out.status == SUCCEEDED and out.name == "source.zip"
+    before = chain.chain_paths(run_dir).state.read_bytes()
+    comps = one_fix_components()
+    again, j = only(run_dir, root, comps=comps)
+    assert again.status == SUCCEEDED and j.names() == ["remediation_exists"] and comps.maven.package_calls == []
+    assert chain.chain_paths(run_dir).state.read_bytes() == before
+
+
+def test_run_only_intake_rejection_is_a_failed_state(tmp_path, ivas_env):
+    out, j = only(tmp_path / "run", _zip(tmp_path, {"README.txt": "no pom"}), comps=one_fix_components())
+    assert out.status == FAILED and out.reason == "no_pom" and "remediation_intake_rejected" in j.names()
+
+
+def test_run_only_failed_baseline_has_no_migration_sentence(tmp_path, ivas_env):
+    out, j = only(tmp_path / "run", _zip(tmp_path, {"pom.xml": POM}),
+                  comps=one_fix_components(maven=FakeMaven(outcomes=[False])))
+    assert out.status == FAILED and out.reason == "baseline_build_failed"
+    assert "migration's final build passed" not in (out.message or "")
+    assert "remediation_baseline_differs" not in j.names()
+
+
+def test_zip_targets_reroot_a_wrapping_folder(tmp_path):
+    files = {"proj/a/pom.xml": "x", "proj/b/pom.xml": "x"}
+    z = _zip(tmp_path, files)
+    assert chain.zip_targets(z, ["a", "b"]) == ["proj/a", "proj/b"]
+    assert chain.zip_targets(z, []) == [] and chain.zip_targets(z, ["."]) == []
+    assert chain.zip_targets(_zip(tmp_path, {"a/pom.xml": "x"}, "flat.zip"), ["a"]) == ["a"]
+    assert chain.zip_targets(z, ["zzz"]) == ["zzz"]                     # nothing fits: unchanged (intake decides)

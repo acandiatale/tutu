@@ -879,17 +879,20 @@ class AdvisoryConfig(BaseModel):
 
 
 class IntakeConfig(BaseModel):
-    """접수 설정(v2.1j, 2026-10-29 현업: "Ant 프로젝트도 Maven 으로 바꾼 뒤 이관"). ``build.xml`` 만 있고 pom.xml 이 없는
-    프로젝트는 접수에서 pom.xml 을 합성해 받는다(``sbmig.analyze.ant.synthesize_pom``): build.xml 의 javac / war 설정과
+    """접수 설정. Ant 프로젝트(``build.xml`` 만 있고 pom.xml 이 없음)는 받지 않는다(2026-11-12 회사 결정): 접수에서
+    ``ant_message`` 안내를 내고 끝난다(exit 3). ``ant_to_maven: true`` 로 켜면 접수에서 pom.xml 을 합성해 받는다
+    (``sbmig.analyze.ant.synthesize_pom`` — 코드는 그대로 두었다, 다시 하기로 하면 이 스위치만 켠다): build.xml 의 javac / war 설정과
     폴더 구조로 소스·웹 루트·리소스·Java 수준·인코딩·packaging 을 정하고, lib 의 jar 는 ① jar 안의 pom.properties
     ② 이름 표(jar_names.yml + <kb>/jar_names.yml) ③ sha1 저장소 조회 순으로 Maven 좌표를 찾는다. 못 찾은 jar 는
     ``unknown_jar`` 정책대로(system = systemPath 의존성으로 선언해 빌드는 통과, 인수인계에 install-file 명령 안내).
     pom.xml 도 build.xml 도 없는 트리는 여전히 거부한다(2026-10-23 결정).
 
-    Intake (v2.1j): an Ant project (build.xml, no pom.xml) gets a synthesized pom.xml at intake — layout from build.xml
-    and the directories, jar coordinates from the jar's pom.properties, the name table, then a sha1 repository lookup;
-    unknown jars follow `unknown_jar`. A tree with neither pom.xml nor build.xml is still rejected."""
-    ant_to_maven: bool = True                               # false = reject Ant projects as before (exit 3)
+    Intake: an Ant project (build.xml, no pom.xml) is refused at intake with `ant_message` (exit 3; company decision
+    2026-11-12). With `ant_to_maven: true` it gets a synthesized pom.xml instead (v2.1j; the code is kept) — layout from
+    build.xml and the directories, jar coordinates from the jar's pom.properties, the name table, then a sha1 repository
+    lookup; unknown jars follow `unknown_jar`. A tree with neither pom.xml nor build.xml is always rejected."""
+    ant_to_maven: bool = False                              # true = synthesize a pom.xml for an Ant project and go on (v2.1j)
+    ant_message: str = "Maven 변환 후 신청 부탁드립니다."    # what an Ant project's owner is told when it is refused
     synth_group_id: str = "com.company.migrated"           # placeholder groupId of a synthesized pom (company config overrides)
     synth_version: str = "1.0.0-SNAPSHOT"                   # version of a synthesized pom when build.xml names none
     unknown_jar: Literal["system", "skip"] = "system"       # system = <systemPath> dependency (build passes) | skip = not declared

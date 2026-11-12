@@ -118,6 +118,11 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
     "above.": "이관 빌드가 성공한 뒤 이어서 실행했습니다. 위의 이관 결과에는 영향이 없습니다. 자세한 결과는 아래 파일의 "
               "report.md에 있습니다.",
     "- Not run: `{reason}`": "- 실행하지 않음: `{reason}`",
+    "# Vulnerability remediation report — {name}": "# 취약점 조치 보고서 — {name}",
+    "The migration was not run: only the vulnerability remediation was requested.":
+        "이관은 실행하지 않았습니다. 취약점 조치만 요청된 실행입니다.",
+    "Full remediation report: `{path}`": "자세한 조치 결과는 `{path}`에 있습니다.",
+    "**Not started:** {why}": "**시작하지 못했습니다.** {why}",
     "- Status: `{status}`{reason}": "- 상태 코드: `{status}`{reason}",
     "- Counts: {counts}": "- 집계: {counts}",
     "- In-house artifacts (exception possible, contact their owners): {n}":
@@ -554,6 +559,48 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
 # Handover data lines (English in report.json) → Korean, matched against the whole line. Unknown lines (manual
 # follow-ups from other modules, advisory text from the knowledge YAML) stay as they are.
 PATTERNS: dict[str, list[tuple[re.Pattern[str], str]]] = {"ko": [(re.compile(p), t) for p, t in (
+    # 접수·조치 시작에서 실행이 멈춘 사유(Orchestrator._abort; 웹 화면이 journal abort 의 reason 을 이 표로 옮긴다)
+    (r"^vulnerability remediation not started \(not ready\): (?P<m>.+)$",
+     r"취약점 조치를 시작하지 못했습니다. 실행 환경이 갖춰지지 않았습니다: \g<m>"),
+    (r"^Gradle build detected \(build\.gradle / settings\.gradle\) and no pom\.xml: only Maven projects are supported "
+     r"\(convert the build to Maven first\)$",
+     r"Gradle 빌드 파일(build.gradle / settings.gradle)만 있고 pom.xml은 없습니다. Maven 프로젝트만 받습니다. Maven으로 "
+     r"변환한 뒤 다시 신청해 주세요."),
+    (r"^no pom\.xml found \(no supported build tool\): only Maven projects are supported — .*$",
+     r"pom.xml이 없어 지원하는 빌드 도구를 찾지 못했습니다. Maven 프로젝트만 받습니다."),
+    (r"^'(?P<mvn>[^']*)' is not runnable \(install Maven or set build\.mvn\)$",
+     r"Maven(\g<mvn>)을 실행할 수 없습니다. Maven을 설치하거나 build.mvn을 설정해 주세요."),
+    (r"^'(?P<mvn>[^']*)' cannot start: (?P<p>.+) — set build\.java_home \(or JAVA_HOME\) to a JDK (?P<v>\d+) home$",
+     r"Maven(\g<mvn>)이 시작되지 않습니다(\g<p>). build.java_home(또는 JAVA_HOME)을 JDK \g<v> 경로로 설정해 주세요."),
+    (r"^Maven runs on Java (?P<ver>\S+) \((?P<where>.+)\), not Java (?P<want>\d+): set build\.java_home \(or JAVA_HOME\) "
+     r"to a JDK \d+ home and rerun$",
+     r"Maven이 Java \g<ver>에서 실행됩니다(\g<where>). Java \g<want>이 필요합니다. build.java_home(또는 JAVA_HOME)을 "
+     r"JDK \g<want> 경로로 설정한 뒤 다시 실행해 주세요."),
+    (r"^build\.setup_command failed \(rc=(?P<rc>-?\d+)\): ?(?P<t>.*)$",
+     r"실행 준비 명령(build.setup_command)이 실패했습니다(rc=\g<rc>). \g<t>"),
+    (r"^stopped by user \(stop\.request\) — the final `mvn clean package` did not run$",
+     r"사용자 요청으로 멈췄습니다. 최종 빌드(mvn clean package)는 실행하지 않았습니다."),
+    (r"^stopped by user \(web UI\) — the final `mvn clean package` did not run$",
+     r"화면에서 멈춤을 요청해 멈췄습니다. 최종 빌드(mvn clean package)는 실행하지 않았습니다."),
+    (r"^internal error: (?P<e>.+)$", r"내부 오류로 멈췄습니다: \g<e>"),
+    (r"^missing component: (?P<e>.+)$", r"필요한 구성 요소가 없어 멈췄습니다: \g<e>"),
+    (r"^pom\.xml is an EAR \((?P<a>[^,]+), packaging ear\) that packages modules which are not in this directory: "
+     r"(?P<n>.+?)\. An EAR holds no code of its own — .*$",
+     r"루트 pom.xml이 EAR(\g<a>)이고, EAR이 묶는 모듈(\g<n>)이 이 폴더에 없습니다. EAR에는 코드가 없으니 모든 모듈이 들어 있는 "
+     r"상위 폴더로 다시 신청해 주세요."),
+    (r"^Ant build\.xml detected and no pom\.xml: the pom synthesis \(sbmig\.analyze\.ant\) is not available in this "
+     r"installation \((?P<e>.+)\) — convert the build to Maven first$",
+     r"Ant 프로젝트의 pom.xml을 만드는 기능을 이 설치본에서 쓸 수 없습니다(\g<e>). Maven으로 변환한 뒤 신청해 주세요."),
+    (r"^pom\.xml could not be synthesized from (?P<f>\S+): (?P<e>.+) \(Ant project rejected: convert the build to Maven "
+     r"first\)$",
+     r"\g<f>에서 pom.xml을 만들지 못했습니다(\g<e>). Maven으로 변환한 뒤 신청해 주세요."),
+    # Ant 거부(Orchestrator._refuse_ant)의 기술 내용 줄
+    (r"^Ant build file (?P<f>\S+) found and no pom\.xml: the Ant → Maven conversion is switched off "
+     r"\(intake\.ant_to_maven: false\)$",
+     r"Ant 빌드 파일(\g<f>)만 있고 pom.xml은 없습니다. Ant → Maven 변환은 꺼져 있습니다(intake.ant_to_maven: false)."),
+    (r"^Ant build file (?P<f>\S+) found and no pom\.xml: the remediation flow builds the project as uploaded and "
+     r"needs a Maven project$",
+     r"Ant 빌드 파일(\g<f>)만 있고 pom.xml은 없습니다. 취약점 조치는 올린 프로젝트를 그대로 빌드하므로 Maven 프로젝트여야 합니다."),
     # v2.1z-e: jakarta build discovery — the search record / the unmatched owner class on a blocked item
     # (sbmig.loop.fixloop JAKARTA_SEARCH_PREFIX / UNMAPPED_PREFIX; the dynamic record inside stays as written)
     ((r"^repository search for a jakarta build of (?P<key>\S+): (?P<rest>.*?) — verified build\(s\): (?P<found>.+)$"),
@@ -809,9 +856,14 @@ def tr_line(lang: str, line: str) -> str:
     """인수인계 데이터 줄 하나를 ``lang`` 으로(``PATTERNS`` 의
     첫 매칭). ``en`` 이거나 아는 패턴이 없으면 그대로.
 
-    A Handover data line (see `PATTERNS`) in `lang`; unchanged for `en` and for lines no pattern knows."""
+    A Handover data line (see `PATTERNS`) in `lang`; unchanged for `en` and for lines no pattern knows. A stored abort
+    follow-up `run aborted: <reason>` gets a translated head and its reason translated on its own; the bare reason (the
+    journal `abort` event) translates directly."""
     if lang == "en":
         return line
+    # 후속 조치로 저장된 중단 사유("run aborted: <사유>"): 머리를 옮기고 사유는 따로 옮긴다
+    if line.startswith(ABORT_PREFIX) and lang in ABORT_LABEL:
+        return ABORT_LABEL[lang] + tr_line(lang, line[len(ABORT_PREFIX):])
     for rx, tmpl in PATTERNS.get(lang, []):
         m = rx.match(line)
         if m:
@@ -825,5 +877,8 @@ def tr_line(lang: str, line: str) -> str:
             return f"{tr_line(lang, head)}; {tr_line(lang, tail)}"
     return line
 
+
+ABORT_PREFIX = "run aborted: "                 # Orchestrator._abort 가 후속 조치에 붙이는 머리
+ABORT_LABEL = {"ko": "실행 중단: "}
 
 _TAIL_SEPARATORS = ("; repository search for a jakarta build of ", "; the library behind ")

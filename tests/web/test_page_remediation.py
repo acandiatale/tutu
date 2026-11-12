@@ -112,7 +112,7 @@ def test_server_strings_never_go_through_innerHTML() -> None:
 
 def test_confirmation_and_stopped_actions() -> None:
     conf = _function("confirmationView")
-    assert "'IVAS 에서 확인했고, 접수되지 않았다 → 다시 올리기'" in conf
+    assert "'IVAS에서 확인했고, 접수되지 않았다 → 다시 올리기'" in conf
     assert "confirm: 'reupload'" in conf
     assert "'접수되어 있다 → projectId / analysisId 입력 후 이어가기'" in conf
     assert "confirm: 'receipt', project_id, analysis_id" in conf
@@ -128,7 +128,7 @@ def test_confirmation_and_stopped_actions() -> None:
 
 def test_resuming_state_polls_and_shows_queue() -> None:
     going = _function("goingView")
-    assert "'이어서 진행 중'" in going and "새 빌드 파드에서 적용 · 빌드 · 재검사" in going
+    assert "'이어서 진행 중'" in going and "적용 · 빌드 · 재검사를 이어서 합니다" in going
     assert "자리가 날 때까지 대기 중 (앞에 ${ahead}건)" in going and "qpos(j.queue)" in going
     load = _function("loadRemediation")
     assert "if (remActive(st)) rem.poll = setTimeout(" in load

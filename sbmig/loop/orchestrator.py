@@ -7,9 +7,14 @@
 inline) 둘 다 같은 ``step_*`` 메서드를 같은 ``_run_guard`` 안에서 돌린다(보고서가 같다). 불변(빌드 게이트):
 실패·차단·예산 소진·내부 오류 뒤에도 최종 ``mvn clean package`` 시도와 보고서는 반드시 남는다. 일찍 멈추는
 것(``aborted:*``, exit 3)은 아예 빌드할 수 없을 때뿐(Maven 없음, Maven 프로젝트 아님, 사내 parent 해석 불가).
-v2.1j: Ant 프로젝트(build.xml, pom.xml 없음)는 접수에서 pom.xml 을 합성·커밋한 뒤 Maven 프로젝트처럼 계속한다.
+Ant 프로젝트(build.xml, pom.xml 없음)는 접수에서 ``intake.ant_message`` 안내로 거부한다(exit 3); ``intake.ant_to_maven: true`` 면
+pom.xml 을 합성·커밋한 뒤 Maven 프로젝트처럼 계속한다(v2.1j). 실행 방식(``flow``): ``full`` = 위의 이관(성공하면 설정에 따라 취약점 조치가
+이어진다), ``remediation`` = 프로젝트를 바꾸지 않는 접수(작업 공간·사전 점검·빌드 도구 확인)만 거친 뒤 올린 그대로 취약점 조치만
+(``chain.run_only``) — 분석·계획·변환·재구성·검토·검증·수정 루프·LLM·KB 없음.
 
-Orchestrator: intake → analyze → plan → phases → verify → report.
+Orchestrator: intake → analyze → plan → phases → verify → report (flow `full`), or intake (no project edits) →
+remediation → report (flow `remediation`: `sbmig.remediations.chain.run_only`, no LLM / KB). An Ant project is refused
+at intake with `intake.ant_message` unless `intake.ant_to_maven` is on (then a pom.xml is synthesized, v2.1j).
 
 v2.1 (2026-10-27, docs/v2/PLAN-v2.1.md §3): transform (every OpenRewrite recipe in ONE run, `transform.rewrite`) →
 `transform.compile` (`mvn clean compile` once, no fixing: every error goes on the run's error list, seen `compile`)
@@ -38,6 +43,7 @@ import importlib
 import json
 import logging
 import os
+import posixpath
 import re
 import time
 from contextlib import contextmanager
@@ -46,9 +52,9 @@ from typing import Any, Callable, Iterator, Optional
 
 from sbmig.build.log_parser import BUILD_EXTENSION_RE
 from sbmig.core.config import Config
-from sbmig.core.models import (GAV, BlockedItem, BuildError, BuildResult, CaseType, DecisionKind, ErrorKind,
-                               IterationRecord, LLMUsage, MigrationPlan, Phase, PhaseResult, PlanStep, ProjectProfile,
-                               RunReport, StepKind, utcnow)
+from sbmig.core.models import (FLOW_FULL, FLOW_REMEDIATION, GAV, RUN_FLOWS, BlockedItem, BuildError, BuildResult,
+                               CaseType, DecisionKind, ErrorKind, IterationRecord, LLMUsage, MigrationPlan, Phase,
+                               PhaseResult, PlanStep, ProjectProfile, RunReport, StepKind, utcnow)
 from sbmig.core.stage import stage
 from sbmig.core.workspace import Workspace, logs_dir
 
@@ -171,6 +177,34 @@ def parse_stop_after(value: Any) -> Phase | None:
     return phase
 
 
+def parse_flow(value: Any) -> str:
+    """실행 방식 값(``--flow`` / ``flow=``)을 ``RUN_FLOWS`` 의 하나로(대소문자·앞뒤 공백 무시). None / '' = ``full``. 모르는 값이면
+    받을 수 있는 값을 나열한 ValueError.
+
+    The run flow (`full` | `remediation`); None / '' = `full`; ValueError names the accepted values."""
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return FLOW_FULL
+    text = str(value).strip().lower()
+    if text not in RUN_FLOWS:
+        raise ValueError(f"flow must be one of: {', '.join(RUN_FLOWS)}")
+    return text
+
+
+def check_flow(flow: Any, stop_after: Phase | None = None, dry_run: bool = False) -> str:
+    """실행 방식과 다른 실행 옵션의 조합을 검사하고 정리된 실행 방식을 돌려준다: ``remediation`` 은 ``stop_after`` 와도
+    ``dry_run`` 과도 함께 쓸 수 없다(이관 단계가 없고, 조치는 결정만 하고 멈출 수 없다). 어기면 ValueError(사람이 읽을 문장).
+
+    Validate the flow against the other run options (`remediation` takes neither `stop_after` nor `dry_run`)."""
+    f = parse_flow(flow)
+    if f == FLOW_REMEDIATION and stop_after is not None:
+        raise ValueError("--stop-after cannot be combined with --flow remediation (the remediation flow runs no "
+                         "migration phases)")
+    if f == FLOW_REMEDIATION and dry_run:
+        raise ValueError("--dry-run cannot be combined with --flow remediation (the remediation builds and scans the "
+                         "project; it has no dry-run mode)")
+    return f
+
+
 class _BudgetedLLM:
     """호출마다 실행 예산(``LoopBudget``)에 한 번씩 매기는 LLM 클라이언트 감싸개. 구조 검토도 수정 루프와
     같은 예산을 쓰고, 모델별 사용량은 ``sink`` 에 모여 보고서의 비용 표가 된다.
@@ -200,6 +234,16 @@ STRAY_POM_TAIL = ("treated as a stray copy (an IDE output / backup folder): not 
                   "delete it from the source, or give it its own coordinates and list it in <modules> if it is a real module")
 
 
+def ant_refusal_detail(build_file: str, flow: str = FLOW_FULL) -> str:
+    """Ant 거부의 기술 내용 한 줄(후속 조치 둘째 줄·저널 ``build_tool.detail``; 한국어는 i18n ``PATTERNS``): 어느 build.xml 을 봤고 왜
+    변환하지 않는지. 사람에게 보이는 거부 문구(``intake.ant_message``)는 따로다.
+
+    The technical detail of an Ant refusal (which build.xml, why it is not converted)."""
+    why = ("the remediation flow builds the project as uploaded and needs a Maven project" if flow == FLOW_REMEDIATION
+           else "the Ant → Maven conversion is switched off (intake.ant_to_maven: false)")
+    return f"Ant build file {build_file} found and no pom.xml: {why}"
+
+
 def stray_pom_followup(st: Any) -> str:
     """v2.1z-h: 떠도는 pom 복사본의 인수인계 한 줄(영문; 한국어는 report/i18n.py ``PATTERNS`` 가 맞춘다 — 바꾸면 함께).
 
@@ -219,7 +263,8 @@ class Orchestrator:
                  report_writer: Optional[Callable] = None, clock: Callable[[], float] = time.monotonic,
                  locator: Any = None, effective_capture: Optional[Callable] = None,
                  javax_inventory: Any = None, script_runner: Any = None, reviewer: Any = None,
-                 error_list: Optional[Callable[..., Any]] = None, edit_applier: Optional[Callable[..., Any]] = None):
+                 error_list: Optional[Callable[..., Any]] = None, edit_applier: Optional[Callable[..., Any]] = None,
+                 source: Any = None, remediation_components: Any = None):
         """협력 객체는 모두 주입할 수 있다(테스트·사내 플러그인). None 이면 실제 구현을 처음 쓸 때 만든다.
         커스텀 ``build_runner`` 를 주면 진짜 Maven 이 아니므로 classpath
         귀속·effective pom 캡처는 기본으로 꺼진다(mvn 을 띄우므로).
@@ -228,7 +273,9 @@ class Orchestrator:
         and `reviewer` (a StructureReviewerLike object, or a factory `fn(cfg, llm, runner, kb)`; None =
         `sbmig.review.StructureReviewer`). v2.1: `error_list` = `fn(ws, cfg, project)` → the run's error list (None =
         `sbmig.errors.entries.ErrorList.for_workspace`), `edit_applier` = `fn(ws, edits, *, cfg, errors=None) -> ScriptRunResult` (`errors` only when the signature takes it)
-        for the LLM's direct edits (None = `sbmig.script.apply_edits`)."""
+        for the LLM's direct edits (None = `sbmig.script.apply_edits`). Flow `remediation`: `source` = the input the
+        workspace was made from (the uploaded ZIP or a directory; None = read from the workspace's `intake` journal line),
+        `remediation_components` = the remediation's `Components` (None = the real ones, built on first use)."""
         self.cfg = cfg
         self.ws = ws
         self.clock = clock
@@ -276,6 +323,9 @@ class Orchestrator:
         self.abort_reason: str | None = None   # first `_abort` reason of the current run
         self._run_steps: list[PlanStep] = []   # the run's steps incl. an appended verify.build (step_plan)
         self._verify_done: list[str] = []      # verify step ids whose final build has a result (invariant 1, round 10)
+        self._flow = FLOW_FULL                 # v2.1z-aj: the current run's flow (full | remediation), set by _run_guard
+        self._source = source                  # flow remediation: the uploaded ZIP / directory (None = journal's intake line)
+        self._remediation_components = remediation_components
 
     # ------------------------------------------------------------------ lazy collaborators
     @property
@@ -378,22 +428,35 @@ class Orchestrator:
         return self._fixer
 
     # ------------------------------------------------------------------ run
-    def run(self, stop_after: Phase | None = None, dry_run: bool = False) -> RunReport:
+    def run(self, stop_after: Phase | None = None, dry_run: bool = False, flow: str = FLOW_FULL) -> RunReport:
         """마이그레이션 한 번. ``loop.engine`` 이 단계를 모는 엔진을 고른다: ``graph``(기본, LangGraph
         ``StateGraph``) 또는 ``inline``. 둘 다 같은 ``step_*`` 를 같은 보호막(``_run_guard``) 안에서 부르므로
-        보고서·저널·종료 코드가 같다.
+        보고서·저널·종료 코드가 같다. ``flow="remediation"`` 이면 이관 없이 접수(프로젝트를 바꾸지 않는 부분) → 취약점 조치 → 보고서
+        (``stop_after`` / ``dry_run`` 과 함께 쓰면 ValueError — ``check_flow``).
 
         One migration run. `loop.engine` picks the driver of the steps: ``graph`` (default, LangGraph
         `StateGraph`, `sbmig.graph`) or ``inline`` (`_run`). Both call the same `step_*` methods inside the same
         guard (`_run_guard`: abort / missing-component / internal-error handling + `_finalize`), so reports,
-        journals and exit codes are identical apart from the graph's additive ``graph_node`` journal events."""
-        with self._run_guard(dry_run) as report:
+        journals and exit codes are identical apart from the graph's additive ``graph_node`` journal events.
+        `flow` (`RUN_FLOWS`): `full` (default) or `remediation` — intake without project edits, then
+        `chain.run_only`, then the short report (no LLM, no KB); ValueError with `stop_after` / `dry_run`."""
+        flow = check_flow(flow, stop_after, dry_run)
+        with self._run_guard(dry_run, flow=flow) as report:
             if self.engine == "graph":
                 from sbmig.graph import run_graph
-                run_graph(self, stop_after=stop_after, dry_run=dry_run)
+                run_graph(self, stop_after=stop_after, dry_run=dry_run, flow=flow)
+            elif flow == FLOW_REMEDIATION:
+                self._run_remediation_flow(report)
             else:
                 self._run(report, stop_after, dry_run)
         return report
+
+    @property
+    def flow(self) -> str:
+        """지금(또는 마지막) 실행의 실행 방식(``full`` | ``remediation``).
+
+        The flow of the current (or last) run."""
+        return self._flow
 
     @property
     def engine(self) -> str:
@@ -408,7 +471,7 @@ class Orchestrator:
         return self._running
 
     @contextmanager
-    def _run_guard(self, dry_run: bool = False) -> Iterator[RunReport]:
+    def _run_guard(self, dry_run: bool = False, flow: str = FLOW_FULL) -> Iterator[RunReport]:
         """실행을 열고(새 RunReport) 반드시 닫는다: ``_RunAborted`` 는 조용히 끝, 빠진 협력 패키지나 그 밖의
         예외는 중단으로 기록하고 그래도 최종 빌드를 시도한다(빌드 게이트), 그리고 무슨 일이 있어도
         ``_finalize``(보고서·KB 기록·산출물). 버그 하나 때문에 보고서를 잃지 않으려는 장치다.
@@ -421,6 +484,7 @@ class Orchestrator:
             raise RuntimeError("Orchestrator run already in progress")
         self._running = True
         self._dry_run = dry_run
+        self._flow = parse_flow(flow)
         self.abort_reason = None
         # per-run state (an orchestrator is normally used once; a second run must not see the first one's results)
         self._verify_results = []
@@ -442,6 +506,10 @@ class Orchestrator:
         self.report = report
         if dry_run:
             report.flags.append("dry-run")
+        if self._flow == FLOW_REMEDIATION:
+            # 취약점 조치만 하는 실행: 이 실행의 첫 저널 줄(웹이 화면의 단계 줄을 고른다). full 실행의 저널은 예전 그대로
+            report.flow = self._flow
+            self.ws.journal({"event": "flow", "flow": self._flow})
         try:
             yield report
         except _RunAborted:
@@ -606,6 +674,17 @@ class Orchestrator:
         self.step_finish(report, stop_after)
         self._note_inline_remediation(report, stop_after, dry_run)
 
+    def _run_remediation_flow(self, report: RunReport) -> None:
+        """inline 엔진의 실행 방식 ``remediation``: 접수(프로젝트를 바꾸지 않는 부분) → 취약점 조치. 그래프 엔진의 노드 intake →
+        remediation → finalize 와 같은 단계다(보고서는 ``_run_guard`` 의 마무리가 쓴다).
+
+        The inline engine's `remediation` flow: intake (no project edits) → remediation."""
+        if not self.step_intake(report, None):
+            return
+        if self._stop_file_abort(report, "remediation"):
+            return
+        self.step_remediation(report)
+
     def _note_inline_remediation(self, report: RunReport, stop_after: Phase | None, dry_run: bool) -> None:
         # 2026-11-11: 취약점 조치는 그래프 엔진의 remediation 노드에서만 이어서 돈다. inline 엔진은 잇지 않고, 스위치가 켜져 있고
         # 그래프였다면 돌았을 실행(빌드 성공·끝까지)에만 그 사실을 한 줄 남긴다 — 스위치가 꺼진 실행에는 아무 줄도 없다
@@ -646,11 +725,18 @@ class Orchestrator:
         if not self._dry_run and not self._run_hook("setup", report):
             raise _RunAborted()
         with stage("intake"):
-            return self._step_intake(report, stop_after)
+            return self._step_intake(report, stop_after, edits=self._flow != FLOW_REMEDIATION)
 
-    def _step_intake(self, report: RunReport, stop_after: Phase | None) -> bool:
+    def _step_intake(self, report: RunReport, stop_after: Phase | None, *, edits: bool = True) -> bool:
+        """접수 본체. ``edits=False`` (실행 방식 remediation): 프로젝트를 바꾸는 것은 하나도 하지 않는다 — git 스냅샷, pom 합성,
+        aggregator 생성, reactor 중복 정리, 배포 확장 제거, 부모 확장 표식 정리, effective-pom 캡처를 건너뛰고 설정 경고·사전 점검
+        (Maven·JDK)·빌드 도구 확인(Gradle / 빌드 파일 없음 / Ant 거부)만 한다.
+
+        The intake body; `edits=False` (flow remediation) runs only the config warnings, the preflight and the build-tool
+        check (with its refusals) — nothing that writes into the project or calls Maven on it."""
         t = self.clock()
-        self.ws.git_init()
+        if edits:
+            self.ws.git_init()
         # 2026-11-05: 설정 경고(중복 블록·모르는 키·없어진 키)는 설정을 읽을 때 콘솔에만 찍혔다 — 실행 로그가 붙은 지금 다시 적는다
         for line in getattr(self.cfg, "_config_warnings", None) or []:
             log.warning("%s", line)
@@ -668,9 +754,12 @@ class Orchestrator:
         if "jdk-not-21" in report.flags:
             self._abort(report, self._jdk_problem)
             return False
-        if not self._check_build_tool(report):
+        if not self._check_build_tool(report, edits=edits):
             self._timed("intake", t)
             return False
+        if not edits:
+            self._timed("intake", t)
+            return True
         if not self._intake_layout(report):
             self._timed("intake", t)
             return False
@@ -722,23 +811,26 @@ class Orchestrator:
         except Exception as e:  # noqa: BLE001 - never lose the run over a pre-check
             log.warning("parent build extension pre-check failed: %s: %s", type(e).__name__, e)
 
-    def _check_build_tool(self, report: RunReport) -> bool:
-        """회사 결정: Maven 프로젝트만 받는다. Gradle / 빌드 없음은 Maven 을 부르기 전에 중단(exit 3). v2.1j: Ant
-        (build.xml 만 있고 pom.xml 없음)는 ``intake.ant_to_maven`` 이면 pom.xml 을 합성·커밋하고 Maven 처럼 계속한다
-        (``_synthesize_ant_pom``); 꺼져 있거나 합성이 실패하면 예전처럼 거부.
+    def _check_build_tool(self, report: RunReport, *, edits: bool = True) -> bool:
+        """회사 결정: Maven 프로젝트만 받는다. Gradle / 빌드 없음은 Maven 을 부르기 전에 중단(exit 3). Ant(build.xml 만 있고
+        pom.xml 없음)는 ``intake.ant_message`` 안내로 거부한다(``_refuse_ant``, 2026-11-12 회사 결정) — ``intake.ant_to_maven`` 이
+        켜져 있고 프로젝트를 바꿔도 되는 실행(``edits``, 실행 방식 full)일 때만 pom.xml 을 합성·커밋하고 Maven 처럼 계속한다
+        (``_synthesize_ant_pom``, v2.1j); 합성이 실패하면 그 이유로 거부.
 
-        Catalog S4 at intake: only Maven projects; Gradle / no build abort before any Maven call. v2.1j: an Ant
-        project gets a synthesized pom.xml when `intake.ant_to_maven` is on and then runs as a Maven project; off or
-        a failed synthesis → the old rejection. `step_analyze` keeps the same check (on `profile.build_tool`) as a
-        fallback — it passes once the synthesized pom exists."""
+        Only Maven projects; Gradle / no build abort before any Maven call. An Ant project is refused with
+        `intake.ant_message` (`_refuse_ant`); with `intake.ant_to_maven` on (and a flow that may edit the project) it gets a
+        synthesized pom.xml and runs as a Maven project (v2.1j; a failed synthesis is refused with its reason).
+        `step_analyze` keeps the same check (on `profile.build_tool`) as a fallback."""
         try:
             from sbmig.analyze import detect_build_tool
         except ImportError:  # pragma: no cover - analyze component missing; step_analyze still checks
             return True
         det = detect_build_tool(self.ws)
         intake = getattr(self.cfg, "intake", None)
-        if det.tool == "ant" and intake is not None and getattr(intake, "ant_to_maven", False):
-            return self._synthesize_ant_pom(report, det)
+        if det.tool == "ant":
+            if edits and intake is not None and getattr(intake, "ant_to_maven", False):
+                return self._synthesize_ant_pom(report, det)
+            return self._refuse_ant(report, det)
         if det.tool != "maven":
             report.flags.append(f"unsupported-build-tool:{det.tool}")
             self._abort(report, det.reason)
@@ -746,6 +838,26 @@ class Orchestrator:
             return False
         self.ws.journal({"event": "build_tool", "tool": "maven", "ok": True})
         return True
+
+    def _refuse_ant(self, report: RunReport, det: Any) -> bool:
+        """Ant 프로젝트 거부(회사 결정): 사람에게 보이는 중단 사유는 ``intake.ant_message`` 그대로(ERROR 줄·보고서 첫 줄·저널 ``abort``
+        — 웹 화면이 이것을 보여 준다). 어느 build.xml 을 봤는지 같은 기술 내용은 그 다음 줄(INFO 로그·후속 조치 둘째 줄)과 저널
+        ``build_tool`` 의 ``detail`` 에만 둔다. 플래그 ``unsupported-build-tool:ant``, exit 3. 파일은 쓰지 않는다.
+
+        Refuse an Ant project: the abort reason is exactly `intake.ant_message`; the technical detail (which build.xml)
+        is a second follow-up line, an INFO line and the journal's `build_tool.detail`."""
+        intake = getattr(self.cfg, "intake", None)
+        message = str(getattr(intake, "ant_message", "") or "").strip() or det.reason
+        build_file = getattr(det, "ant_build_file", None) or "build.xml"
+        detail = ant_refusal_detail(build_file, self._flow)
+        report.flags.append("unsupported-build-tool:ant")
+        self._abort(report, message)
+        if detail not in report.manual_followups:
+            report.manual_followups.append(detail)
+        log.info("접수: %s", detail)
+        self.ws.journal({"event": "build_tool", "tool": "ant", "ok": False, "reason": message, "detail": detail,
+                         "build_file": build_file})
+        return False
 
     def _synthesize_ant_pom(self, report: RunReport, det: Any) -> bool:
         """v2.1j 현업 요청("Ant 프로젝트도 Maven 으로 변경 후 마이그레이션"): build.xml + 폴더 구조로 pom.xml 을 쓰고
@@ -797,7 +909,10 @@ class Orchestrator:
         return True
 
     def _reject_ant(self, report: RunReport, why: str) -> bool:
-        """Ant 프로젝트를 예전처럼 거부: ``unsupported-build-tool:ant`` + 중단 사유 + 저널 ``build_tool`` (ok False)."""
+        """합성이 실패한 Ant 프로젝트를 그 이유로 거부(``ant_to_maven`` 이 켜졌을 때): ``unsupported-build-tool:ant`` + 중단 사유 + 저널
+        ``build_tool`` (ok False).
+
+        Refuse an Ant project whose pom synthesis failed (switch on), naming why."""
         report.flags.append("unsupported-build-tool:ant")
         self._abort(report, why)
         self.ws.journal({"event": "build_tool", "tool": "ant", "ok": False, "reason": why})
@@ -1262,6 +1377,133 @@ class Orchestrator:
         After the last phase group: record `stop_after` when it named a phase that the groups ran."""
         if stop_after is not None and stop_after != Phase.VERIFY:
             self._stop(stop_after, stop_after)
+
+    # ------------------------------------------------------------------ flow remediation (v2.1z-aj)
+    def step_remediation(self, report: RunReport) -> dict:
+        """실행 방식 ``remediation`` 의 조치 단계: 올린 ZIP(디렉토리면 작업 공간의 프로젝트 트리)으로 ``chain.run_only`` 를 부르고
+        요약을 ``report.remediation`` 에, 성공 판정(``SUCCEEDED``)을 ``report.success`` 에 둔다. 준비가 안 됐으면 상태 없이 중단:
+        플래그 ``remediation:not-ready``, 빠진 이름(값 아님)이 보고서·저널(``remediation_skipped``)에, ERROR 한 줄(``run aborted: …``), exit 3.
+        돌려주는 값 = 요약 dict.
+
+        The remediation step of flow `remediation` (`chain.run_only`); not ready → abort with flag
+        `remediation:not-ready` and the missing names. Returns the summary (`report.remediation`)."""
+        with stage("remediation"):
+            from sbmig.remediations import chain
+            t0 = self.clock()
+            try:
+                rs = chain.run_only(self.ws.run_dir, self._remediation_source(), self.cfg, run_id=self.ws.run_id,
+                                    journal=self.ws.journal, stop=self._remediation_stop,
+                                    components=self._remediation_components, build_targets=self._remediation_targets())
+            except chain.RemediationNotReady as e:
+                self._flag("remediation:not-ready")
+                report.remediation = chain.summary(None, self.ws.run_dir,
+                                                   skipped={"reason": "not_ready", "missing": list(e.missing)})
+                self._abort(report, "vulnerability remediation not started (not ready): " + "; ".join(e.missing))
+                return dict(report.remediation)
+            finally:
+                report.timings_s["remediation"] = round(self.clock() - t0, 3)
+            report.remediation = chain.summary(rs, self.ws.run_dir)
+            report.success = rs.status == "SUCCEEDED"
+            return dict(report.remediation)
+
+    def _remediation_stop(self) -> bool:
+        """조치 중의 멈춤 요청(실행 폴더의 ``stop.request``). 읽을 수 없으면 멈춤 아님."""
+        fn = getattr(self.ws, "stop_requested", None)
+        try:
+            return bool(fn()) if callable(fn) else False
+        except OSError:
+            return False
+
+    def _remediation_source(self) -> Any:
+        """조치에 넣을 원본: 올린 ZIP 파일(그 바이트 그대로) — 생성자의 ``source``, 없으면 작업 공간 저널의 ``intake`` 줄의 ``source``.
+        ZIP 이 아니거나(디렉토리 입력) 찾을 수 없으면 작업 공간의 프로젝트 트리(이 실행 방식에서는 아무것도 바꾸지 않았다).
+
+        The uploaded ZIP (constructor `source`, else the workspace's `intake` journal line); otherwise the project tree."""
+        import zipfile
+        from pathlib import Path
+        src = self._source
+        if src is None:
+            try:
+                with open(self.ws.journal_path, encoding="utf-8") as fh:
+                    for line in fh:
+                        try:
+                            ev = json.loads(line)
+                        except ValueError:
+                            continue
+                        if isinstance(ev, dict) and ev.get("event") == "intake" and ev.get("source"):
+                            src = ev["source"]
+                            break
+            except (OSError, AttributeError, TypeError):
+                src = None
+        if src is not None:
+            p = Path(src)
+            try:
+                if p.is_file() and zipfile.is_zipfile(p):
+                    return p
+            except OSError:
+                pass
+        return self.ws.root
+
+    def _remediation_targets(self) -> list[str]:
+        """조치의 빌드 대상(프로젝트 루트 기준): 루트 pom.xml 이 있으면 [] (루트에서 한 번), 없으면 reactor 의 뿌리 pom 들(다른 pom 의
+        ``<modules>`` 가 가리키지 않는 pom, 떠도는 복사본 제외)의 폴더 — 이관이 루트 aggregator 없는 트리를 서비스마다 빌드하는 것과 같은
+        모양. 읽기만 한다(분석·Maven 호출 없음). 읽을 수 없으면 [].
+
+        The build targets: [] with a root pom, else the directories of the reactor roots (poms no `<modules>` lists, stray
+        copies excluded). Read-only; [] when the poms cannot be read."""
+        try:
+            if (self.ws.root / "pom.xml").is_file():
+                return []
+            from sbmig.analyze.pom_parser import parse_poms
+            poms, _ = parse_poms(self.ws)
+            referenced: set[str] = set()
+            for p in poms:
+                base = posixpath.dirname(p.path) or "."
+                for m in p.modules:
+                    t = posixpath.normpath(posixpath.join(base, m))
+                    referenced.add(posixpath.normpath(t if t.endswith(".xml") else posixpath.join(t, "pom.xml")))
+            roots = sorted((p.path for p in poms if p.path not in referenced), key=lambda x: (x.count("/"), x))
+            return [posixpath.dirname(r) or "." for r in roots]
+        except Exception as e:  # noqa: BLE001 - the remediation then builds at the root (its intake decides)
+            log.debug("remediation build targets not derived: %s: %s", type(e).__name__, e)
+            return []
+
+    def _finalize_remediation(self, report: RunReport) -> None:
+        """실행 방식 ``remediation`` 의 마무리: 성공 = 조치 ``SUCCEEDED`` (중단이 아니고), infra 플래그, 출력 경로, 짧은 보고서
+        (report.md / report.json). 오류 목록·KB 기록·changes.patch·result.zip 은 없다(조치의 결과는 ``remediation/`` 아래).
+
+        Finalize a `remediation` flow run: success = remediation SUCCEEDED, infra flags, outputs, the short report; no
+        error list, no KB records, no patch / result.zip."""
+        report.finished_at = utcnow()
+        rem = report.remediation if isinstance(report.remediation, dict) else {}
+        report.success = rem.get("status") == "SUCCEEDED" and not _aborted(report.flags)
+        try:
+            self._infra_flags(report)
+        except Exception as e:  # noqa: BLE001 - never lose the report
+            log.debug("infra flags not computed: %s", e)
+        out = report.outputs
+        out["run_dir"] = str(self.ws.run_dir)
+        out["project_dir"] = str(self.ws.root)
+        out["journal"] = str(self.ws.journal_path)
+        out["logs"] = str(self.ws.logs_dir)
+        if "md" in self.cfg.report.formats:
+            out["report_md"] = str(self.ws.run_dir / "report.md")
+        if "json" in self.cfg.report.formats:
+            out["report_json"] = str(self.ws.run_dir / "report.json")
+        for key, rel in (rem.get("files") or {}).items():
+            out[f"remediation_{key}"] = str(self.ws.run_dir / rel)
+        writer = self._report_writer
+        if writer is None:
+            from sbmig.report import write_report
+            writer = lambda r, w: write_report(r, w, cfg=self.cfg)      # noqa: E731 - report.language from the config
+        try:
+            paths = writer(report, self.ws) or {}
+            out.update({k: v for k, v in paths.items()})
+        except Exception as e:
+            log.exception("report writing failed")
+            report.flags.append(f"report-failed: {e}")
+        self.ws.journal({"event": "report", "success": report.success, "flags": report.flags, "flow": report.flow,
+                         "remediation": rem.get("status"), "outputs": out})
 
     def _resolve_locator(self) -> Any:
         if self._locator is not None:
@@ -3096,6 +3338,9 @@ class Orchestrator:
         판정(모든 최종 빌드 성공 + 재구성 실패 없음 + 중단 아님 + 빠진 최종 빌드 없음), 미해결 오류, 차단
         목록, infra 플래그, 운영자 확인, 권고·인수인계, 오류
         목록·KB 기록, 보고서 → 마지막에 느린 patch / zip."""
+        if self._flow == FLOW_REMEDIATION:
+            self._finalize_remediation(report)
+            return
         report.finished_at = utcnow()
         usage = LLMUsage()
         for pr in report.phases:

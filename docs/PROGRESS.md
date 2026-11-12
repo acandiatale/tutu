@@ -1,6 +1,6 @@
 # 진행 내역 체크리스트 — sbmig (flow-v2)
 
-이 파일은 회사에 배포되는 sbmig(브랜치 `flow-v2`)가 지금까지 무엇을 하게 되었는지를 한 줄씩 적은 체크리스트다. 2026-11-11 기준의
+이 파일은 회사에 배포되는 sbmig(브랜치 `flow-v2`)가 지금까지 무엇을 하게 되었는지를 한 줄씩 적은 체크리스트다. 2026-11-12 기준의
 스냅샷이며, `- [x]` 는 만들어져 있는 것, `- [ ]` 는 아직 안 된 것 또는 회사의 답을 기다리는 것이다. 라운드별 자세한 내용(파일, 테스트,
 검증 수치)은 `docs/PLAN.md`, 계약은 `docs/INTERFACES.md`, 현업 요청과 v2 결정은 `docs/v2/PLAN-v2.md` 에 있다. v1 시절 기록은 git 태그
 `company-v1` 에만 남긴다.
@@ -9,8 +9,8 @@
 
 **접수**
 - [x] Maven 프로젝트 ZIP / 폴더를 받아 처음 상태를 git 커밋으로 남기고, JDK 21 · Maven 준비를 미리 검사한다(preflight)
-- [x] Ant 프로젝트(build.xml 만 있고 pom.xml 이 없음)는 build.xml 을 읽어 pom.xml 을 만들어 준 뒤 Maven 프로젝트처럼 이관한다 (v2.1j)
-- [x] Ant 의 jar 좌표는 jar 안 정보 → 이름 표 → 저장소 sha1 조회 순으로 찾고, 못 찾은 jar 는 `system` 범위로 두고 인수인계에 설치 명령을 적는다
+- [x] Ant 프로젝트(build.xml 만 있고 pom.xml 이 없음)는 받지 않는다: 접수에서 멈추고(종료 코드 3, `unsupported-build-tool:ant`) 안내 문구 "Maven 변환 후 신청 부탁드립니다." 를 보여 준다(`intake.ant_message`) — 회사 결정
+- [x] Ant → pom 합성 기능은 남아 있어 `intake.ant_to_maven: true` 로 다시 켤 수 있다: build.xml 을 읽어 pom.xml 을 만들고, jar 좌표는 jar 안 정보 → 이름 표 → 저장소 sha1 조회 순, 못 찾은 jar 는 `system` 범위 + 인수인계에 설치 명령 (`ant-webapp` 픽스처가 켜고 시험한다)
 - [x] Gradle 프로젝트와 pom.xml · build.xml 이 모두 없는 트리는 받지 않는다(종료 코드 3), 그런 트리는 `sbmig inventory` 로 설명만 한다
 - [x] 루트 pom 이 없는 트리(형제 pom, `APP/pom.xml` 이 `../DEV` 를 묶는 회사 모양)에는 루트 집계 pom 을 만들어 준다 (v2.1k)
 - [x] 집계 pom 이 하나뿐이면 그 옆의 묶이지 않은 pom 이 있어도 그것을 루트로 삼고, 빠진 pom 은 인수인계에 이름을 적는다
@@ -124,6 +124,10 @@
 - [x] 웹 화면(FastAPI + LangGraph, 파일 하나의 HTML · CSS · JS, 회사 파란색, 외부 글꼴 · CDN 없음): 끌어 놓기 → 단계 표시 → 진행 기록 / 로그 → 보고서 · 결과 ZIP 버튼
 - [x] 로그가 쌓여도 화면이 버벅이지 않게 링 버퍼와 1,500줄 그리기 한도를 둔다
 - [x] 설정 파일은 서버가 정한다(`artifacts.yml`), 화면은 고급 설정 아래에만 보인다
+- [x] 업로드 칸에서 진행 방식을 고른다: 전체 진행(기본, 이관 후 취약점 조치) / 취약점 해결(이미 이관된 프로젝트의 취약점 조치만). 시작 버튼 · 단계 표시가 선택을 따른다
+- [x] 머리 이름은 `panacea-remediating-oss`(임시), 설명 줄 · 바닥글 없음
+- [x] 실행 폴더 이름은 올린 파일 이름에서 만든 앞머리로 시작한다(`<앞머리>-YYYYMMDD-HHMMSS-<hex 6>`, 소문자 · 숫자 · 하이픈, 긴 이름은 자름, 쓸 글자가 없으면 `web`), 실행 목록에는 올린 파일 이름이 그대로 보인다
+- [x] 접수에서 거절된 실행은 그 사유를 문장으로 보여 준다
 - [x] 이미지 하나(Python + JDK 21 + Maven), Windows 체크아웃 · 폐쇄망(APT 미러, pip 신뢰 호스트)에서도 빌드
 - [x] 회사 `artifacts.yml` 을 이미지에 굽고, 컨테이너 경로는 매니페스트의 환경 변수로 덮는다
 - [x] 회사 클러스터 값: namespace `agent`, `nfs-csi` ReadWriteMany, kubeconfig Secret 방식, Job 모드를 켠 채로 내보낸다
@@ -147,6 +151,9 @@
 
 - [x] 이관이 BUILD SUCCESS 로 끝난 빌드 파드에서 이어서 돈다, 이관 판정 · 종료 코드는 바뀌지 않는다, 결과는 `<실행 폴더>/remediation/`
 - [x] IVAS 값 · Maven 이 없으면 건너뛰고(`remediation=skipped`) 빠진 것의 이름만 저널에 적는다
+- [x] 실행 방식 두 가지: `full`(이관 → 성공하면 취약점 조치) / `remediation`(이관 없이 올린 프로젝트를 그대로 빌드 · 검사 · 조치 · 재검사). CLI `sbmig run --flow remediation`, 웹 `POST /api/runs?flow=remediation`, 화면의 취약점 해결
+- [x] 취약점 해결 실행은 이관 단계 · LLM · KB 를 쓰지 않고 자기 기준 빌드 전에는 아무것도 고치지 않는다. `after_migration` · `trusted_projects` 는 묻지 않고, IVAS 값 · Maven 이 없으면 시작하지 않는다(종료 코드 3, `remediation:not-ready`). 종료 코드 0 = 완료, 2 = 그 밖의 저장 상태
+- [x] Job 모드에서도 같은 대기 줄 · 자리에서 도는 보통 실행이다(Job env `SBMIG_FLOW` 는 웹 파드가 넣는다, 매니페스트는 그대로)
 - [x] ZIP 검사: 경로 탈출 · 절대 경로 · 링크 · 특수 파일 · 암호화 · 중복 · 개수 · 크기 · 압축률을 풀기 전에 막는다
 - [x] 원본 ZIP 은 읽기 전용으로 보관하고, 파일 목록(manifest)과 작업 트리 `accepted/` 를 따로 둔다
 - [x] Maven 경계: `.mvn` 설정 · 확장, wrapper, 링크, 승인 안 된 저장소, 읽을 수 없는 pom 은 거부하거나 무시한다
@@ -235,4 +242,5 @@
 - [ ] 회사에 물을 것: 넣는 override 항목의 들여쓰기(형제 항목에서 복사)가 괜찮은지
 - [ ] 실제 IVAS 로 조치를 끝까지(확정 · 전달 ZIP 재검사 · 승인 → 새 빌드 파드) — 검사 결과 수신과 후보 빌드까지는 회사 PC(Windows)에서 확인
 - [ ] 회사에 물을 것: 회사 부모를 상속하는 모듈의 간접 의존성 override 를 어디에 넣을지(모듈 pom 마다 / 회사 부모에서 올림)
+- [ ] 취약점 해결 실행 방식(이관 없이 조치만)을 회사 환경 · 실제 IVAS 로 돌려 보기 — 지금은 가짜 IVAS 시험만
 - [ ] 레지스트리에 올린 이미지의 전체 이름과 pull 인증 여부 — 인프라팀

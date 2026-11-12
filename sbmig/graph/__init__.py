@@ -10,6 +10,6 @@ The graph only *drives* the orchestrator's shared step methods (`Orchestrator.st
 
 
 """
-from .engine import NODES, RECURSION_LIMIT, MigrationState, build_graph, run_graph, stream_graph
+from .engine import NODES, RECURSION_LIMIT, REMEDIATION_NODES, MigrationState, build_graph, run_graph, stream_graph
 
-__all__ = ["NODES", "RECURSION_LIMIT", "MigrationState", "build_graph", "run_graph", "stream_graph"]
+__all__ = ["NODES", "REMEDIATION_NODES", "RECURSION_LIMIT", "MigrationState", "build_graph", "run_graph", "stream_graph"]

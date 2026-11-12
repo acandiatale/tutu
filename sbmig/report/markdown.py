@@ -5,9 +5,12 @@
 javax API jar →
 Manual follow-ups → Flags → What we changed → LLM usage and cost → Notes → Outputs.
 인수인계가 맨 앞인 이유: 담당팀은 그 섹션만 읽는다. 모든 문장은 ``tr`` / ``tr_line`` 을 거쳐
-``report.language`` 로 번역된다(영어 원문이 번역 표의 키 — 문장을 바꾸면 i18n.py 도 함께).
+``report.language`` 로 번역된다(영어 원문이 번역 표의 키 — 문장을 바꾸면 i18n.py 도 함께). 실행 방식 ``remediation``
+(이관 없이 취약점 조치만)의 보고서는 짧다(``render_remediation_flow``: 제목 → 이관은 하지 않았다는 한 줄 → 결과 줄 → 취약점 조치 절).
+Ant 거부로 끝난 실행은 제목 바로 아래 첫 줄이 회사 안내 문구다(``intake_notice_lines``).
 
-report.md rendering — written for the as-is owners who pick up whatever the agent could not fix."""
+report.md rendering — written for the as-is owners who pick up whatever the agent could not fix. A `remediation` flow
+run gets the short report (`render_remediation_flow`); an Ant refusal puts the company notice right under the title."""
 from __future__ import annotations
 
 import re
@@ -950,11 +953,13 @@ def remediation_lines(r: RunReport, lang: str = "en") -> list[str]:
     rem = getattr(r, "remediation", None)
     if not isinstance(rem, dict) or not rem.get("status"):
         return []
+    chained = getattr(r, "flow", "full") != "remediation"     # 조치만 한 실행에는 "이관 뒤에 이어서" 문장이 없다
     if normalize(lang) == "ko":
-        return _remediation_lines_ko(rem)
-    L = [f"## {tr(lang, 'Vulnerability remediation')}", "",
-         tr(lang, "Chained after the migration's BUILD SUCCESS (remediation.after_migration); it does not change the "
-                  "migration result above."), ""]
+        return _remediation_lines_ko(rem, chained=chained)
+    L = [f"## {tr(lang, 'Vulnerability remediation')}", ""]
+    if chained:
+        L += [tr(lang, "Chained after the migration's BUILD SUCCESS (remediation.after_migration); it does not change the "
+                       "migration result above."), ""]
     status = str(rem.get("status"))
     if status == "skipped":
         L.append(tr(lang, "- Not run: `{reason}`", reason=_cell(rem.get("reason") or "-", 80)))
@@ -981,7 +986,7 @@ def remediation_lines(r: RunReport, lang: str = "en") -> list[str]:
     return L
 
 
-def _remediation_lines_ko(rem: dict) -> list[str]:
+def _remediation_lines_ko(rem: dict, *, chained: bool = True) -> list[str]:
     """한국어 이관 보고서의 ``## 취약점 조치`` 절(2026-11-12): 결과 문장 + 상태 코드, 취약점 개수 한 줄, 승인 대기, 사내 라이브러리,
     상태 메시지의 한국어(``sbmig.remediations.i18n.ko_display``), 자세한 결과 파일. 집계 키 이름은 쓰지 않는다.
 
@@ -989,9 +994,10 @@ def _remediation_lines_ko(rem: dict) -> list[str]:
     # 늦게 부른다: sbmig.remediations 가 보고서 모듈보다 먼저 올라오지 않아도 되게(순환 import 방지)
     from sbmig.remediations.i18n import REASON_KO, ko_display, label
     from sbmig.remediations.report import _VERDICT
-    L = [f"## {tr('ko', 'Vulnerability remediation')}", "",
-         tr("ko", "Chained after the migration's BUILD SUCCESS (remediation.after_migration); it does not change the "
-                  "migration result above."), ""]
+    L = [f"## {tr('ko', 'Vulnerability remediation')}", ""]
+    if chained:
+        L += [tr("ko", "Chained after the migration's BUILD SUCCESS (remediation.after_migration); it does not change the "
+                       "migration result above."), ""]
     status = str(rem.get("status"))
     if status == "skipped":
         reason = str(rem.get("reason") or "-")
@@ -1030,6 +1036,64 @@ def _remediation_lines_ko(rem: dict) -> list[str]:
             L.append("- 다른 파일: " + ", ".join(f"`{_cell(v, 120)}`" for v in others))
     L.append("")
     return L
+
+
+ANT_FLAG = "unsupported-build-tool:ant"
+ABORT_PREFIX = "run aborted: "                 # Orchestrator._abort 의 후속 조치 머리
+ANT_DETAIL_PREFIX = "Ant build file "          # Orchestrator._refuse_ant 의 기술 내용 줄
+
+
+def _abort_reason(r: RunReport) -> str:
+    """중단 사유(후속 조치의 첫 ``run aborted: …``), 없으면 ""."""
+    return next((f[len(ABORT_PREFIX):] for f in r.manual_followups if f.startswith(ABORT_PREFIX)), "")
+
+
+def intake_notice_lines(r: RunReport, lang: str = "en") -> list[str]:
+    """접수에서 Ant 프로젝트를 거부한 실행의 머리 안내: 첫 줄 = 중단 사유(``intake.ant_message`` 그대로, 굵게), 둘째 줄 = 어느 build.xml
+    을 봤는지(기술 내용, 기울임). Ant 거부가 아니면 [].
+
+    The head notice of an Ant refusal: the abort reason (`intake.ant_message`) first, the technical detail second."""
+    if ANT_FLAG not in (r.flags or []):
+        return []
+    why = _abort_reason(r)
+    if not why:
+        return []
+    L = [f"**{why}**", ""]
+    detail = next((f for f in r.manual_followups if f.startswith(ANT_DETAIL_PREFIX)), "")
+    if detail:
+        L += [f"_{tr_line(lang, detail)}_", ""]
+    return L
+
+
+def render_remediation_flow(report: RunReport, language: str = "en") -> str:
+    """실행 방식 ``remediation`` (이관 없이 취약점 조치만)의 짧은 report.md: 제목 → (시작하지 못했으면 그 사유) → "이관은 실행하지 않았다"
+    한 줄 → ``SBMIG-RESULT`` 줄 → 취약점 조치 절(``remediation_lines``) → ``remediation/report.md`` 경로. 이관 절(인수인계·구조 점검·
+    수정 시도·LLM 비용 …)은 없다.
+
+    The short report.md of flow `remediation`: title, the not-started reason (if any), one line saying the migration was
+    not run, the SBMIG-RESULT line, the remediation section and the path of `remediation/report.md` (once: a line of
+    its own only when the section does not list it already)."""
+    lang = normalize(language)
+    r = report
+    L = [tr(lang, "# Vulnerability remediation report — {name}", name=r.project_name), ""]
+    notice = intake_notice_lines(r, lang)
+    rem = r.remediation if isinstance(r.remediation, dict) else {}
+    if not notice and not rem and "aborted" in (r.flags or []):
+        why = _abort_reason(r)
+        if why:
+            notice = [tr(lang, "**Not started:** {why}", why=_cell(tr_line(lang, why), 400)), ""]
+    L += notice
+    L += [tr(lang, "The migration was not run: only the vulnerability remediation was requested."), ""]
+    L += [f"`{report_result_line(r)}`", ""]
+    section = remediation_lines(r, lang)
+    L += section
+    # 조치 절이 이미 그 파일을 가리키면(파일이 있을 때) 한 번만 — 아니면 끝에 경로 한 줄
+    # 조치 보고서는 조치가 끝나야 쓰인다(승인 대기로 멈춘 실행에는 아직 없다) — 없는 파일을 가리키지 않게 있을 때만 적는다
+    has_report = "report_md" in (rem.get("files") or {}) if isinstance(rem, dict) else False
+    if rem and rem.get("status") != "skipped" and has_report \
+            and not any("remediation/report.md" in ln for ln in section):
+        L += [tr(lang, "Full remediation report: `{path}`", path="remediation/report.md"), ""]
+    return "\n".join(L).rstrip() + "\n"
 
 
 def _cost_summary(c: Any, lang: str = "en") -> str:
@@ -1126,10 +1190,13 @@ def render_markdown(report: RunReport, language: str = "en", cfg: Any = None) ->
     v2.1h the JSP javax → jakarta rename) → LLM usage and cost → Notes → Outputs."""
     lang = normalize(language)
     r = report
+    if getattr(r, "flow", "full") == "remediation":
+        return render_remediation_flow(r, lang)
     L: list[str] = []
     ok = tr(lang, "✅ BUILD SUCCESS") if r.success else tr(lang, "❌ NOT BUILDING")
     L.append(tr(lang, "# Migration report — {name}", name=r.project_name))
     L.append("")
+    L += intake_notice_lines(r, lang)       # Ant 거부: 회사 안내 문구가 보고서의 첫 줄
     L.append("| | |")
     L.append("|---|---|")
     L.append(tr(lang, "| **Result** | {ok} (final `mvn clean package`) |", ok=ok))

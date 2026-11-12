@@ -51,6 +51,7 @@
 | `KUBECONFIG` | `/etc/kube/config` (Deployment 의 env, 매니페스트 값) | 회사 방식: 인프라팀이 준 kubeconfig Secret(`agent-kubeconfig`, 키 `config`)을 `/etc/kube` 에 마운트한다. 파일이 있으면 서비스 계정 토큰 대신 이것으로 쿠버네티스 API 를 부른다(token / 클라이언트 인증서 사용자; `exec` 는 거절). 개발 PC 에서 `k8s-job` 이 `local-job` 으로 내려가지 않게도 한다 |
 | `SBMIG_JOB_MAX_PARALLEL` | `3` (매니페스트 값) / `1` (변수가 없을 때) | 동시에 도는 빌드 파드(Job) 수. 넘는 업로드는 올린 순서대로 `queued` 로 기다리고 화면에 대기 순번이 보인다. 자리(1 · 2 · 3)마다 Maven 로컬 저장소를 따로 쓴다(`sbmig-m2` 안의 `repository`, `repository-slot2`, `repository-slot3`). 웹 파드가 시작할 때 읽는다(바꾸면 재시작). `in-process` 모드는 언제나 1. 1 이상의 정수가 아니면 경고를 찍고 1. 81 틀에는 줄이 필요 없다(README §3 "동시에 여러 건") |
 | `SBMIG_JOB_SLOT` | (웹 파드가 Job 마다 넣는다) | 그 Job 의 자리 번호(1 부터). 손으로 넣지 않는다 — Worker 가 2 번 자리부터 `SBMIG_BUILD__LOCAL_REPO` 를 그 자리의 저장소로 바꿔 `sbmig run` 에 넘긴다(저널 `worker_slot`) |
+| `SBMIG_FLOW` | (웹 파드가 Job 마다 넣는다) | 그 실행의 진행 방식 `full`(전체 진행) / `remediation`(취약점 해결). 손으로 넣지 않는다 — 화면에서 고른 값이 `request.json` 에 고정되고 Worker 가 대조한 뒤 `sbmig run --flow` 로 넘긴다. 81 틀에 줄이 필요 없다 |
 | `SBMIG_JOB_POLL_S` | `2` | Job 상태 조회 간격(초) |
 | `SBMIG_JOB_STOP_GRACE_S` | `2700` | 멈춤 요청(stop.request) 뒤 Job 을 지우기까지 기다리는 시간(초) — Maven 빌드 + OpenRewrite 한 번보다 길게 |
 | `SBMIG_JOB_EXIT_GRACE_S` | `120` | Worker 가 결과(`job-status.json`)를 쓴 뒤에도 파드가 남아 있으면 이 초 뒤에 그 Job(우리 라벨인 것만)을 지우고 사라질 때까지 기다린다. 그 자리는 Job 이 끝난 것을 확인한 뒤에 다음 업로드로 넘어간다 |

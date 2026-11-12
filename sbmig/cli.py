@@ -315,6 +315,9 @@ def run(
     stop_after: Optional[str] = typer.Option(None, "--stop-after",
                                              help="intake|analyze|plan|transform|restructure|verify (v2; jdk21|spring are v1 phases)"),
     dry_run: bool = typer.Option(False, "--dry-run", help="compute and journal decisions, apply nothing"),
+    flow: str = typer.Option("full", "--flow",
+                             help="full (migration, then the chained remediation when switched on) | remediation "
+                                  "(no migration: remediate the project as uploaded)"),
     llm_provider: Optional[str] = typer.Option(None, "--llm-provider",
                                                help="openai_compatible|anthropic|fake|plugin|<entry-point name>"),
     llm_plugin: Optional[str] = typer.Option(None, "--llm-plugin",
@@ -336,10 +339,14 @@ def run(
 
     Exit code 0 = final `mvn clean package` passed and nothing is blocked; 2 = finished with blocked and/or
     unresolved errors (see report.md "Error list" / "Blocked"); 3 = aborted (no Maven, not a Maven project,
-    configured parent POM not resolvable, internal error)."""
+    configured parent POM not resolvable, internal error).
+
+    `--flow remediation`: no migration — intake without project edits, then the vulnerability remediation of the
+    project as uploaded (`remediation/`); exit 0 = SUCCEEDED, 2 = any other saved status, 3 = not started. It takes
+    neither `--stop-after` nor `--dry-run`."""
     if verbose:
         setup_logging(True)
-    from sbmig.loop import parse_stop_after
+    from sbmig.loop import check_flow, parse_stop_after
 
     overrides: dict = {}
     if llm_provider:
@@ -356,6 +363,10 @@ def run(
         phase = parse_stop_after(stop_after)
     except ValueError as e:
         _fail(f"--{e}")
+    try:
+        flow = check_flow(flow, phase, dry_run)
+    except ValueError as e:
+        raise typer.BadParameter(str(e), param_hint="'--flow'") from None
     cfg = _load(config, overrides, repo_root)
     from sbmig.core.workspace import Workspace
     from sbmig.loop import Orchestrator
@@ -365,9 +376,10 @@ def run(
     ws = Workspace.from_input(input, out, run_id=run_id)
     log_path = attach_file_log(ws.run_dir / "sbmig.log")
     log.info("run %s", ws.run_id)
-    orch = Orchestrator(cfg, ws)
+    orch = Orchestrator(cfg, ws, source=input)
     try:
-        report = orch.run(stop_after=phase, dry_run=dry_run)
+        # flow= only for a non-default flow: a full run calls run() exactly as before (in-house wrappers keep working)
+        report = orch.run(stop_after=phase, dry_run=dry_run, **({"flow": flow} if flow != "full" else {}))
     except Exception:
         log.exception("run aborted by an unexpected error (see %s)", log_path)
         line = result_line(ws.run_id, 1, False, attention=["crash"])

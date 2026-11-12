@@ -655,7 +655,8 @@ COMPANY_OVERRIDES = {name: {"layout": {"module_dir", "boot_module", "comp_module
                                   "rootless-unlisted-module", "hollow-reactor", "adf-jdev",
                                   "servlet-javax-grid", "boot-stray-pom-copy", "webapp-bundled-jar",
                                   "boot-asis-parent-unpublished")}
-COMPANY_OVERRIDES["ant-webapp"]["intake"] = {"jar_lookup"}      # v2.1j: no sha1 lookup on Maven Central during e2e
+# v2.1j: no sha1 lookup on Maven Central during e2e; v2.1z-aj: Ant is refused by default, the fixture switches the synthesis on
+COMPANY_OVERRIDES["ant-webapp"]["intake"] = {"ant_to_maven", "jar_lookup"}
 COMPANY_OVERRIDES["legacy-external-parent"]["artifacts"] = {"boot_parent", "comp_parent", "optional"}   # v2.1n trigger
 
 COMPANY_NAMES = {"servlet-webxml-legacy": "legacy", "servlet-nonstandard-dirs": "ndirs", "ear-sibling-poms": "portal",
@@ -1118,3 +1119,28 @@ def test_legacy_external_config_inventory_matches_expected():
     by = {f.key: f.status for f in prof.properties.findings}
     assert sorted(k for k, s in by.items() if s == "external") == sorted(exp["external"])
     assert sorted(k for k, s in by.items() if s == "defined") == sorted(exp["defined"])
+
+
+def test_ant_fixture_switches_the_pom_synthesis_on(tmp_path):
+    """v2.1z-aj: Ant projects are refused by default; the `ant-webapp` fixture sets `intake.ant_to_maven: true`, so its
+    intake still synthesizes the pom.xml (here with the real synthesizer, no jar lookup, a fake Maven)."""
+    import shutil
+
+    from sbmig.core.models import Phase
+    from sbmig.core.workspace import Workspace
+    from sbmig.loop import Orchestrator
+
+    from ..loop.fakes import FakeBuildRunner
+
+    assert load_config(REPO / "config" / "artifacts.local-e2e.yml", repo_root=REPO).intake.ant_to_maven is False
+    cfg = _effective_cfg("ant-webapp")
+    assert cfg.intake.ant_to_maven is True
+    src = tmp_path / "ant-webapp"
+    shutil.copytree(FIXTURES / "ant-webapp", src)
+    ws = Workspace.from_input(src, tmp_path / "out", run_id="t-ant-fixture")
+    ws.git_init()
+    orch = Orchestrator(cfg, ws, build_runner=FakeBuildRunner(ws))
+    orch._capture_effective = lambda report: None
+    report = orch.run(stop_after=Phase.INTAKE)
+    assert "pom-synthesized" in report.flags and "aborted" not in report.flags, report.manual_followups
+    assert ws.exists("pom.xml") and report.pom_synthesis is not None and report.pom_synthesis.ok

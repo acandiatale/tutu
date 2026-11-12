@@ -12,7 +12,7 @@ type: `sbmig/core/models.py`, `sbmig/core/interfaces.py`, `sbmig/core/config.py`
 | topic | sections |
 |---|---|
 | run directory & workspace | Base "Run directory and workspace"; v2.1z-h (`ignored_dirs`) |
-| intake / analyze | Base "Intake and analyze", "Externalized configuration"; v2.1j (Ant), v2.1k + v2.1z "Review follow-ups" (rootless trees), v2.1z-c (hollow reactor), v2.1z-d (ADF), v2.1z-h (stray poms), v2.1z-i (bundled jars), v2.1z-z (build extensions) |
+| intake / analyze | Base "Intake and analyze", "Externalized configuration"; v2.1j (Ant), v2.1k + v2.1z "Review follow-ups" (rootless trees), v2.1z-c (hollow reactor), v2.1z-d (ADF), v2.1z-h (stray poms), v2.1z-i (bundled jars), v2.1z-z (build extensions); v2.1z-aj (Ant refused by default) |
 | plan | v2 "Plan (L)"; v2.1o (1) (`plan.compile_after_rewrite`); v2.1u … v2.1y / v2.1w (recipe sets) |
 | transform (OpenRewrite) | Base "Plan, transform"; v2.1l "Recipes"; v2.1o (Framework 7); v2.1w |
 | restructure & layout | Base "Restructure and the company layout"; v2.1g, v2.1h (JSP jakarta), v2.1l / v2.1s (version pins), v2.1m (resource filtering), v2.1n (optional triggers), v2.1o / v2.1p / v2.1t (parent-chain facts, BOM imports), v2.1q (embedded Tomcat), v2.1x (legacy Spring context), v2.1z-j (bundled jars), v2.1z-k, v2.1z-l |
@@ -22,7 +22,7 @@ type: `sbmig/core/models.py`, `sbmig/core/interfaces.py`, `sbmig/core/config.py`
 | LLM gateway | Base "LLM client tier and adapter seams"; v2.1z-m (agent gateway, token exchange), v2.1z-n, v2.1z-o, v2.1z-p (case thread), v2.1z-q, v2.1z-x, v2.1z-af (busy wait, auth retries) |
 | report & result line | Base "Report and the result line", "Advisories and the Handover"; v2 "As built (step 1)" (`review=`); v2.1d (`major=`); remediations (`remediation=`) |
 | fleet | Base "Fleet" |
-| web app | Base "Graph engine", "Web app"; v2.1z-w (page, server-chosen configs), v2.1z-ae (queue / slots on the page), v2.1z-af (page re-attach) |
+| web app | Base "Graph engine", "Web app"; v2.1z-w (page, server-chosen configs), v2.1z-ae (queue / slots on the page), v2.1z-af (page re-attach), v2.1z-aj (run flows, page header) |
 | Job mode (Main / Worker, slots, env pins) | v2.1z-z "k8s Job dispatch mode", v2.1z-ab (kubeconfig, template ConfigMap), v2.1z-ac (Main ↔ Worker contract), v2.1z-ad (end confirmation, ownership, env pins, write-time redaction), v2.1z-ae (parallel slots), v2.1z-af |
 | deploy | v2.1z-s (build hooks), v2.1z-t (one Job per request), v2.1z-u, deploy (baked config, container paths), v2.1z-ad "Shipped mode" |
 | remediations | remediations |
@@ -3729,6 +3729,74 @@ of the whole L2, so matching is exact on the L2 text; the ten characters only na
 - **Lookups by an old id.** `sbmig kb cases show | pin | unpin <id>` resolve an id found in a case's `aliases` to that
   case (a real folder with that id wins); `retire` / `activate` refuse an alias, because a merge may have renumbered the
   versions, and name the current id.
+
+## v2.1z-aj — run flows (`full` | `remediation`), Ant projects refused with a notice, the page header
+
+**Run flow.** A run is one of `RUN_FLOWS` (`sbmig/core/models.py`): `full` — the migration, followed by the chained
+remediation when it ends BUILD SUCCESS and `remediation.after_migration` is on — or `remediation` — no migration; the
+project is remediated as it was uploaded (already-migrated projects that are checked against IVAS again later).
+
+- **Entry points**: `sbmig run <zip | dir> --flow full|remediation` (default `full`; another value is a usage error),
+  `sbmig.api.migrate(..., flow="full")`, `Orchestrator.run(stop_after=None, dry_run=False, flow="full")`,
+  `run_graph` / `stream_graph(orch, stop_after, dry_run, flow="full")`; `sbmig.loop.parse_flow` / `check_flow`;
+  `Orchestrator(..., source=<the uploaded zip or directory>, remediation_components=None)` (without `source` the path is
+  read from the workspace's `intake` journal line). `RunReport.flow` records it. `--stop-after` and `--dry-run` are
+  refused together with `--flow remediation`.
+- **`remediation` flow — what runs**: intake only as far as it changes nothing in the project (workspace, preflight, the
+  build-tool check with its usual refusals: Gradle, no build file, Ant), then the remediation (`chain.run_only`), then
+  the report. No analyze / plan / transform / restructure / review / verify / fix loop, no LLM call, no KB read or write,
+  no intake step that edits the project (no generated aggregator, no extension stripping, no pom synthesis).
+- **Source**: the uploaded ZIP's own bytes (`intake.accept_zip`); a directory input is zipped as it is. Build targets: the
+  root pom when the tree has one, else what the chained flow would build for that tree (derived from a read-only look at
+  the accepted tree). The remediation's own baseline build is the build gate: a project that does not build as uploaded
+  ends `FAILED baseline_build_failed` before any scan.
+- **Readiness**: `remediation.after_migration` is not consulted (the flow was asked for). `remediation.trusted_projects`
+  is not consulted either (the run builds the upload exactly as a `full` run would). Missing IVAS values or Maven
+  readiness → the run does not start: exit 3, flag `remediation:not-ready`, the missing names (never values) in the
+  report and journal `remediation_skipped`.
+- **Files**: under `<run dir>/remediation/`, exactly as a chained run (state id = run id), so status / proposals /
+  approvals / resume in a new build pod work unchanged (`kind: chained` for the page).
+- **Result**: `SBMIG-RESULT … flow=remediation … remediation=<STATUS>` (the `flow=` field is printed only for
+  `remediation`). Exit code: 0 = `SUCCEEDED`; 2 = any other saved status (`INCOMPLETE`, `AWAITING_APPROVAL`,
+  `AWAITING_CONFIRMATION`, `STOPPED`, `FAILED`, `INTERRUPTED`); 3 = not started (intake refusal, not ready).
+  The run's `report.md` is short: one line saying the migration was not run, the remediation section, the path of
+  `remediation/report.md`; no migration sections. `RunReport.success` = remediation `SUCCEEDED`.
+- **Engine**: graph nodes `intake → remediation → finalize` (`sbmig.graph.REMEDIATION_NODES`; the page's stage rail
+  follows the `node` events; an intake refusal goes straight to `finalize`); journal `{"event": "flow", "flow":
+  "remediation"}` first. Of the intake only the setup hook, the config warnings, the preflight and the build-tool check
+  run; no git snapshot, aggregator, de-duplication, extension stripping or effective-pom capture. `chain.run_only(run_dir,
+  source, cfg, *, run_id, journal, stop, components=None, build_targets=())` raises `chain.RemediationNotReady` (with
+  `.missing`) and nothing else. Build targets without a root pom: the directories of the reactor roots read from the
+  accepted tree (`pom_parser.parse_poms`; a pom no other pom lists as a module), re-rooted onto the ZIP (`chain.zip_targets`).
+  A ZIP whose project sits two or more folders deep is not accepted by this flow (`no_pom`). `sbmig fleet` runs `full` only.
+
+**Web.** `POST /api/runs?flow=full|remediation` (default `full`; another value → 400). The flow is a per-run value like
+`stop_after`: `RequestRecord.flow` (pinned at intake), Job env `SBMIG_FLOW` (`contract.FLOW_ENV`, in `contract.RUN_ENV`;
+set by Main when it creates the Job, checked by the Worker against `request.json` like `SBMIG_STOP_AFTER`), `sbmig run
+--flow remediation` in the Worker's command; in-process mode passes it to the orchestrator. `status()` and the run list
+carry `flow`. Queue, slots and stop work as for any run. Nothing changes in the 81 template.
+
+**Run ids and names.** A web run's id is `<slug>-YYYYMMDD-HHMMSS-<6 hex>` (`runs.run_id_for`): the slug is the uploaded
+file's base name without `.zip`, lowercased, every run of characters outside `[a-z0-9]` turned into one `-`, trimmed, cut
+to 24 characters (`RUN_ID_SLUG_MAX`: the Job name `sbmig-<id>` and the resume name `…-rem<attempt>` stay within the
+63-character label limit); a slug without a letter (a Korean name, digits only) is `web`, the earlier shape. The run
+directory is claimed by an exclusive `mkdir`. The name as uploaded (Unicode kept, control characters dropped, 255
+characters) is `RequestRecord.upload_name` / `upload` in `web-status.json`; `status()` and the list carry it as
+`upload_name`. `status()` also carries `abort_reason` (the first `run aborted: …` follow-up of `report.json`) and, when
+`sbmig.report.i18n.tr_line` knows it, `abort_reason_ko`.
+
+**Page** (`sbmig/web/static/index.html`): the header shows the name `panacea-remediating-oss` and no description line
+(a temporary name; `<title>` the same); there is no footer. Every run is named by its uploaded file name (the run id small
+under it). A run that was refused shows its reason as a sentence in the result area (`abort_reason_ko || abort_reason`). The upload card has two choices, 전체 진행 (default: 이관 후 취약점 조치) and 취약점
+해결 (이미 이관된 프로젝트의 취약점 조치만); the start button and the stage rail follow the choice (전체 진행: as before;
+취약점 해결: 접수 → 취약점 조치 → 마무리). A run of the `remediation` flow shows the remediation result block as its
+result, and its download buttons are the remediation report and the remediation result ZIP. The run list names the flow.
+
+**Ant.** `intake.ant_to_maven` is `false` by default (company decision 2026-11-12: no Ant → Maven conversion). An Ant
+project (build.xml, no pom.xml) is refused at intake: exit 3, flag `unsupported-build-tool:ant`, and the abort reason is
+`intake.ant_message` ("Maven 변환 후 신청 부탁드립니다.") — the ERROR line, the first line of the report and what the page
+shows. The synthesis code (v2.1j, `sbmig/analyze/ant.py`) is kept and runs with `intake.ant_to_maven: true`; the
+`ant-webapp` fixture sets it, so the tests and the real-Maven e2e keep exercising it.
 
 ## remediations (취약점 조치) — `/api/remediations`, IVAS, version-text fixes + approved managed overrides (2026-11-11)
 

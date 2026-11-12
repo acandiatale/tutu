@@ -57,8 +57,10 @@ def migrate(
     dry_run: bool = False,
     repo_root: Optional[Union[str, Path]] = None,
     components: Optional[Mapping[str, Any]] = None,
+    flow: str = "full",
 ) -> "RunReport":
-    """프로젝트 하나(디렉토리 또는 zip)를 끝까지 이관한다 — `sbmig run` 과 같은 파이프라인. llm 에 회사
+    """프로젝트 하나(디렉토리 또는 zip)를 끝까지 이관한다 — `sbmig run` 과 같은 파이프라인(``flow="remediation"`` 이면 이관 없이
+    취약점 조치만). llm 에 회사
     게이트웨이 어댑터(LLMAdapterLike)나 클라이언트를, fixer 에 사내 수정기(propose_script)를 줄 수 있다.
     RunReport 를 돌려주고 exit_code(report) 가 CLI 종료 코드(0 / 2 / 3)로 바꾼다.
 
@@ -72,12 +74,15 @@ def migrate(
     kb         None/True → the file knowledge base; False → no KB (a NullKnowledgeBase); an object → used as is.
     stop_after intake|analyze|plan|transform|restructure (v2; jdk21|spring are v1 phases).
     components advanced: extra Orchestrator collaborators (build_runner, rewrite_runner, restructurer, …).
+    flow       "full" (default: the migration) | "remediation" (no migration: the vulnerability remediation of the
+               project as uploaded; not with stop_after / dry_run — ValueError).
     Returns the RunReport; `exit_code(report)` maps it to the CLI exit code (0 / 2 / 3)."""
     from sbmig.core.config import load_config
     from sbmig.core.workspace import Workspace
-    from sbmig.loop import NullKnowledgeBase, Orchestrator, parse_stop_after
+    from sbmig.loop import NullKnowledgeBase, Orchestrator, check_flow, parse_stop_after
 
     phase = parse_stop_after(stop_after)        # ValueError names the accepted values
+    flow = check_flow(flow, phase, dry_run)     # ValueError: unknown flow / remediation with stop_after or dry_run
     ov: dict = dict(overrides or {})
     if kb is False:
         ov = _merge(ov, {"kb": NO_KB_OVERRIDES})
@@ -99,8 +104,9 @@ def migrate(
 
     ws = Workspace.from_input(input, out, run_id=run_id)
     extra = dict(components or {})
+    extra.setdefault("source", input)
     orch = Orchestrator(cfg, ws, llm=client, fixer=fixer, kb=kb_obj, **extra)
-    return orch.run(stop_after=phase, dry_run=dry_run)
+    return orch.run(stop_after=phase, dry_run=dry_run, **({"flow": flow} if flow != "full" else {}))
 
 
 def exit_code(report: "RunReport") -> int:

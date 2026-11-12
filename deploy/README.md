@@ -159,8 +159,16 @@ Secret 의 `SBMIG_WEB_TOKEN` 을 채운다 — 그때는 `http://<host>:8765/?to
   | `SBMIG_BUILD__LOCAL_REPO` | `null` (= `~/.m2` 볼륨) | 40 · 81 · 80 |
   | `SBMIG_SCRIPT__PYTHON` | `null` (= 이미지의 python) | 40 · 81 · 80 |
   | `SBMIG_LLM__RECORD_DIR` | `${LLM_RECORD_DIR:-}` (= 그 변수가 있을 때만 기록) | 40 |
-* **화면**(2026-11-05 새 디자인, 회사 블루): zip 을 끌어다 놓거나 파일 선택 → `마이그레이션 시작` → 단계 레일(접수 → 분석 → 계획 →
-  단계들 → 마무리)과 진행 기록 / 로그 탭 → 끝나면 `보고서 받기(report.md)` / `변환된 프로젝트 받기(result.zip)` 두 버튼. 로그는 화면에
+* **화면**(회사 블루, 머리 이름 `panacea-remediating-oss` — 임시): 먼저 진행 방식을 고른다.
+  * **전체 진행**(기본): 이관 후 취약점 조치까지. `마이그레이션 시작` → 단계 레일(접수 → 분석 → 계획 → 단계들 → 마무리).
+    이관이 BUILD SUCCESS 로 끝나야 조치가 이어 돌고, 그때 레일 끝에 '취약점 조치' 칸이 붙는다(§6).
+  * **취약점 해결**: 이미 이관된 프로젝트의 취약점만 조치한다. 이관 단계·LLM·KB 를 쓰지 않고 올린 프로젝트를 그대로 빌드·검사·조치·재검사한다.
+    `취약점 조치 시작` → 단계 레일(접수 → 취약점 조치 → 마무리), 결과는 조치 결과 칸과 조치 보고서 / 조치 결과 ZIP 버튼(§6 "취약점 해결만").
+
+  zip 을 끌어다 놓거나 파일 선택 → 시작 → 진행 기록 / 로그 탭 → 끝나면 `보고서 받기(report.md)` / `변환된 프로젝트 받기(result.zip)` 두 버튼.
+  실행 폴더 이름은 올린 파일 이름에서 만든 앞머리로 시작한다(`<앞머리>-YYYYMMDD-HHMMSS-<hex 6>`; 소문자·숫자·하이픈, 긴 이름은 자르고, 쓸
+  글자가 없으면 `web`). 실행 목록에는 올린 파일 이름이 그대로 보인다. 접수에서 거절된 실행은 그 사유를 문장으로 보인다(예: Ant 프로젝트 →
+  "Maven 변환 후 신청 부탁드립니다."). 로그는 화면에
   마지막 1,500 줄만 그린다(전체는 `sbmig.log` 링크) — 몇 만 줄이 쌓여 브라우저가 느려지던 문제의 답. 사내망이라 웹 폰트·CDN 없음.
 * **리소스**: Maven / OpenRewrite 는 `openrewrite.jvm_args: ["-Xmx4g"]` 로 돈다 → 메모리 limit 6~8 GiB, CPU 2~4. 업로드 상한
   `SBMIG_MAX_UPLOAD_MB`(기본 512, 매니페스트는 1024). **프로브**: 인증 없는 health 경로가 없어 `tcpSocket`.
@@ -239,7 +247,7 @@ env 가 아닌 것: `artifacts.yml`(이미지에 구운 파일), `settings.xml`(
 ```
 담당자 브라우저 ──zip 업로드──▶ 웹 파드 (sbmig serve --mode k8s-job)
                                   │ 1 /data/out/<run id>/source.zip 에 보관, 저널 첫 줄
-                                  │ 2 Job 생성 (k8s/81-web-job.template.yaml + 실행별 env: SBMIG_SOURCE_ZIP, SBMIG_OUT, SBMIG_RUN_ID, SBMIG_CONFIG)
+                                  │ 2 Job 생성 (k8s/81-web-job.template.yaml + 실행별 env: SBMIG_SOURCE_ZIP, SBMIG_OUT, SBMIG_RUN_ID, SBMIG_CONFIG, SBMIG_FLOW)
                                   │ 3 Job/파드 상태 감시 → 화면 레일의 '파드' 단계 (생성 중 → 준비됨 → 결과 파일을 받으면 체크)
                                   ▼
                             빌드 Job 파드 (같은 이미지, run-job.sh → sbmig run --out /data/out --run-id <run id>)
@@ -557,6 +565,14 @@ preflight / ADF / 내부 오류)이면 3. `SBMIG_FAIL_JOB_ON_BUILD_FAIL=1` 이�
   취약점 상세 행 수(중복 제거 전)와 같아야 검사 완료다. 다르면 `summary_mismatch`(검사 미완료, 두 수는 검사 메모에). `fileComponents` · `swComponents`
   는 상세 행과의 대응이 확인되지 않아 0 인지 아닌지만 본다. 실제 IVAS 의 건수 뜻이 달라 멀쩡한 검사가 미완료로 끝나면
   `SBMIG_REMEDIATION__IVAS_SUMMARY_CHECK: "nonzero"` 주석을 풀고 웹 파드를 재시작한다(정책 해시와 무관).
+* **취약점 해결만**(이관 없이 조치만 — 이미 이관된 프로젝트를 다시 점검할 때): 실행 방식 `remediation`.
+  * 클러스터: 화면에서 **취약점 해결** 을 고르고 ZIP 을 올린다(API 는 `POST /api/runs?flow=remediation`). 업로드와 같은 대기 줄·자리를 쓰는 보통
+    빌드 Job 이다. 웹 파드가 Job env `SBMIG_FLOW` 를 넣으므로 운영자가 설정할 것은 없고 매니페스트도 그대로다(IVAS Secret 은 위와 같다).
+  * PC: `sbmig run <zip|폴더> --config config/artifacts.yml --flow remediation`. `.env` 에 IVAS 세 값과 `SBMIG_BUILD__SETTINGS_FILE` 이 있어야 한다.
+  * 하는 일: 이관 단계·LLM·KB 없이 올린 프로젝트를 그대로 기준 빌드(실패하면 검사 전에 `FAILED baseline_build_failed`) → 검사 → 조치 → 재검사.
+    파일·승인·재개는 이관에 이어 돈 조치와 같다(`<run dir>/remediation/`). `remediation.after_migration` · `remediation.trusted_projects` 는 묻지 않는다.
+  * 결과 줄 `SBMIG-RESULT … flow=remediation … remediation=<상태>`. 종료 코드 0 = SUCCEEDED, 2 = 그 밖의 저장 상태(승인 대기 포함), 3 = 시작 못 함
+    (접수 거절, 또는 IVAS 값·Maven 준비가 없을 때 플래그 `remediation:not-ready` — 보고서가 빠진 이름을 적는다).
 * **80 모델(요청별 Job, emptyDir)**: 같은 스위치·Secret 이 `envFrom` 으로 닿아 조치도 돈다. 그러나 작업 공간이 파드와 함께 사라지므로
   `run-job.sh` 는 결과 저장소에 `remediation/` 의 글로 된 요약(`report.md`, `report.json`, `state.json`, `journal.jsonl`, `delivery.json`)만 보낸다.
   `result.zip` 은 git 에 넣지 않는다 — 필요하면 `RESULT_PUSH_CMD` 로 실행 폴더째 내보낸다. 이 모델에는 승인 화면도 없다.

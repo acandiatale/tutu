@@ -38,7 +38,7 @@
 |---|---|
 | Maven (루트 pom) | 그대로 |
 | 루트 pom 없는 형제 pom / `APP/pom.xml` 이 `../DEV` 를 묶는 모양 | 접수에서 루트 aggregator 생성 |
-| Ant (`build.xml` 만) | 접수에서 pom.xml 합성(`intake.ant_to_maven`), 좌표 모르는 jar 는 `system` 스코프 + Handover |
+| Ant (`build.xml` 만) | 받지 않음(exit 3, `unsupported-build-tool:ant`). 안내 문구 "Maven 변환 후 신청 부탁드립니다."(`intake.ant_message`). `intake.ant_to_maven: true` 면 접수에서 pom.xml 을 합성하고 진행(좌표 모르는 jar 는 `system` 스코프 + Handover) |
 | Gradle, pom 도 build.xml 도 없는 트리 | 거부(exit 3). 담당팀 안내문은 읽기 전용 `sbmig inventory <dir>` |
 | Oracle ADF(근거 계열 둘 이상) | 분석에서 멈춤(exit 3, "ADF 프로젝트라 변환이 불가능합니다") |
 | 리액터가 아무것도 컴파일하지 않는 속 빈 모양 | 계속하지만 성공 아님(`hollow-reactor`, exit 2) |
@@ -98,7 +98,7 @@ flowchart LR
 ```mermaid
 flowchart TD
   START(["폴더 / zip"]) --> INTAKE["intake: 작업 사본 · git · preflight · 빌드 도구 · 트리 모양"]
-  INTAKE -->|"Gradle · 빌드 파일 없음 · Maven/JDK 문제"| FIN
+  INTAKE -->|"Gradle · Ant · 빌드 파일 없음 · Maven/JDK 문제"| FIN
   INTAKE --> ANALYZE["analyze: 케이스 유형 · 라이브러리 · 권고 · 동봉 jar · ADF"]
   ANALYZE -->|"ADF · 루트 pom 없음"| FIN
   ANALYZE --> PLAN["plan: 레시피 세트 · 단계 목록"]
@@ -117,6 +117,7 @@ flowchart TD
 ```
 
 LangGraph 노드는 `intake` → `analyze` → `plan` → `phase`(단계 묶음마다 반복: transform, restructure(재구성 + 검토), verify) → `finalize` → `remediation` → END 입니다.
+위 그림은 실행 방식 `full`(기본, 전체 진행)입니다. 실행 방식 `remediation`(취약점 해결)은 `intake` → `remediation` → `finalize` 만 지나갑니다: 프로젝트를 고치지 않는 접수(작업 사본, preflight, 빌드 도구 판별과 거부), 올린 그대로의 프로젝트에 대한 취약점 조치, 짧은 보고서. 이관 단계·LLM·KB 는 쓰지 않습니다(10절).
 멈춤(`--stop-after`, 웹의 Stop)이나 중단은 곧바로 `finalize` 로 갑니다. Stop 은 노드 사이에서만 반영되고, 진행 중인 Maven·LLM 호출은 끊지 않습니다.
 
 MSA 는 공유 라이브러리 루트 먼저, 그다음 서비스마다 `transform.rewrite@<x>` → `restructure.msa_pom` → `restructure.review` → `verify.build` 입니다(루트 aggregator 가 없으면 서비스마다 verify).
@@ -125,7 +126,7 @@ MSA 는 공유 라이브러리 루트 먼저, 그다음 서비스마다 `transfo
 
 ### 4.1 intake
 
-- `build.setup_command`(있으면) → preflight(Maven 실행, `mvn -v` 의 Java 가 21, 사내 부모 좌표가 채워졌는지) → 빌드 도구 판별(Maven / Ant 합성 / 거부).
+- `build.setup_command`(있으면) → preflight(Maven 실행, `mvn -v` 의 Java 가 21, 사내 부모 좌표가 채워졌는지) → 빌드 도구 판별(Maven 통과 / Ant 는 `intake.ant_message` 로 거부, `intake.ant_to_maven: true` 면 pom 합성 / Gradle·빌드 파일 없음 거부).
 - 트리 모양: 떠도는 pom 복사본(IDE 출력 폴더의 모듈 사본) 무시, 루트 pom 없으면 aggregator 생성, 리액터에 두 번 닿는 모듈 제거, 배포 전송 빌드 확장(wagon) 제거, 사내 부모 체인의 빌드 확장 점검.
 - as-is effective dependencyManagement 캡처 → `logs/effective-depmgmt.json`(나중에 버전 이어받기와 Handover 의 "바뀐 버전").
 - 멈춤(exit 3): `mvn-not-found`, `jdk-not-21`, `unsupported-build-tool:<도구>`, `ear-without-modules`.
@@ -296,9 +297,9 @@ flowchart TD
 
 | 방식 | 무엇 |
 |---|---|
-| `sbmig run <폴더 또는 zip> --config <회사 yml>` | 한 프로젝트 → `out/<run id>/` |
+| `sbmig run <폴더 또는 zip> --config <회사 yml>` | 한 프로젝트 → `out/<run id>/`. `--flow remediation` 이면 이관 없이 취약점 조치만(10절) |
 | `sbmig fleet run <manifest>` / `resume` / `status` | 여러 프로젝트를 하나씩, KB 하나 공유(개발·대량 시험용) |
-| `sbmig serve` (in-process) | 웹 UI: zip 업로드 → 실행을 이 프로세스에서, 한 번에 하나(나머지는 `queued`), SSE 로 `node` / `journal` / `log` / `report` 이벤트 |
+| `sbmig serve` (in-process) | 웹 UI: zip 업로드(진행 방식 전체 진행 / 취약점 해결, `POST /api/runs?flow=`) → 실행을 이 프로세스에서, 한 번에 하나(나머지는 `queued`), SSE 로 `node` / `journal` / `log` / `report` 이벤트 |
 | `sbmig serve` + `SBMIG_WEB_MODE=k8s-job` | 웹 파드가 업로드마다 빌드 **Job** 을 만듦. 동시에 `SBMIG_JOB_MAX_PARALLEL` 개(매니페스트 3), 나머지는 올린 순서로 대기. 자리 k ≥ 2 는 자기 Maven 로컬 저장소. 공유 PVC 의 실행 폴더로만 만남(`control/state.json`, `job-status.json`) |
 
 ```mermaid
@@ -319,6 +320,8 @@ Main ↔ Worker 의 파일·종료 코드·멈춤·복구 약속: `docs/v2/JOB-R
 이관이 BUILD SUCCESS 로 끝나고 `remediation.after_migration` 이 켜져 있으면, 마지막 노드 `remediation` 이 같은 빌드 파드 안에서 별도 그래프를 부릅니다:
 IVAS 로 이관된 프로젝트를 검사하고, 승인된 취약 라이브러리의 **버전 글자만** 고쳐 다시 빌드·재검사합니다. 결과는 `<실행 폴더>/remediation/` 에 남고 이관의 판정·종료 코드는 바꾸지 않습니다(`SBMIG-RESULT … remediation=<상태>`).
 승인을 기다리면 파드가 끝나고, 재개는 새 빌드 파드로 이어 갑니다. 노드·상태·API·설정: `agent-doc/11-remediations.md`.
+
+이미 이관된 프로젝트를 다시 점검할 때는 실행 방식 `remediation` 으로 조치만 돌립니다: `sbmig run <zip|폴더> --flow remediation`, 웹 `POST /api/runs?flow=remediation`, 화면의 **취약점 해결**. 이관 단계·LLM·KB 를 쓰지 않고, 올린 프로젝트를 그대로 빌드해 검사·조치·재검사합니다(파일은 같은 `<실행 폴더>/remediation/`). `remediation.after_migration` · `remediation.trusted_projects` 는 묻지 않습니다. 결과 줄은 `SBMIG-RESULT … flow=remediation … remediation=<상태>`, 종료 코드 0 = SUCCEEDED, 2 = 그 밖의 저장 상태, 3 = 시작 못 함(접수 거절, IVAS 값·Maven 준비가 없으면 `remediation:not-ready`). Job 모드에서도 같은 대기 줄·자리에서 도는 보통 실행입니다.
 
 ## 11. 운영과 검증
 

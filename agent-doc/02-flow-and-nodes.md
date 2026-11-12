@@ -31,11 +31,17 @@ step_intake --> step_analyze --> step_plan --> step_phase(transform)
 |---|---|
 | 코드 | `Orchestrator.step_intake` → `_step_intake`: `_preflight`, `_check_build_tool`, `_intake_layout`, `_capture_effective` |
 | 읽는 것 | 입력 트리, `artifacts.parent` / `artifacts.boot_parent` / `artifacts.comp_parent`, `build.mvn`, `build.java_home` |
-| 하는 일 | (0) `build.setup_command` 가 있으면 먼저 실행(실패 = 중단). (1) 사전 점검: Maven 이 도는지, `mvn -v` 의 Java 가 `build.require_java_major`(21)인지, 사내 부모 좌표가 채워졌는지 → 저널 `preflight`. (2) 빌드 도구: `sbmig/analyze/build_tool.py` 의 판별. Maven 이면 통과. Ant(build.xml 만)면 `intake.ant_to_maven` 일 때 `sbmig/analyze/ant.py` 의 `synthesize_pom` 이 pom.xml 을 쓰고 커밋 `intake: pom.xml synthesized from build.xml`, 플래그 `pom-synthesized`(좌표 모르는 jar 가 있으면 `jar-coordinates-unknown`). Gradle·빌드 파일 없음 → 중단. (3) 레이아웃: 떠도는 pom 복사본 무시(`find_stray_pom_copies`, 폴더를 `Workspace.ignored_dirs` 에 넣음, 플래그 `stray-pom-ignored`, 커밋 없음) → 모듈이 트리에 없는 EAR 루트면 중단(`ear-without-modules`) → 루트 pom 없는 형제 pom 이면 루트 aggregator 생성(`layout.generate_aggregator`, 커밋 `intake: generated root aggregator pom (…)`, 플래그 `aggregator-generated`) → reactor 에 두 번 닿는 모듈의 중복 `<module>` 제거(커밋, 플래그 `reactor-duplicate-removed`) → 배포 전송 빌드 확장(`<build><extensions>` 의 wagon-*, 목록 `knowledge/libraries/build_extensions.yml`) 제거(`sbmig/analyze/build_extensions.py`, 커밋 `intake: deploy transport extension(s) removed (…)`, 플래그 `deploy-extensions-removed`, 인수인계 한 줄씩 — 저장소에 없는 확장 하나가 OpenRewrite 까지 막기 때문, `intake.strip_deploy_extensions`) → 사내 부모 체인이 선언한 빌드 확장 점검(`sbmig/build/parent_extensions.py`: 저장소가 주는데 로컬 `~/.m2` 에 묵은 `*.lastUpdated` 표식만 있으면 그 폴더의 표식 제거, 어디서도 못 읽으면 WARNING + 플래그 `parent-extension-unresolvable` + 인수인계, 저널 `parent_build_extensions`). (4) as-is effective dependencyManagement 캡처(`sbmig/build/effective.py` 의 `capture_effective_depmgmt` → `logs/effective-depmgmt.json`) — 나중에 버전 이어받기와 인수인계의 "바뀐 버전" 에 쓴다 |
+| 하는 일 | (0) `build.setup_command` 가 있으면 먼저 실행(실패 = 중단). (1) 사전 점검: Maven 이 도는지, `mvn -v` 의 Java 가 `build.require_java_major`(21)인지, 사내 부모 좌표가 채워졌는지 → 저널 `preflight`. (2) 빌드 도구: `sbmig/analyze/build_tool.py` 의 판별. Maven 이면 통과. Ant(build.xml 만)는 기본으로 거절한다(`_refuse_ant`: 플래그 `unsupported-build-tool:ant`, exit 3, 중단 사유 = `intake.ant_message` "Maven 변환 후 신청 부탁드립니다." — ERROR 줄·보고서 첫 줄·웹 화면에 그대로). `intake.ant_to_maven: true` 일 때만 `sbmig/analyze/ant.py` 의 `synthesize_pom` 이 pom.xml 을 쓰고 커밋 `intake: pom.xml synthesized from build.xml`, 플래그 `pom-synthesized`(좌표 모르는 jar 가 있으면 `jar-coordinates-unknown`). Gradle·빌드 파일 없음 → 중단. (3) 레이아웃: 떠도는 pom 복사본 무시(`find_stray_pom_copies`, 폴더를 `Workspace.ignored_dirs` 에 넣음, 플래그 `stray-pom-ignored`, 커밋 없음) → 모듈이 트리에 없는 EAR 루트면 중단(`ear-without-modules`) → 루트 pom 없는 형제 pom 이면 루트 aggregator 생성(`layout.generate_aggregator`, 커밋 `intake: generated root aggregator pom (…)`, 플래그 `aggregator-generated`) → reactor 에 두 번 닿는 모듈의 중복 `<module>` 제거(커밋, 플래그 `reactor-duplicate-removed`) → 배포 전송 빌드 확장(`<build><extensions>` 의 wagon-*, 목록 `knowledge/libraries/build_extensions.yml`) 제거(`sbmig/analyze/build_extensions.py`, 커밋 `intake: deploy transport extension(s) removed (…)`, 플래그 `deploy-extensions-removed`, 인수인계 한 줄씩 — 저장소에 없는 확장 하나가 OpenRewrite 까지 막기 때문, `intake.strip_deploy_extensions`) → 사내 부모 체인이 선언한 빌드 확장 점검(`sbmig/build/parent_extensions.py`: 저장소가 주는데 로컬 `~/.m2` 에 묵은 `*.lastUpdated` 표식만 있으면 그 폴더의 표식 제거, 어디서도 못 읽으면 WARNING + 플래그 `parent-extension-unresolvable` + 인수인계, 저널 `parent_build_extensions`). (4) as-is effective dependencyManagement 캡처(`sbmig/build/effective.py` 의 `capture_effective_depmgmt` → `logs/effective-depmgmt.json`) — 나중에 버전 이어받기와 인수인계의 "바뀐 버전" 에 쓴다 |
 | 저널 | `build_hook`, `preflight`, `build_tool`, `pom_synthesized`, `stray_pom_ignored`, `ear_without_modules`, `aggregator_generated`, `reactor_dedupe`, `effective_depmgmt` |
 | 멈춤 | Maven 실행 불가(`mvn-not-found`), JDK 가 21 아님(`jdk-not-21`), `unsupported-build-tool:<도구>`, `ear-without-modules` → 모두 exit 3 |
 
 pom 이 없고 build.xml 도 없는 트리(풀어 놓은 Tomcat 웹앱)는 거부된다. 담당팀에 보낼 설명서는 읽기 전용 `sbmig inventory <dir>` 가 만든다.
+
+**실행 방식.** `sbmig run --flow full|remediation`(기본 `full`, 웹 `POST /api/runs?flow=`). `full` 은 이 문서의 흐름 전부다.
+`remediation`(취약점 해결)은 엔진 노드 `intake → remediation → finalize` 만 지나간다: 접수는 프로젝트를 고치지 않는 데까지만(작업 사본,
+사전 점검, 빌드 도구 판별과 거절 — aggregator 생성·확장 제거·pom 합성 없음) 돌고, `chain.run_only` 가 올린 그대로의 프로젝트를 조치한다.
+분석·계획·변환·재구성·검토·검증·수정 루프·LLM·KB 는 없다. 저널 첫 줄 `{"event": "flow", "flow": "remediation"}`, `--stop-after` 는
+함께 쓸 수 없다. 자세한 것은 [11-remediations.md](11-remediations.md).
 
 ## 2. 분석 (analyze) — `step_analyze`
 
@@ -189,23 +195,24 @@ KB 쪽: 실행의 오류 목록이 `kb-v2/errors.jsonl` 에 덧붙고, 케이스
 |---|---|---|
 | `aborted`, `aborted:parent-not-found` | `_abort`, 설정된 사내 부모 좌표(설정 버전) 해석 불가 | 3 |
 | `asis-parent-aligned`, `rewrite-skipped-asis-parent` | 변환·수정 루프(사내 부모의 as-is 버전 / 다른 부모가 저장소에 없음) | 기록만 |
-| `mvn-not-found`, `jdk-not-21`, `unsupported-build-tool:<x>`, `ear-without-modules`, `no-root-pom` | 접수·분석 | 3 |
+| `mvn-not-found`, `jdk-not-21`, `unsupported-build-tool:<x>`(Gradle, 빌드 파일 없음, Ant), `ear-without-modules`, `no-root-pom` | 접수·분석 | 3 |
 | `adf-project` | 분석(ADF 2계열 이상, `stop`) | 3 |
 | `hollow-reactor` | 분석 | 2 (빌드가 통과해도) |
 | `restructure-failed` | 재구성 | 2 |
 | `parent-chain-no-boot-bom` | 재구성 | 알림(attn 코드) |
 | `tests-not-compiled` | 마무리 | 알림 |
 | `bundled-jars`, `stray-pom-ignored`, `pom-synthesized`, `aggregator-generated`, `reactor-duplicate-removed`, `deploy-extensions-removed`, `adf-traces`, `sources-outside-reactor` | 접수·분석 | 기록만 |
+| `remediation:not-ready` | 접수(실행 방식 `remediation`) | 3 (IVAS 값·Maven 준비 없음, 빠진 이름만 보고서에) |
 | `parent-extension-unresolvable` | 접수 | 사내 부모 체인의 빌드 확장을 로컬·저장소 어디서도 못 읽음 — 모든 Maven 호출이 `Unresolveable build extension` 으로 실패한다. Nexus 에 올리거나 부모에서 빼야 한다 |
 | `llm-budget-exhausted`, `time-budget-exhausted`, `infra:<kind>` | 루프·마무리 | 성공이 아니면 2 |
 
 ## 11. LangGraph 엔진, inline 엔진, 웹 UI
 
 - 기본 엔진은 `loop.engine: graph`: `build_graph`(`sbmig/graph/engine.py`)가 `StateGraph` 노드 `intake` → `analyze` → `plan` →
-  `phase`(phase 묶음마다 반복) → `finalize` (→ `remediation`: `remediation.after_migration` 이고 BUILD SUCCESS 일 때 취약점 조치, 11 문서) → END 를 만든다. 노드마다 오케스트레이터의 같은 `step_*` 메서드를 하나씩 부르고,
+  `phase`(phase 묶음마다 반복) → `finalize` (→ `remediation`: `remediation.after_migration` 이고 BUILD SUCCESS 일 때 취약점 조치, 11 문서) → END 를 만든다(실행 방식 `remediation` 은 `intake` → `remediation` → `finalize`). 노드마다 오케스트레이터의 같은 `step_*` 메서드를 하나씩 부르고,
   그래프 상태에는 작은 JSON 값만 둔다(무거운 객체는 오케스트레이터에). 노드는 오류를 처리하지 않는다 — 예외는 run guard 로 올라간다.
 - `loop.engine: inline` 은 같은 순서를 `Orchestrator._run` 이 그래프 없이 돈다. 보고서·저널·종료 코드가 같다(테스트로 보장).
-- 웹 UI: `sbmig serve`(= uvicorn `sbmig.web.app:app`). zip 업로드 → `RunManager`(`sbmig/web/runs.py`)가 실행마다 작업 스레드
+- 웹 UI: `sbmig serve`(= uvicorn `sbmig.web.app:app`). zip 업로드(진행 방식 전체 진행 / 취약점 해결 → `?flow=full|remediation`) → `RunManager`(`sbmig/web/runs.py`)가 실행마다 작업 스레드
   하나에서 `stream_graph` 를 돌린다. 한 번에 이관 하나, 나머지는 `queued`(파일 KB 를 같이 쓰므로). SSE(`/api/runs/{run_id}/events`)
   이벤트: `status`(처음과 끝), `node`(그래프 노드 하나가 끝날 때), `journal`(저널 한 줄), `log`(`sbmig.log` 한 줄), `report`
   (끝난 뒤 보고서 본문), `error`, `ping`, `end`. 중지(Stop)는 노드 사이에서만 반영된다 — 진행 중인 Maven·LLM 호출은 끊지 않고,

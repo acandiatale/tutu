@@ -2068,11 +2068,20 @@ class PomSynthesis(BaseModel):
         return out
 
 
+# v2.1z-aj: 실행 방식. full = 이관 전체(성공하면 설정에 따라 취약점 조치가 이어진다), remediation = 이관을 하지 않고 올린
+# 프로젝트 그대로 취약점 조치만. CLI `--flow`, 웹 `POST /api/runs?flow=`, 화면의 "전체 진행" / "취약점 해결".
+FLOW_FULL = "full"
+FLOW_REMEDIATION = "remediation"
+RUN_FLOWS = (FLOW_FULL, FLOW_REMEDIATION)
+
+
 class RunReport(BaseModel):
     """실행 한 번의 최종 보고서(report.json, report.md 의 원본). 오케스트레이터가 단계마다 채우고
     마무리에서 인수인계·운영자 확인·오류 목록을 붙인다. `success` = 최종 검증 빌드 성공(불변조건 1: 최종
     빌드 없이 끝나는 실행은 없다)."""
     pom_synthesis: Optional["PomSynthesis"] = None   # v2.1j: set when the intake synthesized a pom.xml for an Ant project
+    # v2.1z-aj: 이 실행이 무엇을 했는가 — full = 이관(뒤에 취약점 조치가 이어질 수 있음), remediation = 이관 없이 취약점 조치만
+    flow: str = "full"                             # RUN_FLOWS: "full" | "remediation"
     run_id: str
     project_name: str
     case_type: CaseType

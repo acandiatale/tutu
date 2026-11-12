@@ -11,9 +11,16 @@ Maven 로컬 저장소는 이 파드의 이관과 같은 것(``cfg.build.local_r
 이 파드에서 이번 호출이 그만큼 돌면 ``stop`` 이 참이 되어 다음 경계에서 STOPPED, 이유 ``chain_budget`` (재개 가능; 진행 중인 검사의 영수증은
 남아 재개가 같은 IVAS 분석을 이어서 조회한다).
 
+이관 없이 조치만 하는 실행(``--flow remediation``)도 같은 자리를 쓴다: ``run_only`` 는 올린 ZIP 의 바이트를 그대로(디렉토리면
+있는 그대로 ZIP 으로 묶어) ``intake.accept_zip`` 에 넣고, 같은 실행 폴더·작업 id·시간 한도·``_drive`` 로 돈다. 이 경로는
+``remediation.after_migration`` 도 ``trusted_projects`` 도 묻지 않는다(사용자가 조치를 직접 요청했다). 준비가 안 됐으면 상태를 만들지
+않고 ``RemediationNotReady`` 를 올린다 — 오케스트레이터가 그것을 "시작하지 않음"(exit 3)으로 바꾼다.
+
 Chained remediation: runs in the build pod after a migration that ended in BUILD SUCCESS. The migration graph's
 `remediation` node calls `run_after_migration`; the remediation graph stays a separate feature. Its outcome never changes
-the migration's verdict and no exception leaves this module's entry points.
+the migration's verdict and no exception leaves this module's entry points. `run_only` is the entry point of the
+`remediation` run flow (no migration): same files, state id and driver; the only exception it raises is
+`RemediationNotReady` (no state was created).
 """
 from __future__ import annotations
 
@@ -395,15 +402,143 @@ def _start(paths: RunPaths, project_dir: Path, cfg: Any, comps: Components, *, r
     return _drive(paths, state, cfg, comps, jr=jr, stop=stop, budget=budget, real_stop=real_stop, excluded=excluded)
 
 
+class RemediationNotReady(Exception):
+    """조치만 하는 실행(``run_only``)을 시작할 수 없다: 빠진 IVAS 환경 변수 이름·Maven 준비 문제(값은 넣지 않는다). 상태는 만들지 않았다.
+
+    The remediation-only run cannot start (`missing` = problem sentences, names only); no state was created."""
+
+    def __init__(self, missing: Iterable[str]):
+        self.missing = [str(m) for m in missing]
+        super().__init__("; ".join(self.missing) or "not ready")
+
+
+def zip_targets(zip_path: Path | str, targets: Iterable[str]) -> list[str]:
+    """프로젝트 루트 기준 빌드 대상 폴더들을 ZIP 뿌리 기준으로 바꾼다: 대상마다 ``<t>/pom.xml`` 이 ZIP 뿌리에서 바로 보이면 그대로,
+    ZIP 이 프로젝트를 폴더로 한 번(이상) 감쌌으면 모든 대상이 들어맞는 가장 짧은 앞부분을 붙인다. 못 맞추면 그대로 돌려준다
+    (``accept_zip`` 이 ``no_pom`` 으로 거부한다). 읽을 수 없는 ZIP 도 그대로.
+
+    Re-root project-relative build targets onto the ZIP root (a wrapping folder is prefixed); unchanged when nothing fits."""
+    tl = [str(t).strip("/") for t in targets if str(t).strip("/") not in ("", ".")]
+    if not tl:
+        return []
+    try:
+        with zipfile.ZipFile(zip_path) as zf:
+            names = {n.replace("\\", "/") for n in zf.namelist()}
+    except (OSError, zipfile.BadZipFile, ValueError, EOFError):
+        return tl
+    if all(f"{t}/pom.xml" in names for t in tl):
+        return tl
+    tail = f"/{tl[0]}/pom.xml"
+    prefixes = sorted({n[:-len(tail) + 1] for n in names if n.endswith(tail)}, key=lambda p: (len(p), p))
+    for p in prefixes:
+        if all(f"{p}{t}/pom.xml" in names for t in tl):
+            return [f"{p}{t}" for t in tl]
+    return tl
+
+
+def run_only(run_dir: Path | str, source: Path | str, cfg: Any, *, run_id: str, journal: Journal | None,
+             stop: StopCheck | None, components: Components | None = None,
+             build_targets: Iterable[str] = ()) -> RemediationState:
+    """이관 없이 취약점 조치만 한 번(실행 방식 ``remediation``). ``source`` = 올린 ZIP 파일(그 바이트를 그대로 ``accept_zip`` 에 — 다시
+    묶지 않는다) 또는 디렉토리(``source_zip`` 으로 있는 그대로 묶는다). ``remediation.after_migration`` · ``trusted_projects`` 는 묻지 않는다.
+    준비 안 됨(IVAS 환경 변수 이름·Maven 준비) → 저널 ``remediation_skipped`` (reason not_ready, missing) 뒤 ``RemediationNotReady`` — 상태를
+    만들지 않는다. 이 실행 폴더에 이미 조치 상태가 있으면 손대지 않고 그대로 돌려준다(저널 ``remediation_exists``). 그 밖에는 이어서 도는
+    조치와 같다: ``chain_paths`` · 작업 id = 실행 id · ``remediation.chain_budget_minutes`` · 멈춤 · ``_drive``; 접수 거부는 FAILED 상태, 다른
+    예외는 FAILED internal_error. ``build_targets`` = 프로젝트 루트 기준 빌드 대상(루트 pom 이 있으면 비움) — ZIP 이 폴더로 감싸였으면
+    ZIP 뿌리 기준으로 바꾼다(``zip_targets``).
+
+    One remediation without a migration. Raises only `RemediationNotReady` (nothing created); an existing state is
+    returned untouched; otherwise the final state (intake rejection → FAILED, other errors → FAILED internal_error)."""
+    paths = chain_paths(run_dir)
+    jr = _scoped(journal)
+    try:
+        budget = _Budget(cfg, jr)
+        existing = load_state(run_dir)
+        if existing is not None:
+            jr({"event": "remediation_exists", "remediation": existing.id, "status": existing.status})
+            log.info("vulnerability remediation %s already exists (%s) — not started again", existing.id, existing.status)
+            return existing
+        comps = components
+        if comps is None:
+            try:
+                comps = graph_mod.default_components(cfg, journal=jr)
+            except Exception:
+                log.debug("remediation components not built", exc_info=True)
+        missing = readiness(cfg, comps)
+        if missing:
+            jr({"event": "remediation_skipped", "reason": "not_ready", "missing": missing})
+            raise RemediationNotReady(missing)
+        real_stop = _safe_stop(stop)
+        return _start_only(paths, Path(source), cfg, comps, run_id=run_id, jr=jr, stop=budget.wrap(real_stop),
+                           budget=budget, real_stop=real_stop, build_targets=build_targets)
+    except RemediationNotReady:
+        raise
+    except Exception as e:  # noqa: BLE001 — a saved FAILED state, never a traceback out of here
+        return _error(paths, jr, e, run_id, load_state(run_dir))
+
+
+def _start_only(paths: RunPaths, source: Path, cfg: Any, comps: Components, *, run_id: str, jr: Journal,
+                stop: StopCheck, budget: _Budget, real_stop: StopCheck,
+                build_targets: Iterable[str]) -> RemediationState:
+    from . import intake as intake_mod
+    from . import planner as planner_mod
+    from .models import IntakeRejected
+    if paths.root.exists():
+        # 상태 파일 없이 남은 폴더 = 접수 도중에 죽은 지난 시도(IVAS 에 보낸 것은 상태가 생긴 뒤에만 있다)
+        import shutil
+        shutil.rmtree(paths.root)
+    paths.root.mkdir(parents=True)
+    policy = planner_mod.policy_hash(cfg)
+    jr({"event": "remediation_start", "remediation": run_id, "flow": "remediation"})
+    log.info("vulnerability remediation %s: start (remediation only — the project as uploaded, no migration)", run_id)
+    targets = clean_targets(build_targets)
+    if source.is_dir():
+        name = SOURCE_NAME
+        source_zip(source, paths.original_zip, journal=jr)
+        zip_in = paths.original_zip
+    else:
+        name = source.name or SOURCE_NAME
+        targets = zip_targets(source, targets)
+        zip_in = source
+    if targets:
+        jr({"event": "remediation_build_targets", "targets": targets})
+        log.info("vulnerability remediation %s: building the targets %s (no root pom)", run_id, ", ".join(targets))
+    try:
+        result = intake_mod.accept_zip(zip_in, paths.root, intake_mod.limits_from_config(cfg),
+                                       **({"build_targets": targets} if targets else {}))
+    except IntakeRejected as e:
+        st = _failed_state(run_id, e.code, graph_mod.scrub_message(str(e), paths.root, 500), policy)
+        st.name = name
+        _try_save(paths, st)
+        jr({"event": "remediation_intake_rejected", "remediation": run_id, "code": e.code})
+        log.warning("vulnerability remediation %s: intake rejected the uploaded project (%s)", run_id, e.code)
+        _ended(jr, st, paths)
+        return st
+    state = graph_mod.new_state(run_id, name, cfg, result, [], policy_hash=policy)
+    state.build_targets = targets
+    _saver(paths)(state)
+    return _drive(paths, state, cfg, comps, jr=jr, stop=stop, budget=budget, real_stop=real_stop, chained=False)
+
+
+def _run_flow(run_dir: Path) -> str:
+    """실행 폴더의 report.json 에 적힌 실행 방식(없거나 읽을 수 없으면 "full"). 재개가 baseline 실패 문장을 고를 때 쓴다."""
+    try:
+        data = read_json(Path(run_dir) / "report.json")
+        return str(data.get("flow") or "full") if isinstance(data, dict) else "full"
+    except Exception:  # noqa: BLE001 — an unreadable report means "the chained case", as before
+        return "full"
+
+
 def _drive(paths: RunPaths, state: RemediationState, cfg: Any, comps: Components, *, jr: Journal,
            stop: StopCheck, budget: _Budget | None = None, real_stop: StopCheck | None = None,
-           excluded: Iterable[str] = ()) -> RemediationState:
+           excluded: Iterable[str] = (), chained: bool = True) -> RemediationState:
     save = _saver(paths)
     try:
         state = graph_mod.run_remediation(state, paths, cfg, comps, save=save, journal=jr, stop=stop)
     except Exception as e:  # noqa: BLE001 — run_remediation turns node errors into FAILED; this guards the rest
         return _error(paths, jr, e, state.id, state)
-    state = _baseline_outcome(paths, state, jr, excluded)
+    if chained:                              # 이관 없이 돈 조치에는 "이관의 최종 빌드는 통과했다" 는 사실이 없다
+        state = _baseline_outcome(paths, state, jr, excluded)
     if budget is not None:
         state = _budget_outcome(paths, state, budget, real_stop or (lambda: False))
     _ended(jr, state, paths)
@@ -430,14 +565,16 @@ def resume(run_dir: Path | str, cfg: Any, *, journal: Journal | None, stop: Stop
         state.stop_requested = False
         jr({"event": "remediation_resume", "remediation": state.id, "next_node": state.next_node})
         real_stop = _safe_stop(stop)
-        return _drive(paths, state, cfg, comps, jr=jr, stop=budget.wrap(real_stop), budget=budget, real_stop=real_stop)
+        return _drive(paths, state, cfg, comps, jr=jr, stop=budget.wrap(real_stop), budget=budget, real_stop=real_stop,
+                      chained=_run_flow(Path(run_dir)) != "remediation")
     except Exception as e:  # noqa: BLE001
         return _error(paths, jr, e, state.id, state)
 
 
 def summary(state: RemediationState | None, run_dir: Path | str, *, skipped: dict[str, Any] | None = None) -> dict[str, Any]:
     """이관 보고서(``RunReport.remediation``)에 넣을 작은 JSON 요약: status(건너뛰면 "skipped"), reason, reasons, counts, 짧은 message,
-    이관 실행 폴더 기준 파일 경로(report.md / report.json / state.json / delivery/result.zip 중 있는 것), 전달 ZIP 의 build_ok / scanned.
+    이관 실행 폴더 기준 파일 경로(report.md / report.json / state.json / delivery/result.zip 중 있는 것), 전달 ZIP 의 build_ok / scanned,
+    baseline 빌드가 돌았으면 그 결과 ``baseline_build_ok``.
 
     A small JSON-able digest for the migration report."""
     if state is None:
@@ -459,4 +596,7 @@ def summary(state: RemediationState | None, run_dir: Path | str, *, skipped: dic
     if state.delivery is not None:
         out["delivery"] = {"build_ok": bool(state.delivery.build_ok), "scanned": bool(state.delivery.scanned),
                            "sha256": state.delivery.sha256}
+    if state.baseline_build is not None:
+        # 결과 줄의 build= (실행 방식 remediation): 올린 그대로의 빌드가 돌았고 통과했는가
+        out["baseline_build_ok"] = bool(state.baseline_build.ok)
     return out

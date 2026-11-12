@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>sbmig — JDK 21 · Spring Boot 4.1 마이그레이션</title>
+<title>panacea-remediating-oss</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%231F5BD8'/%3E%3Cpath d='M9 22V10l7 7 7-7v12' fill='none' stroke='%23fff' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
 <style>
   /* 회사 메인 컬러가 파란색이라 파랑 하나만 뜻을 가진다: 지금 하는 일(현재 단계, 주 버튼, 올려놓을 자리).
@@ -30,7 +30,6 @@
   .top { background: var(--blue-deep); color: #fff; }
   .top .in { max-width: 960px; margin: 0 auto; padding: 14px 20px; display: flex; align-items: baseline; gap: 14px; }
   .top .name { font-weight: 700; font-size: 17px; letter-spacing: .01em; }
-  .top .what { color: rgba(255,255,255,.72); font-size: 13px; }
   .top .right { margin-left: auto; font-size: 12px; color: rgba(255,255,255,.6); }
 
   main { max-width: 960px; margin: 0 auto; padding: 24px 20px 56px; display: flex; flex-direction: column; gap: 20px; }
@@ -59,6 +58,20 @@
   .drop.has .meta { color: var(--muted); font-size: 12.5px; margin: 2px 0 0; }
   .drop.has .change { margin-left: auto; flex: none; color: var(--blue); font-weight: 600; font-size: 13px; position: relative; z-index: 1; }
   .drop.busy { pointer-events: none; opacity: .6; }
+  /* 진행 방식(v2.1z-aj): 라디오 두 칸. 고른 칸만 파랑 — 지금 할 일이 파랑이라는 이 화면의 규칙 그대로 */
+  .flowpick { border: 0; margin: 0 0 14px; padding: 0; min-width: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .flowpick legend { padding: 0; margin: 0 0 8px; font-size: 12.5px; font-weight: 600; color: var(--muted); }
+  .flowopt { display: flex; gap: 10px; align-items: flex-start; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--radius-s);
+             background: #fff; cursor: pointer; min-width: 0; transition: border-color .15s, background .15s; }
+  .flowopt:hover { border-color: var(--blue-mid); }
+  .flowopt input { width: 16px; height: 16px; margin: 2px 0 0; flex: none; accent-color: var(--blue); cursor: pointer; }
+  .flowopt .nm { display: block; font-weight: 700; color: var(--ink); }
+  .flowopt .ds { display: block; margin-top: 2px; font-size: 12.5px; color: var(--muted); word-break: keep-all; overflow-wrap: anywhere; }
+  .flowopt.on { border-color: var(--blue); background: var(--blue-soft); box-shadow: inset 0 0 0 1px var(--blue); }
+  .flowopt.on .nm { color: var(--blue-deep); }
+  .flowopt:has(input:focus-visible) { outline: 2px solid var(--blue); outline-offset: 2px; }
+  .flowopt:has(input:focus-visible) input:focus-visible { outline: none; }   /* 칸 전체에 테두리가 있으니 동그라미에는 겹쳐 그리지 않는다 */
+  .flowpick.locked .flowopt { cursor: default; opacity: .6; }
   .actions { display: flex; align-items: center; gap: 12px; margin-top: 16px; flex-wrap: wrap; }
   .actions .note { color: var(--muted); font-size: 12.5px; }
   .actions .spacer { flex: 1; }
@@ -97,6 +110,8 @@
   .run { padding: 20px 22px; }
   .runhead { display: flex; align-items: flex-start; gap: 16px; flex-wrap: wrap; }
   .runhead .title { font-size: 20px; font-weight: 700; margin: 0; line-height: 1.3; }
+  .runhead .who { min-width: 0; flex: 1 1 280px; }
+  .runhead .fname { margin: 0 0 4px; font-size: 14px; font-weight: 600; color: var(--ink); max-width: 100%; }
   .runhead .title.ok { color: var(--ok); } .runhead .title.bad { color: var(--bad); } .runhead .title.warn { color: var(--warn); }
   .runhead .sub { color: var(--muted); margin: 4px 0 0; font-size: 13px; display: flex; gap: 10px; flex-wrap: wrap; }
   .runhead .right { margin-left: auto; display: flex; gap: 8px; align-items: center; }
@@ -152,6 +167,11 @@
 
   /* ---- 3. 결과 카드 */
   .result { padding: 20px 22px; }
+  /* 진행하지 못한 까닭(접수 거절 등): 결과 카드 맨 위, 담당자가 바로 읽는 한 문장 */
+  .abort { margin: 0 0 16px; padding: 12px 16px; border: 1px solid var(--bad-tint); border-left: 3px solid var(--bad); border-radius: var(--radius-s);
+           background: var(--bad-tint); color: var(--ink); }
+  .abort .h { margin: 0 0 2px; font-weight: 700; color: var(--bad); font-size: 13px; }
+  .abort .why { margin: 0; font-size: 15px; font-weight: 600; word-break: keep-all; overflow-wrap: anywhere; white-space: pre-wrap; }
   .result .line { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; }
   .counts { display: flex; gap: 8px; flex-wrap: wrap; }
   .chip { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; font-size: 12.5px; background: var(--paper); color: var(--muted); border: 1px solid var(--line-soft); }
@@ -169,6 +189,7 @@
 
   /* ---- 3b. 취약점 조치(빌드 파드가 이관 성공 뒤 이어 돌린 조치): 결과 카드 아래 한 칸 */
   .remed { margin-top: 18px; border-top: 1px solid var(--line-soft); padding-top: 16px; }
+  .remed.solo { margin-top: 0; border-top: 0; padding-top: 0; }   /* 취약점 해결 실행: 이 칸이 결과 그 자체 */
   .remed .msg { margin: 8px 0 0; color: var(--muted); font-size: 12.5px; word-break: keep-all; overflow-wrap: anywhere; }
   .remed .msg:empty { display: none; }
   .remed .reasons { margin-top: 8px; } .remed .reasons:empty { display: none; }
@@ -231,16 +252,24 @@
   .runs { list-style: none; margin: 0; padding: 0 10px 10px; max-height: 360px; overflow: auto; }
   .runs li { display: grid; grid-template-columns: 1fr auto; gap: 8px 16px; padding: 10px 12px; border-radius: var(--radius-s); cursor: pointer; align-items: center; }
   .runs li:hover { background: var(--paper); } .runs li.active { background: var(--blue-tint); }
-  .runs .id { font-family: var(--mono); font-size: 12.5px; color: var(--ink); } .runs .when { color: var(--faint); font-size: 12px; }
+  .runs .id { font-family: var(--mono); font-size: 12px; color: var(--muted); } .runs .when { color: var(--faint); font-size: 12px; }
+  /* 올린 파일 이름이 줄의 주인공(누구의 어느 프로젝트인지). 길면 말줄임, 전체 이름은 title 에 */
+  .runs .who { min-width: 0; }
+  .runs .fname, .runhead .fname { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .runs .fname { font-weight: 600; color: var(--ink); font-size: 13.5px; }
+  .runs .meta2 { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; margin-top: 2px; }
+  .runs .meta2 .flowtag { margin-left: 0; }
   .runs .empty { padding: 10px 12px; color: var(--faint); }
   .runs .state { font-size: 12.5px; font-weight: 600; color: var(--muted); white-space: nowrap; }
+  .runs .flowtag { display: inline-block; margin-left: 8px; padding: 0 7px; border-radius: 999px; font-size: 11.5px; font-weight: 600;
+                   border: 1px solid var(--line); color: var(--muted); background: #fff; vertical-align: 1px; white-space: nowrap; }
+  .runs .flowtag.rem { border-color: transparent; background: var(--blue-tint); color: var(--blue-deep); }
   .runs .state.ok { color: var(--ok); } .runs .state.bad { color: var(--bad); } .runs .state.warn { color: var(--warn); } .runs .state.running { color: var(--blue); }
 
   .toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); background: var(--ink); color: #fff; padding: 10px 16px; border-radius: var(--radius-s);
            font-size: 13px; max-width: min(640px, 90vw); opacity: 0; pointer-events: none; transition: opacity .2s; }
   .toast.show { opacity: 1; }
   .toast.bad { background: var(--bad); }
-  footer { max-width: 960px; margin: 0 auto; padding: 0 20px 28px; color: var(--faint); font-size: 12px; }
 
   @media (max-width: 640px) {
     .top .in { padding: 12px 16px; } .top .right { display: none; }
@@ -248,6 +277,7 @@
     .intake, .run, .result { padding: 16px; }
     .drop { padding: 32px 16px 28px; }
     .advgrid { grid-template-columns: 1fr; }
+    .flowpick { grid-template-columns: 1fr; }
     .timeline .row { grid-template-columns: 58px 16px 1fr; } .timeline .d { grid-column: 2 / -1; }
     .rail .label .en { display: none; }
     .tabs { flex-wrap: wrap; } .tabs .tools { width: 100%; margin: 0; padding: 6px 12px 8px; }
@@ -257,14 +287,13 @@
     .rform { grid-template-columns: 1fr; }
     .remed .act .actions .btn { flex: 1 1 auto; justify-content: center; }
   }
-  @media (prefers-reduced-motion: reduce) { .pulse, .rail .step.current .dot::after { animation: none; } .drop { transition: none; } }
+  @media (prefers-reduced-motion: reduce) { .pulse, .rail .step.current .dot::after { animation: none; } .drop, .flowopt { transition: none; } }
 </style>
 </head>
 <body>
 <header class="top">
   <div class="in">
-    <span class="name">sbmig</span>
-    <span class="what">프로젝트를 JDK 21 과 Spring Boot 4.1 로 옮깁니다</span>
+    <span class="name">panacea-remediating-oss</span>
     <span class="right" id="envhint" hidden></span>
   </div>
 </header>
@@ -272,20 +301,31 @@
 <main>
   <!-- 1. 올리는 자리 -->
   <section class="card intake" aria-labelledby="intake-title">
-    <h2 id="intake-title" class="muted small" style="font-weight:600; margin-bottom:12px;">새 마이그레이션</h2>
+    <h2 id="intake-title" class="muted small" style="font-weight:600; margin-bottom:12px;">새 작업</h2>
     <p class="busynote" id="busynote" role="status"></p>
+    <fieldset class="flowpick" id="flowpick">
+      <legend>진행 방식</legend>
+      <label class="flowopt on" for="flow-full">
+        <input type="radio" name="flow" id="flow-full" value="full" checked>
+        <span><span class="nm">전체 진행</span><span class="ds">이관 후 취약점 조치까지 진행합니다</span></span>
+      </label>
+      <label class="flowopt" for="flow-remediation">
+        <input type="radio" name="flow" id="flow-remediation" value="remediation">
+        <span><span class="nm">취약점 해결</span><span class="ds">이미 이관된 프로젝트의 취약점만 조치합니다</span></span>
+      </label>
+    </fieldset>
     <label class="drop" id="drop" for="zip">
-      <input type="file" id="zip" accept=".zip,application/zip,application/x-zip-compressed" aria-label="프로젝트 zip 파일">
+      <input type="file" id="zip" accept=".zip,application/zip,application/x-zip-compressed" aria-label="프로젝트 ZIP 파일">
       <svg class="icon" viewBox="0 0 44 44" fill="none" aria-hidden="true">
         <rect x="6" y="14" width="32" height="24" rx="4" stroke="#1F5BD8" stroke-width="2"/>
         <path d="M6 20h32" stroke="#1F5BD8" stroke-width="2"/>
         <path d="M14 14V9a3 3 0 0 1 3-3h10a3 3 0 0 1 3 3v5" stroke="#1F5BD8" stroke-width="2"/>
         <path d="M22 34V25m0 0-4 4m4-4 4 4" stroke="#1F5BD8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
       </svg>
-      <p class="lead" id="droplead">프로젝트 zip 파일을 여기에 놓으세요</p>
+      <p class="lead" id="droplead">프로젝트 ZIP 파일을 여기에 놓으세요</p>
       <p class="or">또는 <b>파일 선택</b></p>
       <p class="meta" id="dropmeta" hidden></p>
-      <p class="limit" id="droplimit">pom.xml(또는 build.xml)이 든 프로젝트 폴더를 zip 으로 묶은 파일</p>
+      <p class="limit" id="droplimit">pom.xml이 든 프로젝트 폴더를 ZIP으로 묶은 파일</p>
       <span class="change" id="dropchange" hidden>다른 파일 선택</span>
     </label>
     <div class="actions">
@@ -293,7 +333,7 @@
       <span class="spacer"></span>
       <button class="btn big" id="start" disabled>
         <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M4 2.5v11l9-5.5-9-5.5z"/></svg>
-        마이그레이션 시작
+        <span id="startlabel">마이그레이션 시작</span>
       </button>
     </div>
     <details class="adv" id="adv">
@@ -327,7 +367,8 @@
   <!-- 2. 실행 카드: 실행이 하나 붙으면 보인다 -->
   <section class="card run" id="runcard" hidden aria-live="polite">
     <div class="runhead">
-      <div>
+      <div class="who">
+        <p class="fname" id="runname" hidden></p>
         <p class="title" id="title"></p>
         <p class="sub"><span class="mono" id="runid"></span><span id="summary"></span></p>
       </div>
@@ -357,11 +398,16 @@
 
   <!-- 3. 결과 카드: 끝나면 보인다 -->
   <section class="card result" id="resultcard" hidden>
-    <div class="line">
+    <!-- 진행하지 못한 실행(종료 코드 3): 까닭 한 문장. 접수 거절("Maven 변환 후 신청 부탁드립니다." 등)이 로그 탭에 묻히지 않게 -->
+    <div class="abort" id="abortbox" role="alert" hidden>
+      <p class="h">사유</p>
+      <p class="why" id="aborttext"></p>
+    </div>
+    <div class="line" id="mainline">
       <h2>결과 파일</h2>
       <span class="counts" id="counts"></span>
     </div>
-    <div class="downloads">
+    <div class="downloads" id="maindl">
       <a class="btn big" id="dl-report" aria-disabled="true">
         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M4 1.5h5.5L13 5v9.5H4z"/><path d="M9.5 1.5V5H13M6 8h4M6 10.5h4"/></svg>
         <span>보고서 받기 <span class="sub">report.md</span></span>
@@ -372,7 +418,8 @@
       </a>
     </div>
     <div class="otherfiles" id="otherfiles"></div>
-    <!-- 취약점 조치: 이 이관 실행에 이어 돈 조치가 있을 때만(/api/remediations/<실행 id>, 404 면 숨김) -->
+    <!-- 취약점 조치: 이 실행에 조치가 있을 때만(/api/remediations/<실행 id>, 404 면 숨김). 이관 뒤에 이어 돈 조치(전체 진행)이거나,
+         취약점 해결 실행이면 이 칸이 결과 그 자체다(.solo — 이관 결과 버튼은 숨긴다) -->
     <div class="remed" id="remed" hidden>
       <div class="line">
         <h2>취약점 조치</h2>
@@ -397,7 +444,6 @@
     <ul class="runs" id="runs"></ul>
   </details>
 </main>
-<footer id="foot"></footer>
 <div class="toast" id="toast" role="status"></div>
 
 <script>
@@ -415,6 +461,10 @@
   let defaultConfigs = [];      // 서버가 정한 설정 파일들: 담당자는 고르지 않는다
   let es = null, current = null, file = null;
   let lastState = '';           // 지금 보이는 실행의 마지막 status.state: 끊겼을 때 다시 붙을지(끝난 실행이면 안 붙는다)를 가른다
+  // 진행 방식(v2.1z-aj): full = 이관 후 취약점 조치까지(전체 진행), remediation = 이관 없이 취약점 조치만(취약점 해결)
+  const FLOW_FULL = 'full', FLOW_REM = 'remediation';
+  let runFlow = FLOW_FULL;      // 지금 보이는 실행의 진행 방식(status.flow) — 결과 칸·제목이 따른다
+  let uploading = false;
 
   // ---------------------------------------------------------------- 알림
   let toastTimer = null;
@@ -451,7 +501,7 @@
     setText('busynote', s);
   }
   function uploadToast(st) {
-    if (!st || st.state !== 'queued') return '올렸습니다. 마이그레이션을 시작합니다.';
+    if (!st || st.state !== 'queued') return st && st.flow === FLOW_REM ? '올렸습니다. 취약점 조치를 시작합니다.' : '올렸습니다. 마이그레이션을 시작합니다.';
     const p = par(st.parallel), q = qpos(st.queue);
     if (!p || !q) return '올렸습니다. 앞의 실행이 끝나면 시작합니다.';
     // 막 자리가 빈 순간(이관 중 0건)에는 '0건이 이관 중이라' 라고 하지 않는다
@@ -469,7 +519,7 @@
   // 그 뒤의 fetch / EventSource 는 같은 출처라 쿠키가 자동으로 붙는다. 401 / 403 이면 안내만 한다.
   function authProblem(r, d) {
     if (r.status !== 401 && r.status !== 403) return false;
-    toast(r.status === 401 ? '접근 토큰이 필요합니다. 주소 뒤에 ?token=<토큰> 을 붙여 한 번 여세요 (서버의 SBMIG_WEB_TOKEN).'
+    toast(r.status === 401 ? '접근 토큰이 필요합니다. 주소 뒤에 ?token=<토큰>을 붙여 한 번 여세요(서버의 SBMIG_WEB_TOKEN).'
                            : '이 서버는 서버 PC(127.0.0.1)에서만 열립니다. ' + ((d && d.error) || ''), true);
     return true;
   }
@@ -485,12 +535,11 @@
       const id = 'cfg-' + c.replace(/\W/g, '_');
       box.insertAdjacentHTML('beforeend', `<label><input type="checkbox" value="${esc(c)}" id="${id}" ${defaultConfigs.includes(c) ? 'checked' : ''}>${esc(c)}</label>`);
     }
-    if (!d.configs.length) box.innerHTML = '<span class="muted small">config/ 에 default.yml 밖의 yml 이 없습니다.</span>';
+    if (!d.configs.length) box.innerHTML = '<span class="muted small">config/에 default.yml 말고는 yml 파일이 없습니다.</span>';
     $('cfghelp').textContent = defaultConfigs.length ? `서버 기본값: ${defaultConfigs.join(', ')} (sbmig serve --config / SBMIG_WEB_CONFIGS)`
-                                                     : '서버에 기본 설정이 없습니다 — default.yml 만으로 돕니다. sbmig serve --config <이름> 으로 정하세요.';
-    $('droplimit').textContent = 'pom.xml(또는 build.xml)이 든 프로젝트 폴더를 zip 으로 묶은 파일' + (maxUploadMb ? ` · 최대 ${maxUploadMb} MB` : '');
+                                                     : '서버에 기본 설정이 없어 default.yml만으로 돕니다. sbmig serve --config <이름>으로 정하세요.';
+    setDropLimit();
     $('envhint').textContent = d.out_dir ? `결과 폴더 ${d.out_dir}` : '';
-    $('foot').textContent = `설정 ${d.repo_root}/config` + (defaultConfigs.length ? ` (${defaultConfigs.join(', ')})` : '') + ` · 결과 ${d.out_dir}`;
     describeConfigs();
   }
   function chosenConfigs() {
@@ -500,33 +549,48 @@
   function describeConfigs() {
     const c = chosenConfigs();
     const same = c.length === defaultConfigs.length && c.every((x, i) => x === defaultConfigs[i]);
-    let s = c.length ? `설정 ${c.join(', ')}` : '설정 default.yml 만';
+    let s = c.length ? `설정 ${c.join(', ')}` : '설정 default.yml만';
     if (!same) s += ' (고급 설정에서 바꿈)';
     if ($('llm').value) s += ` · LLM ${$('llm').value}`;
-    if ($('stop_after').value) s += ` · ${$('stop_after').value} 까지만`;
+    if ($('stop_after').value && chosenFlow() === FLOW_FULL) s += ` · ${$('stop_after').value}까지만`;
     $('cfgnote').textContent = s;
   }
   $('cfgs').addEventListener('change', describeConfigs);
   $('llm').addEventListener('change', describeConfigs);
   $('stop_after').addEventListener('change', describeConfigs);
 
+  // ---- 진행 방식: 전체 진행(기본) / 취약점 해결. 시작 버튼·안내 글·단계 레일이 이 선택을 따른다
+  function chosenFlow() { const r = document.querySelector('input[name="flow"]:checked'); return r && r.value === FLOW_REM ? FLOW_REM : FLOW_FULL; }
+  function startLabel() { return chosenFlow() === FLOW_REM ? '취약점 조치 시작' : '마이그레이션 시작'; }
+  function setDropLimit() {
+    const what = chosenFlow() === FLOW_REM ? '이관을 마친 프로젝트 폴더(pom.xml 포함)를 ZIP으로 묶은 파일' : 'pom.xml이 든 프로젝트 폴더를 ZIP으로 묶은 파일';
+    $('droplimit').textContent = what + (maxUploadMb ? ` · 최대 ${maxUploadMb} MB` : '');
+  }
+  function syncFlow() {
+    for (const r of document.querySelectorAll('input[name="flow"]')) r.closest('.flowopt').classList.toggle('on', r.checked);
+    if (!uploading) $('startlabel').textContent = startLabel();
+    $('stop_after').disabled = chosenFlow() === FLOW_REM;    // 조치만 하는 실행에는 멈출 이관 단계가 없다(서버도 함께 받지 않는다)
+    setDropLimit(); describeConfigs();
+  }
+  for (const r of document.querySelectorAll('input[name="flow"]')) r.addEventListener('change', syncFlow);
+
   function setFile(f) {
     file = f || null;
     const drop = $('drop');
     if (!file) {
-      drop.classList.remove('has'); $('droplead').textContent = '프로젝트 zip 파일을 여기에 놓으세요';
+      drop.classList.remove('has'); $('droplead').textContent = '프로젝트 ZIP 파일을 여기에 놓으세요';
       $('dropmeta').hidden = true; $('dropchange').hidden = true; $('start').disabled = true; return;
     }
     drop.classList.add('has');
     $('droplead').textContent = file.name;
-    $('dropmeta').textContent = fmtMB(file.size) + (maxUploadMb && file.size > maxUploadMb * 1048576 ? ` — 업로드 한도 ${maxUploadMb} MB 를 넘습니다` : '');
+    $('dropmeta').textContent = fmtMB(file.size) + (maxUploadMb && file.size > maxUploadMb * 1048576 ? ` — 업로드 한도 ${maxUploadMb} MB를 넘습니다` : '');
     $('dropmeta').hidden = false; $('dropchange').hidden = false;
     $('start').disabled = !!(maxUploadMb && file.size > maxUploadMb * 1048576);
   }
   function pickZip(list) {
     const f = list && list[0];
     if (!f) return;
-    if (!/\.zip$/i.test(f.name) && !/zip/.test(f.type)) { toast(`${f.name} 은(는) zip 파일이 아닙니다. 프로젝트 폴더를 zip 으로 묶어 올려 주세요.`, true); return; }
+    if (!/\.zip$/i.test(f.name) && !/zip/.test(f.type)) { toast(`${f.name}은(는) ZIP 파일이 아닙니다. 프로젝트 폴더를 ZIP으로 묶어 올려 주세요.`, true); return; }
     setFile(f);
   }
   $('zip').addEventListener('change', (e) => pickZip(e.target.files));
@@ -540,14 +604,18 @@
 
   $('start').addEventListener('click', async () => {
     if (!file) return;
-    const q = new URLSearchParams({ name: file.name });
+    const upName = file.name;                                // setFile(null) 뒤에도 실행 카드에 이름을 바로 보이려고
+    const q = new URLSearchParams({ name: upName });
     const cfgs = chosenConfigs();
     const same = cfgs.length === defaultConfigs.length && cfgs.every((x, i) => x === defaultConfigs[i]);
     if (!same) q.set('configs', cfgs.join(','));            // 서버 기본값 그대로면 보내지 않는다 (서버가 정한다)
-    if ($('stop_after').value) q.set('stop_after', $('stop_after').value);
+    const flow = chosenFlow();
+    q.set('flow', flow);                                     // full | remediation (v2.1z-aj)
+    if ($('stop_after').value && flow === FLOW_FULL) q.set('stop_after', $('stop_after').value);
     if ($('llm').value) q.set('llm_provider', $('llm').value);
     $('start').disabled = true; drop.classList.add('busy');
-    $('start').lastChild.textContent = ' 올리는 중…';
+    uploading = true; $('flowpick').disabled = true; $('flowpick').classList.add('locked');
+    $('startlabel').textContent = '올리는 중…';
     try {
       const r = await fetch('/api/runs?' + q.toString(), { method: 'POST', headers: { 'Content-Type': 'application/zip' }, body: file });
       let d = {}; try { d = await r.json(); } catch (e) {}
@@ -557,13 +625,14 @@
       if (st.parallel) setParallel(st.parallel);
       toast(uploadToast(st), false, st.state === 'queued' ? 8000 : 0);   // 기다린다는 안내는 조금 더 오래 (화면에도 남는다)
       setFile(null); $('zip').value = '';
-      attach(d.run_id);
+      attach(d.run_id, false, st.flow || flow, st.upload || upName);
       if (st.state) setStatus(st);                     // SSE 가 붙기 전에도 '대기 중' 을 바로 보인다 (같은 status 가 다시 와도 그대로)
       $('runcard').scrollIntoView({ behavior: 'smooth', block: 'start' });
     } catch (e) {
       toast('서버에 보내지 못했습니다: ' + e, true);
     } finally {
-      drop.classList.remove('busy'); $('start').lastChild.textContent = ' 마이그레이션 시작'; $('start').disabled = !file;
+      uploading = false; $('flowpick').disabled = false; $('flowpick').classList.remove('locked');
+      drop.classList.remove('busy'); $('startlabel').textContent = startLabel(); $('start').disabled = !file;
     }
   });
 
@@ -575,9 +644,17 @@
       if (!q) return { cls: '', text: '대기 중 — 앞의 실행이 끝나면 시작합니다', short: '대기' };   // 옛 서버
       return { cls: '', text: q.ahead > 0 ? `대기 중 — 앞에 ${q.ahead}건이 기다립니다` : '대기 중 — 다음 차례입니다', short: `대기 ${q.position}번` };
     }
-    if (st.state === 'running') return { cls: '', text: '마이그레이션 진행 중', short: '진행 중' };
+    const remOnly = st.flow === FLOW_REM;
+    if (st.state === 'running') return { cls: '', text: remOnly ? '취약점 조치 진행 중' : '마이그레이션 진행 중', short: '진행 중' };
     if (st.state === 'finished') {
       if (st.stop_requested && st.exit_code === 3) return { cls: 'bad', text: '중단되었습니다', short: '중단' };
+      // 진행하지 못한 실행(접수 거절, 조치 환경 미비 …): 까닭은 결과 칸 맨 위에 문장으로(abortText) — 제목은 짧게
+      if (st.exit_code === 3 && abortText(st)) return { cls: 'bad', text: '진행하지 못했습니다', short: '진행 못 함' };
+      if (remOnly) {
+        if (st.success === true) return { cls: 'ok', text: '조치를 마쳤습니다', short: '조치 완료' };
+        const r = remTitle(st.remediation && st.remediation.status);
+        if (r) return r;
+      }
       if (st.success === true) return { cls: 'ok', text: '빌드에 성공했습니다', short: '성공' };
       if (st.success === false) {
         const open = st.open ?? st.unresolved ?? 0, blocked = st.blocked || 0;
@@ -591,6 +668,30 @@
     }
     return { cls: '', text: st.state || '', short: st.state || '' };
   }
+  // 취약점 해결 실행의 제목: 조치 상태마다 한 문장(조치 보고서의 결과 문장과 같은 말). 모르는 상태면 null
+  const REM_TITLE = { SUCCEEDED: ['ok', '조치를 마쳤습니다', '조치 완료'], INCOMPLETE: ['warn', '일부만 조치되었습니다', '일부 조치'],
+                      AWAITING_APPROVAL: ['warn', '승인을 기다리고 있습니다', '승인 대기'], AWAITING_CONFIRMATION: ['warn', '확인이 필요합니다', '확인 필요'],
+                      STOPPED: ['warn', '조치를 멈췄습니다', '멈춤'], INTERRUPTED: ['bad', '조치가 중단되었습니다', '중단'],
+                      FAILED: ['bad', '조치하지 못했습니다', '실패'], QUEUED: ['', '취약점 조치 진행 중', '진행 중'], RUNNING: ['', '취약점 조치 진행 중', '진행 중'] };
+  function remTitle(status) { const t = REM_TITLE[status]; return t ? { cls: t[0], text: t[1], short: t[2] } : null; }
+  // 진행하지 못한 까닭 한 문장: 엔진이 멈춘 까닭(접수 거절 "Maven 변환 후 신청 부탁드립니다." 등) → 시작하지 못한 조치 → 웹이 아는 오류
+  function abortText(st) {
+    // 서버가 보고서와 같은 번역표로 옮긴 한국어(abort_reason_ko)가 먼저, 번역이 없으면 엔진의 문장 그대로
+    if (st.abort_reason_ko || st.abort_reason) return String(st.abort_reason_ko || st.abort_reason);
+    const r = st.remediation;
+    if (r && r.status === 'skipped' && st.flow === FLOW_REM) {
+      const missing = Array.isArray(r.missing) && r.missing.length ? ` (필요한 값: ${r.missing.join(', ')})` : '';
+      return '취약점 조치를 시작하지 못했습니다. 실행 환경이 갖춰지지 않았습니다' + missing + '.';
+    }
+    return st.error ? String(st.error) : '';
+  }
+  // 열린 실행의 맨 위: 올린 파일 이름 그대로(길면 말줄임, title 에 전체). 이름을 모르는 옛 실행이면 숨긴다
+  function setRunName(name) {
+    const n = $('runname');
+    if (!name) { n.hidden = true; n.textContent = ''; n.removeAttribute('title'); return; }
+    if (n.textContent !== name) { n.textContent = name; n.title = name; }
+    n.hidden = false;
+  }
   function setTitle(cls, text, live) {
     const t = $('title'), key = `${cls}|${live ? 1 : 0}|${text}`;
     if (t.dataset.key === key) return;               // 같은 제목이면 그대로 (맥박 점의 애니메이션이 처음부터 다시 돌지 않게)
@@ -601,6 +702,12 @@
   let queueText = '', statusKey = '';
   function setStatus(st) {
     lastState = st.state || '';
+    if (st.upload) setRunName(st.upload);
+    // 진행 방식이 정해지면 레일을 그 모양으로(엔진 단계가 아직 하나도 오지 않았을 때만 — 이미 그린 진행을 지우지 않게)
+    if (st.flow === FLOW_REM || st.flow === FLOW_FULL) {
+      runFlow = st.flow;
+      if (railFlow !== runFlow && !engineSeen()) resetRail(runFlow);
+    }
     const d = describe(st);
     const live = st.state === 'running' || st.state === 'queued';
     setTitle(d.cls, d.text, live);
@@ -623,6 +730,7 @@
     if (statusKey && key !== statusKey && st.state !== 'finished') loadRuns();
     statusKey = key;
   }
+  function readyText() { return runFlow === FLOW_REM ? '준비를 마쳤습니다. 취약점 조치를 시작합니다.' : '준비를 마쳤습니다. 이관을 시작합니다.'; }
   function jobStep() {
     const rail = $('rail');
     let el = rail.querySelector('.step[data-node="job"]');
@@ -641,11 +749,19 @@
   }
   // 엔진이 멈춘 까닭(`중단: …`)은 끝까지 남긴다: 뒤에 오는 파드 안내(ending · api-back)가 그 한 줄을 덮으면 왜 멈췄는지가 사라진다
   let abortNote = '';
-  function resetRail() {
+  // 취약점 해결 실행의 단계: 접수 → 취약점 조치 → 마무리 (엔진의 노드 intake → remediation → finalize)
+  const REM_STEPS = ['intake', FLOW_REM, 'finalize'];
+  let railFlow = FLOW_FULL;
+  function resetRail(flow) {
     const g = $('rail'); g.innerHTML = ''; abortNote = '';
-    for (const n of FIXED) g.insertAdjacentHTML('beforeend', stepHtml(n, n));
-    g.insertAdjacentHTML('beforeend', stepHtml('phase', 'phases', ' data-pending="1" data-placeholder="1"'));
-    g.insertAdjacentHTML('beforeend', stepHtml('finalize', 'finalize'));
+    railFlow = flow === FLOW_REM ? FLOW_REM : FLOW_FULL;
+    if (railFlow === FLOW_REM) {
+      for (const n of REM_STEPS) g.insertAdjacentHTML('beforeend', stepHtml(n, n));
+    } else {
+      for (const n of FIXED) g.insertAdjacentHTML('beforeend', stepHtml(n, n));
+      g.insertAdjacentHTML('beforeend', stepHtml('phase', 'phases', ' data-pending="1" data-placeholder="1"'));
+      g.insertAdjacentHTML('beforeend', stepHtml('finalize', 'finalize'));
+    }
     $('railnote').textContent = ''; queueText = '';
   }
   function railSteps() { return [...$('rail').querySelectorAll('.step')]; }
@@ -668,21 +784,21 @@
       el = jobStep();
       const s = u.state || '';
       // 늦게 온 running 은 이미 시작한 엔진 단계의 표시(현재 단계·안내 줄)를 되돌리지 않는다
-      if (s === 'running') { el.classList.add('done'); if (!engineSeen()) { setCurrent(railSteps()[1]); $('railnote').textContent = '파드가 준비됐습니다. 이관을 시작합니다.'; } }
-      else if (s === 'failed' || s === 'missing') { el.classList.remove('done'); el.classList.add('failed'); setCurrent(null); $('railnote').textContent = `파드 실패: ${u.message || s}`; }
+      if (s === 'running') { el.classList.add('done'); if (!engineSeen()) { setCurrent(railSteps()[1]); $('railnote').textContent = readyText(); } }
+      else if (s === 'failed' || s === 'missing') { el.classList.remove('done'); el.classList.add('failed'); setCurrent(null); $('railnote').textContent = `실행 환경을 준비하지 못했습니다: ${u.message || s}`; }
       // completed: 이 실행의 결과 파일을 받았다 = 파드는 제 일을 했다(이관의 종료 코드가 3 이어도). 안내 줄·현재 단계는 엔진 쪽 몫
       else if (s === 'succeeded' || s === 'completed') { el.classList.remove('failed'); el.classList.add('done'); }
       // 아래 셋은 단계 표시를 바꾸지 않는다(안내 한 줄만): API 가 답하지 않는 동안에도, 파드가 끝나기를 기다리는 동안에도 이 실행이 제 자리를 지킨다
-      else if (s === 'api-unavailable') { $('railnote').textContent = `쿠버네티스 API 가 응답하지 않습니다. 응답할 때까지 이 이관은 자리를 유지합니다${u.message ? ' (' + u.message + ')' : ''}`; }
-      else if (s === 'api-back') { $('railnote').textContent = abortNote || '쿠버네티스 API 가 다시 응답합니다.'; }
-      else if (s === 'ending') { $('railnote').textContent = abortNote || '파드가 끝나기를 기다립니다. 끝난 것을 확인한 뒤 기다리는 이관에 자리를 넘깁니다.'; }
-      else { setCurrent(el); $('railnote').textContent = s === 'created' ? '파드 생성 중…' : `파드 생성 중 (${s}${u.message ? ': ' + u.message : ''})`; }
+      else if (s === 'api-unavailable') { $('railnote').textContent = `작업 서버(쿠버네티스)가 응답하지 않습니다. 응답할 때까지 이 작업은 자리를 유지합니다${u.message ? ' (' + u.message + ')' : ''}`; }
+      else if (s === 'api-back') { $('railnote').textContent = abortNote || '작업 서버(쿠버네티스)가 다시 응답합니다.'; }
+      else if (s === 'ending') { $('railnote').textContent = abortNote || '작업이 정리되기를 기다립니다. 끝난 것을 확인한 뒤 기다리는 작업에 자리를 넘깁니다.'; }
+      else { setCurrent(el); $('railnote').textContent = s === 'created' ? '실행 환경을 준비하는 중…' : `실행 환경을 준비하는 중 (${s}${u.message ? ': ' + u.message : ''})`; }
       return;
     }
     // 엔진 단계가 왔다 = 파드가 돌고 있다: running 을 못 본 빠른 실행, job 이벤트 없이 저널로 다시 보는 끝난 실행도 '파드' 에 체크
     const pod = rail.querySelector('.step[data-node="job"]');
     if (pod && !pod.classList.contains('failed') && !pod.classList.contains('done')) {
-      if (pod.classList.contains('current')) $('railnote').textContent = '파드가 준비됐습니다. 이관을 시작합니다.';   // '파드 생성 중' 안내가 남지 않게
+      if (pod.classList.contains('current')) $('railnote').textContent = readyText();   // '준비하는 중' 안내가 남지 않게
       pod.classList.add('done');
     }
     if (name === 'plan' && Array.isArray(u.phases)) {          // 계획이 단계 묶음을 정한다: 하나씩 점으로
@@ -804,6 +920,15 @@
   function showResult(st, d) {
     const files = st.files || [];
     $('resultcard').hidden = false;
+    // 진행하지 못한 실행: 까닭 한 문장을 결과 칸 맨 위에 (로그 탭에 묻히지 않게)
+    const why = st.exit_code === 3 && !st.stop_requested ? abortText(st) : '';
+    $('abortbox').hidden = !why; setText('aborttext', why);
+    // 취약점 해결 실행: 이관 결과(report.md / result.zip 버튼)가 없다 — 아래 '취약점 조치' 칸이 결과다
+    const remOnly = (st.flow || runFlow) === FLOW_REM;
+    $('mainline').hidden = remOnly; $('maindl').hidden = remOnly;
+    $('remed').classList.toggle('solo', remOnly);
+    // 그 밖의 파일은 결과 버튼 아래에: 취약점 해결 실행이면 조치 칸 뒤, 전체 진행이면 이관 버튼 바로 뒤(조치 칸 앞)
+    if (remOnly) $('remed').after($('otherfiles')); else $('remed').before($('otherfiles'));
     const chips = [];
     if (st.resolved) chips.push(`<span class="chip ok">해결 ${st.resolved}건</span>`);
     const open = st.open ?? st.unresolved; if (open) chips.push(`<span class="chip warn">남은 오류 ${open}건</span>`);
@@ -816,9 +941,9 @@
       if (has) { a.href = fileUrl(name, true); a.setAttribute('download', name); } else { a.removeAttribute('href'); a.removeAttribute('download'); }
     };
     set('dl-report', 'report.md'); set('dl-zip', 'result.zip');
-    const others = files.filter((f) => f !== 'report.md' && f !== 'result.zip');
+    const others = files.filter((f) => remOnly ? f !== 'result.zip' : f !== 'report.md' && f !== 'result.zip');
     $('otherfiles').innerHTML = others.length ? '<span>그 밖의 파일</span>' + others.map((f) => `<a href="${fileUrl(f)}" target="_blank" rel="noopener">${esc(f)}</a>`).join('') : '';
-    if (!files.includes('result.zip')) $('otherfiles').insertAdjacentHTML('afterbegin', '<span class="muted">변환 결과 zip 이 없습니다 (중단되었거나 report.zip_result 가 꺼져 있음).</span>');
+    if (!remOnly && !why && !files.includes('result.zip')) $('otherfiles').insertAdjacentHTML('afterbegin', '<span class="muted">변환된 프로젝트 ZIP이 없습니다(중단되었거나 report.zip_result 설정이 꺼져 있습니다).</span>');
     if (files.includes('sbmig.log')) { $('logfull').href = fileUrl('sbmig.log'); $('logfull').hidden = false; }
     if (current) loadRemediation(current);
   }
@@ -895,7 +1020,10 @@
     rem.last = st;
     const chip = $('remed-status');
     chip.className = 'chip ' + (REM_CLS[st.status] || '');
-    setText('remed-status', (REM_KO[st.status] || st.status) + (st.stale ? ' (빌드 파드 종료)' : ''));
+    setText('remed-status', (REM_KO[st.status] || st.status) + (st.stale ? ' (작업 종료)' : ''));
+    // 취약점 해결 실행은 이 칸이 결과다: 제목도 지금의 조치 상태를 따른다(승인 뒤 이어서 진행하면 바뀐다)
+    const solo = runFlow === FLOW_REM;
+    if (solo && lastState === 'finished') { const t = remTitle(st.status); if (t) setTitle(t.cls, t.text, t.text === REM_TITLE.RUNNING[1]); }
     const c = st.counts || {}, counts = $('remed-counts');
     counts.replaceChildren();
     if (c.baseline_findings != null) counts.appendChild(el('span', 'chip', `취약점 ${c.baseline_findings}건 → ${c.final_findings != null ? c.final_findings + '건' : '검사 전'}`));
@@ -919,10 +1047,10 @@
       dl.appendChild(a);
     };
     const failed = !!(st.delivery && st.delivery.build_ok === false);
-    link('report.md', '조치 결과 보고서', 'quiet');
-    link('result.zip', '결과 ZIP 받기', failed ? 'ghost' : 'quiet', failed ? '빌드 실패본' : '');
+    link('report.md', '조치 결과 보고서', solo ? 'big' : 'quiet');
+    link('result.zip', '결과 ZIP 받기', (failed ? 'ghost' : 'quiet') + (solo ? ' big' : ''), failed ? '빌드 실패본' : '');
     link('result-verified.zip', '검증된 이전 라운드 결과 받기', 'quiet');
-    if (st.withheld) dl.appendChild(el('span', 'note', '이관 실행이 끝나면(마지막 정제 뒤) 받을 수 있습니다.'));
+    if (st.withheld) dl.appendChild(el('span', 'note', solo ? '실행이 끝나면 받을 수 있습니다.' : '이관 실행이 끝나면(마지막 정제 뒤) 받을 수 있습니다.'));
     // 상태마다 하는 일. 같은 그림이면 다시 그리지 않는다(같은 상태가 여러 번 와도 고른 칸·열린 확인 칸이 사라지지 않게)
     const pending = props && Array.isArray(props.proposals) ? props.proposals.filter((p) => p && p.decision === 'pending') : [];
     const rs = (st.resume && typeof st.resume === 'object') ? st.resume : {};
@@ -948,7 +1076,7 @@
     box.appendChild(el('span', 'pulse'));
     const txt = el('div');
     txt.appendChild(el('p', null, '이어서 진행 중'));
-    txt.appendChild(el('p', 'small', '새 빌드 파드에서 적용 · 빌드 · 재검사를 합니다. 이 창을 닫아도 계속됩니다.'));
+    txt.appendChild(el('p', 'small', '적용 · 빌드 · 재검사를 이어서 합니다. 이 창을 닫아도 계속됩니다.'));
     const q = qpos(j.queue);
     const ahead = q ? q.ahead : (st.status === 'QUEUED' && Number.isInteger(st.queue_position) ? st.queue_position - 1 : null);
     if (ahead != null) txt.appendChild(el('p', 'small', `자리가 날 때까지 대기 중 (앞에 ${ahead}건)`));
@@ -962,7 +1090,7 @@
     if (key !== rem.propKey) { rem.propKey = key; rem.sel = new Map(); }   // 제안이 바뀌면 고른 것을 비운다
     const wrap = el('div');
     wrap.appendChild(el('p', 'head', '적용할 변경을 고르세요'));
-    wrap.appendChild(el('p', 'lead', '체크한 변경만 적용하고, 체크하지 않은 변경은 적용하지 않습니다. 적용하면 새 빌드 파드에서 빌드와 IVAS 재검사까지 이어서 합니다.'));
+    wrap.appendChild(el('p', 'lead', '체크한 변경만 적용하고, 체크하지 않은 변경은 적용하지 않습니다. 적용하면 빌드와 IVAS 재검사까지 이어서 합니다.'));
     const bar = el('div', 'selbar');
     const allLab = el('label');
     const all = el('input', 'pick'); all.type = 'checkbox'; all.id = 'remed-all';
@@ -1088,7 +1216,7 @@
     const n = body.decisions.filter((x) => x.decision === 'approved').length;
     if (d.resumed) {
       rem.resumeErr = '';
-      toast(`결정을 저장했습니다(적용 ${n}건). 새 빌드 파드에서 이어서 진행합니다.`);
+      toast(`결정을 저장했습니다(적용 ${n}건). 이어서 진행합니다.`);
       if (rem.last) $('remed-act').replaceChildren(goingView({ ...rem.last, status: 'QUEUED' }));   // 다음 상태가 오기 전에도 바로
     } else {
       const re = d.resume_error && typeof d.resume_error === 'object' ? d.resume_error : null;
@@ -1101,7 +1229,7 @@
   function decidedView(runId, rs) {
     const wrap = el('div');
     wrap.appendChild(el('p', 'head', '결정을 저장했습니다'));
-    wrap.appendChild(el('p', 'lead', '모든 제안에 결정이 남아 있습니다. 아래 버튼으로 새 빌드 파드에서 적용 · 빌드 · 재검사를 이어서 합니다.'));
+    wrap.appendChild(el('p', 'lead', '모든 제안에 결정이 남아 있습니다. 아래 버튼을 누르면 적용 · 빌드 · 재검사를 이어서 합니다.'));
     const err = el('p', 'err', rem.err || rem.resumeErr); err.setAttribute('role', 'alert'); wrap.appendChild(err);
     wrap.appendChild(resumeRow(runId, rs, {}, '이어서 진행'));
     return wrap;
@@ -1113,12 +1241,12 @@
     const extra = label != null && labels.length > 1 ? { label } : {};
     const wrap = el('div');
     wrap.appendChild(el('p', 'head', 'IVAS 업로드 결과를 확인해 주세요'));
-    wrap.appendChild(el('p', 'lead', 'IVAS 에 검사할 파일을 올렸지만 접수됐다는 답을 받지 못했습니다. 같은 파일이 두 번 접수되지 않도록 자동으로 다시 올리지 않으니, IVAS 화면에서 접수 여부를 확인한 뒤 아래에서 골라 주세요.'
+    wrap.appendChild(el('p', 'lead', 'IVAS에 검사할 파일을 올렸지만 접수됐다는 답을 받지 못했습니다. 같은 파일이 두 번 접수되지 않도록 자동으로 다시 올리지 않으니, IVAS 화면에서 접수 여부를 확인한 뒤 아래에서 골라 주세요.'
                                        + (labels.length > 1 ? ` (대상: ${label})` : '')));
     const err = el('p', 'err', rem.err); err.setAttribute('role', 'alert'); wrap.appendChild(err);
     const can = !!rs.available;
     const a = el('div', 'choice');
-    const re = el('button', 'btn quiet', 'IVAS 에서 확인했고, 접수되지 않았다 → 다시 올리기'); re.type = 'button'; re.id = 'remed-reupload';
+    const re = el('button', 'btn quiet', 'IVAS에서 확인했고, 접수되지 않았다 → 다시 올리기'); re.type = 'button'; re.id = 'remed-reupload';
     re.style.whiteSpace = 'normal';
     re.disabled = !can;
     re.addEventListener('click', () => postResume(runId, { confirm: 'reupload', ...extra }, [re]));
@@ -1153,8 +1281,8 @@
   // ---- 중지됨 / 중단됨(빌드 파드가 사라진 stale, 시간 한도 chain_budget 포함): 까닭 한 줄 + 이어서 진행
   function stoppedView(runId, st, rs) {
     let why;
-    if (st.stale) why = '이관 실행의 빌드 파드가 끝나면서 조치가 멈춘 채 남았습니다. 자동으로 다시 보내지 않으니, 이어서 진행하면 새 빌드 파드에서 멈춘 곳부터 계속합니다.';
-    else if (st.reason === 'chain_budget') why = '빌드 파드에서 조치에 쓸 수 있는 시간을 다 써서 멈췄습니다. 이어서 진행하면 새 빌드 파드에서 멈춘 곳부터 계속합니다.';
+    if (st.stale) why = '실행이 끝나면서 조치가 멈춘 채 남았습니다. 자동으로 다시 보내지 않으니, 이어서 진행하면 멈춘 곳부터 계속합니다.';
+    else if (st.reason === 'chain_budget') why = '조치에 쓸 수 있는 시간을 다 써서 멈췄습니다. 이어서 진행하면 멈춘 곳부터 계속합니다.';
     else if (st.reason === 'stop_requested' || st.stop_requested) why = '중지 요청으로 멈췄습니다. 이어서 진행하면 멈춘 곳부터 계속합니다.';
     else if (st.status === 'INTERRUPTED') why = '서버가 다시 시작되면서 조치가 멈췄습니다. 자동으로 다시 보내지 않으니, 이어서 진행하면 멈춘 곳부터 계속합니다.';
     else why = '조치가 멈췄습니다. 이어서 진행하면 멈춘 곳부터 계속합니다.';
@@ -1190,24 +1318,26 @@
     if (r && authProblem(r, d)) { rem.err = '접근이 거부되었습니다.'; }
     else if (!r) rem.err = '서버에 보내지 못했습니다. 연결을 확인하고 다시 눌러 주세요.';
     else if (!r.ok) rem.err = '이어서 진행하지 못했습니다: ' + ((d && d.error) || r.status);
-    else { rem.resumeErr = ''; toast('새 빌드 파드에서 이어서 진행합니다.'); if (rem.last) $('remed-act').replaceChildren(goingView({ ...rem.last, status: 'QUEUED' })); }
+    else { rem.resumeErr = ''; toast('이어서 진행합니다.'); if (rem.last) $('remed-act').replaceChildren(goingView({ ...rem.last, status: 'QUEUED' })); }
     loadRemediation(runId, true);
   }
 
   // ---------------------------------------------------------------- 실행에 붙기 (SSE)
   // resume = 끊긴 같은 실행에 다시 붙기(아래 '다시 붙기'). 담당자가 고른 실행이면 진행 중인 재연결을 그만둔다.
   // 화면(레일·기록·로그·결과)은 매번 비우고 서버가 처음부터 다시 보내는 것으로 채운다: 다시 붙어도 줄이 겹치지 않는다
-  function attach(runId, resume) {
+  function attach(runId, resume, flowHint, nameHint) {
     if (!resume) cancelRetry();
     if (es) { es.close(); es = null; }
     current = runId; lastState = '';
+    runFlow = flowHint === FLOW_REM ? FLOW_REM : FLOW_FULL;   // 첫 status 가 실제 값을 준다(setStatus)
+    $('abortbox').hidden = true;
     logBuf = []; logTotal = 0; logDropped = 0; renderLog();
     $('runcard').hidden = false; $('resultcard').hidden = true; hideRemediation();
-    $('runid').textContent = runId; $('summary').textContent = '';
+    $('runid').textContent = runId; $('summary').textContent = ''; setRunName(nameHint || '');
     $('timeline').innerHTML = ''; $('log').replaceChildren(); $('report').textContent = ''; $('logfull').hidden = true;
     setTitle('', resume ? '다시 연결하는 중…' : '연결하는 중…', false); statusKey = '';
     $('stop').disabled = true;                         // 이 실행의 status 가 오기 전에는 누를 수 없다 (앞 실행의 상태가 남지 않게)
-    resetRail();
+    resetRail(runFlow);
     try { history.replaceState(null, '', '#' + encodeURIComponent(runId)); } catch (e) {}
     const src = new EventSource(`/api/runs/${encodeURIComponent(runId)}/events`);
     es = src;
@@ -1340,16 +1470,20 @@
       li.className = (run.run_id === current) ? 'active' : '';
       const s = describe(run);
       const cls = run.state === 'running' || run.state === 'queued' ? 'running' : s.cls;
-      li.innerHTML = `<span><span class="id">${esc(run.run_id)}</span><br><span class="when">${esc(fmtWhen(run.started || 0))}</span></span>` +
+      const tag = run.flow === FLOW_REM ? '<span class="flowtag rem">취약점 해결</span>' : '<span class="flowtag">전체 진행</span>';
+      // 줄의 주인공 = 올린 파일 이름 그대로(이스케이프, 길면 말줄임 + title 에 전체). 옛 실행처럼 이름이 없으면 실행 id
+      const fname = run.upload ? String(run.upload) : run.run_id;
+      li.innerHTML = `<span class="who"><span class="fname" title="${esc(fname)}">${esc(fname)}</span>` +
+                     `<span class="meta2"><span class="id">${esc(run.run_id)}</span>${tag}<span class="when">${esc(fmtWhen(run.started || 0))}</span></span></span>` +
                      `<span class="state ${cls}">${esc(s.short)}</span>`;
-      li.onclick = () => { attach(run.run_id); $('runcard').scrollIntoView({ behavior: 'smooth', block: 'start' }); };
+      li.onclick = () => { attach(run.run_id, false, run.flow, run.upload); $('runcard').scrollIntoView({ behavior: 'smooth', block: 'start' }); };
       ul.appendChild(li);
     }
   }
   $('refresh').addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); fetchRuns(); });
 
   // ---------------------------------------------------------------- 시작
-  resetRail(); loadConfigs(); loadRuns(); setInterval(loadRuns, 15000);
+  resetRail(FLOW_FULL); syncFlow(); loadConfigs(); loadRuns(); setInterval(loadRuns, 15000);
   if (location.hash.length > 1) attach(decodeURIComponent(location.hash.slice(1)));   // #<run id> = 공유할 수 있는 주소
 })();
 </script>

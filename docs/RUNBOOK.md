@@ -72,6 +72,7 @@ sbmig run path/to/project.zip --config config/artifacts.yml --out out/
 #  --stop-after intake|analyze|plan|transform|restructure|verify   stop early (still writes a report)
 #  --dry-run                       compute and journal decisions, apply nothing
 #  --java-home <jdk21> --settings <settings.xml> --llm-provider <p> --fix-plugin pkg.mod:attr
+#  --flow full|remediation         full (default) = migration + chained remediation; remediation = §6, no migration
 ```
 
 The flow: intake → analyze → plan → one OpenRewrite run → company restructure → LLM structure review →
@@ -79,8 +80,9 @@ The flow: intake → analyze → plan → one OpenRewrite run → company restru
 every attempt rebuilt, scored, rolled back if it did not help) → final build → report. Tests are never compiled
 (`build.skip_test_compile: true`, flag `tests-not-compiled`).
 
-Inputs: a Maven tree (a missing root pom gets a generated aggregator), or an Ant tree (`build.xml`, no pom: a pom is
-synthesized at intake — set `intake.synth_group_id`; company jar coordinates can be added to `<kb>/jar_names.yml`).
+Inputs: a Maven tree (a missing root pom gets a generated aggregator). An Ant tree (`build.xml`, no pom) is refused
+at intake with the notice "Maven 변환 후 신청 부탁드립니다." (`intake.ant_message`; exit 3, flag
+`unsupported-build-tool:ant`); the pom synthesis comes back with `intake.ant_to_maven: true` (section "Ant 프로젝트" below).
 Gradle and trees with neither pom nor build.xml are rejected (exit 3, flag `unsupported-build-tool:<tool>`); for
 the latter `sbmig inventory <dir> --out out/inventory/<name>` writes a read-only description for the owners. Oracle
 ADF projects stop at analyze (exit 3, flag `adf-project`).
@@ -205,7 +207,9 @@ sbmig clean --fleet out\fleet --older-than 7 --keep-failed --dry-run
 ## 5. Web UI and Kubernetes Job mode
 
 - **Local web UI**: `sbmig serve --port 8765 --out out/web` (FastAPI on uvicorn, bound to 127.0.0.1): upload a zip,
-  follow the stage rail / journal / log, download `report.md` and `result.zip`. Sharing on the LAN needs a token
+  choose 전체 진행 (migration, then the remediation) or 취약점 해결 (remediation only, §6), follow the stage rail /
+  journal / log, download `report.md` and `result.zip`. A run's folder name starts with a slug of the uploaded file's
+  name; a run refused at intake shows its reason as a sentence. Sharing on the LAN needs a token
   (`SBMIG_WEB_TOKEN` or `--token`; `--open` only on a trusted intranet). The configs every upload runs with are the
   server's choice (`--config` / `SBMIG_WEB_CONFIGS`). In-process mode runs one migration at a time (the others are
   `queued`); "중단" takes effect between graph nodes.
@@ -214,7 +218,7 @@ sbmig clean --fleet out\fleet --older-than 7 --keep-failed --dry-run
   after changing ConfigMap `sbmig-env` restart the web pod; after a new Job template re-create ConfigMap
   `sbmig-job-template`. Operations summary for in-house LLMs: `agent-doc/09-deploy-and-ops.md`.
 
-## 6. Vulnerability remediation after a migration
+## 6. Vulnerability remediation
 
 When a migration ends BUILD SUCCESS and `remediation.after_migration` is on (shipped on in the Kubernetes manifests,
 off in the code), the same build pod scans the migrated project with IVAS, changes only the version text of
@@ -223,6 +227,15 @@ go to `<run dir>/remediation/`; the outcome never changes the migration's exit c
 as `remediation=<STATUS|skipped>`. Approvals and resume (a new build pod) happen in the web UI. Operator text:
 `deploy/README.md` §6; flow, states, API and diagnosis: `agent-doc/11-remediations.md`; `sbmig remediation-resume
 --run-dir <dir>` resumes outside Kubernetes.
+
+**Remediation only** (a project migrated earlier, checked again): `sbmig run <zip|dir> --config config/artifacts.yml
+--flow remediation` on a PC, or the page's 취약점 해결 choice (in the cluster an ordinary build Job in the same queue; nothing
+to set in the manifests). No migration step, no LLM call, no KB access: the upload is built as it is (a project that does
+not build ends `FAILED baseline_build_failed` before any scan), scanned, remediated and rescanned; files under
+`<run dir>/remediation/`, `SBMIG-RESULT … flow=remediation … remediation=<STATUS>`. `remediation.after_migration` and
+`remediation.trusted_projects` are not consulted. Exit 0 = `SUCCEEDED`, 2 = any other saved status, 3 = not started
+(refused at intake, or flag `remediation:not-ready` when the IVAS values or Maven readiness — e.g. `build.settings_file`
+on a PC — are missing; the report names what is missing). `--stop-after` is refused with this flow.
 
 ## 7. Tuning knobs (`config/default.yml`, Korean comments there)
 
@@ -286,7 +299,12 @@ markers = ["integration: needs mvn/java/network (deselect with -m 'not integrati
 
 ## Ant 프로젝트
 
-`build.xml` 만 있는 프로젝트는 그대로 넣으면 됩니다. 접수가 pom.xml 을 합성해 커밋하고 나머지는 같습니다. 실행 전에 두 가지만:
+Ant 프로젝트(`build.xml` 만 있고 pom.xml 이 없음)는 받지 않습니다(회사 결정: Ant → Maven 변환은 하지 않는다). 접수에서 멈추고
+(종료 코드 3, 플래그 `unsupported-build-tool:ant`) 신청자에게 `intake.ant_message` 안내 문구 "Maven 변환 후 신청 부탁드립니다." 를
+보여 줍니다. 콘솔 ERROR 줄, 보고서 첫 줄, 웹 화면에 같은 문장이 나옵니다.
+
+pom 합성 기능은 지우지 않았습니다. 회사 설정 yml 에 `intake: {ant_to_maven: true}` 를 넣으면 접수가 build.xml 로 pom.xml 을
+합성해 커밋하고 나머지는 Maven 프로젝트와 같습니다(`ant-webapp` 픽스처가 이 스위치를 켭니다). 그때는 실행 전에 두 가지만:
 - 회사 설정 yml 에 `intake: {synth_group_id: <사내 groupId>}` 를 넣습니다(기본값은 자리표시자).
 - 사내 공용 jar 가 `lib/` 에 많으면 `<kb>/jar_names.yml` 에 `{stem, artifact}` 행을 적어 두면 좌표를 바로 찾습니다(형식은
   `knowledge/libraries/jar_names.yml` 과 같고, 재배포 없이 다음 실행부터 반영).

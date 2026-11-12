@@ -1,12 +1,15 @@
 """빌드 도구 판별(카탈로그 S4): Maven 프로젝트만 마이그레이션한다.
 흐름상 위치: 접수(intake)의 ``_check_build_tool`` 이 Maven 호출 전에 가장 먼저 부르고, 분석기가 같은 결과를
 ``ProjectProfile.build_tool`` 에 다시 쓴다(대비책). Maven 이 아니면 실행은 exit 3 으로 중단된다. 핵심 진입점:
-:func:`detect_build_tool` → :class:`BuildToolDetection` (``ok`` = maven). 결정: Gradle / Ant 거부는 사용자
-결정(2026-10-20), pom 이 하나도 없는 트리 거부는 회사 결정 (2026-10-23, pom 합성 없음; ``sbmig inventory
-<dir>`` 로 트리를 설명해 담당 팀에 거부 사유를 보낸다). pom
-이 어딘가에 하나라도 있으면 옆의 Gradle / Ant 파일은 무시한다.
+:func:`detect_build_tool` → :class:`BuildToolDetection` (``ok`` = maven). 결정: Gradle 거부는 사용자 결정, pom 이 하나도
+없는 트리 거부는 회사 결정(pom 합성 없음; ``sbmig inventory <dir>`` 로 트리를 설명해 담당 팀에 거부 사유를 보낸다). Ant 는
+접수가 ``intake.ant_message`` 안내로 거부한다(회사 결정); ``intake.ant_to_maven: true`` 일 때만 접수가 ``ant_build_file`` 로 pom.xml 을
+합성한다. ``ANT_REASON`` 은 판별 결과의 기술 설명(분석기 경고·후속 조치)이고, 사람에게 보이는 거부 문구는 ``intake.ant_message`` 다.
+pom 이 어딘가에 하나라도 있으면 옆의 Gradle / Ant 파일은 무시한다.
 
-Build-tool detection (catalog S4): only Maven projects are migrated.
+Build-tool detection (catalog S4): only Maven projects are migrated. An Ant project is refused at intake with
+`intake.ant_message` (`ANT_REASON` is the technical description); with `intake.ant_to_maven: true` the intake
+synthesizes a pom.xml from `ant_build_file` instead.
 
 `detect_build_tool(ws)` is cheap (root checks first, then recursive globs that skip `.git` / `target`) so the
 orchestrator can run it at intake, before the effective-pom capture, and the analyzer reuses it for
@@ -88,6 +91,6 @@ def detect_build_tool(ws: Any) -> BuildToolDetection:
     if gradle:
         return BuildToolDetection("gradle", GRADLE_REASON)
     if ant:
-        # v2.1j: 접수가 이 파일로 pom 을 합성한다(intake.ant_to_maven); ANT_REASON 은 거부할 때의 문구로 남는다
+        # 접수는 intake.ant_message 로 거부한다; intake.ant_to_maven 이 켜졌을 때만 이 파일로 pom 을 합성한다
         return BuildToolDetection("ant", ANT_REASON, ant_build_file=find_ant_build_file(ws))
     return BuildToolDetection("none", NONE_REASON)

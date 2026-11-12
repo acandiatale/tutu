@@ -16,11 +16,11 @@ UI 에 올리면** 에이전트가 이관을 돌린다. 담당자는 sbmig 를 �
 담당자 브라우저 ◀──결과 내려받기── report.md, result.zip, errors.md, sbmig.log …
 ```
 
-- 화면: zip 을 끌어다 놓거나 파일 선택 → `마이그레이션 시작` → 단계 레일(접수 → 분석 → 계획 → 단계들 → 마무리)과 진행 기록 / 로그 탭 →
+- 화면(머리 이름 `panacea-remediating-oss`, 임시): 진행 방식 **전체 진행**(기본, 이관 후 취약점 조치) / **취약점 해결**(조치만, [11](11-remediations.md)) → zip 놓기 → `마이그레이션 시작`(취약점 해결은 `취약점 조치 시작`) → 단계 레일과 진행 기록 / 로그 탭 →
   끝나면 `보고서 받기(report.md)` / `변환된 프로젝트 받기(result.zip)` 버튼. **설정 파일은 서버가 정한다**: `sbmig serve --config <이름>`
   (여러 번) 또는 `SBMIG_WEB_CONFIGS=a.yml,b.yml`, 없으면 `config/artifacts.yml` → `artifacts.local-e2e.yml` 중 있는 것(`GET /api/configs` 의
   `default`). 담당자는 고르지 않고, 개발자는 "고급 설정"을 펼쳐 설정 파일 / LLM(fake) / 여기까지만 실행을 바꾼다. 로그 탭은 마지막 1,500 줄만
-  그린다(전체는 `sbmig.log` 링크). 화면은 `sbmig/web/static/index.html` 한 파일(HTML + CSS + JS, 웹 폰트·CDN 없음 — 사내망).
+  그린다(전체는 `sbmig.log` 링크). 실행 폴더 이름은 올린 파일 이름의 앞머리로 시작한다(`<앞머리>-YYYYMMDD-HHMMSS-<hex 6>`, 긴 이름은 자름, 쓸 글자가 없으면 `web`). 접수에서 거절된 실행(Ant 등)은 사유를 문장으로 보인다. 화면은 `sbmig/web/static/index.html` 한 파일(HTML + CSS + JS, 웹 폰트·CDN 없음 — 사내망).
 - **웹 파드가 직접 돌리면 한 번에 하나, Job 모드는 동시에 `SBMIG_JOB_MAX_PARALLEL` 건**(기본 1, 매니페스트 값 3). 넘는 zip 은 `queued` 로 기다리고 화면에 순번이 보인다.
 - **중지**는 그래프 노드 사이에서만 먹힌다(지금 노드가 끝난 뒤).
 - **접근 제어**: 사내망 전용 페이지라 기본 배포는 `SBMIG_WEB_OPEN=1`(또는 `--open`)로 토큰 없이 모든 클라이언트를 받는다 — 시작 때
@@ -128,7 +128,7 @@ kubectl exec deploy/sbmig -- python -m sbmig.cli llm-probe
 처리하면 ① 로 돈다): 업로드된 zip 을 자기 프로세스에서 돌리는 대신 Job 을 만든다.
 **전달·결과·KB 는 전부 공유 PVC**(`sbmig-data`, ReadWriteMany, 두 파드가 `/data` 에 마운트): 웹(Main)이 `/data/out/<run id>/source.zip` 을 두고
 `control/request.json`(zip sha256 · 설정 digest · sbmig 버전 — 접수 때 고정)과 `control/state.json`(제어 상태)을 쓴 뒤, 틀
-`deploy/k8s/81-web-job.template.yaml` 에 실행별 env(`SBMIG_SOURCE_ZIP`, `SBMIG_OUT`, `SBMIG_RUN_ID`, `SBMIG_CONFIG`, 고급 설정의 `SBMIG_STOP_AFTER` /
+`deploy/k8s/81-web-job.template.yaml` 에 실행별 env(`SBMIG_SOURCE_ZIP`, `SBMIG_OUT`, `SBMIG_RUN_ID`, `SBMIG_CONFIG`, 진행 방식 `SBMIG_FLOW`, 고급 설정의 `SBMIG_STOP_AFTER` /
 `SBMIG_LLM_PROVIDER`)와 라벨(`sbmig-run-id`, `sbmig-owner`)을 채워 Job 을 만든다(만들기 전에 `creating` 을 적어 응답이 끊겨도 같은 이름의 Job 을 이어받는다)
 → 파드의 `python -m sbmig.web.worker`(`sbmig/web/worker.py`)가 request.json 의 digest 를 대조하고(다르면 exit 3, 저널 `worker_refused`) `sbmig run --out /data/out
 --run-id <run id>` 를 돌려 같은 실행 폴더에 저널·로그·보고서·`result.zip` 을 쓰고, 끝나면 비밀값을 지우고(`sbmig/web/redact.py`) `job-status.json

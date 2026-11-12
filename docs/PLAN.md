@@ -621,3 +621,23 @@ After the first complete run against the real IVAS the user read the Korean `rep
 | Waiting | the user's read of the new samples; photos of the real report's hardest parts | — | open |
 
 Also this day: pod sizes as the company set them (CPU 2 / 8Gi for the web pod and each of three build pods, `a56116f`).
+
+## Status — 2026-11-12, run flows (full | remediation), Ant refused with a notice, the page (v2.1z-aj)
+
+The user, after the first complete run: already-migrated projects will be checked against IVAS again and again, and
+then only the remediation should run — a choice on the page, 전체 진행 / 취약점 해결. Ant → Maven conversion is no longer
+wanted ("Maven 변환 후 신청 부탁드립니다." only; keep the code for later). The page gets a temporary name, loses its
+description and footer, and runs must be recognisable by the uploaded file's name (everyone sees every run until SSO).
+
+| Item | Deliverable | Where | Status |
+|---|---|---|---|
+| Contract | `RUN_FLOWS`, `RunReport.flow`; `intake.ant_to_maven: false`, `intake.ant_message`; INTERFACES "v2.1z-aj" | `sbmig/core/models.py`, `config.py`, `config/default.yml`, `docs/INTERFACES.md` | done |
+| Remediation flow | `sbmig run --flow remediation`, `Orchestrator.run(flow=)`, both engines: intake without any edit → `chain.run_only` on the uploaded ZIP's own bytes → a short report; no migration step, no LLM, no KB; exit 0 / 2 / 3, `flow=remediation` in the result line, `build=` says what was built; flag `remediation:not-ready` | `sbmig/cli.py`, `sbmig/api.py`, `sbmig/loop/orchestrator.py`, `sbmig/graph/engine.py`, `sbmig/remediations/chain.py`, `sbmig/report/` | done |
+| Ant | refused at intake by default with the company's sentence as the reason (both flows); the synthesis kept behind the switch, the `ant-webapp` fixture switches it on | `sbmig/loop/orchestrator.py`, `fixtures/projects/ant-webapp/sbmig.e2e.yml` | done |
+| Web | `POST /api/runs?flow=`, `RequestRecord.flow`, Job env `SBMIG_FLOW` checked by the Worker, in-process pass-through; run id `<slug of the file name>-…` (24 characters, `web` without a letter), `upload_name`, `abort_reason` / `abort_reason_ko` | `sbmig/web/` | done |
+| Page | header `panacea-remediating-oss`, no description, no footer; 전체 진행 / 취약점 해결; the stage rail and the result follow the flow; file names in the run list; the refusal reason as a sentence | `sbmig/web/static/index.html` | done |
+| Korean abort reasons | a pattern for every abort reason reachable at intake and at the start of the remediation flow | `sbmig/report/i18n.py` | done |
+| Docs | README, ARCHITECTURE, RUNBOOK, PROGRESS, design README, agent-doc 00 / 02 / 03 / 06 / 07 / 09 / 10 / 11, deploy README / ENV | `docs/`, `agent-doc/`, `deploy/` | done |
+| Real Maven | the remediation flow on a migrated result ZIP against the local fake IVAS (`exit=2 build=ok … flow=remediation remediation=AWAITING_APPROVAL`, the uploaded bytes unchanged, `llm=0`); `ant-webapp` with the switch on PASS; the same project refused by default in both flows | scratch, `scripts/e2e.sh --only ant-webapp` | done |
+| Known limits | a ZIP whose project sits two or more folders deep is not accepted by the remediation flow; without a root pom the reactor roots are built one by one (no generated aggregator) | — | open |
+| Not seen yet | the remediation flow in the cluster (Job mode) and against the real IVAS | — | open |

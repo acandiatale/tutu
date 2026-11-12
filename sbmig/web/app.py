@@ -20,9 +20,11 @@ Routes:
                                          migrations run at a time (v2.1z-ae: Job modes, else 1)
     GET  /api/runs                       known runs (newest first) with status ("runs"; a waiting run carries "queue",
                                          a Job run its "slot") and "parallel": {slots, running, waiting}
-    POST /api/runs?name=<file.zip>[&configs=a.yml,b.yml][&stop_after=…][&llm_provider=…]
+    POST /api/runs?name=<file.zip>[&configs=a.yml,b.yml][&stop_after=…][&llm_provider=…][&flow=full|remediation]
          body = the zip bytes                                       → 202 {"run_id", "status"}
-         `configs` omitted = the server default; `configs=` (empty) = default.yml only
+         `configs` omitted = the server default; `configs=` (empty) = default.yml only; `flow` (v2.1z-aj) omitted =
+         `full` (migration, then the chained remediation), `remediation` = remediation only (no migration), another
+         value → 400; `stop_after` with `flow=remediation` → 400
     GET  /api/runs/{id}                  status
     GET  /api/runs/{id}/events           SSE: status | node | error | journal | log | report | ping | end
     POST /api/runs/{id}/stop             stop after the current graph node
@@ -78,7 +80,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from sbmig.core.config import PACKAGE_ROOT, load_dotenv_files
 
-from .runs import RUN_ID_RE, SERVED_FILES, RunManager
+from .runs import RUN_ID_RE, SERVED_FILES, RunManager, check_flow
 
 log = logging.getLogger("sbmig.web")
 
@@ -415,10 +417,16 @@ def create_app(out_dir: Path, repo_root: Path = PACKAGE_ROOT, max_upload_mb: int
 
     @app.post("/api/runs", status_code=202)
     async def start(request: Request, name: str = "project.zip", configs: str | None = None,
-                    stop_after: str | None = None, llm_provider: str | None = None) -> JSONResponse:
+                    stop_after: str | None = None, llm_provider: str | None = None,
+                    flow: str | None = None) -> JSONResponse:
         def too_large() -> JSONResponse:
             return JSONResponse({"error": f"zip too large (max {describe_max_upload(max_upload)})"}, status_code=413)
 
+        # v2.1z-aj: 실행 방식은 본문을 받기 전에 본다 — 잘못된 값으로 1 GB 를 다 받은 뒤 거절하지 않게
+        try:
+            flow = check_flow(flow)
+        except ValueError as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
         length = request.headers.get("content-length")
         if max_upload and length and length.isdigit() and int(length) > max_upload:
             return too_large()
@@ -452,7 +460,7 @@ def create_app(out_dir: Path, repo_root: Path = PACKAGE_ROOT, max_upload_mb: int
             # 설정 읽기·zip 풀기·오케스트레이터 만들기는 막히는 작업이라 스레드풀에서. 잘못된 요청은 400
             try:
                 rid = await run_in_threadpool(mgr.start_file, tmp, name, cfgs, stop_after or None,
-                                              llm_provider or None)
+                                              llm_provider or None, flow)
             except (ValueError, OSError, zipfile.BadZipFile) as e:
                 return JSONResponse({"error": str(e)}, status_code=400)
             return JSONResponse({"run_id": rid, "status": mgr.status(rid)}, status_code=202)

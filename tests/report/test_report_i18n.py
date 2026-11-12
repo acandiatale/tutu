@@ -356,6 +356,13 @@ def test_every_handover_pattern_matches_a_real_handover_line(tmp_path, cfg):
     from ..build.test_http_blocker import DEP_LOG, PARENT_LOG
     lines += [http_blocked_followup(http_blocker_hit(t), cfg) for t in (DEP_LOG, PARENT_LOG)]
 
+    # v2.1z-aj: the Ant refusal's detail line (full flow / remediation flow)
+    from sbmig.loop.orchestrator import ant_refusal_detail
+    lines += [ant_refusal_detail("build.xml"), ant_refusal_detail("app/build.xml", "remediation")]
+    # v2.1z-aj: the abort reasons of intake / the remediation flow's start (tests/report/test_abort_reasons_ko.py)
+    from .test_abort_reasons_ko import CASES as ABORT_CASES
+    lines += [reason for reason, _ in ABORT_CASES]
+
     translated = {x: tr_line("ko", x) for x in lines}
     for rx, _ in PATTERNS["ko"]:
         assert any(rx.match(x) for x in lines), f"pattern never matched a handover line: {rx.pattern}"

@@ -52,7 +52,7 @@
 | `target` | 목표 버전(정보용 문자열). Java 21 / Boot 4.1.0 / Framework 7.0.x | 보통 그대로: `target.java_version`, `target.spring_boot_version` |
 | `artifacts` | 회사 부모 pom 과 사내 아티팩트. 루트 pom 의 부모, boot 모듈·그 외 모듈의 부모, 필수 2개, 선택 8개 | `artifacts.parent`, `artifacts.boot_parent`, `artifacts.comp_parent`, `artifacts.mandatory`, `artifacts.optional`, `artifacts.parent_manages_spring_boot` |
 | `layout` | 재구성 모양: 모듈 이름(`{name}-boot` / `-back` / `-front`), Boot as-is 를 제자리로 둘지, JSP 패키징, 다중 모듈 정책, 버전 정리 규칙, 레거시 Spring 컨텍스트 스위치(`layout.legacy_context.*`) | `layout.boot_module`, `layout.comp_module`, `layout.front_module`, `layout.boot_as_is`, `layout.multi_module_policy`, `layout.wire_bundled_jars` |
-| `intake` | 접수 규칙: Ant → pom 합성, 동봉 jar 스캔, jar 이름 표, ADF 정책 | `intake.ant_to_maven`, `intake.synth_group_id`, `intake.unknown_jar`, `intake.bundled_jars`, `intake.adf_policy` |
+| `intake` | 접수 규칙: Ant 거절과 안내 문구(스위치를 켜면 pom 합성), 동봉 jar 스캔, jar 이름 표, ADF 정책 | `intake.ant_to_maven`(기본 false = 거절), `intake.ant_message`, `intake.synth_group_id`, `intake.unknown_jar`, `intake.bundled_jars`, `intake.adf_policy` |
 | `openrewrite` | OpenRewrite 1회 실행: 플러그인·레시피 BOM 버전, 레시피 세트, JVM 옵션, 제외 파일 | `openrewrite.recipes.jakarta`, `openrewrite.recipes.extra`, `openrewrite.jvm_args`, `openrewrite.timeout_minutes`, `openrewrite.recipe_bom_version` |
 | `build` | Maven 호출: `mvn` 경로, settings.xml, JDK, 테스트 건너뛰기, 타임아웃, 저장소 조회 주소, 파일 잠금 재시도, 실행 전후 훅 | `build.mvn`, `build.settings_file`, `build.java_home`, `build.repository_url`, `build.local_repo`, `build.non_filtered_extensions` |
 | `loop` | 수정 루프: 단계별 라운드 수(`loop.phases.verify`), LLM 총 호출 상한, 시간 상한, 차단 정책, 진동 감지 | `loop.phases.verify.max_iterations`, `loop.max_llm_calls`, `loop.max_total_minutes`, `loop.blocked_policy`, `loop.oscillation_limit` |
@@ -94,7 +94,7 @@
 | `config/settings.nexus.example.xml` | 있음 | Nexus 미러 settings.xml 견본(`<mirrorOf>external:*</mirrorOf>`). 복사해 `config/settings.nexus.xml` 등으로 두고 `build.settings_file` 로 가리킨다 |
 
 **반드시 바꿔야 하는 자리표시자**: `artifacts.parent` / `artifacts.boot_parent` / `artifacts.comp_parent` 의 g:a:v, `artifacts.mandatory`
-2개, `artifacts.optional` 8개(별칭 `aliases`, 트리거 `when_present` 가 있으면 함께), `intake.synth_group_id`(Ant 합성 pom 의 groupId),
+2개, `artifacts.optional` 8개(별칭 `aliases`, 트리거 `when_present` 가 있으면 함께), `intake.synth_group_id`(Ant 합성 pom 의 groupId, `intake.ant_to_maven` 을 켤 때만),
 settings.xml 의 Nexus 그룹 URL 과 `build.repository_url`(같은 Nexus — 하나는 Maven 용, 하나는 sbmig 가 직접 메타데이터를 읽는 용).
 실행은 `sbmig run <프로젝트> --config config/artifacts.yml` 이고, 여러 yml 을 겹칠 때는 `--config` 를 여러 번 준다(뒤가 이김).
 

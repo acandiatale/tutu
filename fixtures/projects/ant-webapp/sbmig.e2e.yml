@@ -23,4 +23,6 @@ llm:
 kb:
   dir: out/e2e/kb-ant-webapp
 intake:
+  # Ant projects are refused by default (company decision); this fixture keeps exercising the pom synthesis
+  ant_to_maven: true
   jar_lookup: false

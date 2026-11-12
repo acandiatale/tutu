@@ -40,10 +40,13 @@ target:
 # 접수에서 pom.xml 을 만들어 준 뒤 Maven 프로젝트처럼 진행한다.
 # pom.xml 도 build.xml 도 없는 트리와 Gradle 프로젝트는 어떤 설정으로도 받지 않는다(종료 코드 3).
 intake:
-  # Ant 프로젝트를 받을지 정한다.
+  # Ant 프로젝트를 받을지 정한다. 회사 결정으로 받지 않는다 — 아래 안내 문구를 내고 끝난다(종료 코드 3).
+  #   false = Ant 프로젝트를 받지 않는다. 신청자에게 ant_message 를 보여 준다.
   #   true  = build.xml 의 javac / war 설정과 폴더 구조를 읽어 pom.xml 을 만든 뒤 진행한다.
-  #   false = Ant 프로젝트를 거부한다(종료 코드 3). Maven 프로젝트만 받고 싶을 때.
-  ant_to_maven: true
+  #           변환 기능은 지우지 않고 그대로 두었다. 다시 하기로 하면 이 값만 true 로 바꾼다.
+  ant_to_maven: false
+  # Ant 프로젝트를 받지 않을 때 신청자에게 보여 주는 안내 문구.
+  ant_message: "Maven 변환 후 신청 부탁드립니다."
   # Ant 프로젝트에 만들어 주는 pom.xml 의 groupId. 지금 값은 자리표시자이므로
   # 회사가 정한 groupId 가 있으면 회사 설정 yml 에 적어 덧씌운다.
   synth_group_id: com.company.migrated

@@ -88,6 +88,7 @@ from pathlib import Path
 from typing import Any
 
 from sbmig.core.config import PACKAGE_ROOT
+from sbmig.core.models import FLOW_FULL, FLOW_REMEDIATION, RUN_FLOWS
 from sbmig.core.scrub import output_scrubbing, scrub, scrub_json
 from sbmig.core.workspace import STOP_REQUEST_FILE
 from sbmig.web import contract
@@ -225,6 +226,10 @@ class Run:
     slot: int | None = None
     # 2026-11-11 wave 4: None = 이관, "remediation-resume" = 이어 돈 조치 재개 시도(제어 상태·결과 파일·줄의 키가 따로)
     action: str | None = None
+    # v2.1z-aj: 실행 방식 — full(이관 전체) | remediation(이관 없이 취약점 조치만). Job 실행은 request.json 의 값과 같다
+    flow: str = FLOW_FULL
+    # 2026-11-12: 사람이 올린 파일 이름 그대로(화면이 실행을 이 이름으로 보인다)
+    upload: str | None = None
 
     @property
     def key(self) -> str:
@@ -473,6 +478,118 @@ def resume_job_name(run_id: str, attempt: int) -> str:
     return job_name(run_id)[:63 - len(suffix)].rstrip("-") + suffix
 
 
+# 실행 id 의 앞머리(2026-11-12, 사용자: "web-…" 로는 누구의 어느 프로젝트인지 모른다): 올린 파일 이름에서 만든 짧은 이름.
+# 상한 24자의 근거 — 실행 id = <앞머리 ≤24>-YYYYMMDD-HHMMSS-<hex6> (≤ 47자) → Job 이름 sbmig-<id> ≤ 53자, 재개 Job 이름
+# <Job>-rem<시도> 는 시도 번호 네 자리까지 63자(DNS-1123 라벨 상한) 안에 잘리지 않고 들어간다 — 잘리면 끝의 난수가 먼저 사라진다
+RUN_ID_SLUG_MAX = 24
+RUN_ID_FALLBACK = "web"
+
+
+def run_id_slug(upload_name: str | None) -> str:
+    """올린 파일 이름 → 실행 id 앞머리: 경로·``.zip`` 을 떼고 소문자로, ``[a-z0-9]`` 밖의 글자 묶음은 ``-`` 하나로, 앞뒤 ``-`` 를 떼고
+    ``RUN_ID_SLUG_MAX`` 자로 자른 뒤 끝의 ``-`` 를 다시 뗀다. 남는 것에 영문자가 하나도 없으면(한글만, 문장부호만, 한글 이름에서
+    숫자만 남은 ``2026-11``) ``web`` — 숫자 조각만으로는 누구의 프로젝트인지 알 수 없고 뒤의 날짜와 헷갈린다.
+
+    The run-id prefix from the upload name: basename without `.zip`, lowercase, every run outside `[a-z0-9]` → one `-`,
+    trimmed, cut to `RUN_ID_SLUG_MAX`; a result without any letter (empty, or only the digits left of a Korean name) →
+    `web`."""
+    name = re.split(r"[\\/]", str(upload_name or ""))[-1]      # 경로 구분자 앞은 버린다(어느 OS 의 것이든)
+    if name.lower().endswith(".zip"):
+        name = name[:-4]
+    slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+    slug = slug[:RUN_ID_SLUG_MAX].rstrip("-")
+    return slug if re.search(r"[a-z]", slug) else RUN_ID_FALLBACK
+
+
+def run_id_for(upload_name: str | None, now: datetime | None = None, token: str | None = None) -> str:
+    """새 실행 id ``<앞머리>-YYYYMMDD-HHMMSS-<hex 6>`` (``run_id_slug`` + 지금 시각 + 난수). ``now`` / ``token`` 은 테스트용.
+    같은 초에 같은 파일을 두 번 올려도 난수로 갈린다(이미 있는 폴더는 ``RunManager`` 가 다시 뽑는다).
+
+    A new run id `<slug>-YYYYMMDD-HHMMSS-<6 hex>`; `now` / `token` are for tests."""
+    stamp = (now or datetime.now()).strftime("%Y%m%d-%H%M%S")
+    return f"{run_id_slug(upload_name)}-{stamp}-{token or uuid.uuid4().hex[:6]}"
+
+
+UPLOAD_NAME_MAX = 255                 # 기록하는 원래 파일 이름의 상한(글자 수)
+
+
+def display_upload_name(name: str | None) -> str | None:
+    """화면에 보일 원래 파일 이름: 경로 부분만 떼고(브라우저는 이름만 보내지만 다른 클라이언트는 모른다) 제어 문자를 빼고
+    ``UPLOAD_NAME_MAX`` 자로 자른다. 유니코드는 그대로. 남는 것이 없으면 None.
+
+    The upload name to show: basename only, control characters dropped, capped; Unicode kept; None when empty."""
+    base = re.split(r"[\\/]", str(name or ""))[-1]
+    base = "".join(ch for ch in base if ch >= " " and ch != "\x7f").strip()
+    return base[:UPLOAD_NAME_MAX] or None
+
+
+def _abort_reason_ko(reason: str) -> str | None:
+    # 멈춘 까닭의 한국어(보고서와 같은 번역표 sbmig.report.i18n.tr_line). 보고서의 후속 조치 줄 모양("run aborted: <까닭>")을 먼저,
+    # 그다음 까닭만 번역해 본다. 앞머리("실행 중단: " 같은)는 떼어 까닭 문장만 남긴다. 번역되지 않았으면 None
+    try:
+        from sbmig.report import i18n
+    except Exception:  # noqa: BLE001 — a missing translation table only means "no Korean"
+        return None
+    for line in (f"run aborted: {reason}", reason):
+        try:
+            out = i18n.tr_line("ko", line)
+        except Exception:  # noqa: BLE001
+            return None
+        if out and out != line:
+            if line != reason:
+                out = re.sub(r"^[^:：]*(?:중단|aborted)[^:：]*[:：]\s*", "", out, count=1)
+            out = out.strip()
+            return out if out and out != reason else None
+    return None
+
+
+def _recorded_upload(rd: Path) -> str | None:
+    # 메모리에 없는 실행의 원래 파일 이름: request.json(Job 모드; 옛 기록은 다듬은 이름) → web-status.json(in-process)
+    rec = RequestRecord.read(rd)
+    if rec is not None:
+        return rec.upload_name or rec.upload or None
+    try:
+        data = json.loads((rd / WEB_STATUS_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    up = data.get("upload") if isinstance(data, dict) else None
+    return up if isinstance(up, str) and up else None
+
+
+def check_flow(flow: str | None) -> str:
+    """실행 방식 값 검사(v2.1z-aj): 없거나 비었으면 ``full``, ``RUN_FLOWS`` 밖의 값은 받는 값을 적은 ValueError(웹은 400).
+
+    Validate a run flow: None / "" = `full`; anything outside `RUN_FLOWS` raises a ValueError naming the accepted values."""
+    if flow is None or flow == "":
+        return FLOW_FULL
+    if flow not in RUN_FLOWS:
+        raise ValueError(f"unknown flow {flow!r} — use one of: {', '.join(RUN_FLOWS)}")
+    return flow
+
+
+def _abort_reason(report: dict[str, Any]) -> str | None:
+    # 엔진이 실행을 멈춘 까닭: Orchestrator._abort 가 manual_followups 에 "run aborted: <까닭>" 으로 남긴다(첫 줄이 첫 까닭)
+    for item in report.get("manual_followups") or []:
+        if isinstance(item, str) and item.startswith("run aborted: "):
+            return item[len("run aborted: "):].strip() or None
+    return None
+
+
+def _recorded_flow(rd: Path) -> str:
+    # 메모리에 없는 실행의 실행 방식: request.json(Job 모드) → web-status.json(in-process) → report.json(엔진) → full
+    rec = RequestRecord.read(rd)
+    if rec is not None:
+        return rec.flow or FLOW_FULL
+    for name in (WEB_STATUS_FILE, "report.json"):
+        try:
+            data = json.loads((rd / name).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(data, dict) and data.get("flow") in RUN_FLOWS:
+            return data["flow"]
+    return FLOW_FULL
+
+
 class RunManager:
     """이관을 작업 스레드로 시작하고, 상태·이벤트 질문에 메모리 + 실행 폴더로 답한다.
     ``_lock`` 은 ``runs`` dict 를 지키고, ``_turns`` 는 이관을 올린 순서대로 ``max_parallel`` 개까지 들여보낸다(Job 모드; in-process 는 하나).
@@ -672,7 +789,8 @@ class RunManager:
         mode = {RunState.QUEUED.value: None, RunState.CREATING.value: "probe"}.get(cs.state, "adopt")
         action = cs.action or None
         run = Run(rd.name, rd, rd / SOURCE_ZIP, list(rec.configs or []), rec.stop_after, rec.llm_provider, job=True,
-                  request=rec, control=cs, recover=mode, action=action)
+                  request=rec, control=cs, recover=mode, action=action, flow=rec.flow or FLOW_FULL,
+                  upload=rec.upload_name or rec.upload)
         if action:                             # 재개 시도의 Job 이름은 줄을 설 때부터 정해져 있다(시도 번호에서)
             run.job_name = cs.job or resume_job_name(run.run_id, run.attempt)
         elif cs.state != RunState.QUEUED.value:
@@ -746,19 +864,19 @@ class RunManager:
         return uploads / f".incoming-{uuid.uuid4().hex}.part"
 
     def start(self, zip_bytes: bytes, name: str, configs: list[str], stop_after: str | None = None,
-              llm_provider: str | None = None) -> str:
+              llm_provider: str | None = None, flow: str | None = None) -> str:
         """메모리에 이미 있는 본문용 ``start_file`` (테스트, 다른 코드에서 부를 때). ValueError = 잘못된 요청.
 
         `start_file` for a body already in memory (tests, embedding callers). ValueError = bad request."""
         tmp = self.incoming_path()
         tmp.write_bytes(zip_bytes)
         try:
-            return self.start_file(tmp, name, configs, stop_after, llm_provider)
+            return self.start_file(tmp, name, configs, stop_after, llm_provider, flow)
         finally:
             tmp.unlink(missing_ok=True)
 
     def start_file(self, incoming: Path, name: str, configs: list[str], stop_after: str | None = None,
-                   llm_provider: str | None = None) -> str:
+                   llm_provider: str | None = None, flow: str | None = None) -> str:
         """검사 → 올라온 zip 을 실행 ID 이름으로 옮김 → 설정·워크스페이스·오케스트레이터 생성 → 작업 스레드
         시작. ValueError 면 ``incoming`` 은 호출자 몫(라우트가 지운다), 옮긴 뒤에는 실행 몫이다. zip 이 깨져
         워크스페이스를 못 만들면 실행 폴더·zip 을 남기지 않는다(유령 실행 방지).
@@ -776,6 +894,10 @@ class RunManager:
                 raise ValueError(f"unknown config {c}")
         phase = parse_stop_after(stop_after)                  # ValueError names the accepted values
         stop_after = phase.value if phase is not None else None
+        flow = check_flow(flow)                               # v2.1z-aj; ValueError names the accepted values
+        if flow == FLOW_REMEDIATION and stop_after:
+            # 조치만 하는 실행에는 멈출 이관 단계가 없다(CLI 도 --stop-after 와 --flow remediation 을 함께 받지 않는다)
+            raise ValueError("stop_after cannot be combined with flow=remediation (that flow runs no migration phase)")
         overrides: dict[str, Any] = {}
         if llm_provider:
             overrides["llm"] = {"provider": llm_provider}
@@ -783,9 +905,10 @@ class RunManager:
                           repo_root=self.repo_root)        # pydantic ValidationError is a ValueError
 
         safe = re.sub(r"[^A-Za-z0-9._-]+", "_", Path(name or "project.zip").name) or "project.zip"
-        run_id = f"web-{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
+        shown = display_upload_name(name)                     # 사람이 올린 이름 그대로(화면용)
+        run_id = self._claim_run_id(name)
         if self.effective_mode in ("k8s-job", "local-job"):
-            return self._start_job(incoming, run_id, safe, list(configs), stop_after, llm_provider)
+            return self._start_job(incoming, run_id, safe, list(configs), stop_after, llm_provider, flow, shown)
         uploads = self.out_dir / "_uploads"
         uploads.mkdir(parents=True, exist_ok=True)
         zip_path = uploads / f"{run_id}-{safe}"
@@ -796,11 +919,12 @@ class RunManager:
             shutil.rmtree(self.out_dir / run_id, ignore_errors=True)
             zip_path.unlink(missing_ok=True)
             raise
-        run = Run(run_id, ws.run_dir, zip_path, list(configs), stop_after, llm_provider)
+        run = Run(run_id, ws.run_dir, zip_path, list(configs), stop_after, llm_provider, flow=flow, upload=shown)
         run.orch = Orchestrator(cfg, ws)
         # 실행 폴더의 첫 기록: 어떤 설정으로 돌았는지 journal 만 보고도 알 수 있게
         try:
-            ws.journal({"event": "web_run", "configs": list(configs), "stop_after": stop_after, "llm_provider": llm_provider})
+            ws.journal({"event": "web_run", "configs": list(configs), "stop_after": stop_after, "llm_provider": llm_provider,
+                        "flow": flow, "upload": shown})
         except OSError as e:                   # the journal line is a convenience; never refuse the run on it
             log.debug("run %s: web_run journal line not written: %s", run_id, e)
         # daemon: 서버 프로세스가 끝나면 스레드도 함께 끝난다(정리는 shutdown 의 멈춤 요청 + Maven 종료)
@@ -817,12 +941,29 @@ class RunManager:
             with self._lock:
                 self.runs.pop(run_id, None)
             raise
-        log.info("run %s started: %s configs=%s stop_after=%s llm_provider=%s", run_id,
-                 zip_path.name, ",".join(configs) or "-", stop_after or "-", llm_provider or "-")
+        log.info("run %s started: %s configs=%s stop_after=%s llm_provider=%s flow=%s", run_id,
+                 zip_path.name, ",".join(configs) or "-", stop_after or "-", llm_provider or "-", flow)
         return run_id
 
+    def _claim_run_id(self, upload_name: str) -> str:
+        """새 실행 id 를 뽑아 그 실행 폴더를 **배타적으로** 만든다(``mkdir`` 이 이미 있으면 다시 뽑는다) — 같은 초에 같은 파일을 올린 두
+        요청도, 앞선 실행의 폴더도 겹치지 않는다. 메모리에 같은 id 가 있어도 다시 뽑는다.
+
+        Draw a run id and create its run directory exclusively (an existing directory or an id in memory → draw again)."""
+        self.out_dir.mkdir(parents=True, exist_ok=True)
+        for _ in range(100):
+            rid = run_id_for(upload_name)
+            if rid in self.runs or not RUN_ID_RE.match(rid):
+                continue
+            try:
+                (self.out_dir / rid).mkdir()
+            except FileExistsError:
+                continue
+            return rid
+        raise OSError("no free run id after 100 tries")
+
     def _start_job(self, incoming: Path, run_id: str, safe_name: str, configs: list[str], stop_after: str | None,
-                   llm_provider: str | None) -> str:
+                   llm_provider: str | None, flow: str = FLOW_FULL, upload_name: str | None = None) -> str:
         """k8s Job 모드의 시작: 실행 폴더를 만들고 zip 을 ``source.zip`` 으로 옮기고(둘 다 공유 볼륨), 첫 저널 줄을 쓰고,
         Job 을 만들어 지켜보는 작업 스레드를 띄운다. 이 프로세스는 이관을 돌리지 않는다.
 
@@ -838,7 +979,7 @@ class RunManager:
             request = RequestRecord(run_id=run_id, accepted_at=utc_now(), upload=safe_name, configs=list(configs),
                                     zip_sha256=sha256_file(zip_path), config_digests=config_digests(self.repo_root, configs),
                                     sbmig_version=sbmig_version(), mode=self.effective_mode, stop_after=stop_after,
-                                    llm_provider=llm_provider, attempt=1)
+                                    llm_provider=llm_provider, attempt=1, flow=flow, upload_name=upload_name)
             request.write(run_dir)
             control = ControlState(run_id=run_id, state=RunState.QUEUED.value, attempt=request.attempt,
                                    accepted_at=request.accepted_at)
@@ -846,9 +987,11 @@ class RunManager:
         except OSError:                        # no run was started: leave no half-accepted run dir behind
             shutil.rmtree(run_dir, ignore_errors=True)
             raise
-        run = Run(run_id, run_dir, zip_path, configs, stop_after, llm_provider, job=True, request=request, control=control)
+        run = Run(run_id, run_dir, zip_path, configs, stop_after, llm_provider, job=True, request=request, control=control,
+                  flow=flow, upload=upload_name or safe_name)
         _append_journal(run_dir, {"event": "web_run", "run_id": run_id, "mode": self.effective_mode, "upload": safe_name,
-                                  "configs": configs, "stop_after": stop_after, "llm_provider": llm_provider})
+                                  "configs": configs, "stop_after": stop_after, "llm_provider": llm_provider, "flow": flow,
+                                  "upload_name": upload_name})
         run.thread = threading.Thread(target=self._worker, args=(run,), name=f"sbmig-job-{run_id}", daemon=True)
         with self._lock:
             self.runs[run_id] = run
@@ -860,9 +1003,9 @@ class RunManager:
             with self._lock:
                 self.runs.pop(run_id, None)
             raise
-        log.info("run %s queued as a %s: %s configs=%s stop_after=%s", run_id,
+        log.info("run %s queued as a %s: %s configs=%s stop_after=%s flow=%s", run_id,
                  "k8s Job" if self.effective_mode == "k8s-job" else "local job (development)", safe_name,
-                 ",".join(configs) or "-", stop_after or "-")
+                 ",".join(configs) or "-", stop_after or "-", flow)
         return run_id
 
     def _worker(self, run: Run) -> None:
@@ -904,8 +1047,8 @@ class RunManager:
                     # 같은 프로세스의 다른 실행·서버 로그가 섞이지 않게
                     log_path = attach_file_log(run.run_dir / "sbmig.log", thread_id=threading.get_ident())
                     # 이 실행 sbmig.log 의 첫 줄: 어떤 설정으로 돌았는지
-                    log.info("run %s: configs=%s stop_after=%s llm_provider=%s", run.run_id,
-                             ",".join(run.configs) or "-", run.stop_after or "-", run.llm_provider or "-")
+                    log.info("run %s: configs=%s stop_after=%s llm_provider=%s flow=%s", run.run_id,
+                             ",".join(run.configs) or "-", run.stop_after or "-", run.llm_provider or "-", run.flow)
                     report = self._run_thread_body(run)
                     run.report = report
                     run.exit_code = run_exit_code(report) if report is not None else EXIT_ABORTED
@@ -1137,6 +1280,8 @@ class RunManager:
             env[contract.SLOT_ENV] = str(run.slot)
         if run.action:                         # 2026-11-11 wave 4: the Worker runs this action instead of `sbmig run`
             env[contract.ACTION_ENV] = run.action
+        # v2.1z-aj: 늘 적는다(full 도) — Worker 는 request.json 의 flow 와 대조한다. 비었으면 full 로 보므로 옛 Job 과도 맞는다
+        env[contract.FLOW_ENV] = run.flow or FLOW_FULL
         return env
 
     def _env_pins(self, run: Run) -> dict[str, str] | None:
@@ -1544,12 +1689,14 @@ class RunManager:
 
         orch = run.orch
         phase = Phase(run.stop_after) if run.stop_after else None
+        # v2.1z-aj: 실행 방식은 full 이 아닐 때만 넘긴다 — full 은 엔진의 기본값이고, 그래야 flow 를 모르는 엔진으로도 이관이 돈다
+        extra: dict[str, Any] = {"flow": run.flow} if run.flow and run.flow != FLOW_FULL else {}
         try:
             from sbmig.graph import stream_graph
         except ImportError as e:      # no sbmig.graph / no langgraph: inline engine, no node events (kept on purpose)
             log.info("graph engine unavailable (%s) — running the inline engine", e)
-            return orch.run(stop_after=phase)
-        updates = stream_graph(orch, stop_after=phase)
+            return orch.run(stop_after=phase, **extra)
+        updates = stream_graph(orch, stop_after=phase, **extra)
         stopped = False
         try:
             for name, update in updates:
@@ -1658,7 +1805,8 @@ class RunManager:
             except OSError as e:
                 raise StateConflict(f"the resume request could not be recorded ({type(e).__name__})") from None
             run = Run(run_id, rd, rd / SOURCE_ZIP, list(rec.configs or []), rec.stop_after, rec.llm_provider, job=True,
-                      request=rec, control=control, action=ACTION_REMEDIATION_RESUME)
+                      request=rec, control=control, action=ACTION_REMEDIATION_RESUME, flow=rec.flow or FLOW_FULL,
+                      upload=rec.upload_name or rec.upload)
             run.job_name = resume_job_name(run_id, attempt)
             run.thread = threading.Thread(target=self._worker, args=(run,), name=f"sbmig-job-{run.key}", daemon=True)
             self.resumes[run_id] = run
@@ -1819,7 +1967,11 @@ class RunManager:
         run = self.runs.get(run_id)
         rd = self.run_dir(run_id)
         info: dict[str, Any] = {"run_id": run_id, "run_dir": str(rd), "exists": rd.is_dir() or run is not None,
-                                "mode": self.effective_mode, "parallel": self.parallel()}
+                                "mode": self.effective_mode, "parallel": self.parallel(),
+                                # v2.1z-aj: 실행 방식 — 화면의 단계 레일·결과 칸·지난 실행 목록이 이것을 따른다
+                                "flow": (run.flow or FLOW_FULL) if run is not None else _recorded_flow(rd),
+                                # 2026-11-12: 사람이 올린 파일 이름 그대로 — 화면은 실행을 이 이름으로 보인다(옛 in-process 실행은 없을 수 있다)
+                                "upload": (run.upload if run is not None else None) or _recorded_upload(rd)}
         control: ControlState | None = None
         if run is not None:
             info["state"] = self._mem_state(run)
@@ -1892,6 +2044,17 @@ class RunManager:
                 info["blocked"] = len(data.get("blocked") or [])
                 info["unresolved"] = len(data.get("unresolved") or [])
                 info["llm_calls"] = (data.get("llm_usage") or {}).get("calls")
+                # v2.1z-aj: 실행을 멈춘 까닭(접수 거절 — "Maven 변환 후 신청 부탁드립니다." 등)과 이어 돈 / 단독 조치의 짧은 요약 —
+                # 화면이 결과 칸에 문장으로 보인다(로그 탭에 묻히지 않게)
+                why = _abort_reason(data)
+                if why:
+                    info["abort_reason"] = scrub(why) if output_scrubbing() else why
+                    ko = _abort_reason_ko(info["abort_reason"])
+                    if ko:
+                        info["abort_reason_ko"] = ko
+                rsum = data.get("remediation")
+                if isinstance(rsum, dict) and rsum.get("status"):
+                    info["remediation"] = {k: rsum[k] for k in ("status", "reason", "missing") if rsum.get(k) is not None}
                 from sbmig.report.result_line import entry_counts
                 info["open"], info["resolved"] = entry_counts(data.get("error_entries") or [])   # v2.1 error list
             except (OSError, ValueError):
@@ -2052,7 +2215,7 @@ def _write_web_status(run: Run) -> None:
     """작업 스레드가 끝날 때 web-status.json(종료 코드·오류·멈춤 요청·마지막 노드)을 쓴다 — 메모리에서
     밀려났거나 서버를 다시 띄운 뒤에도 상태를 답하려고. 못 써도 실행 결과에는 영향이 없다."""
     try:
-        data = {"run_id": run.run_id, "exit_code": run.exit_code, "error": run.error,
+        data = {"run_id": run.run_id, "exit_code": run.exit_code, "error": run.error, "flow": run.flow, "upload": run.upload,
                 "stop_requested": run.cancel.is_set(), "last_node": run.last_node,
                 "success": run.success if run.success is not None else getattr(run.report, "success", None)}
         (run.run_dir / WEB_STATUS_FILE).write_text(json.dumps(data, default=str), encoding="utf-8")

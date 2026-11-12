@@ -1,8 +1,10 @@
 """v2.1j orchestrator side (docs/INTERFACES.md "v2.1j"): an Ant project (build.xml, no pom.xml) gets a synthesized
 pom.xml at intake — committed `intake: pom.xml synthesized from build.xml` after the as-is snapshot, journal
 `pom_synthesized` + `build_tool` (`ant→maven`), flags `pom-synthesized` / `jar-coordinates-unknown`,
-`report.pom_synthesis`, one Korean INFO line — and the run continues as a Maven project. `intake.ant_to_maven: false`,
-`ok=False`, an exception or a missing analyzer module keep the old rejection (`unsupported-build-tool:ant`, exit 3).
+`report.pom_synthesis`, one Korean INFO line — and the run continues as a Maven project. The synthesis runs only with
+`intake.ant_to_maven: true` (default false since the company decision: the local `cfg` fixture below switches it on);
+`ok=False`, an exception or a missing analyzer module are refused with their reason (`unsupported-build-tool:ant`, exit
+3); switched off, the refusal carries `intake.ant_message` (tests/loop/test_ant_refusal.py has the default).
 
 The analyzer (`sbmig.analyze.ant.synthesize_pom`) is faked: a stub module is injected into `sys.modules` (the
 orchestrator imports it with `importlib.import_module` on every call), so these tests do not depend on the real one."""
@@ -85,6 +87,14 @@ class FakeAnt:
         if self.result.ok:
             ws.write("pom.xml", POM)
         return self.result
+
+
+@pytest.fixture()
+def cfg(cfg):
+    """The shared config with the pom synthesis switched on (`intake.ant_to_maven` is false by default)."""
+    c = cfg.model_copy(deep=True)
+    c.intake.ant_to_maven = True
+    return c
 
 
 @pytest.fixture()
@@ -187,8 +197,8 @@ def test_ant_to_maven_off_keeps_the_rejection(cfg, tmp_path, fake_ant, engine):
     assert fake.calls == []
     assert "unsupported-build-tool:ant" in report.flags and "aborted" in report.flags
     assert run_exit_code(report) == 3 and report.pom_synthesis is None
-    assert report.manual_followups[0].startswith("run aborted: Ant build.xml detected and no pom.xml")
-    assert "only Maven projects are supported" in report.manual_followups[0]
+    assert report.manual_followups[0] == f"run aborted: {cfg.intake.ant_message}"
+    assert report.manual_followups[1].startswith("Ant build file build.xml found and no pom.xml")
     assert not ws.exists("pom.xml") and "pom-synthesized" not in report.flags
 
 

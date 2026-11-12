@@ -3,7 +3,7 @@
 
 ``SBMIG_WEB_MODE=local-job``(또는 ``k8s-job`` 인데 클러스터 밖) 이면 ``RunManager`` 가 ``K8sClient`` 대신 이 클라이언트를 쓴다. 같은
 세 호출: ``create_job`` 은 렌더된 Job 매니페스트의 env 가운데 **실행별 값만**(``contract.RUN_ENV``: SBMIG_SOURCE_ZIP, SBMIG_OUT,
-SBMIG_RUN_ID, SBMIG_CONFIG, SBMIG_STOP_AFTER, SBMIG_LLM_PROVIDER) 넘겨 파드가 돌릴 바로 그 Worker ``python -m sbmig.web.worker`` 를
+SBMIG_RUN_ID, SBMIG_CONFIG, SBMIG_STOP_AFTER, SBMIG_LLM_PROVIDER, SBMIG_FLOW …) 넘겨 파드가 돌릴 바로 그 Worker ``python -m sbmig.web.worker`` 를
 띄운다. 틀의 나머지 env 는 **파드**의 설정이라(컨테이너 경로 ``/etc/sbmig/settings.xml`` · ``/opt/java21`` · ``/data/kb-v2``, ConfigMap 에서
 오는 조정 키) 넘기지 않는다 — 로컬 Worker 의 설정은 개발자의 셸과 ``.env`` 가 정한다(v2.1z-ac — Worker 가
 ``control/request.json`` 의 digest 를 대조하고 ``sbmig.cli run`` 을 돌리고 비밀 값을 지우고 ``job-status.json`` 을 쓴다; 표준 출력은

@@ -39,7 +39,7 @@
 
 | 명령 | 하는 일과 옵션 |
 |---|---|
-| `sbmig run <dir|zip>` | 한 프로젝트를 끝까지. `--out/-o`(기본 `out`), `--run-id`, `--stop-after intake|analyze|plan|transform|restructure|verify`, `--dry-run`(결정만 저널, 적용 없음), `--llm-provider`, `--llm-plugin pkg.mod:attr`, `--fix-plugin pkg.mod:attr`, `--java-home`, `--settings`, `--repo-root` |
+| `sbmig run <dir|zip>` | 한 프로젝트를 끝까지. `--out/-o`(기본 `out`), `--run-id`, `--stop-after intake|analyze|plan|transform|restructure|verify`, `--dry-run`(결정만 저널, 적용 없음), `--flow full|remediation`([11](11-remediations.md)), `--llm-provider`, `--llm-plugin pkg.mod:attr`, `--fix-plugin pkg.mod:attr`, `--java-home`, `--settings`, `--repo-root` |
 | `sbmig serve` | 웹 UI(FastAPI + uvicorn, 한 번에 이관 하나, 나머지는 대기열). `--host`(기본 127.0.0.1), `--port`(8765), `--out`(기본 `out/web`), `--graceful-timeout`, `--max-upload-mb`, `--token`(루프백이 아닌 host 면 필수, `SBMIG_WEB_TOKEN`) 또는 `--open`(토큰 없이 사내망에 공개, `SBMIG_WEB_OPEN=1`), `--mode`(`in-process` | `k8s-job`: 업로드마다 Job | `local-job`: 개발 PC 에서 파드 자리에 로컬 서브프로세스, `SBMIG_WEB_MODE`), `--config`(모든 업로드가 돌 `config/*.yml` 이름, 여러 번; `SBMIG_WEB_CONFIGS`) |
 | `sbmig analyze <dir>` | 분석만(변경 없음): 종류, Java·Boot 버전, 라이브러리, 권고. `--json` |
 | `sbmig plan <dir>` | 분석 + 계획 단계 목록. `--json` |
@@ -51,7 +51,7 @@
 | `sbmig fleet run <manifest>` | 여러 프로젝트를 KB 하나로 차례로. `--out`, `--order manifest|simple-first`, `--max-projects`, `--retry-failed`, `--stop-on-abort`, `--max-llm-calls-total`, `--dry-run`, `--llm-provider`. 이어 돌리기 `sbmig fleet resume <out>`, 진행표 `sbmig fleet status [out] [--attention] [--json]` |
 | 그 밖 | `sbmig rewrite`(OpenRewrite 단독), `sbmig recipes …`, `sbmig advisories …`, `sbmig version` |
 
-예: `sbmig run D:\in\app.zip -c config\artifacts.yml -o D:\sbmig\out`. 웹 UI 는 `sbmig serve` 가 곧 uvicorn 이다(`uvicorn sbmig.web.app:app` 도 같은 앱).
+예: `sbmig run D:\in\app.zip -c config\artifacts.yml -o D:\sbmig\out`. 웹 UI 는 `sbmig serve`(= `uvicorn sbmig.web.app:app`).
 플릿은 `<out>/fleet/` 에 `state.json`, `summary.md`, `summary.csv`(attention 칸), `fleet/sbmig.log` 를 쓴다. 플릿 시작 전 점검은
 `preflight: <점검> ok|FAIL|skip …` 줄(disk / maven / java / settings / repository / llm, `sbmig/fleet/preflight.py`)이다.
 
@@ -180,8 +180,8 @@ verify_guide …), `metadata`(run_id, 케이스 등). 키·헤더는 들어가�
 ## 5. 종료 코드, `attn=` 코드, 차단 사유
 
 종료 코드(`sbmig/report/result_line.py` `report_exit_code`): **0** = 최종 `mvn clean package` 성공이고 차단 없음, **2** = 끝났지만 차단·미해결
-오류가 남음, **3** = 중단(플래그 `aborted[:…]` 또는 `mvn-not-found`: Maven 없음, Maven/Ant 프로젝트 아님, 설정된 사내 parent 좌표 해석 불가, ADF 프로젝트),
-**1** = 예외로 죽음(`SBMIG-RESULT … exit=1 … attn=crash`) 또는 명령 인자 오류.
+오류가 남음, **3** = 중단(플래그 `aborted[:…]` 또는 `mvn-not-found`: Maven 없음, Maven 프로젝트 아님(Ant 는 `intake.ant_message` 로 거절), 설정된 사내 parent 좌표 해석 불가, ADF 프로젝트),
+**1** = 예외로 죽음(`SBMIG-RESULT … exit=1 … attn=crash`) 또는 명령 인자 오류. `--flow remediation`: 0 = 조치 SUCCEEDED, 2 = 그 밖, 3 = 시작 못 함.
 
 `attn=` 코드는 중요한 것부터 쉼표로(`-` = 볼 것 없음): `infra:<kind>`(llm / maven / jdk / repository / file-lock / http-blocked …; 초록 실행에는 안 붙음),
 `crash`, `aborted[:<reason>]`, `owner-decision`(needs_owner 차단이 있음 = 소유팀 결정 필요), `blocked:<reason>`(사유마다), `unresolved:<n>`,
@@ -189,7 +189,7 @@ verify_guide …), `metadata`(run_id, 케이스 등). 키·헤더는 들어가�
 `test-compile-skipped`, `tests-not-compiled`, `major-upgrade`, `jar-coordinates-unknown`, `parent-chain-no-boot-bom`, `hollow-reactor`,
 `adf-project`, 그 무엇도 아니면 `incomplete`. 플릿은 `skipped:<why>` 도 쓴다.
 
-`infra:http-blocked,aborted:http-blocked`(exit 3): Maven 3.8.1+ 의 차단 미러(`maven-default-http-blocker`)가 `http://` 저장소를 거부했다(`Blocked mirror for repositories`). 프로젝트·sbmig 탓이 아니라 부모 맞추기·재시도·LLM 없이 바로 멈춘다. 인수인계 첫 줄대로 settings 를 고친다: https URL, 또는 차단 미러 `<mirrorOf>` 에 `,!<저장소 ID>`. 그 id 를 실제 주소로 재정의한 settings 의 `Could not find … in maven-default-http-blocker (<실주소>)` 는 차단이 아니다: 덮인 저장소가 전부 그 주소로 간 것(다른 저장소는 `,!ID` 로 뺀다). 저널 `maven_http_blocked`, 사전 점검 경고 `maven_http_blocker_active`.
+`infra:http-blocked,aborted:http-blocked`(exit 3): Maven 3.8.1+ 의 차단 미러(`maven-default-http-blocker`)가 `http://` 저장소를 거부했다(`Blocked mirror for repositories`). 부모 맞추기·재시도·LLM 없이 바로 멈춘다. 인수인계 첫 줄대로 settings 를 고친다: https URL, 또는 차단 미러 `<mirrorOf>` 에 `,!<저장소 ID>`. 그 id 를 실제 주소로 재정의한 settings 의 `Could not find … in maven-default-http-blocker (<실주소>)` 는 차단이 아니다: 덮인 저장소가 전부 그 주소로 간 것(다른 저장소는 `,!ID` 로 뺀다). 저널 `maven_http_blocked`, 사전 점검 경고 `maven_http_blocker_active`.
 
 차단 사유 = `BlockReason`(`sbmig/core/models.py`). LLM 시도 허용 횟수는 `loop.blocked_policy`:
 

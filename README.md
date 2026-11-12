@@ -1,7 +1,8 @@
 # sbmig — JDK 21 / Spring Boot 4.1 migration agent
 
 `sbmig` takes an as-is **Maven** project (zip or directory: pure Java, Spring 4/5, servlet / Tomcat, Spring Boot 2/3,
-MSA; an Ant project gets a pom.xml synthesized at intake), migrates it to JDK 21 + Spring Boot 4.1, restructures it into
+MSA; Ant projects are refused with the notice "Maven 변환 후 신청 부탁드립니다." unless `intake.ant_to_maven` is
+switched on), migrates it to JDK 21 + Spring Boot 4.1, restructures it into
 the company layout (in-house parent, 2 mandatory dependencies, optional in-house artifacts, `{name}-boot` / `-back` /
 `-front` modules) and stops only after a final `mvn clean package` (tests skipped). Build errors are fixed by
 **LLM-written Python fix scripts** that are stored per error case in a file-based knowledge base, so a later project with
@@ -11,7 +12,8 @@ owners (versions replaced, ⚠ pins carried over, EOL libraries that still compi
 ## The flow
 
 ```
-intake       Maven, or Ant → synthesized pom (Gradle / trees with neither pom.xml nor build.xml: rejected, exit 3);
+intake       Maven only (Ant: refused with `intake.ant_message`, exit 3 — pom synthesis behind `intake.ant_to_maven`;
+             Gradle / trees with neither pom.xml nor build.xml: rejected, exit 3);
              root aggregator generated for sibling poms, stray pom copies ignored, preflight (Maven, JDK 21)
 analyze      case (pure_java | servlet_tomcat | spring_legacy | spring_boot | msa), libraries, advisories, bundled jars,
              ADF stop (exit 3), hollow reactor (exit 2)
@@ -34,6 +36,13 @@ recorded in `kb-v2/cases/<case_id>/`.
 
 The remediation step (vulnerable library versions, IVAS) is a separate graph chained after a successful migration; it
 never changes the migration's verdict. Details: `agent-doc/11-remediations.md`.
+
+A run has one of two **flows**: `full` (the default: the migration above, then the chained remediation) or
+`remediation` (`sbmig run <zip|dir> --flow remediation`, web `POST /api/runs?flow=remediation`, the page's 취약점 해결
+choice) — for a project migrated earlier and checked again: no migration step, no LLM call, no KB access; the upload is
+built as it is, scanned by IVAS, remediated and rescanned under `<run dir>/remediation/`. `SBMIG-RESULT … flow=remediation
+… remediation=<STATUS>`; exit 0 = SUCCEEDED, 2 = any other saved status, 3 = not started (refused at intake, or
+`remediation:not-ready` when IVAS values / Maven readiness are missing).
 
 ## Business decisions (kept in config / knowledge, not in code)
 
@@ -62,9 +71,9 @@ Python unless `script.python` names another one (it needs pydantic + lxml, `docs
 
 | command | what it does |
 |---|---|
-| `sbmig run <input>` | migrate one project → `out/<run id>/` (`report.md`, `report.json`, `result.zip`, `changes.patch`, `sbmig.log`); exit 0 ok, 2 blocked / unresolved, 3 aborted |
+| `sbmig run <input>` | migrate one project → `out/<run id>/` (`report.md`, `report.json`, `result.zip`, `changes.patch`, `sbmig.log`); exit 0 ok, 2 blocked / unresolved, 3 aborted. `--flow remediation`: no migration, only the vulnerability remediation of the project as uploaded (below) |
 | `sbmig fleet run <manifest>` / `resume` / `status` | many projects, one after the other, one shared KB → `<out>/fleet/summary.md` |
-| `sbmig serve` | web UI (FastAPI on uvicorn, LangGraph engine): upload a zip, watch the run live, download the report |
+| `sbmig serve` | web UI (FastAPI on uvicorn, LangGraph engine): upload a zip, choose 전체 진행 or 취약점 해결, watch the run live, download the report |
 | `sbmig analyze` / `plan` / `inventory` | read-only: project profile, migration plan, a pom-less tree described for its owners |
 | `sbmig kb cases list\|show\|retire\|activate\|pin\|unpin` | stored fix scripts per case (versions, successes, lineage) |
 | `sbmig kb errors …` / `stats` / `validate` / `reindex` / `export` / `import` | error list, KB upkeep |

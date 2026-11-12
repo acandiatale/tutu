@@ -8,7 +8,7 @@ attempt · 버전이 들어 있어 Main 이 **지금 시도**의 결과만 믿�
 비밀 값은 **쓰는 순간** 지운다(리뷰 2026-11-10): 자식은 언제나 ``SBMIG_REDACT_OUTPUT=1`` 로 돌아 자기 로그·저널을 스스로 지우고,
 Worker 는 자식의 출력을 한 줄씩 지워서 파드 로그로 넘긴다. 끝난 뒤 실행 폴더를 훑는 것은 그 뒤의 마지막 단계다(Maven 출력, 보고서).
 환경 대조(리뷰 2026-11-10): Job 을 만든 Main 이 ``control/state.json`` 에 환경 지문(``env_pins``)과 정책을 적었으면 자기 환경으로 다시
-계산해 대조하고 실행별 값(``SBMIG_CONFIG`` / ``SBMIG_STOP_AFTER`` / ``SBMIG_LLM_PROVIDER``)도 ``request.json`` 과 맞춰 본다 — refuse 면
+계산해 대조하고 실행별 값(``SBMIG_CONFIG`` / ``SBMIG_STOP_AFTER`` / ``SBMIG_LLM_PROVIDER`` / ``SBMIG_FLOW``)도 ``request.json`` 과 맞춰 본다 — refuse 면
 거절(exit 3), warn 이면 저널에 ``worker_env_differs`` 를 적고 돈다. 글에는 이름만 적는다(값·지문은 적지 않는다).
 자리(v2.1z-ae): Job 이 여러 개 동시에 돌면 Main 이 ``SBMIG_JOB_SLOT``(1 부터)을 준다. 2번 자리부터는 Maven 로컬 저장소를 따로
 쓴다 — 이 실행이 원래 쓸 저장소 옆의 ``<이름>-slot<k>`` 폴더를 만들어 환경 대조가 끝난 뒤 **자식의 env 에만** ``SBMIG_BUILD__LOCAL_REPO`` 로
@@ -95,7 +95,10 @@ ENV_DIFFERS_EVENT = "worker_env_differs"
 ENV_DIFF_LABELS = (("differs", "values differ"), ("main_only", "set in the web pod only"),
                    ("worker_only", "set in the Job pod only"))
 # Main 이 request.json 에 적은 실행별 값과 Worker 가 받은 env 의 이름(SBMIG_CONFIG 는 따로 본다 — 파일 경로 대조)
-RUN_VALUE_FIELDS = (("SBMIG_STOP_AFTER", "stop_after"), ("SBMIG_LLM_PROVIDER", "llm_provider"))
+RUN_VALUE_FIELDS = (("SBMIG_STOP_AFTER", "stop_after"), ("SBMIG_LLM_PROVIDER", "llm_provider"), (contract.FLOW_ENV, "flow"))
+# 비었을 때의 값이 있는 실행별 값: 이 값과 "없음"을 같은 것으로 본다 — SBMIG_FLOW 가 없는 옛 Main 의 Job 과 flow 키가 없는 옛
+# request.json 은 둘 다 full 이다(v2.1z-aj)
+RUN_VALUE_DEFAULTS = {contract.FLOW_ENV: contract.FLOW_FULL}
 # 거절·경고 글 끝의 고정 안내: 운영자가 할 일. 네임스페이스·디플로이먼트 이름은 넣지 않는다(설치마다 다르다)
 ENV_PIN_HINT = ("after changing ConfigMap sbmig-env or the Job template, restart the web pod and re-create ConfigMap "
                 f"sbmig-job-template; {contract.ENV_PIN_POLICY_ENV}=warn (or off) on the web pod relaxes this check")
@@ -668,11 +671,12 @@ def slot_message(data: dict) -> str:
 
 
 def build_command(python: str, zip_path: str, configs: list[str], paths_yml: Path, out: str, run_id: str,
-                  stop_after: str | None, llm_provider: str | None) -> list[str]:
+                  stop_after: str | None, llm_provider: str | None, flow: str | None = None) -> list[str]:
     """자식 명령: ``python -m sbmig.cli run <zip> --config … --config <worker-paths.yml> --out <out> --run-id <id>
-    [--stop-after X] [--llm-provider Y]``.
+    [--stop-after X] [--llm-provider Y] [--flow remediation]``. ``--flow`` 는 full 이 아닐 때만 붙인다(full 이 CLI 의 기본값이다).
 
-    The child command line (run-job.sh's shape, the Worker's paths file as the last `--config`)."""
+    The child command line (run-job.sh's shape, the Worker's paths file as the last `--config`); `--flow` only when it
+    is not the default `full`."""
     cmd = [python, "-m", "sbmig.cli", "run", zip_path]
     for c in configs:
         cmd += ["--config", c]
@@ -681,6 +685,8 @@ def build_command(python: str, zip_path: str, configs: list[str], paths_yml: Pat
         cmd += ["--stop-after", stop_after]
     if llm_provider:
         cmd += ["--llm-provider", llm_provider]
+    if flow and flow != contract.FLOW_FULL:
+        cmd += ["--flow", flow]
     return cmd
 
 
@@ -759,7 +765,8 @@ def _run_value_problems(record: contract.RequestRecord, environ: dict[str, str],
                     " — the pinned digests cover the request's files only")
         out.append(("SBMIG_CONFIG", sentence))
     for name, attr in RUN_VALUE_FIELDS:
-        if (environ.get(name) or None) != (getattr(record, attr, None) or None):     # 비었거나 없으면 None
+        default = RUN_VALUE_DEFAULTS.get(name)
+        if (environ.get(name) or default) != (getattr(record, attr, None) or default):     # 비었거나 없으면 기본값(대개 None)
             out.append((name, f"{name} differs from request.json's {attr}"))
     return out
 
@@ -769,7 +776,7 @@ def check_environment(record: contract.RequestRecord, state: contract.ControlSta
     """Job 을 만든 Main 의 환경(``state.env_pins`` — 리뷰 2026-11-10)과 이 Worker 의 환경을 대조한다. state 가 없거나(옛 Main,
     local-job) 지문이 없거나 정책이 off 면 None — 대조하지 않는다. 지문은 있는데 정책이 비었으면 refuse 로 본다. 대조하면 두 가지를
     본다: 지문의 차이(``contract.env_pins`` 를 이 환경으로 다시 계산해 ``compare_env_pins``)와, 실행별 값(``SBMIG_CONFIG`` 가 가리키는
-    파일 · ``SBMIG_STOP_AFTER`` · ``SBMIG_LLM_PROVIDER``)이 ``request.json`` 과 같은지. 예외를 내지 않는다: 대조 중의 예외는 문제
+    파일 · ``SBMIG_STOP_AFTER`` · ``SBMIG_LLM_PROVIDER`` · ``SBMIG_FLOW``)이 ``request.json`` 과 같은지. 예외를 내지 않는다: 대조 중의 예외는 문제
     하나(``the environment check failed: <형식>``)가 된다. 결과에는 이름만 있다(값·지문 없음).
 
     Compare this Worker's environment with the pins the Main that created the Job wrote (`state.env_pins`). None = no
@@ -947,8 +954,10 @@ def _run(env: dict[str, str], record: contract.RequestRecord, run_dir: Path, run
         if action == contract.ACTION_REMEDIATION_RESUME:
             cmd = build_resume_command(python, run_dir, configs, paths_yml)
         else:
+            # 실행 방식은 접수 때 고정한 request.json 의 값을 따른다(env SBMIG_FLOW 는 그것과 대조만 한다 — 이관 없이 조치만 청한
+            # 요청이 env 한 줄 때문에 이관 전체로 돌면 안 된다)
             cmd = build_command(python, zip_path, configs, paths_yml, out, run_id, env.get("SBMIG_STOP_AFTER") or None,
-                                env.get("SBMIG_LLM_PROVIDER") or None)
+                                env.get("SBMIG_LLM_PROVIDER") or None, flow=record.flow or contract.FLOW_FULL)
         child_env = child_environ(env)
         # v2.1z-ae: 2번 자리부터 자기 Maven 로컬 저장소 — 환경 대조가 끝난 뒤, 자식의 env 에만(대조는 파드 자신의 env 를 본다)
         slot = apply_slot_repo(child_env, env, configs, paths_yml, cwd=repo_root, resolver=repo_resolver)

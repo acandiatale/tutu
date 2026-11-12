@@ -37,8 +37,8 @@ as-is 담당팀의 몫이다 — sbmig 는 빌드와 패키징까지만 책임�
  입력(폴더 / zip)
       |
       v
- [intake 접수] ---- Gradle / pom·build.xml 없음 / EAR 만 ----> 중단 (exit 3)
-  - Maven 만. Ant(build.xml)는 pom.xml 합성 후 계속
+ [intake 접수] ---- Gradle / Ant / pom·build.xml 없음 / EAR 만 ----> 중단 (exit 3)
+  - Maven 만. Ant(build.xml)는 "Maven 변환 후 신청 부탁드립니다." 로 거절(intake.ant_to_maven: true 면 pom 합성 후 계속)
   - 루트 pom 없는 형제 pom -> 루트 aggregator 생성
   - pom 복사본(stray) 무시, reactor 중복 정리, 사전 점검(Maven, JDK 21, 부모 설정)
   - as-is effective dependencyManagement 캡처
@@ -76,6 +76,10 @@ as-is 담당팀의 몫이다 — sbmig 는 빌드와 패키징까지만 책임�
  [finalize 마무리]  report.md(인수인계 먼저) / report.json / SBMIG-RESULT 한 줄
                     + KB 기록(kb-v2/: 오류 목록, 케이스, 저장 스크립트)
 ```
+
+위 그림은 실행 방식 `full`(전체 진행)이다. 이관이 BUILD SUCCESS 로 끝나면 마무리 뒤에 취약점 조치가 이어 돌 수 있다. 실행 방식
+`remediation`(취약점 해결, `sbmig run --flow remediation`)은 접수 → 취약점 조치 → 마무리만 지나간다: 이관 단계·LLM·KB 없이 올린
+프로젝트를 그대로 빌드·검사·조치한다([11-remediations.md](11-remediations.md)).
 
 단계마다 코드 위치와 입출력은 [02-flow-and-nodes.md](02-flow-and-nodes.md) 에 있다.
 
@@ -122,7 +126,7 @@ KB 에 저장되어 다음 프로젝트가 LLM 호출 없이 재사용한다. �
 |---|---|
 | 0 | 최종 빌드 성공, 차단 없음, 성공 판정 |
 | 2 | 끝까지 돌았지만 성공이 아님: 미해결 오류·차단 케이스 남음, 재구성 실패, `hollow-reactor` 등 |
-| 3 | 중단·거부: Maven 아님, 루트 pom 없음, ADF, Maven/JDK 문제, 사내 부모 pom 해석 불가 |
+| 3 | 중단·거부: Maven 아님(Ant 포함), 루트 pom 없음, ADF, Maven/JDK 문제, 사내 부모 pom 해석 불가 |
 
 마지막 줄 `SBMIG-RESULT run=<id> exit=<n> build=<ok|FAIL> unresolved=<n> blocked=<n> … attn=<codes> review=<v>` 는 운영자가 회사 PC
 화면에서 손으로 옮겨 적는 줄이다(`sbmig/report/result_line.py`). 읽는 법은 [03-run-debug-and-logs.md](03-run-debug-and-logs.md).
@@ -131,7 +135,7 @@ KB 에 저장되어 다음 프로젝트가 LLM 호출 없이 재사용한다. �
 
 | 한국어 | 영어 | 코드 이름 / 위치 | 뜻 |
 |---|---|---|---|
-| 접수 | intake | `Orchestrator.step_intake` | 입력 검사, Ant pom 합성, aggregator 생성, 사전 점검 |
+| 접수 | intake | `Orchestrator.step_intake` | 입력 검사(Ant·Gradle 거절), aggregator 생성, 사전 점검 |
 | 분석 / 프로필 | analyze / profile | `analyze_project`, `ProjectProfile` | 유형·Java·Spring/Boot 버전·라이브러리 파악 |
 | 계획 | plan | `build_plan`, `MigrationPlan` | 실행할 단계 목록(`transform.rewrite`, `restructure.*`, `verify.build`) |
 | 변환(OpenRewrite 1회) | transform.rewrite | `sbmig/rewrite/runner.py` | Java 21 / jakarta / Boot 4 레시피를 한 번에 |
@@ -164,7 +168,7 @@ KB 에 저장되어 다음 프로젝트가 LLM 호출 없이 재사용한다. �
 | 속 빈 리액터 | hollow reactor | `sbmig/analyze/hollow.py`, 플래그 `hollow-reactor` | 모듈이 컴파일하는 소스가 없고 진짜 소스는 트리의 다른 곳 → 성공 아님 |
 | 떠도는 pom 복사본 | stray pom copy | `find_stray_pom_copies` (`sbmig/analyze/pom_parser.py`) | IDE 출력·백업 폴더 안의 모듈 통째 복사본 → 무시 |
 | ADF 프로젝트 | Oracle ADF (JDeveloper) | `sbmig/analyze/adf.py`, 플래그 `adf-project` | 근거 2계열 이상이면 변환하지 않고 중단 |
-| 합성 pom | Ant → Maven | `sbmig/analyze/ant.py` | build.xml 만 있는 프로젝트에 pom.xml 을 만들어 줌 |
+| 합성 pom | Ant → Maven | `sbmig/analyze/ant.py` | build.xml 만 있는 프로젝트에 pom.xml 을 만들어 줌. `intake.ant_to_maven: true` 일 때만(기본은 거절) |
 | 생성 aggregator | generated aggregator | `sbmig/analyze/aggregator.py` | 루트 pom 없는 형제 pom 들을 묶는 루트 pom |
 | 케이스 스레드 | case thread | `llm.case_thread` | 한 케이스의 보강 요청이 게이트웨이 세션을 이어 받는 방식(기본 꺼짐) |
 | 재생 / 가짜 LLM | replay / fake provider | `llm.provider: fake` | 오프라인 테스트용 LLM 응답 재생(`replay/llm-NNN.json`) |

@@ -50,8 +50,11 @@ and keep `tests/docs` green.
   a single-module Boot app is wrapped into `{name}-boot`. The pre-9c layout (`module/boot-jar` + `module/comp-jar`,
   Boot projects split) stays available through `layout.*` and is pinned by `config/artifacts.local-e2e.yml` for
   the older fixtures.
-- Maven projects, plus **Ant projects since 2026-10-29 (v2.1j)**: a tree with `build.xml` and no pom.xml gets a pom.xml
-  synthesized at intake (`sbmig/analyze/ant.py`: layout from build.xml, jar coordinates from the jar's pom.properties →
+- Maven projects only. **Ant projects are refused since 2026-11-12** (company decision, the user: "ant -> maven 변경하는거
+  안하기로 했어 … 삭제는 하지말고 끊어놨다가 나중에 또 하자고 하면 살리기만"): `intake.ant_to_maven` is `false` by default and
+  the abort reason is `intake.ant_message` ("Maven 변환 후 신청 부탁드립니다.", exit 3, flag `unsupported-build-tool:ant`).
+  The v2.1j code is KEPT and runs with `intake.ant_to_maven: true` (the `ant-webapp` fixture sets it; do not delete it): a tree
+  with `build.xml` and no pom.xml then gets a pom.xml synthesized at intake (`sbmig/analyze/ant.py`: layout from build.xml, jar coordinates from the jar's pom.properties →
   `knowledge/libraries/jar_names.yml` + `<kb>/jar_names.yml` → sha1 repository lookup; unknown-but-used jars as `system`
   scope at their as-is path, listed in the Handover with `install-file` commands; `intake.*` keys) and then runs like
   any Maven project. Gradle is still rejected (exit 3), and so are trees **without pom.xml or build.xml** (company
@@ -487,6 +490,22 @@ Then the final build again, the report (Handover first, "Structure review", fix 
   library table with the worst rows on top, per-level counts (before / after) in 요약. Emoji because Markdown has no colour — whether the
   company PC's Windows renders 🟠 / 🟡 is to be checked there.
   Still the user's to decide: transitives under a dependency the project itself declares, in modules outside the root's reach.
+- **Run flows and the page (v2.1z-aj, 2026-11-12)**: a run is `full` (the migration, then the chained remediation) or
+  `remediation` (no migration — the user: already-migrated projects are checked against IVAS again later, "이때는 마이그레이션을
+  안타고 remediation만"): `sbmig run --flow remediation`, `POST /api/runs?flow=remediation`, on the page 전체 진행 (default) /
+  취약점 해결. The remediation flow runs intake without any edit (preflight + build-tool check only) → `chain.run_only` on the
+  uploaded ZIP's own bytes → a short report; graph nodes `intake → remediation → finalize`; no LLM, no KB; neither
+  `remediation.after_migration` nor `trusted_projects` is asked; files under `<run dir>/remediation/` like a chained run, so
+  status / approvals / resume are the chained ones. Result: `… flow=remediation remediation=<STATUS>`, exit 0 SUCCEEDED / 2
+  any other saved status / 3 not started (`remediation:not-ready`), `build=` = what was built (FAIL only for a failed or
+  missing build). A full run's result line is unchanged. Web: the flow is a run value like `stop_after`
+  (`RequestRecord.flow`, Job env `SBMIG_FLOW` set by Main, nothing in the 81 template). Page: name `panacea-remediating-oss`
+  (temporary, the user's), no description, no footer; a web run's id is `<slug of the uploaded file name>-YYYYMMDD-HHMMSS-<hex>`
+  (24 characters, `[a-z0-9-]`, `web` when no letter is left — the id is the Kubernetes Job name) and the list shows the file
+  name as uploaded ("어떤 프로젝트가 올라간지 모르겠어"; SSO with per-account lists comes later). Abort reasons reach the page in
+  Korean through `sbmig.report.i18n.tr_line` (`abort_reason_ko`): a new `_abort(...)` reason at intake needs a pattern
+  (`tests/report/test_abort_reasons_ko.py`). Limits: a ZIP nested two or more folders deep is not accepted by the remediation
+  flow; not run in the cluster or against the real IVAS yet. The user announced one more feature after this.
 - **Company convention (2026-10-20): agents run on LangGraph under uvicorn.** `loop.engine: graph` (default) drives
   the phases from a LangGraph `StateGraph` (`sbmig/graph/`, nodes intake → analyze → plan → phase×N → finalize;
   `inline` is the old loop, reports are identical by test); the web UI is FastAPI (`uvicorn sbmig.web.app:app` or

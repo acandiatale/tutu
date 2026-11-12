@@ -13,11 +13,12 @@ from .budget import LoopBudget
 from .components import LazyFixer, LazyScriptRunner, MissingComponentError, NullKnowledgeBase, ScriptFixerMissing, lazy_attr
 from .entries import CaseScripts, RunErrors
 from .fixloop import BuildFixLoop
-from .orchestrator import STOP_AFTER_PHASES, Orchestrator, parse_stop_after
+from .orchestrator import STOP_AFTER_PHASES, Orchestrator, check_flow, parse_flow, parse_stop_after
 
 # 드라이런: 결정(케이스 분류·사다리 단계)만 계산해 저널에 남기고, 프로젝트에는 아무것도 적용하지 않는다.
 # DryRun mode: `Orchestrator(...).run(dry_run=True)` / `BuildFixLoop(..., dry_run=True)` — decisions are computed and
 # journaled but nothing is applied.
 __all__ = ["Orchestrator", "BuildFixLoop", "LoopBudget", "NullKnowledgeBase", "LazyFixer", "MissingComponentError",
            "LazyScriptRunner", "ScriptFixerMissing", "STOP_AFTER_PHASES", "parse_stop_after",
+           "parse_flow", "check_flow",
            "lazy_attr", "RunErrors", "CaseScripts"]

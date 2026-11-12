@@ -1,6 +1,6 @@
-"""Ant 프로젝트(build.xml 만 있고 pom.xml 없음)에 pom.xml 을 합성한다(v2.1j, 2026-10-29 현업: "Ant 프로젝트도 Maven
-으로 변경 후 마이그레이션"). 흐름상 위치: 접수의 ``_check_build_tool`` 이 도구가 ant 이고 ``intake.ant_to_maven``
-이면 :func:`synthesize_pom` 을 부르고, 결과가 ok 면 커밋(``intake: pom.xml synthesized from build.xml``)한 뒤
+"""Ant 프로젝트(build.xml 만 있고 pom.xml 없음)에 pom.xml 을 합성한다(v2.1j). 기본은 꺼져 있다: 회사 결정으로 Ant 프로젝트는
+접수에서 ``intake.ant_message`` 안내로 거부되고, 이 모듈은 다시 켤 수 있게 그대로 둔다. 흐름상 위치: 접수의 ``_check_build_tool`` 이
+도구가 ant 이고 ``intake.ant_to_maven: true`` (실행 방식 full)이면 :func:`synthesize_pom` 을 부르고, 결과가 ok 면 커밋(``intake: pom.xml synthesized from build.xml``)한 뒤
 여느 Maven 프로젝트처럼 분석부터 계속한다. 핵심 진입점: :func:`describe_ant` (build.xml + 폴더 구조 → 읽기 전용
 :class:`AntProject`), :func:`synthesize_pom` (``<root>/pom.xml`` 하나만
 씀 — 커밋·삭제 없음, build.xml 은 그대로). 지킬 것: 번역 못 하는 build.xml 작업(exec / java / 코드 생성 / 바깥
@@ -8,7 +8,8 @@ copy / 하위 빌드)은 ``build_xml_notes`` 에 한 줄씩; 좌표 없는 jar �
 ``${maven.multiModuleProjectDirectory}/<as-is 경로>`` — 재구성이 모듈로 옮길 때 복사·경로 수정), 안 쓰이면 뺌; 컨테이너
 API 는 provided; Java 수준은 ``intake.min_java_source`` 로 올리되 ``<release>`` 는 쓰지 않음(source / target 유지).
 
-Ant → Maven at intake (v2.1j, docs/INTERFACES.md "v2.1j").
+Ant → Maven at intake (v2.1j, docs/INTERFACES.md "v2.1j"), used only with `intake.ant_to_maven: true` — by default an
+Ant project is refused at intake with `intake.ant_message`.
 
 `describe_ant(ws)` reads build.xml with its properties resolved (`<property name value|location>`, `<property file>`,
 an unreferenced `build.properties` as fallback, `${basedir}`, nested `${a.b}`; `<property environment>` ignored;
