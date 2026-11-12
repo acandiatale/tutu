@@ -379,6 +379,41 @@ def test_freeze_delivery_deterministic(tmp_path):
     assert d3.sha256 == d1.sha256
 
 
+@pytest.fixture
+def windows_fsync(monkeypatch):
+    """Windows' rule for `os.fsync` (`_commit`): a descriptor opened read-only is refused with EBADF. POSIX accepts
+    it, so the delivery freeze passed here and failed on the company PC (2026-11-12: `OSError: [Errno 9] Bad file
+    descriptor`, `freeze_delivery` failed)."""
+    import errno
+    import fcntl
+
+    real = os.fsync
+
+    def fsync(fd):
+        if fcntl.fcntl(fd, fcntl.F_GETFL) & os.O_ACCMODE == os.O_RDONLY:
+            raise OSError(errno.EBADF, "Bad file descriptor")
+        return real(fd)
+
+    monkeypatch.setattr(os, "fsync", fsync)
+
+
+def test_freeze_delivery_syncs_through_a_writable_descriptor(tmp_path, windows_fsync):
+    acc, paths = _accepted(tmp_path)
+    rp = RunPaths(tmp_path / "run")
+    d = intake.freeze_delivery(acc, rp.delivery_zip, 1, paths)
+    assert intake.verify_zip_sha256(rp.delivery_zip, d.sha256)
+    assert not [n for n in os.listdir(rp.delivery_zip.parent) if n.startswith(".")]      # no temp file left
+
+
+def test_accept_zip_and_state_writes_sync_through_writable_descriptors(tmp_path, windows_fsync):
+    from sbmig.remediations.models import write_json_atomic
+
+    z = make_zip(tmp_path / "up.zip", [("app/pom.xml", POM), ("app/src/A.java", b"a")])
+    intake.accept_zip(z, tmp_path / "run", IntakeLimits())
+    write_json_atomic(tmp_path / "run" / "state.json", {"a": 1})
+    assert json.loads((tmp_path / "run" / "state.json").read_text(encoding="utf-8")) == {"a": 1}
+
+
 def test_freeze_delivery_file_set_equals_original(tmp_path):
     z = make_zip(tmp_path / "up.zip", [("app/pom.xml", POM), ("app/src/A.java", b"a"), ("app/web/x.jsp", b"j")])
     intake.accept_zip(z, tmp_path / "run", IntakeLimits())

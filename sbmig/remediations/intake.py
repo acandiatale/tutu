@@ -431,7 +431,9 @@ def freeze_delivery(tree: Path, out_zip: Path, round: int, paths: list[str]) -> 
                 info.file_size = st.st_size
                 with open(source, "rb") as f, zf.open(info, "w", force_zip64=st.st_size > 0x7FFFFFFF) as out:
                     shutil.copyfileobj(f, out, _CHUNK)
-        with open(tmp, "rb") as f:
+        # 쓰기 가능한 핸들로 연다: Windows 의 fsync(_commit)는 읽기 전용 핸들을 EBADF 로 거절한다(POSIX 는 받는다)
+        # a writable handle: Windows' fsync refuses a read-only descriptor with EBADF ("r+b" never truncates)
+        with open(tmp, "r+b") as f:
             os.fsync(f.fileno())
         os.replace(tmp, out_zip)
     except BaseException:
