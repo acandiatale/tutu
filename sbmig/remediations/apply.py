@@ -755,19 +755,44 @@ def _direct_gas(model: ResolvedModel) -> set[str]:
     return {d.ga for m in model.modules for d in m.dependencies if d.direct}
 
 
+def _packaging_module(artifact: str) -> str | None:
+    """산출물 경로(프로젝트 루트 기준, 예 ``app/target/app.war``)에서 그것을 만든 모듈 폴더: ``/target/`` 앞부분, ``target/`` 으로
+    시작하면 루트("."). 알아낼 수 없으면 None."""
+    a = (artifact or "").replace("\\", "/").lstrip("/")
+    while a.startswith("./"):
+        a = a[2:]
+    if a.startswith("target/"):
+        return "."
+    head, sep, _rest = a.partition("/target/")
+    if not sep or not head:
+        return None
+    return head
+
+
 def verify_resolution(proposals: list[Proposal], before: ResolvedModel, after: ResolvedModel,
                       packaged: list[PackagedLib]) -> list[str]:
     """적용한 제안이 Maven 해석·패키징 결과에 계획대로 나타났는지. 문제 문장 목록 — ``info:`` 로 시작하는 줄은 참고용(막지 않는다).
-    규칙: 제안의 ga 는 어느 모듈에서도 ``from_version`` 으로 해석되지 않고, 전에 ``from_version`` 이던 모듈에서는 ``to_version`` 이어야
-    한다. 제안이 다루지 않은 아티팩트의 버전 변화는 전(before)에 **직접** 의존성이었을 때만 문제다(속성·부모·BOM 제안과 함께 움직인
-    것과 전이 의존성은 info). ``after.complete`` False 는 문제. 패키징된 jar 에 ``from_version`` 이 남아 있으면 문제.
 
-    managed_override 제안도 같은 규칙이다: 넣은 관리 항목 때문에 그 g:a 가 전에 ``from_version`` 이던 모든 모듈에서 ``to_version``
-    이 되고 어디에도 ``from_version`` 이 남지 않아야 한다(override 는 g:a 하나만 고정하므로 다른 직접 의존성의 움직임은 문제다).
+    제안마다 검증 범위가 다르다:
+    - ``p.modules`` 가 비어 있으면(예전 state, 부모·BOM 버전 제안) 예전 규칙: 제안의 ga 는 어느 모듈에서도 ``from_version`` 으로
+      해석되지 않고, 전에 ``from_version`` 이던 모든 모듈에서 ``to_version`` 이어야 한다. 패키징된 jar 에 ``from_version`` 이 남아
+      있으면 문제.
+    - ``p.modules`` 가 있으면 그 모듈들(이 글자가 다스리는 모듈)에서만 from → to 를 요구한다. 전에 ``from_version`` 이던 다른 모듈
+      (같은 버전이 간접·부모/BOM 관리로 해석된 곳 — 이 글자가 닿는지 정적으로 알 수 없다)에 ``from_version`` 이 남으면 ``info:``
+      한 줄이다: 그래프는 라운드를 확정하고, 다시 검사에 남은 발견 항목을 다음 라운드가 그 모듈만으로 계획한다(override / 잔여).
+      패키징된 jar 도 같은 범위다: 산출물 경로에서 모듈을 알아냈고 그 모듈이 다스리는 범위 밖이면 info, 아니면 문제.
+    제안이 다루지 않은 아티팩트의 버전 변화는 전(before)에 **직접** 의존성이었을 때만 문제다(속성·부모·BOM 제안과 함께 움직인
+    것과 전이 의존성은 info). ``after.complete`` / ``before.complete`` False 는 문제.
 
-    Problems (lines starting with `info:` are informational): the proposal's ga moved off `from_version` to
-    `to_version` wherever it resolved at `from_version`; uncovered version changes are problems only for direct
-    dependencies of `before`; an incomplete `after` is a problem; no packaged jar may still carry `from_version`."""
+    managed_override 제안(루트 ``<dependencyManagement>`` 항목, ``modules`` = 항목의 모든 모듈)은 그 모든 모듈에서 ``to_version``
+    이 되고 ``from_version`` 이 남지 않아야 한다(override 는 g:a 하나만 고정하므로 다른 직접 의존성의 움직임은 문제다).
+
+    Problems (lines starting with `info:` are informational). With an empty `p.modules` (legacy state, parent / BOM
+    proposals) the ga must leave `from_version` everywhere and reach `to_version` in every module that had
+    `from_version`. With `p.modules` set, only those governed modules must move; another module that stays at
+    `from_version` (the same version reached through another origin) is an `info:` line left for the next round, and a
+    stale packaged jar is a problem only when its packaging module is governed or cannot be derived. Uncovered version
+    changes are problems only for direct dependencies of `before`; an incomplete `before` / `after` is a problem."""
     problems: list[str] = []
     if not after.complete:
         problems.append("resolution after the change is incomplete: " + "; ".join(after.notes or ["(no detail)"]))
@@ -776,16 +801,35 @@ def verify_resolution(proposals: list[Proposal], before: ResolvedModel, after: R
     bmap, amap = _module_map(before), _module_map(after)
     covered = {p.ga for p in proposals}
     for p in proposals:
-        if p.from_version in after.versions_of(p.ga):
+        if not p.modules:
+            if p.from_version in after.versions_of(p.ga):
+                problems.append(f"{p.ga} still resolves at {p.from_version} ({p.id})")
+            for mdir, deps in sorted(bmap.items()):
+                if p.from_version not in deps.get(p.ga, set()):
+                    continue
+                if mdir not in amap:
+                    problems.append(f"module {mdir} is missing from the resolution after the change ({p.id})")
+                elif p.to_version not in amap[mdir].get(p.ga, set()):
+                    got = ", ".join(sorted(amap[mdir].get(p.ga, set()))) or "nothing"
+                    problems.append(f"{p.ga} in module {mdir} resolves at {got}, planned {p.to_version} ({p.id})")
+            continue
+        governed = set(p.modules)
+        # 왜: 이 글자가 다스리는 모듈에 from 이 남았을 때만 "still resolves" 다 — 다른 길로 해석된 모듈은 다음 라운드 몫이다
+        if any(p.from_version in amap.get(m, {}).get(p.ga, set()) for m in governed):
             problems.append(f"{p.ga} still resolves at {p.from_version} ({p.id})")
         for mdir, deps in sorted(bmap.items()):
             if p.from_version not in deps.get(p.ga, set()):
                 continue
-            if mdir not in amap:
-                problems.append(f"module {mdir} is missing from the resolution after the change ({p.id})")
-            elif p.to_version not in amap[mdir].get(p.ga, set()):
-                got = ", ".join(sorted(amap[mdir].get(p.ga, set()))) or "nothing"
-                problems.append(f"{p.ga} in module {mdir} resolves at {got}, planned {p.to_version} ({p.id})")
+            now = amap.get(mdir, {}).get(p.ga, set())
+            if mdir in governed:
+                if mdir not in amap:
+                    problems.append(f"module {mdir} is missing from the resolution after the change ({p.id})")
+                elif p.to_version not in now:
+                    got = ", ".join(sorted(now)) or "nothing"
+                    problems.append(f"{p.ga} in module {mdir} resolves at {got}, planned {p.to_version} ({p.id})")
+            elif p.from_version in now:
+                problems.append(f"info: {p.ga} in module {mdir} still resolves at {p.from_version} — not governed by "
+                                f"the edited version text ({p.id}); left for the next round")
     direct = _direct_gas(before)
     shared = [p for p in proposals if p.kind in _SHARED_KINDS]
     broad = any(p.kind in (K_PARENT_VERSION, K_BOM_VERSION) for p in proposals)
@@ -808,9 +852,18 @@ def verify_resolution(proposals: list[Proposal], before: ResolvedModel, after: R
     for p in proposals:
         artifact = p.ga.split(":", 1)[1] if ":" in p.ga else p.ga
         stale_name = f"{artifact}-{p.from_version}.jar"
+        governed = set(p.modules)
         for lib in packaged:
             if lib.ga == p.ga and lib.version == p.from_version:
-                problems.append(f"{lib.artifact} still packages {lib.entry} ({p.ga}:{p.from_version}, {p.id})")
+                what = f"{p.ga}:{p.from_version}"
             elif (not lib.ga or (lib.ga == p.ga and not lib.version)) and lib.file_name == stale_name:
-                problems.append(f"{lib.artifact} still packages {lib.entry} ({stale_name}, {p.id})")
+                what = stale_name
+            else:
+                continue
+            mod = _packaging_module(lib.artifact) if governed else None
+            if mod is not None and mod not in governed:
+                problems.append(f"info: {lib.artifact} still packages {lib.entry} ({what}) — its module is not "
+                                f"governed by {p.id}")
+            else:
+                problems.append(f"{lib.artifact} still packages {lib.entry} ({what}, {p.id})")
     return problems

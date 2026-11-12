@@ -431,3 +431,38 @@ def test_classifier_or_type_variant_is_marked_for_the_planner(tmp_path):
     # a plain jar everywhere: no mark
     resolved = model({"core": [rdep(LIB, "1.2.3", direct=False, path=["example:a:1"])]})
     assert VARIANT_MARK not in only(build_inventory(p, [finding("CVE-1")], resolved)).reason
+
+
+# ---------------------------------------------------------------------------- scope: also_modules
+def test_editable_item_records_folded_modules_as_also_modules(tmp_path):
+    p = write(tmp_path, {"pom.xml": root_pom(modules=("a", "b", "c")),
+                         "a/pom.xml": module_pom("a", dep("example", "lib", "1.2.3")),
+                         "b/pom.xml": module_pom("b", dep("example", "x", "1")),
+                         "c/pom.xml": module_pom("c", dep("example", "y", "1"))})
+    resolved = model({"a": [rdep(LIB, "1.2.3")],
+                      "b": [rdep("example:x", "1"), rdep(LIB, "1.2.3", direct=False, path=["example:x:1"])],
+                      "c": [rdep("example:y", "1"), rdep(LIB, "1.2.3", direct=False, path=["example:y:1"])]})
+    it = only(build_inventory(p, [finding("CVE-1")], resolved))
+    assert it.origin == O_DIRECT_LITERAL and it.location.pom == "a/pom.xml"
+    assert it.modules == ["a", "b", "c"] and it.also_modules == ["b", "c"]
+    assert "also resolved in b (transitive via example:x:1)" in it.reason
+    assert "also resolved in c (transitive via example:y:1)" in it.reason
+
+
+def test_one_root_text_governing_every_module_has_no_also_modules(tmp_path):
+    p = write(tmp_path, {"pom.xml": root_pom(modules=("core", "web"), props="    <lib.version>1.2.3</lib.version>\n"),
+                         "core/pom.xml": module_pom("core", dep("example", "lib", "${lib.version}")),
+                         "web/pom.xml": module_pom("web", dep("example", "lib", "${lib.version}"))})
+    it = only(build_inventory(p, [finding("CVE-1")], model({"core": [rdep(LIB, "1.2.3")], "web": [rdep(LIB, "1.2.3")]})))
+    assert it.modules == ["core", "web"] and it.also_modules == []
+
+
+def test_no_editable_item_keeps_also_modules_empty(tmp_path):
+    p = write(tmp_path, {"pom.xml": root_pom(parent=True, modules=("a", "b", "c")),
+                         "a/pom.xml": module_pom("a", dep("example", "lib")),
+                         "b/pom.xml": module_pom("b", dep("example", "lib")),
+                         "c/pom.xml": module_pom("c", dep("example", "x", "1"))})
+    resolved = model({"a": [rdep(LIB, "1.2.3")], "b": [rdep(LIB, "1.2.3")],
+                      "c": [rdep(LIB, "1.2.3", direct=False, path=["example:x:1"])]})
+    it = only(build_inventory(p, [finding("CVE-1")], resolved))
+    assert it.origin == O_PARENT_MANAGED and it.modules == ["a", "b", "c"] and it.also_modules == []

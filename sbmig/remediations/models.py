@@ -395,6 +395,10 @@ class InventoryItem(Record):
     # 한 줄 안에 버전이 여럿이면 버전 라인별 대안이다(OR)
     patched_versions: list[str] = field(default_factory=list)
     modules: list[str] = field(default_factory=list)
+    # ``modules`` 가운데 이 항목의 버전 글자(``location``)가 다스린다고 볼 근거가 없는 모듈들: 같은 g:a:version 이 다른 길(간접
+    # 의존성 · 부모/BOM 관리)로 해석된 곳. 글자를 고쳐도 그대로일 수 있다 — 검증은 이 모듈들을 실패로 치지 않고, 남으면 다음
+    # 라운드가 따로 계획한다. 다스리는 모듈 = modules − also_modules
+    also_modules: list[str] = field(default_factory=list)
     via: list[str] = field(default_factory=list)                  # transitive 일 때 끌고 오는 사슬(g:a:v)
     location: PomLocation | None = None
     manager: str = ""                                             # 관리하는 부모 / BOM 의 g:a:v
@@ -478,10 +482,15 @@ class Proposal(Record):
     source_tree_hash: str = ""
     policy_hash: str = ""
     note: str = ""
+    # 이 제안의 글자가 다스리는 모듈들(프로젝트 루트 기준 폴더, 루트는 "."): 검증은 여기서 from → to 를 요구한다. 비어 있으면
+    # 예전 규칙(전에 from 이던 모든 모듈). ``also_modules`` 는 같은 g:a:version 이 다른 길로 해석된 모듈들 — 그대로 남아도
+    # 실패가 아니다(검증 메모 info, 다음 라운드가 따로 계획). 둘 다 ``proposal_hash`` 에 들어가지 않는다(승인은 diff 에 묶인다)
+    modules: list[str] = field(default_factory=list)
+    also_modules: list[str] = field(default_factory=list)
     _nested = {"edits": TextEdit}
 
     def compute_hash(self) -> str:
-        """``proposal_hash`` 의 정의: 아래 값들의 정규 JSON 의 sha256. decision / note 는 들어가지 않는다."""
+        """``proposal_hash`` 의 정의: 아래 값들의 정규 JSON 의 sha256. decision / note / modules / also_modules 는 들어가지 않는다."""
         return sha256_text(canonical_json({
             "ga": self.ga, "from": self.from_version, "to": self.to_version, "kind": self.kind,
             "risks": sorted(self.risks), "edits": [e.to_dict() for e in self.edits], "diff": self.diff}))

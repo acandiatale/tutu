@@ -709,3 +709,83 @@ def test_ignore_actions_empty_list_ignores_nothing(tmp_path, explicit):
     out, _ = run(state, paths, comps, cfg=make_cfg(ignore_actions=[]) if explicit else None)
     assert out.status == SUCCEEDED and [f.id for f in comps.inventory.calls[0]] == ["CVE-1"]
     assert out.counts["baseline_findings"] == 1 and out.counts["baseline_ignored"] == 0
+
+
+# ---------------------------------------------------------------------------- module scope (company run 2026-11-12)
+def _scope_project():
+    """Company layout: an aggregator root, modules inheriting an EXTERNAL role parent (not the root). app-domain pins
+    the library with a literal; app-service / app-store get the same version from their parent's management."""
+    def module(name, deps):
+        return ("<project>\n  <modelVersion>4.0.0</modelVersion>\n  <parent>\n    <groupId>com.example.ext</groupId>\n"
+                "    <artifactId>comp-jar</artifactId>\n    <version>4.0.0</version>\n    <relativePath/>\n  </parent>\n"
+                f"  <groupId>com.example</groupId>\n  <artifactId>{name}</artifactId>\n  <version>1.0.0</version>\n"
+                f"  <dependencies>\n{deps}  </dependencies>\n</project>\n")
+
+    def dep(a, v=None):
+        ver = f"      <version>{v}</version>\n" if v else ""
+        return (f"    <dependency>\n      <groupId>com.example.logging</groupId>\n      <artifactId>{a}</artifactId>\n"
+                f"{ver}    </dependency>\n")
+    root = ("<project>\n  <modelVersion>4.0.0</modelVersion>\n  <groupId>com.example</groupId>\n"
+            "  <artifactId>app</artifactId>\n  <version>1.0.0</version>\n  <packaging>pom</packaging>\n"
+            "  <modules>\n    <module>app-domain</module>\n    <module>app-service</module>\n"
+            "    <module>app-store</module>\n  </modules>\n</project>\n")
+    return {"pom.xml": root,
+            "app-domain/pom.xml": module("app-domain", dep("log-api", "2.25.4")),
+            "app-service/pom.xml": module("app-service", dep("log-api")),
+            "app-store/pom.xml": module("app-store", dep("log-api"))}
+
+
+def _scope_model(domain, service, store):
+    from sbmig.remediations.models import ModuleResolution, ResolvedDep, ResolvedModel
+
+    def mod(d, v):
+        return ModuleResolution(dir=d, group_id="com.example", artifact_id=d, version="1.0.0",
+                                dependencies=[ResolvedDep(group_id="com.example.logging", artifact_id="log-api",
+                                                          version=v, direct=True)])
+    return ResolvedModel(modules=[mod("app-domain", domain), mod("app-service", service), mod("app-store", store)])
+
+
+def test_edit_that_does_not_govern_every_module_commits_and_leaves_the_rest_to_round_two(tmp_path):
+    """Real inventory / planner / apply (incl. verify_resolution) over fake Maven + IVAS: round 1 edits app-domain's
+    literal, the parent-managed modules stay at 2.25.4 → info lines, the round commits and is delivered; the rescan
+    still reports the finding → round 2 inventories app-service / app-store only → no project text, no root inheritance
+    → a manual_review residual; the run ends INCOMPLETE, never FAILED resolution_mismatch."""
+    from sbmig.remediations import apply as apply_mod
+    from sbmig.remediations import inventory as inventory_mod
+    from sbmig.remediations import planner as planner_mod
+    from sbmig.remediations.models import Finding
+
+    from .fakes import FakeVersions
+
+    ga = "com.example.logging:log-api"
+    f = Finding(id="CVE-2026-0001", kind="library", identifier=ga, version="2.25.4", patched_version="2.25.5")
+    state, paths = make_run(tmp_path, _scope_project())
+    maven = FakeMaven(models=[_scope_model("2.25.4", "2.25.4", "2.25.4"),      # round 1 before
+                              _scope_model("2.25.5", "2.25.4", "2.25.4"),      # round 1 after (candidate)
+                              _scope_model("2.25.5", "2.25.4", "2.25.4")])     # round 2 before
+    comps = make_components(scan=FakeScanner({"baseline": [scan_result(f)], "final-r1": [scan_result(f)]}),
+                            maven=maven, versions=FakeVersions({ga: ["2.25.4", "2.25.5"]}),
+                            inventory=inventory_mod.build_inventory, plan=planner_mod.plan_round, apply=apply_mod)
+    out, _ = run(state, paths, comps)
+
+    assert out.status == INCOMPLETE, (out.reason, out.message)
+    assert out.reason != "resolution_mismatch" and "resolution_mismatch" not in out.reasons
+    plan1 = RoundPlan.from_dict(read_json(paths.plan(1)))
+    (p,) = plan1.proposals
+    assert (p.id, p.from_version, p.to_version, p.decision) == ("p-1-1", "2.25.4", "2.25.5", "auto")
+    assert p.modules == ["app-domain"] and p.also_modules == ["app-service", "app-store"]
+    first = out.rounds[0]
+    assert first.committed and first.applied == ["p-1-1"]
+    assert first.verify_problems and all(x.startswith("info:") for x in first.verify_problems)
+    assert sum("not governed by the edited version text" in x for x in first.verify_problems) == 2
+    # round 1 was delivered (the scanned bytes of the committed tree)
+    assert out.delivery is not None and out.delivery.round == 1 and paths.delivery_zip.is_file()
+    assert "<version>2.25.5</version>" in (paths.accepted / "app-domain/pom.xml").read_text()
+    # round 2: only the two parent-managed modules remain; they do not inherit from the root → residual, no proposal
+    inv2 = Inventory.from_dict(read_json(paths.round_dir(2) / "inventory.json"))
+    (item,) = inv2.items
+    assert item.origin == "parent_managed" and item.modules == ["app-service", "app-store"] and item.also_modules == []
+    plan2 = RoundPlan.from_dict(read_json(paths.plan(2)))
+    assert plan2.proposals == [] and [r.reason for r in plan2.residuals] == ["manual_review"]
+    assert "do not inherit from the root pom.xml" in plan2.residuals[0].detail
+    assert {"manual_review", "residual_findings"} <= set(out.reasons) and out.status != FAILED

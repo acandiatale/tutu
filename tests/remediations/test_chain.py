@@ -336,3 +336,33 @@ def test_zero_budget_means_no_limit(tmp_path, ivas_env, clock):
     run_dir, root = project(tmp_path)
     out, j = go(run_dir, root, cfg=make_cfg(after_migration=True, chain_budget_minutes=0), comps=comps)
     assert out.status == SUCCEEDED and "remediation_budget" not in j.names()
+
+
+# ---------------------------------------------------------------------------- the end line in sbmig.log
+def _end_lines(caplog):
+    return [r.getMessage() for r in caplog.records if r.getMessage().startswith("chained remediation run-1:")]
+
+
+def test_end_log_line_carries_the_scrubbed_capped_message(tmp_path, ivas_env, caplog):
+    from .fakes import FakeApply
+    run_dir, root = project(tmp_path)
+    where = (run_dir / "remediation").resolve()
+    bad = (f"example:lib in module core resolves at 1.0, planned 1.1 (p-1-1)\nsee {where}/rounds/1/build.log "
+           f"password {ENV['IVAS_PASSWORD']} " + "x" * 2000)
+    caplog.set_level("INFO", logger="sbmig.remediations.chain")
+    out, _ = go(run_dir, root, comps=one_fix_components(apply=FakeApply(resolution_lines=[bad])))
+    assert out.status == FAILED and out.reason == "resolution_mismatch"
+    (line,) = _end_lines(caplog)
+    head = "chained remediation run-1: FAILED resolution_mismatch — "
+    assert line.startswith(head + "example:lib in module core resolves at 1.0, planned 1.1 (p-1-1) see ")
+    tail = line[len(head):]
+    assert "\n" not in line and len(tail) <= 600
+    assert str(where) not in line and ENV["IVAS_PASSWORD"] not in line
+
+
+def test_end_log_line_without_message_is_unchanged(tmp_path, ivas_env, caplog):
+    run_dir, root = project(tmp_path)
+    caplog.set_level("INFO", logger="sbmig.remediations.chain")
+    out, _ = go(run_dir, root, comps=one_fix_components())
+    assert out.status == SUCCEEDED and not out.message
+    assert _end_lines(caplog) == ["chained remediation run-1: SUCCEEDED "]

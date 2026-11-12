@@ -482,3 +482,104 @@ def test_verify_resolution_for_an_override():
     moved = ResolvedModel.from_dict(good.to_dict())
     moved.modules[1].dependencies = [_dep("example:x", "3.1")]
     assert any("example:x" in x and not x.startswith("info:") for x in A.verify_resolution([p], before, moved, []))
+
+
+# ------------------------------------------------------------------------------------------------- verify: module scope
+LOG = "com.example.logging:log-api"
+
+
+def _modules(**mods):
+    return ResolvedModel(modules=[ModuleResolution(dir=d.replace("_", "-"), group_id="example", artifact_id=d,
+                                                   version="1", dependencies=list(deps)) for d, deps in mods.items()])
+
+
+def _company(after_domain="2.25.5"):
+    before = _modules(app_domain=[_dep(LOG, "2.25.4")], app_service=[_dep(LOG, "2.25.4")],
+                      app_store=[_dep(LOG, "2.25.4")])
+    after = _modules(app_domain=[_dep(LOG, after_domain)], app_service=[_dep(LOG, "2.25.4")],
+                     app_store=[_dep(LOG, "2.25.4")])
+    return before, after
+
+
+def _scoped(modules=("app-domain",), also=("app-service", "app-store")):
+    p = _prop("p-1-1", [], ga=LOG, frm="2.25.4", to="2.25.5")
+    p.modules, p.also_modules = list(modules), list(also)
+    return p
+
+
+def test_verify_scoped_proposal_leaves_other_origins_to_the_next_round():
+    before, after = _company()
+    lines = A.verify_resolution([_scoped()], before, after, [])
+    assert [x for x in lines if not x.startswith("info:")] == []
+    assert lines == [
+        f"info: {LOG} in module app-service still resolves at 2.25.4 — not governed by the edited version text "
+        "(p-1-1); left for the next round",
+        f"info: {LOG} in module app-store still resolves at 2.25.4 — not governed by the edited version text "
+        "(p-1-1); left for the next round"]
+    # a non-governed module that followed the edit: nothing to say
+    moved = _modules(app_domain=[_dep(LOG, "2.25.5")], app_service=[_dep(LOG, "2.25.5")], app_store=[_dep(LOG, "2.25.4")])
+    assert len(A.verify_resolution([_scoped()], before, moved, [])) == 1
+
+
+def test_verify_scoped_governed_module_not_moved_is_a_problem():
+    before, after = _company(after_domain="2.25.4")
+    probs = [x for x in A.verify_resolution([_scoped()], before, after, []) if not x.startswith("info:")]
+    assert probs == [f"{LOG} still resolves at 2.25.4 (p-1-1)",
+                     f"{LOG} in module app-domain resolves at 2.25.4, planned 2.25.5 (p-1-1)"]
+    gone = _modules(app_service=[_dep(LOG, "2.25.4")], app_store=[_dep(LOG, "2.25.4")])
+    probs = [x for x in A.verify_resolution([_scoped()], before, gone, []) if not x.startswith("info:")]
+    assert probs == ["module app-domain is missing from the resolution after the change (p-1-1)"]
+
+
+def test_verify_unscoped_proposal_keeps_the_legacy_rule():
+    # the company run's shape: the edited module (here app-api) moved, three modules reached through another origin did not
+    before = _modules(app_api=[_dep(LOG, "2.25.4")], app_domain=[_dep(LOG, "2.25.4")],
+                      app_service=[_dep(LOG, "2.25.4")], app_store=[_dep(LOG, "2.25.4")])
+    after = _modules(app_api=[_dep(LOG, "2.25.5")], app_domain=[_dep(LOG, "2.25.4")],
+                     app_service=[_dep(LOG, "2.25.4")], app_store=[_dep(LOG, "2.25.4")])
+    assert A.verify_resolution([_scoped(modules=(), also=())], before, after, []) == [
+        f"{LOG} still resolves at 2.25.4 (p-1-1)",
+        f"{LOG} in module app-domain resolves at 2.25.4, planned 2.25.5 (p-1-1)",
+        f"{LOG} in module app-service resolves at 2.25.4, planned 2.25.5 (p-1-1)",
+        f"{LOG} in module app-store resolves at 2.25.4, planned 2.25.5 (p-1-1)"]
+    # the same run with the scope the inventory now records: no problem, three info lines
+    scoped = _scoped(modules=("app-api",), also=("app-domain", "app-service", "app-store"))
+    lines = A.verify_resolution([scoped], before, after, [])
+    assert len(lines) == 3 and all(x.startswith("info:") for x in lines)
+
+
+def test_verify_old_plan_json_without_scope_loads_and_uses_the_legacy_rule():
+    data = _scoped().to_dict()
+    data.pop("modules")
+    data.pop("also_modules")
+    p = Proposal.from_dict(data)
+    assert p.modules == [] and p.also_modules == []
+    before, after = _company()
+    assert [x for x in A.verify_resolution([p], before, after, []) if not x.startswith("info:")] == [
+        f"{LOG} still resolves at 2.25.4 (p-1-1)",
+        f"{LOG} in module app-service resolves at 2.25.4, planned 2.25.5 (p-1-1)",
+        f"{LOG} in module app-store resolves at 2.25.4, planned 2.25.5 (p-1-1)"]
+
+
+def test_verify_scoped_packaged_jar_by_packaging_module():
+    before, after = _company()
+    p = _scoped()
+
+    def lib(artifact):
+        return [PackagedLib(artifact, "WEB-INF/lib/log-api-2.25.4.jar", "log-api-2.25.4.jar", LOG, "2.25.4")]
+    blocking = [x for x in A.verify_resolution([p], before, after, lib("app-domain/target/app-domain.war"))
+                if not x.startswith("info:")]
+    assert blocking == [f"app-domain/target/app-domain.war still packages WEB-INF/lib/log-api-2.25.4.jar "
+                        f"({LOG}:2.25.4, p-1-1)"]
+    lines = A.verify_resolution([p], before, after, lib("app-service\\target\\app-service.war"))
+    assert all(x.startswith("info:") for x in lines)
+    assert (f"info: app-service\\target\\app-service.war still packages WEB-INF/lib/log-api-2.25.4.jar "
+            f"({LOG}:2.25.4) — its module is not governed by p-1-1") in lines
+    # the packaging module cannot be derived: a problem, as before
+    assert any(not x.startswith("info:") and "still packages" in x
+               for x in A.verify_resolution([p], before, after, lib("dist/app.war")))
+    # root module: target/x.jar is module "."
+    assert any(not x.startswith("info:") for x in
+               A.verify_resolution([_scoped(modules=(".",), also=())], before, after, lib("target/app.jar")))
+    assert A._packaging_module("target/app.jar") == "." and A._packaging_module("a/b/target/x.war") == "a/b"
+    assert A._packaging_module("dist/app.war") is None

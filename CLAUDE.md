@@ -435,6 +435,21 @@ Then the final build again, the report (Handover first, "Structure review", fix 
   accepted), refuses insecure-TLS / `-s` / `-f` arguments in `build.extra_args` as a readiness problem instead of dropping them,
   retries a cached resolution failure once with `-U`, logs every `remediation mvn …` call, and explains a baseline failure that
   follows a successful migration build. Known gap: a project using git-commit-id fails the baseline (the build copy has no `.git`).
+- **Remediation, first run against the real IVAS (company PC, Windows, 2026-11-12)**: on a PC the chained remediation needs
+  `build.settings_file` (`SBMIG_BUILD__SETTINGS_FILE=~/.m2/settings.xml` in `.env`): the migration falls back to Maven's default
+  settings, the remediation says `skipped (not ready): server settings.xml not configured` (the cluster manifests already set it).
+  With it the IVAS side worked end to end: login, upload of the migrated tree's source ZIP, status polling, summary, both
+  vulnerability pages, plan (1 proposal, 56 residuals), candidate build. It ended `FAILED resolution_mismatch`: one version text
+  (log4j-api in one module's pom) had been planned as if it governed every module resolving that version, and three modules kept
+  the old one. **Proposal scope** since then: `InventoryItem.also_modules`, `Proposal.modules` / `also_modules` (outside
+  `proposal_hash`); `verify_resolution` requires from → to in the governed modules and their artifacts only, an also-module left
+  behind is an `info:` memo and the next round's business (round commits, delivery exists, INCOMPLETE instead of FAILED); the
+  `chained remediation <id>: <status> <reason> — <message>` line of `sbmig.log` carries the reason sentence. **Open, the user's
+  decision**: in the company layout the modules inherit the role parents, not the project root, so a root-pom
+  `<dependencyManagement>` override reaches none of them — every transitive finding the user read out was `manual_review`
+  ("do not inherit from the root pom.xml"; one row a classifier variant). Options put to the user: an override entry in each
+  affected module's pom (recommended, always approved), root only (as is), or raising the versions in the company parent with
+  sbmig only listing them.
 - **Company convention (2026-10-20): agents run on LangGraph under uvicorn.** `loop.engine: graph` (default) drives
   the phases from a LangGraph `StateGraph` (`sbmig/graph/`, nodes intake → analyze → plan → phase×N → finalize;
   `inline` is the old loop, reports are identical by test); the web UI is FastAPI (`uvicorn sbmig.web.app:app` or

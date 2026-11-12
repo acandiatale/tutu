@@ -270,6 +270,14 @@ class _Change:
     risks: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
     origin: str = ""
+    modules: list[str] = field(default_factory=list)          # 이 글자가 다스리는 모듈(비면 예전 규칙)
+    also_modules: list[str] = field(default_factory=list)     # 같은 버전이 다른 길로 해석된 모듈
+
+
+def _scope(item: InventoryItem) -> tuple[list[str], list[str]]:
+    """항목의 (다스리는 모듈, also 모듈): 다스리는 = modules − also_modules."""
+    also = sorted(set(item.also_modules or []))
+    return sorted(set(item.modules or []) - set(also)), also
 
 
 def _residual(item: InventoryItem, reason: str, detail: str) -> Residual:
@@ -415,10 +423,17 @@ def _change_for(project: Path, item: InventoryItem, policy: Any, source: Any, po
     if kind == K_PROPERTY_VERSION:
         prop = loc.property or "?"
         notes.append(f"property ${{{prop}}} may govern other artifacts")
+    governed, also = _scope(item)
+    if also:
+        # 왜: 같은 g:a:version 이 다른 길로 해석된 모듈은 이 글자가 닿지 않을 수 있다 — 검증은 그 모듈을 실패로 치지 않고
+        # 남으면 다음 라운드가 그 모듈만으로 다시 계획한다(override / 잔여)
+        notes.append(f"also resolved in {', '.join(also)} through another origin; this edit may not govern them — "
+                     f"whatever stays at {current} is planned in the next round")
     risks = [RISK_MAJOR] if _major(target) != _major(current) else []
     return _Change(ga=item.ga, from_version=current, to_version=target, kind=kind,
                    edit=TextEdit(pom=loc.pom, line=loc.line, old=loc.text, new=target), evidence=evidence,
-                   finding_ids=list(item.finding_ids), risks=risks, notes=notes, origin=item.origin)
+                   finding_ids=list(item.finding_ids), risks=risks, notes=notes, origin=item.origin,
+                   modules=governed, also_modules=also)
 
 
 def _managed_change(project: Path, item: InventoryItem, policy: Any) -> _Change | Residual | None:
@@ -524,7 +539,8 @@ def _existing_entry_change(project: Path, item: InventoryItem, policy: Any, sour
     risks = [RISK_MAJOR] if _major(target) != _major(item.version) else []
     return _Change(ga=item.ga, from_version=item.version, to_version=target, kind=kind,
                    edit=TextEdit(pom=loc.pom, line=loc.line, old=loc.text, new=target), evidence=evidence,
-                   finding_ids=list(item.finding_ids), risks=risks, notes=notes, origin=item.origin)
+                   finding_ids=list(item.finding_ids), risks=risks, notes=notes, origin=item.origin,
+                   modules=sorted(set(item.modules)))
 
 
 def _override_note(item: InventoryItem, target: str) -> str:
@@ -584,7 +600,8 @@ def _override_change(project: Path, item: InventoryItem, policy: Any, source: An
     risks = [RISK_MANAGED_OVERRIDE] + ([RISK_MAJOR] if _major(target) != _major(current) else [])
     return _Change(ga=item.ga, from_version=current, to_version=target, kind=K_MANAGED_OVERRIDE, edit=edit,
                    evidence=evidence, finding_ids=list(item.finding_ids), risks=risks, origin=item.origin,
-                   notes=[_override_note(item, target), *notes, OVERRIDE_WARNING, OVERRIDE_APPROVAL])
+                   notes=[_override_note(item, target), *notes, OVERRIDE_WARNING, OVERRIDE_APPROVAL],
+                   modules=sorted(set(item.modules)))
 
 
 def _merge(group: list[_Change], project: Path | None = None) -> _Change:
@@ -611,8 +628,16 @@ def _merge(group: list[_Change], project: Path | None = None) -> _Change:
         edit = _apply.locate_override(Path(project or "."), g, a, best.to_version)
     else:
         edit = TextEdit(pom=first.edit.pom, line=first.edit.line, old=first.edit.old, new=best.to_version)
+    # 다스리는 모듈 = 합집합; 어느 한 변경이라도 다스리는 모듈은 also 에서 뺀다. 하나라도 범위가 비었으면(예전 규칙·부모/BOM)
+    # 합친 제안도 예전 규칙으로 둔다 — 그 변경이 어느 모듈을 다스리는지 모르므로 좁히면 안 된다
+    if all(c.modules for c in group):
+        governed = sorted({m for c in group for m in c.modules})
+        also = sorted({m for c in group for m in c.also_modules} - set(governed))
+    else:
+        governed, also = [], []
     return _Change(ga=first.ga, from_version=first.from_version, to_version=best.to_version, kind=first.kind, edit=edit,
-                   evidence=best.evidence, finding_ids=ids, risks=sorted(risks), notes=notes, origin=first.origin)
+                   evidence=best.evidence, finding_ids=ids, risks=sorted(risks), notes=notes, origin=first.origin,
+                   modules=governed, also_modules=also)
 
 
 def plan_round(project: Path, inventory: Inventory, cfg: Any, source: Any, *, round: int, source_tree_hash: str,
@@ -689,7 +714,8 @@ def plan_round(project: Path, inventory: Inventory, cfg: Any, source: Any, *, ro
                      to_version=change.to_version, kind=change.kind, risks=sorted(change.risks), requires_approval=needs,
                      decision=D_PENDING if needs else D_AUTO, evidence=change.evidence,
                      finding_ids=list(change.finding_ids), edits=[change.edit], diff=diff,
-                     source_tree_hash=source_tree_hash, policy_hash=phash, note="; ".join(change.notes))
+                     source_tree_hash=source_tree_hash, policy_hash=phash, note="; ".join(change.notes),
+                     modules=list(change.modules), also_modules=list(change.also_modules))
         p.proposal_hash = p.compute_hash()
         plan.proposals.append(p)
     plan.residuals.sort(key=lambda r: (r.ga, r.version, r.reason))

@@ -665,3 +665,47 @@ def test_same_artifact_at_two_versions_is_one_override(tmp_path):
     plan = _plan(proj, [_trans(), _trans(version="1.0.5", hints=("1.2",), fid="CVE-T2")], source=src)
     (p,) = plan.proposals
     assert p.to_version == "1.2" and p.edits[0].override["version"] == "1.2" and p.finding_ids == ["CVE-T", "CVE-T2"]
+
+
+# ------------------------------------------------------------------------------------------------- module scope
+SCOPE_NOTE = ("also resolved in app-service, app-store through another origin; this edit may not govern them — "
+              "whatever stays at 1.2.3 is planned in the next round")
+
+
+def test_direct_proposal_carries_governed_and_also_modules(project):
+    item = _direct()
+    item.modules, item.also_modules = ["app-domain", "app-service", "app-store"], ["app-service", "app-store"]
+    src = FakeSource({"example:lib": ["1.2.5"]})
+    (p,) = _plan(project, [item], source=src).proposals
+    assert p.modules == ["app-domain"] and p.also_modules == ["app-service", "app-store"]
+    assert SCOPE_NOTE in p.note
+    # the scope is not part of the proposal hash: the same proposal without it hashes the same
+    plain = _direct()
+    (q,) = _plan(project, [plain], source=src).proposals
+    assert q.modules == [] and q.also_modules == [] and SCOPE_NOTE not in q.note
+    assert p.compute_hash() == q.compute_hash() and p.proposal_hash == q.proposal_hash
+
+
+def test_scoped_direct_without_also_has_no_note(project):
+    item = _direct()
+    item.modules = ["app-domain"]
+    (p,) = _plan(project, [item], source=FakeSource({"example:lib": ["1.2.5"]})).proposals
+    assert p.modules == ["app-domain"] and p.also_modules == [] and "through another origin" not in p.note
+
+
+def test_override_proposal_governs_every_item_module(tmp_path):
+    _write(tmp_path, ROOT)
+    _write(tmp_path, _mod("core"), "core/pom.xml")
+    _write(tmp_path, _mod("other"), "other/pom.xml")
+    (p,) = _plan(tmp_path, [_trans(modules=["core", "other"])], source=FakeSource({"example:t": ["1.1"]})).proposals
+    assert p.kind == K_MANAGED_OVERRIDE and p.modules == ["core", "other"] and p.also_modules == []
+
+
+def test_merge_unions_scopes_and_governed_wins_over_also(project):
+    a = _prop_item()
+    a.modules, a.also_modules = ["m1", "m2"], ["m2"]
+    b = _prop_item(ga="example:annotations", fid="CVE-3")
+    b.modules, b.also_modules = ["m2", "m3"], ["m3"]
+    src = FakeSource({"example:core": ["2.14.3"], "example:annotations": ["2.14.3"]})
+    (p,) = _plan(project, [a, b], source=src).proposals
+    assert p.modules == ["m1", "m2"] and p.also_modules == ["m3"]

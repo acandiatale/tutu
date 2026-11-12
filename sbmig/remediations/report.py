@@ -168,7 +168,9 @@ def _plan_summary(plan: RoundPlan | None) -> dict[str, Any] | None:
     return {"round": plan.round, "source_tree_hash": plan.source_tree_hash, "policy_hash": plan.policy_hash,
             "proposals": [{"id": p.id, "ga": p.ga, "from": p.from_version, "to": p.to_version, "kind": p.kind,
                            "risks": sorted(p.risks), "decision": p.decision, "evidence": p.evidence, "note": p.note,
-                           "finding_ids": list(p.finding_ids), "proposal_hash": p.proposal_hash} for p in plan.proposals],
+                           "finding_ids": list(p.finding_ids), "proposal_hash": p.proposal_hash,
+                           **({"modules": list(p.modules), "also_modules": list(p.also_modules)} if p.modules else {})}
+                          for p in plan.proposals],
             "residuals": [r.to_dict() for r in plan.residuals], "notes": list(plan.notes)}
 
 
@@ -344,6 +346,14 @@ def build_report_md(state: RemediationState, paths: RunPaths, *, ignore_actions:
             for p in plan.proposals:
                 if p.note:
                     L.append(f"- 주의 `{_md_cell(p.id)}`: {_md_cell(p.note)}")
+            # 제안이 다스리는 모듈(검증이 from → to 를 요구하는 곳)과, 같은 버전이 다른 길로 해석돼 이 수정이 닿지 않을 수
+            # 있는 모듈 — 범위가 없는 예전 제안(부모·BOM 버전 포함)에는 적지 않는다
+            for p in plan.proposals:
+                if p.modules:
+                    L.append(f"- 다스리는 모듈 `{_md_cell(p.id)}`: {_md_cell(', '.join(p.modules))}")
+                    if p.also_modules:
+                        L.append(f"- 같은 버전이 다른 길로 해석된 모듈(이 수정이 닿지 않을 수 있음) `{_md_cell(p.id)}`: "
+                                 f"{_md_cell(', '.join(p.also_modules))}")
         L.append(f"- 적용한 제안: {', '.join(rs.applied) if rs.applied else '없음'}")
         if rs.build is not None:
             L.append(f"- 후보 빌드: {'성공' if rs.build.ok else '실패'}" + (f" (로그 `{rs.build.log}`)" if rs.build.log else ""))

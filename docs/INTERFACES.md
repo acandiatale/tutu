@@ -3799,6 +3799,17 @@ manager is pinned — or left residual) and `plugin`, `vendored`, `unmapped` (ne
 `parent_version`, `bom_version`. Edit ops (`TextEdit.op`): `replace`, `insert`. Risk flags (= values of
 `remediation.always_approve`): `major`, `parent`, `bom`, `managed_override`. Decisions: `auto`, `pending`, `approved`, `rejected`.
 
+Proposal scope: one g:a at one version may resolve in several modules through different origins. When the project holds a
+version text for it, the inventory item's `modules` lists every module and `also_modules` the ones that text is not known to
+govern (the same g:a:version reached as a transitive / parent- / BOM-managed dependency). The proposal carries `modules`
+(governed = `modules − also_modules`) and `also_modules`; neither is part of `proposal_hash`. `verify_resolution` requires
+`from_version → to_version` in the governed modules and in the artifacts those modules package (the module is the part of
+`PackagedLib.artifact` before `/target/`). An also-module — or the artifact of one — that stays at `from_version` is an `info:`
+line in the round's verify memo: the round commits, and the next round's inventory plans what the rescan still reports for
+those modules alone (override entry or residual). A `managed_override` / existing-root-entry proposal governs all of the
+item's modules; a proposal without `modules` (parent / BOM version, a state written without the field) is verified over
+every module that resolved `from_version`.
+
 ### The graph (`sbmig/remediations/graph.py`, a LangGraph separate from `sbmig/graph/`)
 
 Ten nodes, state saved at every boundary; an entry router jumps to `state.next_node` (= resume). A stop request is checked
@@ -3811,7 +3822,7 @@ before every node and inside builds / IVAS polling.
 | `inventory` | `dependency:tree` of the before-tree; findings → `Inventory` | `plan`; resolution / inventory incomplete → `INCOMPLETE manual_review` |
 | `plan` | proposals + residuals, approval classes, hashes; a plan whose tree / policy hash no longer matches is kept as `plan.stale.json` and re-made | pending → `AWAITING_APPROVAL`; something to apply → `apply`; nothing → `evaluate` |
 | `apply` | copy `accepted/` → candidate, apply auto + approved edits, write `candidate.patch`, text-only check | `build`; violation → `FAILED text_only_violation`; nothing applied → `evaluate` |
-| `build` | `package` the candidate, resolve again, list packaged jars, `verify_resolution`; then commit into `accepted/` | `freeze_delivery`; build failed → `FAILED candidate_build_failed` (with `include` the failed candidate is frozen as `result.zip` first, not rescanned); mismatch → `FAILED resolution_mismatch` (never delivered) |
+| `build` | `package` the candidate, resolve again, list packaged jars, `verify_resolution`; then commit into `accepted/` | `freeze_delivery`; build failed → `FAILED candidate_build_failed` (with `include` the failed candidate is frozen as `result.zip` first, not rescanned); a governed module (or its artifact) not at the planned version → `FAILED resolution_mismatch` (never delivered) |
 | `freeze_delivery` | deterministic `delivery/result.zip` from `accepted/` (manifest paths only) | `rescan` |
 | `rescan` | delivery sha256 re-checked; IVAS scan of the same bytes (`final-r<n>`) | `evaluate`; incomplete → `INCOMPLETE scan_incomplete`; sha differs → `FAILED zip_hash_mismatch`; uncertain → `AWAITING_CONFIRMATION` |
 | `evaluate` | actionable findings remain, last round committed and `round < remediation.max_rounds` → next round | `inventory` (round + 1) or the success decision → `report` |

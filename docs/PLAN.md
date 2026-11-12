@@ -545,3 +545,17 @@ refusing the company repository's `http://` URL; sbmig's message pointed at the 
 | Tests | `tests/build/test_http_blocker.py`, `tests/loop/test_http_blocker_flow.py`, pins in `test_result_line.py` / `test_report_i18n.py` | `tests/` | done |
 | Not done | e2e fixture: `scripts/e2e.sh` passes no per-fixture settings file (a blocked run needs one, or a global-settings blocker on the e2e host) | — | open |
 | Docs | ERROR-HANDLING §6 / §7, INTERFACES "v2.1z-ah", RUNBOOK §0, agent-doc 03, deploy README, PROGRESS | `docs/`, `agent-doc/`, `deploy/` | done |
+
+## Status — 2026-11-12, remediations: first run against the real IVAS (company PC), proposal scope
+
+The chained remediation ran on the company PC: readiness (needs `build.settings_file`), baseline build, login, upload, analysis
+polling, every result page, inventory, plan (1 proposal, 56 residuals), candidate build — and ended `FAILED resolution_mismatch`.
+
+| Item | Deliverable | Where | Status |
+|---|---|---|---|
+| Proposal scope | `InventoryItem.also_modules`, `Proposal.modules` / `also_modules` (outside `proposal_hash`): a version text is answerable only for the modules it governs | `sbmig/remediations/models.py`, `inventory.py`, `planner.py` | done |
+| Verification | `verify_resolution` requires from → to in the governed modules and their artifacts; an also-module left at `from_version` is an `info:` line, the round commits, the next round plans the rest | `sbmig/remediations/apply.py` | done |
+| Operator text | the governed / also modules in `report.md` and `report.json`; `chained remediation <id>: <status> <reason> — <message>` in `sbmig.log` (scrubbed, one line, 600 characters) | `sbmig/remediations/report.py`, `chain.py` | done |
+| Tests | inventory / planner / apply units, the flow with the real inventory + planner + verify over fake Maven and IVAS (round 1 commits, round 2 residual, INCOMPLETE not FAILED), old plan JSON without the fields | `tests/remediations/` | done |
+| Open | company layout: modules inherit the company role parents, not the project root, so a root `<dependencyManagement>` override reaches no module and every transitive finding is `manual_review` (the reason on all but one of the residual rows read out from that run) — where the entry goes is the company's decision | — | open |
+| Not yet seen with the real IVAS | commit + frozen delivery ZIP rescan, approval → resume in a new build pod, the uncertain-upload path | — | open |

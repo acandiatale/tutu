@@ -20,6 +20,8 @@ pom 파일을 다시 읽어 **그 줄에 그 글자가 정말 있는지** 확인
       항목 하나** — 두 모듈이 각자 pom 에 같은 취약 버전을 적었으면 둘 다 고쳐야 하기 때문이다.
     * 나머지(parent_managed / bom_managed / transitive)는 고칠 수 있는 항목이 있으면 그중 모듈을 가장 많이 다스리는 항목에
       모듈로 합치고 reason 에 사실을 적는다(형제 모듈을 거쳐 온 transitive 가 대부분이다 — 따로 두면 거짓 수동 검토가 된다).
+      합쳐 들어온 모듈은 ``also_modules`` 에도 적는다: 그 버전 글자가 그 모듈까지 다스리는지는 정적으로 알 수 없어(외부 역할
+      부모를 상속하는 회사 구조에서는 대개 아니다) 검증이 실패로 치지 않고, 남으면 다음 라운드가 따로 계획한다.
       고칠 수 있는 항목이 없으면 모듈을 가장 많이 다스리는 모양 하나로 항목 하나, 나머지 모양은 reason 에.
     * ``unmapped`` 결과(글자 불일치 등)는 합치지 않고 늘 따로 항목이 된다(문제를 숨기지 않게).
 
@@ -28,7 +30,8 @@ pom 파일을 다시 읽어 **그 줄에 그 글자가 정말 있는지** 확인
 
 Links IVAS findings to what Maven resolved and to the exact line / literal text of the version in the project poms.
 Rules: see the Korean block above (one item per distinct editable location; non-editable module results fold into the
-item that governs most modules; unmapped results never fold). Also holds the small lxml pom model `ProjectPoms`
+item that governs most modules and are listed in its `also_modules` — the edit is not known to govern them; unmapped
+results never fold). Also holds the small lxml pom model `ProjectPoms`
 that `maven.py` reuses for module discovery.
 """
 from __future__ import annotations
@@ -582,10 +585,15 @@ def _classify(pp: ProjectPoms, mod: PomFile, dep: ResolvedDep,
 
 
 # ---------------------------------------------------------------------------- 묶기
-def _merge_modules(item: InventoryItem, extra: list[tuple[str, _Res]]) -> None:
+def _merge_modules(item: InventoryItem, extra: list[tuple[str, _Res]], *, also: bool = False) -> None:
+    governed = set(item.modules)
     for mdir, res in extra:
         if mdir not in item.modules:
             item.modules.append(mdir)
+    if also:
+        # 왜: 합쳐 들어온 모듈은 다른 길(간접·부모/BOM 관리)로 같은 버전이 된 곳이다 — 이 항목의 버전 글자가 그 모듈도
+        # 다스리는지는 정적으로 알 수 없다. 검증은 이 모듈들을 실패로 치지 않고, 남으면 다음 라운드가 따로 계획한다
+        item.also_modules = sorted(({m for m, _ in extra} | set(item.also_modules)) - governed)
     shapes: dict[tuple, list[str]] = {}
     for mdir, res in extra:
         shapes.setdefault((res.origin, res.manager, " → ".join(res.via)), []).append(mdir)
@@ -618,7 +626,7 @@ def _group(ga: str, version: str, results: list[tuple[str, _Res]]) -> list[Inven
             # 고칠 수 있는 항목 중 모듈을 가장 많이 다스리는 것(동률이면 정렬 순서 첫째)에 합친다
             target = sorted(items, key=lambda it: (-len(it.modules), it.location.pom if it.location else "",
                                                    it.location.line if it.location else 0))[0]
-            _merge_modules(target, [x for v in others.values() for x in v])
+            _merge_modules(target, [x for v in others.values() for x in v], also=True)
         else:
             def shortest_via(v: list[tuple[str, _Res]]) -> list[str]:
                 vias = [r.via for _, r in v if r.via]

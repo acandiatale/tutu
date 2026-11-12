@@ -202,3 +202,22 @@ def test_ignored_findings_table_uses_the_given_codes(tmp_path):
 def test_chain_budget_reason_has_a_korean_text():
     meaning, step = report._REASON_KO["chain_budget"]
     assert "chain_budget_minutes" in meaning and "재개" in step
+
+
+def test_scoped_proposal_lists_its_modules_and_a_legacy_one_does_not(tmp_path):
+    scoped = proposal()
+    scoped.modules, scoped.also_modules = ["app-domain"], ["app-service", "app-store"]
+    out, paths = _run(tmp_path, **{**_fixing(), "plan": ScriptedPlanner([RoundPlan(round=1, source_tree_hash="",
+                                                                                   policy_hash="", proposals=[scoped])])})
+    md = paths.report_md.read_text(encoding="utf-8")
+    assert "- 다스리는 모듈 `p-1-1`: app-domain" in md
+    assert "- 같은 버전이 다른 길로 해석된 모듈(이 수정이 닿지 않을 수 있음) `p-1-1`: app-service, app-store" in md
+    data = json.loads(paths.report_json.read_text(encoding="utf-8"))
+    pj = data["rounds"][0]["plan"]["proposals"][0]
+    assert pj["modules"] == ["app-domain"] and pj["also_modules"] == ["app-service", "app-store"]
+
+    legacy_out, legacy_paths = _run(tmp_path / "legacy", **_fixing())
+    md = legacy_paths.report_md.read_text(encoding="utf-8")
+    assert "다스리는 모듈" not in md and "다른 길로 해석된 모듈" not in md
+    pj = json.loads(legacy_paths.report_json.read_text(encoding="utf-8"))["rounds"][0]["plan"]["proposals"][0]
+    assert "modules" not in pj and "also_modules" not in pj

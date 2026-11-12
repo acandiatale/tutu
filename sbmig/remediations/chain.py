@@ -300,9 +300,19 @@ def _baseline_outcome(paths: RunPaths, state: RemediationState, jr: Journal, exc
     return state
 
 
-def _ended(jr: Journal, st: RemediationState) -> None:
+_END_MESSAGE_CAP = 600
+
+
+def _ended(jr: Journal, st: RemediationState, paths: RunPaths | None = None) -> None:
     jr({"event": "remediation_end", "remediation": st.id, "status": st.status, "reason": st.reason})
-    log.info("chained remediation %s: %s %s", st.id, st.status, st.reason)
+    text = " ".join(str(st.message or "").split())
+    if text:
+        # 왜: 회사 PC 는 복사·붙여넣기가 안 된다 — sbmig.log 한 줄에서 "왜 실패했는지" 까지 읽혀야 다른 파일을 열지 않는다
+        msg = graph_mod.scrub_message(text, paths.root if paths is not None else None, _END_MESSAGE_CAP)
+        msg = " ".join(msg.split())
+        log.info("chained remediation %s: %s %s — %s", st.id, st.status, st.reason, msg)
+    else:
+        log.info("chained remediation %s: %s %s", st.id, st.status, st.reason)
 
 
 def run_after_migration(run_dir: Path | str, project_dir: Path | str, cfg: Any, *, run_id: str, journal: Journal | None,
@@ -376,7 +386,7 @@ def _start(paths: RunPaths, project_dir: Path, cfg: Any, comps: Components, *, r
         _try_save(paths, st)
         jr({"event": "remediation_intake_rejected", "remediation": run_id, "code": e.code})
         log.warning("vulnerability remediation %s: intake rejected the migrated tree (%s)", run_id, e.code)
-        _ended(jr, st)
+        _ended(jr, st, paths)
         return st
     state = graph_mod.new_state(run_id, SOURCE_NAME, cfg, result, [], policy_hash=policy)
     state.build_targets = targets
@@ -396,7 +406,7 @@ def _drive(paths: RunPaths, state: RemediationState, cfg: Any, comps: Components
     state = _baseline_outcome(paths, state, jr, excluded)
     if budget is not None:
         state = _budget_outcome(paths, state, budget, real_stop or (lambda: False))
-    _ended(jr, state)
+    _ended(jr, state, paths)
     return state
 
 
