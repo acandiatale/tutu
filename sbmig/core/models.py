@@ -1212,6 +1212,17 @@ class ErrorEntry(BaseModel):
     script: str = ""                               # cases/<case_id>/fix_v2.py — the script that resolved it
     note: str = ""                                 # pom-verify: what the restructure did; note entries: the text
     at: datetime = Field(default_factory=utcnow)
+    # 서명 사실(v2.1z-ai): L2 를 만든 규칙 버전과, 규칙이 바뀌었을 때 L2 를 다시 계산할 재료. 옛 기록은 비어 있다
+    # (sig 0 = 규칙 버전이 생기기 전 = 규칙 1) — 그때는 raw 의 symbol / location 줄에서 다시 읽는다.
+    # signature facts (v2.1z-ai): the rule version that produced `l2`, and what a later rule version needs to
+    # compute it again. Entries stored before this have none (sig 0 = rules 1): the re-sign reads `raw` instead.
+    sig: int = 0                                   # sbmig.build.signatures.SIGNATURE_VERSION when `l2` was computed
+    l1: str = ""                                   # BuildError.signature (the specific signature)
+    symbol: str = ""                               # javac "symbol:" line (masked like `message`)
+    location: str = ""                             # javac "location:" line
+    artifact: str = ""                             # g:a[:v] of a resolution / pom error
+    goal: str = ""                                 # plugin goal ("compiler:compile", "war:war")
+    was: list[str] = Field(default_factory=list)   # earlier case ids of this entry (re-signed), oldest first
 
 
 # 저장된 스크립트 상태: unverified = 이 프로젝트에서만 통했거나 한 번 돌았음, proven = 다른 프로젝트에서
@@ -1287,6 +1298,11 @@ class CaseInfo(BaseModel):
     last_analysis: str = ""
     last_solution: str = ""
     updated_at: datetime = Field(default_factory=utcnow)
+    # v2.1z-ai: `l2` 를 만든 서명 규칙 버전(0 = 버전이 생기기 전)과, 규칙이 바뀌어 이 케이스로 옮겨 온 옛 케이스 ID 들
+    # the signature rule version of `l2` (0 = stored before versions existed) and the earlier case ids whose
+    # content a re-sign moved here (`sbmig kb cases show <old id>` still finds the case through them)
+    sig: int = 0
+    aliases: list[str] = Field(default_factory=list)
     # case.json may carry extra keys the store keeps beside the model: "pin" ("block[:<reason>]", a person's
     # instruction never to try the case) and "last_result" (sbmig.errors.cases.CaseStore.extra)
 

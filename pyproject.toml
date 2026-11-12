@@ -37,6 +37,9 @@ sbmig = ["**/*.yml", "**/*.yaml", "**/*.md", "**/*.j2", "**/*.json", "**/*.html"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# pytest skips a directory named "build" by default: tests/build (the log parser, signatures, runner tests) was
+# never part of a run started at the repository root. The default list minus "build":
+norecursedirs = [".*", "*.egg", "_darcs", "CVS", "dist", "node_modules", "venv", "{arch}", "__pycache__"]
 addopts = "-q"
 markers = [
   "integration: needs mvn/java/network (deselect with -m 'not integration')",

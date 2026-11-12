@@ -117,9 +117,14 @@ TEST_COMPILE < PLUGIN_EXECUTION < TEST_FAILURE; inside one priority the root cau
 * **L2 (generic)** `kind|message class|key` — e.g. `compile|cannot_find_symbol|WebSecurityConfigurerAdapter`,
   `compile|package_does_not_exist|javax.xml.bind`, `dependency_resolution|g:a`, `pom_invalid|missing_version`,
   `plugin_execution|war:war|<normalized cause>`. A coarse `build` / `other` L2 is refined from the first meaningful javac line.
+  A missing member (method, field) of a library type carries the type: `compile|cannot_find_symbol|org.springframework.http.HttpHeaders.keySet`,
+  so the same method name on two types is two cases; a missing class keeps its simple name, so its import line and its usages are one case.
 * Paths, line numbers, URLs, versions and numbers are stripped; reactor artifactIds are masked as `<module>`.
 * **case id** = `sha1(L2)[:10]`. The same L2 on another project is the same case, which is what makes a stored script reusable.
-  Changing a signature rule gives existing errors new ids (stored cases become orphans; `sbmig kb reindex` does not re-sign).
+  The id hashes the whole L2 (matching is exact on the text); a stored case whose L2 is not the one asked for is never used.
+* **Rule version**: `SIGNATURE_VERSION` names the rules; every stored record carries the version that signed it. After a rule change
+  `sbmig kb reindex` (and a run, by itself, before its first KB lookup) re-signs the records of the changed error classes and moves
+  their cases and scripts to the new ids; the old ids stay as `aliases` (`docs/INTERFACES.md` "v2.1z-ai").
 
 ## 6. LLM seam and fix protocol
 

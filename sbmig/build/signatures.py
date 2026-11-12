@@ -6,6 +6,10 @@
 소유 패키지·타입은 ``*`` 로 가린다. L2(일반): 프로젝트가 달라도 같은 종류(예
 ``compile|cannot_find_symbol|BASE64Encoder``). L2 는 서로 다른 문제를 합치면 안 된다(round 10): 패키지 오류는
 패키지 전체, @Override / static import 오류는 소스에서 읽은 이름, plugin_execution 은 목표 + 정규화한 원인.
+멤버 심볼(메서드·필드·생성자)은 그것을 가진 라이브러리 타입까지 키에 넣는다: cannot_find_symbol 의 위치가
+라이브러리 타입(``variable x of type T`` / ``class T``)이면 ``…|cannot_find_symbol|T.이름``, no_suitable_method 는
+javac 후보 줄의 라이브러리 타입으로 ``…|no_suitable_method|T.이름``. 클래스 같은 심볼, 프로젝트 소유 타입·패키지·
+위치 없음은 이름만 쓴다(import 줄과 그 클래스의 사용처는 한 케이스). 규칙 버전은 ``SIGNATURE_VERSION``.
 규칙: 절대경로·줄 번호·모듈 이름·프로젝트 소유 위치는 넣지 않는다. 전부 BuildError 의 순수 함수다(같은 오류 →
 같은 서명). 여기를 바꾸면 KB 의 기존 케이스와 매칭이 끊긴다(case_id 가 L2 의 해시).
 
@@ -20,6 +24,14 @@ Error signatures (ARCHITECTURE §5).
   method / class the log parser read from the source line, ``illegal_start`` the javac phrase, ``plugin_execution``
   the plugin goal plus the normalized cause (``plugin_execution|war:war|error assembling war: webxml attribute is
   required``).
+* A **member** symbol (``method …``, ``variable …``, ``constructor …``, ``static …``) is keyed by the library type that
+  owns it: a ``cannot_find_symbol`` whose ``location`` is a library-owned type (``variable x of type T`` or
+  ``class | interface | enum | record | @interface T``, ``T`` without type arguments / array brackets) has the L2
+  ``compile|cannot_find_symbol|org.springframework.http.HttpHeaders.keySet``; a ``no_suitable_method`` takes the owner
+  of the first library-owned ``… is not applicable`` candidate line of ``raw``
+  (``compile|no_suitable_method|org.springframework.data.repository.PagingAndSortingRepository.findAll``). Class-like
+  symbols, project-owned or package locations and missing locations keep the bare name, so an import line and the
+  usages of one missing class stay one case. ``SIGNATURE_VERSION`` names the rules in force.
 
 Rules: no absolute paths, no line numbers, no module names, no project-owned locations. Everything here is a pure
 function of the ``BuildError`` so the same error always yields the same signature.
@@ -32,6 +44,36 @@ import re
 from collections.abc import Iterable
 
 from sbmig.core.models import BuildError, ErrorKind
+
+# 서명 규칙 버전. ``signature_for`` 가 내는 L2 가 달라지는 규칙 변경마다 1 올리고, 바뀐 javac / 오류 분류를
+# ``SIGNATURE_CHANGES`` 에 적는다 — KB 의 재서명(``sbmig kb reindex``, ``sbmig.errors.resign``)이 이 표를 보고 옛
+# 규칙으로 서명된 기록 중 그 분류에 속한 것만 다시 계산한다(나머지는 버전 도장만 찍는다: 600자로 잘린 원문에서
+# 모든 L2 를 다시 만들면 바뀌지 않은 규칙의 케이스까지 흔들린다).
+#   1 = 버전이 생기기 전의 규칙(기록에 ``sig`` 가 없거나 0).
+#   2 = 멤버 심볼은 그것을 가진 라이브러리 타입까지 키에 넣는다(아래 ``_compile_signature`` / ``_javac_key``).
+# The signature rule version. Raise it with every rule change that alters an L2 `signature_for` produces and list
+# the error classes (2nd L2 segment, prefixed by nothing: the class name alone) the change touches in
+# SIGNATURE_CHANGES: the KB re-sign recomputes ONLY stored records of those classes signed by an older version and
+# merely stamps the rest (recomputing every L2 from a 600-character raw would disturb cases whose rule never changed).
+SIGNATURE_VERSION = 2
+SIGNATURE_CHANGES: dict[int, frozenset[str]] = {
+    2: frozenset({"cannot_find_symbol", "no_suitable_method"}),
+}
+
+
+def classes_changed_since(version: int) -> frozenset[str]:
+    """``version`` 규칙으로 서명된 기록 중 지금 규칙에서 L2 가 달라질 수 있는 오류 분류들(L2 의 둘째 칸).
+    0 과 1 은 같은 규칙이다. 지금 버전 이상이면 빈 집합.
+
+    The error classes (2nd L2 segment) whose L2 may differ between rule `version` and the current rules
+    (0 and 1 are the same rules); empty for the current version or a newer one."""
+    v = max(int(version or 0), 1)
+    out: set[str] = set()
+    for changed_in, classes in SIGNATURE_CHANGES.items():
+        if changed_in > v:
+            out |= classes
+    return frozenset(out)
+
 
 MAX_MESSAGE_CHARS = 160
 GENERIC_WORDS = 6
@@ -312,6 +354,66 @@ def _norm_location(location: str | None) -> str:
     return normalize_message(loc, lower=False, max_chars=80)
 
 
+# 멤버 심볼(메서드·필드·생성자)의 kind 낱말. 이것으로 시작하지 않는 symbol(class / interface / package / 이름만)은
+# '클래스 같은' 심볼이다 — import 줄과 그 클래스의 사용처가 한 케이스로 남아야 하므로 위치를 키에 넣지 않는다.
+# The kind words of a MEMBER symbol; anything else (class / interface / enum / record / annotation / package / type /
+# no kind word) is class-like and keeps its rules-1 key whatever the location.
+_MEMBER_KINDS = ("method ", "variable ", "constructor ", "static ")
+_LOC_VAR_TYPE_RE = re.compile(r"^variable \S+ of type (.+)$")
+_LOC_TYPE_RE = re.compile(r"^(?:class|interface|enum|record|@interface)\s+(.+)$")
+_QUALIFIED_TYPE_RE = re.compile(r"^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+$")
+# javac 의 후보 줄: 'method <T>.<name>(…) is not applicable', 제네릭 메서드 'method <T>.<X>name(…)',
+# 생성자 'constructor <T>.<Simple>(…)'. Maven 이 줄 앞에 [ERROR] 를 붙이기도 한다.
+_CANDIDATE_RE = re.compile(
+    r"^\s*(?:\[ERROR\]\s*)?(?:method|constructor)\s+(?:<[^()]*?>\s*)?([\w$]+(?:\.[\w$]+)*)\.(?:<[^()]*?>)?([\w$]+)\("
+    r"[^\n]*?\)\s+is not applicable", re.M)
+
+
+def _bare_type(text: str) -> str:
+    """위치의 타입 글에서 타입 인자(중첩·공백·쉼표 포함)와 배열 괄호를 걷어낸 한정 이름. 한정 이름이 아니면 ""
+    (타입 변수 ``T``, ``capture#1 of ?`` 등).
+
+    The qualified name of a location type with every type argument (nested ones, ones with spaces / commas) and
+    array brackets removed; "" when what is left is not a qualified name (a type variable, ``capture#1 of ?``)."""
+    t = text.strip()
+    prev = None
+    while prev != t:                                            # innermost <…> first, until none is left
+        prev, t = t, re.sub(r"<[^<>]*>", "", t)
+    t = re.sub(r"\s*\[\s*\]", "", t).replace("...", "").strip()
+    return t if _QUALIFIED_TYPE_RE.match(t) else ""
+
+
+def _library_owner(location: str | None) -> str:
+    """location 이 라이브러리 소유 타입을 가리키면 그 한정 이름(``variable x of type T`` / ``class|interface|enum|
+    record|@interface T``, ``_is_external``), 아니면 "" — 프로젝트 소유 타입·패키지·위치 없음.
+
+    The library-owned type a javac `location:` names (``variable x of type T`` or ``class … T``, `_is_external`),
+    else "" (project-owned, a package, a type variable, no location)."""
+    if not location:
+        return ""
+    loc = _WS_RE.sub(" ", location).strip()
+    m = _LOC_VAR_TYPE_RE.match(loc) or _LOC_TYPE_RE.match(loc)
+    if not m:
+        return ""
+    typ = _bare_type(m.group(1))
+    return typ if typ and _is_external(typ) else ""
+
+
+def _candidate_owner(raw: str, name: str) -> str:
+    """no_suitable_method 의 후보 줄들 중 처음으로 라이브러리 소유 타입을 이름으로 가진 줄의 그 타입(메서드 / 생성자
+    이름이 'found for' 뒤 이름과 같을 때만 — 다른 오류의 줄을 잘못 읽지 않게). 없으면 "".
+
+    The owner type of the first `… is not applicable` candidate line of `raw` whose owner is library-owned and whose
+    method / constructor name is the one javac printed after ``found for``; "" when there is none."""
+    if not raw or not name:
+        return ""
+    for m in _CANDIDATE_RE.finditer(raw):
+        owner, member = m.group(1), m.group(2)
+        if member == name and _is_external(owner):
+            return owner
+    return ""
+
+
 def _first_words(text: str, n: int = GENERIC_WORDS) -> str:
     return " ".join(text.split()[:n])
 
@@ -334,7 +436,10 @@ def _javac_key(cls: str, msg: str, err: BuildError) -> str:
         return grab(r"abstract method (\w+)\(.*?\) in (\S+)",
                     lambda m: f"{_simple(m.group(2))}.{m.group(1)}")
     if cls == "no_suitable_method":
-        return grab(r"no suitable (?:method|constructor) found for (\w+)", lambda m: m.group(1))
+        name = grab(r"no suitable (?:method|constructor) found for (\w+)", lambda m: m.group(1))
+        # 규칙 2: 후보 줄이 라이브러리 타입을 말하면 그 타입까지 키에 — 다른 타입의 같은 이름 메서드와 섞이지 않게
+        owner = _candidate_owner(err.raw, name)
+        return f"{owner}.{name}" if owner else name
     if cls == "cannot_be_applied":
         return grab(r"(?:method|constructor) (\w+) in (?:class|interface|enum|record) (\S+?)(?:<.*?>)? cannot",
                     lambda m: f"{_simple(m.group(2))}.{m.group(1)}")
@@ -433,7 +538,7 @@ def _compile_signature(err: BuildError) -> tuple[str, str]:
     """컴파일 오류의 (L1, L2). 애노테이션 프로세서 붕괴 → 'compile|annotation_processor|lombok' 등;
     파일·줄·symbol 이 없는 빌드 단위 메시지 → 'compile|build|<앞 6단어>'; 그 밖은 javac
     분류별(package_does_not_exist 는 패키지 전체, cannot_find_symbol 은 L1 = symbol + location / L2 =
-    이름, 나머지는 ``_javac_key``)."""
+    이름 — 라이브러리 타입에 있는 멤버 심볼이면 ``타입.이름``, 나머지는 ``_javac_key``)."""
     prefix = err.kind.value
     msg = err.message or ""
     if msg.startswith("annotation-processor:"):
@@ -461,7 +566,14 @@ def _compile_signature(err: BuildError) -> tuple[str, str]:
             m = re.search(r"unresolved reference:?\s*'?([\w.]+)'?", msg, re.IGNORECASE)
             sym = m.group(1) if m else ""
         name = _symbol_name(sym) or sym
-        return _join(prefix, cls, sym, _norm_location(err.location)), _join(prefix, cls, name)
+        l1 = _join(prefix, cls, sym, _norm_location(err.location))
+        # 규칙 2: 멤버 심볼이 라이브러리 타입에 있으면 그 타입까지 키에(HttpHeaders.keySet ≠ 다른 타입의 keySet).
+        # 클래스 같은 심볼은 위치와 상관없이 이름만 — import 줄과 사용처가 한 케이스로 남는다.
+        if err.symbol and name and sym.startswith(_MEMBER_KINDS):
+            owner = _library_owner(err.location)
+            if owner:
+                return l1, _join(prefix, cls, f"{owner}.{name}")
+        return l1, _join(prefix, cls, name)
     norm = _mask_project_types(normalize_message(msg, module=err.module, lower=False))
     l1 = _join(prefix, cls, norm, _mask_project_types(_norm_symbol(err.symbol)), _norm_location(err.location))
     key = _javac_key(cls, msg, err)

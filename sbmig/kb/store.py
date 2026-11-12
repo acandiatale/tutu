@@ -16,7 +16,15 @@ Layout under ``cfg.kb_dir`` (``kb.dir``, default ``kb-v2/``): ``errors.jsonl``, 
 catalog, views, audit, quarantine, reviews, fix_attempts, scripts/*/meta.json and index.json are gone; an old KB
 directory is simply not looked at).
 
+재서명(v2.1z-ai): ``reindex`` 는 먼저 :meth:`FileKnowledgeBase.resign`(옛 규칙의 기록을 지금 케이스 ID 로)을 하고 다시 센다.
+자동으로도 돈다 — 실행 하나에서 KB 디렉토리마다 첫 ``match`` 때(``kb.json`` 이 없거나 옛 버전이고 기록이 있을 때)와,
+``record_run`` 뒤에 옛 규칙의 줄이 남아 있을 때(옛 이미지의 파드가 쓴 줄). 어느 것도 실행을 멈추지 않는다(실패 = WARNING 한 줄).
+``match`` 는 오류의 L2 를 알므로 저장된 케이스의 L2 와 다르면 그 케이스를 빼고 저장소에 알린다(정확한 키).
 
+Re-sign (v2.1z-ai): ``reindex`` re-signs first (:meth:`FileKnowledgeBase.resign`), then recounts. Automatically too,
+never failing a run: on the first ``match`` of a process per KB directory (``kb.json`` missing / older while the KB
+has records) and after a ``record_run`` that leaves a line signed by older rules. ``match`` leaves out a stored case
+whose L2 is not the L2 of the cluster's errors (the exact-key guard, :meth:`CaseStore.same_case`).
 """
 from __future__ import annotations
 
@@ -32,6 +40,7 @@ from sbmig.core.config import Config
 from sbmig.core.models import CaseAction, CaseHit, ErrorCluster, ErrorEntry, KBMatch, utcnow
 from sbmig.errors.cases import CASES_DIR, CASES_MD, KB_ERRORS, CaseStore
 from sbmig.errors.common import atomic_write, case_id_of
+from sbmig.errors.resign import ResignReport, current_version
 
 from .lock import LOCK_NAME, kb_lock, keep_alive
 
@@ -42,6 +51,9 @@ HINT_CHARS = 400
 EXPORT_FILES = (KB_ERRORS, CASES_MD)
 
 __all__ = ["FileKnowledgeBase", "atomic_write"]
+
+# 이 프로세스에서 첫 match 의 재서명 확인을 이미 한 KB 디렉토리들(두 번째부터는 파일도 보지 않는다)
+_FIRST_MATCH_CHECKED: set[str] = set()
 
 
 class FileKnowledgeBase:
@@ -54,6 +66,7 @@ class FileKnowledgeBase:
         self.cfg = cfg
         self.root = Path(kb_dir) if kb_dir else cfg.kb_dir
         self._cases: Optional[CaseStore] = None
+        self.last_resign: Optional[ResignReport] = None   # v2.1z-ai: the last re-sign's report (`sbmig kb reindex`)
 
     @property
     def lock_timeout(self) -> float:
@@ -99,6 +112,7 @@ class FileKnowledgeBase:
         a person's ``block`` pin (``pinned``; the triage obeys it), and hint lines (the case's last solution). Empty
         for an unknown case. Never raises."""
         out = KBMatch()
+        self._first_match_check()
         try:
             if not self.cases.cases_dir.is_dir():
                 return out
@@ -110,6 +124,10 @@ class FileKnowledgeBase:
                     continue
                 errs = [e for e in cluster.errors if case_id_of(e) == cid] or \
                     (list(cluster.errors) if cid == cluster.case_id else [])
+                # 정확한 키: 저장된 케이스의 L2 가 이 오류들의 L2 가 아니면 그 케이스가 아니다(10자 해시가 겹친 다른 서명)
+                asked = next((e.signature_generic for e in errs if e.signature_generic), "")
+                if asked and not self.cases.same_case(cid, asked, case):
+                    continue
                 # 사람이 case.json 에 "block: <이유>" 로 고정한 케이스:
                 # 스크립트를 찾지 않고 그대로 차단 결정을 넘긴다
                 pin = self.cases.pin_of(cid)
@@ -145,10 +163,56 @@ class FileKnowledgeBase:
 
         The run's finished error list into the KB (:meth:`CaseStore.record_run`). Never raises (0 + a warning)."""
         try:
-            return self.cases.record_run(entries)
+            n = self.cases.record_run(entries)
         except Exception as e:  # noqa: BLE001
             log.warning("kb.record_run failed: %s: %s", type(e).__name__, e)
             return 0
+        # v2.1z-ai: 덧붙인 뒤에도 옛 규칙의 줄이 있으면(옛 이미지의 파드가 쓴 줄 포함) 지금 재서명한다 — 실패해도 n 은 그대로
+        try:
+            if getattr(self.cases, "older_lines", 0):
+                log.info("kb: %d line(s) of %s signed by older rules — re-signing", self.cases.older_lines, KB_ERRORS)
+                self._resign(dry_run=False, recount=True, retry=False)
+        except Exception as e:  # noqa: BLE001 - the run's record stands
+            log.warning("kb re-sign after record_run failed: %s: %s", type(e).__name__, e)
+        return n
+
+    def resign(self, dry_run: bool = False) -> ResignReport:
+        """재서명(:meth:`CaseStore.resign`): 옛 규칙으로 서명된 기록과 스크립트를 지금 규칙의 케이스 ID 로 옮긴다.
+        ``dry_run`` 이면 무엇이 옮겨 갈지만 보고하고 아무것도 쓰지 않는다. 절대 예외를 내지 않는다 — 실패는 WARNING
+        한 줄과 ``error`` 가 든 빈 보고. 보고는 ``last_resign`` 에도 남는다.
+
+        Re-sign (:meth:`CaseStore.resign`); ``dry_run`` reports what would move and writes nothing. Never raises: a
+        failure is one WARNING and an empty report with ``error``. The report is kept in ``last_resign``. An explicit
+        call retries the cases the last re-sign skipped; the automatic triggers do not."""
+        return self._resign(dry_run=dry_run, recount=True, retry=True)
+
+    def _resign(self, dry_run: bool, recount: bool, retry: bool) -> ResignReport:
+        try:
+            rep = self.cases.resign(dry_run=dry_run, recount=recount, retry_skipped=retry)
+        except Exception as e:  # noqa: BLE001 - a re-sign never fails a run
+            log.warning("kb re-sign failed: %s: %s — the KB stays as it is", type(e).__name__, e)
+            rep = ResignReport(version=current_version(), dry_run=dry_run, error=f"{type(e).__name__}: {e}")
+        self.last_resign = rep
+        return rep
+
+    def _first_match_check(self) -> None:
+        """실행(프로세스)에서 이 KB 디렉토리의 첫 ``match``: ``kb.json`` 이 지금 버전이 아니고 기록이 있으면 한 번
+        재서명한다. 두 번째 ``match`` 부터는 파일도 보지 않는다. 예외를 내지 않는다.
+
+        The first ``match`` of a process for this KB directory: re-sign once when ``kb.json`` is missing / older
+        and the KB has records; later calls do not look again. Never raises."""
+        key = os.path.abspath(str(self.root))
+        if key in _FIRST_MATCH_CHECKED:
+            return
+        _FIRST_MATCH_CHECKED.add(key)
+        try:
+            if self.cases.marker_sig() >= current_version() or not self.cases.has_records():
+                return
+            log.info("kb: %s was not re-signed to the current signature rules (v%d) — re-signing once", self.root,
+                     current_version())
+            self._resign(dry_run=False, recount=True, retry=False)
+        except Exception as e:  # noqa: BLE001 - the lookup goes on with the KB as it is
+            log.warning("kb re-sign on first lookup failed: %s: %s", type(e).__name__, e)
 
     def reindex(self) -> int:
         """``sbmig kb reindex``: ``errors.jsonl`` 로부터 모든 케이스를 다시 세고 ``cases.md`` 를 다시 쓴다
@@ -156,14 +220,19 @@ class FileKnowledgeBase:
         hunk 없이 저장된 옛 항목의 as-is / to-be 코드까지 —
         :meth:`CaseStore.recount`). 케이스 수를 돌려주고, 없는 KB 는 만들지 않고 0. 절대 예외를 내지 않는다.
 
+        v2.1z-ai: re-signs first (:meth:`resign`, its report in ``last_resign``).
+
         Recount every case from ``errors.jsonl`` and rewrite ``cases.md`` (v2.1e: also every stored script's run
         history, augment lineage and last failure, and the as-is / to-be hunks of entries stored without them —
         :meth:`CaseStore.recount`). Returns the number of cases (0 for a KB that does not exist yet — nothing is
         created). Never raises."""
         if not self.root.exists():
             return 0
+        # v2.1z-ai: records of older rules to their current ids (the skipped cases retried); a case it still cannot
+        # read is not recounted (no fresh case.json over a damaged one)
+        rep = self._resign(dry_run=False, recount=False, retry=True)
         try:
-            return self.cases.recount()
+            return self.cases.recount(skip=rep.unreadable)
         except Exception as e:  # noqa: BLE001
             log.warning("kb reindex failed: %s: %s", type(e).__name__, e)
             return 0

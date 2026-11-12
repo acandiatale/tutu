@@ -18,7 +18,7 @@ type: `sbmig/core/models.py`, `sbmig/core/interfaces.py`, `sbmig/core/config.py`
 | restructure & layout | Base "Restructure and the company layout"; v2.1g, v2.1h (JSP jakarta), v2.1l / v2.1s (version pins), v2.1m (resource filtering), v2.1n (optional triggers), v2.1o / v2.1p / v2.1t (parent-chain facts, BOM imports), v2.1q (embedded Tomcat), v2.1x (legacy Spring context), v2.1z-j (bundled jars), v2.1z-k, v2.1z-l |
 | structure review | v2 "Structure review (R)"; v2.1u … v2.1y (review prompt, invariant check, unsupported issues); v2.1z-h (review guard) |
 | verify & script fix loop | Base "Fix-loop invariants"; v2 "Script fix loop (L)", "Script contract (S)", "As built (step 1)"; v2.1d (versions, operator checks), v2.1l / v2.1m pre-tries, v2.1r (file locks), v2.1y (declines, idempotency), v2.1z (ladder caps, case keys), v2.1z-e (jakarta discovery), v2.1z-i, v2.1z-n, v2.1z-y, v2.1z-z, v2.1z-aa |
-| cases & KB | v2 intro + "Script KB (K)"; Base "KB plumbing"; v2.1e (learning records), v2.1f (probable fixers), v2.1z (masked case keys), v2.1z-ae / v2.1z-af (several pods on one KB) |
+| cases & KB | v2 intro + "Script KB (K)"; Base "KB plumbing"; v2.1e (learning records), v2.1f (probable fixers), v2.1z (masked case keys), v2.1z-ae / v2.1z-af (several pods on one KB), v2.1z-ai (rule versions, member-symbol keys, re-sign, exact-key guard) |
 | LLM gateway | Base "LLM client tier and adapter seams"; v2.1z-m (agent gateway, token exchange), v2.1z-n, v2.1z-o, v2.1z-p (case thread), v2.1z-q, v2.1z-x, v2.1z-af (busy wait, auth retries) |
 | report & result line | Base "Report and the result line", "Advisories and the Handover"; v2 "As built (step 1)" (`review=`); v2.1d (`major=`); remediations (`remediation=`) |
 | fleet | Base "Fleet" |
@@ -3634,6 +3634,101 @@ sbmig can change that.
 - **Remediation** (`sbmig/remediations/maven.py`): a blocked baseline / candidate build gets the same Handover sentence as the
   first line of `BuildOutcome.summary` (and so of the remediation message); a blocked `dependency:tree` adds it to
   `ResolvedModel.notes` and skips the package-assisted second attempt; no `-U` retry.
+
+## v2.1z-ai — case identity: signature rule versions, member symbols keyed by their owner, re-signing, the exact-key guard
+
+A case is one L2 (`signature_generic`); its id is `sha1(L2)[:10]` (the folder name `cases/<case_id>/`). The id is a hash
+of the whole L2, so matching is exact on the L2 text; the ten characters only name the folder.
+
+- **Rule version** (`sbmig/build/signatures.py`): `SIGNATURE_VERSION` (int, now 2) names the rules `signature_for`
+  applies; `SIGNATURE_CHANGES: {version: frozenset(error classes)}` lists, per version, the error classes (2nd L2 segment)
+  whose L2 that version changed; `classes_changed_since(version)` = the classes that may differ between `version` and now
+  (0 and 1 are the same rules). A rule change that alters a produced L2 raises the version and lists its classes.
+- **Rules 2 — a member symbol is keyed by the library type that owns it.** Rules 1 keyed `cannot_find_symbol` by the simple
+  name alone, so `keySet()` on `HttpHeaders` and `keySet()` on any other type were one case.
+  - `cannot_find_symbol`: when the symbol is a member (`method …`, `variable …`, `constructor …`, `static …`) AND the
+    `location` names a library-owned type — `variable <x> of type <T>` or `class | interface | enum | record | @interface <T>`
+    with `<T>` under `EXTERNAL_PACKAGE_PREFIXES` / the registered prefixes — the L2 is
+    `<kind>|cannot_find_symbol|<T>.<name>` (`<T>` = the qualified type without type arguments and array brackets, `<name>` as
+    before). Otherwise the L2 is unchanged: `<kind>|cannot_find_symbol|<name>` (class-like symbols whatever their location —
+    an import line and the usages of one missing class stay one case; members whose location is project-owned or absent).
+  - `no_suitable_method`: the first candidate line of `raw` (`method <T>.<name>(…) is not applicable`,
+    `method <T>.<…>name(…)`, `constructor <T>.<Simple>(…) is not applicable`) whose `<T>` is library-owned and whose
+    member name is the one javac printed after `found for` gives the L2 `<kind>|no_suitable_method|<T>.<name>`
+    (a project-owned candidate listed first is skipped); no such line → unchanged (`…|<name>`).
+  - L1 is unchanged. Every other class is unchanged, so every id not in those two classes is the same under rules 1 and 2.
+- **Stored facts.** `ErrorEntry` += `sig` (the rule version of its `l2`; 0 = stored before versions), `l1`, `symbol`,
+  `location`, `artifact` (`g:a[:v]`), `goal` — filled from the `BuildError` when the entry is made, masked like `message` —
+  and `was` (earlier case ids, oldest first). `CaseInfo` += `sig`, `aliases` (earlier case ids whose content moved here).
+  A later rule version recomputes from these facts; entries without them are read from `raw` (`symbol:` / `location:` /
+  candidate lines).
+- **Re-sign** (`sbmig/errors/resign.py`; `CaseStore.resign(dry_run=False) -> ResignReport`): inside the KB lock, the
+  records of `errors.jsonl` whose `sig` is older than `SIGNATURE_VERSION` AND whose class is in
+  `classes_changed_since(sig)` are recomputed (a `BuildError` rebuilt from the stored facts, else from `raw`;
+  `signature_for` + `refine_signature`; a recomputation that yields another class or no key, or lacks the facts the rule
+  reads, keeps the stored L2) and stamped with the current version. Records of unchanged classes are not touched: their
+  `sig` stays, which `classes_changed_since` reads as current. An entry whose L2 changed gets the new `case_id` / `l2`,
+  its old id appended to `was`, the `cases/<old>/` prefix of its `script` rewritten; its `id` never changes (the
+  import / record de-duplication key). Case folders follow the entries:
+  - every entry of case O now belongs to one case N → the case moves: folder renamed (or merged into an existing N —
+    scripts de-duplicated by content, a clashing number takes the next free one and the entries' `tries[].script_version`
+    follow, runs merged), `case.json` gets the new `case_id` / `l2` / `sig`, `aliases` += O and O's aliases, human keys
+    (`pin`) travel;
+  - the entries of O split over several cases → each stored script version goes to every case one of whose entries has a
+    try that ran it (`FixTry.script_version`), a version no moved entry ran stays with O (or, when O keeps no entry, with
+    the case holding most of O's entries); counts and status of a version that was copied are recomputed from its rebuilt
+    runs (an estimate: runs are capped at `errors.script_runs`); a `pin` is copied to every part;
+  - a case without entries in `errors.jsonl` keeps its id. Nothing is merged by an `aliases` entry alone: an old id can be
+    a valid key of the current rules again (`…|cannot_find_symbol|keySet` on a project-owned type) and a running pod may
+    have just created that case.
+  A case that cannot be read, or whose target id is held by another signature, is skipped: its entries keep their id and
+  `sig`, it is not recounted, and `kb.json` names it under `skipped` (`{"<case id>": "<reason>"}`). The automatic
+  triggers leave skipped cases alone; `sbmig kb reindex` tries them again; `sbmig kb validate` lists them.
+  The library prefixes the owner check reads (`build.external_package_prefixes` + the in-house group ids) are registered
+  from the store's config before anything is recomputed, as a build does: a re-sign from the CLI and a run give the same
+  L2. A KB is therefore shared only between runs of one artifacts configuration.
+  Order of writes: `<kb>/kb.json` with `"sig": 0` and `"resigning": [<affected ids>]` (a kill at any later step sends
+  the next run through the whole procedure again), then new folders and scripts, then the `case.json` files, then
+  `<kb>/resign-pending.json` (the folders to clean up), then `errors.jsonl` (one atomic rewrite by streaming copy:
+  untouched lines byte for byte, an unparsable line kept in place; the torn prefix in front of a recovered record that is
+  rewritten goes to `errors.jsonl.corrupt`) and the per-entry JSON files of the moved entries, then the emptied old folders
+  (a script file is removed only when a byte-identical copy is in a target; `case.json` last; a folder holding files the
+  KB does not know is kept with a WARNING), then `<kb>/kb.json` (`{"sig": <version>, "resigned_at": <iso>, "skipped":
+  {…}}`, always written when the lock was held), then the recount of the affected cases and `cases.md`. Interrupted, it
+  leaves duplicates at worst and the next run finishes the clean-up from `resign-pending.json` (copies are recognised by
+  content, also files no `case.json` lists yet); `resign()` run twice changes no byte the second time. `dry_run` writes
+  nothing and takes no lock. Only the lines of the affected cases are parsed (one regex pass finds them), so memory
+  follows the affected cases, not the file (measured on a 103 MB / 32,000-line file: three older lines among current
+  ones 0.9 s and 49 MB peak; everything old, 3,000 moves, 12 s and 190 MB). `ResignReport`: `version`,
+  `entries_stamped` (recomputed records, moved or not), `entries_resigned` (L2 changed), `moves: [(old id, new id,
+  l2)]`, `splits: [(old id, [ids])]`, `merged`, `cases_stamped` (`case.json` files rewritten), `unreadable`, `error`,
+  `summary()`, `lines(limit=50)`; one INFO line `kb re-sign: case <old> → <new> (<l2>)` per moved case. Known limit: an
+  export taken before a move and imported into the KB that already made it brings the old case folder back under its old
+  id, without entries (a duplicate script, nothing lost).
+- **When it runs.** `sbmig kb reindex` re-signs, then recounts everything (`--dry-run` prints what would move and writes
+  nothing). Automatically, never failing a run: on the first `FileKnowledgeBase.match` of a process when `<kb>/kb.json` is
+  missing or older while the KB has records (one small file read when it is current; once per KB path and process), and
+  inside `record_run` when the file still holds a record signed by older rules whose class changed since and whose case is
+  not in `skipped` (a pod of an older image wrote after the re-sign). `record_run` writes `kb.json` when it creates
+  `errors.jsonl`, so a new KB never re-signs. `sbmig kb import` re-signs inside the merge, under the same lock, before its
+  recount. A failure, or a lock not taken within `kb.lock_timeout_seconds`, is one WARNING; the run goes on with the KB as
+  it is.
+- **Exact-key guard.** A stored case whose `l2` is not the L2 asked for (two L2s with the same ten characters, or a
+  hand-edited `case.json`) is not that case: `CaseStore.same_case(case_id, l2)` records the id as foreign for the
+  process (`FileKnowledgeBase.match` asks it with every error's L2 before the ladder looks anything up); `best` /
+  `latest` / `match` return nothing for a foreign id, `credit` and `record_run` write nothing into it (the entry still
+  goes to `errors.jsonl`), `add_script` raises `CaseKeyMismatch` (an `OSError`: the loop's store adapter logs it and
+  stores nothing), `kb import` does not merge into it. One WARNING per id and process: `case id <id> is held by another
+  signature: stored "…" asked "…"`. `sbmig kb validate` lists a case whose `case.json` L2 differs from the L2 of entries
+  stored under its id, and one line `N record(s) in M case(s) signed by older rules (version < V): run sbmig kb reindex`
+  (the records a re-sign would move).
+- **Stored fact sizes.** `symbol` / `location` / `l1` / `artifact` / `goal` are cleaned like `message` and cut at
+  `FACT_CHARS` (2,000); a fact that was cut is not used for a recomputation (`raw` is read instead). Known limit: a
+  `no_suitable_method` whose library candidate line lies beyond the stored `raw` (`errors.raw_chars`) keeps the bare key
+  when it is recomputed.
+- **Lookups by an old id.** `sbmig kb cases show | pin | unpin <id>` resolve an id found in a case's `aliases` to that
+  case (a real folder with that id wins); `retire` / `activate` refuse an alias, because a merge may have renumbered the
+  versions, and name the current id.
 
 ## remediations (취약점 조치) — `/api/remediations`, IVAS, version-text fixes + approved managed overrides (2026-11-11)
 

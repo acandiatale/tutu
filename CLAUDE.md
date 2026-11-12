@@ -216,10 +216,19 @@ Then the final build again, the report (Handover first, "Structure review", fix 
   company runs show what a case needs. A case the LLM declines (legacy-ibatis) blocks after `script.max_declines_per_case`
   (1 call). `loop.blocked_policy` gives javax libraries / missing artifacts / plugins 2 script attempts (a stored
   script is reused regardless). The v2.1i switches (`fix.mode: edits`, `--no-kb`) were removed in v2.1z.
-- KB matching (review 2026-11-02, not built): case id = hash of the L2, so a `signatures.py` / `triage/cluster.py` rule
-  change orphans stored cases (`kb reindex` never re-derives the L2; proposed `kb reindex --resign` from the stored `raw`
-  + old-id alias); `compile|cannot_find_symbol|<simple name>` merges problems sharing a method name — fix only after
-  `--resign`. Reactor artifactIds are masked as `<module>` in L1 / L2 since v2.1z.
+- KB case identity (v2.1z-ai, 2026-11-12, the user: "정확도를 올려놔야 나중에 머리 안 아플 것" — the KB goes into a DB later):
+  the case id stays `sha1(L2)[:10]` (a hash of the WHOLE L2, so a longer id would not match better). `SIGNATURE_VERSION` (2)
+  names the signature rules; a rule change that alters a produced L2 raises it and lists its error classes in
+  `SIGNATURE_CHANGES`; replay fixtures keyed `case: <id>` and `expected.json` ids move with it. Rules 2: a missing MEMBER
+  (method / field / constructor) of a library-owned type carries the type (`…|cannot_find_symbol|org.springframework.http.
+  HttpHeaders.keySet`, `…|no_suitable_method|<T>.<name>` from the candidate line); class symbols keep the bare name (import
+  line + usages = one case). Every entry stores its signature facts (`sig`, `l1`, `symbol`, `location`, `artifact`, `goal`).
+  The KB re-signs records of older rules (`sbmig/errors/resign.py`, `CaseStore.resign`: only the changed classes are
+  recomputed; cases and scripts move, old ids stay in `aliases` / `was`; `<kb>/kb.json`) — by `sbmig kb reindex
+  [--dry-run]`, on a process's first `kb.match` when `kb.json` is older, and inside `record_run` when an older-image pod
+  wrote later. Exact-key guard: a stored case whose L2 is not the L2 asked for is never reused or written. Still merged by
+  name / phrase only (to decide from real company cases): members of project-owned types (`…|cannot_find_symbol|save`),
+  syntax errors (`';' expected`), `unreported exception <type>`. Reactor artifactIds are masked as `<module>` in L1 / L2.
 - `script.python` must have pydantic and lxml installed (else the run reports `ModuleNotFoundError`); Windows paths
   over 260 characters are not handled specially.
 - Items to validate in the company environment: `docs/RUNBOOK.md` §0; the first v2 runs should be compared with
@@ -237,8 +246,10 @@ Then the final build again, the report (Handover first, "Structure review", fix 
   commits happen in the main session. Per round: append a "Status" table to `docs/PLAN.md`, update
   `docs/INTERFACES.md` on contract changes, add a fixture + `expected.json` (+ `replay/`) for every new scenario.
 - Setup: `uv venv && source .venv/bin/activate && uv pip install -e ".[dev]"` (plain `pip install -e ".[dev]"` works too).
-- Fast check (Python only, ~10 min): `python -m pytest -m "not integration"` → ≈ 3,400 passed, ≈ 50 deselected (2026-11-10)
-  (`-q` on top of the `-q` in pyproject hides the summary line).
+- Fast check (Python only, ~12 min): `python -m pytest -m "not integration"` → ≈ 4,700 passed, ≈ 58 deselected (2026-11-12)
+  (`-q` on top of the `-q` in pyproject hides the summary line). Until 2026-11-12 `tests/build` (381 tests) was silently
+  left out of every root-level run — pytest skips a directory named `build` by default; `norecursedirs` in pyproject now
+  keeps it in. When a total does not grow by the number of tests added, compare per-file counts (`--collect-only -q`).
   `ruff check sbmig tests` has pre-existing style findings (mostly `UP045`); lint is not a gate here, so fix only what
   you touch and never run a repo-wide `ruff --fix` inside a feature round.
 - **Korean handover comments (2026-10-28, the business team's request)**: every module under `sbmig/` starts its
@@ -441,7 +452,10 @@ Then the final build again, the report (Handover first, "Structure review", fix 
   With it the IVAS side worked end to end: login, upload of the migrated tree's source ZIP, status polling, summary, both
   vulnerability pages, plan (1 proposal, 56 residuals), candidate build. It ended `FAILED resolution_mismatch`: one version text
   (log4j-api in one module's pom) had been planned as if it governed every module resolving that version, and three modules kept
-  the old one. **Proposal scope** since then: `InventoryItem.also_modules`, `Proposal.modules` / `also_modules` (outside
+  the old one. The next run passed the candidate build, the resolution check and the round commit and failed in
+  `freeze_delivery` with `OSError: [Errno 9] Bad file descriptor`: the finished ZIP was re-opened read-only for `os.fsync`,
+  which Windows refuses (fixed `115d537`: `"r+b"`; `tests/remediations/test_intake.py` has a fixture applying Windows' fsync
+  rule — use it for any new write path). **Proposal scope** since then: `InventoryItem.also_modules`, `Proposal.modules` / `also_modules` (outside
   `proposal_hash`); `verify_resolution` requires from → to in the governed modules and their artifacts only, an also-module left
   behind is an `info:` memo and the next round's business (round commits, delivery exists, INCOMPLETE instead of FAILED); the
   `chained remediation <id>: <status> <reason> — <message>` line of `sbmig.log` carries the reason sentence. **Open, the user's

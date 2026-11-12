@@ -137,7 +137,7 @@ footer { color: var(--muted); font-size: 13px; border-top: 1px solid var(--line)
     <div class="layer">
       <h3><span class="chip c-fact">원본 기록</span></h3>
       <ul><li><code>errors.jsonl</code></li></ul>
-      <p>모든 실행의 오류 한 건 = 한 줄. 실행이 끝날 때 그 실행의 오류 목록을 덧붙이고(이미 있는 id 는 건너뜀) 이미 쓴 줄은 고치지 않습니다. 나머지는 모두 이 파일에서 다시 만들 수 있습니다.</p>
+      <p>모든 실행의 오류 한 건 = 한 줄. 실행이 끝날 때 그 실행의 오류 목록을 덧붙이고(이미 있는 id 는 건너뜀) 이미 쓴 줄은 재색인(<code>sbmig kb reindex</code>)과 재서명 때만 고치고 오류 id 는 바꾸지 않습니다. 나머지는 모두 이 파일에서 다시 만들 수 있습니다.</p>
     </div>
     <div class="layer">
       <h3><span class="chip c-know">재사용 지식</span></h3>
@@ -151,8 +151,8 @@ footer { color: var(--muted); font-size: 13px; border-top: 1px solid var(--line)
     </div>
     <div class="layer">
       <h3><span class="chip c-ops">운영 파일</span></h3>
-      <ul><li><code>.lock</code></li><li>잠깐 생기는 <code>.lock.breaker</code>, <code>.lock.probe.*</code>, <code>.fix.*.tmp</code></li></ul>
-      <p>웹 파드·빌드 파드·플릿·<code>sbmig kb</code> 가 동시에 쓰지 않게 하는 잠금입니다.</p>
+      <ul><li><code>.lock</code></li><li>잠깐 생기는 <code>.lock.breaker</code>, <code>.lock.probe.*</code>, <code>.fix.*.tmp</code></li><li><code>kb.json</code></li><li>잠깐 생기는 <code>resign-pending.json</code></li></ul>
+      <p>웹 파드·빌드 파드·플릿·<code>sbmig kb</code> 가 동시에 쓰지 않게 하는 잠금입니다. <code>kb.json</code> 은 이 KB 가 어느 시그니처 규칙 버전까지 재서명됐는지 적은 표식입니다.</p>
     </div>
   </div>
   <div class="frame">
@@ -165,6 +165,7 @@ footer { color: var(--muted); font-size: 13px; border-top: 1px solid var(--line)
 │   └── <span class="t-derived">errors/&lt;run_id&gt;-&lt;id&gt;.json</span>       <span class="t-c">오류 1건 = 파일 1개 (errors.jsonl 과 같은 내용, 들여쓰기)</span>
 ├── <span class="t-derived">cases/_other/errors/…</span>               <span class="t-c">케이스 없는 항목 (pom-verify, 메모)</span>
 ├── libraries.yml, jar_names.yml        <span class="t-c">사람이 채우는 표 (있을 때만)</span>
+├── <span class="t-ops">kb.json</span>                             <span class="t-c">재서명 표식 {"sig": 규칙 버전}</span>
 └── <span class="t-ops">.lock</span>                               <span class="t-c">쓰기 잠금</span>
 
 kb-v2.bak-&lt;시각&gt;/                       <span class="t-c">kb import --replace 전에 남기는 이전 KB (kb-v2 옆)</span>
@@ -321,7 +322,9 @@ flowchart LR
   <ul>
     <li>리액터 모듈의 artifactId 는 <code>&lt;module&gt;</code> 로 가립니다. 그래서 프로젝트가 달라도 같은 원인은 같은 케이스입니다.</li>
     <li>L2 가 없는 오류는 <code>sha1(종류|파일|L1)</code> 앞 10자를 씁니다.</li>
-    <li>시그니처 규칙(<code>sbmig/build/signatures.py</code>)이 바뀌면 옛 규칙으로 저장된 케이스와는 매칭이 끊깁니다(알려진 과제, <code>agent-doc/10-open-items-and-history.md</code>).</li>
+    <li>라이브러리 타입의 메서드·필드를 못 찾는 오류는 그 타입까지 키에 넣습니다(<code>compile|cannot_find_symbol|org.springframework.http.HttpHeaders.keySet</code>). 이름만 쓰면 <code>keySet</code>, <code>save</code> 같은 흔한 이름의 서로 다른 문제가 한 케이스가 됩니다. 클래스를 못 찾는 오류는 단순 이름 그대로입니다.</li>
+    <li>시그니처 규칙에는 버전이 있습니다(<code>SIGNATURE_VERSION</code>). 오류 기록과 케이스는 자기를 서명한 버전을 <code>sig</code> 로 갖습니다. 규칙이 바뀌면 KB 가 옛 기록을 지금 규칙으로 <strong>재서명</strong>해서 케이스와 스크립트를 새 case_id 로 옮기고, 옛 case_id 는 <code>aliases</code>(케이스) · <code>was</code>(오류 기록)에 남깁니다. <code>sbmig kb reindex</code> 를 칠 때와 실행이 KB 를 처음 볼 때 스스로 합니다.</li>
+    <li>case_id 는 L2 전체의 해시입니다. 저장된 케이스의 L2 가 지금 묻는 L2 와 글자까지 같을 때만 그 케이스를 씁니다(10자가 우연히 겹쳐도 섞이지 않음).</li>
   </ul>
 </section>
 
@@ -379,6 +382,9 @@ stateDiagram-v2
         <tr><td><code>script</code></td><td>해결한 스크립트 파일 <code>cases/&lt;case_id&gt;/fix_v&lt;N&gt;.py</code></td></tr>
         <tr><td><code>note</code></td><td>pom-verify: 구조 정리가 한 일 / note 항목: 그 글</td></tr>
         <tr><td><code>at</code></td><td>기록 시각 (UTC)</td></tr>
+        <tr><td><code>sig</code></td><td>이 기록의 L2 를 만든 시그니처 규칙 버전 (0 = 버전이 생기기 전)</td></tr>
+        <tr><td><code>l1</code>, <code>symbol</code>, <code>location</code>, <code>artifact</code>, <code>goal</code></td><td>시그니처의 재료: 구체 시그니처, javac 의 symbol / location 줄, 좌표 <code>g:a[:v]</code>, 플러그인 목표. 규칙이 바뀌면 이것으로 L2 를 다시 계산합니다</td></tr>
+        <tr><td><code>was[]</code></td><td>재서명 전의 case_id 들 (오래된 것 먼저)</td></tr>
       </tbody>
     </table></div></div>
   </details>
@@ -414,6 +420,8 @@ stateDiagram-v2
         <tr><td><code>scripts[]</code></td><td>저장된 스크립트 버전 (아래 표)</td></tr>
         <tr><td><code>last_analysis</code>, <code>last_solution</code></td><td>마지막 LLM 원인 / 해결</td></tr>
         <tr><td><code>updated_at</code></td><td>마지막 갱신</td></tr>
+        <tr><td><code>sig</code></td><td>이 케이스의 L2 를 만든 시그니처 규칙 버전</td></tr>
+        <tr><td><code>aliases[]</code></td><td>재서명으로 이 케이스에 옮겨 온 옛 case_id 들 — <code>sbmig kb cases show &lt;옛 id&gt;</code> 가 이 케이스를 엽니다</td></tr>
         <tr><td><code>pin</code></td><td>(모델 밖 키) 사람이 고정한 차단 <code>block[:이유]</code> — 이 케이스는 시도하지 않음</td></tr>
         <tr><td><code>last_result</code></td><td>(모델 밖 키) 마지막 결과</td></tr>
       </tbody>

@@ -578,3 +578,27 @@ sentence. And the report must be Korean and easy to scan (the first real report 
 | Docs | INTERFACES "remediations", agent-doc 12 (new) + 11, PROGRESS | `docs/`, `agent-doc/` | done |
 | Open | transitive findings under a dependency the project itself declares, in modules that do not inherit the project root, stay `manual_review` — where an override entry would go is the company's decision | — | open |
 | Not measured | how the real project's 56 residuals split between in-house and manual review (next company run) | — | open |
+
+## Status — 2026-11-12, KB case identity: rule versions, member-symbol keys, re-sign, the exact-key guard (v2.1z-ai)
+
+The user asked whether a longer case id (50 characters instead of 10) would match better, because the KB goes into a database
+later. It would not: the id hashes the whole L2. What decides accuracy is the signature rule and whether stored cases survive
+a rule change, so those were built (contract: `docs/INTERFACES.md` "v2.1z-ai").
+
+| Item | Deliverable | Where | Status |
+|---|---|---|---|
+| Rule version | `SIGNATURE_VERSION` (2), `SIGNATURE_CHANGES`, `classes_changed_since` | `sbmig/build/signatures.py` | done |
+| Rules 2 | a missing member (method / field / constructor) of a library-owned type carries the type in the L2 (`cannot_find_symbol`, `no_suitable_method`); class symbols and project-owned receivers keep their key, so no other id moves | `sbmig/build/signatures.py` | done |
+| Stored facts | `ErrorEntry.sig` / `l1` / `symbol` / `location` / `artifact` / `goal` / `was`; `CaseInfo.sig` / `aliases` | `sbmig/core/models.py`, `sbmig/errors/entries.py` | done |
+| Re-sign | records of the changed classes recomputed, cases and scripts moved (whole move, merge, split), old ids kept as aliases; streaming, crash-convergent (`resign-pending.json`, `kb.json`); automatic on the first lookup and after `record_run`, explicit by `sbmig kb reindex [--dry-run]`, inside `kb import` | `sbmig/errors/resign.py`, `sbmig/errors/cases.py`, `sbmig/kb/store.py`, `sbmig/kb/cli.py` | done |
+| Exact-key guard | a stored case whose L2 is not the L2 asked for is neither reused nor written (`same_case`, `CaseKeyMismatch`); `kb validate` findings | `sbmig/errors/cases.py`, `sbmig/kb/store.py` | done |
+| Independent review | a read-only review reproduced seven defects in the first build of the re-sign (an alias-only merge that moved a live case's script into another case; triggers that never converged for skipped cases and glued lines; a CLI re-sign blind to the in-house prefixes; cut facts; `retire` through an alias hitting a renumbered script; 1 GB peak memory on a 100 MB file) — all fixed, each with a regression test that failed first | `tests/errors/test_resign_review.py` | done |
+| Fixtures | replay files re-keyed for the five cases that move: `spring5-security-batch` (4), `boot2-rewrite-excluded` (1) | `fixtures/projects/*/replay/` | done |
+| Test collection | `tests/build` (381 tests) had never been part of a run started at the repository root: pytest skips a directory named `build` by default. `norecursedirs` now leaves it in | `pyproject.toml` | done |
+| Rehearsal | copies of two stored KBs written by rules 1: five cases moved, every script file byte-identical, untouched lines byte-identical, `kb validate` clean; an older-rules KB re-signs on its first lookup and the HttpHeaders case is found under the new id | scratch | done |
+| Docs | INTERFACES "v2.1z-ai", ARCHITECTURE §5, agent-doc 04 / 10, kb-map (md, html, index.html), PROGRESS | `docs/`, `agent-doc/` | done |
+| Still merged by name or phrase | members of project-owned types (`…|cannot_find_symbol|save`), syntax errors (`';' expected`), `unreported exception <type>` — to decide from real company cases | — | open |
+| Not measured | the re-sign on the company KB and on NFS with three pods; a mixed old / new image roll-out | — | open |
+
+Also this day: the chained remediation ran to its report on the company PC against the real IVAS after one more Windows fix —
+`freeze_delivery` re-opened the finished ZIP read-only for `os.fsync`, which Windows refuses with EBADF (`115d537`).

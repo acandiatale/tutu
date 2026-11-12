@@ -64,11 +64,14 @@ def test_location_masking_and_variable_types():
            location="variable http of type org.springframework.security.config.annotation.web.builders.HttpSecurity")
     l1, l2 = signature_for(e)
     assert l1.endswith("|variable of type org.springframework.security.config.annotation.web.builders.HttpSecurity")
-    assert l2 == "compile|cannot_find_symbol|antMatchers"
+    # rules 2: a member of a library-owned type carries that type (v2.1z-ai)
+    assert l2 == ("compile|cannot_find_symbol|"
+                  "org.springframework.security.config.annotation.web.builders.HttpSecurity.antMatchers")
     own = _e(symbol="variable foo", location="variable x of type com.mycorp.Thing")
     assert signature_for(own)[0] == "compile|cannot_find_symbol|variable foo|variable of type *"
+    assert signature_for(own)[1] == "compile|cannot_find_symbol|foo"
     assert signature_for(_e(symbol="static method of(int)", location="interface java.util.List"))[1] == \
-        "compile|cannot_find_symbol|of"
+        "compile|cannot_find_symbol|java.util.List.of"
 
 
 def test_signature_is_independent_of_position_file_and_module():

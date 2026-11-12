@@ -76,6 +76,7 @@ ERRORS_FILE = "errors.jsonl"
 ERRORS_MD = "errors.md"
 MESSAGE_CHARS = 300
 NOTE_CHARS = 2000
+FACT_CHARS = 2000                     # v2.1z-ai signature facts of an entry (symbol / location / l1 / artifact / goal)
 TEXT_CHARS = 4000                     # analysis / solution / no_script_reason of a try
 MD_DIFF_CHARS = 2000                  # a try's diff in errors.md (the jsonl keeps errors.diff_chars)
 NOTES_MAX = 100                       # 수정 notes kept per try (v2.1b; a script that touched more files: the diff says)
@@ -403,17 +404,43 @@ class ErrorList:
         while eid in self._by_id:                         # (only on a sha1 prefix clash)
             n += 1
             eid = entry_id(self.run_id, case_id, file, line, f"{message}#{n}")
+        # L2 가 있으면 지금 규칙 버전으로 도장(sig): KB 재서명이 옛 규칙의 기록만 골라 다시 계산하게. 메모 항목의 고정
+        # L2(review|structure)도 지금 것이다 — 도장이 없으면 record_run 이 매번 '옛 규칙 줄' 로 보고 재서명을 부른다
         e = ErrorEntry(id=eid, run_id=self.run_id, project=self.project, case_id=case_id, l2=l2, kind=kind,
                        file=file or None, line=line or None, module=module or None, message=message, raw=raw,
-                       seen=seen, status=status, note=note)
+                       seen=seen, status=status, note=note, sig=_current_sig() if l2 else 0)
         self.entries.append(e)
         self._by_id[eid] = e
         return e
 
     def _from_error(self, e: BuildError, seen: str) -> ErrorEntry:
-        return self._new(case_id=case_id_of(e), l2=e.signature_generic or "", kind=e.kind, file=posix(e.file) or None,
-                         line=e.line, module=e.module, message=self._message(e),
-                         raw=self.clean(e.raw or e.message, self.raw_chars), seen=seen, status="open")
+        entry = self._new(case_id=case_id_of(e), l2=e.signature_generic or "", kind=e.kind,
+                          file=posix(e.file) or None, line=e.line, module=e.module, message=self._message(e),
+                          raw=self.clean(e.raw or e.message, self.raw_chars), seen=seen, status="open")
+        self._facts(entry, e)
+        return entry
+
+    def _facts(self, entry: ErrorEntry, e: BuildError) -> None:
+        """v2.1z-ai: 서명 사실을 항목에 적는다 — L1, javac ``symbol`` / ``location``, 좌표(``g:a[:v]``), 플러그인 목표.
+        규칙이 바뀌면 KB 재서명이 이것으로 L2 를 다시 계산한다(600자 raw 보다 믿을 만함). ``message`` 처럼 정리기를
+        거친다. L2 가 있으면 ``sig`` = 지금 규칙 버전.
+
+        v2.1z-ai: the signature facts of the error (L1, javac ``symbol`` / ``location``, ``g:a[:v]``, the plugin goal),
+        cleaned like ``message``; ``sig`` = the current rule version when the entry has an L2."""
+        c = self.clean
+        art = getattr(e, "artifact", None)
+        coords = ""
+        if art is not None:
+            try:
+                coords = art.coordinates
+            except Exception:  # noqa: BLE001 - an odd GAV: no coordinates
+                coords = ""
+        entry.l1 = c(e.signature or "", FACT_CHARS)
+        entry.symbol = c(e.symbol or "", FACT_CHARS)
+        entry.location = c(e.location or "", FACT_CHARS)
+        entry.artifact = c(coords, FACT_CHARS)
+        entry.goal = c(e.goal or "", FACT_CHARS)
+        entry.sig = _current_sig() if entry.l2 else 0
 
     def _match(self, errors: list[BuildError]) -> tuple[list[tuple[ErrorEntry, BuildError]], list[BuildError]]:
         """빌드 오류를 기존 항목에 맞춘다: (1) 케이스·파일·줄·메시지가 같음 → (2) 같은 파일·메시지의 가장
@@ -444,6 +471,7 @@ class ErrorList:
                 hit = min(opts, key=lambda c: abs((c.line or 0) - line))
                 used.add(hit.id)
                 hit.line = line or None
+                self._facts(hit, x)                       # the newest sighting's facts (same case, same L2)
                 pairs.append((hit, x))
             else:
                 rest2.append((cid, f, line, msg, x))
@@ -455,6 +483,7 @@ class ErrorList:
                 hit = min(opts, key=lambda c: abs((c.line or 0) - line))
                 used.add(hit.id)
                 hit.file, hit.line, hit.module = f or None, line or None, x.module or hit.module
+                self._facts(hit, x)
                 pairs.append((hit, x))
             else:
                 unmatched.append(x)
@@ -909,6 +938,15 @@ def _hunk_items(raw: Any) -> list[EditHunk]:
         if got.before or got.after:
             out.append(got)
     return out
+
+
+def _current_sig() -> int:
+    """지금 서명 규칙 버전(``sbmig.build.signatures.SIGNATURE_VERSION``, 부를 때마다 읽음).
+
+    The current signature rule version, read at call time."""
+    from sbmig.build import signatures
+
+    return int(getattr(signatures, "SIGNATURE_VERSION", 1) or 1)
 
 
 def _cap(text: str, limit: int) -> str:

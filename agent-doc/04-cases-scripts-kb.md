@@ -18,7 +18,7 @@
 | 오류 종류 | L2 (케이스 키) | L1 |
 |---|---|---|
 | 컴파일 `package X does not exist` | `compile|package_does_not_exist|<패키지 전체>` | 같음 |
-| 컴파일 `cannot find symbol` | `compile|cannot_find_symbol|<단순 이름>` | 심볼 + 위치 |
+| 컴파일 `cannot find symbol` | `compile|cannot_find_symbol|<단순 이름>`; 라이브러리 타입의 멤버(메서드·필드)면 `…|<타입 전체 이름>.<이름>` | 심볼 + 위치 |
 | 그 밖의 javac 분류(`_JAVAC_CLASSES`) | `compile|<분류>|<핵심어>` (`_javac_key`: @Override 는 메서드 이름, `illegal_start` 는 javac 문구 …) | 정규화 메시지 + 심볼 + 위치 |
 | 애노테이션 프로세서 붕괴 | `compile|annotation_processor|lombok` 등 | |
 | 파일·줄·심볼 없는 빌드 단위 메시지 | `compile|build|<앞 6단어>` → 묶기 전에 `refine_signature` 가 원문의 첫 의미 있는 줄로 세분 | |
@@ -34,6 +34,13 @@
 - **포괄 L2 세분**(`refine_signature`): 둘째 칸이 `build` / `other` 이거나 셋째 칸이 빈 컴파일 L2 는 `<kind>|<분류>|<원문 첫 줄 정규화>` 로 바뀐다
   (아니면 무관한 실패가 한 케이스가 되어 엉뚱한 스크립트가 재사용된다). 같은 값을 오류 목록·KB·채점·클러스터가 모두 쓴다.
 - 같은 L2 = 프로젝트가 달라도 같은 케이스 → 같은 저장 스크립트가 LLM 없이 재사용된다. 이것이 500 개 프로젝트를 도는 이유다.
+- **멤버 심볼은 주인 타입까지 키**: `cannot find symbol` 의 심볼이 `method` / `variable` / `constructor` 이고 위치가 라이브러리 타입이면
+  (`variable headers of type org.springframework.http.HttpHeaders`, `class org.apache.commons.lang.StringUtils`) L2 는
+  `compile|cannot_find_symbol|org.springframework.http.HttpHeaders.keySet`. 이름만 쓰면 `keySet`, `save` 처럼 흔한 이름의 서로 다른 문제가 한
+  케이스가 된다. 클래스 심볼은 단순 이름 그대로다(import 줄과 본문 사용이 한 케이스). 위치가 프로젝트 소유 타입이거나 없으면 이름만 쓴다.
+  `no suitable method` 도 후보 줄의 라이브러리 타입을 같은 식으로 붙인다(`…|no_suitable_method|<타입>.<이름>`).
+- **규칙 버전**: `SIGNATURE_VERSION`(지금 2)이 규칙 묶음의 이름이다. 오류 항목과 케이스는 자기를 서명한 버전을 `sig` 로 갖는다
+  (0 = 버전이 생기기 전). L2 가 달라지는 규칙을 고치면 버전을 올리고 `SIGNATURE_CHANGES` 에 바뀐 분류를 적는다 — 8절 "재서명".
 
 ## 3. 라운드 안의 순서와 미루기
 
@@ -143,12 +150,13 @@ KB 는 파일뿐이다(DB 금지). 위치 `kb.dir`(기본 `kb-v2`). 원본은 `e
 
 | 파일 | 내용 |
 |---|---|
-| `kb-v2/errors.jsonl` | 모든 실행의 오류 항목(실행 끝에 그 실행의 errors.jsonl 을 덧붙임, 이미 있는 id 는 건너뜀) |
+| `kb-v2/errors.jsonl` | 모든 실행의 오류 항목(실행 끝에 그 실행의 errors.jsonl 을 덧붙임, 이미 있는 id 는 건너뜀). 항목마다 서명 사실 `sig`, `l1`, `symbol`, `location`, `artifact`, `goal` 과 옛 케이스 ID `was` |
 | `kb-v2/cases.md` | 사람용 케이스 표: case, name, projects, seen / resolved, scripts(`v1 proven 3/0; v2 unverified 0/1 — 마지막 실패`), pin, last result |
-| `kb-v2/cases/<case_id>/case.json` | `CaseInfo`: `case_id`, `l2`, `name`, `kind`, `projects`, `seen`, `resolved`, `scripts[]`, `last_analysis`, `last_solution`, `updated_at` + 모델 밖 키 `pin`(`block[:<reason>]`), `last_result` |
+| `kb-v2/cases/<case_id>/case.json` | `CaseInfo`: `case_id`, `l2`, `name`, `kind`, `projects`, `seen`, `resolved`, `scripts[]`, `last_analysis`, `last_solution`, `updated_at`, `sig`, `aliases`(재서명으로 이 케이스에 합쳐진 옛 ID) + 모델 밖 키 `pin`(`block[:<reason>]`), `last_result` |
 | `kb-v2/cases/<case_id>/fix_v<N>.py` | 저장 스크립트(같은 코드는 한 번만) |
 | `kb-v2/cases/<case_id>/errors/<run id>-<entry id>.json` | 오류 한 건씩 읽기 쉬운 JSON(`errors.json_files`); 케이스 없는 항목은 `cases/_other/` |
 | `kb-v2/.lock` | 프로세스 간 쓰기 잠금(웹·플릿·`sbmig kb`·동시에 도는 빌드 파드가 공유, `kb.lock_timeout_seconds`). 옆에 잠깐 생기는 `.lock.probe.*`(파일 시스템 시계 재기), `.lock.breaker`(낡은 잠금을 깨는 차례)와 케이스 폴더의 `.fix.*.tmp` 는 임시 파일이다. 0 이하의 `kb.lock_timeout_seconds` 는 300 으로 읽는다 |
+| `kb-v2/kb.json` | `{"sig": <규칙 버전>, "skipped": {…}}` — 이 KB 가 어느 규칙까지 재서명됐는지, 건너뛴 케이스와 이유. 재서명 도중에만 `resign-pending.json` 이 옆에 생긴다 |
 | `kb-v2/libraries.yml`, `kb-v2/jar_names.yml` | 사람이 더하는 라이브러리 표 / jar 이름 표(`libraries.company_file`, `intake.company_jar_names_file`) |
 
 `scripts[]` 한 칸 = `CaseScript`: `version`, `file`, `status`(`unverified` 저장 시 → `proven` 만든 프로젝트가 **아닌** 곳에서 재사용으로 해결했을 때 → `retired`
@@ -167,16 +175,31 @@ KB 는 파일뿐이다(DB 금지). 위치 `kb.dir`(기본 `kb-v2`). 원본은 `e
 | `sbmig kb cases pin <case_id> block[:REASON] [--create]` / `sbmig kb cases unpin <case_id>` | 케이스를 시도 없이 차단으로 고정(Handover 가 이유를 보여 줌) / 풀기 |
 | `sbmig kb stats [--json]`, `sbmig kb validate` | 숫자 / 파일 점검(문제 있으면 exit 1) |
 | `sbmig kb export <OUT.zip>` / `sbmig kb import <IN.zip> [--replace]` | 다른 PC 로 옮기기(기본 합치기, `--replace` 는 예전 것을 `.bak-*` 로) |
-| `sbmig kb reindex` | errors.jsonl 로 케이스 수치·실행 기록을 다시 셈 |
+| `sbmig kb reindex [--dry-run]` | 옛 규칙으로 서명된 기록을 지금 규칙으로 재서명하고(케이스·스크립트가 새 ID 로 옮겨짐), errors.jsonl 로 케이스 수치·실행 기록을 다시 셈. `--dry-run` 은 무엇이 옮겨질지만 보여 준다 |
 
 KB 위치는 그룹 옵션으로 바꾼다: `sbmig kb --kb-dir <dir> cases list`(`--config` 도 같은 자리). 좋은 스크립트를 "고정 사용" 하는 명령은 없다: best 는 proven 최신이므로, 나쁜 버전을 retire 하면 좋은 버전이 선택된다.
 
-## 9. 알려진 매칭 함정
+## 9. 케이스 ID 를 믿을 수 있게 하는 장치와 남은 함정
 
-- 케이스 ID 가 L2 의 해시라서 `sbmig/build/signatures.py` 나 `sbmig/triage/cluster.py` 의 규칙을 바꾸면 같은 오류가 새 ID 를 받고, 저장된 케이스는
-  **고아**가 된다. `sbmig kb reindex` 는 저장된 `case_id` 로 다시 셀 뿐 L2 를 다시 계산하지 않는다(저장된 `raw` 로 재서명하는 명령은 아직 없다).
-- `compile|cannot_find_symbol|<단순 이름>` 은 이름이 같은 다른 문제(같은 메서드 이름)를 한 케이스로 합칠 수 있다.
+- **재서명**(`sbmig/errors/resign.py`, `CaseStore.resign`): 케이스 ID 는 L2 의 해시라서 규칙이 바뀌면 같은 오류가 새 ID 를 받는다. 그래서 KB 는
+  옛 규칙으로 서명된 항목 가운데 **바뀐 분류에 속한 것만** 다시 계산한다(저장된 서명 사실로, 없으면 `raw` 의 `symbol:` / `location:` 줄로). 다른
+  분류의 항목은 한 글자도 건드리지 않는다. L2 가 달라진 항목은 새 `case_id` 를 받고 옛 ID 는 `was` 에 남는다. 항목 `id` 는 그대로다. 케이스
+  폴더는 항목을 따라간다: 전부 한 곳으로 가면 폴더째 옮기고(`aliases` 에 옛 ID), 여러 곳으로 갈라지면 스크립트는 그것을 실제로 돌린 항목을
+  따라간다. `pin` 도 같이 간다. 항목이 없는 케이스는 옮기지 않는다 — 옛 ID 가 지금 규칙에서도 유효한 키일 수 있다(프로젝트 소유 타입의 `keySet`).
+- **언제 도나**: `sbmig kb reindex` 를 칠 때, 그리고 실행이 KB 를 처음 조회할 때 `kb.json` 이 옛 버전이면 스스로. 옛 이미지의 파드가 뒤늦게 옛
+  규칙으로 적은 줄은 다음 실행의 기록 단계가 발견해 다시 맞춘다. 실패해도 실행은 멈추지 않는다(WARNING 한 줄).
+- **건너뛴 케이스**: `case.json` 을 못 읽었거나 옮길 자리를 다른 서명이 차지한 케이스는 그대로 두고 `kb.json` 의 `skipped` 에 이유와 함께 적는다.
+  자동 재서명은 이들을 다시 건드리지 않는다. 사람이 원인을 고친 뒤 `sbmig kb reindex` 를 치면 다시 시도한다. `sbmig kb validate` 가 목록을 보여 준다.
+- **같은 설정끼리만 KB 를 나눠 쓴다**: 주인 타입이 라이브러리인지는 `build.external_package_prefixes` 와 사내 groupId 로 판단한다. 재서명은 계산 전에
+  이 접두어를 설정에서 등록한다. 사내 groupId 가 다른 설정으로 돌린 실행은 같은 오류에 다른 케이스 ID 를 준다.
+- **정확 일치 보호**: 저장된 케이스의 L2 가 지금 묻는 L2 와 다르면(10자리가 우연히 겹쳤거나 `case.json` 을 손으로 고침) 그 케이스는 쓰지 않는다.
+  재사용도 기록도 하지 않고 `case id <id> is held by another signature` 를 남긴다. `sbmig kb validate` 가 목록으로 보여 준다.
+- **옛 ID 로 찾기**: `sbmig kb cases show | pin | unpin <옛 id>` 는 `aliases` 를 보고 지금 케이스를 연다(같은 ID 의 폴더가 있으면 그 폴더가 먼저).
+  `retire` / `activate` 는 옛 ID 를 받지 않는다 — 합쳐지면서 버전 번호가 바뀌었을 수 있어 지금 ID 를 알려 주고 끝난다.
+- 남은 함정: 프로젝트 소유 타입의 멤버(`compile|cannot_find_symbol|save`)와 `';' expected` 같은 문법 오류, `unreported exception <타입>` 은 여전히
+  이름·문구만으로 묶인다. 저장 스크립트가 맞지 않으면 재빌드 채점이 되돌린다.
 - 사내 아티팩트처럼 프로젝트마다 이름이 다른 것이 L2 에 들어가면 케이스가 갈라진다 — 리액터 artifactId 를 `<module>` 로 가리는 이유.
+- 서명 규칙을 고칠 때: `SIGNATURE_VERSION` 을 올리고 `SIGNATURE_CHANGES` 에 분류를 적는다. 재생 픽스처의 `case: <id>` 와 `expected.json` 의 ID 도 같이 바뀐다.
 
 ## 10. 재생(replay) 픽스처 — LLM 없이 같은 답을 다시
 

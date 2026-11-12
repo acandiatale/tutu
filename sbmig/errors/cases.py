@@ -45,7 +45,17 @@ KB write is skipped with a WARNING; nothing is written over it). A script file i
 (exclusive: an existing ``fix_v<N>.py`` is never replaced — the next number is taken), by an exclusive create where
 the file system has no hard links; any other link error is raised.
 
+서명 규칙 버전(v2.1z-ai): 항목과 case.json 은 자기 L2 를 만든 규칙 버전(``sig``)을 갖는다. 규칙이 바뀌면 :meth:`CaseStore.resign`
+(``sbmig.errors.resign`` 의 계획 + 이 파일의 쓰기)이 기록을 지금 규칙의 ID 로 옮긴다(옛 ID 는 ``was`` / ``aliases`` 에). 정확한
+키 확인: 저장된 case.json 의 L2 가 물어본 L2 와 다르면 그 케이스가 아니다 — 재사용도 기록도 하지 않는다(:meth:`CaseStore.same_case`).
 
+Signature rule versions (v2.1z-ai): entries and case.json files carry the rule version of their L2 (``sig``); a rule
+change is followed by :meth:`CaseStore.resign`, which moves records and scripts to the ids the current rules give
+(``<kb>/kb.json`` = the version the KB was last re-signed to and the cases it skipped, written at the end of every
+re-sign; ``<kb>/resign-pending.json`` = the folder clean-up a re-sign still owes, executed first by the next one).
+Only records of classes the rules changed are touched; nothing is ever merged by an alias (aliases are a lookup aid
+for people). The re-sign streams errors.jsonl: memory follows the affected cases, not the file. The exact-key guard: a stored case whose L2 is not the L2 asked
+for is not that case — nothing is reused from or written into it (:meth:`CaseStore.same_case`, :class:`CaseKeyMismatch`).
 """
 from __future__ import annotations
 
@@ -57,6 +67,7 @@ import os
 import re
 import tempfile
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Optional, Union
 
@@ -65,6 +76,8 @@ from sbmig.core.stage import stage
 
 from .common import Cleaner, atomic_write, atomic_write_bytes, case_id_for, first_line, note_text, posix
 from .entries import change_line, guide_lines, probable_fixers, resolved_text, round_of, tries_text
+from .resign import (ResignReport, Signer, changed_since, current_version, cut, l2_parts, line_case_id, line_case_ids,
+                     older_record, plan_entries, resigned_l2)
 
 log = logging.getLogger("sbmig.errors")
 
@@ -74,6 +87,8 @@ OTHER_DIR = "_other"              # entries without a case (pom-verify, notes)
 CASE_FILE = "case.json"
 KB_ERRORS = "errors.jsonl"
 CASES_MD = "cases.md"
+KB_MARKER = "kb.json"             # {"sig": <rule version the KB was re-signed to>, "resigned_at": <iso>}
+RESIGN_PENDING = "resign-pending.json"   # the folder clean-up a re-sign still owes (written before errors.jsonl)
 SUCCESS_RESULTS = frozenset({"improved", "build_ok"})
 FAILURE_RESULTS = frozenset({"no_change", "regressed", "reverted", "apply_failed", "blocked"})
 TEXT_CHARS = 4000
@@ -109,6 +124,18 @@ class CaseUnreadable(OSError):
     The server says ``case.json`` exists (an exclusive create answered EEXIST) but this client could not read it for
     ``CONFIRM_SECONDS``: no fresh file is written over it, this KB write is skipped. An OSError, so every KB caller
     that already survives an I/O error survives this one."""
+
+
+class CaseKeyMismatch(OSError):
+    """케이스 ID 는 같은데 저장된 case.json 의 L2 가 물어본 L2 와 다르다(10자 해시 충돌, 손으로 고친 case.json) — 그
+    케이스가 아니므로 아무것도 쓰지 않는다. OSError 라서 수정 루프의 어댑터가 ``CaseUnreadable`` 처럼 WARNING 으로 끝낸다.
+
+    The case id matches but the stored case's L2 is not the L2 asked for: nothing is written into it. An OSError,
+    so every KB caller that survives ``CaseUnreadable`` survives this one."""
+
+
+# (KB 디렉토리, 케이스 ID) — 정확한 키 경고는 프로세스마다 한 번
+_MISMATCH_SAID: set[tuple[str, str]] = set()
 
 
 def _no_hard_links(e: OSError) -> bool:
@@ -263,6 +290,10 @@ class CaseStore:
             self.script_runs = SCRIPT_RUNS
         self.clean = Cleaner(cfg)
         self.last_reindex: dict[str, int] = {}         # v2.1e: what the last recount rebuilt (runs, hunks)
+        # v2.1z-ai: 다른 L2 가 차지한 케이스 ID(이 프로세스에서 본 것) — best / latest / credit 이 건너뛴다
+        self._foreign: set[str] = set()                # case ids held by another signature (seen this process)
+        self.older_lines = 0                           # lines signed by older rules after the last record_run
+        self.signer: Optional[Signer] = None           # the rule a re-sign uses (None = the current rules)
 
     # ------------------------------------------------------------------ layout
     @property
@@ -380,6 +411,45 @@ class CaseStore:
         p = self.extra(case_id).get("pin")
         p = p.strip() if isinstance(p, str) else ""
         return p if p == "block" or p.startswith("block:") else ""
+
+    # ------------------------------------------------------------------ v2.1z-ai: the exact-key guard
+    def _mismatch(self, case_id: str, stored: str, asked: str) -> None:
+        """케이스 ID 를 남의 것으로 표시하고 경고(ID·프로세스마다 한 번).
+
+        Mark ``case_id`` as held by another signature; one WARNING per id and process."""
+        self._foreign.add(case_id)
+        key = (str(self.root), case_id)
+        if key not in _MISMATCH_SAID:
+            _MISMATCH_SAID.add(key)
+            log.warning('case id %s is held by another signature: stored "%s" asked "%s" — nothing is reused from or '
+                        "written into it", case_id, cut(stored, 160), cut(asked, 160))
+
+    def same_case(self, case_id: str, l2: str, case: Optional[CaseInfo] = None) -> bool:
+        """저장된 케이스가 정말 이 L2 의 케이스인가. 저장된 L2 와 물어본 L2 가 둘 다 있고 다르면 False — 그 ID 는 이
+        프로세스에서 '남의 것' 으로 기억되어 ``best`` / ``latest`` / ``credit`` / ``describe`` 가 아무것도 주지도 쓰지도
+        않는다(같은 L2 로 다시 물어 맞으면 풀린다). 케이스가 없거나 어느 한쪽 L2 가 비면 True. 예외 없음.
+
+        Is the stored case really the case of ``l2``? False when both L2s are there and differ — the id is then
+        remembered as foreign for this process (``best`` / ``latest`` / ``credit`` / ``describe`` give / write nothing;
+        a later matching ask clears it). True when there is no case or either L2 is empty. Never raises."""
+        if not l2 or not valid_case_id(case_id):
+            return True
+        if case is None:
+            case = self.find(case_id)
+        if case is None or not case.l2:
+            self._foreign.discard(case_id)
+            return True
+        if case.l2 != l2:
+            self._mismatch(case_id, case.l2, l2)
+            return False
+        self._foreign.discard(case_id)
+        return True
+
+    def foreign(self, case_id: str) -> bool:
+        """이 프로세스에서 다른 L2 가 차지한 케이스 ID 로 확인된 것인가.
+
+        Was ``case_id`` found held by another signature in this process?"""
+        return case_id in self._foreign
 
     def _case_or_new(self, case_id: str, l2: str = "", name: str = "",
                      kind: Optional[ErrorKind] = None) -> tuple[CaseInfo, dict[str, Any]]:
@@ -551,7 +621,9 @@ class CaseStore:
 
         The script to run first: the newest proven version, else the newest unverified one; retired never, nor a
         version marked ``non_idempotent`` (v2.1y: a second run changed the tree again), nor one whose file is
-        missing. None = nothing stored."""
+        missing. None = nothing stored (also for a case id held by another signature, :meth:`same_case`)."""
+        if case_id in self._foreign:
+            return None
         # v2.1y (E-H3): 두 번째 실행에서 또 바꾸는 스크립트는 반쯤 고친 다음 프로젝트를 망가뜨린다 — 기록만 남기고 재사용 안 함
         ranked = sorted((s for s in self.scripts(case_id) if s.status != "retired" and not s.non_idempotent),
                         key=lambda s: (s.status == "proven", s.version), reverse=True)
@@ -564,7 +636,9 @@ class CaseStore:
     def latest(self, case_id: str) -> Optional[tuple[CaseScript, str]]:
         """retired 가 아닌 가장 새 버전 — 보강(augment) 요청의 바탕.
 
-        The newest non-retired version (the base of an augment request)."""
+        The newest non-retired version (the base of an augment request); None for a foreign case id."""
+        if case_id in self._foreign:
+            return None
         for s in sorted(self.scripts(case_id), key=lambda s: s.version, reverse=True):
             code = self.code(case_id, s.version) if s.status != "retired" else None
             if code:
@@ -590,6 +664,13 @@ class CaseStore:
         why = self._reason(reason)
         with stage("kb"), self.lock():
             case, extra = self._case_or_new(case_id, l2, name, kind)
+            # 정확한 키: 같은 ID 를 다른 L2 가 차지하고 있으면 그 케이스에 쓰지 않는다(어댑터가 OSError 를 WARNING 으로 끝냄)
+            if (l2 and case.l2 and case.l2 != l2) or (not l2 and case_id in self._foreign):
+                self._mismatch(case_id, case.l2, l2)
+                raise CaseKeyMismatch(errno.EEXIST, f"cases/{case_id} holds another signature — the script is not "
+                                                    "stored")
+            if l2 and case.l2 == l2:
+                case.sig = max(int(case.sig or 0), current_version())   # the asked L2 is the current rules'
             masked = self.clean.red.redact(code) or ""
             # 비밀값이 든 코드는 마스킹본만 저장하고 바로 retired:
             # 마스킹된 코드는 실제로 돈 코드가 아니라 재사용하면 안 된다
@@ -755,7 +836,7 @@ class CaseStore:
         pending is ignored. v2.1e: every credit appends a ``ScriptRun`` (round / try ``n``, the reason in words,
         error counts, files; the same run_id + round + n replaces the earlier record; ``errors.script_runs`` kept)
         and a failure sets ``last_failure``."""
-        if not result or result == "pending":
+        if not result or result == "pending" or case_id in self._foreign:
             return None
         why = self._reason(reason)
         with stage("kb"), self.lock():
@@ -861,6 +942,8 @@ class CaseStore:
 
         The KB lookup result as one log phrase: ``저장된 스크립트 없음 (처음 보는 케이스)``, ``저장된 스크립트 v2 (proven,
         성공 3 / 실패 0, 프로젝트 2)``, ``pin block: <reason>``, ``케이스는 있으나 쓸 스크립트 없음 (v1 retired)``."""
+        if case_id in self._foreign:
+            return "저장된 스크립트 없음 (케이스 ID 를 다른 서명이 차지함 — 재사용·기록 안 함)"
         case = self.find(case_id)
         if case is None:
             return "저장된 스크립트 없음 (처음 보는 케이스)"
@@ -879,16 +962,29 @@ class CaseStore:
     def _known_ids(self) -> set[str]:
         """KB errors.jsonl 에 이미 있는 항목 ID 들(찢긴 줄 뒤에 붙은 레코드의
         ID 포함, ``line_ids``) — 같은 항목을 두 번 적지 않으려고."""
+        return self._scan_lines()[0]
+
+    def _scan_lines(self, skipped: Iterable[str] = ()) -> tuple[set[str], int]:
+        """errors.jsonl 한 번 읽기: (항목 ID 들, 옛 규칙으로 서명되고 그 분류가 바뀐 레코드 줄 수). 줄마다 정규식, 후보만
+        파싱(:func:`sbmig.errors.resign.older_record`); ``skipped`` 케이스의 줄은 세지 않는다.
+
+        One pass over errors.jsonl: (the entry ids, the records signed by older rules whose class changed since); a
+        regex per line, a parse for candidates only; lines of the ``skipped`` cases are not counted."""
         from sbmig.kb.jsonl import line_ids
 
         out: set[str] = set()
+        older = 0
         if not self.errors_path.is_file():
-            return out
+            return out, 0
+        v = current_version()
+        skip = set(skipped or ())
         with open(self.errors_path, "r", encoding="utf-8", errors="replace") as fh:
             for line in fh:
                 if line.strip():
                     out.update(line_ids(line))
-        return out
+                    if older_record(line, v, skip) is not None:
+                        older += 1
+        return out, older
 
     def _clean_note(self, n: EditNote) -> EditNote:
         c = self.clean
@@ -903,7 +999,9 @@ class CaseStore:
                                       "no_script_reason": c(t.no_script_reason), "diff": c(t.diff),
                                       "note": c(t.note), "edits": [self._clean_note(n) for n in t.edits]})
                  for t in e.tries]
-        return e.model_copy(update={"message": c(e.message), "raw": c(e.raw), "note": c(e.note), "tries": tries})
+        return e.model_copy(update={"message": c(e.message), "raw": c(e.raw), "note": c(e.note), "tries": tries,
+                                    "l1": c(e.l1), "symbol": c(e.symbol), "location": c(e.location),
+                                    "artifact": c(e.artifact), "goal": c(e.goal)})
 
     def record_run(self, entries: Iterable[ErrorEntry]) -> int:
         """실행이 끝난 항목들을 ``<kb>/errors.jsonl`` 에
@@ -917,13 +1015,24 @@ class CaseStore:
         from sbmig.kb.jsonl import append_lines
 
         entries = [self._clean_entry(e) for e in entries]
+        self.older_lines = 0
         if not entries:
             return 0
         with stage("kb"), self.lock():
-            known = self._known_ids()
+            new_file = not self.errors_path.exists()
+            skipped = self.skipped_cases()
+            known, older = self._scan_lines(skipped)
             fresh = [e for e in entries if e.id not in known]
             n = append_lines(self.errors_path, [e.model_dump_json() for e in fresh])
+            v = current_version()
+            # v2.1z-ai: 덧붙인 뒤에도 옛 규칙의 줄이 있으면 FileKnowledgeBase 가 재서명을 부른다(이미 읽은 줄 + 새 줄)
+            self.older_lines = older + sum(1 for e in fresh if e.l2 and int(e.sig or 0) < v
+                                           and l2_parts(e.l2)[1] in changed_since(e.sig)
+                                           and e.case_id not in skipped)
+            if new_file and n:
+                self._write_marker()                      # a brand-new KB is current: it never re-signs
             by_case: dict[str, list[ErrorEntry]] = {}
+            skip_files: set[str] = set()
             # note / pom-verify 는 케이스 통계에 넣지 않는다; L2 도
             # case.json 도 없는 케이스(L1 폴백 ID)는 폴더를 만들지 않는다
             for e in fresh:
@@ -939,9 +1048,19 @@ class CaseStore:
                     log.warning("kb: case %s not updated by this run (%s) — `sbmig kb reindex` recounts it from %s",
                                 cid, ex, KB_ERRORS)
                     continue
-                self._apply(case, extra, es)
+                # 정확한 키: 저장된 L2 와 다른 L2 의 항목은 errors.jsonl 에만 남고 그 케이스에는 셈하지 않는다
+                mine = [e for e in es if not (e.l2 and case.l2 and e.l2 != case.l2)]
+                if len(mine) < len(es):
+                    other = next(e for e in es if e not in mine)
+                    self._mismatch(cid, case.l2, other.l2)
+                    skip_files.update(e.id for e in es if e not in mine)
+                if not mine:
+                    continue
+                if any(e.l2 and e.l2 == case.l2 and int(e.sig or 0) >= v for e in mine):
+                    case.sig = max(int(case.sig or 0), v)
+                self._apply(case, extra, mine)
                 self._save(case, extra)
-            self._write_entry_files(fresh)
+            self._write_entry_files([e for e in fresh if e.id not in skip_files])
             self._write_md_locked()
             log.info("errors.jsonl +%d (%d already stored), %d case(s) updated, cases.md rewritten", n,
                      len(entries) - len(fresh), len(by_case))
@@ -1039,16 +1158,17 @@ class CaseStore:
         with open(self.errors_path, "rb") as fh:
             return sum(1 for line in fh if line.strip())
 
-    def recount(self) -> int:
+    def recount(self, skip: Iterable[str] = ()) -> int:
         """재색인(``sbmig kb reindex``): ``errors.jsonl`` 로부터 케이스마다 seen / resolved /
         프로젝트 / 마지막 텍스트를 다시 센다(스크립트 성공·실패 수와 사람이 넣은 키는 그대로; errors.jsonl
         에만 있는 L2 의 케이스는 만든다). 케이스 수를 돌려준다. v2.1e: 저장 버전마다 실행 기록(runs)·보강
         계보(parent / reason)·마지막 실패를 다시 만들고, 변경 조각 없이 저장된 옛 시도에 수정 전/후 코드를
         채운다; v2.1f: build 로 해결된 옛 항목에 '해결한 시도'(resolved_by)도 채운다. errors.jsonl 과 그
-        항목들의 에러별 JSON 은 한 번만 다시 쓴다.
+        항목들의 에러별 JSON 은 한 번만 다시 쓴다. ``skip`` 의 케이스(재서명이 못 읽어 건너뛴 것)는 건드리지 않는다.
 
         Rebuild every case's seen / resolved / projects / last texts from ``<kb>/errors.jsonl`` (script counts and
-        people's keys untouched; cases for L2s that only errors.jsonl knows are made). Returns the cases.
+        people's keys untouched; cases for L2s that only errors.jsonl knows are made). Returns the cases. The cases in
+        ``skip`` (a re-sign could not read them) are left alone.
 
         v2.1e: every stored version's ``runs`` are rebuilt from the entries' tries (merged with the runs the store
         already has: those keep their error counts; deduplicated by run_id + round + try n), ``parent`` / ``reason``
@@ -1058,55 +1178,113 @@ class CaseStore:
         probable fixer (also when ``attach_hunks`` is not importable). One INFO line says how many of each
         (``last_reindex["hunks"]`` / ``["resolved_by"]``, counted separately, fresh every call)."""
         with stage("kb"), self.lock():
-            # 변경 조각·해결한 시도 채우기는 부가 기능: 실패해도 재색인(카운트)은 계속한다. 두 숫자는 따로 세고
-            # 매 recount 마다 0 에서 시작한다(A15 / A16: 같은 store 로 다시 불러도 지난 숫자를 보고하지 않게)
-            hunked, fixers = 0, 0
-            try:
-                hunked, fixers = self._backfill_entries()
-            except Exception as e:  # noqa: BLE001 - the backfill is extra; the recount goes on
-                log.warning("kb reindex: hunk / resolved_by backfill failed: %s: %s", type(e).__name__, e)
-            groups: dict[str, list[ErrorEntry]] = {}
-            for e in self.iter_errors():
-                if e.case_id and e.status not in ("note", "pom-verify") and valid_case_id(e.case_id):
-                    groups.setdefault(e.case_id, []).append(e)
-            ids = set(self.case_ids()) | {cid for cid, es in groups.items() if any(x.l2 for x in es)}
-            rebuilt = 0
-            self._keep_alive()
-            for cid in sorted(ids):
-                self._keep_alive()                        # every case.json is rewritten: keep the lock fresh
-                es = groups.get(cid, [])
-                first = es[0] if es else None
-                try:
-                    case, extra = self._case_or_new(cid, first.l2 if first else "",
-                                                    case_name(first.message, first.l2) if first else "",
-                                                    first.kind if first else None)
-                except CaseUnreadable as ex:
-                    log.warning("kb reindex: case %s skipped (%s) — run `sbmig kb reindex` again later", cid, ex)
-                    continue
-                # 처음부터 다시 센다: 실행별로 묶어 _apply 하면
-                # record_run 이 실행 끝마다 센 것과 같은 결과가 된다
-                case.seen, case.resolved, case.projects = 0, 0, []
-                runs: dict[str, list[ErrorEntry]] = {}
-                for e in es:
-                    runs.setdefault(e.run_id, []).append(e)
-                for run_es in runs.values():
-                    self._apply(case, extra, run_es)
-                try:
-                    rebuilt += self._rebuild_runs(case, es)
-                except Exception as e:  # noqa: BLE001 - the run history is extra; the counts are saved anyway
-                    log.warning("kb reindex: runs of case %s not rebuilt: %s: %s", cid, type(e).__name__, e)
-                self._save(case, extra)
-            # 에러별 JSON 이 생기기 전에 저장된 항목(또는 사람이 지운 파일)을 errors.jsonl 로부터 다시 만든다
-            # the readable per-error files for entries stored before they existed (or deleted by hand)
-            missing = [e for e in self.iter_errors() if not self.entry_file(e).is_file()]
-            if missing:
-                log.info("writing %d per-error JSON file(s) missing under cases/*/errors/", len(missing))
-                self._write_entry_files(missing)
-            self._write_md_locked()
-            self.last_reindex = {"cases": len(ids), "runs": rebuilt, "hunks": hunked, "resolved_by": fixers}
-            log.info("reindex: %d script run record(s) rebuilt, %d entr(ies) given as-is/to-be hunks, %d build-resolved "
-                     "entr(ies) given a probable fixer", rebuilt, hunked, fixers)
-            return len(ids)
+            return self._recount_locked(skip=set(skip or ()))
+
+    @staticmethod
+    def _slim(e: ErrorEntry) -> ErrorEntry:
+        # 다시 세기에 필요 없는 큰 텍스트(raw, 시도의 diff)는 들고 있지 않는다 — 기억 공간은 항목 수에 비례
+        return e.model_copy(update={"raw": "", "tries": [t.model_copy(update={"diff": ""}) for t in e.tries]})
+
+    def _recount_locked(self, skip: Iterable[str] = ()) -> int:
+        """:meth:`recount` 의 본문(잠금은 호출자가 — 재서명·가져오기가 같은 잠금 안에서 부른다). 저장된 L2 와 다른
+        L2 의 항목(정확한 키)은 그 케이스에 셈하지 않는다.
+
+        The body of :meth:`recount` (the caller holds the lock); entries whose L2 is not the case's are not counted
+        into it (the exact-key guard)."""
+        skip = set(skip or ())
+        # 변경 조각·해결한 시도 채우기는 부가 기능: 실패해도 재색인(카운트)은 계속한다. 두 숫자는 따로 세고
+        # 매 recount 마다 0 에서 시작한다(A15 / A16: 같은 store 로 다시 불러도 지난 숫자를 보고하지 않게)
+        hunked, fixers = 0, 0
+        try:
+            hunked, fixers = self._backfill_entries()
+        except Exception as e:  # noqa: BLE001 - the backfill is extra; the recount goes on
+            log.warning("kb reindex: hunk / resolved_by backfill failed: %s: %s", type(e).__name__, e)
+        groups: dict[str, list[ErrorEntry]] = {}
+        for e in self.iter_errors():
+            if e.case_id and e.status not in ("note", "pom-verify") and valid_case_id(e.case_id):
+                groups.setdefault(e.case_id, []).append(self._slim(e))
+        ids = (set(self.case_ids()) | {cid for cid, es in groups.items() if any(x.l2 for x in es)}) - skip
+        rebuilt = 0
+        self._keep_alive()
+        for cid in sorted(ids):
+            rebuilt += self._recount_one(cid, groups.get(cid, []))
+        # 에러별 JSON 이 생기기 전에 저장된 항목(또는 사람이 지운 파일)을 errors.jsonl 로부터 다시 만든다
+        # the readable per-error files for entries stored before they existed (or deleted by hand)
+        missing = [e for e in self.iter_errors() if e.case_id not in skip and not self.entry_file(e).is_file()]
+        if missing:
+            log.info("writing %d per-error JSON file(s) missing under cases/*/errors/", len(missing))
+            self._write_entry_files(missing)
+        self._write_md_locked()
+        self.last_reindex = {"cases": len(ids), "runs": rebuilt, "hunks": hunked, "resolved_by": fixers}
+        log.info("reindex: %d script run record(s) rebuilt, %d entr(ies) given as-is/to-be hunks, %d build-resolved "
+                 "entr(ies) given a probable fixer", rebuilt, hunked, fixers)
+        return len(ids)
+
+    def _recount_cases(self, ids: Iterable[str]) -> int:
+        """케이스 몇 개만 다시 센다(자동 재서명 뒤): errors.jsonl 을 한 번 흘려 읽으며 그 케이스의 줄만 파싱한다(그
+        항목의 빠진 에러별 JSON 도 이때 쓴다). 변경 조각 채우기는 없다 — 전체 재색인은 ``sbmig kb reindex`` 의 몫.
+
+        Recount a few cases only (after an automatic re-sign): one streaming pass over errors.jsonl parses only their
+        lines (writing their missing per-entry files on the way); no hunk backfill — the full recount is what
+        ``sbmig kb reindex`` does."""
+        from sbmig.kb.jsonl import parse_record
+
+        want = {c for c in ids if valid_case_id(c)}
+        if not want:
+            return 0
+        groups: dict[str, list[ErrorEntry]] = {}
+        if self.errors_path.is_file():
+            with open(self.errors_path, "rb") as fh:
+                for b in fh:
+                    text = b.decode("utf-8", "replace")
+                    if line_case_id(text) not in want:
+                        continue
+                    e = parse_record(text, ErrorEntry)
+                    if e is None or e.case_id not in want:
+                        continue
+                    if self.json_files and not self.entry_file(e).is_file():
+                        self._write_entry_files([e])
+                    if e.status not in ("note", "pom-verify"):
+                        groups.setdefault(e.case_id, []).append(self._slim(e))
+        n = 0
+        for cid in sorted(want):
+            if (self.cases_dir / cid / CASE_FILE).is_file() or any(x.l2 for x in groups.get(cid, [])):
+                n += self._recount_one(cid, groups.get(cid, []))
+        self._write_md_locked()
+        return n
+
+    def _recount_one(self, cid: str, es: list[ErrorEntry]) -> int:
+        """한 케이스를 그 항목들로 다시 세고 저장한다(만든 실행 기록 수를 돌려줌).
+
+        Recount one case from its entries and save it; returns the run records derived."""
+        self._keep_alive()                                # every case.json is rewritten: keep the lock fresh
+        first = es[0] if es else None
+        try:
+            case, extra = self._case_or_new(cid, first.l2 if first else "",
+                                            case_name(first.message, first.l2) if first else "",
+                                            first.kind if first else None)
+        except CaseUnreadable as ex:
+            log.warning("kb reindex: case %s skipped (%s) — run `sbmig kb reindex` again later", cid, ex)
+            return 0
+        if case.l2 and any(x.l2 and x.l2 != case.l2 for x in es):
+            other = next(x for x in es if x.l2 and x.l2 != case.l2)
+            self._mismatch(cid, case.l2, other.l2)
+            es = [x for x in es if not (x.l2 and x.l2 != case.l2)]
+        # 처음부터 다시 센다: 실행별로 묶어 _apply 하면
+        # record_run 이 실행 끝마다 센 것과 같은 결과가 된다
+        case.seen, case.resolved, case.projects = 0, 0, []
+        runs: dict[str, list[ErrorEntry]] = {}
+        for e in es:
+            runs.setdefault(e.run_id, []).append(e)
+        for run_es in runs.values():
+            self._apply(case, extra, run_es)
+        rebuilt = 0
+        try:
+            rebuilt = self._rebuild_runs(case, es)
+        except Exception as e:  # noqa: BLE001 - the run history is extra; the counts are saved anyway
+            log.warning("kb reindex: runs of case %s not rebuilt: %s: %s", cid, type(e).__name__, e)
+        self._save(case, extra)
+        return rebuilt
 
     # ------------------------------------------------------------------ v2.1e: runs + hunks from errors.jsonl
     @staticmethod
@@ -1363,6 +1541,7 @@ class CaseStore:
             "scripts_unverified": sum(1 for s in scripts if s.status == "unverified"),
             "scripts_retired": sum(1 for s in scripts if s.status == "retired"),
             "pinned": sum(1 for _, x in cases if x.get("pin")),
+            "sig": self.marker_sig(),                  # v2.1z-ai: the rule version kb.json says (0 = none yet)
         }
 
     def validate(self, limit: int = 20) -> list[str]:
@@ -1375,18 +1554,42 @@ class CaseStore:
         from sbmig.kb.jsonl import parse_record
 
         problems: list[str] = []
+        l2s: dict[str, set[str]] = {}                     # v2.1z-ai: the L2s stored under each case id
+        older: set[str] = set()
+        older_cases: set[str] = set()
+        v = current_version()
+        skipped = self.skipped_cases()
         if self.errors_path.is_file():
+            self._register_prefixes()
             bad = []
             with open(self.errors_path, "r", encoding="utf-8", errors="replace") as fh:
                 for n, line in enumerate(fh, 1):
-                    if line.strip() and parse_record(line, ErrorEntry) is None:
+                    if not line.strip():
+                        continue
+                    e = parse_record(line, ErrorEntry)
+                    if e is None:
                         bad.append(n)
+                        continue
+                    if e.l2 and valid_case_id(e.case_id):
+                        l2s.setdefault(e.case_id, set()).add(e.l2)
+                    # 옛 규칙의 기록 중 재서명이 실제로 옮길 것만 센다(도장만 받을 기록은 문제가 아니다)
+                    if e.l2 and int(e.sig or 0) < v and e.case_id not in skipped \
+                            and resigned_l2(e, self.signer) != e.l2:
+                        older.add(e.id)
+                        older_cases.add(e.case_id)
             problems += [f"{KB_ERRORS}: line {n} is no ErrorEntry" for n in bad[:limit]]
             if len(bad) > limit:
                 problems.append(f"{KB_ERRORS}: … {len(bad) - limit} more unreadable line(s)")
+            if older:
+                problems.append(f"{KB_ERRORS}: {len(older)} record(s) in {len(older_cases)} case(s) signed by older "
+                                f"rules (version < {v}): run sbmig kb reindex")
+        for cid, why in sorted(skipped.items())[:limit]:
+            problems.append(f"{KB_MARKER}: case {cid} was skipped by the last re-sign ({why}) — fix it, then run "
+                            "sbmig kb reindex")
         if self.cases_dir.is_dir():
             found = []
-            for d in sorted(p for p in self.cases_dir.iterdir() if p.is_dir()):
+            # cases/_other 은 케이스 없는 항목의 에러별 JSON 폴더다 — 케이스가 아니다
+            for d in sorted(p for p in self.cases_dir.iterdir() if p.is_dir() and p.name != OTHER_DIR):
                 rel = f"{CASES_DIR}/{d.name}"
                 path = d / CASE_FILE
                 if not path.is_file():
@@ -1402,6 +1605,11 @@ class CaseStore:
                     found.append(f"{rel}/{CASE_FILE}: names case {case.case_id}")
                 if case.l2 and case_id_for(case.l2) != d.name:
                     found.append(f"{rel}/{CASE_FILE}: l2 hashes to {case_id_for(case.l2)}, not {d.name}")
+                others = sorted(x for x in l2s.get(d.name, ()) if case.l2 and x != case.l2)
+                if others:
+                    found.append(f'{rel}/{CASE_FILE}: l2 "{cut(case.l2, 100)}" is not the L2 of {len(others)} '
+                                 f'signature(s) stored under its id in {KB_ERRORS} ("{cut(others[0], 100)}") — the '
+                                 "case id is held by two signatures")
                 listed = {s.file for s in case.scripts}
                 for s in case.scripts:
                     if not (d / s.file).is_file():
@@ -1418,6 +1626,825 @@ class CaseStore:
                 problems.append(f"{CASES_DIR}: … {len(found) - limit} more problem(s)")
         return problems
 
+    # ------------------------------------------------------------------ v2.1z-ai: signature versions, re-sign
+    @property
+    def marker_path(self) -> Path:
+        """``<kb>/kb.json`` — KB 가 마지막으로 재서명된 규칙 버전(``{"sig": N, "resigned_at": …, "skipped": {…}}``)."""
+        return self.root / KB_MARKER
+
+    @property
+    def pending_path(self) -> Path:
+        """``<kb>/resign-pending.json`` — 재서명이 아직 끝내지 못한 폴더 정리(다음 재서명이 먼저 마친다)."""
+        return self.root / RESIGN_PENDING
+
+    def marker(self) -> dict[str, Any]:
+        """``kb.json`` 의 내용(없거나 못 읽으면 빈 dict).
+
+        The content of ``kb.json`` ({} when missing / unreadable)."""
+        try:
+            data = json.loads(self.marker_path.read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def marker_sig(self) -> int:
+        """``kb.json`` 의 규칙 버전(없거나 못 읽으면 0). 작은 파일 하나 읽기 — 첫 ``match`` 의 확인이 이것뿐이다.
+
+        The rule version ``kb.json`` names (0 when missing / unreadable); one small file read."""
+        try:
+            return int(self.marker().get("sig") or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    def skipped_cases(self) -> dict[str, str]:
+        """지난 재서명이 건너뛴 케이스(ID → 이유, ``kb.json`` 의 ``skipped``). 자동 재서명은 이것들을 다시 보지 않는다 —
+        ``sbmig kb reindex`` 만 다시 해 본다.
+
+        The cases the last re-sign skipped (id → reason, ``kb.json`` "skipped"); only ``sbmig kb reindex`` retries
+        them, the automatic paths leave them."""
+        got = self.marker().get("skipped")
+        return {str(k): str(v) for k, v in got.items()} if isinstance(got, dict) else {}
+
+    def _write_marker(self, skipped: Optional[dict[str, str]] = None, *, sig: Optional[int] = None,
+                      resigning: Optional[Iterable[str]] = None) -> None:
+        data: dict[str, Any] = {"sig": current_version() if sig is None else sig, "resigned_at": utcnow().isoformat(),
+                                "skipped": dict(sorted((skipped or {}).items()))}
+        if resigning is not None:
+            data["resigning"] = sorted(resigning)        # a re-sign is under way: these cases are recounted after it
+        atomic_write(self.marker_path, json.dumps(data, ensure_ascii=False) + "\n")
+
+    def has_records(self) -> bool:
+        """errors.jsonl 이 있고 비어 있지 않은가(크기만 본다).
+
+        ``errors.jsonl`` exists and is not empty (a stat)."""
+        try:
+            return self.errors_path.stat().st_size > 0
+        except OSError:
+            return False
+
+    def _register_prefixes(self) -> None:
+        """설정의 사내 라이브러리 접두어를 서명 규칙에 등록한다(``MavenRunner`` 가 하는 것과 같은 호출) — 그래야 CLI
+        재서명도 실행 중의 서명과 같은 '라이브러리 타입' 키를 만든다. 설정이 없으면 WARNING 한 번.
+
+        Register the configured in-house package prefixes with the signature rules (the call ``MavenRunner`` makes),
+        so a CLI re-sign keys in-house owner types like a live run. Without a cfg: one WARNING."""
+        from sbmig.build.signatures import external_prefixes_from_config, register_external_prefixes
+
+        try:
+            register_external_prefixes(external_prefixes_from_config(self.cfg))
+            return
+        except Exception as e:  # noqa: BLE001 - no cfg / no artifacts section
+            why = f"{type(e).__name__}: {e}"
+        key = (str(self.root), "prefixes")
+        if key not in _MISMATCH_SAID:
+            _MISMATCH_SAID.add(key)
+            log.warning("kb re-sign: the in-house package prefixes are unknown here (%s) — members of in-house types "
+                        "are keyed with what is registered in this process", why)
+
+    def _older_scan(self, v: int, skipped: Iterable[str]) -> tuple[int, set[str]]:
+        """errors.jsonl 한 번 흘려 읽기: (옛 규칙의 레코드 줄 수, 그 줄들의 케이스 ID). 줄마다 정규식, 후보만 파싱.
+
+        One streaming pass: (older records, their case ids); a regex per line, a parse for candidates only."""
+        n, ids = 0, set()
+        if not self.errors_path.is_file():
+            return 0, ids
+        skip = set(skipped or ())
+        with open(self.errors_path, "rb") as fh:
+            for b in fh:
+                e = older_record(b.decode("utf-8", "replace"), v, skip)
+                if e is not None:
+                    n += 1
+                    if valid_case_id(e.case_id):
+                        ids.add(e.case_id)
+        return n, ids
+
+    def _load_any(self, case_id: str) -> Optional[tuple[CaseInfo, dict[str, Any]]]:
+        """case.json 을 이름 확인 없이 읽는다(중단된 폴더 이름 바꾸기가 남긴, 옛 ID 를 가리키는 파일을 알아보려고).
+
+        Read ``case.json`` without the name check (an interrupted folder rename leaves one naming the old id)."""
+        if not valid_case_id(case_id):
+            return None
+        try:
+            data = json.loads((self.cases_dir / case_id / CASE_FILE).read_bytes().decode("utf-8-sig"))
+            case = CaseInfo.model_validate(data)
+        except (OSError, ValueError):
+            return None
+        return case, {k: v for k, v in data.items() if k not in CaseInfo.model_fields}
+
+    def _affected_lines(self, ids: set[str], signer: Optional[Signer], v: int
+                        ) -> tuple[dict[int, ErrorEntry], dict[int, bytes], Any]:
+        """두 번째 흘려 읽기: 맨 위 ``case_id`` 가 ``ids`` 인 줄만 파싱하고, 읽는 자리에서 그 항목의 재서명 계획(새 L2 /
+        도장)을 정한 뒤 큰 텍스트(raw, diff)를 버린 항목만 들고 있는다 — 기억 공간은 영향받은 케이스의 항목 수에
+        비례한다. 찢긴 접두어 뒤의 레코드를 살린 줄은 그 접두어 바이트도 — 다시 쓸 때 ``.corrupt`` 로 옮긴다.
+
+        Second streaming pass: parse only the lines whose top-level ``case_id`` is in ``ids``, decide each entry's
+        plan (new L2 / stamp) right there, keep the entry without its big texts (raw, diffs) — memory proportional to
+        the affected cases' entries. For a record recovered after a torn prefix, the prefix bytes too (moved to
+        ``.corrupt`` on the rewrite). Returns (line number → slim entry, line number → prefix, the EntryPlan)."""
+        from sbmig.kb.jsonl import parse_record
+
+        from .resign import EntryPlan
+
+        out: dict[int, ErrorEntry] = {}
+        torn: dict[int, bytes] = {}
+        plan = EntryPlan()
+        if not ids or not self.errors_path.is_file():
+            return out, torn, plan
+        with open(self.errors_path, "rb") as fh:
+            for i, b in enumerate(fh):
+                text = b.decode("utf-8", "replace")
+                if line_case_id(text) not in ids:
+                    continue
+                body = text.strip()
+                try:
+                    e = ErrorEntry.model_validate_json(body)
+                except ValueError:
+                    e = parse_record(body, ErrorEntry)
+                    if e is not None:
+                        torn[i] = body[: body.rfind('{"id":"', 1)].encode("utf-8")
+                if e is not None and e.case_id in ids:
+                    one = plan_entries({i: e}, signer, v)
+                    plan.stamp |= one.stamp
+                    plan.new_l2.update(one.new_l2)
+                    out[i] = self._slim(e)
+                if i % 2000 == 0:
+                    self._keep_alive()
+        return out, torn, plan
+
+    def resign(self, dry_run: bool = False, signer: Optional[Signer] = None, *, recount: bool = True,
+               retry_skipped: bool = True) -> ResignReport:
+        """재서명: 옛 규칙으로 서명된 기록(그 뒤로 규칙이 바뀐 분류만)을 지금 규칙의 케이스 ID 로 옮긴다(KB 잠금 안).
+        그런 줄이 없고 ``kb.json`` 이 지금 버전이면 errors.jsonl 한 번 흘려 읽고 아무것도 쓰지 않는다. ``dry_run`` 은
+        같은 보고만 만들고 아무것도 쓰지 않는다. ``signer`` 는 테스트가 규칙을 바꿔 끼우는 자리(기본 = 지금 규칙).
+        ``recount`` 면 옮긴 케이스들만 다시 센다. ``retry_skipped``(명시적 호출)면 지난번에 건너뛴 케이스도 다시 해
+        본다 — 자동 경로는 False. 잠금을 못 잡으면 WARNING 과 ``error`` 가 든 보고(아무것도 안 씀).
+
+        Re-sign: move the records signed by older rules (only classes the rules changed since) to the case ids the
+        current rules give, under the KB lock (docs/INTERFACES.md "v2.1z-ai"). Fast path: no such line and
+        ``kb.json`` current → one streaming read, nothing written. ``dry_run``: the same report, nothing written.
+        ``signer`` = the rule (tests inject one). ``recount``: the affected cases are recounted. ``retry_skipped``
+        (explicit calls): the cases the last re-sign skipped are tried again; the automatic paths pass False.
+        Without the lock: a WARNING and a report with ``error``."""
+        if not self.root.exists():
+            return ResignReport(version=current_version(), dry_run=dry_run)
+        with stage("kb"), self.lock() as held:
+            if not held and not dry_run:
+                rep = ResignReport(version=current_version(), error="the KB lock was not taken — nothing re-signed")
+                log.warning("kb re-sign skipped: the KB lock of %s was not taken — the KB stays as it is", self.root)
+                return rep
+            return self._resign_locked(dry_run, signer, recount, retry_skipped=retry_skipped)
+
+    def _resign_locked(self, dry_run: bool, signer: Optional[Signer], recount: bool = True, *,
+                       force: bool = False, retry_skipped: bool = True) -> ResignReport:
+        """:meth:`resign` 의 본문(잠금은 호출자가). ``force`` 는 빠른 길을 건너뛴다(가져오기).
+
+        The body of :meth:`resign` (the caller holds the lock); ``force`` skips the fast path (an import)."""
+        v = current_version()
+        signer = signer or self.signer
+        rep = ResignReport(version=v, dry_run=dry_run)
+        marker = self.marker()
+        prev_skipped = {} if retry_skipped else self.skipped_cases()
+        recover: set[str] = set()
+        if not dry_run:
+            if self.pending_path.exists():
+                recover |= self._finish_pending()         # an interrupted re-sign's clean-up first
+            if isinstance(marker.get("resigning"), list):
+                recover |= {str(x) for x in marker["resigning"] if valid_case_id(str(x))}
+        n_older, affected = self._older_scan(v, prev_skipped)
+        try:
+            msig = int(marker.get("sig") or 0)
+        except (TypeError, ValueError):
+            msig = 0
+        if not (force or recover) and msig >= v and n_older == 0:
+            return rep                                    # the fast path: one streaming read, nothing written
+        self._register_prefixes()
+        entries, torn, eplan = self._affected_lines(affected, signer, v)
+        groups: dict[str, list[int]] = {}
+        for i, e in sorted(entries.items()):
+            if e.l2 and valid_case_id(e.case_id):
+                groups.setdefault(e.case_id, []).append(i)
+        skipped: set[int] = set()
+        plans: list[_CasePlan] = []
+        existed: set[str] = set()
+
+        def target(i: int) -> str:
+            return case_id_for(eplan.new_l2[i]) if i in eplan.new_l2 else entries[i].case_id
+
+        for old in sorted(groups):
+            self._keep_alive()
+            idxs = groups[old]
+            hit, state, detail = self._load(old)
+            if state in ("empty", "damaged", "error"):
+                # 못 읽는 케이스의 항목은 옛 ID·옛 버전 그대로(다음 명시적 재서명이 다시 해 본다)
+                self._resign_skip(rep, old, f"cases/{old}/{CASE_FILE} {detail or state}")
+                skipped.update(idxs)
+                continue
+            # 정확한 키: case.json 의 L2 가 아닌 항목은 자기 ID 로 옮겨 가되 이 케이스의 스크립트를 데려가지 않는다
+            owners = [i for i in idxs if hit is None or not hit[0].l2 or entries[i].l2 == hit[0].l2]
+            targets: dict[str, list[int]] = {}
+            for i in owners:
+                targets.setdefault(target(i), []).append(i)
+            if set(targets) <= {old}:
+                continue
+            l2s = {n: (eplan.new_l2[ix[0]] if ix[0] in eplan.new_l2 else entries[ix[0]].l2)
+                   for n, ix in targets.items()}
+            why = self._resign_targets_bad(old, hit, l2s)
+            if why:
+                self._resign_skip(rep, old, why)
+                skipped.update(idxs)
+                continue
+            existed |= {n for n in targets if n != old and self._load(n)[1] == "ok"}
+            plans.append(_CasePlan(old, hit, targets, l2s))
+        if dry_run:
+            self._resign_fill(rep, eplan, plans, skipped, existed)
+            rep.cases_stamped = sum(1 for o in groups if o not in {p.old for p in plans if p.whole}
+                                    and any(i in eplan.stamp and i not in skipped for i in groups[o]))
+            return rep
+
+        touched = set(groups) | {n for p in plans for n in p.targets} | recover
+        # 쓰기를 시작하기 전에 '진행 중' 을 kb.json 에 적는다: 어디서 죽든 다음 재서명이 빠른 길로 빠지지 않고 이
+        # 케이스들을 다시 센다
+        if plans or eplan.stamp:
+            self._write_marker(dict(prev_skipped), sig=0, resigning=touched)
+        ctx = _ResignCtx()
+        done: list[_CasePlan] = []
+        for p in plans:
+            self._keep_alive()
+            try:
+                self._resign_place(p, entries, ctx)
+                done.append(p)
+                if p.whole:
+                    ctx.whole[p.old] = next(iter(p.targets))
+            except OSError as ex:                         # CaseUnreadable / a failing copy: this case only
+                self._resign_skip(rep, p.old, f"{type(ex).__name__}: {ex}")
+                skipped.update(groups.get(p.old, []))
+        moved = self._resign_entries(entries, eplan, skipped, ctx, v)
+        for n, versions in ctx.shared.items():            # a version copied to several parts: counted per part
+            if n in ctx.saves and versions:
+                part = [entries[i].model_copy(update=moved[i]) if i in moved else entries[i]
+                        for i in ctx.parts.get(n, []) if i in entries]
+                self._recount_versions(ctx.saves[n][0], versions, part)
+        # 1) 새 폴더·스크립트는 위에서 → 2) case.json 들(옮겨 받은 케이스, 다시 계산된 기록을 가진 케이스만)
+        whole_sources = {p.old for p in done if p.whole}
+        for n, (case, extra) in ctx.saves.items():
+            self._keep_alive()
+            case.sig = max(int(case.sig or 0), v)
+            case.updated_at = utcnow()
+            self._save(case, extra)
+        for old, idxs in sorted(groups.items()):
+            if old in ctx.saves or old in whole_sources or old in rep.unreadable:
+                continue
+            if not any(i in eplan.stamp and i not in skipped for i in idxs):
+                continue
+            hit = self._read(old, quiet=True)
+            if hit is None or int(hit[0].sig or 0) >= v:
+                continue
+            self._keep_alive()
+            self._save(hit[0].model_copy(update={"sig": v}), hit[1])
+            rep.cases_stamped += 1
+        # 3) 정리할 폴더 목록(중단되면 다음 재서명이 마저 함) → 4) errors.jsonl 을 흘려 복사하며 한 번 원자적으로
+        if ctx.journal["remove"] or ctx.journal["trim"]:
+            atomic_write(self.pending_path, json.dumps(ctx.journal, ensure_ascii=False, indent=2) + "\n")
+        if moved or ctx.whole:
+            self._resign_write_entries(moved, torn, ctx.whole)
+        # 5) 에러별 JSON 을 새 케이스 폴더로 → 6) 비운 옛 폴더 정리 → 7) 다시 세기 → 8) kb.json
+        self._resign_move_entry_files(entries, moved)
+        entries.clear()                                   # the recount below reads its own (slim) entries
+        if self.pending_path.exists():
+            self._finish_pending()
+        self._resign_fill(rep, eplan, done, skipped, existed)
+        for o, n, l2 in rep.moves:
+            log.info("kb re-sign: case %s → %s (%s)", o, n, cut(l2))
+        for o, ns in rep.splits:
+            log.info("kb re-sign: case %s split → %s", o, ", ".join(ns))
+        new_skipped = {k: why for k, why in prev_skipped.items() if k not in touched}
+        new_skipped.update(rep.reasons)
+        if rep.changed or recover:
+            if recount:
+                # 건너뛴 케이스는 다시 세지 않는다(못 읽는 case.json 위에 새 파일을 쓰지 않게)
+                self._recount_cases((touched | ctx.saves.keys()) - set(new_skipped))
+            else:
+                self._write_md_locked()
+        self._write_marker(new_skipped)
+        log.info("%s", rep.summary())
+        return rep
+
+    @staticmethod
+    def _resign_skip(rep: ResignReport, case_id: str, why: str) -> None:
+        if case_id not in rep.unreadable:
+            rep.unreadable.append(case_id)
+        rep.reasons[case_id] = why
+        log.warning("kb re-sign: case %s skipped (%s) — its records keep their ids; `sbmig kb reindex` tries again",
+                    case_id, why)
+
+    def _resign_targets_bad(self, old: str, hit: Optional[tuple[CaseInfo, dict[str, Any]]],
+                            l2s: dict[str, str]) -> str:
+        """옮겨 갈 케이스들이 받을 수 있나: 못 읽는 case.json, 다른 L2 가 차지한 케이스면 이유 문장("" = 괜찮음).
+        옛 ID 를 가리키는 case.json(중단된 폴더 이름 바꾸기)은 괜찮다 — 이번에 고친다.
+
+        Can every target take the case? The reason when one does not read or holds another L2 ("" = fine). A
+        case.json naming the old id (an interrupted rename) is fine: it is repaired now."""
+        for n, l2 in l2s.items():
+            if n == old:
+                continue
+            t, state, detail = self._load(n)
+            if state == "ok" and t is not None:
+                if t[0].l2 and l2 and t[0].l2 != l2:
+                    self._mismatch(n, t[0].l2, l2)
+                    return f"case {n} holds another signature"
+            elif state in ("empty", "damaged", "error"):
+                anyhit = self._load_any(n)
+                if hit is None and anyhit is not None and anyhit[0].case_id == old:
+                    continue
+                return f"cases/{n}/{CASE_FILE} {detail or state}"
+        return ""
+
+    @staticmethod
+    def _resign_fill(rep: ResignReport, eplan: Any, plans: list["_CasePlan"], skipped: set[int],
+                     existed: set[str]) -> None:
+        """보고의 숫자·목록을 계획에서 채운다(``dry_run`` 은 쓰기 전에, 실제 실행은 쓴 뒤에).
+
+        Fill the report from the plans (before writing for a dry run, after it otherwise)."""
+        rep.entries_stamped = len(eplan.stamp - skipped)
+        rep.entries_resigned = len(set(eplan.new_l2) - skipped)
+        rep.moves, rep.splits, rep.merged = [], [], 0
+        for p in plans:
+            if p.whole:
+                (n,) = p.targets
+                rep.moves.append((p.old, n, p.l2.get(n, "")))
+            else:
+                rep.splits.append((p.old, sorted(p.targets)))
+            rep.merged += sum(1 for n in p.targets if n != p.old and n in existed)
+
+    def _resign_place(self, p: "_CasePlan", entries: dict[int, ErrorEntry], ctx: "_ResignCtx") -> None:
+        """한 케이스의 폴더·스크립트를 옮긴다(재서명 1단계). 통째 이동: 대상 폴더가 없으면 이름 바꾸기, 있으면 합치기
+        (내용이 같은 스크립트는 하나, 겹치는 번호는 다음 빈 번호). 나뉨: 버전마다 그것을 돌린 시도가 있는 쪽으로(아무도
+        안 돌린 것은 남는 쪽 또는 가장 큰 쪽). 옛 폴더 정리는 errors.jsonl 다시 쓰기 뒤에(``ctx.journal``).
+
+        Move one case's folder / scripts (re-sign step 1): a whole move renames the folder when the target does not
+        exist, else merges (same code once, a clashing number takes the next free one); a split sends each version
+        to every part one of whose entries ran it (a version nobody ran stays with the old case, or goes to the
+        largest part). The old folder's clean-up is queued in ``ctx.journal`` (after errors.jsonl)."""
+        v = current_version()
+        old = p.old
+        o_case = p.hit[0] if p.hit else None
+        o_extra = dict(p.hit[1]) if p.hit else {}
+        versions = sorted(o_case.scripts, key=lambda s: s.version) if o_case else []
+        first = next((entries[i] for ix in p.targets.values() for i in ix if i in entries), None)
+        msg = first.message if first is not None else ""
+        if p.whole:
+            (n,) = p.targets
+            if o_case is None:
+                # 옛 폴더가 없다: 항목만 있던 케이스, 또는 이름 바꾸기 뒤 case.json 을 고치기 전에 멈춘 재서명
+                anyhit = self._load_any(n)
+                if anyhit is not None and anyhit[0].case_id == old and n not in ctx.saves:
+                    case = anyhit[0].model_copy(deep=True)
+                    self._become(case, n, p.l2[n], old, [], msg, v)
+                    ctx.saves[n] = (case, dict(anyhit[1]))
+                ctx.vmaps[(old, n)] = {}
+                return
+            nd = self.cases_dir / n
+            if n not in ctx.saves and not os.path.lexists(nd):
+                try:
+                    os.rename(self.cases_dir / old, nd)
+                except OSError as e:
+                    log.debug("kb re-sign: cases/%s not renamed to %s (%s) — copied instead", old, n, e)
+                else:
+                    case = o_case.model_copy(deep=True)
+                    self._become(case, n, p.l2[n], old, o_case.aliases, msg, v)
+                    ctx.saves[n] = (case, o_extra)
+                    ctx.vmaps[(old, n)] = {}
+                    return
+            assign = {s.version: {n} for s in versions}
+        else:
+            kept = old in p.targets
+            ran: dict[int, set[str]] = {}
+            for n, ix in p.targets.items():
+                for i in ix:
+                    for t in (entries[i].tries if i in entries else []):
+                        if t.script_version and t.source in RUN_SOURCES:
+                            ran.setdefault(int(t.script_version), set()).add(n)
+            largest = sorted(p.targets, key=lambda n: (-len(p.targets[n]), n))[0]
+            home = old if kept else largest
+            assign = {s.version: (ran.get(s.version) or {home}) for s in versions}
+        shared = {ver for ver, ns in assign.items() if len(ns) > 1}
+        # 대상 케이스를 먼저 모두 확인한다(CaseUnreadable 이면 아무 스크립트도 복사하기 전에 이 케이스를 건너뜀)
+        resolved: dict[str, tuple[CaseInfo, dict[str, Any]]] = {}
+        for n in sorted(x for x in p.targets if x != old):
+            if n in ctx.saves:
+                resolved[n] = ctx.saves[n]
+                continue
+            hit = self._read(n, quiet=True) or self._confirm_new(n)
+            if hit is None:
+                kind = o_case.kind if o_case else (first.kind if first is not None else ErrorKind.UNKNOWN)
+                hit = (CaseInfo(case_id=n, l2=p.l2[n], name=case_name(msg, p.l2[n]), kind=kind), {})
+            else:
+                hit = (hit[0].model_copy(deep=True), dict(hit[1]))
+            resolved[n] = hit
+        staged: dict[str, tuple[CaseInfo, dict[str, Any], dict[int, int]]] = {}
+        for n, (tc, tx) in resolved.items():
+            self._keep_alive()
+            vs = [s for s in versions if n in assign.get(s.version, set())]
+            vmap = self._copy_versions(old, vs, tc)
+            for k, val in o_extra.items():                # pin and other human keys travel; the target's win
+                tx.setdefault(k, val)
+            self._become(tc, n, p.l2[n], old, o_case.aliases if o_case else [], "", v)
+            if o_case is not None and not tc.last_solution and o_case.last_solution:
+                tc.last_analysis, tc.last_solution = o_case.last_analysis, o_case.last_solution
+            staged[n] = (tc, tx, vmap)
+        # 모든 대상이 끝난 뒤에만 계획에 반영한다(중간에 실패하면 이 케이스는 통째로 건너뛴 것이 된다)
+        for n, (tc, tx, vmap) in staged.items():
+            ctx.vmaps[(old, n)] = vmap
+            ctx.saves[n] = (tc, tx)
+            ctx.parts.setdefault(n, []).extend(p.targets[n])
+            if shared:
+                ctx.shared.setdefault(n, set()).update(vmap[x] for x in shared if x in vmap)
+        if o_case is None:
+            return
+        moved_ix = [i for n, ix in p.targets.items() if n != old for i in ix if i in entries]
+        expect = None
+        if moved_ix:
+            expect = [entries[moved_ix[0]].id, next(n for n, ix in p.targets.items() if moved_ix[0] in ix)]
+        others = sorted(x for x in p.targets if x != old)
+        if old in p.targets:
+            keep = sorted(ver for ver, ns in assign.items() if old in ns)
+            ctx.journal["trim"][old] = {"keep": keep, "shared": sorted(x for x in shared if x in keep),
+                                        "targets": others, "expect": expect}
+        else:
+            ctx.journal["remove"][old] = {"targets": others, "expect": expect}
+
+    @staticmethod
+    def _become(case: CaseInfo, n: str, l2: str, old: str, old_aliases: Iterable[str], msg: str, v: int) -> None:
+        """케이스를 ID ``n`` / L2 ``l2`` / 지금 버전으로 고치고 옛 ID 들을 aliases 에 더한다(순서 유지, 중복 없음).
+        aliases 는 사람의 조회용일 뿐이다 — 재서명은 그것으로 아무것도 합치지 않는다.
+
+        Make ``case`` the case ``n`` (L2, current version) and add the old ids to its aliases (a lookup aid for
+        people only: nothing is ever merged by an alias)."""
+        renamed = case.case_id != n
+        case.case_id = n
+        if l2 and (renamed or not case.l2):
+            if case.l2 != l2 and msg:
+                case.name = case_name(msg, l2)
+            case.l2 = l2
+        case.sig = max(int(case.sig or 0), v)
+        case.aliases = [a for a in dict.fromkeys([*case.aliases, old, *old_aliases]) if a and a != n]
+
+    def _script_bytes(self, case_id: str, version: int) -> Optional[bytes]:
+        try:
+            return (self.case_dir(case_id) / f"fix_v{int(version)}.py").read_bytes()
+        except (OSError, ValueError):
+            return None
+
+    def _copy_versions(self, old: str, versions: list[CaseScript], tc: CaseInfo) -> dict[int, int]:
+        """``old`` 의 스크립트 버전들을 케이스 ``tc`` 로 복사하고 (옛 번호 → 새 번호)를 돌려준다. 대상 폴더에 바이트가
+        같은 파일이 이미 있으면(앞선 재서명이 복사했거나 같은 코드) 그 번호를 쓰고 기록을 합친다 — ``merge_from`` 의
+        규칙 그대로라 성공·실패 수는 두 기록의 max(합이 아님, 정확한 수가 아니다), 프로젝트 합집합, 실행 기록 합침.
+        새 폴더면 번호를 지키고, 있는 폴더면 다음 빈 번호.
+
+        Copy ``old``'s versions into ``tc``; returns old number → new number. A byte-identical file already in the
+        target (an earlier, interrupted re-sign, or the same code) is reused and the records merged by the rules
+        ``merge_from`` uses — the counts are the max of the two records (not a sum: not exact), projects united,
+        runs merged. In a new folder the numbers are kept, in an existing one a clash takes the next free."""
+        n = tc.case_id
+        vmap: dict[int, int] = {}
+        disk: dict[str, int] = {}
+        for dv in sorted(self._disk_versions(n)) if (self.cases_dir / n).is_dir() else []:
+            data = self._script_bytes(n, dv)
+            if data is not None:
+                disk.setdefault(hashlib.sha1(data).hexdigest(), dv)
+        fresh = not tc.scripts and not disk
+        listed = {s.version: s for s in tc.scripts}
+        for s in sorted(versions, key=lambda x: x.version):
+            self._keep_alive()
+            data = self._script_bytes(old, s.version)
+            if data is None:
+                log.warning("kb re-sign: cases/%s/fix_v%d.py does not read — that version is not copied to %s", old,
+                            s.version, n)
+                continue
+            h = hashlib.sha1(data).hexdigest()
+            nv = disk.get(h)
+            if nv is not None:
+                vmap[s.version] = nv
+                have = listed.get(nv)
+                if have is None:                          # claimed by an interrupted re-sign, never listed
+                    have = self._copied(s, nv, vmap)
+                    tc.scripts.append(have)
+                    listed[nv] = have
+                else:
+                    have.successes, have.failures = max(have.successes, s.successes), max(have.failures, s.failures)
+                    have.projects += [x for x in s.projects if x not in have.projects]
+                    if s.status == "proven" and have.status == "unverified":
+                        have.status = "proven"
+                    self._merge_runs(have, s, vmap)
+                continue
+            nv = self._claim_script(n, s.version if fresh else self._next_version(tc), data)
+            vmap[s.version] = nv
+            new = self._copied(s, nv, vmap)
+            tc.scripts.append(new)
+            listed[nv] = new
+            disk[h] = nv
+        tc.scripts.sort(key=lambda x: x.version)
+        return vmap
+
+    @staticmethod
+    def _copied(s: CaseScript, nv: int, vmap: dict[int, int]) -> CaseScript:
+        return s.model_copy(deep=True, update={"version": nv, "file": f"fix_v{nv}.py",
+                                               "parent": vmap.get(s.parent) if s.parent else None})
+
+    def _recount_versions(self, case: CaseInfo, versions: set[int], entries: list[ErrorEntry]) -> None:
+        """여러 케이스로 나뉜 버전: 이 케이스 몫의 항목들로 실행 기록을 다시 만들고(그 항목들의 시도에 해당하는 저장
+        기록만 남김) 성공·실패·프로젝트·상태를 다시 센다(retired 는 그대로). 근사치다: 실행 기록은
+        ``errors.script_runs`` 로 잘려 있고 시도 번호 없이 적힌 기록은 버려지므로, 나뉜 버전의 수는 정확한 수가 아니다.
+
+        A version that ended in several cases: its runs rebuilt from this case's entries only (the stored runs kept
+        when one of these entries' tries made them), successes / failures / projects / status recounted (retired
+        stays). Approximate: the runs are capped at ``errors.script_runs`` and runs without a try number are dropped,
+        so the counts of a split version are not exact."""
+        keys: dict[int, set[tuple[str, int, int]]] = {}
+        for e in entries:
+            for t in e.tries:
+                if t.script_version and int(t.script_version) in versions:
+                    keys.setdefault(int(t.script_version), set()).add((e.run_id, int(t.round), int(t.n)))
+        for s in case.scripts:
+            if s.version not in versions:
+                continue
+            mine = keys.get(s.version, set())
+            s.runs = [r for r in s.runs if _run_key(r) in mine]
+            self._rebuild_runs(CaseInfo(case_id=case.case_id, scripts=[s]), entries)
+            s.successes = sum(1 for r in s.runs if r.result in SUCCESS_RESULTS)
+            s.failures = sum(1 for r in s.runs if r.result in FAILURE_RESULTS)
+            s.projects = list(dict.fromkeys(r.project for r in s.runs if r.result in SUCCESS_RESULTS and r.project))
+            if s.status != "retired":
+                s.status = "proven" if _resolved_elsewhere(s) else "unverified"
+
+    def _resign_entries(self, entries: dict[int, ErrorEntry], eplan: Any, skipped: set[int],
+                        ctx: "_ResignCtx", v: int) -> dict[int, dict[str, Any]]:
+        """바뀌는 항목들(줄 번호 → 바꿀 필드): 도장(``sig``), 새 ``case_id`` / ``l2``, ``was`` 에 옛 ID, 시도의 스크립트
+        번호(``tries`` 는 번호만 바꾼 목록이 아니라 '옛 번호 → 새 번호' 로 적용됨)와 ``script`` 경로, 통째로 옮긴
+        케이스를 가리키는 ``resolved_by``. 항목 ID 는 그대로.
+
+        The entries that change (line number → the fields to update): ``sig``, the new ``case_id`` / ``l2``, the old
+        id in ``was``, the tries' script numbers (as ``_vmap``, applied to the full record on the rewrite) and the
+        ``script`` path, ``resolved_by`` of a case moved whole."""
+        out: dict[int, dict[str, Any]] = {}
+        for i, e in entries.items():
+            if i in skipped:
+                continue
+            upd: dict[str, Any] = {}
+            if i in eplan.stamp:
+                upd["sig"] = v
+            if i in eplan.new_l2:
+                o, n = e.case_id, case_id_for(eplan.new_l2[i])
+                vm = ctx.vmaps.get((o, n), {})
+                upd.update(case_id=n, l2=eplan.new_l2[i], was=list(dict.fromkeys([*e.was, o])))
+                upd["tries"] = _renumbered(e.tries, vm)
+                upd["script"] = _moved_script(e.script, o, n, vm)
+                upd["_vmap"] = vm
+            rb = _moved_resolved_by(e, ctx.whole)
+            if rb is not None:
+                upd["resolved_by"] = rb
+            if upd:
+                out[i] = upd
+        return out
+
+    def _resign_write_entries(self, moved: dict[int, dict[str, Any]], torn: dict[int, bytes],
+                              whole: dict[str, str]) -> None:
+        """errors.jsonl 을 흘려 복사하며 한 번 원자적으로 다시 쓴다: 바뀐 줄만 새로 직렬화, 나머지(못 읽는 줄 포함)는
+        바이트 그대로. 통째로 옮긴 케이스를 ``resolved_by`` 로 가리키는 다른 줄도 고친다. 찢긴 접두어 뒤에서 살린
+        레코드를 다시 쓰면 그 접두어 바이트는 ``errors.jsonl.corrupt`` 에 덧붙인다(``repair_tail`` 과 같은 곳).
+
+        Rewrite errors.jsonl once by a streaming copy into a temp file, atomically: changed lines re-serialised, every
+        other line byte for byte; lines whose ``resolved_by`` names a case moved whole are fixed too. The torn prefix
+        of a record recovered from a glued line goes to ``errors.jsonl.corrupt`` (where ``repair_tail`` puts torn
+        lines)."""
+        from sbmig.kb.jsonl import corrupt_path, parse_record
+
+        self._keep_alive()
+        prefixes = [torn[i] for i in sorted(moved) if i in torn and torn[i].strip()]
+        keys = set(whole)
+        fd, tmp = tempfile.mkstemp(prefix=f".{KB_ERRORS}.", suffix=".tmp", dir=str(self.root))
+        try:
+            with os.fdopen(fd, "wb") as dst, open(self.errors_path, "rb") as src:
+                for i, b in enumerate(src):
+                    nl = b"\n" if b.endswith(b"\n") else b""
+                    body = b[:-1] if nl else b
+                    if i in moved:
+                        full = _full_record(body)
+                        if full is not None:
+                            body = _updated(full, moved[i]).model_dump_json().encode("utf-8")
+                    elif keys and line_case_ids(body) & keys:
+                        e = parse_record(body.decode("utf-8", "replace"), ErrorEntry)
+                        rb = _moved_resolved_by(e, whole) if e is not None else None
+                        if rb is not None:
+                            # (a glued line here keeps its torn prefix as it is: only the record part is replaced)
+                            text = body.decode("utf-8", "replace")
+                            j = text.rfind('{"id":"', 1)
+                            try:
+                                ErrorEntry.model_validate_json(text.strip())
+                                head = ""
+                            except ValueError:
+                                head = text[:j] if j > 0 else ""
+                            body = (head + e.model_copy(update={"resolved_by": rb}).model_dump_json()).encode("utf-8")
+                    dst.write(body + nl)
+                    if i % 2000 == 0:
+                        self._keep_alive()
+                dst.flush()
+                try:
+                    os.fsync(dst.fileno())
+                except OSError:
+                    pass
+            if prefixes:
+                with open(corrupt_path(self.errors_path), "ab") as bad:
+                    for t in prefixes:
+                        bad.write(t + b"\n")
+            os.replace(tmp, self.errors_path)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+
+    def _resign_move_entry_files(self, entries: dict[int, ErrorEntry], moved: dict[int, dict[str, Any]]) -> None:
+        """케이스가 바뀐 항목의 에러별 JSON 을 새 케이스 폴더에 쓰고 옛 파일을 지운다(다시 쓴 errors.jsonl 에서 그 줄만
+        읽는다; 파생 파일 — 실패는 WARNING, 빠진 파일은 다시 세기가 만든다).
+
+        The per-entry JSON of every entry whose case changed: written under the new case (read back from the
+        rewritten errors.jsonl, those lines only), the old file removed (derived files: a failure is a WARNING, the
+        recount writes missing ones)."""
+        want = {i for i, u in moved.items() if "case_id" in u and i in entries and u["case_id"] != entries[i].case_id}
+        if not want:
+            return
+        with open(self.errors_path, "rb") as fh:
+            for i, b in enumerate(fh):
+                if i not in want:
+                    continue
+                ne = _full_record(b.rstrip(b"\n"))
+                if ne is None:
+                    continue
+                old = entries[i]
+                self._keep_alive()
+                if self.json_files:
+                    try:
+                        atomic_write(self.entry_file(ne), json.dumps(ne.model_dump(mode="json"), ensure_ascii=False,
+                                                                     indent=2) + "\n")
+                    except OSError as ex:
+                        log.warning("could not write %s: %s", self.entry_file(ne), ex)
+                try:
+                    self.entry_file(old).unlink()
+                except FileNotFoundError:
+                    pass
+                except OSError as ex:
+                    log.warning("kb re-sign: %s not removed: %s", self.entry_file(old), ex)
+
+    def _finish_pending(self) -> set[str]:
+        """``resign-pending.json`` 의 폴더 정리를 마친다 — 단, 그 항목의 errors.jsonl 다시 쓰기가 끝났을 때만(확인용
+        항목 하나가 새 케이스 ID 를 갖고 있나). 끝나지 않았으면 그 정리는 버린다(다음 계획이 처음부터 다시 세움). 몇
+        번을 다시 해도 같은 결과다. 손댄 케이스 ID 들을 돌려준다(다시 세기용).
+
+        Finish the clean-up queued in ``resign-pending.json`` — each item only when its errors.jsonl rewrite
+        completed (the item's check entry carries the new case id); an item whose rewrite did not happen is dropped
+        (the next plan starts over from intact folders). Re-runnable. Returns the case ids involved (to recount)."""
+        try:
+            data = json.loads(self.pending_path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                raise ValueError("not an object")
+        except (OSError, ValueError) as ex:
+            log.warning("kb re-sign: %s does not read (%s) — dropped", self.pending_path, ex)
+            data = {}
+        items = [(sec, old, item) for sec in ("remove", "trim") for old, item in sorted((data.get(sec) or {}).items())
+                 if isinstance(item, dict) and valid_case_id(old)]
+        want = {str(it["expect"][0]) for _, _, it in items if isinstance(it.get("expect"), list) and it["expect"]}
+        now: dict[str, str] = {}
+        if want:
+            from sbmig.kb.jsonl import parse_record
+
+            with open(self.errors_path, "rb") as fh:
+                for b in fh:
+                    text = b.decode("utf-8", "replace")
+                    if not any(f'"{w}"' in text for w in want):
+                        continue
+                    e = parse_record(text, ErrorEntry)
+                    if e is not None and e.id in want:
+                        now[e.id] = e.case_id
+        ids: set[str] = set()
+        for sec, old, item in items:
+            self._keep_alive()
+            exp = item.get("expect")
+            if isinstance(exp, list) and len(exp) == 2 and now.get(str(exp[0])) != str(exp[1]):
+                log.info("kb re-sign: the clean-up of cases/%s is dropped (its records were not rewritten)", old)
+                continue
+            targets = [t for t in (item.get("targets") or []) if valid_case_id(str(t))]
+            ids |= {old, *targets}
+            try:
+                if sec == "remove":
+                    self._remove_moved(old, targets)
+                else:
+                    self._trim_moved(old, item, targets)
+            except OSError as ex:
+                log.warning("kb re-sign: cases/%s not cleaned up (%s) — left as it is", old, ex)
+        try:
+            self.pending_path.unlink()
+        except FileNotFoundError:
+            pass
+        return ids
+
+    def _script_shas(self, ids: Iterable[str]) -> set[str]:
+        out: set[str] = set()
+        for n in ids:
+            if not (self.cases_dir / n).is_dir():
+                continue
+            for dv in self._disk_versions(n):
+                data = self._script_bytes(n, dv)
+                if data is not None:
+                    out.add(hashlib.sha1(data).hexdigest())
+        return out
+
+    def _remove_moved(self, old: str, targets: list[str]) -> None:
+        """통째로 옮긴 케이스의 옛 폴더를 지운다 — 모든 ``fix_v*.py`` 가 대상 케이스에 바이트 그대로 있을 때만, 그리고
+        파생 파일(case.json, 에러별 JSON, 임시 파일)밖에 없을 때만. 아니면 WARNING 과 함께 그대로 둔다. 스크립트를
+        먼저, case.json 을 마지막에 지우므로 도중에 죽어도 다시 하면 끝난다.
+
+        Remove the old folder of a case moved whole — only when every ``fix_v*.py`` exists byte for byte in a target
+        and nothing but derived files (case.json, per-entry JSON, temp files) is left; else a WARNING, kept. Scripts
+        first, case.json last: re-runnable after a kill."""
+        d = self.case_dir(old)
+        if not d.is_dir():
+            return
+        have = self._script_shas(targets)
+        scripts, junk, unknown = [], [], []
+        for p in sorted(d.iterdir()):
+            if p.is_file() and _SCRIPT_RE.match(p.name):
+                scripts.append(p)
+            elif p.is_file() and (p.name == CASE_FILE or (p.name.startswith(".") and p.name.endswith(".tmp"))):
+                junk.append(p)
+            elif p.is_dir() and p.name == ENTRIES_DIR and all(x.is_file() and x.suffix in (".json", ".tmp")
+                                                              for x in p.iterdir()):
+                junk.append(p)
+            else:
+                unknown.append(p.name)
+        lost = [p.name for p in scripts if hashlib.sha1(p.read_bytes()).hexdigest() not in have]
+        if lost or unknown:
+            log.warning("kb re-sign: cases/%s kept (%s) — remove it by hand once checked", old,
+                        f"{', '.join(lost)} not found in {', '.join(targets) or '-'}" if lost
+                        else f"it holds {', '.join(unknown[:5])}")
+            return
+        for p in scripts:
+            p.unlink()
+        for p in junk:
+            if p.is_dir():
+                for x in p.iterdir():
+                    x.unlink()
+                p.rmdir()
+            elif p.name != CASE_FILE:
+                p.unlink()
+        (d / CASE_FILE).unlink(missing_ok=True)           # last: the folder is a case until here
+        try:
+            d.rmdir()
+        except OSError as ex:
+            log.debug("kb re-sign: cases/%s not removed (%s)", old, ex)
+        log.info("kb re-sign: cases/%s removed (moved to %s)", old, ", ".join(targets))
+
+    def _trim_moved(self, old: str, item: dict[str, Any], targets: list[str]) -> None:
+        """나뉜 케이스 중 남는 쪽: 떠난 버전을 목록에서 빼고, 여러 쪽에 있는 버전은 남은 항목으로 다시 센 뒤, 폴더에서
+        목록에 없는 ``fix_v*.py`` 중 대상에 바이트 그대로 있는 것을 지운다(파일 기준이라 case.json 저장과 지우기 사이에
+        죽어도 다시 하면 끝난다).
+
+        The part a split case keeps: the versions that left are unlisted, a version kept in several parts is
+        recounted from the remaining entries, then every unlisted ``fix_v*.py`` that a target has byte for byte is
+        removed (decided from the files, so a re-run after a kill between the save and the removals finishes it)."""
+        hit = self._read(old)
+        if hit is None:
+            return
+        case, extra = hit
+        keep = {int(x) for x in item.get("keep") or []}
+        shared = {int(x) for x in item.get("shared") or []}
+        have = self._script_shas(targets)
+        scripts = []
+        for s in case.scripts:
+            if s.version not in keep:
+                data = self._script_bytes(old, s.version)
+                if data is None or hashlib.sha1(data).hexdigest() in have:
+                    continue
+                keep.add(s.version)
+                log.warning("kb re-sign: cases/%s/fix_v%d.py kept (no copy found in %s)", old, s.version,
+                            ", ".join(targets) or "-")
+            scripts.append(s)
+        if len(scripts) != len(case.scripts) or shared & keep:
+            case.scripts = scripts
+            if shared & keep:
+                es = [e for e in self.iter_errors(case=old) if e.case_id == old]
+                self._recount_versions(case, shared & keep, es)
+            case.updated_at = utcnow()
+            self._save(case, extra)
+        listed = {s.version for s in case.scripts}
+        for dv in self._disk_versions(old):
+            if dv in listed:
+                continue
+            data = self._script_bytes(old, dv)
+            if data is not None and hashlib.sha1(data).hexdigest() in have:
+                (self.case_dir(old) / f"fix_v{dv}.py").unlink(missing_ok=True)
+
     # ------------------------------------------------------------------ import (merge)
     def merge_from(self, other: "CaseStore") -> dict[str, int]:
         """다른 KB(풀어 놓은 내보내기)를 합친다: 새 ID 의 errors.jsonl 줄, 이쪽에
@@ -1431,7 +2458,7 @@ class CaseStore:
         from sbmig.kb.jsonl import append_lines
 
         counters = {"errors_added": 0, "cases_added": 0, "scripts_added": 0, "scripts_merged": 0}
-        with stage("kb"), self.lock():
+        with stage("kb"), self.lock() as held:
             if other.errors_path.is_file():
                 known = self._known_ids()
                 lines = [e.model_dump_json() for e in other.iter_errors() if e.id not in known]
@@ -1458,6 +2485,11 @@ class CaseStore:
                             atomic_write_bytes(self.case_dir(cid) / s.file, code.encode("utf-8"))
                     self._save(t_case, t_extra)
                     counters["cases_added"] += 1
+                    continue
+                if mine is not None and mine[0].l2 and t_case.l2 and mine[0].l2 != t_case.l2:
+                    # 정확한 키: 같은 ID 를 다른 L2 가 차지한 케이스에는 합치지 않는다
+                    self._mismatch(cid, mine[0].l2, t_case.l2)
+                    counters["cases_skipped"] = counters.get("cases_skipped", 0) + 1
                     continue
                 if mine is None:
                     # 이쪽 폴더에 case.json 은 없는데 fix_v*.py 가 남아 있다(case.json 저장 전에 멈춘 실행 등):
@@ -1496,7 +2528,18 @@ class CaseStore:
                 if t_case.last_solution and not case.last_solution:
                     case.last_analysis, case.last_solution = t_case.last_analysis, t_case.last_solution
                 self._save(case, extra)
-            self.recount()
+            # v2.1z-ai: 가져온 기록은 옛 규칙으로 서명됐을 수 있다 — 같은 잠금 안에서 재서명한 뒤 한 번만 다시 센다
+            # (옛 내보내기를 지금 KB 에 넣어도 지금 ID 로 자리 잡는다; 항목 ID 는 바뀌지 않아 중복 거르기는 그대로)
+            if not held:
+                log.warning("kb import: the KB lock was not taken — no re-sign; run `sbmig kb reindex` later")
+            else:
+                try:
+                    rep = self._resign_locked(False, None, recount=False, force=True)
+                    if rep.entries_resigned:
+                        counters["entries_resigned"] = rep.entries_resigned
+                except Exception as e:  # noqa: BLE001 - the import stands; `sbmig kb reindex` re-signs later
+                    log.warning("kb import: re-sign failed (%s: %s) — run `sbmig kb reindex`", type(e).__name__, e)
+            self._recount_locked(skip=self.skipped_cases())
         return counters
 
     def _merge_runs(self, have: CaseScript, theirs: CaseScript, local: dict[int, int]) -> None:
@@ -1516,6 +2559,77 @@ class CaseStore:
         have.last_failure = have.last_failure or theirs.last_failure
         # v2.1y: 어느 한쪽이라도 비멱등을 봤으면 합친 KB 에서도 재사용하지 않는다
         have.non_idempotent = bool(have.non_idempotent or theirs.non_idempotent)
+
+
+# --------------------------------------------------------------------------- re-sign helpers
+@dataclass
+class _CasePlan:
+    """재서명 계획 한 건: 옛 케이스 ``old``(case.json, 없으면 None), 옮겨 갈 케이스마다 그 항목 위치들과 L2.
+
+    One case of a re-sign plan: the old case, every target with its entry positions and its L2."""
+    old: str
+    hit: Optional[tuple[CaseInfo, dict[str, Any]]]
+    targets: dict[str, list[int]]
+    l2: dict[str, str]
+
+    @property
+    def whole(self) -> bool:
+        return self.old not in self.targets and len(self.targets) == 1
+
+
+@dataclass
+class _ResignCtx:
+    vmaps: dict[tuple[str, str], dict[int, int]] = field(default_factory=dict)
+    saves: dict[str, tuple[CaseInfo, dict[str, Any]]] = field(default_factory=dict)
+    shared: dict[str, set[int]] = field(default_factory=dict)
+    parts: dict[str, list[int]] = field(default_factory=dict)
+    whole: dict[str, str] = field(default_factory=dict)
+    journal: dict[str, dict[str, Any]] = field(default_factory=lambda: {"remove": {}, "trim": {}})
+
+
+def _renumbered(tries: list[FixTry], vmap: dict[int, int]) -> list[FixTry]:
+    return [t.model_copy(update={"script_version": vmap.get(int(t.script_version), int(t.script_version))})
+            if t.script_version and vmap else t for t in tries]
+
+
+def _full_record(body: bytes) -> Optional[ErrorEntry]:
+    """줄 바이트의 레코드(찢긴 접두어 뒤에 붙은 것 포함), 못 읽으면 None.
+
+    The record of a line's bytes (also one glued after a torn prefix); None when it does not read."""
+    from sbmig.kb.jsonl import parse_record
+
+    return parse_record(body.decode("utf-8", "replace"), ErrorEntry)
+
+
+def _updated(full: ErrorEntry, upd: dict[str, Any]) -> ErrorEntry:
+    """``_resign_entries`` 의 바꿀 필드를 온전한 레코드에 적용한다(시도는 번호표로 다시 매김 — 온전한 레코드의 diff 를
+    지키려고).
+
+    Apply ``_resign_entries``' fields to the full record (tries renumbered by the map, keeping their diffs)."""
+    u = {k: val for k, val in upd.items() if k not in ("tries", "_vmap")}
+    if "_vmap" in upd:
+        u["tries"] = _renumbered(full.tries, upd["_vmap"])
+    return full.model_copy(update=u)
+
+
+def _moved_resolved_by(e: ErrorEntry, whole: dict[str, str]) -> Optional[list[Any]]:
+    """``resolved_by`` 중 통째로 옮긴 케이스를 가리키는 것을 새 ID 로 바꾼 목록(바꿀 것이 없으면 None).
+
+    ``resolved_by`` with the cases moved whole renamed; None when nothing names one."""
+    if not whole or not any(r.case_id in whole for r in e.resolved_by):
+        return None
+    return [r.model_copy(update={"case_id": whole[r.case_id]}) if r.case_id in whole else r for r in e.resolved_by]
+
+
+def _moved_script(text: str, old: str, new: str, vmap: dict[int, int]) -> str:
+    """``cases/<old>/fix_v<N>.py`` → ``cases/<new>/fix_v<새 N>.py`` (그 밖의 ``cases/<old>/`` 접두어도 바꿈).
+
+    Rewrite the script path of an entry whose case moved (version renumbered by ``vmap``)."""
+    if not text:
+        return text
+    t = re.sub(rf"cases/{re.escape(old)}/fix_v(\d+)\.py",
+               lambda m: f"cases/{new}/fix_v{vmap.get(int(m.group(1)), int(m.group(1)))}.py", text)
+    return t.replace(f"cases/{old}/", f"cases/{new}/")
 
 
 # --------------------------------------------------------------------------- cases.md

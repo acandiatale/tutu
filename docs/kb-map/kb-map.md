@@ -28,11 +28,11 @@
 
 | 층 | 파일 | 성격 |
 |---|---|---|
-| **원본 기록** | `errors.jsonl` | 모든 실행의 오류 한 건 = 한 줄. 실행이 끝날 때 그 실행의 오류 목록을 덧붙이고(이미 있는 id 는 건너뜀) 이미 쓴 줄은 고치지 않습니다. 나머지는 모두 이 파일에서 다시 만들 수 있습니다. |
+| **원본 기록** | `errors.jsonl` | 모든 실행의 오류 한 건 = 한 줄. 실행이 끝날 때 그 실행의 오류 목록을 덧붙이고(이미 있는 id 는 건너뜀) 이미 쓴 줄은 재색인(`sbmig kb reindex`)과 재서명 때만 고치고 오류 id 는 바꾸지 않습니다. 나머지는 모두 이 파일에서 다시 만들 수 있습니다. |
 | **재사용 지식** | `cases/<case_id>/case.json`, `fix_v<N>.py` | 다음 프로젝트에서 실제로 다시 실행되는 스크립트와 그 성적. 사람은 `sbmig kb cases retire` · `activate` · `pin` · `unpin` 으로만 손댑니다. |
 | **파생 사본** | `cases.md`, `cases/<case_id>/errors/*.json` | 사람이 읽는 표와 오류별 JSON. `sbmig kb reindex` 로 다시 만들 수 있으니 직접 고치지 않습니다. |
 | **사람이 채우는 표** | `libraries.yml`, `jar_names.yml` | 회사가 더하는 라이브러리 표(jakarta 빌드 좌표) / jar 이름 → 좌표 표. sbmig 는 읽기만 합니다. |
-| **운영 파일** | `.lock` (+ 잠깐 생기는 `.lock.breaker`, `.lock.probe.*`, `.fix.*.tmp`) | 웹 파드·빌드 파드·플릿·`sbmig kb` 가 동시에 쓰지 않게 하는 잠금. |
+| **운영 파일** | `.lock` (+ 잠깐 생기는 `.lock.breaker`, `.lock.probe.*`, `.fix.*.tmp`), `kb.json` (+ 잠깐 생기는 `resign-pending.json`) | 웹 파드·빌드 파드·플릿·`sbmig kb` 가 동시에 쓰지 않게 하는 잠금. `kb.json` 은 이 KB 가 어느 시그니처 규칙 버전까지 재서명됐는지 적은 표식입니다. |
 
 ```text
 kb-v2/
@@ -44,6 +44,7 @@ kb-v2/
 │   └── errors/<run_id>-<id>.json       오류 1건 = 파일 1개 (errors.jsonl 과 같은 내용, 들여쓰기)     [파생 사본]
 ├── cases/_other/errors/…               케이스 없는 항목 (pom-verify, 메모)                          [파생 사본]
 ├── libraries.yml, jar_names.yml        사람이 채우는 표 (있을 때만)                                 [사람]
+├── kb.json                             재서명 표식 {"sig": 규칙 버전}                               [운영]
 └── .lock                               쓰기 잠금                                                    [운영]
 
 kb-v2.bak-<시각>/                       kb import --replace 전에 남기는 이전 KB (kb-v2 옆)
@@ -189,7 +190,9 @@ flowchart LR
 
 - 리액터 모듈의 artifactId 는 `<module>` 로 가립니다. 그래서 프로젝트가 달라도 같은 원인은 같은 케이스입니다.
 - L2 가 없는 오류는 `sha1(종류|파일|L1)` 앞 10자를 씁니다.
-- 시그니처 규칙(`sbmig/build/signatures.py`)이 바뀌면 옛 규칙으로 저장된 케이스와는 매칭이 끊깁니다(알려진 과제, `agent-doc/10-open-items-and-history.md`).
+- 라이브러리 타입의 메서드·필드를 못 찾는 오류는 그 타입까지 키에 넣습니다(`compile|cannot_find_symbol|org.springframework.http.HttpHeaders.keySet`). 이름만 쓰면 `keySet`, `save` 같은 흔한 이름의 서로 다른 문제가 한 케이스가 됩니다. 클래스를 못 찾는 오류는 단순 이름 그대로입니다.
+- 시그니처 규칙에는 버전이 있습니다(`SIGNATURE_VERSION`). 오류 기록과 케이스는 자기를 서명한 버전을 `sig` 로 갖습니다. 규칙이 바뀌면 KB 가 옛 기록을 지금 규칙으로 **재서명**해서 케이스와 스크립트를 새 case_id 로 옮기고, 옛 case_id 는 `aliases`(케이스) · `was`(오류 기록)에 남깁니다. `sbmig kb reindex` 를 칠 때와 실행이 KB 를 처음 볼 때 스스로 합니다.
+- case_id 는 L2 전체의 해시입니다. 저장된 케이스의 L2 가 지금 묻는 L2 와 글자까지 같을 때만 그 케이스를 씁니다(10자가 우연히 겹쳐도 섞이지 않음).
 
 <a id="states"></a>
 
@@ -248,6 +251,9 @@ stateDiagram-v2
 | `script` | 해결한 스크립트 파일 `cases/<case_id>/fix_v<N>.py` |
 | `note` | pom-verify: 구조 정리가 한 일 / note 항목: 그 글 |
 | `at` | 기록 시각 (UTC) |
+| `sig` | 이 기록의 L2 를 만든 시그니처 규칙 버전 (0 = 버전이 생기기 전) |
+| `l1`, `symbol`, `location`, `artifact`, `goal` | 시그니처의 재료: 구체 시그니처, javac 의 symbol / location 줄, 좌표 `g:a[:v]`, 플러그인 목표. 규칙이 바뀌면 이것으로 L2 를 다시 계산합니다 |
+| `was[]` | 재서명 전의 case_id 들 (오래된 것 먼저) |
 
 ### tries[] — 시도 1건 (`FixTry`)
 
@@ -275,6 +281,8 @@ stateDiagram-v2
 | `scripts[]` | 저장된 스크립트 버전 (아래 표) |
 | `last_analysis`, `last_solution` | 마지막 LLM 원인 / 해결 |
 | `updated_at` | 마지막 갱신 |
+| `sig` | 이 케이스의 L2 를 만든 시그니처 규칙 버전 |
+| `aliases[]` | 재서명으로 이 케이스에 옮겨 온 옛 case_id 들 — `sbmig kb cases show <옛 id>` 가 이 케이스를 엽니다 |
 | `pin` | (모델 밖 키) 사람이 고정한 차단 `block[:이유]` — 이 케이스는 시도하지 않음 |
 | `last_result` | (모델 밖 키) 마지막 결과 |
 

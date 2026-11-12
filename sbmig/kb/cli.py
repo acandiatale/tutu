@@ -79,14 +79,32 @@ def _main(
 
 
 # --------------------------------------------------------------------------- whole KB
-@kb_cli.command("reindex")
-def reindex_cmd(ctx: typer.Context) -> None:
-    """재색인: errors.jsonl 로부터 케이스 수치·스크립트 실행 기록·수정 전/후 코드를 다시 만든다.
+RESIGN_LINES = 50                 # moved cases listed by `kb reindex` before "… N more"
 
-    Recount every case (seen / resolved / projects / last solution) from errors.jsonl and rewrite cases.md; rebuild
-    every stored script's run history (why it failed) and give old entries their as-is / to-be code."""
+
+@kb_cli.command("reindex")
+def reindex_cmd(ctx: typer.Context,
+                dry_run: bool = typer.Option(False, "--dry-run",
+                                             help="Only print what the re-sign would move; write nothing.")) -> None:
+    """재색인: 옛 서명 규칙의 기록을 지금 케이스 ID 로 옮기고(재서명) 케이스 수치·실행 기록을 다시 만든다.
+
+    Re-sign the records signed by older signature rules (moved to the case ids the current rules give), then
+    recount every case (seen / resolved / projects / last solution) from errors.jsonl and rewrite cases.md; rebuild
+    every stored script's run history (why it failed) and give old entries their as-is / to-be code. ``--dry-run``
+    prints what would move and writes nothing (no recount either)."""
     kb = _kb(ctx)
+    if dry_run:
+        rep = kb.resign(dry_run=True)
+        for ln in rep.lines(RESIGN_LINES):
+            typer.echo(ln)
+        if rep.error:
+            raise typer.Exit(1)
+        return
     n = kb.reindex()
+    rep = kb.last_resign
+    if rep is not None:
+        for ln in rep.lines(RESIGN_LINES):
+            typer.echo(ln)
     st = kb.stats()
     done = getattr(kb.cases, "last_reindex", None) or {}
     # 변경 조각 수와 해결한 시도 수는 따로 센 숫자(A15) — INFO 줄과 같은 말로 둘 다 보인다
@@ -187,16 +205,47 @@ def errors_show_cmd(ctx: typer.Context, entry: str = typer.Argument(..., metavar
 
 
 # --------------------------------------------------------------------------- cases
-def _case_id(store: CaseStore, key: str) -> str:
-    """케이스 ID, 또는 하나로 정해지는 4자 이상의 앞부분 → 케이스 ID(없거나 여럿이면 exit 1)."""
+def _case_id(store: CaseStore, key: str, *, versioned: bool = False) -> str:
+    """케이스 ID, 또는 하나로 정해지는 4자 이상의 앞부분 → 케이스 ID(없거나 여럿이면 exit 1). 폴더가 없는 ID 가
+    어떤 케이스의 ``aliases``(재서명으로 옮겨 온 옛 ID)에 있으면 그 케이스(stderr 에 ``case <old> is now <new>``).
+
+    A case id or a unique prefix of 4+ characters; an id (or prefix) that names no folder but is in a case's
+    ``aliases`` (moved there by a re-sign) resolves to that case (``case <old> is now <new>`` on stderr). A real
+    folder always wins over an alias. ``versioned`` (retire / activate take a version number): an alias is refused —
+    a merge may have renumbered the moved scripts."""
     ids = store.case_ids()
     if key in ids:
         return key
     hits = [c for c in ids if c.startswith(key)] if len(key) >= 4 else []
     if len(hits) == 1:
         return hits[0]
+    if not hits:
+        found = _alias_target(store, key, quiet=versioned)
+        if found and versioned:
+            # 합치기에서 번호가 바뀌었을 수 있다 — 옛 번호로 다른 스크립트를 끄지 않게 거부한다
+            _fail(f"case {key} is now {found}: version numbers may have changed — look at 'sbmig kb cases show "
+                  f"{found}' and use that id")
+        if found:
+            return found
     _fail(f"no case {key}" if not hits else f"{key} matches {len(hits)} cases: " + ", ".join(hits[:10]))
     return ""
+
+
+def _alias_target(store: CaseStore, key: str, quiet: bool = False) -> str:
+    """``key``(ID 또는 4자 이상 앞부분)를 aliases 에 가진 케이스 하나 — 없거나 여럿이면 "".
+
+    The one case whose ``aliases`` hold ``key`` (an id or a 4+ character prefix); "" when none or several."""
+    found: dict[str, str] = {}
+    for c, _ in store.cases():
+        for a in c.aliases:
+            if a == key or (len(key) >= 4 and a.startswith(key)):
+                found.setdefault(c.case_id, a)
+    if len(found) != 1:
+        return ""
+    (new, old), = found.items()
+    if not quiet:
+        typer.echo(f"case {old} is now {new}", err=True)
+    return new
 
 
 @cases_cli.command("list")
@@ -230,7 +279,9 @@ def cases_show_cmd(ctx: typer.Context, key: str = typer.Argument(..., metavar="C
         _fail(f"case {cid}: case.json does not read (`sbmig kb validate`)")
     extra = store.extra(cid)
     typer.echo(f"case {case.case_id}  {case.name}")
-    typer.echo(f"  l2: {case.l2 or '-'}  kind {case.kind.value}")
+    typer.echo(f"  l2: {case.l2 or '-'}  kind {case.kind.value}" + (f"  sig {case.sig}" if case.sig else ""))
+    if case.aliases:
+        typer.echo(f"  aliases: {', '.join(case.aliases)}")
     typer.echo(f"  seen {case.seen}, resolved {case.resolved}, projects {len(case.projects)}: "
                + (", ".join(case.projects) or "-"))
     for k, v in extra.items():
@@ -271,7 +322,7 @@ def cases_show_cmd(ctx: typer.Context, key: str = typer.Argument(..., metavar="C
 def _status(ctx: typer.Context, key: str, version: int, retire: bool) -> None:
     """retire / activate 명령의 공통 부분(없는 케이스·버전이면 exit 1)."""
     store = _kb(ctx).cases
-    cid = _case_id(store, key)
+    cid = _case_id(store, key, versioned=True)
     try:
         s = store.retire(cid, version) if retire else store.activate(cid, version)
     except KeyError as e:
@@ -311,6 +362,9 @@ def _pin_target(store: CaseStore, key: str, create: bool) -> str:
         return hits[0]
     if len(hits) > 1:
         _fail(f"{key} matches {len(hits)} cases: " + ", ".join(hits[:10]))
+    found = _alias_target(store, key)                 # an old id a re-sign moved: the case it is now
+    if found:
+        return found
     if not create:
         _fail(f"unknown case {key}; use --create to pin a case the KB has not seen")
     # 미리 고정: 케이스 ID 는 L2 서명 sha1 의 앞 10자리 — 그 모양이 아니면 폴더를 만들지 않는다
