@@ -72,8 +72,11 @@ spec:
             - {name: job-template, mountPath: /templates, readOnly: true}
             - {name: kubeconfig, mountPath: /etc/kube, readOnly: true}   # 회사 방식: Secret 의 키 config → /etc/kube/config
           resources:
-            requests: {cpu: "2", memory: 6Gi}
-            limits: {cpu: "4", memory: 8Gi}      # Maven / OpenRewrite 가 -Xmx4g(build.jvm_args) + Python
+            # 회사 값(2026-11-12): 웹 파드 1개와 빌드 파드 3개를 모두 CPU 2 / 메모리 8Gi 로 맞춘다. requests = limits 라서 다른 파드에
+            # 밀려 쫓겨나지 않는다. Job 모드의 이 파드는 빌드를 하지 않아 실제로는 훨씬 적게 쓴다(화면 · Job 생성 · 로그 읽기) —
+            # vCPU 를 아끼려면 여기를 줄이는 것이 가장 싸다(README §3). in-process 모드로 돌리면 이 파드가 빌드도 하므로 그대로 둔다.
+            requests: {cpu: "2", memory: 8Gi}
+            limits: {cpu: "2", memory: 8Gi}      # in-process 모드일 때: Maven / OpenRewrite 가 -Xmx4g(build.jvm_args) + Python
           readinessProbe:
             tcpSocket: {port: http}               # 인증 없는 health 경로가 없다(토큰 가드가 403) → tcp 프로브
             initialDelaySeconds: 10

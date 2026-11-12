@@ -123,8 +123,11 @@ spec:
             # - {name: config, mountPath: /app/config/artifacts.yml, subPath: artifacts.yml, readOnly: true}   # artifacts.yml 을 ConfigMap 으로 줄 때만(20-configmap.yaml 맨 아래; 웹 파드도 같이)
             - {name: config, mountPath: /etc/sbmig/settings.xml, subPath: settings.xml, readOnly: true}
           resources:
-            requests: {cpu: "2", memory: 6Gi}
-            limits: {cpu: "4", memory: 8Gi}     # openrewrite.jvm_args -Xmx4g + Python
+            # 회사 값(2026-11-12): 빌드 파드 하나에 CPU 2 / 메모리 8Gi, 동시에 3개(SBMIG_JOB_MAX_PARALLEL). requests = limits.
+            # 메모리 8Gi 는 Maven 힙 -Xmx4g(openrewrite.jvm_args) + JVM 의 힙 밖 메모리 + Python 을 담는다 — 힙을 올리면 여기도 올린다
+            # (힙은 memory limit 보다 2 GiB 이상 작게).
+            requests: {cpu: "2", memory: 8Gi}
+            limits: {cpu: "2", memory: 8Gi}
       volumes:
         - name: data
           persistentVolumeClaim: {claimName: sbmig-data}                 # 10-storage.yaml — ReadWriteMany

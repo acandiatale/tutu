@@ -65,8 +65,8 @@ spec:
             # - {name: config, mountPath: /app/config/artifacts.yml, subPath: artifacts.yml, readOnly: true}   # artifacts.yml 을 ConfigMap 으로 줄 때만(20-configmap.yaml 맨 아래)
             - {name: config, mountPath: /etc/sbmig/settings.xml, subPath: settings.xml, readOnly: true}
           resources:
-            requests: {cpu: "2", memory: 6Gi}
-            limits: {cpu: "4", memory: 8Gi}     # build.jvm_args -Xmx4g + Python
+            requests: {cpu: "2", memory: 8Gi}   # 회사 값(2026-11-12): 빌드 파드 하나에 CPU 2 / 메모리 8Gi, requests = limits
+            limits: {cpu: "2", memory: 8Gi}     # build.jvm_args -Xmx4g + JVM 의 힙 밖 메모리 + Python
       volumes:
         - name: workspace
           emptyDir: {sizeLimit: 20Gi}

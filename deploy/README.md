@@ -344,8 +344,11 @@ PVC 가 RWO 만 되는 클러스터라면 Job 템플릿과 Deployment 의 hostna
 | 웹 파드 재시작 | 돌던 Job 은 그대로 돈다. 다시 뜬 웹 파드가 적어 둔 자리 번호 그대로 이어받고, 기다리던 업로드는 접수 순서로 다시 줄을 선다 |
 | 멈춤 | 도는 이관은 지금처럼 노드 사이에서 멈춘다. 기다리는 이관에 누른 멈춤은 **바로** 먹힌다: 줄에서 빠지고 `stopped` 로 끝나며(Job 을 만들지 않는다) 뒤에서 기다리던 이관들의 순번이 한 칸씩 당겨진다 |
 
-**인프라팀에 확인할 것.** 빌드 파드 하나가 CPU 2 / 메모리 6Gi 를 요청한다(상한 4 / 8Gi, 81 의 `resources`). 셋이 같이 돌려면 CPU 6 / 메모리 18Gi 의 여유가
-있어야 한다. 모자라면 그 파드는 `Pending` 으로 서 있고 화면의 '파드' 단계가 넘어가지 않는다(`kubectl -n agent describe pod <파드 이름>` 의 Events).
+**인프라팀에 확인할 것.** 파드 크기는 회사 값으로 맞춰 두었다: 웹 파드 1개와 빌드 파드 3개 모두 CPU 2 / 메모리 8Gi, requests 와 limits 가
+같다(40 · 81 의 `resources`). 넷이 같이 돌려면 CPU 8 / 메모리 32Gi 의 여유가
+있어야 한다. Job 모드의 웹 파드는 빌드를 하지 않으므로(화면, Job 만들기, 로그 읽기) vCPU 를 아껴야 하면 웹 파드를
+줄이는 것이 가장 싸다(예: CPU 500m / 메모리 1Gi). 빌드 파드의 메모리는 Maven 힙(`openrewrite.jvm_args` `-Xmx4g`)보다 2 GiB 이상 커야 한다.
+CPU 2 로 이관 한 건이 얼마나 걸리는지는 재지 않았다 — 보고서 머리 표의 소요 시간으로 PC 실행과 비교한다. 모자라면 그 파드는 `Pending` 으로 서 있고 화면의 '파드' 단계가 넘어가지 않는다(`kubectl -n agent describe pod <파드 이름>` 의 Events).
 namespace 에 ResourceQuota 가 있으면 파드가 만들어지지 않을 수 있다(`kubectl -n agent describe job sbmig-<run id>` 의 Events). `sbmig-m2`(50Gi)에는
 저장소가 셋 생기므로 용량을 본다: `kubectl -n agent exec deploy/sbmig -- du -sh /home/sbmig/.m2`. KB 가 있는 NFS 는 마운트 옵션에
 `nocto` 가 없어야 한다(기본값이면 된다: 잠금을 잡은 뒤 연 파일이 앞 파드가 쓴 내용을 보여 준다는 보장). 하드 링크가 안 되는 저장소면 스크립트 파일은 "없을 때만 만들기"(배타적 생성)로 쓴다.
@@ -548,7 +551,7 @@ preflight / ADF / 내부 오류)이면 3. `SBMIG_FAIL_JOB_ON_BUILD_FAIL=1` 이�
 * **IVAS 조치 구분 코드**(`action.actionDivCd`): NE 조치 필요 / NP 조치계획 미등록 / PL 조치예정 / OT 조치일 경과 / PC 패치 완료 / IG 조치 예외.
   `remediation.ignore_actions` 의 기본은 **비어 있음** — 모든 조치 구분을 고칠 대상으로 본다(기존 사내 구현도 PC·IG 를 거르지 않는다, 2026-11-11).
   보안팀이 예외 처리한 항목을 빼려면 `SBMIG_REMEDIATION__IGNORE_ACTIONS: '["PC","IG"]'` 처럼 적는다: 그 코드의 항목은 검사 파일과 보고서의 "조치
-  대상에서 뺀 항목" 표에 남지만 계획하지 않고 남은 취약점으로 세지 않는다. 빈 코드·모르는 코드는 늘 조치 대상이다. 바꾸면 정책 해시가 바뀌어 열린
+  대상에서 제외한 항목" 표에 남지만 계획하지 않고 남은 취약점으로 세지 않는다. 빈 코드·모르는 코드는 늘 조치 대상이다. 바꾸면 정책 해시가 바뀌어 열린
   제안은 다시 만들어진다.
 * **IVAS 요약 대조**(`remediation.ivas_summary_check`, 기본 `exact`): 기존 사내 구현처럼 요약의 `components.total` 이 모든 쪽에서 받은 라이브러리
   취약점 상세 행 수(중복 제거 전)와 같아야 검사 완료다. 다르면 `summary_mismatch`(검사 미완료, 두 수는 검사 메모에). `fileComponents` · `swComponents`
