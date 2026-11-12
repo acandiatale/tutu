@@ -49,6 +49,7 @@ from typing import Any
 from sbmig.core import scrub as _scrub
 
 from . import graph as graph_mod
+from . import i18n as i18n_mod
 from . import intake as intake_mod
 from . import ivas as ivas_mod
 from . import planner as planner_mod
@@ -976,9 +977,11 @@ class RemediationManager:
         return {"items": items, "page": page, "size": size, "total": len(rows)}
 
     def proposals(self, rid: str, all_rounds: bool = False) -> dict[str, Any]:
-        """지금 라운드(``all_rounds`` 면 모든 라운드)의 제안 전체(diff·해시 세 개·결정 포함)와 남긴 항목.
+        """지금 라운드(``all_rounds`` 면 모든 라운드)의 제안 전체(diff·해시 세 개·결정 포함)와 남긴 항목. 화면용 한국어를
+        덧붙인다: 제안마다 ``note_ko``, 남긴 항목마다 ``detail_ko`` / ``origin_ko`` / ``reason_ko`` (기존 필드는 그대로).
 
-        The current round's proposals (all rounds with `all_rounds`) with diffs, hashes and decisions."""
+        The current round's proposals (all rounds with `all_rounds`) with diffs, hashes and decisions, plus Korean
+        display fields (`note_ko`; `detail_ko` / `origin_ko` / `reason_ko`)."""
         paths, chained = self._locate(rid)
         st = self._load(rid)
         plan = self._current_plan(paths, st)
@@ -997,6 +1000,13 @@ class RemediationManager:
         else:
             out["proposals"] = [p.to_dict() for p in plan.proposals] if plan else []
             out["residuals"] = [r.to_dict() for r in plan.residuals] if plan else []
+        # 화면용 한국어(저장된 영어 문장과 코드는 그대로 두고 옆에 붙인다)
+        for p in out["proposals"]:
+            p["note_ko"] = i18n_mod.ko_text(p.get("note") or "")
+        for r in out["residuals"]:
+            r["detail_ko"] = i18n_mod.ko_text(r.get("detail") or "")
+            r["origin_ko"] = i18n_mod.label(i18n_mod.ORIGIN_KO, r.get("origin"))
+            r["reason_ko"] = i18n_mod.label(i18n_mod.REASON_KO, r.get("reason"))
         return out
 
     def result(self, rid: str) -> dict[str, Any]:

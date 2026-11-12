@@ -119,6 +119,8 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
     "- Not run: `{reason}`": "- 실행 안 함: `{reason}`",
     "- Status: `{status}`{reason}": "- 상태: `{status}`{reason}",
     "- Counts: {counts}": "- 개수: {counts}",
+    "- In-house artifacts (exception possible, contact their owners): {n}":
+        "- 사내 아티팩트(예외 처리 가능, 담당자에게 연락): {n}건",
     "- Files: {files}": "- 파일: {files}",
     "| Structure review | {summary} |": "| 구조 점검 | {summary} |",
     "After the restructure and before the first build, the LLM checked the poms, dependencies and module layout "

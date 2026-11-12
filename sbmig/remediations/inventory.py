@@ -39,13 +39,14 @@ from __future__ import annotations
 import logging
 import posixpath
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from lxml import etree
 
+from .inhouse import inhouse_on_path
 from .models import (
     O_BOM_MANAGED,
     O_DIRECT_LITERAL,
@@ -464,6 +465,9 @@ class _Res:
     manager_location: PomLocation | None = None
     reason: str = ""
     via: list[str] = field(default_factory=list)
+    # 이 모듈에서 이 라이브러리를 끌고 온 사내 아티팩트 g:a 들(``inhouse.inhouse_on_path``). 묶는 열쇠에는 넣지 않는다 —
+    # 같은 버전 글자 자리는 사내 아티팩트와 상관없이 한 항목이다; 항목의 ``inhouse`` / ``inhouse_modules`` 로 모은다
+    inhouse: list[str] = field(default_factory=list)
 
     def key(self) -> tuple:
         if self.origin in EDITABLE and self.location is not None:
@@ -645,6 +649,48 @@ def _group(ga: str, version: str, results: list[tuple[str, _Res]]) -> list[Inven
     return items
 
 
+AMBIGUOUS_MARK = "ambiguous provenance"
+PARENTS_GROUP = "parents"
+
+
+def _parent_inhouse(pp: ProjectPoms, mod: PomFile, dep: ResolvedDep, res: _Res, parents: set[str]) -> list[str]:
+    """회사 부모(``inhouse_groups`` 의 ``parents``)에서 파생된 결과면 ``[그 부모 g:a]``, 아니면 []. 부모 g:a 는 의존성 사슬에
+    나타나지 않으므로 사슬로는 못 본다 — 모듈 사슬 맨 위의 **외부** 부모가 회사 부모일 때 다음 둘 중 하나면 그 부모 몫이다
+    (사용자 2026-11-12: "parent, boot-jar, comp-jar 에서 파생된 것도 아키텍처팀에 문의해야 고쳐진다"):
+      1. 출처가 ``parent_managed`` 이고 출처 불명(부모 + 프로젝트 BOM 등) 갈래가 아니다 — 버전이 부모 사슬에서 관리되거나,
+         프로젝트 pom 이 선언하지 않은 직접 의존성(부모의 ``<dependencies>`` 에서 물려받음)이다;
+      2. 간접 결과(``transitive`` 또는 사슬이 있는 관리 결과)인데 사슬 머리(모듈의 직접 의존성)를 모듈의 프로젝트 pom 사슬이
+         선언하지 않았다 — 머리를 부모에서 물려받았으니 그 아래도 부모와 함께 왔다.
+    고칠 수 있는 출처·unmapped·프로젝트가 import 한 BOM 의 관리는 부모 몫이 아니다(프로젝트가 다스린다).
+
+    `[parent g:a]` when the result derives from an in-house company parent (managed through its chain, inherited from
+    its `<dependencies>`, or transitive under a dependency the project poms do not declare); else []."""
+    if not parents or res.editable or res.origin == O_UNMAPPED:
+        return []
+    ext = pp.external_parent(mod)
+    if ext is None:
+        return []
+    pga = _split_ga(ext[0])
+    if pga is None or pga not in parents:
+        return []
+    if res.origin == O_PARENT_MANAGED and AMBIGUOUS_MARK not in (res.reason or ""):
+        return [pga]
+    if not dep.direct and dep.path and (res.origin == O_TRANSITIVE or res.via):
+        head = _split_ga(dep.path[0])
+        if head is not None and head != dep.ga and _find_decl(pp, mod, head, management=False) is None:
+            return [pga]
+    return []
+
+
+def _fill_inhouse(item: InventoryItem, results: list[tuple[str, _Res]]) -> None:
+    """항목의 모듈들(합쳐 들어온 also 모듈 포함)의 사내 아티팩트 결과를 모은다: ``inhouse`` = 합집합(정렬),
+    ``inhouse_modules`` = 결과가 비지 않은 모듈."""
+    per_mod = {m: r.inhouse for m, r in results}
+    mods = [m for m in item.modules if per_mod.get(m)]
+    item.inhouse = sorted({ga for m in mods for ga in per_mod[m]})
+    item.inhouse_modules = sorted(mods)
+
+
 # ---------------------------------------------------------------------------- 해석 결과에 없는 항목
 def _safe_rel(loc: str) -> str | None:
     p = (loc or "").replace("\\", "/").lstrip("/")
@@ -721,12 +767,17 @@ def _split_ga(identifier: str) -> str | None:
 
 # ---------------------------------------------------------------------------- 진입점
 def build_inventory(project: Path, findings: list[Finding], resolved: ResolvedModel, *,
-                    managed_by: Callable[[str], str | None] | None = None) -> Inventory:
+                    managed_by: Callable[[str], str | None] | None = None,
+                    inhouse: Mapping[str, str] | None = None) -> Inventory:
     """발견 항목 → ``Inventory`` (``interfaces.InventoryFn``). 해석 결과와 같은 g:a·같은 버전인 라이브러리만 자동 출처를 받고,
     나머지는 plugin / vendored / unmapped. ``managed_by`` (g:a → 관리하는 부모·BOM 의 g:a:v)를 주면 외부 관리 판정에 그 사실을
     쓴다. 해석 결과가 불완전하거나 프로젝트 pom 을 못 읽으면 ``complete=False``. 순서는 (ga, 버전, 출처, pom, 줄).
+    ``inhouse`` (사내 아티팩트 g:a → 그룹, ``inhouse.inhouse_keys``)를 주면 모듈마다 그 라이브러리를 끌고 온 사내 아티팩트를
+    항목의 ``inhouse`` / ``inhouse_modules`` 에 적는다(planner 가 그 항목을 담당자 몫의 잔여로 남긴다): 의존성 사슬에 있는 것,
+    그리고 그룹 ``parents`` 의 회사 부모에서 파생된 것(``_parent_inhouse``). 없으면 둘 다 빈 목록.
 
-    Findings → inventory. Deterministic order; `complete=False` when the resolution is incomplete or a pom is unreadable."""
+    Findings → inventory. Deterministic order; `complete=False` when the resolution is incomplete or a pom is unreadable.
+    With `inhouse` (in-house g:a → group) each item records the in-house artifacts that bring it and in which modules."""
     project = Path(project)
     # 해석 결과가 서비스마다의 reactor 에서 왔으면(루트 aggregator 없음) 같은 뿌리들로 pom 을 읽는다
     pp = ProjectPoms(project, roots=list(getattr(resolved, "roots", None) or []) or None)
@@ -736,6 +787,8 @@ def build_inventory(project: Path, findings: list[Finding], resolved: ResolvedMo
         inv.notes.append("Maven resolution is incomplete")
 
     items: list[InventoryItem] = []
+    # 회사 부모(그룹 parents)는 의존성 사슬에 나오지 않는다 — 모듈의 외부 부모로 따로 본다(_parent_inhouse)
+    parent_keys = {k for k, grp in (inhouse or {}).items() if grp == PARENTS_GROUP}
 
     # 라이브러리 발견 항목을 (g:a, 버전)으로 묶는다
     lib_groups: dict[tuple[str, str], list[Finding]] = {}
@@ -774,9 +827,14 @@ def build_inventory(project: Path, findings: list[Finding], resolved: ResolvedMo
                     note = f"module {m.dir}: pom not readable ({pf.error or 'missing'})"
                     if note not in inv.notes:
                         inv.notes.append(note)
-                    results.append((m.dir, _Res(O_UNMAPPED, reason=note)))
+                    results.append((m.dir, _Res(O_UNMAPPED, reason=note,
+                                                inhouse=inhouse_on_path(dep.ga, dep.path, inhouse))))
                     continue
                 res = _classify(pp, pf, dep, managed_by)
+                res.inhouse = inhouse_on_path(dep.ga, dep.path, inhouse)
+                for pga in _parent_inhouse(pp, pf, dep, res, parent_keys):
+                    if pga not in res.inhouse:
+                        res.inhouse.append(pga)
                 variants = sorted({f"{d.type or 'jar'}/{d.classifier}" for d in m.dependencies
                                    if d.ga == ga and d.version == version and ((d.type or "jar") != "jar" or d.classifier)})
                 if variants and not res.editable:
@@ -789,6 +847,7 @@ def build_inventory(project: Path, findings: list[Finding], resolved: ResolvedMo
                 # 왜: 다른 모듈의 결과가 이 항목에 합쳐지면 그 모듈의 reason 은 사라진다 — 변종 표시는 남겨야 override 를 막는다
                 if it.origin not in EDITABLE and VARIANT_MARK not in it.reason and set(marked) & set(it.modules):
                     it.reason = "; ".join(x for x in [it.reason, f"{VARIANT_MARK} in {', '.join(marked)}"] if x)
+                _fill_inhouse(it, results)
                 items.append(decorate(it, fs))
             continue
         items.append(decorate(_unresolved(project, resolved, ga, version, fs), fs))

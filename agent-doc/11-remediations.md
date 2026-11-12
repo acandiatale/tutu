@@ -148,7 +148,7 @@ pin 이 없으면 IVAS patched 힌트 필수, 근거는 정책 또는 승인된 
 이유 코드(문자열 그대로가 API 계약): `baseline_build_failed`, `candidate_build_failed`, `scan_incomplete`, `upload_uncertain`, `zip_hash_mismatch`,
 `text_only_violation`, `resolution_mismatch`, `execution_boundary_refused`, `not_ready`, `pending_approval`, `rejected_proposals`,
 `residual_findings`, `manual_review`, `no_candidate_version`, `rounds_exhausted`, `stop_requested`, `internal_error`, `policy_denied`,
-`unknown_provenance`, `stale_location`, `inventory_incomplete`. 정의는 `sbmig/remediations/models.py`(이관에 이어 돈 조치만 `chain_budget`, chain.py).
+`unknown_provenance`, `stale_location`, `inventory_incomplete`, `inhouse_artifact`(12). 정의는 `sbmig/remediations/models.py`(이관에 이어 돈 조치만 `chain_budget`, chain.py).
 
 ## 5. HTTP API (웹 파드, TokenGuard 뒤 — 이관에 이어 돈 조치의 id 는 이관 run id)
 
@@ -188,7 +188,7 @@ pin 이 없으면 IVAS patched 힌트 필수, 근거는 정책 또는 승인된 
 `state.boundary` 의 `code`(`project_maven_config`, `maven_extensions`, `maven_wrapper`, `symlink`, `foreign_repository`,
 `foreign_plugin_repository`, `unparsable_pom`). `manual_review` 만 남음 → `inventory.json` 의 `origin` 이 `plugin` / `vendored` / `unmapped` 이거나,
 `transitive` / 부모·BOM 관리인데 override 를 막은 사실이 잔여의 `detail` 에 있다(분류자·jar 아님, 루트 pom 비상속·루트 pom 없음, 직접 선언 버전,
-넣을 줄 없음, 이미 있는 관리 항목). `resolution_mismatch` → 제안이 다스리는 모듈이 계획 버전이 아니다(닿지 않는 모듈이 남는 것은 `info:` 메모, 다음 라운드 몫). `no_candidate_version` → 잔여의 `detail` 에 저장소가 준 버전 목록과 제외 이유(힌트 없음 포함)가 있다.
+넣을 줄 없음, 이미 있는 관리 항목). `resolution_mismatch` → 제안이 다스리는 모듈이 계획 버전이 아니다(12 의 4절). `no_candidate_version` → 잔여의 `detail` 에 저장소가 준 버전 목록과 제외 이유(힌트 없음 포함)가 있다.
 
 ## 7. 설정 키 (`remediation:` 절, `config/default.yml` 에 한국어 설명)
 
@@ -235,7 +235,7 @@ Maven 쪽은 이관과 같은 키를 쓴다: `build.mvn`, `build.java_home`, `bu
 | 실패한 후보를 낼지(include / discard), 검증된 ZIP 보존 | `sbmig/remediations/graph.py` (`_build`, `deliver_failed_candidate`, `discard_candidate`) |
 | Maven 명령·준비 조건·해석 읽기 | `sbmig/remediations/maven.py` |
 | 노드 순서, 멈춤·재개, 성공 판정 | `sbmig/remediations/graph.py` (`_evaluate`, `_Holder.scan`) |
-| 보고서 문장·다음 할 일 | `sbmig/remediations/report.py` |
+| 보고서·한국어 문장·사내 라이브러리 안내 | [12](12-remediation-report.md) |
 | 상태·이유 코드·자료형(계약) | `sbmig/remediations/models.py` — 바꾸면 `docs/INTERFACES.md` 의 remediations 절도 |
 | 새 설정 키 | `sbmig/core/config.py` 의 `RemediationConfig` + `config/default.yml` (한국어 설명) |
 | HTTP 경로·작업 관리 | 같은 패키지의 api.py / service.py |

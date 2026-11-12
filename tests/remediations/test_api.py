@@ -155,6 +155,7 @@ def test_result_proposals_approvals_resume(tmp_path, base_cfg):
     assert props["policy_hash"] == planner_mod.policy_hash(base_cfg)
     p = props["proposals"][0]
     assert {"diff", "proposal_hash", "source_tree_hash", "policy_hash", "decision"} <= set(p)
+    assert "note_ko" in p and isinstance(p["note_ko"], str)              # Korean display text beside the stored note
     assert c.get(f"/api/remediations/{rid}/proposals?all=1").json()["proposals"][0]["id"] == p["id"]
 
     r = c.post(f"/api/remediations/{rid}/resume")

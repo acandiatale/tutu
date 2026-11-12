@@ -275,9 +275,12 @@ class ScriptedInventory:
     def __init__(self, results: list[Inventory] | None = None):
         self.results = list(results or [])
         self.calls: list[list[Finding]] = []
+        self.inhouse: list[dict[str, str]] = []          # the in-house table the graph passed per call
 
-    def __call__(self, project: Path, findings: list[Finding], resolved: ResolvedModel) -> Inventory:
+    def __call__(self, project: Path, findings: list[Finding], resolved: ResolvedModel, *,
+                 inhouse: Any = None) -> Inventory:
         self.calls.append(list(findings))
+        self.inhouse.append(dict(inhouse or {}))
         if self.results:
             return self.results.pop(0)
         return Inventory(items=[InventoryItem(ga=f.identifier, version=f.version, origin="direct_literal",

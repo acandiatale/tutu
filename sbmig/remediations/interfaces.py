@@ -8,7 +8,7 @@ or Maven call). `default_components(cfg)` in `graph.py` wires the real implement
 """
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
@@ -115,9 +115,11 @@ class IntakeFns(Protocol):
 
 
 class InventoryFn(Protocol):
-    """``inventory.build_inventory``: 발견 항목을 해석 결과와 pom 선언 자리에 연결한다."""
+    """``inventory.build_inventory``: 발견 항목을 해석 결과와 pom 선언 자리에 연결한다. ``inhouse`` 는 사내 아티팩트 표
+    ("g:a" → 그룹, ``inhouse.inhouse_keys``) — 그래프가 늘 키워드로 넘긴다(비면 ``{}``)."""
 
-    def __call__(self, project: Path, findings: list[Finding], resolved: ResolvedModel) -> Inventory: ...
+    def __call__(self, project: Path, findings: list[Finding], resolved: ResolvedModel, *,
+                 inhouse: Mapping[str, str] | None = None) -> Inventory: ...
 
 
 class PlanFn(Protocol):

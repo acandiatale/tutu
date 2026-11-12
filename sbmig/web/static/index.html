@@ -838,7 +838,8 @@
     pending_approval: '승인 대기 중', rejected_proposals: '적용하지 않은 제안 있음', residual_findings: '남은 취약점 있음',
     manual_review: '수동 검토 필요', no_candidate_version: '올릴 버전 없음', rounds_exhausted: '라운드 한도 도달',
     stop_requested: '중지 요청', internal_error: '내부 오류', policy_denied: '서버 정책이 막음', unknown_provenance: '관리 출처 불명',
-    stale_location: '파일이 바뀌어 버전 자리를 못 찾음', inventory_incomplete: '의존성 목록 미완성', chain_budget: '빌드 파드 시간 한도' };
+    stale_location: '파일이 바뀌어 버전 자리를 못 찾음', inventory_incomplete: '의존성 목록 미완성', chain_budget: '빌드 파드 시간 한도',
+    inhouse_artifact: '사내 라이브러리 경유(예외 처리 가능)' };
   // 제안의 종류(K_*)·위험 표시(RISK_*)
   const KIND_KO = { direct_version: '직접 버전', property_version: '속성 값', own_management_version: '관리 버전',
                     managed_override: '관리 버전 override 추가', parent_version: '부모 버전', bom_version: 'BOM 버전' };
@@ -1032,7 +1033,7 @@
     for (const r of Array.isArray(p.risks) ? p.risks : []) tags.appendChild(el('span', 'tag risk', RISK_KO[r] || r));
     if (tags.childElementCount) card.appendChild(tags);
     if (p.evidence) card.appendChild(el('p', 'facts', '근거: ' + evidenceText(p.evidence)));
-    if (p.note) card.appendChild(el('p', 'pnote', p.note));
+    if (p.note_ko || p.note) card.appendChild(el('p', 'pnote', p.note_ko || p.note));
     const det = el('details');
     det.appendChild(el('summary', null, '변경 내용 보기'));
     det.appendChild(diffPre(p.diff || ''));

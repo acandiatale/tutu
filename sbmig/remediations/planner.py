@@ -15,6 +15,9 @@
   루트 pom 에 그 g:a 의 관리 항목이 이미 있으면 두 번째 항목을 넣지 않고 기존 버전 글자를 바꾸는 길로 간다(안 되면 잔여).
   모듈이 루트 pom 을 상속하지 않거나, 모듈이 그 의존성을 버전과 함께 직접 선언했거나(선언 버전이 관리 버전을 이긴다),
   해석된 의존성이 jar 가 아니거나 분류자가 있거나, 루트 pom 에 항목을 안전하게 넣을 줄을 못 찾으면 잔여로 남긴다.
+- 사내 아티팩트(``remediation.inhouse_groups``, 회사 규칙 2026-11-12)가 끌고 온 취약 라이브러리 — 그 항목의 모든 모듈에서
+  간접·부모/BOM 관리로 그렇게 들어왔을 때 — 와 사내 아티팩트 자체는 제안하지 않는다(잔여 ``inhouse_artifact``): 그 아티팩트의
+  담당자가 pom 을 고쳐야 반영된다. 일부 모듈만 그렇거나 프로젝트가 직접 버전을 적은 라이브러리는 예전처럼 계획한다.
 - 승인은 제안 해시·원본 트리 해시·정책 해시·diff 가 **모두** 같을 때만 받아들인다(``validate_decision``).
 
 Planning for the remediation feature: proposals + residuals from the inventory, approval classes, and the hashes that
@@ -22,7 +25,9 @@ bind a proposal to the current tree and policy. A target version comes only from
 repository lists (IVAS patched versions are hints, never evidence). A parent / BOM version text changes only when the
 server pins that parent / BOM. Transitive items and parent / BOM managed versions without such a pin get a
 managed-version override entry in the root pom (user decision 2026-11-11); such a proposal ALWAYS waits for approval,
-whatever `require_approval` / `always_approve` say — inserting XML is never automatic.
+whatever `require_approval` / `always_approve` say — inserting XML is never automatic. A library that is an in-house
+artifact, or that every one of its modules gets transitively / managed through an in-house artifact, is an
+`inhouse_artifact` residual (its owner publishes the fix).
 """
 from __future__ import annotations
 
@@ -37,6 +42,7 @@ from sbmig.build.repo_versions import is_prerelease, parse_version
 
 from . import apply as _apply
 from . import inventory as _inv
+from .inhouse import inhouse_keys
 from .inventory import split_patched_versions as split_hints
 from .models import (
     D_APPROVED,
@@ -57,6 +63,7 @@ from .models import (
     O_OWN_MANAGEMENT,
     O_PARENT_MANAGED,
     O_TRANSITIVE,
+    R_INHOUSE_ARTIFACT,
     R_INVENTORY_INCOMPLETE,
     R_MANUAL_REVIEW,
     R_NO_CANDIDATE_VERSION,
@@ -106,11 +113,13 @@ def _policy_dict(policy: Any) -> dict[str, Any]:
 
 def policy_hash(cfg: Any) -> str:
     """서버 정책의 해시: ``remediation.policy`` 전부 + ``require_approval`` + ``always_approve``(정렬) + ``failed_candidate``
-    + ``ignore_actions`` (정렬·대문자 — 어떤 IVAS 항목을 계획에 넣는지를 바꾼다).
+    + ``ignore_actions`` (정렬·대문자 — 어떤 IVAS 항목을 계획에 넣는지를 바꾼다) + ``inhouse`` (사내 아티팩트 g:a 표의 열쇠,
+    정렬 — 어떤 항목을 담당자 몫의 잔여로 남기는지를 바꾼다).
     무엇을 제안하는지·무엇이 승인을 기다리는지를 바꾸는 값이 하나라도 바뀌면 해시가 바뀌어, 전에 만든 승인 후보는 무효가 된다
-    (``ignore_actions`` 가 해시에 들어가기 전에 저장된 계획도 이 때문에 한 번 낡은 계획이 된다).
+    (``ignore_actions`` · ``inhouse`` 가 해시에 들어가기 전에 저장된 계획도 이 때문에 한 번 낡은 계획이 된다).
 
-    Hash of everything that changes what is proposed or what needs approval (incl. `ignore_actions`)."""
+    Hash of everything that changes what is proposed or what needs approval (incl. `ignore_actions` and the sorted
+    in-house g:a keys)."""
     from .ivas import ignore_set
     rem = _rem(cfg)
     return sha256_text(canonical_json({
@@ -119,6 +128,7 @@ def policy_hash(cfg: Any) -> str:
         "always_approve": sorted(str(x) for x in (rem.always_approve or [])),
         "failed_candidate": str(rem.failed_candidate),
         "ignore_actions": sorted(ignore_set(getattr(rem, "ignore_actions", None))),
+        "inhouse": sorted(inhouse_keys(cfg)),
     }))
 
 
@@ -272,6 +282,9 @@ class _Change:
     origin: str = ""
     modules: list[str] = field(default_factory=list)          # 이 글자가 다스리는 모듈(비면 예전 규칙)
     also_modules: list[str] = field(default_factory=list)     # 같은 버전이 다른 길로 해석된 모듈
+    # 이 변경이 잔여가 될 때(합치기 실패·거절됨·diff 실패) 보고서에 줄 사실: 항목의 사슬과 사내 아티팩트(plan_round 가 채운다)
+    via: list[str] = field(default_factory=list)
+    inhouse: list[str] = field(default_factory=list)
 
 
 def _scope(item: InventoryItem) -> tuple[list[str], list[str]]:
@@ -282,7 +295,32 @@ def _scope(item: InventoryItem) -> tuple[list[str], list[str]]:
 
 def _residual(item: InventoryItem, reason: str, detail: str) -> Residual:
     return Residual(ga=item.ga, version=item.version, origin=item.origin, reason=reason, detail=detail,
-                    finding_ids=list(item.finding_ids))
+                    finding_ids=list(item.finding_ids), modules=sorted(set(item.modules or [])),
+                    via=list(item.via or []), inhouse=sorted(set(item.inhouse or [])))
+
+
+def _change_residual(c: _Change, reason: str, detail: str) -> Residual:
+    """제안이 되지 못한 변경 하나 → 잔여(모듈 = 다스리는 + also, 사슬·사내 아티팩트는 항목에서 옮겨 둔 것)."""
+    return Residual(ga=c.ga, version=c.from_version, origin=c.origin, reason=reason, detail=detail,
+                    finding_ids=list(c.finding_ids), modules=sorted(set(c.modules) | set(c.also_modules)),
+                    via=list(c.via), inhouse=sorted(set(c.inhouse)))
+
+
+def _inhouse_residual(item: InventoryItem) -> Residual | None:
+    """사내 아티팩트 규칙(회사 2026-11-12): 항목 자체가 사내 아티팩트이거나, 간접·부모/BOM 관리 항목이 **모든** 모듈에서 사내
+    아티팩트를 거쳐 들어왔으면 잔여 ``inhouse_artifact``. 아니면 None(예전처럼 계획한다 — 일부 모듈만 그런 라이브러리를
+    프로젝트가 고치면 나머지 모듈은 고쳐진다).
+
+    The in-house rule: the item IS an in-house artifact, or a transitive / managed item reaches every module through one."""
+    if not item.inhouse:
+        return None
+    if item.ga in item.inhouse:
+        return _residual(item, R_INHOUSE_ARTIFACT, f"{item.ga} is an in-house artifact: its owner publishes the fixed version")
+    if (item.origin in (O_TRANSITIVE, O_PARENT_MANAGED, O_BOM_MANAGED) and item.modules
+            and set(item.modules) <= set(item.inhouse_modules or [])):
+        return _residual(item, R_INHOUSE_ARTIFACT, f"brought in by the in-house artifact(s) {', '.join(item.inhouse)}: "
+                                                   "only their owner can change it")
+    return None
 
 
 _LINE_NUMS = re.compile(r"\d+")
@@ -389,12 +427,24 @@ def _choose_target(item: InventoryItem, policy: Any, source: Any, current: str) 
     return target, evidence, "", []
 
 
-def _change_for(project: Path, item: InventoryItem, policy: Any, source: Any, poms: _Poms) -> _Change | Residual:
+def _change_for(project: Path, item: InventoryItem, policy: Any, source: Any, poms: _Poms, *,
+                parents: frozenset[str] = frozenset()) -> _Change | Residual:
     """인벤토리 항목 하나 → 변경 하나 또는 잔여 하나."""
     if item.origin in MANUAL_ORIGINS:
         return _residual(item, R_MANUAL_REVIEW, item.reason or f"{item.origin}: not changed automatically")
     if _denied(item.ga, policy.deny):
         return _residual(item, R_POLICY_DENIED, f"{item.ga} matches policy.deny")
+    # 왜: 사내 아티팩트의 pom 은 그 담당자만 고칠 수 있다 — 프로젝트에 override 를 넣으면 담당자 쪽 수정과 어긋난다
+    inhouse = _inhouse_residual(item)
+    if inhouse is not None:
+        if (inhouse.reason == R_INHOUSE_ARTIFACT and item.ga not in item.inhouse
+                and item.origin in (O_PARENT_MANAGED, O_BOM_MANAGED) and set(item.inhouse) <= parents):
+            # 왜: 회사 부모 몫이라도 서버 정책이 그 부모를 pin 했으면 그것이 아키텍처팀이 낸 고침이다 — 부모 버전 제안
+            # (언제나 승인 대상)을 그대로 낸다. pin 이 없을 때만 담당자 몫의 잔여
+            got = _managed_change(project, item, policy)
+            if got is not None:
+                return got
+        return inhouse
     if item.origin in (O_PARENT_MANAGED, O_BOM_MANAGED):
         got = _managed_change(project, item, policy)
         return got if got is not None else _override_change(project, item, policy, source, poms)
@@ -637,7 +687,8 @@ def _merge(group: list[_Change], project: Path | None = None) -> _Change:
         governed, also = [], []
     return _Change(ga=first.ga, from_version=first.from_version, to_version=best.to_version, kind=first.kind, edit=edit,
                    evidence=best.evidence, finding_ids=ids, risks=sorted(risks), notes=notes, origin=first.origin,
-                   modules=governed, also_modules=also)
+                   modules=governed, also_modules=also, via=list(first.via),
+                   inhouse=sorted({x for c in group for x in c.inhouse}))
 
 
 def plan_round(project: Path, inventory: Inventory, cfg: Any, source: Any, *, round: int, source_tree_hash: str,
@@ -650,6 +701,8 @@ def plan_round(project: Path, inventory: Inventory, cfg: Any, source: Any, *, ro
     rem = _rem(cfg)
     policy = rem.policy
     phash = policy_hash(cfg)
+    # 회사 부모(그룹 parents)의 g:a: 그 부모만의 몫인 관리 버전 항목은 서버 pin 이 있으면 부모 버전 제안을 먼저 본다
+    parents = frozenset(k for k, grp in inhouse_keys(cfg).items() if grp == "parents")
     rejected = set(rejected or set())
     plan = RoundPlan(round=round, source_tree_hash=source_tree_hash, policy_hash=phash)
     items = sorted(inventory.items, key=lambda i: (i.ga, i.version, i.origin,
@@ -662,10 +715,12 @@ def plan_round(project: Path, inventory: Inventory, cfg: Any, source: Any, *, ro
     changes: list[_Change] = []
     poms = _Poms(project)
     for item in items:
-        got = _change_for(project, item, policy, source, poms)
+        got = _change_for(project, item, policy, source, poms, parents=parents)
         if isinstance(got, Residual):
             plan.residuals.append(got)
         else:
+            # 이 변경이 뒤에서 잔여가 되면(거절됨·diff 실패) 보고서가 항목의 사슬·사내 아티팩트를 보여 줄 수 있게 옮겨 둔다
+            got.via, got.inhouse = list(item.via or []), sorted(set(item.inhouse or []))
             changes.append(got)
     # 같은 pom 줄을 고치는 replace 끼리, 같은 g:a 의 override 끼리 합친다. override 의 자리는 모두 **원래 파일** 기준으로
     # 정했고(같은 기준 줄을 여럿이 가질 수 있다), apply 가 그것들을 제안 ID 순서로 한 번에 넣는다.
@@ -678,33 +733,28 @@ def plan_round(project: Path, inventory: Inventory, cfg: Any, source: Any, *, ro
         group = groups[key]
         if len({c.edit.old for c in group}) > 1:
             for c in group:
-                plan.residuals.append(Residual(ga=c.ga, version=c.from_version, origin=c.origin, reason=R_STALE_LOCATION,
-                                               detail=f"{key[0]}:{key[1]}: inventory names different version texts "
-                                                      "for one line", finding_ids=list(c.finding_ids)))
+                plan.residuals.append(_change_residual(c, R_STALE_LOCATION, f"{key[0]}:{key[1]}: inventory names "
+                                                                            "different version texts for one line"))
             continue
         try:
             merged.append((_merge(group, project), group))
         except (_apply.EditError, OSError) as e:
             for c in group:
-                plan.residuals.append(Residual(ga=c.ga, version=c.from_version, origin=c.origin, reason=R_MANUAL_REVIEW,
-                                               detail=f"cannot place an override entry safely: {e}",
-                                               finding_ids=list(c.finding_ids)))
+                plan.residuals.append(_change_residual(c, R_MANUAL_REVIEW, f"cannot place an override entry safely: {e}"))
     always = set(rem.always_approve or [])
     n = 0
     for change, group in merged:
         if any((c.ga, change.to_version) in rejected for c in group):
             for c in group:
-                plan.residuals.append(Residual(ga=c.ga, version=c.from_version, origin=c.origin,
-                                               reason=R_REJECTED_PROPOSALS,
-                                               detail=f"{change.ga} → {change.to_version} was rejected in an earlier "
-                                                      "decision; not proposed again", finding_ids=list(c.finding_ids)))
+                plan.residuals.append(_change_residual(c, R_REJECTED_PROPOSALS,
+                                                       f"{change.ga} → {change.to_version} was rejected in an earlier "
+                                                       "decision; not proposed again"))
             continue
         try:
             diff = _apply.render_diff(project, [change.edit])
         except (_apply.EditError, OSError) as e:
             for c in group:
-                plan.residuals.append(Residual(ga=c.ga, version=c.from_version, origin=c.origin, reason=R_STALE_LOCATION,
-                                               detail=str(e), finding_ids=list(c.finding_ids)))
+                plan.residuals.append(_change_residual(c, R_STALE_LOCATION, str(e)))
             continue
         n += 1
         # 고정 규칙: override 항목(XML 넣기)은 설정과 무관하게 늘 승인을 기다린다

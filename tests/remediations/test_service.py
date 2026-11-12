@@ -13,6 +13,7 @@ import pytest
 from sbmig.core.config import PACKAGE_ROOT, load_config
 from sbmig.remediations import graph
 from sbmig.remediations import intake as intake_mod
+from sbmig.remediations import i18n as i18n_mod
 from sbmig.remediations import planner as planner_mod
 from sbmig.remediations import service as service_mod
 from sbmig.remediations.models import (
@@ -270,6 +271,7 @@ def test_approvals_all_or_nothing_then_resume_applies(tmp_path, base_cfg):
     assert props["round"] == 1 and props["policy_hash"] == planner_mod.policy_hash(base_cfg)
     p = props["proposals"][0]
     assert p["decision"] == D_PENDING and p["proposal_hash"]
+    assert p["note_ko"] == i18n_mod.ko_text(p["note"])                 # Korean beside the stored English note
     before = paths.plan(1).read_bytes()
 
     with pytest.raises(StateConflict):
@@ -1023,3 +1025,25 @@ def test_job_mode_receipt_is_written_before_the_job_and_the_new_pod_never_reuplo
     finally:
         mgr.shutdown()
         rm.shutdown("test teardown")
+
+
+def test_proposals_carry_korean_display_fields(tmp_path, base_cfg):
+    """`note_ko` per proposal; `detail_ko` / `origin_ko` / `reason_ko` per residual; the stored fields stay English."""
+    from sbmig.remediations.models import Residual, RoundPlan, write_json_atomic
+    mgr = manager(tmp_path, base_cfg, one_fix(cfg=base_cfg))
+    st = submit_and_wait(mgr, tmp_path)
+    rid = st["id"]
+    paths = mgr.paths(rid)
+    plan = RoundPlan.from_dict(json.loads(paths.plan(1).read_text(encoding="utf-8")))
+    plan.proposals[0].note = "uses the existing <dependencyManagement> entry of the root pom.xml"
+    plan.residuals = [Residual(ga="org.example:m", version="1.0", origin="transitive", reason="manual_review",
+                               detail="module(s) app-a do not inherit from the root pom.xml: an override entry there would "
+                                      "not reach them")]
+    write_json_atomic(paths.plan(1), plan.to_dict())
+    out = mgr.proposals(rid)
+    p, r = out["proposals"][0], out["residuals"][0]
+    assert p["note"].startswith("uses the existing") and p["note_ko"].startswith("루트 pom.xml 에 이미 있는")
+    assert r["detail"].startswith("module(s)") and "app-a 모듈은 루트 pom.xml 을 상속하지 않습니다" in r["detail_ko"]
+    assert r["origin_ko"] == "간접 의존성" and r["reason_ko"] == "사람 검토"
+    every = mgr.proposals(rid, all_rounds=True)
+    assert every["residuals"][0]["reason_ko"] == "사람 검토"

@@ -957,6 +957,20 @@ class RemediationConfig(BaseModel):
     # 기본은 비어 있다 = 모든 조치 구분을 고칠 대상으로 본다(기존 사내 구현도 PC·IG 를 거르지 않는다, 2026-11-11). 보안팀이 예외
     # 처리한 항목을 빼려면 [PC, IG] 처럼 적는다.
     ignore_actions: list[str] = Field(default_factory=list)
+    # 사내 라이브러리 안내(회사 규격 2026-11-12): artifacts yml 의 어느 목록을 '사내 아티팩트' 로 볼지 — mandatory / optional /
+    # parents(parent · boot_parent · comp_parent). 취약 라이브러리가 그 아티팩트를 거쳐 들어왔거나 그 아티팩트 자체면 프로젝트에서
+    # 고치지 않는다(잔여 이유 inhouse_artifact): 그 아티팩트의 담당자가 pom 을 고쳐야 반영된다. 보고서는 그 항목들을 따로 묶어
+    # inhouse_message 를 붙인다. 빈 목록 = 이 안내를 쓰지 않는다. 무엇을 제안하는지를 바꾸므로 정책 해시에 들어간다.
+    # parents = 회사 부모 pom 에서 파생된 것: 그 부모를 상속하는 모듈에서 부모 체인이 버전을 관리하는 의존성, 부모가 선언해 물려준
+    # 의존성과 그것이 끌고 온 것(사용자 2026-11-12: "parent, boot-jar, comp-jar 에서 파생된 것도 아키텍처팀에 문의해야 고쳐진다")
+    inhouse_groups: list[str] = Field(default_factory=lambda: ["mandatory", "optional", "parents"])
+    inhouse_message: str = "해당 아티팩트는 예외처리가 가능합니다. 담당자에게 연락 부탁드립니다."
+    # 보고서의 위험도 표시(사용자 2026-11-12: "취약점 옆에 위험도 빨강 주황 노랑 … 눈이 가게"): IVAS 점수(Finding.score)가 이 값
+    # 이상이면 빨강 / 주황 / 노랑 표시를 취약점 옆에 붙인다. 그보다 낮거나 점수가 없으면 표시하지 않는다. 기본은 CVSS 의
+    # 심각(9.0) · 높음(7.0) · 보통(4.0) 구간. 표시만 바꾸는 값이라 정책 해시에 들어가지 않는다.
+    severity_red: float = 9.0
+    severity_orange: float = 7.0
+    severity_yellow: float = 4.0
     max_upload_mb: int = 1024                # 업로드 ZIP 한도(MiB)
     max_entries: int = 200_000               # ZIP 항목 수 한도
     max_unpacked_mb: int = 4096              # 풀었을 때 전체 크기 한도(MiB)

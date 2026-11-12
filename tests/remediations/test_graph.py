@@ -580,7 +580,7 @@ def test_exception_in_a_node_fails_with_a_report_and_no_secret(tmp_path, monkeyp
 
     state, paths = make_run(tmp_path)
 
-    def boom(project, findings, resolved):
+    def boom(project, findings, resolved, **_kw):
         raise RuntimeError(f"login failed for https://user:hunter2-secret-value@ivas.invalid at {paths.root}/x")
 
     out, _ = run(state, paths, one_fix_components(inventory=boom))
@@ -789,3 +789,56 @@ def test_edit_that_does_not_govern_every_module_commits_and_leaves_the_rest_to_r
     assert plan2.proposals == [] and [r.reason for r in plan2.residuals] == ["manual_review"]
     assert "do not inherit from the root pom.xml" in plan2.residuals[0].detail
     assert {"manual_review", "residual_findings"} <= set(out.reasons) and out.status != FAILED
+
+
+# ---------------------------------------------------------------------------- in-house artifacts
+INH = "com.example.inhouse:inhouse-core"
+
+
+def test_findings_all_through_an_inhouse_artifact_end_incomplete_with_the_count(tmp_path):
+    from sbmig.core.config import ArtifactsConfig
+    from sbmig.remediations import planner as planner_mod
+    from sbmig.remediations.models import InventoryItem
+
+    cfg = make_cfg()
+    cfg.artifacts = ArtifactsConfig(parent={"group_id": "com.example.inhouse", "artifact_id": "base-parent"},
+                                    mandatory=[{"group_id": "com.example.inhouse", "artifact_id": "inhouse-core"}])
+    state, paths = make_run(tmp_path, cfg=cfg)
+    item = InventoryItem(ga="example:lib", version="1.0", origin="transitive", finding_ids=["CVE-2026-0001"],
+                         patched_versions=["1.1"], modules=["app-domain", "app-web"], via=[f"{INH}:4.0.0"],
+                         inhouse=[INH], inhouse_modules=["app-domain", "app-web"])
+    inv = ScriptedInventory([Inventory(items=[item])])
+    comps = make_components(scan=FakeScanner({"baseline": [scan_result(finding())]}), inventory=inv,
+                            plan=planner_mod.plan_round)
+    out, _ = run(state, paths, comps, cfg=cfg)
+    assert inv.inhouse[0].get(INH) == "mandatory" and inv.inhouse[0].get("com.example.inhouse:base-parent") == "parents"
+    assert out.status == INCOMPLETE and "inhouse_artifact" in out.reasons
+    plan = RoundPlan.from_dict(read_json(paths.round_dir(1) / "plan.json"))
+    assert plan.proposals == []
+    (r,) = [x for x in out.residuals if x.reason == "inhouse_artifact"]
+    assert r.modules == ["app-domain", "app-web"] and r.inhouse == [INH] and r.via == [f"{INH}:4.0.0"]
+    assert out.counts["residual_inhouse"] == 1
+
+
+def test_merge_residuals_unions_the_report_facts():
+    st = SimpleNamespace(residuals=[Residual(ga="g:a", version="1", origin="transitive", reason="inhouse_artifact",
+                                             modules=["app-web"], via=[], inhouse=["x:y"])])
+    graph._merge_residuals(st, [Residual(ga="g:a", version="1", origin="transitive", reason="inhouse_artifact",
+                                         modules=["app-domain"], via=["x:y:1"], inhouse=["x:z"]),
+                                Residual(ga="g:b", version="1", origin="transitive", reason="manual_review")])
+    a, b = st.residuals
+    assert a.modules == ["app-domain", "app-web"] and a.inhouse == ["x:y", "x:z"] and a.via == ["x:y:1"]
+    assert b.ga == "g:b" and b.modules == []
+
+
+def test_counts_have_residual_inhouse_zero_by_default(tmp_path):
+    state, paths = make_run(tmp_path)
+    out, _ = run(state, paths, one_fix_components())
+    assert out.counts["residual_inhouse"] == 0
+
+
+def test_old_state_json_without_residual_facts_loads():
+    from sbmig.remediations.models import RemediationState
+    d = {"id": "rem-1", "residuals": [{"ga": "g:a", "version": "1", "origin": "transitive", "reason": "manual_review"}]}
+    r = RemediationState.from_dict(d).residuals[0]
+    assert (r.modules, r.via, r.inhouse) == ([], [], [])

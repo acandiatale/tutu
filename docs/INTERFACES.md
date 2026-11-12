@@ -3780,11 +3780,11 @@ Chained (build pod): `<migration run dir>/remediation/`. Standalone (in-process 
 `TERMINAL = SUCCEEDED, INCOMPLETE, FAILED`; `RESUMABLE = AWAITING_APPROVAL, AWAITING_CONFIRMATION, STOPPED, INTERRUPTED`.
 `state.reason` is the first reason, `state.reasons` all of them (ordered: `baseline_build_failed`, `scan_incomplete`,
 `zip_hash_mismatch`, `candidate_build_failed`, `pending_approval`, `rejected_proposals`, `residual_findings`, `manual_review`,
-`no_candidate_version`, the rest sorted, `rounds_exhausted` last). Reason codes: `baseline_build_failed`,
+`no_candidate_version`, `inhouse_artifact`, the rest sorted, `rounds_exhausted` last). Reason codes: `baseline_build_failed`,
 `candidate_build_failed`, `scan_incomplete`, `upload_uncertain`, `zip_hash_mismatch`, `text_only_violation`,
 `resolution_mismatch`, `execution_boundary_refused`, `not_ready`, `pending_approval`, `rejected_proposals`,
 `residual_findings`, `manual_review`, `no_candidate_version`, `rounds_exhausted`, `stop_requested`, `internal_error`,
-`policy_denied`, `unknown_provenance`, `stale_location`, `inventory_incomplete`, and on the chained path only `chain_budget`
+`policy_denied`, `unknown_provenance`, `stale_location`, `inventory_incomplete`, `inhouse_artifact`, and on the chained path only `chain_budget`
 (`STOPPED`, the time budget was used up; defined in `chain.py`). Scan `incomplete_reasons`: `analysis_failed`,
 `analysis_timeout`, `page_missing`, `total_mismatch`, `duplicate_result`, `summary_mismatch`, `unsupported_sw`,
 `zip_hash_mismatch`, `id_mismatch`, `http_error`, `stop_requested`. Intake rejection codes (HTTP 400): `not_zip`, `encrypted`,
@@ -3809,6 +3809,38 @@ line in the round's verify memo: the round commits, and the next round's invento
 those modules alone (override entry or residual). A `managed_override` / existing-root-entry proposal governs all of the
 item's modules; a proposal without `modules` (parent / BOM version, a state written without the field) is verified over
 every module that resolved `from_version`.
+
+In-house artifacts (`sbmig/remediations/inhouse.py`; company rule: what comes from a company artifact is fixed by that
+artifact's owner, never by the project). `inhouse_keys(cfg)` maps "g:a" → group for the groups of
+`remediation.inhouse_groups` (default `[mandatory, optional, parents]`; `artifacts.mandatory` / `artifacts.optional` with
+their aliases, `parents` = `artifacts.parent` / `boot_parent` / `comp_parent`; `[]` = off). The inventory
+(`build_inventory(…, inhouse=keys)`) fills `InventoryItem.inhouse` (the in-house g:a's a library comes from, sorted) and
+`inhouse_modules`: a g:a of group mandatory / optional that is the library itself or on its dependency path
+(`ResolvedDep.path`), and — for a module whose external parent is a `parents` key — that parent when the result is
+`parent_managed` with an unambiguous provenance, or a transitive whose path head no project pom of the module's chain
+declares (inherited from the parent). Never attributed: editable origins, `unmapped`, a BOM the project itself imports.
+The planner makes an `inhouse_artifact` residual (no proposal, no override) when the library is itself an in-house
+artifact or a transitive / parent- / BOM-managed item reaches every one of its modules through one; an item that is
+in-house only through a parent is first offered to `_managed_change` (a `policy.pins` entry for that parent still
+gives the parent-version proposal, always approved). Anything else is planned as before. `Residual` carries `modules`,
+`via` (the shortest chain) and `inhouse`; `state.counts.residual_inhouse` counts those residuals; the sorted in-house keys
+are part of the policy hash. A run whose remaining findings are all in-house is `INCOMPLETE` with `inhouse_artifact` among
+its reasons.
+
+Presentation (`sbmig/remediations/i18n.py`, `report.py`): stored data and API answers keep their codes and English
+sentences; `report.md` is Korean throughout — label tables for origin / kind / risk / decision / reason, `ko_text` (pattern
+rules, identifiers kept verbatim, an unknown sentence returned unchanged), `detail_group` (residuals grouped by reason and
+kind of detail, the explanation printed once per group). Section order: result line → 한눈에 보기 → 다음에 할 일 → 고친 것 →
+승인을 기다리는 것 → 사내 라이브러리에서 온 취약점 (`remediation.inhouse_message` first, grouped by in-house artifact) →
+사람이 확인할 것 → 조치 대상에서 뺀 항목 → 진행 기록 → 바꾸지 않은 것. `report.json` keeps every earlier key and adds
+`inhouse {message, artifacts[{ga, libraries[{ga, version, modules, via, finding_ids}]}]}`. `GET …/proposals` adds `note_ko`
+per proposal and `detail_ko` / `origin_ko` / `reason_ko` per residual.
+Severity marks: a finding whose IVAS score (`Finding.score`, rounded to one decimal) is ≥ `remediation.severity_red` /
+`severity_orange` / `severity_yellow` carries 🔴 심각 / 🟠 높음 / 🟡 보통 in `report.md`; below yellow or without a score it
+carries none. Every library table opens with a 위험도 column (the row's highest score) and sorts its rows by it, each CVE id
+has its mark (ordered by score, the first three shown), 한눈에 보기 has the per-level counts of the baseline and of what the
+final scan still reports, a legend line names the configured bounds. `report.json` adds
+`severity {thresholds{red, orange, yellow}, baseline{red, orange, yellow, none}, final | null}` (counts only).
 
 ### The graph (`sbmig/remediations/graph.py`, a LangGraph separate from `sbmig/graph/`)
 
@@ -3945,7 +3977,9 @@ readiness names it; set `SBMIG_REMEDIATION__TRUSTED_PROJECTS=true` explicitly), 
 `max_compression_ratio` (intake limits; the ratio applies to entries ≥ 1 MiB unpacked), `require_approval` (default false),
 `always_approve` (default `[major, parent, bom, managed_override]`; `managed_override` proposals wait even if it is removed),
 `max_rounds` (3), `failed_candidate` (`include` default | `discard`, see "Failed candidate"), `ignore_actions` (default `[]`,
-see "IVAS action codes"; part of the policy hash), `chain_budget_minutes` (90; 0 = none; chained path only), `project_maven_config` /
+see "IVAS action codes"; part of the policy hash), `inhouse_groups` (default `[mandatory, optional, parents]`; the resolved keys are
+part of the policy hash) and `inhouse_message` (the sentence the report puts over the in-house section), `severity_red` / `severity_orange` /
+`severity_yellow` (9.0 / 7.0 / 4.0: lower bounds of the report's severity marks; presentation only, not in the policy hash), `chain_budget_minutes` (90; 0 = none; chained path only), `project_maven_config` /
 `maven_wrapper` / `foreign_repository` (`refuse` | `ignore`), `allowed_repository_hosts`, `build_timeout_minutes`,
 `ivas_timeout_seconds`, `ivas_upload_timeout_seconds`, `ivas_poll_seconds`, `ivas_analysis_timeout_minutes` (default **30** =
 1,800 s; past it the scan is incomplete, never 0 findings), `ivas_page_size`, `ivas_project_prefix` (IVAS project name `<prefix>-<id>-<label>`),

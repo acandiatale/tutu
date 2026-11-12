@@ -68,6 +68,10 @@ R_POLICY_DENIED = "policy_denied"                        # 서버 정책 deny �
 R_UNKNOWN_PROVENANCE = "unknown_provenance"            # 어느 parent / BOM 이 관리하는지 분명하지 않다
 R_STALE_LOCATION = "stale_location"                    # 인벤토리 뒤에 파일이 바뀌어 버전 글자가 그 자리에 없다
 R_INVENTORY_INCOMPLETE = "inventory_incomplete"
+# 사내 아티팩트(artifacts yml 의 mandatory / optional — ``remediation.inhouse_groups``)를 거쳐 들어온 취약 라이브러리, 또는 그
+# 사내 아티팩트 자체: 프로젝트가 아니라 그 아티팩트의 담당자가 pom 을 고쳐야 반영된다. 제안하지 않고 잔여로 남기며 보고서가
+# ``remediation.inhouse_message`` (예외 처리 가능, 담당자 연락)를 붙인다
+R_INHOUSE_ARTIFACT = "inhouse_artifact"
 
 T = TypeVar("T")
 
@@ -399,6 +403,10 @@ class InventoryItem(Record):
     # 의존성 · 부모/BOM 관리)로 해석된 곳. 글자를 고쳐도 그대로일 수 있다 — 검증은 이 모듈들을 실패로 치지 않고, 남으면 다음
     # 라운드가 따로 계획한다. 다스리는 모듈 = modules − also_modules
     also_modules: list[str] = field(default_factory=list)
+    # 이 라이브러리를 끌고 온 사내 아티팩트의 g:a 들(모듈의 의존성 사슬 ``ResolvedDep.path`` 에 있는 것; 이 항목 자체가 사내
+    # 아티팩트면 자기 g:a). 정렬·중복 없음. ``inhouse_modules`` 는 그렇게 들어온 모듈들(``modules`` 의 부분집합)
+    inhouse: list[str] = field(default_factory=list)
+    inhouse_modules: list[str] = field(default_factory=list)
     via: list[str] = field(default_factory=list)                  # transitive 일 때 끌고 오는 사슬(g:a:v)
     location: PomLocation | None = None
     manager: str = ""                                             # 관리하는 부모 / BOM 의 g:a:v
@@ -506,6 +514,11 @@ class Residual(Record):
     reason: str
     detail: str = ""
     finding_ids: list[str] = field(default_factory=list)
+    # 보고서가 표로 묶어 보여 줄 사실들(``detail`` 문장을 다시 읽지 않게): 이 버전이 해석된 모듈, 끌고 온 사슬(g:a:v, 가장 짧은 것),
+    # 끌고 온 사내 아티팩트의 g:a(``reason`` 이 inhouse_artifact 가 아니어도 일부 모듈이 그렇게 들어왔으면 채운다)
+    modules: list[str] = field(default_factory=list)
+    via: list[str] = field(default_factory=list)
+    inhouse: list[str] = field(default_factory=list)
 
 
 @dataclass

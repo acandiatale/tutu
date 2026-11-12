@@ -33,6 +33,7 @@ from langgraph.graph import END, START, StateGraph
 
 from sbmig.core import scrub as _scrub
 
+from .inhouse import inhouse_keys
 from .interfaces import Components, Journal, StopCheck
 from .models import (
     AWAITING_APPROVAL,
@@ -46,6 +47,7 @@ from .models import (
     R_BASELINE_BUILD_FAILED,
     R_BOUNDARY_REFUSED,
     R_CANDIDATE_BUILD_FAILED,
+    R_INHOUSE_ARTIFACT,
     R_INTERNAL_ERROR,
     R_MANUAL_REVIEW,
     R_NO_CANDIDATE_VERSION,
@@ -93,7 +95,8 @@ RECURSION_BASE = 100
 RECURSION_PER_ROUND = 20
 # 성공이 아닌 이유의 순서(state.reason = 첫 번째): 결과를 믿을 수 없는 이유 → 사람이 결정할 것 → 남은 취약점
 _REASON_ORDER = (R_SCAN_INCOMPLETE, R_ZIP_HASH_MISMATCH, R_CANDIDATE_BUILD_FAILED, R_PENDING_APPROVAL,
-                 R_REJECTED_PROPOSALS, R_RESIDUAL_FINDINGS, R_MANUAL_REVIEW, R_NO_CANDIDATE_VERSION)
+                 R_REJECTED_PROPOSALS, R_RESIDUAL_FINDINGS, R_MANUAL_REVIEW, R_NO_CANDIDATE_VERSION,
+                 R_INHOUSE_ARTIFACT)
 # 예외 문장에서 지울 비밀: 이름에 이런 낱말이 든 환경 변수의 값 + IVAS 아이디(브리프: 사용자·비밀번호·토큰 모두 비밀)
 _SECRET_WORDS = ("PASSWORD", "PASSWD", "SECRET", "TOKEN", "API_KEY", "APIKEY", "CREDENTIAL", "PRIVATE_KEY")
 _SECRET_NAMES = ("IVAS_USER_ID", "IVAS_PASSWORD")
@@ -360,6 +363,8 @@ class _Holder:
             "proposals_applied": len(applied),
             "proposals_rejected": sum(1 for p in props if p.decision == D_REJECTED),
             "proposals_pending": sum(1 for p in props if p.decision == D_PENDING),
+            # 사내 아티팩트 담당자 몫의 잔여(보고서가 '예외 처리 가능, 담당자 연락' 으로 묶는다); 없으면 0
+            "residual_inhouse": sum(1 for x in st.residuals if x.reason == R_INHOUSE_ARTIFACT),
         }
         # *_findings = 조치 대상만(ignore_actions 코드는 *_ignored 로 따로 센다)
         base_act: list[Any] = []
@@ -542,7 +547,7 @@ def _inventory(h: _Holder) -> str | None:
         return h.finish(INCOMPLETE, R_SCAN_INCOMPLETE, "the scan this round plans from is missing or incomplete")
     # ignore_actions 코드(기본은 없음; 예 PC 패치 완료 · IG 조치 예외)의 항목은 인벤토리·계획에 넘기지 않는다
     findings, _ignored = h.split(scan)
-    inv = c.inventory(h.project(p.accepted), findings, before)
+    inv = c.inventory(h.project(p.accepted), findings, before, inhouse=inhouse_keys(h.cfg))
     write_json_atomic(rd / "inventory.json", inv.to_dict())
     if not inv.complete:
         return h.finish(INCOMPLETE, R_MANUAL_REVIEW, "inventory incomplete: " + "; ".join(inv.notes))
@@ -563,12 +568,22 @@ def _current_policy_hash(h: _Holder) -> str:
 
 
 def _merge_residuals(st: RemediationState, residuals: list[Residual]) -> None:
-    seen = {(x.ga, x.version, x.reason) for x in st.residuals}
+    """라운드의 잔여를 작업 상태에 합친다: (ga, 버전, 이유)마다 하나. 이미 있으면 보고서용 사실(모듈·사내 아티팩트)은
+    합집합으로 더하고, 사슬은 비어 있을 때만 채운다(먼저 적힌 것이 이긴다).
+
+    Merge a round's residuals into the state, one per (ga, version, reason); facts of a repeat are unioned."""
+    by_key = {(x.ga, x.version, x.reason): x for x in st.residuals}
     for x in residuals:
         key = (x.ga, x.version, x.reason)
-        if key not in seen:
-            seen.add(key)
+        old = by_key.get(key)
+        if old is None:
+            by_key[key] = x
             st.residuals.append(x)
+            continue
+        old.modules = sorted(set(old.modules or []) | set(x.modules or []))
+        old.inhouse = sorted(set(old.inhouse or []) | set(x.inhouse or []))
+        if not old.via and x.via:
+            old.via = list(x.via)
 
 
 def _plan(h: _Holder) -> str | None:
@@ -644,7 +659,9 @@ def _apply(h: _Holder) -> str | None:
                                    version=by_id[pid].from_version if pid in by_id else "",
                                    origin="proposal", reason=R_MANUAL_REVIEW,
                                    detail=f"proposal {pid} not applied: {why}",
-                                   finding_ids=list(by_id[pid].finding_ids) if pid in by_id else [])
+                                   finding_ids=list(by_id[pid].finding_ids) if pid in by_id else [],
+                                   modules=sorted(set(by_id[pid].modules) | set(by_id[pid].also_modules))
+                                   if pid in by_id else [])
                           for pid, why in sorted(result.skipped.items())])
     applied = [by_id[pid] for pid in result.applied if pid in by_id]
     if not applied:
@@ -830,7 +847,11 @@ def _evaluate(h: _Holder) -> str | None:
 
 def _report(h: _Holder) -> str | None:
     from . import report as report_mod  # report.py 는 그래프만 쓴다 — 늦게 불러도 된다
-    report_mod.write_report(h.state, h.paths, ignore_actions=sorted(h.ignored_codes))
+    # 위험도 경계(표시만, 정책 해시 밖): 예전 설정 객체에 없으면 기본값
+    severity = (getattr(h.rcfg, "severity_red", 9.0), getattr(h.rcfg, "severity_orange", 7.0),
+                getattr(h.rcfg, "severity_yellow", 4.0))
+    report_mod.write_report(h.state, h.paths, ignore_actions=sorted(h.ignored_codes),
+                            inhouse_message=getattr(h.rcfg, "inhouse_message", None), severity=severity)
     return None
 
 

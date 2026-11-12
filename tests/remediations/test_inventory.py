@@ -466,3 +466,69 @@ def test_no_editable_item_keeps_also_modules_empty(tmp_path):
                       "c": [rdep(LIB, "1.2.3", direct=False, path=["example:x:1"])]})
     it = only(build_inventory(p, [finding("CVE-1")], resolved))
     assert it.origin == O_PARENT_MANAGED and it.modules == ["a", "b", "c"] and it.also_modules == []
+
+
+# ---------------------------------------------------------------------------- in-house artifacts (company rule 2026-11-12)
+INH = "com.example.inhouse:inhouse-core"
+INH_KEYS = {INH: "mandatory"}
+
+
+def _two_modules(tmp_path):
+    return write(tmp_path, {"pom.xml": root_pom(modules=("app-domain", "app-web")),
+                            "app-domain/pom.xml": module_pom("app-domain", dep("com.example.inhouse", "inhouse-core", "4.0.0")),
+                            "app-web/pom.xml": module_pom("app-web", dep("org.example", "third", "1"))})
+
+
+def test_transitive_through_inhouse_artifact_in_every_module(tmp_path):
+    p = _two_modules(tmp_path)
+    resolved = model({
+        "app-domain": [rdep(LIB, "1.2.3", direct=False, path=[f"{INH}:4.0.0"])],
+        "app-web": [rdep(LIB, "1.2.3", direct=False, path=["org.example:third:1", f"{INH}:4.0.0"])]})
+    it = only(build_inventory(p, [finding("CVE-1")], resolved, inhouse=INH_KEYS))
+    assert it.origin == O_TRANSITIVE and it.modules == ["app-domain", "app-web"]
+    assert it.inhouse == [INH] and it.inhouse_modules == ["app-domain", "app-web"]
+
+
+def test_inhouse_in_one_module_third_party_in_the_other(tmp_path):
+    p = _two_modules(tmp_path)
+    resolved = model({
+        "app-domain": [rdep(LIB, "1.2.3", direct=False, path=[f"{INH}:4.0.0"])],
+        "app-web": [rdep(LIB, "1.2.3", direct=False, path=["org.example:third:1"])]})
+    it = only(build_inventory(p, [finding("CVE-1")], resolved, inhouse=INH_KEYS))
+    assert it.modules == ["app-domain", "app-web"]
+    assert it.inhouse == [INH] and it.inhouse_modules == ["app-domain"]
+
+
+def test_no_inhouse_mapping_leaves_both_lists_empty(tmp_path):
+    p = _two_modules(tmp_path)
+    resolved = model({"app-domain": [rdep(LIB, "1.2.3", direct=False, path=[f"{INH}:4.0.0"])]})
+    for kw in ({}, {"inhouse": None}, {"inhouse": {}}):
+        it = only(build_inventory(p, [finding("CVE-1")], resolved, **kw))
+        assert it.inhouse == [] and it.inhouse_modules == []
+
+
+def test_vulnerable_inhouse_artifact_itself(tmp_path):
+    p = _two_modules(tmp_path)
+    resolved = model({"app-domain": [rdep(INH, "4.0.0")]})
+    it = only(build_inventory(p, [finding("CVE-1", ident=INH, version="4.0.0")], resolved, inhouse=INH_KEYS))
+    assert it.origin == O_DIRECT_LITERAL                      # declared with a literal in app-domain
+    assert it.inhouse == [INH] and it.inhouse_modules == ["app-domain"]
+
+
+def test_folded_module_contributes_its_inhouse_facts(tmp_path):
+    # app-web declares the library itself (editable); app-domain gets it through the in-house artifact and folds in
+    p = write(tmp_path, {"pom.xml": root_pom(modules=("app-domain", "app-web")),
+                         "app-domain/pom.xml": module_pom("app-domain", dep("com.example.inhouse", "inhouse-core", "4.0.0")),
+                         "app-web/pom.xml": module_pom("app-web", dep("example", "lib", "1.2.3"))})
+    resolved = model({
+        "app-domain": [rdep(LIB, "1.2.3", direct=False, path=[f"{INH}:4.0.0"])],
+        "app-web": [rdep(LIB, "1.2.3")]})
+    it = only(build_inventory(p, [finding("CVE-1")], resolved, inhouse=INH_KEYS))
+    assert it.origin == O_DIRECT_LITERAL and it.also_modules == ["app-domain"]
+    assert it.inhouse == [INH] and it.inhouse_modules == ["app-domain"]
+
+
+def test_old_inventory_json_without_inhouse_fields_loads():
+    from sbmig.remediations.models import Inventory
+    inv = Inventory.from_dict({"complete": True, "items": [{"ga": LIB, "version": "1.2.3", "origin": "transitive"}]})
+    assert inv.items[0].inhouse == [] and inv.items[0].inhouse_modules == []

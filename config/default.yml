@@ -780,6 +780,18 @@ remediation:
   # 기본은 비어 있음 = 모든 조치 구분을 고칠 대상으로 본다. 보안팀이 예외 처리한 항목을 빼려면 [PC, IG] 처럼 적는다.
   # IVAS 문서의 값: NE 조치 필요, NP 조치계획 미등록, PL 조치예정, OT 조치일 경과, PC 패치 완료, IG 조치 예외
   ignore_actions: []
+  # 사내 라이브러리 안내. 취약 라이브러리가 사내 아티팩트를 거쳐 들어왔거나 사내 아티팩트 자체이면 프로젝트에서 고치지 않는다.
+  # 그 아티팩트의 담당자가 pom 을 고쳐야 반영되기 때문이다. 보고서는 이 항목들을 따로 묶고 아래 문구를 붙인다.
+  # inhouse_groups = 회사 artifacts yml 의 어느 목록을 사내 아티팩트로 볼지: mandatory, optional, parents.
+  # parents 는 부모 pom(parent, boot_parent, comp_parent)에서 파생된 것이다: 부모가 버전을 관리하는 의존성,
+  # 부모가 선언해 물려준 의존성과 그것이 끌고 온 것. 비워 두면 이 안내를 쓰지 않는다.
+  inhouse_groups: [mandatory, optional, parents]
+  inhouse_message: "해당 아티팩트는 예외처리가 가능합니다. 담당자에게 연락 부탁드립니다."
+  # 보고서에서 취약점 옆에 붙이는 위험도 표시의 기준 점수. IVAS 가 준 점수가 이 값 이상이면 빨강, 주황, 노랑으로 표시한다.
+  # 노랑 기준보다 낮거나 점수가 없는 취약점에는 표시를 붙이지 않는다. 기본값은 CVSS 의 심각, 높음, 보통 구간이다.
+  severity_red: 9.0
+  severity_orange: 7.0
+  severity_yellow: 4.0
   max_upload_mb: 1024              # 올릴 수 있는 ZIP 크기(MiB)
   max_entries: 200000              # ZIP 안의 파일 수 한도
   max_unpacked_mb: 4096            # 풀었을 때 전체 크기 한도(MiB)

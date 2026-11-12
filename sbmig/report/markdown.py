@@ -966,6 +966,10 @@ def remediation_lines(r: RunReport, lang: str = "en") -> list[str]:
     counts = rem.get("counts") or {}
     if counts:
         L.append(tr(lang, "- Counts: {counts}", counts=", ".join(f"{k} {v}" for k, v in sorted(counts.items()))))
+    # 사내 아티팩트가 끌고 온 취약점은 프로젝트가 아니라 그 담당자 몫이다 — 개수 나열 속에 묻히지 않게 한 줄 따로 둔다
+    n_inhouse = counts.get("residual_inhouse") if isinstance(counts, dict) else 0
+    if isinstance(n_inhouse, int) and n_inhouse > 0:
+        L.append(tr(lang, "- In-house artifacts (exception possible, contact their owners): {n}", n=n_inhouse))
     if rem.get("message"):
         L.append(f"- {_cell(rem.get('message'), 300)}")
     files = rem.get("files") or {}

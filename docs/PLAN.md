@@ -559,3 +559,22 @@ polling, every result page, inventory, plan (1 proposal, 56 residuals), candidat
 | Tests | inventory / planner / apply units, the flow with the real inventory + planner + verify over fake Maven and IVAS (round 1 commits, round 2 residual, INCOMPLETE not FAILED), old plan JSON without the fields | `tests/remediations/` | done |
 | Open | company layout: modules inherit the company role parents, not the project root, so a root `<dependencyManagement>` override reaches no module and every transitive finding is `manual_review` (the reason on all but one of the residual rows read out from that run) — where the entry goes is the company's decision | — | open |
 | Not yet seen with the real IVAS | commit + frozen delivery ZIP rescan, approval → resume in a new build pod, the uncertain-upload path | — | open |
+
+## Status — 2026-11-12, remediations: in-house artifacts go to their owners, the report in Korean
+
+The company's rule (user): a vulnerability that comes from the company's own artifacts — the mandatory / optional libraries of
+the artifacts yml and what derives from the parent poms — is not the project's to fix; the report says so with the company's
+sentence. And the report must be Korean and easy to scan (the first real report repeated one English sentence on 55 rows).
+
+| Item | Deliverable | Where | Status |
+|---|---|---|---|
+| Contract | reason `inhouse_artifact`; `InventoryItem.inhouse` / `inhouse_modules`; `Residual.modules` / `via` / `inhouse`; `remediation.inhouse_groups` (`[mandatory, optional, parents]`), `remediation.inhouse_message` | `sbmig/remediations/models.py`, `sbmig/core/config.py`, `config/default.yml` | done |
+| Attribution | `inhouse_keys`, `inhouse_on_path`; parent-derived results (`parent_managed` with a clear provenance, or a transitive under a dependency no project pom declares) for modules inheriting a company parent | `sbmig/remediations/inhouse.py`, `inventory.py` | done |
+| Planning | `inhouse_artifact` residual instead of a proposal / override when the library is in-house or every module gets it through one; a `policy.pins` entry for the parent still gives the parent-version proposal; in-house keys in the policy hash; `counts.residual_inhouse` | `sbmig/remediations/planner.py`, `graph.py` | done |
+| Report | Korean `report.md` in a new order (result line, 한눈에 보기, 다음에 할 일, 고친 것, 승인 대기, 사내 라이브러리, 사람이 확인할 것 grouped by reason and kind of detail, 진행 기록); `report.json` + `inhouse`; one more line in the migration report's remediation section | `sbmig/remediations/report.py`, `sbmig/report/markdown.py`, `i18n.py` | done |
+| Severity marks | 🔴 / 🟠 / 🟡 by `remediation.severity_red` / `severity_orange` / `severity_yellow` (9.0 / 7.0 / 4.0) next to every CVE, a 위험도 column first in every library table (rows sorted by it), per-level counts in 한눈에 보기, `report.json` `severity` | `sbmig/remediations/report.py`, `i18n.py`, `sbmig/core/config.py` | done |
+| Korean presentation | label tables, `ko_text` pattern rules (unknown text unchanged), `detail_group`; `note_ko` / `detail_ko` / `origin_ko` / `reason_ko` in `GET …/proposals`; the approval card shows the Korean note | `sbmig/remediations/i18n.py`, `service.py`, `sbmig/web/static/index.html` | done |
+| Tests | `test_inhouse.py`, `test_i18n.py` (one sample sentence per rule), inventory / planner / graph / report / service additions | `tests/remediations/` | done |
+| Docs | INTERFACES "remediations", agent-doc 12 (new) + 11, PROGRESS | `docs/`, `agent-doc/` | done |
+| Open | transitive findings under a dependency the project itself declares, in modules that do not inherit the project root, stay `manual_review` — where an override entry would go is the company's decision | — | open |
+| Not measured | how the real project's 56 residuals split between in-house and manual review (next company run) | — | open |

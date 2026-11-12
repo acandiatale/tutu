@@ -709,3 +709,104 @@ def test_merge_unions_scopes_and_governed_wins_over_also(project):
     src = FakeSource({"example:core": ["2.14.3"], "example:annotations": ["2.14.3"]})
     (p,) = _plan(project, [a, b], source=src).proposals
     assert p.modules == ["m1", "m2"] and p.also_modules == ["m3"]
+
+
+# ------------------------------------------------------------------------------------------------- in-house artifacts
+INH = "com.example.inhouse:inhouse-core"
+MM_ROOT = DM_POM.replace("  <version>1.0.0</version>\n",
+                         "  <version>1.0.0</version>\n  <packaging>pom</packaging>\n"
+                         "  <modules>\n    <module>app-domain</module>\n    <module>app-web</module>\n  </modules>\n", 1)
+MM_MODULE = ("<project>\n  <parent>\n    <groupId>example</groupId>\n    <artifactId>app</artifactId>\n"
+             "    <version>1.0.0</version>\n  </parent>\n  <artifactId>{name}</artifactId>\n</project>\n")
+
+
+def _mm_project(tmp_path):
+    _write(tmp_path, MM_ROOT)
+    for m in ("app-domain", "app-web"):
+        _write(tmp_path, MM_MODULE.format(name=m), f"{m}/pom.xml")
+    return tmp_path
+
+
+def _inh_trans(modules=("app-domain", "app-web"), inhouse_modules=("app-domain", "app-web"), origin=O_TRANSITIVE):
+    return InventoryItem(ga="example:t", version="1.0", origin=origin, patched_versions=["1.1"],
+                         via=[f"{INH}:4.0.0"], finding_ids=["CVE-T"], modules=list(modules),
+                         inhouse=[INH], inhouse_modules=list(inhouse_modules))
+
+
+def test_inhouse_artifact_itself_is_an_inhouse_residual(project):
+    item = InventoryItem(ga=INH, version="4.0.0", origin=O_DIRECT_LITERAL, finding_ids=["CVE-I"], patched_versions=["4.0.1"],
+                         location=PomLocation("pom.xml", L_DEP, "1.2.3"), modules=["app-domain"],
+                         inhouse=[INH], inhouse_modules=["app-domain"])
+    plan = _plan(project, [item], source=FakeSource({INH: ["4.0.1"]}))
+    assert not plan.proposals
+    (r,) = plan.residuals
+    assert r.reason == "inhouse_artifact" and r.modules == ["app-domain"] and r.inhouse == [INH]
+    assert f"{INH} is an in-house artifact" in r.detail and r.finding_ids == ["CVE-I"]
+
+
+@pytest.mark.parametrize("origin", [O_TRANSITIVE, O_PARENT_MANAGED, O_BOM_MANAGED])
+def test_every_module_through_inhouse_is_a_residual_no_override(tmp_path, origin):
+    proj = _mm_project(tmp_path)
+    plan = _plan(proj, [_inh_trans(origin=origin)], source=FakeSource({"example:t": ["1.1"]}))
+    assert not plan.proposals
+    (r,) = plan.residuals
+    assert r.reason == "inhouse_artifact" and r.modules == ["app-domain", "app-web"] and r.inhouse == [INH]
+    assert r.via == [f"{INH}:4.0.0"] and f"brought in by the in-house artifact(s) {INH}" in r.detail
+
+
+def test_some_modules_through_inhouse_planned_as_today(tmp_path):
+    proj = _mm_project(tmp_path)
+    src = FakeSource({"example:t": ["1.1"]})
+    mixed = _plan(proj, [_inh_trans(inhouse_modules=("app-domain",))], source=src)
+    plain = _plan(proj, [_inh_trans(inhouse_modules=())], source=src)
+    assert [p.kind for p in mixed.proposals] == [p.kind for p in plain.proposals] == [K_MANAGED_OVERRIDE]
+    assert mixed.proposals[0].diff == plain.proposals[0].diff
+    # the same mixed item without an inheriting root: today's residual, now carrying the in-house facts
+    plan = _plan(_write(tmp_path / "flat", POM), [_inh_trans(inhouse_modules=("app-domain",))], source=src)
+    (r,) = plan.residuals
+    assert r.reason == "manual_review" and r.inhouse == [INH] and r.modules == ["app-domain", "app-web"]
+
+
+def test_direct_declaration_also_reached_through_inhouse_is_proposed(project):
+    item = _direct()
+    item.modules, item.also_modules = ["app-web", "app-domain"], ["app-domain"]
+    item.inhouse, item.inhouse_modules = [INH], ["app-domain"]
+    (p,) = _plan(project, [item], source=FakeSource({"example:lib": ["1.2.5"]})).proposals
+    assert p.kind == K_DIRECT_VERSION and p.to_version == "1.2.5"
+
+
+def test_rejected_change_residual_carries_modules_and_inhouse(tmp_path):
+    proj = _mm_project(tmp_path)
+    plan = _plan(proj, [_inh_trans(inhouse_modules=("app-domain",))], source=FakeSource({"example:t": ["1.1"]}),
+                 rejected={("example:t", "1.1")})
+    (r,) = plan.residuals
+    assert r.reason == "rejected_proposals" and r.modules == ["app-domain", "app-web"] and r.inhouse == [INH]
+    assert r.via == [f"{INH}:4.0.0"]
+
+
+def test_policy_hash_covers_the_inhouse_set():
+    from sbmig.core.config import ArtifactsConfig
+
+    def cfg(groups=("mandatory", "optional", "parents"), mandatory=()):
+        c = _cfg(inhouse_groups=list(groups))
+        c.artifacts = ArtifactsConfig(parent={"group_id": "com.example.inhouse", "artifact_id": "base-parent"},
+                                      mandatory=[{"group_id": g, "artifact_id": a} for g, a in
+                                                 (x.split(":") for x in mandatory)])
+        return c
+
+    base = P.policy_hash(cfg(mandatory=[INH]))
+    assert base == P.policy_hash(cfg(mandatory=[INH]))
+    assert base != P.policy_hash(cfg(mandatory=[INH, "com.example.inhouse:inhouse-web"]))
+    assert base != P.policy_hash(cfg(groups=("mandatory", "optional"), mandatory=[INH]))    # parent left out
+    assert base != P.policy_hash(cfg(groups=(), mandatory=[INH]))
+    assert P.policy_hash(cfg(groups=())) == P.policy_hash(_cfg())        # empty set either way
+    assert P.policy_hash(_cfg()) == P.policy_hash(_cfg(inhouse_message="x"))   # the message is not policy
+
+
+def test_old_plan_json_without_residual_facts_loads():
+    from sbmig.remediations.models import RoundPlan
+    plan = RoundPlan.from_dict({"round": 1, "source_tree_hash": "t", "policy_hash": "p",
+                                "residuals": [{"ga": "example:t", "version": "1.0", "origin": "transitive",
+                                               "reason": "manual_review"}]})
+    r = plan.residuals[0]
+    assert (r.modules, r.via, r.inhouse) == ([], [], [])
