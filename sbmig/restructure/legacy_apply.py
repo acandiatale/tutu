@@ -1,12 +1,12 @@
-"""재구성이 legacy Spring 컨텍스트를 다루는 부분(v2.1x, ``Restructurer`` 가 상속하는 믹스인). 왜: Spring Framework /
-servlet 프로젝트를 Boot 앱으로 바꾸면 빌드는 통과해도 기동에서 깨지는 지점(빈 덮어쓰기 금지, JNDI 없음, WEB-INF
-위치, CommonsMultipartResolver, 기본 서블릿, @EnableWebMvc …)을 재구성이 직접 처리하고 사실을 ``RestructureResult`` 의
-v2.1x 필드(``xml_imports`` / ``xml_skipped`` / ``legacy_properties_written`` / ``scope_restored`` /
-``source_encodings_written`` / ``webinf_locations_rewritten`` / ``beans_removed`` / ``duplicate_bean_ids`` / ``starter`` /
-``web_evidence`` / ``conversion_facts``)에 남긴다 — 수정 루프의 layout facts, 구조 검토, 인수인계가 읽는다. 흐름상 위치:
-``_generate_application`` (진입 XML 고르기 + 사본 고치기 + D1 속성), ``_write_boot`` (starter, E-M9),
-``_web_xml_registrations`` (D4 / D11 / D12), ``apply`` 끝(E-M6 scope 복원, D-M7 소스 인코딩). 스위치는
-``layout.legacy_context.*`` — 끄면 인수인계 문장만. 원칙: as-is 파일은 고치지 않고 ``legacy-config/`` 사본만 고친다.
+"""재구성 단계에서 legacy Spring 컨텍스트(XML 설정, web.xml)를 Boot에 맞게 처리하는 믹스인 모듈.
+``Restructurer``가 상속한다.
+Spring Framework / servlet 프로젝트를 Boot 앱으로 바꾸면 빌드는 통과해도 기동할 때 깨지는 지점(빈 덮어쓰기
+금지, JNDI 없음, WEB-INF 위치, CommonsMultipartResolver, 기본 서블릿, @EnableWebMvc 등)을 여기서 처리한다.
+처리 결과는 ``RestructureResult``의 ``xml_imports``, ``conversion_facts``
+등에 남기며 수정 루프, 구조 검토, 인수인계가 읽는다.
+- ``_generate_application``, ``_write_boot``, ``_web_xml_registrations``, ``apply`` 끝에서 호출된다
+- 스위치는 ``layout.legacy_context.*``이며, 끄면 인수인계 문장만 남긴다
+- as-is 파일은 고치지 않고 ``legacy-config/``에 복사한 파일만 고친다
 
 Restructure side of the legacy Spring context (v2.1x, docs/INTERFACES.md "v2.1x"): a mixin of `Restructurer`. Pure
 text helpers live in `legacy_context`; the class / property tables in `knowledge/config/legacy_context_rules.yml`.
@@ -36,8 +36,8 @@ NON_LEGACY_CASES = (CaseType.SPRING_BOOT, CaseType.MSA)
 
 
 class LegacyContextMixin:
-    """v2.1x 처리 묶음. ``Restructurer`` 의 ``_append_props`` / ``_boot_resource_files`` / ``_jsp_web_path`` /
-    ``_project_poms`` 를 쓴다.
+    """legacy 컨텍스트 처리 메서드를 모은 믹스인 클래스. ``Restructurer``의 ``_append_props`` /
+    ``_boot_resource_files`` / ``_jsp_web_path`` / ``_project_poms``를 사용한다.
 
     The v2.1x steps; relies on the Restructurer helpers `_append_props`, `_boot_resource_files`, `_jsp_web_path`,
     `_project_poms`, `_servlet_scan`."""
@@ -45,21 +45,21 @@ class LegacyContextMixin:
     # ------------------------------------------------------------------ shared
     @staticmethod
     def _lc_switches(c: "_Ctx") -> Any:
-        """``layout.legacy_context`` (없으면 기본값 객체)."""
+        """설정 ``layout.legacy_context``를 반환한다. 없으면 기본값 객체를 반환한다."""
         from sbmig.core.config import LegacyContextConfig
 
         return getattr(c.cfg.layout, "legacy_context", None) or LegacyContextConfig()
 
     @staticmethod
     def _lc_rules(c: "_Ctx") -> lc.LegacyContextRules:
-        """규칙 표(재구성 한 번에 한 번 읽음)."""
+        """legacy 컨텍스트 규칙 표를 반환한다. 재구성 한 번에 한 번만 읽는다."""
         if c.legacy_rules is None:
             c.legacy_rules = lc.load_rules(c.cfg.resolve_path(lc.RULES_FILE))
         return c.legacy_rules
 
     @staticmethod
     def _lc_fact(c: "_Ctx", key: str, value: Any) -> None:
-        """``conversion_facts`` 에 한 항목(목록이면 중복 없이 이어 붙임)."""
+        """``conversion_facts``에 항목 하나를 넣는다. 값이 목록이면 중복 없이 이어 붙인다."""
         cf = c.result.conversion_facts
         if isinstance(value, list):
             cur = cf.setdefault(key, [])
@@ -70,11 +70,12 @@ class LegacyContextMixin:
 
     @staticmethod
     def _lc_legacy_case(c: "_Ctx") -> bool:
-        """Boot 로 전환되는 legacy 프로젝트인가(spring_legacy / servlet_tomcat / pure_java — Boot as-is / MSA 아님)."""
+        """Boot로 바뀌는 legacy 프로젝트(spring_legacy / servlet_tomcat / pure_java)인지 반환한다.
+        Boot as-is와 MSA 프로젝트는 해당하지 않는다."""
         return c.profile.case_type not in NON_LEGACY_CASES
 
     def _lc_prop_configured(self, c: "_Ctx", boot: str, key: str) -> bool:
-        """boot 리소스(application*.properties / yml)나 이번 실행이 이미 그 키를 정했는가."""
+        """boot 리소스(application*.properties / yml)나 이번 실행이 그 속성 키를 이미 정했는지 반환한다."""
         if key in c.props_written:
             return True
         res = f"{boot}/src/main/resources"
@@ -86,8 +87,9 @@ class LegacyContextMixin:
         return False
 
     def _lc_write_props(self, c: "_Ctx", boot: str, header: str, rows: list[tuple[str, str, str]]) -> list[str]:
-        """boot ``application.properties`` 끝에 ``# sbmig: <header>`` 블록(행 = (키, 값, 출처)). 이미 정해진 키는 건너뛴다.
-        쓴 ``키=값`` 목록(``legacy_properties_written`` 에도 ``(출처)`` 와 함께).
+        """boot 모듈의 ``application.properties`` 끝에 ``# sbmig: <header>`` 블록을 덧붙인다.
+        행은 (키, 값, 출처)이고 이미 정해진 키는 건너뛴다.
+        쓴 ``키=값`` 목록을 반환하며, ``legacy_properties_written``에도 출처와 함께 남긴다.
 
         Append `# sbmig: <header>` + `key=value` lines (rows = (key, value, why)) to the boot application.properties;
         keys already configured are skipped. Returns the `key=value` strings written."""
@@ -112,7 +114,7 @@ class LegacyContextMixin:
         return out
 
     def _lc_web_model(self, c: "_Ctx") -> Any:
-        """첫 web.xml 의 모델(현재 위치에서 다시 읽음, 한 번만). 없으면 None."""
+        """첫 web.xml을 현재 위치에서 다시 읽어 그 모델을 반환한다. 한 번만 읽으며, 없으면 None을 반환한다."""
         if c.web_model_loaded:
             return c.web_model
         c.web_model_loaded = True
@@ -130,8 +132,9 @@ class LegacyContextMixin:
 
     # ------------------------------------------------------------------ comp sources (D8 / D10 / D12)
     def _lc_sources(self, c: "_Ctx", comp_dirs: list[str]) -> dict[str, list[str]]:
-        """comp 소스(src/main/java) 한 번 훑기: @EnableWebMvc / WebMvcConfigurationSupport (FQCN), WebApplicationInitializer,
-        configureDefaultServletHandling, ``@PropertySource("/WEB-INF/…")`` (파일:줄 위치).
+        """comp 모듈의 소스(src/main/java)를 한 번 검사해 @EnableWebMvc / WebMvcConfigurationSupport(FQCN),
+        WebApplicationInitializer, configureDefaultServletHandling,
+        ``@PropertySource("/WEB-INF/…")``(파일:줄)를 찾는다.
 
         One pass over the comp sources (cached): FQCNs that switch Boot's MVC auto-configuration off, web application
         initializers, default-servlet handling, `@PropertySource` values naming `/WEB-INF/…`."""
@@ -171,8 +174,8 @@ class LegacyContextMixin:
 
     # ------------------------------------------------------------------ E-M9 starter
     def _lc_web_evidence(self, c: "_Ctx", asis_deps: Optional[list[Any]] = None) -> list[str]:
-        """웹 앱이라는 근거(web.xml / spring-webmvc / servlet-api / @Controller ×N / JSP ×N / 서블릿 클래스 ×N): 분석기
-        라이브러리와 as-is 의존성(``web_artifacts`` 표) 둘 다 본다."""
+        """웹 앱이라는 근거(web.xml, spring-webmvc, servlet-api, @Controller, JSP, 서블릿 클래스 수)를
+        모은다. 분석기가 찾은 라이브러리와 as-is 의존성(``web_artifacts`` 표)을 모두 본다."""
         src = c.profile.source
         rules = self._lc_rules(c)
         ev: list[str] = []
@@ -196,8 +199,9 @@ class LegacyContextMixin:
         return ev
 
     def _lc_starter(self, c: "_Ctx", starter: Optional[str], asis_deps: Optional[list[Any]] = None) -> Optional[str]:
-        """E-M9: spring_legacy 의 웹 starter 는 웹 근거가 있을 때만. 근거가 없으면 ``starter_by_case['pure_java']`` (설정의
-        비웹 starter) + 노트 + 인수인계. ``web_evidence`` / ``starter`` 를 채운다.
+        """spring_legacy 프로젝트에 쓸 starter를 고른다.
+        웹 starter는 웹 앱 근거가 있을 때만 쓰고, ``web_evidence`` / ``starter``를 채운다.
+        근거가 없으면 설정의 비웹 starter(``starter_by_case['pure_java']``)를 쓰고 메모와 인수인계를 남긴다.
 
         E-M9 (user decision 6): a spring_legacy project without web evidence gets the configured non-web starter
         (`starter_by_case.pure_java`) instead of the webmvc one; fills `web_evidence` / `starter`."""
@@ -235,10 +239,11 @@ class LegacyContextMixin:
 
     # ------------------------------------------------------------------ D2 / D3 / D1 + the copies
     def _lc_xml_imports(self, c: "_Ctx", boot: str, comp_dirs: list[str]) -> list[str]:
-        """D2 + D3 + 사본 고치기 + D1: web.xml ``contextConfigLocation`` 의 진입 XML 만 ``legacy-config/`` 에 바이트 복사해
-        ``@ImportResource`` 목록으로 돌려주고, ``<import>`` 로 닿는 파일은 상대 경로를 지켜 옆에 복사(목록에는 안 넣음),
-        ``src/test`` 는 빼고, 사본마다 D5–D10 을 적용, Boot 가 거부하는 빈 덮어쓰기 / 순환 참조 속성(D1)을 쓴다.
-        web.xml 이 없거나 아무것도 못 풀면 예전처럼 모든 XML.
+        """web.xml ``contextConfigLocation``이 가리키는 진입 XML만 ``legacy-config/``에 바이트 그대로
+        복사하고 ``@ImportResource`` 목록으로 반환한다.
+        ``<import>``로 연결된 파일은 상대 경로를 유지해 옆에 복사하되 목록에는 넣지 않고, ``src/test``는 뺀다. 복사한
+        파일마다 필요한 수정을 적용하고, Boot가 기본으로 막는 빈 덮어쓰기 / 순환 참조를 허용하는 속성을 쓴다.
+        web.xml이 없거나 진입 XML을 찾지 못하면 모든 XML을 대상으로 한다.
 
         D2 / D3 / D1 and the copy edits (docs/INTERFACES.md "v2.1x"). Returns the `@ImportResource` entries."""
         LC = self._lc_switches(c)
@@ -340,7 +345,8 @@ class LegacyContextMixin:
         return imports
 
     def _lc_copy(self, c: "_Ctx", cur: str, dst: str) -> None:
-        """D3: 바이트 그대로 복사(EUC-KR XML 의 선언이 계속 맞도록). 같은 바이트가 이미 있으면 그대로."""
+        """파일을 바이트 그대로 복사한다. EUC-KR XML의 인코딩 선언이 계속 맞아야 하기 때문이다.
+        같은 바이트의 파일이 이미 있으면 그대로 둔다."""
         if c.ws.exists(dst):
             if c.ws.abs(dst).read_bytes() == c.ws.abs(cur).read_bytes():
                 return
@@ -353,9 +359,10 @@ class LegacyContextMixin:
     def _lc_follow_imports(self, c: "_Ctx", asis: str, res_dir: str, cands: list[str], web_dirs: list[str],
                            copies: dict[str, str], taken: dict[str, str], loaded: set[str],
                            reached_by: dict[str, str]) -> None:
-        """사본의 ``<import resource>`` 를 따라가며 닿는 파일도 사본 옆에 복사한다. 상대 경로(앞 ``/`` 는 Spring 이 무시)는
-        사본 위치 기준 같은 상대 경로로; ``classpath:`` (파일 하나)나 ``legacy-config/`` 밖으로 나가는 경로는 사본의
-        resource 문자열을 사본을 가리키게 고친다. 와일드카드 ``classpath*:`` 는 그대로(as-is 위치에서 읽힘, 노트).
+        """복사한 XML의 ``<import resource>``를 따라가며 연결된 파일도 그 옆에 복사한다.
+        상대 경로(앞의 ``/``는 Spring이 무시)는 복사한 위치 기준으로 같은 상대 경로에 둔다. ``classpath:``(파일 하나)나
+        ``legacy-config/`` 밖으로 나가는 경로는 복사한 파일을 가리키도록 resource 값을 고친다.
+        와일드카드 ``classpath*:``는 as-is 위치에서 읽히므로 그대로 두고 메모를 남긴다.
 
         Follow the `<import resource>` graph from the copy of `asis`: every reached file is copied next to the copies
         (relative paths kept; a `classpath:` import of one file or a path leaving legacy-config/ is rewritten in the
@@ -384,7 +391,8 @@ class LegacyContextMixin:
                     want = posixpath.normpath(posixpath.join(posixpath.dirname(imp), r.lstrip("/")))
                     targets = [x for x in cands if lc.ant_match(want, x)] if wildcard else \
                         [x for x in cands if x == want]
-                    # 빈 설정으로 잡히지 않은 XML(네임스페이스 접두 등)이라도 파일이 있으면 사본 옆에 둔다 — 상대 import 가 풀리게
+                    # 빈 설정으로 인식되지 않은 XML(네임스페이스 접두어 사용 등)도
+                    # 파일이 있으면 옆에 복사해 상대 import가 풀리게 한다
                     if not targets and not wildcard and c.ws.exists(c.new_location(want)):
                         targets = [want]
                     absolute = False
@@ -431,8 +439,9 @@ class LegacyContextMixin:
 
     def _lc_edit_copies(self, c: "_Ctx", boot: str, res_dir: str, copies: dict[str, str], roles: dict[str, str],
                         comp_dirs: list[str]) -> None:
-        """사본마다 D5 (JNDI 빈 위 MIGRATION-TODO), D6 (/WEB-INF 위치), D7 (${…} 위치), D9 (CommonsMultipartResolver 제거),
-        D10 (JSP view prefix, <mvc:resources>), D8 / Security XML 감지, 중복 빈 id(D1)를 적용·수집하고 문장을 남긴다.
+        """복사한 XML마다 수정을 적용하고 찾은 내용을 모아 인수인계 문장을 남긴다.
+        대상은 JNDI 빈 위의 MIGRATION-TODO 주석, /WEB-INF 위치, ${…} 위치, CommonsMultipartResolver 제거,
+        JSP view prefix와 <mvc:resources>, 기본 서블릿과 Security XML 감지, 중복 빈 id다.
 
         Apply the copy edits (D5 / D6 / D7 / D9 / D10) and the detections (D8, Security XML, duplicate ids)."""
         LC = self._lc_switches(c)
@@ -458,26 +467,28 @@ class LegacyContextMixin:
                 ids.setdefault(i, [])
                 if cp not in ids[i]:
                     ids[i].append(cp)
-            # D5: JNDI 조회 빈 — 빈은 두고(소유팀 결정) 바로 위에 MIGRATION-TODO 주석
+            # JNDI 조회 빈은 소유팀이 결정하도록 그대로 두고 바로 위에 MIGRATION-TODO 주석을 단다
             for el in sorted(lc.elements(text, rules.jndi_elements) + lc.beans_of_class(text, rules.jndi_classes),
                              key=lambda e: e.start, reverse=True):
                 bid = el.attrs.get("id") or el.attrs.get("name") or el.local
                 jndi.append(f"{bid} ({cp})")
                 if LC.handover_sentences:
                     text, _ = lc.insert_comment_above(text, el, rules.jndi_todo)
-            # D6: /WEB-INF/… 위치 → classpath:asis-webinf/… (front 이동이 거기 둔 파일; 없으면 거기로 바이트 복사)
+            # /WEB-INF/… 위치는 front 이동이 파일을 둔 classpath:asis-webinf/…로 바꾸고, 그곳에 파일이
+            # 없으면 바이트 그대로 복사한다
             if LC.rewrite_webinf_locations:
                 text, done = lc.rewrite_webinf_locations(text, rules, lambda sub: self._lc_stash(c, boot, sub))
                 for old, new in done:
                     res.webinf_locations_rewritten.append(f"{cp}: {old} → {new}")
             else:
                 webinf_left += [f"{cp}: {old}" for old, _ in lc.rewrite_webinf_locations(text, rules, lambda s: "x")[1]]
-            # D7: ${…} 가 든 classpath 위치
+            # ${…}가 들어간 classpath 위치를 처리한다
             for loc in lc.profile_locations(text, rules):
                 line, text = self._lc_profile_location(c, boot, cp, loc, text)
                 if line:
                     profile_lines.append(line)
-            # D9: CommonsMultipartResolver 빈(Spring 6 에서 클래스 삭제) — 사본에서 지우고 한도는 Boot 속성으로
+            # CommonsMultipartResolver는 Spring 6에서 삭제됐으므로 복사한 XML에서
+            # 빈을 지우고 업로드 한도는 Boot 속성으로 옮긴다
             for el in reversed(lc.beans_of_class(text, rules.multipart_classes)):
                 bid = el.attrs.get("id") or "multipartResolver"
                 limits = lc.multipart_limits(text, el, rules)
@@ -493,7 +504,7 @@ class LegacyContextMixin:
                     c.followup(f"{cp}: bean {bid} is a {el.attrs.get('class')} — Spring 6 deleted the class, startup "
                                "fails: remove the bean and set spring.servlet.multipart.max-file-size / max-request-size "
                                "(layout.legacy_context.multipart_resolver: false)")
-            # D10: JSP view prefix — 결정 5 로 JSP 는 WEB-INF/jsp 아래로 갔다: spring.mvc.view.prefix 와 같은 변환
+            # JSP를 WEB-INF/jsp 아래로 옮겼으므로 view prefix도 spring.mvc.view.prefix와 같은 방식으로 바꾼다
             if c.jsp_moved:
                 edits = []
                 for a, b, pre in lc.view_prefixes(text, rules):
@@ -502,7 +513,7 @@ class LegacyContextMixin:
                         edits.append((a, b, new_pre))
                         prefix_done.append(f"{cp}: {pre} → {new_pre}")
                 text = lc.rewrite_spans(text, edits)
-            # D10: <mvc:resources location="/resources/"> — 파일은 front 의 static/ 으로 갔다
+            # <mvc:resources location="/resources/">의 파일은 front 모듈의 static/으로 옮겨졌으므로 위치를 덧붙인다
             for el in lc.resource_handlers(text, rules):
                 line, text = self._lc_resources(c, cp, el, text)
                 if line:
@@ -558,8 +569,9 @@ class LegacyContextMixin:
                        "default)")
 
     def _lc_stash(self, c: "_Ctx", boot: str, sub: str) -> Optional[str]:
-        """D6: ``WEB-INF/<sub>`` 의 boot stash 위치(``classpath:asis-webinf/<sub>``). front 이동이 거기 두지 않았으면
-        as-is 파일을 찾아 그 자리로 바이트 복사. 못 찾으면 None(위치를 고치지 않는다).
+        """``WEB-INF/<sub>``를 boot 모듈 안에 보관한 위치(``classpath:asis-webinf/<sub>``)를 반환한다.
+        front 이동이 그곳에 두지 않았으면 as-is 파일을 찾아 바이트 그대로 복사한다.
+        찾지 못하면 None을 반환하고 위치를 고치지 않는다.
 
         The boot-module stash location of `WEB-INF/<sub>`; copies the as-is file there when the front move did not.
         None when the file cannot be found (the location is left)."""
@@ -584,7 +596,8 @@ class LegacyContextMixin:
         return f"classpath:{STASH}/{sub}"
 
     def _lc_resolvable(self, c: "_Ctx", key: str) -> bool:
-        """``${key}`` 가 Boot 에서도 풀리는가: 패키지된 리소스가 정의하거나 web.xml context-param 값으로 쓰이는 키."""
+        """``${key}``가 Boot에서도 해석되는지 반환한다.
+        패키지에 들어가는 리소스가 정의하거나 web.xml context-param 값으로 쓰이는 키면 참이다."""
         inv = getattr(c.profile, "properties", None)
         for f in getattr(inv, "findings", None) or []:
             if f.key != key:
@@ -596,9 +609,10 @@ class LegacyContextMixin:
         return False
 
     def _lc_profile_location(self, c: "_Ctx", boot: str, cp: str, loc: str, text: str) -> tuple[str, str]:
-        """D7: ``${…}`` 가 든 classpath 위치 하나 → (인수인계 문장, 새 텍스트). 자리값이 Boot 에서도 풀리면(기본값이 있거나
-        application.properties 에 값이 쓰이는 키) 그대로; 패키지된 파일 하나만 맞으면 ``classpath*:`` glob 으로; 여럿이면
-        glob 이 전부를 읽어 값이 섞이므로 고치지 않고 설정할 키를 알린다.
+        """``${…}``가 들어간 classpath 위치 하나를 처리해 (인수인계 문장, 새 텍스트)를 반환한다.
+        - 플레이스홀더가 Boot에서도 해석되면 그대로 두고, 패키지에 들어가는 파일 하나만 맞으면
+          ``classpath*:`` glob으로 바꾼다
+        - 여러 파일이 맞으면 glob이 모두 읽어 값이 섞이므로 고치지 않고 설정해야 할 키를 알린다
 
         D7, one `classpath:` location with `${…}` → (Handover sentence, new text). Resolvable placeholders (default
         or a value Boot gets) stay; exactly one packaged match → the `classpath*:` glob; several → left (a glob would
@@ -631,15 +645,16 @@ class LegacyContextMixin:
 
     @staticmethod
     def _lc_classpath_files(c: "_Ctx") -> list[str]:
-        """지금 트리의 classpath 리소스(``src/main/resources`` 아래 *.properties / *.yml / *.yaml) 경로들."""
+        """현재 트리의 classpath 리소스 경로(``src/main/resources`` 아래 *.properties / *.yml / *.yaml) 목록을 반환한다."""
         out: list[str] = []
         for pat in ("*.properties", "*.yml", "*.yaml"):
             out += [r for r in c.ws.glob(pat) if "/src/main/resources/" in "/" + r]
         return out
 
     def _lc_resources(self, c: "_Ctx", cp: str, el: Any, text: str) -> tuple[str, str]:
-        """D10: ``<mvc:resources location="/resources/">`` — 웹 루트 위치의 파일은 front 의 ``static/`` 으로 갔다. 그 디렉토리가
-        있으면 사본의 location 에 ``classpath:/static/<loc>`` 를 덧붙이고(D6 스위치) 문장 하나.
+        """``<mvc:resources location="/resources/">``를 처리한다.
+        웹 루트의 파일은 front 모듈의 ``static/``으로 옮겨졌다.
+        그 디렉토리가 있으면 복사한 XML의 location에 ``classpath:/static/<loc>``를 덧붙이고 문장 하나를 남긴다.
 
         D10: a servlet-context `<mvc:resources>` location whose files moved to the front module's `static/`."""
         LC = self._lc_switches(c)
@@ -678,7 +693,8 @@ class LegacyContextMixin:
                 f"{static}/{web[0].strip('/')}/ — add {', '.join(add)} to its location"), text
 
     def _lc_has_jdbc(self, c: "_Ctx") -> bool:
-        """boot / comp pom 에 spring-boot-jdbc 를 끌어오는 의존성이 있는가(D5 문장)."""
+        """boot / comp pom에 spring-boot-jdbc를 끌어오는 의존성이 있는지 반환한다.
+        JNDI 안내 문장을 고를 때 쓴다."""
         rules = self._lc_rules(c)
         for rel in (c.boot_rel, c.comp_rel):
             if not rel:
@@ -695,8 +711,9 @@ class LegacyContextMixin:
         return False
 
     def _lc_legacy_properties(self, c: "_Ctx", boot: str, copies: dict[str, str]) -> None:
-        """D1 (사용자 결정 1): 전환된 legacy 프로젝트의 boot application.properties 에 빈 덮어쓰기 / 순환 참조 허용
-        (as-is Framework 동작) + 중복 빈 id 를 인수인계에. Boot as-is / MSA 에는 절대 쓰지 않는다.
+        """Boot로 바뀐 legacy 프로젝트의 boot application.properties에 빈 덮어쓰기와 순환 참조를 허용하는
+        속성을 쓰고, 중복 빈 id는 인수인계에 남긴다.
+        as-is Spring Framework의 동작을 유지하기 위해서다. Boot as-is / MSA 프로젝트에는 절대 쓰지 않는다.
 
         D1: `spring.main.allow-bean-definition-overriding` / `allow-circular-references` for a converted legacy
         project (never Boot as-is / MSA), the duplicate ids in the Handover."""
@@ -723,8 +740,9 @@ class LegacyContextMixin:
 
     # ------------------------------------------------------------------ D12 project-level sentences
     def _lc_project_sentences(self, c: "_Ctx", boot: str, comp_dirs: list[str]) -> None:
-        """D8 (XML 사본 + Java), D9 (Java @Bean), D6 (Java @PropertySource), D12: WebApplicationInitializer, log4j 1 설정
-        파일 — 속성과 인수인계 문장.
+        """XML import와 관계없는 프로젝트 단위 항목을 처리한다. 기본 서블릿(XML, Java), Java @Bean의
+        CommonsMultipartResolver, Java @PropertySource, WebApplicationInitializer, log4j 1 설정 파일에 대한
+        속성과 인수인계 문장을 만든다.
 
         Project-level steps that need no XML import: Tomcat's default servlet (D8, XML copies + Java), a Java
         CommonsMultipartResolver (D9) and `@PropertySource("/WEB-INF/…")` (D6) sentences, web application initializers and
@@ -783,8 +801,8 @@ class LegacyContextMixin:
             self._lc_fact(c, "enable_web_mvc", srcs["enable_web_mvc"])
 
     def _lc_web_xml_sentences(self, c: "_Ctx", boot: str, asis: str, plan: Any) -> None:
-        """D12 (web.xml 이 있을 때): ``<jsp-config>``, ``spring.profiles.active`` context-param, DelegatingFilterProxy 사실,
-        DispatcherServlet 매핑 사실.
+        """web.xml이 있을 때 인수인계 문장을 만든다. ``<jsp-config>``, ``spring.profiles.active``
+        context-param, DelegatingFilterProxy와 DispatcherServlet 매핑을 다룬다.
 
         D12 web.xml sentences: `<jsp-config>`, the profile context-params; DelegatingFilterProxy / dispatcher facts."""
         LC = self._lc_switches(c)
@@ -812,8 +830,8 @@ class LegacyContextMixin:
 
     @staticmethod
     def _lc_jsp_config(text: str) -> str:
-        """web.xml 의 ``<jsp-config>`` 요약(jsp-property-group 수와 page-encoding / include-prelude / include-coda /
-        el-ignored, taglib 수). 없으면 ""."""
+        """web.xml ``<jsp-config>``를 요약한 문자열(jsp-property-group 수와 page-encoding / include-prelude
+        / include-coda / el-ignored, taglib 수)을 반환한다. 없으면 빈 문자열을 반환한다."""
         m = re.search(r"<(?:\w+:)?jsp-config\b[^>]*>(.*?)</(?:\w+:)?jsp-config>", lc._COMMENT_RE.sub("", text), re.S)
         if not m:
             return ""
@@ -834,8 +852,8 @@ class LegacyContextMixin:
 
     # ------------------------------------------------------------------ E-M6 / D-M7 (every pom mode)
     def _lc_after_mode(self, c: "_Ctx", mode: str) -> None:
-        """``apply`` 끝(모드가 성공한 뒤): E-M6 as-is ``provided`` 복원, D-M7 소스 인코딩, Boot as-is 의 starter 글,
-        저널 ``legacy_context`` 한 줄, 바뀌었으면 커밋.
+        """모드 작업이 성공한 뒤 ``apply`` 끝에서 실행한다. as-is ``provided`` scope 복원, 소스 인코딩, Boot
+        as-is의 starter 문구, 저널 ``legacy_context`` 한 줄을 처리하고, 바뀐 것이 있으면 커밋한다.
 
         After the mode's work (layout / boot_pom / msa_pom): restore as-is `provided` scopes (E-M6), write the source
         encodings (D-M7), the Boot as-is starter text, one journal event `legacy_context`, a commit when poms changed."""
@@ -865,8 +883,9 @@ class LegacyContextMixin:
             c.commit("restructure: legacy context (as-is provided scopes / source encodings)")
 
     def _lc_restore_scopes(self, c: "_Ctx") -> None:
-        """E-M6: as-is 선언이 ``provided`` 였던 의존성(또는 그 jakarta 후속 좌표, ``scope_successors``)이 지금 compile /
-        runtime 이면 ``provided`` 로 되돌린다(OpenRewrite 가 javax.servlet-api provided → jakarta.servlet-api compile).
+        """as-is에서 ``provided``였던 의존성(또는 그 jakarta 후속 좌표, ``scope_successors``)이 지금 compile
+        / runtime이면 ``provided``로 되돌린다.
+        OpenRewrite가 javax.servlet-api provided를 jakarta.servlet-api compile로 바꾸기 때문이다.
 
         E-M6: a dependency the as-is poms declared `provided` (or its jakarta successor) that is now compile / runtime
         gets `provided` back; `scope_restored` + a note."""
@@ -911,9 +930,9 @@ class LegacyContextMixin:
             c.note("as-is provided scopes restored after the recipes: " + "; ".join(c.result.scope_restored))
 
     def _lc_source_encodings(self, c: "_Ctx") -> None:
-        """D-M7: 표본 .java 가 MS949 / EUC-KR 인데 프로젝트 안 pom 사슬이 맞는 ``project.build.sourceEncoding`` 을 선언하지
-        않은 모듈 → 그 모듈 pom 에 적는다(검토 전). UTF-8 과 섞인 모듈, 컴파일러 플러그인 ``<encoding>`` 이 다른 값인
-        모듈은 문장만.
+        """샘플 .java 파일이 MS949 / EUC-KR인데 프로젝트 안 pom 체인에 맞는
+        ``project.build.sourceEncoding``이 없는 모듈은, 구조 검토 전에 그 모듈 pom에 인코딩을 기록한다.
+        UTF-8과 섞인 모듈이나 컴파일러 플러그인의 ``<encoding>``이 다른 모듈은 문장만 남긴다.
 
         D-M7: write `project.build.sourceEncoding` into the module pom whose sampled sources are MS949 / EUC-KR and
         whose in-project chain declares no matching encoding (before the review); mixed modules and a conflicting

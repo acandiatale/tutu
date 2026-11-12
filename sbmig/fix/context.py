@@ -1,17 +1,14 @@
-"""수정 스크립트 요청의 프롬프트 문맥 꾸리기(ContextPacker): 케이스 하나(L2 서명)의 오류들, 오류 파일 발췌,
-pom 발췌, 의존성 버전 사실, 권고, 마이그레이션 노트, 이전 시도 — 글자 예산(`llm.max_context_chars`, 기본
-60,000) 안에서. 흐름상 위치: LLMFixer.propose_script 가 LLM 을 부르기 직전에 `pack_script(ws, cluster, ctx,
-ctx.profile_summary)` 를 부른다. 사내 fixer 플러그인도 같은 문맥을 재사용할 수 있다(`PackedContext.render()`).
-예산 배분: 머리말·오류 목록·보강할 스크립트는 줄이지 않는다. 오류 파일에는 import 블록 + 오류 줄 주변 창(작은
-파일은 통째로)을 주고, 작은 파일이 남긴 몫은 큰 파일이 쓴다. 예산을 넘는 파일은 이름만 적는다(스크립트는
-`p.errors` / `p.files` 로 닿는다). 넘치면 SCRIPT_TRUNCATE_ORDER 순서로 줄이거나 뺀다. 지킬 것: 같은 입력이면
-같은 프롬프트(결정적). 머리말의 `case: <case_id>` 줄은 재생 픽스처의 `match: "case: <id>"` 가 찾는 자리라
-형식을 바꾸지 말 것. 참고 파일(모듈 병합에서 빠진 사본)은 읽기 전용 — 빌드에 없고 스크립트가 쓰면 안 된다.
-v2.1d `library_hints` → "Dependency versions" 섹션(사람이 넣은 `libraries.yml` 항목 + 저장소에 있는 버전;
-정책은 스크립트 프롬프트 규칙 14), pom 바로 뒤에 두고 늦게 버린다. v2.1u/v(2026-10-31 프롬프트 검토): 머리말의 프로젝트 줄은 `as-is (before sbmig): …`(분석 시점), 그
-바로 뒤에 재구성 뒤의 사실 "Project after the restructure"(`ctx.layout_facts`, 순서 0.5, 자르지 않음), Plan notes 는
-`PROMPT_PLAN_NOTE_PREFIXES` 로 시작하는 줄만, 노트는 오류 본문에 맞은 키워드 ×3 + import / pom 에 맞은 키워드 ×1
-(오류 본문에 맞은 노트가 하나라도 있으면 그것들만), 줄이는 순서는 다른 케이스 → Plan notes → 노트 → ….
+"""수정 스크립트를 요청하는 LLM 프롬프트에 넣을 문맥을 만드는 모듈(ContextPacker).
+케이스 하나의 오류, 오류 파일 발췌, pom 발췌, 의존성 버전, 권고, 이관 노트, 이전 시도를
+`llm.max_context_chars`(기본 60,000자) 안에 담는다.
+LLMFixer.propose_script가 LLM 호출 직전에 `pack_script`를 호출하고, 사내 fixer 플러그인도
+`PackedContext.render()`로 재사용할 수 있다.
+- 머리말, 오류 목록, 보강할 스크립트, 재구성 뒤 프로젝트 정보는 줄이지 않는다
+- 오류 파일은 import 블록과 오류 줄 주변을 보여 주고, 예산을 넘는 파일은 이름만 쓴다.
+  전체가 넘치면 SCRIPT_TRUNCATE_ORDER 순으로 줄인다
+- 같은 입력이면 같은 프롬프트가 나와야 한다
+- 머리말의 `case: <case_id>` 줄은 재생 픽스처의 `match`가 찾으므로 형식을 바꾸지 않는다
+- 참고 파일(모듈 병합에서 빠진 복사본)은 읽기 전용이다. 빌드에 포함되지 않으므로 스크립트가 쓰면 안 된다
 
 Context packing for the LLM fixer: errors, file windows, pom excerpts, library migration guidance (advisories),
 migration notes, history — within a budget.
@@ -69,22 +66,22 @@ _LANG = {".java": "java", ".xml": "xml", ".kt": "kotlin", ".yml": "yaml", ".yaml
 # ---------------------------------------------------------------------------
 @dataclass
 class NoteEntry:
-    """마이그레이션 노트 하나(`knowledge/notes/index.yml` 항목 또는 .md 앞머리): 키워드 정규식으로 오류 문장에
-    점수를 매겨 고른다."""
+    """이관 노트 하나를 담는 클래스.
+    `knowledge/notes/index.yml` 항목이나 .md 앞머리에서 읽고, 키워드 정규식이 맞는 수로 고른다."""
     file: str
     title: str
     keywords: list[str] = field(default_factory=list)
     cases: list[str] = field(default_factory=list)
     phases: list[str] = field(default_factory=list)
     always: bool = False
-    # v2.1z-aa (회사 실행 2026-11-06, spring-mobile): "이 라이브러리는 프로젝트 코드로 대체하는 법을 sbmig 가 안다" — 트라이어지는 이런
-    # 케이스를 라이브러리 차단(external_javax_api …)으로 넘기지 않고, 수정 루프는 LLM 의 거절을 받지 않는다(replacement_notes)
+    # sbmig가 프로젝트 코드로 대체하는 방법을 아는 라이브러리이므로, 이런 케이스는 라이브러리 차단으로
+    # 넘기지 않고 LLM의 거절도 받지 않는다
     replacement: bool = False
     path: Optional[Path] = None
     _compiled: list[re.Pattern] = field(default_factory=list, repr=False)
 
     def compiled(self) -> list[re.Pattern]:
-        """키워드 정규식들(잘못된 정규식은 글자 그대로 찾도록 escape 해서)."""
+        """키워드 정규식 목록을 반환한다. 잘못된 정규식은 escape해서 문자 그대로 찾는다."""
         if not self._compiled and self.keywords:
             for k in self.keywords:
                 try:
@@ -94,12 +91,12 @@ class NoteEntry:
         return self._compiled
 
     def score(self, text: str) -> int:
-        """`text` 에서 맞는 키워드 수."""
+        """`text`에서 맞는 키워드 수를 센다."""
         return sum(1 for rx in self.compiled() if rx.search(text))
 
     def score_parts(self, error_text: str, context_text: str = "") -> tuple[int, int]:
-        """(오류 본문에 맞은 키워드 수, 오류 본문에는 없고 import / pom 에만 맞은 키워드 수) — 패커가
-        3 × 앞 + 1 × 뒤 로 점수를 매긴다(B-H3: import 줄에만 맞은 9K 노트가 오류를 이름으로 맞춘 노트를 밀어냈다).
+        """(오류 본문에 맞은 키워드 수, import / pom에만 맞은 키워드 수)를 센다.
+        문맥을 만들 때 앞의 값에 3, 뒤의 값에 1의 가중치를 준다.
 
         (keywords found in the error text, keywords found only in the imports / pom text); the packer scores
         3 × the first + 1 × the second (v2.1v)."""
@@ -112,8 +109,9 @@ class NoteEntry:
         return err, ctx
 
     def applies(self, case: Optional[str], phase: Optional[str]) -> bool:
-        """이 케이스 종류·단계에 쓸 수 있는가. `cases` 는 제한이고 `phases` 는 참고일 뿐이다: v2 는 모든
-        오류를 `verify` 스크립트 루프 하나에서 고치므로 verify 는 언제나 허용.
+        """이 노트를 해당 케이스 종류와 단계에 쓸 수 있는지 확인한다.
+        `cases`는 제한 조건이고 `phases`는 참고용이다.
+        모든 오류를 `verify` 단계의 스크립트 루프에서 고치므로 verify는 항상 허용한다.
 
         `cases` restricts the note; `phases` is advisory (the v1 phase the note was written for): v2 fixes every
         error — Java 21, jakarta, Spring, restructure — in the one `verify` script loop, so `verify` is always
@@ -125,14 +123,14 @@ class NoteEntry:
         return True
 
     def body(self) -> str:
-        """노트 본문(앞머리 제외; 파일이 없으면 "")."""
+        """노트 본문(앞머리 제외)을 읽는다. 파일이 없으면 빈 문자열을 반환한다."""
         if not self.path or not self.path.exists():
             return ""
         return strip_front_matter(self.path.read_text(encoding="utf-8")).strip()
 
 
 def split_front_matter(text: str) -> tuple[dict, str]:
-    """`---` YAML 앞머리와 본문을 나눈다(앞머리가 없거나 깨진 YAML 이면 빈 dict)."""
+    """`---`로 감싼 YAML 앞머리와 본문을 나눈다. 앞머리가 없거나 YAML이 깨졌으면 빈 dict를 반환한다."""
     m = re.match(r"^---\s*\n(.*?)\n---\s*\n", text, re.DOTALL)
     if not m:
         return {}, text
@@ -144,12 +142,12 @@ def split_front_matter(text: str) -> tuple[dict, str]:
 
 
 def strip_front_matter(text: str) -> str:
-    """앞머리를 뺀 본문."""
+    """노트 텍스트에서 앞머리(front matter)를 떼고 본문만 반환한다."""
     return split_front_matter(text)[1]
 
 
 def load_notes_index(notes_dir: str | Path) -> list[NoteEntry]:
-    """노트 목록: `index.yml` 을 읽고, 없으면 디렉토리의 모든 *.md 앞머리에서 만든다.
+    """노트 목록을 읽는다. `index.yml`을 읽고, 없으면 디렉토리의 모든 *.md 앞머리로 목록을 만든다.
 
     Read `index.yml` (falls back to front-matter of every *.md when the index is missing)."""
     d = Path(notes_dir)
@@ -185,10 +183,9 @@ def load_notes_index(notes_dir: str | Path) -> list[NoteEntry]:
 
 def replacement_notes(notes: list[NoteEntry], text: str, case: Optional[str] = None,
                       phase: Optional[str] = None) -> list[NoteEntry]:
-    """``replacement: true`` 노트 중 ``text``(오류 글 + 오류 파일들의 import 줄, ``sbmig.triage.blocked.note_text``)에 키워드가 맞고
-    이 케이스 종류에 쓸 수 있는 것들 — sbmig 가 "프로젝트 코드로 대체하는 법" 을 아는 라이브러리. 회사 실행(2026-11-06): spring-mobile
-    케이스에서 LLM 이 대체 클래스를 반만 만들고 두 번째 답에 거절했고, 루프는 그 거절을 받아 external_javax_api 로 차단한 뒤 이웃 케이스까지
-    같은 원인으로 묶었다. 이 노트가 맞는 케이스는 라이브러리 차단도, 거절도 받지 않는다(v2.1z-aa).
+    """``replacement: true`` 노트 중 ``text``에 키워드가 맞고 이 케이스에 쓸 수 있는 노트를 고른다.
+    sbmig가 프로젝트 코드로 대체하는 방법을 아는 라이브러리이므로, 이 노트가
+    맞는 케이스는 라이브러리 차단도 LLM의 거절도 받지 않는다.
 
     The `replacement: true` notes whose keywords match `text` and that apply to `case` / `phase`: libraries sbmig knows how to
     replace with project code — never a library block, never an accepted decline (v2.1z-aa)."""
@@ -204,19 +201,18 @@ def replacement_notes(notes: list[NoteEntry], text: str, case: Optional[str] = N
 # ---------------------------------------------------------------------------
 TARGET_MARK = " | target: "           # the tail of `sbmig.fix.profile_summary` (the migration target)
 ASIS_LABEL = "as-is (before sbmig): "  # v2.1u: the head of `sbmig.fix.profile_summary` (the analyze-time project)
-# v2.1u (B-L1): Plan notes 중 프롬프트에 가는 줄 — 첫 단어(`:` / 공백 / `[` 앞)가 이것으로 시작하는 것만. 빠지는 것:
-# `case … (confidence …)`, `optional artifacts: bumped …`, `compile: no build …`, `review: …`, `advisory: … → guide`,
-# `verify: …`, `advisor…` (실제 plan.json 의 접두어를 세어 정했다: transform / restructure / warning / msa / followup 만
-# 답을 바꾼다). The plan notes that reach the fix prompt: first word starts with one of these.
+# Plan notes 중 첫 단어가 이 접두어로 시작하는 줄만 프롬프트에 넣는다
+# 실제 plan.json을 보면 LLM의 답에 영향을 주는 것은 이 접두어로 시작하는 줄뿐이기 때문이다
+# The plan notes that reach the fix prompt: first word starts with one of these.
 PROMPT_PLAN_NOTE_PREFIXES = ("transform", "restructure", "warning", "msa", "followup")
 LAYOUT_FACTS_TITLE = "Project after the restructure"   # v2.1v: FixContext.layout_facts (order 0.5, never truncated)
 _FIRST_WORD_RE = re.compile(r"^\s*([^\s:\[]+)")
 
 
 def asis_line(summary: str) -> str:
-    """프로젝트 요약을 `as-is (before sbmig): …` 로 이름 붙인 한 줄(이미 붙어 있으면 그대로, 비면 "").
-    `profile_summary` 는 이름을 붙여 만들지만, 플러그인·테스트가 넘긴 맨 요약(`case=… java=…`)도 같은 모양이
-    되게 한다 — LLM 이 분석 시점의 as-is(`java=1.8 spring=5.3.31`)를 현재 상태로 읽지 않게(B-H2).
+    """프로젝트 요약 앞에 `as-is (before sbmig): …` 이름표를 붙인다.
+    이미 붙어 있으면 그대로 두고, 비어 있으면 빈 문자열을 반환한다.
+    LLM이 분석 시점의 as-is 정보를 현재 상태로 오해하지 않게 하기 위해서다.
 
     The project summary labelled as the as-is project: `as-is (before sbmig): …` (unchanged when it already carries
     the label, "" when empty) — a bare summary from a plugin / test gets the same shape (v2.1u)."""
@@ -227,8 +223,9 @@ def asis_line(summary: str) -> str:
 
 
 def prompt_plan_notes(notes: Sequence[str]) -> list[str]:
-    """프롬프트에 실을 Plan notes: 첫 단어가 PROMPT_PLAN_NOTE_PREFIXES 로 시작하는 줄만, 순서 그대로(B-L1: 절반이
-    답을 바꾸지 않는 소음이었다 — 케이스 판정, 선택 아티팩트 bump, 검토·권고 안내).
+    """프롬프트에 넣을 Plan notes를 고른다.
+    첫 단어가 PROMPT_PLAN_NOTE_PREFIXES로 시작하는 줄만 순서대로 남긴다.
+    나머지는 LLM의 답에 영향이 없는 내용이다.
 
     The plan notes worth a fix prompt: those whose first word (before `:`, a space or `[`) starts with one of
     `PROMPT_PLAN_NOTE_PREFIXES`, in their order (v2.1u)."""
@@ -241,8 +238,8 @@ def prompt_plan_notes(notes: Sequence[str]) -> list[str]:
 
 
 def target_text(cfg: Config | None = None) -> str:
-    """프롬프트의 목표 버전 구절 ``JDK 21, Spring Boot 4.1.0`` — ``cfg.target``(설정이 없으면 TargetConfig 기본값).
-    하드코딩하지 않는다(A20: 회사가 목표를 바꾸면 프롬프트도 따라간다).
+    """프롬프트에 넣을 목표 버전 문구를 만든다.
+    회사가 목표를 바꾸면 따라가도록 하드코딩하지 않고 ``cfg.target``에서 만든다.
 
     The migration target for prompts, from `cfg.target` (TargetConfig defaults without a config)."""
     t = getattr(cfg, "target", None) if cfg is not None else None
@@ -251,8 +248,9 @@ def target_text(cfg: Config | None = None) -> str:
 
 
 def with_target(summary: str, cfg: Config | None = None) -> str:
-    """프로젝트 요약의 `` | target: …`` 꼬리를 설정의 목표로 바꾼다(꼬리가 없거나 요약이 비면 그대로).
-    루프는 설정 없이 요약을 만들므로(``sbmig.loop.components.profile_summary``) 프롬프트를 꾸릴 때 고친다.
+    """프로젝트 요약의 `` | target: …`` 부분을 설정의 목표 버전으로 바꾼다.
+    그 부분이 없거나 요약이 비어 있으면 그대로 둔다.
+    수정 루프는 설정 없이 요약을 만들므로 프롬프트를 만들 때 고친다.
 
     `summary` with its ` | target: …` tail set from `cfg.target` (unchanged without a tail). The loop builds the
     summary without the config, so the packer and the verify prompt retarget it."""
@@ -262,17 +260,18 @@ def with_target(summary: str, cfg: Config | None = None) -> str:
 
 
 def fence_for(text: str) -> str:
-    """본문에 ``` 가 있으면 ```` 로 감싼다(프롬프트 속 코드 펜스가 중간에 닫히지 않게)."""
+    """본문에 ```가 있으면 ````를 펜스로 쓴다. 코드 펜스가 중간에 닫히지 않게 하기 위해서다."""
     return "````" if "```" in text else "```"
 
 
 def lang_for(path: str) -> str:
-    """확장자 → 코드 펜스 언어 이름(모르면 "")."""
+    """확장자에 맞는 코드 펜스 언어 이름을 반환한다. 모르는 확장자면 빈 문자열을 반환한다."""
     return _LANG.get(PurePosixPath(path).suffix.lower(), "")
 
 
 def merge_windows(lines: list[int], total: int, radius: int = WINDOW_RADIUS) -> list[tuple[int, int]]:
-    """각 줄 ±radius 의 창(1부터, 양끝 포함), 겹치거나 붙으면 합친다. 줄 번호가 없으면 파일 앞부분.
+    """각 줄의 ±radius 범위(1부터 시작, 양끝 포함)를 만들고 겹치거나 붙은 범위는 합친다.
+    줄 번호가 없으면 파일 앞부분을 쓴다.
 
     1-based inclusive windows of ±radius around each line, merged when overlapping or adjacent."""
     spans: list[tuple[int, int]] = []
@@ -288,7 +287,7 @@ def merge_windows(lines: list[int], total: int, radius: int = WINDOW_RADIUS) -> 
 
 
 def summarize_attempt(a: FixAttempt) -> str:
-    """스크립트 시도가 아닌 이전 시도(옛 기록)의 요약: 결과, 분석, 바꾼 파일.
+    """스크립트가 아닌 이전 시도의 결과, 분석, 바꾼 파일을 한 줄로 요약한다.
 
     An earlier attempt that is not a script attempt (old records): outcome, analysis, the files it changed."""
     lines = [f"- attempt {a.id} (iteration {a.iteration}, model {a.model or '-'}) → outcome: {a.outcome}"
@@ -324,7 +323,7 @@ SCRIPT_WINDOW_RADII = (60, 25, 10, 3, 0)   # windows around the error lines, wid
 SCRIPT_OPTIONAL_RESERVE = 0.35       # share of the budget kept for hints / notes / poms before the files take the rest
 SCRIPT_MAX_POMS = 4
 SCRIPT_BASE_MAX_LINES = 60           # log / remaining / introduced lines of an augment base
-# v2.1v (B-H3): 다른 케이스·Plan notes 가 노트보다 먼저 줄어든다 — 오류를 이름으로 맞춘 노트가 먼저 잘렸었다
+# 오류 이름으로 고른 노트가 남도록 다른 케이스와 Plan notes를 노트보다 먼저 줄인다
 # v2.1v: the other cases and the plan notes go before the notes (the note that names the error symbol survives)
 SCRIPT_TRUNCATE_ORDER = ("other_errors", "plan_notes", "notes", "previous_attempts", "kb_hints", "reference_files",
                          "advisory_hints", "reference_notes", "library_hints", "related_files", "files", "pom",
@@ -333,7 +332,7 @@ ATTEMPT_ANALYSIS_CHARS = 300         # an earlier attempt's analysis in the scri
 
 
 def format_error_line(e: BuildError, max_message: int = 300) -> str:
-    """스크립트 프롬프트용 오류 한 줄(메시지는 `max_message` 자까지).
+    """스크립트 프롬프트에 넣을 오류 한 줄을 만든다. 메시지는 `max_message`자까지 쓴다.
 
     One compact line per error for a script prompt: `- file:line:col: message | symbol: … | location: …`."""
     loc = (e.file or "(no file)").replace("\\", "/")
@@ -357,7 +356,8 @@ def format_error_line(e: BuildError, max_message: int = 300) -> str:
 
 
 def dedupe_errors(errors: list[BuildError]) -> list[BuildError]:
-    """케이스의 오류를 한 번씩만(리액터 빌드는 같은 오류를 되풀이한다), 파일·줄·열·메시지 순으로.
+    """리액터 빌드는 같은 오류를 반복해서 보고하므로 케이스의 오류를 한
+    번씩만 남기고 파일, 줄, 열, 메시지 순으로 정렬한다.
 
     The case's errors once each (reactor builds repeat them), sorted by file / line / column / message."""
     seen: set[tuple] = set()
@@ -372,8 +372,7 @@ def dedupe_errors(errors: list[BuildError]) -> list[BuildError]:
 
 
 def summarize_script_attempt(a: FixAttempt) -> str:
-    """이 케이스의 이전 시도 요약(스크립트 시도면 모드·버전·실행
-    상태·만든 새 오류) — 프롬프트의 "되풀이하지 말 것" 섹션이 된다.
+    """이 케이스의 이전 시도를 요약한다. 프롬프트의 "반복하지 말 것" 섹션에 들어간다.
 
     An earlier attempt on the case for a script prompt (script attempts: mode, version, run status)."""
     if not a.script_mode:
@@ -394,8 +393,8 @@ def summarize_script_attempt(a: FixAttempt) -> str:
 
 
 def shorten(text: str, width: int) -> str:
-    """`text` 를 한 줄로 `width` 자 이하에(`textwrap.shorten`, 단어 경계, "…") — 표시 없이 문장 중간에서 잘리던
-    것(E-M1)을 고친다. 띄어쓰기 없는 긴 덩어리(경로·스택)는 shorten 이 "…" 만 남기므로 그때는 글자에서 자른다.
+    """`text`를 단어 경계에서 잘라 `width`자 이하의 한 줄로 줄인다.
+    공백 없는 긴 문자열(경로, 스택)은 문자 단위로 자른다.
 
     `text` on one line within `width` characters (`textwrap.shorten` at a word boundary, placeholder "…"); a long
     run without spaces (a path, a stack line) is cut at the character instead of collapsing to "…"."""
@@ -409,7 +408,7 @@ def shorten(text: str, width: int) -> str:
 
 
 def _first_line(text: str, limit: int = 100) -> str:
-    """첫 비어 있지 않은 줄(`limit` 자에서 자름).
+    """비어 있지 않은 첫 줄을 `limit`자에서 잘라 반환한다.
 
     The first non-blank line of `text`, cut at `limit` characters ("" when blank)."""
     line = next((ln.strip() for ln in (text or "").split("\n") if ln.strip()), "")
@@ -424,8 +423,8 @@ def _capped(items: list[str], limit: int, what: str = "line(s)") -> list[str]:
 
 
 def script_base_result(base: ScriptBase) -> str:
-    """보강할 스크립트가 이 프로젝트에서 한 일(보강 프롬프트): 결과, 실행 상태·오류, 바꾼 파일, 로그 끝
-    SCRIPT_BASE_MAX_LINES 줄, 아직 남은 이 케이스의 오류, 새로 만든 오류, 이전 버전들.
+    """보강할 스크립트가 이 프로젝트에서 한 일을 보강 프롬프트용으로 정리한다.
+    결과, 실행 상태와 오류, 바꾼 파일, 로그 뒷부분, 남은 오류, 새로 생긴 오류, 이전 버전들을 담는다.
 
     What the script to extend did in this project (augment prompt)."""
     lines = [f"outcome in this project: {base.outcome or 'not run in this project'}"]
@@ -466,7 +465,7 @@ _ARTIFACT_ID_RE = re.compile(r"<artifactId>\s*([^<\s]+)\s*</artifactId>")
 
 
 def pom_artifact_id(ws: Workspace, pom: str) -> Optional[str]:
-    """pom 자신의 artifactId(parent 의 것이 아님); 못 읽으면 None.
+    """pom 자신의 artifactId(parent의 것이 아님)를 읽는다. 읽지 못하면 None을 반환한다.
 
     The pom's own artifactId (not its parent's); None when unreadable."""
     try:
@@ -478,9 +477,9 @@ def pom_artifact_id(ws: Workspace, pom: str) -> Optional[str]:
 
 
 def nearest_pom(ws: Workspace, rel: Optional[str]) -> Optional[str]:
-    """파일이 속한 모듈 pom: 파일 디렉토리에서 루트까지 올라가며 찾는다(최대 128단계). 역슬래시는 정규화, 절대
-    경로는 워크스페이스 안이면 상대 경로로 바꾸고 밖이면 버린다 — 예전에 절대 경로가 무한 루프를 돌아 Windows
-    에서 "fixer.propose 에서 멈춤" 으로 보였다(round 9c).
+    """파일이 속한 모듈의 pom을 루트 방향으로 최대 128단계까지 올라가며 찾는다.
+    절대 경로는 워크스페이스 안이면 상대 경로로 바꾸고 밖이면 버린다.
+    절대 경로를 그대로 쓰면 무한 루프에 빠지기 때문이다.
 
     The module pom of a file: walk up from the file's directory to the project root. Root-relative posix paths
     only; a path with backslashes is normalized, an absolute one is made root-relative when it lies under the
@@ -514,8 +513,8 @@ _POM_SECTIONS = ("parent", "properties", "dependencyManagement", "dependencies",
 
 
 def pom_excerpt(text: str, path: str) -> str:
-    """pom 발췌: POM_WHOLE_MAX_LINES 줄 이하면 통째로, 아니면 parent / properties / dependencyManagement /
-    dependencies / build 섹션만(줄 번호와 함께, 파일 순서대로)."""
+    """pom 발췌를 만든다. POM_WHOLE_MAX_LINES줄 이하면 통째로, 아니면 parent / properties /
+    dependencyManagement / dependencies / build 섹션만 줄 번호와 함께 보여 준다."""
     lines = text.split("\n")
     if len(lines) <= POM_WHOLE_MAX_LINES:
         return f"// {path} (whole file)\n```xml\n{text.rstrip()}\n```"
@@ -544,8 +543,8 @@ def pom_excerpt(text: str, path: str) -> str:
 # ---------------------------------------------------------------------------
 @dataclass
 class PackedContext:
-    """꾸려진 문맥: (제목, 본문) 섹션 목록(프롬프트 순서), 보여 준 파일, 이름만 적은 파일, 넣은 노트, 줄이거나
-    뺀 섹션, 글자 수."""
+    """만들어진 문맥을 담는 클래스.
+    섹션 목록(프롬프트 순서), 보여 준 파일, 이름만 쓴 파일, 넣은 노트, 줄인 섹션, 문자 수를 가진다."""
     sections: list[tuple[str, str]] = field(default_factory=list)
     keys: list[str] = field(default_factory=list)          # v2.1z-p: the section key of each pair (the thread turn picks by key)
     files_included: list[str] = field(default_factory=list)
@@ -555,7 +554,7 @@ class PackedContext:
     files_listed: list[str] = field(default_factory=list)   # v2 scripts: erroring files named but not shown
 
     def render(self) -> str:
-        """섹션들을 `## 제목` + 본문의 markdown 한 덩어리로."""
+        """섹션들을 `## 제목`과 본문으로 된 markdown 하나로 합친다."""
         return "\n\n".join(f"## {t}\n{body}" for t, body in self.sections)
 
 
@@ -570,9 +569,9 @@ class _Section:
 
 
 class ContextPacker:
-    """수정 스크립트 프롬프트의 문맥을 예산 안에서 꾸린다(`pack_script`).
-    노트는 `knowledge/notes` 에서 처음 쓸 때 읽는다."""
-    # 줄이는 순서는 SCRIPT_TRUNCATE_ORDER(앞이 먼저 줄어든다); "errors" 와 "header" 는 절대 줄이지 않는다
+    """수정 스크립트 프롬프트에 넣을 문맥을 예산 안에서 만드는 클래스(`pack_script`).
+    노트는 처음 쓸 때 `knowledge/notes`에서 읽는다."""
+    # SCRIPT_TRUNCATE_ORDER의 앞쪽부터 줄이고, "errors"와 "header"는 줄이지 않는다
     # truncation priority: SCRIPT_TRUNCATE_ORDER (first = dropped/shrunk first); "errors" and "header" never shrink
     MAX_RELATED_FILES = 3
     ADVISORY_TITLE = "Library migration guidance (what to migrate TO)"
@@ -588,7 +587,8 @@ class ContextPacker:
 
     @property
     def notes(self) -> list[NoteEntry]:
-        """노트 목록(지연 로드). 인덱스가 깨져도 수정은 계속한다 — 빈 목록 + 경고."""
+        """노트 목록을 반환한다(처음 쓸 때 읽음).
+        인덱스가 깨져도 수정을 계속하도록 경고를 남기고 빈 목록을 반환한다."""
         if self._notes is None:
             try:
                 self._notes = load_notes_index(self.notes_dir)
@@ -600,10 +600,9 @@ class ContextPacker:
     # ------------------------------------------------------------------ public
     def select_notes(self, text: str, case: Optional[str], phase: Optional[str], *,
                      context: str = "") -> list[NoteEntry]:
-        """점수 상위 `max_notes` 개의 노트, always 노트는 앞에(pack_script 는 always 노트를 뺀다). v2.1v: `text` 는
-        오류 본문(메시지·심볼·위치·raw·아티팩트), `context` 는 import 줄·pom 발췌 — 점수 = 3 × 오류 본문에 맞은
-        키워드 + 1 × context 에만 맞은 키워드. 오류 본문에 맞은 노트가 하나라도 있으면 그런 노트만 고른다(import 에만
-        맞은 노트는 다른 후보가 없을 때만). `context` 없이 부르면 예전처럼 `text` 하나로 센다(×3 이라 순위는 같다).
+        """점수가 높은 노트를 최대 `max_notes`개 고른다. always 노트가 앞에 온다.
+        `text`는 오류 본문, `context`는 import 줄과 pom 발췌다.
+        오류 본문에 맞은 노트가 있으면 그런 노트만 고른다.
 
         The top `max_notes` notes (always-notes first; `pack_script` leaves those out). v2.1v: `text` = the error text,
         `context` = the imports / pom text; score = 3 × keywords in the error text + 1 × keywords only in the context;
@@ -636,11 +635,10 @@ class ContextPacker:
 
     def pack_script(self, ws: Workspace, cluster: ErrorCluster, ctx: FixContext, profile_summary: str = "",
                     *, case_type: Optional[str] = None, budget: Optional[int] = None) -> PackedContext:
-        """수정 스크립트 요청의 문맥: 여러 파일에 걸칠 수 있는 케이스(L2) 하나. 섹션(순서 값): Case 머리말(0)
-        → 재구성 뒤의 프로젝트(0.5, v2.1v `ctx.layout_facts`, 자르지 않음) → 오류 목록(1) → 보강이면 보강할
-        스크립트(1.5)와 그 결과(1.6) → 오류 파일 색인(1.8) → 소스 발췌(2) → 관련 타입 파일(2.2) → 참고 파일(2.5) →
-        POM(3.x) → Dependency versions(3.5) → 권고(4) → 병합 메모(4.5) → KB 힌트(5) → 이전 시도(6) → 다른 케이스(7)
-        → 계획 메모(8, PROMPT_PLAN_NOTE_PREFIXES 줄만) → 노트(10+). 같은 입력이면 같은 결과.
+        """수정 스크립트 요청에 넣을 문맥을 만든다. 여러 파일에 걸칠 수 있는 케이스 하나를 다룬다.
+        섹션 순서는 머리말, 재구성 뒤 프로젝트, 오류 목록, 보강할 스크립트와 결과, 소스 발췌, 참고 파일,
+        POM, 의존성 버전, 권고, KB 힌트, 이전 시도, 다른 케이스, Plan notes, 노트다.
+        같은 입력이면 같은 결과가 나온다.
 
         Context for a fix-script request: ONE case (L2) that may span many files. `llm.max_context_chars` is
         spread over the erroring files (import block + windows around the error lines, the whole file when small;
@@ -675,8 +673,8 @@ class ContextPacker:
         if mode == "augment" and base is None:
             mode = "new"
 
-        # 머리말 + 오류 목록은 절대 줄이지 않는다. `case: <id>` 줄 형식을 바꾸지 말 것 — 재생 픽스처의 `match:
-        # "case: <case_id>"` 가 이 줄로 답을 고른다
+        # 머리말과 오류 목록은 줄이지 않고, 재생 픽스처의 `match: "case: <case_id>"`가 이 줄로 답을 고르므로
+        # 형식도 바꾸지 않는다
         # header + errors (never truncated)
         case_id = ctx.case_id or cluster.case_id or cluster.id
         sig = ctx.signature_generic or ", ".join(cluster.generic_signatures[:3])
@@ -695,7 +693,7 @@ class ContextPacker:
         header.append(f"phase: {ctx.phase.value}, iteration {ctx.iteration}"
                       + (f", stall level {ctx.stall_level}" if ctx.stall_level else ""))
         secs.append(_Section("header", "Case", "\n".join(header), 0, truncatable=False))
-        # v2.1v (B-H2): 재구성 뒤의 프로젝트(전환·모듈 역할·생성 파일·사내 규칙) — 머리말 바로 뒤, 자르지 않는다
+        # 재구성 뒤 프로젝트 정보(모듈 역할, 생성 파일, 사내 규칙)는 머리말 바로 뒤에 두고 줄이지 않는다
         if ctx.layout_facts:
             secs.append(_Section("layout_facts", LAYOUT_FACTS_TITLE, "\n".join(
                 ln if ln.lstrip().startswith("- ") else f"- {ln}" for ln in ctx.layout_facts if str(ln).strip()),
@@ -714,7 +712,7 @@ class ContextPacker:
         secs.append(_Section("errors", f"Errors of this case ({len(errors)})", "\n".join(err_lines), 1,
                              truncatable=False))
 
-        # 보강: 고칠 스크립트 본문은 줄이지 않는다 — 보강 답은 그것을 대체하는 완전한 새 스크립트여야 한다
+        # 보강 답은 이 스크립트를 대체하는 완전한 새 스크립트여야 하므로 본문을 줄이지 않는다
         # augment: the script to extend (never truncated) and what it did here
         if mode == "augment" and base is not None:
             label = f"version {base.version}" if base.version else "this run's script, not stored"
@@ -770,7 +768,7 @@ class ContextPacker:
 
         # the erroring files, sized to what the other sections leave
         renderings, import_text = self._script_renderings(ws, by_file)
-        # v2.1v: 오류 본문(×3)과 import / pom(×1)을 따로 본다
+        # 노트를 고를 때 오류 본문(가중치 3)과 import / pom(가중치 1)을 따로 본다
         error_text = "\n".join(
             [e.message for e in errors] + [e.symbol or "" for e in errors] + [e.location or "" for e in errors]
             + [e.raw[:2000] for e in errors[:40]] + [e.artifact.coordinates for e in errors if e.artifact])
@@ -787,8 +785,9 @@ class ContextPacker:
         def size(s: _Section) -> int:
             return len(s.title) + len(s.text) + 6
 
-        # 예산 계산: 줄일 수 없는 섹션(+ base_result, pom)을 먼저 빼고, 선택 섹션 몫(남는 것의 최대 35%)을
-        # 남긴 나머지를 오류 파일이 쓴다(최소 SCRIPT_MIN_FILE_SHARE 자)
+        # 줄일 수 없는 섹션과 base_result, pom을 빼고 선택 섹션에 쓸 예산(남은
+        # 예산의 최대 35%)을 남긴 나머지를 오류 파일에 준다
+        # 오류 파일 예산은 최소 SCRIPT_MIN_FILE_SHARE자다
         late = ("base_result", "pom")
         fixed = sum(size(s) for s in secs if not s.truncatable or s.key in late)
         optional = sum(size(s) for s in secs if s.truncatable and s.key not in late)
@@ -821,8 +820,8 @@ class ContextPacker:
         return packed
 
     def _script_poms(self, ws: Workspace, cluster: ErrorCluster, files: list[str]) -> list[str]:
-        """케이스가 닿는 모듈의 pom 들(최대 SCRIPT_MAX_POMS): 오류 난 pom, 오류 파일마다 그 모듈 pom, 파일
-        없는 오류가 이름 댄 모듈의 pom(디렉토리 이름, 다음 artifactId), 해석 오류면 루트 pom.
+        """케이스와 관련된 모듈의 pom 목록(최대 SCRIPT_MAX_POMS개)을 만든다.
+        오류가 난 pom, 오류 파일의 모듈 pom, 파일 없는 오류가 가리킨 모듈의 pom, 의존성 해석 오류면 루트 pom을 담는다.
 
         The poms of the modules a case touches: erroring poms, the module pom of every erroring file, the pom of a
         module named by a file-less error (directory name), and the root pom for resolution errors."""
@@ -854,8 +853,9 @@ class ContextPacker:
         return out[:SCRIPT_MAX_POMS]
 
     def _script_renderings(self, ws: Workspace, by_file: dict[str, list[int]]) -> tuple[dict[str, list[str]], str]:
-        """오류 파일마다(pom 제외 — POM 섹션이 따로 있다) 보여 줄 수 있는 모양들을 자세한 순으로: 작으면 통째
-        → import 블록 + 점점 좁은 창 → import 없이 창. 그리고 노트 고르기에 쓸 모든 import 줄.
+        """오류 파일마다 보여 줄 수 있는 형태를 자세한 것부터 만든다.
+        작으면 파일 전체, 다음은 import 블록과 점점 좁아지는 범위, 마지막은 import 없이 범위만이다.
+        노트 선택에 쓸 import 줄도 함께 반환한다. pom은 POM 섹션이 따로 있으므로 제외한다.
 
         Per erroring file (poms excluded — they get a POM section): its possible renderings, most informative
         first (whole file when small, then import block + ever narrower windows around the error lines, then windows
@@ -891,9 +891,9 @@ class ContextPacker:
     @staticmethod
     def _allocate_files(by_file: dict[str, list[int]], counts: dict[str, int], renderings: dict[str, list[str]],
                         budget: int) -> dict[str, str]:
-        """물 채우기(water-filling) 배분: 오류 많은 순으로 최대 SCRIPT_MAX_FILES_SHOWN 개, 파일당 최소
-        SCRIPT_MIN_FILE_SHARE 자. 짧은 파일부터 몫을 받고 남긴 몫은 큰 파일로 간다(각자 몫에 들어가는 가장
-        자세한 모양). 들어갈 모양이 없으면 이름만 적힌다.
+        """오류 파일에 문자 예산을 나눈다.
+        오류가 많은 순으로 최대 SCRIPT_MAX_FILES_SHOWN개, 파일당 최소 SCRIPT_MIN_FILE_SHARE자를 준다.
+        작은 파일이 남긴 예산은 큰 파일이 쓰고, 예산에 맞는 형태가 없는 파일은 이름만 쓴다.
 
         Water-filling: at most SCRIPT_MAX_FILES_SHOWN files (most errors first, then path), each at least
         SCRIPT_MIN_FILE_SHARE chars; files that need little take it and leave the rest to the big ones (each takes
@@ -918,8 +918,8 @@ class ContextPacker:
     @staticmethod
     def _file_index(by_file: dict[str, list[int]], counts: dict[str, int], shown: set[str], missing: set[str],
                     max_chars: int = 30000) -> str:
-        """오류 파일 색인: 파일마다 오류 수와 줄 번호(보여 준 파일 먼저, 다음은 경로 순). 안 보여 준 파일은
-        "not shown" — 스크립트는 `p.errors` / `p.files` 로 닿는다.
+        """오류 파일 목록을 만든다. 파일마다 오류 수와 줄 번호를 쓰고 보여 준 파일이 먼저 온다.
+        보여 주지 않은 파일은 "not shown"으로 표시하며, 스크립트는 `p.errors` / `p.files`로 내용을 읽는다.
 
         Every erroring file with its error count and lines (shown files first, then by path), within `max_chars`
         and SCRIPT_MAX_INDEX_FILES entries."""
@@ -960,7 +960,8 @@ class ContextPacker:
 
     @staticmethod
     def _spans(imp: Optional[tuple[int, int]], err_lines: list[int], radius: int, total: int) -> list[tuple[int, int]]:
-        """import 블록 + 오류 줄 ±radius 창(간격이 3줄 이하면 합침). 줄 번호가 없거나 낡았으면 파일 앞부분."""
+        """import 블록과 오류 줄 ±radius 범위를 만든다. 간격이 3줄 이하면 합친다.
+        줄 번호가 없거나 맞지 않으면 파일 앞부분을 쓴다."""
         if total <= 0:
             return []
         spans: list[tuple[int, int]] = [imp] if imp else []
@@ -980,7 +981,7 @@ class ContextPacker:
 
     @staticmethod
     def _render_spans(path: str, lines: list[str], spans: list[tuple[int, int]]) -> str:
-        """창들을 `// path lines a-b (of N)` 머리줄 + 코드 펜스로(줄 번호는 p.errors 와 같다)."""
+        """범위들을 `// path lines a-b (of N)` 머리줄과 코드 펜스로 만든다. 줄 번호는 p.errors와 같다."""
         if not spans:
             return f"// {path} (empty file)"
         total = len(lines)
@@ -1004,9 +1005,8 @@ class ContextPacker:
     _PACKAGE_LINE_RE = re.compile(r"^[ \t]*package\s+([\w.]+)\s*;", re.M)
 
     def _related_type_files(self, ws: Workspace, cluster: ErrorCluster, cluster_files: list[str]) -> list[str]:
-        """오류가 이름 댄 프로젝트 타입의 소스 파일(예: CRUD 메서드를 잃은 repository 인터페이스): FQCN 또는
-        오류 파일의 import / package 로 찾고, 케이스 파일
-        자신과 라이브러리 타입은 빼고 최대 MAX_RELATED_FILES 개.
+        """오류가 가리킨 프로젝트 타입의 소스 파일을 찾는다. FQCN이나 오류 파일의 import / package로 찾는다.
+        케이스 파일 자신과 라이브러리 타입은 빼고 최대 MAX_RELATED_FILES개를 반환한다.
 
         Project source files of the types the errors name (`location: variable x of type T`, `location: class T`,
         `method T.m(…) is not applicable`), resolved by FQCN or through the error file's imports / package; never the
@@ -1049,7 +1049,8 @@ class ContextPacker:
 
     @staticmethod
     def _candidate_fqcns(name: str, imports: dict[str, str], own_pkg: str) -> list[str]:
-        """타입 이름의 후보 FQCN: 이미 FQCN 이면 그대로, 아니면 import 와 같은 패키지에서."""
+        """타입 이름에 대한 후보 FQCN 목록을 만든다.
+        이미 FQCN이면 그대로 쓰고, 아니면 import와 같은 패키지에서 찾는다."""
         if "." in name and name.split(".")[0][:1].islower():          # already fully qualified
             return [name]
         simple = name.split(".")[0]
@@ -1062,8 +1063,8 @@ class ContextPacker:
 
     @staticmethod
     def _project_source(java_files: list[str], fqcn: str) -> Optional[str]:
-        """FQCN 의 프로젝트 소스 파일(Outer.Inner → Outer.java);
-        JDK·jakarta·Spring·Hibernate·lombok 타입은 None."""
+        """FQCN에 해당하는 프로젝트 소스 파일을 찾는다.
+        JDK, jakarta, Spring, Hibernate, lombok 타입이면 None을 반환한다."""
         if fqcn.startswith(("java.", "javax.", "jakarta.", "org.springframework.", "org.hibernate.", "lombok.")):
             return None
         parts = fqcn.split(".")
@@ -1085,8 +1086,8 @@ class ContextPacker:
 
     @staticmethod
     def _wants_pom(cluster: ErrorCluster, files: list[str]) -> bool:
-        """POM 섹션이 필요한 케이스인가: 해석·pom 계열 오류, pom 파일 오류, 소스 파일 없는 컴파일
-        실패(컴파일러·플러그인 설정), "package … does not exist" 처럼 의존성 문제로 보이는 메시지."""
+        """POM 섹션이 필요한 케이스인지 확인한다.
+        의존성 해석이나 pom 관련 오류, 소스 파일 없는 컴파일 실패, 의존성 문제로 보이는 메시지면 필요하다."""
         if cluster.kind in POM_KINDS:
             return True
         if any(PurePosixPath(f).name == "pom.xml" for f in files):
@@ -1096,8 +1097,8 @@ class ContextPacker:
         return any(POM_MESSAGE_RE.search(e.message or "") for e in cluster.errors)
 
     def _file_block(self, ws: Workspace, path: str, err_lines: list[int]) -> tuple[str, str]:
-        """(파일 블록, import 줄): WHOLE_FILE_MAX_LINES 줄 이하면 통째로, 아니면 import 블록 + 오류 줄 창.
-        관련 타입 파일에 쓴다."""
+        """관련 타입 파일을 보여 줄 (파일 블록, import 줄)을 만든다.
+        WHOLE_FILE_MAX_LINES줄 이하면 통째로, 아니면 import 블록과 오류 줄 주변을 보여 준다."""
         if not ws.exists(path):
             return f"// {path}: (file not found in workspace)", ""
         text = ws.read(path).replace("\r\n", "\n")
@@ -1124,9 +1125,8 @@ class ContextPacker:
 
     def _fit(self, secs: list[_Section], budget: int, packed: PackedContext,
              order: Optional[tuple[str, ...]] = None) -> None:
-        """예산을 넘으면 `order` 순서로 섹션을 줄이고(200자 미만이 되면 뺀다), 노트는 순위 낮은 것부터 뺀다.
-        줄일 수 없는 섹션(truncatable=False)은 건드리지 않는다.
-        줄인 것은 `packed.truncated` 와 INFO 로그에 남는다."""
+        """문맥이 예산을 넘으면 `order` 순으로 섹션을 줄이고(200자 미만이 되면 뺀다) 노트는 순위가 낮은 것부터 뺀다.
+        truncatable=False인 섹션은 건드리지 않는다. 줄인 내용은 `packed.truncated`와 INFO 로그에 남긴다."""
         def total() -> int:
             return sum(len(s.title) + len(s.text) + 6 for s in secs)
 

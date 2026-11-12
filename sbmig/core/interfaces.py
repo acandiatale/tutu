@@ -1,9 +1,10 @@
-"""플러그인 이음새(Protocol) — 오케스트레이터(sbmig.loop)는 구현이 아니라 이 Protocol 들과만 이야기한다.
-아래 영어 목록이 Protocol → 구현 모듈 표다. 회사 LLM 게이트웨이는 LLMRequest / LLMResponse(1단계,
-`llm.plugin`)로, 사내 코딩 에이전트는 FixerLike.propose_script(2단계, `fix.plugin`)로 꽂는다 — 새 HTTP
-클라이언트를 만들지 않는다. 불변조건 4: LLMRequest / LLMResponse, FixerLike.propose_script, sbmig.api.migrate
-의 모양은 바꾸지 않는다. v2.1 의 스크립트 저장소는 sbmig.errors.cases.CaseStore 다. 영어 목록의
-sbmig.kb.scripts.ScriptStore 는 v2 초기 이름이다.
+"""외부 구현을 끼워 넣는 연결 지점(Protocol)을 모아 둔 모듈.
+오케스트레이터(sbmig.loop)는 구현 대신 이 Protocol만 사용한다.
+회사 LLM 게이트웨이는 LLMRequest / LLMResponse(1단계, `llm.plugin`)로, 사내 코딩 에이전트는
+FixerLike.propose_script(2단계, `fix.plugin`)로 연결한다. 새 HTTP 클라이언트는 만들지 않는다.
+- LLMRequest / LLMResponse, FixerLike.propose_script, sbmig.api.migrate의 형태는 바꾸지 않는다
+- 스크립트 저장소 구현은 sbmig.errors.cases.CaseStore다.
+  영어 설명의 sbmig.kb.scripts.ScriptStore는 이전 이름이다
 
 Protocols that each workstream implements. The orchestrator (sbmig.loop) only talks to these.
 
@@ -67,14 +68,14 @@ from .workspace import Workspace
 # LLM
 # ---------------------------------------------------------------------------
 class ChatMessage(BaseModel):
-    """LLM 대화 메시지 하나(system / user / assistant). 회사 게이트웨이에는 messages 만 간다."""
+    """LLM 대화 메시지 하나(system / user / assistant)를 담는 데이터 클래스.
+    회사 게이트웨이에는 messages만 전달한다."""
     role: Literal["system", "user", "assistant"]
     content: str
 
 
 class LLMResponse(BaseModel):
-    """LLM 응답 하나(1단계 계약, 불변조건 4): 본문, 모델, 토큰 수,
-    종료 이유. 어댑터가 만들고 수정기·구조 검토가 읽는다."""
+    """LLM 응답 하나를 담는 데이터 클래스(1단계 연결 규약). 본문, 모델, 토큰 수, 종료 이유를 담는다."""
     content: str
     model: str
     input_tokens: int = 0
@@ -86,14 +87,15 @@ class LLMResponse(BaseModel):
 
 
 # Who is asking — lets an in-house gateway / agent platform route or budget by purpose.
-# 호출 목적 — 사내 게이트웨이가 목적별로 라우팅·예산을 나눌 수 있게 요청에 실어 보낸다.
+# 사내 게이트웨이가 목적별로 라우팅과 예산을 나눌 수 있도록 호출 목적을 요청에 넣는다
 LLMRole = Literal["fix", "fix_escalation", "plan_advisor", "structure_review", "verify_guide", "other"]
 # fix scripts use fix / fix_escalation; the structure review asks with structure_review; the plan advisor plan_advisor
 
 
 class LLMRequest(BaseModel):
-    """LLM 호출 한 번에 대해 sbmig 가 아는 전부(1단계 어댑터 계약, 불변조건 4): 메시지, 모델, 토큰 한도,
-    목적(role), 메타데이터(run_id·케이스 등 — 비밀은 절대 넣지 않음).
+    """LLM 호출 한 번의 요청을 담는 데이터 클래스(1단계 연결 규약).
+    메시지, 모델, 토큰 한도, 목적(role), 메타데이터를 담는다.
+    메타데이터에는 비밀 값을 넣지 않는다.
 
     Everything sbmig knows about one call, in one object (the adapter tier contract)."""
     messages: list[ChatMessage]
@@ -107,8 +109,8 @@ class LLMRequest(BaseModel):
 
 @runtime_checkable
 class LLMClientLike(Protocol):
-    """저수준 채팅 완성 클라이언트. 내장: company(회사 게이트웨이) / openai_compatible / anthropic /
-    fake(재생). 구현은 `role` / `metadata`(와 앞으로 생길 키워드)를 받아야 하고 무시해도 된다.
+    """채팅 응답을 받아 오는 저수준 LLM 클라이언트의 Protocol. 구현은 `role` / `metadata`와 나중에 추가될
+    키워드 인자를 받을 수 있어야 하며, 받은 뒤 무시해도 된다.
 
     Low-level chat completion. Built-in clients: openai_compatible / anthropic / fake (sbmig.fix.client).
     Implementations must accept and may ignore `role` / `metadata` (and any future keyword)."""
@@ -127,9 +129,9 @@ class LLMClientLike(Protocol):
 
 @runtime_checkable
 class LLMAdapterLike(Protocol):
-    """1단계 어댑터: 사내 게이트웨이·에이전트 플랫폼용, 요청 하나(LLMRequest) → 응답 하나(LLMResponse).
-    `llm.provider: plugin` + `llm.plugin` 또는 entry point 로
-    꽂으면 sbmig 가 LLMClientLike 로 감싸고 호출 기록도 남긴다.
+    """사내 게이트웨이나 에이전트 플랫폼을 연결하는 1단계 어댑터의 Protocol. LLMRequest 하나를 받아
+    LLMResponse 하나를 반환한다.
+    `llm.provider: plugin`과 `llm.plugin`이나 entry point로 연결하면 sbmig가 LLMClientLike로 감싸고 호출 기록도 남긴다.
 
     Adapter tier for in-house LLM gateways / agent platforms: one request object in, one response out.
     Plug in via `llm.provider: plugin` + `llm.plugin: "pkg.module:attr"` (or an entry point in group
@@ -142,8 +144,8 @@ class LLMAdapterLike(Protocol):
 # ---------------------------------------------------------------------------
 @runtime_checkable
 class PomEditorLike(Protocol):
-    """pom.xml 하나의 형식·주석 보존 편집기(sbmig.restructure.pom_editor). 재구성과 스크립트 헬퍼 API 의 pom
-    편집이 쓴다. 모든 변경 메서드는 문서가 바뀌었으면 True 를 돌려준다.
+    """형식과 주석을 그대로 두고 pom.xml을 고치는 편집기의 Protocol. 재구성과 스크립트 헬퍼 API가 사용한다.
+    변경 메서드는 문서가 바뀌었으면 True를 반환한다.
 
     Formatting/comment-preserving editor for one pom.xml. All mutators return True if the document changed."""
 
@@ -176,16 +178,15 @@ class PomEditorLike(Protocol):
 # Restructure
 # ---------------------------------------------------------------------------
 class RestructureResult(BaseModel):
-    """재구성 단계 한 번의 결과: 바뀐·생성된 파일, 필수·선택 아티팩트 처리, 병합 충돌, 외부 설정
-    placeholder, 부모 교체, 회사 레이아웃의 실제 모듈 경로(boot / comp / front)와 boot 패키징, 보고서
-    플래그. 오케스트레이터가 보고서·구조 검토에 넘긴다."""
+    """재구성 한 번의 결과를 담는 데이터 클래스.
+    바뀐 파일, 사내 아티팩트 처리, 부모 교체, 실제 모듈 경로, 보고서 플래그 등을 담는다."""
     ok: bool
     changed_files: list[str] = Field(default_factory=list)
     moved_files: int = 0
     generated_files: list[str] = Field(default_factory=list)
     optional_bumped: list[str] = Field(default_factory=list)      # "g:a old→new"
-    # v2.1n: 트리거 의존성(ArtifactSpec.when_present)이 있어 새로 선언한 선택 사내 아티팩트, 그리고 replaces: true
-    # 로 지운 트리거 선언. "g:a → <pom> (for <matched g:a>[, …])" / "<matched g:a> removed from <pom> → g:a"
+    # 트리거 의존성(ArtifactSpec.when_present)이 있어서 새로 선언한 선택 사내 아티팩트와, replaces: true로 지운 트리거 선언의 목록
+    # "g:a → <pom> (for <matched g:a>[, …])" / "<matched g:a> removed from <pom> → g:a"
     optional_added: list[str] = Field(default_factory=list)
     optional_replaced: list[str] = Field(default_factory=list)
     mandatory_added: list[str] = Field(default_factory=list)
@@ -202,32 +203,34 @@ class RestructureResult(BaseModel):
     # round 9: explicit dependency versions dropped because the new parent chain manages the artifact
     # (`layout.drop_managed_versions`); "g:a: <explicit> → managed <version> (<pom>)"
     managed_versions_dropped: list[str] = Field(default_factory=list)
-    # v2.1o: 관리 버전보다 새 명시 버전인데 as-is 빌드는 관리 버전 이하(또는 없음)였던 것 — 레시피가 올린 버전이라
-    # 지웠다. "g:a <explicit> (as-is <v | ->, managed <m>, <pom>)"
+    # 관리 버전보다 높은 명시 버전 중 as-is 빌드에서는 관리 버전 이하였거나 없던 것.
+    # 레시피가 올린 버전이므로 지운다
+    # "g:a <explicit> (as-is <v | ->, managed <m>, <pom>)"
     recipe_versions_dropped: list[str] = Field(default_factory=list)
     # v2.1z-j: bundled jars (declared by no pom) the restructure wired / left alone — dicts for the journal and the Handover:
     # wired = {path, pom, coordinates, scope, placeholder, boot_poms}, skipped = {path, why} (superseded | container | unused |
     # declared | skip)
     jars_wired: list[dict[str, Any]] = Field(default_factory=list)
     jars_skipped: list[dict[str, Any]] = Field(default_factory=list)
-    # v2.1l: 새 부모로 옮기며 버전을 잃은 의존성에 as-is 빌드의 버전을 적은 것(새 부모 체인이
-    # 관리하면 다시 비움), as-is 빌드도 몰라 비어 남은 것. Version-less dependencies given the as-is build's
+    # 새 부모로 옮기면서 버전이 빠진 의존성 중 as-is 빌드의 버전을 넣은 것과, as-is 빌드도 버전을 몰라 비워 둔 것
+    # Version-less dependencies given the as-is build's
     # version (the new chain does not manage them): "g:a: <version> ← as-is <managed by g:a:v | declared>
     # (<pom>)"; the ones the as-is build did not resolve either (left empty, a follow-up each): "g:a (<pom>)"
     versions_pinned: list[str] = Field(default_factory=list)
     versions_unknown: list[str] = Field(default_factory=list)
-    # v2.1o: 부모의 Boot BOM 속성을 덮어쓰던 as-is 버전 속성 중 지운 것 — "<pom>: name=value"
+    # 부모의 Boot BOM 속성을 덮어쓰던 as-is 버전 속성 중 지운 것. "<pom>: name=value"
     bom_properties_removed: list[str] = Field(default_factory=list)
-    # v2.1t: 재구성이 적은 BOM import — "<pom>: g:a ${prop} (property of <defining pom>)" / "<pom>: g:a <v> (no property in
-    # the parent chain)"; artifacts.parent_manages_spring_boot 의 실효값(auto 는 부모 체인의 pom 으로 정함)
+    # 재구성이 추가한 BOM import. "<pom>: g:a ${prop} (property of <defining pom>)" / "<pom>: g:a <v> (no
+    # property in the parent chain)"
+    # 아래 값은 artifacts.parent_manages_spring_boot의 실제 적용값이다. auto면 부모 체인의 pom을 보고 정한다
     bom_imports: list[str] = Field(default_factory=list)
     parent_manages_spring_boot_effective: bool | None = None
-    # v2.1p: 지운 속성 이름 → 그 이름을 정의한 사내 부모 체인의 pom g:a:v (pom-verify 문구용)
+    # 지운 속성 이름과 그 속성을 정의한 사내 부모 체인 pom의 g:a:v. pom-verify 문구에 쓴다
     bom_property_sources: dict[str, str] = Field(default_factory=dict)
-    # v2.1o: 관리 버전 정리가 지운 명시 버전만 참조하던 버전 속성(spring.version=5.3.31 …) — "<pom>: name=value"
+    # 관리 버전 정리로 지운 명시 버전에서만 참조하던 버전 속성. "<pom>: name=value"
     version_properties_removed: list[str] = Field(default_factory=list)
-    # v2.1m: 필터링되는 리소스 아래 바이너리 파일 때문에 maven-resources-plugin(/ maven-war-plugin)
-    # <nonFilteredFileExtensions> 에 적은 확장자. "<pom>: ext1, ext2 → maven-resources-plugin[, maven-war-plugin]"
+    # 필터링되는 리소스 아래 바이너리 파일이 깨지지 않도록 <nonFilteredFileExtensions>에 추가한 확장자.
+    # pom마다 확장자와 플러그인을 남긴다
     non_filtered_extensions: list[str] = Field(default_factory=list)
     # round 9b: every parent the restructure set or replaced — "<pom>: <old g:a:v or '-'> → <new g:a:v>"
     parents_set: list[str] = Field(default_factory=list)
@@ -249,7 +252,7 @@ class RestructureResult(BaseModel):
     # v2.1x (2026-10-31, prompt review §4 — the legacy Spring context after the conversion; read by the fix loop's
     # layout facts, the structure review's "What the restructure did" and the Handover). All optional, [] / None when
     # the mode did not do it.
-    # v2.1x: 전환 사실 — 수정 루프의 layout facts, 구조 검토의 "What the restructure did", 인수인계가 읽는다.
+    # Boot 전환 결과. 수정 루프의 layout facts, 구조 검토, 인수인계에서 읽는다
     starter: Optional[str] = None                                  # the Boot starter written into the boot pom
     web_evidence: list[str] = Field(default_factory=list)          # why the project counts as a web app ("web.xml",
                                                                    # "spring-webmvc", "servlet-api", "@Controller ×N", "JSP ×N")
@@ -268,8 +271,8 @@ class RestructureResult(BaseModel):
 
 @runtime_checkable
 class RestructurerLike(Protocol):
-    """재구성 실행기. mode: layout(모듈 나눔) / msa_pom(MSA 서비스별 pom 만) / optional_bump /
-    boot_pom(Boot as-is 제자리)."""
+    """재구성 실행기의 Protocol. mode는 layout(모듈 분리) / msa_pom(서비스별 pom만) / optional_bump /
+    boot_pom(Boot as-is 유지)이다."""
     def apply(self, ws: Workspace, profile: ProjectProfile, cfg: Config, *,
               mode: Literal["layout", "msa_pom", "optional_bump", "boot_pom"],   # boot_pom: round 9c Boot as-is in place
               params: Optional[dict] = None) -> RestructureResult: ...
@@ -280,8 +283,8 @@ class RestructurerLike(Protocol):
 # ---------------------------------------------------------------------------
 @runtime_checkable
 class RewriteRunnerLike(Protocol):
-    """OpenRewrite 실행기(transform.rewrite): 레시피 목록을
-    한 번에 돌리고 RewriteResult 를 돌려준다(빌드 없음)."""
+    """OpenRewrite 실행기의 Protocol. 레시피 목록을 한 번에 실행하고 RewriteResult를 반환한다.
+    빌드는 하지 않는다."""
     def run(
         self,
         recipes: list[RecipeRef],
@@ -296,8 +299,8 @@ class RewriteRunnerLike(Protocol):
 
 @runtime_checkable
 class BuildRunnerLike(Protocol):
-    """Maven 실행기: goal(compile / package …)을 돌려 오류를 파싱한
-    BuildResult 를 돌려준다. 테스트는 항상 건너뛴다(회사 결정)."""
+    """Maven 실행기의 Protocol. goal을 실행하고 오류를 파싱한 BuildResult를 반환한다.
+    테스트는 항상 건너뛴다."""
     def run(
         self,
         goal: str,                              # compile | test-compile | package | verify | "clean package"
@@ -314,8 +317,8 @@ class BuildRunnerLike(Protocol):
 # Triage / handlers / fix
 # ---------------------------------------------------------------------------
 class TriageContext(BaseModel):
-    """트리아지가 결정을 내릴 때 보는 맥락: 단계, 라운드, 정체
-    수준, 같은 서명에 대한 이전 시도, LLM 호출 사용량."""
+    """빌드 오류를 어떻게 처리할지 정할 때 쓰는 정보를 담는 데이터 클래스.
+    단계, 라운드, 진척 없음 수준, 같은 서명의 이전 시도, LLM 호출 사용량을 담는다."""
     phase: Phase
     iteration: int
     stall_level: int = 0
@@ -326,16 +329,14 @@ class TriageContext(BaseModel):
 
 @runtime_checkable
 class TriagerLike(Protocol):
-    """트리아지: 빌드 오류를 클러스터(케이스)로 묶고(cluster),
-    KB 조회 결과를 보고 클러스터마다 결정을 내린다(decide)."""
+    """빌드 오류를 케이스로 묶고(cluster) KB 조회 결과를 보고 케이스마다 처리 방법을 정하는(decide) Protocol."""
     def cluster(self, errors: list[BuildError], profile: ProjectProfile) -> list[ErrorCluster]: ...
     def decide(self, cluster: ErrorCluster, kb_match: KBMatch, ctx: TriageContext, profile: ProjectProfile) -> TriageDecision: ...
 
 
 class FixContext(BaseModel):
-    """수정기에 넘기는 맥락(수정 프롬프트의 재료): 프로필 요약, KB·권고·라이브러리 힌트, 이전 시도, 나머지
-    오류 요약, 병합 충돌 참고 파일, 그리고 v2 스크립트 요청
-    종류(new / augment)와 보강할 스크립트(script_base)."""
+    """수정 프롬프트에 들어가는 정보를 담는 데이터 클래스.
+    스크립트 요청 종류(new / augment)와 보강할 스크립트(script_base)도 담는다."""
     phase: Phase
     iteration: int
     stall_level: int = 0
@@ -360,30 +361,28 @@ class FixContext(BaseModel):
     # (libraries.yml) and what the repository has for the libraries behind this case (same-major releases, which are
     # jakarta builds, the higher majors), one line each; [] when nothing is known
     library_hints: list[str] = Field(default_factory=list)
-    # v2.1v (2026-10-31 prompt review B-H2): 재구성 뒤의 프로젝트 사실 — "sbmig 가 Boot 로 전환했다, boot / back / front
-    # 모듈과 그 pom 의 부모·패키징, 생성 파일(Application, legacy-config/, WebXmlRegistrations), boot pom 의 starter, 사내
-    # 아티팩트 규칙(루트 부모, 필수 위치, 선택은 쓰는 곳만), BOM import" — 한 줄씩. 값은 전부 RestructureResult / cfg 에서,
-    # 리터럴 없음. 프롬프트 섹션 "Project after the restructure" (순서 0.5, 자르지 않음). 재구성이 없었으면 [].
+    # 재구성 뒤의 프로젝트 정보를 한 줄씩 담는다.
+    # Boot 전환 여부, 모듈과 부모, 생성 파일, starter, 사내 아티팩트 규칙, BOM import다
+    # 값은 모두 RestructureResult와 cfg에서 가져오고, 재구성이 없었으면 빈 목록이다
     # v2.1v: facts about the project AFTER the restructure (converted to Boot by sbmig, module roles and parents, generated
     # files, boot starter, company artifact rules, BOM imports) — one line each, rendered as the section "Project after the
     # restructure" right after the header and never truncated; [] when no restructure ran (Boot as-is pom-only mode still
     # lists the parents / mandatory facts).
     layout_facts: list[str] = Field(default_factory=list)
 
-    # v2.1z 호환: v2.1i 가 더했던 `fix_mode` / `previous_edits` 는 edits 모드와 함께 사라졌지만, 그 닷새 사이에 쓰인 2단계
-    # 플러그인이 `ctx.fix_mode` 를 읽어도 깨지지 않게 읽기 전용 값으로 남긴다(언제나 "script" / 빈 dict). 필드가 아니라
-    # 직렬화·프롬프트에는 나오지 않는다. / v2.1z compatibility for tier-2 plugins written against v2.1i: read-only, never
+    # edits 모드가 없어진 뒤에도 `ctx.fix_mode`를 읽는 2단계 플러그인이 깨지지 않게 남긴 읽기 전용 값. 직렬화나
+    # 프롬프트에는 나오지 않는다 / v2.1z compatibility for tier-2 plugins written against v2.1i: read-only, never
     # serialized, never rendered.
     @property
     def fix_mode(self) -> str:
-        """항상 "script" — edits 모드는 v2.1z 에서 없어졌다(플러그인 호환용 읽기 전용 값).
+        """항상 "script"를 반환한다. 이전 플러그인과 호환하기 위한 읽기 전용 값이다.
 
         Always "script": the edits mode went in v2.1z (read-only, for plugins written against v2.1i)."""
         return "script"
 
     @property
     def previous_edits(self) -> dict[str, str]:
-        """항상 빈 dict — edits 모드의 이전 편집 이력은 v2.1z 에서 없어졌다(플러그인 호환용).
+        """항상 빈 dict를 반환한다. 이전 플러그인과 호환하기 위한 읽기 전용 값이다.
 
         Always {}: the edits-mode history went in v2.1z (read-only, for plugins written against v2.1i)."""
         return {}
@@ -391,9 +390,12 @@ class FixContext(BaseModel):
 
 @runtime_checkable
 class FixerLike(Protocol):
-    """수정기 이음새(불변조건 4, 2단계 `fix.plugin`): 케이스 하나에 수정 스크립트로 답한다. new = 저장본 없음,
-    augment = script_base 를 고친 '완전한' 새 스크립트(기존 것을
-    되돌린 트리에서 돈다). 실패는 예외 대신 ScriptProposal(error=…).
+    """수정 스크립트를 만들어 주는 수정기의 Protocol(2단계 `fix.plugin`).
+    케이스 하나를 받아 수정 스크립트로 답한다.
+    - new: 저장된 스크립트가 없을 때 새로 만든다
+    - augment: script_base를 고친 완전한 새 스크립트를 만든다.
+      이전 스크립트의 변경을 되돌린 트리에서 실행된다
+    실패하면 예외를 던지지 않고 ScriptProposal(error=…)을 반환한다.
 
     The fixer seam (invariant 4; tier 2 `fix.plugin`): the fixer answers a case with a fix script. `ctx.script_mode` = "new" (no
     stored script for the case) or "augment" (`ctx.script_base` = the version to extend; the answer must be the
@@ -408,9 +410,9 @@ ScriptFixerLike = FixerLike          # the name step 1 introduced; one seam sinc
 
 @runtime_checkable
 class VerifyGuideLike(Protocol):
-    """v2.1d, 수정기의 선택 기능: 메이저 업그레이드·라이브러리 교체를 한 수정의 답에 운영자 확인 사항이 없으면
-    루프가 한 번 더 묻는다(`libraries.verify_guide_llm`). 없거나
-    실패하면 sbmig 가 diff 로 가이드를 만든다. 예외를 내지 않는다.
+    """수정기가 선택적으로 제공하는 운영자 확인 가이드 기능의 Protocol. 메이저 업그레이드나 라이브러리 교체
+    답에 운영자 확인 사항이 없으면 루프가 한 번 더 요청한다(`libraries.verify_guide_llm`).
+    구현이 없거나 실패하면 sbmig가 diff로 가이드를 만든다. 예외를 던지지 않는다.
 
     v2.1d, optional on a fixer: after a fix that raised a dependency's major version or replaced a library, the loop
     asks ONCE for the 운영자 확인 사항 the answer did not carry (`libraries.verify_guide_llm`). `changes` = the
@@ -426,9 +428,9 @@ class VerifyGuideLike(Protocol):
 # ---------------------------------------------------------------------------
 @runtime_checkable
 class ScriptRunnerLike(Protocol):
-    """수정 스크립트 실행기(sbmig.script): check = 정적 검사만, run = 검사 후 `python -I` 별도 프로세스에서
-    헬퍼 API `p` 로 실행(timeout 뒤 프로세스 트리 강제 종료). 변경은 커밋하지 않은 채 두고 호출자가
-    커밋·되돌림을 정한다. 예외를 내지 않는다.
+    """수정 스크립트 실행기의 Protocol. check는 정적 검사만 하고, run은 검사 후 별도 `python -I`
+    프로세스에서 헬퍼 API `p`로 스크립트를 실행한다.
+    변경은 커밋하지 않은 채 두고, 커밋할지 되돌릴지는 호출하는 쪽이 정한다. 예외를 던지지 않는다.
 
     Runs one fix script against the project folder of `ws` (sbmig.script). `check` = the static check alone
     (empty list = allowed). `run` = check, then a separate `python -I` process with the helper API `p`
@@ -441,9 +443,10 @@ class ScriptRunnerLike(Protocol):
 
 @runtime_checkable
 class ScriptStoreLike(Protocol):
-    """케이스별 스크립트 저장소 계약. v2.1 구현은
-    sbmig.errors.cases.CaseStore(`<kb>/cases/<case_id>/case.json` + fix_v<N>.py). best = proven 중 최신,
-    없으면 unverified 중 최신(retired 는 절대 안 고름); credit = 재빌드 점수를 그 버전에 기록.
+    """케이스별 수정 스크립트 저장소의 Protocol. 구현은 sbmig.errors.cases.CaseStore다.
+    - best: 검증된(proven) 버전 중 최신을, 없으면 미검증(unverified) 버전 중 최신을 고른다.
+      폐기된(retired) 버전은 고르지 않는다
+    - credit: 재빌드 결과를 해당 버전에 기록한다
 
     v2.1: the per-case script store is `sbmig.errors.cases.CaseStore` (<kb>/cases/<case_id>/case.json + fix_v<N>.py):
     `find(case_id) -> CaseInfo | None`, `best(case_id) -> (CaseScript, code) | None` (proven newest, else unverified
@@ -459,9 +462,8 @@ class ScriptStoreLike(Protocol):
 
 @runtime_checkable
 class StructureReviewerLike(Protocol):
-    """구조 검토 이음새(sbmig.review): 재구성 뒤 첫 빌드 전에 LLM 이 pom·의존성·모듈을 회사 규칙으로 검토한다.
-    v2.1 은 critical 을 `<edits>` 로 직접 고치고(스크립트만 온 답은 ScriptRunnerLike 로), 오케스트레이터가
-    `review: …` 로 커밋한다. 예외를 내지 않는다.
+    """구조 검토의 Protocol. 재구성 뒤 첫 빌드 전에 LLM이 pom, 의존성, 모듈을 회사 규칙에 맞는지 검토한다.
+    critical 항목은 `<edits>`로 직접 고치고 오케스트레이터가 `review: …`로 커밋한다. 예외를 던지지 않는다.
 
     v2 (sbmig.review): after the restructure, before the first build — the LLM checks poms, dependencies and the
     module layout against the company rules (artifacts.* / layout.*). Critical issues with a script → the script
@@ -477,9 +479,9 @@ class StructureReviewerLike(Protocol):
 # ---------------------------------------------------------------------------
 @runtime_checkable
 class KnowledgeBaseLike(Protocol):
-    """v2.1 파일 KB 이음새(sbmig.kb.FileKnowledgeBase = CaseStore 위의 창구): 케이스 저장소(cases), 클러스터
-    조회(match), 실행 끝 기록(record_run), cases.md 재생성(reindex). `sbmig.api.migrate(kb=False)` 나 sbmig.kb 를
-    못 불러올 때는 아무것도 답하지 않는 NullKnowledgeBase 를 쓴다(v2.1z: 운영 스위치 `--no-kb` 는 없어졌다).
+    """파일 KB의 Protocol. 구현은 CaseStore를 감싼 파사드인 sbmig.kb.FileKnowledgeBase다.
+    케이스 저장소(cases), 조회(match), 실행 결과 기록(record_run), cases.md 재생성(reindex)을 제공한다.
+    `sbmig.api.migrate(kb=False)`이거나 sbmig.kb를 불러올 수 없으면 아무것도 반환하지 않는 NullKnowledgeBase를 쓴다.
 
     The v2.1 file KB (sbmig.kb.FileKnowledgeBase, a facade over sbmig.errors.cases.CaseStore): the case store
     (`cases`: find / best / code / add_script / credit / describe / pin), catalog hits for a cluster's case

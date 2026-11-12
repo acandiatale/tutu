@@ -1,12 +1,13 @@
-"""v2.1 수정 사다리 — 이 실행에서 케이스가 다음에 받을 단계: 재사용 → 보강 → 신규 → (한도) 차단.
-흐름상 위치: ``DecisionEngine.decide`` 가 ``plan_script_step`` 을 불러 SCRIPT / BLOCKED 를 정하고, 수정 루프가
-돌려받은 ``ScriptStep`` 을 실행한다(재사용 = 저장된 스크립트 실행, LLM 0회). 한도(v2.1z): 케이스당 한 실행에서 저장본
-``script.reuse_versions``(1) + LLM 요청 ``script.max_llm_tries_per_case``(20, 신규 + 보강), 그중 보강은
-``script.max_augments_per_case``(15) 번까지 — 보강을 다 쓰면 새로 작성(신규)을 요청한다. reuse_versions 가 2 이상이면
-이번 실행에서 실패한 저장본 다음 버전(proven 최신 → unverified 최신 순)을 LLM 전에 더 돌린다(A14). LLM 요청을 다
-쓰면 ``repeated_failure`` 로 차단되어 인수인계로 간다. ``kb_line`` 은 KB 탐색 "결과" 로그 줄이다: 처음 보는
-프로젝트가 KB 적중처럼 읽히면 안 된다(회사 피드백 7). KB 저장소
-문제는 로그만 남기고 "저장본 없음" 으로 다룬다 — 루프를 멈추지 않는다.
+"""케이스가 이번 실행에서 다음에 받을 수정 단계를 정하는 모듈.
+단계는 재사용 -> 보강 -> 신규 순서이고 한도에 도달하면 차단한다.
+``DecisionEngine.decide``가 ``plan_script_step``을 호출해 SCRIPT / BLOCKED를 정하고, 수정 루프가 돌려받은
+``ScriptStep``을 실행한다. 재사용은 저장된 스크립트를 LLM 없이 실행하는 것이다.
+- 케이스당 한 실행에서 저장된 스크립트는 ``script.reuse_versions``개, LLM 요청은
+  ``script.max_llm_tries_per_case``번까지이고 그중 보강은 ``script.max_augments_per_case``번까지다. 보강을
+  다 쓰면 신규 작성을 요청한다
+- LLM 요청을 다 쓰면 ``repeated_failure``로 차단되어 인수인계로 간다
+- ``kb_line``은 KB 탐색 결과 로그 줄이다. 처음 보는 프로젝트가 KB 적중처럼 읽히지 않게 쓴다
+- KB 저장소 문제는 로그만 남기고 저장된 스크립트가 없는 것으로 처리하므로 루프를 멈추지 않는다
 
 v2.1 fix ladder (docs/v2/PLAN-v2.1.md §3.1): what a case gets next in this run.
 
@@ -51,13 +52,14 @@ from sbmig.core.models import DecisionKind, ErrorCluster, FixAttempt
 log = logging.getLogger("sbmig.triage")
 
 LLM_MODES = ("new", "augment")              # script modes that ask the LLM (reuse runs a stored version)
-# 실패로 보는 채점 결과(차단 정책의 LLM 실패 횟수, 다음 저장본으로 넘어갈지) — decide.py 도 이것을 쓴다
+# 차단 정책의 LLM 실패 횟수와 다음 저장 버전으로 넘어갈지 판단할 때 실패로 보는 결과. decide.py도 사용한다
 FAILED_OUTCOMES = frozenset({"no_change", "regressed", "reverted", "apply_failed", "inconclusive"})
 
 
 @dataclass
 class ScriptStep:
-    """케이스의 다음 단계. ``mode`` 가 None 이면 케이스별 한도에 도달한 것(→ BLOCKED).
+    """케이스의 다음 단계를 담는 데이터 클래스.
+    ``mode``가 None이면 케이스별 한도에 도달해 BLOCKED로 처리한다.
 
     The next step of a case. `mode` None = the per-case limits are reached (→ BLOCKED)."""
     case_id: str
@@ -77,12 +79,12 @@ class ScriptStep:
 
     @property
     def needs_llm(self) -> bool:
-        """LLM 을 불러야 하는 단계인가(보강 / 신규). 재사용은 LLM 을 부르지 않는다."""
+        """LLM을 호출해야 하는 단계(보강, 신규)인지 반환한다. 재사용은 LLM을 호출하지 않는다."""
         return self.mode in LLM_MODES
 
     @property
     def base_version(self) -> int:
-        """보강이 이어받는 버전(0 = 이 실행에서 만든, 아직 저장 안 된 스크립트).
+        """보강이 이어받는 버전을 반환한다. 0은 이번 실행에서 만들어 아직 저장하지 않은 스크립트다.
 
         The version an augment extends (0 = an unstored script of this run)."""
         if self.base_attempt is not None:
@@ -91,12 +93,12 @@ class ScriptStep:
 
 
 def script_attempts(attempts: Iterable[FixAttempt]) -> list[FixAttempt]:
-    """SCRIPT 결정으로 한 시도들만."""
+    """SCRIPT 결정으로 한 시도만 반환한다."""
     return [a for a in attempts if a.decision.kind == DecisionKind.SCRIPT]
 
 
 def cluster_case_id(cluster: ErrorCluster) -> str:
-    """클러스터의 케이스 ID(없으면 첫 오류에서 계산)."""
+    """클러스터의 케이스 ID를 반환한다. 없으면 첫 오류로 계산한다."""
     if cluster.case_id:
         return cluster.case_id
     from .cluster import case_id_of
@@ -104,8 +106,8 @@ def cluster_case_id(cluster: ErrorCluster) -> str:
 
 
 def stored_best(store: Any, case_id: str) -> Optional[tuple[Any, str]]:
-    """KB 저장소의 ``best(case_id)`` 에서 (CaseScript, 코드).
-    저장본 없음 · 빈 코드 · retired(사람이 끔) · 저장소 오류면 None.
+    """KB 저장소의 ``best(case_id)``에서 (CaseScript, 코드)를 가져온다.
+    저장된 스크립트가 없거나, 코드가 비었거나, 사람이 끈 retired 버전이거나, 저장소 오류면 None을 반환한다.
 
     (CaseScript, code) from `store.best(case_id)` (a `CaseScripts` adapter or E1's `CaseStore`); None = nothing
     stored or the store failed (logged). v2.1y: a `non_idempotent` best (a store that does not skip it) → the next
@@ -126,15 +128,16 @@ def stored_best(store: Any, case_id: str) -> Optional[tuple[Any, str]]:
         return None
     if meta is None or not (code or "").strip() or getattr(meta, "status", "") == "retired":
         return None
-    # v2.1y: 비멱등으로 표시된 버전은 재사용하지 않는다(CaseStore.best 가 이미 건너뛴다; 다른 저장소 대역에 대비) — 다음 저장본
+    # 여러 번 실행하면 결과가 달라지는 버전은 재사용하지 않고 다음 저장 버전을 쓴다.
+    # CaseStore.best는 이미 건너뛰지만 다른 저장소 구현에 대비한다
     if getattr(meta, "non_idempotent", False):
         return stored_next(store, case_id, ())
     return meta, code
 
 
 def _stored_scripts(store: Any, case_id: str) -> list[Any]:
-    """케이스의 저장된 스크립트 메타 목록: ``find(case_id).scripts``(CaseStore · 루프의 CaseScripts 어댑터
-    공통), 없으면 ``scripts(case_id)``. 못 읽으면 [].
+    """케이스의 저장된 스크립트 메타 목록을 반환한다.
+    ``find(case_id).scripts``가 없으면 ``scripts(case_id)``를 쓰고, 읽지 못하면 빈 리스트를 반환한다.
 
     The case's stored CaseScripts: `find(case_id).scripts` (CaseStore and the loop's CaseScripts adapter alike),
     else `scripts(case_id)`; [] when the store cannot say (logged)."""
@@ -152,8 +155,9 @@ def _stored_scripts(store: Any, case_id: str) -> list[Any]:
 
 
 def stored_next(store: Any, case_id: str, skip: Iterable[int]) -> tuple[Any, str] | None:
-    """``skip`` (이번 실행에서 이미 돈 버전)을 뺀 다음 저장본 (CaseScript, 코드): ``best`` 와 같은 순서 —
-    proven 최신 → unverified 최신, retired·비멱등(v2.1y)·빈 코드는 건너뜀. 없으면 None(A14, ``script.reuse_versions`` > 1).
+    """이번 실행에서 이미 실행한 버전(``skip``)을 뺀 다음 저장 버전 (CaseScript, 코드)를 반환한다.
+    남은 것이 없으면 None을 반환한다.
+    순서는 ``best``와 같이 proven 최신, unverified 최신 순이며 retired, 비멱등, 빈 코드 버전은 건너뛴다.
 
     The next stored version not in `skip` (the versions this run already ran), in `best`'s order: proven newest,
     then unverified newest; retired ones, `non_idempotent` ones (v2.1y) and versions without code never. None =
@@ -185,8 +189,7 @@ NOTHING_STORED = "저장된 스크립트 없음 (처음 보는 케이스)"
 
 
 def describe_stored(meta: Any) -> str:
-    """저장본 설명 구절 ``저장된 스크립트 v2 (proven, 성공 3 / 실패 0, 프로젝트 2)``
-    (``CaseStore.describe`` 와 같은 꼴).
+    """저장된 스크립트 설명 구절(``저장된 스크립트 v2 (proven, 성공 3 / 실패 0, 프로젝트 2)``)을 만든다.
 
     '저장된 스크립트 v2 (proven, 성공 3 / 실패 0, 프로젝트 2)' — the phrase of `CaseStore.describe`."""
     return (f"저장된 스크립트 v{getattr(meta, 'version', '?')} ({getattr(meta, 'status', '?')}, 성공 "
@@ -195,7 +198,7 @@ def describe_stored(meta: Any) -> str:
 
 
 def kb_found(store: Any, case_id: str, best: Optional[tuple[Any, str]]) -> str:
-    """KB 탐색이 찾은 것 한 구절: 저장소의 ``describe(case_id)`` 가 있으면 그것, 없으면 여기서 만든다.
+    """KB 탐색이 찾은 것을 한 구절로 만든다. 저장소에 ``describe(case_id)``가 있으면 그것을 쓴다.
 
     What the KB search found, one phrase: the store's own `describe(case_id)` when it has one, else built here."""
     fn = getattr(store, "describe", None) if store is not None else None
@@ -210,10 +213,10 @@ def kb_found(store: Any, case_id: str, best: Optional[tuple[Any, str]]) -> str:
 
 
 def plan_script_step(cluster: ErrorCluster, previous: Iterable[FixAttempt], store: Any, cfg: Any) -> ScriptStep:
-    """케이스의 다음 단계를 정한다(모듈 docstring 의 순서). ``previous`` = 이 실행에서 같은 케이스에 대해
-    채점된 시도들(pending 과 쉬는 중인 전송 실패는 루프가 이미
-    뺐다). 저장본은 이 실행에서 아직 안 돌린 버전만 재사용한다 — best 가 이미 실패했으면
-    ``script.reuse_versions`` 개까지 다음 저장본(``stored_next``).
+    """케이스의 다음 단계를 정한다. 순서는 모듈 docstring에 있다.
+    ``previous``는 이 실행에서 같은 케이스에 대해 결과가 나온 시도 목록이다. 저장된 스크립트는 이번 실행에서
+    아직 실행하지 않은 버전만 재사용하고, best가 이미 실패했으면 ``script.reuse_versions``개까지 다음 저장
+    버전(``stored_next``)을 쓴다.
 
     The case's next step (see the module doc). `previous` = this run's scored tries on the same case (the loop
     passes `_previous(cluster)`: no pending ones, no cooled-down transport failures). v2.1z: `llm_used` counts new +
@@ -249,8 +252,8 @@ def plan_script_step(cluster: ErrorCluster, previous: Iterable[FixAttempt], stor
                         f"project(s), {getattr(meta, 'failures', 0)} failure(s)) — no LLM call")
             step.kb_line = f"KB 탐색: {stored_text} → 실행"
             return step
-        # A14: best 가 이번 실행에서 실패했고 저장본을 더 돌려도 되면(reuse_versions > 1) 다음 저장본 — 도움이 된
-        # 재사용(improved / partial)이 있었으면 그것을 LLM 이 보강하는 편이 낫다
+        # best가 이번 실행에서 실패했고 더 실행해도 되면 다음 저장 버전을 쓴다.
+        # 도움이 된 재사용이 있었다면 그것을 LLM이 보강하는 편이 낫다
         if reuse_n > 1 and failed_here and all(a.outcome in FAILED_OUTCOMES for a in failed_here):
             nxt = stored_next(store, case_id, tried_versions)
             if nxt is not None:
@@ -268,7 +271,7 @@ def plan_script_step(cluster: ErrorCluster, previous: Iterable[FixAttempt], stor
     # 2./3. the LLM: the total cap first (new + augment)
     if llm_used >= max_llm:
         if max_llm == 0:
-            # 한도 0 = 이 케이스에는 LLM 을 아예 묻지 않는 설정 — "0회가 해결 못 했다" 로 읽히지 않게 따로 쓴다
+            # 한도 0은 이 케이스에 LLM을 호출하지 않는 설정이므로 해결에 실패한 것으로 읽히지 않게 따로 기록한다
             step.why = (f"LLM asks are switched off for case {case_id} (script.max_llm_tries_per_case 0)"
                         + (f"; {len(failed_here)} stored script run(s) did not resolve it" if failed_here else ""))
             step.kb_line = f"KB 탐색: {stored_part} → LLM 요청 없음 (script.max_llm_tries_per_case 0) → blocked"
@@ -294,8 +297,8 @@ def plan_script_step(cluster: ErrorCluster, previous: Iterable[FixAttempt], stor
     nth = f"{llm_used + 1}/{max_llm}"
     can_augment = augments_used < max_aug
     aug_nth = f"보강 {augments_used + 1}/{max_aug}"
-    # 보강의 기준: 이 실행에서 코드가 있었던 마지막 시도(실패한 저장본 또는 LLM 스크립트) — 무엇을 했고 무엇이
-    # 남았는지를 LLM 에 함께 준다. 코드 없는 답(no_script)만 있었으면 다시 신규 요청
+    # LLM에 무엇을 했고 무엇이 남았는지 함께 주기 위해 코드가 있었던 마지막 시도를 보강의 기준으로 삼는다.
+    # 코드 없는 답만 있었으면 다시 신규로 요청한다
     base_att = next((a for a in reversed(tried) if (a.script_code or "").strip()), None)
     if base_att is not None and can_augment:
         step.mode, step.base_attempt = "augment", base_att
@@ -314,7 +317,7 @@ def plan_script_step(cluster: ErrorCluster, previous: Iterable[FixAttempt], stor
         return step
     step.mode = "new"
     if base_att is not None or best is not None:
-        # 확장할 것이 있지만 보강 한도를 다 썼다 — 이어 붙이기보다 처음부터 다시 쓰게 한다
+        # 보강 한도를 다 썼으므로 이어 붙이지 않고 처음부터 다시 쓰게 한다
         step.why = (f"new fix for case {case_id} (augments used up: script.max_augments_per_case {max_aug}; "
                     f"request {nth})")
         step.kb_line = f"KB 탐색: {stored_part} → 보강 한도({max_aug}) 소진 → LLM 에 새 수정 요청 ({nth})"

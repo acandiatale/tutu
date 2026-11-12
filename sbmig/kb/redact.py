@@ -1,11 +1,11 @@
-"""KB 가 저장하는 모든 것의 비밀값 마스킹(round 10): Maven 원문, 메시지, diff, 스크립트 로그·코드, 구조 검토.
-누가 부르나: ``sbmig.errors.common.Cleaner``(오류 목록·KB 의 모든 텍스트), ``CaseStore.add_script``(비밀값이
-든 스크립트는 마스킹 후 retired). 값만(``***``), 그리고 문맥이 비밀이라고 말할 때만 가린다: 키의 마지막 단어가
-비밀 단어인 ``key = value``, 그런 이름에 대입한 문자열 리터럴, XML·JSON 의 password 류, URL·JDBC 사용자 정보,
-Authorization 헤더·Bearer 토큰, PEM 개인키. 코드는 가리지 않는다(``token = helper.clientIp();``, 비교식, for
-문) — diff 와 스크립트가 읽을 수 있어야 하기 때문이다. 자리표시자(``${…}``, ``@…@`` 등)도 그대로 둔다. 회사
-추가 규칙은 ``kb.redact_file``(``knowledge/kb/redact.yml``, 불변조건 2: 회사 특수 사항은 설정에)에서 읽어 기본
-규칙에 더한다. 순수 함수이며 예외를 내지 않는다 — 마스킹 실패가 실행을 깨면 안 된다.
+"""KB에 저장하는 모든 텍스트에서 비밀 값을 마스킹하는 모듈.
+Maven 로그 원문, 메시지, diff, 스크립트 로그와 코드, 구조 검토 결과가 대상이다.
+``sbmig.errors.common.Cleaner``와 ``CaseStore.add_script``가 사용한다.
+- 문맥상 비밀인 값만 가린다. 마지막 단어가 비밀 단어인 키의 ``key = value``, URL / JDBC 사용자 정보,
+  Authorization 헤더, PEM 개인키 등이다
+- diff와 스크립트를 읽을 수 있어야 하므로 코드와 플레이스홀더는 가리지 않는다
+- 회사 추가 규칙은 ``kb.redact_file``에서 읽어 기본 규칙에 더한다
+- 마스킹 실패로 실행이 멈추면 안 되므로 예외를 던지지 않는다
 
 Secret masking for everything the KB stores (round 10, 2026-10-26): raw Maven text, messages, diffs, fix-script
 logs and code, structure reviews.
@@ -49,8 +49,7 @@ log = logging.getLogger("sbmig.kb")
 MASK = "***"
 DEFAULT_RULES_FILE = "knowledge/kb/redact.yml"
 
-# 키의 '마지막' 단어로 판단한다: password.encoder, tokenCount
-# 처럼 비밀 단어가 앞에 있는 키는 설정 이름이지 비밀이 아니다
+# 키의 마지막 단어로 판단하므로 password.encoder, tokenCount처럼 비밀 단어가 앞에 있으면 설정 이름으로 본다
 # the LAST word of a key that makes its value a secret (and two-word endings)
 SECRET_WORDS = frozenset({
     "password", "passwd", "passphrase", "passcode", "pwd", "pw", "pass", "secret", "secrets", "token",
@@ -105,8 +104,7 @@ _MID_VALUE_RE = re.compile(r"[^\s\"'<>&;,(){}\[\]]+")
 
 
 def key_words(key: str) -> list[str]:
-    """키를 단어로 나눈다(``.`` ``_`` ``-`` 와 camelCase
-    경계): ``userPw`` → [user, pw]; 끝의 숫자 단어는 버린다.
+    """키를 ``.`` ``_`` ``-``와 camelCase 경계에서 단어로 나눈다. 끝에 붙은 숫자 단어는 버린다.
 
     ``spring.datasource.password`` → [spring, datasource, password]; ``userPw`` → [user, pw]; trailing
     number words dropped (``PASSWORD2`` → [password])."""
@@ -120,7 +118,7 @@ def key_words(key: str) -> list[str]:
 
 @dataclass
 class _Extra:
-    """회사 추가 규칙(redact.yml): 비밀 단어, 키 전체 패턴, 자유 패턴, 허용 키."""
+    """회사 추가 규칙(redact.yml)의 비밀 단어, 키 패턴, 자유 패턴, 허용 키를 담는 클래스."""
 
     words: frozenset = frozenset()
     key_patterns: list = field(default_factory=list)       # compiled, full match, case-insensitive
@@ -129,7 +127,7 @@ class _Extra:
 
 
 class Redactor:
-    """기본 규칙 + 회사 추가 규칙(:func:`load_rules`)으로 비밀값을 찾아 가린다.
+    """기본 규칙과 회사 추가 규칙(:func:`load_rules`)으로 비밀 값을 찾아 가리는 클래스.
 
     Built-in rules + company additions (:func:`load_rules`)."""
 
@@ -138,8 +136,8 @@ class Redactor:
 
     # ------------------------------------------------------------------ keys
     def is_secret_key(self, key: str) -> bool:
-        """이 키의 값이 비밀인가: 허용 키는 아님, 회사 키 패턴은 비밀, 아니면 마지막
-        단어(또는 마지막 두 단어)가 비밀 단어인지."""
+        """이 키의 값이 비밀인지 확인한다.
+        허용 키는 비밀이 아니고, 회사 키 패턴에 맞으면 비밀이며, 그 밖에는 마지막 한두 단어로 판단한다."""
         k = (key or "").strip().strip("\"'")
         if not k or k.lower() in self.extra.allow:
             return False
@@ -155,7 +153,7 @@ class Redactor:
 
     # ------------------------------------------------------------------ spans
     def spans(self, text: Optional[str]) -> list[tuple[int, int]]:
-        """``text`` 에서 가릴 구간(값만), 겹치는 것은 합쳐서 정렬.
+        """``text``에서 가릴 값의 구간 목록을 반환한다. 겹치는 구간은 합치고 정렬한다.
 
         Merged, sorted spans of ``text`` to mask (values only)."""
         if not text:
@@ -165,12 +163,12 @@ class Redactor:
             self._collect(text, out)
             return _merge(out)
         except Exception as e:  # pragma: no cover - masking must never break a run
-            # 규칙이 고장 나면 비밀 단어가 보이는 텍스트는 통째로 가린다 — 새는 것보다 덜 보이는 게 낫다
+            # 비밀 값이 새는 것보다 덜 보이는 편이 나으므로, 규칙이 고장 나면 비밀 단어가 보이는 텍스트는 통째로 가린다
             log.debug("redaction failed: %s: %s", type(e).__name__, e)
             return [(0, len(text))] if any(w in text.lower() for w in ("password", "secret", "token")) else []
 
     def _collect(self, text: str, out: list[tuple[int, int]]) -> None:
-        """모든 문맥 규칙을 돌며 가릴 값 구간을 ``out`` 에 모은다(자리표시자 값은 건너뜀)."""
+        """모든 문맥 규칙을 적용해 가릴 값의 구간을 ``out``에 모은다. 플레이스홀더 값은 건너뛴다."""
         def add(m: re.Match, group: str = "v") -> None:
             s, e = m.span(group)
             v = text[s:e]
@@ -197,8 +195,7 @@ class Redactor:
             for m in rx.finditer(text):
                 if self.is_secret_key(m.group("k")):
                     add(m)
-                    # diff 에서는 바뀐 <param-value> 가 - 줄과 + 줄로
-                    # 두 번 나오므로 바로 뒤의 값들(최대 4개)도 가린다
+                    # diff에서는 바뀐 <param-value>가 - 줄과 + 줄에 두 번 나오므로 바로 뒤의 값(최대 4개)도 가린다
                     if rx is _XML_PARAM_RE:
                         pos = m.end()
                         for _ in range(4):
@@ -221,8 +218,9 @@ class Redactor:
 
     @staticmethod
     def _assign_value(text: str, m: re.Match) -> Optional[tuple[int, int]]:
-        """따옴표 없는 ``key = value`` / ``key: value`` 의 값 구간; 코드(메서드 호출·다른 변수)·빈
-        값·자리표시자면 None — 코드까지 가리면 diff 를 읽을 수 없게 된다.
+        """따옴표 없는 ``key = value`` / ``key: value``에서 값의 구간을 찾는다.
+        코드, 빈 값, 플레이스홀더면 None을 반환한다.
+        코드까지 가리면 diff를 읽을 수 없기 때문이다.
 
         The value span of an unquoted ``key = value`` / ``key: value``, None when it is code / empty / a
         placeholder."""
@@ -257,7 +255,8 @@ class Redactor:
 
     # ------------------------------------------------------------------ masking
     def redact_ex(self, text: Optional[str]) -> tuple[Optional[str], list[str]]:
-        """(가린 텍스트, 가린 값들 순서대로). ``None`` 은 ``None``.
+        """텍스트를 마스킹하고 (가린 텍스트, 가린 값 목록)을 반환한다.
+        ``None``이 들어오면 ``None``을 돌려준다.
 
         (masked text, the masked values in order). ``None`` stays ``None``."""
         if text is None:
@@ -277,12 +276,12 @@ class Redactor:
         return "".join(parts), values
 
     def redact(self, text: Optional[str]) -> Optional[str]:
-        """가린 텍스트만(``redact_ex`` 의 첫 값)."""
+        """텍스트를 마스킹하고 가린 텍스트만 반환한다."""
         return self.redact_ex(text)[0]
 
 
 def _code_rhs(after: str) -> bool:
-    """``key = …`` 의 오른쪽이 설정값이 아니라 코드(Java / JS 문장)처럼 보이나.
+    """``key = …``의 오른쪽이 설정값이 아니라 코드처럼 보이는지 확인한다.
 
     The right-hand side of `key = …` reads like code (a Java / JS statement), not a configured value."""
     r = _LINE_COMMENT_RE.sub("", after).strip()
@@ -307,7 +306,7 @@ def _merge(spans: list[tuple[int, int]]) -> list[tuple[int, int]]:
 
 
 def overlaps(spans: Iterable[tuple[int, int]], start: int, end: int) -> bool:
-    """구간들 중 [start, end) 와 겹치는 것이 있나."""
+    """구간 중 [start, end)와 겹치는 것이 있는지 확인한다."""
     return any(s < end and start < e for s, e in spans)
 
 
@@ -317,7 +316,8 @@ _DEFAULT = Redactor()
 
 
 def _rules_path(cfg: Any = None) -> Optional[Path]:
-    """``kb.redact_file`` 경로; 설정에 ""(빈 값)로 적으면 끈 것(None), 설정이 없으면 패키지의 기본 파일."""
+    """``kb.redact_file`` 경로를 반환한다.
+    빈 값이면 기능을 끈 것이므로 None을, 설정이 없으면 패키지 기본 파일을 반환한다."""
     try:
         kbc = getattr(cfg, "kb", None)
         rel = getattr(kbc, "redact_file", None) if kbc is not None else None
@@ -333,7 +333,8 @@ def _rules_path(cfg: Any = None) -> Optional[Path]:
 
 
 def load_rules(path: Optional[Path]) -> _Extra:
-    """redact yml 의 회사 추가 규칙(파일이 없거나 못 읽으면 없음; 잘못된 정규식은 경고 후 건너뜀).
+    """redact yml에서 회사 추가 규칙을 읽는다.
+    파일이 없거나 읽지 못하면 빈 규칙을 반환하고, 잘못된 정규식은 경고를 남기고 건너뛴다.
 
     The company additions of a redact yml (missing / unreadable file → none; a bad regex is skipped)."""
     if path is None or not Path(path).is_file():
@@ -373,8 +374,8 @@ def load_rules(path: Optional[Path]) -> _Extra:
 
 
 def get_redactor(cfg: Any = None) -> Redactor:
-    """``cfg`` 용 마스커(기본 규칙 + ``kb.redact_file``), 파일의
-    수정 시각·크기로 캐시 — 파일을 고치면 재시작 없이 반영된다.
+    """``cfg``에 맞는 마스킹 객체를 반환한다.
+    규칙 파일의 수정 시각과 크기로 캐시하므로 파일을 고치면 재시작 없이 반영된다.
 
     The redactor for ``cfg`` (built-ins + its ``kb.redact_file``), cached by the file's stamp."""
     path = _rules_path(cfg)
@@ -395,7 +396,7 @@ def get_redactor(cfg: Any = None) -> Redactor:
 
 
 def redact(text: Optional[str], cfg: Any = None) -> Optional[str]:
-    """``text`` 의 비밀값을 가린다(모듈 설명 참고); ``None`` 은 ``None``.
+    """``text``의 비밀 값을 가린다. ``None``이 들어오면 ``None``을 돌려준다.
 
     Mask the secret values in ``text`` (see the module doc); ``None`` stays ``None``."""
     if not text:
@@ -404,5 +405,5 @@ def redact(text: Optional[str], cfg: Any = None) -> Optional[str]:
 
 
 def clear_cache() -> None:
-    """마스커 캐시를 비운다(다음 ``get_redactor`` 가 규칙 파일을 다시 읽음)."""
+    """마스킹 객체 캐시를 비운다. 다음 ``get_redactor`` 호출이 규칙 파일을 다시 읽는다."""
     _CACHE.clear()

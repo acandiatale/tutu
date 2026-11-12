@@ -1,12 +1,11 @@
-"""사내 부모 체인의 빌드 확장 사전 점검 (2026-11-05, 회사 실행).
-
-마이그레이션 대상 사내 부모(``base-parent 4.0.0``)의 ``<build><extensions>`` 에 ``org.apache.maven.wagon:wagon-webdav:1.0-beta-2``
-가 있었다. 상속되는 확장은 자식 pom 에서 뺄 수 없고, Maven 은 어떤 goal 보다 먼저(OpenRewrite 포함) 확장을 내려받으므로 그
-하나를 못 받으면 모든 모듈의 모든 Maven 호출이 ``Unresolveable build extension`` 으로 멈춘다. 회사 PC 에서는 HTTP 차단 미러
-시절에 실패한 다운로드의 ``*.lastUpdated`` 표식이 로컬 저장소에 남아, Nexus 가 pom 을 다시 주는데도 Maven 이 하루 동안
-거부했다. 그래서 첫 Maven 호출 전에: 체인이 선언한 확장마다 (1) 로컬 저장소 / 저장소에서 pom 을 읽을 수 있는지 보고,
-(2) 저장소에서는 읽히는데 로컬에 묵은 표식만 있으면 표식을 지우고(그 폴더의 ``*.lastUpdated`` 만, 절대 ``~/.m2`` 전체가
-아니다), (3) 어디서도 못 읽으면 경고·플래그·인수인계로 운영자에게 알린다 — Nexus 에 올리거나 부모에서 빼야 하는 일이다.
+"""첫 Maven 호출 전에 사내 부모 체인의 build extension을 받을 수 있는지 점검하는 모듈.
+상속된 확장은 자식 pom에서 뺄 수 없고, 하나라도 받지 못하면 OpenRewrite를 포함한 모든 Maven 호출이
+``Unresolveable build extension``으로 실패한다.
+- 확장마다 로컬 저장소나 원격 저장소에서 pom을 읽을 수 있는지 확인한다
+- 원격에서는 읽히는데 로컬에 오래된 ``*.lastUpdated`` 표식만 있으면 그 폴더의 표식만 지운다.
+  ``~/.m2`` 전체는 건드리지 않는다
+- 어디서도 읽지 못하면 경고, 플래그, 인수인계로 운영자에게 알린다.
+  해당 확장을 Nexus에 올리거나 부모 pom에서 빼야 한다
 
 Pre-check of the configured parent chain's build extensions before the first Maven call: readable from the local
 repository / the repository set? Stale `*.lastUpdated` markers of an extension the repository does serve are deleted
@@ -27,7 +26,8 @@ log = logging.getLogger("sbmig.build.parent_extensions")
 
 @dataclass
 class ExtensionCheck:
-    """확장 하나의 점검 결과: 좌표, 선언한 pom, 읽혔나, 어디서(로컬 경로 / repository / 이유), 지운 표식 파일 이름들."""
+    """build extension 하나의 점검 결과를 담는 데이터 클래스.
+    좌표, 선언한 pom, 읽기 결과와 출처, 지운 표식 파일을 담는다."""
     coordinates: str
     declared_by: str
     readable: bool
@@ -36,7 +36,7 @@ class ExtensionCheck:
     ancestors: list[str] = field(default_factory=list)          # the extension pom's <parent> chain that was read
 
     def line(self) -> str:
-        """로그 / 저널용 한 줄."""
+        """로그와 저널에 남길 한 줄 요약을 만든다."""
         tail = f"; stale markers removed: {', '.join(self.markers_removed)}" if self.markers_removed else ""
         anc = f"; parent poms: {' → '.join(self.ancestors)}" if self.ancestors else ""
         return f"{self.coordinates} (declared by {self.declared_by}): {'readable' if self.readable else 'NOT readable'} — {self.where}{tail}{anc}"
@@ -49,8 +49,9 @@ def _split(coord: str) -> tuple[str, str, str] | None:
 
 
 def check_parent_build_extensions(cfg: Any, facts: Any = None, *, clear_markers: bool = True) -> list[ExtensionCheck]:
-    """설정한 부모 체인(``load_parent_chain_facts``)이 선언한 빌드 확장마다 점검한다. ``clear_markers`` 면(``build.retry_negative_cache``)
-    저장소에서 읽히는 확장의 로컬 ``*.lastUpdated`` 표식을 지운다. 체인을 못 읽었거나 확장이 없으면 []. 절대 예외 없음.
+    """부모 체인이 선언한 build extension을 하나씩 점검해 결과 목록을 반환한다.
+    ``clear_markers``가 참이면 원격에서 읽히는 확장의 로컬 표식을 지운다.
+    체인을 읽지 못했거나 확장이 없으면 빈 목록을 반환하고, 예외를 던지지 않는다.
 
     One `ExtensionCheck` per build extension the parent chain declares; stale local markers of a repository-served
     extension are deleted when `clear_markers`. [] when the chain was not read or declares none. Never raises."""
@@ -97,8 +98,8 @@ def check_parent_build_extensions(cfg: Any, facts: Any = None, *, clear_markers:
 
 
 def _check_ancestors(read: Any, text: str, check: ExtensionCheck, local: Path | None, clear_markers: bool) -> None:
-    """확장 pom 의 ``<parent>`` 체인을 위로 읽는다(최대 MAX_ANCESTORS). 못 읽는 조상이 있으면 그 확장은 "NOT readable" —
-    이유에 조상 좌표를 적는다. 저장소에서 읽힌 조상의 묵은 표식도 지운다."""
+    """확장 pom의 ``<parent>`` 체인을 최대 MAX_ANCESTORS단계까지 읽는다.
+    읽지 못한 조상이 있으면 그 확장을 "NOT readable"로 표시하고 사유에 조상 좌표를 남긴다."""
     pom = parse_pom(text)
     seen: set[str] = set()
     for _ in range(MAX_ANCESTORS):
@@ -123,7 +124,7 @@ def _check_ancestors(read: Any, text: str, check: ExtensionCheck, local: Path | 
 
 
 def _remove_stale_markers(folder: Path) -> list[str]:
-    """``<local repo>/<g>/<a>/<v>/*.lastUpdated`` 만 지운다(그 외 파일은 손대지 않는다). 지운 이름들을 돌려준다."""
+    """``<local repo>/<g>/<a>/<v>/*.lastUpdated`` 파일만 지우고 지운 파일 이름 목록을 반환한다."""
     removed: list[str] = []
     try:
         if not folder.is_dir():

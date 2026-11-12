@@ -1,11 +1,11 @@
-"""Maven pom 그래프 파서 — 네임스페이스 무관, 네트워크·mvn 호출 없이 저장소 안의 pom.xml 만으로
-PomInfo 를 만든다. 흐름상 위치: 분석의 첫 단계(``analyze_project`` → :func:`parse_poms` →
-:func:`module_order`). 집계 pom 계획, 권고 검증, 구조 검토 입력, 인수인계 보고서도 다시 부른다.
-두 단계: (1) pom 마다 원시 파싱(_RawPom), (2) 저장소 안 부모 체인 연결(relativePath + GAV, 그다음 GAV 만으로)
-→ 유효 속성 → ``${prop}`` 치환 → dependencyManagement 로 의존성 버전 채우기 → Java / Boot / Spring 버전 도출.
-한계: 저장소 밖 부모(사내 ``base-parent`` 등)와 import 된 BOM 은 읽지 않으므로 거기서 오는 값은 모른다(mvn 의
-effective-pom 은 접수 단계가 따로 캡처해 버전 이어받기에
-쓴다). 깨진 pom 은 경고 후 건너뛴다(예외로 멈추지 않음).
+"""저장소 안의 pom.xml만 읽어 PomInfo 목록을 만드는 모듈.
+네트워크나 mvn을 쓰지 않고, 네임스페이스가 있든 없든 똑같이 읽는다.
+분석의 첫 단계(``analyze_project`` -> :func:`parse_poms` -> :func:`module_order`)이고, 집계 pom 계획, 권고
+검증, 구조 검토, 인수인계 보고서도 호출한다.
+- 1단계에서 pom마다 원시 파싱을 하고, 2단계에서 저장소 안 부모 체인을 연결한 뒤 속성 치환, 관리 버전 채우기,
+  Java / Boot / Spring 버전 도출을 한다
+- 저장소 밖 부모(사내 ``base-parent`` 등)와 import된 BOM은 읽지 않으므로 거기서 오는 값은 알 수 없다
+- 깨진 pom은 경고를 남기고 건너뛴다. 예외로 멈추지 않는다
 
 Maven pom graph parser (namespace-aware, no network, no mvn).
 
@@ -42,8 +42,8 @@ _PROP_RE = re.compile(r"\$\{([^}]+)\}")
 
 
 class WorkspaceView(Protocol):
-    """분석기가 쓰는 ``Workspace`` 의 최소 기능(root, glob,
-    read, pom_files) — 실행 작업공간과 PathView 둘 다 맞는다.
+    """분석기가 쓰는 ``Workspace``의 최소 기능(root, glob, read, pom_files)을 정의한 프로토콜.
+    실행 작업공간과 PathView 모두 해당한다.
 
     The subset of `Workspace` the analyzer needs."""
     root: Any
@@ -57,8 +57,9 @@ class WorkspaceView(Protocol):
 # helpers
 # ---------------------------------------------------------------------------
 def is_skipped_path(rel: str) -> bool:
-    """분석에서 뺄 경로인지: node_modules / .git / .idea / .svn, pom 옆 Maven 빌드 출력(``target/``),
-    그리고 ``src/test/resources`` (테스트 픽스처 pom 을 프로젝트 모듈로 오인하지 않게)."""
+    """분석에서 뺄 경로인지 확인한다.
+    node_modules, .git, .idea, .svn, Maven 빌드 출력(``target/``), ``src/test/resources``가 해당한다.
+    ``src/test/resources``는 테스트용 pom을 프로젝트 모듈로 잘못 보지 않기 위해 뺀다."""
     parts = rel.replace("\\", "/").split("/")
     if any(p in SKIP_DIR_PARTS for p in parts) or is_build_output_path(rel):
         return True
@@ -66,7 +67,7 @@ def is_skipped_path(rel: str) -> bool:
 
 
 def _local(tag: Any) -> str:
-    """``{네임스페이스}이름`` 에서 이름만 — 네임스페이스 없는 옛 pom 과 있는 pom 을 똑같이 읽기 위해."""
+    """``{네임스페이스}이름``에서 이름만 반환한다. 네임스페이스가 없는 pom도 똑같이 읽기 위해 쓴다."""
     if not isinstance(tag, str):
         return ""
     return tag.rsplit("}", 1)[-1]
@@ -96,7 +97,7 @@ def _text(el: Optional[ET.Element], name: str) -> Optional[str]:
 
 
 def _path(el: Optional[ET.Element], *names: str) -> Optional[ET.Element]:
-    """자식 이름을 차례로 따라 내려간 요소(중간에 없으면 None)."""
+    """자식 요소 이름을 차례로 따라 내려간 요소를 반환한다. 중간에 없으면 None을 반환한다."""
     cur = el
     for n in names:
         cur = _child(cur, n)
@@ -106,7 +107,8 @@ def _path(el: Optional[ET.Element], *names: str) -> Optional[ET.Element]:
 
 
 def interpolate(value: Optional[str], props: dict[str, str], depth: int = 0) -> Optional[str]:
-    """``${key}`` 를 ``props[key]`` 로 치환(재귀, 최대 깊이 10 — 순환 참조 방지). 모르는 키는 그대로 남긴다.
+    """``${key}``를 ``props[key]``로 치환한다.
+    순환 참조를 막기 위해 최대 깊이 10까지만 재귀하고, 모르는 키는 그대로 둔다.
 
     Replace `${key}` with props[key] (recursively, max depth 10); unknown keys are left in place."""
     if value is None or "${" not in value or depth > 10:
@@ -123,8 +125,8 @@ def interpolate(value: Optional[str], props: dict[str, str], depth: int = 0) -> 
 
 
 def _flat_config(el: Optional[ET.Element]) -> dict[str, Any]:
-    """플러그인 ``<configuration>`` 을 1단계 dict 로: 단순 값은
-    문자열, 자식이 모두 단순 값이면 목록, 더 깊은 것은 버린다."""
+    """플러그인 ``<configuration>``을 1단계 딕셔너리로 바꾼다.
+    자식이 모두 단순 값이면 목록으로 만들고 더 깊은 구조는 버린다."""
     out: dict[str, Any] = {}
     if el is None:
         return out
@@ -165,7 +167,8 @@ class _RawPlugin:
 
 @dataclass
 class _RawPom:
-    """pom 하나의 원시 파싱 결과(치환 전). 부모 연결(``parent_raw``)과 유효 속성은 2단계에서 채운다."""
+    """pom 하나를 치환 전 상태로 파싱한 결과를 담는 클래스.
+    부모 연결(``parent_raw``)과 유효 속성은 2단계에서 채운다."""
     path: str
     group_id: Optional[str]
     artifact_id: str
@@ -197,7 +200,7 @@ class _RawPom:
 
 
 def _parse_dep(el: ET.Element) -> Optional[_RawDep]:
-    """``<dependency>`` 하나(artifactId 가 없으면 None)."""
+    """``<dependency>`` 하나를 파싱한다. artifactId가 없으면 None을 반환한다."""
     g, a = _text(el, "groupId"), _text(el, "artifactId")
     if not a:
         return None
@@ -207,7 +210,8 @@ def _parse_dep(el: ET.Element) -> Optional[_RawDep]:
 
 
 def _parse_plugins(container: Optional[ET.Element], managed: bool) -> list[_RawPlugin]:
-    """``<plugins>`` 의 플러그인들(groupId 가 없으면 Maven 기본 ``org.apache.maven.plugins``)."""
+    """``<plugins>``의 플러그인 목록을 파싱한다.
+    groupId가 없으면 Maven 기본값 ``org.apache.maven.plugins``를 쓴다."""
     out = []
     for p in _children(_child(container, "plugins"), "plugin"):
         a = _text(p, "artifactId")
@@ -225,9 +229,9 @@ _XML_COMMENT_RE = re.compile(r"<!--.*?-->", re.S)
 
 
 def repository_urls(text: str) -> list[str]:
-    """pom 텍스트의 ``<repository>`` / ``<pluginRepository>`` URL 들(profile
-    포함, 주석·distributionManagement 제외, 순서 유지, 중복 제거). settings 외에 Maven 이 접속하는 저장소 —
-    폐쇄망 호스트에서 닿지 않는 곳(RUNBOOK §0.1).
+    """pom 텍스트의 ``<repository>``와 ``<pluginRepository>`` URL을 순서대로, 중복 없이 반환한다.
+    profile 안의 것도 포함하고 주석과 distributionManagement는 제외한다.
+    폐쇄망에서 접속할 수 없는 저장소를 찾는 데 쓴다.
 
     URLs of every `<repository>` / `<pluginRepository>` in the pom text (profiles included, comments ignored,
     `<distributionManagement>` excluded), in order, de-duplicated. These are the repositories Maven contacts in
@@ -247,18 +251,18 @@ def repository_urls(text: str) -> list[str]:
 # ---------------------------------------------------------------------------
 _XML_DECL_RE = re.compile(r"^\s*<\?xml\b[^>]*\?>")
 _DECL_ENCODING_RE = re.compile(rb"^\s*<\?xml\b[^>]*?\bencoding\s*=\s*[\"']([A-Za-z0-9._:-]+)[\"']")
-# 파이썬 코덱 목록에 없는 Java 쪽 이름(회사 pom 선언에 실제로 적히는 것) → 파이썬 코덱
+# Python 코덱 목록에 없는 Java 인코딩 이름을 Python 코덱으로 바꾸는 표
 # Java charset names Python's codec registry does not know
 _JAVA_ENCODING_ALIASES = {"x-windows-949": "cp949", "windows-949": "cp949", "x-euc-kr": "euc_kr"}
-# 한글 계열은 모두 cp949 로 푼다: cp949 는 EUC-KR(KS X 1001)의 상위 집합이라 EUC-KR 바이트가 똑같이 풀리고,
-# 선언은 EUC-KR 인데 Windows 편집기가 확장 한글(예: "똠")까지 cp949 로 저장한 pom 도 깨지지 않는다
+# cp949는 EUC-KR의 상위 집합이므로 한글 계열은 모두 cp949로 읽는다.
+# 선언은 EUC-KR인데 확장 한글이 cp949로 저장된 pom도 깨지지 않는다
 _KOREAN_CODECS = {"euc_kr", "cp949"}
 
 
 def xml_without_declaration(text: str) -> str:
-    """이미 디코딩된 XML 텍스트에서 BOM 과 맨 앞 XML 선언(``<?xml … encoding="EUC-KR"?>``)을 뗀다. 텍스트를 UTF-8
-    바이트로 파서에 넘길 때 선언의 encoding 이 그 바이트와 어긋나지 않게 — expat 은 멀티바이트 선언(EUC-KR / MS949)을
-    거부하고 모르는 이름(x-windows-949)에는 LookupError 를 낸다(A1). pom·web.xml·pom 의 war 설정 파서가 같이 쓴다.
+    """디코딩된 XML 텍스트에서 BOM과 맨 앞의 XML 선언을 뗀다.
+    expat은 EUC-KR / MS949 같은 멀티바이트 선언을 거부하고 x-windows-949 같은 이름에 LookupError를 던지므로,
+    UTF-8 바이트로 넘기기 전에 선언을 없앤다.
 
     Drop a leading BOM and the XML declaration from already-decoded XML text, so that its `encoding=` cannot
     contradict the UTF-8 bytes handed to the parser (expat rejects multi-byte declarations such as EUC-KR / MS949
@@ -267,8 +271,9 @@ def xml_without_declaration(text: str) -> str:
 
 
 def xml_codec(name: str | None) -> str | None:
-    """XML 선언의 encoding 이름 → 파이썬 코덱 이름(모르는 이름·빈 값은 None). Java 이름(``x-windows-949``)도 받고,
-    한글 계열(EUC-KR / KSC5601 / MS949 / CP949)은 상위 집합인 ``cp949`` 로 돌려준다.
+    """XML 선언의 encoding 이름에 맞는 Python 코덱 이름을 반환한다.
+    모르는 이름이거나 빈 값이면 None을 반환한다.
+    Java 이름(``x-windows-949``)도 받고, 한글 계열은 상위 집합인 ``cp949``를 반환한다.
 
     Python codec for an XML `encoding=` name (None when unknown). Java names such as x-windows-949 are accepted;
     the Korean family (EUC-KR, KSC5601, MS949, CP949) maps to its superset cp949."""
@@ -283,10 +288,10 @@ def xml_codec(name: str | None) -> str | None:
 
 
 def pom_encoding(data: bytes, candidates: Iterable[str] = DEFAULT_ENCODING_CANDIDATES) -> str:
-    """pom 바이트를 풀 인코딩: BOM(UTF-8 → ``utf-8-sig``, UTF-16) → UTF-8 로 엄격히 풀리면 ``utf-8`` → XML 선언의
-    인코딩(한글 계열은 cp949) → ``candidates`` 순서(기본 cp949 → euc-kr → shift_jis → latin-1) 중 파일 전체를 엄격히
-    푸는 첫 것 → 다 안 되면 ``utf-8`` (대체 문자로 읽힘). UTF-8 을 선언보다 먼저 보는 이유: ``Workspace.read`` 의
-    감지 순서와 같아야 분석이 읽은 인코딩과 재구성이 다시 쓰는 인코딩이 어긋나지 않는다.
+    """pom 바이트를 읽을 인코딩을 정한다. BOM -> 엄격한 UTF-8 -> XML 선언의 인코딩 -> ``candidates`` 순서로
+    파일 전체를 오류 없이 읽는 첫 인코딩을 쓰고, 모두 실패하면 ``utf-8``을 반환한다.
+    UTF-8을 선언보다 먼저 보는 것은 ``Workspace.read``와 순서를 맞춰 분석이 읽은 인코딩과 재구성이 쓰는
+    인코딩이 같도록 하기 위해서다.
 
     Encoding to decode pom bytes with: BOM (UTF-8 → "utf-8-sig", UTF-16); strict UTF-8 → "utf-8"; else the
     declared encoding (Korean family → cp949) when it decodes the whole file strictly; else the first of
@@ -311,9 +316,9 @@ def pom_encoding(data: bytes, candidates: Iterable[str] = DEFAULT_ENCODING_CANDI
 
 
 def read_pom_text(ws: WorkspaceView, rel: str) -> str:
-    """pom 텍스트를 바른 인코딩으로 읽는다: 파일 바이트로 :func:`pom_encoding` 을 정한 뒤 ``ws.read(rel, encoding=…)``
-    (실행 작업공간은 그 인코딩을 기억해 다시 쓸 때 쓴다). ``PathView`` 의 기본 utf-8 읽기는 cp949 pom 의 한글을
-    대체 문자로 바꾸므로 그대로 두지 않는다. 바이트를 못 읽으면 ``ws.read(rel)``.
+    """pom 바이트로 :func:`pom_encoding`을 정한 뒤 그 인코딩으로 pom 텍스트를 읽는다.
+    바이트를 읽지 못하면 ``ws.read(rel)``을 쓴다.
+    ``PathView``의 기본 utf-8 읽기는 cp949 pom의 한글을 깨뜨리므로 쓰지 않는다.
 
     Text of a pom, decoded with `pom_encoding` of its bytes (the workspace's candidate order when it has one);
     falls back to `ws.read(rel)` when the bytes cannot be read."""
@@ -326,13 +331,11 @@ def read_pom_text(ws: WorkspaceView, rel: str) -> str:
 
 
 def parse_pom_text(text: str | bytes, path: str) -> _RawPom:
-    """pom 하나를 원시 파싱한다. XML 이 깨졌거나 ``<project>`` 가 아니거나 artifactId 가 없으면 ValueError.
-    바이트는 :func:`pom_encoding` 으로 먼저 풀고, XML 선언은 떼고 파싱한다(EUC-KR / MS949 선언 pom, A1).
+    """pom 하나를 원시 파싱한다.
+    XML이 깨졌거나 ``<project>``가 아니거나 artifactId가 없으면 ValueError를 던진다.
 
     Parse one pom; raises ValueError on malformed XML or a missing artifactId."""
-    # 문자열은 이미 디코딩된 텍스트다: 선언을 떼고 UTF-8 로 넘긴다 — 예전에는 ``encoding="EUC-KR"`` 선언이 UTF-8
-    # 바이트와 어긋나 expat 이 ValueError("multi-byte encodings are not supported")를, ``x-windows-949`` 에는
-    # LookupError 를 내서 그 모듈이 프로필에서 통째로 빠지거나(앞) 분석 전체가 죽었다(뒤)
+    # 인코딩 선언이 UTF-8 바이트와 어긋나면 expat이 오류를 내므로, 디코딩된 텍스트에서 선언을 떼고 UTF-8로 넘긴다
     if isinstance(text, (bytes, bytearray)):
         data = bytes(text)
         text = data.decode(pom_encoding(data), errors="replace")
@@ -376,7 +379,8 @@ def parse_pom_text(text: str | bytes, path: str) -> _RawPom:
 # graph
 # ---------------------------------------------------------------------------
 def find_pom_files(ws: WorkspaceView) -> list[str]:
-    """작업공간의 pom.xml 경로들(정렬, posix, 건너뛸 경로와 접수가 무시한 폴더(``ws.ignored_dirs``, v2.1z-h) 제외)."""
+    """작업공간의 pom.xml 경로를 정렬해서 반환한다.
+    건너뛸 경로와 접수가 제외한 폴더(``ws.ignored_dirs``)는 뺀다."""
     try:
         files = ws.pom_files()
     except Exception:  # pragma: no cover - defensive
@@ -387,7 +391,7 @@ def find_pom_files(ws: WorkspaceView) -> list[str]:
 
 
 def _module_pom_path(pom_path: str, module: str) -> str:
-    """``<module>`` 값 → 그 모듈 pom 의 프로젝트 상대 경로(``a/b`` → ``a/b/pom.xml``, ``../x/pom.xml`` 그대로)."""
+    """``<module>`` 값을 그 모듈 pom의 프로젝트 상대 경로로 바꾼다(``a/b``는 ``a/b/pom.xml``)."""
     base = posixpath.dirname(pom_path)
     target = posixpath.normpath(posixpath.join(base or ".", module.strip().replace("\\", "/").rstrip("/")))
     if not target.endswith(".xml"):
@@ -397,10 +401,10 @@ def _module_pom_path(pom_path: str, module: str) -> str:
 
 @dataclass
 class StrayPom:
-    """v2.1z-h (회사 실행 2026-11-03): 어느 pom 의 ``<modules>`` 에도 안 올라 있는데 다른 pom 과 groupId:artifactId 가 같은
-    pom — IDE 출력·백업 폴더에 든 모듈의 통째 복사본(``boot/bin/pom.xml``: src, .project, pom.xml). 접수가 분석·검토·
-    재구성에서 빼고 인수인계에 적는다(구조 검토 LLM 이 "등록 안 된 모듈" 로 보고 ``<module>`` 에 넣으면 Maven 이
-    "is duplicated in the reactor" 로 reactor 전체를 거부하던 사례).
+    """어느 pom의 ``<modules>``에도 없으면서 다른 pom과 groupId:artifactId가 같은 pom을 나타내는 클래스.
+    IDE 출력 폴더나 백업 폴더에 든 모듈 복사본이다.
+    접수가 분석, 구조 검토, 재구성에서 빼고 인수인계에 기록한다. 이 pom을 모듈로 등록하면 Maven이
+    "is duplicated in the reactor"로 reactor 전체를 거부하기 때문이다.
 
     A pom no `<modules>` lists whose coordinates duplicate another pom's: a stray copy of a module (an IDE output or
     backup folder holding src + .project + pom.xml). Ignored by every scan, named in the Handover."""
@@ -414,18 +418,17 @@ class StrayPom:
         return posixpath.dirname(self.path)
 
     def why(self) -> str:
-        """짧은 이유(영문, 경고·저널·인수인계 공용)."""
+        """경고, 저널, 인수인계에 함께 쓰는 짧은 영문 이유를 반환한다."""
         where = "inside the directory of" if self.nested else "beside the module"
         return (f"`{self.path}` has the same coordinates as `{self.duplicate_of}` (`{self.coordinates}`), lies {where} "
                 f"`{self.duplicate_of}` and no pom lists it as a module")
 
 
 def stray_pom_copies(raws: list[_RawPom]) -> list[StrayPom]:
-    """v2.1z-h: 떠도는 pom 복사본 판정. 규칙: (1) 루트가 아니고 어느 pom 의 ``<modules>`` 도 가리키지 않는 pom 이, (2) 다른
-    pom 과 유효 groupId:artifactId 가 같고, (3) 그 pom 의 폴더 안에 들어 있거나(중첩 복사본) 그 pom 이 reactor 에 닿아 있으면
-    (루트이거나 어딘가에 나열됨) 복사본이다. 둘 다 나열되지 않고 중첩도 아니면(루트 없는 트리의 형제 최상위 pom) 판정하지
-    않는다 — 집계 pom 계획과 Maven 의 중복 검사가 그대로 본다. 나열된 pom 은 좌표가 겹쳐도 여기서 빼지 않는다(그건
-    ``reactor_duplicate`` 의 몫이고, 검토 편집이 복사본을 나열하면 검토의 불변식 검사가 되돌린다).
+    """파싱한 pom 중 모듈 복사본을 찾아 반환한다.
+    루트가 아니고 어디에도 나열되지 않은 pom이 다른 pom과 좌표가 같고, 그 pom의 폴더 안에 있거나 그 pom이
+    reactor에 포함되면 복사본으로 본다.
+    둘 다 나열되지 않은 형제 pom과 이미 나열된 pom은 여기서 빼지 않는다.
 
     Stray copies among the parsed poms: an UNLISTED, non-root pom whose effective groupId:artifactId equals another
     pom's, when it is nested under that pom's directory or that pom is reactor-reachable (root or listed). Two
@@ -453,12 +456,12 @@ def stray_pom_copies(raws: list[_RawPom]) -> list[StrayPom]:
 
 
 def _read_raw_poms(ws: WorkspaceView) -> tuple[list[_RawPom], list[str]]:
-    """작업공간의 pom 들을 원시 파싱한다(``parse_poms`` 1단계): (원시 목록, 경고)."""
+    """작업공간의 pom을 원시 파싱해서 (원시 목록, 경고)를 반환한다."""
     warnings: list[str] = []
     raws: list[_RawPom] = []
     for rel in find_pom_files(ws):
         try:
-            # 선언·감지한 인코딩으로 읽는다(A1): cp949 pom 의 한글 속성 값이 대체 문자로 깨지지 않게
+            # cp949 pom의 한글 속성 값이 깨지지 않도록 감지한 인코딩으로 읽는다
             text = read_pom_text(ws, rel)
             raw = parse_pom_text(text, rel)
             raw.repositories = repository_urls(text)
@@ -471,7 +474,7 @@ def _read_raw_poms(ws: WorkspaceView) -> tuple[list[_RawPom], list[str]]:
 
 
 def find_stray_pom_copies(ws: WorkspaceView) -> list[StrayPom]:
-    """v2.1z-h: 작업공간에서 떠도는 pom 복사본을 찾는다(접수가 부른다; 파싱만, 바꾸지 않음).
+    """작업공간에서 모듈 복사본 pom을 찾는다. 접수가 호출하며 파일을 바꾸지 않는다.
 
     The stray pom copies of the workspace (read-only; the intake calls it, see `stray_pom_copies`)."""
     raws, _warnings = _read_raw_poms(ws)
@@ -479,15 +482,13 @@ def find_stray_pom_copies(ws: WorkspaceView) -> list[StrayPom]:
 
 
 def _resolve_parent(raw: _RawPom, by_path: dict[str, _RawPom], all_raw: list[_RawPom]) -> Optional[_RawPom]:
-    """저장소 안에서 ``raw`` 의 부모 pom 을 찾는다: Maven 처럼 relativePath(없으면
-    ``../pom.xml``)를 먼저 보고 좌표가 맞는지 확인, 아니면 저장소 전체에서
-    좌표(artifactId, 그룹·버전이 모순되지 않음)로. 없으면 None(외부 부모)."""
+    """저장소 안에서 ``raw``의 부모 pom을 찾는다. 없으면 외부 부모로 보고 None을 반환한다.
+    Maven처럼 relativePath(기본 ``../pom.xml``)를 먼저 확인하고, 맞지 않으면 저장소 전체에서 좌표로 찾는다."""
     if raw.parent is None:
         return None
 
     def gav_match(c: _RawPom) -> bool:
-        """``c`` 가 선언된 부모 좌표와 모순되지 않는지(artifactId
-        같음; 그룹·버전은 둘 다 구체적일 때만 비교)."""
+        """``c``가 선언된 부모 좌표와 모순되지 않는지 확인한다. 그룹과 버전은 둘 다 값이 있을 때만 비교한다."""
         if c is raw or c.artifact_id != raw.parent.artifact_id:  # type: ignore[union-attr]
             return False
         if raw.parent.group_id and c.eff_group and c.eff_group != raw.parent.group_id:  # type: ignore[union-attr]
@@ -498,8 +499,7 @@ def _resolve_parent(raw: _RawPom, by_path: dict[str, _RawPom], all_raw: list[_Ra
         return True
 
     rel = raw.parent_relative_path
-    # 요소가 없으면 Maven 기본값 ``../pom.xml``. 빈 ``<relativePath/>``
-    # 는 경로 확인을 건너뛰고 아래의 좌표 검색만 한다
+    # 요소가 없으면 Maven 기본값 ``../pom.xml``을 쓰고, 빈 ``<relativePath/>``이면 경로 확인 없이 좌표로만 찾는다
     if rel is None:
         rel = "../pom.xml"
     if rel:
@@ -515,7 +515,7 @@ def _resolve_parent(raw: _RawPom, by_path: dict[str, _RawPom], all_raw: list[_Ra
 
 
 def _chain(raw: _RawPom) -> list[_RawPom]:
-    """``[최상위 조상, …, raw]`` (순환 안전).
+    """최상위 조상부터 ``raw``까지의 부모 체인을 반환한다. 순환이 있어도 멈춘다.
 
     [top-most ancestor, ..., raw] (cycle safe)."""
     out: list[_RawPom] = []
@@ -529,8 +529,8 @@ def _chain(raw: _RawPom) -> list[_RawPom]:
 
 
 def _effective_props(raw: _RawPom) -> dict[str, str]:
-    """유효 속성: 부모 체인 위에서부터 덮어쓴 ``<properties>`` + 잘 알려진 ``project.*`` / ``parent.*`` 키,
-    ``basedir`` 는 "." — 마지막에 속성끼리의 참조를 한 번 풀어 둔다."""
+    """부모 체인 위에서부터 덮어쓴 ``<properties>``에 ``project.*``, ``parent.*`` 키를 더한 유효 속성을 반환한다.
+    ``basedir``은 "."이고, 마지막에 속성끼리의 참조를 한 번 치환한다."""
     props: dict[str, str] = {}
     for p in _chain(raw):
         props.update(p.properties)
@@ -553,7 +553,7 @@ def _effective_props(raw: _RawPom) -> dict[str, str]:
 
 
 def _to_gav(d: _RawDep, props: dict[str, str], version: Optional[str] = None) -> GAV:
-    """원시 의존성을 속성 치환한 GAV 로."""
+    """원시 의존성을 속성 치환한 GAV로 바꾼다."""
     return GAV(group_id=interpolate(d.group_id, props) or "", artifact_id=interpolate(d.artifact_id, props) or "",
                version=interpolate(version if version is not None else d.version, props),
                scope=interpolate(d.scope, props), type=interpolate(d.type, props),
@@ -561,8 +561,8 @@ def _to_gav(d: _RawDep, props: dict[str, str], version: Optional[str] = None) ->
 
 
 def _effective_managed(raw: _RawPom) -> dict[str, GAV]:
-    """부모 체인 전체의 dependencyManagement(아래 pom 이 위를 덮어씀) — 버전 없는 의존성의
-    버전을 채우는 데 쓴다. 저장소 밖 부모·import 된 BOM 의 관리 버전은 모른다."""
+    """부모 체인 전체의 dependencyManagement를 합쳐 반환한다. 아래 pom이 위를 덮어쓴다.
+    저장소 밖 부모와 import된 BOM의 관리 버전은 포함하지 않는다."""
     out: dict[str, GAV] = {}
     for p in _chain(raw):
         for d in p.managed:
@@ -572,8 +572,8 @@ def _effective_managed(raw: _RawPom) -> dict[str, GAV]:
 
 
 def _effective_plugin_mgmt(raw: _RawPom) -> dict[str, tuple[Optional[str], dict[str, Any]]]:
-    """부모 체인의 플러그인 선언 → ``group:artifact`` 별 (버전,
-    합친 configuration). 자식의 버전 없는 플러그인을 채운다."""
+    """부모 체인의 플러그인 선언을 ``group:artifact``별 (버전, 합친 configuration)으로 모은다.
+    자식의 버전 없는 플러그인을 채우는 데 쓴다."""
     out: dict[str, tuple[Optional[str], dict[str, Any]]] = {}
     for p in _chain(raw):
         for pl in p.plugins:
@@ -586,15 +586,15 @@ def _effective_plugin_mgmt(raw: _RawPom) -> dict[str, tuple[Optional[str], dict[
 
 
 def _clean_version(v: Optional[str]) -> Optional[str]:
-    """풀리지 않은 ``${...}`` 가 남은 값은 버전으로 치지 않는다."""
+    """버전을 반환한다. 풀리지 않은 ``${...}``가 남아 있으면 None을 반환한다."""
     if not v or "${" in v:
         return None
     return v
 
 
 def build_pom_infos(raws: list[_RawPom]) -> list[PomInfo]:
-    """2단계: 부모 연결 → 유효 속성(위에서 아래로) → 치환·관리 버전 채우기 → PomInfo. 입력 순서대로 돌려준다.
-    Java / Boot / Spring 버전은 자기 pom 에서 못 찾으면 저장소 안 부모의 값을 물려받는다."""
+    """원시 pom 목록으로 PomInfo 목록을 만들어 입력 순서대로 반환한다.
+    Java / Boot / Spring 버전을 자기 pom에서 찾지 못하면 저장소 안 부모의 값을 쓴다."""
     by_path = {r.path: r for r in raws}
     for r in raws:
         r.parent_raw = _resolve_parent(r, by_path, raws)
@@ -642,8 +642,7 @@ def build_pom_infos(raws: list[_RawPom]) -> list[PomInfo]:
             dependency_management=dm,
             repositories=[interpolate(u, props) or u for u in r.repositories],
             plugins=plugins,
-            # pluginManagement 에만 있는 Boot 플러그인은 세지 않는다
-            # — 실제로 ``<build><plugins>`` 에 있어야 Boot 앱이다
+            # ``<build><plugins>``에 있어야 Boot 앱이므로 pluginManagement에만 있는 Boot 플러그인은 세지 않는다
             has_spring_boot_plugin=any(p.group_id == BOOT_GROUP and p.artifact_id == "spring-boot-maven-plugin"
                                        for p, raw_pl in zip(plugins, r.plugins) if not raw_pl.managed),
             is_root=r.parent_raw is None,
@@ -659,8 +658,8 @@ def build_pom_infos(raws: list[_RawPom]) -> list[PomInfo]:
 
 
 def _java_version(props: dict[str, str], plugins: list[PluginInfo], raw_plugins: list[_RawPlugin]) -> Optional[str]:
-    """Java 수준: maven-compiler-plugin 의 release / source / target 이 먼저, 그다음 ``maven.compiler.*`` /
-    ``java.version`` 속성."""
+    """Java 버전을 구한다. maven-compiler-plugin의 release / source / target을 먼저 보고, 없으면
+    ``maven.compiler.*``와 ``java.version`` 속성을 본다."""
     for p in plugins:
         if p.artifact_id == COMPILER_PLUGIN:
             for k in ("release", "source", "target"):
@@ -675,8 +674,8 @@ def _java_version(props: dict[str, str], plugins: list[PluginInfo], raw_plugins:
 
 
 def _boot_version(r: _RawPom, props: dict[str, str], deps: list[GAV], dm: list[GAV]) -> Optional[str]:
-    """Boot 버전: Boot 부모 → spring-boot-dependencies BOM →
-    ``spring-boot.version`` 속성 → Boot 의존성의 버전 순."""
+    """Boot 버전을 구한다.
+    Boot 부모, spring-boot-dependencies BOM, ``spring-boot.version`` 속성, Boot 의존성 순으로 본다."""
     if r.parent and r.parent.group_id == BOOT_GROUP and r.parent.artifact_id in BOOT_PARENTS:
         v = _clean_version(interpolate(r.parent.version, props))
         if v:
@@ -698,8 +697,8 @@ def _boot_version(r: _RawPom, props: dict[str, str], deps: list[GAV], dm: list[G
 
 
 def _spring_version(props: dict[str, str], deps: list[GAV], managed: dict[str, GAV]) -> Optional[str]:
-    """Spring Framework 버전: 속성(``spring-framework.version``
-    / ``spring.version``) → 핵심 spring-* 의존성 → BOM."""
+    """Spring Framework 버전을 구한다.
+    속성(``spring-framework.version``, ``spring.version``), 핵심 spring-* 의존성, BOM 순으로 본다."""
     for k in ("spring-framework.version", "spring.version"):
         v = _clean_version(props.get(k))
         if v:
@@ -714,7 +713,8 @@ def _spring_version(props: dict[str, str], deps: list[GAV], managed: dict[str, G
 
 
 def parse_poms(ws: WorkspaceView) -> tuple[list[PomInfo], list[str]]:
-    """작업공간의 모든 pom 을 파싱한다. (PomInfo 목록, 경고) — 파싱 못 한 pom 은 경고를 남기고 건너뛴다.
+    """작업공간의 모든 pom을 파싱해서 (PomInfo 목록, 경고)를 반환한다.
+    파싱하지 못한 pom과 모듈 복사본은 경고를 남기고 뺀다.
 
     Parse every pom in the workspace. Returns (poms, warnings); unparsable poms are skipped with a warning. v2.1z-h:
     stray copies (`stray_pom_copies`) are left out with a `pom ignored (stray copy): …` warning — they are not
@@ -725,7 +725,7 @@ def parse_poms(ws: WorkspaceView) -> tuple[list[PomInfo], list[str]]:
         drop = {st.path for st in strays}
         raws = [r for r in raws if r.path not in drop]
         for st in strays:
-            # 접수가 INFO 로 한 번 알린다(parse_poms 는 실행마다 여러 번 불려 여기서는 DEBUG)
+            # parse_poms는 실행마다 여러 번 호출되므로 여기서는 DEBUG로 남기고, 접수가 INFO로 한 번 알린다
             msg = f"pom ignored (stray copy): {st.why()} — not a module"
             log.debug(msg)
             warnings.append(msg)
@@ -733,8 +733,8 @@ def parse_poms(ws: WorkspaceView) -> tuple[list[PomInfo], list[str]]:
 
 
 def module_order(poms: Iterable[PomInfo]) -> list[str]:
-    """reactor 비슷한 pom 경로 순서: 루트 집계 pom 에서 ``<modules>``
-    를 따라 전위 DFS, 어디에도 안 걸린 pom 은 경로순으로 뒤에.
+    """pom 경로를 reactor와 비슷한 순서로 반환한다.
+    루트 집계 pom에서 ``<modules>``를 따라 전위 순회하고, 어디에도 없는 pom은 경로순으로 뒤에 붙인다.
 
     Reactor-ish order of pom paths: pre-order DFS through <modules> from the root aggregator(s)."""
     poms = list(poms)
@@ -774,14 +774,14 @@ def module_order(poms: Iterable[PomInfo]) -> list[str]:
 
 
 def pom_dir(path: str) -> str:
-    """pom 경로의 디렉토리(최상위 pom.xml 이면 '').
+    """pom 경로의 디렉토리를 반환한다. 최상위 pom.xml이면 빈 문자열을 반환한다.
 
     Directory of a pom path ('' for the top-level pom.xml)."""
     return posixpath.dirname(path)
 
 
 def owning_pom(file_path: str, poms: Iterable[PomInfo]) -> Optional[PomInfo]:
-    """``file_path`` 를 품는 pom 중 디렉토리가 가장 깊은 것(= 그 파일이 속한 모듈).
+    """``file_path``가 속한 모듈, 즉 디렉토리가 가장 깊게 겹치는 pom을 반환한다.
 
     The pom whose directory is the deepest prefix of `file_path`."""
     best: Optional[PomInfo] = None

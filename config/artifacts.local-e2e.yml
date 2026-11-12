@@ -1,27 +1,27 @@
 # ======================================================================================
 # 로컬 end-to-end 테스트용 설정 (config/artifacts.local-e2e.yml)
 # ======================================================================================
-# 사내 Nexus 없이 개발 PC 에서 전체 흐름(OpenRewrite → 재구성 → 구조 검토 → 빌드 → 수정 루프)을 돌려 보려고
+# 사내 Nexus 없이 개발 PC에서 전체 흐름(OpenRewrite -> 재구성 -> 구조 검토 -> 빌드 -> 수정 루프)을 실행해 보기 위해
 # 공개 Maven Central 아티팩트만 쓰는 설정이다. 회사 운영에는 쓰지 않는다.
-# 사내 부모는 spring-boot-starter-parent 로, 필수 의존성 2개는 공개 starter 로, 선택 8개는 흔한 공개
-# 라이브러리로 흉내 낸다. 모두 공개 좌표의 대역일 뿐 회사 좌표와는 관계가 없다.
-# scripts/e2e.sh 가 이 파일을 --config 로 넘기고, 각 fixture 의 sbmig.e2e.yml 을 그 뒤에 덧씌운다.
+# 사내 부모는 spring-boot-starter-parent로, 필수 의존성 2개는 공개 starter로, 선택 8개는 흔한 공개
+# 라이브러리로 대신한다. 모두 공개 좌표로 만든 대체 값이며 회사 좌표와는 관계가 없다.
+# scripts/e2e.sh가 이 파일을 --config로 넘기고, 각 fixture의 sbmig.e2e.yml로 그 위를 덮어쓴다.
 
-# 사내 아티팩트 대역 (재구성)
+# 사내 아티팩트 대체 값 (재구성)
 artifacts:
-  # 사내 루트 부모 대역. Boot 부모라 Boot 버전을 관리하고(true), Java 버전은 관리하지 않으므로(false)
-  # 재구성이 maven.compiler.release 를 적는다.
+  # 사내 루트 부모 대체 값. Boot 부모라서 Boot 버전은 관리하고(true), Java 버전은 관리하지 않으므로(false)
+  # 재구성이 maven.compiler.release를 추가한다.
   parent:
     group_id: org.springframework.boot
     artifact_id: spring-boot-starter-parent
     version: 4.1.0
   parent_manages_spring_boot: true
   parent_manages_java_version: false
-  # 필수 의존성 2개의 대역(버전은 부모가 관리)
+  # 필수 의존성 2개의 대체 값(버전은 부모가 관리)
   mandatory:
     - { group_id: org.springframework.boot, artifact_id: spring-boot-starter-validation, version: null }
     - { group_id: org.springframework.boot, artifact_id: spring-boot-starter-actuator,   version: null }
-  # 선택 아티팩트 8개의 대역. fixture 가 이미 쓰는 경우에만 이 버전으로 맞춰진다.
+  # 선택 아티팩트 8개의 대체 값. fixture가 이미 쓰는 경우에만 이 버전으로 맞춘다.
   optional:
     - { group_id: org.apache.commons, artifact_id: commons-lang3,  version: 3.17.0 }
     - { group_id: com.google.guava,   artifact_id: guava,          version: 33.4.8-jre }
@@ -32,9 +32,9 @@ artifacts:
     - { group_id: commons-io,         artifact_id: commons-io,     version: 2.19.0 }
     - { group_id: org.slf4j,          artifact_id: slf4j-api,      version: 2.0.17 }
 
-# 예전 레이아웃 (재구성). 회사 레이아웃이 정해지기 전에 만든 fixture 들은 module/boot-jar + module/comp-jar
-# 구조를 기대하므로(Boot 프로젝트도 다른 경우처럼 나누고 front 모듈은 없음) 여기서 그 구조로 되돌린다.
-# 회사 레이아웃을 시험하는 fixture 는 자기 sbmig.e2e.yml 에서 이 값들을 다시 덮어쓴다.
+# 이전 레이아웃 (재구성). 회사 레이아웃이 정해지기 전에 만든 fixture들은 module/boot-jar + module/comp-jar
+# 구조를 기대하므로(Boot 프로젝트도 똑같이 나누고 front 모듈은 없음) 여기서 그 구조로 설정한다.
+# 회사 레이아웃을 테스트하는 fixture는 자기 sbmig.e2e.yml에서 이 값들을 다시 덮어쓴다.
 layout:
   module_dir: module          # 모듈을 module/ 아래에 둔다
   boot_module: boot-jar       # Boot 모듈 디렉토리 이름
@@ -43,14 +43,14 @@ layout:
   boot_as_is: layout          # Boot 프로젝트도 디렉토리를 유지하지 않고 나눈다
   comp_artifact_suffix: "-comp"   # 소스 모듈 artifactId 접미사
 
-# JDK 21 위치는 환경 변수 JAVA21_HOME 에서 받는다(비어 있으면 현재 JAVA_HOME)
+# JDK 21 위치는 환경 변수 JAVA21_HOME에서 읽는다(비어 있으면 현재 JAVA_HOME)
 build:
   java_home: "${JAVA21_HOME:-}"
 
-# LLM 은 부르지 않는다. fixture 의 녹화된 응답을 재생한다(fixture 마다 llm.base_url: replay:<폴더>)
+# LLM은 호출하지 않고 fixture에 녹화된 응답을 재생한다(fixture마다 llm.base_url: replay:<폴더>)
 llm:
   provider: fake
 
-# 로컬 테스트·데모 실행의 KB 는 out/ 아래에만 쓴다. 저장소의 kb-v2/ 에 케이스나 스크립트를 쓰면 안 된다.
+# 로컬 테스트와 데모 실행의 KB는 out/ 아래에만 기록한다. 저장소의 kb-v2/에 케이스나 스크립트를 쓰면 안 된다.
 kb:
   dir: out/e2e/kb

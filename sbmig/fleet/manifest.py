@@ -1,12 +1,12 @@
-"""일괄 실행 매니페스트 — 어떤 프로젝트를, 어떤 순서로, 프로젝트별로 어떤 설정으로 이관할지 읽는다.
-흐름상 위치: ``FleetRunner.run`` 이 맨 먼저 ``load_manifest`` 를 부른다(재개할 때도 매번 다시 읽는다). 형식:
-디렉토리(``*.zip`` 과 ``pom.xml`` 이 맨 위나 한 단계 아래에 있는 하위 폴더 — ``_validate`` 와 같은 규칙,
-pom 이 없는 폴더는 경고 한 줄을 남기고 뺀다), ``.txt`` (한 줄에 경로 하나), ``.yml`` (configs /
-overrides / tags), ``.csv`` (``name,input,tags``). 상대 경로는 매니페스트 파일 위치 기준. 입력이 없거나 쓸 수
-없어도 예외를 내지 않고 ``error`` 를 채워 돌려준다 → 러너가 ``skipped`` 로 둔다. 윈도우 운영자 대비(round 10):
-인코딩은 UTF-8(BOM 유무)·UTF-16·cp949 무엇이든 읽는다. 이름은 실행 ID·폴더명이 되므로 ASCII 로 만든다(한글
-이름은 slug + 입력 경로 해시). 일괄 실행 상태는 이름이 아니라 입력 경로(:func:`input_key`)로 프로젝트를 찾는다
-— 이름이 바뀌어도 남의 성공을 물려받지 않게.
+"""일괄 실행 매니페스트를 읽어 어떤 프로젝트를 어떤 순서와 설정으로 이관할지 정하는 모듈.
+``FleetRunner.run``이 맨 먼저 ``load_manifest``를 호출하며 재개할 때도 매번 다시 읽는다.
+- 형식: 디렉토리(``*.zip``과 pom이 맨 위나 한 단계 아래 있는 하위 폴더), ``.txt``(한 줄에 경로 하나),
+  ``.yml``, ``.csv``(``name,input,tags``). 상대 경로는 매니페스트 파일 위치 기준이다
+- 입력이 없거나 쓸 수 없어도 예외를 던지지 않고 ``error``를 채워 반환하며, 러너는 그 프로젝트를 ``skipped``로 둔다
+- Windows 운영자를 위해 UTF-8(BOM 유무), UTF-16, cp949를 모두 읽는다
+- 이름은 실행 ID와 폴더명이 되므로 ASCII로 만든다. 한글 이름은 slug에 입력 경로 해시를 붙인다
+- 이름이 바뀌어도 다른 프로젝트의 성공을 물려받지 않도록 일괄 실행
+  상태는 입력 경로(:func:`input_key`)로 프로젝트를 찾는다
 
 Fleet manifests: which projects to migrate, in which order, with which per-project config.
 
@@ -51,8 +51,9 @@ log = logging.getLogger("sbmig.fleet")
 
 @dataclass
 class FleetProject:
-    """매니페스트 한 줄 = 프로젝트 하나: 이름(ASCII), 입력 경로(절대), 프로젝트별 설정·오버라이드·태그,
-    쓸 수 없는 입력이면 ``error`` (그때 러너는 실행하지 않고 ``skipped``)."""
+    """매니페스트의 프로젝트 하나를 담는 데이터 클래스.
+    이름(ASCII), 절대 입력 경로, 프로젝트별 설정, 덮어쓴 값, 태그를 담는다.
+    입력을 쓸 수 없으면 ``error``를 채우고, 러너는 실행하지 않고 ``skipped``로 둔다."""
     name: str
     input: str  # resolved path (absolute) of the project dir / zip
     configs: list[str] = field(default_factory=list)
@@ -62,13 +63,13 @@ class FleetProject:
 
     @property
     def ok(self) -> bool:
-        """입력이 쓸 만한가(``error`` 없음)."""
+        """입력을 쓸 수 있는지(``error``가 없는지) 반환한다."""
         return self.error is None
 
 
 class ManifestError(ValueError):
-    """매니페스트 자체가 틀림(형식·필수 키 누락).
-    입력 하나가 없는 것은 이 예외가 아니라 ``FleetProject.error`` 다."""
+    """매니페스트 자체가 잘못되었을 때(형식 오류, 필수 키 누락) 던지는 예외.
+    입력 하나가 없는 경우는 ``FleetProject.error``로 처리한다."""
 
 
 _NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
@@ -76,7 +77,8 @@ HASH_CHARS = 6
 
 
 def safe_name(name: str) -> str:
-    """실행 ID·폴더명에 쓸 수 있는 이름(ASCII 영문·숫자·``._-``). 남는 것이 없으면 ``project``.
+    """실행 ID와 폴더명에 쓸 수 있는 이름(ASCII 영문, 숫자, ``._-``)으로 바꾼다.
+    남는 문자가 없으면 ``project``를 반환한다.
 
     A name usable in run ids / directory names (ASCII letters, digits, `._-`)."""
     n = _NAME_RE.sub("-", name).strip("-.")
@@ -84,8 +86,8 @@ def safe_name(name: str) -> str:
 
 
 def input_key(path: str | Path) -> str:
-    """일괄 실행 상태에서 프로젝트를 가리키는 열쇠: 입력 경로를 절대·정규화한 것(윈도우는 대소문자도 접는다).
-    예전 상태 파일도 같은 절대 경로를 적었으므로 그대로 맞는다.
+    """일괄 실행 상태에서 프로젝트를 구분하는 키로, 입력 경로를 절대 경로로 정규화해서 반환한다.
+    Windows에서는 대소문자도 통일한다.
 
     The identity of a project in the fleet state: its input path, absolute and normalized (case-folded where the
     file system is, i.e. on Windows). Older state files stored the same resolved path, so they match unchanged."""
@@ -100,24 +102,25 @@ def input_key(path: str | Path) -> str:
 
 
 def path_hash(path: str | Path, n: int = HASH_CHARS) -> str:
-    """입력 경로(:func:`input_key`)의 sha1 앞 ``n`` 자리 — 매니페스트 순서가 바뀌어도 같은 값."""
+    """입력 경로(:func:`input_key`)의 sha1 앞 ``n``자리를 반환한다. 매니페스트 순서가 바뀌어도 값은 같다."""
     return hashlib.sha1(input_key(path).encode("utf-8")).hexdigest()[:n]
 
 
 def name_with_hash(name: str, path: str | Path) -> str:
-    """``<slug>-<경로 해시>``: 한글 이름이나 겹치는 이름을 서로 다르게 만든다."""
+    """``<slug>-<경로 해시>`` 형태의 이름을 만든다. 한글 이름이나 겹치는 이름을 서로 구분하기 위해 쓴다."""
     return f"{safe_name(name)}-{path_hash(path)}"
 
 
 def read_text_any(path: str | Path) -> str:
-    """편집기가 무엇으로 저장했든 읽는다: UTF-8(BOM 유무), UTF-16(BOM, 또는 BOM 없는 UTF-16LE 의 NUL 패턴),
-    그 밖은 cp949(한국어 윈도우). 매니페스트 때문에 UnicodeDecodeError 가 나는 일은 없다.
+    """텍스트 파일을 편집기가 저장한 인코딩과 상관없이 읽는다.
+    UTF-8(BOM 유무), UTF-16, 그 밖에는 cp949로 읽는다.
+    UnicodeDecodeError를 던지지 않는다.
 
     A text file whatever the editor saved: UTF-8 (with or without BOM), UTF-16 (BOM, or the NUL pattern of BOM-less
     UTF-16LE), else cp949 (Korean Windows) — never a UnicodeDecodeError for a manifest."""
     data = Path(path).read_bytes()
-    # PowerShell 5.1 의 ``>`` 는 UTF-16LE 로 저장한다: BOM 이 있으면 그대로, 없으면 둘째·넷째 바이트가 NUL(첫
-    # 바이트는 아님)인 것으로 알아본다
+    # PowerShell 5.1의 ``>``는 UTF-16LE로 저장하므로 BOM이 있거나, BOM이
+    # 없어도 둘째와 넷째 바이트가 NUL이면 UTF-16으로 읽는다
     if data.startswith((b"\xff\xfe", b"\xfe\xff")):
         return data.decode("utf-16")
     if len(data) >= 4 and data[1:2] == b"\x00" and data[3:4] == b"\x00" and data[0:1] != b"\x00":
@@ -126,7 +129,7 @@ def read_text_any(path: str | Path) -> str:
         except UnicodeDecodeError:
             pass
     try:
-        # utf-8-sig: 엑셀 "CSV UTF-8" 의 BOM 을 떼어 첫 열 이름(``name``)이 깨지지 않게
+        # 엑셀 "CSV UTF-8"의 BOM 때문에 첫 열 이름(``name``)이 깨지지 않도록 utf-8-sig로 읽는다
         return data.decode("utf-8-sig")
     except UnicodeDecodeError:
         return data.decode("cp949", errors="replace")
@@ -142,9 +145,8 @@ def _resolve(base: Path, p: str) -> Path:
 
 
 def has_pom(d: Path) -> bool:
-    """폴더가 Maven 프로젝트로 보이는가: ``pom.xml`` 이 맨 위나 한 단계 아래(``*/pom.xml``)에 있다.
-    디렉토리 매니페스트(:func:`_from_dir`)와 입력 검사(:func:`_validate`)가 같은 이 규칙을 쓴다
-    — 둘이 어긋나면 한 단계 아래에만 pom 이 있는 프로젝트가 아무 말 없이 빠졌다(A7).
+    """``pom.xml``이 맨 위나 한 단계 아래(``*/pom.xml``)에 있어 Maven 프로젝트로 보이는지 확인한다.
+    디렉토리 매니페스트(:func:`_from_dir`)와 입력 검사(:func:`_validate`)가 같은 규칙을 쓰도록 이 함수를 함께 쓴다.
 
     A pom.xml at the top of ``d`` or one level down — the one rule the directory manifest and
     :func:`_validate` share (intake turns sibling poms into an aggregator)."""
@@ -152,9 +154,8 @@ def has_pom(d: Path) -> bool:
 
 
 def _validate(proj: FleetProject) -> FleetProject:
-    """입력이 쓸 만한지 보고 아니면 ``error`` 를 채운다(예외 없음): 입력 없음,
-    pom.xml 이 맨 위에도 한 단계 아래에도 없음(:func:`has_pom`), 디렉토리도 zip 도 아님,
-    프로젝트별 설정 파일 없음."""
+    """입력을 쓸 수 있는지 확인하고, 아니면 ``error``를 채운다. 예외를 던지지 않는다.
+    입력이 없거나, pom.xml이 없거나(:func:`has_pom`), 디렉토리도 zip도 아니거나, 프로젝트별 설정 파일이 없으면 오류다."""
     p = Path(proj.input)
     if not p.exists():
         proj.error = f"input not found: {proj.input}"
@@ -170,8 +171,8 @@ def _validate(proj: FleetProject) -> FleetProject:
 
 
 def _dedupe_names(projects: list[FleetProject]) -> list[FleetProject]:
-    """이름을 ASCII 로, 겹치지 않게: slug 로 글자를 잃는 이름(한글 등)이나 앞 이름과 겹치는 이름에는
-    입력 경로 해시를 붙인다(순서가 바뀌거나 폴더가 늘어도 같은 이름). 같은 입력이 두 번이면 번호 접미사.
+    """이름을 겹치지 않는 ASCII로 정리한다. slug로 바꾸면서 문자를 잃거나 앞 이름과 겹치면 입력 경로 해시를
+    붙이고, 같은 입력이 두 번이면 번호를 붙인다.
 
     ASCII names, unique: a name that loses characters to the slug (non-ASCII) or collides with an earlier one gets
     the hash of its input path (stable when the manifest is reordered or a folder is added); the same input listed
@@ -194,9 +195,9 @@ def _dedupe_names(projects: list[FleetProject]) -> list[FleetProject]:
 
 
 def _from_dir(d: Path) -> list[FleetProject]:
-    """디렉토리 매니페스트: 이름순으로 ``*.zip`` 과 pom 이 맨 위나 한 단계 아래 있는 하위 폴더
-    (:func:`has_pom`, 점으로 시작하는 것 제외). pom 이 어디에도 없는 폴더는 프로젝트가 아니므로 빼되,
-    조용히 사라지지 않게 폴더 이름을 경고로 남긴다(A7)."""
+    """디렉토리 매니페스트를 읽는다.
+    ``*.zip``과 pom이 있는 하위 폴더를 이름순으로 모으고, 점으로 시작하는 폴더는 뺀다.
+    pom이 없는 폴더는 프로젝트가 아니므로 빼고, 조용히 사라지지 않도록 폴더 이름을 경고로 남긴다."""
     out = []
     for p in sorted(d.iterdir(), key=lambda x: x.name):
         if p.name.startswith("."):
@@ -204,8 +205,7 @@ def _from_dir(d: Path) -> list[FleetProject]:
         if (p.is_file() and p.suffix.lower() == ".zip") or (p.is_dir() and has_pom(p)):
             out.append(FleetProject(name=_name_for(p), input=str(p.resolve())))
         elif p.is_dir():
-            # pom 없는 트리(톰캣 exploded 등)는 회사 결정상 이관하지 않는다
-            # — 운영자가 볼 수 있게 이름만 남긴다
+            # pom이 없는 트리는 이관하지 않으므로 운영자가 알 수 있도록 이름만 경고로 남긴다
             log.warning("fleet manifest: %s left out - no pom.xml at its top or one level down", p)
     return out
 
@@ -277,8 +277,9 @@ def _from_csv(f: Path) -> list[FleetProject]:
 
 
 def load_manifest(path: str | Path) -> list[FleetProject]:
-    """매니페스트(디렉토리 / .txt / .yml / .csv)를 읽어 프로젝트 목록을 돌려준다(이름 정리 + 입력 검사까지).
-    매니페스트가 없거나 형식이 틀리면 :class:`ManifestError`, 입력 하나가 없으면 그 프로젝트의 ``error``."""
+    """매니페스트(디렉토리, .txt, .yml, .csv)를 읽어 이름을 정리하고 입력을 검사한 프로젝트 목록을 반환한다.
+    매니페스트가 없거나 형식이 틀리면 :class:`ManifestError`를 던지고,
+    입력 하나가 없으면 그 프로젝트의 ``error``를 채운다."""
     path = Path(path)
     if not path.exists():
         raise ManifestError(f"manifest not found: {path}")

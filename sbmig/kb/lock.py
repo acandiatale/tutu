@@ -1,19 +1,15 @@
-"""프로세스 간 KB 잠금 ``<kb>/.lock``(round 10) — :func:`kb_lock`.
-웹 서버·플릿·``sbmig kb`` 명령이 한 KB 를 같이 쓸 수 있으므로 모든 KB 쓰기(``errors.jsonl``, case.json,
-``fix_v<N>.py``, cases.md, 에러별 JSON)는 ``kb_lock`` 안에서 한다. 방식: ``O_CREAT | O_EXCL`` 로 만든
-파일(Windows·POSIX·공유 폴더 모두 동작)에 {pid, host, at, token, cmd} 를 적는다; 프로세스 안에서는 재진입
-가능(KB 디렉토리마다 RLock, 가장 바깥 holder 만 파일을 만들고 지움). 오래됐거나(``kb.lock_timeout_seconds``)
-같은 호스트에서 pid 가 죽은 잠금은 경고와 함께 깬다; 아니면 기다리다가 시간이 다 되면 경고만 남기고 잠금 없이
-진행한다 — 잠금 때문에 실행을 실패시키지 않는다. 잠긴 구간은 짧게: 그 안에서 LLM 이나 Maven 을 부르지 않는다.
-v2.1z-ae(빌드 파드 셋이 NFS 의 KB 하나를 같이 씀): 잠금의 나이는 KB 파일 시스템의 시계로 잰다 — 잠금 파일의 mtime 은
-NFS 서버가 찍으므로, 기다리는 쪽이 잠금 옆에 탐침 파일(``.lock.probe.<pid>.<난수>``)을 써서 서버 시계와 이 파드 시계의
-차이를 재고(KB 마다 최대 60초에 한 번, 경합할 때만) 그 차이를 더한 '지금' 으로 나이를 계산한다. 탐침이 실패하면 예전
-비교(이 파드의 시계)를 쓴다. 마감 순간에 막 낡아 가는 잠금은 잠금 없이 가지 않고 낡을 때까지 잠깐 더 기다린다.
-검토 반영(2026-11-10): 낡은 잠금을 깨는 일은 두 번째 배타 파일 ``.lock.breaker`` 를 잡은 한 프로세스만 한다(그 안에서
-다시 읽고 다시 판정하고, 옮긴 파일이 판정한 그 파일(inode)인지 확인하고, 잘못 옮긴 새 잠금은 ``os.link`` 로만 —
-덮어쓰지 않고 — 되돌린다). 깨지 못한 낡은 잠금(이름 바꾸기 거부)은 바쁘게 돌지 않고 마감까지 기다린다. 오래 걸리는
-구간(재색인·내보내기·case.json 확인 대기)은 :func:`keep_alive` 로 잠금의 mtime 을 새로 찍어 낡아 보이지 않게 한다.
-``kb.lock_timeout_seconds`` 가 0 이하이면 기본값(300초)을 쓰고 WARNING 한 줄. 지연된 시계 탐침(1초 넘게 걸림)은 버린다.
+"""여러 프로세스가 KB를 동시에 수정하지 않도록 ``<kb>/.lock`` 잠금을 거는 모듈.
+진입점은 :func:`kb_lock`이다.
+웹 서버, 플릿, ``sbmig kb`` 명령, 여러 빌드 파드가 KB 하나를 같이 쓰므로 모든 KB 쓰기는 ``kb_lock`` 안에서 한다.
+- 잠금은 ``O_CREAT | O_EXCL``로 만든 파일이고 {pid, host, at, token, cmd}를 기록한다.
+  같은 프로세스 안에서는 다시 잡을 수 있다
+- ``kb.lock_timeout_seconds``보다 오래됐거나, 같은 호스트에서 pid가 죽은 잠금은 경고를 남기고 해제한다
+- 시간 안에 잠금을 못 잡으면 경고만 남기고 잠금 없이 진행한다. 잠금 때문에 실행을 실패시키지 않는다
+- 잠금 구간 안에서는 LLM이나 Maven을 호출하지 않는다
+- 잠금이 얼마나 오래됐는지는 KB 파일 시스템의 시계로 잰다.
+  NFS에서는 서버가 mtime을 기록하므로 측정용 파일을 만들어 시계 차이를 측정한다
+- 오래된 잠금은 ``.lock.breaker``를 잡은 프로세스 하나만 해제한다
+- 오래 걸리는 작업은 :func:`keep_alive`로 mtime을 갱신해 잠금이 오래된 것으로 보이지 않게 한다
 
 Cross-process KB lock ``<kb>/.lock`` (round 10, 2026-10-26).
 
@@ -97,18 +93,19 @@ BREAKER_NAME = LOCK_NAME + ".breaker"  # only the holder of this exclusive file 
 _BREAKER_STALE = 30.0                  # a breaker file older than this (fs clock; capped by max(timeout, 2)) expired
 _KEEPALIVE_EVERY = 10.0                # keep_alive touches the lock at most this often (s; timeout / 4 when shorter)
 _PROBE_MAX = 1.0                       # a clock probe that took longer than this (s) is discarded (an NFS stall)
-# 시계는 이 이름으로 읽는다 — 테스트가 이 파드의 시계만 어긋나게 할 수 있게(파일 시스템의 mtime 은 그대로)
+# 테스트에서 이 파드의 시계만 어긋나게 바꿀 수 있도록 이 이름으로 읽는다
 _now = time.time
 
 
 class _State:
-    """KB 디렉토리 하나의 프로세스 안 상태: RLock, 중첩 깊이, 우리가 파일에 쓴 토큰."""
+    """KB 디렉토리 하나에 대한 프로세스 안의 잠금 상태를 담는 클래스.
+    RLock, 중첩 깊이, 파일에 기록한 토큰을 가진다."""
 
     def __init__(self) -> None:
         self.rlock = threading.RLock()
         self.depth = 0
         self.token: Optional[str] = None
-        # 파일 시스템 시계 - 이 호스트 시계(초). 기다리는 스레드만 RLock 을 쥔 채 재고 쓴다
+        # 파일 시스템 시계와 이 호스트 시계의 차이(초)이며, 기다리는 스레드만 RLock을 잡은 채 측정한다
         self.fs_offset: Optional[float] = None
         self.fs_offset_at = 0.0                           # time.monotonic() of the measurement
         self.skew_said: Optional[float] = None            # the offset the INFO line last reported
@@ -124,7 +121,7 @@ _GUARD = threading.Lock()
 
 
 def _state(root: Path) -> _State:
-    # 같은 KB 를 다른 경로 표기(상대 경로, 심볼릭 링크)로 불러도 같은 상태를 쓰도록 realpath 로 키를 만든다
+    # 같은 KB를 다른 경로 표기로 열어도 같은 상태를 쓰도록 realpath를 키로 쓴다
     key = os.path.realpath(str(root))
     with _GUARD:
         st = _STATES.get(key)
@@ -134,7 +131,7 @@ def _state(root: Path) -> _State:
 
 
 def lock_path(root: Path) -> Path:
-    """잠금 파일 경로 ``<root>/.lock``."""
+    """잠금 파일 경로 ``<root>/.lock``을 반환한다."""
     return Path(root) / LOCK_NAME
 
 
@@ -147,7 +144,8 @@ def _read(path: Path) -> Optional[dict[str, Any]]:
 
 
 def pid_alive(pid: int) -> bool:
-    """이 호스트에서 ``pid`` 가 살아 있나? 모르면 True(그런 잠금은 나이로만 깬다).
+    """이 호스트에서 ``pid`` 프로세스가 살아 있는지 확인한다.
+    알 수 없으면 True를 반환하고, 그런 잠금은 경과 시간으로만 해제한다.
 
     Is process ``pid`` running on this host? Unknown → True (only the age breaks such a lock)."""
     try:
@@ -159,8 +157,8 @@ def pid_alive(pid: int) -> bool:
     if pid == os.getpid():
         return True
     try:
-        # Windows 에서 os.kill(pid, 0) 은 존재 확인이 아니라 CTRL_C_EVENT 를 보낸다 — 그래서 OpenProcess /
-        # GetExitCodeProcess 로 묻는다(접근 거부 = 살아 있음)
+        # Windows의 os.kill(pid, 0)은 CTRL_C_EVENT를 보내므로 OpenProcess / GetExitCodeProcess로 확인한다
+        # 접근이 거부되면 살아 있는 것으로 본다
         if os.name == "nt":
             import ctypes
 
@@ -193,10 +191,9 @@ def _owner_text(info: Optional[dict[str, Any]]) -> str:
 
 
 def _probe_offset(root: Path) -> Optional[float]:
-    """KB 파일 시스템의 시계 - 이 호스트의 시계(초): 잠금 옆에 탐침 파일을 O_EXCL 로 만들어 한 바이트 쓰고,
-    그 mtime(NFS 면 서버가 찍음)을 쓰기 전후 이 호스트 시계의 가운데와 비교한 뒤 바로 지운다. 실패하면 0.0
-    (= 예전처럼 이 호스트의 시계로 비교). 만들기·쓰기가 ``_PROBE_MAX`` 초보다 오래 걸렸으면(NFS 지연) None — 그
-    값은 지연의 절반만큼 틀릴 수 있어 쓰지 않는다.
+    """KB 파일 시스템 시계에서 이 호스트 시계를 뺀 값(초)을 측정한다.
+    잠금 옆에 측정용 파일을 만들어 mtime을 비교하고 바로 지운다.
+    실패하면 0.0을, 측정이 ``_PROBE_MAX``초보다 오래 걸렸으면 값을 믿을 수 없으므로 None을 반환한다.
 
     File system clock minus this host's clock, from the mtime of a probe file written beside the lock (removed at
     once); 0.0 when the probe fails; None when the probe itself took longer than ``_PROBE_MAX`` (an NFS stall would
@@ -215,7 +212,7 @@ def _probe_offset(root: Path) -> Optional[float]:
         after = _now()
         took = time.monotonic() - t0
         if took > _PROBE_MAX:
-            # 탐침이 오래 걸리면(NFSv4 grace 기간 등) 서버가 mtime 을 찍은 순간을 모른다 — 버린다
+            # 측정이 오래 걸리면 서버가 mtime을 기록한 시점을 알 수 없으므로 값을 버린다
             log.debug("kb lock %s: clock probe took %.1f s — discarded", lock_path(root), took)
             return None
         return os.stat(str(probe)).st_mtime - (before + after) / 2.0
@@ -231,9 +228,8 @@ def _probe_offset(root: Path) -> Optional[float]:
 
 
 def _fs_offset(root: Path) -> float:
-    """KB 디렉토리마다 기억해 둔 파일 시스템 시계 차이(최대 ``_PROBE_EVERY`` 초마다 다시 잼). 차이가
-    ``_SKEW_NOTE`` 초보다 크면 INFO 한 줄(같은 값이면 다시 말하지 않음). 기다리는 쪽만 부른다 — 잠금이 비어
-    있으면 탐침도 없다.
+    """KB 디렉토리별로 저장해 둔 시계 차이를 반환한다. 최대 ``_PROBE_EVERY``초마다 다시 측정한다.
+    차이가 ``_SKEW_NOTE``초보다 크면 INFO 로그를 한 줄 남긴다. 잠금을 기다리는 쪽만 호출한다.
 
     The cached file system clock offset of ``root`` (measured again at most every ``_PROBE_EVERY`` s); only a
     waiter asks for it."""
@@ -243,7 +239,7 @@ def _fs_offset(root: Path) -> float:
         return st.fs_offset
     off = _probe_offset(root)
     if off is None:
-        # 지연된 탐침은 기억하지 않는다: 예전 값(없으면 0)을 쓰고 다음에 다시 잰다
+        # 오래 걸린 측정값은 저장하지 않고 이전 값을 쓴 뒤 다음에 다시 측정한다
         return st.fs_offset if st.fs_offset is not None else 0.0
     st.fs_offset, st.fs_offset_at = off, mono
     if abs(off) > _SKEW_NOTE and (st.skew_said is None or abs(off - st.skew_said) > _SKEW_NOTE):
@@ -254,9 +250,9 @@ def _fs_offset(root: Path) -> float:
 
 
 def _judge(path: Path, info: Optional[dict[str, Any]], timeout: float) -> tuple[bool, Optional[float]]:
-    """(깨도 되나, 나이로 낡기까지 남은 초 또는 None). 같은 호스트에서 pid 가 죽은 잠금은 나이를 묻지 않고
-    낡음(탐침도 안 함); 아니면 나이 = (이 호스트 시계 + 파일 시스템 시계 차이) - 잠금의 mtime 이 한계(내용이 비었거나
-    깨진 잠금은 max(timeout, 5초), 아니면 timeout)를 넘을 때 낡음.
+    """잠금을 해제해도 되는지 판단하고 (해제 가능 여부, 오래된 잠금이 되기까지 남은 초 또는 None)을 반환한다.
+    같은 호스트에서 pid가 죽은 잠금은 바로 해제 대상이다.
+    그 밖에는 파일 시스템 시계 기준 경과 시간을 timeout과 비교한다.
 
     (stale?, seconds until it turns stale by age or None). A same-host lock of a dead pid is stale without an age;
     otherwise the age is measured on the file system's clock against ``timeout`` (``max(timeout, 5)`` for an empty /
@@ -274,14 +270,15 @@ def _judge(path: Path, info: Optional[dict[str, Any]], timeout: float) -> tuple[
 
 
 def _stale(path: Path, info: Optional[dict[str, Any]], timeout: float) -> bool:
-    """깨도 되는 잠금인가: 내용이 비었거나 깨진 잠금은 max(timeout, 5초)보다 오래됐을 때, 아니면 timeout 보다
-    오래됐거나 같은 호스트에서 pid 가 죽었을 때. 나이는 KB 파일 시스템의 시계로 잰다(:func:`_judge`)."""
+    """해제해도 되는 잠금인지 확인한다.
+    비었거나 깨진 잠금은 max(timeout, 5초), 그 밖에는 timeout을 기준으로 본다.
+    같은 호스트에서 pid가 죽은 잠금도 해제 대상이다."""
     return _judge(path, info, timeout)[0]
 
 
 def _ident(path: Path) -> Optional[tuple[int, int, int]]:
-    # (장치, inode, mtime_ns): 판정한 파일과 옮긴 파일이 같은지 본다 — 토큰은 빈 잠금에 없고, inode 번호는 지운 뒤
-    # 곧 재사용될 수 있다(ext4); 새로 만든 파일·keep_alive 로 건드린 파일은 mtime 이 다르다
+    # 빈 잠금에는 토큰이 없고 inode 번호는 재사용될 수 있으므로 (장치,
+    # inode, mtime_ns)로 확인한 파일과 옮긴 파일이 같은지 본다
     try:
         s = os.stat(str(path))
     except OSError:
@@ -290,8 +287,9 @@ def _ident(path: Path) -> Optional[tuple[int, int, int]]:
 
 
 def _put_back(aside: Path, path: Path) -> bool:
-    """잘못 옮긴 파일을 제자리로 — 배타적으로만(``os.link``: 그 이름이 이미 있으면 실패, 덮어쓰지 않음). 하드 링크가
-    없는 곳에서는 Windows 의 ``os.rename``(대상이 있으면 실패)만 쓴다. 되돌렸으면 True.
+    """잘못 옮긴 파일을 덮어쓰지 않고 원래 위치로 되돌린다.
+    ``os.link``를 쓰고, 하드 링크를 쓸 수 없으면 ``os.rename``을 쓴다.
+    되돌렸으면 True를 반환한다.
 
     Put a wrongly moved file back, exclusively only (``os.link`` fails when the name exists — never a replace; on
     Windows without hard links ``os.rename``, which fails on an existing target). True when it is back."""
@@ -315,9 +313,9 @@ def _put_back(aside: Path, path: Path) -> bool:
 
 
 def _remove_judged(path: Path, ident: tuple[int, int, int], token: Optional[str] = None) -> str:
-    """판정한 그 파일(``ident``, 토큰이 있으면 그 토큰)만 지운다: 옆 이름으로 옮기고, 옮긴 것이 그 파일인지 확인한 뒤
-    지운다. 다른 파일을 옮겼으면 :func:`_put_back`. 결과: removed / gone(이미 없음) / changed(다른 파일이었음) /
-    failed(옮기기 거부).
+    """확인한 바로 그 잠금 파일만 지운다.
+    다른 이름으로 옮겨 같은 파일인지 확인한 뒤 지우고, 다른 파일이면 :func:`_put_back`으로 되돌린다.
+    결과로 removed / gone / changed / failed 중 하나를 반환한다.
 
     Remove exactly the judged file: move it aside, check the moved file is the judged one (same device, inode and
     mtime; the same token when the judged one had one), unlink it; another file moved by mistake is put back
@@ -331,7 +329,7 @@ def _remove_judged(path: Path, ident: tuple[int, int, int], token: Optional[str]
         log.debug("kb lock %s: not moved aside (%s)", path, e)
         return "failed"
     if _ident(aside) != ident or (token is not None and (_read(aside) or {}).get("token") != token):
-        # 판정한 뒤 풀리고 남이 새로 잡은 파일을 옮겼다 — 덮어쓰지 않고 되돌린다
+        # 확인한 뒤에 다른 프로세스가 새로 잡은 잠금을 옮긴 것이므로 덮어쓰지 않고 되돌린다
         if not _put_back(aside, path):
             log.warning("kb lock %s: a lock taken meanwhile was moved aside while breaking a stale one and could not "
                         "be put back (the name was taken again) — two writers may overlap once", path)
@@ -355,9 +353,9 @@ def _new_payload(token: str) -> str:
 
 
 def _take_breaker(root: Path, timeout: float) -> Optional[str]:
-    """깨는 권리(``.lock.breaker``)를 O_EXCL 로 잡는다. 이미 있으면: 같은 호스트 것은 pid 가 죽었을 때만, 다른 호스트
-    것은 파일 시스템 시계로 ``min(_BREAKER_STALE, max(timeout, 2))`` 초보다 오래됐을 때만(죽은 breaker) 지우고 한 번
-    더 해 본다. 우리 토큰 또는 None(다른 프로세스가 깨는 중 — 기다린다).
+    """잠금을 해제할 권한(``.lock.breaker``)을 O_EXCL로 잡는다.
+    잡으면 우리 토큰을, 다른 프로세스가 해제하는 중이면 None을 반환한다.
+    기존 breaker 파일은 같은 호스트면 pid가 죽었을 때만, 다른 호스트면 일정 시간이 지났을 때만 지우고 한 번 더 시도한다.
 
     Take the right to break (``.lock.breaker``, O_EXCL). An existing one is removed only when it is dead: this host's
     by its pid (a live one is never expired by age), another host's when older than ``min(_BREAKER_STALE,
@@ -373,7 +371,7 @@ def _take_breaker(root: Path, timeout: float) -> Optional[str]:
             if ident is None:
                 continue                                  # released just now: try again
             if binfo is not None and binfo.get("host") == socket.gethostname():
-                # 같은 호스트: pid 로 정확히 안다 — 살아 있는 breaker 는 나이와 상관없이 기다린다
+                # 같은 호스트면 pid로 정확히 알 수 있으므로 살아 있는 breaker는 경과 시간과 관계없이 기다린다
                 stale = not pid_alive(binfo.get("pid", 0))
             else:
                 stale, _ = _judge(bpath, binfo, min(_BREAKER_STALE, max(timeout, 2.0)))
@@ -400,7 +398,7 @@ def _take_breaker(root: Path, timeout: float) -> Optional[str]:
 
 
 def _drop_breaker(root: Path, token: str) -> None:
-    """우리 토큰이 든 breaker 파일만 지운다."""
+    """breaker 파일에 이 프로세스의 토큰이 들어 있을 때만 그 파일을 지운다."""
     bpath = Path(root) / BREAKER_NAME
     if (_read(bpath) or {}).get("token") != token:
         return
@@ -411,10 +409,10 @@ def _drop_breaker(root: Path, token: str) -> None:
 
 
 def _break(path: Path, info: Optional[dict[str, Any]], timeout: float = DEFAULT_TIMEOUT) -> bool:
-    """낡은 잠금을 깬다 — ``.lock.breaker`` 를 잡은 한 프로세스만. 그 안에서 잠금을 다시 읽어 판정한 그 잠금(토큰,
-    inode·mtime)인지 보고 다시 판정한 뒤에만 옆으로 옮겨 지운다(:func:`_remove_judged`). 깼거나 잠금이 이미 없으면 True
-    (바로 다시 만들어 본다); 아니면 False — 다른 프로세스가 깨는 중, 잠금이 바뀜, 옮기기 거부: 호출자는 평소처럼
-    마감을 확인하고 쉬었다가 다시 본다(바쁘게 돌지 않는다).
+    """오래된 잠금을 해제한다.
+    ``.lock.breaker``를 잡은 프로세스만 해제하고, 확인한 잠금이 맞는지 다시 본 뒤 지운다.
+    해제했거나 이미 없으면 True를 반환한다.
+    False면 호출하는 쪽이 마감 시간을 확인하고 잠시 쉰 뒤 다시 확인한다.
 
     Break a stale lock — only as the holder of ``.lock.breaker``: re-read the lock, check it is the judged one (token,
     inode), judge it again, then move it aside and remove it (:func:`_remove_judged`). True when broken or already
@@ -452,8 +450,8 @@ def _break(path: Path, info: Optional[dict[str, Any]], timeout: float = DEFAULT_
 
 
 def _acquire(root: Path, timeout: float) -> Optional[str]:
-    """잠금 파일을 O_EXCL 로 만들 때까지 백오프하며 기다린다(낡은 잠금은 깬다). 우리 토큰을 돌려주고, 시간
-    초과나 디렉토리 문제면 None(잠금 없이 진행)."""
+    """잠금 파일을 O_EXCL로 만들 때까지 간격을 늘리며 기다린다. 오래된 잠금은 해제한다.
+    잡으면 우리 토큰을, 타임아웃이나 디렉토리 문제가 있으면 None을 반환한다(잠금 없이 진행)."""
     path = lock_path(root)
     try:
         Path(root).mkdir(parents=True, exist_ok=True)
@@ -468,18 +466,17 @@ def _acquire(root: Path, timeout: float) -> Optional[str]:
         try:
             fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
         except (FileExistsError, PermissionError):        # Windows: a lock being deleted reads as PermissionError
-            # Windows: 지워지는 중인 잠금 파일은 PermissionError
-            # 로 보인다 — 잡혀 있는 것으로 보고 다시 시도한다
+            # Windows에서는 지워지는 중인 잠금 파일이 PermissionError로 보이므로 잡혀 있는 것으로 보고 다시 시도한다
             info = _read(path)
             stale, until = _judge(path, info, timeout)
-            # 깨지 못했으면(다른 프로세스가 깨는 중, 옮기기 거부) 바로 다시 돌지 않고 아래의 마감 확인·쉬기로 간다
+            # 해제하지 못했으면 바로 다시 시도하지 않고 아래에서 마감 시간 확인과 대기를 한다
             if stale and _break(path, info, timeout):
                 continue
             left = deadline - time.monotonic()
             if left <= 0 and not extended and (until is None or until < _EDGE):
-                # 잡은 채 죽은 파드의 잠금은 기다리기 시작한 바로 그때 생긴 것이라 마감과 거의 같은 순간에 낡는다 —
-                # 그 경계에서 잠금 없이 가지 않도록 낡을 때까지만 한 번 더 기다린다(최대 _EDGE 초). until 이 None
-                # 이면 잠금이 방금 풀렸다(stat 실패): 마감이라도 O_EXCL 을 한 번 더 해 본다
+                # 죽은 파드의 잠금은 마감 시간과 거의 같은 때 오래된 잠금이 되므로, 그 경계에서 잠금 없이
+                # 진행하지 않도록 최대 _EDGE초 더 기다린다
+                # until이 None이면 잠금이 방금 풀린 것이므로 마감이 지나도 O_EXCL을 한 번 더 시도한다
                 deadline = time.monotonic() + max(until or 0.0, 0.0) + 0.25
                 extended = True
                 left = deadline - time.monotonic()
@@ -500,7 +497,8 @@ def _acquire(root: Path, timeout: float) -> Optional[str]:
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
                 fh.write(payload)
         except OSError as e:
-            # 주인을 못 적은 잠금은 놓는다: 비어 있는 잠금은 남이 우리 것인지 알 수 없고 release 도 지우지 않는다
+            # 빈 잠금은 다른 프로세스가 주인을 알 수 없고 release도 지우지
+            # 않으므로, 소유자를 기록하지 못한 잠금은 놓는다
             log.warning("kb lock %s: could not write the owner (%s) — the lock is dropped, going on without it",
                         path, e)
             try:
@@ -512,9 +510,9 @@ def _acquire(root: Path, timeout: float) -> Optional[str]:
 
 
 def _release(root: Path, token: str) -> None:
-    """파일이 우리 토큰으로 읽힐 때만 지운다(우리 잠금이 깨지고 남이 잡았으면, 또는 비었거나 깨져 읽히면 — 막
-    만들고 아직 주인을 못 적은 새 잠금일 수 있다 — 건드리지 않음). 우리 잠금이 잠깐 안 읽히는 경우를 위해 몇 번
-    다시 읽는다.
+    """잠금 파일이 우리 토큰으로 읽힐 때만 지운다.
+    비었거나 깨진 파일은 방금 생성된 새 잠금일 수 있으므로 건드리지 않는다.
+    잠깐 읽히지 않는 경우를 위해 몇 번 다시 읽는다.
 
     Remove the file only when it reads with our token; an empty / garbled file may be a new owner between its create
     and its payload write and is left alone (read again briefly first)."""
@@ -538,10 +536,10 @@ def _release(root: Path, token: str) -> None:
 
 
 def keep_alive(root: Path | str, *, force: bool = False) -> bool:
-    """잠금을 쥔 쪽이 긴 구간(재색인·가져오기·내보내기·case.json 확인 대기) 동안 부른다: 파일이 아직 우리 토큰을
-    갖고 있으면 mtime 을 새로 찍어(``os.utime``; NFS 에서는 서버 시각) 남이 낡은 잠금으로 깨지 않게 한다. 자주 불러도
-    된다 — 실제로는 ``min(_KEEPALIVE_EVERY, timeout / 4)`` 초에 한 번만 건드린다(``force`` 면 바로). 잠금을 쥐고 있지
-    않으면 아무것도 안 하고 False.
+    """잠금 파일에 아직 우리 토큰이 있으면 mtime을 갱신해 다른 프로세스가 해제하지 않게 한다.
+    잠금을 잡은 쪽이 오래 걸리는 작업 중에 호출한다.
+    자주 호출해도 되며 실제 갱신은 ``min(_KEEPALIVE_EVERY, timeout / 4)``초에 한 번이다.
+    잠금이 없으면 False를 반환한다.
 
     Called by the holder inside a long section: touch the lock file (``os.utime``; the server's time on NFS) while it
     still holds our token, so nobody breaks it as stale. Cheap to call often — it touches at most every
@@ -573,8 +571,8 @@ def keep_alive(root: Path | str, *, force: bool = False) -> bool:
 
 
 def _timeout_of(root: Path, timeout: Optional[float]) -> float:
-    """잠금 대기·낡음 한계(초). None 은 기본값; 0 이하(설정 실수 — 0 이면 모든 잠금이 바로 낡아 깨졌다)도 기본값에
-    WARNING 한 줄(KB 디렉토리마다 한 번)."""
+    """잠금 대기 시간이자 오래된 잠금으로 보는 기준 시간(초)을 반환한다.
+    None이나 0 이하면 기본값을 쓰고, 0 이하일 때는 KB 디렉토리마다 WARNING을 한 번 남긴다."""
     if timeout is None:
         return DEFAULT_TIMEOUT
     try:
@@ -593,8 +591,8 @@ def _timeout_of(root: Path, timeout: Optional[float]) -> float:
 
 @contextmanager
 def kb_lock(root: Path | str, timeout: Optional[float] = None) -> Iterator[bool]:
-    """KB 쓰기 동안 ``<root>/.lock`` 을 잡는다. 잡았으면 True, 못 잡고 그냥 진행하면 False 를 내준다. 같은
-    프로세스 안에서는 재진입 가능하다(바깥 holder 만 파일을 만들고 지움). ``timeout`` 이 0 이하이면 기본값.
+    """KB에 쓰는 동안 ``<root>/.lock`` 잠금을 잡는다. 잡았으면 True, 못 잡고 진행하면 False를 yield한다.
+    같은 프로세스 안에서는 다시 잡을 수 있다. ``timeout``이 0 이하면 기본값을 쓴다.
 
     Hold ``<root>/.lock`` for a KB write. Yields True when the lock is held (False: going on without it). A
     non-positive ``timeout`` means the default (one WARNING)."""
@@ -624,7 +622,7 @@ def kb_lock(root: Path | str, timeout: Optional[float] = None) -> Iterator[bool]
 
 
 def holding(root: Path | str) -> bool:
-    """이 스레드가 ``root`` 의 잠금을 잡고 있나(테스트·단언용).
+    """이 스레드가 ``root``의 잠금을 잡고 있는지 확인한다. 테스트에서 쓴다.
 
     This thread holds the lock of ``root`` (tests / assertions)."""
     st = _state(Path(root))

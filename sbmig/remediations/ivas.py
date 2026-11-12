@@ -1,21 +1,20 @@
-"""IVAS(LabradorLabs 취약점 점검) HTTP 클라이언트와 검사 절차(업로드 → 상태 조회 → 요약 → 모든 페이지 → 완전성 판정).
-회사가 알려 준 HTTP 계약만 쓴다: ``POST /session`` 로그인 → ``X-API-KEY`` 헤더, ``POST /projects/SELF/sourcecode`` 로
-ZIP 업로드(multipart: ``analysisRequest`` + 파일), ``…/analysis/{id}/status`` 상태, ``…/result/summary`` 요약,
-``…/result/<종류>?page=&size=`` 상세 페이지. 그 밖의 것은 모른다 — 모르는 것은 추측하지 않고 "미완료"로 남긴다.
-
-지키는 규칙:
-- **업로드는 절대 자동으로 다시 하지 않는다.** 요청 본문이 나갔을 수 있는 뒤의 모든 애매함(시간 초과, 연결 끊김, 5xx,
-  ID 없는 2xx)은 ``IvasUploadUncertain`` — 작업은 사람이 IVAS 에서 확인할 때까지 멈춘다(같은 ZIP 이 두 번 분석되는 것보다
-  멈추는 편이 낫다). 보내기 전에 실패한 것이 분명할 때(로그인 실패, 파일을 못 읽음, 접속 자체 실패)와 분명한 4xx 거절만 ``IvasError``.
-- 토큰은 메모리에만 두고, 토큰·비밀번호는 로그·예외 문장·repr 어디에도 나오지 않는다(응답 본문을 인용할 때도 지우고 300자로 자른다).
-- TLS 검증은 끄지 않는다(``verify=False`` 없음; ``REQUESTS_CA_BUNDLE`` 은 requests 가 그대로 따른다).
-- 검사 결과는 빠진 페이지·바뀐 전체 개수·중복 항목·요약과 맞지 않는 개수·지원하지 않는 범주(SW)·HTTP 오류가 하나라도 있으면
-  ``complete=False`` — 그때 ``findings`` 가 비어 있어도 "0건"이 아니다. 요약 대조: ``components.total`` 은 모든 쪽에서 돌려받은
-  라이브러리 취약점 행 수(중복 제거 전)와 같아야 한다(``remediation.ivas_summary_check: exact``, 기존 사내 구현과 같은 대조);
-  swComponents / fileComponents 는 대응이 확인되지 않아 0 / 0 아님만 본다. ``nonzero`` 면 components 도 0 / 0 아님만 본다.
-- 조치 구분 코드(``action.actionDivCd``)의 뜻은 ``ACTION_MEANINGS`` 한 곳에 있다. 검사 파일에는 모든 항목을 그대로 두고, 조치
-  대상에서 뺄 코드(``remediation.ignore_actions``)는 그래프가 ``split_findings`` 로 가른다. 빈 코드·모르는 코드는 조치 대상이다.
-- 파일 컴포넌트 ID 에는 ``|`` 가 들어 있을 수 있다(``11560|934982``): matchedfiles 경로에 경로 조각 하나로 인코딩해 보낸다.
+"""회사 취약점 점검 도구 IVAS(LabradorLabs)의 HTTP 클라이언트와 검사 절차를 제공하는 모듈.
+검사 절차는 업로드 -> 상태 조회 -> 요약 -> 모든 페이지 -> 결과가 빠짐없는지 확인 순서다. 회사가 알려 준
+API만 쓴다: ``POST /session`` 로그인과 ``X-API-KEY`` 헤더, ``POST /projects/SELF/sourcecode``
+업로드(multipart: ``analysisRequest`` + 파일), ``…/analysis/{id}/status``, ``…/result/summary``,
+``…/result/<종류>?page=&size=``. 모르는 것은 추측하지 않고 미완료로 남긴다.
+- 업로드는 자동으로 다시 하지 않는다. 본문이 나갔을 수 있는 애매한 상황(타임아웃, 연결 끊김, 5xx, ID 없는
+  2xx)은 ``IvasUploadUncertain``으로 처리해 사람이 IVAS에서 확인할 때까지 멈춘다. 보내기 전의 실패와 분명한
+  4xx 거절만 ``IvasError``다
+- 토큰은 메모리에만 두고, 토큰과 비밀번호는 로그, 예외 메시지, repr에 넣지 않는다
+- TLS 검증은 끄지 않는다
+- 빠진 페이지, 바뀐 전체 개수, 중복 항목, 요약과 맞지 않는 개수, 지원하지 않는 범주(SW), HTTP 오류가
+  하나라도 있으면 ``complete=False``이며, 이때 ``findings``가 비어 있어도 0건으로 보지 않는다
+- ``remediation.ivas_summary_check: exact``면 ``components.total``이 모든 페이지에서 받은 라이브러리 취약점
+  행 수(중복 제거 전)와 같아야 한다. swComponents / fileComponents와 ``nonzero`` 모드는 0인지 아닌지만 본다
+- 조치 구분 코드의 뜻은 ``ACTION_MEANINGS``에만 둔다. ``remediation.ignore_actions``에 따른 제외는 그래프가
+  ``split_findings``로 처리하고, 빈 코드와 모르는 코드는 조치 대상이다
+- 파일 컴포넌트 ID에는 ``|``가 있을 수 있으므로(``11560|934982``) matchedfiles 경로에 경로 조각 하나로 인코딩해서 보낸다
 
 IVAS HTTP client and scan procedure. Only the HTTP contract the company gave is used; anything unknown makes the
 scan incomplete instead of being guessed. An upload is never retried automatically: any ambiguity after the body may
@@ -50,7 +49,7 @@ ENV_BASE_URL = "IVAS_BASE_URL"
 ENV_USER_ID = "IVAS_USER_ID"
 ENV_PASSWORD = "IVAS_PASSWORD"
 
-# 분석 상태 코드(anlStatusDivCd) — 회사가 알려 준 값
+# 회사가 알려 준 분석 상태 코드(anlStatusDivCd) 값
 IN_PROGRESS = ("PREPARING", "WAITING", "ANALYSIS")
 DONE = "DONE"
 FAILED_STATES = ("FAILED", "ERROR", "CANCELED", "CANCELLED")
@@ -58,11 +57,11 @@ FAILED_STATES = ("FAILED", "ERROR", "CANCELED", "CANCELLED")
 # 요약의 범주 8개(summary.resultCount.vulnerabilities.<범주>.total)
 SUMMARY_CATEGORIES = ("components", "swComponents", "fileComponents", "codeSnippets", "file", "functionComponents",
                       "ospkgComponents", "binaryComponents")
-# 분석 ID 의 필드 이름 — 회사 문서에 lbrdAnlId 와 lbrdrAnlId 가 둘 다 적혀 있어 셋 다 받는다
+# 분석 ID 필드 이름. 회사 문서에 lbrdAnlId와 lbrdrAnlId가 둘 다 나오므로 셋 다 받는다
 ANALYSIS_ID_KEYS = ("lbrdAnlId", "lbrdrAnlId", "analysisId")
 
-# 조치 구분 코드(action.actionDivCd) → 뜻 — 회사 IVAS 문서의 표. 코드의 뜻은 이 표 한 곳에만 둔다(보고서도 여기서 읽는다).
-# 어떤 코드를 조치 대상에서 뺄지는 설정(``remediation.ignore_actions``)이 정한다 — 이 표는 뜻만 말한다
+# 조치 구분 코드(action.actionDivCd)의 뜻. 회사 IVAS 문서의 표이며 보고서도 여기서 읽는다
+# 어떤 코드를 조치 대상에서 뺄지는 ``remediation.ignore_actions``가 정한다
 ACTION_MEANINGS: dict[str, str] = {
     "NE": "조치 필요",
     "NP": "조치계획 미등록",
@@ -71,11 +70,11 @@ ACTION_MEANINGS: dict[str, str] = {
     "PC": "패치 완료",
     "IG": "조치 예외",
 }
-# 기본은 비어 있다(2026-11-11, 기존 사내 구현도 PC·IG 를 거르지 않는다) — 모든 조치 구분을 고칠 대상으로 본다
+# 기본값이 비어 있으므로 모든 조치 구분 코드를 조치 대상으로 본다. 기존 사내 구현도 PC, IG를 거르지 않는다
 DEFAULT_IGNORE_ACTIONS: tuple[str, ...] = ()
 SUMMARY_CHECKS = ("exact", "nonzero")
 
-# 결과 종류 → URL 꼬리(analysis/{id}/ 뒤)
+# 결과 종류별 URL 끝부분(analysis/{id}/ 뒤)
 PAGE_PATHS = {
     "library": ("result", "libraryvulnerabilities"),
     "sw": ("result", "swvulnerabilities"),
@@ -83,18 +82,19 @@ PAGE_PATHS = {
     "file_potential": ("result", "filecomponentvulnerabilities", "potential"),
 }
 
-GET_TRIES = 3                  # GET 한 번의 최대 시도 횟수(연결 오류·시간 초과·5xx·429)
-BACKOFF_SECONDS = (1.0, 2.0)   # 시도 사이 대기
-BODY_QUOTE_CHARS = 300         # 오류 문장에 인용하는 응답 본문 길이
-STATUS_ERROR_LIMIT = 3         # 상태 조회가 연달아 이만큼 실패하면 검사 미완료(http_error)
+GET_TRIES = 3                  # GET 요청 하나의 최대 시도 횟수(연결 오류, 타임아웃, 5xx, 429일 때)
+BACKOFF_SECONDS = (1.0, 2.0)   # 재시도 사이의 대기 시간(초)
+BODY_QUOTE_CHARS = 300         # 오류 메시지에 인용하는 응답 본문의 최대 길이
+STATUS_ERROR_LIMIT = 3         # 상태 조회가 연달아 이 횟수만큼 실패하면 검사 미완료(http_error)로 본다
 _MASK = "***"
 
 
 # ---------------------------------------------------------------------------- 설정 / settings
 @dataclass
 class IvasSettings:
-    """IVAS 접속 설정. 주소·아이디·비밀번호는 환경 변수(Secret)에서만, 나머지는 ``cfg.remediation.ivas_*`` 에서 온다.
-    비밀번호는 repr 에 나오지 않는다.
+    """IVAS 접속 설정을 담는 데이터 클래스.
+    주소, 아이디, 비밀번호는 환경 변수(Secret)에서만 읽고 나머지는 ``cfg.remediation.ivas_*``에서 읽는다.
+    비밀번호는 repr에 나오지 않는다.
 
     IVAS connection settings; the password is excluded from the repr."""
     base_url: str = ""
@@ -106,12 +106,13 @@ class IvasSettings:
     analysis_timeout_seconds: float = 120 * 60.0
     page_size: int = 100
     project_prefix: str = "sbmig"
-    # exact = 요약 components 건수 == 라이브러리 취약점 상세 행 수(기존 사내 구현의 대조) / nonzero = 0 인지 아닌지만
+    # exact는 요약의 components 건수와 라이브러리 취약점 상세 행 수가 같아야 하고, nonzero는 0인지 아닌지만 본다
     summary_check: str = "exact"
 
 
 def ivas_settings(cfg: Any, env: Mapping[str, str] = os.environ) -> IvasSettings:
-    """설정 객체와 환경 변수로 ``IvasSettings`` 를 만든다. 비밀 값은 환경 변수에서만 읽는다(설정 파일에 두지 않는다).
+    """설정 객체와 환경 변수로 ``IvasSettings``를 만든다.
+    비밀 값은 설정 파일이 아니라 환경 변수에서만 읽는다.
 
     Build `IvasSettings`: secrets from the environment only, the rest from `cfg.remediation`."""
     rem = getattr(cfg, "remediation", None)
@@ -142,8 +143,9 @@ def _is_loopback(host: str) -> bool:
 
 
 def readiness(settings: IvasSettings) -> list[str]:
-    """IVAS 를 쓸 수 없게 하는 문제들(빈 목록 = 준비됨). 이름만 말하고 값은 절대 말하지 않는다. 주소는 https 여야 한다
-    (loopback 만 http 허용 — 시험용).
+    """IVAS를 쓸 수 없게 하는 문제 목록을 반환한다. 빈 목록이면 쓸 수 있다.
+    문제 항목의 이름만 담고 값은 넣지 않는다.
+    주소는 https여야 하며, 테스트용 loopback 주소만 http를 허용한다.
 
     Problems that prevent IVAS use (names only, never values); the base URL must be https unless loopback."""
     problems: list[str] = []
@@ -172,7 +174,7 @@ def readiness(settings: IvasSettings) -> list[str]:
 
 
 def project_name(settings: IvasSettings, remediation_id: str, label: str) -> str:
-    """IVAS 프로젝트 이름 ``<앞머리>-<작업 ID>-<label>``.
+    """IVAS 프로젝트 이름 ``<접두어>-<작업 ID>-<label>``을 만든다.
 
     The IVAS project name `<prefix>-<id>-<label>`."""
     return f"{settings.project_prefix}-{remediation_id}-{label}"
@@ -180,8 +182,9 @@ def project_name(settings: IvasSettings, remediation_id: str, label: str) -> str
 
 # ---------------------------------------------------------------------------- multipart 본문 / streamed body
 class _MultipartStream:
-    """multipart 본문을 파일 전체를 메모리에 올리지 않고 조각으로 내보낸다(길이를 알려 Content-Length 로 보낸다).
-    실제로 내보낸 파일 바이트의 sha256 을 함께 센다 — 영수증의 zip_sha256 은 '보낸 바이트'의 해시다."""
+    """파일 전체를 메모리에 올리지 않고 multipart 본문을 조각으로 내보내는 클래스.
+    길이를 미리 계산해 Content-Length로 보낸다.
+    실제로 보낸 파일 바이트의 sha256도 계산하며, 접수 정보의 zip_sha256은 이 값이다."""
 
     def __init__(self, boundary: str, analysis_json: str, fh: Any, filename: str, size: int):
         safe_name = filename.replace("\\", "_").replace('"', "_").replace("\r", "_").replace("\n", "_")
@@ -222,7 +225,7 @@ class _MultipartStream:
                 chunk = self._pre[self._pos:self._pos + n]
             elif self._pos < body_end:
                 chunk = self._fh.read(min(n, body_end - self._pos))
-                if not chunk:          # 파일이 줄어들었다: 길이가 맞지 않는 본문을 보내지 않는다
+                if not chunk:          # 보내는 도중 파일이 줄어든 것이므로, 길이가 맞지 않는 본문은 보내지 않는다
                     raise OSError("upload file shrank while it was being sent")
                 self._hash.update(chunk)
                 self.file_bytes += len(chunk)
@@ -243,7 +246,8 @@ class _MultipartStream:
 
 
 def _connect_failure(exc: BaseException) -> bool:
-    """예외 사슬 안에 '접속 자체가 안 됨'(urllib3 NewConnectionError: 거부·이름 해석 실패)이 있는가. 모르면 False(= 불확실)."""
+    """예외 체인 안에 접속 실패(urllib3 NewConnectionError: 연결 거부, 이름 해석 실패)가 있는지 확인한다.
+    알 수 없으면 False를 반환해 불확실한 경우로 처리하게 한다."""
     try:
         from urllib3.exceptions import NewConnectionError
     except ImportError:          # pragma: no cover
@@ -287,14 +291,16 @@ def _is_int(v: Any) -> bool:
 
 # ---------------------------------------------------------------------------- 조치 구분 / action codes
 def normalize_action(code: Any) -> str:
-    """조치 구분 코드를 비교용으로: 앞뒤 공백을 지우고 대문자로. 문자열이 아니면 빈 값.
+    """조치 구분 코드를 비교할 수 있도록 앞뒤 공백을 지우고 대문자로 바꾼다.
+    문자열이 아니면 빈 문자열을 반환한다.
 
     An action code for comparison: trimmed, upper-cased ('' for a non-string)."""
     return code.strip().upper() if isinstance(code, str) else ""
 
 
 def action_meaning(code: Any) -> str:
-    """코드의 한국어 뜻(표에 없으면 "알 수 없는 코드", 비었으면 "코드 없음").
+    """조치 구분 코드의 한국어 뜻을 반환한다.
+    표에 없으면 "알 수 없는 코드", 비어 있으면 "코드 없음"을 반환한다.
 
     The Korean meaning of an action code."""
     norm = normalize_action(code)
@@ -304,8 +310,9 @@ def action_meaning(code: Any) -> str:
 
 
 def ignore_set(value: Any) -> frozenset[str]:
-    """설정 값(``cfg`` / ``cfg.remediation`` / 코드 목록 / None)에서 조치 대상에서 뺄 코드 집합(정규화). None 이나 설정이 없는
-    객체 = 기본값(빈 집합 — 아무것도 빼지 않는다). 빈 문자열 항목은 버린다 — 빈 코드는 절대 '뺄 코드'가 되지 않는다.
+    """설정 값(``cfg`` / ``cfg.remediation`` / 코드 목록 / None)에서 조치 대상에서 뺄 코드 집합을 정규화해서 만든다.
+    None이거나 설정이 없으면 기본값인 빈 집합을 반환한다.
+    빈 문자열 항목은 버리므로 빈 코드는 제외 대상이 되지 않는다.
 
     The normalized set of ignored action codes from a config object, a code list or None (= the default)."""
     if value is not None and not isinstance(value, (list, tuple, set, frozenset, str)):
@@ -319,7 +326,7 @@ def ignore_set(value: Any) -> frozenset[str]:
 
 
 def is_ignored(finding: Finding, ignore: frozenset[str]) -> bool:
-    """이 항목의 조치 코드가 '뺄 코드'인가. 빈 코드는 늘 조치 대상이다(조용히 빼지 않는다).
+    """이 항목의 조치 구분 코드가 제외 대상인지 확인한다. 빈 코드는 항상 조치 대상이다.
 
     True when the finding's action code is in the ignored set; an empty code never is."""
     norm = normalize_action(finding.action)
@@ -327,7 +334,7 @@ def is_ignored(finding: Finding, ignore: frozenset[str]) -> bool:
 
 
 def split_findings(findings: list[Finding], ignore: frozenset[str]) -> tuple[list[Finding], list[Finding]]:
-    """(조치 대상, 조치 대상에서 뺀 항목). 순서는 그대로.
+    """취약점 목록을 (조치 대상, 제외 항목)으로 나눈다. 원래 순서는 유지한다.
 
     (actionable, ignored), order kept."""
     act: list[Finding] = []
@@ -338,8 +345,8 @@ def split_findings(findings: list[Finding], ignore: frozenset[str]) -> tuple[lis
 
 
 def unknown_actions(findings: list[Finding]) -> list[str]:
-    """표에 없는 조치 코드(빈 코드는 "(empty)")들 — 정렬, 중복 없음. 이런 항목은 조치 대상으로 다룬다(설정에 그 코드를 직접
-    적은 경우만 뺀다).
+    """표에 없는 조치 구분 코드 목록을 정렬하고 중복을 빼서 반환한다. 빈 코드는 "(empty)"로 표시한다.
+    이런 항목은 조치 대상으로 다루며, 설정에 그 코드를 직접 지정한 경우에만 뺀다.
 
     Action codes outside the known table ('(empty)' for a missing one), sorted."""
     out = set()
@@ -352,9 +359,10 @@ def unknown_actions(findings: list[Finding]) -> list[str]:
 
 # ---------------------------------------------------------------------------- HTTP 클라이언트 / client
 class IvasHttpClient:
-    """``interfaces.IvasClient`` 의 requests 구현. 로그인은 처음 필요할 때 하고, 토큰은 메모리에만 둔다. 이후 호출이
-    401/403 이면 한 번 다시 로그인해 그 호출을 한 번 더 한다(업로드는 예외: 업로드 직전에 늘 새로 로그인하고, 업로드의 401 은
-    분명한 거절). GET 은 연결 오류·시간 초과·5xx·429 에 최대 3번 시도한다. 업로드는 재시도하지 않는다.
+    """requests로 ``interfaces.IvasClient``를 구현한 클래스. 처음 필요할 때 로그인하고 토큰은 메모리에만
+    두며, 이후 401/403을 받으면 한 번 다시 로그인해서 그 호출을 재시도한다.
+    업로드 직전에는 항상 새로 로그인하고 업로드의 401은 분명한 거절로 본다.
+    GET은 연결 오류, 타임아웃, 5xx, 429일 때 최대 3번 시도하고, 업로드는 재시도하지 않는다.
 
     `interfaces.IvasClient` over requests: lazy login, in-memory token, one re-login on 401/403 (not for the upload,
     which always logs in fresh first), bounded GET retries, never an upload retry."""
@@ -370,7 +378,7 @@ class IvasHttpClient:
 
     # ---- helpers -------------------------------------------------------
     def _scrub(self, text: Any) -> str:
-        """비밀 값(토큰·비밀번호)을 지우고 길이를 자른다 — 오류 문장에 응답 본문을 인용할 때."""
+        """오류 메시지에 응답 본문을 인용할 때 비밀 값(토큰, 비밀번호)을 지우고 길이를 자른다."""
         s = str(text or "")
         for secret in (self._token, self._settings.password):
             if secret:
@@ -384,7 +392,7 @@ class IvasHttpClient:
     def _body_text(self, r: Any) -> str:
         try:
             return self._scrub(getattr(r, "text", ""))
-        except Exception:        # 본문을 못 읽어도 오류 문장은 만든다
+        except Exception:        # 본문을 못 읽어도 오류 메시지는 만든다
             return ""
 
     def _backoff(self, attempt: int) -> None:
@@ -392,7 +400,8 @@ class IvasHttpClient:
 
     # ---- login -----------------------------------------------------------
     def _login(self) -> None:
-        """``POST /session`` → token. 일시적 오류(연결·시간 초과·5xx·429)는 최대 3번. 거절·읽을 수 없는 답은 IvasError."""
+        """``POST /session``으로 로그인해서 토큰을 받는다. 일시적인 오류(연결, 타임아웃, 5xx, 429)는 최대
+        3번 시도하고, 거절되거나 응답을 읽을 수 없으면 IvasError를 던진다."""
         url = self._url("session")
         payload = {"userId": self._settings.user_id, "password": self._settings.password}
         attempt = 0
@@ -408,7 +417,7 @@ class IvasHttpClient:
                 self._backoff(attempt)
                 continue
             except requests.exceptions.RequestException as exc:
-                # 잘못된 주소(스킴 없음 등)처럼 보내기 전에 실패한 것: 다시 해도 같다 — 분명한 실패
+                # 잘못된 주소처럼 보내기 전에 실패한 것은 다시 해도 같으므로 분명한 실패로 처리한다
                 raise IvasError(f"IVAS login failed: {type(exc).__name__}", code="login_failed") from None
             code = r.status_code
             if (code == 429 or code >= 500) and attempt < GET_TRIES:
@@ -425,10 +434,10 @@ class IvasHttpClient:
             if not isinstance(token, str) or not token.strip():
                 raise IvasError(f"IVAS login answer has no token (HTTP {code})", code="login_failed")
             self._token = token
-            try:                 # 출력 정제기가 걸려 있으면 이 토큰도 지우게 알린다
+            try:                 # 출력 마스킹이 켜져 있으면 이 토큰도 가리도록 등록한다
                 from sbmig.core.scrub import note_secret
                 note_secret(token)
-            except Exception:    # pragma: no cover - 정제기가 없어도 클라이언트는 동작한다
+            except Exception:    # pragma: no cover - 마스킹 기능이 없어도 클라이언트는 동작한다
                 pass
             log.debug("ivas: logged in")
             return
@@ -457,12 +466,13 @@ class IvasHttpClient:
                 self._backoff(attempt)
                 continue
             except requests.exceptions.RequestException as exc:
-                # 그 밖의 requests 오류(잘못된 주소, 너무 많은 redirect 등)도 IvasError — 검사는 미완료가 된다(0건이 아니다)
+                # 그 밖의 requests 오류(잘못된 주소, 너무 많은 redirect 등)도 IvasError로 처리하므로 검사는
+                # 0건이 아니라 미완료가 된다
                 raise IvasError(f"IVAS GET {where}: {type(exc).__name__}", code="http_error") from None
             code = r.status_code
             log.debug("ivas: GET %s -> HTTP %s", where, code)
             if code in (401, 403) and not relogged:
-                # 토큰이 만료됐을 수 있다: 한 번만 다시 로그인하고 같은 호출을 한 번 더 한다
+                # 토큰이 만료됐을 수 있으므로 한 번만 다시 로그인하고 같은 호출을 재시도한다
                 relogged = True
                 self._token = None
                 continue
@@ -484,8 +494,9 @@ class IvasHttpClient:
 
     # ---- IvasClient --------------------------------------------------------
     def upload(self, zip_path: Path, project_name: str) -> UploadReceipt:
-        """ZIP 을 올린다(재시도 없음). 보내기 전 실패·분명한 4xx 거절은 ``IvasError``, 본문이 나갔을 수 있는 뒤의 모든 애매함은
-        ``IvasUploadUncertain``. 업로드 직전에 늘 새로 로그인한다(캐시한 토큰이 업로드 도중 만료되어 결과가 애매해지지 않게).
+        """ZIP을 한 번만 올리고 재시도하지 않는다. 보내기 전의 실패와 분명한 4xx 거절은 ``IvasError``를,
+        본문이 나갔을 수 있는 애매한 상황은 ``IvasUploadUncertain``을 던진다.
+        캐시한 토큰이 업로드 도중 만료되지 않도록 직전에 항상 새로 로그인한다.
 
         Upload the ZIP once; `IvasUploadUncertain` for every ambiguity after the body may have been sent."""
         zip_path = Path(zip_path)
@@ -497,7 +508,7 @@ class IvasHttpClient:
                             code="upload_not_sent") from None
         with fh:
             self._token = None
-            self._login()       # 실패하면 IvasError — 아직 아무것도 보내지 않았다
+            self._login()       # 여기서 실패하면 IvasError다. 아직 아무것도 보내지 않았다
             analysis_json = json.dumps({"projectNm": project_name, "source": {"type": "ZIP_FILE"}})
             boundary = "sbmig-" + uuid.uuid4().hex
             body = _MultipartStream(boundary, analysis_json, fh, zip_path.name, size)
@@ -522,7 +533,7 @@ class IvasHttpClient:
                                     **details) from None
                 raise IvasUploadUncertain(f"IVAS upload outcome unknown: {type(exc).__name__} while sending",
                                           **details) from None
-            except Exception as exc:   # 시간 초과·끊김·파일 읽기 오류 등: 본문 일부가 나갔을 수 있다
+            except Exception as exc:   # 타임아웃, 연결 끊김, 파일 읽기 오류 등은 본문 일부가 이미 나갔을 수 있다
                 raise IvasUploadUncertain(f"IVAS upload outcome unknown: {type(exc).__name__} while sending",
                                           **details) from None
         code = r.status_code
@@ -545,12 +556,14 @@ class IvasHttpClient:
         if not project_id or not analysis_id:
             raise IvasUploadUncertain(f"IVAS upload outcome unknown: HTTP {code} answer lacks projectId / analysis id: "
                                       f"{self._body_text(r)}", http_status=code, **details)
-        # 영수증의 sha256 은 실제로 보낸 바이트의 해시 — 끝까지 다 보내지 못했으면 빈 값(검사 쪽이 zip_hash_mismatch 로 본다)
+        # 접수 정보의 sha256은 실제로 보낸 바이트의 해시다.
+        # 끝까지 보내지 못했으면 빈 값이 되고 검사 쪽이 zip_hash_mismatch로 처리한다
         sent_sha = body.file_sha256 if body.file_bytes == size else ""
         return UploadReceipt(project_id=project_id, analysis_id=analysis_id, zip_sha256=sent_sha, project_name=project_name)
 
     def status(self, project_id: str, analysis_id: str) -> str:
-        """분석 상태 코드 ``anlStatusDivCd`` 그대로. 응답의 ID 가 요청과 다르면 ``IvasError(code="id_mismatch")``.
+        """분석 상태 코드 ``anlStatusDivCd``를 그대로 반환한다.
+        응답의 ID가 요청과 다르면 ``IvasError(code="id_mismatch")``를 던진다.
 
         The raw `anlStatusDivCd`; differing ids in the answer → `IvasError(code="id_mismatch")`."""
         data = self._get_json(("projects", "SELF", project_id, "analysis", analysis_id, "status"))
@@ -570,7 +583,8 @@ class IvasHttpClient:
         return code.strip()
 
     def summary(self, project_id: str, analysis_id: str) -> dict[str, int]:
-        """요약의 범주별 total 8개. 하나라도 읽을 수 없으면 ``IvasError`` (읽지 못한 요약은 0 이 아니다).
+        """검사 요약에서 범주별 total 8개를 반환한다.
+        읽지 못한 요약을 0으로 보지 않도록, 하나라도 읽을 수 없으면 ``IvasError``를 던진다.
 
         The eight category totals; any unreadable one raises `IvasError`."""
         data = self._get_json(("projects", "SELF", project_id, "analysis", analysis_id, "result", "summary"))
@@ -590,7 +604,8 @@ class IvasHttpClient:
 
     def page(self, project_id: str, analysis_id: str, kind: str, page: int, size: int,
              component_id: str | None = None) -> Page:
-        """결과 한 쪽(page 는 0 부터). ``content`` 목록과 정수 ``totalElements`` 가 없으면 ``IvasError``.
+        """검사 결과 한 페이지(page는 0부터)를 반환한다.
+        ``content`` 목록과 정수 ``totalElements``가 없으면 ``IvasError``를 던진다.
 
         One result page (0-based); a missing `content` list or integer `totalElements` raises `IvasError`."""
         base = ("projects", "SELF", project_id, "analysis", analysis_id)
@@ -610,7 +625,7 @@ class IvasHttpClient:
 
 # ---------------------------------------------------------------------------- 검사 절차 / scan
 class _Collector:
-    """검사 하나의 미완료 이유·메모를 순서대로, 중복 없이 모은다."""
+    """검사 하나의 미완료 사유와 메모를 순서대로, 중복 없이 모으는 클래스."""
 
     def __init__(self) -> None:
         self.reasons: list[str] = []
@@ -629,8 +644,9 @@ class _Collector:
 
 def _all_pages(client: Any, receipt: UploadReceipt, kind: str, size: int, col: _Collector,
                component_id: str | None = None) -> tuple[list[Any], int | None, int]:
-    """한 종류의 결과를 끝까지 읽는다 → (항목들, 첫 쪽의 totalElements, 읽은 쪽 수). 빠진 쪽·바뀐 전체 개수·개수 불일치는
-    ``col`` 에 이유로 남긴다. 무한 반복을 막는 쪽 수 상한(전체/크기 + 2)이 있다."""
+    """한 종류의 결과를 끝까지 읽어 (항목들, 첫 페이지의 totalElements, 읽은 페이지 수)를 반환한다.
+    빠진 페이지, 바뀐 전체 개수, 개수 불일치는 ``col``에 사유로 남긴다.
+    무한 반복을 막기 위해 페이지 수 상한(전체/크기 + 2)을 둔다."""
     what = kind if component_id is None else f"{kind}({component_id})"
     items: list[Any] = []
     total: int | None = None
@@ -709,9 +725,10 @@ def _library_finding(item: Any) -> Finding | None:
 
 
 def _file_component_id(item: Mapping[str, Any]) -> tuple[str, str]:
-    """파일 컴포넌트 ID 와 그 출처 필드. ``fileComponent.id`` 가 늘 먼저다(지금까지의 규칙). 그것이 없을 때만
-    ``fileComponent.ossId`` → 최상위 ``ossId`` 를 쓴다 — 회사는 matchedfiles 경로의 ID 를 ossId 라고 부르지만 어느 필드가 맞는지는
-    아직 확인되지 않았다(추측해 바꾸지 않는다). ID 에 ``|`` 가 들어 있을 수 있다(예: ``11560|934982``) — 그대로 둔다."""
+    """파일 컴포넌트의 ID와 그 ID를 읽은 필드 이름을 반환한다.
+    ``fileComponent.id``를 먼저 쓰고, 없으면 ``fileComponent.ossId``, 최상위 ``ossId`` 순으로 쓴다.
+    회사는 matchedfiles 경로의 ID를 ossId라고 부르지만 어느 필드가 맞는지 확인되지 않아 추측해서 바꾸지
+    않는다. ID에 ``|``가 있을 수 있으며(예: ``11560|934982``) 그대로 둔다."""
     comp = item.get("fileComponent")
     comp = comp if isinstance(comp, dict) else {}
     for where, value in (("fileComponent.id", comp.get("id")), ("fileComponent.ossId", comp.get("ossId")),
@@ -730,7 +747,8 @@ def _file_finding(item: Any, kind: str) -> Finding | None:
         return None
     comp = item.get("fileComponent") if isinstance(item.get("fileComponent"), dict) else {}
     info = comp.get("info") if isinstance(comp.get("info"), dict) else {}
-    # 이름 필드가 있으면 그것을, 없으면 컴포넌트 ID 를 식별자로 둔다(필드 이름은 회사 문서에 없다 — 지어내지 않는다)
+    # 이름 필드가 있으면 그것을, 없으면 컴포넌트 ID를 식별자로 쓴다.
+    # 필드 이름이 회사 문서에 없으므로 임의로 만들지 않는다
     identifier = _text(comp, "identifier") or _text(comp, "name") or comp_id
     return Finding(id=_scalar_id(item["id"]), kind=kind, identifier=identifier, version=_text(comp, "version"),
                    patched_version=_text(info, "patchedVersion"), action=_action(item), score=_max_score(item),
@@ -741,8 +759,10 @@ def run_scan(client: Any, zip_path: Path, zip_sha256: str, label: str, project_n
              receipt: UploadReceipt | None = None, on_receipt: Callable[[UploadReceipt], None] | None = None,
              stop: StopCheck | None = None, journal: Journal | None = None, settings: IvasSettings | None = None,
              sleep: Callable[[float], None] = time.sleep, clock: Callable[[], float] = time.monotonic) -> ScanResult:
-    """검사 한 번: (영수증이 없으면) 업로드 → 상태 조회 반복 → 요약 → 모든 쪽 → 완전성 판정. ``IvasUploadUncertain`` 만 밖으로
-    나가고, 다른 실패는 ``complete=False`` 결과로 돌아온다. 중지 요청은 조회를 멈출 뿐 원격 분석은 계속된다(취소가 아니다).
+    """IVAS 검사를 한 번 실행하고 결과를 반환한다.
+    순서는 업로드(접수 정보가 없을 때) -> 상태 조회 반복 -> 요약 -> 모든 페이지 -> 결과가 빠짐없는지
+    확인이다. ``IvasUploadUncertain``만 밖으로 던지고 다른 실패는 ``complete=False`` 결과로 반환한다.
+    중지 요청이 오면 조회만 멈추고 원격 분석은 취소하지 않는다.
 
     One scan (`interfaces.Scanner`); only `IvasUploadUncertain` propagates, every other failure is an incomplete result."""
     st = settings or IvasSettings()
@@ -768,7 +788,7 @@ def run_scan(client: Any, zip_path: Path, zip_sha256: str, label: str, project_n
             col.bad("stop_requested", "stop requested before the upload; nothing was sent to IVAS")
             return result(False)
         try:
-            receipt = client.upload(Path(zip_path), project_name)     # IvasUploadUncertain 은 그대로 나간다
+            receipt = client.upload(Path(zip_path), project_name)     # IvasUploadUncertain은 잡지 않고 그대로 던진다
         except IvasUploadUncertain:
             raise
         except IvasError as exc:
@@ -852,8 +872,8 @@ def run_scan(client: Any, zip_path: Path, zip_sha256: str, label: str, project_n
     items, total, pages = _all_pages(client, receipt, "library", size, col)
     page_totals["library"] = total
     if total is not None and len(items) == total:
-        # 중복을 빼기 전의 돌려받은 행 수 — 요약 대조는 이 수로 한다. 쪽 읽기가 이미 어긋났으면(page_missing /
-        # total_mismatch) 그 이유가 이미 남았으니 같은 어긋남을 summary_mismatch 로 한 번 더 세지 않는다
+        # 요약과의 비교는 중복을 제거하기 전에 받은 행 수로 한다
+        # 페이지를 읽을 때 이미 page_missing / total_mismatch를 남겼으면 summary_mismatch로 한 번 더 세지 않는다
         rows_returned["library"] = len(items)
     emit({"event": "ivas_pages", "label": label, "kind": "library", "items": len(items), "total": total, "pages": pages})
     for i, item in enumerate(items):
@@ -863,7 +883,7 @@ def run_scan(client: Any, zip_path: Path, zip_sha256: str, label: str, project_n
         else:
             add(f, "library")
 
-    # sw: 세부 필드를 아직 다루지 않는다 — 항목이 있으면 검사 미완료
+    # sw 결과는 세부 필드를 아직 처리하지 않으므로 항목이 있으면 검사를 미완료로 본다
     items, total, pages = _all_pages(client, receipt, "sw", size, col)
     page_totals["sw"] = total
     emit({"event": "ivas_pages", "label": label, "kind": "sw", "items": len(items), "total": total, "pages": pages})
@@ -885,7 +905,8 @@ def run_scan(client: Any, zip_path: Path, zip_sha256: str, label: str, project_n
                 continue
             _cid, where = _file_component_id(item)
             if where != "fileComponent.id":
-                # fileComponent.id 가 없어 ossId 를 matchedfiles 의 ID 로 썼다 — 어느 필드가 맞는지 회사 확인 전이라 기록한다
+                # fileComponent.id가 없어 ossId를 matchedfiles ID로 썼다.
+                # 어느 필드가 맞는지 회사가 확인하기 전이므로 기록해 둔다
                 col.note(f"{kind}: file component id taken from {where} (no fileComponent.id)")
             if f.component_id not in matched_cache:
                 paths: list[str] = []
@@ -912,8 +933,8 @@ def run_scan(client: Any, zip_path: Path, zip_sha256: str, label: str, project_n
     return result(True, last, findings, counts)
 
 
-# 요약 범주 ↔ 상세 페이지. components ↔ 라이브러리 취약점 행 수는 기존 사내 구현이 같은지 대조한다(exact 모드).
-# 나머지 둘의 대응은 회사 확인 전이라 0 / 0 아님만 대조한다(개수의 단위 — 컴포넌트인지 취약점인지 — 가 문서에 없다)
+# 요약 범주와 상세 페이지의 대응. components는 exact 모드에서 라이브러리 취약점 행 수와 같은지 비교한다
+# 나머지 둘은 개수 단위가 문서에 없으므로 0인지 아닌지만 비교한다
 _RECONCILE = (("components", ("library",)), ("swComponents", ("sw",)), ("fileComponents", ("file_main", "file_potential")))
 _EXACT = {"components": "library"}
 
@@ -926,7 +947,7 @@ def _reconcile(counts: dict[str, int], page_totals: dict[str, int | None], col: 
     for cat, kinds in _RECONCILE:
         totals = [page_totals.get(k) for k in kinds]
         if any(t is None for t in totals):
-            continue           # 그 페이지를 읽지 못했다: 이미 page_missing
+            continue           # 그 페이지를 읽지 못해 이미 page_missing으로 남겼다
         exact_kind = _EXACT.get(cat) if exact_mode else None
         if exact_kind is not None and exact_kind not in rows:
             compared.append(f"{cat}: not compared ({exact_kind} pages incomplete)")

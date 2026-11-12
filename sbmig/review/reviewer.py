@@ -1,13 +1,13 @@
-"""StructureReviewer — 구조 검토 단계(`restructure.review`)의 실행기(`StructureReviewerLike` 구현).
-흐름상 위치: 재구성이 커밋된 직후, 첫 `verify.build` 전에 오케스트레이터가 `review(ws, profile, …)` 를 부른다.
-LLM 이 pom·의존성·모듈 구조를 회사 규칙(`cfg.artifacts` / `cfg.layout`)에 비추어 검토하고 critical 은 직접
-고친다("검증하고, 문제가 있으면 직접 고쳐라"). 수정: `<edits>` 를 `sbmig.script.apply_edits` 로 적용(편집 없이
-스크립트만 온 v2 답이면 ScriptRunnerLike 로 실행). 성공하면 커밋하지 않은 채 두고 오케스트레이터가 `review: …`
-로 커밋, 실패하면 작업 트리를 되돌린다. warning 은 기록만 한다(보고서 "Structure review", Handover). 가드:
-소스를 건드리는 편집은 거부(빌드 파일만 바꿀 수 있음), 바뀐 pom 은 다시 파싱돼야 한다. LLM 호출(코드 기준):
-검토 1회 + 답을 못 읽으면 1회 + 편집 적용이 실패하면 1회 = 최대 3회. 절대 예외를 내지 않는다: LLM 없음 /
-`review.enabled` 꺼짐 → `skipped`, 전송 오류·못 읽는 답·예상 못 한 오류 → `failed` + 메모. 어떤 경우든 빌드는
-진행한다(빌드 게이트가 최종 판정).
+"""구조 검토 단계(`restructure.review`)를 실행하는 StructureReviewer(`StructureReviewerLike` 구현) 모듈.
+재구성이 커밋된 직후, 첫 `verify.build` 전에 오케스트레이터가 `review(ws, profile, …)`를 호출한다.
+LLM이 pom, 의존성, 모듈 구조를 회사 규칙에 맞춰 검토하고, critical 문제는 LLM의 `<edits>`를
+`sbmig.script.apply_edits`로 적용해 고친다.
+- 성공하면 변경을 커밋하지 않고 두며, 오케스트레이터가 `review: …`로 커밋한다. 실패하면 작업 트리를 되돌린다
+- warning은 보고서와 인수인계에 기록만 한다
+- 소스를 바꾸는 편집은 거부하고, 바뀐 pom은 다시 파싱돼야 한다
+- LLM은 최대 3번 호출한다. 검토 1번, 답변을 읽지 못했을 때 1번, 편집 적용이 실패했을 때 1번이다
+- 예외를 던지지 않는다.
+  LLM이 없거나 `review.enabled`가 꺼져 있으면 `skipped`, 오류가 나면 `failed`로 끝내고 빌드는 항상 진행한다
 
 StructureReviewer (implements `StructureReviewerLike`, v2 docs/v2/PLAN-v2.md §3.3, v2.1 docs/v2/PLAN-v2.1.md §2).
 
@@ -102,8 +102,8 @@ def _system_template(version: str = "v1") -> str:
 
 
 def helper_api_doc() -> str:
-    """프롬프트에 넣을 헬퍼 API 표: `sbmig.script.HELPER_API_DOC` 의 첫 표 줄부터(그 앞의 수정 루프용 답변
-    형식은 검토에 맞지 않아 뺀다). import 가 안 되면 계약서의 표(FALLBACK_HELPER_API).
+    """프롬프트에 넣을 도우미 API 표를 반환한다.
+    `sbmig.script.HELPER_API_DOC`의 첫 표 줄부터 쓰고, import할 수 없으면 FALLBACK_HELPER_API를 쓴다.
 
     The helper table of `sbmig.script.HELPER_API_DOC` when importable (from its first table line on: the fix-loop
     answer format in front of it does not apply to the review), else the contract's table."""
@@ -119,21 +119,21 @@ def helper_api_doc() -> str:
 
 
 def ask_script(cfg: Any) -> bool:
-    """v2.1y (사용자 결정 2): 검토가 `<script>` 도 요구하는가(`review.ask_script`, 기본 false = edits 만).
+    """검토에서 `<script>`도 요구할지 반환한다(`review.ask_script`). 기본값 false이면 edits만 받는다.
 
     Does the review ask for a `<script>` too (`review.ask_script`; default false = edits only)?"""
     return bool(getattr(getattr(cfg, "review", None), "ask_script", False))
 
 
 def _retry_text(msg: str, cfg: Any) -> str:
-    """재질의 문장: `review.ask_script` 면 끝에 선택 스크립트 안내를 붙인다."""
+    """LLM에 다시 요청할 문장을 만든다.
+    `review.ask_script`가 켜져 있으면 끝에 스크립트도 보낼 수 있다는 안내를 붙인다."""
     return msg + SCRIPT_RETRY_TAIL if ask_script(cfg) else msg
 
 
 def system_prompt(cfg: Config, version: str = "v1") -> str:
-    """구조 검토 system 프롬프트(`prompts/review_<version>.md`)에 추가 허용 import·변경 설명
-    언어(`report.language`)·헬퍼 API 표를 채워 돌려준다. v2.1y: `review.ask_script` 가 false(기본)면
-    `<!-- script:begin -->` … `<!-- script:end -->` 사이(스크립트 문단·예시·규칙·헬퍼 API 표)를 뺀다.
+    """구조 검토 system 프롬프트(`prompts/review_<version>.md`)를 채워 반환한다.
+    `review.ask_script`가 false이면 `<!-- script:begin -->`부터 `<!-- script:end -->`까지를 뺀다.
 
     The structure-review system prompt; v2.1y: without `review.ask_script` (the default) the marked script-only
     parts (script paragraph, `<changes>` / `<script>` example, script rules, helper API table) are left out."""
@@ -166,7 +166,7 @@ def _short(text: object, limit: int = 300) -> str:
 
 
 def _diff_stats(diff: str) -> dict[str, tuple[int, int]]:
-    """unified `git diff` 의 파일별 (추가 줄, 삭제 줄) 수.
+    """unified `git diff`에서 파일별 (추가 줄 수, 삭제 줄 수)를 센다.
 
     {file: (+lines, -lines)} of a unified `git diff`."""
     out: dict[str, list[int]] = {}
@@ -187,8 +187,8 @@ def _diff_stats(diff: str) -> dict[str, tuple[int, int]]:
 
 
 def _file_desc(path: str, notes: list[Any], changed: list[str]) -> str:
-    """바뀐 파일 `path` 에 대한 LLM 의 설명("where: change", 여러 개면 "; " 로 이음). 짧은 경로(파일명만)로
-    적힌 설명은 바뀐 파일 중 그 파일명이 하나뿐일 때만 인정한다.
+    """바뀐 파일 `path`에 대한 LLM의 설명을 찾는다.
+    파일 이름만 쓴 설명은 바뀐 파일 중 그 이름이 하나뿐일 때만 인정한다.
 
     The LLM's description(s) of the change to `path` ("where: change", several joined by "; "); a note with a
     short path counts when its basename names only this one of the changed files."""
@@ -213,9 +213,9 @@ def _file_desc(path: str, notes: list[Any], changed: list[str]) -> str:
 
 
 class StructureReviewer:
-    """구조 검토기. `llm`: 이 실행의 (예산이 걸린) LLMClientLike 또는 None, `runner`: v2 답의 스크립트를 돌릴
-    ScriptRunnerLike(None 이면 스크립트는 안 돌림), `kb`: v2.1 부터 쓰지 않음(루프가 오류 목록에 기록),
-    `edits_runner`: apply_edits 가 쓸 러너(None 이면 자체 ScriptRunner).
+    """구조 검토를 실행하는 클래스. `llm`은 사용량 제한이 걸린 LLMClientLike이거나 None이고, `runner`는
+    스크립트 답변을 실행할 ScriptRunnerLike다.
+    `kb`는 쓰지 않는다. `edits_runner`는 apply_edits가 쓸 러너이며, None이면 자체 ScriptRunner를 쓴다.
 
     `StructureReviewer(cfg, llm, runner, kb)` — `llm`: the run's (budgeted) LLMClientLike or None; `runner`: a
     ScriptRunnerLike for a v2 answer's script (None = such a script is not run); `kb`: ignored since v2.1 (the loop
@@ -235,8 +235,8 @@ class StructureReviewer:
     # ------------------------------------------------------------------ StructureReviewerLike
     def review(self, ws: Any, profile: Optional[ProjectProfile], cfg: Optional[Config] = None, *, run_id: str = "",
                restructure_notes: Iterable[str] = (), restructure_results: Iterable[Any] = ()) -> StructureReview:
-        """검토 한 번(StructureReviewerLike): 언제나 StructureReview 를 돌려주고 예외를 내지 않는다. 내부
-        오류면 verdict `failed` 이고 이미 적용한 수정은 되돌린다. 로그 줄마다 `[review]` 태그가 붙는다."""
+        """검토를 한 번 실행하고 항상 StructureReview를 반환한다. 예외를 던지지 않는다.
+        내부 오류가 나면 verdict를 `failed`로 하고 이미 적용한 수정은 되돌린다."""
         with stage("review"):
             cfg = cfg or self.cfg
             run_id = run_id or str(getattr(ws, "run_id", "") or "")
@@ -246,7 +246,7 @@ class StructureReviewer:
                                  case_type=profile.case_type if profile is not None else CaseType.UNKNOWN)
             try:
                 self._review(rv, ws, profile, cfg, list(restructure_notes or ()), list(restructure_results or ()))
-            # 검토가 깨져도 실행은 계속한다 — 최종 판정은 빌드 게이트(verify.build)가 한다
+            # noqa: BLE001 - 검토가 실패해도 실행은 계속하고 최종 결과는 빌드가 정한다
             except Exception as e:  # noqa: BLE001 - the review never stops a run
                 log.warning("structure review failed: %s: %s", type(e).__name__, e, exc_info=True)
                 rv.verdict = "failed"
@@ -261,8 +261,8 @@ class StructureReviewer:
     # ------------------------------------------------------------------ steps
     def _review(self, rv: StructureReview, ws: Any, profile: Optional[ProjectProfile], cfg: Config,
                 notes: list[str], results: list[Any]) -> None:
-        """검토 본체: 꺼짐 / LLM 없음 / pom 없음 → skipped; 입력 수집 → 질문(_ask, 최대 2회) → 답 반영(_take)
-        → critical 수정(_fix) → 편집이 실패했으면 실패 이유를 주고 한 번 더(_apply_retry)."""
+        """검토의 본체를 실행한다. 입력 수집 -> 질문(_ask) -> 답변 반영(_take) -> critical 수정(_fix) ->
+        편집 실패 시 재시도(_apply_retry) 순서로 진행한다."""
         if not cfg.review.enabled:
             rv.verdict, rv.note = "skipped", "review.enabled is off"
             return
@@ -298,11 +298,10 @@ class StructureReviewer:
             self._apply_retry(rv, ws, cfg, inp, messages)
 
     def _take(self, rv: StructureReview, parsed: ParsedReview, inp: ReviewInput) -> None:
-        """읽은 답을 검토 결과에 옮긴다: 이슈·요약·스크립트·네 부분 답변(ScriptProposal), 그리고 LLM 이 놓친
-        인코딩 불일치를 sbmig 가 critical 로 추가한다.
+        """읽은 답변을 검토 결과에 옮긴다. LLM이 놓친 인코딩 불일치는 sbmig가 critical 이슈로 추가한다.
 
         The parsed answer into the review: issues, analysis, script, and the four-part answer."""
-        # v2.1y (E-M5): 재료에 없는 버전·속성을 말한 이슈는 표시만 하고 고치지도 인수인계하지도 않는다
+        # 프롬프트 자료에 없는 버전이나 속성을 언급한 이슈는 표시만 하고 고치거나 인수인계하지 않는다
         rv.issues, self._unsupported = mark_unsupported(list(parsed.issues), inp.material_text(), inp.state_text())
         if self._unsupported:
             log.info("structure review: %d issue(s) name something not in the material (%s) — kept in the report, "
@@ -323,9 +322,9 @@ class StructureReviewer:
 
     def _ask(self, rv: StructureReview, cfg: Config, messages: list[ChatMessage]
              ) -> tuple[Optional[ParsedReview], str, list[ChatMessage]]:
-        """(읽은 답, 오류, 대화). 호출은 최대 2회: 검토, 그리고 첫 답을 못 읽었을 때(리뷰 JSON 없음 →
-        RETRY_MESSAGE, critical 옆의 edits 가 안 읽힘 → EDITS_RETRY_MESSAGE) 한 번 더. 두 번째가 실패해도 첫
-        답의 리뷰 JSON 이 읽혔으면 그것을 쓴다(편집 없이).
+        """LLM에 검토를 요청하고 (읽은 답변, 오류, 대화)를 반환한다. 최대 2번 호출하며, 첫 답변에 리뷰
+        JSON이 없거나 critical 이슈의 edits를 읽지 못하면 한 번 더 요청한다.
+        두 번째 요청이 실패해도 첫 답변의 리뷰 JSON을 읽었으면 편집 없이 그것을 쓴다.
 
         (parsed, error, conversation). At most two calls: the review, and once more when the first answer was
         unreadable (no review JSON — RETRY_MESSAGE; edits that cannot be read next to a critical issue —
@@ -360,9 +359,8 @@ class StructureReviewer:
         return None, _short(f"unreadable answer twice ({parsed.error}): {resp2.content}", 400), convo2
 
     def _call(self, rv: StructureReview, cfg: Config, messages: list[ChatMessage]) -> LLMResponse | str:
-        """LLM 한 번 호출(role `structure_review`, metadata 에 run_id·project·step). 실패하면 예외 대신
-        `llm-error: …` 문자열 — 검토만 건너뛰고 실행은 계속한다. 사용량은 `rv.llm_usage` 에
-        더한다(보고서·예산)."""
+        """LLM을 한 번 호출한다(role `structure_review`).
+        실패하면 예외 대신 `llm-error: …` 문자열을 반환하고, 사용량은 `rv.llm_usage`에 더한다."""
         model = None if _unset(cfg.llm.model) else cfg.llm.model
         meta = {"run_id": rv.run_id, "project": rv.project, "phase": "restructure", "step": STEP_ID}
         try:
@@ -381,11 +379,10 @@ class StructureReviewer:
         return resp
 
     def _encoding_check(self, rv: StructureReview, inp: ReviewInput) -> None:
-        """UTF-8 아닌 소스에 맞는 소스 인코딩이 없으면 계약상 critical(빌드 오류로는 절대 보이지 않는다). LLM
-        이 그 모듈의 인코딩 이슈를 말하지 않았으면 sbmig 가 `(sbmig
-        check)` 이슈로 직접 더한다(이 이슈의 수정은 하지 않는다). v2.1y (D-M7): LLM 의 이슈는 그 모듈의 pom 이나 모듈이
-        프로젝트 안에서 상속하는 pom 을 가리킬 때만 인정한다(역할 부모면 모듈은 루트 aggregator 를 상속하지 않는다 —
-        루트에 적어도 고쳐지지 않는다).
+        """UTF-8이 아닌 소스에 맞는 인코딩 선언이 없는 모듈을 critical로 처리한다.
+        이 문제는 빌드 오류로 드러나지 않기 때문이다.
+        LLM이 그 모듈의 인코딩 이슈를 지적하지 않았으면 sbmig가 `(sbmig check)` 이슈로 추가한다.
+        LLM의 이슈는 그 모듈의 pom이나 모듈이 상속하는 pom을 가리킬 때만 인정한다.
 
         Non-UTF-8 sources without a matching source encoding are critical by contract (no build error ever shows
         them). When the LLM did not name an encoding issue for such a module, sbmig adds it (no fix for it). v2.1y: the
@@ -420,8 +417,8 @@ class StructureReviewer:
                      "sources to UTF-8)" + (" — the module mixes encodings, convert one side" if me.mixed else ""))
 
     def _encoding_recheck(self, rv: StructureReview, ws: Any, cfg: Config) -> None:
-        """v2.1y (D-M7): 편집을 적용한 뒤 인코딩 불일치를 다시 계산한다 — 고쳐진 모듈의 `(sbmig check)` 이슈는 빼고, 여전히
-        불일치인 모듈은(LLM 이 고쳤다고 했어도) `(sbmig check)` critical 로 남긴다. 예외 없음.
+        """편집 뒤 인코딩 불일치를 다시 계산한다.
+        고쳐진 모듈의 이슈는 빼고, 여전히 불일치인 모듈은 critical로 남긴다. 예외를 던지지 않는다.
 
         After the edits the mismatches are recomputed: a fixed module's own sbmig issue is dropped, a module still
         mismatched gets (or keeps) one — whatever the LLM said. Never raises."""
@@ -447,13 +444,13 @@ class StructureReviewer:
 
     def _fix(self, rv: StructureReview, ws: Any, cfg: Config, parsed: ParsedReview,
              inp: Optional[ReviewInput] = None) -> str:
-        """critical 이슈에 대한 답의 수정을 적용한다: 편집이 있으면 편집, 없으면(v2 답) 스크립트. "" = 끝(할
-        일 없음 포함), "retry" = 편집이 실패해 트리를 되돌렸음(LLM 이 한 번 고칠 수 있다). critical 이 없거나,
-        `review.fix_critical` 이 꺼졌거나, 작업 트리에 커밋 안 된 변경이 있으면 적용하지 않는다.
+        """critical 이슈에 대한 수정을 적용한다. 편집이 있으면 편집을, 없으면 스크립트를 쓴다.
+        빈 문자열을 반환하면 끝났다는 뜻이고, "retry"는 편집이 실패해 트리를 되돌렸다는 뜻이다.
+        작업 트리에 커밋되지 않은 변경이 있으면 적용하지 않는다.
 
         Apply the answer's fix for the critical issues: its edits, else (a v2 answer) its script. "" = done (or
         nothing to do), "retry" = the edits failed and the tree was restored (the LLM may correct them once)."""
-        # v2.1y (E-M5): 재료에 없는 것을 말한 critical 은 고칠 대상이 아니다
+        # 프롬프트 자료에 없는 내용을 언급한 critical 이슈는 고치지 않는다
         critical = [i for i in rv.critical if not i.unsupported]
         edits = list(parsed.edits)
         if not edits and not rv.script:
@@ -473,7 +470,7 @@ class StructureReviewer:
         if not edits and self.runner is None:
             rv.note = "script not run: no script runner in this run"
             return ""
-        # 재구성이 커밋되지 않았으면 적용하지 않는다 — 실패 시 되돌리기(discard)가 재구성까지 지운다
+        # 실패했을 때 되돌리면 커밋되지 않은 재구성까지 지워지므로 이때는 적용하지 않는다
         if self._dirty(ws):
             rv.note = (f"{what} not applied: the working tree has uncommitted changes (the restructure must be "
                        "committed before the review — restoring after a failed fix would lose them)")
@@ -486,9 +483,8 @@ class StructureReviewer:
 
     def _apply(self, rv: StructureReview, ws: Any, cfg: Config, parsed: ParsedReview,
                inp: Optional[ReviewInput] = None) -> str:
-        """검토의 편집을 apply_edits 로 적용한다(커밋 안 함). 소스(.java / .jsp 등)를 고치는 편집은 적용 전에
-        거부, 적용 뒤 git 이 본 변경에 소스가 있거나 pom 이
-        파싱되지 않으면 되돌린다. 적용 실패·pom 파싱 실패는 "retry".
+        """검토의 편집을 apply_edits로 적용하며, 커밋하지 않는다.
+        소스를 고치는 편집은 거부하고, 적용이 실패하거나 pom을 파싱할 수 없으면 되돌린 뒤 "retry"를 반환한다.
 
         The review's edits through `apply_edits` (uncommitted); restored on failure → "retry"."""
         from sbmig.script.edits import apply_edits, summarize_edits
@@ -512,7 +508,7 @@ class StructureReviewer:
             what = res.error or "; ".join(res.problems[:3]) or "-"
             self._restore(ws, rv, f"review edits failed ({res.status}): {_short(what, 300)}")
             return "retry"
-        # 편집기의 보고를 그대로 믿지 않고 git 이 본 변경으로 확인한다(소스 가드·pom 파싱 검사도 이 목록 기준)
+        # 편집기의 보고 대신 git이 확인한 변경을 기준으로 하며, 소스 수정 검사와 pom 파싱 검사도 이 목록을 쓴다
         changed = self._changed_files(ws, res.changed_files)
         if changed != sorted(res.changed_files):
             rv.script_result = res = res.model_copy(update={"changed_files": changed})
@@ -528,7 +524,7 @@ class StructureReviewer:
         if broken:
             self._restore(ws, rv, "review edits left unparsable pom(s): " + "; ".join(broken[:3]) + " — restored")
             return "retry"
-        # v2.1y (D-M4): 검토 편집이 재구성의 결정(체인 속성·관리 버전·부모·필수)을 되돌렸으면 복원하고 이유를 주며 다시 묻는다
+        # 검토 편집이 재구성의 결정을 되돌렸으면 복원하고, 이유를 알려 다시 요청한다
         violations = self._invariants(ws, cfg, changed, inp) if inp is not None and \
             getattr(cfg.review, "invariant_check", True) else []
         if violations:
@@ -546,8 +542,8 @@ class StructureReviewer:
 
     def _apply_retry(self, rv: StructureReview, ws: Any, cfg: Config, inp: ReviewInput,
                      convo: list[ChatMessage]) -> None:
-        """편집이 실패해 되돌린 뒤: 실패 이유를 LLM 에 알리고 고친 편집을 한 번만 적용한다(세 번째 시도는
-        없다). 고친 답도 적용되지 않으면 첫 결과와 "되돌림" 상태를 남긴다.
+        """되돌린 뒤 실패 이유를 LLM에 알리고, 고친 편집을 한 번만 다시 적용한다.
+        그래도 실패하면 첫 결과와 되돌린 상태를 남긴다.
 
         The edits failed and were restored: tell the LLM why, apply its corrected edits once (no further retry)."""
         error = rv.note
@@ -572,8 +568,8 @@ class StructureReviewer:
         rv.note = f"{rv.note} (second try; first: {_short(error, 200)})"
 
     def _run_script(self, rv: StructureReview, ws: Any) -> None:
-        """v2 답(편집 없이 스크립트만): ScriptRunnerLike 로 실행한다. 실패·소스 수정·깨진 pom 이면 되돌리고,
-        성공해도 커밋은 오케스트레이터 몫이다.
+        """편집 없이 스크립트만 온 답변을 ScriptRunnerLike로 실행한다.
+        실행이 실패하거나, 소스를 고쳤거나, pom이 깨졌으면 되돌린다.
 
         A v2 answer: the review's script (no edits) through the ScriptRunnerLike, as before v2.1."""
         log.info("structure review: running the review script for %d critical issue(s)", len(rv.critical))
@@ -607,7 +603,7 @@ class StructureReviewer:
 
     # ------------------------------------------------------------------ helpers
     def _supported_edits(self, edits: list[Any]) -> list[Any]:
-        """v2.1y (E-M5): 재료에 없는 버전·속성(표시된 이슈의 토큰)을 담은 편집은 뺀다."""
+        """프롬프트 자료에 없는 버전이나 속성을 담은 편집을 뺀 목록을 반환한다."""
         if not self._unsupported:
             return edits
         kept: list[Any] = []
@@ -627,7 +623,8 @@ class StructureReviewer:
 
     @staticmethod
     def _invariants(ws: Any, cfg: Config, changed: list[str], inp: ReviewInput) -> list[str]:
-        """v2.1y (D-M4): 바뀐 pom 을 다시 읽어 `invariant_violations` 로 검사한다(검사 실패 = 위반 없음)."""
+        """바뀐 pom을 다시 읽어 `invariant_violations`로 재구성의 결정을 되돌렸는지 검사한다.
+        검사 자체가 실패하면 위반이 없는 것으로 본다."""
         try:
             from sbmig.analyze.pom_parser import parse_poms
 
@@ -643,8 +640,8 @@ class StructureReviewer:
 
     @staticmethod
     def _save_input(ws: Any, text: str) -> None:
-        """v2.1v (D-L5): 검토의 user 프롬프트를 `<run dir>/logs/review-input.md` 로 남긴다(실행 디렉토리가 없으면 조용히
-        건너뜀 — 예외 없음)."""
+        """검토에 쓴 user 프롬프트를 `<run dir>/logs/review-input.md`에 저장한다.
+        실행 디렉토리가 없으면 건너뛴다."""
         try:
             from sbmig.core.workspace import logs_dir
 
@@ -664,7 +661,8 @@ class StructureReviewer:
 
     @staticmethod
     def _changed_files(ws: Any, reported: Iterable[str]) -> list[str]:
-        """수정이 보고한 파일 + git 이 본 변경(HEAD 이후)의 합집합(git 이 없으면 보고만)."""
+        """수정이 보고한 파일과 git이 확인한 변경 파일을 합쳐 반환한다.
+        git을 쓸 수 없으면 보고된 파일만 반환한다."""
         out = {str(f).replace("\\", "/") for f in (reported or []) if f}
         try:
             out |= set(ws.changed_files_since(ws.head()))
@@ -674,8 +672,7 @@ class StructureReviewer:
 
     @staticmethod
     def _log_diff(ws: Any, changed: list[str], solution: str, notes: Iterable[Any] = ()) -> None:
-        """바뀐 파일마다 `structure review 수정: <파일> (+a −b) — <설명>` 한 줄(INFO), diff 본문은 DEBUG 로
-        남긴다.
+        """바뀐 파일마다 INFO 로그를 한 줄 남기고, diff 본문은 DEBUG 로그로 남긴다.
 
         `수정: <file> (+a −b) — <the LLM's description of that file's change, else the solution> … diff N lines`
         per changed file, the diff itself at DEBUG."""
@@ -698,7 +695,7 @@ class StructureReviewer:
 
     @staticmethod
     def _unparsable_poms(ws: Any, changed: list[str]) -> list[str]:
-        """바뀐 pom.xml 중 다시 파싱되지 않는 것들(있으면 호출한 쪽이 되돌린다)."""
+        """바뀐 pom.xml 중 다시 파싱되지 않는 파일을 반환한다. 결과가 있으면 호출한 쪽이 되돌린다."""
         from sbmig.analyze.pom_parser import parse_pom_text
 
         out: list[str] = []
@@ -715,8 +712,8 @@ class StructureReviewer:
 
     @staticmethod
     def _restore(ws: Any, rv: StructureReview, note: str) -> None:
-        """커밋 안 된 변경을 모두 버리고(`discard_uncommitted`) `rv.reverted=True` 와 메모를 남긴다. 되돌리기
-        자체가 실패하면 그 사실을 메모에 덧붙인다."""
+        """커밋되지 않은 변경을 모두 버리고 `rv.reverted=True`와 메모를 남긴다.
+        되돌리기가 실패하면 그 사실을 메모에 덧붙인다."""
         try:
             ws.discard_uncommitted()
             rv.reverted = True
@@ -728,8 +725,7 @@ class StructureReviewer:
 
     @staticmethod
     def _log_summary(rv: StructureReview) -> None:
-        """검토 끝 요약 줄(verdict, critical / warning 수, 수정 결과,
-        LLM 호출 수)과 critical 이슈 줄(INFO), warning 은 DEBUG."""
+        """검토가 끝나면 요약 줄과 critical 이슈 줄을 INFO 로그로, warning은 DEBUG 로그로 남긴다."""
         crit, warn = len(rv.critical), len(rv.issues) - len(rv.critical)
         edits = len(rv.answer.edits) if rv.answer is not None else 0
         kind = "edits" if edits else "script"

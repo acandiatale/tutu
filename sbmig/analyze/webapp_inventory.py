@@ -1,11 +1,11 @@
-"""pom 이 없는 Tomcat 웹앱 트리(풀어 놓은 WAR: JSP + 자바 소스 + ``WEB-INF/lib`` jar)의 읽기 전용
-목록(``sbmig inventory``). 왜 있나: 회사 결정(2026-10-23) — pom 없는 트리는 마이그레이션하지 않고 접수에서
-거부한다(pom 합성 없음, JSP 정리 없음). 이 모듈은 그 거부 안내문에 붙일 "이 트리가 무엇인지" 를 담당 팀에
-설명하는 도구일 뿐, 아무것도 바꾸지 않는다. 흐름상 위치: CLI ``sbmig inventory <dir>`` 가
-:func:`scan_webapp_tree` 를 부르고 ``sbmig.report.inventory`` 가 보고서로 쓴다(마이그레이션 실행 흐름 밖).
-모으는 것: web.xml 스펙·서블릿·프레임워크, JNDI 이름, JSP / 정적 파일 수, 파일 이름으로 추정한 jar
-좌표(``knowledge/libraries/jar_names.yml``), class 파일의 Java 수준, 소스 루트, 중복 클래스, 웹앱 루트마다의
-Maven 모듈 제안(참고용). 파일 하나가 깨져도 경고일 뿐 예외는 없다.
+"""pom이 없는 Tomcat 웹앱 트리(풀어 놓은 WAR)를 읽어 무엇이 들어 있는지 정리하는 모듈.
+아무것도 바꾸지 않는다.
+pom이 없는 트리는 접수에서 거부하므로, 담당 팀에 보낼 거부 안내에 이 트리의 내용을 설명하기 위해 쓴다.
+CLI ``sbmig inventory <dir>``가 :func:`scan_webapp_tree`를 호출하고 ``sbmig.report.inventory``가 보고서로
+만든다. 이관 실행 흐름에는 포함되지 않는다.
+- web.xml, JNDI 이름, JSP와 정적 파일 수, jar 좌표 추정, class 파일의 Java 버전, 소스 루트, 중복 클래스,
+  웹앱 루트별 Maven 모듈 제안을 모은다
+- 파일 하나가 깨져도 경고만 남기고 예외를 던지지 않는다
 
 Read-only inventory of a Tomcat webapp tree WITHOUT a pom (`sbmig inventory`, 2026-10-23).
 
@@ -58,7 +58,7 @@ _RESOURCE_NAME_RE = re.compile(r"<Resource\b[^>]*?\bname\s*=\s*[\"']([^\"']+)[\"
 _RES_REF_RE = re.compile(r"<(?:res-ref-name|resource-env-ref-name)>\s*([^<]+?)\s*</", re.S)
 _JSP_JAVAX_IMPORT_RE = re.compile(r"<%@\s*page\b[^%]*\bimport\s*=\s*[\"'][^\"']*\bjavax\.", re.S)
 
-# 프레임워크 분류(import 접두어). 한 파일이 여러 분류에 동시에 셀 수 있다
+# import 접두어로 프레임워크를 분류한다. 한 파일이 여러 분류에 동시에 셀 수 있다
 # framework categories of the imports (first matching prefixes win nothing: a file can count for several)
 FRAMEWORK_IMPORTS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("spring", ("org.springframework.",)),
@@ -77,8 +77,8 @@ CLASS_MAJOR_JAVA = {45: "1.1", 46: "1.2", 47: "1.3", 48: "1.4", 49: "1.5", 50: "
 # ------------------------------------------------------------------------------------------------ jar names table
 @lru_cache(maxsize=4)
 def jar_names(path: Optional[str] = None) -> dict[str, tuple[str, str]]:
-    """jar 이름 표(``knowledge/libraries/jar_names.yml``) →
-    ``{소문자 stem: (groupId:artifactId, 메모)}``. 못 읽으면 {}.
+    """jar 이름 표(``knowledge/libraries/jar_names.yml``)를 ``{소문자 stem: (groupId:artifactId, 메모)}``로
+    읽는다. 읽지 못하면 빈 딕셔너리를 반환한다.
 
     `knowledge/libraries/jar_names.yml` → {stem.lower(): (groupId:artifactId, note)}; {} when unreadable."""
     p = Path(path) if path else JAR_NAMES_FILE
@@ -95,7 +95,8 @@ def jar_names(path: Optional[str] = None) -> dict[str, tuple[str, str]]:
 
 
 def _jar_base(name: str) -> Optional[str]:
-    """jar 파일 이름(백업 ``x-1.0.jar.old`` 는 ``x-1.0.jar`` 로), jar 가 아니면 None.
+    """jar 파일 이름을 반환한다.
+    백업 파일 ``x-1.0.jar.old``는 ``x-1.0.jar``로 바꾸고, jar가 아니면 None을 반환한다.
 
     `x-1.0.jar` → `x-1.0.jar`; a backup `x-1.0.jar.old` → `x-1.0.jar`; anything else None."""
     low = name.lower()
@@ -106,9 +107,9 @@ def _jar_base(name: str) -> Optional[str]:
 
 
 def guess_jar(name: str) -> tuple[Optional[str], Optional[str], str]:
-    """jar 파일 이름에서 (추정 좌표, 추정 버전, stem). 표가 아는 가장 긴 stem
-    이 이기고(``commons-lang3-3.1.jar`` → commons-lang3 / 3.1), 모르는 이름은 정규식으로 이름-버전을 가르거나
-    ``.jar`` 를 뗀 이름 전체를 stem 으로 쓴다.
+    """jar 파일 이름에서 (추정 좌표, 추정 버전, stem)을 구한다.
+    표가 아는 가장 긴 stem을 쓰고, 모르는 이름은 정규식으로 이름과 버전을
+    나누거나 ``.jar``를 뗀 이름 전체를 stem으로 쓴다.
 
     (artifact_guess, version_guess, stem) of a jar file name. The longest stem the table knows wins (`commons-
     lang3-3.1.jar` → commons-lang3 / 3.1, `ojdbc6.jar` → ojdbc6 / None); unknown names fall back to the regex split
@@ -131,7 +132,7 @@ def guess_jar(name: str) -> tuple[Optional[str], Optional[str], str]:
 
 
 def jar_note(jar: JarInfo) -> str:
-    """jar 의 표 메모(없으면 "") — 인벤토리 보고서의 ``note`` 칸.
+    """jar에 대한 이름 표의 메모를 반환한다. 메모가 없으면 빈 문자열을 반환한다.
 
     The table note for a jar ("" when none) — the writer's `note` column."""
     _, _, stem = guess_jar(jar.name)
@@ -140,7 +141,8 @@ def jar_note(jar: JarInfo) -> str:
 
 
 def java_level(major: Optional[int]) -> Optional[str]:
-    """class 파일 major 버전 → Java 수준(45 → 1.1 … 52 → 1.8, 53 이상은 major − 44). 모르면 None."""
+    """class 파일의 major 버전을 Java 버전으로 바꾼다(52는 1.8, 53 이상은 major - 44).
+    모르는 값이면 None을 반환한다."""
     if not major:
         return None
     return CLASS_MAJOR_JAVA.get(major) or (str(major - 44) if major > 52 else None)
@@ -156,7 +158,8 @@ def _join(d: str, *parts: str) -> str:
 
 
 def _read_text(p: Path, limit: int, warnings: list[str], rel: str) -> str:
-    """파일 앞부분(``limit`` 바이트)을 utf-8 → cp949 → latin-1 순으로 디코딩. 못 읽으면 경고 + ""."""
+    """파일 앞부분(``limit`` 바이트)을 utf-8, cp949, latin-1 순으로 디코딩한다.
+    읽지 못하면 경고를 남기고 빈 문자열을 반환한다."""
     try:
         data = p.read_bytes()[:limit]
     except OSError as e:
@@ -171,7 +174,7 @@ def _read_text(p: Path, limit: int, warnings: list[str], rel: str) -> str:
 
 
 def _sha1(p: Path) -> str:
-    """파일 sha1(64 KB 씩 읽음) — 같은 jar 의 사본을 알아보는 데 쓴다."""
+    """파일의 sha1을 계산한다. 같은 jar의 복사본을 알아보는 데 쓴다."""
     h = hashlib.sha1()
     with p.open("rb") as f:
         for chunk in iter(lambda: f.read(1 << 16), b""):
@@ -180,7 +183,7 @@ def _sha1(p: Path) -> str:
 
 
 def _class_major(p: Path) -> Optional[int]:
-    """class 파일 헤더(CAFEBABE 다음 major 버전)를 읽는다. class 파일이 아니면 None."""
+    """class 파일 헤더에서 major 버전을 읽는다. class 파일이 아니면 None을 반환한다."""
     try:
         with p.open("rb") as f:
             head = f.read(8)
@@ -196,8 +199,8 @@ def _sample(items, n: int) -> list[str]:
 
 
 def _walk(root: Path) -> tuple[list[str], set[str]]:
-    """루트 아래 모든 파일(posix 상대 경로)과 모든 디렉토리.
-    ``SKIP_DIRS`` (.git, target, node_modules …)는 건너뛴다.
+    """루트 아래의 모든 파일(상대 경로)과 디렉토리를 반환한다.
+    ``SKIP_DIRS``(.git, target, node_modules 등)는 건너뛴다.
 
     All files (root-relative posix) and all directories, skipping SKIP_DIRS."""
     files: list[str] = []
@@ -215,8 +218,8 @@ def _walk(root: Path) -> tuple[list[str], set[str]]:
 
 # ------------------------------------------------------------------------------------------------ webapp roots
 def _scan_web_xml(root: Path, wr: WebappRoot, warnings: list[str]) -> None:
-    """web.xml 을 정규식으로 훑는다(스펙, 서블릿·필터·리스너·taglib 수, 서블릿 클래스로 본
-    프레임워크, JNDI 참조). 완전 파싱(:mod:`sbmig.analyze.webxml`)이 아니라 목록용 대략치다."""
+    """web.xml을 정규식으로 검사해 스펙, 서블릿 / 필터 / 리스너 / taglib 수, 프레임워크, JNDI 참조를 모은다.
+    완전한 파싱(:mod:`sbmig.analyze.webxml`)이 아니라 목록을 만들기 위한 대략적인 값이다."""
     if not wr.web_xml:
         return
     text = _XML_COMMENT_RE.sub("", _read_text(root / wr.web_xml, MAX_XML_BYTES, warnings, wr.web_xml))
@@ -251,8 +254,8 @@ def _scan_web_xml(root: Path, wr: WebappRoot, warnings: list[str]) -> None:
 
 
 def _scan_lib(root: Path, wr: WebappRoot, lib_files: list[str], warnings: list[str]) -> None:
-    """``WEB-INF/lib`` 의 jar 마다 크기·sha1·추정 좌표를 적는다. ``*.jar.old`` 백업은 무시 표시,
-    같은 라이브러리의 버전이 여럿이면 경고(Tomcat 이 둘 다 올린다)."""
+    """``WEB-INF/lib``의 jar마다 크기, sha1, 추정 좌표를 기록한다.
+    ``*.jar.old`` 백업은 무시 표시를 하고, Tomcat이 둘 다 로드하므로 같은 라이브러리가 여러 버전이면 경고한다."""
     lib = _join(wr.dir, "WEB-INF", "lib")
     by_stem: dict[str, list[str]] = defaultdict(list)
     for rel in lib_files:
@@ -286,8 +289,8 @@ def _scan_lib(root: Path, wr: WebappRoot, lib_files: list[str], warnings: list[s
 
 
 def _scan_classes(root: Path, wr: WebappRoot, class_files: list[str]) -> dict[str, str]:
-    """``WEB-INF/classes`` 의 class 파일 Java 수준(최소 / 최대)을 적고
-    ``{바깥 클래스 FQCN: 경로}`` 를 돌려준다 (소스 없는 클래스를 찾는 데 쓴다).
+    """``WEB-INF/classes``의 class 파일 Java 버전(최소, 최대)을 기록하고 ``{바깥 클래스 FQCN: 경로}``를
+    반환한다. 소스 없는 클래스를 찾는 데 쓴다.
 
     Class-file majors of WEB-INF/classes; returns {outer FQCN: rel path}."""
     base = _join(wr.dir, "WEB-INF", "classes") + "/"
@@ -310,8 +313,7 @@ def _scan_classes(root: Path, wr: WebappRoot, class_files: list[str]) -> dict[st
 
 # ------------------------------------------------------------------------------------------------ sources
 def _source_root_of(rel: str, package: str) -> tuple[str, bool]:
-    """``package a.b;`` 선언과 디렉토리가 맞으면 (그 위 디렉토리
-    = 소스 루트, True), 안 맞으면 (자기 디렉토리, False)."""
+    """``package a.b;`` 선언이 디렉토리와 맞으면 (소스 루트, True)를, 맞지 않으면 (자기 디렉토리, False)를 반환한다."""
     d = posixpath.dirname(rel)
     if not package:
         return d, True
@@ -324,7 +326,7 @@ def _source_root_of(rel: str, package: str) -> tuple[str, bool]:
 
 
 def _inside(d: str, webapp_dirs: list[str]) -> Optional[str]:
-    """``d`` 를 품는 가장 깊은 웹앱 루트(없으면 None).
+    """``d``를 포함하는 가장 깊은 웹앱 루트를 반환한다. 없으면 None을 반환한다.
 
     The deepest webapp root dir `d` lies under (or None)."""
     best: Optional[str] = None
@@ -336,9 +338,8 @@ def _inside(d: str, webapp_dirs: list[str]) -> Optional[str]:
 
 # ------------------------------------------------------------------------------------------------ main entry
 def scan_webapp_tree(root: Path, *, max_sample: int = 8, name: Optional[str] = None) -> WebappInventory:
-    """pom 없는 웹앱 트리의 목록(읽기 전용) → ``WebappInventory``. 순서: 빌드 파일 → 웹앱 루트(WEB-INF 가 있는
-    디렉토리) → web.xml / context.xml / lib / classes / JSP → 소스 루트 → 소스 없는 클래스 → 모듈 제안.
-    ``name`` 은 제안에서 루트 폴더 이름 대신 쓸 이름(zip 을 임시 폴더에 푼 경우).
+    """pom 없는 웹앱 트리를 읽어 ``WebappInventory``를 반환한다. 파일을 바꾸지 않는다.
+    ``name``은 zip을 임시 폴더에 풀었을 때 루트 폴더 이름 대신 쓸 이름이다.
 
     Inventory of a pom-less webapp tree (read only). See the module docstring. `name` replaces the root's
     basename in the proposals (a zip extracted to a temp dir)."""
@@ -353,8 +354,8 @@ def scan_webapp_tree(root: Path, *, max_sample: int = 8, name: Optional[str] = N
         if posixpath.basename(f) == "pom.xml":
             warnings.append(f"this tree has a pom at {f}: use `sbmig run` for that module")
 
-    # 웹앱 루트 = WEB-INF 를 자식으로 가진 디렉토리. WEB-INF
-    # 안에 또 있는 WEB-INF(백업 사본 등)는 루트로 치지 않는다
+    # WEB-INF를 자식으로 가진 디렉토리가 웹앱 루트다.
+    # 백업 복사본처럼 WEB-INF 안에 다시 있는 WEB-INF는 제외한다
     # 2. webapp roots: directories with a WEB-INF child (WEB-INF nested inside another WEB-INF does not count)
     webapp_dirs = sorted(posixpath.dirname(d) if "/" in d else "" for d in dirs
                          if posixpath.basename(d) == "WEB-INF" and "WEB-INF" not in d.split("/")[:-1])
@@ -368,8 +369,7 @@ def scan_webapp_tree(root: Path, *, max_sample: int = 8, name: Optional[str] = N
         web_inf = _join(wd, "WEB-INF")
         nested = [o for o in webapp_dirs if o != wd and _under(o, wd)]
 
-        # 이 루트의 파일 = 루트 아래이면서 안쪽에 중첩된 다른 웹앱
-        # 루트 아래는 아닌 것 (기본 인자로 루프 변수를 고정한다)
+        # 안쪽에 중첩된 다른 웹앱 루트의 파일은 제외한다. 루프 변수는 기본 인자로 고정한다
         def mine(rel: str, _wd=wd, _nested=nested) -> bool:
             return _under(rel, _wd) and not any(_under(rel, o) for o in _nested)
 
@@ -498,7 +498,7 @@ def scan_webapp_tree(root: Path, *, max_sample: int = 8, name: Optional[str] = N
 
     # 4. proposals
     inv.proposals = _proposals(name or root.name, inv, max_sample, jsp_javax_by_dir)
-    # v2.1z-d: ADF 이면 규모 요약도 같이(읽기 전용 센서스 도구가 ADF 를 알아보게) / the ADF sizing for the census helper
+    # 읽기 전용 inventory 도구도 ADF 프로젝트를 알아보도록 ADF이면 규모 요약을 함께 담는다 / the ADF sizing for the census helper
     try:
         from .adf import detect_adf
         _adf = detect_adf(root)
@@ -511,9 +511,8 @@ def scan_webapp_tree(root: Path, *, max_sample: int = 8, name: Optional[str] = N
 
 def _proposals(root_name: str, inv: WebappInventory, max_sample: int,
                jsp_javax_by_dir: dict[str, int]) -> list[ModuleProposal]:
-    """웹앱 루트마다 Maven 모듈 하나를 제안한다(이름, 소스 디렉토리, Java 수준, 의존성 추정 수, 메모). 루트가
-    없고 소스만 있으면 jar 모듈 하나. 참고용 제안일 뿐이다 — pom 합성은 회사 결정으로 하지 않는다.
-    주의: 메모 문구의 "source-encoding handler" 는 v1 핸들러 이름이다(v2 에는 없음)."""
+    """웹앱 루트마다 Maven 모듈 하나를 제안한다. 루트 없이 소스만 있으면 jar 모듈 하나를 제안한다.
+    참고용 제안일 뿐이며 pom을 만들지는 않는다."""
     roots, sroots = inv.webapp_roots, inv.source_roots
     majors = [wr.class_major_max for wr in roots if wr.class_major_max]
     overall = java_level(max(majors)) if majors else None
@@ -566,8 +565,8 @@ def _proposals(root_name: str, inv: WebappInventory, max_sample: int,
 
 
 def _source_notes(mp: ModuleProposal, sroots: list[SourceRoot]) -> None:
-    """소스 루트에서 나온 메모를 제안에 더한다: UTF-8 이 아닌 인코딩(cp949 / euc-kr → MS949 로 표기),
-    sun.* / com.sun.* 같은 JDK 내부 API import."""
+    """소스 루트에서 나온 메모를 제안에 추가한다.
+    UTF-8이 아닌 인코딩과 sun.* / com.sun.* 같은 JDK 내부 API import가 해당한다."""
     encs = sorted({s.encoding for s in sroots if s.encoding not in ("utf-8", "ascii")})
     for enc in encs:
         label = "MS949" if enc.lower().replace("-", "_") in ("cp949", "ms949", "euc_kr") else enc

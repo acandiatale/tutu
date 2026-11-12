@@ -1,17 +1,13 @@
-"""LLMFixer — 2단 접점(`ScriptFixerLike.propose_script`)의 기본 구현: 문맥 꾸리기 → LLM → 답변 파싱 → 정적
-사전 검사 / 피드백 1회 → FixAnswer(= ScriptProposal). 흐름상 위치: 수정 루프가 케이스마다 사다리에서 LLM 이
-필요할 때(보강 / 신규) `propose_script` 를 부르고, 메이저 업그레이드·라이브러리 교체가 `<verify>` 없이
-적용됐을 때 `verify_guide` 를 부른다. 답변(v2.1): `<analysis>` 원인, `<solution>` 해결 방법, `<edits>`
-수정(루프가 `sbmig.script.apply_edits` 로 바로 적용), `<script>` 재사용 스크립트(같은 케이스의 다른
-프로젝트용으로 KB 에 저장) 또는 `<no_script>` + 이유, `<changes>` 현업이 읽는 변경 설명, v2.1d `<verify>`
-운영자 확인 사항(메이저 업그레이드 뒤 필수, 규칙 14). 신규는 편집 + 스크립트를, 보강은 더 나은 완전한
-스크립트(또는 no_script + 편집)를 요청한다. LLM 호출 한도: propose_script 한 번 = 첫 질문 1회 + LLM 이
-파일·grep 을 더 달라면(`<need_files>` / `<need_grep>`) 최대 `llm.max_context_rounds`(기본 2)회 + 쓸 수 없는
-스크립트·못 읽는 편집이면 피드백 1회. 케이스당 몇 번 부르는지는 루프가 정한다(한 실행에서 저장본 1회 + LLM
-요청 `script.max_llm_tries_per_case` 회, 그중 보강 `script.max_augments_per_case` 회). verify_guide 는 그 시도당 1회. 지킬 것: fixer 는 작업 트리를 고치지
-않는다 — 적용·커밋·재빌드 채점·되돌리기는 루프 몫이다(예전 사내 에이전트가 빌드를 돌리지 않고 "끝" 이라고 한
-실패 때문에 모든 판정은 재빌드로 한다). 절대 예외를 내지
-않는다(전송 오류는 루프가 분류하는 `llm-error: …` 분석 문구가 된다).
+"""LLM에 빌드 오류 수정 스크립트를 요청하는 LLMFixer 모듈.
+수정 단계 플러그인 인터페이스(`ScriptFixerLike.propose_script`)의 기본 구현이다.
+처리 순서: 문맥 구성 -> LLM 호출 -> 답변 파싱 -> 정적 검사와 피드백 1회 -> FixAnswer.
+수정 루프가 보강이나 신규 단계에서 LLM이 필요할 때 `propose_script`를 호출하고, 메이저 업그레이드가
+`<verify>` 없이 적용되면 `verify_guide`를 호출한다.
+- 답변은 `<analysis>`, `<solution>`, `<edits>`, `<script>` 또는 `<no_script>`, `<changes>`, `<verify>` 블록으로 이뤄진다
+- propose_script 한 번에 LLM을 첫 요청, 문맥 라운드 최대 `llm.max_context_rounds`회, 피드백 1회까지
+  호출한다. 케이스당 요청 횟수는 수정 루프가 정한다
+- fixer는 작업 트리를 고치지 않는다. 적용, 커밋, 재빌드로 하는 시도 결과 평가, 되돌리기는 수정 루프가 한다
+- 예외를 던지지 않는다. 전송 오류는 수정 루프가 분류하는 `llm-error: …` 문구로 바꿔 돌려준다
 
 LLMFixer: the default fixer seam (`propose_script`, ScriptFixerLike): context packing → LLM → answer parsing →
 static pre-check / one feedback round → FixAnswer (= ScriptProposal).
@@ -110,8 +106,8 @@ _HEADING_RE = re.compile(r"^[ \t]*#{1,6}[ \t]+", re.MULTILINE)
 
 
 def _script_module_attr(name: str) -> Any:
-    """`sbmig.script` 의 속성(HELPER_API_DOC, ALLOWED_IMPORTS, check_script). 모듈이 없거나 깨졌으면 None —
-    그러면 fixer 가 가진 계약 사본을 쓴다.
+    """`sbmig.script` 모듈의 속성을 읽는다.
+    모듈이 없거나 깨졌으면 None을 반환하고, 그때는 fixer 안에 둔 복사본을 쓴다.
 
     An attribute of agent S's `sbmig.script` (HELPER_API_DOC, ALLOWED_IMPORTS, check_script), or None when the
     module is missing or broken — the fixer then falls back to its own copy of the contract."""
@@ -123,8 +119,8 @@ def _script_module_attr(name: str) -> Any:
 
 
 def script_allowed_imports(extra: tuple[str, ...] | list[str] = ()) -> list[str]:
-    """스크립트의 import 허용 목록: `sbmig.script.ALLOWED_IMPORTS`(없으면 계약 사본) +
-    `extra`(`script.extra_allowed_imports`)."""
+    """스크립트가 import할 수 있는 모듈 목록을 만든다.
+    `sbmig.script.ALLOWED_IMPORTS`(없으면 fixer 안의 복사본)에 `script.extra_allowed_imports`를 더한다."""
     base = _script_module_attr("ALLOWED_IMPORTS") or DEFAULT_SCRIPT_IMPORTS
     out = [str(m) for m in base]
     out += [str(m) for m in extra if str(m) not in out]
@@ -132,8 +128,8 @@ def script_allowed_imports(extra: tuple[str, ...] | list[str] = ()) -> list[str]
 
 
 def script_helper_api_doc(extra_imports: tuple[str, ...] = (), timeout_s: Optional[int] = None) -> str:
-    """스크립트 프롬프트의 헬퍼 API 표(`sbmig.script.helper_api_doc(...)`, 없으면 HELPER_API_DOC). 못 구하면
-    "" — 프롬프트 파일에 든 자체 표가 쓰인다.
+    """스크립트 프롬프트에 넣을 헬퍼 API 표를 만든다.
+    만들지 못하면 빈 문자열을 반환하고, 그때는 프롬프트 파일에 있는 표를 쓴다.
 
     The helper API block of the script prompt from agent S's `sbmig.script` (`helper_api_doc(...)`, else
     `HELPER_API_DOC`); "" when unavailable — the prompt file then uses its own copy of the table."""
@@ -150,10 +146,8 @@ def script_helper_api_doc(extra_imports: tuple[str, ...] = (), timeout_s: Option
 @lru_cache(maxsize=8)
 def load_script_prompts(version: str = "v1", extra_imports: tuple[str, ...] = (),
                         timeout_s: Optional[int] = None, target: str = "") -> tuple[str, jinja2.Template]:
-    """수정 스크립트 요청의 (system 프롬프트, user 템플릿): `prompts/script_system_<version>.md` +
-    `script_user_<version>.md.j2`. 헬퍼 API 표와 허용 import 를
-    채운다(둘 다 INTERFACES.md "Script contract (S)" 표를 따른다). v2.1u: 목표(`{{ target }}`)는 프롬프트 파일에
-    쓰지 않고 `target`(호출한 쪽이 `target_text(cfg)` 로 넘김; 비면 TargetConfig 기본값)으로 채운다.
+    """수정 스크립트 요청의 (system 프롬프트, user 템플릿)을 읽고 헬퍼 API 표와 허용 import를 채운다.
+    목표 버전(`{{ target }}`)은 프롬프트 파일에 직접 쓰지 않고 `target` 인자로 채운다.
 
     (system prompt, user template) of a fix-script request. The helper API block comes from `sbmig.script`
     (`helper_api_doc`) when that module provides it, else from the table kept in `script_system_<version>.md` (both
@@ -173,8 +167,9 @@ def load_script_prompts(version: str = "v1", extra_imports: tuple[str, ...] = ()
 
 
 def default_script_checker(cfg: Config) -> Optional[Callable[[str], list[str]]]:
-    """config(추가 import, 최대 코드 크기)에 묶은 `sbmig.script.check_script`(없으면 None). 이 검사가 문제를
-    찾으면 루프가 저장·실행하기 전에 스크립트가 거절된다(그 전에 피드백 1회).
+    """설정(추가 import, 최대 코드 크기)을 적용한 `sbmig.script.check_script` 검사 함수를 만든다.
+    검사 모듈이 없으면 None을 반환한다.
+    이 검사에서 문제가 나오면 피드백 1회 뒤에도 남은 스크립트를 수정 루프가 저장하거나 실행하기 전에 거절한다.
 
     `sbmig.script.check_script` bound to the config (extra imports, max code size), or None when unavailable.
     Its findings reject a script before the loop stores / runs it (one feedback round first)."""
@@ -209,9 +204,10 @@ def default_script_checker(cfg: Config) -> Optional[Callable[[str], list[str]]]:
 
 @lru_cache(maxsize=1)
 def advisory_markers() -> frozenset[str]:
-    """라이브러리가 아니라 권고 표지인 탐지 이름들: `sbmig.analyze.libraries.LIBRARY_RULES` 에서 좌표 패턴(deps /
-    managed / parents)이 하나도 없는 규칙(import 만 보는 `jdk-removed-apis` 같은 것). 프롬프트의 `libs=` 에서
-    뺀다(B-H2 — 권고는 힌트로 따로 간다). 이름을 코드에 적지 않고 규칙 표에서 읽는다; 못 읽으면 빈 집합.
+    """라이브러리가 아니라 권고 표시로 쓰는 탐지 이름 목록을 반환한다.
+    `LIBRARY_RULES`에서 좌표 패턴이 없는 규칙이 여기에 해당한다.
+    이 이름은 프롬프트의 `libs=`에서 빼고 권고는 힌트로 따로 보낸다.
+    이름은 코드에 두지 않고 규칙 표에서 읽으며, 읽지 못하면 빈 집합을 반환한다.
 
     Detection names that are advisory markers, not libraries: the `LIBRARY_RULES` entries without any coordinate
     pattern (import-only, e.g. the JDK-internal APIs marker). Kept out of `libs=` (the advisories reach the prompt as
@@ -224,11 +220,11 @@ def advisory_markers() -> frozenset[str]:
 
 
 def profile_summary(profile: ProjectProfile, cfg: Config | None = None) -> str:
-    """프롬프트용 프로젝트 한 줄 설명(FixContext.profile_summary): `as-is (before sbmig): case=… java=… boot=…
-    libs=… | target: …`. 분석 시점(sbmig 이전)의 프로젝트라 그렇다고 이름 붙인다(B-H2: 헤더가 as-is 를 현재처럼
-    보여 줬다); jakarta 재작성이 이미 끝났으므로 `javax-imports=` 는 없고, 권고 표지는 `libs=` 에서 뺀다.
-    ContextPacker 는 여기의 `case=`(항상 첫 항목)로 노트를 고른다. 목표는 ``cfg.target``(없으면 TargetConfig
-    기본값); 설정 없이 만든 요약도 프롬프트를 꾸릴 때 ``with_target`` 이 설정의 목표로 바꾼다(A20).
+    """프롬프트에 넣을 프로젝트 한 줄 설명을 만든다.
+    분석 시점의 프로젝트 정보이므로 앞에 `as-is (before sbmig): …`를 붙인다.
+    - `case=`가 항상 첫 항목이다. ContextPacker가 이 값으로 노트를 고른다
+    - jakarta 변환이 이미 끝났으므로 `javax-imports=`는 넣지 않고, 권고 표시는 `libs=`에서 뺀다
+    - 목표 버전은 ``cfg.target``에서 만든다
 
     One-line project description for prompts (and for FixContext.profile_summary), labelled as the AS-IS project
     (`as-is (before sbmig): …`, v2.1u): `case=` first (the packer selects notes by it), no `javax-imports=` (the jakarta
@@ -264,7 +260,8 @@ def _unset(v: Optional[str]) -> bool:
 
 
 def describe_language(cfg: Optional[Config]) -> str:
-    """프롬프트가 요구할 변경 설명 언어(`report.language` 기준; `sbmig.script` 를 못 불러오면 한국어).
+    """프롬프트가 요구할 변경 설명의 언어를 정한다.
+    `report.language`를 따르고, `sbmig.script`를 불러오지 못하면 한국어를 쓴다.
 
     The language of the change descriptions for the prompts (`sbmig.script.notes.describe_language`)."""
     try:
@@ -276,9 +273,8 @@ def describe_language(cfg: Optional[Config]) -> str:
 
 @lru_cache(maxsize=4)
 def load_verify_prompt(version: str = "v1", target: str = "") -> str:
-    """verify_guide 요청의 system 프롬프트(`verify_system_<version>.md`,
-    없으면 v1). 목표(`{{ target }}`)는 `target`(비면 TargetConfig 기본값)으로 채우고, `{{ language }}` 는 호출한
-    쪽이 채운다.
+    """verify_guide 요청의 system 프롬프트를 읽는다.
+    `{{ target }}`은 `target`으로 채우고 `{{ language }}`는 호출하는 쪽이 채운다.
 
     The system prompt of a `verify_guide` request (`verify_system_<version>.md`, v1 when the version has none);
     `{{ target }}` is filled from `target` (v2.1u; "" = the TargetConfig defaults), `{{ language }}` by the caller."""
@@ -290,7 +286,8 @@ def load_verify_prompt(version: str = "v1", target: str = "") -> str:
 
 @dataclass
 class VerifyAnswer:
-    """verify_guide 답을 읽은 결과: 가이드 텍스트("" = 쓸 게 없음)와 버린 이유.
+    """verify_guide 답의 파싱 결과를 담는 클래스.
+    가이드 텍스트(빈 문자열이면 쓸 내용 없음)와 버린 이유를 가진다.
 
     A parsed `verify_guide` answer: the guide text ("" = nothing usable) and why it was dropped."""
     text: str = ""
@@ -309,9 +306,9 @@ def _cap_lines(text: str, limit: int) -> str:
 
 
 def parse_verify_answer(text: str) -> VerifyAnswer:
-    """verify_guide 답의 가이드: `<verify>` 블록(닫는 태그 없어도 됨), 없으면 답 전체 — 단 수정
-    답(`<analysis>` / `<script>` 등, 예: 재생된 수정 답이나 "no fix")이면 "". 바깥 펜스·markdown 제목 표시를
-    지우고 VERIFY_MAX_CHARS 로 자른다.
+    """verify_guide 답에서 가이드 텍스트를 꺼낸다.
+    `<verify>` 블록이 있으면 그 내용을, 없으면 답 전체를 쓴다.
+    수정 답이 왔으면 빈 문자열이다. 바깥 펜스와 markdown 제목 표시를 지우고 VERIFY_MAX_CHARS자로 자른다.
 
     The guide of a `verify_guide` answer: the `<verify>` block when there is one (closing tag optional), else the
     whole answer — unless it is a fix answer (`<analysis>` / `<script>` / … without `<verify>`, e.g. a replayed fix
@@ -357,7 +354,7 @@ def _change_line(c: DependencyChange) -> str:
 
 
 def _same_code(a: str, b: str) -> bool:
-    """공백만 다른 두 스크립트는 같은 코드로 본다 — 보강 답이 원본과 같으면 거절하기 위해.
+    """공백만 다른 두 스크립트를 같은 코드로 보고 비교한다. 원본과 같은 보강 답을 거절할 때 쓴다.
 
     Two scripts are the same code when they differ in whitespace only."""
     def norm(t: str) -> list[str]:
@@ -366,9 +363,9 @@ def _same_code(a: str, b: str) -> bool:
 
 
 class LLMFixer:
-    """기본 fixer(ScriptFixerLike): 채팅 완성 하나로 케이스마다 파이썬 수정 스크립트 하나(+ 이 프로젝트용
-    편집). 사내 fix.plugin 은 propose_script 를 직접 구현하되
-    같은 문맥(`ContextPacker.pack_script`)을 재사용할 수 있다.
+    """기본 fixer(ScriptFixerLike) 클래스.
+    채팅 완성 요청으로 케이스마다 파이썬 수정 스크립트 하나와 이 프로젝트용 편집을 받는다.
+    사내 fix.plugin은 propose_script를 직접 구현하면서 같은 문맥(`ContextPacker.pack_script`)을 재사용할 수 있다.
 
     Default fixer (ScriptFixerLike): one Python fix script per case over a chat completion.
 
@@ -387,7 +384,7 @@ class LLMFixer:
         # ScriptRunnerLike's `check` fits as well)
         self.script_checker = script_checker
         self._script_prompts: Optional[tuple[str, jinja2.Template]] = None
-        # verify_guide 는 텍스트만 돌려주므로 사용량은 여기 남기고, 루프가 예산에 청구한다
+        # verify_guide는 텍스트만 반환하므로 사용량을 여기 남겨 수정 루프가 예산에 반영하게 한다
         # v2.1d verify_guide: usage of the last call (the loop charges it: the method returns only the text) and of
         # every call of this fixer
         self.last_verify_usage = LLMUsage()
@@ -395,12 +392,11 @@ class LLMFixer:
 
     # ------------------------------------------------------------------ ScriptFixerLike
     def propose_script(self, ws: Workspace, cluster: ErrorCluster, ctx: FixContext) -> ScriptProposal:
-        """케이스 하나의 답(FixAnswer). `ctx.script_mode` 는 new | augment, `ctx.script_base` 는 보강할 버전.
-        순서: 문맥 꾸리기 → 질문 → 문맥 라운드(최대 `llm.max_context_rounds`) → 정적 검사 + 피드백 1회 → 결과
-        조립 → 저널·기록. 쓸 수 있음 = `code` 또는 `edits`; 둘 다 없을 때만 `error`. 피드백 뒤에도 못 쓰는
-        스크립트는 버리고(편집이 있으면 `no_script_reason` 에 "[sbmig] …"), 못 읽는 편집은 버린다(스크립트가
-        있으면 analysis 에 "[sbmig] edits dropped"). 예외를 내지 않는다 — 전송·설정 실패는 루프가 분류하는
-        `llm-error: …` 분석 문구가 된다.
+        """케이스 하나에 대한 수정 답(FixAnswer)을 LLM에서 받는다.
+        `ctx.script_mode`는 new | augment이고, `ctx.script_base`는 보강할 버전이다.
+        - `code`나 `edits`가 있으면 쓸 수 있는 답이고, 둘 다 없을 때만 `error`를 채운다
+        - 피드백 뒤에도 쓸 수 없는 스크립트와 읽을 수 없는 편집은 버리고 그 사실을 "[sbmig] …"로 남긴다
+        - 예외를 던지지 않는다. 전송, 설정 실패는 `llm-error: …` 분석 문구로 돌려준다
 
         The answer for ONE case (`ctx.script_mode` new | augment, `ctx.script_base` = the version to extend) as a
         FixAnswer: `analysis` 원인, `solution` 해결 방법, `edits` (validated `Edit`s; the loop applies them with
@@ -419,7 +415,7 @@ class LLMFixer:
         messages: list[ChatMessage] = []
         last: Optional[LLMResponse] = None
         base = ctx.script_base
-        # base 가 없으면 신규로 묻는다 — 보강 답은 base 를 대체하는 완전한 스크립트라 base 없이는 뜻이 없다
+        # 보강 답은 base를 대체하는 완전한 스크립트이므로 base가 없으면 신규로 요청한다
         mode = "augment" if base is not None and ctx.script_mode in ("augment", None) else "new"
         if ctx.script_mode == "augment" and base is None:
             log.warning("script request for %s: augment without a script base — asking for a new script", cluster.id)
@@ -479,7 +475,7 @@ class LLMFixer:
                     raise
             verify = parsed.verify                  # v2.1d: the latest <verify> of any round
 
-            # 1) 문맥 라운드: LLM 이 파일·grep 을 더 달라면 내준다(쓸 수 있는 답이 오거나 한도에 닿으면 멈춤)
+            # 1) 문맥 라운드: LLM이 파일이나 grep을 요청하면 제공하고, 쓸 수 있는 답이 오거나 한도에 이르면 멈춘다
             # 1) context rounds
             while parsed.wants_context and not parsed.usable and not parsed.blocked_reason \
                     and rounds < self.cfg.llm.max_context_rounds:
@@ -496,7 +492,7 @@ class LLMFixer:
             if parsed.wants_context and not parsed.usable and not parsed.blocked_reason:
                 requested.extend(p for p in parsed.need_files if p not in requested)
 
-            # 2) 정적 검사 + 피드백 1회: 스크립트를 못 쓰거나 v1 patches 형식이거나 편집 JSON 이 안 읽힐 때
+            # 2) 정적 검사와 피드백 1회: 스크립트를 그대로 쓸 수 없거나, patches 형식이거나, 편집 JSON을 읽을 수 없을 때
             # 2) static pre-check + one feedback round for a script that cannot be used as written / edits that
             #    cannot be read
             notes: list[str] = []
@@ -556,7 +552,7 @@ class LLMFixer:
                 requested_files=requested,
                 raw_response=last.content if last else "",
                 error=error,
-                # v2.1y: <blocked> 은 편집이 있어도 그대로 넘긴다 — 분류(declined / needs_owner)는 루프 몫
+                # declined / needs_owner 분류는 수정 루프가 하므로 <blocked>는 편집이 있어도 그대로 넘긴다
                 blocked_reason=parsed.blocked_reason,
             )
             log.debug("answer for %s: %d edit(s), %d change note(s), script %s, solution %d chars%s%s", cluster.id,
@@ -581,11 +577,11 @@ class LLMFixer:
     # ------------------------------------------------------------------ VerifyGuideLike (v2.1d)
     def verify_guide(self, ws: Workspace, cluster: ErrorCluster | None, ctx: FixContext | None,
                      changes: list[DependencyChange], diff: str, *, solution: str = "") -> str:
-        """운영자 확인 사항: 적용된 수정이 의존성 메이저를 올렸거나 라이브러리를 바꿨는데 답에 `<verify>` 가
-        없을 때(VerifyGuideLike). LLM 1회(role `verify_guide`): 프로젝트, 케이스의 첫 오류들, 변경 목록(사람이
-        승인한 것 표시), diff(잘림), 답의 `<solution>`. 보고서 언어의 평문, 최대 VERIFY_MAX_CHARS. 변경이
-        없거나 `libraries.verify_guide_llm` 이 꺼졌거나 실패하면 "" — 그때는 루프가 sbmig 가 만든 가이드를
-        쓴다. 예외를 내지 않는다. 사용량은 `self.last_verify_usage`(루프가 예산에 청구).
+        """운영자가 확인할 사항을 LLM으로 만든다.
+        적용된 수정이 메이저 버전을 올렸거나 라이브러리를 바꿨는데 답에 `<verify>`가 없을 때 호출한다.
+        LLM을 1회 호출한다(role `verify_guide`). 변경이 없거나, `libraries.verify_guide_llm`이 꺼졌거나,
+        호출이 실패하면 빈 문자열을 반환하고 수정 루프가 sbmig 기본 가이드를 쓴다.
+        예외를 던지지 않는다. 사용량은 `self.last_verify_usage`에 남는다.
 
         The 운영자 확인 사항 for an applied fix that raised a dependency's major version / replaced a library and
         whose answer carried no `<verify>` (`VerifyGuideLike`): ONE LLM call (role `verify_guide`) with the project,
@@ -647,13 +643,13 @@ class LLMFixer:
 
     def build_verify_messages(self, cluster: ErrorCluster | None, ctx: FixContext | None,
                               changes: list[DependencyChange], diff: str, *, solution: str = "") -> list[ChatMessage]:
-        """verify_guide 요청의 (system, user) 메시지: 프로젝트 → 케이스 오류(최대 VERIFY_MAX_ERRORS) → 의존성
-        변경 → 해결 방법 → 적용된 diff(최대 VERIFY_MAX_DIFF_CHARS) → `<verify>` 로 답하라는 요청.
+        """verify_guide 요청의 (system, user) 메시지를 만든다.
+        프로젝트, 케이스 오류, 의존성 변경, 해결 방법, 적용된 diff를 넣고 `<verify>`로 답하게 한다.
 
         (system, user) of a `verify_guide` request."""
         lang = describe_language(self.cfg)
         system = load_verify_prompt(self.cfg.llm.prompt_version, target_text(self.cfg)).replace("{{ language }}", lang)
-        # 이 안내는 적용 직후·재빌드 전에 쓰인다 — "빌드가 통과했다" 고 말하면 틀린다(B-L3)
+        # 이 안내는 수정을 적용한 직후 재빌드 전에 만들어지므로 빌드가 통과했다고 쓰면 안 된다
         parts = [("A fix applied to this project raised a dependency's major version or replaced a library. The "
                   "build has not been re-run yet; the runtime is unverified. Write the 운영자 확인 사항 for the "
                   "operator.")]
@@ -686,8 +682,8 @@ class LLMFixer:
         return [ChatMessage(role="system", content=system), ChatMessage(role="user", content="\n\n".join(parts) + "\n")]
 
     def script_prompts(self) -> tuple[str, jinja2.Template]:
-        """스크립트 요청의 (system, user 템플릿) — 처음 쓸 때
-        로드(`llm.prompt_version`, 그 버전에 스크립트 프롬프트가 없으면 v1).
+        """스크립트 요청의 (system, user 템플릿)을 반환한다.
+        처음 쓸 때 `llm.prompt_version`으로 읽고, 그 버전이 없으면 v1을 쓴다.
 
         (system, user template) of the script requests — loaded on first use (`llm.prompt_version`, falling back
         to v1 when the version has no script prompts)."""
@@ -702,18 +698,20 @@ class LLMFixer:
                 self._script_prompts = load_script_prompts("v1", extra, timeout, target_text(self.cfg))
         return self._script_prompts
 
-    # v2.1z-p: 케이스 스레드 — 게이트웨이 세션은 system 프롬프트와 이전 턴을 기억한다(사용자 확인 2026-11-04). 보강 턴은 바뀐 것만
-    # 보낸다: 기준 스크립트가 한 일, 지금 남은 오류와 그 소스, (바뀔 수 있는) pom 과 버전 사실. 기준 코드·규칙·힌트·노트는 세션에 있다
+    # 게이트웨이 세션이 system 프롬프트와 이전 턴을 기억하므로 보강 턴에는 바뀐 것(기준 스크립트의 결과,
+    # 남은 오류와 소스, pom과 버전 정보)만 보낸다
+    # 기준 코드, 규칙, 힌트, 노트는 이미 세션에 있다
     THREAD_TURN_KEYS = ("base_result", "errors", "file_index", "files", "related_files", "pom", "library_hints")
 
     def _thread_on(self) -> bool:
-        """``llm.case_thread`` — 케이스 스레드(한 케이스의 보강 요청들이 게이트웨이 세션 하나를 이어간다)가 켜져 있나."""
+        """``llm.case_thread``가 켜져 있는지 확인한다.
+        켜져 있으면 한 케이스의 보강 요청들이 게이트웨이 세션 하나를 이어서 쓴다."""
         return bool(getattr(self.cfg.llm, "case_thread", False))
 
     def build_thread_turn(self, packed: PackedContext, base: ScriptBase) -> list[ChatMessage]:
-        """스레드의 보강 턴(user 메시지 하나): 같은 대화라고 밝히고, 기준 스크립트의 결과·지금 오류·소스 발췌·pom·버전 사실만
-        (``THREAD_TURN_KEYS``) 붙인 뒤 "같은 출력 형식으로 COMPLETE 새 스크립트" 를 청한다. system 프롬프트·케이스 머리말·규칙·힌트·
-        노트·기준 코드는 세션이 기억하므로 보내지 않는다.
+        """케이스 대화를 이어 가는 보강 요청(user 메시지 하나)을 만든다.
+        같은 대화임을 밝히고 ``THREAD_TURN_KEYS`` 섹션만 붙여 완전한 새 스크립트를 요청한다.
+        system 프롬프트, 케이스 머리말, 규칙, 힌트, 노트, 기준 코드는 세션이 기억하므로 보내지 않는다.
 
         The augment turn of a case thread: one user message — "same conversation", then only what changed (the base
         script's result, the errors now, their source windows, the poms, the version facts) and the request for the
@@ -742,8 +740,9 @@ class LLMFixer:
         return [ChatMessage(role="user", content="\n".join(parts).strip() + "\n")]
 
     def _follow_up(self, messages: list[ChatMessage], last: LLMResponse, text: str, meta: dict) -> list[ChatMessage]:
-        """문맥 / 피드백 라운드의 다음 메시지들: 스레드가 켜져 있고 직전 답에 세션 id 가 있으면 그 세션을 이어가며 새 user
-        메시지 하나만, 아니면 지금처럼 전체 대화(assistant 답 + user) 를 다시 보낸다.
+        """문맥 라운드나 피드백 라운드에 보낼 다음 메시지 목록을 만든다.
+        케이스 대화가 켜져 있고 직전 답에 세션 id가 있으면 새 user 메시지 하나만 보낸다.
+        그렇지 않으면 전체 대화를 다시 보낸다.
 
         The next round's messages: in a session (thread on, the last answer carried a session id) only the new user
         message, continuing that session; otherwise the stateless chain (the assistant's answer + the user message)."""
@@ -757,8 +756,8 @@ class LLMFixer:
     def build_script_messages(self, packed: PackedContext, mode: str = "new", base: Optional[ScriptBase] = None,
                               *, system: Optional[str] = None,
                               user_template: Optional[jinja2.Template] = None) -> list[ChatMessage]:
-        """스크립트 요청 메시지 (system, user): 꾸린 섹션·줄인 섹션·모드·보강 base 이름·base 가 트리에 남아
-        있는지·설명 언어로 user 템플릿을 채운다."""
+        """스크립트 요청 메시지 (system, user)를 만든다.
+        섹션, 줄인 섹션, 모드, 보강할 base 정보, 설명 언어로 user 템플릿을 채운다."""
         if system is None or user_template is None:
             system, user_template = self.script_prompts()
         label = (f"version {base.version}" if base.version else "this run's script") if base is not None else ""
@@ -770,8 +769,8 @@ class LLMFixer:
         return [ChatMessage(role="system", content=system), ChatMessage(role="user", content=user.strip() + "\n")]
 
     def _static_problems(self, code: str) -> list[str]:
-        """정적 검사(script_checker 또는 기본 check_script)가 찾은 문제들. 검사기가 깨져도 수정은 막지 않는다
-        — 러너가 실행 전에 다시 검사한다."""
+        """정적 검사로 스크립트의 문제를 찾는다.
+        실행기가 실행 전에 다시 검사하므로 검사기가 고장 나도 수정을 막지 않는다."""
         checker = self.script_checker if self.script_checker is not None else default_script_checker(self.cfg)
         if checker is None:
             return []
@@ -782,8 +781,9 @@ class LLMFixer:
             return []
 
     def _script_problems(self, parsed: ParsedScript, base: Optional[ScriptBase]) -> list[str]:
-        """답의 스크립트를 쓸 수 없는 이유([] = 쓸 수 있음, 또는 편집·<no_script> 이유가 있어 스크립트가 없는
-        것이 의도된 경우). 보강 답이 원본과 같은 코드면 그것도 문제다.
+        """답의 스크립트를 쓸 수 없는 이유 목록을 반환한다.
+        빈 목록이면 쓸 수 있거나, 편집이나 <no_script> 이유가 있어 스크립트가 없는 것이 의도된 경우다.
+        보강 답이 원본과 같은 코드여도 문제로 본다.
 
         Why the parsed answer's script is not usable ([] = usable, or no script at all next to valid edits /
         a <no_script> reason)."""
@@ -805,7 +805,7 @@ class LLMFixer:
 
     @staticmethod
     def _feedback_problems(parsed: ParsedScript, problems: list[str]) -> list[str]:
-        """피드백에 적을 것: 못 읽는 편집과 / 또는 스크립트의 문제.
+        """피드백에 넣을 문제(읽을 수 없는 편집과 스크립트의 문제)를 모은다.
 
         What the feedback round names: the unreadable edits and / or the script's problems."""
         out = [parsed.edits_problem] if parsed.edits_problem else []
@@ -815,8 +815,9 @@ class LLMFixer:
 
     @staticmethod
     def _wants_feedback(parsed: ParsedScript, problems: list[str]) -> bool:
-        """피드백 1회를 할지: 스크립트 블록은 있는데 못 씀, v1 patches 답, 편집 블록을 못 읽음. 수정이 아예
-        없는 답(분석만 / 편집 없는 <no_script>)은 모델의 판단이라 피드백하지 않는다.
+        """피드백을 한 번 보낼지 정한다.
+        스크립트를 쓸 수 없거나, patches 형식 답이거나, 편집 블록을 읽을 수 없을 때 보낸다.
+        수정이 아예 없는 답은 모델이 판단한 결과이므로 피드백하지 않는다.
 
         One feedback round when a script block is there but unusable, the answer used v1 patches, or the edits
         block cannot be read. An answer without any fix (only an analysis / a <no_script> without edits) is the
@@ -824,7 +825,7 @@ class LLMFixer:
         return bool(parsed.edits_problem) or bool(problems and (parsed.candidate or parsed.used_patches))
 
     def _answer_error(self, parsed: ParsedScript, problems: list[str]) -> str:
-        """쓸 스크립트도 유효한 편집도 없는 답의 짧은 이유(ScriptProposal.error).
+        """쓸 수 있는 스크립트도 유효한 편집도 없는 답에 대해 짧은 이유를 만든다(ScriptProposal.error).
 
         The short reason of an answer with neither a usable script nor valid edits (ScriptProposal.error)."""
         if parsed.blocked_reason and not parsed.candidate and not parsed.edits_problem:
@@ -838,7 +839,7 @@ class LLMFixer:
         return err
 
     def _script_error(self, parsed: ParsedScript, problems: list[str]) -> str:
-        """스크립트가 없는 제안의 짧은 이유.
+        """스크립트가 없는 제안에 대해 짧은 이유를 만든다.
 
         The short reason of a proposal without a script."""
         if parsed.code and problems:
@@ -854,8 +855,8 @@ class LLMFixer:
         return NO_SCRIPT
 
     def script_feedback_message(self, parsed: ParsedScript, problems: list[str], mode: str = "new") -> str:
-        """피드백 user 메시지: 문제 목록(최대 10개) + 형식 안내(patches 금지, 편집 JSON 규칙) + 모드에 맞는
-        "완전한 답을 다시 보내라" 요청."""
+        """피드백 user 메시지를 만든다.
+        문제 목록(최대 10개), 형식 안내, 모드에 맞는 완전한 답을 다시 보내라는 요청을 담는다."""
         parts = ["Your answer cannot be used. Problems:"]
         parts += [f"- {p}" for p in problems[:10]]
         if len(problems) > 10:
@@ -880,7 +881,8 @@ class LLMFixer:
 
     def _error_script(self, analysis: str, error: str, model: Optional[str], messages: list[ChatMessage],
                       usage: LLMUsage, requested: list[str]) -> ScriptProposal:
-        """실패한 요청의 빈 제안(analysis 가 `llm-error: …` 로 시작 — 루프가 전송 장애로 분류한다)."""
+        """실패한 요청에 대한 빈 제안을 만든다.
+        analysis가 `llm-error: …`로 시작하므로 수정 루프가 전송 장애로 분류한다."""
         log.warning("%s", analysis[:300])
         return ScriptProposal(code="", analysis=analysis[:1000], model=model or "",
                               prompt_hash=messages_hash(messages) if messages else "", llm_usage=usage,
@@ -888,8 +890,7 @@ class LLMFixer:
 
     def _journal_script(self, ws: Workspace, cluster: ErrorCluster, ctx: FixContext, mode: str, p: ScriptProposal,
                         rounds: int, advisory_hints: int, packed: Optional[PackedContext]) -> None:
-        """`llm_script` 저널 이벤트(모드·라운드·호출·토큰·프롬프트
-        해시·코드 / 편집 크기·오류). 저널 실패는 무시한다."""
+        """`llm_script` 저널 이벤트를 남긴다. 저널 기록이 실패해도 무시한다."""
         try:
             ws.journal({"event": "llm_script", "cluster_id": cluster.id,
                         "case_id": ctx.case_id or cluster.case_id or None, "mode": mode,
@@ -910,8 +911,9 @@ class LLMFixer:
 
     # ------------------------------------------------------------------ building blocks
     def _model(self, ctx: FixContext) -> Optional[str]:
-        """이번 호출의 모델: `ctx.use_escalation_model`(루프가 정체 뒤나 케이스의 두 번째 보강부터 켠다)이면
-        `llm.escalation_model`(설정됐을 때), 아니면 `llm.model`(미설정이면 None = 게이트웨이 기본)."""
+        """이번 호출에 쓸 모델을 정한다. `ctx.use_escalation_model`이 켜지고 `llm.escalation_model`이
+        설정됐으면 그 모델을, 아니면 `llm.model`을 쓴다.
+        `llm.model`도 없으면 None을 반환하고 게이트웨이 기본 모델을 쓴다."""
         llm = self.cfg.llm
         if ctx.use_escalation_model and not _unset(llm.escalation_model):
             return llm.escalation_model
@@ -920,9 +922,10 @@ class LLMFixer:
     @staticmethod
     def call_tags(ctx: Optional[FixContext], cluster_id: Optional[str] = None,
                   ws: Optional[Workspace] = None) -> tuple[str, dict]:
-        """propose_script 한 번의 모든 LLM 호출에 붙는 (role, metadata) — 게이트웨이가 목적별로 라우팅·예산을
-        할 수 있게. role 은 fix(에스컬레이션이면 fix_escalation), metadata 는
-        run_id·project·phase·iteration·cluster_id(비밀 금지).
+        """propose_script 한 번의 모든 LLM 호출에 붙일 (role, metadata)를 만든다.
+        게이트웨이가 목적별로 라우팅하고 예산을 관리할 수 있게 하기 위해서다.
+        role은 fix 또는 fix_escalation이고, metadata는 run_id, project,
+        phase, iteration, cluster_id이며 비밀 값은 넣지 않는다.
 
         (role, metadata) sent with every LLM call of one propose_script() — lets a gateway route/budget by purpose.
         Round 10: `run_id` and `project` (the workspace's run id / project directory name) as the LLMRequest contract
@@ -947,8 +950,8 @@ class LLMFixer:
     def _call(self, messages: list[ChatMessage], model: Optional[str], usage: LLMUsage,
               transcript: list[dict], *, role: str = "fix", metadata: Optional[dict] = None,
               parse: Callable[[str], Any] = parse_script_response) -> tuple[LLMResponse, Any]:
-        """LLM 한 번: watchdog 침묵 표시, 사용량 누적, 답 파싱, transcript(기록용)에 추가. 예외(LLMError 등)는
-        호출한 쪽으로 그대로 올라간다."""
+        """LLM을 한 번 호출하고 답을 파싱한다. watchdog 표시, 사용량 누적, transcript 추가도 함께 한다.
+        LLMError 같은 예외는 호출한 쪽으로 그대로 던진다."""
         with llm_call_in_flight():          # the loop's watchdog stays silent while the call heartbeats (round 10)
             resp = self.client.complete(messages, model=model, max_tokens=self.cfg.llm.max_output_tokens,
                                         temperature=self.cfg.llm.temperature, role=role,
@@ -974,8 +977,8 @@ class LLMFixer:
 
     # ------------------------------------------------------------------ context serving
     def resolve_path(self, ws: Workspace, want: str) -> tuple[Optional[str], list[str]]:
-        """LLM 이 달라는 경로(부분 경로나 FQCN 일 수도)를 워크스페이스 파일로. (경로, 후보들); 하나로 정해지지
-        않으면 (None, 후보 최대 8개).
+        """LLM이 요청한 경로(부분 경로나 FQCN일 수 있음)를 워크스페이스 파일 경로로 바꾼다.
+        (경로, 후보 목록)을 반환하고, 하나로 정해지지 않으면 (None, 최대 8개의 후보)를 반환한다.
 
         Map a requested path (maybe partial, or a FQCN) to a workspace file. Returns (path, candidates)."""
         if ws.exists(want) and ws.abs(want).is_file():
@@ -1000,7 +1003,7 @@ class LLMFixer:
 
     @staticmethod
     def _resource_files(ws: Workspace) -> list[str]:
-        """src/ 아래 리소스 파일(properties / yml / yaml / xml / factories / imports, pom 제외)."""
+        """src/ 아래 리소스 파일(properties / yml / yaml / xml / factories / imports, pom 제외) 목록을 반환한다."""
         out: list[str] = []
         for ext in ("properties", "yml", "yaml", "xml", "factories", "imports"):
             for f in ws.glob(f"*.{ext}"):
@@ -1011,9 +1014,9 @@ class LLMFixer:
         return sorted(set(out))
 
     def serve_context(self, ws: Workspace, need_files: list[str], need_grep: list[str], remaining_rounds: int) -> str:
-        """`<need_files>` / `<need_grep>` 에 답하는 user 메시지: 파일은 라운드당 MAX_SERVED_FILES
-        개(MAX_SERVED_LINES 줄을 넘으면 앞 SERVED_HEAD_LINES + 뒤 SERVED_TAIL_LINES 줄), grep 결과, 남은
-        라운드 안내(마지막이면 "지금 답하라")."""
+        """`<need_files>` / `<need_grep>` 요청에 답하는 user 메시지를 만든다.
+        파일은 라운드당 MAX_SERVED_FILES개까지 보내고 길면 앞뒤만 보낸다.
+        grep 결과와 남은 라운드 안내를 붙이고, 마지막 라운드면 지금 답하라고 쓴다."""
         parts: list[str] = ["Here is the requested context."]
         for want in need_files[:MAX_SERVED_FILES]:
             path, cands = self.resolve_path(ws, want)
@@ -1056,9 +1059,10 @@ class LLMFixer:
         return "\n\n".join(parts) + "\n"
 
     def grep(self, ws: Workspace, patterns: list[str]) -> str:
-        """LLM 의 `<need_grep>`: java / pom / 리소스 파일을 한 번씩만 읽어 패턴 최대 5개를 찾는다. 큰
-        파일(MAX_GREP_FILE_BYTES 초과)은 건너뛰고, MAX_GREP_FILES 개·GREP_BUDGET_S 초에서 멈춘다(Windows +
-        실시간 백신에서 너무 느렸던 경험). 잘못된 정규식은 글자 그대로 찾는다.
+        """LLM의 `<need_grep>` 요청을 처리한다.
+        java / pom / 리소스 파일을 한 번씩 읽으며 최대 5개 패턴을 찾는다.
+        Windows 실시간 백신 환경에서는 느리므로 큰 파일은 건너뛰고 MAX_GREP_FILES개 또는 GREP_BUDGET_S초에서
+        멈춘다. 잘못된 정규식은 문자 그대로 찾는다.
 
         `<need_grep>` from the LLM: one pass over the project's java / pom / resource files (each read once, big
         files skipped, bounded by MAX_GREP_FILES and GREP_BUDGET_S) for up to 5 patterns."""
@@ -1117,13 +1121,15 @@ class LLMFixer:
     # ------------------------------------------------------------------ bookkeeping
     def _record(self, cluster: ErrorCluster, transcript: list[dict], p: ScriptProposal,
                 prefix: str = "script") -> None:
-        """스크립트 요청 하나의 기록(`script-<cluster>-<hash>.json`: 호출 transcript + 제안)."""
+        """스크립트 요청 하나를 기록 파일(`script-<cluster>-<hash>.json`)로 남긴다.
+        호출 transcript와 제안을 담는다."""
         self._record_json(prefix, cluster.id, p.prompt_hash, {"cluster_id": cluster.id, "calls": transcript,
                                                               "proposal": p.model_dump(mode="json")})
 
     def _record_json(self, prefix: str, cluster_id: str, prompt_hash: str, payload: dict) -> None:
-        """`<llm.record_dir>/<prefix>-<cluster>-<hash>.json` 을 쓴다(record dir 이 없거나 클라이언트가
-        RecordingClient 면 아무것도 안 함). 실패해도 수정은 계속.
+        """`<llm.record_dir>/<prefix>-<cluster>-<hash>.json` 파일을 쓴다.
+        record dir이 없거나 클라이언트가 RecordingClient면 아무것도 하지 않는다.
+        실패해도 수정은 계속한다.
 
         `<llm.record_dir>/<prefix>-<cluster>-<hash>.json` (nothing when no record dir or the client records)."""
         rd = self.cfg.llm.record_dir

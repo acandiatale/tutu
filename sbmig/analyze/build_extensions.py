@@ -1,11 +1,10 @@
-"""접수 때 배포 전송 빌드 확장 제거 (2026-11-05, 회사 실행).
-
-pom 의 ``<build><extensions>`` 에 든 Wagon 전송 제공자(``org.apache.maven.wagon:wagon-webdav`` 등)는 ``mvn deploy`` 가
-``dav:`` / ``scp:`` / ``ftp:`` 주소로 올릴 때만 쓰이는데, Maven 은 어떤 goal 보다 먼저(OpenRewrite 포함) 확장을 내려받아
-로드한다. 저장소가 더는 주지 않는 2007년 jar 하나가 ``Unresolveable build extension`` 으로 실행 전체를 막았다. 패키징에
-필요 없고 배포 대상은 회사 부모가 주므로, 지식 목록(``intake.build_extensions_file``)에 맞는 확장을 첫 Maven 호출 전에
-모든 pom(프로필 안 포함)에서 지운다. 목록에 없는 확장(os-maven-plugin, 빌드 캐시 …)은 빌드에 참여하므로 손대지 않고
-기록만 한다. 좌표는 코드가 아니라 지식 파일에 있다.
+"""접수 단계에서 배포 전송용 build extension을 pom에서 지우는 모듈.
+Wagon 전송 확장은 ``mvn deploy``에만 쓰이지만 Maven은 어떤 goal보다 먼저 확장을 받으므로, 받지 못하면
+``Unresolveable build extension``으로 실행 전체가 막힌다.
+- 목록 파일(``intake.build_extensions_file``)에 있는 확장을 첫 Maven 호출 전에 모든 pom에서 지운다.
+  프로필 안의 확장도 포함한다
+- 목록에 없는 확장은 빌드에 쓰일 수 있으므로 그대로 두고 기록만 한다
+- 지울 좌표는 코드가 아니라 목록 파일에 둔다
 
 Remove deploy-transport build extensions at intake: Wagon providers in `<build><extensions>` only teach `mvn deploy` a URL
 scheme, yet Maven resolves every extension while building the project model — before any goal, OpenRewrite included —
@@ -29,7 +28,8 @@ log = logging.getLogger("sbmig.analyze.build_extensions")
 
 @dataclass(frozen=True)
 class DeployTransport:
-    """지식 목록의 한 줄: groupId(정확히) + artifactId(셸 글롭).
+    """목록 파일의 한 줄을 담는 데이터 클래스.
+    groupId는 정확히 일치해야 하고, artifactId는 셸 글롭 패턴으로 비교한다.
 
     One knowledge row: exact groupId, artifactId as a shell glob."""
     group: str
@@ -42,7 +42,7 @@ class DeployTransport:
 
 @dataclass
 class RemovedExtension:
-    """지운 확장 하나: pom(상대 경로), 좌표, 프로필 id(프로필 안이었으면)."""
+    """지운 확장 하나를 담는 데이터 클래스. pom 상대 경로, 좌표, 프로필 id를 담는다."""
     pom: str
     coordinates: str
     profile: str | None = None
@@ -53,15 +53,15 @@ class RemovedExtension:
 
 @dataclass
 class StripResult:
-    """제거 결과: 지운 확장들과, 목록에 없어 그대로 둔 확장들 (pom, 좌표)."""
+    """제거 결과를 담는 데이터 클래스. 지운 확장과, 목록에 없어 그대로 둔 확장을 담는다."""
     removed: list[RemovedExtension] = field(default_factory=list)
     kept: list[tuple[str, str]] = field(default_factory=list)
     poms_changed: list[str] = field(default_factory=list)
 
 
 def load_deploy_transports(cfg: Any) -> list[DeployTransport]:
-    """``intake.build_extensions_file`` 의 ``deploy_transports`` 목록. 파일이 없거나 깨졌으면 경고 한 번과 빈 목록
-    (그러면 접수는 아무것도 지우지 않는다).
+    """``intake.build_extensions_file``에서 ``deploy_transports`` 목록을 읽는다.
+    파일이 없거나 깨졌으면 경고를 한 번 남기고 빈 목록을 반환하므로, 접수는 아무것도 지우지 않는다.
 
     The `deploy_transports` rows of `intake.build_extensions_file`; a missing / broken file → one warning and []."""
     rel = getattr(getattr(cfg, "intake", None), "build_extensions_file", "") or ""
@@ -83,9 +83,9 @@ def load_deploy_transports(cfg: Any) -> list[DeployTransport]:
 
 
 def strip_deploy_extensions(ws: Any, cfg: Any, table: list[DeployTransport] | None = None) -> StripResult:
-    """모든 pom(``find_pom_files``: 접수가 무시한 폴더 제외)의 ``build/extensions`` 와 ``profiles/*/build/extensions`` 에서
-    목록에 맞는 확장을 지우고 빈 ``<extensions>`` 도 걷어 저장한다. 목록에 없는 확장은 ``kept`` 에 기록만. 절대 예외 없음
-    (pom 하나가 깨졌으면 그 pom 만 건너뛴다).
+    """모든 pom의 ``build/extensions``와 ``profiles/*/build/extensions``에서 목록에 있는 확장을 지우고, 비게
+    된 ``<extensions>``도 지운다.
+    목록에 없는 확장은 ``kept``에 기록만 한다. 예외를 던지지 않고, 깨진 pom은 건너뛴다.
 
     Remove the listed extensions from every pom's `build/extensions` and `profiles/*/build/extensions`, drop an emptied
     `<extensions>`, save; unlisted extensions are recorded in `kept`. Never raises (a broken pom is skipped)."""
@@ -135,7 +135,7 @@ def strip_deploy_extensions(ws: Any, cfg: Any, table: list[DeployTransport] | No
 
 
 def commit_message(res: StripResult) -> str:
-    """커밋 제목 + 본문 한 줄씩: ``intake: deploy transport extension(s) removed (N)``."""
+    """커밋 제목과 본문을 만든다. 예: ``intake: deploy transport extension(s) removed (N)``"""
     if not res.removed:
         return ""
     body = "\n".join(f"- {r.coordinates} in {r.where()}" for r in res.removed)
@@ -144,7 +144,7 @@ def commit_message(res: StripResult) -> str:
 
 
 def followups(res: StripResult) -> list[str]:
-    """인수인계 줄(영문, 다른 후속 조치와 같은 말투): 지운 확장마다 하나."""
+    """지운 확장마다 영어로 된 인수인계 줄을 하나씩 만든다. 다른 후속 조치와 같은 말투로 쓴다."""
     return [f"build extension {r.coordinates} was removed from {r.where()}: it is a deploy transport (WebDAV / SSH / FTP) "
             f"the old <distributionManagement> needed for `mvn deploy`; packaging never used it and the company parent "
             f"supplies the deploy target — if a team still deploys over that protocol, it must re-add the extension there"

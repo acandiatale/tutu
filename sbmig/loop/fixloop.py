@@ -1,20 +1,19 @@
-"""빌드-수정 루프(v2.1) — 최종 빌드가 실패하면 오케스트레이터가 부른다. 라운드마다: 빌드 → 직전 시도
-채점(악화는 되돌림, 저장 스크립트 실적 기록, 오류 목록의 시도 마감) → 새 오류 추가 → 케이스(L2)로 묶기 →
-케이스마다 사다리 → 커밋. 사다리(케이스당·실행당): KB 탐색 → 저장된 스크립트 재사용(LLM 0회) → 실패하면
-되돌리고 LLM 보강 → 저장본이 없으면 LLM 신규(edits 는 바로 적용, 스크립트는 unverified 로 저장). 저장본 1 +
-LLM 요청 ``script.max_llm_tries_per_case``(20, 그중 보강 ``script.max_augments_per_case`` 15 — 다 쓰면 새로 작성)
-뒤 BLOCKED. 채점은 재빌드로만(``_score``): 개선 = 대상 오류가 전부
-사라지고 빌드가 그 단계까지 갔을 때뿐("안 보임 ≠ 해결"), 판정 불가 = KB 실적 없음. 개선되지 않은 시도는 그
-케이스의 다음 시도 전에 되돌린다. 근본 원인 케이스 먼저, 이번 라운드에 이미 손댄 파일·모듈 pom 의 케이스는
-다음 빌드까지 미룬다(시도로 세지 않음). 끝 = 언제나 빌드 뒤: BUILD SUCCESS · 라운드
-소진(``loop.phases.verify.max_iterations``, 50) · 손댈 케이스 없음 · 차단만 남음 · 시간 초과. v2.1d: LLM 호출
-전 ``_library_hints``(저장소 버전 사실), 적용 뒤 ``_read_back``(메이저
-업그레이드 → 운영자 확인; 되돌리거나 차단하지 않음).
-v2.1l: 의존성 버전은 LLM 이 추측하지 않는다 — 적용된 시도의 pom 에서 버전 없는 의존성은 커밋 전에
-``_fill_versions`` 가 채우고(``VersionResolver``: 새 부모 체인 관리 → as-is 빌드 → 방금 추가된 것만 저장소),
-``pom_invalid|missing_version`` 케이스는 LLM 전에 sbmig 가 한 번 고친다(출처 ``sbmig-version``, LLM 0회). v2.1m:
-리소스 / war 플러그인이 필터링되는 바이너리 파일에서 실패한 케이스도 같은 자리에서 LLM 없이
-``nonFilteredFileExtensions`` 를 적는다(출처 ``sbmig-resources``, ``sbmig.restructure.resources_filtering``).
+"""Maven 빌드 오류를 LLM이 작성한 수정 스크립트로 고치는 수정 루프 모듈.
+검증 빌드가 실패하면 오케스트레이터가 호출한다.
+한 라운드는 빌드 -> 직전 시도 결과 평가 -> 새 오류 기록 -> 오류 서명(L2)이 같은 오류를 케이스로 묶기 ->
+케이스마다 수정 시도 -> 커밋 순서로 진행한다.
+- 케이스마다 저장된 스크립트 재사용(LLM 호출 없음) -> LLM 보강 -> LLM 신규 순서로 시도한다
+- 케이스당 LLM 요청은 ``script.max_llm_tries_per_case``번까지이고 그중 보강은
+  ``script.max_augments_per_case``번까지다. 다 쓰면 그 케이스는 차단(BLOCKED)된다
+- 시도 결과는 재빌드로만 평가한다(``_score``).
+  대상 오류가 모두 사라지고 빌드가 그 단계까지 진행돼야 개선으로 본다
+- 개선되지 않은 시도는 같은 케이스의 다음 시도 전에 되돌린다
+- 근본 원인 케이스를 먼저 고치고, 이번 라운드에 이미 수정한 파일이나 모듈 pom에 걸린 케이스는 다음 빌드까지 미룬다
+- 루프는 항상 빌드 뒤에 끝난다. 종료 조건은 BUILD SUCCESS, 라운드
+  소진(``loop.phases.verify.max_iterations``), 남은 케이스 없음, 차단된 케이스만 남음, 시간 초과다
+- LLM에게 의존성 버전을 추측시키지 않는다. 버전이 없는 의존성은 커밋 전에 ``_fill_versions``가 채운다
+- 누락된 버전이나 리소스 필터링처럼 확인된 정보만으로 고칠 수 있는
+  케이스는 LLM을 호출하기 전에 sbmig가 직접 고친다(사전 시도)
 
 The build-fix loop (ARCHITECTURE §3) — v2.1 (2026-10-27, docs/v2/PLAN-v2.1.md §3 / §3.1 / §3.2).
 
@@ -125,9 +124,8 @@ log = logging.getLogger("sbmig.loop")
 TEST_COMPILING_GOALS = ("test-compile", "package", "verify", "install", "deploy", "test")
 TEST_RUNNING_GOALS = ("test", "package", "verify", "install", "deploy")
 RESOLUTION_PREFIXES = ("parent_resolution:", "pom_invalid:", "dependency_resolution:", "plugin_resolution:")
-# LLM 전송·설정 실패(게이트웨이·네트워크·키 문제)와 모델이 형식을 어긴 답을 가른다. 전송 실패만 쿨다운 / "LLM
-# 불가" 로 센다. 예전 목록은 ``config`` 같은 단어·경로·``line
-# 512`` 까지 걸려서 Windows 파일 잠금 오류가 LLM 불가로 찍혔다.
+# 게이트웨이, 네트워크, 키 문제 같은 전송이나 설정 실패를 모델이 형식을 어긴 응답과 구분한다
+# 쿨다운을 하고 "LLM 사용 불가"로 세는 것은 전송이나 설정 실패뿐이다
 # fixer analysis of a transport/config failure (vs. a protocol-garbage response, which is the model's fault). Round 10:
 # only explicit markers — the HTTP status the client reports (`status=<code>`: auth, endpoint 404, timeouts, rate
 # limit after the retries, 5xx; `status=None` = no HTTP answer at all), the transport exception (`cause=<Class>` or
@@ -143,7 +141,8 @@ _LLM_TRANSPORT_CLASS_RE = re.compile(      # case-sensitive: exception class nam
     r"RemoteDisconnected|ChunkedEncodingError|ConnectionResetError|ConnectionRefusedError|ConnectionAbortedError|"
     r"NewConnectionError|MaxRetryError|NameResolutionError|LLMHardDeadline|LLMConfigError|MissingComponentError|"
     r"PluginLoadError)\b")
-# 게이트웨이가 *이 요청의 내용* 을 거절한 것(너무 김, 형식 오류, 토큰 한도) — 프롬프트 탓이지 전송 탓이 아니다
+# 게이트웨이가 요청 내용(너무 긴 요청, 형식 오류, 토큰 한도) 때문에 거절한 경우다.
+# 전송이 아니라 프롬프트의 문제이므로 LLM 사용 불가로 세지 않는다
 # the gateway rejected *this request* for its content (too long, malformed, cut by the token limit): the prompt's
 # fault, not the wire's — such a failure must not count towards "LLM unavailable for the run"
 _LLM_REQUEST_REJECTED_RE = re.compile(r"status=4(?:00|13|22)\b|content[ _-]?filter|"
@@ -153,24 +152,24 @@ _LLM_PROMPT_TOO_BIG_RE = re.compile(r"(?i)context[ _-]?length|too (?:long|large|
                                     r"max(?:imum)?[ _-]?(?:context|tokens?|input)|token limit|payload too large|"
                                     r"finish_reason=(?:length|max_tokens)")
 _LLM_400_BODY_RE = re.compile(r"status=400\)?:?\s*(?P<body>.*)", re.S)
-# 서로 다른 프롬프트 2개가 같은 HTTP 400 본문을 받으면 설정 오류(모델 이름·필드) → 그 실행의 LLM 호출 중단
+# 서로 다른 프롬프트 2개가 같은 HTTP 400 본문을 받으면 설정 오류로 보고 그 실행의 LLM 호출을 멈춘다
 LLM_CONFIG_ERROR_PROMPTS = 2         # the same HTTP 400 body for this many different prompts → configuration error
 _BLOCKED_RAT_RE = re.compile(r"blocked:\s*(?P<r>[a-z_]+)")
 REFERENCE_MAX_CHARS = 12_000         # one dropped merge copy in the fix prompt (round 9)
-# 감시견: 회사 Windows PC 에는 SIGUSR1 이 없어, 오래 조용하면 스스로 경고하고 스레드 덤프를 남긴다
+# Windows에는 SIGUSR1이 없으므로 루프가 오래 조용하면 감시 스레드가 스스로 경고하고 스레드 덤프를 남긴다
 WATCHDOG_S = 30.0                    # the fix loop's watchdog wakes up this often …
 WATCHDOG_QUIET_S = 60.0              # … and warns when no milestone was reached for this long (operators: stuck?)
 WATCHDOG_DUMP_S = 300.0              # … and writes a thread dump into the run dir by itself after this long (Windows has no SIGUSR1)
 REFERENCE_MAX_FILES = 3              # dropped copies per cluster
 _TRUNCATED_MARK = "\n… (truncated)"
-# 회사 규칙 "개선되지 않으면 되돌린다": 개선·빌드 성공만 트리에 남긴다. NO_ROLLBACK 의 나머지는 이미 트리에
-# 없거나 (되돌림·적용 실패·차단) 아직 판정 전(pending)이라 되돌릴 것이 없다
+# 개선되지 않은 시도는 되돌리고, 개선되었거나 빌드에 성공한 시도만 트리에 남긴다
+# NO_ROLLBACK의 나머지 상태는 이미 트리에 없거나 아직 결과가 나오지 않아 되돌릴 것이 없다
 SCRIPT_KEEP = frozenset({"improved", "build_ok"})   # a case's previous script attempt is kept (not rolled back)
 NO_ROLLBACK = frozenset({"improved", "build_ok", "reverted", "pending", "apply_failed", "blocked"})
 SCRIPT_BASE_LOG = 50                 # ScriptBase.log lines (augment prompt)
 SCRIPT_HISTORY = 10                  # ScriptBase.history lines
 FIXER_WITHOUT_SCRIPTS_FLAG = "fixer-without-scripts"
-# 이 메모가 붙은 시도는 최종 트리에 없다 → 운영자 확인(메이저 업그레이드) 목록에서도 뺀다
+# 이 메모가 붙은 시도는 최종 트리에 없으므로 운영자 확인 목록에서도 뺀다
 ROLLED_BACK_NOTE = "rolled back before "   # the note on a try the next try of its case rolled back (not in the tree)
 try:    # one definition each, shared with the error list: the runner's stand-in errors of a crashed build and the
     # Maven stage at which an error kind is reported ("not visible" is not "resolved", round 10)
@@ -188,7 +187,8 @@ except ImportError:  # pragma: no cover - the error list package is part of sbmi
     }
 
     def error_stage(e: BuildError) -> Optional[int]:
-        """(대체 정의) 이 종류의 오류를 Maven 이 보고하는 빌드 단계 번호(작을수록 이른 단계)."""
+        """오류 종류별로 Maven이 그 오류를 보고하는 빌드 단계 번호를 반환한다. 번호가 작을수록 이른 단계다.
+        공용 정의를 가져오지 못할 때 쓰는 대체 정의다."""
         if e.kind == ErrorKind.PLUGIN_EXECUTION:
             return 2 if "resources" in (e.goal or "").lower() else 5
         return STAGE.get(e.kind)
@@ -197,7 +197,7 @@ NOTES_LOGGED = 20                    # `수정:` INFO lines per applied change (
 
 
 def fmt_error(e: BuildError) -> str:
-    """오류 한 줄 ``파일:줄 메시지`` — 보강 프롬프트의 남은 오류 / 새로 생긴 오류 목록에 쓴다.
+    """오류 하나를 ``파일:줄 메시지`` 형식의 한 줄로 만든다. 보강 프롬프트의 오류 목록에 쓴다.
 
     'file:line message' (module or '-' without a file) — remaining / introduced errors in an augment prompt."""
     loc = e.file or e.module or "-"
@@ -217,8 +217,8 @@ def _status_paths(ws: Any) -> set[str]:
 
 
 def _restore_build_byproducts(ws: Any, before: set[str]) -> list[str]:
-    """v2.1b: 빌드가 target/ 밖에 쓴 파일(lib/ 에 복사된 jar 등)을 빌드 직후 치운다 — 시도의 커밋과 파일
-    목록에 수정이 바꾼 것만 남게 하려는 것.
+    """빌드가 target/ 밖에 만든 파일(lib/에 복사된 jar 등)을 빌드 직후 치운다.
+    시도의 커밋과 파일 목록에 실제로 수정한 내용만 남기기 위해서다.
 
     v2.1b: files a build wrote outside target/ (a jar copied into lib/) are set aside right after the build, so
     an attempt's commit and `files` hold only what the fix changed (sbmig.core.workspace.restore_build_byproducts)."""
@@ -232,7 +232,7 @@ def _restore_build_byproducts(ws: Any, before: set[str]) -> list[str]:
         return []
 
 def sleep_seconds(seconds: float) -> None:
-    """LLM 쿨다운 대기(모듈 수준 함수라 테스트 conftest 가 모든 루프에서 한 번에 바꿔 끼울 수 있다).
+    """LLM 쿨다운 동안 주어진 초만큼 기다린다. 테스트가 한 번에 교체할 수 있도록 모듈 함수로 둔다.
 
     The LLM cool-down pause (module-level so a test conftest can replace it for every loop)."""
     time.sleep(seconds)
@@ -261,7 +261,7 @@ def _first_sentence(text: str, limit: int = 160) -> str:
 
 
 def cut_lines(text: str, limit: int) -> str:
-    """``limit`` 자 안에서 줄 경계로 자르고 ``(… N more lines)`` 를 붙인다(줄 중간에서 표시 없이 잘리던 것, E-L9).
+    """텍스트를 ``limit``자 안에서 줄 단위로 자르고, 잘린 줄 수를 ``(… N more lines)``로 덧붙인다.
 
     `text` cut at a line boundary within `limit` characters, with `(… N more lines)` naming what was left out
     (v2.1v E-L9: the other cases' summary used to be cut mid-line without a marker). A first line longer than
@@ -285,7 +285,7 @@ def cut_lines(text: str, limit: int) -> str:
 
 
 def case_stage(round_no: int, c: ErrorCluster) -> str:
-    """한 라운드 안에서 한 케이스를 다루는 로그 단계 태그(``fix r3 7a52b1cea8``).
+    """라운드 안에서 케이스 하나를 처리할 때 쓰는 로그 단계 태그(``fix r3 7a52b1cea8``)를 만든다.
 
     'fix r3 7a52b1cea8' — the log stage of a case's work in a fix round (§3.2)."""
     cid = c.case_id or (c.id[len("case:"):] if c.id.startswith("case:") else c.id)
@@ -310,8 +310,9 @@ def _class_of(c: ErrorCluster) -> str:
 
 
 def is_llm_transport_error(analysis: str) -> bool:
-    """``llm-error: …`` 가 전송·설정 실패인가(쿨다운 / "LLM 불가" 로 센다). 형식을 어긴 답과 내용 때문에
-    거절된 요청은 아니다 — 그건 프롬프트 탓이다.
+    """``llm-error: …`` 분석 문구가 전송이나 설정 실패인지 판단한다.
+    이런 실패만 쿨다운과 "LLM 사용 불가"로 센다.
+    형식을 어긴 응답이나 내용 때문에 거절된 요청은 프롬프트의 문제이므로 해당하지 않는다.
 
     `llm-error: …` of a transport / configuration failure (counts towards the cool-down / "LLM unavailable")."""
     a = (analysis or "").strip()
@@ -325,8 +326,9 @@ def is_llm_transport_error(analysis: str) -> bool:
 
 
 def llm_400_body(analysis: str) -> Optional[str]:
-    """HTTP 400 ``llm-error`` 의 짧은 본문(200자 이하) 또는 None. 프롬프트가 너무 크다는 400 도 None — 큰
-    프롬프트 둘이 같은 글을 받는 것은 정상이므로 설정 오류의 근거가 되면 안 된다.
+    """HTTP 400 ``llm-error``의 짧은 본문(200자 이하)을 반환한다. 해당하지 않으면 None을 반환한다.
+    프롬프트가 너무 크다는 400도 None이다.
+    큰 프롬프트 둘이 같은 본문을 받는 것은 정상이므로 설정 오류의 근거로 삼지 않는다.
 
     The short body of an HTTP 400 `llm-error` (whitespace collapsed, ≤ 200 chars), or None — None as well for a
     400 that says the prompt is too big (two big prompts legitimately get the same text)."""
@@ -340,9 +342,10 @@ def llm_400_body(analysis: str) -> Optional[str]:
 
 
 def build_target_args(profile: Optional[ProjectProfile], target: Optional[str]) -> tuple[Optional[str], list[str]]:
-    """``target`` 을 빌드할 (모듈, 추가 인자). 루트 aggregator 가 그 모듈을 나열하면 루트에서
-    ``-pl <target> -am`` 으로 — 저장소 안 공유 라이브러리도 함께 빌드되고 오류 경로가 루트 기준으로 유지된다.
-    아니면 그 디렉토리 안에서 빌드.
+    """``target``을 빌드할 때 쓸 (빌드 디렉토리 모듈, 추가 Maven 인자)를 정한다.
+    루트 aggregator가 그 모듈을 포함하면 루트에서 ``-pl <target> -am``으로 빌드한다.
+    저장소 안의 공유 라이브러리도 함께 빌드되고 오류 경로가 루트 기준으로 유지되기 때문이다.
+    그렇지 않으면 그 모듈 디렉토리 안에서 빌드한다.
 
     (module, extra_args) for building `target`. When a root aggregator pom lists the target among its modules, build
     from the root with `-pl <target> -am` (in-repo library roots get built too, error paths stay root-relative);
@@ -370,7 +373,7 @@ def _case_of_errors(errors: list[BuildError]) -> str:
 
 
 def _reduced(c: ErrorCluster, errors: list[BuildError]) -> ErrorCluster:
-    """같은 클러스터를 주어진 오류들로 줄인(또는 되살린 오류로 늘린) 사본 — 서명 목록도 맞춘다."""
+    """주어진 오류만 담은 새 클러스터를 만들어 반환한다. 서명 목록도 그 오류에 맞춘다."""
     sigs: list[str] = []
     for e in errors:
         s = e.signature or f"{e.kind.value}|{e.message}"
@@ -381,9 +384,10 @@ def _reduced(c: ErrorCluster, errors: list[BuildError]) -> ErrorCluster:
 
 @dataclass
 class _Round:
-    """수정 라운드 하나의 상태. ``covered`` / ``poms`` 는 이번 라운드에 수정이 돈 오류 파일·바뀐 pom →
-    케이스 ID 로, 같은 파일·모듈의 다른 케이스를 다음 빌드까지 미루는(deferral) 근거다. ``restored`` 는
-    롤백이 되살린 오류(다음 채점 기준선)."""
+    """수정 라운드 하나의 상태를 담는 클래스.
+    ``covered``와 ``poms``는 이번 라운드에 수정한 오류 파일과 pom을 케이스 ID와 연결한다.
+    같은 파일이나 모듈의 다른 케이스를 다음 빌드까지 미룰 때 쓴다.
+    ``restored``는 되돌리기로 다시 나타난 오류이며, 다음 시도 결과 평가의 기준선이 된다."""
     phase: Phase
     iteration: int
     build: BuildResult
@@ -403,7 +407,7 @@ class _Round:
 
 @dataclass
 class _Pending:
-    """채점을 기다리는 적용된 시도와 그 커밋 범위(되돌리기에 쓰는 pre / post sha)."""
+    """적용되어 결과 평가를 기다리는 시도와 그 커밋 범위를 담는 클래스. 되돌릴 때 pre / post sha를 쓴다."""
     attempt: FixAttempt
     pre_sha: str
     post_sha: str
@@ -423,8 +427,8 @@ def _script_name(a: FixAttempt) -> str:
 
 
 def _related(cluster: ErrorCluster, attempts: list[FixAttempt]) -> list[FixAttempt]:
-    """같은 클러스터 id 이거나 서명을 하나라도 공유하는 시도들(다른
-    파일 포함). 힌트 재료일 뿐, 시도 한도에는 쓰지 않는다.
+    """클러스터 id가 같거나 서명을 하나라도 공유하는 시도를 다른 파일까지 포함해 찾는다.
+    프롬프트 힌트로만 쓰고 시도 횟수 한도에는 반영하지 않는다.
 
     Same cluster id or any shared signature (other files too): hint material, never a limit (round 10)."""
     sigs = set(cluster.signatures)
@@ -433,8 +437,8 @@ def _related(cluster: ErrorCluster, attempts: list[FixAttempt]) -> list[FixAttem
 
 def _same_cluster(cluster: ErrorCluster, attempts: list[FixAttempt],
                   canon: Optional[Callable[[Optional[str]], str]] = None) -> list[FixAttempt]:
-    """바로 *이* 클러스터에 대한 시도들(같은 id, 또는 옮겨졌을
-    수 있는 같은 파일 + 겹치는 서명). 사다리·한도·롤백의 근거.
+    """이 클러스터에 대한 시도를 찾는다. id가 같거나, 파일이 같고 서명이 겹치는 시도다.
+    시도 순서, 시도 횟수 한도, 되돌리기는 이 목록을 기준으로 한다.
 
     The attempts made on THIS cluster (same id, or same — possibly moved — file with an overlapping signature)."""
     from sbmig.triage.decide import same_cluster_attempts
@@ -442,9 +446,9 @@ def _same_cluster(cluster: ErrorCluster, attempts: list[FixAttempt],
 
 
 def call_edit_applier(fn: Callable[..., Any], ws: Any, edits: list, cfg: Any, errors: list) -> Any:
-    """플러그인 edit applier 호출(A4, 2026-10-28): 문서화된 모양은 ``fn(ws, edits, *, cfg, errors=None)`` 이고,
-    ``errors``(이번 케이스의 오류 목록)는 시그니처가 받을 때만 넘긴다(``**kwargs`` 면 넘김). 시그니처를 볼 수 없는
-    callable 이면 예전처럼 넘긴다. 문서대로 ``errors`` 없이 만든 회사 플러그인도 TypeError 없이 돈다.
+    """플러그인 edit applier를 ``fn(ws, edits, *, cfg, errors=None)`` 형태로 호출한다.
+    ``errors``는 함수가 그 인자를 받을 때만 넘기므로, ``errors``를 받지 않는 회사 플러그인도 TypeError 없이
+    실행된다. 시그니처를 확인할 수 없으면 그대로 넘긴다.
 
     Call a plugin edit applier `fn(ws, edits, *, cfg, errors=None)`: `errors` (the case's errors) only when the
     signature takes it (or `**kwargs`); a callable whose signature does not inspect gets it as before (A4)."""
@@ -468,7 +472,8 @@ PRE_TRY_SOURCES = frozenset({SBMIG_VERSION_SOURCE, SBMIG_RESOURCES_SOURCE, SBMIG
                              SBMIG_BUNDLED_SOURCE, SBMIG_PARENT_SOURCE})   # zero-LLM pre-tries
 JAKARTA_SEARCH_PREFIX = "repository search for a jakarta build of"   # BlockedItem.suggestion / notes evidence (v2.1z-e)
 UNMAPPED_PREFIX = "the library behind"                                # … "<owner class> could not be matched to a dependency"
-# 소유 클래스의 패키지 토큰을 선언된 의존성과 맞출 때 뜻이 없는 조각 / tokens that identify nothing when matching a class
+# 소유 클래스의 패키지를 선언된 의존성과 맞춰 볼 때 아무것도 구별하지 못하므로 무시하는 토큰 / tokens that
+# identify nothing when matching a class
 # package against declared dependencies
 _GENERIC_TOKENS = frozenset({"com", "org", "net", "io", "kr", "co", "java", "javax", "jakarta", "api", "core", "lib",
                              "libs", "common", "commons", "util", "utils", "web", "app", "impl", "internal", "base"})
@@ -479,8 +484,9 @@ PRE_TRY_APPLY_FAILURES = VERSION_TRY_APPLY_FAILURES   # … the same cap for eve
 
 @dataclass(frozen=True)
 class _PreTry:
-    """LLM 0회 사전 시도 한 종류(v2.1l ``sbmig-version``, v2.1m ``sbmig-resources``): 이 케이스가 해당하는지와 손댈
-    pom(미루기 판단용; None = 해당 없음), 그리고 실행(적용되면 True).
+    """LLM을 호출하지 않는 사전 시도 한 종류(``sbmig-version``, ``sbmig-resources`` 등)를 담는 데이터 클래스.
+    케이스가 이 종류에 해당하는지와 수정할 pom 목록(해당하지 않으면
+    None)을 알려 주고, 실행해서 적용되면 True를 반환한다.
 
     One zero-LLM pre-try kind: `targets(c)` → the poms it would edit (the deferral check; None = not this kind),
     `run(pr, st, c)` → True when it applied (the case's try of the round)."""
@@ -495,8 +501,8 @@ VERSION_SOURCE_NOTE = {"asis": "the as-is build", "repository": "newest release 
                        "chain-property": "a version property of the parent chain"}
 
 
-# v2.1t: 그룹 → 버전 속성 가족 키워드(하위 그룹 포함 여부). org.springframework 는 정확히 그 그룹만 — security 등은
-# 다른 버전 줄이다
+# groupId별 버전 속성 키워드와 하위 그룹 포함 여부다
+# org.springframework는 그 그룹만 보는데, security 등 하위 그룹은 버전 체계가 다르기 때문이다
 VERSION_PROPERTY_FAMILIES: tuple[tuple[str, str, bool], ...] = (
     ("org.springframework.boot", "spring-boot", True),
     ("org.springframework.cloud", "spring-cloud", True),
@@ -530,7 +536,7 @@ _STEM_SUFFIXES = ("-starter", "-bom", "-parent")
 
 
 def artifact_stem(artifact_id: str) -> str:
-    """artifactId 의 줄기: 끝의 ``-starter`` / ``-bom`` / ``-parent`` 를 뗀 것(없으면 그대로).
+    """artifactId 끝의 ``-starter`` / ``-bom`` / ``-parent``를 떼어 기본 이름을 반환한다.
 
     The artifactId without a trailing `-starter` / `-bom` / `-parent`."""
     for suf in _STEM_SUFFIXES:
@@ -547,10 +553,11 @@ def _property_base(name: str) -> str | None:
 
 
 def version_property_matches(gav: Any, properties: Iterable[str], *, in_house: bool = False) -> list[str]:
-    """v2.1t: 부모 체인의 ``*.version`` / ``*-version`` 속성 중 이 아티팩트의 것(가장 구체적인 것 먼저): 이름이
-    artifactId 나 그 줄기로 시작(``jackson-databind.version``, ``spring-boot-starter`` → ``spring-boot.version``), 그룹의
-    가족 키워드(``spring-boot`` / ``spring-cloud`` / ``spring-data`` / ``spring-framework``; 점 표기도), 사내 아티팩트면
-    줄기가 속성 이름의 바탕 + ``-`` 로 시작하는 가족(``xxx-reuse-web`` → ``xxx-reuse.version``).
+    """부모 체인의 ``*.version`` / ``*-version`` 속성 중 이 아티팩트에 해당하는 것을 구체적인 것부터 찾아 반환한다.
+    - 이름이 artifactId나 그 기본 이름으로 시작하는 속성, 또는 그룹 키워드(``spring-boot``,
+      ``spring-cloud``, ``spring-data``, ``spring-framework``)인 속성
+    - 사내 아티팩트는 기본 이름이 속성 이름 + ``-``로 시작하는 속성도
+      포함한다(``xxx-reuse-web``이면 ``xxx-reuse.version``)
 
     The chain's version properties (`*.version` / `*-version`) that belong to this artifact, most specific first: the
     name starts with the artifactId or its stem, or is the group's family keyword (`spring-boot`, `spring-cloud`,
@@ -585,10 +592,10 @@ def version_property_matches(gav: Any, properties: Iterable[str], *, in_house: b
 
 
 def chain_company_properties(facts: Any, cfg: Any) -> tuple[dict[str, str], dict[str, str]]:
-    """v2.1t: 회사 자신의 체인 pom 이 정의한 속성과 그 정의 pom — 정의한 pom 의 groupId 가 루트(설정한 사내 부모)의
-    그룹(또는 그 아래)이거나 ``is_in_house`` 인 것만. Spring / Spring Boot pom(``org.springframework*``)과 Boot BOM
-    보탬의 속성은 절대 아니다 — ``spring-boot-starter-parent`` 체인의 ``lombok.version`` 같은 것은 회사 체인에서 풀리지
-    않는다. 사실에 ``company_properties`` / ``company_property_sources`` 가 채워져 있으면 그것, 아니면 여기서 같은 규칙.
+    """회사 부모 체인의 pom이 정의한 속성과, 각 속성을 정의한 pom을 반환한다.
+    정의한 pom의 groupId가 사내 부모의 그룹이나 그 하위 그룹이거나 ``is_in_house``에 해당할 때만 포함한다.
+    Spring / Spring Boot pom과 sbmig가 추가한 Boot BOM의 속성은 회사 체인에서 참조할 수 없으므로 뺀다.
+    정보에 ``company_properties`` / ``company_property_sources``가 이미 있으면 그것을 쓴다.
 
     The properties DEFINED BY THE COMPANY'S OWN chain poms and their defining pom: the defining pom's groupId is a
     root's group (or under it) or in-house (`is_in_house`); never a Spring / Spring Boot pom (`org.springframework*`)
@@ -616,17 +623,17 @@ def chain_company_properties(facts: Any, cfg: Any) -> tuple[dict[str, str], dict
 
 
 def chain_own_managed(facts: Any, boot: Callable[[], dict] | dict | None = None) -> dict[str, str]:
-    """v2.1s: 사내 부모 체인 *자신이* 관리하는 버전 — Boot 덧붙임(``boot_bom_added``: 체인이 Boot BOM 을 import 하지
-    않아 sbmig 가 보탠 것)은 뺀다. 그 덧붙임은 실제 빌드에서 관리되지 않으므로 '관리됨' 이라고 하면 버전 없음 오류가
-    난다. ``managed_by_chain`` 이 사실에 있으면 그것, 없으면 ``managed`` 에서 Boot BOM 과 같은 값의 항목을 뺀다(체인이
-    다른 값으로 직접 선언한 것은 남는다).
+    """사내 부모 체인이 직접 관리하는 버전을 반환한다.
+    sbmig가 추가한 Boot BOM(``boot_bom_added``)의 항목은 실제 빌드에서 관리되지 않으므로 뺀다.
+    정보에 ``managed_by_chain``이 있으면 그것을 쓰고, 없으면 ``managed``에서 Boot BOM과 값이 같은 항목을 뺀다.
 
     The parent chain's OWN managed versions, without the Boot add-on (`boot_bom_added`: sbmig added the Boot BOM
     because the chain does not import it — the real build does not manage those). `facts.managed_by_chain` when the
     facts have it, else `managed` minus the entries equal to the target Boot BOM's (an entry the chain declares itself
     at another version stays)."""
-    # v2.1s: 로더가 Boot 보강분을 얹었을 때만 채우는 `ParentChainFacts.chain_managed` (체인 고유 관리 목록) 가 있으면 그것;
-    # 이름이 다른 옛 사실 객체(`managed_by_chain`)도 받는다. 둘 다 없으면 아래에서 Boot BOM 과 같은 값의 항목을 뺀다
+    # 로더가 Boot 항목을 추가했을 때만 채우는 `ParentChainFacts.chain_managed`를 먼저 쓰고, 이전 이름인
+    # `managed_by_chain`도 받는다
+    # 둘 다 없으면 아래에서 Boot BOM과 값이 같은 항목을 뺀다
     own = getattr(facts, "chain_managed", None)
     if own is None:
         own = getattr(facts, "managed_by_chain", None)
@@ -644,15 +651,12 @@ def chain_own_managed(facts: Any, boot: Callable[[], dict] | dict | None = None)
 
 
 class VersionResolver:
-    """v2.1l / v2.1s 버전 결정 규칙 하나(재구성·수정 루프 공통, INTERFACES "Resolution order"): 버전 없는 의존성
-    g:a 에 대해 (1) 새 부모 체인(재구성 뒤 effective pom ``depmgmt-after-restructure.json``, 없으면 Boot 덧붙임을 뺀
-    사내 부모 체인의 사실)이 관리하면 그대로 둔다 → ``(None, "managed")``, (1b, v2.1s) 체인이 관리하지 않고 목표 Boot
-    BOM(``spring-boot-dependencies:<target>``)이 관리하면 그 버전 → ``(v, "boot-bom")`` — 단 as-is 버전이 더 새것이면
-    as-is(내리지 않는다), (2) as-is 빌드가 쓴 버전(``logs/depmgmt.json``: 그 모듈의 direct → managed → 합친
-    managed → 합친 direct) → ``(v, "asis")``, (3) 호출자가 허락할 때만(LLM 이 방금 추가한 의존성, 누락 버전
-    케이스) 저장소의 최신 정식 릴리스(프리릴리스 제외) → ``(v, "repository")``, (4) 못 찾음 → ``(None,
-    "unknown")``. LLM 에게 버전을 추측시키지 않으려는 것 — 사실(as-is·저장소)만 쓴다. 예외를 내지 않는다
-    (저장소 실패 = 못 찾음). 실행마다 수정 루프가 하나 만들어 캐시한다.
+    """버전이 없는 의존성의 버전을 정하는 클래스. 재구성과 수정 루프가 같은 규칙을 쓴다.
+    순서: 새 부모 체인이 관리 ``(None, "managed")`` -> 목표 Boot BOM이 관리 ``(v, "boot-bom")``, 단 as-is
+    버전이 더 새것이면 as-is -> as-is 빌드의 버전 ``(v, "asis")`` -> 호출한 쪽이 허용하면 저장소의 최신
+    릴리스 ``(v, "repository")`` -> ``(None, "unknown")``
+    LLM에게 버전을 추측시키지 않는다. 예외를 던지지 않고, 저장소 조회에 실패하면 찾지 못한 것으로 본다.
+    수정 루프가 실행마다 하나 만들어 재사용한다.
 
     The v2.1l resolution order for a `<dependencies>` entry without `<version>` (one rule for the restructure and
     the fix loop): (1) the new parent chain manages it (the post-restructure capture; the declaring module's
@@ -667,8 +671,9 @@ class VersionResolver:
 
     def __init__(self, asis: dict | None = None, after: dict | None = None,
                  repository: Callable[[], Any] | None = None, chain: Any = None, boot: Any = None):
-        """두 캡처(dict, 없으면 빈 것), 저장소 조회기를 주는 콜러블, 재구성 뒤 캡처가 없을 때 쓸 사내 부모 체인의 사실
-        (``load_effective`` 모양의 dict, 또는 그것을 돌려주는 콜러블 — 처음 필요할 때 한 번 부른다)을 받는다.
+        """as-is 캡처와 재구성 뒤 캡처(없으면 빈 dict), 저장소 조회기를 반환하는 함수, 재구성 뒤 캡처가 없을
+        때 쓸 사내 부모 체인 정보를 받는다.
+        ``chain``과 ``boot``는 dict이거나 dict를 반환하는 함수이며, 함수는 처음 필요할 때 한 번만 호출한다.
 
         `chain`: the parent-chain facts used when the post-restructure capture is missing (a capture-shaped dict, or a
         zero-arg callable returning one, called once when first needed). `boot` (v2.1s): the target Boot BOM's
@@ -685,9 +690,9 @@ class VersionResolver:
     @classmethod
     def for_workspace(cls, ws: Any, repository: Callable[[], Any] | None = None,
                       cfg: Any = None) -> VersionResolver:
-        """실행 디렉토리의 두 캡처(as-is ``depmgmt.json``, 재구성 뒤 ``depmgmt-after-restructure.json``)로 만든다.
-        못 읽으면 빈 캡처 — 규칙은 저장소 단계만 남는다. ``cfg`` 를 주면 재구성 뒤 캡처가 없을 때 사내 부모 체인의
-        사실(``sbmig.build.parent_chain``, 재구성이 쓰는 대체 출처)로 1단계를 본다.
+        """실행 디렉토리의 두 캡처(as-is ``depmgmt.json``, 재구성 뒤 ``depmgmt-after-restructure.json``)를
+        읽어 생성한다. 읽지 못한 캡처는 빈 캡처로 본다.
+        ``cfg``가 있으면 재구성 뒤 캡처가 없을 때 사내 부모 체인 정보(``sbmig.build.parent_chain``)로 1단계를 판단한다.
 
         Built from the run directory's two captures (missing / unreadable → empty); with `cfg`, step 1 falls back on
         the parent-chain facts (`load_parent_chain_facts(cfg).as_capture()`, the restructure's fallback) when the
@@ -702,7 +707,7 @@ class VersionResolver:
             log.debug("dependency version captures unavailable: %s: %s", type(e).__name__, e)
 
         def boot() -> dict:
-            # 모듈 속성으로 불러 테스트의 대역(tests/conftest.py)이 걸린다
+            # 모듈 속성으로 호출해야 테스트의 가짜 구현(tests/conftest.py)이 적용된다
             from sbmig.build import boot_bom
             return dict(boot_bom.load_boot_bom_facts(cfg).managed)
 
@@ -711,7 +716,7 @@ class VersionResolver:
             facts = parent_chain.load_parent_chain_facts(cfg)
             data = facts.as_capture()
             data["managed"] = chain_own_managed(facts, boot)
-            # v2.1t: 회사 체인 pom 이 정의한 속성만(Spring / Boot pom·Boot 보탬의 속성은 회사에서 풀리지 않는다)
+            # Spring / Boot pom의 속성은 회사 체인에서 참조할 수 없으므로 회사 체인 pom이 정의한 속성만 쓴다
             data["company_properties"], data["company_property_sources"] = chain_company_properties(facts, cfg)
             return data
 
@@ -724,17 +729,17 @@ class VersionResolver:
 
     @property
     def has_asis(self) -> bool:
-        """as-is 캡처가 있는가(비어 있지 않은가)."""
+        """as-is 캡처에 내용이 있는지 확인한다."""
         return self._has(self.asis)
 
     @property
     def has_after(self) -> bool:
-        """재구성 뒤 캡처(새 부모 체인)가 있는가."""
+        """재구성 뒤 캡처(새 부모 체인 정보)가 있는지 확인한다."""
         return self._has(self.after)
 
     @property
     def chain(self) -> dict:
-        """재구성 뒤 캡처 대신 쓸 사내 부모 체인의 사실(처음 쓸 때 한 번 읽음; 없거나 실패하면 빈 dict)."""
+        """재구성 뒤 캡처 대신 쓸 사내 부모 체인 정보. 처음 쓸 때 한 번 읽고, 없거나 읽지 못하면 빈 dict다."""
         if self._chain is None:
             data: Any = None
             try:
@@ -746,7 +751,7 @@ class VersionResolver:
 
     @property
     def boot(self) -> dict:
-        """v2.1s: 목표 Boot BOM 이 관리하는 버전(g:a → 버전; 처음 쓸 때 한 번 읽음, 없거나 실패하면 빈 dict)."""
+        """목표 Boot BOM이 관리하는 g:a별 버전. 처음 쓸 때 한 번 읽고, 없거나 읽지 못하면 빈 dict다."""
         if self._boot is None:
             data: Any = None
             try:
@@ -757,8 +762,8 @@ class VersionResolver:
         return self._boot
 
     def boot_version(self, key: str, module: str | None = None) -> str | None:
-        """v2.1s: 새 부모 체인이 관리하지 *않는* g:a 를 목표 Boot BOM 이 관리하는 버전(체인이 관리하거나 BOM 에
-        없으면 None).
+        """새 부모 체인이 관리하지 않는 g:a의 목표 Boot BOM 버전을 반환한다.
+        체인이 관리하거나 BOM에 없으면 None을 반환한다.
 
         The target Boot BOM's version of g:a when the new chain does not manage it (else None)."""
         if self.managed_version(key, module):
@@ -767,13 +772,14 @@ class VersionResolver:
 
     @property
     def has_chain(self) -> bool:
-        """새 부모 체인이 무엇을 관리하는지 아는가(재구성 뒤 캡처, 없으면 부모 체인의 사실). 모르면 1단계는 아무것도
-        관리된다고 말하지 못한다."""
+        """새 부모 체인이 관리하는 버전을 알고 있는지 여부.
+        모르면 1단계에서 아무것도 관리되지 않는 것으로 본다."""
         return self.has_after or self._has(self.chain)
 
     @staticmethod
     def _module(data: dict, module: str | None) -> dict | None:
-        """캡처의 ``by_module`` 에서 모듈 항목(g:a 로, 없으면 artifactId 로). 없으면 None."""
+        """캡처의 ``by_module``에서 모듈 항목을 g:a로, 없으면 artifactId로 찾는다.
+        찾지 못하면 None을 반환한다."""
         if not module:
             return None
         by = data.get("by_module") or {}
@@ -784,10 +790,10 @@ class VersionResolver:
         return own if isinstance(own, dict) else None
 
     def managed_version(self, key: str, module: str | None = None) -> str | None:
-        """새 부모 체인이 g:a 를 관리하는 버전(없으면 None). 선언한 모듈의 항목이 캡처에 있으면 그 모듈의
-        effective dependencyManagement 가 정답이다 — 다른 모듈(예: boot 모듈의 Boot BOM)이 관리한다고 이
-        모듈도 관리되는 것은 아니다. 모듈 항목이 없을 때만 합친 ``managed``. 재구성 뒤 캡처가 없으면 사내 부모
-        체인의 사실(``chain``)의 관리 버전.
+        """새 부모 체인이 관리하는 g:a의 버전을 반환한다. 없으면 None을 반환한다.
+        캡처에 선언한 모듈의 항목이 있으면 그 모듈의 effective dependencyManagement만 본다.
+        다른 모듈이 관리한다고 이 모듈도 관리되는 것은 아니기 때문이다.
+        모듈 항목이 없으면 합친 ``managed``를 보고, 재구성 뒤 캡처가 없으면 ``chain``의 관리 버전을 본다.
 
         The version the new chain manages g:a at: the declaring module's effective dependencyManagement when the
         capture has the module (another module's chain does not manage this one), else the merged `managed`; without
@@ -800,10 +806,10 @@ class VersionResolver:
         return (self.after.get("managed") or {}).get(key) or None
 
     def asis_fact(self, key: str, module: str | None = None) -> tuple[str | None, str]:
-        """as-is 빌드가 g:a 에 쓴 버전과 출처 문구: ``(v, "declared")`` / ``(v, "managed by g:a:v")`` /
-        ``(None, "")``. 순서: 모듈 direct → 모듈 managed → 합친 managed → 합친 direct — 버전 없는 선언은 관리로
-        풀렸으므로, 모듈 밖에서는 다른 모듈이 명시한 버전보다 부모가 관리한 버전이 맞다. 문구는 찾은 표를 그대로
-        말한다(direct = declared, managed = managed by 부모; 섞지 않는다).
+        """as-is 빌드가 g:a에 쓴 버전과 그 출처를 반환한다: ``(v, "declared")`` /
+        ``(v, "managed by g:a:v")`` / ``(None, "")``.
+        모듈의 직접 선언 -> 모듈의 관리 버전 -> 합친 관리 버전 -> 합친 직접 선언 순서로 찾는다.
+        모듈 밖에서는 다른 모듈이 명시한 버전보다 부모가 관리한 버전이 맞기 때문이다.
 
         (version, how) of the as-is build in the order: the module's `direct` → its `managed` → merged `managed` →
         merged `direct` (a version-less declaration was resolved by management: outside the module, the managed
@@ -824,7 +830,8 @@ class VersionResolver:
         return None, ""
 
     def repository_version(self, key: str) -> str | None:
-        """저장소가 가진 g:a 의 최신 정식 릴리스(프리릴리스 제외). 조회기 없음·실패 → None. 키별 캐시.
+        """저장소에 있는 g:a의 최신 정식 릴리스(프리릴리스 제외)를 반환한다.
+        조회기가 없거나 조회에 실패하면 None을 반환하며, 결과는 키별로 캐시한다.
 
         The newest release of g:a the repository lists (`RepositoryLookup.versions`, oldest → newest) that is not a
         prerelease; None without a lookup or on any failure. Cached per key."""
@@ -846,8 +853,10 @@ class VersionResolver:
 
     def resolve(self, key: str, module: str | None = None, *, allow_repository: bool = False,
                 check_managed: bool = True) -> tuple[str | None, str]:
-        """규칙대로 ``(버전 | None, 출처)``: managed / boot-bom / asis / repository / unknown. ``check_managed=False`` 는
-        빌드가 이미 '버전 없음' 이라고 말한 의존성(1단계를 건너뜀). 예외 없음.
+        """규칙에 따라 ``(버전 또는 None, 출처)``를 반환한다.
+        출처는 managed / boot-bom / asis / repository / unknown 중 하나다.
+        ``check_managed=False``는 빌드가 이미 버전이 없다고 알린 의존성이므로 1단계를 건너뛴다.
+        예외를 던지지 않는다.
 
         `(version | None, source)` by the resolution order (managed / boot-bom / asis / repository / unknown);
         `check_managed=False` skips step 1 (the build already said the version is missing). Never raises."""
@@ -855,7 +864,7 @@ class VersionResolver:
             if check_managed and self.managed_version(key, module):
                 return None, "managed"
             v, _how = self.asis_fact(key, module)
-            # v2.1s: 목표 Boot BOM 이 as-is 보다 먼저 — to-be 줄을 따른다(as-is 가 더 새것이면 내리지 않는다)
+            # 목표 Boot BOM의 버전을 as-is 버전보다 먼저 따르되, as-is 버전이 더 새것이면 버전을 내리지 않는다
             bv = self.boot.get(key) or None          # not the chain's (step 1, or the build said missing)
             if bv:
                 from sbmig.plan.versions import compare_versions
@@ -880,10 +889,11 @@ class VersionResolver:
 
 
 class BuildFixLoop:
-    """v2.1 수정 루프. 오케스트레이터가 실행마다 하나 만들고(``budget`` / ``blocked`` / ``errors`` 공유),
-    최종 빌드 실패 시 ``run`` 을 부른다. 케이스의 다음 사다리 단계는 트리아지(``sbmig.triage.scripts``)가,
-    시도 실행·채점·되돌리기·KB 실적은 이 클래스가 맡는다. KB 가
-    없으면 LLM 스크립트는 저장 없이 v0 로 돌고 재사용은 없다.
+    """Maven 빌드 오류를 케이스별 수정 시도로 고치는 수정 루프 클래스. 오케스트레이터가 실행마다 하나
+    만들고(``budget`` / ``blocked`` / ``errors``는 공유) 검증 빌드가 실패하면 ``run``을 호출한다.
+    케이스의 다음 시도 방식은 트리아지(``sbmig.triage.scripts``)가 정하고, 시도 실행, 결과 평가, 되돌리기,
+    KB 실적 기록은 이 클래스가 맡는다.
+    KB가 없으면 LLM 스크립트는 저장하지 않고 v0로 실행하며 재사용도 하지 않는다.
 
     v2.1 fix loop. `script_runner` = ScriptRunnerLike (the orchestrator passes a lazy `sbmig.script.ScriptRunner
     (cfg)`); `edit_applier` = `fn(ws, edits, *, cfg, errors=None) -> ScriptRunResult` (None = `sbmig.script.apply_edits`;
@@ -898,8 +908,8 @@ class BuildFixLoop:
                  locator: Any = None, advisories: Optional[list[AdvisoryFinding]] = None,
                  script_runner: Any = None, edit_applier: Optional[Callable[..., ScriptRunResult]] = None,
                  errors: Optional[RunErrors] = None):
-        """협력 객체와 실행 동안의 상태(시도 이력·차단 등록부·플래그·후속 조치·LLM 장애 상태·시도별 기록)를
-        준비한다. ``history`` 는 같은 실행의 모든 루프가 공유할 수 있다 — 사다리와 한도는 이 이력을 본다."""
+        """협력 객체와 실행 중 상태(시도 이력, 차단 목록, 플래그, 후속 조치, LLM 장애 상태, 시도별 기록)를 준비한다.
+        ``history``는 같은 실행의 여러 루프가 공유할 수 있으며, 시도 순서와 횟수 한도는 이 이력을 기준으로 한다."""
         self.cfg = cfg
         self.ws = ws
         self.build_runner = build_runner
@@ -945,7 +955,7 @@ class BuildFixLoop:
         self._sleep: Optional[Callable[[float], None]] = None   # injectable (tests); None = module `sleep_seconds`
         # round 9: first-wins merge conflicts of the restructure step (set by the orchestrator) → fix-prompt hints
         self.merge_conflicts: list[MergeConflict] = []
-        # v2.1v (B-H2): 재구성 결과와 그 모드(오케스트레이터가 넣는다) → 프롬프트의 "Project after the restructure" 절
+        # 재구성 결과와 모드는 오케스트레이터가 넣어 주며, 프롬프트의 "Project after the restructure" 절을 만들 때 쓴다
         # the run's RestructureResults and their modes (set by the orchestrator) → FixContext.layout_facts
         self.restructure_results: list[Any] = []
         self.restructure_modes: list[Optional[str]] = []
@@ -972,7 +982,7 @@ class BuildFixLoop:
         self._edit_results: dict[int, ScriptRunResult] = {}
         self._seconds: dict[int, float] = {}
         self._tally: dict[int, tuple[int, int]] = {}
-        # 시도별 상태 사전은 FixAttempt 객체(id())가 키 — 시도 id 문자열은 MSA 서비스별 루프에서 겹칠 수 있다
+        # 시도 id 문자열은 MSA 서비스별 루프에서 겹칠 수 있으므로 시도별 상태는 FixAttempt 객체의 id()를 키로 쓴다
         self._try_seq: dict[str, int] = {}       # case id → local try counter (an error list that returns no FixTry)
         self._answers: dict[int, Any] = {}       # v2.1b: attempt → the LLM answer it applied (its edit descriptions)
         self._notes: dict[int, list] = {}        # v2.1b: attempt → its 수정 notes (EditNote per change)
@@ -983,10 +993,11 @@ class BuildFixLoop:
         self._repo_lookup: Any = None
         self._repo_lookup_off = False
         self._repo_facts: dict[str, Any] = {}    # g:a → RepositoryVersions (the read-back's "same major offered")
-        # v2.1l: 버전 결정기(처음 쓸 때 한 번), 누락 버전 케이스의 결정적 시도가 이미 본 (pom, g:a) 쌍(실행당 한 번)
+        # 버전 결정기(처음 쓸 때 생성)와, 누락 버전 사전 시도가 이미 확인한 (pom, g:a) 쌍을 기억한다
         # the version resolver (lazy, one per loop); the (pom, g:a) pairs the zero-LLM missing-version try looked at
         self._version_resolver: VersionResolver | None = None
-        # v2.1l / v2.1m: LLM 0회 사전 시도가 이미 본 키(출처, pom 또는 모듈, g:a | 확장자들)와 적용 실패 횟수
+        # 같은 사전 시도를 반복하지 않도록 이미 확인한 키(출처, pom 또는
+        # 모듈, g:a 또는 확장자)와 적용 실패 횟수를 기억한다
         # the zero-LLM pre-tries' keys already looked at — (source, pom or module, g:a | extensions) — and apply failures
         self._pre_tried: set[tuple[str, str, str]] = set()
         self._pre_failures: Counter = Counter()
@@ -1000,7 +1011,8 @@ class BuildFixLoop:
                 attach(blocked_registry=self.blocked, ws=ws, cases=self._cases if self._cases.active else None)
             except Exception as e:  # pragma: no cover - a foreign triager
                 log.warning("triager.attach_run failed: %s", e)
-        # v2.1z-aa: 지식 노트(knowledge/notes)를 트라이어저에도 준다 — `replacement: true` 노트가 맞는 라이브러리는 차단하지 않는다
+        # 지식 노트(knowledge/notes)를 트리아지에도 전달해
+        # `replacement: true` 노트에 맞는 라이브러리는 차단하지 않게 한다
         self._notes_index: Optional[list[Any]] = None
         if callable(attach):
             try:
@@ -1010,14 +1022,14 @@ class BuildFixLoop:
 
     @property
     def cases(self) -> CaseScripts:
-        """KB 케이스 저장소(``CaseScripts`` 어댑터, KB 가 없으면 비활성).
+        """KB 케이스 저장소(``CaseScripts`` 어댑터)를 반환한다. KB가 없으면 비활성 상태의 저장소다.
 
         The KB's case store (`kb.cases` through the `CaseScripts` adapter; inactive without a KB)."""
         return self._cases
 
     # ------------------------------------------------------------------ public
     def _mark(self, what: str) -> None:
-        """감시견용 이정표: 루프가 지금 무엇을 하는지(sbmig.log 에 DEBUG 한 줄도).
+        """감시 스레드가 볼 수 있도록 루프가 지금 하는 일을 기록하고, sbmig.log에 DEBUG 한 줄을 남긴다.
 
         Milestone for the watchdog: what the loop is doing right now (also a DEBUG line in sbmig.log; the line's
         stage says where)."""
@@ -1026,8 +1038,8 @@ class BuildFixLoop:
 
     @contextmanager
     def _busy_with(self, what: str):
-        """스스로 진행 신호를 남기는 호출(Maven 빌드 등) 동안
-        감시견을 조용히 시키고, 끝나면 조용한 시간을 다시 잰다.
+        """스스로 진행 로그를 남기는 호출(Maven 빌드 등)이 실행되는 동안 감시 스레드가 경고하지 않게 하고,
+        끝나면 무응답 시간을 처음부터 다시 잰다.
 
         A call that logs its own heartbeat (Maven build, OpenRewrite run): the watchdog stays silent meanwhile, and
         its quiet time starts again when the call returns."""
@@ -1039,8 +1051,10 @@ class BuildFixLoop:
             self._quiet_from = time.monotonic()
 
     def _activity(self) -> Optional[str]:
-        """지금 스스로 진행 신호를 내는 일이 도는가(이 루프의 빌드, LLM HTTP 호출, Maven 자식 프로세스) —
-        없으면 None 이고 그때만 감시견이 말한다(긴 LLM 호출을 "멈춤" 으로 오인하지 않으려고).
+        """스스로 진행 로그를 남기는 작업(이 루프의 빌드, LLM HTTP 호출, Maven 자식 프로세스)이 실행 중인지
+        확인해 그 이름을 반환한다.
+        실행 중인 작업이 없으면 None을 반환하고, 이때만 감시 스레드가 경고한다.
+        긴 LLM 호출을 멈춤으로 오인하지 않기 위해서다.
 
         What is running right now that heartbeats by itself (round 10, A12): a build / rewrite of this loop, an LLM
         HTTP call (`sbmig.fix.client.llm_calls_in_flight`), a Maven child process (`sbmig.build.mvn.live_processes`,
@@ -1062,9 +1076,9 @@ class BuildFixLoop:
         return None
 
     def _start_watchdog(self, phase: Phase) -> threading.Event:
-        """감시견 데몬 스레드: 루프가 ``WATCHDOG_QUIET_S`` 동안 조용하면 마지막 이정표를 WARNING 으로
-        말하고, ``WATCHDOG_DUMP_S`` 가 지나면 스레드 덤프를 실행 디렉터리에 쓴다. 운영자가 "멈췄나?" 를
-        sbmig.log 의 이 줄로 판단한다.
+        """감시 데몬 스레드를 시작한다. 루프가 ``WATCHDOG_QUIET_S`` 동안 조용하면 마지막 진행 내용을
+        WARNING으로 남기고, ``WATCHDOG_DUMP_S``가 지나면 스레드 덤프를 실행 디렉토리에 기록한다.
+        운영자는 sbmig.log의 이 줄을 보고 멈췄는지 판단한다.
 
         A daemon thread that says, every WATCHDOG_S once the loop was quiet for WATCHDOG_QUIET_S, where the loop is
         (last milestone) — a slow LLM / build keeps logging through its own heartbeat, so a quiet watchdog line
@@ -1099,9 +1113,9 @@ class BuildFixLoop:
 
     def run(self, phase: Phase, goal: str, max_iterations: int, target: Optional[str] = None,
             first_build: Optional[BuildResult] = None) -> PhaseResult:
-        """수정 루프 실행(감시견을 켠 채로). ``first_build`` = 루프를 시작하게 만든 실패한 최종
-        ``clean package`` — 같은 트리를 다시 빌드하지 않고 빌드 1 로 쓴다(실패하는 프로젝트마다 Maven 빌드 한
-        번 절약; 그 오류는 이미 목록에 있다).
+        """감시 스레드를 켜고 수정 루프를 실행한다.
+        ``first_build``는 루프를 시작하게 한 실패한 ``clean package`` 결과다.
+        같은 트리를 다시 빌드하지 않고 이 결과를 첫 빌드로 쓰며, 그 오류는 이미 오류 목록에 있다.
 
         `first_build` (v2): the build that made the caller start the loop (the failed final `clean package`) —
         used as the loop's build 1 instead of building the same tree again (one Maven build less per failing
@@ -1116,10 +1130,11 @@ class BuildFixLoop:
 
     def _run(self, phase: Phase, goal: str, max_iterations: int, target: Optional[str] = None,
              first_build: Optional[BuildResult] = None) -> PhaseResult:
-        """루프 본체. 바깥 반복 = 빌드 1번(채점 → 오류 목록 → 성공이면 끝 → 정체·진동 감지 → 종료 조건).
-        안쪽 반복 = 수정 라운드; 아무것도 트리를 바꾸지 못했으면 같은 빌드로 각 케이스의 다음 사다리 단계를
-        다시 묻는다(재라운드). 재라운드도 라운드 수(``max_iterations``)에
-        들어가고, 루프는 반드시 빌드 뒤에 끝난다."""
+        """수정 루프의 본체를 실행한다. 바깥 반복 한 번이 빌드 한 번이다(시도 결과 평가 -> 오류 목록 갱신 ->
+        성공이면 종료 -> 정체와 진동 감지 -> 종료 조건 확인).
+        안쪽 반복은 수정 라운드다.
+        트리가 바뀌지 않았으면 재빌드하지 않고 같은 빌드 결과로 각 케이스의 다음 시도를 실행한다.
+        이런 라운드도 ``max_iterations``에 포함되며, 루프는 항상 빌드 뒤에 끝난다."""
         pr = PhaseResult(phase=phase)
         self._phase_items = []
         self._cur_phase = phase
@@ -1157,11 +1172,12 @@ class BuildFixLoop:
                     build = self._build(goal, target, f"{phase.value}-{build_no}", phase, build_no)
                 last = build
                 pr.iterations = build_no
-                # 직전 라운드의 시도들을 이 빌드로 채점(악화는 여기서 되돌림 → 되돌린 트리를 다시 빌드)
+                # 직전 라운드의 시도를 이 빌드로 평가한다.
+                # 악화된 시도는 여기서 되돌리고 되돌린 트리를 다시 빌드한다
                 reverted = self._score(pr, pending, build, prev_build, prev_restored)
                 scored = [p.attempt for p in pending]
-                # 되돌린 뒤 재빌드: 되돌린 라운드에서 판정 불가였던 시도(pom 수정의 새 의존성 오류가 대상
-                # 오류를 가렸던 것)는 다시 채점한다 — 그때까지 그 FixTry 는 대기 상태
+                # 되돌린 뒤 재빌드에서는 되돌린 라운드에서 판단할 수 없었던 시도를 다시 평가한다
+                # pom 수정이 만든 새 의존성 오류가 대상 오류를 가렸던 경우이며, 그때까지 FixTry는 대기 상태다
                 # a revert rebuild shows the tree minus the reverted commits against the same "before" build: tries
                 # the reverted round left inconclusive (a pom edit's new dependency error hid their errors) are
                 # scored again — their FixTry stays pending until then
@@ -1169,16 +1185,17 @@ class BuildFixLoop:
                 again = {id(p.attempt) for p in pending}
                 for p in pending:
                     p.attempt.notes.append("scored again on the rebuild after the revert")
-                # "안 보임 ≠ 해결": 되돌린 라운드의 빌드, 오류를 파싱 못
-                # 한 실패, 타임아웃은 아무것도 해결 처리하지 않는다(void)
+                # 보이지 않는다고 해결된 것은 아니므로 되돌린 라운드의 빌드, 오류를 파싱하지 못한 실패, 타임아웃은
+                # 어떤 오류도 해결된 것으로 처리하지 않는다(void)
                 # a reverted round's build shows a tree that no longer exists; a failed build without parsed errors
                 # (or a timeout) says nothing about which errors are gone → void: the list resolves nothing
                 void = bool(reverted) or (not build.ok and not build.errors) or bool(build.timed_out)
                 added = 0
                 if not reused:     # the reused first build is on the list already (the caller's `build`)
-                    # 판정보다 먼저 목록에 넣는다: 대기 중 시도가 걸린 항목은 열어 두고(resolve 가 판정), 다른
-                    # 케이스의 수정으로 사라진 항목은 여기서 해결 + v2.1f
-                    # ``resolved_by``(이 라운드에 그 파일·pom 을 바꾼 시도)
+                    # 결과를 정하기 전에 먼저 오류 목록에 넣고, 대기 중인 시도의
+                    # 항목은 열어 두어 resolve가 처리하게 한다
+                    # 다른 케이스의 수정으로 사라진 항목은 여기서 해결 처리하고, 이번 라운드에 그 파일이나
+                    # pom을 바꾼 시도를 ``resolved_by``에 남긴다
                     # BEFORE the verdicts: the list keeps this round's pending tries open for `resolve`
                     added = self.errors.add_build(build, f"fix r{label}", round=fix_rounds, void=void, scope=target)
                 self._after_scoring([a for a in scored if id(a) not in again], build_no)
@@ -1194,21 +1211,23 @@ class BuildFixLoop:
                 if reverted:
                     pr.notes.append(f"build {build_no}: regressed attempt(s) reverted → rebuilding the reverted tree")
                     continue
-                # 2026-11-05 (k8s Job 모드): 웹의 멈춤 요청(stop.request)은 빌드 라운드 사이에서 본다 — 노드 경계까지 40분을 기다리면
-                # 웹이 유예 뒤 Job 을 지워 보고서가 사라진다. 여기서 나가면 다음 노드(또는 finalize)가 aborted 로 마감한다
+                # 노드 경계까지 기다리면 웹이 Job을 지워 보고서가 사라지므로 웹의
+                # 멈춤 요청(stop.request)은 빌드 사이에 확인한다
+                # 여기서 빠져나가면 다음 노드나 finalize가 aborted로 마무리한다
                 if getattr(self.ws, "stop_requested", lambda: False)():
                     pr.notes.append(f"build {build_no}: stop requested (stop.request) — leaving the fix loop before the next build")
                     log.warning("stop requested (stop.request) — leaving the fix loop after build %d (no further fix)", build_no)
                     self.ws.journal({"event": "stop_request", "phase": phase.value, "iteration": build_no, "where": "fix loop"})
                     break
-                # v2.1z-ah: Maven 의 HTTP 차단 미러가 저장소를 거부했다 → 부모 맞추기·사전 시도·LLM 어느 것도 못 고친다: 바로 중단
+                # Maven의 HTTP 차단 미러에 막혔으면 부모 버전 맞추기, 사전 시도, LLM
+                # 어느 것으로도 해결할 수 없으므로 바로 중단한다
                 if self.http_blocked_abort(pr, phase, build, build_no):
                     break
-                # 사내 parent 가 해석되지 않으면 아무것도 빌드할 수 없다 → 실행 중단(코드 수정으로는 못 고침)
+                # 사내 parent를 찾지 못하면 아무것도 빌드할 수 없고 코드 수정으로도 해결되지 않으므로 실행을 중단한다
                 if self._parent_abort(pr, phase, build, build_no):
                     break
-                # 정체 = 직전 빌드와 오류 집합이 똑같음, 진동 = 더 이전 빌드와 같음(A↔B↔A). 정체가 쌓이면 더
-                # 센 모델, 진동이 2번이면 관련 케이스를 차단(OSCILLATION)
+                # 정체는 오류 집합이 직전 빌드와 같은 경우, 진동은 그보다 이전 빌드와 같은 경우다
+                # 정체가 쌓이면 상위 모델로 바꾸고, 진동이 2번 일어나면 관련 케이스를 OSCILLATION으로 차단한다
                 multiset = build.signature_multiset()
                 stalled = prev_multiset is not None and multiset == prev_multiset
                 oscillating = (not stalled) and any(m == multiset for m in window[:-1])
@@ -1259,13 +1278,13 @@ class BuildFixLoop:
                 rec.decisions += decisions
                 rec.cluster_count = len(rec.decisions)
                 rec.attempt_ids = [a.id for a in pr.attempts if a.iteration == build_no]
-                # 안쪽 반복을 끝내는 조건: 무엇이든 적용됨(→ 재빌드) /
-                # 시도 자체가 없었음 / 라운드 소진 / 시간 초과 / 전부 차단
+                # 무엇이든 적용됐거나(재빌드 필요), 시도가 없거나, 라운드를 다 썼거나, 시간이 초과됐거나,
+                # 모두 차단됐으면 안쪽 반복을 끝낸다
                 if self.dry_run or applied_any or not tried or fix_rounds >= max_iterations \
                         or self.budget.time_exceeded() or all(self.blocked.covering(c) for c in clusters):
                     break
-                # 재라운드: 트리가 그대로라 재빌드해도 같은 오류 →
-                # 같은 빌드로 다음 단계를 묻는다(라운드 수는 센다)
+                # 트리가 그대로라 재빌드해도 오류가 같으므로 같은 빌드 결과로 다음 시도를 실행한다.
+                # 이 라운드도 라운드 수에 포함된다
                 # nothing changed the tree, so a rebuild would show the same errors — the next rung of each case's
                 # ladder on the same build (bounded by script.max_llm_tries_per_case)
                 self.ws.journal({"event": "reround", "phase": phase.value, "iteration": build_no,
@@ -1283,7 +1302,7 @@ class BuildFixLoop:
             prev_build, prev_multiset, prev_restored = build, multiset, restored
 
         assert last is not None
-        # 끝까지 판정 불가로 남은 시도도 마지막에 한 번 실적으로 남긴다(KB 기록)
+        # 끝까지 결과를 판단할 수 없었던 시도도 마지막에 한 번 KB 실적으로 기록한다
         self._credit_scripts(pr, [a for a in pr.attempts if a.outcome == "inconclusive"])
         if not pr.build_ok and not self.dry_run and not self.aborted:
             self._maybe_skip_test_compile(pr, phase, goal, target, last)
@@ -1304,9 +1323,9 @@ class BuildFixLoop:
 
     # ------------------------------------------------------------------ v2.1: scoring → error list + log
     def _after_scoring(self, scored: list[FixAttempt], build_no: int) -> None:
-        """직전 라운드의 채점된 시도들 마감: 오류 목록의 시도(FixTry) 결과·메모 동기화, 해결된 케이스 항목을
-        resolve(개선·빌드 성공·부분 해결), 돌았던 저장 스크립트에 실적
-        기록, 시도마다 결과 한 줄(``결과 (build N): resolved 3/4 → …``).
+        """직전 라운드에서 평가된 시도의 후속 처리를 한다.
+        - 오류 목록의 FixTry 결과와 메모를 맞추고, 해결된 케이스 항목(개선, 빌드 성공, 부분 해결)을 해결 처리한다
+        - 실행된 저장 스크립트에 실적을 기록하고, 시도마다 결과를 로그 한 줄로 남긴다
 
         The scored tries of the previous round: settle their FixTry (result, notes), resolve the error list's
         entries of a resolved case, credit the stored script that ran, one result line per try (in its case's
@@ -1315,7 +1334,7 @@ class BuildFixLoop:
             case_id, n, rnd = self._tries.get(id(a), (a.script_case_id, 0, 0))
             gone, targeted = self._tally.get(id(a), (0, len(a.cluster_errors)))
             self._sync_try(a)
-            # 부분 해결도 사라진 항목은 이 시도로 해결 처리한다(남은 항목은 열린 채로 다음 시도에)
+            # 부분 해결이어도 사라진 항목은 이 시도로 해결 처리하고, 남은 항목은 열어 둔 채 다음 시도에 넘긴다
             if a.outcome in ("improved", "build_ok", "partial") and n:    # the gone entries of the case
                 self.errors.resolve(case_id, rnd, n)
             self._credit_script(a)
@@ -1331,9 +1350,9 @@ class BuildFixLoop:
                          else "")
 
     def _log_build(self, build_no: int, build: BuildResult, scored: list[FixAttempt], added: int, void: bool) -> None:
-        """빌드 요약 한 줄(오류 수, 새로 추가된 항목, 케이스별 해결 수, 남은 열린 항목).
+        """빌드 결과를 요약한 로그 한 줄(오류 수, 새로 추가된 항목, 케이스별 해결 수, 남은 항목)을 남긴다.
 
-        `build 2: 2 error(s); 새 에러 1건 추가; resolved 23 (case 7a52b1cea8 4/4, …), open 2` (§3.2)."""
+        `build 2: 2 error(s); 새 에러 1건 추가; resolved 23 (case 7a52b1cea8 4/4, …), open 2`"""
         if build.ok:
             head = f"build {build_no}: BUILD SUCCESS"
         elif void:
@@ -1361,7 +1380,8 @@ class BuildFixLoop:
             self._phase_items.append(item_id)
 
     def _only_blocked(self, pr: PhaseResult, clusters: list[ErrorCluster], build_no: int) -> bool:
-        """남은 클러스터가 전부 이미 차단된 것이면 True(단계 끝) — 고칠 수 없는 것에 라운드를 쓰지 않는다."""
+        """남은 클러스터가 모두 이미 차단됐으면 True를 반환해 단계를 끝낸다.
+        고칠 수 없는 오류에 라운드를 쓰지 않기 위해서다."""
         if not clusters:
             return False
         items = [self.blocked.covering(c) for c in clusters]
@@ -1377,8 +1397,8 @@ class BuildFixLoop:
         return True
 
     def _candidate_for(self, c: ErrorCluster, d: TriageDecision):
-        """BLOCKED 결정의 근거(BlockedCandidate): 트리아지가 가진 것, 없으면 결정 문구의 ``blocked: <사유>``
-        에서 사유를 읽는다 (모르면 반복 실패)."""
+        """BLOCKED 결정의 근거(BlockedCandidate)를 반환한다. 트리아지가 주지 않았으면 결정 문구의
+        ``blocked: <사유>``에서 읽고, 사유를 알 수 없으면 반복 실패로 본다."""
         from sbmig.triage.blocked import BlockedCandidate
         getter = getattr(self.triager, "blocked_candidate", None)
         cand = None
@@ -1398,9 +1418,9 @@ class BuildFixLoop:
 
     def _register_blocked(self, phase: Phase, iteration: int, c: ErrorCluster, cand, rationale: str,
                           target: Optional[str] = None) -> list[BuildError]:
-        """``cand`` 가 덮는 오류들을 차단 항목으로 등록하고(javax / 외부 API 면 classpath 로 라이브러리
-        귀속, 제안 문구 작성), 오류 목록의 케이스도 차단 처리한다.
-        차단되지 *않은* 나머지 오류를 돌려준다 — 나머지는 계속 고친다.
+        """``cand``에 포함된 오류를 차단 항목으로 등록하고, 오류 목록에서도 그 케이스를 차단 처리한다.
+        javax나 외부 API 오류면 classpath에서 라이브러리를 찾아 조치 방법 문구를 만든다.
+        차단되지 않은 나머지 오류를 반환하며, 이 오류는 계속 고친다.
 
         Record a BlockedItem for the errors `cand` covers; returns the cluster errors that are NOT blocked."""
         key = self.blocked.key
@@ -1419,13 +1439,13 @@ class BuildFixLoop:
         elif reason in (BlockReason.ARTIFACT_NOT_FOUND, BlockReason.PARENT_NOT_FOUND):
             artifact = next((e.artifact for e in errs if e.artifact is not None), None)
         elif reason == BlockReason.NEEDS_OWNER:
-            # v2.1y: 거절된 javax 라이브러리·없는 아티팩트 케이스도 인수인계 표에 그 라이브러리가 남게(예전 사유의 귀속과 같게)
+            # javax 라이브러리 거절이나 없는 아티팩트 케이스도 인수인계 표에 그 라이브러리가 남도록 한다
             artifact = next((e.artifact for e in errs if e.artifact is not None), None)
             if artifact is None and _mentions_javax(errs):
                 owner, required, found = self._classpath_hints(errs, owner, required, found)
                 artifact, owner, notes = attribute(self.locator, self.ws, self.cfg, owner, errs, c.module or target)
         elif reason == BlockReason.REACTOR_DUPLICATE:
-            # v2.1k: 차단 표의 아티팩트 칸에 중복된 프로젝트 좌표(Maven 메시지에서)
+            # Maven 메시지에서 찾은 중복 프로젝트 좌표를 차단 표의 아티팩트 칸에 쓴다
             from sbmig.triage.blocked import errors_text, reactor_duplicate_coordinates
             coords = reactor_duplicate_coordinates(errors_text(errs))
             try:
@@ -1454,8 +1474,8 @@ class BuildFixLoop:
             if reason in (BlockReason.EXTERNAL_JAVAX_API, BlockReason.EXTERNAL_API_INCOMPATIBLE, BlockReason.NEEDS_OWNER):
                 item.suggestion = self._with_eol_advisory(item.suggestion, artifact)   # v2.1z-k: "no jakarta build" + why
         if reason in (BlockReason.EXTERNAL_JAVAX_API, BlockReason.NEEDS_OWNER) and _mentions_javax(errs):
-            # v2.1z-e: 사람이 "어디를 찾아봤나" 를 보게 — 탐색 기록을 제안 뒤에 붙이고 메모에도 남긴다; 의존성을 못 맞춘
-            # 소유 클래스는 그렇다고 말한다 / what sbmig searched (and an owner class it could not match) on the item
+            # 어디를 찾아봤는지 사람이 볼 수 있도록 탐색 기록을 조치 방법 뒤에 붙이고 메모에도 남긴다.
+            # 의존성을 찾지 못한 소유 클래스는 찾지 못했다고 함께 기록한다 / what sbmig searched (and an owner class it could not match) on the item
             evidence = self._jakarta_evidence(c, owner, artifact)
             if evidence:
                 if evidence not in item.suggestion:
@@ -1479,7 +1499,8 @@ class BuildFixLoop:
 
     def _classpath_hints(self, errs: list[BuildError], owner: Optional[str], required: Optional[str],
                          found: Optional[str]) -> tuple[Optional[str], Optional[str], Optional[str]]:
-        """빈 칸(소유 클래스, 요구·실제 타입)을 classpath 도구로 채운다(도구가 그 기능을 줄 때만).
+        """비어 있는 값(소유 클래스, 요구 타입, 실제 타입)을 classpath 도구로 채운다.
+        도구가 그 기능을 제공할 때만 쓴다.
 
         Fill gaps with sbmig.build.classpath.owner_fqcn / type_mismatch (G1) when the locator provides them."""
         loc = self.locator
@@ -1499,7 +1520,8 @@ class BuildFixLoop:
         return owner, required, found
 
     def _block_simple(self, phase: Phase, iteration: int, c: ErrorCluster, reason: BlockReason, why: str) -> None:
-        """아직 차단 안 된 오류만 주어진 사유로 차단(예산 소진·LLM 불가·진동 등 루프가 직접 내리는 차단)."""
+        """아직 차단되지 않은 오류만 주어진 사유로 차단한다.
+        예산 소진, LLM 사용 불가, 진동처럼 루프가 직접 내리는 차단에 쓴다."""
         from sbmig.triage.blocked import BlockedCandidate
         _blocked, rest = self.blocked.partition(c)
         if not rest:
@@ -1514,7 +1536,7 @@ class BuildFixLoop:
             self._block_simple(phase, iteration, c, reason, why)
 
     def _block_oscillation(self, pr: PhaseResult, phase: Phase, iteration: int, clusters: list[ErrorCluster]) -> None:
-        """진동이 되풀이됨: 이 단계가 실제로 손댄 클러스터만 OSCILLATION 으로 차단한다(사람이 봐야 함)."""
+        """진동이 반복되면 이 단계에서 실제로 수정을 시도한 클러스터만 OSCILLATION으로 차단해 사람이 확인하게 한다."""
         # round 10: the clusters this phase actually worked on — not every cluster that shares an L1 signature with one
         involved = [c for c in clusters if _same_cluster(c, pr.attempts, self.blocked.canonical_file)] or clusters
         why = (f"fixes kept toggling between the same error sets (A↔B↔A) {int(getattr(self.cfg.loop, 'oscillation_limit', 2) or 2)} "
@@ -1524,7 +1546,7 @@ class BuildFixLoop:
 
     @staticmethod
     def build_text(build: Any) -> str:
-        """실패한 빌드(또는 OpenRewrite 실행)의 글: 오류들의 메시지·원문, 요약/오류 문장, 그리고 로그 파일(있으면).
+        """실패한 빌드나 OpenRewrite 실행의 오류 메시지, 원문, 요약, 로그 파일 내용을 합친 텍스트를 반환한다.
 
         The text of a failed build (or OpenRewrite run): the errors' message / raw, the summary / error text, the log file."""
         parts = [f"{e.message}\n{e.raw or ''}" for e in (getattr(build, "errors", None) or [])]
@@ -1541,11 +1563,10 @@ class BuildFixLoop:
 
     def http_blocked_abort(self, pr: Optional[PhaseResult], phase: Phase, build: Any, iteration: int, *,
                            where: str = "build") -> bool:
-        """v2.1z-ah: 실패한 Maven 실행(빌드 / OpenRewrite)에 HTTP 차단의 증거(``Blocked mirror for repositories`` 문구 또는
-        차단기 주소 ``http://0.0.0.0`` — 미러 id 만으로는 아님, ``http_blocker_hit``)가 보이면 실행을 한 번에 멈춘다 — 플래그 ``aborted:http-blocked``, 저널
-        ``maven_http_blocked`` (저장소들, 자격증명 없음) + ``abort``, ERROR 한 줄, 인수인계 한 줄(``http_blocked_followup``). 부모
-        맞추기·``sbmig-parent`` / ``sbmig-version`` / ``sbmig-jakarta`` 사전 시도·LLM 어느 것도 이 실패를 고칠 수 없다. 이미 멈췄으면
-        True 만. 보이지 않으면 False.
+        """실패한 Maven 실행에 HTTP 차단의 증거(``Blocked mirror for repositories`` 문구나
+        ``http://0.0.0.0``)가 있으면 실행을 중단한다. 미러 id만으로는 판단하지 않는다.
+        중단하면 플래그 ``aborted:http-blocked``, 저널 ``maven_http_blocked``, ERROR 한 줄, 인수인계 한 줄을
+        남긴다. 이번에 또는 이미 중단했으면 True, 증거가 없으면 False를 반환한다.
 
         Maven's HTTP repository blocker in a failed build / OpenRewrite run → abort the run once: flag `aborted:http-blocked`,
         journal `maven_http_blocked` (repositories, no credentials) + `abort`, one ERROR line, one Handover line. No parent
@@ -1572,18 +1593,20 @@ class BuildFixLoop:
         return True
 
     def _parent_abort(self, pr: PhaseResult, phase: Phase, build: BuildResult, iteration: int) -> bool:
-        """설정된 사내 parent(root / boot / comp)가 해석되지 않는다 → 아무것도 빌드할 수 없으니 실행을
-        중단하고 분명한 차단 항목 (settings·Nexus·``artifacts.parent`` 를 고치라는)을 남긴다. 코드 수정으로는
-        못 고치므로 LLM 을 부르지 않는다.
+        """설정된 사내 parent(root / boot / comp)를 찾지 못하면 아무것도 빌드할 수 없으므로 실행을 중단하고,
+        settings, Nexus, ``artifacts.parent``를 확인하라는 차단 항목을 남긴다.
+        코드 수정으로 해결되지 않으므로 LLM을 호출하지 않는다.
 
         The configured in-house parent is not resolvable → nothing can build: abort the run with a clear item."""
         keys = set(self.cfg.artifacts.parent_keys())           # root parent + boot_parent / comp_parent (round 9b)
-        # v2.1z-ag: 사내 부모 g:a 라도 설정 버전이 아닌 as-is 버전을 못 찾은 것은 중단이 아니다(사전 시도 sbmig-parent 가 맞춘다) —
-        # 설정 버전 자체(또는 버전을 모름)일 때만, 또는 openrewrite.unresolvable_asis_parent: abort 일 때만 중단
+        # 사내 부모 g:a라도 설정 버전이 아닌 as-is 버전을 찾지 못한 경우는
+        # 사전 시도 sbmig-parent가 맞추므로 중단하지 않는다
+        # 설정 버전 자체이거나 버전을 모를 때, 또는 openrewrite.unresolvable_asis_parent: abort일 때만 중단한다
         errs = [e for e in build.errors if e.kind == ErrorKind.PARENT_RESOLUTION
                 and e.artifact is not None and e.artifact.key in keys and self._parent_miss_aborts(e)]
-        # 2026-11-05 (회사 PC): 사내 부모(base-parent 4.0.0)가 <build><extensions> 에 선언한 wagon-webdav 를 Maven 이 못 받는다 —
-        # 상속된 확장은 프로젝트에서 뺄 수 없고 어떤 goal 도 돌지 않으니 부모 해석 실패와 같은 종류: LLM 을 부르지 않고 중단한다
+        # 사내 부모가 <build><extensions>에 선언한 확장(wagon-webdav 등)을 Maven이 받지 못한 경우다
+        # 상속된 확장은 프로젝트에서 뺄 수 없고 어떤 goal도 실행되지
+        # 않으므로, 부모를 찾지 못한 경우처럼 LLM 없이 중단한다
         ext_errs = self._inherited_extension_errors(build) if not errs else []
         if not errs and not ext_errs:
             return False
@@ -1633,8 +1656,8 @@ class BuildFixLoop:
         return True
 
     def _parent_miss_aborts(self, e: BuildError) -> bool:
-        """v2.1z-ag: 사내 부모 g:a 의 해석 실패 하나가 실행을 멈추게 하는가 — 설정 버전 자체(또는 버전을 모름)면 예, as-is
-        버전이면 ``openrewrite.unresolvable_asis_parent: abort`` 일 때만.
+        """사내 부모 g:a를 찾지 못한 오류가 실행을 중단시키는지 판단한다. 설정 버전 자체이거나 버전을 모르면
+        중단하고, as-is 버전이면 ``openrewrite.unresolvable_asis_parent: abort``일 때만 중단한다.
 
         Does this company-parent resolution failure abort the run? The configured version (or an unknown one): yes; an as-is
         version: only under `openrewrite.unresolvable_asis_parent: abort`."""
@@ -1649,7 +1672,8 @@ class BuildFixLoop:
         return kind == "configured"
 
     def _chain_extensions(self) -> dict[str, str]:
-        """사내 부모 체인이 선언한 빌드 확장: {g:a: g:a:v}, 선언한 pom 은 ``_extension_declarer``. 못 읽으면 {}."""
+        """사내 부모 체인이 선언한 빌드 확장을 {g:a: g:a:v} 형태로 반환한다.
+        선언한 pom은 ``_extension_declarer``에 기억하고, 읽지 못하면 빈 dict를 반환한다."""
         try:
             from sbmig.build import parent_chain
             facts = parent_chain.load_parent_chain_facts(self.cfg)
@@ -1669,7 +1693,7 @@ class BuildFixLoop:
         return srcs.get(coords) or next((v for k, v in srcs.items() if k.rsplit(":", 1)[0] == coords.rsplit(":", 1)[0]), "?")
 
     def _inherited_extension_errors(self, build: BuildResult) -> list[BuildError]:
-        """이 빌드의 `Unresolveable build extension` 오류 중 좌표가 사내 부모 체인의 확장과 같은 것(g:a 기준)."""
+        """이 빌드의 `Unresolveable build extension` 오류 중 좌표(g:a)가 사내 부모 체인의 확장과 같은 것을 찾는다."""
         cands = [e for e in build.errors if e.kind == ErrorKind.POM_INVALID and e.artifact is not None
                  and "build extension" in (e.message or "").lower()]
         if not cands:
@@ -1680,9 +1704,9 @@ class BuildFixLoop:
         return [e for e in cands if chain.get(e.artifact.key) == e.artifact.coordinates] if chain else []
 
     def skips_for(self, target: Optional[str]) -> tuple[bool, bool]:
-        """``target`` 빌드에 적용할 대체 결과(test-compile 건너뜀, 테스트 실행 건너뜀). 한 MSA 서비스의
-        대체가 다른 서비스의 최종 빌드 방식을 바꾸면 안 된다: 서비스 빌드는 자기 것만, 프로젝트 전체 빌드는
-        어느 서비스의 것이든 물려받는다.
+        """``target`` 빌드에 적용할 대체 빌드 결과(test-compile 건너뜀, 테스트 실행 건너뜀)를 반환한다.
+        MSA 서비스 하나의 대체 빌드가 다른 서비스의 최종 빌드를 바꾸면 안 되므로, 서비스 빌드는 자기 결과만,
+        프로젝트 전체 빌드는 모든 서비스의 결과를 물려받는다.
 
         (test-compile skipped, tests skipped) by the L7 / L7b fallbacks for a build of `target` (round 10): a loop
         on the whole project ("") applies to every target; a whole-project build (target None) inherits any
@@ -1695,19 +1719,20 @@ class BuildFixLoop:
 
     @staticmethod
     def test_compile_skipped_in(pr: PhaseResult) -> bool:
-        """이 단계 결과가 test-compile 건너뛰기 대체로 통과했는가(단계 메모로 판단)."""
+        """이 단계가 test-compile을 건너뛴 대체 빌드로 통과했는지 단계 메모로 판단한다."""
         return any("test-compile-skipped" in n for n in pr.notes)
 
     @staticmethod
     def tests_skipped_in(pr: PhaseResult) -> bool:
-        """이 단계 결과가 테스트 실행 건너뛰기(-DskipTests) 대체로 통과했는가."""
+        """이 단계가 테스트 실행을 건너뛴(-DskipTests) 대체 빌드로 통과했는지 판단한다."""
         return any("tests-skipped:" in n for n in pr.notes)
 
     # ------------------------------------------------------------------ build
     def _build(self, goal: str, target: Optional[str], label: str, phase: Phase, iteration: int,
                skip_test_compile: bool = False, skip_tests: bool = False) -> BuildResult:
-        """루프의 빌드 한 번(v2 기본 ``-Dmaven.test.skip=true``). 빌드 부산물을 치우고, 케이스 키를
-        다듬어(``refine_build``) 채점·오류 목록·클러스터·차단 등록부가 모두 같은 L1 / L2 를 보게 한다."""
+        """루프의 빌드를 한 번 실행한다. 기본으로 ``-Dmaven.test.skip=true``를 붙인다.
+        빌드 부산물을 치우고 케이스 키를 다듬어(``refine_build``) 시도 결과 평가, 오류 목록, 클러스터, 차단
+        목록이 같은 L1 / L2 서명을 보게 한다."""
         module, extra = build_target_args(self.profile, target)
         skip_test_compile = skip_test_compile or bool(getattr(self.cfg.build, "skip_test_compile", False))
         kw: dict[str, Any] = {"module": module, "label": label, "skip_test_compile": skip_test_compile}
@@ -1734,13 +1759,13 @@ class BuildFixLoop:
     # ------------------------------------------------------------------ scoring
     def _score(self, pr: PhaseResult, pending: list[_Pending], build: BuildResult,
                prev: Optional[BuildResult], restored: Optional[list[BuildError]] = None) -> bool:
-        """직전 라운드의 시도들을 이 빌드로 채점한다. 되돌리기가 트리를 바꿨으면 True. 결과: build_ok;
-        개선(improved) = 대상 오류가 전부 사라지고 *빌드가 그 단계까지 갔을 때만*("안 보임 ≠ 해결");
-        부분(partial) = 일부만 사라지고 손댄 파일에 새 오류 없음; 변화 없음(no_change); 악화(regressed) = 손댄
-        파일에 새 오류, 오류 수가 ×``regression_ratio`` 초과, 또는 pom 을 고친 뒤 새 구조적 오류·더 이른 단계
-        오류가 대상 오류를 가림(→ 되돌림); 판정 불가(inconclusive) = 빌드가 말해 주지 못함(타임아웃, 파싱된
-        오류 없음, 이 시도와 무관하게 이른 단계에서 멈춤) — KB 실적 없음, 되돌린 뒤 재빌드에서 다시 채점.
-        ``restored`` = 롤백이 되살린 오류: 기준선에 넣어 "새 오류" 로 세지 않는다.
+        """직전 라운드의 시도를 이 빌드 결과로 평가한다. 되돌리기로 트리가 바뀌었으면 True를 반환한다.
+        - improved는 대상 오류가 모두 사라지고 빌드가 그 단계까지 진행된 경우, partial은 일부만 사라지고
+          수정한 파일에 새 오류가 없는 경우다
+        - regressed는 수정한 파일에 새 오류가 생겼거나, 오류 수가 ``regression_ratio``배를 넘었거나, pom
+          수정 뒤 새 구조적 오류나 더 이른 단계의 오류가 대상을 가린 경우이며 되돌린다
+        - inconclusive는 빌드로 판단할 수 없는 경우(타임아웃, 파싱된 오류 없음)이며 KB 실적 없이 되돌린 뒤
+          재빌드에서 다시 평가한다. 되돌리기로 다시 나타난 오류(``restored``)는 새 오류로 세지 않는다
 
         Score the previous round's attempts against `build`. Returns True when a revert changed the tree.
         `restored` (v2) = the errors that round's rollbacks brought back: part of the baseline (`prev`), so they are
@@ -1765,7 +1790,8 @@ class BuildFixLoop:
         struct_kinds = set(self.cfg.loop.structural_regression_kinds)
         prev_kinds = {e.kind.value for e in prev_errors}
         new_struct = sorted({e.kind.value for e in real if e.kind.value in struct_kinds} - prev_kinds)
-        # 눈먼 빌드: 아무 시도에 대해서도 말해 주지 않는다 → 전원 판정 불가(KB 실적 없음)
+        # 타임아웃이거나 파싱된 오류가 없는 실패 빌드로는 어떤 시도도 판단할
+        # 수 없으므로 모두 판단 불가로 둔다(KB 실적 없음)
         # a timed-out build, or a failed one without a single parsed error, says nothing about any attempt
         blind = not build.ok and (bool(build.timed_out) or not real)
         structural: set[str] = set()
@@ -1797,13 +1823,13 @@ class BuildFixLoop:
                 continue
             touched = _touched(a)
             pom_touched = any(t.rsplit("/", 1)[-1] == "pom.xml" for t in touched)
-            # pom 을 고친 시도 뒤에 새 구조적 오류 종류(pom 무효,
-            # 의존성 해결 실패 등)가 나타나면 숫자와 상관없이 되돌린다
+            # pom을 고친 시도 뒤에 새 구조적 오류(pom 무효, 의존성 해결 실패 등)가 나타나면 오류 수와 상관없이 되돌린다
             uncovered = self._uncovered_stage(a, left_of[id(a)], real, new_struct) if new_struct and pom_touched else []
             if uncovered:
-                # 2026-11-05 (회사 실행): 버전 없는 spring-dao(0단계 pom 문제)를 지운 스크립트 뒤에 빌드가 1단계(의존성 해결)로
-                # 나아가 처음으로 "Could not find artifact" 를 보였다 — 이 시도가 만든 오류가 아니라 pom 문제가 가리고 있던 다음 단계.
-                # 24번 되돌리던 구멍: 대상이 전부 사라졌고 새 구조적 오류가 모두 더 뒤 단계면 악화가 아니다
+                # pom 문제를 고치면 빌드가 다음 단계로 나아가 가려져 있던
+                # 오류("Could not find artifact" 등)가 처음 보일 수 있다
+                # 대상 오류가 모두 사라졌고 새 구조적 오류가 모두 더 뒤 단계에
+                # 있으면 이 시도가 악화시킨 것으로 보지 않는다
                 kinds = ", ".join(sorted({e.kind.value for e in uncovered}))
                 a.notes.append(f"the build advanced past the fixed pom problem: {len(uncovered)} {kinds} error(s) of a later "
                                "stage were hidden behind it — not a regression of this attempt")
@@ -1833,8 +1859,7 @@ class BuildFixLoop:
                                + ", ".join(sorted({e.kind.value for e in real})[:4]) + " first) — whether they are "
                                "gone is unknown (no KB credit)")
                 continue
-            # 악화 판정: 손댄 파일의 새 오류는 (파일, 서명) 횟수로
-            # 센다 — 다른 파일에 같은 L1 서명이 있어도 여기선 새 오류
+            # 다른 파일에 같은 L1 서명이 있어도 수정한 파일에 생긴 오류는 새 오류이므로 (파일, 서명) 횟수로 센다
             new_in_touched = _new_in_files(build.errors, touched, prev_count)
             before = max(a.errors_before, base_total) if restored else a.errors_before
             ratio_regress = (not any_resolved) and total > max(before, 1) * ratio
@@ -1854,8 +1879,8 @@ class BuildFixLoop:
         # v2: no KB recipe credit (no KB recipes in the flow); the fix scripts are credited by the caller after the
         # revert below settled the outcomes (`_credit_scripts`)
         reverted = False
-        # 되돌리기: HEAD 쪽부터 연속으로 악화된 커밋 묶음만 reset 한다(뒤의 개선된 커밋이 의존할 수 있으므로
-        # 거기서 멈춤). 구조적 악화는 예외 — 뒤의 커밋이 있어도 git revert 로 되돌린다
+        # 뒤의 개선된 커밋이 앞 커밋에 의존할 수 있으므로 HEAD부터 연속으로 악화된 커밋 묶음만 reset한다
+        # 구조적 악화는 예외로, 뒤에 커밋이 있어도 git revert로 되돌린다
         if not build.ok and self.cfg.loop.revert_on_regression and any(p.attempt.outcome == "regressed" for p in pending):
             commits: list[str] = []
             for p in pending:
@@ -1892,8 +1917,8 @@ class BuildFixLoop:
             for p in pending:
                 if p.attempt.outcome == "regressed":
                     p.attempt.notes.append("not reverted: later commits that improved things depend on it")
-        # v2.1v (E-L9): 남은(되돌리지 않은) 시도가 손댄 파일에 새로 생긴 오류 → 그 시도. 그 오류의 케이스 프롬프트가
-        # "introduced by script:<case>:v<N>" 라고 말한다(TokenCodec: 스크립트가 남긴 catch IOException)
+        # 남은 시도가 수정한 파일에 새로 생긴 오류는 그 시도와 연결해,
+        # 그 오류 케이스의 프롬프트에 "introduced by script:<case>:v<N>"으로 알린다
         if not build.ok:
             for p in pending:
                 a = p.attempt
@@ -1910,8 +1935,9 @@ class BuildFixLoop:
     @staticmethod
     def _uncovered_stage(a: FixAttempt, left_targeted: tuple[int, int], real: list[BuildError],
                          new_struct: list[str]) -> list[BuildError]:
-        """pom 을 고친 시도가 대상 오류를 **전부** 없앴고, 새로 나타난 구조적 오류가 **모두 대상보다 뒤 단계**(pom 문제 0 → 의존성
-        해결 1)이면 그 오류들 — 시도가 만든 악화가 아니라 pom 문제가 가리고 있던 다음 단계다. 아니면 [](평소 규칙: 되돌림).
+        """pom을 고친 시도가 대상 오류를 모두 없앴고 새 구조적 오류가 모두 대상보다 뒤 단계면 그 오류 목록을
+        반환한다. 아니면 빈 목록을 반환하고 평소대로 되돌린다.
+        이런 오류는 시도가 만든 악화가 아니라 pom 문제에 가려져 있던 다음 단계의 오류다.
 
         The new structural errors when a pom-editing attempt removed EVERY targeted error and all of them are of a LATER
         stage than the targets (a stage-0 pom problem fixed → stage-1 dependency resolution now visible): uncovered, not
@@ -1927,8 +1953,8 @@ class BuildFixLoop:
 
     # ------------------------------------------------------------------ fixing
     def _kb_match(self, cluster: ErrorCluster) -> KBMatch:
-        """KB 조회(사람이 ``block`` 으로 고정한 케이스 + 케이스의
-        마지막 해결 힌트). 실패해도 빈 결과로 계속 간다."""
+        """KB에서 이 클러스터를 조회한다(사람이 ``block``으로 고정한 케이스, 케이스의 마지막 해결 힌트).
+        조회에 실패해도 빈 결과로 계속한다."""
         try:
             m = self.kb.match(cluster, self.ws, self.profile)
             return m if m is not None else KBMatch()
@@ -1937,8 +1963,9 @@ class BuildFixLoop:
             return KBMatch()
 
     def _plan(self, clusters: list[ErrorCluster]) -> list[tuple[ErrorCluster, Optional[TriageDecision], list[str]]]:
-        """트리아지의 라운드 계획: 근본 원인 순으로 정렬된 (클러스터, 가려짐 결정, 가리는 클러스터들). 예:
-        pom 문제가 있으면 그 모듈의 컴파일 오류는 가려 둔다(먼저 원인을 고친다)."""
+        """트리아지로 이번 라운드의 처리 계획을 세운다.
+        근본 원인 순으로 정렬한 (클러스터, 가려짐 결정, 가리는 클러스터 목록)을 반환한다.
+        pom 문제가 있으면 그 모듈의 컴파일 오류는 가려 두고 원인을 먼저 고친다."""
         planner = getattr(self.triager, "plan_iteration", None)
         if not callable(planner):
             return [(c, None, []) for c in clusters]
@@ -1946,8 +1973,9 @@ class BuildFixLoop:
 
     def _decide(self, phase: Phase, iteration: int, stall_level: int, cluster: ErrorCluster,
                 match: KBMatch) -> TriageDecision:
-        """트리아지 결정(SCRIPT / BLOCKED / SKIP / ESCALATE). 차단 정책(``loop.blocked_policy``)·한도·고정된
-        케이스는 트리아지가 판단한다. 트리아지가 깨지면 ESCALATE — 루프는 멈추지 않는다."""
+        """트리아지에게 결정(SCRIPT / BLOCKED / SKIP / ESCALATE)을 받는다.
+        차단 정책(``loop.blocked_policy``), 시도 한도, 고정된 케이스는 트리아지가 판단한다.
+        트리아지에서 예외가 나도 루프가 멈추지 않도록 ESCALATE를 반환한다."""
         ctx = TriageContext(phase=phase, iteration=iteration, stall_level=stall_level,
                             previous_attempts=self._previous(cluster), llm_calls_used=self.budget.llm_calls,
                             llm_calls_budget=self.budget.max_llm_calls)
@@ -1959,11 +1987,12 @@ class BuildFixLoop:
                                   rationale=f"triage failed: {type(e).__name__}: {e}")
 
     def _previous(self, cluster: ErrorCluster, *, ladder: bool = True) -> list[FixAttempt]:
-        """이 클러스터에 대한 앞서 *채점된* 시도들 — 사다리와 한도의 근거. 같은 L1 서명의 다른 파일, 이번
-        라운드의 대기 중 시도, LLM 쿨다운을 일으킨 전송 실패
-        시도는 뺀다(쿨다운 라운드가 케이스 한도를 깎으면 안 된다). v2.1l / v2.1m: sbmig 의 사전 시도
-        (``sbmig-version`` / ``sbmig-resources``, LLM 0회)는 사다리(``ladder``)에서 빠진다 — LLM 시도 한도를 깎으면 안 된다. 프롬프트의
-        "앞 시도" 에는 들어간다(``ladder=False``).
+        """이 클러스터에 대해 앞서 결과가 평가된 시도를 반환한다.
+        시도 순서와 횟수 한도는 이 목록을 기준으로 한다.
+        같은 L1 서명의 다른 파일, 이번 라운드에 대기 중인 시도, LLM 쿨다운을 일으킨 전송 실패는 뺀다.
+        쿨다운 때문에 케이스의 시도 한도가 줄면 안 되기 때문이다.
+        sbmig 사전 시도는 ``ladder=True``일 때 빠져 LLM 시도 한도를 쓰지 않고, 프롬프트에 보여 줄 이전
+        시도(``ladder=False``)에는 들어간다.
 
         Earlier SCORED attempts on THIS cluster (round 10: not other files that share an L1 signature, not this
         round's pending ones), without the transport failures that triggered the LLM cool-down (L5): the cool-down
@@ -1974,8 +2003,8 @@ class BuildFixLoop:
                 and not (ladder and a.source in PRE_TRY_SOURCES)]
 
     def _sibling_hints(self, cluster: ErrorCluster, limit: int = 3) -> list[str]:
-        """이 실행의 *다른* 파일·범위에서 같은 오류가 어떻게
-        고쳐졌는지(또는 무엇이 안 됐는지) — 프롬프트 힌트로만 쓴다.
+        """이 실행에서 다른 파일이나 범위의 같은 오류를 어떻게 고쳤는지, 또는 무엇이 실패했는지 찾는다.
+        프롬프트 힌트로만 쓴다.
 
         The same error in OTHER files of this run (shared signature): hint material for the prompt only (round 10)
         — how a sibling was fixed, or what did not work there. v2: a case already spans its files, so this is the
@@ -2000,7 +2029,8 @@ class BuildFixLoop:
         return out
 
     def _cluster(self, errors: list[BuildError], target: Optional[str]) -> list[ErrorCluster]:
-        """v2: 케이스(L2)마다 클러스터 하나(여러 파일에 걸침), 루프의 빌드 대상(MSA 서비스) 범위 안에서.
+        """오류를 케이스(L2 서명)마다 클러스터 하나로 묶는다.
+        한 클러스터는 여러 파일에 걸칠 수 있고, 루프의 빌드 대상(MSA 서비스) 안의 오류만 담는다.
 
         v2: one cluster per case (L2) across files, scoped by the loop's build target (MSA services)."""
         return self.triager.cluster(errors, self.profile, scope=target)
@@ -2008,9 +2038,9 @@ class BuildFixLoop:
     def _fix_round(self, pr: PhaseResult, phase: Phase, iteration: int, build: BuildResult, target: Optional[str],
                    stall_level: int, clusters: Optional[list[ErrorCluster]] = None, *, round_no: int = 1,
                    max_rounds: int = 0) -> tuple[list[_Pending], bool, list[TriageDecision], bool, list[BuildError]]:
-        """수정 라운드 하나: 케이스마다 시도는 최대 1번, 라운드당 케이스는
-        ``loop.max_clusters_per_iteration``(8)개까지(미뤄진 케이스·차단은 세지 않음). 가려진 케이스는, 가린
-        쪽이 손댈 수 없는 것(차단·에스컬레이트)이면 가림을 풀고 다룬다.
+        """수정 라운드 하나를 실행한다. 케이스마다 최대 1번 시도하고, 라운드당 ``loop.max_clusters_per_iteration``개
+        케이스까지 다룬다(미뤄진 케이스와 차단된 케이스는 세지 않는다).
+        가리고 있는 쪽이 차단되거나 에스컬레이트되어 손댈 수 없으면 가려진 케이스도 함께 다룬다.
 
         One fix round (log stage `fix r<round_no>`, set by the caller): at most one try per case,
         `loop.max_clusters_per_iteration` cases. Returns (pending tries, anything applied, decisions, a try was made,
@@ -2049,8 +2079,8 @@ class BuildFixLoop:
                 continue
             if self._handle_cluster(pr, st, c2) not in ("blocked", "deferred"):     # deferred cases do not count
                 handled += 1
-        # 가림 풀기: 가린 쪽(예: pom 문제)이 차단·에스컬레이트되어
-        # 손댈 수 없으면 고칠 수 있는 컴파일 오류를 숨기면 안 된다
+        # 가리고 있는 쪽(pom 문제 등)이 차단되거나 에스컬레이트되어 손댈 수
+        # 없으면 고칠 수 있는 컴파일 오류를 더 숨기지 않는다
         # unmask: a masker that cannot be acted upon must not hide compile errors we could fix
         for c, skip, by in masked:
             if by and all(b in st.hopeless for b in by) and handled < limit:
@@ -2066,7 +2096,8 @@ class BuildFixLoop:
         return st.pending, st.applied_any, st.decisions, tried, list(st.restored)
 
     def _unblocked_part(self, st: "_Round", c: ErrorCluster) -> Optional[ErrorCluster]:
-        """이미 차단된 오류는 뺀다. 남는 것이 없으면 None(BLOCKED 결정을 기록하고 건너뜀).
+        """이미 차단된 오류를 뺀 클러스터를 반환한다.
+        남는 오류가 없으면 BLOCKED 결정을 기록하고 None을 반환한다.
 
         Drop the errors the run already blocked; None when nothing is left (decision BLOCKED is recorded)."""
         blocked, rest = self.blocked.partition(c)
@@ -2092,8 +2123,8 @@ class BuildFixLoop:
                          **d.model_dump(mode="json")})
 
     def _script_step(self, c: ErrorCluster) -> Any:
-        """트리아지의 마지막 SCRIPT 결정이 정한 사다리 단계(reuse / augment / new, 또는 한도 도달 = mode
-        None). 트리아지가 안 주면 여기서 ``plan_script_step`` 으로 계산한다.
+        """트리아지의 마지막 SCRIPT 결정이 정한 시도 방식(reuse / augment / new, 한도에 도달하면 mode
+        None)을 반환한다. 트리아지가 주지 않으면 ``plan_script_step``으로 계산한다.
 
         The ladder step of the triager's last SCRIPT decision for `c` (computed here for a triager without it)."""
         getter = getattr(self.triager, "script_step", None)
@@ -2109,11 +2140,12 @@ class BuildFixLoop:
         return step
 
     def _deferral(self, st: "_Round", c: ErrorCluster, step: Any) -> tuple[list[str], str]:
-        """``c`` 를 다음 빌드까지 미루게 하는 (케이스들, "files" | "pom"). ([], "") = 지금 시도. 근본 원인을
-        먼저 다루므로, 원인이 고쳐지는 중인 결과 케이스는 재빌드에서 대개 사라진다 — 라운드당 원인 하나에 LLM
-        1회가 맞는 비용이다. "files" = 이번 라운드에 수정(스크립트 또는 edits)이 이미 그 오류 파일 전부에서
-        돌았음, "pom" = 컴파일 케이스의 모듈 pom(또는 루트 pom)을 이번 라운드 수정이 바꿨음. 재사용(LLM 0회,
-        진짜 해결일 수 있음)·파일 없는 오류·라운드의 첫 케이스는 미루지 않는다.
+        """``c``를 다음 빌드까지 미뤄야 하는지 판단해 (원인 케이스 목록, "files" 또는 "pom")을 반환한다.
+        ([], "")이면 지금 시도한다.
+        - "files"는 이번 라운드의 수정이 그 오류 파일 전부에 이미 실행된 경우, "pom"은 이번 라운드의 수정이
+          컴파일 케이스의 모듈 pom이나 루트 pom을 바꾼 경우다
+        - 근본 원인을 먼저 고치면 뒤따르는 케이스는 재빌드에서 대개 사라지므로, 원인 하나에 LLM 호출 1번으로 끝난다
+        - 재사용, 파일이 없는 오류, 라운드의 첫 케이스는 미루지 않는다
 
         (case ids, "files" | "pom") that make `c` wait for the rebuild — ([], "") = attempt `c`. Root causes come
         first (`CAUSE_RANK`), so this defers the consequences of a cause being fixed — they mostly vanish on the
@@ -2149,7 +2181,8 @@ class BuildFixLoop:
         return [], ""
 
     def _nearest_pom(self, rel: str) -> Optional[str]:
-        """파일이 속한 모듈의 pom(가장 가까운 위쪽 pom.xml). 알 수 없으면 None(미루기는 최적화일 뿐).
+        """파일이 속한 모듈의 pom(가장 가까운 상위 pom.xml)을 찾는다.
+        알 수 없으면 None을 반환하며, 이 경우 미루지 않을 뿐이다.
 
         The module pom of a project file (`sbmig.fix.context.nearest_pom`); None when it cannot be told."""
         try:
@@ -2160,8 +2193,8 @@ class BuildFixLoop:
             return None
 
     def _handle_cluster(self, pr: PhaseResult, st: "_Round", c: ErrorCluster, prefix: str = "") -> str:
-        """결정 → 케이스의 시도(저장 스크립트 / LLM 답: edits 또는 스크립트) → 커밋. 모든 로그 줄이 케이스
-        단계 태그 (``fix r<n> <case_id>``) 안에 찍힌다. 결과:
+        """케이스 하나에 대해 결정, 시도(저장 스크립트, 또는 LLM 답의 edits나 스크립트), 커밋을 차례로 실행한다.
+        로그는 모두 케이스 단계 태그(``fix r<n> <case_id>``) 아래에 남는다. 반환값:
         blocked / escalated / skipped / deferred / attempted.
 
         Decide → the case's try (stored script / LLM answer: edits or script) → commit, every log line in the case's
@@ -2171,9 +2204,9 @@ class BuildFixLoop:
             return self._handle_case(pr, st, c, prefix)
 
     def _handle_case(self, pr: PhaseResult, st: "_Round", c: ErrorCluster, prefix: str) -> str:
-        """한 케이스 처리. 사다리가 끝났으면(mode None) 반복 실패, LLM 이 필요한데 LLM 불가·예산 소진이면 그
-        사유로 강제 차단. 일부만 차단되면 나머지 오류로 다시 결정한다(최대 4번). 미뤄진 케이스는 시도가
-        아니다(한도·정체 감지에 안 보임)."""
+        """케이스 하나를 처리한다. 시도 순서를 다 썼으면(mode None) 반복 실패로, LLM이 필요한데 LLM을 쓸 수
+        없거나 예산이 없으면 그 사유로 차단한다.
+        일부 오류만 차단되면 나머지 오류로 다시 결정한다(최대 4번). 미뤄진 케이스는 시도로 세지 않는다."""
         from sbmig.triage.blocked import BlockedCandidate
         log.info("%s", _case_header(c))
         self._mark(f"KB 탐색 for {c.id}")
@@ -2186,15 +2219,16 @@ class BuildFixLoop:
                 d.rationale = prefix + d.rationale
             step = self._script_step(c) if d.kind == DecisionKind.SCRIPT else None
             seen_step = step
-            # v2.1y (E-M1): 소유팀 결정이 필요하다고 차단된 케이스와 같은 파일·같은 아티팩트의 케이스는 LLM 에 묻지 않고
-            # 같은 이유로 차단한다(legacy-ibatis: CatalogDao.java 의 3 케이스 × 3 회 = 9 회 → 1 회)
+            # 소유팀의 결정이 필요해 차단된 케이스와 같은 파일이나 같은 아티팩트의
+            # 케이스는 LLM을 호출하지 않고 같은 사유로 차단한다
             if step is not None and step.needs_llm:
                 owner = self._owner_cause(c)
                 if owner is not None:
                     return self._block_same_cause(st, c, owner, prefix)
             forced = None
-            # 강제 차단: 사다리 끝(저장본 재사용 뒤 LLM 요청 한도 script.max_llm_tries_per_case 소진 → 반복 실패), LLM 이 필요한데 LLM 불가 또는 예산
-            # 소진. 저장본 재사용(LLM 0회)은 LLM 이 없어도 막지 않는다
+            # 시도 순서를 다 썼거나(script.max_llm_tries_per_case 소진, 반복 실패), LLM이 필요한데 LLM을 쓸
+            # 수 없거나 예산이 없으면 강제로 차단한다
+            # 저장된 스크립트 재사용은 LLM을 쓰지 않으므로 LLM이 없어도 막지 않는다
             if step is not None and step.mode is None:
                 forced = BlockedCandidate(reason=BlockReason.REPEATED_FAILURE, errors=list(c.errors),
                                           evidence=[(step.why or "fix-script limits reached") + "; needs a human"])
@@ -2204,16 +2238,16 @@ class BuildFixLoop:
             elif step is not None and step.needs_llm and not self.budget.llm_allowed():
                 forced = BlockedCandidate(reason=BlockReason.BUDGET_EXHAUSTED, errors=list(c.errors),
                                           evidence=[f"LLM budget exhausted ({self.budget.llm_text()})"])
-            # v2.1l / v2.1m: 누락 버전·바이너리 리소스 필터링 케이스는 LLM 전에(사다리·한도·LLM 장애와 무관하게)
-            # sbmig 가 한 번 고쳐 본다 — 단, 아래 미루기 검사 뒤에(같은 라운드에 다른 케이스가 바꾼 pom 이면 기다린다)
+            # 누락 버전과 바이너리 리소스 필터링 케이스는 시도 순서, 한도, LLM
+            # 장애와 상관없이 LLM보다 먼저 sbmig가 한 번 고쳐 본다
+            # 단, 같은 라운드에 다른 케이스가 바꾼 pom이면 기다려야 하므로 아래 미루기 검사 뒤에 실행한다
             # the zero-LLM pre-try (decided on the triage decision, run after the deferral check below)
             pre, pre_poms = self._pre_try_for(c, d)
             if forced is not None:
                 d = TriageDecision(cluster_id=c.id, kind=DecisionKind.BLOCKED,
                                    rationale=prefix + f"blocked: {forced.reason.value} — {forced.evidence[0]}")
                 step = None
-            # 같은 라운드에 앞 케이스가 이미 그 파일·모듈 pom
-            # 을 고쳤으면 미룬다(대개 재빌드에서 함께 사라진다)
+            # 같은 라운드에 앞 케이스가 이미 그 파일이나 모듈 pom을 고쳤으면 재빌드에서 대개 함께 사라지므로 미룬다
             by, why = self._deferral(st, c, step) if d.kind == DecisionKind.SCRIPT else ([], "")
             if not by and pre is not None:              # the pre-try edits poms: one changed this round waits
                 by, why = self._pre_try_deferral(st, pre_poms)
@@ -2228,7 +2262,7 @@ class BuildFixLoop:
                 self._journal_decision(st, d)
                 log.info("deferred: %s %s → 다음 빌드까지 대기 (시도로 세지 않음)", what, names)
                 return "deferred"
-            # 적용되면 이것이 이번 라운드의 시도, 아니면 같은 라운드에 평소 사다리
+            # 사전 시도가 적용되면 그것이 이번 라운드의 시도이고, 아니면 같은 라운드에서 평소 시도 순서로 넘어간다
             if pre is not None and pre.run(pr, st, c):
                 return "attempted"
             st.decisions.append(d)
@@ -2263,8 +2297,8 @@ class BuildFixLoop:
         return "attempted"
 
     def _kb_line(self, c: ErrorCluster, d: TriageDecision, step: Any) -> str:
-        """로그의 "KB 탐색: …" 한 줄. SCRIPT 결정이면 사다리가 만든 줄(실행 / LLM 보강 요청 / 한도 도달),
-        아니면 찾은 것과 결정(예: 저장된 스크립트 없음 → blocked (…)).
+        """로그에 남길 "KB 탐색: …" 한 줄을 만든다.
+        SCRIPT 결정이면 시도 방식(실행, LLM 보강 요청, 한도 도달)을, 아니면 찾은 내용과 결정을 쓴다.
 
         The KB search result for the log (§3.2): the ladder's own line for a SCRIPT decision (or a ladder that ran
         out), else what the search found and the decision ("KB 탐색: 저장된 스크립트 없음 → blocked (…)")."""
@@ -2285,13 +2319,14 @@ class BuildFixLoop:
 
     # ------------------------------------------------------------------ v2.1 tries
     def _attempt_name(self, a: FixAttempt) -> str:
-        """시도를 부르는 이름(힌트·로그): ``script <case>:v<N> (<mode>)``.
+        """힌트와 로그에 쓰는 시도 이름(``script <case>:v<N> (<mode>)``)을 만든다.
 
         Who made an attempt (hints, logs): `_script_name`."""
         return _script_name(a)
 
     def _project(self) -> str:
-        """KB 기록에 쓰는 프로젝트 이름(``sbmig.kb.common.project_name`` 이 있으면 그것, 없으면 프로필 이름).
+        """KB 기록에 쓰는 프로젝트 이름을 반환한다.
+        ``sbmig.kb.common.project_name``이 있으면 그것을, 없으면 프로필 이름을 쓴다.
 
         The project name the KB records use (`sbmig.kb.common.project_name` when it exists)."""
         try:
@@ -2301,10 +2336,11 @@ class BuildFixLoop:
             return (getattr(self.profile, "name", "") or "") or self.ws.root.name
 
     def _script_attempt(self, pr: PhaseResult, st: "_Round", c: ErrorCluster, d: TriageDecision, step: Any) -> None:
-        """케이스의 시도 한 번. 순서가 중요하다: (1) 보강의 기준(base)을 무엇이 움직이기 전에 만든다, (2) 그
-        케이스의 직전 시도를 되돌린다(개선·성공이 아니면) — 그 시도가 지웠던 오류가 케이스로 돌아온다, (3)
-        저장 스크립트 실행(``kb-script``) 또는 LLM 답 적용(``_llm_try``), 커밋. 새 시도가 아무것도 바꾸지
-        못하면 되돌리기를 취소해 마지막 빌드가 본 트리로 둔다.
+        """케이스를 한 번 시도한다. 아래 순서를 지켜야 한다.
+        1. 보강의 기준(base)을 트리가 바뀌기 전에 만든다
+        2. 직전 시도가 개선이나 빌드 성공이 아니면 되돌린다. 그 시도가 없앴던 오류가 케이스로 돌아온다
+        3. 저장 스크립트(``kb-script``)를 실행하거나 LLM 답을 적용(``_llm_try``)하고 커밋한다.
+          새 시도가 아무것도 바꾸지 못하면 되돌리기를 취소해 트리를 마지막 빌드 때 상태로 둔다
 
         One try of a case: build the augment base (before anything moves), roll back the case's previous try, then
         the stored script (`kb-script`) or the LLM's answer (`_llm_try`), commit. A try that changes nothing gives the
@@ -2336,8 +2372,7 @@ class BuildFixLoop:
             self._run_script(att, c, step.code, st)
         else:
             self._llm_try(att, c, st, step, base)
-        # 미루기(deferral) 기록: 수정이 돈 오류 파일·바뀐 pom
-        # → 같은 라운드의 뒤 케이스들은 다음 빌드까지 기다린다
+        # 수정이 실행된 오류 파일과 바뀐 pom을 기록해 같은 라운드의 뒤 케이스가 다음 빌드까지 기다리게 한다
         if self._ran_on_files(att):                     # a fix ran on its files: later cases there wait for the
             for e in c.errors:                          # rebuild (a static-check refusal never ran)
                 if e.file:
@@ -2347,9 +2382,9 @@ class BuildFixLoop:
                 for path in (ch.path, ch.new_path):
                     if path and PurePosixPath(_norm_path(path)).name == "pom.xml":
                         st.poms.setdefault(_norm_path(path), c.id)
-        # 직전 시도를 되돌렸고 새 시도가 적용됐으면: 직전 것은 "rolled back"(최종 트리에 없음, 운영자
-        # 확인에서도 빠짐). 새 시도가 아무것도 바꾸지 못했으면
-        # 되돌리기를 취소한다(트리를 마지막 빌드가 본 그대로)
+        # 직전 시도를 되돌렸고 새 시도가 적용됐으면 직전 시도는 최종 트리에 없으므로 "rolled back"으로
+        # 표시해 운영자 확인에서 뺀다
+        # 새 시도가 아무것도 바꾸지 못했으면 되돌리기를 취소해 트리를 마지막 빌드 때 상태로 둔다
         if rolled is not None and rolled[3]:
             prev_att = rolled[0]
             if att.applied:
@@ -2367,11 +2402,13 @@ class BuildFixLoop:
         self._after_decline(st, c, att)                 # v2.1y: the declined case's BLOCKED needs_owner (recorded first)
 
     def _llm_try(self, att: FixAttempt, c: ErrorCluster, st: "_Round", step: Any, base: Optional[ScriptBase]) -> None:
-        """신규 / 보강: LLM 에 묻고(원인·해결·edits·스크립트) 적용한다. 보강 + 스크립트 → 새 버전
-        저장·실행(``llm-augment``); 보강인데 스크립트 없이 edits(``no_script_reason``) → edits 직접
-        적용(``llm-edit``); 신규 + edits → edits 를 바로 적용하고 스크립트는 unverified 로
-        저장만(``llm-new``); 신규 + 스크립트만 → 저장·실행. 첫 선택이 적용되지 않으면(edits 실패·변화 없음,
-        스크립트 실패) 같은 답의 나머지 반쪽을 대신 적용한다(시도에 메모).
+        """신규나 보강 시도에서 LLM에 원인, 해결 방법, edits, 스크립트를 요청하고 그 답을 적용한다.
+        - 보강 답에 스크립트가 있으면 새 버전으로 저장하고 실행한다(``llm-augment``).
+          스크립트 없이 edits만 있으면(``no_script_reason``) edits를 직접 적용한다(``llm-edit``)
+        - 신규 답에 edits가 있으면 edits를 바로 적용하고 스크립트는 unverified로 저장만 한다(``llm-new``).
+          스크립트만 있으면 저장하고 실행한다
+        - 먼저 고른 쪽이 적용되지 않으면(edits 실패나 변화 없음, 스크립트 실패) 같은 답의 나머지 쪽을
+          적용하고 시도에 메모를 남긴다
 
         new / augment: ask the LLM (원인 · 해결 · edits · script), then apply (§3.1):
 
@@ -2397,15 +2434,15 @@ class BuildFixLoop:
         att.solution = getattr(ans, "solution", "") or ""
         att.no_script_reason = getattr(ans, "no_script_reason", "") or ""
         self._log_answer(secs, att, code, edits)
-        # v2.1y (E-M1): <blocked> 또는 분석만 있는 답 = 거절(프로젝트 밖의 일) — 같은 질문을 되풀이하지 않는다
+        # <blocked>나 분석만 있는 답은 프로젝트 밖의 일이라는 거절로 보고 같은 질문을 반복하지 않는다
         declined = self._declined_reason(ans, code, edits)
         if declined:
             fact = self._decline_contradiction(c, declined)
             carries = bool(code.strip() or edits)
             if fact:
-                # v2.1z-e: "jakarta 빌드가 없다" 는 거절은 sbmig 가 저장소에서 찾은 사실과 모순이면 받지 않는다 — 거절 횟수에
-                # 세지 않고 보통의 실패 시도로 기록해 다음 라운드에 그 사실과 함께 다시 묻는다. v2.1z-aa: 대체 방법을 아는 노트가
-                # 맞는 라이브러리의 거절도 같다; 거절을 받지 않았는데 답에 edits / script 가 들어 있으면 버리지 않고 보통 답처럼 적용한다
+                # sbmig가 찾은 정보(jakarta 빌드, 번들 jar, 대체 방법 노트)와 모순되는 거절은 받지 않고,
+                # 거절 횟수에 넣지 않은 채 다음 라운드에 그 정보와 함께 다시 요청한다
+                # 받지 않은 거절에 edits나 script가 있으면 버리지 않고 보통 답처럼 적용한다
                 # a decline is rejected when a fact contradicts it (a jakarta build found, a bundled jar, a replacement note):
                 # not a decline (no count). Without edits / a script: an ordinary failed try, asked again with the fact;
                 # with them (v2.1z-aa): the answer is applied below like any other
@@ -2423,8 +2460,7 @@ class BuildFixLoop:
                 att.source = requested
                 self._begin_try(att, st)
                 return self._decline(att, c, ans, declined, ignored=carries)
-        # 보강했다는 스크립트가 기준 버전과 똑같으면 다시 돌리지
-        # 않는다(같은 결과가 나올 뿐) — edits 가 있으면 그것으로
+        # 보강했다는 스크립트가 기준 버전과 같으면 결과도 같으므로 다시 실행하지 않고, edits가 있으면 그것을 쓴다
         if code.strip() and base is not None and att.script_mode == "augment" \
                 and code.strip() == (base.code or "").strip():
             why = f"the augmented script is identical to its base v{base.version} — not run again"
@@ -2449,8 +2485,9 @@ class BuildFixLoop:
         att.source = requested if has_code else "llm-edit"
         if has_code:
             att.script_code = code
-        # 신규는 edits 먼저(이 프로젝트를 바로 고치고, 스크립트는 다음 프로젝트용으로 unverified 저장), 보강은
-        # 스크립트 먼저(저장본을 고쳐 쓰는 것이 목적) — 스크립트가 없을 때만 edits
+        # 신규는 이 프로젝트를 바로 고치기 위해 edits를 먼저 적용하고,
+        # 스크립트는 다음 프로젝트용으로 unverified 저장한다
+        # 보강은 저장된 스크립트를 고치는 것이 목적이므로 스크립트가 먼저이고, 스크립트가 없을 때만 edits를 쓴다
         edits_first = bool(edits) and (att.script_mode == "new" or not has_code)
         if edits_first:
             self._begin_try(att, st)
@@ -2477,16 +2514,18 @@ class BuildFixLoop:
             self._apply_edits(att, c, edits, st)
 
     def _declines_allowed(self) -> int:
-        """``script.max_declines_per_case`` (0 이하 = 거절 분류를 끔: 예전처럼 적용 실패)."""
+        """케이스당 허용하는 거절 횟수(``script.max_declines_per_case``)를 반환한다.
+        0 이하면 거절로 분류하지 않고 적용 실패로 처리한다."""
         try:
             return int(getattr(getattr(self.cfg, "script", None), "max_declines_per_case", 1))
         except (TypeError, ValueError):
             return 1
 
     def _declined_reason(self, ans: Any, code: str, edits: list) -> str:
-        """v2.1y (E-M1): 답이 "거절" 이면 그 차단 사유 문장, 아니면 "". 거절 = ``<blocked>`` (``blocked_reason``), 또는
-        편집도 스크립트도 없이 분석만 있는 답(예전의 "no script" 적용 실패). 전송 실패·형식을 어긴 답·아직 파일을 더 달라는
-        답·쓸 수 없는 편집은 거절이 아니다(그대로 적용 실패). ``script.max_declines_per_case`` 가 0 이하면 끈다.
+        """LLM 답이 거절이면 그 차단 사유 문장을, 아니면 빈 문자열을 반환한다.
+        거절은 ``<blocked>``(``blocked_reason``)가 있거나 edits도 스크립트도 없이 분석만 있는 답이다.
+        전송 실패, 형식을 어긴 답, 파일을 더 요청하는 답, 쓸 수 없는 edits는 거절이 아니라 적용 실패다.
+        ``script.max_declines_per_case``가 0 이하면 항상 빈 문자열을 반환한다.
 
         The blocker sentence of a declined answer, "" otherwise: `ScriptProposal.blocked_reason`, or an answer with
         neither edits nor a script and only `<analysis>`. Transport failures (`llm-error:`), protocol garbage, an
@@ -2512,15 +2551,16 @@ class BuildFixLoop:
         return _first_sentence(analysis, 300)
 
     def _decline_count(self, case_id: str) -> int:
-        """이 실행에서 케이스가 거절된 횟수(실행 이력의 시도 메모 ``declined: …``)."""
+        """이 실행에서 케이스가 거절된 횟수를 실행 이력의 시도 메모 ``declined: …``로 센다."""
         if not case_id:
             return 0
         return sum(1 for a in self.history if a.script_case_id == case_id
                    and any(n.startswith(DECLINED_NOTE) for n in a.notes))
 
     def _decline(self, att: FixAttempt, c: ErrorCluster, ans: Any, reason: str, *, ignored: bool = False) -> None:
-        """v2.1y: 거절된 답 — 시도 결과 ``blocked``, 메모 ``declined: <사유>``, 저널 ``declined``. 차단(needs_owner)은
-        시도가 이력에 들어간 뒤 ``_after_decline`` 이 한다. 적용한 것은 없다(작업 트리를 깨끗이).
+        """거절된 답을 기록한다.
+        시도 결과는 ``blocked``, 메모는 ``declined: <사유>``, 저널은 ``declined``이며 적용한 것은 없다.
+        차단(needs_owner)은 시도가 이력에 들어간 뒤 ``_after_decline``이 한다.
 
         A declined answer (`<blocked>` or analysis only): outcome `blocked`, note `declined: <reason>`, journal
         `declined`; BLOCKED needs_owner follows in `_after_decline` once the attempt is recorded. Nothing applied."""
@@ -2544,7 +2584,8 @@ class BuildFixLoop:
                          "declines": n, "limit": limit, "mode": att.script_mode, "ignored": ignored})
 
     def _after_decline(self, st: "_Round", c: ErrorCluster, att: FixAttempt) -> None:
-        """거절이 ``script.max_declines_per_case`` 에 닿았으면 케이스를 BLOCKED needs_owner 로(LLM 을 더 부르지 않음).
+        """거절 횟수가 ``script.max_declines_per_case``에 도달하면 케이스를
+        BLOCKED needs_owner로 차단하고 LLM을 더 호출하지 않는다.
 
         After a declined attempt is recorded: BLOCKED needs_owner once the case reached
         `script.max_declines_per_case` declined answers (no further LLM call)."""
@@ -2557,11 +2598,12 @@ class BuildFixLoop:
         self._block_needs_owner(st, c, reason)
 
     def _block_needs_owner(self, st: "_Round", c: ErrorCluster, reason: str, same_as: str = "") -> None:
-        """거절된(또는 같은 원인의) 케이스를 차단한다. 트리아지 분류기가 구체적인 사유를 주면(``DECLINE_KEEPS_REASONS``:
-        javax 라이브러리·호환 안 되는 외부 API·없는 아티팩트·플러그인) 그 사유와 그 제안 문구로 — 운영자·핸드북·attn 코드가
-        그 사유를 본다(PM 결정 2026-10-31); 분류가 없는 오류만(legacy-ibatis 같은 컴파일 오류) needs_owner, 제안 =
-        "<차단 사유 문장> — 소유팀 결정 필요" (형제는 "same cause as <case>: …"). 분류가 일부 오류만 덮으면 나머지는
-        needs_owner. 원래 거절한 케이스는 형제 판정을 위해 (파일, 아티팩트) 를 기억한다.
+        """거절된 케이스나 원인이 같은 다른 케이스를 LLM 호출 없이 차단한다.
+        - 트리아지 분류기가 구체적인 사유(``DECLINE_KEEPS_REASONS``: javax 라이브러리, 호환되지 않는 외부 API, 없는
+          아티팩트, 플러그인)를 주면 운영자와 attn 코드가 볼 수 있도록 그 사유와 조치 방법 문구를 쓴다
+        - 분류되지 않은 오류만 needs_owner로 차단하고, 조치 방법에는 차단
+          사유 문장에 소유팀의 결정이 필요하다는 말을 붙인다
+        - 처음 거절한 케이스는 원인이 같은 케이스를 알아보기 위해 (파일, 아티팩트)를 기억해 둔다
 
         Block a declined case (or a same-cause sibling) without another LLM call. When the triage classifier has a
         specific reason for it (`DECLINE_KEEPS_REASONS`: external_javax_api, external_api_incompatible,
@@ -2597,8 +2639,9 @@ class BuildFixLoop:
             self._owner_blocked.append((c.case_id or c.id, files, arts, sentence))
 
     def _owner_cause(self, c: ErrorCluster) -> Optional[tuple[str, str]]:
-        """v2.1y: ``c`` 가 소유팀 결정으로 차단된 케이스와 같은 원인인가 → (그 케이스, 사유 문장). 같은 원인 = ``c`` 의
-        오류 파일이 전부 그 케이스의 오류 파일 안에 있음, 또는 같은 아티팩트(``e.artifact``)를 말함.
+        """``c``가 소유팀의 결정으로 차단된 케이스와 원인이 같으면 (그 케이스, 사유 문장)을, 아니면 None을 반환한다.
+        ``c``의 오류 파일이 모두 그 케이스의 오류 파일에 포함되거나 같은
+        아티팩트(``e.artifact``)를 가리키면 원인이 같다고 본다.
 
         (case, sentence) of the needs_owner case `c` shares its cause with: every error file of `c` is among that
         case's error files, or an error names the same artifact. None otherwise."""
@@ -2616,7 +2659,8 @@ class BuildFixLoop:
         return None
 
     def _block_same_cause(self, st: "_Round", c: ErrorCluster, owner: tuple[str, str], prefix: str) -> str:
-        """형제 케이스를 LLM 호출 없이 BLOCKED needs_owner 로(결정 기록 + 저널 ``same_cause_blocked``)."""
+        """원인이 같은 케이스를 LLM 호출 없이 BLOCKED needs_owner로 차단한다.
+        결정을 기록하고 저널 ``same_cause_blocked``를 남긴다."""
         case, sentence = owner
         d = TriageDecision(cluster_id=c.id, kind=DecisionKind.BLOCKED,
                            rationale=prefix + f"blocked: {BlockReason.NEEDS_OWNER.value} — same cause as {case} "
@@ -2629,7 +2673,7 @@ class BuildFixLoop:
         return "blocked"
 
     def _switch(self, att: FixAttempt, note: str) -> None:
-        """답의 첫 선택이 적용되지 않았다: 그 실패는 메모로 바꾸고, 같은 시도에서 나머지 반쪽으로 계속한다.
+        """LLM 답에서 먼저 고른 쪽이 적용되지 않았을 때 그 실패를 메모로 남기고, 같은 시도에서 나머지 쪽으로 계속한다.
 
         The answer's first choice did not apply: its failure becomes a note, the try goes on with the other half."""
         att.notes += [f"first choice failed: {e}" for e in att.apply_errors]
@@ -2639,9 +2683,10 @@ class BuildFixLoop:
         log.info("%s", note)
 
     def _log_answer(self, secs: float, att: FixAttempt, code: str, edits: list) -> None:
-        """LLM 답변 요약 한 줄(걸린 초, 원인·해결 첫 문장, edits 개수, 스크립트 유무와 없으면 이유).
+        """LLM 답을 요약한 로그 한 줄(걸린 시간, 원인과 해결 방법의 첫 문장,
+        edits 개수, 스크립트 유무와 없는 이유)을 남긴다.
 
-        `LLM 답변 (21s): 원인 … / 해결 … / edits 1 / script 있음` (§3.2)."""
+        `LLM 답변 (21s): 원인 … / 해결 … / edits 1 / script 있음`"""
         parts = [f"원인 {_first_sentence(att.analysis, 140) or '-'}", f"해결 {_first_sentence(att.solution, 140) or '-'}",
                  f"edits {len(edits)}"]
         if code.strip():
@@ -2653,8 +2698,8 @@ class BuildFixLoop:
         log.info("LLM 답변 (%.0fs): %s", secs, " / ".join(parts))
 
     def _begin_try(self, att: FixAttempt, st: "_Round") -> None:
-        """이 시도의 FixTry 를 오류 목록에 연다(출처 kb-script / llm-new / llm-augment / llm-edit 가 정해진
-        뒤). 목록이 번호를 안 주면 케이스별 자체 번호를 쓴다.
+        """시도의 출처(kb-script / llm-new / llm-augment / llm-edit)가 정해진 뒤 오류 목록에 이 시도의
+        FixTry를 연다. 오류 목록이 번호를 주지 않으면 케이스별로 직접 번호를 매긴다.
 
         The error list's FixTry of this attempt (once its source is known)."""
         case_id = att.script_case_id or _case_of_errors(att.cluster_errors)
@@ -2668,9 +2713,9 @@ class BuildFixLoop:
         self._tries[id(att)] = (case_id, n, st.round)
 
     def _sync_try(self, att: FixAttempt) -> None:
-        """FixAttempt → FixTry 동기화(적용 뒤, 채점 뒤, 롤백 뒤 매번 모든 필드). diff 는
-        ``errors.diff_chars`` 에서 자르고(전체는 changes.patch), 수정
-        기록·메이저 변경·운영자 확인 가이드는 옛 목록이면 빠진다.
+        """FixAttempt의 내용을 FixTry에 반영한다. 적용, 결과 평가, 되돌리기 뒤마다 모든 필드를 맞춘다.
+        diff는 ``errors.diff_chars``까지만 남기고(전체는 changes.patch), 오류 목록이 이전 형식이면 수정
+        기록, 메이저 변경, 운영자 확인 가이드는 넣지 않는다.
 
         FixTry ← FixAttempt (after the apply, after the scoring, after a rollback): every field each time."""
         t = self._tries.get(id(att))
@@ -2694,8 +2739,8 @@ class BuildFixLoop:
                                          "verify_source": att.verify_source})
 
     def _ran_on_files(self, att: FixAttempt) -> bool:
-        """수정(스크립트 또는 edits)이 실제로 파일 위에서
-        돌았는가 — 정적 검사에서 거부된 것은 돌지 않은 것."""
+        """수정(스크립트 또는 edits)이 실제로 파일에 실행됐는지 판단한다.
+        정적 검사에서 거부된 것은 실행되지 않은 것으로 본다."""
         res = att.script_result
         if res is not None and res.status != "rejected":
             return True
@@ -2703,9 +2748,9 @@ class BuildFixLoop:
         return er is not None and er.status != "rejected"
 
     def _script_base(self, c: ErrorCluster, step: Any) -> Optional[ScriptBase]:
-        """보강 프롬프트의 기준(ScriptBase): 이어 고칠 버전과 이 프로젝트에서 그것이 한 일(바꾼 파일, 오류,
-        로그 끝 50줄), 아직 남은 케이스 오류, 새로 생긴 오류,
-        버전 이력. 깨지면 None → 신규 요청(절대 죽지 않는다).
+        """보강 프롬프트에 넣을 기준(ScriptBase)을 만든다. 이어서 고칠 버전, 이 프로젝트에서 그 버전이 한
+        일(바꾼 파일, 오류, 로그 마지막 50줄), 남은 케이스 오류, 새로 생긴 오류, 버전 이력을 담는다.
+        만들 수 없으면 None을 반환하고 신규 요청으로 넘어간다. 예외를 던지지 않는다.
 
         The augment context: the version to extend and what it did in this project (or, for a stored version that
         did not run here, what the store knows of it), the case's remaining errors and the version history."""
@@ -2735,7 +2780,8 @@ class BuildFixLoop:
             return None
 
     def _script_history(self, case_id: str, c: ErrorCluster) -> list[str]:
-        """저장된 버전마다 한 줄(상태, 성공 / 실패, 마지막 결과) + 이번 실행의 시도들 — 보강 프롬프트용 이력.
+        """보강 프롬프트에 넣을 이력을 만든다.
+        저장된 버전마다 한 줄(상태, 성공 / 실패 수, 마지막 결과)을 쓰고 이번 실행의 시도를 덧붙인다.
 
         'v1 [proven]: 2 ok / 1 failed — last: no_change' per stored version, then this run's tries."""
         out: list[str] = []
@@ -2752,10 +2798,11 @@ class BuildFixLoop:
 
     def _rollback_previous(self, c: ErrorCluster, st: "_Round"
                            ) -> Optional[tuple[FixAttempt, list[BuildError], str, bool]]:
-        """케이스의 직전 시도를 되돌린다(회사 규칙: 개선·빌드 성공이 아니면 다음 시도 전에 되돌림; 이미
-        되돌렸거나 적용 안 된 것은 제외). 그 시도가 HEAD 면 reset, 아니면 ``git revert``. 돌려주는 것: (그
-        시도, 그 시도가 지웠던 — 이제 트리에 돌아온 — 오류들, 다음 시도용 메모, 되돌렸나). revert 가 충돌로
-        실패하면 메모만 남기고 다음 버전이 그 위에서 돈다.
+        """케이스의 직전 시도가 개선이나 빌드 성공이 아니면 되돌린다.
+        이미 되돌렸거나 적용되지 않은 시도는 건너뛴다.
+        그 시도가 HEAD면 reset, 아니면 ``git revert``로 되돌리고 (시도, 그 시도가 없앴다가 다시 나타난 오류,
+        다음 시도용 메모, 되돌렸는지 여부)를 반환한다.
+        revert가 충돌로 실패하면 메모만 남기고, 다음 버전은 그 상태에서 실행된다.
 
         Roll back the case's previous try unless it was improved / build_ok (or already reverted / never applied).
         Returns (that try, the errors it had removed — back in the tree now, a note for the next try, rolled back)
@@ -2789,7 +2836,7 @@ class BuildFixLoop:
             a.notes.append(f"rollback before the next attempt failed: {type(e).__name__}: {e}")
             return a, [], (f"the previous attempt {a.id} could not be rolled back ({type(e).__name__}): this "
                            "version ran on top of it"), False
-        # 그 시도가 지웠던 오류 = 시도의 대상 오류 중 이번 빌드에 없는 것. 다음 채점의 기준선에 더한다
+        # 그 시도가 없앴던 오류는 시도의 대상 오류 중 이번 빌드에 없는 것이며, 다음 시도 결과 평가의 기준선에 더한다
         restored = _gone(a.cluster_errors, st.build)
         st.restored += restored
         self.ws.journal({"event": "script_rollback", "phase": st.phase.value, "iteration": st.iteration,
@@ -2802,7 +2849,7 @@ class BuildFixLoop:
 
     def _undo_rollback(self, st: "_Round", prev_att: FixAttempt, head_before: str, restored: list[BuildError],
                        att: FixAttempt) -> None:
-        """다음 시도가 아무것도 바꾸지 못했다: 되돌렸던 시도를 되살린다(마지막 빌드가 본 트리 그대로).
+        """다음 시도가 아무것도 바꾸지 못했을 때 되돌렸던 시도를 되살려 트리를 마지막 빌드 때 상태로 둔다.
 
         The next try changed nothing: put the rolled-back try back (the tree the last build saw)."""
         try:
@@ -2822,15 +2869,16 @@ class BuildFixLoop:
 
     def _ask_llm(self, att: FixAttempt, c: ErrorCluster, st: "_Round", step: Any,
                  base: Optional[ScriptBase]) -> Any:
-        """신규 / 보강: FixContext(힌트: KB 마지막 해결·같은 실행의 다른 파일·권고·병합 충돌 참고본·v2.1d
-        의존성 버전 사실)를 만들어 LLM 답(원인·해결·edits·스크립트 / 스크립트 없는 이유)을 받는다. 없으면
-        None(전송 실패·설정 오류·propose_script 없는 fixer — 이유는 시도에). 정체가 쌓였거나 케이스의 두 번째
-        보강부터는 더 센 모델(``llm.escalation_model``)을 청한다.
+        """FixContext를 만들어 LLM에게 답(원인, 해결 방법, edits, 스크립트 또는 스크립트가 없는 이유)을
+        받는다(신규 또는 보강). 힌트로 KB의 마지막 해결, 같은 실행의 다른 파일, 권고, 병합 충돌 참고 파일,
+        의존성 버전 정보를 넣는다.
+        답을 받지 못하면(전송 실패, 설정 오류, propose_script가 없는 fixer) None을 반환하고 이유를 시도에 남긴다.
+        정체가 쌓였거나 케이스의 세 번째 LLM 요청부터는 상위 모델(``llm.escalation_model``)을 요청한다.
 
         new / augment: the LLM's answer (FixAnswer: 원인 · 해결 · edits · script / no_script_reason), or None when
         there is none (transport failure, configuration error, a fixer without propose_script — the reason is on the
         attempt)."""
-        # v2.1v (E-L9): 앞 시도가 만든 오류면 그 스크립트를 먼저 말한다(새 스크립트보다 그 스크립트의 보강이 낫다)
+        # 앞 시도가 만든 오류라면 새 스크립트보다 그 스크립트를 보강하는 편이 낫기 때문에 그 스크립트를 먼저 알린다
         hints = [*self._match_hints.get(c.id, []), *self._introduced_hints(c), *self._sibling_hints(c)]
         other = cut_lines("\n".join(v for k, v in st.others.items() if k != c.id), OTHER_ERRORS_CHARS)
         self._mark(f"advisory hints for {c.id}")
@@ -2843,14 +2891,15 @@ class BuildFixLoop:
         if step.mode == "augment" and base is None:
             att.notes.append("augment without a usable base → asking for a new fix")
         elif mode == "augment" and self._decline_count(step.case_id):
-            # v2.1y: 거절한 케이스에는 보강을 청하지 않는다(script.max_declines_per_case > 1 일 때만 여기 온다)
+            # 거절한 케이스에는 보강을 요청하지 않는다.
+            # script.max_declines_per_case가 1보다 클 때만 여기에 온다
             mode, base = "new", None
             att.notes.append("the case was declined before → asking for a new fix, not an augment")
         att.script_mode = mode
         if mode == "augment":
             att.script_parent = int(base.version) or None
-        # 더 센 모델: 정체(stall)일 때, 그리고 케이스의 세 번째 LLM 요청부터(보강이든, 보강 소진 뒤의 새 작성이든 — v2.1z 리뷰
-        # R2: 15회 보강 뒤의 신규 요청이 약한 모델로 가던 구멍). 두 번째 보강 = 세 번째 요청이라 전과 같은 자리다.
+        # 정체일 때와 케이스의 세 번째 LLM 요청부터는 상위 모델을 쓴다.
+        # 보강을 다 쓴 뒤의 신규 요청도 포함한다
         # the stronger model on a stall, and from the case's THIRD LLM ask on, whatever the rung (the fresh `new` asks after
         # the augments are used up included) — the same rung as "from the second augment" before v2.1z
         escalate = st.stall_level >= self.cfg.loop.stall_limit or int(getattr(step, "llm_used", 0) or 0) >= 2
@@ -2873,7 +2922,7 @@ class BuildFixLoop:
             self._no_script_fixer(att, c, str(e))
             return None
         except Exception as e:
-            # 실패한 호출도 부른 것이므로 예산에 센다
+            # 실패한 호출도 호출한 것이므로 예산에 센다
             self.budget.charge_llm(1)
             log.warning("fixer.propose_script failed for %s: %s", c.id, e)
             self._fail(att, f"LLM fixer failed: {type(e).__name__}: {e}")
@@ -2900,8 +2949,9 @@ class BuildFixLoop:
         return proposal
 
     def _layout_facts(self) -> list[str]:
-        """v2.1v (B-H2): 프롬프트의 "Project after the restructure" 절 — 오케스트레이터가 넘긴 재구성 결과와 설정으로
-        만든 줄(``sbmig.loop.layout_facts``). 결과 수가 바뀔 때만 다시 만든다. 재구성이 없었으면 []. 예외 없음.
+        """프롬프트의 "Project after the restructure" 절을 만든다.
+        오케스트레이터가 넘긴 재구성 결과와 설정을 쓴다(``sbmig.loop.layout_facts``).
+        재구성 결과 수가 바뀔 때만 다시 만들고, 재구성이 없었으면 빈 목록을 반환한다. 예외를 던지지 않는다.
 
         `FixContext.layout_facts` from the restructure results the orchestrator handed over (`restructure_results` /
         `restructure_modes`) and `cfg.artifacts` / `cfg.layout`; rebuilt only when the number of results changes."""
@@ -2925,7 +2975,7 @@ class BuildFixLoop:
         return list(lines)
 
     def _artifact_id_of(self, rel: str) -> str:
-        """모듈 pom 의 artifactId(읽을 수 없으면 "") — 레이아웃 사실 줄용.
+        """모듈 pom의 artifactId를 반환한다. 읽을 수 없으면 빈 문자열을 반환한다.
 
         The artifactId of a project pom ("" when it does not read)."""
         ed = self._pom_editor(rel)
@@ -2935,9 +2985,9 @@ class BuildFixLoop:
             return ""
 
     def _introduced_hints(self, c: ErrorCluster) -> list[str]:
-        """v2.1v (E-L9): 이 케이스의 오류가 앞 라운드의 적용된 시도가 손댄 파일에서 처음 나타났으면 그 시도를 말하는
-        KB 힌트 한 줄 — ``introduced by script:<case>:v<N> (attempt <id>) — prefer augmenting that script``. 스크립트가
-        아니면(edits) 그 꼬리표만. 없으면 [].
+        """이 케이스의 오류가 앞 라운드에 적용된 시도가 수정한 파일에서 처음 나타났으면, 그 시도를 알려 주는
+        힌트 한 줄을 만든다. 해당하지 않으면 빈 목록을 반환한다.
+        힌트는 ``introduced by script:<case>:v<N>``으로 시작하고, edits 시도면 그 시도 이름만 쓴다.
 
         The kb hint naming the earlier applied try whose touched files first showed this case's errors (`_score`
         records them): `introduced by script:<case>:v<N> (attempt <id>) — prefer augmenting that script`."""
@@ -2958,10 +3008,12 @@ class BuildFixLoop:
 
     def _store_script(self, att: FixAttempt, c: ErrorCluster, step: Any, ans: Any, code: str, *,
                       check_duplicate: bool = True) -> bool:
-        """LLM 스크립트를 KB 케이스에 저장한다. 실행할 스크립트는 *돌리기 전에* 저장한다(실패해도 계보가
-        남도록), edits 답의 스크립트는 수정 옆에 unverified 로. KB 가 없으면 저장 없이 v0. 보강본은 v2.1e
-        계보(``parent``, 만든 이유 ``reason`` = "v1: <부모의 실패 이유>")를 남긴다. False = 돌리지 말 것(같은
-        코드의 버전이 이 실행에서 이미 돌았음).
+        """LLM이 작성한 스크립트를 KB 케이스에 저장한다.
+        - 실행할 스크립트는 실패해도 이력이 남도록 실행 전에 저장한다.
+          edits 답에 딸린 스크립트는 unverified로 저장한다
+        - 보강한 버전에는 부모 버전(``parent``)과 만든 이유(``reason``, 부모 버전이 실패한 이유)를 남긴다.
+          KB가 없으면 저장하지 않고 v0로 둔다
+        False를 반환하면 같은 코드의 버전이 이 실행에서 이미 실행됐다는 뜻이므로 실행하지 않는다.
 
         Store an LLM script in the KB case (`kb.cases.add_script`, source = the try's): a script run stores it
         BEFORE it runs (failures keep their lineage), an edits answer stores it `unverified` next to the fix. No KB →
@@ -2993,7 +3045,7 @@ class BuildFixLoop:
             att.notes.append("fix script not stored (kb.cases.add_script failed): v0")
             return True
         att.script_version = int(getattr(cs, "version", 0) or 0)
-        # the store logs `스크립트 v1 저장 (unverified, llm-new) → cases/<id>/fix_v1.py` itself (stage kb)
+        # 저장 로그는 저장소가 직접 남기므로(stage kb) 여기서는 DEBUG 한 줄만 남긴다
         log.debug("stored as v%d (%s) → %s", att.script_version, getattr(cs, "status", "unverified"),
                   script_path(step.case_id, cs))
         ran = next((a for a in _same_cluster(c, self.history, self.blocked.canonical_file)
@@ -3009,9 +3061,10 @@ class BuildFixLoop:
         return True
 
     def _run_script(self, att: FixAttempt, c: ErrorCluster, code: str, st: "_Round") -> None:
-        """스크립트를 프로젝트에 돌린다(``sbmig.script``: 정적 검사, ``python -I`` 별도 프로세스, 프로젝트
-        폴더 안만, 타임아웃). 거부·오류·타임아웃 → 아무것도 적용 안 됨(작업 트리 복원, 부분 적용 없음), 성공 +
-        변경 → 보고한 파일만 커밋.
+        """스크립트를 프로젝트에 실행한다.
+        ``sbmig.script``가 정적 검사, ``python -I`` 별도 프로세스, 프로젝트 폴더 한정, 타임아웃을 적용한다.
+        거부, 오류, 타임아웃이면 아무것도 적용하지 않고 작업 트리를 복원한다.
+        성공해서 변경이 있으면 스크립트가 보고한 파일만 커밋한다.
 
         Run the script on the project (`errors` = the case's errors); rejected / error / timeout → nothing applied
         (working tree restored); ok + changes → commit."""
@@ -3037,7 +3090,7 @@ class BuildFixLoop:
             log.info("적용 실패 (%s %s): %s — 변경 없음", name, res.status, _first_sentence(res.error or "-", 240))
             return
         self._drop_reference_writes(att, pre)
-        # v2.1y (E-H3): sbmig 의 버전 채움 *전에* — 채움을 스크립트의 두 번째 변경으로 오인하지 않게
+        # sbmig의 버전 채우기를 스크립트의 두 번째 변경으로 오인하지 않도록 버전 채우기보다 먼저 실행한다
         self._idempotency_check(att, c, code, res)
         self._fill_versions(att, c, res, pre, st)      # v2.1l: version-less dependencies get theirs (same commit)
         self._mark(f"git commit for {c.id}")
@@ -3050,11 +3103,12 @@ class BuildFixLoop:
         self._applied(att, c, st, pre, sha, name, list(res.changed_files))
 
     def _idempotency_check(self, att: FixAttempt, c: ErrorCluster, code: str, res: ScriptRunResult) -> None:
-        """v2.1y (E-H3, ``script.idempotency_check``): ok 로 파일을 바꾼 스크립트를 같은 오류로 한 번 더 돌린다(첫 실행의
-        결과 위에서). 또 바꾸면 비멱등 — 두 번째 변경만 되돌리고(첫 실행의 결과는 그대로 커밋된다), 저장된 버전을
-        ``non_idempotent`` 로 표시해 다시는 재사용하지 않으며, 시도에 메모, 저널 ``script_non_idempotent``. 시도 자신의 결과는
-        재빌드가 정한다. sbmig 의 사전 시도(``sbmig-version`` / ``sbmig-resources``)는 스크립트를 돌리지 않으니
-        해당 없음. 첫 실행 상태는 바뀐 파일의 바이트로 기억했다가 되돌린다 — 커밋 전이라 sbmig 의 버전 채움은 아직 없다.
+        """``ok``로 끝나며 파일을 바꾼 스크립트를 첫 실행 결과 위에서 같은 오류로 한 번 더 실행해 멱등성을
+        확인한다. 설정 ``script.idempotency_check``로 켠다.
+        - 두 번째 실행이 또 파일을 바꾸면 멱등이 아니다. 두 번째 변경만 되돌리고 저장된 버전을
+          ``non_idempotent``로 표시해 재사용하지 않으며, 시도 메모와 저널 ``script_non_idempotent``를 남긴다
+        - 시도의 결과는 재빌드로 정한다. 버전 채우기 전에 실행하므로 sbmig의 pom 수정과 섞이지 않는다.
+          예외를 던지지 않는다
 
         Run an `ok` script that changed files once more on its own result (same errors). A second change = not
         idempotent (rule 2): only the second run's changes are undone (the first run's result is committed as
@@ -3098,8 +3152,9 @@ class BuildFixLoop:
                          "attempt": att.id, "files": changed2[:20], "second_status": res2.status, "marked": marked})
 
     def _restore_first_run(self, snap: dict[str, Optional[bytes]], changed2: list[str]) -> None:
-        """두 번째 실행이 바꾼 파일을 첫 실행 직후 상태로: 첫 실행이 바꾼 파일은 기억한 바이트로(없던 파일은 지움),
-        그 밖은 HEAD(시도 전 커밋)의 내용으로(HEAD 에 없으면 지움).
+        """두 번째 실행이 바꾼 파일을 첫 실행 직후 상태로 되돌린다.
+        첫 실행이 바꾼 파일은 기억해 둔 내용으로 복원하고(없던 파일은 삭제),
+        나머지는 HEAD 내용으로 복원하며 HEAD에 없으면 삭제한다.
 
         Put every file the second run changed back as the first run left it: the remembered bytes (None = the file did
         not exist), else HEAD's content (the attempt has not committed yet), else delete it."""
@@ -3123,9 +3178,10 @@ class BuildFixLoop:
 
     def _apply_edits(self, att: FixAttempt, c: ErrorCluster, edits: list, st: "_Round",
                      subject: str | None = None, apply_fn: Callable[[], ScriptRunResult] | None = None) -> None:
-        """답의 ``<edits>`` 를 ``sbmig.script.apply_edits`` 로 적용(스크립트와 같은 가드: 프로젝트 폴더
-        안만, 같은 거부 규칙). 실패 → 아무것도 적용 안 됨(작업 트리 복원), 변경 → 커밋
-        ``fix(edits:<case> <source>)``(v2.1l 의 sbmig 버전 채움은 ``subject`` 로 ``fix(sbmig-version): …``).
+        """LLM 답의 ``<edits>``를 ``sbmig.script.apply_edits``로 적용한다.
+        스크립트와 같은 안전장치(프로젝트 폴더 한정, 같은 거부 규칙)를 쓴다.
+        실패하면 아무것도 적용하지 않고 작업 트리를 복원한다. 변경이 있으면 ``fix(edits:<case> <source>)``로
+        커밋하고, sbmig의 버전 채우기는 ``subject``로 ``fix(sbmig-version): …``를 쓴다.
 
         The answer's `<edits>` through `sbmig.script.apply_edits` (the helper API's guards: project folder only,
         same refusals as a script); failure → nothing applied (working tree restored); changes → commit (`subject`
@@ -3176,9 +3232,10 @@ class BuildFixLoop:
 
     def _applied(self, att: FixAttempt, c: ErrorCluster, st: "_Round", pre: str, sha: str, how: str,
                  reported: list[str]) -> None:
-        """커밋된 변경 정리: 시도의 파일 목록, diff(DEBUG 로그엔 전체, FixTry 엔 잘라서), ``적용(…)`` 줄, 수정
-        기록마다 ``수정: …`` INFO 줄(v2.1e: as-is / to-be 조각 포함), pom 을 바꿨으면 v2.1d 되읽기, 바뀐
-        파일이 많으면 경고. 그리고 채점 대기에 넣는다.
+        """커밋된 변경을 정리하고 시도를 결과 평가 대기 목록에 넣는다.
+        - 시도의 파일 목록과 diff(DEBUG 로그에는 전체, FixTry에는 일부)를 남기고, ``적용(…)`` 줄과 수정
+          기록마다 ``수정: …`` INFO 줄을 남긴다
+        - pom을 바꿨으면 변경 내용을 다시 읽어 확인하고, 바뀐 파일이 많으면 경고한다
 
         A committed change: the attempt's files, the diff (DEBUG, full; the FixTry, capped), the `적용(…)` line and
         one `수정: <path> <lines> — <change>` line per note (v2.1b: the LLM's descriptions of the edits it applied /
@@ -3214,7 +3271,7 @@ class BuildFixLoop:
             log.info("수정: … %d more (errors.md)", len(notes) - NOTES_LOGGED)
         if diff:
             log.debug("diff:\n%s", diff)
-        if pom_changed(files or reported):             # v2.1d: major upgrades / library replacements → 운영자 확인
+        if pom_changed(files or reported):             # 메이저 업그레이드와 라이브러리 교체는 운영자가 확인해야 한다
             self._read_back(att, c, st, pre, sha, diff)
         warn = int(getattr(getattr(self.cfg, "script", None), "max_files_changed_warn", 0) or 0)
         if warn and len(files) > warn:
@@ -3227,10 +3284,11 @@ class BuildFixLoop:
 
     # ------------------------------------------------------------------ v2.1d dependency version policy
     def _read_back(self, att: FixAttempt, c: ErrorCluster, st: _Round, pre: str, sha: str, diff: str) -> None:
-        """v2.1d 되읽기: 적용된 커밋의 pom 변경 중 메이저 업그레이드·라이브러리 교체를
-        ``att.major_upgrades`` 에, 운영자 확인 가이드와 함께(답의 ``<verify>`` → 없으면 LLM 1회
-        ``verify_guide`` → 그래도 없으면 sbmig 가 만든 것). 메이저가 바뀌어도 되돌리거나 차단하지 않는다 —
-        빌드는 통과해야 하니까. 실패는 DEBUG 한 줄.
+        """적용된 커밋의 pom 변경 중 메이저 업그레이드와 라이브러리 교체를 찾아 운영자 확인 가이드와 함께
+        ``att.major_upgrades``에 넣는다.
+        가이드는 답의 ``<verify>``를 쓰고, 없으면 LLM에 한 번 요청하고(``verify_guide``), 그것도 없으면 sbmig가 만든다.
+        빌드 통과가 목표이므로 메이저 버전이 바뀌어도 되돌리거나 차단하지 않는다.
+        실패는 DEBUG 한 줄로만 남긴다.
 
         The applied commit's pom changes (`sbmig.build.depchanges`): every major upgrade / library replacement
         becomes `att.major_upgrades` with the 운영자 확인 guide — the answer's `<verify>`, else ONE LLM call
@@ -3253,9 +3311,9 @@ class BuildFixLoop:
 
     def _verify_guide(self, att: FixAttempt, c: ErrorCluster, st: _Round, changes: list, diff: str
                       ) -> tuple[str, str]:
-        """(가이드, "llm" | "sbmig"). 저장 스크립트 재사용(``kb-script``)은 LLM 을 부르지 않는다 — 재사용의
-        장점(LLM 0회)을 지키려고 가이드는 sbmig 가 만든다.
-        ``libraries.verify_guide_llm``·LLM 불가·예산도 본다.
+        """운영자 확인 가이드를 만들어 (가이드, "llm" 또는 "sbmig")를 반환한다. 저장 스크립트 재사용(``kb-script``)은
+        LLM 호출이 없다는 장점을 지키기 위해 LLM을 호출하지 않고 sbmig가 가이드를 만든다.
+        ``libraries.verify_guide_llm`` 설정, LLM 사용 가능 여부, 예산도 확인한다.
 
         (guide, "llm" | "sbmig") for the try's major upgrades. A reused stored script (`kb-script`) costs no LLM
         call: its guide is synthesized (docs/INTERFACES.md v2.1d)."""
@@ -3287,9 +3345,9 @@ class BuildFixLoop:
         return fallback_guide(changes, self._lang()), "sbmig"
 
     def _verify_fixer(self) -> Any:
-        """``verify_guide`` 를 가진 fixer: fixer 자신, 또는 ``LazyFixer`` 뒤의 진짜 fixer(propose_script 가
-        이미 만들었을 때만 — 가이드 하나 때문에 LLM 클라이언트를
-        새로 만들지 않는다). None = sbmig 가 가이드를 만든다.
+        """``verify_guide``를 가진 fixer를 반환한다. fixer 자신이거나 ``LazyFixer`` 뒤의 실제 fixer다.
+        가이드 하나 때문에 LLM 클라이언트를 새로 만들지 않도록, 실제 fixer는 propose_script가 이미 만들어 둔
+        경우에만 쓴다. None이면 sbmig가 가이드를 만든다.
 
         The fixer that has `verify_guide` (VerifyGuideLike): the fixer itself, or the real one behind the
         orchestrator's `LazyFixer` proxy once `propose_script` created it; None = sbmig synthesizes the guide."""
@@ -3300,8 +3358,8 @@ class BuildFixLoop:
         return inner if inner is not None and callable(getattr(inner, "verify_guide", None)) else None
 
     def _charge_verify_usage(self, att: FixAttempt, fx: Any) -> None:
-        """verify_guide 호출의 사용량을 예산과 시도(FixTry 의 LLM 호출 수, 보고서 사용량)에 매긴다. 일찍
-        실패했어도 요청은 했으므로 최소 1회.
+        """verify_guide 호출의 사용량을 예산과 시도(FixTry의 LLM 호출 수, 보고서 사용량)에 반영한다.
+        일찍 실패했더라도 요청은 했으므로 최소 1회로 센다.
 
         The verify_guide call's usage (`fixer.last_verify_usage`, an LLMUsage; a fixer without it = one call) on
         the budget and on the attempt (its try's `llm_calls`, the report's usage) — like `_ask_llm` does."""
@@ -3314,13 +3372,13 @@ class BuildFixLoop:
         att.llm_usage = att.llm_usage.add(u)
 
     def _lang(self) -> str:
-        """sbmig 가 만드는 가이드의 언어(``report.language``: ko | en, 기본 ko)."""
+        """sbmig가 만드는 가이드의 언어(``report.language``: ko 또는 en, 기본값 ko)를 반환한다."""
         lang = str(getattr(getattr(self.cfg, "report", None), "language", "") or "ko").lower()
         return lang if lang in ("en", "ko") else "ko"
 
     def _same_major_offer(self, ch: Any) -> str:
-        """저장소 / 표가 제시했던 같은 메이저의 최신 jakarta 릴리스("" = 없음) — 경고 줄이 "정책상 메이저
-        대신 이것이 있었다" 고 말하게 한다.
+        """저장소나 표가 제시했던 같은 메이저의 최신 jakarta 릴리스를 반환한다. 없으면 빈 문자열을 반환한다.
+        경고 줄에 메이저 업그레이드 대신 쓸 수 있었던 버전을 함께 보여 주는 데 쓴다.
 
         The newest same-major jakarta release the repository / the table offered for `ch.key` ("" = none) — the
         WARNING line says so (the policy asked for it instead of the major upgrade)."""
@@ -3340,13 +3398,14 @@ class BuildFixLoop:
         return ""
 
     def _library_hints(self, c: ErrorCluster) -> list[str]:
-        """v2.1d 프롬프트의 "Dependency versions" 절: 맨 앞에 사실 줄(v2.1l ``_version_facts`` — 케이스 오류의 아티팩트와
-        v2.1v 부터 classpath 에서 찾은 라이브러리의 as-is 버전·새 부모 체인 / 목표 Boot BOM 의 관리 버전, v2.1t 체인 속성,
-        v2.1v ``_package_facts``, v2.1m 리소스 사실), 그다음 라이브러리마다 저장소 사실(같은 메이저 jakarta ✓ / javax, 상위
-        메이저)과 판정. v2.1v (B-H1 / E-H1): 저장소 목록과 판정은 javax 케이스에만 — 오류가 ``javax.`` 를 말하거나
-        라이브러리가 javax 표(``jakarta_libraries``)에 있을 때. 새 체인 / Boot BOM 이 관리하는 라이브러리는 사실 줄 하나
-        ("… — the API changed, fix the code and leave the version")뿐(Spring 7 의 API 제거 케이스에 "7.0.10 으로 올려라 /
-        <no_script>" 가 붙던 것). 라이브러리별로 실행 동안 캐시, 예외 없음.
+        """프롬프트의 "Dependency versions" 절을 만든다.
+        - 맨 앞은 정보 줄이다. 케이스 오류의 아티팩트와 classpath에서 찾은 라이브러리의 as-is 버전, 새 부모
+          체인 / 목표 Boot BOM의 관리 버전, 체인 속성, ``_package_facts``, 리소스 정보를 쓴다
+        - 그다음 라이브러리마다 저장소 정보(같은 메이저의 jakarta / javax, 상위 메이저)와 판단을 붙인다.
+          오류가 ``javax.``를 언급하거나 javax 표에 있는 라이브러리인 javax 케이스에만 붙인다
+        - 새 체인이나 Boot BOM이 관리하는 라이브러리에는 "the API changed, fix the code and leave the version" 정보 줄
+          하나만 붙인다. API가 제거된 경우에 버전을 올리라는 안내가 나가지 않도록 하기 위해서다
+        라이브러리별 결과는 실행 중에 캐시하고, 예외를 던지지 않는다.
 
         FixContext.library_hints (the prompt's "Dependency versions" section): the facts first — `_version_facts` (the
         errors' artifacts and, since v2.1v, the libraries `_case_libraries` locates on the classpath), the chain's
@@ -3387,12 +3446,14 @@ class BuildFixLoop:
             return list(facts)
 
     def _lib_module(self, c: ErrorCluster) -> Optional[str]:
-        """classpath 에서 찾은 라이브러리의 모듈(케이스의 첫 컴파일 오류의 모듈, 없으면 클러스터의 모듈)."""
+        """classpath에서 찾은 라이브러리를 조회할 모듈을 반환한다.
+        케이스의 첫 컴파일 오류의 모듈이고, 없으면 클러스터의 모듈이다."""
         return next((e.module for e in c.errors if e.module and e.kind in (ErrorKind.COMPILE, ErrorKind.TEST_COMPILE)),
                     None) or c.module
 
     def _known_version(self, key: str, module: Optional[str]) -> Optional[tuple[str, str]]:
-        """새 부모 체인 또는 목표 Boot BOM 이 이 g:a 를 관리하는가 → ("new parent chain" | "target Boot BOM", 버전).
+        """새 부모 체인이나 목표 Boot BOM이 이 g:a를 관리하면 ("new parent
+        chain" 또는 "target Boot BOM", 버전)을 반환한다.
 
         (who, version) when the new parent chain or the target Boot BOM manages `key`; None otherwise."""
         try:
@@ -3408,9 +3469,9 @@ class BuildFixLoop:
         return None
 
     def _case_libraries(self, c: ErrorCluster) -> list[GAV]:
-        """케이스 뒤의 외부 라이브러리들(최대 ``libraries.max_artifacts_per_case``, g:a 당 하나): 오류의
-        ``artifact``, 없으면 앞쪽 컴파일 오류의 소유 클래스·오류 줄에서 부른 클래스를 classpath 에서 찾아.
-        사내 아티팩트와 프로젝트 클래스는 뺀다.
+        """케이스와 관련된 외부 라이브러리를 g:a당 하나씩, 최대 ``libraries.max_artifacts_per_case``개까지 찾는다.
+        오류의 ``artifact``를 쓰고, 없으면 앞쪽 컴파일 오류의 소유 클래스나 오류 줄에서 호출한 클래스를
+        classpath에서 찾는다. 사내 아티팩트와 프로젝트 클래스는 뺀다.
 
         The libraries behind the case (≤ `libraries.max_artifacts_per_case`, one per g:a): the errors' `artifact`,
         else the owner class of the first compile errors located on the module classpath (`ClassLocation.artifact`).
@@ -3466,8 +3527,9 @@ class BuildFixLoop:
         return list(found.values())
 
     def _repository(self) -> Any:
-        """실행의 저장소 조회기(Nexus·미러의 maven-metadata.xml). ``libraries.lookup`` 이 꺼졌거나 만들 수
-        없으면 None — 그 뒤로는 실행 내내 끈다(WARNING 한 줄, 표만 사용).
+        """이 실행의 저장소 조회기(Nexus, 미러의 maven-metadata.xml)를 반환한다.
+        ``libraries.lookup``이 꺼졌거나 만들 수 없으면 None을 반환하고, 그 뒤로는 실행 내내 조회하지
+        않는다(WARNING 한 줄, 표만 사용).
 
         The run's `RepositoryLookup` (lazy; None when `libraries.lookup` is off or it cannot be built — then off
         for the rest of the run with one WARNING)."""
@@ -3489,8 +3551,9 @@ class BuildFixLoop:
         return self._repo_lookup
 
     def _library_lines(self, key: str, current: str | None, javax: bool = False) -> list[str]:
-        """라이브러리 하나의 프롬프트 줄들(표 항목 + 저장소 사실 + v2.1z-e 탐색 줄; ``javax`` = javax 케이스라 형제 탐색 결과도).
-        찾은 것은 ``의존성 버전 조회: …`` INFO 줄로 남긴다.
+        """라이브러리 하나에 대한 프롬프트 줄(표 항목, 저장소 정보, 탐색 줄)을 만든다.
+        ``javax``이면 javax 케이스이므로 비슷한 이름의 좌표 탐색 결과도 넣는다.
+        찾은 내용은 ``의존성 버전 조회: …`` INFO 줄로 남긴다.
 
         The prompt lines of one library (table entry + repository facts + the v2.1z-e discovery lines; `javax` = a
         javax case, so the sibling search's outcome is said too); logs what was found."""
@@ -3532,8 +3595,10 @@ class BuildFixLoop:
 
     # ------------------------------------------------------------------ v2.1z-e jakarta build discovery
     def _discover(self, key: str, current: Optional[str], rv: Any = None) -> Any:
-        """라이브러리 ``key`` 의 jakarta 빌드 탐색 결과(``sbmig.build.jakarta_discovery``; 조회기에 캐시). 조회기가 없으면 None.
-        ``rv`` = 이미 받은 RepositoryVersions(없으면 ``_repo_facts`` 의 것) — ``candidates`` 는 라이브러리당 한 번만 묻는다.
+        """라이브러리 ``key``의 jakarta 빌드를 탐색해 결과를 반환한다(``sbmig.build.jakarta_discovery``,
+        조회기에 캐시). 조회기가 없으면 None을 반환한다.
+        ``rv``는 이미 받아 둔 RepositoryVersions이며, 없으면 ``_repo_facts``의 것을 쓴다.
+        후보(``candidates``)는 라이브러리당 한 번만 조회한다.
 
         The `JakartaDiscovery` of `key` (cached on the lookup); None without a repository lookup."""
         lookup = self._repository()
@@ -3550,9 +3615,9 @@ class BuildFixLoop:
             return None
 
     def _discovery_lines(self, key: str, current: Optional[str], entry: Any, rv: Any, javax: bool) -> list[str]:
-        """프롬프트에 붙는 탐색 줄들 + 저널 ``library_lookup``. ``hint_lines`` 가 이미 말한 것(같은 좌표의 pom 으로 확인된 jakarta ✓)은
-        되풀이하지 않는다: 같은 좌표라도 sbmig 의 확인(버전 한정어·jar 스캔)이 새로 보탠 것, 다른 좌표의 빌드, 그리고 javax
-        케이스에서 형제까지 찾아봤는데 없었다는 한 줄만.
+        """프롬프트에 붙일 탐색 줄을 만들고 저널 ``library_lookup``을 남긴다.
+        ``hint_lines``가 이미 보여 준 내용은 반복하지 않고, sbmig의 확인(버전 한정어, jar 스캔)으로 새로
+        알게 된 것, 다른 좌표의 빌드, javax 케이스에서 비슷한 이름까지 찾았지만 없었다는 한 줄만 쓴다.
 
         The discovery lines that ADD to `hint_lines`: same-coordinate builds only when sbmig's verification (qualifier /
         jar scan) said more than the pom check, sibling builds, and — for a javax case whose sibling search ran — the
@@ -3586,7 +3651,8 @@ class BuildFixLoop:
             return []
 
     def _journal_lookup(self, key: str, current: Optional[str], rv: Any, d: Any) -> None:
-        """저널 ``library_lookup``: journal.jsonl 만으로 "그 라이브러리를 저장소에서 찾아봤나, 무엇이 나왔나" 를 알 수 있게."""
+        """journal.jsonl만 보고도 그 라이브러리를 저장소에서 찾았는지, 결과가 무엇인지 알 수 있도록 저널
+        ``library_lookup``을 남긴다."""
         try:
             self.ws.journal({"event": "library_lookup", "key": key, "current": current,
                              "source": getattr(rv, "source", "") if rv is not None else "no lookup",
@@ -3605,7 +3671,7 @@ class BuildFixLoop:
             log.debug("library_lookup journal for %s failed: %s: %s", key, type(e).__name__, e)
 
     def _javax_cluster(self, c: ErrorCluster) -> Any:
-        """``external_javax_api`` 로 분류되는 케이스면 그 BlockedCandidate(소유 클래스 포함), 아니면 None."""
+        """케이스가 ``external_javax_api``로 분류되면 그 BlockedCandidate(소유 클래스 포함)를, 아니면 None을 반환한다."""
         if not _mentions_javax(c.errors):
             return None
         try:
@@ -3617,7 +3683,8 @@ class BuildFixLoop:
         return cand if cand is not None and cand.reason == BlockReason.EXTERNAL_JAVAX_API else None
 
     def _declared_dependencies(self) -> list[tuple[str, GAV]]:
-        """프로젝트 pom 들이 선언한 (pom, 의존성) 쌍(직접 + 관리; 자기 모듈 제외)."""
+        """프로젝트 pom이 선언한 (pom, 의존성) 쌍을 반환한다.
+        직접 선언과 dependencyManagement 항목을 포함하고 프로젝트 자신의 모듈은 뺀다."""
         own = self._own_module_keys()
         out: list[tuple[str, GAV]] = []
         for p in self.ws.pom_files():
@@ -3634,9 +3701,10 @@ class BuildFixLoop:
         return out
 
     def _owner_dependency(self, owner_class: Optional[str], deps: list[tuple[str, GAV]]) -> Optional[GAV]:
-        """classpath 귀속이 없을 때의 폴백: 소유 클래스의 패키지 토큰(``com.vendor8.grid.GridExporter`` → vendor8, vendor, grid)을
-        선언된 의존성의 groupId · artifactId 토큰과 맞춘다(끝자리 숫자를 뗀 줄기도 같은 토큰으로). 가장 많이 겹치는 의존성,
-        동점이면 groupId 가 패키지 접두어인 것. 그래도 없으면 로컬 저장소의 그 의존성 jar 안에 클래스 파일이 있는지 본다.
+        """classpath로 소유 클래스의 라이브러리를 찾지 못할 때, 선언된 의존성에서 대신 찾는다.
+        소유 클래스의 패키지 토큰(``com.vendor8.grid.GridExporter``면 vendor8, vendor, grid)을 의존성의 groupId,
+        artifactId 토큰과 비교해 가장 많이 겹치는 것을 고르고, 동점이면 groupId가 패키지 접두어인 것을 고른다.
+        그래도 없으면 로컬 저장소에 있는 그 의존성 jar 안에 해당 클래스 파일이 있는지 확인한다.
 
         The fallback when the classpath cannot attribute the owner class: the class package's tokens against the
         declared dependencies' groupId / artifactId tokens (stems without trailing digits count too), best overlap
@@ -3691,9 +3759,10 @@ class BuildFixLoop:
         return None
 
     def _javax_libraries(self, c: ErrorCluster) -> list[GAV]:
-        """v2.1z-e: javax 케이스 뒤의 라이브러리를 classpath 없이도 찾는다(``_owner_dependency`` 폴백). 못 찾으면 저널
-        ``library_unmapped``(소유 클래스와 함께) — 회사 실행에서 LLM 기록에 저장소 줄이 하나도 없던 이유를 journal.jsonl 만으로
-        알 수 있게. 클러스터별 캐시.
+        """javax 케이스와 관련된 라이브러리를 classpath 없이 찾는다(``_owner_dependency``).
+        결과는 클러스터별로 캐시한다.
+        찾지 못하면 소유 클래스와 함께 저널 ``library_unmapped``를 남긴다.
+        프롬프트에 저장소 줄이 없는 이유를 journal.jsonl만으로 알 수 있게 하기 위해서다.
 
         The libraries behind a javax case when the classpath attribution found none: the owner class → declared
         dependency fallback (`_owner_dependency`); journal `library_unmapped` when even that fails."""
@@ -3712,7 +3781,8 @@ class BuildFixLoop:
             self._javax_owner[c.id] = owner
             deps = self._declared_dependencies()
             g = self._owner_dependency(owner, deps)
-            # v2.1z-g: 첫 소유자(중립 타입일 수 있음)가 안 맞으면 순위대로 다음 소유 클래스로 매핑을 시도한다
+            # 첫 소유 클래스는 어느 라이브러리에나 있는 타입일 수 있으므로, 맞지
+            # 않으면 다음 순위의 소유 클래스로 다시 찾아본다
             for other in [o for o in (getattr(cand, "owner_classes", None) or []) if o and o != owner]:
                 if g is not None:
                     break
@@ -3734,8 +3804,9 @@ class BuildFixLoop:
         return out
 
     def _owner_from_source(self, c: ErrorCluster) -> Optional[str]:
-        """소유 클래스를 메시지가 말하지 않을 때(``incompatible types``): 오류 줄에 쓰인 식별자 중 그 파일의 import 가 가리키는
-        외부 클래스(JDK · javax · jakarta · 프로젝트 클래스 제외)의 FQCN. 못 찾으면 None. 파일 읽기만.
+        """메시지가 소유 클래스를 알려 주지 않는 오류(``incompatible types``)에서, 오류 줄의 식별자 중 그
+        파일의 import가 가리키는 외부 클래스의 FQCN을 반환한다.
+        JDK, javax, jakarta, 프로젝트 클래스는 제외하고, 찾지 못하면 None을 반환한다. 파일은 읽기만 한다.
 
         The library class on the error line when the message names none: an identifier of that line whose import in the
         file is neither JDK / javax / jakarta nor a project class; None otherwise."""
@@ -3776,7 +3847,8 @@ class BuildFixLoop:
         return None
 
     def _jakarta_evidence(self, c: ErrorCluster, owner: Optional[str], artifact: Optional[GAV]) -> str:
-        """차단 항목에 붙는 한 문장: 탐색 기록(``JAKARTA_SEARCH_PREFIX`` …) 또는 의존성을 못 맞춘 소유 클래스(``UNMAPPED_PREFIX`` …)."""
+        """차단 항목에 붙일 한 문장을 만든다. 탐색 기록(``JAKARTA_SEARCH_PREFIX`` …)이나, 의존성을 찾지 못한
+        소유 클래스(``UNMAPPED_PREFIX`` …)를 쓴다."""
         try:
             libs = [artifact] if artifact is not None else []
             if not libs:
@@ -3784,7 +3856,7 @@ class BuildFixLoop:
             if not libs:
                 who = owner or self._javax_owner.get(c.id) or self._owner_from_source(c)
                 if not who:
-                    return ""                      # 소유 클래스조차 모르면 덧붙일 사실이 없다(v2.1v 의 거절 문장 그대로)
+                    return ""                      # 소유 클래스도 모르면 덧붙일 정보가 없다
                 return (f"{UNMAPPED_PREFIX} {who} could not be matched to a dependency (classpath, package tokens, local "
                         f"jars) — run mvn dependency:tree in the module and look the library's jakarta build up in Nexus")
             lib = libs[0]
@@ -3799,7 +3871,8 @@ class BuildFixLoop:
             return ""
 
     def _decline_contradiction(self, c: ErrorCluster, reason: str) -> str:
-        """거절 사유가 jakarta / javax 빌드 얘기인데 sbmig 의 탐색이 적용 가능한(확인된) jakarta 빌드를 찾았으면 그 사실, 아니면 "".
+        """거절 사유가 jakarta / javax 빌드에 관한 것인데 sbmig가 확인된 jakarta 빌드를 찾았으면 그 정보를,
+        아니면 빈 문자열을 반환한다.
 
         The fact that contradicts a "no jakarta build" decline — a verified build discovery found for a library of the
         case — or ""."""
@@ -3823,8 +3896,9 @@ class BuildFixLoop:
         return ""
 
     def _knowledge_notes(self) -> list[Any]:
-        """``knowledge/notes`` 의 노트 목록(``sbmig.fix.context.load_notes_index``; 한 번만 읽고, 못 읽으면 빈 목록). 트라이어저에
-        같은 목록을 준다(``attach_run(notes=…)``); 테스트는 ``_notes_index`` 에 직접 넣는다."""
+        """``knowledge/notes``의 노트 목록을 반환한다(``sbmig.fix.context.load_notes_index``).
+        한 번만 읽고, 읽지 못하면 빈 목록을 반환한다.
+        트리아지에도 같은 목록을 넘긴다(``attach_run(notes=…)``). 테스트는 ``_notes_index``에 직접 넣는다."""
         if self._notes_index is None:
             try:
                 from sbmig.fix.context import load_notes_index
@@ -3835,9 +3909,9 @@ class BuildFixLoop:
         return self._notes_index
 
     def _note_contradiction(self, c: ErrorCluster) -> str:
-        """v2.1z-aa: 거절된 케이스의 오류 글·오류 파일의 import 줄에 ``replacement: true`` 노트가 맞으면 그 사실(노트 제목·파일), 아니면 "".
-        회사 실행(2026-11-06): spring-mobile 케이스에서 LLM 이 compat 클래스를 반만 만들고 두 번째 답에 거절했고, 루프는 그 거절을 받아
-        external_javax_api 로 차단한 뒤 이웃 케이스까지 같은 원인으로 묶었다 — 노트가 답을 아는 라이브러리의 거절은 받지 않는다.
+        """거절된 케이스의 오류 텍스트나 오류 파일의 import 줄에 ``replacement: true`` 노트가 맞으면 그
+        정보(노트 제목, 파일)를, 아니면 빈 문자열을 반환한다.
+        노트가 대체 방법을 알고 있는 라이브러리라면 거절을 받지 않기 위해 쓴다.
 
         The fact that contradicts a decline on a library a `replacement: true` note knows how to replace — or ""."""
         try:
@@ -3855,7 +3929,8 @@ class BuildFixLoop:
                 f"project, not a blocker")
 
     def _bundled_contradiction(self, c: ErrorCluster, reason: str) -> str:
-        """v2.1z-i: 좌표·라이브러리·jar 가 없다는 거절인데 케이스가 잃은 패키지를 동봉 jar 가 가지고 있으면 그 사실, 아니면 "".
+        """좌표, 라이브러리, jar가 없다는 거절인데 케이스에 없는 패키지를 프로젝트에 포함된 jar(번들 jar)가
+        제공하면 그 정보를, 아니면 빈 문자열을 반환한다.
 
         The fact that contradicts a "no coordinates / library missing" decline — a bundled jar provides one of the
         case's missing packages — or ""."""
@@ -3872,9 +3947,11 @@ class BuildFixLoop:
         return f"`{jar.path}` in the project provides package `{pkg}` — the library is not missing, it is bundled; wire it"
 
     def _jakarta_plan(self, c: ErrorCluster) -> dict[str, Any]:
-        """사전 시도 ``sbmig-jakarta`` 의 계획(클러스터별로 라운드마다 한 번): javax 케이스의 라이브러리마다 탐색 → 확인된 최선의
-        빌드 → 그것을 선언한 pom 들 → (pom, 옛 g:a, 새 빌드, 쓸 버전 | None). 새 좌표를 새 부모 체인 / Boot BOM 이 관리하면
-        버전 없이(그 관리 버전이 jakarta 인지는 체인이 보장). 보호 좌표(사내 parent·필수·선택)는 바꾸지 않는다.
+        """사전 시도 ``sbmig-jakarta``의 계획을 세운다. 클러스터별로 라운드마다 한 번 만든다.
+        javax 케이스의 라이브러리마다 탐색 -> 확인된 가장 좋은 빌드 선택 -> 선언한 pom 찾기 순서로 (pom,
+        이전 g:a, 새 빌드, 쓸 버전 또는 None)을 만든다.
+        새 좌표를 새 부모 체인이나 Boot BOM이 관리하면 버전 없이 쓰고, 보호
+        좌표(사내 parent, 필수, 선택)는 바꾸지 않는다.
 
         The `sbmig-jakarta` plan: per javax library of the case, the best verified build, the poms declaring the old
         coordinates, the version to write (None when the new chain / Boot BOM manages the new key)."""
@@ -3922,21 +3999,22 @@ class BuildFixLoop:
         return plan
 
     def _jakarta_enabled(self) -> bool:
-        """``libraries.discover_jakarta_builds`` — 꺼지면 v2.1d 동작(사전 시도·거절 반박·탐색 없음, 릴리스 나열만)."""
+        """jakarta 빌드 탐색 설정(``libraries.discover_jakarta_builds``)이 켜져 있는지 여부.
+        꺼져 있으면 사전 시도, 거절 반박, 탐색 없이 릴리스 목록만 보여 준다."""
         return bool(getattr(getattr(self.cfg, "libraries", None), "discover_jakarta_builds", True))
 
     def _jakarta_targets(self, c: ErrorCluster) -> list[str] | None:
-        """javax 라이브러리 케이스이고 적용할 jakarta 빌드가 있으면 손댈 pom 들, 아니면 None."""
+        """javax 라이브러리 케이스이고 적용할 jakarta 빌드가 있으면 수정할 pom 목록을, 아니면 None을 반환한다."""
         if not self._jakarta_enabled() or not _mentions_javax(c.errors):
             return None
         plan = self._jakarta_plan(c)
         return list(dict.fromkeys(i["pom"] for i in plan["items"])) or None
 
     def _jakarta_attempt(self, pr: PhaseResult, st: _Round, c: ErrorCluster) -> bool:
-        """v2.1z-e 사전 시도(LLM 0회): 확인된 jakarta 빌드로 의존성 선언을 바꾼다 — 좌표가 다르면 ``replace_dependency``, 같으면
-        버전(관리되면 버전 삭제)과 classifier. 같은 좌표의 상위 메이저면 메이저 업그레이드지만 javax → jakarta 는 v2.1d 가 허용한
-        유일한 메이저 변경이라 적용하고, 되읽기가 ⚠ 운영자 확인 줄을 남긴다(가이드는 sbmig 가 만든다, LLM 호출 없음). 커밋
-        ``fix(sbmig-jakarta): <cluster id>``; (pom, 옛 → 새) 마다 실행당 한 번.
+        """LLM 호출 없이, 확인된 jakarta 빌드로 의존성 선언을 바꾸는 사전 시도를 실행한다.
+        좌표가 다르면 ``replace_dependency``를 쓰고, 같으면 버전(관리되면 버전 삭제)과 classifier를 바꾼다. javax에서
+        jakarta로 가는 상위 메이저 변경은 유일하게 허용된 메이저 변경이므로 적용하고, 운영자 확인 줄을 남긴다.
+        커밋은 ``fix(sbmig-jakarta): <cluster id>``이고, (pom, 이전 좌표, 새 좌표)마다 실행당 한 번만 시도한다.
 
         The deterministic swap of a javax-era dependency for the verified jakarta build (`replace_dependency` for other
         coordinates, version / classifier for the same): commit `fix(sbmig-jakarta): <cluster id>`, scored and rolled
@@ -3995,13 +4073,14 @@ class BuildFixLoop:
 
     # ------------------------------------------------------------------ v2.1z-i bundled jars
     def _bundled_enabled(self) -> bool:
-        """``intake.bundled_jars`` 이고 분석이 동봉 jar 를 찾았는가."""
+        """``intake.bundled_jars``가 켜져 있고 분석 단계가 프로젝트에 포함된 jar(번들 jar)를 찾았는지 확인한다."""
         if not bool(getattr(getattr(self.cfg, "intake", None), "bundled_jars", True)):
             return False
         return bool(getattr(self.profile, "bundled_jars", None) or [])
 
     def _bundled_managed_keys(self) -> set[str]:
-        """목표 부모 체인 / Boot BOM 이 관리하는 g:a 들(``_managed_keys``; 읽을 수 없으면 빈 집합 — 그러면 아무것도 superseded 가 아니다)."""
+        """목표 부모 체인이나 Boot BOM이 관리하는 g:a 집합(``_managed_keys``)을 반환한다.
+        읽을 수 없으면 빈 집합을 반환하며, 이때는 어떤 jar도 대체된 것으로 보지 않는다."""
         try:
             return set(self._managed_keys())
         except Exception as e:  # noqa: BLE001 - no captures / chain facts: nothing is known to be managed
@@ -4009,9 +4088,10 @@ class BuildFixLoop:
             return set()
 
     def _bundled_superseded(self) -> list[JarCoordinate]:
-        """좌표가 알려졌고 그 g:a 를 목표 부모 체인 / Boot BOM 이 **관리하는** 동봉 jar(WEB-INF/lib 의 옛 spring-webmvc 4.x 같은 것):
-        관리 버전이 대신한다 — 절대 붙이지 않고(옛 버전을 박거나 system 으로 거는 건 두 Spring 이 섞이는 길) LLM 에는 "옛 jar 를
-        다시 넣지 말고 코드를 옮기라" 는 사실만 준다(사용자 2026-11-04: "있다고 다 참조 걸어주는 방식은 안티패턴").
+        """좌표를 알고 그 g:a를 목표 부모 체인이나 Boot BOM이 관리하는 번들 jar(WEB-INF/lib의 오래된
+        spring-webmvc 4.x 등)를 반환한다. 이런 jar는 관리 버전으로 대체된다.
+        이전 버전을 고정하거나 system scope로 연결하면 두 Spring 버전이 섞이므로 절대 연결하지 않는다.
+        LLM에는 이전 jar를 다시 넣지 말고 코드를 고치라는 정보만 전달한다.
 
         Bundled jars whose known g:a the target parent chain / Boot BOM manages (an old `spring-webmvc-4.x.jar` in
         WEB-INF/lib): superseded by the managed version — never wired, never pinned; the LLM only gets the fact."""
@@ -4022,8 +4102,8 @@ class BuildFixLoop:
                 if j.group_id and j.artifact_id and f"{j.group_id}:{j.artifact_id}" in managed]
 
     def _bundled_wireable(self) -> list[JarCoordinate]:
-        """붙일 수 있는 동봉 jar — 컨테이너 API 사본(``scope == "provided"``: servlet / jsp / el, Tomcat)과 목표 체인이 관리하는
-        좌표의 옛 jar(``_bundled_superseded``)는 절대 붙이지 않는다.
+        """연결할 수 있는 번들 jar를 반환한다. 컨테이너 API jar(``scope == "provided"``: servlet / jsp / el,
+        Tomcat)와 목표 체인이 관리하는 좌표의 jar(``_bundled_superseded``)는 뺀다.
 
         The bundled jars that may be wired: a container API copy (`scope == "provided"`) never is, nor a jar whose
         coordinates the target parent chain manages (`_bundled_superseded`)."""
@@ -4032,9 +4112,10 @@ class BuildFixLoop:
                 if (j.scope or "compile") != "provided" and j.path not in skip]
 
     def _bundled_missing_packages(self, c: ErrorCluster) -> dict[str, list[str]]:
-        """v2.1z-i: 케이스가 잃은 패키지 → 그 오류 파일들. ``package <p> does not exist`` 의 ``<p>`` 와, ``cannot find symbol
-        … symbol: class X`` 오류면 오류 파일의 ``import <p>.X;`` 의 ``<p>``(파일은 ``BUNDLED_READ_CHARS`` 까지 읽는다).
-        ``javax.*`` / ``jakarta.*`` 는 jakarta 사전 시도 몫이라 뺀다. 예외 없음.
+        """케이스에서 찾지 못한 패키지와 그 오류 파일을 반환한다.
+        ``package <p> does not exist``의 ``<p>``와, ``cannot find symbol … symbol: class X`` 오류면 오류
+        파일의 ``import <p>.X;``에서 ``<p>``를 가져온다(파일은 ``BUNDLED_READ_CHARS``자까지 읽는다).
+        ``javax.*`` / ``jakarta.*``는 jakarta 사전 시도가 다루므로 뺀다. 예외를 던지지 않는다.
 
         The packages the case lacks → the error files: `package <p> does not exist`, and for `cannot find symbol …
         class X` the `<p>` of `import <p>.X;` in the error's file (read up to `BUNDLED_READ_CHARS`). `javax.*` /
@@ -4073,7 +4154,8 @@ class BuildFixLoop:
         return out
 
     def _bundled_providers(self, c: ErrorCluster) -> list[tuple[str, JarCoordinate, list[str]]]:
-        """(잃은 패키지, 그것을 가진 동봉 jar, 오류 파일들) — 패키지마다 ``providers`` 의 첫 jar(정확 일치 우선).
+        """(없는 패키지, 그 패키지를 제공하는 번들 jar, 오류 파일) 목록을 반환한다.
+        패키지마다 ``providers``의 첫 jar를 쓰고, 정확히 일치하는 jar를 우선한다.
 
         (missing package, the bundled jar providing it, error files): the first `providers` hit per package."""
         if not self._bundled_enabled():
@@ -4091,7 +4173,7 @@ class BuildFixLoop:
         return out
 
     def _bundled_owning_pom(self, f: str, poms: list[str]) -> str:
-        """오류 파일을 품는 현재 트리의 가장 깊은 pom(없으면 루트 pom)."""
+        """현재 트리에서 오류 파일을 포함하는 가장 깊은 pom을 반환한다. 없으면 루트 pom을 반환한다."""
         from sbmig.analyze.pom_parser import owning_pom
         from sbmig.core.models import PomInfo
         infos = [PomInfo(path=p, artifact_id="") for p in poms]
@@ -4099,7 +4181,8 @@ class BuildFixLoop:
         return _norm_path(hit.path) if hit is not None else "pom.xml"
 
     def _bundled_plan(self, c: ErrorCluster) -> list[tuple[str, JarCoordinate, str]]:
-        """아직 해 보지 않은 (모듈 pom, jar, 패키지) 들 — 현재 트리의 pom 으로(재구성 뒤 배치) 오류 파일의 모듈을 정한다."""
+        """아직 시도하지 않은 (모듈 pom, jar, 패키지) 목록을 반환한다.
+        오류 파일의 모듈은 재구성 뒤의 현재 트리에 있는 pom으로 정한다."""
         provs = self._bundled_providers(c)
         if not provs:
             return []
@@ -4117,10 +4200,11 @@ class BuildFixLoop:
         return plan
 
     def _with_eol_advisory(self, suggestion: str, artifact: Any) -> str:
-        """v2.1z-k (현업 2026-11-04: spring-mobile 은 "jakarta 빌드를 못 찾았다" 로만 차단됐다): 차단 아티팩트가 권고표
-        (``knowledge/libraries/advisories.yml``, 분석의 findings 우선, 없으면 카탈로그의 ``artifacts`` glob)의 EOL / 미관리
-        항목이면 제안 뒤에 "EOL: <제목> — replacement: <대체>" 를 붙인다 — jakarta 빌드가 **없는 이유**와 다음 행동을 소유팀이
-        같은 줄에서 읽게. 권고가 없으면 그대로. 예외 없음.
+        """차단된 아티팩트가 권고표(``knowledge/libraries/advisories.yml``)의 EOL / 미관리 항목이면 조치
+        방법 뒤에 EOL 제목과 대체 라이브러리를 붙인다.
+        분석 결과(findings)를 먼저 보고, 없으면 카탈로그의 ``artifacts`` glob으로 찾는다.
+        jakarta 빌드가 없는 이유와 다음에 할 일을 소유팀이 한 줄에서 읽을 수 있게 하기 위해서다.
+        권고가 없으면 문구를 그대로 반환하며 예외를 던지지 않는다.
 
         Append the EOL advisory (title + replacement) of the blocked artifact to the suggestion when the advisory
         table knows it (the profile's findings first, else the catalog's `artifacts` globs); unchanged otherwise."""
@@ -4161,7 +4245,8 @@ class BuildFixLoop:
             return suggestion
 
     def _bundled_declared(self, pom: str, jar: JarCoordinate) -> bool:
-        """v2.1z-j: 그 pom 이 jar 의 (알려진) g:a 를 이미 선언했는가 — 재구조화가 붙였거나 사람이 넣은 것. 좌표를 모르면 False.
+        """그 pom이 jar의 g:a를 이미 선언했는지 판단한다(재구성이 연결했거나 사람이 넣은 경우).
+        좌표를 모르면 False를 반환한다.
 
         Does `pom` already declare the jar's known g:a (the restructure wired it, or a person did)? Unknown coordinates → False."""
         if not (jar.group_id and jar.artifact_id):
@@ -4173,8 +4258,9 @@ class BuildFixLoop:
             return False
 
     def _bundled_targets(self, c: ErrorCluster) -> list[str] | None:
-        """v2.1z-i: 케이스가 잃은 패키지를 동봉 jar 가 갖고 있으면 그 jar 를 붙일 모듈 pom 들(오류 파일의 ``owning_pom``,
-        없으면 루트 pom), 아니면 None(설정 꺼짐·동봉 jar 없음·제공 jar 없음·이미 다 해 봄).
+        """케이스에 없는 패키지를 번들 jar가 제공하면 그 jar를 연결할 모듈 pom 목록(오류 파일의
+        ``owning_pom``, 없으면 루트 pom)을 반환한다.
+        설정이 꺼졌거나, 번들 jar가 없거나, 제공하는 jar가 없거나, 모두 시도했으면 None을 반환한다.
 
         The module poms (`owning_pom` of the error files, else the root pom) to wire a bundled jar into, when a bundled
         jar provides a package the case lacks; None otherwise (config off, no bundled jars, no provider, all tried)."""
@@ -4184,8 +4270,8 @@ class BuildFixLoop:
         return list(dict.fromkeys(p for p, _j, _k in plan)) or None
 
     def _bundled_in_repository(self, jar: JarCoordinate) -> bool:
-        """jar 자신의 좌표(pom.properties / sha1 조회 / 이름표, 버전 있음)를 저장소 SET(v2.1z-e 조회기)이 실제로 갖고 있는가.
-        조회기가 없거나 읽을 수 없으면 False(= system scope).
+        """jar 자신의 좌표(pom.properties, sha1 조회, 이름표 중 버전이 있는 것)가 저장소에 실제로 있는지
+        판단한다. 조회기가 없거나 읽을 수 없으면 False를 반환하며, 이때는 system scope로 연결한다.
 
         True only when the jar's own coordinates (with a version) are found in the repository set (the v2.1z-e
         `RepositoryLookup`: the pom of exact `g:a:v`, else the version in the metadata); no / unreadable lookup → False."""
@@ -4205,9 +4291,11 @@ class BuildFixLoop:
             return False
 
     def _bundled_boot_poms(self, module_pom: str = "") -> list[str]:
-        """현재 트리에서 spring-boot-maven-plugin 을 가진 pom 들 + 분석의 boot 모듈(``<dir>/pom.xml`` 이 있으면).
-        ``module_pom`` 이 주어지면 그 모듈을 **의존하는**(또는 그 모듈 자체인) boot pom 만 남긴다 — MSA 처럼 boot 모듈이
-        여럿일 때 무관한 서비스에 system 의존성을 심지 않기 위해; 아무것도 안 맞으면 전부(안전한 기본값).
+        """현재 트리에서 spring-boot-maven-plugin을 가진 pom과 분석 단계의
+        boot 모듈(``<dir>/pom.xml``이 있을 때)을 반환한다.
+        ``module_pom``이 주어지면 그 모듈에 의존하거나 그 모듈 자체인 boot pom만 남긴다.
+        MSA처럼 boot 모듈이 여럿일 때 관계없는 서비스에 system 의존성을 넣지 않기 위해서다.
+        맞는 것이 없으면 전부 반환한다.
 
         The current poms carrying the Boot plugin plus the profile's boot modules; with `module_pom`, only the
         boot poms that depend on that module (or are it) — several boot modules (MSA) must not all carry the
@@ -4249,10 +4337,12 @@ class BuildFixLoop:
         return kept or out
 
     def _bundled_attempt(self, pr: PhaseResult, st: _Round, c: ErrorCluster) -> bool:
-        """v2.1z-i 사전 시도(LLM 0회): 케이스가 잃은 패키지를 가진 동봉 jar 를 오류 파일의 모듈 pom 에 붙인다 — 저장소가 jar 의
-        좌표를 가지면 보통 의존성, 아니면 ``<module>/lib/<name>`` 복사 + system scope + boot 모듈의 ``includeSystemScope``
-        (``wire_bundled_jar``). 좌표는 추측하지 않는다(자리표시 좌표 + 인수인계 ⚠). ``intake.unknown_jar: skip`` 이면 저장소에
-        없는 jar 는 붙이지 않고 사실·인수인계만. (pom, jar) 마다 실행당 한 번, 커밋 ``fix(sbmig-bundled): <cluster id>``.
+        """사전 시도 ``sbmig-bundled``를 실행한다.
+        케이스에 없는 패키지를 제공하는 번들 jar를 오류 파일의 모듈 pom에 연결한다(``wire_bundled_jar``).
+        저장소에 jar 좌표가 있으면 일반 의존성으로, 없으면 ``<module>/lib/<name>``에 복사해 system scope로
+        연결한다. 좌표는 추측하지 않고 인수인계 항목을 남긴다.
+        ``intake.unknown_jar: skip``이면 저장소에 없는 jar는 연결하지 않는다.
+        (pom, jar)마다 실행당 한 번만 시도한다.
 
         The zero-LLM wiring of a bundled jar that provides a package the case lacks (`wire_bundled_jar` per (module
         pom, jar)): commit `fix(sbmig-bundled): <cluster id>`, scored and rolled back like any try; journal
@@ -4321,8 +4411,9 @@ class BuildFixLoop:
         return applied
 
     def _bundled_facts(self, c: ErrorCluster) -> list[str]:
-        """v2.1z-i 프롬프트 사실: (jar, 패키지)마다 "the project bundles `<jar>` which provides package `<p>` …" 한 줄
-        (``PACKAGE_FACTS_ARTIFACTS`` 개까지). 예외 없음.
+        """프로젝트에 포함된 jar가 제공하는 패키지를 프롬프트에 알리는 줄을 만든다.
+        (jar, 패키지)마다 "the project bundles `<jar>` which provides package `<p>` …" 한 줄을 쓰고,
+        ``PACKAGE_FACTS_ARTIFACTS``개까지만 쓴다. 예외를 던지지 않는다.
 
         One `the project bundles <jar> which provides package <p> …` line per (jar, package), capped. Never raises."""
         out: list[str] = []
@@ -4370,7 +4461,8 @@ class BuildFixLoop:
 
     # ------------------------------------------------------------------ v2.1l dependency versions
     def _versions(self) -> VersionResolver:
-        """이 루프의 버전 결정기(처음 쓸 때 두 캡처를 읽어 한 번 만든다; 저장소 조회기는 v2.1d 의 것을 같이 쓴다).
+        """이 루프의 버전 결정기를 반환한다.
+        처음 쓸 때 두 캡처를 읽어 한 번 만들고, 저장소 조회기는 ``_repository()``의 것을 함께 쓴다.
 
         The loop's `VersionResolver` (built once, lazily; the repository step reuses `_repository()`)."""
         if self._version_resolver is None:
@@ -4379,8 +4471,9 @@ class BuildFixLoop:
         return self._version_resolver
 
     def _protected_version_keys(self) -> set[str]:
-        """버전을 sbmig 가 채우지 않는 g:a: 사내 부모·역할 부모·필수·선택(별칭 포함)·``remove_when_present`` —
-        재구성기가 건드리지 않는 것과 같은 목록(회사가 관리하는 좌표).
+        """sbmig가 버전을 채우지 않는 g:a 집합을 반환한다.
+        사내 부모, 역할 부모, 필수, 선택 아티팩트(별칭 포함), ``remove_when_present``가 해당한다.
+        회사가 관리하는 좌표이므로 재구성 단계에서 건드리지 않는 목록과 같다.
 
         The keys sbmig never fills a version for (the restructurer's protected set: in-house parent / role parents /
         mandatory / optional incl. aliases / `remove_when_present`)."""
@@ -4400,7 +4493,7 @@ class BuildFixLoop:
         return keys
 
     def _pom_editor(self, rel: str) -> Any:
-        """현재 트리의 pom 편집기(못 읽으면 None)."""
+        """현재 트리의 pom 편집기를 반환한다. 읽지 못하면 None을 반환한다."""
         try:
             from sbmig.restructure.pom_editor import PomEditor
             return PomEditor(self.ws.abs(rel))
@@ -4409,7 +4502,8 @@ class BuildFixLoop:
             return None
 
     def _own_module_keys(self) -> set[str]:
-        """프로젝트 자신의 모듈 좌표(g:a, ``${project.groupId}:a``) — 형제 모듈 의존성의 버전은 채우지 않는다."""
+        """프로젝트 자신의 모듈 좌표(g:a, ``${project.groupId}:a``)를 반환한다.
+        형제 모듈 의존성의 버전은 채우지 않기 위해 쓴다."""
         own: set[str] = set()
         for p in self.ws.pom_files():
             ed = self._pom_editor(p)
@@ -4424,8 +4518,9 @@ class BuildFixLoop:
         return f"{ed.effective_group_id() or ''}:{a}" if a else None
 
     def _pom_chain(self, rel: str) -> list[str]:
-        """[pom, 프로젝트 안의 부모 pom, …] — ``<relativePath>``(없으면 ``../pom.xml``)를 따라 artifactId 가 맞는
-        동안(10 단계까지). 빈 ``<relativePath/>``·프로젝트 밖·불일치에서 멈춘다.
+        """pom에서 시작해 프로젝트 안의 부모 pom을 차례로 찾아 [pom, 부모 pom, …] 목록을 반환한다.
+        ``<relativePath>``(없으면 ``../pom.xml``)를 따라 artifactId가 맞는 동안 최대 10단계까지 올라간다.
+        빈 ``<relativePath/>``, 프로젝트 밖의 경로, artifactId 불일치에서 멈춘다.
 
         [pom, its in-project parent, …] following `<relativePath>` (default `../pom.xml`) while the parent's
         artifactId matches (≤ 10 levels)."""
@@ -4451,8 +4546,9 @@ class BuildFixLoop:
 
     @staticmethod
     def _managed_shape(ed: Any) -> tuple[str, tuple[str, ...]]:
-        """pom 의 부모 좌표와 BOM import 들 — 시도가 sbmig 가 볼 수 없는 방식으로 버전 관리를 바꿨는지 비교하는
-        데 쓴다(일반 dependencyManagement 항목은 직접 보이므로 여기 넣지 않는다).
+        """pom의 부모 좌표와 BOM import 목록을 반환한다.
+        시도가 sbmig가 추적할 수 없는 방식으로 버전 관리를 바꿨는지 비교하는 데 쓴다.
+        일반 dependencyManagement 항목은 직접 읽으므로 넣지 않는다.
 
         The pom's parent coordinates and BOM imports: what changes version management in a way sbmig cannot see
         (plain dependencyManagement entries are read directly by the local-chain check)."""
@@ -4463,7 +4559,7 @@ class BuildFixLoop:
         return parent, boms
 
     def _reported_missing(self, st: _Round | None, rel: str, aid: str | None, key: str) -> bool:
-        """이 라운드의 빌드(또는 롤백으로 돌아온 오류)가 이 pom 의 g:a 를 '버전 없음' 으로 보고했는가.
+        """이 라운드의 빌드(또는 되돌리기로 돌아온 오류)가 이 pom의 g:a에 버전이 없다고 보고했는지 판단한다.
 
         Did this round's build (or an error a rollback brought back) report g:a's version missing in this pom?"""
         if st is None:
@@ -4478,17 +4574,16 @@ class BuildFixLoop:
 
     def _fill_versions(self, att: FixAttempt, c: ErrorCluster, res: ScriptRunResult, pre: str,
                        st: _Round | None = None) -> list[tuple[str, str, str, str]]:
-        """v2.1l: 적용된 스크립트 / edits 가 바꾼 pom 들의 버전 없는 ``<dependencies>`` 항목에 버전을 채운다
-        (커밋 전, 그 시도의 커밋에 함께 들어간다). 시도가 *추가한* 의존성은 규칙 1–3(관리됨 → as-is → 저장소),
-        원래 있던 것은 빌드가 '버전 없음' 이라고 보고한 경우만 규칙 2(as-is), 시도가 버전을 지운 것은 재구성 뒤
-        캡처가 있을 때만 규칙 1–2(없으면 "부모가 관리" 라는 LLM 판단을 둔다). 규칙 1 은 프로젝트 안의
-        dependencyManagement(그 pom·프로젝트 안 부모)도 본다 — 재구성 뒤 캡처가 없으면 그것뿐이다(비워 두면 다음
-        빌드의 pom_invalid 로 시도 전체가 되돌려진다). 시도가 *버전을 적어* 추가한 의존성을 새 부모 체인이
-        관리하면(규칙 1: 캡처, 없으면 부모 체인의 사실) 그 ``<version>`` 을 지운다 — 관리가 이긴다(as-is 빌드에 없던
-        의존성이라 주인의 고정 버전이 아니다); 그것만을 위해 시도가 추가한 속성도. v2.1t: 시도가 추가한 사내
-        의존성은 체인이 관리하지 않으면 체인의 가족 버전 속성 ``${prop}`` 을 적는다(리터럴·저장소 버전 대신). 원래 있던 명시 버전은 손대지
-        않는다(재구성 규칙의 몫). 시도가 부모·BOM import 를 바꾼 pom(과 그 아래)은 건드리지 않는다.
-        사내·필수·선택·제거 대상·자기 모듈·system scope 는 제외. 예외 없음, 채운 것이 없으면 조용하다.
+        """적용된 스크립트나 edits가 바꾼 pom에서 버전 없는 ``<dependencies>`` 항목에 버전을 채운다.
+        시도의 커밋에 함께 들어가도록 커밋 전에 실행한다.
+        - 시도가 추가한 의존성은 1~3단계(관리 버전, as-is, 저장소)로, 원래 있던 것은 빌드가 버전 없음을
+          보고했을 때만 2단계로, 시도가 버전을 지운 것은 재구성 뒤 캡처가 있을 때만 1~2단계로 채운다.
+          1단계에서는 프로젝트 안의 dependencyManagement도 보는데, 비워 두면 다음 빌드의 pom_invalid로 시도
+          전체가 되돌려지기 때문이다
+        - 시도가 버전을 명시해 추가한 의존성을 새 부모 체인이 관리하면 ``<version>``을 지운다.
+          사내 의존성에는 체인의 버전 속성 ``${prop}``을 쓴다
+        - 원래 있던 명시 버전, 부모나 BOM import를 바꾼 pom, 사내, 필수, 선택, 제거 대상, 자기 모듈, system
+          scope 의존성은 건드리지 않는다. 예외를 던지지 않는다
 
         Fill the versions of the `<dependencies>` entries without `<version>` in the poms the applied script / edits
         changed (before the commit; the pom joins the attempt's commit): a dependency the attempt ADDED (absent from
@@ -4563,8 +4658,8 @@ class BuildFixLoop:
                     own = self._own_module_keys()
                 if key in own or (g.scope or "") == "system":
                     continue
-                # v2.1t: 시도가 추가한 사내 의존성 — 체인이 관리하면 버전 없이(관리가 이긴다), 아니면 체인의 가족 버전
-                # 속성 ``${prop}`` (값이 아니라 참조 — 부모가 올리면 따라간다); 사내 필수·선택 좌표도 같다
+                # 시도가 추가한 사내 의존성은 체인이 관리하면 버전 없이 두고, 아니면 체인의 버전 속성 ``${prop}``을 쓴다
+                # 값이 아니라 참조이므로 부모 버전이 오르면 함께 따라간다. 사내 필수, 선택 좌표도 같다
                 if key not in pre_versions and (not g.version or "${" not in g.version) and is_in_house(g, self.cfg):
                     jar = (g.type or "jar") == "jar" and not g.classifier
                     mv = r.managed_version(key, module) if jar else None
@@ -4593,11 +4688,13 @@ class BuildFixLoop:
                 if key in local:
                     continue
                 if key not in pre_versions:          # added by this attempt: steps 1–3
-                    # 재구성 뒤 캡처가 없으면 1단계는 프로젝트 안 관리(위 local)만 본다 — 비워 두면 다음 빌드의
-                    # pom_invalid 가 구조적 악화로 시도 전체를 되돌리므로 as-is / 저장소 버전을 적는다
+                    # 재구성 뒤 캡처가 없으면 1단계는 프로젝트 안의 관리 버전(위 local)만 본다
+                    # 버전을 비워 두면 다음 빌드의 pom_invalid가 구조적 악화로 시도 전체를 되돌리므로
+                    # as-is나 저장소 버전을 쓴다
                     v, src = r.resolve(key, module, allow_repository=True)
                 elif pre_versions[key]:              # the attempt dropped its version ("the parent manages it")
-                    # 새 체인을 모르면 LLM 의 판단을 둔다 — as-is 버전(예: 옛 Boot 2 버전)을 되살리면 더 나쁘다
+                    # 새 체인을 모르면 as-is 버전(이전 Boot 2 버전 등)을 되살리는
+                    # 것이 더 나쁘므로 LLM의 판단을 그대로 둔다
                     if not r.has_chain:
                         continue
                     v, src = r.resolve(key, module)              # steps 1–2
@@ -4633,9 +4730,9 @@ class BuildFixLoop:
         return filled
 
     def _chain_property_for(self, g: GAV, r: VersionResolver) -> str | None:
-        """v2.1t: 사내 의존성 g 에 쓸 회사 체인의 버전 속성 이름(``chain_company_properties`` 만): 필수·선택 스펙의
-        ``property_name`` 이 체인에 있으면 그것(재구성과 같은 순서), 아니면 ``version_property_matches`` 의 가장
-        구체적인 것. 없으면 None.
+        """사내 의존성 g에 쓸 회사 체인의 버전 속성 이름을 ``chain_company_properties``에서 찾아 반환한다.
+        필수, 선택 아티팩트 설정의 ``property_name``이 체인에 있으면 그것을 쓰고(재구성과 같은 순서), 아니면
+        ``version_property_matches``의 가장 구체적인 것을 쓴다. 없으면 None을 반환한다.
 
         The company chain's version property for in-house `g` (company-defined properties only): the mandatory /
         optional spec's `property_name` when the chain defines it (the restructure's order), else the most specific
@@ -4651,9 +4748,11 @@ class BuildFixLoop:
         return names[0] if names else None
 
     def _chain_property_facts(self, c: ErrorCluster, libs: Optional[list[GAV]] = None) -> list[str]:
-        """v2.1t 프롬프트 사실: 케이스 오류의 아티팩트마다(v2.1v: classpath 에서 찾은 라이브러리 ``libs`` 도) 관련된 회사
-        체인의 버전 속성(회사 pom 이 정의한 것만, ``chain_company_properties``) — ``parent chain property:
-        <name>=<value> (<정의한 pom>)``, 중복 없이 ``CHAIN_PROPERTY_FACTS_MAX`` 줄까지. 예외 없음.
+        """케이스 오류의 아티팩트와 classpath에서 찾은 라이브러리(``libs``)마다 관련된 회사 체인 버전 속성을
+        프롬프트 정보 줄로 만든다.
+        회사 pom이 정의한 속성(``chain_company_properties``)만
+        ``parent chain property: <name>=<value> (<정의한 pom>)`` 형식으로, 중복 없이
+        ``CHAIN_PROPERTY_FACTS_MAX``줄까지 쓴다. 예외를 던지지 않는다.
 
         The parent chain's version properties relevant to the case's artifacts and (v2.1v) the libraries located on
         the classpath (`libs`; compile errors carry no `e.artifact`), one `parent chain property: <name>=<value>
@@ -4684,8 +4783,8 @@ class BuildFixLoop:
             return []
 
     def _drop_added_property(self, ed: Any, ed0: Any, version: str, rel: str) -> None:
-        """지운 ``<version>`` 이 ``${속성}`` 이고 그 속성을 이 시도가 이 pom 에 *추가했으며* 이제 아무 pom 도 그것을
-        참조하지 않으면 속성도 지운다(주인의 속성·다른 곳이 쓰는 속성은 그대로).
+        """지운 ``<version>``이 ``${속성}``이고, 그 속성을 이 시도가 이 pom에 추가했으며 이제 어느 pom도
+        참조하지 않으면 속성도 지운다. 원래 있던 속성이나 다른 곳에서 쓰는 속성은 그대로 둔다.
 
         Drop the property a removed `${prop}` version used when this attempt added it to this pom and no project pom
         references it any more (an owner's property, or one still used, stays)."""
@@ -4706,8 +4805,9 @@ class BuildFixLoop:
         ed.remove_property(prop)
 
     def _declaring_pom(self, e: BuildError) -> str | None:
-        """'버전 없음' 오류의 g:a 가 버전 없이 선언된 pom(오류의 pom → 같은 artifactId 의 모듈 pom, 각각의 프로젝트
-        안 부모까지). 못 찾으면 None.
+        """버전 없음 오류의 g:a를 버전 없이 선언한 pom을 찾는다.
+        오류의 pom, 그다음 같은 artifactId의 모듈 pom 순서로 찾고, 각각 프로젝트 안의 부모까지 본다.
+        찾지 못하면 None을 반환한다.
 
         The pom that declares the error's g:a without a version (the error's pom, else the module pom with that
         artifactId; each with its in-project parents); None when not found."""
@@ -4734,10 +4834,12 @@ class BuildFixLoop:
 
     def _version_plan(self, c: ErrorCluster
                       ) -> tuple[list[tuple[str, str, str, str, str]], list[str], bool, list[tuple[str, str, str]]]:
-        """누락 버전 케이스의 결정적 시도 계획: 오류마다 (pom, g:a) 쌍을 as-is 빌드 → 저장소 순으로 푼다(규칙 2–3;
-        빌드가 '없음' 이라 했으니 규칙 1 은 건너뜀). 못 찾은 쌍은 바로 '본 것' 으로 기억하고(사다리를 두 번 늦추지
-        않게), 찾은 쌍은 돌려주기만 한다 — 적용된 뒤에야 기억한다(``_version_attempt``). 돌려주는 것: ([(pom, g,
-        a, 버전, 출처)], 못 찾은 것들, 새로 본 쌍이 있었나, 찾은 쌍들).
+        """누락 버전 케이스를 LLM 없이 고칠 계획을 세운다.
+        오류마다 (pom, g:a) 쌍의 버전을 as-is 빌드 -> 저장소 순서로 찾는다.
+        빌드가 이미 버전 없음을 알렸으므로 1단계는 건너뛴다.
+        찾지 못한 쌍은 바로 확인한 것으로 기억해 다음 시도가 두 번 늦어지지 않게 한다.
+        찾은 쌍은 반환만 하고, 적용된 뒤 ``_version_attempt``가 기억한다.
+        반환값은 ([(pom, g, a, 버전, 출처)], 찾지 못한 것, 새로 확인한 쌍이 있는지, 찾은 쌍)이다.
 
         The deterministic try's plan for a missing-version case: each (pom, g:a) of its errors not tried yet,
         resolved by steps 2–3. A pair nothing was found for is remembered at once (the ladder is not delayed twice);
@@ -4747,7 +4849,8 @@ class BuildFixLoop:
                 and e.artifact.group_id and e.artifact.artifact_id]
         if not errs:
             return [], [], False, []
-        # 쌍 = 오류가 가리키는 (pom 또는 모듈, g:a) — 이미 본 쌍은 다시 풀지 않는다(같은 답이 나올 뿐)
+        # 쌍은 오류가 가리키는 (pom 또는 모듈, g:a)다.
+        # 이미 확인한 쌍은 같은 결과가 나오므로 다시 찾지 않는다
         new = [e for e in errs if (SBMIG_VERSION_SOURCE, _norm_path(e.file or "") or (e.module or ""), e.artifact.key)
                not in self._pre_tried]
         if not new:
@@ -4785,8 +4888,8 @@ class BuildFixLoop:
         return plan, unknown, bool(seen), pairs
 
     def _pre_tries(self) -> tuple[_PreTry, ...]:
-        """LLM 0회 사전 시도 목록(순서대로 첫 번째로 해당하는 것 하나): v2.1l 누락 버전, v2.1m 리소스 필터링, v2.1z-i 동봉
-        jar, v2.1z-e jakarta 빌드.
+        """LLM을 호출하지 않는 사전 시도 목록을 반환한다. 아래 순서대로 처음 해당하는 하나만 쓴다: 사내 부모
+        버전 맞추기, 누락 버전, 리소스 필터링, 번들 jar, jakarta 빌드.
 
         The zero-LLM pre-tries, in order (the first that matches a case is the one): v2.1l versions, v2.1m resources,
         v2.1z-i bundled jars, v2.1z-e jakarta builds."""
@@ -4797,9 +4900,9 @@ class BuildFixLoop:
                 _PreTry(SBMIG_JAKARTA_SOURCE, self._jakarta_targets, self._jakarta_attempt))
 
     def _pre_try_for(self, c: ErrorCluster, d: TriageDecision) -> tuple[_PreTry | None, list[str]]:
-        """이 케이스에 LLM 0회 사전 시도를 먼저 해 볼까: 트리아지가 SCRIPT 를 정했거나 LLM 이 없어서(불가·예산
-        소진) 막혔고, 사전 시도 하나가 해당할 때 → (그 시도, 손댈 pom). 사람이 고정한 차단·이미 차단된 오류는
-        존중한다. 아니면 (None, []).
+        """이 케이스에 먼저 실행할 사전 시도와 수정할 pom을 반환한다. 트리아지가 SCRIPT로 정했거나, LLM을 쓸
+        수 없거나 예산이 없어서만 막혔고, 사전 시도 하나가 해당할 때 반환한다.
+        사람이 고정한 차단과 이미 차단된 오류는 그대로 두며, 해당하지 않으면 (None, [])을 반환한다.
 
         The pre-try for this case and the poms it would edit, when the triager gave a SCRIPT decision or blocked it
         only for the LLM (unavailable / budget exhausted); else (None, [])."""
@@ -4808,7 +4911,7 @@ class BuildFixLoop:
         tries = self._pre_tries()
         if d.kind != DecisionKind.SCRIPT:
             m = _BLOCKED_RAT_RE.search(d.rationale or "") if d.kind == DecisionKind.BLOCKED else None
-            # v2.1z-ag: 부모를 못 찾은 케이스(트리아지는 parent_not_found 로 차단)도 sbmig-parent 사전 시도만은 먼저 해 본다
+            # 부모를 찾지 못해 트리아지가 parent_not_found로 차단한 케이스도 sbmig-parent 사전 시도는 먼저 실행한다
             if m is not None and m.group("r") == BlockReason.PARENT_NOT_FOUND.value:
                 tries = tuple(t for t in tries if t.source == SBMIG_PARENT_SOURCE)
             elif m is None or m.group("r") not in (BlockReason.LLM_UNAVAILABLE.value, BlockReason.BUDGET_EXHAUSTED.value):
@@ -4824,8 +4927,9 @@ class BuildFixLoop:
         return None, []
 
     def _parent_misses(self, c: ErrorCluster) -> list[Any]:
-        """v2.1z-ag: 이 케이스의 부모 해석 실패 중 사전 시도가 맞출 것 — 사내 부모 g:a 의 as-is 버전(설정 버전 아님),
-        ``openrewrite.unresolvable_asis_parent: align`` 일 때만, 이 실행에서 아직 안 해 본 것.
+        """이 케이스의 부모를 찾지 못한 오류 중 사전 시도가 맞출 대상을 반환한다.
+        사내 부모 g:a의 as-is 버전(설정 버전이 아님)이고 이 실행에서 아직 시도하지 않은 것이다.
+        ``openrewrite.unresolvable_asis_parent: align``일 때만 반환한다.
 
         The as-is company-parent versions of this case's parent-resolution errors the pre-try would align (switch
         `align` only, not tried in this run yet)."""
@@ -4843,7 +4947,7 @@ class BuildFixLoop:
         return out
 
     def _parent_targets(self, c: ErrorCluster) -> list[str] | None:
-        """v2.1z-ag: 사내 부모의 as-is 버전을 못 찾은 케이스면 그 부모를 둔 pom 들, 아니면 None."""
+        """사내 부모의 as-is 버전을 찾지 못한 케이스면 그 부모를 선언한 pom 목록을, 아니면 None을 반환한다."""
         if not any(e.kind == ErrorKind.PARENT_RESOLUTION for e in c.errors):
             return None
         misses = self._parent_misses(c)
@@ -4854,10 +4958,10 @@ class BuildFixLoop:
         return [rel for rel, g, _p in declared_parents(self.ws) if (g.key, g.version) in keys] or None
 
     def _parent_attempt(self, pr: PhaseResult, st: _Round, c: ErrorCluster) -> bool:
-        """v2.1z-ag 사전 시도 ``sbmig-parent`` (LLM 0회): 사내 부모 g:a 의 as-is 버전이 저장소에 없다 → 그 부모를 둔 pom 전부에
-        설정 버전을 적는다(``align_asis_parent``) — ``_apply_edits`` 와 같은 커밋·채점·롤백 길, 커밋
-        ``fix(sbmig-parent): <cluster id>``, 저널 ``asis_parent_aligned`` (where = fix loop), 플래그 ``asis-parent-aligned``,
-        인수인계 한 줄. (부모 좌표)마다 실행당 한 번. 맞출 것이 없으면 False(평소 길: parent_not_found 차단).
+        """사전 시도 ``sbmig-parent``를 실행한다. 사내 부모의 as-is 버전이 저장소에 없으면 그 부모를 선언한
+        모든 pom에 설정 버전을 쓴다(``align_asis_parent``).
+        커밋 ``fix(sbmig-parent): <cluster id>``, 저널 ``asis_parent_aligned``, 플래그 ``asis-parent-aligned``를 남긴다.
+        부모 좌표마다 실행당 한 번만 시도하고, 맞출 것이 없으면 False를 반환한다.
 
         The zero-LLM `sbmig-parent` pre-try: set the configured version in every pom whose parent is the missing as-is
         version of a company parent (commit `fix(sbmig-parent): <cluster id>`, scored and rolled back like any try), once
@@ -4901,15 +5005,16 @@ class BuildFixLoop:
         return applied
 
     def _version_targets(self, c: ErrorCluster) -> list[str] | None:
-        """누락 버전 케이스면 오류의 pom 들(없으면 빈 목록), 아니면 None."""
+        """누락 버전 케이스면 오류의 pom 목록(없으면 빈 목록)을, 아니면 None을 반환한다."""
         if not any(e.signature_generic == MISSING_VERSION_SIG for e in c.errors):
             return None
         return list(dict.fromkeys(_norm_path(e.file) for e in c.errors
                                   if e.signature_generic == MISSING_VERSION_SIG and e.file))
 
     def _resources_targets(self, c: ErrorCluster) -> list[str] | None:
-        """v2.1m: 리소스 / war 플러그인의 필터링 복사 실패 케이스면 고칠 pom 들(``reactive_targets``), 아니면 None.
-        정규식으로 먼저 걸러 pom 을 읽는 일은 해당 케이스에서만 한다.
+        """리소스 / war 플러그인이 필터링 복사에 실패한 케이스면 고칠 pom
+        목록(``reactive_targets``)을, 아니면 None을 반환한다.
+        해당 케이스에서만 pom을 읽도록 정규식으로 먼저 거른다.
 
         The poms `reactive_targets` picks for a resources / war plugin filtering failure; None when it is not one
         (a regex pre-check keeps the pom parsing to such cases)."""
@@ -4920,9 +5025,9 @@ class BuildFixLoop:
         return list(reactive_targets(self.ws, errs)) or None
 
     def _pre_try_deferral(self, st: _Round, poms: list[str]) -> tuple[list[str], str]:
-        """사전 시도를 다음 빌드까지 미루게 하는 (케이스들, "pom" | "files"): 이번 라운드에 다른 케이스의 수정이 손댈
-        pom(또는 루트 pom — 모든 모듈의 부모 체인)을 바꿨거나 그 pom 위에서 돌았으면 기다린다. 한 트리에 두 시도가
-        겹쳐 채점되거나, 앞 시도의 되돌리기(git revert)가 이 시도의 줄과 충돌하지 않게.
+        """사전 시도를 다음 빌드까지 미뤄야 하는지 판단해 (원인 케이스 목록, "pom" 또는 "files")를 반환한다.
+        이번 라운드에 다른 케이스의 수정이 대상 pom이나 루트 pom을 바꿨거나 그 pom에서 실행됐으면 기다린다. 한 pom의 두
+        시도가 함께 평가되거나, 앞 시도의 git revert가 이 시도의 변경과 충돌하지 않게 하기 위해서다.
 
         (case ids, "pom" | "files") that make a pre-try wait for the rebuild: a fix of another case changed one of the
         poms it would edit (or the root pom — every module's chain) in this round, or ran on it. Two tries are never
@@ -4939,9 +5044,10 @@ class BuildFixLoop:
     def _pre_attempt(self, pr: PhaseResult, st: _Round, c: ErrorCluster, *, source: str, rationale: str,
                      analysis: str, solution: str, notes: list[str], keys: list[tuple[str, str, str]],
                      edits: list | None = None, apply_fn: Callable[[], ScriptRunResult] | None = None) -> bool:
-        """LLM 0회 사전 시도 한 번의 공통 순서: 결정·시도 기록 → ``_begin_try`` → ``_apply_edits``(edits, 또는 파일을
-        직접 고치는 ``apply_fn`` — 같은 커밋·채점·롤백 길) → 키 정리(적용된 것만 '본 것', 적용 실패는
-        ``PRE_TRY_APPLY_FAILURES`` 번까지 다시) → 미루기 기록 → 기록. 적용됐으면 True.
+        """사전 시도 한 번을 공통 순서로 실행하고, 적용됐으면 True를 반환한다.
+        결정과 시도 기록 -> ``_begin_try`` -> ``_apply_edits``(edits 또는 파일을 직접 고치는 ``apply_fn``)
+        -> 키 정리 -> 미루기 기록 -> 이력 기록
+        적용된 키만 확인한 것으로 기억하고, 적용에 실패한 키는 ``PRE_TRY_APPLY_FAILURES``번까지 다시 시도한다.
 
         The common sequence of one zero-LLM pre-try: decision + attempt (source, script_mode new, no stored script),
         `_begin_try`, `_apply_edits` (edits, or `apply_fn` that edits the files itself — same commit / scoring /
@@ -4959,8 +5065,9 @@ class BuildFixLoop:
         att.notes += notes
         self._begin_try(att, st)
         self._apply_edits(att, c, list(edits or []), st, subject=f"fix({source}): {c.id}", apply_fn=apply_fn)
-        # 적용된 키만 '본 것' — 적용 실패(applier 예외, 커밋 실패, Windows 의 일시적 파일 잠금)는 다음 라운드에
-        # 다시 해 본다(키마다 PRE_TRY_APPLY_FAILURES 번까지)
+        # 적용된 키만 확인한 것으로 기억한다.
+        # 적용 실패(applier 예외, 커밋 실패, Windows의 일시적 파일 잠금)는
+        # 다음 라운드에 키마다 PRE_TRY_APPLY_FAILURES번까지 다시 시도한다
         for key in keys:
             if att.applied:
                 self._pre_tried.add(key)
@@ -4979,10 +5086,10 @@ class BuildFixLoop:
         return att.applied
 
     def _version_attempt(self, pr: PhaseResult, st: _Round, c: ErrorCluster) -> bool:
-        """v2.1l 누락 버전 케이스의 결정적 시도(LLM 0회, 예산 그대로): 계획한 버전을 ``set_dependency_version``
-        편집으로 ``_apply_edits`` 와 같은 길(가드·커밋·채점·롤백)로 적용한다. 출처 ``sbmig-version``, 모드 new,
-        저장 스크립트 없음, 커밋 ``fix(sbmig-version): <case>``. 적용됐으면 True(이번 라운드의 케이스 시도는 이것),
-        아니면 False — 같은 라운드에서 평소 사다리가 이어진다.
+        """누락 버전 케이스를 LLM 없이 고친다. 계획한 버전을 ``set_dependency_version`` 편집으로 만들어
+        ``_apply_edits``로 적용하며, LLM과 예산은 쓰지 않는다.
+        커밋은 ``fix(sbmig-version): <case>``이다.
+        적용됐으면 True를 반환하고, 아니면 False를 반환해 같은 라운드에서 평소 시도 순서로 이어진다.
 
         The deterministic try of a missing-version case (no LLM call, the budget untouched): the planned versions as
         `set_dependency_version` edits through `_apply_edits` (same guards, commit, scoring, rollback); source
@@ -5022,12 +5129,10 @@ class BuildFixLoop:
                      "no LLM call")
 
     def _resources_attempt(self, pr: PhaseResult, st: _Round, c: ErrorCluster) -> bool:
-        """v2.1m 리소스 필터링 케이스의 결정적 시도(LLM 0회): ``binary_resource_plan(errors=…)`` 의 확장자를
-        ``apply_non_filtered_extensions`` 로 maven-resources-plugin(필요하면 maven-war-plugin)의
-        ``nonFilteredFileExtensions`` 에 적는다 — ``_apply_edits`` 와 같은 커밋·채점·롤백 길, 출처
-        ``sbmig-resources``, 커밋 ``fix(sbmig-resources): <cluster id>``. (pom, 확장자 묶음)마다 실행당 한 번.
-        추가할 것이 없거나 이미 해 본 것뿐이면 False(평소 사다리). 확장자 없는 바이너리 파일은 시도 메모와
-        인수인계 후속 조치로.
+        """리소스 필터링 케이스를 LLM 없이 고친다. ``binary_resource_plan``이 찾은 확장자를
+        ``apply_non_filtered_extensions``로 ``nonFilteredFileExtensions``에 추가한다.
+        커밋은 ``fix(sbmig-resources): <cluster id>``이고 (pom, 확장자 묶음)마다 실행당 한 번만 시도한다.
+        추가할 것이 없으면 False를 반환한다. 확장자가 없는 바이너리 파일은 인수인계 후속 조치로 남긴다.
 
         The deterministic try of a resources / war plugin filtering case (no LLM call): the extensions of
         `binary_resource_plan(ws, cfg, errors=…)` written by `apply_non_filtered_extensions` through the
@@ -5068,9 +5173,9 @@ class BuildFixLoop:
             solution="sbmig adds their extensions to nonFilteredFileExtensions (filtering stays on) — no LLM call")
 
     def _resources_facts(self, c: ErrorCluster) -> list[str]:
-        """v2.1m 프롬프트 사실: 리소스 필터링 케이스면 계획이 찾은 것 — pom 마다 적을 확장자(``plan.lines()``)와
-        필터링되는 바이너리 파일들(``RESOURCE_FACTS_FILES`` 개까지). 사전 시도가 적용되지 못했을 때 LLM 이 본다.
-        예외 없음.
+        """리소스 필터링 케이스의 프롬프트 정보 줄을 만든다. 계획이 찾은 pom별 확장자(``plan.lines()``)와
+        필터링되는 바이너리 파일(``RESOURCE_FACTS_FILES``개까지)이다.
+        사전 시도가 적용되지 못했을 때 LLM이 참고한다. 예외를 던지지 않는다.
 
         The facts of a resources / war plugin filtering case: the plan's lines (extensions per pom) and the filtered
         binary files it found. Never raises."""
@@ -5087,13 +5192,12 @@ class BuildFixLoop:
             return []
 
     def _version_facts(self, c: ErrorCluster, libs: Optional[list[GAV]] = None) -> list[str]:
-        """v2.1l 프롬프트 사실("Dependency versions" 절의 앞부분): 케이스 오류의 아티팩트마다(사내 것도) as-is
-        빌드가 쓴 버전(``as-is build: g:a <v> (managed by …)`` / ``… not declared``)과 새 부모 체인이 관리하는
-        버전(``new parent chain: manages g:a at <v>``) / 목표 Boot BOM 의 버전. v2.1v (B-M3 / E-H2): 컴파일 오류에는
-        ``e.artifact`` 가 없어 e2e 전체에서 이 줄이 두 번밖에 안 나갔다 → classpath 에서 찾은 라이브러리(``libs``,
-        ``_case_libraries``)도 같은 줄을 받고, 메이저가 다르면 ``(major 4 → 6)``, classpath 라이브러리의 관리 줄은
-        "— the API changed, fix the code and leave the version" 으로 끝난다. 캡처가 없으면 그 줄은 없다(모르는 것을
-        '없음' 이라고 하지 않는다). ``VERSION_FACTS_MAX`` 개까지, 예외 없음.
+        """프롬프트 "Dependency versions" 절의 앞부분에 들어갈 정보 줄을 만든다.
+        - 케이스 오류의 아티팩트(사내 포함)와 classpath에서 찾은 라이브러리(``libs``)마다 as-is 빌드 버전(``as-is build:
+          …``)과 새 부모 체인 / 목표 Boot BOM의 관리 버전(``new parent chain: manages g:a at <v>``)을 쓴다
+        - 메이저 버전이 다르면 메이저 변화를 덧붙이고, classpath 라이브러리의 관리 줄 끝에는 ``API_CHANGED_TAIL``을 붙인다
+        - 버전 정보를 캡처하지 못했으면 그 줄을 쓰지 않는다. 모르는 것을 선언되지 않았다고 말하지 않기 위해서다
+        ``VERSION_FACTS_MAX``개까지 쓰고 예외를 던지지 않는다.
 
         The as-is / new-chain / target Boot BOM facts for every artifact of the case's errors (in-house ones too) and,
         since v2.1v, for the libraries located on the module classpath (`libs`, de-duplicated, ≤ `VERSION_FACTS_MAX`);
@@ -5134,11 +5238,13 @@ class BuildFixLoop:
             return []
 
     def _package_facts(self, c: ErrorCluster) -> list[str]:
-        """v2.1v (B-M4): ``package <p> does not exist`` (javax 아님) 케이스 — 새 부모 체인 / 목표 Boot BOM 이 관리하는
-        키 중 ``<p>`` 의 가장 긴 groupId 접두(``org.springframework.batch.item`` → ``org.springframework.batch``)의
+        """javax가 아닌 ``package <p> does not exist`` 케이스의 정보 줄을 만든다. 새 부모 체인 / 목표 Boot
+        BOM이 관리하는 키 중 ``<p>``와 가장 길게 겹치는 groupId(``org.springframework.batch.item``이면
+        ``org.springframework.batch``)의
         artifactId 들(정렬, ``PACKAGE_FACTS_ARTIFACTS`` 개까지): ``managed artifacts under <group> (add the one that holds
-        <p>, version-less): a, b, …``. 의존성을 *추가* 해야 하는 케이스에서 LLM 이 좌표를 짐작하지 않게. 맞는 그룹이
-        없으면 없다. 좌표 리터럴 없음(관리 목록에서만). 예외 없음.
+        <p>, version-less): a, b, …``.
+        의존성을 추가해야 하는 케이스에서 LLM이 좌표를 짐작하지 않게 하기 위해서다.
+        맞는 그룹이 없으면 쓰지 않고, 좌표는 관리 목록에서만 가져온다. 예외를 던지지 않는다.
 
         For `package <p> does not exist` errors (not `javax.*`): the artifactIds managed under the longest groupId that
         prefixes `<p>` (the new chain's capture / parent-chain facts and the target Boot BOM): one `managed artifacts
@@ -5181,7 +5287,8 @@ class BuildFixLoop:
             return []
 
     def _managed_keys(self) -> set[str]:
-        """새 부모 체인(재구성 뒤 캡처 — 합친 것과 모듈별, 없으면 부모 체인의 사실)과 목표 Boot BOM 이 관리하는 g:a 들.
+        """새 부모 체인(재구성 뒤 캡처의 전체와 모듈별 항목, 없으면 부모 체인 정보)과 목표 Boot BOM이
+        관리하는 g:a 집합을 반환한다.
 
         Every g:a the new parent chain (the post-restructure capture, merged and per module; else the parent-chain
         facts) or the target Boot BOM manages."""
@@ -5198,7 +5305,8 @@ class BuildFixLoop:
         return {str(k) for k in keys if k}
 
     def _numstat(self, a: str, b: str) -> list[tuple[str, int, int]]:
-        """두 커밋 사이 파일별 (경로, 추가 줄, 삭제 줄). 바이너리는 0 / 0, 이름 바꾸기는 새 경로.
+        """두 커밋 사이에 바뀐 파일별로 (경로, 추가 줄 수, 삭제 줄 수)를 반환한다.
+        바이너리 파일은 0 / 0이고, 이름이 바뀐 파일은 새 경로로 쓴다.
 
         (path, added, removed) per file between two commits (`git diff --numstat -z`; binary files 0 / 0)."""
         try:
@@ -5227,9 +5335,9 @@ class BuildFixLoop:
         return res
 
     def _drop_reference_writes(self, att: FixAttempt, pre: str) -> None:
-        """프롬프트가 보여 준 병합 충돌 참고본은 빌드 대상이 아니다(실행 디렉터리에 있음). 수정이 그 경로에
-        파일을 썼다면 쓰레기를 프로젝트에 넣은 것 → 커밋 전에
-        되돌린다("참고본은 절대 고칠 대상이 아니다", round 9).
+        """수정이 병합 충돌 참고 파일의 경로에 파일을 썼으면 커밋 전에 되돌린다.
+        참고 파일은 프롬프트에 보여 주려고 실행 디렉토리에 둔 것이며 빌드나 수정의 대상이 아니므로, 그
+        경로에 쓴 파일은 프로젝트에 불필요한 파일이다.
 
         The merge-conflict reference copies the prompt showed are not in the build (they live under the run dir):
         a fix that wrote a file at such a path wrote junk into the project — undone before the commit (round 9:
@@ -5252,10 +5360,12 @@ class BuildFixLoop:
             att.notes.append(f"dropped {len(hit)} change(s) aimed at a read-only reference copy: {', '.join(hit[:3])}")
 
     def _credit_script(self, att: FixAttempt) -> None:
-        """저장된 스크립트 버전의 실적 기록(``kb.cases.credit``): 시도마다 최종 결과로 한 번(판정 불가였던
-        것은 되돌린 뒤 재채점되면 한 번 더). 그 버전의 *실행* 이 결과를 정한 경우만 — edits 옆에 저장만 된
-        스크립트는 돌지 않았으니 실적 없음. v2.1e: 실행 기록(라운드·시도 번호·실패 이유·오류 수·파일)도 함께.
-        저장 안 된 v0·드라이런·KB 없음 → 아무것도 안 함.
+        """저장된 스크립트 버전의 실적을 기록한다(``kb.cases.credit``).
+        시도마다 최종 결과로 한 번 기록하고, 판단할 수 없었다가 다시 평가되면 한 번 더 기록한다.
+        그 버전을 실행한 결과가 시도 결과를 정한 경우만 기록한다.
+        edits와 함께 저장만 된 스크립트는 실행되지 않았으므로 기록하지 않는다.
+        실행 정보(라운드, 시도 번호, 실패 이유, 오류 수, 파일)도 함께 남긴다.
+        저장되지 않은 v0, 드라이런, KB 없음이면 아무것도 하지 않는다.
 
         `kb.cases.credit(case, version, result)` once per try and final outcome (an inconclusive one is credited
         again when a revert rebuild scores it) — only for a stored script whose RUN decided the outcome (a script
@@ -5283,8 +5393,9 @@ class BuildFixLoop:
                          "attempt": att.id, "outcome": att.outcome, "reason": reason})
 
     def _run_reason(self, att: FixAttempt) -> str:
-        """채점된 시도가 왜 케이스를 못 풀었는지 한 줄(v2.1e ScriptRun.reason, 보강본의 CaseScript.reason).
-        사람이 case.json 만 보고 "v1 은 어디서 깨졌고 왜 v2 가 생겼나" 를 알게 하려는 것. 개선·성공이면 "".
+        """평가된 시도가 케이스를 해결하지 못한 이유 한 줄(ScriptRun.reason, 보강 버전의
+        CaseScript.reason)을 반환한다. 개선이나 빌드 성공이면 빈 문자열을 반환한다.
+        case.json만 보고도 어느 버전이 어디서 실패했고 왜 다음 버전이 생겼는지 알 수 있게 하기 위해서다.
 
         Why a scored try did not resolve its case, one line (v2.1e ScriptRun.reason / an augment's
         CaseScript.reason; "" for improved / build_ok): `no_change: 2 of 2 targeted error(s) remained — <the first
@@ -5310,14 +5421,15 @@ class BuildFixLoop:
             return "; ".join(x for x in (head, note) if x) or att.outcome
 
     def _credit_scripts(self, pr: PhaseResult, attempts: list[FixAttempt]) -> None:
-        """여러 시도의 실적 기록(``_credit_script`` 를 차례로)."""
+        """여러 시도의 실적을 ``_credit_script``로 차례로 기록한다."""
         for a in attempts:
             self._credit_script(a)
 
     def _no_script_fixer(self, att: FixAttempt, c: ErrorCluster, why: str) -> None:
-        """``propose_script`` 없는 tier-2 fixer: 이 실행에서는 LLM 스크립트를 쓸 수 없다(저장본은 재사용).
-        기반 시설 문제가 아니므로 ``infra:llm`` 은 아니고, ``fixer-without-scripts`` 플래그 + 후속 조치 한 줄,
-        해당 케이스는 llm_unavailable 차단.
+        """``propose_script``가 없는 tier-2 fixer일 때 처리한다.
+        이 실행에서는 LLM 스크립트를 쓸 수 없고 저장된 스크립트 재사용만 한다.
+        인프라 문제가 아니므로 ``infra:llm`` 대신 ``fixer-without-scripts`` 플래그와 후속 조치 한 줄을
+        남기고, 해당 케이스는 llm_unavailable로 차단한다.
 
         A tier-2 fixer without `propose_script`: no LLM script can be written in this run (stored versions are
         still reused). Not an infrastructure problem (no `llm-unavailable` / `infra:llm`): flag
@@ -5337,9 +5449,9 @@ class BuildFixLoop:
 
     def _new_attempt(self, phase: Phase, iteration: int, n: int, c: ErrorCluster, d: TriageDecision,
                      build: BuildResult) -> FixAttempt:
-        """새 FixAttempt(id ``<phase>-<build>-<n>``). 대상 오류를 함께 담고(채점·오류 목록용), 지금 HEAD 를
-        ``base_commit`` 으로 기록한다 — ``base_commit..commit``
-        이 이 시도가 적용한 정확한 코드(롤백의 근거)."""
+        """새 FixAttempt(id ``<phase>-<build>-<n>``)를 만든다.
+        대상 오류를 함께 담고 현재 HEAD를 ``base_commit``으로 기록한다.
+        ``base_commit..commit``이 이 시도가 적용한 정확한 변경이며 되돌리기의 기준이 된다."""
         att = FixAttempt(id=f"{phase.value}-{iteration}-{n}", phase=phase, iteration=iteration, cluster_id=c.id,
                          decision=d, errors_before=build.error_count, cluster_signatures=list(c.signatures),
                          cluster_errors=list(c.errors))   # scoring and the error list need the errors
@@ -5350,7 +5462,7 @@ class BuildFixLoop:
         return att
 
     def _record(self, pr: PhaseResult, att: FixAttempt) -> None:
-        """시도를 단계 결과와 실행 이력(사다리·한도의 근거)에 넣고 저널에 한 줄."""
+        """시도를 단계 결과와 실행 이력(시도 순서와 횟수 한도의 기준)에 넣고 저널에 한 줄 남긴다."""
         pr.attempts.append(att)
         self.history.append(att)
         self.ws.journal({"event": "attempt", "phase": att.phase.value, "iteration": att.iteration,
@@ -5368,8 +5480,9 @@ class BuildFixLoop:
                                     if att.decision.kind == DecisionKind.SCRIPT else None)})
 
     def _commit(self, message: str, pre: str, paths: Optional[list[str]] = None) -> Optional[str]:
-        """시도를 커밋한다: 스크립트 / edits 가 보고한 파일만(v2.1b) — 직전 빌드가 lib/ 에 복사한 jar 는
-        수정이 아니다. 바뀐 것이 없으면 None.
+        """시도를 커밋한다.
+        직전 빌드가 lib/에 복사한 jar 같은 파일은 수정이 아니므로 스크립트나 edits가 보고한 파일만 넣는다.
+        바뀐 것이 없으면 None을 반환한다.
 
         Commit an attempt: only the files its script / edits reported (`paths`, v2.1b) — a jar the last build
         copied into `lib/` is not part of the fix; None when nothing changed."""
@@ -5384,7 +5497,7 @@ class BuildFixLoop:
         return sha if sha != pre else None
 
     def _fail(self, att: FixAttempt, why: str) -> None:
-        """적용 실패로 표시하고 커밋 안 된 변경을 버린다(부분 적용을 남기지 않는다)."""
+        """시도를 적용 실패로 표시하고, 일부만 적용된 상태가 남지 않도록 커밋되지 않은 변경을 버린다."""
         att.outcome = "apply_failed"
         att.apply_errors.append(why)
         try:
@@ -5394,13 +5507,14 @@ class BuildFixLoop:
             pass
 
     def _summary(self) -> str:
-        """프롬프트용 프로젝트 요약(실행 동안 한 번만 만든다)."""
+        """프롬프트에 넣을 프로젝트 요약을 반환한다. 실행 중에 한 번만 만든다."""
         if self._profile_summary is None:
             self._profile_summary = profile_summary(self.profile)
         return self._profile_summary
 
     def _advisory_hints(self, c: ErrorCluster) -> tuple[list[str], list[str]]:
-        """이 클러스터에 맞는 라이브러리 권고의 (힌트, 권고 id). 권고는 차단하지 않고 프롬프트 힌트로만 간다.
+        """이 클러스터에 맞는 라이브러리 권고의 (힌트, 권고 id)를 반환한다.
+        권고로 차단하지는 않고 프롬프트 힌트로만 쓴다.
 
         (hints, advisory ids) of the run's library advisories that match this cluster (sbmig.advisory.hints_for)."""
         if not self.advisories:
@@ -5418,9 +5532,10 @@ class BuildFixLoop:
         return list(hints), list(ids)
 
     def _llm_transport_failure(self, att: FixAttempt, c: ErrorCluster, why: str) -> None:
-        """전송·설정 실패가 연속 2번(L5): 실행에서 처음이면 ``llm.cooldown_seconds`` 쉬고 다시 시도한다(그
-        시도들은 케이스의 LLM 한도에 세지 않음). 두 번째 연속 실패이거나 쿨다운을 쓸 수 없으면 실행 끝까지 LLM
-        불가 — 필요한 케이스는 llm_unavailable 로 차단되고 저장된 스크립트 재사용만 계속된다.
+        """LLM 전송이나 설정 실패를 기록하고, 연속 2번이 되면 대응한다.
+        실행에서 처음이면 ``llm.cooldown_seconds``만큼 쉬고 다시 시도하며, 이 시도들은 케이스의 LLM 한도에 세지 않는다.
+        두 번째 연속 실패이거나 쿨다운을 쓸 수 없으면 실행 끝까지 LLM 사용 불가로 둔다.
+        LLM이 필요한 케이스는 llm_unavailable로 차단되고 저장된 스크립트 재사용만 계속한다.
 
         Two transport/config failures in a row (L5): the first such streak of the run pauses the loop for
         `llm.cooldown_seconds` and retries (the streak's attempts do not count against the per-cluster LLM limit);
@@ -5449,9 +5564,9 @@ class BuildFixLoop:
         self._llm_streak, self._streak_attempts = [], []
 
     def _llm_config_check(self, att: FixAttempt, c: ErrorCluster, analysis: str, prompt_hash: str) -> bool:
-        """게이트웨이가 서로 다른 프롬프트 ``LLM_CONFIG_ERROR_PROMPTS``(2)개에 같은 HTTP 400 본문을 돌려줬다
-        → 프롬프트 탓이 아니라 설정(지원 안 되는 모델 이름, 페이로드 필드) 문제: 그 실행의 LLM 호출을
-        멈춘다(``llm-config-error``). True = 이 시도는 여기서 끝.
+        """게이트웨이가 서로 다른 프롬프트 ``LLM_CONFIG_ERROR_PROMPTS``개에 같은 HTTP 400 본문을 반환했는지 확인한다.
+        그렇다면 프롬프트가 아니라 설정(지원하지 않는 모델 이름, 페이로드 필드) 문제이므로 그 실행의 LLM
+        호출을 멈춘다(``llm-config-error``). True를 반환하면 이 시도는 여기서 끝난다.
 
         Round 10: the gateway answered the same HTTP 400 body to LLM_CONFIG_ERROR_PROMPTS different prompts → not
         the prompts' fault but the configuration (an unsupported model name, a payload field): stop calling the LLM
@@ -5481,8 +5596,9 @@ class BuildFixLoop:
         return True
 
     def _llm_cooldown(self, att: FixAttempt, why: str) -> bool:
-        """LLM 을 포기하기 전에 실행당 한 번 쉰다(게이트웨이 503 같은 일시 장애 대비). False = 쿨다운
-        없음(이미 씀, 꺼짐, 남은 실행 시간보다 김) → 호출한 쪽이 LLM 불가로 표시한다.
+        """게이트웨이 503 같은 일시 장애에 대비해, LLM을 포기하기 전에 실행당 한 번 쉰다.
+        쿨다운을 쓸 수 없으면(이미 씀, 꺼짐, 남은 실행 시간보다 김) False를
+        반환하고, 호출한 쪽이 LLM 사용 불가로 표시한다.
 
         Pause once per run instead of giving up on the LLM (round 9). False = no cool-down (used up, disabled,
         or it would run past the run's time budget) → the caller marks the LLM unavailable."""
@@ -5508,9 +5624,10 @@ class BuildFixLoop:
 
     # ------------------------------------------------------------------ merge-conflict hints (round 9)
     def _merge_conflict_hints(self, att: FixAttempt, c: ErrorCluster) -> tuple[list[str], dict[str, str]]:
-        """``c`` 와 관련된 병합 충돌(first-wins)의 (참고 메모, 참고 파일). 남긴 파일이 오류 파일이거나
-        오류가 그 클래스 이름을 말할 때. 버려진 사본은 읽기 전용 참고로만 보여 준다 — 그 멤버를 옮겨 오라고,
-        두 번째 모듈을 다시 만들지 말라고.
+        """``c``와 관련된 병합 충돌(first-wins)의 (참고 메모, 참고 파일)을 반환한다.
+        남긴 파일이 오류 파일이거나 오류가 그 클래스 이름을 언급하면 관련된 것으로 본다.
+        버려진 쪽 파일은 읽기 전용 참고로만 보여 준다.
+        필요한 멤버를 옮겨 오게 하고, 두 번째 모듈을 다시 만들지 않게 하기 위해서다.
 
         (reference_notes, reference_files) for the first-wins merge conflicts relevant to `c`: by file (the kept
         file is the cluster's / an error's file) or by symbol (an error names the kept class's simple name)."""
@@ -5565,7 +5682,8 @@ class BuildFixLoop:
         return notes, refs
 
     def _changed_between(self, a: str, b: str) -> list[str]:
-        """두 커밋 사이 바뀐 파일들(NUL 구분이라 한글·공백 이름도 그대로)."""
+        """두 커밋 사이에 바뀐 파일 목록을 반환한다.
+        NUL로 구분하므로 한글이나 공백이 있는 파일 이름도 그대로 받는다."""
         changed = getattr(self.ws, "changed_between", None)          # NUL-separated: Korean / spaced names verbatim
         if callable(changed):
             return changed(a, b)
@@ -5575,10 +5693,10 @@ class BuildFixLoop:
     # ------------------------------------------------------------------ fallback
     def _maybe_skip_test_compile(self, pr: PhaseResult, phase: Phase, goal: str, target: Optional[str],
                                  last: BuildResult) -> None:
-        """대체 빌드(L7): 남은 오류가 전부 테스트 컴파일 오류면 ``-Dmaven.test.skip=true`` 로 다시 빌드한다.
-        통과하면 단계는 통과, 플래그 ``test-compile-skipped``, 테스트 오류는 미해결·후속 조치로
-        남는다(테스트는 담당 팀 몫). v2 기본은 처음부터 테스트를 컴파일하지
-        않으므로(``build.skip_test_compile``) 보통은 해당 없다."""
+        """남은 오류가 모두 테스트 컴파일 오류면 ``-Dmaven.test.skip=true``로 다시 빌드하는 대체 빌드를 실행한다.
+        통과하면 단계를 통과로 보고 플래그 ``test-compile-skipped``를 남기며,
+        테스트 오류는 담당 팀이 처리할 후속 조치로 남는다.
+        기본 설정(``build.skip_test_compile``)은 처음부터 테스트를 컴파일하지 않으므로 보통은 해당하지 않는다."""
         if not self.cfg.build.allow_skip_test_compile_fallback:
             return
         if not any(g in goal.split() for g in TEST_COMPILING_GOALS):
@@ -5608,9 +5726,9 @@ class BuildFixLoop:
 
     def _maybe_skip_tests(self, pr: PhaseResult, phase: Phase, goal: str, target: Optional[str],
                           last: BuildResult) -> None:
-        """대체 빌드(L7b): 메인 코드는 빌드되고 테스트 *실행* 실패만 남았으면(대개 외부 설정·빌드 때 닿지
-        않는 인프라) ``-DskipTests`` 로 다시 빌드한다. 통과하면 플래그 ``tests-skipped``, 실패한 테스트마다
-        후속 조치(마무리에서 미해결).
+        """메인 코드는 빌드되고 테스트 실행 실패만 남았으면 ``-DskipTests``로 다시 빌드하는 대체 빌드를
+        실행한다. 이런 실패는 대개 외부 설정이나 빌드 시점에 접근할 수 없는 인프라 때문이다.
+        통과하면 플래그 ``tests-skipped``를 남기고, 실패한 테스트마다 미해결 후속 조치를 남긴다.
 
         Round 8: main code compiles and packages, only runtime test failures (TEST_FAILURE) remain — usually an
         externalized setting or infrastructure not reachable at build time. Rebuild with -DskipTests; on success the
@@ -5656,7 +5774,8 @@ VERSIONS_LOGGED = 6                  # versions per list in the `의존성 버�
 
 
 def _versions_text(cands: list) -> str:
-    """후보 버전 목록 글(최신 ``VERSIONS_LOGGED`` 개, pom 을 확인한 것은 jakarta ✓ / javax 표시).
+    """후보 버전 목록을 텍스트로 만든다.
+    최신 ``VERSIONS_LOGGED``개를 쓰고, pom을 확인한 버전에는 jakarta / javax 표시를 붙인다.
 
     '2.5.0, 2.6.0 (jakarta ✓)' — the newest VERSIONS_LOGGED candidates, each tagged when its pom was checked."""
     items = []
@@ -5670,10 +5789,8 @@ def _versions_text(cands: list) -> str:
 
 
 def _versions_line(rv: Any, key: str, current: str | None) -> str:
-    """저장소 조회 결과 로그 한 줄(현재 버전 → 같은 메이저 후보 / 상위 메이저 후보, 또는 조회 실패).
-
-    `의존성 버전 조회: opensymphony:sitemesh 2.4.2 → 같은 메이저 2.5.0, 2.6.0 (jakarta ✓) / 상위 3.3.0` or
-    `의존성 버전 조회 실패: <key> — <error>`."""
+    """저장소 조회 결과를 로그 한 줄(현재 버전, 같은 메이저 후보, 상위 메이저 후보)로 만든다.
+    조회에 실패했으면 ``의존성 버전 조회 실패: <key>``로 시작하는 줄을 만든다."""
     k = getattr(rv, "key", "") or key
     if getattr(rv, "error", "") and not (rv.same_major or rv.higher):
         return f"의존성 버전 조회 실패: {k} — {' '.join(str(rv.error).split())[:200]}"
@@ -5687,7 +5804,8 @@ def _versions_line(rv: Any, key: str, current: str | None) -> str:
 
 
 def _try_note(att: FixAttempt) -> str:
-    """FixTry 메모: 왜 실패했는지(적용 오류), 롤백, 채점 메모 — 중복 제거, ``TRY_NOTE_CHARS`` 자 캡.
+    """FixTry에 남길 메모를 만든다.
+    실패 이유(적용 오류), 되돌리기, 결과 평가 메모를 중복 없이 합치고 ``TRY_NOTE_CHARS``자에서 자른다.
 
     FixTry.note: why the try failed (apply errors), rollbacks, scoring notes — deduplicated, capped."""
     parts = list(dict.fromkeys([*att.apply_errors, *att.notes]))
@@ -5696,9 +5814,10 @@ def _try_note(att: FixAttempt) -> str:
 
 
 def _kept_partial(a: FixAttempt) -> bool:
-    """v2.1l / v2.1m: 부분 해결된 sbmig 사전 시도(``sbmig-version`` / ``sbmig-resources``)는 다음 시도 전에
-    되돌리지 않는다 — 적은 것은 추측이 아니라 사실(as-is 빌드·저장소, 파일 스캔)이고, 남은 오류는 sbmig 가 못 찾은
-    것뿐이다.
+    """부분 해결된 사전 시도(``sbmig-version`` / ``sbmig-resources``)인지 판단한다.
+    이런 시도는 다음 시도 전에 되돌리지 않는다.
+    추측이 아니라 확인된 정보(as-is 빌드, 저장소, 파일 스캔)로 쓴
+    내용이고, 남은 오류는 sbmig가 찾지 못한 것뿐이기 때문이다.
 
     A partial zero-LLM pre-try stays in the tree (no rollback before the case's next try): what it wrote are facts
     (the as-is build / the repository / the file scan), what is left is what it could not find."""
@@ -5706,7 +5825,8 @@ def _kept_partial(a: FixAttempt) -> bool:
 
 
 def _major_delta(before: Optional[str], after: Optional[str]) -> str:
-    """``(major 4 → 6)`` — as-is 와 관리 버전의 메이저가 다를 때만(둘 중 하나를 모르면 "").
+    """as-is 버전과 관리 버전의 메이저가 다르면 메이저 변화 표시를 만든다.
+    둘 중 하나를 모르거나 메이저가 같으면 빈 문자열을 반환한다.
 
     `" (major X → Y)"` when both majors are known and differ, else ""."""
     from sbmig.build.depchanges import major_of
@@ -5715,7 +5835,8 @@ def _major_delta(before: Optional[str], after: Optional[str]) -> str:
 
 
 def _mentions_javax(errors: Iterable[BuildError]) -> bool:
-    """v2.1v: 케이스 오류가 ``javax.`` 를 말하는가(메시지·심볼·위치·원문) — v2.1d 저장소 목록·판정의 원래 범위.
+    """케이스 오류의 메시지, 심볼, 위치, 원문 중에 ``javax.``가 있는지 확인한다.
+    저장소 목록과 판단은 이런 케이스에만 붙인다.
 
     Does any error of the case name `javax.` (message / symbol / location / raw)? v2.1d's repository listing and
     verdict exist for those cases only."""
@@ -5723,15 +5844,16 @@ def _mentions_javax(errors: Iterable[BuildError]) -> bool:
 
 
 def _synthetic(e: BuildError) -> bool:
-    """Maven 이 죽거나 시간 초과일 때 실행기가 넣는 대역 오류 — 빌드가 어디까지 갔는지 아무것도 말하지 않는다.
+    """Maven이 비정상 종료되거나 타임아웃일 때 실행기가 대신 넣는 오류인지 판단한다.
+    이런 오류로는 빌드가 어디까지 진행됐는지 알 수 없다.
 
     The runner's stand-in error for a crashed / timed-out Maven: says nothing about how far the build got."""
     return e.kind == ErrorKind.UNKNOWN and not e.file and (e.message or "").startswith(_SYNTHETIC_PREFIXES)
 
 
 def _pair(e: BuildError) -> tuple[str, str]:
-    """채점의 단위 (파일, 서명). L1 서명에는 파일이 없어서(다른 두
-    파일의 같은 오류 = 같은 서명) 파일과 짝지어 횟수로 비교한다.
+    """시도 결과 평가에 쓰는 (파일, 서명) 쌍을 반환한다.
+    L1 서명에는 파일이 없어 두 파일의 같은 오류가 같은 서명이 되므로, 파일과 짝지어 횟수로 비교한다.
 
     (file, signature) of an error — file '' for module / artifact errors. L1 signatures carry no file: the same
     renamed method in two files is one signature, so scoring compares these pairs (with their occurrence counts)."""
@@ -5739,13 +5861,13 @@ def _pair(e: BuildError) -> tuple[str, str]:
 
 
 def _touched(a: FixAttempt) -> set[str]:
-    """시도가 바꾼 파일 경로들(이름 바꾸기는 옛 / 새 경로 모두)."""
+    """시도가 바꾼 파일 경로를 반환한다. 이름이 바뀐 파일은 이전 경로와 새 경로를 모두 넣는다."""
     return {_norm_path(p) for c in a.changes for p in (c.path, c.new_path) if p}
 
 
 def _targeted_left(a: FixAttempt, cur: Counter) -> tuple[int, int]:
-    """(빌드에 아직 남은 대상 오류 수, 대상 오류 수) — (파일, 서명)
-    횟수로. 오류 기록이 없는 시도는 서명으로 전부 / 전무 판정.
+    """(빌드에 아직 남은 대상 오류 수, 전체 대상 오류 수)를 (파일, 서명) 횟수로 세어 반환한다.
+    오류 기록이 없는 시도는 서명만으로 전부 남았는지 전부 사라졌는지 판단한다.
 
     (targeted errors still in the build, targeted errors) — by (file, signature) occurrence; attempts without
     recorded errors fall back to the cluster signatures (all or nothing)."""
@@ -5757,16 +5879,16 @@ def _targeted_left(a: FixAttempt, cur: Counter) -> tuple[int, int]:
 
 
 def _stage_of(errors: list[BuildError]) -> int:
-    """이 오류들이 보고되는 가장 이른 빌드 단계 번호(없으면 99).
+    """이 오류들이 보고되는 가장 이른 빌드 단계 번호를 반환한다. 오류가 없으면 99를 반환한다.
 
     The earliest build stage (`STAGE` / `error_stage`) at which these errors are reported; 99 when none has one."""
     return min((error_stage(e) for e in errors if error_stage(e) is not None), default=99)
 
 
 def _visible_in(errors: list[BuildError], build: BuildResult, real: list[BuildError]) -> bool:
-    """이 빌드가 (지금은 없는) 이 오류들을 보고할 *수* 있었나? 그 모듈이 빌드됐거나 빌드가 그 단계까지
-    갔으면 예. 아니면 사라진 것은 "해결" 이 아니라 "안 보임" 이다(round
-    10: 안 보임 ≠ 해결) — 그때 시도는 개선이 아니라 판정 불가.
+    """지금은 없는 이 오류들을 이 빌드가 보고할 수 있었는지 판단한다.
+    그 모듈이 빌드됐거나 빌드가 그 단계까지 진행됐으면 True를 반환한다.
+    아니면 오류가 해결된 것이 아니라 보이지 않을 뿐이므로, 시도는 개선이 아니라 판단 불가가 된다.
 
     Could `build` have reported these (now absent) errors? Their module was built, or the build got at least as far
     as their stage — the same notion as the error list's visibility (round 10: "not visible" ≠ "resolved")."""
@@ -5795,7 +5917,7 @@ def _visible_in(errors: list[BuildError], build: BuildResult, real: list[BuildEr
 
 
 def _new_errors(errors: list[BuildError], prev: Counter) -> list[BuildError]:
-    """직전 빌드보다 많아진 (파일, 서명) 발생분 = 새 오류.
+    """직전 빌드보다 늘어난 (파일, 서명) 오류를 새 오류로 반환한다.
 
     The occurrences of (file, signature) beyond what the previous build had."""
     seen: Counter = Counter()
@@ -5809,8 +5931,8 @@ def _new_errors(errors: list[BuildError], prev: Counter) -> list[BuildError]:
 
 
 def _new_in_files(errors: list[BuildError], files: set[str], prev: Counter) -> list[BuildError]:
-    """``files`` 안의 새 오류들((파일, 서명) 횟수로) — 다른
-    파일이 이미 가진 L1 서명이라도 이 파일에선 새 오류다.
+    """``files`` 안에서 새로 생긴 오류를 (파일, 서명) 횟수로 찾는다.
+    다른 파일에 이미 있던 L1 서명이어도 이 파일에서는 새 오류다.
 
     New errors (by (file, signature) occurrence) in `files` — round 10: a new error whose L1 signature another file
     already had is still new here."""
@@ -5818,8 +5940,8 @@ def _new_in_files(errors: list[BuildError], files: set[str], prev: Counter) -> l
 
 
 def _target_key(target: Optional[str]) -> str:
-    """빌드 대상의 정규화 키('' = 프로젝트 전체, 끝의 pom.xml
-    제거) — 대체 빌드 결과를 대상별로 기억할 때 쓴다."""
+    """빌드 대상을 정규화한 키를 반환한다. 빈 문자열은 프로젝트 전체이고, 끝의 pom.xml은 뗀다.
+    대체 빌드 결과를 대상별로 기억할 때 쓴다."""
     t = _norm_path(target or "").strip("/")
     if t.endswith("pom.xml"):
         t = t[:-len("pom.xml")].rstrip("/")
@@ -5827,7 +5949,7 @@ def _target_key(target: Optional[str]) -> str:
 
 
 def _gone(errors: list[BuildError], build: BuildResult) -> list[BuildError]:
-    """``errors`` 중 이 빌드에 더는 없는 발생분 — 시도가 지운 것(롤백하면 돌아오는 것).
+    """``errors`` 중 이 빌드에 더 이상 없는 오류를 반환한다. 시도가 없앤 오류이며, 되돌리면 다시 나타난다.
 
     The occurrences of `errors` (by (file, signature)) that `build` no longer has — what an attempt removed."""
     cur = Counter(_pair(e) for e in build.errors)
@@ -5842,7 +5964,8 @@ def _gone(errors: list[BuildError], build: BuildResult) -> list[BuildError]:
 
 
 def _change_line(a: FixAttempt) -> str:
-    """시도가 바꾼 것 한 줄(같은 실행의 형제 힌트용): 바꾼 파일들, 없으면 원인 분석 첫 문장.
+    """다른 파일의 같은 오류에 대한 힌트에 쓰도록, 시도가 바꾼 내용을 한 줄로 만든다.
+    바꾼 파일 목록을 쓰고, 없으면 원인 분석의 첫 문장을 쓴다.
 
     One line of what an attempt changed (sibling hints): the files its script changed, else its analysis."""
     if a.changes:
@@ -5859,8 +5982,9 @@ def _norm_path(p: str) -> str:
 
 
 def refine_build(build: Optional[BuildResult]) -> Optional[BuildResult]:
-    """빌드 오류들의 케이스 키를 다듬는다(제자리, 거친 ``build`` / ``other`` 키를 javac 줄로 세분).
-    채점·오류 목록·클러스터·차단 등록부가 모두 같은 L1 / L2 를 보게 하려고 빌드 직후 한 번만 한다.
+    """빌드 오류의 케이스 키를 제자리에서 다듬는다.
+    대략적인 ``build`` / ``other`` 키를 javac 줄로 더 세분한다.
+    시도 결과 평가, 오류 목록, 클러스터, 차단 목록이 같은 L1 / L2 서명을 보도록 빌드 직후 한 번만 실행한다.
 
     The refined case keys of a build's errors (in place, `sbmig.triage.cluster.refine_signatures`): every consumer
     of the build — scoring, the error list, the clusters, the blocked registry — sees the same L1 / L2."""

@@ -1,15 +1,16 @@
-"""취약점 조치 HTTP 라우터 ``/api/remediations…`` — 기존 웹 앱(같은 프로세스, 같은 TokenGuard)에 붙는다.
-흐름상 위치: ``sbmig/web/app.py`` 의 ``create_app`` 이 :func:`create_router` 를 포함한다 → :class:`~sbmig.remediations.service.RemediationManager`.
-업로드는 ``/api/runs`` 와 같은 방식으로 메모리에 올리지 않고 임시 파일로 흘려 쓰며 조각마다 상한(``remediation.max_upload_mb``)과
-ZIP 서명(PK)을 본다. 막히는 일(ZIP 검사·상태 파일 읽기)은 스레드풀에서 돈다 — 이벤트 루프를 막지 않는다. 오류는 늘
-``{"error", "code", …}`` 모양이고 비밀 값·서버 절대 경로는 응답에 넣지 않는다. 계약: API.md (``docs/INTERFACES.md`` "remediations").
+"""취약점 조치 HTTP API(``/api/remediations…``)를 제공하는 모듈.
+웹 앱의 ``create_app``이 :func:`create_router`를 포함하므로 같은 프로세스와 같은 TokenGuard를 쓴다.
+- 업로드 파일은 메모리에 올리지 않고 임시 파일로 쓰며, 받는 도중 크기
+  상한(``remediation.max_upload_mb``)과 ZIP 서명(PK)을 확인한다
+- ZIP 검사와 상태 파일 읽기는 이벤트 루프를 막지 않도록 스레드풀에서 실행한다
+- 오류 응답은 항상 ``{"error", "code", …}`` 형태이고, 비밀 값과 서버 절대 경로는 넣지 않는다
 
 The `/api/remediations` router (contract: API.md). Error mapping: IntakeRejected → 400, NotReady → 503,
 ApprovalMismatch / StateConflict / NotAvailable → 409, unknown id → 404, bad id → 400.
-Job 모드(k8s-job / local-job)의 웹 파드는 조치를 돌리지 않는다: 단독 업로드는 본문을 받기 전에 409 ``not_available``,
-이어 돈 조치(``<out>/<이관 실행 id>/remediation/``)는 같은 라우트로 읽고 승인하고, 재개하면 새 빌드 파드가 잇는다(2026-11-11 wave 4).
-승인 요청에 ``"resume": true`` 를 주면 결정을 쓴 뒤 곧바로 재개한다(화면의 한 버튼 "선택한 항목 적용") — 재개가 거절돼도 결정은 쓰인
-채로 남고 응답의 ``resumed: false`` + ``resume_error`` {code, error} 가 그 까닭을 말한다. ``by`` (승인자 이름)는 비워도 된다.
+Job 모드의 웹 파드는 취약점 조치를 직접 실행하지 않는다. 단독 업로드는 본문을 받기 전에 409 ``not_available``을
+반환하고, 이관에 이어 실행된 조치는 같은 경로로 조회하고 승인한다. 재개는 새 빌드 파드가 진행한다.
+승인 요청에 ``"resume": true``가 있으면 결정을 기록한 뒤 바로 재개한다.
+재개가 거절돼도 결정은 남고, 응답의 ``resumed: false``와 ``resume_error``에 이유를 담는다.
 
 Approvals with `"resume": true` resume right after the decisions are written; a refused resume keeps the decisions and is
 reported as `resumed: false` + `resume_error`. `by` is optional.
@@ -30,7 +31,7 @@ from .service import BadRemediationId, NotAvailable, RemediationManager, Unknown
 
 log = logging.getLogger("sbmig.remediations.api")
 
-# 응답에 실어도 되는 오류 세부 항목(그 밖의 details 는 내보내지 않는다 — 경로·내부 값이 섞이지 않게)
+# 경로나 내부 값이 응답에 섞이지 않도록 이 목록에 있는 세부 항목만 내보낸다
 _SAFE_DETAILS = ("missing", "fields", "proposals", "status", "pending", "proposal_id", "mode")
 _MEDIA = {".md": "text/markdown; charset=utf-8", ".json": "application/json", ".zip": "application/zip",
           ".jsonl": "application/x-ndjson", ".log": "text/plain; charset=utf-8", ".patch": "text/plain; charset=utf-8"}
@@ -38,7 +39,7 @@ _ATTACH = (".zip", ".jsonl", ".patch")
 
 
 def error_response(exc: BaseException) -> JSONResponse:
-    """오류 → HTTP 응답 ``{"error", "code", …}``. 알려진 세부 항목만 싣는다.
+    """예외를 ``{"error", "code", …}`` 형태의 HTTP 응답으로 바꾼다. 세부 항목은 공개해도 되는 것만 넣는다.
 
     Map an exception of this feature to its HTTP response (contract error shape)."""
     if isinstance(exc, (BadRemediationId,)):
@@ -82,8 +83,8 @@ async def _json_body(request: Request) -> dict[str, Any]:
 
 
 def create_router(manager: RemediationManager, max_upload_bytes: int | None = None) -> APIRouter:
-    """``/api/remediations`` 라우터를 만든다. ``max_upload_bytes`` 가 None 이면 관리자의 기본 설정
-    (``remediation.max_upload_mb``)에서, 0 = 상한 없음.
+    """``/api/remediations`` 라우터를 만든다.
+    ``max_upload_bytes``가 None이면 ``remediation.max_upload_mb``를 쓰고, 0이면 크기 제한이 없다.
 
     Build the router; the upload limit defaults to the manager's `remediation.max_upload_mb` (0 = no limit)."""
     limit = manager.max_upload_bytes() if max_upload_bytes is None else int(max_upload_bytes)
@@ -95,12 +96,12 @@ def create_router(manager: RemediationManager, max_upload_bytes: int | None = No
 
     @r.post("", status_code=202)
     async def submit(request: Request, name: str = "project.zip", configs: str | None = None) -> JSONResponse:
-        if manager.job_mode:          # Job 모드: 본문(1 GiB 가까운 ZIP)을 받기 전에 거절한다 — 조치는 빌드 파드에서 돈다
+        if manager.job_mode:          # Job 모드는 조치를 빌드 파드에서 실행하므로 큰 본문을 받기 전에 거절한다
             return error_response(NotAvailable(manager.readiness()[0], mode=manager.mode))
         length = request.headers.get("content-length")
         if limit and length and length.isdigit() and int(length) > limit:
             return too_large()
-        # 본문은 메모리에 올리지 않고 임시 파일로 흘려 쓴다(1 GiB 가까운 ZIP) — 조각마다 상한과 ZIP 서명을 본다
+        # 본문이 1 GiB에 가까울 수 있으므로 임시 파일로 쓰고, 받는 도중 크기 상한과 ZIP 서명을 확인한다
         tmp = manager.incoming_path()
         size, head = 0, b""
         try:
@@ -137,7 +138,7 @@ def create_router(manager: RemediationManager, max_upload_bytes: int | None = No
         except Exception as e:  # noqa: BLE001
             return error_response(e)
 
-    # /{id} 보다 먼저 선언해야 "readiness" 가 ID 로 잡히지 않는다
+    # /{id}보다 먼저 선언해야 readiness가 ID로 해석되지 않는다
     @r.get("/readiness")
     async def readiness() -> JSONResponse:
         return JSONResponse(await _call(manager.readiness_info))
@@ -179,7 +180,7 @@ def create_router(manager: RemediationManager, max_upload_bytes: int | None = No
             out = await _call(manager.decide, rid, decisions, by)
             if not then_resume:
                 return JSONResponse(out)
-            # 결정은 이미 쓰였다: 재개가 거절돼도 그대로 두고, 거절의 모양(code / error)만 응답에 싣는다
+            # 결정은 이미 기록됐으므로 재개가 거절돼도 그대로 두고 거절 내용(code / error)만 응답에 넣는다
             try:
                 await _call(manager.resume, rid, None, None, None, None, by)
             except Exception as e:  # noqa: BLE001 — the decisions stay written; the refusal is part of the answer

@@ -1,15 +1,14 @@
-"""개발 PC 의 "파드": Job 모드의 흐름을 그대로 두고 쿠버네티스 Job 자리에 로컬 서브프로세스를 쓴다 (2026-11-05, 사용자: "로컬 개발에서는
-파드 생성이 들어가면 안 돌거니까 … 개발 모드일 때는 파드 생성 없이").
-
-``SBMIG_WEB_MODE=local-job``(또는 ``k8s-job`` 인데 클러스터 밖) 이면 ``RunManager`` 가 ``K8sClient`` 대신 이 클라이언트를 쓴다. 같은
-세 호출: ``create_job`` 은 렌더된 Job 매니페스트의 env 가운데 **실행별 값만**(``contract.RUN_ENV``: SBMIG_SOURCE_ZIP, SBMIG_OUT,
-SBMIG_RUN_ID, SBMIG_CONFIG, SBMIG_STOP_AFTER, SBMIG_LLM_PROVIDER, SBMIG_FLOW …) 넘겨 파드가 돌릴 바로 그 Worker ``python -m sbmig.web.worker`` 를
-띄운다. 틀의 나머지 env 는 **파드**의 설정이라(컨테이너 경로 ``/etc/sbmig/settings.xml`` · ``/opt/java21`` · ``/data/kb-v2``, ConfigMap 에서
-오는 조정 키) 넘기지 않는다 — 로컬 Worker 의 설정은 개발자의 셸과 ``.env`` 가 정한다(v2.1z-ac — Worker 가
-``control/request.json`` 의 digest 를 대조하고 ``sbmig.cli run`` 을 돌리고 비밀 값을 지우고 ``job-status.json`` 을 쓴다; 표준 출력은
-``<run dir>/job-local.log``). ``job_state`` 는 프로세스 상태를 Running / Succeeded / Failed 로, ``delete_job`` 은 프로세스를 끝낸다.
-Worker 가 ``job-status.json`` 을 남기지 않고 끝났을 때만(죽었거나 가짜 명령) 대신 쓴다. 그래서 웹의 Job 모드 코드(실행 폴더, 저널 tail,
-'파드' 단계, stop.request)가 쿠버네티스 없이 노트북에서 전부 돈다.
+"""개발 PC에서 쿠버네티스 Job 대신 로컬 서브프로세스로 Worker를 실행하는 클라이언트 모듈.
+Job 모드의 처리 흐름은 그대로 유지된다.
+``SBMIG_WEB_MODE=local-job``이거나, ``k8s-job``인데 클러스터 밖에서 실행 중이면 ``RunManager``가
+``K8sClient`` 대신 이 클라이언트를 쓴다.
+- ``create_job``은 매니페스트의 env 중 실행별 값(``contract.RUN_ENV``)만 넘겨, 파드와 같은 Worker
+  ``python -m sbmig.web.worker``를 실행한다. 출력은 ``<run dir>/job-local.log``에 기록한다
+- 템플릿의 나머지 env는 파드용 설정이므로 넘기지 않는다.
+  로컬 Worker의 설정은 개발자의 셸과 ``.env``가 정한다
+- ``job_state``는 프로세스 상태를 Running / Succeeded / Failed로 알려 주고, ``delete_job``은 프로세스를 종료한다
+- Worker가 ``job-status.json``을 남기지 않고 끝났을 때만 대신 기록한다.
+  조치 재개 Job은 ``remediation-job-status.json``에 기록한다
 
 The developer's "pod": the Job-mode flow with a local subprocess in place of a Kubernetes Job — the same three calls as
 `K8sClient`, running the same Worker the pod runs (`python -m sbmig.web.worker`, which verifies the pinned request, runs
@@ -35,7 +34,8 @@ log = logging.getLogger("sbmig.web.localjob")
 
 
 def _kill_tree(proc: subprocess.Popen) -> None:
-    """프로세스와 그 자손(Maven / Java)을 끝낸다: POSIX 는 세션(프로세스 그룹)에 TERM → KILL, Windows 는 ``taskkill /T /F``."""
+    """프로세스와 그 자식 프로세스(Maven / Java)를 모두 종료한다.
+    POSIX에서는 프로세스 그룹에 TERM, 이어서 KILL을 보내고, Windows에서는 ``taskkill /T /F``를 쓴다."""
     try:
         if os.name == "nt":
             subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], capture_output=True, timeout=30, check=False)
@@ -59,8 +59,8 @@ def _kill_tree(proc: subprocess.Popen) -> None:
 
 
 class LocalJobClient:
-    """로컬 서브프로세스로 Job 을 흉내 내는 클라이언트(``namespace`` 는 "local"). ``command_factory(env) -> list[str]`` 를 바꿔
-    끼우면 테스트가 가짜 실행 파일을 쓸 수 있다.
+    """로컬 서브프로세스로 쿠버네티스 Job을 대신하는 클라이언트 클래스. ``namespace``는 "local"이다.
+    테스트는 ``command_factory(env) -> list[str]``를 바꿔 가짜 실행 파일을 쓸 수 있다.
 
     Jobs as local subprocesses; `command_factory(env)` lets tests substitute the command."""
     namespace = "local"
@@ -74,25 +74,26 @@ class LocalJobClient:
         self.repo_root = Path(repo_root) if repo_root else None
         self.python = python or sys.executable
         self.command_factory = command_factory or self._command
-        # 사용자(2026-11-05): "서브프로세스로 돌면 콘솔 창에는 안 뜰 거잖아?" — 개발 모드라 자식의 출력을 파일(job-local.log)에 쓰면서
-        # 서버 콘솔에도 `[job <run id>]` 접두어로 흘린다
+        # 서브프로세스 출력은 콘솔에 보이지 않으므로 job-local.log에 기록하면서 서버 콘솔에도
+        # `[job <run id>]`를 앞에 붙여 출력한다
         self.echo = (os.environ.get(self.ECHO_ENV, "1").strip().lower() not in ("0", "false", "no", "off")) if echo is None else echo
         self._procs: dict[str, tuple[subprocess.Popen, Path, dict[str, str]]] = {}
 
     # ---- the command the Job pod runs
     def _command(self, env: dict[str, str]) -> list[str]:
-        """파드와 같은 Worker 명령. 실행별 값(zip, out, run id, 설정 …)은 인자가 아니라 env 로 간다 — Worker 가 ``SBMIG_*`` 를 읽는다.
+        """파드와 같은 Worker 실행 명령을 만든다.
+        실행별 값은 인자가 아니라 환경 변수로 넘기고 Worker가 ``SBMIG_*``를 읽는다.
 
         The Worker command the pod runs; the run's values travel as `SBMIG_*` env, not as arguments."""
         return [self.python, "-m", WORKER_MODULE]
 
     @staticmethod
     def _env_of(manifest: dict) -> dict[str, str]:
-        """매니페스트에서 로컬 Worker 로 넘길 env: ``contract.RUN_ENV`` 의 이름이고 값이 리터럴인 것만.
-
-        틀은 **파드**를 적은 것이다. 그 리터럴(``SBMIG_BUILD__SETTINGS_FILE=/etc/sbmig/settings.xml``, ``SBMIG_KB_DIR=/data/kb-v2`` …)과
-        ``valueFrom`` 항목(ConfigMap / Secret — 로컬에서는 값이 없어 ``""`` 가 되고, 빈 ``SBMIG_<A>__<B>`` 는 설정 값을 ``None`` 으로
-        덮어 ``load_config`` 가 죽는다)은 개발 PC 의 것이 아니다. 2026-11-10 에 확인한 회귀: 이전에는 틀의 env 를 통째로 넘겼다.
+        """매니페스트에서 로컬 Worker로 넘길 환경 변수를 고른다.
+        ``contract.RUN_ENV``에 있는 이름이면서 값을 직접 쓴 항목만 고른다.
+        템플릿은 파드 기준이라 컨테이너 경로나 ``valueFrom``(ConfigMap / Secret) 항목은 개발 PC에 맞지
+        않는다. 특히 ``valueFrom``은 로컬에서 ``""``가 되는데, 빈 ``SBMIG_<A>__<B>``는 설정 값을
+        ``None``으로 덮어써 ``load_config``를 실패하게 만든다.
 
         The env the local Worker gets from the manifest: the per-run names with a literal value only. The template describes
         the POD — its container paths and its ConfigMap / Secret references are not the developer machine's."""
@@ -102,7 +103,7 @@ class LocalJobClient:
                 if isinstance(e, dict) and e.get("name") in RUN_ENV and "valueFrom" not in e and e.get("value") is not None}
 
     def create_job(self, manifest: dict) -> str:
-        """매니페스트의 env 로 명령을 만들어 서브프로세스를 띄운다. 이름 = 매니페스트의 이름."""
+        """매니페스트의 환경 변수로 명령을 만들어 서브프로세스를 실행하고, 매니페스트에 있는 Job 이름을 반환한다."""
         name = str(manifest.get("metadata", {}).get("name") or f"local-{int(time.time())}")
         env = self._env_of(manifest)
         for key in ("SBMIG_SOURCE_ZIP", "SBMIG_OUT", "SBMIG_RUN_ID"):
@@ -112,13 +113,14 @@ class LocalJobClient:
         run_dir.mkdir(parents=True, exist_ok=True)
         cmd = list(self.command_factory(env))
         log_path = run_dir / "job-local.log"
-        # 2026-11-05 (한국어 Windows): 자식의 stdout 은 파이프라 로케일(cp949)로 쓰이고 Rich 는 80칸으로 접는다 — 자식을 UTF-8 로 쓰게 하고
-        # (job-local.log 도 UTF-8, `—` 로 죽는 "Logging error" 없음) 폭을 넉넉히 준다. 셸이 이미 정한 값은 그대로 둔다
+        # 자식의 stdout은 파이프라서 로케일(cp949)로 출력되고 Rich는 80칸에서 줄을 바꾸므로, 자식이 UTF-8로
+        # 출력하게 하고 폭을 넉넉히 준다
+        # 셸에서 이미 정한 값은 그대로 둔다
         child_env = {"PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1",
                      "COLUMNS": os.environ.get(self.COLUMNS_ENV, "") or self.DEFAULT_COLUMNS,
                      **os.environ, **env}
-        # Worker 는 SBMIG_APP_DIR 의 config/ 로 digest 를 다시 계산한다 — Main 이 고정한 것과 같은 폴더여야 대조가 맞는다
-        # (틀의 값이 아니라 이 Main 의 저장소: 틀의 것은 컨테이너 경로다)
+        # Worker는 SBMIG_APP_DIR 아래 config/로 해시를 다시 계산하므로 Main이 고정한 폴더와 같아야 한다.
+        # 템플릿 값은 컨테이너 경로이므로 이 Main의 저장소 경로를 넣는다
         if self.repo_root is not None:
             child_env["SBMIG_APP_DIR"] = str(self.repo_root)
         # its own process group / session: delete_job must take the Maven / Java grandchildren with it (review 2026-11-05)
@@ -137,7 +139,8 @@ class LocalJobClient:
         return name
 
     def _pump(self, proc: subprocess.Popen, log_path: Path, run_id: str) -> None:
-        """자식의 출력을 줄마다 job-local.log 에 쓰고(echo 면) 콘솔에도 ``[job <run id>]`` 로 흘린다. 자식이 끝나면 파일을 닫는다."""
+        """자식 프로세스의 출력을 줄마다 job-local.log에 기록하고, echo가 켜져 있으면 콘솔에도
+        ``[job <run id>]``를 붙여 출력한다. 자식이 끝나면 파일을 닫는다."""
         prefix = f"[job {run_id}] "
         try:
             with open(log_path, "ab") as fh, proc.stdout:  # type: ignore[union-attr]
@@ -157,8 +160,8 @@ class LocalJobClient:
             log.debug("local job output pump for %s ended: %s", run_id, e)
 
     def job_state(self, name: str) -> JobState:
-        """프로세스 상태 → JobState. 끝났는데 Worker 가 ``job-status.json`` 을 남기지 않았으면 대신 쓴다(run id 포함, attempt 없음 = 대조
-        생략). 모르는 이름 → Missing.
+        """프로세스 상태를 JobState로 반환한다. 모르는 이름이면 Missing을 반환한다.
+        프로세스가 끝났는데 Worker가 ``job-status.json``을 남기지 않았으면, run id만 넣고 attempt 없이 대신 기록한다.
 
         The process state as a JobState; a fallback `job-status.json` only when the Worker left none."""
         hit = self._procs.get(name)
@@ -169,7 +172,7 @@ class LocalJobClient:
         pod = f"local-{proc.pid}"
         if rc is None:
             return JobState("Running", pod=pod, message="")
-        # 조치 재개 Job(SBMIG_WORKER_ACTION)의 결과 파일은 따로다 — 이관의 job-status.json 은 이미 있고 건드리지 않는다
+        # 조치 재개 Job은 결과 파일이 따로 있으므로 이미 있는 이관의 job-status.json은 건드리지 않는다
         status = run_dir / status_file_for(env.get(ACTION_ENV) or None)
         if not status.is_file():
             try:
@@ -183,7 +186,7 @@ class LocalJobClient:
                         message="" if rc in (0, 2) else f"sbmig exit {rc}")
 
     def delete_job(self, name: str) -> None:
-        """프로세스를 끝낸다(terminate → kill). 모르는 이름이면 조용히."""
+        """프로세스를 종료한다(terminate 후 kill). 모르는 이름이면 무시한다."""
         hit = self._procs.get(name)
         if hit is None:
             return

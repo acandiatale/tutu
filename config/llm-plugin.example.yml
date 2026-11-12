@@ -1,51 +1,51 @@
 # ======================================================================================
-# 회사 LLM 게이트웨이 / 코딩 에이전트를 어댑터로 끼우는 예시 (config/llm-plugin.example.yml)
+# 회사 LLM 게이트웨이 / 코딩 에이전트를 어댑터로 연결하는 예시 (config/llm-plugin.example.yml)
 # ======================================================================================
-# sbmig 의 HTTP 호출 대신 회사가 만든 어댑터를 쓰고 싶을 때의 예시다. 자세한 계약은 docs/ADAPTERS.md,
-# 예제 코드는 examples/adapters/ 에 있다. 아래 주소·모델 이름은 모두 예시 값이다.
-# 키는 이 파일에 절대 적지 않는다. api_key_env 는 키가 들어 있는 "환경 변수의 이름" 이다.
+# sbmig의 HTTP 호출 대신 회사가 만든 어댑터를 쓸 때의 예시다. 자세한 계약은 docs/ADAPTERS.md,
+# 예제 코드는 examples/adapters/에 있다. 아래 주소와 모델 이름은 모두 예시 값이다.
+# 키는 이 파일에 기록하지 않는다. api_key_env는 키가 들어 있는 환경 변수의 이름이다.
 #   export COMPANY_LLM_KEY=...
 #   PYTHONPATH=. sbmig run path/to/project --config config/artifacts.example.yml --config config/llm-plugin.example.yml
 #
-# 1단계(tier 1): LLM 호출만 회사 어댑터로 바꾼다. 프롬프트 만들기, 수정 스크립트 해석·검사, 호출 기록,
-#                한도 관리는 여전히 sbmig 가 한다.
+# 1단계(tier 1): LLM 호출만 회사 어댑터로 바꾼다. 프롬프트 생성, 수정 스크립트 해석과 검사, 호출 기록,
+#                한도 관리는 계속 sbmig가 한다.
 llm:
-  # plugin = 아래 llm.plugin 의 어댑터를 쓴다. 또는 "sbmig.llm_adapters" 진입점 그룹에 등록한 이름을 적는다.
+  # plugin이면 아래 llm.plugin의 어댑터를 쓴다. "sbmig.llm_adapters" 진입점 그룹에 등록한 이름을 써도 된다.
   provider: plugin
-  # 어댑터를 만드는 곳. "패키지.모듈:이름" 형식이며 이름은 클래스, 팩토리 함수, 인스턴스 중 하나다.
+  # 어댑터를 만드는 위치. "패키지.모듈:이름" 형식이며 이름은 클래스, 팩토리 함수, 인스턴스 중 하나다.
   plugin: examples.adapters.company_gateway_adapter:make_adapter
-  # 이 환경 변수가 있으면 그 값을 팩토리에 options["api_key"] 로 넘긴다(메모리 안에서만, 파일·로그에는 남기지 않음).
+  # 이 환경 변수가 있으면 값을 팩토리에 options["api_key"]로 넘긴다(메모리에서만 쓰고 파일과 로그에는 기록하지 않음).
   api_key_env: COMPANY_LLM_KEY
-  # 팩토리에 그대로 넘기는 옵션. 무엇을 받는지는 어댑터가 정한다. 비밀값은 적지 않는다.
+  # 팩토리에 그대로 넘기는 옵션. 어떤 값을 받는지는 어댑터가 정한다. 비밀 값은 넣지 않는다.
   plugin_options:
     base_url: https://llm-gateway.internal.example/api   # 예시 주소
-    default_model: internal-coder-m      # 역할 표에 없는 요청에 쓰는 모델
-    # 요청 역할 → 모델 표. 어댑터가 이 표로 모델을 고른다(게이트웨이 팀이 용도별 비용을 정할 수 있게).
-    #   fix = 수정 스크립트, fix_escalation = 정체 뒤의 수정, plan_advisor = 계획 검토, structure_review = 구조 검토
+    default_model: internal-coder-m      # 아래 역할 표에 없는 요청에 쓰는 모델
+    # 요청 역할별 모델 표. 게이트웨이 팀이 용도별 비용을 정할 수 있도록 어댑터가 이 표로 모델을 고른다.
+    #   fix: 수정 스크립트, fix_escalation: 진전이 없을 때의 수정, plan_advisor: 계획 검토, structure_review: 구조 검토
     models:
       fix: internal-coder-l
       fix_escalation: internal-coder-xl
       plan_advisor: internal-small
       structure_review: internal-coder-l
-    timeout: 120                         # 어댑터의 요청 시간 상한(초)
-    max_retries: 3                       # 어댑터가 429 / 5xx 에서 다시 보내는 횟수
+    timeout: 120                         # 어댑터의 요청 타임아웃(초)
+    max_retries: 3                       # 어댑터가 429 / 5xx 응답에 재시도하는 횟수
     team: platform-migration             # 예시 어댑터가 X-Team 헤더로 보내는 팀 이름
-  model: internal-coder-m                # 어댑터에 역할 표가 없을 때 LLMRequest.model 로 보내는 모델
-  escalation_model: internal-coder-xl    # 정체 뒤에 쓸 상위 모델
+  model: internal-coder-m                # 어댑터에 역할 표가 없을 때 LLMRequest.model로 보내는 모델
+  escalation_model: internal-coder-xl    # 진전이 없을 때 쓸 상위 모델
   recipe_model: internal-small           # 계획 검토(plan.advisor: llm)에 쓸 모델
-  max_output_tokens: 8000                # 답 하나의 최대 토큰
-  record_dir: out/llm-records            # 어댑터 호출도 기록한다(메시지, 응답, 역할, 메타데이터. 키는 없음)
+  max_output_tokens: 8000                # 응답 하나의 최대 토큰
+  record_dir: out/llm-records            # 어댑터 호출도 기록한다(메시지, 응답, 역할, 메타데이터. 키는 제외)
 
-# 2단계(tier 2, 선택): sbmig 의 수정기(LLMFixer)를 회사 코딩 에이전트로 통째로 바꾼다. plugin 을 비우면
-# sbmig 의 수정기를 그대로 쓴다. 팩토리는 (options, cfg, llm) 을 받는다. llm 은 위 1단계 클라이언트(없으면 None)다.
-# 수정기는 propose_script(ws, cluster, ctx) -> ScriptProposal 을 구현해야 한다. 오류 케이스 하나에 Python 수정
-# 스크립트 하나를 돌려주는 계약이다(examples/adapters/agent_fixer.py 참고).
-# 스크립트 실행·재빌드·되돌리기·KB 저장은 여전히 sbmig 가 한다.
+# 2단계(tier 2, 선택): sbmig의 수정기(LLMFixer)를 회사 코딩 에이전트로 통째로 바꾼다. plugin을 비우면
+# sbmig의 수정기를 그대로 쓴다. 팩토리는 (options, cfg, llm)을 받고, llm은 위 1단계 클라이언트(없으면 None)다.
+# 수정기는 propose_script(ws, cluster, ctx) -> ScriptProposal을 구현해야 한다. 오류 케이스 하나에 Python 수정
+# 스크립트 하나를 반환하는 계약이다(examples/adapters/agent_fixer.py 참고).
+# 스크립트 실행, 재빌드, 되돌리기, KB 저장은 계속 sbmig가 한다.
 fix:
   plugin: null                           # 예: examples.adapters.agent_fixer:make_fixer
   plugin_options:                        # 팩토리에 그대로 넘기는 옵션(에이전트 프레임워크가 필요로 하는 값)
     agent: code-migrator
 
-# 계획 검토. none = 하지 않는다. llm = 같은 어댑터로 role=plan_advisor 요청을 보낸다.
+# 계획 검토. none이면 하지 않고, llm이면 같은 어댑터로 role=plan_advisor 요청을 보낸다.
 plan:
   advisor: none

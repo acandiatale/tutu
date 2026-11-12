@@ -1,23 +1,16 @@
-"""Main(웹 파드)과 Worker(Job 파드)가 공유 볼륨 위에서 주고받는 파일의 계약 (v2.1z-ac, 2026-11-09 — 배포팀의 명세를 우리 코드로).
-
-쓰는 사람을 나눈다. **Main** 은 ``<run dir>/control/`` 만 쓴다: 접수 때 입력을 고정한 ``request.json``(zip 의 sha256, 설정 파일의
-digest, sbmig 버전 — 그 뒤로 바꾸지 않는다)과 제어 상태 ``state.json``(queued → creating → created → running → finished | stopped |
-lost | failed; 전이마다 원자적으로 다시 쓴다; Job 을 만들기 **전에** creating 과 Job 이름을 적어 두므로 응답이 끊겨도 다시 뜬 Main 이
-같은 이름의 Job 을 찾아 이어받는다). **Worker** 는 실행 폴더의 나머지(저널·로그·보고서·result.zip)와 끝날 때 ``job-status.json`` 을 쓴다 —
-여기에 run id 와 attempt 가 들어 있어 Main 은 **지금 시도**의 결과만 믿는다. Worker 는 시작할 때 ``request.json`` 의 digest 와 자기가 받은
-zip·설정·코드를 대조해 다르면 돌지 않는다(exit 3). Job 의 소유는 라벨 ``sbmig-run-id`` + ``sbmig-owner``(요청마다 난수)로 확인한다 —
-Main 은 자기 라벨이 맞는 Job 만 지운다.
-
-리뷰 2026-11-10 — **환경 변수 고정**: zip·설정 파일·버전이 같아도 두 파드의 환경 변수가 다르면 다른 설정으로 돈다(설정 파일의
-``${VAR}`` 자리표시자와 덮어쓰기 ``SBMIG_<섹션>__<키>`` 는 환경 변수가 값을 정한다). Job 을 만드는 Main 이 그 이름들의 값 지문
-(``env_pins`` — 비밀로 보이는 이름은 빼고, sha256 앞 16자)과 정책(``SBMIG_JOB_ENV_PIN``: refuse | warn | off)을 ``state.json`` 에
-creating 전이와 함께 적고, Worker 가 자기 환경으로 다시 계산해 대조한다(``compare_env_pins``).
-2026-11-11: 비밀로 다루는 이름에 낱말 규칙 밖의 ``SECRET_NAMES``(IVAS 계정 아이디)가 더해졌다 — 지우는 대상이 되고 지문에서는 빠진다.
-2026-11-11 (wave 4) — **조치 재개 시도**: 빌드 파드에서 승인·확인을 기다리며 끝난 이어 돈 조치를 새 빌드 파드에서 잇는 것은 같은 실행의
-**다른 행동(action)을 가진 새 시도**다. Main 은 그 시도의 제어 상태를 ``control/remediation-resume.json`` 에(같은 ``ControlState``, ``action``
-이 채워짐, creating 을 먼저 적는 규칙도 같다), Worker 는 결과를 ``remediation-job-status.json`` 에 쓴다 — 이관의 ``control/state.json`` ·
-``job-status.json`` 은 재개가 절대 건드리지 않는다(이관은 "끝남, 빌드 성공" 그대로). Job env ``SBMIG_WORKER_ACTION`` 이 Worker 에게 행동을 알린다.
-``IVAS_BASE_URL`` 은 비밀이 아니지만 ``SBMIG_`` 덮어쓰기도 설정 파일의 ``${VAR}`` 도 아니라 지문 대상이 아니다.
+"""웹 파드(Main)와 Job 파드(Worker)가 공유 볼륨에서 주고받는 파일의 형식과 규칙을 정하는 모듈.
+- Main은 ``<run dir>/control/``에만 기록한다. ``request.json``은 접수할 때 고정한 입력(zip sha256, 설정 파일 해시, sbmig
+  버전)이라 이후 바꾸지 않고, ``state.json``은 제어 상태라 상태가 바뀔 때마다 원자적으로 다시 쓴다
+- Job을 만들기 전에 creating 상태와 Job 이름을 먼저 기록한다.
+  응답이 끊겨도 다시 뜬 Main이 같은 이름의 Job을 찾아 이어받기 위해서다
+- Worker는 실행 폴더의 나머지 파일과, 끝날 때 ``job-status.json``을 기록한다.
+  이 파일에 run id와 attempt가 있어 Main은 현재 시도의 결과만 받는다
+- Worker는 시작할 때 받은 zip, 설정, 코드를 ``request.json``의 해시와 비교하고, 다르면 실행하지 않는다(exit 3)
+- Job의 소유자는 라벨 ``sbmig-run-id``와 ``sbmig-owner``로 확인하고, Main은 자기 라벨이 붙은 Job만 지운다
+- Job을 만드는 Main은 설정이 읽는 환경 변수 값의 해시(``env_pins``)와 정책(``SBMIG_JOB_ENV_PIN``)을
+  기록하고, Worker가 ``compare_env_pins``로 자기 환경과 비교한다. 비밀로 보이는 이름은 기록하지 않는다
+- 취약점 조치 재개는 같은 실행에서 action만 다른 새 시도다. 제어 상태는 ``control/remediation-resume.json``,
+  결과는 ``remediation-job-status.json``에 기록하고 이관의 파일은 건드리지 않는다
 
 The file contract between the Main pod and the Worker pod on the shared volume: `control/request.json` (inputs pinned at
 intake), `control/state.json` (Main's control state, written atomically, intent recorded before the Job is created),
@@ -44,52 +37,54 @@ from typing import Any
 
 from sbmig.core.models import FLOW_FULL
 
-CONTROL_DIR = "control"                     # <run dir>/control/ — Main 만 쓴다
-REQUEST_FILE = "request.json"               # 접수 때 고정한 입력(불변)
-STATE_FILE = "state.json"                   # Main 의 제어 상태(전이마다 원자적으로 다시 쓴다)
-JOB_STATUS_FILE = "job-status.json"         # Worker 가 끝날 때 <run dir> 에 쓴다 (runs.py 가 같은 이름을 읽는다)
+CONTROL_DIR = "control"                     # <run dir>/control/ 폴더이며 Main만 기록한다
+REQUEST_FILE = "request.json"               # 접수할 때 고정한 입력이므로 바꾸지 않는다
+STATE_FILE = "state.json"                   # Main의 제어 상태이며 상태가 바뀔 때마다 원자적으로 다시 쓴다
+JOB_STATUS_FILE = "job-status.json"         # Worker가 끝날 때 <run dir>에 기록하고 runs.py가 같은 이름으로 읽는다
 WORKER_MODULE = "sbmig.web.worker"
-WORKER_COMMAND = ["python", "-m", WORKER_MODULE]      # Job 틀(81-web-job.template.yaml)과 LocalJobClient 의 명령
-RUN_LABEL = "sbmig-run-id"                  # Job / 파드 라벨: 실행 id
-OWNER_LABEL = "sbmig-owner"                 # Job / 파드 라벨: 요청마다 난수 — Main 이 자기 Job 만 지우게
-# Main 이 Job 마다 끼워 넣는 실행별 값의 이름(RunManager._job_env). 그 밖의 env 는 파드의 것이다 — 틀의 리터럴·ConfigMap·Secret 이 채운다
-# SBMIG_JOB_SLOT: 동시에 도는 Job 가운데 이 Job 의 자리 번호(1 부터) — Worker 가 자리마다 다른 Maven 로컬 저장소를 쓰게 한다
-# SBMIG_WORKER_ACTION: 이 Job 이 할 일(없음 = 이관, "remediation-resume" = 이어 돈 조치 재개) — 2026-11-11 wave 4
-# SBMIG_FLOW: 실행 방식(v2.1z-aj) — full(이관 전체) | remediation(이관 없이 취약점 조치만). Main 이 Job 마다 늘 적는다(full 도)
+WORKER_COMMAND = ["python", "-m", WORKER_MODULE]      # Job 템플릿(81-web-job.template.yaml)과 LocalJobClient가 실행하는 명령
+RUN_LABEL = "sbmig-run-id"                  # Job / 파드 라벨로 실행 id를 담는다
+OWNER_LABEL = "sbmig-owner"                 # Job / 파드 라벨이며 요청마다 난수를 넣어 Main이 자기 Job만 지우게 한다
+# Main이 Job마다 넣어 주는 실행별 환경 변수 이름이다.
+# 나머지 환경 변수는 템플릿의 리터럴, ConfigMap, Secret이 채운다
+# SBMIG_JOB_SLOT은 슬롯 번호(1부터), SBMIG_WORKER_ACTION은 할 일(비어 있으면 이관), SBMIG_FLOW는 실행
+# 방식(full | remediation)이다
 RUN_ENV = ("SBMIG_SOURCE_ZIP", "SBMIG_OUT", "SBMIG_RUN_ID", "SBMIG_CONFIG", "SBMIG_STOP_AFTER", "SBMIG_LLM_PROVIDER",
            "SBMIG_JOB_SLOT", "SBMIG_WORKER_ACTION", "SBMIG_FLOW")
-FLOW_ENV = "SBMIG_FLOW"                     # 위 RUN_ENV 의 한 이름: Main 이 적고(_job_env) Worker 가 request.json 의 flow 와 대조한다
-SLOT_ENV = "SBMIG_JOB_SLOT"                 # 위 RUN_ENV 의 한 이름: Main 이 적고(_job_env) Worker 가 읽는다
-# ── 이어 돈 조치의 재개 시도(2026-11-11 wave 4) ──
-ACTION_ENV = "SBMIG_WORKER_ACTION"          # 위 RUN_ENV 의 한 이름: 비었으면 이관(sbmig run), 아니면 아래 행동 중 하나
+FLOW_ENV = "SBMIG_FLOW"                     # Main이 기록하고 Worker가 request.json의 flow와 비교한다
+SLOT_ENV = "SBMIG_JOB_SLOT"                 # Main이 기록하고 Worker가 읽는다
+# 취약점 조치 재개 시도
+ACTION_ENV = "SBMIG_WORKER_ACTION"          # 비어 있으면 이관(sbmig run)을 하고, 아니면 아래 action 중 하나를 한다
 ACTION_REMEDIATION_RESUME = "remediation-resume"
 WORKER_ACTIONS = (ACTION_REMEDIATION_RESUME,)
-RESUME_STATE_FILE = "remediation-resume.json"         # control/ 안: 재개 시도의 Main 제어 상태(Main 만 쓴다)
-RESUME_STATUS_FILE = "remediation-job-status.json"    # 실행 폴더: 재개 Worker 의 결과(이관의 job-status.json 과 따로)
-MAX_PARALLEL_ENV = "SBMIG_JOB_MAX_PARALLEL"  # 웹 파드만 읽는다: 동시에 도는 Job 의 최대 수(기본 1; k8s-job / local-job 에서만)
-LLM_RECORDS_ENV = "SBMIG_WORKER_LLM_RECORDS"  # "1" 이면 Worker 가 설정의 llm.record_dir 을 그대로 둔다(기본: 끈다 — 소스가 공유 볼륨에 더 남지 않게)
-SECRET_NAME_WORDS = ("TOKEN", "PASSWORD", "PASSWD", "SECRET", "API_KEY")   # 이 말이 든 env 는 비밀로 다룬다(값은 로그·보고서에서 지운다)
-MIN_SECRET_LEN = 6                          # 이보다 짧은 값은 지우지 않는다(우연한 부분 일치로 로그를 망치지 않게)
-# 이름에 위 낱말이 없어도 비밀로 다루는 env(2026-11-11): IVAS 계정 아이디 — 회사 규칙은 IVAS 의 사용자·비밀번호·토큰을 모두 비밀로 본다.
-# 취약점 조치가 빌드 파드에서 돌게 되어 이 값이 Job 파드의 로그·보고서에 닿을 수 있다. 아이디는 짧을 수 있어 하한을 따로 둔다
+RESUME_STATE_FILE = "remediation-resume.json"         # control/ 안에 두는 재개 시도의 제어 상태이며 Main만 기록한다
+RESUME_STATUS_FILE = "remediation-job-status.json"    # 재개 Worker의 결과이며 이관의 job-status.json과 따로 둔다
+MAX_PARALLEL_ENV = "SBMIG_JOB_MAX_PARALLEL"  # 웹 파드가 읽는 동시 Job 최대 수(기본 1, Job 모드에서만 쓴다)
+LLM_RECORDS_ENV = "SBMIG_WORKER_LLM_RECORDS"  # "1"이면 Worker가 llm.record_dir을 유지하고, 기본은 끈다
+SECRET_NAME_WORDS = ("TOKEN", "PASSWORD", "PASSWD", "SECRET", "API_KEY")   # 이 단어가 들어간 환경 변수는 비밀 값으로 보고 로그와 보고서에서 마스킹한다
+MIN_SECRET_LEN = 6                          # 우연한 부분 일치로 로그가 망가지지 않도록 이보다 짧은 값은 마스킹하지 않는다
+# 이름에 위 단어가 없어도 비밀로 다루는 환경 변수다. 회사 규칙상 IVAS 사용자, 비밀번호, 토큰은 모두
+# 비밀이고, 조치가 빌드 파드에서 실행되므로 Job 로그에 남을 수 있다
+# 아이디는 짧을 수 있으므로 최소 길이를 따로 둔다
 SECRET_NAMES = frozenset({"IVAS_USER_ID"})
-MIN_NAMED_SECRET_LEN = 4                    # SECRET_NAMES 의 값은 이 길이부터 지운다(remediations.graph.scrub_message 와 같은 하한)
-# ── 환경 변수 고정(리뷰 2026-11-10) ──
-ENV_PIN_POLICY_ENV = "SBMIG_JOB_ENV_PIN"    # Main 의 env: Worker 의 환경이 다를 때 refuse(돌지 않는다) | warn(저널에 적고 돈다) | off(안 본다)
+MIN_NAMED_SECRET_LEN = 4                    # SECRET_NAMES 값을 마스킹하는 최소 길이
+# 환경 변수 고정 검사
+ENV_PIN_POLICY_ENV = "SBMIG_JOB_ENV_PIN"    # Worker 환경이 다를 때의 정책: refuse | warn | off
 ENV_PIN_REFUSE, ENV_PIN_WARN, ENV_PIN_OFF = "refuse", "warn", "off"
 ENV_PIN_POLICIES = (ENV_PIN_REFUSE, ENV_PIN_WARN, ENV_PIN_OFF)
-# 파드마다 달라도 되는 이름: LLM 원문 기록 폴더(웹 파드 안에서 도는 실행의 진단용 — Worker 는 SBMIG_WORKER_LLM_RECORDS 로 따로 켠다)
+# 파드마다 달라도 되는 이름이다.
+# LLM 원문 기록 폴더는 진단용이고 Worker는 SBMIG_WORKER_LLM_RECORDS로 따로 켠다
 ENV_PIN_SKIP = frozenset({"SBMIG_LLM__RECORD_DIR", "LLM_RECORD_DIR"})
-# 같은 설정을 정하는 다른 이름: Worker 는 KB 위치를 SBMIG_KB_DIR 로 받는다(worker-paths.yml 의 kb.dir) — 웹 파드의 덮어쓰기
-# SBMIG_KB__DIR 과 같은 값이어야 한다(틀에 그 줄이 없으면 Worker 는 구운 yml 의 PC 경로에 KB 를 쓰고 파드와 함께 잃는다)
+# Worker는 KB 위치를 SBMIG_KB_DIR로 받으므로 웹 파드의 SBMIG_KB__DIR과 같은 값이어야 한다.
+# 다르면 Worker가 이미지 안 yml의 경로에 KB를 기록해 파드와 함께 사라진다
 ENV_PIN_ALIASES: dict[str, tuple[str, ...]] = {"SBMIG_KB__DIR": ("SBMIG_KB_DIR",)}
 ENV_PIN_HASH_LEN = 16
 
 
 class RunState(str, Enum):
-    """Main 의 제어 상태. ``queued`` 접수됨(차례 대기) → ``creating`` Job 생성 요청 직전·직후(응답 불확실 구간) → ``created`` Job 이 있음 →
-    ``running`` 파드가 돈다 → 끝: ``finished``(Worker 의 결과 받음) / ``stopped``(멈춤 뒤 삭제) / ``lost``(Job 이 사라졌거나 결과 검증 실패) /
-    ``failed``(Main 쪽 오류 — 생성 실패 등).
+    """Main이 관리하는 실행의 제어 상태를 나타내는 열거형.
+    ``queued`` -> ``creating`` -> ``created`` -> ``running`` 순으로 진행하고 ``finished`` / ``stopped`` /
+    ``lost`` / ``failed`` 중 하나로 끝난다. ``creating``은 Job 생성 요청의 응답을 아직 확인하지 못한 상태다.
 
     Main's control states; `creating` is the "request sent, answer uncertain" window."""
     QUEUED = "queued"
@@ -106,33 +101,36 @@ TERMINAL_STATES = frozenset({RunState.FINISHED, RunState.STOPPED, RunState.LOST,
 
 
 def state_file_for(action: str | None) -> str:
-    """행동별 Main 제어 상태 파일 이름(``control/`` 안): 이관(None) = ``state.json``, 조치 재개 = ``remediation-resume.json``.
+    """action에 맞는 Main 제어 상태 파일 이름을 반환한다.
+    이관(None)은 ``state.json``, 조치 재개는 ``remediation-resume.json``이다.
 
     The control-state file name of an action: the migration's `state.json`, a remediation resume's own file."""
     return RESUME_STATE_FILE if action == ACTION_REMEDIATION_RESUME else STATE_FILE
 
 
 def status_file_for(action: str | None) -> str:
-    """행동별 Worker 결과 파일 이름(실행 폴더): 이관 = ``job-status.json``, 조치 재개 = ``remediation-job-status.json``.
+    """action에 맞는 Worker 결과 파일 이름을 반환한다.
+    이관은 ``job-status.json``, 조치 재개는 ``remediation-job-status.json``이다.
 
     The Worker's result file name of an action (the resume never overwrites the migration's `job-status.json`)."""
     return RESUME_STATUS_FILE if action == ACTION_REMEDIATION_RESUME else JOB_STATUS_FILE
 
 
 def utc_now() -> str:
-    """지금 시각, UTC ISO 8601 (초 단위, Z). / Now as ISO 8601 UTC."""
+    """현재 시각을 UTC ISO 8601 문자열(초 단위, Z)로 반환한다."""
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def control_dir(run_dir: Path) -> Path:
-    """``<run dir>/control`` (없으면 만든다). / The run's control directory."""
+    """``<run dir>/control`` 경로를 반환한다. 폴더가 없으면 만든다."""
     d = Path(run_dir) / CONTROL_DIR
     d.mkdir(parents=True, exist_ok=True)
     return d
 
 
 def atomic_write_json(path: Path, data: dict[str, Any]) -> None:
-    """같은 폴더의 임시 파일에 쓰고 ``os.replace`` — 읽는 쪽이 반쪽짜리 JSON 을 보지 않게(NFS 에서도 rename 은 원자적이다).
+    """JSON을 파일에 원자적으로 기록한다. 같은 폴더의 임시 파일에 쓴 뒤 ``os.replace``로 바꾸므로, NFS에서도
+    읽는 쪽이 반쯤 쓰인 JSON을 보지 않는다.
 
     Write JSON through a temp file in the same directory and `os.replace` it."""
     path = Path(path)
@@ -143,7 +141,7 @@ def atomic_write_json(path: Path, data: dict[str, Any]) -> None:
 
 
 def read_json(path: Path) -> dict[str, Any] | None:
-    """JSON 객체를 읽는다; 없거나 깨졌거나 객체가 아니면 None. / A JSON object, or None."""
+    """JSON 객체를 파일에서 읽는다. 파일이 없거나 깨졌거나 객체가 아니면 None을 반환한다."""
     try:
         data = json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -152,7 +150,7 @@ def read_json(path: Path) -> dict[str, Any] | None:
 
 
 def sha256_file(path: Path, chunk: int = 1 << 20) -> str:
-    """파일의 sha256 hex (스트리밍). / Streaming sha256 of a file."""
+    """파일의 sha256을 스트리밍으로 계산해 hex 문자열로 반환한다."""
     h = hashlib.sha256()
     with open(path, "rb") as fh:
         for block in iter(lambda: fh.read(chunk), b""):
@@ -161,8 +159,9 @@ def sha256_file(path: Path, chunk: int = 1 << 20) -> str:
 
 
 def config_digests(repo_root: Path, configs: list[str]) -> dict[str, str]:
-    """``config/default.yml`` 과 선택한 설정 파일들의 sha256 — 이름 → digest. 없는 파일은 ``"missing"``. Main 이 접수 때 적고 Worker 가
-    같은 경로(같은 이미지 — 회사 yml 을 ConfigMap 으로 줄 때는 같은 마운트)에서 다시 계산해 대조한다.
+    """``config/default.yml``과 선택한 설정 파일들의 sha256을 이름별로 반환한다.
+    없는 파일은 ``"missing"``으로 기록한다.
+    Main이 접수할 때 기록하고, Worker가 같은 경로에서 다시 계산해 비교한다.
 
     sha256 of `config/default.yml` and each selected config, by file name (`"missing"` when absent)."""
     d = Path(repo_root) / "config"
@@ -174,7 +173,7 @@ def config_digests(repo_root: Path, configs: list[str]) -> dict[str, str]:
 
 
 def sbmig_version() -> str:
-    """이 코드의 sbmig 버전(Main 과 Worker 가 같은 이미지인지 보는 값). / This code's sbmig version."""
+    """이 코드의 sbmig 버전을 반환한다. Main과 Worker가 같은 이미지인지 확인할 때 쓴다."""
     try:
         from sbmig import __version__
     except ImportError:  # pragma: no cover
@@ -183,14 +182,15 @@ def sbmig_version() -> str:
 
 
 def new_owner_token() -> str:
-    """요청 하나의 소유 토큰(라벨 값으로 쓸 수 있는 16자 hex). / A per-request owner token (label-safe)."""
+    """요청 하나의 소유 토큰을 만든다. 라벨 값으로 쓸 수 있는 16자 hex 문자열이다."""
     return secrets.token_hex(8)
 
 
 def is_secret_name(name: str) -> bool:
-    """환경 변수 이름이 비밀로 보이는가 — 이름에 ``SECRET_NAME_WORDS`` 가 들어 있으면 그렇다. 설정 덮어쓰기 ``SBMIG_<섹션>__<키>``(밑줄 두 개)는
-    예외다: 설정 키는 비밀을 담지 않는다(키·토큰은 환경 변수 이름으로만 가리킨다 — ``llm.api_key_env``). 그래서 ``SBMIG_LLM__MAX_OUTPUT_TOKENS``
-    의 값이 보고서에서 지워지거나 Worker 틀에서 literal 이라고 거절되지 않는다. ``SECRET_NAMES``(IVAS 계정 아이디)는 낱말이 없어도 비밀이다.
+    """환경 변수 이름이 비밀 값으로 보이는지 확인한다.
+    이름에 ``SECRET_NAME_WORDS``의 단어가 들어 있거나 ``SECRET_NAMES``에 있으면 비밀로 본다.
+    설정 덮어쓰기 ``SBMIG_<섹션>__<키>``는 비밀을 담지 않으므로 제외한다.
+    예를 들어 ``SBMIG_LLM__MAX_OUTPUT_TOKENS``는 마스킹하지 않는다.
 
     Whether an env name looks like a secret (contains one of `SECRET_NAME_WORDS`, or is one of `SECRET_NAMES`). A config override
     `SBMIG_<SECTION>__<KEY>` never is: no config key holds a credential, so `SBMIG_LLM__MAX_OUTPUT_TOKENS` is neither redacted nor
@@ -202,14 +202,15 @@ def is_secret_name(name: str) -> bool:
 
 
 def secret_env_names(environ: dict[str, str] | None = None) -> list[str]:
-    """비밀로 보이는 환경 변수 이름들(``is_secret_name``, 정렬). / Env names that look like secrets."""
+    """비밀로 보이는 환경 변수 이름을 정렬해서 반환한다."""
     env = os.environ if environ is None else environ
     return sorted(k for k in env if is_secret_name(k))
 
 
 def secret_values(environ: dict[str, str] | None = None, min_len: int = MIN_SECRET_LEN) -> list[str]:
-    """비밀로 보이는 환경 변수의 값들(``min_len`` 이상, 긴 것부터 — 긴 값을 먼저 지워야 부분 문자열이 남지 않는다).
-    ``SECRET_NAMES`` 의 값은 ``MIN_NAMED_SECRET_LEN`` 부터(``min_len`` 이 더 작으면 그것) — 짧은 계정 아이디도 지운다.
+    """비밀로 보이는 환경 변수의 값 목록을 반환한다.
+    ``min_len`` 이상인 값만 담고, 부분 문자열이 남지 않도록 긴 값부터 정렬한다.
+    ``SECRET_NAMES``의 값은 짧은 계정 아이디도 가리도록 ``MIN_NAMED_SECRET_LEN`` 길이부터 포함한다.
 
     The values of secret-looking env vars, longest first; a `SECRET_NAMES` value from `MIN_NAMED_SECRET_LEN` characters on."""
     env = os.environ if environ is None else environ
@@ -222,20 +223,22 @@ def secret_values(environ: dict[str, str] | None = None, min_len: int = MIN_SECR
 
 
 def env_pin_policy(value: str | None, default: str = ENV_PIN_REFUSE) -> str:
-    """``SBMIG_JOB_ENV_PIN`` 의 값을 정책 이름으로(앞뒤 공백·대소문자 무시). 비었거나 모르는 값이면 ``default``.
+    """``SBMIG_JOB_ENV_PIN`` 값을 정책 이름으로 바꾼다.
+    공백과 대소문자는 무시하고, 비었거나 모르는 값이면 ``default``를 반환한다.
 
     Normalize a `SBMIG_JOB_ENV_PIN` value to `refuse` / `warn` / `off`; empty or unknown → `default`."""
-    v = value.strip().lower() if isinstance(value, str) else ""      # 깨진 state.json 의 값(숫자·목록)도 예외 없이 default
+    v = value.strip().lower() if isinstance(value, str) else ""      # 깨진 state.json에 숫자나 목록이 들어 있어도 예외 없이 default로 처리한다
     return v if v in ENV_PIN_POLICIES else default
 
 
 def config_env_names(repo_root: Path, configs: list[str]) -> set[str]:
-    """``config/default.yml`` 과 선택한 설정 파일들이 ``${VAR}`` 자리표시자로 읽는 환경 변수 이름들(주석 속의 것은 세지 않는다 —
-    yml 을 읽은 값만 본다; yml 로 읽히지 않는 파일은 글 전체에서 찾는다). 없는 파일은 건너뛴다.
+    """설정 파일들의 ``${VAR}`` 플레이스홀더가 읽는 환경 변수 이름을 모아 반환한다.
+    yml로 읽은 값만 보므로 주석은 세지 않는다.
+    yml로 읽히지 않는 파일은 텍스트 전체에서 찾고, 없는 파일은 건너뛴다.
 
     The env names the `${VAR}` placeholders of `config/default.yml` and the selected configs read (values only, not
     comments; a file that is not valid YAML is scanned as text; a missing file is skipped)."""
-    import yaml          # 늦은 import: 이 모듈은 설정 스택 없이도 읽힌다(k8s 클라이언트, 테스트)
+    import yaml          # 설정 모듈 없이도 이 모듈을 쓸 수 있도록 함수 안에서 import한다
 
     from sbmig.core.config import placeholder_names
     names: set[str] = set()
@@ -253,8 +256,8 @@ def config_env_names(repo_root: Path, configs: list[str]) -> set[str]:
 
 
 def env_pin_value(name: str, environ: dict[str, str] | None = None) -> str | None:
-    """고정할 이름 하나의 값: 그 이름의 환경 변수, 없으면 ``ENV_PIN_ALIASES`` 의 다른 이름(설정이 실제로 적용되는 순서와 같다).
-    어느 것도 없으면 None(빈 값으로 **설정된** 변수는 ``""`` — 없는 것과 다르다).
+    """고정할 환경 변수 하나의 값을 반환한다. 그 변수가 없으면 ``ENV_PIN_ALIASES``의 다른 이름을 찾는다.
+    둘 다 없으면 None을 반환한다. 빈 값으로 설정된 변수는 ``""``를 반환하므로 None과 구분된다.
 
     The value pinned for one name: the variable itself, else its alias (`ENV_PIN_ALIASES`); None when unset (a variable
     set to the empty string is `""`, not None)."""
@@ -266,10 +269,9 @@ def env_pin_value(name: str, environ: dict[str, str] | None = None) -> str | Non
 
 
 def env_pin_names(repo_root: Path, configs: list[str], environ: dict[str, str] | None = None) -> list[str]:
-    """고정할 환경 변수 이름들(정렬): 설정 파일의 자리표시자(``config_env_names``) + 이 환경의 설정 덮어쓰기
-    ``SBMIG_<섹션>__<키>``(와 섹션 하나를 통째로 바꾸는 ``SBMIG_<섹션>`` — ``load_config`` 가 같은 규칙으로 읽는다)와 그 값 안의
-    자리표시자 + 다른 이름으로만 설정된 ``ENV_PIN_ALIASES`` 의 이름. 비밀로 보이는 이름(``is_secret_name`` — 그 값의 지문을 공유
-    볼륨에 남기지 않는다)과 ``ENV_PIN_SKIP`` 은 뺀다. 프록시 변수는 대상이 아니다.
+    """고정할 환경 변수 이름 목록을 만든다. 설정 파일의 플레이스홀더, 이 환경의 ``SBMIG_<섹션>__<키>``와
+    ``SBMIG_<섹션>`` 덮어쓰기, 그 값 안의 플레이스홀더, 별칭으로만 설정된 이름을 모은다.
+    공유 볼륨에 비밀 값의 해시를 남기지 않도록 비밀로 보이는 이름과 ``ENV_PIN_SKIP``의 이름은 뺀다.
 
     The env names to pin: the configs' placeholders, this environment's `SBMIG_<SECTION>__<KEY>` overrides (and a
     whole-section `SBMIG_<SECTION>`, which `load_config` reads by the same rule) and the placeholders inside their
@@ -281,7 +283,7 @@ def env_pin_names(repo_root: Path, configs: list[str], environ: dict[str, str] |
     for key, val in env.items():
         if not key.startswith("SBMIG_"):
             continue
-        # 밑줄 두 개 = 설정 키 하나. 밑줄 두 개가 없으면 최상위 섹션 이름일 때만 설정이다(SBMIG_WEB_MODE · SBMIG_OUT 류는 아니다)
+        # 밑줄 두 개가 있으면 설정 키 하나를 덮어쓰는 것이고, 없으면 최상위 섹션 이름일 때만 설정으로 본다
         if "__" in key or key[len("SBMIG_"):].lower() in sections:
             names.add(key)
             names |= placeholder_names(val)
@@ -290,8 +292,9 @@ def env_pin_names(repo_root: Path, configs: list[str], environ: dict[str, str] |
 
 
 def env_pins(repo_root: Path, configs: list[str], environ: dict[str, str] | None = None) -> dict[str, str]:
-    """이 환경의 고정 지문: ``env_pin_names`` 중 **설정된** 이름 → 값의 sha256 앞 ``ENV_PIN_HASH_LEN`` 자(값 자체는 적지 않는다).
-    설정되지 않은 이름은 빠진다 — 한쪽에만 있는 이름은 ``compare_env_pins`` 가 따로 알려 준다.
+    """이 환경의 고정 해시를 만든다. ``env_pin_names`` 중 설정된 이름마다 값의 sha256 앞
+    ``ENV_PIN_HASH_LEN``자를 담고, 값 자체는 기록하지 않는다.
+    설정되지 않은 이름은 빠지며, 한쪽에만 있는 이름은 ``compare_env_pins``가 알려 준다.
 
     This environment's pins: each set name of `env_pin_names` → the first `ENV_PIN_HASH_LEN` hex of its value's sha256."""
     out: dict[str, str] = {}
@@ -303,8 +306,8 @@ def env_pins(repo_root: Path, configs: list[str], environ: dict[str, str] | None
 
 
 def compare_env_pins(pinned: dict[str, str], actual: dict[str, str]) -> dict[str, list[str]]:
-    """Main 이 적은 지문과 Worker 가 계산한 지문의 차이 — **이름만**(정렬): ``differs``(양쪽에 있고 값이 다름), ``main_only``
-    (Main 에만 설정됨), ``worker_only``(Worker 에만 설정됨). 차이가 없는 항목은 빈 목록.
+    """Main의 해시와 Worker의 해시를 비교해 차이 나는 이름만 반환한다.
+    ``differs``는 값이 다른 이름, ``main_only`` / ``worker_only``는 한쪽에만 설정된 이름이다.
 
     The differences between Main's pins and the Worker's, names only: `differs`, `main_only`, `worker_only`."""
     pinned, actual = dict(pinned or {}), dict(actual or {})
@@ -315,8 +318,9 @@ def compare_env_pins(pinned: dict[str, str], actual: dict[str, str]) -> dict[str
 
 @dataclass
 class RequestRecord:
-    """접수 때 고정한 입력(``control/request.json``). Worker 는 ``zip_sha256`` / ``config_digests`` / ``sbmig_version`` 을 자기 쪽에서 다시
-    계산해 대조한다(``verify_request``). 한 번 쓰면 바꾸지 않는다.
+    """접수할 때 고정한 입력(``control/request.json``)을 담는 데이터 클래스. 한 번 기록하면 바꾸지 않는다.
+    Worker가 ``zip_sha256``, ``config_digests``, ``sbmig_version``을 다시 계산해
+    비교한다(``verify_request``).
 
     The inputs pinned at intake; the Worker recomputes the digests and refuses to run on a mismatch."""
     run_id: str
@@ -330,9 +334,10 @@ class RequestRecord:
     stop_after: str | None = None
     llm_provider: str | None = None
     attempt: int = 1
-    # v2.1z-aj: 실행 방식(sbmig.core.models.RUN_FLOWS). 이 키가 없는 옛 request.json 은 full 로 읽힌다(기본값)
+    # 실행 방식(sbmig.core.models.RUN_FLOWS)이며 이 키가 없는 이전 request.json은 full로 읽는다
     flow: str = FLOW_FULL
-    # 2026-11-12: 사람이 올린 파일 이름 그대로(한글 등 유니코드 유지; ``upload`` 는 파일 시스템용으로 다듬은 이름). 옛 기록에는 없다
+    # 사용자가 올린 파일 이름 그대로다.
+    # ``upload``는 파일 시스템에 맞게 다듬은 이름이고, 이전 기록에는 이 값이 없다
     upload_name: str | None = None
 
     def to_json(self) -> dict[str, Any]:
@@ -342,7 +347,7 @@ class RequestRecord:
     def from_json(cls, data: dict[str, Any]) -> RequestRecord:
         known = set(cls.__dataclass_fields__)                   # tolerate extra keys from a newer writer
         rec = cls(**{k: v for k, v in data.items() if k in known})
-        if not rec.flow:                                        # "flow": null / "" = 옛 기록과 같다
+        if not rec.flow:                                        # flow가 null이나 빈 문자열이면 이전 기록처럼 full로 처리한다
             rec.flow = FLOW_FULL
         return rec
 
@@ -364,10 +369,11 @@ class RequestRecord:
 
 @dataclass
 class ControlState:
-    """Main 의 제어 상태(``control/state.json``). ``job`` 은 결정적 이름(``job_name(run_id)``), ``owner`` 는 라벨 ``sbmig-owner`` 의 값.
-    전이할 때마다 ``write`` 로 통째로 다시 쓴다(원자적). ``env_pins`` / ``env_pin_policy`` 는 Job 을 **만드는** Main 이 creating 전이와
-    함께 적는다(접수한 Main 이 아니다 — 대기 중에 웹 파드가 재시작되면 새 Main 의 환경이 기준이다). Worker 는 이 파일을 읽기만 한다.
-    ``slot`` 도 같은 전이 때 적는다: 동시에 도는 Job 가운데 이 Job 의 자리 번호 — 재시작한 Main 이 같은 자리를 다시 잡는다.
+    """Main의 제어 상태(``control/state.json``)를 담는 데이터 클래스.
+    상태가 바뀔 때마다 ``write``로 파일 전체를 원자적으로 다시 쓰고, Worker는 읽기만 한다.
+    ``job``은 ``job_name(run_id)``로 정해지는 Job 이름이고, ``owner``는 ``sbmig-owner`` 라벨 값이다.
+    ``env_pins``, ``env_pin_policy``, ``slot``은 Job을 만드는 Main이 creating 상태로 바꿀 때 기록하므로,
+    대기 중에 웹 파드가 재시작하면 새 Main의 환경이 기준이 된다.
 
     Main's control state for one run (atomic rewrite on every transition). `env_pins` / `env_pin_policy` are written by
     the Main that creates the Job, with the `creating` transition; the Worker only reads this file."""
@@ -380,10 +386,10 @@ class ControlState:
     updated_at: str = field(default_factory=utc_now)
     exit_code: int | None = None
     error: str | None = None
-    env_pins: dict[str, str] | None = None      # Job 을 만드는 Main 의 환경 지문(creating 전이 때 적는다; None = 대조 안 함)
-    env_pin_policy: str | None = None           # refuse | warn | off — Main 의 SBMIG_JOB_ENV_PIN (Worker 는 이 값을 따른다)
-    slot: int | None = None                     # 이 Job 이 차지한 자리 번호(creating 전이 때 적는다; None = 자리 개념 이전에 만든 Job = 1번 자리)
-    action: str | None = None                   # None = 이관 시도, "remediation-resume" = 이어 돈 조치 재개 시도(파일도 따로)
+    env_pins: dict[str, str] | None = None      # Job을 만드는 Main의 환경 해시이며 None이면 비교하지 않는다
+    env_pin_policy: str | None = None           # refuse | warn | off 중 하나이며 Worker가 이 값을 따른다
+    slot: int | None = None                     # 이 Job의 슬롯 번호이며 None이면 1번 슬롯으로 본다
+    action: str | None = None                   # None은 이관 시도이고 "remediation-resume"은 조치 재개 시도다
 
     @property
     def terminal(self) -> bool:
@@ -393,7 +399,7 @@ class ControlState:
             return False
 
     def transition(self, state: RunState | str, **changes: Any) -> ControlState:
-        """상태를 바꾸고(updated_at 갱신) 자신을 돌려준다; 파일에는 ``write`` 로 쓴다."""
+        """상태를 바꾸고 updated_at을 갱신한 뒤 자신을 반환한다. 파일 저장은 ``write``가 한다."""
         self.state = state.value if isinstance(state, RunState) else str(state)
         for k, v in changes.items():
             setattr(self, k, v)
@@ -426,8 +432,10 @@ class ControlState:
 
 @dataclass
 class JobStatus:
-    """Worker 가 끝날 때 쓰는 ``<run dir>/job-status.json``: 종료 코드, 시각, 그리고 **어느 실행·시도의** 결과인지. Main 은 ``matches`` 가
-    참인 파일만 결과로 받는다(옛 시도의 파일을 지금 성공으로 읽지 않게). run-job.sh 가 쓰는 두 필드짜리 파일도 읽힌다(id 없음 = 대조 생략).
+    """Worker가 끝날 때 기록하는 ``<run dir>/job-status.json``을 담는 데이터 클래스.
+    종료 코드, 시각, 어느 실행과 시도의 결과인지를 담는다.
+    Main은 이전 시도의 결과를 현재 결과로 착각하지 않도록 ``matches``가 참인 파일만 결과로 받는다.
+    run-job.sh가 쓰는 필드 두 개짜리 파일도 읽을 수 있다.
 
     The Worker's result for one attempt; Main accepts it only when `matches(run_id, attempt)`."""
     exit_code: int
@@ -436,7 +444,7 @@ class JobStatus:
     attempt: int | None = None
     error: str | None = None
     sbmig_version: str | None = None
-    action: str | None = None                   # 조치 재개 시도의 결과면 그 행동 이름(이관이면 없음)
+    action: str | None = None                   # 조치 재개 시도의 결과면 그 action 이름이 들어가고 이관이면 비어 있다
 
     def matches(self, run_id: str, attempt: int) -> bool:
         return (self.run_id is None or self.run_id == run_id) and (self.attempt is None or int(self.attempt) == int(attempt))
@@ -463,8 +471,9 @@ class JobStatus:
 
 
 def verify_request(record: RequestRecord, repo_root: Path, zip_path: Path | None, run_id: str | None = None) -> list[str]:
-    """Worker 쪽 대조: 받은 zip 의 sha256, 설정 파일들의 digest, sbmig 버전, run id 가 ``request.json`` 과 같은지. 다른 점을 사람이 읽을
-    문장으로 돌려준다(빈 목록 = 통과). zip 이 None 이면 zip 은 건너뛴다.
+    """Worker가 받은 입력이 접수 때와 같은지 확인한다.
+    zip의 sha256, 설정 파일 해시, sbmig 버전, run id를 ``request.json``과 비교한다.
+    다른 점을 문장 목록으로 반환하고, 빈 목록이면 통과다. ``zip_path``가 None이면 zip 비교는 건너뛴다.
 
     The Worker's check of the pinned inputs; returns the mismatches as sentences (empty = ok)."""
     problems: list[str] = []

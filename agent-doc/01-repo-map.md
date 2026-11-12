@@ -67,7 +67,7 @@
 | `sbmig/graph/` | LangGraph 엔진 | `engine.py` 노드 intake → analyze → plan → phase → finalize (→ remediation, 켜졌을 때) |
 | `sbmig/web/` | 웹 UI | `app.py` 라우트(`/api/runs`, `/api/runs/{run_id}/events` …) · `runs.py` 실행 관리자·SSE 이벤트 · `static/index.html` 화면(바닐라 JS) |
 
-모듈마다 docstring 맨 앞에 한국어 블록(요약 → 흐름상 위치 → 진입점 → 지킬 것)이 있다. 규약: `docs/v2/CODE-COMMENTS-KO.md`.
+모듈마다 docstring 맨 앞에 짧은 한국어 블록(역할, 호출 위치, 진입점, 지켜야 할 규칙)이 있고 그 뒤에 영어 상세 기록이 있다. 규약: `docs/v2/CODE-COMMENTS-KO.md`.
 
 ## 3. 이 일을 하려면 이 파일
 

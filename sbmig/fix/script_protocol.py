@@ -1,16 +1,13 @@
-"""수정 답변 프로토콜 파서(v2.1): LLM 답 텍스트를 `<analysis>` 원인, `<solution>` 해결 방법, `<verify>` 운영자
-확인 사항, `<edits>` 편집 JSON, `<changes>` 변경 설명, `<script>` 스크립트(또는 `<no_script>` 이유),
-`<need_files>` / `<need_grep>` 문맥 요청으로 나눈다. 흐름상 위치: LLMFixer 가 답마다 `parse_script_response`
-를 부르고, 구조 검토(`sbmig.review.parse`)도 수정 블록을 이것으로 읽는다. 핵심: parse_script_response →
-ParsedScript, parse_edits / load_edits_json(관대한 JSON), parse_changes,
+"""LLM의 수정 답변을 태그별로 나누어 읽는 모듈. LLMFixer가 답변마다 `parse_script_response`를 호출하고, 구조
+검토(`sbmig.review.parse`)도 이 모듈로 수정 블록을 읽는다.
+- 모든 태그는 없어도 되며, 어떤 답변에도 예외를 던지지 않는다
+- 설명 글과 데이터 블록을 먼저 꺼내 지우므로 분석 글이나 JSP 편집 안의 `<script>`를 수정 스크립트로 잘못 읽지 않는다
+- 여기서는 코드가 파싱되고 모듈 수준 `def fix`가 있는지만 확인한다.
+  정적 검사는 `sbmig.script.check_script`, 편집 검증은 `sbmig.script.edits.edits_from_json`이 맡는다
+- `<verify>`만 있는 답변은 답변으로 보지 않는다
+- `<blocked>`는 한 문장으로 줄여 `blocked_reason`에 담는다.
+  편집이 함께 와도 읽으며, 거절로 처리할지는 수정 루프가 정한다
 clean_code, script_problem, normalize_path.
-지킬 것: 관대하고 절대 예외를 내지 않는다. 모든 부분이 선택이라 v2 답(`<analysis>` + `<script>`)도 그대로
-읽힌다. 산문·데이터 블록을 먼저 꺼내 지우므로(masking) 분석이나 JSP 편집 속의 `<script>` 가 수정 스크립트로
-오인되지 않는다. 여기서는 "파싱되고 모듈 수준 `def fix` 가 있는가" 만 보고, 진짜 정적 검사는
-`sbmig.script.check_script`, 편집 항목의 op / pom 호출 / 경로 검증은 `sbmig.script.edits.edits_from_json`
-몫이다. `<verify>` 만 있는 답은 답으로 치지 않는다. v2.1y `<blocked>한 문장</blocked>`: 프로젝트 안에서 못 고치는
-이유(소유팀 결정) → `blocked_reason`(공백을 한 칸으로, 최대 BLOCKED_MAX_CHARS 자; 빈 태그는 "(no reason given)").
-편집과 함께 와도 편집은 그대로 읽는다 — 거절로 분류하는 것은 루프 몫이다.
 
 Fix answer protocol (v2.1, docs/v2/PLAN-v2.1.md §3.6; v2 script contract docs/INTERFACES.md "Script contract (S)").
 
@@ -97,8 +94,8 @@ _PATCHES_RE = re.compile(r"^\s*(?:[#*>\-]\s*)*={3}\s*(?:MODIFY|CREATE|DELETE|REN
 
 @dataclass
 class ParsedScript:
-    """답 하나를 나눈 결과: 쓸 수 있는 코드(`code`)와 못 써도 꺼낸 후보(`candidate`), 원인·해결·운영자 확인,
-    검증된 편집과 그 문제, 변경 설명, no_script 이유, 문맥 요청, 경고."""
+    """LLM 답변 하나를 나눈 결과를 담는 데이터 클래스.
+    실행할 수 있는 코드(`code`), 쓸 수 없지만 꺼내 둔 후보(`candidate`), 편집, 변경 설명, 추가 자료 요청, 경고를 담는다."""
     code: str = ""                                 # usable code (parses, defines a module-level fix); "" otherwise
     candidate: str = ""                            # the extracted script text even when it is not usable
     analysis: str = ""                             # 원인
@@ -121,31 +118,32 @@ class ParsedScript:
 
     @property
     def wants_context(self) -> bool:
-        """LLM 이 파일·grep 을 더 달라고 했는가."""
+        """LLM이 파일 내용이나 grep 결과를 더 요청했는지 반환한다."""
         return bool(self.need_files or self.need_grep)
 
     @property
     def usable(self) -> bool:
-        """루프가 적용할 것이 있는가: 쓸 수 있는 스크립트 또는 유효한 편집.
+        """수정 루프가 적용할 내용이 있는지 반환한다. 실행할 수 있는 스크립트나 유효한 편집이 있으면 참이다.
 
         Something the loop can apply: a usable script or valid edits."""
         return bool(self.code or self.edits)
 
     @property
     def used_patches(self) -> bool:
-        """v1 SEARCH/REPLACE `<patches>` 형식으로 답했는가(v2 루프는 받지 않는다)."""
+        """LLM이 이전 SEARCH/REPLACE `<patches>` 형식으로 답했는지 반환한다.
+        지금 수정 루프는 이 형식을 받지 않는다."""
         return PATCHES_WARNING in self.warnings
 
     @property
     def described(self) -> bool:
-        """`<changes>` 목록 자체가 무언가를 설명했는가(스크립트에는 필요; 편집의 desc 는 세지 않는다).
+        """`<changes>` 목록에 변경 설명이 하나라도 있는지 반환한다. 편집 항목의 desc는 세지 않는다.
 
         The answer's `<changes>` list describes something (a script needs one)."""
         return any(n.change or n.where for n in self.changes[:self.changes_count])
 
     def changes_note(self) -> str:
-        """설명이 있으면 ""; 없으면 스크립트 답에 붙일 `[sbmig]`
-        메모 문구(그러면 루프가 diff 로 설명을 만든다).
+        """변경 설명이 없는 스크립트 답변에 붙일 `[sbmig]` 메모를 반환한다.
+        설명이 있으면 빈 문자열을 반환하고, 없으면 수정 루프가 diff로 설명을 만든다.
 
         "" when the changes are described; else the `[sbmig]` note text for an answer with a script but no usable
         `<changes>` list (the loop then builds the notes from the diff)."""
@@ -160,8 +158,8 @@ class ParsedScript:
 # helpers
 # ---------------------------------------------------------------------------
 def normalize_path(raw: str) -> tuple[Optional[str], Optional[str]]:
-    """(정규화한 posix 상대 경로, 경고). 절대 경로·드라이브
-    문자·`~`·`..` 는 거부한다 — 프로젝트 밖은 손대지 않는다.
+    """LLM이 준 경로를 posix 상대 경로로 정규화해 (경로, 경고)로 반환한다.
+    절대 경로, 드라이브 문자, `~`, `..`는 거부한다.
 
     Return (normalized posix relative path, warning). Rejects absolute paths and `..`."""
     p = raw.strip().strip("`'\"*").strip()
@@ -204,8 +202,8 @@ def _split_list(text: str) -> list[str]:
 
 
 def _find_simple(text: str, name: str) -> Optional[tuple[str, int]]:
-    """<name>…</name> 의 (내용, 끝 위치). 닫는 태그가 없으면 다음 알려진 태그나 끝에서 닫는다. 닫는 태그가
-    있으면 내용이 다른 태그를 언급해도 된다.
+    """<name>…</name>의 내용과 끝 위치를 반환한다.
+    닫는 태그가 없으면 다음 태그나 텍스트 끝까지를 내용으로 본다.
 
     (content, end offset) of <name>…</name>; a missing closing tag ends at the next known tag or EOF. With a
     closing tag the content may mention other tags ("I return a <script> …")."""
@@ -223,8 +221,8 @@ def _find_simple(text: str, name: str) -> Optional[tuple[str, int]]:
 
 
 def clean_code(body: str) -> str:
-    """스크립트 텍스트를 쓴 그대로: 앞뒤 빈 줄과 감싼 코드 펜스만 지우고, 통째로 들여쓴 블록이면 dedent, 끝
-    줄바꿈 하나. 그 밖엔 손대지 않는다.
+    """스크립트 텍스트에서 앞뒤 빈 줄과 코드 펜스만 지우고 반환한다.
+    블록 전체가 들여쓰기되어 있으면 들여쓰기를 걷어 낸다.
 
     The script text as written: blank lines around it and a code fence wrapped around it dropped, dedented when
     the block is indented as a whole, one trailing newline. Nothing else is touched."""
@@ -251,8 +249,8 @@ def clean_code(body: str) -> str:
 
 
 def script_problem(code: str) -> str:
-    """코드가 파싱되고 모듈 수준 `def fix(…)` 를 정의하면 ""; 아니면 이유(LLM 에 피드백으로 보여 주고
-    ScriptProposal.error 에 남는다).
+    """코드가 파싱되고 모듈 수준 `def fix(…)`가 있는지 확인한다.
+    문제가 없으면 빈 문자열을, 있으면 LLM에 피드백으로 보낼 이유를 반환한다.
 
     "" when `code` parses and defines a module-level `def fix(…)`; else the reason (shown to the LLM and kept in
     ScriptProposal.error)."""
@@ -271,9 +269,8 @@ def script_problem(code: str) -> str:
 
 
 def _script_from_tag(t: str, start: int, warnings: list[str]) -> Optional[str]:
-    """`start` 부터 찾은 <script>…</script> 안의 텍스트. 닫는 태그는 "자기 줄에 있고 그 앞 블록이 파싱되는" 첫
-    것(코드 안에 `</script>` 가 있을 수 있다 — JSP 편집), 다음은 아무 닫는 태그. 닫는 태그가 없으면 다음
-    <analysis> / <need_*> 줄이나 끝까지(경고).
+    """`start` 위치부터 <script>…</script> 안의 텍스트를 꺼낸다. 코드 안에도 `</script>`가 나올 수 있으므로
+    자기 줄에 홀로 있고 앞의 코드가 파싱되는 닫는 태그를 먼저 고른다.
 
     The text inside <script>…</script> searched from `start`. The closing tag is the first one on its own line
     whose block parses (a `</script>` can sit inside the code, e.g. a JSP edit), then any later one; without a
@@ -295,8 +292,8 @@ def _script_from_tag(t: str, start: int, warnings: list[str]) -> Optional[str]:
 
 
 def _script_from_fence(t: str, warnings: list[str]) -> Optional[str]:
-    """<script> 태그가 없을 때: `fix(…)` 를 정의하는 마지막 python
-    펜스 블록, 또는 답 전체가 그런 코드면 답 전체(경고와 함께).
+    """<script> 태그가 없을 때 `fix(…)`를 정의하는 마지막 python 코드 펜스 블록을 꺼낸다.
+    답변 전체가 그런 코드이면 답변 전체를 반환한다.
 
     No <script> tag: the last fenced python block that defines a module-level fix(…), or the whole answer when
     it is nothing but such code."""
@@ -319,8 +316,8 @@ _PY_LITERALS = {"None": "null", "True": "true", "False": "false"}
 
 
 def _repair_json(s: str) -> str:
-    """LLM 이 흔히 틀리는 JSON 을 고친다: 문자열 밖의 끝 쉼표·`//` `/* */` 주석·Python `None` / `True` /
-    `False`, 작은따옴표 문자열 → JSON 문자열, 문자열 안의 잘못된 escape 는 역슬래시를 하나 더 붙여 살린다.
+    """LLM이 자주 틀리는 JSON 표기를 고친다.
+    끝 쉼표, 주석, Python 리터럴, 작은따옴표 문자열, 문자열 안의 잘못된 이스케이프를 처리한다.
 
     A JSON text with the usual LLM slips repaired: outside strings trailing commas, `//` / `/* */` comments and
     Python `None` / `True` / `False`; single-quoted strings become JSON strings; inside strings invalid escapes
@@ -379,8 +376,8 @@ def _repair_json(s: str) -> str:
 
 
 def load_edits_json(text: str) -> tuple[Optional[Any], str]:
-    """(파싱한 객체, "") 또는 (None, 디코더 메시지). `json.loads` 먼저, 다음은 관대하게: 문자열 안의 제어 문자
-    허용, _repair_json, 앞뒤에 설명이 붙었으면 첫 `[` / `{` 부터 읽기.
+    """편집 JSON을 읽어 (객체, 빈 문자열)을 반환한다.
+    `json.loads`가 실패하면 표기를 고쳐 다시 읽고, 그래도 실패하면 (None, 디코더 메시지)를 반환한다.
 
     (parsed object, "" ) or (None, the decoder's message). `json.loads` first, then lenient: raw control
     characters in strings, `_repair_json`, the first `[` / `{` value with prose around it, a Python literal."""
@@ -401,7 +398,7 @@ def load_edits_json(text: str) -> tuple[Optional[Any], str]:
             return json.loads(v, strict=False), ""
         except ValueError:
             pass
-    # 첫 괄호부터만 읽는다 — 뒤의 "{" 부터 읽으면 목록에서 편집 하나만 집어 오게 된다
+    # 뒤쪽 "{"부터 읽으면 목록에서 편집 하나만 가져오게 되므로 첫 괄호부터 읽는다
     # prose around the value: decode from the first bracket only (a later "{" would pick one edit out of a list)
     dec = json.JSONDecoder(strict=False)
     for v in variants:
@@ -418,8 +415,7 @@ def load_edits_json(text: str) -> tuple[Optional[Any], str]:
 
 
 def parse_edits(text: str) -> tuple[list[Edit], str]:
-    """`<edits>` 블록 → (검증된 편집, 문제). 빈 블록 / `[]` 는 편집 없음·문제 없음. 항목 하나라도 잘못되면
-    편집 전체를 버린다(일부만 적용하지 않는다).
+    """`<edits>` 블록을 읽어 (검증된 편집 목록, 문제)로 반환한다. 항목 하나라도 잘못되면 편집 전체를 버린다.
 
     The `<edits>` block → (validated edits, problem). An empty block / `[]` = no edits, no problem."""
     obj, err = load_edits_json(text)
@@ -434,8 +430,7 @@ def parse_edits(text: str) -> tuple[list[Edit], str]:
 
 
 def parse_changes(text: str) -> tuple[list[EditNote], str]:
-    """`<changes>` 블록 → (설명 목록, 문제). 편집과 같은 관대한 JSON, JSON 이 아니면 줄마다 "path: what" 으로
-    읽는다. 읽히지 않아도 답을 거절하는 이유가 되지 않는다.
+    """`<changes>` 블록을 읽어 (변경 설명 목록, 문제)로 반환한다. 읽지 못해도 답변을 거절하지 않는다.
 
     The `<changes>` block → (notes, problem). JSON as lenient as the edits (`load_edits_json`); a text that is not
     JSON is read line by line ("path: what" bullets). An empty block = no notes, no problem."""
@@ -456,8 +451,8 @@ def parse_changes(text: str) -> tuple[list[EditNote], str]:
 
 
 def blocked_text(body: str) -> str:
-    """`<blocked>` 블록 → 한 문장: 바깥 펜스를 지우고 공백을 한 칸으로, BLOCKED_MAX_CHARS 자에서 자른다("…"). 빈
-    태그는 "(no reason given)" — 이유가 없어도 거절은 거절이다.
+    """`<blocked>` 블록의 내용을 한 문장으로 줄인다.
+    태그가 비어 있으면 "(no reason given)"을 반환하며, 이유가 없어도 거절로 처리한다.
 
     The `<blocked>` block as one sentence: outer fence stripped, whitespace collapsed, capped at BLOCKED_MAX_CHARS
     ("…" when cut); "(no reason given)" for an empty tag."""
@@ -473,8 +468,8 @@ def _mask(t: str, start: int, end: int) -> str:
 
 
 def _take_block(t: str, masked: str, name: str) -> tuple[Optional[str], str]:
-    """(`masked` 에서 찾은 <name>…</name> 의 내용 — 원문 `t` 의 같은 위치에서 잘라 옴, 그 블록 전체를 공백으로
-    지운 masked). 공백으로 지우므로 오프셋이 그대로다.
+    """`masked`에서 <name>…</name>을 찾아 그 내용과, 블록 자리를 공백으로 지운 masked를 반환한다.
+    공백으로 지우므로 다른 위치 값이 바뀌지 않는다.
 
     (content of <name>…</name> found in `masked`, masked text with the whole block blanked)."""
     m = re.search(rf"<\s*{name}\s*>", masked, re.IGNORECASE)
@@ -493,9 +488,9 @@ def _take_block(t: str, masked: str, name: str) -> tuple[Optional[str], str]:
 # entry point
 # ---------------------------------------------------------------------------
 def parse_script_response(text: str) -> ParsedScript:
-    """LLM 답 하나 → ParsedScript(절대 예외 없음). 순서가 중요하다: 산문·데이터 블록(analysis → solution →
-    verify → edits → changes → no_script)을 먼저 꺼내 지우고, 다음 문맥 요청, 마지막에 스크립트(태그, 없으면
-    펜스). 태그된 것이 하나도 없으면 PROTOCOL_WARNING 과 함께 답 앞 500자를 analysis 로.
+    """LLM 답변 하나를 ParsedScript로 나눈다. 예외를 던지지 않는다.
+    설명 글과 데이터 블록 -> 추가 자료 요청 -> 스크립트 순서로 꺼낸다.
+    태그가 하나도 없으면 답변 앞 500자를 analysis로 둔다.
 
     One LLM answer → ParsedScript (never raises)."""
     raw = text or ""
@@ -557,7 +552,7 @@ def parse_script_response(text: str) -> ParsedScript:
         if _PATCHES_RE.search(masked):
             res.warnings.append(PATCHES_WARNING)
 
-    # <verify> 만 있는 답은 답으로 치지 않는다(아래 목록에 verify 가 없는 이유)
+    # <verify>만 있는 답변은 답변으로 보지 않으므로 아래 조건에 verify를 넣지 않는다
     answered = (res.code or res.candidate or res.wants_context or res.analysis or res.solution or res.edits_block
                 or res.no_script_reason or res.blocked_reason or res.changes_block)
     if not answered and raw.strip():

@@ -1,289 +1,294 @@
 # ======================================================================================
 # sbmig 기본 설정 (config/default.yml)
 # ======================================================================================
-# sbmig 는 실행할 때마다 이 파일을 맨 먼저 읽는다. 여기 값은 "회사 흐름" 의 기본값이라
-# 보통은 고치지 않고, 바꾸고 싶은 값만 별도 yml 에 적어 --config 로 덧씌운다.
+# sbmig는 실행할 때마다 이 파일을 가장 먼저 읽는다. 여기 값은 회사 흐름의 기본값이므로
+# 보통은 고치지 않고, 바꾸려는 값만 별도 yml에 기록해 --config로 덮어쓴다.
 #
-# 회사마다 다른 값(사내 부모 pom 좌표, 필수·선택 사내 아티팩트)은 이 파일에 없다.
-# config/artifacts.example.yml 을 config/artifacts.yml 로 복사해 실제 좌표를 채우고
+# 회사마다 다른 값(사내 부모 pom 좌표, 필수 / 선택 사내 아티팩트)은 이 파일에 없다.
+# config/artifacts.example.yml을 config/artifacts.yml로 복사해 실제 좌표를 채우고
 #   sbmig run <zip 또는 폴더> --config config/artifacts.yml
-# 처럼 넘긴다. config/artifacts.yml 은 git 이 무시하는 파일이라 저장소에 올라가지 않는다.
+# 처럼 넘긴다. config/artifacts.yml은 git이 무시하는 파일이라 저장소에 올라가지 않는다.
 #
-# 값이 합쳐지는 순서(뒤가 이긴다):
-#   이 파일 → --config 로 준 yml(적은 순서대로) → SBMIG_* 환경 변수
-# 환경 변수로 값 하나만 바꿀 때는 단계 사이를 밑줄 두 개로 잇는다.
-#   예) SBMIG_LLM__MODEL=... 은 llm.model 을, SBMIG_BUILD__JAVA_HOME=... 은 build.java_home 을 바꾼다.
-# 값 안의 "${이름}" 과 "${이름:-기본값}" 은 실행할 때 환경 변수(.env 파일 포함)로 채워진다.
+# 값을 합치는 순서(뒤에 오는 값이 우선한다):
+#   이 파일 -> --config로 준 yml(지정한 순서대로) -> SBMIG_* 환경 변수
+# 환경 변수로 값 하나만 바꿀 때는 섹션과 키 사이를 밑줄 두 개로 잇는다.
+#   예) SBMIG_LLM__MODEL=...은 llm.model을, SBMIG_BUILD__JAVA_HOME=...은 build.java_home을 바꾼다.
+# 값 안의 "${이름}"과 "${이름:-기본값}"은 실행할 때 환경 변수(.env 파일 포함)로 채워진다.
 #
-# 한 번의 실행은 다음 순서로 흐른다. 아래 섹션도 대체로 이 순서로 놓여 있다.
-#   접수(intake) → 분석 → 계획(plan) → 변환(openrewrite, 1회) → 재구성(layout)
-#   → 구조 검토(review) → 검증 빌드(build) → 실패하면 수정 루프(loop, script, llm)
-#   → 보고서(report) · 지식베이스 기록(errors, kb)
+# 실행은 다음 순서로 진행된다. 아래 섹션도 대체로 이 순서로 놓여 있다.
+#   접수(intake) -> 분석 -> 계획(plan) -> 변환(openrewrite, 1회) -> 재구성(layout)
+#   -> 구조 검토(review) -> 검증 빌드(build) -> 실패하면 수정 루프(loop, script, llm)
+#   -> 보고서(report), KB 기록(errors, kb)
 
 # --------------------------------------------------------------------------------------
-# target — 목표 버전
+# target: 목표 버전
 # --------------------------------------------------------------------------------------
-# 이 도구가 프로젝트를 어디까지 올리는지 적은 값이다. 재구성(BOM import 버전, maven.compiler.release),
-# 구조 검토·수정 LLM 에게 주는 "목표" 문장, 보고서 인수인계 섹션의 "이후 버전" 이 이 값을 읽는다.
-# 실행할 OpenRewrite 레시피는 이 값으로 바뀌지 않는다(레시피는 openrewrite.recipes 에 고정).
-# 회사 목표가 바뀌기 전에는 손대지 않는다.
+# 이 도구가 프로젝트를 어느 버전까지 올리는지 지정한다. 재구성(BOM import 버전, maven.compiler.release),
+# 구조 검토와 수정 LLM에 전달하는 목표 문장, 보고서 인수인계 섹션의 "이후 버전"이 이 값을 읽는다.
+# 실행할 OpenRewrite 레시피는 이 값으로 바뀌지 않는다(레시피는 openrewrite.recipes에 고정).
+# 회사 목표가 바뀌기 전에는 수정하지 않는다.
 target:
-  java_version: "21"              # 목표 Java 버전. pom 의 maven.compiler.release 와 프롬프트에 쓰인다
-  spring_boot_version: "4.1.0"    # 목표 Spring Boot. 부모 체인에 버전 속성이 없을 때 BOM import 에 이 값을 그대로 쓴다
+  java_version: "21"              # 목표 Java 버전. pom의 maven.compiler.release와 프롬프트에 쓰인다
+  spring_boot_version: "4.1.0"    # 목표 Spring Boot. 부모 체인에 버전 속성이 없으면 BOM import에 이 값을 그대로 쓴다
   spring_framework_version: "7.0.x"   # 목표 Spring Framework. 구조 검토 프롬프트와 레시피 변수에만 쓰는 안내 값
 
 # --------------------------------------------------------------------------------------
-# intake — 접수 (실행의 첫 단계)
+# intake: 접수 (실행의 첫 단계)
 # --------------------------------------------------------------------------------------
-# 받은 zip / 폴더가 변환할 수 있는 프로젝트인지 보고, 필요하면 빌드 파일을 마련하는 단계다.
-# Maven 프로젝트(pom.xml)는 그대로 받는다. Ant 프로젝트(build.xml 만 있고 pom.xml 이 없음)는
-# 접수에서 pom.xml 을 만들어 준 뒤 Maven 프로젝트처럼 진행한다.
-# pom.xml 도 build.xml 도 없는 트리와 Gradle 프로젝트는 어떤 설정으로도 받지 않는다(종료 코드 3).
+# 받은 zip / 폴더가 변환할 수 있는 프로젝트인지 확인하고, 필요하면 빌드 파일을 준비하는 단계다.
+# Maven 프로젝트(pom.xml)는 그대로 받는다. Ant 프로젝트(build.xml만 있고 pom.xml이 없음)는
+# 접수에서 pom.xml을 만든 뒤 Maven 프로젝트처럼 진행한다.
+# pom.xml도 build.xml도 없는 트리와 Gradle 프로젝트는 어떤 설정으로도 받지 않는다(종료 코드 3).
 intake:
-  # Ant 프로젝트를 받을지 정한다. 회사 결정으로 받지 않는다 — 아래 안내 문구를 내고 끝난다(종료 코드 3).
-  #   false = Ant 프로젝트를 받지 않는다. 신청자에게 ant_message 를 보여 준다.
-  #   true  = build.xml 의 javac / war 설정과 폴더 구조를 읽어 pom.xml 을 만든 뒤 진행한다.
-  #           변환 기능은 지우지 않고 그대로 두었다. 다시 하기로 하면 이 값만 true 로 바꾼다.
+  # Ant 프로젝트를 받을지 정한다. 회사 결정으로 받지 않으며, 아래 안내 문구를 보여 주고 끝난다(종료 코드 3).
+  #   false: Ant 프로젝트를 받지 않는다. 신청자에게 ant_message를 보여 준다.
+  #   true: build.xml의 javac / war 설정과 폴더 구조를 읽어 pom.xml을 만든 뒤 진행한다.
+  #         변환 기능은 지우지 않고 남겨 두었다. 다시 받기로 하면 이 값만 true로 바꾼다.
   ant_to_maven: false
   # Ant 프로젝트를 받지 않을 때 신청자에게 보여 주는 안내 문구.
   ant_message: "Maven 변환 후 신청 부탁드립니다."
-  # Ant 프로젝트에 만들어 주는 pom.xml 의 groupId. 지금 값은 자리표시자이므로
-  # 회사가 정한 groupId 가 있으면 회사 설정 yml 에 적어 덧씌운다.
+  # Ant 프로젝트에 만드는 pom.xml의 groupId. 지금 값은 플레이스홀더이므로
+  # 회사가 정한 groupId가 있으면 회사 설정 yml에 지정해 덮어쓴다.
   synth_group_id: com.company.migrated
-  synth_version: 1.0.0-SNAPSHOT    # 만들어 주는 pom.xml 의 버전(build.xml 에 버전이 없을 때 이 값)
-  # Ant 프로젝트의 lib 폴더 jar 중 Maven 좌표를 끝내 못 찾은 jar 를 어떻게 할지 정한다.
-  #   system = 그 jar 를 원래 경로 그대로 system scope 의존성으로 선언한다. 빌드는 통과하고,
-  #            보고서 인수인계 섹션에 사내 저장소에 올리는 mvn install:install-file 명령을 적어 준다.
-  #   skip   = 선언하지 않는다. 그 jar 가 필요하면 빌드 오류로 드러나고 수정 루프가 다룬다.
+  synth_version: 1.0.0-SNAPSHOT    # 만드는 pom.xml의 버전(build.xml에 버전이 없을 때 쓴다)
+  # Ant 프로젝트의 lib 폴더 jar 중 Maven 좌표를 끝내 찾지 못한 jar의 처리 방식.
+  #   system: 그 jar를 원래 경로 그대로 system scope 의존성으로 선언한다. 빌드는 통과하고,
+  #           보고서 인수인계 섹션에 사내 저장소에 올리는 mvn install:install-file 명령을 기록한다.
+  #   skip: 선언하지 않는다. 그 jar가 필요하면 빌드 오류로 드러나고 수정 루프가 처리한다.
   unknown_jar: system
-  # jar 안에 pom.properties 도 없고 이름 표에도 없는 jar 를 sha1 값으로 저장소에서 찾아볼지.
-  # false 로 두면 저장소에 묻지 않으므로 좌표를 못 찾는 jar 가 늘어난다(망이 막힌 곳에서만 끈다).
+  # pom.properties도 없고 이름 표에도 없는 jar를 sha1 값으로 저장소에서 조회할지 여부.
+  # false면 저장소를 조회하지 않으므로 좌표를 못 찾는 jar가 늘어난다(네트워크가 막힌 곳에서만 끈다).
   jar_lookup: true
-  # 어떤 pom 도 선언하지 않았는데 트리 안에 들어 있는 jar(WEB-INF/lib, lib/ 등)를 찾아 둘지.
-  # IDE 빌드는 이런 jar 를 보았지만 Maven 은 보지 못한다. 여기서 찾아 둔 jar 는
-  # layout.wire_bundled_jars 가 true 이면 재구성이 첫 빌드 전에 의존성으로 이어 준다.
-  # 수정 루프의 사전 시도(sbmig-bundled, LLM 없음)는 그래도 남은 "패키지 없음" 오류를 잡는 안전망일 뿐이다.
-  #   true  = 분석에서 찾아 기록한다(보고서 플래그 bundled-jars, logs/bundled-jars.json).
-  #   false = 찾지 않는다. 그 jar 에 기대던 코드는 "패키지 없음" 빌드 오류로 남는다.
+  # 어떤 pom도 선언하지 않았는데 트리 안에 들어 있는 jar(WEB-INF/lib, lib/ 등)를 찾을지 여부.
+  # IDE 빌드는 이런 jar를 사용했지만 Maven은 알지 못한다. 여기서 찾은 jar는
+  # layout.wire_bundled_jars가 true이면 재구성이 첫 빌드 전에 의존성으로 추가한다.
+  # 수정 루프의 사전 시도(sbmig-bundled, LLM 없음)는 그래도 남은 "패키지 없음" 오류를 처리하는 안전장치다.
+  #   true: 분석 단계에서 찾아 기록한다(보고서 플래그 bundled-jars, logs/bundled-jars.json).
+  #   false: 찾지 않는다. 그 jar를 쓰던 코드는 "패키지 없음" 빌드 오류로 남는다.
   bundled_jars: true
-  # jar 파일 이름 → Maven 좌표 표(배포본에 들어 있는 것). 경로는 sbmig 체크아웃 기준이다.
+  # jar 파일 이름과 Maven 좌표의 대응표(배포본에 포함). 경로는 sbmig 체크아웃 기준이다.
   jar_names_file: knowledge/libraries/jar_names.yml
-  # 회사가 덧붙이는 같은 형식의 표. kb.dir 폴더 안의 파일 이름이며, 배포본 표 위에 덮어쓴다.
+  # 회사가 추가하는 같은 형식의 표. kb.dir 폴더 안의 파일 이름이며, 배포본 표를 덮어쓴다.
   # 재배포 없이 파일만 고치면 다음 실행부터 반영된다.
   company_jar_names_file: jar_names.yml
-  # pom 의 <build><extensions> 중 배포 전송만 하는 확장(wagon-webdav, wagon-ssh, wagon-ftp …)을 첫 Maven 호출 전에 지울지.
-  # 이런 확장은 mvn deploy 가 dav:/scp:/ftp: 주소로 올릴 때만 쓰이고 패키징에는 필요 없다. 그런데 Maven 은 어떤 goal 보다
-  # 먼저(OpenRewrite 포함) 확장을 내려받으므로, 저장소에 없는 옛 확장 하나가 실행 전체를 막는다(2026-11-05 회사 실행).
-  #   true  = 지우고 커밋한다(플래그 deploy-extensions-removed, 인수인계에 이름을 남긴다).
-  #   false = 그대로 둔다. 못 받으면 "Unresolveable build extension" 으로 OpenRewrite 가 실패하고 수정 루프가 뒤에서 고친다.
+  # pom의 <build><extensions> 중 배포 전송용 확장(wagon-webdav, wagon-ssh, wagon-ftp 등)을
+  # 첫 Maven 호출 전에 지울지 여부. 이런 확장은 mvn deploy가 dav:/scp:/ftp: 주소로 올릴 때만 쓰이고
+  # 패키징에는 필요 없다. 그런데 Maven은 어떤 goal보다 먼저(OpenRewrite 포함) 확장을 내려받으므로,
+  # 저장소에 없는 오래된 확장 하나가 실행 전체를 막는다.
+  #   true: 지우고 커밋한다(플래그 deploy-extensions-removed, 인수인계에 이름을 기록한다).
+  #   false: 그대로 둔다. 받지 못하면 "Unresolveable build extension"으로 OpenRewrite가 실패하고
+  #          이후 수정 루프가 고친다.
   strip_deploy_extensions: true
-  # 어떤 확장이 배포 전송인지의 목록(배포본에 들어 있는 것). 경로는 sbmig 체크아웃 기준이다.
+  # 배포 전송용 확장의 목록(배포본에 포함). 경로는 sbmig 체크아웃 기준이다.
   build_extensions_file: knowledge/libraries/build_extensions.yml
-  # build.xml 의 source / target 이 이 값보다 낮으면 이 값으로 올려 pom 에 적는다.
-  # JDK 21 은 1.8 미만 소스를 컴파일하지 못하기 때문이다. 바꿀 일은 거의 없다.
+  # build.xml의 source / target이 이 값보다 낮으면 이 값으로 올려 pom에 기록한다.
+  # JDK 21은 1.8 미만 소스를 컴파일하지 못하기 때문이다. 바꿀 일은 거의 없다.
   min_java_source: "1.8"
-  # Oracle ADF(JDeveloper) 프로젝트를 만났을 때 어떻게 할지(회사 결정: 변환하지 않는다).
-  # 근거 네 계열(BC4J XML, oracle.jbo/adf 패키지 import, ADF 바인딩, ADF Faces·태스크 플로우) 중
-  # 둘 이상이 보이면 ADF 프로젝트로 본다. 한 계열만 보이면 메모만 남기고 계속한다.
-  #   stop     = 분석 직후 "ADF 프로젝트라 변환이 불가능합니다" 로 끝낸다(종료 코드 3).
-  #              Maven 도 LLM 도 부르지 않고, 보고서에 ADF 규모와 근거를 남긴다.
-  #   continue = 보고만 하고 변환을 계속한다. 결과를 믿기 어려우므로 권하지 않는다.
+  # Oracle ADF(JDeveloper) 프로젝트의 처리 방식(회사 결정: 변환하지 않는다).
+  # 네 가지 근거(BC4J XML, oracle.jbo/adf 패키지 import, ADF 바인딩, ADF Faces와 태스크 플로우) 중
+  # 둘 이상이 있으면 ADF 프로젝트로 본다. 한 가지만 있으면 메모만 남기고 계속한다.
+  #   stop: 분석 직후 "ADF 프로젝트라 변환이 불가능합니다"로 끝낸다(종료 코드 3).
+  #         Maven과 LLM을 호출하지 않고, 보고서에 ADF 규모와 근거를 남긴다.
+  #   continue: 보고만 하고 변환을 계속한다. 결과를 믿기 어려우므로 권장하지 않는다.
   adf_policy: stop
 
 # --------------------------------------------------------------------------------------
-# layout — 재구성 (변환 다음 단계: 회사 모듈 구조로 바꾸기)
+# layout: 재구성 (변환 다음 단계: 회사 모듈 구조로 바꾸기)
 # --------------------------------------------------------------------------------------
 # 재구성 단계가 프로젝트를 회사 레이아웃으로 옮길 때 쓰는 규칙이다.
-# Boot 가 아닌 프로젝트(Spring Framework, 서블릿, 순수 Java)는 루트 바로 아래 모듈로 나눈다.
-#   {name}-boot  : Boot 설정만 담는 모듈. 부모는 artifacts.boot_parent(boot-jar).
-#   {name}-back  : 컨트롤러를 포함한 모든 소스. 부모는 artifacts.comp_parent(comp-jar).
-#   {name}-front : 웹 리소스(정적 파일·JSP)가 있을 때만 만든다. 부모는 comp-jar.
-# {name} 은 루트 pom 의 artifactId 다. Spring Boot 프로젝트(MSA 포함)는 디렉토리를 그대로 두고
-# pom 만 바꾼다(boot_as_is). 예전 레이아웃(module/boot-jar + module/comp-jar)이 필요하면
-# config/artifacts.local-e2e.yml 처럼 아래 이름 키들을 덧씌운다.
+# Boot가 아닌 프로젝트(Spring Framework, 서블릿, 순수 Java)는 루트 바로 아래 모듈로 나눈다.
+#   {name}-boot: Boot 설정만 담는 모듈. 부모는 artifacts.boot_parent(boot-jar).
+#   {name}-back: 컨트롤러를 포함한 모든 소스. 부모는 artifacts.comp_parent(comp-jar).
+#   {name}-front: 웹 리소스(정적 파일, JSP)가 있을 때만 만든다. 부모는 comp-jar.
+# {name}은 루트 pom의 artifactId다. Spring Boot 프로젝트(MSA 포함)는 디렉토리를 그대로 두고
+# pom만 바꾼다(boot_as_is). 이전 레이아웃(module/boot-jar + module/comp-jar)이 필요하면
+# config/artifacts.local-e2e.yml처럼 아래 이름 키들을 덮어쓴다.
 layout:
-  module_dir: ""                         # 모듈을 둘 하위 폴더. "" = 루트 바로 아래(회사 규칙). 예전 레이아웃은 module
+  module_dir: ""                         # 모듈을 둘 하위 폴더. ""이면 루트 바로 아래(회사 규칙)
   boot_module: "{name}-boot"             # Boot 모듈의 디렉토리 이름
   comp_module: "{name}-back"             # 소스 모듈의 디렉토리 이름
-  # 웹 리소스 모듈의 디렉토리 이름. null 로 두면 front 모듈을 만들지 않고 웹 리소스를 Boot 모듈에 둔다.
+  # 웹 리소스 모듈의 디렉토리 이름. null이면 front 모듈을 만들지 않고 웹 리소스를 Boot 모듈에 둔다.
   front_module: "{name}-front"
-  project_name: null                     # {name} 자리에 쓸 이름. null = 루트 pom 의 artifactId
-  # front 모듈 안의 정적 파일(HTML·css·js·이미지) 위치와 JSP 위치(Servlet 3 의 jar 리소스 규칙)
+  project_name: null                     # {name}에 쓸 이름. null이면 루트 pom의 artifactId
+  # front 모듈 안의 정적 파일(HTML, css, js, 이미지) 위치와 JSP 위치(Servlet 3의 jar 리소스 규칙)
   front_static_dir: src/main/resources/static
   front_jsp_dir: src/main/resources/META-INF/resources/WEB-INF/jsp
-  # 웹 루트 안에 있던 리소스 폴더(media, templates, css …) 파일을 어떻게 둘지.
-  #   true  = 소스 모듈 classpath 에도 남기고, front 정적 폴더에도 원래 웹 경로 그대로 복사한다
-  #           (as-is WAR 가 그 경로로 서빙했으므로 화면 경로가 바뀌지 않는다).
-  #   false = 소스 모듈에만 남기고, 인수인계 섹션이 옮길 정적 파일을 알려 준다.
+  # 웹 루트 안에 있던 리소스 폴더(media, templates, css 등) 파일의 처리 방식.
+  #   true: 소스 모듈 classpath에도 남기고, front 정적 폴더에도 원래 웹 경로 그대로 복사한다
+  #         (as-is WAR가 그 경로로 서빙했으므로 화면 경로가 바뀌지 않는다).
+  #   false: 소스 모듈에만 남기고, 인수인계 섹션에서 옮길 정적 파일을 알려 준다.
   front_copy_resource_dirs: true
-  # JSP·태그 파일 안의 javax EE 이름(javax.servlet … )을 jakarta 로 바꿀지.
-  # OpenRewrite 는 JSP 를 읽지 못하므로, 파일이 최종 위치로 옮겨진 뒤 재구성이 직접 바꾼다.
-  # 태그 라이브러리 URI 는 그대로 둔다(JSTL 3 이 예전 URI 를 계속 받는다).
-  #   true  = 바꾼다.   false = 바꾸지 않고 인수인계 섹션에 할 일로만 적는다.
+  # JSP와 태그 파일 안의 javax EE 이름(javax.servlet 등)을 jakarta로 바꿀지 여부.
+  # OpenRewrite는 JSP를 읽지 못하므로, 파일이 최종 위치로 옮겨진 뒤 재구성이 직접 바꾼다.
+  # 태그 라이브러리 URI는 그대로 둔다(JSTL 3이 이전 URI를 계속 지원한다).
+  #   true: 바꾼다.   false: 바꾸지 않고 인수인계 섹션에 할 일로만 기록한다.
   jsp_jakarta_rename: true
-  # 어떤 pom 도 선언하지 않은 트리 안의 jar(intake.bundled_jars 가 찾은 것)를 첫 빌드 전에 이어 줄지.
-  # 드라이버·필터·태그 라이브러리처럼 실행 때만 쓰는 jar 는 컴파일 오류를 내지 않아
+  # 어떤 pom도 선언하지 않은 트리 안의 jar(intake.bundled_jars가 찾은 것)를 첫 빌드 전에 의존성으로 추가할지 여부.
+  # 드라이버, 필터, 태그 라이브러리처럼 실행할 때만 쓰는 jar는 컴파일 오류를 내지 않아
   # 수정 루프가 알아챌 수 없으므로, 재구성이 미리 선언해 둔다.
-  #   - 저장소에 그 jar 의 좌표가 있으면 → 일반 compile 의존성
-  #   - 없으면 → <모듈>/lib 에 복사하고 system scope 로 선언(인수인계에 Nexus 등록 요청)
-  #   - 대상 부모 체인이 이미 관리하는 라이브러리(예: 옛 spring-webmvc 4.x),
-  #     컨테이너 API, 아무도 쓰지 않는 jar 는 건드리지 않는다
-  #   false = 미리 잇지 않는다. 컴파일 오류가 났을 때 수정 루프의 사전 시도(LLM 없음)만 이어 준다.
+  #   - 저장소에 그 jar의 좌표가 있으면 일반 compile 의존성으로 선언한다
+  #   - 없으면 <모듈>/lib에 복사하고 system scope로 선언한다(인수인계에 Nexus 등록 요청)
+  #   - 대상 부모 체인이 이미 관리하는 라이브러리(예: 오래된 spring-webmvc 4.x),
+  #     컨테이너 API, 아무도 쓰지 않는 jar는 건드리지 않는다
+  #   false: 미리 추가하지 않는다. 컴파일 오류가 났을 때 수정 루프의 사전 시도(LLM 없음)만 추가한다.
   wire_bundled_jars: true
-  # Spring Boot 프로젝트(MSA 포함)를 어떻게 재구성할지.
-  #   in-place = 디렉토리는 그대로 두고 pom 만 바꾼다(회사 규칙). 루트 → artifacts.parent,
-  #              boot_module_pattern 에 맞고 pom 이 Boot 앱인 모듈 → boot_parent, 나머지 → comp_parent.
-  #              모듈 하나짜리 Boot 앱은 {name}-boot 로 감싸 집계 루트 아래에 둔다.
-  #   layout   = Boot 가 아닌 프로젝트처럼 boot / back 으로 나눈다(예전 방식).
+  # Spring Boot 프로젝트(MSA 포함)의 재구성 방식.
+  #   in-place: 디렉토리는 그대로 두고 pom만 바꾼다(회사 규칙). 루트는 artifacts.parent,
+  #             boot_module_pattern에 맞고 pom이 Boot 앱인 모듈은 boot_parent, 나머지는 comp_parent를 상속한다.
+  #             모듈이 하나인 Boot 앱은 {name}-boot로 감싸 집계 루트 아래에 둔다.
+  #   layout: Boot가 아닌 프로젝트처럼 boot / back으로 나눈다.
   boot_as_is: in-place
-  boot_module_pattern: "*-boot"          # Boot 프로젝트에서 "Boot 앱 모듈" 로 볼 디렉토리 이름 패턴(pom 으로 다시 확인)
-  # JSP 가 있을 때 Boot 모듈의 패키징.
-  #   war = 실행 가능한 WAR. java -jar 로 내장 Tomcat 이 뜨고(이관의 목표), 같은 파일을 외부 Tomcat 에도 배포할 수 있다.
-  #   jar = 실행 가능한 jar. 실행 jar 에서는 JSP 를 서빙할 수 없으므로 JSP 프로젝트에는 쓰지 않는다.
+  boot_module_pattern: "*-boot"          # Boot 프로젝트에서 Boot 앱 모듈로 볼 디렉토리 이름 패턴(pom으로 다시 확인)
+  # JSP가 있을 때 Boot 모듈의 패키징.
+  #   war: 실행 가능한 WAR. java -jar로 내장 Tomcat이 실행되고(이관의 목표),
+  #        같은 파일을 외부 Tomcat에도 배포할 수 있다.
+  #   jar: 실행 가능한 jar. 실행 jar에서는 JSP를 서빙할 수 없으므로 JSP 프로젝트에는 쓰지 않는다.
   jsp_boot_packaging: war
   boot_artifact_suffix: "-boot"          # Boot 모듈 artifactId = 루트 artifactId + 이 접미사
-  comp_artifact_suffix: "-back"          # 소스 모듈 artifactId = 루트 artifactId + 이 접미사(front 는 "-front")
-  # 소스를 Boot 모듈과 소스 모듈 사이에 어떻게 나눌지.
-  #   minimal   = 모든 소스는 소스 모듈로. Boot 모듈에는 Application 클래스(와 Boot 리소스)만 둔다(회사 규칙).
-  #   web-layer = @SpringBootApplication / @Controller / @RestController / @Configuration / @ControllerAdvice
-  #               클래스를 Boot 모듈로 옮긴다.
+  comp_artifact_suffix: "-back"          # 소스 모듈 artifactId = 루트 artifactId + 이 접미사(front는 "-front")
+  # 소스를 Boot 모듈과 소스 모듈에 나누는 방식.
+  #   minimal: 모든 소스는 소스 모듈로 옮긴다. Boot 모듈에는 Application 클래스와 Boot 리소스만 둔다(회사 규칙).
+  #   web-layer: 다음 어노테이션이 붙은 클래스를 Boot 모듈로 옮긴다.
+  #              @SpringBootApplication / @Controller / @RestController / @Configuration / @ControllerAdvice
   split_policy: minimal
-  # 모듈이 여러 개인 as-is 프로젝트(MSA 아님)를 어떻게 할지.
-  #   merge = 모든 모듈의 소스를 소스 모듈 하나로 합친다(회사 레이아웃: Boot + 소스 모듈 두 개).
-  #           boot_module 이름과 같은 as-is 모듈은 Boot 모듈로 그대로 쓴다.
-  #   wrap  = 기존 모듈은 module/ 아래 그대로 두고 Boot 모듈만 더한다(모듈 N+1 개).
+  # 모듈이 여러 개인 as-is 프로젝트(MSA 아님)의 처리 방식.
+  #   merge: 모든 모듈의 소스를 소스 모듈 하나로 합친다(회사 레이아웃: Boot + 소스 모듈 두 개).
+  #          boot_module 이름과 같은 as-is 모듈은 Boot 모듈로 그대로 쓴다.
+  #   wrap: 기존 모듈은 module/ 아래 그대로 두고 Boot 모듈만 추가한다(모듈 N+1개).
   multi_module_policy: merge
-  # 루트에 pom.xml 이 없고 서로 의존하는 형제 pom 들만 있을 때(APP/BATCH, APP/WEB, APP/EAR …)
-  # 접수가 그것들을 의존 순서로 나열한 루트 집계 pom 을 만들어 한 번에 빌드되게 할지.
-  # false 로 두면 그런 트리는 루트 pom 이 없어 진행할 수 없다.
+  # 루트에 pom.xml이 없고 서로 의존하는 형제 pom들만 있을 때(APP/BATCH, APP/WEB, APP/EAR 등)
+  # 접수 단계에서 그것들을 의존 순서로 나열한 루트 집계 pom을 만들어 한 번에 빌드할지 여부.
+  # false면 그런 트리는 루트 pom이 없어 진행할 수 없다.
   generate_aggregator: true
-  # merge 로 합칠 때 같은 경로의 파일이 여러 모듈에 있으면 어떻게 할지.
-  #   first-wins = <modules> 순서에서 먼저 나온 모듈의 파일을 쓴다. 버려진 사본은
-  #                <실행 폴더>/merge-conflicts/ 에 보관하고 인수인계 섹션에 적는다.
-  #   fail       = 재구성 오류로 멈춘다(아무것도 옮기지 않음).
+  # merge로 합칠 때 같은 경로의 파일이 여러 모듈에 있을 때의 처리 방식.
+  #   first-wins: <modules> 순서에서 먼저 나온 모듈의 파일을 쓴다. 버려진 복사본은
+  #               <실행 폴더>/merge-conflicts/에 보관하고 인수인계 섹션에 기록한다.
+  #   fail: 재구성 오류로 멈춘다(아무것도 옮기지 않음).
   merge_collision: first-wins
-  # (필수 사내 의존성을 어느 pom 에 선언할지는 artifacts.mandatory_target 이 정한다. artifacts.example.yml 참고)
+  # (필수 사내 의존성을 선언할 pom은 artifacts.mandatory_target이 정한다. artifacts.example.yml 참고)
   #
-  # 사내 부모를 붙인 뒤, 새 부모 체인이 이미 버전을 관리하는 의존성의 명시 <version> 을 지울지.
-  #   gte = 부모가 관리하는 버전이 같거나 더 새로울 때만 지운다(일부러 더 높게 고정한 것은 남김).
-  #   any = 언제나 지운다.   off = 지우지 않는다.
-  # 사내 부모·필수·선택 아티팩트와 system scope 의존성은 어느 경우에도 건드리지 않는다.
+  # 사내 부모를 지정한 뒤, 새 부모 체인이 이미 버전을 관리하는 의존성의 명시적 <version>을 지울지 여부.
+  #   gte: 부모가 관리하는 버전이 같거나 더 새로울 때만 지운다(일부러 더 높게 고정한 것은 남긴다).
+  #   any: 항상 지운다.   off: 지우지 않는다.
+  # 사내 부모, 필수 / 선택 아티팩트, system scope 의존성은 어느 경우에도 건드리지 않는다.
   drop_managed_versions: gte
-  # 프로젝트 <properties> 중 사내 부모 체인(그 pom 들과 Boot BOM)이 정의한 버전 속성과 이름이 같은 것
-  # (spring-boot.version, spring-security.version, hibernate.version …)을 지울지.
-  # Maven 은 자식의 속성이 부모의 속성을 이기므로, as-is 값(2.5.15 등)이 남으면 부모의 새 버전을 덮어 버린다.
-  #   true  = 지운다. 아직 ${이름} 으로 참조되는 속성은 남기고 메모한다.
-  #   false = 남긴다(구조 검토가 지적할 수 있다).
+  # 프로젝트 <properties> 중 사내 부모 체인(그 pom들과 Boot BOM)이 정의한 버전 속성과 이름이 같은 것
+  # (spring-boot.version, spring-security.version, hibernate.version 등)을 지울지 여부.
+  # Maven에서는 자식의 속성이 부모의 속성보다 우선하므로, as-is 값(2.5.15 등)이 남으면 부모의 새 버전을 덮어쓴다.
+  #   true: 지운다. 아직 ${이름}으로 참조되는 속성은 남기고 메모한다.
+  #   false: 남긴다(구조 검토가 지적할 수 있다).
   drop_bom_property_overrides: true
-  # 비상구용 목록. 부모 체인 pom 들을 읽어도 나오지 않지만 회사가 지우고 싶은 속성 이름을 적는다.
-  # 부모가 정의한 이름은 부모 pom 에서 직접 읽으므로 보통은 비워 둔다.
+  # 예외 처리용 목록. 부모 체인 pom들을 읽어도 나오지 않지만 회사가 지우려는 속성 이름을 지정한다.
+  # 부모가 정의한 이름은 부모 pom에서 직접 읽으므로 보통은 비워 둔다.
   parent_property_names: []
-  # 재구성이 BOM 을 직접 import 해야 할 때(부모 체인에 Boot BOM 이 없거나, 체인이 관리하지 않는
-  # Spring Cloud) 버전 자리에 쓸 속성 이름 후보. 부모 체인이 정의한 첫 이름을 ${이름} 으로 쓰고,
-  # 하나도 없으면 target 의 버전 숫자를 그대로 쓴다. 버전은 추측하지 않는다.
+  # 재구성이 BOM을 직접 import해야 할 때(부모 체인에 Boot BOM이 없거나, 체인이 관리하지 않는
+  # Spring Cloud) 버전에 쓸 속성 이름 후보. 부모 체인이 정의한 첫 이름을 ${이름}으로 쓰고,
+  # 하나도 없으면 target의 버전 숫자를 그대로 쓴다. 버전은 추측하지 않는다.
   bom_version_properties:
     spring_boot: [spring-boot.version, spring.boot.version, springboot.version, spring-boot-version]
     spring_cloud: [spring-cloud.version, spring.cloud.version, spring-cloud-version]
   application_class_name: Application    # Boot 모듈에 새로 만드는 시작 클래스의 이름
   # 프로젝트 종류별로 Boot 모듈에 넣는 Boot starter.
-  # spring_boot 의 auto 는 as-is 프로젝트가 이미 가진 starter 를 그대로 둔다는 뜻이다.
+  # spring_boot의 auto는 as-is 프로젝트에 이미 있는 starter를 그대로 둔다는 뜻이다.
   starter_by_case:
     pure_java: spring-boot-starter
     servlet_tomcat: spring-boot-starter-webmvc
     spring_legacy: spring-boot-starter-webmvc
     spring_boot: auto
-  # 만든 Application 클래스에 @ServletComponentScan 을 붙일지.
-  # @WebServlet / @WebFilter / @WebListener 로 등록하던 클래스가 Boot 에서도 등록되게 한다.
+  # 생성한 Application 클래스에 @ServletComponentScan을 붙일지 여부.
+  # @WebServlet / @WebFilter / @WebListener로 등록하던 클래스가 Boot에서도 등록되게 한다.
   add_servlet_component_scan: true
-  # web.xml 의 서블릿·필터·리스너·오류 페이지·세션 시간 제한을 어떻게 옮길지.
-  # Boot 는 web.xml 을 읽지 않으므로 옮기지 않으면 그 등록이 사라진다.
-  #   generate = Boot 모듈에 WebXmlRegistrations @Configuration 클래스를 만들어 등록한다.
-  #   followup = 만들지 않고 인수인계 섹션에 할 일로만 적는다.
+  # web.xml의 서블릿, 필터, 리스너, 오류 페이지, 세션 타임아웃을 옮기는 방식.
+  # Boot는 web.xml을 읽지 않으므로 옮기지 않으면 그 등록이 사라진다.
+  #   generate: Boot 모듈에 WebXmlRegistrations @Configuration 클래스를 만들어 등록한다.
+  #   followup: 만들지 않고 인수인계 섹션에 할 일로만 기록한다.
   web_xml_registrations: generate
-  # 찾아낸 Spring XML 빈 설정(<beans>)을 @ImportResource 로 Boot 컨텍스트에 넣을지.
-  # false 로 두면 XML 에 정의된 빈이 Boot 에서 뜨지 않는다.
+  # 찾아낸 Spring XML 빈 설정(<beans>)을 @ImportResource로 Boot 컨텍스트에 넣을지 여부.
+  # false면 XML에 정의된 빈이 Boot에서 생성되지 않는다.
   import_xml_bean_configs: true
-  # MSA 프로젝트에서 사내 루트 부모(artifacts.parent)를 어디에 붙일지.
-  #   per-service-root = 서비스마다 그 서비스 루트 pom 에 붙인다(회사 규칙).
-  #   top-aggregator   = 맨 위 집계 pom 이 모든 서비스를 덮을 때 거기 한 번 붙이고 레시피도 한 번에 돌린다.
+  # MSA 프로젝트에서 사내 루트 부모(artifacts.parent)를 지정할 위치.
+  #   per-service-root: 서비스마다 그 서비스 루트 pom에 지정한다(회사 규칙).
+  #   top-aggregator: 맨 위 집계 pom이 모든 서비스를 포함할 때 거기 한 번 지정하고 레시피도 한 번에 실행한다.
   msa_parent_policy: per-service-root
-  # Spring Framework / 서블릿 프로젝트를 Boot 로 바꿀 때, 빌드는 통과해도 "기동할 때" 깨질 항목들을
-  # 재구성이 미리 처리하는 스위치들이다. 빌드 게이트와 LLM 은 기동 실패를 보지 못하므로 여기서 다룬다.
-  # 어떤 스위치를 끄면 그 항목은 처리하지 않고 인수인계 섹션의 안내 문장으로만 남는다.
-  # 클래스 → Boot 속성 같은 대응표는 knowledge/config/web_xml_rules.yml 에 있다.
+  # Spring Framework / 서블릿 프로젝트를 Boot로 바꿀 때, 빌드는 통과해도 기동할 때 실패할 항목들을
+  # 재구성이 미리 처리하는 스위치들이다. 빌드 게이트와 LLM은 기동 실패를 보지 못하므로 여기서 처리한다.
+  # 스위치를 끄면 그 항목은 처리하지 않고 인수인계 섹션의 안내 문장으로만 남는다.
+  # 클래스와 Boot 속성의 대응표는 knowledge/config/web_xml_rules.yml에 있다.
   legacy_context:
-    # @ImportResource 에 web.xml 의 contextConfigLocation(루트 + DispatcherServlet)이 가리키는 XML 만 넣는다.
-    # 그 XML 이 <import> 로 부르는 파일은 Spring 이 알아서 읽는다. web.xml 이 없으면 찾은 XML 전부.
+    # @ImportResource에 web.xml의 contextConfigLocation(루트 + DispatcherServlet)이 가리키는 XML만 넣는다.
+    # 그 XML이 <import>로 가져오는 파일은 Spring이 직접 읽는다. web.xml이 없으면 찾은 XML을 모두 넣는다.
     entry_xml_only: true
-    exclude_test_xml: true               # src/test/ 아래 XML 은 Boot 컨텍스트에 넣지 않는다
-    # as-is Spring 은 같은 id 의 빈을 덮어쓰도록 허용했지만 Boot 4 기본은 금지다.
-    # true = spring.main.allow-bean-definition-overriding=true 를 써서 예전처럼 기동되게 한다.
+    exclude_test_xml: true               # src/test/ 아래 XML은 Boot 컨텍스트에 넣지 않는다
+    # as-is Spring은 같은 id의 빈을 덮어쓰도록 허용했지만 Boot 4 기본값은 금지다.
+    # true면 spring.main.allow-bean-definition-overriding=true를 설정해 이전처럼 기동되게 한다.
     allow_bean_overriding: true
-    # 순환 참조도 마찬가지다. true = spring.main.allow-circular-references=true. 중복 빈 id 는 인수인계에 적는다.
+    # 순환 참조도 마찬가지다. true면 spring.main.allow-circular-references=true. 중복 빈 id는 인수인계에 기록한다.
     allow_circular_references: true
-    # 건너뛴 web.xml 필터의 init-param 을 Boot 속성으로 옮긴다(CharacterEncodingFilter → spring.servlet.encoding.*).
+    # 건너뛴 web.xml 필터의 init-param을 Boot 속성으로 옮긴다(CharacterEncodingFilter -> spring.servlet.encoding.*).
     filter_properties: true
-    default_servlet: true                # <mvc:default-servlet-handler/> → server.servlet.register-default-servlet=true
-    # XML 의 CommonsMultipartResolver 를 설정 사본에서 빼고 spring.servlet.multipart.* 크기 제한으로 옮긴다.
+    default_servlet: true                # <mvc:default-servlet-handler/> -> server.servlet.register-default-servlet=true
+    # XML의 CommonsMultipartResolver를 설정 복사본에서 빼고 spring.servlet.multipart.* 크기 제한으로 옮긴다.
     multipart_resolver: true
-    # @EnableWebMvc / WebMvcConfigurationSupport 가 있으면 spring.mvc.view.* 를 쓰지 않고 인수인계로 돌린다
-    # (그 설정이 Boot 의 자동 설정을 끄기 때문에 속성을 써도 효과가 없다).
+    # @EnableWebMvc / WebMvcConfigurationSupport가 있으면 spring.mvc.view.*를 쓰지 않고 인수인계로 넘긴다
+    # (그 설정이 Boot의 자동 설정을 끄기 때문에 속성을 써도 효과가 없다).
     detect_enable_web_mvc: true
-    # 설정 사본 안의 /WEB-INF/… 속성 파일 위치를 classpath:asis-webinf/… 로 고친다(jar 안에는 WEB-INF 경로가 없다).
+    # 설정 복사본 안의 /WEB-INF/... 속성 파일 위치를 classpath:asis-webinf/...로 고친다
+    # (jar 안에는 WEB-INF 경로가 없다).
     rewrite_webinf_locations: true
-    profile_globs: true                  # classpath 위치 안의 ${…} 조각을 * 패턴으로 바꾼다(프로필별 파일을 모두 찾게)
-    # as-is 에서 provided 였던 의존성(jakarta.servlet-api 등)이 레시피 뒤에도 provided 로 남게 되돌린다.
+    profile_globs: true                  # classpath 위치의 ${...}를 *로 바꿔 프로필별 파일을 모두 찾는다
+    # as-is에서 provided였던 의존성(jakarta.servlet-api 등)이 레시피 실행 후에도 provided로 남도록 되돌린다.
     restore_asis_scopes: true
-    # spring_legacy 프로젝트에 webmvc starter 를 웹 증거(web.xml, spring-webmvc, servlet-api, @Controller, JSP)가
-    # 있을 때만 넣는다. 증거가 없으면 spring-boot-starter(배치·CLI 프로젝트에 Tomcat 이 뜨지 않게).
+    # spring_legacy 프로젝트에 웹 근거(web.xml, spring-webmvc, servlet-api, @Controller, JSP)가 있을 때만
+    # webmvc starter를 넣는다. 근거가 없으면 spring-boot-starter를 넣는다
+    # (배치나 CLI 프로젝트에서 Tomcat이 뜨지 않도록).
     web_starter_by_evidence: true
-    # 소스가 MS949 / EUC-KR 인 모듈의 pom 에 project.build.sourceEncoding 을 적는다
-    # (JDK 18 이상은 기본이 UTF-8 이라 그대로 두면 한글이 깨진다).
+    # 소스가 MS949 / EUC-KR인 모듈의 pom에 project.build.sourceEncoding을 기록한다
+    # (JDK 18 이상은 기본값이 UTF-8이라 그대로 두면 한글이 깨진다).
     write_source_encoding: true
-    # JNDI, DelegatingFilterProxy, *.do 매핑, <jsp-config>, log4j 1, Security XML 처럼 자동으로 못 옮기는 항목을
-    # 인수인계 문장과 XML 사본 옆 MIGRATION-TODO 주석으로 남긴다.
+    # JNDI, DelegatingFilterProxy, *.do 매핑, <jsp-config>, log4j 1, Security XML처럼 자동으로 옮기지 못하는 항목을
+    # 인수인계 문장과 XML 복사본 옆의 MIGRATION-TODO 주석으로 남긴다.
     handover_sentences: true
 
 # --------------------------------------------------------------------------------------
-# openrewrite — 변환 (OpenRewrite 를 한 번만 돌리는 단계)
+# openrewrite: 변환 (OpenRewrite를 한 번만 실행하는 단계)
 # --------------------------------------------------------------------------------------
-# 재구성 전에 OpenRewrite 를 한 번 돌려 Java 21 / jakarta / Boot 4 로 코드를 바꾸는 단계의 설정이다.
+# 재구성 전에 OpenRewrite를 한 번 실행해 코드를 Java 21 / jakarta / Boot 4로 바꾸는 단계의 설정이다.
 # 중간 빌드는 없다. 레시피가 남긴 오류는 마지막 검증 빌드에서 수정 루프가 고친다.
-# 플러그인·레시피 BOM 버전은 Maven Central 에서 서로 맞는 것을 확인한 조합이므로 함부로 올리지 않는다.
-# 사내 Nexus 가 이 버전들을 프록시해야 한다(docs/RUNBOOK.md §0).
+# 플러그인과 레시피 BOM 버전은 Maven Central에서 서로 맞는지 확인한 조합이므로 임의로 올리지 않는다.
+# 사내 Nexus가 이 버전들을 프록시해야 한다(docs/RUNBOOK.md §0).
 openrewrite:
   plugin_version: "6.46.1"               # rewrite-maven-plugin 버전
-  # 레시피 BOM 버전. 3.37.0 으로 고정한다. 3.38.0 은 Central 에 아직 없는 아티팩트를 가리켜
-  # 모든 실행이 의존성 해석에서 실패한다. 3.37.0 은 rewrite-spring 6.37.0 으로 이어진다.
+  # 레시피 BOM 버전. 3.37.0으로 고정한다. 3.38.0은 Central에 없는 아티팩트를 가리켜
+  # 모든 실행이 의존성 해석에서 실패한다. 3.37.0을 쓰면 rewrite-spring 6.37.0이 선택된다.
   recipe_bom_version: "3.37.0"
-  # 레시피를 담은 아티팩트들. 버전은 위 BOM 이 정한다.
+  # 레시피가 들어 있는 아티팩트들. 버전은 위 BOM이 정한다.
   recipe_artifacts:
     - org.openrewrite.recipe:rewrite-migrate-java
     - org.openrewrite.recipe:rewrite-spring
     - org.openrewrite.recipe:rewrite-testing-frameworks
     - org.openrewrite.recipe:rewrite-static-analysis
-  # 실행할 레시피 묶음. 계획 단계가 프로젝트 종류와 분석 결과로 어느 묶음을 넣을지 정한다.
-  # 현업 결정: "레시피가 무엇을 바꿀지 모르니 넣지 않는다" — 꼭 필요한 묶음만 돌리고
+  # 실행할 레시피 묶음. 계획 단계가 프로젝트 종류와 분석 결과를 보고 넣을 묶음을 정한다.
+  # 현업 결정에 따라 레시피가 무엇을 바꿀지 모르는 묶음은 넣지 않는다. 꼭 필요한 묶음만 실행하고
   # 나머지는 빌드 오류로 드러나게 해 LLM 수정 스크립트가 고친다.
-  # 여기 적는 레시피 id 는 반드시 knowledge/recipes/catalog.yml 에도 있어야 한다(레시피 id 의 유일한 출처).
-  # 빈 묶음을 다시 채우는 회사 설정은 catalog.yml 의 sets: 에도 같은 id 를 올려야 하며,
-  # sbmig recipes check 가 어긋남을 잡는다.
+  # 여기 지정하는 레시피 id는 반드시 knowledge/recipes/catalog.yml에도 있어야 한다(레시피 id의 유일한 출처).
+  # 빈 묶음을 다시 채우는 회사 설정은 catalog.yml의 sets:에도 같은 id를 추가해야 하며,
+  # sbmig recipes check가 불일치를 찾아낸다.
   recipes:
-    jdk21:                               # 모든 프로젝트: Java 21 로
+    jdk21:                               # 모든 프로젝트: Java 21로
       - org.openrewrite.java.migrate.UpgradeToJava21
-    jakarta:                             # Java EE 의 javax import 가 있는 프로젝트: javax → jakarta
+    jakarta:                             # Java EE의 javax import가 있는 프로젝트: javax -> jakarta
       - org.openrewrite.java.migrate.jakarta.JavaxMigrationToJakarta
-    # Spring Boot 프로젝트: Boot 4 우산 레시피 + 4.1 속성. 우산 안에서 Spring Framework 7,
-    # Security 7, Spring Cloud 2025.1 단계도 함께 돈다.
+    # Spring Boot 프로젝트: Boot 4 상위 레시피 + 4.1 속성. 상위 레시피 안에서 Spring Framework 7,
+    # Security 7, Spring Cloud 2025.1 단계도 함께 실행된다.
     spring_boot_4:
       - org.openrewrite.java.spring.boot4.UpgradeSpringBoot_4_0
       - org.openrewrite.java.spring.boot4.SpringBootProperties_4_1
-    # Spring Framework(Boot 아님) 프로젝트: Framework 7. 재구성 뒤 Boot 4.1 BOM 이 Spring 7 / Jackson 3 를
-    # 가져오므로 그 코드 변경을 레시피가 미리 한다.
+    # Spring Framework(Boot 아님) 프로젝트: Framework 7. 재구성 뒤 Boot 4.1 BOM이 Spring 7 / Jackson 3를
+    # 가져오므로 그에 맞는 코드 변경을 레시피가 미리 한다.
     spring_framework_7:
       - org.openrewrite.java.spring.framework.UpgradeSpringFramework_7_0
-    # Spring Framework 프로젝트 중 Spring Security 를 쓰는 경우에만 넣는다("쓰는 경우만").
-    # 6_0 은 앞 단계(5_8, 5_7)를 품지만 6_1 … 6_5 와 7_0 은 앞 단계를 품지 않아 전부 나열한다.
+    # Spring Framework 프로젝트 중 Spring Security를 쓰는 경우에만 넣는다.
+    # 6_0은 앞 단계(5_8, 5_7)를 포함하지만 6_1 ~ 6_5와 7_0은 앞 단계를 포함하지 않아 모두 나열한다.
     spring_security_7:
       - org.openrewrite.java.spring.security6.UpgradeSpringSecurity_6_0
       - org.openrewrite.java.spring.security6.UpgradeSpringSecurity_6_1
@@ -292,12 +297,12 @@ openrewrite:
       - org.openrewrite.java.spring.security6.UpgradeSpringSecurity_6_4
       - org.openrewrite.java.spring.security6.UpgradeSpringSecurity_6_5
       - org.openrewrite.java.spring.security7.UpgradeSpringSecurity_7_0
-    junit5: []                           # 꺼 둔 묶음(테스트는 범위 밖). 빈 목록 = 돌지 않음
-    # 아래 셋도 "쓰는 경우만" 넣는다. Boot 프로젝트는 우산 레시피가 이미 같은 단계를 돈다.
-    #   spring_batch_6     : Spring Framework 프로젝트가 spring-batch 를 쓸 때 Batch 5 → 6
-    #   hibernate_7        : Spring Framework 프로젝트가 Hibernate ORM 을 직접 쓸 때 Hibernate 7.1
-    #   servlet_jakarta_10 : 서블릿 프로젝트 전부. Servlet 6 에서 없어진 API 정리
-    #                        (Spring Framework 프로젝트는 Framework 7 레시피 안에서 같은 일이 돈다)
+    junit5: []                           # 꺼 둔 묶음(테스트는 범위 밖). 빈 목록이면 실행되지 않는다
+    # 아래 세 묶음도 해당 라이브러리를 쓰는 경우에만 넣는다. Boot 프로젝트는 상위 레시피가 같은 단계를 이미 실행한다.
+    #   spring_batch_6: Spring Framework 프로젝트가 spring-batch를 쓸 때 Batch 5 -> 6
+    #   hibernate_7: Spring Framework 프로젝트가 Hibernate ORM을 직접 쓸 때 Hibernate 7.1
+    #   servlet_jakarta_10: 모든 서블릿 프로젝트. Servlet 6에서 없어진 API 정리
+    #                       (Spring Framework 프로젝트는 Framework 7 레시피 안에서 같은 작업이 실행된다)
     # 묶음을 끄려면 빈 목록([])으로 둔다.
     spring_batch_6:
       - org.openrewrite.java.spring.batch.SpringBatch5To6Migration
@@ -305,534 +310,545 @@ openrewrite:
       - org.openrewrite.hibernate.MigrateToHibernate71
     servlet_jakarta_10:
       - org.openrewrite.java.migrate.jakarta.RemovalsServletJakarta10
-  timeout_minutes: 40                    # 레시피 실행 한 번의 시간 상한(분). 큰 프로젝트에서 시간 초과가 나면 늘린다
-  # 레시피를 돌리는 Maven JVM 옵션. 메모리 부족(OutOfMemoryError)이 나면 한 번은 더 큰 메모리로 다시 돈다.
+  timeout_minutes: 40                    # 레시피 실행 한 번의 시간 상한(분). 큰 프로젝트에서 타임아웃이 나면 늘린다
+  # 레시피를 실행하는 Maven JVM 옵션. 메모리 부족(OutOfMemoryError)이 나면 한 번은 더 큰 메모리로 다시 실행한다.
   jvm_args: ["-Xmx4g"]
-  plugin_goal: run                       # run = 파일을 실제로 바꾼다 | dryRun = 바꾸지 않고 바꿀 내용만 본다(점검용)
-  # 프록시 오류·연결 끊김 같은 다운로드 실패로 레시피 실행이 깨졌거나 x.y.x 같은 버전을 남겼을 때
-  # 기다렸다가 다시 돌리는 횟수(0 = 다시 돌리지 않음)와 기다리는 초.
+  plugin_goal: run                       # run: 파일을 바꾼다 | dryRun: 바꿀 내용만 확인한다(점검용)
+  # 프록시 오류, 연결 끊김 같은 다운로드 실패로 레시피 실행이 실패했거나 x.y.x 같은 버전을 남겼을 때
+  # 기다렸다가 다시 실행하는 횟수(0이면 다시 실행하지 않음)와 기다리는 시간(초).
   download_retry: 1
   download_retry_wait_s: 30
-  # OpenRewrite 가 읽지 않을 파일. JSP·HTML 은 어느 레시피도 건드리지 않고 파서 경고만 쏟아지므로 뺀다.
+  # OpenRewrite가 읽지 않을 파일. JSP와 HTML은 어느 레시피도 건드리지 않고 파서 경고만 많이 남기므로 뺀다.
   # (JSP 안의 javax 이름은 재구성이 바꾼다: layout.jsp_jakarta_rename)
   exclusions: ["**/*.jsp", "**/*.jspx", "**/*.html", "**/*.htm"]
-  # 프로젝트가 이미 사내 부모(artifacts.parent / boot_parent / comp_parent 의 g:a)를 쓰는데 그 버전(예: 옛 도구가 남긴
-  # 1.0.0-SNAPSHOT)이 저장소에 없어 레시피 실행이 실패했을 때 어떻게 할지.
-  #   align    : 그 pom 들의 부모 버전을 설정된 버전으로 바꿔 커밋하고 레시피를 한 번 더 돌린다(LLM 없음). 레시피는
-  #              새 부모의 클래스패스로 돈다. 빌드 중에 같은 일이 생기면 수정 루프가 sbmig-parent 로 똑같이 맞춘다.
-  #   continue : 바꾸지 않고 레시피 없이 계속 간다(재구성이 부모를 바꾸고, 남은 일은 수정 루프가 맡는다).
-  #   abort    : 설정된 부모를 못 찾은 것처럼 실행을 멈춘다.
-  # 설정된 버전 자체가 저장소에 없으면 이 값과 상관없이 멈춘다(settings·Nexus 를 고쳐야 함).
+  # 프로젝트가 이미 사내 부모(artifacts.parent / boot_parent / comp_parent의 g:a)를 쓰는데 그 버전(예: 이전 도구가 남긴
+  # 1.0.0-SNAPSHOT)이 저장소에 없어 레시피 실행이 실패했을 때의 처리 방식.
+  #   align: 그 pom들의 부모 버전을 설정된 버전으로 바꿔 커밋하고 레시피를 한 번 더 실행한다(LLM 없음). 레시피는
+  #          새 부모의 클래스패스로 실행된다. 빌드 중에 같은 일이 생기면 수정 루프가 sbmig-parent로 똑같이 맞춘다.
+  #   continue: 바꾸지 않고 레시피 없이 계속 진행한다(재구성이 부모를 바꾸고, 남은 일은 수정 루프가 맡는다).
+  #   abort: 설정된 부모를 못 찾은 경우처럼 실행을 멈춘다.
+  # 설정된 버전 자체가 저장소에 없으면 이 값과 상관없이 멈춘다(settings나 Nexus를 고쳐야 한다).
   unresolvable_asis_parent: align
 
 # --------------------------------------------------------------------------------------
-# build — Maven 실행 (검증 빌드, 수정 루프의 재빌드, 레시피 실행, effective-pom 조회)
+# build: Maven 실행 (검증 빌드, 수정 루프의 재빌드, 레시피 실행, effective-pom 조회)
 # --------------------------------------------------------------------------------------
-# sbmig 가 Maven 을 부를 때마다 쓰는 설정이다. 운영 PC 마다 다른 값(mvn 경로, JDK 21 경로, settings.xml)은
-# 회사 설정 yml 에 적는다. 경로를 상대 경로로 적으면 sbmig 를 실행한 현재 폴더 기준이 되므로 절대 경로를 권한다.
+# sbmig가 Maven을 호출할 때마다 쓰는 설정이다. 운영 PC마다 다른 값(mvn 경로, JDK 21 경로, settings.xml)은
+# 회사 설정 yml에 지정한다. 상대 경로는 sbmig를 실행한 현재 폴더 기준이 되므로 절대 경로를 권장한다.
 #
-# 테스트는 이관 범위 밖이다(회사 결정: "테스트는 다 스킵"). 모든 빌드에 -Dmaven.test.skip=true 를 붙여
-# 테스트 소스를 컴파일하지도 돌리지도 않는다. 그래서 테스트 코드 오류가 이관을 막는 일은 없고,
-# 보고서에 tests-not-compiled 플래그와 "테스트는 담당 팀이 고칠 것" 이라는 후속 작업이 남는다.
+# 테스트는 이관 범위 밖이다(회사 결정). 모든 빌드에 -Dmaven.test.skip=true를 붙여
+# 테스트 소스를 컴파일하지도 실행하지도 않는다. 그래서 테스트 코드 오류가 이관을 막지 않고,
+# 보고서에 tests-not-compiled 플래그와 "테스트는 담당 팀이 고칠 것"이라는 후속 작업이 남는다.
 build:
-  mvn: mvn                     # Maven 실행 파일. PATH 에 없으면 전체 경로(예: C:/tools/maven/bin/mvn.cmd)
-  # 사내 Nexus 를 가리키는 settings.xml. 지정하면 모든 Maven 호출에 -s 로 넘기고, 사용자 ~/.m2/settings.xml 대신 쓴다.
-  # config/settings.nexus.example.xml 을 복사해 만든다. null = Maven 의 평소 settings 를 쓴다.
+  mvn: mvn                     # Maven 실행 파일. PATH에 없으면 전체 경로(예: C:/tools/maven/bin/mvn.cmd)
+  # 사내 Nexus를 가리키는 settings.xml. 지정하면 모든 Maven 호출에 -s로 넘기고, 사용자 ~/.m2/settings.xml 대신 쓴다.
+  # config/settings.nexus.example.xml을 복사해 만든다. null이면 Maven의 평소 settings를 쓴다.
   settings_file: null
-  # 로컬 Maven 저장소 위치(-Dmaven.repo.local). null = settings.xml 의 값, 없으면 ~/.m2/repository
+  # 로컬 Maven 저장소 위치(-Dmaven.repo.local). null이면 settings.xml의 값, 그것도 없으면 ~/.m2/repository
   local_repo: null
-  # JDK 21 설치 폴더. 지정하면 Maven 을 이 JDK 로 돌린다. null = 현재 환경의 JAVA_HOME.
-  # 운영 PC 에 여러 JDK 가 있으면 꼭 지정한다(아래 require_java_major 점검이 다른 JDK 를 잡아낸다).
+  # JDK 21 설치 폴더. 지정하면 Maven을 이 JDK로 실행한다. null이면 현재 환경의 JAVA_HOME을 쓴다.
+  # 운영 PC에 JDK가 여러 개 있으면 반드시 지정한다(아래 require_java_major 점검이 다른 JDK를 찾아낸다).
   java_home: null
-  offline: false               # true = Maven 을 -o 로 돌리고 Central 조회도 하지 않는다(로컬 저장소에 다 있을 때만)
-  # 모든 Maven 호출에 붙는 인자(배치 모드, 다운로드 진행 표시 끔, 색 끔). 로그를 읽기 쉽게 하려는 값이다.
+  offline: false               # true면 Maven을 -o로 실행하고 Central도 조회하지 않는다(로컬 저장소에 모두 있을 때만)
+  # 모든 Maven 호출에 붙는 인자(배치 모드, 다운로드 진행 표시 끔, 색 끔). 로그를 읽기 쉽게 하기 위한 값이다.
   extra_args: ["-B", "-ntp", "-Dstyle.color=never"]
-  # skip_test_compile 이 꺼져 있을 때만 의미가 있다: 테스트를 컴파일은 하되 돌리지는 않는다(-DskipTests).
+  # skip_test_compile이 꺼져 있을 때만 의미가 있다. 테스트를 컴파일은 하되 실행하지는 않는다(-DskipTests).
   skip_tests: true
-  # 테스트를 아예 건너뛸지(-Dmaven.test.skip=true: 컴파일도 실행도 안 함). 회사 기본은 true 다.
-  # false 로 바꾸면 테스트 소스도 컴파일되어 테스트 코드 오류가 빌드를 막을 수 있다.
+  # 테스트를 아예 건너뛸지 여부(-Dmaven.test.skip=true: 컴파일도 실행도 하지 않음). 회사 기본값은 true다.
+  # false로 바꾸면 테스트 소스도 컴파일되어 테스트 코드 오류가 빌드를 막을 수 있다.
   skip_test_compile: true
-  # skip_test_compile 을 끈 경우의 안전장치들이다(기본 설정에서는 쓰이지 않는다).
-  #   allow_skip_test_compile_fallback : 테스트 컴파일 오류만 남으면
-  #       마지막 수단으로 -Dmaven.test.skip=true 로 다시 빌드한다.
-  #   allow_skip_tests_fallback : 테스트 실행 실패만 남으면
-  #       -DskipTests 로 다시 빌드하고 실패한 테스트를 목록으로 남긴다.
+  # skip_test_compile을 끈 경우의 안전장치들이다(기본 설정에서는 쓰이지 않는다).
+  #   allow_skip_test_compile_fallback: 테스트 컴파일 오류만 남으면
+  #       마지막 수단으로 -Dmaven.test.skip=true로 다시 빌드한다.
+  #   allow_skip_tests_fallback: 테스트 실행 실패만 남으면
+  #       -DskipTests로 다시 빌드하고 실패한 테스트를 목록으로 남긴다.
   allow_skip_test_compile_fallback: true
   allow_skip_tests_fallback: true
-  timeout_minutes: 30          # Maven 빌드 한 번의 시간 상한(분). 넘으면 프로세스를 끊고 시간 초과로 기록한다
-  # 오류 서명(케이스를 묶는 키)에서 "라이브러리 코드" 로 볼 패키지 접두어를 더한다.
-  # 프로젝트 고유 클래스 이름은 가려서 같은 오류가 다른 프로젝트에서도 같은 케이스가 되게 하는데,
-  # 라이브러리 이름은 남겨야 하기 때문이다. 사내 부모·필수·선택 아티팩트의 groupId 는 자동으로 들어간다.
+  timeout_minutes: 30          # Maven 빌드 한 번의 시간 상한(분). 넘으면 프로세스를 종료하고 타임아웃으로 기록한다
+  # 오류 서명(케이스를 묶는 키)에서 라이브러리 코드로 볼 패키지 접두어를 추가한다.
+  # 같은 오류가 다른 프로젝트에서도 같은 케이스가 되도록 프로젝트 고유 클래스 이름은 가리지만,
+  # 라이브러리 이름은 남겨야 하기 때문이다. 사내 부모, 필수 / 선택 아티팩트의 groupId는 자동으로 들어간다.
   external_package_prefixes: []
-  # 사전 점검: mvn -v 가 보고한 Java 메이저가 이 값이 아니면 실행을 멈춘다(플래그 jdk-not-21). 0 = 점검하지 않음.
+  # 사전 점검: mvn -v가 보고한 Java 메이저 버전이 이 값이 아니면 실행을 멈춘다(플래그 jdk-not-21).
+  # 0이면 점검하지 않는다.
   require_java_major: 21
-  # "… was cached in the local repository …"(Nexus 의 404 를 로컬 저장소가 하루 동안 기억함)로 실패하면
-  # 오류를 분류하기 전에 같은 빌드를 -U 로 한 번 더 돌린다. Nexus 에 나중에 올라온 아티팩트를 바로 받기 위해서다.
+  # "... was cached in the local repository ..."(Nexus의 404를 로컬 저장소가 하루 동안 기억함)로 실패하면
+  # 오류를 분류하기 전에 같은 빌드를 -U로 한 번 더 실행한다. Nexus에 나중에 올라온 아티팩트를 바로 받기 위해서다.
   retry_negative_cache: true
-  # 실행 하나당 한 번씩, 처음과 끝에 돌릴 명령(argv 목록, 셸 아님). 별도 빌드 환경을 띄우고 내리는 일반 갈고리다.
-  # 환경 변수 SBMIG_RUN_ID / SBMIG_RUN_DIR / SBMIG_PROJECT_DIR 를 받는다. 지금 운영 형태에서는 비워 둔다.
-  #   setup_command    : 첫 단계 전에 돈다. 실패하거나 시간을 넘기면 실행을 멈춘다
-  #                      (빌드 환경이 없으면 아무것도 할 수 없으므로).
-  #   teardown_command : 보고서를 쓴 뒤에 돈다. 실패해도 경고만 남긴다.
+  # 실행마다 처음과 끝에 한 번씩 실행할 명령(argv 목록, 셸 아님). 별도 빌드 환경을 띄우고 내리는 범용 훅이다.
+  # 환경 변수 SBMIG_RUN_ID / SBMIG_RUN_DIR / SBMIG_PROJECT_DIR를 받는다. 현재 운영 형태에서는 비워 둔다.
+  #   setup_command: 첫 단계 전에 실행된다. 실패하거나 시간을 넘기면 실행을 멈춘다
+  #                  (빌드 환경이 없으면 아무것도 할 수 없으므로).
+  #   teardown_command: 보고서를 쓴 뒤에 실행된다. 실패해도 경고만 남긴다.
   setup_command: []
   teardown_command: []
   hook_timeout_s: 600          # 위 두 명령 각각의 시간 상한(초)
-  # 어떤 버전이 존재하는지 sbmig 가 직접 읽어 볼 저장소 URL(maven-metadata.xml / pom). LLM 에게 "실제로 있는
-  # 릴리스" 를 알려 주고, jakarta 빌드를 찾고, jar 좌표를 sha1 로 찾을 때 쓴다. sbmig 는 버전을 추측하지 않는다.
-  # 지정하면 이 URL 을 가장 먼저 묻고(settings 미러와 다르면 경고로 둘 다 알려 준다), 그다음 settings 에서
-  # 나온 저장소들(mirrorOf 규칙에 따른 모든 미러, 활성 프로필 저장소(pluginRepositories 포함), 미러가 덮지 않는 pom 저장소,
-  # 전역 settings, 온라인이면 Central)을 차례로 묻는다. null = settings 에서 나온 저장소들만 쓴다.
-  # Nexus 그룹 URL 을 settings.xml 미러와 여기 둘 다 적어 두는 것을 권한다.
+  # 어떤 버전이 존재하는지 sbmig가 직접 확인할 저장소 URL(maven-metadata.xml / pom). LLM에 실제로 있는
+  # 릴리스를 알려 주고, jakarta 빌드를 찾고, jar 좌표를 sha1로 찾을 때 쓴다. sbmig는 버전을 추측하지 않는다.
+  # 지정하면 이 URL을 가장 먼저 조회하고(settings 미러와 다르면 경고로 둘 다 알려 준다), 그다음
+  # settings에서 나온 저장소들을 차례로 조회한다: mirrorOf 규칙에 맞는 모든 미러, 활성 프로필 저장소와
+  # pluginRepositories, 미러가 덮지 않는 pom 저장소, 전역 settings, 온라인이면 Central.
+  # null이면 settings에서 나온 저장소들만 쓴다.
+  # Nexus 그룹 URL을 settings.xml 미러와 여기 둘 다 지정해 두는 것을 권장한다.
   repository_url: null
-  # repository_url 이 settings.xml 어디에도 나오지 않는 URL 일 때 그 자격증명을 가져올 <server> id.
-  # 같은 URL 의 미러·저장소가 settings 에 있으면 그 자격증명을 자동으로 쓰므로 비워 둬도 된다.
+  # repository_url이 settings.xml 어디에도 없는 URL일 때 그 자격 증명을 가져올 <server> id.
+  # 같은 URL의 미러나 저장소가 settings에 있으면 그 자격 증명을 자동으로 쓰므로 비워 둬도 된다.
   repository_server_id: null
   repository_timeout_seconds: 10   # 저장소 조회 HTTP 요청 하나의 시간 상한(초)
-  # Windows 에서 백신·IDE·남은 java 프로세스가 target/ 의 파일을 잡고 있어 빌드가 실패하면,
-  # file_lock_retry_wait_s 초 기다렸다가 같은 빌드를 최대 file_lock_retries 번 다시 돌린다(0 = 끔).
-  # 환경 문제를 LLM 에게 묻지 않기 위해서다. 판별 패턴은 knowledge/config/build_env_errors.yml.
+  # Windows에서 백신, IDE, 남은 java 프로세스가 target/의 파일을 잡고 있어 빌드가 실패하면,
+  # file_lock_retry_wait_s초 기다렸다가 같은 빌드를 최대 file_lock_retries번 다시 실행한다(0이면 끔).
+  # 환경 문제를 LLM에 보내지 않기 위해서다. 판별 패턴은 knowledge/config/build_env_errors.yml에 있다.
   file_lock_retries: 3
   file_lock_retry_wait_s: 5
   # 리소스 필터링(<filtering>true</filtering>)이 켜진 폴더 안의 바이너리 파일은 텍스트로 읽혀
-  # MalformedInputException 으로 빌드가 깨진다. 재구성은 스캔으로 찾은 바이너리 확장자를 필터링을 선언한 pom 의
-  # maven-resources-plugin <nonFilteredFileExtensions> 에 적는데, 내용이 텍스트처럼 보여 스캔이 놓치는
-  # 회사 형식이 있으면 여기에 확장자를 더한다(소문자, 점 없이. 예: [dmdb]).
+  # MalformedInputException으로 빌드가 실패한다. 재구성은 스캔으로 찾은 바이너리 확장자를 필터링을 선언한 pom의
+  # maven-resources-plugin <nonFilteredFileExtensions>에 기록한다. 내용이 텍스트처럼 보여 스캔이 놓치는
+  # 회사 형식이 있으면 여기에 확장자를 추가한다(소문자, 점 없이. 예: [dmdb]).
   non_filtered_extensions: []
 
 # --------------------------------------------------------------------------------------
-# loop — 검증 빌드와 수정 루프
+# loop: 검증 빌드와 수정 루프
 # --------------------------------------------------------------------------------------
-# 변환 → 재구성 → 구조 검토가 끝난 뒤 처음 도는 빌드가 곧 최종 빌드(mvn clean package)다. 중간 빌드는 없다.
-# 실패하면 수정 루프가 오류를 케이스별로 묶어 수정 스크립트를 시도하고, 다시 빌드해 점수를 매긴다.
-# 도움이 안 된 시도는 되돌린다. 무슨 일이 있어도 마지막에 빌드를 한 번 더 하고 남은 오류를 보고서에 적는다.
+# 변환 -> 재구성 -> 구조 검토가 끝난 뒤 처음 실행하는 빌드가 곧 최종 빌드(mvn clean package)다. 중간 빌드는 없다.
+# 실패하면 수정 루프가 오류를 케이스별로 묶어 수정 스크립트를 시도하고, 다시 빌드해 시도 결과를 평가한다.
+# 도움이 안 된 시도는 되돌린다. 어떤 경우에도 마지막에 빌드를 한 번 더 하고 남은 오류를 보고서에 기록한다.
 loop:
-  # 단계별 루프. 앞의 셋(jdk21 / spring / restructure)은 예전 흐름의 중간 빌드 루프로, 지금 흐름에서는
-  # 계획 단계가 읽지 않는다(켜도 무시하고 계획 메모만 남긴다). 실제로 쓰이는 것은 verify 뿐이다.
-  # verify.max_iterations = 수정 루프 라운드 수의 상한(기본 50). 한 라운드 = 빌드 한 번
-  # (케이스별 시도를 적용한 뒤 mvn clean package 로 다시 빌드해 점수를 매긴다). 상한에 닿으면
+  # 단계별 루프. 앞의 세 개(jdk21 / spring / restructure)는 중간 빌드 루프로, 현재 흐름에서는
+  # 계획 단계가 읽지 않는다(켜도 무시하고 계획 메모만 남긴다). 실제로 쓰이는 것은 verify뿐이다.
+  # verify.max_iterations: 수정 루프 라운드 수의 상한(기본 50). 한 라운드는 빌드 한 번이다
+  # (케이스별 시도를 적용한 뒤 mvn clean package로 다시 빌드해 결과를 평가한다). 상한에 도달하면
   # 루프를 멈추고 마지막 빌드와 보고서로 넘어간다. 줄이면 빨리 끝나지만 고칠 수 있었던 오류가 남을 수 있다.
   phases:
     jdk21:       { goal: compile,      max_iterations: 3, enabled: false }
     spring:      { goal: test-compile, max_iterations: 6, enabled: false }
     restructure: { goal: package,      max_iterations: 6, enabled: false }
     verify:      { goal: package,      max_iterations: 50 }
-  # 프로젝트 하나에서 LLM 을 부를 수 있는 총 횟수.
-  #   0 = 제한 없음(기본)   양수 = 그 횟수에서 멈춤   -1 = LLM 을 전혀 부르지 않음(저장된 스크립트만 재사용)
+  # 프로젝트 하나에서 LLM을 호출할 수 있는 총 횟수.
+  #   0: 제한 없음(기본)   양수: 그 횟수에서 멈춤   -1: LLM을 호출하지 않음(저장된 스크립트만 재사용)
   max_llm_calls: 0
-  # 실행 하나의 전체 시간 상한(분). 넘으면 남은 루프를 건너뛰지만 마지막 빌드는 여전히 돈다.
+  # 실행 하나의 전체 시간 상한(분). 넘으면 남은 루프를 건너뛰지만 마지막 빌드는 그대로 실행된다.
   max_total_minutes: 240
-  # 같은 오류 묶음이 이 횟수만큼 그대로 되풀이되면 "정체" 로 보고 다음 시도부터 상위 모델
+  # 같은 오류 묶음이 이 횟수만큼 그대로 반복되면 진전이 없다고 보고 다음 시도부터 상위 모델
   # (llm.escalation_model)을 쓴다.
   stall_limit: 2
-  max_clusters_per_iteration: 8    # 한 라운드에서 손대는 케이스 수 상한(근본 원인으로 보이는 케이스부터)
-  # 시도 뒤 오류가 크게 늘면(시도 전 오류 수 × regression_ratio 초과) 그 시도를 "악화" 로 보고 되돌릴지.
-  # pom 을 고친 시도 뒤에 pom 오류나 부모·플러그인·의존성 해석 오류가 새로 나타나면 개수와 상관없이 되돌린다.
-  # 단, pom 문제를 없앤 뒤 빌드가 다음 단계로 나아가 처음 보이게 된 더 뒤 단계의 오류(예: 의존성 해결 실패)는
-  # 그 시도가 만든 악화가 아니라 가려져 있던 것으로 보고 되돌리지 않는다.
+  max_clusters_per_iteration: 8    # 한 라운드에서 처리하는 케이스 수 상한(근본 원인으로 보이는 케이스부터)
+  # 시도 뒤 오류가 크게 늘면(시도 전 오류 수 × regression_ratio 초과) 그 시도를 악화로 보고 되돌릴지 여부.
+  # pom을 고친 시도 뒤에 pom 오류나 부모, 플러그인, 의존성 해석 오류가 새로 나타나면 개수와 상관없이 되돌린다.
+  # 단, pom 문제를 없앤 뒤 빌드가 다음 단계로 진행되어 처음 보이게 된 뒤 단계의 오류(예: 의존성 해결 실패)는
+  # 그 시도 때문에 생긴 것이 아니라 가려져 있던 것으로 보고 되돌리지 않는다.
   revert_on_regression: true
   regression_ratio: 1.5
-  # 마지막 검증 빌드를 언제나 돌릴지. 빌드 게이트(실행은 반드시 최종 빌드로 끝난다)이므로 끄지 않는다.
+  # 마지막 검증 빌드를 항상 실행할지 여부. 빌드 게이트(실행은 반드시 최종 빌드로 끝난다)이므로 끄지 않는다.
   always_final_verify: true
-  # 오류 집합이 A ↔ B 로 오가는 "진동" 을 잡는 설정이다.
-  #   oscillation_window : 비교할 최근 빌드 수. 넓히면 진동을 더 빨리 알아챈다.
-  #   oscillation_limit  : 진동이 이 횟수만큼 되풀이되면 관련 케이스를 차단한다. 더 끈질기게 시도하려면 올린다.
+  # 오류 집합이 A와 B 사이를 오가는 진동을 감지하는 설정이다.
+  #   oscillation_window: 비교할 최근 빌드 수. 넓히면 진동을 더 빨리 알아챈다.
+  #   oscillation_limit: 진동이 이 횟수만큼 반복되면 관련 케이스를 차단한다. 더 오래 시도하려면 올린다.
   oscillation_window: 4
   oscillation_limit: 2
-  # 차단 사유별로 LLM 스크립트 시도를 몇 번까지 허용할지(0 = LLM 에게 묻지 않고 바로 차단해 인수인계로).
-  # 저장된 스크립트는 이 값과 상관없이 재사용한다. 코드로 고칠 수 없는 환경 문제는 0 이다.
+  # 차단 사유별로 LLM 스크립트 시도를 몇 번까지 허용할지 정한다.
+  # 0이면 LLM을 호출하지 않고 바로 차단해 인수인계로 넘긴다.
+  # 저장된 스크립트는 이 값과 상관없이 재사용한다. 코드로 고칠 수 없는 환경 문제는 0이다.
   blocked_policy:
-    reactor_duplicate: 0           # 같은 모듈이 reactor 에 두 번 들어감: pom 구조 문제라 사람에게 넘긴다
-    file_lock: 0                   # target/ 를 다른 프로세스가 잡고 있음(Windows): 환경 문제
-    needs_owner: 0                 # LLM 이 "프로젝트 밖의 결정이 필요하다" 고 답한 경우(예: jakarta 빌드가 없음)
-    external_javax_api: 2          # 의존성이 아직 javax.* 를 드러냄: 스크립트가 jakarta 릴리스로 바꿔 볼 수 있다.
-                                   # 단, 프로젝트 코드로 대체하는 법을 적은 노트(knowledge/notes 의 replacement: true, 예: spring-mobile)가
-                                   # 맞는 라이브러리는 이 정책으로 차단하지 않는다 — 직접 수정 한도(script.max_edit_tries_per_case)가 끝을 정한다
-    external_api_incompatible: 2   # 라이브러리 API 가 새 버전과 맞지 않음
+    reactor_duplicate: 0           # 같은 모듈이 reactor에 두 번 들어감: pom 구조 문제라 사람에게 넘긴다
+    file_lock: 0                   # target/을 다른 프로세스가 잡고 있음(Windows): 환경 문제
+    needs_owner: 0                 # LLM이 "프로젝트 밖의 결정이 필요하다"고 답한 경우(예: jakarta 빌드가 없음)
+    external_javax_api: 2          # 의존성이 아직 javax.*를 노출함: 스크립트가 jakarta 릴리스로 바꿔 볼 수 있다.
+                                   # 단, 프로젝트 코드로 대체하는 방법을 기록한 노트
+                                   # (knowledge/notes의 replacement: true, 예: spring-mobile)에 해당하는
+                                   # 라이브러리는 이 정책으로 차단하지 않는다. 시도 횟수는
+                                   # 직접 수정 한도(script.max_edit_tries_per_case)가 정한다
+    external_api_incompatible: 2   # 라이브러리 API가 새 버전과 맞지 않음
     artifact_not_found: 2          # 의존성을 저장소에서 찾지 못함
-    parent_not_found: 0            # 사내 부모 pom 을 찾지 못함: settings / Nexus 문제라 코드로 못 고친다
-    plugin_incompatible: 2         # Maven 플러그인이 JDK 21 과 맞지 않음
+    parent_not_found: 0            # 사내 부모 pom을 찾지 못함: settings / Nexus 문제라 코드로 고칠 수 없다
+    plugin_incompatible: 2         # Maven 플러그인이 JDK 21과 맞지 않음
     unsupported_source: 0          # 지원하지 않는 소스 수준
     encoding: 0                    # 인코딩 문제(재구성과 구조 검토가 따로 다룬다)
 
 # --------------------------------------------------------------------------------------
-# llm — LLM 연결 (구조 검토, 수정 스크립트, 운영자 가이드에 쓰인다)
+# llm: LLM 연결 (구조 검토, 수정 스크립트, 운영자 가이드에 쓰인다)
 # --------------------------------------------------------------------------------------
-# 회사 LLM 게이트웨이 연결 정보는 yml 이 아니라 환경 변수(.env 파일 포함)에서만 온다.
-# .env 는 git 이 무시하는 파일이며, 패키지 폴더와 현재 폴더에서 git 루트까지 올라가며 찾고 가까운 것이 이긴다.
-# 셸에 직접 설정한 환경 변수가 .env 보다 우선한다. 예시는 .env.example 에 있다.
+# 회사 LLM 게이트웨이 연결 정보는 yml이 아니라 환경 변수(.env 파일 포함)에서만 읽는다.
+# .env는 git이 무시하는 파일이며, 패키지 폴더와 현재 폴더에서 git 루트까지 올라가며 찾고 가까운 파일이 우선한다.
+# 셸에 직접 설정한 환경 변수가 .env보다 우선한다. 예시는 .env.example에 있다.
 #   LLM_BASE_URL  LLM_API_KEY  LLM_MODEL  [LLM_ESCALATION_MODEL  LLM_RESPONSE_PATH  LLM_RECORD_DIR  LLM_GATEWAY ...]
-# API 키는 절대 yml 이나 로그에 적지 않는다. api_key_env 는 키가 아니라 "키가 들어 있는 환경 변수의 이름" 이다.
-# 연결이 되는지는 sbmig llm-probe 로 확인한다(보낼 요청과 받은 응답을 그대로 보여 준다).
+# API 키는 yml이나 로그에 기록하지 않는다. api_key_env는 키가 아니라 키가 들어 있는 환경 변수의 이름이다.
+# 연결 여부는 sbmig llm-probe로 확인한다(보낼 요청과 받은 응답을 그대로 보여 준다).
 llm:
-  # 어떤 방식으로 LLM 을 부를지.
-  #   company           = 회사 게이트웨이. requests.post 한 번(Bearer 키, json = model + messages + 추가 필드)
-  #   openai_compatible = OpenAI 호환 API
-  #   anthropic         = Anthropic API(검증용, config/llm-anthropic.yml)
-  #   fake              = 녹화된 응답을 재생(오프라인 테스트, base_url: replay:<폴더>)
-  #   plugin            = 회사 어댑터를 끼운다(llm.plugin, config/llm-plugin.example.yml)
+  # LLM을 호출하는 방식.
+  #   company: 회사 게이트웨이. requests.post 한 번(Bearer 키, json = model + messages + 추가 필드)
+  #   openai_compatible: OpenAI 호환 API
+  #   anthropic: Anthropic API(검증용, config/llm-anthropic.yml)
+  #   fake: 녹화된 응답을 재생한다(오프라인 테스트, base_url: replay:<폴더>)
+  #   plugin: 회사 어댑터를 연결한다(llm.plugin, config/llm-plugin.example.yml)
   provider: company
-  base_url: "${LLM_BASE_URL}"            # 게이트웨이 주소. .env 의 LLM_BASE_URL 에서 온다
+  base_url: "${LLM_BASE_URL}"            # 게이트웨이 주소. .env의 LLM_BASE_URL에서 읽는다
   api_key_env: LLM_API_KEY               # API 키가 들어 있는 환경 변수의 이름(키 자체가 아님)
-  # 수정 스크립트와 구조 검토에 쓰는 모델 이름. .env 의 LLM_MODEL 이 없을 때만 뒤의 기본 이름을 쓴다.
+  # 수정 스크립트와 구조 검토에 쓰는 모델 이름. .env의 LLM_MODEL이 없을 때만 뒤의 기본 이름을 쓴다.
   model: "${LLM_MODEL:-gpt-6-luna}"
-  # legacy 게이트웨이 요청에 그대로 덧붙이는 최상위 필드들(회사 게이트웨이가 요구하는 값).
+  # legacy 게이트웨이 요청에 그대로 추가하는 최상위 필드들(회사 게이트웨이가 요구하는 값).
   payload_extra:
     need_origin: true
-  # 응답 JSON 안에서 답 글자가 있는 위치(점으로 이은 경로, 예: data.result.content). 비우면 자동으로 찾는다.
+  # 응답 JSON 안에서 답변 텍스트가 있는 위치(점으로 이은 경로, 예: data.result.content). 비우면 자동으로 찾는다.
   response_path: "${LLM_RESPONSE_PATH:-}"
-  # 요청·응답을 llm-NNNN.json 으로 남길 폴더(키는 남기지 않는다). 감사와 오프라인 재생에 쓴다.
-  # 상대 경로는 sbmig 체크아웃 기준. 비우면 남기지 않는다(.env 에서 예: out/llm-records).
+  # 요청과 응답을 llm-NNNN.json으로 기록할 폴더(키는 기록하지 않는다). 감사와 오프라인 재생에 쓴다.
+  # 상대 경로는 sbmig 체크아웃 기준이다. 비우면 기록하지 않는다(.env에서 예: out/llm-records).
   record_dir: "${LLM_RECORD_DIR:-}"
-  # 회사 게이트웨이의 요청 형식(.env 의 LLM_GATEWAY).
-  #   legacy = {model, messages, payload_extra 의 필드}
-  #   agent  = 사내 GPT 에이전트 게이트웨이. {model: LLM_ASSET_ID, messages, stream: false, async: false,
-  #            params: {role: LLM_MODEL 또는 LLM_ESCALATION_MODEL}, trace_id(호출마다), max_tokens, temperature}
-  #            에 agent_extra 를 더한다. role 이름(build_error_fixer / escalation_fixer)을
-  #            게이트웨이가 실제 모델로 바꾼다.
-  #            세션 id 는 보내지 않고 게이트웨이가 돌려준다(이어가는 대화만 되돌려 보낸다: case_thread).
-  #            payload_extra 는 agent 형식에서는 보내지 않는다.
+  # 회사 게이트웨이의 요청 형식(.env의 LLM_GATEWAY).
+  #   legacy: {model, messages, payload_extra의 필드}
+  #   agent: 사내 GPT 에이전트 게이트웨이. {model: LLM_ASSET_ID, messages, stream: false, async: false,
+  #          params: {role: LLM_MODEL 또는 LLM_ESCALATION_MODEL}, trace_id(호출마다), max_tokens, temperature}
+  #          에 agent_extra를 더한다. role 이름(build_error_fixer / escalation_fixer)은
+  #          게이트웨이가 실제 모델로 바꾼다.
+  #          세션 id는 보내지 않고 게이트웨이가 반환한다(이어지는 대화에서만 다시 보낸다: case_thread).
+  #          agent 형식에서는 payload_extra를 보내지 않는다.
   gateway: "${LLM_GATEWAY:-legacy}"
-  asset_id: "${LLM_ASSET_ID:-}"          # agent 게이트웨이에서 최상위 model 자리에 들어가는 값(.env 의 LLM_ASSET_ID)
-  # 토큰 교환 주소(.env 의 LLM_TOKEN_URL). 지정하면 먼저 앱 토큰(LLM_APP_TOKEN, 없으면 LLM_API_KEY)으로
-  # 이 주소에 POST 해 접근 토큰을 받아 쓴다. 비우면 키를 그대로 Bearer 로 보낸다.
+  asset_id: "${LLM_ASSET_ID:-}"          # agent 게이트웨이에서 최상위 model에 들어가는 값(.env의 LLM_ASSET_ID)
+  # 토큰 교환 주소(.env의 LLM_TOKEN_URL). 지정하면 먼저 앱 토큰(LLM_APP_TOKEN, 없으면 LLM_API_KEY)으로
+  # 이 주소에 POST해 접근 토큰을 받아 쓴다. 비우면 키를 그대로 Bearer로 보낸다.
   token_url: "${LLM_TOKEN_URL:-}"
-  # 접근 토큰이 만료되기 이 초만큼 전에 새로 받는다. 401 을 받으면 한 번 더 새로 받아 다시 보낸다.
+  # 접근 토큰이 만료되기 이 시간(초) 전에 새로 받는다. 401을 받으면 한 번 더 새로 받아 다시 보낸다.
   token_refresh_margin_s: 300
-  agent_extra: {}                        # agent 게이트웨이 요청에 그대로 덧붙이는 고정 필드
-  # 상위 모델(.env 의 LLM_ESCALATION_MODEL). 같은 오류가 되풀이되는 정체(loop.stall_limit) 뒤나 한 케이스의
-  # 시도가 쌓인 뒤에 쓴다. 비우면 LLM_MODEL 을 계속 쓴다.
+  agent_extra: {}                        # agent 게이트웨이 요청에 그대로 추가하는 고정 필드
+  # 상위 모델(.env의 LLM_ESCALATION_MODEL). 같은 오류가 반복되어 진전이 없을 때(loop.stall_limit)나 한 케이스의
+  # 시도가 쌓인 뒤에 쓴다. 비우면 LLM_MODEL을 계속 쓴다.
   escalation_model: "${LLM_ESCALATION_MODEL:-}"
-  # 계획 검토(plan.advisor: llm)에 쓰는 값싼 모델(.env 의 LLM_RECIPE_MODEL). 비우면 LLM_MODEL.
+  # 계획 검토(plan.advisor: llm)에 쓰는 저렴한 모델(.env의 LLM_RECIPE_MODEL). 비우면 LLM_MODEL을 쓴다.
   # 기본 흐름(plan.advisor: none)에서는 쓰이지 않는다.
   recipe_model: "${LLM_RECIPE_MODEL:-}"
-  temperature: 0.0                       # 답의 무작위성. 0 = 같은 질문에 최대한 같은 답(재현성 때문에 0 을 권한다)
-  max_output_tokens: 8000                # 답 하나의 최대 토큰. 긴 스크립트가 잘리면 늘린다
-  max_context_chars: 60000               # 요청 하나에 담는 맥락(소스·pom 발췌 등) 글자 수 상한
+  temperature: 0.0                       # 답변의 무작위성. 재현성을 위해 0을 권장한다
+  max_output_tokens: 8000                # 응답 하나의 최대 토큰. 긴 스크립트가 잘리면 늘린다
+  max_context_chars: 60000               # 요청 하나에 담는 맥락(소스, pom 발췌 등)의 문자 수 상한
   timeout_seconds: 180                   # 요청 하나를 기다리는 시간(초)
   max_retries: 3                         # 전송 오류(연결 끊김, 5xx 등)일 때 같은 요청을 다시 보내는 횟수
-  # 게이트웨이가 "지금 바쁘다" 고 답할 때(429, 또는 Retry-After 가 붙은 502 / 503 / 504) 그 요청을 기다렸다가
-  # 다시 보내는 시간의 합(초). 빌드 파드 여러 개가 같은 게이트웨이를 함께 쓰면 자리가 날 때까지 줄을 서는 것이
-  # 정상이므로, 이 시간 안에서는 오류로 치지 않는다(max_retries 와 따로 센다). 기다리는 동안 sbmig.log 에
-  # 1분에 한 줄쯤 "llm gateway still busy" 가 찍힌다. 이 시간을 다 쓰면 전송 오류로 넘어가 위의 쉬기 / 사용 불가
-  # 규칙을 따른다. 게이트웨이 동시 처리 한도가 작고 답이 오래 걸릴수록 크게 잡는다. 0 = 바쁨도 max_retries 로만 센다.
+  # 게이트웨이가 바쁘다고 응답할 때(429, 또는 Retry-After가 붙은 502 / 503 / 504) 그 요청을 기다렸다가
+  # 다시 보내는 시간의 합계(초). 빌드 파드 여러 개가 같은 게이트웨이를 함께 쓰면 처리 슬롯이 날 때까지
+  # 기다리는 것이 정상이므로, 이 시간 안에서는 오류로 보지 않는다(max_retries와 따로 센다).
+  # 기다리는 동안 sbmig.log에 1분에 한 줄 정도 "llm gateway still busy"가 기록된다. 이 시간을 다 쓰면
+  # 전송 오류로 넘어가 아래의 대기 / 사용 불가 규칙을 따른다. 게이트웨이 동시 처리 한도가 작고 응답이
+  # 오래 걸릴수록 크게 잡는다. 0이면 바쁨도 max_retries로만 센다.
   busy_wait_seconds: 600
-  # 토큰을 새로 받아 보냈는데도 401 이 올 때 잠깐(1~5초) 쉬고 다시 받아 보내는 추가 횟수. 같은 앱 토큰을 다른
-  # 파드가 교환하면 이 파드의 토큰이 무효가 되는 게이트웨이일 수 있어서다(그때 sbmig.log 에 경고가 한 번 찍힌다).
-  # 0 = 401 뒤 한 번만 새로 받아 보낸다.
+  # 토큰을 새로 받아 보냈는데도 401이 올 때 잠깐(1~5초) 기다린 뒤 다시 받아 보내는 추가 횟수. 같은 앱 토큰을 다른
+  # 파드가 교환하면 이 파드의 토큰이 무효가 되는 게이트웨이일 수 있기 때문이다(그때 sbmig.log에 경고가 한 번 기록된다).
+  # 0이면 401 뒤 한 번만 새로 받아 보낸다.
   auth_retries: 2
-  # 전송 실패가 두 번 연속 나면 실행당 한 번 이 초만큼 쉬고 다시 시도한다. 또 연달아 실패하면 그 실행에서는
-  # LLM 을 쓸 수 없는 것으로 본다. 0 = 쉬지 않고 바로 사용 불가로 본다.
+  # 전송 실패가 두 번 연속 나면 실행당 한 번 이 시간(초)만큼 기다리고 다시 시도한다. 또 연달아 실패하면 그 실행에서는
+  # LLM을 쓸 수 없는 것으로 본다. 0이면 기다리지 않고 바로 사용 불가로 본다.
   cooldown_seconds: 60
-  max_context_rounds: 2                  # LLM 이 한 케이스에서 "이 파일도 보여 달라" 고 더 요청할 수 있는 횟수
-  # 프롬프트 묶음 버전(sbmig/fix/prompts 의 파일 이름 끝). 새 프롬프트를 시험할 때만 바꾼다.
+  max_context_rounds: 2                  # LLM이 한 케이스에서 다른 파일을 더 보여 달라고 요청할 수 있는 횟수
+  # 프롬프트 묶음 버전(sbmig/fix/prompts의 파일 이름 끝). 새 프롬프트를 테스트할 때만 바꾼다.
   prompt_version: v1
   # 케이스 대화 모드. agent 게이트웨이처럼 세션이 앞선 대화를 기억할 때만 의미가 있다.
-  #   true  = 한 케이스의 첫 요청은 전체 프롬프트로 세션을 열고, 같은 케이스의 보강 요청은 그 세션에
-  #           달라진 것(지난 스크립트 결과, 지금 오류, 새 파일)만 보낸다. 토큰을 아끼려는 모드다.
-  #           열린 세션은 모델을 바꾸지 못하므로, 상위 모델(escalation_model)로 넘어가는 요청이나 다시
-  #           기본 모델로 돌아오는 요청은 전체 프롬프트로 새 세션을 열고 그 뒤 보강이 그 세션을 이어간다.
-  #   false = 매 요청이 전체 프롬프트를 담는 독립 요청(기본).
+  #   true: 한 케이스의 첫 요청은 전체 프롬프트로 세션을 열고, 같은 케이스의 보강 요청은 그 세션에
+  #         달라진 내용(지난 스크립트 결과, 현재 오류, 새 파일)만 보낸다. 토큰을 아끼기 위한 모드다.
+  #         열린 세션은 모델을 바꿀 수 없으므로, 상위 모델(escalation_model)로 넘어가는 요청이나 다시
+  #         기본 모델로 돌아오는 요청은 전체 프롬프트로 새 세션을 열고, 이후 보강은 그 세션에서 이어간다.
+  #   false: 매 요청이 전체 프롬프트를 담는 독립 요청이다(기본).
   case_thread: false
-  # 이어 보낸 요청이 거절되거나 세션 id 가 오지 않으면 새 세션에서 전체 프롬프트로 다시 보낼지.
+  # 이어 보낸 요청이 거절되거나 세션 id가 오지 않으면 새 세션에서 전체 프롬프트로 다시 보낼지 여부.
   thread_fallback_full: true
   # 보고서 "LLM 사용량과 비용" 표와 일괄 실행 요약의 llm_cost 열에 쓰는 1M 토큰당 가격.
-  # 키는 게이트웨이가 보는 모델 이름이다(정확히 같은 이름 먼저, 그다음 앞부분·부분 일치).
-  # 아래는 공개 정가이며 회사 게이트웨이의 실제 청구와 다를 수 있다. 회사 단가가 있으면 회사 설정에 적는다.
+  # 키는 게이트웨이가 받는 모델 이름이다(정확히 같은 이름을 먼저 찾고, 그다음 앞부분 일치와 부분 일치를 찾는다).
+  # 아래는 공개 정가이며 회사 게이트웨이의 실제 청구와 다를 수 있다. 회사 단가가 있으면 회사 설정에 지정한다.
   pricing:
     gpt-5.6-terra: { input_per_mtok: 2.00, output_per_mtok: 12.00, cached_input_per_mtok: 0.20 }
     gpt-6-luna:    { input_per_mtok: 0.10, output_per_mtok: 0.50,  cached_input_per_mtok: 0.01 }
   pricing_currency: USD                  # 위 가격의 통화
-  # 비용 표 아래에 찍히는 출처 문장
+  # 비용 표 아래에 표시되는 출처 문장
   pricing_note: "OpenAI list prices as of 2026-10-22 (developers.openai.com model pages); the company gateway may bill differently"
 
 # --------------------------------------------------------------------------------------
-# script — 수정 스크립트 실행 (수정 루프)
+# script: 수정 스크립트 실행 (수정 루프)
 # --------------------------------------------------------------------------------------
-# 빌드 오류 하나(케이스)마다 LLM 이 Python 수정 스크립트(def fix(p))를 쓰고, sbmig 가 정적 검사 뒤
-# 별도 python -I 프로세스에서 돌린다. 스크립트는 헬퍼 API p 로 프로젝트 폴더 안의 파일만 만질 수 있다.
-# 실수로 밖을 건드리는 것을 막는 가드이지, 악의적인 코드를 막는 샌드박스는 아니다.
-# 케이스마다 사다리를 탄다: 저장된 스크립트 재사용(LLM 없음) → 이 실행의 마지막 스크립트 보강(LLM)
-# → 보강을 다 쓰면 새로 작성(LLM) → 한도에 닿으면 차단하고 인수인계로 넘긴다.
-# 한도는 일부러 넉넉하게 잡았다. 회사 실행에서 케이스가 실제로 얼마나 필요한지 보고 줄여 간다.
+# 빌드 오류 하나(케이스)마다 LLM이 Python 수정 스크립트(def fix(p))를 작성하고, sbmig가 정적 검사 뒤
+# 별도 python -I 프로세스에서 실행한다. 스크립트는 헬퍼 API p로 프로젝트 폴더 안의 파일만 수정할 수 있다.
+# 실수로 폴더 밖을 건드리는 것을 막는 가드이고, 악의적인 코드를 막는 샌드박스는 아니다.
+# 케이스마다 다음 순서로 시도한다: 저장된 스크립트 재사용(LLM 없음) -> 이 실행의 마지막 스크립트 보강(LLM)
+# -> 보강 한도를 다 쓰면 신규 작성(LLM) -> 한도에 도달하면 차단하고 인수인계로 넘긴다.
+# 한도는 일부러 넉넉하게 잡았다. 회사 실행에서 케이스마다 실제로 필요한 횟수를 보고 줄여 간다.
 script:
-  timeout_seconds: 60              # 스크립트 한 번의 시간 상한(초). 넘으면 프로세스 트리를 통째로 끊는다
-  # 스크립트를 돌릴 Python. null = sbmig 를 돌리는 그 Python. 다른 것을 쓰면 pydantic 과 lxml 이 깔려 있어야 한다
-  # (없으면 ModuleNotFoundError 로 보고된다).
+  timeout_seconds: 60              # 스크립트 한 번의 시간 상한(초). 넘으면 프로세스 트리 전체를 종료한다
+  # 스크립트를 실행할 Python. null이면 sbmig를 실행하는 Python을 쓴다. 다른 Python을 쓰려면
+  # pydantic과 lxml이 설치되어 있어야 한다(없으면 ModuleNotFoundError로 보고된다).
   python: null
-  # 스크립트가 import 할 수 있는 모듈을 더한다(기본 허용: re, json, textwrap, fnmatch …). 회사가 정할 일이다.
+  # 스크립트가 import할 수 있는 모듈을 추가한다(기본 허용: re, json, textwrap, fnmatch 등). 회사가 정할 일이다.
   extra_allowed_imports: []
-  max_code_chars: 30000            # 이보다 긴 스크립트는 돌리지 않고 거절한다
-  log_lines: 200                   # 스크립트가 p.log 로 남긴 줄 중 보관할 줄 수
-  max_files_changed_warn: 40       # 한 번에 이보다 많은 파일을 바꾸면 경고 메모를 단다(바뀐 내용은 그대로 보관)
-  # 예전에 본 케이스면 KB 에 저장된 가장 좋은 스크립트를 LLM 없이 먼저 돌린다. 500개 프로젝트를 차례로
-  # 돌리며 LLM 호출을 줄이는 핵심 장치이므로 끄지 않는다.
+  max_code_chars: 30000            # 이보다 긴 스크립트는 실행하지 않고 거절한다
+  log_lines: 200                   # 스크립트가 p.log로 남긴 줄 중 보관할 줄 수
+  max_files_changed_warn: 40       # 한 번에 이보다 많은 파일을 바꾸면 경고 메모를 남긴다(바뀐 내용은 그대로 보관)
+  # 이전에 처리한 케이스면 KB에 저장된 가장 좋은 스크립트를 LLM 없이 먼저 실행한다. 500개 프로젝트를 차례로
+  # 처리하며 LLM 호출을 줄이는 핵심 기능이므로 끄지 않는다.
   reuse: true
-  reuse_versions: 1                # 한 케이스에서 LLM 에게 묻기 전에 돌려 볼 저장 버전 수
-  # 한 케이스에서 "보강"(이 실행의 마지막 스크립트를 LLM 이 고쳐 늘림)을 할 수 있는 횟수.
-  # 다 쓰면 다음 요청은 새로 작성이다. 0 = 보강하지 않음.
+  reuse_versions: 1                # 한 케이스에서 LLM을 호출하기 전에 실행해 볼 저장 버전 수
+  # 한 케이스에서 보강(이 실행의 마지막 스크립트를 LLM이 고치고 확장함)을 할 수 있는 횟수.
+  # 다 쓰면 다음 요청은 신규 작성이다. 0이면 보강하지 않는다.
   max_augments_per_case: 15
-  # 한 케이스에서 LLM 에게 묻는 총 횟수(신규 + 보강). 닿으면 그 케이스를 차단(repeated_failure)하고 인수인계로 넘긴다.
+  # 한 케이스에서 LLM을 호출하는 총 횟수(신규 + 보강).
+  # 도달하면 그 케이스를 차단(repeated_failure)하고 인수인계로 넘긴다.
   max_llm_tries_per_case: 20
-  # LLM 이 편집도 스크립트도 없이 "프로젝트 밖의 문제" 라고 답한 횟수가 이만큼이면 차단(needs_owner)한다.
-  # 같은 원인을 가진 이웃 케이스도 LLM 을 다시 부르지 않고 함께 차단한다.
-  # 세지 않는 거절: sbmig 가 아는 사실과 모순되는 것 — 저장소에 jakarta 빌드가 있음, 동봉 jar 가 그 패키지를 제공함, 또는 프로젝트 코드로
-  # 대체하는 법을 적은 노트(knowledge/notes 의 replacement: true)가 그 케이스에 맞음. 그때는 그 사실을 붙여 다시 묻고, 거절 답에 들어 있던
-  # edits / script 는 버리지 않고 적용한다.
+  # LLM이 편집도 스크립트도 없이 "프로젝트 밖의 문제"라고 답한 횟수가 이 값에 도달하면 차단(needs_owner)한다.
+  # 같은 원인을 가진 다른 케이스도 LLM을 다시 호출하지 않고 함께 차단한다.
+  # sbmig가 아는 정보와 모순되는 거절은 세지 않는다. 다음과 같은 경우다.
+  #   - 저장소에 jakarta 빌드가 있다
+  #   - 동봉 jar가 그 패키지를 제공한다
+  #   - 프로젝트 코드로 대체하는 방법을 기록한 노트(knowledge/notes의 replacement: true)가 그 케이스에 해당한다
+  # 이때는 그 정보를 붙여 다시 요청하고, 거절 응답에 들어 있던 edits / script는 버리지 않고 적용한다.
   max_declines_per_case: 1
-  # LLM 이 스크립트 대신 직접 편집(<edits>)으로 고치는 케이스(EOL 라이브러리를 프로젝트 코드로 대체하는 일처럼
-  # 다른 프로젝트가 재사용할 수 없는 수정)에 허용하는 시도 횟수. 넘으면 차단(repeated_failure).
+  # LLM이 스크립트 대신 직접 편집(<edits>)으로 고치는 케이스(EOL 라이브러리를 프로젝트 코드로 대체하는 일처럼
+  # 다른 프로젝트가 재사용할 수 없는 수정)에 허용하는 시도 횟수. 넘으면 차단(repeated_failure)한다.
   max_edit_tries_per_case: 4
-  # 스크립트가 성공하면 곧바로 한 번 더 돌려 보고, 또 무언가 바뀌면 non_idempotent 로 표시해 재사용하지 않는다
-  # (두 번 돌리면 결과가 달라지는 스크립트는 다른 프로젝트에서 위험하기 때문이다).
+  # 스크립트가 성공하면 곧바로 한 번 더 실행해 보고, 또 무언가 바뀌면 non_idempotent로 표시해 재사용하지 않는다
+  # (두 번 실행하면 결과가 달라지는 스크립트는 다른 프로젝트에서 위험하기 때문이다).
   idempotency_check: true
 
 # --------------------------------------------------------------------------------------
-# errors — 오류 목록 기록 (보고서 · KB)
+# errors: 오류 목록 기록 (보고서, KB)
 # --------------------------------------------------------------------------------------
-# 실행마다 <실행 폴더>/errors.jsonl 과 errors.md 를 쓰고, 끝에 KB 의 errors.jsonl 에 덧붙인다.
+# 실행마다 <실행 폴더>/errors.jsonl과 errors.md를 쓰고, 마지막에 KB의 errors.jsonl에 추가한다.
 # 사람이 읽는 기록의 길이를 정하는 값들이다.
 errors:
-  diff_chars: 6000                 # 시도 하나의 diff 를 담는 글자 수 상한(전체 diff 는 changes.patch)
-  raw_chars: 600                   # 원래 오류 블록을 담는 글자 수 상한
-  md_view: true                    # 사람이 읽는 errors.md 와 KB 의 cases.md 를 쓸지
-  # 오류마다 읽기 쉬운 JSON 을 KB 의 cases/<케이스 ID>/errors/ 에 남길지(사람이 둘러보는 용도)
+  diff_chars: 6000                 # 시도 하나의 diff를 담는 문자 수 상한(전체 diff는 changes.patch)
+  raw_chars: 600                   # 원래 오류 블록을 담는 문자 수 상한
+  md_view: true                    # 사람이 읽는 errors.md와 KB의 cases.md를 쓸지 여부
+  # 오류마다 읽기 쉬운 JSON을 KB의 cases/<케이스 ID>/errors/에 남길지 여부(사람이 살펴보는 용도)
   json_files: true
-  snippet_lines: 0                 # 바뀐 곳마다 수정 전 / 수정 후 코드를 몇 줄까지 남길지. 0 = 전부
+  snippet_lines: 0                 # 바뀐 곳마다 수정 전 / 수정 후 코드를 몇 줄까지 남길지. 0이면 전부
   script_runs: 30                  # 저장된 스크립트 버전마다 남기는 실행 이력(결과와 이유) 수
 
 # --------------------------------------------------------------------------------------
-# libraries — 의존성 버전 정책 (수정 루프)
+# libraries: 의존성 버전 정책 (수정 루프)
 # --------------------------------------------------------------------------------------
-# 버전은 추측하지 않는다. 사내 부모 체인 → Boot BOM → as-is 빌드 → 저장소에 실제로 있는 릴리스 순으로
-# 사실을 모아 쓴다. LLM 은 스스로 메이저 버전을 올리거나 라이브러리를 바꾸지 못한다.
-# javax 를 쓰는 라이브러리는 같은 메이저의 jakarta 릴리스가 먼저이고, 없을 때만 더 높은 메이저를
-# "운영자 확인" 안내와 함께 쓴다. 사람이 승인·추가한 표는 KB 폴더의 libraries.yml 에 둔다(재배포 없음).
+# 버전은 추측하지 않는다. 사내 부모 체인 -> Boot BOM -> as-is 빌드 -> 저장소에 실제로 있는 릴리스 순으로
+# 정보를 모아 쓴다. LLM은 스스로 메이저 버전을 올리거나 라이브러리를 바꾸지 못한다.
+# javax를 쓰는 라이브러리는 같은 메이저의 jakarta 릴리스를 먼저 쓰고, 없을 때만 더 높은 메이저를
+# 운영자 확인 안내와 함께 쓴다. 사람이 승인하거나 추가한 표는 KB 폴더의 libraries.yml에 둔다(재배포 없음).
 libraries:
-  # 저장소(build.repository_url / settings 미러 / Central)에 어떤 릴리스가 있는지 물어 LLM 프롬프트의
-  # "Dependency versions" 절에 넣는다. false = 표와 정책만 넣는다(LLM 이 버전을 고르기 어려워진다).
+  # 저장소(build.repository_url / settings 미러 / Central)에 어떤 릴리스가 있는지 조회해 LLM 프롬프트의
+  # "Dependency versions" 절에 넣는다. false면 표와 정책만 넣는다(LLM이 버전을 고르기 어려워진다).
   lookup: true
-  max_pom_checks: 6                # 라이브러리 하나에서 jakarta 빌드를 가려내려고 내려받는 후보 pom 수
-  include_prerelease: false        # 마일스톤·RC·알파 버전도 후보로 보여 줄지
+  max_pom_checks: 6                # 라이브러리 하나에서 jakarta 빌드를 확인하려고 내려받는 후보 pom 수
+  include_prerelease: false        # 마일스톤, RC, 알파 버전도 후보로 보여 줄지 여부
   max_artifacts_per_case: 3        # 케이스 하나에서 조회할 라이브러리 수
-  # 사람이 추가·승인한 라이브러리 표. kb.dir 폴더 안의 파일 이름이며 형식은
-  # knowledge/libraries/jakarta_libraries.yml 과 같다(+ allow_major: true 로 메이저 상향 승인).
-  # 같은 항목이면 이 표가 이긴다.
+  # 사람이 추가하거나 승인한 라이브러리 표. kb.dir 폴더 안의 파일 이름이며 형식은
+  # knowledge/libraries/jakarta_libraries.yml과 같다(allow_major: true를 추가하면 메이저 상향 승인).
+  # 같은 항목이면 이 표가 우선한다.
   company_file: libraries.yml
-  # 메이저 버전을 올린 답에 운영자 확인 안내(<verify>)가 없으면 안내만 받으려고 LLM 을 한 번 더 부른다.
-  # false(또는 LLM 없음)면 sbmig 가 diff 로 안내를 만든다.
+  # 메이저 버전을 올린 응답에 운영자 확인 안내(<verify>)가 없으면 안내만 받기 위해 LLM을 한 번 더 호출한다.
+  # false(또는 LLM 없음)면 sbmig가 diff로 안내를 만든다.
   verify_guide_llm: true
-  # javax 시대 라이브러리의 jakarta 빌드를 sbmig 가 직접 찾을지(같은 좌표의 상위 릴리스 → Nexus 이름 검색
-  # → 이름 규칙 탐침). 확인되면 LLM 을 부르기 전에 선언을 바꿔 넣는다(사전 시도 sbmig-jakarta).
-  # 확인은 버전 한정어·classifier, pom 의 jakarta 선언, 그래도 모르면 jar 를 받아 클래스 참조를 세어서 한다.
-  # false = 전체를 끄는 스위치: 릴리스 목록만 보여 주고, 확인·사전 시도를 하지 않는다.
+  # javax 시대 라이브러리의 jakarta 빌드를 sbmig가 직접 찾을지 여부(같은 좌표의 상위 릴리스 -> Nexus 이름 검색
+  # -> 이름 규칙 탐색). 확인되면 LLM을 호출하기 전에 선언을 바꿔 넣는다(사전 시도 sbmig-jakarta).
+  # 버전 한정어와 classifier, pom의 jakarta 선언으로 확인하고, 그래도 모르면 jar를 받아 클래스 참조를 세어 확인한다.
+  # false면 전체를 끈다. 릴리스 목록만 보여 주고 확인과 사전 시도는 하지 않는다.
   discover_jakarta_builds: true
-  nexus_search: true               # 저장소 URL 이 …/repository/<이름>/ 꼴이면 Nexus 3 검색 API 를 쓴다
-  # 라이브러리 하나에서 이름 규칙으로 찔러 보는 후보 수(-jakarta 붙인 이름, 끝 숫자를 올린 이름 …)
+  nexus_search: true               # 저장소 URL이 .../repository/<이름>/ 형태면 Nexus 3 검색 API를 쓴다
+  # 라이브러리 하나에서 이름 규칙으로 조회해 보는 후보 수(-jakarta를 붙인 이름, 끝 숫자를 올린 이름 등)
   max_jakarta_probes: 12
-  max_jar_scans: 2                 # pom 으로 판단이 안 될 때 라이브러리 하나에서 내려받아 볼 jar 수
-  max_jar_scan_mb: 20              # 이보다 큰 jar 는 내려받지 않는다(그 후보는 "미확인" 으로 남고 적용되지 않는다)
+  max_jar_scans: 2                 # pom으로 판단할 수 없을 때 라이브러리 하나에서 내려받아 볼 jar 수
+  max_jar_scan_mb: 20              # 이보다 큰 jar는 내려받지 않는다(그 후보는 미확인으로 남고 적용되지 않는다)
 
 # --------------------------------------------------------------------------------------
-# review — 구조 검토 (재구성 다음, 첫 빌드 전)
+# review: 구조 검토 (재구성 다음, 첫 빌드 전)
 # --------------------------------------------------------------------------------------
-# 재구성이 끝난 pom·의존성·모듈·소스 인코딩·필터링되는 바이너리 리소스를 LLM 이 회사 규칙에 비추어 본다.
-# critical(치명) 지적은 바로 고치고(review: … 커밋, 되돌릴 수 있음), warning 은 보고서 "Structure review" 에 남긴다.
+# 재구성이 끝난 pom, 의존성, 모듈, 소스 인코딩, 필터링되는 바이너리 리소스를 LLM이 회사 규칙에 따라 검토한다.
+# critical(치명) 지적은 바로 고치고(review: ... 커밋, 되돌릴 수 있음), warning은 보고서 "Structure review"에 남긴다.
 review:
-  enabled: true                    # false = 구조 검토를 건너뛰고 재구성 바로 뒤에 빌드한다
-  fix_critical: true               # critical 지적을 답의 편집으로 바로 고칠지. false = 보고만 한다
-  max_pom_chars: 60000             # 프롬프트에 넣는 pom 글자 수 합계 상한(넘는 pom 은 앞뒤만 남기고 자른다)
+  enabled: true                    # false면 구조 검토를 건너뛰고 재구성 바로 뒤에 빌드한다
+  fix_critical: true               # critical 지적을 응답의 편집으로 바로 고칠지 여부. false면 보고만 한다
+  max_pom_chars: 60000             # 프롬프트에 넣는 pom 문자 수 합계 상한(넘는 pom은 앞뒤만 남기고 자른다)
   max_poms: 40                     # 프롬프트에 넣는 pom 개수 상한
-  # 지금은 읽지 않는 키다(바꿔도 효과 없음). 예전에는 검토 결과를 KB 의 reviews.jsonl 에 남겼지만,
-  # 지금은 그 파일을 쓰지 않고 검토 결과가 보고서("Structure review")와 오류 목록에 남는다.
+  # 현재 읽지 않는 키다(바꿔도 효과 없음). 검토 결과는 보고서("Structure review")와 오류 목록에 남는다.
   record: true
-  # 검토 답의 형식.
-  #   false = 편집 목록(edits)만 요구한다(기본). 스크립트 설명이 빠져 프롬프트가 짧아진다.
-  #   true  = 편집에 더해 수정 스크립트(<script>)도 요구한다.
+  # 검토 응답의 형식.
+  #   false: 편집 목록(edits)만 요구한다(기본). 스크립트 설명이 빠져 프롬프트가 짧아진다.
+  #   true: 편집에 더해 수정 스크립트(<script>)도 요구한다.
   ask_script: false
   # 검토 편집을 적용한 뒤 재구성의 불변 규칙(부모 체인이 정의한 속성을 다시 넣지 않기, 관리되는 아티팩트에
-  # 버전 달지 않기, 낯선 <parent> 금지 등)을 다시 검사한다. 어기면 되돌리고 이유를 붙여 한 번 다시 묻는다.
+  # 버전 넣지 않기, 낯선 <parent> 금지 등)을 다시 검사한다. 어기면 되돌리고 이유를 붙여 한 번 다시 요청한다.
   invariant_check: true
-  save_input: true                 # 검토에 보낸 프롬프트를 <실행 폴더>/logs/review-input.md 로 남긴다(문제 확인용)
+  save_input: true                 # 검토에 보낸 프롬프트를 <실행 폴더>/logs/review-input.md로 남긴다(문제 확인용)
 
 # --------------------------------------------------------------------------------------
-# fix — 수정기 교체 (어댑터 2단계, docs/ADAPTERS.md)
+# fix: 수정기 교체 (어댑터 2단계, docs/ADAPTERS.md)
 # --------------------------------------------------------------------------------------
-# sbmig 의 LLM 수정기를 회사 코딩 에이전트로 통째로 바꾸고 싶을 때만 쓴다. 비워 두면 sbmig 의 수정기를 쓴다.
-# 수정은 언제나 스크립트 사다리와 KB 로 진행되며, 교체한 에이전트도 그 안에서 스크립트를 제안할 뿐이다.
+# sbmig의 LLM 수정기를 회사 코딩 에이전트로 통째로 바꿀 때만 쓴다. 비워 두면 sbmig의 수정기를 쓴다.
+# 수정은 항상 스크립트 시도 순서와 KB로 진행되며, 교체한 에이전트도 그 안에서 스크립트를 제안할 뿐이다.
 fix:
-  # "패키지.모듈:이름" 형식. propose_script 를 구현한 클래스나 팩토리를 가리킨다. null = sbmig 기본 수정기.
+  # "패키지.모듈:이름" 형식. propose_script를 구현한 클래스나 팩토리를 가리킨다. null이면 sbmig 기본 수정기를 쓴다.
   plugin: null
-  plugin_options: {}               # 팩토리에 그대로 넘기는 옵션(비밀값을 적지 않는다)
+  plugin_options: {}               # 팩토리에 그대로 넘기는 옵션(비밀 값을 넣지 않는다)
 
 # --------------------------------------------------------------------------------------
-# kb — 지식베이스(파일) 위치
+# kb: KB(파일) 위치
 # --------------------------------------------------------------------------------------
 # 케이스별 수정 스크립트와 오류 기록이 쌓이는 곳이다. 다음 프로젝트가 같은 오류를 만나면 여기 저장된
 # 스크립트를 LLM 없이 재사용한다. 파일로만 관리한다(데이터베이스 없음).
 kb:
-  # KB 폴더. 상대 경로는 sbmig 체크아웃(저장소 루트) 기준이므로, 기본값 kb-v2 는 체크아웃 폴더 안에 생긴다.
-  # 체크아웃을 지우거나 새로 받으면 KB 도 함께 사라지므로, 운영에서는 체크아웃 밖의 절대 경로를 회사 설정에 적는다.
-  # 테스트·데모 실행은 out/ 아래 KB 만 써야 한다(config/artifacts.local-e2e.yml 참고).
+  # KB 폴더. 상대 경로는 sbmig 체크아웃(저장소 루트) 기준이므로, 기본값 kb-v2는 체크아웃 폴더 안에 생긴다.
+  # 체크아웃을 지우거나 새로 받으면 KB도 함께 사라지므로, 운영에서는 체크아웃 밖의 절대 경로를 회사 설정에 지정한다.
+  # 테스트와 데모 실행은 out/ 아래 KB만 써야 한다(config/artifacts.local-e2e.yml 참고).
   # 안에 생기는 것: errors.jsonl(모든 실행의 오류 목록), cases.md, cases/<케이스 ID>/(case.json + 스크립트 버전들)
   dir: kb-v2
-  redact_file: knowledge/kb/redact.yml   # KB 에 쓰기 전에 비밀값을 가리는 규칙(기본 규칙에 더해짐, 회사 패턴은 여기에)
-  # 여러 프로세스(웹 UI, 일괄 실행, kb 명령)가 같은 KB 를 쓸 때 잠금을 기다리는 시간(초).
-  # 넘기면 그 기록만 포기하고 로그에 남긴다(실행은 멈추지 않는다).
+  redact_file: knowledge/kb/redact.yml   # KB에 쓰기 전에 비밀 값을 마스킹하는 추가 규칙(회사 패턴)
+  # 여러 프로세스(웹 UI, 일괄 실행, kb 명령)가 같은 KB를 쓸 때 잠금을 기다리는 시간(초).
+  # 넘으면 그 기록만 포기하고 로그에 남긴다(실행은 멈추지 않는다).
   lock_timeout_seconds: 300
 
 # --------------------------------------------------------------------------------------
-# fleet — 일괄 실행 (sbmig fleet: 프로젝트 약 500개를 하나씩 차례로)
+# fleet: 일괄 실행 (sbmig fleet: 프로젝트 약 500개를 하나씩 차례로)
 # --------------------------------------------------------------------------------------
-# 에이전트 하나가 프로젝트를 엄격히 순서대로 돌리며, 프로젝트 사이마다 KB 가 채워져 다음 프로젝트가 재사용한다.
-# 인프라 장애(네트워크·Nexus·LLM 중단)로 연달아 실패하면 기다렸다 다시 점검하는 장치가 여기 있다.
+# 에이전트 하나가 프로젝트를 엄격히 순서대로 처리하며, 프로젝트가 끝날 때마다 KB가 채워져 다음 프로젝트가 재사용한다.
+# 인프라 장애(네트워크, Nexus, LLM 중단)로 연달아 실패하면 기다렸다가 다시 점검하는 설정이 여기 있다.
 fleet:
   preflight: true                  # 첫 프로젝트 전에 Java / Maven / settings / LLM / 디스크를 한 번 점검한다
-  infra_failure_limit: 3           # 인프라 이유로 연달아 이만큼 끝나면 기다렸다가 다시 점검한다
-  # 다시 점검하기 전 기다리는 분. 0 = 기다리지 않고 바로 멈춘다(상태는 남아 다시 돌리면 이어서 한다).
+  infra_failure_limit: 3           # 인프라 문제로 연달아 이만큼 실패하면 기다렸다가 다시 점검한다
+  # 다시 점검하기 전에 기다리는 시간(분). 0이면 기다리지 않고 바로 멈춘다(상태가 남으므로 다시 실행하면 이어서 한다).
   infra_retry_minutes: 15
-  infra_max_waits: 4               # 다시 점검을 몇 번까지 할지. 넘으면 일괄 실행을 멈춘다(상태 저장, 재개 가능)
+  infra_max_waits: 4               # 다시 점검하는 최대 횟수. 넘으면 일괄 실행을 멈춘다(상태 저장, 재개 가능)
   # 프로젝트가 끝난 뒤 디스크를 비우는 방식.
-  #   none         = 지우지 않는다
-  #   build-output = 실행 사본의 target/ 폴더만 지운다(기본)
-  #   workspace    = 프로젝트 사본까지 지운다(result.zip, 보고서, patch 는 남는다)
+  #   none: 지우지 않는다
+  #   build-output: 실행 복사본의 target/ 폴더만 지운다(기본)
+  #   workspace: 프로젝트 복사본까지 지운다(result.zip, 보고서, patch는 남는다)
   cleanup: build-output
-  min_free_gb: 5                   # 프로젝트를 시작하기 전 출력 드라이브에 필요한 여유 공간(GB). 0 = 점검하지 않음
+  min_free_gb: 5                   # 프로젝트를 시작하기 전 출력 드라이브에 필요한 여유 공간(GB). 0이면 점검하지 않는다
 
 # --------------------------------------------------------------------------------------
-# plan — 계획
+# plan: 계획
 # --------------------------------------------------------------------------------------
-# 분석 결과로 실행할 단계(변환·재구성·구조 검토·검증 빌드)를 정한다. 계획은 규칙으로 정해지며(결정적),
-# LLM 이 레시피를 고르지 않는다.
+# 분석 결과로 실행할 단계(변환, 재구성, 구조 검토, 검증 빌드)를 정한다. 계획은 규칙으로 결정되며
+# LLM이 레시피를 고르지 않는다.
 plan:
-  # 규칙으로 만든 계획을 LLM 이 한 번 더 볼지.
-  #   none = 보지 않는다(기본).
-  #   llm  = LLM(llm.recipe_model)이 catalog.yml 에 있는 레시피 중에서만 변환 단계에 더할 수 있다.
+  # 규칙으로 만든 계획을 LLM이 한 번 더 검토할지 여부.
+  #   none: 검토하지 않는다(기본).
+  #   llm: LLM(llm.recipe_model)이 catalog.yml에 있는 레시피 중에서만 변환 단계에 추가할 수 있다.
   advisor: none
-  # OpenRewrite 뒤, 재구성 전에 한 번 컴파일해 볼지.
-  #   false = 하지 않는다(기본, 현업: "레시피 돌리고 구조화 다 한 뒤에 빌드"). 반쯤 옮겨진 트리의 오류는 잡음만 늘린다.
-  #   true  = 한 번 컴파일해 오류 목록을 미리 채운다(고치지는 않는다).
+  # OpenRewrite 뒤, 재구성 전에 한 번 컴파일해 볼지 여부.
+  #   false: 하지 않는다(기본, 현업 결정: 레시피와 재구성을 모두 마친 뒤 빌드).
+  #          절반만 옮겨진 트리의 오류는 불필요한 정보만 늘린다.
+  #   true: 한 번 컴파일해 오류 목록을 미리 채운다(고치지는 않는다).
   compile_after_rewrite: false
 
 # --------------------------------------------------------------------------------------
-# report — 보고서 (실행의 마지막)
+# report: 보고서 (실행의 마지막)
 # --------------------------------------------------------------------------------------
-# 실행 폴더에 남는 보고서다. 맨 앞 "인수인계(Handover)" 섹션이 사람이 이어서 할 일을 알려 준다.
+# 실행 폴더에 남는 보고서다. 맨 앞 "인수인계(Handover)" 섹션에서 사람이 이어서 할 일을 알려 준다.
 report:
-  formats: [md, json]              # 쓸 보고서 형식: md = report.md(사람용), json = report.json(기계용)
-  zip_result: true                 # 바뀐 프로젝트를 result.zip 으로 묶어 남길지
-  include_diff: true               # as-is 대비 전체 변경을 changes.patch 로 남길지
-  language: en                     # report.md 언어: en | ko. report.json·콘솔·로그는 언제나 영어(회사 설정은 ko)
-  # 최종 빌드 뒤 모듈마다 mvn dependency:tree 를 돌려, classpath 에 아직 남은 javax API jar 와
-  # 그것을 끌고 오는 직접 의존성을 보고서 "javax API jars" 섹션에 적는다. 끄면 그 섹션이 빠지고 시간이 준다.
+  formats: [md, json]              # 작성할 보고서 형식: md는 report.md(사람용), json은 report.json(기계용)
+  zip_result: true                 # 바뀐 프로젝트를 result.zip으로 묶어 남길지 여부
+  include_diff: true               # as-is 대비 전체 변경을 changes.patch로 남길지 여부
+  language: en                     # report.md 언어: en | ko. report.json, 콘솔, 로그는 항상 영어(회사 설정은 ko)
+  # 최종 빌드 뒤 모듈마다 mvn dependency:tree를 실행해, classpath에 아직 남은 javax API jar와
+  # 그것을 가져오는 직접 의존성을 보고서 "javax API jars" 섹션에 기록한다. 끄면 그 섹션이 빠지고 시간이 줄어든다.
   javax_api_inventory: true
 
 # --------------------------------------------------------------------------------------
-# advisories — 라이브러리 권고 (분석 → 수정 프롬프트 힌트 · 보고서 인수인계)
+# advisories: 라이브러리 권고 (분석 -> 수정 프롬프트 힌트, 보고서 인수인계)
 # --------------------------------------------------------------------------------------
-# springfox, hystrix, sleuth, 옛 Spring Cloud 처럼 EOL 이거나 더는 관리되지 않는 라이브러리를 알려 준다.
-# 권고는 실행을 절대 막지 않는다. 빌드는 갈 수 있는 데까지 가고, 권고는 수정 LLM 에게 주는 힌트와
-# 보고서 인수인계 섹션의 안내로만 쓰인다. 규칙의 자세한 내용은 docs/ADVISORIES.md.
+# springfox, hystrix, sleuth, 오래된 Spring Cloud처럼 EOL이거나 더는 관리되지 않는 라이브러리를 알려 준다.
+# 권고는 실행을 막지 않는다. 빌드는 가능한 데까지 진행하고, 권고는 수정 LLM에 주는 힌트와
+# 보고서 인수인계 섹션의 안내로만 쓰인다. 규칙의 자세한 내용은 docs/ADVISORIES.md에 있다.
 advisories:
-  enabled: true                    # false = 권고를 찾지 않는다(힌트와 인수인계 안내가 빠진다)
+  enabled: true                    # false면 권고를 찾지 않는다(힌트와 인수인계 안내가 빠진다)
   file: knowledge/libraries/advisories.yml   # 배포본 권고 목록(sbmig 체크아웃 기준)
-  extra_files: []                  # 회사가 더하거나 덮어쓰는 목록(같은 형식, id 로 합치고 뒤 파일이 이긴다)
+  extra_files: []                  # 회사가 추가하거나 덮어쓰는 목록(같은 형식, id로 합치고 뒤 파일이 우선한다)
   policy_overrides: {}             # 항목별로 끄기. 예: {hystrix: off}
-  # 부모를 바꾼 뒤 더는 관리되지 않아 as-is 버전으로 고정해 둔 의존성을 인수인계에 적을지.
+  # 부모를 바꾼 뒤 더는 관리되지 않아 as-is 버전으로 고정해 둔 의존성을 인수인계에 기록할지 여부.
   report_carried_over: true
   max_from_here: 40                # 인수인계의 "이제부터 할 일" 목록에 보여 줄 최대 항목 수
 
 # --------------------------------------------------------------------------------------
-# externalized — 외부에서 주입되던 설정 (분석 → 재구성 → 인수인계)
+# externalized: 외부에서 주입되던 설정 (분석 -> 재구성 -> 인수인계)
 # --------------------------------------------------------------------------------------
-# 코드는 읽는데 패키지 안 리소스 어디에도 정의되지 않은 설정 키(예전에는 컨테이너가 JNDI, context-param,
-# -D 옵션으로 주던 값)를 찾아, Boot 모듈의 application.properties 에 자리표시자 값을 써 넣고
+# 코드에서 읽지만 패키지 안 리소스 어디에도 정의되지 않은 설정 키(컨테이너가 JNDI, context-param,
+# -D 옵션으로 주던 값)를 찾아, Boot 모듈의 application.properties에 플레이스홀더 값을 넣고
 # 인수인계 섹션에서 어떤 값을 어떻게 넣어야 하는지 알려 준다.
 externalized:
-  enabled: true                    # false = 찾지도 쓰지도 않는다(기동할 때 값이 없어 실패할 수 있다)
-  # 자리표시자 값. grep 으로 찾기 쉬운 글자이며, 환경 변수 / -D / 외부 파일이 Boot 우선순위로 덮어쓸 수 있다.
+  enabled: true                    # false면 찾지도 쓰지도 않는다(기동할 때 값이 없어 실패할 수 있다)
+  # 플레이스홀더 값. grep으로 찾기 쉬운 문자열이며, 환경 변수 / -D / 외부 파일이 Boot 우선순위에 따라 덮어쓸 수 있다.
   sentinel: "__SET_ME__"
-  # 자리표시자 블록을 Boot 모듈의 설정 파일 끝에 덧붙일지. 위치는 현재 레이아웃 키로 정해진다:
+  # 플레이스홀더 블록을 Boot 모듈의 설정 파일 끝에 추가할지 여부. 위치는 현재 레이아웃 키로 정해진다:
   # <layout.module_dir>/<layout.boot_module>/src/main/resources/<placeholder_file>
-  # 회사 레이아웃이면 루트 바로 아래 {name}-boot/src/main/resources/application.properties 다.
-  # Boot 프로젝트(in-place)는 기존 Boot 모듈에, MSA 는 서비스마다 쓴다.
+  # 회사 레이아웃이면 루트 바로 아래 {name}-boot/src/main/resources/application.properties다.
+  # Boot 프로젝트(in-place)는 기존 Boot 모듈에, MSA는 서비스마다 추가한다.
   write_placeholders: true
-  placeholder_file: application.properties   # 덧붙일 파일 이름(그 모듈의 src/main/resources 기준)
-  rules_file: knowledge/config/externalized.yml   # JNDI / context-param / 시스템 속성 → Boot 키 대응 규칙과 안내
-  include_test_refs: true          # 테스트만 읽는 키에도 자리표시자를 쓸지
+  placeholder_file: application.properties   # 추가할 파일 이름(그 모듈의 src/main/resources 기준)
+  rules_file: knowledge/config/externalized.yml   # JNDI / context-param / 시스템 속성과 Boot 키의 대응 규칙과 안내
+  include_test_refs: true          # 테스트에서만 읽는 키에도 플레이스홀더를 넣을지 여부
   max_refs_per_key: 3              # 인수인계에서 키마다 보여 줄 참조 위치 수
 
 # --------------------------------------------------------------------------------------
-# remediation — 취약점 조치 (/api/remediations)
+# remediation: 취약점 조치 (/api/remediations)
 # --------------------------------------------------------------------------------------
-# 올린 Maven 프로젝트를 IVAS 로 검사하고, 취약한 라이브러리의 버전 표기만 고쳐 다시 빌드·재검사한다.
-# 소스와 프로젝트 구조는 건드리지 않는다. IVAS 주소·아이디·비밀번호는 여기 적지 않는다:
-# 환경 변수 IVAS_BASE_URL / IVAS_USER_ID / IVAS_PASSWORD (쿠버네티스에서는 Secret) 로만 받는다.
+# 업로드한 Maven 프로젝트를 IVAS로 검사하고, 취약한 라이브러리의 버전 표기만 고쳐 다시 빌드하고 재검사한다.
+# 소스와 프로젝트 구조는 건드리지 않는다. IVAS 주소, 아이디, 비밀번호는 여기 기록하지 않고
+# 환경 변수 IVAS_BASE_URL / IVAS_USER_ID / IVAS_PASSWORD(쿠버네티스에서는 Secret)로만 받는다.
 remediation:
-  # 신뢰 프로젝트 확인. Maven 빌드는 올라온 프로젝트의 플러그인 코드를 이 서버에서 실행한다(보안 격리가 아니다).
-  # 운영자가 "여기에 올라오는 ZIP 은 실행해도 되는 신뢰된 프로젝트" 라고 확인했을 때만 true 로 바꾼다.
-  # false 면 취약점 조치 요청을 받지 않는다.
+  # 신뢰 프로젝트 확인. Maven 빌드는 업로드된 프로젝트의 플러그인 코드를 이 서버에서 실행한다(보안 격리가 아니다).
+  # 운영자가 여기에 올라오는 ZIP이 실행해도 되는 신뢰된 프로젝트라고 확인했을 때만 true로 바꾼다.
+  # false면 취약점 조치 요청을 받지 않는다.
   trusted_projects: false
-  # 이관이 BUILD SUCCESS 로 끝나면 같은 빌드 파드에서 이어서 취약점 조치를 돌릴지.
-  # true 면 이관 결과물을 IVAS 로 검사하고 고친 결과를 실행 폴더의 remediation/ 아래에 둔다.
+  # 이관이 BUILD SUCCESS로 끝나면 같은 빌드 파드에서 이어서 취약점 조치를 실행할지 여부.
+  # true면 이관 결과물을 IVAS로 검사하고 고친 결과를 실행 폴더의 remediation/ 아래에 둔다.
   # 조치가 실패해도 이관의 성공 여부는 바뀌지 않는다. IVAS 접속 값이 없으면 건너뛴다.
   after_migration: false
-  # 이어 타는 조치가 빌드 파드에서 쓸 수 있는 시간(분). 넘기면 다음 단계 경계에서 멈추고, 재개하면 새 파드가 이어 간다.
-  # 파드 수명 한도에 걸려 이미 끝난 이관까지 중단으로 보이는 일을 막는다. 0 이면 한도가 없다.
+  # 이어서 실행하는 조치가 빌드 파드에서 쓸 수 있는 시간(분). 넘으면 다음 단계 경계에서 멈추고,
+  # 재개하면 새 파드가 이어서 한다.
+  # 파드 수명 한도에 걸려 이미 끝난 이관까지 중단된 것처럼 보이는 일을 막는다. 0이면 한도가 없다.
   chain_budget_minutes: 90
-  # IVAS 의 조치 구분 가운데 고칠 대상에서 뺄 값. 이 값의 항목은 보고서에는 남지만 고칠 대상과 성공 판정에서 뺀다.
-  # 기본은 비어 있음 = 모든 조치 구분을 고칠 대상으로 본다. 보안팀이 예외 처리한 항목을 빼려면 [PC, IG] 처럼 적는다.
+  # IVAS의 조치 구분 중 조치 대상에서 뺄 값. 이 값의 항목은 보고서에는 남지만 조치 대상과 성공 여부 판단에서 빠진다.
+  # 기본값은 빈 목록이며 모든 조치 구분을 조치 대상으로 본다. 보안팀이 예외 처리한 항목을 빼려면 [PC, IG]처럼 지정한다.
   # IVAS 문서의 값: NE 조치 필요, NP 조치계획 미등록, PL 조치예정, OT 조치일 경과, PC 패치 완료, IG 조치 예외
   ignore_actions: []
-  # 사내 라이브러리 안내. 취약 라이브러리가 사내 아티팩트를 거쳐 들어왔거나 사내 아티팩트 자체이면 프로젝트에서 고치지 않는다.
-  # 그 아티팩트의 담당자가 pom 을 고쳐야 반영되기 때문이다. 보고서는 이 항목들을 따로 묶고 아래 문구를 붙인다.
-  # inhouse_groups = 회사 artifacts yml 의 어느 목록을 사내 아티팩트로 볼지: mandatory, optional, parents.
-  # parents 는 부모 pom(parent, boot_parent, comp_parent)에서 파생된 것이다: 부모가 버전을 관리하는 의존성,
-  # 부모가 선언해 물려준 의존성과 그것이 끌고 온 것. 비워 두면 이 안내를 쓰지 않는다.
+  # 사내 라이브러리 안내. 취약 라이브러리가 사내 아티팩트를 거쳐 들어왔거나 사내 아티팩트 자체이면
+  # 프로젝트에서 고치지 않는다.
+  # 그 아티팩트의 담당자가 pom을 고쳐야 반영되기 때문이다. 보고서는 이 항목들을 따로 묶고 아래 문구를 붙인다.
+  # inhouse_groups: 회사 artifacts yml의 어느 목록을 사내 아티팩트로 볼지 정한다(mandatory, optional, parents).
+  # parents는 부모 pom(parent, boot_parent, comp_parent)에서 파생된 것이다. 부모가 버전을 관리하는 의존성,
+  # 부모가 선언해 물려준 의존성과 그것이 가져온 의존성이 해당한다. 비워 두면 이 안내를 쓰지 않는다.
   inhouse_groups: [mandatory, optional, parents]
   inhouse_message: "해당 아티팩트는 예외처리가 가능합니다. 담당자에게 연락 부탁드립니다."
-  # 보고서에서 취약점 옆에 붙이는 위험도 표시의 기준 점수. IVAS 가 준 점수가 이 값 이상이면 빨강, 주황, 노랑으로 표시한다.
-  # 노랑 기준보다 낮거나 점수가 없는 취약점에는 표시를 붙이지 않는다. 기본값은 CVSS 의 심각, 높음, 보통 구간이다.
+  # 보고서에서 취약점 옆에 붙이는 위험도 표시의 기준 점수. IVAS 점수가 이 값 이상이면 빨강, 주황, 노랑으로 표시한다.
+  # 노랑 기준보다 낮거나 점수가 없는 취약점에는 표시를 붙이지 않는다. 기본값은 CVSS의 심각, 높음, 보통 구간이다.
   severity_red: 9.0
   severity_orange: 7.0
   severity_yellow: 4.0
-  max_upload_mb: 1024              # 올릴 수 있는 ZIP 크기(MiB)
+  max_upload_mb: 1024              # 업로드할 수 있는 ZIP 크기(MiB)
   max_entries: 200000              # ZIP 안의 파일 수 한도
   max_unpacked_mb: 4096            # 풀었을 때 전체 크기 한도(MiB)
   max_entry_mb: 1024               # 파일 하나의 풀린 크기 한도(MiB)
   max_compression_ratio: 200       # 파일 하나의 압축률 한도(압축 폭탄 방지)
-  # 사람 승인. false = 위험한 부류(always_approve)만 승인을 기다리고 나머지 제안은 바로 적용한다.
-  # true = 모든 제안이 승인을 기다린다. 운영에서 사람 승인이 필요하면 true 로 명시한다.
+  # 사람 승인. false면 위험한 부류(always_approve)만 승인을 기다리고 나머지 제안은 바로 적용한다.
+  # true면 모든 제안이 승인을 기다린다. 운영에서 사람 승인이 필요하면 true로 지정한다.
   require_approval: false
-  # 설정과 무관하게 늘 승인이 필요한 부류: major(메이저 버전 변경), parent(부모 pom 버전),
-  # bom(가져온 BOM 버전), managed_override(부모·BOM 이 관리하는 버전을 프로젝트에서 덮어쓰기)
-  # managed_override 는 간접 의존성이나 부모·BOM 이 관리하는 버전을 고치려고 루트 pom 에 항목을 넣는 제안이다.
-  # 이 목록에서 빼더라도 늘 승인을 기다린다(파일에 새 항목을 넣는 일은 자동으로 하지 않는다).
+  # 설정과 관계없이 항상 승인이 필요한 부류: major(메이저 버전 변경), parent(부모 pom 버전),
+  # bom(가져온 BOM 버전), managed_override(부모나 BOM이 관리하는 버전을 프로젝트에서 덮어쓰기)
+  # managed_override는 간접 의존성이나 부모, BOM이 관리하는 버전을 고치려고 루트 pom에 항목을 넣는 제안이다.
+  # 이 목록에서 빼더라도 항상 승인을 기다린다(파일에 새 항목을 넣는 일은 자동으로 하지 않는다).
   always_approve: [major, parent, bom, managed_override]
-  max_rounds: 3                    # 계획 → 적용 → 빌드 → 재검사를 되풀이하는 횟수 한도
-  # 버전을 바꾼 수정본의 빌드가 실패했을 때.
-  # include = 실패한 수정본도 결과 ZIP 으로 낸다(상태 FAILED, 보고서 첫 줄에 "빌드가 실패한 수정본" 표시, 재검사 없음).
-  # discard = 실패한 수정본은 결과 ZIP 에 넣지 않는다(변경 내용은 patch 파일로만 남는다).
-  # 어느 쪽이든 올린 원본 ZIP 은 따로 보존된다.
+  max_rounds: 3                    # 계획 -> 적용 -> 빌드 -> 재검사를 반복하는 횟수 한도
+  # 버전을 바꾼 수정본의 빌드가 실패했을 때의 처리 방식.
+  # include: 실패한 수정본도 결과 ZIP으로 낸다(상태 FAILED, 보고서 첫 줄에 "빌드가 실패한 수정본" 표시, 재검사 없음).
+  # discard: 실패한 수정본은 결과 ZIP에 넣지 않는다(변경 내용은 patch 파일로만 남는다).
+  # 어느 쪽이든 업로드한 원본 ZIP은 따로 보존된다.
   failed_candidate: include
-  # 프로젝트가 서버의 Maven 설정을 우회할 수 있는 요소를 가졌을 때: refuse(거부) / ignore(기록만)
+  # 프로젝트에 서버의 Maven 설정을 우회할 수 있는 요소가 있을 때: refuse(거부) / ignore(기록만)
   project_maven_config: refuse     # .mvn/maven.config, .mvn/jvm.config, .mvn/extensions.xml
-  maven_wrapper: ignore            # mvnw, .mvn/wrapper (서버 Maven 만 쓰므로 실행되지 않는다)
-  allowed_repository_hosts: []     # 승인된 저장소 호스트. 비우면 서버 settings.xml 의 호스트만 승인된 것으로 본다
-  foreign_repository: refuse       # pom 이 승인되지 않은 호스트의 저장소를 선언했을 때
+  maven_wrapper: ignore            # mvnw, .mvn/wrapper (서버 Maven만 쓰므로 실행되지 않는다)
+  allowed_repository_hosts: []     # 승인된 저장소 호스트. 비우면 서버 settings.xml의 호스트만 승인된 것으로 본다
+  foreign_repository: refuse       # pom이 승인되지 않은 호스트의 저장소를 선언했을 때
   build_timeout_minutes: 60        # package 빌드 한 번의 한도
   ivas_timeout_seconds: 60         # IVAS 요청 하나의 한도
   ivas_upload_timeout_seconds: 1800   # ZIP 업로드의 한도
-  ivas_poll_seconds: 15            # 분석 상태를 묻는 간격
-  ivas_analysis_timeout_minutes: 30    # 이 시간(1,800초) 안에 분석이 끝나지 않으면 검사 미완료로 본다(0건이 아니다)
-  ivas_page_size: 100              # 결과 한 쪽의 크기
-  ivas_project_prefix: sbmig       # IVAS 프로젝트 이름의 앞머리: <앞머리>-<작업 ID>-<baseline 또는 final-rN>
-  # 검사 결과의 요약 대조.
-  # exact = 요약의 components 건수와 라이브러리 취약점 상세 행 수가 같아야 검사 완료로 본다.
-  # nonzero = 0 인지 아닌지만 비교한다 — 실제 IVAS 의 건수 뜻이 다르면 이 값으로 바꾼다.
+  ivas_poll_seconds: 15            # 분석 상태를 조회하는 간격
+  ivas_analysis_timeout_minutes: 30    # 이 시간 안에 분석이 끝나지 않으면 검사 미완료로 본다(0건이 아니다)
+  ivas_page_size: 100              # 결과 한 페이지의 크기
+  ivas_project_prefix: sbmig       # IVAS 프로젝트 이름의 접두어: <접두어>-<작업 ID>-<baseline 또는 final-rN>
+  # 검사 결과의 요약 대조 방식.
+  # exact: 요약의 components 건수와 라이브러리 취약점 상세 행 수가 같아야 검사 완료로 본다.
+  # nonzero: 0인지 아닌지만 비교한다. 실제 IVAS의 건수 의미가 다르면 이 값으로 바꾼다.
   ivas_summary_check: exact
-  policy:                          # 서버 정책: 버전 후보의 근거. 바뀌면 전에 만든 승인 후보는 무효가 된다
-    pins: {}                       # "g:a": "버전" — 이 버전으로만 올린다
-    deny: []                       # "g:a" 또는 "g:*" — 자동으로 바꾸지 않는다(수동 검토로 남긴다)
-    deny_versions: {}              # "g:a": [버전, …] — 후보에서 뺀다
-    allow_prerelease: false        # 시험판(alpha, beta, RC, SNAPSHOT)을 후보로 쓸지
-    allow_major: true              # false = 메이저 변경은 제안하지 않고 수동 검토로 남긴다
+  policy:                          # 서버 정책: 버전 후보의 근거. 바뀌면 전에 만든 승인 대기 후보는 무효가 된다
+    pins: {}                       # "g:a": "버전" 형식. 이 버전으로만 올린다
+    deny: []                       # "g:a" 또는 "g:*". 자동으로 바꾸지 않는다(직접 확인으로 남긴다)
+    deny_versions: {}              # "g:a": [버전, ...] 형식. 후보에서 뺀다
+    allow_prerelease: false        # 시험판(alpha, beta, RC, SNAPSHOT)을 후보로 쓸지 여부
+    allow_major: true              # false면 메이저 변경은 제안하지 않고 직접 확인으로 남긴다

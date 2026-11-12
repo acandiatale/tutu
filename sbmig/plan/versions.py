@@ -1,7 +1,6 @@
-"""작은 버전 비교 도구 — 숫자 마디를 숫자로 비교한다(1.18.24
-< 1.18.30, 3.8.1 < 3.13.0, 2.7.18.RELEASE == 2.7.18).
-흐름상 위치: 권고의 버전 하한 판정(``sbmig.advisory.evaluate.below``) 등에서 쓴다. ``${...}`` 참조나 숫자로
-시작하지 않는 버전은 None(모름) — 호출한 쪽이 모를 때의 처리를 정한다.
+"""버전 문자열의 숫자 부분을 숫자로 비교하는 모듈(1.18.24 < 1.18.30, 2.7.18.RELEASE == 2.7.18).
+권고의 버전 하한 판단 등에서 사용한다.
+``${...}`` 참조나 숫자로 시작하지 않는 버전은 None이므로 그 처리는 호출하는 쪽이 정한다.
 
 Tiny semver-ish version comparison: 1.18.24 < 1.18.30, 3.8.1 < 3.13.0, 2.7.18.RELEASE == 2.7.18."""
 from __future__ import annotations
@@ -15,7 +14,8 @@ _QUALIFIER_ORDER = {"alpha": -4, "a": -4, "beta": -3, "b": -3, "milestone": -2, 
 
 
 def parse_version(v: Optional[str]) -> Optional[tuple[tuple[int, ...], int]]:
-    """버전 문자열 → (숫자 마디 튜플, 수식어 순위). 비었거나 ``${...}`` 이거나 숫자가 아니면 None.
+    """버전 문자열을 (숫자 부분 튜플, 수식어 순위)로 바꾼다.
+    비었거나 ``${...}``이거나 숫자가 아니면 None을 반환한다.
 
     ('1.18.24') -> ((1, 18, 24), 0). Returns None for empty/unresolved (`${...}`) or non-numeric versions."""
     if not v or "${" in v:
@@ -33,7 +33,8 @@ def parse_version(v: Optional[str]) -> Optional[tuple[tuple[int, ...], int]]:
 
 
 def compare_versions(a: Optional[str], b: Optional[str]) -> Optional[int]:
-    """비교 결과 -1 / 0 / 1. 짧은 쪽은 0 으로 채워 비교한다(3.1 == 3.1.0). 한쪽이라도 못 읽으면 None.
+    """두 버전을 비교해 -1 / 0 / 1을 반환한다.
+    짧은 쪽은 0으로 채워 비교하고(3.1 == 3.1.0) 한쪽이라도 읽지 못하면 None을 반환한다.
 
     -1 / 0 / 1, or None when either side cannot be parsed."""
     pa, pb = parse_version(a), parse_version(b)
@@ -51,6 +52,6 @@ def compare_versions(a: Optional[str], b: Optional[str]) -> Optional[int]:
 
 
 def version_lt(a: Optional[str], b: str) -> Optional[bool]:
-    """``a < b`` 인가. 못 읽으면 None(모름)."""
+    """``a < b``인지 반환한다. 읽지 못하면 None을 반환한다."""
     c = compare_versions(a, b)
     return None if c is None else c < 0

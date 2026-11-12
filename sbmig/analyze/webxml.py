@@ -1,10 +1,10 @@
-"""web.xml 을 ``WebXmlModel`` 로 파싱한다(2026-10-23): 서블릿·매핑, 필터(체인 순서), 리스너, 세션
-타임아웃, welcome-file, error-page, mime, context-param, 보안 제약 수, login-config, resource-ref, taglib.
-흐름상 위치: 소스 스캐너가 부르고(``SourceStats.web_xml_*`` 개수), 재구성이 이 모델로 Boot 등록 코드
-``WebXmlRegistrations`` 를 만든다(``layout.web_xml_registrations``) — 외장 Tomcat 의 web.xml 설정이 Boot
-앱에서 사라지지 않게 하려는 것. 진입점: :func:`parse_web_xml` (예외를 절대 올리지 않음, 문제는 ``warnings``).
-버전 무관(DTD 2.2 / 2.3 … jakarta 6.x, 로컬 이름으로만 매칭). 외부 DTD 는 절대 내려받지 않는다 (폐쇄망 + XXE
-방지: ``load_dtd=False``, ``no_network=True``); 깨진 파일은 lxml 복구 파서로 한 번 더 읽는다.
+"""web.xml을 ``WebXmlModel``로 파싱하는 모듈.
+서블릿, 필터, 리스너, 세션 타임아웃, error-page, context-param 등을 읽는다.
+소스 스캐너가 호출해 개수를 ``SourceStats.web_xml_*``에 남기고, 재구성은 외장 Tomcat의 web.xml 설정이 Boot
+앱에서 빠지지 않도록 이 모델로 등록 코드(``WebXmlRegistrations``)를 만든다.
+- :func:`parse_web_xml`은 예외를 던지지 않고 문제를 ``warnings``에 남긴다
+- 버전과 상관없이 요소를 로컬 이름으로만 비교한다
+- 폐쇄망이고 XXE를 막아야 하므로 외부 DTD를 내려받지 않는다. 깨진 파일은 lxml 복구 파서로 한 번 더 읽는다
 
 web.xml → `WebXmlModel` (2026-10-23).
 
@@ -39,7 +39,7 @@ DISPATCHERS = ("REQUEST", "FORWARD", "INCLUDE", "ERROR", "ASYNC")
 
 
 def _local(el: Any) -> str:
-    """요소의 로컬 이름(네임스페이스 제거). 주석·PI 처럼 태그가 문자열이 아니면 ''."""
+    """네임스페이스를 뗀 요소의 로컬 이름을 반환한다. 주석처럼 태그가 문자열이 아니면 빈 문자열을 반환한다."""
     tag = el.tag
     if not isinstance(tag, str):
         return ""
@@ -51,7 +51,7 @@ def _kids(el: Any, name: str) -> list[Any]:
 
 
 def _text(el: Any, name: str) -> Optional[str]:
-    """``name`` 인 첫 자식의 전체 텍스트(공백 정리, 비면 None)."""
+    """이름이 ``name``인 첫 자식의 텍스트를 공백을 정리해서 반환한다. 비어 있으면 None을 반환한다."""
     for c in el:
         if _local(c) == name:
             t = "".join(c.itertext()).strip()
@@ -60,7 +60,8 @@ def _text(el: Any, name: str) -> Optional[str]:
 
 
 def _texts(el: Any, name: str) -> list[str]:
-    """``name`` 인 모든 자식의 텍스트(빈 것 제외) — url-pattern 처럼 여러 번 나오는 요소용."""
+    """이름이 ``name``인 모든 자식의 텍스트를 빈 것을 빼고 반환한다.
+    url-pattern처럼 여러 번 나오는 요소에 쓴다."""
     out = []
     for c in el:
         if _local(c) == name:
@@ -71,7 +72,7 @@ def _texts(el: Any, name: str) -> list[str]:
 
 
 def _int(value: Optional[str], what: str, warnings: list[str]) -> Optional[int]:
-    """정수로 읽는다. 숫자가 아니면 경고를 남기고 None."""
+    """값을 정수로 읽는다. 숫자가 아니면 경고를 남기고 None을 반환한다."""
     if value is None:
         return None
     try:
@@ -82,7 +83,7 @@ def _int(value: Optional[str], what: str, warnings: list[str]) -> Optional[int]:
 
 
 def _params(el: Any, warnings: list[str], where: str) -> dict[str, str]:
-    """``<init-param>`` 들을 dict 로(이름 없는 것은 경고 후 건너뜀)."""
+    """``<init-param>``을 딕셔너리로 읽는다. 이름이 없는 것은 경고를 남기고 건너뛴다."""
     out: dict[str, str] = {}
     for p in _kids(el, "init-param"):
         k = _text(p, "param-name")
@@ -94,9 +95,8 @@ def _params(el: Any, warnings: list[str], where: str) -> dict[str, str]:
 
 
 def _parse_root(text: str, warnings: list[str]) -> Any:
-    """루트 요소를 얻는다: 엄격 파서 → 실패하면 복구(recover)
-    파서 → 그래도 안 되면 None. DTD·네트워크·엔티티 없음."""
-    # 이미 디코딩된 텍스트이므로 XML 선언을 뗀다 — EUC-KR 선언이 UTF-8 바이트와 어긋나 파싱이 깨지지 않게
+    """루트 요소를 반환한다. 엄격한 파서가 실패하면 복구 파서로 읽고, 그래도 안 되면 None을 반환한다."""
+    # 인코딩 선언이 UTF-8 바이트와 어긋나 파싱이 깨지지 않도록 디코딩된 텍스트에서 XML 선언을 뗀다
     # the text is already decoded: drop the XML declaration so its `encoding=` cannot contradict the UTF-8 bytes
     data = xml_without_declaration(text).encode("utf-8")
     strict = etree.XMLParser(load_dtd=False, no_network=True, resolve_entities=False, remove_comments=True,
@@ -117,8 +117,8 @@ def _parse_root(text: str, warnings: list[str]) -> Any:
 
 
 def _spec(root: Any, text: str) -> Optional[str]:
-    """서블릿 스펙 버전: ``<web-app version=…>`` 속성, 없으면
-    텍스트에서, 그다음 DTD 파일 이름(``web-app_2_3.dtd``)."""
+    """서블릿 스펙 버전을 구한다.
+    ``<web-app version=…>`` 속성, 텍스트, DTD 파일 이름(``web-app_2_3.dtd``) 순으로 본다."""
     v = root.get("version") if root is not None else None
     if v:
         return v.strip()
@@ -132,8 +132,8 @@ def _spec(root: Any, text: str) -> Optional[str]:
 
 
 def parse_web_xml(text: str, path: str) -> WebXmlModel:
-    """web.xml 하나를 파싱한다(``path`` 는 기록용). 예외를 내지 않는다 — 잘못된 서술자 하나로 분석·재구성이
-    멈추면 안 된다. 문제는 ``WebXmlModel.warnings`` 에 남는다.
+    """web.xml 하나를 파싱한다. ``path``는 기록용이다.
+    잘못된 파일 하나로 분석과 재구성이 멈추면 안 되므로 예외를 던지지 않고 문제는 ``WebXmlModel.warnings``에 남긴다.
 
     Parse a web.xml (`path` is only recorded). Never raises; problems land in `WebXmlModel.warnings`."""
     try:
@@ -144,7 +144,7 @@ def parse_web_xml(text: str, path: str) -> WebXmlModel:
 
 
 def _parse(text: str, path: str) -> WebXmlModel:
-    """:func:`parse_web_xml` 의 본체. 서블릿은 이름으로 합치고 같은 이름이 또 나오면 처음 것을 쓴다(경고)."""
+    """:func:`parse_web_xml`의 본체. 같은 이름의 서블릿이 또 나오면 경고를 남기고 처음 것을 쓴다."""
     warnings: list[str] = []
     model = WebXmlModel(path=path)
     if not text.strip():
@@ -197,8 +197,8 @@ def _parse(text: str, path: str) -> WebXmlModel:
                 servlets[name].url_patterns.append(p)
     model.servlets = list(servlets.values())
 
-    # 필터 순서가 중요하다: 서블릿 컨테이너는 <filter-mapping> 이 처음 나온 순서로 체인을 만든다 — Boot 등록
-    # (FilterRegistrationBean 의 order)이 같은 순서를 지켜야 인코딩·보안 필터가 뒤바뀌지 않는다
+    # 서블릿 컨테이너는 <filter-mapping>이 처음 나온 순서로 필터 체인을 만드므로, Boot 등록도 이 순서를
+    # 지켜야 인코딩 필터와 보안 필터가 뒤바뀌지 않는다
     # filters + mappings; order = index of the filter's first <filter-mapping> (the chain order)
     filters: dict[str, WebXmlFilter] = {}
     for f in _kids(root, "filter"):

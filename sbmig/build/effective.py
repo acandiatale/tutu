@@ -1,12 +1,11 @@
-"""as-is parent 체인이 관리하던 버전(effective dependencyManagement)을 잡아 둔다.
-왜: 재구성이 as-is parent(Boot starter parent, 옛 사내 parent …)를 회사 parent(``base-parent`` 등)로 바꾸면 옛
-체인이 관리하던 버전이 모두 사라진다. 그래서 접수(intake) 때 한 번, 바꾸기 전 트리에 ``mvn
-help:effective-pom`` 을 돌려 ``logs/effective-depmgmt.json`` 에 저장한다(effective pom xml 은 파싱 후 지우고
-Maven 로그만 남긴다). 누가 쓰나(v2.1): 보고서 인수인계 섹션의 as-is 버전(``load_effective`` →
-``build_handover``), 그리고 재구성 뒤 캡처(``depmgmt-after-restructure.json``)는
-``layout.drop_managed_versions`` 가 새 parent 가 관리하는 명시 버전을 지울 때 쓴다. 핵심 진입점:
-``capture_effective_depmgmt``, ``load_effective``, ``parse_effective_pom``, ``effective_version``. 지킬 것:
-절대 예외 없음 — as-is pom 이 해결되지 않으면 None 이고 실행은 계속된다.
+"""as-is 부모 체인이 관리하던 의존성 버전(effective dependencyManagement)을 저장하고 읽는 모듈.
+재구성이 as-is 부모를 회사 부모로 바꾸면 이전 체인이 관리하던 버전이 모두 사라지므로, 접수 때 바꾸기 전
+트리에서 ``mvn help:effective-pom``을 실행해 ``logs/effective-depmgmt.json``에 저장해 둔다.
+- 인수인계 섹션의 as-is 버전에 쓴다(``load_effective`` -> ``build_handover``)
+- 재구성 뒤 저장본(``depmgmt-after-restructure.json``)은 ``layout.drop_managed_versions``가 새 부모가
+  관리하는 명시 버전을 지울 때 쓴다
+- 진입점: ``capture_effective_depmgmt``, ``load_effective``, ``parse_effective_pom``, ``effective_version``
+- 예외를 던지지 않는다. as-is pom을 해석할 수 없으면 None을 반환하고 실행은 계속한다
 
 Managed versions of the as-is parent chain (catalog E6).
 
@@ -45,7 +44,7 @@ log = logging.getLogger("sbmig.build.effective")
 HELP_PLUGIN = "org.apache.maven.plugins:maven-help-plugin:3.5.1"
 EFFECTIVE_TIMEOUT_S = 10 * 60
 DEPMGMT_FILE = "depmgmt.json"
-# as-is 캡처(depmgmt.json)는 인수인계의 as-is 버전이라 절대 덮어쓰지 않는다 → 재구성 뒤 캡처는 다른 파일에.
+# as-is 저장본(depmgmt.json)은 인수인계에 쓰는 as-is 버전이므로 덮어쓰지 않도록 재구성 뒤 저장본은 다른 파일에 둔다
 AFTER_RESTRUCTURE_FILE = "depmgmt-after-restructure.json"   # round 9: chain of the restructured tree
 DEFAULT_PLUGIN_GROUP = "org.apache.maven.plugins"
 
@@ -102,9 +101,9 @@ def _plugins_into(container: Any, out: dict[str, str]) -> None:
 
 
 def parse_effective_pom(text: str | bytes) -> dict[str, Any]:
-    """effective pom 하나(단일 ``<project>`` 또는 reactor 의 ``<projects>``) → depmgmt dict. 여러 프로젝트는
-    '먼저 나온 것이 이김' 으로 합치고(reactor 루트가 먼저), 모듈별
-    값은 ``by_module`` 에 따로 둔다. ``${…}`` 가 남은 버전은 버린다.
+    """effective pom 하나를 depmgmt dict로 파싱한다.
+    프로젝트가 여러 개이면 먼저 나온 값이 우선하도록 합치고, 모듈별 값은 ``by_module``에 둔다.
+    ``${…}``가 남은 버전은 버린다.
 
     Parse one effective pom (single `<project>` or `<projects>` of a reactor) into the depmgmt dict.
     Several projects are merged, first wins (the reactor root comes first)."""
@@ -156,7 +155,7 @@ def _effective_dir(ws: Workspace) -> Path:
 
 
 def _effective_path(ws: Workspace, name: str) -> Path:
-    """캡처 파일 경로 ``<run_dir>/logs/effective-<name>``(v2.1: effective/ 디렉토리 없음).
+    """저장 파일 경로 ``<run_dir>/logs/effective-<name>``을 반환한다.
 
     `<run_dir>/logs/effective-<name>` (depmgmt.json → effective-depmgmt.json)."""
     return _effective_dir(ws) / f"effective-{name}"
@@ -164,9 +163,9 @@ def _effective_path(ws: Workspace, name: str) -> Path:
 
 def capture_effective_depmgmt(ws: Workspace, cfg: Config, module: Optional[str] = None,
                               name: str = DEPMGMT_FILE) -> Optional[Path]:
-    """지금 트리에 ``help:effective-pom``(reactor 전체 또는 ``-pl module``)을 돌려 ``<name>``(기본
-    depmgmt.json = 접수 때의 as-is 캡처; round 9: 재구성 뒤 캡처는 ``AFTER_RESTRUCTURE_FILE``)에 쓴다. 이미
-    있으면 먼저 것이 이기게 합친다. 경로를 돌려주고, 실패면 None(로그 + 저널).
+    """지금 트리에서 ``help:effective-pom``을 실행해 결과를 ``<name>`` 파일에 쓰고 경로를 반환한다.
+    실패하면 None을 반환하고 로그와 저널에 남긴다.
+    기본 파일 depmgmt.json은 접수 때의 as-is 저장본이다. 파일이 이미 있으면 기존 값이 우선하도록 합친다.
 
     Run `help:effective-pom` (whole reactor, or `-pl module`) on the current tree and write `<name>` (default
     depmgmt.json = the as-is capture at intake; round 9: `AFTER_RESTRUCTURE_FILE` for the restructured chain).
@@ -187,7 +186,7 @@ def capture_effective_depmgmt(ws: Workspace, cfg: Config, module: Optional[str] 
         pr = run_logged(cmd, cwd=ws.root, env=mvn_env(cfg), log_path=log_path, timeout_s=EFFECTIVE_TIMEOUT_S)
         if pr.exit_code != 0 and not xml_path.is_file() and getattr(cfg.build, "retry_negative_cache", True) \
                 and not cfg.build.offline and not any(a in ("-U", "--update-snapshots", "-o", "--offline") for a in cmd):
-            # 2026-11-05 (회사 PC): 모델 단계의 해결 실패(빌드 확장 / 부모 POM)는 묵은 `*.lastUpdated` 표식일 수 있다 → -U 1회
+            # 모델 단계의 해석 실패는 남아 있는 `*.lastUpdated` 표시 때문일 수 있으므로 -U로 한 번 다시 시도한다
             hits = negative_cache_hits(pr.text)
             if hits:
                 log.info("effective-pom: cached / model-level resolution failure (%s) → retrying once with -U", ", ".join(hits[:3]))
@@ -196,7 +195,7 @@ def capture_effective_depmgmt(ws: Workspace, cfg: Config, module: Optional[str] 
                 pr = run_logged([*cmd, "-U"], cwd=ws.root, env=mvn_env(cfg), log_path=log_path, timeout_s=EFFECTIVE_TIMEOUT_S)
         if pr.exit_code != 0 or not xml_path.is_file():
             why = pr.error or ("timed out" if pr.timed_out else _last_error(pr.text) or f"exit {pr.exit_code}")
-            # v2.1z-ag: 부모 pom 을 저장소에서 못 받아 실패했으면 그 사실을 한 줄로(실행은 계속 — 버전 이어받기만 빠진다)
+            # 부모 pom을 저장소에서 받지 못했으면 한 줄로 남기며, 실행은 계속하고 버전을 이어받는 처리만 빠진다
             from .log_parser import parent_coordinates_in
             parents = parent_coordinates_in(pr.text or "")
             if parents:
@@ -228,7 +227,7 @@ def capture_effective_depmgmt(ws: Workspace, cfg: Config, module: Optional[str] 
 
 
 def _merge(first: dict[str, Any], second: dict[str, Any]) -> dict[str, Any]:
-    """두 캡처 합치기: ``first``(이미 있던 것)가 이긴다."""
+    """두 저장본을 합친다. 이미 있던 ``first``의 값이 우선한다."""
     out = _empty()
     for key in ("managed", "direct", "plugins", "properties"):
         merged = dict(second.get(key) or {})
@@ -246,8 +245,7 @@ def _last_error(text: str) -> str:
 
 
 def load_effective(ws: Workspace, name: str = DEPMGMT_FILE) -> dict[str, Any]:
-    """저장된 depmgmt dict(``logs/effective-<name>``). 없거나 못 읽으면 빈 모양(``managed`` /
-    ``direct`` … 가 빈 dict)을 돌려준다.
+    """저장된 depmgmt dict를 읽어 반환한다. 파일이 없거나 읽지 못하면 빈 형태의 dict를 반환한다.
 
     The captured depmgmt dict (`<run_dir>/logs/effective-<name>`), or an empty one
     (`{"managed": {}, "direct": {}, …, "parent": None}`)."""
@@ -266,10 +264,9 @@ def load_effective(ws: Workspace, name: str = DEPMGMT_FILE) -> dict[str, Any]:
 
 def effective_pom_provider(ws: Workspace, cfg: Config, module: Optional[str] = None,
                            name: str = AFTER_RESTRUCTURE_FILE) -> Callable[[], Optional[dict[str, Any]]]:
-    """round 9: 재구성기의 ``params["effective_pom"]`` 에 넣을 인자 없는 콜러블. 부를 때마다 이전
-    ``<name>`` 을 지우고(낡은 캡처가 '먼저 것이 이김' 합치기에서 이기지 않게) 지금 트리(재구성의 pom 편집
-    뒤)를 캡처해 dict 를 돌려준다. Maven 실패면 None. (v2.1 오케스트레이터는 같은 일을 하는 자체
-    ``_effective_pom_after`` 를 쓴다.)
+    """재구성기의 ``params["effective_pom"]``에 넣을 인자 없는 함수를 만든다.
+    호출할 때마다 이전 저장본을 지우고 지금 트리를 다시 읽어 dict를 반환한다.
+    Maven이 실패하면 None을 반환한다. 오케스트레이터는 같은 일을 하는 ``_effective_pom_after``를 쓴다.
 
     Round 9: the zero-arg `params["effective_pom"]` callable of the restructurer. Each call drops a previous
     `<name>` (a stale capture must not win the first-wins merge), captures the effective pom of the tree as it is
@@ -287,8 +284,8 @@ def effective_pom_provider(ws: Workspace, cfg: Config, module: Optional[str] = N
 
 def effective_version(ws: Workspace, key: str, module: Optional[str] = None,
                       data: Optional[dict[str, Any]] = None) -> Optional[str]:
-    """as-is effective pom 이 관리(없으면 직접 선언)하던 g:a 의 버전. ``module``(artifactId 또는 g:a)을 주면
-    그 모듈의 값을 먼저 본다 — MSA 서비스마다 parent 가 다를 수 있다.
+    """as-is effective pom이 관리하던 g:a의 버전을 반환한다. 관리 버전이 없으면 직접 선언된 버전을 반환한다.
+    MSA 서비스마다 부모가 다를 수 있으므로 ``module``을 주면 그 모듈의 값을 먼저 본다.
 
     Version of g:a managed (else declared) by the as-is effective pom; `module` (artifactId or g:a of the
     declaring module) is preferred over the merged (first-wins) view — MSA services may have different parents."""

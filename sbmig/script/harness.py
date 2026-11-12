@@ -1,10 +1,10 @@
-"""수정 스크립트 프로세스 쪽 코드 — 부모가 import 하지 않고 파일로 실행한다.
-실행: ``<python> -I -X utf8 harness.py <payload.json>``. ``-I``(격리 모드)는 PYTHON* 환경 변수·사용자
-site·현재 디렉토리를 무시하므로 임시 cwd 나 환경의 무엇도 우연히 import 되지 않는다. sbmig 소스 루트는 payload
-로 받아 sys.path 에 직접 넣되, 화이트리스트 표준 모듈을 먼저 로드해 루트의 파일이 그것들을 가리지 못하게 한다.
-LLM 코드는 작은 builtins 사전과 감시되는 ``__import__``(정적 검사와 같은 규칙; sbmig 자체는 import 불가)로
-도우미 ``p`` 에 대해 돈다. 결과 JSON 은 원자적으로 쓰고, 로그 줄·바뀐 파일은 저널에 줄마다 flush 한다 — 시간
-초과로 죽어도 무엇을 했는지 남는다. 가드일 뿐 샌드박스가 아니다(``sbmig.script.check`` 참고, 불변조건 7).
+"""별도 프로세스에서 수정 스크립트를 실행하는 모듈. 부모 프로세스가 import하지 않고 파일로 실행한다.
+실행 명령은 ``<python> -I -X utf8 harness.py <payload.json>``이다.
+- ``-I``는 PYTHON* 환경 변수, 사용자 site, 현재 디렉토리를 무시하므로 의도하지 않은 import를 막는다
+- sbmig 소스 루트는 payload로 받아 sys.path에 넣는다.
+  허용된 표준 모듈을 먼저 로드해 두므로 루트에 같은 이름의 파일이 있어도 가려지지 않는다
+- LLM 코드는 최소한의 builtins와 검사를 거치는 ``__import__``로 실행하며, sbmig 자체는 import할 수 없다
+- 결과 JSON은 원자적으로 쓰고, 로그와 바뀐 파일은 저널에 줄마다 flush하므로 시간 초과로 종료돼도 남는다
 
 The fix-script process. Run as a FILE, never imported by the parent:
 
@@ -50,8 +50,8 @@ SAFE_BUILTIN_NAMES: tuple[str, ...] = (
 
 
 def safe_builtins(print_fn, import_fn) -> dict:
-    """스크립트에 줄 builtins: 안전한 이름만 + ``print``(로그로 감)
-    + 감시되는 ``__import__``. open·exec·getattr 등은 아예 없다."""
+    """스크립트에 넘길 builtins를 만든다.
+    안전한 이름, 로그로 보내는 ``print``, 검사를 거치는 ``__import__``만 넣는다."""
     out = {name: getattr(builtins, name) for name in SAFE_BUILTIN_NAMES if hasattr(builtins, name)}
     out["print"] = print_fn
     out["__import__"] = import_fn
@@ -59,7 +59,8 @@ def safe_builtins(print_fn, import_fn) -> dict:
 
 
 def guarded_import(allowed, extra_imports):
-    """스크립트용 ``__import__``: ``allowed(name, fromlist, extra)`` 가 받아들이는 것만, 상대 import 금지.
+    """스크립트에서 쓸 ``__import__``를 만든다.
+    ``allowed(name, fromlist, extra)``가 허용한 모듈만 import하고 상대 import는 막는다.
 
     `__import__` for the script: only what `allowed(name, fromlist, extra)` accepts, no relative imports."""
     real_import = builtins.__import__
@@ -75,8 +76,7 @@ def guarded_import(allowed, extra_imports):
 
 
 def describe(exc: BaseException, code: str) -> str:
-    """예외를 한 줄 + 스크립트 자신의 프레임으로
-    설명한다(도우미·하네스 프레임은 뺀다) — 다음 시도가 원인을 바로 보게.
+    """예외를 한 줄 요약과 스크립트 자신의 프레임으로 설명한다. 도우미와 하네스의 프레임은 뺀다.
 
     'KeyError: 'x' (line 7)' + the script's own frames (helper / harness frames are left out)."""
     lines = code.splitlines()
@@ -95,7 +95,8 @@ def describe(exc: BaseException, code: str) -> str:
 
 
 def write_result(path: str, result: dict) -> None:
-    """결과 JSON 을 임시 파일에 쓰고 ``os.replace`` — 부모가 반쪽짜리 결과를 읽지 않게."""
+    """결과 JSON을 임시 파일에 쓴 뒤 ``os.replace``로 바꾼다.
+    부모 프로세스가 쓰다 만 결과를 읽지 않게 하기 위해서다."""
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as fh:
         json.dump(result, fh, ensure_ascii=False)
@@ -103,9 +104,7 @@ def write_result(path: str, result: dict) -> None:
 
 
 def run(payload: dict) -> dict:
-    """payload 하나 실행: 표준 모듈 선로드 → sbmig 루트를 sys.path 에 → FixHelper →
-    코드 컴파일·exec → ``fix(p)`` → 결과 dict. 스크립트의 모든 예외는
-    결과(status error)가 되고, 스크립트가 잡아 삼킨 경로 거부도 오류로 보고한다."""
+    """payload 하나를 실행해 결과 dict를 반환한다. 스크립트에서 난 예외는 모두 status error로 반환한다."""
     for name in payload.get("preload") or ():            # whitelisted stdlib first: the root cannot shadow them
         try:
             __import__(name)
@@ -137,8 +136,7 @@ def run(payload: dict) -> dict:
                 pass
     except BaseException as exc:                         # noqa: BLE001  # every failure is the script's result
         result.update(status="error", error=describe(exc, code))
-    # 스크립트가 PathRefused 를 except 로 삼켜도 실패로 친다
-    # — 거부된 경로는 다음 시도가 알아야 할 스크립트 버그다
+    # 거부된 경로는 다음 시도가 알아야 할 스크립트 버그이므로 스크립트가 PathRefused를 잡았더라도 실패로 처리한다
     if result["status"] == "ok" and helper._refusals:
         result.update(status="error", error=f"PathRefused: {helper._refusals[0]} (caught by the script)")
     result.update(changed_files=list(helper._changed), log=list(helper._log), log_dropped=helper._dropped)
@@ -147,9 +145,9 @@ def run(payload: dict) -> dict:
 
 
 def main(argv: list[str]) -> int:
-    """진입점: 출력 스트림을 UTF-8 로, payload 읽기, ``run``, 결과 쓰기.
-    하네스 자체가 실패하면 traceback 을 stderr 로 내고 종료 코드 3."""
-    # Windows 콘솔 코드페이지(cp949)와 상관없이 UTF-8 로 — 한글 로그·경로가 깨지지 않게
+    """하네스의 진입점으로, payload를 읽어 ``run``을 실행하고 결과를 파일에 쓴다.
+    하네스 자체가 실패하면 traceback을 stderr로 출력하고 종료 코드 3을 반환한다."""
+    # Windows 콘솔 코드페이지와 상관없이 한글 로그와 경로가 깨지지 않도록 UTF-8로 맞춘다
     for stream in (sys.stdout, sys.stderr):
         try:
             stream.reconfigure(encoding="utf-8", errors="replace")

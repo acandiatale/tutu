@@ -1,11 +1,10 @@
-"""sbmig.review — 구조 검토(v2): 재구성 직후·첫 빌드 전에 LLM 이 pom·의존성·모듈 구조·소스 인코딩·필터링되는
-바이너리 리소스를 회사 규칙(`artifacts.*`, `layout.*`)에 비추어 검토하고, critical 은 직접 고친다. 흐름상
-위치: plan 단계 `restructure.review` — 오케스트레이터가 StructureReviewer.review 를 부르고, 적용된 수정은
-오케스트레이터가 `review: …` 로 커밋한다. 핵심: StructureReviewer(reviewer.py), collect_review_input /
-ReviewInput(inputs.py, 프롬프트에 보여 줄 사실),
+"""재구성 직후 첫 빌드 전에 LLM으로 구조를 검토하는 패키지. LLM이 pom, 의존성, 모듈 구조, 소스 인코딩,
+필터링되는 리소스를 회사 규칙에 맞춰 검토하고 critical 문제는 직접 고친다.
+오케스트레이터가 `restructure.review` 단계에서 StructureReviewer.review를 호출하고, 수정 내용을 `review: …`로 커밋한다.
+주요 구성은 StructureReviewer(reviewer.py), collect_review_input / ReviewInput(inputs.py),
 parse_review_answer / ParsedReview(parse.py).
-지킬 것: 검토는 실행을 절대 멈추지 않는다(실패해도 verdict `failed` 로 빌드 진행). 소스는 고치지 않는다(빌드
-파일만). KB 에는 직접 쓰지 않는다(루프가 오류 목록에 `review` 레코드로 남긴다).
+- 검토가 실패해도 실행을 멈추지 않고 verdict `failed`로 빌드를 진행한다
+- 빌드 파일만 고치고 KB에는 직접 쓰지 않는다
 
 sbmig.review — v2 structure review (flow-v2, docs/v2/PLAN-v2.md §3.3, docs/INTERFACES.md "Structure review").
 

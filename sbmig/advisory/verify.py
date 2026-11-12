@@ -1,7 +1,7 @@
-"""마무리 검증 — 권고 대상 라이브러리를 최종 트리에서 다시 찾아 권고마다 결과(outcome)를 정한다.
-흐름상 위치: 최종 빌드 뒤 마무리 단계가 ``verify_advisories`` 를 부르고, 인수인계 섹션이 결과별로 문장을
-고른다 (replaced → "확인할 것", still-present → 담당팀 후속
-작업). 절대 예외를 내지 않는다(다시 훑기 실패 → unknown).
+"""권고 대상 라이브러리를 최종 트리에서 다시 찾아 권고마다 결과(outcome)를 정하는 모듈.
+최종 빌드 뒤 마무리 단계가 ``verify_advisories``를 호출하고, 인수인계 섹션이 결과에 따라 문장을
+고른다(replaced는 확인 요청, still-present는 담당팀 후속 작업).
+다시 검사하지 못하면 unknown으로 두고 예외를 던지지 않는다.
 
 Finalize: re-detect the advised libraries on the FINAL tree and set each finding's outcome.
 
@@ -26,7 +26,8 @@ log = logging.getLogger("sbmig.advisory")
 
 
 def _entries(cfg: Config) -> dict[str, LibraryAdvisory]:
-    """id → 권고 항목. 카탈로그를 못 읽으면 {} — 검증은 권고 결과 자신의 데이터로만 한다."""
+    """id별 권고 항목을 반환한다.
+    카탈로그를 읽지 못하면 빈 dict를 반환하고 검증은 권고 결과 자체의 데이터로만 한다."""
     try:
         from .catalog import load_advisories
 
@@ -38,8 +39,9 @@ def _entries(cfg: Config) -> dict[str, LibraryAdvisory]:
 
 def _verify_one(f: AdvisoryFinding, libs: dict[str, LibraryUsage], gavs: list,
                 entry: Optional[LibraryAdvisory]) -> None:
-    """권고 하나의 결과: 라이브러리·아티팩트가 더 안 보이면 replaced, 보여도 ``resolved_min_version`` 이상이면
-    replaced(릴리스 트레인을 올린 경우), 그 밖은 still-present. 판단 근거를 notes 에 남긴다."""
+    """권고 하나의 결과를 정하고 판단 근거를 notes에 남긴다.
+    라이브러리와 아티팩트가 더 보이지 않거나, 보여도
+    ``resolved_min_version`` 이상이면 replaced, 그 밖은 still-present다."""
     lib = libs.get(f.library)
     patterns = list(entry.artifacts) if entry is not None and entry.artifacts else []
     patterns += [k for k in f.artifacts if k not in patterns]
@@ -63,8 +65,8 @@ def _verify_one(f: AdvisoryFinding, libs: dict[str, LibraryUsage], gavs: list,
 
 
 def verify_advisories(findings: list[AdvisoryFinding], view: Any, cfg: Config) -> list[AdvisoryFinding]:
-    """``view``(Workspace 또는 PathView)를 다시 훑어 모든 권고의 ``outcome`` 을 정한다. 같은 리스트를 고쳐서
-    돌려준다. 예외를 내지 않는다.
+    """``view``(Workspace 또는 PathView)를 다시 검사해 모든 권고의 ``outcome``을 정한다.
+    받은 리스트를 고쳐서 반환하며 예외를 던지지 않는다.
 
     Set `outcome` on every finding from a re-scan of `view` (Workspace or PathView). Returns the same list
     (mutated). Never raises."""

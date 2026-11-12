@@ -1,12 +1,13 @@
-r"""외부 설정 목록(round 8): as-is 코드가 읽는 설정 키마다 "패키지된 리소스가 정의하는가" 를 가린다. 왜:
-레거시 앱은 외장 Tomcat 이 값을 대 주었다(catalina.properties, ``-D``, JNDI ``<Resource>``, web.xml
-``<context-param>``, ``file:`` 속성 파일) — 실행 jar 로 바꾸면 그 공급 경로가 사라져 빌드는 통과해도 실행 시
-깨진다. 흐름상 위치: ``analyze_project`` 가 ``externalized.enabled`` 일 때 부르고(MSA 는 배포 서비스별), 결과
-``profile.properties`` 로 재구성이 컨테이너 전용 키의 Boot 키를 표식 자리값으로 써 넣고, 보고서 인수인계에
-실린다. 진입점: :func:`scan_properties` (키마다 ``defined`` / ``defaulted`` / ``external``),
-:func:`load_rules` (규칙은 ``knowledge/config/externalized.yml`` — 회사 규칙은 코드가 아니라 설정에, 불변조건
-2), :func:`filtered_binary_resources` (필터링되는 리소스 아래 바이너리 — v2 에서는 구조 검토가 사실 줄로
-쓴다). 정규식 기반이고, 깨지거나 너무 큰 파일은 메모(notes)가 될 뿐 예외는 없다.
+r"""as-is 코드가 읽는 설정 키마다 패키지된 리소스가 그 값을 정의하는지 확인하는 모듈.
+외장 Tomcat에서 실행되던 앱은 catalina.properties, ``-D``, JNDI ``<Resource>``, web.xml ``<context-param>``,
+``file:`` 속성 파일로 값을 받았으므로, 실행 jar로 바꾸면 빌드는 통과해도 실행 시 값이 없어 실패한다.
+``analyze_project``가 ``externalized.enabled``일 때 호출하고(MSA는 서비스별), 결과 ``profile.properties``는
+재구성과 인수인계 보고서가 쓴다.
+- :func:`scan_properties`: 키마다 ``defined`` / ``defaulted`` / ``external``로 분류한다
+- :func:`load_rules`: 규칙은 ``knowledge/config/externalized.yml``에 둔다.
+  회사 규칙은 코드가 아니라 설정에 둔다
+- :func:`filtered_binary_resources`: 필터링되는 리소스 아래의 바이너리 파일을 찾는다
+- 정규식으로 검사하며, 깨지거나 너무 큰 파일은 메모로 남기고 예외를 던지지 않는다
 
 Externalized-configuration inventory (round 8): which settings does the as-is code read, and does a packaged
 resource define them?
@@ -98,8 +99,8 @@ _KEY_OK = re.compile(r"^[A-Za-z0-9_.\-\[\]]+$")
 # ---------------------------------------------------------------------------
 @dataclass
 class JndiRule:
-    """JNDI 이름 규칙: ``match`` (fnmatch) 에 맞는 이름을 어떤
-    Boot 키로 바꿀지(``{name}`` / ``{leaf}`` 치환)와 안내."""
+    """JNDI 이름 규칙을 담는 데이터 클래스.
+    ``match``(fnmatch)에 맞는 이름을 어떤 Boot 키로 바꿀지와 안내 문구를 담는다."""
     match: str
     boot_keys: list[str] = field(default_factory=list)
     note: str = ""
@@ -107,7 +108,8 @@ class JndiRule:
 
 @dataclass
 class ContextParamRule:
-    """알려진 web.xml context-param 하나의 규칙: 건너뛸지, 대응 Boot 키(None = 기본 규칙), 안내."""
+    """알려진 web.xml context-param 하나의 규칙을 담는 데이터 클래스.
+    건너뛸지, 대응하는 Boot 키, 안내 문구를 담는다."""
     skip: bool = False
     boot_keys: Optional[list[str]] = None
     note: str = ""
@@ -115,8 +117,8 @@ class ContextParamRule:
 
 @dataclass
 class ExternalizedRules:
-    """``externalized.yml`` 을 읽은 규칙 묶음: JNDI, context-param(기본 Boot 키 + 알려진 것), 건너뛸
-    시스템 속성, Boot 기본값이라 자리값이 필요 없는 키, 한국어 안내 줄, 로더 메모(파일 없음 / 깨짐)."""
+    """``externalized.yml``에서 읽은 규칙 전체를 담는 데이터 클래스.
+    규칙 파일이 없거나 깨졌으면 메모를 함께 담는다."""
     jndi: list[JndiRule] = field(default_factory=list)
     context_param_default: str = "server.servlet.context-parameters.{name}"
     context_param_known: dict[str, ContextParamRule] = field(default_factory=dict)
@@ -127,7 +129,7 @@ class ExternalizedRules:
 
 
 def _str_list(v: Any) -> list[str]:
-    """YAML 값을 문자열 목록으로(None → [], 단일 값 → [값])."""
+    """YAML 값을 문자열 목록으로 바꾼다. None이면 빈 목록, 단일 값이면 한 개짜리 목록을 반환한다."""
     if v is None:
         return []
     if isinstance(v, (list, tuple)):
@@ -136,8 +138,8 @@ def _str_list(v: Any) -> list[str]:
 
 
 def load_rules(path: Path) -> ExternalizedRules:
-    """``knowledge/config/externalized.yml`` 을 읽는다. 파일이 없거나 깨지면
-    빈 규칙 + 메모(예외 없음 — 규칙 파일 하나 때문에 분석이 멈추면 안 된다).
+    """``knowledge/config/externalized.yml``을 읽어 규칙을 반환한다.
+    규칙 파일 때문에 분석이 멈추면 안 되므로, 파일이 없거나 깨지면 빈 규칙과 메모를 반환하고 예외를 던지지 않는다.
 
     Parse `knowledge/config/externalized.yml`. A missing or broken file → empty rules + a note (never raises)."""
     path = Path(path)
@@ -175,20 +177,20 @@ def load_rules(path: Path) -> ExternalizedRules:
 # small helpers
 # ---------------------------------------------------------------------------
 def norm_key(key: str) -> str:
-    """Spring 완화 바인딩 비교용 키: 소문자, ``-`` ``_`` ``.`` 제거(db.url == DB_URL == db-url).
+    """Spring 완화 바인딩으로 비교하기 위해 키를 소문자로 바꾸고 ``-``,
+    ``_``, ``.``를 없앤다(db.url == DB_URL == db-url).
 
     Relaxed-binding comparison form: lowercase, `-` `_` `.` removed (db.url == DB_URL == db-url)."""
     return re.sub(r"[-_.]", "", key.lower())
 
 
 def _segments(key: str) -> list[str]:
-    """키를 점 단위 조각으로(조각마다 소문자, ``-`` ``_``
-    제거) — ``@ConfigurationProperties`` 접두어 비교용."""
+    """``@ConfigurationProperties`` 접두어를 비교하기 위해 키를 점 단위 조각 목록으로 나눈다."""
     return [re.sub(r"[-_]", "", s.lower()) for s in key.split(".") if s]
 
 
 def _strip_java_comments(text: str) -> str:
-    """source_scanner 의 주석 제거와 같되, 주석 속 줄바꿈은 남긴다 — 위치(offset)를 줄 번호로 바꿀 수 있게.
+    """Java 주석을 지운다. 위치를 줄 번호로 바꿀 수 있도록 주석 안의 줄바꿈은 남긴다.
 
     `strip_comments` of source_scanner, but newlines inside comments are kept so offsets map to lines."""
     return _COMMENT_RE.sub(lambda m: m.group(1) or "\n" * m.group(0).count("\n"), text)
@@ -198,12 +200,12 @@ _XML_COMMENT_RE = re.compile(r"<!--.*?-->", re.S)
 
 
 def _strip_xml_comments(text: str) -> str:
-    """XML 주석을 지우되 줄바꿈은 남긴다(줄 번호 유지)."""
+    """XML 주석을 지운다. 줄 번호가 바뀌지 않도록 줄바꿈은 남긴다."""
     return _XML_COMMENT_RE.sub(lambda m: "\n" * m.group(0).count("\n"), text)
 
 
 class _Lines:
-    """텍스트 위치 → 1부터 세는 줄 번호(이진 탐색)."""
+    """텍스트 위치를 1부터 세는 줄 번호로 바꾸는 클래스."""
     def __init__(self, text: str):
         self.starts = [0] + [m.end() for m in re.finditer(r"\n", text)]
 
@@ -211,25 +213,25 @@ class _Lines:
         return bisect.bisect_right(self.starts, offset)
 
 
-# 보고서·KB 에 남는 원문 조각에서 비밀번호류 값을 가린다(키 이름이 password / secret … 이면 값을 ***)
+# 보고서와 KB에 남는 원문에 비밀번호가 드러나지 않도록 password, secret 같은 키의 값을 별표로 가린다
 _SECRET_RE = re.compile(r"(?i)((?:password|passwd|pwd|secret|credential)\w*\s*[=:]\s*)(\"[^\"]*\"|'[^']*'|\S+)")
 
 
 def _raw(text: str) -> str:
-    """참조 원문(공백 정리, 비밀 값 가림, 200자까지) — ``PropertyRef.raw``."""
+    """``PropertyRef.raw``에 넣을 참조 원문을 만든다. 공백을 정리하고 비밀 값을 가린 뒤 200자까지 남긴다."""
     s = re.sub(r"\s+", " ", text).strip()
     s = _SECRET_RE.sub(lambda m: m.group(1) + ('"***"' if m.group(2).startswith(('"', "'")) else "***"), s)
     return s[:200]
 
 
 def _skipped(rel: str) -> bool:
-    """node_modules / .git / Maven 빌드 출력 아래면
-    건너뛴다(``target`` 이라는 자바 패키지는 소스로 남긴다)."""
+    """node_modules, .git, Maven 빌드 출력 아래 경로이면 True를 반환한다.
+    ``target``이라는 자바 패키지는 건너뛰지 않는다."""
     return any(p in SKIP_PARTS for p in rel.replace("\\", "/").split("/")) or is_build_output_path(rel)
 
 
 def _is_test(rel: str) -> bool:
-    """테스트 소스 / 리소스 경로인지."""
+    """테스트 소스나 테스트 리소스 경로인지 확인한다."""
     return "src/test/" in rel or rel.startswith("test/")
 
 
@@ -238,9 +240,9 @@ def _unescape_java(s: str) -> str:
 
 
 def iter_placeholders(s: str, base: int = 0) -> Iterable[tuple[str, Optional[str], int]]:
-    """``s`` 안의 모든 ``${key[:default]}`` 에 대해 (키, 기본값 또는 None, 위치). 중첩된 기본값 안의
-    것도 낸다. 앞에 역슬래시가 붙은 ``${x}`` (Spring 6.2+
-    이스케이프)는 자리값이 아니다. 괄호가 닫히지 않으면 거기서 멈춘다.
+    """``s`` 안의 모든 ``${key[:default]}``에 대해 (키, 기본값, 위치)를 반환한다.
+    중첩된 기본값 안의 것도 포함한다.
+    역슬래시로 이스케이프된 ``${x}``는 제외하고, 괄호가 닫히지 않으면 거기서 멈춘다.
 
     (key, default|None, offset) for every `${key[:default]}` in `s`, nested defaults included."""
     i = 0
@@ -291,8 +293,7 @@ def iter_placeholders(s: str, base: int = 0) -> Iterable[tuple[str, Optional[str
 # collector
 # ---------------------------------------------------------------------------
 class _Collector:
-    """스캔 중에 모으는 것: 참조(PropertyRef, 중복 제거), 메모, ``file:`` 공급 경로, classpath 위치, 프로필,
-    테스트 인라인 정의, 컨테이너 시스템 속성, 자기 참조 정의."""
+    """스캔 중에 찾은 참조, 메모, ``file:`` 경로, classpath 위치, 프로필 등을 모아 두는 클래스."""
 
     def __init__(self, rules: ExternalizedRules, maven_props: set[str], filtered: list[str]):
         self.rules = rules
@@ -315,13 +316,13 @@ class _Collector:
         self.sys_skip = set(rules.system_property_skip)
 
     def in_filtered(self, rel: str) -> bool:
-        """Maven 리소스 필터링(``<filtering>true``)이 걸린 디렉토리 아래 파일인지."""
+        """Maven 리소스 필터링(``<filtering>true``)이 걸린 디렉토리 아래 파일인지 확인한다."""
         return any(rel == d or rel.startswith(d.rstrip("/") + "/") for d in self.filtered)
 
     def add(self, key: str, source: str, file: str, line: Optional[int], raw: str,
             default: Optional[str] = None) -> None:
-        """참조 하나를 기록한다. 이상한 키·건너뛸 시스템 속성(컨테이너 속성으로 따로
-        셈)·내장 키(project.* 등)는 버리고, (키, 출처, 파일, 줄)이 같은 것은 한 번만."""
+        """참조 하나를 기록한다.
+        이상한 키, 건너뛸 시스템 속성, ``project.*`` 같은 내장 키는 버리고 같은 참조는 한 번만 기록한다."""
         key = key.strip()
         if not key:
             return
@@ -343,8 +344,8 @@ class _Collector:
 
     def placeholder(self, key: str, default: Optional[str], source: str, file: str, line: int, raw: str,
                     filtered: bool = False) -> None:
-        """``${key}`` 하나를 기록한다. 필터링되는 파일에서 pom 속성이면 빌드 때 Maven 이 풀어 주므로 무시,
-        ``env.X`` 는 환경 변수 X 로 기록."""
+        """``${key}`` 하나를 기록한다. 필터링되는 파일의 pom 속성은 빌드 때 Maven이 치환하므로 무시하고,
+        ``env.X``는 환경 변수 X로 기록한다."""
         if filtered and (key in self.maven_props or _MAVEN_BUILTIN.match(key)):
             return                                  # resolved by Maven resource filtering at build time
         if key.startswith("env."):
@@ -375,7 +376,8 @@ _PROFILE_ANNOT_RE = re.compile(r"@(?:Profile|ActiveProfiles)\s*\(([^)]*)\)")
 
 
 def _balanced(src: str, open_idx: int) -> int:
-    """``open_idx`` 의 ``(`` 와 짝인 ``)`` 바로 뒤 위치(문자열 리터럴 안의 괄호는 무시). 짝이 없으면 len(src).
+    """``open_idx``의 ``(``와 짝인 ``)`` 바로 뒤 위치를 반환한다.
+    문자열 안의 괄호는 무시하고, 짝이 없으면 len(src)를 반환한다.
 
     Index just after the `)` matching the `(` at open_idx (string literals respected); len(src) if unbalanced."""
     depth, i, n = 0, open_idx, len(src)
@@ -396,7 +398,7 @@ def _balanced(src: str, open_idx: int) -> int:
 
 
 def _split_args(s: str) -> list[str]:
-    """어노테이션 / 메서드 인자 문자열을 최상위 쉼표로 나눈다(괄호·중괄호·문자열 안의 쉼표는 무시)."""
+    """어노테이션이나 메서드 인자 문자열을 최상위 쉼표로 나눈다. 괄호, 중괄호, 문자열 안의 쉼표는 무시한다."""
     out, depth, cur, i = [], 0, "", 0
     while i < len(s):
         c = s[i]
@@ -422,14 +424,14 @@ def _split_args(s: str) -> list[str]:
 
 
 def _lit_or_expr(arg: str) -> str:
-    """인자가 문자열 리터럴이면 그 값, 아니면 식 그대로(기본값 기록용)."""
+    """인자가 문자열 리터럴이면 그 값을, 아니면 식을 그대로 반환한다."""
     m = re.fullmatch(_STR, arg.strip())
     return _unescape_java(m.group(1)) if m else arg.strip()
 
 
 def _location(col: _Collector, loc: str, file: str, line: int, raw: str, source: str) -> None:
-    """속성 파일 위치 하나: 안의 ``${…}`` 는 참조로, ``classpath:`` 는 정의 파일
-    후보로, ``file:`` / 자리값 경로는 외부 공급 경로(패키지되지 않음)로 기록."""
+    """속성 파일 위치 하나를 기록한다.
+    안의 ``${…}``는 참조로, ``classpath:``는 정의 파일 후보로, ``file:``은 외부 경로로 기록한다."""
     loc = loc.strip()
     if not loc:
         return
@@ -445,23 +447,23 @@ def _location(col: _Collector, loc: str, file: str, line: int, raw: str, source:
 
 
 def profile_glob(path: str) -> str:
-    """위치 안의 ``${…}`` 를 ``*`` 로(v2.1x D7): ``config/${env}/app.properties`` → ``config/*/app.properties``.
+    """위치 안의 ``${…}``를 ``*``로 바꾼다(``config/${env}/app.properties``는 ``config/*/app.properties``).
 
     `${…}` segments of a location → `*` (v2.1x D7)."""
     return re.sub(r"\$\{[^}]*\}", "*", path)
 
 
 def _webinf_sub(loc: str) -> Optional[str]:
-    """``/WEB-INF/x`` · ``WEB-INF/x`` 위치 → ``x`` (``${…}`` 가 있으면 glob), 아니면 None."""
+    """``/WEB-INF/x`` 또는 ``WEB-INF/x`` 위치에서 ``x``를 반환한다. 해당하지 않으면 None을 반환한다."""
     m = re.match(r"^/?WEB-INF/(.+)$", loc.strip())
     return profile_glob(m.group(1)) if m else None
 
 
 def scan_java(col: _Collector, rel: str, text: str) -> None:
-    """자바 파일 하나에서 설정 참조를 모은다: 어노테이션 인자의 ``${…}`` (@Value 등), @PropertySource 위치,
-    @ConfigurationProperties 접두어, Environment.getProperty, System.getProperty / getenv, JNDI 이름·lookup,
-    프로필. 테스트의 인라인 속성(@SpringBootTest(properties=…), DynamicPropertyRegistry)은 정의로 센다."""
-    # 싼 사전 검사: 힌트 문자열이 하나도 없으면 정규식을 돌리지 않는다(파일 수천 개 프로젝트)
+    """자바 파일 하나에서 설정 참조를 모은다.
+    @Value 같은 어노테이션의 ``${…}``, @PropertySource, @ConfigurationProperties, Environment.getProperty,
+    System.getProperty / getenv, JNDI 이름, 프로필을 본다. 테스트의 인라인 속성은 정의로 센다."""
+    # 파일이 수천 개인 프로젝트를 위해 힌트 문자열이 하나도 없으면 정규식 검사를 건너뛴다
     if not any(h in text for h in _JAVA_HINTS):
         return
     src = _strip_java_comments(text)
@@ -508,8 +510,8 @@ def scan_java(col: _Collector, rel: str, text: str) -> None:
         ln = lines.line(m.start())
         if recv == "System":
             col.add(key, "system-property", rel, ln, m.group(0), default)
-        # 받는 쪽이 Environment 타입으로 선언된 변수이거나 이름에 env 가 들어갈 때만 — 아무 객체의 getProperty
-        # 를 설정 참조로 세지 않으려는 것(Properties.getProperty 등)
+        # Properties.getProperty 같은 다른 객체의 호출을 세지 않도록 Environment 타입 변수이거나 이름에
+        # env가 들어갈 때만 설정 참조로 센다
         elif recv is None or recv in env_vars or "env" in recv.lower():
             col.add(key, "environment", rel, ln, m.group(0), default)
         if key == "spring.profiles.active":
@@ -540,14 +542,13 @@ def scan_java(col: _Collector, rel: str, text: str) -> None:
 
 
 def _strings(arg: str) -> list[str]:
-    """인자 안의 모든 자바 문자열 리터럴 값."""
+    """인자 안의 모든 자바 문자열 리터럴 값을 반환한다."""
     return [_unescape_java(x.group(1)) for x in _STR_RE.finditer(arg)]
 
 
 def _conditional(col: _Collector, rel: str, line: int, body: str, raw: str) -> None:
-    """@ConditionalOnProperty 의 ``prefix.name`` 마다 읽기 참조 하나. 키가 비어
-    있는 것도 정상 상태(조건이 정한다)라서 가짜 기본값을 달아 ``defaulted`` 로 두고, 자리값은 절대 쓰지 않는다
-    — 값을 써 넣으면 조건이 뒤집힌다.
+    """@ConditionalOnProperty의 ``prefix.name``마다 읽기 참조를 하나씩 기록한다.
+    키가 없는 것도 정상 상태이므로 기본값이 있는 것으로 보고, 값을 넣으면 조건이 뒤집히므로 플레이스홀더를 쓰지 않는다.
 
     @ConditionalOnProperty(prefix=, name=|value=, havingValue=, matchIfMissing=): every `prefix.name` is a read.
     An unset key is a valid state (the condition decides), so the ref carries a pseudo default → `defaulted` unless
@@ -572,7 +573,7 @@ def _conditional(col: _Collector, rel: str, line: int, body: str, raw: str) -> N
 
 
 def _line_text(src: str, lines: _Lines, off: int) -> str:
-    """위치 ``off`` 가 있는 줄 전체."""
+    """위치 ``off``가 있는 줄 전체를 반환한다."""
     ln = lines.line(off)
     start = lines.starts[ln - 1]
     end = src.find("\n", start)
@@ -601,15 +602,15 @@ _WEBINF_LOC_RE = re.compile(r"(?<![\w:/.\-])(/?WEB-INF/[^\s\"'<>,;]+\.(?:propert
 
 
 def _jndi_name(name: str) -> str:
-    """JNDI 이름 정규화: ``java:`` 로 시작하지 않으면 ``java:comp/env/`` 를 붙인다."""
+    """JNDI 이름이 ``java:``로 시작하지 않으면 ``java:comp/env/``를 붙여 반환한다."""
     name = name.strip()
     return name if name.startswith("java:") else JNDI_PREFIX + name.lstrip("/")
 
 
 def scan_xml(col: _Collector, rel: str, text: str, *, web_xml: bool = False, context_xml: bool = False) -> None:
-    """XML 하나에서 참조를 모은다: 모든 ``${…}``, web.xml 이면 context-param /
-    resource-ref / env-entry, context.xml 이면 ``<Resource>`` / ``<Environment>``,
-    Spring 의 jndi-lookup / jndiName, 자리값 설정기의 파일 위치."""
+    """XML 파일 하나에서 설정 참조를 모은다.
+    모든 ``${…}``, web.xml의 context-param / resource-ref / env-entry, context.xml의 ``<Resource>`` /
+    ``<Environment>``, Spring의 JNDI 조회를 본다."""
     src = _strip_xml_comments(text)
     lines = _Lines(src)
     filtered = col.in_filtered(rel)
@@ -668,8 +669,7 @@ def scan_xml(col: _Collector, rel: str, text: str, *, web_xml: bool = False, con
 # definitions
 # ---------------------------------------------------------------------------
 def parse_properties(text: str) -> list[tuple[str, str, int]]:
-    """.properties 파일의 (키, 값, 줄) 목록. 구분자 ``=`` /
-    ``:`` / 공백, ``\\`` 줄 이음, ``#`` / ``!`` 주석을 처리한다.
+    """.properties 파일을 읽어 (키, 값, 줄) 목록을 반환한다. 구분자, 줄 이음, 주석을 처리한다.
 
     (key, value, line) of a .properties file: `=`, `:` or whitespace separators, `\\` continuations, #/! comments."""
     out: list[tuple[str, str, int]] = []
@@ -705,13 +705,14 @@ def parse_properties(text: str) -> list[tuple[str, str, int]]:
 
 
 def _odd_backslashes(s: str) -> bool:
-    """줄 끝 역슬래시가 홀수 개면 다음 줄로 이어진다(짝수면 문자 그대로의 역슬래시)."""
+    """줄 끝 역슬래시가 홀수 개이면 다음 줄로 이어지는 것으로 보고 True를 반환한다."""
     n = len(s) - len(s.rstrip("\\"))
     return n % 2 == 1
 
 
 def _flatten(obj: Any, prefix: str, out: dict[str, Any]) -> None:
-    """YAML 문서를 Spring 식 평면 키로(``a.b``, 목록은 ``a[0]``). 빈 dict / 목록도 키로 남긴다."""
+    """YAML 문서를 Spring 방식의 평면 키(``a.b``, 목록은 ``a[0]``)로 바꾼다.
+    빈 딕셔너리와 목록도 키로 남긴다."""
     if isinstance(obj, dict):
         if prefix and not obj:
             out[prefix] = ""
@@ -727,7 +728,7 @@ def _flatten(obj: Any, prefix: str, out: dict[str, Any]) -> None:
 
 
 def _profile_names(v: Any) -> list[str]:
-    """프로필 값(목록 또는 쉼표 문자열, 프로필 식 ``a & !b`` 포함)에서 프로필 이름들."""
+    """프로필 값(목록, 쉼표 문자열, ``a & !b`` 같은 식)에서 프로필 이름을 꺼낸다."""
     if v is None:
         return []
     items = v if isinstance(v, list) else str(v).split(",")
@@ -741,8 +742,7 @@ def _profile_names(v: Any) -> list[str]:
 
 @dataclass
 class _Definitions:
-    """정의된 키 색인(main / test 따로): 완화 바인딩 키 → 파일,
-    접두어 비교용 조각 목록, 패키지된 파일, 추가 순서 기록."""
+    """정의된 키를 main과 test로 나눠 색인하는 클래스."""
     main: dict[str, list[str]] = field(default_factory=lambda: defaultdict(list))     # norm key → files
     test: dict[str, list[str]] = field(default_factory=lambda: defaultdict(list))
     main_segs: list[tuple[list[str], str]] = field(default_factory=list)
@@ -751,7 +751,7 @@ class _Definitions:
     log: list[tuple[str, str, bool]] = field(default_factory=list)    # (key, file, test) in add order
 
     def add(self, key: str, file: str, test: bool) -> None:
-        """정의 하나를 더한다(``log`` 에도 남겨 MSA 서비스별 색인을 다시 만들 수 있게)."""
+        """정의 하나를 추가한다. MSA 서비스별 색인을 다시 만들 수 있도록 ``log``에도 남긴다."""
         self.log.append((key, file, test))
         d, segs = (self.test, self.test_segs) if test else (self.main, self.main_segs)
         files = d[norm_key(key)]
@@ -760,8 +760,9 @@ class _Definitions:
         segs.append((_segments(key), file))
 
     def lookup(self, key: str, include_test: bool) -> list[str]:
-        """키를 정의한 파일들. ``p.*`` (ConfigurationProperties 접두어)는 그 아래 키가 하나라도
-        있으면 정의된 것. ``include_test`` 는 테스트에서만 읽히는 키일 때 test 리소스도 본다."""
+        """키를 정의한 파일 목록을 반환한다.
+        ``p.*`` 접두어는 그 아래 키가 하나라도 있으면 정의된 것으로 본다.
+        ``include_test``가 True이면 test 리소스도 본다."""
         if key.endswith(".*"):
             want = _segments(key[:-2])
             pools = [self.main_segs] + ([self.test_segs] if include_test else [])
@@ -780,9 +781,9 @@ class _Definitions:
 
 
 def _definition_files(ws: Any, col: _Collector) -> tuple[list[str], list[str]]:
-    """정의 파일 (main, test): resources 바로 아래, ``config/`` · ``META-INF/``
-    한 단계, 그리고 설정이 이름으로 부른 ``classpath:`` 위치. 이름으로 불렸는데 패키지에 없는 파일은
-    메모(컨테이너 클래스패스에서 오던 것).
+    """정의 파일을 (main, test)로 모은다. resources 바로 아래, ``config/``와 ``META-INF/`` 한 단계, 설정에서
+    이름으로 지정한 ``classpath:`` 위치를 본다.
+    이름으로 지정했는데 패키지에 없는 파일은 메모로 남긴다.
 
     (main, test) definition files: resources root, config/, META-INF + named classpath: locations."""
     main: list[str] = []
@@ -821,7 +822,7 @@ def _definition_files(ws: Any, col: _Collector) -> tuple[list[str], list[str]]:
 
 
 def _read(ws: Any, rel: str, col: _Collector) -> Optional[str]:
-    """파일을 읽는다(1 MB 초과·읽기 실패는 메모 + None, UTF-8 BOM 제거)."""
+    """파일을 읽어 텍스트를 반환한다. 1 MB를 넘거나 읽지 못하면 메모를 남기고 None을 반환한다."""
     try:
         size = ws.abs(rel).stat().st_size if hasattr(ws, "abs") else 0
         if size > MAX_FILE_BYTES:
@@ -835,9 +836,8 @@ def _read(ws: Any, rel: str, col: _Collector) -> Optional[str]:
 
 
 def _scan_definitions(ws: Any, col: _Collector, files: list[str], test: bool, defs: _Definitions) -> None:
-    """정의 파일들을 읽어 키를 색인에 넣고, 프로필 이름(파일
-    이름·on-profile·profiles.active)을 모으며, 값 안의 ``${…}`` 는 ``config-placeholder``
-    참조로 기록한다(``log.dir=${LOG_DIR}`` 같은 자기 참조는 따로 표시)."""
+    """정의 파일을 읽어 키를 색인에 넣고 프로필 이름을 모은다.
+    값 안의 ``${…}``는 ``config-placeholder`` 참조로 기록한다."""
     for rel in files:
         text = _read(ws, rel, col)
         if text is None:
@@ -900,8 +900,8 @@ _RESOURCE_RE = re.compile(r"<resource>(.*?)</resource>", re.S)
 
 
 def filtered_resource_dirs(ws: Any, poms: list[PomInfo], col: Optional[_Collector] = None) -> list[str]:
-    """``<build><resources>`` 중 ``<filtering>true`` 인 디렉토리들(루트 기준). 그 안의 ``${pom 속성}`` 은
-    빌드 때 Maven 이 풀어 주므로 외부 설정 참조로 치지 않는다. plugins / pluginManagement 블록은 뺀다."""
+    """``<build><resources>`` 중 ``<filtering>true``인 디렉토리 목록을 반환한다.
+    그 안의 pom 속성은 빌드 때 Maven이 치환하므로 외부 설정 참조로 보지 않는다."""
     out: list[str] = []
     for p in poms:
         try:
@@ -926,8 +926,8 @@ def filtered_resource_dirs(ws: Any, poms: list[PomInfo], col: Optional[_Collecto
 
 
 # ---------------------------------------------------------------------------
-# 필터링되는 리소스 아래의 바이너리 파일. 주의: 아래 영어 설명의 "handler" (resources-binary-filtering, E12)는
-# v1 이야기다 — v2 에는 그 핸들러가 없고, 구조 검토(sbmig.review.inputs)가 이 목록을 사실 줄로 LLM 에 넘긴다
+# 필터링되는 리소스 아래의 바이너리 파일을 찾는다.
+# 재구성이 nonFilteredFileExtensions를 쓸 때와 구조 검토 입력에 이 목록을 쓴다
 # binary files under a filtered resource (handler `resources-binary-filtering`, catalog E12)
 # ---------------------------------------------------------------------------
 # maven-resources-plugin / maven-war-plugin copy jpg, jpeg, gif, bmp, png unfiltered by default; every other binary
@@ -955,9 +955,9 @@ SNIFF_BYTES = 8192
 
 
 def looks_binary(path: Any) -> bool:
-    """확장자를 모르는 리소스의 내용 검사: 앞 8 KB 에 NUL 바이트가 있거나 UTF-8 도 cp949 도
-    아니면 바이너리. 회사 실행(2026-10-26)에서 ``static/img/.dm/`` 아래 ``.items.dmdb`` 가 필터 복사 중
-    MalformedInputException 을 낸 사례에서 나왔다. 못 읽으면 바이너리 아님. 예외 없음.
+    """확장자를 모르는 리소스의 내용을 보고 바이너리인지 판단한다.
+    앞 8 KB에 NUL 바이트가 있거나 UTF-8과 cp949 모두로 읽히지 않으면 바이너리다.
+    읽지 못하면 False를 반환하고 예외를 던지지 않는다.
 
     Content sniff for a resource of an unknown extension (round 10 follow-up, company run 2026-10-26: an
     `.items.dmdb` under `static/img/.dm/` failed the filtered copy with MalformedInputException): a NUL byte in the
@@ -983,8 +983,8 @@ PLUGIN_UNFILTERED_DEFAULTS = frozenset({"jpg", "jpeg", "gif", "bmp", "png"})   #
 
 
 def _binary_by_content(name: str) -> bool:
-    """내용 검사가 필요한 이름인지: 텍스트로 알려진 확장자도,
-    플러그인이 원래 안 거르는 이미지 확장자도 아닌 것."""
+    """내용을 검사해야 하는 파일인지 확인한다.
+    텍스트 확장자도 아니고, 플러그인이 원래 필터링하지 않는 이미지 확장자도 아니면 True다."""
     ext = name.rsplit(".", 1)[1].lower() if "." in name else ""
     return ext not in TEXT_RESOURCE_EXTENSIONS and ext not in PLUGIN_UNFILTERED_DEFAULTS
 _RESOURCE_SETS_RE = re.compile(r"<(resources|testResources|webResources)>(.*?)</\1>", re.S)
@@ -993,8 +993,8 @@ _PATTERN_RE = re.compile(r"<(include|exclude)>\s*([^<]+?)\s*</\1>")
 
 
 def _ant_re(pattern: str) -> "re.Pattern[str]":
-    """Ant / plexus 경로 패턴 → 정규식(``*.properties`` = 맨
-    위만, ``**/*.properties`` = 모든 깊이, 끝 ``/`` = ``/**``).
+    """Ant 경로 패턴을 정규식으로 바꾼다.
+    ``*.properties``는 최상위 파일에만 맞고, 앞에 디렉토리 와일드카드가 붙으면 모든 깊이에 맞는다.
 
     Ant / plexus path pattern → regex over a resource-relative posix path: `*.properties` = top level only,
     `**/*.properties` = any depth, a trailing `/` means `/**`."""
@@ -1023,9 +1023,8 @@ def _ant_re(pattern: str) -> "re.Pattern[str]":
 
 
 def _filtered_resource_specs(ws: Any, poms: list[PomInfo]) -> list[tuple[str, list, list]]:
-    """``<filtering>true`` 리소스마다 (루트 기준 디렉토리, include 정규식,
-    exclude 정규식): resources / testResources / war 의 webResources / copy-resources 실행까지, profile 안의
-    것도 센다(profile 이 켜지면 깨지니까).
+    """``<filtering>true`` 리소스마다 (디렉토리, include 정규식, exclude 정규식)을 반환한다.
+    profile이 켜지면 빌드가 깨지므로 profile 안의 리소스, war의 webResources, copy-resources 실행도 포함한다.
 
     (root-relative dir, include regexes, exclude regexes) per `<filtering>true</filtering>` resource: `<build>`
     `<resources>` / `<testResources>`, the war plugin's `<webResources>` and `copy-resources` executions (plugins
@@ -1063,9 +1062,9 @@ def _filtered_resource_specs(ws: Any, poms: list[PomInfo]) -> list[tuple[str, li
 
 def filtered_binary_resources(ws: Any, poms: list[PomInfo],
                               extensions: Iterable[str] = BINARY_RESOURCE_EXTENSIONS) -> list[str]:
-    """필터링되는 리소스가 필터를 통과시킬 바이너리 파일들(include / exclude 반영, 정렬, 최대
-    200개): 알려진 바이너리 확장자이거나, 모르는 확장자인데 내용이 바이너리(:func:`looks_binary`)인 것. 빌드는
-    통과해도 jar 안의 바이트가 바뀐다(웹폰트 깨짐 등). 예외 없음.
+    """필터링되는 리소스 아래의 바이너리 파일 목록을 정렬해서 반환한다. 예외를 던지지 않는다.
+    필터를 거치면 빌드는 통과해도 jar 안의 바이트가 바뀌므로 찾는다.
+    알려진 바이너리 확장자이거나 :func:`looks_binary`가 True인 파일이 해당한다.
 
     Root-relative binary files a filtered resource would run through the filter (includes / excludes honoured),
     sorted and capped at MAX_BINARY_RESOURCES: a known binary extension, or (round 10 follow-up) a file of an unknown
@@ -1108,16 +1107,15 @@ def filtered_binary_resources(ws: Any, poms: list[PomInfo],
 # classification
 # ---------------------------------------------------------------------------
 def _fmt(tpl: str, name: str, leaf: str) -> str:
-    """규칙 문자열의 ``{name}`` / ``{leaf}`` 치환."""
+    """규칙 문자열의 ``{name}``과 ``{leaf}``를 치환한다."""
     return tpl.replace("{name}", name).replace("{leaf}", leaf)
 
 
 def _classify(key: str, refs: list[PropertyRef], defs: _Definitions, rules: ExternalizedRules,
               file_routes: bool, self_defs: frozenset[tuple[str, str]] | set[tuple[str, str]] = frozenset()
               ) -> PropertyFinding:
-    """키 하나의 판정: 공급자(jndi / context-param / system-property / property-source:file), 재구성이
-    자리값으로 쓸 Boot 키(``boot_keys``; 빈 목록 = 자리값 없음), 안내, 상태(``defined`` 패키지에 정의
-    / ``defaulted`` 모든 참조에 코드 기본값 / ``external`` 어디에도 없음 — 실행 시 공급 필요)."""
+    """키 하나의 공급 경로, 재구성이 플레이스홀더로 쓸 Boot 키, 안내 문구, 상태를 정한다.
+    상태는 ``defined``(패키지에 정의), ``defaulted``(코드에 기본값), ``external``(실행 시 외부에서 받아야 함) 중 하나다."""
     sources = {r.source for r in refs}
     test_only = all(r.scope == "test" for r in refs)
     boot_keys: list[str] = [key]
@@ -1168,8 +1166,7 @@ def _classify(key: str, refs: list[PropertyRef], defs: _Definitions, rules: Exte
         supplied_by = "property-source:file"
 
     nk = norm_key(key)
-    # 자기 참조(``log.dir=${LOG_DIR}``)는 정의로 치지 않는다 — 완화 바인딩으로는 LOG_DIR 이 log.dir 자신에
-    # 의해 정의된 것처럼 보이므로
+    # 완화 바인딩으로는 ``log.dir=${LOG_DIR}``가 LOG_DIR을 정의한 것처럼 보이므로 자기 참조는 정의로 보지 않는다
     defined_in = [f for f in defs.lookup(key, include_test=test_only) if (nk, f) not in self_defs]
     if not defined_in and boot_keys and boot_keys != [key]:
         per = [defs.lookup(b, include_test=test_only) for b in boot_keys]
@@ -1189,15 +1186,14 @@ def _classify(key: str, refs: list[PropertyRef], defs: _Definitions, rules: Exte
 # entry point
 # ---------------------------------------------------------------------------
 def _is_context_xml(rel: str) -> bool:
-    """Tomcat 의 ``META-INF/context.xml`` 인지."""
+    """Tomcat의 ``META-INF/context.xml``인지 확인한다."""
     return rel.endswith("META-INF/context.xml")
 
 
 def scan_properties(ws: Any, poms: list[PomInfo], scan: ScanResult, rules: ExternalizedRules,
                     cfg: Any = None, *, services: Optional[list[ServiceInfo]] = None) -> PropertyInventory:
-    """외부 설정 목록(모듈 docstring 참고). ``services`` (MSA 배포 서비스, round 9)를 주면
-    서비스별 목록, None / [] 이면 프로젝트 전체. 예외를 내지 않는다 — 문제는 ``notes`` 로 (어떤 이상한
-    프로젝트에서도 분석은 살아남아야 한다).
+    """외부 설정 목록을 만든다. ``services``를 주면 MSA 서비스별로, 없으면 프로젝트 전체로 만든다.
+    어떤 프로젝트에서도 분석이 멈추지 않도록 예외를 던지지 않고 문제는 ``notes``에 남긴다.
 
     Inventory of externalized settings (see module docstring). `services` (MSA deployables, round 9) switches to a
     per-service inventory; None / [] = project-wide. Never raises: problems become `notes`."""
@@ -1209,7 +1205,7 @@ def scan_properties(ws: Any, poms: list[PomInfo], scan: ScanResult, rules: Exter
 
 
 def _service_dirs(services: list[ServiceInfo]) -> list[tuple[str, str]]:
-    """서비스마다 (디렉토리, 이름), 깊은 것부터. 디렉토리 = root_pom 의 디렉토리(루트 서비스는 "").
+    """서비스마다 (디렉토리, 이름)을 깊은 것부터 반환한다. 루트 서비스의 디렉토리는 빈 문자열이다.
 
     (dir, name) per service, deepest first; dir = dirname(root_pom), "" for a root service."""
     out = [(posixpath.dirname(s.root_pom.replace("\\", "/")).strip("/"), s.name) for s in services]
@@ -1217,7 +1213,7 @@ def _service_dirs(services: list[ServiceInfo]) -> list[tuple[str, str]]:
 
 
 def _owner(rel: str, dirs: list[tuple[str, str]]) -> Optional[str]:
-    """``rel`` 을 품는 서비스(가장 깊은 것). None = 어느 서비스에도 속하지 않는 공유 코드.
+    """``rel``이 속한 서비스를 반환한다. 어느 서비스에도 속하지 않는 공유 코드이면 None을 반환한다.
 
     The service whose directory holds `rel` (deepest wins); None = outside every service (shared code)."""
     for d, name in dirs:
@@ -1228,8 +1224,8 @@ def _owner(rel: str, dirs: list[tuple[str, str]]) -> Optional[str]:
 
 def _scan_properties(ws: Any, poms: list[PomInfo], scan: ScanResult, rules: ExternalizedRules,
                      cfg: Any, services: list[ServiceInfo]) -> PropertyInventory:
-    """:func:`scan_properties` 의 본체: 자바 → XML(Spring XML, web.xml, context.xml) → 정의 파일(main,
-    test, 인라인) → (MSA 면 서비스별 정의 색인) → 키마다 판정 → 메모(잘림, file: 경로, 컨테이너 속성)."""
+    """:func:`scan_properties`의 본체.
+    자바, XML, 정의 파일 순으로 읽은 뒤 키마다 상태를 정하고 메모를 남긴다."""
     maven_props: set[str] = set()
     for p in poms:
         maven_props.update(p.properties)
@@ -1277,8 +1273,8 @@ def _scan_properties(ws: Any, poms: list[PomInfo], scan: ScanResult, rules: Exte
     _bootstrap_note(col, main_files, poms)
 
     dirs = _service_dirs(services)
-    # MSA: 서비스 안의 참조는 그 서비스의 정의만 보고 판정한다(다른
-    # 서비스의 application.yml 이 대신 정의해 주지 않는다)
+    # 다른 서비스의 application.yml이 대신 정의해 주지 않으므로 MSA에서는
+    # 서비스 안의 참조를 그 서비스의 정의로만 판단한다
     svc_defs: dict[Optional[str], _Definitions] = {None: defs}     # shared code: every service's definitions
     if dirs:
         for _, name in dirs:
@@ -1320,8 +1316,8 @@ def _scan_properties(ws: Any, poms: list[PomInfo], scan: ScanResult, rules: Exte
 
 
 def _bootstrap_note(col: _Collector, main_files: list[str], poms: list[PomInfo]) -> None:
-    """bootstrap.* 정의 파일이 있는데 spring-cloud-starter-bootstrap
-    이 없으면 메모: Boot 4 에서는 그 파일을 읽지 않는다."""
+    """bootstrap.* 정의 파일이 있는데 spring-cloud-starter-bootstrap이 없으면
+    Boot 4가 그 파일을 읽지 않는다는 메모를 반환한다."""
     boot = [f for f in main_files if re.match(r"bootstrap(-[\w.-]+)?\.(properties|ya?ml)$", posixpath.basename(f))]
     if boot and not any(d.artifact_id == "spring-cloud-starter-bootstrap" for p in poms for d in p.dependencies):
         col.notes.append("bootstrap.* files define keys (counted as defined: " + ", ".join(boot[:5])
@@ -1331,6 +1327,6 @@ def _bootstrap_note(col: _Collector, main_files: list[str], poms: list[PomInfo])
 
 
 def _dedupe(xs: list[str]) -> list[str]:
-    """순서를 지키며 중복 제거."""
+    """순서를 유지하면서 중복을 제거한다."""
     seen: set[str] = set()
     return [x for x in xs if not (x in seen or seen.add(x))]

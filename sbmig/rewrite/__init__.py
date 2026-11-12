@@ -1,10 +1,10 @@
-"""sbmig.rewrite — 변환(OpenRewrite 1회) 단계의 실행기: rewrite-maven-plugin 을 한 번
-돌려 레시피를 적용한다(빌드 없음). 흐름상 위치: 계획의 ``transform.rewrite`` 단계에서 오케스트레이터가
-``OpenRewriteRunner.run`` 을 부르고, 바뀐 것은 커밋 ``rewrite: …`` 가 된다. 핵심 진입점:
-``OpenRewriteRunner``(실행·재시도), ``compose_rewrite_yaml``(이번 실행용 rewrite.yml 합성),
-``resolve_recipe_artifact_versions``(레시피 BOM 에서 레시피 아티팩트 버전 결정). 결정: v2 는 Java 21 / jakarta
-/ Boot 4 레시피만 돌린다(레시피 id 의 원본은 ``knowledge/recipes/catalog.yml``, 여기서는 받은 id 를 그대로
-쓴다). 레시피 BOM 은 3.37.0 고정 — 3.38.0 은 Maven Central 에서 버전이 맞지 않는다(불변조건 5).
+"""rewrite-maven-plugin을 한 번 실행해 레시피를 적용하는 변환 단계 패키지. 빌드는 하지 않는다.
+계획의 ``transform.rewrite`` 단계에서 오케스트레이터가 ``OpenRewriteRunner.run``을 호출하고, 바뀐 내용은
+``rewrite: …`` 커밋이 된다.
+- ``OpenRewriteRunner``(실행, 재시도), ``compose_rewrite_yaml``(이번 실행용 rewrite.yml 생성),
+  ``resolve_recipe_artifact_versions``(레시피 BOM에서 아티팩트 버전 결정)
+- 레시피 id는 ``knowledge/recipes/catalog.yml``에서 관리하고 여기서는 받은 id를 그대로 쓴다
+- 레시피 BOM은 3.37.0으로 고정한다. 3.38.0은 Maven Central에서 버전이 맞지 않는다
 
 sbmig.rewrite — OpenRewrite (rewrite-maven-plugin) runner (workstream C).
 

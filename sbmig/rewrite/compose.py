@@ -1,9 +1,9 @@
-"""이번 실행용 ``rewrite.yml`` 합성 — 변환(OpenRewrite 1회)에서 돌릴 레시피 id 들을 합성 레시피 하나로 묶는다.
-흐름상 위치: ``OpenRewriteRunner.compose`` 가 부르고, 결과는 ``logs/rewrite-<n>.yml`` 로 저장돼 플러그인의
-``-Drewrite.configLocation`` 이 된다. 결정: 합성 레시피 ``com.company.migrate.Run`` 의 ``recipeList`` = 요청한
-id 를 요청 순서대로(중복 제거), 활성화는 이것 하나뿐 → 적용 순서가 결정적이다. v2 계획은 OpenRewrite 레시피만
-쓰므로 보통 합성 레시피 하나뿐이다(프로젝트 / KB 레시피 파일 없음). 호출자가 준 ``extra_files`` 의 선언형
-레시피는 ``{{SPRING_BOOT_VERSION}}`` 등을 채워 앞에 붙인다.
+"""변환에서 실행할 레시피 id를 합성 레시피 하나로 묶어 이번 실행용 ``rewrite.yml``을 만드는 모듈.
+``OpenRewriteRunner.compose``가 호출하고, 결과는 ``logs/rewrite-<n>.yml``로 저장되어 플러그인의
+``-Drewrite.configLocation``이 된다.
+- 합성 레시피 ``com.company.migrate.Run``의 ``recipeList``는 요청한 id를 요청 순서대로 중복 없이 담는다.
+  이것 하나만 활성화하므로 적용 순서가 항상 같다
+- 호출자가 준 ``extra_files``의 선언형 레시피는 ``{{SPRING_BOOT_VERSION}}`` 등을 채워 앞에 붙인다
 
 Compose the run-specific ``rewrite.yml``.
 
@@ -36,8 +36,8 @@ _PLACEHOLDER_RE = re.compile(r"\{\{\s*([A-Z0-9_]+)\s*\}\}")
 
 
 class RecipeCompositionError(ValueError):
-    """자기 파일을 가리키는 레시피가 합성된 어느 파일에도 정의돼 있지 않을 때의 오류(프로그래밍 / 설정 오류).
-    v2 의 RecipeRef 에는 파일 필드가 없어 지금 코드는 이 예외를 내지 않는다 — 공개 API 호환용으로 남아 있다.
+    """자기 파일을 지정한 레시피가 합성된 어느 파일에도 정의되어 있지 않을 때 던지는 예외.
+    지금 코드는 던지지 않으며 공개 API 호환을 위해 남겨 둔다.
 
     A requested recipe that names its own file (`RecipeRef.file`) is not defined in any composed file (a
     programming / config error)."""
@@ -51,8 +51,7 @@ class RecipeCompositionError(ValueError):
 
 
 def template_values(target: TargetConfig | None) -> dict[str, str]:
-    """레시피 파일의 ``{{…}}`` 자리표시자 값: 목표 Spring Boot / Java / Spring
-    Framework 버전(``target.*``)."""
+    """레시피 파일의 ``{{…}}`` 플레이스홀더 값(목표 Spring Boot / Java / Spring Framework 버전)을 반환한다."""
     t = target or TargetConfig()
     return {
         "SPRING_BOOT_VERSION": t.spring_boot_version,
@@ -62,7 +61,7 @@ def template_values(target: TargetConfig | None) -> dict[str, str]:
 
 
 def render_template(text: str, values: dict[str, str], *, source: str = "") -> str:
-    """``{{NAME}}`` 을 값으로 바꾼다. 모르는 자리표시자는 경고 한 줄과 함께 그대로 둔다."""
+    """``{{NAME}}``을 값으로 바꾼다. 모르는 플레이스홀더는 경고 한 줄을 남기고 그대로 둔다."""
     def repl(m: re.Match[str]) -> str:
         key = m.group(1)
         if key in values:
@@ -73,7 +72,7 @@ def render_template(text: str, values: dict[str, str], *, source: str = "") -> s
 
 
 def split_documents(text: str) -> list[str]:
-    """여러 문서짜리 YAML 을 ``---`` 줄로 나눈다(주석만 있거나 빈 조각은 버림).
+    """여러 문서로 된 YAML을 ``---`` 줄로 나눈다. 주석만 있거나 빈 조각은 버린다.
 
     Split a multi-document YAML text on ``---`` lines, dropping comment-only/empty chunks."""
     out = []
@@ -85,7 +84,7 @@ def split_documents(text: str) -> list[str]:
 
 
 def recipe_documents(text: str) -> dict[str, dict]:
-    """텍스트 안의 모든 ``specs.openrewrite.org/v1beta/recipe`` 문서를 이름 → 파싱된 문서로.
+    """텍스트 안의 모든 ``specs.openrewrite.org/v1beta/recipe`` 문서를 이름별로 파싱해 반환한다.
 
     name → parsed document for every ``specs.openrewrite.org/v1beta/recipe`` document in ``text``."""
     out: dict[str, dict] = {}
@@ -96,7 +95,7 @@ def recipe_documents(text: str) -> dict[str, dict]:
 
 
 def recipe_list_ids(doc: dict) -> list[str]:
-    """선언형 레시피의 ``recipeList`` 가 가리키는 레시피 id 들(문자열 항목 또는 키 하나짜리 매핑).
+    """선언형 레시피의 ``recipeList``가 가리키는 레시피 id 목록을 반환한다.
 
     Recipe ids referenced by a declarative recipe's ``recipeList`` (string items or single-key mappings)."""
     ids: list[str] = []
@@ -109,8 +108,8 @@ def recipe_list_ids(doc: dict) -> list[str]:
 
 
 def _source_files(extra_files: Iterable[Path], recipes: Sequence[RecipeRef]) -> list[Path]:
-    """합성 파일에 넣을 선언형 레시피 파일들(중복 제거). v2 계획은 OpenRewrite 레시피 id 만 쓰므로 호출자가 준
-    ``extra_files`` 뿐이고 ``recipes`` 는 보지 않는다.
+    """합성 파일에 넣을 선언형 레시피 파일을 중복 없이 반환한다.
+    계획은 레시피 id만 쓰므로 호출자가 준 ``extra_files``만 담는다.
 
     Declarative recipe files to inline (v2 plans name OpenRewrite recipes only; `extra_files` stays for callers)."""
     files: list[Path] = [Path(p) for p in extra_files]
@@ -127,9 +126,10 @@ def _source_files(extra_files: Iterable[Path], recipes: Sequence[RecipeRef]) -> 
 def compose_rewrite_yaml(recipes: Sequence[RecipeRef], *, extra_files: Iterable[Path | str] = (),
                          target: TargetConfig | None = None,
                          composite_id: str = COMPOSITE_RECIPE_ID) -> str:
-    """rewrite.yml 전체 텍스트를 만든다: 머리 주석(출처 파일), ``extra_files`` 의 레시피 문서들, 마지막에 합성
-    레시피. 합성 id 와 같은 이름의 문서는 무시, 같은 이름이 두 번이면 뒤의 것이 이긴다(경고). 없는
-    ``extra_files`` 파일은 FileNotFoundError, 깨진 YAML 은 ValueError.
+    """rewrite.yml 전체 텍스트를 만든다.
+    머리 주석, ``extra_files``의 레시피 문서, 마지막에 합성 레시피 순서다.
+    합성 id와 같은 이름의 문서는 무시하고 같은 이름이 두 번 나오면 경고를 남기고 뒤의 것을 쓴다.
+    ``extra_files``의 파일이 없으면 FileNotFoundError, YAML이 깨졌으면 ValueError를 던진다.
 
     Return the full rewrite.yml text. Raises ``RecipeCompositionError`` when a recipe with its own `file` is not
     defined there (nor in another composed file) and ``FileNotFoundError`` for a given (extra / RecipeRef.file) file

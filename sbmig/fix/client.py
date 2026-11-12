@@ -1,12 +1,10 @@
-"""LLM 클라이언트들: 회사 LLM 게이트웨이(`sbmig.fix.company`, requests.post — 기본값), OpenAI 호환, Anthropic
-Messages API, 가짜(재생) 클라이언트, 기록기. 흐름상 위치: 실행 시작 때 오케스트레이터·`sbmig llm-probe`·fleet
-preflight 가 `make_llm_client(cfg)` 로 하나를 만들고, 수정 루프(LLMFixer)와 구조 검토가 그것을 쓴다. 핵심:
-make_llm_client, LLMError(전송·HTTP·응답 해석 실패), FakeLLMClient + ReplayResponder(`llm.provider: fake` +
-`llm.base_url: replay:<dir>` → `<dir>/llm-NNNN.json` 재생), RecordingClient(`llm.record_dir` 에 호출마다
-`llm-NNNN.json`), llm_call_in_flight(watchdog 침묵용 카운터), extract_reply. 지킬 것: 키는
-환경변수(`llm.api_key_env`, 기본 `LLM_API_KEY`)에서만 읽고 repr·로그·기록에 넣지 않는다. 수정 루프는 LLMError
-문구의 `status=` / `cause=` 표식으로 전송 장애를 가르므로 그 형식을 지킨다. OpenAI 호환·Anthropic 은 httpx 로
-보내지만, 회사 게이트웨이는 일부러 평범한 requests.post 로 보낸다(company.py 참고).
+"""LLM 클라이언트를 모은 모듈. 회사 게이트웨이(`sbmig.fix.company`, 기본값), OpenAI 호환, Anthropic,
+가짜(기록 재생) 클라이언트와 호출 기록기를 제공한다.
+오케스트레이터, `sbmig llm-probe`, fleet preflight가 `make_llm_client(cfg)`로 클라이언트를 만들고 수정
+루프와 구조 검토가 사용한다.
+- 키는 환경 변수(`llm.api_key_env`, 기본 `LLM_API_KEY`)에서만 읽고 repr, 로그, 기록에 넣지 않는다
+- 수정 루프가 LLMError 메시지의 `status=` / `cause=`로 전송 장애를 구분하므로 이 형식을 유지한다
+- OpenAI 호환과 Anthropic은 httpx를 쓰고, 회사 게이트웨이는 일부러 단순한 requests.post를 쓴다
 
 LLM clients: the company gateway (`sbmig.fix.company`, requests.post — the default), OpenAI-compatible,
 Anthropic Messages API, scripted fake, recorder.
@@ -50,9 +48,10 @@ _ANTHROPIC_NO_SAMPLING_RE = re.compile(
 
 
 class LLMError(RuntimeError):
-    """LLM 요청 실패(전송 오류, HTTP 오류, 답을 못 읽음). `status`(HTTP 코드, 전송 오류면 None)와 본문 앞
-    500자를 담는다. 수정 루프는 문구의 `status=` / `cause=` 표식으로 전송 장애(쿨다운 → `llm_unavailable`)와
-    그 요청만의 거절(400 / 413 / 422, 콘텐츠 필터, finish_reason=length)을 가른다."""
+    """LLM 요청이 실패했을 때(전송 오류, HTTP 오류, 응답 해석 실패) 던지는 예외.
+    `status`와 응답 본문 앞 500자를 담는다.
+    수정 루프는 메시지의 `status=` / `cause=`로 전송 장애와 그 요청만
+    거절된 경우(400 / 413 / 422, 콘텐츠 필터 등)를 구분한다."""
     def __init__(self, status: Optional[int], body_excerpt: str = "", message: str = ""):
         self.status = status
         self.body_excerpt = body_excerpt[:500]
@@ -60,13 +59,13 @@ class LLMError(RuntimeError):
 
 
 class LLMConfigError(ValueError):
-    """LLM 설정이 모자람(키 환경변수·URL·모델 없음) — 실행 시작 때 바로 드러나야 하는 설정 오류."""
+    """LLM 설정(키 환경 변수, URL, 모델)이 빠졌을 때 던지는 예외.
+    실행을 시작할 때 바로 드러나야 하는 오류다."""
 
 
 # --------------------------------------------------------------------------- LLM calls in flight (round 10)
-# 수정 루프 watchdog 은 LLM 호출이 진행 중이면 조용히 있는다(클라이언트가 heartbeat·재시도 줄을 따로 남긴다).
-# 프로세스 전역 카운터로 충분하다: 한 프로세스 안에서는 마이그레이션이 한 번에 하나만 돈다 — Job 모드에서는 동시에
-# 도는 마이그레이션마다 자기 프로세스(자기 파드)라 카운터도 따로이고, in-process 웹 서버는 대기열로 하나씩, fleet 은 순차다.
+# LLM 호출 중에는 클라이언트가 heartbeat와 재시도 로그를 따로 남기므로 수정 루프 watchdog은 조용히 있는다
+# 프로세스당 이관은 한 번에 하나만 실행되므로 프로세스 전역 카운터로 충분하다
 # The fix loop's watchdog stays silent while an LLM HTTP call is in progress (the clients log their own heartbeat /
 # retry lines); `LLMFixer._call`, the HTTP clients and `RecordingClient` mark their calls. Process-wide on purpose:
 # one migration runs at a time per process — in Job mode every migration running at once is its own process (its own
@@ -77,7 +76,7 @@ _IN_FLIGHT_LOCK = threading.Lock()
 
 @contextmanager
 def llm_call_in_flight() -> Iterator[None]:
-    """이 블록 동안 "LLM 호출 중" 카운터를 올린다(중첩 가능, 스레드 안전). 루프 watchdog 이 이 값을 본다."""
+    """이 블록이 실행되는 동안 진행 중인 LLM 호출 수를 늘려 둔다. 중첩할 수 있고 스레드에 안전하다."""
     global _IN_FLIGHT
     with _IN_FLIGHT_LOCK:
         _IN_FLIGHT += 1
@@ -89,25 +88,26 @@ def llm_call_in_flight() -> Iterator[None]:
 
 
 def llm_calls_in_flight() -> int:
-    """지금 진행 중인 LLM 호출 수(겹친 감싸개는 각각 센다).
+    """진행 중인 LLM 호출 수를 반환한다. 중첩된 블록은 각각 센다.
 
     How many LLM calls are in progress right now (nested wrappers count once each)."""
     return _IN_FLIGHT
 
 
 def usage_from(resp: LLMResponse) -> LLMUsage:
-    """응답 하나의 사용량(호출 1회 + 입력 / 출력 토큰)."""
+    """응답 하나의 사용량(호출 1회와 입력 / 출력 토큰 수)을 반환한다."""
     return LLMUsage(model=resp.model, calls=1, input_tokens=resp.input_tokens, output_tokens=resp.output_tokens)
 
 
 def messages_hash(messages: list[ChatMessage]) -> str:
-    """메시지 목록의 sha256(프롬프트 해시) — 기록·저널·DEBUG 로그에 프롬프트 본문 대신 남기는 식별자."""
+    """메시지 목록의 sha256 해시를 계산한다. 기록, 저널, DEBUG 로그에 프롬프트 본문 대신 남긴다."""
     data = json.dumps([m.model_dump() for m in messages], sort_keys=True, ensure_ascii=False)
     return hashlib.sha256(data.encode("utf-8")).hexdigest()
 
 
 def _retry_after_seconds(resp: httpx.Response) -> Optional[float]:
-    """응답의 `Retry-After`(초 또는 HTTP 날짜) / `retry-after-ms` 헤더 → 기다릴 초(없거나 못 읽으면 None)."""
+    """`Retry-After` / `retry-after-ms` 헤더에서 기다릴 시간(초)을 구한다.
+    헤더가 없거나 읽지 못하면 None을 반환한다."""
     val = resp.headers.get("retry-after")
     if not val:
         ms = resp.headers.get("retry-after-ms")
@@ -131,8 +131,8 @@ def _retry_after_seconds(resp: httpx.Response) -> Optional[float]:
 # HTTP base
 # ---------------------------------------------------------------------------
 class _HTTPClient:
-    """httpx 기반 HTTP 클라이언트의 공통 부분(OpenAI 호환·Anthropic): 재시도·백오프·로그. 회사 게이트웨이는
-    이것을 쓰지 않는다(company.py, requests)."""
+    """httpx 기반 HTTP 클라이언트의 공통 부분(재시도, 백오프, 로그)을 담은 클래스.
+    회사 게이트웨이 클라이언트는 쓰지 않는다."""
     provider = "http"
 
     def __init__(
@@ -168,7 +168,7 @@ class _HTTPClient:
         return f"{type(self).__name__}(base_url={self.base_url!r}, model={self.model!r})"
 
     def close(self) -> None:
-        """httpx 연결을 닫는다."""
+        """httpx 클라이언트의 연결을 닫는다."""
         self._http.close()
 
     # subclasses
@@ -193,8 +193,8 @@ class _HTTPClient:
         metadata: Optional[dict] = None,
         **_ignored: Any,
     ) -> LLMResponse:
-        """메시지를 provider 형식으로 바꿔 보내고 LLMResponse 를 돌려준다. DEBUG 로그에는 프롬프트 해시와 글자
-        수만 남긴다(본문·키 없음)."""
+        """메시지를 provider 형식으로 바꿔 보내고 LLMResponse를 반환한다.
+        DEBUG 로그에는 프롬프트 해시와 문자 수만 남긴다."""
         model = model or self.model
         max_tokens = max_tokens or self.default_max_tokens
         temperature = self.default_temperature if temperature is None else temperature
@@ -207,9 +207,9 @@ class _HTTPClient:
             return self._complete(model, body, url, headers)
 
     def _complete(self, model: str, body: dict[str, Any], url: str, headers: dict[str, str]) -> LLMResponse:
-        """재시도 루프: 전송 오류와 RETRY_STATUS(408 / 429 / 5xx 등)는 `max_retries` 번까지 다시(Retry-After
-        가 있으면 그만큼 최대 120초, 없으면 지수 백오프 + 지터), 그 밖의 HTTP 오류는 즉시 LLMError. 다
-        실패하면 `status=… cause=…` 를 담은 LLMError."""
+        """요청을 보내고 실패하면 다시 시도한다.
+        전송 오류와 RETRY_STATUS는 `max_retries`번까지 재시도하고, 다른 HTTP 오류는 바로 LLMError를 던진다.
+        대기 시간은 Retry-After가 있으면 그 값(최대 120초), 없으면 지수 백오프에 무작위 지연을 더한 값이다."""
         t0 = time.monotonic()
         last_status: Optional[int] = None
         last_body = ""
@@ -256,8 +256,7 @@ class _HTTPClient:
 # OpenAI-compatible
 # ---------------------------------------------------------------------------
 class OpenAICompatibleClient(_HTTPClient):
-    """OpenAI 호환 `/v1/chat/completions` 클라이언트(httpx,
-    Bearer 키). base_url 에 `/vN` 이 없으면 `/v1` 을 붙인다."""
+    """OpenAI 호환 chat completions API를 호출하는 클라이언트. base_url에 API 버전 경로가 없으면 붙인다."""
     provider = "openai_compatible"
 
     def _url(self) -> str:
@@ -316,7 +315,8 @@ _REPLY_PATHS = (
 
 
 def _dig(data: Any, path: str) -> Any:
-    """점 경로(`choices.0.message.content`)를 따라 dict / list 를 내려간다(없으면 KeyError / IndexError)."""
+    """점으로 구분된 경로(`choices.0.message.content`)를 따라 dict / list 안의 값을 꺼낸다.
+    경로가 없으면 KeyError / IndexError가 난다."""
     cur = data
     for part in path.split("."):
         if isinstance(cur, list):
@@ -341,9 +341,9 @@ def _reply_text(value: Any) -> Optional[str]:
 
 
 def extract_reply(data: Any, response_path: Optional[str] = None) -> str:
-    """게이트웨이가 어떤 JSON 모양으로 답하든 그 안의 답변 텍스트를 꺼낸다:
-    `llm.response_path`(LLM_RESPONSE_PATH)가 있으면 그 경로, 없으면 알려진 모양(_REPLY_PATHS)을 차례로. 못
-    찾으면 LLMError(`sbmig llm-probe` 로 경로를 확인하라는 안내 포함).
+    """게이트웨이 JSON 응답에서 답변 텍스트를 꺼낸다.
+    `llm.response_path`가 있으면 그 경로를, 없으면 알려진 응답 형태를 차례로 확인한다.
+    찾지 못하면 `sbmig llm-probe`로 경로를 확인하라는 안내와 함께 LLMError를 던진다.
 
     The assistant text inside whatever JSON a gateway returns (`response_path` wins; else known shapes)."""
     if isinstance(data, str):
@@ -373,8 +373,8 @@ def extract_reply(data: Any, response_path: Optional[str] = None) -> str:
 # Anthropic Messages API
 # ---------------------------------------------------------------------------
 class AnthropicClient(_HTTPClient):
-    """Anthropic Messages API 클라이언트(httpx, `x-api-key` 헤더) — Anthropic 검증
-    실행용(`config/llm-anthropic.yml`). 회사 실행의 기본은 `company`."""
+    """Anthropic Messages API를 호출하는 클라이언트.
+    Anthropic 검증 실행에 쓰고, 회사 실행의 기본값은 `company`다."""
     provider = "anthropic"
 
     def __init__(self, base_url: str = "https://api.anthropic.com", api_key: Optional[str] = None,
@@ -397,7 +397,8 @@ class AnthropicClient(_HTTPClient):
 
     @staticmethod
     def accepts_temperature(model: str) -> bool:
-        """이 모델이 temperature 를 받는가 — 최신 Claude 세대는 샘플링 파라미터를 HTTP 400 으로 거절한다."""
+        """이 모델이 temperature 파라미터를 받는지 확인한다.
+        최신 Claude 모델은 샘플링 파라미터를 HTTP 400으로 거절한다."""
         return not _ANTHROPIC_NO_SAMPLING_RE.search(model or "")
 
     def _body(self, messages, model, max_tokens, temperature, stop) -> dict[str, Any]:
@@ -439,16 +440,16 @@ FakeScript = Union[list[Union[str, Exception]], Callable[[list[ChatMessage]], st
 
 
 class FakeLLMClient:
-    """테스트·오프라인 실행용 가짜 LLM: 목록(순서대로 소비, 마지막이 반복, Exception 항목은 던짐), 함수
-    `fn(messages)`, ReplayResponder(기록 재생), None(늘 "no fix").
+    """테스트와 오프라인 실행에 쓰는 가짜 LLM 클라이언트.
+    응답 목록, 함수 `fn(messages)`, ReplayResponder, None 중 하나로 답한다.
 
     Scripted client for tests / offline runs.
 
     responses: list (consumed in order, last one repeats; an Exception item is raised), a callable
     `fn(messages) -> str`, a `ReplayResponder` (recorded answers selected by role / regex), or None (always answers
     "no fix"). Answers are plain text: fix scripts or structure-review JSON alike.
-    
-    
+
+
     """
 
     def __init__(self, responses: FakeScript = None, record_dir: Optional[str | Path] = None, model: str = "fake"):
@@ -461,8 +462,8 @@ class FakeLLMClient:
     def complete(self, messages: list[ChatMessage], *, model: Optional[str] = None, max_tokens: Optional[int] = None,
                  temperature: Optional[float] = None, stop: Optional[list[str]] = None,
                  role: Optional[str] = None, metadata: Optional[dict] = None, **_ignored: Any) -> LLMResponse:
-        """정해진 답을 돌려준다(토큰 수는 글자 수 / 4 로 어림). ReplayResponder 에는 role 도 넘긴다.
-        record_dir 가 있으면 실제 클라이언트처럼 기록한다."""
+        """미리 정해 둔 답을 반환한다. 토큰 수는 문자 수 / 4로 추정한다.
+        record_dir가 있으면 실제 클라이언트처럼 호출을 기록한다."""
         used_model = model or self.model
         self.calls.append({"messages": list(messages), "model": used_model, "max_tokens": max_tokens,
                            "temperature": temperature, "stop": stop, "role": role,
@@ -500,10 +501,9 @@ _RECORD_TRIES = 10000               # numbers tried past ones another writer too
 
 
 class _Recorder:
-    """`llm-NNNN.json` 을 하나씩 쓰는 기록기(번호는 디렉토리의 기존 파일 다음부터, 이미 있으면 건너뜀).
-    메시지·응답·모델·사용량·지연·프롬프트 해시·오류·role·metadata 를 담는다 — 키·헤더는 담지 않는다.
-    v2.1z-ae: 파일은 배타적으로 만든다(``open(…, "x")``) — 한 기록 디렉토리를 같이 쓰는 파드 둘이 같은 번호를
-    골라도 하나는 다음 번호로 가고, 어느 기록도 덮이지 않는다."""
+    """LLM 호출을 `llm-NNNN.json` 파일로 하나씩 기록하는 클래스.
+    번호는 디렉토리의 기존 파일 다음부터 매긴다.
+    키와 헤더는 담지 않는다. 파일을 배타적으로 만들므로 여러 파드가 같은 번호를 골라도 덮어쓰지 않는다."""
     def __init__(self, record_dir: str | Path, ws: Any = None):
         self.dir = Path(record_dir)
         self.dir.mkdir(parents=True, exist_ok=True)
@@ -513,8 +513,9 @@ class _Recorder:
     def write(self, messages: list[ChatMessage], resp: Optional[LLMResponse], latency: float,
               error: Optional[str] = None, *, role: Optional[str] = None,
               metadata: Optional[dict] = None) -> Optional[Path]:
-        """호출 하나를 기록하고, ws 가 있으면 `llm_call` 저널
-        이벤트를 남긴다(저널 실패는 호출을 깨지 않는다). 기록 파일을 못 쓰면(디스크 가득, EIO …) WARNING 후 None."""
+        """호출 하나를 파일로 기록하고, ws가 있으면 `llm_call` 저널 이벤트를 남긴다.
+        기록 파일을 쓰지 못하면 WARNING을 남기고 None을 반환한다.
+        저널 기록이 실패해도 호출은 실패하지 않는다."""
         rec = {
             "messages": [m.model_dump() for m in messages],
             "response": resp.content if resp else None,
@@ -529,7 +530,7 @@ class _Recorder:
             "metadata": _jsonable(metadata) if metadata else None,   # caller-supplied context only, never secrets
         }
         text = json.dumps(rec, ensure_ascii=False, indent=2)
-        # 번호는 배타적 생성으로 잡는다: exists() 뒤에 쓰면 같은 디렉토리를 쓰는 다른 프로세스와 한 번호를 고를 수 있다
+        # exists()로 확인한 뒤에 쓰면 다른 프로세스와 같은 번호를 고를 수 있으므로 배타적 생성으로 번호를 잡는다
         for _ in range(_RECORD_TRIES):
             self._n += 1
             path = self.dir / f"llm-{self._n:04d}.json"
@@ -542,7 +543,7 @@ class _Recorder:
             except FileExistsError:
                 continue
             except OSError as e:
-                # 기록을 못 쓴 것은 호출 실패가 아니다(답은 이미 받음) — 경고만, 반쯤 쓴 우리 파일은 지운다
+                # 답은 이미 받았으므로 기록 실패를 호출 실패로 보지 않고, 경고만 남긴 뒤 쓰다 만 파일을 지운다
                 log.warning("LLM record %s not written (%s: %s) — the call itself is not affected", path,
                             type(e).__name__, e)
                 if made:
@@ -564,9 +565,9 @@ class _Recorder:
 
 
 class RecordingClient:
-    """다른 클라이언트를 감싸 호출마다 `llm-NNNN.json` 을 `llm.record_dir` 에 쓴다(실패한 호출도 `error` 와
-    함께). 이 기록이 그대로 재생 입력이 된다(`provider: fake` + `base_url: replay:<dir>`). 운영자가 문제를
-    알릴 때 공유하는 파일이기도 하다.
+    """다른 클라이언트를 감싸 호출마다 `llm-NNNN.json`을 `llm.record_dir`에 기록하는 클래스.
+    실패한 호출도 기록한다.
+    이 기록은 그대로 재생 입력으로 쓸 수 있고, 운영자가 문제를 알릴 때 공유하는 파일이기도 하다.
 
     Wraps another client and writes `llm-<n>.json` per call into record_dir (and journals via ws)."""
 
@@ -577,12 +578,12 @@ class RecordingClient:
 
     @property
     def record_dir(self) -> Path:
-        """기록 디렉토리."""
+        """LLM 요청과 응답을 기록하는 디렉토리."""
         return self._rec.dir
 
     def complete(self, messages: list[ChatMessage], **kw: Any) -> LLMResponse:
-        """안쪽 클라이언트를 부르고 성공·실패 모두 기록한다(예외는 그대로 다시 던진다). 기록 쓰기의 실패는
-        WARNING 일 뿐 — 이미 돈을 낸 답을 잃거나 원래 예외를 가리지 않는다."""
+        """안쪽 클라이언트를 호출하고 성공과 실패를 모두 기록한다. 예외는 그대로 다시 던진다.
+        받은 답을 잃거나 원래 예외를 가리지 않도록 기록 실패는 WARNING만 남긴다."""
         role, metadata = kw.get("role"), kw.get("metadata")
         t0 = time.monotonic()
         try:
@@ -601,24 +602,25 @@ class RecordingClient:
             log.warning("LLM record not written (%s: %s) — the call itself is not affected", type(e).__name__, e)
 
     def close(self) -> None:
-        """안쪽 클라이언트에 `close()` 가 있으면 부른다."""
+        """안쪽 클라이언트에 `close()`가 있으면 호출한다."""
         fn = getattr(self.inner, "close", None)
         if callable(fn):
             fn()
 
 
 def load_replay_responses(record_dir: str | Path) -> list[str]:
-    """기록된 세션의 답변 텍스트들(파일 순서) — 위치 기반 재생용으로 FakeLLMClient 에 넣는다.
+    """기록된 세션의 답변 텍스트를 파일 순서대로 읽어 반환한다.
+    순서대로 재생하기 위해 FakeLLMClient에 넣는다.
 
     Responses of a recorded session (llm-*.json, in order) — feed to FakeLLMClient for replay."""
     return [e.response for e in load_replay_entries(record_dir)]
 
 
 class ReplayEntry:
-    """기록된 답 하나(`llm-NNNN.json`): `response` 텍스트, 선택 `replay_role`(fix | structure_review |
-    verify_guide …; fix 는 fix_escalation 호출에도 답하지만 verify_guide 에는 답하지 않는다 — 운영자 가이드는
-    `replay_role: verify_guide` 항목이나 role 없는 항목만 답한다), 선택 `match` 정규식(요청의 system 이 아닌
-    메시지에서 찾음). 기록기가 쓴 `role` 키는 참고용일 뿐 선택에 쓰지 않는다.
+    """기록된 답 하나(`llm-NNNN.json`)를 담는 클래스.
+    `response`와 선택 항목 `replay_role`, `match` 정규식을 가진다.
+    role이 fix인 답은 fix_escalation 호출에도 답하지만 verify_guide 호출에는 답하지 않는다.
+    기록기가 쓴 `role` 키는 답을 고를 때 쓰지 않는다.
 
     One recorded answer (`llm-NNNN.json`): `response` text, optional `replay_role` (fix | structure_review |
     verify_guide | …; "fix" also answers fix_escalation calls, never verify_guide ones — the operator guide call is
@@ -633,17 +635,16 @@ class ReplayEntry:
         self._rx = re.compile(match, re.MULTILINE) if match else None
 
     def matches(self, text: str, role: Optional[str]) -> bool:
-        """이 답이 이 요청에 맞는가: role 이 맞고(`replay_role` 이 없으면 아무 role), `match` 가 있으면
-        본문에서 찾아져야 한다."""
+        """이 답이 요청에 맞는지 확인한다. role이 맞아야 하고, `match`가 있으면 요청 본문에서 찾아져야 한다."""
         if self.role and self.role != (role or "") and not (self.role == "fix" and role == "fix_escalation"):
             return False
         return self._rx is None or bool(self._rx.search(text))
 
 
 def load_replay_entries(record_dir: str | Path) -> list[ReplayEntry]:
-    """재생 디렉토리의 `llm-*.json` 중 `response` 가 있는 것 전부(파일 이름 순). 손으로 만든 픽스처는
-    `match`(정규식) / `replay_role` 로 위치 대신 요청 내용으로 답을 고른다 — e2e 픽스처의 `match: "case:
-    <case_id>"` 는 수정 프롬프트 머리말의 `case: <id>` 줄(ContextPacker.pack_script)을 찾는다.
+    """재생 디렉토리에서 `response`가 있는 `llm-*.json`을 모두 파일 이름 순으로 읽는다.
+    직접 만든 픽스처는 `match` / `replay_role`로 요청 내용에 맞는 답을 고른다.
+    e2e 픽스처의 `match: "case: <case_id>"`는 수정 프롬프트의 `case: <id>` 줄을 찾는다.
 
     Every llm-*.json of a replay directory with a `response` (file-name order). Hand-written fixtures may add
     `match` (regex) and / or `replay_role` to pick answers by request instead of by position (`ReplayResponder`)."""
@@ -658,9 +659,9 @@ def load_replay_entries(record_dir: str | Path) -> list[ReplayEntry]:
 
 
 class ReplayResponder:
-    """요청마다 기록된 답을 고르는 재생기: role 이 맞고 `match` 정규식이 user / assistant 메시지에서 찾아지는
-    항목 중 아직 안 쓴 첫 항목(파일 순서). 맞는 항목을 다 썼으면 마지막 것이 반복, 맞는 게 없으면 "no fix"
-    답(경고 로그). `match` / role 이 없으면 위치 재생과 같다.
+    """요청마다 맞는 기록된 답을 골라 주는 클래스.
+    role과 `match`가 맞는 항목 중 아직 쓰지 않은 첫 항목을 반환한다.
+    다 썼으면 마지막 항목을 반복하고, 맞는 항목이 없으면 경고를 남기고 "no fix"로 답한다.
 
     Replays recorded answers chosen per request: the first unused entry (file order) whose `replay_role` fits the
     call's role (entries without one take any role) and whose `match` regex is found in the request's user / assistant
@@ -674,8 +675,8 @@ class ReplayResponder:
         self.served: list[str] = []                  # entry names in serve order (tests / debugging)
 
     def __call__(self, messages: list[ChatMessage], role: Optional[str] = None) -> str:
-        """이 요청에 맞는 기록된 답 텍스트(위 규칙)."""
-        # system 프롬프트는 빼고 찾는다 — 모든 요청의 system 이 같아서 거기로는 요청이 구분되지 않는다
+        """이 요청에 맞는 기록된 답 텍스트를 반환한다."""
+        # system 프롬프트는 모든 요청에서 같아 구분에 쓸 수 없으므로 빼고 찾는다
         text = "\n\n".join(m.content for m in messages if m.role != "system")
         hits = [i for i, e in enumerate(self.entries) if e.matches(text, role)]
         if not hits:
@@ -691,8 +692,8 @@ class ReplayResponder:
 # factory
 # ---------------------------------------------------------------------------
 def agent_url(base_url: str, asset_id: Optional[str]) -> str:
-    """v2.1z-q: ``LLM_BASE_URL`` 안의 ``{asset_id}`` / ``${LLM_ASSET_ID}`` 자리표시를 에셋 id 로 채운다(에이전트 게이트웨이의
-    경로 ``…/agents/<asset id>/chat/completions``). 자리표시가 없으면 그대로; 자리표시가 있는데 id 가 없으면 LLMConfigError.
+    """``LLM_BASE_URL``의 ``{asset_id}`` / ``${LLM_ASSET_ID}`` 플레이스홀더를 에셋 id로 채운다.
+    플레이스홀더가 없으면 그대로 두고, 있는데 id가 없으면 LLMConfigError를 던진다.
 
     Fill a `{asset_id}` / `${LLM_ASSET_ID}` placeholder in the gateway URL from the asset id; verbatim without one."""
     url = base_url or ""
@@ -708,12 +709,14 @@ def _unexpanded(v: Optional[str]) -> bool:
 
 
 def make_llm_client(cfg: Config, *, ws: Any = None, transport: Optional[httpx.BaseTransport] = None) -> LLMClientLike:
-    """설정된 LLM 클라이언트를 만든다(실행마다 한 번). `company`(기본) → CompanyClient(LLM_BASE_URL 로
+    """설정에 맞는 LLM 클라이언트를 만든다. 실행마다 한 번 호출한다.
+    `company`(기본)는 CompanyClient(LLM_BASE_URL로
     requests.post, `Authorization: Bearer <LLM_API_KEY>`), `openai_compatible` / `anthropic` → httpx
-    클라이언트, `fake` → FakeLLMClient(`base_url: replay:<dir>` 면 기록 재생 — `match` / `replay_role` 이 있는
-    항목이 하나라도 있으면 ReplayResponder, 아니면 위치 순), `plugin` 이나 내장이 아닌 이름 →
-    `sbmig.llm.resolve_llm_plugin`.
-    `llm.record_dir` 가 있으면 RecordingClient 로 감싼다. 키·URL·모델이 없으면 LLMConfigError.
+    클라이언트, `fake`는 FakeLLMClient를 쓴다.
+    `plugin`이나 내장이 아닌 이름은 `sbmig.llm.resolve_llm_plugin`에 맡긴다.
+    - `fake`에 `base_url: replay:<dir>`을 주면 기록을 재생한다
+    - `llm.record_dir`가 있으면 RecordingClient로 감싼다
+    - 키, URL, 모델이 없으면 LLMConfigError를 던진다
 
     Build the configured client. `fake` needs no key; `base_url: replay:<dir>` with fake replays recordings.
 
@@ -737,7 +740,8 @@ def make_llm_client(cfg: Config, *, ws: Any = None, transport: Optional[httpx.Ba
                 else [e.response for e in entries]
         client = FakeLLMClient(responses)
     else:
-        # 키는 환경변수에서만 읽는다(.env 는 load_config 가 환경으로 올림) — 오류 문구에도 변수 이름만 쓴다
+        # 키는 환경 변수에서만 읽고 오류 메시지에도 변수 이름만 쓴다.
+        # .env는 load_config가 환경 변수로 넣어 준다
         key = os.environ.get(llm.api_key_env or "")
         # v2.1z-q: with a token exchange (llm.token_url) the APP token is the credential — LLM_API_KEY is then optional
         token_url_set = llm.provider == "company" and not _unexpanded(str(getattr(llm, "token_url", "") or ""))
@@ -797,7 +801,8 @@ def make_llm_client(cfg: Config, *, ws: Any = None, transport: Optional[httpx.Ba
                                    max_retries=llm.max_retries, extra_headers=llm.extra_headers, gateway=gateway,
                                    asset_id=asset_id, token_manager=tokens,
                                    agent_extra=dict(getattr(llm, "agent_extra", None) or {}),
-                                   # 파드 여럿이 한 게이트웨이를 같이 쓸 때: 바쁨(429)은 줄 서서 기다리고, 갓 받은 토큰의 401 은 다시 받는다
+                                   # 여러 파드가 게이트웨이를 같이 쓰므로 429는 기다리고, 새로 받은 토큰이
+                                   # 401이면 토큰을 다시 받는다
                                    busy_wait_s=float(llm.busy_wait_seconds), auth_retries=int(llm.auth_retries))
         else:  # pragma: no cover - non-builtin providers are routed to sbmig.llm above
             raise LLMConfigError(f"unknown llm.provider: {llm.provider}")

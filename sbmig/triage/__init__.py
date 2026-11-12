@@ -1,8 +1,8 @@
-"""트리아지 패키지 — 빌드 오류를 케이스별 클러스터로 묶고,
-케이스마다 무엇을 할지(스크립트 / 차단 / 건너뜀) 정한다. 흐름상 위치: verify.build 가 실패하면 수정
-루프(``sbmig.loop.fixloop``)가 라운드마다 ``Triager`` 를 부른다. 핵심 진입점: ``Triager``(cluster / decide /
-plan_iteration), ``cluster_cases``(L2 서명별 묶음, 근본 원인 먼저), ``DecisionEngine``(재사용 → 보강 → 신규
-사다리, 차단 정책), ``classify_blocked``(코드로 못 고치는 오류 판정).
+"""빌드 오류를 케이스별로 묶고 케이스마다 할 일(스크립트, 차단, 건너뜀)을 정하는 패키지.
+검증 빌드가 실패하면 수정 루프(``sbmig.loop.fixloop``)가 라운드마다 ``Triager``를 호출한다.
+- ``cluster_cases``: 오류를 L2 서명별로 묶고 근본 원인을 앞에 둔다
+- ``DecisionEngine``: 재사용 -> 보강 -> 신규 순서로 시도를 정하고 차단 정책을 적용한다
+- ``classify_blocked``: 코드로 고칠 수 없는 오류를 가려낸다
 
 sbmig.triage — error clustering (v2: by case), the decision engine (v2: fix-script ladder), blocked
 classification."""

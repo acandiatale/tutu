@@ -1,9 +1,9 @@
-"""sbmig.kb — 파일 지식베이스(KB, v2.1)의 패키지 입구.
-오케스트레이터·플릿·웹 서버가 드는 창구(``FileKnowledgeBase``), ``sbmig kb`` CLI(``kb_cli``), KB 쓰기가 거치는
-말단 도구(잠금·마스킹·jsonl)를 내보낸다. 공개 이름은 처음 쓰일 때 불러온다(모듈 ``__getattr__``):
-``sbmig.errors`` 가 ``sbmig.kb.redact`` / ``sbmig.kb.lock`` 을 import 해도 store·cli(→ ``sbmig.errors``)까지
-끌려와 순환 import 가 생기지 않게 하려는 것이다. KB 는 파일뿐이다(DB 금지, 불변조건 3). 테스트·데모 실행은
-``out/`` 아래 KB 에만 쓴다(불변조건 6).
+"""파일 KB 패키지의 진입점 모듈.
+파사드 ``FileKnowledgeBase``, ``sbmig kb`` CLI(``kb_cli``), KB에 쓸 때 쓰는 잠금, 마스킹, jsonl 도구를 내보낸다.
+- 공개 이름은 처음 사용할 때 import한다. ``sbmig.errors``가 ``sbmig.kb.redact`` / ``sbmig.kb.lock``을
+  import해도 순환 import가 생기지 않게 하기 위해서다
+- KB는 파일로만 관리한다(DB 사용 금지)
+- 테스트와 데모 실행은 ``out/`` 아래 KB에만 쓴다
 
 sbmig.kb — the file-based knowledge base, v2.1 (docs/v2/PLAN-v2.1.md §3.4): the facade the orchestrator, the
 fleet and the web server hold, the ``sbmig kb`` CLI, and the leaf helpers the KB writes go through.
@@ -42,7 +42,7 @@ __all__ = list(_EXPORTS)
 
 
 def __getattr__(name: str) -> Any:
-    """지연 로드: 처음 쓰일 때 해당 모듈을 import 하고 globals 에 넣어 둔다(다음부터는 바로 찾음)."""
+    """요청한 이름이 처음 사용될 때 해당 모듈을 import하고 globals에 저장해 둔다."""
     try:
         module, attr = _EXPORTS[name]
     except KeyError:

@@ -1,12 +1,11 @@
-"""오류 묶기 — 한 빌드의 오류들을 케이스(L2 서명) 단위 클러스터로 묶고, 근본 원인이 먼저 오게 정렬한다.
-흐름상 위치: 수정 루프가 빌드마다 ``Triager.cluster`` → ``cluster_cases`` 를 부른다. 오류 목록·KB
-케이스·채점이 같은 키를 보도록, 루프와 오케스트레이터도 빌드 직후 ``refine_signatures`` 를 먼저 적용한다. 핵심
-진입점: ``cluster_cases``(v2 케이스 클러스터, id ``case:<case_id>[@scope]``), ``case_id_of`` /
-``l2_case_id``(케이스 ID = sha1(L2)[:10] — KB 폴더 ``cases/<case_id>/`` 의 이름),
-``refine_signature``(뭉뚱그린 컴파일 L2 를 오류 원문 줄로 세분화), ``cause_rank`` / ``CAUSE_RANK``(근본 원인
-순서). 왜 세분화하나: ``build`` / ``other`` 같은 포괄 L2 로 두면 무관한 실패가 한 케이스가 되어 저장된
-스크립트가 엉뚱한 문제에 재사용된다. 왜 근본 원인 먼저인가: jakarta.xml.bind-api 하나가 빠지면 파일 2개에
-케이스 10개가 생긴다(2026-10-26) — 원인 케이스의 스크립트를 먼저 받고 결과 케이스들은 재빌드를 기다리게 한다.
+"""한 빌드의 오류를 케이스(L2 서명) 단위로 묶고 근본 원인이 앞에 오도록 정렬하는 모듈.
+수정 루프가 빌드마다 ``Triager.cluster``를 통해 ``cluster_cases``를 호출한다. 오류 목록, KB 케이스, 시도
+결과 평가가 같은 키를 보도록 루프와 오케스트레이터는 빌드 직후 ``refine_signatures``를 먼저 적용한다.
+- ``case_id_of`` / ``l2_case_id``: 케이스 ID는 sha1(L2)[:10]이고 KB 폴더 ``cases/<case_id>/``의 이름이 된다
+- ``refine_signature``: ``build`` / ``other`` 같은 포괄적인 컴파일 L2를 오류 원문 줄로 세분화한다.
+  그대로 두면 무관한 실패가 한 케이스가 되어 저장된 스크립트가 엉뚱한 문제에 재사용된다
+- ``cause_rank``: 라이브러리 하나가 빠지면 결과 케이스가 여러 개 생기므로
+  원인 케이스를 먼저 고치고 나머지는 재빌드를 기다리게 한다
 
 Error clustering (ARCHITECTURE §4).
 
@@ -86,7 +85,8 @@ RESOLUTION_KINDS = frozenset({ErrorKind.PARENT_RESOLUTION, ErrorKind.POM_INVALID
 
 
 def cluster_key(e: BuildError) -> str:
-    """v1 클러스터 키: 컴파일 오류는 파일(없으면 모듈), 해결형 오류는 아티팩트, 그 밖은 모듈."""
+    """이전 방식의 클러스터 키를 만든다.
+    컴파일 오류는 파일(없으면 모듈), 의존성 해결 오류는 아티팩트, 그 밖은 모듈을 키로 쓴다."""
     if e.kind in FILE_KINDS:
         return e.file or f"module:{e.module or '-'}"
     if e.kind in ARTIFACT_KINDS or (e.kind == ErrorKind.POM_INVALID and e.artifact is not None):
@@ -96,13 +96,14 @@ def cluster_key(e: BuildError) -> str:
 
 
 def cluster_id(kind: ErrorKind, key: str) -> str:
-    """v1 클러스터 id ``<kind>:<sha1(key)[:8]>``."""
+    """이전 방식의 클러스터 id ``<kind>:<sha1(key)[:8]>``를 만든다."""
     return f"{kind.value}:{hashlib.sha1(key.encode('utf-8')).hexdigest()[:8]}"
 
 
 def module_index(profile: Optional[ProjectProfile], module: Optional[str], file: Optional[str] = None) -> Optional[int]:
-    """모듈의 reactor 순번(``profile.poms`` 안의 위치 — 분석기가 reactor 순서를 지킨다). 모듈 이름으로 못
-    찾으면 파일을 품은 가장 깊은 pom 디렉토리로 찾는다. 앞 모듈의 컴파일 오류를 먼저 고치려는 것.
+    """모듈의 reactor 순번(``profile.poms`` 안의 위치)을 반환한다.
+    모듈 이름으로 찾지 못하면 파일을 포함하는 가장 깊은 pom 디렉토리로 찾는다.
+    앞 모듈의 컴파일 오류를 먼저 고치기 위해 사용한다.
 
     Reactor index of a module: position in `profile.poms` (analyzer keeps reactor order)."""
     if profile is None or not profile.poms:
@@ -126,8 +127,9 @@ def module_index(profile: Optional[ProjectProfile], module: Optional[str], file:
 
 def priority_for(kind: ErrorKind, profile: Optional[ProjectProfile], module: Optional[str],
                  file: Optional[str]) -> int:
-    """우선순위(낮을수록 먼저): 종류별 기본값(parent → pom → 의존성 → 플러그인 … → 컴파일), 컴파일 계열은
-    + reactor 순번(모르는 모듈은 +40). parent / 의존성이 풀려야 컴파일 오류가 의미가 있기 때문이다."""
+    """클러스터의 우선순위를 계산한다(낮을수록 먼저).
+    종류별 기본값(parent, pom, 의존성, 플러그인, 컴파일 순)에 컴파일 계열은 reactor 순번을 더하고 모르는
+    모듈은 40을 더한다. parent와 의존성이 풀려야 컴파일 오류가 의미가 있기 때문이다."""
     base = BASE_PRIORITY.get(kind, 99)
     if kind in FILE_KINDS:
         idx = module_index(profile, module, file)
@@ -136,7 +138,8 @@ def priority_for(kind: ErrorKind, profile: Optional[ProjectProfile], module: Opt
 
 
 def cluster_errors(errors: list[BuildError], profile: Optional[ProjectProfile] = None) -> list[ErrorCluster]:
-    """v1 클러스터(파일 / 아티팩트 / 모듈 단위). 수정 루프는 쓰지 않고 루프 밖 호출자만 쓴다."""
+    """이전 방식(파일, 아티팩트, 모듈 단위)으로 오류를 묶는다.
+    수정 루프는 사용하지 않고 루프 밖의 호출자만 사용한다."""
     groups: dict[tuple[ErrorKind, str], list[BuildError]] = {}
     for e in errors:
         groups.setdefault((e.kind, cluster_key(e)), []).append(e)
@@ -157,8 +160,7 @@ def cluster_errors(errors: list[BuildError], profile: Optional[ProjectProfile] =
 
 
 def cluster_label(c: ErrorCluster) -> str:
-    """로그용 짧은 이름: v1 은 ``compile <파일> (3)``, 케이스는
-    ``compile case <id> <L2 뒷부분> (N in M file(s))``.
+    """로그용 짧은 이름을 만든다. 케이스는 ``compile case <id> <L2 뒷부분> (N in M file(s))`` 형식이다.
 
     Short human label: 'compile src/main/java/Foo.java (3)'; a case: 'compile case abc1234567
     cannot_find_symbol|clientIp (7 in 4 files)'."""
@@ -178,7 +180,7 @@ CASE_PREFIX = "case:"
 
 
 def _posix(path: Optional[str]) -> str:
-    # 회사 PC 는 Windows — 역슬래시 경로도 같은 케이스 키가 나오도록 posix 로 맞춘다
+    # Windows의 역슬래시 경로도 같은 케이스 키가 나오도록 posix 형식으로 맞춘다
     p = (path or "").replace("\\", "/")
     while p.startswith("./"):
         p = p[2:]
@@ -186,8 +188,9 @@ def _posix(path: Optional[str]) -> str:
 
 
 def l2_case_id(signature_generic: Optional[str]) -> str:
-    """L2 서명의 케이스 ID ``sha1(signature_generic)[:10]`` (서명이 없으면 ""). ``ErrorEntry.case_id`` 와
-    KB 폴더 ``<kb>/cases/<case_id>/`` 의 계약이다 — 바꾸면 쌓아 둔 KB 와 매칭이 끊긴다.
+    """L2 서명의 케이스 ID ``sha1(signature_generic)[:10]``를 반환한다. 서명이 없으면 빈 문자열을 반환한다.
+    ``ErrorEntry.case_id``와 KB 폴더 ``<kb>/cases/<case_id>/``가 이 값을
+    쓰므로 계산 방식을 바꾸면 쌓아 둔 KB와 매칭되지 않는다.
 
     The case id of an L2 signature: ``sha1(signature_generic)[:10]`` ("" without one) — the contract of
     `ErrorEntry.case_id` and ``<kb>/cases/<case_id>/`` (v2.1, docs/v2/PLAN-v2.1.md §3.3)."""
@@ -197,7 +200,7 @@ def l2_case_id(signature_generic: Optional[str]) -> str:
 
 
 def case_id_of(e: BuildError) -> str:
-    """오류 하나의 케이스 ID: L2 가 있으면 그 ID, 없으면 ``sha1(kind|file|L1)[:10]``(파일은 posix 경로).
+    """오류 하나의 케이스 ID를 반환한다. L2가 있으면 그 ID를, 없으면 ``sha1(kind|file|L1)[:10]``을 쓴다.
 
     The case of one error: its L2 id, or — no L2 — ``sha1(kind|file|L1)[:10]`` (file = posix path, '' for none;
     L1 = the signature, else ``kind|message``)."""
@@ -209,14 +212,14 @@ def case_id_of(e: BuildError) -> str:
 
 
 def case_files(c: ErrorCluster) -> list[str]:
-    """클러스터 오류들의 파일 목록(중복 없이, posix, 오류 순서). 같은 라운드 미루기 판단에도 쓰인다.
+    """클러스터 오류들의 파일 목록을 중복 없이 오류 순서대로 반환한다.
 
     The distinct files of a cluster's errors (posix, in error order)."""
     return list(dict.fromkeys(_posix(e.file) for e in c.errors if e.file))
 
 
-# 근본 원인 순서(낮을수록 먼저): 없는 패키지 / 클래스 → import 줄 → 심볼 → 타입 불일치 → override. 앞쪽이
-# 고쳐지면 뒤쪽은 대개 저절로 사라지므로, 뒤쪽 케이스에 LLM 호출을 쓰지 않게 한다
+# 앞쪽 원인이 고쳐지면 뒤쪽 오류는 대개 사라지므로 없는 패키지나 클래스,
+# import 줄, 심볼, 타입 불일치, override 순서로 고친다
 # v2 root-cause order of compile cases (lower = earlier; the error class is the 2nd segment of the L2 signature,
 # `sbmig.build.signatures.classify_javac` for an error without one). A `cannot_find_symbol` whose location is a
 # package is an import line (`import a.b.Gone;`): it goes before the body usages of the same symbol.
@@ -232,9 +235,9 @@ OTHER_CAUSE_RANK = 6                   # everything else (illegal_start, has_pri
 
 
 def error_class(e: BuildError) -> str:
-    """컴파일 오류의 javac 오류 종류(L2 의 두 번째 칸, 없으면 메시지로 분류). 위치가 ``package …`` 인
-    ``cannot_find_symbol`` 은 import 줄이라
-    ``cannot_find_symbol@import`` 로 따로 센다. 컴파일 계열이 아니면 "".
+    """컴파일 오류의 javac 오류 종류(L2의 두 번째 칸, 없으면 메시지로 분류)를 반환한다.
+    import 줄의 ``cannot_find_symbol``은 ``cannot_find_symbol@import``로 따로 센다.
+    컴파일 계열이 아니면 빈 문자열을 반환한다.
 
     The javac error class of a compile error (`cannot_find_symbol`, …; `cannot_find_symbol@import` for an import
     line); "" for other kinds."""
@@ -254,8 +257,8 @@ def error_class(e: BuildError) -> str:
 
 
 def cause_rank(c: ErrorCluster) -> int:
-    """케이스의 근본 원인 순위(가장 원인에 가까운 오류 기준).
-    컴파일 계열이 아니면 0 — 기본 우선순위가 이미 앞에 둔다.
+    """케이스에서 가장 원인에 가까운 오류를 기준으로 근본 원인 순위를 반환한다.
+    컴파일 계열이 아니면 기본 우선순위가 이미 앞에 두므로 0을 반환한다.
 
     Root-cause rank of a case (`CAUSE_RANK`; its most causal error). 0 for non-compile kinds — their priority
     (`BASE_PRIORITY`) already puts them first."""
@@ -283,7 +286,7 @@ _BARE_JAVAC = frozenset({"cannot find symbol", "method does not override or impl
 
 
 def is_coarse_l2(e: BuildError) -> bool:
-    """뭉뚱그린 컴파일 L2 인가(종류가 ``build`` / ``other`` 이거나 세 번째 칸이 비었음). 모듈 docstring 참고.
+    """포괄적인 컴파일 L2인지 확인한다. 종류가 ``build`` / ``other``이거나 세 번째 칸이 비었으면 True다.
 
     A catch-all compile L2 (class ``build`` / ``other``, or no key segment) — see the module docstring."""
     if e.kind not in FILE_KINDS or not e.signature_generic:
@@ -295,7 +298,8 @@ def is_coarse_l2(e: BuildError) -> bool:
 
 
 def _normalize_line(text: str, module: Optional[str]) -> str:
-    """세분화 키 줄을 L2 처럼 정규화(URL·경로·위치·hex·버전·숫자 가림, 프로젝트 타입 → ``*``, 소문자)."""
+    """세분화 키 줄을 L2처럼 정규화한다.
+    URL, 경로, 위치, 16진수, 버전, 숫자를 가리고 프로젝트 타입은 ``*``로 바꾸고 소문자로 만든다."""
     try:
         from sbmig.build.signatures import _mask_project_types, normalize_message
     except Exception:  # pragma: no cover - the build package is ours
@@ -304,8 +308,8 @@ def _normalize_line(text: str, module: Optional[str]) -> str:
 
 
 def refined_key_line(e: BuildError) -> str:
-    """``e.raw`` 에서 처음 나오는 의미 있는 줄(Maven 머리말·요약
-    문구·잡음 줄·맨 javac 문구 제외)을 정규화해 돌려준다. 없으면 "".
+    """``e.raw``에서 처음 나오는 의미 있는 줄을 정규화해 반환한다.
+    Maven 머리말, 요약 문구, 잡음 줄은 제외하고 해당하는 줄이 없으면 빈 문자열을 반환한다.
 
     The first meaningful, non-generic line of `e.raw`, normalized (module docstring); "" when there is none."""
     for line in (e.raw or "").splitlines():
@@ -321,8 +325,9 @@ def refined_key_line(e: BuildError) -> str:
 
 
 def refine_signature(e: BuildError) -> BuildError:
-    """뭉뚱그린 컴파일 L2 에 세분화 키를 준다(제자리 수정). 멱등 — 키를 현재 L2 가 아니라 ``raw`` 에서
-    계산한다. L1 이 L2 와 같았으면(파일 없는 요약) L1 도 바꿔서 채점이 두 실패를 구분하게 한다.
+    """포괄적인 컴파일 L2에 세분화 키를 붙인다(제자리 수정).
+    키를 현재 L2가 아니라 ``raw``에서 계산하므로 여러 번 호출해도 결과가 같다.
+    L1이 L2와 같았으면 시도 결과 평가가 두 실패를 구분하도록 L1도 바꾼다.
 
     Give a catch-all compile L2 its refined key (in place; the module docstring has the rule). Idempotent."""
     if not is_coarse_l2(e):
@@ -340,7 +345,7 @@ def refine_signature(e: BuildError) -> BuildError:
 
 
 def refine_signatures(errors: Iterable[BuildError]) -> list[BuildError]:
-    """모든 오류에 ``refine_signature`` (제자리), 리스트로 돌려준다.
+    """모든 오류에 ``refine_signature``를 적용하고 리스트로 반환한다.
 
     `refine_signature` for every error (in place); returns them as a list."""
     out = list(errors or [])
@@ -351,10 +356,11 @@ def refine_signatures(errors: Iterable[BuildError]) -> list[BuildError]:
 
 def cluster_cases(errors: list[BuildError], profile: Optional[ProjectProfile] = None,
                   scope: Optional[str] = None) -> list[ErrorCluster]:
-    """v2 클러스터: 파일을 가로질러 케이스(L2) 하나당 하나 — 스크립트 하나가 모든 파일의 같은 원인을 고친다
-    (v1 은 파일마다 LLM 을 불렀다). MSA 서비스별 루프면 id 뒤에 ``@<scope>`` 를 붙여 두 서비스의 시도가 서로의
-    시도 횟수에 섞이지 않게 하고, ``case_id`` 는 그대로
-    둔다(KB 키). 정렬: 우선순위 → 근본 원인 → 오류 수 → id.
+    """파일을 가리지 않고 케이스(L2)마다 클러스터 하나를 만든다.
+    스크립트 하나가 모든 파일의 같은 원인을 고치기 위해서다.
+    MSA 서비스별 루프면 두 서비스의 시도 횟수가 섞이지 않도록 id 뒤에 ``@<scope>``를 붙이고, KB 키인
+    ``case_id``는 그대로 둔다.
+    정렬 순서: 우선순위 -> 근본 원인 -> 오류 수 -> id.
 
     v2 clusters: one per case (L2) across files. `scope` (a targeted loop's build target, MSA services) is appended
     to the id (``case:<id>@<scope>``) so two services' attempts on the same case never count against each other —

@@ -1,10 +1,8 @@
-"""``sbmig kb …`` 명령(v2.1) — 사람이 KB 를 보고 고치는 창구.
-오류 목록(``errors list | show``), 케이스와 수정 스크립트(``cases list | show | retire | activate | pin |
-unpin``), KB 전체의 stats / validate / export / import / reindex. ``sbmig/cli.py`` 가 ``kb_cli`` 를 ``sbmig
-kb`` 로 붙인다. Typer 는 함수 docstring 을 ``--help`` 로 쓰므로 각 명령 docstring 의 첫 줄(한국어)이 명령
-목록의 요약이 된다 — 그래서 첫 줄은 한 줄로 짧게 둔다. 데이터는 전부 ``FileKnowledgeBase`` → ``CaseStore`` 를
-거친다(쓰기는 KB 잠금 안에서). 고치는 법: 나쁜 스크립트는 ``cases retire``, 사람 몫 케이스는 ``cases pin <id>
-block:<이유>``, 기록을 다시 셀 때는 ``reindex``.
+"""사람이 KB를 조회하고 고칠 때 쓰는 ``sbmig kb …`` 명령 모듈.
+``sbmig/cli.py``가 ``kb_cli``를 ``sbmig kb``로 연결한다.
+- Typer가 명령 함수 docstring의 첫 줄을 명령 요약으로 쓰므로 첫 줄은 짧게 둔다
+- 데이터는 모두 ``FileKnowledgeBase``와 ``CaseStore``를 거쳐 읽고, 쓰기는 KB 잠금 안에서 한다
+- 문제 있는 스크립트는 ``cases retire``로 끄고, 사람이 처리할 케이스는 ``cases pin <id> block:<이유>``로 고정한다
 
 `sbmig kb …` (v2.1, docs/v2/PLAN-v2.1.md §3.4): the error list of every run (`errors list | show`), the cases and
 their fix scripts (`cases list | show | retire | activate | pin | unpin`), plus stats / validate / export / import /
@@ -36,7 +34,8 @@ kb_cli.add_typer(cases_cli, name="cases")
 
 
 def _load_cfg(configs: list[Path]) -> Config:
-    """KB 명령은 회사 artifacts 설정이 필요 없으므로, 설정에 없으면 자리표시자로 채워 검증 오류를 피한다.
+    """KB 명령용 설정을 읽는다.
+    KB 명령에는 회사 artifacts 설정이 필요 없으므로, 없으면 플레이스홀더로 채워 검증 오류를 피한다.
 
     KB commands do not need the company artifacts section; use a placeholder when no config provides it."""
     try:
@@ -48,8 +47,8 @@ def _load_cfg(configs: list[Path]) -> Config:
 
 
 def _kb(ctx: typer.Context) -> FileKnowledgeBase:
-    """명령이 쓸 FileKnowledgeBase: 상위 CLI 가 ctx.obj 에 넣어
-    둔 cfg / kb 를 쓰고, 없으면 --config / --kb-dir 로 만든다.
+    """명령이 사용할 FileKnowledgeBase를 반환한다.
+    상위 CLI가 ctx.obj에 넣은 cfg / kb를 쓰고, 없으면 --config / --kb-dir로 만든다.
 
     The parent CLI may pre-populate ctx.obj["cfg"] (a loaded Config) or ctx.obj["kb"]."""
     obj = ctx.ensure_object(dict)
@@ -86,7 +85,7 @@ RESIGN_LINES = 50                 # moved cases listed by `kb reindex` before "�
 def reindex_cmd(ctx: typer.Context,
                 dry_run: bool = typer.Option(False, "--dry-run",
                                              help="Only print what the re-sign would move; write nothing.")) -> None:
-    """재색인: 옛 서명 규칙의 기록을 지금 케이스 ID 로 옮기고(재서명) 케이스 수치·실행 기록을 다시 만든다.
+    """이전 서명 규칙으로 만든 기록을 현재 케이스 ID로 옮기고 케이스 통계와 실행 기록을 다시 만든다.
 
     Re-sign the records signed by older signature rules (moved to the case ids the current rules give), then
     recount every case (seen / resolved / projects / last solution) from errors.jsonl and rewrite cases.md; rebuild
@@ -107,7 +106,7 @@ def reindex_cmd(ctx: typer.Context,
             typer.echo(ln)
     st = kb.stats()
     done = getattr(kb.cases, "last_reindex", None) or {}
-    # 변경 조각 수와 해결한 시도 수는 따로 센 숫자(A15) — INFO 줄과 같은 말로 둘 다 보인다
+    # 변경 부분 수와 해결한 시도 수는 따로 센 값이므로 INFO 줄과 같은 표현으로 둘 다 출력한다
     typer.echo(f"{n} case(s), {st['script_versions']} script version(s); {done.get('runs', 0)} script run "
                f"record(s) rebuilt, {done.get('hunks', 0)} entr(ies) given as-is/to-be hunks, "
                f"{done.get('resolved_by', 0)} build-resolved entr(ies) given a probable fixer — {kb.cases.md_path}")
@@ -115,7 +114,7 @@ def reindex_cmd(ctx: typer.Context,
 
 @kb_cli.command("stats")
 def stats_cmd(ctx: typer.Context, as_json: bool = typer.Option(False, "--json")) -> None:
-    """KB 숫자: 오류 항목, 케이스, 상태별 스크립트 버전, 고정된 케이스.
+    """KB 통계(오류 항목, 케이스, 상태별 스크립트 버전, 고정된 케이스 수)를 출력한다.
 
     Counts: error entries, cases, script versions by status, pinned cases."""
     st = _kb(ctx).stats()
@@ -128,7 +127,7 @@ def stats_cmd(ctx: typer.Context, as_json: bool = typer.Option(False, "--json"))
 
 @kb_cli.command("validate")
 def validate_cmd(ctx: typer.Context) -> None:
-    """KB 파일 점검(errors.jsonl 줄, case.json, 스크립트 파일, pin). 문제가 있으면 exit 1.
+    """KB 파일(errors.jsonl, case.json, 스크립트, pin)을 점검한다. 문제가 있으면 exit 1로 끝난다.
 
     Check the KB files (errors.jsonl lines, case.json files, script files, pins). Exit 1 on a problem."""
     kb = _kb(ctx)
@@ -145,7 +144,7 @@ def validate_cmd(ctx: typer.Context) -> None:
 
 @kb_cli.command("export")
 def export_cmd(ctx: typer.Context, out: Path = typer.Argument(..., metavar="OUT.zip")) -> None:
-    """KB 를 zip 하나로 내보낸다(다른 PC 로 옮길 때).
+    """KB를 zip 파일 하나로 내보낸다. 다른 PC로 옮길 때 쓴다.
 
     Export the KB as a zip (cases/, errors.jsonl, cases.md) to move it between machines."""
     typer.echo(f"exported {_kb(ctx).export_zip(out)}")
@@ -154,7 +153,7 @@ def export_cmd(ctx: typer.Context, out: Path = typer.Argument(..., metavar="OUT.
 @kb_cli.command("import")
 def import_cmd(ctx: typer.Context, src: Path = typer.Argument(..., metavar="IN.zip", exists=True),
                replace: bool = typer.Option(False, "--replace", help="Replace the local KB (kept as .bak-*).")) -> None:
-    """내보낸 KB 를 가져온다(기본은 합치기, --replace 는 통째 교체하고 예전 KB 는 .bak-* 로 남김).
+    """내보낸 KB zip을 가져온다. 기본은 병합이고, --replace면 통째로 교체하면서 기존 KB를 .bak-*로 남긴다.
 
     Import an exported KB: merged by default (new entries, unknown cases, scripts by their code)."""
     counters = _kb(ctx).import_zip(src, merge=not replace)
@@ -172,7 +171,7 @@ def errors_list_cmd(
     limit: int = typer.Option(50, "--limit", help="Newest N (0 = all)."),
     as_json: bool = typer.Option(False, "--json"),
 ) -> None:
-    """오류 항목을 한 줄씩: ID, 실행, 상태, 케이스, 파일:줄 메시지, 시도, 해결(기본 최근 50개).
+    """오류 항목을 한 줄씩 출력한다. 기본으로 최근 50개를 보여 준다.
 
     One line per entry: id, run, status, case, file:line message, tries, resolved."""
     rows = list(_kb(ctx).cases.iter_errors(run=run, case=case, status=status, project=project))
@@ -191,7 +190,7 @@ def errors_list_cmd(
 @errors_cli.command("show")
 def errors_show_cmd(ctx: typer.Context, entry: str = typer.Argument(..., metavar="ID", help="Entry id or prefix."),
                     diff: bool = typer.Option(True, "--diff/--no-diff")) -> None:
-    """항목 하나와 모든 시도: 원인 / 해결 / 수정(수정 전·후 코드) / 바뀐 파일 / diff.
+    """오류 항목 하나와 모든 시도의 원인, 해결, 수정 전후 코드, 바뀐 파일, diff를 보여 준다.
 
     The entry with every try: 원인 / 해결 / applied files / diff."""
     hits = list(_kb(ctx).cases.iter_errors(entry=entry))
@@ -206,8 +205,9 @@ def errors_show_cmd(ctx: typer.Context, entry: str = typer.Argument(..., metavar
 
 # --------------------------------------------------------------------------- cases
 def _case_id(store: CaseStore, key: str, *, versioned: bool = False) -> str:
-    """케이스 ID, 또는 하나로 정해지는 4자 이상의 앞부분 → 케이스 ID(없거나 여럿이면 exit 1). 폴더가 없는 ID 가
-    어떤 케이스의 ``aliases``(재서명으로 옮겨 온 옛 ID)에 있으면 그 케이스(stderr 에 ``case <old> is now <new>``).
+    """케이스 ID나 4자 이상의 ID 앞부분을 받아 전체 케이스 ID로 바꾼다.
+    맞는 케이스가 없거나 여럿이면 exit 1로 끝난다.
+    폴더가 없는 ID가 어떤 케이스의 ``aliases``에 있으면 그 케이스를 반환한다.
 
     A case id or a unique prefix of 4+ characters; an id (or prefix) that names no folder but is in a case's
     ``aliases`` (moved there by a re-sign) resolves to that case (``case <old> is now <new>`` on stderr). A real
@@ -222,7 +222,7 @@ def _case_id(store: CaseStore, key: str, *, versioned: bool = False) -> str:
     if not hits:
         found = _alias_target(store, key, quiet=versioned)
         if found and versioned:
-            # 합치기에서 번호가 바뀌었을 수 있다 — 옛 번호로 다른 스크립트를 끄지 않게 거부한다
+            # 병합으로 버전 번호가 바뀌었을 수 있으므로, 이전 번호로 엉뚱한 스크립트를 끄지 않도록 거부한다
             _fail(f"case {key} is now {found}: version numbers may have changed — look at 'sbmig kb cases show "
                   f"{found}' and use that id")
         if found:
@@ -232,7 +232,7 @@ def _case_id(store: CaseStore, key: str, *, versioned: bool = False) -> str:
 
 
 def _alias_target(store: CaseStore, key: str, quiet: bool = False) -> str:
-    """``key``(ID 또는 4자 이상 앞부분)를 aliases 에 가진 케이스 하나 — 없거나 여럿이면 "".
+    """``key``를 aliases에 가진 케이스를 찾는다. 없거나 여럿이면 빈 문자열을 반환한다.
 
     The one case whose ``aliases`` hold ``key`` (an id or a 4+ character prefix); "" when none or several."""
     found: dict[str, str] = {}
@@ -250,7 +250,7 @@ def _alias_target(store: CaseStore, key: str, quiet: bool = False) -> str:
 
 @cases_cli.command("list")
 def cases_list_cmd(ctx: typer.Context, as_json: bool = typer.Option(False, "--json")) -> None:
-    """케이스를 한 줄씩(널리 퍼진 것 먼저): ID, 프로젝트 수, seen / resolved, 스크립트, pin, 이름.
+    """케이스를 한 줄씩 출력한다. 여러 프로젝트에서 나온 케이스가 먼저 나온다.
 
     One line per case (most widespread first): id, projects, seen / resolved, scripts, pin, name."""
     cases = _kb(ctx).cases.cases()
@@ -269,7 +269,7 @@ def cases_show_cmd(ctx: typer.Context, key: str = typer.Argument(..., metavar="C
                    code: bool = typer.Option(True, "--code/--no-code", help="Print the scripts."),
                    last: int = typer.Option(5, "--last", help="The last N entries of the case with their tries."),
                    diff: bool = typer.Option(False, "--diff/--no-diff")) -> None:
-    """케이스 하나: case.json, 저장 스크립트(코드·계보·실행 기록), errors.jsonl 의 최근 항목.
+    """케이스 하나의 case.json, 저장된 스크립트(코드, 이력, 실행 기록), errors.jsonl의 최근 항목을 보여 준다.
 
     case.json, its scripts (code) and the last entries of the case from errors.jsonl."""
     store = _kb(ctx).cases
@@ -310,7 +310,7 @@ def cases_show_cmd(ctx: typer.Context, key: str = typer.Argument(..., metavar="C
             for ln in (body if body is not None else "(file missing)").splitlines():
                 typer.echo(f"    | {ln}")
     entries = list(store.iter_errors(case=cid))
-    # iter_errors 의 case 는 앞부분 일치라 정확히 같은 케이스만 남긴다
+    # iter_errors는 케이스 ID를 앞부분만 비교하므로 정확히 같은 케이스만 남긴다
     entries = [e for e in entries if e.case_id == cid]
     if entries and last > 0:
         typer.echo(f"  last {min(last, len(entries))} of {len(entries)} entr(ies):")
@@ -320,7 +320,7 @@ def cases_show_cmd(ctx: typer.Context, key: str = typer.Argument(..., metavar="C
 
 
 def _status(ctx: typer.Context, key: str, version: int, retire: bool) -> None:
-    """retire / activate 명령의 공통 부분(없는 케이스·버전이면 exit 1)."""
+    """스크립트 버전 하나를 끄거나(retire) 다시 켠다(activate). 케이스나 버전이 없으면 exit 1로 끝난다."""
     store = _kb(ctx).cases
     cid = _case_id(store, key, versioned=True)
     try:
@@ -333,7 +333,7 @@ def _status(ctx: typer.Context, key: str, version: int, retire: bool) -> None:
 @cases_cli.command("retire")
 def cases_retire_cmd(ctx: typer.Context, key: str = typer.Argument(..., metavar="CASE_ID"),
                      version: int = typer.Argument(..., metavar="N")) -> None:
-    """스크립트 버전 N 을 다시는 쓰지 않게 끈다(사람의 결정).
+    """스크립트 버전 N을 다시 쓰지 않도록 끈다.
 
     Never run version N again (a person's decision)."""
     _status(ctx, key, version, True)
@@ -342,15 +342,16 @@ def cases_retire_cmd(ctx: typer.Context, key: str = typer.Argument(..., metavar=
 @cases_cli.command("activate")
 def cases_activate_cmd(ctx: typer.Context, key: str = typer.Argument(..., metavar="CASE_ID"),
                        version: int = typer.Argument(..., metavar="N")) -> None:
-    """retire 를 되돌린다(다른 프로젝트에서 해결한 적 있으면 proven, 아니면 unverified).
+    """retire한 스크립트 버전을 다시 켠다.
+    다른 프로젝트에서 해결한 적이 있으면 proven, 아니면 unverified가 된다.
 
     Undo a retire (proven when it resolved the case in another project, else unverified)."""
     _status(ctx, key, version, False)
 
 
 def _pin_target(store: CaseStore, key: str, create: bool) -> str:
-    """``cases pin`` 이 고정할 케이스 ID: 아는 케이스(정확한 ID 또는 하나로 정해지는 앞부분), ``--create`` 면
-    KB 가 아직 못 본 10자리 ID 도 그대로. 모르는 ID 는 exit 1 — 오타가 새 케이스 폴더를 만들지 않게(A19).
+    """``cases pin``이 고정할 케이스 ID를 정한다. ``--create``면 KB에 아직 없는 10자리 ID도 받는다.
+    오타로 새 케이스 폴더가 생기지 않도록 모르는 ID면 exit 1로 끝난다.
 
     The case ``cases pin`` pins: a known case (exact id or a unique prefix of 4+ characters); with ``create`` a
     10-character id the KB has not seen yet (set_pin makes its case.json). Anything else exits 1."""
@@ -367,7 +368,7 @@ def _pin_target(store: CaseStore, key: str, create: bool) -> str:
         return found
     if not create:
         _fail(f"unknown case {key}; use --create to pin a case the KB has not seen")
-    # 미리 고정: 케이스 ID 는 L2 서명 sha1 의 앞 10자리 — 그 모양이 아니면 폴더를 만들지 않는다
+    # 미리 고정할 때 케이스 ID 형식(10자리)이 아니면 폴더를 만들지 않는다
     if len(key) != 10 or not valid_case_id(key):
         _fail(f"{key} is no case id (10 characters, as `sbmig kb cases list` shows them)")
     return key
@@ -379,12 +380,12 @@ def cases_pin_cmd(ctx: typer.Context, key: str = typer.Argument(..., metavar="CA
                   create: bool = typer.Option(False, "--create",
                                               help="Pin a case id the KB has not seen yet (makes its case.json).")
                   ) -> None:
-    """케이스를 `block` 으로 고정한다(스크립트·LLM 시도 없음, 인수인계 섹션이 이유를 보여 줌).
+    """케이스를 `block`으로 고정한다. 스크립트도 LLM도 시도하지 않고, 인수인계 섹션에 사유가 나온다.
 
     Pin a case to `block` (never tried: no script, no LLM; Handover names the reason). An unknown id is refused
     unless --create is given."""
     store = _kb(ctx).cases
-    # 모르는 ID 는 거부한다; 아직 폴더가 없는 케이스를 미리 고정할 때만 --create(set_pin 이 case.json 을 만든다)
+    # 모르는 ID는 거부하고, 폴더가 아직 없는 케이스를 미리 고정할 때만 --create를 쓴다
     cid = _pin_target(store, key, create)
     try:
         store.set_pin(cid, spec)
@@ -395,7 +396,7 @@ def cases_pin_cmd(ctx: typer.Context, key: str = typer.Argument(..., metavar="CA
 
 @cases_cli.command("unpin")
 def cases_unpin_cmd(ctx: typer.Context, key: str = typer.Argument(..., metavar="CASE_ID")) -> None:
-    """케이스 고정을 푼다.
+    """케이스에 걸린 고정을 해제한다.
 
     Remove a case's pin."""
     store = _kb(ctx).cases

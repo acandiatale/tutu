@@ -1,15 +1,15 @@
-"""취약점 조치의 사람용 한국어 표시: 코드(출처·변경 종류·주의·결정·이유·검사 결과 종류)의 한국어 이름표와, 조치 코드가 만든 영어
-문장(잔여 설명·인벤토리 사유·제안 메모·검증 메모·상태 메시지·준비 문제·빌드 설정 점검)을 한국어 문장으로 바꾸는 규칙표.
-흐름상 위치: ``report.build_report_md`` (report.md)와 ``service.proposals`` (화면의 ``*_ko`` 필드)가 부른다. 저장되는 자료
-(state.json · plan.json · report.json · HTTP API 의 기존 필드)는 영어 문장과 코드 그대로다 — 그것이 계약이고, 이 모듈은 보여 줄
-때만 바꾼다.
-문체(사용자 요청 2026-11-12, "기계번역처럼 읽힌다"): 합니다체, 한 문장에 사실 하나, 국내 개발 조직이 실제로 쓰는 말(조치·적용·
-반영·제외·의존 경로·간접 의존성·버전 지정·담당자). pom · BOM · classifier · dependencyManagement · property · scope · jar 는
-영어 그대로. 의인화·공간 비유(다스리다·닿다·들어온 길·글자)는 쓰지 않는다. 용어표는 ``agent-doc/12-remediation-report.md``.
-지켜야 할 것: ``ko_text`` 는 규칙(정규식)이 모르는 문장을 **그대로** 돌려준다(정보를 버리거나 추측하지 않는다). 보고서용
-``ko_display`` 는 모르는 조각을 "원문: `…`" 으로 감싸 깨진 한국어처럼 보이지 않게 한다. g:a · 버전 · 모듈 이름 · 파일 경로
-· 제안 ID 는 글자 그대로 남긴다(pom 의 줄 번호는 "41행"). Maven 자체의 출력(빌드 요약)은 번역하지 않는다. "; " 또는 " | " 로
-이어진 문장은 조각마다 바꾸되, 한 규칙이 "; " 를 품은 문장 전체를 말하면(가장 긴 조각부터 맞춰 본다) 그 규칙이 이긴다.
+"""취약점 조치 결과를 사람이 읽기 쉬운 한국어로 바꿔 주는 모듈.
+코드별 한국어 이름과, 조치 코드가 만든 영어 문장을 한국어 문장으로 바꾸는 규칙 목록이 있다.
+``report.build_report_md``(report.md)와 ``service.proposals``(화면의 ``*_ko`` 필드)가 호출한다. state.json,
+plan.json, report.json, HTTP API에는 영어 문장과 코드를 그대로 저장하고 화면과 보고서에 보여 줄 때만 바꾼다.
+- 문체는 합니다체로, 한 문장에 내용 하나씩, 국내 개발 조직이 실제로 쓰는 말로 쓴다.
+  pom, BOM, classifier, dependencyManagement, property, scope, jar는 영어 그대로 쓴다.
+  용어표는 ``agent-doc/12-remediation-report.md``에 있다
+- ``ko_text``는 규칙에 없는 문장을 그대로 반환한다. 정보를 버리거나 추측하지 않는다
+- ``ko_display``는 규칙에 없는 조각을 "원문: `…`"으로 감싸서 깨진 한국어처럼 보이지 않게 한다
+- g:a, 버전, 모듈 이름, 파일 경로, 제안 ID는 그대로 두고 pom의 줄 번호는 "41행"처럼 쓴다.
+  Maven 출력은 번역하지 않는다
+- "; "나 " | "로 이어진 문장은 조각마다 바꾸되, "; "를 포함한 문장 전체에 맞는 규칙이 있으면 그 규칙을 쓴다
 
 Korean presentation for the remediation: labels for the codes and pattern rules that turn the English sentences the
 remediation code produces into Korean. Stored data keeps its English text and codes (the contract); `ko_text` returns a
@@ -30,7 +30,7 @@ ORIGIN_KO: dict[str, str] = {
     "parent_managed": "부모 pom에서 버전 지정", "bom_managed": "BOM에서 버전 지정", "plugin": "빌드 플러그인",
     "vendored": "프로젝트에 포함된 jar 파일", "unmapped": "의존성 트리에서 찾지 못함", "proposal": "적용하지 못한 제안",
 }
-# 묶음의 모든 행이 같은 출처일 때 표 위에 한 번 쓰는 문장(출처 칸을 빼고)
+# 묶음의 모든 행이 같은 출처일 때, 출처 칸을 빼고 표 위에 한 번만 쓰는 문장
 ORIGIN_ALL_KO: dict[str, str] = {
     "transitive": "아래 항목은 모두 간접 의존성입니다.",
     "direct_literal": "아래 항목은 모두 pom에 버전을 적은 직접 의존성입니다.",
@@ -52,7 +52,8 @@ RISK_KO: dict[str, str] = {
     "major": "메이저 버전 변경", "parent": "부모 pom 변경", "bom": "BOM 변경", "managed_override": "dependencyManagement 항목 추가",
 }
 DECISION_KO: dict[str, str] = {"auto": "자동 적용", "pending": "승인 대기", "approved": "승인 후 적용", "rejected": "적용 안 함"}
-# 이유 코드(models.R_* + chain_budget) → 짧은 이름표(표·묶음 제목·화면 칩). 무슨 일이 있었고 무엇을 할지는 report._REASON_KO
+# 사유 코드(models.R_*와 chain_budget)의 짧은 한국어 이름.
+# 표, 묶음 제목, 화면 표시에 쓰며 자세한 설명은 report._REASON_KO에 있다
 REASON_KO: dict[str, str] = {
     "baseline_build_failed": "조치 전 빌드 실패", "candidate_build_failed": "수정본 빌드 실패", "scan_incomplete": "검사 미완료",
     "upload_uncertain": "업로드 결과 확인 불가", "zip_hash_mismatch": "검사한 파일 불일치",
@@ -64,7 +65,7 @@ REASON_KO: dict[str, str] = {
     "stale_location": "pom이 그 사이 변경됨", "inventory_incomplete": "의존성 목록을 다 읽지 못함",
     "inhouse_artifact": "사내 라이브러리 (담당자 요청)", "chain_budget": "제한 시간 초과",
 }
-# graph.fill_counts 가 쓰는 집계 키 → 한국어(이 순서로 보여 준다; 모르는 키는 이름 그대로 뒤에)
+# graph.fill_counts가 만드는 집계 키의 한국어 이름. 이 순서로 보여 주고 모르는 키는 이름 그대로 뒤에 붙인다
 COUNT_KO: dict[str, str] = {
     "baseline_findings": "조치 전 취약점", "baseline_ignored": "조치 전 제외", "fixed": "조치한 취약점",
     "final_findings": "조치 후 남은 취약점", "final_ignored": "조치 후 제외", "rounds": "라운드", "proposals": "제안",
@@ -75,14 +76,14 @@ FINDING_KIND_KO: dict[str, str] = {
     "library": "라이브러리", "file_component": "파일 컴포넌트", "file_component_potential": "파일 컴포넌트(추정)",
     "sw": "소프트웨어(지원하지 않음)",
 }
-# IVAS 검사가 끝나지 않은 까닭 코드(ivas._Collector.bad) → 한국어
+# IVAS 검사가 끝나지 않은 사유 코드(ivas._Collector.bad)의 한국어 이름
 SCAN_REASON_KO: dict[str, str] = {
     "analysis_failed": "IVAS 분석 실패", "analysis_timeout": "분석 대기 시간 초과", "duplicate_result": "같은 결과가 두 번 옴",
     "http_error": "IVAS 응답 오류", "id_mismatch": "분석 ID 불일치", "page_missing": "결과 페이지 누락",
     "stop_requested": "중지 요청", "summary_mismatch": "요약과 상세 결과의 개수가 다름", "total_mismatch": "전체 개수가 바뀜",
     "unsupported_sw": "지원하지 않는 SW 취약점", "zip_hash_mismatch": "분석한 파일 불일치",
 }
-# 빌드 설정 점검(intake.check_boundary) 코드 → 한국어
+# 빌드 설정 점검(intake.check_boundary) 코드의 한국어 이름
 BOUNDARY_KO: dict[str, str] = {
     "symlink": "심볼릭 링크", "settings_in_project": "프로젝트 안의 settings.xml", "project_maven_config": ".mvn 설정 파일",
     "maven_extensions": "Maven extension 설정", "maven_wrapper": "Maven wrapper", "foreign_repository": "승인되지 않은 저장소",
@@ -90,15 +91,16 @@ BOUNDARY_KO: dict[str, str] = {
 }
 
 
-# 위험도 표시(사용자 요청 2026-11-12: 위험한 취약점에 눈이 가게): (표시, 이름) — 빨강·주황·노랑 순서. Markdown 에는 색이 없어
-# 편집기 미리보기에서 보이는 그림 글자를 쓴다
+# 위험도 표시. (표시, 이름)을 빨강, 주황, 노랑 순으로 둔다.
+# Markdown에는 색이 없으므로 편집기 미리보기에서도 보이는 이모지를 쓴다
 SEVERITY_LEVELS: tuple[tuple[str, str, str], ...] = (("red", "🔴", "심각"), ("orange", "🟠", "높음"), ("yellow", "🟡", "보통"))
 SEVERITY_NONE_KO = "낮음·점수 없음"
 
 
 def severity_thresholds(value: Any = None) -> tuple[float, float, float]:
-    """위험도 경계(빨강·주황·노랑의 아래 경계). None 이면 설정 기본값(``RemediationConfig``). 순서가 뒤집히거나 음수여도
-    예외를 내지 않는다 — 큰 것부터 정렬해 쓴다. 읽을 수 없는 값이면 기본값.
+    """빨강, 주황, 노랑 위험도의 하한 점수를 반환한다. None이면 ``RemediationConfig`` 기본값을 쓴다.
+    순서가 뒤집히거나 음수여도 큰 값부터 정렬해 쓰고 예외를 던지지 않는다.
+    읽을 수 없는 값이면 기본값을 쓴다.
 
     The (red, orange, yellow) lower bounds; None = the config defaults; sorted descending, never raises."""
     from sbmig.core.config import RemediationConfig
@@ -116,13 +118,13 @@ def severity_thresholds(value: Any = None) -> tuple[float, float, float]:
 
 
 def severity_of(score: float | None, thresholds: tuple[float, float, float]) -> tuple[str, str, str]:
-    """점수 → (수준 키 red / orange / yellow / none, 표시 🔴 / 🟠 / 🟡 / "", 이름 심각 / 높음 / 보통 / ""). 점수 ≥ 경계면 그
-    수준; 노랑 경계보다 낮거나 점수가 없으면 표시 없음.
+    """점수를 (수준 키, 표시, 이름)으로 바꾼다.
+    점수가 경계값 이상이면 그 수준이고, 노랑 경계보다 낮거나 점수가 없으면 ``("none", "", "")``를 반환한다.
 
     Score → (level key, mark, Korean name); below yellow or no score → ("none", "", "")."""
     if score is not None:
         try:
-            sc = round(float(score), 1)      # 보고서가 보여 주는 소수 한 자리 값으로 판정한다(8.96 → 9.0 은 빨강)
+            sc = round(float(score), 1)      # 보고서에 보이는 소수 한 자리로 정한다. 8.96은 9.0이라 빨강이다
         except (TypeError, ValueError):
             sc = None
         if sc is not None:
@@ -133,7 +135,7 @@ def severity_of(score: float | None, thresholds: tuple[float, float, float]) -> 
 
 
 def label(table: dict[str, str], code: Any) -> str:
-    """이름표 표에서 코드의 한국어 이름(모르는 코드·빈 값은 그대로).
+    """표에서 코드에 해당하는 한국어 이름을 찾아 반환한다. 모르는 코드와 빈 값은 그대로 반환한다.
 
     The Korean label of `code` in `table`; unknown codes are returned as they are."""
     s = "" if code is None else str(code)
@@ -141,7 +143,8 @@ def label(table: dict[str, str], code: Any) -> str:
 
 
 def evidence_ko(evidence: str) -> str:
-    """제안의 근거 글자 → 한국어("policy:pins" → 서버 정책에 지정한 버전, "repository:<호스트>" → 저장소 <호스트>).
+    """제안 근거 문자열을 한국어로 바꾼다.
+    "policy:pins"는 서버 정책에 지정한 버전, "repository:<호스트>"는 저장소 <호스트>로 표시한다.
 
     The Korean form of a proposal's evidence text."""
     s = str(evidence or "")
@@ -155,16 +158,14 @@ def evidence_ko(evidence: str) -> str:
 
 
 def loc_ko(loc: str) -> str:
-    """"app/pom.xml:41" → "app/pom.xml 41행" (줄 번호가 없으면 그대로).
-
-    "pom:line" → "pom N행"."""
+    """"app/pom.xml:41"을 "app/pom.xml 41행"으로 바꾼다. 줄 번호가 없으면 그대로 둔다."""
     m = re.fullmatch(r"(?P<p>.+):(?P<n>\d+)", str(loc or ""))
     return f"{m['p']} {m['n']}행" if m else str(loc or "")
 
 
 # ---------------------------------------------------------------------------- 값 변환 도우미
 def _none(x: str | None) -> str:
-    """도구가 '없음' 자리에 쓰는 영어 낱말 → 없음."""
+    """도구가 값이 없을 때 쓰는 영어 단어(nothing, none 등)를 "없음"으로 바꾼다."""
     x = (x or "").strip()
     return "없음" if x in ("", "nothing", "none", "absent", "no version") else x
 
@@ -173,7 +174,7 @@ _MORE = re.compile(r" \(\+(\d+) more\)")
 
 
 def _vlist(x: str | None) -> str:
-    """버전 목록 글자의 꼬리표만 한국어로(버전 글자는 그대로)."""
+    """버전 목록 문자열에 붙은 영어 표시만 한국어로 바꾸고 버전은 그대로 둔다."""
     s = _none(x)
     s = _MORE.sub(r" 외 \1개", s)
     s = s.replace(" (deny_versions)", " (서버 정책에서 금지)").replace(" (prerelease)", " (시험판)")
@@ -194,18 +195,18 @@ def _origin(x: str | None) -> str:
 
 
 def _places(x: str) -> str:
-    """루트 pom 관리 항목 자리 목록("top level, profile dev") → 한국어."""
+    """루트 pom의 관리 항목 위치 목록("top level, profile dev")을 한국어로 바꾼다."""
     return ", ".join("최상위" if p.strip() == "top level" else re.sub(r"^profile (.+)$", r"\1 프로필", p.strip())
                      for p in x.split(", "))
 
 
 def _what(x: str) -> str:
-    """"parent g:a:v, BOM g:a:v" → "부모 pom g:a:v, BOM g:a:v"."""
+    """"parent g:a:v, BOM g:a:v"를 "부모 pom g:a:v, BOM g:a:v"로 바꾼다."""
     return re.sub(r"(^|, )parent ", r"\1부모 pom ", x)
 
 
 def _desc(x: str) -> str:
-    """인벤토리의 "<origin>[ by <관리자>][ via <사슬>]" → 한국어."""
+    """인벤토리의 출처 설명 "<origin>[ by <관리자>][ via <경로>]"를 한국어로 바꾼다."""
     m = re.fullmatch(r"(?P<o>[a-z_]+)(?: by (?P<by>.+?))?(?: via (?P<via>.+))?", x or "")
     if not m:
         return x
@@ -235,7 +236,7 @@ def _inc(x: str | None) -> str:
 
 
 def _raw(x: str | None) -> str:
-    """번역하지 않는 안쪽 글자(도구 내부 오류·Maven 메시지)를 원문 표시로 감싼다."""
+    """번역하지 않는 내부 문장(도구 내부 오류, Maven 메시지)을 원문 표시로 감싼다."""
     s = re.sub(r"\s+", " ", str(x or "")).replace("`", "'").strip()
     if len(s) > 500:
         s = s[:500] + "…"
@@ -247,23 +248,25 @@ _STATE_KO = {"QUEUED": "대기 중", "RUNNING": "진행 중", "AWAITING_APPROVAL
 
 
 def _state(x: str) -> str:
-    """상태 코드 → 한국어(모르는 코드는 그대로)."""
+    """상태 코드를 한국어 이름으로 바꾼다. 모르는 코드는 그대로 둔다."""
     return _STATE_KO.get(x, x)
 
 
 def _scan_reasons(x: str) -> str:
-    """검사 미완료 사유 코드 목록("page_missing, total_mismatch") → 한국어(모르는 코드는 그대로)."""
+    """검사 미완료 사유 코드 목록("page_missing, total_mismatch")을 한국어로 바꾼다.
+    모르는 코드는 그대로 둔다."""
     return ", ".join(label(SCAN_REASON_KO, c.strip()) for c in (x or "").split(",") if c.strip())
 
 
 # ---------------------------------------------------------------------------- 규칙표 / rules
-# 변수 조각: "; " 를 품지 않는 글자들. 문장 끝을 알 수 없는 ``.+`` 를 그대로 쓰면 뒤에 이어 붙은 다른 문장까지 삼킨다
+# 변수 부분이 "; "를 포함하지 않게 한다. ``.+``를 쓰면 뒤에 이어 붙은 다른 문장까지 잡히기 때문이다
 _A = r"(?:(?!; ).)+?"
 
 
 @dataclass(frozen=True)
 class _Group:
-    """잔여 설명 묶음 하나: 짧은 제목, 행마다의 변수 없이 한 번만 쓰는 한국어 설명, 메모 칸이 필요한가(행마다 다른 사실이 있다)."""
+    """조치하지 못한 항목의 설명 묶음 하나를 담는 클래스. 짧은 제목, 행마다 반복하지 않고 한 번만 쓰는
+    한국어 설명, 행마다 내용이 달라 메모 칸이 필요한지를 담는다."""
     title: str
     text: str
     memo: bool = True
@@ -357,7 +360,8 @@ _VARIANT_IN = re.compile(r"type/classifier variant in (?P<m>.+)")
 
 
 def _variant_parts(why: str) -> tuple[list[str], list[str]]:
-    """변종 사유 조각들 → (변종 사실 "jar/tests" · "<모듈> 모듈", 그 밖의 조각 원문)."""
+    """변종 사유 조각들을 (변종 정보 목록, 그 밖의 조각 원문 목록)으로 나눈다.
+    변종 정보는 "jar/tests"나 "<모듈> 모듈" 같은 형태다."""
     facts, others = [], []
     for piece in (why or "").split("; "):
         m = _VARIANT_PAREN.fullmatch(piece)
@@ -372,7 +376,8 @@ def _variant_parts(why: str) -> tuple[list[str], list[str]]:
 
 
 def _variant_sentence(kw: str, ga: str, why: str) -> str:
-    """버전 지정을 막은 변종 사유를 한 번만 말한다: 변종 사실은 괄호에, 그 밖의 사유 조각은 번역해 뒤 문장으로."""
+    """버전 지정을 막은 변종 사유를 한 문장으로 만든다.
+    변종 정보는 괄호에 넣고, 그 밖의 사유 조각은 번역해서 뒤에 문장으로 붙인다."""
     facts, others = _variant_parts(why)
     head = f"{_kw(kw)} {ga}의 형식이 jar가 아니거나 classifier가 붙어 있습니다"
     head += f"({', '.join(facts)})." if facts else "."
@@ -380,7 +385,8 @@ def _variant_sentence(kw: str, ga: str, why: str) -> str:
 
 
 def _why(x: str | None) -> str:
-    """안쪽 문장(이유)을 다시 번역해 앞 문장 뒤에 붙일 글: " 이유: …" (+ 모르는 조각은 " 원문: `…`")."""
+    """안쪽 문장(이유)을 번역해서 앞 문장 뒤에 붙일 " 이유: …" 문자열을 만든다.
+    규칙에 없는 조각은 " 원문: `…`"으로 붙인다."""
     ko, raw = split_known(x or "")
     out = (" 이유: " + " ".join(ko)) if ko else ""
     if raw:
@@ -388,9 +394,10 @@ def _why(x: str | None) -> str:
     return out
 
 
-# 순서가 중요하다: 같은 문장에 둘이 맞으면 앞의 것이 이긴다(예: root_unreadable 이 cannot_place 보다 앞)
+# 같은 문장에 규칙 두 개가 맞으면 앞의 것을 쓰므로 순서가 중요하다.
+# 예: root_unreadable이 cannot_place보다 앞
 RULES: list[_Rule] = [
-    # ---- planner: 잔여 설명
+    # ---- planner: 조치하지 못한 항목 설명
     _r("not_changed_auto", r"(?P<origin>[a-z_]+): not changed automatically",
        lambda g: f"{_origin(g['origin'])} 항목은 자동으로 수정하지 않습니다.", "not_auto_origin"),
     _r("policy_deny", r"(?P<ga>\S+) matches policy\.deny",
@@ -465,7 +472,7 @@ RULES: list[_Rule] = [
        lambda g: _variant_sentence(g["kw"], g["ga"], g["why"]), "variant"),
     _r("root_unreadable", r"cannot place an override entry safely: the root pom\.xml is not readable",
        lambda g: "루트 pom.xml을 읽을 수 없어 dependencyManagement에 버전 지정을 추가하지 못했습니다.", "root_unreadable"),
-    # 안쪽 오류(apply.EditError)는 도구 내부 문장이라 원문으로 둔다
+    # 내부 오류(apply.EditError)는 도구 내부 문장이므로 원문으로 둔다
     _r("cannot_place", r"cannot place an override entry safely: (?P<e>.+)",
        lambda g: f"dependencyManagement에 버전 지정을 추가할 위치를 정하지 못했습니다. {_raw(g['e'])}", "cannot_place"),
     _r("not_inheriting_root",
@@ -490,7 +497,7 @@ RULES: list[_Rule] = [
     _r("inhouse_via", r"brought in by the in-house artifact\(s\) (?P<gas>{A}): only their owner can change it",
        lambda g: f"사내 라이브러리({g['gas']})에서 가져오는 의존성입니다. 버전은 그 라이브러리 담당자만 변경할 수 있습니다.",
        "inhouse_via"),
-    # 안쪽 이유(apply.EditError)는 도구 내부 문장이라 원문으로 둔다
+    # 내부 이유(apply.EditError)는 도구 내부 문장이므로 원문으로 둔다
     _r("not_applied", r"proposal (?P<pid>\S+) not applied: (?P<why>.+)",
        lambda g: f"제안({g['pid']})을 적용하지 못했습니다. {_raw(g['why'])}", "not_applied"),
     # ---- planner: 제안 메모 / plan notes
@@ -656,7 +663,7 @@ RULES: list[_Rule] = [
                   "repository가 없습니다.")),
     _r("components_unbuilt", r"remediation components cannot be built \((?P<e>[^()]*)\)",
        lambda g: f"조치 구성 요소를 준비하지 못했습니다({g['e']})."),
-    # ---- intake: 빌드 설정 점검의 설명
+    # ---- intake: 빌드 설정 점검 설명
     _r("boundary_symlink", r"symbolic link in the project", lambda g: "프로젝트 안의 심볼릭 링크입니다."),
     _r("boundary_settings", r"the server's settings\.xml is the only one used",
        lambda g: "서버의 settings.xml만 사용합니다."),
@@ -805,9 +812,10 @@ RULES: list[_Rule] = [
 ]
 
 
-# 시험·보고서 점검용: 규칙마다 영어 원문의 고정 구절(변수 없는 부분). 번역되지 않은 원문이 보고서에 남았는지 찾는 데 쓴다
+# 테스트와 보고서 점검용.
+# 규칙마다 영어 원문에서 변수가 없는 고정 구절을 뽑아, 번역되지 않은 원문이 보고서에 남았는지 찾는다
 def _literal_runs(pattern: str) -> list[str]:
-    """정규식의 맨 바깥 단계에서 이어진 글자(LITERAL) 덩어리들."""
+    """정규식의 맨 바깥 단계에서 이어진 문자(LITERAL) 덩어리들을 목록으로 반환한다."""
     try:
         from re import _parser as sre_parse  # type: ignore[attr-defined]
     except ImportError:  # pragma: no cover - Python < 3.11
@@ -842,7 +850,8 @@ def _match(text: str) -> tuple[_Rule, str] | None:
 
 
 def _pieces(text: str) -> list[tuple[str, _Rule | None, str]]:
-    """"; " 로 나눈 조각들을 가장 긴 것부터 규칙에 맞춘다: (원문 조각, 맞은 규칙 또는 None, 한국어 또는 원문)."""
+    """문장을 "; "로 나누고, 조각들을 가장 긴 것부터 규칙에 맞춘다.
+    (원문 조각, 맞은 규칙 또는 None, 한국어 또는 원문) 목록을 반환한다."""
     parts = text.split("; ")
     out: list[tuple[str, _Rule | None, str]] = []
     i = 0
@@ -867,15 +876,16 @@ def _join(pieces: list[tuple[str, _Rule | None, str]]) -> str:
         if prev is None:
             s = p[2]
         else:
-            # 번역한 문장 뒤는 띄어쓰기로, 원문이 남은 자리는 원래 구분자로 잇는다
+            # 번역한 문장 사이는 공백으로, 원문이 남은 곳은 원래 구분자로 잇는다
             s += (" " if prev[1] is not None and p[1] is not None else "; ") + p[2]
         prev = p
     return s
 
 
 def ko_text(text: Any) -> Any:
-    """조치 코드가 만든 영어 문장 → 한국어. " | " 와 "; " 로 이어진 문장은 조각마다 바꾸고, 모르는 조각은 그대로 둔다.
-    문자열이 아니면 그대로 돌려준다.
+    """조치 코드가 만든 영어 문장을 한국어로 바꾼다.
+    " | "와 "; "로 이어진 문장은 조각마다 바꾸고 규칙에 없는 조각은 그대로 둔다.
+    문자열이 아니면 그대로 반환한다.
 
     Translate a sentence the remediation code produced into Korean, piece by piece; unknown pieces stay unchanged."""
     if not isinstance(text, str) or not text:
@@ -884,8 +894,9 @@ def ko_text(text: Any) -> Any:
 
 
 def ko_display(text: Any) -> str:
-    """보고서용 한국어: ``ko_text`` 와 같이 조각마다 바꾸되, 규칙이 모르는 조각은 "원문: `…`" 으로 감싸 뒤에 붙인다(깨진 한국어처럼
-    보이지 않게). 빈 값은 "".
+    """보고서에 보여 줄 한국어 문장을 만든다.
+    ``ko_text``처럼 조각마다 바꾸고, 규칙에 없는 조각은 "원문: `…`"으로 감싸서 뒤에 붙인다.
+    빈 값이면 빈 문자열을 반환한다.
 
     Korean for the report: like `ko_text`, but pieces no rule knows are shown once as "원문: `…`" after the Korean."""
     ko, raw = split_known(text)
@@ -896,7 +907,7 @@ def ko_display(text: Any) -> str:
 
 
 def split_known(text: Any) -> tuple[list[str], list[str]]:
-    """문장 → (규칙이 아는 조각의 한국어들, 규칙이 모르는 조각의 원문들). " | " 와 "; " 로 나눈다.
+    """문장을 " | "와 "; "로 나눠 (규칙에 있는 조각의 한국어 목록, 규칙에 없는 조각의 원문 목록)을 반환한다.
 
     (Korean of the known pieces, raw text of the unknown pieces)."""
     ko: list[str] = []
@@ -913,7 +924,7 @@ def split_known(text: Any) -> tuple[list[str], list[str]]:
 
 
 def rule_keys(text: Any) -> list[str]:
-    """문장의 조각들이 맞은 규칙 키(순서대로, 모르는 조각은 빠진다).
+    """문장의 각 조각에 맞은 규칙 키를 순서대로 반환한다. 규칙에 없는 조각은 뺀다.
 
     The rule keys the pieces of `text` matched."""
     if not isinstance(text, str) or not text:
@@ -922,8 +933,9 @@ def rule_keys(text: Any) -> list[str]:
 
 
 def detail_group(text: str) -> tuple[str, str]:
-    """잔여 설명 한 줄 → (묶음 키, 행마다의 변수 없는 한국어 설명 한 문장). 모든 조각이 알려진 규칙이면 키는 규칙 묶음 이름들
-    ("+" 로 이음), 아니면 키는 원문 그대로이고 설명은 ``ko_display(원문)``.
+    """조치하지 못한 항목의 설명 한 줄을 (묶음 키, 행마다 다른 값이 없는 한국어 설명 한 문장)으로 바꾼다.
+    모든 조각이 알려진 규칙이면 키는 규칙 묶음 이름을 "+"로 이은 것이고,
+    아니면 원문이 키가 되고 설명은 ``ko_display(원문)``이다.
 
     A residual detail → (stable group key, one Korean explanation without the per-row variables); the raw text is the
     key when any piece is unknown."""
@@ -938,7 +950,8 @@ def detail_group(text: str) -> tuple[str, str]:
 
 
 def group_meta(key: str) -> tuple[str, bool]:
-    """묶음 키 → (짧은 제목, 메모 칸이 필요한가). 모르는 키(원문 묶음)는 ("", False) — 행마다 같은 원문이다.
+    """묶음 키에 해당하는 (짧은 제목, 메모 칸 필요 여부)를 반환한다.
+    모르는 키는 행마다 같은 원문이므로 ("", False)를 반환한다.
 
     Group key → (short title, whether rows need a memo column)."""
     keys = [k for k in (key or "").split("+") if k in GROUPS]
@@ -948,7 +961,8 @@ def group_meta(key: str) -> tuple[str, bool]:
 
 
 def variant_label(detail: str) -> str:
-    """잔여 설명에 든 jar 가 아닌 형식 · classifier 표시 → "linux-x86_64" · "test-jar, tests" (없으면 "").
+    """설명에 들어 있는 jar가 아닌 형식이나 classifier 표시를 꺼낸다. 예: "linux-x86_64", "test-jar, tests".
+    없으면 빈 문자열을 반환한다.
 
     The type / classifier variant a residual detail names, shown after the coordinates ("" when none)."""
     found: list[str] = []
@@ -962,7 +976,8 @@ def variant_label(detail: str) -> str:
 
 
 def row_memo(detail: str) -> str:
-    """표의 '내용' 칸: 잔여 설명의 한국어. 변종 사유는 라이브러리 칸에 따로 쓰므로 그 사실은 빼고 다른 조각만 남긴다.
+    """표의 내용 칸에 쓸 한국어 설명을 만든다.
+    변종 사유는 라이브러리 칸에 따로 쓰므로 빼고 나머지 조각만 남긴다.
 
     The memo cell of a residual row (variant facts left out: they are shown next to the coordinates)."""
     text = str(detail or "")
@@ -988,7 +1003,8 @@ def row_memo(detail: str) -> str:
 
 
 def inhouse_gas(detail: str) -> list[str]:
-    """예전 상태 파일(잔여에 ``inhouse`` 가 없음)용: 사내 아티팩트 설명 문장에서 g:a 들을 읽는다. 아니면 빈 목록.
+    """사내 아티팩트 설명 문장에서 g:a 목록을 읽어 반환하고, 해당하지 않으면 빈 목록을 반환한다.
+    ``inhouse`` 필드가 없는 이전 상태 파일을 읽을 때 쓴다.
 
     The in-house g:a's named by an in-house residual detail (for state files without `Residual.inhouse`)."""
     for _c, r, _k in _pieces(str(detail or "")):

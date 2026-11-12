@@ -1,14 +1,12 @@
-"""v2.1d 의존성 버전 정책 — 저장소(회사 Nexus / Central)에 그 라이브러리의 어떤 릴리스가 있는지
-조회해 프롬프트에 '사실' 로 넣는다. 왜: 수정 프롬프트의 규칙 14 는 "javax 시절 라이브러리는 같은 메이저 중
-jakarta 빌드인 최신 릴리스로" 다. LLM 은 회사 Nexus 에 무엇이 있는지 모르고, 없는 버전을 지어내면 빌드 한
-라운드를 버린다 → sbmig 가 찾아서 "Dependency versions" 절로 넘긴다. 흐름상 위치: 수정 루프가 새 수정 / 보강
-LLM 호출 전에 케이스 뒤의 라이브러리마다 ``candidates`` → ``hint_lines`` (로그 ``의존성 버전 조회: <key>
-<현재> → 같은 메이저 …, 상위 …``). 마지막 줄은 판정(verdict):
-같은 메이저 jakarta 로 올려라 / 그 메이저엔 jakarta 가 없으니 상위 메이저 허용(``<verify>`` 필수) / 사람이
-allow_major 로 승인 / 어디에도 jakarta 가 안 보이면 같은 메이저 안의 API 변경으로 보고 코드를 고쳐라(v2.1v). 조회 순서: ``build.repository_url`` → settings 의 catch-all
-미러(자격증명 포함) → Central(offline 이 아니면) → 로컬 저장소. 지킬 것: 같은 메이저 우선; 시간 초과 / 연결
-실패가 2번 연속이면 그 실행에서 더는 묻지 않는다(폐쇄망에서 케이스마다 기다리지 않게); 절대 예외 없음(실패는
-``RepositoryVersions.error``).
+"""저장소(회사 Nexus, Central)에 라이브러리의 어떤 릴리스가 있는지 조회해 수정 프롬프트에 정보로 넣는 모듈.
+LLM은 Nexus에 무엇이 있는지 모르고, 없는 버전을 지어내면 빌드 한 라운드를 낭비한다.
+그래서 sbmig가 직접 찾아 "Dependency versions" 절로 넘긴다.
+수정 루프는 신규 / 보강 LLM 호출 전에 케이스의 라이브러리마다 ``candidates`` -> ``hint_lines``를 호출한다.
+마지막 줄은 어떤 버전을 쓸지에 대한 결론이다.
+- 조회 순서는 ``build.repository_url`` -> settings 미러 -> Central(offline이 아닐 때) -> 로컬 저장소다
+- 같은 메이저 버전을 우선한다
+- 시간 초과나 연결 실패가 두 번 연속 나면 그 실행에서는 그 저장소를 다시 조회하지 않는다
+- 예외를 던지지 않고, 실패는 ``RepositoryVersions.error``에 남긴다
 
 v2.1d dependency version policy — what the repository has for a library (docs/INTERFACES.md "v2.1d").
 
@@ -60,13 +58,11 @@ FetchBytes = Callable[[str, Optional[tuple[str, str]], float, int], Optional[byt
 
 CENTRAL = "https://repo1.maven.org/maven2/"
 MAX_FETCH_BYTES = 8 * 1024 * 1024
-# 연속 2번 시간 초과 / 연결 실패면 이 실행 동안 저장소를 건너뛴다(미러
-# 없는 폐쇄망에서 라이브러리마다 timeout 을 기다리지 않게).
+# 미러가 없는 폐쇄망에서 라이브러리마다 타임아웃을 기다리지 않도록 연속 실패 한도를 둔다
 UNREACHABLE_LIMIT = 2                 # timeouts / connection failures in a row → the repository is skipped (one run)
 _TOKEN_RE = re.compile(r"\d+|[A-Za-z]+")
 _ENV_RE = re.compile(r"\$\{env\.([A-Za-z0-9_.-]+)\}")
-# '아직 릴리스가 아님' 한정어 — 기본은 후보에서 뺀다(``libraries.include_prerelease``). 아래 _RELEASE_* 는
-# 붙어 있어도 릴리스인 한정어.
+# 아직 정식 릴리스가 아니라는 뜻의 한정어. 기본적으로 후보에서 뺀다(``libraries.include_prerelease``)
 # qualifiers that mean "not a release yet" (Maven's order: alpha < beta < milestone < rc < snapshot < release)
 _PRERELEASE_ORDER = {"alpha": 2, "a": 2, "ea": 1, "beta": 3, "b": 3, "milestone": 4, "m": 4, "preview": 4, "pre": 4,
                      "rc": 5, "cr": 5, "snapshot": 6, "dev": 1, "nightly": 1, "incubating": 1}
@@ -75,8 +71,7 @@ _RELEASE_EQUAL = {"release", "final", "ga"}
 _RELEASE_OTHER = {"sp", "jre", "jdk", "java", "android", "v", "r", "jakarta", "javax", "ee", "redhat", "osgi",
                   "bundle", "jdk8", "jdk11", "jdk17"}
 _END = (1, 0, "")
-# javax 로 시작하지만 Java EE 가 아니라 jakarta 로 옮겨지지
-# 않는 API — 이것만 쓰는 pom 을 'javax 빌드' 로 보지 않는다.
+# javax로 시작하지만 Java EE가 아니어서 jakarta로 옮겨지지 않은 API. 이것만 쓰는 pom은 javax 빌드로 보지 않는다
 _NON_EE_JAVAX = ("javax.cache", "javax.money", "javax.measure", "javax.jdo", "javax.media", "javax.vecmath",
                  "javax.help", "javax.usb", "javax.time")
 _logged_encrypted: set[str] = set()
@@ -90,8 +85,8 @@ def _tokens(v: str) -> list[str]:
 
 
 def parse_version(v: str) -> tuple:
-    """Maven 버전 정렬 키: 숫자는 정수, 끝의 0 은 무시(1.0 == 1.0.0), 릴리스가 그 프리릴리스보다 위(3.3.0-RC1
-    < 3.3.0 < 3.3.1), ``sp`` / ``jre`` 등은 같은 릴리스보다 위, 모르는 단어는 가장 아래. 절대 예외 없음.
+    """Maven 버전 정렬에 쓰는 키를 만든다.
+    끝의 0은 무시하고, 릴리스를 프리릴리스보다 높게, 모르는 단어는 가장 낮게 둔다. 예외를 던지지 않는다.
 
     A sortable key for Maven versions: numeric parts as ints, trailing zeros ignored (1.0 == 1.0.0), a release
     above its prereleases (3.3.0-RC1 < 3.3.0 < 3.3.1, 2.6.0-M1 < 2.6.0), `sp` / `jre` / … above the plain release,
@@ -132,8 +127,8 @@ def _release_word(t: str) -> bool:
 
 
 def is_prerelease(v: str) -> bool:
-    """프리릴리스인가: milestone / RC / alpha / beta / SNAPSHOT / preview / ea / cr, 그리고 숫자 뒤의 '릴리스
-    한정어가 아닌' 모든 단어. 숫자로 시작하지 않는 버전(RELEASE, LATEST, 쓰레기 값)도 릴리스가 아니다.
+    """프리릴리스 버전인지 확인한다.
+    숫자 뒤에 릴리스 한정어가 아닌 단어가 있거나 숫자로 시작하지 않으면 프리릴리스로 본다.
 
     milestone / RC / alpha / beta / SNAPSHOT / preview / ea / cr spellings (`2.6.0-M1`, `3.3.0.RC2`,
     `1.0-SNAPSHOT`), and any other word after the numbers that is not a release qualifier (`3.0-alpa-1`);
@@ -176,7 +171,7 @@ def _txt(el: Any, name: str) -> str:
 
 
 def _resolve_env(value: str) -> Optional[str]:
-    """``${env.NAME}`` 을 환경 변수로 푼다. 변수가 없거나 다른 ``${…}`` 가 남으면 None(그 값은 쓰지 않는다).
+    """``${env.NAME}``을 환경 변수 값으로 치환한다. 변수가 없거나 다른 ``${…}``가 남으면 None을 반환한다.
 
     `${env.NAME}` from the environment; None when a variable is unset or another `${…}` stays."""
     missing = False
@@ -206,7 +201,8 @@ def _parse_xml(text: str) -> Any:
 
 
 def _server_credentials(root: Any, server_id: str, path: Any) -> Optional[tuple[str, str]]:
-    """``<server id=…>`` 의 (user, password) — ``${env.X}`` 를 풀고, 암호화된 비밀번호면 None(로그 한 번)."""
+    """``<server id=…>``의 (user, password)를 반환한다.
+    비밀번호가 암호화되어 있으면 None을 반환하고 로그를 한 번 남긴다."""
     if not server_id:
         return None
     server = next((x for x in _kids(_kid(root, "servers"), "server") if _txt(x, "id") == server_id), None)
@@ -226,7 +222,7 @@ def _server_credentials(root: Any, server_id: str, path: Any) -> Optional[tuple[
 
 
 class SettingsData:
-    """settings.xml 하나에서 읽은 것: 미러들(id, url, mirrorOf, 자격증명), 활성 프로필의 저장소들(id, url, 자격증명), 파일 경로.
+    """settings.xml 하나에서 읽은 미러, 활성 프로필의 저장소, 파일 경로를 담는 데이터 클래스.
 
     What one settings.xml says: its mirrors (id, url, mirrorOf, credentials), the active profiles' repositories
     (id, url, credentials) and the path."""
@@ -235,19 +231,16 @@ class SettingsData:
         self.path = path
         self.mirrors: list[tuple[str, str, str, Optional[tuple[str, str]]]] = []   # (id, url, mirrorOf, creds)
         self.repos: list[tuple[str, str, Optional[tuple[str, str]]]] = []           # (id, url, creds) of active profiles
-        # 2026-11-06: 활성 프로필의 <pluginRepositories> — Maven 은 플러그인과 **빌드 확장**(<build><extensions>)을 여기서 받는다.
-        # 회사 PC 의 wagon-webdav 는 settings 의 pluginRepository(dmz 프록시)에만 있었고 sbmig 의 집합에는 빠져 있었다
+        # 활성 프로필의 <pluginRepositories>. Maven은 플러그인과 build extension을 여기서 받는다
         self.plugin_repos: list[tuple[str, str, Optional[tuple[str, str]]]] = []    # (id, url, creds) of active profiles
         self.servers: dict[str, Optional[tuple[str, str]]] = {}
         self.blocked: set[str] = set()                # 2026-11-05: mirror ids with <blocked>true</blocked> (Maven 3.8.1+)
 
 
 def read_settings(path: Optional[str]) -> Optional[SettingsData]:
-    """v2.1z-e: settings.xml 을 Maven 의미대로 읽는다 — 모든 ``<mirror>`` (파일 순서, mirrorOf 패턴 그대로), ``<servers>`` 의
-    자격증명(``${env.X}`` 해석, 암호화면 None), 활성 프로필(``<activeProfiles>`` + ``activeByDefault``)의 ``<repositories>`` 와
-    ``<pluginRepositories>``(플러그인·빌드 확장은 Maven 이 여기서 받는다, 2026-11-06).
-    왜: 회사 PC 의 조회가 settings 의 미러가 아닌 다른 URL 을 쓰고 있었다 — 사용자: "무조건 여기서 받고 안 받아지면 사고".
-    없거나 못 읽는 파일 → None.
+    """settings.xml을 Maven 규칙대로 읽는다. 미러(파일 순서대로), ``<servers>`` 자격증명, 활성 프로필의
+    ``<repositories>``와 ``<pluginRepositories>``를 읽는다.
+    파일이 없거나 읽지 못하면 None을 반환한다.
 
     A settings.xml by Maven's rules: every `<mirror>` in file order with its `mirrorOf` pattern, the `<servers>`
     credentials, the active profiles' `<repositories>` and `<pluginRepositories>`. None when the file is missing / unreadable."""
@@ -302,9 +295,9 @@ def read_settings(path: Optional[str]) -> Optional[SettingsData]:
 
 
 def global_settings_file(cfg: Any = None) -> Optional[Path]:
-    """Maven 의 전역 settings(``$MAVEN_HOME/conf/settings.xml`` / ``M2_HOME`` / **설정한 ``build.mvn``** 또는 PATH 의 ``mvn`` 에서
-    되짚은 설치 폴더), 없으면 None. 2026-11-05: 회사 PC 는 Maven 을 PATH 에 두지 않고 ``build.mvn`` 에 전체 경로로 적어 둔다 —
-    그 설치의 ``conf/settings.xml`` 이 Nexus 미러를 들고 있는데 PATH 만 보면 못 찾아 조회 저장소에 Nexus 가 빠졌다.
+    """Maven 전역 settings 파일을 찾는다. ``MAVEN_HOME``, ``M2_HOME``, 설정한 ``build.mvn``, PATH의 ``mvn``
+    순서로 설치 폴더를 찾고, 없으면 None을 반환한다.
+    PATH에 Maven이 없고 ``build.mvn``에 전체 경로만 있는 PC도 있기 때문이다.
 
     Maven's global settings file: `MAVEN_HOME` / `M2_HOME`, the installation behind the configured `build.mvn` (a path,
     or resolved like the build runner does) or `mvn` on PATH; None when none has `conf/settings.xml`."""
@@ -339,8 +332,8 @@ def global_settings_file(cfg: Any = None) -> Optional[Path]:
 
 
 def is_blocking_mirror(mirror_url: str, blocked: bool = False) -> bool:
-    """Maven 3.8.1+ 의 차단 미러인가: 그 미러에 ``<blocked>true</blocked>`` 가 붙었거나 URL 의 호스트가 ``0.0.0.0`` (전역 settings 의
-    ``maven-default-http-blocker`` 가 쓰는 주소). 차단 미러가 덮은 저장소는 Maven 도 쓰지 않는다.
+    """Maven 3.8.1 이상의 차단 미러인지 확인한다.
+    ``<blocked>true</blocked>``이거나 호스트가 ``0.0.0.0``이면 차단 미러다.
 
     A Maven 3.8.1+ blocking mirror: `<blocked>true</blocked>` on it, or a URL whose host is `0.0.0.0` (what the default
     `maven-default-http-blocker` of the global settings uses). A repository it covers is unusable for Maven too."""
@@ -354,8 +347,8 @@ def is_blocking_mirror(mirror_url: str, blocked: bool = False) -> bool:
 
 
 def mirror_covers(mirror_of: str, repo_id: str, repo_url: str) -> bool:
-    """Maven 의 ``mirrorOf`` 규칙: ``*`` 전부, ``external:*`` 로컬호스트·file 제외 전부, ``external:http:*`` 비-https 외부,
-    ``central`` / 명시 id, ``!id`` 제외(먼저 본다). 쉼표로 여럿.
+    """Maven의 ``mirrorOf`` 규칙에 따라 저장소가 이 미러에 포함되는지 확인한다.
+    ``!id`` 제외 규칙을 먼저 본다.
 
     Maven's `mirrorOf` matching: `*`, `external:*` (not localhost / file), `external:http:*`, explicit ids, `!id`
     exclusions (checked first), comma-separated."""
@@ -378,8 +371,8 @@ _POM_SKIP = frozenset({"target", ".git", ".svn", ".hg", ".idea", ".settings", "n
 
 
 def pom_repositories(root: Optional[Path], limit: int = 400) -> list[tuple[str, str, str]]:
-    """v2.1z-e: 프로젝트 pom 들(과 저장소 안 부모 체인)이 선언한 ``<repositories><repository><url>`` — (url, 출처). ``${…}`` 는
-    그 pom 과 부모 pom 들의 ``<properties>`` 로 풀고 못 풀면 뺀다. 중복 없이, 트리 순서.
+    """프로젝트 pom과 부모 체인이 선언한 저장소 URL 목록을 반환한다.
+    ``${…}``는 pom 속성으로 치환하고, 치환하지 못한 URL은 뺀다.
 
     The `<repository>` URLs the project's poms declare (`${…}` interpolated from the pom's and its in-repo parents'
     properties; unresolved ones skipped), deduplicated, as (id, url, origin)."""
@@ -466,9 +459,8 @@ def pom_repositories(root: Optional[Path], limit: int = 400) -> list[tuple[str, 
 
 
 def mirror_from_settings(path: str) -> Optional[tuple[str, Optional[tuple[str, str]]]]:
-    """settings.xml 의 catch-all 미러(``*`` / ``external:*``, 없으면 첫 미러)의 (url, 자격증명).
-    자격증명은 미러 id 와 같은 ``<server>`` 에서(``${env.X}`` 해석; 암호화된 비밀번호면 인증 없이 읽고 로그 한
-    번). 미러가 없거나 못 읽으면 None.
+    """settings.xml에서 모든 저장소를 받는 미러(없으면 첫 미러)의 (url, 자격증명)을 반환한다.
+    미러가 없거나 파일을 읽지 못하면 None을 반환한다.
 
     (url, credentials) of the catch-all mirror (`<mirrorOf>*</mirrorOf>` / `external:*`, else the first mirror) of
     a settings.xml; credentials from the `<server>` with the mirror's id (`${env.X}` resolved; encrypted → None).
@@ -525,8 +517,8 @@ def _pom_root(text: str) -> Any:
 
 
 def pom_is_jakarta(text: str) -> Optional[bool]:
-    """pom 이 jakarta 빌드인가: ``jakarta.*`` 의존성(또는 artifactId / classifier 에 jakarta, 자기 artifactId
-    포함)이 있으면 True, javax EE 의존성만 있으면 False, 둘 다 아니면 None(모름).
+    """pom이 jakarta 빌드인지 확인한다.
+    jakarta 의존성이 있으면 True, javax EE 의존성만 있으면 False, 둘 다 없으면 None을 반환한다.
 
     True when the pom declares a `jakarta.*` dependency (or an artifactId / classifier with `jakarta`, its own
     artifactId included), False when it declares `javax.*` EE dependencies only, None when neither."""
@@ -564,8 +556,8 @@ def _java_number(v: str) -> Optional[int]:
 
 
 def pom_java(text: str) -> Optional[int]:
-    """pom 이 밝힌 최소 Java: ``maven.compiler.release`` / ``.target`` / ``.source`` / ``java.version``
-    프로퍼티, 없으면 maven-compiler-plugin 의 ``<release>`` / ``<target>``(``1.8`` → 8).
+    """pom에 명시된 최소 Java 버전을 반환한다.
+    컴파일러 속성을 먼저 보고, 없으면 maven-compiler-plugin 설정을 본다.
 
     The minimum Java a pom states: `maven.compiler.release` / `.target` / `.source` / `java.version` properties,
     else `<release>` / `<target>` of maven-compiler-plugin (`1.8` → 8)."""
@@ -600,7 +592,8 @@ def pom_java(text: str) -> Optional[int]:
 
 
 def _metadata_versions(text: str) -> list[str]:
-    """maven-metadata.xml 의 ``<versions>`` 목록, 없으면 ``<release>`` / ``<latest>``."""
+    """maven-metadata.xml에서 ``<versions>`` 목록을 읽는다.
+    목록이 없으면 ``<release>`` / ``<latest>``를 쓴다."""
     root = _pom_root(text or "")
     if root is None:
         return []
@@ -630,9 +623,9 @@ def _sorted_unique(vs: list[str]) -> list[str]:
 # the lookup
 # ---------------------------------------------------------------------------------------------------------------------
 class RepositoryLookup:
-    """저장소 한 곳(기본 URL 하나)에서 릴리스 목록(maven-metadata.xml)과 후보 pom 을 읽는 조회기. 한 실행에
-    하나, 결과는 인스턴스 안에 캐시한다. 테스트는 진짜 저장소에 나가지 않는다: ``tests/conftest.py`` 가 이
-    클래스를 오프라인 대역으로 바꾸고, ``tests/build/test_repo_versions.py`` 는 가짜 ``fetch`` 를 주입한다."""
+    """저장소에서 릴리스 목록과 후보 pom을 조회하는 클래스.
+    실행마다 하나를 만들고 조회 결과는 인스턴스에 캐시한다.
+    테스트에서는 ``tests/conftest.py``가 오프라인 가짜 구현으로 바꾸므로 실제 저장소에 접속하지 않는다."""
     def __init__(self, cfg: Config, *, fetch: Optional[Fetch] = None, fetch_bytes: Optional[FetchBytes] = None,
                  project_root: Optional[Path] = None) -> None:
         self.cfg = cfg
@@ -651,7 +644,7 @@ class RepositoryLookup:
         self._last_error = ""
         self._versions: dict[tuple[str, str], tuple[list[str], str, str]] = {}   # → (versions, source, error)
         self._poms: dict[tuple[str, str, str], Optional[str]] = {}
-        # 어느 저장소 URL 이 그 pom 을 줬는지(로컬 저장소면 'local repository'): 운영자가 Maven 의 settings 미러와 비교할 수 있게
+        # 운영자가 Maven의 settings 미러와 비교할 수 있도록 pom을 받은 저장소 URL을 기록한다
         self._pom_sources: dict[tuple[str, str, str], str] = {}
         self._failures = 0                                        # timeouts / connection failures in a row (primary URL)
         self._dead = ""                                           # set → the primary repository is not asked again
@@ -667,8 +660,8 @@ class RepositoryLookup:
 
     # ------------------------------------------------------------------ http
     def _urllib_fetch(self, url: str, credentials: Optional[tuple[str, str]], timeout: float) -> Optional[str]:
-        """GET 한 번(User-Agent sbmig, 자격증명이 있으면 basic auth, 프록시는 환경 변수대로). 오류면 None —
-        404 는 경고가 아니다(후보 대부분은 원래 없다).
+        """URL에 GET 요청을 한 번 보낸다. 자격증명이 있으면 basic auth를 쓴다.
+        오류가 나면 None을 반환하고, 후보 대부분은 원래 없으므로 404는 경고하지 않는다.
 
         GET with `User-Agent: sbmig`, basic auth when credentials, urllib's proxy handling (environment). The
         text, or None on any error (404 is not a warning: most candidates are simply absent)."""
@@ -701,7 +694,7 @@ class RepositoryLookup:
 
     def _urllib_fetch_bytes(self, url: str, credentials: Optional[tuple[str, str]], timeout: float,
                             max_bytes: int) -> Optional[bytes]:
-        """v2.1z-e: jar 한 번 내려받기(``max_bytes`` 까지, 더 크면 None — 스캔하지 않는다). 그 밖은 ``_urllib_fetch`` 와 같다.
+        """jar를 ``max_bytes``까지만 내려받는다. 더 크면 None을 반환하고 검사하지 않는다.
 
         One GET for a jar, at most `max_bytes` (a bigger file → None: not scanned); otherwise like `_urllib_fetch`."""
         self._last_error = ""
@@ -730,8 +723,8 @@ class RepositoryLookup:
 
     def jar_bytes(self, group_id: str, artifact_id: str, version: str, classifier: Optional[str] = None, *,
                   max_bytes: int = 20 * 1024 * 1024) -> Optional[bytes]:
-        """v2.1z-e: 후보 jar 의 바이트(저장소 URL, 없으면 로컬 저장소; ``max_bytes`` 초과·오류면 None). (g, a, v, classifier)
-        별 캐시. 저장소가 ``_dead`` 면 로컬만 본다.
+        """후보 jar의 바이트를 저장소에서, 없으면 로컬 저장소에서 읽어 반환한다.
+        크기를 넘거나 오류가 나면 None을 반환한다. 응답하지 않는 저장소(``_dead``)는 건너뛰고 로컬만 본다.
 
         The candidate jar's bytes (the repository URL, else the local repository; None when bigger than `max_bytes` or
         on any error). Cached per (g, a, v, classifier)."""
@@ -760,7 +753,8 @@ class RepositoryLookup:
         return self._jars[key]
 
     def _ordered_sources(self, group_id: str, artifact_id: str) -> list[tuple[str, Optional[tuple[str, str]], str]]:
-        """(g, a) 의 버전 목록을 준 URL 을 앞에 둔 저장소 순서(그 저장소에 pom / jar 도 있을 가능성이 가장 크다)."""
+        """(g, a)의 버전 목록을 준 URL을 맨 앞에 둔 저장소 순서를 반환한다.
+        pom / jar도 그 저장소에 있을 가능성이 가장 높기 때문이다."""
         srcs = list(self.repository_urls())
         hit = self._answered.get((group_id, artifact_id))
         if hit:
@@ -769,10 +763,9 @@ class RepositoryLookup:
 
     def _fetch(self, url: str, credentials: Optional[tuple[str, str]] = None, base: Optional[str] = None
                ) -> Optional[str]:
-        """GET 한 번. 시간 초과 / 연결 실패가 ``UNREACHABLE_LIMIT`` 번 연속이면 그 저장소 URL 은 이 인스턴스(한 실행)에서 다시
-        묻지 않는다 — 미러 없는 폐쇄망이면 모든 케이스의 모든 라이브러리마다 ``repository_timeout_seconds`` 를 기다리게
-        된다. 404 / 401 같은 응답은 '닿는다' 는 뜻이라 연속 횟수를 0 으로 돌린다. v2.1z-e: URL 마다 따로 센다(``base`` = 그
-        저장소 URL; 없으면 ``url`` 의 저장소를 ``_sources`` 에서 찾는다).
+        """URL에 GET 요청을 한 번 보낸다.
+        시간 초과나 연결 실패가 ``UNREACHABLE_LIMIT``번 연속이면 이 실행에서 그 URL을 다시 조회하지 않는다.
+        404 / 401 같은 응답은 접속은 된다는 뜻이므로 연속 횟수를 0으로 되돌린다. 횟수는 URL마다 센다.
 
         One GET through the fetch function. After `UNREACHABLE_LIMIT` timeouts / connection failures in a row THAT
         repository URL is not contacted again by this instance (one run): an air-gapped host without a mirror would
@@ -816,7 +809,7 @@ class RepositoryLookup:
 
     # ------------------------------------------------------------------ where
     def repository_url(self) -> Optional[str]:
-        """첫 번째(주) 저장소 URL(끝 ``/``), 없으면 None — v2.1z-e 부터 ``repository_urls`` 의 첫 항목(settings 의 미러가 먼저).
+        """주 저장소 URL(끝에 ``/``)을 반환한다. ``repository_urls``의 첫 항목이고, 없으면 None이다.
 
         The primary base URL (trailing `/`), None when there is none: the first entry of `repository_urls()`."""
         if self._url_done:
@@ -827,15 +820,13 @@ class RepositoryLookup:
         return self._url
 
     def repository_urls(self) -> list[tuple[str, Optional[tuple[str, str]], str]]:
-        """v2.1z-e: 묻는 저장소 전부, Maven 의 의미대로 (url, 자격증명, 이유) 순서로 — settings 가 기준이다(사용자: "무조건 여기서 받고
-        안 받아지면 사고"). 저장소 목록 = settings 활성 프로필의 repositories(와 pluginRepositories) → 프로젝트 pom(과 부모 체인)의 repositories →
-        Maven Central(``central``); 각각 그 id/URL 을 덮는 **첫 미러**(``mirrorOf`` 규칙)가 있으면 미러 URL 로 바뀐다(``mirrorOf *``
-        면 pom 의 저장소는 절대 직접 묻지 않는다). offline 이면 미러 없는 Central 은 뺀다. 명시적 ``build.repository_url`` 은 운영자의
-        결정이라 **맨 앞**(회사 PC 가 그렇게 설정돼 있다) — 자격증명은 같은 URL 의 미러 / 저장소의 ``<server>``, 아니면
-        ``build.repository_server_id`` 로; settings 가 가리키는 주 URL 과 다르면 WARNING 한 번("Maven 은 <settings url> 에서 받고
-        sbmig 의 조회는 build.repository_url 을 쓴다")으로 묵은 yml 이 보이게 한다. settings 파일: ``build.settings_file``, 없으면
-        ``~/.m2/settings.xml``, 그리고 전역 ``$MAVEN_HOME/conf/settings.xml``(사용자 파일 항목이 먼저). 한 실행에 한 번 계산,
-        INFO 로 어떤 URL 을 왜 쓰는지 남긴다.
+        """조회할 저장소 전체를 Maven 규칙에 따라 (url, 자격증명, 이유) 목록으로 반환한다.
+        settings 파일을 기준으로 한다.
+        - 명시한 ``build.repository_url``이 맨 앞이다. settings의 주 URL과 다르면 WARNING을 한 번 남긴다
+        - 그다음은 settings 활성 프로필 저장소, 프로젝트 pom 저장소, Central 순이고, 각 저장소를 포함하는
+          미러가 있으면 미러 URL로 바꾼다
+        - offline이면 미러가 없는 Central은 뺀다.
+          실행마다 한 번 계산하고, 사용하는 URL과 이유를 INFO로 남긴다
 
         Every repository the lookup asks, by Maven's rules, as (url, credentials, reason): an explicit
         `build.repository_url` FIRST (the operator's decision; credentials from the `<server>` of the mirror / repository
@@ -908,9 +899,8 @@ class RepositoryLookup:
                 if hit is not None:
                     mid, murl, mo, mcreds, morigin, mblocked = hit
                     if is_blocking_mirror(murl, mblocked):
-                        # 2026-11-05 (회사 PC): Maven 3.8.1+ 의 전역 settings 가 기본으로 넣는 `maven-default-http-blocker`
-                        # (mirrorOf external:http:*, url http://0.0.0.0/) 가 사내 Nexus 의 http 주소를 덮었다 — Maven 과 똑같이 그
-                        # 저장소는 쓸 수 없다. 0.0.0.0 을 묻는 대신(WinError 10049) 왜 빠졌는지 적는다
+                        # Maven 3.8.1 이상의 기본 http 차단 미러에 걸린 저장소는 Maven도 쓸 수 없으므로
+                        # 0.0.0.0에 접속하는 대신 빠진 이유를 남긴다
                         notes.append(f"{rid} ({url}) is blocked by Maven's HTTP blocker (mirror '{mid}', mirrorOf {mo}, {morigin}): "
                                      "Maven 3.8.1+ refuses plain-http external repositories — use an https URL, override the "
                                      "mirror in the user settings.xml, or set build.repository_url (asked first, never mirrored)")
@@ -923,8 +913,8 @@ class RepositoryLookup:
                     if origin.startswith("build.settings_file") or origin.startswith("~/.m2") or origin.startswith("global"):
                         settings_gave_url = True
                     if rid == "central" and any(not is_blocking_mirror(murl, mblocked) for _i, murl, _m, _c, _o, mblocked in mirrors):
-                        # 2026-11-06 (회사 PC): 미러가 http 저장소만 덮고 central 은 안 덮어 sbmig 는 Central 을 직접 읽었다(probe `ok`) —
-                        # 그 PC 의 Maven 은 Central 에서 PKIX 로 실패하므로 sbmig 가 거기서 본 버전·pom 을 Maven 은 받지 못한다. 말해 둔다
+                        # Central을 포함하는 미러가 없으면 sbmig는 Central을 직접 읽는다.
+                        # Maven은 Central에서 실패하는 PC도 있으므로 이 점을 남긴다
                         notes.append("Maven Central is not covered by any settings mirror: sbmig reads it directly, which is fine ONLY if "
                                      "Maven can download from Central too — check with one build or `mvn dependency:get`; if Maven fails "
                                      "there (PKIX / proxy) either let Maven reach a host it can (mirrorOf central → that URL) or cover "
@@ -934,8 +924,8 @@ class RepositoryLookup:
             if configured and str(configured).strip():
                 u = _normalize_url(str(configured))
                 # credentials: the <server> of the mirror / repository with the same URL, else build.repository_server_id
-                # 2026-11-05: 차단 미러가 덮어 set 에서 빠진 저장소(out 에 없음)의 <server> 도 같은 URL 이면 쓴다 — 운영자가
-                # build.repository_url 로 그 http Nexus 를 다시 가리킬 때 로그인이 사라지면 안 된다
+                # build.repository_url로 차단된 Nexus를 다시 가리킬 때 로그인 정보가 필요하므로, 목록에서
+                # 빠진 저장소의 <server>도 URL이 같으면 쓴다
                 sid = getattr(build, "repository_server_id", None)
                 creds, creds_from = None, ""
                 if sid:                                   # the operator's explicit server id beats every URL heuristic
@@ -956,7 +946,7 @@ class RepositoryLookup:
                                  "— a stale yml value would show up here")
                 out.insert(0, (u, creds, "build.repository_url (explicit: first)" + creds_from))
         except Exception as e:  # noqa: BLE001
-            # 2026-11-05: 여기서 조용히 넘어가면 build.repository_url 까지 사라진 채 Central 만 남는다 — 화면(note:)과 로그에 남긴다
+            # 여기서 조용히 넘어가면 build.repository_url까지 빠지고 Central만 남으므로 화면과 로그에 남긴다
             notes.append(f"repository set incomplete: building it failed midway ({type(e).__name__}: {e}) — an sbmig error, "
                          "report this line; the URLs above are what was collected before it")
         seen: set[str] = set()
@@ -982,11 +972,13 @@ class RepositoryLookup:
         return uniq
 
     def lookup_trace(self, group_id: str, artifact_id: str) -> list[tuple[str, str]]:
-        """v2.1z-e: (g, a) 의 maven-metadata.xml 을 어느 URL 에 물어 무엇이 돌아왔는지 — [(url, 결과)] (조회 뒤에 있다)."""
+        """(g, a)의 maven-metadata.xml을 어느 URL에 조회해 무엇을 받았는지 목록으로 반환한다.
+        조회한 뒤에 채워진다."""
         return list(self._trace.get((group_id, artifact_id), []))
 
     def remote_failures(self, group_id: str, artifact_id: str) -> str:
-        """v2.1z-e: 원격 저장소가 하나도 답하지 못했으면 "remote repositories unreadable: <url> HTTP 401, …" 한 문장, 아니면 ""."""
+        """원격 저장소가 하나도 응답하지 않았으면 "remote repositories
+        unreadable: …" 문장을, 아니면 빈 문자열을 반환한다."""
         trace = self.lookup_trace(group_id, artifact_id)
         remote = [(u, o) for u, o in trace if u.startswith(("http://", "https://"))]
         if not remote or any(o.startswith("ok") for _u, o in remote):
@@ -1003,7 +995,8 @@ class RepositoryLookup:
             return None
 
     def _local_versions(self, d: Optional[Path]) -> list[str]:
-        """로컬 저장소 디렉토리가 아는 버전들: maven-metadata*.xml 의 목록 + pom 이 든 하위 디렉토리 이름."""
+        """로컬 저장소 디렉토리에 있는 버전 목록을 반환한다.
+        maven-metadata*.xml과 pom이 들어 있는 하위 디렉토리 이름을 읽는다."""
         if d is None or not d.is_dir():
             return []
         out: list[str] = []
@@ -1022,8 +1015,9 @@ class RepositoryLookup:
 
     # ------------------------------------------------------------------ what
     def _lookup(self, group_id: str, artifact_id: str) -> tuple[list[str], str, str]:
-        """(버전 목록, 출처, 오류)를 (g, a) 별로 캐시. URL 의 maven-metadata.xml → 없으면 로컬 저장소. 오류
-        문구는 프롬프트 줄에 그대로 나가므로 경우를 나눈다(건너뜀 / 시간 초과 / 못 읽음 / 없음 / offline)."""
+        """(g, a)의 (버전 목록, 출처, 오류)를 조회하고 캐시한다.
+        각 URL의 maven-metadata.xml을 먼저 보고, 없으면 로컬 저장소를 본다.
+        오류 문구는 프롬프트에 그대로 들어가므로 경우마다 다르게 쓴다."""
         key = (group_id, artifact_id)
         if key in self._versions:
             return self._versions[key]
@@ -1045,8 +1039,8 @@ class RepositoryLookup:
                     trace.append((url, f"ok ({len(got)} release(s))"))
                     self._answered[key] = url
                     break
-                # 결과 분류: 'not found'(404, 또는 오류 없이 빈 답) 는 "그 저장소에 없다" 는 사실, 나머지(timeout·연결 실패·401/403·
-                # 5xx) 는 "못 읽었다" — 둘을 가른다. 못 읽은 저장소가 있으면 "없음" 이 Nexus 에 대한 사실로 읽히지 않게 말한다.
+                # 404나 빈 응답은 저장소에 없다는 뜻이고 그 밖의 실패는 읽지 못한 것이다.
+                # 읽지 못한 저장소가 있으면 Nexus에 없다고 단정하지 않는다
                 if text:
                     outcome = "empty maven-metadata.xml"
                 elif not self._last_error or self._last_error.startswith("HTTP 404"):
@@ -1084,13 +1078,14 @@ class RepositoryLookup:
         return result
 
     def versions(self, group_id: str, artifact_id: str) -> list[str]:
-        """저장소 / 로컬 저장소가 아는 그 아티팩트의 모든 릴리스(오래된 것 → 최신).
+        """저장소 / 로컬 저장소에 있는 그 아티팩트의 모든 릴리스를 오래된 것부터 반환한다.
 
         Every release of the artifact the repository / local repository knows, sorted (oldest → newest)."""
         return list(self._lookup(group_id, artifact_id)[0])
 
     def pom_text(self, group_id: str, artifact_id: str, version: str) -> Optional[str]:
-        """후보 버전의 pom 텍스트(URL, 없으면 로컬 저장소), 없으면 None. (g, a, v) 별 캐시."""
+        """후보 버전의 pom 텍스트를 저장소 URL에서, 없으면 로컬 저장소에서 읽어 반환한다.
+        어디에도 없으면 None이다. (g, a, v)별로 캐시한다."""
         key = (group_id, artifact_id, version)
         if key in self._poms:
             return self._poms[key]
@@ -1115,16 +1110,17 @@ class RepositoryLookup:
         return self._poms[key]
 
     def pom_source(self, group_id: str, artifact_id: str, version: str) -> Optional[str]:
-        """``pom_text`` 가 그 pom 을 읽어 온 저장소 URL(로컬 저장소면 'local repository'), 아직 안 읽었거나 못 읽었으면 None.
-        2026-11-06 회사 실행: sbmig 는 읽었는데 Maven 은 404 — 둘이 다른 URL 을 물었는지 로그에서 바로 보이게.
+        """``pom_text``가 그 pom을 읽은 저장소 URL을 반환한다(로컬이면 'local repository').
+        읽지 않았거나 읽지 못했으면 None이다.
+        sbmig와 Maven이 다른 URL을 조회했는지 로그에서 바로 확인할 수 있게 한다.
 
         The repository URL `pom_text` read that pom from (or 'local repository'); None when not read."""
         return self._pom_sources.get((group_id, artifact_id, version))
 
     def candidates(self, key: str, current: Optional[str]) -> RepositoryVersions:
-        """``key``(groupId:artifactId)와 현재 버전으로 RepositoryVersions 를 만든다: 현재보다 새로운 같은
-        메이저 릴리스(오래된 → 최신), 상위 메이저마다 최신 하나, 그리고 ``_check_poms`` 로 jakarta 여부·최소
-        Java. 프리릴리스는 ``libraries.include_prerelease`` 일 때만. 절대 예외 없음.
+        """``key``와 현재 버전으로 RepositoryVersions를 만든다.
+        같은 메이저의 새 릴리스, 상위 메이저별 최신 버전, jakarta 여부, 최소 Java 버전을 담는다.
+        프리릴리스는 ``libraries.include_prerelease``일 때만 넣는다. 예외를 던지지 않는다.
 
         See the module docstring. `key` = groupId:artifactId."""
         cur = current if current and "${" not in current else None
@@ -1164,9 +1160,10 @@ class RepositoryLookup:
         return rv
 
     def _check_poms(self, g: str, a: str, rv: RepositoryVersions, by_major: dict[int, list[str]]) -> None:
-        """후보 pom 검사(모두 합쳐 최대 ``libraries.max_pom_checks``개): 같은 메이저는 최신부터 내려가다 javax
-        빌드를 만나면 멈춘다(그보다 오래된 것도 javax 이므로). 다음 상위 메이저마다 최신 하나. 예산이 남으면
-        jakarta 인 상위 메이저를 첫 jakarta 릴리스까지 내려간다(``first_jakarta``)."""
+        """후보 버전의 pom을 읽어 jakarta 여부와 Java 버전을 확인한다.
+        모두 합쳐 ``libraries.max_pom_checks``개까지만 본다.
+        같은 메이저는 최신부터 내려가다 javax 빌드를 만나면 멈춘다.
+        남은 횟수가 있으면 jakarta인 상위 메이저에서 첫 jakarta 릴리스(``first_jakarta``)까지 찾는다."""
         budget = self.max_pom_checks
         jakarta_seen: dict[str, bool] = {}
 
@@ -1214,8 +1211,8 @@ class RepositoryLookup:
 # prompt lines
 # ---------------------------------------------------------------------------------------------------------------------
 def _tag(c: VersionCandidate, first_jakarta: Optional[str] = None) -> str:
-    """후보 하나의 표시 '2.6.0 (jakarta ✓, Java 17)'. 같은 메이저의 첫 jakarta
-    릴리스가 따로 있으면 덧붙인다."""
+    """후보 하나를 '2.6.0 (jakarta ✓, Java 17)' 형태의 문구로 만든다.
+    같은 메이저의 첫 jakarta 릴리스가 따로 있으면 덧붙인다."""
     bits: list[str] = []
     if c.jakarta is True:
         bits.append("jakarta ✓")
@@ -1233,7 +1230,7 @@ def _tag(c: VersionCandidate, first_jakarta: Optional[str] = None) -> str:
 
 
 def _listing(cands: list[VersionCandidate], first_jakarta: Optional[str], cap: int = 6) -> str:
-    """후보 목록 표시: 최신 ``cap`` 개만, 앞의 나머지는 '… (+n)'."""
+    """후보 목록을 표시 문구로 만든다. 최신 ``cap``개만 보이고 나머지는 '… (+n)'으로 줄인다."""
     shown = cands[-cap:]
     rest = len(cands) - len(shown)
     if first_jakarta in {c.version for c in shown}:
@@ -1243,9 +1240,9 @@ def _listing(cands: list[VersionCandidate], first_jakarta: Optional[str], cap: i
 
 
 def hint_lines(rv: RepositoryVersions, entry: Any = None) -> list[str]:
-    """라이브러리 하나의 프롬프트 줄들: 표 항목 줄(``library_hint_line``) 먼저, 다음 저장소 사실(같은 메이저의
-    새 릴리스와 jakarta ✓ / javax, 상위 메이저들), 마지막에 판정 한 줄(``_verdict_line``). 조회 실패면 '같은
-    메이저에 머물라' 한 줄. 절대 예외 없음(프롬프트 줄 때문에 수정이 깨지면 안 된다).
+    """라이브러리 하나에 대한 프롬프트 줄을 만든다. 표 항목 줄, 저장소 정보, 결론 한 줄 순서다.
+    조회에 실패하면 같은 메이저에 머물라는 한 줄만 낸다.
+    프롬프트 줄 때문에 수정이 깨지면 안 되므로 예외를 던지지 않는다.
 
     Prompt lines for one library: the table entry first (`library_hint_line`), then what the repository has
     (`<key> — current 2.4.2; same major (2.x) in the repository, newer than current: 2.5.0 (javax), 2.6.0 (jakarta
@@ -1263,7 +1260,8 @@ def hint_lines(rv: RepositoryVersions, entry: Any = None) -> list[str]:
             return lines
         where = "" if not rv.source or rv.source.startswith(("http://", "https://")) else " (local repository only)"
         if where:
-            # v2.1z-e: 원격이 못 읽혔으면 그렇다고 말한다 — "newer release 없음" 이 Nexus 에 대한 사실로 읽히지 않게
+            # 원격을 읽지 못했으면 그 사실을 남긴다.
+            # 새 릴리스가 없다는 말이 Nexus에 없다는 뜻으로 읽히면 안 되기 때문이다
             failed = [t.split(" → ", 1) for t in (rv.urls_tried or []) if t.startswith(("http://", "https://"))]
             bad = [f"{u} {o}" for u, o in failed if not o.startswith(("ok", "not found", "empty"))]
             if bad:
@@ -1295,12 +1293,11 @@ def hint_lines(rv: RepositoryVersions, entry: Any = None) -> list[str]:
 
 
 def _verdict_line(rv: RepositoryVersions, entry: Any = None) -> str:
-    """규칙 14 의 판정을 한 줄로 명시한다 — 모델이 표 줄과 저장소 줄을 스스로 조합하지 않게(2026-10-27,
-    "qlrm 같은 경우는 메이저로 올라가야 하지 않아?"). 코드의 검사 순서: 사람의 ``allow_major`` → 같은 메이저
-    jakarta(저장소 ✓, 또는 표가 현재 메이저의 더 새 버전을 앎) → 그 메이저엔 없고 표 / 저장소가 상위 메이저
-    jakarta 를 앎(표 버전, 없으면 jakarta 인 가장 높은 메이저의 최신; 메이저 업그레이드 허용, ``<verify>``
-    필수) → 릴리스는 있는데 jakarta 가 어디에도 없음(v2.1v: 같은 메이저 안의 API 변경 — 관리 버전에 맞춰 코드를
-    고치고 버전은 그대로; ``<no_script>`` 거절을 시키지 않는다). 사실이 없으면(조회 오류, 현재 버전 모름) "".
+    """규칙 14에 따라 어떤 버전을 쓸지 결론을 한 줄로 만든다.
+    모델이 표 줄과 저장소 줄을 직접 조합하지 않게 하기 위해서다.
+    검사 순서는 ``allow_major`` -> 같은 메이저의 jakarta -> 상위 메이저의 jakarta(``<verify>`` 필수) ->
+    어디에도 jakarta가 없으면 같은 메이저 안의 API 변경으로 보고 코드를 고친다.
+    조회 오류가 있거나 현재 버전을 모르면 빈 문자열을 반환한다.
 
     ONE explicit rule-14 verdict so the model does not have to combine the table line and the repository line
     itself (2026-10-27, "qlrm 같은 경우는 메이저로 올라가야 하지 않아?"):
@@ -1342,8 +1339,8 @@ def _verdict_line(rv: RepositoryVersions, entry: Any = None) -> str:
                     f"changes (coordinates, removed packages, API) and write <verify>; the change will be listed "
                     f"for the operator")
         if rv.same_major or rv.higher:
-            # v2.1v (B-H1 / E-H1): "jakarta 여부 미상"(Spring 처럼 pom 이 jakarta.* 를 선언하지 않는 jakarta 네이티브
-            # 라이브러리)을 "jakarta 빌드 없음 → <no_script>" 로 읽어 거짓 거절을 시켰다 — 같은 메이저 안의 API 변경으로 본다
+            # pom에 jakarta를 선언하지 않는 jakarta 전용 라이브러리도 있으므로, jakarta 빌드가 없다고
+            # 거절하지 않고 같은 메이저 안의 API 변경으로 본다
             return (f"{rv.key} → verdict: no jakarta build is known on any line — the API changed inside the same "
                     f"major: fix the code against the version the parent chain / Boot BOM manages and leave the "
                     f"version")

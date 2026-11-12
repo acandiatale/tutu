@@ -1,18 +1,17 @@
-"""웹 앱의 프로세스 안 실행 관리자: 이관마다 작업 스레드 하나, SSE 로 흘릴 이벤트를 모은다.
-흐름상 위치: app.py 라우트 → :meth:`RunManager.start_file` (검사·설정·워크스페이스·오케스트레이터를 동기로
-만들어 잘못된 요청은 400) → 작업 스레드 ``_worker`` → ``stream_graph`` 노드마다 기록 →
-:meth:`RunManager.events` 가 그 기록과 ``journal.jsonl`` / ``sbmig.log`` 의 새 줄을 SSE 이벤트로 바꾼다.
-지켜야 할 것: (1) 동시에 도는 이관은 Job 모드(k8s-job / local-job)에서 ``SBMIG_JOB_MAX_PARALLEL`` 개까지(기본 1), 프로세스
-안(in-process)에서는 한 번에 하나 — ``_turns`` (올린 순서대로의 FIFO 줄 + 번호 붙은 자리)에서 줄을 서고, 기다리는 실행은
-``queued`` 이고 줄의 몇 번째인지(``queue``)를 상태로 알린다. (2) 멈춤은 그래프 노드 사이에서만 — LangGraph 는 진행 중인
-동기 노드(Maven, OpenRewrite, LLM 호출)를 끊지 못한다. (3) 실행 로그는 스레드 필터로 나눈다 — 각
-``sbmig.log`` 에는 그 실행 스레드의 줄만. (4) 메모리에는 끝난 실행을 ``max_finished_runs`` 개만 두고,
-나머지는 실행 폴더의 파일로 답한다. (5) Job 모드에서는 Job 을 **만드는** Main 이 설정이 읽는 환경 변수의 값 지문(``env_pins``)과
-정책 ``SBMIG_JOB_ENV_PIN``(k8s-job 기본 refuse, local-job 기본 off)을 ``control/state.json`` 의 creating 전이에 함께 적는다 —
-Worker 가 자기 환경과 대조한다(리뷰 2026-11-10). (6) 이어 돈 조치의 재개(2026-11-11 wave 4, ``resume_remediation``): 같은 실행의
-새 시도를 **다른 행동**(``SBMIG_WORKER_ACTION=remediation-resume``)의 Job 으로 만든다 — 업로드와 같은 FIFO 줄·자리를 쓰고, 제어 상태는
-``control/remediation-resume.json``, 결과는 ``remediation-job-status.json``, Job 이름은 ``<이관 Job 이름>-rem<시도>``. 이관의 상태·보고서·
-web-status 는 그대로 "끝남" 이고, ``status()`` 는 ``remediation_job`` 으로 재개 Job 을 따로 보인다. 재시작 복구도 같은 규칙으로 이어받는다.
+"""웹 앱에서 이관 실행을 시작하고 상태와 진행 이벤트를 관리하는 모듈.
+이관마다 작업 스레드 하나를 두고 SSE로 보낼 이벤트를 모은다.
+라우트가 :meth:`RunManager.start_file`을 호출하면 설정과 오케스트레이터를 바로 만들고(잘못된 요청은 400),
+``_worker``가 ``stream_graph``의 노드마다 이벤트를 기록한다. :meth:`RunManager.events`는 그 기록과 저널,
+로그의 새 줄을 SSE로 보낸다.
+- 동시에 실행하는 이관 수는 Job 모드에서 ``SBMIG_JOB_MAX_PARALLEL``개(기본 1), in-process에서 1개이며
+  ``_turns``의 대기열과 슬롯으로 관리한다
+- 중지는 그래프 노드 사이에서만 적용된다. 진행 중인 Maven, OpenRewrite, LLM 호출은 끊지 않는다
+- 실행별 로그는 스레드 필터로 나누어 각 ``sbmig.log``에 그 실행의 줄만 남긴다
+- 끝난 실행은 메모리에 ``max_finished_runs``개까지만 두고, 나머지는 실행 폴더의 파일로 응답한다
+- Job을 만드는 Main이 환경 변수 해시(``env_pins``)와 정책 ``SBMIG_JOB_ENV_PIN``을 creating 상태와 함께
+  기록하고, Worker가 자기 환경과 비교한다
+- 취약점 조치 재개(``resume_remediation``)는 같은 실행의 새 시도를 별도 Job으로 만든다.
+  업로드와 같은 대기열을 쓰고, 이관의 상태와 보고서는 바꾸지 않는다
 
 In-process run manager for the web app: one worker thread per migration, events for the SSE stream.
 
@@ -140,11 +139,11 @@ SERVED_FILES = {"report.md": "text/markdown; charset=utf-8", "report.json": "app
                 # v2.1: the run's error list — every error with its tries, the LLM's answer and the applied diff
                 "errors.md": "text/markdown; charset=utf-8",
                 "errors.jsonl": "application/x-ndjson; charset=utf-8"}
-# 리뷰 2026-11-10 — 쓰는 순간 비밀 값이 지워지는 파일: 실행 중에도 내려받을 수 있다. 나머지(보고서, 오류 목록, plan …)는
-# 실행이 끝날 때의 마지막 정제를 지난 뒤에만 내준다(`RunManager.file_withheld`)
+# 기록할 때 이미 마스킹되는 파일이므로 실행 중에도 내려받을 수 있다.
+# 나머지 파일은 실행이 끝나고 마지막 마스킹을 거친 뒤에만 내준다(`RunManager.file_withheld`)
 LIVE_FILES = ("sbmig.log", "journal.jsonl")
-# 파일 꼬리(journal / sbmig.log)는 알림이 없으므로 0.5 초마다 다시 본다. 15 초 조용하면 ping: 몇 분짜리 Maven
-# 빌드 동안 브라우저·프록시가 연결을 끊지 않게
+# journal과 sbmig.log의 새 줄은 변경 알림이 없으므로 0.5초마다 다시 읽는다. 몇 분 걸리는 Maven 빌드 동안
+# 브라우저나 프록시가 연결을 끊지 않도록 15초 동안 보낼 것이 없으면 ping을 보낸다
 POLL_S = 0.5
 KEEPALIVE_S = 15.0
 MAX_UPDATE_CHARS = 20_000          # a node update larger than this is summarized (keys only) in the `node` event
@@ -155,32 +154,35 @@ SOURCE_ZIP = "source.zip"             # k8s Job mode: the uploaded zip, in the r
 JOB_STALE_S = 6 * 3600                # a job run of an earlier server process older than this with no status file is "unknown"
 DEFAULT_MAX_FINISHED_RUNS = 200
 LOCAL_LOST = "the local job did not survive the server restart"
-# Job 생성 요청의 응답이 불확실한 경우(이미 있음 / 전송 오류): 같은 이름의 Job 이 있으면 이어받는다 — 두 번 만들지 않게
+# Job 생성 응답이 불확실하면(이미 있음, 전송 오류) Job을 두 번 만들지 않도록 같은 이름의 Job을 이어받는다
 _UNCERTAIN_CREATE_RE = re.compile(r"HTTP 409|RequestException|ConnectionError|Timeout|ChunkedEncodingError|ProtocolError")
-# 리뷰 2026-11-10 — 자리 수의 한도(Job 모드 SBMIG_JOB_MAX_PARALLEL, 기본 1)는 Job 이 끝난 것을 확인한 뒤에야 자리를 넘겨야 지켜진다
-# (_hold_until_ended, 자리마다 따로). 그 기다림의 박자:
-HOLD_WARN_S = 60.0                 # 끝나지 않는 Job 을 기다리는 동안 이 간격으로 경고를 남긴다
-DELETE_RETRY_S = 15.0              # Job 삭제 요청이 실패하면 이 간격으로 다시 보낸다
-API_REMIND_S = 600.0               # Kubernetes API 가 계속 답하지 않으면 이 간격으로 로그에 다시 남긴다
-CREATE_CONFIRM_POLLS = 3           # 생성 응답이 불확실한데 Job 이 안 보이면 이만큼 더 묻는다(요청이 늦게 닿았을 수 있다)
+# Job이 끝난 것을 확인한 뒤에 슬롯을 넘겨야 슬롯 수 한도가 지켜진다(_hold_until_ended).
+# 아래는 그 대기에 쓰는 간격이다
+HOLD_WARN_S = 60.0                 # 끝나지 않는 Job을 기다리는 동안 경고를 남기는 간격
+DELETE_RETRY_S = 15.0              # Job 삭제 요청이 실패했을 때 다시 시도하는 간격
+API_REMIND_S = 600.0               # Kubernetes API가 계속 응답하지 않을 때 로그를 다시 남기는 간격
+CREATE_CONFIRM_POLLS = 3           # 생성 응답이 불확실하고 Job이 보이지 않을 때 더 조회하는 횟수
 
 
 class _ServerClosing(Exception):
-    """Kubernetes API 의 답을 기다리는 중에 서버가 내려간다 — 실행을 실패로 적지 않고 제어 상태를 그대로 둔다(다음 Main 이 이어받는다).
+    """Kubernetes API 응답을 기다리는 중에 서버가 종료될 때 쓰는 예외 클래스.
+    실행을 실패로 기록하지 않고 제어 상태를 그대로 두어 다음에 뜨는 Main이 이어받게 한다.
 
     The server shuts down while a run waits for the Kubernetes API: the control state is kept for the next Main."""
 
 
 class _LeftLine(Exception):
-    """기다리던 실행이 멈춤 요청으로 줄에서 빠졌다(``_FifoTurns.withdraw``) — 자리를 받지 않았고 Job 도 만들지 않는다.
+    """대기 중이던 실행이 중지 요청으로 대기열에서 빠졌을 때 쓰는 예외 클래스(``_FifoTurns.withdraw``).
+    이 실행은 슬롯을 받지 않았고 Job도 만들지 않았다.
 
     A waiting run was taken out of the line by a stop (`_FifoTurns.withdraw`): no slot, no Job."""
 
 
 @dataclass
 class Run:
-    """이 서버 프로세스가 시작한 실행 하나의 메모리 상태: 이벤트 기록(``history``), 멈춤 요청(``cancel``),
-    대기열을 벗어남(``active``), 끝남(``done``). 앞선 프로세스의 실행은 폴더로만 남는다.
+    """이 서버 프로세스가 시작한 실행 하나의 메모리 상태를 담는 클래스.
+    이벤트 기록(``history``), 중지 요청(``cancel``), 대기열 통과(``active``), 종료(``done``)를 담는다.
+    이전 프로세스가 시작한 실행은 실행 폴더로만 남는다.
 
     A run started by this server process (runs from earlier processes only exist as directories)."""
     run_id: str
@@ -201,71 +203,76 @@ class Run:
     error: str | None = None
     last_node: str | None = None
     started: float = field(default_factory=time.time)
-    # k8s Job 모드(2026-11-05): 이 실행은 다른 파드에서 돈다 — Job 이름과 마지막으로 본 상태
+    # k8s Job 모드에서는 이 실행이 다른 파드에서 실행되므로 Job 이름과 마지막으로 확인한 상태를 둔다
     job: bool = False
     job_name: str | None = None
     job_phase: str | None = None
     job_pod: str | None = None
-    # v2.1z-ac: 접수 때 고정한 입력(control/request.json)과 Main 의 제어 상태(control/state.json)
+    # 접수할 때 고정한 입력(control/request.json)과 Main의 제어 상태(control/state.json)
     request: Any = None
     control: Any = None
-    verified: bool | None = None          # True = 이 실행·시도의 job-status.json 을 받았다
-    result_source: str | None = None      # "status" (job-status.json) | "container" (컨테이너 종료 코드만)
-    final_state: str | None = None        # _run_job 이 정한 끝 상태(없으면 결과 검증으로 finished / lost)
-    keep_state: bool = False              # 서버 종료: Job 은 계속 돈다 — state.json 을 그대로 두어 다음 Main 이 이어받게
-    recover: str | None = None            # 재시작 복구: None (새로 만듦) | "probe" (creating: 있으면 이어받음) | "adopt"
+    verified: bool | None = None          # True면 이 실행과 시도의 job-status.json을 받았다는 뜻
+    result_source: str | None = None      # "status"(job-status.json) | "container"(컨테이너 종료 코드만)
+    final_state: str | None = None        # _run_job이 정한 종료 상태이며 없으면 결과 확인으로 finished / lost를 정한다
+    keep_state: bool = False              # 서버가 종료될 때 다음 Main이 이어받도록 state.json을 그대로 둔다
+    recover: str | None = None            # 재시작 후 복구 방식: None | "probe" | "adopt"
     status_warned: bool = False
-    status_error: str | None = None       # 받은 job-status.json 의 error(Worker 가 실행 자체를 못 했다: 요청 거부, sbmig 를 못 띄움)
-    pod_step_closed: bool = False         # 이 감시에서 '파드' 단계를 닫는 이벤트(completed / failed)를 이미 보냈다 — 한 번만
-    # Kubernetes API 가 답하지 않는 동안(리뷰 2026-11-10): 처음 실패한 때, 마지막으로 크게 알린 때(monotonic), 화면에 보일 한 줄
+    status_error: str | None = None       # Worker가 실행 자체를 하지 못했을 때 job-status.json에 담긴 error
+    pod_step_closed: bool = False         # '파드' 단계를 닫는 이벤트는 한 번만 보내므로 이미 보냈는지 기억한다
+    # Kubernetes API가 응답하지 않는 동안의 정보로, 처음 실패한 시각, 마지막으로 알린 시각(monotonic),
+    # 화면에 보일 한 줄을 담는다
     api_down_since: float | None = None
     api_down_reported: float | None = None
     job_note: str | None = None
     success: bool | None = None
-    # v2.1z-ae: 이 Job 실행이 쥔(쥐었던) 자리 번호 — Job 의 env SBMIG_JOB_SLOT, control/state.json 의 slot
+    # 이 Job 실행이 차지하고 있거나 차지했던 슬롯 번호이며 Job env SBMIG_JOB_SLOT, control/state.json의 slot과 같다
     slot: int | None = None
-    # 2026-11-11 wave 4: None = 이관, "remediation-resume" = 이어 돈 조치 재개 시도(제어 상태·결과 파일·줄의 키가 따로)
+    # None은 이관이고 "remediation-resume"은 조치 재개 시도다.
+    # 재개 시도는 제어 상태, 결과 파일, 대기열 키를 따로 쓴다
     action: str | None = None
-    # v2.1z-aj: 실행 방식 — full(이관 전체) | remediation(이관 없이 취약점 조치만). Job 실행은 request.json 의 값과 같다
+    # 실행 방식으로 full(이관 전체) | remediation(이관 없이 취약점 조치만) 중 하나다.
+    # Job 실행에서는 request.json의 값과 같다
     flow: str = FLOW_FULL
-    # 2026-11-12: 사람이 올린 파일 이름 그대로(화면이 실행을 이 이름으로 보인다)
+    # 사용자가 올린 파일 이름 그대로이며 화면이 실행을 이 이름으로 보여 준다
     upload: str | None = None
 
     @property
     def key(self) -> str:
-        """차례 줄(``_turns``)의 키: 이관은 실행 id, 재개 시도는 ``<실행 id>#<행동>`` — 같은 실행의 두 시도가 서로를 막지 않게.
+        """대기열(``_turns``)에서 쓰는 키. 이관은 실행 id이고 재개 시도는 ``<실행 id>#<action>``이므로 같은
+        실행의 두 시도가 서로를 막지 않는다.
 
         The turn key: the run id for a migration, `<run id>#<action>` for a resume attempt."""
         return f"{self.run_id}#{self.action}" if self.action else self.run_id
 
     @property
     def control_file(self) -> str:
-        """이 시도의 제어 상태 파일 이름(``control/`` 안). / This attempt's control-state file name."""
+        """이 시도의 제어 상태 파일 이름(``control/`` 안)을 반환한다."""
         return contract.state_file_for(self.action)
 
     @property
     def status_file(self) -> str:
-        """이 시도의 Worker 결과 파일 이름(실행 폴더). / This attempt's Worker result file name."""
+        """이 시도의 Worker 결과 파일 이름(실행 폴더 안)을 반환한다."""
         return contract.status_file_for(self.action)
 
     @property
     def attempt(self) -> int:
-        """이 실행의 시도 번호(제어 상태의 값, 없으면 1). / The attempt number (from the control state; 1 without one)."""
+        """제어 상태에 기록된 이 실행의 시도 번호를 반환한다. 제어 상태가 없으면 1을 반환한다. / The attempt number (from the control state; 1 without one)."""
         return int(self.control.attempt) if self.control is not None else 1
 
     @property
     def owner(self) -> str | None:
-        """Job 라벨 ``sbmig-owner`` 의 값(요청마다 난수). / The per-request owner token (label `sbmig-owner`)."""
+        """Job 라벨 ``sbmig-owner``의 값. 요청마다 다른 난수다."""
         return self.control.owner if self.control is not None else None
 
 
 class _FifoTurns:
-    """이관 차례 줄(FIFO) + 번호 붙은 자리(v2.1z-ae): 올린 순서대로, 동시에 ``slots`` 개까지. ``join`` 으로 줄 끝에 서고(업로드를
-    받을 때, 작업 스레드 시작 전), ``turn`` 이 **줄 맨 앞이고 빈 자리가 있을 때까지** 기다렸다가 비어 있는 가장 작은 번호(1 부터)를
-    차지하고 그 번호를 내준다 — 아무도 앞사람을 앞지르지 못한다. 블록을 떠나면(예외여도) 자리를 비우고 기다리는 스레드를 깨운다.
-    ``occupy`` 는 재시작 복구 전용: 클러스터에 이미 있는(있을 수 있는) Job 은 이미 돌고 있으므로 한도와 상관없이 지금 자리를 잡는다 —
-    적힌 번호 그대로(다른 키가 쥐었어도; 새 실행은 어느 키도 쥐지 않은 번호만 받는다). ``withdraw`` 는 멈춘 대기 실행을 줄에서 뺀다.
-    ``threading.Lock`` 은 기다리는 스레드 중 누구에게 넘어갈지 정하지 않아 순서가 뒤바뀔 수 있었다(A10). ``slots == 1`` 이면 예전과 같다.
+    """업로드 순서대로 실행을 들여보내는 대기열과 번호 붙은 슬롯을 관리하는 클래스. 동시에 ``slots``개까지
+    실행하며, 기다리는 스레드 사이의 순서를 ``threading.Lock``이 보장하지 않으므로 직접 구현했다.
+    - ``join``으로 줄 끝에 서고, ``turn``은 맨 앞이 되고 빈 슬롯이 생길 때까지 기다렸다가 비어 있는 가장
+      작은 번호(1부터)를 차지한다. 블록을 벗어나면 예외가 나도 슬롯을 비운다
+    - ``occupy``는 재시작 복구에서만 쓴다. 이미 실행 중인 Job은 한도와 상관없이 기록된 번호로 슬롯을 잡고,
+      새 실행은 아무도 쓰지 않는 번호만 받는다
+    - ``withdraw``는 중지된 대기 실행을 줄에서 뺀다
 
     Upload-order line plus numbered slots: `join` takes a place at the end of the line (when the upload is accepted,
     before the worker thread starts); `turn(key)` waits until `key` is first in line AND fewer than `slots` keys hold a
@@ -279,13 +286,13 @@ class _FifoTurns:
         self.slots = max(1, int(slots))
         self._cond = threading.Condition()
         self._line: deque[str] = deque()
-        # key → slot number. 새 실행(turn)이 받는 번호는 어느 키도 쥐지 않은 번호뿐이다. 복구(occupy)만 적힌 번호를 그대로 지켜 두 키가
-        # 한 번호를 쥘 수 있다 — 두 파드가 실제로 그 번호로 돌고 있으므로(리뷰 2026-11-10)
+        # 키별 슬롯 번호다. 새 실행은 아무도 쓰지 않는 번호만 받지만, 복구(occupy)는 기록된 번호를 그대로
+        # 쓰므로 두 키가 같은 번호를 가질 수 있다. 두 파드가 실제로 그 번호로 실행 중이기 때문이다
         self._active: dict[str, int] = {}
-        self._withdrawn: set[str] = set()       # 기다리다 줄에서 빠진 키(멈춤) — turn() 이 깨어나 _LeftLine 을 낸다
+        self._withdrawn: set[str] = set()       # 대기 중에 중지되어 줄에서 빠진 키이며 turn()이 깨어나 _LeftLine을 던진다
 
     def _lowest_free(self) -> int:
-        # 호출자가 _cond 를 쥐고 있다. 어느 키도 쥐지 않은 가장 작은 번호(1 부터)
+        # 아무도 쓰지 않는 가장 작은 번호(1부터)를 반환한다. 호출하는 쪽이 _cond를 잡고 있어야 한다
         used = set(self._active.values())
         n = 1
         while n in used:
@@ -293,7 +300,7 @@ class _FifoTurns:
         return n
 
     def join(self, key: str) -> None:
-        """줄 끝에 선다(같은 키가 이미 줄에 있거나 자리를 쥐고 있으면 그대로).
+        """키를 대기 줄 끝에 세운다. 같은 키가 이미 줄에 있거나 슬롯을 갖고 있으면 그대로 둔다.
 
         Take a place at the end of the line (no-op when `key` is already waiting or holds a slot)."""
         with self._cond:
@@ -301,7 +308,7 @@ class _FifoTurns:
                 self._line.append(key)
 
     def leave(self, key: str) -> None:
-        """줄과 자리 어디에 있든 빠지고 기다리는 스레드를 깨운다. 없는 키면 아무 일도 없다.
+        """키를 대기 줄이나 슬롯에서 빼고 기다리는 스레드를 깨운다. 없는 키면 아무것도 하지 않는다.
 
         Leave the line and the slot, wherever `key` is, and wake the waiters; an unknown key is harmless."""
         with self._cond:
@@ -314,9 +321,9 @@ class _FifoTurns:
             self._cond.notify_all()
 
     def withdraw(self, key: str) -> bool:
-        """기다리는 키를 지금 줄에서 뺀다(멈춤 요청, 리뷰 2026-11-10). 그 키의 ``turn()`` 은 깨어나 ``_LeftLine`` 을 낸다 — 자리를 받지
-        않는다. 줄에 없으면(이미 자리를 받았거나 모르는 키) False 이고 아무것도 바꾸지 않는다. 자리를 받는 일과 같은 잠금 안이라 둘 중
-        하나만 일어난다. 뒤의 실행들은 한 칸씩 앞으로(``notify_all``).
+        """대기 중인 키를 바로 줄에서 뺀다. 그 키의 ``turn()``은 깨어나서 슬롯 대신 ``_LeftLine``을 던진다.
+        줄에 없으면(이미 슬롯을 받았거나 모르는 키) 아무것도 바꾸지 않고 False를 반환한다.
+        슬롯 배정과 같은 잠금 안에서 판단하므로 둘 중 하나만 일어난다.
 
         Take a waiting key out of the line now; its `turn()` wakes up and raises `_LeftLine` instead of taking a slot. False
         (and nothing changed) when `key` is not waiting — it already holds a slot, or it is unknown. Decided under the same
@@ -330,10 +337,10 @@ class _FifoTurns:
             return True
 
     def occupy(self, key: str, prefer: int | None = None) -> int:
-        """재시작 복구 전용: 한도와 상관없이 **지금** 자리를 잡고 그 번호를 돌려준다(줄에 있었으면 줄에서 빠진다). ``prefer`` (state.json 에
-        적힌 번호)가 있으면 **다른 키가 이미 쥐었어도 그 번호** — 그 Job 의 파드는 env 로 받은 그 번호(그 번호의 Maven 로컬 저장소)로 돌고
-        있으므로 메모리에서 다른 번호를 주면 나중에 그 번호가 새 실행에 넘어간다(리뷰 2026-11-10). 겹치면 두 실행을 이름 대어 WARNING.
-        ``prefer`` 가 없거나 읽을 수 없으면 비어 있는 가장 작은 번호. 이미 자리를 쥔 키면 그 번호.
+        """재시작 복구에서 한도와 상관없이 바로 슬롯을 잡고 그 번호를 반환한다.
+        ``prefer``(state.json에 기록된 번호)가 있으면 다른 키가 쓰고 있어도 그 번호를 쓴다. 그 Job의 파드가 실제로 그
+        번호의 Maven 로컬 저장소를 쓰고 있기 때문이며, 겹치면 두 실행 이름을 담아 WARNING을 남긴다.
+        ``prefer``가 없으면 비어 있는 가장 작은 번호를, 이미 슬롯을 가진 키면 그 번호를 반환한다.
 
         Restart recovery only: take a slot now whatever the limit (a Job that exists already runs and must be counted).
         `prefer` (the recorded number) is honoured even when another key holds it — the pod really uses it — with a
@@ -367,9 +374,9 @@ class _FifoTurns:
 
     @contextmanager
     def turn(self, key: str) -> Iterator[int]:
-        """``key`` 차례가 올 때까지(줄 맨 앞 + 빈 자리) 기다린 뒤 자리 번호를 내주고 블록을 돌리고, 끝나면 자리를 비운다. ``join`` 없이
-        불렀으면 지금 줄 끝에 선다(늦게 온 만큼 뒤에서 기다린다). ``occupy`` 로 이미 자리를 쥔 키면 기다리지 않고 그 번호를 내준다.
-        기다리는 중에 ``withdraw`` 로 줄에서 빠졌으면(멈춤) 자리를 받지 않고 ``_LeftLine`` 을 낸다.
+        """``key``가 줄 맨 앞이 되고 빈 슬롯이 생길 때까지 기다린 뒤 슬롯 번호를 넘기고, 블록이 끝나면 슬롯을 비운다.
+        ``join`` 없이 호출하면 이때 줄 끝에 서고, ``occupy``로 이미 슬롯을 가진 키는 바로 받는다.
+        기다리는 중에 ``withdraw``로 빠지면 ``_LeftLine``을 던진다.
 
         Wait until `key` is first in line and a slot is free, yield the slot number, free it when the block leaves. A key
         that already holds a slot (`occupy`) gets it at once; a key that never joined joins now (at the end). A key taken
@@ -396,7 +403,7 @@ class _FifoTurns:
                         self._active[key] = slot
                         break
                     self._cond.wait()
-                # 자리가 둘 이상이면 다음 맨 앞도 곧바로 들어갈 수 있다 — 깨워서 스스로 보게 한다
+                # 슬롯이 둘 이상이면 다음 차례도 바로 들어갈 수 있으므로 기다리는 스레드를 모두 깨워 직접 확인하게 한다
                 self._cond.notify_all()
         try:
             yield slot
@@ -404,7 +411,7 @@ class _FifoTurns:
             self.leave(key)
 
     def position(self, key: str) -> int | None:
-        """기다리는 줄에서의 자리(1 = 다음 차례). 기다리고 있지 않으면 None. / 1-based place among the waiting; None when not waiting."""
+        """대기열에서 몇 번째인지 반환한다(1이면 다음 차례). 기다리고 있지 않으면 None을 반환한다. / 1-based place among the waiting; None when not waiting."""
         with self._cond:
             try:
                 return self._line.index(key) + 1
@@ -412,12 +419,12 @@ class _FifoTurns:
                 return None
 
     def slot_of(self, key: str) -> int | None:
-        """이 키가 쥔 자리 번호(없으면 None). / The slot number `key` holds, or None."""
+        """이 키가 가진 슬롯 번호를 반환한다. 없으면 None을 반환한다."""
         with self._cond:
             return self._active.get(key)
 
     def counts(self) -> tuple[int, int]:
-        """(자리를 쥔 키의 수, 기다리는 수) — 복구로 두 키가 한 번호를 쥐면 둘로 센다. / (keys holding a slot, waiting)."""
+        """(슬롯을 가진 키 수, 대기 중인 키 수)를 반환한다. 복구로 두 키가 같은 번호를 가지면 두 개로 센다."""
         with self._cond:
             return len(self._active), len(self._line)
 
@@ -426,8 +433,9 @@ _LOG_TS_RE = re.compile(r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)(?:[,.](\d{3}))?\b")
 
 
 def _event_time(kind: str, data: Any) -> float | None:
-    """journal 이벤트(``ts``, UTC ISO 8601)나 ``sbmig.log`` 줄(로컬 시각)의 epoch 초 — 두 파일을 시간순으로
-    섞으려고. 시각이 없는 줄(이어지는 줄, traceback)은 None.
+    """journal 이벤트(``ts``, UTC ISO 8601)나 ``sbmig.log`` 줄(로컬 시각)의 시각을 epoch 초로 반환한다.
+    두 파일의 줄을 시간순으로 섞을 때 쓴다.
+    시각이 없는 줄(앞 줄에 이어지는 줄, traceback)은 None을 반환한다.
 
     Epoch seconds of a journal event (`ts`, ISO 8601 UTC) or a `sbmig.log` line (`%(asctime)s`, local time);
     None when the line carries no timestamp (continuation lines, tracebacks)."""
@@ -444,8 +452,9 @@ def _event_time(kind: str, data: Any) -> float | None:
 
 
 def _resolve_max_parallel(value: int | str | None, mode: str) -> int:
-    """동시에 도는 Job 의 수(v2.1z-ae): 인자가 이기고, 없으면 ``SBMIG_JOB_MAX_PARALLEL``. 1 이상의 정수만 — 아니면 그 값을 이름 대어
-    경고하고 1. ``k8s-job`` / ``local-job`` 에서만 듣는다: in-process 는 늘 1(더 달라고 했으면 경고).
+    """동시에 실행할 Job 수를 정한다. 인자를 먼저 쓰고, 없으면 ``SBMIG_JOB_MAX_PARALLEL``을 쓴다.
+    1 이상의 정수가 아니면 경고를 남기고 1을 쓴다.
+    ``k8s-job`` / ``local-job``에서만 적용하고, in-process는 항상 1이다.
 
     The number of Jobs at a time: the argument wins over `SBMIG_JOB_MAX_PARALLEL`; an integer ≥ 1, anything else → 1 with a
     WARNING naming the value. Only the Job modes count it — in-process always runs one (a WARNING when more was asked)."""
@@ -462,7 +471,7 @@ def _resolve_max_parallel(value: int | str | None, mode: str) -> int:
             log.warning("%s=%r is not an integer ≥ 1 — running 1 migration job at a time", contract.MAX_PARALLEL_ENV, raw)
     if mode not in ("k8s-job", "local-job"):
         if asked > 1:
-            # 같은 프로세스 안의 이관 둘은 LLM 호출 수와 실행별 로그(스레드 필터)를 함께 쓴다 — 한도는 Job 모드에서만 듣는다
+            # 같은 프로세스 안의 이관들은 LLM 호출 수와 실행별 로그 필터를 함께 쓰므로 한도는 Job 모드에서만 적용한다
             log.warning("%s=%d is ignored in %s mode — one migration at a time (the LLM call counter and the per-run log "
                         "filter are process-wide); set SBMIG_WEB_MODE=k8s-job or local-job to run several",
                         contract.MAX_PARALLEL_ENV, asked, mode)
@@ -471,29 +480,31 @@ def _resolve_max_parallel(value: int | str | None, mode: str) -> int:
 
 
 def resume_job_name(run_id: str, attempt: int) -> str:
-    """조치 재개 시도의 Job 이름: 이관 Job 이름(``job_name``)에 ``-rem<시도>`` — 63자 안, 이관 Job 과 겹치지 않는다.
+    """조치 재개 시도의 Job 이름을 만든다.
+    이관 Job 이름(``job_name``)에 ``-rem<시도 번호>``를 붙이고 63자를 넘지 않게 한다.
 
     The Job name of a remediation resume attempt: the migration's Job name + `-rem<attempt>` (≤ 63 characters)."""
     suffix = f"-rem{int(attempt)}"
     return job_name(run_id)[:63 - len(suffix)].rstrip("-") + suffix
 
 
-# 실행 id 의 앞머리(2026-11-12, 사용자: "web-…" 로는 누구의 어느 프로젝트인지 모른다): 올린 파일 이름에서 만든 짧은 이름.
-# 상한 24자의 근거 — 실행 id = <앞머리 ≤24>-YYYYMMDD-HHMMSS-<hex6> (≤ 47자) → Job 이름 sbmig-<id> ≤ 53자, 재개 Job 이름
-# <Job>-rem<시도> 는 시도 번호 네 자리까지 63자(DNS-1123 라벨 상한) 안에 잘리지 않고 들어간다 — 잘리면 끝의 난수가 먼저 사라진다
+# 실행 id 앞부분을 올린 파일 이름으로 만들어 어느 프로젝트인지 알 수 있게 한다. 24자로 제한해야 실행 id가
+# 47자 이하가 되고, 재개 Job 이름이 시도 번호 네 자리까지 63자(DNS-1123 라벨 한도) 안에 들어간다
+# 이름이 잘리면 끝의 난수가 먼저 사라진다
 RUN_ID_SLUG_MAX = 24
 RUN_ID_FALLBACK = "web"
 
 
 def run_id_slug(upload_name: str | None) -> str:
-    """올린 파일 이름 → 실행 id 앞머리: 경로·``.zip`` 을 떼고 소문자로, ``[a-z0-9]`` 밖의 글자 묶음은 ``-`` 하나로, 앞뒤 ``-`` 를 떼고
-    ``RUN_ID_SLUG_MAX`` 자로 자른 뒤 끝의 ``-`` 를 다시 뗀다. 남는 것에 영문자가 하나도 없으면(한글만, 문장부호만, 한글 이름에서
-    숫자만 남은 ``2026-11``) ``web`` — 숫자 조각만으로는 누구의 프로젝트인지 알 수 없고 뒤의 날짜와 헷갈린다.
+    """올린 파일 이름으로 실행 id의 앞부분을 만든다. 경로와 ``.zip``을 떼고 소문자로 바꾼 뒤, ``[a-z0-9]``
+    밖의 문자 묶음은 ``-`` 하나로 바꾸고 ``RUN_ID_SLUG_MAX``자로 자른다.
+    영문자가 하나도 없으면 ``web``을 쓴다.
+    숫자만으로는 어느 프로젝트인지 알 수 없고 뒤의 날짜와 헷갈리기 때문이다.
 
     The run-id prefix from the upload name: basename without `.zip`, lowercase, every run outside `[a-z0-9]` → one `-`,
     trimmed, cut to `RUN_ID_SLUG_MAX`; a result without any letter (empty, or only the digits left of a Korean name) →
     `web`."""
-    name = re.split(r"[\\/]", str(upload_name or ""))[-1]      # 경로 구분자 앞은 버린다(어느 OS 의 것이든)
+    name = re.split(r"[\\/]", str(upload_name or ""))[-1]      # OS와 상관없이 경로 구분자 앞부분은 버린다
     if name.lower().endswith(".zip"):
         name = name[:-4]
     slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
@@ -502,20 +513,21 @@ def run_id_slug(upload_name: str | None) -> str:
 
 
 def run_id_for(upload_name: str | None, now: datetime | None = None, token: str | None = None) -> str:
-    """새 실행 id ``<앞머리>-YYYYMMDD-HHMMSS-<hex 6>`` (``run_id_slug`` + 지금 시각 + 난수). ``now`` / ``token`` 은 테스트용.
-    같은 초에 같은 파일을 두 번 올려도 난수로 갈린다(이미 있는 폴더는 ``RunManager`` 가 다시 뽑는다).
+    """새 실행 id ``<앞부분>-YYYYMMDD-HHMMSS-<hex 6>``를 만든다. ``now`` / ``token``은 테스트용이다.
+    같은 초에 같은 파일을 두 번 올려도 난수로 구분되며, 이미 있는 폴더면 ``RunManager``가 다시 만든다.
 
     A new run id `<slug>-YYYYMMDD-HHMMSS-<6 hex>`; `now` / `token` are for tests."""
     stamp = (now or datetime.now()).strftime("%Y%m%d-%H%M%S")
     return f"{run_id_slug(upload_name)}-{stamp}-{token or uuid.uuid4().hex[:6]}"
 
 
-UPLOAD_NAME_MAX = 255                 # 기록하는 원래 파일 이름의 상한(글자 수)
+UPLOAD_NAME_MAX = 255                 # 기록하는 원래 파일 이름의 최대 문자 수
 
 
 def display_upload_name(name: str | None) -> str | None:
-    """화면에 보일 원래 파일 이름: 경로 부분만 떼고(브라우저는 이름만 보내지만 다른 클라이언트는 모른다) 제어 문자를 빼고
-    ``UPLOAD_NAME_MAX`` 자로 자른다. 유니코드는 그대로. 남는 것이 없으면 None.
+    """화면에 보일 원래 파일 이름을 만든다.
+    경로와 제어 문자를 빼고 ``UPLOAD_NAME_MAX``자로 자르며, 유니코드는 그대로 둔다.
+    남는 것이 없으면 None을 반환한다.
 
     The upload name to show: basename only, control characters dropped, capped; Unicode kept; None when empty."""
     base = re.split(r"[\\/]", str(name or ""))[-1]
@@ -524,8 +536,9 @@ def display_upload_name(name: str | None) -> str | None:
 
 
 def _abort_reason_ko(reason: str) -> str | None:
-    # 멈춘 까닭의 한국어(보고서와 같은 번역표 sbmig.report.i18n.tr_line). 보고서의 후속 조치 줄 모양("run aborted: <까닭>")을 먼저,
-    # 그다음 까닭만 번역해 본다. 앞머리("실행 중단: " 같은)는 떼어 까닭 문장만 남긴다. 번역되지 않았으면 None
+    # 중단 사유를 보고서와 같은 번역표(sbmig.report.i18n.tr_line)로 한국어 문장으로 바꾼다.
+    # "run aborted: <사유>" 형식을 먼저, 그다음 사유만 번역해 본다
+    # 앞부분("실행 중단: " 등)은 떼고 사유만 남기며, 번역되지 않으면 None을 반환한다
     try:
         from sbmig.report import i18n
     except Exception:  # noqa: BLE001 — a missing translation table only means "no Korean"
@@ -544,7 +557,7 @@ def _abort_reason_ko(reason: str) -> str | None:
 
 
 def _recorded_upload(rd: Path) -> str | None:
-    # 메모리에 없는 실행의 원래 파일 이름: request.json(Job 모드; 옛 기록은 다듬은 이름) → web-status.json(in-process)
+    # 메모리에 없는 실행의 원래 파일 이름을 request.json(Job 모드), web-status.json(in-process) 순으로 찾는다
     rec = RequestRecord.read(rd)
     if rec is not None:
         return rec.upload_name or rec.upload or None
@@ -557,7 +570,8 @@ def _recorded_upload(rd: Path) -> str | None:
 
 
 def check_flow(flow: str | None) -> str:
-    """실행 방식 값 검사(v2.1z-aj): 없거나 비었으면 ``full``, ``RUN_FLOWS`` 밖의 값은 받는 값을 적은 ValueError(웹은 400).
+    """실행 방식 값을 검사해 반환한다. 없거나 비었으면 ``full``을 반환하고, ``RUN_FLOWS`` 밖의 값이면 허용
+    값을 담은 ValueError를 던진다(웹은 400).
 
     Validate a run flow: None / "" = `full`; anything outside `RUN_FLOWS` raises a ValueError naming the accepted values."""
     if flow is None or flow == "":
@@ -568,7 +582,8 @@ def check_flow(flow: str | None) -> str:
 
 
 def _abort_reason(report: dict[str, Any]) -> str | None:
-    # 엔진이 실행을 멈춘 까닭: Orchestrator._abort 가 manual_followups 에 "run aborted: <까닭>" 으로 남긴다(첫 줄이 첫 까닭)
+    # 엔진이 실행을 중단한 사유를 찾는다.
+    # Orchestrator._abort가 manual_followups에 "run aborted: <사유>"로 남기며, 첫 줄이 첫 사유다
     for item in report.get("manual_followups") or []:
         if isinstance(item, str) and item.startswith("run aborted: "):
             return item[len("run aborted: "):].strip() or None
@@ -576,7 +591,8 @@ def _abort_reason(report: dict[str, Any]) -> str | None:
 
 
 def _recorded_flow(rd: Path) -> str:
-    # 메모리에 없는 실행의 실행 방식: request.json(Job 모드) → web-status.json(in-process) → report.json(엔진) → full
+    # 메모리에 없는 실행의 실행 방식을 request.json(Job 모드), web-status.json(in-process),
+    # report.json(엔진) 순으로 찾고, 없으면 full로 본다
     rec = RequestRecord.read(rd)
     if rec is not None:
         return rec.flow or FLOW_FULL
@@ -591,8 +607,9 @@ def _recorded_flow(rd: Path) -> str:
 
 
 class RunManager:
-    """이관을 작업 스레드로 시작하고, 상태·이벤트 질문에 메모리 + 실행 폴더로 답한다.
-    ``_lock`` 은 ``runs`` dict 를 지키고, ``_turns`` 는 이관을 올린 순서대로 ``max_parallel`` 개까지 들여보낸다(Job 모드; in-process 는 하나).
+    """이관을 작업 스레드로 시작하고, 상태와 이벤트 요청에 메모리와 실행 폴더의 정보로 응답하는 클래스.
+    ``_lock``은 ``runs`` dict를 보호하고, ``_turns``는 업로드 순서대로 ``max_parallel``개(in-process는
+    1개)까지 실행을 들여보낸다.
 
     Starts migrations in worker threads and answers status / event questions from memory + the run directory;
     `_turns` lets them in in upload order, up to `max_parallel` at a time (Job modes; one in-process)."""
@@ -604,14 +621,15 @@ class RunManager:
         self.out_dir = Path(out_dir).resolve()
         self.repo_root = Path(repo_root).resolve()
         self.max_finished_runs = max(0, int(max_finished_runs))
-        # 2026-11-05: 실행 모드 — in-process(이 프로세스의 스레드) | k8s-job(업로드마다 Job 하나, 공유 PVC 로 전달·결과)
+        # 실행 모드로 in-process(이 프로세스의 스레드) | k8s-job(업로드마다
+        # Job 하나, 입력과 결과는 공유 PVC로 전달) 중 하나다
         self.mode = (mode or os.environ.get(MODE_ENV, "") or "in-process").strip()
         if self.mode not in MODES:
             raise ValueError(f"{MODE_ENV} must be one of {', '.join(MODES)}, not {self.mode!r}")
-        # 개발 PC(2026-11-05, 사용자: "개발 모드일 때는 파드 생성 없이"): k8s-job 으로 설정돼 있어도 클러스터 밖이면 local-job —
-        # 같은 Job 모드 흐름, 파드 자리는 로컬 서브프로세스. 운영 파드에서는 KUBERNETES_SERVICE_HOST 가 항상 있어 내려가지 않는다
+        # 개발 PC에서는 k8s-job으로 설정되어 있어도 클러스터 밖이면 local-job으로 실행한다.
+        # 운영 파드에는 KUBERNETES_SERVICE_HOST가 항상 있으므로 바뀌지 않는다
         self.effective_mode = self.mode
-        # 2026-11-09: 서비스 계정 토큰 또는 KUBECONFIG 파일(인프라팀이 Secret 으로 주는 /etc/kube/config) — 둘 중 하나면 실제 Job 을 만든다
+        # 서비스 계정 토큰이나 KUBECONFIG 파일(/etc/kube/config) 중 하나가 있으면 실제 Job을 만든다
         if self.mode == "k8s-job" and job_client is None and not (in_cluster_available() or kubeconfig_path() is not None):
             if cluster_host_present():
                 # inside a cluster but without a usable service account: do NOT silently run migrations in the web pod
@@ -627,33 +645,37 @@ class RunManager:
         # the engine stops between nodes and the fix loop between build rounds — the grace must outlast one Maven build
         # (build.timeout_minutes 30) plus an OpenRewrite run before the Job is deleted (review 2026-11-05: 600 s lost the report)
         self.job_stop_grace_s = max(0.0, float(os.environ.get(STOP_GRACE_ENV, "2700") or 2700))
-        # Kubernetes API 가 이만큼 답하지 않으면 한 번 크게 알린다(로그 error, 저널, 화면). **실행을 실패로 끝내지는 않는다**(리뷰
-        # 2026-11-10): 파드가 살아 있는지 모르는 채로 차례를 넘기면 다음 이관과 겹친다 — API 가 답할 때까지 이 실행이 차례를 지킨다
+        # Kubernetes API가 이 시간 동안 응답하지 않으면 로그 error, 저널,
+        # 화면에 한 번 알리지만 실행을 실패로 끝내지는 않는다
+        # 파드 상태를 모르는 채로 슬롯을 넘기면 다음 이관과 겹치므로 API가 응답할 때까지 슬롯을 유지한다
         self.job_api_grace_s = max(0.0, float(os.environ.get("SBMIG_JOB_API_GRACE_S", "300") or 300))
-        # 결과 파일(job-status.json)을 받은 뒤 파드가 스스로 끝나기를 기다리는 시간. 넘기면 그 Job 을 지우고 사라질 때까지 기다린다 —
-        # Worker 는 그 파일을 맨 마지막에 쓰므로 지워도 잃는 것이 없고, 끝나지 않는 파드가 줄을 막지 않는다
+        # job-status.json을 받은 뒤 파드 종료를 기다리는 시간이며, 넘기면 Job을 지우고 사라질 때까지 기다린다
+        # Worker는 그 파일을 마지막에 기록하므로 지워도 잃는 것이 없고, 끝나지 않는 파드가 대기열을 막지 않게 된다
         self.job_exit_grace_s = max(0.0, float(os.environ.get(EXIT_GRACE_ENV, "120") or 120))
-        # v2.1z-ac: 파드가 끝났는데 job-status.json 이 아직 안 보이면 잠시 기다린다 — NFS 의 속성 캐시(기본 최대 60초)가 Worker 가 마지막에 쓴
-        # 파일을 Main 에 늦게 보여 줄 수 있다. 끝난 결과를 "검증 안 됨" 으로 잘못 적지 않으려면 이 유예가 캐시보다 길어야 한다
+        # 파드가 끝났는데 job-status.json이 보이지 않으면 잠시 기다린다. NFS 속성 캐시(기본 최대 60초)
+        # 때문에 파일이 늦게 보일 수 있으므로 이 유예 시간이 캐시보다 길어야 한다
         self.job_status_grace_s = max(0.0, float(os.environ.get(STATUS_GRACE_ENV, "90") or 90))
-        # 리뷰 2026-11-10 — 환경 변수 고정의 정책(SBMIG_JOB_ENV_PIN, 시작 때 한 번 읽는다). k8s-job 의 기본은 refuse(Worker 의 환경이
-        # 다르면 돌지 않는다), local-job 은 off(로컬 Worker 는 이 프로세스의 환경을 물려받는다 — 접수와 시작 사이의 .env 수정은 잘못된
-        # 경보만 낸다). recover() 가 Job 을 만들 수 있으므로 그보다 먼저 정한다
+        # 환경 변수 고정 정책(SBMIG_JOB_ENV_PIN)의 기본값은 k8s-job에서 refuse, local-job에서 off다.
+        # 로컬 Worker는 이 프로세스의 환경을 물려받으므로 .env를 고치면 잘못된 경고만 나기 때문이다
+        # recover()가 Job을 만들 수 있으므로 그보다 먼저 정한다
         pin_default = contract.ENV_PIN_REFUSE if self.effective_mode == "k8s-job" else contract.ENV_PIN_OFF
         pin_raw = (os.environ.get(contract.ENV_PIN_POLICY_ENV) or "").strip()
         self.env_pin_policy = contract.env_pin_policy(pin_raw, pin_default)
         if pin_raw and pin_raw.lower() not in contract.ENV_PIN_POLICIES:
             log.warning("%s=%r is not one of %s — using the default %s", contract.ENV_PIN_POLICY_ENV, pin_raw,
                         " | ".join(contract.ENV_PIN_POLICIES), self.env_pin_policy)
-        # 서버가 정한 기본 설정 파일 이름들(sbmig serve --config / SBMIG_WEB_CONFIGS): 화면은 이것으로 돈다
+        # 서버가 정한 기본 설정 파일 이름(sbmig serve --config /
+        # SBMIG_WEB_CONFIGS)이며 화면에서 시작한 실행은 이 설정을 쓴다
         self._default_configs = [c.strip() for c in (default_configs or []) if c and c.strip()]
         self._missing_warned: set[str] = set()
         self.runs: dict[str, Run] = {}
-        # 2026-11-11 wave 4: 실행 id → 이 프로세스가 아는 조치 재개 시도(마지막 하나). 이관의 runs 와 따로 — status 가 섞이지 않게
+        # 실행 id별로 이 프로세스가 아는 마지막 조치 재개 시도다.
+        # 상태가 섞이지 않도록 이관의 runs와 따로 둔다
         self.resumes: dict[str, Run] = {}
         self._lock = threading.Lock()
-        # v2.1z-ae: 동시에 도는 Job 의 수 — 인자 → SBMIG_JOB_MAX_PARALLEL → 1. 실행 모드가 정해진 뒤(k8s-job 이 local-job 으로 내려간
-        # 뒤)에 정한다: in-process 는 늘 1(LLM 호출 수·실행별 로그 필터가 프로세스 전체에 하나뿐이다). recover() 가 자리를 잡으므로 그보다 먼저
+        # 동시 Job 수는 인자, SBMIG_JOB_MAX_PARALLEL, 1 순으로 정한다.
+        # in-process는 LLM 호출 수와 로그 필터가 프로세스에 하나뿐이므로 항상 1이다
+        # 실행 모드가 정해진 뒤, recover()가 슬롯을 잡기 전에 정해야 한다
         self.max_parallel = _resolve_max_parallel(max_parallel, self.effective_mode)
         self._turns = _FifoTurns(self.max_parallel)   # upload order; up to max_parallel Jobs at a time (one in-process)
         if self.effective_mode in ("k8s-job", "local-job"):
@@ -664,7 +686,8 @@ class RunManager:
         self.closing = threading.Event()       # server shutdown: open SSE streams end, running runs are asked to stop
         self._job_template_doc: dict | None = None   # k8s-job: the template validated at startup (Jobs are rendered from it)
         self.recovered: list[str] = []         # run ids picked up from control/state.json at startup (recover())
-        # v2.1z-ac: 운영(k8s-job)은 잘못된 틀·권한·접속을 첫 업로드가 아니라 시작 때 거부한다(앱이 뜨지 않는다)
+        # 운영(k8s-job)에서는 잘못된 템플릿, 권한, 접속 정보를 첫 업로드
+        # 때가 아니라 시작할 때 거부해 앱이 뜨지 않게 한다
         if self.effective_mode == "k8s-job":
             self._startup_k8s(constructed=job_client is None)
         if self.effective_mode in ("k8s-job", "local-job"):
@@ -672,9 +695,9 @@ class RunManager:
 
     # ---- k8s-job startup (v2.1z-ac)
     def _startup_k8s(self, constructed: bool) -> None:
-        """k8s-job 시작 검증: 클라이언트를 지금 만들고(토큰·kubeconfig 가 없으면 여기서 실패), Worker 틀을 검사하고, 권한을 스스로
-        점검한다. 어느 것이든 실패하면 ValueError(앱이 뜨지 않는다). 테스트가 클라이언트를 넣었으면 만들기를 건너뛰고, 틀은 파일이
-        있을 때만 마운트 규칙 없이 검사한다.
+        """k8s-job 모드의 시작 검증을 한다. 클라이언트를 만들고, Worker 템플릿을 검사하고, 권한을 점검하며,
+        하나라도 실패하면 ValueError를 던져 앱이 뜨지 않게 한다.
+        테스트가 클라이언트를 넣었으면 생성을 건너뛰고, 템플릿은 파일이 있을 때만 마운트 규칙 없이 검사한다.
 
         k8s-job startup: build the client now, validate the Worker template, self-check RBAC; any failure is a ValueError.
         An injected client skips the construction; its template is validated (mount rules aside) only when the file exists."""
@@ -691,8 +714,8 @@ class RunManager:
         self._check_permissions(self._job_client)
 
     def _check_permissions(self, client: Any) -> None:
-        """시작 때 권한 자가 점검: Job 만들기·보기·목록·watch·지우기, 파드 보기·목록·watch(deploy/k8s/45-web-rbac.yaml 과 같은 목록).
-        ``can_i`` 가 없는 클라이언트(가짜, 로컬)는 건너뛴다. 하나라도 거부되면 ValueError 로 무엇이 막혔는지 이름을 댄다.
+        """시작할 때 클러스터 권한을 점검한다. 점검 목록은 deploy/k8s/45-web-rbac.yaml과 같다.
+        ``can_i``가 없는 클라이언트(가짜 구현, 로컬)는 건너뛰고, 하나라도 거부되면 막힌 권한을 담은 ValueError를 던진다.
 
         Startup RBAC self-check through `client.can_i` (skipped when the client has none); any denial → ValueError naming it."""
         can_i = getattr(client, "can_i", None)
@@ -711,14 +734,13 @@ class RunManager:
 
     # ---- restart recovery (v2.1z-ac)
     def recover(self) -> list[str]:
-        """재시작 복구: ``<out>/*/control/state.json`` 중 끝나지 않은 실행을 찾는다(``_`` 폴더 제외). **k8s-job**: 접수 기록
-        (request.json)을 읽어 ``Run`` 을 다시 세우고 ``accepted_at`` 순서로 FIFO 줄에 넣는다 — ``queued`` 는 평소대로 Job 을 만들고,
-        ``creating`` 은 같은 이름의 Job 이 있으면 이어받고 없으면 만들고, ``created`` / ``running`` 은 이어받아 지켜보기만 한다. **local-job**:
-        서브프로세스는 서버와 함께 죽었으므로 ``lost`` 로 적는다. 깨진 파일은 로그만 남기고 건너뛴다 — 절대 예외를 내지 않는다.
-
-        v2.1z-ae: Job 이 있는(있을 수 있는) ``creating`` / ``created`` / ``running`` 을 **먼저** 모두 되살려 적힌 자리(``slot``, 없으면 1)를
-        한도와 상관없이 지금 잡고(``_turns.occupy``), 그다음에야 ``queued`` 를 줄에 세운다 — 기다리던 실행의 스레드가 도는 Job 의 번호를
-        먼저 가져가지 못하게.
+        """서버 재시작 뒤 끝나지 않은 실행을 복구하고, 복구한 실행 id 목록을 반환한다.
+        ``<out>/*/control/state.json``에서 찾으며, 깨진 파일은 로그만 남기고 건너뛰고 예외를 던지지 않는다.
+        - k8s-job: request.json으로 ``Run``을 다시 만든다. ``queued``는 평소처럼 Job을 만들고,
+          ``creating``은 같은 이름의 Job이 있으면 이어받고, ``created`` / ``running``은 이어받아 감시만 한다
+        - local-job: 서브프로세스는 서버와 함께 종료되었으므로 ``lost``로 기록한다
+        대기 중인 실행이 실행 중인 Job의 슬롯 번호를 가져가지 않도록, Job이 있을 수 있는 실행을 먼저 복구해
+        기록된 슬롯을 잡고(``_turns.occupy``) 그다음 ``queued`` 실행을 줄에 세운다.
 
         Restart recovery from the control states on disk (k8s-job: re-register and watch / create in `accepted_at` order;
         local-job: mark `lost`). Runs whose Job exists or may exist re-occupy their recorded slot first, before any queued
@@ -726,7 +748,7 @@ class RunManager:
         if self.effective_mode not in ("k8s-job", "local-job"):
             return self.recovered
         try:
-            # 2026-11-11 wave 4: 조치 재개 시도의 제어 상태도 같은 규칙으로 — 그 Job 도 클러스터에서 돌고 있을 수 있다
+            # 조치 재개 시도의 Job도 클러스터에서 실행 중일 수 있으므로 그 제어 상태도 같은 규칙으로 복구한다
             paths = sorted(self.out_dir.glob(f"*/{CONTROL_DIR}/{STATE_FILE}"))
             paths += sorted(self.out_dir.glob(f"*/{CONTROL_DIR}/{RESUME_STATE_FILE}"))
         except OSError as e:
@@ -752,7 +774,7 @@ class RunManager:
                     log.warning("recovery: %s names run %s, not its folder %s — skipped", sp, cs.run_id, rd.name)
                     continue
                 if self.effective_mode == "local-job":
-                    # 로컬 "파드" 는 이 서버의 자식이었다 — 서버가 죽으면 함께 죽어 이어받을 것이 없다
+                    # 로컬 "파드"는 이 서버의 자식 프로세스라 서버가 종료되면 함께 종료되므로 이어받을 것이 없다
                     cs.transition(RunState.LOST, exit_code=EXIT_ABORTED, error=LOCAL_LOST).write(rd, sp.name)
                     self.recovered.append(f"{cs.run_id}#{cs.action}" if resume else cs.run_id)
                     log.warning("recovery: run %s was %s — marked lost (%s)", cs.run_id, "in progress", LOCAL_LOST)
@@ -764,13 +786,14 @@ class RunManager:
                 if cs.state not in (RunState.QUEUED.value, RunState.CREATING.value, RunState.CREATED.value, RunState.RUNNING.value):
                     log.warning("recovery: run %s has an unknown state %r — skipped", cs.run_id, cs.state)
                     continue
-                # 재개 시도는 자기 접수 시각(그 시도의 accepted_at)으로 줄을 선다 — 이관의 접수 시각이 아니다
+                # 재개 시도는 이관의 접수 시각이 아니라 그 시도의 accepted_at 순서로 줄을 선다
                 at = (cs.accepted_at or "") if resume else (rec.accepted_at or cs.accepted_at or "")
                 pending.append((at, rd, cs, rec))
             except Exception as e:  # noqa: BLE001 — recovery must never keep the web app from starting
                 log.warning("recovery: %s skipped (%s: %s)", sp, type(e).__name__, e)
         ordered = sorted(pending, key=lambda t: (t[0], t[1].name))
-        # 자리를 쥔 실행(Job 이 이미 돈다)을 먼저, 기다리던 실행은 그 뒤에 — 각 무리 안에서는 accepted_at 순서
+        # Job이 이미 실행 중이라 슬롯을 가진 실행을 먼저, 대기하던 실행을 그 뒤에
+        # 처리하고, 각 그룹 안에서는 accepted_at 순서를 따른다
         holding = [t for t in ordered if t[2].state != RunState.QUEUED.value]
         waiting = [t for t in ordered if t[2].state == RunState.QUEUED.value]
         for _at, rd, cs, rec in holding + waiting:
@@ -781,8 +804,9 @@ class RunManager:
         return self.recovered
 
     def _resume(self, rd: Path, cs: ControlState, rec: RequestRecord) -> None:
-        """복구한 실행 하나를 메모리에 다시 세우고 감시 스레드를 띄운다. ``queued`` 는 줄 끝에 서고(accepted_at 순서), Job 이 있는(있을 수
-        있는) 실행은 적힌 자리를 지금 잡는다(``occupy`` — 한도와 상관없이; ``slot`` 이 없는 state.json 은 1번).
+        """복구한 실행 하나를 메모리에 다시 등록하고 감시 스레드를 시작한다.
+        ``queued`` 실행은 줄 끝에 서고, Job이 있을 수 있는 실행은 기록된 슬롯을 한도와 상관없이 바로
+        잡는다(``occupy``). ``slot``이 없는 state.json은 1번 슬롯으로 본다.
 
         Re-register one run: a queued one joins the line; one whose Job exists or may exist re-occupies its recorded slot
         now, whatever the limit (no `slot` on disk = slot 1)."""
@@ -791,7 +815,7 @@ class RunManager:
         run = Run(rd.name, rd, rd / SOURCE_ZIP, list(rec.configs or []), rec.stop_after, rec.llm_provider, job=True,
                   request=rec, control=cs, recover=mode, action=action, flow=rec.flow or FLOW_FULL,
                   upload=rec.upload_name or rec.upload)
-        if action:                             # 재개 시도의 Job 이름은 줄을 설 때부터 정해져 있다(시도 번호에서)
+        if action:                             # 재개 시도의 Job 이름은 시도 번호로 처음부터 정해진다
             run.job_name = cs.job or resume_job_name(run.run_id, run.attempt)
         elif cs.state != RunState.QUEUED.value:
             run.job_name = cs.job or job_name(run.run_id)
@@ -802,8 +826,8 @@ class RunManager:
             if mode is None:
                 self._turns.join(run.key)
             else:
-                # 클러스터의 Job 은 이미 돈다: 자리를 세어야 새 업로드가 같은 번호(같은 Maven 로컬 저장소)를 받지 않는다. probe 가 결국
-                # Job 을 스스로 만들면 이 번호를 creating 전이에 적는다
+                # 클러스터의 Job은 이미 실행 중이므로, 새 업로드가 같은 번호의 Maven 로컬 저장소를 받지
+                # 않도록 슬롯을 차지한다. probe가 Job을 직접 만들면 이 번호를 creating 상태에 기록한다
                 run.slot = self._turns.occupy(run.key, prefer=cs.slot or 1)
         try:
             run.thread.start()
@@ -820,23 +844,26 @@ class RunManager:
 
     # ---- paths
     def run_dir(self, run_id: str) -> Path:
-        """실행 폴더 ``<out>/<run id>`` (호출하는 라우트가 ``RUN_ID_RE`` 로 먼저 검사한다)."""
+        """실행 폴더 ``<out>/<run id>``의 경로를 반환한다.
+        호출하는 라우트가 먼저 ``RUN_ID_RE``로 id를 검사한다."""
         return self.out_dir / run_id
 
     def configs(self) -> list[str]:
-        """페이지에서 고를 수 있는 ``config/*.yml`` 이름들. ``default.yml`` 은 늘 먼저 읽히므로 뺀다."""
+        """화면에서 고를 수 있는 ``config/*.yml`` 이름 목록을 반환한다.
+        ``default.yml``은 항상 먼저 읽히므로 목록에서 뺀다."""
         d = self.repo_root / "config"
         return sorted(p.name for p in d.glob("*.yml") if p.name != "default.yml") if d.is_dir() else []
 
-    # 아무것도 정해 주지 않았을 때 쓰는 이름(있는 첫 것): 회사 PC 의 관례 artifacts.yml, 개발 PC 의 로컬 e2e 설정
+    # 아무것도 지정하지 않았을 때 쓰는 이름이며, 회사 PC의 artifacts.yml,
+    # 개발 PC의 로컬 e2e 설정 순으로 먼저 있는 파일을 쓴다
     FALLBACK_CONFIGS = ("artifacts.yml", "artifacts.local-e2e.yml")
 
     def default_configs(self) -> list[str]:
-        """이번 실행에 쓸 기본 설정 파일 이름들(``config/`` 안, default.yml 뒤에 읽힌다). 화면은 담당자에게 고르게
-        하지 않고 이것으로 돈다(2026-11-05: 설정은 하나로 고정, 고급 설정에서만 바꾼다). ``sbmig serve --config`` /
-        ``SBMIG_WEB_CONFIGS`` 로 준 이름 중 지금 있는 파일만 — 없는 이름은 한 번 경고하고 뺀다(나중에 생기면
-        다시 들어온다). 아무것도 안 줬으면 :attr:`FALLBACK_CONFIGS` 중 있는 첫 것, 그것도 없으면 빈 목록
-        (default.yml 만으로 돈다).
+        """이번 실행에 쓸 기본 설정 파일 이름 목록을 반환한다. 이 파일들은 ``config/`` 안에 있고 default.yml
+        다음에 읽히며, 화면은 사용자에게 고르게 하지 않고 이 목록을 쓴다.
+        ``sbmig serve --config`` / ``SBMIG_WEB_CONFIGS``의 이름 중 지금
+        있는 파일만 쓰고, 없는 이름은 한 번 경고한 뒤 뺀다.
+        지정된 이름이 하나도 없으면 :attr:`FALLBACK_CONFIGS` 중 처음 있는 파일을, 그것도 없으면 빈 목록을 반환한다.
 
         The server's default config names for a run (`sbmig serve --config` / `$SBMIG_WEB_CONFIGS`, existing files
         only; a missing name is warned about once). Without any: the first existing of `FALLBACK_CONFIGS`, else []."""
@@ -854,8 +881,8 @@ class RunManager:
 
     # ---- lifecycle
     def incoming_path(self) -> Path:
-        """받는 중인 본문을 쓸 새 임시 파일 ``<out>/_uploads/.incoming-<hex>.part``. 최종 zip 과 같은 폴더라
-        ``start_file`` 이 복사 없이 이름만 바꿔 옮긴다.
+        """받는 중인 업로드 본문을 기록할 새 임시 파일 경로 ``<out>/_uploads/.incoming-<hex>.part``를
+        만든다. 최종 zip과 같은 폴더이므로 ``start_file``이 복사 없이 이름만 바꾼다.
 
         A fresh `<out>/_uploads/.incoming-<hex>.part` for a body that is still arriving (same directory as the
         final `<run id>-<name>` so `start_file` can rename it without a copy)."""
@@ -865,7 +892,8 @@ class RunManager:
 
     def start(self, zip_bytes: bytes, name: str, configs: list[str], stop_after: str | None = None,
               llm_provider: str | None = None, flow: str | None = None) -> str:
-        """메모리에 이미 있는 본문용 ``start_file`` (테스트, 다른 코드에서 부를 때). ValueError = 잘못된 요청.
+        """메모리에 있는 zip 본문으로 실행을 시작한다.
+        테스트나 다른 코드에서 쓰며 ``start_file``과 같이 동작하고, 잘못된 요청이면 ValueError를 던진다.
 
         `start_file` for a body already in memory (tests, embedding callers). ValueError = bad request."""
         tmp = self.incoming_path()
@@ -877,9 +905,10 @@ class RunManager:
 
     def start_file(self, incoming: Path, name: str, configs: list[str], stop_after: str | None = None,
                    llm_provider: str | None = None, flow: str | None = None) -> str:
-        """검사 → 올라온 zip 을 실행 ID 이름으로 옮김 → 설정·워크스페이스·오케스트레이터 생성 → 작업 스레드
-        시작. ValueError 면 ``incoming`` 은 호출자 몫(라우트가 지운다), 옮긴 뒤에는 실행 몫이다. zip 이 깨져
-        워크스페이스를 못 만들면 실행 폴더·zip 을 남기지 않는다(유령 실행 방지).
+        """업로드된 zip으로 새 실행을 시작하고 실행 id를 반환한다. 입력 검사 -> zip을 실행 id 이름으로 이동
+        -> 설정, 워크스페이스, 오케스트레이터 생성 -> 작업 스레드 시작 순으로 처리한다.
+        ValueError가 나면 ``incoming`` 파일은 호출한 쪽이 지우고, 이동한 뒤에는 실행이 관리한다.
+        zip이 깨져 워크스페이스를 만들지 못하면 실행 폴더와 zip을 남기지 않는다.
 
         Validate, move the uploaded zip (`incoming`, written by the caller) under its run id, build config +
         workspace + orchestrator, start the worker. ValueError = bad request — `incoming` is then left to the caller
@@ -888,7 +917,7 @@ class RunManager:
         from sbmig.core.workspace import Workspace
         from sbmig.loop import Orchestrator, parse_stop_after
 
-        # 설정 이름도 RUN_ID_RE 로 검사: ``../`` 로 config 폴더 밖의 파일을 읽지 못하게
+        # ``../``로 config 폴더 밖의 파일을 읽지 못하도록 설정 이름도 RUN_ID_RE로 검사한다
         for c in configs:
             if not RUN_ID_RE.match(c) or not (self.repo_root / "config" / c).is_file():
                 raise ValueError(f"unknown config {c}")
@@ -896,7 +925,8 @@ class RunManager:
         stop_after = phase.value if phase is not None else None
         flow = check_flow(flow)                               # v2.1z-aj; ValueError names the accepted values
         if flow == FLOW_REMEDIATION and stop_after:
-            # 조치만 하는 실행에는 멈출 이관 단계가 없다(CLI 도 --stop-after 와 --flow remediation 을 함께 받지 않는다)
+            # 조치만 하는 실행에는 중지할 이관 단계가 없으므로 거부하며, CLI도 --stop-after와 --flow
+            # remediation을 함께 받지 않는다
             raise ValueError("stop_after cannot be combined with flow=remediation (that flow runs no migration phase)")
         overrides: dict[str, Any] = {}
         if llm_provider:
@@ -905,7 +935,7 @@ class RunManager:
                           repo_root=self.repo_root)        # pydantic ValidationError is a ValueError
 
         safe = re.sub(r"[^A-Za-z0-9._-]+", "_", Path(name or "project.zip").name) or "project.zip"
-        shown = display_upload_name(name)                     # 사람이 올린 이름 그대로(화면용)
+        shown = display_upload_name(name)                     # 화면에 보여 줄, 사용자가 올린 이름 그대로의 값
         run_id = self._claim_run_id(name)
         if self.effective_mode in ("k8s-job", "local-job"):
             return self._start_job(incoming, run_id, safe, list(configs), stop_after, llm_provider, flow, shown)
@@ -921,18 +951,17 @@ class RunManager:
             raise
         run = Run(run_id, ws.run_dir, zip_path, list(configs), stop_after, llm_provider, flow=flow, upload=shown)
         run.orch = Orchestrator(cfg, ws)
-        # 실행 폴더의 첫 기록: 어떤 설정으로 돌았는지 journal 만 보고도 알 수 있게
+        # journal만 보고도 어떤 설정으로 실행했는지 알 수 있도록 실행 폴더에 처음으로 기록한다
         try:
             ws.journal({"event": "web_run", "configs": list(configs), "stop_after": stop_after, "llm_provider": llm_provider,
                         "flow": flow, "upload": shown})
         except OSError as e:                   # the journal line is a convenience; never refuse the run on it
             log.debug("run %s: web_run journal line not written: %s", run_id, e)
-        # daemon: 서버 프로세스가 끝나면 스레드도 함께 끝난다(정리는 shutdown 의 멈춤 요청 + Maven 종료)
+        # daemon 스레드라 서버 프로세스가 끝나면 함께 끝나므로, 정리는 shutdown의 중지 요청과 Maven 종료가 맡는다
         run.thread = threading.Thread(target=self._worker, args=(run,), name=f"sbmig-run-{run_id}", daemon=True)
         with self._lock:
             self.runs[run_id] = run
-            # 줄은 업로드를 받은 지금 선다 — 스레드가 실제로 뜨는 순서는 정해져 있지 않으므로
-            # 작업 스레드 안에서 서면 순서가 다시 뒤바뀔 수 있다
+            # 스레드가 실제로 시작되는 순서는 보장되지 않으므로 대기열 순서는 업로드를 받은 지금 정한다
             self._turns.join(run_id)           # the place in line is taken here, in upload order (A10)
         try:
             run.thread.start()
@@ -946,8 +975,8 @@ class RunManager:
         return run_id
 
     def _claim_run_id(self, upload_name: str) -> str:
-        """새 실행 id 를 뽑아 그 실행 폴더를 **배타적으로** 만든다(``mkdir`` 이 이미 있으면 다시 뽑는다) — 같은 초에 같은 파일을 올린 두
-        요청도, 앞선 실행의 폴더도 겹치지 않는다. 메모리에 같은 id 가 있어도 다시 뽑는다.
+        """새 실행 id를 만들고 실행 폴더를 배타적으로 생성한다.
+        폴더가 이미 있거나 메모리에 같은 id가 있으면 id를 다시 만든다.
 
         Draw a run id and create its run directory exclusively (an existing directory or an id in memory → draw again)."""
         self.out_dir.mkdir(parents=True, exist_ok=True)
@@ -964,8 +993,9 @@ class RunManager:
 
     def _start_job(self, incoming: Path, run_id: str, safe_name: str, configs: list[str], stop_after: str | None,
                    llm_provider: str | None, flow: str = FLOW_FULL, upload_name: str | None = None) -> str:
-        """k8s Job 모드의 시작: 실행 폴더를 만들고 zip 을 ``source.zip`` 으로 옮기고(둘 다 공유 볼륨), 첫 저널 줄을 쓰고,
-        Job 을 만들어 지켜보는 작업 스레드를 띄운다. 이 프로세스는 이관을 돌리지 않는다.
+        """k8s Job 모드에서 실행을 시작한다. 실행 폴더를 만들고 zip을 ``source.zip``으로 옮긴 뒤 첫 저널
+        줄을 기록하고, Job을 만들어 감시할 작업 스레드를 시작한다.
+        이 프로세스는 이관을 직접 실행하지 않는다.
 
         Job mode: create the run dir, move the zip there as `source.zip` (both on the shared volume), write the first
         journal line, start the worker that creates and watches the Job. Nothing migrates in this process."""
@@ -973,8 +1003,8 @@ class RunManager:
         run_dir.mkdir(parents=True, exist_ok=True)
         zip_path = run_dir / SOURCE_ZIP
         Path(incoming).replace(zip_path)
-        # v2.1z-ac: 입력을 접수 때 고정한다(request.json — Worker 가 digest 를 대조한다)와 제어 상태 queued — 작업 스레드보다 먼저,
-        # 그래야 이 프로세스가 곧 죽어도 다음 Main 이 같은 요청을 이어받는다
+        # 이 프로세스가 곧바로 죽어도 다음 Main이 같은 요청을 이어받도록 고정 입력(request.json)과 queued
+        # 제어 상태를 작업 스레드보다 먼저 기록한다
         try:
             request = RequestRecord(run_id=run_id, accepted_at=utc_now(), upload=safe_name, configs=list(configs),
                                     zip_sha256=sha256_file(zip_path), config_digests=config_digests(self.repo_root, configs),
@@ -1009,21 +1039,22 @@ class RunManager:
         return run_id
 
     def _worker(self, run: Run) -> None:
-        """작업 스레드 본체. ``_turns`` 줄 맨 앞이고 빈 자리가 생길 때까지 ``queued``, 차례가 오면 ``active`` (Job 실행은 자리 번호를
-        ``run.slot`` 에) → 이 스레드 전용 ``sbmig.log`` 를 붙이고 이관을 돌린 뒤 ``SBMIG-RESULT`` 줄을 남긴다. 무슨 일이
-        있어도 finally 에서 로그를 떼고 ``finished`` 이벤트·web-status.json 을 쓰고 ``done`` 을 세워
-        기다리는 SSE 를 깨운다.
+        """실행 하나를 처리하는 작업 스레드의 본체.
+        줄 맨 앞이 되고 빈 슬롯이 생길 때까지 ``queued``로 기다리고, 차례가 오면 ``active``가 된다.
+        Job 실행은 슬롯 번호를 ``run.slot``에 둔다.
+        이 스레드 전용 ``sbmig.log``를 붙이고 이관을 실행한 뒤 ``SBMIG-RESULT`` 줄을 남긴다. 어떤 경우에도 마지막에
+        로그를 떼고, ``finished`` 이벤트와 web-status.json을 기록하고, ``done``을 세워 SSE를 깨운다.
 
         The worker thread: `queued` until first in line with a free slot, then `active` (a Job run keeps its slot number in
         `run.slot`); whatever happens, the finally block writes the end of the run and wakes the streams."""
         log_path: Path | None = None
         settled = False                        # a Job run's terminal control state was written (or tried) inside its turn
         try:
-            # import 도 try 안에서: 여기서 죽어도 finally 가 줄에서 빼야 뒤의 실행이 영원히 기다리지 않는다
+            # 여기서 실패해도 finally가 줄에서 빼야 뒤의 실행이 계속 기다리지 않으므로 import도 try 안에서 한다
             from sbmig.cli import attach_file_log, run_exit_code
 
-            # Job 모드는 max_parallel 개까지(파드마다 따로, KB 쓰기는 파일 잠금, 자리마다 Maven 로컬 저장소), in-process 는 하나. 차례는
-            # 올린 순서(FIFO 줄, start_file 에서 섬) — 예전의 threading.Lock 은 기다리는 스레드에게 넘겨주는 순서를 보장하지 않았다(A10)
+            # Job 모드는 max_parallel개까지, in-process는 1개만 실행하며,
+            # 차례는 start_file에서 정한 업로드 순서를 따른다
             try:
                 with self._turns.turn(run.key) as slot:  # upload order; up to max_parallel Jobs at a time (docstring)
                     if run.job:
@@ -1037,16 +1068,16 @@ class RunManager:
                         except Exception as e:  # noqa: BLE001 — _run_job catches everything itself; a bug here must still settle
                             self._record_crash(run, e)
                         finally:
-                            # 리뷰 2026-11-10: 끝 상태(control/state.json)를 **자리를 쥔 채로** 적는다. 자리를 먼저 비우면 그 사이(웹 파드가
-                            # 죽거나 쓰기가 실패하면) 다음 실행이 같은 번호를 적고, 재시작 뒤 끝나지 않은 두 상태가 한 번호를 갖는다.
-                            # 쓰기가 실패해도(로그만) 블록을 떠나며 자리는 비운다 — 새지 않는다
+                            # 종료 상태(control/state.json)는 슬롯을 가진 채로 기록한다. 슬롯을 먼저 비우면 그 사이 다음
+                            # 실행이 같은 번호를 기록해, 재시작 뒤 두 상태가 한 번호를 갖게 되기 때문이다
+                            # 기록이 실패해도 로그만 남기고, 블록을 벗어나면서 슬롯은 비운다
                             settled = True
                             self._close_job_run(run)
                         return
-                    # thread_id: 이 스레드(와 그 컨텍스트를 물려받은 LangGraph 실행기 스레드)의 로그만 이 파일로 —
-                    # 같은 프로세스의 다른 실행·서버 로그가 섞이지 않게
+                    # 다른 실행이나 서버 로그가 섞이지 않도록 이 스레드와, 컨텍스트를 물려받은 LangGraph
+                    # 실행기 스레드의 로그만 이 파일에 기록한다
                     log_path = attach_file_log(run.run_dir / "sbmig.log", thread_id=threading.get_ident())
-                    # 이 실행 sbmig.log 의 첫 줄: 어떤 설정으로 돌았는지
+                    # 어떤 설정으로 실행했는지 남기기 위해 이 실행의 sbmig.log 첫 줄을 기록한다
                     log.info("run %s: configs=%s stop_after=%s llm_provider=%s flow=%s", run.run_id,
                              ",".join(run.configs) or "-", run.stop_after or "-", run.llm_provider or "-", run.flow)
                     report = self._run_thread_body(run)
@@ -1056,7 +1087,8 @@ class RunManager:
                         from sbmig.report.result_line import report_result_line
                         log.info("%s", report_result_line(report, run.exit_code, run_id=run.run_id))
             except _LeftLine:
-                # 리뷰 2026-11-10: 기다리던 Job 실행이 멈춤으로 줄에서 빠졌다 — 차례가 와서 cancel 을 본 것과 똑같이 끝낸다(Job 없음)
+                # 대기하던 Job 실행이 중지 요청으로 줄에서 빠진 경우다.
+                # 차례가 와서 cancel을 확인한 경우와 똑같이 Job 없이 끝낸다
                 log.info("run %s: stopped while waiting — left the line", run.run_id)
                 run.exit_code = self._stopped_before_create(run)
         except Exception as e:  # noqa: BLE001 — the orchestrator never raises; a crash here is a bug (logged in _record_crash)
@@ -1072,13 +1104,14 @@ class RunManager:
                     self._close_job_run(run)
                 success = run.success
             else:
-                # 마지막 정제(이 프로세스 안의 실행): 출력 정제가 걸려 있을 때. done 을 세우기 전에 — 그 전에는 file_withheld 가 내주지 않는다
+                # 출력 마스킹이 설치되어 있으면 done 전에 마지막 마스킹을 실행한다.
+                # 그 전까지는 file_withheld가 파일을 내주지 않는다
                 if output_scrubbing():
                     self._final_redaction(run)
                 success = getattr(run.report, "success", None)
                 run.success = success
             self._push(run, "finished", {"exit_code": run.exit_code, "success": success})
-            # 재개 시도는 web-status.json 을 쓰지 않는다: 그 파일은 이관의 결과다(재개가 이관의 끝 상태를 바꾸면 안 된다)
+            # web-status.json은 이관의 결과이므로 재개 시도에서는 기록하지 않는다
             if not run.keep_state and not run.action:   # a Job left running at shutdown: its state.json speaks for it
                 _write_web_status(run)
             run.done.set()
@@ -1088,7 +1121,7 @@ class RunManager:
                 self._prune_locked()
 
     def _record_crash(self, run: Run, e: BaseException) -> None:
-        # 작업 스레드 안의 예상 못 한 예외(엔진·이 모듈의 버그): 실행을 실패로 적고 화면에 알린다
+        # 작업 스레드 안에서 예상하지 못한 예외는 엔진이나 이 모듈의 버그이므로 실행을 실패로 기록하고 화면에 알린다
         log.exception("run %s failed", run.run_id)
         run.error = scrub(f"{type(e).__name__}: {e}")
         run.exit_code = EXIT_ABORTED
@@ -1097,7 +1130,8 @@ class RunManager:
         self._push(run, "error", {"message": run.error})
 
     def _final_redaction(self, run: Run) -> None:
-        # 마지막 정제: 쓰는 순간의 정제가 닿지 않는 파일(Maven 출력 logs/, 보고서)을 훑는다. 실패해도 실행을 막지 않는다(로그만)
+        # 기록할 때 마스킹되지 않는 파일(Maven 출력 logs/, 보고서)을 마지막으로 마스킹한다.
+        # 실패해도 로그만 남기고 계속한다
         try:
             from sbmig.web.redact import redact_run_dir
             redact_run_dir(run.run_dir)
@@ -1105,11 +1139,11 @@ class RunManager:
             log.exception("run %s: the final output redaction failed", run.run_id)
 
     def _close_job_run(self, run: Run) -> None:
-        """Job 실행의 마무리 — 마지막 정제(필요할 때)와 끝 상태 기록(``_settle_job_run``) 후 ``run.success``. 자리를 쥔 실행은 **자리를
-        비우기 전에** 부른다(리뷰 2026-11-10). 무슨 일이 있어도 예외를 내지 않는다(자리는 부른 쪽의 블록이 비운다).
-        Job 실행의 마지막 정제는 Worker 가 끝에 하지만(job-status.json 을 쓰기 직전), 그 파일 없이 끝난 Job(파드가 죽었다)은 그 단계를 못
-        지났을 수 있어 Main 이 자기 환경의 비밀 값으로 대신한다 — Job 이 끝난 것을 확인했을 때만(서버 종료로 두고 나가는 Job, 우리 것이
-        아닌 Job 의 파일은 건드리지 않는다).
+        """Job 실행을 마무리한다.
+        필요하면 마지막 마스킹을 하고, 종료 상태를 기록(``_settle_job_run``)한 뒤 ``run.success``를 정한다.
+        슬롯을 비우기 전에 호출하며 예외를 던지지 않는다.
+        결과 파일 없이 끝난 Job은 Worker의 마스킹을 거치지 않았을 수 있으므로 Main이 대신 마스킹한다.
+        Job 종료를 확인했을 때만 하고, 서버 종료로 남겨 두는 Job이나 우리 것이 아닌 Job은 건드리지 않는다.
 
         Close a Job run: the final redaction when Main must do it, then the terminal control state (`_settle_job_run`);
         sets `run.success`. Called before the slot is freed; never raises."""
@@ -1121,14 +1155,16 @@ class RunManager:
             log.exception("run %s: settling the job run failed", run.run_id)
 
     def _stopped_before_create(self, run: Run) -> int:
-        # 대기 중에 온 멈춤: Job 을 만들지 않고 stopped 로 끝낸다(차례가 와서 본 경우와 줄에서 빠진 경우가 같은 길)
+        # 대기 중에 중지되면 Job을 만들지 않고 stopped로 끝낸다.
+        # 차례가 와서 확인한 경우와 줄에서 빠진 경우 모두 같다
         run.error = "stopped before the job was created"
         run.final_state = RunState.STOPPED.value
         return EXIT_ABORTED
 
     def _job_client_or_fail(self) -> Any:
-        """Job 클라이언트(처음 부를 때 만든다). v2.1z-ae: 여러 감시 스레드가 동시에 부를 수 있어 ``_lock`` 안에서 한 번만 만든다 —
-        둘이 따로 만들면 로컬 클라이언트의 프로세스 목록이 갈라진다.
+        """Job 클라이언트를 반환한다.
+        여러 감시 스레드가 동시에 호출할 수 있으므로 ``_lock`` 안에서 처음 한 번만 만든다.
+        따로 만들면 로컬 클라이언트의 프로세스 목록이 나뉘기 때문이다.
 
         The Job client, built once under `_lock` on first use (several watcher threads may ask at the same time)."""
         with self._lock:
@@ -1141,21 +1177,22 @@ class RunManager:
             return self._job_client
 
     def _turn_words(self, run: Run) -> tuple[str, str]:
-        # 끝나지 않은 Job 이 무엇을 막고 있는지 알리는 말 (무엇을 쥐고 있나, 뒤에 붙일 말): 자리가 하나면 예전 문장 그대로(다음 이관이
-        # 기다린다), 여럿이면 그 자리 하나만 막힌다
+        # 끝나지 않은 Job이 무엇을 막고 있는지 알리는 문구다.
+        # 슬롯이 하나면 다음 이관이 기다리고, 여럿이면 그 슬롯 하나만 막힌다
         if self.max_parallel <= 1:
             return "its turn", ", the next migration waits"
         return (f"its slot {run.slot}" if run.slot is not None else "its slot"), ""
 
     def _settle_job_run(self, run: Run) -> bool | None:
-        """Job 실행의 마무리(작업 스레드의 finally): 결과를 믿을 수 있나 — 이 실행·시도의 ``job-status.json`` 을 받았거나, 컨테이너
-        종료 코드가 있고 ``report.json`` 이 있을 때만 report.json 의 success 를 읽는다. 아니면 success=None 이고 오류에 "result not
-        verified". 그리고 제어 상태를 끝 상태로 적는다(서버 종료로 Job 을 두고 나갈 때는 그대로 둔다).
+        """Job 실행의 결과를 확정한다. 이 실행과 시도의 ``job-status.json``을 받았거나 컨테이너 종료 코드와
+        ``report.json``이 있을 때만 report.json의 success를 읽는다.
+        그렇지 않으면 success는 None, 오류는 "result not verified"가 된다.
+        제어 상태를 종료 상태로 기록하되, 서버 종료로 Job을 남겨 둘 때는 그대로 둔다.
 
         Settle a job run: success only from a verified result; write the terminal control state (left as is at shutdown)."""
         if run.action:
-            # 재개 시도: 이관의 report.json 은 이 시도의 결과가 아니다 — 결과 파일이나 컨테이너 종료 코드만 본다. 조치의 결과는 조치
-            # 상태(remediation/state.json)에 있고 이관의 success 는 바뀌지 않는다
+            # 재개 시도에서는 이관의 report.json이 이 시도의 결과가 아니므로 결과 파일이나 컨테이너 종료
+            # 코드만 본다. 조치 결과는 remediation/state.json에 있고 이관의 success는 바뀌지 않는다
             trusted = bool(run.verified) or run.result_source == "container"
             success = None
         else:
@@ -1177,18 +1214,19 @@ class RunManager:
         return success
 
     def _transition(self, run: Run, state: RunState | str, **changes: Any) -> None:
-        """제어 상태를 바꾸고 바로 ``control/state.json`` 에 원자적으로 쓴다(OSError 는 부른 쪽 몫 — creating 은 못 쓰면 Job 을 만들지
-        않는다). / Transition the control state and write it atomically."""
+        """제어 상태를 바꾸고 바로 ``control/state.json``에 원자적으로 기록한다.
+        OSError는 호출하는 쪽이 처리하며, creating 상태를 기록하지 못하면 Job을 만들지 않는다. / Transition the control state and write it atomically."""
         if run.control is None:                # a run built without intake records (embedding callers): nothing to persist
             run.control = ControlState(run_id=run.run_id, action=run.action)
         cs = run.control.transition(state, **changes)
-        # 이관 시도는 예전 그대로의 호출(state.json), 재개 시도만 자기 파일 이름을 준다
+        # 이관 시도는 기본 파일(state.json)에, 재개 시도는 자기 파일에 기록한다
         cs.write(run.run_dir, run.control_file) if run.action else cs.write(run.run_dir)
 
     def _owned(self, run: Run, st: JobState) -> bool:
-        """이 Job 이 이 요청의 것인가: ``sbmig-owner`` 와 ``sbmig-run-id`` 라벨이 **둘 다** 이 요청의 값이어야 한다. 라벨이 하나도 없는
-        Job 은 우리 것이 아니다(같은 이름으로 손으로 만든 Job, 다른 도구의 Job) — 이어받지도 지우지도 않는다. 라벨을 아예 알려 주지
-        못하는 클라이언트(``labels is None``: 로컬 서브프로세스, 테스트용 가짜)만 이름을 믿는다.
+        """이 Job이 이 요청의 것인지 확인한다.
+        ``sbmig-owner``와 ``sbmig-run-id`` 라벨이 둘 다 이 요청의 값이어야 한다.
+        라벨이 없는 Job은 우리 것이 아니므로 이어받지도 지우지도 않는다. 라벨을 알 수 없는
+        클라이언트(``labels is None``: 로컬 서브프로세스, 테스트용 가짜 구현)일 때만 이름으로 판단한다.
 
         Is this Job this request's: both labels must match. An unlabelled Job is NOT ours (review 2026-11-10); only a client
         that cannot report labels at all (`labels is None`: the local subprocess, test fakes) is trusted by name."""
@@ -1198,8 +1236,9 @@ class RunManager:
         return labels.get(OWNER_LABEL) == run.owner and labels.get(RUN_LABEL) == run.run_id
 
     def _accept_status(self, run: Run) -> int | None:
-        """``job-status.json`` 을 읽어 **이 실행·이 시도**의 것이면 종료 코드(그리고 verified), 아니면 None. 다른 실행·시도의 파일은 한
-        번 경고하고 무시한다(옛 시도의 성공을 지금 성공으로 읽지 않게).
+        """``job-status.json``이 이 실행과 시도의 것이면 종료 코드를 반환하고 verified를 설정한다.
+        아니면 None을 반환한다.
+        다른 실행이나 이전 시도의 파일은 그 결과를 현재 결과로 읽지 않도록 한 번 경고하고 무시한다.
 
         The Worker's exit code when `job-status.json` matches this run and attempt; a foreign file is ignored (one warning)."""
         status = JobStatus.read(run.run_dir, run.status_file) if run.action else JobStatus.read(run.run_dir)
@@ -1219,12 +1258,13 @@ class RunManager:
         return int(status.exit_code)
 
     def _run_job(self, run: Run) -> int:
-        """k8s Job 모드의 본체: Job 생성(또는 재시작 복구 때 이어받기) → ``_watch_job``. 만들기 전에 제어 상태를 ``creating`` + Job
-        이름으로 적고(응답이 끊겨도 다음 Main 이 같은 이름을 찾는다), 응답이 409 이거나 전송 오류면 같은 이름의 Job 을 찾아 있으면
-        이어받는다(두 번 만들지 않는다). 대기 중에 멈춤·서버 종료가 오면 Job 을 만들지 않는다.
-        **차례(``_turns``)는 이 함수가 돌아올 때 넘어간다** — 그래서 Job 을 만들려 했거나 이어받은 뒤에는 그 Job 이 끝났거나 없는 것을
-        API 로 확인하고서야 돌아온다(리뷰 2026-11-10): 실패로 끝날 때도 우리 Job 을 지우고 사라질 때까지 기다린다. 예외는 서버 종료
-        (제어 상태를 그대로 두어 다음 Main 이 이어받는다)와 우리 것이 아닌 Job(건드리지 않는다)뿐이다.
+        """k8s Job 모드에서 실행 하나를 처리한다.
+        Job을 만들거나 재시작 복구 때 이어받은 뒤 ``_watch_job``을 호출하고 종료 코드를 반환한다.
+        - 만들기 전에 ``creating`` 상태와 Job 이름을 기록한다.
+          응답이 409이거나 전송 오류면 같은 이름의 Job을 찾아 이어받는다
+        - 대기 중에 중지 요청이나 서버 종료가 오면 Job을 만들지 않는다
+        - 이 함수가 반환해야 다음 차례로 넘어가므로 Job 종료를 API로 확인한 뒤에만 반환한다.
+          실패할 때도 우리 Job을 지우고 사라질 때까지 기다리며, 서버 종료와 우리 것이 아닌 Job만 예외다
 
         Create the Job (intent recorded first; an uncertain answer adopts an existing Job of the same name) or adopt it on
         recovery, then watch it. A stop or shutdown that arrived while queued never creates a Job. The turn is handed on
@@ -1243,8 +1283,8 @@ class RunManager:
                     return EXIT_ABORTED
             client = self._job_client_or_fail()
             if run.recover == "adopt":
-                # 이름만으로 이어받지 않는다: 같은 이름의 Job 이 있으면 라벨이 이 요청의 것이어야 한다(아니면 여기서 실패). 없으면 — 끝난 뒤
-                # 지워진 Job — 그대로 이어받아 볼륨의 결과 파일이 답하게 한다
+                # 이름만으로 이어받지 않는다. 같은 이름의 Job이 있으면 라벨이 이 요청의 것이어야 하고,
+                # 없으면 끝나서 지워진 Job으로 보고 볼륨의 결과 파일로 판단한다
                 self._job_exists(run, client, name)
                 self._adopt(run, name, "restart: the job was created by an earlier web process")
             elif run.recover == "probe" and self._job_exists(run, client, name):
@@ -1265,7 +1305,8 @@ class RunManager:
                 log.exception("run %s: k8s job %s failed", run.run_id, name)
             self._push(run, "error", {"message": run.error})
             if client is not None and run.job_name:
-                # 생성을 시도했거나 이어받은 Job 이 있을 수 있다: 우리 것이면 지우고, 끝난(없는) 것을 확인한 뒤에야 차례를 넘긴다
+                # 생성을 시도했거나 이어받은 Job이 있을 수 있으므로, 우리 것이면
+                # 지우고 끝난 것을 확인한 뒤에 차례를 넘긴다
                 self._hold_until_ended(run, client, run.job_name, delete_after=0.0, why="the run failed in the web process")
             return EXIT_ABORTED
 
@@ -1280,14 +1321,16 @@ class RunManager:
             env[contract.SLOT_ENV] = str(run.slot)
         if run.action:                         # 2026-11-11 wave 4: the Worker runs this action instead of `sbmig run`
             env[contract.ACTION_ENV] = run.action
-        # v2.1z-aj: 늘 적는다(full 도) — Worker 는 request.json 의 flow 와 대조한다. 비었으면 full 로 보므로 옛 Job 과도 맞는다
+        # Worker가 request.json의 flow와 비교하므로 full이어도 항상 기록한다.
+        # Worker는 비어 있으면 full로 보므로 이전 Job과도 맞는다
         env[contract.FLOW_ENV] = run.flow or FLOW_FULL
         return env
 
     def _env_pins(self, run: Run) -> dict[str, str] | None:
-        """Job 을 만드는 지금, 이 프로세스 환경의 지문(``contract.env_pins`` — 이름 → 값의 sha256 앞부분; 비밀로 보이는 이름은 없다).
-        정책이 off 면 None(Worker 가 대조하지 않는다). 계산이 실패해도 Job 만들기를 막지 않는다: 경고만 남기고 None — 읽히지 않는
-        설정 파일은 Worker 가 request.json 의 digest 로 따로 잡는다.
+        """Job을 만드는 시점의 이 프로세스 환경 해시(``contract.env_pins``)를 반환한다.
+        비밀로 보이는 이름은 포함하지 않는다.
+        정책이 off면 None을 반환한다. 계산이 실패해도 Job 생성을 막지 않도록 경고만 남기고 None을 반환하며,
+        읽히지 않는 설정 파일은 Worker가 설정 파일 해시 비교로 잡아낸다.
 
         This process's environment pins at Job creation; None when the policy is off or when computing them failed (a
         warning, never a failed create — an unreadable config is caught by the Worker's config digests)."""
@@ -1301,9 +1344,11 @@ class RunManager:
             return None
 
     def _create_job(self, run: Run, client: Any, name: str) -> None:
-        """틀을 렌더하고(owner 라벨 포함) ``creating`` 을 적은 뒤 Job 을 만든다. ``creating`` 에는 이 Main 의 환경 지문(``env_pins``)과
-        정책(``env_pin_policy``)도 함께 적는다 — Worker 가 자기 환경과 대조한다(Job 을 만드는 곳은 여기뿐이다). 409 / 전송 오류 → API 가
-        답할 때까지 같은 이름의 Job 을 찾아, 있고 우리 것이면 이어받고, 없으면(몇 번 더 물어도) 원래 오류를 다시 낸다. 성공하면 ``created``.
+        """템플릿에 owner 라벨까지 채워 매니페스트를 만들고, ``creating`` 상태를 기록한 뒤 Job을 만든다.
+        Job을 만드는 곳은 이 함수뿐이다.
+        ``creating`` 상태에는 Worker가 비교할 수 있도록 이 Main의 ``env_pins``와 ``env_pin_policy``도 기록한다.
+        응답이 409이거나 전송 오류면 API가 응답할 때까지 같은 이름의 Job을 찾아 우리 것이면 이어받고, 없으면
+        원래 오류를 다시 던진다. 성공하면 상태는 ``created``가 된다.
 
         Render, record `creating` together with this Main's `env_pins` / `env_pin_policy` (the Worker compares them with its
         own environment; this is the only place a Job is created), create; an uncertain answer asks (until the API answers)
@@ -1311,18 +1356,19 @@ class RunManager:
         template: Any = self._job_template_doc if self._job_template_doc is not None else self.job_template
         if self._job_template_doc is None and not Path(self.job_template).is_file():
             if self.effective_mode == "k8s-job":
-                # 시작 검증을 건너뛴 경우(테스트가 넣은 클라이언트)에만 여기 온다 — 빈 틀로 Job 을 만들지 않는다
+                # 시작 검증을 건너뛴 경우(테스트 클라이언트)에만 여기에 온다.
+                # 빈 템플릿으로 Job을 만들지 않도록 예외를 던진다
                 raise K8sError(f"job template not found: {self.job_template} — mount the ConfigMap sbmig-job-template at /templates "
                                f"(deploy/README.md §3) or point {TEMPLATE_ENV} at the filled template")
             # the local "pod" needs only the env: a minimal manifest stands in for a template the checkout may lack
             template = {"kind": "Job", "metadata": {}, "spec": {"template": {"spec": {"containers": [{"name": "build"}]}}}}
         manifest = render_job(template, run.run_id, self._job_env(run), getattr(client, "namespace", None), owner=run.owner)
-        # 재개 시도의 Job 은 이름이 다르다(<이관 Job>-rem<시도>) — 라벨(실행 id + 이 시도의 owner)은 render_job 이 붙인 그대로
+        # 재개 시도의 Job은 이름이 <이관 Job>-rem<시도 번호>로 다르며, 라벨은 render_job이 붙인 그대로 쓴다
         manifest.setdefault("metadata", {})["name"] = name
-        # 의도를 먼저 적는다: 이 줄 뒤에 프로세스가 죽어도 다음 Main 은 creating + 이름을 보고 Job 을 찾는다. 환경 지문도 같은 전이로 —
-        # 기준은 접수한 Main 이 아니라 Job 을 **만드는** 이 Main 의 지금 환경이다(대기 중에 재시작했으면 새 Main 의 것)
+        # 프로세스가 여기서 죽어도 다음 Main이 creating 상태와 이름으로 Job을 찾을 수 있도록 생성 의도를
+        # 먼저 기록한다. 환경 해시는 접수한 Main이 아니라 Job을 만드는 이 Main의 현재 환경으로 만든다
         pins = self._env_pins(run)
-        # 자리 번호도 같은 전이로: 재시작한 Main 이 같은 번호를 다시 잡는다(v2.1z-ae)
+        # 재시작한 Main이 같은 번호를 다시 잡을 수 있도록 슬롯 번호도 같은 상태 기록에 넣는다
         self._transition(run, RunState.CREATING, job=name, env_pins=pins, env_pin_policy=self.env_pin_policy, slot=run.slot)
         if pins is not None:
             log.info("run %s: %d environment value(s) pinned for job %s (%s=%s)", run.run_id, len(pins), name,
@@ -1333,8 +1379,9 @@ class RunManager:
         except K8sError as e:
             if not _UNCERTAIN_CREATE_RE.search(str(e)):
                 raise
-            # 응답이 불확실하다: Job 이 있는지 API 가 답할 때까지 묻는다(모르는 채로 실패 처리하면 만들어진 파드를 두고 차례를 넘긴다).
-            # 안 보여도 몇 번 더 묻는다 — 끊긴 요청이 뒤늦게 닿아 Job 이 생길 수 있다
+            # 응답이 불확실하면 API가 응답할 때까지 Job이 있는지 조회한다.
+            # 모르는 채로 실패 처리하면 이미 만들어진 파드를 둔 채 차례를 넘기게 된다
+            # 끊긴 요청이 늦게 전달되어 Job이 생길 수 있으므로 보이지 않아도 몇 번 더 조회한다
             st = self._state_when_answered(run, client, name)
             for _ in range(CREATE_CONFIRM_POLLS - 1):
                 if st.phase != "Missing":
@@ -1359,16 +1406,17 @@ class RunManager:
         self._push(run, "node", {"node": "job", "update": {"state": "created", "job": name}})
 
     def _poll_job(self, run: Run, client: Any, name: str) -> JobState | None:
-        """Job 상태를 한 번 묻는다. API 가 답하지 않으면 None — **실행을 실패로 끝내지 않는다**: 파드가 살아 있는지 모르는 채로 차례를
-        넘기면 그 파드가 다음 이관과 겹친다(리뷰 2026-11-10). ``job_api_grace_s`` 를 넘기면 한 번 크게 알리고(로그 error, 저널
-        ``job_api_unavailable``, 화면의 한 줄 ``job.note``) 그 뒤로는 ``API_REMIND_S`` 마다 로그에 다시 남긴다. 다시 답하면 ``job_api_back``.
+        """Job 상태를 한 번 조회해 반환한다. API가 응답하지 않으면 None을 반환하며, 파드 상태를 모르는 채로
+        차례를 넘기면 다음 이관과 겹치므로 실행을 실패로 끝내지 않는다.
+        ``job_api_grace_s``를 넘기면 로그 error, 저널 ``job_api_unavailable``, 화면 ``job.note``로 한 번
+        알리고, 이후 ``API_REMIND_S``마다 로그를 남긴다. 다시 응답하면 저널에 ``job_api_back``을 기록한다.
 
         One state poll; None while the API does not answer — reported once past `job_api_grace_s`, never a failure. ANY
         exception of the client counts as "API unavailable" (review 2026-11-10: a 200 with a non-JSON body from a proxy
         raised ValueError past this handler, failed the run and freed the slot while the Job ran)."""
         try:
             st = client.job_state(name)
-        except Exception as e:  # noqa: BLE001 — 어떤 예외든 'API 가 답하지 않는다': 실행을 실패로 끝내지도, 자리를 비우지도 않는다
+        except Exception as e:  # noqa: BLE001 - 어떤 예외든 API 무응답으로 본다
             if not isinstance(e, K8sError):
                 e = K8sError(f"{type(e).__name__}: {e}")
             now = time.monotonic()
@@ -1400,8 +1448,9 @@ class RunManager:
         return st
 
     def _state_when_answered(self, run: Run, client: Any, name: str) -> JobState:
-        """API 가 답할 때까지 Job 상태를 묻는다(기한 없음 — Job 이 있는지 모르는 채로는 차례를 넘기지 않는다). 기다리는 중에 서버가
-        내려가면 ``_ServerClosing``.
+        """API가 응답할 때까지 Job 상태를 조회해 반환한다.
+        Job이 있는지 모르는 채로 차례를 넘기지 않기 위해 기한 없이 기다린다.
+        기다리는 중에 서버가 종료되면 ``_ServerClosing``을 던진다.
 
         Poll until the API answers (no deadline); raises `_ServerClosing` when the server shuts down meanwhile."""
         while True:
@@ -1414,8 +1463,8 @@ class RunManager:
                 run.cond.wait(self.job_poll_s)
 
     def _job_exists(self, run: Run, client: Any, name: str) -> bool:
-        """재시작 복구: 같은 이름의 Job 이 있나(API 가 답할 때까지 묻는다). 있는데 라벨이 이 요청의 것이 아니면 — 라벨이 아예 없는 Job 도 —
-        이어받지 않고 오류를 낸다.
+        """재시작 복구에서 같은 이름의 Job이 있는지 API가 응답할 때까지 조회한다.
+        Job이 있는데 라벨이 이 요청의 것이 아니면(라벨이 없는 경우 포함) 예외를 던진다.
 
         Recovery: does a Job of that name exist (asked until the API answers)? One that is not this request's raises."""
         st = self._state_when_answered(run, client, name)
@@ -1426,8 +1475,9 @@ class RunManager:
         return True
 
     def _transition_soft(self, run: Run, state: RunState | str, **changes: Any) -> None:
-        """Job 이 이미 있는 뒤의 상태 기록: 파일을 못 써도 예외를 내지 않는다(로그만) — 기록 실패로 감시를 그만두면 도는 파드를 두고 차례를
-        넘기게 된다. 메모리의 상태는 바뀌어 있고, 디스크에는 직전 상태가 남아 다음 Main 이 그 상태로 이어받는다.
+        """Job이 이미 있을 때 제어 상태를 기록한다. 기록 실패로 감시를 멈추면 실행 중인 파드를 둔 채 차례를
+        넘기게 되므로, 파일을 쓰지 못해도 로그만 남기고 예외를 던지지 않는다.
+        이 경우 메모리 상태는 바뀌고 디스크에는 직전 상태가 남아, 다음 Main이 그 상태로 이어받는다.
 
         A control-state write once the Job exists: an `OSError` is logged, never raised (the Job must be watched on)."""
         try:
@@ -1437,7 +1487,8 @@ class RunManager:
                       state.value if isinstance(state, RunState) else state, e)
 
     def _adopt(self, run: Run, name: str, reason: str) -> None:
-        """이미 있는 Job 을 이 실행의 것으로 이어받는다: 저널 ``job_adopted``, 제어 상태 queued / creating → created, '파드' 단계 이벤트.
+        """이미 있는 Job을 이 실행의 것으로 이어받는다. 저널에 ``job_adopted``를 남기고, 제어 상태를 queued
+        / creating에서 created로 바꾸고, '파드' 단계 이벤트를 보낸다.
 
         Adopt an existing Job: journal `job_adopted`, control state → `created` (a `running` state stays), a `job` node event."""
         run.job_name = name
@@ -1449,12 +1500,10 @@ class RunManager:
         self._push(run, "node", {"node": "job", "update": {"state": "created", "job": name, "adopted": True}})
 
     def _hold_until_ended(self, run: Run, client: Any, name: str, *, delete_after: float | None, why: str) -> bool:
-        """**자리를 넘기기 전의 문**(리뷰 2026-11-10; v2.1z-ae 부터 자리마다): Job 과 그 파드가 끝났거나 사라진 것을 API 로 확인할 때까지
-        이 실행이 자기 자리를 지킨다 — 자리 수의 한도는 파드가 실제로 끝나야 지켜진다(그 자리의 Maven 로컬 저장소·공유 볼륨을 다음 이관과
-        함께 쓰지 않게). ``delete_after`` 초가
-        지나도 남아 있으면 우리 라벨의 Job 을 지우고 계속 기다린다(None = 지우지 않는다). 기한은 없다: API 가 답하지 않으면 답할 때까지,
-        파드가 안 끝나면 끝날 때까지(``HOLD_WARN_S`` 마다 경고). 돌려주는 값: True = 끝난 것을 확인했다; False = 확인하지 못하고 빠진다 —
-        서버 종료(제어 상태를 그대로 두어 다음 Main 이 이어서 지켜본다)이거나 우리 Job 이 아니다(건드리지 않는다).
+        """Job과 파드가 끝났거나 사라진 것을 API로 확인할 때까지 슬롯을 놓지 않고 기다린다.
+        그 슬롯의 Maven 로컬 저장소를 다음 이관과 함께 쓰지 않게 하기 위해서다.
+        ``delete_after``초가 지나면 우리 라벨의 Job을 지우고 기한 없이 기다린다.
+        종료를 확인하면 True를, 서버 종료나 다른 요청의 Job이라 확인 없이 빠지면 False를 반환한다.
 
         The gate before the slot is handed on: wait until the API confirms the Job terminal / gone, deleting our Job once
         `delete_after` seconds passed. False = left unconfirmed (server shutdown: state kept; or a foreign Job: untouched)."""
@@ -1482,7 +1531,7 @@ class RunManager:
                 if delete_after is not None and not deleted and now - started >= delete_after and now >= delete_retry_at:
                     try:
                         client.delete_job(name)
-                    except Exception as e:  # noqa: BLE001 — 어떤 실패든 다시 보낸다; 끝난 것을 확인하기 전에는 빠지지 않는다
+                    except Exception as e:  # noqa: BLE001 - 어떤 실패든 다시 시도하며 종료 확인 전에는 빠지지 않는다
                         delete_retry_at = now + DELETE_RETRY_S
                         log.warning("run %s: job %s not deleted (%s) — retrying in %.0fs", run.run_id, name, e, DELETE_RETRY_S)
                     else:
@@ -1502,12 +1551,11 @@ class RunManager:
                 run.cond.wait(self.job_poll_s)
 
     def _watch_job(self, run: Run, client: Any, name: str) -> int:
-        """Job 을 끝까지 지켜본다(생성 직후와 이어받기가 함께 쓴다): '파드' 단계 이벤트, 파드가 Running 이 되면 ``running``, 끝나면
-        종료 코드 — 이 실행·시도의 ``job-status.json`` 이 먼저, 없으면 컨테이너 종료 코드(검증 안 됨), Job 이 사라졌으면 ``lost``. 멈춤
-        요청은 ``stop.request`` 를 쓰고, 유예가 지나면 우리 라벨의 Job 만 지운다. 서버 종료 때는 Job 을 두고 빠진다.
-        **이 함수는 Job 이 끝난 것을 확인하고서야 돌아온다**(리뷰 2026-11-10; 서버 종료와 남의 Job 만 예외): 결과 파일을 받았어도 파드가
-        끝날 때까지 ``_hold_until_ended``, API 가 답하지 않으면 답할 때까지 기다린다(실패로 끝내지 않는다). '파드' 단계는 Job 의 Failed 를
-        그대로 보내지 않는다: 결과 파일을 받으면 ``completed``, 유예 안에 못 받으면 그때 ``failed``(``_close_pod_step``).
+        """Job이 끝날 때까지 감시하고 종료 코드를 반환한다. 생성 직후와 이어받은 뒤에 모두 쓴다.
+        - 파드가 Running이 되면 ``running``으로 바꾸고, 끝나면 ``job-status.json``이나 컨테이너 종료
+          코드(확인되지 않은 결과)를 쓰며, Job이 사라졌으면 ``lost``로 끝낸다
+        - 중지 요청이 오면 ``stop.request``를 기록하고, 유예 시간이 지나면 우리 라벨의 Job만 지운다
+        - Job 종료를 확인한 뒤에만 반환하며, 서버 종료와 다른 요청의 Job만 예외다
 
         Watch the Job to its end (shared by a fresh create and an adoption). Returns only once the Job is confirmed ended,
         except at server shutdown or for a Job that is not this request's. The pod step's `Failed` is decided by the
@@ -1527,8 +1575,8 @@ class RunManager:
                 if (st.phase, st.pod) != last:
                     last = (st.phase, st.pod)
                     run.job_phase, run.job_pod = st.phase, st.pod
-                    # Failed 는 아직 화면에 보내지 않는다: Worker 가 sbmig 의 종료 코드 3(ADF 거부 …)을 그대로 내면 Job 은 Failed 가 되지만
-                    # 파드는 제 일을 다 했다 — 파드가 죽었는지는 결과 파일을 기다린 뒤(_await_status) 가린다
+                    # Failed는 아직 화면에 보내지 않는다. Worker가 sbmig의 종료 코드 3을 그대로 내면 Job은
+                    # Failed지만 파드는 정상 동작한 것이므로 결과 파일을 기다린 뒤(_await_status) 판단한다
                     if st.phase != "Failed":
                         self._push(run, "node", {"node": "job", "update": {"state": st.phase.lower(), "job": name,
                                                                             "pod": st.pod, "message": st.message}})
@@ -1538,8 +1586,8 @@ class RunManager:
                         RunState.QUEUED.value, RunState.CREATING.value, RunState.CREATED.value):
                     self._transition_soft(run, RunState.RUNNING, job=name)
                 if st.phase in ("Succeeded", "Failed") and not st.finished:
-                    # 리뷰 2026-11-10: Job 은 끝났다고 하지만(activeDeadlineSeconds 로 Failed …) 파드가 아직 돌거나 종료 유예 중이다 — Maven 이
-                    # 아직 쓸 수 있다. 파드가 끝날 때까지(종료 유예 SBMIG_JOB_EXIT_GRACE_S 가 지나면 우리 Job 을 지우고 사라질 때까지) 자리를 지킨다
+                    # Job은 끝났다고 하지만 파드가 아직 실행 중이거나 종료 유예 중이라 Maven이 계속 파일을 쓸 수 있다.
+                    # 파드가 끝날 때까지 슬롯을 유지하고, SBMIG_JOB_EXIT_GRACE_S가 지나면 우리 Job을 지우고 기다린다
                     log.info("run %s: job %s is %s but %d pod(s) of it are still running or terminating — waiting for them",
                              run.run_id, name, st.phase, st.active_pods)
                     ended = self._hold_until_ended(run, client, name, delete_after=self.job_exit_grace_s,
@@ -1551,7 +1599,8 @@ class RunManager:
                 if st.finished:
                     code = self._await_status(run, name, st)   # the Worker writes job-status.json just before the pod ends — NFS may show it late
                     if code is None and self.closing.is_set() and st.phase != "Missing" and self.job_status_grace_s > 0:
-                        # 서버 종료 중에는 결과 파일을 기다리지 않는다: 제어 상태를 그대로 두면 다음 Main 이 이어받아 그 파일을 읽는다
+                        # 서버 종료 중에는 결과 파일을 기다리지 않는다.
+                        # 제어 상태를 그대로 두면 다음 Main이 이어받아 읽는다
                         run.error = "web server shut down while waiting for the job's result — the next web process reads it"
                         run.keep_state = True
                         return EXIT_ABORTED
@@ -1564,7 +1613,8 @@ class RunManager:
                     run.verified = False
                     if st.phase == "Missing":
                         if run.cancel.is_set() or (run.run_dir / STOP_REQUEST_FILE).is_file():
-                            # 멈춤을 요청한 실행의 Job 이 사라졌다(이전 Main 이 지우다 내려갔거나 밖에서 지웠다) — lost 가 아니라 stopped
+                            # 중지를 요청한 실행의 Job이 사라진 경우다. 이전 Main이 지우다가 종료되었거나
+                            # 밖에서 지운 것이므로 lost가 아니라 stopped로 기록한다
                             run.error = f"stopped: job {name} is gone after the stop request — no job-status.json for this run/attempt"
                             run.final_state = RunState.STOPPED.value
                             return EXIT_ABORTED
@@ -1596,7 +1646,7 @@ class RunManager:
                 elif st is not None and time.monotonic() - stop_sent > self.job_stop_grace_s:
                     run.final_state = RunState.STOPPED.value
                     if not self._owned(run, st):
-                        # 같은 이름이라도 라벨이 다르면 다른 요청의 Job 이다 — 지우지 않는다
+                        # 같은 이름이라도 라벨이 다르면 다른 요청의 Job이므로 지우지 않는다
                         run.error = f"job {name} is not owned by this request — not deleted"
                         log.error("run %s: %s (labels %s)", run.run_id, run.error, st.labels)
                         _append_journal(run.run_dir, {"event": "job_delete_refused", "run_id": run.run_id, "job": name})
@@ -1604,18 +1654,20 @@ class RunManager:
                     log.warning("run %s: job %s still running %.0fs after the stop request — deleting it",
                                 run.run_id, name, self.job_stop_grace_s)
                     run.error = "stopped: the job was deleted after the grace period"
-                    # 지운 뒤 사라질 때까지 기다린다(기한 없음) — 파드가 아직 볼륨에 쓰는 동안 다음 이관을 시작하지 않게
+                    # 파드가 아직 볼륨에 쓰는 동안 다음 이관을 시작하지 않도록,
+                    # Job을 지운 뒤 사라질 때까지 기한 없이 기다린다
                     self._hold_until_ended(run, client, name, delete_after=0.0, why="the stop grace period is over")
                     return EXIT_ABORTED
             with run.cond:
                 run.cond.wait(self.job_poll_s)
 
     def _close_pod_step(self, run: Run, name: str, *, code: int | None = None, ended: JobState | None = None) -> None:
-        """'파드' 단계를 닫는 이벤트를 **이 감시에서 한 번만** 보낸다. '파드' 는 "파드가 제 일을 했나" 이지 이관의 종료 코드가 아니다
-        (2026-11-10 회사 실행: ADF 프로젝트를 분석에서 멈춘 실행(종료 코드 3)의 Job 이 Failed 가 되자 화면이 '파드' 를 X 로 그렸다).
-        ``code`` = 이 실행·시도의 ``job-status.json`` 을 받았다: ``error`` 가 없으면 ``completed``(종료 코드가 무엇이든), 있으면 — Worker 가
-        요청을 거부했거나 sbmig 를 띄우지 못했다 — ``failed`` + 그 오류. ``ended`` = 결과 파일 없이 Job 이 Failed 로 끝났다(유예가 지났다):
-        파드가 죽었다 — ``failed`` + 쿠버네티스 메시지(예전 모양 그대로).
+        """'파드' 단계를 닫는 이벤트를 이 감시에서 한 번만 보낸다.
+        '파드' 단계는 파드가 제 역할을 했는지를 나타내며, 이관의 종료 코드와는 다르다.
+        ``code``를 주면 이 실행과 시도의 ``job-status.json``을 받은 것이므로, ``error``가 없으면 종료 코드와
+        상관없이 ``completed``를, 있으면 ``failed``와 그 오류를 보낸다.
+        ``ended``를 주면 결과 파일 없이 Job이 Failed로 끝난 것이므로 파드가 죽었다고 보고 ``failed``와
+        쿠버네티스 메시지를 보낸다.
 
         Push the pod step's closing event, at most once per watch: a verified status without `error` → `completed` (whatever
         the exit code), with `error` → `failed` carrying it; `ended` (the Job ended Failed, no verified status within the
@@ -1638,8 +1690,8 @@ class RunManager:
         self._push(run, "node", {"node": "job", "update": update})
 
     def _log_failed_phase_explained(self, run: Run, name: str, code: int) -> None:
-        """Job 이 Failed 로 끝났지만 그 까닭이 검증된 결과 파일의 종료 코드일 때 로그 한 줄 — 운영자가 sbmig.log 에서 "파드 실패" 로
-        잘못 읽지 않게(Worker 는 sbmig 의 종료 코드 3 을 컨테이너 종료 코드로 그대로 낸다).
+        """Job이 Failed로 끝났지만 확인된 결과 파일의 종료 코드로 설명될 때 로그 한 줄을 남긴다.
+        Worker가 sbmig 종료 코드 3을 그대로 내므로, 운영자가 파드 실패로 오해하지 않게 하기 위해서다.
 
         One log line when a verified result explains a `Failed` Job phase (the Worker's own exit code, not a pod failure)."""
         if run.job_phase == "Failed" and run.verified and not run.status_error:
@@ -1647,9 +1699,10 @@ class RunManager:
                      run.run_id, name, code)
 
     def _await_status(self, run: Run, name: str, st: JobState) -> int | None:
-        """Job 이 끝난 직후: 이 실행·시도의 ``job-status.json`` 이 보일 때까지 ``job_status_grace_s``(기본 90초) 동안 다시 읽는다 — Worker 는
-        파드가 끝나기 직전에 그 파일을 쓰는데, NFS 의 속성 캐시는 새 파일을 최대 1분 늦게 보여 줄 수 있다(끝난 결과를 "검증 안 됨" 으로
-        잘못 적지 않게). Missing(지워진 Job)은 기다리지 않는다.
+        """Job이 끝난 직후 이 실행과 시도의 ``job-status.json``이 보일 때까지 ``job_status_grace_s``(기본
+        90초) 동안 다시 읽고, 찾으면 종료 코드를 반환한다.
+        NFS 속성 캐시가 새 파일을 최대 1분 늦게 보여 줄 수 있기 때문이다.
+        Missing(지워진 Job)이면 기다리지 않는다.
 
         After the Job ended, re-read `job-status.json` for up to `job_status_grace_s` (NFS attribute caching); None when it
         never shows. A server shutdown ends the wait at once (None; the caller keeps the control state for the next Main)."""
@@ -1668,8 +1721,9 @@ class RunManager:
         return None
 
     def _prune_locked(self) -> None:
-        """끝난 실행이 ``max_finished_runs`` 를 넘으면 오래된 것부터 메모리에서 뺀다(호출자가 ``self._lock``
-        보유). 실행 중·대기 중인 것은 남고, 빠진 실행은 실행 폴더의 파일로 답한다.
+        """끝난 실행이 ``max_finished_runs``개를 넘으면 오래된 것부터 메모리에서 뺀다.
+        호출하는 쪽이 ``self._lock``을 잡고 있어야 한다.
+        실행 중이거나 대기 중인 실행은 남기며, 빠진 실행은 실행 폴더의 파일로 응답한다.
 
         Drop the oldest finished runs beyond `max_finished_runs` from memory (caller holds `self._lock`). Running
         and queued runs stay; evicted runs are answered from their run directory."""
@@ -1680,16 +1734,19 @@ class RunManager:
             log.debug("run %s evicted from memory (max_finished_runs=%d)", r.run_id, self.max_finished_runs)
 
     def _run_thread_body(self, run: Run) -> Any:
-        """이관을 돌리고 최종 RunReport 를 돌려준다(테스트가 이 메서드를 바꿔 끼운다). LangGraph 가 없으면
-        inline 엔진(노드 이벤트 없음, 멈춤도 안 먹음). 노드가 끝날 때마다 ``node`` 이벤트를 쌓고 멈춤 요청을
-        본다: 최종 빌드(verify)·finalize 뒤면 무시, 아니면 aborted 표시 → 그래프 닫기 → 보고서 마감.
+        """이관을 실행하고 최종 RunReport를 반환한다. 테스트가 이 메서드를 교체한다.
+        LangGraph가 없으면 inline 엔진을 쓰며 이때는 노드 이벤트와 중지가 없다.
+        노드가 끝날 때마다 ``node`` 이벤트를 쌓고 중지 요청을 확인한다.
+        중지 요청은 최종 빌드(verify)나 finalize 뒤면 무시하고, 아니면 aborted
+        표시 -> 그래프 닫기 -> 보고서 마감 순으로 처리한다.
 
         Drive the migration; return the final `RunReport`. Tests replace this method."""
         from sbmig.core.models import Phase
 
         orch = run.orch
         phase = Phase(run.stop_after) if run.stop_after else None
-        # v2.1z-aj: 실행 방식은 full 이 아닐 때만 넘긴다 — full 은 엔진의 기본값이고, 그래야 flow 를 모르는 엔진으로도 이관이 돈다
+        # 실행 방식은 full이 아닐 때만 넘긴다.
+        # full은 엔진의 기본값이므로 flow를 모르는 엔진에서도 이관이 실행된다
         extra: dict[str, Any] = {"flow": run.flow} if run.flow and run.flow != FLOW_FULL else {}
         try:
             from sbmig.graph import stream_graph
@@ -1703,15 +1760,15 @@ class RunManager:
                 self._push(run, "node", {"node": name, "update": _jsonable(update)})
                 if not run.cancel.is_set():
                     continue
-                # 최종 빌드가 이미 돌았으면 이관은 끝난 것: 여기서 멈추면 성공을 중단으로 잘못 적을 뿐이다
-                # 2026-11-11: 이관 뒤에 이어 도는 remediation 노드도 최종 빌드 뒤다 — 여기서의 중지가 성공한 이관을 중단으로 적으면 안 된다
+                # 최종 빌드가 이미 실행되었으면 이관은 끝난 것이므로, 여기서 중지하면 성공을 중단으로 잘못 기록하게 된다
+                # 이관 뒤에 실행되는 remediation 노드도 최종 빌드 뒤에 있으므로 마찬가지다
                 if not update.get("aborted") and (name in ("finalize", "remediation")
                                                   or (name == "phase" and update.get("phase") == Phase.VERIFY.value)):
                     # the final build already ran: the migration is complete, a stop now would only mislabel it
                     log.warning("run %s: stop requested after the final build — finishing normally", run.run_id)
                     continue
                 log.warning("run %s: stop requested — stopping after node %s (no final build)", run.run_id, name)
-                # 닫기 전에 aborted 표시: 엔진은 일찍 닫힐 때 보고서를 마감하므로, 그 뒤에 표시하면 늦다
+                # 엔진은 일찍 닫힐 때 보고서를 마감하므로 닫기 전에 aborted를 표시한다
                 _mark_stopped(orch)          # before close(): the engine finalizes the report when closed early
                 stopped = True
                 break
@@ -1724,8 +1781,9 @@ class RunManager:
         return orch.report
 
     def _push(self, run: Run, kind: str, data: Any) -> None:
-        """실행 기록에 이벤트를 붙이고 기다리는 SSE 스트림을 깨운다(``node`` 면 마지막 노드 이름도 갱신). 출력 정제가 걸려 있으면
-        이벤트의 문자열도 지나간다 — 화면으로 가는 또 하나의 출력이다."""
+        """실행 기록에 이벤트를 추가하고 기다리는 SSE 스트림을 깨운다.
+        ``node`` 이벤트면 마지막 노드 이름도 갱신한다.
+        이벤트는 화면으로 나가므로 출력 마스킹이 설치되어 있으면 이벤트 문자열도 마스킹한다."""
         if output_scrubbing():
             data = scrub_json(data)
         with run.cond:
@@ -1735,10 +1793,9 @@ class RunManager:
             run.cond.notify_all()
 
     def stop(self, run_id: str) -> bool:
-        """지금 그래프 노드가 끝나면 멈추라고 요청한다(진행 중인 Maven·LLM 호출은 끊지 않는다).
-        모르는 실행이거나 이미 끝났으면 False. Job 모드에서 아직 기다리는 실행은 **지금** 줄에서 빠져 stopped 로 끝난다(Job 을 만들지
-        않는다; 리뷰 2026-11-10 — 예전에는 차례가 올 때까지 줄의 자리를 지켜 뒤의 실행들의 순번을 부풀렸다). in-process 의 대기 실행은
-        예전처럼 차례가 와서 첫 노드를 마친 뒤 멈춘다.
+        """현재 그래프 노드가 끝나면 실행을 중지하도록 요청한다. 진행 중인 Maven이나 LLM 호출은 끊지 않는다.
+        모르는 실행이거나 이미 끝났으면 False를 반환한다. Job 모드에서 대기 중인 실행은 바로 줄에서 빠지고
+        Job 없이 stopped로 끝나며, in-process의 대기 실행은 차례가 와서 첫 노드를 마친 뒤 멈춘다.
 
         Ask a running run to stop after the current graph node. False if the run is unknown or finished. In the Job modes a
         run still waiting leaves the line at once and ends stopped (no Job is created); in-process it stops after its first
@@ -1755,11 +1812,12 @@ class RunManager:
 
     # ---- remediation resume in a new build pod (2026-11-11, wave 4)
     def resume_remediation(self, run_id: str) -> dict[str, Any]:
-        """끝난 Job 모드 실행의 이어 돈 조치를 **새 빌드 파드**에서 잇는 시도를 줄에 세운다(``chain.resume`` 은 그 파드의 Worker 가 부른다).
-        검사: Job 모드, 실행이 있고 접수 기록(request.json)이 있고 이관이 끝났고(``finished``), 이 실행의 재개가 지금 줄에 있거나 돌고 있지
-        않다(메모리·디스크 둘 다) — 아니면 ``StateConflict``. 그러면: 이관 뒤에 남은 ``stop.request`` 를 지우고(새 시도를 바로 멈추지 않게),
-        새 시도 번호(이관·이전 재개보다 하나 큰 수)로 ``control/remediation-resume.json`` 에 queued 를 **먼저** 적고, 업로드와 같은 FIFO 줄
-        끝에 서는 감시 스레드를 띄운다. Job 생성·이어받기·감시·자리 반납은 이관 Job 과 같은 코드다. 돌려주는 값 = ``remediation_job``.
+        """끝난 Job 모드 실행의 취약점 조치를 새 빌드 파드에서 이어 가는 시도를 대기열에 넣고,
+        ``remediation_job`` 정보를 반환한다.
+        - Job 모드가 아니거나, 이관이 ``finished``가 아니거나, 재개가 이미 대기 중이거나 실행 중이면
+          ``StateConflict``를 던진다
+        - 남아 있는 ``stop.request``를 지우고, ``control/remediation-resume.json``에 queued를 먼저 기록한 뒤
+          업로드와 같은 대기열에 선다
 
         Queue a NEW attempt of a finished Job-mode run that resumes its chained remediation in a new build pod. `StateConflict`
         when not in a Job mode, the run is unknown / not accepted in a Job mode / not finished, or a resume of it is already
@@ -1789,14 +1847,16 @@ class RunManager:
                 raise StateConflict(f"a remediation resume of run {run_id} is already {self._mem_state(cur)}",
                                     status=self._mem_state(cur))
             if cur is None and disk is not None and not disk.terminal:
-                # 다른(이전) 웹 프로세스가 적은 끝나지 않은 재개 — 복구가 이어받지 않았으면 그 Job 이 아직 돌 수 있다
+                # 이전 웹 프로세스가 기록한 끝나지 않은 재개다.
+                # 복구가 이어받지 않았으면 그 Job이 아직 실행 중일 수 있으므로 거부한다
                 raise StateConflict(f"a remediation resume of run {run_id} is recorded as {disk.state}", status=disk.state)
             mig_cs = ControlState.read(rd)
             attempt = max(int(rec.attempt or 1), int(mig_cs.attempt) if mig_cs else 1, int(disk.attempt) if disk else 0) + 1
             stop_file = rd / STOP_REQUEST_FILE
             try:
                 if stop_file.is_file():
-                    # 이관은 끝났다: 남은 멈춤 요청은 이관의 것이다 — 새 재개 시도가 첫 경계에서 바로 멈추지 않게 지운다
+                    # 이관은 이미 끝났으므로 남은 중지 요청은 이관의 것이다.
+                    # 새 재개 시도가 바로 멈추지 않도록 지운다
                     stop_file.unlink()
                     log.info("run %s: a leftover %s removed before the remediation resume", run_id, STOP_REQUEST_FILE)
                 control = ControlState(run_id=run_id, state=RunState.QUEUED.value, attempt=attempt,
@@ -1824,9 +1884,10 @@ class RunManager:
         return self.remediation_job(run_id) or {}
 
     def remediation_job(self, run_id: str) -> dict[str, Any] | None:
-        """이 실행의 조치 재개 시도(마지막 하나)의 모습: ``state`` (queued / running / finished), ``active``, ``attempt``, ``job``,
-        ``control``(제어 상태), 있으면 ``slot`` · ``queue`` {position, ahead} · ``exit_code`` · ``verified`` · ``error`` · ``note`` ·
-        ``stop_requested``. 메모리에 없으면 ``control/remediation-resume.json`` 으로. 재개를 한 번도 안 했으면 None.
+        """이 실행의 마지막 조치 재개 시도 정보를 반환한다. ``state``(queued / running / finished),
+        ``active``, ``attempt``, ``job``, ``control``과, 있으면 ``slot``, ``queue``, ``exit_code``,
+        ``verified``, ``error``, ``note``, ``stop_requested``를 담는다.
+        메모리에 없으면 ``control/remediation-resume.json``에서 읽고, 재개한 적이 없으면 None을 반환한다.
 
         The last remediation resume attempt of `run_id` (memory first, else its control file); None when there was none."""
         run = self.resumes.get(run_id)
@@ -1869,8 +1930,9 @@ class RunManager:
         return info
 
     def remediation_active(self, run_id: str) -> bool:
-        """이 실행의 조치 재개 시도가 지금 줄에 있거나 돌고 있나(그동안 조치 상태 파일의 주인은 그 시도다 — 승인·재개를 막고, 끝날 때의
-        마지막 정제 전이라 조치 파일을 내주지 않는다).
+        """이 실행의 조치 재개 시도가 대기 중이거나 실행 중인지 확인한다.
+        그동안은 그 시도가 조치 상태 파일을 관리하므로 승인과 재개를 막고,
+        마지막 마스킹 전이므로 조치 파일을 내주지 않는다.
 
         Whether a remediation resume of `run_id` is queued or running now."""
         try:
@@ -1880,9 +1942,10 @@ class RunManager:
             return True
 
     def stop_remediation(self, run_id: str) -> str | None:
-        """조치 재개 시도를 멈춘다. 줄에서 기다리면 **지금** 빠지고 Job 없이 stopped 로 끝난다(``"withdrawn"``). Job 을 아직 만들지 않았으면
-        만들지 않게 한다. Job 이 이미 있으면 ``stop.request`` 만 쓴다(``"requested"``) — 조치는 다음 경계에서 멈추고, 도는 IVAS 분석을
-        취소했다고 하지 않으며, Job 을 유예 뒤에 지우지도 않는다(이관 뒤 조치의 멈춤 규칙과 같다). 도는 재개가 없으면 None.
+        """조치 재개 시도를 중지한다.
+        대기 중이면 바로 줄에서 빠지고 Job 없이 stopped로 끝나며 ``"withdrawn"``을 반환한다.
+        Job이 이미 있으면 ``stop.request``만 기록하고 ``"requested"``를 반환한다.
+        조치는 다음 단계 경계에서 멈추고 Job은 지우지 않는다. 실행 중인 재개가 없으면 None을 반환한다.
 
         Stop a remediation resume attempt: a waiting one leaves the line now (`"withdrawn"`); one whose Job exists gets
         `stop.request` only (`"requested"`, never a Job deletion); None when no resume is queued or running."""
@@ -1908,9 +1971,9 @@ class RunManager:
         return "requested"
 
     def shutdown(self, reason: str = "server shutdown") -> dict[str, Any]:
-        """서버 종료(lifespan): 열린 SSE 스트림을 모두 끝내고, 실행 중·대기 중인 실행에 멈춤을 요청하고,
-        아직 도는 Maven / OpenRewrite 프로세스를 죽인다. 안 하면 uvicorn 이 SSE 연결을 기다리고, 윈도우에서는
-        java.exe 가 서버보다 오래 산다(2026-10-21).
+        """서버 종료(lifespan) 때 정리 작업을 한다. 열린 SSE 스트림을 모두 끝내고, 실행 중이거나 대기 중인
+        실행에 중지를 요청하고, 남은 Maven / OpenRewrite 프로세스를 종료한다.
+        이렇게 하지 않으면 uvicorn이 SSE 연결이 끝나기를 기다리고, Windows에서는 java.exe가 서버보다 오래 남는다.
 
         Server shutdown (the web app's lifespan): end every open event stream, ask every running / queued run to
         stop after its current graph node, and kill the Maven / OpenRewrite processes still running — otherwise
@@ -1934,15 +1997,15 @@ class RunManager:
 
     @staticmethod
     def _final_pass_pending(run: Run | None, control: ControlState | None) -> bool:
-        # 끝날 때의 마지막 정제가 아직 남았는가. 메모리의 실행: 끝나지 않았고, Job 이거나(Worker 가 끝에 지운다) 이 프로세스에
-        # 출력 정제가 걸려 있다. 메모리에 없는 실행: Main 의 control 상태가 아직 끝나지 않았다(Job 이 돌고 있을 수 있다)
+        # 마지막 마스킹이 아직 남았는지 판단한다. 메모리의 실행은 끝나지 않았고 Job이거나 출력 마스킹이
+        # 설치된 경우, 메모리에 없는 실행은 제어 상태가 아직 끝나지 않은 경우다
         if run is not None:
             return not run.done.is_set() and bool(run.job or output_scrubbing())
         return control is not None and not control.terminal
 
     def file_withheld(self, run_id: str, name: str) -> bool:
-        """이 실행의 ``name`` 을 아직 내주면 안 되는가 — 마지막 정제(실행이 끝날 때 실행 폴더를 훑어 비밀 값을 지우는 단계)가 남았고
-        ``name`` 이 쓰는 순간 정제되는 파일(``LIVE_FILES``)이 아닐 때 True.
+        """이 실행의 파일 ``name``을 아직 내주면 안 되는지 확인한다. 마지막 마스킹이 남았고 ``name``이
+        기록할 때 마스킹되는 파일(``LIVE_FILES``)이 아니면 True를 반환한다.
 
         Must `name` of this run still be withheld: the end-of-run redaction pass is still to come and `name` is not one of
         the files redacted as they are written (`LIVE_FILES`)."""
@@ -1956,11 +2019,10 @@ class RunManager:
         return self._final_pass_pending(run, control)
 
     def status(self, run_id: str) -> dict[str, Any]:
-        """실행 상태 dict. 메모리에 있으면 queued / running / finished, 없으면(밀려남·이전 프로세스)
-        web-status.json → report.json → 폴더 유무 순으로 finished / unknown / missing.
-        report.json 이 있으면 성공·차단·미해결·LLM 호출·오류 목록 개수, 그리고 내려받을 수 있는 파일 목록.
-        v2.1z-ae: 늘 ``parallel`` {slots, running, waiting}; 이 프로세스의 줄에서 기다리는 실행은 ``queue`` {position, ahead};
-        자리를 쥔(쥐었던) Job 실행은 ``slot`` (메모리, 없으면 control/state.json).
+        """실행 상태를 dict로 반환한다. 메모리에 있으면 queued / running / finished를, 없으면
+        web-status.json, report.json, 폴더 유무 순으로 확인해 finished / unknown / missing을 정한다.
+        report.json이 있으면 성공 여부, 차단, 미해결, LLM 호출, 오류 목록 개수와 내려받을 수 있는 파일 목록을 담는다.
+        항상 ``parallel``을 담고, 대기 중이면 ``queue``를, 슬롯을 가진 Job 실행이면 ``slot``을 담는다.
 
         The run's status dict (memory first, else the run directory). Always `parallel`; `queue` for a run waiting in this
         process's line; `slot` for a Job run that holds or held one."""
@@ -1968,9 +2030,10 @@ class RunManager:
         rd = self.run_dir(run_id)
         info: dict[str, Any] = {"run_id": run_id, "run_dir": str(rd), "exists": rd.is_dir() or run is not None,
                                 "mode": self.effective_mode, "parallel": self.parallel(),
-                                # v2.1z-aj: 실행 방식 — 화면의 단계 레일·결과 칸·지난 실행 목록이 이것을 따른다
+                                # 실행 방식이며 화면의 단계 표시, 결과 칸, 지난 실행 목록이 이 값을 따른다
                                 "flow": (run.flow or FLOW_FULL) if run is not None else _recorded_flow(rd),
-                                # 2026-11-12: 사람이 올린 파일 이름 그대로 — 화면은 실행을 이 이름으로 보인다(옛 in-process 실행은 없을 수 있다)
+                                # 사용자가 올린 파일 이름 그대로다.
+                                # 화면이 실행을 이 이름으로 보여 주며, 이전 in-process 실행에는 없을 수 있다
                                 "upload": (run.upload if run is not None else None) or _recorded_upload(rd)}
         control: ControlState | None = None
         if run is not None:
@@ -2032,7 +2095,7 @@ class RunManager:
                 else:
                     info["state"] = "finished" if (rd / "report.json").is_file() else ("unknown" if rd.is_dir() else "missing")
                 info["exit_code"] = None
-        # 2026-11-11 wave 4: 이어 돈 조치의 재개 Job(있으면) — 이관의 state 는 그대로 두고 따로 보인다
+        # 조치 재개 Job이 있으면 이관의 상태와 따로 보여 준다
         rjob = self.remediation_job(run_id)
         if rjob is not None:
             info["remediation_job"] = rjob
@@ -2044,8 +2107,8 @@ class RunManager:
                 info["blocked"] = len(data.get("blocked") or [])
                 info["unresolved"] = len(data.get("unresolved") or [])
                 info["llm_calls"] = (data.get("llm_usage") or {}).get("calls")
-                # v2.1z-aj: 실행을 멈춘 까닭(접수 거절 — "Maven 변환 후 신청 부탁드립니다." 등)과 이어 돈 / 단독 조치의 짧은 요약 —
-                # 화면이 결과 칸에 문장으로 보인다(로그 탭에 묻히지 않게)
+                # 실행 중단 사유(접수 거절 등)와 조치의 짧은 요약이 로그 탭에
+                # 묻히지 않도록 화면 결과 칸에 문장으로 보여 준다
                 why = _abort_reason(data)
                 if why:
                     info["abort_reason"] = scrub(why) if output_scrubbing() else why
@@ -2059,15 +2122,15 @@ class RunManager:
                 info["open"], info["resolved"] = entry_counts(data.get("error_entries") or [])   # v2.1 error list
             except (OSError, ValueError):
                 pass
-        pending = self._final_pass_pending(run, control)       # 마지막 정제 전: 쓰는 순간 정제되는 파일만 목록에 올린다
+        pending = self._final_pass_pending(run, control)       # 마지막 마스킹 전에는 기록할 때 마스킹되는 파일만 목록에 넣는다
         for name in SERVED_FILES:
             if (rd / name).is_file() and (not pending or name in LIVE_FILES):
                 info.setdefault("files", []).append(name)
         return info
 
     def _mem_state(self, run: Run) -> str:
-        # 메모리 실행의 상태: 자리를 쥐었으면 running 이다 — 작업 스레드가 active 를 세우기 직전의 찰나(그리고 복구 직후 자리를 다시 잡은
-        # 실행)에 자리 번호 없는 queued 로 보이지 않게
+        # 슬롯을 가졌으면 running으로 보여 준다. 작업 스레드가 active를 세우기 직전이나 복구 직후에 슬롯
+        # 번호 없는 queued로 보이지 않게 하기 위해서다
         if run.done.is_set():
             return "finished"
         if run.active.is_set() or self._turns.slot_of(run.key) is not None:
@@ -2075,16 +2138,16 @@ class RunManager:
         return "queued"
 
     def parallel(self) -> dict[str, int]:
-        """동시 실행의 지금 모습(v2.1z-ae): ``slots`` = 한도(``max_parallel``), ``running`` = 자리를 쥔 실행 수(복구 직후에는 한도보다
-        많을 수 있다), ``waiting`` = 줄에서 기다리는 수.
+        """현재 동시 실행 현황을 반환한다. ``slots``는 한도(``max_parallel``), ``running``은 슬롯을 가진
+        실행 수(복구 직후에는 한도보다 많을 수 있다), ``waiting``은 대기 중인 실행 수다.
 
         The parallel picture: the limit, the runs holding a slot (may exceed the limit right after a restart), the waiting."""
         running, waiting = self._turns.counts()
         return {"slots": self.max_parallel, "running": running, "waiting": waiting}
 
     def list_runs(self) -> list[dict[str, Any]]:
-        """메모리와 출력 폴더의 모든 실행(``_`` 로 시작하는 폴더 제외)의 상태를 최신순으로. 줄마다 ``parallel`` 은 빼고(라우트가 한 번
-        붙인다) ``queue`` / ``slot`` 은 아는 만큼 남는다.
+        """메모리와 출력 폴더에 있는 모든 실행의 상태를 최신순으로 반환한다(``_``로 시작하는 폴더는 제외).
+        ``parallel``은 라우트가 한 번만 붙이고, ``queue`` / ``slot``은 알 수 있는 경우에만 담는다.
 
         Every run's status, newest first; `parallel` is left to the route (once), `queue` / `slot` stay when known."""
         ids = set(self.runs)
@@ -2104,11 +2167,12 @@ class RunManager:
 
     # ---- streaming
     def events(self, run_id: str) -> Iterator[tuple[str, Any]]:
-        """SSE 로 흘릴 (이벤트, 데이터)를 실행이 끝나고 다 비울 때까지 내는 막히는 생성기(스레드풀에서 돈다).
-        처음 ``status`` → 노드·오류 기록과 journal·로그 파일의 새 줄(한 번에 모아 시간순) → 조용하면 ``ping``
-        → 끝나면 ``report`` / ``status`` / ``end``. 서버 종료 때는 ``end`` (reason) 로 연결을
-        놓는다(브라우저가 나중에 다시 붙는다). v2.1z-ae: 끝나기 전에도 (상태, 줄의 자리)가 바뀌면 ``status`` 를 다시 보낸다 — 기다리는
-        화면이 새로 고침 없이 3 → 2 → 1 → 시작을 본다(박자는 ``POLL_S`` 마다 보는 값싼 비교, 시작할 때는 실행의 조건 변수가 바로 깨운다).
+        """SSE로 보낼 (이벤트, 데이터)를 실행이 끝나고 남은 것을 모두 보낼 때까지 내보내는 블로킹 생성기.
+        스레드풀에서 실행된다.
+        처음 ``status`` -> 노드, 오류 기록, journal, 로그 파일의 새 줄(시간순) -> 보낼 것이 없으면 ``ping`` -> 끝나면
+        ``report`` / ``status`` / ``end`` 순으로 보낸다. 서버 종료 때는 ``end``(reason)를 보내고 연결을 놓는다.
+        끝나기 전에도 상태나 대기 순번이 바뀌면 ``status``를 다시 보내,
+        화면이 새로 고침 없이 순번 변화를 보여 주게 한다.
 
         Yield (event, data) until the run is finished and everything has been drained (blocking generator). `status` is
         sent again whenever the run's (state, queue position) changes before it finished."""
@@ -2130,8 +2194,8 @@ class RunManager:
                 for kind, data in new:
                     if kind in ("node", "error"):
                         yield kind, data
-            # journal 과 로그는 같은 스레드가 쓰는 두 파일이라, 하나씩 비우면 화면에서 시간이 뒤섞인다 → 한
-            # 번에 모은 것을 시각으로 정렬한다(시각 없는 줄은 앞 줄의 시각을 따라 파일 순서 유지)
+            # journal과 로그는 같은 스레드가 기록하는 두 파일이라 하나씩 비우면 화면에서 시간 순서가
+            # 뒤섞인다. 한 번에 모아 시각으로 정렬하고, 시각 없는 줄은 앞 줄의 시각을 따른다
             # journal events and log lines are two files written by the same thread; drained one file after the
             # other they can show up out of time order in the UI ("build FAILED 09:35:05" after "mvn … 09:35:06"
             # of the *next* build) → merge each tick's batch by timestamp (round 9)
@@ -2148,8 +2212,8 @@ class RunManager:
                     key = _event_time(item[0], item[1])
                     last_key = key if key is not None else last_key     # unparsable → keep its file position
                     batch.append((last_key, len(batch), item[0], item[1]))
-                    # k8s Job 모드 / 옛 실행 재생: 파드가 쓴 graph_node_end 줄이 화면의 node 이벤트가 된다(자기 프로세스 실행은
-                    # _push 로 이미 받는다)
+                    # Job 모드나 지난 실행을 다시 보여 줄 때는 파드가 기록한 graph_node_end 줄을 화면의 node
+                    # 이벤트로 바꾼다. 이 프로세스에서 실행한 것은 _push로 이미 받았다
                     if item[0] == "journal" and isinstance(item[1], dict) and item[1].get("event") == "graph_node_end" \
                             and (run is None or run.job):
                         ev = item[1]
@@ -2161,7 +2225,8 @@ class RunManager:
                 yield kind, data
 
         while True:
-            # 끝났는지는 비우기 *전에* 본다: done 이 선 뒤의 비우기라면 실행이 쓴 것이 모두 파일에 들어 있다
+            # 종료 여부는 비우기 전에 확인한다.
+            # done이 선 뒤에 비우면 실행이 기록한 내용이 모두 파일에 들어 있다
             now_st: dict[str, Any] | None = None
             if run is not None:
                 finished = run.done.is_set()
@@ -2179,12 +2244,13 @@ class RunManager:
                 yield "status", self.status(run_id)
                 yield "end", {"run_id": run_id}
                 return
-            # 서버 종료: 연결을 놓아야 uvicorn 이 기다리지 않고 내려간다
+            # 서버 종료 때 연결을 놓아야 uvicorn이 기다리지 않고 종료된다
             if self.closing.is_set():     # server shutdown: release the connection, the browser reconnects later
                 yield "status", self.status(run_id)
                 yield "end", {"run_id": run_id, "reason": "server shutdown"}
                 return
-            # v2.1z-ae: 기다리는 실행의 자리가 바뀌었거나 시작했다 — 값싼 비교로 먼저 보고, 바뀌었을 때만 status() 를 만든다
+            # 대기 실행의 순번이 바뀌었거나 실행이 시작되었는지 가벼운 비교로
+            # 먼저 확인하고, 바뀌었을 때만 status()를 만든다
             if run is not None:
                 state = self._mem_state(run)
                 if (state, self._turns.position(run_id) if state == "queued" else None) != last_sig:
@@ -2207,13 +2273,14 @@ class RunManager:
 
 
 def _queue_sig(st: dict[str, Any]) -> tuple[Any, Any]:
-    # SSE 가 status 를 다시 보낼지 정하는 값: (상태, 줄의 자리). 자리는 이 프로세스의 줄에서 기다릴 때만 있다
+    # SSE가 status를 다시 보낼지 판단하는 값(상태, 대기 순번)이며, 순번은 이 프로세스의 줄에서 기다릴 때만 있다
     return st.get("state"), (st.get("queue") or {}).get("position")
 
 
 def _write_web_status(run: Run) -> None:
-    """작업 스레드가 끝날 때 web-status.json(종료 코드·오류·멈춤 요청·마지막 노드)을 쓴다 — 메모리에서
-    밀려났거나 서버를 다시 띄운 뒤에도 상태를 답하려고. 못 써도 실행 결과에는 영향이 없다."""
+    """작업 스레드가 끝날 때 web-status.json(종료 코드, 오류, 중지 요청, 마지막 노드)을 기록한다.
+    메모리에서 빠졌거나 서버를 다시 띄운 뒤에도 상태를 응답하기 위해서다.
+    기록에 실패해도 실행 결과에는 영향이 없다."""
     try:
         data = {"run_id": run.run_id, "exit_code": run.exit_code, "error": run.error, "flow": run.flow, "upload": run.upload,
                 "stop_requested": run.cancel.is_set(), "last_node": run.last_node,
@@ -2224,8 +2291,9 @@ def _write_web_status(run: Run) -> None:
 
 
 def _journal_job(rd: Path) -> dict[str, Any] | None:
-    """실행 폴더 저널의 ``job_created`` 줄(+ 마지막 graph_node_end 의 노드) — 이전 웹 프로세스가 만든 Job 이 아직 돌고 있을 수 있다.
-    ``JOB_STALE_S`` 보다 오래됐으면 None(끝났는데 상태 파일이 없는 것으로 본다).
+    """실행 폴더 저널에서 ``job_created`` 줄과 마지막 graph_node_end의 노드를 찾아 반환한다.
+    이전 웹 프로세스가 만든 Job이 아직 실행 중일 수 있기 때문이다.
+    ``JOB_STALE_S``보다 오래되었으면 상태 파일 없이 끝난 것으로 보고 None을 반환한다.
 
     The run dir's `job_created` journal line (+ the last node ended), unless older than `JOB_STALE_S`; None otherwise."""
     try:
@@ -2254,7 +2322,7 @@ def _journal_job(rd: Path) -> dict[str, Any] | None:
 
 
 def _read_job_status(rd: Path) -> dict[str, Any] | None:
-    """k8s Job 모드: 파드의 run-job.sh 가 쓴 ``job-status.json`` (없거나 깨졌으면 None)."""
+    """k8s Job 모드에서 파드가 기록한 ``job-status.json``을 읽는다. 없거나 깨졌으면 None을 반환한다."""
     try:
         data = json.loads((rd / JOB_STATUS_FILE).read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -2263,7 +2331,8 @@ def _read_job_status(rd: Path) -> dict[str, Any] | None:
 
 
 def _report_success(rd: Path) -> bool | None:
-    """report.json 의 success (없으면 None) — Job 모드의 finished 이벤트용."""
+    """report.json의 success 값을 반환한다.
+    파일이 없으면 None을 반환하며, Job 모드의 finished 이벤트에 쓴다."""
     try:
         return json.loads((rd / "report.json").read_text(encoding="utf-8")).get("success")
     except (OSError, ValueError, AttributeError):
@@ -2271,11 +2340,12 @@ def _report_success(rd: Path) -> bool | None:
 
 
 def _append_journal(rd: Path, event: dict[str, Any]) -> None:
-    """실행 폴더의 journal.jsonl 에 한 줄(ts 포함) — Job 모드에서 웹이 쓰는 몇 줄(web_run, job_created, stop_request_sent)."""
+    """실행 폴더의 journal.jsonl에 ts를 포함한 한 줄을 추가한다.
+    Job 모드에서 웹이 직접 기록하는 줄(web_run, job_created, stop_request_sent)에 쓴다."""
     try:
         line = {"ts": datetime.now(timezone.utc).isoformat(), **event}
         text = json.dumps(line, default=str)
-        if output_scrubbing():                    # 값 단위로: 직렬화한 줄을 통째로 바꾸면 JSON 이 깨질 수 있다
+        if output_scrubbing():                    # 직렬화한 줄을 통째로 바꾸면 JSON이 깨질 수 있으므로 값 단위로 마스킹한다
             text = json.dumps(scrub_json(json.loads(text)))
         with open(rd / "journal.jsonl", "a", encoding="utf-8") as fh:
             fh.write(text + "\n")
@@ -2284,7 +2354,7 @@ def _append_journal(rd: Path, event: dict[str, Any]) -> None:
 
 
 def _read_web_status(rd: Path) -> dict[str, Any] | None:
-    """web-status.json 을 읽는다(없거나 깨졌으면 None)."""
+    """web-status.json을 읽는다. 없거나 깨졌으면 None을 반환한다."""
     try:
         data = json.loads((rd / WEB_STATUS_FILE).read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -2293,8 +2363,9 @@ def _read_web_status(rd: Path) -> dict[str, Any] | None:
 
 
 def _mark_stopped(orch: Any) -> None:
-    """사용자 멈춤: 아직 마감 안 된 보고서를 aborted 로 표시한다(report.md 에 남고 종료 코드 3).
-    이미 마감됐거나 이미 aborted 면 아무것도 안 한다.
+    """사용자 중지를 보고서에 반영한다.
+    아직 마감하지 않은 보고서를 aborted로 표시해 report.md에 남기고 종료 코드를 3으로 만든다.
+    이미 마감되었거나 aborted면 아무것도 하지 않는다.
 
     A user stop: flag the (not yet finalized) report as aborted, so report.md says so and the exit code is 3."""
     report = getattr(orch, "report", None)
@@ -2311,8 +2382,9 @@ def _mark_stopped(orch: Any) -> None:
 
 
 def _finalize_stopped(orch: Any) -> None:
-    """멈춘 뒤 그래프는 노드 사이에 남아 있다: 엔진이 닫힐 때 보고서를 마감하지 않았다면 여기서 마감한다
-    (report.md / report.json 쓰기). 예외는 로그만 남기고 삼킨다 — 멈춤 처리 때문에 보고서가 사라지지 않게.
+    """중지된 실행의 보고서를 마감한다. 중지 뒤 그래프는 노드 사이에 멈춰 있으므로, 엔진이 닫힐 때 보고서를
+    마감하지 않았으면 여기서 report.md / report.json을 기록한다.
+    중지 처리 때문에 보고서가 사라지지 않도록 예외는 로그만 남기고 무시한다.
 
     After a stop the graph was left between nodes: if the engine did not finalize the report on close, do it
     here (writes report.md / report.json)."""
@@ -2329,7 +2401,7 @@ def _finalize_stopped(orch: Any) -> None:
 
 
 def _detach_file_log(path: Path) -> None:
-    """이 파일의 실행별(스레드 필터) 핸들러만 뗀다. 같은 파일의 프로세스 전체 핸들러가 있으면 남긴다.
+    """이 파일에 붙은 실행별(스레드 필터) 핸들러만 뗀다. 같은 파일에 붙은 프로세스 전체 핸들러는 남긴다.
 
     Remove the per-run (thread-filtered) handlers of `path`; the process-wide one, if any, stays."""
     root = logging.getLogger("sbmig")
@@ -2351,8 +2423,8 @@ def _json_default(o: Any) -> Any:
 
 
 def _jsonable(update: Any) -> Any:
-    """그래프 상태 갱신을 JSON 데이터로 바꾼다.
-    ``MAX_UPDATE_CHARS`` 를 넘으면 키 이름만 보낸다(페이지가 무거워지지 않게).
+    """그래프 상태 갱신 값을 JSON으로 보낼 수 있는 데이터로 바꾼다.
+    화면이 무거워지지 않도록 ``MAX_UPDATE_CHARS``를 넘으면 키 이름만 보낸다.
 
     A graph state update as plain JSON data (small; big updates are reduced to their keys)."""
     try:
@@ -2366,8 +2438,8 @@ def _jsonable(update: Any) -> Any:
 
 
 def _new_lines(path: Path, offsets: dict[Path, int]) -> list[str]:
-    """파일에 새로 붙은 *완성된* 줄만 돌려준다(읽은 위치를 ``offsets`` 에 기억). 줄바꿈이 아직 안 온 마지막
-    조각은 다음 번으로 미룬다 — 쓰는 중인 줄을 반쪽으로 보내거나 JSON 을 깨진 채 읽지 않게."""
+    """파일에 새로 추가된 완성된 줄만 반환하고, 읽은 위치는 ``offsets``에 기억한다.
+    반쪽 줄이나 깨진 JSON을 보내지 않도록 줄바꿈이 오지 않은 마지막 조각은 다음으로 미룬다."""
     try:
         size = path.stat().st_size
     except OSError:

@@ -1,9 +1,10 @@
-"""report.md 의 언어(``report.language: en | ko``) — 의존성 없는 번역 문자열 표와 도우미 함수.
-흐름상 위치: markdown.py 가 report.md 를 그릴 때 ``tr`` / ``tr_line`` 으로 문장을 옮긴다(report.json 은 영어
-그대로). 핵심 진입점: ``tr``(영어 원문 = 표의 키, 없으면 영어로 fallback), ``tr_line``(인수인계 데이터 줄을
-``PATTERNS`` 정규식으로 통째 매칭해 번역), ``normalize``(언어 코드 정리). 주의: 키가 영어 원문이므로
-markdown.py / handover.py 의 영어 문장을 바꾸면 그 번역은 조용히 영어로 돌아간다 — 문장을 바꿀 때는 이 표의
-키도 같이 바꿔야 한다. 식별자·경로·Maven / javac 메시지·루프의 자유 문장은 번역하지 않는다.
+"""report.md의 문장을 한국어로 바꾸는 번역 표와 도우미 함수를 담은 모듈(``report.language: en | ko``).
+markdown.py가 report.md를 만들 때 ``tr``과 ``tr_line``으로 문장을 번역한다. report.json은 영어 그대로 둔다.
+- ``tr``: 영어 원문을 키로 번역을 찾고, 없으면 영어를 그대로 반환한다
+- ``tr_line``: 인수인계 데이터 줄 전체를 ``PATTERNS`` 정규식으로 맞춰 번역한다
+- 키가 영어 원문이므로 markdown.py나 handover.py의 영어 문장을 바꾸면 이 표의 키도 함께 바꿔야 한다.
+  그러지 않으면 영어로 출력된다
+- 식별자, 경로, Maven / javac 메시지, 수정 루프가 만든 자유 문장은 번역하지 않는다
 
 report.md languages (`report.language: en | ko`). Dependency-free string table + helpers.
 
@@ -21,7 +22,7 @@ import re
 
 LANGUAGES = ("en", "ko")
 
-# 영어 원문 → 한국어. 키는 markdown.py 의 tr(...) 호출에 쓰인 영어 문자열과 글자 하나까지 같아야 한다
+# 영어 원문을 키로 한 한국어 번역 표. 키는 markdown.py의 tr(...) 호출에 쓴 영어 문자열과 정확히 같아야 한다
 STRINGS: dict[str, dict[str, str]] = {"ko": {
     # ---- section titles
     "Blocked — needs human / library action": "차단됨 — 사람 / 라이브러리 조치 필요",
@@ -325,7 +326,7 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
     "each application's directory":
         "프로젝트 루트에 pom.xml 이 없고 sbmig 가 만들 수도 없었다(최상위 pom 들이 한 애플리케이션도, MSA 서비스도 아님) — "
         "Maven 을 부르기 전에 실행을 멈췄다: 루트 pom.xml 을 추가하거나 애플리케이션 폴더마다 따로 sbmig 를 돌릴 것",
-    # v2.1z-ag: 사내 부모의 as-is 버전이 저장소에 없음(markdown.FLAG_HELP — 바꾸면 함께)
+    # 사내 부모의 as-is 버전이 저장소에 없을 때의 플래그 설명. markdown.FLAG_HELP를 바꾸면 함께 바꾼다
     "the project's own version of the company parent was not in the repository: sbmig set the configured version in those "
     "poms (openrewrite.unresolvable_asis_parent: align) — the recipes ran on the target parent's classpath, not the as-is "
     "one (see the Handover)":
@@ -335,8 +336,8 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
     "restructure replaced the parent and the fix loop did the rest (see the Handover)":
         "as-is 부모 pom 이 저장소에 없어 OpenRewrite 가 돌지 못했다: 레시피가 바꾼 코드는 없고, 재구성이 부모를 바꾼 뒤 나머지는 "
         "수정 루프가 맡았다(인수인계 참조)",
-    # v2.1z-c: 속 빈 리액터 / 리액터 밖 소스 플래그 설명(markdown.FLAG_HELP)
-    # v2.1z-h: 플래그 stray-pom-ignored 설명(sbmig/report/markdown.py — 바꾸면 함께)
+    # 빈 reactor, reactor 밖 소스, stray-pom-ignored 플래그 설명.
+    # sbmig/report/markdown.py를 바꾸면 함께 바꾼다
     "a pom.xml with the same coordinates as a module that no pom lists (a stray copy in an IDE output / backup folder such as "
     "`boot/bin/pom.xml`): ignored at intake — not built, not migrated, not shown to the structure review; see Manual follow-ups":
         "어느 pom 도 나열하지 않는데 모듈과 좌표가 같은 pom.xml(IDE 출력·백업 폴더의 떠도는 복사본, 예: `boot/bin/pom.xml`): 접수에서 무시했다 — "
@@ -349,7 +350,7 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
     "more java files lie outside the modules' source roots than inside them: they are neither built nor migrated — "
     "check whether they belong to the application":
         "모듈의 소스 루트 안보다 밖에 java 파일이 더 많다: 빌드도 이관도 되지 않는다 — 애플리케이션의 일부인지 확인할 것",
-    # v2.1z-i: 동봉 jar — 플래그 bundled-jars 설명과 "동봉 jar" 섹션(sbmig/report/markdown.py — 바꾸면 함께)
+    # 동봉 jar의 bundled-jars 플래그 설명과 "동봉 jar" 섹션. sbmig/report/markdown.py를 바꾸면 함께 바꾼다
     "jars sit in the tree (e.g. WEB-INF/lib) that no pom declares — the as-is IDE build compiled against them, Maven does "
     "not: when a build error needs one, sbmig wires it into the module pom (`sbmig-bundled`: a normal dependency when the "
     "repository has its coordinates, else system scope + includeSystemScope) — see \"Bundled jars (declared by no pom)\" "
@@ -369,7 +370,7 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
     "coordinates known": "좌표 있음",
     "coordinates unknown": "좌표 없음",
     "unknown": "모름",
-    # v2.1z-j: 재구성 단계 연결 — "동봉 jar" 표의 연결 단계 / 상태 낱말과 설명 한 줄(sbmig/report/markdown.py — 바꾸면 함께)
+    # "동봉 jar" 표의 연결 단계와 상태 단어, 설명 한 줄. sbmig/report/markdown.py를 바꾸면 함께 바꾼다
     "restructure": "재구성",
     "loop": "수정 루프",
     "container API": "컨테이너 API",
@@ -379,7 +380,7 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
     "jars are left out.":
         "재구성이 첫 빌드 전에 참조되는 jar 를 모두 연결했다(layout.wire_bundled_jars): 저장소에 있는 좌표는 보통 의존성으로, "
         "나머지는 system scope 로; 컨테이너 API 사본, 대체된 jar, 참조 없는 jar 는 빼었다.",
-    # v2.1z-d: Oracle ADF — 플래그 설명과 "ADF 규모" 섹션(ADF 프로젝트는 변환하지 않는다 — 현업 결정 2026-11-02)
+    # Oracle ADF 프로젝트의 플래그 설명과 "ADF 규모" 섹션. ADF 프로젝트는 변환하지 않는다
     "an Oracle ADF (JDeveloper) project (two or more evidence families: BC4J XML, oracle.jbo / oracle.adf imports, ADF Model "
     "bindings, ADF Faces / task flows): conversion is not possible — ADF 프로젝트라 변환이 불가능합니다; the run stopped at "
     "analyze (intake.adf_policy: stop) — see \"ADF sizing\" and the Handover's first line":
@@ -554,12 +555,12 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
         "3. 2차: `sbmig synthesize-pom`이 `inventory.json`으로 pom을 작성한다(아직 없음).",
 }}
 
-# 인수인계 데이터 줄(report.json 에는 영어로 저장)을 한국어로. 정규식은 handover.py 가 만드는 영어 줄 전체와
-# 맞아야 한다 — handover.py 의 문장을 바꾸면 여기 패턴도 함께 바꿀 것(안 맞으면 영어 그대로 나간다)
+# report.json에 영어로 저장된 인수인계 줄을 한국어로 바꾸는 패턴.
+# handover.py의 문장을 바꾸면 패턴도 함께 바꿔야 하며, 맞지 않으면 영어 그대로 출력된다
 # Handover data lines (English in report.json) → Korean, matched against the whole line. Unknown lines (manual
 # follow-ups from other modules, advisory text from the knowledge YAML) stay as they are.
 PATTERNS: dict[str, list[tuple[re.Pattern[str], str]]] = {"ko": [(re.compile(p), t) for p, t in (
-    # 접수·조치 시작에서 실행이 멈춘 사유(Orchestrator._abort; 웹 화면이 journal abort 의 reason 을 이 표로 옮긴다)
+    # 접수나 조치 시작 단계에서 실행이 중단된 사유. 웹 화면도 저널 abort의 reason을 이 표로 번역한다
     (r"^vulnerability remediation not started \(not ready\): (?P<m>.+)$",
      r"취약점 조치를 시작하지 못했습니다. 실행 환경이 갖춰지지 않았습니다: \g<m>"),
     (r"^Gradle build detected \(build\.gradle / settings\.gradle\) and no pom\.xml: only Maven projects are supported "
@@ -594,7 +595,7 @@ PATTERNS: dict[str, list[tuple[re.Pattern[str], str]]] = {"ko": [(re.compile(p),
     (r"^pom\.xml could not be synthesized from (?P<f>\S+): (?P<e>.+) \(Ant project rejected: convert the build to Maven "
      r"first\)$",
      r"\g<f>에서 pom.xml을 만들지 못했습니다(\g<e>). Maven으로 변환한 뒤 신청해 주세요."),
-    # Ant 거부(Orchestrator._refuse_ant)의 기술 내용 줄
+    # Ant 프로젝트를 거부할 때(Orchestrator._refuse_ant) 남기는 상세 줄
     (r"^Ant build file (?P<f>\S+) found and no pom\.xml: the Ant → Maven conversion is switched off "
      r"\(intake\.ant_to_maven: false\)$",
      r"Ant 빌드 파일(\g<f>)만 있고 pom.xml은 없습니다. Ant → Maven 변환은 꺼져 있습니다(intake.ant_to_maven: false)."),
@@ -613,7 +614,7 @@ PATTERNS: dict[str, list[tuple[re.Pattern[str], str]]] = {"ko": [(re.compile(p),
       r"run mvn dependency:tree in the module and look the library's jakarta build up in Nexus$"),
      r"\g<who> 뒤의 라이브러리를 의존성과 맞추지 못함(classpath · 패키지 토큰 · 로컬 jar) — 모듈에서 mvn dependency:tree 를 돌리고 "
      r"Nexus 에서 그 라이브러리의 jakarta 빌드를 찾을 것"),
-    # v2.1z-c: 속 빈 리액터 / 리액터 밖 소스 (sbmig.analyze.hollow.hollow_followup / outside_followup)
+    # 빈 reactor와 reactor 밖 소스의 인수인계 줄(sbmig.analyze.hollow.hollow_followup / outside_followup)
     # v2.1z-d: the ADF first line (rejected; policy stop / continue) and the traces note
     ((r"^ADF project \(Oracle JDeveloper / ADF\): conversion is not possible — ADF 프로젝트라 변환이 불가능합니다 "
       r"\(evidence: (?P<fams>[^;]+); (?P<e>\d+) entities / (?P<t>\d+) tables, (?P<v>\d+) view objects, "
@@ -645,7 +646,8 @@ PATTERNS: dict[str, list[tuple[re.Pattern[str], str]]] = {"ko": [(re.compile(p),
       r"the sources must be mapped into the modules first \(sbmig: tree profile, next increment\)$"),
      (r"Maven 리액터가 컴파일하는 소스가 없다: 모듈 밖에 \g<counts>이(가) 있고(\g<dirs>) 이관되지 않았다 — as-is 빌드는 다른 곳에서 "
       r"만든 파일을 포장만 했다; 소스를 먼저 모듈에 매핑해야 한다(sbmig: 트리 프로필, 다음 증분)")),
-    # v2.1z-h: 떠도는 pom 복사본의 인수인계 줄(sbmig/loop/orchestrator.py stray_pom_followup — 바꾸면 함께)
+    # 모듈 복사본 pom을 무시했다는 인수인계 줄.
+    # sbmig/loop/orchestrator.py의 stray_pom_followup을 바꾸면 함께 바꾼다
     ((r"^pom copy ignored: `(?P<p>[^`]+)` has the same coordinates as `(?P<q>[^`]+)` \(`(?P<c>[^`]+)`\), lies inside the "
       r"directory of `(?P<q2>[^`]+)` and no pom lists it as a module — treated as a stray copy \(an IDE output / backup "
       r"folder\): not built, not migrated, left where it is; delete it from the source, or give it its own coordinates and "
@@ -660,7 +662,7 @@ PATTERNS: dict[str, list[tuple[re.Pattern[str], str]]] = {"ko": [(re.compile(p),
      (r"pom 복사본 무시: `\g<p>` 은(는) `\g<q>` 와 좌표가 같고(`\g<c>`), 모듈 `\g<q2>` 옆에 있으며, 어느 pom 도 모듈로 나열하지 "
       r"않는다 — 떠도는 복사본(IDE 출력·백업 폴더)으로 보고 빌드도 이관도 하지 않고 그 자리에 둔다; 원본에서 지우거나, 진짜 모듈이면 "
       r"다른 좌표를 주고 <modules> 에 나열하라")),
-    # v2.1z-ah: Maven 의 HTTP 차단 미러 줄(sbmig/build/env_errors.py http_blocked_followup — 바꾸면 함께)
+    # Maven의 HTTP 차단 미러 안내 줄. sbmig/build/env_errors.py의 http_blocked_followup을 바꾸면 함께 바꾼다
     ((r"^Maven \(3\.8\.1\+\) refuses the HTTP repositor(?:y|ies) (?P<r>.+?) via the blocked mirror `(?P<m>[^`]+)` — not a "
       r"project or sbmig problem\. Fix the Maven settings: \(a\) an https URL, or \(b\) in (?P<s>.+?) \((?P<o>[\w.]+)\) "
       r"exempt (?P<i0>.+?) from mirror `(?P<m2>[^`]+)` \(append `,!<repository id>` to its `<mirrorOf>`\), or add a mirror "
@@ -669,7 +671,8 @@ PATTERNS: dict[str, list[tuple[re.Pattern[str], str]]] = {"ko": [(re.compile(p),
      (r"Maven(3.8.1 이상)이 HTTP 저장소 \g<r> 를 차단 미러 `\g<m>` 로 거부합니다 — 프로젝트·sbmig 문제가 아닙니다. Maven settings "
       r"를 고치세요: (a) https URL 로, 또는 (b) \g<s> (\g<o>)에서 차단 미러 `\g<m2>` 의 `<mirrorOf>` 끝에 `,!<저장소 ID>` 를 붙여 \g<i0> 를 예외로 빼거나 "
       r"\g<i> 용 미러 추가(같은 URL, `<blocked>false</blocked>`). 차단 미러 출처: \g<g>")),
-    # v2.1z-ag: 사내 부모의 as-is 버전 / 레시피 없이 계속 줄(sbmig/loop/orchestrator.py · fixloop.py — 바꾸면 함께)
+    # 사내 부모의 as-is 버전이 없을 때와 레시피 없이 계속할 때의 줄.
+    # sbmig/loop/orchestrator.py와 fixloop.py를 바꾸면 함께 바꾼다
     ((r"^as-is parent `(?P<o>[^`]+)` is not in the repository: sbmig set the configured `(?P<t>[^`]+)` \((?P<s>[\w.]+)\) in "
       r"(?P<p>.+?) before the recipes — the recipes ran on the target parent's classpath, not the as-is one \(code that only "
       r"compiled against the old parent was fixed by the build loop\)$"),
@@ -683,7 +686,9 @@ PATTERNS: dict[str, list[tuple[re.Pattern[str], str]]] = {"ko": [(re.compile(p),
       r"should be there\)$"),
      (r"OpenRewrite 가 돌지 못했다: as-is 부모 `\g<o>` 이(가) 저장소에 없다 — 레시피가 바꾼 코드는 없고, 재구성이 부모를 바꾼 뒤 "
       r"나머지는 수정 루프가 맡았다(그 부모가 있어야 한다면 저장소·settings 를 확인)")),
-    # v2.1z-i: 동봉 jar 연결 줄(sbmig/restructure/system_jars.py bundled_jar_followup — 바꾸면 함께; 루프가 앞에 ⚠ 를 붙일 수 있다)
+    # 동봉 jar를 연결했다는 줄.
+    # sbmig/restructure/system_jars.py의 bundled_jar_followup을 바꾸면 함께 바꾼다.
+    # 수정 루프가 앞에 ⚠를 붙일 수 있다
     ((r"^(?P<w>⚠ ?)?bundled jar `(?P<n>[^`]+)` \(Maven coordinates unknown — no pom\.properties, not in the jar name table\) "
       r"wired into `(?P<p>[^`]+)` as a system dependency `(?P<c>[^`]+)` — wired by sbmig so the build sees the classes the "
       r"as-is IDE build saw; publish the jar to Nexus \((?P<cmd>`[^`]+`)\) and replace the system dependency with the real "
@@ -700,11 +705,13 @@ PATTERNS: dict[str, list[tuple[re.Pattern[str], str]]] = {"ko": [(re.compile(p),
     ((r"^(?P<w>⚠ ?)?bundled jar `(?P<n>[^`]+)` wired into `(?P<p>[^`]+)` as a compile dependency `(?P<c>[^`]+)` "
       r"\(the repository has it\)$"),
      r"\g<w>동봉 jar `\g<n>` 를 `\g<p>` 에 보통(compile) 의존성 `\g<c>` 로 연결했다(저장소에 있음)"),
-    # v2.1z-j: 참조가 없어 선언하지 않은 동봉 jar(sbmig/restructure/bundled_jars.py unused_jar_followup — 바꾸면 함께)
+    # 참조가 없어 선언하지 않은 동봉 jar의 줄.
+    # sbmig/restructure/bundled_jars.py의 unused_jar_followup을 바꾸면 함께 바꾼다
     ((r"^bundled jar `(?P<n>[^`]+)` is referenced by no source / JSP / XML / properties file — not declared \(add it by "
       r"hand if a runtime needs it\)$"),
      r"동봉 jar `\g<n>` 은(는) 어느 소스 / JSP / XML / properties 파일도 참조하지 않아 선언하지 않았다(런타임에 필요하면 직접 추가할 것)"),
-    # v2.1z-i: 웹 루트 이동 뒤 남은 WEB-INF/lib · classes · META-INF 파일(system_jars.webinf_left_followup — 바꾸면 함께)
+    # 웹 루트를 옮긴 뒤 남은 WEB-INF/lib, classes, META-INF 파일의 줄.
+    # system_jars.webinf_left_followup을 바꾸면 함께 바꾼다
     ((r"^(?P<k>\d+) file\(s\) under WEB-INF/lib, WEB-INF/classes or META-INF stay in (?P<d>.+?) \(not packaged\): "
       r"jar\(s\) (?P<j>.+?) — sbmig wires a bundled jar into its module pom when a build error needs it \(`sbmig-bundled`\), "
       r"declare the others as Maven dependencies; move the classes into src/main/java$"),
@@ -780,7 +787,8 @@ PATTERNS: dict[str, list[tuple[re.Pattern[str], str]]] = {"ko": [(re.compile(p),
       r"/ useBean to jakarta\.\* \(the build passes, Tomcat 10\+ fails at runtime\)$"),
      (r"JSP 에 javax 참조가 남아 있다(파일 \g<n>개) — page import / 스크립틀릿 / useBean 의 javax EE 이름을 jakarta.* 로 "
       r"바꿀 것(빌드는 통과하지만 Tomcat 10+ 에서 실행 시 실패한다)")),
-    # v2.1k: reactor 중복 모듈 정리(sbmig/analyze/aggregator.py reactor_followups — 문장을 바꾸면 함께)
+    # reactor에 중복으로 나열된 모듈을 정리한 줄.
+    # sbmig/analyze/aggregator.py의 reactor_followups 문장을 바꾸면 함께 바꾼다
     ((r"^(?P<d>.+?) was listed (?:twice|\d+ times) in the reactor \((?P<poms>[^)]+)\); the (?P<a>.+?) listings? "
       r"(?:was|were) removed so Maven can build — if (?P<b>.+?) is meant to be built on its own, add (?P=d) back "
       r"there and remove it from the root$"),
@@ -802,7 +810,7 @@ PATTERNS: dict[str, list[tuple[re.Pattern[str], str]]] = {"ko": [(re.compile(p),
       r"-P(?P=id) lists (?P=d) twice in the reactor — remove it from one of them if that profile is still used$"),
      (r"\g<d> 모듈은 \g<p> 의 프로필 '\g<id>'(기본으로 꺼짐)에도 올라 있다 — -P\g<id> 로 빌드하면 reactor 에 두 번 "
       r"들어간다: 그 프로필을 아직 쓴다면 둘 중 한 곳에서 뺄 것")),
-    # v2.1k: 차단 표의 reactor_duplicate 제안 문구(sbmig/loop/blocked_registry.py reactor_duplicate_suggestion)
+    # 차단 표의 reactor_duplicate 제안 문구(sbmig/loop/blocked_registry.py reactor_duplicate_suggestion)
     ((r"^`(?P<c>[^`]+)` is reached more than once through the reactor's <module> lists \(e\.g\. the root pom lists DEV "
       r"and a nested aggregator lists \.\./DEV\): keep one listing per module — the intake removes the duplicate "
       r"listings of nested aggregators, this one it could not \(two listings in the root pom, two directories with "
@@ -810,14 +818,14 @@ PATTERNS: dict[str, list[tuple[re.Pattern[str], str]]] = {"ko": [(re.compile(p),
      (r"`\g<c>` 가 reactor 의 <module> 목록으로 두 번 이상 닿는다(예: 루트 pom 의 DEV 와 안쪽 집계 pom 의 ../DEV) — "
       r"모듈마다 한 줄만 남길 것. 접수가 안쪽 집계 pom 의 중복 줄은 지우지만 이것은 지우지 못했다(루트 pom 안의 두 줄, "
       r"같은 좌표의 두 디렉토리, 또는 프로필): pom 을 손으로 고칠 것, LLM 에게는 묻지 않는다")),
-    # v2.1r: 차단 표의 file_lock 제안 문구(sbmig/loop/blocked_registry.py FILE_LOCK_SUGGESTION)
+    # 차단 표의 file_lock 제안 문구(sbmig/loop/blocked_registry.py FILE_LOCK_SUGGESTION)
     ((r"^the build output \(target/\) was locked by another process: exclude the project's target/ from the antivirus "
       r"real-time scan, close any IDE / Explorer window / leftover java process holding it, then run again; the LLM "
       r"is not asked$"),
      (r"빌드 산출물(target/)을 다른 프로세스가 잠갔습니다 — 백신 실시간 검사에서 프로젝트의 target/ 를 예외 처리하고, 열려 "
       r"있는 IDE/탐색기/이전 java 프로세스를 닫은 뒤 다시 실행하세요")),
-    # v2.1y: 차단 표의 needs_owner 제안 — 형제 케이스(sbmig/loop/fixloop.py _block_needs_owner)와 사유 문장이 없을 때의
-    # 문구(sbmig/loop/blocked_registry.py compose_suggestion). LLM 의 사유 문장 자체는 옮기지 않는다
+    # 차단 표의 needs_owner 제안 문구. 같은 원인의 케이스와 사유 문장이 없을 때의 문구다
+    # LLM이 쓴 사유 문장 자체는 번역하지 않는다
     (r"^same cause as (?P<c>\w+): (?P<s>.+) — 소유팀 결정 필요$",
      r"\g<c> 와 같은 원인: \g<s> — 소유팀 결정 필요"),
     ((r"^the LLM named a blocker outside the project \(a library without a jakarta build, a framework to replace, an "
@@ -834,7 +842,7 @@ PATTERNS: dict[str, list[tuple[re.Pattern[str], str]]] = {"ko": [(re.compile(p),
 
 
 def normalize(lang: object) -> str:
-    """지원하는 언어 코드로 정리한다. 그 밖의 값(None, 오타)은 "en".
+    """언어 코드를 지원하는 값으로 정리한다. None이나 오타 같은 다른 값이면 "en"을 반환한다.
 
     A supported language code; anything else (None, typo) → "en"."""
     s = str(lang or "en").strip().lower()
@@ -842,8 +850,8 @@ def normalize(lang: object) -> str:
 
 
 def tr(lang: str, text: str, **fmt: object) -> str:
-    """``text``(영어 원문)를 ``lang`` 으로 옮기고 ``fmt`` 가 있으면 ``str.format`` 으로 채운다.
-    번역이 없으면 영어 그대로 — 그래서 ``en`` 출력은 절대 바뀌지 않는다.
+    """영어 원문 ``text``를 ``lang`` 언어로 번역하고, ``fmt``가 있으면 ``str.format``으로 채운다.
+    번역이 없으면 영어를 그대로 쓰므로 ``en`` 출력은 바뀌지 않는다.
 
     Translation of `text` for `lang` (English fallback), formatted with `fmt` when given."""
     s = text
@@ -853,15 +861,15 @@ def tr(lang: str, text: str, **fmt: object) -> str:
 
 
 def tr_line(lang: str, line: str) -> str:
-    """인수인계 데이터 줄 하나를 ``lang`` 으로(``PATTERNS`` 의
-    첫 매칭). ``en`` 이거나 아는 패턴이 없으면 그대로.
+    """인수인계 데이터 줄 하나를 ``PATTERNS``의 첫 번째로 맞는 패턴으로 번역한다.
+    ``en``이거나 맞는 패턴이 없으면 그대로 반환한다.
 
     A Handover data line (see `PATTERNS`) in `lang`; unchanged for `en` and for lines no pattern knows. A stored abort
     follow-up `run aborted: <reason>` gets a translated head and its reason translated on its own; the bare reason (the
     journal `abort` event) translates directly."""
     if lang == "en":
         return line
-    # 후속 조치로 저장된 중단 사유("run aborted: <사유>"): 머리를 옮기고 사유는 따로 옮긴다
+    # 후속 조치로 저장된 중단 사유("run aborted: <사유>")는 앞부분과 사유를 따로 번역한다
     if line.startswith(ABORT_PREFIX) and lang in ABORT_LABEL:
         return ABORT_LABEL[lang] + tr_line(lang, line[len(ABORT_PREFIX):])
     for rx, tmpl in PATTERNS.get(lang, []):
@@ -878,7 +886,7 @@ def tr_line(lang: str, line: str) -> str:
     return line
 
 
-ABORT_PREFIX = "run aborted: "                 # Orchestrator._abort 가 후속 조치에 붙이는 머리
+ABORT_PREFIX = "run aborted: "                 # Orchestrator._abort가 후속 조치 앞에 붙이는 문구
 ABORT_LABEL = {"ko": "실행 중단: "}
 
 _TAIL_SEPARATORS = ("; repository search for a jakarta build of ", "; the library behind ")

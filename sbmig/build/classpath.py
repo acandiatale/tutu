@@ -1,11 +1,11 @@
-"""클래스 → jar → GAV 귀속: "이 javac 오류의 클래스는 어느 의존성에서 왔나?"(예: 아직 javax
-API 를 드러내는 라이브러리 찾기). 흐름상 위치: 수정 루프의 ``_library_hints``(v2.1d: 케이스 뒤의 라이브러리를
-찾아 저장소 버전 조회로 넘김)와 차단(BLOCKED) 항목의 원인 라이브러리 표시(``sbmig.loop.blocked_registry``)가
-``locate_class`` / ``locate_type_owner`` / ``owner_fqcn`` / ``type_mismatch`` 를 쓴다. 핵심 진입점:
-``module_classpath``(``dependency:build-classpath``, ``logs/classpath-<모듈>.txt`` 캐시, pom 이 바뀌면 무효),
-``locate_class``(프로젝트 소스 → classpath 의 jar / classes 디렉토리), ``locate_type_owner``(오류 뒤의
-라이브러리 클래스). 지킬 것: Maven / IO 실패에도 예외를 내지 않는다(classpath 는 [], 위치는 None, 로그만) —
-귀속은 최선 노력일 뿐 수정 루프를 멈추지 않는다.
+"""javac 오류에 나온 클래스가 어느 의존성 jar에서 왔는지 찾는 모듈.
+예를 들어 아직 javax API를 쓰는 라이브러리를 찾아낸다.
+수정 루프의 ``_library_hints``와, 차단 항목에 원인 라이브러리를 표시하는 ``sbmig.loop.blocked_registry``가 호출한다.
+- ``module_classpath``: ``dependency:build-classpath`` 결과를
+  ``logs/classpath-<모듈>.txt``에 캐시하고, pom이 바뀌면 다시 구한다
+- ``locate_class``: 프로젝트 소스, classpath의 jar와 classes 디렉토리 순으로 클래스를 찾는다
+- ``locate_type_owner``: 오류의 원인이 되는 라이브러리 클래스를 찾는다
+- Maven이나 파일 읽기가 실패해도 예외를 던지지 않는다. 찾지 못해도 수정 루프는 계속 진행한다
 
 Class → jar → GAV attribution (catalog X1/X2: "which dependency still exposes javax.* in its API?").
 
@@ -45,8 +45,8 @@ CLASSPATH_TIMEOUT_S = 15 * 60
 
 
 class ClassLocation(BaseModel):
-    """클래스가 어디서 왔는지: 저장소 jar(좌표 있음) / 프로젝트 소스(``source_file``) / 저장소 밖
-    jar(systemPath 등, 좌표 없음) / reactor 형제의 target jar(``in_project``)."""
+    """클래스를 어디서 찾았는지 담는 데이터 클래스.
+    저장소 jar, 프로젝트 소스, 저장소 밖 jar, reactor 형제 모듈의 target jar(``in_project``) 중 하나다."""
     artifact: Optional[GAV] = None         # repository jar → its coordinates; project source / foreign jar → None
     jar: str = ""                          # absolute jar (or classes dir) path; "" for project sources
     in_project: bool = False               # the class is a source of this project
@@ -62,8 +62,9 @@ def _safe(name: str) -> str:
 
 
 def _module_dir(ws: Workspace, module: Optional[str]) -> Optional[str]:
-    """모듈 디렉토리 경로 또는 artifactId → 프로젝트 기준 모듈 디렉토리('' = 루트), 모르면 None. ``src/`` 아래
-    pom(테스트 리소스 등)은 모듈이 아니다.
+    """모듈 디렉토리 경로나 artifactId로 프로젝트 기준 모듈 디렉토리를 찾는다.
+    루트이면 빈 문자열을, 찾지 못하면 None을 반환한다.
+    ``src/`` 아래에 있는 pom은 모듈로 보지 않는다.
 
     Project-relative module directory ("" = root) for a module dir path or artifactId; None if unknown."""
     if not module or module in (".", "/"):
@@ -92,7 +93,8 @@ def _module_dir(ws: Workspace, module: Optional[str]) -> Optional[str]:
 
 
 def _pom_stamp(ws: Workspace, mdir: str) -> dict[str, int]:
-    """캐시 무효화 키: 루트 pom 과 모듈 pom 의 mtime(수정 시도가 pom 을 고치면 classpath 를 다시 구한다)."""
+    """classpath 캐시를 무효화할 기준 값을 만든다.
+    수정 시도가 pom을 고치면 classpath를 다시 구하도록 루트와 모듈 pom의 mtime을 쓴다."""
     out: dict[str, int] = {}
     for rel in {"pom.xml", f"{mdir}/pom.xml" if mdir else "pom.xml"}:
         try:
@@ -112,8 +114,8 @@ def _parse_classpath(text: str) -> list[Path]:
     return entries
 
 
-# reactor 형제 모듈은 같은 Maven 세션에서 package 돼야 풀린다 → 컴파일·테스트·repackage·검사는 전부 건너뛰고
-# 빈 jar 만 만드는 package 인자들.
+# reactor 형제 모듈은 같은 Maven 세션에서 package돼야 해석되므로, 컴파일, 테스트, repackage, 검사를 모두
+# 건너뛰고 빈 jar만 만드는 인자
 _PACKAGE_SKIPS = ("-Dmaven.main.skip=true", "-Dmaven.test.skip=true", "-Dspring-boot.repackage.skip=true",
                   "-Denforcer.skip=true", "-Dcheckstyle.skip=true", "-Dpmd.skip=true", "-Dspotbugs.skip=true",
                   "-Djacoco.skip=true", "-Dmaven.javadoc.skip=true", "-Dmaven.source.skip=true", "-Dgpg.skip=true",
@@ -128,8 +130,8 @@ def _has_modules(ws: Workspace) -> bool:
 
 
 def _run_build_classpath(ws: Workspace, cfg: Config, mdir: str, name: str, out_file: Path, *, package: bool):
-    """``dependency:build-classpath``(test 범위) 한 번. 모듈이면 ``-pl <dir> -am``(위쪽 reactor 모듈이 먼저,
-    대상 모듈이 마지막에 파일을 쓴다), ``package=True`` 면 빈 package 와 함께."""
+    """``dependency:build-classpath``(test 범위)를 한 번 실행한다.
+    모듈이면 ``-pl <dir> -am``을 붙이고, ``package=True``이면 빈 package와 함께 실행한다."""
     cmd = base_command(cfg)
     if mdir:
         cmd += ["-pl", mdir, "-am"]              # upstream reactor modules first; the target module writes last
@@ -143,9 +145,9 @@ def _run_build_classpath(ws: Workspace, cfg: Config, mdir: str, name: str, out_f
 
 
 def module_classpath(ws: Workspace, cfg: Config, module: Optional[str] = None) -> list[Path]:
-    """``module``(디렉토리 경로나 artifactId; None = 루트)의 test 범위 classpath. 처음엔 그냥
-    돌리고, 실패했는데 다중 모듈이면 package(전부 건너뛰기)와 함께 한 번 더. 결과는 pom mtime 과 함께 캐시.
-    절대 예외 없음, 실패면 [].
+    """``module``의 test 범위 classpath를 구한다.
+    실패했고 다중 모듈 프로젝트이면 빈 package와 함께 한 번 더 실행한다.
+    결과는 pom mtime과 함께 캐시한다. 예외를 던지지 않으며, 실패하면 빈 목록을 반환한다.
 
     Test-scope classpath of `module` (dir path or artifactId; None = root project). Never raises; [] on failure."""
     try:
@@ -168,8 +170,8 @@ def module_classpath(ws: Workspace, cfg: Config, module: Optional[str] = None) -
         out_file.unlink(missing_ok=True)
         pr, log_path = _run_build_classpath(ws, cfg, mdir, name, out_file, package=False)
         if (pr.exit_code != 0 or not out_file.is_file()) and _has_modules(ws):
-            # reactor 형제는 같은 세션에서 package 된 뒤에야 풀린다
-            # → 빈 jar 를 만드는 package 와 classpath 를 한 번에.
+            # reactor 형제 모듈은 같은 세션에서 package돼야 해석되므로 빈 jar
+            # package와 classpath 조회를 한 번에 실행한다
             # reactor siblings are only resolvable once packaged in the same session → package (compilation,
             # tests, repackage and checks skipped: empty jars are enough) and build the classpath in one run
             out_file.unlink(missing_ok=True)
@@ -192,8 +194,8 @@ def module_classpath(ws: Workspace, cfg: Config, module: Optional[str] = None) -
 # jar → GAV
 # ---------------------------------------------------------------------------
 def gav_for_jar(jar: Path, repo: Optional[Path] = None) -> Optional[GAV]:
-    """``<저장소>/g/r/o/u/p/artifact/version/artifact-version[-classifier].jar`` 경로를 GAV 로 되돌린다.
-    ``repo`` 밖이면 경로 안의 ``repository`` 디렉토리를 찾아 추정한다. 저장소 밖 jar 는 None.
+    """저장소 jar 경로를 GAV로 바꾼다. ``repo`` 밖에 있으면 경로 안의 ``repository`` 디렉토리를 기준으로
+    추정하고, 저장소 밖 jar이면 None을 반환한다.
 
     Map `<repo>/g/r/o/u/p/artifact/version/artifact-version[-classifier].jar` back to a GAV. When `repo` does not
     contain the path, a `.../repository/...` layout is recognised heuristically. None for foreign jars."""
@@ -234,7 +236,8 @@ _JAR_CACHE: dict[str, tuple[int, frozenset[str]]] = {}     # jar path → (mtime
 
 
 def _jar_entries(jar: Path) -> frozenset[str]:
-    """jar 안의 .class 엔트리 목록(경로 + mtime 으로 캐시, 못 읽는 jar 는 빈 집합)."""
+    """jar 안의 .class 엔트리 목록을 반환한다.
+    경로와 mtime으로 캐시하고, 읽을 수 없는 jar는 빈 집합을 반환한다."""
     key = str(jar)
     try:
         mtime = jar.stat().st_mtime_ns
@@ -254,15 +257,15 @@ def _jar_entries(jar: Path) -> frozenset[str]:
 
 
 def clean_fqcn(name: str) -> str:
-    """타입 이름 정리: 제네릭 ``<…>``, 배열 ``[]``, 가변인자 ``...``, 끝의 구두점을 뗀다."""
+    """타입 이름에서 제네릭, 배열, 가변 인자, 끝의 구두점을 떼어 낸다."""
     n = re.sub(r"<.*>", "", name or "").strip()
     n = n.replace("[]", "").replace("...", "").strip().rstrip(".,;:)")
     return n
 
 
 def _class_entries(fqcn: str) -> list[tuple[str, str]]:
-    """FQCN 의 (class 엔트리, 최상위 소스 경로) 후보. 중첩 클래스일 수 있어 ``a/b/C/D.class``,
-    ``a/b/C$D.class`` … 를 모두 만든다.
+    """FQCN에 해당할 수 있는 (class 엔트리, 최상위 소스 경로) 후보를 만든다.
+    중첩 클래스일 수 있으므로 가능한 경로를 모두 만든다.
 
     (class entry, top-level source path) candidates: `a.b.C.D` → a/b/C/D.class, a/b/C$D.class, a/b$C$D.class …"""
     fq = clean_fqcn(fqcn)
@@ -294,9 +297,9 @@ def _find_project_source(ws: Workspace, fqcn: str) -> Optional[str]:
 
 
 def locate_class(ws: Workspace, cfg: Config, fqcn: str, module: Optional[str] = None) -> Optional[ClassLocation]:
-    """``fqcn`` 은 어디서 오나? 프로젝트 소스 먼저, 다음은 모듈 classpath 의 jar(와 classes 디렉토리)
-    순서대로. 프로젝트 안의 jar(reactor 형제의 target/*.jar)는
-    ``in_project`` 로 표시하고 좌표를 붙이지 않는다. 절대 예외 없음.
+    """``fqcn`` 클래스가 어디에 있는지 찾는다. 프로젝트 소스를 먼저 보고 모듈 classpath를 순서대로 본다.
+    예외를 던지지 않는다.
+    reactor 형제 모듈의 target jar에서 찾으면 ``in_project``로 표시하고 좌표는 붙이지 않는다.
 
     Where does `fqcn` come from? Project sources first, then the jars (and class dirs) of the module classpath."""
     try:
@@ -339,7 +342,7 @@ def locate_class(ws: Workspace, cfg: Config, fqcn: str, module: Optional[str] = 
 # ---------------------------------------------------------------------------
 # javac error → owner class
 # ---------------------------------------------------------------------------
-# javac 오류 문구에서 '무엇에 관한 오류인가' 를 뽑는 패턴들: '… in class X', 'location: class X', 'variable v
+# javac 오류 문구에서 오류의 대상 클래스를 뽑는 패턴들: '… in class X', 'location: class X', 'variable v
 # of type X', 'does not override … in X', 'incompatible types: A cannot be converted to B', 'required: /
 # found:', 'cannot access X', 'no suitable … X.m('.
 _FQ = r"[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+"
@@ -361,8 +364,8 @@ def _error_text(error: BuildError) -> str:
 
 
 def type_mismatch(error: BuildError) -> tuple[Optional[str], Optional[str]]:
-    """``incompatible types`` / ``cannot be applied`` 오류의 (required 타입, found 타입).
-    메시지·location·raw 의 ``required:`` / ``found:`` 줄도 본다.
+    """``incompatible types`` / ``cannot be applied`` 오류에서 (required 타입, found 타입)을 뽑는다.
+    ``required:`` / ``found:`` 줄도 확인한다.
 
     (required type, found type) of an `incompatible types` / `cannot be applied` error, when stated."""
     text = _error_text(error)
@@ -375,8 +378,8 @@ def type_mismatch(error: BuildError) -> tuple[Optional[str], Optional[str]]:
 
 
 def owner_fqcn(error: BuildError) -> Optional[str]:
-    """오류가 '무엇에 관한' 것인지의 클래스: 위 패턴 순서대로 첫 매치, 아무것도 없는
-    ``incompatible types`` 면 required 타입.
+    """오류의 대상 클래스를 찾는다. 위 패턴을 순서대로 적용해 처음 맞는 것을 쓰고, 아무것도 맞지 않는
+    ``incompatible types``이면 required 타입을 반환한다.
 
     The class an error is *about*: `… in class X`, `location: class X`, `variable v of type X`, `does not override
     … in X`, `cannot access X`, `no suitable … X.m(`; for a bare `incompatible types` the required type."""
@@ -389,8 +392,8 @@ def owner_fqcn(error: BuildError) -> Optional[str]:
     return req
 
 
-# 표준·프레임워크 API 타입(javax / jakarta / java / spring / slf4j / lombok)은 '범인' 이 아니다 — 그 API 를
-# 쓰는 라이브러리를 찾아야 한다. 아래는 오류 줄에서 호출(new X(…), X.m(…), v.m(…))과 import 를 읽는 패턴.
+# 표준과 프레임워크 API 타입은 원인이 아니므로 그 API를 쓰는 라이브러리를 찾아야 한다.
+# 아래는 오류 줄의 호출과 import를 읽는 패턴이다
 _API_PREFIXES = ("javax.", "jakarta.", "java.", "org.springframework.", "org.slf4j.", "lombok.")
 _NEW_RE = re.compile(r"\bnew\s+([A-Z][\w$]*)\s*(?:<[^>]*>)?\s*\(")
 _STATIC_CALL_RE = re.compile(r"\b([A-Z][\w$]*)\s*\.\s*[a-z_]\w*\s*\(")
@@ -399,9 +402,9 @@ _IMPORT_RE = re.compile(r"^\s*import\s+(?:static\s+)?([\w.]+)(?:\.\*)?\s*;", re.
 
 
 def callee_candidates(ws: Workspace, rel_file: str, line: Optional[int]) -> list[str]:
-    """오류 줄에서 생성자 / 메서드가 '호출되는' 클래스들의 FQCN(파일의 import·와일드카드 import·자기 패키지로
-    해석). 맨 ``incompatible types`` / ``cannot access`` 는 호출 대상을 말하지 않으므로 이렇게 라이브러리를
-    찾는다. java / javax / jakarta / spring 타입은 뺀다.
+    """오류 줄에서 생성자나 메서드를 호출하는 대상 클래스의 FQCN을 찾는다.
+    파일의 import와 같은 패키지로 해석하고 java / javax / jakarta / spring 타입은 뺀다.
+    ``incompatible types`` / ``cannot access`` 오류는 호출 대상을 알려 주지 않으므로 이 방법으로 라이브러리를 찾는다.
 
     Fully-qualified classes whose constructor/method is CALLED on the error line (resolved through the file's
     imports). This is how we find the library behind a bare `incompatible types` / `cannot access` javac error,
@@ -446,9 +449,8 @@ def callee_candidates(ws: Workspace, rel_file: str, line: Optional[int]) -> list
 
 def locate_type_owner(ws: Workspace, cfg: Config, error: BuildError,
                       module: Optional[str] = None) -> Optional[ClassLocation]:
-    """javac 오류 '뒤에 있는' 라이브러리 클래스의 위치. 순서: 메시지가 말하는 owner(API 타입이 아니고 required
-    타입과 다를 때) → 오류 줄에서 호출되는 클래스 중 프로젝트 밖의 것 → 마지막으로 owner 자체(API 타입이거나
-    required 타입일 수 있다). 절대 예외 없음.
+    """javac 오류의 원인이 되는 라이브러리 클래스의 위치를 찾는다. 예외를 던지지 않는다.
+    메시지에 나온 대상 클래스, 오류 줄에서 호출하는 프로젝트 밖 클래스, 대상 클래스 자체 순으로 찾는다.
 
     `locate_class` for the library class *behind* a javac error. Order: the owner named in the message
     (`in class X`, `location: class X` …) unless it is an API type (javax/jakarta/java/spring); then the classes

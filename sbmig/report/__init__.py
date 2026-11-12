@@ -1,7 +1,10 @@
-"""실행 보고서 패키지 — ``report.json`` / ``report.md`` / 콘솔 요약을 만든다.
-흐름상 위치: 수정 루프와 최종 빌드가 끝난 뒤 오케스트레이터가 ``write_report`` 를 부른다(보고서 단계). 핵심
-진입점: ``write_report``(파일 쓰기), ``render_markdown``(report.md 본문), ``build_handover``(인수인계 섹션
-데이터), ``console_summary``(콘솔 마지막 요약). 보고서는 인수인계 섹션이 맨 앞 — 담당팀은 그 섹션만 읽는다.
+"""실행 보고서(``report.json``, ``report.md``, 콘솔 요약)를 만드는 패키지.
+수정 루프와 최종 빌드가 끝난 뒤 오케스트레이터가 ``write_report``를 호출한다.
+- ``write_report``: 보고서 파일을 쓴다
+- ``render_markdown``: report.md 본문을 만든다
+- ``build_handover``: 인수인계 섹션의 데이터를 만든다
+- ``console_summary``: 콘솔의 마지막 요약을 만든다
+담당 팀은 인수인계 섹션만 읽으므로 이 섹션을 보고서 맨 앞에 둔다.
 
 sbmig.report — report.json / report.md / console summary."""
 from .handover import build_handover

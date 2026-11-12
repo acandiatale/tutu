@@ -1,16 +1,15 @@
-"""루트 pom 없이 형제 pom 만 있는 프로젝트 처리(2026-10-23, 회사 사례 ``APP/BATCH`` · ``APP/WEB`` ·
-``APP/EAR``). 흐름상 위치: 접수(intake)의 ``_intake_layout`` 이 부른다 — 먼저
-:func:`ear_without_modules` 로 EAR 단독 실행을 거부(exit 3)하고, ``layout.generate_aggregator`` 가
-켜져 있으면 :func:`plan_aggregator` → :func:`write_aggregator` 로 루트 집계(aggregator) pom 을 만들어
-``intake: generated root aggregator pom`` 으로 커밋한다. 왜: 루트 pom 이 없으면 재구성(restructure)이 트리를
-회사 레이아웃으로 바꿀 수 없고, EAR 만 따로 돌리면 EAR 의 WAR 의존성이 back 모듈로 새어 들어간다. 서로
-의존하는 형제 pom 만 묶는다(연결 안 된 것은 제외 목록, 서로 무관한 그룹이 둘 이상이면 None = 독립 앱, MSA
-경로가 판단). 파일 읽기만 하고 예외를 올리지 않는다. v2.1k(2026-10-29, 회사 사례: 루트 pom 없음, ``APP/pom.xml`` 이
-``../DEV``, ``./EAR``, ``./BATCH`` 를 묶음): 최상위 pom 이 하나뿐이어도 그것을 나열하는 집계 pom 을 만든다(예전에는
-None → 모든 Maven 호출이 pom 없는 루트에서 실패, 재구성은 APP 아래에 레이아웃을 만들거나 "root pom not found: pom.xml").
-그리고 :func:`reactor_duplicates` 가 reactor 에 두 번 닿는 모듈을 찾고 :func:`dedupe_reactor` 가 루트가 아닌 집계 pom 의
-중복 ``<module>`` 을 지운다(루트 목록은 그대로) — Maven 이 "is duplicated in the reactor" 로 reactor 전체를 거부해
-OpenRewrite·컴파일·빌드가 모두 실패했기 때문에, Maven 을 부르기 전 접수에서 고친다.
+"""루트 pom 없이 형제 pom만 있는 프로젝트에 루트 집계 pom을 만들어 주는 모듈.
+접수의 ``_intake_layout``이 호출한다.
+루트 pom이 없으면 재구성이 회사 레이아웃을 만들 수 없고, EAR만 따로 실행하면 EAR의 WAR 의존성이 back 모듈로 섞인다.
+- :func:`ear_without_modules`로 EAR만 단독으로 실행하는 것을 거부한다(exit 3)
+- ``layout.generate_aggregator``가 켜져 있으면 :func:`plan_aggregator` -> :func:`write_aggregator`로 루트
+  집계 pom을 만들어 커밋한다
+- 서로 의존하는 형제 pom만 묶는다. 무관한 그룹이 둘 이상이면 None을 반환하고 MSA 처리에 맡긴다.
+  최상위 pom이 하나뿐이어도 집계 pom을 만든다
+- 파일을 읽기만 하고 예외를 던지지 않는다
+- reactor에 두 번 포함되는 모듈은 :func:`reactor_duplicates`가 찾고 :func:`dedupe_reactor`가 루트가 아닌 집계 pom에서
+  중복된 ``<module>``을 지운다. 루트 pom의 목록은 그대로 둔다. Maven은 이런 reactor 전체를 "is duplicated in the reactor"로
+  거부해 OpenRewrite, 컴파일, 빌드가 모두 실패하므로 Maven을 호출하기 전 접수 단계에서 고친다
 
 Sibling poms without an aggregator (2026-10-23).
 
@@ -66,8 +65,8 @@ MODULE_TYPES = ("war", "ejb", "ear")          # dependency types that only make 
 
 @dataclass
 class AggregatorPlan:
-    """생성할 루트 집계 pom 의 내용: 모듈 디렉토리(의존 순서),
-    좌표, 회사 레이아웃의 ``{name}``, 이유, 제외 목록."""
+    """만들 루트 집계 pom의 내용을 담는 데이터 클래스.
+    모듈 디렉토리(의존 순서), 좌표, ``{name}``, 이유, 제외 목록을 담는다."""
     modules: list[str]                        # module directories relative to the project root, dependency order
     group_id: str
     artifact_id: str
@@ -82,8 +81,8 @@ def _dir(p: PomInfo) -> str:
 
 
 def _module_path(p: PomInfo, m: str) -> str:
-    """``<module>`` 값을 루트 기준 pom 경로로 — 디렉토리면 ``/pom.xml`` 을 붙이고, ``x.xml`` 이면 그대로. v2.1k:
-    Windows 식 ``..\\DEV`` 도 ``../DEV`` 로(Windows 의 Maven 은 받아들인다 — 못 맞추면 DEV 가 최상위로 보여 중복)."""
+    """``<module>`` 값을 루트 기준 pom 경로로 바꾼다. Windows 역슬래시 경로도 ``../DEV`` 형태로 맞춘다.
+    맞추지 못하면 DEV가 최상위 pom으로 보여 중복되기 때문이다."""
     target = posixpath.normpath(posixpath.join(_dir(p) or ".", m.strip().replace("\\", "/").rstrip("/")))
     if not target.endswith(".xml"):
         target = posixpath.join(target, "pom.xml")
@@ -91,7 +90,7 @@ def _module_path(p: PomInfo, m: str) -> str:
 
 
 def _subtree(top: PomInfo, by_path: dict[str, PomInfo]) -> list[PomInfo]:
-    """``top`` 과 그 ``<modules>`` 를 따라 닿는 모든 pom(순환 안전)."""
+    """``top``과 그 ``<modules>``를 따라 도달하는 모든 pom을 반환한다. 순환 참조가 있어도 안전하다."""
     out: list[PomInfo] = []
     stack = [top]
     while stack:
@@ -107,8 +106,8 @@ def _subtree(top: PomInfo, by_path: dict[str, PomInfo]) -> list[PomInfo]:
 
 
 def _links_to(dep: GAV, target: PomInfo) -> bool:
-    """의존성 ``dep`` 이 ``target`` pom 을 가리키는지: artifactId
-    같고, groupId 가 없거나 ``${...}`` 이거나 같으면 연결."""
+    """의존성 ``dep``가 ``target`` pom을 가리키는지 확인한다.
+    artifactId가 같고 groupId가 없거나 ``${...}``이거나 같으면 가리킨다고 본다."""
     if not dep.artifact_id or dep.artifact_id != target.artifact_id:
         return False
     g = dep.group_id or ""
@@ -116,16 +115,15 @@ def _links_to(dep: GAV, target: PomInfo) -> bool:
 
 
 def _most_common(values: list[Optional[str]]) -> Optional[str]:
-    """풀리지 않은 ``${...}`` 와 빈 값을 뺀 가장 흔한 값."""
+    """치환되지 않은 ``${...}``와 빈 값을 빼고 가장 많이 나온 값을 반환한다."""
     vals = [v for v in values if v and "${" not in v]
     return Counter(vals).most_common(1)[0][0] if vals else None
 
 
 def _top_poms(poms: list[PomInfo]) -> list[PomInfo]:
-    """다른 pom 의 ``<modules>`` (``../x`` 포함)에 올라 있지 않은 pom = 각자 따로 빌드되던 최상위 pom. 다른 pom 에서
-    닿는 pom 은 최상위가 아니다(v2.1k: 그러면 생성한 집계 pom 이 그것을 또 나열해 reactor 에 두 번 든다). 프로필의
-    ``<modules>`` 는 보지 않는다 — 재구성·분석도 본문 ``<modules>`` 만 따라가므로 프로필로만 닿는 모듈은 집계 pom 이
-    직접 나열해야 합쳐진다; 그래서 생기는 프로필 쪽 중복은 :func:`dedupe_reactor` 가 지운다."""
+    """다른 pom의 ``<modules>``에 들어 있지 않은 최상위 pom 목록을 반환한다.
+    다른 pom에서 도달하는 pom까지 넣으면 reactor에 두 번 들어가기 때문이다.
+    프로필의 ``<modules>``는 보지 않으며, 그 때문에 생기는 중복은 :func:`dedupe_reactor`가 지운다."""
     referenced = {_module_path(p, m) for p in poms for m in p.modules}
     return [p for p in poms if p.path not in referenced]
 
@@ -134,9 +132,8 @@ _EAR_SUFFIX_RE = re.compile(r"(?i)[-_.]?ear$")
 
 
 def _name_from(members: list[PomInfo]) -> str:
-    """프로젝트 이름(``{name}``): EAR 이 하나면 그 artifactId(v2.1k: 끝의 ``-ear`` / ``EAR`` 는 뗀다 — ``xxx-ear`` 가
-    ``xxx-ear-boot`` 를 만들지 않게, 남는 것이 3자 이상일 때), 아니면 WAR 하나의 것, 아니면 공통 접두어(3자 이상),
-    끝으로 app."""
+    """프로젝트 이름(``{name}``)을 정한다. EAR이 하나면 그 artifactId(끝의 ``-ear``는 뗀다), 아니면 WAR
+    하나의 artifactId, 공통 접두어, 마지막으로 app 순서로 고른다."""
     ears = [p for p in members if p.packaging == "ear"]
     wars = [p for p in members if p.packaging == "war"]
     if len(ears) == 1 and ears[0].artifact_id:
@@ -150,10 +147,10 @@ def _name_from(members: list[PomInfo]) -> str:
 
 
 def plan_aggregator(ws: Any) -> Optional[AggregatorPlan]:
-    """루트 pom 이 없을 때 집계 pom 계획: 최상위 pom 이 하나면(v2.1k 회사 사례 ``APP`` 이 ``../DEV, ./EAR, ./BATCH`` 를
-    묶음) 그 하나를, 여럿이면 서로 의존하는 한 그룹을 나열한다. 그 밖(루트 pom 있음, 서로 무관한 그룹 0개 / 2개 이상 —
-    MSA 경로가 판단)은 None. 다른 최상위 pom 에서 ``<modules>`` 로 닿는 pom 은 나열하지 않는다. 접수가 여기서
-    실패하면 안 되므로 예외는 경고 + None.
+    """루트 pom이 없을 때 만들 집계 pom을 계획한다.
+    최상위 pom이 하나면 그것을, 여럿이면 서로 의존하는 한 그룹을 나열한다.
+    그 밖의 경우는 None을 반환한다.
+    접수가 여기서 실패하면 안 되므로 예외가 나면 경고를 남기고 None을 반환한다.
 
     The root aggregator plan when the project root has no pom.xml: the single top pom (v2.1k: before, a single
     top such as `APP/pom.xml` aggregating `../DEV` got no aggregator, so every Maven call ran in a directory without a
@@ -166,8 +163,9 @@ def plan_aggregator(ws: Any) -> Optional[AggregatorPlan]:
 
 
 def _plan(ws: Any) -> Optional[AggregatorPlan]:
-    """:func:`plan_aggregator` 의 본체: 최상위 pom 간 의존 간선 → 연결 요소 → 의존 순서 → 좌표·이름 결정."""
-    # 루트 pom 이 이미 있으면 할 일 없음(집계 pom 은 루트가 없을 때만 만든다)
+    """:func:`plan_aggregator`의 실제 처리를 한다.
+    의존 관계 수집 -> 연결된 그룹 찾기 -> 의존 순서 정렬 -> 좌표와 이름 결정 순서다."""
+    # 집계 pom은 루트 pom이 없을 때만 만든다
     if ws.exists("pom.xml"):
         return None
     poms, _ = parse_poms(ws)
@@ -202,10 +200,8 @@ def _plan(ws: Any) -> Optional[AggregatorPlan]:
     for t in tops:
         groups.setdefault(find(t.path), []).append(t)
     linked = [g for g in groups.values() if len(g) >= 2]
-    # v2.1z-a (2026-11-02, 회사 사례: 루트에 .gitignore 뿐, APP/pom.xml 이 ./WEB · ./EAR 를 묶고 APP/BATCH 에는 아무도 안 쓰는
-    # pom 이 하나 더): 최상위 pom 중 <modules> 로 다른 pom 을 묶는 "집계 pom" 이 딱 하나면 그것이 애플리케이션의 루트다 —
-    # 의존으로 이어진 다른 최상위 pom 은 함께 나열하고, 이어지지 않은 것은 빼고 보고한다(예전에는 "서로 안 이어진 최상위
-    # pom 들" 로 보고 중단해 Maven 호출 한 번 없이 끝났다). 집계 pom 이 둘 이상 서로 무관하면 그대로 None(독립 앱).
+    # 최상위 pom 중 다른 pom을 묶는 집계 pom이 하나뿐이면 그것이 애플리케이션 루트다.
+    # 연결된 pom은 함께 나열하고 나머지는 빼고 보고한다
     # one aggregator among several tops is the application root: linked tops join it, unlinked ones are left out
     # (reported) instead of aborting the run; two or more unlinked aggregators stay None (independent applications)
     aggregators = [t for t in tops if len(trees[t.path]) > 1]
@@ -215,7 +211,7 @@ def _plan(ws: Any) -> Optional[AggregatorPlan]:
         if len(linked) == 1 and agg not in linked[0]:
             members = [agg]                      # the linked pair is not the aggregator's: it stays out, reported below
     elif len(linked) != 1:
-        # 연결된 그룹이 정확히 하나일 때만 만든다 — 둘 이상이면 서로 무관한 앱들이라 하나로 묶지 않는다
+        # 연결된 그룹이 둘 이상이면 서로 무관한 앱이므로 묶지 않는다
         if len(linked) > 1:
             log.info("aggregator not generated: %d separate groups of linked poms (independent applications)",
                      len(linked))
@@ -255,8 +251,8 @@ def _plan(ws: Any) -> Optional[AggregatorPlan]:
 
 
 def _single_top_plan(top: PomInfo, tree: list[PomInfo], poms: list[PomInfo]) -> AggregatorPlan:
-    """v2.1k: 최상위 pom 이 하나뿐(루트에는 pom 없음): 그 pom 하나를 나열하는 집계 pom — Maven 과 재구성이 프로젝트
-    루트에서 돌게. 회사 사례: ``APP/pom.xml`` 이 ``../DEV``, ``./EAR``, ``./BATCH`` 를 묶고 DEV 는 APP 옆 폴더."""
+    """최상위 pom이 하나뿐일 때 그것을 나열하는 집계 pom을 계획한다.
+    Maven과 재구성이 프로젝트 루트에서 실행되게 하기 위해서다."""
     outside = sorted(_dir(p) for p in tree if p is not top and not (_dir(p) + "/").startswith(_dir(top) + "/"))
     what = (f"{top.path} aggregates the project ({len(tree)} poms" + (f", incl. {', '.join(outside)} beside it"
                                                                       if outside else "") + ")"
@@ -268,15 +264,16 @@ def _single_top_plan(top: PomInfo, tree: list[PomInfo], poms: list[PomInfo]) -> 
 
 def _make_plan(modules: list[str], members: list[PomInfo], poms: list[PomInfo], reason: str,
                excluded: list[str]) -> AggregatorPlan:
-    """좌표·이름 결정: ``{name}`` 은 구성원 전체(나열한 pom 과 그 하위 모듈)의 EAR → WAR → 공통 접두어, groupId /
-    version 은 EAR(없으면 WAR, 없으면 가장 흔한 값), artifactId 는 이름(구성원이 이미 그 좌표면 ``<name>-aggregator``)."""
+    """집계 pom의 좌표와 이름을 정해 계획을 만든다. ``{name}``은 EAR -> WAR -> 공통 접두어 순, groupId /
+    version은 EAR -> WAR -> 가장 많이 나온 값 순으로 정한다.
+    구성원이 이미 그 좌표를 쓰고 있으면 artifactId를 ``<name>-aggregator``로 한다."""
     name = _name_from(members)
     ear = next((p for p in members if p.packaging == "ear"), None)
     src = ear or next((p for p in members if p.packaging == "war"), None)
     group = (src.group_id if src is not None else None) or _most_common([p.group_id for p in members]) \
         or "com.example"
     version = (src.version if src is not None else None) or _most_common([p.version for p in members]) or "1.0.0"
-    # 구성원이 이미 같은 좌표를 쓰면 ``<name>-aggregator`` — EAR 이 합쳐진 뒤 재구성이 루트 이름을 되돌린다
+    # 구성원이 같은 좌표를 쓰면 ``<name>-aggregator``로 한다. EAR이 합쳐진 뒤 재구성이 루트 이름을 되돌린다
     artifact = name if not any(p.artifact_id == name and (p.group_id or group) == group for p in poms) \
         else f"{name}-aggregator"
     return AggregatorPlan(modules=modules, group_id=group, artifact_id=artifact, version=version, name=name,
@@ -288,8 +285,8 @@ def _xml(text: str) -> str:
 
 
 def aggregator_pom_text(plan: AggregatorPlan) -> str:
-    """집계 pom 의 XML 본문(packaging pom, ``<modules>``, 프로젝트
-    이름 속성 ``sbmig.project-name``, 생성 표시 주석)."""
+    """집계 pom의 XML 본문을 만든다.
+    packaging pom, ``<modules>``, ``sbmig.project-name`` 속성, 자동 생성 표시 주석을 넣는다."""
     mods = "\n".join(f"        <module>{_xml(m)}</module>" for m in plan.modules)
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <!-- {AGGREGATOR_MARK}: the project had no aggregator pom at its root; built together in one reactor:
@@ -315,8 +312,7 @@ def aggregator_pom_text(plan: AggregatorPlan) -> str:
 
 
 def write_aggregator(ws: Any, plan: AggregatorPlan) -> str:
-    """집계 pom 을 ``<root>/pom.xml`` 로 쓴다(Workspace 면
-    ``ws.write``, PathView 면 폴더에 직접). 커밋은 호출자 몫.
+    """집계 pom을 ``<root>/pom.xml``에 기록한다. 커밋은 호출하는 쪽이 한다.
 
     Write the aggregator as `<root>/pom.xml` (a Workspace, or a read-only PathView's directory)."""
     text = aggregator_pom_text(plan)
@@ -328,9 +324,9 @@ def write_aggregator(ws: Any, plan: AggregatorPlan) -> str:
 
 
 def no_root_pom_reason(ws: Any, generate: bool = True) -> str:
-    """v2.1k: 루트 pom.xml 이 없고(집계 pom 도 못 만듦) MSA 도 아닌 트리를 분석 단계에서 멈출 때의 사유 — Maven 은
-    pom 없는 폴더에서 돌 수 없고 재구성은 루트 pom 이 있어야 한다(예전에는 OpenRewrite·컴파일·빌드가 "there is no POM
-    in this directory" 로, 재구성이 "root pom not found: pom.xml" 로 실패했다). 최상위 pom 들을 이름으로 든다.
+    """루트 pom.xml도 집계 pom도 없고 MSA도 아닌 트리를 분석 단계에서 중단할 사유 문구를 만든다.
+    최상위 pom 이름을 나열한다.
+    Maven은 pom이 없는 폴더에서 실행할 수 없고, 재구성에는 루트 pom이 필요하기 때문이다.
 
     Why a tree without a root pom.xml (no aggregator generated) that is not MSA stops before any Maven call."""
     try:
@@ -360,9 +356,8 @@ _EAR_RE = re.compile(r"<packaging>\s*ear\s*</packaging>")
 
 
 def ear_without_modules(ws: Any) -> Optional[str]:
-    """루트 pom 이 EAR 인데 그 EAR 이 묶는 WAR / EJB / 같은 그룹 모듈이 트리에
-    없으면 거부 사유를, 아니면 None. EAR 자체에는 코드가 없으므로 ``APP/EAR`` 만 돌리는 실행은 접수에서
-    중단시킨다(상위 폴더에서 다시 실행하도록 안내).
+    """루트 pom이 EAR인데 묶는 모듈이 트리에 없으면 거부 사유를, 아니면 None을 반환한다.
+    EAR 자체에는 코드가 없으므로 ``APP/EAR``만 실행하면 접수에서 중단하고 상위 폴더에서 다시 실행하도록 안내한다.
 
     The reason to reject a run whose root pom is an EAR that packages modules missing from the tree."""
     try:
@@ -370,7 +365,7 @@ def ear_without_modules(ws: Any) -> Optional[str]:
             return None
         poms, _ = parse_poms(ws)
         root = next((p for p in poms if p.path == "pom.xml"), None)
-        # 모듈을 직접 거느린 EAR 루트(``<modules>`` 있음)는 정상 — 모듈이 트리 안에 있으니 거부하지 않는다
+        # ``<modules>``가 있는 EAR 루트는 모듈이 트리 안에 있으므로 거부하지 않는다
         if root is None or root.packaging != "ear" or root.modules:
             return None
         present = {p.artifact_id for p in poms}
@@ -396,8 +391,8 @@ def ear_without_modules(ws: Any) -> Optional[str]:
 # ---------------------------------------------------------------------------------------------------------------------
 @dataclass(frozen=True)
 class ModuleRef:
-    """``<module>`` 한 줄의 위치: 그 줄을 가진 pom, 원문, 블록(None = 본문 ``<modules>``, 아니면 프로필 id),
-    같은 블록에서 같은 원문의 몇 번째인지(0부터) — 지울 때 정확히 그 줄만 지우려고.
+    """``<module>`` 한 줄의 위치를 담는 데이터 클래스.
+    정확히 그 줄만 지울 수 있도록 pom, 원문, 블록, 같은 원문 중 몇 번째인지를 담는다.
 
     One `<module>` entry: the pom that lists it, its text, the block (None = the main `<modules>`, else the
     profile id) and its occurrence among the entries of that block with the same text (0-based)."""
@@ -408,16 +403,15 @@ class ModuleRef:
 
     @property
     def listing(self) -> tuple[str, str]:
-        """(pom 경로, ``<module>`` 원문)."""
+        """(pom 경로, ``<module>`` 원문) 쌍을 반환한다."""
         return (self.pom, self.text)
 
 
 @dataclass
 class ReactorDuplicate:
-    """reactor 에서 둘 이상의 ``<module>`` 줄이 닿는 디렉토리 하나와 정리 계획. ``listings`` = 기본 reactor(본문 +
-    activeByDefault 프로필)의 줄(reactor 순서), ``keep`` = 남길 줄, ``remove`` = :func:`dedupe_reactor` 가 지울 줄,
-    ``left`` = 루트 pom 의 다른 블록이라 못 지우는 줄, ``inactive`` = 기본으로 꺼진 프로필의 줄(메모만),
-    ``removed`` = 실제로 지운 줄.
+    """reactor에서 둘 이상의 ``<module>`` 줄이 가리키는 디렉토리와 정리 계획을 담는 데이터 클래스.
+    ``keep``은 남길 줄, ``remove``는 지울 줄, ``left``는 루트 pom이라 지우지 않는 줄, ``inactive``는 꺼진
+    프로필의 줄(메모만 남김)이다.
 
     A directory reached by more than one `<module>` listing, and what to do about it. `listings` = the default
     reactor's listings (main `<modules>` + profiles active by default) as (pom, module text) in reactor order;
@@ -439,13 +433,13 @@ class ReactorDuplicate:
 
     @property
     def is_duplicate(self) -> bool:
-        """기본 reactor 에서 실제로 두 번 이상 닿는가(아니면 꺼진 프로필에만 있는 메모 거리)."""
+        """기본 reactor에서 실제로 두 번 이상 포함되는지 확인한다.
+        아니면 꺼진 프로필에만 있어 메모만 남기는 경우다."""
         return len(self.listings) >= 2
 
 
 def _module_target(pom_rel: str, text: str) -> str | None:
-    """``<module>`` 원문 → 루트 기준 pom 경로: ``../DEV`` (APP/pom.xml 에서) · ``./DEV`` · ``DEV/`` · ``DEV/pom.xml`` 이
-    모두 ``DEV/pom.xml``. ``${…}``, 빈 값, 프로젝트 밖(루트를 벗어나는 ``../``)은 None."""
+    """``<module>`` 원문을 루트 기준 pom 경로로 바꾼다. ``${…}``, 빈 값, 루트 밖 경로면 None을 반환한다."""
     t = (text or "").strip().replace("\\", "/").rstrip("/")
     if not t or "${" in t:
         return None
@@ -460,7 +454,8 @@ def _module_target(pom_rel: str, text: str) -> str | None:
 
 
 def _pom_label(pom_rel: str) -> str:
-    """사람이 읽는 집계 pom 이름: ``APP/pom.xml`` → ``APP``, 루트 pom.xml → ``the root``, 이름이 다른 pom 은 경로."""
+    """사람이 읽을 집계 pom 이름을 반환한다.
+    ``APP/pom.xml``은 ``APP``, 루트 pom.xml은 ``the root``, 그 밖은 경로를 그대로 쓴다."""
     d, b = posixpath.split(pom_rel)
     if b != "pom.xml":
         return pom_rel
@@ -468,7 +463,8 @@ def _pom_label(pom_rel: str) -> str:
 
 
 def _read_project(ws: Any, rel: str) -> ET.Element | None:
-    """pom 하나의 ``<project>`` (바른 인코딩으로 읽고 XML 선언은 뗌, A1). 못 읽거나 깨졌으면 None."""
+    """pom 하나를 올바른 인코딩으로 읽어 ``<project>`` 요소를 반환한다.
+    XML 선언은 떼고 읽으며, 읽지 못하거나 깨졌으면 None을 반환한다."""
     from .pom_parser import read_pom_text, xml_without_declaration
     try:
         return ET.fromstring(xml_without_declaration(read_pom_text(ws, rel)).encode("utf-8"))
@@ -478,9 +474,8 @@ def _read_project(ws: Any, rel: str) -> ET.Element | None:
 
 
 def _module_blocks(project: ET.Element) -> tuple[list[tuple[str | None, list[str]]], list[tuple[str, list[str]]]]:
-    """pom 의 ``<modules>`` 블록: (기본 reactor 에 드는 것 = 본문 + activeByDefault 프로필, 기본으로 꺼진 프로필의 것),
-    각각 (프로필 id 또는 본문 None, 원문 목록). id 없는 프로필은 ``#<순번>``. activeByDefault 프로필의 줄 중 본문과
-    원문이 같은 것은 Maven 이 프로필을 합칠 때 빼므로 여기서도 뺀다."""
+    """pom의 ``<modules>`` 블록을 (기본 reactor 블록, 꺼진 프로필 블록)으로 나눠 반환한다.
+    activeByDefault 프로필의 줄 중 본문과 같은 줄은 Maven처럼 뺀다."""
     from .pom_parser import _child, _children, _text
 
     def texts(mods: ET.Element | None) -> list[str]:
@@ -502,11 +497,12 @@ def _module_blocks(project: ET.Element) -> tuple[list[tuple[str | None, list[str
 
 
 def reactor_duplicates(ws: Any, root_pom: str = "pom.xml") -> list[ReactorDuplicate]:
-    """루트 pom 에서 모든 집계 pom 의 ``<modules>`` 를 Maven 처럼(전위 DFS, 선언 순서) 따라가 둘 이상의 줄이 닿는
-    디렉토리를 모두 찾고, 무엇을 남기고 지울지 정한다: 같은 블록의 반복 줄은 뒤의 것을 지운다(루트 pom 이라도),
-    그 밖에는 루트 pom 의 줄을 남기고(루트 줄이 없으면 reactor 순서의 첫 줄) 루트가 아닌 pom 의 나머지 줄을 지운다.
-    루트 pom 의 다른 블록 줄은 지우지 않고 ``left`` 에, 꺼진 프로필이 reactor 에 이미 있는 모듈을 또 나열하면
-    ``inactive`` 에 둔다(메모만). 읽기만 하고 예외를 올리지 않는다(문제 → 빈 목록).
+    """루트 pom에서 모든 ``<modules>``를 Maven처럼 따라가며 둘 이상의 줄이
+    가리키는 디렉토리를 찾고, 남길 줄과 지울 줄을 정한다.
+    - 같은 블록 안에서 반복된 줄은 루트 pom이라도 뒤의 것을 지운다
+    - 그 밖에는 루트 pom의 줄을 남기고 다른 pom의 줄을 지운다.
+      루트 pom의 다른 블록에 있는 줄은 ``left``에 둔다
+    - 파일을 읽기만 하고 예외를 던지지 않는다. 문제가 있으면 빈 목록을 반환한다
 
     Every directory reached by more than one `<module>` listing of the reactor rooted at `root_pom` (pre-order DFS
     in declaration order, like Maven's project collection; profiles active by default included), with the plan: a
@@ -522,7 +518,8 @@ def reactor_duplicates(ws: Any, root_pom: str = "pom.xml") -> list[ReactorDuplic
 
 
 def _reactor_duplicates(ws: Any, root_pom: str) -> list[ReactorDuplicate]:
-    """:func:`reactor_duplicates` 의 본체: reactor 걷기 → 대상 pom 별 줄 모으기 → 계획(:func:`_decide`)."""
+    """:func:`reactor_duplicates`의 실제 처리를 한다.
+    reactor 순회 -> 대상 pom별 줄 수집 -> :func:`_decide` 순서다."""
     if not ws.exists(root_pom):
         return []
     listings: dict[str, list[ModuleRef]] = {}             # target pom → every active listing, reactor order
@@ -545,7 +542,7 @@ def _reactor_duplicates(ws: Any, root_pom: str) -> list[ReactorDuplicate]:
                 if target is None or not ws.exists(target):
                     continue                              # a missing module is another Maven error, not this one
                 listings.setdefault(target, []).append(ref)
-                # 이미 닿은 모듈(중복)이나 루트 쪽으로 되돌아가는 줄(순환)은 다시 걷지 않는다
+                # 이미 방문한 모듈이나 루트로 되돌아가는 줄은 다시 순회하지 않는다
                 if target not in visited:
                     visit(target)
 
@@ -569,7 +566,7 @@ def _reactor_duplicates(ws: Any, root_pom: str) -> list[ReactorDuplicate]:
 
 
 def _decide(d: ReactorDuplicate, root_pom: str) -> None:
-    """남길 줄 / 지울 줄 / 못 지우는 줄을 정한다(규칙은 :func:`reactor_duplicates`)."""
+    """남길 줄, 지울 줄, 지우지 않을 줄을 정한다. 규칙은 :func:`reactor_duplicates`를 참고한다."""
     heads: dict[tuple[str, str | None], ModuleRef] = {}
     for r in d.refs:                                     # a repeat inside one block: its first entry stays
         if (r.pom, r.profile) in heads:
@@ -581,8 +578,8 @@ def _decide(d: ReactorDuplicate, root_pom: str) -> None:
     for r in first:
         if r is keep:
             continue
-        # 루트 pom 은 건드리지 않는다(같은 블록의 반복 줄만 예외): 회사가 보는 reactor 의 기준이 루트이고,
-        # 루트에서 빼면 그 모듈이 아예 빌드에서 빠질 수 있다
+        # 루트에서 빼면 모듈이 빌드에서 빠질 수 있으므로 루트 pom은 건드리지 않는다.
+        # 같은 블록의 반복 줄만 예외다
         if r.pom == root_pom:
             d.left.append(r.listing)
         else:
@@ -592,8 +589,8 @@ def _decide(d: ReactorDuplicate, root_pom: str) -> None:
 
 
 def _remove_ref(root: Path, ref: ModuleRef) -> str | None:
-    """``ref`` 의 ``<module>`` 한 줄을 PomEditor 로 지운다(서식·주석·인코딩·줄 끝 유지, 블록이 비면 ``<modules>`` 도
-    지움). None = 지움, 문자열 = 못 지운 이유."""
+    """``ref``가 가리키는 ``<module>`` 한 줄을 PomEditor로 지우고, 블록이 비면 ``<modules>``도 지운다.
+    지웠으면 None을, 지우지 못했으면 사유를 반환한다."""
     from sbmig.restructure.pom_editor import PomEditError, PomEditor  # lazy: restructure imports analyze
 
     try:
@@ -623,9 +620,9 @@ def _remove_ref(root: Path, ref: ModuleRef) -> str | None:
 
 def dedupe_reactor(ws: Any, root_pom: str = "pom.xml",
                    duplicates: list[ReactorDuplicate] | None = None) -> list[str]:
-    """:func:`reactor_duplicates` 의 계획대로 중복 ``<module>`` 줄을 지운다: 루트가 아닌 집계 pom 의 줄, 그리고 한
-    블록 안의 반복 줄(루트에서도). 사람이 읽는 메모(지운 줄 · 못 지운 줄 · 메모만 한 줄)를 돌려주고, 주어진
-    ``duplicates`` 의 ``removed`` 를 채운다(접수가 커밋 메시지·저널·후속 조치에 쓴다). 커밋은 호출자 몫.
+    """:func:`reactor_duplicates`의 계획대로 중복 ``<module>`` 줄을 지우고,
+    사람이 읽을 메모를 반환하며 ``removed``를 채운다.
+    루트 pom에서는 같은 블록의 반복 줄만 지운다. 커밋은 호출하는 쪽이 한다.
 
     Remove the duplicate `<module>` entries planned by `reactor_duplicates` (through `PomEditor`: formatting,
     comments and encoding kept; an emptied `<modules>` goes too). Never touches the root pom except for a repeat
@@ -669,8 +666,7 @@ def _names(items: list[str], last: str) -> str:
 
 
 def reactor_commit_message(dups: list[ReactorDuplicate], root_pom: str = "pom.xml") -> str | None:
-    """접수 커밋 메시지: ``intake: reactor duplicate removed (DEV listed by pom.xml and APP/pom.xml)`` + 본문에 지운 줄마다
-    한 줄. 지운 것이 없으면 None(커밋하지 않음).
+    """접수 커밋 메시지를 만든다. 제목과, 지운 줄마다 본문 한 줄을 쓴다. 지운 것이 없으면 None을 반환한다.
 
     The intake commit message (subject + one body line per removed listing); None when nothing was removed."""
     done = [d for d in dups if d.removed]
@@ -685,9 +681,8 @@ def reactor_commit_message(dups: list[ReactorDuplicate], root_pom: str = "pom.xm
 
 
 def reactor_followups(dups: list[ReactorDuplicate], root_pom: str = "pom.xml") -> list[str]:
-    """보고서 "수동 후속 조치" 줄(쉬운 말): 다른 pom 에서 지운 중복마다 한 줄(어디에 남기고 어느 집계 pom 에서
-    뺐는지, 그 집계 pom 을 따로 빌드하려면 어떻게 되돌리는지), 같은 블록 반복, 못 지운 루트 중복, 꺼진 프로필
-    메모. 한국어는 report/i18n.py ``PATTERNS`` 가 이 문장들을 통째로 맞춘다 — 문장을 바꾸면 패턴도 함께.
+    """보고서에 넣을 수동 후속 조치 줄을 만든다.
+    한국어 번역은 report/i18n.py의 ``PATTERNS``가 문장 단위로 맞추므로, 문장을 바꾸면 패턴도 함께 고친다.
 
     Plain-words manual follow-ups (Korean: `sbmig.report.i18n.PATTERNS` matches these sentences — keep in sync)."""
     out: list[str] = []

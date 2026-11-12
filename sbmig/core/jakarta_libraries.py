@@ -1,9 +1,10 @@
-"""jakarta.* 릴리스가 알려진 서드파티 라이브러리 표(배포 표 + 사람이 고치는 회사 표).
-배포 표 knowledge/libraries/jakarta_libraries.yml 과 회사 표 `<kb>/libraries.yml`(같은 스키마, 재배포 없이
-수정). 쓰는 곳: 차단 항목의 제안 문구, 보고서의 javax API jar 목록, v2.1d 버전 정책(수정 프롬프트의
-"Dependency versions" 줄 = library_hint_line, depchanges.apply_table 의 승인 표시). 회사 항목은 같은 키(또는
-old_keys)의 배포 항목을 대신하고, `allow_major: true` 는 메이저 넘기를 허락한다. 회사 파일은 mtime 이 바뀌면
-다시 읽고(500개 플릿이 한 프로세스), 깨진 파일은 한 번 경고하고 무시한다(배포 표는 그대로 쓴다).
+"""jakarta.* 릴리스가 알려진 서드파티 라이브러리 표를 읽는 모듈.
+함께 배포되는 표 knowledge/libraries/jakarta_libraries.yml과 사람이 직접 고치는 회사 표
+`<kb>/libraries.yml`을 합쳐서 쓴다. 두 파일의 형식은 같다.
+차단 항목의 조치 안내 문구, 보고서의 javax API jar 목록, 수정 프롬프트의 "Dependency versions" 줄,
+depchanges.apply_table의 승인 표시에 쓰인다.
+- 회사 항목은 key나 old_keys가 같은 배포 항목을 대신한다. `allow_major: true`면 메이저 버전 변경을 허용한다
+- 회사 파일은 수정 시각이 바뀌면 다시 읽고, 깨진 파일은 한 번 경고한 뒤 무시한다
 
 Third-party libraries with a known jakarta.* release (knowledge/libraries/jakarta_libraries.yml).
 
@@ -39,16 +40,16 @@ DEFAULT_COMPANY_FILE = "libraries.yml"
 
 
 class JakartaLibrary(BaseModel):
-    """표 항목 하나: 좌표(key, 옛 좌표 old_keys), 첫 jakarta 릴리스(jakarta_since), 올릴 버전(version),
-    분류자, 최소 Java, 메모, 사람의 메이저 허용(allow_major), 출처(shipped / company)."""
+    """라이브러리 표 항목 하나를 담는 데이터 클래스. 좌표, 첫 jakarta 릴리스, 올릴 버전, classifier, 최소
+    Java 버전, 메모, 메이저 변경 허용 여부, 출처를 담는다."""
     key: str                                  # groupId:artifactId (current coordinates)
     old_keys: list[str] = Field(default_factory=list)   # earlier coordinates (e.g. ch.simas.qlrm:qlrm) → relocated to key
     jakarta_since: str                        # first jakarta.* release
     version: str                              # release the handler sets (>= jakarta_since)
     classifier: Optional[str] = None          # jakarta flavour published as a classifier jar (Ehcache 3: `jakarta`);
                                               # the handler sets it on the bumped / relocated declaration
-    # v2.1z-e (2026-11-02): jakarta 빌드가 다른 좌표로 올라온 라이브러리(상용 그리드 `com.example.grid8:grid8` → `com.example.grid9:grid9`,
-    # 또는 `…:grid8-jakarta`): 그 좌표. 사전 시도 `sbmig-jakarta` 가 저장소에서 그 좌표의 최신 릴리스를 확인해 바꿔 넣는다.
+    # jakarta 빌드가 다른 좌표로 나온 라이브러리의 새 좌표.
+    # 사전 시도 `sbmig-jakarta`가 저장소에서 최신 릴리스를 확인한 뒤 의존성을 바꿔 넣는다
     # v2.1z-e: the coordinates of the jakarta build when they differ from `key` (a vendor's `grid8` → `grid9` line or a
     # `-jakarta` artifactId); the `sbmig-jakarta` pre-try verifies the newest release there and swaps the declaration
     jakarta_key: Optional[str] = None
@@ -62,17 +63,17 @@ class JakartaLibrary(BaseModel):
 
     @property
     def group_id(self) -> str:
-        """key 의 groupId."""
+        """key에서 groupId를 반환한다."""
         return self.key.split(":", 1)[0]
 
     @property
     def artifact_id(self) -> str:
-        """key 의 artifactId."""
+        """key에서 artifactId를 반환한다."""
         return self.key.split(":", 1)[1]
 
     @property
     def all_keys(self) -> list[str]:
-        """현재 + 옛 좌표(`groupId:artifactId`).
+        """현재 좌표와 이전 좌표(`groupId:artifactId`) 목록을 반환한다.
 
         Current + earlier coordinates (`groupId:artifactId`)."""
         return [self.key, *self.old_keys]
@@ -80,7 +81,7 @@ class JakartaLibrary(BaseModel):
 
 @lru_cache(maxsize=4)
 def _load(path: str) -> tuple[JakartaLibrary, ...]:
-    """배포 표를 읽는다(캐시). 파일이 없으면 빈 표."""
+    """jakarta 라이브러리 표를 읽어 캐시해 둔다. 파일이 없으면 빈 표를 반환한다."""
     try:
         doc = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
     except OSError:
@@ -90,8 +91,9 @@ def _load(path: str) -> tuple[JakartaLibrary, ...]:
 
 @lru_cache(maxsize=8)
 def _load_company(path: str, mtime_ns: int, size: int) -> tuple[JakartaLibrary, ...]:
-    """사람의 표를 읽는다. (mtime_ns, size) 는 캐시 키일 뿐이라 파일을 고치면 다시 읽힌다. 예외 없음: 못 읽는
-    파일은 경고 후 빈 표, 검증에 실패한 항목은 경고 후 그 항목만 건너뛴다.
+    """회사 표 파일을 읽어 항목 목록을 반환한다. (mtime_ns, size)는 캐시 키이므로 파일을 고치면 다시 읽는다.
+    예외를 던지지 않는다.
+    읽을 수 없는 파일은 경고 후 빈 목록을 반환하고, 검증에 실패한 항목은 경고 후 그 항목만 건너뛴다.
 
     The people's table at `path`; (mtime_ns, size) are only the cache key, so an edited file is read again.
     Never raises: a file that does not parse → warning (once per file version) and (); an entry that does not
@@ -117,8 +119,8 @@ def _load_company(path: str, mtime_ns: int, size: int) -> tuple[JakartaLibrary, 
             continue
         data = {**raw, "source": "company"}
         if data.get("version") is not None and not data.get("jakarta_since"):
-            # 승인용 항목은 jakarta_since 를 생략할 수 있다(version 이 곧 jakarta 릴리스). YAML 의 `version:
-            # 2.6` 은 float 이라 문자열로 바꾼다.
+            # 승인용 항목은 jakarta_since를 생략할 수 있다.
+            # YAML의 `version: 2.6`은 float이므로 문자열로 바꾼다
             data["jakarta_since"] = data["version"]            # an approval entry may omit it: `version` is jakarta
         for k in ("version", "jakarta_since"):
             if data.get(k) is not None and not isinstance(data[k], str):
@@ -143,7 +145,7 @@ def _load_company(path: str, mtime_ns: int, size: int) -> tuple[JakartaLibrary, 
 
 
 def _company_entries(company_path: Optional[str | Path]) -> tuple[JakartaLibrary, ...]:
-    """회사 표 경로가 있고 파일이면 그 항목들(캐시 키로 mtime·크기를 넘긴다)."""
+    """회사 표 파일이 있으면 그 항목 목록을 반환한다. 파일 수정 시각과 크기를 캐시 키로 넘긴다."""
     if not company_path:
         return ()
     p = Path(company_path)
@@ -158,8 +160,8 @@ def _company_entries(company_path: Optional[str | Path]) -> tuple[JakartaLibrary
 
 def merge_tables(shipped: tuple[JakartaLibrary, ...] | list[JakartaLibrary],
                  company: tuple[JakartaLibrary, ...] | list[JakartaLibrary]) -> tuple[JakartaLibrary, ...]:
-    """배포 표 순서를 지키며, 회사 항목은 자신이 가리키는 배포 항목 자리에 들어간다(key 또는 old_keys 가
-    겹치면). 가리키는 것이 없는 회사 항목은 뒤에 붙는다.
+    """배포 표와 회사 표를 하나로 합친다. 배포 표 순서를 유지하고, 회사 항목은 key나 old_keys가 겹치는 배포
+    항목 자리에 넣으며 겹치는 것이 없으면 뒤에 붙인다.
 
     Shipped entries in their order, a company entry in the place of the shipped one it names (its key or one of
     its old_keys among the shipped entry's all_keys); company entries naming nothing shipped are appended."""
@@ -178,7 +180,7 @@ def merge_tables(shipped: tuple[JakartaLibrary, ...] | list[JakartaLibrary],
 
 def jakarta_libraries(path: Optional[str | Path] = None,
                       company_path: Optional[str | Path] = None) -> tuple[JakartaLibrary, ...]:
-    """배포 표(기본 knowledge/libraries/jakarta_libraries.yml)에 회사 표(있으면)를 합친 결과.
+    """배포 표에 회사 표(있으면)를 합친 라이브러리 목록을 반환한다.
 
     The shipped table (`path`, default knowledge/libraries/jakarta_libraries.yml) merged with the people's table
     `company_path` when it is given and exists (see `merge_tables`)."""
@@ -189,7 +191,7 @@ def jakarta_libraries(path: Optional[str | Path] = None,
 
 def jakarta_library_for(key: Optional[str], path: Optional[str | Path] = None,
                         company_path: Optional[str | Path] = None) -> Optional[JakartaLibrary]:
-    """현재 또는 옛 좌표가 key 인 표 항목(모르는 라이브러리면 None).
+    """현재 좌표나 이전 좌표가 key인 표 항목을 찾는다. 표에 없는 라이브러리면 None을 반환한다.
 
     The table entry whose current or earlier coordinates equal `key` (None when the library is unknown)."""
     if not key:
@@ -198,7 +200,8 @@ def jakarta_library_for(key: Optional[str], path: Optional[str | Path] = None,
 
 
 def company_libraries_file(cfg: Any) -> Path:
-    """회사 표 경로: `<kb dir>/<libraries.company_file>`(기본 kb-v2/libraries.yml), 절대 경로를 주면 그것.
+    """회사 표 파일의 경로를 반환한다.
+    기본은 `<kb dir>/<libraries.company_file>`이고 절대 경로를 설정하면 그 경로를 쓴다.
 
     `<kb dir>/<libraries.company_file>` (default `kb-v2/libraries.yml`); an absolute `company_file` wins."""
     libs = getattr(cfg, "libraries", None)
@@ -215,7 +218,8 @@ _SENTENCE_RE = re.compile(r"^(.+?[.!?])(?=\s|$)", re.DOTALL)
 
 
 def first_sentence(text: str, limit: int = 300) -> str:
-    """메모의 첫 문장을 한 줄로(`2.6.0` 같은 버전의 점에서는 끊지 않음), limit 자에서 자른다.
+    """메모의 첫 문장을 한 줄로 반환한다.
+    `2.6.0` 같은 버전 번호의 점에서는 끊지 않고, limit자를 넘으면 자른다.
 
     The note's first sentence on one line (version dots like `2.6.0` never end it), capped at `limit` chars."""
     t = " ".join((text or "").split())
@@ -227,9 +231,8 @@ def first_sentence(text: str, limit: int = 300) -> str:
 
 
 def library_hint_line(entry: JakartaLibrary, current: Optional[str] = None) -> str:
-    """수정 프롬프트 "Dependency versions" 섹션의 영어 한 줄 — 표가 그 라이브러리에 대해 말하는 것
-    (이미 충분함, 사람이 승인, 메이저를 넘는 사실 정보, 같은 메이저로 올림). 프롬프트 한 줄이 수정을 깨면 안
-    되므로 예외를 내지 않는다.
+    """수정 프롬프트의 "Dependency versions" 섹션에 넣을, 표가 그 라이브러리에 대해 아는 내용을 영어 한 줄로 만든다.
+    프롬프트 한 줄 때문에 수정이 실패하면 안 되므로 예외를 던지지 않는다.
 
     ONE English line for the prompt section "Dependency versions" — what the table says about the library, e.g.
     `opensymphony:sitemesh: approved — raise to 2.6.0 (jakarta since 2.6.0, requires Java 17; SiteMesh 2 got …;
@@ -247,9 +250,8 @@ def library_hint_line(entry: JakartaLibrary, current: Optional[str] = None) -> s
         elif entry.allow_major:
             head = f"{entry.key}: approved — a person allowed the major upgrade to {entry.version}"
         elif crosses:
-            # "approved" 는 사람의 allow_major 나 같은 메이저 고정에만 쓴다. 메이저를 넘는 표 버전은 승인이
-            # 아니라 사실(알려진 jakarta 릴리스)로만 알려 주고, 옮길지는
-            # 프롬프트 규칙 14 가 정한다(v2.1d: 메이저는 올리지 않는다).
+            # "approved"는 사람이 허용한 allow_major나 같은 메이저 안의 버전에만 쓴다.
+            # 메이저를 넘는 버전은 정보로만 알리고, 바꿀지는 프롬프트 규칙 14가 정한다
             # "approved" is reserved for a person's allow_major or a same-major pin: a cross-major table version is a
             # fact (the known jakarta release), not an approval — rule 14 decides whether the move is allowed
             head = (f"{entry.key}: the table knows the jakarta release {entry.version} (crosses {cm}.x → {vm}.x — "

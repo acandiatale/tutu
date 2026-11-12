@@ -1,63 +1,154 @@
-# 한국어 주석 규약 — `sbmig/` 코드 (인수인계용)
+# 한국어 주석 규약 (`sbmig/` 코드)
 
-**목적.** 현업 요청(2026-10-28): 다음 담당자가 영어 docstring 을 읽지 않고도 파일을 열어
-"이 모듈이 흐름 어디에 있고, 무엇을 하고, 왜 이렇게 하는지" 를 알 수 있어야 한다.
-`tests/docs/test_korean_comments.py` 가 이 규약을 지킨다(모듈 docstring 과 공개 클래스·함수 docstring 에 한글이 있어야 함).
+`sbmig/` 코드의 docstring과 주석은 한국어와 영어를 함께 둔다.
 
-## 규칙
+- 한국어: 다음 담당자가 읽는 주석이다. 개발자가 코드에 직접 남기는 주석처럼 짧게 쓴다.
+- 영어: 기능을 추가하거나 고칠 때 참고하는 상세 기록이다. 변경 경위와 세부 규칙은 여기에 있다.
 
-1. **영어 원문은 지우지 않는다. 한국어는 더하기만 한다.** 코드(로직·이름·순서·문자열·로그 줄·프롬프트 `.md`)는 손대지 않는다.
-2. **모듈 docstring**: 한국어 블록이 **먼저**, 빈 줄, 그 다음 영어 원문. 한국어 블록(3~8줄)에 넣을 것:
-   한 줄 요약 → 흐름상 위치(어느 단계에서 누가 부르는지) → 핵심 진입점(클래스·함수 이름) → 지켜야 할 결정·불변조건.
-3. **공개 클래스·함수 docstring**(이름이 `_` 로 시작하지 않는 최상위 정의 전부, 그리고 길거나 까다로운 비공개 함수·메서드):
-   한국어 1~3줄이 먼저, 빈 줄, 영어 원문. docstring 이 없던 정의에는 한국어 한 줄 docstring 을 새로 단다.
-   자명한 한 줄짜리 비공개 헬퍼는 생략해도 된다.
-4. **인라인 주석**은 "무엇" 이 아니라 **"왜"**: 회사 규칙, 불변조건, 실패했던 사례, 순서가 중요한 이유, 함정.
-   기존 영어 인라인 주석은 그대로 두고, 중요한 것이면 그 위 줄에 한국어를 더한다.
-5. **용어**는 아래 표를 따른다. 영어 식별자(함수·설정 키·단계 이름)는 그대로 쓰고 한국어로 풀이한다.
-6. **줄 길이**: 코드와 같은 110칸 안에서 줄바꿈(한글은 2칸으로 센다 → 한글만 있는 줄은 50자 안팎).
-7. **금지**: 코드 변경, 영어 삭제·재작성, 자동 포매팅(`ruff --fix`, black), 로그·f-string 번역, 프롬프트 `.md` 번역,
-   기존 테스트 수정.
-8. **검증**: 손댄 파일마다 `python -m py_compile`, 그 디렉토리의 테스트, `ruff check <파일>` (새 F·E 오류 없음),
-   `python -m pytest tests/docs/test_korean_comments.py`.
+`tests/docs/test_korean_comments.py`가 이 규약을 검사한다.
 
-## 용어표
+## 1. 형식
 
-| 식별자 / 영어 | 한국어 | 뜻 |
+1. 모듈 docstring은 한국어 블록, 빈 줄, 영어 원문 순서로 쓴다.
+2. 공개 클래스와 함수(이름이 `_`로 시작하지 않는 최상위 정의)의 docstring에는 한국어가 있어야 한다. 순서는 모듈과 같다.
+3. 인라인 주석은 한국어로 쓴다. 영어 주석이 이미 있으면 그대로 두고 필요한 곳에만 한국어를 더한다.
+4. 영어 원문, 코드, 로그 문구, 프롬프트 `.md`는 한국어 주석을 고칠 때 건드리지 않는다.
+
+## 2. 분량
+
+| 대상 | 분량 | 쓰는 내용 |
 |---|---|---|
-| intake | 접수 | 입력 프로젝트 검사(Maven 만, pom 없는 트리 거부) |
-| analyze / profile | 분석 / 프로필 | 프로젝트 종류·Java 버전·Spring 세대·라이브러리 파악 |
-| plan | 계획 | 실행할 단계(`transform.*`, `restructure.*`, `verify.build`) 목록 |
-| transform.rewrite | 변환(OpenRewrite 1회) | Java 21 / jakarta / Boot 4 레시피만 |
-| transform.compile | 변환 후 컴파일 | 그 시점에 보이는 오류 수집(빌드 게이트 아님) |
-| restructure | 재구성 | 회사 레이아웃(`{name}-boot` / `-back` / `-front`, `base-parent` 등) |
-| structure review | 구조 검토 | LLM 이 pom·모듈·인코딩·리소스를 회사 규칙에 비추어 검토 |
-| verify.build | 검증 빌드 | `mvn clean package -Dmaven.test.skip=true`, 성공해야 끝 |
-| fix loop / round | 수정 루프 / 라운드 | 빌드 실패 → 케이스별 스크립트 시도 → 재빌드 반복 |
-| case / case_id | 케이스 / 케이스 ID | 오류 사례. L2 서명의 sha1 앞 10자리 |
-| L1 / L2 signature | L1 / L2 서명 | 오류 줄에서 경로·숫자·이름을 지운 정규화 키(L2 가 더 거친 것) |
-| cluster | 클러스터 | 같은 라운드에 같은 케이스로 묶인 오류 묶음 |
-| try / attempt | 시도 | 스크립트 한 번 실행 + 재빌드 + 점수 |
-| stored script / `fix_v<N>.py` | 저장된 스크립트 | 케이스 폴더에 버전별로 쌓이는 수정 스크립트 |
-| reuse / augment / new | 재사용 / 보강 / 신규 | 사다리: 저장본 그대로 → LLM 이 고쳐서 → LLM 이 새로 |
-| `no_script` + edits | 스크립트 없는 직접 수정 | LLM 이 스크립트 대신 편집 목록을 돌려주는 경우 |
-| improved / partial / no_change / regressed / inconclusive | 개선 / 부분 / 변화 없음 / 악화 / 판정 불가 | 재빌드 점수 |
-| rollback / revert | 되돌리기 | 도움이 안 된 시도의 커밋을 되돌림 |
-| resolved / resolved_by | 해결 / 해결한 시도 | 빌드에서 사라진 오류와 그 원인 시도(v2.1f) |
-| BLOCKED / blocked_policy | 차단 / 차단 정책 | 더 시도하지 않는 케이스와 그 기준 |
-| KB (knowledge base) | 지식베이스(파일) | `kb-v2/` 아래 `errors.jsonl`, `cases.md`, `cases/<id>/` — DB 금지 |
-| reindex / recount | 재색인 | `errors.jsonl` 로부터 케이스·실행 기록을 다시 셈 |
-| hunk (as-is / to-be) | 변경 조각(수정 전 / 수정 후) | v2.1e 학습 기록 |
-| Handover | 인수인계 섹션 | 보고서 맨 앞, 사람이 이어서 해야 할 일 |
-| operator check | 운영자 확인 필요 | 메이저 업그레이드 등 사람이 봐야 하는 항목(v2.1d) |
-| advisory | 권고 | EOL 라이브러리 안내(차단 없음, 안내만) |
-| mandatory / optional artifacts | 필수 / 선택 사내 아티팩트 | 루트 pom 의 2개 필수, 쓰던 것만 올리는 8개 선택 |
-| base-parent / boot-jar / comp-jar | 사내 부모 pom | 루트 / boot 모듈 / 그 외 모듈 |
-| replay / fake provider | 재생 / 가짜 LLM | 오프라인 테스트용 LLM 응답 재생 |
-| company gateway | 회사 LLM 게이트웨이 | `LLM_BASE_URL` + `LLM_API_KEY`, messages 만 |
-| fleet | 일괄 실행 | 여러 프로젝트를 순차로 돌리는 명령 |
-| business team / operator | 현업 / 운영자 | 요청한 팀 / 도구를 돌리는 사람 |
+| 모듈 docstring | 2~6줄, 큰 모듈은 12줄까지 | 첫 줄에 이 모듈이 하는 일. 그다음 어디서 호출하는지, 꼭 지켜야 하는 규칙 |
+| 클래스 docstring | 1~3줄 | 이 클래스가 하는 일 |
+| 함수 docstring | 1줄, 주의할 점이 있으면 2~3줄 | 이 함수가 하는 일. 호출하는 쪽이 알아야 하는 점이 있을 때만 덧붙인다 |
+| 인라인 주석 | 1줄, 길어도 2줄 | 코드만 봐서는 알 수 없는 이유 |
 
-## 예시
+규칙이나 단계가 여러 개면 `- ` 목록이나 번호 목록으로 나눈다. 한 문단에 이어 쓰지 않는다.
 
-`sbmig/kb/store.py` 가 규약대로 단 첫 파일이다. 모듈 docstring, 클래스·메서드 docstring, 인라인 "왜" 주석의 형태를 거기서 본다.
+## 3. 쓰는 법
+
+읽는 사람은 이 프로젝트를 처음 보는 개발자다. 주석만 읽고 이 코드가 무엇을 하는지 알 수 있어야 한다.
+
+- 첫 문장에 하는 일을 쓴다. 함수는 "~한다.", 클래스는 "~하는 클래스.", 모듈은 "~하는 모듈."로 끝낸다.
+- 주어와 목적어가 있는 온전한 문장으로 쓴다. "없으면 ''."처럼 끊어 쓰지 않고 "값이 없으면 빈 문자열을 반환한다."로 쓴다.
+- 간단한 함수는 한 문장으로 끝낸다.
+- 프로젝트 안에서만 통하는 말은 풀어 쓴다(4절). 약어는 "오류 서명(L2)"처럼 뜻을 함께 쓴다.
+- 지금 코드와 상관없는 설명은 쓰지 않는다. "~로는 쓰지 않는다", "예전에는 ~였다" 같은 문장이다.
+- 인라인 주석은 "~하므로 ~한다", "~하기 위해 ~한다"처럼 이유를 쓴다. 한 줄이면 마침표를 생략한다.
+- 조사는 앞말에 붙인다. `KB에`, `pom을`, `` `match`를 ``.
+- 식별자, 설정 키, 파일명, 로그 문구는 원문 그대로 쓴다.
+- 쓰지 않는 표기: 줄표(`—`), 화살표(`→`), 굵게(`**`), 세미콜론으로 문장 잇기, 괄호 안 괄호. 단계를 나열할 때만 `->`를 쓴다.
+- 쓰지 않는 내용: 버전 태그(`v2.1…`), 날짜, 리뷰나 라운드 번호, 항목 번호, 어느 실행에서 발견했는지 같은 경위.
+  이유가 필요하면 현재 사실로 쓴다. 예: "Windows는 읽기 전용 fd의 fsync를 거부한다"
+
+## 4. 용어
+
+단계 이름과 식별자는 영어 그대로 쓴다(`intake`, `analyze`, `plan`, `transform`, `restructure`, `verify`).
+아래는 문장에서 쓰는 우리말이다. 문서(`agent-doc/`)와 화면에서 쓰는 말과 같다.
+
+| 영어 | 주석에서 쓰는 말 |
+|---|---|
+| migration / remediation | 이관 / 취약점 조치 |
+| intake / restructure / structure review / verify build | 접수 / 재구성 / 구조 검토 / 검증 빌드 |
+| fix loop / round / attempt / pre-try | 수정 루프 / 라운드 / 시도 / 사전 시도 |
+| case / L1·L2 signature / re-sign | 케이스 / L1·L2 서명 / 재서명 |
+| reuse / augment / new | 재사용 / 보강 / 신규 |
+| rollback, revert | 되돌린다 |
+| blocked / handover / advisory | 차단 / 인수인계 / 권고 |
+| lock / slot / queue | 잠금 / 슬롯 / 대기열 |
+| template / placeholder / override | 템플릿 / 플레이스홀더 / 덮어쓴다 |
+| hash, fingerprint / pin | 해시 / 고정한다 |
+| secret / redact | 비밀 값 / 마스킹 |
+| facade / wrapper / entry point / fallback | 파사드 / 래퍼 / 진입점 / 대체 경로 |
+| call / run / write, record / raise / look up | 호출한다 / 실행한다 / 기록한다 / 예외를 던진다 / 조회한다 |
+| test / fake | 테스트 / 가짜 구현 |
+| operator / business team | 운영자 / 현업 |
+| in-house artifact / parent pom | 사내 아티팩트 / 부모 pom |
+| baseline build / candidate / delivery ZIP / rescan | 조치 전 빌드 / 수정본 / 결과 ZIP / 재검사 |
+| residual / manual review / pending approval | 조치하지 못한 항목 / 직접 확인 / 승인 대기 |
+
+Maven과 쿠버네티스 용어는 영어 그대로 쓴다(pom, BOM, scope, classifier, dependencyManagement, Job, ConfigMap, Secret, PVC).
+파드, 워커, 저널, 플래그, 캐시, 토큰, 세션, 타임아웃처럼 굳어진 외래어는 한글로 쓴다.
+
+프로젝트 안에서만 통해서 풀어 쓰는 말:
+
+| 쓰지 않는 말 | 대신 쓰는 말 |
+|---|---|
+| 등록부 | 차단 목록 |
+| 사본 | 복사본 |
+| 꼬리 | 뒷부분 |
+| 사다리 | 시도 순서(재사용 -> 보강 -> 신규) |
+| 채점 | 시도 결과 평가 |
+| 판정 | 결과, 판단 |
+| 사실(facts) | 정보 |
+| 고정 문구, 계약 문구 | 정해진 문구 |
+
+번역투라서 쓰지 않는 말:
+
+| 쓰지 않는 말 | 대신 쓰는 말 |
+|---|---|
+| 부른다, 불린다 | 호출한다, 호출된다 |
+| 돈다, 돌린다 | 실행된다, 실행한다 |
+| 적는다, 적힌 | 기록한다, 기록된 |
+| 예외를 올린다 | 예외를 던진다 |
+| 묻는다 | 조회한다, 확인한다 |
+| 닿는다 | 적용된다, 전달된다 |
+| 훑는다 | 검사한다, 순회한다 |
+| 창구, 틀, 자리, 지문, 낱말, 글자 | 파사드, 템플릿, 슬롯, 해시, 단어, 문자 |
+| 시험 | 테스트 |
+| 옛 규칙, 옛 이미지 | 이전 규칙, 이전 이미지 |
+| 이미지에 굽는다 | 이미지에 포함한다 |
+| 영수증 | 접수 정보 |
+| 최선 노력 | 실패해도 계속 진행한다 |
+
+## 5. 예시
+
+함수 docstring:
+
+```python
+def _src_tail(path: str) -> str:
+    """파일 경로에서 ``src/`` 이후 부분만 잘라서 반환한다."""
+
+def _posix(path: str) -> str:
+    """경로 구분자를 '/'로 통일하고 앞의 './'를 제거한다. 값이 없으면 빈 문자열을 반환한다."""
+
+def lock(self):
+    """프로세스 간에 KB를 동시에 수정하지 않도록 잠금을 건다.
+
+    The cross-process KB lock (``<kb>/.lock``, re-entrant)."""
+```
+
+클래스 docstring:
+
+```python
+class BlockedRegistry:
+    """실행 한 번 동안 차단된 오류를 모아 두는 클래스.
+    같은 사유로 차단된 같은 오류는 한 항목으로 합친다.
+    """
+```
+
+모듈 docstring (`sbmig/kb/store.py`):
+
+```python
+"""파일 기반 KB를 다루는 모듈. 오케스트레이터, 플릿, 웹 서버가 이 모듈로 KB를 읽고 쓴다.
+데이터는 :class:`sbmig.errors.cases.CaseStore`가 관리하고, 여기서는 아래 기능을 제공한다.
+- ``match``: 빌드 오류에 맞는 저장된 수정 스크립트를 찾는다
+- ``record_run``: 실행이 끝난 뒤 오류 목록을 KB에 기록한다
+- ``reindex``: KB 통계를 다시 계산한다
+- ``export_zip`` / ``import_zip``: KB 전체를 내보내고 가져온다
+KB는 파일로만 관리한다(DB 사용 금지).
+
+The file KB facade ...
+"""
+```
+
+인라인 주석:
+
+```python
+# 같은 KB 디렉토리는 프로세스당 한 번만 확인하면 되므로 확인한 경로를 기억해 둔다
+_FIRST_MATCH_CHECKED: set[str] = set()
+
+# 케이스 ID가 같아도 오류 서명(L2)이 다르면 다른 케이스이므로 건너뛴다
+if asked and not self.cases.same_case(cid, asked, case):
+    continue
+```

@@ -1,10 +1,10 @@
-"""구조 검토 LLM 답변 읽기(v2.1): `<review>{json}</review>` 의 판정(verdict)·이슈 목록, 그리고 수정 답변 —
-`<analysis>` 원인, `<solution>` 해결 방법, `<edits>` 편집 목록(각 `desc` 포함), `<changes>` 변경 설명, 선택
-`<script>` / `<no_script>`, v2.1d `<verify>` 운영자 확인 사항. 흐름상 위치: StructureReviewer 가 LLM 답을 받을
-때마다(`_ask`, `_apply_retry`) 부른다. 핵심: parse_review_answer → ParsedReview, to_issue, extract_script,
-changes_note. 지킬 것: 일부러 관대하게 읽는다(코드 펜스, 뒤따르는 설명, 끝 쉼표, 태그 없는 JSON, 객체 하나뿐인
-issues, 모르는 severity → warning). 수정 블록은 `sbmig.fix.script_protocol` 이 수정 루프와 같은 규칙으로
-읽는다. 읽을 리뷰 JSON 이 없으면 `ok=False` → 검토기가 한 번 더 묻는다.
+"""구조 검토에서 LLM 답변을 읽는 모듈.
+`<review>{json}</review>`의 결과와 이슈 목록, 그리고 수정 블록을 읽는다.
+StructureReviewer가 LLM 답변을 받을 때마다(`_ask`, `_apply_retry`) 호출하며, 진입점은 `parse_review_answer`다.
+- 형식이 조금 틀려도 읽는다.
+  코드 펜스, 뒤에 붙은 설명, 끝 쉼표, 태그 없는 JSON을 받아 주고, 모르는 severity는 warning으로 본다
+- 수정 블록은 `sbmig.fix.script_protocol`이 수정 루프와 같은 규칙으로 읽는다
+- 리뷰 JSON이 없으면 `ok=False`가 되고 검토기가 한 번 더 요청한다
 
 Reading the structure-review answer (v2.1): `<review>{json}</review>` with the verdict and the issues, plus the
 fix answer of docs/v2/PLAN-v2.1.md §3.6 — `<analysis>` 원인, `<solution>` 해결 방법, `<edits>` (JSON list of `Edit`, the
@@ -51,15 +51,16 @@ _HINT_KEYS = ("fix_hint", "fix", "hint", "suggestion", "recommendation")
 
 @dataclass
 class ParsedReview:
-    """구조 검토 답변 하나를 읽은 결과: 판정·이슈·요약 + 수정 답변(원인·해결·편집·변경 설명·스크립트·운영자
-    확인)과 읽다가 생긴 문제(`edits_problem` 등). `ok` 가 False 면 읽을 수 있는 리뷰 JSON 이 없었다."""
+    """구조 검토 답변 하나를 읽은 결과를 담는 데이터 클래스.
+    결과, 이슈, 요약, 수정 블록과 읽는 중에 생긴 문제를 담는다.
+    `ok`가 False이면 읽을 수 있는 리뷰 JSON이 없었다는 뜻이다."""
     ok: bool = False
     verdict: str = "ok"                         # ok | issues (only meaningful when ok)
     issues: list[ReviewIssue] = field(default_factory=list)
     analysis: str = ""                          # the review's summary (JSON "analysis", else the <analysis> block)
     script: str = ""
     fix_analysis: str = ""                      # <analysis> 원인 (the JSON analysis when the block is missing)
-    solution: str = ""                          # <solution> 해결 방법
+    solution: str = ""                          # 해결 방법
     verify: str = ""                            # v2.1d <verify> 운영자 확인 사항 (only after a major upgrade)
     edits: list[Edit] = field(default_factory=list)
     edits_problem: str = ""                     # "edits JSON unreadable: …" / "edits invalid: …"
@@ -73,7 +74,7 @@ class ParsedReview:
 
     @property
     def critical(self) -> list[ReviewIssue]:
-        """severity 가 critical 인 이슈만(검토는 이것만 고친다)."""
+        """severity가 critical인 이슈 목록을 반환한다. 검토는 이 이슈만 고친다."""
         return [i for i in self.issues if i.severity == "critical"]
 
 
@@ -83,7 +84,7 @@ def _cap(text: Any, limit: int) -> str:
 
 
 def strip_fences(code: str) -> str:
-    """```python … ``` 펜스 안의 본문(펜스가 없으면 텍스트 그대로).
+    """```python … ``` 펜스 안의 본문을 꺼낸다. 펜스가 없으면 텍스트를 그대로 반환한다.
 
     The body of a ```python … ``` fence (or the text as it is)."""
     s = code.strip("\n")
@@ -94,7 +95,8 @@ def strip_fences(code: str) -> str:
 
 
 def extract_script(text: str) -> tuple[str, str]:
-    """(스크립트, 스크립트 블록을 뺀 나머지 텍스트). `def fix` 가 정의된 스크립트만 남긴다.
+    """텍스트에서 스크립트를 꺼내 (스크립트, 스크립트 블록을 뺀 텍스트)를 반환한다.
+    `def fix`가 있는 스크립트만 남긴다.
 
     (script, text without the script block). A script is kept only when it defines `fix`."""
     m = _SCRIPT_RE.search(text or "")
@@ -112,8 +114,8 @@ def _json_candidates(text: str) -> list[str]:
 
 
 def _decode(s: str) -> Optional[Any]:
-    """리뷰처럼 보이는 첫 JSON: 통째로 → 끝 쉼표 제거 → 글자 위치마다 raw_decode 해서 verdict / issues 키가
-    있는 객체를 먼저, 없으면 이슈처럼 생긴 첫 객체나 객체 배열.
+    """텍스트에서 리뷰로 보이는 첫 JSON을 찾는다.
+    verdict / issues 키가 있는 객체를 먼저 찾고, 없으면 이슈처럼 생긴 첫 객체나 배열을 고른다.
 
     The first JSON object (or array) in `s` that looks like a review; trailing text / commas tolerated."""
     s = s.strip()
@@ -154,8 +156,8 @@ def _pick(d: dict, keys: tuple[str, ...]) -> str:
 
 
 def to_issue(item: Any, warnings: list[str]) -> Optional[ReviewIssue]:
-    """이슈 한 항목(dict 또는 문자열)을 ReviewIssue 로. severity 는 critical 이 아니면 모두 warning(모르는
-    값은 `warnings` 에 기록), 문제 문장이 없으면 버린다(None). 파일 경로의 역슬래시는 `/` 로."""
+    """이슈 항목 하나를 ReviewIssue로 바꾼다.
+    critical이 아닌 severity는 모두 warning으로 보고, 문제 설명이 없으면 None을 반환한다."""
     if isinstance(item, str):
         return ReviewIssue(severity="warning", problem=_cap(item, PROBLEM_CHARS)) if item.strip() else None
     if not isinstance(item, dict):
@@ -172,8 +174,8 @@ def to_issue(item: Any, warnings: list[str]) -> Optional[ReviewIssue]:
 
 
 def _fix_blocks(text: str, out: ParsedReview) -> None:
-    """`<review>` 밖의 수정 답변을 `sbmig.fix.script_protocol.parse_script_response` 로 읽어 `out` 에 옮긴다.
-    태그된 블록이 하나도 없으면 아무것도 가져오지 않는다(`<verify>` 만은 보관).
+    """`<review>` 밖의 수정 답변을 `parse_script_response`로 읽어 `out`에 옮긴다.
+    태그된 블록이 없으면 `<verify>`만 보관한다.
 
     The four-part fix answer outside the <review> block (sbmig.fix.script_protocol)."""
     from sbmig.fix.script_protocol import PROTOCOL_WARNING, parse_script_response
@@ -196,9 +198,8 @@ def _fix_blocks(text: str, out: ParsedReview) -> None:
 
 
 def parse_review_answer(text: str) -> ParsedReview:
-    """LLM 답변 하나 → ParsedReview. `<review>` 블록(없으면 수정 블록을 지운 나머지)에서 JSON 을 찾고, 수정
-    블록은 따로 읽는다. 이슈가 MAX_ISSUES 를 넘으면 critical 을
-    남기고 자른다. JSON 안에 든 script / edits / changes 도 받아 준다.
+    """LLM 답변 하나를 ParsedReview로 만든다. `<review>` 블록에서 JSON을 찾고, 수정 블록은 따로 읽는다.
+    이슈가 MAX_ISSUES개를 넘으면 critical 이슈를 남기고 나머지를 자른다.
 
     `ParsedReview` of one LLM answer (see the module docstring)."""
     text = text or ""
@@ -239,7 +240,7 @@ def parse_review_answer(text: str) -> ParsedReview:
     verdict = str(obj.get("verdict") or "").strip().lower()
     if verdict not in ("ok", "issues", ""):
         out.warnings.append(f"unknown verdict {verdict!r}")
-    # 판정은 이슈 목록이 정한다: LLM 이 ok 라고 해도 이슈가 하나라도 있으면 issues
+    # LLM이 ok라고 답해도 이슈가 있으면 결과를 issues로 정한다
     if verdict == "ok" and out.issues:
         out.warnings.append("verdict ok with issues listed → issues")
     out.verdict = "issues" if out.issues else "ok"
@@ -286,8 +287,8 @@ _BUILTIN_PREFIXES = ("project.", "java.", "env.", "settings.", "maven.", "os.", 
 
 
 def issue_tokens(issue: ReviewIssue) -> tuple[list[str], list[str]]:
-    """이슈 문장(problem + fix_hint)이 말하는 (버전 문자열, 속성 이름) — 버전은 아티팩트 / version 낱말에 붙은 것만, 속성은
-    `${…}` 와 `<이름>.version` (Maven 내장 `project.*` / `java.*` … 제외).
+    """이슈 문장에 나온 (버전 문자열, 속성 이름)을 뽑는다.
+    버전은 아티팩트 이름이나 version 단어 옆에 나온 것만 뽑고, 속성에서는 Maven 내장 속성을 뺀다.
 
     (version strings, property names) an issue's text names: versions attached to an artifact-like word or the word
     "version"; properties as `${…}` or `<name>.version` (Maven built-ins skipped)."""
@@ -312,8 +313,9 @@ def _property_in(name: str, material: str) -> bool:
 
 
 def unsupported_tokens(issue: ReviewIssue, material: str, state: Optional[str] = None) -> list[str]:
-    """이슈가 말하는데 재료 어디에도 없는 버전·속성. 버전은 프롬프트 전체(`material`), 속성은 지금 상태를 보여 주는 부분
-    (`state`, "What the restructure did" 를 뺀 것 — 재구성이 지운 속성이 '남아 있다' 는 말을 잡는다)에서 찾는다.
+    """이슈가 언급하지만 프롬프트 자료 어디에도 없는 버전과 속성을 찾는다.
+    속성은 "What the restructure did"를 뺀 `state`에서 찾으므로,
+    재구성이 지운 속성이 남아 있다는 잘못된 지적을 잡아낸다.
 
     The versions / properties an issue names that the material does not contain: versions are looked up in the whole
     prompt, property names in `state` (the prompt without "What the restructure did") — a property the restructure
@@ -325,8 +327,9 @@ def unsupported_tokens(issue: ReviewIssue, material: str, state: Optional[str] =
 
 def mark_unsupported(issues: list[ReviewIssue], material: str, state: Optional[str] = None
                      ) -> tuple[list[ReviewIssue], list[str]]:
-    """v2.1y (E-M5): 재료에 없는 버전·속성을 말한 이슈에 `unsupported=True` 와 문장 앞 표시 "(sbmig check) not in the
-    material: " 를 붙인다(심각도는 그대로 — 보고서에는 남고, 적용·인수인계에서는 빠진다). (표시한 목록, 없던 토큰들).
+    """프롬프트 자료에 없는 버전이나 속성을 언급한 이슈에 `unsupported=True`와 문장 앞 표시를 붙인다.
+    심각도는 바꾸지 않는다.
+    (이슈 목록, 자료에 없던 토큰 목록)을 반환한다.
 
     Mark the issues that name a version / property found nowhere in the material: `unsupported=True` and the problem
     prefixed with UNSUPPORTED_MARK (severity kept). Returns (issues, the missing tokens of all marked issues)."""
@@ -346,8 +349,8 @@ def mark_unsupported(issues: list[ReviewIssue], material: str, state: Optional[s
 
 
 def changes_note(parsed: ParsedReview) -> str:
-    """스크립트는 있는데 `<changes>` 목록이 없는 리뷰 답변에
-    붙일 `[sbmig]` 메모(설명이 있거나 스크립트가 없으면 "").
+    """스크립트는 있지만 `<changes>` 목록이 없는 리뷰 답변에 붙일 `[sbmig]` 메모를 반환한다.
+    그 밖의 경우에는 빈 문자열을 반환한다.
 
     The `[sbmig]` note for a review answer with a script but no `<changes>` list ("" = described / no script)."""
     from sbmig.fix.script_protocol import CHANGES_MISSING

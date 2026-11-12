@@ -1,9 +1,10 @@
-"""``sbmig recipes …`` 명령(list | show | check | sets) — 레시피
-카탈로그(knowledge/recipes/catalog.yml)를 보고 검사한다. 흐름상 위치: 실행과 무관한 운영 도구. ``check`` 는
-카탈로그 ↔ 설정 레시피 세트 ↔ 레시피 아티팩트의 어긋남을 잡고 (불변조건 5, 스냅숏 테스트와 같은 역할), ``check
---jars`` 는 Maven 으로 실제 레시피 jar 를 받아 id 를 확인한다. ``sets`` 는 케이스별로 계획기가 고를 변환
-레시피를 보여 준다. 주의: typer 는 명령 함수의 docstring 을 ``--help`` 화면으로 쓴다 — 한국어 첫 줄이 명령
-목록의 요약이 된다 (``sbmig --help``, ``sbmig kb --help`` 와 같은 방식).
+"""레시피 카탈로그(knowledge/recipes/catalog.yml)를 보여 주고 검사하는
+``sbmig recipes …`` 명령(list | show | check | sets) 모듈.
+이관 실행과 무관한 운영 도구다.
+- ``check``는 카탈로그, 설정 레시피 세트, 레시피 아티팩트가 서로 어긋나는지 찾고, ``check --jars``는
+  Maven으로 실제 레시피 jar를 받아 id를 확인한다
+- ``sets``는 케이스별로 계획기가 고를 변환 레시피를 보여 준다
+- typer는 명령 함수의 docstring을 ``--help`` 화면으로 쓰므로 한국어 첫 줄이 명령 목록의 요약이 된다
 
 `sbmig recipes …` — typer sub-app over the recipe catalog (knowledge/recipes/catalog.yml). See docs/RECIPES.md."""
 from __future__ import annotations
@@ -26,8 +27,8 @@ ArtifactOpt = typer.Option(None, "--artifact", help="with --jars: g:a to resolve
 
 
 def _load(configs: Optional[List[Path]], catalog: Optional[Path] = None):
-    """설정 읽기. 레시피 명령에는 사내 아티팩트(artifacts) 설정이 필요 없으므로, 어느 설정에도 없으면 자리표시
-    parent 로 채워 검증 오류를 피한다(회사 좌표를 지어내지 않는다).
+    """설정을 읽는다. 레시피 명령에는 사내 아티팩트 설정이 필요 없으므로, 어느 설정에도 없으면 검증 오류가
+    나지 않게 플레이스홀더 parent로 채운다.
 
     Recipe commands do not need the company artifacts section; use a placeholder when no config provides it."""
     from pydantic import ValidationError
@@ -45,7 +46,7 @@ def _load(configs: Optional[List[Path]], catalog: Optional[Path] = None):
 
 
 def _catalog(cfg):
-    """설정의 카탈로그 파일을 읽는다. 없으면 exit 2."""
+    """설정의 카탈로그 파일을 읽는다. 파일이 없으면 exit 2로 끝낸다."""
     from .catalog import RecipeCatalog
 
     path = cfg.recipe_catalog_file
@@ -56,12 +57,13 @@ def _catalog(cfg):
 
 
 def _where(row: dict) -> str:
-    """artifact 칸: jar 좌표, 없으면 ``(core)``(rewrite-maven-plugin 에 들어 있는 레시피)."""
+    """artifact 칸에 쓸 jar 좌표를 반환한다.
+    rewrite-maven-plugin에 들어 있는 레시피는 ``(core)``를 반환한다."""
     return row.get("artifact") or ("(core)" if row.get("origin") == "openrewrite" else "-")
 
 
 def _table(rows: list[dict], cols: list[tuple[str, Any]]) -> list[str]:
-    """고정폭 텍스트 표(머리, 구분선, 줄들)."""
+    """머리글, 구분선, 행으로 고정폭 텍스트 표를 만든다."""
     cells = [[str(fn(r)) for _, fn in cols] for r in rows]
     widths = [max([len(h)] + [len(c[i]) for c in cells]) for i, (h, _) in enumerate(cols)]
     fmt = "  ".join(f"{{:<{w}}}" for w in widths)
@@ -75,7 +77,7 @@ def list_cmd(
     catalog: Optional[Path] = CatalogOpt,
     as_json: bool = typer.Option(False, "--json", help="machine-readable output"),
 ) -> None:
-    """카탈로그의 모든 레시피를 표로(출처, 단계, jar, 게이트, 조언자 허용, 세트). --json 이면 JSON.
+    """카탈로그의 모든 레시피를 표로 보여 준다. --json이면 JSON으로 출력한다.
 
     Every catalog recipe (origin, phase, artifact, gate, advisor, sets)."""
     cfg = _load(config, catalog)
@@ -105,7 +107,8 @@ def show_cmd(
     catalog: Optional[Path] = CatalogOpt,
     as_json: bool = typer.Option(False, "--json", help="machine-readable output"),
 ) -> None:
-    """레시피 하나: 카탈로그 항목과, 그것을 참조하는 설정 세트 / 묶음 레시피. 모르는 id 면 exit 1.
+    """레시피 하나의 카탈로그 항목과 그것을 참조하는 설정 세트, 묶음 레시피를 보여 준다.
+    모르는 id면 exit 1로 끝낸다.
 
     One recipe: catalog entry and the config sets / composites that reference it."""
     from .catalog import config_recipe_sets
@@ -142,9 +145,8 @@ def check_cmd(
     as_json: bool = typer.Option(False, "--json", help="with --jars: print the jar check report as JSON"),
     artifact: list[str] | None = ArtifactOpt,
 ) -> None:
-    """카탈로그를 설정 레시피 세트·레시피 아티팩트와 대조한다(오프라인). --jars 면 Maven 으로 레시피 jar 를
-    받아 모든 openrewrite id 가 정말 그 jar 에 있는지도 본다(BOM openrewrite.recipe_bom_version, 네트워크
-    필요). 문제가 있으면 exit 1.
+    """카탈로그를 설정 레시피 세트, 레시피 아티팩트와 오프라인으로 대조한다. 문제가 있으면 exit 1로 끝낸다.
+    --jars면 Maven으로 레시피 jar를 받아 모든 openrewrite id가 실제로 jar에 있는지도 확인한다(네트워크 필요).
 
     Cross-check the catalog against the config recipe sets and the recipe artifacts.
 
@@ -169,7 +171,7 @@ def check_cmd(
 
 
 def _check_jars(cat, cfg, work_dir: Path | None, artifacts: list[str] | None, as_json: bool) -> None:
-    """``check --jars`` 의 본체: jarcheck 결과를 표(또는 JSON)로 찍고, 문제가 있으면 exit 1."""
+    """``check --jars``를 실행한다. jarcheck 결과를 표나 JSON으로 출력하고 문제가 있으면 exit 1로 끝낸다."""
     from .jarcheck import check_jars
 
     report = check_jars(cat, cfg, work_dir=work_dir, artifacts=artifacts)
@@ -211,9 +213,9 @@ def sets_cmd(
     config: Optional[List[Path]] = ConfigOpt,
     as_json: bool = typer.Option(False, "--json", help="machine-readable output"),
 ) -> None:
-    """설정 레시피 세트와, 케이스마다 v2 계획기가 고를 변환
-    1회의 레시피(조건부 레시피는 따로: EE javax import / javax.servlet / junit4 / spring-security / spring-batch /
-    hibernate 가 있을 때).
+    """설정 레시피 세트와 케이스마다 계획기가 한 번의 변환에서 고를 레시피를 보여 준다.
+    조건부 레시피(EE javax import, javax.servlet, junit4, spring-security,
+    spring-batch, hibernate가 있을 때)는 따로 보여 준다.
 
     The config recipe sets and, per case, the one transform run the v2 planner resolves from them."""
     from sbmig.core.models import CaseType

@@ -1,7 +1,7 @@
-"""``sbmig advisories …`` 명령(list | show | check) — 권고 파일을 보고 검사하는 typer 하위 앱.
-권고 파일은 knowledge/libraries/advisories.yml + ``advisories.extra_files``. 실행과 무관한 읽기 전용 도구다
-(state 는 guide 또는 off 뿐, block 은 없다). 주의: typer 는 명령 함수의 docstring 을 ``--help`` 화면으로 쓴다
-— 한국어 첫 줄이 명령 목록의 요약이 된다 (``sbmig --help``, ``sbmig kb --help`` 와 같은 방식).
+"""권고 파일(knowledge/libraries/advisories.yml과 ``advisories.extra_files``)을 보여 주고 검사하는
+``sbmig advisories …`` 명령(list | show | check) 모듈.
+이관 실행과 무관한 읽기 전용 도구이며 항목 상태는 guide 또는 off뿐이다.
+typer는 명령 함수의 docstring을 ``--help`` 화면으로 쓰므로 한국어 첫 줄이 명령 목록의 요약이 된다.
 
 `sbmig advisories …` — typer sub-app over knowledge/libraries/advisories.yml (+ advisories.extra_files).
 
@@ -21,14 +21,15 @@ ConfigOpt = typer.Option(None, "--config", "-c", help="extra config yml (repeata
 
 
 def _load(configs: Optional[List[Path]]):
-    """설정 읽기 — ``sbmig recipes`` 와 같은 규칙(사내 좌표 자리표시 허용)을 쓴다."""
+    """``sbmig recipes``와 같은 규칙으로 설정을 읽는다. 사내 좌표는 플레이스홀더를 허용한다."""
     from sbmig.plan.catalog_cli import _load as load_cfg     # same placeholder-artifacts convention
 
     return load_cfg(configs)
 
 
 def _state(entry: Any, cfg: Any) -> str:
-    """항목 상태: ``advisories.policy_overrides`` 로 꺼졌으면 "off", 아니면 "guide"(LLM 힌트 + 인수인계).
+    """항목 상태를 반환한다.
+    ``advisories.policy_overrides``로 꺼졌으면 "off", 아니면 "guide"(LLM 힌트와 인수인계)다.
 
     "off" when `advisories.policy_overrides` switches the entry off, else "guide" (LLM hints + Handover)."""
     from .evaluate import switched_off
@@ -40,13 +41,13 @@ _DROPPED_FIELDS = ("policy", "recipes")      # still on the core model; guide-on
 
 
 def _row(entry: Any, cfg: Any) -> dict[str, Any]:
-    """출력용 한 줄 dict(안내 전용 권고가 쓰지 않는 ``policy`` / ``recipes`` 는 뺀다) + state."""
+    """출력용 한 줄 dict를 만들고 상태를 붙인다. 쓰지 않는 ``policy`` / ``recipes``는 뺀다."""
     data = {k: v for k, v in entry.model_dump(mode="json").items() if k not in _DROPPED_FIELDS}
     return {**data, "state": _state(entry, cfg)}
 
 
 def _table(rows: list[list[str]], heads: list[str]) -> list[str]:
-    """고정폭 텍스트 표(머리, 구분선, 줄들)."""
+    """머리글, 구분선, 행으로 고정폭 텍스트 표를 만든다."""
     widths = [max([len(h)] + [len(r[i]) for r in rows]) for i, h in enumerate(heads)]
     fmt = "  ".join(f"{{:<{w}}}" for w in widths)
     return [fmt.format(*heads).rstrip(), fmt.format(*["-" * w for w in widths]).rstrip(),
@@ -58,7 +59,7 @@ def list_cmd(
     config: Optional[List[Path]] = ConfigOpt,
     as_json: bool = typer.Option(False, "--json", help="machine-readable output"),
 ) -> None:
-    """모든 권고를 표로(id, 라이브러리, 상태, guide | off, 대체품, 노트 파일). --json 이면 JSON.
+    """모든 권고를 표로 보여 준다. --json이면 JSON으로 출력한다.
 
     Every advisory: id, library, status, state (guide | off), replacement, notes file."""
     from .catalog import load_advisories
@@ -82,7 +83,7 @@ def show_cmd(
     config: Optional[List[Path]] = ConfigOpt,
     as_json: bool = typer.Option(False, "--json", help="machine-readable output"),
 ) -> None:
-    """권고 하나의 모든 필드(state guide | off). 모르는 id 면 exit 1.
+    """권고 하나의 모든 필드를 보여 준다. 모르는 id면 exit 1로 끝낸다.
 
     One advisory (state guide | off)."""
     from .catalog import load_advisories
@@ -104,8 +105,8 @@ def show_cmd(
 
 @advisories_cli.command("check")
 def check_cmd(config: Optional[List[Path]] = ConfigOpt) -> None:
-    """권고 파일 검사(AdvisoryCatalog.check): 분석기 라이브러리
-    이름, 아티팩트 패턴, 노트 파일. 문제가 있으면 exit 1.
+    """권고 파일의 분석기 라이브러리 이름, 아티팩트 패턴, 노트 파일을 검사한다.
+    문제가 있으면 exit 1로 끝낸다.
 
     Validate the advisory files: analyzer library names, artifact patterns, notes files (exit 1 on problems)."""
     from .catalog import load_advisories

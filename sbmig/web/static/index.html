@@ -6,8 +6,8 @@
 <title>panacea-remediating-oss</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%231F5BD8'/%3E%3Cpath d='M9 22V10l7 7 7-7v12' fill='none' stroke='%23fff' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
 <style>
-  /* 회사 메인 컬러가 파란색이라 파랑 하나만 뜻을 가진다: 지금 하는 일(현재 단계, 주 버튼, 올려놓을 자리).
-     나머지는 잉크색·회색. 그림자·그라데이션 없음, 선과 여백으로만 나눈다. 사내망(오프라인)이라 웹 폰트는 쓰지 않는다. */
+  /* 회사 메인 컬러인 파란색은 현재 진행 중인 것(현재 단계, 주 버튼, 업로드 영역)에만 쓴다.
+     나머지는 잉크색과 회색이다. 그림자와 그라데이션 없이 선과 여백으로만 구분한다. 사내망은 오프라인이라 웹 폰트를 쓰지 않는다. */
   :root {
     --blue: #1F5BD8; --blue-deep: #0E2E6E; --blue-mid: #3C73E3; --blue-tint: #E9F0FD; --blue-soft: #F3F7FE;
     --paper: #F4F7FC; --card: #FFFFFF; --line: #D5DEEE; --line-soft: #E6ECF6;
@@ -26,7 +26,7 @@
   :focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
   [hidden] { display: none !important; }
 
-  /* ---- 머리띠 */
+  /* ---- 헤더 */
   .top { background: var(--blue-deep); color: #fff; }
   .top .in { max-width: 960px; margin: 0 auto; padding: 14px 20px; display: flex; align-items: baseline; gap: 14px; }
   .top .name { font-weight: 700; font-size: 17px; letter-spacing: .01em; }
@@ -38,7 +38,7 @@
   .muted { color: var(--muted); } .small { font-size: 12.5px; }
   .mono { font-family: var(--mono); font-size: 12.5px; }
 
-  /* ---- 1. 올리는 자리(첫 화면의 주인공) */
+  /* ---- 1. 업로드 영역 */
   .intake { padding: 22px 22px 18px; }
   .drop { display: block; position: relative; border: 2px dashed var(--blue-mid); border-radius: var(--radius); background: var(--blue-soft);
           padding: 44px 24px 40px; text-align: center; transition: background .15s, border-color .15s; cursor: pointer; }
@@ -58,7 +58,7 @@
   .drop.has .meta { color: var(--muted); font-size: 12.5px; margin: 2px 0 0; }
   .drop.has .change { margin-left: auto; flex: none; color: var(--blue); font-weight: 600; font-size: 13px; position: relative; z-index: 1; }
   .drop.busy { pointer-events: none; opacity: .6; }
-  /* 진행 방식(v2.1z-aj): 라디오 두 칸. 고른 칸만 파랑 — 지금 할 일이 파랑이라는 이 화면의 규칙 그대로 */
+  /* 진행 방식 라디오 버튼 두 개. 선택한 항목만 파란색으로 표시한다 */
   .flowpick { border: 0; margin: 0 0 14px; padding: 0; min-width: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
   .flowpick legend { padding: 0; margin: 0 0 8px; font-size: 12.5px; font-weight: 600; color: var(--muted); }
   .flowopt { display: flex; gap: 10px; align-items: flex-start; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--radius-s);
@@ -70,13 +70,13 @@
   .flowopt.on { border-color: var(--blue); background: var(--blue-soft); box-shadow: inset 0 0 0 1px var(--blue); }
   .flowopt.on .nm { color: var(--blue-deep); }
   .flowopt:has(input:focus-visible) { outline: 2px solid var(--blue); outline-offset: 2px; }
-  .flowopt:has(input:focus-visible) input:focus-visible { outline: none; }   /* 칸 전체에 테두리가 있으니 동그라미에는 겹쳐 그리지 않는다 */
+  .flowopt:has(input:focus-visible) input:focus-visible { outline: none; }   /* 항목 전체에 포커스 테두리가 있으므로 라디오 버튼에는 따로 그리지 않는다 */
   .flowpick.locked .flowopt { cursor: default; opacity: .6; }
   .actions { display: flex; align-items: center; gap: 12px; margin-top: 16px; flex-wrap: wrap; }
   .actions .note { color: var(--muted); font-size: 12.5px; }
   .actions .spacer { flex: 1; }
-  /* 자리가 다 찼다는 안내(v2.1z-ae): 막는 것이 아니라 알리는 것이라 빨강이 아닌 파랑(정보). 비어 있으면 보이지 않는다 —
-     요소는 늘 그 자리에 두고 글만 바꾼다(role=status 가 바뀐 글을 화면 낭독기에 한 번 읽어 주게) */
+  /* 슬롯이 모두 사용 중일 때의 안내. 막지 않고 알리기만 하므로 빨간색 대신 파란색(정보)을 쓴다. 내용이 없으면 숨긴다.
+     요소는 그대로 두고 문구만 바꾼다(role=status가 바뀐 문구를 화면 낭독기에 한 번 읽어 주도록) */
   .busynote { display: flex; align-items: flex-start; gap: 10px; margin: 0 0 14px; padding: 10px 14px; border: 1px solid var(--line);
               border-left: 3px solid var(--blue); border-radius: var(--radius-s); background: var(--blue-soft); color: var(--blue-deep); font-size: 13px;
               word-break: keep-all; overflow-wrap: anywhere; }
@@ -119,7 +119,7 @@
            box-shadow: 0 0 0 0 rgba(31,91,216,.45); animation: pulse 1.6s ease-out infinite; }
   @keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(31,91,216,.45); } 100% { box-shadow: 0 0 0 9px rgba(31,91,216,0); } }
 
-  /* 단계 레일: 이 화면에서 유일하게 힘을 준 요소. 점 = 그래프 노드, 선 = 지난 길. */
+  /* 단계 레일: 이 화면에서 유일하게 강조하는 요소. 점은 그래프 노드, 선은 지나온 단계다 */
   .rail { margin: 22px 0 6px; display: flex; align-items: flex-start; overflow-x: auto; padding-bottom: 4px; }
   .rail .step { position: relative; flex: 1 1 0; min-width: 72px; text-align: center; }
   .rail .step::before { content: ""; position: absolute; top: 9px; left: 0; right: 0; height: 2px; background: var(--line); }
@@ -139,7 +139,7 @@
   .rail .step.current .label { color: var(--blue-deep); font-weight: 700; }
   .rail .step.done .label { color: var(--ink); }
   .rail .label .en { display: block; color: var(--faint); font-family: var(--mono); font-size: 11px; margin-top: 1px; }
-  .railnote { color: var(--muted); font-size: 12.5px; margin: 4px 0 0; min-height: 1.4em; word-break: keep-all; overflow-wrap: anywhere; }   /* 한글은 낱말 단위로 줄을 바꾼다 */
+  .railnote { color: var(--muted); font-size: 12.5px; margin: 4px 0 0; min-height: 1.4em; word-break: keep-all; overflow-wrap: anywhere; }   /* 한글은 단어 단위로 줄을 바꾼다 */
 
   /* 진행 기록 / 로그 탭 */
   .tabs { display: flex; align-items: center; gap: 4px; border-bottom: 1px solid var(--line-soft); margin-top: 18px; }
@@ -167,7 +167,7 @@
 
   /* ---- 3. 결과 카드 */
   .result { padding: 20px 22px; }
-  /* 진행하지 못한 까닭(접수 거절 등): 결과 카드 맨 위, 담당자가 바로 읽는 한 문장 */
+  /* 진행하지 못한 사유(접수 거절 등). 결과 카드 맨 위에 한 문장으로 표시한다 */
   .abort { margin: 0 0 16px; padding: 12px 16px; border: 1px solid var(--bad-tint); border-left: 3px solid var(--bad); border-radius: var(--radius-s);
            background: var(--bad-tint); color: var(--ink); }
   .abort .h { margin: 0 0 2px; font-weight: 700; color: var(--bad); font-size: 13px; }
@@ -187,9 +187,9 @@
   .report { margin-top: 10px; white-space: pre-wrap; font: 12.5px/1.5 var(--mono); max-height: 420px; overflow: auto;
             background: var(--paper); border: 1px solid var(--line-soft); border-radius: var(--radius-s); padding: 12px 14px; }
 
-  /* ---- 3b. 취약점 조치(빌드 파드가 이관 성공 뒤 이어 돌린 조치): 결과 카드 아래 한 칸 */
+  /* ---- 3b. 취약점 조치: 이관 성공 후 빌드 파드가 이어서 실행한 조치를 결과 카드 아래에 표시한다 */
   .remed { margin-top: 18px; border-top: 1px solid var(--line-soft); padding-top: 16px; }
-  .remed.solo { margin-top: 0; border-top: 0; padding-top: 0; }   /* 취약점 해결 실행: 이 칸이 결과 그 자체 */
+  .remed.solo { margin-top: 0; border-top: 0; padding-top: 0; }   /* 취약점 해결 실행에서는 이 영역이 곧 결과다 */
   .remed .msg { margin: 8px 0 0; color: var(--muted); font-size: 12.5px; word-break: keep-all; overflow-wrap: anywhere; }
   .remed .msg:empty { display: none; }
   .remed .reasons { margin-top: 8px; } .remed .reasons:empty { display: none; }
@@ -197,7 +197,7 @@
   .remed .downloads:empty { display: none; }
   .badge { display: inline-block; margin-left: 4px; padding: 1px 8px; border-radius: 999px; font-size: 11.5px; font-weight: 700; }
   .badge.bad { background: var(--bad); color: #fff; }
-  /* 상태마다 바뀌는 조치 칸(승인 목록·확인 칸·이어서 진행). 한 덩어리로 다시 그린다 */
+  /* 상태에 따라 바뀌는 조치 영역(승인 목록, 업로드 확인, 이어서 진행). 통째로 다시 그린다 */
   .remed .act { margin-top: 16px; }
   .remed .act:empty { display: none; }
   .remed .act .head { font-weight: 700; font-size: 13.5px; margin: 0 0 4px; }
@@ -253,7 +253,7 @@
   .runs li { display: grid; grid-template-columns: 1fr auto; gap: 8px 16px; padding: 10px 12px; border-radius: var(--radius-s); cursor: pointer; align-items: center; }
   .runs li:hover { background: var(--paper); } .runs li.active { background: var(--blue-tint); }
   .runs .id { font-family: var(--mono); font-size: 12px; color: var(--muted); } .runs .when { color: var(--faint); font-size: 12px; }
-  /* 올린 파일 이름이 줄의 주인공(누구의 어느 프로젝트인지). 길면 말줄임, 전체 이름은 title 에 */
+  /* 각 행은 업로드한 파일 이름을 앞세워 보여 준다. 길면 말줄임하고 전체 이름은 title에 넣는다 */
   .runs .who { min-width: 0; }
   .runs .fname, .runhead .fname { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .runs .fname { font-weight: 600; color: var(--ink); font-size: 13.5px; }
@@ -299,7 +299,7 @@
 </header>
 
 <main>
-  <!-- 1. 올리는 자리 -->
+  <!-- 1. 업로드 영역 -->
   <section class="card intake" aria-labelledby="intake-title">
     <h2 id="intake-title" class="muted small" style="font-weight:600; margin-bottom:12px;">새 작업</h2>
     <p class="busynote" id="busynote" role="status"></p>
@@ -364,7 +364,7 @@
     </details>
   </section>
 
-  <!-- 2. 실행 카드: 실행이 하나 붙으면 보인다 -->
+  <!-- 2. 실행 카드: 실행에 연결되면 표시한다 -->
   <section class="card run" id="runcard" hidden aria-live="polite">
     <div class="runhead">
       <div class="who">
@@ -396,9 +396,9 @@
     </div>
   </section>
 
-  <!-- 3. 결과 카드: 끝나면 보인다 -->
+  <!-- 3. 결과 카드: 실행이 끝나면 표시한다 -->
   <section class="card result" id="resultcard" hidden>
-    <!-- 진행하지 못한 실행(종료 코드 3): 까닭 한 문장. 접수 거절("Maven 변환 후 신청 부탁드립니다." 등)이 로그 탭에 묻히지 않게 -->
+    <!-- 진행하지 못한 실행(종료 코드 3)의 사유 한 문장. 접수 거절("Maven 변환 후 신청 부탁드립니다." 등)이 로그 탭에 묻히지 않도록 여기에 표시한다 -->
     <div class="abort" id="abortbox" role="alert" hidden>
       <p class="h">사유</p>
       <p class="why" id="aborttext"></p>
@@ -418,8 +418,8 @@
       </a>
     </div>
     <div class="otherfiles" id="otherfiles"></div>
-    <!-- 취약점 조치: 이 실행에 조치가 있을 때만(/api/remediations/<실행 id>, 404 면 숨김). 이관 뒤에 이어 돈 조치(전체 진행)이거나,
-         취약점 해결 실행이면 이 칸이 결과 그 자체다(.solo — 이관 결과 버튼은 숨긴다) -->
+    <!-- 취약점 조치: 이 실행에 조치가 있을 때만 표시한다(/api/remediations/<실행 id>가 404면 숨김). 전체 진행에서는 이관 뒤에 이어서 실행한 조치이고,
+         취약점 해결 실행에서는 이 영역이 곧 결과다(.solo, 이관 결과 버튼은 숨긴다) -->
     <div class="remed" id="remed" hidden>
       <div class="line">
         <h2>취약점 조치</h2>
@@ -429,7 +429,7 @@
       <p class="msg" id="remed-msg"></p>
       <div class="counts reasons" id="remed-reasons"></div>
       <div class="downloads" id="remed-dl"></div>
-      <!-- 상태마다 하는 일: 승인 대기 = 체크해서 한 번에 적용, 업로드 확인 대기 = 두 갈래, 멈춤 = 이어서 진행 -->
+      <!-- 상태별 동작: 승인 대기는 체크한 항목을 한 번에 적용, 업로드 확인 대기는 두 가지 중 선택, 중지는 이어서 진행 -->
       <div class="act" id="remed-act"></div>
     </div>
     <details class="preview" id="preview">
@@ -456,14 +456,14 @@
   const fmtWhen = (sec) => { try { return new Date(sec * 1000).toLocaleString('ko-KR', {hour12:false, month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit'}); } catch (e) { return ''; } };
   const fmtMB = (bytes) => bytes < 1048576 ? Math.max(1, Math.round(bytes / 1024)) + ' KB' : (bytes / 1048576).toFixed(bytes > 100 * 1048576 ? 0 : 1) + ' MB';
 
-  // 화면이 아는 서버 사실들 (/api/configs)
-  let maxUploadMb = 0;          // 0 = 한도 없음
-  let defaultConfigs = [];      // 서버가 정한 설정 파일들: 담당자는 고르지 않는다
+  // 서버에서 받아 오는 설정 정보(/api/configs)
+  let maxUploadMb = 0;          // 0이면 한도 없음
+  let defaultConfigs = [];      // 서버가 정한 설정 파일 목록. 사용자가 고르지 않는다
   let es = null, current = null, file = null;
-  let lastState = '';           // 지금 보이는 실행의 마지막 status.state: 끊겼을 때 다시 붙을지(끝난 실행이면 안 붙는다)를 가른다
-  // 진행 방식(v2.1z-aj): full = 이관 후 취약점 조치까지(전체 진행), remediation = 이관 없이 취약점 조치만(취약점 해결)
+  let lastState = '';           // 현재 실행의 마지막 status.state. 연결이 끊겼을 때 다시 연결할지 판단한다(끝난 실행이면 연결하지 않음)
+  // 진행 방식: full은 이관 후 취약점 조치까지(전체 진행), remediation은 이관 없이 취약점 조치만(취약점 해결)
   const FLOW_FULL = 'full', FLOW_REM = 'remediation';
-  let runFlow = FLOW_FULL;      // 지금 보이는 실행의 진행 방식(status.flow) — 결과 칸·제목이 따른다
+  let runFlow = FLOW_FULL;      // 현재 실행의 진행 방식(status.flow). 결과 영역과 제목이 이 값을 따른다
   let uploading = false;
 
   // ---------------------------------------------------------------- 알림
@@ -472,25 +472,25 @@
     const t = $('toast'); t.textContent = msg; t.className = 'toast show' + (bad ? ' bad' : '');
     clearTimeout(toastTimer); toastTimer = setTimeout(() => { t.className = 'toast'; }, ms || (bad ? 8000 : 4000));
   }
-  // 같은 값이면 다시 쓰지 않는다: status 가 한 흐름에 여러 번 와도(v2.1z-ae) 깜빡이거나 화면 낭독기가 같은 말을 되풀이하지 않게
+  // status가 여러 번 와도 깜빡이거나 화면 낭독기가 같은 말을 반복하지 않도록 같은 값이면 다시 쓰지 않는다
   function setText(id, s) { const el = $(id); if (el.textContent !== s) el.textContent = s; }
 
-  // ---------------------------------------------------------------- 동시에 도는 이관 (v2.1z-ae)
-  // 서버가 slots 건까지 동시에 옮기고 나머지는 올린 순서대로 기다리게 한다. 옛 서버는 parallel / queue 를 보내지 않는다 → null,
-  // 그때는 예전 문장 그대로
+  // ---------------------------------------------------------------- 동시 실행 중인 이관
+  // 서버는 slots 건까지 동시에 실행하고 나머지는 업로드 순서대로 대기시킨다. 이전 서버는 parallel / queue를 보내지 않으므로(null)
+  // 그때는 기존 문구를 그대로 쓴다
   function par(p) {                                  // parallel {slots, running, waiting}
     if (!p || typeof p !== 'object') return null;
     const slots = Number(p.slots), running = Number(p.running), waiting = Number(p.waiting);
     if (!Number.isInteger(slots) || slots < 1 || !Number.isFinite(running) || running < 0) return null;
     return { slots, running, waiting: Number.isFinite(waiting) && waiting > 0 ? waiting : 0 };
   }
-  function qpos(q) {                                 // queue {position, ahead}: position 1 = 다음 차례, ahead = 앞에서 기다리는 건수
+  function qpos(q) {                                 // queue {position, ahead}: position 1은 다음 차례, ahead는 앞에서 대기 중인 건수
     const position = q && typeof q === 'object' ? Number(q.position) : NaN;
     if (!Number.isInteger(position) || position < 1) return null;
     const ahead = Number(q.ahead);
     return { position, ahead: Number.isInteger(ahead) && ahead >= 0 ? ahead : position - 1 };
   }
-  // 올리는 자리 위의 안내: 자리가 다 찼으면 올리기 전에 미리 알린다(막지는 않는다). /api/runs(15초마다)·status 이벤트가 부른다
+  // 업로드 영역 위의 안내. 슬롯이 모두 사용 중이면 업로드 전에 미리 알린다(막지는 않음). /api/runs(15초마다)와 status 이벤트에서 호출한다
   function setParallel(p0) {
     const p = par(p0);
     let s = '';
@@ -504,19 +504,19 @@
     if (!st || st.state !== 'queued') return st && st.flow === FLOW_REM ? '올렸습니다. 취약점 조치를 시작합니다.' : '올렸습니다. 마이그레이션을 시작합니다.';
     const p = par(st.parallel), q = qpos(st.queue);
     if (!p || !q) return '올렸습니다. 앞의 실행이 끝나면 시작합니다.';
-    // 막 자리가 빈 순간(이관 중 0건)에는 '0건이 이관 중이라' 라고 하지 않는다
+    // 슬롯이 막 비어 이관 중인 건이 0건이면 '0건이 이관 중이라'라고 표시하지 않는다
     const busy = p.running > 0 ? `지금 ${p.running}건이 이관 중이라 기다립니다. ` : '';
     return '올렸습니다. ' + busy + (q.ahead > 0 ? `앞에 ${q.ahead}건이 있습니다. 차례가 오면 자동으로 시작합니다.`
                                                 : '다음 차례입니다. 자리가 나면 자동으로 시작합니다.');
   }
-  // 기다리는 실행의 레일 아래 안내. 이 창을 닫아도 차례는 남는다: 줄은 업로드를 받을 때 서버(start_file)에 서고, 화면 연결과 상관없다
+  // 대기 중인 실행의 레일 아래 안내. 대기열 순서는 업로드 시 서버(start_file)에서 정해지므로 창을 닫아도 유지된다
   function queueNote(st) {
     const p = par(st.parallel);
     if (p && p.slots > 1) return `동시에 ${p.slots}건까지 이관합니다. 지금 ${p.running}건이 진행 중이고, 자리가 나면 올린 순서대로 자동으로 시작합니다. 이 창을 닫아도 차례는 유지됩니다.`;
     return '한 번에 한 프로젝트만 옮깁니다. 차례가 오면 자동으로 시작합니다.';
   }
-  // 접근 토큰: 서버가 SBMIG_WEB_TOKEN 으로 떠 있으면 /?token=<토큰> 으로 한 번 열 때 HttpOnly 쿠키가 심어지고,
-  // 그 뒤의 fetch / EventSource 는 같은 출처라 쿠키가 자동으로 붙는다. 401 / 403 이면 안내만 한다.
+  // 접근 토큰: 서버가 SBMIG_WEB_TOKEN으로 실행 중이면 /?token=<토큰>으로 한 번 접속할 때 HttpOnly 쿠키가 설정되고,
+  // 이후 fetch / EventSource는 같은 출처라 쿠키가 자동으로 붙는다. 401 / 403이면 안내만 한다.
   function authProblem(r, d) {
     if (r.status !== 401 && r.status !== 403) return false;
     toast(r.status === 401 ? '접근 토큰이 필요합니다. 주소 뒤에 ?token=<토큰>을 붙여 한 번 여세요(서버의 SBMIG_WEB_TOKEN).'
@@ -524,7 +524,7 @@
     return true;
   }
 
-  // ---------------------------------------------------------------- 1. 올리는 자리
+  // ---------------------------------------------------------------- 1. 업로드 영역
   async function loadConfigs() {
     const r = await fetch('/api/configs'); const d = await r.json();
     if (authProblem(r, d)) return;
@@ -559,7 +559,7 @@
   $('llm').addEventListener('change', describeConfigs);
   $('stop_after').addEventListener('change', describeConfigs);
 
-  // ---- 진행 방식: 전체 진행(기본) / 취약점 해결. 시작 버튼·안내 글·단계 레일이 이 선택을 따른다
+  // ---- 진행 방식: 전체 진행(기본) / 취약점 해결. 시작 버튼, 안내 문구, 단계 레일이 이 선택을 따른다
   function chosenFlow() { const r = document.querySelector('input[name="flow"]:checked'); return r && r.value === FLOW_REM ? FLOW_REM : FLOW_FULL; }
   function startLabel() { return chosenFlow() === FLOW_REM ? '취약점 조치 시작' : '마이그레이션 시작'; }
   function setDropLimit() {
@@ -569,7 +569,7 @@
   function syncFlow() {
     for (const r of document.querySelectorAll('input[name="flow"]')) r.closest('.flowopt').classList.toggle('on', r.checked);
     if (!uploading) $('startlabel').textContent = startLabel();
-    $('stop_after').disabled = chosenFlow() === FLOW_REM;    // 조치만 하는 실행에는 멈출 이관 단계가 없다(서버도 함께 받지 않는다)
+    $('stop_after').disabled = chosenFlow() === FLOW_REM;    // 취약점 해결 실행에는 멈출 이관 단계가 없다(서버도 이 값을 받지 않는다)
     setDropLimit(); describeConfigs();
   }
   for (const r of document.querySelectorAll('input[name="flow"]')) r.addEventListener('change', syncFlow);
@@ -598,19 +598,19 @@
   for (const ev of ['dragenter', 'dragover']) drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add('over'); });
   for (const ev of ['dragleave', 'drop']) drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove('over'); });
   drop.addEventListener('drop', (e) => pickZip(e.dataTransfer && e.dataTransfer.files));
-  // 페이지 어디에 떨어뜨려도 브라우저가 파일을 열어 버리지 않게
+  // 페이지 어디에 파일을 놓아도 브라우저가 파일을 열지 않도록 막는다
   window.addEventListener('dragover', (e) => e.preventDefault());
   window.addEventListener('drop', (e) => { e.preventDefault(); if (!drop.contains(e.target)) pickZip(e.dataTransfer && e.dataTransfer.files); });
 
   $('start').addEventListener('click', async () => {
     if (!file) return;
-    const upName = file.name;                                // setFile(null) 뒤에도 실행 카드에 이름을 바로 보이려고
+    const upName = file.name;                                // setFile(null) 이후에도 실행 카드에 파일 이름을 바로 표시하기 위해 보관한다
     const q = new URLSearchParams({ name: upName });
     const cfgs = chosenConfigs();
     const same = cfgs.length === defaultConfigs.length && cfgs.every((x, i) => x === defaultConfigs[i]);
-    if (!same) q.set('configs', cfgs.join(','));            // 서버 기본값 그대로면 보내지 않는다 (서버가 정한다)
+    if (!same) q.set('configs', cfgs.join(','));            // 서버 기본값과 같으면 보내지 않는다(서버가 정한다)
     const flow = chosenFlow();
-    q.set('flow', flow);                                     // full | remediation (v2.1z-aj)
+    q.set('flow', flow);                                     // full | remediation
     if ($('stop_after').value && flow === FLOW_FULL) q.set('stop_after', $('stop_after').value);
     if ($('llm').value) q.set('llm_provider', $('llm').value);
     $('start').disabled = true; drop.classList.add('busy');
@@ -623,10 +623,10 @@
       if (!r.ok) { toast('시작하지 못했습니다: ' + (d.error || r.status), true); return; }
       const st = d.status || {};
       if (st.parallel) setParallel(st.parallel);
-      toast(uploadToast(st), false, st.state === 'queued' ? 8000 : 0);   // 기다린다는 안내는 조금 더 오래 (화면에도 남는다)
+      toast(uploadToast(st), false, st.state === 'queued' ? 8000 : 0);   // 대기 안내는 조금 더 오래 보여 준다(화면에도 남는다)
       setFile(null); $('zip').value = '';
       attach(d.run_id, false, st.flow || flow, st.upload || upName);
-      if (st.state) setStatus(st);                     // SSE 가 붙기 전에도 '대기 중' 을 바로 보인다 (같은 status 가 다시 와도 그대로)
+      if (st.state) setStatus(st);                     // SSE 연결 전에도 '대기 중'을 바로 표시한다(같은 status가 다시 와도 결과는 같다)
       $('runcard').scrollIntoView({ behavior: 'smooth', block: 'start' });
     } catch (e) {
       toast('서버에 보내지 못했습니다: ' + e, true);
@@ -637,18 +637,18 @@
   });
 
   // ---------------------------------------------------------------- 2. 실행 카드
-  // 상태 한 줄: 담당자가 읽는 말로. (state / success / exit_code 는 /api/runs 의 status dict)
+  // 상태 한 줄을 사용자가 읽기 쉬운 문장으로 만든다(state / success / exit_code는 /api/runs의 status dict)
   function describe(st) {
     if (st.state === 'queued') {
       const q = qpos(st.queue);
-      if (!q) return { cls: '', text: '대기 중 — 앞의 실행이 끝나면 시작합니다', short: '대기' };   // 옛 서버
+      if (!q) return { cls: '', text: '대기 중 — 앞의 실행이 끝나면 시작합니다', short: '대기' };   // 이전 서버
       return { cls: '', text: q.ahead > 0 ? `대기 중 — 앞에 ${q.ahead}건이 기다립니다` : '대기 중 — 다음 차례입니다', short: `대기 ${q.position}번` };
     }
     const remOnly = st.flow === FLOW_REM;
     if (st.state === 'running') return { cls: '', text: remOnly ? '취약점 조치 진행 중' : '마이그레이션 진행 중', short: '진행 중' };
     if (st.state === 'finished') {
       if (st.stop_requested && st.exit_code === 3) return { cls: 'bad', text: '중단되었습니다', short: '중단' };
-      // 진행하지 못한 실행(접수 거절, 조치 환경 미비 …): 까닭은 결과 칸 맨 위에 문장으로(abortText) — 제목은 짧게
+      // 진행하지 못한 실행(접수 거절, 조치 환경 미비 등): 사유는 결과 영역 맨 위에 문장으로 표시하고(abortText) 제목은 짧게 쓴다
       if (st.exit_code === 3 && abortText(st)) return { cls: 'bad', text: '진행하지 못했습니다', short: '진행 못 함' };
       if (remOnly) {
         if (st.success === true) return { cls: 'ok', text: '조치를 마쳤습니다', short: '조치 완료' };
@@ -668,15 +668,15 @@
     }
     return { cls: '', text: st.state || '', short: st.state || '' };
   }
-  // 취약점 해결 실행의 제목: 조치 상태마다 한 문장(조치 보고서의 결과 문장과 같은 말). 모르는 상태면 null
+  // 취약점 해결 실행의 제목. 조치 상태별로 한 문장(조치 보고서의 결과 문장과 같음)이고, 모르는 상태면 null
   const REM_TITLE = { SUCCEEDED: ['ok', '조치를 마쳤습니다', '조치 완료'], INCOMPLETE: ['warn', '일부만 조치되었습니다', '일부 조치'],
                       AWAITING_APPROVAL: ['warn', '승인을 기다리고 있습니다', '승인 대기'], AWAITING_CONFIRMATION: ['warn', '확인이 필요합니다', '확인 필요'],
                       STOPPED: ['warn', '조치를 멈췄습니다', '멈춤'], INTERRUPTED: ['bad', '조치가 중단되었습니다', '중단'],
                       FAILED: ['bad', '조치하지 못했습니다', '실패'], QUEUED: ['', '취약점 조치 진행 중', '진행 중'], RUNNING: ['', '취약점 조치 진행 중', '진행 중'] };
   function remTitle(status) { const t = REM_TITLE[status]; return t ? { cls: t[0], text: t[1], short: t[2] } : null; }
-  // 진행하지 못한 까닭 한 문장: 엔진이 멈춘 까닭(접수 거절 "Maven 변환 후 신청 부탁드립니다." 등) → 시작하지 못한 조치 → 웹이 아는 오류
+  // 진행하지 못한 사유 한 문장. 엔진의 중단 사유(접수 거절 등), 시작하지 못한 조치, 웹에서 알고 있는 오류 순으로 찾는다
   function abortText(st) {
-    // 서버가 보고서와 같은 번역표로 옮긴 한국어(abort_reason_ko)가 먼저, 번역이 없으면 엔진의 문장 그대로
+    // 서버가 보고서와 같은 번역표로 옮긴 한국어(abort_reason_ko)를 먼저 쓰고, 없으면 엔진의 문장을 그대로 쓴다
     if (st.abort_reason_ko || st.abort_reason) return String(st.abort_reason_ko || st.abort_reason);
     const r = st.remediation;
     if (r && r.status === 'skipped' && st.flow === FLOW_REM) {
@@ -685,7 +685,7 @@
     }
     return st.error ? String(st.error) : '';
   }
-  // 열린 실행의 맨 위: 올린 파일 이름 그대로(길면 말줄임, title 에 전체). 이름을 모르는 옛 실행이면 숨긴다
+  // 열린 실행의 맨 위에 업로드한 파일 이름을 표시한다(길면 말줄임, title에 전체 이름). 이름이 없는 이전 실행이면 숨긴다
   function setRunName(name) {
     const n = $('runname');
     if (!name) { n.hidden = true; n.textContent = ''; n.removeAttribute('title'); return; }
@@ -694,16 +694,16 @@
   }
   function setTitle(cls, text, live) {
     const t = $('title'), key = `${cls}|${live ? 1 : 0}|${text}`;
-    if (t.dataset.key === key) return;               // 같은 제목이면 그대로 (맥박 점의 애니메이션이 처음부터 다시 돌지 않게)
+    if (t.dataset.key === key) return;               // 같은 제목이면 그대로 둔다(점 애니메이션이 처음부터 다시 시작되지 않도록)
     t.dataset.key = key; t.className = 'title ' + cls;
     t.innerHTML = (live ? '<span class="pulse" aria-hidden="true"></span>' : '') + esc(text);
   }
-  // status 는 한 흐름에 여러 번 온다(v2.1z-ae: 처음, 줄에서 앞으로 오거나 시작할 때마다, 끝): 몇 번 와도 레일·기록·로그를 되돌리지 않는다
+  // status는 한 연결에서 여러 번 온다(처음, 대기 순서가 바뀌거나 시작할 때, 끝). 몇 번 와도 레일, 기록, 로그를 되돌리지 않는다
   let queueText = '', statusKey = '';
   function setStatus(st) {
     lastState = st.state || '';
     if (st.upload) setRunName(st.upload);
-    // 진행 방식이 정해지면 레일을 그 모양으로(엔진 단계가 아직 하나도 오지 않았을 때만 — 이미 그린 진행을 지우지 않게)
+    // 진행 방식이 정해지면 레일을 그에 맞게 그린다. 이미 그린 진행을 지우지 않도록 엔진 단계가 아직 오지 않았을 때만 한다
     if (st.flow === FLOW_REM || st.flow === FLOW_FULL) {
       runFlow = st.flow;
       if (railFlow !== runFlow && !engineSeen()) resetRail(runFlow);
@@ -719,13 +719,13 @@
     $('stop').hidden = !live;
     setText('stop', st.stop_requested ? '중단 요청됨' : '중단');
     if (st.parallel) setParallel(st.parallel);
-    if (st.mode === 'k8s-job' || st.mode === 'local-job') jobStep();   // Job 모드(개발 PC 의 local-job 포함): 접수 앞에 '파드' 단계 — 첫 current 보다 먼저
+    if (st.mode === 'k8s-job' || st.mode === 'local-job') jobStep();   // Job 모드(개발 PC의 local-job 포함)에서는 첫 current보다 먼저 접수 앞에 '파드' 단계를 넣는다
     if (st.state === 'finished') { setCurrent(null); showResult(st, d); }
     else if (st.state === 'running' && !railSteps().some((n) => n.classList.contains('done'))) setCurrent(railSteps()[0]);
-    // 기다리는 안내는 기다리는 동안만: 차례가 와서 시작하거나 끝나면 이 안내만 지운다(그 사이 다른 안내가 썼으면 두고)
+    // 대기 안내는 대기 중에만 보인다. 시작하거나 끝나면 이 안내만 지운다(그 사이 다른 안내로 바뀌었으면 그대로 둔다)
     if (st.state === 'queued') { queueText = queueNote(st); setText('railnote', queueText); }
     else if (queueText) { if ($('railnote').textContent === queueText) $('railnote').textContent = ''; queueText = ''; }
-    // 줄에서 앞으로 왔거나 시작했다: 지난 실행 목록의 '대기 N번' 도 맞춘다 (끝은 end 이벤트가 목록을 다시 읽는다)
+    // 대기 순서가 바뀌었거나 시작했으면 지난 실행 목록의 '대기 N번'도 갱신한다(끝났을 때는 end 이벤트에서 목록을 다시 읽는다)
     const q = qpos(st.queue), key = `${st.state}|${q ? q.position : ''}`;
     if (statusKey && key !== statusKey && st.state !== 'finished') loadRuns();
     statusKey = key;
@@ -738,7 +738,7 @@
     return el;
   }
 
-  // ---- 단계 레일: intake → analyze → plan → phase × N → finalize. `node` 이벤트가 켠다.
+  // ---- 단계 레일: intake -> analyze -> plan -> phase × N -> finalize. `node` 이벤트가 오면 해당 단계를 켠다.
   const KO = { job: '파드', intake: '접수', analyze: '분석', plan: '계획', finalize: '마무리',
                transform: '레시피 적용', restructure: '재구성', verify: '빌드 검증', report: '보고서', jdk21: 'JDK 21', spring: 'Spring',
                remediation: '취약점 조치' };
@@ -747,9 +747,9 @@
     const ko = KO[node] || label;
     return `<div class="step" role="listitem" data-node="${esc(node)}"${extra || ''}><div class="dot"></div><div class="label">${esc(ko)}<span class="en">${esc(label)}</span></div></div>`;
   }
-  // 엔진이 멈춘 까닭(`중단: …`)은 끝까지 남긴다: 뒤에 오는 파드 안내(ending · api-back)가 그 한 줄을 덮으면 왜 멈췄는지가 사라진다
+  // 엔진의 중단 사유(`중단: …`)는 끝까지 남긴다. 뒤에 오는 파드 안내(ending, api-back)가 덮어쓰면 중단 사유를 알 수 없게 된다
   let abortNote = '';
-  // 취약점 해결 실행의 단계: 접수 → 취약점 조치 → 마무리 (엔진의 노드 intake → remediation → finalize)
+  // 취약점 해결 실행의 단계: 접수 -> 취약점 조치 -> 마무리(엔진 노드 intake -> remediation -> finalize)
   const REM_STEPS = ['intake', FLOW_REM, 'finalize'];
   let railFlow = FLOW_FULL;
   function resetRail(flow) {
@@ -780,28 +780,28 @@
     const name = ev.node, u = (ev.update && typeof ev.update === 'object') ? ev.update : {};
     const rail = $('rail');
     let el;
-    if (name === 'job') {                                       // 쿠버네티스 Job 모드: 파드 생성 중 → 준비됨
+    if (name === 'job') {                                       // 쿠버네티스 Job 모드: 파드 생성 중 -> 준비됨
       el = jobStep();
       const s = u.state || '';
-      // 늦게 온 running 은 이미 시작한 엔진 단계의 표시(현재 단계·안내 줄)를 되돌리지 않는다
+      // 늦게 온 running은 이미 시작한 엔진 단계의 표시(현재 단계, 안내 줄)를 되돌리지 않는다
       if (s === 'running') { el.classList.add('done'); if (!engineSeen()) { setCurrent(railSteps()[1]); $('railnote').textContent = readyText(); } }
       else if (s === 'failed' || s === 'missing') { el.classList.remove('done'); el.classList.add('failed'); setCurrent(null); $('railnote').textContent = `실행 환경을 준비하지 못했습니다: ${u.message || s}`; }
-      // completed: 이 실행의 결과 파일을 받았다 = 파드는 제 일을 했다(이관의 종료 코드가 3 이어도). 안내 줄·현재 단계는 엔진 쪽 몫
+      // completed는 결과 파일을 받았다는 뜻이므로 파드는 정상 종료한 것이다(이관 종료 코드가 3이어도). 안내 줄과 현재 단계는 엔진 이벤트가 정한다
       else if (s === 'succeeded' || s === 'completed') { el.classList.remove('failed'); el.classList.add('done'); }
-      // 아래 셋은 단계 표시를 바꾸지 않는다(안내 한 줄만): API 가 답하지 않는 동안에도, 파드가 끝나기를 기다리는 동안에도 이 실행이 제 자리를 지킨다
+      // 아래 세 가지는 단계 표시를 바꾸지 않고 안내 한 줄만 바꾼다. API가 응답하지 않거나 파드 종료를 기다리는 동안에도 실행 표시는 그대로 유지된다
       else if (s === 'api-unavailable') { $('railnote').textContent = `작업 서버(쿠버네티스)가 응답하지 않습니다. 응답할 때까지 이 작업은 자리를 유지합니다${u.message ? ' (' + u.message + ')' : ''}`; }
       else if (s === 'api-back') { $('railnote').textContent = abortNote || '작업 서버(쿠버네티스)가 다시 응답합니다.'; }
       else if (s === 'ending') { $('railnote').textContent = abortNote || '작업이 정리되기를 기다립니다. 끝난 것을 확인한 뒤 기다리는 작업에 자리를 넘깁니다.'; }
       else { setCurrent(el); $('railnote').textContent = s === 'created' ? '실행 환경을 준비하는 중…' : `실행 환경을 준비하는 중 (${s}${u.message ? ': ' + u.message : ''})`; }
       return;
     }
-    // 엔진 단계가 왔다 = 파드가 돌고 있다: running 을 못 본 빠른 실행, job 이벤트 없이 저널로 다시 보는 끝난 실행도 '파드' 에 체크
+    // 엔진 단계가 왔으면 파드는 실행 중이다. running을 받지 못한 빠른 실행이나 job 이벤트 없이 저널로 다시 보는 끝난 실행도 '파드'를 완료로 표시한다
     const pod = rail.querySelector('.step[data-node="job"]');
     if (pod && !pod.classList.contains('failed') && !pod.classList.contains('done')) {
-      if (pod.classList.contains('current')) $('railnote').textContent = readyText();   // '준비하는 중' 안내가 남지 않게
+      if (pod.classList.contains('current')) $('railnote').textContent = readyText();   // '준비하는 중' 안내가 남지 않도록
       pod.classList.add('done');
     }
-    if (name === 'plan' && Array.isArray(u.phases)) {          // 계획이 단계 묶음을 정한다: 하나씩 점으로
+    if (name === 'plan' && Array.isArray(u.phases)) {          // plan이 정한 phase마다 점을 하나씩 그린다
       for (const p of rail.querySelectorAll('.step[data-phase], .step[data-placeholder]')) p.remove();
       for (const ph of u.phases) phaseStep(ph, true);
     }
@@ -824,7 +824,7 @@
     else if (u.stopped) $('railnote').textContent = '요청한 단계까지만 실행하고 멈췄습니다.';
     const steps = railSteps(); let last = -1;
     steps.forEach((n, i) => { if (n.classList.contains('done') || n.classList.contains('failed')) last = i; });
-    // finalize 뒤에는 이어 도는 취약점 조치(빌드 파드의 remediation 노드)만 남는다: 이미 시작했으면 그것이 현재 단계
+    // finalize 뒤에는 이어서 실행되는 취약점 조치(빌드 파드의 remediation 노드)만 남는다. 이미 시작했으면 그것이 현재 단계다
     const remRunning = rail.querySelector('.step[data-node="remediation"]:not(.done):not(.failed)');
     setCurrent(u.aborted ? null : (name === 'finalize' ? remRunning : steps[last + 1]));
     if (name === 'remediation' && current) loadRemediation(current);
@@ -850,7 +850,7 @@
       bits.push(`${k}=${s}`);
     }
     if (name === 'phase_start' && ev.phase) $('railnote').textContent = `지금 단계: ${KO[ev.phase] || ev.phase}`;
-    // 이관 성공 뒤 빌드 파드가 취약점 조치 노드를 시작했다(graph_node … node=remediation): 레일 끝에 한 칸, 현재 단계로
+    // 이관 성공 후 빌드 파드가 취약점 조치 노드를 시작하면(graph_node … node=remediation) 레일 끝에 단계를 추가하고 현재 단계로 표시한다
     if (name === 'graph_node' && ev.node === 'remediation') {
       const step = remStep();
       if (!step.classList.contains('done')) { setCurrent(step); $('railnote').textContent = '취약점 조치 중 — IVAS 검사와 승인된 버전 수정을 합니다.'; }
@@ -868,8 +868,8 @@
     tl.scrollTop = tl.scrollHeight;
   }
 
-  // ---- 로그(sbmig.log): 줄은 메모리 버퍼에만 쌓고(최대 LOG_KEEP), 화면에는 보이는 탭일 때 마지막 LOG_SHOW 줄만
-  //      한 프레임에 한 번 그린다. 몇 만 줄이 DOM 에 쌓여 브라우저가 느려지던 문제의 답. 전체는 sbmig.log 파일로.
+  // ---- 로그(sbmig.log): 줄은 메모리 버퍼에만 쌓고(최대 LOG_KEEP), 로그 탭이 보일 때만 마지막 LOG_SHOW 줄을
+  //      한 프레임에 한 번 그린다. DOM에 수만 줄이 쌓이면 브라우저가 느려지기 때문이다. 전체 로그는 sbmig.log 파일로 받는다.
   const LOG_KEEP = 20000, LOG_SHOW = 1500;
   let logBuf = [], logTotal = 0, logDropped = 0, pendingRender = false, logTab = false;
   function parseLog(kind, line) {
@@ -920,14 +920,14 @@
   function showResult(st, d) {
     const files = st.files || [];
     $('resultcard').hidden = false;
-    // 진행하지 못한 실행: 까닭 한 문장을 결과 칸 맨 위에 (로그 탭에 묻히지 않게)
+    // 진행하지 못한 실행: 사유 한 문장을 결과 영역 맨 위에 표시한다(로그 탭에 묻히지 않도록)
     const why = st.exit_code === 3 && !st.stop_requested ? abortText(st) : '';
     $('abortbox').hidden = !why; setText('aborttext', why);
-    // 취약점 해결 실행: 이관 결과(report.md / result.zip 버튼)가 없다 — 아래 '취약점 조치' 칸이 결과다
+    // 취약점 해결 실행에는 이관 결과(report.md / result.zip 버튼)가 없고 아래 '취약점 조치' 영역이 결과다
     const remOnly = (st.flow || runFlow) === FLOW_REM;
     $('mainline').hidden = remOnly; $('maindl').hidden = remOnly;
     $('remed').classList.toggle('solo', remOnly);
-    // 그 밖의 파일은 결과 버튼 아래에: 취약점 해결 실행이면 조치 칸 뒤, 전체 진행이면 이관 버튼 바로 뒤(조치 칸 앞)
+    // 그 밖의 파일은 결과 버튼 아래에 둔다. 취약점 해결 실행이면 조치 영역 뒤, 전체 진행이면 이관 버튼 바로 뒤(조치 영역 앞)
     if (remOnly) $('remed').after($('otherfiles')); else $('remed').before($('otherfiles'));
     const chips = [];
     if (st.resolved) chips.push(`<span class="chip ok">해결 ${st.resolved}건</span>`);
@@ -949,13 +949,13 @@
   }
 
   // ---------------------------------------------------------------- 3b. 취약점 조치
-  // 빌드 파드가 이관 성공 뒤 이어 돌린 조치(상태 id = 이관 실행 id). 서버 글(이유 코드·diff·메시지·라이브러리 이름)은 모두
-  // textContent 로만 넣는다 — diff 에는 '<dependency>' 같은 태그 글자가 그대로 들어 있다
+  // 이관 성공 후 빌드 파드가 이어서 실행한 조치(상태 id는 이관 실행 id). 서버 문자열(이유 코드, diff, 메시지, 라이브러리 이름)은 모두
+  // textContent로만 넣는다. diff에는 '<dependency>' 같은 태그 문자가 그대로 들어 있기 때문이다
   const REM_KO = { QUEUED: '대기', RUNNING: '진행 중', AWAITING_APPROVAL: '승인 대기', AWAITING_CONFIRMATION: '업로드 확인 대기',
                    STOPPED: '중지됨', INTERRUPTED: '중단됨', SUCCEEDED: '조치 완료', INCOMPLETE: '일부만 조치됨', FAILED: '실패' };
   const REM_CLS = { SUCCEEDED: 'ok', INCOMPLETE: 'warn', AWAITING_APPROVAL: 'warn', AWAITING_CONFIRMATION: 'warn', STOPPED: 'warn',
                     INTERRUPTED: 'bad', FAILED: 'bad' };
-  // 이유 코드(sbmig/remediations/models.py R_*) → 담당자가 읽는 말. 모르는 코드는 코드 그대로(칩의 title 에는 늘 코드)
+  // 이유 코드(sbmig/remediations/models.py R_*)를 사용자가 읽을 문장으로 바꾼다. 모르는 코드는 그대로 보여 준다(칩의 title에는 항상 코드)
   const REM_REASON_KO = {
     baseline_build_failed: '조치 전 빌드 실패', candidate_build_failed: '수정본 빌드 실패', scan_incomplete: 'IVAS 검사 미완료',
     upload_uncertain: '업로드 결과 확인 불가', zip_hash_mismatch: '검사한 파일 불일치', text_only_violation: '버전 표기 외 변경 감지',
@@ -965,14 +965,14 @@
     stop_requested: '중지 요청', internal_error: '내부 오류', policy_denied: '정책상 허용되지 않음', unknown_provenance: '버전을 지정한 곳을 찾지 못함',
     stale_location: 'pom이 그 사이 변경됨', inventory_incomplete: '의존성 목록을 다 읽지 못함', chain_budget: '제한 시간 초과',
     inhouse_artifact: '사내 라이브러리 (담당자 요청)' };
-  // 제안의 종류(K_*)·위험 표시(RISK_*)
+  // 제안 종류(K_*)와 위험 표시(RISK_*)
   const KIND_KO = { direct_version: 'pom의 버전 표기 수정', property_version: 'property 값 수정', own_management_version: 'dependencyManagement의 버전 수정',
                     managed_override: 'dependencyManagement에 버전 지정 추가', parent_version: '부모 pom 버전 변경', bom_version: 'BOM 버전 변경' };
   const RISK_KO = { major: '메이저 버전 변경', parent: '부모 pom 변경', bom: 'BOM 변경', managed_override: 'dependencyManagement 항목 추가' };
   const ACTIVE_JOB_DONE = ['succeeded', 'failed', 'completed', 'finished', 'done', 'missing', 'ended'];
   const REM_POLL_MS = 4000;
-  // 화면 쪽 기억: 고른 칸(제안 id → 체크), 지금 그린 조치 칸의 열쇠(같으면 다시 그리지 않아 체크·확인 칸이 그대로 남는다),
-  // 요청 중(두 번 보내지 않게), 마지막 오류 한 줄
+  // 화면 상태: 제안 id별 체크 여부, 현재 그린 조치 영역의 키(같으면 다시 그리지 않아 체크와 입력 내용이 유지된다),
+  // 요청 중 여부(중복 전송 방지), 마지막 오류 한 줄
   const rem = { run: null, sel: new Map(), propKey: '', viewKey: '', busy: false, err: '', resumeErr: '', poll: null, last: null };
   let remSeq = 0;
   function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = String(text); return e; }
@@ -988,7 +988,7 @@
     if (!s) { rail.insertAdjacentHTML('beforeend', stepHtml('remediation', 'remediation')); s = rail.lastElementChild; }
     return s;
   }
-  // 서버가 active 를 주면 그것이 기준이다(resume_job 은 끝난 뒤에도 남는다). 없을 때만 state 로 미룬다
+  // 서버가 active를 주면 그 값을 기준으로 한다(resume_job은 끝난 뒤에도 남는다). 없을 때만 state로 판단한다
   function jobActive(j) {
     if (!j || typeof j !== 'object') return false;
     if (typeof j.active === 'boolean') return j.active;
@@ -999,8 +999,8 @@
     const seq = ++remSeq;
     let r = null, st = null;
     try { r = await fetch(remUrl(runId)); try { st = await r.json(); } catch (e) {} } catch (e) { return; }
-    if (seq !== remSeq || current !== runId) return;              // 그 사이 다른 실행을 골랐다
-    if (!r.ok || !st || !st.status) { $('remed').hidden = true; return; }   // 404 = 이 실행에는 이어 돈 조치가 없다
+    if (seq !== remSeq || current !== runId) return;              // 그 사이 다른 실행을 선택했다
+    if (!r.ok || !st || !st.status) { $('remed').hidden = true; return; }   // 404면 이 실행에는 이어서 실행된 조치가 없다
     if (rem.run !== runId) { rem.run = runId; rem.sel = new Map(); rem.propKey = ''; rem.viewKey = ''; rem.err = ''; rem.resumeErr = ''; }
     const step = remStep();
     if (remActive(st)) setCurrent(step);
@@ -1011,7 +1011,7 @@
       if (seq !== remSeq || current !== runId) return;
     }
     renderRemediation(runId, st, props, force);
-    // 새 빌드 파드에서 이어 도는 동안(대기·진행)만 몇 초마다 다시 읽는다
+    // 새 빌드 파드에서 이어서 실행되는 동안(대기, 진행)에만 몇 초마다 다시 읽는다
     stopRemPoll();
     if (remActive(st)) rem.poll = setTimeout(() => { if (current === runId) loadRemediation(runId); }, REM_POLL_MS);
   }
@@ -1021,7 +1021,7 @@
     const chip = $('remed-status');
     chip.className = 'chip ' + (REM_CLS[st.status] || '');
     setText('remed-status', (REM_KO[st.status] || st.status) + (st.stale ? ' (작업 종료)' : ''));
-    // 취약점 해결 실행은 이 칸이 결과다: 제목도 지금의 조치 상태를 따른다(승인 뒤 이어서 진행하면 바뀐다)
+    // 취약점 해결 실행은 이 영역이 결과이므로 제목도 현재 조치 상태를 따른다(승인 후 이어서 진행하면 바뀐다)
     const solo = runFlow === FLOW_REM;
     if (solo && lastState === 'finished') { const t = remTitle(st.status); if (t) setTitle(t.cls, t.text, t.text === REM_TITLE.RUNNING[1]); }
     const c = st.counts || {}, counts = $('remed-counts');
@@ -1030,12 +1030,12 @@
     if (c.proposals_applied) counts.appendChild(el('span', 'chip ok', `적용 ${c.proposals_applied}건`));
     const pend = Number(st.pending_approvals || 0);
     if (pend) counts.appendChild(el('span', 'chip warn', `승인 대기 ${pend}건`));
-    $('remed-msg').textContent = st.message_ko || st.message || '';   // 한국어(서버가 덧붙인 message_ko)가 먼저
+    $('remed-msg').textContent = st.message_ko || st.message || '';   // 서버가 추가한 한국어 문장(message_ko)을 먼저 쓴다
     const reasons = $('remed-reasons');
     reasons.replaceChildren();
     const codes = Array.isArray(st.reasons) && st.reasons.length ? st.reasons : (st.reason ? [st.reason] : []);
     for (const code of codes) { const ch = el('span', 'chip', REM_REASON_KO[code] || code); ch.title = String(code); reasons.appendChild(ch); }
-    // 내려받기: 조치 보고서, 조치 결과 zip(빌드가 실패한 후보면 '빌드 실패본' 표시), 앞 라운드의 검증된 zip
+    // 다운로드: 조치 보고서, 조치 결과 zip(빌드가 실패한 수정본이면 '빌드 실패본' 표시), 이전 라운드의 검증된 zip
     const files = Array.isArray(st.files) ? st.files : [], dl = $('remed-dl');
     dl.replaceChildren();
     const link = (name, text, cls, badge) => {
@@ -1051,14 +1051,14 @@
     link('result.zip', '결과 ZIP 받기', (failed ? 'ghost' : 'quiet') + (solo ? ' big' : ''), failed ? '빌드 실패본' : '');
     link('result-verified.zip', '검증된 이전 라운드 결과 받기', 'quiet');
     if (st.withheld) dl.appendChild(el('span', 'note', solo ? '실행이 끝나면 받을 수 있습니다.' : '이관 실행이 끝나면(마지막 정제 뒤) 받을 수 있습니다.'));
-    // 상태마다 하는 일. 같은 그림이면 다시 그리지 않는다(같은 상태가 여러 번 와도 고른 칸·열린 확인 칸이 사라지지 않게)
+    // 상태별 동작. 같은 상태가 여러 번 와도 선택한 항목과 열린 확인 영역이 사라지지 않도록 내용이 같으면 다시 그리지 않는다
     const pending = props && Array.isArray(props.proposals) ? props.proposals.filter((p) => p && p.decision === 'pending') : [];
     const rs = (st.resume && typeof st.resume === 'object') ? st.resume : {};
     const j = (st.resume_job && typeof st.resume_job === 'object') ? st.resume_job : {};
     const q = qpos(j.queue);
     const key = JSON.stringify([st.status, !!st.stale, st.reason || '', !!rs.available, rs.note || '', jobActive(j), j.state || '',
                                 q ? q.ahead : null, st.queue_position || null, pending.map((p) => p.id + ':' + (p.proposal_hash || ''))]);
-    if (rem.busy) return;                                       // 요청 중: 답이 오면 다시 그린다
+    if (rem.busy) return;                                       // 요청 중이면 응답이 온 뒤 다시 그린다
     if (!force && key === rem.viewKey) return;
     rem.viewKey = key;
     const act = $('remed-act');
@@ -1069,7 +1069,7 @@
     else act.replaceChildren();
   }
 
-  // ---- 새 빌드 파드에서 이어 도는 중(대기·진행)
+  // ---- 새 빌드 파드에서 이어서 실행 중(대기, 진행)
   function goingView(st) {
     const j = (st.resume_job && typeof st.resume_job === 'object') ? st.resume_job : {};
     const box = el('div', 'going');
@@ -1084,10 +1084,10 @@
     return box;
   }
 
-  // ---- 승인 대기: 제안마다 체크 칸 하나. 체크 = 적용, 체크 안 함 = 적용하지 않음. 버튼 하나로 결정과 이어서 진행을 함께 보낸다
+  // ---- 승인 대기: 제안마다 체크박스 하나. 체크하면 적용하고 체크하지 않으면 적용하지 않는다. 버튼 하나로 결정과 이어서 진행을 함께 보낸다
   function approvalsView(runId, pending) {
     const key = pending.map((p) => p.id + ':' + (p.proposal_hash || '')).join('|');
-    if (key !== rem.propKey) { rem.propKey = key; rem.sel = new Map(); }   // 제안이 바뀌면 고른 것을 비운다
+    if (key !== rem.propKey) { rem.propKey = key; rem.sel = new Map(); }   // 제안이 바뀌면 선택을 초기화한다
     const wrap = el('div');
     wrap.appendChild(el('p', 'head', '적용할 변경을 고르세요'));
     wrap.appendChild(el('p', 'lead', '체크한 변경만 적용하고, 체크하지 않은 변경은 적용하지 않습니다. 적용하면 빌드와 IVAS 재검사까지 이어서 합니다.'));
@@ -1175,10 +1175,10 @@
     if (s.startsWith('repository:')) return '저장소 ' + s.slice(11);
     return s;
   }
-  // 정확한 diff 를 그대로: 줄마다 span 하나(textContent), 앞 글자로 더한 줄·뺀 줄만 색을 입힌다
+  // diff를 그대로 보여 준다. 줄마다 span 하나(textContent)를 만들고, 첫 문자로 추가된 줄과 삭제된 줄만 색을 입힌다
   function diffPre(text) {
     const pre = el('pre', 'diff');
-    pre.setAttribute('tabindex', '0');                          // 가로로 긴 줄을 키보드로도 밀어 볼 수 있게
+    pre.setAttribute('tabindex', '0');                          // 가로로 긴 줄을 키보드로도 스크롤할 수 있도록
     const lines = String(text).split('\n');
     if (lines.length && lines[lines.length - 1] === '') lines.pop();
     for (const ln of lines) {
@@ -1188,8 +1188,8 @@
     }
     return pre;
   }
-  // 결정 한 번: 기다리는 제안 전부를 한 요청에(체크 = approved, 아니면 rejected). 서버는 제안 해시·원본 트리 해시·정책 해시·diff 가
-  // 저장된 제안과 모두 같을 때만 받는다(하나라도 틀리면 409 approval_mismatch, 아무것도 쓰지 않음). resume: true = 저장 뒤 이어서 진행
+  // 대기 중인 제안 전부의 결정을 한 번의 요청으로 보낸다(체크하면 approved, 아니면 rejected). 서버는 제안 해시, 원본 트리 해시, 정책 해시, diff가
+  // 저장된 제안과 모두 같을 때만 받는다(하나라도 다르면 409 approval_mismatch, 아무것도 기록하지 않음). resume: true면 저장 후 이어서 진행한다
   async function submitDecisions(runId, pending, btns) {
     if (rem.busy) return;
     rem.busy = true; rem.err = '';
@@ -1217,7 +1217,7 @@
     if (d.resumed) {
       rem.resumeErr = '';
       toast(`결정을 저장했습니다(적용 ${n}건). 이어서 진행합니다.`);
-      if (rem.last) $('remed-act').replaceChildren(goingView({ ...rem.last, status: 'QUEUED' }));   // 다음 상태가 오기 전에도 바로
+      if (rem.last) $('remed-act').replaceChildren(goingView({ ...rem.last, status: 'QUEUED' }));   // 다음 상태가 오기 전에도 바로 표시한다
     } else {
       const re = d.resume_error && typeof d.resume_error === 'object' ? d.resume_error : null;
       rem.resumeErr = (re && re.error) || '이어서 진행하지 못했습니다.';
@@ -1225,7 +1225,7 @@
     }
     loadRemediation(runId, true);
   }
-  // ---- 모든 제안에 결정이 남았는데 이어서 진행하지 못했다(위 요청이 거절됐거나 옛 서버): 이 경우에만 '이어서 진행' 버튼
+  // ---- 모든 제안의 결정이 기록됐지만 이어서 진행하지 못한 경우(위 요청이 거절됐거나 이전 서버)에만 '이어서 진행' 버튼을 보인다
   function decidedView(runId, rs) {
     const wrap = el('div');
     wrap.appendChild(el('p', 'head', '결정을 저장했습니다'));
@@ -1234,7 +1234,7 @@
     wrap.appendChild(resumeRow(runId, rs, {}, '이어서 진행'));
     return wrap;
   }
-  // ---- 업로드 확인 대기: 사람이 IVAS 에서 확인한 사실을 고른다(자동으로 다시 올리지 않는다)
+  // ---- 업로드 확인 대기: 사용자가 IVAS에서 확인한 결과를 선택한다(자동으로 다시 업로드하지 않는다)
   function confirmationView(runId, st, rs) {
     const labels = Array.isArray(st.pending_uploads) ? st.pending_uploads : [];
     const label = labels.length ? String(labels[0]) : null;
@@ -1278,7 +1278,7 @@
     if (!can) wrap.appendChild(el('p', 'lead', rs.note || '지금은 이어서 진행할 수 없습니다.'));
     return wrap;
   }
-  // ---- 중지됨 / 중단됨(빌드 파드가 사라진 stale, 시간 한도 chain_budget 포함): 까닭 한 줄 + 이어서 진행
+  // ---- 중지됨 / 중단됨(빌드 파드가 사라진 stale, 시간 한도 chain_budget 포함): 사유 한 줄과 이어서 진행 버튼
   function stoppedView(runId, st, rs) {
     let why;
     if (st.stale) why = '실행이 끝나면서 조치가 멈춘 채 남았습니다. 자동으로 다시 보내지 않으니, 이어서 진행하면 멈춘 곳부터 계속합니다.';
@@ -1303,7 +1303,7 @@
     }
     return row;
   }
-  // POST /resume: 새 빌드 파드에서 이어서(웹 파드가 Job 을 만든다). 답이 오면 상태를 다시 읽는다
+  // POST /resume: 새 빌드 파드에서 이어서 진행한다(웹 파드가 Job을 만든다). 응답이 오면 상태를 다시 읽는다
   async function postResume(runId, body, ctrls) {
     if (rem.busy) return;
     rem.busy = true; rem.err = '';
@@ -1322,21 +1322,21 @@
     loadRemediation(runId, true);
   }
 
-  // ---------------------------------------------------------------- 실행에 붙기 (SSE)
-  // resume = 끊긴 같은 실행에 다시 붙기(아래 '다시 붙기'). 담당자가 고른 실행이면 진행 중인 재연결을 그만둔다.
-  // 화면(레일·기록·로그·결과)은 매번 비우고 서버가 처음부터 다시 보내는 것으로 채운다: 다시 붙어도 줄이 겹치지 않는다
+  // ---------------------------------------------------------------- 실행에 연결 (SSE)
+  // resume은 끊긴 같은 실행에 다시 연결하는 경우다(아래 '다시 연결'). 사용자가 직접 선택한 실행이면 진행 중인 재연결을 멈춘다.
+  // 화면(레일, 기록, 로그, 결과)은 매번 비우고 서버가 처음부터 다시 보내는 내용으로 채우므로 다시 연결해도 줄이 겹치지 않는다
   function attach(runId, resume, flowHint, nameHint) {
     if (!resume) cancelRetry();
     if (es) { es.close(); es = null; }
     current = runId; lastState = '';
-    runFlow = flowHint === FLOW_REM ? FLOW_REM : FLOW_FULL;   // 첫 status 가 실제 값을 준다(setStatus)
+    runFlow = flowHint === FLOW_REM ? FLOW_REM : FLOW_FULL;   // 실제 값은 첫 status에서 받는다(setStatus)
     $('abortbox').hidden = true;
     logBuf = []; logTotal = 0; logDropped = 0; renderLog();
     $('runcard').hidden = false; $('resultcard').hidden = true; hideRemediation();
     $('runid').textContent = runId; $('summary').textContent = ''; setRunName(nameHint || '');
     $('timeline').innerHTML = ''; $('log').replaceChildren(); $('report').textContent = ''; $('logfull').hidden = true;
     setTitle('', resume ? '다시 연결하는 중…' : '연결하는 중…', false); statusKey = '';
-    $('stop').disabled = true;                         // 이 실행의 status 가 오기 전에는 누를 수 없다 (앞 실행의 상태가 남지 않게)
+    $('stop').disabled = true;                         // 이전 실행의 상태가 남지 않도록 이 실행의 status가 오기 전에는 비활성화한다
     resetRail(runFlow);
     try { history.replaceState(null, '', '#' + encodeURIComponent(runId)); } catch (e) {}
     const src = new EventSource(`/api/runs/${encodeURIComponent(runId)}/events`);
@@ -1348,15 +1348,15 @@
     src.addEventListener('log', (e) => { if (mine()) logLine('log', JSON.parse(e.data)); });
     src.addEventListener('console', (e) => { if (mine()) logLine('console', JSON.parse(e.data)); });
     src.addEventListener('report', (e) => { if (mine()) $('report').textContent = JSON.parse(e.data); });
-    // end 에 reason 이 있으면(웹 파드 재시작 등) 실행이 끝난 것이 아니다: 같은 실행에 다시 붙는다
+    // end에 reason이 있으면(웹 파드 재시작 등) 실행이 끝난 것이 아니므로 같은 실행에 다시 연결한다
     src.addEventListener('end', (e) => {
       if (!mine()) return;
       let d = {}; try { d = e.data ? JSON.parse(e.data) : {}; } catch (x) {}
       if (d && d.reason) { lost(runId, 'shutdown'); return; }
       src.close(); es = null; loadRuns();
     });
-    // `error` 는 서버의 실행 오류 이벤트(data 있음)이기도, EventSource 의 연결 오류(data 없음)이기도 하다.
-    // 연결 오류면 브라우저의 자동 재연결을 쓰지 않고 닫는다: 다시 붙는 길은 retry 하나뿐이라 두 번 붙지 않는다
+    // `error`는 서버의 실행 오류 이벤트(data 있음)일 수도 있고 EventSource의 연결 오류(data 없음)일 수도 있다.
+    // 연결 오류면 브라우저 자동 재연결을 쓰지 않고 닫는다. 재연결은 retry로만 하므로 중복 연결되지 않는다
     src.addEventListener('error', (e) => {
       if (!mine()) return;
       if (e.data) { logLine('error', '[실행 오류] ' + JSON.parse(e.data).message); toast('실행 오류: ' + JSON.parse(e.data).message, true); return; }
@@ -1365,8 +1365,8 @@
     loadRuns();
   }
 
-  // ---- 다시 붙기: 웹 파드가 다시 뜨면(ConfigMap 을 바꿀 때마다) 서버는 같은 실행 id 를 되살린다. 2초, 4초, 8초 … 최대 30초 간격으로
-  //      GET /api/runs/<id> 를 물어 답이 오면 다시 붙고, 연달아 RETRY_GONE 번 404 면 그만둔다. 다른 실행을 고르면 그만둔다.
+  // ---- 다시 연결: 웹 파드가 재시작되면(ConfigMap을 바꿀 때마다) 서버는 같은 실행 id를 복구한다. 2초, 4초, 8초 … 최대 30초 간격으로
+  //      GET /api/runs/<id>를 요청해 응답이 오면 다시 연결하고, 연속 RETRY_GONE번 404면 멈춘다. 다른 실행을 선택해도 멈춘다.
   const RETRY_MIN_MS = 2000, RETRY_MAX_MS = 30000, RETRY_GONE = 3;
   const retry = { run: null, timer: null, delay: 0, gone: 0, gen: 0 };
   function cancelRetry() {
@@ -1376,7 +1376,7 @@
   function lost(runId, why) {
     if (es) { es.close(); es = null; }
     if (current !== runId) return;
-    if (lastState === 'finished') { loadRuns(); return; }   // 끝난 실행: 결과는 이미 보인다
+    if (lastState === 'finished') { loadRuns(); return; }   // 끝난 실행은 결과가 이미 표시돼 있다
     setTitle('warn', why === 'shutdown' ? '서버가 다시 시작되는 중입니다' : '서버와 연결이 끊겼습니다', false);
     $('stop').disabled = true;
     scheduleRetry(runId);
@@ -1394,7 +1394,7 @@
     if (gen !== retry.gen || current !== runId) return;
     let r = null, st = null;
     try { r = await fetch(`/api/runs/${encodeURIComponent(runId)}`); try { st = await r.json(); } catch (e) {} } catch (e) {}
-    if (gen !== retry.gen || current !== runId) return;      // 그 사이 다른 실행을 골랐다
+    if (gen !== retry.gen || current !== runId) return;      // 그 사이 다른 실행을 선택했다
     if (r && authProblem(r, st)) { cancelRetry(); return; }
     if (r && r.status === 404) {
       if (++retry.gone >= RETRY_GONE) {
@@ -1407,23 +1407,23 @@
       }
     } else if (r && r.ok) {
       retry.gone = 0;
-      attach(runId, true);                          // 끝난 실행이어도 한 번은 붙는다: 결과 파일이 그 흐름으로 온다
+      attach(runId, true);                          // 결과 파일이 SSE로 오므로 끝난 실행이어도 한 번은 연결한다
       return;
     }
-    scheduleRetry(runId);                            // 서버가 아직 안 떴다(연결 실패·5xx)
+    scheduleRetry(runId);                            // 서버가 아직 준비되지 않았다(연결 실패, 5xx)
   }
 
   $('stop').addEventListener('click', async () => {
-    const runId = current;                           // 답을 기다리는 사이 다른 실행을 골라도 그 실행에는 손대지 않는다
+    const runId = current;                           // 응답을 기다리는 사이 다른 실행을 선택해도 그 실행은 건드리지 않는다
     if (!runId) return;
     const wasQueued = lastState === 'queued';
-    $('stop').disabled = true;                       // 두 번 누르지 않게
+    $('stop').disabled = true;                       // 중복 클릭 방지
     let r = null, d = {};
     try { r = await fetch(`/api/runs/${encodeURIComponent(runId)}/stop`, { method: 'POST' }); try { d = await r.json(); } catch (e) {} } catch (e) {}
     const here = current === runId && !!es;
     if (r && authProblem(r, d)) { if (here) $('stop').disabled = false; return; }
     if (!r || !r.ok) { toast('중단 요청이 실패했습니다.', true); if (here) $('stop').disabled = false; return; }
-    if (d && d.stopped === false) {                  // 서버가 멈출 것이 없다고 했다: 요청됨으로 표시하지 않는다
+    if (d && d.stopped === false) {                  // 서버가 중지할 대상이 없다고 응답하면 요청됨으로 표시하지 않는다
       toast('이미 끝난 이관입니다. 중단할 것이 없습니다.');
       loadRuns(); if (current === runId) refreshStatus(runId);
       return;
@@ -1436,7 +1436,7 @@
       toast('중단을 요청했습니다. 지금 돌고 있는 단계가 끝나면 멈춥니다.');
     }
   });
-  // 지금 보이는 실행의 상태를 한 번 다시 읽는다 (흐름이 이미 끝난 실행의 중단 버튼을 바로잡을 때)
+  // 현재 실행의 상태를 한 번 다시 읽는다(이미 끝난 실행의 중지 버튼 상태를 바로잡을 때 쓴다)
   async function refreshStatus(runId) {
     try {
       const r = await fetch(`/api/runs/${encodeURIComponent(runId)}`);
@@ -1446,8 +1446,8 @@
   }
 
   // ---------------------------------------------------------------- 4. 지난 실행
-  // 여러 곳(15초 주기·status 변화·attach·end)이 부른다: RUNS_COALESCE_MS 안의 부름은 한 번으로 묶고,
-  // 늦게 온 옛 답이 새 답을 덮지 않게 마지막으로 보낸 요청의 답만 쓴다
+  // 여러 곳(15초 주기, status 변화, attach, end)에서 호출한다. RUNS_COALESCE_MS 안의 호출은 한 번으로 묶고,
+  // 늦게 온 이전 응답이 새 응답을 덮지 않도록 마지막 요청의 응답만 쓴다
   const RUNS_COALESCE_MS = 300;
   let runsSeq = 0, runsTimer = null;
   function loadRuns() {
@@ -1457,11 +1457,11 @@
   async function fetchRuns() {
     const seq = ++runsSeq;
     let r, d;
-    try { r = await fetch('/api/runs'); d = await r.json(); } catch (e) { return; }   // 서버가 다시 뜨는 중: 다음 주기에
+    try { r = await fetch('/api/runs'); d = await r.json(); } catch (e) { return; }   // 서버가 재시작 중이면 다음 주기에 다시 읽는다
     if (seq !== runsSeq) return;
     if (authProblem(r, d)) return;
     if (!d || !Array.isArray(d.runs)) return;
-    setParallel(d.parallel);                           // 옛 서버(parallel 없음)면 안내를 숨긴다
+    setParallel(d.parallel);                           // 이전 서버(parallel 없음)면 안내를 숨긴다
     const ul = $('runs'); ul.innerHTML = '';
     $('runcount').textContent = d.runs.length ? `${d.runs.length}건` : '';
     if (!d.runs.length) { ul.innerHTML = '<li class="empty">아직 실행이 없습니다.</li>'; return; }
@@ -1471,7 +1471,7 @@
       const s = describe(run);
       const cls = run.state === 'running' || run.state === 'queued' ? 'running' : s.cls;
       const tag = run.flow === FLOW_REM ? '<span class="flowtag rem">취약점 해결</span>' : '<span class="flowtag">전체 진행</span>';
-      // 줄의 주인공 = 올린 파일 이름 그대로(이스케이프, 길면 말줄임 + title 에 전체). 옛 실행처럼 이름이 없으면 실행 id
+      // 각 행에 업로드한 파일 이름을 표시한다(이스케이프, 길면 말줄임하고 title에 전체 이름). 이름이 없는 이전 실행이면 실행 id를 쓴다
       const fname = run.upload ? String(run.upload) : run.run_id;
       li.innerHTML = `<span class="who"><span class="fname" title="${esc(fname)}">${esc(fname)}</span>` +
                      `<span class="meta2"><span class="id">${esc(run.run_id)}</span>${tag}<span class="when">${esc(fmtWhen(run.started || 0))}</span></span></span>` +
@@ -1484,7 +1484,7 @@
 
   // ---------------------------------------------------------------- 시작
   resetRail(FLOW_FULL); syncFlow(); loadConfigs(); loadRuns(); setInterval(loadRuns, 15000);
-  if (location.hash.length > 1) attach(decodeURIComponent(location.hash.slice(1)));   // #<run id> = 공유할 수 있는 주소
+  if (location.hash.length > 1) attach(decodeURIComponent(location.hash.slice(1)));   // #<run id>는 공유할 수 있는 주소다
 })();
 </script>
 </body>

@@ -1,9 +1,11 @@
-"""쿠버네티스 Job 디스패치의 얇은 클라이언트 (2026-11-05, 웹 파드의 ``SBMIG_WEB_MODE=k8s-job``).
-
-웹 파드는 업로드마다 Job 하나를 만들고(``81-web-job.template.yaml`` 의 틀에 실행별 env 를 채워), 상태를 지켜보고(Pending →
-Running → Succeeded / Failed), 멈출 때 지운다. 그 셋이 전부라서 ``kubernetes`` 패키지 대신 ``requests`` 로 클러스터 안 API 를
-직접 부른다 — 폐쇄망에 새 wheel 을 들일 일이 없고, 서비스 계정의 토큰·CA(``/var/run/secrets/kubernetes.io/serviceaccount``)로
-인증한다(권한은 deploy/k8s/45-web-rbac.yaml). 로그 스트림·zip 전달·결과 회수는 공유 PVC 가 대신하므로 여기 없다.
+"""웹 파드가 쿠버네티스 Job을 만들고 관리할 때 쓰는 가벼운 API 클라이언트 모듈.
+웹 파드의 ``SBMIG_WEB_MODE=k8s-job``에서 쓴다.
+업로드마다 ``81-web-job.template.yaml`` 템플릿에 실행별 환경 변수를
+채워 Job을 만들고, 상태를 확인하고, 중지할 때 지운다.
+- 필요한 호출이 몇 가지뿐이므로 ``kubernetes`` 패키지 없이 ``requests``로 API를 직접 호출한다.
+  폐쇄망에 새 패키지를 들이지 않기 위해서다
+- 인증은 서비스 계정 토큰과 CA 또는 ``KUBECONFIG``로 한다. 필요한 권한은 deploy/k8s/45-web-rbac.yaml에 있다
+- 로그, zip 전달, 결과 회수는 공유 PVC로 하므로 이 모듈에는 없다
 
 A thin in-cluster client for the three calls the Job dispatch needs — create a Job from the template, read its state
 (Job status + its pod's phase / container exit code), delete it — over `requests` with the service-account token and CA.
@@ -33,38 +35,41 @@ NAMESPACE_ENV = "SBMIG_K8S_NAMESPACE"
 TEMPLATE_ENV = "SBMIG_JOB_TEMPLATE"
 POLL_ENV = "SBMIG_JOB_POLL_S"
 STOP_GRACE_ENV = "SBMIG_JOB_STOP_GRACE_S"
-STATUS_GRACE_ENV = "SBMIG_JOB_STATUS_GRACE_S"   # Job 이 끝난 뒤 Worker 의 job-status.json 이 보일 때까지 기다리는 초(NFS 속성 캐시 — 기본 90)
-EXIT_GRACE_ENV = "SBMIG_JOB_EXIT_GRACE_S"       # 결과 파일을 받은 뒤 파드가 스스로 끝나기를 기다리는 초(넘기면 그 Job 을 지운다 — 기본 120)
-KUBECONFIG_ENV = "KUBECONFIG"              # 인프라팀 모델(2026-11-09): Agent 파드에 Secret 으로 마운트한 kubeconfig(/etc/kube/config)
+STATUS_GRACE_ENV = "SBMIG_JOB_STATUS_GRACE_S"   # Job이 끝난 뒤 job-status.json이 보일 때까지 기다리는 시간(초, 기본 90)
+EXIT_GRACE_ENV = "SBMIG_JOB_EXIT_GRACE_S"       # 결과 파일을 받은 뒤 파드 종료를 기다리는 초(기본 120), 넘기면 Job을 지운다
+KUBECONFIG_ENV = "KUBECONFIG"              # Agent 파드에 Secret으로 마운트한 kubeconfig(/etc/kube/config)
 DEFAULT_TEMPLATE = "deploy/k8s/81-web-job.template.yaml"
 SA_DIR = Path("/var/run/secrets/kubernetes.io/serviceaccount")
 MODES = ("in-process", "k8s-job", "local-job")    # local-job: the Job-mode flow with a local subprocess as the "pod" (development)
 TERMINAL_PHASES = ("Succeeded", "Failed", "Missing")
-TEMPLATE_INVALID = "MIGRATION_TEMPLATE_INVALID"   # 시작 검증이 거부할 때 메시지의 첫 말(배포팀이 로그에서 찾는 값)
-# Worker 에 있으면 안 되는 env: 원문 LLM 기록(공유 볼륨에 소스가 남는다)과 웹 토큰(빌드 파드가 웹 API 를 부를 일이 없다)
+TEMPLATE_INVALID = "MIGRATION_TEMPLATE_INVALID"   # 시작 검증에서 거부할 때 메시지 앞에 붙는 값으로 배포팀이 로그에서 찾는다
+# Worker에 있으면 안 되는 환경 변수다.
+# LLM 원문 기록은 공유 볼륨에 소스를 남기고, 빌드 파드는 웹 API를 호출하지 않으므로 웹 토큰이 필요 없다
 FORBIDDEN_WORKER_ENV = ("LLM_RECORD_DIR", "SBMIG_WEB_TOKEN", "WEB_API_TOKEN")
-# 시작 때 확인하는 권한(deploy/k8s/45-web-rbac.yaml 과 같은 목록): (verb, resource, group)
+# 시작할 때 확인하는 권한 (verb, resource, group) 목록이며 deploy/k8s/45-web-rbac.yaml과 같아야 한다
 REQUIRED_PERMISSIONS = tuple([(v, "jobs", "batch") for v in ("create", "get", "list", "watch", "delete")]
                              + [(v, "pods", "") for v in ("get", "list", "watch")])
 
 
 def cluster_host_present() -> bool:
-    """``KUBERNETES_SERVICE_HOST`` 가 있나 — 파드 안이라는 뜻(토큰은 별개)."""
+    """환경 변수 ``KUBERNETES_SERVICE_HOST``가 있는지 확인한다.
+    있으면 파드 안에서 실행 중이라는 뜻이며 토큰이 있는지와는 상관없다."""
     return bool(os.environ.get("KUBERNETES_SERVICE_HOST"))
 
 
 def in_cluster_available() -> bool:
-    """이 프로세스가 클러스터 안 파드인가(``KUBERNETES_SERVICE_HOST`` + 서비스 계정 토큰). 개발 PC 에서는 False —
-    ``kubeconfig_path()`` 도 없으면 ``k8s-job`` 모드가 자동으로 ``local-job`` 으로 내려가는 기준.
+    """이 프로세스가 클러스터 안 파드에서 실행 중인지 확인한다(``KUBERNETES_SERVICE_HOST``와 서비스 계정
+    토큰). 개발 PC에서는 False다.
+    이 값이 False이고 ``kubeconfig_path()``도 없으면 ``k8s-job`` 모드가 ``local-job``으로 바뀐다.
 
     Are we a pod inside a cluster (`KUBERNETES_SERVICE_HOST` + the service-account token)? False on a developer PC."""
     return bool(os.environ.get("KUBERNETES_SERVICE_HOST")) and (SA_DIR / "token").is_file()
 
 
 def kubeconfig_path() -> Path | None:
-    """``KUBECONFIG`` 가 가리키는 파일이 있으면 그 경로(2026-11-09, 인프라팀 모델: Agent 파드에 kubeconfig Secret 을 ``/etc/kube/config`` 로
-    마운트하고 ``KUBECONFIG`` 를 준다). 명시된 것만 본다 — ``~/.kube/config`` 는 개발 PC 의 다른 클러스터일 수 있어 저절로 쓰지 않는다.
-    여러 경로(os.pathsep)면 첫 번째 있는 파일.
+    """``KUBECONFIG``가 가리키는 파일이 있으면 그 경로를 반환한다.
+    여러 경로(os.pathsep)가 있으면 처음 존재하는 파일을 반환한다.
+    ``~/.kube/config``는 개발 PC의 다른 클러스터일 수 있으므로 자동으로 쓰지 않는다.
 
     The file `KUBECONFIG` points at, when it exists; nothing implicit (`~/.kube/config` is never picked up on its own)."""
     raw = (os.environ.get(KUBECONFIG_ENV) or "").strip()
@@ -76,43 +81,47 @@ def kubeconfig_path() -> Path | None:
 
 
 def cluster_access_available() -> bool:
-    """쿠버네티스 API 를 부를 수단이 있나 — 파드 안의 서비스 계정 토큰이거나 ``KUBECONFIG`` 파일. ``K8sClient.connect()`` 가 그 순서의
-    반대로(kubeconfig 가 명시됐으면 그것부터) 고른다.
+    """쿠버네티스 API를 호출할 수단이 있는지 확인한다.
+    파드 안의 서비스 계정 토큰이나 ``KUBECONFIG`` 파일 중 하나가 있으면 된다.
 
     A service-account token inside a pod, or an explicit kubeconfig: either lets `k8s-job` create real Jobs."""
     return in_cluster_available() or kubeconfig_path() is not None
 
 
 class K8sError(RuntimeError):
-    """클러스터 API 가 거부했거나 닿지 않을 때(상태 코드와 본문 앞부분을 담는다)."""
+    """클러스터 API가 요청을 거부했거나 연결되지 않을 때 던지는 예외 클래스.
+    상태 코드와 응답 본문 앞부분을 담는다."""
 
 
 @dataclass
 class JobState:
-    """Job 하나의 지금 상태: ``phase`` (Creating | Pending | Running | Succeeded | Failed | Missing), 파드 이름, 컨테이너
-    종료 코드(끝났을 때), 사람이 읽을 메시지(ImagePullBackOff 같은 대기 이유, Job 조건)."""
+    """Job 하나의 현재 상태를 담는 데이터 클래스.
+    ``phase``(Creating | Pending | Running | Succeeded | Failed | Missing), 파드 이름, 컨테이너 종료 코드,
+    사람이 읽을 메시지(ImagePullBackOff 같은 대기 이유, Job 조건)를 담는다."""
     phase: str
     pod: str | None = None
     exit_code: int | None = None
     message: str = ""
-    # Job 의 metadata.labels: 이어받거나 지우기 전에 소유(sbmig-owner / sbmig-run-id)를 확인한다. **None = 이 클라이언트는 라벨을 알려 주지
-    # 못한다**(로컬 서브프로세스, 테스트용 가짜) — 그때만 이름을 믿는다. dict 는 API 가 답한 라벨 그대로이고, 비어 있으면(라벨 없는 Job)
-    # 우리 것이 아니다(리뷰 2026-11-10: 빈 dict 를 "모름" 으로 읽어 라벨 없는 Job 을 자기 것으로 다뤘다)
+    # 이어받거나 지우기 전에 소유 라벨(sbmig-owner / sbmig-run-id)을 확인한다. None은 라벨을 알 수 없는
+    # 클라이언트(로컬 서브프로세스, 테스트용 가짜 구현)이고, 그때만 이름으로 판단한다
+    # 빈 dict는 라벨이 없는 Job이므로 우리 것이 아니다
     labels: dict[str, str] | None = None
-    # 리뷰 2026-11-10: Job 이 Succeeded / Failed 라고 해도 아직 돌거나 종료 유예 중인 파드의 수(status.active / terminating, 파드 목록).
-    # activeDeadlineSeconds 로 Failed 가 된 Job 의 파드는 종료 유예 동안 Maven 이 아직 쓸 수 있다 — 0 이 될 때까지 끝난 것이 아니다
+    # Job이 Succeeded / Failed여도 아직 실행 중이거나 종료 중인 파드 수다. activeDeadlineSeconds로 Failed가
+    # 된 Job도 종료 유예 동안 파드의 Maven이 계속 파일을 쓸 수 있으므로 0이 되어야 끝난 것으로 본다
     active_pods: int = 0
 
     @property
     def finished(self) -> bool:
-        """끝났나 — 끝 상태(Succeeded / Failed / Missing)이고 돌거나 종료 중인 파드가 없을 때만(자리를 넘겨도 되는가).
+        """Job이 완전히 끝났는지 확인한다. 종료 상태(Succeeded / Failed / Missing)이고 실행 중이거나 종료
+        중인 파드가 없어야 하며, 슬롯을 다른 실행에 넘겨도 되는지 판단할 때 쓴다.
 
         Ended: a terminal phase AND no pod of it still running or terminating (may its slot be handed on)."""
         return self.phase in TERMINAL_PHASES and not self.active_pods
 
 
 def job_name(run_id: str) -> str:
-    """실행 id → Job 이름(``sbmig-<run id>``, RFC 1123: 소문자·숫자·``-``, 63자 이하).
+    """실행 id로 Job 이름(``sbmig-<run id>``)을 만든다.
+    RFC 1123에 맞게 소문자, 숫자, ``-``만 쓰고 63자 이하로 자른다.
 
     `sbmig-<run id>` made a valid RFC 1123 name (lower-case, `-`, at most 63 characters)."""
     base = re.sub(r"[^a-z0-9-]+", "-", f"sbmig-{run_id}".lower()).strip("-")
@@ -121,9 +130,11 @@ def job_name(run_id: str) -> str:
 
 def render_job(template: str | Path | dict, run_id: str, env: dict[str, str], namespace: str | None = None,
                owner: str | None = None) -> dict:
-    """틀(yaml 경로 또는 dict)에 실행 하나를 채운다: ``metadata.name`` = job_name, ``generateName`` 제거, 라벨
-    ``sbmig-run-id``(와 ``owner`` 가 주어지면 ``sbmig-owner`` — Job 과 파드 틀 둘 다), namespace(주어지면), 첫 컨테이너의 env 에 ``env`` 를
-    같은 이름은 바꾸고 없는 것은 덧붙인다. 틀은 손대지 않는다.
+    """Job 템플릿(yaml 경로 또는 dict)에 실행 하나의 값을 채운 매니페스트를 만든다.
+    원본 템플릿은 바꾸지 않는다.
+    - ``metadata.name``을 job_name으로 정하고 ``generateName``은 제거한다
+    - 라벨 ``sbmig-run-id``와, ``owner``가 있으면 ``sbmig-owner``를 Job과 파드 템플릿에 붙인다
+    - namespace를 넣고, 첫 컨테이너의 env에 ``env``를 합친다. 같은 이름은 값을 바꾸고 없는 이름은 추가한다
 
     Fill the template for one run: name, labels (run id, and the per-request owner token when given — on the Job and its
     pod template), namespace, and the first container's env (same names replaced)."""
@@ -154,7 +165,8 @@ def render_job(template: str | Path | dict, run_id: str, env: dict[str, str], na
 
 
 def _label_value(value: str) -> str:
-    # 라벨 값 규칙(영숫자·``-_.``, 63자 이하) — run id 와 owner 토큰은 이미 맞지만 틀린 값이 API 에서 422 로 죽지 않게
+    # 라벨 값 규칙(영숫자, ``-_.``, 63자 이하)에 맞춘다.
+    # run id와 owner 토큰은 이미 맞지만 틀린 값 때문에 API가 422로 실패하지 않게 한다
     return re.sub(r"[^A-Za-z0-9._-]+", "-", str(value))[:63]
 
 
@@ -163,13 +175,11 @@ def _invalid(reason: str) -> K8sError:
 
 
 def validate_worker_template(template: str | Path | dict, out_dir: Path | None) -> dict:
-    """Worker Job 틀을 시작 때 검사한다(배포팀 명세, v2.1z-ac — 회사 Main 의 worker_template 과 같은 규칙). 어기면
-    ``K8sError("MIGRATION_TEMPLATE_INVALID: <이유>")``: 읽을 수 없음 / ``batch/v1`` ``Job`` 아님; 컨테이너가 정확히 하나가 아니거나
-    initContainers·ephemeralContainers 있음; ``backoffLimit``(기본 0) ≠ 0, ``parallelism`` / ``completions``(기본 1) ≠ 1,
-    ``restartPolicy``(기본 Never) ≠ Never; 컨테이너에 name / image 없음; ``envFrom`` 있음; ``out_dir`` 를 품는 마운트가 쓰기 가능한 PVC
-    전체(readOnly·subPath 없음) 하나가 아니거나 ``out_dir`` 아래 마운트가 있음; ``LLM_RECORD_DIR`` / ``SBMIG_WEB_TOKEN`` / ``WEB_API_TOKEN``
-    env, 또는 이름에 TOKEN / PASSWORD / SECRET / API_KEY 가 든 env(설정 덮어쓰기 ``SBMIG_<섹션>__<키>`` 제외)에 literal ``value``. ``out_dir`` 가 None 이면(테스트가 주입한 클라이언트
-    — 출력 폴더가 파드 경로가 아니다) 마운트 규칙만 건너뛴다. 통과하면 읽은 dict 를 돌려준다(Main 은 그것으로 Job 을 만든다).
+    """Worker Job 템플릿이 규칙에 맞는지 시작할 때 검사한다.
+    위반하면 ``K8sError("MIGRATION_TEMPLATE_INVALID: <이유>")``를 던지고, 통과하면 읽은 dict를 반환한다.
+    Job 매니페스트인지, 컨테이너가 하나인지, ``backoffLimit`` 0, ``restartPolicy`` Never, ``envFrom`` 없음,
+    ``out_dir``를 포함하는 쓰기 가능한 PVC 마운트 하나, 비밀 이름 env에 직접 쓴 값이 없는지 등을 확인한다.
+    ``out_dir``가 None이면 테스트 클라이언트로 보고 마운트 규칙만 건너뛴다.
 
     Validate the Worker Job template at startup; raises `K8sError("MIGRATION_TEMPLATE_INVALID: …")`, returns the parsed dict.
     `out_dir=None` skips the mount rules only (an injected test client: the output dir is not a pod path)."""
@@ -231,10 +241,10 @@ def validate_worker_template(template: str | Path | dict, out_dir: Path | None) 
 
 
 class K8sClient:
-    """클러스터 안 API 클라이언트. ``in_cluster()`` 가 서비스 계정 파일과 ``KUBERNETES_SERVICE_HOST`` 로 만든다; 테스트는
-    ``session`` 에 가짜를 넣는다. v2.1z-ae: 여러 Job 을 동시에 지켜보는 스레드들이 한 클라이언트를 함께 쓴다 — ``requests.Session``
-    은 스레드 사이에서 안전하다고 약속하지 않으므로, 넣어 준 세션이 없으면 **스레드마다** 세션을 하나씩 만든다(헤더·verify·cert 는
-    요청마다 넘기므로 동작은 같다). 넣어 준 세션은 그대로 쓴다.
+    """쿠버네티스 클러스터 API를 호출하는 클라이언트 클래스. ``connect()``, ``in_cluster()``,
+    ``from_kubeconfig()``로 만들고, 테스트는 ``session``에 가짜 구현을 넣는다.
+    여러 Job을 감시하는 스레드가 함께 쓰는데 ``requests.Session``은 스레드 안전하지 않으므로, 세션을 넣지
+    않았으면 스레드마다 하나씩 만든다.
 
     In-cluster API client (`in_cluster()`); tests pass a fake `session`, used as is. Without one each thread gets its own
     `requests.Session` (several watcher threads share the client; headers / verify / cert travel with every request)."""
@@ -244,20 +254,21 @@ class K8sClient:
         self.base_url = base_url.rstrip("/")
         self.namespace = namespace
         self.verify = verify
-        self.cert = cert                        # (client.crt, client.key) — kubeconfig 의 클라이언트 인증서 사용자일 때
+        self.cert = cert                        # kubeconfig 사용자가 클라이언트 인증서를 쓸 때의 (client.crt, client.key)
         self.timeout_s = timeout_s
         self._injected_session = session       # None → one requests.Session per thread (the `session` property)
         self._local = threading.local()
-        self.source = ""                        # 사람이 읽을 출처: "in-cluster service account" / "kubeconfig <경로> (context <이름>)"
-        self._tmp: Any = None                   # kubeconfig 의 base64 인증서를 풀어 둔 임시 폴더 — 클라이언트와 같이 산다
+        self.source = ""                        # 접속 정보를 어디서 읽었는지 사람이 읽을 수 있게 남긴다
+        self._tmp: Any = None                   # kubeconfig의 base64 인증서를 풀어 둔 임시 폴더이며 클라이언트와 수명이 같다
         self._headers = {"Accept": "application/json", "Content-Type": "application/json"}
         if token:
             self._headers["Authorization"] = f"Bearer {token}"
 
     @classmethod
     def in_cluster(cls, namespace: str | None = None, session: Any = None) -> K8sClient:
-        """파드 안의 기본값: 토큰·CA·namespace 는 서비스 계정 디렉터리, 주소는 ``KUBERNETES_SERVICE_HOST`` / ``_PORT``.
-        클러스터 밖이면 K8sError."""
+        """파드 안의 기본 접속 정보로 클라이언트를 만든다. 토큰, CA, namespace는 서비스 계정 폴더에서,
+        주소는 ``KUBERNETES_SERVICE_HOST`` / ``_PORT``에서 읽는다.
+        클러스터 밖이면 K8sError를 던진다."""
         host, port = os.environ.get("KUBERNETES_SERVICE_HOST"), os.environ.get("KUBERNETES_SERVICE_PORT", "443")
         token_file, ca_file, ns_file = SA_DIR / "token", SA_DIR / "ca.crt", SA_DIR / "namespace"
         if not host or not token_file.is_file():
@@ -272,12 +283,10 @@ class K8sClient:
 
     @classmethod
     def from_kubeconfig(cls, path: str | Path | None = None, namespace: str | None = None, session: Any = None) -> K8sClient:
-        """kubeconfig 파일로 만든다(2026-11-09, 인프라팀 모델: Secret ``agent-kubeconfig`` → ``/etc/kube/config``, env ``KUBECONFIG``).
-        ``current-context`` 의 cluster(server, certificate-authority[-data], insecure-skip-tls-verify)와 user(token / tokenFile,
-        client-certificate[-data] + client-key[-data], username + password)를 읽는다. base64 ``*-data`` 는 임시 폴더에 0600 파일로 풀어
-        requests 에 경로로 준다; 상대 경로는 kubeconfig 파일이 있는 폴더 기준(kubectl 과 같다). ``exec`` / ``auth-provider`` 사용자는 못
-        쓴다(외부 명령을 부르지 않는다 — 토큰이나 인증서가 든 kubeconfig 를 달라고 K8sError). namespace: 인자 → ``SBMIG_K8S_NAMESPACE`` →
-        context 의 namespace → default.
+        """kubeconfig 파일로 클라이언트를 만든다.
+        ``current-context``의 cluster와 user(token, 클라이언트 인증서, username + password)를 읽는다.
+        외부 명령을 실행하지 않으므로 ``exec`` / ``auth-provider`` 사용자는 K8sError를 던진다.
+        namespace는 인자, ``SBMIG_K8S_NAMESPACE``, context의 namespace, default 순으로 정한다.
 
         Build the client from a kubeconfig (current-context's cluster + user; token, client certificate or basic auth; `exec` refused)."""
         p = Path(path) if path else kubeconfig_path()
@@ -304,7 +313,8 @@ class K8sClient:
         tmp = tempfile.TemporaryDirectory(prefix="sbmig-kube-")
 
         def materialize(b64: Any, file: Any, name: str) -> str | None:
-            # ``*-data`` 는 base64 PEM → 임시 파일(0600); ``*`` 는 경로(상대면 kubeconfig 폴더 기준)
+            # ``*-data``는 base64 PEM이므로 임시 파일(0600)로 풀고, ``*``는 경로이므로 상대 경로면
+            # kubeconfig 폴더를 기준으로 본다
             if b64:
                 out = Path(tmp.name) / name
                 out.write_bytes(base64.b64decode(str(b64)))
@@ -350,8 +360,8 @@ class K8sClient:
 
     @classmethod
     def connect(cls, namespace: str | None = None, session: Any = None) -> K8sClient:
-        """``KUBECONFIG`` 파일이 있으면 그것으로(명시된 쪽이 이긴다), 없으면 파드 안 서비스 계정으로. 둘 다 없으면 K8sError
-        (``in_cluster`` 의 메시지).
+        """접속할 수 있는 방법으로 클라이언트를 만든다. ``KUBECONFIG`` 파일이 있으면 그것을, 없으면 파드 안
+        서비스 계정을 쓰고, 둘 다 없으면 K8sError를 던진다.
 
         Explicit kubeconfig first, else the in-cluster service account."""
         if kubeconfig_path() is not None:
@@ -360,7 +370,8 @@ class K8sClient:
 
     @property
     def session(self) -> Any:
-        """이 스레드가 쓸 세션: 넣어 준 것이 있으면 그것, 없으면 이 스레드 전용 ``requests.Session`` (처음 부를 때 만든다).
+        """이 스레드가 쓸 HTTP 세션을 반환한다. 넣어 준 세션이 있으면 그것을, 없으면 처음 호출할 때 만든
+        스레드 전용 ``requests.Session``을 반환한다.
 
         The injected session, else this thread's own `requests.Session` (created on first use)."""
         if self._injected_session is not None:
@@ -392,7 +403,7 @@ class K8sClient:
 
     @staticmethod
     def _body(r: Any, what: str) -> dict:
-        # 2xx 인데 본문이 JSON 객체가 아니다(API 서버 앞의 프록시가 HTML 을 돌려준다 …): "나쁜 답" 도 API 문제다 — K8sError
+        # 2xx인데 본문이 JSON 객체가 아니면(앞단 프록시의 HTML 응답 등) API 문제로 보고 K8sError를 던진다
         try:
             body = r.json()
         except Exception as e:  # requests' JSONDecodeError, a fake's ValueError …
@@ -405,8 +416,8 @@ class K8sClient:
 
     # ---- the three calls
     def create_job(self, manifest: dict) -> str:
-        """Job 을 만들고 이름을 돌려준다(이미 있으면 409 → K8sError). 2xx 인데 본문을 읽을 수 없으면 만든 것은 성공했으므로 틀의 이름을
-        돌려준다(경고 한 줄).
+        """Job을 만들고 그 이름을 반환한다. 같은 이름의 Job이 이미 있으면 상태 409로 K8sError를 던진다.
+        2xx인데 본문을 읽을 수 없으면 생성은 성공한 것이므로 경고를 남기고 템플릿의 이름을 반환한다.
 
         Create the Job and return its name; a 2xx whose body cannot be read still created it (the manifest's name, a warning)."""
         r = self._req("POST", self._jobs(), json=manifest)
@@ -420,9 +431,10 @@ class K8sClient:
         return str(name)
 
     def job_state(self, name: str) -> JobState:
-        """Job + 그 파드의 상태 하나로: 없음 → Missing; status.succeeded / failed → Succeeded / Failed(컨테이너 종료 코드 포함);
-        아니면 파드 phase(Pending / Running; 대기 이유를 메시지로), 파드가 아직 없으면 Creating. 끝 상태라도 아직 돌거나 종료 중인 파드의
-        수를 ``active_pods`` 에 담는다(그동안 ``finished`` 는 False). 본문이 JSON 이 아니거나 모양이 이상하면 K8sError(API 문제로 다룬다).
+        """Job과 파드의 상태를 조회해 하나의 JobState로 합친다. Job이 없으면 Missing, status.succeeded /
+        failed가 있으면 Succeeded / Failed, 아니면 파드의 phase이고 파드가 없으면 Creating이다.
+        종료 상태여도 실행 중이거나 종료 중인 파드 수를 ``active_pods``에 담는다.
+        응답 형식이 이상하면 K8sError를 던진다.
 
         One state of the Job and its pod; `active_pods` counts pods still running / terminating even when the Job is
         terminal. A body that is not JSON or has an odd shape raises K8sError (an API problem, never another exception)."""
@@ -439,12 +451,12 @@ class K8sClient:
 
     @staticmethod
     def _job_state_of(body: dict, pods_body: dict) -> JobState:
-        # job_state 의 본문 해석(모양이 이상하면 부른 쪽이 K8sError 로 바꾼다)
+        # job_state가 받은 응답을 해석한다. 형식이 이상하면 호출한 쪽이 K8sError로 바꾼다
         status = body.get("status") or {}
         labels = {str(k): str(v) for k, v in (((body.get("metadata") or {}).get("labels")) or {}).items()}
         pods = list(pods_body.get("items") or [])
-        # 아직 돌거나 종료 중인 파드: phase 가 Succeeded / Failed 가 아닌 것(종료 중인 파드는 deletionTimestamp 가 있어도 Running 이다).
-        # Job 의 status.active / status.terminating(있는 클러스터만)도 함께 본다 — 둘 중 큰 쪽
+        # 종료 중인 파드는 deletionTimestamp가 있어도 phase가 Running이므로 Succeeded / Failed가 아닌 파드를 모두 센다
+        # Job의 status.active / status.terminating도 함께 보고 더 큰 값을 쓴다
         live = sum(1 for p in pods if ((p.get("status") or {}).get("phase") or "Pending") not in ("Succeeded", "Failed"))
         active_pods = max(live, int(status.get("active") or 0), int(status.get("terminating") or 0))
         pods.sort(key=lambda p: ((p.get("metadata") or {}).get("creationTimestamp") or ""), reverse=True)
@@ -474,14 +486,15 @@ class K8sClient:
         return JobState(phase, pod_name, None, message, labels)
 
     def delete_job(self, name: str) -> None:
-        """Job 과 그 파드를 지운다(propagationPolicy Foreground). 이미 없으면 조용히."""
+        """Job과 그 파드를 지운다(propagationPolicy Foreground). 이미 없으면 무시한다."""
         self._req("DELETE", f"{self._jobs()}/{name}", ok=(200, 202, 404),
                   json={"apiVersion": "v1", "kind": "DeleteOptions", "propagationPolicy": "Foreground"})
         log.info("k8s: job %s deleted", name)
 
     def can_i(self, verb: str, resource: str, group: str = "") -> bool:
-        """이 클라이언트의 사용자가 namespace 안에서 ``verb`` ``resource`` 를 할 수 있나 — SelfSubjectAccessReview 한 번(시작 때 권한
-        자가 점검; 누구나 부를 수 있는 API 라 따로 권한이 필요 없다). API 가 거부·불통이면 K8sError.
+        """이 클라이언트의 사용자가 namespace 안에서 ``resource``에 ``verb`` 작업을 할 수 있는지
+        SelfSubjectAccessReview로 확인한다. 시작할 때 권한을 점검하는 데 쓴다.
+        API가 거부하거나 연결되지 않으면 K8sError를 던진다.
 
         One SelfSubjectAccessReview: may this client's user `verb` `resource` (API `group`) in its namespace?"""
         body = {"apiVersion": "authorization.k8s.io/v1", "kind": "SelfSubjectAccessReview",

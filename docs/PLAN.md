@@ -641,3 +641,23 @@ description and footer, and runs must be recognisable by the uploaded file's nam
 | Real Maven | the remediation flow on a migrated result ZIP against the local fake IVAS (`exit=2 build=ok … flow=remediation remediation=AWAITING_APPROVAL`, the uploaded bytes unchanged, `llm=0`); `ant-webapp` with the switch on PASS; the same project refused by default in both flows | scratch, `scripts/e2e.sh --only ant-webapp` | done |
 | Known limits | a ZIP whose project sits two or more folders deep is not accepted by the remediation flow; without a root pom the reactor roots are built one by one (no generated aggregator) | — | open |
 | Not seen yet | the remediation flow in the cluster (Job mode) and against the real IVAS | — | open |
+
+## Status — 2026-11-12, Korean comments rewritten as hand-written comments
+
+The business team read the Korean docstrings / comments and said they look AI-written ("주석들 너무 ai티 난다"). The user:
+keep the English (the working record), rewrite only the Korean "개발자들이 남기는 주석처럼". After a first sample
+("경로에서 src/… 이후 부분만 남긴다. 등록부 키로는 쓰지 않는다.") the user added: a comment must say what the function does,
+in words a newcomer knows ("등록부 키가 뭔지를 모르겠는데 … 이런 기능을 하는 함수 … 아직 부드럽지가 않네"), and approved the
+second sample ("파일 경로에서 ``src/`` 이후 부분만 잘라서 반환한다."). No code changed in this round.
+
+| Item | Deliverable | Where | Status |
+|---|---|---|---|
+| Convention | reader = a developer new to the project; the first sentence says what the code does; length table; plain words instead of project-only words; no em dash / arrow / bold / version tag / date / detached particle in Korean; examples | `docs/v2/CODE-COMMENTS-KO.md` | done |
+| Python comments | every Korean docstring part and `#` comment of `sbmig/**/*.py` rewritten (5,286 items in 164 files): a first pass for length and notation, a second for plain purpose-first sentences, a last pass over the lines the worklists did not reach | `sbmig/` | done |
+| How it was applied | worklists extracted per file, new Korean returned as JSON, applied by a script from git HEAD: the code is identical (AST without docstrings), English docstring lines and English comments are kept | — | done |
+| Page | the HTML / CSS / JS comments of the single-file page (104 comments); nothing the page shows changed | `sbmig/web/static/index.html` | done |
+| Config comments | the operator explanations of the five yml files in the same wording (keys, values and commented-out examples untouched) | `config/*.yml` | done |
+| Guard | Korean parts of docstrings and comments may not carry an em dash, arrow, bold, `v2.x` tag, ISO date or a detached particle; English parts (also an English sentence quoting Korean) are not checked | `tests/docs/test_korean_comments.py` | done |
+| Docs | CLAUDE.md working note, agent-doc 01 / 08, PROGRESS | `CLAUDE.md`, `agent-doc/`, `docs/PROGRESS.md` | done |
+| Tests | offline suite 5,061 passed, 58 deselected (one test added for the guard, one for its classifier); the AST without docstrings of all 164 changed Python files equals the commit before | — | done |
+| Not changed on purpose | `deploy/` comments: the company keeps hand-filled copies of the manifests, comment churn there would make their manual merge harder | `deploy/` | open (ask first) |

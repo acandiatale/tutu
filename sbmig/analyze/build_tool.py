@@ -1,11 +1,10 @@
-"""빌드 도구 판별(카탈로그 S4): Maven 프로젝트만 마이그레이션한다.
-흐름상 위치: 접수(intake)의 ``_check_build_tool`` 이 Maven 호출 전에 가장 먼저 부르고, 분석기가 같은 결과를
-``ProjectProfile.build_tool`` 에 다시 쓴다(대비책). Maven 이 아니면 실행은 exit 3 으로 중단된다. 핵심 진입점:
-:func:`detect_build_tool` → :class:`BuildToolDetection` (``ok`` = maven). 결정: Gradle 거부는 사용자 결정, pom 이 하나도
-없는 트리 거부는 회사 결정(pom 합성 없음; ``sbmig inventory <dir>`` 로 트리를 설명해 담당 팀에 거부 사유를 보낸다). Ant 는
-접수가 ``intake.ant_message`` 안내로 거부한다(회사 결정); ``intake.ant_to_maven: true`` 일 때만 접수가 ``ant_build_file`` 로 pom.xml 을
-합성한다. ``ANT_REASON`` 은 판별 결과의 기술 설명(분석기 경고·후속 조치)이고, 사람에게 보이는 거부 문구는 ``intake.ant_message`` 다.
-pom 이 어딘가에 하나라도 있으면 옆의 Gradle / Ant 파일은 무시한다.
+"""프로젝트의 빌드 도구를 판별하는 모듈. Maven 프로젝트만 이관하고, 아니면 exit 3으로 중단한다.
+접수의 ``_check_build_tool``이 가장 먼저 호출하고, 분석기가 결과를 ``ProjectProfile.build_tool``에 넣는다.
+- Gradle 프로젝트와 pom이 하나도 없는 트리는 거부한다.
+  pom이 없는 트리는 ``sbmig inventory <dir>``로 구조를 설명한다
+- Ant 프로젝트는 접수가 ``intake.ant_message``로 거부한다.
+  ``intake.ant_to_maven: true``일 때만 pom.xml을 만든다
+- pom이 하나라도 있으면 함께 있는 Gradle / Ant 파일은 무시한다
 
 Build-tool detection (catalog S4): only Maven projects are migrated. An Ant project is refused at intake with
 `intake.ant_message` (`ANT_REASON` is the technical description); with `intake.ant_to_maven: true` the intake
@@ -39,20 +38,22 @@ NONE_REASON = ("no pom.xml found (no supported build tool): only Maven projects 
 
 @dataclass(frozen=True)
 class BuildToolDetection:
-    """빌드 도구 판별 결과: ``tool`` (maven / gradle / ant / none) 과 사람에게 보여 줄 설명 ``reason``.
-    v2.1j: ant 이면 ``ant_build_file`` = 쓸 build.xml 의 저장소 상대 경로(루트의 것, 없으면 가장 얕은 것)."""
+    """빌드 도구 판별 결과를 담는 데이터 클래스.
+    ``tool``(maven / gradle / ant / none)과 설명 ``reason``을 담는다.
+    ant면 ``ant_build_file``에 사용할 build.xml의 상대 경로가 들어간다."""
     tool: BuildTool
     reason: str = ""
     ant_build_file: str = ""                 # v2.1j: repo-relative build.xml when tool is ant (else "")
 
     @property
     def ok(self) -> bool:
-        """Maven 이면 True — 이것만 마이그레이션 대상이다."""
+        """Maven 프로젝트인지 확인한다. Maven만 이관 대상이다."""
         return self.tool == "maven"
 
 
 def _has_any(ws: Any, names: tuple[str, ...]) -> bool:
-    """루트에 먼저 묻고(싸다), 없으면 하위 전체를 glob — ``.git`` / ``target`` 등 건너뛸 경로는 제외."""
+    """이름 중 하나인 파일이 트리에 있는지 확인한다.
+    확인 비용이 적은 루트를 먼저 보고, 없으면 하위 전체를 찾는다(``.git`` / ``target`` 등은 제외)."""
     exists = getattr(ws, "exists", None)
     if callable(exists) and any(exists(n) for n in names):
         return True
@@ -60,8 +61,8 @@ def _has_any(ws: Any, names: tuple[str, ...]) -> bool:
 
 
 def find_ant_build_file(ws: Any) -> str:
-    """Ant 빌드 파일: 루트의 ``build.xml``, 없으면 가장 얕은 ``build.xml`` (건너뛸 경로 제외, 같은 깊이면 이름순).
-    없으면 "".
+    """Ant 빌드 파일 경로를 찾는다. 루트의 ``build.xml``이 없으면 가장 얕은 ``build.xml``(같은 깊이면
+    이름순)을 고르고, 없으면 빈 문자열을 반환한다.
 
     The Ant build file: the root `build.xml`, else the shallowest one outside skipped paths; "" when none."""
     exists = getattr(ws, "exists", None)
@@ -72,12 +73,13 @@ def find_ant_build_file(ws: Any) -> str:
 
 
 def detect_build_tool(ws: Any) -> BuildToolDetection:
-    """pom.xml 이 루트든 하위든 하나라도 있으면 ``maven``, 아니면 gradle / ant / none 과 거부 설명을 돌려준다.
+    """빌드 도구를 판별한다.
+    pom.xml이 어디든 하나라도 있으면 ``maven``을, 아니면 gradle / ant / none과 거부 사유를 반환한다.
 
     `maven` when any pom.xml exists (root or below); else gradle / ant / none with an explanation."""
     gradle = _has_any(ws, GRADLE_FILES)
     ant = _has_any(ws, ANT_FILES)
-    # pom 이 있으면 Maven 이 이긴다: 옆에 남은 Gradle / Ant 파일은 무시하고 경고(reason 에 "ignored")만 남긴다
+    # pom이 있으면 Maven으로 본다. 함께 있는 Gradle / Ant 파일은 무시하고 reason에 "ignored"만 남긴다
     if _has_any(ws, ("pom.xml",)):
         ignored = []
         if gradle:
@@ -87,10 +89,10 @@ def detect_build_tool(ws: Any) -> BuildToolDetection:
         reason = (f"{' and '.join(ignored)} present next to Maven poms: ignored (Maven build used)"
                   if ignored else "pom.xml found")
         return BuildToolDetection("maven", reason)
-    # 여기부터는 pom 이 전혀 없는 경우 — 전부 접수에서 거부(exit 3), reason 이 보고서의 중단 사유가 된다
+    # 여기부터는 pom이 없는 경우이므로 모두 접수에서 거부한다. reason이 보고서의 중단 사유가 된다
     if gradle:
         return BuildToolDetection("gradle", GRADLE_REASON)
     if ant:
-        # 접수는 intake.ant_message 로 거부한다; intake.ant_to_maven 이 켜졌을 때만 이 파일로 pom 을 합성한다
+        # 접수는 intake.ant_message로 거부하고, intake.ant_to_maven이 켜졌을 때만 이 파일로 pom을 만든다
         return BuildToolDetection("ant", ANT_REASON, ant_build_file=find_ant_build_file(ws))
     return BuildToolDetection("none", NONE_REASON)

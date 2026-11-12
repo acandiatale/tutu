@@ -1,11 +1,9 @@
-"""두 어댑터 단(tier)의 플러그인 불러오기(docs/ADAPTERS.md)
-— 회사 프레임워크가 sbmig 코드를 고치지 않고 끼우는 곳. 흐름상 위치: 실행 시작 때
-`sbmig.fix.client.make_llm_client` 가 provider 가 `plugin` 이거나 내장 이름이 아니면 `resolve_llm_plugin(cfg)`
-를, 오케스트레이터가 처음 LLM 수정이 필요할 때 `resolve_fixer_plugin(cfg, llm, notes_dir)` 를 부른다. 핵심:
-load_plugin("pkg.module:attr"), load_entry_point, instantiate(클래스·팩토리·인스턴스를 서명에 맞춰 생성),
-wrap_llm, llm_plugin_options. 지킬 것: API 키는 `llm.api_key_env` 환경변수에서만 읽어 메모리 안의
-options["api_key"] 로만 넘긴다(파일·로그·기록 금지). 2단 플러그인은 `propose_script` 가 있어야 한다 —
-SEARCH/REPLACE `propose` 만 있는 v1 fixer 는 거부한다(v2 에는 대체 경로가 없다).
+"""두 어댑터 단의 플러그인을 로드하는 모듈(docs/ADAPTERS.md).
+회사 프레임워크는 sbmig 코드를 고치지 않고 여기서 연결된다.
+provider가 `plugin`이거나 내장 provider가 아니면 `sbmig.fix.client.make_llm_client`가 `resolve_llm_plugin(cfg)`를
+호출하고, 오케스트레이터는 처음 LLM 수정이 필요할 때 `resolve_fixer_plugin`을 호출한다.
+- API 키는 `llm.api_key_env` 환경 변수에서만 읽고, 메모리의 options["api_key"]로만 넘긴다
+- 2단 플러그인에는 `propose_script`가 있어야 하며, `propose`만 있는 fixer는 거부한다
 
 Plugin loading for the two adapter tiers (see docs/ADAPTERS.md).
 
@@ -36,8 +34,8 @@ FIXER_ENTRY_POINT_GROUP = "sbmig.fixers"
 
 
 class PluginLoadError(ValueError):
-    """설정된 플러그인을 import / 생성할 수 없거나 기대한
-    메서드가 없을 때(ValueError 라서 설정 오류로 다뤄진다).
+    """플러그인을 import하거나 생성할 수 없거나 필요한 메서드가 없을 때 던지는 예외.
+    ValueError를 상속하므로 설정 오류로 처리된다.
 
     A configured plugin cannot be imported, built, or does not implement the expected contract."""
 
@@ -46,8 +44,8 @@ class PluginLoadError(ValueError):
 # loading
 # ---------------------------------------------------------------------------
 def load_plugin(spec: str) -> Any:
-    """`"pkg.module:attr"`(attr 는 점으로 이어질 수 있음, 예 `Factory.create`) 또는 `"pkg.module.attr"` 을
-    import 해 그 객체를 돌려준다. 실패하면 원인(설치 안 됨, PYTHONPATH)을 담은 PluginLoadError.
+    """`"pkg.module:attr"` 또는 `"pkg.module.attr"`를 import해 그 객체를 반환한다.
+    실패하면 원인을 담은 PluginLoadError를 던진다.
 
     Import `"pkg.module:attr"` (attr may be dotted, e.g. `Factory.create`) or the fallback `"pkg.module.attr"`."""
     spec = (spec or "").strip()
@@ -84,8 +82,8 @@ def _entry_points(group: str) -> list[Any]:
 
 
 def load_entry_point(name: str, group: str) -> Optional[Any]:
-    """그룹 `group` 에서 이름이 `name` 인 entry point 를 찾아
-    불러온다. 없으면 None, 불러오다 실패하면 PluginLoadError."""
+    """`group` 그룹에서 이름이 `name`인 entry point를 로드한다.
+    없으면 None을 반환하고, 로드에 실패하면 PluginLoadError를 던진다."""
     for ep in _entry_points(group):
         if ep.name == name:
             try:
@@ -98,9 +96,9 @@ def load_entry_point(name: str, group: str) -> Optional[Any]:
 
 def instantiate(obj: Any, positional: list[Any], optional_kw: Optional[dict[str, Any]] = None, *,
                 required_method: str, spec: str) -> Any:
-    """플러그인 객체를 만든다: 이미 `required_method` 를 가진 인스턴스면 그대로, 클래스·팩토리면 서명이 받는
-    만큼만 `positional` 을 앞에서부터 넘기고 `optional_kw` 는 이름이 선언된 것만 넘긴다. 필수 인자가 sbmig 가
-    줄 수 있는 것보다 많거나, 생성이 실패하거나, 결과에 `required_method` 가 없으면 PluginLoadError.
+    """플러그인 객체를 만든다.
+    `required_method`가 있는 인스턴스는 그대로 쓰고, 클래스나 팩토리는 시그니처가 받는 인자만 넘겨 호출한다.
+    필수 인자를 채울 수 없거나, 생성에 실패하거나, 결과에 `required_method`가 없으면 PluginLoadError를 던진다.
 
     Build a plugin object.
 
@@ -160,21 +158,22 @@ def _unset(v: Optional[str]) -> bool:
 
 
 def llm_plugin_options(cfg: Config) -> dict[str, Any]:
-    """`llm.plugin_options` + (환경변수가 있으면) `api_key`. 키는 메모리에서만 플러그인 팩토리에 넘긴다.
+    """`llm.plugin_options`를 반환하되, 키 환경 변수가 설정돼 있으면 `api_key`를 더한다.
+    키는 메모리로만 넘긴다.
 
     `llm.plugin_options` + `api_key` from the `llm.api_key_env` variable when it is set (never written anywhere)."""
     opts = dict(cfg.llm.plugin_options or {})
     env = cfg.llm.api_key_env
-    # 키는 환경변수에서만 읽는다 — config·기록(llm-NNNN.json)·저널·로그에는 절대 남기지 않는다(CLAUDE.md)
+    # 키는 환경 변수에서만 읽고 config, LLM 기록, 저널, 로그에는 남기지 않는다
     if env and os.environ.get(env):
         opts.setdefault("api_key", os.environ[env])
     return opts
 
 
 def _llm_source(cfg: Config) -> tuple[Any, str]:
-    """1단 플러그인의 출처(객체, 설명 문자열): provider `plugin` → `llm.plugin`; 내장 provider 이름이면 오류;
-    그 밖의 이름 → 같은 이름의 entry point, 없으면 `llm.plugin`,
-    둘 다 없으면 등록 방법 두 가지를 알려 주는 오류."""
+    """1단 플러그인을 어디서 가져올지 찾아 (객체, 설명 문자열)을 반환한다.
+    provider가 `plugin`이면 `llm.plugin`을, 그 밖의 이름이면 같은 이름의 entry point를 먼저 찾는다.
+    내장 provider 이름이거나 둘 다 없으면 등록 방법을 알려 주는 오류를 던진다."""
     llm = cfg.llm
     if llm.provider == "plugin":
         if not llm.plugin:
@@ -199,9 +198,8 @@ def _llm_source(cfg: Config) -> tuple[Any, str]:
 
 
 def wrap_llm(obj: Any, cfg: Optional[Config] = None) -> Any:
-    """만들어진 어댑터 / 클라이언트를 sbmig 가 쓰는 LLMClientLike 로: 어댑터(`complete(request)`)는
-    AdapterClient 로, `role` / `metadata` 를 못 받는 클라이언트는
-    KwargFilterClient 로 감싸고, 나머지는 그대로 둔다.
+    """생성한 어댑터나 클라이언트를 LLMClientLike로 맞춘다.
+    어댑터는 AdapterClient로, 키워드 인자를 다 받지 못하는 클라이언트는 KwargFilterClient로 감싼다.
 
     Built adapter/client → LLMClientLike (adapters are wrapped in AdapterClient)."""
     if isinstance(obj, (AdapterClient, KwargFilterClient)):
@@ -217,7 +215,7 @@ def wrap_llm(obj: Any, cfg: Optional[Config] = None) -> Any:
 
 
 def resolve_llm_plugin(cfg: Config) -> Any:
-    """1단: 설정대로 사내 LLM 플러그인을 불러와 `(options, cfg)` 중 받는 만큼으로 생성하고, 감싸서 돌려준다.
+    """설정에 따라 사내 LLM 플러그인(1단)을 로드하고 생성해 감싼 뒤 반환한다.
 
     Tier 1. `llm.provider: plugin` → `llm.plugin`; a non-builtin provider name → entry point of that name in
     `sbmig.llm_adapters` (falling back to `llm.plugin`). The object may be a class / factory taking
@@ -233,9 +231,8 @@ def resolve_llm_plugin(cfg: Config) -> Any:
 # tier 2: fixer
 # ---------------------------------------------------------------------------
 def resolve_fixer_plugin(cfg: Config, llm: Any = None, notes_dir: Optional[str | Path] = None) -> Optional[Any]:
-    """2단: `fix.plugin` 의 사내 fixer(설정이 없으면 None). `propose_script` 가 꼭 있어야 하고, 스크립트가
-    스스로 적용되므로 `apply` 는 없다. 팩토리 인자는
-    `(options, cfg, llm)` 의 앞부분 + 선택 키워드 `notes_dir`.
+    """`fix.plugin`에 지정된 사내 fixer(2단)를 로드해 반환한다. 설정이 없으면 None을 반환한다.
+    `propose_script`가 반드시 있어야 하고, 스크립트가 스스로 적용되므로 `apply`는 필요 없다.
 
     Tier 2. `fix.plugin` → the in-house fixer, or None when not configured. The plugin implements the script seam
     (`ScriptFixerLike`): `propose_script(ws, cluster, ctx) -> ScriptProposal` — one Python fix script per case; the

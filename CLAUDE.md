@@ -249,18 +249,24 @@ Then the final build again, the report (Handover first, "Structure review", fix 
   commits happen in the main session. Per round: append a "Status" table to `docs/PLAN.md`, update
   `docs/INTERFACES.md` on contract changes, add a fixture + `expected.json` (+ `replay/`) for every new scenario.
 - Setup: `uv venv && source .venv/bin/activate && uv pip install -e ".[dev]"` (plain `pip install -e ".[dev]"` works too).
-- Fast check (Python only, ~12 min): `python -m pytest -m "not integration"` → ≈ 4,700 passed, ≈ 58 deselected (2026-11-12)
+- Fast check (Python only, ~12 min): `python -m pytest -m "not integration"` → ≈ 5,060 passed, ≈ 58 deselected (2026-11-12)
   (`-q` on top of the `-q` in pyproject hides the summary line). Until 2026-11-12 `tests/build` (381 tests) was silently
   left out of every root-level run — pytest skips a directory named `build` by default; `norecursedirs` in pyproject now
   keeps it in. When a total does not grow by the number of tests added, compare per-file counts (`--collect-only -q`).
   `ruff check sbmig tests` has pre-existing style findings (mostly `UP045`); lint is not a gate here, so fix only what
   you touch and never run a repo-wide `ruff --fix` inside a feature round.
-- **Korean handover comments (2026-10-28, the business team's request)**: every module under `sbmig/` starts its
-  docstring with a Korean block and every public top-level class / function has Korean first in its docstring, the English
-  original kept unchanged after it; inline Korean comments say *why*. Convention + terminology table:
-  `docs/v2/CODE-COMMENTS-KO.md` (exemplar `sbmig/kb/store.py`, package map `sbmig/__init__.py`);
-  `tests/docs/test_korean_comments.py` fails for a new module or public definition without Korean. Prompt `.md` files,
-  YAML, tests and `coding/` stay English.
+- **Korean handover comments (2026-10-28, the business team's request; rewritten 2026-11-12 after the same team said
+  the Korean "너무 ai티 난다")**: every module under `sbmig/` starts its docstring with a Korean block and every public
+  top-level class / function has Korean first in its docstring, the English original kept unchanged after it. The Korean
+  is written like a Korean developer's own comment — SHORT (module 2–6 lines, function 1 line, inline 1 line = the
+  reason), "~한다." endings, particles attached (`KB에`), identifiers verbatim, and never an em dash, arrow, bold,
+  version tag (`v2.1…`), date, review / round label or the story of how a bug was found; that history belongs to the
+  English part (the working record) and the commit message. Verbs 호출한다 / 실행한다 / 기록한다 / 예외를 던진다, not
+  부른다 / 돈다 / 적는다 / 올린다. Convention, glossary and examples: `docs/v2/CODE-COMMENTS-KO.md`;
+  `tests/docs/test_korean_comments.py` fails for a new module or public definition without Korean and for a Korean
+  comment line with one of those tells (English lines are not checked). The page's comments and `config/*.yml` comments
+  follow the same wording; `deploy/` comments were left as they are (the company keeps hand-filled copies of the
+  manifests). Prompt `.md` files, tests and `coding/` stay English.
 - e2e needs **JDK 21** (`JAVA21_HOME`), Maven and network to Maven Central: `scripts/e2e.sh` → `out/e2e/summary.md`
   (`--only boot2,msa` for a subset; the reuse scenario needs pure-java before java6-legacy — `kb.after` in
   `expected.json`); KB demo `scripts/demo-kb/run.sh` (run 2 reuses run 1's script); fleet `scripts/fleet-demo.sh`.

@@ -1,35 +1,25 @@
-"""Job 파드의 일생 전체 — 공유 볼륨 모드의 Python Worker (v2.1z-ac, 2026-11-09; ``deploy/docker/run-job.sh`` 의 공유 볼륨 갈래를 대신한다).
-
-``python -m sbmig.web.worker`` 로 돈다. 환경 변수 이름은 run-job.sh 와 같다(``SBMIG_SOURCE_ZIP`` / ``SBMIG_OUT`` / ``SBMIG_RUN_ID`` 필수).
-순서: Main 이 접수 때 고정한 ``control/request.json`` 을 읽고(없으면 거절) zip·설정·코드 버전을 대조한다(다르면 거절, exit 3) →
-환경 대조 → 저널에 ``worker_started`` → ``worker-paths.yml``(KB 위치, LLM 원문 기록 끄기 — 배포팀의 결정: 기본으로 끈다) → ``sbmig.cli run`` 자식
-프로세스(출력은 파드 로그로) → 실행 폴더의 비밀 값 지우기 → ``SBMIG-RESULT`` 줄 출력 → ``worker_finished`` → ``job-status.json``(run id ·
-attempt · 버전이 들어 있어 Main 이 **지금 시도**의 결과만 믿는다). Worker 는 ``control/`` 에 쓰지 않는다(Main 의 몫).
-비밀 값은 **쓰는 순간** 지운다(리뷰 2026-11-10): 자식은 언제나 ``SBMIG_REDACT_OUTPUT=1`` 로 돌아 자기 로그·저널을 스스로 지우고,
-Worker 는 자식의 출력을 한 줄씩 지워서 파드 로그로 넘긴다. 끝난 뒤 실행 폴더를 훑는 것은 그 뒤의 마지막 단계다(Maven 출력, 보고서).
-환경 대조(리뷰 2026-11-10): Job 을 만든 Main 이 ``control/state.json`` 에 환경 지문(``env_pins``)과 정책을 적었으면 자기 환경으로 다시
-계산해 대조하고 실행별 값(``SBMIG_CONFIG`` / ``SBMIG_STOP_AFTER`` / ``SBMIG_LLM_PROVIDER`` / ``SBMIG_FLOW``)도 ``request.json`` 과 맞춰 본다 — refuse 면
-거절(exit 3), warn 이면 저널에 ``worker_env_differs`` 를 적고 돈다. 글에는 이름만 적는다(값·지문은 적지 않는다).
-자리(v2.1z-ae): Job 이 여러 개 동시에 돌면 Main 이 ``SBMIG_JOB_SLOT``(1 부터)을 준다. 2번 자리부터는 Maven 로컬 저장소를 따로
-쓴다 — 이 실행이 원래 쓸 저장소 옆의 ``<이름>-slot<k>`` 폴더를 만들어 환경 대조가 끝난 뒤 **자식의 env 에만** ``SBMIG_BUILD__LOCAL_REPO`` 로
-넘긴다. 1번 자리·변수 없음은 그대로이다. 그 폴더를 만들거나 쓸 수 없으면(또는 기준을 못 정하면) 파드 안의 임시 저장소
-(``<tmp>/sbmig-m2-slot<k>`` — 매번 다시 받지만 나누지 않는다)로, 그것마저 안 될 때만 공유 저장소로 돌며 그렇게 적는다(파드 로그 한 줄 +
-저널 ``worker_slot``; 파드 안 저장소면 ``pod_local: true``).
-종료 신호(리뷰 2026-11-10): Worker 는 파드의 PID 1 이라 처리기가 없으면 SIGTERM 이 아무 일도 하지 않는다 — SIGTERM / SIGINT 를 받으면
-자식의 트리 전체(자기 세션의 Maven 포함)에 신호를 넘기고, 잠깐(``TERM_GRACE_S``) 기다린 뒤 남은 것을 SIGKILL 하고, ``job-status.json`` 에
-exit 3 과 "terminated by SIGTERM" 오류를 쓰고(저널 ``worker_finished`` 에 ``terminated``) 3 으로 끝난다.
-종료 코드: 3 = 중단(거절 / 종료 신호 / sbmig exit 3 / 자식을 못 띄움), 2 = 빌드 실패이고 ``SBMIG_FAIL_JOB_ON_BUILD_FAIL=1``, 그 밖에는
-0 — 빌드가 실패해도 보고서가 결과다(run-job.sh 와 같다).
-취약점 조치(2026-11-11): 이관이 BUILD SUCCESS 로 끝나고 ``remediation.after_migration`` 이 켜져 있으면 자식 ``sbmig run`` 이 같은 프로세스에서
-조치를 이어 돌린다(``<run dir>/remediation/``). 자식은 Worker 의 env 를 그대로 받으므로 IVAS 값(``IVAS_BASE_URL`` / ``IVAS_USER_ID`` /
-``IVAS_PASSWORD``, Job 틀의 secretKeyRef)도 닿는다. 마지막 정제는 ``remediation/`` 의 텍스트 파일도 훑고(ZIP·프로젝트 트리·원본은 빼고),
-``IVAS_USER_ID`` 는 이름에 비밀 낱말이 없어도 비밀로 지운다(``contract.SECRET_NAMES``). 조치 도중 종료 신호로 끊기면 이관의 결과 줄을
-오류 글에 붙인다.
-조치 재개 행동(2026-11-11 wave 4): Job env ``SBMIG_WORKER_ACTION=remediation-resume`` 이면 같은 실행의 **새 시도**로 이어 돈 조치를 잇는다.
-그 시도의 제어 상태 ``control/remediation-resume.json`` (Main 이 적는다; 없거나 행동이 다르면 거절)과 ``request.json`` 의 설정 digest ·
-sbmig 버전 · 환경 지문을 대조하고(이관 zip 의 sha256 은 보지 않는다 — 재개는 그 zip 을 읽지 않는다), ``sbmig run`` 대신 자식
-``python -m sbmig.cli remediation-resume --run-dir <run dir>`` (``chain.resume``)을 같은 규칙(자리 저장소, 줄 단위 정제, SIGTERM 처리, 마지막
-정제)으로 돌리고, 결과는 ``remediation-job-status.json`` 에 쓴다 — 이관의 ``job-status.json`` · 보고서 · ``SBMIG-RESULT`` 줄은 건드리지 않는다.
+"""빌드 파드(Job) 안에서 이관 요청 하나를 처음부터 끝까지 처리하는 Worker 모듈.
+``python -m sbmig.web.worker``로 실행하고, 환경 변수 ``SBMIG_SOURCE_ZIP`` / ``SBMIG_OUT`` /
+``SBMIG_RUN_ID``가 반드시 있어야 한다.
+처리 순서: ``control/request.json`` 확인 -> 환경 변수 확인 -> ``worker-paths.yml`` 작성 -> 자식 프로세스로
+``sbmig.cli run`` 실행 -> 실행 폴더의 비밀 값 마스킹 -> ``SBMIG-RESULT`` 출력 -> ``job-status.json`` 기록.
+- ``control/`` 폴더는 웹 파드(Main)가 관리하므로 Worker는 읽기만 한다
+- 비밀 값은 기록하는 시점에 마스킹한다. 자식은 항상 ``SBMIG_REDACT_OUTPUT=1``로 실행하고, Worker는 자식의
+  출력을 줄마다 마스킹해서 파드 로그로 넘긴다
+- Main이 ``control/state.json``에 남긴 ``env_pins``와 지금 환경을 비교한다.
+  정책이 refuse면 실행을 거절하고(exit 3), warn이면 저널에 ``worker_env_differs``를 남기고 계속한다.
+  기록에는 변수 이름만 남긴다
+- ``SBMIG_JOB_SLOT``이 2 이상이면 슬롯 전용 Maven 로컬 저장소 ``<이름>-slot<k>``를
+  ``SBMIG_BUILD__LOCAL_REPO``로 자식에게만 넘긴다. 만들 수 없으면 파드 안 임시 저장소를, 그것도 안 되면 공유
+  저장소를 쓰고 저널 ``worker_slot``에 남긴다
+- SIGTERM / SIGINT를 받으면 자식 프로세스 트리 전체를 종료하고 ``job-status.json``에 exit 3과 종료 사유를 기록한다
+- 종료 코드: 3은 중단(거절, 종료 신호, sbmig exit 3, 자식 실행 실패), 2는 빌드 실패이면서
+  ``SBMIG_FAIL_JOB_ON_BUILD_FAIL=1``일 때, 그 밖에는 0
+- 이관이 BUILD SUCCESS면 자식이 취약점 조치까지 이어서 실행한다.
+  마지막 마스킹은 ``remediation/``의 텍스트 파일도 대상으로 하고 ``IVAS_USER_ID``도 비밀 값으로 본다
+- ``SBMIG_WORKER_ACTION=remediation-resume``이면 ``control/remediation-resume.json``을 확인한 뒤 자식으로
+  ``remediation-resume``을 같은 규칙으로 실행하고 결과를 ``remediation-job-status.json``에 기록한다. 이관의
+  결과 파일은 건드리지 않는다
 
 The Job pod's whole life in shared-volume mode: verify the request Main pinned, run `sbmig.cli run` as a child (which
 redacts its own log / journal lines as it writes them; its console output is redacted line by line on the way to the pod
@@ -78,56 +68,58 @@ from sbmig.web.redact import Redactor, redact_run_dir
 
 REQUIRED_ENV = ("SBMIG_SOURCE_ZIP", "SBMIG_OUT", "SBMIG_RUN_ID")
 PATHS_FILE = "worker-paths.yml"
-RECORD_DIR_ENV = ("LLM_RECORD_DIR", "SBMIG_LLM__RECORD_DIR")    # LLM 원문 기록 폴더를 정하는 변수들 — 기록을 켜지 않았으면 자식에게 넘기지 않는다
+RECORD_DIR_ENV = ("LLM_RECORD_DIR", "SBMIG_LLM__RECORD_DIR")    # LLM 원문 기록 폴더를 정하는 변수. 기록을 켜지 않으면 자식에게 넘기지 않는다
 JOURNAL_FILE = "journal.jsonl"
 RESULT_MARK = "SBMIG-RESULT"
 REFUSE_NO_REQUEST = "control/request.json missing — the Worker runs only requests Main accepted"
 REFUSE_NO_RESUME = (f"control/{contract.RESUME_STATE_FILE} missing or not for {contract.ACTION_REMEDIATION_RESUME} — the Worker "
                     "resumes a remediation only when Main recorded that attempt")
 REFUSE_NO_CHAIN = "no chained remediation in this run directory (remediation/state.json missing)"
-REMEDIATION_MARK = "SBMIG-REMEDIATION"       # 재개 자식이 끝에 내는 결과 줄(sbmig.cli remediation-resume)
-# 자식 콘솔의 줄 폭(COLUMNS 가 없을 때): 파이프는 터미널이 아니라 rich 가 80 칸에서 줄을 접는다 — 접힌 줄에 걸친 값은
-# 줄 단위 정제가 놓친다. 넓게 잡아 접히는 일을 줄인다
+REMEDIATION_MARK = "SBMIG-REMEDIATION"       # 취약점 조치 재개를 실행한 자식이 마지막에 출력하는 결과 줄의 표시
+# COLUMNS가 없을 때 자식 콘솔의 줄 폭
+# 파이프로 출력하면 rich가 80칸에서 줄을 접고, 접힌 비밀 값은 줄 단위 마스킹이 놓치므로 넓게 잡는다
 CHILD_COLUMNS = "200"
-# ── 환경 대조(리뷰 2026-11-10) ──
+# ── 환경 확인 ──
 ENV_DIFFERS_EVENT = "worker_env_differs"
-# 차이의 갈래(contract.compare_env_pins 의 키)와 글 속 이름 — Main 은 웹 파드, Worker 는 Job 파드다
+# 환경 차이의 종류(contract.compare_env_pins의 키)와 메시지에 쓰는 이름. Main은 웹 파드, Worker는 Job 파드다
 ENV_DIFF_LABELS = (("differs", "values differ"), ("main_only", "set in the web pod only"),
                    ("worker_only", "set in the Job pod only"))
-# Main 이 request.json 에 적은 실행별 값과 Worker 가 받은 env 의 이름(SBMIG_CONFIG 는 따로 본다 — 파일 경로 대조)
+# request.json의 실행별 값에 대응하는 환경 변수 이름. SBMIG_CONFIG는 파일 경로로 따로 비교한다
 RUN_VALUE_FIELDS = (("SBMIG_STOP_AFTER", "stop_after"), ("SBMIG_LLM_PROVIDER", "llm_provider"), (contract.FLOW_ENV, "flow"))
-# 비었을 때의 값이 있는 실행별 값: 이 값과 "없음"을 같은 것으로 본다 — SBMIG_FLOW 가 없는 옛 Main 의 Job 과 flow 키가 없는 옛
-# request.json 은 둘 다 full 이다(v2.1z-aj)
+# 값이 비어 있으면 기본값으로 보고 비교한다. SBMIG_FLOW나 flow 키가 없으면 full이다
 RUN_VALUE_DEFAULTS = {contract.FLOW_ENV: contract.FLOW_FULL}
-# 거절·경고 글 끝의 고정 안내: 운영자가 할 일. 네임스페이스·디플로이먼트 이름은 넣지 않는다(설치마다 다르다)
+# 거절이나 경고 메시지 끝에 붙이는 운영자 안내.
+# 네임스페이스와 디플로이먼트 이름은 설치마다 다르므로 넣지 않는다
 ENV_PIN_HINT = ("after changing ConfigMap sbmig-env or the Job template, restart the web pod and re-create ConfigMap "
                 f"sbmig-job-template; {contract.ENV_PIN_POLICY_ENV}=warn (or off) on the web pod relaxes this check")
 
-# ── 자리마다 Maven 로컬 저장소 하나(v2.1z-ae, 2026-11-10) ──
-# 세 파드가 PVC 하나(~/.m2)를 나눠 쓴다. Maven 기본 설정은 여러 프로세스가 한 로컬 저장소에 동시에 쓰는 것을 약속하지 않는다
-LOCAL_REPO_ENV = "SBMIG_BUILD__LOCAL_REPO"    # 자식의 build.local_repo 를 정하는 설정 덮어쓰기(load_config 가 값을 yaml 로 읽는다)
+# ── 슬롯마다 Maven 로컬 저장소 하나 ──
+# 여러 파드가 PVC 하나(~/.m2)를 같이 쓰는데 Maven은 여러 프로세스가 한 로컬 저장소에 동시에 쓰는 것을
+# 보장하지 않으므로 슬롯마다 저장소를 나눈다
+LOCAL_REPO_ENV = "SBMIG_BUILD__LOCAL_REPO"    # 자식의 build.local_repo를 덮어쓰는 설정. load_config가 값을 yaml로 읽는다
 SLOT_EVENT = "worker_slot"
-# 자리 저장소를 PVC 에 못 만들 때의 물러섬: 파드 안(임시 폴더)의 저장소 — 매번 비어 있어 느리지만 다른 파드와 절대 나누지 않는다.
-# 공유 저장소(여러 Maven 이 한 저장소에)는 그것마저 안 될 때만
+# PVC에 슬롯 저장소를 만들 수 없을 때 쓰는 대체 경로
+# 매번 비어 있어 느리지만 다른 파드와 공유하지 않으므로, 공유 저장소는 이것도 안 될 때만 쓴다
 POD_LOCAL_REPO_NAME = "sbmig-m2-slot{slot}"
-POD_LOCAL_KEY = "pod_local"                   # worker_slot 저널 줄의 키(파드 안 저장소일 때만 true 로 붙는다)
-WRITE_PROBE = ".sbmig-write-probe-{pid}"      # 쓰기 가능 확인용 파일 — 만들고 바로 지운다
+POD_LOCAL_KEY = "pod_local"                   # 파드 안 저장소를 쓸 때만 true로 붙는 worker_slot 저널 키
+WRITE_PROBE = ".sbmig-write-probe-{pid}"      # 쓰기 가능 여부를 확인하는 임시 파일. 만들고 바로 지운다
 
-# ── 종료 신호(리뷰 2026-11-10) ──
-# 컨테이너의 PID 1 은 기본 신호 동작이 없다: 처리기가 없으면 SIGTERM 이 아무 일도 하지 않고, 자식 sbmig 와 Maven 이 종료 유예
-# 시간 내내 자리 저장소와 실행 폴더에 계속 쓴다(그 사이 Main 은 같은 자리에 다음 실행을 띄울 수 있다)
+# ── 종료 신호 ──
+# 컨테이너의 PID 1은 처리기가 없으면 SIGTERM을 무시하므로, 처리기를 등록하지 않으면 종료 유예 시간 동안
+# 자식과 Maven이 계속 파일을 쓴다
 STOP_SIGNALS = ("SIGTERM", "SIGINT")
-# 자식 트리에 신호를 넘긴 뒤 스스로 끝나기를 기다리는 시간, 그 뒤 SIGKILL 후 사라지기를 기다리는 시간. 합이 쿠버네티스 기본 종료 유예
-# (30초)와 local-job 의 기다림(10초, localjob._kill_tree) 안에 들어야 Worker 가 상태 파일까지 쓰고 나간다
+# 자식 트리에 신호를 보낸 뒤와 SIGKILL 뒤에 기다리는 시간
+# 상태 파일까지 기록하려면 합이 쿠버네티스 종료 유예(30초)와 local-job 대기(10초)보다 짧아야 한다
 TERM_GRACE_S = 5.0
 KILL_GRACE_S = 3.0
-TERMINATED_EXIT = 3                            # = EXIT_ABORTED — Main 이 아는 "중단"
+TERMINATED_EXIT = 3                            # EXIT_ABORTED와 같은 값이므로 Main은 중단으로 처리한다
 STOP_POLL_S = 0.1
 
 RunChild = Callable[[list[str], Path, dict[str, str]], int]
-# (자식에게 넘길 설정 파일들, worker-paths.yml) → 이 실행이 자리 없이 쓸 로컬 저장소
+# 설정 파일 목록과 worker-paths.yml을 받아 슬롯이 없을 때 쓸 로컬 저장소를 반환하는 함수 형식
 RepoResolver = Callable[[list[str], Path], Path]
-# 신호 처리기를 걸고, 원래대로 돌리는 함수를 돌려준다(테스트는 진짜 신호 없이 처리기를 직접 부른다)
+# 신호 처리기를 등록하고 원래대로 되돌리는 함수를 반환하는 함수 형식.
+# 테스트는 실제 신호 없이 처리기를 직접 호출한다
 InstallSignals = Callable[[Callable[[int, Any], None]], Callable[[], None]]
 
 
@@ -148,8 +140,8 @@ def _journal(run_dir: Path, event: str, data: dict) -> None:
 
 
 class WorkerTerminated(BaseException):
-    """종료 신호(SIGTERM / SIGINT)를 받아 자식 실행을 끊을 때 올리는 예외. ``BaseException`` 인 것은 ``except Exception`` 이
-    삼키지 않게 하려는 것이다.
+    """종료 신호를 받아 자식 실행을 중단할 때 던지는 예외.
+    ``except Exception``에 잡히지 않도록 ``BaseException``을 상속한다.
 
     Raised (from the signal handler) to abandon the child run on SIGTERM / SIGINT; a BaseException so that no
     `except Exception` swallows it."""
@@ -160,7 +152,8 @@ class WorkerTerminated(BaseException):
 
 
 def signal_name(signum: int) -> str:
-    """신호 번호의 이름(``SIGTERM``), 모르면 ``signal <n>``. / The signal's name, else `signal <n>`."""
+    """신호 번호에 해당하는 이름(``SIGTERM``)을 반환하고, 모르는 번호면 ``signal <n>``을 반환한다.
+    / The signal's name, else `signal <n>`."""
     try:
         return signal.Signals(signum).name
     except ValueError:
@@ -168,9 +161,9 @@ def signal_name(signum: int) -> str:
 
 
 class StopSignals:
-    """종료 신호의 상태. 처리기(``handle``)는 첫 신호를 기억하고, 자식이 도는 동안(``arm`` ~ ``disarm``)에만 ``WorkerTerminated`` 를
-    올린다 — 그 밖(입력 대조, 마지막 정제·상태 파일 쓰기)에서는 기억만 한다: 상태 파일을 쓰다 끊기면 Main 이 결과를 못 받는다.
-    한 번 올린 뒤에는 다시 올리지 않는다(정리하는 동안 온 두 번째 SIGTERM 이 정리를 끊지 않게).
+    """종료 신호를 받았는지 기억하는 클래스.
+    자식이 실행되는 동안(``arm`` ~ ``disarm``)에만 ``WorkerTerminated``를 한 번 던지고, 그 밖에서는 신호를 기억만 한다.
+    상태 파일을 기록하는 도중에 끊기면 Main이 결과를 받지 못하기 때문이다.
 
     The stop-signal state: the handler remembers the first signal and raises `WorkerTerminated` only while armed (the child
     is running) and only once; outside that window (checks, the final redaction, the status file) it just records."""
@@ -180,7 +173,7 @@ class StopSignals:
         self.armed = False
 
     def handle(self, signum: int, frame: Any = None) -> None:
-        """신호 처리기. / The signal handler."""
+        """받은 종료 신호를 기록하고, 자식 실행 중이면 ``WorkerTerminated``를 던진다. / The signal handler."""
         del frame
         if self.signum is None:
             self.signum = int(signum)
@@ -189,19 +182,20 @@ class StopSignals:
             raise WorkerTerminated(signum)
 
     def arm(self) -> None:
-        """자식을 띄우기 직전: 이미 신호가 왔으면 띄우지 않고 바로 ``WorkerTerminated``. / Arm; raise at once if a signal came."""
+        """자식을 실행하기 직전에 호출한다. 이미 신호가 와 있으면 바로 ``WorkerTerminated``를 던진다.
+        / Arm; raise at once if a signal came."""
         if self.signum is not None:
             raise WorkerTerminated(self.signum)
         self.armed = True
 
     def disarm(self) -> None:
-        """자식이 끝난 뒤. / Disarm after the child ended."""
+        """자식이 끝난 뒤 호출해 신호가 와도 예외를 던지지 않게 한다. / Disarm after the child ended."""
         self.armed = False
 
 
 def install_stop_signals(handler: Callable[[int, Any], None]) -> Callable[[], None]:
-    """``SIGTERM`` / ``SIGINT`` 에 ``handler`` 를 걸고 원래 처리기로 돌리는 함수를 돌려준다. 주 스레드가 아니거나 플랫폼이 거절하면
-    걸지 않는다(Windows 의 local-job 에서도 import·실행이 깨지지 않는다).
+    """``SIGTERM`` / ``SIGINT``에 ``handler``를 등록하고, 원래 처리기로 되돌리는 함수를 반환한다.
+    주 스레드가 아니거나 플랫폼이 거부하면 등록하지 않으므로 Windows의 local-job에서도 문제없이 동작한다.
 
     Install `handler` for SIGTERM / SIGINT; returns a function restoring the previous handlers. Skipped off the main thread
     or where the platform refuses (never breaks a Windows / macOS dev run)."""
@@ -226,14 +220,14 @@ def install_stop_signals(handler: Callable[[int, Any], None]) -> Callable[[], No
     return restore
 
 
-# ── 자식 프로세스 트리 끝내기 ──
-# sbmig 자식은 SIGTERM 에 처리기가 없어 atexit(kill_live_processes) 없이 바로 죽고, Maven 은 자기 세션에서 돈다(mvn.run_logged 의
-# start_new_session) — 자식의 그룹에만 신호를 보내면 Maven 은 남는다. 그래서 신호를 보내기 전에 Worker 의 자손 전체를 적어 두고,
-# 고아가 되어 Worker(파드의 PID 1)에게 넘어온 것도 다시 훑어 함께 끝낸다
+# ── 자식 프로세스 트리 종료 ──
+# Maven은 별도 세션에서 실행되어 자식 그룹에만 신호를 보내면 살아남으므로, Worker의 자손 전체와 Worker에게
+# 넘어온 고아 프로세스까지 찾아 함께 종료한다
 
 def parse_proc_stat(raw: str) -> tuple[int, int, str]:
-    """Linux ``/proc/<pid>/stat`` 한 줄 → ``(ppid, pgid, 상태)``. 형식은 ``pid (comm) state ppid pgrp …`` 이고 comm 에 괄호·공백이
-    있을 수 있어 마지막 ``)`` 뒤를 자른다. 형식이 틀리면 ``ValueError`` / ``IndexError``.
+    """Linux ``/proc/<pid>/stat`` 한 줄을 읽어 ``(ppid, pgid, 상태)``를 반환한다.
+    프로세스 이름에 괄호나 공백이 있을 수 있으므로 마지막 ``)`` 뒤부터 읽는다.
+    형식이 맞지 않으면 ``ValueError`` / ``IndexError``를 던진다.
 
     Parse one `/proc/<pid>/stat` line into `(ppid, pgid, state)` (split after the last ')': comm may hold spaces / parens)."""
     rest = raw[raw.rindex(")") + 2:].split()
@@ -241,7 +235,8 @@ def parse_proc_stat(raw: str) -> tuple[int, int, str]:
 
 
 def process_table() -> dict[int, tuple[int, int, str]]:
-    """``{pid: (ppid, pgid, 상태)}`` — Linux 는 ``/proc``, 그 밖의 Unix 는 ``ps``. 읽지 못하면 빈 dict(Windows 포함).
+    """현재 프로세스 목록을 ``{pid: (ppid, pgid, 상태)}`` 형태로 반환한다.
+    Linux는 ``/proc``, 그 밖의 Unix는 ``ps``로 읽고, 읽지 못하면 빈 dict를 반환한다.
 
     The process table `{pid: (ppid, pgid, state)}` from `/proc` (Linux) or `ps` (other Unix); empty when unreadable."""
     table: dict[int, tuple[int, int, str]] = {}
@@ -268,7 +263,7 @@ def process_table() -> dict[int, tuple[int, int, str]]:
         ps.kill()
         ps.communicate()
         return table
-    ps_pid = ps.pid                     # ps 자신은 Worker 의 자손으로 표에 보인다 — 끝낼 대상이 아니다
+    ps_pid = ps.pid                     # ps 자신도 Worker의 자손으로 보이지만 종료할 대상이 아니므로 뺀다
     for line in out.splitlines():
         parts = line.split()
         if len(parts) < 4:
@@ -283,7 +278,8 @@ def process_table() -> dict[int, tuple[int, int, str]]:
 
 
 def descendants(root: int, table: dict[int, tuple[int, int, str]]) -> set[int]:
-    """``root`` 의 자손 pid 전부(``root`` 제외). / Every descendant pid of `root` (not `root` itself)."""
+    """``root``의 자손 pid를 모두 찾아 반환한다. ``root`` 자신은 포함하지 않는다.
+    / Every descendant pid of `root` (not `root` itself)."""
     children: dict[int, list[int]] = {}
     for pid, (ppid, _pgid, _state) in table.items():
         children.setdefault(ppid, []).append(pid)
@@ -298,7 +294,7 @@ def descendants(root: int, table: dict[int, tuple[int, int, str]]) -> set[int]:
 
 
 def _alive(pid: int, pgid: int, table: dict[int, tuple[int, int, str]]) -> bool:
-    # 좀비(Z)는 이미 끝난 것. pgid 가 달라졌으면 그 번호를 다른 프로세스가 다시 쓰는 것 — 건드리지 않는다
+    # 좀비(Z)는 이미 끝난 프로세스이고, pgid가 바뀌었으면 다른 프로세스가 번호를 재사용한 것이므로 건너뛴다
     hit = table.get(pid)
     return hit is not None and hit[1] == pgid and not hit[2].startswith("Z")
 
@@ -311,7 +307,7 @@ def _send(pid: int, sig: int) -> None:
 
 
 def _send_group(pgid: int, sig: int) -> None:
-    # 자기 그룹(Worker 와 같은 그룹)과 1 이하는 보내지 않는다 — Worker 자신이나 시스템 전체를 치지 않게
+    # Worker 자신이나 시스템 전체에 신호를 보내지 않도록 Worker와 같은 그룹과 1 이하의 번호는 건너뛴다
     killpg = getattr(os, "killpg", None)
     if killpg is None or pgid <= 1 or pgid == os.getpgrp():
         return
@@ -322,7 +318,8 @@ def _send_group(pgid: int, sig: int) -> None:
 
 
 def _reap(pids: set[int]) -> None:
-    # 고아가 Worker(파드의 PID 1)에게 넘어오면 Worker 가 거둬야 좀비로 남지 않는다. 우리 자식이 아닌 pid 는 ChildProcessError
+    # Worker(PID 1)에게 넘어온 고아 프로세스는 Worker가 거둬야 좀비로 남지 않는다.
+    # 우리 자식이 아닌 pid는 ChildProcessError가 난다
     waitpid = getattr(os, "waitpid", None)
     nohang = getattr(os, "WNOHANG", None)
     if waitpid is None or nohang is None:
@@ -337,9 +334,10 @@ def _reap(pids: set[int]) -> None:
 def stop_process_tree(proc: subprocess.Popen, sig: int = signal.SIGTERM, *, term_grace_s: float = TERM_GRACE_S,
                       kill_grace_s: float = KILL_GRACE_S,
                       table: Callable[[], dict[int, tuple[int, int, str]]] = process_table) -> set[int]:
-    """자식 ``proc`` 과 그 자손 전체(자기 세션에서 도는 Maven 포함)를 끝낸다: 자손을 적어 두고 → 각 프로세스와 (Worker 의 것이 아닌)
-    프로세스 그룹에 ``sig`` → ``term_grace_s`` 동안 기다림(그 사이 Worker 에게 넘어온 고아도 다시 훑는다) → 남은 것에 SIGKILL →
-    ``kill_grace_s`` 기다림. Windows 는 ``taskkill /T /F``. 끝내 남은 pid 를 돌려준다(빈 집합 = 다 끝남). 예외를 내지 않는다.
+    """자식 ``proc``과 별도 세션에서 실행되는 Maven을 포함한 자손 프로세스 전체를 종료한다.
+    자손 목록 확인 -> ``sig`` 전송 -> ``term_grace_s`` 대기 -> SIGKILL -> ``kill_grace_s`` 대기 순서로
+    진행하고, Windows에서는 ``taskkill /T /F``를 쓴다.
+    끝까지 남은 pid 집합을 반환하며(비어 있으면 모두 종료된 것이다) 예외를 던지지 않는다.
 
     Stop the child and its whole tree (Maven in its own session included): snapshot the descendants, send `sig` to each
     and to each process group that is not the Worker's, wait `term_grace_s` (re-scanning for orphans reparented to the
@@ -356,7 +354,7 @@ def stop_process_tree(proc: subprocess.Popen, sig: int = signal.SIGTERM, *, term
         return set()
 
     me = os.getpid()
-    known: dict[int, int] = {}                 # pid → 처음 본 pgid(번호 재사용을 가려낸다)
+    known: dict[int, int] = {}                 # pid가 재사용됐는지 가려내기 위해 pid별로 처음 본 pgid를 기억한다
 
     def scan() -> dict[int, tuple[int, int, str]]:
         snap = table()
@@ -365,7 +363,7 @@ def stop_process_tree(proc: subprocess.Popen, sig: int = signal.SIGTERM, *, term
         return snap
 
     def alive(snap: dict[int, tuple[int, int, str]]) -> set[int]:
-        # 자식 자신은 Popen 이 거둔다(poll) — 표를 못 읽는 곳에서도 자식의 생사는 안다
+        # 자식 자신은 Popen이 거두므로 프로세스 목록을 못 읽어도 자식의 종료 여부는 알 수 있다
         proc.poll()
         _reap({p for p in known if p != proc.pid})
         out = {p for p, g in known.items() if p != proc.pid and _alive(p, g, snap)}
@@ -381,7 +379,7 @@ def stop_process_tree(proc: subprocess.Popen, sig: int = signal.SIGTERM, *, term
 
     snap = scan()
     if proc.poll() is None and proc.pid not in known:
-        known[proc.pid] = os.getpgrp()        # 표를 못 읽었어도 자식 자신에게는 보낸다
+        known[proc.pid] = os.getpgrp()        # 프로세스 목록을 못 읽어도 자식 자신에게는 신호를 보낸다
     blast(sig, set(known))
     left: set[int] = set(known)
     for grace, final in ((term_grace_s, False), (kill_grace_s, True)):
@@ -403,14 +401,14 @@ def stop_process_tree(proc: subprocess.Popen, sig: int = signal.SIGTERM, *, term
 
 
 def default_run_child(cmd: list[str], cwd: Path, env: dict[str, str]) -> int:
-    """자식 프로세스를 띄우고 그 stdout / stderr 를 **한 줄씩 비밀 값을 지워서** 우리 stdout(파드 로그)으로 흘린 뒤 종료 코드를
-    돌려준다. 지울 값은 ``env`` 의 비밀 변수 값(``contract.secret_values``)과 그 표기들, URL 사용자 정보. 지우다 실패한 줄은
-    원문 대신 고정 문구가 나간다.
+    """자식 프로세스를 실행하고 stdout / stderr를 한 줄씩 마스킹해 파드 로그로 내보낸 뒤 종료 코드를 반환한다.
+    ``env``에 있는 비밀 값과 URL의 사용자 정보를 가리고, 마스킹에 실패한 줄은 정해진 문구로 대신 출력한다.
 
     Run the child, streaming its stdout / stderr to ours (the pod log) with every line redacted first (the secret
     values of `env`, their spellings, URL userinfo; a line that cannot be redacted is withheld); returns its exit code."""
     redactor = Redactor(lambda: contract.secret_values(env))
-    # 파드 로그는 UTF-8 로 읽힌다 — 자식이 로케일 인코딩으로 쓰다 `—` 같은 글자에서 죽지 않게(localjob 의 2026-11-05 교훈)
+    # 파드 로그는 UTF-8로 읽는다.
+    # 로케일 인코딩으로 두면 자식이 ASCII 밖의 문자를 출력하다 죽으므로 UTF-8로 고정한다
     child_env = {"PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1", **env}
     proc = subprocess.Popen(cmd, cwd=str(cwd), env=child_env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     assert proc.stdout is not None
@@ -425,8 +423,9 @@ def default_run_child(cmd: list[str], cwd: Path, env: dict[str, str]) -> int:
                 sys.stdout.write(chunk.decode("utf-8", errors="replace"))
                 sys.stdout.flush()
     except BaseException as e:
-        # SIGTERM / Ctrl-C(WorkerTerminated) 나 그 밖의 실패: 상태 파일을 쓰기 전에 Maven 까지 트리째 끝낸다. 받은 신호를 그대로
-        # 넘겨 자식이 스스로 정리할 기회를 먼저 준다. 파이프는 더 읽지 않는다 — 끝나는 프로세스들이 막혀도 SIGKILL 이 끝낸다
+        # 종료 신호나 다른 실패가 나면 상태 파일을 기록하기 전에 Maven까지 트리째 종료한다.
+        # 받은 신호를 그대로 보내 자식이 먼저 정리할 수 있게 한다
+        # 파이프는 더 읽지 않고, 응답하지 않는 프로세스는 SIGKILL로 끝낸다
         sig = e.signum if isinstance(e, WorkerTerminated) else signal.SIGTERM
         left = stop_process_tree(proc, sig)
         if left:
@@ -440,8 +439,9 @@ def default_run_child(cmd: list[str], cwd: Path, env: dict[str, str]) -> int:
 
 
 def resolve_configs(environ: dict[str, str], record: contract.RequestRecord, repo_root: Path) -> list[str]:
-    """쓸 설정 파일들: ``SBMIG_CONFIG``(공백으로 구분한 경로 또는 이름)가 있으면 그것, 없으면 ``request.json`` 의 ``configs`` 를
-    ``<repo root>/config/<name>`` 으로. 경로 구분자가 없는 이름은 ``config/`` 아래로 본다(Main 이 이름으로 고정하므로).
+    """자식에게 넘길 설정 파일 목록을 만든다.
+    ``SBMIG_CONFIG``가 있으면 그 값을 쓰고, 없으면 ``request.json``의 ``configs``를
+    ``<repo root>/config/<name>`` 경로로 바꿔 쓴다. 경로 구분자가 없는 이름은 ``config/`` 아래 파일로 본다.
 
     The config files to pass: `SBMIG_CONFIG` (paths or bare names) else the request's configs under `<repo root>/config/`."""
     raw = (environ.get("SBMIG_CONFIG") or "").split() or list(record.configs or [])
@@ -455,8 +455,9 @@ def resolve_configs(environ: dict[str, str], record: contract.RequestRecord, rep
 
 
 def write_paths_yml(run_dir: Path, environ: dict[str, str]) -> Path:
-    """``<run dir>/worker-paths.yml``: ``SBMIG_KB_DIR`` 이 있으면 ``kb.dir``, LLM 원문 기록을 켜지 않았으면 ``llm.record_dir: ""`` —
-    원문 기록에는 프로젝트 소스가 들어 있어 공유 볼륨에 더 남기지 않는 것이 배포팀의 기본값이다. 마지막 ``--config`` 로 넘긴다.
+    """자식이 마지막 ``--config``로 읽을 ``<run dir>/worker-paths.yml``을 기록한다.
+    ``SBMIG_KB_DIR``이 있으면 ``kb.dir``을 넣고, LLM 원문 기록을 켜지 않았으면 ``llm.record_dir: ""``를
+    넣는다. 원문 기록에는 프로젝트 소스가 들어 있으므로 기본으로는 남기지 않는다.
 
     Write the Worker's override config (KB dir; raw LLM records off unless `SBMIG_WORKER_LLM_RECORDS=1`)."""
     lines: list[str] = []
@@ -471,11 +472,10 @@ def write_paths_yml(run_dir: Path, environ: dict[str, str]) -> Path:
 
 
 def child_environ(environ: dict[str, str]) -> dict[str, str]:
-    """자식 ``sbmig run`` 의 환경. LLM 원문 기록을 켜지 않았으면(``SBMIG_WORKER_LLM_RECORDS`` ≠ 1) 기록 폴더를 정하는 변수
-    (``LLM_RECORD_DIR``, 설정 덮어쓰기 ``SBMIG_LLM__RECORD_DIR``)를 뺀다 — 환경 변수는 yml 보다 우선하므로 ``worker-paths.yml`` 의
-    ``llm.record_dir: ""`` 만으로는 덮어쓰기를 못 끈다. 켰으면 그대로 넘긴다(회사 yml 이 이미지에 구워져 있으면 그 덮어쓰기가 기록 폴더를 정한다).
-    그리고 언제나 ``SBMIG_REDACT_OUTPUT=1``(자식이 로그·저널을 쓰는 순간 지운다 — Worker 아래에서는 끌 수 없다)과, 없으면
-    넓은 ``COLUMNS`` 를 넣는다.
+    """자식 ``sbmig run``에 넘길 환경 변수를 만든다.
+    - LLM 원문 기록을 켜지 않았으면(``SBMIG_WORKER_LLM_RECORDS`` ≠ 1) ``LLM_RECORD_DIR``과 ``SBMIG_LLM__RECORD_DIR``을
+      뺀다. 환경 변수가 yml보다 우선하므로 ``worker-paths.yml``만으로는 끌 수 없다
+    - 항상 ``SBMIG_REDACT_OUTPUT=1``을 넣고, ``COLUMNS``가 없으면 넓은 값을 넣는다
 
     The child's environment: without `SBMIG_WORKER_LLM_RECORDS=1` the variables that choose the raw-record directory are dropped
     (an env override beats the paths yml). Always adds `SBMIG_REDACT_OUTPUT=1` (the child redacts its log / journal lines as
@@ -491,8 +491,8 @@ def child_environ(environ: dict[str, str]) -> dict[str, str]:
 
 
 def slot_number(environ: dict[str, str]) -> int | None:
-    """``SBMIG_JOB_SLOT`` 의 자리 번호(1 부터). 없거나 비었으면 None(자리 개념 없음 — 예전 Main, ``sbmig run`` 직접 실행). 양의 정수가
-    아니면 ``ValueError`` — 부르는 쪽이 "자리 없음"으로 다루고 그렇게 적는다.
+    """``SBMIG_JOB_SLOT``에서 슬롯 번호(1부터)를 읽어 반환한다. 값이 없거나 비어 있으면 None을 반환한다.
+    양의 정수가 아니면 ``ValueError``를 던지고, 호출하는 쪽은 슬롯이 없는 것으로 처리한다.
 
     The 1-based slot number from `SBMIG_JOB_SLOT`; None when unset or blank; `ValueError` when it is not a positive integer."""
     raw = (environ.get(contract.SLOT_ENV) or "").strip()
@@ -505,22 +505,21 @@ def slot_number(environ: dict[str, str]) -> int | None:
 
 
 def slot_local_repo(base: Path, slot: int) -> Path:
-    """자리 ``slot`` 의 로컬 저장소: ``base`` 옆의 ``<base 이름>-slot<k>``(예: ``/home/sbmig/.m2/repository-slot2``) — 같은 PVC
-    안에 남아 다음 실행이 다시 받지 않는다.
+    """슬롯 ``slot``이 쓸 로컬 저장소 경로를 반환한다.
+    ``base`` 옆의 ``<base 이름>-slot<k>``이므로 같은 PVC 안에 남아 다음 실행이 의존성을 다시 받지 않는다.
 
     Slot `slot`'s local repository: the sibling `<base name>-slot<k>` of `base`."""
     return Path(base).parent / f"{Path(base).name}-slot{slot}"
 
 
 def default_repo_resolver(configs: list[str], paths_yml: Path) -> Path:
-    """자리가 없을 때 자식이 쓸 로컬 저장소를 자식과 같은 설정 파일들(같은 순서, ``worker-paths.yml`` 이 마지막)로 계산한다:
-    ``build.local_repo`` → settings.xml 의 ``<localRepository>`` → ``~/.m2/repository``(``sbmig.build.mvn.local_repo_path``).
-    ``load_config`` 는 덮어쓰기를 ``os.environ`` 에서 읽는다 — 파드에서는 Worker 의 env 와 같다(테스트는 다른 resolver 를 넣는다).
+    """슬롯이 없을 때 자식이 쓸 로컬 저장소를 자식과 같은 설정 파일, 같은 순서로 계산한다.
+    ``build.local_repo`` -> settings.xml의 ``<localRepository>`` -> ``~/.m2/repository`` 순서로 찾는다.
 
     The repository the child would use without a slot, from the same config files in the same order (the Worker's paths
     file last): `build.local_repo` → settings.xml `<localRepository>` → `~/.m2/repository`. `load_config` reads its
     overrides from `os.environ` (the Worker's own environment in the pod)."""
-    # 늦게 import: sbmig.build 는 Maven 실행기 전체를 끌고 온다 — 자리 2 부터만 필요하다
+    # sbmig.build를 불러오면 Maven 실행 코드 전체가 함께 로드되므로 슬롯 2번부터 필요할 때만 import한다
     from sbmig.build.mvn import local_repo_path
     from sbmig.core.config import load_config
     return local_repo_path(load_config(*configs, paths_yml))
@@ -528,9 +527,10 @@ def default_repo_resolver(configs: list[str], paths_yml: Path) -> Path:
 
 def base_local_repo(environ: dict[str, str], configs: list[str], paths_yml: Path,
                     resolver: RepoResolver | None = None) -> Path:
-    """이 실행이 자리 없이 쓸 로컬 저장소(자리 저장소의 기준): Worker 자신의 ``SBMIG_BUILD__LOCAL_REPO`` 가 yaml 로 읽어 비지 않은
-    문자열이면 그것(Job 틀의 리터럴 ``"null"`` 은 "정하지 않음"), 아니면 ``resolver``(기본 ``default_repo_resolver``). 예외는 그대로
-    올린다 — 부르는 쪽이 공유 저장소로 물러선다.
+    """슬롯 저장소의 기준이 되는 로컬 저장소를 반환한다.
+    Worker의 ``SBMIG_BUILD__LOCAL_REPO``가 비어 있지 않으면 그 값을 쓰고, 아니면 ``resolver``로 계산한다.
+    Job 템플릿의 문자열 ``"null"``은 지정하지 않은 것으로 본다.
+    예외는 그대로 던지므로 호출하는 쪽이 처리한다.
 
     The repository the run would use without a slot: the Worker's own `SBMIG_BUILD__LOCAL_REPO` when it loads as a
     non-empty string (the template's literal "null" means unset), else `resolver`. Raises what the resolver raises."""
@@ -539,17 +539,17 @@ def base_local_repo(environ: dict[str, str], configs: list[str], paths_yml: Path
         try:
             val = yaml.safe_load(raw)
         except yaml.YAMLError:
-            val = None               # 자식의 load_config 도 이 값에서 깨진다 — resolver 가 같은 이유로 실패해 공유 저장소로 간다
-        # ${VAR} 자리표시자는 자식의 load_config 가 펼친다 — 펼치지 않은 글자를 경로로 쓰지 않고 resolver(같은 load_config)에 맡긴다
+            val = None               # 자식의 load_config와 resolver도 이 값에서 똑같이 실패한다
+        # ${VAR} 플레이스홀더는 자식의 load_config가 채우므로, 채워지지 않은 값을 경로로 쓰지 않고 resolver에 맡긴다
         if isinstance(val, str) and val.strip() and "${" not in val:
             return Path(val).expanduser()
     return Path((resolver or default_repo_resolver)(list(configs), Path(paths_yml)))
 
 
 def yaml_env_value(text: str) -> str:
-    """``SBMIG_<섹션>__<키>`` 로 넘길 값: 자식의 ``load_config`` 는 값을 ``yaml.safe_load`` 로 읽으므로, 그대로 읽어 같은 문자열이면
-    그대로, 아니면(``: `` · `` #`` · 예약 기호로 시작 …) JSON 따옴표 문자열(YAML 이 같은 문자열로 읽는다). 어느 쪽도 되돌아오지
-    않으면 ``ValueError``.
+    """``SBMIG_<섹션>__<키>`` 환경 변수로 넘길 값을 만든다.
+    자식의 ``load_config``가 ``yaml.safe_load``로 읽어도 같은 문자열이면 그대로, 아니면 JSON 따옴표로 감싼
+    문자열을 반환한다. 둘 다 원래 문자열로 읽히지 않으면 ``ValueError``를 던진다.
 
     The value to pass as an `SBMIG_<SECTION>__<KEY>` override so that the child's `yaml.safe_load` returns `text`: as
     is when it round-trips, else JSON-quoted; `ValueError` when neither form does."""
@@ -563,17 +563,18 @@ def yaml_env_value(text: str) -> str:
 
 
 def pod_local_repo(slot: int, root: Path | str | None = None) -> Path:
-    """PVC 에 자리 저장소를 못 만들 때 쓰는 파드 안의 저장소: ``<임시 폴더>/sbmig-m2-slot<k>``(``root`` 가 없으면
-    ``tempfile.gettempdir()``). 파드가 끝나면 사라진다 — 매번 의존성을 다시 받지만 다른 파드와 나누지 않는다.
+    """PVC에 슬롯 저장소를 만들 수 없을 때 쓰는 파드 안 저장소 경로 ``<임시 폴더>/sbmig-m2-slot<k>``를 반환한다.
+    파드가 끝나면 사라져 매번 다시 받아야 하지만 다른 파드와 공유하지 않는다.
 
     The pod-local fallback repository `<temp dir>/sbmig-m2-slot<k>`: cold on every run, never shared with another pod."""
     return Path(root if root is not None else tempfile.gettempdir()) / POD_LOCAL_REPO_NAME.format(slot=slot)
 
 
 def prepare_repo_dir(path: Path) -> tuple[str | None, str | None]:
-    """``path`` 를 Maven 로컬 저장소로 쓸 수 있게 한다: 자식에게 넘길 값(``yaml_env_value``)을 만들고, 폴더를 만들고, 파일 하나를
-    만들었다 지워 **실제로 쓸 수 있는지** 본다(NFS 의 루트는 만들기는 되는데 쓰기가 안 되는 일이 있다). ``(값, None)`` 또는
-    ``(None, 이유)``. 예외를 내지 않는다.
+    """``path``를 Maven 로컬 저장소로 쓸 수 있게 준비한다.
+    폴더를 만들고 파일을 하나 썼다 지워서 실제로 쓸 수 있는지 확인한다.
+    NFS 루트처럼 폴더는 만들어지는데 쓰기가 안 되는 경우가 있기 때문이다.
+    ``(환경 변수 값, None)`` 또는 ``(None, 실패 이유)``를 반환하고 예외를 던지지 않는다.
 
     Make `path` usable as a local repository: the env value, the directory, and a real write probe (create + remove a
     file). Returns `(value, None)` or `(None, reason)`; never raises."""
@@ -597,14 +598,11 @@ def prepare_repo_dir(path: Path) -> tuple[str | None, str | None]:
 
 def apply_slot_repo(child_env: dict[str, str], environ: dict[str, str], configs: list[str], paths_yml: Path, *,
                     cwd: Path, resolver: RepoResolver | None = None, local_root: Path | str | None = None) -> dict | None:
-    """자리 규칙을 자식의 env(``child_env``, 그 자리에서 고친다)에 적용하고 저널 ``worker_slot`` 의 데이터를 돌려준다.
-    ``SBMIG_JOB_SLOT`` 이 없으면 None(아무것도 하지 않고 적지도 않는다). 1번 자리 → 그대로 ``{slot: 1, local_repo: None, shared:
-    False}``. k ≥ 2 → (1) 기준 저장소(``base_local_repo``; 상대 경로면 자식의 작업 폴더 ``cwd`` 기준) 옆의 ``-slot<k>`` 폴더를 만들고
-    쓰기를 확인해 ``SBMIG_BUILD__LOCAL_REPO`` 를 넣는다 → ``{slot: k, local_repo: <경로>, shared: False}``. (2) 기준을 못 정했거나 그
-    폴더를 만들거나 쓸 수 없으면 파드 안의 저장소(``pod_local_repo``; ``local_root`` 는 테스트용) → ``{…, local_repo: <경로>, shared:
-    False, pod_local: True, note: <이유>}`` — 느리지만 다른 파드와 나누지 않는다. (3) 그것마저 안 되면, 또는 번호가 틀렸으면 env 는
-    그대로(공유 저장소) → ``{…, local_repo: None, shared: True, note: <이유>}``. 예외를 내지 않는다 — 이것 때문에 실행이 실패하는 일은
-    없다. Worker 의 env(``environ``)는 건드리지 않는다(환경 대조는 파드 자신의 env 를 본다).
+    """슬롯 번호에 맞는 Maven 로컬 저장소를 ``child_env``에 설정하고 저널 ``worker_slot``에 남길 데이터를 반환한다.
+    ``SBMIG_JOB_SLOT``이 없으면 None을 반환하고, 1번 슬롯은 설정을 바꾸지 않는다. 2번부터는 기준 저장소 옆
+    ``-slot<k>`` 폴더를 쓰고, 실패하면 파드 안 저장소(``pod_local: True``), 그것도 실패하면 공유
+    저장소(``shared: True``)를 쓴다.
+    예외를 던지지 않으며 ``environ``은 바꾸지 않는다.
 
     Apply the slot rule to the child's environment (`child_env`, changed in place) and return the `worker_slot` journal
     data; None when `SBMIG_JOB_SLOT` is unset. Slot 1 = unchanged; slot k ≥ 2 = (1) the sibling `<base>-slot<k>`, created
@@ -630,18 +628,18 @@ def apply_slot_repo(child_env: dict[str, str], environ: dict[str, str], configs:
         why: str | None = None
         try:
             base = base_local_repo(environ, configs, paths_yml, resolver)
-        except Exception as e:  # noqa: BLE001 — 기준을 못 정해도 실행은 간다(아래의 파드 안 저장소로)
-            # 형식 이름만: 설정 검증 오류의 글은 값을 담을 수 있다
+        except Exception as e:  # noqa: BLE001 - 기준을 못 정해도 파드 안 저장소로 계속한다
+            # 설정 검증 오류 메시지에는 값이 들어 있을 수 있으므로 예외 형식 이름만 남긴다
             why = f"the base Maven local repository could not be resolved ({type(e).__name__})"
         else:
             if not base.is_absolute():
-                base = Path(cwd) / base      # 자식은 cwd 에서 돌고 거기서 상대 경로를 푼다(mvn.base_command 의 absolute())
+                base = Path(cwd) / base      # 자식은 cwd에서 실행되므로 상대 경로도 cwd 기준으로 바꾼다
             path = slot_local_repo(base, slot)
             value, why = prepare_repo_dir(path)
             if value is not None:
                 child_env[LOCAL_REPO_ENV] = value
                 return {"slot": slot, "local_repo": str(path), "shared": False}
-        # 공유 저장소로 물러서면 세 파드의 Maven 이 한 저장소에 쓴다 — 그 전에 파드 안의 저장소(느리지만 나누지 않는다)
+        # 공유 저장소를 쓰면 여러 파드의 Maven이 한 저장소에 쓰게 되므로 먼저 파드 안 저장소를 시도한다
         local = pod_local_repo(slot, local_root)
         value, why_local = prepare_repo_dir(local)
         if value is not None:
@@ -649,12 +647,12 @@ def apply_slot_repo(child_env: dict[str, str], environ: dict[str, str], configs:
             return {"slot": slot, "local_repo": str(local), "shared": False, POD_LOCAL_KEY: True,
                     "note": f"pod-local repository: {why}"}
         return shared(f"{why}; pod-local fallback: {why_local}")
-    except Exception as e:  # noqa: BLE001 — 어떤 예외도 실행을 막지 않는다
+    except Exception as e:  # noqa: BLE001 - 어떤 예외가 나도 실행을 막지 않는다
         return shared(f"the slot repository could not be set up ({type(e).__name__})")
 
 
 def slot_message(data: dict) -> str:
-    """``apply_slot_repo`` 결과를 파드 로그 한 줄로. / One pod-log line for an `apply_slot_repo` result."""
+    """``apply_slot_repo`` 결과를 파드 로그에 남길 한 줄로 만든다. / One pod-log line for an `apply_slot_repo` result."""
     if data.get("shared"):
         where = f"job slot {data['slot']}: " if data.get("slot") else ""
         return f"WARNING: {where}{data.get('note')}; the run uses the shared Maven local repository"
@@ -672,8 +670,10 @@ def slot_message(data: dict) -> str:
 
 def build_command(python: str, zip_path: str, configs: list[str], paths_yml: Path, out: str, run_id: str,
                   stop_after: str | None, llm_provider: str | None, flow: str | None = None) -> list[str]:
-    """자식 명령: ``python -m sbmig.cli run <zip> --config … --config <worker-paths.yml> --out <out> --run-id <id>
-    [--stop-after X] [--llm-provider Y] [--flow remediation]``. ``--flow`` 는 full 이 아닐 때만 붙인다(full 이 CLI 의 기본값이다).
+    """자식 프로세스로 실행할 ``sbmig.cli run`` 명령을 만든다.
+    형태는
+    ``python -m sbmig.cli run <zip> --config … --config <worker-paths.yml> --out <out> --run-id <id> [--stop-after X] [--llm-provider Y] [--flow remediation]``이고,
+    ``--flow``는 CLI 기본값인 full이 아닐 때만 붙인다.
 
     The child command line (run-job.sh's shape, the Worker's paths file as the last `--config`); `--flow` only when it
     is not the default `full`."""
@@ -691,7 +691,7 @@ def build_command(python: str, zip_path: str, configs: list[str], paths_yml: Pat
 
 
 def build_resume_command(python: str, run_dir: Path, configs: list[str], paths_yml: Path) -> list[str]:
-    """조치 재개 자식 명령: ``python -m sbmig.cli remediation-resume --run-dir <run dir> --config … --config <worker-paths.yml>``.
+    """취약점 조치를 이어서 진행하는 자식 명령을 만든다: ``python -m sbmig.cli remediation-resume --run-dir <run dir> --config … --config <worker-paths.yml>``.
 
     The remediation resume child command (the Worker's paths file as the last `--config`)."""
     cmd = [python, "-m", "sbmig.cli", "remediation-resume", "--run-dir", str(run_dir)]
@@ -701,7 +701,8 @@ def build_resume_command(python: str, run_dir: Path, configs: list[str], paths_y
 
 
 def last_result_line(run_dir: Path) -> str | None:
-    """``<run dir>/sbmig.log`` 의 마지막 ``SBMIG-RESULT`` 줄(운영자가 옮겨 적는 줄). / The log's last SBMIG-RESULT line."""
+    """``<run dir>/sbmig.log``에서 마지막 ``SBMIG-RESULT`` 줄을 찾아 반환한다.
+    운영자가 결과를 확인하는 줄이다. / The log's last SBMIG-RESULT line."""
     try:
         text = (Path(run_dir) / "sbmig.log").read_text(encoding="utf-8", errors="replace")
     except OSError:
@@ -712,9 +713,9 @@ def last_result_line(run_dir: Path) -> str | None:
 
 @dataclass
 class EnvCheck:
-    """환경 대조 한 번의 결과(``check_environment``). ``policy`` 는 refuse | warn. 차이는 **이름만** 담는다: ``differs`` /
-    ``main_only`` / ``worker_only``(``contract.compare_env_pins``), ``run_values``(``request.json`` 과 다른 실행별 변수 이름),
-    ``problems``(사람이 읽을 문장 — 비면 통과), ``error``(대조 자체가 실패했을 때 그 예외의 형식 이름 — 메시지는 값을 담을 수 있어 뺀다).
+    """환경 확인(``check_environment``) 한 번의 결과를 담는 데이터 클래스.
+    ``policy``는 refuse 또는 warn이고, 차이는 변수 이름만 담는다. ``problems``가 비어 있으면 통과다.
+    ``error``는 확인 자체가 실패했을 때의 예외 형식 이름이며, 메시지는 값을 담을 수 있으므로 넣지 않는다.
 
     One environment check: the policy, the differing names per category, the per-run variables that differ from
     `request.json`, the problem sentences (empty = ok) and the exception type when the check itself failed. Names only."""
@@ -727,11 +728,11 @@ class EnvCheck:
     error: str | None = None
 
     def reason(self) -> str:
-        """문장들을 ``; `` 로 잇고 고정 안내를 붙인 글(거절 사유 / 경고 줄). / The problems joined, plus the fixed hint."""
+        """문제 문장들을 ``; ``로 잇고 정해진 안내 문구를 붙여 거절 사유나 경고 줄을 만든다. / The problems joined, plus the fixed hint."""
         return "; ".join(self.problems) + " — " + ENV_PIN_HINT
 
     def journal_data(self, run_id: str, clean: Callable[[str], str]) -> dict:
-        """``worker_env_differs`` 저널 줄의 데이터 — 이름 목록만. / The journal data of `worker_env_differs` (names only)."""
+        """``worker_env_differs`` 저널 줄에 넣을 데이터를 만든다. 값은 빼고 이름 목록만 담는다. / The journal data of `worker_env_differs` (names only)."""
         data: dict = {"run_id": run_id, "policy": self.policy}
         for key in ("differs", "main_only", "worker_only", "run_values"):
             data[key] = [clean(n) for n in getattr(self, key)]
@@ -740,7 +741,7 @@ class EnvCheck:
         return data
 
     def _failed(self, exc: BaseException) -> None:
-        # 대조가 깨져도 Worker 는 죽지 않는다: 같은 정책 아래의 문제 하나로 센다(refuse 는 닫힌 채로, warn 은 계속)
+        # 확인이 실패해도 Worker를 멈추지 않고 같은 정책 아래의 문제 하나로 센다
         self.error = self.error or type(exc).__name__
         self.problems.append(f"the environment check failed: {type(exc).__name__}")
 
@@ -748,13 +749,14 @@ class EnvCheck:
 def _real_path(path: str | Path, base: Path) -> str:
     p = Path(path)
     if not p.is_absolute():
-        p = Path(base) / p          # 자식은 repo root 에서 돈다(cwd) — 상대 경로는 거기서 풀린다
+        p = Path(base) / p          # 자식은 repo root에서 실행되므로 상대 경로는 repo root 기준으로 바꾼다
     return os.path.normcase(os.path.realpath(p))
 
 
 def _run_value_problems(record: contract.RequestRecord, environ: dict[str, str],
                         repo_root: Path) -> list[tuple[str, str]]:
-    # request.json 의 digest 는 요청의 설정 이름으로 계산했다 — SBMIG_CONFIG 가 다른 파일을 가리키면 검증 안 된 파일로 돈다
+    # request.json의 digest는 요청한 설정 이름으로 계산했으므로, SBMIG_CONFIG가 다른 파일을 가리키면
+    # 검증하지 않은 파일로 실행되는 것을 잡는다
     out: list[tuple[str, str]] = []
     names = [str(c) for c in (record.configs or [])]
     want = [_real_path(Path(repo_root) / "config" / c, repo_root) for c in names]
@@ -766,18 +768,18 @@ def _run_value_problems(record: contract.RequestRecord, environ: dict[str, str],
         out.append(("SBMIG_CONFIG", sentence))
     for name, attr in RUN_VALUE_FIELDS:
         default = RUN_VALUE_DEFAULTS.get(name)
-        if (environ.get(name) or default) != (getattr(record, attr, None) or default):     # 비었거나 없으면 기본값(대개 None)
+        if (environ.get(name) or default) != (getattr(record, attr, None) or default):     # 값이 비었거나 없으면 기본값으로 비교한다
             out.append((name, f"{name} differs from request.json's {attr}"))
     return out
 
 
 def check_environment(record: contract.RequestRecord, state: contract.ControlState | None, environ: dict[str, str],
                       repo_root: Path) -> EnvCheck | None:
-    """Job 을 만든 Main 의 환경(``state.env_pins`` — 리뷰 2026-11-10)과 이 Worker 의 환경을 대조한다. state 가 없거나(옛 Main,
-    local-job) 지문이 없거나 정책이 off 면 None — 대조하지 않는다. 지문은 있는데 정책이 비었으면 refuse 로 본다. 대조하면 두 가지를
-    본다: 지문의 차이(``contract.env_pins`` 를 이 환경으로 다시 계산해 ``compare_env_pins``)와, 실행별 값(``SBMIG_CONFIG`` 가 가리키는
-    파일 · ``SBMIG_STOP_AFTER`` · ``SBMIG_LLM_PROVIDER`` · ``SBMIG_FLOW``)이 ``request.json`` 과 같은지. 예외를 내지 않는다: 대조 중의 예외는 문제
-    하나(``the environment check failed: <형식>``)가 된다. 결과에는 이름만 있다(값·지문 없음).
+    """Job을 만든 Main의 환경(``state.env_pins``)과 이 Worker의 환경이 같은지 확인한다.
+    ``env_pins`` 차이와 함께 실행별 값(``SBMIG_CONFIG`` 파일, ``SBMIG_STOP_AFTER``, ``SBMIG_LLM_PROVIDER``,
+    ``SBMIG_FLOW``)이 ``request.json``과 같은지 본다.
+    state나 ``env_pins``가 없거나 정책이 off면 None을 반환하고, 정책이 비어 있으면 refuse로 본다.
+    예외를 던지지 않으며 결과에는 변수 이름만 담는다.
 
     Compare this Worker's environment with the pins the Main that created the Job wrote (`state.env_pins`). None = no
     check (no state, no pins, policy off); pins without a policy = refuse. Checks the pin diff and the per-run values
@@ -786,7 +788,7 @@ def check_environment(record: contract.RequestRecord, state: contract.ControlSta
         return None
     try:
         policy = contract.env_pin_policy(state.env_pin_policy, default=contract.ENV_PIN_REFUSE)
-    except Exception:  # noqa: BLE001 — 읽을 수 없는 정책 값은 가장 엄한 쪽으로
+    except Exception:  # noqa: BLE001 - 읽을 수 없는 정책 값은 가장 엄격한 refuse로 본다
         policy = contract.ENV_PIN_REFUSE
     if policy == contract.ENV_PIN_OFF:
         return None
@@ -812,8 +814,8 @@ def check_environment(record: contract.RequestRecord, state: contract.ControlSta
 
 def _env_check(run_dir: Path, record: contract.RequestRecord, environ: dict[str, str],
                repo_root: Path, state_name: str = contract.STATE_FILE) -> EnvCheck | None:
-    # Worker 는 control/ 을 읽기만 한다. 읽다가 깨지면(있을 수 없는 일이지만) 정책을 모르니 닫힌 쪽(refuse)으로.
-    # 조치 재개 시도는 자기 제어 상태(remediation-resume.json)의 지문 — 그 Job 을 만든 Main 의 환경이 기준이다
+    # Worker는 control/을 읽기만 하고, 읽기에 실패하면 정책을 알 수 없으므로 refuse로 본다
+    # 취약점 조치 재개는 그 Job을 만든 Main이 기록한 remediation-resume.json을 기준으로 확인한다
     try:
         state = (contract.ControlState.read(run_dir) if state_name == contract.STATE_FILE
                  else contract.ControlState.read(run_dir, state_name))
@@ -833,7 +835,8 @@ def _refuse(run_dir: Path, run_id: str, reason: str, attempt: int | None, action
 
 
 def terminated_error(signum: int) -> str:
-    """종료 신호로 끊긴 실행의 오류 글(``job-status.json`` 의 ``error``, 저널 ``worker_finished`` 의 ``error``).
+    """종료 신호로 중단된 실행의 오류 메시지를 만든다.
+    ``job-status.json``과 저널 ``worker_finished``의 ``error``에 쓴다.
 
     The error text of a run cut short by a stop signal."""
     return (f"the Worker was terminated by {signal_name(signum)} (pod deleted, Job deadline or stop) before sbmig finished "
@@ -842,15 +845,16 @@ def terminated_error(signum: int) -> str:
 
 def _finish_terminated(run_dir: Path, run_id: str, attempt: int, version: str, env: dict[str, str],
                        signum: int, action: str | None = None) -> int:
-    # 진짜 결과처럼 보이면 안 된다: exit 3(Main 이 아는 "중단") + 오류 글. 정제를 먼저 — Main 은 받은 상태 파일을 믿고 자기 정제를 건너뛴다
+    # 실제 결과로 오해하지 않도록 exit 3과 오류 메시지를 남긴다.
+    # Main은 상태 파일을 믿고 자기 마스킹을 건너뛰므로 마스킹을 먼저 한다
     error = terminated_error(signum)
     if action:
-        # 조치 재개 시도: 조치는 다음 재개 때 그 경계부터 다시 간다(상태 파일이 남아 있다). 이관의 결과는 이 시도와 상관없다
+        # 중단된 취약점 조치 재개는 다음 재개 때 마지막으로 저장한 상태부터 다시 진행하며 이관 결과와는 상관없다
         error += (" — the remediation resume stopped where its state was last saved; the migration's results are untouched"
                   " (a running IVAS analysis is not cancelled)")
     else:
-        # 2026-11-11: 이관 뒤에 취약점 조치가 이어 돌면 이관은 이미 끝났는데 조치 중에(Job 기한 등) 끊길 수 있다 — 운영자가 이관의 결과
-        # 줄(SBMIG-RESULT)과 보고서는 남아 있다는 것을 알게 그 줄을 오류 글에 붙인다(종료 코드는 그대로 3: 자식이 끝을 맺지 못했다)
+        # 이관이 끝난 뒤 이어서 실행한 취약점 조치 중에 끊길 수 있으므로, 이관 결과와 보고서가 남아 있다는
+        # 것을 알 수 있게 SBMIG-RESULT 줄을 오류 메시지에 붙인다
         finished = last_result_line(run_dir)
         if finished:
             error += f" — the migration itself had finished before (its report is in the run dir): {finished}"
@@ -865,10 +869,9 @@ def _finish_terminated(run_dir: Path, run_id: str, attempt: int, version: str, e
 
 def main(argv: list[str] | None = None, *, environ: dict[str, str] | None = None, run_child: RunChild | None = None,
          repo_resolver: RepoResolver | None = None, install_signals: InstallSignals | None = None) -> int:
-    """Worker 진입점: 환경 변수로 받은 요청 하나를 검증하고 돌리고 결과 상태 파일을 쓴다. 종료 코드는 모듈 설명 참고.
-    ``repo_resolver`` 는 자리 저장소의 기준을 정하는 함수(테스트용; None = ``default_repo_resolver``). ``install_signals`` 는
-    SIGTERM / SIGINT 처리기를 거는 함수(테스트용; None = ``install_stop_signals``): 자식이 도는 동안 신호가 오면 자식 트리를 끝내고
-    ``job-status.json`` 에 exit 3 + "terminated" 오류를 쓰고 3 으로 끝난다.
+    """Worker의 진입점. 환경 변수로 받은 요청 하나를 확인하고 실행한 뒤 결과 상태 파일을 기록한다.
+    종료 코드는 모듈 docstring에 정리되어 있다. ``repo_resolver``와 ``install_signals``는 테스트에서 바꿔
+    넣는 값이며, None이면 ``default_repo_resolver``와 ``install_stop_signals``를 쓴다.
 
     The Worker entry point (`python -m sbmig.web.worker`); see the module docstring for the exit codes. `repo_resolver`
     finds the base of a slot's repository (tests; None = `default_repo_resolver`); `install_signals` installs the
@@ -885,11 +888,12 @@ def main(argv: list[str] | None = None, *, environ: dict[str, str] | None = None
     run_dir = Path(out) / run_id
     repo_root = Path(env.get("SBMIG_APP_DIR") or PACKAGE_ROOT)
 
-    clean = Redactor(lambda: contract.secret_values(env))      # Worker 자신이 쓰는 글(파드 로그 줄, 저널·상태 파일의 오류 글)용
-    # 2026-11-11 wave 4: 이 Job 이 할 일 — 비었으면 이관(sbmig run), "remediation-resume" 이면 이어 돈 조치 재개
+    clean = Redactor(lambda: contract.secret_values(env))      # Worker가 직접 출력하는 파드 로그, 저널, 상태 파일의 오류 메시지를 마스킹한다
+    # 이 Job이 할 일. 비어 있으면 이관(sbmig run), remediation-resume이면 취약점 조치 재개다
     action = (env.get(contract.ACTION_ENV) or "").strip() or None
     if action is not None and action not in contract.WORKER_ACTIONS:
-        # 모르는 행동: 어느 결과 파일에도 쓰지 않는다(이관의 job-status.json 을 덮지 않게) — Main 은 컨테이너 종료 코드로 끝을 안다
+        # 알 수 없는 작업이면 이관의 job-status.json을 덮어쓰지 않도록 결과 파일을 기록하지 않는다.
+        # Main은 컨테이너 종료 코드로 결과를 안다
         reason = f"unknown {contract.ACTION_ENV}={clean(action[:40])!r} — expected one of {', '.join(contract.WORKER_ACTIONS)}"
         _say(f"REFUSED: {reason}")
         _journal(run_dir, "worker_refused", {"run_id": run_id, "reason": reason})
@@ -905,7 +909,7 @@ def main(argv: list[str] | None = None, *, environ: dict[str, str] | None = None
         if resume_state is None or resume_state.action != action:
             return _refuse(run_dir, run_id, REFUSE_NO_RESUME, None, action)
         attempt = int(resume_state.attempt)
-        # 이관 zip 의 sha256 은 보지 않는다: 재개는 그 zip 을 읽지 않는다(그리고 결과 파일이 생긴 실행 폴더에서 돈다)
+        # 재개는 이관 zip을 읽지 않으므로 sha256은 확인하지 않는다
         problems = contract.verify_request(record, repo_root, None, run_id)
         if not (run_dir / "remediation" / "state.json").is_file():
             problems.append(REFUSE_NO_CHAIN)
@@ -914,11 +918,11 @@ def main(argv: list[str] | None = None, *, environ: dict[str, str] | None = None
         problems = contract.verify_request(record, repo_root, Path(zip_path), run_id)
     if problems:
         return _refuse(run_dir, run_id, "; ".join(problems), attempt, action)
-    # 리뷰 2026-11-10: 파일이 같아도 env 가 다르면 다른 설정으로 돈다 — Job 을 만든 Main 의 환경 지문과 대조(이름만 적는다)
+    # 파일이 같아도 환경 변수가 다르면 다른 설정으로 실행되므로 Job을 만든 Main의 env_pins와 비교한다
     check = _env_check(run_dir, record, env, repo_root, contract.state_file_for(action))
     if check is not None and check.problems:
         reason = clean(check.reason())
-        if check.policy != contract.ENV_PIN_WARN:          # refuse (그리고 알 수 없는 값) — 닫힌 쪽
+        if check.policy != contract.ENV_PIN_WARN:          # refuse와 알 수 없는 정책 값은 거절한다
             return _refuse(run_dir, run_id, reason, attempt, action)
         _say(f"WARNING: {reason}")
         _journal(run_dir, ENV_DIFFERS_EVENT, check.journal_data(run_id, clean))
@@ -930,7 +934,8 @@ def main(argv: list[str] | None = None, *, environ: dict[str, str] | None = None
     if check is not None:
         started["env_pin"] = check.policy
     _journal(run_dir, "worker_started", started)
-    # 리뷰 2026-11-10: 파드의 PID 1 은 처리기가 없으면 SIGTERM 을 무시한다 — 자식이 도는 동안의 신호는 자식 트리를 끝내고 기록을 남긴다
+    # PID 1은 처리기가 없으면 SIGTERM을 무시하므로 처리기를 등록한다.
+    # 자식 실행 중에 신호가 오면 자식 트리를 종료하고 기록을 남긴다
     stops = StopSignals()
     restore = (install_signals or install_stop_signals)(stops.handle)
     try:
@@ -954,22 +959,22 @@ def _run(env: dict[str, str], record: contract.RequestRecord, run_dir: Path, run
         if action == contract.ACTION_REMEDIATION_RESUME:
             cmd = build_resume_command(python, run_dir, configs, paths_yml)
         else:
-            # 실행 방식은 접수 때 고정한 request.json 의 값을 따른다(env SBMIG_FLOW 는 그것과 대조만 한다 — 이관 없이 조치만 청한
-            # 요청이 env 한 줄 때문에 이관 전체로 돌면 안 된다)
+            # 실행 방식은 request.json 값을 따르고 환경 변수 SBMIG_FLOW는 비교에만 쓴다.
+            # 취약점 조치만 요청한 실행이 환경 변수 때문에 이관 전체로 실행되면 안 되기 때문이다
             cmd = build_command(python, zip_path, configs, paths_yml, out, run_id, env.get("SBMIG_STOP_AFTER") or None,
                                 env.get("SBMIG_LLM_PROVIDER") or None, flow=record.flow or contract.FLOW_FULL)
         child_env = child_environ(env)
-        # v2.1z-ae: 2번 자리부터 자기 Maven 로컬 저장소 — 환경 대조가 끝난 뒤, 자식의 env 에만(대조는 파드 자신의 env 를 본다)
+        # 2번 슬롯부터 별도의 Maven 로컬 저장소를 쓴다. 환경 확인이 끝난 뒤 자식의 환경 변수에만 넣는다
         slot = apply_slot_repo(child_env, env, configs, paths_yml, cwd=repo_root, resolver=repo_resolver)
         if slot is not None:
             _say(clean(slot_message(slot)))
             _journal(run_dir, SLOT_EVENT, {k: clean(v) if isinstance(v, str) else v for k, v in slot.items()})
         _say(clean(" ".join(["sbmig", *cmd[3:]])))
-        stops.arm()                                   # 이미 신호가 왔으면 자식을 띄우지 않는다
+        stops.arm()                                   # 이미 신호가 와 있으면 자식을 실행하지 않는다
         try:
             rc = int(run_child(cmd, repo_root, child_env))
         finally:
-            stops.disarm()                            # 자식이 끝난 뒤의 신호는 기억만 — 정제·상태 파일 쓰기를 끊지 않는다
+            stops.disarm()                            # 이후의 신호는 기억만 해서 마스킹과 상태 파일 기록이 끊기지 않게 한다
     except WorkerTerminated as t:
         return _finish_terminated(run_dir, run_id, attempt, version, env, t.signum, action)
     except (Exception, KeyboardInterrupt) as e:  # noqa: BLE001 — whatever broke, Main must still get a status file
@@ -983,7 +988,8 @@ def _run(env: dict[str, str], record: contract.RequestRecord, run_dir: Path, run
 
     _say(f"sbmig exit {rc} — run dir {run_dir}")
     redacted = redact_run_dir(run_dir, contract.secret_values(env))
-    # 재개 시도는 이관의 SBMIG-RESULT 줄을 다시 내지 않는다(이 시도의 결과가 아니다) — 자식이 낸 SBMIG-REMEDIATION 줄이 파드 로그에 있다
+    # 재개 실행은 이관의 SBMIG-RESULT 줄을 다시 출력하지 않는다.
+    # 자식이 출력한 SBMIG-REMEDIATION 줄이 파드 로그에 남아 있다
     line = None if action else last_result_line(run_dir)
     if line:
         print(line, flush=True)

@@ -1,64 +1,65 @@
 # ======================================================================================
 # 회사 사내 아티팩트 설정 예시 (config/artifacts.example.yml)
 # ======================================================================================
-# 이 파일의 좌표(com.company.platform, base-parent, lib-auth …)는 모두 자리표시자다. 실제 회사 좌표가 아니다.
-# 쓰는 방법:
-#   1. 이 파일을 config/artifacts.yml 로 복사한다. 이 이름은 git 이 무시하므로 저장소에 올라가지 않는다.
-#   2. 복사본에 실제 사내 좌표와 버전을 채운다. 실제 좌표는 이 예시 파일이나 저장소의 다른 곳에 적지 않는다.
+# 이 파일의 좌표(com.company.platform, base-parent, lib-auth 등)는 모두 플레이스홀더이고 실제 회사 좌표가 아니다.
+# 사용 방법:
+#   1. 이 파일을 config/artifacts.yml로 복사한다. 이 이름은 git이 무시하므로 저장소에 올라가지 않는다.
+#   2. 복사본에 실제 사내 좌표와 버전을 채운다. 실제 좌표는 이 예시 파일이나 저장소의 다른 곳에 기록하지 않는다.
 #   3. sbmig run <zip 또는 폴더> --config config/artifacts.yml
-# 여기 없는 값은 config/default.yml 의 기본값을 쓴다. 이 파일은 재구성 단계(회사 레이아웃으로 옮기기)와
-# 그 뒤 구조 검토·버전 정리가 주로 읽는다.
+# 여기 없는 값은 config/default.yml의 기본값을 쓴다. 이 파일은 주로 재구성 단계(회사 레이아웃으로 옮기기)와
+# 그 뒤의 구조 검토, 버전 정리에서 읽는다.
 
 # --------------------------------------------------------------------------------------
-# artifacts — 사내 부모 pom 과 사내 아티팩트 (재구성)
+# artifacts: 사내 부모 pom과 사내 아티팩트 (재구성)
 # --------------------------------------------------------------------------------------
 # 회사 레이아웃의 규칙은 다음과 같다.
-#   - 이관된 루트 pom 은 사내 루트 부모(parent, 회사에서는 base-parent)를 상속하는 집계 pom 이 된다.
+#   - 이관된 루트 pom은 사내 루트 부모(parent, 회사에서는 base-parent)를 상속하는 집계 pom이 된다.
 #   - Boot 모듈({name}-boot, Boot 프로젝트라면 *-boot 모듈)은 boot_parent(boot-jar)를 상속한다.
 #   - 그 밖의 모듈({name}-back, {name}-front, 라이브러리, 서비스)은 comp_parent(comp-jar)를 상속한다.
-#   - 필수 의존성 2개는 모든 루트 pom 에 선언한다.
+#   - 필수 의존성 2개는 모든 루트 pom에 선언한다.
 #   - 선택 사내 아티팩트 8개는 as-is 프로젝트가 이미 쓰고 있을 때만 버전을 올린다.
-#   - 사내 아티팩트는 모두 한 버전 줄(예: 4.0.0)을 쓴다.
-# 이전 이관 도구로 옮겨져 옛 boot-jar / comp-jar(예: 1.0.0)를 상속하던 모듈은 여기 적은 버전으로 옮긴다.
-# boot_parent 와 comp_parent 를 둘 다 비우면 역할 부모 없이 모듈들이 루트 pom 을 상속한다.
+#   - 사내 아티팩트는 모두 같은 버전(예: 4.0.0)을 쓴다.
+# 이전 이관 도구로 옮겨져 이전 boot-jar / comp-jar(예: 1.0.0)를 상속하던 모듈은 여기 지정한 버전으로 바꾼다.
+# boot_parent와 comp_parent를 둘 다 비우면 역할 부모 없이 모듈들이 루트 pom을 상속한다.
 artifacts:
-  # 루트 pom 의 사내 부모(필수). 이것을 저장소에서 찾지 못하면 settings / Nexus 문제이므로 실행이 멈춘다.
+  # 루트 pom의 사내 부모(필수). 저장소에서 찾지 못하면 settings / Nexus 문제이므로 실행을 멈춘다.
   parent:
     group_id: com.company.platform
     artifact_id: base-parent
     version: 4.0.0
-  # Boot 모듈의 사내 부모(선택. comp_parent 와 함께 써야 역할 부모 레이아웃이 된다)
+  # Boot 모듈의 사내 부모(선택. comp_parent와 함께 지정해야 역할 부모 레이아웃이 된다)
   boot_parent:
     group_id: com.company.platform
     artifact_id: boot-jar
     version: 4.0.0
-  # Boot 가 아닌 나머지 모듈의 사내 부모(선택)
+  # Boot가 아닌 나머지 모듈의 사내 부모(선택)
   comp_parent:
     group_id: com.company.platform
     artifact_id: comp-jar
     version: 4.0.0
-  # 사내 부모 체인이 Spring Boot 버전을 관리하는지. sbmig 는 Boot 버전을 직접 박아 넣지 않으므로 이 판단이 중요하다.
-  #   auto  = 부모 체인의 pom 들을 읽어 정한다(권장). 체인이 spring-boot-dependencies 를 상속하거나 import 하면
-  #           true 로, 아니면 false 로 본다.
-  #   true  = 관리한다고 본다. 실제 체인에 Boot BOM 이 없으면 parent-chain-no-boot-bom 경고가 남는다.
-  #   false = 관리하지 않는다고 본다. 재구성이 Boot BOM 을 직접 import 하고, 버전 자리에는 부모 체인의
-  #           속성(${spring-boot.version} 등, layout.bom_version_properties)을 쓴다.
+  # 사내 부모 체인이 Spring Boot 버전을 관리하는지 여부. sbmig는 Boot 버전을 직접 넣지 않으므로 이 값이 중요하다.
+  #   auto: 부모 체인의 pom들을 읽어 결정한다(권장). 체인이 spring-boot-dependencies를 상속하거나 import하면
+  #         true, 아니면 false로 본다.
+  #   true: 관리한다고 본다. 실제 체인에 Boot BOM이 없으면 parent-chain-no-boot-bom 경고가 남는다.
+  #   false: 관리하지 않는다고 본다. 재구성이 Boot BOM을 직접 import하고, 버전에는 부모 체인의
+  #          속성(${spring-boot.version} 등, layout.bom_version_properties)을 쓴다.
   parent_manages_spring_boot: auto
-  # 사내 부모가 Java 버전(컴파일러 release)을 정해 주는지. false 면 재구성이 pom 에 maven.compiler.release 를 적는다.
+  # 사내 부모가 Java 버전(컴파일러 release)을 정해 주는지 여부.
+  # false면 재구성이 pom에 maven.compiler.release를 추가한다.
   parent_manages_java_version: true
-  # 필수 사내 의존성(회사 규칙상 정확히 2개). mandatory_target 에 따라 선언된다.
-  # version: null 은 "버전은 사내 부모가 관리한다" 는 뜻이다. sbmig 는 버전을 지어내지 않는다.
+  # 필수 사내 의존성(회사 규칙상 정확히 2개). mandatory_target에 따라 선언된다.
+  # version: null은 사내 부모가 버전을 관리한다는 뜻이다. sbmig는 버전을 임의로 만들지 않는다.
   mandatory:
     - { group_id: com.company.platform, artifact_id: company-core,    version: null }   # null = 부모가 버전 관리
     - { group_id: com.company.platform, artifact_id: company-logging, version: null }
-    # 모든 항목은 같은 필드를 받는다. jar 가 없는 pom 형식 사내 아티팩트는 type: pom 이 필요하다
-    # (<type>pom</type> 으로 쓰이고, as-is 선언에 빠져 있으면 더해 준다). BOM 형식이면
-    # type: pom, scope: import 로 적으며 <dependencies> 가 아니라 <dependencyManagement> 에 들어간다. 예:
+    # 모든 항목은 같은 필드를 받는다. jar가 없는 pom 형식 사내 아티팩트는 type: pom이 필요하다
+    # (<type>pom</type>으로 선언되고, as-is 선언에 빠져 있으면 추가한다). BOM 형식이면
+    # type: pom, scope: import로 지정하며 <dependencies>가 아니라 <dependencyManagement>에 들어간다. 예:
     #   - { group_id: com.company.platform, artifact_id: company-deps, version: null, type: pom }
     #   - { group_id: com.company.platform, artifact_id: company-bom,  version: 4.0.0, type: pom, scope: import }
-  # 선택 사내 아티팩트(회사 규칙상 8개). as-is 프로젝트가 이미 쓰고 있을 때만 버전을 맞춘다(새로 넣지 않는다).
-  #   aliases       = 같은 아티팩트의 옛 이름(g:a). 이 이름으로 쓰고 있으면 새 이름으로 바꾼다.
-  #   property_name = 버전을 관례상 이 이름의 pom 속성에 둘 때 그 속성 이름.
+  # 선택 사내 아티팩트(회사 규칙상 8개). as-is 프로젝트가 이미 쓰고 있을 때만 버전을 맞추고 새로 추가하지 않는다.
+  #   aliases: 같은 아티팩트의 이전 이름(g:a). 이 이름으로 쓰고 있으면 새 이름으로 바꾼다.
+  #   property_name: 관례상 버전을 pom 속성에 둘 때 그 속성 이름.
   optional:
     - { group_id: com.company.lib, artifact_id: lib-auth,      version: 3.0.0, aliases: ["com.company.legacy:auth"] }
     - { group_id: com.company.lib, artifact_id: lib-batch,     version: 3.0.0 }
@@ -68,58 +69,58 @@ artifacts:
     - { group_id: com.company.lib, artifact_id: lib-file,      version: 3.0.0 }
     - { group_id: com.company.lib, artifact_id: lib-messaging, version: 3.0.0 }
     - { group_id: com.company.lib, artifact_id: lib-web,       version: 3.0.0 }
-    # 선택 아티팩트를 "새로 도입" 하게 할 수도 있다. when_present 에 적은 의존성(g:a 또는 glob)이 프로젝트 pom 에
-    # 있으면 그 pom 에 이 아티팩트를 선언한다. 회사가 다듬은 아티팩트가 원래 라이브러리를 대신하는 경우다.
-    #   replaces: true(기본)  = 찾은 원래 선언을 지운다(이 아티팩트가 그 라이브러리를 가져온다).
-    #   replaces: false       = 원래 선언을 남기고 옆에 더한다.
-    # when_present 가 없는 선택 아티팩트는 위처럼 이미 쓰는 경우에만 버전을 맞춘다. 예:
+    # 선택 아티팩트를 새로 도입하게 할 수도 있다. when_present에 지정한 의존성(g:a 또는 glob)이 프로젝트 pom에
+    # 있으면 그 pom에 이 아티팩트를 선언한다. 회사가 정리한 아티팩트가 원래 라이브러리를 대신하는 경우다.
+    #   replaces: true(기본): 찾은 원래 선언을 지운다(이 아티팩트가 그 라이브러리를 가져온다).
+    #   replaces: false: 원래 선언을 남기고 그 옆에 추가한다.
+    # when_present가 없는 선택 아티팩트는 위처럼 이미 쓰는 경우에만 버전을 맞춘다. 예:
     #   - { group_id: com.company.lib, artifact_id: lib-jpa, version: 4.0.0,
     #       when_present: ["org.hibernate:hibernate-core", "org.hibernate.orm:hibernate-core", "org.hibernate:hibernate-entitymanager"] }
-  # 프로젝트에 있으면 지울 의존성(g:a). 예: 옛 사내 부모가 쓰던 BOM ["com.company.legacy:legacy-bom"]
+  # 프로젝트에 있으면 지울 의존성(g:a). 예: 이전 사내 부모가 쓰던 BOM ["com.company.legacy:legacy-bom"]
   remove_when_present: []
-  # 필수 의존성 2개를 어느 pom 에 선언할지.
-  #   root    = 모든 루트 pom(프로젝트 루트. MSA 는 서비스 루트마다 + 맨 위 집계 pom). 회사 규칙.
-  #   modules = 역할 모듈 pom 마다(예전 방식).
+  # 필수 의존성 2개를 선언할 pom.
+  #   root: 모든 루트 pom(프로젝트 루트. MSA는 서비스 루트마다, 그리고 맨 위 집계 pom). 회사 규칙이다.
+  #   modules: 역할 모듈 pom마다 선언한다.
   mandatory_target: root
   # 선택 아티팩트의 버전을 맞추는 방식.
-  #   floor = 적은 버전보다 낮을 때만 올린다. 더 새 버전을 쓰고 있으면 내리지 않는다(기본).
-  #   pin   = 언제나 적은 버전으로 정확히 맞춘다(내릴 수도 있다).
+  #   floor: 지정한 버전보다 낮을 때만 올린다. 더 새 버전을 쓰고 있으면 내리지 않는다(기본).
+  #   pin: 항상 지정한 버전으로 정확히 맞춘다(버전을 내릴 수도 있다).
   optional_version_policy: floor
 
 # plan / loop: 회사 흐름에서는 설정할 것이 없다. 기본값이 곧 회사 흐름이다
-# (OpenRewrite 1회 → 재구성 → 구조 검토 → mvn clean package → 수정 루프).
-# 예전 도구(company-v1) 설정의 plan.parent_phase: spring 이나 loop.phases.verify.max_iterations: 4 를
+# (OpenRewrite 1회 -> 재구성 -> 구조 검토 -> mvn clean package -> 수정 루프).
+# 이전 도구 설정의 plan.parent_phase: spring이나 loop.phases.verify.max_iterations: 4를
 # 옮겨 오지 않는다. 옮겨 오면 수정 루프 라운드가 줄어든다.
 
-# 보고서 report.md 를 한국어로 쓴다(운영자용). report.json·콘솔·로그는 영어로 남는다.
+# 보고서 report.md를 한국어로 작성한다(운영자용). report.json, 콘솔, 로그는 영어로 남는다.
 report:
   language: ko
 
 # --------------------------------------------------------------------------------------
-# build — 회사 PC 의 Maven 환경 (검증 빌드, 수정 루프, 버전 조회)
-# 한 파일에 build: 블록은 한 번만 적는다. 두 번 적으면 YAML 은 마지막 블록만 남기고 앞 블록의 값은 사라진다(경고로 알린다).
-# 키는 꼭 build: 아래에 두 칸 들여쓴다 — 최상위에 놓인 키는 무시된다(이것도 경고로 알린다).
+# build: 회사 PC의 Maven 환경 (검증 빌드, 수정 루프, 버전 조회)
+# 한 파일에 build: 블록은 한 번만 쓴다. 두 번 쓰면 YAML은 마지막 블록만 남기고 앞 블록의 값은 사라진다(경고로 알린다).
+# 키는 반드시 build: 아래에 두 칸 들여쓴다. 최상위에 있는 키는 무시된다(이것도 경고로 알린다).
 # --------------------------------------------------------------------------------------
 build:
-  # 테스트는 이관 범위 밖이다(회사 결정). 모든 빌드에 -Dmaven.test.skip=true 를 붙여 테스트 소스를 컴파일하지도
-  # 돌리지도 않으므로 테스트 코드 오류가 이관을 막지 않는다. 보고서는 tests-not-compiled 플래그를 달고,
-  # 인수인계 섹션이 담당 팀에게 테스트를 컴파일하고 고치라고 안내한다.
-  # skip_tests: true 만으로는 테스트가 여전히 컴파일된다는 점에 주의한다.
-  # config/default.yml 의 기본값도 true 이지만, 회사 파일에서 이 결정이 보이도록 여기에도 적어 둔다.
+  # 테스트는 이관 범위 밖이다(회사 결정). 모든 빌드에 -Dmaven.test.skip=true를 붙여 테스트 소스를 컴파일하지도
+  # 실행하지도 않으므로 테스트 코드 오류가 이관을 막지 않는다. 보고서에는 tests-not-compiled 플래그가 붙고,
+  # 인수인계 섹션에서 담당 팀에게 테스트를 컴파일하고 고치도록 안내한다.
+  # skip_tests: true만으로는 테스트가 여전히 컴파일된다는 점에 주의한다.
+  # config/default.yml의 기본값도 true이지만, 회사 파일에서 이 결정이 보이도록 여기에도 지정해 둔다.
   skip_test_compile: true
-  # 사내 Nexus 를 가리키는 Maven settings.xml. config/settings.nexus.example.xml 을 복사해 그룹 URL 을 채운 뒤
-  # 그 경로를 적는다(예: config/settings.nexus.xml, 절대 경로 권장). 그 파일의 mirrorOf external:* 미러가
-  # pom 안에 선언된 <repositories> 까지 사내 Nexus 로 돌려 준다.
+  # 사내 Nexus를 가리키는 Maven settings.xml. config/settings.nexus.example.xml을 복사해 그룹 URL을 채운 뒤
+  # 그 경로를 지정한다(예: config/settings.nexus.xml, 절대 경로 권장). 그 파일의 mirrorOf external:* 미러가
+  # pom 안에 선언된 <repositories>까지 사내 Nexus로 보낸다.
   settings_file: null
   java_home: null                       # JDK 21 설치 폴더(예: /usr/lib/jvm/java-21, C:/Program Files/Java/jdk-21)
-  # sbmig 가 "실제로 존재하는 릴리스" 를 읽어 볼 저장소 URL(maven-metadata.xml / pom). 버전은 추측하지 않고
-  # 여기서 확인한 사실만 LLM 에게 준다. null = settings_file 의 미러(와 그 자격증명)를 쓴다.
-  # settings.xml 미러와 같은 Nexus 그룹 URL 을 여기에도 적어 두는 것을 권한다.
+  # sbmig가 실제로 존재하는 릴리스를 확인할 저장소 URL(maven-metadata.xml / pom). 버전은 추측하지 않고
+  # 여기서 확인한 정보만 LLM에 전달한다. null이면 settings_file의 미러와 그 자격 증명을 쓴다.
+  # settings.xml 미러와 같은 Nexus 그룹 URL을 여기에도 지정해 두는 것을 권장한다.
   repository_url: null
 
-# libraries: 의존성 버전 정책은 여기서 설정할 것이 없다. 사람이 추가·승인하는 라이브러리는
-# <KB 폴더>/libraries.yml 에 적는다(knowledge/libraries/libraries.company.example.yml 을 복사).
-# 실행마다 새로 읽으므로 재배포가 필요 없다.
+# libraries: 의존성 버전 정책은 여기서 설정할 것이 없다. 사람이 추가하거나 승인하는 라이브러리는
+# <KB 폴더>/libraries.yml에 기록한다(knowledge/libraries/libraries.company.example.yml을 복사).
+# 실행할 때마다 새로 읽으므로 재배포가 필요 없다.
 
-# llm: 여기에 적지 않는다. 게이트웨이 주소·키·모델은 .env(LLM_BASE_URL / LLM_API_KEY / LLM_MODEL)에서만 온다.
-# API 키를 yml 에 적지 않는다. 자세한 것은 config/default.yml 의 llm 섹션.
+# llm: 여기에 쓰지 않는다. 게이트웨이 주소, 키, 모델은 .env(LLM_BASE_URL / LLM_API_KEY / LLM_MODEL)에서만 읽는다.
+# API 키를 yml에 기록하지 않는다. 자세한 내용은 config/default.yml의 llm 섹션을 참고한다.

@@ -1,13 +1,16 @@
-"""동봉 jar 를 재구성 단계에서 연결한다(v2.1z-j): 어느 pom 도 선언하지 않은 트리 안 jar(``profile.bundled_jars``)를 첫
-빌드 전에 대상 모듈 pom 에 넣는다 — Ant 접수(v2.1j)가 하던 일과 같은 규칙. 컴파일 오류가 없는 런타임 전용 jar(JDBC
-드라이버, web.xml 의 sitemesh 필터, taglib 구현)도 as-is WAR 처럼 패키징되게 하려는 것이다.
-
-jar 마다 판정 하나: ``superseded`` (목표 부모 체인 / Boot BOM 이 그 g:a 를 관리 — 관리 버전이 대신, 손대지 않음),
-``container`` (서블릿 / JSP API 사본 — Tomcat 이 준다), ``unused`` (소스 / JSP / XML / properties 어디서도 참조하지 않음 —
-선언하지 않고 인수인계에 이름만), ``declared`` (대상 pom 이 이미 그 g:a 를 선언), ``compile`` (좌표를 알고 저장소에 있음 →
-보통 의존성), ``system`` (좌표를 모르거나 저장소에 없음 → ``<module>/lib`` 복사 + system scope), ``skip``
-(``intake.unknown_jar: skip`` 이라 저장소에 없는 jar 는 선언하지 않음, 또는 연결 중 오류). 판정(``plan_bundled_jars``)은
-파일을 바꾸지 않고, 쓰기(``apply_bundled_jars``)는 ``system_jars.wire_bundled_jar`` 를 통한다.
+"""어느 pom도 선언하지 않은 트리 안의 jar(``profile.bundled_jars``)를 재구성
+단계에서 첫 빌드 전에 대상 모듈 pom에 연결하는 모듈.
+JDBC 드라이버, sitemesh 필터, taglib 구현처럼 컴파일 오류를 내지 않는
+런타임 전용 jar도 as-is WAR처럼 패키징되게 하기 위해서다.
+jar마다 아래 결과 중 하나를 정한다.
+- ``superseded``(목표 부모 체인이나 Boot BOM이 관리), ``container``(Tomcat이 제공하는 서블릿 / JSP API): 손대지 않는다
+- ``unused``: 어디서도 참조하지 않으므로 선언하지 않고 인수인계에 이름만 남긴다.
+  ``declared``: 대상 pom이 이미 선언했다
+- ``compile``: 좌표를 알고 저장소에 있다.
+  ``system``: 그렇지 않으므로 ``<module>/lib``에 복사하고 system scope로 선언한다
+- ``skip``: ``intake.unknown_jar: skip``이거나 연결 중 오류가 났다
+결정(``plan_bundled_jars``)은 파일을 바꾸지 않고, 쓰기(``apply_bundled_jars``)는
+``system_jars.wire_bundled_jar``를 거친다.
 
 Bundled jars wired at the restructure (v2.1z-j): every `profile.bundled_jars` entry gets one verdict
 (`superseded | container | unused | declared | compile | system | skip`, with the reason) from the pure planner;
@@ -32,13 +35,15 @@ __all__ = ["TRUSTED_SOURCES", "VERDICTS", "BundledItem", "BundledPlan", "apply_b
 log = logging.getLogger(__name__)
 
 VERDICTS = ("superseded", "container", "unused", "declared", "compile", "system", "skip")
-# 저장소에 물어볼 만한 좌표의 출처(루프의 BUNDLED_TRUSTED_SOURCES 와 같다) — manifest 추정은 믿지 않는다
+# 저장소에 조회할 만한 좌표 출처이며 수정 루프의 BUNDLED_TRUSTED_SOURCES와 같다.
+# manifest로 추정한 좌표는 믿지 않는다
 TRUSTED_SOURCES = ("pom_properties", "sha1_lookup", "name_table")
 
 
 @dataclass
 class BundledItem:
-    """jar 하나의 판정: as-is jar(분석 시점 경로), 지금 위치(재구성 뒤), 판정 낱말, 사유. 연결됐으면 ``wired``.
+    """jar 하나에 대한 결정을 담는 데이터 클래스.
+    as-is 경로, 재구성 뒤 경로, 결과 값, 사유를 담고, 연결되면 ``wired``가 된다.
 
     One jar's verdict: the as-is jar, its current (post-move) path, the verdict word, the reason; `wired` once
     applied."""
@@ -53,18 +58,19 @@ class BundledItem:
 
 @dataclass
 class BundledPlan:
-    """``plan_bundled_jars`` 의 결과: jar 마다 ``BundledItem`` 하나. ``wired()`` / ``skipped()`` 는
-    ``RestructureResult.jars_wired`` / ``jars_skipped`` 모양의 dict 목록.
+    """``plan_bundled_jars``의 결과를 담는 데이터 클래스. jar마다 ``BundledItem``이 하나씩 있다.
+    ``wired()`` / ``skipped()``는 ``RestructureResult.jars_wired`` / ``jars_skipped`` 형태의 dict 목록을 반환한다.
 
     The planner's outcome; `wired()` / `skipped()` give the `RestructureResult.jars_wired` / `jars_skipped` shapes."""
     items: list[BundledItem] = field(default_factory=list)
 
     def by_verdict(self, *verdicts: str) -> list[BundledItem]:
-        """판정이 ``verdicts`` 중 하나인 항목들."""
+        """결과 값이 ``verdicts`` 중 하나인 항목을 반환한다."""
         return [i for i in self.items if i.verdict in verdicts]
 
     def wired(self) -> list[dict[str, Any]]:
-        """연결된 jar 마다 ``{path, pom, coordinates, scope, placeholder, boot_poms}`` (path = as-is 경로)."""
+        """연결된 jar마다 ``{path, pom, coordinates, scope, placeholder, boot_poms}`` dict를 만들어
+        반환한다. path는 as-is 경로다."""
         out: list[dict[str, Any]] = []
         for i in self.items:
             w = i.wired
@@ -76,13 +82,14 @@ class BundledPlan:
         return out
 
     def skipped(self) -> list[dict[str, Any]]:
-        """연결하지 않은 jar 마다 ``{path, why}`` (``why`` 는 판정 낱말로 시작)."""
+        """연결하지 않은 jar마다 ``{path, why}`` dict를 만들어 반환한다. ``why``는 결과 값으로 시작한다."""
         return [{"path": i.jar.path, "why": i.why} for i in self.items if i.wired is None]
 
 
 def repository_has_fn(lookup: Any) -> Callable[[str, str, str], bool]:
-    """``RepositoryLookup`` (또는 None)으로 "저장소에 정확히 g:a:v 가 있는가" 함수를 만든다: ``pom_text(g, a, v)`` 가
-    있으면 True, 아니면 ``v in versions(g, a)``. 조회기가 없거나 어떤 예외든 False(= system scope).
+    """``RepositoryLookup``으로 저장소에 g:a:v가 정확히 있는지 확인하는 함수를 만든다.
+    ``pom_text(g, a, v)``가 있으면 True, 없으면 ``v in versions(g, a)``로 판단한다.
+    조회기가 없거나 예외가 나면 False가 되어 그 jar는 system scope로 연결된다.
 
     "Does the repository have exactly g:a:v": `pom_text` truthy, else `v in versions(g, a)`; no lookup / any
     exception → False."""
@@ -100,7 +107,8 @@ def repository_has_fn(lookup: Any) -> Callable[[str, str, str], bool]:
 
 
 def unused_jar_followup(name: str) -> str:
-    """참조가 없어 선언하지 않은 동봉 jar 의 인수인계 한 줄(i18n PATTERNS 가 옮긴다 — 바꾸면 함께).
+    """참조가 없어 선언하지 않은 동봉 jar에 대한 인수인계 문구를 만든다.
+    i18n PATTERNS가 번역하므로 고칠 때 함께 고친다.
 
     The Handover line for a bundled jar nothing references (not declared)."""
     return (f"bundled jar `{name}` is referenced by no source / JSP / XML / properties file — not declared (add it by "
@@ -130,11 +138,11 @@ def plan_bundled_jars(ws: Any, cfg: Any, jars: Iterable[JarCoordinate], *, modul
                       repository: Callable[[str, str, str], bool] | None = None,
                       source_roots: Iterable[str] = (), extra_dirs: Iterable[str] = (),
                       current: dict[str, str] | None = None, managed_known: bool = True) -> BundledPlan:
-    """jar 마다 판정 하나(순서대로 첫 규칙): 관리되는 g:a → superseded, 컨테이너 API → container, 참조 없음(``mark_used``
-    — ``source_roots`` 의 Java + ``extra_dirs`` 의 JSP / XML / properties; 분석의 ``used`` 는 바꾸지 않는다) → unused,
-    대상 pom 이 g:a 를 이미 선언 → declared, 믿을 만한 출처의 완전한 좌표를 저장소가 가짐 → compile, 그 밖 → system
-    (``intake.unknown_jar: skip`` 이면 skip). 같은 sha1 의 두 번째 jar 는 첫 jar 의 판정을 따른다(연결은 한 번). 파일을
-    바꾸지 않는다. ``current`` = as-is 경로 → 지금 경로.
+    """jar마다 결과를 하나 정한다. 아래 순서로 처음 맞는 규칙을 쓰며 파일은 바꾸지 않는다.
+    관리되는 g:a면 superseded, 컨테이너 API면 container, 참조가 없으면 unused, 대상 pom이 이미 선언했으면
+    declared, 믿을 만한 좌표가 저장소에 있으면 compile, 그 밖에는 system이다.
+    참조 여부는 ``source_roots``의 Java와 ``extra_dirs``의 JSP / XML / properties로 다시 확인한다.
+    sha1이 같은 두 번째 jar는 첫 jar의 결과를 따른다.
 
     Pure classification (first rule wins): managed g:a → superseded; container API copy → container; nothing
     references it → unused; the target pom declares the g:a → declared; trusted full coordinates the repository has →
@@ -148,7 +156,7 @@ def plan_bundled_jars(ws: Any, cfg: Any, jars: Iterable[JarCoordinate], *, modul
     boots = list(dict.fromkeys(boot_poms or ()))
     cur = dict(current or {})
     policy = getattr(getattr(cfg, "intake", None), "unknown_jar", "system") if cfg is not None else "system"
-    # 분석의 JarCoordinate 는 그대로 두고 사본으로 used 를 다시 본다(재구성 뒤의 소스·웹 루트 기준)
+    # 분석 결과의 JarCoordinate는 그대로 두고, 깊은 복제본으로 재구성 뒤의 소스와 웹 루트 기준 used를 다시 계산한다
     copies = [j.model_copy(deep=True) for j in jars]
     roots = [d for d in source_roots if d is not None]
     extra = [d for d in extra_dirs if d is not None]
@@ -204,8 +212,9 @@ def plan_bundled_jars(ws: Any, cfg: Any, jars: Iterable[JarCoordinate], *, modul
 
 
 def apply_bundled_jars(ws: Any, cfg: Any, plan: BundledPlan, *, project_group: str = "") -> list[WiredJar]:
-    """``compile`` / ``system`` 항목을 ``wire_bundled_jar`` 로 쓴다(compile = 저장소에 있음). jar 하나의 실패는 WARNING
-    한 줄 + 그 항목을 ``skip`` (사유 = 오류)으로 바꾸고 다음 jar 로 — 예외를 밖으로 내지 않는다. 커밋하지 않는다.
+    """``compile`` / ``system`` 항목을 ``wire_bundled_jar``로 pom에 쓴다. 커밋은 하지 않는다.
+    jar 하나가 실패하면 WARNING 한 줄을 남기고 그 항목을 ``skip``(사유는 오류 내용)으로 바꾼 뒤 다음 jar로
+    넘어간다. 예외를 던지지 않는다.
 
     Write the `compile` / `system` items through `wire_bundled_jar`; a failing jar becomes `skip` with the error
     (one WARNING), never raises. Never commits."""
@@ -223,7 +232,7 @@ def apply_bundled_jars(ws: Any, cfg: Any, plan: BundledPlan, *, project_group: s
                         type(e).__name__, e)
             item.verdict, item.why = "skip", f"skip: wiring failed: {type(e).__name__}: {e}"[:300]
             continue
-        # wire_bundled_jar 는 멱등: 같은 g:a 가 이미 있으면 아무것도 쓰지 않고 "already declared" 를 남긴다
+        # wire_bundled_jar는 같은 g:a가 이미 있으면 아무것도 쓰지 않고 "already declared"만 남긴다
         if any(n.startswith(f"{w.key} already declared") for n in w.notes):
             item.verdict, item.why = "declared", f"declared: {w.key} is already declared in {w.module_pom}"
             continue
@@ -233,5 +242,5 @@ def apply_bundled_jars(ws: Any, cfg: Any, plan: BundledPlan, *, project_group: s
 
 
 def jar_name(path: str) -> str:
-    """경로의 파일 이름(``/`` · ``\\`` 모두)."""
+    """경로에서 파일 이름만 반환한다. 슬래시와 역슬래시 구분자를 모두 처리한다."""
     return posixpath.basename(path.replace("\\", "/"))

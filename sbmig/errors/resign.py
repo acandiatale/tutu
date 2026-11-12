@@ -1,12 +1,13 @@
-"""KB 재서명(re-sign)의 순수한 부분: 옛 규칙으로 서명된 기록의 L2 를 지금 규칙으로 다시 계산하고, 어느 케이스가
-어디로 옮겨 가는지 계획을 세운다. 파일은 건드리지 않는다 — 쓰기는 :meth:`sbmig.errors.cases.CaseStore.resign` 이 KB
-잠금 안에서 한다. 왜 필요한가: 케이스 ID 는 L2 문자열의 해시라서 서명 규칙(``sbmig.build.signatures``)이 바뀌면 같은
-오류가 다른 ID 를 받고 저장된 케이스·스크립트가 고아가 된다. 그래서 기록마다 자기를 서명한 규칙 버전(``sig``)을
-갖고, 규칙 표(``SIGNATURE_CHANGES``)가 그 버전 뒤로 바뀌었다고 말하는 분류의 기록만 다시 계산한다(나머지는 버전
-도장만). 다시 계산할 재료는 기록에 남은 사실(``symbol`` / ``location`` / ``artifact`` / ``goal``), 없으면(옛 기록)
-``raw`` 의 javac 이어지는 줄(``symbol:`` / ``location:``)이다. 결과가 다른 분류이거나 키가 비면 저장된 L2 를 지킨다.
-``signature_for`` 는 프로세스 전역의 reactor 모듈 이름 목록을 읽는다 — 재계산 동안 그것을 비워 두고 끝나면 되돌린다
-(실행 중인 프로젝트의 이름에 기대지도, 그것을 망가뜨리지도 않게).
+"""KB 재서명에서 파일을 건드리지 않는 계산 부분을 맡는 모듈.
+이전 규칙으로 서명된 기록의 L2를 현재 규칙으로 다시 계산하고 케이스를 어디로 옮길지 정한다.
+파일 쓰기는 :meth:`sbmig.errors.cases.CaseStore.resign`이 KB 잠금 안에서 한다.
+- 케이스 ID는 L2의 해시이므로 서명 규칙이 바뀌면 같은 오류가 다른 ID를 받는다.
+  그래서 기록마다 서명할 때의 규칙 버전(``sig``)을 남긴다
+- ``SIGNATURE_CHANGES``에서 그 버전 이후 바뀐 오류 분류만 다시 계산하고, 나머지는 버전만 갱신한다
+- 다시 계산할 때는 기록의 ``symbol`` / ``location`` / ``artifact`` / ``goal``을 쓰고, 없으면 ``raw``에 있는
+  javac의 이어지는 줄을 읽는다
+- 결과의 분류가 달라지거나 키가 비면 저장된 L2를 그대로 둔다
+- 계산하는 동안 프로세스 전역의 reactor 모듈 이름 목록을 비워 두고 끝나면 되돌린다
 
 The pure parts of the KB re-sign: recompute the L2 of records signed by older signature rules and plan which case
 moves where. No file is touched here — :meth:`sbmig.errors.cases.CaseStore.resign` writes, under the KB lock.
@@ -35,33 +36,34 @@ log = logging.getLogger("sbmig.errors")
 
 Signer = Callable[[BuildError], str]
 
-# javac 의 이어지는 줄('  symbol:   method keySet()'). sbmig.build.log_parser._CONT_RE 와 같은 식 — 그 모듈의 비공개
-# 이름에 기대지 않으려고 여기 둔다. 저장된 raw 의 줄은 '[ERROR]' 접두어를 달고 있을 수 있어 먼저 뗀다.
+# javac의 이어지는 줄을 찾는 식으로 log_parser._CONT_RE와 같으며, 비공개 이름에 의존하지 않으려고 여기 따로 둔다
+# 저장된 raw의 줄 앞에는 '[ERROR]'가 붙어 있을 수 있으므로 먼저 뗀다
 # the javac continuation line, the same expression as sbmig.build.log_parser._CONT_RE (mirrored: a private name)
 _CONT_RE = re.compile(r"^\s+(?P<key>symbol|location|required|found|reason)\s*:\s*(?P<val>.*)$")
 _LEVEL_RE = re.compile(r"^\s*\[(?:ERROR|FATAL|WARNING|WARN|INFO)\]")
-# errors.jsonl 한 줄에서 맨 위 'l2' 와 'sig' 값만 정규식으로(JSON 파싱 없이) 읽는다. 문자열 안의 따옴표는 \" 로
-# 이스케이프되므로 메시지 속 '"l2":' 글자는 걸리지 않는다; ErrorEntry 의 하위 객체에는 l2 / sig 키가 없다.
+# JSON 파싱 없이 errors.jsonl 한 줄에서 최상위 'l2'와 'sig'만 읽는다
+# 문자열 안 따옴표는 이스케이프되고 하위 객체에는 l2 / sig 키가 없으므로 잘못 찾을 일이 없다
 # the top-level "l2" (kind, class) and "sig" of one stored line, without a JSON parse
 _LINE_L2_RE = re.compile(r'"l2"\s*:\s*"([^"|\\]*)\|([^"|\\]*)')
 _LINE_SIG_RE = re.compile(r'"sig"\s*:\s*(\d+)')
 _LINE_CASE_RE = re.compile(r'"case_id"\s*:\s*"([^"\\]*)"')
 _ANY_CASE_RE = re.compile(rb'"case_id"\s*:\s*"([^"\\]*)"')
 ID_HEAD = '{"id":"'
-# 정리기(Cleaner)가 자른 텍스트 끝의 표식('…[N more characters]') — 잘린 사실은 없는 것으로 본다
+# 텍스트를 정리할 때 잘라 낸 값 끝에 붙는 표시이며, 잘린 값은 없는 것으로 본다
 _CUT_RE = re.compile(r"…\[\d+ more characters\]\s*$")
 L2_LOG_CHARS = 100
 
 
 def current_version() -> int:
-    """지금 서명 규칙 버전(``sbmig.build.signatures.SIGNATURE_VERSION``; 테스트가 바꿔 끼울 수 있게 매번 읽는다).
+    """현재 서명 규칙 버전(``sbmig.build.signatures.SIGNATURE_VERSION``)을 반환한다.
+    테스트에서 바꿀 수 있도록 매번 새로 읽는다.
 
     The current signature rule version, read at call time."""
     return int(getattr(_sigs, "SIGNATURE_VERSION", 1) or 1)
 
 
 def changed_since(version: int) -> frozenset[str]:
-    """``version`` 규칙과 지금 규칙 사이에 L2 가 달라질 수 있는 분류들(``classes_changed_since``).
+    """``version`` 규칙과 현재 규칙 사이에 L2가 달라질 수 있는 오류 분류 목록을 반환한다.
 
     The error classes whose L2 may differ between rule ``version`` and now."""
     try:
@@ -71,8 +73,7 @@ def changed_since(version: int) -> frozenset[str]:
 
 
 def l2_parts(l2: str) -> tuple[str, str, str]:
-    """L2 의 (종류, 분류, 키) — ``compile|cannot_find_symbol|keySet`` → ("compile", "cannot_find_symbol", "keySet").
-    두 칸짜리 L2 는 키가 "".
+    """L2를 (종류, 분류, 키)로 나눈다. 두 부분으로 된 L2는 키가 빈 문자열이다.
 
     (kind, class, key) of an L2; the key is "" for a two-segment L2."""
     parts = (l2 or "").split("|", 2)
@@ -82,7 +83,7 @@ def l2_parts(l2: str) -> tuple[str, str, str]:
 
 
 def cut(text: str, limit: int = L2_LOG_CHARS) -> str:
-    """로그·보고용으로 자른 L2(``limit`` 자, 넘으면 …).
+    """로그에 출력하기 위해 L2를 ``limit``자까지 자른다.
 
     An L2 cut for a log line."""
     t = " ".join((text or "").split())
@@ -90,7 +91,8 @@ def cut(text: str, limit: int = L2_LOG_CHARS) -> str:
 
 
 def record_text(line: str) -> str:
-    """줄에서 레코드 부분: 찢긴 레코드 뒤에 온전한 레코드가 붙은 줄이면 그 뒤쪽(``parse_record`` 와 같은 규칙).
+    """한 줄에서 레코드 부분을 꺼낸다.
+    깨진 레코드 뒤에 온전한 레코드가 붙어 있으면 뒤쪽을 쓴다(``parse_record``와 같은 규칙).
 
     The record part of a line: the whole record glued after a torn one, else the line (``parse_record``'s rule)."""
     line = line or ""
@@ -99,7 +101,7 @@ def record_text(line: str) -> str:
 
 
 def line_case_id(line: str) -> str:
-    """줄의 레코드가 가진 맨 위 ``case_id``(정규식; 없으면 "").
+    """한 줄의 레코드에서 최상위 ``case_id``를 꺼낸다. 없으면 빈 문자열을 반환한다.
 
     The top-level ``case_id`` of the line's record (regex; "" when none)."""
     m = _LINE_CASE_RE.search(record_text(line))
@@ -107,7 +109,8 @@ def line_case_id(line: str) -> str:
 
 
 def line_case_ids(line: bytes) -> set[str]:
-    """줄에 나오는 모든 ``case_id`` 값(맨 위 + ``resolved_by`` 들; 정규식, 바이트).
+    """한 줄에 나오는 모든 ``case_id`` 값을 찾는다.
+    최상위 값과 ``resolved_by`` 안의 값을 바이트에서 정규식으로 찾는다.
 
     Every ``case_id`` value in a line (top level and ``resolved_by``), from the bytes."""
     return {m.decode("utf-8", "replace") for m in _ANY_CASE_RE.findall(line or b"")}
@@ -115,10 +118,9 @@ def line_case_ids(line: bytes) -> set[str]:
 
 def older_record(line: str, version: Optional[int] = None,
                  skipped: Collection[str] = ()) -> Optional[ErrorEntry]:
-    """``errors.jsonl`` 한 줄이 옛 규칙으로 서명됐고 그 L2 분류가 그 뒤로 바뀐 레코드면 그 항목, 아니면 None. 먼저
-    정규식으로 거르고(대부분의 줄은 JSON 파싱 없이 끝난다) 후보만 ``parse_record`` 로 읽는다 — 파싱되지 않는 줄은 옛
-    줄이 아니다(찢긴 접두어 뒤에 붙은 온전한 레코드는 읽힌다). 케이스 ID 가 ``skipped``(지난 재서명이 건너뛴 케이스)에
-    있으면 None.
+    """이전 규칙으로 서명됐고 그 뒤 분류 규칙이 바뀐 레코드면 그 항목을 반환하고, 아니면 None을 반환한다.
+    정규식으로 먼저 거르고 후보만 ``parse_record``로 읽는다.
+    파싱되지 않는 줄과 ``skipped``에 있는 케이스는 None이다.
 
     The entry when the line holds a record signed by older rules whose class changed since, else None: a regex test
     first (most lines end there without a JSON parse), then ``parse_record`` for the candidates only — a line that
@@ -144,19 +146,19 @@ def older_record(line: str, version: Optional[int] = None,
 
 
 def older_line(line: str, version: Optional[int] = None, skipped: Collection[str] = ()) -> bool:
-    """:func:`older_record` 가 항목을 주는가.
+    """이 줄에서 :func:`older_record`가 다시 계산할 항목을 찾는지 확인한다.
 
     Whether :func:`older_record` finds an older record in the line."""
     return older_record(line, version, skipped) is not None
 
 
 def _fact(text: str) -> str:
-    # 정리기가 자른 사실은 믿지 않는다 — raw 에서 다시 읽는다
+    # 텍스트 정리 때 잘린 값은 믿지 않고 raw에서 다시 읽는다
     return "" if not text or _CUT_RE.search(text) else text
 
 
 def continuation(raw: str) -> dict[str, str]:
-    """raw 블록의 javac 이어지는 줄들(``symbol`` / ``location`` / …): 키마다 처음 나온 값.
+    """raw 블록에서 javac의 이어지는 줄들을 읽어 키별로 처음 나온 값을 반환한다.
 
     The javac continuation lines of a raw block, the first value per key."""
     out: dict[str, str] = {}
@@ -169,9 +171,10 @@ def continuation(raw: str) -> dict[str, str]:
 
 
 def rebuild_error(entry: ErrorEntry) -> Optional[BuildError]:
-    """저장된 항목에서 빌드 오류를 다시 만든다(서명 규칙이 읽는 사실들). 사실이 없는 옛 항목(``sig`` 0)은
-    ``raw`` 의 ``symbol:`` / ``location:`` 줄에서 읽는다; ``raw`` 는 그대로 넣어 ``no_suitable_method`` 의 후보 줄을
-    규칙이 볼 수 있게 한다. L2 가 없는 항목은 None.
+    """저장된 항목의 정보로 빌드 오류를 다시 만든다.
+    정보가 없는 이전 항목은 ``raw``의 ``symbol:`` / ``location:`` 줄에서 읽는다.
+    ``no_suitable_method``의 후보 줄을 규칙이 볼 수 있게 ``raw``도 그대로 넣는다.
+    L2가 없으면 None을 반환한다.
 
     A ``BuildError`` from an entry's stored facts; an entry without them is read from ``raw`` (``symbol:`` /
     ``location:``); ``raw`` is kept so the ``no_suitable_method`` candidate lines are there. A fact the cleaner cut
@@ -199,7 +202,7 @@ def rebuild_error(entry: ErrorEntry) -> Optional[BuildError]:
         return None
 
 
-# 분류마다 규칙이 읽는 사실 — 없으면 다시 계산해도 옛 키로 떨어질 뿐이라 저장된 L2 를 지킨다
+# 분류별 규칙이 읽는 값이 없으면 다시 계산해도 이전 키가 나올 뿐이므로 저장된 L2를 유지한다
 # the facts the rule of a class reads; without them the recomputation is not trusted
 _NEEDS: dict[str, Callable[[BuildError], bool]] = {
     "cannot_find_symbol": lambda err: bool((err.symbol or "").strip()),
@@ -209,7 +212,7 @@ _NEEDS: dict[str, Callable[[BuildError], bool]] = {
 
 @contextmanager
 def no_reactor_modules() -> Iterator[None]:
-    """재계산 동안 ``signature_for`` 가 읽는 reactor 모듈 이름을 비우고, 끝나면(예외여도) 원래대로 돌린다.
+    """재계산하는 동안 ``signature_for``가 읽는 reactor 모듈 이름을 비워 두고, 끝나면 예외가 나도 원래대로 되돌린다.
 
     Empty the process-global reactor-module set for the recomputation and restore it afterwards (also on an
     exception): a re-sign inside a migration neither depends on nor disturbs the running project's names."""
@@ -222,7 +225,8 @@ def no_reactor_modules() -> Iterator[None]:
 
 
 def default_signer(err: BuildError) -> str:
-    """지금 규칙의 L2: ``signature_for`` 다음 ``refine_signature``(트리아지가 클러스터를 만들 때와 같은 순서).
+    """현재 규칙으로 L2를 계산한다.
+    트리아지와 같은 순서로 ``signature_for`` 다음에 ``refine_signature``를 적용한다.
 
     The current rules' L2: ``signature_for`` then ``refine_signature``, the order the triage uses."""
     from sbmig.triage.cluster import refine_signature
@@ -234,9 +238,9 @@ def default_signer(err: BuildError) -> str:
 
 
 def resigned_l2(entry: ErrorEntry, signer: Optional[Signer] = None) -> str:
-    """항목의 지금 L2. 항목의 분류(L2 둘째 칸)가 ``classes_changed_since(entry.sig)`` 에 있을 때만 다시 계산하고,
-    다시 만든 오류에 규칙이 읽는 사실이 있고 결과가 같은 종류·같은 분류·빈 키가 아닐 때만 받아들인다 — 아니면
-    저장된 L2 그대로. 예외를 내지 않는다.
+    """항목의 현재 L2를 반환한다. 분류가 ``classes_changed_since(entry.sig)``에 있을 때만 다시 계산한다.
+    규칙이 읽는 값이 있고, 종류와 분류가 같고, 키가 비지 않은 결과만 받아들이고, 아니면 저장된 L2를 쓴다.
+    예외를 던지지 않는다.
 
     The current L2 of an entry: recomputed only when its class is in ``classes_changed_since(entry.sig)``; the
     result is accepted only when the rebuilt error has the facts the rule reads and the result keeps the kind prefix
@@ -267,9 +271,9 @@ def resigned_l2(entry: ErrorEntry, signer: Optional[Signer] = None) -> str:
 
 @dataclass
 class EntryPlan:
-    """항목들의 재서명 계획: ``new_l2`` = L2 가 바뀌는 항목(위치 → 새 L2), ``stamp`` = 다시 계산된 항목 위치(옛
-    버전이고 그 뒤로 규칙이 바뀐 분류 — L2 가 그대로여도 도장을 받아 다시 보지 않는다). 규칙이 바뀌지 않은 분류의
-    기록은 어느 쪽에도 없다(바이트 그대로 남는다).
+    """항목들의 재서명 계획을 담는 데이터 클래스.
+    ``new_l2``는 L2가 바뀌는 항목, ``stamp``는 다시 계산한 모든 항목의 위치다.
+    L2가 그대로여도 버전을 갱신해서 다음에 다시 계산하지 않게 한다.
 
     ``new_l2``: position → new L2 for the entries whose L2 changes; ``stamp``: positions of every recomputed entry
     (older version, class changed since — stamped even when the L2 stays, so it is never looked at again). Records of
@@ -280,8 +284,8 @@ class EntryPlan:
 
 def plan_entries(entries: Union[Mapping[int, Optional[ErrorEntry]], list[Optional[ErrorEntry]]],
                  signer: Optional[Signer] = None, version: Optional[int] = None) -> EntryPlan:
-    """``entries``(위치 → 항목, 또는 목록; None 은 못 읽은 줄 — 건너뜀)마다 도장·새 L2 를 정한다. 규칙이 바뀐 분류의
-    옛 기록만 본다.
+    """항목마다 버전을 갱신할지와 새 L2를 정한다.
+    규칙이 바뀐 분류의 이전 기록만 보고, None인 항목은 읽지 못한 줄이므로 건너뛴다.
 
     Stamp / new L2 for every entry (a mapping position → entry, or a list; None = an unreadable line, skipped); only
     older records of a class the rules changed are looked at."""
@@ -300,9 +304,9 @@ def plan_entries(entries: Union[Mapping[int, Optional[ErrorEntry]], list[Optiona
 
 @dataclass
 class ResignReport:
-    """재서명 결과(또는 ``dry_run`` 이면 할 일): 도장 찍은 항목 수, L2 가 바뀐 항목 수, 옮긴 케이스
-    ``moves``(옛 ID, 새 ID, L2), 나뉜 케이스 ``splits``(옛 ID, 새 ID 들), 이미 있던 케이스에 합친 수 ``merged``, 도장
-    찍은 케이스 수(이번에 고쳐 쓴 케이스만), 못 읽어 건너뛴 케이스 ``unreadable``(이유는 ``reasons``), 실패 문장 ``error``.
+    """재서명 결과를 담는 데이터 클래스. ``dry_run``이면 실제로 바꾸지 않고 할 일만 담는다.
+    옮긴 케이스 ``moves``, 나뉜 케이스 ``splits``, 합친 수 ``merged``, 읽지 못한 케이스 ``unreadable``과
+    ``reasons``, 실패 메시지 ``error``를 가진다.
 
     What a re-sign did (or, ``dry_run``, would do)."""
     version: int = 0
@@ -319,13 +323,13 @@ class ResignReport:
 
     @property
     def changed(self) -> bool:
-        """무엇이든 바뀌었(바뀔 것이)나.
+        """바뀐 것(``dry_run``이면 바뀔 것)이 있는지 확인한다.
 
         Anything stamped, re-signed, moved or split."""
         return bool(self.entries_stamped or self.entries_resigned or self.moves or self.splits or self.cases_stamped)
 
     def summary(self) -> str:
-        """한 줄 요약(로그·CLI 첫 줄).
+        """로그와 CLI 첫 줄에 쓸 한 줄 요약을 만든다.
 
         The one-line summary (log, CLI)."""
         if self.error:
@@ -341,8 +345,8 @@ class ResignReport:
                    if self.unreadable else ""))
 
     def lines(self, limit: int = 50) -> list[str]:
-        """운영자에게 보일 줄들: 요약, 옮긴 케이스마다 ``<옛 ID> → <새 ID>  <l2>``(``limit`` 줄까지, 넘으면
-        ``… N more``), 나뉜 케이스마다 ``<옛 ID> → <ID>, <ID>``.
+        """운영자에게 보여 줄 줄 목록을 만든다.
+        요약, 옮긴 케이스마다 한 줄(``limit``줄까지), 나뉜 케이스마다 한 줄을 담는다.
 
         The operator text: the summary, one ``<old id> → <new id>  <l2>`` line per moved case (at most ``limit``,
         then ``… N more``), one line per split."""

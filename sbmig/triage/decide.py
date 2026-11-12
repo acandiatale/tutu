@@ -1,11 +1,15 @@
-"""결정 엔진 — 케이스(클러스터) 하나에 이번 라운드에 무엇을 할지 정한다(SCRIPT / BLOCKED / SKIP / ESCALATE).
-흐름상 위치: 수정 루프 → ``Triager.decide`` → ``DecisionEngine.decide``. SCRIPT 면 사다리
-단계(``scripts.py``)를 ``script_steps[cluster.id]`` 에 남기고, 루프가 그 단계를 실행한다. 판단 순서: 이
-실행에서 이미 차단됨 → 사람이 ``block`` 으로 고정한 케이스 → 저장된 스크립트 재사용(LLM 없음 — 그래서 차단
-정책·LLM 예산·LLM 장애가 막지 않는다) → 차단 판정(``loop.blocked_policy`` 횟수만큼 LLM 시도 후 차단) → LLM
-장애 → 사다리 소진(``repeated_failure``) → LLM 예산 → SCRIPT(보강 | 신규). BLOCKED 는 LLM 을 부르지 않고,
-루프는 차단 항목을 남긴 채 나머지 케이스를 계속 고친다. ``plan_iteration`` 은 같은 모듈에 해결형 오류(parent /
-pom / 의존성 / 플러그인)가 있으면 컴파일 케이스를 이번 라운드에서 가린다.
+"""케이스 하나에 이번 라운드에 할 일(SCRIPT / BLOCKED / SKIP / ESCALATE)을 정하는 결정 엔진 모듈.
+수정 루프가 ``Triager.decide``를 통해 ``DecisionEngine.decide``를 호출한다.
+SCRIPT면 시도 단계(``scripts.py``)를 ``script_steps[cluster.id]``에 남기고 루프가 그 단계를 실행한다.
+판단 순서:
+1. 이 실행에서 이미 차단됨
+2. 사람이 ``block``으로 고정한 케이스
+3. 저장된 스크립트 재사용. LLM을 호출하지 않으므로 차단 정책, LLM 예산, LLM 장애에 막히지 않는다
+4. 차단 판단(``loop.blocked_policy`` 횟수만큼 LLM으로 시도한 뒤 차단)
+5. LLM 장애, 시도 횟수 소진(``repeated_failure``), LLM 예산
+6. SCRIPT(보강 또는 신규)
+BLOCKED는 LLM을 호출하지 않고, 루프는 차단 항목을 남긴 채 나머지 케이스를 계속 고친다. ``plan_iteration``은 같은 모듈에
+의존성 해결 오류(parent, pom, 의존성, 플러그인)가 있으면 컴파일 케이스를 이번 라운드에서 건너뛴다.
 
 Decision engine (ARCHITECTURE §4, ERROR-HANDLING §5/§6; v2: docs/INTERFACES.md "Script fix loop (L)").
 
@@ -39,8 +43,7 @@ from .scripts import FAILED_OUTCOMES, LLM_MODES, ScriptStep, plan_script_step, s
 
 log = logging.getLogger("sbmig.triage")
 
-# 시도 결과 분류. pending(이번 라운드에 적용했지만 아직
-# 재빌드 전)은 아무것도 증명하지 않으므로 어디에도 세지 않는다
+# 시도 결과 분류. pending은 적용만 하고 아직 재빌드하지 않아 아무것도 증명하지 않으므로 어디에도 세지 않는다
 SUCCESS_OUTCOMES = frozenset({"improved", "build_ok"})
 # scored failures: what the per-cluster limits count (round 10: no "pending" — an attempt applied this round and not
 # built yet proves nothing; "inconclusive" = the scoring build could not show the cluster's errors, counts as tried).
@@ -55,7 +58,7 @@ PINNED_BLOCK_FALLBACK = BlockReason.EXTERNAL_API_INCOMPATIBLE
 
 
 def blocked_rationale(reason: BlockReason, detail: str) -> str:
-    """BLOCKED 결정의 근거 문장 ``blocked: <이유> — <설명>`` (로그·보고서에 그대로 나간다)."""
+    """BLOCKED 결정의 근거 문장을 만든다. 로그와 보고서에 그대로 출력된다."""
     return f"blocked: {reason.value} — {detail}"
 
 
@@ -68,9 +71,9 @@ def _posix(path: Optional[str]) -> str:
 
 def same_cluster(cluster: ErrorCluster, attempt: FixAttempt,
                  canon: Optional[Callable[[Optional[str]], str]] = None) -> bool:
-    """``attempt`` 가 이 클러스터에 대한 시도였나: 같은 클러스터 id, 또는 재구성이 파일을 옮겨 id 가 바뀐 경우
-    같은 파일(``canon`` 이 옮긴 경로를 지금 경로로 맞춤) + 겹치는 서명. 다른 파일이 L1 서명만 같으면 같은
-    클러스터가 아니다 — 케이스별 시도 한도는 이 기준으로만 센다(round 10).
+    """``attempt``가 이 클러스터에 대한 시도였는지 확인한다.
+    클러스터 id가 같거나, 재구성이 파일을 옮겨 id가 바뀌었을 때 같은 파일이면서 서명이 겹치면 같은 클러스터로 본다. 다른
+    파일이 L1 서명만 같으면 같은 클러스터가 아니며, 케이스별 시도 한도는 이 기준으로 센다.
 
     Was `attempt` made on this cluster? Same cluster id, or — the cluster id changes when the restructure moves
     the file — the same file (`canon` maps a moved path to its current one, `BlockedRegistry.canonical_file`) with
@@ -89,22 +92,22 @@ def same_cluster(cluster: ErrorCluster, attempt: FixAttempt,
 
 def same_cluster_attempts(cluster: ErrorCluster, attempts: Iterable[FixAttempt],
                           canon: Optional[Callable[[Optional[str]], str]] = None) -> list[FixAttempt]:
-    """``same_cluster`` 인 시도들만 — 케이스별 한도(재사용 1 + 보강 15 · LLM 20)를 셀 때 쓴다."""
+    """``same_cluster``에 해당하는 시도만 반환한다. 케이스별 시도 한도를 셀 때 사용한다."""
     return [a for a in attempts if same_cluster(cluster, a, canon)]
 
 
 @dataclass
 class IterationItem:
-    """이번 라운드에 다룰 클러스터 하나. 가려졌으면 ``skip``
-    에 SKIP 결정과 ``masked_by``(가린 클러스터 id)."""
+    """이번 라운드에 다룰 클러스터 하나를 담는 데이터 클래스.
+    건너뛰는 경우 ``skip``에 SKIP 결정을, ``masked_by``에 원인 클러스터 id를 담는다."""
     cluster: ErrorCluster
     skip: Optional[TriageDecision] = None          # SKIP decision when masked
     masked_by: list[str] = field(default_factory=list)
 
 
 def related_attempts(cluster: ErrorCluster, attempts: Iterable[FixAttempt]) -> list[FixAttempt]:
-    """같은 클러스터 id 이거나 서명이 하나라도 겹치는 시도(다른 파일 포함). round 10 부터는 프롬프트 힌트
-    재료로만 쓰고, 한도 계산에는 쓰지 않는다(``same_cluster_attempts``).
+    """같은 클러스터 id이거나 서명이 하나라도 겹치는 시도를 다른 파일까지 포함해 반환한다.
+    프롬프트 힌트로만 쓰고 한도 계산에는 쓰지 않는다.
 
     Same cluster id or ANY shared signature (other files included) — hint material only since round 10; the
     limits use `same_cluster_attempts`."""
@@ -119,9 +122,9 @@ def _modules(c: ErrorCluster) -> set[str]:
 
 
 def plan_iteration(clusters: list[ErrorCluster]) -> list[IterationItem]:
-    """가리기: 해결형 클러스터(parent / pom / 의존성 / 플러그인 해결 실패)가 있으면 같은 모듈(모듈이 없으면
-    모든 모듈)의 컴파일 클러스터는 이번 라운드에 SKIP 한다. pom
-    이 고쳐지면 컴파일 오류는 대개 사라지므로 LLM 호출을 아낀다.
+    """의존성 해결 오류(parent, pom, 의존성, 플러그인)가 있는 모듈의 컴파일 클러스터를 이번 라운드에서
+    SKIP으로 정한다. 모듈을 모르면 모든 모듈에 적용한다.
+    pom이 고쳐지면 컴파일 오류는 대개 사라지므로 LLM 호출을 아낄 수 있다.
 
     Masking: resolution-type clusters (parent/pom/dependency/plugin resolution) mask compile and test-compile
     clusters of the same module (or of every module when the resolution error has no module). A case spanning
@@ -145,8 +148,8 @@ def plan_iteration(clusters: list[ErrorCluster]) -> list[IterationItem]:
 
 
 class DecisionEngine:
-    """케이스 결정기. 실행 내내 하나가 살아 있으며, 루프가 읽어 가는 두 표를 채운다:
-    ``blocked_info``(왜 차단했나 → BlockedItem) 와 ``script_steps``(사다리 단계 + KB 탐색 로그 줄)."""
+    """케이스마다 할 일을 정하는 클래스. 실행 내내 하나만 사용한다.
+    루프가 읽는 ``blocked_info``(차단 이유)와 ``script_steps``(시도 단계와 KB 탐색 로그 줄)를 채운다."""
 
     def __init__(self, cfg: Config):
         self.cfg = cfg
@@ -164,8 +167,9 @@ class DecisionEngine:
         self.script_steps: dict[str, ScriptStep] = {}
 
     def _replacement_note(self, cluster: ErrorCluster, cand: BlockedCandidate, profile: ProjectProfile) -> Any:
-        """v2.1z-aa: 이 라이브러리 차단 후보(X1 / X2)의 오류 글·오류 파일의 import 줄·소유 클래스에 키워드가 맞는 ``replacement: true``
-        노트의 첫 것, 없으면 None — 그 노트가 "프로젝트 코드로 대체하는 법" 을 적어 두었다는 뜻이라 차단 정책을 적용하지 않는다.
+        """라이브러리 차단 후보의 오류, import 줄, 소유 클래스에 키워드가 맞는 ``replacement: true`` 노트 중
+        첫 번째를 반환한다. 없으면 None을 반환한다.
+        이런 노트가 있으면 프로젝트 코드로 대체하는 방법을 알고 있으므로 차단 정책을 적용하지 않는다.
 
         The first `replacement: true` note (`sbmig.fix.context.NoteEntry`) whose keywords match the candidate's errors, their files'
         import lines or its owner classes; None when there is none."""
@@ -183,14 +187,14 @@ class DecisionEngine:
         return hits[0] if hits else None
 
     def _canon(self) -> Optional[Callable[[Optional[str]], str]]:
-        """재구성이 옮긴 파일 경로를 지금 경로로 바꾸는 함수(차단 목록이 가진 것), 없으면 None."""
+        """재구성이 옮긴 파일 경로를 현재 경로로 바꾸는 함수를 반환한다. 차단 목록에 없으면 None을 반환한다."""
         fn = getattr(self.blocked_registry, "canonical_file", None)
         return fn if callable(fn) else None
 
     # -- pinned case actions (round 10) ----------------------------------
     @staticmethod
     def _pinned_hits(cluster: ErrorCluster, kb_match: KBMatch) -> list[Any]:
-        """사람이 행동을 고정한(``CaseHit.pinned``) KB 케이스 중, 그 오류가 아직 이 클러스터에 있는 것들.
+        """사람이 할 일을 고정한(``CaseHit.pinned``) KB 케이스 중 그 오류가 아직 이 클러스터에 있는 것을 반환한다.
 
         Case hits whose action a person pinned (`CaseHit.pinned`) and whose errors are (still) in this cluster."""
         def ek(e) -> tuple:
@@ -206,8 +210,9 @@ class DecisionEngine:
         return out
 
     def _pinned_block(self, cluster: ErrorCluster, kb_match: KBMatch) -> Optional[TriageDecision]:
-        """사람이 ``block`` 으로 고정한 케이스 → 그 사람의 이유 / 문장으로 BLOCKED(round 10). 스크립트도 LLM
-        도 쓰지 않는다. 이유가 BlockReason 값이 아니면 일반 라이브러리 쪽 이유로 두고 문장을 제안 칸에 넣는다.
+        """사람이 ``block``으로 고정한 케이스를 그 사람이 남긴 이유와 문장으로 BLOCKED 처리한다.
+        스크립트도 LLM도 쓰지 않는다.
+        이유가 BlockReason 값이 아니면 일반 라이브러리 이유로 두고 문장은 제안 칸에 넣는다.
 
         A case a person pinned to `block` → BLOCKED with their reason / text (round 10). A pinned `script` version
         is the store's `best()` choice (`kb.cases`), not a decision here."""
@@ -231,14 +236,15 @@ class DecisionEngine:
 
     # -- main ----------------------------------------------------------
     def _blocked(self, cluster: ErrorCluster, cand: BlockedCandidate, extra: str = "") -> TriageDecision:
-        """BLOCKED 결정을 만들고 그 이유를 ``blocked_info`` 에 남긴다(루프가 BlockedItem 을 만든다)."""
+        """BLOCKED 결정을 만들고 그 이유를 ``blocked_info``에 남긴다. BlockedItem은 루프가 만든다."""
         self.blocked_info[cluster.id] = cand
         return TriageDecision(cluster_id=cluster.id, kind=DecisionKind.BLOCKED,
                               rationale=blocked_rationale(cand.reason, cand.detail()) + extra)
 
     def decide(self, cluster: ErrorCluster, kb_match: Optional[KBMatch], ctx, profile: ProjectProfile) -> TriageDecision:
-        """v2: SCRIPT(사다리 단계는 ``script_steps[cluster.id]``), BLOCKED, 또는 ESCALATE(케이스 ID 가 없을
-        때). 판단 순서는 모듈 docstring 참고. 이 클러스터의 이전 결정 흔적은 먼저 지운다.
+        """케이스의 결정(SCRIPT, BLOCKED, 케이스 ID가 없으면 ESCALATE)을 반환한다.
+        SCRIPT의 시도 단계는 ``script_steps[cluster.id]``에 남는다.
+        판단 순서는 모듈 docstring에 있다. 이 클러스터의 이전 결정 기록은 먼저 지운다.
 
         v2: SCRIPT (with the ladder step in `script_steps[cluster.id]`), BLOCKED or ESCALATE (no case id)."""
         kb_match = kb_match or KBMatch()
@@ -266,8 +272,8 @@ class DecisionEngine:
         if d is not None:
             return d
 
-        # 1. 저장된 스크립트(``best``: proven 최신, 없으면 unverified 최신)부터 — LLM 호출이 없으므로 차단
-        # 정책도 LLM 예산 / 장애도 막지 않는다. 500개 프로젝트를 도는 동안 LLM 호출을 줄이는 핵심 경로
+        # 1. 저장된 스크립트는 LLM 호출이 없으므로 차단 정책이나 LLM 예산과 장애에 막히지 않게 가장 먼저
+        #   시도한다. 프로젝트를 많이 처리할수록 LLM 호출을 줄여 주는 핵심 경로다
         # 1. the script ladder: a proven stored version first — no LLM call, so neither the blocked policy nor the
         #    LLM budget / availability stops it
         step = plan_script_step(cluster, prev, self.cases, self.cfg)
@@ -278,19 +284,18 @@ class DecisionEngine:
         if step.mode == "reuse":
             return TriageDecision(cluster_id=cluster.id, kind=DecisionKind.SCRIPT, rationale=step.why)
 
-        # 2. 프로젝트 안에서 못 고칠 것 같은 오류: blocked_policy[이유] 횟수만큼만 LLM 에 맡겨 보고 차단 →
-        # 인수인계로 넘긴다(javax 라이브러리·없는 아티팩트·플러그인 2회, 사내 parent 미해결 등 0회)
+        # 2. 프로젝트 안에서 고칠 수 없어 보이는 오류는 blocked_policy[이유] 횟수만큼만 LLM에 맡긴 뒤
+        #   차단하고 인수인계로 넘긴다
         # 2. blocked check: cannot be fixed inside the project → blocked_policy[reason] LLM script attempts, then BLOCKED
         llm_failed = [a for a in script_attempts(prev) if a.script_mode in LLM_MODES and a.outcome in FAILED_OUTCOMES]
         policy_note = ""
         try:
             cand = classify_blocked(cluster, profile, self.cfg, ws=self.ws)
         except Exception:  # a classifier bug must never stop the loop
-            # 분류기 버그로 루프가 멈추면 안 된다 — 판정 실패는 "차단 아님" 으로 보고 LLM 에게 기회를 준다
+            # 분류기 오류로 루프가 멈추지 않도록 분류에 실패하면 차단이 아닌 것으로 보고 LLM에 기회를 준다
             cand = None
-        # v2.1z-aa (회사 실행 2026-11-06, spring-mobile): 라이브러리 차단 후보라도 "프로젝트 코드로 대체하는 법" 을 적은 노트가 맞으면
-        # 차단 정책을 적용하지 않는다 — sbmig 가 고치는 법을 아는 것을 "프로젝트 안에서 못 고침" 으로 분류하지 않는다. 그 케이스의 끝은
-        # 직접 수정 한도(script.max_edit_tries_per_case)와 LLM 한도가 정한다
+        # 프로젝트 코드로 대체하는 방법을 적은 노트가 맞으면 고칠 수 있는 것이므로 라이브러리 차단 후보라도 차단 정책을
+        # 적용하지 않는다. 이 케이스는 직접 수정 한도(script.max_edit_tries_per_case)와 LLM 한도에서 끝난다
         # a library-block candidate whose case a `replacement: true` note matches is not blocked by the policy
         if cand is not None and cand.reason in (BlockReason.EXTERNAL_JAVAX_API, BlockReason.EXTERNAL_API_INCOMPATIBLE):
             note = self._replacement_note(cluster, cand, profile)
@@ -317,7 +322,7 @@ class DecisionEngine:
             return self._blocked(cluster, BlockedCandidate(
                 reason=BlockReason.REPEATED_FAILURE, errors=list(cluster.errors),
                 evidence=[step.why + "; needs a human"]))
-        # v2.1: 0 = 무제한, 양수 = 상한, -1 = LLM 호출 금지(플릿 전체 한도를 다 씀 — 저장본만 쓴다)
+        # 0은 무제한, 양수는 상한, -1은 플릿 전체 한도를 다 써서 LLM을 호출하지 않고 저장된 스크립트만 쓴다는 뜻이다
         # v2.1: 0 = no limit, > 0 = a cap, -1 = no LLM call at all (the fleet's total is used up)
         if ctx.llm_calls_budget < 0 or (ctx.llm_calls_budget > 0 and ctx.llm_calls_used >= ctx.llm_calls_budget):
             spent = ("fleet" if ctx.llm_calls_budget < 0 else f"{ctx.llm_calls_used}/{ctx.llm_calls_budget} calls")

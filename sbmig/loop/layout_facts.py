@@ -1,11 +1,11 @@
-"""재구성 뒤 프로젝트 사실(v2.1v, 2026-10-31 프롬프트 검토 B-H2) — 수정 프롬프트의 "Project after the restructure" 절.
-왜: 수정 프롬프트의 머리말은 분석 시점(as-is) 프로필만 보여 줘서(Java 1.8, Spring 5.3, 모듈 1개) LLM 이 sbmig 가 이미
-Boot 애플리케이션으로 바꿨다는 것, boot / back / front 모듈과 그 부모·패키징, 생성한 파일(Application,
-``legacy-config/`` 사본, WebXmlRegistrations), 사내 아티팩트 규칙을 몰랐다. 흐름상 위치: 오케스트레이터가 재구성 결과
-(``RestructureResult``)를 루프에 넘기고(``BuildFixLoop.restructure_results``), 루프가 LLM 요청마다 이 함수로 줄을 만들어
-``FixContext.layout_facts`` 에 넣는다(패커가 순서 0.5 로, 자르지 않고 렌더). 지킬 것: 값은 전부 재구성 결과와
-``cfg.artifacts`` / ``cfg.layout`` 에서 — 코드에 좌표·버전 리터럴 없음; 전체 ~1,500 자(목록마다 개수 상한, 넘치면 우선순위가
-낮은 줄부터 뺌); Boot as-is / MSA 의 pom 전용 모드는 부모·필수·BOM 줄만; 예외 없음(사실 하나 때문에 수정이 깨지면 안 된다).
+"""재구성 뒤 프로젝트가 어떻게 바뀌었는지 수정 프롬프트의 "Project after the restructure" 절로 정리하는 모듈.
+프롬프트 앞부분은 분석 시점의 프로젝트 정보만 보여 주므로, Boot 애플리케이션으로 바꾼 것, 모듈 구성, 생성한
+파일, 사내 아티팩트 규칙을 LLM에 따로 알려 준다.
+수정 루프가 LLM 요청마다 ``BuildFixLoop.restructure_results``로 줄을 만들어 ``FixContext.layout_facts``에 넣는다.
+- 모든 값은 재구성 결과와 ``cfg.artifacts`` / ``cfg.layout``에서 가져오고, 코드에 좌표나 버전을 직접 쓰지 않는다
+- 전체는 약 1,500자이며, 넘치면 우선순위가 낮은 줄부터 뺀다
+- Boot as-is 프로젝트와 MSA처럼 pom만 바꾸는 모드에서는 부모, 필수 아티팩트, BOM 줄만 넣는다
+- 예외를 던지지 않는다
 
 v2.1v (docs/INTERFACES.md "v2.1v — the facts reach the LLM"): the lines of `FixContext.layout_facts` built from the
 run's `RestructureResult`s and the configuration. Each line appears only when its value exists:
@@ -51,7 +51,7 @@ def _short(text: Any, limit: int = ITEM_CHARS) -> str:
 
 
 def _items(values: Iterable[Any], cap: int = LIST_ITEMS) -> str:
-    """목록 줄의 값: 앞의 ``cap`` 개(각 ``ITEM_CHARS`` 자) + 남은 개수.
+    """목록 값을 앞의 ``cap``개(각 ``ITEM_CHARS``자까지)와 남은 개수로 줄인 문자열을 만든다.
 
     The first `cap` items (each capped) joined with "; ", plus "(+N more)"."""
     vals = [_short(v) for v in values if str(v or "").strip()]
@@ -60,7 +60,7 @@ def _items(values: Iterable[Any], cap: int = LIST_ITEMS) -> str:
 
 
 def spec_gav(spec: Any) -> str:
-    """설정 스펙(ArtifactSpec)의 ``g:a:v`` (버전이 없으면 ``g:a``) — 프롬프트에 쓰는 좌표는 언제나 설정에서.
+    """설정의 아티팩트 정보(ArtifactSpec)를 ``g:a:v`` 문자열로 만든다. 버전이 없으면 ``g:a``를 반환한다.
 
     `g:a:v` of a configured ArtifactSpec (`g:a` without a version); "" for None."""
     if spec is None:
@@ -72,7 +72,7 @@ def spec_gav(spec: Any) -> str:
 
 
 def _new_parents(res: Any) -> dict[str, str]:
-    """``parents_set`` 의 ``<pom>: <옛> → <새>`` 에서 pom → 새 부모(g:a:v)."""
+    """재구성 결과의 ``parents_set`` 항목에서 pom별로 새로 지정한 부모(g:a:v)를 모은다."""
     out: dict[str, str] = {}
     for entry in list(getattr(res, "parents_set", None) or []):
         pom, sep, rest = str(entry).partition(": ")
@@ -83,8 +83,8 @@ def _new_parents(res: Any) -> dict[str, str]:
 
 
 def _mode_of(res: Any, mode: str | None) -> str:
-    """결과의 재구성 모드(layout / boot_pom / msa_pom). 모르면 결과로 짐작: boot 모듈에 생성된 ``.java`` 가 있으면
-    layout(Application 을 만든 것은 레이아웃 분할뿐), 아니면 pom 전용."""
+    """재구성 결과의 모드(layout / boot_pom / msa_pom)를 반환한다.
+    모드를 모르면 boot 모듈에 생성된 ``.java``가 있을 때 layout으로, 없을 때 pom만 바꾸는 모드로 본다."""
     if mode:
         return str(mode)
     gen = [str(f) for f in (getattr(res, "generated_files", None) or [])]
@@ -98,7 +98,8 @@ def _fqcn(rel: str) -> str:
 
 
 def _generated_line(res: Any, cfg: Any) -> str:
-    """생성 파일 줄: Application FQCN 먼저, ``legacy-config/`` 사본(@ImportResource 목록), 그 밖의 생성 클래스."""
+    """생성한 파일을 설명하는 줄을 만든다. Application 클래스 FQCN, ``legacy-config/``에 복사한 XML
+    설정(@ImportResource 목록), 그 밖의 생성 클래스 순서로 쓴다."""
     gen = [str(f) for f in (getattr(res, "generated_files", None) or [])]
     java = [_fqcn(f) for f in gen if f.endswith(".java") and JAVA_ROOT in "/" + f]
     app_name = str(getattr(getattr(cfg, "layout", None), "application_class_name", "") or "")
@@ -116,7 +117,7 @@ def _generated_line(res: Any, cfg: Any) -> str:
 
 
 def _company_line(cfg: Any) -> str:
-    """사내 아티팩트 규칙 한 줄(값은 ``cfg.artifacts`` 에서만)."""
+    """사내 아티팩트 규칙을 한 줄로 만든다. 값은 ``cfg.artifacts``에서만 가져온다."""
     A = getattr(cfg, "artifacts", None)
     if A is None:
         return ""
@@ -139,7 +140,8 @@ def _company_line(cfg: Any) -> str:
 
 def _layout_lines(res: Any, cfg: Any, case: str, read_artifact_id: Callable[[str], str] | None
                   ) -> list[tuple[int, str]]:
-    """회사 레이아웃(분할) 결과의 줄들 — (우선순위, 줄). 낮은 수가 먼저 남는다."""
+    """회사 레이아웃으로 모듈을 나눈 결과를 (우선순위, 줄) 목록으로 만든다.
+    우선순위 숫자가 작을수록 마지막까지 남는다."""
     L = getattr(cfg, "layout", None)
     parents = _new_parents(res)
     A = getattr(cfg, "artifacts", None)
@@ -200,7 +202,8 @@ def _layout_lines(res: Any, cfg: Any, case: str, read_artifact_id: Callable[[str
 
 
 def _pom_lines(res: Any, layout: bool = False) -> list[tuple[int, str]]:
-    """모든 모드에 공통인 pom 줄: BOM import, 부모 교체(레이아웃 모드면 boot / back / front 줄이 이미 말한 모듈 pom 은 뺀다)."""
+    """모든 모드에 공통인 pom 줄(BOM import, 부모 교체)을 만든다.
+    레이아웃 모드에서는 boot / back / front 줄에 이미 나온 모듈 pom을 뺀다."""
     out: list[tuple[int, str]] = []
     boms = list(getattr(res, "bom_imports", None) or [])
     if boms:
@@ -229,8 +232,8 @@ def _conversion_lines(res: Any) -> list[tuple[int, str]]:
 
 
 def _fit(lines: list[tuple[int, str]], budget: int) -> list[str]:
-    """우선순위가 높은 줄(작은 수)부터 예산 안에 담고, 원래 순서로 돌려준다. 넘치는 줄은 남은 자리가 넉넉하면 잘라
-    넣고(… 표시), 아니면 뺀다.
+    """우선순위가 높은 줄부터 문자 수 예산 안에 담아 원래 순서대로 반환한다.
+    넘치는 줄은 남은 공간이 넉넉하면 잘라서(… 표시) 넣고, 아니면 뺀다.
 
     Keep the most important lines (lowest priority number first) within `budget` characters, in display order."""
     keep: dict[int, str] = {}
@@ -249,10 +252,10 @@ def _fit(lines: list[tuple[int, str]], budget: int) -> list[str]:
 def layout_fact_lines(results: Iterable[Any], cfg: Any, *, modes: list[str | None] | None = None,
                       case: str = "", read_artifact_id: Callable[[str], str] | None = None,
                       budget: int = LAYOUT_FACTS_CHARS) -> list[str]:
-    """재구성 결과들 → "Project after the restructure" 절의 줄들(모듈 docstring 의 목록, 예산 ``budget`` 자). 결과가
-    없거나 모두 실패했으면 []. ``modes`` = 결과마다 재구성 모드(layout / boot_pom / msa_pom; 모르면 결과로 짐작),
-    ``case`` = as-is 프로젝트 종류(``spring_legacy`` …), ``read_artifact_id(pom 경로)`` = 모듈 pom 의 artifactId(없으면
-    그 칸 생략). 예외 없음.
+    """재구성 결과로 "Project after the restructure" 절의 줄 목록을 만든다.
+    쓸 수 있는 결과가 없으면 빈 목록을 반환하고, 예외를 던지지 않는다.
+    ``modes``는 결과별 재구성 모드, ``case``는 as-is 프로젝트 종류,
+    ``read_artifact_id``는 모듈 pom의 artifactId를 읽는 함수다.
 
     The `FixContext.layout_facts` lines for the run's restructure results (docs/INTERFACES.md v2.1v). `modes` gives
     each result's restructure mode (`layout` / `boot_pom` / `msa_pom`; inferred when missing); pom-only results give

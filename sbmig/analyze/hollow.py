@@ -1,12 +1,11 @@
-"""속 빈 리액터(hollow reactor) 판정 — Maven 모듈들이 컴파일·포장하는 소스 루트 안에는 소스가 없고, 트리의 다른 곳에 진짜
-소스가 있는 프로젝트(2026-11-02 회사 사례: ``APP/WEB/pom.xml`` 은 JDeveloper 작업공간 ``DEV/`` 에서 만든 산출물을 ``${DIR_…}``
-프로퍼티로 포장만 하고, java 는 ``DEV/s10/src``, 웹 루트는 ``DEV/s10/public_html``, 정적 파일은 ``STATIC/`` 에 있었다). 흐름상
-위치: 분석(analyze) 단계가 프로필을 만든 직후 ``detect_hollow`` 를 부르고, 오케스트레이터가 결과에 따라 플래그
-``hollow-reactor``(성공 아님, exit 2, 인수인계 첫 줄) 또는 ``sources-outside-reactor``(알림만)를 단다. 왜: 그런 실행은 pom 과
-web.xml 만 옮기고 빌드는 할 게 없어 성공으로 끝났다 — 500개 중 이런 프로젝트가 "이관 완료" 로 집계되면 안 된다. 폴더 이름은
-전혀 보지 않는다(회사 폴더명은 코드에 없다): 각 pom 이 선언한 소스·리소스·웹 루트(기본값 + ``<sourceDirectory>`` ·
-``<resources>`` · ``warSourceDirectory`` · ``<webResources>``, ``${…}`` 는 pom 과 저장소 안 부모의 프로퍼티로 풀고 못 풀면
-"unresolved" 로 기록) 안쪽과 바깥쪽의 java / jsp / 웹 파일 수를 센다. 파일 읽기만 하고 절대 예외를 올리지 않는다.
+"""Maven 모듈에는 소스가 없고 실제 소스는 트리의 다른 곳에 있는 프로젝트(hollow reactor)를 찾는 모듈.
+분석 단계가 프로필을 만든 직후 ``detect_hollow``를 호출하고, 오케스트레이터가 결과에 따라 플래그를 단다.
+- ``hollow-reactor``: 성공으로 보지 않는다(exit 2, 인수인계 첫 줄).
+  빌드할 소스가 없어 성공한 실행이 이관 완료로 집계되면 안 되기 때문이다
+- ``sources-outside-reactor``: 알림만 남긴다
+- 폴더 이름은 보지 않는다. pom이 선언한 소스, 리소스, 웹 루트의 안과 밖에서 java / jsp / 웹 파일 수를 센다.
+  치환하지 못한 ``${…}``는 unresolved로 남긴다
+- 파일을 읽기만 하고 예외를 던지지 않는다
 
 Hollow-reactor detection (2026-11-02). A Maven reactor whose modules' source / resource / web roots hold no sources
 while the tree holds them elsewhere used to end as `success` with nothing migrated. `detect_hollow(ws, poms)` counts
@@ -42,8 +41,8 @@ OUTSIDE_PREFIX = "sources outside the Maven reactor:"
 JAVA_EXT = (".java",)
 JSP_EXT = (".jsp", ".jspx", ".jspf", ".tag", ".tagx")
 WEB_EXT = (".html", ".htm", ".css", ".js")
-# 세지 않는 디렉토리: 형상관리·IDE 메타데이터·빌드 산출물(pom 옆의 target)·node_modules. 이름으로 역할을 정하는 게
-# 아니라 "소스일 리 없는 곳" 만 뺀다 / pruned while walking: never sources
+# 소스가 있을 수 없는 폴더만 빼고 센다.
+# 폴더 이름으로 역할을 정하지 않는다 / pruned while walking: never sources
 _PRUNE = frozenset({".git", ".svn", ".hg", ".idea", ".settings", "node_modules", "__pycache__"})
 _PROP_RE = re.compile(r"\$\{([^}]+)\}")
 _BASEDIR_KEYS = ("basedir", "project.basedir", "pom.basedir", "project.build.directory")
@@ -52,7 +51,8 @@ _MAX_FILES = 200_000
 
 @dataclass
 class HollowResult:
-    """판정 결과: 안쪽 / 바깥쪽 종류별 개수, 바깥쪽 파일의 최상위 폴더별 개수, 본 루트들, 못 푼 ``${…}`` 식, WAR 여부.
+    """hollow reactor 판단 결과를 담는 데이터 클래스. 모듈 안 / 밖의 종류별 파일 수, 밖에 있는 파일의 최상위
+    폴더별 개수, 검사한 루트, 치환하지 못한 ``${…}``, WAR 여부를 담는다.
 
     inside / outside counts per kind (`java`, `jsp`, `web`), the outside files per top-level directory, the roots
     considered (root-relative), the unresolved `${…}` directory expressions, whether a WAR module exists."""
@@ -67,7 +67,8 @@ class HollowResult:
 
     @property
     def hollow(self) -> bool:
-        """속 빈 리액터인가: 안쪽 java 0 + 바깥쪽 java 있음, 또는 WAR 인데 안쪽 JSP·웹 파일 0 + 바깥쪽 JSP 있음.
+        """hollow reactor인지 확인한다. 모듈 안에 java가 없고 밖에 java가 있거나, WAR인데 안에 JSP / 웹
+        파일이 없고 밖에 JSP가 있으면 참이다.
 
         No java inside and java outside — or a WAR with no JSP / web file inside and JSPs outside."""
         if self.inside["java"] == 0 and self.outside["java"] > 0:
@@ -76,23 +77,25 @@ class HollowResult:
 
     @property
     def sources_outside(self) -> bool:
-        """(약한 판정) 속 빈 건 아니지만 바깥쪽 java 가 안쪽보다 많다.
+        """hollow reactor는 아니지만 모듈 밖의 java가 안보다 많은지 확인한다.
 
         Not hollow, but more java files lie outside the roots than inside them."""
         return not self.hollow and self.outside["java"] > self.inside["java"] > 0
 
     @property
     def outside_total(self) -> int:
-        """바깥쪽 파일 전체 수."""
+        """모듈 밖에 있는 파일의 전체 수."""
         return sum(self.outside.values())
 
     def counts_text(self) -> str:
-        """``120 java, 35 jsp, 25 web files`` — 바깥쪽 개수 요약(0 인 종류는 생략)."""
+        """모듈 밖 파일 수를 요약한 문구를 만든다. 0인 종류는 생략한다.
+        예: ``120 java, 35 jsp, 25 web files``"""
         parts = [f"{n} {k}" for k, n in self.outside.items() if n]
         return (", ".join(parts) + (" files" if parts else "")) or "0 files"
 
     def by_dir_text(self, limit: int = 6) -> str:
-        """``DEV: java 120, jsp 35; STATIC: web 25`` — 바깥쪽 파일의 최상위 폴더별 개수(많은 순, ``limit`` 개까지)."""
+        """모듈 밖 파일의 최상위 폴더별 개수를 많은 순으로 ``limit``개까지 보여 주는 문구를 만든다.
+        예: ``DEV: java 120, jsp 35; STATIC: web 25``"""
         rows = sorted(self.outside_by_dir.items(), key=lambda kv: (-sum(kv[1].values()), kv[0]))
         out = [f"{d}: " + ", ".join(f"{k} {n}" for k, n in c.items() if n) for d, c in rows[:limit]]
         if len(rows) > limit:
@@ -100,18 +103,19 @@ class HollowResult:
         return "; ".join(out)
 
     def unresolved_text(self) -> str:
-        """`` (unresolved directories: ${DIR_X}, …)`` 또는 빈 문자열."""
+        """치환하지 못한 디렉터리 식을 `` (unresolved directories: ${DIR_X}, …)`` 형식으로 반환한다. 없으면 빈 문자열을 반환한다."""
         return f" (unresolved directories: {', '.join(self.unresolved[:6])})" if self.unresolved else ""
 
     def as_journal(self) -> dict[str, Any]:
-        """저널 이벤트에 넣는 dict(개수·루트·못 푼 식)."""
+        """저널 이벤트에 넣을 dict(개수, 루트, 치환하지 못한 식)를 만든다."""
         return {"inside": dict(self.inside), "outside": dict(self.outside),
                 "outside_by_dir": {d: dict(c) for d, c in self.outside_by_dir.items()},
                 "roots": list(self.roots), "unresolved": list(self.unresolved), "war": self.war}
 
 
 def hollow_followup(res: HollowResult) -> str:
-    """인수인계 첫 줄(영어 원문; i18n PATTERNS 가 한국어로 옮긴다): 소스가 리액터 밖에 있어 이관되지 않았다.
+    """소스가 reactor 밖에 있어 이관되지 않았다는 인수인계 첫 줄(영어)을 만든다.
+    i18n PATTERNS가 한국어로 바꾼다.
 
     The Handover's first line for a hollow reactor (English; `sbmig.report.i18n.PATTERNS` renders it in Korean)."""
     return (f"{HOLLOW_PREFIX} {res.counts_text()} lie outside its modules ({res.by_dir_text()}) and were NOT migrated — "
@@ -120,7 +124,7 @@ def hollow_followup(res: HollowResult) -> str:
 
 
 def outside_followup(res: HollowResult) -> str:
-    """약한 판정의 후속 조치 줄(영어 원문): 리액터 밖에 java 가 더 많다 — 애플리케이션의 일부인지 확인.
+    """reactor 밖의 java가 애플리케이션의 일부인지 확인하라는 후속 조치 줄(영어)을 만든다.
 
     The soft follow-up: more java outside the roots than inside — check whether it belongs to the application."""
     return (f"{OUTSIDE_PREFIX} {res.counts_text()} lie outside the modules' source roots ({res.by_dir_text()}) and are "
@@ -135,7 +139,8 @@ def _norm(rel: str) -> str:
 
 
 def _chain_props(pom: PomInfo, by_key: dict[tuple[str, str], PomInfo]) -> dict[str, str]:
-    """pom 자신의 ``<properties>`` 위에 저장소 안 부모들의 것을 깐 유효 프로퍼티(자식이 이김) + ``basedir`` 류 = ``.``."""
+    """pom의 ``<properties>``에 저장소 안 부모 pom의 속성을 합쳐 실제로 적용되는 속성을 만든다(자식 우선).
+    ``basedir`` 계열은 ``.``으로 둔다."""
     chain: list[PomInfo] = []
     cur: PomInfo | None = pom
     seen: set[str] = set()
@@ -162,7 +167,8 @@ def _interpolate(value: str, props: dict[str, str], depth: int = 6) -> str:
 
 
 def _resolve_dir(raw: str | None, base: str, props: dict[str, str], unresolved: list[str]) -> str | None:
-    """pom 디렉토리 값 → 루트 기준 posix 경로; ``${…}`` 가 남거나 절대 경로·프로젝트 밖이면 None(``unresolved`` 에 기록)."""
+    """pom의 디렉토리 값을 루트 기준 posix 경로로 바꾼다.
+    ``${…}``가 남거나 프로젝트 밖이면 None을 반환하고 ``unresolved``에 기록한다."""
     if not raw or not raw.strip():
         return None
     text = _interpolate(raw.strip().replace("\\", "/"), props)
@@ -179,9 +185,8 @@ def _resolve_dir(raw: str | None, base: str, props: dict[str, str], unresolved: 
 
 
 def module_roots(ws: Any, poms: Iterable[PomInfo]) -> tuple[list[str], list[str], list[str], bool]:
-    """각 pom 이 컴파일·포장하는 루트(루트 기준): 기본 ``src/main/java`` / ``src/main/resources`` / ``src/main/webapp`` 과
-    pom 이 선언한 ``sourceDirectory`` · ``scriptSourceDirectory`` · ``<resources>`` · ``warSourceDirectory`` ·
-    ``<webResources>``; 무시할 루트(테스트 디렉토리); 못 푼 ``${…}`` 식; WAR 모듈 존재 여부.
+    """각 pom이 컴파일하고 패키징하는 루트, 무시할 테스트 루트, 치환하지 못한 ``${…}``, WAR 모듈 여부를 반환한다.
+    기본 ``src/main/*`` 루트에 pom이 선언한 소스, 리소스, 웹 루트를 더한다.
 
     (roots, ignored roots, unresolved expressions, has_war) — root-relative; the defaults are listed whether or not
     they exist (a missing default simply holds nothing)."""
@@ -249,14 +254,15 @@ def _under(rel: str, d: str) -> bool:
 
 
 def detect_hollow(ws: Any, poms: Iterable[PomInfo]) -> HollowResult:
-    """작업공간(``ws.root``)을 걸으며 java / JSP / 웹 파일을 pom 의 루트 안·밖으로 나눠 센다(테스트 루트·빌드 산출물 제외).
-    pom 이 하나도 없으면 빈 결과(속 빈 리액터 아님). 절대 예외를 올리지 않는다(``error`` 에 메모).
+    """작업공간을 순회하며 java / JSP / 웹 파일을 pom 루트 안과 밖으로 나눠 센다.
+    테스트 루트와 빌드 산출물은 제외한다.
+    pom이 없으면 빈 결과를 반환한다. 예외를 던지지 않고, 실패는 ``error``에 남긴다.
 
     Walk `ws.root`, classify every java / JSP / web file as inside or outside the poms' roots (test roots and Maven
     build output ignored). No poms → an empty result. Never raises."""
     res = HollowResult()
     try:
-        # 디스크에 실제로 있는 pom 만 본다(테스트의 가짜 프로필, 합성 전의 좌표 등은 판정 근거가 아니다)
+        # 디스크에 실제로 있는 pom만 본다. 파일 없이 프로필에만 있는 항목은 근거가 되지 않는다
         # only poms that exist in the tree count — a profile's stand-in PomInfo without a file is no evidence
         exists = getattr(ws, "exists", None)
         pom_list = [p for p in (poms or []) if p.path and (exists is None or exists(p.path))]
@@ -266,13 +272,13 @@ def detect_hollow(ws: Any, poms: Iterable[PomInfo]) -> HollowResult:
         res.roots, res.ignored, res.unresolved, res.war = roots, ignored, unresolved, war
         root = Path(ws.root)
         pom_dirs = {posixpath.dirname(p.path.replace("\\", "/")) for p in pom_list}
-        # v2.1z-h: 접수가 무시한 폴더(떠도는 pom 복사본)는 소스로 세지 않는다 — 복사본의 java 가 "리액터 밖 소스" 로 잡히지 않게
+        # 접수가 무시한 폴더의 java가 reactor 밖 소스로 잡히지 않도록 세지 않는다
         # v2.1z-h: the intake's ignored dirs (stray pom copies) are not sources (their java would count as "outside")
         is_ignored = getattr(ws, "is_ignored", None)
         seen = 0
         for dirpath, dirnames, filenames in os.walk(root):
             rel_dir = _norm(os.path.relpath(dirpath, root))
-            # Maven 산출물: pom 옆의 target 만 가지치기(소스 폴더 이름이 target 인 경우는 pom 이 없는 곳이라 남긴다)
+            # pom 옆의 target만 뺀다. pom이 없는 곳의 target은 소스 폴더일 수 있기 때문이다
             dirnames[:] = sorted(d for d in dirnames if d not in _PRUNE and not (
                 d == "target" and (rel_dir in pom_dirs or "pom.xml" in filenames))
                 and not (callable(is_ignored) and is_ignored(f"{rel_dir}/{d}" if rel_dir else d)))

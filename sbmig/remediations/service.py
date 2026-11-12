@@ -1,23 +1,19 @@
-"""취약점 조치 작업 관리자 — 웹 파드 프로세스 안에서 작업 스레드로 조치 그래프를 돌리고, state.json 으로 상태를 지킨다.
-흐름상 위치: ``api.py`` 라우트 → :class:`RemediationManager` → ``graph.run_remediation``. 접수(``intake.accept_zip``) →
-QUEUED → 작업 스레드(한 번에 하나: 이 프로세스 안의 Maven 이 서로 부딪히지 않게, 나머지는 접수 순서대로 기다린다) →
-대기 상태(승인·업로드 확인·중지)나 끝 상태. 승인(``decide``)은 제안 해시·원본 트리 해시·정책 해시·diff 를 **모두** 맞춰 본 뒤에만
-plan.json 과 approvals.jsonl 에 쓴다(하나라도 틀리면 아무것도 쓰지 않는다). 재개(``resume``)는 사람이 부를 때만 — 서버가 새로
-뜨면 QUEUED / RUNNING 으로 남은 작업은 INTERRUPTED 가 되고 **아무것도 자동으로 다시 보내지 않는다**.
-Maven 로컬 저장소: 설정의 ``build.local_repo`` 가 있으면 조치 실행은 ``<그 경로>-remediation`` 을 쓴다 — 이관 빌드 파드들이
-쓰는 저장소를 여러 Maven 프로세스가 함께 쓰지 않게(:func:`remediation_config`). 비어 있으면 Maven 기본값 그대로다.
-데이터베이스 없음: 목록·상태는 ``<out>/_remediations/<id>/state.json`` 파일에서 읽는다.
-
-웹 모드(2026-11-11, 사용자 결정 "조치는 웹 파드에서 돌지 않는다"): ``in-process`` (개발 PC)만 위의 작업 스레드를 쓴다.
-Job 모드(``k8s-job`` / ``local-job``)에서는 이 프로세스가 **아무것도 실행하지 않는다** — 단독 업로드(``submit``)·재개는
-``NotAvailable`` (HTTP 409 ``not_available``), 준비 확인은 Maven 을 재 보지 않고 "빌드 파드에서 이관 성공 뒤에 돈다"고만 답한다.
-이어 돈 조치(chained): 빌드 파드가 이관 성공 뒤 ``<out>/<이관 실행 id>/remediation/`` 에 남긴 조치(상태 id = 이관 실행 id)도
-같은 API 로 보인다 — 상태·목록·제안·결과·파일·승인은 모든 모드에서, 재개는 in-process 에서는 이 프로세스의 작업 스레드가
-(``chain.resume``), Job 모드에서는 **새 빌드 파드**가(2026-11-11 wave 4: 확인 응답을 state.json 에 먼저 적고
-``RunManager.resume_remediation`` 이 행동 ``remediation-resume`` 의 Job 을 업로드와 같은 줄·자리로 만든다), 삭제는 거절(폴더의
-주인은 이관 실행). 시작 때의 재시작 규칙은 단독 조치 폴더만 본다(이어 돈 조치는 빌드 파드의 것). 이관 실행이 이미 끝났는데
-QUEUED / RUNNING 으로 남은 이어 돈 조치는 파일을 고치지 않고 INTERRUPTED (``stale: true``)로 **보여 준다** — 재개 Job 이 줄에 있거나
-도는 동안은 그 Job 이 상태 파일의 주인이라 stale 이 아니다.
+"""취약점 조치 작업의 접수, 실행, 상태 조회, 승인, 재개를 관리하는 모듈.
+``api.py``의 라우트가 :class:`RemediationManager`를 거쳐 ``graph.run_remediation``을 호출한다.
+- in-process 모드에서만 작업 스레드로 조치를 실행한다.
+  한 번에 하나만 실행하고 나머지는 접수 순서대로 기다린다
+- Job 모드(``k8s-job`` / ``local-job``)에서는 아무것도 실행하지 않으며, 단독 업로드와 재개 요청에는
+  ``NotAvailable``(HTTP 409)을 돌려준다
+- 승인(``decide``)은 네 해시 값이 모두 맞을 때만 plan.json과
+  approvals.jsonl에 기록하고, 하나라도 틀리면 아무것도 쓰지 않는다
+- 재개는 사람이 요청할 때만 한다.
+  서버가 재시작되면 QUEUED / RUNNING으로 남은 작업은 INTERRUPTED가 되고 자동으로 다시 실행하지 않는다
+- ``build.local_repo``가 있으면 ``<그 경로>-remediation``을 써서 이관 빌드 파드와 로컬 저장소를 나눈다
+- 상태는 ``state.json`` 파일에서 읽는다(DB 없음)
+이관 뒤 이어서 실행하는 조치(빌드 파드가 이관 성공 뒤 ``<out>/<이관 실행 id>/remediation/``에 남긴 조치)도
+같은 API로 보여 준다. Job 모드에서 이를 재개하면 확인 응답을 state.json에 먼저 기록하고
+``RunManager.resume_remediation``이 새 빌드 파드를 만든다. 삭제 요청은 거절한다.
+이관은 끝났는데 QUEUED / RUNNING으로 남은 조치는 파일을 고치지 않고 INTERRUPTED(``stale: true``)로 보여 준다.
 
 The remediation job manager: worker threads of this process (one remediation at a time), `state.json` per run,
 approvals (all-or-nothing hash checks), resume / stop / delete, and the restart rule (QUEUED / RUNNING of an earlier
@@ -83,17 +79,19 @@ from .models import (
 
 log = logging.getLogger("sbmig.remediations.service")
 
-# 작업 ID: r<날짜-시각>-<무작위 16진수> — 이름순 = 시간순이고, 무작위 부분 때문에 남의 작업 주소를 짐작하지 못한다
+# 작업 ID 형식은 r<날짜-시각>-<무작위 16진수>다.
+# 이름순이 곧 시간순이고, 무작위 부분 때문에 다른 작업의 주소를 짐작할 수 없다
 ID_RE = re.compile(r"^r\d{8}-\d{6}-[0-9a-f]{6,32}$")
-# 이어 돈 조치의 ID = 이관 실행 id — sbmig.web.runs.RUN_ID_RE 와 같은 규칙(경로 문자 없음, 첫 글자는 영숫자)
+# 이관 뒤 이어서 실행한 조치의 ID는 이관 실행 id이며 sbmig.web.runs.RUN_ID_RE와 같은 규칙이다
 RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$")
-from .chain import CHAIN_DIR  # noqa: E402 — 이관 실행 폴더 안의 조치 폴더 이름(한 곳에서만 정한다)
-STOP_REQUEST_FILE = "stop.request"            # sbmig.core.workspace.STOP_REQUEST_FILE — 다른 파드의 실행을 멈추는 파일
+from .chain import CHAIN_DIR  # noqa: E402. 이관 실행 폴더 안의 조치 폴더 이름
+STOP_REQUEST_FILE = "stop.request"            # sbmig.core.workspace.STOP_REQUEST_FILE. 다른 파드의 실행을 멈추는 파일
 JOB_MODES = ("k8s-job", "local-job")
 IN_PROCESS = "in-process"
 KIND_CHAINED, KIND_STANDALONE = "chained", "standalone"
-LIVE_FILES = ("journal.jsonl",)               # 마지막 정제 전에도 내주는 이어 돈 조치의 파일(쓰는 순간 정제된다)
-# 이관 실행이 끝났다고 보는 RunManager.status 의 state 값 — 그런데도 QUEUED / RUNNING 인 이어 돈 조치는 파드가 사라진 것이다
+LIVE_FILES = ("journal.jsonl",)               # 쓸 때 바로 마스킹되므로 최종 마스킹 전에도 내려받을 수 있는 파일
+# 이관 실행이 끝났다고 보는 RunManager.status 값이다.
+# 이때 이어서 실행한 조치가 QUEUED / RUNNING이면 파드가 사라진 것이다
 _RUN_ENDED = ("finished", "unknown", "missing")
 NOT_AVAILABLE_MESSAGE = ("remediation runs in the build pod after a successful migration (remediation.after_migration); "
                          "the web pod runs nothing in {mode} mode")
@@ -101,7 +99,7 @@ RESUME_UNSUPPORTED = ("this web server cannot dispatch a build pod for the resum
                       "resumes remediations)")
 RESUME_ACTIVE_NOTE = "이미 새 빌드 파드에서 이어서 진행 중이거나 자리를 기다리고 있습니다."      # 화면에 그대로 보이는 문장
 CONFIG_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$")
-FALLBACK_CONFIGS = ("artifacts.yml", "artifacts.local-e2e.yml")       # RunManager.FALLBACK_CONFIGS 와 같은 규칙
+FALLBACK_CONFIGS = ("artifacts.yml", "artifacts.local-e2e.yml")       # RunManager.FALLBACK_CONFIGS와 같은 규칙
 LOCAL_REPO_SUFFIX = "-remediation"
 MAX_PAGE_SIZE = 100
 SHUTDOWN_JOIN_S = 5.0
@@ -112,7 +110,8 @@ RESTART_MESSAGE = ("the server restarted while this remediation was {status}; no
 SHUTDOWN_MESSAGE = ("the server shut down while this remediation was running; nothing is re-sent automatically — "
                     "resume it explicitly")
 CONFIRM_REUPLOAD, CONFIRM_RECEIPT = "reupload", "receipt"
-# 내려받을 수 있는 고정 이름(나머지는 아래 정규식의 라운드·검사 파일뿐) — 경로 조작을 막는 화이트리스트
+# 경로 조작을 막기 위해 내려받을 수 있는 파일 이름을 정해 둔다.
+# 이 밖에는 아래 정규식에 맞는 라운드, 검사 파일만 허용한다
 _FIXED_FILES: dict[str, Callable[[RunPaths], Path]] = {
     "report.md": lambda p: p.report_md,
     "report.json": lambda p: p.report_json,
@@ -122,7 +121,7 @@ _FIXED_FILES: dict[str, Callable[[RunPaths], Path]] = {
     "journal.jsonl": lambda p: p.journal,
     "remediation.log": lambda p: p.log,
     "delivery.json": lambda p: p.delivery_json,
-    # 정책 include 로 실패한 수정본이 result.zip 을 차지했을 때 앞 라운드의 검증된 ZIP(delivery/result-r<k>-verified.zip)
+    # include 정책으로 실패한 수정본이 result.zip이 되었을 때 따로 보관한 앞 라운드의 검증된 ZIP
     "result-verified.zip": lambda p: graph_mod.find_verified_zip(p) or p.delivery_zip.with_name("result-verified.zip"),
     "baseline-build.log": lambda p: p.baseline_log,
 }
@@ -139,7 +138,8 @@ _ABS_PATH = re.compile(r"(?<![\w:/\\.])(?:[A-Za-z]:[\\/]|/)[^\s()'\"]+")
 
 
 def _status_ko(status: str) -> str:
-    """상태 코드 → 보고서 결과 줄의 굵은 문장(그림 글자·굵게 표시 없이). 모르는 코드는 그대로.
+    """상태 코드에 맞는 보고서의 결과 문장을 그림 문자와 굵게 표시를 빼고 반환한다.
+    모르는 코드는 그대로 반환한다.
 
     The report's verdict sentence for a status, without the mark and the bold markers."""
     from .report import _VERDICT
@@ -147,29 +147,30 @@ def _status_ko(status: str) -> str:
     return v.split(" ", 1)[1].replace("**", "") if v else str(status or "")
 
 class UnknownRemediation(RemediationError):
-    """그런 ID 의 작업이 없다(HTTP 404)."""
+    """해당 ID의 작업이 없을 때 던지는 오류(HTTP 404)."""
     code = "not_found"
 
 
 class BadRemediationId(RemediationError):
-    """ID 모양이 규칙(``ID_RE``)에 맞지 않는다(HTTP 400) — 파일 시스템에 닿기 전에 거른다."""
+    """ID가 ``ID_RE`` 형식에 맞지 않을 때 던지는 오류(HTTP 400). 파일 시스템에 접근하기 전에 걸러낸다."""
     code = "bad_id"
 
 
 class NotFinished(StateConflict):
-    """아직 끝 상태가 아니라 결과(report.json)를 줄 수 없다(HTTP 409 ``not_finished``)."""
+    """작업이 아직 끝나지 않아 report.json을 줄 수 없을 때 던지는 오류(HTTP 409 ``not_finished``)."""
     code = "not_finished"
 
 
 class NotAvailable(RemediationError):
-    """이 웹 모드에서는 할 수 없는 일(HTTP 409 ``not_available``) — Job 모드의 단독 업로드·재개, 아직 없는 chain 모듈.
+    """현재 웹 모드에서 할 수 없는 요청일 때 던지는 오류(HTTP 409 ``not_available``).
+    Job 모드의 단독 업로드와 재개, chain 모듈이 없는 경우다.
 
     Not available in this web mode (Job modes: standalone upload / resume; chain module missing)."""
     code = "not_available"
 
 
 class Withheld(StateConflict):
-    """이관 실행의 마지막 정제(끝날 때 비밀 값을 지우는 단계)가 아직 남아 이어 돈 조치의 파일을 내줄 수 없다(HTTP 409 ``withheld``).
+    """이관 실행의 최종 마스킹이 아직 끝나지 않아 조치 파일을 내줄 수 없을 때 던지는 오류(HTTP 409 ``withheld``).
 
     The migration run's final redaction pass is still pending: chained files other than the journal wait."""
     code = "withheld"
@@ -188,7 +189,7 @@ def _iso() -> str:
 
 
 def safe_problem(text: str) -> str:
-    """준비 문제 한 줄에서 서버의 절대 경로를 마지막 이름만 남기고 지운다(응답에 서버 경로·값을 내지 않는다).
+    """준비 문제 문장에서 서버 절대 경로를 마지막 이름만 남기고 지운다.
 
     Strip absolute server paths (keep the last component) and secrets from a readiness problem line."""
     out = _ABS_PATH.sub(lambda m: Path(m.group(0).rstrip("\\/")).name or "<path>", str(text))
@@ -196,8 +197,8 @@ def safe_problem(text: str) -> str:
 
 
 def remediation_config(cfg: Any) -> Any:
-    """조치 실행에 쓸 설정 사본: ``build.local_repo`` 가 있으면 ``<그 경로>-remediation`` 으로 바꾼다 — 이관 빌드 파드와
-    Maven 로컬 저장소를 함께 쓰지 않게(한 저장소를 여러 Maven 프로세스가 쓰는 것을 피한다). 없으면 그대로.
+    """조치용 설정의 복사본을 만든다. ``build.local_repo``가 있으면 ``<그 경로>-remediation``으로 바꿔 이관
+    빌드 파드와 같은 로컬 저장소를 쓰지 않게 한다.
 
     A copy of `cfg` whose `build.local_repo` gets the `-remediation` suffix (never shared with the migration build pods)."""
     build = getattr(cfg, "build", None)
@@ -218,14 +219,15 @@ def remediation_config(cfg: Any) -> Any:
 
 
 def default_components_factory(cfg: Any, paths: RunPaths | None) -> Components:
-    """운영 부품 묶음(``graph.default_components``). ``paths`` 는 쓰지 않는다(준비 확인 때는 None).
+    """운영용 구성 요소(``graph.default_components``)를 만든다.
+    ``paths``는 쓰지 않으며 준비 확인 때는 None이 넘어온다.
 
     The real components; `paths` is unused (None for readiness checks)."""
     return graph_mod.default_components(cfg)
 
 
 class _ScrubbingFormatter(logging.Formatter):
-    """로그 줄을 파일에 쓰기 직전 비밀 값·URL 자격증명·실행 폴더의 절대 경로를 지운다."""
+    """로그를 파일에 쓰기 직전에 비밀 값, URL 속 계정 정보, 실행 폴더 절대 경로를 지우는 포매터 클래스."""
 
     def __init__(self, root: Path):
         super().__init__(LOG_FORMAT)
@@ -236,7 +238,7 @@ class _ScrubbingFormatter(logging.Formatter):
 
 
 class _ThreadFilter(logging.Filter):
-    """한 작업 스레드(또는 그 컨텍스트를 물려받은 스레드)의 로그만 통과 — 다른 실행의 로그가 섞이지 않게."""
+    """다른 실행의 로그가 섞이지 않도록 한 작업 스레드와 그 컨텍스트를 물려받은 스레드의 로그만 통과시키는 필터 클래스."""
 
     def __init__(self, thread_id: int):
         super().__init__()
@@ -253,11 +255,11 @@ class _ThreadFilter(logging.Filter):
 
 
 class RemediationManager:
-    """조치 작업 관리자(웹 앱 하나에 하나). 폴더 ``<out>/_remediations/<id>/``, 작업 스레드 하나씩 차례로, 상태 파일 기반.
-    ``components_factory(cfg, paths)`` / ``config_loader(configs)`` 는 테스트가 가짜를 넣는 자리다.
-
-    ``mode`` = 웹 모드(``RunManager.effective_mode``): Job 모드면 작업 스레드를 한 번도 띄우지 않는다. ``run_manager`` (선택)는
-    이어 돈 조치의 이관 실행 상태·마지막 정제·중지에 쓴다.
+    """취약점 조치 작업을 접수하고 실행하고 관리하는 클래스.
+    웹 앱마다 하나 있으며 상태는 ``<out>/_remediations/<id>/``의 파일로 관리한다.
+    ``mode``가 Job 모드면 작업 스레드를 띄우지 않는다.
+    ``run_manager``는 이관 뒤 이어서 실행한 조치의 이관 실행 상태, 최종 마스킹, 중지에 쓴다.
+    테스트는 ``components_factory``, ``config_loader``에 가짜 구현을 넣는다.
 
     One per web app. `default_configs` is a list of config names or a callable returning them (the web app passes
     `RunManager.default_configs` so both features resolve the server default the same way). `mode` is the web mode
@@ -274,14 +276,14 @@ class RemediationManager:
         self._default_configs = default_configs
         self.components_factory: ComponentsFactory = components_factory or default_components_factory
         self.config_loader: ConfigLoader = config_loader or self._load_config
-        self.owner = secrets.token_hex(16)            # 이 프로세스의 토큰 — 재시작 뒤 남은 작업을 알아본다
+        self.owner = secrets.token_hex(16)            # 재시작 뒤 남은 작업을 가려내기 위한 이 프로세스의 토큰
         self._lock = threading.RLock()                # index / queue / locks / events
         self._cond = threading.Condition(self._lock)
         self._run_locks: dict[str, threading.RLock] = {}
         self._events: dict[str, threading.Event] = {}
-        self._live: dict[str, RemediationState] = {}  # 작업 스레드가 지금 쥐고 있는 상태 객체(중지 요청을 바로 넣는다)
+        self._live: dict[str, RemediationState] = {}  # 중지 요청을 바로 넣을 수 있도록 작업 스레드가 쓰는 상태 객체를 둔다
         self._queue: collections.deque[str] = collections.deque()
-        self._active: set[str] = set()                # 줄을 섰거나 도는 작업
+        self._active: set[str] = set()                # 대기 중이거나 실행 중인 작업
         self._index: set[str] = set()
         self._worker: threading.Thread | None = None
         self._closing = threading.Event()
@@ -291,7 +293,8 @@ class RemediationManager:
 
     @property
     def job_mode(self) -> bool:
-        """Job 모드(``k8s-job`` / ``local-job``)인가 — 이 프로세스는 조치를 실행하지 않는다. / True in the Job modes."""
+        """Job 모드(``k8s-job`` / ``local-job``)인지 확인한다.
+        Job 모드면 이 프로세스는 조치를 실행하지 않는다. / True in the Job modes."""
         return self.mode in JOB_MODES
 
     def _not_available(self) -> NotAvailable:
@@ -299,8 +302,7 @@ class RemediationManager:
 
     # ------------------------------------------------------------------ config
     def default_configs(self) -> list[str]:
-        """이번 서버의 기본 설정 이름들(``RunManager.default_configs`` 와 같은 규칙: 준 이름 중 있는 파일, 없으면
-        artifacts.yml / artifacts.local-e2e.yml 중 있는 첫 것).
+        """서버의 기본 설정 이름 목록을 반환한다. ``RunManager.default_configs``와 같은 규칙이다.
 
         The server default config names (same rule as `RunManager.default_configs`)."""
         d = self.repo_root / "config"
@@ -316,7 +318,8 @@ class RemediationManager:
         return load_config(*[self.repo_root / "config" / c for c in configs], repo_root=self.repo_root)
 
     def _config(self, configs: list[str]) -> Any:
-        """설정 이름 검사(``../`` 차단) 뒤 읽는다. 모르는 이름 = ValueError(400), 읽기 실패 = NotReady(503)."""
+        """설정 이름을 검사한 뒤 설정을 읽는다.
+        모르는 이름이면 ValueError(400), 읽지 못하면 NotReady(503)를 던진다."""
         for c in configs:
             if not CONFIG_NAME_RE.match(c) or not (self.repo_root / "config" / c).is_file():
                 raise ValueError(f"unknown config {c}")
@@ -327,7 +330,8 @@ class RemediationManager:
             raise NotReady(problem, missing=[problem]) from None
 
     def max_upload_bytes(self) -> int:
-        """업로드 상한(바이트) = 기본 설정의 ``remediation.max_upload_mb``. 설정을 읽지 못하면 코드 기본값(1024 MiB).
+        """업로드 상한(바이트)을 반환한다.
+        기본 설정의 ``remediation.max_upload_mb``를 쓰고, 읽지 못하면 코드 기본값 1024 MiB를 쓴다.
 
         The upload limit from the default config's `remediation.max_upload_mb` (code default when unreadable)."""
         from sbmig.core.config import RemediationConfig
@@ -350,13 +354,15 @@ class RemediationManager:
         return self.out_dir / run_id
 
     def chain_paths(self, run_id: str) -> RunPaths:
-        """이어 돈 조치의 경로 규칙 ``<out>/<이관 실행 id>/remediation/`` (ID 검사 뒤). / Chained run paths."""
+        """이관 뒤 이어서 실행한 조치의 경로 ``<out>/<이관 실행 id>/remediation/``을 ID를 검사한 뒤
+        반환한다. / Chained run paths."""
         if not isinstance(run_id, str) or not RUN_ID_RE.match(run_id) or ".." in run_id:
             raise BadRemediationId("bad remediation id")
         return RunPaths(self._migration_run_dir(run_id) / CHAIN_DIR)
 
     def _locate(self, rid: str) -> tuple[RunPaths, bool]:
-        # 단독 조치 ID(r<날짜>-…)가 먼저, 그 밖의 이관 실행 id 모양은 이어 돈 조치 — 둘 다 아니면 파일 시스템에 닿기 전에 거른다
+        # 단독 조치 ID인지 먼저 보고, 이관 실행 id 형식이면 이어서 실행한 조치로 본다.
+        # 둘 다 아니면 파일 시스템에 접근하기 전에 걸러낸다
         if not isinstance(rid, str):
             raise BadRemediationId("bad remediation id")
         if ID_RE.match(rid):
@@ -368,11 +374,12 @@ class RemediationManager:
         return self.chain_paths(rid), True
 
     def is_chained(self, rid: str) -> bool:
-        """이 ID 가 이어 돈 조치(이관 실행 폴더 안)인가. / Whether `rid` names a chained remediation."""
+        """이 ID가 이관 뒤 이어서 실행한 조치인지 확인한다. / Whether `rid` names a chained remediation."""
         return self._locate(rid)[1]
 
     def paths(self, rid: str) -> RunPaths:
-        """작업 폴더의 경로 규칙(ID 검사 뒤; 이어 돈 조치면 이관 실행 폴더 안). / The run paths of a validated id."""
+        """ID를 검사한 뒤 작업 폴더 경로를 반환한다.
+        이관 뒤 이어서 실행한 조치면 이관 실행 폴더 안의 경로다. / The run paths of a validated id."""
         return self._locate(rid)[0]
 
     def _new_id(self) -> str:
@@ -382,7 +389,8 @@ class RemediationManager:
                 return rid
 
     def incoming_path(self) -> Path:
-        """받는 중인 업로드 본문의 임시 파일 ``<out>/_remediations/.incoming/<hex>.part`` (작업 폴더와 섞이지 않는 자리).
+        """받는 중인 업로드를 담을 임시 파일 경로 ``<out>/_remediations/.incoming/<hex>.part``를 반환한다.
+        작업 폴더와 섞이지 않는 위치다.
 
         A fresh temp file for an upload body that is still arriving."""
         d = self.root / ".incoming"
@@ -420,7 +428,8 @@ class RemediationManager:
 
     # ------------------------------------------------------------------ chained: the migration run's facts
     def _migration_state(self, run_id: str) -> str | None:
-        """이관 실행의 state(``RunManager.status``) — 관리자가 없으면 빌드 파드·작업 스레드가 끝에 쓰는 파일로 짐작한다."""
+        """이관 실행의 상태(``RunManager.status``)를 반환한다.
+        RunManager가 없으면 빌드 파드나 작업 스레드가 마지막에 쓰는 파일로 판단한다."""
         rm = self.run_manager
         if rm is not None and hasattr(rm, "status"):
             try:
@@ -438,7 +447,8 @@ class RemediationManager:
 
     # ---- chained: the resume Job of RunManager (2026-11-11 wave 4)
     def _resume_job(self, run_id: str) -> dict[str, Any] | None:
-        """이 이어 돈 조치의 재개 Job(``RunManager.remediation_job``)의 모습. 관리자가 그 기능이 없거나 읽기가 실패하면 None."""
+        """이 조치의 재개 Job 정보(``RunManager.remediation_job``)를 반환한다.
+        기능이 없거나 읽지 못하면 None을 반환한다."""
         fn = getattr(self.run_manager, "remediation_job", None) if self.run_manager is not None else None
         if not callable(fn):
             return None
@@ -450,7 +460,8 @@ class RemediationManager:
         return out if isinstance(out, dict) else None
 
     def _resume_active(self, run_id: str) -> bool:
-        """재개 Job 이 줄에 있거나 돌고 있나 — 그동안 조치 상태 파일의 주인은 그 빌드 파드다(승인·재개 거절, stale 아님, 파일 보류)."""
+        """재개 Job이 대기 중이거나 실행 중인지 확인한다.
+        그동안에는 그 빌드 파드가 상태 파일을 관리하므로 승인과 재개를 거절하고 파일 제공을 보류한다."""
         fn = getattr(self.run_manager, "remediation_active", None) if self.run_manager is not None else None
         if not callable(fn):
             return False
@@ -461,12 +472,12 @@ class RemediationManager:
             return True
 
     def _can_dispatch(self) -> bool:
-        # Job 모드에서 새 빌드 파드로 재개할 수 있는가: RunManager 가 재개 Job 을 만들 줄 알아야 한다
+        # Job 모드에서 새 빌드 파드로 재개하려면 RunManager가 재개 Job을 만들 수 있어야 한다
         return self.run_manager is not None and callable(getattr(self.run_manager, "resume_remediation", None))
 
     def _withheld(self, run_id: str) -> bool:
-        """이관 실행의 마지막 정제가 아직 남았는가(``RunManager.file_withheld`` — 쓰는 순간 정제되지 않는 파일 기준). 재개 Job 이
-        줄에 있거나 도는 동안에도 그렇다 — 그 파드의 마지막 정제가 끝나야 조치 파일을 내준다.
+        """조치 파일 제공을 보류해야 하는지 확인한다.
+        이관 실행의 최종 마스킹이 남았거나 재개 Job이 대기 중 또는 실행 중이면 보류한다.
 
         Whether chained files must wait: the migration run's final pass, or a resume Job that is queued / running."""
         if self._resume_active(run_id):
@@ -481,18 +492,20 @@ class RemediationManager:
             return True
 
     def _stale(self, rid: str, st: RemediationState, chained: bool) -> bool:
-        # 이어 돈 조치가 QUEUED / RUNNING 이라는데 이관 실행은 끝났다 = 그 파드는 사라졌다(이 프로세스가 재개해 돌리는 중이면 아니다)
+        # 조치가 QUEUED / RUNNING인데 이관 실행이 끝났다면 파드가 사라진 것이다.
+        # 이 프로세스가 재개해서 실행 중인 경우는 제외한다
         if not chained or st.status not in ACTIVE:
             return False
         with self._lock:
             if rid in self._active:
                 return False
-        if self._resume_active(rid):          # 새 빌드 파드의 재개 Job 이 이 상태를 쓰는 중이다
+        if self._resume_active(rid):          # 새 빌드 파드의 재개 Job이 이 상태를 쓰고 있다
             return False
         return self._migration_ended(rid)
 
     def _recorded_configs(self, run_id: str) -> list[str]:
-        # 이관 실행이 접수 때 적은 설정 이름: control/request.json(Job 모드) → journal 의 web_run 줄(in-process)
+        # 이관 실행이 접수 때 기록한 설정 이름을 찾는다.
+        # Job 모드는 control/request.json, in-process는 journal의 web_run 줄에 있다
         rd = self._migration_run_dir(run_id)
         data = read_json(rd / "control" / "request.json")
         if isinstance(data, dict) and isinstance(data.get("configs"), list):
@@ -513,8 +526,8 @@ class RemediationManager:
         return []
 
     def chained_configs(self, run_id: str) -> list[str]:
-        """이어 돈 조치의 정책 해시에 쓸 설정 이름들 = 이관 실행이 쓴 것(``control/request.json`` → journal ``web_run``).
-        기록이 없거나 그 이름이 이 서버의 config/ 에 없으면 서버 기본값.
+        """이관 뒤 이어서 실행한 조치의 정책 해시에 쓸 설정 이름을 반환한다.
+        이관 실행이 쓴 이름을 찾고, 기록이 없거나 이 서버의 config/에 없으면 서버 기본값을 쓴다.
 
         The config names the migration run used (request.json, else the journal's `web_run`), else the server default."""
         d = self.repo_root / "config"
@@ -531,7 +544,8 @@ class RemediationManager:
         return self.chained_configs(rid) if chained else list(st.configs)
     # ------------------------------------------------------------------ restart rule
     def _recover(self) -> None:
-        """시작 때 모든 state.json 을 훑는다: 다른 프로세스가 남긴 QUEUED / RUNNING → INTERRUPTED(자동 재개 없음)."""
+        """시작할 때 모든 state.json을 검사해 다른 프로세스가 남긴 QUEUED / RUNNING 작업을 INTERRUPTED로
+        바꾼다. 자동으로 재개하지 않는다."""
         for d in sorted(self.root.iterdir()) if self.root.is_dir() else []:
             if not d.is_dir() or not ID_RE.match(d.name):
                 continue
@@ -557,13 +571,13 @@ class RemediationManager:
 
     # ------------------------------------------------------------------ readiness
     def readiness(self, cfg: Any = None) -> list[str]:
-        """조치를 시작할 수 없게 하는 문제들(빈 목록 = 준비됨): IVAS 환경 변수 이름, Maven / JDK / settings.xml 문제.
-        값·서버 경로는 넣지 않는다.
+        """조치를 시작할 수 없게 하는 문제 목록을 반환한다.
+        빈 목록이면 준비된 것이고, 목록에 설정 값과 서버 경로는 넣지 않는다.
 
         Problems that prevent a remediation (IVAS env names, Maven / JDK / settings problems; never values).
         In the Job modes the one line that says remediation runs in the build pod (Maven is not probed here)."""
         if self.job_mode:
-            # 웹 파드는 Maven 을 돌리지 않는다 — 여기서 Maven / JDK 를 재 보면 틀린 답(빌드 파드의 사정이 아니다)이 된다
+            # 웹 파드는 Maven을 실행하지 않으므로 여기서 Maven / JDK를 확인하면 틀린 결과가 나온다
             return [NOT_AVAILABLE_MESSAGE.format(mode=self.mode)]
         if cfg is None:
             try:
@@ -573,7 +587,7 @@ class RemediationManager:
             except ValueError as e:
                 return [safe_problem(str(e))]
         problems = [safe_problem(p) for p in ivas_mod.readiness(ivas_mod.ivas_settings(cfg))]
-        # 신뢰 프로젝트 확인: Maven 이 올라온 프로젝트의 플러그인 코드를 이 서버에서 실행하므로, 운영자의 명시적 확인 없이는 받지 않는다
+        # Maven이 업로드된 프로젝트의 플러그인 코드를 서버에서 실행하므로 운영자가 명시적으로 허용해야 받는다
         if not bool(getattr(cfg.remediation, "trusted_projects", False)):
             problems.insert(0, "remediation.trusted_projects is not confirmed (set SBMIG_REMEDIATION__TRUSTED_PROJECTS=true "
                                "once the operator confirmed that uploaded projects may be built on this server)")
@@ -585,16 +599,16 @@ class RemediationManager:
         return problems
 
     def readiness_info(self) -> dict[str, Any]:
-        """준비 확인 라우트의 답: ``ready`` / ``missing`` + ``mode`` 와 ``runs_in`` (``web`` = 이 프로세스, ``build_pod`` = 이관
-        성공 뒤 빌드 파드). / The readiness answer incl. where remediation runs."""
+        """준비 상태 응답(``ready`` / ``missing``, ``mode``, ``runs_in``: ``web`` 또는 ``build_pod``)을
+        만든다. / The readiness answer incl. where remediation runs."""
         missing = self.readiness()
         return {"ready": not missing and not self.job_mode, "missing": list(missing), "mode": self.mode,
                 "runs_in": "build_pod" if self.job_mode else "web"}
 
     # ------------------------------------------------------------------ submit / queue
     def submit(self, tmp_zip: Path, name: str, configs: list[str] | None) -> RemediationState:
-        """업로드 하나를 접수한다: 설정 → 준비 확인(NotReady) → ZIP 검사(IntakeRejected 면 폴더를 남기지 않는다) → 첫 상태 →
-        줄 세우기. ``tmp_zip`` 은 호출한 쪽이 지운다(여기서는 복사한다).
+        """업로드 하나를 접수한다. 순서는 설정 -> 준비 확인 -> ZIP 검사 -> 첫 상태 저장 -> 대기열이다.
+        ZIP 검사에서 거부되면 폴더를 남기지 않는다. ``tmp_zip``은 복사해서 쓰므로 원본은 호출한 쪽이 지운다.
 
         Accept one upload: config, readiness (`NotReady`), intake (`IntakeRejected` leaves no directory), the first state,
         then queue it. The caller deletes `tmp_zip`. Job modes: `NotAvailable` before anything else."""
@@ -628,7 +642,7 @@ class RemediationManager:
         return state
 
     def _enqueue_locked(self, rid: str) -> None:
-        if self.job_mode:      # 마지막 방어선: Job 모드의 웹 파드는 작업 스레드를 띄우지 않는다
+        if self.job_mode:      # Job 모드의 웹 파드는 작업 스레드를 띄우지 않는다
             raise self._not_available()
         self._events[rid] = threading.Event()
         self._active.add(rid)
@@ -638,7 +652,7 @@ class RemediationManager:
             self._worker.start()
 
     def _dispatch(self) -> None:
-        # 줄의 맨 앞부터 하나씩 — 한 번에 하나만 돈다(이 프로세스 안의 Maven 이 서로 부딪히지 않게)
+        # 이 프로세스 안의 Maven끼리 충돌하지 않도록 대기열 앞에서부터 하나씩 실행한다
         while True:
             with self._lock:
                 if not self._queue or self._closing.is_set():
@@ -672,7 +686,7 @@ class RemediationManager:
             state.owner = self.owner
             self._save(paths, state)
             with self._lock:
-                self._live[rid] = state      # 같은 잠금 안에서: 중지 요청이 이 객체에 바로 들어가게
+                self._live[rid] = state      # 중지 요청이 이 객체에 바로 들어가도록 같은 잠금 안에서 넣는다
         ev = self._events.get(rid) or threading.Event()
         handler = self._attach_log(paths)
         try:
@@ -711,7 +725,7 @@ class RemediationManager:
                     state.message = graph_mod.scrub_message(f"{type(e).__name__}: {e}", paths.root)
                     state.updated = _now()
                     self._save(paths, state)
-            # 서버 종료 때문에 멈춘 작업(사람이 중지를 누르지 않음)은 STOPPED 가 아니라 INTERRUPTED — 재시작 규칙과 같은 뜻
+            # 사람이 중지하지 않고 서버 종료로 멈춘 작업은 STOPPED가 아니라 INTERRUPTED로 기록한다
             if self._closing.is_set() and state.status == STOPPED and not state.stop_requested:
                 with lock:
                     state.status = INTERRUPTED
@@ -724,7 +738,7 @@ class RemediationManager:
 
     @staticmethod
     def _chain_module() -> Any:
-        # 늦게 부른다: chain.py 가 없는(또는 깨진) 동안에도 이 모듈과 웹 앱은 뜬다 — sys.modules 를 먼저 보는 import_module
+        # chain.py가 없거나 깨져도 이 모듈과 웹 앱은 떠야 하므로 필요할 때 import한다
         try:
             return importlib.import_module("sbmig.remediations.chain")
         except ImportError as e:
@@ -732,7 +746,8 @@ class RemediationManager:
                                f"({type(e).__name__})") from None
 
     def _execute_chained(self, rid: str, paths: RunPaths) -> None:
-        """in-process 모드에서 이어 돈 조치를 ``chain.resume`` 으로 이어서 돌린다(사람이 재개했을 때만)."""
+        """in-process 모드에서 이관 뒤 이어서 실행한 조치를 ``chain.resume``으로 계속 실행한다.
+        사람이 재개를 요청했을 때만 호출된다."""
         lock = self._run_lock(rid)
         with lock:
             try:
@@ -767,7 +782,7 @@ class RemediationManager:
                         st = self._load(rid)
                     except UnknownRemediation:
                         return
-                    if st.status in ACTIVE:          # chain 이 손대기 전에 실패했으면 재개할 수 있는 상태 그대로 둔다
+                    if st.status in ACTIVE:          # chain이 상태를 바꾸기 전에 실패했으면 재개할 수 있는 상태로 둔다
                         st.status, st.reason = FAILED, R_INTERNAL_ERROR
                         st.reasons = [R_INTERNAL_ERROR]
                         st.message = graph_mod.scrub_message(f"{type(e).__name__}: {e}", paths.root)
@@ -785,7 +800,7 @@ class RemediationManager:
             fh.setFormatter(_ScrubbingFormatter(paths.root))
             fh.addFilter(_ThreadFilter(tid))
             if root.level == logging.NOTSET or root.level > logging.DEBUG:
-                for h in root.handlers:     # 파일은 DEBUG 까지, 콘솔은 원래 수준 그대로
+                for h in root.handlers:     # 파일에는 DEBUG까지, 콘솔에는 원래 수준대로 남긴다
                     if h.level == logging.NOTSET:
                         h.setLevel(logging.INFO if root.level in (logging.NOTSET, logging.INFO) else root.level)
                 root.setLevel(logging.DEBUG)
@@ -808,7 +823,8 @@ class RemediationManager:
         handler.close()
 
     def wait(self, rid: str, timeout: float = 30.0) -> bool:
-        """그 작업이 줄에서 빠지고 스레드가 끝날 때까지 기다린다(테스트·도구용). 끝났으면 True.
+        """작업이 대기열에서 빠지고 스레드가 끝날 때까지 기다린다.
+        끝났으면 True를 반환하며, 테스트와 도구에서 쓴다.
 
         Wait until `rid` is neither queued nor running; True when it finished within `timeout`."""
         deadline = time.monotonic() + timeout
@@ -821,7 +837,7 @@ class RemediationManager:
         return True
 
     def wait_idle(self, timeout: float = 30.0) -> bool:
-        """줄이 비고 작업 스레드가 끝날 때까지 기다린다. / Wait until nothing is queued or running."""
+        """대기열이 비고 작업 스레드가 끝날 때까지 기다린다. / Wait until nothing is queued or running."""
         deadline = time.monotonic() + timeout
         with self._cond:
             while self._active or (self._worker is not None and self._worker.is_alive()):
@@ -861,7 +877,7 @@ class RemediationManager:
                 return None
 
     def _resume_info(self, rid: str, st: RemediationState, chained: bool, shown: str, pending: int = 0) -> dict[str, Any]:
-        # 화면의 재개 버튼: 누를 수 있는가와 못 누르는 까닭(단독 조치의 Job 모드, 재개 Job 이 이미 있음, 결정 대기, 끝 상태 …)
+        # 화면의 재개 버튼을 누를 수 있는지와, 누를 수 없다면 그 이유
         if self.job_mode and not chained:
             return {"available": False, "note": "이 서버에서는 단독 조치를 돌리지 않습니다. 조치는 이관이 성공한 뒤 빌드 파드에서 돕니다."}
         if self.job_mode and not self._can_dispatch():
@@ -882,8 +898,9 @@ class RemediationManager:
         return (INTERRUPTED if stale else st.status), stale
 
     def status(self, rid: str) -> dict[str, Any]:
-        """API 의 상태 dict(API.md 의 모양) + ``kind`` (chained / standalone), 이어 돈 조치면 ``run_id``, 파드가 사라진 이어 돈
-        조치면 ``status = INTERRUPTED`` 와 ``stale: true`` (파일은 고치지 않는다), ``resume`` {available, note}.
+        """API에 돌려줄 상태 dict를 만든다.
+        ``kind``를 넣고, 이관 뒤 이어서 실행한 조치면 ``run_id``와 ``resume`` {available, note}를 더한다.
+        파드가 사라진 조치는 파일을 고치지 않고 ``status = INTERRUPTED``, ``stale: true``로 보여 준다.
 
         The status dict of the API contract plus `kind`, `run_id` (chained), `stale`, `resume` {available, note}."""
         paths, chained = self._locate(rid)
@@ -894,7 +911,7 @@ class RemediationManager:
         base = f"/api/remediations/{rid}"
         withheld = chained and self._withheld(rid)
         files = self._available_files(paths)
-        if withheld:                      # 마지막 정제 전: 쓰는 순간 정제되는 파일만 목록에 올린다
+        if withheld:                      # 최종 마스킹 전에는 쓸 때 바로 마스킹되는 파일만 목록에 넣는다
             files = [f for f in files if f in LIVE_FILES]
         stop_requested = st.stop_requested
         if chained and st.status in ACTIVE and not stale:
@@ -917,7 +934,7 @@ class RemediationManager:
             out["run_id"] = rid
             if withheld:
                 out["withheld"] = True
-            # 새 빌드 파드의 재개 Job(마지막 하나): state queued / running / finished, active, queue {position, ahead}, slot …
+            # 새 빌드 파드로 실행한 마지막 재개 Job 정보
             rjob = self._resume_job(rid)
             if rjob is not None:
                 out["resume_job"] = rjob
@@ -931,15 +948,16 @@ class RemediationManager:
         pos = self._queue_position(rid) if shown == QUEUED else None
         if pos is not None:
             out["queue_position"] = pos
-        # 화면용 한국어(덧붙임만, 2026-11-12): 영어 message 는 그대로 두고 message_ko · status_ko 를 더한다
-        # 화면은 Markdown 이 아니다: 규칙이 모르는 조각은 보고서처럼 "원문: `…`" 으로 감싸지 않고 원문 그대로 뒤에 붙인다
+        # 화면용 한국어 필드 message_ko, status_ko를 더하고 영어 message는 그대로 둔다
+        # 화면은 Markdown이 아니므로 번역하지 못한 부분은 원문 그대로 뒤에 붙인다
         ko, raw = i18n_mod.split_known(out["message"]) if out["message"] else ([], [])
         out["message_ko"] = " ".join([*ko, *raw])
         out["status_ko"] = _status_ko(shown)
         return out
 
     def _chained_ids(self) -> list[str]:
-        # 출력 폴더의 이관 실행 폴더 가운데 remediation/state.json 이 있는 것(`_` 로 시작하는 폴더는 이관 실행이 아니다)
+        # 출력 폴더의 이관 실행 폴더 중 remediation/state.json이 있는 것을 찾는다.
+        # `_`로 시작하는 폴더는 이관 실행이 아니다
         base = self.out_dir
         if self.run_manager is not None and getattr(self.run_manager, "out_dir", None) is not None:
             base = Path(self.run_manager.out_dir)
@@ -955,7 +973,8 @@ class RemediationManager:
         return out
 
     def list(self, page: int = 1, size: int = 20) -> dict[str, Any]:
-        """목록(새것부터) 한 쪽: 단독 조치와 이어 돈 조치를 합친다(줄마다 ``kind``, 이어 돈 조치는 ``run_id``). ``size`` 는 1…100.
+        """단독 조치와 이관 뒤 이어서 실행한 조치를 합친 목록에서 한 페이지를 최신순으로 반환한다.
+        ``size``는 1에서 100까지다.
 
         One page of summaries (standalone + chained, `kind` per row), newest first."""
         page = max(1, int(page))
@@ -991,8 +1010,8 @@ class RemediationManager:
         return {"items": items, "page": page, "size": size, "total": len(rows)}
 
     def proposals(self, rid: str, all_rounds: bool = False) -> dict[str, Any]:
-        """지금 라운드(``all_rounds`` 면 모든 라운드)의 제안 전체(diff·해시 세 개·결정 포함)와 남긴 항목. 화면용 한국어를
-        덧붙인다: 제안마다 ``note_ko``, 남긴 항목마다 ``detail_ko`` / ``origin_ko`` / ``reason_ko`` (기존 필드는 그대로).
+        """현재 라운드의 제안 전체와 남긴 항목을 반환한다. ``all_rounds``면 모든 라운드를 반환한다.
+        화면용 한국어 필드 ``note_ko``, ``detail_ko``, ``origin_ko``, ``reason_ko``를 더하고 기존 필드는 그대로 둔다.
 
         The current round's proposals (all rounds with `all_rounds`) with diffs, hashes and decisions, plus Korean
         display fields (`note_ko`; `detail_ko` / `origin_ko` / `reason_ko`)."""
@@ -1014,7 +1033,7 @@ class RemediationManager:
         else:
             out["proposals"] = [p.to_dict() for p in plan.proposals] if plan else []
             out["residuals"] = [r.to_dict() for r in plan.residuals] if plan else []
-        # 화면용 한국어(저장된 영어 문장과 코드는 그대로 두고 옆에 붙인다)
+        # 화면용 한국어를 더한다. 저장된 영어 문장과 코드는 그대로 두고 옆에 붙인다
         for p in out["proposals"]:
             p["note_ko"] = i18n_mod.ko_text(p.get("note") or "")
         for r in out["residuals"]:
@@ -1024,7 +1043,8 @@ class RemediationManager:
         return out
 
     def result(self, rid: str) -> dict[str, Any]:
-        """끝 상태면 report.json 내용, 아니면 ``NotFinished``(이어 돈 조치는 이관 실행의 마지막 정제 전이면 ``Withheld``).
+        """작업이 끝났으면 report.json 내용을 반환하고, 아니면 ``NotFinished``를 던진다.
+        최종 마스킹 전인 조치는 ``Withheld``를 던진다.
 
         report.json once terminal, else `NotFinished` (`Withheld` for a chained one before the final redaction pass)."""
         paths, chained = self._locate(rid)
@@ -1036,15 +1056,16 @@ class RemediationManager:
         data = read_json(paths.report_json)
         if isinstance(data, dict):
             return data
-        # report.json 이 없을 때만 여기서 다시 만든다 — 그래프가 쓴 것과 같은 "조치 대상에서 뺄 값"(ignore_actions)으로
+        # report.json이 없을 때만 그래프와 같은 ignore_actions로 다시 만든다
         try:
             ignore = list(self._config(self._configs_for(rid, st, chained)).remediation.ignore_actions)
-        except Exception:  # noqa: BLE001 — 설정을 못 읽어도 보고서는 준다(기본값: 빼지 않음)
+        except Exception:  # noqa: BLE001. 설정을 읽지 못해도 보고서는 돌려준다
             ignore = None
         return report_mod.build_report_json(st, paths, ignore_actions=ignore)
 
     def file_path(self, rid: str, name: str) -> Path | None:
-        """화이트리스트 이름 → 작업 폴더 안의 실제 파일. 모르는 이름·없는 파일·폴더 밖(링크 포함)은 None.
+        """허용된 파일 이름에 해당하는 작업 폴더 안의 실제 파일 경로를 반환한다.
+        모르는 이름, 없는 파일, 링크를 따라 폴더 밖으로 나가는 경로면 None을 반환한다.
 
         Whitelisted name → the real file inside the run directory; None for anything else. A chained run's files other
         than the journal raise `Withheld` while the migration run's final redaction pass is pending."""
@@ -1078,9 +1099,9 @@ class RemediationManager:
 
     # ------------------------------------------------------------------ approvals
     def decide(self, rid: str, decisions: list[Decision], by: str) -> dict[str, Any]:
-        """승인·거절을 받는다(AWAITING_APPROVAL 에서만). 모든 결정을 먼저 맞춰 보고(``planner.validate_decision``: 제안 해시·
-        원본 트리 해시·정책 해시·diff, 지금 트리·정책과도), 하나라도 틀리면 아무것도 쓰지 않고 ``ApprovalMismatch``.
-        통과하면 plan.json 을 원자적으로 고쳐 쓰고 approvals.jsonl 에 한 줄씩 덧붙인다. 재개하지 않는다.
+        """AWAITING_APPROVAL 상태에서 승인과 거절을 받는다. 재개는 하지 않는다.
+        모든 결정을 ``planner.validate_decision``으로 먼저 확인하고, 하나라도 틀리면 아무것도 쓰지 않고
+        ``ApprovalMismatch``를 던진다. 통과하면 plan.json을 원자적으로 고치고 approvals.jsonl에 추가한다.
 
         All-or-nothing approval: every decision is validated before anything is written. Does not resume.
         Chained: the policy hash comes from the configs the migration run used (`chained_configs`); refused (`Withheld`)
@@ -1105,9 +1126,9 @@ class RemediationManager:
             if dupes:
                 raise ApprovalMismatch(f"duplicate proposal id(s) in one request: {', '.join(dupes)}",
                                        fields=["proposal_id"], proposals={i: ["proposal_id"] for i in dupes})
-            # 이어 탄 조치(chained)의 정책 기준은 그 조치를 돌린 빌드 파드가 state.json 에 적은 정책 해시다: 웹 파드의 환경 값이
-            # 빌드 파드와 한 글자라도 다르면 여기서 다시 계산한 해시가 달라져 멀쩡한 승인이 거부된다. 정책이 정말 바뀌었는지는
-            # 재개하는 빌드 파드가 자기 설정으로 다시 확인한다(graph 의 plan 재사용 검사: 다르면 계획을 새로 세우고 옛 승인은 버린다).
+            # 웹 파드의 환경 값이 조금만 달라도 해시가 달라져 정상 승인이 거부되므로, 이어서 실행한 조치는
+            # 빌드 파드가 state.json에 기록한 정책 해시를 기준으로 한다
+            # 정책이 실제로 바뀌었는지는 재개하는 빌드 파드가 다시 확인한다
             if chained and st.policy_hash:
                 current_policy = st.policy_hash
             else:
@@ -1156,16 +1177,14 @@ class RemediationManager:
     # ------------------------------------------------------------------ resume / stop / delete
     def resume(self, rid: str, confirm: str | None = None, label: str | None = None, project_id: str | None = None,
                analysis_id: str | None = None, by: str = "") -> dict[str, Any]:
-        """재개(사람이 부를 때만). 재개할 수 있는 상태이고 도는 스레드가 없어야 한다. 승인 대기에 결정 안 된 제안이 남았으면,
-        업로드 확인 대기에 ``confirm`` 이 없으면 ``StateConflict``. ``reupload`` = 업로드가 IVAS 에 닿지 않았음을 사람이 확인 →
-        다시 올린다. ``receipt`` = 사람이 IVAS 에서 찾은 프로젝트·분석 ID 로 이어서 조회한다(다시 올리지 않는다).
-
-        in-process 의 이어 돈 조치는 상태를 그대로 둔 채(``chain.resume`` 은 재개할 수 있는 상태를 받는다) 이 프로세스의 작업
-        스레드가 ``chain.resume`` 을 부른다. Job 모드(2026-11-11 wave 4): 단독 조치는 ``NotAvailable``; 이어 돈 조치는 같은 검사 뒤
-        확인 응답(``reupload`` = ``pending_upload`` 에서 지움, ``receipt`` = ``pending_receipt[label]`` 에 프로젝트·분석 ID 와 그 ZIP 의
-        sha256)을 **Job 을 만들기 전에** 이 웹 파드가 state.json 에 적고 저널에 남긴 뒤 ``RunManager.resume_remediation`` 으로 새 빌드
-        파드를 줄에 세운다(이미 줄에 있거나 돌면 ``StateConflict``). 파드가 사라져 RUNNING 으로 남은 상태는 이 재개가 먼저 INTERRUPTED
-        로 적는다(자동으로는 절대 안 한다). 줄에 세우지 못하면 state.json 을 재개 전의 내용으로 되돌린다.
+        """사람이 요청한 재개를 처리한다. 재개할 수 있는 상태이고 실행 중인 스레드가 없어야 한다.
+        - 승인 대기 중에 결정되지 않은 제안이 남았거나, 업로드 확인 대기 중인데 ``confirm``이 없으면
+          ``StateConflict``를 던진다
+        - ``reupload``는 업로드가 IVAS에 전달되지 않았음을 사람이 확인한 것이므로 다시 업로드하고,
+          ``receipt``는 사람이 IVAS에서 찾은 프로젝트, 분석 ID로 다시 업로드하지 않고 결과를 이어서 조회한다
+        Job 모드에서 단독 조치는 ``NotAvailable``을 던진다. 이관 뒤 이어서 실행한 조치는 확인 응답을
+        state.json에 먼저 기록하고 ``RunManager.resume_remediation``으로 새 빌드 파드를 대기열에 넣으며,
+        거절되면 state.json을 되돌린다.
 
         Explicit resume. `confirm` is required in AWAITING_CONFIRMATION: "reupload" or "receipt" (+ project / analysis id).
         In-process, a chained state is resumed through `chain.resume` in a worker thread. Job modes: a standalone one is
@@ -1187,7 +1206,7 @@ class RemediationManager:
                 alive = rid in self._active
             if chained and not alive:
                 if self._stale(rid, st, chained):
-                    st.status = INTERRUPTED           # 파드가 사라진 이어 돈 조치: 사람이 재개할 때 비로소 파일에도 적는다
+                    st.status = INTERRUPTED           # 파드가 사라진 조치는 사람이 재개할 때 파일에도 기록한다
                 elif st.status in ACTIVE or self._migration_state(rid) in ("queued", "running"):
                     raise StateConflict(f"the migration run {rid} is still running", status=st.status)
             if alive or st.status not in RESUMABLE or not graph_mod.can_resume(st):
@@ -1225,7 +1244,7 @@ class RemediationManager:
             if chained and dispatch:
                 return self._dispatch_chained(rid, paths, st, event)
             if chained:
-                self._chain_module()                  # 없으면 여기서 NotAvailable — 상태 파일을 고치기 전에
+                self._chain_module()                  # 상태 파일을 고치기 전에 chain 모듈이 없으면 NotAvailable을 던진다
                 st.stop_requested = False
                 st.message = ""
                 st.updated = _now()
@@ -1250,8 +1269,9 @@ class RemediationManager:
         return self.status(rid)
 
     def _dispatch_chained(self, rid: str, paths: RunPaths, st: RemediationState, event: dict[str, Any]) -> dict[str, Any]:
-        """Job 모드의 이어 돈 조치 재개(부르는 쪽이 이 조치의 잠금을 쥐고 있다): 확인 응답이 반영된 ``st`` 를 저장하고 저널에 남긴 뒤
-        ``RunManager.resume_remediation``. 거절되면 state.json 을 이 재개 전의 내용으로 되돌리고 저널 ``resume_refused`` 뒤 그 예외를 낸다.
+        """Job 모드에서 이관 뒤 이어서 실행한 조치를 재개한다. 호출한 쪽이 잠금을 잡고 있어야 한다.
+        확인 응답을 반영한 ``st``를 저장하고 저널에 남긴 뒤 ``RunManager.resume_remediation``을 호출한다.
+        거절되면 state.json을 되돌리고 ``resume_refused``를 남긴 뒤 예외를 다시 던진다.
 
         Job modes: save the confirmed state, journal it, queue the resume pod; restore the file when the dispatch is refused."""
         before = read_json(paths.state)
@@ -1263,7 +1283,8 @@ class RemediationManager:
         try:
             job = self.run_manager.resume_remediation(rid)
         except Exception as e:
-            # 재개를 줄에 세우지 못했다: 확인 응답을 적용하기 전의 상태로 — 다음 재개가 같은 확인으로 다시 시작할 수 있게
+            # 재개를 대기열에 넣지 못했으므로, 다음 재개가 같은 확인으로 시작할
+            # 수 있게 확인 응답을 적용하기 전 상태로 되돌린다
             if isinstance(before, dict):
                 try:
                     write_json_atomic(paths.state, before)
@@ -1277,10 +1298,10 @@ class RemediationManager:
         return self.status(rid)
 
     def stop(self, rid: str) -> dict[str, Any]:
-        """중지 요청(QUEUED / RUNNING 에서만). 다음 workflow 경계에서 먹는다 — 도는 IVAS 분석을 취소했다고 하지 않는다.
-
-        이어 돈 조치: 이 프로세스가 재개해 돌리는 중이면 그 스레드에 알리고, 아니면 이관 실행 폴더에 ``stop.request`` 를 쓴다
-        (RunManager 가 Job 실행에 쓰는 것과 같은 파일 — 빌드 파드가 경계에서 본다). 상태 파일은 빌드 파드의 것이라 고치지 않는다.
+        """QUEUED / RUNNING 작업에 중지를 요청한다.
+        다음 노드로 넘어갈 때 적용되며, 진행 중인 IVAS 분석을 취소하지는 않는다.
+        이관 뒤 이어서 실행한 조치는 재개 중인 스레드에 알리거나 이관 실행 폴더에 ``stop.request``를 쓴다.
+        상태 파일은 빌드 파드가 관리하므로 고치지 않는다.
 
         Request a stop at the next workflow boundary (QUEUED / RUNNING only). Chained: signal this process's thread, else
         write the migration run's `stop.request` (the build pod reads it at a boundary); its state file is left alone."""
@@ -1296,7 +1317,7 @@ class RemediationManager:
                 live = self._live.get(rid)
                 ev = self._events.get(rid)
             if live is not None:
-                live.stop_requested = True       # 작업 스레드의 다음 저장이 이 값을 덮지 않게 같은 객체에 넣는다
+                live.stop_requested = True       # 작업 스레드가 다음에 저장할 때 덮어쓰지 않도록 같은 객체에 넣는다
                 self._save(paths, live)
             else:
                 st.stop_requested = True
@@ -1311,7 +1332,8 @@ class RemediationManager:
         lock = self._run_lock(rid)
         with lock:
             st = self._load(rid)
-            # 새 빌드 파드의 재개 Job(wave 4): 기다리면 줄에서 빠지고, 돌면 stop.request 만(Job 을 지우지 않는다)
+            # 새 빌드 파드의 재개 Job이 대기 중이면 대기열에서 빼고, 실행 중이면 stop.request만 쓴다.
+            # Job은 지우지 않는다
             stop_resume = getattr(self.run_manager, "stop_remediation", None) if self.run_manager is not None else None
             if callable(stop_resume) and self._resume_active(rid):
                 how = stop_resume(rid)
@@ -1321,7 +1343,7 @@ class RemediationManager:
             with self._lock:
                 alive = rid in self._active
                 ev = self._events.get(rid)
-            if alive and ev is not None:              # in-process 재개: 이 프로세스의 작업 스레드
+            if alive and ev is not None:              # 이 프로세스의 작업 스레드로 재개한 경우
                 ev.set()
                 self._journal_safe(paths, {"event": "stop_requested", "kind": KIND_CHAINED})
                 return {"stop_requested": True, "note": STOP_NOTE}
@@ -1335,8 +1357,9 @@ class RemediationManager:
                 raise StateConflict(f"the stop request could not be written ({type(e).__name__})", status=st.status) from None
             rm = self.run_manager
             run = getattr(rm, "runs", {}).get(rid) if rm is not None else None
-            # 이 프로세스의 이관 실행(in-process)이면 엔진의 멈춤도 켠다. Job 실행에는 RunManager.stop 을 부르지 않는다 — 유예 뒤
-            # Job 을 지워 도는 IVAS 업로드·Maven 을 끊기 때문(멈춤은 stop.request 하나로 경계에서)
+            # 이 프로세스의 in-process 이관 실행이면 엔진도 멈춘다.
+            # Job 실행에는 RunManager.stop을 호출하지 않는다
+            # RunManager.stop은 유예 시간 뒤 Job을 지워서 진행 중인 IVAS 업로드와 Maven을 끊기 때문이다
             if run is not None and not getattr(run, "job", False):
                 try:
                     rm.stop(rid)
@@ -1346,8 +1369,8 @@ class RemediationManager:
         return {"stop_requested": True, "note": STOP_NOTE}
 
     def delete(self, rid: str) -> None:
-        """작업 폴더 전체(원본 ZIP 포함)를 지운다. QUEUED / RUNNING 이면 ``StateConflict``. 이어 돈 조치는 늘 거절한다 — 그 폴더의
-        주인은 이관 실행이다.
+        """원본 ZIP을 포함해 작업 폴더 전체를 지운다. QUEUED / RUNNING이면 ``StateConflict``를 던진다.
+        이관 뒤 이어서 실행한 조치는 폴더를 이관 실행이 관리하므로 항상 거절한다.
 
         Remove the whole run directory (incl. the read-only original ZIP); refused while queued / running, and always for
         a chained remediation (the migration run owns that directory)."""
@@ -1371,7 +1394,7 @@ class RemediationManager:
     @staticmethod
     def _remove_dir(path: Path) -> None:
         def onerror(func: Any, p: str, _exc: Any) -> None:
-            # 원본 ZIP 은 읽기 전용이다(Windows 는 읽기 전용 파일을 지우지 못한다) — 쓰기 권한을 준 뒤 다시
+            # 원본 ZIP은 읽기 전용이고 Windows는 읽기 전용 파일을 지우지 못하므로 쓰기 권한을 준 뒤 다시 지운다
             try:
                 os.chmod(p, stat.S_IWUSR | stat.S_IRUSR | stat.S_IXUSR)
                 parent = os.path.dirname(p)
@@ -1391,11 +1414,12 @@ class RemediationManager:
 
     # ------------------------------------------------------------------ shutdown
     def shutdown(self) -> dict[str, Any]:
-        """서버 종료: 모든 작업에 멈춤을 알리고 잠깐 기다린다. 그 사이 경계에서 멈춘 작업은 INTERRUPTED 로 적고, 아직 도는
-        작업은 다음 시작이 INTERRUPTED 로 바꾼다(자동 재개 없음).
+        """서버를 종료하면서 모든 작업에 중지를 알리고 잠깐 기다린다.
+        그 사이 멈춘 작업은 INTERRUPTED로 기록하고, 아직 실행 중인 작업은 다음 시작 때 INTERRUPTED로 바뀐다.
 
         Server shutdown: signal every run, join briefly; the next start marks what was left as INTERRUPTED."""
-        # 작업마다의 이벤트는 건드리지 않는다: _closing 이 stop() 을 켜고, 사람의 중지 요청(STOPPED)과 종료(INTERRUPTED)를 가른다
+        # 작업별 이벤트는 건드리지 않는다.
+        # _closing으로 사람의 중지(STOPPED)와 서버 종료(INTERRUPTED)를 구분한다
         self._closing.set()
         with self._lock:
             active = sorted(self._active)

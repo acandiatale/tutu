@@ -1,10 +1,10 @@
-"""동봉 jar 연결(v2.1z-i): 모듈 pom 에 트리 안 jar 를 Maven 의존성으로 붙인다 — 저장소에 그 좌표가 있으면 보통 의존성,
-없으면 jar 를 ``<module>/lib/<name>`` 로 복사하고 ``system`` scope(``${project.basedir}/lib/<name>``)로. system 의존성은
-spring-boot-maven-plugin 이 기본으로 묶지 않으므로 그 모듈을 묶는 boot 모듈의 플러그인에 ``includeSystemScope`` 를 켠다
-(``java -jar`` 가 그 클래스를 보게). 좌표를 추측하지 않는다: pom.properties 가 준 좌표가 없으면 Ant 접수(v2.1j)와 같은
-규칙으로 자리표시 좌표(프로젝트 groupId + 파일 stem, 버전 = 파일명 버전 또는 "0")를 쓰고 인수인계 ⚠ 로 Nexus 등록을 요청한다.
-
-**계약(PM, 2026-11-04) — 구현은 재구조화 에이전트 몫**
+"""프로젝트 폴더 안에 들어 있는 jar를 모듈 pom의 Maven 의존성으로 등록하는 모듈.
+- 저장소에 그 jar의 좌표가 있으면 일반 의존성으로 추가한다
+- 없으면 jar를 ``<module>/lib/<name>``으로 복사하고 ``system`` scope(``${project.basedir}/lib/<name>``)로 선언한다
+- spring-boot-maven-plugin은 system 의존성을 기본으로 포함하지 않으므로 boot 모듈의 플러그인에
+  ``includeSystemScope``를 켠다
+- 좌표는 추측하지 않는다. pom.properties에 좌표가 없으면 임시 좌표(프로젝트 groupId + 파일 이름, 버전은 파일
+  이름의 버전 또는 "0")를 쓰고, 인수인계에서 Nexus 등록을 요청한다
 
 Wiring a bundled jar (v2.1z-i) into a module pom: a normal dependency when the repository has the coordinates, else
 the jar is copied to `<module>/lib/<name>` and declared with `system` scope (`${project.basedir}/lib/<name>`) — plus
@@ -35,17 +35,18 @@ BUNDLED_TAIL = ("wired by sbmig so the build sees the classes the as-is IDE buil
                 "-Durl=<repository> -DrepositoryId=<id>`) and replace the system dependency with the real coordinates")
 
 
-# system 의존성의 systemPath 접두어(모듈 디렉토리 기준) — _relocate_system_dep 과 같은 모양
+# system 의존성의 systemPath 앞부분이며 모듈 폴더를 기준으로 하므로 _relocate_system_dep과 같은 형식을 쓴다
 SYSTEM_PATH_PREFIX = "${project.basedir}/lib/"
 BOOT_PLUGIN = ("org.springframework.boot", "spring-boot-maven-plugin")
-# Ant 접수(v2.1j)와 같은 사유 문구 — 사람이 pom 주석·인수인계에서 같은 말을 보게
+# pom 주석과 인수인계에 같은 문구가 나오도록 Ant 접수에서 쓰는 사유 문구를 그대로 쓴다
 UNKNOWN_WHY = "no pom.properties, not in the jar name table"
 WEBINF_JARS_SHOWN = 5
 
 
 @dataclass
 class WiredJar:
-    """연결 결과 한 건: 어느 pom 에 어떤 좌표로(scope, systemPath), jar 가 어디로 복사됐고, includeSystemScope 를 켠 boot pom 들.
+    """jar 하나를 의존성으로 등록한 결과를 담는 데이터 클래스.
+    수정한 pom, 기록한 좌표(scope, systemPath), jar를 복사한 위치, includeSystemScope를 켠 boot pom 목록을 담는다.
 
     One wiring: the pom edited, the coordinates written (scope / systemPath), where the jar was copied, the boot poms
     that got `includeSystemScope`, and the Handover line."""
@@ -72,9 +73,10 @@ def _module_dir(module_pom: str) -> str:
 
 
 def copy_jar_to_module_lib(ws: Any, src_rel: str, module_dir: str, artifact_id: str) -> tuple[str, str, bool]:
-    """jar ``src_rel`` 을 ``<module_dir>/lib/<이름>`` 으로 복사한다(E7 / v2.1z-i 공용). 같은 이름의 다른 jar 가
-    이미 있으면 ``<artifactId>-<이름>`` 으로 둘 다 살린다. 이미 그 자리면(원본이 곧 대상) 복사하지 않는다.
-    돌려주는 값: (대상 상대 경로, systemPath 에 쓸 파일 이름, 이번에 복사했는가).
+    """jar ``src_rel``을 ``<module_dir>/lib/<이름>``으로 복사한다.
+    같은 이름의 다른 jar가 이미 있으면 ``<artifactId>-<이름>``으로 복사해
+    둘 다 남기고, 원본과 대상이 같으면 복사하지 않는다.
+    (대상 상대 경로, systemPath에 쓸 파일 이름, 이번에 복사했는지 여부)를 반환한다.
 
     Copy the jar `src_rel` to `<module_dir>/lib/<name>` (shared by the restructure's E7 relocation and the
     bundled-jar wiring); another jar of the same name already there → `<artifactId>-<name>`. Returns
@@ -84,7 +86,7 @@ def copy_jar_to_module_lib(ws: Any, src_rel: str, module_dir: str, artifact_id: 
     dst = f"{lib}/{name}"
     if dst == src_rel:
         return dst, name, False
-    # 같은 이름의 다른 jar 가 이미 lib/ 에 있으면 artifactId 를 앞에 붙여 둘 다 살린다
+    # lib/에 같은 이름의 다른 jar가 있으면 덮어쓰지 않도록 artifactId를 앞에 붙여 둘 다 남긴다
     if ws.abs(dst).exists() and ws.abs(dst).read_bytes() != ws.abs(src_rel).read_bytes():
         name = f"{artifact_id}-{name}"
         dst = f"{lib}/{name}"
@@ -103,8 +105,9 @@ def _sha1(ws: Any, rel: str) -> str:
 
 
 def _locate_jar(ws: Any, jar: JarCoordinate) -> str:
-    """분석 시점 경로(as-is)에 jar 가 없으면(재구성이 웹 루트를 back 모듈로 옮겼다) 같은 이름의 파일을 트리에서
-    찾는다: sha1 이 같은 것 → as-is 경로로 끝나는 것 → 하나뿐인 것. 못 찾으면 ValueError."""
+    """jar 파일의 현재 위치를 찾아 반환한다. 재구성이 웹 루트를 back 모듈로 옮겼을 수 있으므로, 분석할 때의
+    경로에 없으면 같은 이름의 파일을 프로젝트 전체에서 찾는다.
+    sha1이 같은 것, 원래 경로로 끝나는 것, 하나뿐인 것 순으로 고르고, 찾지 못하면 ValueError를 던진다."""
     rel = jar.path.replace("\\", "/")
     if ws.abs(rel).is_file():
         return rel
@@ -131,7 +134,7 @@ def _load(ws: Any, pom: str) -> PomEditor:
 
 
 def _comment_before(ed: PomEditor, el: Any, text: str) -> None:
-    """``el`` 바로 앞에 같은 들여쓰기로 XML 주석을 넣는다(``--`` 는 XML 주석에 쓸 수 없어 ``-`` 로)."""
+    """``el`` 바로 앞에 같은 들여쓰기로 XML 주석을 넣는다. XML 주석에 쓸 수 없는 ``--``는 ``-``로 바꾼다."""
     from lxml import etree
 
     parent = el.getparent()
@@ -144,7 +147,8 @@ def _comment_before(ed: PomEditor, el: Any, text: str) -> None:
 
 def _coordinates(ws: Any, ed: PomEditor, jar: JarCoordinate, src_rel: str, project_group: str
                  ) -> tuple[str, str, str, bool]:
-    """(g, a, v, placeholder). pom.properties 등이 준 완전한 좌표는 그대로; 아니면 Ant 접수 규칙의 자리표시 좌표."""
+    """jar에 쓸 좌표 (g, a, v, placeholder)를 반환한다. pom.properties 등에서 얻은 완전한 좌표가 있으면
+    그대로 쓰고, 없으면 Ant 접수와 같은 규칙으로 임시 좌표를 만든다."""
     from sbmig.analyze.ant import maven_artifact_id
     from sbmig.analyze.jar_coords import stem_and_version
 
@@ -163,14 +167,12 @@ def _system_path_name(ed: PomEditor, el: Any) -> str:
 
 def wire_bundled_jar(ws: Any, cfg: Any, *, module_pom: str, jar: JarCoordinate, repository_has: bool,
                      boot_poms: list[str] | None = None, project_group: str = "") -> WiredJar:
-    """``module_pom`` 에 ``jar`` 를 의존성으로 쓴다. ``repository_has`` 가 True(호출자가 저장소 SET 에서 jar 의 좌표
-    ``g:a:v`` 를 확인했다)면 그 좌표의 보통(compile) 의존성 한 줄; False 면 jar 를 ``<모듈 디렉토리>/lib/<파일명>`` 으로
-    복사하고(같은 이름이 있으면 ``_relocate_system_dep`` 처럼 artifactId 를 앞에 붙인다) ``system`` scope +
-    ``<systemPath>${project.basedir}/lib/<name></systemPath>`` + 이유 주석(Ant 접수의 문구 재사용). 좌표: jar.group_id /
-    artifact_id / version 이 있으면 그대로, 없으면 ``project_group`` + ``maven_artifact_id(stem)`` + 파일명 버전("0")
-    (``placeholder=True``). 이미 같은 g:a 가 그 pom 에 있으면 다시 쓰지 않는다(멱등). system 이면 ``boot_poms`` 각각에
-    ``ensure_include_system_scope`` — 그 전에 boot pom 에도 같은 g:a:v 를 system 으로 선언한다(system 은 전이되지 않음;
-    systemPath 는 복사본 하나를 상대 경로로). 파일은 바꾸되 커밋하지 않는다(호출자 = 루프의 사전 시도가 커밋·채점·롤백).
+    """``module_pom``에 ``jar``를 의존성으로 추가한다. ``repository_has``가 True면 compile 의존성으로,
+    False면 jar를 ``<모듈 폴더>/lib/<파일명>``으로 복사하고 ``system`` scope와 사유 주석을 달아 선언한다.
+    좌표가 없으면 ``project_group`` + ``maven_artifact_id(stem)`` + 파일 이름의 버전 또는 "0"을 임시 좌표로
+    쓰고(``placeholder=True``), 같은 g:a가 이미 있으면 다시 추가하지 않는다.
+    system이면 ``boot_poms``마다 같은 g:a:v를 system으로 선언하고 ``ensure_include_system_scope``를 적용한다.
+    파일만 고치고 커밋하지 않는다. 커밋, 시도 결과 평가, 되돌리기는 수정 루프의 사전 시도가 맡는다.
 
     Write `jar` as a dependency of `module_pom`: `repository_has` → a plain compile dependency on the jar's `g:a:v`;
     else copy the jar to `<module dir>/lib/<name>` and declare `system` scope with
@@ -197,8 +199,8 @@ def wire_bundled_jar(ws: Any, cfg: Any, *, module_pom: str, jar: JarCoordinate, 
     src = _locate_jar(ws, jar)
     g, a, v, placeholder = _coordinates(ws, ed, jar, src, project_group)
     name = posixpath.basename(src)
-    # 멱등: 같은 g:a 가 이미 이 jar(같은 파일 이름의 systemPath)를 가리키면 다시 쓰지 않는다. 다른 jar 가 같은
-    # g:a 를 쓰고 있으면 Ant 접수처럼 artifactId 에 sha1 꼬리를 붙인다
+    # 같은 g:a가 이미 이 jar를 가리키면 다시 추가하지 않고, 다른 jar가 같은 g:a를 쓰고 있으면 Ant 접수처럼
+    # artifactId 뒤에 sha1을 붙여 구분한다
     for _ in range(2):
         same = [e for e in ed.dependency_elements(False)
                 if ed.text_of(e, "groupId") == g and ed.text_of(e, "artifactId") == a]
@@ -229,8 +231,8 @@ def wire_bundled_jar(ws: Any, cfg: Any, *, module_pom: str, jar: JarCoordinate, 
     if copied:
         w.notes.append(f"bundled jar {src} copied to {dst}")
     w.notes.append(f"{g}:{a}:{v} (system, {system_path}) added to {module_pom}")
-    # Maven 은 system 의존성을 전이하지 않는다: back 모듈에만 쓰면 boot 의 repackage 아카이브에 들어가지 않으므로
-    # boot pom 마다 같은 g:a:v 를 system 으로 한 번 더 선언한다 — systemPath 는 복사본 하나를 boot pom 디렉토리에서 가리킨다
+    # Maven은 system 의존성을 전이하지 않으므로 back 모듈에만 두면 boot repackage에서 빠진다. 그래서 boot
+    # pom마다 같은 g:a:v를 system으로 다시 선언하고 systemPath는 복사해 둔 jar 하나를 가리키게 한다
     for bp in boot_poms or []:
         edited = False
         if bp != module_pom:
@@ -251,7 +253,8 @@ def wire_bundled_jar(ws: Any, cfg: Any, *, module_pom: str, jar: JarCoordinate, 
 
 
 def _declare_system(ed: PomEditor, g: str, a: str, v: str, system_path: str, comment: str) -> None:
-    """``g:a:v`` 를 system scope + systemPath + 이유 주석으로 직접 의존성에 쓴다(저장은 호출자)."""
+    """``g:a:v``를 system scope, systemPath, 사유 주석과 함께 직접 의존성으로 추가한다.
+    파일 저장은 호출하는 쪽이 한다."""
     ed.add_dependency(GAV(group_id=g, artifact_id=a, version=v, scope="system"))
     el = next(e for e in ed.dependency_elements(False)
               if ed.text_of(e, "groupId") == g and ed.text_of(e, "artifactId") == a)
@@ -260,8 +263,9 @@ def _declare_system(ed: PomEditor, g: str, a: str, v: str, system_path: str, com
 
 
 def ensure_include_system_scope(ws: Any, boot_pom: str) -> bool:
-    """``boot_pom`` 의 spring-boot-maven-plugin ``<configuration>`` 에 ``<includeSystemScope>true</includeSystemScope>`` 를
-    보장한다(플러그인이 없으면 아무것도 안 함 → False). 이미 있으면 False, 새로 썼으면 True.
+    """``boot_pom``의 spring-boot-maven-plugin ``<configuration>``에
+    ``<includeSystemScope>true</includeSystemScope>``를 넣는다.
+    새로 넣었으면 True를, 이미 있거나 플러그인이 없으면 False를 반환한다.
 
     Ensure `<includeSystemScope>true</includeSystemScope>` in the spring-boot-maven-plugin configuration of
     `boot_pom`. True when written, False when already there or the plugin is absent."""
@@ -283,8 +287,9 @@ def ensure_include_system_scope(ws: Any, boot_pom: str) -> bool:
 
 
 def bundled_jar_followup(w: WiredJar) -> str:
-    """인수인계 한 줄: "bundled jar `<name>` (<why>) wired into `<module pom>` as a <scope> dependency `<g:a:v>` — <BUNDLED_TAIL>"
-    (system 일 때; compile 이면 "… as a compile dependency `g:a:v` (the repository has it)"). i18n PATTERNS 가 옮긴다.
+    """jar 등록 한 건에 대한 인수인계 문장을 만든다.
+    system scope면 임시 좌표와 Nexus 등록 요청을, compile이면 저장소에 이미 있었다는 내용을 쓴다.
+    문장은 영어로 만들고, 한국어 보고서에서는 i18n의 ``PATTERNS``가 번역한다.
 
     The Handover line for one wiring (system: placeholder coordinates + the Nexus ask; compile: the repository had it)."""
     name = posixpath.basename(w.copied_to or w.jar.path)
@@ -297,9 +302,9 @@ def bundled_jar_followup(w: WiredJar) -> str:
 
 
 def webinf_left_followup(left: list[str], where: str) -> str:
-    """웹 루트를 옮긴 뒤 WEB-INF/lib · WEB-INF/classes · META-INF 에 남은 파일의 인수인계 한 줄. jar 가 있으면 그
-    이름(최대 5개, 그 뒤 " …")과 "빌드 오류가 그 jar 를 필요로 하면 sbmig 가 연결한다(`sbmig-bundled`)"를 말한다;
-    jar 가 없으면 예전 문장 그대로.
+    """웹 루트를 옮긴 뒤 WEB-INF/lib, WEB-INF/classes, META-INF에 남은 파일에 대한 인수인계 문장을 만든다.
+    jar가 있으면 이름을 최대 5개까지 보여 주고, 빌드 오류에 필요한 jar는 sbmig가 등록한다(`sbmig-bundled`)고
+    안내한다. jar가 없으면 Maven 의존성 선언과 클래스 이동만 안내한다.
 
     The webapp-move follow-up for files left under WEB-INF/lib, WEB-INF/classes or META-INF: names the jars (≤ 5,
     then " …") and says the fix loop wires a bundled jar a build error needs; without jars the old sentence."""

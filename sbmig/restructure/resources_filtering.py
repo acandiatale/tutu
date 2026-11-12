@@ -1,11 +1,11 @@
-"""필터링되는 리소스 아래 바이너리 파일 규칙(v2.1m) — ``<filtering>true</filtering>`` 리소스에 든 바이너리 파일
-(웹폰트, 압축 파일, 회사 확장자 ``.dmdb`` …)을 maven-resources-plugin 이 텍스트로 읽다 ``MalformedInputException:
-Input length = 1`` 로 실패하는 것을 LLM 없이 막는다. 흐름상 위치: 재구성(restructurer.py ``_non_filtered_extensions``)
-이 모듈 pom 이 확정된 뒤 미리 적고, 수정 루프의 결정적 시도(``reactive_targets`` → ``binary_resource_plan(...,
-errors=...)``)가 빌드 오류를 보고 다시 적는다. 핵심 진입점: ``binary_resource_plan`` (무엇을 어느 pom 에),
-``apply_non_filtered_extensions`` (PomEditor 로 적기, 텍스트 수술 없음), ``reactive_targets``. 지킬 것: 필터링은
-끄지 않는다(``@project.version@`` 이 계속 풀려야 함), 파일은 지우지 않는다, 플러그인 기본값(jpg jpeg gif bmp png)과
-텍스트 확장자는 적지 않는다, 예외를 내지 않는다(DEBUG 로그 + 빈 결과), 두 번 돌려도 바뀌는 것이 없다(멱등).
+"""Maven 리소스 필터링 대상 폴더에 있는 바이너리 파일을 필터링에서 제외하는 모듈.
+maven-resources-plugin이 웹폰트, 압축 파일, ``.dmdb`` 같은 파일을 텍스트로 읽다가
+``MalformedInputException: Input length = 1``로 실패하는 것을 LLM 없이 막는다.
+재구성 단계가 첫 빌드 전에 제외 확장자를 기록하고, 빌드 오류가 나면 수정 루프의 사전
+시도(``reactive_targets``)가 다시 기록한다.
+- 필터링 자체는 끄지 않는다. ``@project.version@`` 같은 값은 계속 치환되어야 하기 때문이다
+- 파일은 지우지 않고, 플러그인 기본값과 텍스트 확장자는 기록하지 않는다
+- 예외를 던지지 않고, 여러 번 실행해도 결과가 같다
 
 Binary files under Maven resource filtering (v2.1m, docs/INTERFACES.md "v2.1m"): maven-resources-plugin ≥ 3.2 reads
 every file of a `<filtering>true</filtering>` resource as text, so webfonts, archives and company formats (`.dmdb`)
@@ -54,12 +54,12 @@ REACTIVE_RE = re.compile(r"MalformedInputException|UnmappableCharacterException|
                          r"filtering \S.* to \S.* failed with")
 _FILE_RE = re.compile(r"filtering\s+(?P<path>\S(?:.*?\S)?)\s+to\s+\S")
 _PROJECT_RE = re.compile(r"on project (?P<aid>[\w.\-]+)")
-# 이 오류가 정말 리소스 / war 플러그인의 복사에서 났는지: javac 의 인코딩 오류 같은 다른 실패에 손대지 않게
+# 리소스나 war 플러그인의 복사 실패만 다루고 javac 인코딩 오류 같은 다른 실패는 건드리지 않는다
 _PLUGIN_HINT_RE = re.compile(r"maven-resources-plugin|maven-war-plugin|\b(?:resources|war):[\w-]+\b|"
                              r"filtering \S.* to \S")
 _WAR_HINT_RE = re.compile(r"maven-war-plugin|\bwar:(?:war|exploded|inplace)\b")
 _EXT_RE = re.compile(r"[a-z0-9][a-z0-9_+\-]{0,15}")
-# Maven 상속: 부모 <build><resources> 는 자식이 자기 <resources> 를 선언하지 않을 때만 물려받는다
+# 자식 pom이 자기 <resources>를 선언하지 않을 때만 부모의 <build><resources>가 상속된다
 _DEFAULT_FILTERED_POM = ("<project><build><resources><resource><directory>src/main/resources</directory>"
                          "<filtering>true</filtering></resource></resources></build></project>")
 APPEND_ATTR = "combine.children"
@@ -67,8 +67,8 @@ MAX_FOLLOWUP_FILES = 10
 
 
 class ResourcePlan(BaseModel):
-    """적을 내용: pom 마다 추가할 확장자(``extensions_by_pom``)와 그 플러그인(``plugins_by_pom``), 아직 덮이지 않은
-    바이너리 파일(``files`` — 확장자 없는 것 포함), 사람이 할 일(``followups``: 확장자 없는 파일). 비어 있으면 할 일 없음.
+    """pom별로 추가할 제외 확장자와 대상 플러그인을 담는 데이터 클래스.
+    아직 처리되지 않은 바이너리 파일(``files``)과 확장자가 없어 직접 처리해야 할 파일(``followups``)도 함께 담는다.
 
     What `apply_non_filtered_extensions` writes: per pom the missing extensions (lower-case, no dot, sorted) and
     the plugins they go to (maven-resources-plugin first); `files` = the filtered binary files no
@@ -81,11 +81,12 @@ class ResourcePlan(BaseModel):
 
     @property
     def empty(self) -> bool:
-        """추가할 확장자가 없는가(후속 작업은 따로 본다)."""
+        """추가할 확장자가 하나도 없는지 확인한다. 후속 작업(``followups``)은 따로 확인해야 한다."""
         return not any(self.extensions_by_pom.values())
 
     def lines(self, only: Iterable[str] | None = None) -> list[str]:
-        """보고 줄 ``<pom>: ext1, ext2 → maven-resources-plugin[, maven-war-plugin]`` (``only`` = 실제로 바뀐 pom 만).
+        """보고서에 쓸 ``<pom>: ext1, ext2 -> maven-resources-plugin`` 형식의 줄 목록을 만든다.
+        ``only``를 주면 그 안에 있는 pom만 포함한다.
 
         `RestructureResult.non_filtered_extensions` lines, optionally only for the poms in `only`."""
         keep = set(only) if only is not None else None
@@ -101,7 +102,7 @@ class ResourcePlan(BaseModel):
 # ---------------------------------------------------------------------------------------------- tree facts
 @dataclass
 class _Facts:
-    """pom 하나에 대해 계획이 알아야 할 것(파싱 한 번)."""
+    """제외 확장자 계획에 필요한 pom 하나의 정보를 담는 클래스. pom 파싱은 한 번만 한다."""
     path: str
     ed: PomEditor
     tree_parent: str | None          # the in-tree <parent> pom (relativePath / ../pom.xml, artifactId match)
@@ -117,15 +118,15 @@ class _Facts:
 
 @dataclass
 class _Want:
-    """대상 pom 하나에 적고 싶은 것(중복 제거 전)."""
+    """대상 pom 하나에 기록할 플러그인, 파일, 확장자를 모으는 클래스. 아직 중복을 제거하기 전의 값이다."""
     plugins: set[str] = field(default_factory=set)
     exts: set[str] = field(default_factory=set)
     files: dict[str, str] = field(default_factory=dict)       # file → its extension ("" = none usable)
 
 
 class _View:
-    """``filtered_binary_resources`` 에 넘기는 작업공간 보기: 트리 목록(glob)을 한 번만 읽고, pom 하나의 텍스트를
-    다른 텍스트로 바꿔 보일 수 있다(부모에게서 물려받은 <resources> 로 자식 모듈을 훑을 때)."""
+    """``filtered_binary_resources``에 넘길 작업 공간 뷰 클래스.
+    파일 목록은 한 번만 읽고, 부모의 <resources> 설정으로 자식 모듈을 검사할 때는 pom 텍스트를 바꿔서 보여 준다."""
 
     def __init__(self, ws: Any, overrides: dict[str, str] | None = None,
                  cache: dict[str, list[str]] | None = None):
@@ -157,19 +158,22 @@ def _norm(path: str) -> str:
 
 
 def _ext(name: str) -> str:
-    """Maven 과 같은 확장자(마지막 점 뒤, 소문자): ``.items.dmdb`` → ``dmdb``, 점이 없으면 ''."""
+    """파일 이름에서 Maven과 같은 방식으로 확장자를 구해 반환한다.
+    마지막 점 뒤를 소문자로 돌려주고, 점이 없으면 빈 문자열을 반환한다."""
     base = posixpath.basename(str(name).replace("\\", "/"))
     return base.rsplit(".", 1)[1].lower() if "." in base else ""
 
 
 def _usable(ext: str) -> bool:
-    """적어도 되는 확장자인가: 모양이 맞고, 플러그인 기본값도 텍스트 확장자도 아닌 것."""
+    """pom에 기록해도 되는 확장자인지 확인한다.
+    형식이 맞고 플러그인 기본값이나 텍스트 확장자가 아니어야 한다."""
     return bool(_EXT_RE.fullmatch(ext)) and ext not in PLUGIN_UNFILTERED_DEFAULTS \
         and ext not in TEXT_RESOURCE_EXTENSIONS
 
 
 def _company_exts(cfg: Any) -> list[str]:
-    """``build.non_filtered_extensions`` (회사 확장자, 예: dmdb) — 소문자, 점 없이, 쓸 수 있는 것만."""
+    """설정 ``build.non_filtered_extensions``에 지정된 회사 확장자(예: dmdb)를 반환한다.
+    소문자로 바꾸고 점을 빼며, 기록할 수 없는 값은 버린다."""
     raw = getattr(getattr(cfg, "build", None), "non_filtered_extensions", None) or []
     if isinstance(raw, str):
         raw = [raw]
@@ -198,7 +202,8 @@ def _pom_paths(ws: Any, poms: Iterable[Any] | None) -> list[str]:
 
 
 def _tree_parent(ws: Any, path: str, ed: PomEditor) -> str | None:
-    """저장소 안 <parent> pom (restructurer ``_chain`` 과 같은 규칙: 빈 relativePath 면 없음, artifactId 가 맞아야 함)."""
+    """이 pom의 <parent>가 저장소 안에 있으면 그 pom 경로를 반환한다.
+    relativePath가 비어 있으면 저장소 밖 부모로 보고, artifactId가 일치해야 같은 부모로 인정한다."""
     parent = ed.get_parent()
     if parent is None:
         return None
@@ -221,7 +226,8 @@ def _tree_parent(ws: Any, path: str, ed: PomEditor) -> str | None:
 
 
 def _filter_kinds(ed: PomEditor) -> tuple[bool, bool]:
-    """(resources / testResources 필터링, webResources 필터링). 주석은 lxml 이 요소로 보지 않는다."""
+    """pom이 resources / testResources를 필터링하는지와 webResources를 필터링하는지를 튜플로 반환한다.
+    주석 처리된 설정은 세지 않는다."""
     res = web = False
     for el in ed.root.iter():
         if not isinstance(el.tag, str) or PomEditor.local_name(el) != "filtering":
@@ -254,8 +260,9 @@ def _load_facts(ws: Any, paths: list[str]) -> dict[str, _Facts]:
 
 # ---------------------------------------------------------------------------------------------- plugin element
 def _chosen_plugin(ed: PomEditor, artifact: str, in_tree_parent: bool) -> Any:
-    """고칠 플러그인 요소(결정표): <build><plugins> 선언이 있으면 그것, 없고 pom 이 바깥 부모(역할 부모 comp-jar /
-    boot-jar 등)의 모듈이 아니면 <pluginManagement> 선언, 그 밖은 None(새로 만든다).
+    """수정할 플러그인 요소를 찾는다.
+    <build><plugins> 선언을 먼저 쓰고, 저장소 밖 역할 부모를 상속하는 모듈이 아니면 <pluginManagement>
+    선언도 쓴다. 둘 다 없으면 None을 반환하므로 호출하는 쪽이 새로 만든다.
 
     The element to extend: a `<build><plugins>` declaration wins (its configuration merges over the managed one);
     else a `<pluginManagement>` one when the pom has no parent or an in-tree one — on a parent outside the tree (a
@@ -271,8 +278,8 @@ def _chosen_plugin(ed: PomEditor, artifact: str, in_tree_parent: bool) -> Any:
 
 
 def _entries(el: Any) -> list[str]:
-    """플러그인 수준 ``<configuration><nonFilteredFileExtensions>`` 의 항목(소문자, 점 없이). 실행(execution)의
-    configuration 은 보지 않는다."""
+    """플러그인 수준 ``<configuration><nonFilteredFileExtensions>``에 있는 확장자 목록을 소문자, 점 없는
+    형태로 반환한다. execution 안의 configuration은 보지 않는다."""
     if el is None:
         return []
     nfe = PomEditor.child(PomEditor.child(el, "configuration"), "nonFilteredFileExtensions")
@@ -280,8 +287,8 @@ def _entries(el: Any) -> list[str]:
 
 
 def _has_own_list(ed: PomEditor, artifact: str) -> bool:
-    """이 pom 이 그 플러그인의 플러그인 수준 목록을 직접 갖는가 — 갖고 있으면 부모 목록을 덮어쓰므로(Maven 설정
-    병합, combine.children 없음) 이 pom 을 고쳐야 한다."""
+    """이 pom이 플러그인 수준의 제외 확장자 목록을 직접 갖고 있는지 확인한다.
+    갖고 있으면 combine.children이 없는 한 부모 목록을 덮어쓰므로 이 pom을 고쳐야 한다."""
     return any(PomEditor.child(PomEditor.child(el, "configuration"), "nonFilteredFileExtensions") is not None
                for el in ed.find_plugins(DEFAULT_PLUGIN_GROUP, artifact, "all"))
 
@@ -292,8 +299,8 @@ def _not_inherited(ed: PomEditor, artifact: str) -> bool:
 
 
 def _target(facts: dict[str, _Facts], path: str, artifact: str) -> str:
-    """``path`` 의 빌드에 닿는 플러그인 설정을 가진 pom: 저장소 안 부모(보통 루트)가 필터링을 선언하고 그 설정이
-    자식에게 내려가면 부모를 한 번 고친다; 역할 부모(트리 밖)의 모듈이면 자기 pom.
+    """``path`` 모듈의 빌드에 적용되는 플러그인 설정을 가진 pom을 찾아 반환한다.
+    저장소 안 부모의 필터링 설정을 상속하면 부모를, 역할 부모를 상속하는 모듈이면 자기 pom을 반환한다.
 
     The pom whose plugin configuration reaches `path`'s build: walk up in-tree parents while the parent itself
     declares filtering, the child has no plugin-level list of its own (it would replace the parent's) and the
@@ -314,8 +321,8 @@ def _target(facts: dict[str, _Facts], path: str, artifact: str) -> str:
 
 
 def _resources_owner(facts: dict[str, _Facts], path: str) -> str | None:
-    """``path`` 가 <resources> 를 물려받는 저장소 안 조상(자기 <resources> 가 없을 때만, 처음 선언한 조상이 필터링할
-    때만)."""
+    """``path`` 모듈이 <resources> 설정을 상속받는 저장소 안 조상 pom을 반환한다.
+    자기 <resources>가 없고, 그것을 처음 선언한 조상이 필터링을 켰을 때만 반환하며, 아니면 None을 반환한다."""
     cur, seen = path, {path}
     while True:
         f = facts[cur]
@@ -377,7 +384,7 @@ def _nearest_pom(facts: dict[str, _Facts], rel: str) -> str | None:
 
 
 def _reactive(ws: Any, facts: dict[str, _Facts], errors: Iterable[Any]) -> dict[str, _Want]:
-    """빌드 오류 → 대상 pom 마다 (실패한 플러그인, 오류가 이름 댄 파일·확장자)."""
+    """빌드 오류에서 대상 pom별로 실패한 플러그인, 오류에 나온 파일, 확장자를 뽑아 반환한다."""
     out: dict[str, _Want] = {}
     if not facts:
         return out
@@ -393,7 +400,8 @@ def _reactive(ws: Any, facts: dict[str, _Facts], errors: Iterable[Any]) -> dict[
         efile_rel = _rel(ws, efile) if efile else None
         if efile_rel and posixpath.basename(efile_rel) != "pom.xml" and efile_rel not in named:
             named.append(efile_rel)
-        # 오류가 이름 댄 파일의 모듈이 가장 정확하다(재구성이 만든 모듈은 as-is 프로필이 모른다); 루트는 마지막
+        # 오류에 나온 파일이 속한 모듈을 먼저 쓴다.
+        # 재구성이 만든 모듈은 원래 프로젝트 정보로는 찾을 수 없기 때문이며, 루트 pom은 마지막에 쓴다
         by_file = [p for p in dict.fromkeys(_nearest_pom(facts, n) for n in named) if p]
         aids = {m.group("aid") for m in _PROJECT_RE.finditer(text)}
         if getattr(err, "module", None):
@@ -412,9 +420,9 @@ def _reactive(ws: Any, facts: dict[str, _Facts], errors: Iterable[Any]) -> dict[
 
 
 def reactive_targets(ws: Any, errors: Iterable[Any], poms: Iterable[Any] | None = None) -> list[str]:
-    """리소스 / war 플러그인의 필터링 복사 실패(``MalformedInputException`` …)에서 고칠 pom 들: 오류가 이름 댄 파일의
-    모듈, ``on project <artifactId>`` 의 모듈, 없으면 필터링을 선언한 모든 pom(설정이 내려가는 부모로 올림). 해당
-    오류가 없으면 빈 목록. 예외 없음.
+    """리소스나 war 플러그인의 필터링 복사 실패에서 고쳐야 할 pom 목록을 찾는다.
+    오류에 나온 파일의 모듈, ``on project <artifactId>``의 모듈, 필터링을 선언한 모든 pom 순으로 찾는다.
+    해당 오류가 없으면 빈 목록을 반환하고, 예외를 던지지 않는다.
 
     The poms to edit for a maven-resources-plugin / maven-war-plugin filtering failure (`errors` = the loop's
     `BuildError`s; message / raw matching `REACTIVE_RE`): the module of the file the message names, else the module
@@ -432,9 +440,10 @@ def reactive_targets(ws: Any, errors: Iterable[Any], poms: Iterable[Any] | None 
 # ---------------------------------------------------------------------------------------------- plan
 def binary_resource_plan(ws: Any, cfg: Any, poms: Iterable[Any] | None = None, *,
                          errors: Iterable[Any] | None = None) -> ResourcePlan:
-    """무엇을 어느 pom 에 적을지: 필터링을 선언한 pom(또는 그 설정이 내려가는 저장소 안 부모)마다, 그 필터링 디렉토리
-    아래 바이너리 파일의 확장자 + ``build.non_filtered_extensions`` 에서 플러그인이 이미 가진 것을 뺀 것. ``errors``
-    를 주면(수정 루프) ``reactive_targets`` 의 pom 만, 오류가 이름 댄 파일의 확장자도 넣는다. 예외 없음.
+    """pom별로 기록할 제외 확장자를 계획한다.
+    필터링 폴더 아래 바이너리 파일의 확장자와 ``build.non_filtered_extensions``의 확장자 중 이미 기록된 것을 뺀다.
+    ``errors``를 주면 ``reactive_targets``가 찾은 pom만 다루고 오류에 나온 파일의 확장자도 넣는다.
+    예외를 던지지 않는다.
 
     `poms` = pom paths (or objects with `.path`; None = every pom outside `src/`). For every pom whose plugin
     configuration reaches a filtered resource: the extensions of the binary files the analyzer's scan finds under
@@ -464,7 +473,7 @@ def _plan(ws: Any, cfg: Any, poms: Iterable[Any] | None, errors: Iterable[Any] |
             continue
         files = _scan(view, p) if f.filters else []
         if owner is not None:
-            # 자식 모듈은 부모의 <resources> 를 자기 basedir 기준으로 물려받는다 → 부모 텍스트로 자식 디렉토리를 훑는다
+            # 자식 모듈은 부모의 <resources>를 자기 basedir 기준으로 상속받으므로 부모 텍스트로 자식 폴더를 검사한다
             files += _scan(view.with_text(p, facts[owner].ed.to_string()), p)
         plugins = ([RESOURCES_PLUGIN] if (f.filters_resources or owner) else []) + \
                   ([WAR_PLUGIN] if f.filters_web else [])
@@ -477,9 +486,9 @@ def _plan(ws: Any, cfg: Any, poms: Iterable[Any] | None, errors: Iterable[Any] |
         for t, rw in reactive.items():
             w = want.setdefault(t, _Want())
             if t not in facts or not (facts[t].filters or w.files):
-                # 트리 밖 부모가 필터링을 켠 모듈: 기본 src/main/resources 를 필터링되는 것으로 보고 훑는다
+                # 저장소 밖 부모가 필터링을 켠 모듈은 기본 경로 src/main/resources가 필터링된다고 보고 검사한다
                 _add_files(w, _scan(view.with_text(t, _DEFAULT_FILTERED_POM), t))
-            # 실패한 플러그인만 고친다(v1 E12 와 같음): war 실패에 resources 플러그인 목록까지 늘리지 않는다
+            # war 플러그인이 실패했을 때 resources 플러그인까지 고치지 않도록 실패한 플러그인만 대상으로 한다
             w.plugins = set(rw.plugins)
             w.files.update(rw.files)
         want = {t: w for t, w in want.items() if t in reactive}
@@ -487,7 +496,7 @@ def _plan(ws: Any, cfg: Any, poms: Iterable[Any] | None, errors: Iterable[Any] |
 
 
 def _settle(ws: Any, facts: dict[str, _Facts], want: dict[str, _Want], company: list[str]) -> ResourcePlan:
-    """원하는 것 − 이미 적힌 것 → ResourcePlan."""
+    """기록할 내용에서 이미 pom에 기록된 것을 빼고 ResourcePlan을 만든다."""
     plan = ResourcePlan()
     noext: list[str] = []
     files: set[str] = set()
@@ -498,7 +507,7 @@ def _settle(ws: Any, facts: dict[str, _Facts], want: dict[str, _Want], company: 
             continue
         wanted = {e for e in w.files.values() if _usable(e)} | set(company)
         for rel, e in w.files.items():
-            # nonFilteredFileExtensions 는 확장자로만 고른다 → 확장자 없는 바이너리는 사람이 나눠야 한다(후속 작업)
+            # nonFilteredFileExtensions는 확장자로만 파일을 고르므로 확장자 없는 바이너리 파일은 직접 처리해야 한다
             if (not e or not _EXT_RE.fullmatch(e)) and rel not in noext:
                 noext.append(rel)
         in_tree = f.tree_parent is not None or not f.has_parent
@@ -529,9 +538,9 @@ def _settle(ws: Any, facts: dict[str, _Facts], want: dict[str, _Want], company: 
 
 # ---------------------------------------------------------------------------------------------- apply
 def _add_entries(ed: PomEditor, artifact: str, exts: list[str], in_tree_parent: bool) -> None:
-    """플러그인 하나에 빠진 ``<nonFilteredFileExtension>`` 을 덧붙인다(기존 항목 유지, 플러그인 수준만). 선언이 없으면
-    버전 없이 <build><plugins> 에 만든다(부모가 버전을 관리). 새로 만드는 목록에는 ``combine.children="append"`` 를
-    단다 — 트리 밖 부모(comp-jar 등)가 이미 가진 목록을 Maven 설정 병합이 지우지 않게."""
+    """플러그인 하나에 빠진 ``<nonFilteredFileExtension>`` 항목을 추가한다.
+    플러그인 선언이 없으면 버전 없이 <build><plugins>에 새로 만든다.
+    새 목록에는 ``combine.children="append"``를 달아 저장소 밖 부모의 목록이 설정 병합 때 지워지지 않게 한다."""
     el = _chosen_plugin(ed, artifact, in_tree_parent)
     if el is None:
         ed.add_plugin(PluginInfo(group_id=DEFAULT_PLUGIN_GROUP, artifact_id=artifact,
@@ -563,8 +572,8 @@ def _add_entries(ed: PomEditor, artifact: str, exts: list[str], in_tree_parent: 
 
 
 def apply_non_filtered_extensions(ws: Any, plan: ResourcePlan, *, poms: Iterable[str] | None = None) -> list[str]:
-    """계획을 PomEditor 로 적고 실제로 바뀐 pom 목록을 돌려준다(``poms`` 를 주면 그 pom 만). 두 번째 호출은
-    아무것도 바꾸지 않는다(멱등). 예외 없음.
+    """계획을 pom에 반영하고 실제로 바뀐 pom 목록을 반환한다. ``poms``를 주면 그 pom만 고친다.
+    두 번 호출해도 결과가 같고, 예외를 던지지 않는다.
 
     Write the plan through `PomEditor` (formatting kept, never text surgery): per pom and plugin the missing
     `<nonFilteredFileExtension>` entries are appended to the plugin-level `<configuration>` of the element

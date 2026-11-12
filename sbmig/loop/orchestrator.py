@@ -1,16 +1,16 @@
-"""실행 한 번(프로젝트 하나)을 처음부터 끝까지 모는 오케스트레이터:
-접수 → 분석 → 계획 → 단계들 → 검증 빌드 → 보고서. v2.1 순서: 변환(OpenRewrite 1회) → 변환 후 컴파일(고치지
-않고 오류 목록에만, seen ``compile``) → 재구성(pom 교정마다 ``pom-verify`` 항목) → 구조 검토(LLM, critical 만
-고쳐 ``review: …`` 커밋) → 검증 빌드 ``mvn clean package`` → 실패하면 수정 루프(``loop.phases.verify``, 최대
-50 라운드) → 최종 빌드 한 번 더 → 마무리(errors.jsonl / errors.md, KB 기록, 보고서). 진입점:
-``Orchestrator.run`` — CLI·웹 UI·플릿·``sbmig.api.migrate`` 가 부르고, ``loop.engine`` (graph = LangGraph,
-inline) 둘 다 같은 ``step_*`` 메서드를 같은 ``_run_guard`` 안에서 돌린다(보고서가 같다). 불변(빌드 게이트):
-실패·차단·예산 소진·내부 오류 뒤에도 최종 ``mvn clean package`` 시도와 보고서는 반드시 남는다. 일찍 멈추는
-것(``aborted:*``, exit 3)은 아예 빌드할 수 없을 때뿐(Maven 없음, Maven 프로젝트 아님, 사내 parent 해석 불가).
-Ant 프로젝트(build.xml, pom.xml 없음)는 접수에서 ``intake.ant_message`` 안내로 거부한다(exit 3); ``intake.ant_to_maven: true`` 면
-pom.xml 을 합성·커밋한 뒤 Maven 프로젝트처럼 계속한다(v2.1j). 실행 방식(``flow``): ``full`` = 위의 이관(성공하면 설정에 따라 취약점 조치가
-이어진다), ``remediation`` = 프로젝트를 바꾸지 않는 접수(작업 공간·사전 점검·빌드 도구 확인)만 거친 뒤 올린 그대로 취약점 조치만
-(``chain.run_only``) — 분석·계획·변환·재구성·검토·검증·수정 루프·LLM·KB 없음.
+"""프로젝트 하나의 이관을 처음부터 끝까지 진행하는 오케스트레이터 모듈.
+순서: 변환(OpenRewrite 1회) -> 재구성 -> 구조 검토(critical만 고쳐 ``review: …``로
+커밋) -> 검증 빌드 ``mvn clean package`` -> 실패하면 수정 루프(최대 50 라운드) -> 최종
+빌드 -> 마무리(errors.jsonl / errors.md, KB 기록, 보고서).
+``Orchestrator.run``은 CLI, 웹 UI, 플릿, ``sbmig.api.migrate``가 호출한다.
+``loop.engine``이 graph든 inline이든 같은 ``step_*``를 같은 ``_run_guard`` 안에서 실행하므로 보고서가 같다.
+- 실패, 차단, 예산 소진, 내부 오류가 있어도 최종 ``mvn clean package``를 시도하고 보고서를 반드시 남긴다
+- 일찍 멈추는 것(``aborted:*``, exit 3)은 Maven 없음, Maven 프로젝트 아님, 사내 parent를 찾을 수 없음처럼
+  빌드 자체가 불가능할 때뿐이다
+- Ant 프로젝트는 접수에서 ``intake.ant_message``로 거부한다.
+  ``intake.ant_to_maven: true``면 pom.xml을 만들어 계속 진행한다
+- ``flow``가 ``remediation``이면 프로젝트를 바꾸지 않는 접수만 거친 뒤 취약점 조치(``chain.run_only``)만
+  실행하며, LLM과 KB는 쓰지 않는다
 
 Orchestrator: intake → analyze → plan → phases → verify → report (flow `full`), or intake (no project edits) →
 remediation → report (flow `remediation`: `sbmig.remediations.chain.run_only`, no LLM / KB). An Ant project is refused
@@ -68,7 +68,7 @@ from .notes import (answer_notes, fallback_guide, log_major_upgrades, note_line,
 
 log = logging.getLogger("sbmig.loop")
 
-# 레시피 id 를 못 찾음 = 설정·프로그래밍 오류 → 그 단계를 중단한다(빌드로 고칠 수 있는 문제가 아니다)
+# 레시피 id를 찾지 못하는 것은 설정이나 코드 오류라서 빌드로 고칠 수 없으므로 그 단계를 중단한다
 _MISSING_RECIPE_RE = re.compile(r"(?i)(recipe(?:s|\(s\))? (?:were )?not found|could not find recipe|no recipe(?:s)? (?:found|named)|"
                                 r"unknown recipe|recipe\s+\S+\s+(?:does not exist|not found))")
 _PARENT_UNRESOLVABLE_RE = re.compile(r"(?i)non-resolvable parent|parent pom|failed to read artifact descriptor")
@@ -84,7 +84,7 @@ _INFRA_REPO_RE = re.compile(r"(?i)could not transfer|failed to transfer|connecti
                             r"unknown ?host|no route to host|pkix path building failed|"
                             r"(?:status code|return code is):?\s*(?:401|403|5\d\d)\b|"
                             r"was cached in the local repository")
-# 디스크가 가득 차면 infra:disk 플래그 → 플릿은 다음 프로젝트들까지 실패시키지 않고 멈춘다
+# 디스크가 가득 차면 infra:disk 플래그를 붙여, 플릿이 다음 프로젝트까지 실패시키지 않고 멈추게 한다
 # a full disk during a build (javac / Maven / git on Windows and POSIX; "디스크 공간이 부족" = the Korean Windows text)
 _INFRA_DISK_RE = re.compile(r"(?i)no space left on device|not enough space on the disk|disk quota exceeded|"
                             r"디스크 공간이 부족|ENOSPC")
@@ -93,8 +93,8 @@ COMPILE_GOAL = "clean compile"            # transform.compile: OpenRewrite's res
 
 
 def step_stage(step: PlanStep) -> str:
-    """계획 단계의 로그 단계 태그(rewrite / compile / restructure / review / build / fix) — 로그 줄마다
-    ``[rewrite]`` 처럼 붙어 운영자가 어디서 난 줄인지 안다.
+    """계획 단계의 로그 태그(rewrite / compile / restructure / review / build / fix)를 반환한다.
+    로그 줄마다 ``[rewrite]``처럼 붙어 어느 단계의 줄인지 알 수 있다.
 
     The log stage of a plan step (§3.2): rewrite / compile / restructure / review / build / fix."""
     k = step.kind
@@ -107,12 +107,12 @@ def step_stage(step: PlanStep) -> str:
     if k == StepKind.REVIEW:
         return "review"
     return "fix" if k == StepKind.BUILD_FIX_LOOP else step.phase.value
-# 선택 아티팩트 버전 올리기는 최선 노력: 실패해도 후속 조치로만 남기고 재구성 단계를 계속한다
+# 선택 아티팩트 버전 올리기는 실패해도 후속 조치로만 남기고 재구성을 계속한다
 NON_FATAL_RESTRUCTURE_MODES = frozenset({"optional_bump"})   # a failure is noted, the phase continues
 
 
 def _first_sentence(text: str, limit: int = 160) -> str:
-    """LLM 분석의 첫 문장(공백 정리, ``limit`` 자 이하) — 인수인계 섹션 메모용.
+    """LLM 분석 문장의 첫 문장을 공백을 정리하고 ``limit``자 이하로 잘라 반환한다. 인수인계 메모에 쓴다.
 
     First sentence of an LLM analysis, whitespace-collapsed, ≤ limit chars (Handover note)."""
     t = " ".join((text or "").split())
@@ -122,15 +122,15 @@ def _first_sentence(text: str, limit: int = 160) -> str:
 
 
 class _RunAborted(Exception):
-    """내부용: 실행을 멈춘다(다음 단계도 검증 빌드도 없음). 빌드해 봐야 같은 이유로 실패할 때(Maven 없음,
-    parent 해석 불가)만 쓴다 — 그래도 보고서는 쓰인다.
+    """실행을 멈출 때 쓰는 내부 예외 클래스. 이후 단계와 검증 빌드는 실행하지 않지만 보고서는 남긴다.
+    Maven이 없거나 parent를 찾을 수 없는 것처럼, 빌드해도 같은 이유로 실패할 때만 쓴다.
 
     Internal: stop the run (no further phases, no verify) — the report is still written."""
 
 
 def parse_renames(out: str) -> dict[str, str]:
-    """``git diff --name-status -M -z`` 출력에서 이름 바꾸기(R)만 뽑아 {옛 경로: 새 경로}. 재구성이 옮긴
-    파일을 차단 등록부가 따라가게 하는 데 쓴다.
+    """``git diff --name-status -M -z`` 출력에서 이름 변경(R)만 뽑아 {이전 경로: 새 경로}로 반환한다.
+    재구성으로 옮겨진 파일을 차단 목록이 계속 알아보는 데 쓴다.
 
     `git diff --name-status -M -z` output → {old path: new path} of the renames (`R<score>` entries)."""
     toks = out.split("\0")
@@ -160,8 +160,9 @@ STOP_AFTER_PHASES = tuple(p for p in _PHASE_ORDER if p != Phase.REPORT)
 
 
 def parse_stop_after(value: Any) -> Phase | None:
-    """CLI·웹 UI·``sbmig.api.migrate`` 의 ``--stop-after`` 값을 단계로 바꾼다(대소문자 무시, ``report`` 앞
-    단계만). None / '' = 끝까지. 잘못된 값이면 받을 수 있는 값을 나열한 ValueError.
+    """``--stop-after`` 값을 단계로 바꾼다. 대소문자를 무시하고 ``report`` 앞 단계만 받는다.
+    None이나 빈 문자열이면 None을 반환해 끝까지 실행한다.
+    잘못된 값이면 받을 수 있는 값을 담은 ValueError를 던진다.
 
     `--stop-after` / `stop_after=` of the CLI, the web UI and `sbmig.api.migrate`: a phase name (case-insensitive)
     before `report`; None / '' = run everything. ValueError names the accepted values."""
@@ -178,8 +179,9 @@ def parse_stop_after(value: Any) -> Phase | None:
 
 
 def parse_flow(value: Any) -> str:
-    """실행 방식 값(``--flow`` / ``flow=``)을 ``RUN_FLOWS`` 의 하나로(대소문자·앞뒤 공백 무시). None / '' = ``full``. 모르는 값이면
-    받을 수 있는 값을 나열한 ValueError.
+    """실행 방식 값(``--flow`` / ``flow=``)을 ``RUN_FLOWS`` 중 하나로 바꾼다.
+    대소문자와 앞뒤 공백은 무시한다.
+    None이나 빈 문자열이면 ``full``을 반환하고, 모르는 값이면 받을 수 있는 값을 담은 ValueError를 던진다.
 
     The run flow (`full` | `remediation`); None / '' = `full`; ValueError names the accepted values."""
     if value is None or (isinstance(value, str) and not value.strip()):
@@ -191,8 +193,9 @@ def parse_flow(value: Any) -> str:
 
 
 def check_flow(flow: Any, stop_after: Phase | None = None, dry_run: bool = False) -> str:
-    """실행 방식과 다른 실행 옵션의 조합을 검사하고 정리된 실행 방식을 돌려준다: ``remediation`` 은 ``stop_after`` 와도
-    ``dry_run`` 과도 함께 쓸 수 없다(이관 단계가 없고, 조치는 결정만 하고 멈출 수 없다). 어기면 ValueError(사람이 읽을 문장).
+    """실행 방식과 다른 옵션의 조합을 검사하고 정리된 실행 방식을 반환한다.
+    ``remediation``은 이관 단계가 없고 중간에 멈출 수도 없으므로
+    ``stop_after``, ``dry_run``과 함께 쓰면 ValueError를 던진다.
 
     Validate the flow against the other run options (`remediation` takes neither `stop_after` nor `dry_run`)."""
     f = parse_flow(flow)
@@ -206,8 +209,8 @@ def check_flow(flow: Any, stop_after: Phase | None = None, dry_run: bool = False
 
 
 class _BudgetedLLM:
-    """호출마다 실행 예산(``LoopBudget``)에 한 번씩 매기는 LLM 클라이언트 감싸개. 구조 검토도 수정 루프와
-    같은 예산을 쓰고, 모델별 사용량은 ``sink`` 에 모여 보고서의 비용 표가 된다.
+    """호출할 때마다 실행 예산(``LoopBudget``)을 1회씩 차감하는 LLM 클라이언트 래퍼 클래스.
+    구조 검토도 수정 루프와 같은 예산을 쓰게 하며, 모델별 사용량은 ``sink``에 모아 보고서의 비용 표를 만든다.
 
     An LLM client whose calls are charged to the run's `LoopBudget` (v2: the structure review goes through the same
     budget as the fix loop; per-model usage lands in `sink` for the cost table)."""
@@ -216,7 +219,8 @@ class _BudgetedLLM:
         self._inner, self._budget, self._sink = inner, budget, sink
 
     def complete(self, *args: Any, **kwargs: Any) -> Any:
-        """LLM 호출 한 번: 먼저 예산에 1회를 매기고(실패해도 부른 것), 응답의 모델별 토큰 사용량을 모은다."""
+        """LLM을 한 번 호출한다.
+        호출 전에 예산을 1회 차감하고(실패해도 호출로 센다), 응답의 모델별 토큰 사용량을 모은다."""
         self._budget.charge_llm(1)
         res = self._inner.complete(*args, **kwargs)
         if self._sink is not None:          # per-model usage for the cost table (recipe model calls)
@@ -235,8 +239,8 @@ STRAY_POM_TAIL = ("treated as a stray copy (an IDE output / backup folder): not 
 
 
 def ant_refusal_detail(build_file: str, flow: str = FLOW_FULL) -> str:
-    """Ant 거부의 기술 내용 한 줄(후속 조치 둘째 줄·저널 ``build_tool.detail``; 한국어는 i18n ``PATTERNS``): 어느 build.xml 을 봤고 왜
-    변환하지 않는지. 사람에게 보이는 거부 문구(``intake.ant_message``)는 따로다.
+    """Ant 프로젝트를 거부한 기술적 이유를 한 줄로 만든다. 어느 build.xml을 봤고 왜 변환하지 않는지 담는다.
+    후속 조치의 둘째 줄과 저널 ``build_tool.detail``에 쓰며, 사람에게 보이는 거부 문구는 ``intake.ant_message``다.
 
     The technical detail of an Ant refusal (which build.xml, why it is not converted)."""
     why = ("the remediation flow builds the project as uploaded and needs a Maven project" if flow == FLOW_REMEDIATION
@@ -245,17 +249,19 @@ def ant_refusal_detail(build_file: str, flow: str = FLOW_FULL) -> str:
 
 
 def stray_pom_followup(st: Any) -> str:
-    """v2.1z-h: 떠도는 pom 복사본의 인수인계 한 줄(영문; 한국어는 report/i18n.py ``PATTERNS`` 가 맞춘다 — 바꾸면 함께).
+    """다른 모듈의 pom을 그대로 복사해 둔 폴더 하나에 대한 인수인계 문구를 만든다.
+    report/i18n.py ``PATTERNS``가 한국어로 바꾸므로 고칠 때 함께 고친다.
 
     The Handover line for one stray pom copy (Korean: i18n `PATTERNS`)."""
     return f"pom copy ignored: {st.why()} — {STRAY_POM_TAIL}"
 
 
 class Orchestrator:
-    """한 실행(프로젝트 하나)의 지휘자: 협력
-    객체(분석기·계획기·재구성기·OpenRewrite·Maven·트리아지·fixer·KB·LLM)를 처음 쓸 때 만들고,
-    단계(``step_*``)를 차례로 돌리고, 무슨 일이 있어도 마지막에 보고서를 쓴다. 실행 전체가 공유하는 것:
-    ``budget``(LLM·시간), ``blocked``(차단 등록부), ``errors``(오류 목록), ``loop``(수정 루프)."""
+    """프로젝트 하나의 이관 실행을 맡는 클래스.
+    분석기, 계획기, 재구성기, OpenRewrite, Maven, 트리아지, fixer, KB, LLM을 처음 쓸 때 만들고, ``step_*``
+    단계를 차례로 실행하며, 어떤 경우에도 마지막에 보고서를 남긴다.
+    실행 전체가 함께 쓰는 객체는 ``budget``(LLM, 시간 예산), ``blocked``(차단
+    목록), ``errors``(오류 목록), ``loop``(수정 루프)다."""
     def __init__(self, cfg: Config, ws: Workspace, *, analyzer: Optional[Callable] = None,
                  planner: Optional[Callable] = None,
                  restructurer: Any = None, rewrite_runner: Any = None, build_runner: Any = None,
@@ -265,9 +271,10 @@ class Orchestrator:
                  javax_inventory: Any = None, script_runner: Any = None, reviewer: Any = None,
                  error_list: Optional[Callable[..., Any]] = None, edit_applier: Optional[Callable[..., Any]] = None,
                  source: Any = None, remediation_components: Any = None):
-        """협력 객체는 모두 주입할 수 있다(테스트·사내 플러그인). None 이면 실제 구현을 처음 쓸 때 만든다.
-        커스텀 ``build_runner`` 를 주면 진짜 Maven 이 아니므로 classpath
-        귀속·effective pom 캡처는 기본으로 꺼진다(mvn 을 띄우므로).
+        """오케스트레이터를 만든다.
+        협력 객체는 모두 주입할 수 있고(테스트, 사내 플러그인), None이면 실제 구현을 처음 쓸 때 만든다.
+        ``build_runner``를 직접 주면 실제 Maven이 아니므로, mvn을 실행하는
+        classpath 분석과 effective pom 캡처는 기본으로 꺼진다.
 
         v2 collaborators: `script_runner` (ScriptRunnerLike; None = `sbmig.script.ScriptRunner(cfg)` on first use)
         and `reviewer` (a StructureReviewerLike object, or a factory `fn(cfg, llm, runner, kb)`; None =
@@ -309,7 +316,7 @@ class Orchestrator:
         self._phase_failed = False
         self._dry_run = False
         self._pending_notes: list[str] = []
-        # 차단 등록부는 실행 전체에 하나: 어느 루프에서 차단된 오류든 다른 루프·마무리가 같은 목록을 본다
+        # 차단 목록은 실행 전체에 하나만 두어, 어느 루프에서 차단한 오류든 다른 루프와 마무리 단계가 함께 본다
         self.blocked = BlockedRegistry()            # run-wide: shared by every BuildFixLoop of this run
         # a custom build runner means we are not driving the real Maven → no classpath attribution / effective-pom
         # capture by default (they would spawn mvn); pass `locator` / `effective_capture` explicitly to enable them
@@ -330,21 +337,22 @@ class Orchestrator:
     # ------------------------------------------------------------------ lazy collaborators
     @property
     def analyzer(self) -> Callable:
-        """분석기(``sbmig.analyze.analyze_project``) — 처음 쓸 때 불러온다."""
+        """분석기(``sbmig.analyze.analyze_project``)를 반환한다. 처음 쓸 때 import한다."""
         if self._analyzer is None:
             self._analyzer = lazy_attr("sbmig.analyze", "analyze_project", "A (analyze)")
         return self._analyzer
 
     @property
     def planner(self) -> Callable:
-        """계획기(``sbmig.plan.build_plan``) — 처음 쓸 때 불러온다."""
+        """계획기(``sbmig.plan.build_plan``)를 반환한다. 처음 쓸 때 import한다."""
         if self._planner is None:
             self._planner = lazy_attr("sbmig.plan", "build_plan", "A (plan)")
         return self._planner
 
     @property
     def script_runner(self) -> Any:
-        """수정 루프와 구조 검토가 함께 쓰는 스크립트 실행기(``sbmig.script``, 처음 쓸 때 만든다).
+        """수정 루프와 구조 검토가 함께 쓰는 스크립트 실행기(``sbmig.script``)를 반환한다.
+        처음 쓸 때 만든다.
 
         v2: the fix-script runner shared by the fix loop and the structure review (lazy `sbmig.script`)."""
         if self._script_runner is None:
@@ -354,14 +362,14 @@ class Orchestrator:
 
     @property
     def restructurer(self) -> Any:
-        """재구성기(``sbmig.restructure.Restructurer``, 회사 레이아웃)."""
+        """프로젝트를 회사 레이아웃으로 재구성하는 객체(``sbmig.restructure.Restructurer``)."""
         if self._restructurer is None:
             self._restructurer = lazy_attr("sbmig.restructure", "Restructurer", "B (restructure)")()
         return self._restructurer
 
     @property
     def rewrite_runner(self) -> Any:
-        """OpenRewrite 실행기(``sbmig.rewrite.OpenRewriteRunner``)."""
+        """OpenRewrite를 실행하는 객체(``sbmig.rewrite.OpenRewriteRunner``)."""
         if self._rewrite_runner is None:
             cls = lazy_attr("sbmig.rewrite", "OpenRewriteRunner", "C (rewrite)")
             self._rewrite_runner = cls(self.ws, self.cfg, self.kb)
@@ -376,7 +384,7 @@ class Orchestrator:
 
     @property
     def triager(self) -> Any:
-        """트리아지(오류 → 케이스 묶기, 사다리 단계·차단 정책 결정, ``sbmig.triage.Triager``)."""
+        """오류를 케이스로 묶고 처리 단계와 차단 정책을 정하는 트리아지(``sbmig.triage.Triager``)를 반환한다."""
         if self._triager is None:
             from sbmig.triage import Triager
             self._triager = Triager(self.cfg)
@@ -384,8 +392,9 @@ class Orchestrator:
 
     @property
     def kb(self) -> Any:
-        """파일 지식베이스(``sbmig.kb.FileKnowledgeBase``). 불러올 수 없으면 경고 한 줄 +
-        ``NullKnowledgeBase`` — KB 가 없다고 실행이 멈추지는 않는다(재사용만 없을 뿐)."""
+        """파일 KB(``sbmig.kb.FileKnowledgeBase``)를 반환한다.
+        import할 수 없으면 경고 한 줄을 남기고 ``NullKnowledgeBase``를 쓴다.
+        KB가 없어도 실행은 계속되고 스크립트 재사용만 하지 않는다."""
         if self._kb is None:
             try:
                 self._kb = lazy_attr("sbmig.kb", "FileKnowledgeBase", "F (kb)")(self.cfg)
@@ -396,15 +405,17 @@ class Orchestrator:
         return self._kb
 
     def llm_client(self) -> Any:
-        """LLM 클라이언트(``sbmig.fix.make_llm_client``, 기본은 회사 게이트웨이). 키는 환경변수에서만 온다."""
+        """LLM 클라이언트(``sbmig.fix.make_llm_client``, 기본은 회사 게이트웨이)를 반환한다.
+        API 키는 환경변수에서만 읽는다."""
         if self._llm is None:
             self._llm = lazy_attr("sbmig.fix", "make_llm_client", "D (fix)")(self.cfg)
         return self._llm
 
     @property
     def fixer(self) -> Any:
-        """수정 스크립트를 쓰는 fixer(``LazyFixer`` 로 감싸 첫 요청 때 만든다). ``fix.plugin`` 이 있으면
-        tier 2 사내 코딩 에이전트(``resolve_fixer_plugin``), 없으면 ``sbmig.fix.LLMFixer``."""
+        """수정 스크립트를 만드는 fixer를 반환한다. ``LazyFixer``로 감싸 첫 요청 때 실제 객체를 만든다.
+        ``fix.plugin``이 있으면 사내 코딩 에이전트 플러그인(``resolve_fixer_plugin``)을, 없으면
+        ``sbmig.fix.LLMFixer``를 쓴다."""
         if self._fixer is None:
             def make() -> Any:
                 spec = getattr(getattr(self.cfg, "fix", None), "plugin", None)
@@ -429,10 +440,11 @@ class Orchestrator:
 
     # ------------------------------------------------------------------ run
     def run(self, stop_after: Phase | None = None, dry_run: bool = False, flow: str = FLOW_FULL) -> RunReport:
-        """마이그레이션 한 번. ``loop.engine`` 이 단계를 모는 엔진을 고른다: ``graph``(기본, LangGraph
-        ``StateGraph``) 또는 ``inline``. 둘 다 같은 ``step_*`` 를 같은 보호막(``_run_guard``) 안에서 부르므로
-        보고서·저널·종료 코드가 같다. ``flow="remediation"`` 이면 이관 없이 접수(프로젝트를 바꾸지 않는 부분) → 취약점 조치 → 보고서
-        (``stop_after`` / ``dry_run`` 과 함께 쓰면 ValueError — ``check_flow``).
+        """이관을 한 번 실행한다.
+        엔진은 ``loop.engine``으로 고르며 ``graph``(기본, LangGraph ``StateGraph``)나 ``inline``이다.
+        두 엔진 모두 같은 ``step_*``를 같은 ``_run_guard`` 안에서 호출하므로 보고서, 저널, 종료 코드가 같다.
+        ``flow="remediation"``이면 이관 없이 접수 -> 취약점 조치 -> 보고서 순서로 실행하며, ``stop_after`` /
+        ``dry_run``과 함께 쓰면 ValueError를 던진다(``check_flow``).
 
         One migration run. `loop.engine` picks the driver of the steps: ``graph`` (default, LangGraph
         `StateGraph`, `sbmig.graph`) or ``inline`` (`_run`). Both call the same `step_*` methods inside the same
@@ -453,28 +465,30 @@ class Orchestrator:
 
     @property
     def flow(self) -> str:
-        """지금(또는 마지막) 실행의 실행 방식(``full`` | ``remediation``).
+        """현재 또는 마지막 실행의 실행 방식(``full`` | ``remediation``)을 반환한다.
 
         The flow of the current (or last) run."""
         return self._flow
 
     @property
     def engine(self) -> str:
-        """``loop.engine`` 값(graph | inline, 비어 있으면 inline)."""
+        """``loop.engine`` 값(graph | inline). 비어 있으면 inline이다."""
         return getattr(getattr(self.cfg, "loop", None), "engine", "inline") or "inline"
 
     @property
     def running(self) -> bool:
-        """실행 중인가(``_run_guard`` 가 열려 있고 ``self.report`` 가 그 실행의 보고서).
+        """실행 중인지 반환한다. 실행 중이면 ``self.report``가 그 실행의 보고서다.
 
         True while a `_run_guard` is open (a run is in progress and `self.report` is its report)."""
         return self._running
 
     @contextmanager
     def _run_guard(self, dry_run: bool = False, flow: str = FLOW_FULL) -> Iterator[RunReport]:
-        """실행을 열고(새 RunReport) 반드시 닫는다: ``_RunAborted`` 는 조용히 끝, 빠진 협력 패키지나 그 밖의
-        예외는 중단으로 기록하고 그래도 최종 빌드를 시도한다(빌드 게이트), 그리고 무슨 일이 있어도
-        ``_finalize``(보고서·KB 기록·산출물). 버그 하나 때문에 보고서를 잃지 않으려는 장치다.
+        """실행을 시작하고(새 RunReport) 어떤 경우에도 정상적으로 마무리한다.
+        버그 하나 때문에 보고서를 잃지 않기 위해서다.
+        - ``_RunAborted``는 조용히 끝낸다
+        - 필요한 패키지가 없거나 그 밖의 예외가 나면 중단으로 기록하되 최종 빌드는 시도한다
+        - 어떤 경우에도 ``_finalize``(보고서, KB 기록, 산출물)를 실행한다
 
         Start a run (fresh `RunReport` on `self.report`) and always finish it: `_RunAborted` ends the run
         quietly, a `MissingComponentError` or any other exception is recorded as an abort (never lose the report
@@ -507,7 +521,7 @@ class Orchestrator:
         if dry_run:
             report.flags.append("dry-run")
         if self._flow == FLOW_REMEDIATION:
-            # 취약점 조치만 하는 실행: 이 실행의 첫 저널 줄(웹이 화면의 단계 줄을 고른다). full 실행의 저널은 예전 그대로
+            # 취약점 조치만 하는 실행은 첫 저널 줄에 실행 방식을 남겨, 웹 화면이 그에 맞는 단계 표시를 고르게 한다
             report.flow = self._flow
             self.ws.journal({"event": "flow", "flow": self._flow})
         try:
@@ -533,9 +547,10 @@ class Orchestrator:
                 self._run_hook("teardown", report)                 # v2.1z-s: after the report, whatever happened
 
     def _run_hook(self, which: str, report: RunReport) -> bool:
-        """v2.1z-s: ``build.setup_command`` / ``build.teardown_command`` — 실행마다 한 번 도는 argv(셸 없음). 환경에 ``SBMIG_RUN_ID``,
-        ``SBMIG_RUN_DIR``, ``SBMIG_PROJECT_DIR`` 를 더해 준다. setup 실패(0 아닌 종료·타임아웃·실행 불가)는 ``_abort`` 뒤 False(빌더 없이는 아무것도
-        빌드할 수 없다); teardown 실패는 WARNING 만. 명령이 비어 있으면 True. 저널 ``build_hook`` (which, rc, seconds).
+        """``build.setup_command`` / ``build.teardown_command``를 실행마다 한 번, 셸 없이 실행한다. 환경변수에
+        ``SBMIG_RUN_ID``, ``SBMIG_RUN_DIR``, ``SBMIG_PROJECT_DIR``를 더하고 저널 ``build_hook``을 남긴다.
+        setup이 실패하면 빌드할 수 없으므로 실행을 중단(``_abort``)하고 False를 반환한다.
+        teardown 실패는 WARNING만 남기고, 명령이 비어 있으면 True를 반환한다.
 
         Run the per-run hook `which` ("setup" | "teardown") once: argv from `build.<which>_command` with SBMIG_RUN_ID /
         SBMIG_RUN_DIR / SBMIG_PROJECT_DIR in the environment; a failing setup aborts the run (False), a failing teardown only
@@ -571,8 +586,8 @@ class Orchestrator:
         return True
 
     def _verify_steps(self) -> list[PlanStep]:
-        """이 실행의 최종 빌드 단계들(aggregator 없는 MSA 는 서비스마다 하나). 계획에 없고
-        ``loop.always_final_verify`` 면 ``verify.build`` 하나.
+        """이 실행의 최종 빌드 단계 목록을 반환한다. 루트 aggregator가 없는 MSA는 서비스마다 하나씩이다.
+        계획에 빌드 단계가 없어도 ``loop.always_final_verify``가 켜져 있으면 ``verify.build`` 하나를 반환한다.
 
         The run's final-build steps (MSA without an aggregator: one per service); `verify.build` when the plan had
         none and `loop.always_final_verify` is set (as `step_plan` appends it)."""
@@ -587,10 +602,10 @@ class Orchestrator:
         return [s for s in self._verify_steps() if s.id not in self._verify_done]
 
     def _final_build_after_abort(self, report: RunReport) -> None:
-        """불변조건 1(빌드 게이트): 계획 뒤 내부 오류·빠진 패키지로 죽은 실행도 최종 ``mvn clean package``
-        를 시도해, 남겨진 트리의 진짜 미해결 오류가 report.md 에 실리게 한다. 수정 루프는 돌리지 않는다(방금
-        죽은 것 위에 또 고치지 않음). 일부러 멈춘 실행(Maven 없음,
-        parent 불가)은 빌드하지 않는다 — 같은 이유로 실패할 뿐이므로.
+        """계획 뒤 내부 오류나 빠진 패키지로 중단된 실행도 최종 ``mvn clean package``를 시도해, 남은 트리의
+        실제 미해결 오류를 report.md에 남긴다.
+        수정 루프는 실행하지 않는다. Maven이 없거나 parent를 찾을 수 없어 일부러 멈춘 실행은 빌드해도 같은
+        이유로 실패하므로 빌드하지 않는다.
 
         Invariant 1 (build gate): a run that died of an internal error / missing component after planning still
         ends with the final `mvn clean package` attempt, so report.md lists the real unresolved errors of the tree
@@ -621,9 +636,10 @@ class Orchestrator:
                          "blocked": [], "after_abort": True})
 
     def build_succeeded(self, report: RunReport) -> bool:
-        """이관의 성공 판정(``report.success`` 의 정의): 계획된 최종 빌드가 전부 돌았고 전부 성공, 재구성 실패·속 빈 리액터·중단 없음.
-        ``_finalize`` 와 그래프의 ``remediation`` 노드(``_finalize`` 보다 먼저 돈다)가 같은 판정을 쓴다 — 루프의 플래그도 본다
-        (``_finalize`` 가 보고서에 옮기기 전이어도 같은 답이 나오게).
+        """이관이 성공했는지 판단한다(``report.success``의 정의).
+        계획한 최종 빌드가 모두 실행되어 성공했고, 재구성 실패, 소스 없는 reactor, 중단이 없어야 성공이다.
+        ``_finalize``와 그래프의 ``remediation`` 노드가 같은 판단을 쓴다.
+        그 노드는 ``_finalize``보다 먼저 실행되므로 수정 루프의 플래그도 함께 본다.
 
         The migration's success predicate (`report.success`): every planned final build ran and passed, no
         restructure failure, no hollow reactor, not aborted. Shared by `_finalize` and the graph's `remediation` node."""
@@ -633,7 +649,8 @@ class Orchestrator:
             and not _aborted(flags) and not self._verify_missing()
 
     def _abort(self, report: RunReport, why: str) -> None:
-        """실행 중단 기록: ``aborted`` 플래그, 후속 조치, ERROR 한 줄(운영자가 찾는 줄), 저널."""
+        """실행 중단을 기록한다.
+        ``aborted`` 플래그, 후속 조치, 운영자가 찾는 ERROR 로그 한 줄, 저널을 남긴다."""
         if "aborted" not in report.flags:
             report.flags.append("aborted")
         report.manual_followups.append(f"run aborted: {why}")
@@ -655,7 +672,7 @@ class Orchestrator:
         self.report.timings_s[key] = round(self.report.timings_s.get(key, 0.0) + self.clock() - t0, 3)
 
     def _run(self, report: RunReport, stop_after: Phase | None, dry_run: bool) -> None:
-        """inline 엔진(``loop.engine: inline``): LangGraph 없이 같은 단계 순서를 그대로 돈다.
+        """LangGraph 없이 같은 단계 순서로 실행하는 inline 엔진(``loop.engine: inline``)이다.
 
         The inline engine (`loop.engine: inline`): the step sequence without LangGraph."""
         if not self.step_intake(report, stop_after):
@@ -675,8 +692,9 @@ class Orchestrator:
         self._note_inline_remediation(report, stop_after, dry_run)
 
     def _run_remediation_flow(self, report: RunReport) -> None:
-        """inline 엔진의 실행 방식 ``remediation``: 접수(프로젝트를 바꾸지 않는 부분) → 취약점 조치. 그래프 엔진의 노드 intake →
-        remediation → finalize 와 같은 단계다(보고서는 ``_run_guard`` 의 마무리가 쓴다).
+        """inline 엔진에서 ``remediation`` 실행 방식을 처리한다.
+        프로젝트를 바꾸지 않는 접수 -> 취약점 조치 순서로 실행한다.
+        그래프 엔진의 intake -> remediation -> finalize 노드와 같으며, 보고서는 ``_run_guard``의 마무리 단계가 쓴다.
 
         The inline engine's `remediation` flow: intake (no project edits) → remediation."""
         if not self.step_intake(report, None):
@@ -686,8 +704,8 @@ class Orchestrator:
         self.step_remediation(report)
 
     def _note_inline_remediation(self, report: RunReport, stop_after: Phase | None, dry_run: bool) -> None:
-        # 2026-11-11: 취약점 조치는 그래프 엔진의 remediation 노드에서만 이어서 돈다. inline 엔진은 잇지 않고, 스위치가 켜져 있고
-        # 그래프였다면 돌았을 실행(빌드 성공·끝까지)에만 그 사실을 한 줄 남긴다 — 스위치가 꺼진 실행에는 아무 줄도 없다
+        # 이관 뒤 취약점 조치는 그래프 엔진의 remediation 노드에서만 이어서 실행한다
+        # inline 엔진은 스위치가 켜져 있고 그래프였다면 실행됐을 경우에만 건너뛴 사실을 한 줄 남긴다
         rem = getattr(self.cfg, "remediation", None)
         if rem is None or not bool(getattr(rem, "after_migration", False)):
             return
@@ -701,8 +719,8 @@ class Orchestrator:
         log.info("vulnerability remediation not chained: loop.engine is inline (the graph engine chains it)")
 
     def _stop_file_abort(self, report: RunReport, before: str) -> bool:
-        """2026-11-05 (k8s Job 모드): 실행 폴더의 ``stop.request`` 를 노드 사이에서 본다 — 그래프 엔진의 ``user_stop`` 과 같은 뜻
-        (보고서를 aborted 로 표시, 최종 빌드 없음). 있으면 True."""
+        """노드 사이에서 실행 폴더에 ``stop.request`` 파일이 있는지 확인하고, 있으면 True를 반환한다.
+        그래프 엔진의 ``user_stop``과 같이 보고서를 aborted로 표시하며, 최종 빌드는 하지 않는다."""
         fn = getattr(self.ws, "stop_requested", None)
         if not callable(fn) or not fn():
             return False
@@ -715,8 +733,9 @@ class Orchestrator:
 
     # ------------------------------------------------------------------ steps (shared by both engines)
     def step_intake(self, report: RunReport, stop_after: Phase | None) -> bool:
-        """1. 접수: git 스냅샷, 사전 점검(Maven·JDK 21·parent 설정), Maven 프로젝트인지(v2.1j: Ant 면 pom.xml 합성),
-        aggregator 생성, as-is effective dependencyManagement 캡처. False = 멈춤 또는 중단.
+        """접수 단계를 실행한다. git 스냅샷, 사전 점검(Maven, JDK 21, parent 설정), Maven 프로젝트 확인,
+        aggregator 생성, as-is effective dependencyManagement 캡처를 한다.
+        여기서 멈추거나 중단하면 False를 반환한다.
 
         1. intake: git snapshot, preflight, build tool (v2.1j: an Ant project gets a synthesized pom.xml), effective
         dependencyManagement. False = stop or abort."""
@@ -728,16 +747,16 @@ class Orchestrator:
             return self._step_intake(report, stop_after, edits=self._flow != FLOW_REMEDIATION)
 
     def _step_intake(self, report: RunReport, stop_after: Phase | None, *, edits: bool = True) -> bool:
-        """접수 본체. ``edits=False`` (실행 방식 remediation): 프로젝트를 바꾸는 것은 하나도 하지 않는다 — git 스냅샷, pom 합성,
-        aggregator 생성, reactor 중복 정리, 배포 확장 제거, 부모 확장 표식 정리, effective-pom 캡처를 건너뛰고 설정 경고·사전 점검
-        (Maven·JDK)·빌드 도구 확인(Gradle / 빌드 파일 없음 / Ant 거부)만 한다.
+        """접수 단계의 실제 처리를 한다.
+        ``edits=False``(실행 방식 remediation)면 프로젝트를 바꾸는 작업은 모두 건너뛰고 설정 경고, 사전
+        점검(Maven, JDK), 빌드 도구 확인만 한다.
 
         The intake body; `edits=False` (flow remediation) runs only the config warnings, the preflight and the build-tool
         check (with its refusals) — nothing that writes into the project or calls Maven on it."""
         t = self.clock()
         if edits:
             self.ws.git_init()
-        # 2026-11-05: 설정 경고(중복 블록·모르는 키·없어진 키)는 설정을 읽을 때 콘솔에만 찍혔다 — 실행 로그가 붙은 지금 다시 적는다
+        # 설정 경고는 설정을 읽는 시점에 콘솔로만 나가므로 실행 로그에 한 번 더 남긴다
         for line in getattr(self.cfg, "_config_warnings", None) or []:
             log.warning("%s", line)
         setter = getattr(self.ws, "set_encoding_candidates", None)
@@ -769,11 +788,12 @@ class Orchestrator:
         return not self._stop(stop_after, Phase.INTAKE)
 
     def _intake_parent_extensions(self, report: RunReport) -> None:
-        """2026-11-05 회사 실행: 이관 대상 사내 부모(base-parent 4.0.0)가 ``<build><extensions>`` 에 wagon-webdav 를 선언한다 — 상속되는
-        확장은 자식에서 뺄 수 없고 Maven 은 goal 전에(OpenRewrite 포함) 그것을 받아야 한다. 첫 Maven 호출 전에 체인의 확장마다
-        읽히는지 보고(``check_parent_build_extensions``), 저장소는 주는데 로컬에 묵은 ``*.lastUpdated`` 만 있으면 그 표식을 지우고,
-        어디서도 못 읽으면 WARNING + 플래그 ``parent-extension-unresolvable`` + 인수인계 한 줄. 저널 ``parent_build_extensions``.
-        예외로 실행을 멈추지 않는다.
+        """첫 Maven 호출 전에 부모 pom 체인의 ``<build><extensions>``를 받을 수 있는지
+        확인한다(``check_parent_build_extensions``). 실패해도 실행을 멈추지 않는다.
+        상속된 확장은 자식 pom에서 뺄 수 없고, Maven은 OpenRewrite를 포함한 모든 goal 전에 이를 받아야 하기 때문이다.
+        - 저장소에는 있는데 로컬에 오래된 ``*.lastUpdated`` 표식만 있으면 그 표식을 지운다
+        - 어디서도 받을 수 없으면 WARNING, 플래그 ``parent-extension-unresolvable``, 인수인계 한 줄, 저널
+          ``parent_build_extensions``를 남긴다
 
         Pre-check the configured parent chain's build extensions before the first Maven call: stale markers of a
         repository-served extension are cleared; an extension nobody serves is a WARNING, the flag
@@ -791,7 +811,8 @@ class Orchestrator:
                     else:
                         log.info("접수: 사내 부모 체인의 빌드 확장 %s — 읽힘 (%s)", c.coordinates, c.where)
                     if c.where.startswith("repository http"):
-                        # 2026-11-06 회사 실행: sbmig 는 build.repository_url(그룹)에서 읽었는데 Maven 은 settings 미러의 다른 저장소에 물어 404
+                        # sbmig는 build.repository_url에서 읽어도 Maven은 settings
+                        # 미러의 다른 저장소에서 받으므로 404가 날 수 있다
                         log.info("접수: Maven 은 이 URL 이 아니라 settings.xml 의 미러 URL 로 받는다 — 둘이 다른 저장소면 sbmig 는 읽어도 Maven 은 "
                                  "'Unresolveable build extension' 으로 실패할 수 있다(그 미러가 가리키는 저장소에 %s 가 있어야 한다)", c.coordinates)
                     continue
@@ -812,10 +833,10 @@ class Orchestrator:
             log.warning("parent build extension pre-check failed: %s: %s", type(e).__name__, e)
 
     def _check_build_tool(self, report: RunReport, *, edits: bool = True) -> bool:
-        """회사 결정: Maven 프로젝트만 받는다. Gradle / 빌드 없음은 Maven 을 부르기 전에 중단(exit 3). Ant(build.xml 만 있고
-        pom.xml 없음)는 ``intake.ant_message`` 안내로 거부한다(``_refuse_ant``, 2026-11-12 회사 결정) — ``intake.ant_to_maven`` 이
-        켜져 있고 프로젝트를 바꿔도 되는 실행(``edits``, 실행 방식 full)일 때만 pom.xml 을 합성·커밋하고 Maven 처럼 계속한다
-        (``_synthesize_ant_pom``, v2.1j); 합성이 실패하면 그 이유로 거부.
+        """Maven 프로젝트인지 확인한다.
+        Gradle이거나 빌드 파일이 없으면 Maven을 호출하기 전에 중단한다(exit 3).
+        Ant 프로젝트는 ``intake.ant_message``로 거부한다(``_refuse_ant``). ``intake.ant_to_maven``이 켜져 있고
+        프로젝트를 바꿀 수 있는 실행이면 pom.xml을 만들어 계속 진행하고, 만들지 못하면 그 이유로 거부한다.
 
         Only Maven projects; Gradle / no build abort before any Maven call. An Ant project is refused with
         `intake.ant_message` (`_refuse_ant`); with `intake.ant_to_maven` on (and a flow that may edit the project) it gets a
@@ -840,9 +861,10 @@ class Orchestrator:
         return True
 
     def _refuse_ant(self, report: RunReport, det: Any) -> bool:
-        """Ant 프로젝트 거부(회사 결정): 사람에게 보이는 중단 사유는 ``intake.ant_message`` 그대로(ERROR 줄·보고서 첫 줄·저널 ``abort``
-        — 웹 화면이 이것을 보여 준다). 어느 build.xml 을 봤는지 같은 기술 내용은 그 다음 줄(INFO 로그·후속 조치 둘째 줄)과 저널
-        ``build_tool`` 의 ``detail`` 에만 둔다. 플래그 ``unsupported-build-tool:ant``, exit 3. 파일은 쓰지 않는다.
+        """Ant 프로젝트를 거부한다.
+        플래그 ``unsupported-build-tool:ant``를 붙이고 exit 3으로 끝나며, 파일은 쓰지 않는다.
+        화면에 보이는 중단 사유는 ``intake.ant_message`` 그대로이고, 어느 build.xml을 봤는지 같은 기술
+        내용은 다음 줄과 저널 ``build_tool``의 ``detail``에만 남긴다.
 
         Refuse an Ant project: the abort reason is exactly `intake.ant_message`; the technical detail (which build.xml)
         is a second follow-up line, an INFO line and the journal's `build_tool.detail`."""
@@ -860,11 +882,11 @@ class Orchestrator:
         return False
 
     def _synthesize_ant_pom(self, report: RunReport, det: Any) -> bool:
-        """v2.1j 현업 요청("Ant 프로젝트도 Maven 으로 변경 후 마이그레이션"): build.xml + 폴더 구조로 pom.xml 을 쓰고
-        (``sbmig.analyze.ant.synthesize_pom``, 파일만 씀) 여기서 ``intake: pom.xml synthesized from build.xml`` 로
-        커밋한다. 순서가 중요하다: as-is 스냅샷(``git_init``) 뒤라서 changes.patch 에 pom.xml 이 "추가" 로 보이고,
-        effective-pom 캡처(``_capture_effective``, pom 필요) 앞이다. 실패(모듈 없음·예외·``ok=False``)는 예전 거부와
-        같다: ``unsupported-build-tool:ant`` + 중단(exit 3) — 플릿은 그것을 건너뜀으로 센다.
+        """build.xml과 폴더 구조로 pom.xml을 만들고(``sbmig.analyze.ant.synthesize_pom``)
+        ``intake: pom.xml synthesized from build.xml``로 커밋한다.
+        as-is 스냅샷(``git_init``) 뒤, effective-pom 캡처 앞에 실행해야 한다.
+        그래야 changes.patch에 pom.xml이 추가된 파일로 보이고, 캡처가 pom을 쓸 수 있다.
+        만들지 못하면 ``unsupported-build-tool:ant``로 중단한다(exit 3).
 
         v2.1j: write pom.xml from build.xml (`synthesize_pom` writes the file only), commit it, flag `pom-synthesized`
         (+ `jar-coordinates-unknown` when unknown jars were declared / left out), keep the result on
@@ -898,7 +920,8 @@ class Orchestrator:
         if res.unknown_jars:
             self._flag("jar-coordinates-unknown")
         counts = res.counts
-        # 운영자가 화면에서 옮겨 적는 한 줄(한국어) — jar 출처별 수. manifest 는 메모일 뿐이라 미상으로 센다
+        # 운영자가 화면에서 옮겨 적는 한 줄이다.
+        # jar 출처별 개수를 보이며, manifest는 참고용이라 미상으로 센다
         log.info("접수: Ant build.xml → pom.xml 합성 (jar %d개: pom.properties %d · 이름표 %d · 조회 %d · 미상 %d)",
                  len(res.jars), counts.get("pom_properties", 0), counts.get("name_table", 0),
                  counts.get("sha1_lookup", 0), counts.get("unknown", 0) + counts.get("manifest", 0))
@@ -909,8 +932,8 @@ class Orchestrator:
         return True
 
     def _reject_ant(self, report: RunReport, why: str) -> bool:
-        """합성이 실패한 Ant 프로젝트를 그 이유로 거부(``ant_to_maven`` 이 켜졌을 때): ``unsupported-build-tool:ant`` + 중단 사유 + 저널
-        ``build_tool`` (ok False).
+        """pom.xml 생성에 실패한 Ant 프로젝트를 그 이유로 거부한다.
+        플래그 ``unsupported-build-tool:ant``, 중단 사유, 저널 ``build_tool``(ok False)을 남긴다.
 
         Refuse an Ant project whose pom synthesis failed (switch on), naming why."""
         report.flags.append("unsupported-build-tool:ant")
@@ -919,10 +942,11 @@ class Orchestrator:
         return False
 
     def _intake_layout(self, report: RunReport) -> bool:
-        """루트 pom 없이 서로 의존하는 형제 pom 들(회사 사례 APP/BATCH, APP/WEB)에는 루트 aggregator pom 을
-        만들어 한 reactor 로 빌드하게 한다. 모듈이 트리에 없는 EAR 루트는 거부한다 — EAR 은 코드가 없고, 그
-        WAR 의존성이 back 모듈로 가면 안 된다. v2.1k: 끝으로(aggregator 를 만들었으면 그 뒤에) reactor 에 두 번
-        닿는 모듈의 중복 ``<module>`` 을 지운다(``_intake_reactor_dedupe``) — effective-pom 캡처 앞, Maven 호출 전.
+        """루트 pom 없이 서로 의존하는 형제 pom이 있으면 루트 aggregator pom을 만들어 한 reactor로 빌드하게 한다.
+        모듈이 트리에 없는 EAR 루트는 거부한다.
+        EAR에는 코드가 없고, 그 WAR 의존성이 back 모듈로 들어가면 안 되기 때문이다.
+        마지막으로 reactor에 두 번 포함된 모듈의 중복 ``<module>``을 지운다(``_intake_reactor_dedupe``).
+        모두 effective-pom 캡처와 Maven 호출보다 먼저 실행한다.
 
         2026-10-23 (company case: APP/BATCH, APP/WEB, APP/EAR with no root pom): sibling poms that depend on each
         other get a generated root aggregator pom (`layout.generate_aggregator`), so they build in one reactor and the
@@ -948,11 +972,11 @@ class Orchestrator:
         return True
 
     def _intake_build_extensions(self, report: RunReport) -> None:
-        """2026-11-05 회사 실행: ``<build><extensions>`` 의 ``org.apache.maven.wagon:wagon-webdav:1.0-beta-2`` 를 저장소가 더는
-        주지 않아 Maven 이 모델 단계에서 ``Unresolveable build extension`` 으로 멈췄다 — OpenRewrite 도 빌드도 돌지 않았다.
-        배포 전송 확장은 패키징에 필요 없으므로(``knowledge/libraries/build_extensions.yml``) 첫 Maven 호출 전에 모든 pom 에서
-        지우고 ``intake: deploy transport extension(s) removed (…)`` 로 커밋, 플래그 ``deploy-extensions-removed``, 저널
-        ``build_extensions``, 인수인계 한 줄씩. 목록에 없는 확장은 기록만. 예외로 실행을 멈추지 않는다.
+        """배포 전송에만 쓰는 build extension을 첫 Maven 호출 전에 모든 pom에서 지운다.
+        패키징에는 필요 없고, 저장소에 없으면 Maven이 ``Unresolveable build extension``으로 멈추기 때문이다.
+        대상은 ``knowledge/libraries/build_extensions.yml``에 있는 것이다. 지우면 커밋하고 플래그
+        ``deploy-extensions-removed``, 저널 ``build_extensions``, 인수인계 줄을 남긴다. 목록에 없는 확장은 기록만 한다.
+        실패해도 실행을 멈추지 않는다.
 
         Remove the deploy-transport build extensions (knowledge list) from every pom before the first Maven call: commit,
         flag `deploy-extensions-removed`, journal `build_extensions`, one Handover line each; unlisted extensions are only
@@ -978,11 +1002,10 @@ class Orchestrator:
             log.warning("build extension check failed: %s: %s", type(e).__name__, e)
 
     def _intake_stray_poms(self, report: RunReport) -> None:
-        """v2.1z-h 회사 사례(2026-11-03): 입력 zip 의 ``boot/bin/`` 에 boot 모듈의 통째 복사본(src, .project, pom.xml — 같은
-        좌표)이 있었고, pom 탐색이 그것을 독립 pom 으로 읽자 구조 검토 LLM 이 "등록 안 된 모듈" 로 보고 루트 ``<modules>`` 에
-        넣었다 → Maven "is duplicated in the reactor" → ``reactor_duplicate`` 로 LLM 없이 차단. 여기서 떠도는 복사본
-        (``find_stray_pom_copies``)을 찾아 ``ws.ignored_dirs`` 에 넣고(모든 스캔이 target/ 처럼 가지치기), 플래그
-        ``stray-pom-ignored``, 저널 ``stray_pom_ignored``, 인수인계 한 줄씩. 파일은 건드리지 않는다(커밋 없음). 예외 없음.
+        """다른 pom과 좌표가 같은, IDE 출력이나 백업 폴더에 복제된 pom(``find_stray_pom_copies``)을 찾아
+        ``ws.ignored_dirs``에 넣는다. 구조 검토가 이를 모듈로 등록하면 reactor 중복으로 빌드가 막히기 때문이다.
+        플래그 ``stray-pom-ignored``, 저널 ``stray_pom_ignored``, 인수인계 줄을 남긴다.
+        파일은 바꾸지 않고 예외를 던지지 않는다.
 
         Stray pom copies (`sbmig.analyze.pom_parser.find_stray_pom_copies`): their directories go into
         `ws.ignored_dirs` (every scan prunes them like build output), flag `stray-pom-ignored`, journal
@@ -1003,7 +1026,7 @@ class Orchestrator:
             line = stray_pom_followup(st)
             if line not in report.manual_followups:
                 report.manual_followups.append(line)
-        # 운영자가 화면에서 옮겨 적는 한 줄(한국어)
+        # 운영자가 화면에서 옮겨 적는 한국어 한 줄
         log.info("접수: pom 복사본 %d개 무시 — %s", len(strays),
                  "; ".join(f"{st.path} (= {st.duplicate_of}, {st.coordinates})" for st in strays))
         self.ws.journal({"event": "stray_pom_ignored", "poms": [st.path for st in strays],
@@ -1011,8 +1034,8 @@ class Orchestrator:
                          "coordinates": [st.coordinates for st in strays], "dirs": sorted(st.dir for st in strays)})
 
     def _intake_aggregator(self, report: RunReport) -> None:
-        """루트 pom 이 없고 형제 pom 들이 서로 의존하면 루트 aggregator pom 을 쓰고 커밋한다(``plan_aggregator``).
-        쓰기에 실패해도 실행은 계속한다(후속 조치 한 줄)."""
+        """루트 pom이 없고 형제 pom이 서로 의존하면 ``plan_aggregator``로 루트 aggregator pom을 만들고 커밋한다.
+        파일 쓰기에 실패해도 후속 조치 한 줄만 남기고 실행은 계속한다."""
         from sbmig.analyze.aggregator import plan_aggregator, write_aggregator
         plan = plan_aggregator(self.ws)
         if plan is None:
@@ -1032,7 +1055,8 @@ class Orchestrator:
             msg += f"; not linked to them and left out: {', '.join(plan.excluded)}"
         report.manual_followups.append(msg)
         if plan.excluded:
-            # v2.1z-a: 빠진 pom 은 인수인계에 따로 한 줄 — 집계 pom 의 <modules> 에 넣고 다시 돌리면 함께 전환된다
+            # aggregator에서 빠진 pom은 인수인계에 따로 남긴다.
+            # 집계 pom의 <modules>에 넣고 다시 실행하면 함께 이관된다
             report.manual_followups.append(
                 f"poms left out of the generated root ({', '.join(plan.excluded)}): no aggregator lists them and no module "
                 f"depends on them — if they belong to the application, add them to the <modules> of "
@@ -1042,12 +1066,12 @@ class Orchestrator:
                          "name": plan.name, "modules": plan.modules, "excluded": plan.excluded})
 
     def _intake_reactor_dedupe(self, report: RunReport) -> None:
-        """v2.1k 회사 사례: 루트 pom 이 ``APP, DEV`` 를, ``APP/pom.xml`` 이 ``../DEV, ./EAR, ./BATCH`` 를 나열해 DEV 가
-        reactor 에 두 번 닿았다 → Maven 이 "is duplicated in the reactor" 로 reactor 전체를 거부해 effective-pom 캡처,
-        OpenRewrite(레시피가 하나도 안 돌았다), 컴파일, 빌드가 모두 실패했고 수정 루프는 LLM 만 불렀다. pom 구조
-        문제이므로 Maven 을 부르기 전에 여기서 결정적으로 고친다: 루트가 아닌 집계 pom 의 중복 줄을 지우고(루트 목록은
-        그대로) ``intake: reactor duplicate removed (…)`` 로 커밋, 플래그 ``reactor-duplicate-removed``, 저널
-        ``reactor_dedupe``, 쉬운 말 후속 조치. 꺼진 프로필의 중복은 후속 조치 메모만. 예외로 실행을 멈추지 않는다.
+        """reactor에 두 번 포함된 모듈의 중복 ``<module>``을 Maven 호출 전에 지운다.
+        중복이 있으면 Maven이 reactor 전체를 거부해 OpenRewrite, 컴파일, 빌드가 모두 실패하기 때문이다.
+        - 루트가 아닌 집계 pom의 중복 줄만 지우고 루트의 모듈 목록은 그대로 둔다
+        - ``intake: reactor duplicate removed (…)``로 커밋하고 플래그 ``reactor-duplicate-removed``, 저널
+          ``reactor_dedupe``, 후속 조치를 남긴다
+        - 꺼진 프로필 안의 중복은 후속 조치 메모만 남긴다. 실패해도 실행을 멈추지 않는다
 
         v2.1k: remove the duplicate `<module>` listings of the non-root aggregators (`dedupe_reactor`), commit them,
         flag `reactor-duplicate-removed`, journal `reactor_dedupe`, plain-words follow-ups; noted-only findings (a
@@ -1067,7 +1091,7 @@ class Orchestrator:
                 self.ws.commit(message)
                 self._flag("reactor-duplicate-removed")
             report.manual_followups.extend(f for f in agg.reactor_followups(dups) if f not in report.manual_followups)
-            # 운영자가 화면에서 옮겨 적는 한 줄(한국어)
+            # 운영자가 화면에서 옮겨 적는 한국어 한 줄
             log.info("접수: reactor 중복 모듈 %d개 정리 (지운 줄 %d · 메모 %d)", len(dups), len(removed),
                      len(notes) - len(removed))
             self.ws.journal({"event": "reactor_dedupe", "duplicates": [d.dir for d in dups],
@@ -1078,8 +1102,9 @@ class Orchestrator:
             log.warning("reactor duplicate check failed: %s: %s", type(e).__name__, e)
 
     def step_analyze(self, report: RunReport, stop_after: Phase | None) -> bool:
-        """2. 분석: 프로필(케이스 타입·Java·Spring/Boot 버전·라이브러리) + 라이브러리 권고(EOL, 안내만).
-        False = 멈춤 또는 중단(Maven 아님, pom.xml 없음).
+        """분석 단계를 실행한다. 프로젝트 정보(케이스 타입, Java, Spring/Boot 버전, 라이브러리)와 EOL
+        라이브러리 권고(안내만)를 만든다.
+        Maven 프로젝트가 아니거나 pom.xml이 없어 멈추거나 중단하면 False를 반환한다.
 
         2. analyze: profile + library advisories. False = stop or abort (not Maven, no pom.xml)."""
         with stage("analyze"):
@@ -1116,9 +1141,10 @@ class Orchestrator:
         return not self._stop(stop_after, Phase.ANALYZE)
 
     def _root_pom_present(self, report: RunReport, profile: ProjectProfile) -> bool:
-        """v2.1k: 루트 pom.xml 이 없으면(접수가 집계 pom 을 만들지 못함) MSA 가 아닌 한 여기서 멈춘다(exit 3, 플래그
-        ``no-root-pom``) — Maven 을 pom 없는 폴더에서 부르면 OpenRewrite·컴파일·빌드가 "there is no POM in this
-        directory" 로, 재구성이 "root pom not found: pom.xml" 로 실패하고 LLM 만 쓴다. MSA 는 서비스마다 따로 돈다.
+        """루트 pom.xml이 있는지 확인한다.
+        없으면 MSA가 아닌 한 여기서 멈춘다(exit 3, 플래그 ``no-root-pom``).
+        pom이 없는 폴더에서는 Maven 호출과 재구성이 모두 실패하기 때문이다.
+        MSA는 서비스마다 따로 빌드하므로 루트 pom이 없어도 된다.
 
         v2.1k: without a root pom.xml (no aggregator generated) a non-MSA run stops here (exit 3, flag `no-root-pom`)
         instead of failing in every Maven call; MSA services are migrated one by one and need no root pom."""
@@ -1135,12 +1161,13 @@ class Orchestrator:
         return False
 
     def _check_adf(self, report: RunReport, profile: ProjectProfile) -> bool:
-        """v2.1z-d (2026-11-02, 현업 결정: ADF 프로젝트는 변환하지 않는다): 분석이 프로필에 남긴 ADF 판정(``profile.adf``)을 적용한다.
-        근거 계열이 **둘 이상**(``is_adf``)이면 플래그 ``adf-project``, 저널 ``adf_project``(계열 · 근거 경로 · 개수), 인수인계 첫 줄
-        "ADF 프로젝트라 변환이 불가능합니다 (…규모…)" — ``intake.adf_policy: stop``(기본)이면 여기서 중단(exit 3: Maven · OpenRewrite ·
-        LLM 호출 없음) → True, ``continue`` 면 보고만 하고 계속(권장하지 않음) → False. 한 계열뿐이면(``traces``) 플래그 ``adf-traces`` 와
-        메모("ADF 흔적: 변환은 계속하되 확인 필요")만 남기고 계속 → False. 오탐 금지: ``.jpr`` 기술 이름이나 ``adf-config.xml`` 하나로는
-        멈추지 않는다.
+        """분석 단계가 남긴 ADF 판단 결과(``profile.adf``)를 적용한다.
+        Oracle ADF 프로젝트는 변환하지 않는다.
+        - 근거 종류가 둘 이상(``is_adf``)이면 플래그 ``adf-project``, 저널 ``adf_project``, 인수인계 첫 줄을
+          남긴다. ``intake.adf_policy: stop``(기본값)이면 Maven, LLM 호출 없이 중단하고 True를,
+          ``continue``면 보고만 하고 False를 반환한다
+        - 근거가 한 종류뿐이면(``traces``) 플래그 ``adf-traces``와 메모만 남기고 False를 반환한다
+        - ``.jpr`` 이름이나 ``adf-config.xml`` 하나만으로는 멈추지 않는다
 
         v2.1z-d: apply the profile's ADF verdict. Two or more evidence families → flag `adf-project`, journal `adf_project`,
         Handover first line ("ADF 프로젝트라 변환이 불가능합니다 (…)"); `intake.adf_policy: stop` (default) aborts here (exit 3,
@@ -1177,10 +1204,10 @@ class Orchestrator:
         return True
 
     def _check_hollow(self, report: RunReport, profile: ProjectProfile) -> None:
-        """v2.1z-c (2026-11-02): 속 빈 리액터 판정 — pom 들이 선언한 소스·웹 루트 안에는 소스가 없고 트리의 다른 곳에 있으면
-        플래그 ``hollow-reactor``(성공 아님, exit 2, 인수인계 첫 줄, 저널 ``hollow_reactor``); 안쪽보다 바깥에 java 가 더
-        많기만 하면 ``sources-outside-reactor``(알림만). 실행은 계속된다(빌드·검토는 그대로) — 회사 사례: ``APP/WEB/pom.xml``
-        이 ``DEV/`` 의 산출물을 포장만 해서 pom · web.xml 만 옮기고 "성공" 으로 끝났다.
+        """모듈이 아무 소스도 컴파일하지 않는 reactor인지 확인한다. 실행은 멈추지 않는다.
+        - pom이 선언한 소스, 웹 루트 안에는 소스가 없고 트리의 다른 곳에 있으면 플래그 ``hollow-reactor``를
+          붙인다. 이 실행은 성공이 아니며(exit 2) 인수인계 첫 줄과 저널 ``hollow_reactor``를 남긴다
+        - 모듈 바깥에 java 파일이 더 많기만 하면 ``sources-outside-reactor`` 알림만 남긴다
 
         v2.1z-c: hollow-reactor detection right after the profile (`sbmig.analyze.hollow`). `hollow` → flag
         `hollow-reactor` (the run goes on but is not a success: exit 2, Handover first line, journal `hollow_reactor`);
@@ -1196,7 +1223,7 @@ class Orchestrator:
             self._flag(HOLLOW_FLAG)
             line = hollow_followup(res)
             if line not in report.manual_followups:
-                # v2.1z-d: ADF 줄이 이미 맨 앞이면(intake.adf_policy: continue) 그 다음 자리 — 인수인계 순서와 같게
+                # ADF 줄이 이미 맨 앞에 있으면(intake.adf_policy: continue) 인수인계 순서를 맞추려고 그 다음에 넣는다
                 from sbmig.analyze.adf import ADF_PREFIX
                 pos = 1 if report.manual_followups and report.manual_followups[0].startswith(ADF_PREFIX) else 0
                 report.manual_followups.insert(pos, line)
@@ -1212,9 +1239,10 @@ class Orchestrator:
             self.ws.journal({"event": "sources_outside_reactor", **res.as_journal()})
 
     def _classify_bundled_jars(self, report: RunReport) -> None:
-        """v2.1z-i: 보고서의 동봉 jar 표를 위해, 좌표가 알려졋고 그 g:a 를 목표 부모 체인(재구성 뒤 캡처
-        ``effective-depmgmt-after-restructure.json``, 없으면 루프의 관리 키)이 관리하는 jar 에 note
-        "superseded: g:a is managed by the target parent chain" 을 붙인다 — 그런 jar 는 연결 대상이 아니다. 예외 없음.
+        """보고서의 동봉 jar 표를 위해, 좌표를 알고 그 g:a를 목표 부모 체인이 관리하는 jar에
+        ``superseded: g:a is managed by the target parent chain`` 메모를 붙인다. 그런 jar는 의존성으로 연결하지 않는다.
+        부모 체인 정보는 재구성 뒤 캡처(``effective-depmgmt-after-restructure.json``)를, 없으면 수정 루프가
+        아는 관리 키를 쓴다. 예외를 던지지 않는다.
 
         Mark the bundled jars whose known g:a the target parent chain manages (the post-restructure capture, else the
         loop's managed keys) with the note `superseded: …` for the report table. Never raises."""
@@ -1239,9 +1267,10 @@ class Orchestrator:
             log.debug("bundled jar classification skipped: %s: %s", type(e).__name__, e)
 
     def _note_bundled_jars(self, profile: ProjectProfile) -> None:
-        """v2.1z-i: 분석이 찾은 동봉 jar(트리 안에 있지만 어떤 pom 도 선언하지 않은 jar)를 실행 기록에 남긴다 — 플래그
-        ``bundled-jars``, 저널 ``bundled_jars``(경로 · 좌표), 운영자 로그 한 줄, ``logs/bundled-jars.json``(JarCoordinate 목록).
-        연결(의존성 선언)은 빌드 오류가 그 jar 를 필요로 할 때 수정 루프의 ``sbmig-bundled`` 가 한다. 절대 예외를 내지 않는다.
+        """분석 단계가 찾은 동봉 jar(트리에 있지만 어떤 pom도 선언하지 않은 jar)를 기록한다.
+        예외를 던지지 않는다.
+        플래그 ``bundled-jars``, 저널 ``bundled_jars``, 운영자용 로그 한 줄, ``logs/bundled-jars.json``을
+        남긴다. 실제 의존성 연결은 빌드 오류가 그 jar를 필요로 할 때 수정 루프의 ``sbmig-bundled``가 한다.
 
         v2.1z-i: record the profile's bundled jars — flag `bundled-jars`, journal `bundled_jars`, one operator log line,
         `logs/bundled-jars.json`. Wiring happens in the fix loop (`sbmig-bundled`) on evidence of a build error. Never raises."""
@@ -1266,8 +1295,9 @@ class Orchestrator:
 
     def step_plan(self, report: RunReport, stop_after: Phase | None,
                   dry_run: bool) -> list[tuple[Phase, list[tuple[int, PlanStep]]]] | None:
-        """3. 계획: 결정적 계획(레시피·재구성 모드), 실행의 오류 목록과 ``BuildFixLoop`` 를 만들고, 같은
-        단계가 이어진 계획 단계들을 묶어 돌려준다(변환 → 재구성(+구조 검토) → 검증). None = 계획 뒤 멈춤.
+        """계획 단계를 실행한다. 정해진 규칙으로 계획(레시피, 재구성 모드)을 세우고, 오류 목록과
+        ``BuildFixLoop``를 만든 뒤 같은 단계끼리 묶은 계획 단계를 반환한다.
+        묶음 순서는 변환 -> 재구성(구조 검토 포함) -> 검증이며, 계획 뒤에 멈추면 None을 반환한다.
 
         3. plan: the migration plan, the run's error list and `BuildFixLoop`, and the phase groups (consecutive
         plan steps of the same phase; v2.1: transform (rewrite + compile) → restructure (+ review) → verify; MSA
@@ -1301,7 +1331,7 @@ class Orchestrator:
         if self._stop(stop_after, Phase.PLAN):
             return None
         # 4. phases ------------------------------------------------------------
-        # 오류 목록은 계획 뒤에 연다: 첫 레코드는 transform.compile 의 오류(seen compile)
+        # 오류 목록은 계획 뒤에 연다. 첫 기록은 transform.compile에서 난 오류(seen compile)다
         self._start_error_list(dry_run)
         self.loop = BuildFixLoop(self.cfg, self.ws, self.build_runner, self.triager, self.fixer, self.kb, profile,
                                  plan_notes=plan.notes,
@@ -1311,7 +1341,7 @@ class Orchestrator:
                                  errors=self.errors)
         self._handoff_restructure()        # v2.1v: a loop made after a restructure gets its results too
         steps = list(plan.steps)
-        # 빌드 게이트: 계획에 최종 빌드가 없어도 always_final_verify 면 verify.build 를 덧붙인다
+        # 계획에 최종 빌드가 없어도 always_final_verify가 켜져 있으면 verify.build를 덧붙여 최종 빌드를 보장한다
         if self.cfg.loop.always_final_verify and not any(s.kind == StepKind.BUILD and s.phase == Phase.VERIFY
                                                          for s in steps):
             steps.append(PlanStep(id="verify.build", kind=StepKind.BUILD, phase=Phase.VERIFY,
@@ -1328,9 +1358,9 @@ class Orchestrator:
 
     def step_phase(self, report: RunReport, phase: Phase, items: list[tuple[int, PlanStep]],
                    stop_after: Phase | None) -> PhaseResult | None:
-        """단계 묶음 하나를 돈다 → PhaseResult(``report.phases`` 에도 붙음). ``stop_after`` 뒤의 묶음이면
-        None. 단계 안에서 예외가 나도 그 단계가 한 일(예: MSA
-        의 svc-a 성공 빌드)은 보고서에 남긴 뒤 다시 올린다.
+        """단계 묶음 하나를 실행하고 PhaseResult를 반환한다(``report.phases``에도 추가한다).
+        ``stop_after`` 뒤의 묶음이면 None을 반환한다.
+        단계 안에서 예외가 나도 MSA의 성공한 서비스 빌드처럼 그때까지 한 일은 보고서에 남긴 뒤 예외를 다시 던진다.
 
         One phase group: run its steps. Returns the `PhaseResult` (also appended to `report.phases`), or None when
         the group lies after `stop_after` (``phase_skipped``). Raises `_RunAborted` when the fix loop aborted the run."""
@@ -1371,8 +1401,7 @@ class Orchestrator:
         return pr
 
     def step_finish(self, report: RunReport, stop_after: Phase | None) -> None:
-        """마지막 묶음 뒤: ``stop_after`` 가 돌린 단계를
-        가리켰으면 그 사실(``stopped-after-*`` 플래그)을 남긴다.
+        """마지막 묶음 뒤에, ``stop_after``가 실제로 실행된 단계를 가리켰으면 ``stopped-after-*`` 플래그를 남긴다.
 
         After the last phase group: record `stop_after` when it named a phase that the groups ran."""
         if stop_after is not None and stop_after != Phase.VERIFY:
@@ -1380,10 +1409,11 @@ class Orchestrator:
 
     # ------------------------------------------------------------------ flow remediation (v2.1z-aj)
     def step_remediation(self, report: RunReport) -> dict:
-        """실행 방식 ``remediation`` 의 조치 단계: 올린 ZIP(디렉토리면 작업 공간의 프로젝트 트리)으로 ``chain.run_only`` 를 부르고
-        요약을 ``report.remediation`` 에, 성공 판정(``SUCCEEDED``)을 ``report.success`` 에 둔다. 준비가 안 됐으면 상태 없이 중단:
-        플래그 ``remediation:not-ready``, 빠진 이름(값 아님)이 보고서·저널(``remediation_skipped``)에, ERROR 한 줄(``run aborted: …``), exit 3.
-        돌려주는 값 = 요약 dict.
+        """실행 방식 ``remediation``의 취약점 조치 단계를 실행한다. 업로드한 ZIP(디렉토리로 받았으면 작업
+        공간의 프로젝트 트리)으로 ``chain.run_only``를 호출하고 요약 dict를 반환한다.
+        요약은 ``report.remediation``에, 성공 여부(``SUCCEEDED``)는 ``report.success``에 넣는다.
+        조치 준비가 안 됐으면 조치 상태 없이 중단한다. 플래그 ``remediation:not-ready``, 빠진 설정 이름(값은
+        빼고), ERROR 한 줄(``run aborted: …``)을 남기고 exit 3으로 끝난다.
 
         The remediation step of flow `remediation` (`chain.run_only`); not ready → abort with flag
         `remediation:not-ready` and the missing names. Returns the summary (`report.remediation`)."""
@@ -1407,7 +1437,8 @@ class Orchestrator:
             return dict(report.remediation)
 
     def _remediation_stop(self) -> bool:
-        """조치 중의 멈춤 요청(실행 폴더의 ``stop.request``). 읽을 수 없으면 멈춤 아님."""
+        """조치 중에 멈춤 요청(실행 폴더의 ``stop.request``)이 있는지 반환한다.
+        파일을 읽을 수 없으면 멈춤 요청이 없는 것으로 본다."""
         fn = getattr(self.ws, "stop_requested", None)
         try:
             return bool(fn()) if callable(fn) else False
@@ -1415,8 +1446,10 @@ class Orchestrator:
             return False
 
     def _remediation_source(self) -> Any:
-        """조치에 넣을 원본: 올린 ZIP 파일(그 바이트 그대로) — 생성자의 ``source``, 없으면 작업 공간 저널의 ``intake`` 줄의 ``source``.
-        ZIP 이 아니거나(디렉토리 입력) 찾을 수 없으면 작업 공간의 프로젝트 트리(이 실행 방식에서는 아무것도 바꾸지 않았다).
+        """취약점 조치에 넘길 원본을 반환한다. 업로드한 ZIP 파일을 그대로 쓰며, 생성자에 ``source``가 없으면
+        작업 공간 저널의 ``intake`` 줄에 기록된 ``source``를 쓴다.
+        ZIP이 아니거나 찾을 수 없으면 작업 공간의 프로젝트 트리를 쓴다.
+        이 실행 방식에서는 트리를 바꾸지 않았으므로 원본과 같다.
 
         The uploaded ZIP (constructor `source`, else the workspace's `intake` journal line); otherwise the project tree."""
         import zipfile
@@ -1445,9 +1478,10 @@ class Orchestrator:
         return self.ws.root
 
     def _remediation_targets(self) -> list[str]:
-        """조치의 빌드 대상(프로젝트 루트 기준): 루트 pom.xml 이 있으면 [] (루트에서 한 번), 없으면 reactor 의 뿌리 pom 들(다른 pom 의
-        ``<modules>`` 가 가리키지 않는 pom, 떠도는 복사본 제외)의 폴더 — 이관이 루트 aggregator 없는 트리를 서비스마다 빌드하는 것과 같은
-        모양. 읽기만 한다(분석·Maven 호출 없음). 읽을 수 없으면 [].
+        """취약점 조치의 빌드 대상 폴더 목록(프로젝트 루트 기준)을 반환한다.
+        루트 pom.xml이 있으면 빈 목록을 반환하고 루트에서 한 번 빌드한다.
+        루트 pom이 없으면 다른 pom의 ``<modules>``에 들어 있지 않은 최상위 pom의 폴더를 반환한다(IDE
+        출력이나 백업 폴더에 복제된 pom은 뺀다). 파일은 읽기만 하며, 읽을 수 없으면 빈 목록을 반환한다.
 
         The build targets: [] with a root pom, else the directories of the reactor roots (poms no `<modules>` lists, stray
         copies excluded). Read-only; [] when the poms cannot be read."""
@@ -1469,8 +1503,10 @@ class Orchestrator:
             return []
 
     def _finalize_remediation(self, report: RunReport) -> None:
-        """실행 방식 ``remediation`` 의 마무리: 성공 = 조치 ``SUCCEEDED`` (중단이 아니고), infra 플래그, 출력 경로, 짧은 보고서
-        (report.md / report.json). 오류 목록·KB 기록·changes.patch·result.zip 은 없다(조치의 결과는 ``remediation/`` 아래).
+        """실행 방식 ``remediation``의 마무리를 한다. 조치가 ``SUCCEEDED``이고 중단되지 않았으면 성공이며,
+        infra 플래그, 출력 경로, 짧은 보고서(report.md / report.json)를 남긴다.
+        오류 목록, KB 기록, changes.patch, result.zip은 만들지 않는다.
+        조치 결과는 ``remediation/`` 아래에 있다.
 
         Finalize a `remediation` flow run: success = remediation SUCCEEDED, infra flags, outputs, the short report; no
         error list, no KB records, no patch / result.zip."""
@@ -1512,8 +1548,8 @@ class Orchestrator:
 
     # ------------------------------------------------------------------ library advisories (analyze / plan side)
     def _evaluate_advisories(self, profile) -> list:
-        """이 프로젝트의 라이브러리 권고(EOL: springfox, hystrix, sleuth …). 회사 정책상 차단은 없고 안내만
-        한다(스크립트 프롬프트의 힌트 + 보고서 인수인계 섹션). 예외 없음.
+        """이 프로젝트에 해당하는 라이브러리 권고(springfox, hystrix, sleuth 같은 EOL 라이브러리)를 찾는다.
+        차단하지 않고 스크립트 프롬프트의 힌트와 보고서의 인수인계에만 쓰며, 예외를 던지지 않는다.
 
         knowledge/libraries/advisories.yml findings for this project (springfox, hystrix, sleuth …). Never
         raises; an unavailable advisory package just means no findings. The finalize side (verify → outcome,
@@ -1534,7 +1570,8 @@ class Orchestrator:
         return findings
 
     def _plan_with_advisories(self, profile, findings: list):
-        """계획기 호출. 권고는 계획기가 ``advisories=`` 를 받을 때만 넘긴다(테스트 대역·옛 계획기는 못 받음).
+        """계획기를 호출한다. 권고 목록은 계획기가 ``advisories=`` 인자를 받을 때만 넘긴다(테스트용 가짜
+        구현과 이전 계획기는 받지 못한다).
 
         Planner call; findings are passed as `advisories=` when the planner accepts them (fakes in tests and
         older planners do not)."""
@@ -1552,8 +1589,8 @@ class Orchestrator:
         return self.planner(profile, self.cfg, self.kb)
 
     def _capture_effective(self, report: RunReport) -> None:
-        """접수: 아무것도 바꾸기 전의 as-is effective dependencyManagement 를 캡처한다(나중에 인수인계
-        섹션의 "바뀐 버전"과 버전 이어받기에 쓰인다).
+        """접수 단계에서 아무것도 바꾸기 전에 as-is effective dependencyManagement를 캡처한다.
+        인수인계의 "바뀐 버전"과 as-is 버전 이어받기에 쓴다.
 
         Intake: capture the as-is effective dependencyManagement (before any change) for later version carry-over."""
         fn = self._effective_capture
@@ -1578,9 +1615,9 @@ class Orchestrator:
 
     # ------------------------------------------------------------------ preflight
     def _preflight(self, report: RunReport) -> None:
-        """사전 점검: Maven 이 도는지(JAVA_HOME 문제와 Maven 없음을 구분), Maven 의 Java 가
-        ``build.require_java_major``(21) 인지, 사내 parent·역할 parent 설정이 채워졌는지. 결과는 저널
-        ``preflight`` 한 줄과 후속 조치."""
+        """사전 점검을 한다. Maven이 실행되는지(JAVA_HOME 문제와 Maven 없음을 구분), Maven의 Java가
+        ``build.require_java_major``(21)인지, 사내 parent와 역할 parent 설정이 채워졌는지 확인한다.
+        결과는 저널 ``preflight`` 한 줄과 후속 조치로 남긴다."""
         checks: dict[str, Any] = {}
         if self._build_runner is None:
             try:
@@ -1629,9 +1666,10 @@ class Orchestrator:
             self._check_http_blocker()
 
     def _check_http_blocker(self) -> None:
-        """v2.1z-ah 사전 점검: Maven 이 쓸 settings(사용자 + 전역)에서 차단 미러가 ``http://`` 저장소를 덮고 있으면 WARNING 한 줄과
-        저널 ``maven_http_blocker_active`` (저장소들). 중단하지 않는다 — 그 저장소에서 받을 것이 없을 수도 있다; 중단은 Maven 이 실제로
-        거부했을 때만(``BuildFixLoop.http_blocked_abort``).
+        """Maven이 쓸 settings(사용자, 전역)에서 차단용 미러가 ``http://`` 저장소를 가로채고 있으면 WARNING
+        한 줄과 저널 ``maven_http_blocker_active``를 남긴다.
+        그 저장소에서 받을 것이 없을 수도 있으므로 여기서는 중단하지 않는다.
+        중단은 Maven이 실제로 거부했을 때만 한다(``BuildFixLoop.http_blocked_abort``).
 
         Preflight: one WARNING + journal `maven_http_blocker_active` when the effective Maven settings route an `http://`
         repository to a blocked mirror. Never aborts — the abort happens only when Maven really reports the block."""
@@ -1665,9 +1703,9 @@ class Orchestrator:
                 f"JAVA_HOME={home}" if home else "JAVA_HOME not set: mvn uses the java on PATH")
 
     def _check_java_major(self, report: RunReport, detail: str, checks: dict[str, Any]) -> None:
-        """``mvn -v`` 의 Java 가 ``build.require_java_major``(21)여야 한다. 회사 실행에서 JAVA_HOME 의 JDK
-        17 때문에 모든 빌드가 수정 루프로는 못 고치는 이유로 실패했다(round 10) → ``jdk-not-21`` 로 바로 중단.
-        버전을 읽을 수 없으면 검사 안 함.
+        """``mvn -v``가 보여 주는 Java가 ``build.require_java_major``(21)가 아니면 ``jdk-not-21``로 바로
+        중단한다. 그대로 두면 모든 빌드가 수정 루프로 고칠 수 없는 이유로 실패하기 때문이다.
+        버전을 읽을 수 없으면 검사하지 않는다.
 
         Round 10 (A10): `mvn -v` must report `build.require_java_major` (21) — a JDK 17 on JAVA_HOME made every
         build of a company run fail for a reason no fix loop can change. Unparseable / absent version → no check."""
@@ -1694,8 +1732,9 @@ class Orchestrator:
 
     # ------------------------------------------------------------------ phases
     def _run_phase(self, pr: PhaseResult, items: list[tuple[int, PlanStep]]) -> None:
-        """한 묶음의 단계를 차례로(각자 로그 단계 태그 안에서). 단계가 묶음을 중단시키면 나머지는 건너뛴다.
-        검증 단계의 성공 여부는 최종 빌드 결과들이 전부 성공했는가로만 정한다."""
+        """한 묶음의 단계를 각 단계의 로그 태그 안에서 차례로 실행한다.
+        어떤 단계가 묶음을 중단시키면 나머지 단계는 건너뛴다.
+        검증 묶음의 성공 여부는 최종 빌드가 모두 성공했는지로만 정한다."""
         aborted = False
         loop_ran = False
         for idx, step in items:
@@ -1717,8 +1756,9 @@ class Orchestrator:
             pr.build_ok = False
 
     def _run_step(self, pr: PhaseResult, step: PlanStep, aborted: bool) -> tuple[Any, bool]:
-        """계획 단계 하나를 종류별로 처리 → (성공, 묶음 중단). 레시피 id 없음·재구성 실패는 묶음을
-        중단하지만(선택 버전 올리기는 예외), 최종 빌드는 그래도 돈다.
+        """계획 단계 하나를 종류에 맞게 처리하고 (성공 여부, 묶음 중단 여부)를 반환한다.
+        레시피 id를 찾지 못하거나 재구성이 실패하면 묶음을 중단하지만(선택 아티팩트 버전 올리기는 예외),
+        최종 빌드는 그래도 실행된다.
 
         One plan step (inside its log stage). Returns (ok, the phase is aborted)."""
         ok: Any = True
@@ -1752,10 +1792,11 @@ class Orchestrator:
             self._pending_notes = []
 
     def _step_rewrite(self, pr: PhaseResult, step: PlanStep) -> Optional[bool]:
-        """변환: 계획된 레시피 전부를 OpenRewrite 한 번에(빌드 없음) 돌리고 ``rewrite: <step>`` 로 커밋.
-        레시피가 Maven 메타데이터를 못 받아 ``4.0.x`` 같은 글자 그대로의 버전을 남기면 되돌리고 한 번
-        재시도한다(X8). 실패해도 계속 간다 — 진짜 문제는 빌드가 보여 준다. None = 레시피 id 를 찾지
-        못함(설정 오류 → 묶음 중단)."""
+        """변환 단계를 실행한다.
+        계획된 레시피를 OpenRewrite 한 번으로 모두 실행하고(빌드 없음) ``rewrite: <step>``로 커밋한다.
+        레시피가 Maven 메타데이터를 받지 못해 ``4.0.x`` 같은 버전 문자열을 그대로 남기면 되돌리고 한 번
+        재시도한다. 실패해도 계속 진행하며 실제 문제는 빌드에서 드러난다.
+        레시피 id를 찾지 못하면 설정 오류이므로 None을 반환해 묶음을 중단한다."""
         self._flush_notes(pr)
         if self.budget.time_exceeded():
             pr.notes.append(f"{step.id} skipped: run time budget exhausted")
@@ -1782,9 +1823,9 @@ class Orchestrator:
             unresolved = self._unresolved_versions(res)
         if unresolved:
             self._report_unresolved_versions(pr, step, res, unresolved)
-        # v2.1z-ah: Maven 의 HTTP 차단 미러가 저장소를 거부했다 → 부모 맞추기도 재시도도 소용없다(아래에서 실행을 멈춘다)
+        # Maven의 HTTP 차단 미러에 막힌 경우는 부모 버전 맞추기나 재시도로 풀리지 않으므로 아래에서 실행을 중단한다
         http_blocked = not res.ok and self._http_blocked_text(res)
-        # v2.1z-ag: 사내 부모 g:a 의 as-is 버전이 저장소에 없어 실패 → 설정 버전으로 맞추고 한 번 더(LLM 없음)
+        # 사내 부모 g:a의 as-is 버전이 저장소에 없어 실패했으면 설정 버전으로 맞추고 LLM 없이 한 번 더 실행한다
         if not res.ok and not self._dry_run and not http_blocked:
             res = self._align_asis_parent_and_retry(pr, step, res, pre, clean_before)
         pr.rewrite_results.append(res)
@@ -1831,8 +1872,8 @@ class Orchestrator:
             return runner.run(list(step.recipes), module=step.target, **kwargs)
 
     def _unresolved_versions(self, res: Any) -> dict[str, list[str]]:
-        """성공한 rewrite 가 바뀐 pom 에 남긴 해석 안 된 글자
-        그대로의 버전(``4.0.x``, ``latest.release`` …), pom 경로별.
+        """성공한 rewrite가 바꾼 pom에 남긴, 해석되지 않은 버전 문자열(``4.0.x``, ``latest.release`` 등)을
+        찾아 pom 경로별로 반환한다.
 
         pom path → literal unresolved versions (`4.0.x`, `latest.release`, …) a successful, non-dry rewrite
         left in the changed poms (every pom when the runner reports no changed files)."""
@@ -1854,7 +1895,8 @@ class Orchestrator:
 
     def _report_unresolved_versions(self, pr: PhaseResult, step: PlanStep, res: Any,
                                     unresolved: dict[str, list[str]]) -> None:
-        """결과는 그대로 두되(무엇이 깨지는지는 빌드가 보여 준다) 이유를 남긴다: 플래그, 단계 메모, 후속 조치.
+        """rewrite 결과는 그대로 두고, 해석되지 않은 버전이 남은 이유를 플래그, 단계 메모, 후속 조치로
+        남긴다. 무엇이 깨지는지는 빌드에서 드러난다.
 
         Keep the result (the build loop shows what breaks), but say why: flag, phase note, follow-up."""
         self.ws.journal({"event": "rewrite_unresolved_versions", "step": step.id, "poms": unresolved,
@@ -1874,8 +1916,8 @@ class Orchestrator:
     PARSE_PROBLEMS_FLAG = "rewrite-parse-problems"
 
     def _report_parse_problems(self, pr: PhaseResult, step: PlanStep, res: Any) -> None:
-        """OpenRewrite 가 파싱하지 못한 소스 파일: 플래그 + 단계
-        메모 + WARNING (빌드 오류는 수정 스크립트가 맡는다)."""
+        """OpenRewrite가 파싱하지 못한 소스 파일을 플래그, 단계 메모, WARNING으로 남긴다.
+        그 때문에 생기는 빌드 오류는 수정 스크립트가 처리한다."""
         files = [str(f) for f in (getattr(res, "parse_problems", None) or [])]
         self.ws.journal({"event": "rewrite_parse_problems", "step": step.id, "files": files,
                          "log": getattr(res, "log_path", None)})
@@ -1887,18 +1929,19 @@ class Orchestrator:
 
     @staticmethod
     def _http_blocked_text(res: Any) -> bool:
-        """v2.1z-ah: 실패한 OpenRewrite 실행(오류 문장 + 로그)에 Maven 의 HTTP 차단 미러가 보이는가."""
+        """실패한 OpenRewrite 실행의 오류 메시지와 로그에 Maven의 HTTP 차단 미러가 보이는지 반환한다."""
         from sbmig.build.env_errors import http_blocker_hit
         return http_blocker_hit(BuildFixLoop.build_text(res)) is not None
 
     def _check_parent_in_rewrite(self, pr: PhaseResult, step: PlanStep, err: str) -> None:
-        """사내 parent 가 해석되지 않아 OpenRewrite 가 실패했다 → 수정 루프와 똑같이 실행을 중단한다.
+        """사내 parent를 찾지 못해 OpenRewrite가 실패했으면 수정 루프에서와 똑같이 실행을 중단한다.
 
         OpenRewrite failed because the configured in-house parent does not resolve → abort like the build loop."""
         keys = self.cfg.artifacts.parent_keys()                # root parent + boot_parent / comp_parent (round 9b)
         if self.loop is None:
             return
-        # 2026-11-05: 사내 부모가 선언한 빌드 확장을 Maven 이 못 받아 OpenRewrite 가 모델 단계에서 죽었다 → 같은 중단(LLM 없음)
+        # 사내 부모가 선언한 build extension을 Maven이 받지 못하면 OpenRewrite가 모델을 읽는 단계에서
+        # 실패하므로 같은 방식으로 LLM 없이 중단한다
         m_ext = _BUILD_EXT_IN_TEXT_RE.search(err)
         if m_ext:
             chain = self.loop._chain_extensions()          # same package
@@ -1919,7 +1962,7 @@ class Orchestrator:
         from sbmig.restructure.asis_parent import classify_parent_misses
         misses = classify_parent_misses(err, self.cfg, self.ws)
         if not misses and any(k in err for k in keys):
-            # Maven 의 문장에서 좌표를 못 읽었는데 사내 부모 g:a 가 보인다 → 예전처럼(설정 버전을 못 찾은 것으로) 판정
+            # Maven 메시지에서 좌표를 읽지 못했어도 사내 부모 g:a가 보이면 설정 버전을 찾지 못한 것으로 본다
             from sbmig.restructure.asis_parent import classify_gav
             key = next(k for k in keys if k in err)
             misses = [classify_gav(GAV.parse(key), self.cfg, self.ws)]
@@ -1933,7 +1976,8 @@ class Orchestrator:
             self.loop._parent_abort(pr, step.phase, br, 0)   # noqa: SLF001 - same package
             self._merge_blocked(pr, [it for it in self.blocked.items() if it.reason.value == "parent_not_found"])
             return
-        # 중단하지 않는 경우(as-is 버전 — continue 이거나 맞춘 뒤에도 남음 / 사내 부모가 아닌 부모): 레시피가 돌지 않았다는 사실을 남긴다
+        # 중단하지 않는 경우(as-is 버전 정책이 continue, 맞춘 뒤에도 실패, 사내 부모가 아닌 부모)에는
+        # 레시피가 실행되지 않았다는 사실을 남긴다
         for m in misses:
             self._report_rewrite_skipped_parent(pr, step, m)
 
@@ -1941,8 +1985,10 @@ class Orchestrator:
     ASIS_PARENT_ALIGNED_FLAG = "asis-parent-aligned"
 
     def _report_rewrite_skipped_parent(self, pr: PhaseResult, step: PlanStep, miss: Any) -> None:
-        """v2.1z-ag (경우 c 와 continue): as-is 부모가 저장소에 없어 레시피가 돌지 않았다 — 플래그
-        ``rewrite-skipped-asis-parent``, 저널 ``rewrite_skipped_asis_parent``, 단계 메모, 인수인계 한 줄. 중단하지 않는다.
+        """as-is 부모 pom이 저장소에 없어 레시피가 실행되지 않았다는 사실을 기록한다.
+        실행은 중단하지 않는다.
+        플래그 ``rewrite-skipped-asis-parent``, 저널 ``rewrite_skipped_asis_parent``, 단계 메모, 인수인계 한
+        줄을 남긴다.
 
         The recipes did not run because the as-is parent is not in the repository: flag, journal, note, one Handover line."""
         company = miss.kind == "asis-version"
@@ -1964,11 +2010,12 @@ class Orchestrator:
 
     def _align_asis_parent_and_retry(self, pr: PhaseResult, step: PlanStep, res: Any, pre: Optional[str],
                                      clean_before: bool) -> Any:
-        """v2.1z-ag 경우 b: OpenRewrite 가 사내 부모 g:a 의 as-is 버전(설정 버전이 아님)을 저장소에서 못 받아 실패했다 →
-        (``openrewrite.unresolvable_asis_parent: align`` 일 때) 그 g:a·버전을 부모로 둔 pom 전부에 설정 버전을 적고 커밋
-        (``transform: as-is parent <g:a> <old> → <configured> (as-is version not in the repository)``), 저널
-        ``asis_parent_aligned``, 플래그 ``asis-parent-aligned``, 단계 메모와 인수인계 한 줄, 그리고 OpenRewrite 를 한 번 더.
-        설정 버전 자체를 못 찾은 경우가 섞여 있거나 바꿀 pom 이 없으면 그대로 돌려준다(뒤의 판정이 맡음). 다시 돈 결과를 돌려준다.
+        """OpenRewrite가 사내 부모 g:a의 as-is 버전(설정과 다른 버전)을 저장소에서 받지 못해 실패한 경우를
+        처리하고, 다시 실행한 결과를 반환한다.
+        ``openrewrite.unresolvable_asis_parent: align``이면 그 부모를 쓰는 pom을 모두 설정 버전으로 바꿔
+        커밋하고, 저널 ``asis_parent_aligned``, 플래그 ``asis-parent-aligned``, 메모와 인수인계 한 줄을 남긴
+        뒤 OpenRewrite를 한 번 더 실행한다.
+        설정 버전 자체를 찾지 못한 경우가 섞여 있거나 바꿀 pom이 없으면 ``res``를 그대로 반환한다.
 
         Case b: align every pom whose parent is that g:a at that version to the configured version, commit, journal, flag,
         note + one Handover line, run OpenRewrite once more and return that result. Returns `res` unchanged when the
@@ -2020,9 +2067,10 @@ class Orchestrator:
                 pr.blocked.append(it)
 
     def _step_compile(self, pr: PhaseResult, step: PlanStep) -> bool:
-        """v2.1 변환 후 컴파일(``transform.compile``): OpenRewrite 결과에 ``mvn clean compile`` 한 번 —
-        고치지 않는다. 나온 오류는 전부 오류 목록에(seen ``compile``) 들어가 뒤의 재구성·검토·빌드가 그것에서
-        출발한다. 실패한 컴파일이 정상 입력이므로 단계를 실패시키지 않는다(빌드 게이트가 아니다).
+        """변환 뒤 컴파일 단계(``transform.compile``)를 실행한다.
+        OpenRewrite 결과에 ``mvn clean compile``을 한 번 실행하되 오류를 고치지는 않는다.
+        나온 오류는 모두 오류 목록(seen ``compile``)에 들어가고 이후 재구성, 검토, 빌드가 여기서 출발한다.
+        컴파일 실패는 예상된 입력이므로 단계를 실패로 처리하지 않는다.
 
         v2.1 `transform.compile` (StepKind.BUILD outside the verify phase): `mvn clean compile` once on
         OpenRewrite's result — no fixing; every error goes on the error list (seen `compile`) and the restructure /
@@ -2070,8 +2118,9 @@ class Orchestrator:
         return True
 
     def _step_loop(self, pr: PhaseResult, step: PlanStep) -> bool:
-        """중간 수정 루프 단계(``StepKind.BUILD_FIX_LOOP``). v2 계획기는 만들지 않는다 — 손으로 만든
-        계획에만 있다. 수정 루프는 보통 최종 빌드 실패 뒤 ``_verify_fix_loop`` 에서 돈다."""
+        """직접 작성한 계획에만 있는 중간 수정 루프 단계(``StepKind.BUILD_FIX_LOOP``)를 실행한다.
+        계획기는 이 단계를 만들지 않는다.
+        수정 루프는 보통 최종 빌드가 실패한 뒤 ``_verify_fix_loop``에서 실행된다."""
         self._flush_notes(pr)
         assert self.loop is not None
         if self.budget.time_exceeded():
@@ -2094,8 +2143,8 @@ class Orchestrator:
         return res.ok
 
     def _handoff_restructure(self) -> None:
-        """v2.1v (B-H2): 이 실행의 재구성 결과와 모드를 수정 루프에 넘긴다 — 루프가 LLM 요청마다 "Project after the
-        restructure" 절(``FixContext.layout_facts``)을 만든다. 그래프 엔진도 같은 단계 함수를 부르므로 같은 자리에서.
+        """이 실행의 재구성 결과와 모드를 수정 루프에 넘긴다. 수정 루프는 LLM 요청마다 이것으로 "Project
+        after the restructure" 절(``FixContext.layout_facts``)을 만든다.
 
         Hand the run's RestructureResults and their modes to the fix loop (`BuildFixLoop.restructure_results` /
         `restructure_modes`) — the source of `FixContext.layout_facts`; the graph engine runs the same step method."""
@@ -2104,10 +2153,10 @@ class Orchestrator:
             self.loop.restructure_modes = list(self._restructure_modes)
 
     def _step_restructure(self, pr: PhaseResult, step: PlanStep) -> bool:
-        """재구성(회사 레이아웃: base-parent, ``{name}-boot`` / ``-back`` / ``-front``, 필수 2개, 쓰는 선택
-        8개 올리기)을 돌리고 ``restructure: <step>`` 로 커밋. 옮긴 파일은 차단 등록부가 따라가게 하고, pom
-        교정마다 ``pom-verify`` 항목을 만든다. 실패하면 ``restructure-failed`` — 최종 빌드가 통과해도
-        마이그레이션 완료가 아니다(success=False)."""
+        """재구성(base-parent 지정, ``{name}-boot`` / ``-back`` / ``-front`` 분할, 필수 아티팩트 2개 추가,
+        사용 중인 선택 아티팩트 8개의 버전 올리기)을 실행하고 ``restructure: <step>``로 커밋한다.
+        옮긴 파일을 차단 목록에 알리고, pom 수정마다 ``pom-verify`` 항목을 만든다.
+        실패하면 ``restructure-failed`` 플래그를 붙이며, 최종 빌드가 통과해도 이관 완료로 보지 않는다(success=False)."""
         self._flush_notes(pr)
         assert self.profile is not None and self.report is not None
         mode = self._step_mode(step)
@@ -2146,7 +2195,7 @@ class Orchestrator:
             if (c.path, c.kept_from) not in seen:
                 seen.add((c.path, c.kept_from))
                 self.report.merge_conflicts.append(c)
-        # 모듈 병합에서 먼저 온 것이 이긴(first-wins) 충돌: 버려진 사본을 LLM 에 읽기 전용 참고로 보여 준다
+        # 모듈 병합에서 같은 클래스가 겹쳐 먼저 온 것을 남긴 경우, 버려진 쪽 클래스를 LLM에 읽기 전용 참고로 보여 준다
         if self.loop is not None:          # round 9: the restructure-phase fix loop shows dropped copies to the LLM
             self.loop.merge_conflicts = list(self.report.merge_conflicts)
         self._handoff_restructure()        # v2.1v: the fix prompt's "Project after the restructure"
@@ -2186,9 +2235,9 @@ class Orchestrator:
         return res.ok
 
     def _journal_restructure_jars(self, res: Any) -> None:
-        """v2.1z-j: 재구성이 연결한 동봉 jar 마다 저널 ``bundled_jar_wired`` (stage restructure), 연결하지 않은 것은
-        ``bundled_jars_skipped`` 한 줄. 프로필의 같은 jar 에 note(``restructure: wired (<scope>)`` / ``restructure: <사유>``)
-        를 붙여 보고서 표가 단계와 상태를 읽게 한다. 인수인계 줄은 ``res.manual_followups`` 로 이미 왔다. 예외 없음.
+        """재구성이 의존성으로 연결한 동봉 jar마다 저널 ``bundled_jar_wired``를 남기고, 연결하지 않은 jar는
+        ``bundled_jars_skipped`` 한 줄로 남긴다.
+        프로젝트 정보의 같은 jar에 메모를 붙여 보고서 표에 단계와 상태가 나오게 한다. 예외를 던지지 않는다.
 
         v2.1z-j: journal one `bundled_jar_wired` (`stage: restructure`) per jar the restructure wired and one
         `bundled_jars_skipped` for the rest; mark the profile's jars (`restructure: …` note) for the report table."""
@@ -2212,9 +2261,10 @@ class Orchestrator:
 
     # ------------------------------------------------------------------ v2: structure review
     def _make_reviewer(self) -> tuple[Any, str]:
-        """(검토기, 못 만든 이유). 주입된 것 또는
-        ``StructureReviewer(cfg, 예산이 걸린 LLM, 스크립트 실행기, kb=None)``. KB 는 일부러 None — 검토
-        기록(오류 목록 + KB 케이스)은 커밋 뒤 오케스트레이터가 남긴다. 검토는 실행을 멈추지 않는다.
+        """(구조 검토기, 만들지 못한 이유)를 반환한다. 주입된 검토기가 없으면
+        ``StructureReviewer(cfg, 예산이 걸린 LLM, 스크립트 실행기, kb=None)``를 만든다.
+        KB를 None으로 넘기는 이유는 검토 기록을 커밋 뒤에 오케스트레이터가 남기기 때문이다.
+        검토기를 만들지 못해도 실행은 멈추지 않는다.
 
         (reviewer, why-not) — the injected one, or `sbmig.review.StructureReviewer(cfg, <budgeted LLM>,
         <script runner>, kb)`; (None, reason) when it cannot be built (the review never stops a run)."""
@@ -2238,11 +2288,13 @@ class Orchestrator:
             return None, f"structure reviewer unavailable: {type(e).__name__}: {e}"
 
     def _step_review(self, pr: PhaseResult, step: PlanStep) -> bool:
-        """v2 구조 검토(``restructure.review``): LLM 이 재구성된 트리의 pom·의존성·모듈 구조·인코딩을 회사
-        규칙에 비춰 보고, critical 문제만 고친다(v2.1: 답변의 edits, pom 만). 바뀐 것은 여기서 ``review: fix
-        critical structure issues (<n>)`` 로 커밋(되돌릴 수 있게). warning 은 보고서 "Structure review" 와
-        오류 목록 메모. 실행을 멈추지 않는다: 실패 = 판정 ``failed`` + 메모, 드라이런 = LLM 호출 없이
-        ``skipped``. 프로젝트당 LLM 1회(형식 오류면 1회 재시도).
+        """구조 검토 단계(``restructure.review``)를 실행한다. LLM이 재구성된 트리의 pom, 의존성, 모듈 구조,
+        인코딩을 회사 규칙에 맞는지 검토하고 critical 문제만 고친다.
+        고친 내용은 되돌릴 수 있도록 ``review: fix critical structure issues (<n>)``로 커밋하고, warning은
+        보고서 "Structure review"와 오류 목록 메모로 남긴다.
+        실행을 멈추지 않는다.
+        실패하면 결과 ``failed``와 메모를 남기고, 드라이런이면 LLM 호출 없이 ``skipped``가 된다.
+        LLM은 프로젝트당 1회 호출하며 응답 형식이 틀리면 1회 재시도한다.
 
         v2 `restructure.review` (StepKind.REVIEW): the LLM checks poms / dependencies / module layout of the
         restructured tree; the script it writes for critical issues runs uncommitted in the reviewer and is committed
@@ -2305,8 +2357,8 @@ class Orchestrator:
         return True
 
     def _commit_review(self, pr: PhaseResult, step: PlanStep, rv: Any) -> Optional[str]:
-        """검토가 남긴 변경을 커밋한다. 수정이 성공(``script_result.status == ok``)하지 않았는데 트리가
-        바뀌어 있으면 버린다 — 검토기는 실패했을 때 트리를 받은 그대로 두어야 한다.
+        """구조 검토가 남긴 변경을 커밋한다. 검토의 수정이 성공(``script_result.status == ok``)하지 않았는데
+        트리가 바뀌어 있으면 그 변경을 버린다. 검토기는 실패하면 트리를 받은 그대로 둬야 하기 때문이다.
 
         Commit the review script's changes (`review.commit`); changes without a successful script run are
         discarded (a reviewer must leave the tree as it found it when its script failed)."""
@@ -2338,11 +2390,12 @@ class Orchestrator:
         return None
 
     def _review_entries(self, rv: Any, pre: Optional[str], sha: Optional[str]) -> None:
-        """v2.1: 검토 결과를 오류 목록과 KB 에 남긴다(예외 없음, skipped·드라이런이면 없음). warning 마다,
-        그리고 커밋된 수정이 다루지 못한 critical 마다 ``note`` 항목; 커밋된 수정이 다룬 critical 마다
-        ``review`` 로 해결된 항목(시도 1개: 원인 / 해결 / 수정 기록 / diff / 커밋); 답변의 스크립트는 KB
-        케이스 ``review|structure`` 에 저장. 수정 기록은 ``수정: …`` 로그로. 검토의 LLM 호출 수는 첫 해결 항목의
-        시도에만 싣는다(나머지 0, A23).
+        """구조 검토 결과를 오류 목록과 KB에 기록한다.
+        예외를 던지지 않으며, skipped이거나 드라이런이면 아무것도 남기지 않는다.
+        - warning과 커밋된 수정이 다루지 못한 critical은 ``note`` 항목으로, 커밋된 수정이 다룬 critical은
+          ``review``로 해결된 항목과 시도 하나로 남긴다
+        - 응답의 스크립트는 KB 케이스 ``review|structure``에 저장하고, 수정 기록은 ``수정: …`` 로그로 남긴다
+        - 검토의 LLM 호출 수는 첫 해결 항목의 시도에만 기록한다
 
         v2.1: the review on the error list and in the KB (never raises, nothing for a skipped review / dry run):
         a `note` entry per warning — and per critical issue no committed fix addressed —, an entry resolved by
@@ -2372,14 +2425,14 @@ class Orchestrator:
                     log.info("수정: %s", note_line(nt))
                 if len(notes) > NOTES_LOGGED:
                     log.info("수정: … %d more (errors.md)", len(notes) - NOTES_LOGGED)
-            # A23: 검토의 LLM 호출은 한 번에 여러 critical 을 고친다 — 첫 항목의 시도에만 호출 수를 싣고 나머지는
-            # 0 으로 둔다(FixTry.llm_calls 를 합산하는 KB · errors.md 가 검토 호출을 항목 수만큼 세지 않게).
-            # 보고서의 LLM 사용량은 이와 무관하게 예산 / 사용량 집계(_review_llm_usage)에서 온다
+            # 검토의 LLM 호출 한 번이 여러 critical을 고치므로, KB와 errors.md에서 호출 수가 항목 수만큼
+            # 중복되지 않게 첫 항목에만 싣고 나머지는 0으로 둔다
+            # 보고서의 LLM 사용량은 이와 별개로 _review_llm_usage 집계에서 가져온다
             review_calls = int(rv.llm_usage.calls or 0)
             first_fixed = True
             for issue in rv.issues:
                 text = " ".join((issue.problem or "").split()) + (f" — {issue.fix_hint}" if issue.fix_hint else "")
-                # v2.1y (E-M5): 재료에 없는 버전·속성을 말한 이슈는 적용되지 않았으므로 "검토가 고침" 으로 적지 않는다
+                # 근거 자료에 없는 버전이나 속성을 제시한 이슈는 적용되지 않았으므로 검토가 고친 것으로 기록하지 않는다
                 # v2.1y: an issue the reviewer marked `unsupported` was never applied — a note, never "fixed by the review"
                 if getattr(issue, "unsupported", False):
                     self.errors.add_note(issue.file or "",
@@ -2423,9 +2476,10 @@ class Orchestrator:
             log.warning("recording the structure review failed: %s: %s", type(e).__name__, e)
 
     def _review_major_upgrades(self, rv: Any, pre: str | None, sha: str) -> None:
-        """v2.1d: 검토 커밋의 pom 을 되읽어 메이저 업그레이드·라이브러리 교체를 ``rv.major_upgrades`` 에
-        운영자 확인 가이드와 함께 남긴다(답변의 ``<verify>``, 없으면 sbmig 가 만든 것). 수정 루프와 같은
-        WARNING / INFO 줄. 되돌리지 않는다.
+        """구조 검토 커밋의 pom 변경에서 메이저 업그레이드와 라이브러리 교체를 찾아, 운영자 확인 가이드와
+        함께 ``rv.major_upgrades``에 남긴다.
+        가이드는 LLM 응답의 ``<verify>``를 쓰고, 없으면 sbmig가 만든다.
+        수정 루프와 같은 WARNING / INFO 줄을 남기며 변경을 되돌리지는 않는다.
 
         v2.1d: the review commit's major upgrades / library replacements (`sbmig.build.depchanges`) →
         `rv.major_upgrades` with the 운영자 확인 guide (the answer's `<verify>`, else sbmig's synthesized one, stored
@@ -2463,8 +2517,9 @@ class Orchestrator:
             log.debug("review read-back failed: %s: %s", type(e).__name__, e)
 
     def _review_llm_usage(self, rv: Any) -> None:
-        """검토의 LLM 호출도 실행의 사용량·예산에 들어간다: 예산 걸린 클라이언트로 이미 셌으면 그대로, 자기
-        클라이언트를 쓴 검토기면 ``StructureReview.llm_usage`` 로 센다(두 번 세지 않는다).
+        """구조 검토의 LLM 호출도 실행의 사용량과 예산에 더한다.
+        예산이 걸린 클라이언트로 이미 셌으면 그대로 두고, 자체 클라이언트를 쓴 검토기면
+        ``StructureReview.llm_usage``로 센다. 같은 호출을 두 번 세지 않는다.
 
         The review's LLM calls count toward the run's usage and budget: through the budgeted client (`_review_usage`)
         or — a reviewer with its own client — from `StructureReview.llm_usage`."""
@@ -2476,9 +2531,9 @@ class Orchestrator:
         self._review_usage[key] = self._review_usage.get(key, LLMUsage(model=key)).add(u)
 
     def _follow_moves(self, step: PlanStep, pre: str, sha: str) -> None:
-        """재구성이 옮긴 파일(``git diff -M`` 이름 바꾸기)을 차단 등록부에 알려, 옮기기 전에 차단된 파일이
-        ``{name}-back/src/…`` 에서도 차단된 채로 있게 한다.
-        최선 노력: git 문제면 옮겨진 오류를 다시 볼 뿐이다.
+        """재구성이 옮긴 파일(``git diff -M``의 이름 변경)을 차단 목록에 알린다.
+        그래서 옮기기 전에 차단된 파일은 ``{name}-back/src/…``로 옮겨진 뒤에도 차단된 상태로 남는다.
+        git 문제로 실패해도 옮겨진 파일의 오류를 한 번 더 시도하게 될 뿐이다.
 
         Round 10 (A4): the files the step moved (`git diff -M` renames) → the run-wide blocked registry re-keys
         them, so a file blocked before the move stays blocked at `{name}-back/src/…`. Best effort: a git problem
@@ -2495,9 +2550,10 @@ class Orchestrator:
         self.ws.journal({"event": "restructure_moves", "step": step.id, "moved": len(moves), "blocked_rekeyed": n})
 
     def _restructure_failed(self, step: PlanStep, mode: str, why: str) -> None:
-        """재구성 실패가 성공한 마이그레이션처럼 보이면 안 된다: as-is 트리로도 최종 빌드는 통과할 수 있지만
-        회사 레이아웃·parent 는 만들어지지 않았다 → ``restructure-failed`` 플래그(success=False, exit 2) +
-        인수인계 문구. 선택 버전 올리기만 예외.
+        """재구성 실패를 기록해 성공한 이관처럼 보이지 않게 한다.
+        as-is 트리로도 최종 빌드는 통과할 수 있지만 회사 레이아웃과 parent는 적용되지 않았기 때문이다.
+        ``restructure-failed`` 플래그(success=False, exit 2)와 인수인계 문구를 남긴다.
+        선택 아티팩트 버전 올리기의 실패만 예외다.
 
         Round 9c: a failed / crashed restructure step must not look like a successful migration — the final build
         may pass on the as-is tree, but the company layout / parents were not produced. Flag `restructure-failed`
@@ -2519,10 +2575,10 @@ class Orchestrator:
     _OPTIONAL_ADDED_RE = re.compile(r"^(?P<key>\S+) → (?P<pom>.+?) \(for (?P<matched>[^()]*)\)\s*$")
 
     def _pom_verify_entries(self, res: Any) -> None:
-        """v2.1: 재구성이 보고한 pom 교정 하나하나(parent 지정, 필수 추가, 선택 올리기, 관리 버전 삭제,
-        as-is 버전 이어 쓰기(v2.1l), nonFilteredFileExtensions(v2.1m), 트리거로 넣은 선택 아티팩트(v2.1n),
-        생성된 pom)를 오류 목록의 ``pom-verify`` 항목으로 — 다음 빌드가 그 pom 에서 오류를 내지 않으면
-        해결된다.
+        """재구성이 보고한 pom 수정을 하나씩 오류 목록의 ``pom-verify`` 항목으로 만든다.
+        다음 빌드가 그 pom에서 오류를 내지 않으면 해결로 닫힌다.
+        대상은 parent 지정, 필수 아티팩트 추가, 선택 아티팩트 버전 올리기, 관리 버전 삭제, as-is 버전
+        이어받기, nonFilteredFileExtensions, 조건에 따라 넣은 선택 아티팩트, 생성된 pom이다.
 
         v2.1: every pom correction the restructure reports → one error-list entry, status `pom-verify` (the next
         build verifies it): parents set (`<pom>: old → new`), mandatory artifacts added and optional ones bumped (the
@@ -2578,7 +2634,7 @@ class Orchestrator:
                     else "version carried over from the as-is build")
             items.append((m.group(1) if m else root, f"{what}: {key} {ver.strip()}".rstrip()))
         # v2.1x (E-M6): "g:a: compile → provided (as-is scope, <pom>)" → 'scope restored: provided (as-is): g:a (was compile)'
-        # v2.1x: 레시피가 compile 로 바꾼 as-is provided 스코프를 재구성이 되돌린 행
+        # 레시피가 compile로 바꾼 as-is provided scope를 재구성이 되돌린 경우도 항목으로 남긴다
         for d in list(getattr(res, "scope_restored", None) or []):
             m = re.match(r"^(?P<key>\S+): (?P<old>\S+) → provided \(as-is scope, (?P<pom>[^()]+)\)\s*$", str(d))
             if m:
@@ -2603,7 +2659,8 @@ class Orchestrator:
         for d in list(getattr(res, "bom_properties_removed", None) or []):
             pom, sep, nv = str(d).partition(": ")
             name = nv.split("=", 1)[0]
-            # v2.1p: 정의한 pom 을 알면 그것으로(Boot BOM 이면 BOM 문구), 설정 목록의 이름이면 사내 부모 문구
+            # 속성을 정의한 pom을 알면 그 pom으로 문구를 만들고(Boot BOM이면 BOM 문구), 설정 목록에 있는
+            # 이름이면 사내 부모 문구를 쓴다
             src = defined_by.get(name, "")
             if src.startswith("org.springframework.boot:spring-boot-dependencies:"):
                 whose = f"the Spring Boot {src.rsplit(':', 1)[1]} BOM's {name}"
@@ -2631,9 +2688,9 @@ class Orchestrator:
             log.info("%s: %s (pom-verify #%d)", pom, note, self.errors.size())
 
     def _jsp_jakarta_note(self, pr: PhaseResult, step: PlanStep, res: Any) -> None:
-        """v2.1h (A5): 재구성이 JSP 의 javax EE 이름을 바꿨으면 그 수를 단계 메모(``<step>: JSP javax → jakarta:
-        N files, M references``)로 남기고 저널에 파일 목록을 쓴다. RunReport 에 따로 필드가 없어 보고서의 "What we
-        changed" 와 인수인계의 남은 JSP 수는 이 메모를 읽는다(``sbmig.report.handover.jsp_jakarta_counts``).
+        """재구성이 JSP의 javax EE 이름을 바꿨으면 파일 수와 참조 수를 단계 메모로 남기고 저널에 파일 목록을 기록한다.
+        RunReport에 이를 담을 필드가 없으므로, 보고서의 "What we changed"와 인수인계의 남은 JSP 수는 이
+        메모를 읽어 만든다(``sbmig.report.handover.jsp_jakarta_counts``).
 
         v2.1h (A5): the restructure's JSP rename (`RestructureResult.jsp_jakarta_files` / `_refs` / `_renamed`) as a
         step note the report reads back, plus a `jsp_jakarta` journal event with the files. Never raises."""
@@ -2650,7 +2707,8 @@ class Orchestrator:
             log.debug("JSP rename note skipped: %s: %s", type(e).__name__, e)
 
     def _merge_placeholders(self, files: list[str], keys: list[str]) -> None:
-        """보고서의 properties = 프로필의 설정 목록 + 재구성이 쓴 placeholder 들(중복 제거, 순서 유지).
+        """보고서의 properties 목록에 프로젝트 정보의 설정 파일 목록과
+        재구성이 만든 플레이스홀더를 중복 없이 순서대로 합친다.
 
         RunReport.properties = profile inventory + the placeholders every restructure step wrote (dedupe, ordered)."""
         assert self.report is not None
@@ -2673,9 +2731,10 @@ class Orchestrator:
         return str(step.params.get("mode") or _DEFAULT_MODE.get(step.kind, "layout"))
 
     def _call_restructurer(self, mode: str, params: dict) -> Any:
-        """재구성기 호출. ``layout`` / ``msa_pom`` / ``boot_pom`` 이면 인자 없는 함수 두 개를 params
-        에 넣어 준다: 재구성 뒤의 effective pom(``effective_pom``)과 접수 때의 as-is effective pom
-        (``asis_effective``, v2.1l). ``params`` 를 못 받는 옛 재구성기는 mode 만으로 부른다.
+        """재구성기를 호출한다.
+        모드가 ``layout`` / ``msa_pom`` / ``boot_pom``이면 params에 인자 없는 함수 두 개를 넣는다.
+        재구성 뒤의 effective pom을 읽는 ``effective_pom``과 접수 때의 as-is effective pom을 읽는
+        ``asis_effective``다. ``params``를 받지 못하는 이전 재구성기는 mode만으로 호출한다.
 
         Calls the restructurer; for `layout` / `msa_pom` / `boot_pom` it adds the zero-arg callables
         `effective_pom` (the tree after the pom edits, round 9) and `asis_effective` (the intake capture,
@@ -2690,9 +2749,9 @@ class Orchestrator:
         except (TypeError, ValueError):  # pragma: no cover - builtins / mocks
             takes_params = True
         if mode in ("layout", "msa_pom", "boot_pom"):
-            # v2.1l: as-is 버전 이어 쓰기는 drop_managed_versions 와 무관하다. 재구성 뒤 effective
-            # pom 도 늘 넘긴다 — off 여도 재구성이 적은 as-is 버전을 새 부모 체인이 관리하는지
-            # 확인해야 하므로(적은 것이 있을 때만 부른다)
+            # as-is 버전 이어받기는 drop_managed_versions가 꺼져 있어도 새
+            # 부모 체인이 그 버전을 관리하는지 확인해야 하므로
+            # 재구성 뒤 effective pom을 항상 넘긴다(넣은 버전이 있을 때만 실제로 호출된다)
             params.setdefault("asis_effective", self._asis_effective)       # v2.1l, zero-arg callable
             params.setdefault("effective_pom", self._effective_pom_after)   # round 9 / 9c, zero-arg callable
         if takes_params:
@@ -2700,9 +2759,9 @@ class Orchestrator:
         return r.apply(self.ws, self.profile, self.cfg, mode=mode)
 
     def _asis_effective(self) -> dict | None:
-        """v2.1l: 접수 때 캡처한 as-is effective pom(``logs/effective-depmgmt.json``) — 재구성이
-        새 부모로 옮기며 잃은 버전을 채울 때 쓴다. 파일이 없거나 비었거나 못 읽으면 None, 예외 없음
-        (캡처는 덮어쓰지 않고 읽기만).
+        """접수 때 캡처한 as-is effective pom(``logs/effective-depmgmt.json``)을 읽어 반환한다.
+        재구성이 새 부모로 옮기면서 잃은 버전을 채울 때 쓴다.
+        파일이 없거나 비었거나 읽을 수 없으면 None을 반환하며, 예외를 던지지 않는다.
 
         v2.1l: the as-is capture taken at intake (`load_effective(ws)`, `logs/effective-depmgmt.json`), the
         source of the versions the restructure carries over; None when absent / empty / unreadable. Never
@@ -2721,9 +2780,9 @@ class Orchestrator:
     EFFECTIVE_AFTER_FILE = "depmgmt-after-restructure.json"
 
     def _effective_pom_after(self) -> Optional[dict]:
-        """재구성기가 사내 parent 를 붙인 *뒤* 의 effective dependencyManagement — 별도 파일에 캡처해 as-is
-        캡처(``depmgmt.json``, 인수인계의 as-is 버전)를 절대 덮어쓰지
-        않는다. None 이면 재구성기는 관리 버전 정리를 건너뛴다.
+        """재구성기가 사내 parent를 붙인 뒤의 effective dependencyManagement를 캡처해 반환한다.
+        as-is 캡처(``depmgmt.json``)를 덮어쓰지 않도록 별도 파일에 저장한다.
+        None을 반환하면 재구성기는 관리 버전 정리를 건너뛴다.
 
         Round 9 (`layout.drop_managed_versions`): the effective dependencyManagement of the tree *after* the
         restructurer set the in-house parent, captured into a separate file so the as-is capture (`depmgmt.json`,
@@ -2754,9 +2813,10 @@ class Orchestrator:
         return data or None
 
     def _step_verify(self, pr: PhaseResult, step: PlanStep) -> bool:
-        """검증 빌드(빌드 게이트): ``mvn clean package -Dmaven.test.skip=true`` 를 돌려 오류 목록에
-        반영하고, 실패하면 수정 루프(``_verify_fix_loop``)를 돌린 뒤 최종 빌드를 한 번 더 한다. 실행의 성공
-        여부는 이 최종 빌드들이 정한다."""
+        """검증 빌드 단계를 실행한다.
+        ``mvn clean package -Dmaven.test.skip=true``를 실행해 결과를 오류 목록에 반영한다.
+        실패하면 수정 루프(``_verify_fix_loop``)를 실행한 뒤 최종 빌드를 한 번
+        더 하며, 실행의 성공 여부는 이 최종 빌드가 정한다."""
         self._flush_notes(pr)
         if self._dry_run:
             pr.notes.append(f"{step.id}: dry-run → final build skipped")
@@ -2799,11 +2859,11 @@ class Orchestrator:
 
         res = _final_build()
         self._observe_build(goal, res, step.target)
-        # v2.1z-ah: Maven 의 HTTP 차단 미러 — 수정 루프(사전 시도·LLM)를 열지 않고 실행을 멈춘다
+        # Maven의 HTTP 차단 미러에 막혔으면 수정 루프(사전 시도, LLM)를 시작하지 않고 실행을 중단한다
         blocked_http = (not res.ok and self.loop is not None and not getattr(self, "_after_abort", False)
                         and self.loop.http_blocked_abort(pr, step.phase, res, 1, where=step.id))
-        # 실패한 첫 빌드가 곧 수정 루프의 빌드 1 이다(같은 트리를
-        # 다시 빌드하지 않음). 루프가 끝나면 무조건 다시 빌드
+        # 실패한 첫 빌드를 수정 루프의 첫 빌드로 쓰므로 같은 트리를 다시 빌드하지 않는다.
+        # 루프가 끝나면 반드시 다시 빌드한다
         if not res.ok and not blocked_http and self._verify_fix_loop(pr, step, res):
             if self.loop is not None and self.loop.aborted:
                 pr.notes.append(f"{step.id}: final fix loop aborted the run ({self.loop.aborted}); the failed build stands")
@@ -2836,8 +2896,8 @@ class Orchestrator:
         return res.ok
 
     def _loop_skips(self, target: Optional[str]) -> tuple[bool, bool]:
-        """수정 루프의 대체 빌드 결과(test-compile 건너뜀, 테스트
-        실행 건너뜀) — 빌드 대상별(MSA 서비스마다 따로).
+        """수정 루프가 대체 빌드 방식으로 test-compile이나 테스트 실행을 건너뛰었는지 (test-compile 건너뜀,
+        테스트 건너뜀)으로 반환한다. MSA는 빌드 대상(서비스)별로 따로 본다.
 
         (test-compile skipped, tests skipped) of the fix loop's fallbacks for a build of `target`."""
         lp = self.loop
@@ -2853,10 +2913,11 @@ class Orchestrator:
         return bool(getattr(lp, "test_compile_skipped", False)), bool(getattr(lp, "tests_skipped", False))
 
     def _verify_fix_loop(self, pr: PhaseResult, step: PlanStep, first: BuildResult) -> bool:
-        """최종 ``mvn clean package`` 가 실패했다 → ``loop.phases.verify`` 의 스크립트 수정 루프(최대 50
-        라운드). v2 에서는 이것이 유일한 수정 루프다. 남은 클러스터가 전부 이미 차단된 것이면 돌리지
-        않는다(같은 실행에서 케이스당 한도는 ``script.max_llm_tries_per_case``). 루프를 돌렸으면 True — 호출한
-        쪽이 최종 빌드를 다시 한다(불변조건 1).
+        """최종 ``mvn clean package``가 실패하면 ``loop.phases.verify``의 스크립트 수정 루프(최대 50
+        라운드)를 실행한다. 이관에서 수정 루프가 실행되는 곳은 여기뿐이다.
+        남은 클러스터가 모두 이미 차단됐으면 실행하지 않는다.
+        케이스당 LLM 요청 상한은 ``script.max_llm_tries_per_case``다.
+        루프를 실행했으면 True를 반환하고, 호출한 쪽이 최종 빌드를 다시 한다.
 
         The final `mvn clean package` failed → the script fix loop on `loop.phases.verify` (goal `package`), after
         which the caller repeats the final build (invariant 1: the run still ends on a `clean package`). v2: this is
@@ -2903,7 +2964,8 @@ class Orchestrator:
                                    ErrorKind.PLUGIN_RESOLUTION})
 
     def _advise_plan(self, plan):
-        """``plan.advisor: llm`` 일 때만(기본 꺼짐) 싼 레시피 모델이 규칙 기반 계획을 검토한다(추가만 가능).
+        """``plan.advisor: llm``일 때만(기본값은 꺼짐) 저렴한 레시피 모델에게 규칙 기반 계획을 검토하게
+        한다. 모델은 레시피를 추가만 할 수 있다.
 
         cfg.plan.advisor == "llm": let the (cheap) recipe model review the rule-based plan (additive only)."""
         if self.cfg.plan.advisor != "llm" or self._dry_run or self.profile is None:
@@ -2924,8 +2986,9 @@ class Orchestrator:
 
     # ------------------------------------------------------------------ v2.1 error list
     def _start_error_list(self, dry_run: bool) -> None:
-        """실행의 오류 목록을 연다(``RunErrors``): 컴파일 단계부터 모든 빌드 오류, pom 교정, 검토 결과, 수정
-        시도가 여기에 쌓인다. 드라이런이면 없음(아무것도 빌드하지 않으니까).
+        """실행의 오류 목록(``RunErrors``)을 연다.
+        컴파일 단계부터 모든 빌드 오류, pom 수정, 검토 결과, 수정 시도가 여기에 쌓인다.
+        드라이런은 아무것도 빌드하지 않으므로 목록을 만들지 않는다.
 
         The run's error list (`sbmig.errors`, through `RunErrors`): from the compile step on, every build error,
         pom correction, review finding and fix try. None in a dry run (nothing builds)."""
@@ -2937,9 +3000,10 @@ class Orchestrator:
         self.errors = RunErrors.create(self.ws, self.cfg, project, factory=self._error_list_factory)
 
     def _observe_build(self, goal: str, res: BuildResult, target: Optional[str]) -> None:
-        """최종 ``mvn clean package`` 를 오류 목록에 반영(새 오류만 추가, 안 보이는 열린 항목은 해결,
-        pom-verify 검증) + 로그 한 줄. 타임아웃이거나 오류를 하나도 파싱 못 한 실패 빌드는 아무것도 해결하지
-        않는다("안 보임 ≠ 해결").
+        """최종 ``mvn clean package`` 결과를 오류 목록에 반영하고 로그 한 줄을 남긴다.
+        새 오류는 추가하고, 더 이상 나오지 않는 열린 항목은 해결로 닫고, pom-verify 항목을 확인한다.
+        타임아웃이거나 오류를 하나도 파싱하지 못한 실패 빌드는 아무 항목도 해결로 닫지 않는다.
+        오류가 보이지 않는다고 해결된 것은 아니기 때문이다.
 
         A final `mvn clean package` on the error list (only its NEW errors are added; the open entries it no longer
         shows are resolved; the pom-verify entries are verified) + one line: `mvn clean package: 25 error(s), 새 에러
@@ -2957,9 +3021,10 @@ class Orchestrator:
         log.info("%s", line)
 
     def _finalize_errors(self, report: RunReport) -> None:
-        """v2.1 마무리: 열린 항목 → unresolved, 실행 디렉터리에 errors.jsonl + errors.md, 보고서의 오류
-        항목, KB 에 이 실행의 항목을 덧붙임(``kb.record_run``, KB 가 없으면(``NullKnowledgeBase``) 없음). 실행을 실패시키지 않는다
-        — 문제는 ``errors-failed: …`` 플래그.
+        """오류 목록을 마무리한다. 열린 항목을 unresolved로 닫고, 실행 디렉토리에 errors.jsonl과 errors.md를
+        쓰고, 보고서의 오류 항목을 채우고, 이 실행의 항목을 KB에 추가한다(``kb.record_run``).
+        ``NullKnowledgeBase``면 KB에는 기록하지 않는다.
+        실패해도 실행을 실패로 만들지 않고 ``errors-failed: …`` 플래그로 남긴다.
 
         v2.1 finalize: the open entries → unresolved (`end_of_run`), `<run dir>/errors.jsonl` + `errors.md`,
         `report.error_entries` (diffs capped), the KB gets the run's entries (`kb.record_run`; not with a `NullKnowledgeBase`).
@@ -3002,9 +3067,10 @@ class Orchestrator:
             self.report.flags.append(flag)
 
     def _finalize_operator_checks(self, report: RunReport) -> None:
-        """v2.1d 보고서의 "운영자 확인 필요": 시도들과 구조 검토가 만든 메이저 업그레이드·라이브러리 교체마다
-        하나. 최종 트리에 아직 남은 것만(되돌린 시도는 빼고), 같은 (pom, 라이브러리, 버전)은 마지막 시도 것
-        하나. 플래그 ``major-upgrade``. 예외 없음.
+        """보고서의 "운영자 확인 필요" 항목을 만든다. 수정 시도와 구조 검토가 만든 메이저 업그레이드와
+        라이브러리 교체마다 하나씩 만들고 플래그 ``major-upgrade``를 붙인다.
+        최종 트리에 남은 변경만 넣고(되돌린 시도 제외), 같은 (pom, 라이브러리, 버전)은 마지막 시도의 것
+        하나만 남긴다. 예외를 던지지 않는다.
 
         v2.1d `report.operator_checks` (운영자 확인 필요): one OperatorCheck per major upgrade / library replacement
         of the error list's tries (the fix attempts' records without a list) and of the structure review — only the
@@ -3023,9 +3089,10 @@ class Orchestrator:
                              "changes": [c.change.text for c in checks]})
 
     def _operator_checks(self, report: RunReport) -> list:
-        """운영자 확인 항목 모으기: 구조 검토 커밋(되돌리지 않았을 때) → 오류 목록의 시도들(라운드·번호 순,
-        적용 안 됨·악화·되돌림·적용 실패·롤백된 시도는 제외; 목록이 없으면 FixAttempt 로) →
-        ``still_applied`` 로 최종 트리에 남은 것만."""
+        """운영자 확인 항목을 모은다. 구조 검토 커밋(되돌리지 않은 경우) -> 오류 목록의 시도(라운드, 번호
+        순) 순서로 모은 뒤 ``still_applied``로 최종 트리에 남은 것만 거른다.
+        적용되지 않았거나, 악화되어 되돌렸거나, 적용에 실패한 시도는 뺀다.
+        오류 목록이 없으면 FixAttempt 기록을 쓴다."""
         from sbmig.core.models import OperatorCheck
 
         from .fixloop import ROLLED_BACK_NOTE
@@ -3084,8 +3151,8 @@ class Orchestrator:
         return out
 
     def _still_applied(self, change: Any) -> bool:
-        """그 변경이 최종 트리에 아직 있는가. 판단에 실패하면
-        남긴다 — 한 번 더 보여 주는 편이 놓치는 것보다 낫다.
+        """그 변경이 최종 트리에 아직 남아 있는지 반환한다. 판단하지 못하면 남은 것으로 본다.
+        놓치는 것보다 한 번 더 보여 주는 편이 낫기 때문이다.
 
         `sbmig.build.depchanges.still_applied` (a failure keeps the check: better listed once too often)."""
         try:
@@ -3097,9 +3164,9 @@ class Orchestrator:
 
     # ------------------------------------------------------------------ finalize
     def _finalize_blocked(self, report: RunReport, unresolved: list[BuildError]) -> None:
-        """보고서의 차단 목록 = 이 실행의 모든 차단 항목(id 로 중복 제거). 최종 빌드가 성공했으면 오류가 더
-        이상 어디에도 없는 항목은 뺀다(예: 선택 버전 올리기로 풀림)
-        — 테스트를 건너뛰어서만 통과한 테스트 오류 항목은 남긴다.
+        """보고서의 차단 목록을 만든다. 이 실행의 모든 차단 항목을 id 기준으로 중복 없이 모은다.
+        최종 빌드가 성공했으면 오류가 더 이상 보이지 않는 항목은 뺀다.
+        다만 테스트를 건너뛰어서 통과한 테스트 오류 항목은 남긴다.
 
         RunReport.blocked = every item of the run (dedupe by id). After a green final build, items whose errors no
         longer show up anywhere (e.g. fixed by the optional bump / restructure) are dropped — unless they belong to
@@ -3124,8 +3191,9 @@ class Orchestrator:
         report.blocked = items
 
     def _resolve_javax_inventory(self) -> Optional[Callable]:
-        """javax jar 목록 함수: 주입된 것, False = 끔, 진짜 Maven
-        일 때만 ``sbmig.build.deptree``(mvn 을 띄우므로)."""
+        """javax jar 목록을 만드는 함수를 반환한다.
+        주입된 함수가 있으면 그것을 쓰고, False가 주입됐으면 끈다.
+        기본 구현 ``sbmig.build.deptree``는 mvn을 실행하므로 실제 Maven일 때만 쓴다."""
         if self._javax_inventory is False:
             return None
         if self._javax_inventory is not None:
@@ -3136,9 +3204,10 @@ class Orchestrator:
         return javax_api_inventory
 
     def _finalize_javax_inventory(self, report: RunReport) -> None:
-        """최종 빌드 뒤 classpath 에 아직 남은 javax EE API jar 와 그것을 끌고 오는 직접
-        의존성(``mvn dependency:tree``) → 보고서 섹션·플래그·후속 조치, 그리고 차단된 X1 / X2 항목에 via + 그
-        라이브러리를 가리키는 제안. 최선 노력.
+        """최종 빌드 뒤 classpath에 남은 javax EE API jar와 그것을 끌어오는 직접 의존성을
+        ``mvn dependency:tree``로 찾는다.
+        보고서 섹션, 플래그, 후속 조치를 남기고, 차단된 X1 / X2 항목에 원인 의존성(via)과 그 라이브러리를
+        바꾸라는 조치 문구를 붙인다. 실패해도 실행에는 영향이 없다.
 
         X1b (2026-10-22): after the final build, the javax EE API jars still on the resolved classpath and the
         direct dependency that drags each in (`mvn dependency:tree`) → report section, flag, follow-up, and the
@@ -3177,8 +3246,9 @@ class Orchestrator:
             report.manual_followups.append(fu)
 
     def _finalize_advisories(self, report: RunReport) -> None:
-        """라이브러리 권고의 마무리: 최종 트리에서 다시 확인(결과), 후속 조치, 그리고 인수인계 섹션(바뀐
-        버전, "이제부터 할 일")을 만든다. 예외 없음, 종료 코드를 바꾸지 않는다.
+        """라이브러리 권고를 마무리한다.
+        최종 트리에서 다시 확인하고 후속 조치와 인수인계 섹션(바뀐 버전, 앞으로 할 일)을 만든다.
+        예외를 던지지 않고 종료 코드도 바꾸지 않는다.
 
         Library advisories, finalize side: re-detect on the final tree (outcome), add their follow-ups and build
         the Handover (versions replaced + "from here on, your team"). Never raises, never changes the exit code."""
@@ -3225,9 +3295,8 @@ class Orchestrator:
 
     @staticmethod
     def _attribute_llm_fixes(report: RunReport, findings: list) -> None:
-        """권고 힌트를 프롬프트에 실었던 성공한 LLM 수정(신규·보강, 적용됨, 개선·빌드 성공)이 바꾼 파일과
-        원인 첫 문장을 그 권고에 붙인다 — 인수인계에서 "이 권고는 LLM 이 여기서 이렇게 처리했다" 를 보여
-        주려고. 인수인계 생성 전에 돈다.
+        """권고 힌트를 프롬프트에 넣었던 성공한 LLM 수정(신규, 보강)이 바꾼 파일과 원인 첫 문장을 그 권고에 붙인다.
+        인수인계에서 LLM이 그 권고를 어떻게 처리했는지 보여 주기 위해서다. 인수인계를 만들기 전에 실행한다.
 
         AdvisoryFinding.llm_fixed_files / llm_fix_notes from the run's successful LLM fixes whose prompt carried the
         advisory's hint (FixAttempt.advisory_ids; v2: LLM fix scripts — new / augment, a reuse had no prompt —,
@@ -3252,7 +3321,7 @@ class Orchestrator:
             f.llm_fixed_files, f.llm_fix_notes = files, notes
 
     def _usage_by_model(self, report: RunReport, plan_usage: Optional[LLMUsage]) -> list[LLMUsage]:
-        """모델별 LLM 사용량(수정 시도·계획 조언·구조 검토) — 보고서의 비용 표.
+        """수정 시도, 계획 조언, 구조 검토의 LLM 사용량을 모델별로 모아 반환한다. 보고서의 비용 표에 쓴다.
 
         Fix-script attempts (their own model), the plan advisor and the structure review, per model."""
         by: dict[str, LLMUsage] = {}
@@ -3272,9 +3341,9 @@ class Orchestrator:
         return list(by.values())
 
     def _infra_flags(self, report: RunReport) -> None:
-        """기반 시설 탓으로 끝난 실행에 ``infra:<종류>`` 플래그(llm / maven / jdk / repository / disk).
-        플릿의 차단기가 이것을 보고 500개 프로젝트를 줄줄이 실패시키는 대신 멈춘다. repository = 남은 오류가
-        전부 저장소·네트워크를 가리키는 해석 오류.
+        """인프라 문제로 끝난 실행에 ``infra:<종류>`` 플래그(llm / maven / jdk / repository / disk)를 붙인다.
+        플릿은 이 플래그를 보고 다음 프로젝트를 연달아 실패시키지 않고 멈춘다.
+        repository는 남은 오류가 모두 저장소나 네트워크 문제로 의존성을 받지 못한 경우다.
 
         Round 10 (A14, fleet circuit breaker): `infra:<kind>` when the run ended for an infrastructure reason —
         `infra:llm` (llm-unavailable / llm-config-error, and the run did not succeed), `infra:maven` (mvn-not-found),
@@ -3292,7 +3361,8 @@ class Orchestrator:
             add.append("infra:jdk" if self._mvn_java_problem else "infra:maven")
         if "jdk-not-21" in flags:
             add.append("infra:jdk")
-        # v2.1z-ah: Maven 의 HTTP 차단 미러 — infra:repository 보다 구체적인 원인(운영자가 고칠 곳은 Maven settings)
+        # Maven의 HTTP 차단 미러는 infra:repository보다 구체적인 원인이고, 운영자가 고칠 곳이 Maven
+        # settings이므로 따로 표시한다
         http_blocked = "aborted:http-blocked" in flags or (not report.success and self._http_blocker_trouble())
         if http_blocked:
             add.insert(0, "infra:http-blocked")
@@ -3300,7 +3370,8 @@ class Orchestrator:
             add.append("infra:repository")
         if not report.success and self._disk_full():
             add.append("infra:disk")                # the fleet pauses instead of failing the next projects too
-        # v2.1r: 최종 빌드가 target/ 파일 잠금으로 실패(러너가 다시 돌려도) — 빌드 PC 환경 문제, 플릿은 나중에 다시 돈다
+        # 재시도 후에도 target/ 파일 잠금으로 최종 빌드가 실패했으면 빌드 PC
+        # 환경 문제이므로 플릿이 나중에 다시 실행하게 한다
         if not report.success and self._file_lock_trouble():
             add.append("infra:file-lock")
         for f in add:
@@ -3308,14 +3379,15 @@ class Orchestrator:
                 flags.append(f)
 
     def _file_lock_trouble(self) -> bool:
-        """v2.1r: 실패한 최종 빌드 중 하나라도 Windows 파일 잠금(``sbmig.build.env_errors.file_lock_hit``)으로 끝났는가."""
+        """실패한 최종 빌드 중 하나라도 Windows 파일 잠금(``sbmig.build.env_errors.file_lock_hit``)으로
+        끝났는지 반환한다."""
         from sbmig.build.env_errors import file_lock_hit
 
         return any(file_lock_hit(f"{e.message}\n{e.raw}", self.cfg) is not None for r in self._verify_results
                    if not r.ok for e in r.errors)
 
     def _http_blocker_trouble(self) -> bool:
-        """v2.1z-ah: 실패한 최종 빌드 중 하나라도 Maven 의 HTTP 차단 미러(``http_blocker_hit``)를 보였는가."""
+        """실패한 최종 빌드 중 하나라도 Maven의 HTTP 차단 미러(``http_blocker_hit``)에 막혔는지 반환한다."""
         from sbmig.build.env_errors import http_blocker_hit
 
         return any(http_blocker_hit(f"{e.message}\n{e.raw}") is not None for r in self._verify_results
@@ -3334,10 +3406,9 @@ class Orchestrator:
                    for e in errs)
 
     def _finalize(self, report: RunReport) -> None:
-        """마무리(어떤 경우에도 ``_run_guard`` 가 부른다): LLM 사용량·비용, 루프의 플래그·후속 조치, 성공
-        판정(모든 최종 빌드 성공 + 재구성 실패 없음 + 중단 아님 + 빠진 최종 빌드 없음), 미해결 오류, 차단
-        목록, infra 플래그, 운영자 확인, 권고·인수인계, 오류
-        목록·KB 기록, 보고서 → 마지막에 느린 patch / zip."""
+        """실행을 마무리한다. ``_run_guard``가 어떤 경우에도 호출한다.
+        LLM 사용량과 비용, 수정 루프의 플래그와 후속 조치, 성공 여부, 미해결 오류, 차단 목록, infra 플래그, 운영자 확인,
+        권고와 인수인계, 오류 목록과 KB 기록, 보고서 순서로 처리하고, 오래 걸리는 patch / zip은 마지막에 만든다."""
         if self._flow == FLOW_REMEDIATION:
             self._finalize_remediation(report)
             return
@@ -3377,11 +3448,11 @@ class Orchestrator:
                   "compiles and fixes the tests (`mvn test-compile`) before relying on CI")
             if fu not in report.manual_followups:
                 report.manual_followups.append(fu)
-        # 성공 = 계획된 최종 빌드가 전부 돌았고 전부 성공 — MSA
-        # 에서 svc-a 만 통과하고 svc-b 가 죽은 실행은 성공이 아니다
+        # 중단된 실행은 성공이 아니고, 계획한 최종 빌드가 모두 실행되어 모두 성공해야 성공이다
+        # MSA에서 일부 서비스만 통과하면 성공이 아니다
         # round 10 (invariant 1, A7): an aborted run is never a success, and every planned final build must have
         # run — an MSA run whose svc-a verify passed before svc-b's step crashed used to say BUILD SUCCESS
-        # v2.1z-c: 속 빈 리액터(소스가 모듈 밖에 있어 이관되지 않음)는 빌드가 통과해도 성공이 아니다
+        # 소스 없는 reactor는 소스가 모듈 밖에 있어 이관되지 않았으므로 빌드가 통과해도 성공이 아니다
         report.success = self.build_succeeded(report)
         # unresolved: what the as-is owner must look at
         unresolved: list[BuildError] = []
@@ -3416,8 +3487,8 @@ class Orchestrator:
         for name in ("profile.json", "plan.json"):
             if (self.ws.run_dir / name).exists():
                 out[name.replace(".json", "")] = str(self.ws.run_dir / name)
-        # 순서가 중요: KB 기록과 보고서가 먼저, 느린 patch / zip
-        # 은 마지막 — zip 도중 죽어도 중요한 것은 이미 남아 있다
+        # zip을 만들다 중단되어도 중요한 결과는 남도록 KB 기록과 보고서를 먼저
+        # 쓰고, 오래 걸리는 patch / zip은 마지막에 만든다
         # round 10 (A13): the KB records and the report come first, the slow patch / zip last — a kill while zipping
         # a 1 GB tree loses nothing that matters; their paths are announced up front and dropped again on failure
         want_diff = bool(self.cfg.report.include_diff and (self.ws.root / ".git").exists())

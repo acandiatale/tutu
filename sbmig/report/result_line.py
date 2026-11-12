@@ -1,10 +1,11 @@
-"""``SBMIG-RESULT …`` 한 줄 결과와 주의 코드(attn) — 운영자가 회사 PC(복사·붙여넣기 불가, cp949 콘솔)에서
-화면을 보고 손으로 다시 쳐서 보고하는 줄이다. 흐름상 위치: ``sbmig run`` 이 끝날 때 콘솔·로그에 찍고, 플릿은
-프로젝트마다 한 줄 + ``summary.csv`` 의 attention 칸. 핵심 진입점: ``report_result_line``(실행 보고서 → 한
-줄), ``result_line``(조립), ``attention_codes``(중요한 것 먼저), ``report_exit_code``(0 성공 · 2 빌드 실패 · 3
-거부 / 중단). 지킬 것: 반드시 한 줄, ASCII 만(비ASCII 는 ``?``), 필드 순서·이름을 바꾸지 말 것 — 운영자 보고
-양식과 플릿 집계가 이 형식을 그대로 읽는다. 새 필드는 끝에,
-값이 있을 때만 붙인다(``review=`` v2, ``major=`` v2.1d).
+"""실행 결과 한 줄(``SBMIG-RESULT …``)과 주의 코드(attn)를 만드는 모듈.
+운영자가 회사 PC의 cp949 콘솔 화면을 보고 손으로 옮겨 적어 보고하는 줄이다.
+``sbmig run``이 끝날 때 콘솔과 로그에 출력하고, 플릿은 프로젝트마다 한 줄과 ``summary.csv``의 attention 칸에 쓴다.
+- 진입점: ``report_result_line``, ``result_line``, ``attention_codes``,
+  ``report_exit_code``(0 성공, 2 빌드 실패, 3 거부 / 중단)
+- 반드시 한 줄이고 ASCII만 쓴다. ASCII가 아닌 문자는 ``?``로 바꾼다
+- 운영자 보고 양식과 플릿 집계가 이 형식을 그대로 읽으므로 필드 순서와 이름을 바꾸지 않는다.
+  새 필드는 끝에, 값이 있을 때만 붙인다
 
 One-line results and attention codes (round 10, operators retype them from a cp949 console).
 
@@ -51,11 +52,11 @@ Codes, most important first:
     blocked:<reason>      one per distinct BlockReason (`blocked:external_javax_api`)
     unresolved:<n>        errors left after the final build
     restructure-failed, llm-budget-exhausted, time-budget-exhausted, javax-api-on-classpath, tests-skipped,
-    test-compile-skipped, tests-not-compiled, major-upgrade (v2.1d: 운영자 확인 필요),
-    jar-coordinates-unknown (v2.1j: Ant 합성 pom 의 좌표 미상 jar),
-    parent-chain-no-boot-bom (v2.1s: 사내 부모 체인이 Boot BOM 을 import 하지 않음),
-    hollow-reactor (v2.1z-c: 리액터가 컴파일하는 소스가 없음 — 소스는 모듈 밖, 이관 안 됨),
-    remediation:not-ready (v2.1z-aj: 조치만 하는 실행이 IVAS 값·Maven 준비가 없어 시작하지 못함)   the flags of the same name
+test-compile-skipped, tests-not-compiled, major-upgrade (운영자 확인 필요),
+jar-coordinates-unknown (Ant 합성 pom에 좌표를 모르는 jar가 있음),
+parent-chain-no-boot-bom (사내 부모 체인이 Boot BOM을 import하지 않음),
+hollow-reactor (reactor가 컴파일하는 소스가 없어 모듈 밖의 소스가 이관되지 않음),
+    remediation:not-ready (조치만 하는 실행이 IVAS 설정이나 Maven이 준비되지 않아 시작하지 못함)   the flags of the same name
     incomplete            exit 2 with none of the above
 
 
@@ -82,14 +83,14 @@ _NON_ASCII_RE = re.compile(r"[^\x21-\x7e]+")
 
 
 def _ascii_token(v: Any) -> str:
-    # cp949 콘솔에서 깨지거나 손으로 칠 수 없는 글자(한글·공백
-    # 포함)는 "?" 로 — 토큰 하나가 공백으로 쪼개지지 않게
+    # 토큰 하나가 공백으로 쪼개지지 않도록 cp949 콘솔에서 깨지거나 손으로
+    # 칠 수 없는 문자(한글, 공백 포함)는 "?"로 바꾼다
     return _NON_ASCII_RE.sub("?", str(v)) or "-"
 
 
 def infra_kind(flags: Iterable[str]) -> Optional[str]:
-    """인프라 원인 종류(``llm`` / ``maven`` / ``jdk`` / ``repository`` …): ``infra:<kind>`` 플래그(첫 것)
-    우선, 없으면 예전 플래그(``llm-unavailable`` 등)에서.
+    """인프라 원인 종류(``llm``, ``maven``, ``jdk``, ``repository`` 등)를 반환한다.
+    ``infra:<kind>`` 플래그 중 첫 번째를 쓰고, 없으면 이전 형식의 플래그(``llm-unavailable`` 등)에서 찾는다.
 
     `llm` / `maven` / `jdk` / `repository` / … from `infra:<kind>` flags (first wins), else from the older flags."""
     flags = list(flags or [])
@@ -104,17 +105,17 @@ def infra_kind(flags: Iterable[str]) -> Optional[str]:
 
 def attention_codes(*, flags: Iterable[str] = (), exit_code: Optional[int] = None, status: Optional[str] = None,
                     error: Optional[str] = None, blocked_reasons: Iterable[str] = (), unresolved: int = 0) -> list[str]:
-    """실행 하나의 주의 코드들(모듈 docstring 의 표), 중요한 것 먼저, 중복 없이.
-    ``fleet status --attention`` 이 첫 코드로 프로젝트를 묶으므로 순서가 곧 의미다.
+    """실행 하나의 주의 코드를 중요한 것부터 중복 없이 반환한다.
+    ``fleet status --attention``이 첫 코드로 프로젝트를 묶으므로 순서가 중요하다.
 
     The attention codes of one run (see the module docstring), most important first, no duplicates."""
     flags = list(flags or [])
     err = (error or "").strip()
     codes: list[str] = []
-    # 초록 실행(exit 0)에는 infra 코드를 붙이지 않는다 — 중간에 LLM 이 한 번 끊겼어도 결과는 정상이다
+    # 중간에 LLM 연결이 한 번 끊겼어도 결과는 정상이므로 성공한 실행(exit 0)에는 infra 코드를 붙이지 않는다
     kind = err[len(INFRA_PREFIX):].split()[0] if err.startswith(INFRA_PREFIX) and len(err) > len(INFRA_PREFIX) \
         else (infra_kind(flags) if exit_code not in (0, None) or status == "pending" else None)
-    # v2.1r: target/ 파일 잠금으로 차단된 실행은 빌드 PC 환경 탓 — infra:repository 처럼 infra:file-lock
+    # target/ 파일 잠금으로 차단된 실행은 빌드 PC 환경 문제이므로 infra:file-lock 코드를 붙인다
     if not kind and exit_code not in (0, None) and any(str(r).split(":", 1)[0] == FILE_LOCK_REASON
                                                        for r in blocked_reasons or ()):
         kind = FILE_LOCK_KIND
@@ -134,7 +135,8 @@ def attention_codes(*, flags: Iterable[str] = (), exit_code: Optional[int] = Non
         if not kind or reason:
             codes.append("aborted:" + reason if reason else "aborted")
     reasons = [str(r).split(":", 1)[0] for r in blocked_reasons or ()]
-    # v2.1y: LLM 이 프로젝트 밖의 차단 사유를 말해 소유팀 결정을 기다리는 실행 — 차단 코드들 앞에 한 번(fleet 이 첫 코드로 묶는다)
+    # LLM이 프로젝트 밖의 차단 사유를 들어 담당 팀의 결정을 기다리는 실행.
+    # 플릿이 첫 코드로 묶으므로 차단 코드들 앞에 한 번 넣는다
     if NEEDS_OWNER_REASON in reasons:
         codes.append(OWNER_DECISION)
     for r in reasons:
@@ -148,7 +150,7 @@ def attention_codes(*, flags: Iterable[str] = (), exit_code: Optional[int] = Non
 
 
 def report_attention(report: Any, exit_code: Optional[int]) -> list[str]:
-    """실행 보고서(RunReport)의 주의 코드.
+    """실행 보고서(RunReport)의 주의 코드를 반환한다.
 
     `attention_codes` of a `RunReport`."""
     return attention_codes(flags=getattr(report, "flags", []) or [], exit_code=exit_code,
@@ -157,8 +159,8 @@ def report_attention(report: Any, exit_code: Optional[int]) -> list[str]:
 
 
 def result_attention(r: Any) -> list[str]:
-    """플릿 프로젝트 결과(FleetProjectResult)의 주의 코드. 아직 안 돈 프로젝트(인프라 오류 없는 pending,
-    running)는 아무도 볼 필요가 없으므로 [].
+    """플릿 프로젝트 결과(FleetProjectResult)의 주의 코드를 반환한다.
+    아직 실행되지 않은 프로젝트는 볼 필요가 없으므로 빈 목록을 반환한다.
 
     `attention_codes` of a `FleetProjectResult` (`summary.csv` attention, `fleet status --attention`); a project
     that has not run yet (pending without an infra error, running) needs nobody."""
@@ -175,10 +177,9 @@ def result_line(run_id: Any, exit_code: Any, build_ok: bool, *, unresolved: int 
                 llm_calls: int = 0, attention: Iterable[str] = (), review: Optional[str] = None,
                 open_errors: Optional[int] = None, resolved_errors: Optional[int] = None, major: int = 0,
                 remediation: Optional[str] = None, flow: Optional[str] = None) -> str:
-    """``SBMIG-RESULT`` 한 줄을 조립한다. ``open=`` / ``resolved=`` 는 오류 목록이 있을 때만(충돌 줄에는
-    없음), ``review=`` 는 구조 검토가 있었을 때만, ``major=`` 는 1 이상일 때만
-    붙인다 — 예전 형식을 읽는 쪽이 깨지지 않게. ``remediation=`` 은 이어서 돈(또는 스위치가 켜진 채 건너뛴) 취약점 조치가 있을 때만.
-    ``flow=`` 는 실행 방식이 ``full`` 이 아닐 때만(``remediation=`` 바로 앞).
+    """``SBMIG-RESULT`` 한 줄을 조립한다.
+    이전 형식을 읽는 쪽이 깨지지 않도록 ``open=``, ``resolved=``, ``review=``, ``major=``, ``remediation=``은 값이 있을
+    때만 붙인다. ``flow=``는 실행 방식이 ``full``이 아닐 때만 ``remediation=`` 바로 앞에 붙인다.
 
     Assemble one `SBMIG-RESULT` line; optional fields appear only when they have a value (`flow=` only for a flow other
     than `full`)."""
@@ -198,7 +199,7 @@ OPEN_STATUSES = ("open", "unresolved")
 
 
 def entry_counts(entries: Iterable[Any]) -> tuple[int, int]:
-    """오류 목록의 (열린 수, 해결 수). ErrorEntry 객체와 그 dict(플릿이 JSON 에서 읽은 것) 둘 다 받는다.
+    """오류 목록의 (열린 수, 해결 수)를 반환한다. ErrorEntry 객체와 플릿이 JSON에서 읽은 dict를 모두 받는다.
 
     (open, resolved) of an error list (`ErrorEntry` objects or their dicts)."""
     o = r = 0
@@ -210,7 +211,7 @@ def entry_counts(entries: Iterable[Any]) -> tuple[int, int]:
 
 
 def counts_open_resolved(counts: Optional[dict]) -> tuple[int, int]:
-    """상태별 개수 dict(``FleetProjectResult.error_counts``)에서 (열린 수, 해결 수).
+    """상태별 개수 dict(``FleetProjectResult.error_counts``)에서 (열린 수, 해결 수)를 반환한다.
 
     (open, resolved) from a status → count dict (`FleetProjectResult.error_counts`)."""
     c = counts or {}
@@ -218,8 +219,8 @@ def counts_open_resolved(counts: Optional[dict]) -> tuple[int, int]:
 
 
 def report_exit_code(report: Any) -> int:
-    """보고서의 ``sbmig run`` 종료 코드: 3 = 중단·거부(``aborted[:…]`` / ``mvn-not-found``), 0 = 빌드 성공이고
-    차단 없음, 그 밖은 2.
+    """보고서로 ``sbmig run``의 종료 코드를 정한다.
+    중단이나 거부(``aborted[:…]``, ``mvn-not-found``)는 3, 빌드가 성공하고 차단이 없으면 0, 그 밖은 2다.
 
     The `sbmig run` exit code of a report: 3 aborted (flag `aborted[:…]` / `mvn-not-found`), 0 green with nothing
     blocked, else 2 (`sbmig.cli.run_exit_code` is this function)."""
@@ -232,8 +233,9 @@ def report_exit_code(report: Any) -> int:
 
 
 def report_result_line(report: Any, exit_code: Optional[int] = None, run_id: Optional[str] = None) -> str:
-    """끝난 ``sbmig run`` 의 ``SBMIG-RESULT …`` 줄(``run_id`` 를 주면 보고서 것 대신, ``exit_code`` 기본은
-    ``report_exit_code``). ``major=`` 는 최종 트리에 남은 메이저 업그레이드 수(인수인계 "운영자 확인 필요").
+    """끝난 ``sbmig run``의 ``SBMIG-RESULT …`` 줄을 만든다.
+    ``run_id``를 주면 보고서의 값 대신 쓰고, ``exit_code`` 기본값은 ``report_exit_code``의 결과다.
+    ``major=``는 최종 트리에 남은 메이저 업그레이드 수다.
 
     The `SBMIG-RESULT …` line of a finished `sbmig run` (`run_id` overrides the report's; `exit_code` defaults
     to `report_exit_code(report)`)."""
@@ -252,7 +254,8 @@ def report_result_line(report: Any, exit_code: Optional[int] = None, run_id: Opt
 
 
 def remediation_token(report: Any) -> Optional[str]:
-    """``remediation=`` 의 값: 이어서 돈 조치의 상태(SUCCEEDED …) 또는 "skipped". 조치 요약이 없으면 None(토큰 없음).
+    """``remediation=`` 값을 반환한다.
+    이어서 실행한 조치의 상태(SUCCEEDED 등)나 "skipped"이고, 조치 요약이 없으면 None을 반환한다.
 
     The `remediation=` value of a report (`report.remediation["status"]`), None without a chained remediation."""
     rem = getattr(report, "remediation", None)
@@ -266,9 +269,9 @@ BUILD_FAILED_REASONS = ("baseline_build_failed", "candidate_build_failed")
 
 
 def remediation_build_ok(report: Any) -> bool:
-    """실행 방식 remediation 의 ``build=`` 값: 올린 그대로의 baseline 빌드가 돌았고 통과했으며, 이유에 baseline / 후보 빌드 실패가 없고,
-    전달 ZIP 이 build_ok=false 가 아니면 True. 시작하지 않은 실행(skipped·요약 없음·접수 거부)과 baseline 빌드 전에 멈춘 실행은 False.
-    조치의 성공 여부(종료 코드)와는 따로다.
+    """취약점 조치만 하는 실행의 ``build=`` 값을 정한다. 업로드한 그대로의 조치 전 빌드가 통과했고, 빌드
+    실패 사유가 없고, 결과 ZIP이 build_ok=false가 아니면 True다.
+    시작하지 않았거나 조치 전 빌드 전에 멈춘 실행은 False다. 조치의 성공 여부(종료 코드)와는 별개다.
 
     `build=` of a remediation-flow line: the baseline build ran and passed, no build-failure reason, no delivery with
     `build_ok: false`. Independent of the remediation's verdict (the exit code)."""
