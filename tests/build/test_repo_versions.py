@@ -706,3 +706,39 @@ def test_settings_plugin_repositories_join_the_set_and_a_catch_all_http_mirror_f
     grouped = RepositoryLookup(_cfg(tmp_path, settings_file=str(user)), fetch=FakeFetch({}))
     assert [u for u, _c, _o in grouped.repository_urls()] == ["http://nexus.company.local/repository/maven-public/"]
     assert not any(n.startswith("Maven Central is not covered") for n in grouped.url_notes)
+
+
+USER_REDEFINES_BLOCKER_ID = """<?xml version="1.0" encoding="UTF-8"?>
+<settings xmlns="http://maven.apache.org/SETTINGS/1.0.0">
+  <mirrors><mirror><id>maven-default-http-blocker</id><mirrorOf>external:http:*,!x-public,!x-snap</mirrorOf>
+    <url>http://nexus.invalid:8081/repository/x-release</url><blocked>false</blocked></mirror></mirrors>
+  <profiles><profile><id>co</id><repositories>
+    <repository><id>x-other</id><url>http://nexus.invalid:8081/repository/x-other</url></repository>
+    <repository><id>x-public</id><url>http://nexus.invalid:8081/repository/x-public</url></repository>
+    <repository><id>x-snap</id><url>http://nexus.invalid:8081/repository/x-snap</url></repository>
+  </repositories></profile></profiles>
+  <activeProfiles><activeProfile>co</activeProfile></activeProfiles>
+</settings>
+"""
+
+
+@pytest.mark.parametrize("with_global_blocker", [False, True])
+def test_a_redefined_blocker_id_is_an_ordinary_mirror(tmp_path, monkeypatch, with_global_blocker):
+    """Company settings shape: the user settings REDEFINE the id `maven-default-http-blocker` as an ordinary mirror (real URL,
+    `<blocked>false</blocked>`, mirrorOf `external:http:*,!x-public,!x-snap`). The id decides nothing: covered repositories go
+    to that mirror's URL, the excluded ids keep their own URLs — also when Maven's global settings still ship the blocker under
+    the same id (Maven's merge drops the global mirror the user settings redefine)."""
+    user = tmp_path / "user-settings.xml"
+    user.write_text(USER_REDEFINES_BLOCKER_ID, encoding="utf-8")
+    if with_global_blocker:
+        home = tmp_path / "maven-home"
+        (home / "conf").mkdir(parents=True)
+        (home / "conf" / "settings.xml").write_text(GLOBAL_WITH_BLOCKER, encoding="utf-8")
+        monkeypatch.setenv("MAVEN_HOME", str(home))
+        from sbmig.build import repo_versions as rv_mod
+        monkeypatch.setattr(rv_mod, "global_settings_file", _real_global_settings_file)
+    look = RepositoryLookup(_cfg(tmp_path, settings_file=str(user)), fetch=FakeFetch({}))
+    urls = [u for u, _c, _o in look.repository_urls()]
+    assert urls == ["http://nexus.invalid:8081/repository/x-release/", "http://nexus.invalid:8081/repository/x-public/",
+                    "http://nexus.invalid:8081/repository/x-snap/", CENTRAL]
+    assert not any("HTTP blocker" in n for n in look.url_notes)

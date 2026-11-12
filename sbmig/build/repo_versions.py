@@ -874,7 +874,17 @@ class RepositoryLookup:
                     self.settings_missing.append(f"{f} ({origin}): {state}")
             # (id, url, mirrorOf, creds, origin, blocked) — user entries first: a user mirror that redefines the global
             # blocker's id (the documented override) wins by order, and `blocked` is that file's flag, not the id's
-            mirrors = [(mid, url, mo, creds, origin, mid in d.blocked) for d, origin in datas for mid, url, mo, creds in d.mirrors]
+            # Maven's merge also DROPS a global mirror whose id the user settings redefine: a company settings.xml reuses the id
+            # `maven-default-http-blocker` for its real Nexus mirror with `!id` exclusions — the global blocker under that id must
+            # not catch the excluded repositories afterwards (they keep their own URLs, as in Maven)
+            mirrors = []
+            mirror_ids: set[str] = set()
+            for d, origin in datas:
+                for mid, url, mo, creds in d.mirrors:
+                    if mid and mid in mirror_ids:
+                        continue
+                    mirror_ids.add(mid)
+                    mirrors.append((mid, url, mo, creds, origin, mid in d.blocked))
             servers: dict[str, Optional[tuple[str, str]]] = {}
             for d, _o in reversed(datas):             # user entries win over global ones
                 servers.update(d.servers)

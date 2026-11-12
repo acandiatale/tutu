@@ -413,13 +413,21 @@ Then the final build again, the report (Handover first, "Structure review", fix 
   once more — and the zero-LLM pre-try `sbmig-parent` in the build loop; a foreign parent → continue with flag
   `rewrite-skipped-asis-parent`. Switch `openrewrite.unresolvable_asis_parent: align | continue | abort` (default align).
   Fixture `boot-asis-parent-unpublished`.
-- **Maven's HTTP repository blocker (v2.1z-ah, the real cause of that company run)**: Maven ≥ 3.8.1 routes `http://` repositories to
-  the blocked mirror `maven-default-http-blocker`; the company settings.xml exempts repositories in that mirror's `mirrorOf`
-  (`external:http:*,!<id>`) and had exempted only the release repository, so the snapshots repository (where the as-is parent
-  SNAPSHOT lives) was refused — even the copy in `.m2`, because Maven ties a cached file to the repository id it came from. The
-  user's fix: every repository id used goes into the exception list (PC settings.xml AND the pod's settings.xml in ConfigMap
-  `sbmig-config`). sbmig never edits settings; it passes `-s` only when `build.settings_file` is set. `Blocked mirror for
-  repositories` is now its own environment abort: `attn=infra:http-blocked,aborted:http-blocked`, journal `maven_http_blocked`, a
+- **Maven's HTTP repository blocker and the company settings.xml (v2.1z-ah; the settings shape corrected 2026-11-12 from the
+  user's reading of the file)**: Maven ≥ 3.8.1 ships the blocked mirror `maven-default-http-blocker` (`external:http:*`,
+  `http://0.0.0.0/`) in `<maven home>/conf/settings.xml`. The company settings.xml REDEFINES that id as an ordinary mirror
+  (`external:http:*`, the release repository's URL, `<blocked>false</blocked>`; a second entry with another id and a `mirrorOf`
+  that matches nothing is inert; `central` is mirrored to Maven Central). Nothing is blocked there, but every `http://`
+  repository that `mirrorOf` covers is answered by the release repository: the snapshots / public repositories of the
+  `<repositories>` block were never asked, so the as-is parent SNAPSHOT was missing — even the copy in `.m2`, because Maven ties
+  a cached file to the repository id it came from. A mirror's `<url>` is where requests go, not an allow list; Maven takes the
+  first matching mirror (exact id, then patterns in order). The user's fix, which made the run pass on the company PC with the
+  code from before v2.1z-ag: `,!<repository id>` for the other repositories in that mirror's `mirrorOf` (PC settings.xml AND
+  the pod's settings.xml in ConfigMap `sbmig-config`). **The id `maven-default-http-blocker` in a Maven message is therefore
+  no evidence of blocking** (`Could not find artifact … in maven-default-http-blocker (<real URL>)` is an ordinary miss with
+  such settings): `http_blocker_hit` needs `Blocked mirror for repositories` or the blocker address `http://0.0.0.0`. sbmig
+  never edits settings; it passes `-s` only when `build.settings_file` is set. A real `Blocked mirror for repositories` is its
+  own environment abort: `attn=infra:http-blocked,aborted:http-blocked`, journal `maven_http_blocked`, a
   Handover line naming the repository, the settings file and the fix; no parent alignment / pre-try / retry / LLM runs for it; a
   preflight WARNING `maven_http_blocker_active` when the settings already route an http repository to a blocking mirror.
 - **Remediation, first real-Maven runs (2026-11-11, ~15 chained runs on fixtures with a fake IVAS server)**: the remediation now

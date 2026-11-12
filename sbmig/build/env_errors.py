@@ -4,8 +4,9 @@
 ``file_lock`` 으로 차단할지, 오류 단계(``sbmig.errors.entries.error_stage``)가 그 오류를 '어느 단계도 증명하지 못함' 으로
 볼지 정한다. 핵심 진입점: ``file_lock_hit(text, cfg=None)``, ``file_lock_patterns(cfg=None)``. 지킬 것: 패턴은
 ``knowledge/config/build_env_errors.yml`` 의 ``file_lock:`` 목록(회사가 자기 백신 문구를 더할 수 있게), 파일이 없거나
-비면 내장 목록; 예외를 내지 않는다. v2.1z-ah: Maven(3.8.1 이상)의 HTTP 저장소 차단 미러(``maven-default-http-blocker`` /
-``Blocked mirror for repositories``)도 여기서 알아본다(``http_blocker_hit``) — 프로젝트도 sbmig 도 고칠 수 없는 환경 문제라
+비면 내장 목록; 예외를 내지 않는다. v2.1z-ah: Maven(3.8.1 이상)의 HTTP 저장소 차단(``Blocked mirror for repositories`` 문구
+또는 내장 차단기의 가짜 주소 ``http://0.0.0.0``; ``maven-default-http-blocker`` id 만으로는 차단이 아님)도 여기서 알아본다
+(``http_blocker_hit``) — 프로젝트도 sbmig 도 고칠 수 없는 환경 문제라
 실행을 한 번에 멈추고(``aborted:http-blocked``) 운영자에게 Maven settings 를 고치라고 말한다(``http_blocked_followup``);
 사전 점검은 settings 에 그런 차단이 이미 걸려 있는지 본다(``active_http_blockers``, 경고만).
 
@@ -16,8 +17,10 @@ freshly written jar. `file_lock_hit` tells whether a log text shows one (and whi
 unreadable or empty. Never raises.
 
 v2.1z-ah: Maven's HTTP repository blocker (Maven >= 3.8.1, mirror `maven-default-http-blocker` in
-`<maven home>/conf/settings.xml`, or any mirror with `<blocked>true</blocked>`): `http_blocker_hit` reads the blocked
-repositories from Maven's `Blocked mirror for repositories: [...]` text (credentials removed), `http_blocked_reason` /
+`<maven home>/conf/settings.xml`, or any mirror with `<blocked>true</blocked>`): `http_blocker_hit` needs evidence of a
+block — Maven's `Blocked mirror for repositories: [...]` text (the blocked repositories are read from it, credentials
+removed) or the built-in blocker's pseudo address `http://0.0.0.0`; the id `maven-default-http-blocker` alone is not
+evidence (a settings file may redefine it as an ordinary mirror). `http_blocked_reason` /
 `http_blocked_followup` say what to change in the Maven settings, `active_http_blockers` checks the settings files and
 the poms before any build (preflight warning only)."""
 from __future__ import annotations
@@ -132,7 +135,16 @@ HTTP_BLOCKED_PREFIX = "Maven (3.8.1+) refuses the HTTP repositor"
 _BLOCKED_LIST_RE = re.compile(r"(?:from/to (?P<mid>[^\s()]+) \((?P<murl>[^()\s]*)\): )?"
                               r"Blocked mirror for repositories: \[(?P<list>[^\]\r\n]*)\]")
 _BLOCKED_ENTRY_RE = re.compile(r"(?P<id>[^\s,()\[\]]+) \((?P<url>[^,()\s]+)(?:,[^()]*)?\)")
-_BLOCKER_ID_RE = re.compile(re.escape(HTTP_BLOCKER_ID))
+# Maven's built-in blocker points at the pseudo address http://0.0.0.0/. 호출자는 빌드 로그 전체를 넘긴다 — 플러그인이나
+# 애플리케이션이 찍은 `http://0.0.0.0:8080` 같은 줄을 차단으로 읽지 않게, Maven 이 그 주소를 쓰는 문장 꼴로만 본다:
+# `from/to <id> (http://0.0.0.0/)`, `in <id> (http://0.0.0.0/)`, `was not found in | failed to transfer from http://0.0.0.0/
+# during a previous attempt` (the whole build log is searched, so only Maven's own message shapes count)
+_BLOCKER_URL_RE = re.compile(r"(?:from/to|\bin) [^\s()]+ \(https?://0\.0\.0\.0/?\)"
+                             r"|(?:was not found in|failed to transfer from) https?://0\.0\.0\.0/? during a previous attempt")
+# the mirror id next to that pseudo address: `from/to <id> (http://0.0.0.0/)`, `in <id> (http://0.0.0.0/)`
+_BLOCKER_URL_ID_RE = re.compile(r"(?:from/to|\bin) (?P<mid>[^\s()]+) \(https?://0\.0\.0\.0/?\)")
+# the cached-failure form: `was not found in http://0.0.0.0/ … until the update interval of <id> has elapsed`
+_CACHED_ID_RE = re.compile(r"update interval of (?P<mid>[^\s()]+) has elapsed")
 
 
 @dataclass(frozen=True)
@@ -184,15 +196,24 @@ def strip_userinfo(url: str) -> str:
 
 
 def http_blocker_hit(text: str) -> HttpBlockerHit | None:
-    """Maven 출력에 HTTP 차단 미러가 보이면(``Blocked mirror for repositories`` / ``maven-default-http-blocker``) 그 미러와
-    거부된 저장소들(모든 줄에서 모아 id 기준 중복 제거, URL 의 자격증명은 지움), 아니면 None. 예외 없음.
+    """Maven 이 실제로 막은 증거가 있을 때만 그 차단 미러와 거부된 저장소들(모든 줄에서 모아 id 기준 중복 제거, URL 의
+    자격증명은 지움), 아니면 None. 증거는 둘 중 하나: ``Blocked mirror for repositories`` 문구(미러 id 무관), 또는 내장 차단기의
+    가짜 주소 ``http://0.0.0.0`` (문구 없는 전송 실패·캐시된 실패 형태). ``maven-default-http-blocker`` id 만 보이는 글은 차단이
+    아니다 — 회사 settings 가 그 id 를 실제 Nexus 를 가리키는 보통 미러(``<blocked>false</blocked>``)로 다시 정의해 쓰므로, 평범한
+    아티팩트 누락도 그 id 를 이름에 단다. 예외 없음.
 
-    The blocker Maven reported (`Blocked mirror for repositories: [...]` or the `maven-default-http-blocker` id) with the
-    refused repositories of every occurrence (deduplicated by id, credentials removed); None when the text shows none.
+    The blocker Maven reported, only with evidence that Maven actually blocked: the phrase `Blocked mirror for repositories:
+    [...]` (any mirror id), or the built-in blocker's pseudo address `http://0.0.0.0` (the transfer / cached-failure forms
+    without the phrase). The bare id `maven-default-http-blocker` is not evidence: a settings file may redefine that id as
+    an ordinary mirror with a real URL, and Maven names it in every plain resolution failure. Returns the mirror id and the
+    refused repositories of every occurrence (deduplicated by id, credentials removed); None when the text shows no block.
     Never raises."""
-    if not text or ("Blocked mirror for repositories" not in text and HTTP_BLOCKER_ID not in text):
+    if not text:
         return None
     try:
+        phrase = "Blocked mirror for repositories" in text
+        if not phrase and not _BLOCKER_URL_RE.search(text):
+            return None
         hit = HttpBlockerHit()
         mid = ""
         seen: set[str] = set()
@@ -203,8 +224,15 @@ def http_blocker_hit(text: str) -> HttpBlockerHit | None:
                 if rid not in seen:
                     seen.add(rid)
                     hit.repositories.append(BlockedRepository(rid, strip_userinfo(e.group("url"))))
-        if not mid and not hit.repositories and not _BLOCKER_ID_RE.search(text):
-            return None
+        if not mid:
+            # 미러 id 는 가짜 주소가 있는 줄에서만 읽는다 — 다른 줄의 보통 미러 id 를 차단기로 착각하지 않게
+            for line in text.splitlines():
+                if not _BLOCKER_URL_RE.search(line):
+                    continue
+                m2 = _BLOCKER_URL_ID_RE.search(line) or _CACHED_ID_RE.search(line)
+                if m2:
+                    mid = m2.group("mid")
+                    break
         hit.mirror_id = mid or HTTP_BLOCKER_ID
         return hit
     except Exception as e:  # noqa: BLE001 - a matcher problem means "no blocker", never a failed step

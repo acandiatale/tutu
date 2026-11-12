@@ -3596,9 +3596,17 @@ parent POM …` wrapper for a parent, after `Failed to read artifact descriptor 
 sbmig can change that.
 
 - **Classifier** (`sbmig/build/env_errors.py`): `http_blocker_hit(text) -> HttpBlockerHit | None` — `mirror_id` (the mirror
-  named after `from/to`, else `maven-default-http-blocker`) and `repositories: [BlockedRepository(id, url)]` from every bracket
-  list in the text (deduplicated by id; `user:password@` removed by `strip_userinfo`). Matches `Blocked mirror for repositories`
-  or the bare blocker id. `http_blocked_reason(hit)` (one sentence) and `http_blocked_followup(hit, cfg)` (the Handover line:
+  named after `from/to`, `in` or `update interval of`, else `maven-default-http-blocker`) and
+  `repositories: [BlockedRepository(id, url)]` from every bracket list in the text (deduplicated by id; `user:password@` removed
+  by `strip_userinfo`). A hit needs evidence that Maven blocked: the phrase `Blocked mirror for repositories` (any mirror id) or
+  the built-in blocker's pseudo address in one of Maven's own message shapes — `from/to <id> (http://0.0.0.0/)`,
+  `in <id> (http://0.0.0.0/)`, `… was not found in | failed to transfer from http://0.0.0.0/ during a previous attempt … update
+  interval of <id> …` (the whole build log is searched, so a `http://0.0.0.0:8080` line of a plugin or an application is no
+  evidence). The id
+  `maven-default-http-blocker` alone is not a hit: a settings file may redefine that id as an ordinary mirror (real URL,
+  `<blocked>false</blocked>`), and Maven then names it in every plain resolution failure, which goes to the normal handling.
+  The repository lookup (`RepositoryLookup`) and the preflight treat a mirror as blocking by `<blocked>true</blocked>` or the
+  `0.0.0.0` URL only, and drop a global mirror whose id the user settings redefine (Maven's merge). `http_blocked_reason(hit)` (one sentence) and `http_blocked_followup(hit, cfg)` (the Handover line:
   `Maven (3.8.1+) refuses the HTTP repository `<id>` (<url>) via the blocked mirror `<mirror>` — not a project or sbmig problem.
   Fix the Maven settings: (a) an https URL, or (b) in <settings file> (build.settings_file | default) exempt `<id>` from mirror
   `<mirror>` (append `,!<repository id>` to its `<mirrorOf>`), or add a mirror for `<id>` (same URL, `<blocked>false</blocked>`); blocker from <file>` —

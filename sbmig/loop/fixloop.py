@@ -1541,8 +1541,8 @@ class BuildFixLoop:
 
     def http_blocked_abort(self, pr: Optional[PhaseResult], phase: Phase, build: Any, iteration: int, *,
                            where: str = "build") -> bool:
-        """v2.1z-ah: 실패한 Maven 실행(빌드 / OpenRewrite)에 HTTP 차단 미러(``Blocked mirror for repositories`` /
-        ``maven-default-http-blocker``)가 보이면 실행을 한 번에 멈춘다 — 플래그 ``aborted:http-blocked``, 저널
+        """v2.1z-ah: 실패한 Maven 실행(빌드 / OpenRewrite)에 HTTP 차단의 증거(``Blocked mirror for repositories`` 문구 또는
+        차단기 주소 ``http://0.0.0.0`` — 미러 id 만으로는 아님, ``http_blocker_hit``)가 보이면 실행을 한 번에 멈춘다 — 플래그 ``aborted:http-blocked``, 저널
         ``maven_http_blocked`` (저장소들, 자격증명 없음) + ``abort``, ERROR 한 줄, 인수인계 한 줄(``http_blocked_followup``). 부모
         맞추기·``sbmig-parent`` / ``sbmig-version`` / ``sbmig-jakarta`` 사전 시도·LLM 어느 것도 이 실패를 고칠 수 없다. 이미 멈췄으면
         True 만. 보이지 않으면 False.

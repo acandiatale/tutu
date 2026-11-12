@@ -143,6 +143,10 @@ Secret 의 `SBMIG_WEB_TOKEN` 을 채운다 — 그때는 `http://<host>:8765/?to
 * **ConfigMap `sbmig-config`**: `settings.xml` 하나(`/etc/sbmig/settings.xml`, Nexus 미러). 이미지의 Maven 3.9 도 `http://` 저장소를
   막는 기본 미러 `maven-default-http-blocker` 를 갖고 있다 — Nexus 주소가 `http://` 면 차단 미러의 `<mirrorOf>` 에 `,!<저장소 ID>` 를 붙여 그 저장소를 예외로 빼거나(회사 settings.xml 이 쓰는 방식 — 쓰는 저장소 ID 를 모두 적는다),
   Nexus 미러에 `<blocked>false</blocked>` 를 둔다(아니면 실행이 `attn=infra:http-blocked` 로 멈춘다).
+  미러의 `<url>` 은 허용 목록이 아니라 **대신 물어볼 주소**다: `maven-default-http-blocker` 를 실제 주소(릴리스 저장소 등)로 재정의한
+  settings 에서는 `mirrorOf` 가 덮는 `http://` 저장소 요청이 전부 그 주소 하나로 간다 — 막히지는 않지만, `<repositories>` 에 적은
+  다른 저장소(스냅샷 · public)는 한 번도 묻지 않아 거기에만 있는 아티팩트를 "못 찾는다". 그 저장소들의 ID 를 `,!<저장소 ID>` 로 빼야
+  제 주소로 간다(쉼표 뒤 공백 없이, Maven 은 맞는 미러 중 첫 번째만 쓴다). 확인: `mvn help:effective-settings`.
 * **컨테이너 경로**: 구운 파일은 PC 에서 시험한 것이라 PC 경로가 들어 있을 수 있다. 매니페스트(40 / 81 / 80)의 `env` 가 그 키들을 덮어쓴다 —
   환경 변수는 어떤 yml 보다 뒤에 적용된다. `sbmig-env` 가 아니라 매니페스트에 두는 이유: 80 모델은 KB 폴더와 기록 폴더를 `run-job.sh` 가 정한다.
 

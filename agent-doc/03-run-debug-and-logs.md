@@ -189,7 +189,7 @@ verify_guide …), `metadata`(run_id, 케이스 등). 키·헤더는 들어가�
 `test-compile-skipped`, `tests-not-compiled`, `major-upgrade`, `jar-coordinates-unknown`, `parent-chain-no-boot-bom`, `hollow-reactor`,
 `adf-project`, 그 무엇도 아니면 `incomplete`. 플릿은 `skipped:<why>` 도 쓴다.
 
-`infra:http-blocked,aborted:http-blocked`(exit 3): Maven 3.8.1+ 의 차단 미러(`maven-default-http-blocker`)가 `http://` 저장소를 거부했다(`Blocked mirror for repositories`). 프로젝트·sbmig 탓이 아니라 부모 맞추기·재시도·LLM 없이 바로 멈춘다. 인수인계 첫 줄대로 settings 를 고친다: https URL, 또는 그 미러 id 를 `<mirrorOf>none</mirrorOf>` 로 재정의. 저널 `maven_http_blocked`, 사전 점검 경고 `maven_http_blocker_active`.
+`infra:http-blocked,aborted:http-blocked`(exit 3): Maven 3.8.1+ 의 차단 미러(`maven-default-http-blocker`)가 `http://` 저장소를 거부했다(`Blocked mirror for repositories`). 프로젝트·sbmig 탓이 아니라 부모 맞추기·재시도·LLM 없이 바로 멈춘다. 인수인계 첫 줄대로 settings 를 고친다: https URL, 또는 차단 미러 `<mirrorOf>` 에 `,!<저장소 ID>`. 그 id 를 실제 주소로 재정의한 settings 의 `Could not find … in maven-default-http-blocker (<실주소>)` 는 차단이 아니다: 덮인 저장소가 전부 그 주소로 간 것(다른 저장소는 `,!ID` 로 뺀다). 저널 `maven_http_blocked`, 사전 점검 경고 `maven_http_blocker_active`.
 
 차단 사유 = `BlockReason`(`sbmig/core/models.py`). LLM 시도 허용 횟수는 `loop.blocked_policy`:
 

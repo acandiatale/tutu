@@ -95,6 +95,20 @@ def test_build_loop_failure_with_the_blocker_aborts_without_pre_try_or_llm(cfg, 
     assert [e["event"] for e in journal_events(ws)].count("maven_http_blocked") == 1
 
 
+def test_redefined_blocker_id_with_a_real_url_is_a_plain_missing_artifact(cfg, ws):
+    """A settings file that reuses the id `maven-default-http-blocker` for an ordinary mirror: a missing artifact named
+    `in maven-default-http-blocker (http://nexus.invalid…)` goes to the normal handling, not to the environment abort."""
+    from ..build.test_http_blocker import COMPANY_SHAPE_MISSING
+
+    loop = make_loop(cfg, ws, make_profile(), build=FakeBuildRunner(ws, fn=lambda w, c: blocked_build(COMPANY_SHAPE_MISSING)),
+                     fixer=FakeFixer())
+    pr = loop.run(Phase.VERIFY, "package", 2, first_build=blocked_build(COMPANY_SHAPE_MISSING))
+    assert "aborted:http-blocked" not in loop.flags
+    assert not (loop.aborted or "").startswith(HTTP_BLOCKED_PREFIX)
+    assert "maven_http_blocked" not in [e["event"] for e in journal_events(ws)]
+    assert pr.attempts or pr.blocked                                # triage / the fix loop saw the case
+
+
 def test_preflight_warns_without_aborting(cfg, ws, monkeypatch, caplog):
     from sbmig.build import env_errors
     from sbmig.build.env_errors import ActiveBlocker

@@ -143,7 +143,10 @@ cap ends it instead.
   non-fatal and logs `the parent <g:a:v> is not in the repository` (journal `effective_pom.reason`).
 * **Maven's HTTP repository blocker** (Maven ≥ 3.8.1 ships the blocked mirror `maven-default-http-blocker`, mirrorOf
   `external:http:*`, in `<maven home>/conf/settings.xml`; any mirror with `<blocked>true</blocked>` behaves the same): a failed
-  OpenRewrite run or build whose text shows `Blocked mirror for repositories: [...]` or that mirror id aborts the run at once —
+  OpenRewrite run or build whose text shows `Blocked mirror for repositories: [...]` or the blocker's pseudo address
+  `http://0.0.0.0/` in one of Maven's own messages aborts the run at once (the id `maven-default-http-blocker` alone is not enough: a settings file may redefine
+  it as an ordinary mirror, and a plain missing artifact named `in maven-default-http-blocker (<real URL>)` goes to the normal
+  handling) —
   before the as-is parent alignment, `_check_parent_in_rewrite`, `_parent_abort`, the zero-LLM pre-tries and the LLM. Neither
   runner retries it (no download wait, no `-U`, no runNoFork, no file-lock wait). Flag `aborted:http-blocked`, exit 3, journal
   `maven_http_blocked` (the mirror id and the blocked repositories — ids and URLs without credentials), one Handover line saying

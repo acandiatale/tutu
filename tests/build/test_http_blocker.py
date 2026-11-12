@@ -84,6 +84,56 @@ def test_custom_blocked_mirror_and_bare_blocker_id():
     assert http_blocker_hit("") is None
 
 
+# a settings file that REDEFINES the blocker id as an ordinary mirror (real URL, <blocked>false</blocked>): Maven names
+# that id in every plain resolution failure — not a block
+COMPANY_SHAPE_MISSING = (
+    "[ERROR] Failed to execute goal on project app: Could not resolve dependencies for project com.example:app:jar:1.0: "
+    "Could not find artifact org.example:some-lib:jar:9.9 in maven-default-http-blocker "
+    "(http://nexus.invalid:8081/repository/x-release/) -> [Help 1]\n")
+COMPANY_SHAPE_REFUSED = (
+    "[ERROR] Could not transfer artifact org.example:some-lib:pom:9.9 from/to maven-default-http-blocker "
+    "(http://nexus.invalid:8081/repository/x-release/): Connection refused\n")
+CACHED_BLOCK = (
+    "[ERROR] Non-resolvable parent POM: com.example:base-parent:pom:1.0 was not found in http://0.0.0.0/ during a previous "
+    "attempt. This failure was cached in the local repository and resolution is not reattempted until the update interval "
+    "of maven-default-http-blocker has elapsed or updates are forced\n")
+
+
+def test_redefined_blocker_id_with_a_real_url_is_not_a_block():
+    assert http_blocker_hit(COMPANY_SHAPE_MISSING) is None
+    assert http_blocker_hit(COMPANY_SHAPE_REFUSED) is None
+    # 0.0.0.0 inside a version / another address is not the blocker's URL
+    assert http_blocker_hit(COMPANY_SHAPE_MISSING.replace("9.9", "10.0.0.0.0")) is None
+    assert http_blocker_hit(COMPANY_SHAPE_MISSING.replace("nexus.invalid", "10.0.0.0")) is None
+    # the whole build log is searched: an address a plugin / an application printed is not Maven's blocker message
+    for line in ("[INFO] Tomcat started on port 8080 (http) with context path '/' at http://0.0.0.0:8080/\n",
+                 "[INFO] dev server listening on http://0.0.0.0/ (press ctrl-c)\n",
+                 "[INFO] proxying (http://0.0.0.0/) to the backend\n"):
+        assert http_blocker_hit(line + COMPANY_SHAPE_MISSING) is None
+
+
+def test_transfer_forms_naming_the_blocker_address_are_blocks():
+    # without the phrase: the transfer line and both cached-failure wordings of the resolver
+    transfer = "[ERROR] Could not transfer artifact a:b:pom:1 from/to corp-block (http://0.0.0.0/): timeout\n"
+    assert http_blocker_hit(transfer).mirror_id == "corp-block"
+    found_in = "[ERROR] Could not find artifact a:b:pom:1 in maven-default-http-blocker (http://0.0.0.0/)\n"
+    assert http_blocker_hit(found_in).mirror_id == "maven-default-http-blocker"
+    cached_transfer = ("[ERROR] a:b:pom:1 failed to transfer from http://0.0.0.0/ during a previous attempt. This failure was "
+                       "cached in the local repository and resolution is not reattempted until the update interval of "
+                       "maven-default-http-blocker has elapsed or updates are forced\n")
+    assert http_blocker_hit(cached_transfer).mirror_id == "maven-default-http-blocker"
+
+
+def test_cached_failure_of_the_builtin_blocker_is_a_block():
+    hit = http_blocker_hit(CACHED_BLOCK)
+    assert hit is not None and hit.mirror_id == "maven-default-http-blocker" and hit.repositories == []
+    other = CACHED_BLOCK.replace("of maven-default-http-blocker", "of corp-block")
+    assert http_blocker_hit(other).mirror_id == "corp-block"
+    # a plain failure beside it does not lend its mirror id
+    assert http_blocker_hit(COMPANY_SHAPE_MISSING.replace("maven-default-http-blocker", "x-public") + CACHED_BLOCK
+                            ).mirror_id == "maven-default-http-blocker"
+
+
 def test_strip_userinfo():
     assert strip_userinfo("http://u:p@h.invalid:8081/r/") == "http://h.invalid:8081/r/"
     assert strip_userinfo("https://h.invalid/r/") == "https://h.invalid/r/"
