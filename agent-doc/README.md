@@ -31,8 +31,9 @@ sbmig 는 사내 Maven 프로젝트를 **JDK 21 + Spring Boot 4.1** 로 옮기�
 | [10-open-items-and-history.md](10-open-items-and-history.md) | 지금까지 온 길, 회사 실행에서 겪은 사례, 열린 결정 | 배경이 필요할 때 |
 | [11-remediations.md](11-remediations.md) | 이관이 BUILD SUCCESS 로 끝난 빌드 파드에서 이어 돌거나 실행 방식 `remediation` 으로 따로 도는 취약점 조치(별도 그래프, `/api/remediations`, IVAS, 버전 글자만 수정): 노드, 상태별 할 일, 승인, 진단, 설정 키, 고칠 자리 | 조치 작업을 볼 때 |
 | [12-remediation-report.md](12-remediation-report.md) | 조치 보고서의 절과 절마다 할 일, 사내 라이브러리 안내(담당자 몫으로 빠지는 항목), 제안의 적용 범위, 용어표, 영어 문장을 한국어로 보여 주는 규칙 | 조치 보고서를 읽거나 바꿀 때 |
+| [13-framework-projects.md](13-framework-projects.md) | 사내 프레임워크 아티팩트를 쓰는 프로젝트: 찾는 곳과 순서, JDK 21과 jakarta만 하는 실행(범위 `jdk-jakarta`), 켜는 법, 결과 줄·보고서·화면, 진단할 줄, 수정 루프와 조치에서 달라지는 것 | 프레임워크 프로젝트를 볼 때 |
 
-새 주제는 다음 번호(13, 14 …)로 더하고 이 표와 아래 "일 종류별" 표에 한 줄씩 적는다. 날짜·버전 꼬리표는 여전히 10 번에만 쓴다.
+새 주제는 다음 번호(14, 15 …)로 더하고 이 표와 아래 "일 종류별" 표에 한 줄씩 적는다. 날짜·버전 꼬리표는 여전히 10 번에만 쓴다.
 
 ## 일 종류별로 넣을 파일
 
@@ -47,6 +48,7 @@ sbmig 는 사내 Maven 프로젝트를 **JDK 21 + Spring Boot 4.1** 로 옮기�
 | "왜 이렇게 만들었나" 배경 | 00, 10 (+ `docs/v2/PLAN-v2.md`) |
 | 취약점 조치 작업 진단·규칙 변경 | 00, 11 (+ 실행 폴더의 `state.json`, `journal.jsonl`, 검사 파일 발췌), 배포는 + 09 |
 | 조치 보고서 읽기, 사내 라이브러리 안내·보고서 문장 변경 | 00, 11, 12 (+ 실행 폴더의 `remediation/report.md`) |
+| 사내 프레임워크 프로젝트의 실행 진단·규칙 변경 | 00, 13, 03 (+ 저널의 `framework_project` / `framework_check` 줄), 조치 쪽은 + 12 |
 
 Haiku 급 모델은 한 번에 세 파일 안팎이 안전하고, Sonnet / GPT 급은 묶음 전체를 넣어도 된다.
 

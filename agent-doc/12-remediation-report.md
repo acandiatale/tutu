@@ -26,7 +26,7 @@
 | 해야 할 일 | 번호 목록. 항목마다 "**제목 (N건)** — 설명 ~해 주세요." 이 상태에서 할 수 있는 일만 쓴다 | 위에서부터 한다 |
 | 조치 완료 — N건 | 표 `위험도 / 라이브러리 / 버전 변경 / 수정한 곳 / 해결된 취약점`, 그 아래 제안마다 버전 확인 · 수정 방식 · 적용 범위 · 참고 | 결과 ZIP을 받는다 |
 | 승인 대기 — 제안 N건 | 표 `위험도 / 라이브러리 / 버전 변경 / 수정할 곳 / 주의 / 해결할 취약점` + 제안마다 같은 설명 | 화면의 체크박스 목록에서 고르고 `선택한 항목 적용` |
-| 사내 라이브러리에서 발생한 취약점 — N건 | 안내 문구, 사내 아티팩트별 묶음(회사 부모 pom 이면 제목에 표시). 표 `위험도 / 취약한 라이브러리 / 버전 / 의존 경로 / 취약점` | 그 아티팩트의 아키텍처 담당자에게 묶음째 요청한다 |
+| 사내 라이브러리에서 발생한 취약점 — N건 | 안내 문구, 사내 아티팩트별 묶음(회사 부모 pom 이면 제목에 표시, 사내 프레임워크면 제목에 '사내 프레임워크'와 안내 한 줄). 표 `위험도 / 취약한 라이브러리 / 버전 / 의존 경로 / 취약점` | 그 아티팩트의 아키텍처 담당자에게 묶음째 요청한다 |
 | 직접 확인이 필요한 취약점 — N건 | 나머지 잔여를 사유별로 묶은 것 — 설명은 묶음마다 한 번. 표 `위험도 / 라이브러리 / 버전 / [구분] / [사용 모듈] / 취약점 / [내용]` | 묶음의 설명대로 프로젝트 담당 팀이 조치한다 |
 | 조치 대상에서 제외한 항목 — N건 | `remediation.ignore_actions` 코드로 제외한 검사 결과. 표 `위험도 / 취약점 / 라이브러리 / 버전 / IVAS 조치 상태` | — |
 | 변경하지 않은 것 | 소스·구조는 그대로라는 보증, 원본 ZIP 위치 | — |
@@ -72,6 +72,7 @@ pom · BOM · classifier · dependencyManagement · property · scope · jar는 
 | `mandatory` | `artifacts.mandatory` | 의존성 트리에서 그 아티팩트(별칭 포함)를 거쳐 가져왔거나, 취약한 것이 그 아티팩트 자체 |
 | `optional` | `artifacts.optional` | 위와 같다 |
 | `parents` | `artifacts.parent`, `artifacts.boot_parent`, `artifacts.comp_parent` | 그 부모를 상속하는 모듈에서 (1) 부모 쪽이 버전을 관리하는 의존성(출처가 분명할 때만), (2) 프로젝트 pom이 선언하지 않은 의존성 = 부모가 물려준 것과 그것이 끌고 온 것 |
+| `framework` | `framework.artifacts`의 패턴(artifactId, groupId:artifactId, `*`) | 취약한 것이 프레임워크 아티팩트 자체이거나 의존 경로에 프레임워크가 있음 |
 
 판정과 계획:
 
@@ -83,12 +84,17 @@ pom · BOM · classifier · dependencyManagement · property · scope · jar는 
   낸다. 아키텍처 담당이 고친 부모를 내놓았을 때 쓰는 길이고, 부모 버전 제안은 늘 승인 대상이다.
 - 프로젝트가 자기 pom에 버전을 적은 외부 라이브러리는 사내 아티팩트와 무관하게 예전처럼 조치한다.
 - 프로젝트가 직접 선언한 외부 라이브러리가 가져온 것은 사내 몫이 아니다("직접 확인이 필요한 취약점" 쪽에 남는다).
-- 사내 아티팩트의 목록이 바뀌면 정책 해시가 바뀐다 — 전에 만든 승인 후보는 낡은 계획이 되어 다시 계획한다.
+- `framework` 그룹은 `framework.artifacts`의 패턴에 맞는 아티팩트다. 프레임워크 아티팩트 자체와 그것이 가져오는 라이브러리는 사내 몫이고,
+  프레임워크의 버전은 어떤 경우에도 제안하지 않는다(pin 예외도 없다). 패턴이므로 목록에 g:a가 들어가지 않는다(`InhouseKeys`).
+  보고서는 그 묶음 제목에 '사내 프레임워크'를 붙이고 "사내 프레임워크의 버전은 바꾸지 않습니다." 로 시작하는 안내 한 줄을 더한다.
+  `remediation/report.json`의 사내 묶음 가운데 프레임워크 것만 `"group": "framework"`를 가진다. 이관 쪽 이야기는 [13](13-framework-projects.md).
+- 사내 아티팩트의 목록이 바뀌면 정책 해시가 바뀐다 — 전에 만든 승인 후보는 낡은 계획이 되어 다시 계획한다. `framework` 그룹이 있고
+  패턴이 있으면 패턴 목록도 정책 해시에 들어간다(`inhouse_framework`). 패턴이 없으면 해시는 그대로다.
 - 상태는 다른 잔여와 같다: 남은 것이 사내 몫뿐이어도 `INCOMPLETE`, 이유에 `inhouse_artifact`. 건수는 `state.json`의 `counts.residual_inhouse`.
 
 | 키 | 뜻 |
 |---|---|
-| `remediation.inhouse_groups` | 사내 아티팩트로 볼 그룹(기본 mandatory, optional, parents). 비우면 이 안내를 쓰지 않는다 |
+| `remediation.inhouse_groups` | 사내 아티팩트로 볼 그룹(기본 mandatory, optional, parents, framework). 비우면 이 안내를 쓰지 않는다 |
 | `remediation.inhouse_message` | 보고서의 그 절 첫머리에 붙는 문구(기본 "해당 아티팩트는 예외처리가 가능합니다. 담당자에게 연락 부탁드립니다.") |
 
 ## 4. 제안의 적용 범위
@@ -139,6 +145,7 @@ pom · BOM · classifier · dependencyManagement · property · scope · jar는 
 | 요청 | 파일 |
 |---|---|
 | 사내 아티팩트로 볼 목록·별칭 | 회사 artifacts yml + `remediation.inhouse_groups` (`sbmig/remediations/inhouse.py`의 `inhouse_keys`) |
+| 프레임워크 패턴 판정 | `sbmig/remediations/inhouse.py` (`InhouseKeys`, `framework_patterns`), 정책 해시는 `sbmig/remediations/planner.py` (`policy_hash`) |
 | "사내에서 왔다" 의 판정(경로, 부모 파생) | `sbmig/remediations/inhouse.py`, `sbmig/remediations/inventory.py` (`_parent_inhouse`, `_fill_inhouse`) |
 | 사내 몫을 잔여로 둘지 제안할지, pin 예외 | `sbmig/remediations/planner.py` (`_inhouse_residual`, `_change_for`) |
 | 안내 문구 | `remediation.inhouse_message` |

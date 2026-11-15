@@ -112,7 +112,8 @@ from sbmig.core.stage import stage
 from sbmig.analyze.bundled_jars import providers
 from sbmig.restructure.system_jars import WiredJar, bundled_jar_followup, wire_bundled_jar
 
-from .blocked_registry import BlockedRegistry, attribute, compose_suggestion, is_in_house, sanitize_errors
+from .blocked_registry import (BlockedRegistry, attribute, compose_suggestion, is_in_house, is_javax_api_artifact,
+                               sanitize_errors)
 from .budget import LoopBudget
 from .components import LazyFixer, ScriptFixerMissing, profile_summary
 from .entries import CaseScripts, RunErrors, script_path
@@ -480,6 +481,10 @@ _GENERIC_TOKENS = frozenset({"com", "org", "net", "io", "kr", "co", "java", "jav
 VERSION_FACTS_MAX = 12                                # artifacts per case in the "as-is build: …" prompt facts
 VERSION_TRY_APPLY_FAILURES = 3                        # zero-LLM tries of a (pom, g:a) that may fail to apply
 PRE_TRY_APPLY_FAILURES = VERSION_TRY_APPLY_FAILURES   # … the same cap for every zero-LLM pre-try (v2.1m)
+# 프레임워크 프로젝트(범위 jdk-jakarta)의 프롬프트 절 길이 한도와 되돌린 시도의 이유 문장 머리말
+# v2.1z-ak: the "Scope of this run" section's cap; the head of the guard's sentence (FixAttempt.apply_errors)
+SCOPE_FACTS_MAX_CHARS = 1200
+FRAMEWORK_GUARD_PREFIX = "framework project:"
 
 
 @dataclass(frozen=True)
@@ -689,22 +694,28 @@ class VersionResolver:
 
     @classmethod
     def for_workspace(cls, ws: Any, repository: Callable[[], Any] | None = None,
-                      cfg: Any = None) -> VersionResolver:
+                      cfg: Any = None, *, reduced: bool = False) -> VersionResolver:
         """실행 디렉토리의 두 캡처(as-is ``depmgmt.json``, 재구성 뒤 ``depmgmt-after-restructure.json``)를
         읽어 생성한다. 읽지 못한 캡처는 빈 캡처로 본다.
         ``cfg``가 있으면 재구성 뒤 캡처가 없을 때 사내 부모 체인 정보(``sbmig.build.parent_chain``)로 1단계를 판단한다.
+        ``reduced``이면 프로젝트가 자기 부모를 그대로 쓰므로 as-is 캡처만 쓰고 사내 체인과 목표 Boot BOM은 쓰지 않는다.
 
         Built from the run directory's two captures (missing / unreadable → empty); with `cfg`, step 1 falls back on
         the parent-chain facts (`load_parent_chain_facts(cfg).as_capture()`, the restructure's fallback) when the
-        post-restructure capture is missing."""
+        post-restructure capture is missing. v2.1z-ak `reduced` (a framework project, scope `jdk-jakarta`): no
+        restructure ran, the project keeps its own parent — the as-is capture is both `asis` and `after`, and neither
+        the company parent-chain facts nor the target Boot BOM take part (a version-less dependency is never filled
+        from the Boot BOM there)."""
         asis: dict | None = None
         after: dict | None = None
         try:
             from sbmig.build.effective import AFTER_RESTRUCTURE_FILE, load_effective
             asis = load_effective(ws)
-            after = load_effective(ws, name=AFTER_RESTRUCTURE_FILE)
+            after = asis if reduced else load_effective(ws, name=AFTER_RESTRUCTURE_FILE)
         except Exception as e:  # noqa: BLE001 - no captures: only the repository step is left
             log.debug("dependency version captures unavailable: %s: %s", type(e).__name__, e)
+        if reduced:
+            return cls(asis, after, repository)
 
         def boot() -> dict:
             # 모듈 속성으로 호출해야 테스트의 가짜 구현(tests/conftest.py)이 적용된다
@@ -1004,6 +1015,8 @@ class BuildFixLoop:
         self._jakarta_plans: dict[str, Any] = {}     # v2.1z-e: cluster id → the sbmig-jakarta plan (computed once a round)
         self._javax_owner_libs: dict[str, list[GAV]] = {}   # v2.1z-e: cluster id → libraries mapped without the classpath
         self._javax_owner: dict[str, Optional[str]] = {}    # v2.1z-e: cluster id → the owner class the fallback worked from
+        # 프레임워크 아티팩트 자신이 javax로 컴파일되어 차단한 케이스와 그 프레임워크 좌표
+        self._framework_blocks: dict[str, GAV] = {}  # v2.1z-ak: cluster id → the framework artifact it was blocked on
         self._cases = CaseScripts.of(kb)
         attach = getattr(triager, "attach_run", None)
         if callable(attach):
@@ -1473,7 +1486,13 @@ class BuildFixLoop:
                                                  extra=extra)
             if reason in (BlockReason.EXTERNAL_JAVAX_API, BlockReason.EXTERNAL_API_INCOMPATIBLE, BlockReason.NEEDS_OWNER):
                 item.suggestion = self._with_eol_advisory(item.suggestion, artifact)   # v2.1z-k: "no jakarta build" + why
-        if reason in (BlockReason.EXTERNAL_JAVAX_API, BlockReason.NEEDS_OWNER) and _mentions_javax(errs):
+        # 프레임워크 프로젝트에서 javax 라이브러리가 프레임워크 아티팩트면 소유팀이 jakarta 빌드를 내야 한다고 안내한다
+        fw = self._framework_blocked_artifact(c, reason, artifact)
+        if fw is not None:
+            item.suggestion = framework_owner_suggestion(fw.coordinates if fw.version else fw.key, item.required_type)
+            if item.artifact is None or is_javax_api_artifact(item.artifact):
+                item.artifact = fw                       # the final fill_via pass leaves such an item alone
+        if fw is None and reason in (BlockReason.EXTERNAL_JAVAX_API, BlockReason.NEEDS_OWNER) and _mentions_javax(errs):
             # 어디를 찾아봤는지 사람이 볼 수 있도록 탐색 기록을 조치 방법 뒤에 붙이고 메모에도 남긴다.
             # 의존성을 찾지 못한 소유 클래스는 찾지 못했다고 함께 기록한다 / what sbmig searched (and an owner class it could not match) on the item
             evidence = self._jakarta_evidence(c, owner, artifact)
@@ -1496,6 +1515,16 @@ class BuildFixLoop:
                          "found_type": item.found_type, "attempts": item.attempts, "suggestion": item.suggestion,
                          "rest_errors": len(rest)})
         return rest
+
+    def _framework_blocked_artifact(self, c: ErrorCluster, reason: BlockReason, artifact: Optional[GAV]) -> Optional[GAV]:
+        """차단할 javax 케이스의 라이브러리가 프레임워크 아티팩트면 그 좌표를, 아니면 None을 반환한다."""
+        if not self._reduced_scope() or reason not in (BlockReason.EXTERNAL_JAVAX_API,
+                                                       BlockReason.EXTERNAL_API_INCOMPATIBLE, BlockReason.NEEDS_OWNER):
+            return None
+        fw = self._framework_blocks.get(c.id)
+        if fw is None and artifact is not None and self._is_framework_key(artifact.key):
+            fw = artifact
+        return fw
 
     def _classpath_hints(self, errs: list[BuildError], owner: Optional[str], required: Optional[str],
                          found: Optional[str]) -> tuple[Optional[str], Optional[str], Optional[str]]:
@@ -1598,6 +1627,8 @@ class BuildFixLoop:
         코드 수정으로 해결되지 않으므로 LLM을 호출하지 않는다.
 
         The configured in-house parent is not resolvable → nothing can build: abort the run with a clear item."""
+        if self._reduced_scope():
+            return self._framework_parent_abort(pr, phase, build, iteration)
         keys = set(self.cfg.artifacts.parent_keys())           # root parent + boot_parent / comp_parent (round 9b)
         # 사내 부모 g:a라도 설정 버전이 아닌 as-is 버전을 찾지 못한 경우는
         # 사전 시도 sbmig-parent가 맞추므로 중단하지 않는다
@@ -1655,6 +1686,40 @@ class BuildFixLoop:
         self.ws.journal({"event": "abort", "phase": phase.value, "iteration": iteration, "reason": self.aborted})
         return True
 
+    def _framework_parent_abort(self, pr: PhaseResult, phase: Phase, build: BuildResult, iteration: int) -> bool:
+        """프레임워크 프로젝트에서 부모 pom을 찾지 못하면 LLM을 호출하지 않고 실행을 중단한다.
+        프로젝트가 자기 부모를 그대로 써야 하므로 사내 부모가 아니어도 중단한다. 프로젝트 안의 부모는 제외한다.
+
+        A reduced run (framework project) keeps its own parents: any parent pom Maven cannot resolve — not only the
+        configured company parents — aborts the run without an LLM call (nothing in the project may replace it; no
+        `sbmig-parent` alignment). A parent that is one of the project's own modules is left to the fix loop."""
+        own = self._own_module_keys()
+        errs = [e for e in build.errors if e.kind == ErrorKind.PARENT_RESOLUTION and e.artifact is not None
+                and e.artifact.group_id and e.artifact.artifact_id and e.artifact.key not in own]
+        if not errs:
+            return False
+        from sbmig.triage.blocked import BlockedCandidate, repositories_in
+        c = self.triager.cluster(errs, self.profile)[0]
+        coords = errs[0].artifact.coordinates
+        settings = self.cfg.build.settings_file or "default"
+        fw = self._framework_label()
+        cand = BlockedCandidate(reason=BlockReason.PARENT_NOT_FOUND, errors=errs,
+                                repositories=repositories_in("\n".join(f"{e.message}\n{e.raw}" for e in errs)),
+                                evidence=[errs[0].message[:300]])
+        cand.suggestion = (f"parent `{coords}` is not resolvable with settings `{settings}`: this is a framework project "
+                           f"({fw}) and keeps its own parent — make the repository serve it (or fix the settings / mirror) "
+                           "and rerun; nothing in the project can replace it")
+        self._register_blocked(phase, iteration, c, cand, f"blocked: parent_not_found — parent {coords} of a framework "
+                                                          "project is not resolvable; run aborted")
+        # 변환 단계의 중단 사유(Orchestrator._reduced_parent_abort)와 같은 문장이다. 화면의 한국어 번역 규칙이 하나로 맞는다
+        self.aborted = (f"Maven cannot resolve the parent pom {coords}; a framework project keeps its own parent pom, so "
+                        f"the repository must serve it (settings: {settings}). Make the repository serve it and rerun")
+        self._flag("aborted:parent-not-found")
+        self._followup(f"run aborted: {self.aborted}")
+        pr.notes.append(f"build {iteration}: {self.aborted}")
+        self.ws.journal({"event": "abort", "phase": phase.value, "iteration": iteration, "reason": self.aborted})
+        return True
+
     def _parent_miss_aborts(self, e: BuildError) -> bool:
         """사내 부모 g:a를 찾지 못한 오류가 실행을 중단시키는지 판단한다. 설정 버전 자체이거나 버전을 모르면
         중단하고, as-is 버전이면 ``openrewrite.unresolvable_asis_parent: abort``일 때만 중단한다.
@@ -1696,7 +1761,7 @@ class BuildFixLoop:
         """이 빌드의 `Unresolveable build extension` 오류 중 좌표(g:a)가 사내 부모 체인의 확장과 같은 것을 찾는다."""
         cands = [e for e in build.errors if e.kind == ErrorKind.POM_INVALID and e.artifact is not None
                  and "build extension" in (e.message or "").lower()]
-        if not cands:
+        if not cands or self._reduced_scope():         # 프레임워크 프로젝트는 사내 부모 체인을 상속하지 않는다
             return []
         chain = self._chain_extensions()
         # the full g:a:v: a project pom that redeclares the same g:a at another version owns that declaration (Maven merges
@@ -2241,8 +2306,13 @@ class BuildFixLoop:
             # 누락 버전과 바이너리 리소스 필터링 케이스는 시도 순서, 한도, LLM
             # 장애와 상관없이 LLM보다 먼저 sbmig가 한 번 고쳐 본다
             # 단, 같은 라운드에 다른 케이스가 바꾼 pom이면 기다려야 하므로 아래 미루기 검사 뒤에 실행한다
+            # 프레임워크 프로젝트에서 javax 라이브러리가 프레임워크 아티팩트 자신이면 프로젝트에서 고칠 수 없으므로
+            # LLM 없이 javax 사유로 바로 차단한다
+            if forced is None and d.kind == DecisionKind.SCRIPT:
+                forced = self._framework_javax_block(c)
             # the zero-LLM pre-try (decided on the triage decision, run after the deferral check below)
-            pre, pre_poms = self._pre_try_for(c, d)
+            pre, pre_poms = self._pre_try_for(c, d) if forced is None or forced.reason != BlockReason.EXTERNAL_JAVAX_API \
+                else (None, [])
             if forced is not None:
                 d = TriageDecision(cluster_id=c.id, kind=DecisionKind.BLOCKED,
                                    rationale=prefix + f"blocked: {forced.reason.value} — {forced.evidence[0]}")
@@ -2913,7 +2983,8 @@ class BuildFixLoop:
                          use_escalation_model=escalate, reference_notes=ref_notes, reference_files=ref_files,
                          script_mode=mode, case_id=step.case_id, signature_generic=sig,
                          script_base=base if mode == "augment" else None, library_hints=lib_hints,
-                         layout_facts=self._layout_facts())
+                         layout_facts=self._layout_facts(),
+                         scope="jdk-jakarta" if self._reduced_scope() else "full", scope_facts=self._scope_facts())
         self._mark(f"fixer.propose_script for {c.id} ({mode}: prompt packing + LLM call)")
         try:
             proposal = self.fixer.propose_script(self.ws, c, ctx)
@@ -2956,7 +3027,7 @@ class BuildFixLoop:
         `FixContext.layout_facts` from the restructure results the orchestrator handed over (`restructure_results` /
         `restructure_modes`) and `cfg.artifacts` / `cfg.layout`; rebuilt only when the number of results changes."""
         results = list(self.restructure_results or [])
-        if not results:
+        if not results or self._reduced_scope():     # 프레임워크 프로젝트는 재구성하지 않는다
             return []
         if self._layout_cache is not None and self._layout_cache[0] == len(results):
             return list(self._layout_cache[1])
@@ -3093,6 +3164,8 @@ class BuildFixLoop:
         # sbmig의 버전 채우기를 스크립트의 두 번째 변경으로 오인하지 않도록 버전 채우기보다 먼저 실행한다
         self._idempotency_check(att, c, code, res)
         self._fill_versions(att, c, res, pre, st)      # v2.1l: version-less dependencies get theirs (same commit)
+        if self._framework_rejected(att, pre, list(res.changed_files or []), name):
+            return
         self._mark(f"git commit for {c.id}")
         sha = self._commit(f"fix(script:{case_id}:v{v} {att.script_mode}): {c.id}", pre, paths=res.changed_files)
         if sha is None:
@@ -3218,6 +3291,8 @@ class BuildFixLoop:
             return
         self._drop_reference_writes(att, pre)
         self._fill_versions(att, c, res, pre, st)      # v2.1l: version-less dependencies get theirs (same commit)
+        if self._framework_rejected(att, pre, list(res.changed_files or []), "edits"):
+            return
         self._mark(f"git commit for {c.id}")
         if subject is None:
             subject = f"fix(edits:{att.script_case_id} {att.source or 'llm'}): {c.id}"
@@ -3326,7 +3401,7 @@ class BuildFixLoop:
                 and getattr(getattr(self.cfg, "libraries", None), "verify_guide_llm", True) \
                 and not self.dry_run and not self.llm_unavailable and self.budget.llm_allowed():
             ctx = FixContext(phase=st.phase, iteration=st.iteration, profile_summary=self._summary(),
-                             case_id=att.script_case_id)
+                             case_id=att.script_case_id, scope="jdk-jakarta" if self._reduced_scope() else "full")
             self._mark(f"fixer.verify_guide for {c.id}")
             got = ""
             try:
@@ -3425,6 +3500,11 @@ class BuildFixLoop:
             javax_case = _mentions_javax(c.errors)
             listed: list[str] = []
             for gav in libs:
+                if self._is_framework_key(gav.key):
+                    # 프레임워크 아티팩트는 저장소 목록이나 판단 없이 바꾸지 말라는 정보 한 줄만 보낸다
+                    out.append(f"framework artifact {gav.key}: keep its declaration and version as they are — if it is "
+                               "still compiled against javax.*, only its owner can fix that (answer <blocked> naming it)")
+                    continue
                 if self._known_version(gav.key, self._lib_module(c)):
                     continue                            # its fact line says it all: no listing, no verdict (v2.1v)
                 if not (javax_case or table_entry(gav.key, self.cfg) is not None):
@@ -3460,7 +3540,7 @@ class BuildFixLoop:
             r = self._versions()
             mv = r.managed_version(key, module) if r.has_chain else None
             if mv:
-                return "new parent chain", mv
+                return self._chain_label(), mv
             bv = r.boot_version(key, module)
             if bv:
                 return "target Boot BOM", bv
@@ -3887,6 +3967,8 @@ class BuildFixLoop:
         try:
             libs = self._case_libraries(c) or self._javax_libraries(c)
             for lib in libs:
+                if self._is_framework_key(lib.key):    # 프레임워크 아티팩트는 jakarta 빌드가 있어도 프로젝트에서 바꾸지 않는다
+                    continue
                 d = self._discover(lib.key, lib.version)
                 b = d.best() if d is not None else None
                 if b is not None:
@@ -3975,6 +4057,10 @@ class BuildFixLoop:
             plan["notes"].append(f"{JAKARTA_SEARCH_PREFIX} {lib.key}: {d.searched_text()}")
             b = d.best()
             if b is None:
+                continue
+            if self._is_framework_key(lib.key):         # 프레임워크 아티팩트는 다른 라인으로 바꾸지 않는다
+                plan["notes"].append(f"{lib.key} is the framework artifact of this project: never swapped by sbmig "
+                                     f"({b.coordinates} found) — its owner must provide a jakarta build")
                 continue
             if lib.key in protected:
                 plan["notes"].append(f"{lib.key} is a configured in-house artifact: not swapped by sbmig ({b.coordinates} found)")
@@ -4467,8 +4553,227 @@ class BuildFixLoop:
         The loop's `VersionResolver` (built once, lazily; the repository step reuses `_repository()`)."""
         if self._version_resolver is None:
             self._version_resolver = VersionResolver.for_workspace(self.ws, repository=self._repository,
-                                                                   cfg=self.cfg)
+                                                                   cfg=self.cfg, reduced=self._reduced_scope())
         return self._version_resolver
+
+    # ------------------------------------------------------------------ v2.1z-ak framework projects (reduced scope)
+    def _reduced_scope(self) -> bool:
+        """사내 프레임워크 프로젝트라 JDK와 jakarta만 올리는 실행인지 확인한다."""
+        return bool(getattr(self.profile, "reduced_scope", False))
+
+    def _chain_label(self) -> str:
+        """프롬프트 정보 줄에 쓸 부모 체인 이름을 반환한다. 범위를 줄인 실행은 프로젝트 자신의 부모다."""
+        return "parent chain" if self._reduced_scope() else "new parent chain"
+
+    def _framework_keys(self) -> list[str]:
+        """이 프로젝트에서 찾은 프레임워크 아티팩트의 g:a 목록을 반환한다. 범위를 줄인 실행이 아니면 빈 목록이다."""
+        fw = getattr(self.profile, "framework", None)
+        if not self._reduced_scope() or fw is None:
+            return []
+        try:
+            return list(fw.keys())
+        except Exception:  # noqa: BLE001 - a foreign profile object
+            return []
+
+    def _is_framework_key(self, key: Optional[str]) -> bool:
+        """g:a가 프레임워크 아티팩트인지 확인한다. 범위를 줄인 실행에서만 참이 될 수 있다.
+
+        A framework artifact: one of the evidence keys, or any g:a the `framework.artifacts` patterns match (a sibling
+        framework module the project did not use yet counts too). Always False outside a reduced run."""
+        if not key or not self._reduced_scope():
+            return False
+        k = ":".join(str(key).split(":")[:2])
+        if k in self._framework_keys():
+            return True
+        fwc = getattr(self.cfg, "framework", None)
+        try:
+            return bool(fwc is not None and fwc.matches_key(k))
+        except Exception:  # noqa: BLE001
+            return False
+
+    def _framework_label(self) -> str:
+        """사유 문장에 쓸 프레임워크 아티팩트 이름을 반환한다."""
+        keys = self._framework_keys()
+        if keys:
+            return ", ".join(keys[:3])
+        fw = getattr(self.profile, "framework", None)
+        ev = list(getattr(fw, "evidence", None) or [])
+        return ev[0].artifact if ev else "the in-house framework artifact"
+
+    def _framework_versions(self, key: str) -> set[str]:
+        """분석 단계가 찾은 프레임워크 아티팩트 g:a의 버전 집합을 반환한다."""
+        fw = getattr(self.profile, "framework", None)
+        return {e.version for e in list(getattr(fw, "evidence", None) or []) if e.artifact == key and e.version}
+
+    def _scope_facts(self) -> list[str]:
+        """프롬프트의 "Scope of this run" 절을 만든다. 범위를 줄인 실행이 아니면 빈 목록을 반환한다.
+
+        `FixContext.scope_facts` of a reduced run (≤ `SCOPE_FACTS_MAX_CHARS`): what the run does, one line per
+        framework evidence (`framework artifact <g:a> <version> (<source>: <where>) — never change its version, never
+        remove or replace it`), what a fix may do and what it must not. The evidence lines are cut first when the
+        section would grow too long."""
+        if not self._reduced_scope():
+            return []
+        t = getattr(self.cfg, "target", None)
+        java = getattr(t, "java_version", None) or "21"
+        head = (f"this run: Java {java} and javax.* to jakarta.* only; the parents, the module layout and the Spring / "
+                "Spring Boot line are the project's own, sbmig did not restructure anything")
+        may = ("a fix may: move project code and JSPs to jakarta.*, add jakarta API dependencies, use the jakarta build of "
+               "a library still on javax.* (rule 14)")
+        must_not = ("a fix must not: add Spring Boot or the company parents / artifacts, change any <parent>, move modules "
+                    "or sources")
+        blocked = ("a framework artifact still on javax.* (or a library arriving only through one): answer <blocked> "
+                   "naming it, its owner must provide a jakarta build")
+        fw = getattr(self.profile, "framework", None)
+        ev_lines: list[str] = []
+        for e in list(getattr(fw, "evidence", None) or []):
+            where = e.where or "?"
+            if e.source == "transitive" and e.via:
+                where += " via " + " > ".join(e.via[:4])
+            line = (f"framework artifact {e.artifact}{(' ' + e.version) if e.version else ''} ({e.source}: {where}) — "
+                    "never change its version, never remove or replace it")
+            if line not in ev_lines:
+                ev_lines.append(line)
+        fixed = [head, may, must_not, blocked]
+        budget = SCOPE_FACTS_MAX_CHARS - sum(len(x) + 3 for x in fixed)
+        shown: list[str] = []
+        for ln in ev_lines:
+            if budget - (len(ln) + 3) < 0:
+                break
+            shown.append(ln)
+            budget -= len(ln) + 3
+        if len(shown) < len(ev_lines):
+            more = f"… {len(ev_lines) - len(shown)} more framework evidence line(s) (same rule)"
+            if shown and budget < len(more) + 3:
+                shown.pop()
+                more = f"… {len(ev_lines) - len(shown)} more framework evidence line(s) (same rule)"
+            shown.append(more)
+        return [head, *shown, may, must_not, blocked]
+
+    def _framework_guard(self, att: FixAttempt, pre: str, reported: list[str]) -> str:
+        """범위를 줄인 실행에서 시도가 프레임워크 아티팩트 선언이나 ``<parent>``를 바꿨는지 커밋 전에 확인한다.
+        바꿨으면 다음 요청에 보낼 이유 문장을, 아니면 빈 문자열을 반환한다. sbmig 사전 시도는 검사하지 않는다.
+
+        The post-apply check of a reduced run (before the commit): every project pom the attempt touched is compared
+        with its text at `pre` — the framework artifacts' declarations (`<dependencies>` and `<dependencyManagement>`:
+        g:a, classifier, type, version with the pom's own properties resolved) and the `<parent>` block (g:a:v and
+        relativePath). A removed or changed framework declaration, a framework declaration added at a version the
+        project never used, and any changed / added / removed `<parent>` make the sentence the caller records with
+        `_fail` (the working tree is restored, the next ask sees it among the previous attempts). sbmig's own
+        pre-tries are not checked (they never touch these by construction). Never raises: a pom that does not parse
+        is left to the build."""
+        if not self._reduced_scope() or att.source in PRE_TRY_SOURCES:
+            return ""
+        try:
+            return self._framework_guard_unsafe(pre, reported)
+        except Exception as e:  # noqa: BLE001 - the guard never breaks an attempt
+            log.debug("framework guard for %s skipped: %s: %s", att.id, type(e).__name__, e)
+            return ""
+
+    def _framework_javax_block(self, c: ErrorCluster) -> Any:
+        """javax 케이스의 라이브러리가 프레임워크 아티팩트 자신이면 ``external_javax_api`` 차단 후보를 반환한다.
+        범위를 줄인 실행이 아니거나 해당하지 않으면 None을 반환한다.
+
+        A reduced run's javax case whose library (classpath attribution, else the owner-class fallback) IS a framework
+        artifact cannot be fixed in the project: the triage's own `external_javax_api` candidate comes back with the
+        framework suggestion (no pre-try, no LLM call). The libraries reached only THROUGH a framework artifact are
+        known only after the final `dependency:tree` pass (`framework_via_suggestions`). Never raises."""
+        if not self._reduced_scope():
+            return None
+        try:
+            cand = self._javax_cluster(c)
+            if cand is None:
+                return None
+            libs = self._case_libraries(c) or self._javax_libraries(c)
+            fw = next((g for g in libs if self._is_framework_key(g.key)), None)
+            if fw is None:
+                return None
+        except Exception as e:  # noqa: BLE001 - the check never breaks a case
+            log.debug("framework javax check for %s failed: %s: %s", c.id, type(e).__name__, e)
+            return None
+        cand.suggestion = framework_owner_suggestion(fw.coordinates if fw.version else fw.key, cand.required_type)
+        cand.evidence = [f"the javax-era library is the framework artifact {fw.key} (framework project: its version "
+                         "is kept)", *list(cand.evidence or [])]
+        self._framework_blocks[c.id] = fw
+        log.info("프레임워크 아티팩트가 javax 로 컴파일됨: %s — 프로젝트에서 고칠 수 없어 LLM 없이 차단", fw.key)
+        return cand
+
+    def _framework_rejected(self, att: FixAttempt, pre: str, reported: list[str], name: str) -> bool:
+        """프레임워크 선언이나 ``<parent>``를 바꾼 시도를 커밋하지 않고 되돌린다. 되돌렸으면 True를 반환한다.
+
+        The guard's consequence: the attempt fails (`_fail` restores the working tree; its sentence is in
+        `apply_errors`, which the next ask shows among the previous attempts), a log line and journal
+        `framework_guard`."""
+        why = self._framework_guard(att, pre, reported)
+        if not why:
+            return False
+        self._fail(att, why)
+        log.warning("적용 취소 (%s): 프레임워크 프로젝트에서 바꾸면 안 되는 것을 바꿈 — %s", name, _first_sentence(why, 300))
+        self.ws.journal({"event": "framework_guard", "attempt": att.id, "case": att.script_case_id, "reason": why})
+        return True
+
+    def _framework_guard_unsafe(self, pre: str, reported: list[str]) -> str:
+        from sbmig.restructure.pom_editor import PomEditor
+        try:
+            changed = list(self.ws.changed_files_since(pre)) if pre else []
+        except Exception:  # noqa: BLE001 - a stand-in workspace without git
+            changed = []
+        poms = [p for p in dict.fromkeys(_norm_path(f) for f in [*changed, *(reported or [])] if f)
+                if PurePosixPath(p).name == "pom.xml"]
+        problems: list[str] = []
+        for p in poms:
+            before_text = self.ws.file_at(pre, p) if pre else None
+            if before_text is None:
+                continue                                 # a new pom: nothing to keep in it
+            after_text = self.ws.read(p) if self.ws.exists(p) else None
+            ed0 = PomEditor.from_string(before_text, p)
+            ed1 = PomEditor.from_string(after_text, p) if after_text is not None else None
+            b, a = self._framework_decls(ed0), (self._framework_decls(ed1) if ed1 is not None else {})
+            known = {v for (_m, k, _c, _t), v in b.items() if v} | \
+                {v for (_m, k, _c, _t) in b for v in self._framework_versions(k)}
+            for ident, v in b.items():
+                where = "dependencyManagement" if ident[0] else "dependencies"
+                if ident not in a:
+                    problems.append(f"removed the framework artifact {ident[1]} from the <{where}> of {p}")
+                elif a[ident] != v:
+                    problems.append(f"changed the version of the framework artifact {ident[1]} in {p} from "
+                                    f"{v or '(managed)'} to {a[ident] or '(none)'}")
+            for ident, v in a.items():
+                if ident not in b and v and v not in known | self._framework_versions(ident[1]):
+                    problems.append(f"added the framework artifact {ident[1]} at version {v} to {p}")
+            if ed1 is not None:
+                p0, p1 = self._parent_of(ed0), self._parent_of(ed1)
+                if p0 != p1:
+                    problems.append(f"changed the <parent> of {p} from {p0[0] or '(none)'} to {p1[0] or '(none)'}"
+                                    if p0[0] != p1[0] else f"changed the <parent> relativePath of {p}")
+        if not problems:
+            return ""
+        shown = "; ".join(problems[:4]) + (f"; … (+{len(problems) - 4})" if len(problems) > 4 else "")
+        return (f"{FRAMEWORK_GUARD_PREFIX} the attempt {shown} — nothing of it was kept. This is a framework project: "
+                "every <parent> and the framework artifact's declaration and version must stay exactly as they are; fix "
+                "the code instead, or answer <blocked> naming the framework artifact when only its owner can fix it")
+
+    def _framework_decls(self, ed: Any) -> dict[tuple[bool, str, str, str], Optional[str]]:
+        """pom의 프레임워크 아티팩트 선언을 {(관리 여부, g:a, classifier, type): 속성을 푼 버전}으로 반환한다."""
+        out: dict[tuple[bool, str, str, str], Optional[str]] = {}
+        for managed in (False, True):
+            for g in (ed.managed_dependencies() if managed else ed.dependencies()):
+                if g.group_id and g.artifact_id and self._is_framework_key(g.key):
+                    v = g.version
+                    if v and "${" in v:
+                        try:
+                            v = ed.resolve(v) or v
+                        except Exception:  # noqa: BLE001
+                            pass
+                    out[(managed, g.key, g.classifier or "", g.type or "jar")] = v or None
+        return out
+
+    @staticmethod
+    def _parent_of(ed: Any) -> tuple[str, Optional[str]]:
+        """pom의 ``<parent>`` 좌표(g:a:v)와 relativePath를 반환한다. 부모가 없으면 빈 문자열이다."""
+        g = ed.get_parent()
+        coords = f"{g.group_id}:{g.artifact_id}:{g.version or ''}" if g is not None else ""
+        return coords, ed.parent_relative_path() if g is not None else None
 
     def _protected_version_keys(self) -> set[str]:
         """sbmig가 버전을 채우지 않는 g:a 집합을 반환한다.
@@ -4490,6 +4795,8 @@ class BuildFixLoop:
         except Exception:  # noqa: BLE001 - a foreign config: the optional artifacts by their own keys
             keys |= {s.key for s in getattr(A, "optional", None) or []}
         keys |= {k for k in getattr(A, "remove_when_present", None) or [] if ":" in k}
+        # 프레임워크 프로젝트에서는 프레임워크 아티팩트 버전을 sbmig가 쓰거나 바꾸지 않는다
+        keys |= set(self._framework_keys())
         return keys
 
     def _pom_editor(self, rel: str) -> Any:
@@ -4656,7 +4963,7 @@ class BuildFixLoop:
                     continue
                 if own is None:
                     own = self._own_module_keys()
-                if key in own or (g.scope or "") == "system":
+                if key in own or (g.scope or "") == "system" or self._is_framework_key(key):
                     continue
                 # 시도가 추가한 사내 의존성은 체인이 관리하면 버전 없이 두고, 아니면 체인의 버전 속성 ``${prop}``을 쓴다
                 # 값이 아니라 참조이므로 부모 버전이 오르면 함께 따라간다. 사내 필수, 선택 좌표도 같다
@@ -4711,7 +5018,7 @@ class BuildFixLoop:
             if ed.changed:
                 ed.save()
         for p, key, explicit, mv, _ed0, _ed in removed:
-            att.notes.append(f"version removed by sbmig: {key} {explicit} in {p} (the new parent chain manages it at "
+            att.notes.append(f"version removed by sbmig: {key} {explicit} in {p} (the {self._chain_label()} manages it at "
                              f"{mv})")
             log.info("버전 제거: %s %s → 부모 체인이 관리 (%s) — %s", key, explicit, mv, p)
             self.ws.journal({"event": "version_filled", "case": case, "attempt": att.id, "key": key, "version": mv,
@@ -4869,6 +5176,10 @@ class BuildFixLoop:
                 continue
             seen.add(pair)
             pom = self._declaring_pom(e)
+            if self._is_framework_key(key):
+                self._pre_tried.add(pair)            # 프레임워크 아티팩트 버전은 sbmig가 쓰지 않는다
+                unknown.append(f"{key} (framework artifact: its version is never written by sbmig)")
+                continue
             if key in protected or key in own:
                 self._pre_tried.add(pair)            # nothing to do for it: remembered
                 unknown.append(f"{key} (company / own module: not filled by sbmig)")
@@ -4892,8 +5203,12 @@ class BuildFixLoop:
         버전 맞추기, 누락 버전, 리소스 필터링, 번들 jar, jakarta 빌드.
 
         The zero-LLM pre-tries, in order (the first that matches a case is the one): v2.1l versions, v2.1m resources,
-        v2.1z-i bundled jars, v2.1z-e jakarta builds."""
-        return (_PreTry(SBMIG_PARENT_SOURCE, self._parent_targets, self._parent_attempt),        # v2.1z-ag, first
+        v2.1z-i bundled jars, v2.1z-e jakarta builds. v2.1z-ak: a reduced run (framework project) keeps its parents —
+        no `sbmig-parent`."""
+        # 프레임워크 프로젝트는 자기 부모를 그대로 쓰므로 부모 버전 맞추기를 하지 않는다
+        parent = () if self._reduced_scope() else (
+            _PreTry(SBMIG_PARENT_SOURCE, self._parent_targets, self._parent_attempt),)         # v2.1z-ag, first
+        return (*parent,
                 _PreTry(SBMIG_VERSION_SOURCE, self._version_targets, self._version_attempt),
                 _PreTry(SBMIG_RESOURCES_SOURCE, self._resources_targets, self._resources_attempt),
                 _PreTry(SBMIG_BUNDLED_SOURCE, self._bundled_targets, self._bundled_attempt),     # v2.1z-i, before jakarta
@@ -4933,7 +5248,7 @@ class BuildFixLoop:
 
         The as-is company-parent versions of this case's parent-resolution errors the pre-try would align (switch
         `align` only, not tried in this run yet)."""
-        if getattr(self.cfg.openrewrite, "unresolvable_asis_parent", "align") != "align":
+        if self._reduced_scope() or getattr(self.cfg.openrewrite, "unresolvable_asis_parent", "align") != "align":
             return []
         from sbmig.restructure.asis_parent import classify_gav
         out = []
@@ -5123,7 +5438,7 @@ class BuildFixLoop:
             pr, st, c, source=SBMIG_VERSION_SOURCE, edits=edits, notes=notes, keys=pairs,
             rationale=f"sbmig-version: the missing version(s) from the as-is build / the repository ({what}) — "
                       "no LLM call",
-            analysis=("the build reports dependency versions missing: the new parent chain does not manage "
+            analysis=(f"the build reports dependency versions missing: the {self._chain_label()} does not manage "
                       + ", ".join(f"{g}:{a}" for _p, g, a, _v, _s in plan)),
             solution="sbmig writes the versions the as-is build used (else the newest release in the repository) — "
                      "no LLM call")
@@ -5228,7 +5543,7 @@ class BuildFixLoop:
                 tail = API_CHANGED_TAIL if key in located else ""
                 mv = r.managed_version(key, module) if r.has_chain else None
                 if mv:
-                    out.append(f"new parent chain: manages {key} at {mv}{_major_delta(asis_v, mv)}{tail}")
+                    out.append(f"{self._chain_label()}: manages {key} at {mv}{_major_delta(asis_v, mv)}{tail}")
                 bv = r.boot_version(key, module)
                 if bv:                               # v2.1s: the to-be line when the chain does not manage it
                     out.append(f"target Boot BOM: manages {key} at {bv}{_major_delta(asis_v, bv)}{tail}")
@@ -5822,6 +6137,68 @@ def _kept_partial(a: FixAttempt) -> bool:
     A partial zero-LLM pre-try stays in the tree (no rollback before the case's next try): what it wrote are facts
     (the as-is build / the repository / the file scan), what is left is what it could not find."""
     return a.source in PRE_TRY_SOURCES and a.outcome == "partial"
+
+
+def framework_owner_suggestion(framework: str, api: Optional[str] = None, path: Optional[list[str]] = None) -> str:
+    """프레임워크 아티팩트가 javax로 컴파일되어 차단된 항목의 조치 문구를 만든다.
+
+    The suggestion of a blocked javax item in a framework project (v2.1z-ak): the framework artifact (`framework`,
+    g:a or g:a:v) itself still compiled against javax.*, or — with `path` — the javax API / library that arrives through
+    it. Names the framework artifact and says its owner must provide a jakarta build."""
+    tail = (f"it cannot be fixed in the project — the owner of the framework artifact `{framework}` must provide a "
+            "jakarta build of it (sbmig keeps the framework version as it is)")
+    if path:
+        what = f"`{api}`" if api else "a javax-era library"
+        return f"{what} comes through the framework artifact `{framework}` ({' → '.join(path)}): {tail}"
+    still = f" (it still takes `{api}`)" if api else ""
+    return f"`{framework}` is the in-house framework artifact of this project and is still compiled against javax.*{still}: {tail}"
+
+
+def framework_via_suggestions(items: Iterable[Any], profile: Any, cfg: Any = None) -> int:
+    """최종 의존성 트리로 채운 차단 항목 중 프레임워크 아티팩트를 거쳐 들어온 javax 항목의 조치 문구를 바꾼다.
+    바꾼 항목 수를 반환한다. 범위를 줄인 실행이 아니면 아무것도 하지 않는다.
+
+    The "arrives only through it" half of the framework javax rule (v2.1z-ak), for the orchestrator's final pass right
+    after `blocked_registry.fill_via`: an `external_javax_api` / `external_api_incompatible` item whose `via` path (the
+    `dependency:tree` path from the module to the javax jar) or `via_direct` is / contains a framework artifact gets the
+    framework suggestion (`framework_owner_suggestion`). Items already naming a framework artifact are kept. Returns
+    the number of items changed; never raises."""
+    if not getattr(profile, "reduced_scope", False):
+        return 0
+    fwc = getattr(cfg, "framework", None) if cfg is not None else None
+    fw = getattr(profile, "framework", None)
+    keys = set(fw.keys()) if fw is not None else set()
+
+    def is_fw(coords: Optional[str]) -> bool:
+        k = ":".join(str(coords or "").split(":")[:2])
+        if not k or k.count(":") != 1:
+            return False
+        try:
+            return k in keys or bool(fwc is not None and fwc.matches_key(k))
+        except Exception:  # noqa: BLE001
+            return False
+
+    changed = 0
+    for item in items or []:
+        try:
+            if item.reason not in (BlockReason.EXTERNAL_JAVAX_API, BlockReason.EXTERNAL_API_INCOMPATIBLE):
+                continue
+            if item.artifact is not None and is_fw(item.artifact.key):
+                continue                                  # blocked on the framework artifact itself already
+            path = [str(x) for x in (item.via or [])]
+            hit = next((x for x in path[1:] if is_fw(x)), None)
+            if hit is None and item.via_direct is not None and is_fw(item.via_direct.key):
+                hit = item.via_direct.coordinates
+            if hit is None:
+                continue
+            api = item.artifact.coordinates if item.artifact is not None else None
+            new = framework_owner_suggestion(hit, api, path or [hit])
+            if new != item.suggestion:
+                item.suggestion = new
+                changed += 1
+        except Exception as e:  # noqa: BLE001 - a report aid, never a failure
+            log.debug("framework via suggestion skipped: %s: %s", type(e).__name__, e)
+    return changed
 
 
 def _major_delta(before: Optional[str], after: Optional[str]) -> str:

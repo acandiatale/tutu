@@ -109,7 +109,7 @@ errors.md 표의 열: `# | seen | status | case | file:line | message | tries | 
 
 | 줄 (그대로 grep) | 뜻 |
 |---|---|
-| `SBMIG-RESULT run=… exit=… build=ok|FAIL unresolved=… blocked=… open=… resolved=… llm=… attn=… [review=…] [major=…]` | 운영자가 옮겨 적는 결과 한 줄(콘솔 마지막 줄, report.md 머리) |
+| `SBMIG-RESULT run=… exit=… build=ok|FAIL unresolved=… blocked=… open=… resolved=… llm=… attn=… [review=…] [major=…] [scope=jdk-jakarta]` | 운영자가 옮겨 적는 결과 한 줄(콘솔 끝, report.md 머리). `scope=`는 [13](13-framework-projects.md) |
 | `preflight: …` (ERROR) | 실행 시작 점검 실패(JDK / Maven). 플릿은 `preflight: <점검> FAIL …` |
 | `[intake]` `[analyze]` `[rewrite]` `[restructure]` `[review]` `[build]` `[fix r2]` `[fix r2 <case_id>]` `[kb]` `[report]` | 줄마다 붙는 단계 태그 |
 | `N open → M case(s); 순서: …` | 라운드의 케이스와 처리 순서(근본 원인 먼저) |
@@ -119,7 +119,7 @@ errors.md 표의 열: `# | seen | status | case | file:line | message | tries | 
 | `llm call provider=company … attempt n/m → POST <url> (prompt N chars, timeout Ts)` | LLM 요청. 끝나면 `llm call provider=company model=… in=… out=… latency=… finish=…` |
 | `llm company transport error (attempt n/m): … cause=<예외>` | 전송 실패. `cause=` 뒤가 원인 클래스 |
 | `thread turn (session <id>): sent N chars in K message(s) → prompt_tokens=T` | 케이스 스레드 턴 측정(`llm.case_thread`) |
-| `repository lookup: <id> (<url>) is blocked by Maven's HTTP blocker (mirror 'maven-default-http-blocker', …)` | Maven 3.8.1+ 전역 settings 의 http 차단 미러가 사내 Nexus(http) 를 덮었다 — Maven 도 그 저장소를 쓰지 않는다. https 로 바꾸거나 사용자 settings 에서 그 미러를 덮어쓰거나 `build.repository_url` 을 적는다 |
+| `repository lookup: <id> (<url>) is blocked by Maven's HTTP blocker (mirror 'maven-default-http-blocker', …)` | http 차단 미러가 사내 Nexus(http) 를 덮었다. §5 `infra:http-blocked` |
 | `repository lookup: settings <경로> (~/.m2/settings.xml): missing` / `WARNING settings <경로> could not be read (…)` | 조회가 찾아봤지만 못 쓴 settings.xml — Nexus 가 조회 저장소에 없을 때 먼저 볼 줄. `sbmig repo-probe g:a -c <회사 yml> --project <실행>/project` 가 같은 내용을 찍는다 |
 | 시도 메모 `the build advanced past the fixed pom problem: … not a regression of this attempt` | pom 문제를 없앤 시도 뒤 다음 단계 오류가 처음 보인 것 — 되돌리지 않고 개선으로 채점 |
 | 시도 메모 `regressed: structural error kind(s) … appeared after this attempt edited a pom.xml → reverted` | pom 편집 뒤 같은/더 이른 단계의 새 구조적 오류 종류 — 되돌림 |
@@ -157,7 +157,7 @@ verify_guide …), `metadata`(run_id, 케이스 등). 키·헤더는 들어가�
 | 이벤트 | 뜻 |
 |---|---|
 | `intake`, `preflight`, `build_tool`, `pom_synthesized`, `aggregator_generated`, `no_root_pom`, `reactor_dedupe`, `stray_pom_ignored` | 접수: 입력, 점검, 빌드 도구, Ant pom 합성, 루트 집계 pom 생성, 리액터 중복 제거, 떠도는 pom 복사본 무시 |
-| `analyze`, `hollow_reactor`, `sources_outside_reactor`, `adf_project`, `adf_traces`, `bundled_jars`, `advisories` | 분석 판정 |
+| `analyze`, `hollow_reactor`, `sources_outside_reactor`, `adf_project`, `adf_traces`, `bundled_jars`, `framework_project`, `framework_check`, `advisories` | 분석 판정 |
 | `plan`, `step_start`, `step_end`, `phase_start`, `phase_end`, `graph_node`, `stop_after` | 계획과 단계 진행 |
 | `rewrite`, `rewrite_download_retry(_result)`, `rewrite_oom_retry(_result)`, `rewrite_parse_problems`, `asis_parent_aligned` (`where: rewrite`), `rewrite_skipped_asis_parent` | OpenRewrite (as-is 부모가 저장소에 없음: 설정 버전으로 맞춤 / 레시피 없이 계속) |
 | `restructure`, `restructure_moves`, `restructure_failed`, `versions_pinned`, `parent_chain_facts`, `parent_chain_no_boot_bom`, `bom_property_overrides`, `non_filtered_extensions`, `jsp_jakarta`, `bundled_jar_wired` (`stage: restructure`), `bundled_jars_skipped` | 재구성 결과(건너뛴 jar 의 이유: superseded / container / unused / declared / skip) |
@@ -167,8 +167,9 @@ verify_guide …), `metadata`(run_id, 케이스 등). 키·헤더는 들어가�
 | `decision` | 케이스별 SCRIPT / BLOCKED 와 `rationale`(사다리 단계, KB 탐색 결과) |
 | `library_hints` (`lines` = LLM 이 받은 사실), `library_lookup`, `library_mapped`, `library_unmapped` | 라이브러리 → 저장소 조회 |
 | `version_try`, `resources_try`, `jakarta_try`, `bundled_jar_wired` (`stage: loop`), `asis_parent_aligned` (`where: fix loop`) | LLM 없는 사전 시도 |
+| `scopes_restored`, `source_encodings` | [13](13-framework-projects.md) 4절 |
 | `llm_call`, `llm_script`, `llm_verify_guide`, `llm_cooldown`, `llm_unavailable`, `llm_config_error` | LLM 호출과 장애 |
-| `attempt`, `attempt_scored`, `script_stored`, `script_credit`, `script_non_idempotent` | 시도, 재빌드 채점, KB 저장·실적 |
+| `attempt`, `attempt_scored`, `script_stored`, `script_credit`, `script_non_idempotent`, `framework_guard` | 시도, 재빌드 채점, KB 저장·실적 |
 | `revert`, `script_rollback`, `script_rollback_undone`, `reround` | 되돌림, 같은 빌드로 다음 단계 묻기 |
 | `stall`, `oscillation` (`count`, `stall_level`) | 같은 오류 집합 반복 / 예전 집합으로 되돌아감 |
 | `blocked`, `blocked_resolved`, `declined`, `decline_rejected`, `same_cause_blocked` | 차단, LLM 거절, 거절 거부, 같은 원인 형제 차단 |
@@ -252,7 +253,7 @@ sbmig 에 바라는 것: <사실 추가 / 규칙 / 한도 / 버그 수정> 한 �
 
 - 로그 파일을 통째로 달라고 하지 말고 **특정 줄**을 묻는다: `SBMIG-RESULT`, `preflight:`, `cause=`, `KB 탐색`, `LLM-PROBE`, `REPO-PROBE`, 특정 `build N:`.
 - 콘솔은 cp949 — `SBMIG-RESULT` / `LLM-PROBE` 줄은 ASCII 만(한글은 `?`)이라 손으로 옮겨 적을 수 있다.
-- PowerShell 대응: `Select-String -Path out\<run id>\sbmig.log -Pattern 'SBMIG-RESULT|cause=|KB 탐색' | Select-Object -Last 20`,
+- PowerShell: `Select-String -Path out\<run id>\sbmig.log -Pattern 'SBMIG-RESULT|cause=|KB 탐색' | Select-Object -Last 20`,
   `Get-Content out\<run id>\sbmig.log -Tail 40`, `Select-String -Path out\<run id>\journal.jsonl -Pattern '"event": "decision"'`,
   `Get-ChildItem out\<run id>\logs | Sort-Object Name | Select-Object -Last 3`. 출력은 `-Encoding utf8` 로 읽는다.
 - 멈춘 것 같으면: 수정 루프 감시견이 60초 조용하면 경고, 300초면 실행 폴더에 스레드 덤프를 스스로 남긴다(실행 폴더에 `dump-threads` 파일을 만들어도 덤프).

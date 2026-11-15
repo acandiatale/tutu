@@ -240,6 +240,13 @@ def analyze_project(ws: WorkspaceView, cfg: Config) -> ProjectProfile:
             profile.bundled_jars = scan_bundled_jars(ws, cfg, poms)
         except Exception as e:  # noqa: BLE001 - the analyzer must never fail on the bundled-jar scan
             log.warning("bundled-jar scan skipped: %s: %s", type(e).__name__, e)
+    # 사내 프레임워크 아티팩트를 쓰면 이관 범위를 JDK와 jakarta로 줄인다. 설정이 비어 있으면 None으로 둔다
+    # v2.1z-ak: framework projects (static sources only; the orchestrator adds the dependency:tree check)
+    try:
+        from .framework import decide_scope, detect_framework
+        profile.framework = decide_scope(detect_framework(ws, cfg, poms, profile.bundled_jars), cfg)
+    except Exception as e:  # noqa: BLE001 - the analyzer must never fail on the framework check
+        log.warning("framework check skipped: %s: %s", type(e).__name__, e)
     if cfg.externalized.enabled:
         # round 8: settings the code reads that only the external container supplied (JNDI, context-param, -D …)
         rules = load_rules(cfg.resolve_path(cfg.externalized.rules_file))

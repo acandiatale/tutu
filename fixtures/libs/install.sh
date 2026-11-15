@@ -11,6 +11,7 @@
 #   legacy-base-web 1.0.0 → JDK 21 (JAVA21_HOME)  a WAR (JSP fragment + css, no classes) that servlet-war-overlay overlays
 #   legacy-parent   1.0.0 → JDK 21 (JAVA21_HOME)  the OLD in-house parent pom (manages commons-text / commons-csv), v2.1l
 #   grid8 1.0.6 / 1.1.15 → JDK 8   javax.servlet vendor grid stand-in (v2.1z-e); grid8 2.0.5-jakarta → JDK 21  jakarta build, silent pom
+#   example-fw-core / -web / -parent 1.0.0 → JDK 21 (release 8)  in-house framework stand-in (com.example.fw), v2.1z-ak
 set -euo pipefail
 LIBS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 JVM_DIR=/Users/acandiatale/Library/Java/JavaVirtualMachines
@@ -49,4 +50,7 @@ install_lib "$LIBS/legacy-parent/v1.0.0" "$JAVA21_HOME"      # v2.1l: old in-hou
 install_lib "$LIBS/grid8/v1.0.6" "$JAVA8_HOME"            # v2.1z-e: vendor grid, javax.servlet line
 install_lib "$LIBS/grid8/v1.1.15" "$JAVA8_HOME"
 install_lib "$LIBS/grid8/v2.0.5-jakarta" "$JAVA21_HOME" -Dsbmig.standin=1   # jakarta.servlet build with a silent pom
+install_lib "$LIBS/example-fw/example-fw-core/v1.0.0" "$JAVA21_HOME"     # v2.1z-ak: framework stand-in (core first:
+install_lib "$LIBS/example-fw/example-fw-web/v1.0.0" "$JAVA21_HOME"      # -web depends on it)
+install_lib "$LIBS/example-fw/example-fw-parent/v1.0.0" "$JAVA21_HOME"   # pom packaging, inherits the core
 echo "fixtures/libs installed${1:+ into $1}"

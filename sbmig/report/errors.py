@@ -20,7 +20,7 @@ from sbmig.errors.common import note_text
 
 STATUS_ORDER = ("unresolved", "open", "blocked", "pom-verify", "resolved", "note")
 OPEN_STATUSES = ("open", "unresolved")         # SBMIG-RESULT `open=` (finalize turns open into unresolved)
-SEEN_ORDER = ("compile", "restructure", "review", "build")
+SEEN_ORDER = ("compile", "transform", "restructure", "review", "build")
 KEPT_RESULTS_EXCLUDED = ("regressed", "reverted", "apply_failed")   # rolled back / never applied: not in the tree
 _FIX_ROUND_RE = re.compile(r"^fix r(\d+)\b")
 _RESOLVED_TRY_RE = re.compile(r"^r(\d+) try (\d+)$")
@@ -61,7 +61,7 @@ def counts_text(counts: "OrderedDict[str, int] | dict[str, int]") -> str:
 
 def seen_rank(seen: str) -> tuple[int, int, str]:
     """오류가 처음 나온 단계(``seen``)의 정렬 키를 반환한다.
-    순서는 compile, restructure, review, build, fix r1, r2 … 그 밖이다.
+    순서는 compile, transform, restructure, review, build, fix r1, r2 … 그 밖이다.
     r10이 r2 앞에 오지 않도록 ``fix rN``은 라운드 번호를 숫자로 비교한다."""
     s = (seen or "").strip()
     if s in SEEN_ORDER:

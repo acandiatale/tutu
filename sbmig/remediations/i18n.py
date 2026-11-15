@@ -65,6 +65,11 @@ REASON_KO: dict[str, str] = {
     "stale_location": "pom이 그 사이 변경됨", "inventory_incomplete": "의존성 목록을 다 읽지 못함",
     "inhouse_artifact": "사내 라이브러리 (담당자 요청)", "chain_budget": "제한 시간 초과",
 }
+# 사내 그룹(remediation.inhouse_groups)의 한국어 이름. 보고서의 사내 아티팩트 묶음 제목에 붙인다
+INHOUSE_GROUP_KO: dict[str, str] = {
+    "mandatory": "필수 사내 라이브러리", "optional": "선택 사내 라이브러리", "parents": "회사 부모 pom",
+    "framework": "사내 프레임워크",
+}
 # graph.fill_counts가 만드는 집계 키의 한국어 이름. 이 순서로 보여 주고 모르는 키는 이름 그대로 뒤에 붙인다
 COUNT_KO: dict[str, str] = {
     "baseline_findings": "조치 전 취약점", "baseline_ignored": "조치 전 제외", "fixed": "조치한 취약점",
@@ -1019,6 +1024,6 @@ def inhouse_gas(detail: str) -> list[str]:
 
 
 __all__ = ["SEVERITY_LEVELS", "SEVERITY_NONE_KO", "severity_of", "severity_thresholds", "BOUNDARY_KO", "COUNT_KO",
-           "DECISION_KO", "FINDING_KIND_KO", "GROUPS", "KEY_PHRASES", "KIND_KO", "ORIGIN_ALL_KO", "ORIGIN_KO", "REASON_KO",
+           "DECISION_KO", "FINDING_KIND_KO", "GROUPS", "INHOUSE_GROUP_KO", "KEY_PHRASES", "KIND_KO", "ORIGIN_ALL_KO", "ORIGIN_KO", "REASON_KO",
            "RISK_KO", "RULES", "SCAN_REASON_KO", "detail_group", "evidence_ko", "group_meta", "inhouse_gas", "ko_display",
            "ko_text", "label", "loc_ko", "row_memo", "rule_keys", "split_known", "variant_label"]

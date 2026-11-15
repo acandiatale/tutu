@@ -49,7 +49,7 @@
       },
       "cases": [
         {
-          "l2": "compile|cannot_find_symbol|clientIp",
+          "l2": "compile|cannot_find_symbol|com.company.legacy.web.LegacyRequestHelper.clientIp",
           "modes": [
             "new",
             "augment"
@@ -67,7 +67,7 @@
       ],
       "stored": [
         {
-          "l2": "compile|cannot_find_symbol|clientIp",
+          "l2": "compile|cannot_find_symbol|com.company.legacy.web.LegacyRequestHelper.clientIp",
           "version": 1,
           "parent": null,
           "successes_max": 0,
@@ -78,7 +78,7 @@
           "status": "active"
         },
         {
-          "l2": "compile|cannot_find_symbol|clientIp",
+          "l2": "compile|cannot_find_symbol|com.company.legacy.web.LegacyRequestHelper.clientIp",
           "version": 2,
           "parent": 1,
           "status": "active",
@@ -91,7 +91,7 @@
         }
       ],
       "versions": {
-        "compile|cannot_find_symbol|clientIp": 2
+        "compile|cannot_find_symbol|com.company.legacy.web.LegacyRequestHelper.clientIp": 2
       }
     },
     "kb": {

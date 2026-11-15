@@ -16,7 +16,7 @@ intake       Maven only (Ant: refused with `intake.ant_message`, exit 3 — pom 
              Gradle / trees with neither pom.xml nor build.xml: rejected, exit 3);
              root aggregator generated for sibling poms, stray pom copies ignored, preflight (Maven, JDK 21)
 analyze      case (pure_java | servlet_tomcat | spring_legacy | spring_boot | msa), libraries, advisories, bundled jars,
-             ADF stop (exit 3), hollow reactor (exit 2)
+             ADF stop (exit 3), hollow reactor (exit 2), framework project (scope jdk-jakarta: no restructure / review)
 plan         the recipes of the one OpenRewrite run (Java 21, javax → jakarta, Spring Framework 7 / Security 7, Boot 4.0 + 4.1)
 transform    one OpenRewrite run — no build in between
 restructure  company layout (parent / mandatory / optional, module split, or poms only for Boot / MSA), versions carried
@@ -43,6 +43,14 @@ choice) — for a project migrated earlier and checked again: no migration step,
 built as it is, scanned by IVAS, remediated and rescanned under `<run dir>/remediation/`. `SBMIG-RESULT … flow=remediation
 … remediation=<STATUS>`; exit 0 = SUCCEEDED, 2 = any other saved status, 3 = not started (refused at intake, or
 `remediation:not-ready` when IVAS values / Maven readiness are missing).
+
+**Framework projects.** A project that depends on an in-house framework artifact (`framework.artifacts` in the company
+yml; empty = no check) runs in the reduced scope `jdk-jakarta`: the analyzer looks for the artifact in the poms'
+dependencies, in what a parent pom outside the project brings, in bundled jars and, when none of these has it, with one
+`dependency:tree`; the plan then holds only the recipe sets of `framework.recipe_sets` (default Java 21 + jakarta), the
+JSP javax → jakarta rename and the verify build with the fix loop, followed by the chained remediation. No restructure,
+no structure review; the project keeps its parent pom, its layout and the framework version (the fix loop rolls back an
+attempt that touches them). `SBMIG-RESULT … scope=jdk-jakarta`. Details: `agent-doc/13-framework-projects.md`.
 
 ## Business decisions (kept in config / knowledge, not in code)
 

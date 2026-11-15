@@ -610,6 +610,53 @@ class AdfSummary(BaseModel):
     by_dir: dict[str, dict[str, int]] = Field(default_factory=dict)   # top-level dir → java / java_adf / bc4j / pages / page_defs
 
 
+class FrameworkEvidence(BaseModel):
+    """사내 프레임워크 아티팩트를 프로젝트의 어디에서 찾았는지 담는 데이터 클래스.
+
+    One place a framework artifact (`framework.artifacts`) was found. `source`: `direct` = a project pom declares it in
+    `<dependencies>`; `parent` = it is in a module's effective `<dependencies>` and no project pom declares it (it comes
+    from a parent pom outside the project); `bundled` = a jar in the tree that no pom declares; `transitive` = another
+    dependency brings it (`mvn dependency:tree`)."""
+    source: Literal["direct", "parent", "bundled", "transitive"]
+    artifact: str                                  # "g:a"; a bundled jar without coordinates: its file name
+    version: Optional[str] = None
+    # direct: the pom path / parent: the module (g:a or its pom path) / bundled: the jar path / transitive: the module
+    where: str = ""
+    parent: Optional[str] = None                   # parent only: the g:a:v of the module's parent pom, when known
+    via: list[str] = Field(default_factory=list)   # transitive only: g:a:v path, the project's own dependency first
+
+
+class FrameworkUse(BaseModel):
+    """프로젝트가 사내 프레임워크를 쓰는지 검사한 결과와 그에 따른 이관 범위를 담는 데이터 클래스.
+
+    The framework check of one run (v2.1z-ak). `scope` is what the run does: `jdk-jakarta` = Java 21 + jakarta recipes,
+    verify build + fix loop, chained remediation, nothing else; `full` = the ordinary migration. `unchecked` names the
+    sources that could not be looked at (`"parent: no as-is effective pom"`, `"transitive: dependency:tree failed"`)."""
+    patterns: list[str] = Field(default_factory=list)              # framework.artifacts as configured
+    evidence: list[FrameworkEvidence] = Field(default_factory=list)
+    unchecked: list[str] = Field(default_factory=list)
+    scope: Literal["full", "jdk-jakarta"] = "full"
+    reason: str = ""                               # one English sentence: why this scope (plan note, journal)
+
+    @property
+    def found(self) -> bool:
+        """프레임워크 아티팩트를 한 곳이라도 찾았는지 여부를 반환한다."""
+        return bool(self.evidence)
+
+    @property
+    def reduced(self) -> bool:
+        """JDK와 jakarta만 올리는 범위로 실행하는지 여부를 반환한다."""
+        return self.scope == "jdk-jakarta"
+
+    def keys(self) -> list[str]:
+        """찾은 프레임워크 아티팩트의 ``g:a`` 목록을 중복 없이 반환한다. 좌표를 모르는 jar는 빼고 반환한다."""
+        out: list[str] = []
+        for e in self.evidence:
+            if e.artifact.count(":") == 1 and e.artifact not in out:
+                out.append(e.artifact)
+        return out
+
+
 class ProjectProfile(BaseModel):
     """분석 단계의 결과 전체(profile.json)를 담는 데이터 클래스.
     계획, 재구성, 구조 검토, 수정 프롬프트, 보고서가 모두 읽는다.
@@ -645,6 +692,14 @@ class ProjectProfile(BaseModel):
     # v2.1z-i: jars that sit in the tree (WEB-INF/lib, lib/, …) and that NO pom declares — the as-is IDE build saw them,
     # Maven does not; `sbmig.analyze.bundled_jars.scan_bundled_jars` fills it, the fix loop wires them (`sbmig-bundled`)
     bundled_jars: list["JarCoordinate"] = Field(default_factory=list)
+    # 사내 프레임워크 검사 결과. framework.artifacts가 비어 있으면 None이다
+    # v2.1z-ak: the framework check (None when `framework.artifacts` is empty); `framework.scope` decides the plan
+    framework: Optional[FrameworkUse] = None
+
+    @property
+    def reduced_scope(self) -> bool:
+        """JDK와 jakarta만 올리는 범위(프레임워크 프로젝트)로 실행하는지 여부를 반환한다."""
+        return self.framework is not None and self.framework.reduced
 
     def has_library(self, name: str) -> bool:
         """정규화된 라이브러리 이름(LibraryUsage.name)을 프로젝트가 쓰는지 확인한다."""
@@ -699,6 +754,9 @@ class MigrationPlan(BaseModel):
     notes: list[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=utcnow)
     llm_usage: "LLMUsage" = Field(default_factory=lambda: LLMUsage())   # plan advisor (recipe model) usage
+    # 이관 범위. jdk-jakarta는 사내 프레임워크 프로젝트라 JDK와 jakarta만 올리는 계획이다
+    # v2.1z-ak: `jdk-jakarta` = the reduced plan of a framework project (transform + verify only)
+    scope: Literal["full", "jdk-jakarta"] = "full"
 
 
 # ---------------------------------------------------------------------------

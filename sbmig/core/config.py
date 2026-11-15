@@ -935,6 +935,91 @@ class IntakeConfig(BaseModel):
     adf_policy: Literal["stop", "continue"] = "stop"
 
 
+class FrameworkConfig(BaseModel):
+    """사내 프레임워크를 쓰는 프로젝트를 찾아 이관 범위를 줄이는 설정을 담는 클래스.
+    ``artifacts``의 아티팩트가 의존성에 있으면 JDK와 jakarta만 올리고 빌드한다.
+    목록이 비어 있으면 검사하지 않는다.
+
+    Framework projects (v2.1z-ak): a project that depends on one of `artifacts` (an in-house framework) runs in the
+    reduced scope `jdk-jakarta` — the Java 21 and jakarta recipes, the verify build with the fix loop, then the chained
+    remediation; no restructure, no structure review, and the framework artifact's version is never changed. An empty
+    list switches the check off. Patterns: `artifactId`, `groupId:artifactId`, `*` globs in either part."""
+    # 프레임워크 아티팩트 목록이다. "artifactId"나 "groupId:artifactId"로 쓰고 *를 쓸 수 있다
+    artifacts: list[str] = Field(default_factory=list)
+    # jdk-jakarta는 JDK와 jakarta만 올리고, full은 표시만 하고 전체 이관을 한다
+    scope: Literal["jdk-jakarta", "full"] = "jdk-jakarta"
+    # 다른 라이브러리가 끌고 온 경우의 처리다. apply는 직접 선언과 같게, note는 알림만, off는 검사하지 않는다
+    transitive: Literal["apply", "note", "off"] = "apply"
+    # jdk-jakarta 범위에서 실행할 레시피 세트 이름이다. openrewrite.recipes 아래의 세트 이름을 쓴다
+    recipe_sets: list[str] = Field(default_factory=lambda: ["jdk21", "jakarta"])
+
+    @field_validator("recipe_sets")
+    @classmethod
+    def _known_recipe_sets(cls, v: list[str]) -> list[str]:
+        """``recipe_sets``의 이름이 ``openrewrite.recipes``의 세트 이름인지 확인한다."""
+        allowed = [n for n, f in RecipeSetConfig.model_fields.items() if n != "extra"]
+        out: list[str] = []
+        for name in v or []:
+            n = str(name or "").strip()
+            if n not in allowed:
+                raise ValueError(f"framework.recipe_sets: unknown recipe set '{name}' (allowed: {', '.join(allowed)})")
+            if n not in out:
+                out.append(n)
+        return out
+
+    def patterns(self) -> list[str]:
+        """빈 값을 뺀 패턴 목록을 반환한다."""
+        return [p.strip() for p in self.artifacts if isinstance(p, str) and p.strip()]
+
+    @property
+    def enabled(self) -> bool:
+        """프레임워크 검사를 하는지 여부를 반환한다."""
+        return bool(self.patterns())
+
+    def matches(self, group_id: Optional[str], artifact_id: Optional[str]) -> bool:
+        """g:a가 프레임워크 아티팩트 패턴에 맞는지 확인한다.
+
+        A pattern without `:` is compared with the artifactId, one with `:` with `groupId:artifactId` (fnmatch, case
+        sensitive)."""
+        a = (artifact_id or "").strip()
+        if not a:
+            return False
+        key = f"{(group_id or '').strip()}:{a}"
+        for p in self.patterns():
+            if fnmatch.fnmatchcase(key, p) if ":" in p else fnmatch.fnmatchcase(a, p):
+                return True
+        return False
+
+    def matches_key(self, key: Optional[str]) -> bool:
+        """``g:a`` 또는 ``g:a:...`` 문자열이 프레임워크 아티팩트 패턴에 맞는지 확인한다."""
+        parts = (key or "").split(":")
+        return len(parts) >= 2 and self.matches(parts[0], parts[1])
+
+    def matches_jar(self, file_name: Optional[str]) -> bool:
+        """좌표를 모르는 jar의 파일 이름(``<artifactId>[-<버전>].jar``)이 패턴의 artifactId에 맞는지 확인한다.
+
+        For a bundled jar without coordinates: the artifactId part of each pattern against the file name, an optional
+        `-<version>` suffix allowed. A pattern whose artifactId part is only `*` never matches a file name."""
+        stem = (file_name or "").replace("\\", "/").rsplit("/", 1)[-1]
+        if stem.lower().endswith(".jar"):
+            stem = stem[:-4]
+        if not stem:
+            return False
+        for p in self.patterns():
+            a = p.split(":", 1)[1] if ":" in p else p
+            if not a.strip("*"):
+                continue
+            body = fnmatch.translate(a)
+            body = body[:-2] if body.endswith(r"\Z") else body
+            if re.match(body + r"(-\d[\w.\-]*)?\Z", stem):
+                return True
+        return False
+
+    def maven_includes(self) -> list[str]:
+        """``mvn dependency:tree -Dincludes``에 넣을 패턴 목록을 반환한다. artifactId만 쓴 패턴은 ``*:<artifactId>``가 된다."""
+        return [p if ":" in p else f"*:{p}" for p in self.patterns()]
+
+
 class ExternalizedConfig(BaseModel):
     """외부 설정 키 처리 방식을 담는 클래스.
     코드는 읽지만 패키지된 리소스에는 없는 설정(JNDI, context-param, -D 등 컨테이너가 주던 값)을 다룬다.
@@ -984,11 +1069,12 @@ class RemediationConfig(BaseModel):
     # NE 조치 필요 / NP 조치계획 미등록 / PL 조치예정 / OT 조치일 경과 / PC 패치 완료 / IG 조치 예외.
     # 기본값은 빈 목록이고, 예외 항목을 빼려면 [PC, IG]처럼 쓴다
     ignore_actions: list[str] = Field(default_factory=list)
-    # 사내 아티팩트로 볼 artifacts yml의 그룹 목록이다.
-    # mandatory / optional / parents(parent, boot_parent, comp_parent)
+    # 사내 아티팩트로 볼 그룹 목록이다.
+    # mandatory / optional / parents(parent, boot_parent, comp_parent)는 artifacts yml의 목록이고,
+    # framework는 framework.artifacts의 사내 프레임워크 아티팩트다
     # 이 아티팩트 자체이거나 이를 거쳐 들어온 취약 라이브러리는 프로젝트에서 고치지 않고 inhouse_artifact로
     # 남긴다. 빈 목록이면 쓰지 않으며, 이 값은 정책 해시에 들어간다
-    inhouse_groups: list[str] = Field(default_factory=lambda: ["mandatory", "optional", "parents"])
+    inhouse_groups: list[str] = Field(default_factory=lambda: ["mandatory", "optional", "parents", "framework"])
     inhouse_message: str = "해당 아티팩트는 예외처리가 가능합니다. 담당자에게 연락 부탁드립니다."
     # 보고서의 위험도 표시 기준이다. IVAS 점수가 이 값 이상이면 취약점 옆에 빨강 / 주황 / 노랑 표시를 붙인다
     # 기본값은 CVSS 심각(9.0), 높음(7.0), 보통(4.0) 구간이다. 표시만 바꾸므로 정책 해시에 들어가지 않는다
@@ -1042,6 +1128,7 @@ class Config(BaseModel):
     artifacts: ArtifactsConfig
     layout: LayoutConfig = Field(default_factory=LayoutConfig)
     intake: IntakeConfig = Field(default_factory=IntakeConfig)       # v2.1j: Ant → pom synthesis at intake
+    framework: FrameworkConfig = Field(default_factory=FrameworkConfig)   # 사내 프레임워크 프로젝트 판별
     openrewrite: OpenRewriteConfig = Field(default_factory=OpenRewriteConfig)
     build: BuildConfig = Field(default_factory=BuildConfig)
     loop: LoopConfig = Field(default_factory=LoopConfig)

@@ -49,7 +49,7 @@
       },
       "cases": [
         {
-          "l2": "compile|cannot_find_symbol|clientIp",
+          "l2": "compile|cannot_find_symbol|com.company.legacy.web.LegacyRequestHelper.clientIp",
           "modes": [
             "new"
           ],
@@ -64,7 +64,7 @@
       ],
       "stored": [
         {
-          "l2": "compile|cannot_find_symbol|clientIp",
+          "l2": "compile|cannot_find_symbol|com.company.legacy.web.LegacyRequestHelper.clientIp",
           "version": 1,
           "successes_min": 1,
           "code_contains": [
@@ -73,7 +73,7 @@
         }
       ],
       "versions": {
-        "compile|cannot_find_symbol|clientIp": 1
+        "compile|cannot_find_symbol|com.company.legacy.web.LegacyRequestHelper.clientIp": 1
       }
     },
     "kb": {

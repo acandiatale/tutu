@@ -909,3 +909,107 @@ def test_kb_after_keeps_the_shared_kb_and_needs_its_filler(e2e, tmp_path, monkey
     real = e2e.load_expected("java6-legacy")["expect"]["kb"]
     assert real == {"dir": "out/e2e/kb-jaxb", "after": "pure-java"}
     assert e2e.load_expected("pure-java")["expect"]["kb"] == {"dir": "out/e2e/kb-jaxb"}     # cleared before pure-java
+
+
+# ---------------------------------------------------------------------------------------------- v2.1z-ak (framework)
+FW_JOURNAL = [
+    {"event": "framework_project", "scope": "jdk-jakarta", "artifacts": ["com.example.fw:example-fw-core"],
+     "evidence": [{"source": "transitive", "artifact": "com.example.fw:example-fw-core", "version": "1.0.0",
+                   "where": "fwtransitive", "via": ["com.example.fw:example-fw-web:1.0.0",
+                                                    "com.example.fw:example-fw-core:1.0.0"]}],
+     "unchecked": [], "reason": "..."},
+    {"event": "plan", "scope": "jdk-jakarta", "steps": ["transform.rewrite", "transform.jsp_jakarta", "verify.build"]},
+    {"event": "rewrite", "step": "transform.rewrite", "ok": True},
+]
+
+
+def test_journal_event_paths_regex_and_lists(e2e):
+    """Dotted keys reach nested values (list indices, negative from the end), `regex:` values fully match, a list
+    value must be equal, and a missing key still equals None (the old `ev.get(k) == v`)."""
+    m = e2e.journal_event_matches
+    fw = FW_JOURNAL[0]
+    assert m({"event": "framework_project", "scope": "jdk-jakarta", "evidence.0.source": "transitive"}, fw)
+    assert m({"evidence.0.via.0": "regex:com\\.example\\.fw:example-fw-web:.*",
+              "evidence.0.via.-1": "regex:.*:example-fw-core:1\\.0\\.0"}, fw)
+    assert not m({"evidence.0.source": "direct"}, fw)
+    assert not m({"evidence.1.source": "transitive"}, fw)                # index out of range = missing
+    assert not m({"evidence.0.via.-1": "regex:.*example-fw-web.*"}, fw)
+    assert m({"evidence.0.parent": None}, fw)                            # absent nested key = None
+    assert m({"event": "plan", "steps": ["transform.rewrite", "transform.jsp_jakarta", "verify.build"]}, FW_JOURNAL[1])
+    assert not m({"event": "plan", "steps": ["transform.rewrite", "verify.build"]}, FW_JOURNAL[1])   # list = equal
+    assert m({"event": "rewrite", "missing": None}, FW_JOURNAL[2])
+    assert m({"a.b": 1}, {"a.b": 1})                                     # a literal dotted key still wins
+
+
+def test_journal_events_absent_and_phase_absent(e2e):
+    res = e2e.FixtureResult(fixture="x", exit_code=0, phases=["transform:ok", "verify:ok"])
+    ok = {"journal_events": [{"event": "framework_project", "evidence.0.source": "transitive"}],
+          "journal_events_absent": [{"event": "restructure"}, {"event": "structure_review"}],
+          "phases": {"restructure": "absent", "verify": "ok"}}
+    assert e2e.evaluate(res, ok, {"success": True}, FW_JOURNAL, None) == []
+    bad = dict(ok, journal_events_absent=[{"event": "plan", "scope": "jdk-jakarta"}])
+    mm = e2e.evaluate(res, bad, {"success": True}, FW_JOURNAL, None)
+    assert len(mm) == 1 and "must not occur" in mm[0] and '"event": "plan"' in mm[0]
+    res.phases.append("restructure:ok")
+    assert e2e.evaluate(res, ok, {"success": True}, FW_JOURNAL, None) == ["phase restructure=ok expected absent"]
+    assert "journal_absent=" in e2e.describe_expect("x", {"expect": ok})
+
+
+def test_pom_dependency_versioned_with_version(e2e, tmp_path):
+    proj = tmp_path / "p"
+    proj.mkdir()
+    (proj / "pom.xml").write_text(
+        '<project xmlns="http://maven.apache.org/POM/4.0.0"><dependencies><dependency><groupId>com.example.fw</groupId>'
+        '<artifactId>example-fw-core</artifactId><version>1.0.0</version></dependency></dependencies></project>')
+    check = {"pom_dependency_versioned": {"path": "pom.xml", "artifacts": ["com.example.fw:example-fw-core"]}}
+    assert e2e.run_post_check(check, proj) is None
+    check["pom_dependency_versioned"]["version"] = "1.0.0"
+    assert e2e.run_post_check(check, proj) is None
+    check["pom_dependency_versioned"]["version"] = "2.0.0"
+    assert "at 1.0.0, expected 2.0.0" in e2e.run_post_check(check, proj)
+
+
+def test_preflight_counts_a_packaging_pom_artifact(e2e, tmp_path):
+    """A packaging-pom library (example-fw-parent) is installed when its .pom is in the local repository."""
+    base = tmp_path / "com" / "example" / "fw" / "example-fw-parent" / "1.0.0"
+    base.mkdir(parents=True)
+    want = {"requires_libs": ["com.example.fw:example-fw-parent:1.0.0"]}
+    assert "not in" in (e2e.preflight("x", want, tmp_path) or "")
+    (base / "example-fw-parent-1.0.0.pom").write_text("<project/>")
+    assert e2e.preflight("x", want, tmp_path) is None
+
+
+def test_archive_entries_post_check(e2e, tmp_path):
+    """`archive_entries`: entry names of a built jar / war (`present` / `absent`, each regex a full match)."""
+    import zipfile
+    proj = tmp_path / "p"
+    (proj / "target").mkdir(parents=True)
+    with zipfile.ZipFile(proj / "target" / "app.war", "w") as z:
+        z.writestr("WEB-INF/lib/example-fw-core-1.0.0.jar", b"PK")
+        z.writestr("WEB-INF/classes/A.class", b"")
+    run = e2e.run_post_check
+    ok = {"archive_entries": {"path": "target/*.war", "present": [r"WEB-INF/lib/example-fw-core-1\.0\.0\.jar"],
+                              "absent": [r"WEB-INF/lib/(jakarta|javax)\.servlet-api-.*\.jar"]}}
+    assert run(ok, proj) is None
+    with zipfile.ZipFile(proj / "target" / "app.war", "a") as z:
+        z.writestr("WEB-INF/lib/jakarta.servlet-api-5.0.0.jar", b"PK")
+    assert "contains WEB-INF/lib/jakarta.servlet-api-5.0.0.jar" in run(ok, proj)
+    assert "has no entry matching 'lib/x'" in run({"archive_entries": {"path": "target/app.war", "present": ["lib/x"]}},
+                                                  proj)
+    (proj / "target" / "bad.war").write_text("not a zip")
+    assert "unreadable" in run({"archive_entries": {"path": "target/bad.war"}}, proj)
+    assert "not found" in run({"archive_entries": {"path": "target/none.war"}}, proj)
+
+
+def test_journal_sequence_keeps_order(e2e):
+    """`journal_sequence`: the wanted events occur in this order (other events may lie between)."""
+    journal = [{"event": "source_encodings"}, {"event": "x"}, {"event": "rewrite", "step": "transform.rewrite"},
+               {"event": "scopes_restored"}]
+    res = e2e.FixtureResult(fixture="x", exit_code=0)
+    ok = {"journal_sequence": [{"event": "source_encodings"}, {"event": "rewrite", "step": "transform.rewrite"},
+                               {"event": "scopes_restored"}]}
+    assert e2e.evaluate(res, ok, {"success": True}, journal, None) == []
+    swapped = {"journal_sequence": [{"event": "rewrite"}, {"event": "source_encodings"}]}
+    mm = e2e.evaluate(res, swapped, {"success": True}, journal, None)
+    assert len(mm) == 1 and "after the first 1 of 2" in mm[0] and "source_encodings" in mm[0]
+    assert "journal_sequence=3" in e2e.describe_expect("x", {"expect": ok})

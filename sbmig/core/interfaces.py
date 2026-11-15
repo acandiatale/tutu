@@ -369,6 +369,12 @@ class FixContext(BaseModel):
     # restructure" right after the header and never truncated; [] when no restructure ran (Boot as-is pom-only mode still
     # lists the parents / mandatory facts).
     layout_facts: list[str] = Field(default_factory=list)
+    # 이관 범위와 그 범위에서 LLM이 지켜야 할 사실. full이면 scope_facts는 빈 목록이다
+    # v2.1z-ak: `jdk-jakarta` = a framework project (Java 21 + jakarta only, no restructure): the system prompt uses its
+    # reduced-scope introduction and `scope_facts` is rendered as the section "Scope of this run" in place of "Project
+    # after the restructure" (the framework artifacts and their versions, what must not be changed).
+    scope: Literal["full", "jdk-jakarta"] = "full"
+    scope_facts: list[str] = Field(default_factory=list)
 
     # edits 모드가 없어진 뒤에도 `ctx.fix_mode`를 읽는 2단계 플러그인이 깨지지 않게 남긴 읽기 전용 값. 직렬화나
     # 프롬프트에는 나오지 않는다 / v2.1z compatibility for tier-2 plugins written against v2.1i: read-only, never

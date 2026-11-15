@@ -139,6 +139,14 @@
   .rail .step.current .label { color: var(--blue-deep); font-weight: 700; }
   .rail .step.done .label { color: var(--ink); }
   .rail .label .en { display: block; color: var(--faint); font-family: var(--mono); font-size: 11px; margin-top: 1px; }
+  /* 이 실행에서 하지 않는 단계(사내 프레임워크 프로젝트의 재구성, 구조 검토): 점선 원과 흐린 글자로 진행 대기와 구분한다 */
+  .rail .step.skipped .dot { border-style: dashed; background: var(--paper); }
+  .rail .step.skipped .label { color: var(--faint); }
+  .rail .step.skipped .label .en { font-family: inherit; }
+  /* 사내 프레임워크 프로젝트 안내: 진행 중에는 실행 카드에, 끝나면 결과 카드에도 표시한다 */
+  .fwnote { margin: 10px 0 0; font-size: 13px; color: var(--ink); display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; word-break: keep-all; overflow-wrap: anywhere; }
+  .fwnote .chip { background: var(--blue-tint); color: var(--blue-deep); border-color: transparent; font-weight: 600; }
+  .result .fwnote { margin: 0 0 12px; }
   .railnote { color: var(--muted); font-size: 12.5px; margin: 4px 0 0; min-height: 1.4em; word-break: keep-all; overflow-wrap: anywhere; }   /* 한글은 단어 단위로 줄을 바꾼다 */
 
   /* 진행 기록 / 로그 탭 */
@@ -376,6 +384,8 @@
         <button class="btn ghost" id="stop" disabled>중단</button>
       </div>
     </div>
+    <!-- 사내 프레임워크 프로젝트(분석에서 찾으면 표시) -->
+    <p class="fwnote" id="fwnote" hidden><span class="chip">프레임워크 프로젝트</span><span>JDK 21과 jakarta만 적용합니다. 재구성과 구조 검토는 하지 않습니다.</span></p>
     <div class="rail" id="rail" role="list" aria-label="진행 단계"></div>
     <p class="railnote" id="railnote"></p>
 
@@ -403,6 +413,7 @@
       <p class="h">사유</p>
       <p class="why" id="aborttext"></p>
     </div>
+    <p class="fwnote" id="fwresult" hidden><span class="chip">프레임워크 프로젝트</span><span>JDK 21과 jakarta만 적용합니다. 재구성과 구조 검토는 하지 않습니다.</span></p>
     <div class="line" id="mainline">
       <h2>결과 파일</h2>
       <span class="counts" id="counts"></span>
@@ -741,7 +752,7 @@
   // ---- 단계 레일: intake -> analyze -> plan -> phase × N -> finalize. `node` 이벤트가 오면 해당 단계를 켠다.
   const KO = { job: '파드', intake: '접수', analyze: '분석', plan: '계획', finalize: '마무리',
                transform: '레시피 적용', restructure: '재구성', verify: '빌드 검증', report: '보고서', jdk21: 'JDK 21', spring: 'Spring',
-               remediation: '취약점 조치' };
+               remediation: '취약점 조치', review: '구조 검토' };
   const FIXED = ['intake', 'analyze', 'plan'];
   function stepHtml(node, label, extra) {
     const ko = KO[node] || label;
@@ -763,12 +774,33 @@
       g.insertAdjacentHTML('beforeend', stepHtml('finalize', 'finalize'));
     }
     $('railnote').textContent = ''; queueText = '';
+    placeSkipped();                                   // 범위를 이미 알고 있으면 하지 않는 단계를 다시 그린다
   }
   function railSteps() { return [...$('rail').querySelectorAll('.step')]; }
   function engineSeen() { return railSteps().some((n) => n.dataset.node !== 'job' && (n.classList.contains('done') || n.classList.contains('failed'))); }
   function setCurrent(el) {
     for (const n of railSteps()) n.classList.remove('current');
     if (el) el.classList.add('current');
+  }
+  // 사내 프레임워크 프로젝트는 재구성과 구조 검토를 하지 않는다. 계획에 없는 두 단계를 '하지 않음'으로 레일에 표시해
+  // 대기 중인 단계로 남지 않게 한다. 분석(framework_project)이나 계획(plan) 저널에서 범위를 알게 되면 켠다
+  let fwReduced = false;
+  const SKIP_STEPS = ['restructure', 'review'];
+  function setFramework(on) {
+    fwReduced = !!on;
+    $('fwnote').hidden = !fwReduced; $('fwresult').hidden = !fwReduced;
+    placeSkipped();
+  }
+  function placeSkipped() {
+    const rail = $('rail');
+    for (const n of rail.querySelectorAll('.step[data-skip]')) n.remove();
+    if (!fwReduced || railFlow === FLOW_REM) return;
+    const html = SKIP_STEPS.map((n) => `<div class="step skipped" role="listitem" data-node="skip-${n}" data-skip="1" title="사내 프레임워크 프로젝트라 이 단계는 하지 않습니다"><div class="dot"></div><div class="label">${esc(KO[n])}<span class="en">하지 않음</span></div></div>`).join('');
+    // 레시피 적용 바로 뒤, 레시피 단계가 없으면 빌드 검증 앞, 계획 전이면 마무리 앞에 둔다
+    const tf = [...rail.querySelectorAll('.step[data-phase="transform"]')].pop();
+    const anchor = rail.querySelector('.step[data-phase="verify"]') || rail.querySelector('.step[data-placeholder]') || rail.querySelector('.step[data-node="finalize"]');
+    if (tf) tf.insertAdjacentHTML('afterend', html);
+    else if (anchor) anchor.insertAdjacentHTML('beforebegin', html);
   }
   function phaseStep(phase, pending) {
     const fin = $('rail').querySelector('.step[data-node="finalize"]');
@@ -804,6 +836,7 @@
     if (name === 'plan' && Array.isArray(u.phases)) {          // plan이 정한 phase마다 점을 하나씩 그린다
       for (const p of rail.querySelectorAll('.step[data-phase], .step[data-placeholder]')) p.remove();
       for (const ph of u.phases) phaseStep(ph, true);
+      placeSkipped();
     }
     if (name === 'phase') {
       const placeholder = rail.querySelector('.step[data-placeholder]');
@@ -826,7 +859,9 @@
     steps.forEach((n, i) => { if (n.classList.contains('done') || n.classList.contains('failed')) last = i; });
     // finalize 뒤에는 이어서 실행되는 취약점 조치(빌드 파드의 remediation 노드)만 남는다. 이미 시작했으면 그것이 현재 단계다
     const remRunning = rail.querySelector('.step[data-node="remediation"]:not(.done):not(.failed)');
-    setCurrent(u.aborted ? null : (name === 'finalize' ? remRunning : steps[last + 1]));
+    // 하지 않는 단계(skipped)는 현재 단계가 될 수 없으므로 건너뛴다
+    const next = steps.slice(last + 1).find((n) => !n.classList.contains('skipped'));
+    setCurrent(u.aborted ? null : (name === 'finalize' ? remRunning : next));
     if (name === 'remediation' && current) loadRemediation(current);
   }
 
@@ -849,6 +884,8 @@
       if (s.length > 160) s = s.slice(0, 160) + '…';
       bits.push(`${k}=${s}`);
     }
+    // 범위는 분석의 framework_project와 계획의 plan 저널에 있다. 전체 이관(full)이면 따로 표시하지 않는다
+    if ((name === 'framework_project' || name === 'plan') && ev.scope === 'jdk-jakarta' && !fwReduced) setFramework(true);
     if (name === 'phase_start' && ev.phase) $('railnote').textContent = `지금 단계: ${KO[ev.phase] || ev.phase}`;
     // 이관 성공 후 빌드 파드가 취약점 조치 노드를 시작하면(graph_node … node=remediation) 레일 끝에 단계를 추가하고 현재 단계로 표시한다
     if (name === 'graph_node' && ev.node === 'remediation') {
@@ -1337,7 +1374,7 @@
     $('timeline').innerHTML = ''; $('log').replaceChildren(); $('report').textContent = ''; $('logfull').hidden = true;
     setTitle('', resume ? '다시 연결하는 중…' : '연결하는 중…', false); statusKey = '';
     $('stop').disabled = true;                         // 이전 실행의 상태가 남지 않도록 이 실행의 status가 오기 전에는 비활성화한다
-    resetRail(runFlow);
+    resetRail(runFlow); setFramework(false);
     try { history.replaceState(null, '', '#' + encodeURIComponent(runId)); } catch (e) {}
     const src = new EventSource(`/api/runs/${encodeURIComponent(runId)}/events`);
     es = src;

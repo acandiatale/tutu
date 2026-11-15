@@ -889,45 +889,20 @@ class LegacyContextMixin:
 
         E-M6: a dependency the as-is poms declared `provided` (or its jakarta successor) that is now compile / runtime
         gets `provided` back; `scope_restored` + a note."""
+        from .scope_restore import restore_asis_scopes, scope_note
         on = self._lc_switches(c).restore_asis_scopes
         rules = self._lc_rules(c)
         poms = [*c.profile.poms, *([c.profile.root_pom] if c.profile.root_pom else [])]
-        provided: dict[str, str] = {}
-        elsewhere: set[str] = set()          # declared compile / runtime by another as-is pom: that pom's scope wins
-        for p in poms:
-            for d in p.dependencies or []:
-                if not (d.group_id and d.artifact_id):
-                    continue
-                keys = [d.key, *([rules.scope_successors[d.key]] if d.key in rules.scope_successors else [])]
-                if (d.scope or "") == "provided":
-                    for k in keys:
-                        provided.setdefault(k, p.path)
-                elif (d.scope or "compile") in ("compile", "runtime"):
-                    elsewhere.update(keys)
-        provided = {k: v for k, v in provided.items() if k not in elsewhere}
-        if not provided:
-            return
-        for rel in self._project_poms(c):                                    # type: ignore[attr-defined]
-            try:
-                ed = PomEditor(c.ws.abs(rel))
-            except PomEditError:
-                continue
-            for el in ed.dependency_elements(False):
-                g = ed.gav_of(el)
-                scope = (g.scope or "compile").strip()
-                if g.key not in provided or scope in ("provided", "test", "system", "import"):
-                    continue
-                if not on:
-                    c.followup(f"{rel}: {g.key} is {scope} although the as-is declaration was provided "
-                               "(layout.legacy_context.restore_asis_scopes: false) — the container provides it")
-                    continue
-                ed.set_child_text(el, "scope", "provided")
-                entry = f"{g.key}: {scope} → provided (as-is scope, {rel})"
-                if entry not in c.result.scope_restored:
-                    c.result.scope_restored.append(entry)
-            c.save(ed)
+        out = restore_asis_scopes(c.ws, poms, self._project_poms(c), rules.scope_successors,   # type: ignore[attr-defined]
+                                  on=on)
+        for fu in out.followups:
+            c.followup(fu)
+        for entry in out.restored:
+            if entry not in c.result.scope_restored:
+                c.result.scope_restored.append(entry)
+        c.changed.update(out.changed)
         if c.result.scope_restored:
-            c.note("as-is provided scopes restored after the recipes: " + "; ".join(c.result.scope_restored))
+            c.note(scope_note(c.result.scope_restored))
 
     def _lc_source_encodings(self, c: "_Ctx") -> None:
         """샘플 .java 파일이 MS949 / EUC-KR인데 프로젝트 안 pom 체인에 맞는
@@ -937,38 +912,11 @@ class LegacyContextMixin:
         D-M7: write `project.build.sourceEncoding` into the module pom whose sampled sources are MS949 / EUC-KR and
         whose in-project chain declares no matching encoding (before the review); mixed modules and a conflicting
         compiler `<encoding>` → a Handover sentence only."""
-        on = self._lc_switches(c).write_source_encoding
-        from sbmig.analyze.pom_parser import parse_poms
-        from sbmig.review.inputs import ENCODING_PROPERTY, java_charset, source_encodings
-
-        poms, _warn = parse_poms(c.ws)
-        encs = source_encodings(c.ws, poms, getattr(c.cfg.build, "encoding_candidates", None),
-                                skip_tests=bool(getattr(c.cfg.build, "skip_test_compile", True)))
-        for me in encs:
-            bad = me.mismatch
-            if not bad:
-                continue
-            enc = bad[0]
-            charset = java_charset(enc)
-            if me.mixed:
-                c.followup(f"{me.pom}: the sources mix {charset} and UTF-8 files ({me.counts}) — convert one side; "
-                           "sbmig wrote no project.build.sourceEncoding")
-                continue
-            if not on:
-                c.followup(f"{me.pom}: the sources are {charset} but no project.build.sourceEncoding says so "
-                           "(layout.legacy_context.write_source_encoding: false) — set it to " + charset)
-                continue
-            if "maven-compiler-plugin" in (me.declared_in or ""):
-                c.followup(f"{me.pom}: the sources are {charset} but {me.declared_in} says {me.declared} — set it to "
-                           f"{charset}")
-                continue
-            try:
-                ed = PomEditor(c.ws.abs(me.pom))
-            except PomEditError:
-                continue
-            ed.set_property(ENCODING_PROPERTY, charset)
-            if c.save(ed):
-                n = me.counts.get(enc, 0)
-                line = f"{me.pom}: {ENCODING_PROPERTY}={charset} ({n} of {me.sampled} sampled .java files {enc})"
-                c.result.source_encodings_written.append(line)
-                c.note(f"source encoding written: {line}")
+        from .source_encoding import write_source_encodings
+        out = write_source_encodings(c.ws, c.cfg, on=self._lc_switches(c).write_source_encoding)
+        for fu in out.followups:
+            c.followup(fu)
+        c.changed.update(out.changed)
+        c.result.source_encodings_written.extend(out.written)
+        for n in out.notes:
+            c.note(n)

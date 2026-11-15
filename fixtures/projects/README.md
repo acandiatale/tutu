@@ -64,6 +64,10 @@ previous version, `reuse` = a stored version runs again without an LLM call). Me
 | `legacy-external-parent` | `spring_legacy` | v2.1l as-is parent = OLD in-house parent (local stand-in `legacy-parent`) managing commons-text / commons-csv, declared without versions | 0 | ok | — | success, 1 LLM; the restructure pins both versions from the as-is effective pom (the Boot 4.1 BOM manages neither), `spring-context` 6.2.12 → managed, Handover ⚠ carried over; v2.1n trigger scenario: the local optional commons-lang3 (`when_present: commons-text`, `replaces: false`) is added next to commons-text |
 | `spring5-legacy-startup` | `spring_legacy` | v2.1x legacy Spring context at conversion time (company layout: WAR) | 8 + `-Dfile.encoding=MS949` | ok | — | success, 1 LLM; only the `contextConfigLocation` entries imported (`src/test` XML skipped, `<import>`ed XML copied next to them), EUC-KR copy byte-identical, `spring.main.allow-*` + `spring.servlet.encoding.*` (EUC-KR) + `register-default-servlet` + multipart limits written, JNDI bean marked `MIGRATION-TODO`, `/WEB-INF` / `${env}` locations rewritten in the copies, CommonsMultipartResolver removed from the copy, xss `DelegatingFilterProxyRegistrationBean`, `jakarta.servlet-api` provided again, MS949 `sourceEncoding` on `shop-back`; 12 Handover sentences asserted |
 | `filtered-binary-resources` | `spring_legacy` | v2.1m `<filtering>true</filtering>` resources holding `fonts/app.woff2` + an unknown `data/items.dmdb` (NUL bytes) | 0 | ok | — | success, 1 LLM; the restructure writes maven-resources-plugin `nonFilteredFileExtensions` `dmdb, woff2` into `binres-back/pom.xml` before the first build (v1 handler E12 restored as a restructure rule), both binaries byte-identical in `target/classes`, `application.properties` still filtered |
+| `fw-direct` | `servlet_tomcat` | v2.1z-ak framework project: declares the framework core stand-in `com.example.fw:example-fw-core:1.0.0` (`fixtures/libs/example-fw`); javax servlet / filter, a JSP with a javax import + scriptlet | 8 (+ `install.sh`) | — (not planned) | — | reduced scope `jdk-jakarta`: flag `framework-project`, evidence `direct`, one MS949 source and no `sourceEncoding` (as-is: `-Dfile.encoding=MS949`) → sbmig writes `project.build.sourceEncoding` MS949, plan exactly `transform.rewrite` → `transform.jsp_jakarta` → `verify.build`, no restructure / review; success, **0 LLM**; war, no parent, no modules, core still 1.0.0, sources + JSP on jakarta |
+| `fw-parent` | `servlet_tomcat` | v2.1z-ak the same sources; `<parent>` = `example-fw-parent:1.0.0`, which declares the core in its `<dependencies>`; the pom never declares it | 8 (+ `install.sh`) | — (not planned) | — | as `fw-direct` with evidence `parent` (as-is effective pom); the `<parent>` unchanged |
+| `fw-transitive` | `servlet_tomcat` | v2.1z-ak declares only `example-fw-web:1.0.0`, which depends on the core | 8 (+ `install.sh`) | — (not planned) | — | as `fw-direct` with evidence `transitive` (`dependency:tree` at analyze, `via` web → core; `framework.transitive: apply` default); `framework.recipe_sets` adds `servlet_jakarta_10` (`RemovalsServletJakarta10`) |
+| `fw-transitive-note` | `servlet_tomcat` | v2.1z-ak the `fw-transitive` tree with `framework.transitive: note` | 8 (+ `install.sh`) | ok | — | flag `framework-project`, scope **`full`**: the ordinary migration (restructure `module/comp-jar` + `module/boot-jar`, review), success, 1 LLM |
 
 ### Reuse and augment scenarios
 
@@ -74,16 +78,16 @@ previous version, `reuse` = a stored version runs again without an LLM call). Me
   record `fix_method: script_reuse`). Run order: `scripts/e2e.py` runs pure-java first (`DEFAULT_ORDER`) and clears
   `out/e2e/kb-jaxb` before it; java6-legacy's `expect.kb.after: pure-java` keeps the dir and turns a run without
   pure-java into a precondition mismatch (`--only pure-java,java6-legacy` to run the pair alone).
-* **Augment** (`boot2-fix-failures`, own KB): the case `compile|cannot_find_symbol|clientIp` (`8bb4fd4a4a`) gets v1
+* **Augment** (`boot2-fix-failures`, own KB): the case `compile|cannot_find_symbol|com.company.legacy.web.LegacyRequestHelper.clientIp` (`21175ead2d`) gets v1
   (too narrow → `partial`, rolled back before the next attempt) and then v2 with `parent: 1` (`augment`, `build_ok`);
-  both versions stay in `<kb>/scripts/8bb4fd4a4a/` (v1 `partials: 1`, v2 `successes: 1`), both error records
+  both versions stay in `<kb>/scripts/21175ead2d/` (v1 `partials: 1`, v2 `successes: 1`), both error records
   `resolved` by `script_augment` with the history `partial → build_ok`.
 
 ### Replay format (`replay/llm-NNN.json`)
 
 ```json
 {"note": "why this answer exists", "replay_role": "structure_review", "response": "<review>{…}</review>\n<script>…</script>"}
-{"note": "…", "replay_role": "fix", "match": "case: 8bb4fd4a4a", "response": "<analysis>…</analysis>\n<script>\ndef fix(p):\n    …\n</script>\n"}
+{"note": "…", "replay_role": "fix", "match": "case: 21175ead2d", "response": "<analysis>…</analysis>\n<script>\ndef fix(p):\n    …\n</script>\n"}
 ```
 
 `llm-001.json` answers the structure review (one call; `<review>` JSON as in `sbmig/review/prompts/review_v1.md`, a
@@ -117,6 +121,11 @@ Optional artifacts from `config/artifacts.local-e2e.yml` (exactly 8) used direct
 * `ghost-lib/` (`com.company.nonexistent:ghost-lib:1.2.3`) is **never installed**; `ghost-lib/make-repo.sh <dir>` lays it
   out in a throwaway repo only for the as-is build of `missing-artifact`. `scripts/e2e.py` refuses to run that fixture
   if the jar is in `~/.m2` (`requires_absent`).
+* `example-fw/` (v2.1z-ak): the in-house framework stand-in under placeholder coordinates — `com.example.fw:example-fw-core`
+  (jar), `example-fw-web` (jar, depends on the core) and `example-fw-parent` (pom, declares the core in `<dependencies>`),
+  all 1.0.0, plain Java without javax / jakarta in their API (built with JDK 21 `--release 8`). Used by the `fw-*`
+  fixtures; their `sbmig.e2e.yml` sets `framework.artifacts`. A packaging-pom artifact counts as installed for
+  `requires_libs` when its `.pom` is in the local repository.
 
 ## Running the e2e
 
@@ -150,8 +159,9 @@ before its run except a `kb.after` fixture's, so a full run starts each scenario
 | `flags` / `forbidden_flags` | each entry must (not) be in `RunReport.flags`; `regex:<re>` = full match |
 | `optional_bumped` | each entry (`"g:a old→new"` or `regex:`) must appear in the bumps the engine recorded: `report.optional_bumped`, journal events carrying `optional_bumped`, or phase notes `optional bumped: …` |
 | `unresolved_max` | `len(unresolved)` ≤ n |
-| `journal_events` | each dict must be a subset of some `journal.jsonl` event, e.g. `{"event": "restructure", "ok": true}` |
-| `phases` | `{"restructure": "ok"}` — last result of that phase (`ok`/`FAIL`/`skipped`) |
+| `journal_events` | each dict must be a subset of some `journal.jsonl` event, e.g. `{"event": "restructure", "ok": true}`; a list value must be equal; a key with dots is a path into nested values (`"evidence.0.source": "parent"`, negative indices from the end: `"evidence.0.via.-1"`); a `regex:<re>` string value must fully match |
+| `journal_events_absent` | no `journal.jsonl` event may match any of these dicts (same matching rules) |
+| `phases` | `{"restructure": "ok"}` — last result of that phase (`ok`/`FAIL`/`skipped`), or `absent` = the run has no result of that phase |
 | `advisories` | each `{id, policy?, outcome?, recipe_source?, status?, library?, replacement?}` must match a `report.advisories[]` entry by `advisory_id`, every given field equal; `advisories_exact: true` forbids unlisted findings; `advisories_absent: [id]` must not be reported |
 | `handover` | on `report.handover`: `changes_min`, `carried_over_min`/`carried_over_max` (`len(carried_over)`), `parent_before`/`parent_after` (`g:a[:v]` prefix), `java_*`/`spring_boot_*` (exact), `from_here_contains` (entries of `from_here`), `removed_contains`/`added_contains` (`g:a[:v]`) |
 | `followups_contains` | each entry must match some `manual_followups` line |
@@ -159,7 +169,7 @@ before its run except a `kb.after` fixture's, so a full run starts each scenario
 | `properties` | on `report.properties` (else `profile.properties`), the externalized-config inventory: `external_min`, `external` (keys that must be `external` findings), `absent` (keys that must not be), `external_in` (`{service: [keys]}`, MSA: external findings whose `service` is that deployable), `written` (⊆ `placeholders_written`), `placeholder_file_contains` (substrings of `placeholder_files[0]`) |
 | `structure_review` | v2, on `report.structure_review`: `verdict` (or a list), `critical` / `critical_min` / `critical_max`, `warnings_min` / `warnings_max`, `issues_contain` (over `"<severity> <file>: <problem> -> <fix_hint>"`, `*_contains` rules), `sbmig_check` (an issue sbmig added itself, `(sbmig check) …`), `script_status` (`ok`/`error`/`timeout`/`rejected`, `none` = no script ran), `committed`, `reverted`, `changed_files` (⊆ the script's changed files), `llm_calls_max` |
 | `scripts` | v2, on the script attempts (`phases[].attempts` with a `script_mode`) and the KB (`dir`, default `kb.dir`): `attempts` / `attempts_min` / `attempts_max` (`{new, augment, reuse}` counts), `reuse_without_llm` (every reuse attempt made 0 LLM calls, and there is one), `cases[]` `{case \| l2, modes (exact sequence), outcomes (ordered subsequence), versions (exact), llm_calls (sum)}`, `stored[]` `{case \| l2, version, parent?, status?, successes_min/max?, failures_min/max?, partials_min?, success_projects_min?, last_outcome?, code_contains?}` on `<dir>/scripts/<case_id>/v<N>.meta.json` / `.py`, `versions` (`{case or L2: number of stored versions}`); `l2` is hashed like `sbmig.kb.catalog.case_id_for` |
-| `post_checks` | checks on the migrated `project/` (paths may use `**` globs): `file_decodes_as`/`file_contains` `{path, encoding, contains, not_contains}` (strict decode), `pom_parent {path, group_id, artifact_id, version}`, `pom_dependency_absent`/`pom_dependency_present {path, artifacts: ["g:a"]}`, `pom_dependency_unversioned`/`pom_dependency_versioned {path, artifacts}` (each listed dependency declared without / with a `<version>` element — e.g. a version the parent manages was dropped; absent = fail); `pom_packaging {path, packaging}` (`jar`/`war`/`pom`, absent `<packaging>` = `jar`), `pom_module_list {path, modules, any_order?}` (the exact top-level `<modules>` list, in order unless `any_order: true`); `module/comp-jar/pom.xml` / `module/boot-jar/pom.xml` are the poms the pre-9c restructure creates for a single-jar Boot app (compile dependencies live in `comp-jar`); company-layout fixtures (round 9c) check `<name>-boot|back|front/…` instead |
+| `post_checks` | checks on the migrated `project/` (paths may use `**` globs): `archive_entries {path, present, absent}` (entry names of a built jar / war, regex full match); `file_decodes_as`/`file_contains` `{path, encoding, contains, not_contains}` (strict decode), `pom_parent {path, group_id, artifact_id, version}`, `pom_dependency_absent`/`pom_dependency_present {path, artifacts: ["g:a"]}`, `pom_dependency_unversioned`/`pom_dependency_versioned {path, artifacts}` (each listed dependency declared without / with a `<version>` element — e.g. a version the parent manages was dropped; absent = fail; `pom_dependency_versioned` takes an optional `version` every declaration must carry); `pom_packaging {path, packaging}` (`jar`/`war`/`pom`, absent `<packaging>` = `jar`), `pom_module_list {path, modules, any_order?}` (the exact top-level `<modules>` list, in order unless `any_order: true`); `module/comp-jar/pom.xml` / `module/boot-jar/pom.xml` are the poms the pre-9c restructure creates for a single-jar Boot app (compile dependencies live in `comp-jar`); company-layout fixtures (round 9c) check `<name>-boot|back|front/…` instead |
 
 `*_contains` entries: `regex:<re>` must fully match an entry (DOTALL), a plain string must be a substring of one.
 

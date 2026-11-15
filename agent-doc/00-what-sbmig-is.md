@@ -81,6 +81,10 @@ as-is 담당팀의 몫이다 — sbmig 는 빌드와 패키징까지만 책임�
 `remediation`(취약점 해결, `sbmig run --flow remediation`)은 접수 → 취약점 조치 → 마무리만 지나간다: 이관 단계·LLM·KB 없이 올린
 프로젝트를 그대로 빌드·검사·조치한다([11-remediations.md](11-remediations.md)).
 
+사내 프레임워크 아티팩트(`framework.artifacts`)를 쓰는 프로젝트는 분석에서 범위 `jdk-jakarta`로 정해진다. 위 그림에서 재구성과
+구조 검토를 빼고 JDK 21과 jakarta 레시피, 검증 빌드와 수정 루프, 취약점 조치만 돈다. 부모 pom과 프레임워크 버전은 그대로 둔다.
+결과 줄에 `scope=jdk-jakarta`가 붙는다([13-framework-projects.md](13-framework-projects.md)).
+
 단계마다 코드 위치와 입출력은 [02-flow-and-nodes.md](02-flow-and-nodes.md) 에 있다.
 
 ## 4. 불변조건 7개 (깨면 안 된다)
@@ -164,6 +168,7 @@ KB 에 저장되어 다음 프로젝트가 LLM 호출 없이 재사용한다. �
 | 필수 / 선택 사내 아티팩트 | mandatory / optional | `artifacts.mandatory`, `artifacts.optional` | 루트 pom 의 필수 2개, 쓰던 것만 올리는 선택 8개 |
 | 사내 부모 pom | base-parent / boot-jar / comp-jar | `artifacts.parent`, `artifacts.boot_parent`, `artifacts.comp_parent` | 루트 / boot 모듈 / 그 밖 모듈의 부모 |
 | 부모 체인 | parent chain | `sbmig/build/parent_chain.py` | 사내 부모 pom 의 `<parent>` 와 BOM import 를 따라 읽은 관리 버전·속성 |
+| 사내 프레임워크 프로젝트 / 범위 | framework project / scope | `framework.artifacts`, `MigrationPlan.scope` | 사내 프레임워크를 쓰는 프로젝트. 범위 `jdk-jakarta`는 재구성·구조 검토 없이 JDK 21과 jakarta만 한다 |
 | 동봉 jar | bundled jar | `sbmig/analyze/bundled_jars.py`, `sbmig/restructure/bundled_jars.py` | 트리 안에 있지만 어떤 pom 도 선언하지 않은 jar(`WEB-INF/lib` …) |
 | 속 빈 리액터 | hollow reactor | `sbmig/analyze/hollow.py`, 플래그 `hollow-reactor` | 모듈이 컴파일하는 소스가 없고 진짜 소스는 트리의 다른 곳 → 성공 아님 |
 | 떠도는 pom 복사본 | stray pom copy | `find_stray_pom_copies` (`sbmig/analyze/pom_parser.py`) | IDE 출력·백업 폴더 안의 모듈 통째 복사본 → 무시 |

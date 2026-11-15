@@ -1,0 +1,14 @@
+# Per-fixture config override (fw-transitive), appended after config/artifacts.local-e2e.yml.
+# v2.1z-ak framework project: the core arrives only through example-fw-web (dependency:tree at analyze);
+# framework.transitive defaults to apply -> scope jdk-jakarta.
+# recipe_sets adds the Servlet 6 removals (servlet_jakarta_10) to the reduced run's Java 21 + jakarta sets.
+framework:
+  artifacts: ["example-fw-core"]
+  recipe_sets: [jdk21, jakarta, servlet_jakarta_10]
+# No LLM answer is expected; the fake provider answers "no fix" to any request.
+llm:
+  provider: fake
+  base_url: "replay:fixtures/projects/fw-transitive/replay"
+# Own KB; scripts/e2e.py clears it before the run.
+kb:
+  dir: out/e2e/kb-fw-transitive

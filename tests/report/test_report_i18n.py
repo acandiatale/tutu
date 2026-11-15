@@ -363,6 +363,12 @@ def test_every_handover_pattern_matches_a_real_handover_line(tmp_path, cfg):
     from .test_abort_reasons_ko import CASES as ABORT_CASES
     lines += [reason for reason, _ in ABORT_CASES]
 
+    # v2.1z-ak: the framework project's blocked suggestions (tests/report/test_framework_scope.py)
+    from .test_framework_scope import SUGGESTIONS as FW_SUGGESTIONS
+    lines += [en for en, _ in FW_SUGGESTIONS]
+    from .test_framework_scope import KO_SAMPLES as FW_KO_SAMPLES
+    lines += [en for en, _ in FW_KO_SAMPLES]
+
     translated = {x: tr_line("ko", x) for x in lines}
     for rx, _ in PATTERNS["ko"]:
         assert any(rx.match(x) for x in lines), f"pattern never matched a handover line: {rx.pattern}"

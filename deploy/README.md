@@ -596,3 +596,29 @@ preflight / ADF / 내부 오류)이면 3. `SBMIG_FAIL_JOB_ON_BUILD_FAIL=1` 이�
    `sbmig-env` 와 Job 틀을 읽는다. 재시작하지 않으면 다음 Job 이 `SBMIG_REMEDIATION__AFTER_MIGRATION` 을 "set in the Job pod only" 로 적고 멈춘다.
 6. **확인**: 작은 프로젝트 하나를 올려 Job 파드 로그의 `SBMIG-RESULT … remediation=…` 줄을 본다. `remediation=skipped` 면 저널의
    `remediation_skipped` 줄이 빠진 값의 이름을 알려 준다(대개 Secret 이름을 81 에서 바꾸지 않은 경우).
+
+## 7. 사내 프레임워크 프로젝트 — 켜는 법
+
+사내 프레임워크 아티팩트를 쓰는 프로젝트는 회사 레이아웃과 Boot 4로 옮기지 않고 JDK 21과 jakarta만 올린 뒤 빌드하고 취약점 조치로 넘어간다
+(범위 `jdk-jakarta`, 재구성·구조 검토 없음, 부모 pom과 프레임워크 버전은 그대로). 자세한 동작과 진단은 `agent-doc/13-framework-projects.md`.
+
+* **켜는 자리는 회사 `config/artifacts.yml` 하나다.** 아래 두 줄을 넣는다. 값은 실제 프레임워크 아티팩트의 `groupId:artifactId`(또는 artifactId만,
+  `*` 사용 가능)이고, 저장소에는 자리표시자만 있다.
+
+  ```yaml
+  framework:
+    artifacts: ["com.example.fw:example-fw-core"]   # 실제 좌표로 바꾼다
+  ```
+
+* 이 파일은 이미지에 굽는다(§1). 그래서 **이미지를 다시 만들고** 새 태그를 `40-deployment.yaml`과 `81-web-job.template.yaml`의 `image:`에 같이 넣는다.
+  ConfigMap `sbmig-env`, `sbmig-config`, Secret은 바뀌지 않는다. 81 틀을 바꿨으면 ConfigMap `sbmig-job-template`을 다시 만들고 웹 파드를 재시작한다(§6 점검표 4·5).
+* 함께 정할 수 있는 스위치(같은 파일의 `framework:` 아래, 기본값으로 두면 적지 않아도 된다):
+  * `framework.scope`: `jdk-jakarta`(기본) 또는 `full`(찾은 사실만 보고서에 적고 전체 이관).
+  * `framework.transitive`: 다른 라이브러리가 끌고 오기만 하는 경우. `apply`(기본, 직접 선언과 같게), `note`(보고서에만 적고 전체 이관), `off`(찾지 않음).
+    `off`가 아니면 다른 곳에서 못 찾은 프로젝트마다 분석 단계에서 `mvn dependency:tree`가 한 번 더 돈다.
+  * `framework.recipe_sets`: 돌릴 레시피 세트(기본 `[jdk21, jakarta]`). 기본 jakarta 세트는 서블릿 API를 서블릿 5.0 기준으로 올린다.
+    Tomcat 10.1 이상에 올릴 프로젝트면 `servlet_jakarta_10`을 더한다. 회사가 정할 값이다.
+* 확인: 프레임워크를 쓰는 작은 프로젝트를 올리면 Job 파드 로그의 결과 줄에 `scope=jdk-jakarta`가 붙고, 화면에 `프레임워크 프로젝트` 표시가 나오며
+  재구성·구조 검토 단계가 `하지 않음`으로 보인다. 붙지 않으면 저널의 `framework_check` 줄이 확인하지 못한 곳(`unchecked`)을 알려 준다.
+* 취약점 조치에서는 프레임워크와 그것이 가져오는 라이브러리가 사내 그룹 `framework`(`remediation.inhouse_groups` 기본값에 들어 있음) 몫이 되어
+  제안하지 않고 보고서에 '사내 프레임워크'로 묶인다.

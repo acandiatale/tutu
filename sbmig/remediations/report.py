@@ -18,17 +18,19 @@ input; no secret, no absolute server path.
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from typing import Any
 
 from sbmig.core import scrub as _scrub
 
 from . import i18n
+from .inhouse import FRAMEWORK_GROUP
 from .i18n import (
     BOUNDARY_KO,
     COUNT_KO,
     DECISION_KO,
     FINDING_KIND_KO,
+    INHOUSE_GROUP_KO,
     KIND_KO,
     ORIGIN_ALL_KO,
     ORIGIN_KO,
@@ -269,13 +271,16 @@ def _delivery_dict(state: RemediationState) -> dict[str, Any] | None:
 def build_report_json(state: RemediationState, paths: RunPaths, *,
                       ignore_actions: Iterable[str] | None = None,
                       inhouse_message: str | None = None,
-                      severity: tuple[float, float, float] | None = None) -> dict[str, Any]:
+                      severity: tuple[float, float, float] | None = None,
+                      inhouse: Mapping[str, str] | None = None) -> dict[str, Any]:
     """``report.json``에 쓸 내용을 만든다. 상태 전체, 검사 요약, 라운드별 계획 요약, 결과 ZIP 일치 여부,
     ``ignored_findings``, 사내 아티팩트별 항목(``inhouse``)을 담는다.
     도구가 읽는 형식이므로 한국어 번역은 넣지 않는다.
     ``ignore_actions``, ``inhouse_message``가 None이면 설정 기본값을 쓴다.
+    ``inhouse``(``inhouse.inhouse_keys``)를 주면 사내 프레임워크 묶음에 ``group``을 적는다.
 
-    The content of `report.json`; `ignore_actions` None = the default codes."""
+    The content of `report.json`; `ignore_actions` None = the default codes. With `inhouse` an in-house artifact group
+    of the `framework` group carries `"group": "framework"` (other groups unchanged)."""
     ignore = _ignore(ignore_actions)
     base = _load_scan(paths, state.baseline_scan)
     final = _load_scan(paths, state.final_scan)
@@ -291,7 +296,7 @@ def build_report_json(state: RemediationState, paths: RunPaths, *,
             "ignored_findings": _ignored_rows(final if final is not None else base, ignore),
             "delivery_matches_scanned_zip": _delivery_matches(state, final), "delivery": _delivery_dict(state),
             "verified_delivery": _verified_kept(paths), "rounds": rounds,
-            "inhouse": _inhouse_json(state, inhouse_message or _default_inhouse_message()),
+            "inhouse": _inhouse_json(state, inhouse_message or _default_inhouse_message(), inhouse),
             "severity": _severity_json(base, final, ignore, severity_thresholds(severity))}
     return _clean_json(data, _roots(paths))
 
@@ -403,7 +408,17 @@ def _inhouse_of(r: Residual) -> list[str]:
     return sorted(set(r.inhouse or i18n.inhouse_gas(r.detail) or [r.ga]))
 
 
-def _inhouse_json(state: RemediationState, message: str) -> dict[str, Any]:
+def _framework_ga(ga: str, inhouse: Mapping[str, str] | None) -> bool:
+    """g:a가 사내 프레임워크(``framework`` 그룹) 아티팩트인지 확인한다. 목록이 없으면 False를 반환한다."""
+    if not inhouse:
+        return False
+    try:
+        return inhouse.get(ga) == FRAMEWORK_GROUP
+    except Exception:  # noqa: BLE001 - 표시에만 쓰므로 판단하지 못하면 표시하지 않는다
+        return False
+
+
+def _inhouse_json(state: RemediationState, message: str, inhouse: Mapping[str, str] | None = None) -> dict[str, Any]:
     groups: dict[str, list[dict[str, Any]]] = {}
     for r in state.residuals:
         if r.reason != R_INHOUSE_ARTIFACT:
@@ -411,9 +426,14 @@ def _inhouse_json(state: RemediationState, message: str) -> dict[str, Any]:
         for ga in _inhouse_of(r):
             groups.setdefault(ga, []).append({"ga": r.ga, "version": r.version, "modules": list(r.modules),
                                               "via": list(r.via), "finding_ids": list(r.finding_ids)})
-    return {"message": message,
-            "artifacts": [{"ga": ga, "libraries": sorted(libs, key=lambda x: (x["ga"], x["version"]))}
-                          for ga, libs in sorted(groups.items())]}
+    arts: list[dict[str, Any]] = []
+    for ga, libs in sorted(groups.items()):
+        entry: dict[str, Any] = {"ga": ga, "libraries": sorted(libs, key=lambda x: (x["ga"], x["version"]))}
+        # 다른 그룹의 출력이 바뀌지 않도록 프레임워크 묶음에만 그룹을 적는다
+        if _framework_ga(ga, inhouse):
+            entry["group"] = FRAMEWORK_GROUP
+        arts.append(entry)
+    return {"message": message, "artifacts": arts}
 
 
 # ---------------------------------------------------------------------------- report.md 도우미
@@ -740,7 +760,7 @@ def _lib_cell(r: Residual) -> str:
     return lib
 
 
-def _inhouse_section(L: list[str], fx: _Facts, message: str) -> None:
+def _inhouse_section(L: list[str], fx: _Facts, message: str, inhouse: Mapping[str, str] | None = None) -> None:
     L.append(f"## 사내 라이브러리에서 발생한 취약점 — {_num(fx.matching(fx.inhouse))}건")
     L.append("")
     L.append(f"> {message}")
@@ -751,10 +771,18 @@ def _inhouse_section(L: list[str], fx: _Facts, message: str) -> None:
     for r in fx.inhouse:
         for ga in _inhouse_of(r):
             groups.setdefault(ga, []).append(r)
+    framework = {ga for ga in groups if _framework_ga(ga, inhouse)}
+    if framework:
+        L.append("")
+        L.append(f"{INHOUSE_GROUP_KO[FRAMEWORK_GROUP]}의 버전은 바꾸지 않습니다. 프레임워크와 프레임워크가 가져오는 "
+                 "라이브러리의 취약점은 프레임워크 담당자가 조치해야 합니다.")
     for ga in sorted(groups, key=lambda g: (-len(groups[g]), g)):
         rows = sorted(groups[ga], key=lambda r: fx.order(fx.row_score(r.finding_ids, r.ga, r.version), r.ga, r.version))
         L.append("")
-        tag = " (회사 부모 pom)" if _is_parent_group(rows) else ""
+        if ga in framework:
+            tag = f" ({INHOUSE_GROUP_KO[FRAMEWORK_GROUP]})"
+        else:
+            tag = " (회사 부모 pom)" if _is_parent_group(rows) else ""
         L.append(f"### `{_md_cell(ga)}`{tag} — 라이브러리 {len(rows)}개")
         L.append("")
         common = _common_modules(rows)
@@ -1162,13 +1190,16 @@ def _unchanged_section(L: list[str], state: RemediationState, fx: _Facts) -> Non
 
 
 def build_report_md(state: RemediationState, paths: RunPaths, *, ignore_actions: Iterable[str] | None = None,
-                    inhouse_message: str | None = None, severity: tuple[float, float, float] | None = None) -> str:
+                    inhouse_message: str | None = None, severity: tuple[float, float, float] | None = None,
+                    inhouse: Mapping[str, str] | None = None) -> str:
     """한국어 ``report.md`` 본문을 만든다. 절 순서는 모듈 docstring과 같고 빈 절은 쓰지 않는다.
     - 영어 문장은 ``i18n.ko_display``로 바꿔 보여 주고, 같은 설명은 묶음마다 한 번만 쓴다
     - ``severity``가 None이면 설정 기본값으로 🔴 / 🟠 / 🟡를 붙이고 점수가 높은 행부터 놓는다
     - ``ignore_actions``, ``inhouse_message``가 None이면 설정 기본값을 쓴다
+    - ``inhouse``(``inhouse.inhouse_keys``)를 주면 사내 프레임워크 묶음 제목에 "사내 프레임워크"를 붙인다
 
-    The Korean `report.md` text: the result, a summary and the actions first; codes only in the folded record."""
+    The Korean `report.md` text: the result, a summary and the actions first; codes only in the folded record. With
+    `inhouse` the in-house groups of the `framework` group are labelled 사내 프레임워크."""
     ignore = _ignore(ignore_actions)
     roots = _roots(paths)
     message = inhouse_message if inhouse_message else _default_inhouse_message()
@@ -1214,7 +1245,7 @@ def build_report_md(state: RemediationState, paths: RunPaths, *, ignore_actions:
 
     # 6. 사내 라이브러리에서 발생한 취약점
     if fx.inhouse:
-        _inhouse_section(L, fx, message)
+        _inhouse_section(L, fx, message, inhouse)
         L.append("")
 
     # 7. 직접 확인이 필요한 취약점
@@ -1234,15 +1265,17 @@ def build_report_md(state: RemediationState, paths: RunPaths, *, ignore_actions:
 
 
 def write_report(state: RemediationState, paths: RunPaths, *, ignore_actions: Iterable[str] | None = None,
-                 inhouse_message: str | None = None, severity: tuple[float, float, float] | None = None) -> None:
+                 inhouse_message: str | None = None, severity: tuple[float, float, float] | None = None,
+                 inhouse: Mapping[str, str] | None = None) -> None:
     """``report.json``과 ``report.md``를 실행 폴더에 원자적으로 쓴다.
     ``ignore_actions``가 None이면 기본값(빈 목록)을 쓴다.
 
     Write `report.json` and `report.md` into the run directory."""
     write_json_atomic(paths.report_json, build_report_json(state, paths, ignore_actions=ignore_actions,
-                                                           inhouse_message=inhouse_message, severity=severity))
+                                                           inhouse_message=inhouse_message, severity=severity,
+                                                           inhouse=inhouse))
     text = build_report_md(state, paths, ignore_actions=ignore_actions, inhouse_message=inhouse_message,
-                           severity=severity)
+                           severity=severity, inhouse=inhouse)
     tmp = paths.report_md.with_name(paths.report_md.name + ".tmp")
     tmp.write_text(text, encoding="utf-8")
     tmp.replace(paths.report_md)

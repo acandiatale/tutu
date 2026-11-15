@@ -65,6 +65,22 @@ Get-Content out\<run id>\sbmig.log -Encoding UTF8 -Tail 30   # Windows PowerShel
 - Every command except `llm-probe`, `clean` and the `kb` / `recipes` / `advisories` groups needs
   `--config config/artifacts.yml` (the company artifacts section has no default).
 
+### 0.3 Framework projects (`framework.*`)
+
+Projects built on the in-house framework run in the reduced scope `jdk-jakarta` (Java 21 + jakarta recipes, verify
+build + fix loop, chained remediation; no restructure, no structure review, parent pom and framework version kept).
+Details: `agent-doc/13-framework-projects.md`. To validate in the company environment:
+
+| Item | What to do / look for |
+|---|---|
+| Switch it on | `framework.artifacts` in the company `config/artifacts.yml` with the real coordinates (placeholder: `["com.example.fw:example-fw-core"]`; a bare artifactId matches any groupId, matching is case-sensitive). In the cluster the file is baked into the image: rebuild and push the image (`deploy/README.md` §7) |
+| Recipe sets | `framework.recipe_sets` (default `[jdk21, jakarta]`). The jakarta set moves the servlet API to the Jakarta EE 9 line (servlet 5.0); for projects that will run on Tomcat 10.1+ add `servlet_jakarta_10` — the company decides |
+| First run on a real framework project | `SBMIG-RESULT … scope=jdk-jakarta`; `sbmig.log` INFO `분석: 사내 프레임워크 프로젝트 (…) - JDK와 jakarta만 적용`; journal `framework_project` (`evidence`, `unchecked`), `plan` with `"scope": "jdk-jakarta"`, (MS949 / EUC-KR sources) `source_encodings` before the rewrite and `scopes_restored` after it, commits in the order `transform: source encodings written` → `rewrite: transform.rewrite` → `transform: as-is provided scopes restored` → `transform: JSP javax → jakarta`, notes `source encoding written: <pom>: project.build.sourceEncoding=MS949 (…)` — an encoding the kept parent sets differently stays and becomes a Handover line; `report.md` row `범위`, block `## 사내 프레임워크 프로젝트`, the two corrections as error-list entries under `transform — sbmig의 pom 정정, 다음 빌드에서 검증` and in the Handover subsection `sbmig가 고친 pom`; the page shows 프레임워크 프로젝트 and 재구성 / 구조 검토 as 하지 않음 |
+| Not recognised | journal `framework_check` with `unchecked`: `parent: no as-is effective pom` (the intake capture failed, so inheritance from a parent pom was not checked), `transitive: <why>` (`dependency:tree` failed), nothing = the pattern does not match the real groupId / artifactId |
+| Cost of the transitive check | when the poms, the parent capture and the bundled jars show nothing, every project pays one `mvn dependency:tree -Dincludes=…` on the as-is tree at analyze (one per service root for an MSA without a covering aggregator); `framework.transitive: off` saves it |
+| A framework still on javax | BLOCKED `external_javax_api` without an LLM call, the suggestion names the framework artifact and says its owner must provide a jakarta build — expected, not an sbmig failure |
+| An unresolvable parent | exit 3, `aborted:parent-not-found`: a framework project keeps its own parent, so Nexus must serve it (or fix the settings / mirror) |
+
 ## 1. Running a migration
 
 ```bash

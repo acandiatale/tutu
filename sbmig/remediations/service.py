@@ -50,6 +50,7 @@ from . import intake as intake_mod
 from . import ivas as ivas_mod
 from . import planner as planner_mod
 from . import report as report_mod
+from .inhouse import inhouse_keys
 from .interfaces import Components
 from .models import (
     ACTIVE,
@@ -1057,11 +1058,14 @@ class RemediationManager:
         if isinstance(data, dict):
             return data
         # report.json이 없을 때만 그래프와 같은 ignore_actions로 다시 만든다
+        inhouse = None
         try:
-            ignore = list(self._config(self._configs_for(rid, st, chained)).remediation.ignore_actions)
+            cfg = self._config(self._configs_for(rid, st, chained))
+            ignore = list(cfg.remediation.ignore_actions)
+            inhouse = inhouse_keys(cfg)
         except Exception:  # noqa: BLE001. 설정을 읽지 못해도 보고서는 돌려준다
             ignore = None
-        return report_mod.build_report_json(st, paths, ignore_actions=ignore)
+        return report_mod.build_report_json(st, paths, ignore_actions=ignore, inhouse=inhouse)
 
     def file_path(self, rid: str, name: str) -> Path | None:
         """허용된 파일 이름에 해당하는 작업 폴더 안의 실제 파일 경로를 반환한다.

@@ -26,6 +26,6 @@ JAVA_HOME=/Users/acandiatale/Library/Java/JavaVirtualMachines/azul-11.0.18/Conte
 
 legacy-web-lib is bumped inside the restructure (`1.0.0→3.0.0`); the build then fails at both call sites with
 `cannot find symbol … method clientIp(HttpServletRequest) … location: class LegacyRequestHelper` (catalog **X2**).
-v2 groups errors by case, so both files are **one** case (`compile|cannot_find_symbol|clientIp`, `8bb4fd4a4a`) and one
+v2 groups errors by case, so both files are **one** case (`compile|cannot_find_symbol|com.company.legacy.web.LegacyRequestHelper.clientIp`, `21175ead2d`) and one
 fix script renames the call on the reported lines in both. BUILD SUCCESS, exit 0, nothing blocked, **2 LLM calls**
-(review + script); the script is stored as `<kb>/scripts/8bb4fd4a4a/v1.py`.
+(review + script); the script is stored as `<kb>/scripts/21175ead2d/v1.py`.

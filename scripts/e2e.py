@@ -19,16 +19,24 @@ captures the exit code + output, finds the run directory the CLI created under -
                "flags": ["werror-removed", "regex:source-encoding-set:(cp949|ms949)"],   # must be present
                "optional_bumped": ["g:a old→new", "regex:..."],                         # must be present
                "unresolved_max": int,
-               "journal_events": [{"event": "restructure", "ok": true}],                # subset match on journal.jsonl
-               "phases": {"restructure": "ok"},                                        # ok | FAIL | skipped
+               "journal_events": [{"event": "restructure", "ok": true},                # subset match on journal.jsonl
+                                  {"event": "framework_project", "evidence.0.source": "parent",   # dotted key = path
+                                   "evidence.0.via.-1": "regex:.*:example-fw-core:.*"}],          # regex: full match
+               "journal_events_absent": [{"event": "restructure"}],                    # no event may match these
+               "journal_sequence": [{"event": "source_encodings"}, {"event": "rewrite", "step": "transform.rewrite"}],
+                                                                       # these events in this order (gaps allowed)
+               "phases": {"restructure": "ok"},                                        # ok | FAIL | skipped | absent
                "post_checks": [{"file_decodes_as": {"path", "encoding", "contains", "not_contains"}},
                                {"file_contains": {...}}, {"pom_parent": {...}}, {"pom_dependency_absent": {...}},
                                {"pom_dependency_present": {"path", "artifacts": ["g:a"]}},
                                {"pom_dependency_unversioned": {...}},   # declared, no <version> (parent-managed)
-                               {"pom_dependency_versioned": {...}},     # declared with a <version>
+                               {"pom_dependency_versioned": {...}},     # declared with a <version> (equal to
+                                                                        # `version` when given)
                                {"pom_packaging": {"path", "packaging": "war"}},   # <packaging> (absent = jar)
                                {"pom_module_list": {"path", "modules": [...], "any_order": false}},  # exact <modules>
                                {"file_exists": {"path"}}, {"file_absent": {"path"}},    # files or dirs, globs ok
+                               {"archive_entries": {"path", "present": [re], "absent": [re]}},  # a built jar / war:
+                                                                        # entry names, each regex a full match
                                {"file_same_as": {"path", "source"}}],   # every match byte-equal to the fixture's
                                                                         # as-is `source` (binaries kept intact)
                "advisories": [{"id": "springfox", "policy": "recipe", "outcome": "replaced",   # report.advisories:
@@ -185,7 +193,7 @@ DEFAULT_ORDER = ["pure-java", "servlet-tomcat", "spring5-xml", "boot2", "boot3",
                  "multi-module-conflict", "legacy-ibatis", "legacy-role-parents", "company-boot-single",
                  "company-spring5-web", "webapp-bundled-jar", "company-servlet-jsp",
                  "legacy-external-parent", "filtered-binary-resources", "boot-stray-pom-copy",
-                 "boot-asis-parent-unpublished"]
+                 "boot-asis-parent-unpublished", "fw-direct", "fw-parent", "fw-transitive", "fw-transitive-note"]
 ARROW = "→"
 NS = "{http://maven.apache.org/POM/4.0.0}"
 
@@ -271,12 +279,17 @@ def build_env(args: argparse.Namespace) -> dict[str, str]:
 
 
 def _gav_path(local_repo: Path, gav: str) -> Path:
-    """The installed artifact: `<a>-<v>.jar`, or the `.war` when only a WAR is there (legacy-base-web, 2026-10-23)."""
+    """The installed artifact: `<a>-<v>.jar`, or the `.war` when only a WAR is there (legacy-base-web, 2026-10-23),
+    or the `.pom` when only a pom is there (a packaging-pom parent such as example-fw-parent)."""
     g, a, v = gav.split(":")[:3]
     base = local_repo / Path(*g.split(".")) / a / v
     jar = base / f"{a}-{v}.jar"
-    war = base / f"{a}-{v}.war"
-    return war if war.exists() and not jar.exists() else jar
+    if jar.exists():
+        return jar
+    for other in (base / f"{a}-{v}.war", base / f"{a}-{v}.pom"):
+        if other.exists():
+            return other
+    return jar
 
 
 def preflight(fixture: str, expected: dict, local_repo: Path = DEFAULT_LOCAL_REPO) -> str | None:
@@ -368,6 +381,42 @@ def optional_bumps(report: dict, journal: list[dict]) -> list[str]:
             if m and m.group(1).strip() not in ("", "-"):
                 add([s for s in m.group(1).split(", ")])
     return out
+
+
+_MISSING = object()
+
+
+def _journal_path(ev: Any, key: str) -> Any:
+    """`a.b.0.c` = ev["a"]["b"][0]["c"] (negative list indices count from the end); _MISSING when absent."""
+    cur = ev
+    for part in key.split("."):
+        if isinstance(cur, dict):
+            if part not in cur:
+                return _MISSING
+            cur = cur[part]
+        elif isinstance(cur, list) and re.fullmatch(r"-?\d+", part):
+            i = int(part)
+            if not -len(cur) <= i < len(cur):
+                return _MISSING
+            cur = cur[i]
+        else:
+            return _MISSING
+    return cur
+
+
+def journal_event_matches(want: dict, ev: dict) -> bool:
+    """Subset match of one wanted journal event: each key equal (a list = equal list); a key with dots is a path
+    into nested values (`evidence.0.source`, `evidence.-1.via.0`); a `regex:` string value is a full match."""
+    for k, v in want.items():
+        got = _journal_path(ev, k) if "." in k and k not in ev else ev.get(k)
+        if got is _MISSING:
+            got = None                               # like ev.get(k): an absent value equals None
+        if isinstance(v, str) and v.startswith("regex:"):
+            if not _field_matches(v, got):
+                return False
+        elif got != v:
+            return False
+    return True
 
 
 def read_journal(run_dir: Path | None) -> list[dict]:
@@ -1183,6 +1232,23 @@ def run_post_check(check: dict, project: Path | None, fixture_dir: Path | None =
     files = _resolve(project, str(spec.get("path", "")))
     if not files:
         return f"{kind}: {spec.get('path')} not found in {project.name}/"
+    if kind == "archive_entries":                    # a built jar / war: entry names (`regex` full match)
+        import zipfile
+        for f in files:
+            rel = f.relative_to(project).as_posix()
+            try:
+                with zipfile.ZipFile(f) as z:
+                    names = z.namelist()
+            except (OSError, zipfile.BadZipFile) as e:
+                return f"archive_entries: {rel} unreadable: {e}"
+            for pat in _list(spec.get("present")):
+                if not any(re.fullmatch(pat, n) for n in names):
+                    return f"archive_entries: {rel} has no entry matching {pat!r}"
+            for pat in _list(spec.get("absent")):
+                hit = next((n for n in names if re.fullmatch(pat, n)), None)
+                if hit is not None:
+                    return f"archive_entries: {rel} contains {hit} (matches {pat!r})"
+        return None
     if kind == "file_same_as":                       # 2026-10-23: binaries must survive the migration unchanged
         source = (fixture_dir / str(spec.get("source", ""))) if fixture_dir is not None else None
         if source is None or not source.is_file():
@@ -1247,6 +1313,10 @@ def run_post_check(check: dict, project: Path | None, fixture_dir: Path | None =
                         return f"pom_dependency_unversioned: {rel} declares {ga} with <version>{pinned[0]}</version>"
                     if kind == "pom_dependency_versioned" and len(pinned) < len(versions[ga]):
                         return f"pom_dependency_versioned: {rel} declares {ga} without a <version>"
+                    if kind == "pom_dependency_versioned" and spec.get("version") is not None and \
+                            any(v != spec["version"] for v in pinned):
+                        return f"pom_dependency_versioned: {rel} declares {ga} at {', '.join(pinned)}, " \
+                               f"expected {spec['version']}"
             else:
                 deps = _pom_dependencies(root)
                 for ga in spec.get("artifacts") or []:
@@ -1351,10 +1421,28 @@ def evaluate(res: FixtureResult, expect: dict, report: dict, journal: list[dict]
         if n > expect["unresolved_max"]:
             mm.append(f"unresolved={n} > max {expect['unresolved_max']}")
     for want_ev in _list(expect.get("journal_events")):
-        if not any(all(ev.get(k) == v for k, v in want_ev.items()) for ev in journal):
+        if not any(journal_event_matches(want_ev, ev) for ev in journal):
             mm.append(f"no journal event matching {json.dumps(want_ev, ensure_ascii=False)}")
+    seq = [w for w in _list(expect.get("journal_sequence")) if isinstance(w, dict)]
+    if seq:                                          # the wanted events, in this order (others may lie between)
+        i = 0
+        for ev in journal:
+            if i < len(seq) and journal_event_matches(seq[i], ev):
+                i += 1
+        if i < len(seq):
+            mm.append(f"journal_sequence: no event matching {json.dumps(seq[i], ensure_ascii=False)} after "
+                      f"the first {i} of {len(seq)} in order"[:300])
+    for want_ev in _list(expect.get("journal_events_absent")):
+        hit = next((ev for ev in journal if journal_event_matches(want_ev, ev)), None)
+        if hit is not None:
+            mm.append(f"journal event {json.dumps(want_ev, ensure_ascii=False)} must not occur "
+                      f"(got: {json.dumps(hit, ensure_ascii=False)})"[:300])
     for phase, status in (expect.get("phases") or {}).items():
         got = [s.split(":", 1)[1] for s in res.phases if s.split(":", 1)[0] == phase]
+        if status == "absent":                       # the plan has no step of that phase
+            if got:
+                mm.append(f"phase {phase}={got[-1]} expected absent")
+            continue
         if not got or got[-1] != status:
             mm.append(f"phase {phase}={got[-1] if got else 'absent'} expected {status}")
     if any(k in expect for k in ("advisories", "advisories_exact", "advisories_absent")):
@@ -1408,6 +1496,10 @@ def describe_expect(fixture: str, expected: dict) -> str:
         parts.append(f"unresolved<={exp['unresolved_max']}")
     if exp.get("journal_events"):
         parts.append(f"journal={json.dumps(exp['journal_events'], ensure_ascii=False)}")
+    if exp.get("journal_sequence"):
+        parts.append(f"journal_sequence={len(exp['journal_sequence'])}")
+    if exp.get("journal_events_absent"):
+        parts.append(f"journal_absent={json.dumps(exp['journal_events_absent'], ensure_ascii=False)}")
     if exp.get("advisories"):
         parts.append("advisories" + ("(exact)" if exp.get("advisories_exact") else "") + "=[" + ", ".join(
             ":".join([str(a.get("id") or a.get("advisory_id"))] + [f"{k}={v}" for k, v in a.items()

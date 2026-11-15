@@ -42,7 +42,7 @@ from typing import Any, Callable, Optional
 
 import jinja2
 
-from sbmig.core.config import Config
+from sbmig.core.config import Config, TargetConfig
 from sbmig.core.interfaces import ChatMessage, FixContext, LLMClientLike, LLMResponse
 from sbmig.core.models import (
     DependencyChange,
@@ -65,6 +65,7 @@ from .context import (
     fence_for,
     format_error_line,
     lang_for,
+    scope_target_text,
     target_text,
     with_target,
 )
@@ -145,14 +146,19 @@ def script_helper_api_doc(extra_imports: tuple[str, ...] = (), timeout_s: Option
 
 @lru_cache(maxsize=8)
 def load_script_prompts(version: str = "v1", extra_imports: tuple[str, ...] = (),
-                        timeout_s: Optional[int] = None, target: str = "") -> tuple[str, jinja2.Template]:
+                        timeout_s: Optional[int] = None, target: str = "", scope: str = "full",
+                        java: str = "") -> tuple[str, jinja2.Template]:
     """수정 스크립트 요청의 (system 프롬프트, user 템플릿)을 읽고 헬퍼 API 표와 허용 import를 채운다.
     목표 버전(`{{ target }}`)은 프롬프트 파일에 직접 쓰지 않고 `target` 인자로 채운다.
+    ``scope``가 ``jdk-jakarta``이면 프레임워크 프로젝트용 문단과 규칙이 들어간다.
 
     (system prompt, user template) of a fix-script request. The helper API block comes from `sbmig.script`
     (`helper_api_doc`) when that module provides it, else from the table kept in `script_system_<version>.md` (both
     mirror the INTERFACES.md "Script contract (S)" table). v2.1u: `{{ target }}` is filled from `target`
-    (`target_text(cfg)` from the caller; "" = the TargetConfig defaults) — no version is written in the prompt file."""
+    (`target_text(cfg)` from the caller; "" = the TargetConfig defaults) — no version is written in the prompt file.
+    v2.1z-ak: `scope` (`{{ scope }}`) selects the reduced-scope introduction and rules of a framework project
+    (`jdk-jakarta`; `{{ java }}` = the target Java version, "" = the TargetConfig default); `full` renders the
+    prompt exactly as before."""
     sys_path = PROMPTS_DIR / f"script_system_{version}.md"
     user_path = PROMPTS_DIR / f"script_user_{version}.md.j2"
     if not sys_path.exists() or not user_path.exists():
@@ -161,7 +167,8 @@ def load_script_prompts(version: str = "v1", extra_imports: tuple[str, ...] = ()
     system = env.from_string(sys_path.read_text(encoding="utf-8")).render(
         helper_api=script_helper_api_doc(extra_imports, timeout_s),
         allowed_imports=", ".join(f"`{m}`" for m in script_allowed_imports(extra_imports)),
-        target=target or target_text(None))
+        target=target or target_text(None), scope=scope or "full",
+        java=java or str(TargetConfig().java_version))
     user_t = env.from_string(user_path.read_text(encoding="utf-8"))
     return system.strip() + "\n", user_t
 
@@ -384,6 +391,7 @@ class LLMFixer:
         # ScriptRunnerLike's `check` fits as well)
         self.script_checker = script_checker
         self._script_prompts: Optional[tuple[str, jinja2.Template]] = None
+        self._reduced_prompts: Optional[tuple[str, jinja2.Template]] = None   # v2.1z-ak: scope jdk-jakarta
         # verify_guide는 텍스트만 반환하므로 사용량을 여기 남겨 수정 루프가 예산에 반영하게 한다
         # v2.1d verify_guide: usage of the last call (the loop charges it: the method returns only the text) and of
         # every call of this fixer
@@ -429,7 +437,9 @@ class LLMFixer:
         adv_in_prompt = 0
         packed: Optional[PackedContext] = None
         try:
-            system, user_t = self.script_prompts()
+            # 프레임워크 프로젝트(범위 jdk-jakarta)는 재구성과 Boot 목표가 없는 system 프롬프트를 쓴다
+            system, user_t = (self.script_prompts("jdk-jakarta") if getattr(ctx, "scope", "full") == "jdk-jakarta"
+                              else self.script_prompts())
             log.info("script prompt for %s (%s%s): packing %d error(s) (%d advisory hint(s), %d KB hint(s), %d "
                      "reference file(s)%s)", cluster.id, mode, f" of v{base.version}" if mode == "augment" and base
                      else "", len(cluster.errors), len(ctx.advisory_hints), len(ctx.kb_hints), len(ctx.reference_files),
@@ -648,13 +658,19 @@ class LLMFixer:
 
         (system, user) of a `verify_guide` request."""
         lang = describe_language(self.cfg)
-        system = load_verify_prompt(self.cfg.llm.prompt_version, target_text(self.cfg)).replace("{{ language }}", lang)
+        # 프레임워크 프로젝트(범위 jdk-jakarta)에는 Boot 목표가 없으므로 Java와 jakarta만 목표로 쓴다
+        reduced = ctx is not None and getattr(ctx, "scope", "full") == "jdk-jakarta"
+        target = scope_target_text(self.cfg) if reduced else target_text(self.cfg)
+        system = load_verify_prompt(self.cfg.llm.prompt_version, target).replace("{{ language }}", lang)
         # 이 안내는 수정을 적용한 직후 재빌드 전에 만들어지므로 빌드가 통과했다고 쓰면 안 된다
         parts = [("A fix applied to this project raised a dependency's major version or replaced a library. The "
                   "build has not been re-run yet; the runtime is unverified. Write the 운영자 확인 사항 for the "
                   "operator.")]
         if ctx is not None and ctx.profile_summary:
-            parts.append(f"## Project\n{asis_line(with_target(ctx.profile_summary, self.cfg))}")
+            summary = with_target(ctx.profile_summary, self.cfg)
+            if reduced and TARGET_MARK in summary:
+                summary = summary.rsplit(TARGET_MARK, 1)[0] + TARGET_MARK + target
+            parts.append(f"## Project\n{asis_line(summary)}")
         if cluster is not None:
             errors = dedupe_errors(cluster.errors)
             case_id = (ctx.case_id if ctx is not None else "") or cluster.case_id or cluster.id
@@ -681,12 +697,26 @@ class LLMFixer:
         parts.append(f"Answer with the 운영자 확인 lines only, inside <verify>…</verify>, written in {lang}.")
         return [ChatMessage(role="system", content=system), ChatMessage(role="user", content="\n\n".join(parts) + "\n")]
 
-    def script_prompts(self) -> tuple[str, jinja2.Template]:
+    def script_prompts(self, scope: str = "full") -> tuple[str, jinja2.Template]:
         """스크립트 요청의 (system, user 템플릿)을 반환한다.
         처음 쓸 때 `llm.prompt_version`으로 읽고, 그 버전이 없으면 v1을 쓴다.
+        ``scope``가 ``jdk-jakarta``이면 프레임워크 프로젝트용 system 프롬프트를 반환한다.
 
         (system, user template) of the script requests — loaded on first use (`llm.prompt_version`, falling back
-        to v1 when the version has no script prompts)."""
+        to v1 when the version has no script prompts). v2.1z-ak: `scope="jdk-jakarta"` → the reduced-scope system
+        prompt of a framework project (kept apart from the full one, which stays in `_script_prompts`)."""
+        if scope == "jdk-jakarta":
+            if self._reduced_prompts is None:
+                extra = tuple(self.cfg.script.extra_allowed_imports)
+                timeout = self.cfg.script.timeout_seconds
+                java = str(getattr(getattr(self.cfg, "target", None), "java_version", "") or "")
+                try:
+                    self._reduced_prompts = load_script_prompts(self.cfg.llm.prompt_version, extra, timeout,
+                                                                target_text(self.cfg), "jdk-jakarta", java)
+                except FileNotFoundError:
+                    self._reduced_prompts = load_script_prompts("v1", extra, timeout, target_text(self.cfg),
+                                                                "jdk-jakarta", java)
+            return self._reduced_prompts
         if self._script_prompts is None:
             extra = tuple(self.cfg.script.extra_allowed_imports)
             timeout = self.cfg.script.timeout_seconds

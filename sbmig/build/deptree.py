@@ -15,6 +15,7 @@ The dependency tree knows: ``mvn dependency:tree -Dincludes=javax.persistence:*`
 
 * ``dependency_tree(ws, cfg, module, includes)`` → parsed trees (one root per reactor module that printed one),
   cached as ``<run_dir>/logs/deptree-<module>.txt`` and invalidated when the module's (or root) pom changes.
+  ``dependency_tree_status`` returns ``(roots, why)`` so a caller can tell "Maven failed" from "nothing matched".
 * ``parse_tree(text)`` / ``paths_to(roots, predicate)`` → the plugin's text output as ``TreeNode``s / root→node paths.
 * ``javax_api_inventory(ws, cfg, profile)`` → every javax EE API jar still on a module's classpath after the
   migration, with the direct dependency that brings it (``JavaxApiJar``; report section "javax API jars still on the
@@ -219,11 +220,14 @@ def _includes_suffix(includes: list[str]) -> str:
 
 
 def _run_tree(ws: Workspace, cfg: Config, mdir: str, name: str, out_file: Path, includes: list[str], *,
-              package: bool):
+              package: bool, standalone: bool = False):
     """``dependency:tree``를 한 번 실행한다.
-    모듈이면 ``-pl <dir> -am``을 붙이고, ``package=True``이면 빈 package와 함께 실행한다."""
+    모듈이면 ``-pl <dir> -am``을 붙이고, ``package=True``이면 빈 package와 함께 실행한다.
+    ``standalone``이면 루트 reactor 없이 ``-f <dir>/pom.xml``로 그 pom만 실행한다."""
     cmd = base_command(cfg)
-    if mdir:
+    if mdir and standalone:
+        cmd += ["-f", f"{mdir}/pom.xml"]     # a service root outside every root reactor
+    elif mdir:
         cmd += ["-pl", mdir, "-am"]          # upstream reactor modules print (append) their trees too
     if package:
         cmd += ["package", *_PACKAGE_SKIPS]
@@ -244,45 +248,69 @@ def dependency_tree(ws: Workspace, cfg: Config, module: Optional[str] = None,
 
     Parsed `dependency:tree` of `module` (dir path or artifactId; None = the root project, i.e. the whole reactor
     of an aggregator). Never raises; [] on failure."""
+    return dependency_tree_status(ws, cfg, module, includes)[0]
+
+
+def dependency_tree_status(ws: Workspace, cfg: Config, module: Optional[str] = None,
+                           includes: Iterable[str] = (), *,
+                           standalone: bool = False) -> tuple[list[TreeNode], Optional[str]]:
+    """``dependency_tree``와 같지만 트리를 읽지 못한 이유도 함께 반환한다.
+    읽었으면 ``(트리, None)``을, Maven이 실패했으면 ``([], 이유)``를 반환한다. 예외를 던지지 않는다.
+    ``standalone``이면 루트 reactor 밖의 pom을 ``-f``로 실행한다.
+
+    Like `dependency_tree`, plus why nothing was read: `(roots, None)` when the plugin ran (roots may hold no
+    matching node), `([], "<why>")` when Maven failed or the module is unknown. `standalone` runs the module's pom
+    with `-f` (a service root no root reactor covers) instead of `-pl <dir> -am`."""
     incl = [i for i in (includes or ()) if i]
     mdir: Optional[str] = None
     try:
         mdir = _module_dir(ws, module)
         if mdir is None:
             log.info("deptree: unknown module %r", module)
-            return []
+            return [], f"unknown module {module}"
         out_dir = logs_dir(ws)                       # v2.1: logs/deptree-<module>.txt (+ .meta.json), no deptree/
         out_dir.mkdir(parents=True, exist_ok=True)
-        name = (_safe(mdir.replace("/", "__")) if mdir else "root") + _includes_suffix(incl)
+        name = (_safe(mdir.replace("/", "__")) if mdir else "root") + ("-f" if standalone and mdir else "") \
+            + _includes_suffix(incl)
         out_file = out_dir / f"deptree-{name}.txt"
         meta_file = out_dir / f"deptree-{name}.meta.json"
         stamp = _pom_stamp(ws, mdir)
         if out_file.is_file() and meta_file.is_file():
             try:
                 if json.loads(meta_file.read_text(encoding="utf-8")).get("poms") == stamp:
-                    return parse_tree(out_file.read_text(encoding="utf-8"))
+                    return parse_tree(out_file.read_text(encoding="utf-8")), None
             except (OSError, ValueError):
                 pass
         out_file.unlink(missing_ok=True)
-        pr, log_path = _run_tree(ws, cfg, mdir, name, out_file, incl, package=False)
-        if (pr.exit_code != 0 or not out_file.is_file()) and _has_modules(ws):
+        sa = bool(standalone and mdir)
+        pr, log_path = _run_tree(ws, cfg, mdir, name, out_file, incl, package=False, standalone=sa)
+        has_modules = _pom_has_modules(ws, f"{mdir}/pom.xml") if sa else _has_modules(ws)
+        if (pr.exit_code != 0 or not out_file.is_file()) and has_modules:
             # reactor siblings not resolvable without a package in the same session → package (everything skipped)
             out_file.unlink(missing_ok=True)
-            pr, log_path = _run_tree(ws, cfg, mdir, name, out_file, incl, package=True)
+            pr, log_path = _run_tree(ws, cfg, mdir, name, out_file, incl, package=True, standalone=sa)
         if pr.exit_code != 0 or not out_file.is_file():
             log.warning("deptree: dependency:tree failed for %s (exit %s, see %s)", mdir or "root", pr.exit_code,
                         log_path)
             ws.journal({"event": "deptree", "module": mdir or None, "ok": False, "includes": incl,
                         "log": str(log_path)})
-            return []
+            why = "timed out" if getattr(pr, "timed_out", False) else f"exit {pr.exit_code}"
+            return [], f"dependency:tree failed for {mdir or 'root'} ({why}, see {log_path})"
         meta_file.write_text(json.dumps({"poms": stamp, "includes": incl}), encoding="utf-8")
         roots = parse_tree(out_file.read_text(encoding="utf-8"))
         ws.journal({"event": "deptree", "module": mdir or None, "ok": True, "includes": incl,
                     "log": str(log_path), "roots": len(roots)})
-        return roots
+        return roots, None
     except Exception as exc:                 # never break the caller (report inventory is best effort)
         log.warning("deptree(%s): %s: %s", module, type(exc).__name__, exc)
-        return []
+        return [], f"{type(exc).__name__}: {exc}"
+
+
+def _pom_has_modules(ws: Workspace, rel: str) -> bool:
+    try:
+        return "<module>" in ws.read(rel)
+    except OSError:
+        return False
 
 
 # ---------------------------------------------------------------------------

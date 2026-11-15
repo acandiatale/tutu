@@ -50,6 +50,11 @@ CASES = [
     ("pom.xml could not be synthesized from build.xml: no source root (Ant project rejected: convert the build to Maven "
      "first)",
      "build.xml에서 pom.xml을 만들지 못했습니다(no source root). Maven으로 변환한 뒤 신청해 주세요."),
+    # a framework project keeps its parent pom (scope jdk-jakarta): Orchestrator._reduced_parent_abort
+    ("Maven cannot resolve the parent pom com.example.fw:example-fw-parent:1.2.0; a framework project keeps its own parent "
+     "pom, so the repository must serve it (settings: default). Make the repository serve it and rerun",
+     "부모 pom을 저장소에서 받지 못했습니다(com.example.fw:example-fw-parent:1.2.0). 프레임워크 프로젝트는 부모 pom을 바꾸지 "
+     "않으므로 저장소에서 받을 수 있어야 합니다."),
 ]
 ANT_NOTICE = "Maven 변환 후 신청 부탁드립니다."
 

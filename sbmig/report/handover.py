@@ -48,6 +48,7 @@ REASON_MANDATORY = "mandatory"
 REASON_BOOT_BOM_PIN = "pinned from the target Boot BOM (not managed by the parent chain)"
 REASON_BOOT = "spring boot 4 upgrade"
 REASON_OTHER = "recipe / fix script"
+REASON_RECIPE = "recipe"                 # v2.1z-ak: a reduced run without fix attempts (only the recipes changed poms)
 CARRIED_LIST_MAX = 5
 LLM_FILES_MAX = 5                # files listed per "code rewritten by the LLM for <library>" line
 # the orchestrator's X1b follow-up (report.javax_api_inventory, 2026-10-22)
@@ -342,9 +343,15 @@ def _coord(key: str, v: Optional[str]) -> str:
     return f"{key}:{v}" if v else key
 
 
-def _versions(profile: ProjectProfile, final: list[PomInfo], cfg: Any) -> dict[str, Optional[str]]:
+def _versions(profile: ProjectProfile, final: list[PomInfo], cfg: Any,
+              reduced: bool = False) -> dict[str, Optional[str]]:
     """Java와 Boot 버전의 전후를 구한다. 이후 값은 메인 pom, 다른 pom, 설정의 ``target`` 순으로 찾는다.
-    사내 parent가 버전을 관리하면 최종 pom에는 값이 없으므로 설정 값을 쓴다."""
+    사내 parent가 버전을 관리하면 최종 pom에는 값이 없으므로 설정 값을 쓴다.
+    사내 프레임워크 프로젝트(``reduced``)는 Boot를 올리지 않으므로 Boot 값은 최종 pom에 있는 것만 쓴다.
+
+    Java / Boot before and after. A reduced run (framework project, scope jdk-jakarta) never applies the target Boot
+    line: its Boot after-value is what the final poms carry (none for a project without Boot), never
+    `target.spring_boot_version`. Java keeps the `target.java_version` fallback (the run applied Java 21)."""
     main = _main_pom(final)
     target = getattr(cfg, "target", None) if cfg is not None else None
     java_after = main.java_version if main else None
@@ -355,7 +362,7 @@ def _versions(profile: ProjectProfile, final: list[PomInfo], cfg: Any) -> dict[s
     boot_after = main.spring_boot_version if main else None
     if not boot_after:
         boot_after = next((p.spring_boot_version for p in final if p.spring_boot_version), None)
-    if not boot_after and target is not None:
+    if not boot_after and target is not None and not reduced:
         boot_after = target.spring_boot_version
     return {"java_before": profile.java_version, "java_after": java_after,
             "spring_boot_before": profile.spring_boot_version, "spring_boot_after": boot_after}
@@ -626,7 +633,7 @@ def jsp_jakarta_text(files: int, refs: int) -> str:
 
 
 def jsp_jakarta_note(step_id: str, files: int, refs: int) -> str:
-    """JSP 변환의 파일 수와 참조 수를 담은 재구성 단계 메모를 만든다.
+    """JSP 변환의 파일 수와 참조 수를 담은 단계 메모를 만든다(재구성 또는 ``transform.jsp_jakarta``).
     오케스트레이터가 남기고 ``jsp_jakarta_counts``가 다시 읽는다.
 
     The restructure step's note the orchestrator writes; `jsp_jakarta_counts` reads it back."""
@@ -961,8 +968,14 @@ def _build(profile: ProjectProfile, view: Any, report: RunReport, effective: Opt
     # ---- parent / java / boot
     pb, pa = _parents(before_poms), _parents(final)
     h.parent_before, h.parent_after = _fmt_parents(pb), _fmt_parents(pa)
-    for k, v in _versions(profile, final, cfg).items():
+    from .result_line import run_scope
+    reduced = run_scope(report) is not None
+    for k, v in _versions(profile, final, cfg, reduced=reduced).items():
         setattr(h, k, v)
+    # 프레임워크 프로젝트는 Boot를 올리지 않고, 수정 시도가 없었다면 pom을 바꾼 것은 레시피뿐이다
+    tried = any(pr.attempts for pr in report.phases or [])
+    other_reason = REASON_RECIPE if reduced and not tried else REASON_OTHER
+    boot_reason = other_reason if reduced else REASON_BOOT
 
     notes = _notes(report)
     optional, mandatory = _restructure_keys(notes)
@@ -995,7 +1008,7 @@ def _build(profile: ProjectProfile, view: Any, report: RunReport, effective: Opt
         if k in bb and k in ba:
             if bb[k][0] != ba[k][0]:
                 changes.append(VersionChange(kind="bom", key=k, before=bb[k][0], after=ba[k][0],
-                                             reason=REASON_BOOT if _is_spring(k) else REASON_OTHER, pom=ba[k][1]))
+                                             reason=boot_reason if _is_spring(k) else other_reason, pom=ba[k][1]))
         elif k in bb:
             h.removed.append(f"bom {_coord(k, bb[k][0])}")
         else:
@@ -1024,8 +1037,8 @@ def _build(profile: ProjectProfile, view: Any, report: RunReport, effective: Opt
         if key in mandatory:
             return REASON_MANDATORY
         if _is_spring(key):
-            return REASON_BOOT
-        return REASON_OTHER
+            return boot_reason
+        return other_reason
 
     for k in sorted(set(db) | set(da)):
         if k in db and k in da:
@@ -1064,7 +1077,7 @@ def _build(profile: ProjectProfile, view: Any, report: RunReport, effective: Opt
     for k in sorted(set(plb) & set(pla)):
         if plb[k][0] != pla[k][0]:
             changes.append(VersionChange(kind="plugin", key=k, before=plb[k][0], after=pla[k][0],
-                                         reason=REASON_BOOT if _is_spring(k) else REASON_OTHER, pom=pla[k][1]))
+                                         reason=boot_reason if _is_spring(k) else other_reason, pom=pla[k][1]))
 
     order = {"parent": 0, "bom": 1, "dependency": 2, "plugin": 3, "property": 4}
     changes.sort(key=lambda c: (order.get(c.kind, 9), c.key))

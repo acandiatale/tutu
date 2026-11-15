@@ -12,7 +12,7 @@ the v2 augment path (docs/v2/PLAN-v2.md §3.1).
 | replay | request | answer | attempt outcome |
 |---|---|---|---|
 | `llm-001.json` | structure review | verdict `ok` | — |
-| `llm-002.json` | case `compile\|cannot_find_symbol\|clientIp` (`8bb4fd4a4a`, both files), mode `new` → v1 | an exact replace written for `clientIp(request)` only, so `MemberController`'s `clientIp(http)` stays | `partial`, rolled back before the next attempt |
+| `llm-002.json` | case `compile\|cannot_find_symbol\|com.company.legacy.web.LegacyRequestHelper.clientIp` (`21175ead2d`, both files), mode `new` → v1 | an exact replace written for `clientIp(request)` only, so `MemberController`'s `clientIp(http)` stays | `partial`, rolled back before the next attempt |
 | `llm-003.json` | the same case, mode `augment` → v2 (parent v1, sees v1's log) | renames the call on every reported line, whatever the argument | `build_ok` |
 
 ## Build as-is
@@ -27,6 +27,6 @@ JAVA_HOME=/Users/acandiatale/Library/Java/JavaVirtualMachines/azul-11.0.18/Conte
 
 Success, exit 0, **3 LLM calls** (review, v1, v2). Both error records (`ClientIpFilter.java`, `MemberController.java`)
 are `resolved` by `script_augment` with the attempt history `partial → build_ok`; both versions stay in
-`<kb>/scripts/8bb4fd4a4a/` (v1 `partials: 1`, v2 `successes: 1`, `parent: 1`); `<run dir>/error_cases.jsonl`,
+`<kb>/scripts/21175ead2d/` (v1 `partials: 1`, v2 `successes: 1`, `parent: 1`); `<run dir>/error_cases.jsonl`,
 `fix_attempts.jsonl` (every attempt with its diff) and `error_cases.csv` exist and the KB holds the same records and the
 `clientIp` case (`expect.error_cases`). legacy-web-lib is bumped `1.0.0→3.0.0` inside the restructure.

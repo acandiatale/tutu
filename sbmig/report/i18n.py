@@ -19,6 +19,7 @@ Identifiers, paths, Maven / javac messages and free-text notes from the loop are
 from __future__ import annotations
 
 import re
+from typing import Callable, Union
 
 LANGUAGES = ("en", "ko")
 
@@ -76,7 +77,7 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
     "| **Result** | {ok} (final `mvn clean package`) |": "| **결과** | {ok} (최종 `mvn clean package`) |",
     "| Case | `{case}` |": "| 유형 | `{case}` |",
     "| As-is | java {java}, spring boot {boot}, spring {spring}, {poms} pom(s) |":
-        "| As-is | java {java}, spring boot {boot}, spring {spring}, pom {poms}개 |",
+        "| 전환 전 | java {java}, spring boot {boot}, spring {spring}, pom {poms}개 |",
     "| Run id | `{run_id}` |": "| 실행 ID | `{run_id}` |",
     "| Started / finished | {started} / {finished} ({duration}) |":
         "| 시작 / 종료 | {started} / {finished} ({duration}) |",
@@ -85,6 +86,10 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
     "| Flags | {flags} |": "| 플래그 | {flags} |",
     "| **Blocked** | {line} (see below) |": "| **차단됨** | {line} (아래 참조) |",
     "| **Error list** | {n} error(s): {counts} (see \"Error list\") |": "| **에러 목록** | {n}건: {counts} (\"에러 목록\" 참조) |",
+    "| **Error list** | {m} pom correction(s) by sbmig ({counts}); no build error (see \"Error list\") |":
+        "| **에러 목록** | 빌드 오류 없음. sbmig가 고친 pom {m}건({counts}) (\"에러 목록\" 참조) |",
+    "| **Error list** | {n} error(s): {counts}; {m} pom correction(s) by sbmig (see \"Error list\") |":
+        "| **에러 목록** | {n}건: {counts}. 그 밖에 sbmig가 고친 pom {m}건 (\"에러 목록\" 참조) |",
     "| To-be | {versions} |": "| 전환 후 | {versions} |",
     "{m}m {s}s": "{m}분 {s}초",
     "{secs}s": "{secs}초",
@@ -173,6 +178,7 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
     "Fixes by case": "케이스별 해결",
     "compile — `mvn compile` after OpenRewrite": "compile — OpenRewrite 뒤 `mvn compile`",
     "restructure — pom corrections, verified by the next build": "restructure — 구조화의 pom 정정, 다음 빌드에서 검증",
+    "transform — pom corrections by sbmig, verified by the next build": "transform — sbmig의 pom 정정, 다음 빌드에서 검증",
     "review — structure review": "review — 구조 점검",
     "build — first `mvn clean package`, new errors only": "build — 첫 `mvn clean package`, 새 에러만",
     "{seen} — new errors of round {n}'s build": "{seen} — 라운드 {n} 빌드의 새 에러",
@@ -279,6 +285,24 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
     "mandatory": "필수 아티팩트",
     "spring boot 4 upgrade": "spring boot 4 업그레이드",
     "recipe / fix script": "레시피 / 수정 스크립트",
+    "recipe": "레시피",
+    "parent": "부모 pom",
+    "dependency": "의존성",
+    "bom": "BOM",
+    "plugin": "플러그인",
+    "property": "프로퍼티",
+    "### pom corrections by sbmig": "### sbmig가 고친 pom",
+    "sbmig changed these poms itself in the transform step.": "변환 단계에서 sbmig가 직접 고친 pom입니다.",
+    "No build error in this run. {m} pom correction(s) by sbmig, verified by the build.":
+        "이번 실행에는 빌드 오류가 없습니다. sbmig가 고친 pom {m}건을 빌드로 확인했습니다.",
+    "No build error in this run. {m} pom correction(s) by sbmig, {k} of them not verified yet.":
+        "이번 실행에는 빌드 오류가 없습니다. sbmig가 고친 pom은 {m}건이고 그중 {k}건은 아직 빌드로 확인하지 못했습니다.",
+    "{n} build error(s) in this run, one line each (all of them with every try and diff: `errors.md` / `errors.jsonl` in "
+    "the run directory): {counts}. Besides, {m} pom correction(s) by sbmig.":
+        "이번 실행의 빌드 오류 {n}건, 한 줄에 하나(시도와 diff까지 전부: 실행 디렉터리의 `errors.md` / `errors.jsonl`): "
+        "{counts}. 그 밖에 sbmig가 고친 pom {m}건이 있습니다.",
+    "verified": "빌드로 확인함",
+    "not verified yet": "아직 확인하지 못함",
     # properties (round 8)
     "key": "키",
     "before migration": "마이그레이션 전 공급처",
@@ -355,9 +379,9 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
     "not: when a build error needs one, sbmig wires it into the module pom (`sbmig-bundled`: a normal dependency when the "
     "repository has its coordinates, else system scope + includeSystemScope) — see \"Bundled jars (declared by no pom)\" "
     "and the Handover":
-        "어느 pom 도 선언하지 않은 jar 가 트리에 있다(예: WEB-INF/lib) — as-is IDE 빌드는 이것으로 컴파일했지만 Maven 은 보지 못한다: "
-        "빌드 오류가 그 jar 를 필요로 하면 sbmig 가 모듈 pom 에 연결한다(`sbmig-bundled`: 저장소에 좌표가 있으면 보통 의존성, 없으면 "
-        "system scope + includeSystemScope) — \"동봉 jar (pom 미선언)\" 섹션과 인수인계 참조",
+        "어느 pom에도 선언되지 않은 jar가 프로젝트 안에 있습니다(예: WEB-INF/lib). as-is IDE 빌드는 이 jar로 컴파일했지만 "
+        "Maven은 보지 못합니다. 빌드 오류에 이 jar가 필요하면 sbmig가 모듈 pom에 연결합니다(`sbmig-bundled`: 저장소에 좌표가 "
+        "있으면 보통 의존성, 없으면 system scope와 includeSystemScope). \"동봉 jar (pom 미선언)\" 절과 인수인계를 참고해 주세요.",
     "Bundled jars (declared by no pom)": "동봉 jar (pom 미선언)",
     "Jars in the tree that no pom declares: the as-is IDE build compiled against them, Maven does not. When a build error "
     "needs one, sbmig wires it into the module pom (`sbmig-bundled`, no LLM call).":
@@ -367,6 +391,9 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
     "A jar whose coordinates the target parent chain manages (an old Spring jar, say) is superseded by the managed version "
     "and is never wired.": "좌표를 목표 부모 체인이 관리하는 jar(예: 옛 Spring jar)는 관리 버전이 대신하므로 절대 연결하지 않는다.",
     "superseded (the target chain manages it)": "대체됨 (목표 체인이 관리)",
+    "A jar whose coordinates the project's parent chain manages (an old Spring jar, say) is superseded by the managed "
+    "version and is never wired.": "좌표를 프로젝트의 부모 체인이 관리하는 jar(예: 옛 Spring jar)는 관리 버전이 대신하므로 연결하지 않는다.",
+    "superseded (the parent chain manages it)": "대체됨 (부모 체인이 관리)",
     "coordinates known": "좌표 있음",
     "coordinates unknown": "좌표 없음",
     "unknown": "모름",
@@ -412,6 +439,40 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
     " … and {n} more": " … 외 {n}개",
     "Evidence": "판정 근거 / evidence",
     "hints (not evidence): {files}": "참고(근거 아님): {files}",
+    # 사내 프레임워크 프로젝트 절(markdown.framework_lines)과 머리 표의 범위 줄
+    "In-house framework project": "사내 프레임워크 프로젝트",
+    "In-house framework": "사내 프레임워크",
+    "| Scope | JDK 21 and jakarta only (in-house framework project) |":
+        "| 범위 | JDK 21과 jakarta만 적용(사내 프레임워크 프로젝트) |",
+    "{artifact}: declared directly in `{where}`": "{artifact}: `{where}`에 직접 선언",
+    "{artifact}: inherited from the parent pom `{parent}` (module `{where}`)":
+        "{artifact}: 부모 pom `{parent}`에서 상속(모듈 `{where}`)",
+    "{artifact}: inherited from a parent pom (module `{where}`)": "{artifact}: 부모 pom에서 상속(모듈 `{where}`)",
+    "{artifact}: jar in the tree (`{where}`)": "{artifact}: 프로젝트 안에 jar 파일로 포함(`{where}`)",
+    "{artifact}: brought by another library, path `{via}` (module `{where}`)":
+        "{artifact}: 다른 라이브러리를 통해 들어옴. 경로는 `{via}`(모듈 `{where}`)",
+    "{artifact}: brought by another library (module `{where}`)": "{artifact}: 다른 라이브러리를 통해 들어옴(모듈 `{where}`)",
+    "JDK 21 and jakarta": "JDK 21과 jakarta 적용",
+    "build error fixes": "빌드 오류 수정",
+    "vulnerability remediation": "취약점 조치",
+    "Done in this run: {what}": "이번 실행에서 한 일: {what}",
+    "Not done: restructure, structure review (a framework project's run has neither step). The parent pom and the "
+    "framework version stay as they are.":
+        "하지 않은 일: 재구성, 구조 검토. 프레임워크 프로젝트는 이 두 단계를 실행하지 않습니다. 부모 pom과 프레임워크 "
+        "버전은 그대로 둡니다.",
+    "The full migration ran because the configuration says so (framework.scope: full).":
+        "설정(framework.scope: full)에 따라 전체 이관을 진행했습니다.",
+    "The artifact arrives only through another library: the full migration ran because the configuration says so "
+    "(framework.transitive: {setting}).":
+        "다른 라이브러리를 통해서만 들어오는 아티팩트라서 설정(framework.transitive: {setting})에 따라 전체 이관을 "
+        "진행했습니다.",
+    "Not checked: {where}": "확인하지 못한 곳: {where}",
+    "the project uses an in-house framework artifact (framework.artifacts) — see the framework block at the top of "
+    "the report for where it was found and what this run did":
+        "사내 프레임워크 아티팩트(framework.artifacts)를 사용하는 프로젝트입니다. 어디에서 찾았는지와 이번 실행에서 한 "
+        "일은 보고서 맨 위 사내 프레임워크 절에 있습니다.",
+    " — renamed by sbmig in JSP / tag files (page imports, useBean, scriptlets); OpenRewrite does not parse JSPs":
+        " — sbmig가 JSP / 태그 파일(page import, useBean, 스크립틀릿)에서 바꿨다. OpenRewrite 는 JSP 를 읽지 않는다",
     "artifacts.parent_manages_spring_boot is true but the in-house parent chain does not import the Spring Boot "
     "BOM: the versions it does not manage were pinned from the target Boot BOM — import spring-boot-dependencies in "
     "base-parent (see the Handover's first line)":
@@ -434,8 +495,8 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
         "어떤 pom도 참조하지 않는 웹 콘텐츠(예: JSP·다운로드 파일이 있는 STATIC/)는 그대로 두었다 — 예전처럼 웹 서버에서 내보내거나 front 모듈로 옮길 것",
     "OpenRewrite could not parse some source files (see the phase notes / rewrite log): recipes that need type "
     "information skipped them; the fix loop covered what the build found":
-        "OpenRewrite가 일부 소스 파일을 파싱하지 못함(phase 노트 / rewrite 로그 참고): 타입 정보가 필요한 레시피는 그 "
-        "파일을 건너뛰었고, 빌드가 찾아낸 것은 수정 루프가 처리했다",
+        "OpenRewrite가 일부 소스 파일을 읽지 못했습니다(단계 메모와 rewrite 로그 참고). 타입 정보가 필요한 레시피는 그 "
+        "파일을 건너뛰었고, 빌드에서 드러난 오류는 수정 루프가 처리했습니다.",
     "web.xml servlets / filters / listeners / error pages were turned into a generated WebXmlRegistrations "
     "@Configuration in the boot module (web.xml itself is not read by Spring Boot) — verify the mappings in the "
     "Handover":
@@ -468,8 +529,8 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
     "remove the declaration from the pom": "pom에서 선언 제거",
     "every build ran with `-Dmaven.test.skip=true` (build.skip_test_compile): test sources were neither compiled nor "
     "run — the owning team compiles and fixes them":
-        "모든 빌드가 `-Dmaven.test.skip=true`로 실행됨(build.skip_test_compile): 테스트 소스는 컴파일도 실행도 하지 "
-        "않았다 — 소유 팀이 컴파일하고 고칠 것",
+        "모든 빌드를 `-Dmaven.test.skip=true`로 실행했습니다(build.skip_test_compile). 테스트 소스는 컴파일도 실행도 "
+        "하지 않았으니 담당 팀이 컴파일하고 고쳐 주세요.",
     "main code builds, but test sources only compile with `-Dmaven.test.skip=true` (see follow-ups) — fix the "
     "tests before relying on CI":
         "메인 코드는 빌드되지만 테스트 소스는 `-Dmaven.test.skip=true`로만 컴파일된다(후속 조치 참조) — CI에 "
@@ -559,7 +620,8 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
 # handover.py의 문장을 바꾸면 패턴도 함께 바꿔야 하며, 맞지 않으면 영어 그대로 출력된다
 # Handover data lines (English in report.json) → Korean, matched against the whole line. Unknown lines (manual
 # follow-ups from other modules, advisory text from the knowledge YAML) stay as they are.
-PATTERNS: dict[str, list[tuple[re.Pattern[str], str]]] = {"ko": [(re.compile(p), t) for p, t in (
+PATTERNS: dict[str, list[tuple[re.Pattern[str], Union[str, Callable[[re.Match[str]], str]]]]] = {"ko": [
+    (re.compile(p), t) for p, t in (
     # 접수나 조치 시작 단계에서 실행이 중단된 사유. 웹 화면도 저널 abort의 reason을 이 표로 번역한다
     (r"^vulnerability remediation not started \(not ready\): (?P<m>.+)$",
      r"취약점 조치를 시작하지 못했습니다. 실행 환경이 갖춰지지 않았습니다: \g<m>"),
@@ -583,6 +645,40 @@ PATTERNS: dict[str, list[tuple[re.Pattern[str], str]]] = {"ko": [(re.compile(p),
      r"사용자 요청으로 멈췄습니다. 최종 빌드(mvn clean package)는 실행하지 않았습니다."),
     (r"^stopped by user \(web UI\) — the final `mvn clean package` did not run$",
      r"화면에서 멈춤을 요청해 멈췄습니다. 최종 빌드(mvn clean package)는 실행하지 않았습니다."),
+    # 레시피 뒤에 sbmig가 직접 고친 pom 항목(오류 목록의 메시지, Orchestrator._pom_verify_entries)
+    (r"^scope restored: provided \(as-is\): (?P<k>\S+) \(was (?P<o>\S+)\)$",
+     r"scope를 as-is와 같은 provided로 되돌렸습니다(\g<k>, 레시피 뒤에는 \g<o>)"),
+    (r"^source encoding written: (?:(?P<p>\S+): )?project\.build\.sourceEncoding=(?P<v>[^\s(]+)(?: \(.*\))?$",
+     r"소스 인코딩을 pom에 기록했습니다(project.build.sourceEncoding=\g<v>)"),
+    # 테스트를 컴파일하지 않은 실행의 후속 조치(Orchestrator, build.skip_test_compile)
+    (r"^test sources were neither compiled nor run \(build\.skip_test_compile: true\): the owning team compiles and "
+     r"fixes the tests \(`mvn test-compile`\) before relying on CI$",
+     r"테스트 소스는 컴파일도 실행도 하지 않았습니다(build.skip_test_compile: true). CI에 맡기기 전에 담당 팀이 테스트를 "
+     r"컴파일하고 고쳐 주세요(`mvn test-compile`)."),
+    # 사내 프레임워크 프로젝트의 차단 표 제안 문구(sbmig/loop/fixloop.py의 _framework_parent_abort,
+    # framework_owner_suggestion). 영어 문장을 바꾸면 함께 바꾼다
+    (r"^parent `(?P<c>[^`]+)` is not resolvable with settings `(?P<s>[^`]+)`: this is a framework project "
+     r"\((?P<fw>.+?)\) and keeps its own parent — .*nothing in the project can replace it$",
+     r"부모 pom을 저장소에서 받지 못했습니다(`\g<c>`, settings `\g<s>`). 사내 프레임워크 프로젝트(\g<fw>)는 부모 pom을 "
+     r"바꾸지 않으므로 저장소가 이 pom을 제공해야 합니다. 저장소에 올리거나 settings 또는 미러 설정을 고친 뒤 다시 실행해 "
+     r"주세요. 프로젝트 안에서 대신할 방법은 없습니다."),
+    (r"^`(?P<f>[^`]+)` is the in-house framework artifact of this project and is still compiled against javax\.\*"
+     r"(?: \(it still takes `(?P<api>[^`]+)`\))?: it cannot be fixed in the project — the owner of the framework "
+     r"artifact `[^`]+` must provide a jakarta build of it \(sbmig keeps the framework version as it is\)$",
+     lambda m: ("이 프로젝트의 사내 프레임워크 아티팩트가 아직 javax 기준으로 빌드되어 있습니다(`" + m.group("f") + "`"
+                + (", 필요한 javax API `" + m.group("api") + "`" if m.group("api") else "") + "). "
+                + FRAMEWORK_OWNER_KO)),
+    (r"^(?:`(?P<api>[^`]+)`|a javax-era library) comes through the framework artifact `(?P<f>[^`]+)` "
+     r"\((?P<path>[^()]*)\): it cannot be fixed in the project — the owner of the framework artifact `[^`]+` must "
+     r"provide a jakarta build of it \(sbmig keeps the framework version as it is\)$",
+     lambda m: ("javax 기준 " + ("API" if m.group("api") else "라이브러리") + "가 사내 프레임워크 아티팩트를 통해 "
+                + "들어옵니다(" + ("`" + m.group("api") + "`, " if m.group("api") else "") + "프레임워크 `" + m.group("f")
+                + "`, 경로 "
+                + " > ".join(x.strip() for x in m.group("path").split("→")) + "). " + FRAMEWORK_OWNER_KO)),
+    # 사내 프레임워크 프로젝트의 부모 pom을 저장소에서 받지 못한 경우. 부모 pom을 바꾸지 않으므로 실행을 중단한다
+    (r"^Maven cannot resolve the parent (?:pom )?(?P<p>.+?)[;.] .*\bframework project keeps its (?:own )?parent\b.*$",
+     r"부모 pom을 저장소에서 받지 못했습니다(\g<p>). 프레임워크 프로젝트는 부모 pom을 바꾸지 않으므로 저장소에서 받을 수 "
+     r"있어야 합니다."),
     (r"^internal error: (?P<e>.+)$", r"내부 오류로 멈췄습니다: \g<e>"),
     (r"^missing component: (?P<e>.+)$", r"필요한 구성 요소가 없어 멈췄습니다: \g<e>"),
     (r"^pom\.xml is an EAR \((?P<a>[^,]+), packaging ear\) that packages modules which are not in this directory: "
@@ -841,6 +937,10 @@ PATTERNS: dict[str, list[tuple[re.Pattern[str], str]]] = {"ko": [(re.compile(p),
 )]}
 
 
+FRAMEWORK_OWNER_KO = ("프로젝트 안에서는 고칠 수 없습니다. 프레임워크 담당자가 jakarta 빌드를 제공해야 합니다. sbmig는 프레임워크 "
+                      "버전을 그대로 둡니다.")
+
+
 def normalize(lang: object) -> str:
     """언어 코드를 지원하는 값으로 정리한다. None이나 오타 같은 다른 값이면 "en"을 반환한다.
 
@@ -875,7 +975,8 @@ def tr_line(lang: str, line: str) -> str:
     for rx, tmpl in PATTERNS.get(lang, []):
         m = rx.match(line)
         if m:
-            return m.expand(tmpl)
+            # 값에 따라 문장 모양이 달라지는 규칙(선택 그룹, 경로 구분자 변환)은 함수로 둔다
+            return m.expand(tmpl) if isinstance(tmpl, str) else tmpl(m)
     # v2.1z-e: a blocked item's suggestion may carry the search record / the unmatched owner class as a tail ("…; repository
     # search for a jakarta build of g:a: …") — translate head and tail on their own, so neither blocks the other
     for sep in _TAIL_SEPARATORS:

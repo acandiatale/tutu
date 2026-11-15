@@ -89,6 +89,9 @@ _INFRA_REPO_RE = re.compile(r"(?i)could not transfer|failed to transfer|connecti
 _INFRA_DISK_RE = re.compile(r"(?i)no space left on device|not enough space on the disk|disk quota exceeded|"
                             r"디스크 공간이 부족|ENOSPC")
 _DEFAULT_MODE = {StepKind.MSA_POM: "msa_pom", StepKind.RESTRUCTURE: "layout"}
+# transform.jsp_jakarta (framework projects, scope jdk-jakarta): the JSP rename alone, run without the restructurer
+JSP_JAKARTA_MODE = "jsp_jakarta"
+REDUCED_SCOPE = "jdk-jakarta"
 COMPILE_GOAL = "clean compile"            # transform.compile: OpenRewrite's result compiled once, before the restructure
 
 
@@ -103,7 +106,8 @@ def step_stage(step: PlanStep) -> str:
     if k == StepKind.BUILD:
         return "build" if step.phase == Phase.VERIFY else "compile"
     if k in (StepKind.RESTRUCTURE, StepKind.MSA_POM):
-        return "restructure"
+        # JSP 이름 변경 단계는 jakarta 변환의 일부이므로 rewrite 태그를 붙인다
+        return "rewrite" if step.params.get("mode") == JSP_JAKARTA_MODE else "restructure"
     if k == StepKind.REVIEW:
         return "review"
     return "fix" if k == StepKind.BUILD_FIX_LOOP else step.phase.value
@@ -1128,6 +1132,7 @@ class Orchestrator:
             return False
         self._check_hollow(report, profile)
         self._note_bundled_jars(profile)
+        self._check_framework(report, profile)
         report.advisories = self._evaluate_advisories(profile)
         self._timed("analyze", t)
         if profile.build_tool != "maven":
@@ -1293,6 +1298,78 @@ class Orchestrator:
         except Exception as e:  # noqa: BLE001 - a record of facts must never stop the run
             log.warning("bundled-jar record skipped: %s: %s", type(e).__name__, e)
 
+    def _check_framework(self, report: RunReport, profile: ProjectProfile) -> None:
+        """분석 단계가 남긴 사내 프레임워크 검사 결과(``profile.framework``)를 기록한다. 예외를 던지지 않는다.
+        - 직접 선언, 부모 pom, 동봉 jar에서 찾지 못했으면 실제 Maven일 때만 ``dependency:tree``로 한 번 더 찾는다
+        - 찾았으면 플래그 ``framework-project``, 저널 ``framework_project``, 운영자용 로그 한 줄, 인수인계 줄을 남긴다
+        - 찾지 못했으면 저널 ``framework_check``만 남긴다
+
+        v2.1z-ak: apply the framework check of the profile. No-op when `profile.framework` is None (no patterns). With no
+        evidence yet, `framework.transitive` not `off`, the real Maven and no dry run: `transitive_evidence` (one
+        `dependency:tree`; a failure only adds `transitive: <why>` to `unchecked`), then `decide_scope` again and
+        `profile.json` saved again. Found → flag `framework-project` (not an attention flag), journal `framework_project`,
+        one INFO line for the operator, the Handover line (after an ADF / hollow-reactor first line). Not found → journal
+        `framework_check` only. Never raises."""
+        use = getattr(profile, "framework", None)
+        if use is None:
+            return
+        try:
+            fw = importlib.import_module("sbmig.analyze.framework")
+        except ImportError as e:  # pragma: no cover - the module ships with sbmig
+            log.warning("framework check skipped: %s", e)
+            return
+        try:
+            fcfg = getattr(self.cfg, "framework", None)
+            if not use.found and str(getattr(fcfg, "transitive", "apply")) != "off" and self._real_maven \
+                    and not self._dry_run:
+                try:
+                    evidence, why = fw.transitive_evidence(self.ws, self.cfg, profile)
+                except Exception as e:  # noqa: BLE001 - the contract says it never raises; stay defensive
+                    evidence, why = [], f"{type(e).__name__}: {e}"
+                use.evidence.extend(evidence or [])
+                if why:
+                    use.unchecked.append(f"transitive: {why}")
+                use = fw.decide_scope(use, self.cfg)
+                profile.framework = use
+                self.ws.save_model("profile.json", profile)
+            if not use.found:
+                self.ws.journal({"event": "framework_check", "found": False, "unchecked": list(use.unchecked)})
+                return
+            self._flag(fw.FLAG)
+            self.ws.journal({"event": "framework_project", "scope": use.scope, "artifacts": use.keys(),
+                             "evidence": [e.model_dump() for e in use.evidence], "unchecked": list(use.unchecked),
+                             "reason": use.reason})
+            what = "JDK와 jakarta만 적용" if use.reduced else "설정에 따라 전체 이관"
+            log.info("분석: 사내 프레임워크 프로젝트 (%s) - %s", fw.summary_text(use), what)
+            line = fw.framework_followup(use)
+            if line and line not in report.manual_followups:
+                report.manual_followups.insert(self._first_lines_end(report), line)
+        except Exception as e:  # noqa: BLE001 - a record of facts must never stop the run
+            log.warning("framework check record skipped: %s: %s", type(e).__name__, e)
+
+    @staticmethod
+    def _first_lines_end(report: RunReport) -> int:
+        """인수인계 맨 앞에 있는 ADF 줄과 소스 없는 reactor 줄의 개수를 반환한다. 그 다음이 프레임워크 줄의 위치다.
+
+        Index after the ADF / hollow-reactor lines that lead the Handover (the framework line goes there)."""
+        from sbmig.analyze.adf import ADF_PREFIX
+        from sbmig.analyze.hollow import HOLLOW_PREFIX
+        pos = 0
+        for line in report.manual_followups:
+            if not (line.startswith(ADF_PREFIX) or line.startswith(HOLLOW_PREFIX)):
+                break
+            pos += 1
+        return pos
+
+    @property
+    def reduced_scope(self) -> bool:
+        """이 실행이 JDK와 jakarta만 올리는 범위(사내 프레임워크 프로젝트)인지 반환한다.
+
+        True when this run is a framework project's reduced run (`MigrationPlan.scope` / `ProjectProfile.reduced_scope`)."""
+        if self.plan is not None:                     # the plan decides once it exists
+            return getattr(self.plan, "scope", "full") == REDUCED_SCOPE
+        return bool(getattr(self.profile, "reduced_scope", False)) if self.profile is not None else False
+
     def step_plan(self, report: RunReport, stop_after: Phase | None,
                   dry_run: bool) -> list[tuple[Phase, list[tuple[int, PlanStep]]]] | None:
         """계획 단계를 실행한다. 정해진 규칙으로 계획(레시피, 재구성 모드)을 세우고, 오류 목록과
@@ -1323,7 +1400,8 @@ class Orchestrator:
         self.plan = plan
         report.plan = plan
         self.ws.save_model("plan.json", plan)
-        self.ws.journal({"event": "plan", "steps": [s.id for s in plan.steps], "notes": plan.notes})
+        self.ws.journal({"event": "plan", "steps": [s.id for s in plan.steps], "notes": plan.notes,
+                         "scope": getattr(plan, "scope", "full")})
         for n in plan.notes:
             if n.startswith("followup:"):
                 report.manual_followups.append(n[len("followup:"):].strip())
@@ -1802,6 +1880,9 @@ class Orchestrator:
             pr.notes.append(f"{step.id} skipped: run time budget exhausted")
             self._flag("time-budget-exhausted")
             return True
+        if self.reduced_scope:
+            # 레시피가 MS949 / EUC-KR 소스를 UTF-8로 읽어 건너뛰지 않도록 OpenRewrite보다 먼저 인코딩을 기록한다
+            self._write_encodings_reduced(pr, step)
         if not step.recipes:
             return True
         runner = self.rewrite_runner
@@ -1826,7 +1907,8 @@ class Orchestrator:
         # Maven의 HTTP 차단 미러에 막힌 경우는 부모 버전 맞추기나 재시도로 풀리지 않으므로 아래에서 실행을 중단한다
         http_blocked = not res.ok and self._http_blocked_text(res)
         # 사내 부모 g:a의 as-is 버전이 저장소에 없어 실패했으면 설정 버전으로 맞추고 LLM 없이 한 번 더 실행한다
-        if not res.ok and not self._dry_run and not http_blocked:
+        # 프레임워크 프로젝트는 부모 pom을 그대로 두므로 맞추지 않는다
+        if not res.ok and not self._dry_run and not http_blocked and not self.reduced_scope:
             res = self._align_asis_parent_and_retry(pr, step, res, pre, clean_before)
         pr.rewrite_results.append(res)
         sha = None
@@ -1837,6 +1919,8 @@ class Orchestrator:
                          "error": res.error, "log": res.log_path, "dry_run": self._dry_run})
         if getattr(res, "parse_problems", None):
             self._report_parse_problems(pr, step, res)
+        if res.ok and self.reduced_scope:
+            self._restore_scopes_reduced(pr, step)
         if not res.ok and http_blocked and self.loop is not None:
             self.loop.http_blocked_abort(pr, step.phase, res, 0, where=step.id)
             return True
@@ -1961,6 +2045,10 @@ class Orchestrator:
             return
         from sbmig.restructure.asis_parent import classify_parent_misses
         misses = classify_parent_misses(err, self.cfg, self.ws)
+        if self.reduced_scope:
+            if misses:
+                self._reduced_parent_abort(pr, step, err, misses)
+            return
         if not misses and any(k in err for k in keys):
             # Maven 메시지에서 좌표를 읽지 못했어도 사내 부모 g:a가 보이면 설정 버전을 찾지 못한 것으로 본다
             from sbmig.restructure.asis_parent import classify_gav
@@ -1980,6 +2068,121 @@ class Orchestrator:
         # 레시피가 실행되지 않았다는 사실을 남긴다
         for m in misses:
             self._report_rewrite_skipped_parent(pr, step, m)
+
+    def _restore_scopes_reduced(self, pr: PhaseResult, step: PlanStep) -> None:
+        """재구성이 없는 실행에서 레시피가 compile로 바꾼 as-is ``provided`` scope를 되돌리고 커밋한다.
+        실패해도 메모와 경고만 남기고 단계를 실패로 만들지 않는다.
+
+        Reduced run (scope jdk-jakarta): the restructure's as-is scope restore (`sbmig.restructure.scope_restore`) after a
+        successful `transform.rewrite` — the as-is profile is still the source of the as-is scopes. Commit `transform:
+        as-is provided scopes restored`, journal `scopes_restored`, the full flow's note (`scope_note`) and one
+        `pom-verify` entry per restored scope (the same path as `RestructureResult.scope_restored`). Dry run → a note
+        only; idempotent (MSA: one call per transform step); never raises."""
+        if self.profile is None:
+            return
+        if self._dry_run:
+            pr.notes.append(f"{step.id}: dry-run → as-is provided scopes not restored")
+            return
+        try:
+            from types import SimpleNamespace
+
+            from sbmig.core.config import LegacyContextConfig
+            from sbmig.restructure import legacy_context as lc
+            from sbmig.restructure.scope_restore import project_pom_paths, restore_asis_scopes, scope_note
+            switches = getattr(self.cfg.layout, "legacy_context", None) or LegacyContextConfig()
+            rules = lc.load_rules(self.cfg.resolve_path(lc.RULES_FILE))
+            prof = self.profile
+            poms = [*prof.poms, *([prof.root_pom] if prof.root_pom else [])]
+            out = restore_asis_scopes(self.ws, poms, project_pom_paths(self.ws), rules.scope_successors,
+                                      on=bool(getattr(switches, "restore_asis_scopes", True)))
+            if self.report is not None:
+                self.report.manual_followups += [f for f in out.followups if f not in self.report.manual_followups]
+            if not out.restored:
+                return
+            if self.ws.is_dirty():
+                self.ws.commit("transform: as-is provided scopes restored")
+            self.ws.journal({"event": "scopes_restored", "step": step.id, "entries": list(out.restored)})
+            pr.notes.append(scope_note(out.restored))
+            log.info("%s: %s", step.id, scope_note(out.restored))
+            self._pom_verify_entries(SimpleNamespace(scope_restored=list(out.restored)), seen="transform")
+        except Exception as e:  # noqa: BLE001 - an add-on: the build shows what is left
+            log.warning("%s: as-is scope restore skipped: %s: %s", step.id, type(e).__name__, e)
+            pr.notes.append(f"{step.id}: as-is provided scopes not restored ({type(e).__name__}: {e})")
+
+    def _write_encodings_reduced(self, pr: PhaseResult, step: PlanStep) -> None:
+        """재구성이 없는 실행에서 MS949 / EUC-KR 소스 모듈의 pom에 ``project.build.sourceEncoding``을 기록하고 커밋한다.
+        JDK 21의 javac 기본 인코딩이 UTF-8이기 때문이다. 유지하는 부모 pom이 정한 값은 as-is 캡처로 확인한다.
+        실패해도 메모와 경고만 남긴다.
+
+        Reduced run: the restructure's source-encoding step (`sbmig.restructure.source_encoding`) at the start of every
+        `transform.rewrite`, before OpenRewrite (the rewrite plugin reads the sources with the declared charset; without
+        it an MS949 file is a parse problem the recipes skip), with the as-is effective pom capture so a value the kept external parent provides is respected
+        (a conflicting one becomes a Handover sentence). Commit `transform: source encodings written`, journal
+        `source_encodings`, the full flow's notes and one `pom-verify` entry per written pom. Dry run → a note only;
+        idempotent; never raises."""
+        if self._dry_run:
+            pr.notes.append(f"{step.id}: dry-run → source encodings not written")
+            return
+        try:
+            from types import SimpleNamespace
+
+            from sbmig.core.config import LegacyContextConfig
+            from sbmig.restructure.source_encoding import write_source_encodings
+            switches = getattr(self.cfg.layout, "legacy_context", None) or LegacyContextConfig()
+            out = write_source_encodings(self.ws, self.cfg, on=bool(getattr(switches, "write_source_encoding", True)),
+                                         capture=self._asis_effective() or {})
+            if self.report is not None:
+                self.report.manual_followups += [f for f in out.followups if f not in self.report.manual_followups]
+            if not out.written:
+                return
+            if self.ws.is_dirty():
+                self.ws.commit("transform: source encodings written")
+            self.ws.journal({"event": "source_encodings", "step": step.id, "entries": list(out.written)})
+            for n in out.notes:
+                if n not in pr.notes:
+                    pr.notes.append(n)
+                log.info("%s: %s", step.id, n)
+            self._pom_verify_entries(SimpleNamespace(source_encodings_written=list(out.written)), seen="transform")
+        except Exception as e:  # noqa: BLE001 - an add-on: the build shows what is left
+            log.warning("%s: source encoding step skipped: %s: %s", step.id, type(e).__name__, e)
+            pr.notes.append(f"{step.id}: source encodings not written ({type(e).__name__}: {e})")
+
+    def _reduced_parent_abort(self, pr: PhaseResult, step: PlanStep, err: str, misses: list) -> None:
+        """사내 프레임워크 프로젝트에서 부모 pom을 찾지 못하면 LLM 없이 실행을 중단한다.
+        프로젝트의 부모 pom을 바꾸지 않으므로 저장소가 그 pom을 제공해야만 빌드할 수 있다.
+
+        Reduced run (scope jdk-jakarta): the project keeps its parent, so an unresolvable parent (any parent, company or
+        not) cannot be replaced by anything sbmig does — abort like the fix loop's `_parent_abort` (flag
+        `aborted:parent-not-found`, a `parent_not_found` blocked item, `run aborted: …` follow-up, journal `abort`).
+        `openrewrite.unresolvable_asis_parent` is not consulted."""
+        lp = self.loop
+        assert lp is not None
+        coords = ", ".join(dict.fromkeys(m.coordinates for m in misses))
+        settings = self.cfg.build.settings_file or "default"
+        why = (f"Maven cannot resolve the parent pom {coords}; a framework project keeps its own parent pom, so the "
+               f"repository must serve it (settings: {settings}). Make the repository serve it and rerun")
+        errors = [BuildError(kind=ErrorKind.PARENT_RESOLUTION, message=err.splitlines()[0][:500], raw=err[:2000],
+                             artifact=m.gav, signature=f"parent_resolution|{m.coordinates}", module=step.target)
+                  for m in misses]
+        try:
+            from sbmig.core.models import BlockReason
+            from sbmig.triage.blocked import BlockedCandidate, repositories_in
+            c = lp.triager.cluster(errors, self.profile)[0]
+            cand = BlockedCandidate(reason=BlockReason.PARENT_NOT_FOUND, errors=errors,
+                                    repositories=repositories_in(err), evidence=[errors[0].message[:300]])
+            lp._register_blocked(step.phase, 0, c, cand,   # noqa: SLF001 - same package
+                                 f"blocked: parent_not_found — parent {coords} is not resolvable and a framework project "
+                                 "keeps its parent; run aborted")
+        except Exception as e:  # noqa: BLE001 - the abort below must happen even if the bookkeeping fails
+            log.warning("parent blocked item not recorded: %s: %s", type(e).__name__, e)
+        lp.aborted = why
+        lp._flag("aborted:parent-not-found")              # noqa: SLF001 - same package
+        lp._followup(f"run aborted: {why}")               # noqa: SLF001 - same package
+        pr.notes.append(f"{step.id}: {why}")
+        self.ws.journal({"event": "abort", "phase": step.phase.value, "iteration": 0, "reason": why,
+                         "scope": REDUCED_SCOPE, "parents": [m.coordinates for m in misses]})
+        log.error("run aborted: %s", why)
+        self._merge_blocked(pr, [it for it in self.blocked.items() if it.reason.value == "parent_not_found"])
 
     REWRITE_SKIPPED_PARENT_FLAG = "rewrite-skipped-asis-parent"
     ASIS_PARENT_ALIGNED_FLAG = "asis-parent-aligned"
@@ -2160,6 +2363,8 @@ class Orchestrator:
         self._flush_notes(pr)
         assert self.profile is not None and self.report is not None
         mode = self._step_mode(step)
+        if mode == JSP_JAKARTA_MODE:
+            return self._step_jsp_jakarta(pr, step)
         if self._dry_run:
             pr.notes.append(f"{step.id}: dry-run → restructure ({mode}) not applied")
             return True
@@ -2233,6 +2438,45 @@ class Orchestrator:
                             "the restructure phase (verify still runs)")
             self._restructure_failed(step, mode, res.error or "unknown error")
         return res.ok
+
+    def _step_jsp_jakarta(self, pr: PhaseResult, step: PlanStep) -> bool:
+        """재구성 없이 JSP / 태그 파일의 javax EE 이름만 jakarta로 바꾸고 ``transform: JSP javax → jakarta``로 커밋한다.
+        사내 프레임워크 프로젝트의 변환 단계에서 실행하며, 실패해도 메모만 남기고 True를 반환한다.
+
+        `transform.jsp_jakarta` (mode `jsp_jakarta`, scope jdk-jakarta): `rename_jsp_files` called the way the restructurer
+        calls it, without the restructurer — no RestructureResult reaches the fix loop or a structure review. Commit
+        `transform: JSP javax → jakarta`, the step note `jsp_jakarta_note` + journal `jsp_jakarta` the report reads back
+        (`_jsp_jakarta_note`); dry run → a note only; `layout.jsp_jakarta_rename: false` → a note only. Never fails the
+        phase: a walk failure or files that could not be renamed become notes."""
+        from types import SimpleNamespace
+        if self._dry_run:
+            pr.notes.append(f"{step.id}: dry-run → JSP javax → jakarta not applied")
+            return True
+        if not getattr(self.cfg.layout, "jsp_jakarta_rename", True):
+            pr.notes.append(f"{step.id}: JSP javax → jakarta skipped (layout.jsp_jakarta_rename: false)")
+            return True
+        try:
+            from sbmig.restructure.jsp_jakarta import rename_jsp_files
+            out = rename_jsp_files(self.ws)
+        except Exception as e:  # noqa: BLE001 - an add-on: the build shows what is left
+            log.warning("JSP javax → jakarta skipped: %s: %s", type(e).__name__, e)
+            pr.notes.append(f"{step.id}: JSP javax → jakarta skipped: {type(e).__name__}: {e}")
+            return True
+        if out.renamed:
+            log.info("JSP javax → jakarta: %d file(s), %d reference(s) of %d JSP / tag file(s)",
+                     out.files, out.refs, out.scanned)
+            if self.ws.is_dirty():
+                self.ws.commit("transform: JSP javax → jakarta")
+            res = SimpleNamespace(jsp_jakarta_files=out.files, jsp_jakarta_refs=out.refs,
+                                  jsp_jakarta_renamed=[f"{rel}: {n}" for rel, n in out.renamed.items()])
+            self._jsp_jakarta_note(pr, step, res)
+        else:
+            pr.notes.append(f"{step.id}: JSP javax → jakarta: nothing to rename ({out.scanned} JSP / tag file(s))")
+        if out.failed:
+            names = sorted(out.failed)
+            pr.notes.append(f"{step.id}: JSP javax → jakarta: {len(names)} file(s) not renamed ({', '.join(names[:3])}"
+                            f"{' …' if len(names) > 3 else ''}; see sbmig.log)")
+        return True
 
     def _journal_restructure_jars(self, res: Any) -> None:
         """재구성이 의존성으로 연결한 동봉 jar마다 저널 ``bundled_jar_wired``를 남기고, 연결하지 않은 jar는
@@ -2574,7 +2818,7 @@ class Orchestrator:
                                     r"(?P<managed>[^,]+), (?P<pom>[^()]+)\)\s*$")
     _OPTIONAL_ADDED_RE = re.compile(r"^(?P<key>\S+) → (?P<pom>.+?) \(for (?P<matched>[^()]*)\)\s*$")
 
-    def _pom_verify_entries(self, res: Any) -> None:
+    def _pom_verify_entries(self, res: Any, seen: str = "restructure") -> None:
         """재구성이 보고한 pom 수정을 하나씩 오류 목록의 ``pom-verify`` 항목으로 만든다.
         다음 빌드가 그 pom에서 오류를 내지 않으면 해결로 닫힌다.
         대상은 parent 지정, 필수 아티팩트 추가, 선택 아티팩트 버전 올리기, 관리 버전 삭제, as-is 버전
@@ -2684,7 +2928,7 @@ class Orchestrator:
             if PurePosixPath(str(g).replace("\\", "/")).name == "pom.xml":
                 items.append((str(g).replace("\\", "/"), "generated by the restructure"))
         for pom, note in items:
-            self.errors.add_pom_verify(pom, note)
+            self.errors.add_pom_verify(pom, note, seen)
             log.info("%s: %s (pom-verify #%d)", pom, note, self.errors.size())
 
     def _jsp_jakarta_note(self, pr: PhaseResult, step: PlanStep, res: Any) -> None:
@@ -3228,6 +3472,9 @@ class Orchestrator:
         try:
             from .blocked_registry import fill_via
             fill_via(self.blocked.items(), jars, self.cfg)
+            # 프레임워크 프로젝트에서 javax jar가 프레임워크 아티팩트를 거쳐 들어왔으면 제안 문구에 그 아티팩트를 적는다
+            from .fixloop import framework_via_suggestions
+            framework_via_suggestions(self.blocked.items(), self.profile, self.cfg)
         except Exception as e:  # pragma: no cover - never lose the report
             log.warning("blocked via attribution failed: %s: %s", type(e).__name__, e)
         vias = list(dict.fromkeys(j.via.coordinates for j in jars if j.via is not None))

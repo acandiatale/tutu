@@ -1,0 +1,5 @@
+{
+  "note": "structure review of fw-transitive-note (one call): verdict ok; the framework is only a transitive dependency and framework.transitive=note, so the full migration runs",
+  "replay_role": "structure_review",
+  "response": "<review>\n{\n  \"verdict\": \"ok\",\n  \"issues\": [],\n  \"analysis\": \"Root pom inherits the configured parent and aggregates module/comp-jar and module/boot-jar; both modules inherit the root, the boot module depends on the comp module; the mandatory starters sit in the root only; Java level 21. example-fw-web stays declared in the comp module at its as-is version. Nothing to report.\"\n}\n</review>\n"
+}

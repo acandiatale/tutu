@@ -120,6 +120,11 @@ repeat them)` → `Other error cases in this build` → `Plan notes`(transform /
 (최대 4개) → `Files with errors (N)` → `Source (exact text around the error lines; …)`. 예산은 `llm.max_context_chars`(60000); 넘치면 선택 절부터 줄이고
 "Context was shortened" 를 붙인다. LLM 이 `<need_files>` / `<need_grep>` 로 더 달라면 `llm.max_context_rounds`(2)번까지 내준다.
 
+사내 프레임워크 프로젝트(범위 `jdk-jakarta`)에서는 `Project after the restructure` 대신 `Scope of this run`(`FixContext.scope_facts`)이 들어간다:
+이번 실행이 Java 21과 jakarta만 한다는 것, 프레임워크 아티팩트마다 버전을 바꾸거나 지우지 말라는 줄, 해도 되는 것과 안 되는 것(Spring Boot·
+회사 부모 추가, `<parent>` 변경, 모듈 이동 금지). 시스템 프롬프트도 같은 파일 안의 줄인 범위용 소개와 규칙을 쓰고, 버전 사실은
+`parent chain: manages g:a at v`(프로젝트 자기 부모)로 온다. `full` 범위의 프롬프트는 바뀌지 않는다.
+
 "Dependency versions" 절의 사실 줄 모양: `new parent chain: manages g:a at v`, `target Boot BOM: manages g:a at v`, `as-is build: g:a v`,
 `parent chain property: name=value`, `managed artifacts under <group> …`, jakarta 판정 `verdict: …` / `approved`, 그리고 동봉 jar 사실
 "the project bundles `<jar>` which provides package `<p>` …". 저널 `library_hints` 의 `lines` 가 같은 줄이다.

@@ -1,0 +1,268 @@
+{
+  "case_type": "servlet_tomcat",
+  "java_version": "1.8",
+  "spring_boot_version": null,
+  "spring_version": null,
+  "packaging": "war",
+  "libraries": [
+    "servlet"
+  ],
+  "optional_artifacts_in_use": [],
+  "main_classes": [],
+  "catalog": [],
+  "requires_libs": [
+    "com.example.fw:example-fw-core:1.0.0",
+    "com.example.fw:example-fw-web:1.0.0"
+  ],
+  "expect": {
+    "success": true,
+    "exit_code": 0,
+    "max_llm_calls": 0,
+    "blocked": [],
+    "unresolved_max": 0,
+    "flags": [
+      "framework-project"
+    ],
+    "forbidden_flags": [
+      "regex:aborted.*",
+      "asis-parent-aligned",
+      "restructure-failed",
+      "hollow-reactor",
+      "rewrite-parse-problems"
+    ],
+    "journal_events": [
+      {
+        "event": "framework_project",
+        "scope": "jdk-jakarta",
+        "artifacts": [
+          "com.example.fw:example-fw-core"
+        ],
+        "evidence.0.source": "transitive",
+        "evidence.0.artifact": "com.example.fw:example-fw-core",
+        "evidence.0.via.0": "regex:com\\.example\\.fw:example-fw-web:.*1\\.0\\.0",
+        "evidence.0.via.-1": "regex:com\\.example\\.fw:example-fw-core:.*1\\.0\\.0"
+      },
+      {
+        "event": "plan",
+        "scope": "jdk-jakarta",
+        "steps": [
+          "transform.rewrite",
+          "transform.jsp_jakarta",
+          "verify.build"
+        ]
+      },
+      {
+        "event": "rewrite",
+        "step": "transform.rewrite",
+        "ok": true,
+        "recipes": [
+          "org.openrewrite.java.migrate.UpgradeToJava21",
+          "org.openrewrite.java.migrate.jakarta.JavaxMigrationToJakarta",
+          "org.openrewrite.java.migrate.jakarta.RemovalsServletJakarta10"
+        ]
+      },
+      {
+        "event": "scopes_restored",
+        "step": "transform.rewrite",
+        "entries.0": "regex:jakarta\\.servlet:jakarta\\.servlet-api: compile → provided.*"
+      },
+      {
+        "event": "jsp_jakarta",
+        "step": "transform.jsp_jakarta"
+      }
+    ],
+    "journal_events_absent": [
+      {
+        "event": "restructure"
+      },
+      {
+        "event": "structure_review"
+      },
+      {
+        "event": "asis_parent_aligned"
+      },
+      {
+        "event": "rewrite_parse_problems"
+      }
+    ],
+    "journal_sequence": [
+      {
+        "event": "rewrite",
+        "step": "transform.rewrite",
+        "ok": true
+      },
+      {
+        "event": "scopes_restored",
+        "step": "transform.rewrite"
+      },
+      {
+        "event": "jsp_jakarta",
+        "step": "transform.jsp_jakarta"
+      }
+    ],
+    "phases": {
+      "restructure": "absent"
+    },
+    "scripts": {
+      "attempts": {
+        "new": 0,
+        "augment": 0,
+        "reuse": 0
+      }
+    },
+    "kb": {
+      "dir": "out/e2e/kb-fw-transitive",
+      "may_be_empty": true
+    },
+    "post_checks": [
+      {
+        "pom_packaging": {
+          "path": "pom.xml",
+          "packaging": "war"
+        }
+      },
+      {
+        "pom_module_list": {
+          "path": "pom.xml",
+          "modules": []
+        }
+      },
+      {
+        "pom_dependency_absent": {
+          "path": "pom.xml",
+          "artifacts": [
+            "javax.servlet:javax.servlet-api"
+          ]
+        }
+      },
+      {
+        "file_contains": {
+          "path": "pom.xml",
+          "not_contains": "spring-boot"
+        }
+      },
+      {
+        "pom_dependency_present": {
+          "path": "pom.xml",
+          "artifacts": [
+            "jakarta.servlet:jakarta.servlet-api"
+          ]
+        }
+      },
+      {
+        "file_contains": {
+          "path": "pom.xml",
+          "contains": "<scope>provided</scope>"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "pom.xml",
+          "not_contains": "<scope>compile</scope>"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "../report.md",
+          "not_contains": "spring boot 4.1.0"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "../report.md",
+          "not_contains": "spring boot: - →"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "../report.md",
+          "contains": "no build error"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "../report.md",
+          "not_contains": "recipe / fix script"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "pom.xml",
+          "not_contains": "<parent>"
+        }
+      },
+      {
+        "pom_dependency_versioned": {
+          "path": "pom.xml",
+          "artifacts": [
+            "com.example.fw:example-fw-web"
+          ],
+          "version": "1.0.0"
+        }
+      },
+      {
+        "pom_dependency_absent": {
+          "path": "pom.xml",
+          "artifacts": [
+            "com.example.fw:example-fw-core"
+          ]
+        }
+      },
+      {
+        "file_contains": {
+          "path": "src/main/java/com/example/fwapp/web/GreetingServlet.java",
+          "contains": "import jakarta.servlet.http.HttpServlet;"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "src/main/java/com/example/fwapp/web/GreetingServlet.java",
+          "not_contains": "javax.servlet"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "src/main/webapp/index.jsp",
+          "contains": "jakarta.servlet.http.HttpSession"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "src/main/webapp/index.jsp",
+          "not_contains": "javax.servlet"
+        }
+      },
+      {
+        "file_absent": {
+          "path": "module"
+        }
+      },
+      {
+        "file_absent": {
+          "path": "*-boot"
+        }
+      },
+      {
+        "file_absent": {
+          "path": "*-back"
+        }
+      },
+      {
+        "file_exists": {
+          "path": "target/fwtransitive.war"
+        }
+      },
+      {
+        "archive_entries": {
+          "path": "target/fwtransitive.war",
+          "present": [
+            "WEB-INF/lib/example-fw-core-1\\.0\\.0\\.jar"
+          ],
+          "absent": [
+            "WEB-INF/lib/(jakarta|javax)\\.servlet-api-.*\\.jar"
+          ]
+        }
+      }
+    ]
+  }
+}

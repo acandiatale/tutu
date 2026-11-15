@@ -14,6 +14,8 @@
 - 재구성은 **LLM 없이 결정적**이다. 본체는 `sbmig/restructure/restructurer.py` 의 `Restructurer.apply(ws, profile, cfg, mode=…)`,
   pom 편집은 서식을 지키는 `sbmig/restructure/pom_editor.py`. 다시 돌려도 결과가 같고(이미 재구성된 프로젝트는 pom 정리만),
   프로젝트 밖 경로는 읽지도 바꾸지도 않는다. 실패하면 `ok=False` + 플래그 `restructure-failed`(성공 아님).
+- 사내 프레임워크 프로젝트(`framework.artifacts`, 범위 `jdk-jakarta`)에는 이 문서의 규칙이 적용되지 않는다. 재구성과 구조 검토가 없고
+  부모 pom과 프레임워크 버전을 그대로 둔다. JSP의 javax 이름 바꾸기(9절)만 변환 단계에서 한다([13-framework-projects.md](13-framework-projects.md)).
 - 보고서의 "Handover"(인수인계) 절이 규칙의 결과를 사람에게 말한다. 문구는 `sbmig/report/handover.py`, 번역은 `sbmig/report/i18n.py`.
 
 ## 1. 루트 pom → `base-parent`, aggregator

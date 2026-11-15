@@ -47,7 +47,9 @@ SCENARIOS = ["boot2-javax-lib", "boot2-javax-lib-optional", "euckr-legacy", "enf
              "boot-stray-pom-copy",                     # v2.1z-h: a stray copy of a Boot module in shop-boot/bin (ignored at intake)
              "webapp-bundled-jar",                      # v2.1z-i: an undeclared vendor jar in WEB-INF/lib, wired by sbmig-bundled
              "boot-asis-parent-unpublished",            # v2.1z-ag: the as-is version of the company parent is in no repository
-             "adf-jdev"]                                # v2.1z-d: an Oracle ADF (JDeveloper) workspace — recognised, sized, stopped
+             "adf-jdev",                                # v2.1z-d: an Oracle ADF (JDeveloper) workspace — recognised, sized, stopped
+             "fw-direct", "fw-parent", "fw-transitive",  # v2.1z-ak: framework projects, reduced scope jdk-jakarta
+             "fw-transitive-note"]                       # v2.1z-ak: framework only transitive + transitive: note → full
 NAMES = HAPPY + SCENARIOS
 CP949_FIXTURES = {"euckr-legacy"}
 ANT_FIXTURES = {"ant-webapp"}            # v2.1j: build.xml, no pom.xml — the intake synthesizes pom.xml
@@ -104,7 +106,18 @@ BUILD_MATRIX = [
     ("boot-asis-parent-unpublished", ".", "11", "noparent"),   # v2.1z-ag: the parent version exists nowhere → the
                                                       # as-is build fails by design (`Non-resolvable parent POM`)
     ("adf-jdev", "APP", "8", ""),                      # v2.1z-d: APP packages the JDeveloper / ADF workspace in DEV/s10 (nothing to compile)
+    ("fw-direct", ".", "8", "libs+ms949"),             # v2.1z-ak: example-fw-core / -web / -parent from fixtures/libs/example-fw;
+                                                      # fw-direct has one MS949 source (NoticeText.java)
+    ("fw-parent", ".", "8", "libs"),
+    ("fw-transitive", ".", "8", "libs"),
+    ("fw-transitive-note", ".", "8", "libs"),
 ]
+# v2.1z-ak: framework projects in the reduced scope jdk-jakarta — no restructure, no structure review, no LLM answer
+# needed (no replay/ dir); their sbmig.e2e.yml sets `framework` besides llm / kb
+FRAMEWORK_REDUCED = {"fw-direct", "fw-parent", "fw-transitive"}
+FRAMEWORK_OVERRIDES = {"fw-direct": {"artifacts"}, "fw-parent": {"artifacts"},
+                       "fw-transitive": {"artifacts", "recipe_sets"},             # + servlet_jakarta_10
+                       "fw-transitive-note": {"artifacts", "transitive"}}
 REQUIRED_KEYS = {
     "case_type": str, "java_version": (str, type(None)), "spring_boot_version": (str, type(None)),
     "spring_version": (str, type(None)), "packaging": str, "libraries": list,
@@ -151,6 +164,11 @@ class PomDepsCheck(BaseModel):
     artifacts: list[str]
 
 
+class PomDepsVersionCheck(PomDepsCheck):
+    """`pom_dependency_versioned`: declared with a `<version>`, equal to `version` when given (v2.1z-ak)."""
+    version: str | None = None
+
+
 class PomPackagingCheck(BaseModel):
     """`pom_packaging`: the pom's `<packaging>` (absent = jar)."""
     model_config = ConfigDict(extra="forbid")
@@ -180,6 +198,21 @@ class FileSameCheck(BaseModel):
     source: str
 
 
+class ArchiveCheck(BaseModel):
+    """`archive_entries` (v2.1z-ak): a built jar / war in the migrated tree; entry-name regexes (full match)."""
+    model_config = ConfigDict(extra="forbid")
+    path: str
+    present: list[str] = Field(default_factory=list)
+    absent: list[str] = Field(default_factory=list)
+
+    @field_validator("present", "absent")
+    @classmethod
+    def _patterns(cls, v: list[str]) -> list[str]:
+        for pat in v:
+            re.compile(pat)
+        return v
+
+
 class PostCheck(BaseModel):
     model_config = ConfigDict(extra="forbid")
     file_decodes_as: FileCheck | None = None
@@ -190,10 +223,11 @@ class PostCheck(BaseModel):
     pom_dependency_absent: PomDepsCheck | None = None
     pom_dependency_present: PomDepsCheck | None = None
     pom_dependency_unversioned: PomDepsCheck | None = None    # declared without <version> (parent-managed)
-    pom_dependency_versioned: PomDepsCheck | None = None      # declared with a <version>
+    pom_dependency_versioned: PomDepsVersionCheck | None = None   # declared with a <version> (= `version` if given)
     pom_packaging: PomPackagingCheck | None = None
     pom_module_list: PomModulesCheck | None = None
     file_same_as: FileSameCheck | None = None
+    archive_entries: ArchiveCheck | None = None
 
 
 class AdvisoryExpect(BaseModel):
@@ -439,7 +473,9 @@ class Expect(BaseModel):
     optional_bumped: list[str] = Field(default_factory=list)
     unresolved_max: int | None = Field(default=None, ge=0)
     journal_events: list[dict[str, str | int | bool | None | list[str]]] = Field(default_factory=list)   # list = equal
-    phases: dict[str, Literal["ok", "FAIL", "skipped"]] = Field(default_factory=dict)
+    journal_events_absent: list[dict[str, str | int | bool | None | list[str]]] = Field(default_factory=list)
+    journal_sequence: list[dict[str, str | int | bool | None | list[str]]] = Field(default_factory=list)   # in order
+    phases: dict[str, Literal["ok", "FAIL", "skipped", "absent"]] = Field(default_factory=dict)
     post_checks: list[PostCheck] = Field(default_factory=list)
     advisories: list[AdvisoryExpect] = Field(default_factory=list)
     advisories_exact: bool = False
@@ -567,7 +603,7 @@ def test_post_check_paths_exist_in_fixture(name: str):
     roles = re.compile(rf"(?:{re.escape(aid)})-(?:boot|back|front)/(.+)") if name in COMPANY_OVERRIDES else None
     for check in Expected.model_validate(_expected(name)).expect.post_checks:
         for kind, spec in check.model_dump(exclude_none=True).items():
-            if kind in ("file_exists", "file_absent"):      # describe the migrated tree, not the as-is one
+            if kind in ("file_exists", "file_absent", "archive_entries"):   # the migrated tree / its build output
                 continue
             if kind == "file_same_as":
                 assert (FIXTURES / name / spec["source"]).is_file(), f"{name}: file_same_as source {spec['source']}"
@@ -618,7 +654,8 @@ def test_cp949_sources_are_not_utf8(name: str):
 
 # v2.1x: spring5-legacy-startup keeps ONE package in MS949 (com/example/shop/notice/*.java) next to UTF-8 sources — the
 # restructure must write project.build.sourceEncoding for it (D-M7); every other source of the corpus is UTF-8
-MIXED_ENCODING_FILES = {"spring5-legacy-startup": "com/example/shop/notice/"}
+MIXED_ENCODING_FILES = {"spring5-legacy-startup": "com/example/shop/notice/",
+                        "fw-direct": "com/example/fwapp/web/NoticeText.java"}     # v2.1z-ak: MS949, no sourceEncoding
 
 
 @pytest.mark.parametrize("name", [n for n in NAMES if n not in CP949_FIXTURES])
@@ -732,7 +769,19 @@ def test_fixture_config_override_keeps_8_optionals():
         assert set(raw) - LLM_KB == {"libraries"} and raw["libraries"] == {"discover_jakarta_builds": False}, name
         cfg = _effective_cfg(name)
         assert cfg.libraries.discover_jakarta_builds is False and len(cfg.artifacts.optional) == 8, name
-    plain = set(NAMES) - set(OVERRIDES) - set(COMPANY_OVERRIDES) - set(REWRITE_ONLY_OVERRIDES) - DISCOVERY_OFF_OVERRIDES
+    for name, keys in FRAMEWORK_OVERRIDES.items():                  # v2.1z-ak: `framework` only, besides llm / kb
+        raw = yaml.safe_load((FIXTURES / name / "sbmig.e2e.yml").read_text(encoding="utf-8"))
+        assert set(raw) - LLM_KB == {"framework"} and set(raw["framework"]) == keys, name
+        cfg = _effective_cfg(name)
+        assert cfg.framework.enabled and cfg.framework.matches("com.example.fw", "example-fw-core"), name
+        assert len(cfg.artifacts.optional) == 8, name
+    forms = {tuple(yaml.safe_load((FIXTURES / n / "sbmig.e2e.yml").read_text(encoding="utf-8"))["framework"]["artifacts"])
+             for n in FRAMEWORK_OVERRIDES}
+    assert {("example-fw-core",), ("com.example.fw:example-fw-core",)} <= forms     # both pattern forms are exercised
+    assert _effective_cfg("fw-transitive-note").framework.transitive == "note"
+    assert all(_effective_cfg(n).framework.transitive == "apply" for n in FRAMEWORK_REDUCED)
+    plain = set(NAMES) - set(OVERRIDES) - set(COMPANY_OVERRIDES) - set(REWRITE_ONLY_OVERRIDES) - DISCOVERY_OFF_OVERRIDES \
+        - set(FRAMEWORK_OVERRIDES)
     for name in plain:                                              # nothing but the replayed LLM and the own KB
         raw = yaml.safe_load((FIXTURES / name / "sbmig.e2e.yml").read_text(encoding="utf-8"))
         assert set(raw) == LLM_KB, name
@@ -752,8 +801,12 @@ def test_v2_replayed_llm_into_its_own_kb(name: str):
     assert exp.kb is not None and cfg.kb.dir == exp.kb.dir == SHARED_KB.get(name, f"out/e2e/kb-{name}")
     assert cfg.kb_dir.resolve() not in ((REPO / "kb").resolve(), (REPO / "kb-v2").resolve())
     assert (exp.kb.after is not None) == (name == "java6-legacy")
-    # v2.1z-d: a fixture that stops at analyze (exit 3: adf-jdev) never reaches the structure review — no block to assert
-    assert exp.scripts is not None and (exp.structure_review is not None or exp.exit_code == 3)
+    # v2.1z-d: a fixture that stops at analyze (exit 3: adf-jdev) never reaches the structure review — no block to assert;
+    # v2.1z-ak: a reduced-scope framework run plans no review at all (asserted by journal_events_absent instead)
+    assert exp.scripts is not None and (exp.structure_review is not None or exp.exit_code == 3
+                                        or name in FRAMEWORK_REDUCED)
+    if name in FRAMEWORK_REDUCED:
+        assert exp.structure_review is None and {"event": "structure_review"} in exp.journal_events_absent, name
 
 
 def _replay(name: str) -> list[dict]:
@@ -773,6 +826,9 @@ def test_v2_replay_entries_are_valid_answers(name: str):
     from sbmig.script import check_script
 
     entries = _replay(name)
+    if name in FRAMEWORK_REDUCED:            # v2.1z-ak: no review planned, the build passes after the recipes: no answer
+        assert not entries and Expected.model_validate(_expected(name)).expect.max_llm_calls == 0, name
+        return
     assert entries and entries[0]["replay_role"] == "structure_review" and "match" not in entries[0]
     rv = parse_review_answer(entries[0]["response"])
     assert rv.ok and entries[0]["note"], name
@@ -807,7 +863,8 @@ def _fix_codes(name: str, case: str) -> list[str]:
     return [parse_script_response(e["response"]).code for e in _replay(name)[1:] if case in e["match"]]
 
 
-CLIENT_IP_CASE = "8bb4fd4a4a"          # sha1("compile|cannot_find_symbol|clientIp")[:10]
+CLIENT_IP_L2 = "compile|cannot_find_symbol|com.company.legacy.web.LegacyRequestHelper.clientIp"   # signature rules 2
+CLIENT_IP_CASE = "21175ead2d"          # sha1(CLIENT_IP_L2)[:10]; rules 1 had "compile|cannot_find_symbol|clientIp" = 8bb4fd4a4a
 
 
 def _client_ip_errors(root: Path) -> list[dict]:
@@ -817,7 +874,7 @@ def _client_ip_errors(root: Path) -> list[dict]:
         rows = (root / rel).read_text(encoding="utf-8").split("\n")
         line = next(i + 1 for i, r in enumerate(rows) if "LegacyRequestHelper.clientIp(" in r)
         out.append({"file": rel, "line": line, "message": "cannot find symbol", "kind": "compile",
-                    "symbol": "method clientIp(HttpServletRequest)", "signature_generic": "compile|cannot_find_symbol|clientIp"})
+                    "symbol": "method clientIp(HttpServletRequest)", "signature_generic": CLIENT_IP_L2})
     return out
 
 
@@ -826,7 +883,7 @@ def test_method_rename_script_renames_every_call_site(tmp_path: Path):
     one L2 across files: one LLM call) and leaves the "member-api.clientIp" constant alone."""
     import hashlib
 
-    assert hashlib.sha1(b"compile|cannot_find_symbol|clientIp").hexdigest()[:10] == CLIENT_IP_CASE
+    assert hashlib.sha1(CLIENT_IP_L2.encode()).hexdigest()[:10] == CLIENT_IP_CASE
     name = "boot2-method-rename"
     root = tmp_path / name
     shutil.copytree(FIXTURES / name, root)
@@ -843,7 +900,7 @@ def test_method_rename_script_renames_every_call_site(tmp_path: Path):
 
 def _client_ip_errors_after(root: Path) -> list[dict]:
     return [{"file": "src/main/java/com/example/members/web/ClientIpFilter.java", "line": 1, "kind": "compile",
-             "message": "cannot find symbol", "signature_generic": "compile|cannot_find_symbol|clientIp"}]
+             "message": "cannot find symbol", "signature_generic": CLIENT_IP_L2}]
 
 
 def test_fix_failures_replay_v1_too_narrow_v2_augments(tmp_path: Path):
@@ -858,7 +915,7 @@ def test_fix_failures_replay_v1_too_narrow_v2_augments(tmp_path: Path):
         res = _run_script(code, root, _client_ip_errors(root))
         assert res.status == "ok" and len(res.changed_files) == changed, res
     exp = Expected.model_validate(_expected(name)).expect
-    case = next(c for c in exp.scripts.cases if c.l2 == "compile|cannot_find_symbol|clientIp")
+    case = next(c for c in exp.scripts.cases if c.l2 == CLIENT_IP_L2)
     assert case.modes == ["new", "augment"] and case.versions == [1, 2]
     assert [s.parent for s in exp.scripts.stored] == [None, 1]
 
@@ -929,6 +986,41 @@ def test_javax_lib_variants_share_sources(variant: str):
     assert "import javax.servlet.http.HttpServletRequest;" in src
 
 
+def test_framework_fixtures_share_their_trees():
+    """v2.1z-ak: fw-transitive-note is the fw-transitive tree (only sbmig.e2e.yml / expected.json / README / replay
+    differ); fw-parent has fw-direct's Java sources and JSP. Every fw fixture has a javax JSP and javax servlet code."""
+    def tree(d: Path, sub: str = "") -> dict[str, bytes]:
+        return {p.relative_to(d).as_posix(): p.read_bytes() for p in (d / sub).rglob("*") if p.is_file()
+                and p.relative_to(d).parts[0] not in ("replay",)
+                and p.name not in ("sbmig.e2e.yml", "expected.json", "README.md")}
+    assert tree(FIXTURES / "fw-transitive") == tree(FIXTURES / "fw-transitive-note")
+    direct, parent = tree(FIXTURES / "fw-direct", "src/main/java"), tree(FIXTURES / "fw-parent", "src/main/java")
+    ms949 = "src/main/java/com/example/fwapp/web/NoticeText.java"     # fw-direct only: the MS949 source
+    assert ms949 in direct and ms949 not in parent
+    assert parent and {k: v for k, v in direct.items() if k != ms949} == parent
+    raw = (FIXTURES / "fw-direct" / ms949).read_bytes()
+    with pytest.raises(UnicodeDecodeError):
+        raw.decode("utf-8")
+    text = raw.decode("cp949")
+    assert '"안녕하세요, 공지사항입니다"' in text and "// 긴급 공지" in text and "enum 등급" in text
+    assert "import javax.servlet.http.HttpServletRequest;" in text and "fromRequest(HttpServletRequest req)" in text
+    # the expected result: the same MS949 bytes with only the import moved to jakarta (compared byte for byte)
+    want = (FIXTURES / "fw-direct" / "expected-migrated" / "NoticeText.java.ms949").read_bytes()
+    assert want == raw.replace(b"import javax.servlet.http.", b"import jakarta.servlet.http.")
+    pom = (FIXTURES / "fw-direct" / "pom.xml").read_text(encoding="utf-8")
+    assert "<project.build.sourceEncoding>" not in pom and "<encoding>" not in pom
+    assert _effective_cfg("fw-transitive").framework.recipe_sets == ["jdk21", "jakarta", "servlet_jakarta_10"]
+    for name in FRAMEWORK_OVERRIDES:
+        jsp = (FIXTURES / name / "src/main/webapp/index.jsp").read_text(encoding="utf-8")
+        assert 'import="javax.servlet.http.HttpSession"' in jsp and "javax.servlet.http.Cookie[]" in jsp, name
+        declared = _declared_deps(FIXTURES / name / "pom.xml")
+        assert "javax.servlet:javax.servlet-api" in declared, name
+        assert ("com.example.fw:example-fw-core" in declared) == (name == "fw-direct"), name
+        assert ("com.example.fw:example-fw-web" in declared) == name.startswith("fw-transitive"), name
+    parent = etree.parse(str(FIXTURES / "fw-parent" / "pom.xml")).getroot().find("m:parent", NS)
+    assert parent is not None and parent.findtext("m:artifactId", namespaces=NS) == "example-fw-parent"
+
+
 def test_required_libs_exist_in_fixtures_libs():
     versions = {}
     for pom in LIBS.glob("legacy-web-lib/v*/pom.xml"):
@@ -943,6 +1035,16 @@ def test_required_libs_exist_in_fixtures_libs():
         assert pom.parent.name == f"v{v}" and root.findtext("m:packaging", namespaces=NS) == "war"
         versions[f"{g}:{a}:{v}"] = pom
     assert "install_lib \"$LIBS/legacy-base-web/v1.0.0\"" in (LIBS / "install.sh").read_text(encoding="utf-8")
+    for pom in LIBS.glob("example-fw/*/v*/pom.xml"):           # v2.1z-ak: the framework stand-in (jar, jar, pom)
+        root = etree.parse(str(pom)).getroot()
+        g, a, v = (root.findtext(f"m:{t}", namespaces=NS) for t in ("groupId", "artifactId", "version"))
+        assert pom.parent.name == f"v{v}" and pom.parent.parent.name == a and g == "com.example.fw"
+        assert f'install_lib "$LIBS/example-fw/{a}/v{v}"' in (LIBS / "install.sh").read_text(encoding="utf-8")
+        versions[f"{g}:{a}:{v}"] = pom
+    assert {k for k in versions if k.startswith("com.example.fw:")} == {
+        f"com.example.fw:example-fw-{x}:1.0.0" for x in ("core", "web", "parent")}
+    for src in LIBS.glob("example-fw/**/*.java"):                # no javax / jakarta in the framework's API
+        assert not re.search(r"\b(javax|jakarta)\.", src.read_text(encoding="utf-8")), src
     for name in NAMES:
         for gav in _expected(name).get("requires_libs", []):
             assert gav in versions, f"{name}: {gav} has no source under fixtures/libs"
@@ -1035,11 +1137,11 @@ def test_fixture_builds_as_is(name: str, subdir: str, jdk: str, needs: str, tmp_
     shutil.copytree(FIXTURES / name, src, ignore=shutil.ignore_patterns("target"))
     args: list[str] = []
     env: dict = {}
-    if needs == "libs":
+    if "libs" in needs.split("+"):
         args.append(f"-Dmaven.repo.local.tail={request.getfixturevalue('libs_repo')}")
     elif needs == "ghost":
         args.append(f"-Dmaven.repo.local.tail={request.getfixturevalue('ghost_repo')}")
-    elif needs == "ms949":
+    if "ms949" in needs.split("+"):
         env["JAVA_TOOL_OPTIONS"] = "-Dfile.encoding=MS949"
     t0 = time.monotonic()
     cp = _build(src / subdir, jdk, args, env)

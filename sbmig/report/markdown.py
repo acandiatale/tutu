@@ -1,6 +1,6 @@
 """report.md를 만드는 모듈. 에이전트가 고치지 못한 것을 이어받는 as-is 담당 팀을 위해 쓴다.
 보고서 단계에서 writer.py의 ``write_report``가 ``render_markdown``을 호출한다.
-섹션 순서: 머리 표(``SBMIG-RESULT`` 줄 포함) -> 인수인계 -> Error list -> Fixes by case -> Structure review
+섹션 순서: 머리 표(``SBMIG-RESULT`` 줄 포함) -> 사내 프레임워크 -> 인수인계 -> Error list -> Fixes by case -> Structure review
 -> Bundled jars -> 취약점 조치 -> Blocked -> javax API jar ->
 Manual follow-ups → Flags → What we changed → LLM usage and cost → Notes → Outputs.
 담당 팀은 인수인계 섹션만 읽으므로 이 섹션을 맨 앞에 둔다.
@@ -8,6 +8,7 @@ Manual follow-ups → Flags → What we changed → LLM usage and cost → Notes
   영어 원문이 번역 표의 키이므로 문장을 바꾸면 i18n.py도 함께 바꾼다
 - 이관 없이 취약점 조치만 한 실행(``remediation``)은 짧은 보고서(``render_remediation_flow``)를 만든다
 - Ant 프로젝트를 거부한 실행은 제목 바로 아래에 회사 안내 문구를 둔다(``intake_notice_lines``)
+- 사내 프레임워크 프로젝트는 재구성과 구조 검토를 하지 않으므로 그 절이 없고, 사내 프레임워크 절에서 한 번 알린다
 
 report.md rendering — written for the as-is owners who pick up whatever the agent could not fix. A `remediation` flow
 run gets the short report (`render_remediation_flow`); an Ant refusal puts the company notice right under the title."""
@@ -44,7 +45,7 @@ from .handover import (
     unknown_jars_system,
 )
 from .i18n import normalize, tr, tr_line
-from .result_line import report_result_line
+from .result_line import report_result_line, run_scope
 
 # 플래그별로 보고서 "Flags" 섹션에 쓸 설명. 값이 i18n.py STRINGS의 키이기도 하므로 바꾸면 번역도 함께 바꾼다
 FLAG_HELP = {
@@ -139,6 +140,9 @@ FLAG_HELP = {
                                 "import the Spring Boot BOM: the versions it does not manage were pinned from the "
                                 "target Boot BOM — import spring-boot-dependencies in base-parent (see the Handover's "
                                 "first line)",
+    # 사내 프레임워크 아티팩트를 찾은 실행. 범위(JDK와 jakarta만 또는 전체 이관)는 보고서 맨 위 절에 있다
+    "framework-project": "the project uses an in-house framework artifact (framework.artifacts) — see the framework "
+                         "block at the top of the report for where it was found and what this run did",
 }
 FLAG_PREFIX_HELP = {
     "stopped-after-": "the run was stopped on purpose after this phase (--stop-after)",
@@ -150,6 +154,8 @@ BLOCKED_TITLE = "Blocked — needs human / library action"
 HANDOVER_TITLE = "Handover — what we replaced, what is yours"
 PROPERTIES_TITLE = "Properties to set before running"
 JAVAX_JARS_TITLE = "javax API jars still on the classpath"
+FRAMEWORK_TITLE = "In-house framework project"     # v2.1z-ak: reduced run (JDK 21 + jakarta only)
+FRAMEWORK_FULL_TITLE = "In-house framework"         # v2.1z-ak: found, but the full migration ran
 ADF_TITLE = "ADF sizing"                       # v2.1z-d: Oracle ADF application — the numbers for the rewrite decision
 REVIEW_TITLE = "Structure review"
 BUNDLED_TITLE = "Bundled jars (declared by no pom)"   # v2.1z-i
@@ -275,6 +281,76 @@ def javax_api_lines(r: RunReport, lang: str = "en", cfg: Any = None) -> list[str
         L.append(f"| `{_cell(j.artifact.coordinates, 120)}` | {_cell(j.module or tr(lang, '(root)'), 60)} | "
                  f"{j.scope or '-'} | {_cell(via, 120)} | {tr(lang, 'yes') if j.declared else tr(lang, 'no')} | "
                  f"{_cell(_javax_what_to_do(j, groups, lang), 400)} |")
+    L.append("")
+    return L
+
+
+def _evidence_line(e: Any, lang: str) -> str:
+    """프레임워크 근거 하나를 보고서 한 줄로 만든다. 값 뒤에는 받침과 관계없는 조사만 쓴다."""
+    head = f"`{_cell(e.artifact, 160)}`" + (f" {_cell(e.version, 40)}" if e.version else "")
+    where_ = _cell(e.where or "-", 200)
+    if e.source == "direct":
+        return tr(lang, "{artifact}: declared directly in `{where}`", artifact=head, where=where_)
+    if e.source == "parent":
+        if e.parent:
+            return tr(lang, "{artifact}: inherited from the parent pom `{parent}` (module `{where}`)", artifact=head,
+                      parent=_cell(e.parent, 200), where=where_)
+        return tr(lang, "{artifact}: inherited from a parent pom (module `{where}`)", artifact=head, where=where_)
+    if e.source == "bundled":
+        return tr(lang, "{artifact}: jar in the tree (`{where}`)", artifact=head, where=where_)
+    if e.via:
+        return tr(lang, "{artifact}: brought by another library, path `{via}` (module `{where}`)", artifact=head,
+                  via=_cell(" > ".join(e.via), 400), where=where_)
+    return tr(lang, "{artifact}: brought by another library (module `{where}`)", artifact=head, where=where_)
+
+
+def _remediation_ran(r: RunReport) -> bool:
+    """이관 뒤 취약점 조치를 실제로 실행했는지 확인한다. 건너뛴 조치는 실행하지 않은 것으로 본다."""
+    rem = getattr(r, "remediation", None)
+    return isinstance(rem, dict) and str(rem.get("status") or "") not in ("", "skipped")
+
+
+def framework_lines(r: RunReport, lang: str = "en") -> list[str]:
+    """사내 프레임워크 아티팩트를 찾은 실행의 절을 만든다. 찾지 못했으면 빈 목록을 반환한다.
+    어디에서 찾았는지, 이번 실행에서 한 일과 하지 않은 일, 확인하지 못한 곳을 담는다.
+
+    v2.1z-ak: the framework block right under the header table (`profile.framework` with evidence): one line per
+    evidence entry, what the run did / did not do (reduced run: JDK 21 + jakarta, build fixes, the remediation when it
+    ran; no restructure, no structure review, parent pom and framework version kept) or why the full migration ran,
+    and the sources that could not be checked. [] when nothing was found (or no check was configured)."""
+    use = getattr(getattr(r, "profile", None), "framework", None)
+    if use is None or not list(getattr(use, "evidence", None) or []):
+        return []
+    reduced = run_scope(r) is not None
+    # tests/report/test_report_i18n.py가 번역 표와 대조하므로 tr의 원문은 리터럴로 쓴다
+    title = tr(lang, "In-house framework project") if reduced else tr(lang, "In-house framework")
+    L = [f"## {title}", ""]
+    L += [f"- {_evidence_line(e, lang)}" for e in use.evidence]
+    L.append("")
+    if reduced:
+        did = [tr(lang, "JDK 21 and jakarta")]
+        # 첫 빌드가 통과해 수정 루프가 시도하지 않았으면 빌드 오류 수정은 한 일이 아니다
+        if any(pr.attempts for pr in r.phases or []):
+            did.append(tr(lang, "build error fixes"))
+        if _remediation_ran(r):
+            did.append(tr(lang, "vulnerability remediation"))
+        L.append(tr(lang, "Done in this run: {what}", what=", ".join(did)))
+        L.append("")
+        L.append(tr(lang, "Not done: restructure, structure review (a framework project's run has neither step). The "
+                          "parent pom and the framework version stay as they are."))
+    else:
+        reason = str(getattr(use, "reason", "") or "")
+        if "framework.scope=full" in reason:
+            L.append(tr(lang, "The full migration ran because the configuration says so (framework.scope: full)."))
+        else:
+            setting = "note"
+            if "framework.transitive=" in reason:
+                setting = reason.split("framework.transitive=", 1)[1].split()[0] or setting
+            L.append(tr(lang, "The artifact arrives only through another library: the full migration ran because the "
+                              "configuration says so (framework.transitive: {setting}).", setting=setting))
+    unchecked = [str(u) for u in (getattr(use, "unchecked", None) or []) if str(u).strip()]
+    if unchecked:
+        L += ["", tr(lang, "Not checked: {where}", where=_cell("; ".join(unchecked), 600))]
     L.append("")
     return L
 
@@ -529,6 +605,102 @@ def pom_synthesis_changed_lines(r: RunReport, lang: str = "en") -> list[str]:
                d=n["unknown"]), ""]
 
 
+def _same_version(before: Optional[str], after: Optional[str]) -> bool:
+    """이전 값과 이후 값이 같은 버전인지 확인한다. 둘 중 하나라도 없으면 다른 것으로 본다."""
+    return bool(before) and bool(after) and str(before).strip() == str(after).strip()
+
+
+def _same_change(c: Any) -> bool:
+    """버전 변경 표의 한 줄이 실제로는 바뀌지 않은 줄인지 확인한다."""
+    return _same_version(c.before, c.after) and c.before_source == c.after_source
+
+
+def _versions_replaced_lines(h: Any, tops: list[tuple[str, Optional[str], Optional[str]]], changes: list[Any],
+                             lang: str) -> list[str]:
+    """인수인계의 ``### Versions replaced`` 절을 만든다. 이전과 이후가 같은 줄은 호출하는 쪽에서 뺀다.
+
+    "### Versions replaced": the parent / java / boot lines and the change table, rows with before == after already
+    left out by the caller."""
+    L = [tr(lang, "### Versions replaced"), ""]
+    for label, b, a in tops:
+        if label == "parent":
+            L.append(tr(lang, "- parent: {before} → {after}", before=_v(b), after=_v(a)))
+        elif label == "java":
+            L.append(tr(lang, "- java: {before} → {after}", before=_v(b), after=_v(a)))
+        else:
+            L.append(tr(lang, "- spring boot: {before} → {after}", before=_v(b), after=_v(a)))
+    L.append("")
+    if changes:
+        L += [tr(lang, "| what | before | after | why |"), "|---|---|---|---|"]
+        managed = tr(lang, "managed")
+        for c in changes:
+            warn = "⚠ " if c.carried_over or c.boot_bom_pin else ""
+            before = c.before or (managed if c.before_source == "managed" else "-")
+            if c.before_source == "managed" and c.before:
+                before += tr(lang, " (managed)")
+            after = c.after or (managed if c.after_source == "managed" else "-")
+            L.append(f"| {warn}{_kind_label(c.kind, lang)} `{_cell(c.key, 120)}` | {_cell(before, 120)} | {_cell(after, 80)} | "
+                     f"{_cell(tr_reason(lang, c.reason), 80)} |")
+        L.append("")
+        if h.carried_over:
+            if len(h.carried_over) == 1:
+                L.append(tr(lang, "⚠ 1 dependency pinned at the as-is version: the new parent / Boot BOM no "
+                                  "longer manages it."))
+            else:
+                L.append(tr(lang, "⚠ {n} dependencies pinned at the as-is version: the new parent / Boot BOM "
+                                  "no longer manages them.", n=len(h.carried_over)))
+            L.append("")
+    if h.added:
+        L.append(tr(lang, "Added: {items}", items=", ".join(f"`{x}`" for x in h.added)))
+        L.append("")
+    if h.removed:
+        L.append(tr(lang, "Removed: {items}", items=", ".join(f"`{x}`" for x in h.removed)))
+        L.append("")
+    if not changes and not h.added and not h.removed:
+        L.append(tr(lang, "No dependency versions changed."))
+        L.append("")
+    return L
+
+
+def _pom_correction(e: Any) -> bool:
+    """오류 목록의 항목이 빌드 오류가 아니라 sbmig가 고친 pom(pom-verify, 검증 후 resolved)인지 확인한다.
+
+    A pom correction sbmig made (status pom-verify, or resolved by the next build), not a build error."""
+    if getattr(e, "case_id", "") or getattr(e, "l2", "") or getattr(e, "raw", ""):
+        return False
+    return getattr(e, "seen", "") in ("transform", "restructure") and getattr(e, "status", "") in ("pom-verify", "resolved")
+
+
+def _kind_label(kind: str, lang: str) -> str:
+    """버전 변경 표의 종류(parent, dependency, bom, plugin, property)를 보고서 언어로 바꾼다."""
+    # tests/report/test_report_i18n.py가 번역 표와 대조하므로 tr의 원문은 리터럴로 쓴다
+    labels = {"parent": tr(lang, "parent"), "dependency": tr(lang, "dependency"), "bom": tr(lang, "bom"),
+              "plugin": tr(lang, "plugin"), "property": tr(lang, "property")}
+    return labels.get(kind, kind)
+
+
+def pom_correction_lines(r: RunReport, lang: str = "en") -> list[str]:
+    """인수인계에 넣을 sbmig의 pom 정정 목록을 만든다. 프레임워크 프로젝트만 만들고, 없으면 빈 목록을 반환한다.
+    변환 단계에서 sbmig가 직접 고친 pom 항목(as-is provided scope 복원, 소스 인코딩 기록)이다.
+
+    v2.1z-ak: a reduced run's own pom corrections (as-is provided scopes restored, project.build.sourceEncoding
+    written: the `seen=transform` pom-verify entries) in the Handover; [] in a full run (the restructure's corrections
+    stay in the error list as before) and without any."""
+    if run_scope(r) is None:
+        return []
+    fixes = [e for e in entries_of(r) if _pom_correction(e)]
+    if not fixes:
+        return []
+    L = [tr(lang, "### pom corrections by sbmig"), "",
+         tr(lang, "sbmig changed these poms itself in the transform step."),
+         ""]
+    for e in fixes:
+        state = tr(lang, "verified") if e.status == "resolved" else tr(lang, "not verified yet")
+        L.append(f"- `{_cell(e.file or 'pom.xml', 200)}`: {_cell(tr_line(lang, e.message), 300)} ({state})")
+    L.append("")
+    return L
+
+
 def handover_lines(r: RunReport, lang: str = "en", cfg: Any = None) -> list[str]:
     """report.md의 첫 섹션인 인수인계를 만든다.
     운영자 확인, pom 합성, 교체된 버전, 주의 라이브러리, merge 충돌, 외부 설정, 할 일 목록 순이다.
@@ -547,50 +719,24 @@ def handover_lines(r: RunReport, lang: str = "en", cfg: Any = None) -> list[str]
         L.append(tr(lang, "No version changes and no library advisories recorded for this run.")
                  + (f" ({'; '.join(tr_line(lang, n) for n in h.notes)})" if h and h.notes else ""))
         L.append("")
-        return L
+        return L + pom_correction_lines(r, lang)
     if h is not None:
-        L += [tr(lang, "### Versions replaced"), ""]
-        if h.parent_before or h.parent_after:
-            L.append(tr(lang, "- parent: {before} → {after}", before=_v(h.parent_before), after=_v(h.parent_after)))
-        if h.java_before or h.java_after:
-            L.append(tr(lang, "- java: {before} → {after}", before=_v(h.java_before), after=_v(h.java_after)))
-        if h.spring_boot_before or h.spring_boot_after:
-            L.append(tr(lang, "- spring boot: {before} → {after}", before=_v(h.spring_boot_before),
-                        after=_v(h.spring_boot_after)))
-        L.append("")
-        if h.changes:
-            L += [tr(lang, "| what | before | after | why |"), "|---|---|---|---|"]
-            managed = tr(lang, "managed")
-            for c in h.changes:
-                warn = "⚠ " if c.carried_over or c.boot_bom_pin else ""
-                before = c.before or (managed if c.before_source == "managed" else "-")
-                if c.before_source == "managed" and c.before:
-                    before += tr(lang, " (managed)")
-                after = c.after or (managed if c.after_source == "managed" else "-")
-                L.append(f"| {warn}{c.kind} `{_cell(c.key, 120)}` | {_cell(before, 120)} | {_cell(after, 80)} | "
-                         f"{_cell(tr_reason(lang, c.reason), 80)} |")
-            L.append("")
-            if h.carried_over:
-                if len(h.carried_over) == 1:
-                    L.append(tr(lang, "⚠ 1 dependency pinned at the as-is version: the new parent / Boot BOM no "
-                                      "longer manages it."))
-                else:
-                    L.append(tr(lang, "⚠ {n} dependencies pinned at the as-is version: the new parent / Boot BOM "
-                                      "no longer manages them.", n=len(h.carried_over)))
-                L.append("")
-        if h.added:
-            L.append(tr(lang, "Added: {items}", items=", ".join(f"`{x}`" for x in h.added)))
-            L.append("")
-        if h.removed:
-            L.append(tr(lang, "Removed: {items}", items=", ".join(f"`{x}`" for x in h.removed)))
-            L.append("")
-        if not h.changes and not h.added and not h.removed:
-            L.append(tr(lang, "No dependency versions changed."))
-            L.append("")
+        # 이전과 이후가 같은 줄은 교체가 아니므로 뺀다(부모 pom을 그대로 두는 프레임워크 프로젝트 등)
+        tops = [(label, b, a) for label, b, a in (("parent", h.parent_before, h.parent_after),
+                                                   ("java", h.java_before, h.java_after),
+                                                   ("spring boot", h.spring_boot_before, h.spring_boot_after))
+                if (b or a) and not _same_version(b, a)]
+        changes = [c for c in h.changes if not _same_change(c)]
+        dropped = len(tops) < sum(1 for b, a in ((h.parent_before, h.parent_after), (h.java_before, h.java_after),
+                                                 (h.spring_boot_before, h.spring_boot_after)) if b or a) \
+            or len(changes) < len(h.changes)
+        if not (dropped and not tops and not changes and not h.added and not h.removed):
+            L += _versions_replaced_lines(h, tops, changes, lang)
         for n in h.notes:
             L.append(tr(lang, "_note: {note}_", note=_cell(tr_line(lang, n), 300)))
         if h.notes:
             L.append("")
+    L += pom_correction_lines(r, lang)
     if findings:
         L += [tr(lang, "### Libraries needing your attention"), ""]
         L += [tr(lang, "| library | as-is | status | what we did | outcome | what you do next | docs |"),
@@ -636,6 +782,7 @@ ERROR_LIST_MAX_ROWS = 50                     # per `seen` group; errors.md in th
 FIXES_MAX_ROWS = 40
 SEEN_TITLES = {
     "compile": "compile — `mvn compile` after OpenRewrite",
+    "transform": "transform — pom corrections by sbmig, verified by the next build",
     "restructure": "restructure — pom corrections, verified by the next build",
     "review": "review — structure review",
     "build": "build — first `mvn clean package`, new errors only",
@@ -662,6 +809,11 @@ def _seen_title(seen: str, n: int, lang: str = "en") -> str:
     return f"{title} ({n})"
 
 
+def _entry_message(e: Any, lang: str) -> str:
+    """오류 목록 표의 메시지 칸을 만든다. sbmig가 고친 pom 항목만 번역하고 빌드 오류 메시지는 그대로 둔다."""
+    text = entry_text(e)
+    return tr_line(lang, text) if _pom_correction(e) else text
+
 def error_list_lines(r: RunReport, lang: str = "en") -> list[str]:
     """``## Error list`` 섹션을 만든다. 개수, ``seen`` 단계별 표, 마지막 빌드 로그 경로를 담는다.
     표는 묶음당 ``ERROR_LIST_MAX_ROWS``줄까지 쓰고 전체는 실행 디렉토리의 errors.md에 있다.
@@ -672,10 +824,24 @@ def error_list_lines(r: RunReport, lang: str = "en") -> list[str]:
     before the error list was kept), else one line."""
     entries = entries_of(r)
     L = [f"## {tr(lang, ERROR_LIST_TITLE)}", ""]
-    if entries:
+    # 프레임워크 프로젝트는 머리 표와 같이 sbmig가 고친 pom을 빌드 오류와 따로 센다
+    fixes = [e for e in entries if _pom_correction(e)] if run_scope(r) is not None else []
+    errs = [e for e in entries if e not in fixes]
+    if fixes and not errs:
+        waiting = sum(1 for e in fixes if e.status != "resolved")
+        L += [tr(lang, "No build error in this run. {m} pom correction(s) by sbmig, {k} of them not verified yet.",
+                 m=len(fixes), k=waiting) if waiting else
+              tr(lang, "No build error in this run. {m} pom correction(s) by sbmig, verified by the build.",
+                 m=len(fixes)), ""]
+    elif fixes:
+        L += [tr(lang, "{n} build error(s) in this run, one line each (all of them with every try and diff: `errors.md` "
+                       "/ `errors.jsonl` in the run directory): {counts}. Besides, {m} pom correction(s) by sbmig.",
+                 n=len(errs), counts=counts_text(status_counts(errs)), m=len(fixes)), ""]
+    elif entries:
         L += [tr(lang, "{n} error(s) in this run, one line each (all of them with every try and diff: `errors.md` / "
                        "`errors.jsonl` in the run directory): {counts}.", n=len(entries),
                  counts=counts_text(status_counts(entries))), ""]
+    if entries:
         for seen, rows in seen_groups(entries).items():
             L += [f"### {_seen_title(seen, len(rows), lang)}", "",
                   tr(lang, "| # | case | file:line | message | status | tries | resolved |"),
@@ -683,7 +849,7 @@ def error_list_lines(r: RunReport, lang: str = "en") -> list[str]:
             for i, e in rows[:ERROR_LIST_MAX_ROWS]:
                 loc = where(e)
                 L.append(f"| {i} | {('`' + e.case_id[:12] + '`') if e.case_id else '-'} | "
-                         f"{('`' + _cell(loc, 140) + '`') if loc else '-'} | {_cell(entry_text(e), 200)} | "
+                         f"{('`' + _cell(loc, 140) + '`') if loc else '-'} | {_cell(_entry_message(e, lang), 200)} | "
                          f"{e.status} | {_cell(tries_text(e.tries) or '-', 300)} | {_cell(resolved_text(e) or '-', 60)} |")
             if len(rows) > ERROR_LIST_MAX_ROWS:
                 L += ["", tr(lang, "… {n} more in this group — see `errors.md`", n=len(rows) - ERROR_LIST_MAX_ROWS)]
@@ -914,11 +1080,18 @@ def bundled_jars_lines(r: RunReport, lang: str = "en") -> list[str]:
     if not jars:
         return []
     wired = _bundled_wired(r)
+    # 프레임워크 프로젝트는 부모 체인을 바꾸지 않으므로 "목표" 체인이 아니라 프로젝트의 부모 체인이라고 쓴다
+    reduced = run_scope(r) is not None
+    managed_line = (tr(lang, "A jar whose coordinates the project's parent chain manages (an old Spring jar, say) is "
+                             "superseded by the managed version and is never wired.") if reduced else
+                    tr(lang, "A jar whose coordinates the target parent chain manages (an old Spring jar, say) is "
+                             "superseded by the managed version and is never wired."))
+    superseded = (tr(lang, "superseded (the parent chain manages it)") if reduced
+                  else tr(lang, "superseded (the target chain manages it)"))
     L = [f"## {tr(lang, BUNDLED_TITLE)}", "",
          tr(lang, "Jars in the tree that no pom declares: the as-is IDE build compiled against them, Maven does not. "
                   "When a build error needs one, sbmig wires it into the module pom (`sbmig-bundled`, no LLM call)."), "",
-         tr(lang, "A jar whose coordinates the target parent chain manages (an old Spring jar, say) is superseded by the "
-                  "managed version and is never wired."), "",
+         managed_line, "",
          *([tr(lang, "The restructure wired every referenced jar before the first build (layout.wire_bundled_jars): "
                      "known coordinates the repository has as a plain dependency, the others as system scope; container "
                      "API copies, superseded and unreferenced jars are left out."), ""]
@@ -942,7 +1115,7 @@ def bundled_jars_lines(r: RunReport, lang: str = "en") -> list[str]:
         else:
             wired_cell = "—"
         known = bool(j.group_id and j.artifact_id and j.version)
-        status = (tr(lang, "superseded (the target chain manages it)") if "superseded:" in note
+        status = (superseded if "superseded:" in note
                   else tr(lang, "container API") if (j.scope or "") == "provided" or "restructure: container" in note
                   else tr(lang, "unused") if unused and not m and name not in wired
                   else tr(lang, "coordinates known") if known else tr(lang, "coordinates unknown"))
@@ -1182,6 +1355,10 @@ def jsp_jakarta_lines(r: RunReport, lang: str = "en") -> list[str]:
     fw = tr(lang, "{n} file", n=files) if files == 1 else tr(lang, "{n} files", n=files)
     rw = tr(lang, "{n} reference", n=refs) if refs == 1 else tr(lang, "{n} references", n=refs)
     what = tr(lang, "JSP javax → jakarta: {files}, {refs}", files=fw, refs=rw)
+    # 프레임워크 프로젝트는 재구성 없이 transform.jsp_jakarta 단계가 바꾼다
+    if run_scope(r) is not None:
+        return [what + tr(lang, " — renamed by sbmig in JSP / tag files (page imports, useBean, scriptlets); "
+                                "OpenRewrite does not parse JSPs"), ""]
     return [what + tr(lang, " — renamed by the restructure in JSP / tag files (page imports, useBean, scriptlets); "
                             "OpenRewrite does not parse JSPs"), ""]
 
@@ -1213,7 +1390,16 @@ def render_markdown(report: RunReport, language: str = "en", cfg: Any = None) ->
     # 운영자가 보고서만 보고도 옮겨 적을 수 있도록 콘솔 마지막 줄과 같은 SBMIG-RESULT 줄을 머리 표에도 둔다
     L.append(f"| SBMIG-RESULT | `{report_result_line(r)}` |")
     entries = entries_of(r)
-    if entries:
+    # 프레임워크 프로젝트에서는 sbmig가 고친 pom 항목을 빌드 오류와 따로 센다
+    fixes = [e for e in entries if _pom_correction(e)] if run_scope(r) is not None else []
+    errs = [e for e in entries if e not in fixes]
+    if fixes and not errs:
+        L.append(tr(lang, "| **Error list** | {m} pom correction(s) by sbmig ({counts}); no build error (see \"Error "
+                          "list\") |", m=len(fixes), counts=counts_text(status_counts(fixes))))
+    elif fixes:
+        L.append(tr(lang, "| **Error list** | {n} error(s): {counts}; {m} pom correction(s) by sbmig (see \"Error "
+                          "list\") |", n=len(errs), counts=counts_text(status_counts(errs)), m=len(fixes)))
+    elif entries:
         L.append(tr(lang, "| **Error list** | {n} error(s): {counts} (see \"Error list\") |", n=len(entries),
                     counts=counts_text(status_counts(entries))))
     L.append(tr(lang, "| Case | `{case}` |", case=r.case_type.value))
@@ -1222,6 +1408,8 @@ def render_markdown(report: RunReport, language: str = "en", cfg: Any = None) ->
         L.append(tr(lang, "| As-is | java {java}, spring boot {boot}, spring {spring}, {poms} pom(s) |",
                     java=p.java_version or '?', boot=p.spring_boot_version or '-', spring=p.spring_version or '-',
                     poms=len(p.poms)))
+    if run_scope(r) is not None:
+        L.append(tr(lang, "| Scope | JDK 21 and jakarta only (in-house framework project) |"))
     to_be = _to_be(r)
     if to_be:
         L.append(tr(lang, "| To-be | {versions} |", versions=to_be))
@@ -1245,6 +1433,8 @@ def render_markdown(report: RunReport, language: str = "en", cfg: Any = None) ->
         L.append(tr(lang, "| Structure review | {summary} |", summary=_cell(review_summary(r.structure_review, lang),
                                                                           300)))
     L.append("")
+    # 사내 프레임워크 프로젝트는 무엇을 하고 무엇을 하지 않았는지가 결과를 읽는 전제이므로 머리 표 바로 뒤에 둔다
+    L += framework_lines(r, lang)
 
     # 담당 팀은 보고서에서 인수인계 섹션만 읽으므로 맨 앞에 둔다
     # ---- handover first: what we replaced, what the owning team does from here on
@@ -1296,7 +1486,7 @@ def render_markdown(report: RunReport, language: str = "en", cfg: Any = None) ->
     if r.manual_followups:
         L.append(tr(lang, "## Manual follow-ups"))
         L.append("")
-        L += [f"- {f}" for f in r.manual_followups]
+        L += [f"- {tr_line(lang, f)}" for f in r.manual_followups]
         L.append("")
 
     if r.flags:

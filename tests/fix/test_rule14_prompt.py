@@ -4,11 +4,12 @@ repository → null), an unknown version is written null and sbmig fills it, nev
 properties as `${name}`, no "look releases up yourself"; ≤ 1.4K chars."""
 from __future__ import annotations
 
-from sbmig.fix.fixer import PROMPTS_DIR
+from sbmig.fix.fixer import load_script_prompts
 
 
 def test_rule_14_leaves_unknown_versions_to_sbmig():
-    raw = (PROMPTS_DIR / "script_system_v1.md").read_text(encoding="utf-8")
+    # v2.1z-ak: the prompt file is a template with a reduced-scope variant; the full-scope rendering is the text checked
+    raw = load_script_prompts("v1")[0]
     rule = raw[raw.index("14. Dependency versions"):raw.index("## Edits (`<edits>`)")].strip()
     text = " ".join(rule.split())
     assert len(text) <= 1400, len(text)

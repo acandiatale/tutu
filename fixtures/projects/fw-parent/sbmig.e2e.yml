@@ -1,0 +1,12 @@
+# Per-fixture config override (fw-parent), appended after config/artifacts.local-e2e.yml.
+# v2.1z-ak framework project: the core arrives from the as-is <parent> example-fw-parent (fixtures/libs/example-fw);
+# pattern form "groupId:artifactId". Scope jdk-jakarta; the parent stays as it is.
+framework:
+  artifacts: ["com.example.fw:example-fw-core"]
+# No LLM answer is expected; the fake provider answers "no fix" to any request.
+llm:
+  provider: fake
+  base_url: "replay:fixtures/projects/fw-parent/replay"
+# Own KB; scripts/e2e.py clears it before the run.
+kb:
+  dir: out/e2e/kb-fw-parent

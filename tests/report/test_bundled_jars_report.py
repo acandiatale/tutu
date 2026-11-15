@@ -50,7 +50,7 @@ def test_korean():
     md = render_markdown(_report(manual_followups=[WIRED]), "ko")
     assert "## 동봉 jar (pom 미선언)" in md and "| jar | 좌표 | 패키지 | 사용 | 연결 |" in md
     assert "| `src/main/webapp/WEB-INF/lib/acme-seed-1.0.jar` | 모름 | 2 | 예 | system |" in md
-    assert flag_help("bundled-jars", "ko").startswith("어느 pom 도 선언하지 않은 jar")
+    assert flag_help("bundled-jars", "ko").startswith("어느 pom에도 선언되지 않은 jar")
 
 
 # ---------------------------------------------------------------------------------------------- v2.1z-j stages

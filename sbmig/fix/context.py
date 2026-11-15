@@ -206,6 +206,8 @@ ASIS_LABEL = "as-is (before sbmig): "  # v2.1u: the head of `sbmig.fix.profile_s
 # The plan notes that reach the fix prompt: first word starts with one of these.
 PROMPT_PLAN_NOTE_PREFIXES = ("transform", "restructure", "warning", "msa", "followup")
 LAYOUT_FACTS_TITLE = "Project after the restructure"   # v2.1v: FixContext.layout_facts (order 0.5, never truncated)
+# 프레임워크 프로젝트(범위 jdk-jakarta)에서 "Project after the restructure" 대신 넣는 절의 제목
+SCOPE_FACTS_TITLE = "Scope of this run"   # v2.1z-ak: FixContext.scope_facts (order 0.5, never truncated)
 _FIRST_WORD_RE = re.compile(r"^\s*([^\s:\[]+)")
 
 
@@ -245,6 +247,15 @@ def target_text(cfg: Config | None = None) -> str:
     t = getattr(cfg, "target", None) if cfg is not None else None
     t = t if t is not None else TargetConfig()
     return f"JDK {t.java_version}, Spring Boot {t.spring_boot_version}"
+
+
+def scope_target_text(cfg: Config | None = None) -> str:
+    """프레임워크 프로젝트(범위 jdk-jakarta) 프롬프트에 넣을 목표 문구를 만든다.
+
+    The target of a reduced run (v2.1z-ak): Java from `cfg.target`, jakarta.*, the project's own Spring line kept."""
+    t = getattr(cfg, "target", None) if cfg is not None else None
+    t = t if t is not None else TargetConfig()
+    return f"JDK {t.java_version} and jakarta.* only (framework project: its own Spring / Spring Boot line is kept)"
 
 
 def with_target(summary: str, cfg: Config | None = None) -> str:
@@ -650,6 +661,9 @@ class ContextPacker:
         `prompt_plan_notes`; notes selected by `select_notes(error_text, …, context=imports + pom text)`."""
         budget = budget or self.cfg.llm.max_context_chars
         summary = with_target(profile_summary or ctx.profile_summary, self.cfg)     # A20: cfg.target, not a constant
+        reduced = getattr(ctx, "scope", "full") == "jdk-jakarta"
+        if reduced and summary and TARGET_MARK in summary:   # 프레임워크 프로젝트는 Boot 목표가 없다
+            summary = summary.rsplit(TARGET_MARK, 1)[0] + TARGET_MARK + scope_target_text(self.cfg)
         if case_type is None:
             m = re.search(r"case=(\w+)", summary or "")
             case_type = m.group(1) if m else None
@@ -694,7 +708,12 @@ class ContextPacker:
                       + (f", stall level {ctx.stall_level}" if ctx.stall_level else ""))
         secs.append(_Section("header", "Case", "\n".join(header), 0, truncatable=False))
         # 재구성 뒤 프로젝트 정보(모듈 역할, 생성 파일, 사내 규칙)는 머리말 바로 뒤에 두고 줄이지 않는다
-        if ctx.layout_facts:
+        # 프레임워크 프로젝트는 재구성하지 않았으므로 같은 자리에 이번 실행의 범위를 넣는다
+        if reduced and getattr(ctx, "scope_facts", None):
+            secs.append(_Section("scope_facts", SCOPE_FACTS_TITLE, "\n".join(
+                ln if ln.lstrip().startswith("- ") else f"- {ln}" for ln in ctx.scope_facts if str(ln).strip()),
+                0.5, truncatable=False))
+        elif ctx.layout_facts and not reduced:
             secs.append(_Section("layout_facts", LAYOUT_FACTS_TITLE, "\n".join(
                 ln if ln.lstrip().startswith("- ") else f"- {ln}" for ln in ctx.layout_facts if str(ln).strip()),
                 0.5, truncatable=False))

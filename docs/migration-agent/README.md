@@ -99,10 +99,13 @@ flowchart LR
 flowchart TD
   START(["폴더 / zip"]) --> INTAKE["intake: 작업 사본 · git · preflight · 빌드 도구 · 트리 모양"]
   INTAKE -->|"Gradle · Ant · 빌드 파일 없음 · Maven/JDK 문제"| FIN
-  INTAKE --> ANALYZE["analyze: 케이스 유형 · 라이브러리 · 권고 · 동봉 jar · ADF"]
+  INTAKE --> ANALYZE["analyze: 케이스 유형 · 라이브러리 · 권고 · 동봉 jar · ADF · 사내 프레임워크"]
   ANALYZE -->|"ADF · 루트 pom 없음"| FIN
   ANALYZE --> PLAN["plan: 레시피 세트 · 단계 목록"]
-  PLAN --> T["transform: OpenRewrite 한 번 (빌드 없음)"]
+  PLAN --> SC{"범위 (MigrationPlan.scope)"}
+  SC -->|"full"| T["transform: OpenRewrite 한 번 (빌드 없음)"]
+  SC -->|"jdk-jakarta (사내 프레임워크)"| TF["transform: 소스 인코딩 · framework.recipe_sets 레시피 · provided scope 되돌리기 · JSP jakarta"]
+  TF --> V
   T --> R["restructure: 회사 레이아웃 · 버전 정리 · 동봉 jar · JSP jakarta"]
   R --> RV["structure review: LLM 이 pom·의존성·모듈 점검, critical 은 edits"]
   RV --> V["verify: mvn clean package"]
@@ -119,6 +122,8 @@ flowchart TD
 LangGraph 노드는 `intake` → `analyze` → `plan` → `phase`(단계 묶음마다 반복: transform, restructure(재구성 + 검토), verify) → `finalize` → `remediation` → END 입니다.
 위 그림은 실행 방식 `full`(기본, 전체 진행)입니다. 실행 방식 `remediation`(취약점 해결)은 `intake` → `remediation` → `finalize` 만 지나갑니다: 프로젝트를 고치지 않는 접수(작업 사본, preflight, 빌드 도구 판별과 거부), 올린 그대로의 프로젝트에 대한 취약점 조치, 짧은 보고서. 이관 단계·LLM·KB 는 쓰지 않습니다(10절).
 멈춤(`--stop-after`, 웹의 Stop)이나 중단은 곧바로 `finalize` 로 갑니다. Stop 은 노드 사이에서만 반영되고, 진행 중인 Maven·LLM 호출은 끊지 않습니다.
+
+사내 프레임워크 프로젝트는 계획의 범위가 `jdk-jakarta` 라서 재구성과 구조 검토를 건너뛰고 변환에서 곧바로 검증으로 갑니다(4.9절).
 
 MSA 는 공유 라이브러리 루트 먼저, 그다음 서비스마다 `transform.rewrite@<x>` → `restructure.msa_pom` → `restructure.review` → `verify.build` 입니다(루트 aggregator 가 없으면 서비스마다 verify).
 
@@ -182,6 +187,40 @@ Windows `target/` 잠금은 기다렸다 다시(`build.file_lock_retries`), 로�
 
 LLM 사용량·비용, 성공 판정(계획한 최종 빌드 전부 성공 + `restructure-failed` / `hollow-reactor` / 중단 없음), 미해결·차단 목록, 오류 목록과 KB 기록, 보고서 쓰기, 그다음 `changes.patch` / `result.zip`(KB 와 보고서가 먼저).
 마지막 줄 `SBMIG-RESULT run=… exit=… build=… unresolved=… blocked=… llm=… attn=… review=…`. 종료 코드: 0 성공, 2 차단·미해결·성공 아님, 3 중단.
+
+### 4.9 사내 프레임워크 프로젝트 (범위 `jdk-jakarta`)
+
+사내 프레임워크 아티팩트(`framework.artifacts`, 회사 yml 에만 적는 좌표, 예 `com.example.fw:example-fw-core`)를 쓰는 프로젝트는 회사 레이아웃과
+Spring Boot 4 로 옮기지 않습니다. JDK 21 과 jakarta 만 올리고, 빌드 오류는 수정 루프로 고치고, 성공하면 취약점 조치로 넘어갑니다.
+부모 pom, 모듈 구조, Spring 라인, 프레임워크 버전은 그대로입니다. 패턴이 비어 있으면 검사하지 않습니다.
+
+```mermaid
+flowchart TD
+  A["analyze: framework.artifacts 패턴"] --> D{"direct: 프로젝트 pom 의 dependencies"}
+  D -->|"없음"| P{"parent: as-is effective pom 에서 상속"}
+  P -->|"없음"| B{"bundled: 트리 안 jar"}
+  B -->|"없음"| TR{"transitive: dependency:tree 1회<br/>(framework.transitive 가 off 가 아니고 실제 Maven)"}
+  D -->|"있음"| S{"framework.scope"}
+  P -->|"있음"| S
+  B -->|"있음"| S
+  TR -->|"있음, transitive: apply"| S
+  TR -->|"있음, transitive: note"| FULL["full: 보고서에 적고 전체 이관"]
+  TR -->|"없음 · 읽지 못함 (unchecked)"| FULL2["full: 저널 framework_check"]
+  S -->|"jdk-jakarta"| R["jdk-jakarta: 저널 framework_project, 인수인계 한 줄"]
+  S -->|"full"| FULL
+  R --> PL["plan: transform.rewrite (framework.recipe_sets) · transform.jsp_jakarta · verify.build"]
+```
+
+- 레시피: `framework.recipe_sets`(기본 `jdk21`, `jakarta`). 기본 jakarta 세트는 서블릿 API 를 서블릿 5.0 기준으로 올리므로, Tomcat 10.1 이상에 올릴 프로젝트는 `servlet_jakarta_10` 을 더합니다(회사가 정할 스위치).
+- 레시피 전에 MS949·EUC-KR 소스 모듈의 pom 에 `project.build.sourceEncoding` 을 적습니다. JDK 18부터 javac 기본 인코딩이 UTF-8 이라 선언이 없으면 JDK 21 에서 컴파일되지 않고, OpenRewrite 도 읽지 못하는 파일은 건너뛰어(`rewrite_parse_problems`) javax import 가 남기 때문입니다(커밋 `transform: source encodings written`, 저널 `source_encodings`, 스위치 `layout.legacy_context.write_source_encoding`). 유지하는 부모가 다른 값을 정했으면 부모 값을 두고 Handover 한 줄을 남깁니다.
+- 레시피가 compile 로 바꾼 as-is `provided` scope 는 변환 직후 되돌립니다(커밋 `transform: as-is provided scopes restored`, 저널 `scopes_restored`).
+- 커밋 순서: `transform: source encodings written` → `rewrite: transform.rewrite` → `transform: as-is provided scopes restored` → `transform: JSP javax → jakarta`. 두 정정은 보고서 에러 목록에 `transform` 단계의 pom 정정으로 나오고 머리 표는 빌드 오류와 따로 셉니다.
+- 부모 pom 을 회사 부모로 맞추지 않습니다. 저장소가 부모 pom 을 주지 않으면 LLM 없이 `aborted:parent-not-found` 로 멈춥니다.
+- 수정 루프: 버전 사실은 프로젝트 자기 부모 체인에서 오고 Boot BOM 은 쓰지 않습니다. 프레임워크 선언·버전이나 `<parent>` 를 바꾼 시도는 되돌립니다(저널 `framework_guard`). 프레임워크 자신이 javax 기준이면 LLM 없이 `external_javax_api` 로 차단하고 담당자에게 jakarta 빌드를 요청하라고 적습니다.
+- 결과: `SBMIG-RESULT … scope=jdk-jakarta`, 보고서 머리 표의 `범위` 줄과 `## 사내 프레임워크 프로젝트` 절, 화면의 `프레임워크 프로젝트` 표시와 `하지 않음` 단계(재구성, 구조 검토).
+- 취약점 조치: 프레임워크와 그것이 가져오는 라이브러리는 사내 그룹 `framework` 몫이라 제안하지 않습니다.
+
+진단과 고칠 자리: `agent-doc/13-framework-projects.md`.
 
 ## 5. 수정 루프
 

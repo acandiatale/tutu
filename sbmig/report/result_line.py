@@ -3,6 +3,7 @@
 ``sbmig run``이 끝날 때 콘솔과 로그에 출력하고, 플릿은 프로젝트마다 한 줄과 ``summary.csv``의 attention 칸에 쓴다.
 - 진입점: ``report_result_line``, ``result_line``, ``attention_codes``,
   ``report_exit_code``(0 성공, 2 빌드 실패, 3 거부 / 중단)
+- 사내 프레임워크 프로젝트(JDK와 jakarta만 적용)는 ``major=`` 뒤에 ``scope=jdk-jakarta``를 붙인다
 - 반드시 한 줄이고 ASCII만 쓴다. ASCII가 아닌 문자는 ``?``로 바꾼다
 - 운영자 보고 양식과 플릿 집계가 이 형식을 그대로 읽으므로 필드 순서와 이름을 바꾸지 않는다.
   새 필드는 끝에, 값이 있을 때만 붙인다
@@ -10,7 +11,8 @@
 One-line results and attention codes (round 10, operators retype them from a cp949 console).
 
     SBMIG-RESULT run=<id> exit=<n> build=<ok|FAIL> unresolved=<n> blocked=<n> open=<n> resolved=<n> llm=<calls>
-                 attn=<codes>[ review=<v>][ major=<n>][ flow=remediation][ remediation=<STATUS|skipped>]
+                 attn=<codes>[ review=<v>][ major=<n>][ scope=jdk-jakarta][ flow=remediation]
+                 [ remediation=<STATUS|skipped>]
 
 v2: ` review=<ok|issues|skipped|failed>` is appended when the run has a structure review (`report.structure_review`;
 fleet lines and runs without a review keep the round-10 format).
@@ -29,6 +31,9 @@ succeeded (`remediation_build_ok`): `ok` when the baseline build of the project 
 no summary, an intake refusal), stopped / rejected before the baseline build ran, or a build that failed. So an
 INCOMPLETE / AWAITING_* / STOPPED-after-baseline run or a FAILED `resolution_mismatch` after a passed build prints
 `build=ok` with `exit=2`. A `full` run never prints `flow=` and its line is the one it always was.
+v2.1z-ak: ` scope=jdk-jakarta` (after `major=`, before `flow=` / `remediation=`) marks a framework project's reduced run
+(`report.plan.scope`, else `report.profile.reduced_scope` when the run ended before the plan): Java 21 + jakarta recipes,
+verify build + fix loop, chained remediation; no restructure, no structure review. A full-scope run never prints it.
 v2.1d: ` major=<n>` is appended when the run made n > 0 major upgrades / library replacements that are still in the
 final tree (`report.operator_checks`, Handover "운영자 확인 필요"); the build passed, the runtime needs a look.
 
@@ -176,13 +181,14 @@ def result_attention(r: Any) -> list[str]:
 def result_line(run_id: Any, exit_code: Any, build_ok: bool, *, unresolved: int = 0, blocked: int = 0,
                 llm_calls: int = 0, attention: Iterable[str] = (), review: Optional[str] = None,
                 open_errors: Optional[int] = None, resolved_errors: Optional[int] = None, major: int = 0,
-                remediation: Optional[str] = None, flow: Optional[str] = None) -> str:
+                remediation: Optional[str] = None, flow: Optional[str] = None, scope: Optional[str] = None) -> str:
     """``SBMIG-RESULT`` 한 줄을 조립한다.
     이전 형식을 읽는 쪽이 깨지지 않도록 ``open=``, ``resolved=``, ``review=``, ``major=``, ``remediation=``은 값이 있을
     때만 붙인다. ``flow=``는 실행 방식이 ``full``이 아닐 때만 ``remediation=`` 바로 앞에 붙인다.
+    ``scope=``는 범위가 ``full``이 아닐 때만 ``major=`` 뒤에 붙인다.
 
     Assemble one `SBMIG-RESULT` line; optional fields appear only when they have a value (`flow=` only for a flow other
-    than `full`)."""
+    than `full`, `scope=` only for a scope other than `full`)."""
     codes = ",".join(attention) or "-"
     errs = ""
     if open_errors is not None or resolved_errors is not None:
@@ -191,6 +197,7 @@ def result_line(run_id: Any, exit_code: Any, build_ok: bool, *, unresolved: int 
             f"build={'ok' if build_ok else 'FAIL'} unresolved={unresolved} blocked={blocked}{errs} llm={llm_calls} "
             f"attn={_ascii_token(codes)}" + (f" review={_ascii_token(review)}" if review else "")
             + (f" major={int(major)}" if major and int(major) > 0 else "")
+            + (f" scope={_ascii_token(scope)}" if scope and scope != "full" else "")
             + (f" flow={_ascii_token(flow)}" if flow and flow != "full" else "")
             + (f" remediation={_ascii_token(remediation)}" if remediation else ""))
 
@@ -250,7 +257,23 @@ def report_result_line(report: Any, exit_code: Optional[int] = None, run_id: Opt
                        attention=report_attention(report, code),
                        review=getattr(getattr(report, "structure_review", None), "verdict", None),
                        open_errors=o, resolved_errors=r, major=len(getattr(report, "operator_checks", None) or []),
-                       remediation=remediation_token(report), flow=flow)
+                       remediation=remediation_token(report), flow=flow, scope=run_scope(report))
+
+
+REDUCED_SCOPE = "jdk-jakarta"
+
+
+def run_scope(report: Any) -> Optional[str]:
+    """실행 범위를 반환한다. 사내 프레임워크 프로젝트로 JDK와 jakarta만 적용한 실행이면 ``jdk-jakarta``, 그 밖은 None이다.
+    계획이 있으면 계획의 범위를 쓰고, 계획 전에 끝난 실행은 프로필의 검사 결과를 쓴다.
+
+    `jdk-jakarta` for a framework project's reduced run (`report.plan.scope`, else `report.profile.reduced_scope` when
+    the run ended before the plan), None otherwise."""
+    plan = getattr(report, "plan", None)
+    if plan is not None:
+        return REDUCED_SCOPE if getattr(plan, "scope", "full") == REDUCED_SCOPE else None
+    profile = getattr(report, "profile", None)
+    return REDUCED_SCOPE if profile is not None and bool(getattr(profile, "reduced_scope", False)) else None
 
 
 def remediation_token(report: Any) -> Optional[str]:

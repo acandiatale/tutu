@@ -542,12 +542,13 @@ class ErrorList:
                   sum(1 for e in self.entries if e.status == "open"), " (void build)" if b.void else "")
         return new
 
-    def add_pom_verify(self, file: str, note: str) -> ErrorEntry:
-        """재구성이 고친 pom 하나를 항목(status pom-verify, seen restructure)으로 추가한다.
+    def add_pom_verify(self, file: str, note: str, seen: str = "restructure") -> ErrorEntry:
+        """sbmig가 고친 pom 하나를 항목(status pom-verify)으로 추가한다. ``seen``은 고친 단계이며 기본값은 restructure다.
         다음 빌드에서 ``verify_poms``가 확인한다.
         같은 pom에 같은 첫 줄의 항목이 있으면 기존 항목을 반환한다.
 
-        A restructure pom correction (status pom-verify, seen restructure) that the next build verifies."""
+        A pom correction sbmig made (status pom-verify) that the next build verifies; `seen` = the stage that made it
+        (`restructure`, or `transform` for the corrections of a reduced run)."""
         f = posix(self.clean(file)) or "pom.xml"
         text = self.clean(note, NOTE_CHARS)
         msg = first_line(text, MESSAGE_CHARS)
@@ -555,7 +556,7 @@ class ErrorList:
         if old is not None:
             return old
         e = self._new(case_id="", l2="", kind=ErrorKind.UNKNOWN, file=f, line=None, module=_module_dir(f),
-                      message=msg, raw="", seen="restructure", status="pom-verify", note=text)
+                      message=msg, raw="", seen=seen or "restructure", status="pom-verify", note=text)
         self.write()
         return e
 

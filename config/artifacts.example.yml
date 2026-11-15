@@ -118,6 +118,16 @@ build:
   # settings.xml 미러와 같은 Nexus 그룹 URL을 여기에도 지정해 두는 것을 권장한다.
   repository_url: null
 
+# --------------------------------------------------------------------------------------
+# framework: 사내 프레임워크를 쓰는 프로젝트
+# --------------------------------------------------------------------------------------
+# 아래 아티팩트가 의존성에 있는 프로젝트는 JDK와 jakarta만 올리고 빌드한 뒤 취약점 조치로 넘어간다.
+# 재구성과 구조 검토는 하지 않고, 부모 pom과 프레임워크 버전은 그대로 둔다.
+# "artifactId"만 쓰거나 "groupId:artifactId"로 쓴다. 아래 값은 예시이므로 실제 아티팩트로 바꾼다.
+# 비워 두면(artifacts: []) 이 검사를 하지 않는다. 다른 키는 config/default.yml의 framework 섹션을 참고한다.
+framework:
+  artifacts: []                         # 예: ["example-fw-core"] 또는 ["com.example.fw:example-fw-core"]
+
 # libraries: 의존성 버전 정책은 여기서 설정할 것이 없다. 사람이 추가하거나 승인하는 라이브러리는
 # <KB 폴더>/libraries.yml에 기록한다(knowledge/libraries/libraries.company.example.yml을 복사).
 # 실행할 때마다 새로 읽으므로 재배포가 필요 없다.

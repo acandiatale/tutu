@@ -249,7 +249,7 @@ Then the final build again, the report (Handover first, "Structure review", fix 
   commits happen in the main session. Per round: append a "Status" table to `docs/PLAN.md`, update
   `docs/INTERFACES.md` on contract changes, add a fixture + `expected.json` (+ `replay/`) for every new scenario.
 - Setup: `uv venv && source .venv/bin/activate && uv pip install -e ".[dev]"` (plain `pip install -e ".[dev]"` works too).
-- Fast check (Python only, ~12 min): `python -m pytest -m "not integration"` → ≈ 5,060 passed, ≈ 58 deselected (2026-11-12)
+- Fast check (Python only, ~12 min): `python -m pytest -m "not integration"` → ≈ 5,360 passed, ≈ 62 deselected (2026-11-15)
   (`-q` on top of the `-q` in pyproject hides the summary line). Until 2026-11-12 `tests/build` (381 tests) was silently
   left out of every root-level run — pytest skips a directory named `build` by default; `norecursedirs` in pyproject now
   keeps it in. When a total does not grow by the number of tests added, compare per-file counts (`--collect-only -q`).
@@ -512,6 +512,45 @@ Then the final build again, the report (Handover first, "Structure review", fix 
   Korean through `sbmig.report.i18n.tr_line` (`abort_reason_ko`): a new `_abort(...)` reason at intake needs a pattern
   (`tests/report/test_abort_reasons_ko.py`). Limits: a ZIP nested two or more folders deep is not accepted by the remediation
   flow; not run in the cluster or against the real IVAS yet. The user announced one more feature after this.
+- **Framework projects (v2.1z-ak, 2026-11-15)**: the user — a project that has the in-house framework's core artifact
+  among its dependencies gets "jdk, jakarta 업그레이드만 하고 빌드하고 취약점 점검만 하는 방식"; the artifact may be declared
+  directly or sit in a parent pom; decisions the same day: the fix loop runs ("jakarta 때문에 수정루프는 돌아야할거야"), the
+  framework's own version is kept ("그대로 두자"), a transitive-only presence is checked too (the user was unsure whether
+  it exists; it is treated like a declared one and can be switched to `note`). The real artifact name is a company
+  coordinate: never in the repo — the company writes `framework: {artifacts: ["<artifactId>"]}` into its
+  `config/artifacts.yml` (baked into the image → rebuild). Empty list = check off. `sbmig/analyze/framework.py` looks in
+  four places (direct declaration in a project pom; inherited from a parent pom outside the project, read from the as-is
+  effective pom of intake; a bundled jar no pom declares; `dependency:tree`, one more Maven call, only when the first
+  three found nothing) → `ProjectProfile.framework` (`FrameworkUse`: evidence, `unchecked`, `scope`), flag
+  `framework-project`, journal `framework_project` / `framework_check`, a Korean Handover line. Scope `jdk-jakarta`
+  (`MigrationPlan.scope`): plan = `transform.rewrite` (the jdk21 + jakarta sets only) → `transform.jsp_jakarta` (the JSP
+  rename, run by the orchestrator, not the restructurer) → `verify.build` + fix loop → the chained remediation; no
+  restructure, no structure review, the parent pom is never aligned or replaced (an unresolvable parent aborts
+  `aborted:parent-not-found`). The fix loop of such a run takes its version facts from the project's own chain (the
+  as-is capture stands for the "parent chain"; never the company chain or the target Boot BOM), never touches a framework
+  artifact's version (protected keys, pre-tries skip it, `_framework_guard` rolls back an attempt that changes it or a
+  `<parent>`), blocks a javax-era library that is the framework itself (owner must ship a jakarta build), and the prompt
+  has a reduced-scope system text + the section "Scope of this run". Remediation: in-house group `framework`
+  (`remediation.inhouse_groups`, patterns via `InhouseKeys`) — the framework and what it brings are never proposed.
+  `SBMIG-RESULT … scope=jdk-jakarta`; report block 사내 프레임워크 프로젝트; the page labels the run and shows 재구성 /
+  구조 검토 as 하지 않음. Switches: `framework.scope: jdk-jakarta | full`, `framework.transitive: apply | note | off`,
+  `framework.recipe_sets` (default `[jdk21, jakarta]`: the standard jakarta recipe ends on Jakarta EE 9 / servlet 5.0;
+  `servlet_jakarta_10` adds the Servlet 6 removals — the company's call, depends on the Tomcat line).
+  **What the real-Maven e2e found (the unit tests had not)**: a reduced run has no restructure, so the two corrections
+  the restructure makes for what the UPGRADE itself breaks were missing — (1) the jakarta recipe turns
+  `javax.servlet-api provided` into `jakarta.servlet-api compile` (servlet API inside the WAR) → the as-is `provided`
+  scopes are restored after the rewrite (`sbmig/restructure/scope_restore.py`); (2) javac's default source encoding is
+  UTF-8 since JDK 18 and OpenRewrite skips a file it cannot decode (an MS949 file kept its javax imports) →
+  `project.build.sourceEncoding` is written BEFORE OpenRewrite (`sbmig/restructure/source_encoding.py`; the full flow
+  still writes it after the rewrite — same skip there, not changed in this round); and the report claimed "Spring Boot
+  4.1.0" for a non-Boot project (target fallback). Commit order of a reduced run: `transform: source encodings written`
+  → `rewrite: transform.rewrite` → `transform: as-is provided scopes restored` → `transform: JSP javax → jakarta`; the
+  corrections are error-list entries with `seen = transform`. Lesson: when a flow skips a stage, list what that stage
+  repairs and sort it by cause (the upgrade vs the parent swap) before calling the flow done.
+  Fixtures `fw-direct` (MS949 source), `fw-parent`, `fw-transitive` (`servlet_jakarta_10` listed),
+  `fw-transitive-note` + stand-in libs `fixtures/libs/example-fw`.
+  Open risk told to the user: with the framework version fixed, a framework still compiled against javax cannot work
+  with jakarta project code — such runs end BLOCKED naming the framework. Contract: `docs/INTERFACES.md` "v2.1z-ak".
 - **Company convention (2026-10-20): agents run on LangGraph under uvicorn.** `loop.engine: graph` (default) drives
   the phases from a LangGraph `StateGraph` (`sbmig/graph/`, nodes intake → analyze → plan → phase×N → finalize;
   `inline` is the old loop, reports are identical by test); the web UI is FastAPI (`uvicorn sbmig.web.app:app` or

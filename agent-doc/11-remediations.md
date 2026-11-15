@@ -131,7 +131,7 @@ g:a 는 한 항목). 그 g:a 의 관리 항목이 루트 pom 에 이미 있으�
 
 승인 요청은 **제안 해시 · 원본 트리 해시 · 정책 해시 · diff** 가 저장된 제안과 모두 같고, 제안이 지금의 `accepted/` 와 정책에도 맞고(낡지 않음),
 아직 `pending` 일 때만 받아들인다. 하나라도 다르면 요청 전체가 409 `approval_mismatch`(+ `fields`), 아무것도 쓰지 않는다(전부 아니면 전무).
-정책 해시에는 `remediation.policy` 전부 + `require_approval` + `always_approve` + `failed_candidate` + `ignore_actions` 가 들어간다 — 하나만 바꿔도 열린 제안은 모두
+정책 해시에는 `remediation.policy` 전부 + `require_approval` + `always_approve` + `failed_candidate` + `ignore_actions` + 사내 g:a(+ 프레임워크 패턴, 12)가 들어간다. 하나만 바꿔도 열린 제안은 모두
 무효가 되어 계획을 다시 만든다(`ivas_summary_check` 는 안 들어간다). 제안 해시는 edit 전부(`op` · `anchor` · `override` 포함)를 덮는다. 거절한 (g:a, 버전)은 그 작업의 다음 라운드에서 다시 제안하지 않는다(잔여 `rejected_proposals`). `by` 는 비워도 된다. 화면의 승인은 체크박스 목록과
 버튼 하나 `선택한 항목 적용`: 체크 = approved, 안 함 = rejected, 그다음 자동 재개(`"resume": true`). 그 값이 없으면 승인은 재개가 아니다.
 
@@ -237,14 +237,14 @@ Maven 쪽은 이관과 같은 키를 쓴다: `build.mvn`, `build.java_home`, `bu
 | 실패한 후보를 낼지(include / discard), 검증된 ZIP 보존 | `sbmig/remediations/graph.py` (`_build`, `deliver_failed_candidate`, `discard_candidate`) |
 | Maven 명령·준비 조건·해석 읽기 | `sbmig/remediations/maven.py` |
 | 노드 순서, 멈춤·재개, 성공 판정 | `sbmig/remediations/graph.py` (`_evaluate`, `_Holder.scan`) |
-| 보고서·한국어 문장·사내 라이브러리 안내 | [12](12-remediation-report.md) |
+| 보고서·한국어 문장·사내 라이브러리 안내·`framework` 그룹 | [12](12-remediation-report.md) |
 | 상태·이유 코드·자료형(계약) | `sbmig/remediations/models.py` — 바꾸면 `docs/INTERFACES.md` 의 remediations 절도 |
 | 새 설정 키 | `sbmig/core/config.py` 의 `RemediationConfig` + `config/default.yml` (한국어 설명) |
 | HTTP 경로·작업 관리 | 같은 패키지의 api.py / service.py |
 | 이관 뒤 이어 돌기(건너뜀 조건, 폴더, 재개) | 같은 패키지의 chain.py, 이관 그래프의 `remediation` 노드 |
 | Job 파드의 IVAS env·정제 범위 | `deploy/k8s/81-web-job.template.yaml`, `sbmig/web/contract.py` (`SECRET_NAMES`), `sbmig/web/redact.py` (`_remediation_targets`) |
 
-시험은 `tests/remediations/` (가짜 IVAS·Maven·저장소, 합성 ZIP, 네트워크·`mvn` 없음).
+시험은 `tests/remediations/` (가짜 IVAS·Maven·저장소, 네트워크 없음).
 
 ## 확인하는 법
 

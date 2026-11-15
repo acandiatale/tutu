@@ -1,0 +1,28 @@
+package com.example.fwapp.web;
+
+import javax.servlet.http.HttpServletRequest;
+
+/**
+ * 공지 문구 모음 (MS949로 저장된 소스, 한국어 Windows에서 빌드하던 코드).
+ */
+public final class NoticeText {
+
+    /** 공지 등급 */
+    public enum 등급 { 일반, 긴급 }
+
+    public static final String WELCOME = "안녕하세요, 공지사항입니다";
+
+    private NoticeText() {
+    }
+
+    // 요청 파라미터 urgent=Y 이면 긴급 공지로 만든다
+    public static String fromRequest(HttpServletRequest req) {
+        등급 level = "Y".equals(req.getParameter("urgent")) ? 등급.긴급 : 등급.일반;
+        return title(level, req.getParameter("text"));
+    }
+
+    // 긴급 공지는 앞에 표시를 붙인다
+    public static String title(등급 level, String text) {
+        return (level == 등급.긴급 ? "[긴급] " : "") + text;
+    }
+}

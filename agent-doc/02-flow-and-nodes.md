@@ -52,7 +52,8 @@ pom 이 없고 build.xml 도 없는 트리(풀어 놓은 Tomcat 웹앱)는 거�
 | 정하는 것 | `ProjectProfile`: 유형(`case_type`, `sbmig/analyze/classifier.py`), Java·Spring·Boot 버전, 라이브러리(`sbmig/analyze/libraries.py`), MSA 서비스 루트, 경고, 외부 설정 키, 동봉 jar 목록(`sbmig/analyze/bundled_jars.py`, `intake.bundled_jars`), ADF 요약(`sbmig/analyze/adf.py`) |
 | 쓰는 것 | `out/<run id>/profile.json`, 동봉 jar 가 있으면 `logs/bundled-jars.json` + 플래그 `bundled-jars` |
 | 권고 | `sbmig/advisory/evaluate.py` 가 EOL 라이브러리 권고를 찾는다. 안내만(차단 없음): 계획 노트, 수정 프롬프트 힌트, 인수인계 |
-| 저널 | `analyze`, `adf_project` / `adf_traces`, `hollow_reactor` / `sources_outside_reactor`, `bundled_jars`, `advisories`, `no_root_pom` |
+| 사내 프레임워크 | `framework.artifacts`가 있으면 `sbmig/analyze/framework.py`가 직접 선언, 부모 pom 상속, 동봉 jar 순으로 찾고, 못 찾으면 `_check_framework`가 `dependency:tree` 1회로 간접 의존성을 본다. 찾으면 플래그 `framework-project`, 인수인계 한 줄, 범위 `jdk-jakarta`(아래 "범위") |
+| 저널 | `analyze`, `adf_project` / `adf_traces`, `hollow_reactor` / `sources_outside_reactor`, `bundled_jars`, `framework_project` / `framework_check`, `advisories`, `no_root_pom` |
 | 멈춤 | ADF 근거 계열이 둘 이상이고 `intake.adf_policy: stop`(기본) → 플래그 `adf-project`, 인수인계 첫 줄 "ADF 프로젝트라 변환이 불가능합니다 (…)", exit 3(Maven·LLM 호출 없음). 루트 pom.xml 이 없고 MSA 도 아님 → `no-root-pom`, exit 3 |
 | 계속하지만 성공 아님 | 속 빈 리액터 → 플래그 `hollow-reactor`, 인수인계 첫 줄, exit 2. 계열 하나뿐인 ADF 흔적 → `adf-traces` 메모만 |
 
@@ -78,6 +79,12 @@ pom 이 없고 build.xml 도 없는 트리(풀어 놓은 Tomcat 웹앱)는 거�
 
 MSA: 공유 라이브러리 루트 먼저, 그다음 서비스마다 `transform.rewrite@<x>` → `restructure.msa_pom` → `restructure.review` →
 `verify.build`(루트 aggregator 가 없으면 `verify.build@<x>` 서비스마다).
+
+**범위.** 계획에는 범위(`MigrationPlan.scope`, 저널 `plan`의 `scope`)가 있다. 보통은 `full`이고 위 표대로다. 사내 프레임워크 프로젝트는
+`jdk-jakarta`: 단계는 `transform.rewrite`(`framework.recipe_sets`의 세트만, 기본 `jdk21`과 `jakarta`. 앞에 MS949·EUC-KR 모듈의 `project.build.sourceEncoding` 쓰기, 뒤에 as-is `provided` scope 되돌리기), JSP가 있으면 `transform.jsp_jakarta`
+(재구성기 없이 JSP 이름만 바꿈, 커밋 `transform: JSP javax → jakarta`), `verify.build`뿐이다. `restructure.*`, `restructure.review`,
+`transform.compile`은 없다. as-is 부모는 회사 부모로 맞추지 않고, 받지 못하면 LLM 없이 `aborted:parent-not-found`로 멈춘다. 결과 줄에
+`scope=jdk-jakarta`가 붙는다. 자세한 것은 [13-framework-projects.md](13-framework-projects.md).
 
 레시피 세트(`openrewrite.recipes`, id 는 `knowledge/recipes/catalog.yml` 에 있어야 한다):
 
@@ -171,13 +178,14 @@ MSA: 공유 라이브러리 루트 먼저, 그다음 서비스마다 `transform.
 | 성공 판정 | 계획한 최종 빌드가 전부 돌았고 전부 성공 + `restructure-failed` 없음 + `hollow-reactor` 없음 + 중단 아님 |
 | `tests-not-compiled` | `build.skip_test_compile` 이고 빌드가 한 번이라도 돌았으면 항상 붙는 플래그 + 후속 조치("테스트는 담당팀이 `mvn test-compile` 로") |
 | 종료 코드 | `report_exit_code`(`sbmig/report/result_line.py`): `aborted` / `aborted:…` / `mvn-not-found` → 3, 성공이고 차단 없음 → 0, 그 밖 → 2 |
-| 마지막 줄 | `SBMIG-RESULT run=… exit=… build=… unresolved=… blocked=… open=… resolved=… llm=… attn=…[ review=…][ major=…]` — 콘솔·`sbmig.log`·보고서 머리 표 |
+| 마지막 줄 | `SBMIG-RESULT run=… exit=… build=… unresolved=… blocked=… open=… resolved=… llm=… attn=…[ review=…][ major=…][ scope=jdk-jakarta]` — 콘솔·`sbmig.log`·보고서 머리 표 |
 | 저널 | `report`, 그리고 `build_hook`(teardown: `build.teardown_command`, 실패는 WARNING 만) |
 
 `out/<run id>/report.md` 의 절 순서(`render_markdown`, `sbmig/report/markdown.py`):
 
 ```
-머리 표 (Result, SBMIG-RESULT 줄, Case, As-is, To-be, LLM, Flags, Blocked, Structure review)
+머리 표 (Result, SBMIG-RESULT 줄, Case, As-is, 범위(프레임워크 프로젝트만), To-be, LLM, Flags, Blocked, Structure review)
+사내 프레임워크 (찾았을 때)
 인수인계 (운영자 확인 필요 -> Ant pom 합성 -> 교체된 버전 -> 주의 라이브러리 -> 이제부터 할 일)
 ADF sizing (ADF 일 때)
 Error list -> Fixes by case -> Structure review -> Bundled jars -> Blocked -> javax API jars
@@ -201,7 +209,7 @@ KB 쪽: 실행의 오류 목록이 `kb-v2/errors.jsonl` 에 덧붙고, 케이스
 | `restructure-failed` | 재구성 | 2 |
 | `parent-chain-no-boot-bom` | 재구성 | 알림(attn 코드) |
 | `tests-not-compiled` | 마무리 | 알림 |
-| `bundled-jars`, `stray-pom-ignored`, `pom-synthesized`, `aggregator-generated`, `reactor-duplicate-removed`, `deploy-extensions-removed`, `adf-traces`, `sources-outside-reactor` | 접수·분석 | 기록만 |
+| `bundled-jars`, `framework-project`, `stray-pom-ignored`, `pom-synthesized`, `aggregator-generated`, `reactor-duplicate-removed`, `deploy-extensions-removed`, `adf-traces`, `sources-outside-reactor` | 접수·분석 | 기록만 |
 | `remediation:not-ready` | 접수(실행 방식 `remediation`) | 3 (IVAS 값·Maven 준비 없음, 빠진 이름만 보고서에) |
 | `parent-extension-unresolvable` | 접수 | 사내 부모 체인의 빌드 확장을 로컬·저장소 어디서도 못 읽음 — 모든 Maven 호출이 `Unresolveable build extension` 으로 실패한다. Nexus 에 올리거나 부모에서 빼야 한다 |
 | `llm-budget-exhausted`, `time-budget-exhausted`, `infra:<kind>` | 루프·마무리 | 성공이 아니면 2 |

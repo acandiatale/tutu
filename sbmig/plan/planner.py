@@ -10,6 +10,7 @@ LLM은 사용하지 않는다.
   servlet_tomcat에는 Servlet 6 제거 API 세트를 넣는다. Boot 프로젝트는 Boot 4 묶음 레시피가 같은 일을 한다
 - MSA는 공유 라이브러리를 먼저, 그다음 서비스별 단계를 만든다
 - 권고는 계획 노트 한 줄씩 남길 뿐 레시피가 되지 않는다
+- 사내 프레임워크 프로젝트(``jdk-jakarta`` 범위)는 Java 21과 jakarta 변환, JSP 이름 변경, 검증 빌드만 계획한다
 
 Rule-based migration planner (no LLM), v2 (flow-v2): ProjectProfile + Config → MigrationPlan.
 
@@ -53,6 +54,10 @@ restructure.pom_only, restructure.review, verify.build. The only build before ve
 * `loop.phases.{jdk21,spring,restructure}.enabled` (v1 intermediate loops) are ignored and noted when set.
 * Library advisories (`build_plan(..., advisories=findings)`, sbmig.advisory) are guide-only: one plan note
   `advisory: <id> → guide (LLM hints + Handover)` each; the fix loop gets their hints, the handover their follow-ups.
+* Framework projects (`profile.reduced_scope`, v2.1z-ak): `MigrationPlan.scope = "jdk-jakarta"` and only
+  `transform.rewrite[@svc]` (jdk21 + jakarta sets), `transform.jsp_jakarta` (StepKind.RESTRUCTURE, Phase.TRANSFORM,
+  params {"mode": "jsp_jakarta"}) and `verify.build[@svc]`; never a restructure, the review or `transform.compile`.
+  The first note starts `scope: jdk-jakarta — framework project (…)`. A full-scope plan is unchanged.
 
 
 """
@@ -599,17 +604,20 @@ def _single_steps(profile: ProjectProfile, cfg: Config, notes: list[str]) -> lis
     return steps
 
 
-def _settings_notes(cfg: Config, notes: list[str]) -> None:
+def _settings_notes(cfg: Config, notes: list[str], optional: bool = True) -> None:
     """무시하는 루프 설정과 선택 아티팩트에 대한 노트를 만든다.
     설정과 관계없이 같은 흐름을 계획하며 선택 아티팩트는 재구성 단계에서 버전을 올린다.
 
-    Notes for loop settings v2 ignores and for the optional artifacts; v2 plans the same flow whatever they say."""
+    Notes for loop settings v2 ignores and for the optional artifacts; v2 plans the same flow whatever they say.
+    `optional=False` (the jdk-jakarta scope, no restructure) leaves the optional-artifact note out."""
     on = [k for k in V1_LOOP_PHASES if (pc := cfg.loop.phases.get(k)) is not None and pc.enabled]
     if on:
         notes.append(f"v2: no intermediate build-fix loops (loop.phases.{{{','.join(on)}}}.enabled=true ignored)")
     vc = cfg.loop.phases.get("verify")
     if vc is not None and not vc.enabled:
         notes.append("loop.phases.verify.enabled=false → the final build is not followed by the script fix loop")
+    if not optional:
+        return
     if cfg.artifacts.optional or cfg.artifacts.remove_when_present:
         notes.append("optional artifacts: bumped inside the restructure step (no separate bump step in v2)")
     else:
@@ -637,17 +645,199 @@ def build_plan(profile: ProjectProfile, cfg: Config, kb: Any = None,
         for w in profile.warnings[1:]:
             notes.append(f"warning: {w}")
         return MigrationPlan(profile_fingerprint=profile.fingerprint, case_type=case, steps=[], notes=notes)
-    _settings_notes(cfg, notes)
-
-    if case == CaseType.MSA and profile.services:
-        steps += _msa_steps(profile, cfg, notes)
+    reduced = profile.reduced_scope
+    if reduced:
+        # 사내 프레임워크 프로젝트는 JDK 21과 jakarta만 올리므로 범위 노트를 맨 앞에 둔다
+        notes.insert(0, _scope_note(profile))
+        _settings_notes(cfg, notes, optional=False)
+        steps += _reduced_steps(profile, cfg, notes)
     else:
-        steps += _single_steps(profile, cfg, notes)
+        _settings_notes(cfg, notes)
+        if case == CaseType.MSA and profile.services:
+            steps += _msa_steps(profile, cfg, notes)
+        else:
+            steps += _single_steps(profile, cfg, notes)
     for f in advisories or []:
         notes.append(f"advisory: {getattr(f, 'advisory_id', f)} → guide (LLM hints + Handover)")
     for w in profile.warnings:
         notes.append(f"warning: {w}")
-    return MigrationPlan(profile_fingerprint=profile.fingerprint, case_type=case, steps=steps, notes=notes)
+    plan = MigrationPlan(profile_fingerprint=profile.fingerprint, case_type=case, steps=steps, notes=notes)
+    if reduced:
+        plan.scope = "jdk-jakarta"
+    return plan
+
+
+# ---------------------------------------------------------------------------
+# 사내 프레임워크 프로젝트의 축소 계획(jdk-jakarta). 변환과 검증 빌드만 있고 재구성과 구조 검토는 없다
+# reduced plan of a framework project (scope jdk-jakarta, v2.1z-ak)
+# ---------------------------------------------------------------------------
+JSP_JAKARTA = "transform.jsp_jakarta"
+
+
+def _scope_note(profile: ProjectProfile) -> str:
+    """축소 계획의 첫 노트를 만든다. 무엇을 실행하고 무엇을 하지 않는지 적는다."""
+    from sbmig.analyze.framework import summary_text
+    fw = summary_text(profile.framework) if profile.framework is not None else "-"
+    return (f"scope: jdk-jakarta — framework project ({fw}): Java 21 + jakarta recipes, then the verify build with "
+            "the fix loop; no restructure, no structure review, the parent poms and the framework version are kept")
+
+
+# 축소 계획에서 레시피 세트 이름이 들어갈 묶음. 전체 계획과 같은 묶음을 쓴다
+# reduced plan: `framework.recipe_sets` name → the bucket the full plan uses for that set
+_REDUCED_SET_BUCKET: dict[str, str] = {
+    "jdk21": "jdk21", "jakarta": "jakarta", "servlet_jakarta_10": "jakarta", "spring_framework_7": "framework",
+    "spring_security_7": "security", "spring_batch_6": "batch", "hibernate_7": "hibernate", "spring_boot_4": "boot",
+    "junit5": "junit5",
+}
+
+
+def _reduced_buckets(facts: _Facts, cfg: Config, notes: list[str], label: str = "") -> dict[str, list[str]]:
+    """축소 계획의 레시피 묶음을 ``framework.recipe_sets``에 적힌 세트로 정한다.
+    - jakarta 세트는 EE javax import가 없는 pure_java / unknown에는 넣지 않는다
+    - servlet_jakarta_10 세트는 jakarta 세트가 들어갈 때만 jakarta 뒤에 넣는다
+    - 나머지 세트는 적혀 있으면 넣는다. extra는 쓰지 않는다
+
+    jdk-jakarta scope: the sets named by `framework.recipe_sets` (default jdk21 + jakarta). `jakarta` keeps its rule
+    (not for pure_java / unknown without Java EE javax imports); `servlet_jakarta_10` only together with the jakarta
+    set, after its ids in the `jakarta` bucket; every other listed set goes unconditionally into the bucket the full
+    plan uses for it. `extra` is never used. The note names the sets planned and the listed sets left out."""
+    rs = cfg.openrewrite.recipes
+    out: dict[str, list[str]] = {k: [] for k, _ in _BUCKETS}
+    where = f" [{label}]" if label else ""
+    fw = getattr(cfg, "framework", None)
+    sets = list(getattr(fw, "recipe_sets", None) or []) if fw is not None else ["jdk21", "jakarta"]
+    case = facts.case
+    planned: list[str] = []
+    left: list[str] = []
+    detail = ""
+    jakarta_ok = False
+    if "jakarta" in sets:
+        if case in (CaseType.PURE_JAVA, CaseType.UNKNOWN):
+            ee = ee_javax_packages(facts.javax, "javax-annotation" in facts.libs)
+            jakarta_ok = bool(ee)
+            if ee:
+                detail = f" with Java EE javax imports ({', '.join(ee)})"
+            else:
+                left.append("jakarta (no Java EE javax imports)")
+        else:
+            jakarta_ok = True
+    # jakarta 세트를 먼저 정해야 servlet_jakarta_10을 판단할 수 있으므로 순서를 맞춘다
+    ordered = [n for n in sets if n == "jakarta"] + [n for n in sets if n != "jakarta"]
+    for name in ordered:
+        if name not in _REDUCED_SET_BUCKET:
+            continue
+        if name == "jakarta" and not jakarta_ok:
+            continue
+        if name == "servlet_jakarta_10" and not jakarta_ok:
+            left.append("servlet_jakarta_10 (no jakarta set planned)")
+            continue
+        ids = list(getattr(rs, name, []) or [])
+        if not ids:
+            left.append(f"{name} (the set is empty)")
+            continue
+        bucket = out[_REDUCED_SET_BUCKET[name]]
+        bucket += [i for i in ids if i not in bucket]
+        planned.append(name)
+    shown = [n for n in sets if n in planned]
+    msg = (f"transform{where}: jdk-jakarta scope, {case.value}{detail} → recipe sets: "
+           + (", ".join(shown) or "none"))
+    if left:
+        msg += "; left out: " + ", ".join(left)
+    notes.append(msg)
+    return out
+
+
+def _reduced_transform_step(buckets: dict[str, list[str]], cfg: Config, notes: list[str], *,
+                            svc: Optional[str] = None, target: Optional[str] = None) -> Optional[PlanStep]:
+    """축소 계획의 ``transform.rewrite[@svc]`` 단계를 만든다. 적용할 레시피가 없으면 None을 반환한다."""
+    where = f" [{svc}]" if svc else ""
+    ids = _flatten(buckets)
+    if not ids:
+        notes.append(f"transform{where}: no recipes apply → {TRANSFORM}{_sfx(svc)} omitted")
+        return None
+    parts = [lbl for key, lbl in _BUCKETS if buckets.get(key)]
+    notes.append(f"transform{where}: one OpenRewrite run ({_shorts(ids)}) on the as-is classpath, no restructure "
+                 "(jdk-jakarta scope)")
+    return PlanStep(
+        id=TRANSFORM + _sfx(svc), kind=StepKind.OPENREWRITE, phase=Phase.TRANSFORM,
+        title="OpenRewrite in one run: " + " + ".join(parts) + (f" ({svc})" if svc else ""),
+        recipes=[recipe_ref(i, cfg) for i in ids], target=target, params={"service": svc} if svc else {},
+        reason="framework project (scope jdk-jakarta): Java 21 / jakarta recipes only, on the as-is classpath; the "
+               "parents, the module layout and the framework version stay as they are")
+
+
+def _reduced_steps(profile: ProjectProfile, cfg: Config, notes: list[str]) -> list[PlanStep]:
+    """사내 프레임워크 프로젝트의 단계를 만든다. ``transform.rewrite`` -> ``transform.jsp_jakarta`` ->
+    ``verify.build`` 순서이고 재구성, 구조 검토, ``transform.compile``은 넣지 않는다.
+
+    jdk-jakarta scope: `transform.rewrite[@svc]` (Java 21 + jakarta), `transform.jsp_jakarta` (JSPs, one step for the
+    whole tree), `verify.build[@svc]`. MSA: per target (library roots first) or one root run when the root aggregator
+    covers every target; verify at the root when the root pom aggregates, else per target."""
+    from sbmig.analyze.classifier import is_library_root
+
+    steps: list[PlanStep] = []
+    javax = profile.source.javax_imports
+    no_sources = profile.source.java_files == 0
+    if cfg.plan.compile_after_rewrite:
+        notes.append("compile: plan.compile_after_rewrite=true does not apply in the jdk-jakarta scope (no "
+                     f"{COMPILE}); the verify build is the first build")
+    case = profile.case_type
+    msa = case == CaseType.MSA and bool(profile.services)
+    if msa:
+        libs = _order_libraries(profile, [s for s in profile.services if is_library_root(s, profile)])
+        svcs = [s for s in profile.services if not is_library_root(s, profile)]
+        targets = libs + svcs
+        for t in targets:
+            notes.append(f"msa {'library root' if t in libs else 'service'} {t.name} ({_service_dir(t)}): sub-case "
+                         f"{t.case_type.value}")
+        if no_sources:
+            notes.append("msa: no java sources → no transform step (verify only)")
+        elif _aggregator_covers(profile, targets):
+            union = _union([_reduced_buckets(_Facts(t.case_type, _service_libs(profile, t), javax), cfg, notes, t.name)
+                            for t in targets])
+            notes.append(f"msa: {profile.root_pom.path if profile.root_pom else 'pom.xml'} aggregates every "
+                         f"service/library → one {TRANSFORM} at the repo root")
+            st = _reduced_transform_step(union, cfg, notes)
+            steps += [st] if st else []
+        else:
+            for t in targets:
+                b = _reduced_buckets(_Facts(t.case_type, _service_libs(profile, t), javax), cfg, notes, t.name)
+                st = _reduced_transform_step(b, cfg, notes, svc=t.name, target=_service_dir(t))
+                steps += [st] if st else []
+    else:
+        if case == CaseType.MSA:
+            notes.append("msa without discovered services → planned as a single project")
+        if no_sources:
+            notes.append("no java sources → no transform step (verify only)")
+        else:
+            b = _reduced_buckets(_Facts(case, {lib.name for lib in profile.libraries}, javax), cfg, notes)
+            st = _reduced_transform_step(b, cfg, notes)
+            steps += [st] if st else []
+    jakarta_ids = set(cfg.openrewrite.recipes.jakarta)
+    jakarta_planned = bool(jakarta_ids) and any(r.id in jakarta_ids for st in steps for r in st.recipes)
+    src = profile.source
+    if jakarta_planned and (src.jsp_paths or src.jsp_count):
+        if cfg.layout.jsp_jakarta_rename:
+            steps.append(PlanStep(
+                id=JSP_JAKARTA, kind=StepKind.RESTRUCTURE, phase=Phase.TRANSFORM,
+                title="JSP javax → jakarta rename (whole tree)", params={"mode": "jsp_jakarta"},
+                reason="OpenRewrite does not parse JSPs; the javax EE names in JSP / tag files are renamed in place"))
+            notes.append(f"transform: {len(src.jsp_paths) or src.jsp_count} JSP(s) → {JSP_JAKARTA} renames the javax "
+                         "EE names in place (layout.jsp_jakarta_rename=true)")
+        else:
+            notes.append("transform: JSPs keep their javax names (layout.jsp_jakarta_rename=false) → follow-up for "
+                         "the owners")
+    rp = profile.root_pom
+    if msa and not (rp is not None and rp.is_aggregator):
+        for t in targets:
+            steps.append(_verify(target=_service_dir(t), svc=t.name))
+        notes.append("verify: no root aggregator pom → one mvn clean package per service"
+                     + (" and library root" if libs else ""))
+    else:
+        steps.append(_verify())
+        if msa:
+            notes.append(f"verify: root aggregator {rp.path} → one mvn clean package for the whole repo")
+    return steps
 
 
 # ---------------------------------------------------------------------------
@@ -781,6 +971,10 @@ def advise_plan(plan: MigrationPlan, profile: ProjectProfile, llm: Any = None,
     `catalog` when given, else the advisor-eligible catalog recipes inside the v2 scope (`advisor_whitelist`).
     Never raises."""
     if llm is None or (cfg is not None and cfg.plan.advisor == "none"):
+        return plan
+    if plan.scope == "jdk-jakarta":
+        # 사내 프레임워크 프로젝트는 JDK와 jakarta 세트만 실행하므로 레시피를 더하지 않는다
+        plan.notes.append("advisor: jdk-jakarta scope (framework project) → plan unchanged, no recipe added")
         return plan
     cat_obj = default_catalog(cfg) if cfg is not None else _DEFAULT_CATALOG
     if cfg is not None:

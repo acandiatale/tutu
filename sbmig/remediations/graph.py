@@ -867,7 +867,8 @@ def _report(h: _Holder) -> str | None:
     severity = (getattr(h.rcfg, "severity_red", 9.0), getattr(h.rcfg, "severity_orange", 7.0),
                 getattr(h.rcfg, "severity_yellow", 4.0))
     report_mod.write_report(h.state, h.paths, ignore_actions=sorted(h.ignored_codes),
-                            inhouse_message=getattr(h.rcfg, "inhouse_message", None), severity=severity)
+                            inhouse_message=getattr(h.rcfg, "inhouse_message", None), severity=severity,
+                            inhouse=inhouse_keys(h.cfg))
     return None
 
 

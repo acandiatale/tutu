@@ -179,10 +179,11 @@ class RunErrors(_Guarded):
         The pom-verify entries this build settles (resolved "build"); returns how many."""
         return _count(self._call("verify_poms", build))
 
-    def add_pom_verify(self, file: str, note: str) -> Any:
-        """재구성 단계의 pom 수정 하나를 항목 하나로 기록한다.
-        상태는 ``pom-verify``이며 다음 빌드에서 확인한다."""
-        e = self._call("add_pom_verify", file, note)
+    def add_pom_verify(self, file: str, note: str, seen: str = "restructure") -> Any:
+        """sbmig가 고친 pom 하나를 항목 하나로 기록한다.
+        상태는 ``pom-verify``이며 다음 빌드에서 확인한다. ``seen``은 고친 단계다."""
+        opt = {"seen": seen} if seen != "restructure" else None
+        e = self._call("add_pom_verify", file, note, optional=opt)
         if self.active:
             self.pom_verify_added += 1
         return e

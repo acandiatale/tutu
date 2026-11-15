@@ -105,21 +105,29 @@ def _policy_dict(policy: Any) -> dict[str, Any]:
 
 def policy_hash(cfg: Any) -> str:
     """서버 정책의 해시를 계산한다. ``remediation.policy``, ``require_approval``, ``always_approve``,
-    ``failed_candidate``, ``ignore_actions``, 사내 아티팩트 설정을 포함한다.
+    ``failed_candidate``, ``ignore_actions``, 사내 아티팩트 설정, 프레임워크 패턴을 포함한다.
     제안 내용이나 승인 대상을 바꾸는 값이 하나라도 바뀌면 해시가 바뀌고, 이전의 승인 대기 제안은 무효가 된다.
 
     Hash of everything that changes what is proposed or what needs approval (incl. `ignore_actions` and the sorted
-    in-house g:a keys)."""
+    in-house g:a keys). The framework patterns (group `framework` listed and `framework.artifacts` not empty) are an
+    extra field `inhouse_framework`, left out when there are none, so a configuration without patterns hashes exactly
+    as before the group existed (the group names themselves were never hashed, only the resolved keys)."""
     from .ivas import ignore_set
     rem = _rem(cfg)
-    return sha256_text(canonical_json({
+    keys = inhouse_keys(cfg)
+    data: dict[str, Any] = {
         "policy": _policy_dict(rem.policy),
         "require_approval": bool(rem.require_approval),
         "always_approve": sorted(str(x) for x in (rem.always_approve or [])),
         "failed_candidate": str(rem.failed_candidate),
         "ignore_actions": sorted(ignore_set(getattr(rem, "ignore_actions", None))),
-        "inhouse": sorted(inhouse_keys(cfg)),
-    }))
+        "inhouse": sorted(keys),
+    }
+    # 패턴이 없을 때는 넣지 않아야 framework 그룹이 생기기 전에 받은 승인의 해시가 그대로 유지된다
+    patterns = sorted(getattr(keys, "patterns", ()) or ())
+    if patterns:
+        data["inhouse_framework"] = patterns
+    return sha256_text(canonical_json(data))
 
 
 # ---------------------------------------------------------------------------------------------------- 버전 출처

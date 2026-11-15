@@ -12,20 +12,20 @@ type: `sbmig/core/models.py`, `sbmig/core/interfaces.py`, `sbmig/core/config.py`
 | topic | sections |
 |---|---|
 | run directory & workspace | Base "Run directory and workspace"; v2.1z-h (`ignored_dirs`) |
-| intake / analyze | Base "Intake and analyze", "Externalized configuration"; v2.1j (Ant), v2.1k + v2.1z "Review follow-ups" (rootless trees), v2.1z-c (hollow reactor), v2.1z-d (ADF), v2.1z-h (stray poms), v2.1z-i (bundled jars), v2.1z-z (build extensions); v2.1z-aj (Ant refused by default) |
-| plan | v2 "Plan (L)"; v2.1o (1) (`plan.compile_after_rewrite`); v2.1u … v2.1y / v2.1w (recipe sets) |
+| intake / analyze | Base "Intake and analyze", "Externalized configuration"; v2.1j (Ant), v2.1k + v2.1z "Review follow-ups" (rootless trees), v2.1z-c (hollow reactor), v2.1z-d (ADF), v2.1z-h (stray poms), v2.1z-i (bundled jars), v2.1z-z (build extensions); v2.1z-aj (Ant refused by default); v2.1z-ak (framework projects: detection, scope) |
+| plan | v2 "Plan (L)"; v2.1o (1) (`plan.compile_after_rewrite`); v2.1u … v2.1y / v2.1w (recipe sets); v2.1z-ak (the reduced plan `jdk-jakarta`) |
 | transform (OpenRewrite) | Base "Plan, transform"; v2.1l "Recipes"; v2.1o (Framework 7); v2.1w |
 | restructure & layout | Base "Restructure and the company layout"; v2.1g, v2.1h (JSP jakarta), v2.1l / v2.1s (version pins), v2.1m (resource filtering), v2.1n (optional triggers), v2.1o / v2.1p / v2.1t (parent-chain facts, BOM imports), v2.1q (embedded Tomcat), v2.1x (legacy Spring context), v2.1z-j (bundled jars), v2.1z-k, v2.1z-l |
 | structure review | v2 "Structure review (R)"; v2.1u … v2.1y (review prompt, invariant check, unsupported issues); v2.1z-h (review guard) |
-| verify & script fix loop | Base "Fix-loop invariants"; v2 "Script fix loop (L)", "Script contract (S)", "As built (step 1)"; v2.1d (versions, operator checks), v2.1l / v2.1m pre-tries, v2.1r (file locks), v2.1y (declines, idempotency), v2.1z (ladder caps, case keys), v2.1z-e (jakarta discovery), v2.1z-i, v2.1z-n, v2.1z-y, v2.1z-z, v2.1z-aa |
+| verify & script fix loop | Base "Fix-loop invariants"; v2 "Script fix loop (L)", "Script contract (S)", "As built (step 1)"; v2.1d (versions, operator checks), v2.1l / v2.1m pre-tries, v2.1r (file locks), v2.1y (declines, idempotency), v2.1z (ladder caps, case keys), v2.1z-e (jakarta discovery), v2.1z-i, v2.1z-n, v2.1z-y, v2.1z-z, v2.1z-aa; v2.1z-ak (reduced run: as-is chain facts, framework guard) |
 | cases & KB | v2 intro + "Script KB (K)"; Base "KB plumbing"; v2.1e (learning records), v2.1f (probable fixers), v2.1z (masked case keys), v2.1z-ae / v2.1z-af (several pods on one KB), v2.1z-ai (rule versions, member-symbol keys, re-sign, exact-key guard) |
 | LLM gateway | Base "LLM client tier and adapter seams"; v2.1z-m (agent gateway, token exchange), v2.1z-n, v2.1z-o, v2.1z-p (case thread), v2.1z-q, v2.1z-x, v2.1z-af (busy wait, auth retries) |
-| report & result line | Base "Report and the result line", "Advisories and the Handover"; v2 "As built (step 1)" (`review=`); v2.1d (`major=`); remediations (`remediation=`) |
+| report & result line | Base "Report and the result line", "Advisories and the Handover"; v2 "As built (step 1)" (`review=`); v2.1d (`major=`); remediations (`remediation=`); v2.1z-ak (`scope=`, the framework block) |
 | fleet | Base "Fleet" |
-| web app | Base "Graph engine", "Web app"; v2.1z-w (page, server-chosen configs), v2.1z-ae (queue / slots on the page), v2.1z-af (page re-attach), v2.1z-aj (run flows, page header) |
+| web app | Base "Graph engine", "Web app"; v2.1z-w (page, server-chosen configs), v2.1z-ae (queue / slots on the page), v2.1z-af (page re-attach), v2.1z-aj (run flows, page header); v2.1z-ak (framework label, skipped stages) |
 | Job mode (Main / Worker, slots, env pins) | v2.1z-z "k8s Job dispatch mode", v2.1z-ab (kubeconfig, template ConfigMap), v2.1z-ac (Main ↔ Worker contract), v2.1z-ad (end confirmation, ownership, env pins, write-time redaction), v2.1z-ae (parallel slots), v2.1z-af |
 | deploy | v2.1z-s (build hooks), v2.1z-t (one Job per request), v2.1z-u, deploy (baked config, container paths), v2.1z-ad "Shipped mode" |
-| remediations | remediations |
+| remediations | remediations; v2.1z-ak (in-house group `framework`) |
 
 ## Base contracts (in force; written before v2)
 
@@ -3797,6 +3797,144 @@ project (build.xml, no pom.xml) is refused at intake: exit 3, flag `unsupported-
 `intake.ant_message` ("Maven 변환 후 신청 부탁드립니다.") — the ERROR line, the first line of the report and what the page
 shows. The synthesis code (v2.1j, `sbmig/analyze/ant.py`) is kept and runs with `intake.ant_to_maven: true`; the
 `ant-webapp` fixture sets it, so the tests and the real-Maven e2e keep exercising it.
+
+## v2.1z-ak — framework projects run in the reduced scope `jdk-jakarta`
+
+**Rule.** A project that depends on an in-house framework artifact (`framework.artifacts`) is not converted to the
+company layout / Spring Boot 4. It runs in the scope `jdk-jakarta`: the Java 21 and jakarta recipes, the verify build
+with the script fix loop, then the chained remediation. No restructure, no structure review; the project keeps its
+parent pom, its module layout, its Spring line and the framework artifact's version. One run has one scope (an MSA in
+which one service uses the framework is reduced as a whole).
+
+**Config** (`framework`, `sbmig/core/config.py FrameworkConfig`; company values go into the company yml):
+
+| key | default | meaning |
+|---|---|---|
+| `framework.artifacts` | `[]` | patterns naming the framework artifacts: `artifactId`, `groupId:artifactId`, `*` globs in either part; empty = no check |
+| `framework.scope` | `jdk-jakarta` | `jdk-jakarta` = the reduced run; `full` = the evidence is reported, the ordinary migration runs |
+| `framework.transitive` | `apply` | a framework artifact that only another library brings: `apply` = like a declared one; `note` = reported, full migration; `off` = not looked for (no extra Maven call) |
+| `framework.recipe_sets` | `[jdk21, jakarta]` | the `openrewrite.recipes` sets a reduced run executes (any set name except `extra`; an unknown name is a config error). `jakarta` keeps its case rule; `servlet_jakarta_10` runs only together with the jakarta set |
+| `remediation.inhouse_groups` | `[mandatory, optional, parents, framework]` | `framework` = the artifacts matching `framework.artifacts` |
+
+`FrameworkConfig.matches(group_id, artifact_id)`, `matches_key("g:a…")`, `matches_jar(file_name)` (a jar without
+coordinates: `<artifactId>[-<version>].jar`), `maven_includes()` (`-Dincludes` patterns) are the one matching rule every
+part uses.
+
+**Models** (`sbmig/core/models.py`): `FrameworkEvidence {source: direct | parent | bundled | transitive, artifact,
+version, where, parent, via}`, `FrameworkUse {patterns, evidence, unchecked, scope: full | jdk-jakarta, reason}` with
+`found`, `reduced`, `keys()`; `ProjectProfile.framework` (None when the check is off), `ProjectProfile.reduced_scope`;
+`MigrationPlan.scope`; `FixContext.scope` / `scope_facts` (`sbmig/core/interfaces.py`).
+
+**Detection** (`sbmig/analyze/framework.py`; `analyze_project` attaches the result, the orchestrator adds the
+transitive step):
+
+| source | where it is looked for | Maven call |
+|---|---|---|
+| `direct` | `<dependencies>` of every project pom (a `<dependencyManagement>` entry alone is not evidence) | none |
+| `parent` | a module's effective `<dependencies>` in the as-is effective pom captured at intake (`logs/effective-depmgmt.json`) that no project pom declares: inherited from a parent pom outside the project | none (the intake capture) |
+| `bundled` | a jar in the tree that no pom declares (`profile.bundled_jars`): by its coordinates, else by file name | none |
+| `transitive` | `mvn dependency:tree -Dincludes=<patterns>` on the as-is tree; only when the three above found nothing, `framework.transitive` is not `off`, Maven is real and the run is not a dry run | one |
+
+`detect_framework(ws, cfg, poms, bundled_jars, effective=None) -> FrameworkUse | None`, `transitive_evidence(ws, cfg,
+profile) -> (evidence, why_not | None)`, `decide_scope(use, cfg)`, `summary_text(use)`, `framework_followup(use)` (the
+Korean Handover line). A source that could not be read is named in `unchecked` (`parent: no as-is effective pom`,
+`transitive: <why>`); nothing here stops a run. Scope rule: `jdk-jakarta` when `framework.scope` is `jdk-jakarta` and
+there is `direct` / `parent` / `bundled` evidence, or `transitive` evidence with `framework.transitive: apply`; else `full`.
+
+**Analyze step** (`Orchestrator._check_framework`): found → flag `framework-project` (not an attention code), journal
+`framework_project {scope, artifacts, evidence, unchecked, reason}`, one operator log line, the Handover line; enabled
+and not found → journal `framework_check {found: false, unchecked}`. `profile.json` carries `framework`; the `plan`
+journal event carries `scope`.
+
+**Plan** (`MigrationPlan.scope = "jdk-jakarta"`): `transform.rewrite[@svc]` with the sets of `framework.recipe_sets` —
+by default the `jdk21` set and, unless the case is `pure_java` / `unknown` without Java EE javax imports, the `jakarta`
+set (the standard jakarta recipe ends on the Jakarta EE 9 line, servlet API 5.0; `servlet_jakarta_10` adds the Servlet 6
+removals) — and no set that is not listed (never `extra`);
+`transform.jsp_jakarta` (kind `restructure`, phase `transform`, `params.mode = "jsp_jakarta"`: the JSP javax → jakarta
+rename of `layout.jsp_jakarta_rename`, planned only with JSPs and the jakarta set); `verify.build[@svc]`. MSA: one
+transform at the root when the root aggregator covers every target, else per target (library roots first). Never
+`restructure.*`, `restructure.review`, `transform.compile`. A `full` plan is unchanged.
+
+**Run.** Around each `transform.rewrite[@svc]` a reduced run makes the two corrections the restructure would have made
+and that the upgrade itself causes (`Orchestrator._write_encodings_reduced`, `_restore_scopes_reduced`; neither fails
+the step, dry run = note only, both idempotent across OpenRewrite retries and several transform steps):
+
+| correction | when | why | code, switch | commit / journal |
+|---|---|---|---|---|
+| `project.build.sourceEncoding` written | BEFORE OpenRewrite | javac's default source encoding is UTF-8 since JDK 18: MS949 / EUC-KR sources without a declared encoding stop compiling, and OpenRewrite skips a file it cannot decode (its javax imports would stay) | `sbmig/restructure/source_encoding.py write_source_encodings`; `layout.legacy_context.write_source_encoding` | `transform: source encodings written`; `source_encodings {step, entries}` |
+| as-is `provided` scopes restored | after a successful rewrite | the jakarta recipe turns `javax.servlet-api` `provided` into `jakarta.servlet-api` `compile`, which would put the servlet API into the WAR | `sbmig/restructure/scope_restore.py restore_asis_scopes`; `layout.legacy_context.restore_asis_scopes` | `transform: as-is provided scopes restored`; `scopes_restored {step, entries}` |
+
+Commit order of a reduced run: `transform: source encodings written` → `rewrite: transform.rewrite` → `transform: as-is
+provided scopes restored` → `transform: JSP javax → jakarta`. Both corrections produce the full flow's phase note and
+pom-verify entries recorded with `seen = "transform"` (`ErrorList.add_pom_verify(file, note, seen="restructure")`; the
+next build verifies them like the restructure's). An encoding the kept external parent already sets is read from the
+as-is capture's root properties: a matching value leaves the pom alone, a conflicting one is a Handover line (the
+parent's value is kept); a module with another external parent, or a parent that sets only the compiler plugin's
+`<encoding>`, falls back to the in-project rule. Everything else the restructure corrects belongs to the parent swap
+and is not done. The full flow's order is unchanged (its restructure writes the encoding after the rewrite).
+
+`transform.jsp_jakarta` runs the rename directly (commit `transform: JSP javax → jakarta`, journal `jsp_jakarta`), not
+through the restructurer. The as-is parent is never aligned to the configured company parent: a
+parent pom Maven cannot resolve aborts a reduced run (`aborted:parent-not-found`, no LLM call) in the transform step and
+in the fix loop alike. A reduced run that ends BUILD SUCCESS is a success (exit 0) and goes on to the chained
+remediation like any other.
+
+**Fix loop** (reduced run; the loop reads `profile.reduced_scope` / `profile.framework`):
+
+- **Version facts** come from the project's own chain: `VersionResolver.for_workspace(..., reduced=True)` uses the as-is
+  capture as both `asis` and `after`, without the company parent-chain facts and without the target Boot BOM. Order:
+  the kept parent manages it → no version; else the as-is version; else the newest repository release where that is
+  allowed. The prompt's fact lines read `parent chain: manages g:a at v` (no "new", no Boot BOM line).
+- **The framework artifact is untouchable**: its keys (the evidence's g:a and any g:a the patterns match) are in
+  `_protected_version_keys`; `sbmig-version`, `sbmig-jakarta` and the version fill skip it; `sbmig-parent` is not
+  offered. `_framework_guard` runs before the commit of every script / edits attempt (not for sbmig's own pre-tries):
+  each touched pom is compared with its text before the attempt — framework declarations in `<dependencies>` and
+  `<dependencyManagement>` (g:a, classifier, type, version with the pom's own properties resolved) and the `<parent>`
+  block (g:a:v, relativePath). A changed version, a removed declaration, a framework declaration added at a version the
+  project never used, or any `<parent>` change fails the attempt: the tree is restored, journal `framework_guard`, and
+  the next ask sees the sentence (prefix `framework project:`). Exclusions and `<scope>` are not compared.
+- **Parents**: any `PARENT_RESOLUTION` error (company parent or not; a parent that is one of the project's own modules
+  excepted) aborts without an LLM call: `aborted:parent-not-found`, a `parent_not_found` blocked item, the same reason
+  sentence as the transform step (`Maven cannot resolve the parent pom <g:a:v>; a framework project keeps its own parent
+  pom, …`). The company-chain build-extension check is off.
+- **javax-era framework**: a case whose library is a framework artifact is blocked at once (`external_javax_api`, no
+  pre-try, no LLM call) with a suggestion naming the framework's owner; a javax API jar that reaches the classpath only
+  through a framework artifact gets the same suggestion in the final pass (`framework_via_suggestions`, after
+  `fill_via`).
+- **Prompt**: `FixContext.scope = "jdk-jakarta"`, `layout_facts = []`, `scope_facts` (≤ 1,200 characters) rendered as
+  the section "Scope of this run" (never truncated) where "Project after the restructure" would be; the system prompt
+  (`script_system_v1.md`, variable `scope`) has a reduced-scope introduction, rule 3 ending, rule 8 and rule 14 — the
+  `full` rendering is byte-identical to the one before this increment; the verify guide's target reads `JDK 21 and
+  jakarta.* only (framework project: …)`.
+
+**Remediation.** A library that is a framework artifact, or has one on its dependency path, is a residual
+`inhouse_artifact` (group `framework`, label 사내 프레임워크): never a proposal, never a `managed_override`.
+`sbmig/remediations/inhouse.py`: `inhouse_keys(cfg)` returns `InhouseKeys` — the exact `g:a` keys of the yml groups as
+dict entries plus the framework patterns, which `in` / `get` / `group_of` understand (an exact key of another group
+wins; iteration and `len` see the exact keys only); `framework_patterns(cfg)` = the patterns when the group is listed.
+The policy hash gets the field `inhouse_framework` only when patterns exist (a configuration without patterns keeps its
+hash). `remediation/report.json` marks such a group with `"group": "framework"`; `report.md` titles it
+`(사내 프레임워크)` and adds one sentence that the framework version is not changed.
+
+**Report / result line / page.** `SBMIG-RESULT … [ major=<n>][ scope=jdk-jakarta][ flow=remediation][ remediation=…]`
+(the `scope=` token only for a reduced run; read from `plan.scope`, else `profile.reduced_scope`). `report.md`: the
+header row `범위`, the block `## 사내 프레임워크 프로젝트` right after the header table (one line per evidence entry, what
+the run did — build error fixes and the remediation only when they happened — and did not do, the `unchecked` sources),
+or `## 사내 프레임워크` with one sentence for a run that found the artifact and ran in full by configuration. In a
+reduced run the To-be values come from the final poms only (no target Boot fallback); the error list has the group
+`transform — pom corrections by sbmig, verified by the next build`; the header row counts sbmig's pom
+corrections apart from build errors; the Handover has the subsection `pom corrections by sbmig` (sbmig가 고친 pom); a
+version row's reason is `recipe` when no fix attempt ran. "Versions replaced" leaves out a row whose before and after
+are equal (any scope). The blocked table translates the three framework suggestions and the
+page translates the abort reason. The page shows the label 프레임워크 프로젝트 and the sentence "JDK 21과 jakarta만
+적용합니다. 재구성과 구조 검토는 하지 않습니다." from the journal events `framework_project` / `plan` (scope
+`jdk-jakarta`), and draws 재구성 / 구조 검토 as skipped steps (하지 않음).
+
+**Fixtures and e2e.** `fixtures/libs/example-fw` (stand-ins `example-fw-core`, `example-fw-web`, `example-fw-parent`,
+installed by `fixtures/libs/install.sh`); `fixtures/projects/fw-direct`, `fw-parent`, `fw-transitive` (reduced runs) and
+`fw-transitive-note` (`framework.transitive: note`, the full migration). `scripts/e2e.py` expectations added for them:
+dotted keys into nested journal values (`evidence.0.source`), `regex:` values, `journal_events_absent`, `phases:
+"absent"`, an exact `version` in `pom_dependency_versioned`.
 
 ## remediations (취약점 조치) — `/api/remediations`, IVAS, version-text fixes + approved managed overrides (2026-11-11)
 

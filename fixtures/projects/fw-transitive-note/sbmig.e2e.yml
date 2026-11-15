@@ -1,0 +1,13 @@
+# Per-fixture config override (fw-transitive-note), appended after config/artifacts.local-e2e.yml.
+# v2.1z-ak: the same tree as fw-transitive, but framework.transitive: note -> the framework is reported
+# (flag framework-project) and the ordinary full migration runs (restructure, structure review).
+framework:
+  artifacts: ["com.example.fw:example-fw-core"]
+  transitive: note
+# v2 replayed LLM (llm.provider fake): replay/llm-001.json answers the structure review (replay_role structure_review).
+llm:
+  provider: fake
+  base_url: "replay:fixtures/projects/fw-transitive-note/replay"
+# Own KB; scripts/e2e.py clears it before the run.
+kb:
+  dir: out/e2e/kb-fw-transitive-note
