@@ -689,3 +689,21 @@ company coordinate and is not in the repository: the company lists it in its `co
 | The company's part | two lines in the company `config/artifacts.yml` (`framework:` / `artifacts: ["<artifactId>"]`), then the image rebuilt (the file is baked in) | company side | open |
 | Known limits | a framework still compiled against javax cannot work with jakarta project code while its version is kept: such a run ends BLOCKED naming the framework. The standard jakarta recipe ends on Jakarta EE 9 (servlet 5.0); `servlet_jakarta_10` is the company's choice. The full flow still writes the source encoding after OpenRewrite (the same MS949 skip exists there). A parent outside the project that sets only the compiler plugin's `<encoding>` is not seen | — | open |
 | Not seen yet | a real company framework project; the chained remediation on one against the real IVAS; the page in Job mode | — | open |
+
+## Status — 2026-11-17, Maven's `.m2` (settings.xml and the local repository) lives at `/data/.m2` (v2.1z-al)
+
+The user, about the pods: "우리 이거 파드에 두면 안되서 pvc에 두는건데 /data/.m2에 뒀으면 좋겠어 일관되게!", then
+"Settings도 저기로 옮겨가야하지않아!?" — `/data/.m2` is to the pods what `~/.m2` is on a PC. Before: the local
+repository on a second PVC (`sbmig-m2` at `/home/sbmig/.m2`, `SBMIG_BUILD__LOCAL_REPO: "null"`), settings.xml a
+ConfigMap file at `/etc/sbmig/settings.xml`.
+
+| Item | Deliverable | Where | Status |
+|---|---|---|---|
+| Local repository | `SBMIG_BUILD__LOCAL_REPO` = `/data/.m2/repository` in 40 / 80 / 81 (slots: `repository-slot2`, `-slot3`); the `m2` volume and PVC `sbmig-m2` removed from 40 / 81 / 10 — one PVC (`sbmig-data`); 80 mounts its `m2` volume at `/data/.m2` | `deploy/k8s/` | done |
+| settings.xml | a real file on the data volume, `/data/.m2/settings.xml` (`SBMIG_BUILD__SETTINGS_FILE` in 40 / 81); the operator copies it there; ConfigMap `sbmig-config` is the template (80 still mounts it at the same path, inside its emptyDir). Not a ConfigMap mount nested in the NFS volume: the runtime would have to create the mount point on NFS as root, which a root-squashing export refuses | `deploy/k8s/`, `deploy/README.md` §3 | done |
+| A missing settings file fails early | preflight: `build.settings_file` set and not a readable file → flags `settings-not-found`, `infra:maven`, abort at intake (exit 3) before any Maven call, in both run flows; Korean reason on the page; one WARNING at web-pod start | `sbmig/loop/orchestrator.py`, `sbmig/report/i18n.py`, `sbmig/web/runs.py` | done |
+| Image / worker | `VOLUME ["/data"]`; the worker's pod-local fallback message names the volume that holds `build.local_repo` | `deploy/docker/Dockerfile`, `sbmig/web/worker.py` | done |
+| Docs | the operator list for an existing deployment (copy the file first, then the manifest lines, `sbmig-job-template`, restart), `deploy/ENV.md`, INTERFACES "v2.1z-al", RUNBOOK, agent-doc 02 / 09, CLAUDE.md | `deploy/README.md`, `docs/`, `agent-doc/` | done |
+| Tests | offline suite 5,375 passed, 62 deselected (19 added: the manifest invariants, the preflight check in both flows and both engines, the startup warning, the Korean reason, no path leak into a local-job run) | — | done |
+| The company's part | copy the settings file while the old ConfigMap mount is still there, change the lines in the hand-filled 40 / 81, re-create ConfigMap `sbmig-job-template`, restart the web pod; the first build per slot downloads its dependencies again; PVC `sbmig-m2` may be deleted once the new location works | company side | open |
+| Not seen yet | the new layout on the company cluster (NFS) | — | open |

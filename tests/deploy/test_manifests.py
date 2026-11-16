@@ -23,8 +23,8 @@ BUILD_JOB = K8S / "80-build-job.template.yaml"
 WEB_JOB = K8S / "81-web-job.template.yaml"
 
 # container paths of the image / the volumes: what a PC-tested yml must not decide inside a pod
-PATHS = {"SBMIG_BUILD__SETTINGS_FILE": "/etc/sbmig/settings.xml", "SBMIG_BUILD__JAVA_HOME": "/opt/java21",
-         "SBMIG_BUILD__MVN": "mvn", "SBMIG_BUILD__LOCAL_REPO": "null", "SBMIG_SCRIPT__PYTHON": "null"}
+PATHS = {"SBMIG_BUILD__SETTINGS_FILE": "/data/.m2/settings.xml", "SBMIG_BUILD__JAVA_HOME": "/opt/java21",
+         "SBMIG_BUILD__MVN": "mvn", "SBMIG_BUILD__LOCAL_REPO": "/data/.m2/repository", "SBMIG_SCRIPT__PYTHON": "null"}
 # sbmig-env keys (active or commented) the Job pod needs: config overrides, the LLM endpoint values, proxies
 FORWARDED = re.compile(r"^\s*#?\s*(SBMIG_[A-Z0-9_]+__[A-Z0-9_]+|LLM_[A-Z_]+|[A-Z]+_PROXY):", re.M)
 WEB_ONLY = {"LLM_RECORD_DIR"}        # in-process diagnostics only; the Worker template may not carry it
@@ -66,15 +66,15 @@ def test_config_configmap_carries_only_settings_xml():
 
 
 @pytest.mark.parametrize("path", [WEB, BUILD_JOB, WEB_JOB], ids=lambda p: p.name)
-def test_every_manifest_overrides_the_machine_paths_and_mounts_settings_only(path: Path):
+def test_every_manifest_overrides_the_machine_paths_and_mounts_no_artifacts_yml(path: Path):
     c = _container(path)
     names = [e["name"] for e in c["env"]]
     assert len(names) == len(set(names)), sorted(n for n in names if names.count(n) > 1)
     lit = _literals(path)
     assert {k: lit.get(k) for k in PATHS} == PATHS
     mounts = {m["mountPath"]: m for m in c["volumeMounts"]}
-    assert mounts["/etc/sbmig/settings.xml"]["subPath"] == "settings.xml"
     assert not [p for p in mounts if p.endswith("artifacts.yml")]        # baked, not mounted
+    assert not [p for p in mounts if p.startswith("/etc/sbmig")]
 
 
 def test_web_pod_also_pins_kb_dir_and_neutralizes_a_pc_record_dir():
@@ -138,8 +138,8 @@ def test_web_pod_env_beats_a_pc_tested_yml(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("LLM_RECORD_DIR", "")
     cfg = load_config(PACKAGE_ROOT / "config" / "artifacts.local-e2e.yml", pc)
     assert (cfg.kb.dir, cfg.build.settings_file, cfg.build.java_home, cfg.build.mvn) == \
-        ("/data/kb-v2", "/etc/sbmig/settings.xml", "/opt/java21", "mvn")
-    assert cfg.build.local_repo is None and cfg.script.python is None and not cfg.llm.record_dir
+        ("/data/kb-v2", "/data/.m2/settings.xml", "/opt/java21", "mvn")
+    assert cfg.build.local_repo == "/data/.m2/repository" and cfg.script.python is None and not cfg.llm.record_dir
     monkeypatch.setenv("LLM_RECORD_DIR", "/data/llm-records")
     assert load_config(PACKAGE_ROOT / "config" / "artifacts.local-e2e.yml", pc).llm.record_dir == "/data/llm-records"
 
@@ -289,24 +289,89 @@ def test_the_shipped_configmap_runs_the_company_operating_mode():
 def test_the_shipped_configmap_runs_three_build_pods_at_a_time():
     """The user gave the number (2026-11-10: "3명까지는 빌드파드가 돌아가는 구조"): it ships switched on, in the web pod's group,
     and is the web pod's own knob — never pinned, never forwarded to the Job pod (the Job gets its slot number from Main).
-    Every slot's Maven repository lives inside the one `sbmig-m2` volume both manifests mount at the same path, and the
-    template leaves `SBMIG_BUILD__LOCAL_REPO` unset so the Worker derives the slot's sibling directory itself."""
+    Every slot's Maven repository lives in the `/data/.m2` folder of the data volume (v2.1z-al), and the Worker derives the
+    slot's sibling directory from the template's `SBMIG_BUILD__LOCAL_REPO` itself."""
     data = _sbmig_env_data()
     assert data.get(contract.MAX_PARALLEL_ENV) == "3" and contract.MAX_PARALLEL_ENV not in _commented_keys()
     assert contract.MAX_PARALLEL_ENV not in _pins(_main_env(_configmap(False)))
     names = {e["name"] for e in _container(WEB_JOB)["env"]}
     assert contract.MAX_PARALLEL_ENV not in names
     assert contract.SLOT_ENV in contract.RUN_ENV and contract.SLOT_ENV not in _literals(WEB_JOB)   # Main adds it per Job
-    assert _literals(WEB_JOB)["SBMIG_BUILD__LOCAL_REPO"] == "null"
-    web = next(d for d in _docs(WEB) if d["kind"] == "Deployment")["spec"]["template"]["spec"]
-    job = _docs(WEB_JOB)[0]["spec"]["template"]["spec"]
 
-    def m2(spec: dict) -> tuple[str, str]:
-        mount = next(m for m in spec["containers"][0]["volumeMounts"] if m["mountPath"].endswith("/.m2"))
-        volume = next(v for v in spec["volumes"] if v["name"] == mount["name"])
-        return mount["mountPath"], volume["persistentVolumeClaim"]["claimName"]
 
-    assert m2(web) == m2(job) == ("/home/sbmig/.m2", "sbmig-m2")
+LOCAL_REPO = "/data/.m2/repository"
+SETTINGS = "/data/.m2/settings.xml"
+
+
+def _spec(path: Path) -> dict:
+    return next(d for d in _docs(path) if d["kind"] in ("Deployment", "Job"))["spec"]["template"]["spec"]
+
+
+@pytest.mark.parametrize("path", [WEB, BUILD_JOB, WEB_JOB], ids=lambda p: p.name)
+def test_every_mount_has_its_volume_and_every_volume_is_mounted(path: Path):
+    spec = _spec(path)
+    volumes = {v["name"] for v in spec["volumes"]}
+    mounted = {m["name"] for c in spec["containers"] for m in c.get("volumeMounts") or []}
+    assert sorted(mounted - volumes) == [] and sorted(volumes - mounted) == []
+
+
+def test_maven_settings_is_a_file_at_data_m2_in_every_pod():
+    """v2.1z-al (the user: "Settings도 저기로 옮겨가야하지않아!?"): `/data/.m2` holds `settings.xml` and `repository/`, as
+    `~/.m2` on a PC. 40 / 81 read a real file the operator places on the data volume (no ConfigMap mount nested inside the
+    NFS volume); 80 has no data PVC and mounts ConfigMap `sbmig-config` there (inside its emptyDir, on the node's disk)."""
+    for path in (WEB, WEB_JOB):
+        assert _literals(path)["SBMIG_BUILD__SETTINGS_FILE"] == SETTINGS, path.name
+        spec = _spec(path)
+        assert not [m for m in spec["containers"][0]["volumeMounts"] if m["mountPath"].endswith("settings.xml")]
+        assert not [v for v in spec["volumes"] if (v.get("configMap") or {}).get("name") == "sbmig-config"], path.name
+        # the artifacts.yml alternative stays documented: a commented volume line and a commented mount line
+        text = path.read_text(encoding="utf-8")
+        assert "# - name: config" in text and "#   configMap: {name: sbmig-config}" in text
+        assert "# - {name: config, mountPath: /app/config/artifacts.yml, subPath: artifacts.yml" in text
+    assert _literals(BUILD_JOB)["SBMIG_BUILD__SETTINGS_FILE"] == SETTINGS
+    job = _spec(BUILD_JOB)
+    mount = next(m for m in job["containers"][0]["volumeMounts"] if m["mountPath"] == SETTINGS)
+    assert mount["subPath"] == "settings.xml" and mount.get("readOnly") is True
+    volume = next(v for v in job["volumes"] if v["name"] == mount["name"])
+    assert volume["configMap"]["name"] == "sbmig-config"
+    assert SETTINGS.rsplit("/", 1)[0] == LOCAL_REPO.rsplit("/", 1)[0] == "/data/.m2"
+    cm = next(d for d in _docs(CONFIGMAP) if d["metadata"]["name"] == "sbmig-config")
+    assert "${env.NEXUS_PASSWORD}" in cm["data"]["settings.xml"]       # the template points at the Secret, never a value
+
+
+def test_the_maven_local_repository_lives_at_data_m2_in_every_pod():
+    """v2.1z-al (the user, 2026-11-17: "/data/.m2에 뒀으면 좋겠어 일관되게"): 40 and 81 keep the Maven local repository in the
+    `.m2` folder of the one data PVC (no second volume: a mount nested in the NFS volume needs its mount point created on NFS
+    as root); 80 has no data PVC and mounts its own `m2` volume at the same path, so the path is the same in every pod."""
+    for path in (WEB, WEB_JOB):
+        spec = _docs(path)[-1]["spec"]["template"]["spec"] if path == WEB_JOB else \
+            next(d for d in _docs(path) if d["kind"] == "Deployment")["spec"]["template"]["spec"]
+        assert _literals(path)["SBMIG_BUILD__LOCAL_REPO"] == LOCAL_REPO, path.name
+        mounts = {m["mountPath"]: m["name"] for m in spec["containers"][0]["volumeMounts"]}
+        volumes = {v["name"]: v for v in spec["volumes"]}
+        assert volumes[mounts["/data"]]["persistentVolumeClaim"]["claimName"] == "sbmig-data", path.name
+        assert "m2" not in volumes and not [p for p in mounts if ".m2" in p], path.name
+    job = _docs(BUILD_JOB)[0]["spec"]["template"]["spec"]
+    assert _literals(BUILD_JOB)["SBMIG_BUILD__LOCAL_REPO"] == LOCAL_REPO
+    mounts = {m["mountPath"]: m["name"] for m in job["containers"][0]["volumeMounts"]}
+    assert mounts.get("/data/.m2") == "m2" and "m2" in {v["name"] for v in job["volumes"]}
+    assert LOCAL_REPO.startswith("/data/.m2/")
+    assert not [d for d in _docs(K8S / "10-storage.yaml") if d["metadata"]["name"] == "sbmig-m2"]
+    assert "sbmig-m2" not in "".join(p.read_text(encoding="utf-8") for p in (WEB, WEB_JOB, BUILD_JOB, K8S / "10-storage.yaml"))
+
+
+def test_the_local_repository_pin_matches_and_the_slot_override_follows_it(tmp_path, monkeypatch):
+    """The literal is a real path now, the same in 40 and 81: Main and the Worker pin it to the same fingerprint, and the
+    Worker's slot repository (`<base>-slot<k>`) is set only in the child's environment, after that check."""
+    from sbmig.web import worker
+    cm = _configmap(False)
+    main_env, worker_env = _main_env(cm), _worker_env(cm)
+    assert main_env["SBMIG_BUILD__LOCAL_REPO"] == worker_env["SBMIG_BUILD__LOCAL_REPO"] == LOCAL_REPO
+    main, pins = _pins(main_env), _pins(worker_env)
+    assert "SBMIG_BUILD__LOCAL_REPO" in main and main["SBMIG_BUILD__LOCAL_REPO"] == pins["SBMIG_BUILD__LOCAL_REPO"]
+    assert contract.compare_env_pins(main, pins) == NO_DIFF
+    assert worker.slot_local_repo(Path(LOCAL_REPO), 2) == Path("/data/.m2/repository-slot2")
+    assert worker.slot_local_repo(Path(LOCAL_REPO), 3) == Path("/data/.m2/repository-slot3")
 
 
 def test_a_job_pod_without_the_kb_dir_is_named():

@@ -65,9 +65,9 @@ RUN sed -i 's/\r$//' /app/deploy/docker/*.sh && chmod 755 /app/deploy/docker/*.s
 WORKDIR /app
 USER sbmig
 
-# 상태는 볼륨에, 이미지 안에는 두지 않는다: 실행 디렉터리(--out), KB(회사 yml 의 kb.dir), LLM 기록
+# 상태는 볼륨에, 이미지 안에는 두지 않는다: 실행 디렉터리(--out), KB(회사 yml 의 kb.dir), LLM 기록, Maven 로컬 저장소(/data/.m2)
 # /data = 웹 UI 에이전트(Deployment), /workspace = 요청별 Job(emptyDir)
-VOLUME ["/data", "/home/sbmig/.m2"]
+VOLUME ["/data"]
 EXPOSE 8765
 
 # `sbmig serve` 가 곧 uvicorn 이다(프로세스 안에서 uvicorn.run; 워커 하나 — 대기 줄이 프로세스 안에 있다. Job 모드에서 동시에 도는

@@ -2773,7 +2773,7 @@ URLs. Files: `deploy/k8s/80-build-job.template.yaml` (their CHANGE_ME points + s
 (can-i → `--dry-run=server` → create → `logs -f` → result line), `deploy/README.md` §6 (mapping table, the three decisions).
 
 **Three things the guide does not cover and sbmig needs.** (1) The file KB must outlive the pod — a git repository (pulled /
-pushed per run; runs sequential) or a PVC. (2) `~/.m2` on an emptyDir downloads Boot 4 / OpenRewrite / plugins from Nexus on
+pushed per run; runs sequential) or a PVC. (2) The Maven local repository on an emptyDir downloads Boot 4 / OpenRewrite / plugins from Nexus on
 every Job — a PVC or a warmed image layer. (3) The Agent role in the guide (submit a Job, watch, collect) is not what `sbmig
 serve` does: the web UI's own Job dispatch is "v2.1z-z" / "v2.1z-ac". sbmig itself calls no Kubernetes API in this model (the
 v2.1z-s hooks stay unset).
@@ -3174,11 +3174,12 @@ is the image's file — one copy, no hand-kept twin in a ConfigMap.
   exist under `/app/config/`, else the build stops (`ERROR: config/<name> is missing from the build context (REQUIRE_CONFIG)…`). The
   company build passes `--build-arg REQUIRE_CONFIG=artifacts.yml` (the file is git-ignored — a fresh checkout would silently build an image
   without the company config, and `RunManager.default_configs()` only warns about a missing `SBMIG_WEB_CONFIGS` name). Empty = no check.
-- **ConfigMap `sbmig-config`** carries `settings.xml` only (the `artifacts.yml` key and its mounts are commented alternatives in 20 / 40 /
+- **ConfigMap `sbmig-config`** carries `settings.xml` only (since v2.1z-al the template for `/data/.m2/settings.xml`, mounted by 80 only;
+  the `artifacts.yml` key and its mounts are commented alternatives in 20 / 40 /
   80 / 81). The baked file must hold no secret (an image is readable by whoever pulls it).
 - **Machine paths** of a PC-tested yml are overridden by literal `env` lines in each manifest (env beats every yml):
-  `SBMIG_BUILD__SETTINGS_FILE=/etc/sbmig/settings.xml`, `SBMIG_BUILD__JAVA_HOME=/opt/java21`, `SBMIG_BUILD__MVN=mvn`,
-  `SBMIG_BUILD__LOCAL_REPO=null`, `SBMIG_SCRIPT__PYTHON=null` in 40 / 80 / 81; `SBMIG_KB__DIR=/data/kb-v2` and
+  `SBMIG_BUILD__SETTINGS_FILE=/data/.m2/settings.xml` (v2.1z-al; `/etc/sbmig/settings.xml` before), `SBMIG_BUILD__JAVA_HOME=/opt/java21`, `SBMIG_BUILD__MVN=mvn`,
+  `SBMIG_BUILD__LOCAL_REPO=/data/.m2/repository` (v2.1z-al; `null` before), `SBMIG_SCRIPT__PYTHON=null` in 40 / 80 / 81; `SBMIG_KB__DIR=/data/kb-v2` and
   `SBMIG_LLM__RECORD_DIR=${LLM_RECORD_DIR:-}` in 40 only (the 81 Worker and the 80 `run-job.sh` write `kb.dir` / `llm.record_dir` into their
   own last `--config`). They are not in `sbmig-env`, because 80 reads that ConfigMap with `envFrom`.
 - **`sbmig-env` → the 81 Job pod**: the template has no `envFrom`, so every key the ConfigMap documents (LLM gateway values, proxies, the
@@ -3397,13 +3398,13 @@ The user: "초반엔 무서우니까 3명까지는 빌드파드가 돌아가는 
   order as before. Everything of v2.1z-ad (1) holds per slot: a slot is handed on only after its Job is confirmed ended, a Kubernetes
   API outage frees no slot.
 - **One Maven local repository per slot** (the Worker; Maven's default setup does not promise that several processes can write one
-  local repository, and the three pods share PVC `sbmig-m2`). Slot 1, or no `SBMIG_JOB_SLOT`: nothing changes — today's repository,
+  local repository, and the three pods share one Maven volume: the `/data/.m2` folder of the data PVC since v2.1z-al). Slot 1, or no `SBMIG_JOB_SLOT`: nothing changes — today's repository,
   byte-identical command lines. Slot k ≥ 2: a sibling directory `<base>.parent / f"{base.name}-slot{k}"` (`…/.m2/repository-slot2`),
   where `<base>` is the repository the run would use otherwise: the Worker's own `SBMIG_BUILD__LOCAL_REPO` when it is a non-empty
   string after `yaml.safe_load`, else `sbmig.build.mvn.local_repo_path(load_config(<the run's configs>, <worker-paths.yml>))`
   (`build.local_repo` → settings.xml `<localRepository>` → `~/.m2/repository`). The Worker creates the directory and sets
   `SBMIG_BUILD__LOCAL_REPO=<that path>` **in the child's environment only**, after its environment-pin check (the pins compare the
-  pod's own environment, where 81 keeps the literal `"null"`). It never fails a run over this: when the base cannot be resolved or the
+  pod's own environment, where 81 keeps its literal, `/data/.m2/repository` since v2.1z-al). It never fails a run over this: when the base cannot be resolved or the
   directory cannot be created, the run goes on with the shared repository and says so (stdout line + journal). Journal event
   **`worker_slot`** `{slot, local_repo, shared: bool, note?}` (only when `SBMIG_JOB_SLOT` is set). A slot's first runs download
   everything once; the repositories persist on the PVC.
@@ -3491,7 +3492,7 @@ a run, the page + SSE), each finding reproduced before it was fixed. Where this 
   starts; one after it ended is only noted. (2) **Slot repository fallback**: when `<base>-slot<k>` cannot be created or written
   (write-tested with a probe file), or the base cannot be resolved, slot k ≥ 2 uses a **pod-local** repository
   `<tempdir>/sbmig-m2-slot<k>` (`worker_slot {…, shared: false, pod_local: true, note}` + a WARNING that names the fix: ownership /
-  `fsGroup` of the folder on PVC `sbmig-m2`); the shared repository only when that fails too. This replaces v2.1z-ae's "the run goes
+  `fsGroup` of that folder on the shared volume that holds `build.local_repo`); the shared repository only when that fails too. This replaces v2.1z-ae's "the run goes
   on with the shared repository".
 - **Knowledge base.** (1) `_confirm_new` never writes a fresh `case.json` over one the server says exists: the case folder is listed
   and the file opened directly (no `is_file()` first) for up to `CONFIRM_SECONDS` **75** (longer than an NFS attribute cache can
@@ -3936,6 +3937,49 @@ installed by `fixtures/libs/install.sh`); `fixtures/projects/fw-direct`, `fw-par
 dotted keys into nested journal values (`evidence.0.source`), `regex:` values, `journal_events_absent`, `phases:
 "absent"`, an exact `version` in `pom_dependency_versioned`.
 
+## v2.1z-al — the Maven local repository and settings.xml live at /data/.m2 on the data volume
+
+The user (2026-11-17): "/data/.m2에 뒀으면 좋겠어 일관되게" — the Maven local repository cannot live in the pod, and everything
+else that persists is already under `/data`; right after: "Settings도 저기로 옮겨가야하지않아!?" — `/data/.m2` is to the pods what
+`~/.m2` is on a PC: `settings.xml`, `repository/`, `repository-slot2/`, `repository-slot3/`.
+
+- **Manifests.** `SBMIG_BUILD__LOCAL_REPO: "/data/.m2/repository"` in 40, 80 and 81 (was `"null"` = Maven's `~/.m2/repository`).
+  40 and 81 have no `m2` volume any more: the repository is a folder of PVC `sbmig-data`, and PVC `sbmig-m2` is gone from
+  `10-storage.yaml`. Not the old PVC mounted at `/data/.m2`: a mount nested in the NFS data volume needs the runtime to create the
+  mount point on NFS as root, which a root-squashing export can refuse (the pod does not start), and with `nfs-csi` both PVCs were
+  folders of the same export (no space isolation). A comment in `10-storage.yaml` keeps the way out when `.m2` on NFS is too slow:
+  its own volume mounted at `/data/.m2` in 40 and 81 alike. 80 has no data PVC: its `m2` volume (emptyDir, PVC optional) is
+  mounted at `/data/.m2`, so the path is the same in every pod.
+- **settings.xml.** `SBMIG_BUILD__SETTINGS_FILE: "/data/.m2/settings.xml"` in 40, 80 and 81 (an env pin: the same literal in 40 and
+  81). In 40 / 81 it is a real file on the data volume that the operator copies there (no ConfigMap mount nested in the NFS
+  volume, for the same root-squash reason); the ConfigMap `sbmig-config` mount at `/etc/sbmig/settings.xml` is gone, the `config`
+  volume is a commented line that goes with the commented `artifacts.yml` mount. 80 mounts ConfigMap `sbmig-config` with
+  `subPath: settings.xml` at `/data/.m2/settings.xml` (inside its emptyDir, on the node's disk). `sbmig-config` is therefore the
+  template of the file (passwords as `${env.NEXUS_USER}` / `${env.NEXUS_PASSWORD}`, values in the Secret).
+- **Preflight `settings-not-found`.** `Orchestrator._preflight` first checks `build.settings_file`: set (not empty / `null`) and
+  not a readable file at the absolute path Maven would get as `-s` → flag `settings-not-found` (+ `infra:maven`), journal
+  `preflight {settings_file: "missing (<path>)"}`, no Maven call; `_step_intake` aborts with
+  `Maven settings file not found: <path> (build.settings_file) — put the settings.xml there and rerun` (exit 3). Both flows
+  (the remediation flow's intake runs the preflight before `chain.run_only`, so its own readiness line `server settings.xml not
+  found (<path>)` is never reached for this). Korean (`sbmig.report.i18n`): `Maven settings.xml을 찾지 못했습니다(<path>). 이 경로에
+  settings.xml을 넣은 뒤 다시 실행해 주세요.` Unset = Maven's default settings as on a PC, unchanged. The web pod logs one WARNING at
+  startup (`RunManager._warn_missing_settings_file`, not in `local-job`): `Maven settings file <path> is missing — copy settings.xml
+  there before the first run`; never fatal.
+- **Pins.** `env_pins` hash the VALUE of `SBMIG_BUILD__SETTINGS_FILE` (the path), `request.json` digests the config files only;
+  the content of settings.xml is pinned nowhere (it was not with the ConfigMap either). Both pods read the same file on the
+  shared volume, so nothing changes there.
+- **Slots** follow the v2.1z-ae rule: `/data/.m2/repository-slot2`, `-slot3`. The env pin of `SBMIG_BUILD__LOCAL_REPO` is now a real
+  path, the same literal in 40 and 81; the slot override still happens in the child's environment after the pin check.
+- **Image.** `VOLUME ["/data"]` only; `/data` is created and owned by uid 1000 in the image, so `/data/.m2` can be created without
+  a mounted volume too.
+- **Worker message.** The pod-local fallback WARNING names "the shared volume that holds build.local_repo (ownership / fsGroup of
+  that folder)" instead of the old PVC; `POD_LOCAL_REPO_NAME` (`sbmig-m2-slot<k>`) is only a temp-folder name and stays.
+- **local-job.** Both template values are container paths; `LocalJobClient._env_of` passes only `contract.RUN_ENV`, so a
+  developer-PC Worker gets neither (`tests/web/test_local_job_mode.py`).
+- **Operator steps** for an existing deployment (copy settings.xml from the still-mounted ConfigMap first, then the manifest
+  lines): `deploy/README.md` §3 "Maven 설정과 로컬 저장소 — `/data/.m2`". Tests: `tests/deploy/test_manifests.py`,
+  `tests/loop/test_preflight_settings_file.py`, `tests/web/test_settings_file_warning.py`, `tests/report/test_abort_reasons_ko.py`.
+
 ## remediations (취약점 조치) — `/api/remediations`, IVAS, version-text fixes + approved managed overrides (2026-11-11)
 
 A second, independent flow beside the migration: an uploaded Maven project ZIP is built as it is (baseline), scanned by
@@ -3997,7 +4041,7 @@ It never touches the migration KB; since the later decision of the same day it i
   (`accepted/`, `rounds/<n>/candidate/`), `original/` (the read-only `source.zip` + the hash-bound `manifest.json`), every ZIP and
   every symlink. A stop signal during the chained remediation (the Job deadline) still ends the Worker with exit 3; the error text then
   carries the migration's `SBMIG-RESULT` line (the migration report is in the run dir).
-- **Maven**: on this path the local repository is the pod's slot repository (slot 1 `~/.m2/repository`, slot k `repository-slot<k>`);
+- **Maven**: on this path the local repository is the pod's slot repository (slot 1 `/data/.m2/repository`, slot k `repository-slot<k>`);
   the `-remediation` suffix applies to the in-process standalone path only.
 - **Time**: the Job's `activeDeadlineSeconds` stays 14400. A chained remediation adds a baseline build, an IVAS upload + analysis
   (≤ `remediation.ivas_analysis_timeout_minutes`, 30) and per round a candidate build + rescan; typical 20–75 min, worst case of the

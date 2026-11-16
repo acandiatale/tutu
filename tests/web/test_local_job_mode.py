@@ -209,7 +209,7 @@ def test_k8s_job_outside_a_cluster_falls_back_to_local_job_with_a_warning(tmp_pa
 
 def test_the_pod_settings_of_the_job_template_never_reach_the_local_worker(tmp_path: Path, repo: Path, monkeypatch):
     """2026-11-10 (regression found while reviewing the Job code): the template describes the POD. Its literals are container
-    paths (`SBMIG_BUILD__SETTINGS_FILE=/etc/sbmig/settings.xml`, `SBMIG_BUILD__JAVA_HOME=/opt/java21`, `SBMIG_KB_DIR=/data/kb-v2`)
+    paths (`SBMIG_BUILD__SETTINGS_FILE=/data/.m2/settings.xml`, `SBMIG_BUILD__JAVA_HOME=/opt/java21`, `SBMIG_KB_DIR=/data/kb-v2`)
     and its ConfigMap / Secret references have no value outside a cluster — handed to the local Worker they became `""`, and an
     empty `SBMIG_<SECTION>__<KEY>` overrides the config value with None (`load_config` dies on a pydantic error). Only the
     per-run values (`contract.RUN_ENV`) cross; the local Worker's settings are the developer's shell / `.env`."""
@@ -237,3 +237,30 @@ def test_the_pod_settings_of_the_job_template_never_reach_the_local_worker(tmp_p
     assert child["SBMIG_RUN_ID"] == rid and child["SBMIG_OUT"] == str(tmp_path / "out") and child["SBMIG_STOP_AFTER"] == "plan"
     assert child["SBMIG_CONFIG"] == str(repo / "config" / "artifacts.local-e2e.yml")
     assert child["SBMIG_SOURCE_ZIP"].endswith("source.zip") and child["SBMIG_APP_DIR"] == str(repo)
+
+
+MAVEN_PATHS = {"SBMIG_BUILD__LOCAL_REPO": "/data/.m2/repository", "SBMIG_BUILD__SETTINGS_FILE": "/data/.m2/settings.xml"}
+
+
+def test_the_pods_maven_folder_never_reaches_the_local_worker(tmp_path: Path, repo: Path, monkeypatch):
+    """v2.1z-al: the template names real container paths in `/data/.m2` for the Maven local repository and the settings
+    file (`SBMIG_BUILD__LOCAL_REPO` was `"null"` before, so a leak would not have shown). A `local-job` Worker on a
+    developer PC must take neither: its build uses the developer's own repository and settings."""
+    import yaml
+    template_env = yaml.safe_load(TEMPLATE.read_text(encoding="utf-8"))["spec"]["template"]["spec"]["containers"][0]["env"]
+    for name, value in MAVEN_PATHS.items():
+        assert {"name": name, "value": value} in template_env
+        monkeypatch.delenv(name, raising=False)
+    picked = LocalJobClient._env_of({"spec": {"template": {"spec": {"containers": [{"env": template_env}]}}}})
+    assert not set(MAVEN_PATHS) & set(picked)
+    dump = tmp_path / "child-env.json"
+    script = tmp_path / "dump_env.py"
+    script.write_text("import json, os, sys\njson.dump(dict(os.environ), open(sys.argv[1], 'w'))\n", encoding="utf-8")
+    monkeypatch.setenv("SBMIG_JOB_POLL_S", "0.05")
+    jc = LocalJobClient(repo, command_factory=lambda env: [sys.executable, str(script), str(dump)], echo=False)
+    mgr = RunManager(tmp_path / "out", repo, mode="local-job", job_client=jc, job_template=TEMPLATE)
+    rid = mgr.start(b"PK\x05\x06" + b"\0" * 18, "p.zip", ["artifacts.local-e2e.yml"], stop_after="plan")
+    assert mgr.runs[rid].done.wait(10)
+    child = json.loads(dump.read_text(encoding="utf-8"))
+    assert not set(MAVEN_PATHS) & set(child)
+    assert not [k for k, v in child.items() if "/data/.m2" in v]

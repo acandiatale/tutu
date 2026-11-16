@@ -692,6 +692,28 @@ class RunManager:
             self._startup_k8s(constructed=job_client is None)
         if self.effective_mode in ("k8s-job", "local-job"):
             self.recover()
+        if self.effective_mode != "local-job":
+            self._warn_missing_settings_file()
+
+    def _warn_missing_settings_file(self) -> None:
+        """기본 설정의 ``build.settings_file``이 가리키는 파일이 없으면 시작할 때 WARNING 한 줄을 남긴다.
+        파드가 뜬 뒤에 운영자가 파일을 넣을 수 있으므로 시작을 막지 않는다.
+
+        v2.1z-al: in the cluster the settings file is placed on the data volume by hand; one WARNING at startup when the
+        default configs name a `build.settings_file` that is not a file. Never fatal (the operator may copy it after
+        the pod is up; the run's preflight aborts a run that starts without it)."""
+        try:
+            from sbmig.core.config import load_config
+            configs = self.default_configs()
+            cfg = load_config(*[self.repo_root / "config" / c for c in configs], repo_root=self.repo_root)
+            value = cfg.build.settings_file
+            if value is None or not str(value).strip() or str(value).strip().lower() == "null":
+                return
+            path = Path(str(value).strip()).expanduser().absolute()
+            if not path.is_file():
+                log.warning("Maven settings file %s is missing — copy settings.xml there before the first run", path)
+        except Exception as e:  # noqa: BLE001 - 시작 점검은 앱 시작을 막지 않는다
+            log.debug("web: settings file check skipped (%s: %s)", type(e).__name__, e)
 
     # ---- k8s-job startup (v2.1z-ac)
     def _startup_k8s(self, constructed: bool) -> None:

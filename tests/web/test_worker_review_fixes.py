@@ -321,7 +321,8 @@ def test_an_unwritable_slot_directory_goes_pod_local(tmp_path):
     msg = worker.slot_message(data)
     assert msg.startswith("WARNING: job slot 3: pod-local repository: cannot write to ")
     assert f"the run uses the pod-local Maven local repository {local} and downloads all its dependencies again" in msg
-    assert "PVC sbmig-m2" in msg and "shared Maven local repository" not in msg
+    assert "the shared volume that holds build.local_repo (ownership / fsGroup of that folder)" in msg
+    assert "set build.local_repo to a writable path there" in msg and "shared Maven local repository" not in msg
 
 
 def test_both_fallbacks_failing_uses_the_shared_repository(tmp_path):

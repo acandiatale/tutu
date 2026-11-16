@@ -1,5 +1,5 @@
-"""v2.1z-ae: up to N build Jobs at once share one `~/.m2` PVC, so each slot gets its own Maven local repository. Main passes
-`SBMIG_JOB_SLOT` (1-based); the Worker leaves slot 1 (and no slot) byte-identical to before and gives slot k >= 2 the sibling
+"""v2.1z-ae: up to N build Jobs at once share one Maven volume (v2.1z-al: the `/data/.m2` folder of the data PVC), so each
+slot gets its own Maven local repository. Main passes `SBMIG_JOB_SLOT` (1-based); the Worker leaves slot 1 (and no slot) byte-identical to before and gives slot k >= 2 the sibling
 `<base>-slot<k>` through `SBMIG_BUILD__LOCAL_REPO` in the CHILD's environment only, after the environment-pin check. It never
 fails a run over this: an unresolvable base or an uncreatable / unwritable directory -> a pod-local repository under the temp
 directory (`pod_local: true` + note; review 2026-11-10), and only when that fails too (or the slot number is bad) the shared
@@ -243,7 +243,7 @@ def test_uncreatable_directory_falls_back_to_a_pod_local_repository(setup, capsy
     assert ev["note"].startswith(f"pod-local repository: cannot create {base.parent / 'repository-slot2'}")
     out = capsys.readouterr().out
     assert "WARNING: job slot 2: pod-local repository: cannot create" in out
-    assert "PVC sbmig-m2" in out
+    assert "the shared volume that holds build.local_repo (ownership / fsGroup of that folder)" in out
 
 
 @pytest.mark.parametrize("raw", ["abc", "0", "-1", "2.0", "1e3"])
@@ -327,7 +327,8 @@ POD = {"SBMIG_BUILD__MVN": "/opt/maven/bin/mvn", "SBMIG_SCRIPT__TIMEOUT_SECONDS"
 
 @pytest.mark.parametrize("own_override", [False, True])
 def test_pins_pass_with_a_slot(setup, tmp_path, own_override):
-    """Both pods carry the same SBMIG_BUILD__LOCAL_REPO (the template's "null", or a path); only the child's copy changes."""
+    """Both pods carry the same SBMIG_BUILD__LOCAL_REPO (a path, as the shipped `/data/.m2/repository`, or "null"); only the
+    child's copy changes."""
     base = tmp_path / "m2" / "repository"
     local_repo = str(base) if own_override else "null"
     shared = {**POD, worker.LOCAL_REPO_ENV: local_repo}

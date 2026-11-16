@@ -1,5 +1,7 @@
-# Maven 설정(+ 아래 두 번째 문서 = 환경 변수 ConfigMap). settings.xml 은 Maven 이 Nexus 를 보게 하는 미러 설정이고 파드의 /etc/sbmig/settings.xml 로
-# 마운트된다. <…> 자리를 회사 값으로 바꾼다. 키·토큰은 여기 두지 않는다(Secret 으로).
+# Maven 설정(+ 아래 두 번째 문서 = 환경 변수 ConfigMap). settings.xml 은 Maven 이 Nexus 를 보게 하는 미러 설정의 틀이다.
+# 웹 파드(40)와 Job 파드(81)는 이 ConfigMap 을 마운트하지 않고 데이터 볼륨의 /data/.m2/settings.xml 파일을 읽는다. <…> 자리를 회사 값으로
+# 채운 뒤 그 경로에 복사한다(README §3 "Maven 설정과 로컬 저장소"). 80 은 이 ConfigMap 을 /data/.m2/settings.xml 에 그대로 마운트한다.
+# 키·토큰은 여기 두지 않는다(Secret 으로).
 # 회사 artifacts.yml 은 여기 없다(2026-11-10): PC 에서 시험한 config/artifacts.yml 을 이미지에 굽는다 — docker build 가 /app/config/ 로 복사한다
 # (README §1; --build-arg REQUIRE_CONFIG=artifacts.yml 이 그 파일 없는 빌드를 막는다). 그 파일에 적힌 PC 경로(kb.dir, build.settings_file,
 # build.java_home, build.mvn, build.local_repo, script.python, llm.record_dir)는 각 매니페스트의 env SBMIG_<섹션>__<키> 가 컨테이너 값으로 덮어쓴다
@@ -33,7 +35,7 @@ data:
       -->
     </settings>
   # ── ConfigMap 으로 줄 때(이미지를 다시 굽지 않고 artifacts.yml 전체를 바꿔야 할 때만): 아래 주석을 풀어 회사 artifacts.yml 내용을 붙이고,
-  #    40-deployment.yaml · 81-web-job.template.yaml(· 80-build-job.template.yaml)의 artifacts.yml 마운트 줄 주석을 푼다 — 마운트가 이미지 안의 파일을 가린다.
+  #    40-deployment.yaml · 81-web-job.template.yaml 의 config 볼륨 줄과 artifacts.yml 마운트 줄(80-build-job.template.yaml 은 마운트 줄만) 주석을 푼다 — 마운트가 이미지 안의 파일을 가린다.
   #    웹 파드와 Job 파드가 같은 내용을 봐야 한다(접수 때 적은 sha256 을 Worker 가 대조한다): 이 키를 고치면 웹 파드를 재시작한다.
   # artifacts.yml: |
   #   artifacts:
@@ -71,7 +73,7 @@ data:
   SBMIG_WEB_MODE: "k8s-job"
   SBMIG_K8S_NAMESPACE: "agent"          # Job 을 만드는 namespace(회사 값). 이 줄이 없으면 kubeconfig context 의 namespace, 그것도 없으면 default 로 간다
   # 동시에 도는 빌드 파드(Job) 수(회사 값 2026-11-10: 처음에는 3). 넘는 업로드는 올린 순서대로 기다리고 화면에 대기 순번이 보인다.
-  # 자리(1 · 2 · 3)마다 Maven 로컬 저장소를 따로 쓴다(PVC sbmig-m2 안의 repository, repository-slot2, repository-slot3 — 한 저장소에
+  # 자리(1 · 2 · 3)마다 Maven 로컬 저장소를 따로 쓴다(/data/.m2 폴더의 repository, repository-slot2, repository-slot3 — 한 저장소에
   # 여러 Maven 이 동시에 쓰면 깨질 수 있다). 1 로 두면 예전처럼 한 번에 하나. 바꾼 뒤에는 웹 파드를 다시 띄운다(시작할 때 한 번 읽는다).
   # 파드 하나가 CPU 2 / 메모리 6Gi 를 요청한다(81 의 resources) — 3 이면 노드에 CPU 6 / 메모리 18Gi 여유가 있어야 셋이 같이 돈다
   SBMIG_JOB_MAX_PARALLEL: "3"

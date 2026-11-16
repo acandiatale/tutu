@@ -47,7 +47,7 @@ import posixpath
 import re
 import time
 from contextlib import contextmanager
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Iterator, Optional
 
 from sbmig.build.log_parser import BUILD_EXTENSION_RE
@@ -767,6 +767,9 @@ class Orchestrator:
         if callable(setter):
             setter(list(self.cfg.build.encoding_candidates))
         self._preflight(report)
+        if "settings-not-found" in report.flags:
+            self._abort(report, self._settings_problem)
+            return False
         if "mvn-not-found" in report.flags:
             if self._mvn_java_problem:
                 self._abort(report, f"'{self.cfg.build.mvn}' cannot start: {self._mvn_java_problem} — set "
@@ -1697,6 +1700,15 @@ class Orchestrator:
         ``build.require_java_major``(21)인지, 사내 parent와 역할 parent 설정이 채워졌는지 확인한다.
         결과는 저널 ``preflight`` 한 줄과 후속 조치로 남긴다."""
         checks: dict[str, Any] = {}
+        # build.settings_file이 없으면 모든 Maven 호출이 실패하므로 Maven을 호출하기 전에 멈춘다
+        missing = self._missing_settings_file()
+        if missing is not None:
+            self._settings_problem = (f"Maven settings file not found: {missing} (build.settings_file) — put the "
+                                      "settings.xml there and rerun")
+            report.flags.append("settings-not-found")
+            log.error("preflight: %s", self._settings_problem)
+            self.ws.journal({"event": "preflight", "settings_file": f"missing ({missing})"})
+            return
         if self._build_runner is None:
             try:
                 avail = lazy_attr("sbmig.build", "maven_available", "C (build)")
@@ -1770,6 +1782,24 @@ class Orchestrator:
 
     _mvn_java_problem = ""
     _jdk_problem = ""
+    _settings_problem = ""
+
+    def _missing_settings_file(self) -> str | None:
+        """``build.settings_file``이 설정되어 있는데 읽을 수 있는 파일이 아니면 그 경로를 반환한다.
+
+        The absolute path Maven would get as `-s` when `build.settings_file` is set and is not a readable file; None
+        when it is unset (Maven's default settings, as on a PC) or the file is there (v2.1z-al: in the cluster the file
+        is placed on the data volume by hand)."""
+        value = self.cfg.build.settings_file
+        if value is None or not str(value).strip() or str(value).strip().lower() == "null":
+            return None
+        path = Path(str(value).strip()).expanduser().absolute()
+        try:
+            if path.is_file() and os.access(path, os.R_OK):
+                return None
+        except OSError:
+            pass
+        return str(path)
 
     def _java_major_wanted(self) -> int:
         return int(getattr(self.cfg.build, "require_java_major", 0) or 0) or 21
@@ -3608,6 +3638,8 @@ class Orchestrator:
             add.append("infra:jdk" if self._mvn_java_problem else "infra:maven")
         if "jdk-not-21" in flags:
             add.append("infra:jdk")
+        if "settings-not-found" in flags:
+            add.append("infra:maven")
         # Maven의 HTTP 차단 미러는 infra:repository보다 구체적인 원인이고, 운영자가 고칠 곳이 Maven
         # settings이므로 따로 표시한다
         http_blocked = "aborted:http-blocked" in flags or (not report.success and self._http_blocker_trouble())

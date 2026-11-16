@@ -95,10 +95,10 @@ docker run --rm <registry>/sbmig:<tag> python -m sbmig.cli --help
 
 회사 설정 `config/artifacts.yml` 은 **이미지에 굽는다**: git 이 무시하는 파일이라 빌드에 `--build-arg REQUIRE_CONFIG=artifacts.yml` 을 붙여, 파일이 컨텍스트에
 없으면 빌드를 멈춘다(`/app/config/artifacts.yml` 로 들어가 UI 의 설정 목록에 나옴). PC 에서 시험한 파일 그대로이므로 PC 경로가 든 키는 매니페스트의 `env` 가
-덮어쓴다 — `SBMIG_KB__DIR=/data/kb-v2`(웹 파드), `SBMIG_BUILD__SETTINGS_FILE=/etc/sbmig/settings.xml`, `SBMIG_BUILD__JAVA_HOME=/opt/java21`,
-`SBMIG_BUILD__MVN=mvn`, `SBMIG_BUILD__LOCAL_REPO=null`, `SBMIG_SCRIPT__PYTHON=null`, 웹 파드의 `SBMIG_LLM__RECORD_DIR=${LLM_RECORD_DIR:-}`. 이 값들은
+덮어쓴다 — `SBMIG_KB__DIR=/data/kb-v2`(웹 파드), `SBMIG_BUILD__SETTINGS_FILE=/data/.m2/settings.xml`, `SBMIG_BUILD__JAVA_HOME=/opt/java21`,
+`SBMIG_BUILD__MVN=mvn`, `SBMIG_BUILD__LOCAL_REPO=/data/.m2/repository`, `SBMIG_SCRIPT__PYTHON=null`, 웹 파드의 `SBMIG_LLM__RECORD_DIR=${LLM_RECORD_DIR:-}`. 이 값들은
 `tests/deploy/test_manifests.py` 가 세 매니페스트에서 지킨다. 설정을 바꾸려면 이미지를 다시 만든다(숫자 손잡이는 `sbmig-env` 로 충분).
-비밀값과 settings.xml 은 이미지 밖: ConfigMap `deploy/k8s/20-configmap.yaml`(`sbmig-config` = settings.xml 하나, `sbmig-env` = 환경 변수),
+비밀값과 settings.xml 은 이미지 밖: ConfigMap `deploy/k8s/20-configmap.yaml`(`sbmig-config` = `/data/.m2/settings.xml` 의 틀, `sbmig-env` = 환경 변수),
 Secret 견본 `deploy/k8s/30-secret.example.yaml`(복사해 `deploy/k8s/30-secret.yaml` 로 채움, git-ignore): `sbmig-llm`(= PC 의 `.env` + `SBMIG_WEB_TOKEN`),
 `sbmig-git`(저장소 토큰). 자원: OpenRewrite 가 `openrewrite.jvm_args`(`-Xmx4g`)로 돌므로 메모리 6~8 GiB, CPU 2~4.
 
@@ -112,7 +112,7 @@ Secret 견본 `deploy/k8s/30-secret.example.yaml`(복사해 `deploy/k8s/30-secre
 키마다 `configMapKeyRef` / `secretKeyRef` 한 줄이다 — `sbmig-env` 에 새 키를 더하면 `81` 틀에도 한 줄 더한다(같은 테스트가 본다). 전체 표는 `deploy/ENV.md`(인프라팀 전달용) 와 `deploy/README.md` 의 "env 목록" 절. 모르는 키 이름은 시작 로그에
 `config: … is not a known key` 로 뜬다.
 
-`deploy/k8s/10-storage.yaml`(PVC 둘: `/data` = 업로드·실행·KB·LLM 기록, `~/.m2`), `20-configmap`, `30-secret`, `deploy/k8s/40-deployment.yaml`
+`deploy/k8s/10-storage.yaml`(PVC 하나: `/data` = 업로드·실행·KB·LLM 기록·`.m2`), `20-configmap`, `30-secret`, `deploy/k8s/40-deployment.yaml`
 (replica 1, Recreate — 실행 큐가 프로세스 안에 있으므로 둘 이상 띄우지 않는다, `tcpSocket` 프로브 — 인증 없는 health 경로가 없음),
 `deploy/k8s/50-service.yaml`. PC 의 웹 UI 와 똑같이 담당자가 zip 을 올리고 결과를 받는다. KB 는 PVC 의 `/data/kb-v2` 에 남는다.
 
@@ -194,7 +194,7 @@ Main 파드와 Job 파드 사이의 파일·id·종료 코드·멈춤·복구 �
 결과를 밖으로 못 보냈으면 4. `SBMIG_FAIL_JOB_ON_BUILD_FAIL=1` 이면 빌드 실패를 2 로.
 
 **인프라 회의에서 정할 것**: Job 분리가 필수인지(아니면 ① 을 먼저 올린다), 웹 파드 권한(RBAC 파일 또는 `/etc/kube/config`), 네트워크(빌드 노드 →
-웹 파드 · LLM 게이트웨이 · Nexus · git), KB 영속성(git 저장소 또는 Job 이 마운트하는 PVC), `~/.m2`(PVC 또는 미리 채운 레이어), 결과 보관
+웹 파드 · LLM 게이트웨이 · Nexus · git), KB 영속성(git 저장소 또는 Job 이 마운트하는 PVC), `/data/.m2`(PVC 또는 미리 채운 레이어), 결과 보관
 기간과 소스 저장소 브랜치 push 여부.
 
 `build.setup_command` / `build.teardown_command` 는 실행 전후 한 번씩 도는 일반 훅이다(두 모양 모두 비워 둔다).

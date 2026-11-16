@@ -639,6 +639,8 @@ PATTERNS: dict[str, list[tuple[re.Pattern[str], Union[str, Callable[[re.Match[st
      r"to a JDK \d+ home and rerun$",
      r"Maven이 Java \g<ver>에서 실행됩니다(\g<where>). Java \g<want>이 필요합니다. build.java_home(또는 JAVA_HOME)을 "
      r"JDK \g<want> 경로로 설정한 뒤 다시 실행해 주세요."),
+    (r"^Maven settings file not found: (?P<p>.+) \(build\.settings_file\) — put the settings\.xml there and rerun$",
+     r"Maven settings.xml을 찾지 못했습니다(\g<p>). 이 경로에 settings.xml을 넣은 뒤 다시 실행해 주세요."),
     (r"^build\.setup_command failed \(rc=(?P<rc>-?\d+)\): ?(?P<t>.*)$",
      r"실행 준비 명령(build.setup_command)이 실패했습니다(rc=\g<rc>). \g<t>"),
     (r"^stopped by user \(stop\.request\) — the final `mvn clean package` did not run$",

@@ -94,7 +94,7 @@ ENV_PIN_HINT = ("after changing ConfigMap sbmig-env or the Job template, restart
                 f"sbmig-job-template; {contract.ENV_PIN_POLICY_ENV}=warn (or off) on the web pod relaxes this check")
 
 # ── 슬롯마다 Maven 로컬 저장소 하나 ──
-# 여러 파드가 PVC 하나(~/.m2)를 같이 쓰는데 Maven은 여러 프로세스가 한 로컬 저장소에 동시에 쓰는 것을
+# 여러 파드가 build.local_repo가 있는 공유 볼륨을 같이 쓰는데 Maven은 여러 프로세스가 한 로컬 저장소에 동시에 쓰는 것을
 # 보장하지 않으므로 슬롯마다 저장소를 나눈다
 LOCAL_REPO_ENV = "SBMIG_BUILD__LOCAL_REPO"    # 자식의 build.local_repo를 덮어쓰는 설정. load_config가 값을 yaml로 읽는다
 SLOT_EVENT = "worker_slot"
@@ -661,8 +661,9 @@ def slot_message(data: dict) -> str:
         return (f"WARNING: job slot {data['slot']}: {data.get('note')}; the run uses the pod-local Maven local repository "
                 f"{data['local_repo']} and downloads all its dependencies again (nothing is kept after the pod, nothing is "
                 f"shared with another pod) — to keep one repository per slot between runs, let the pod's user{uid} create "
-                f"and write the '<repository>-slot{data['slot']}' folder beside the Maven local repository on the Maven "
-                f"volume (PVC sbmig-m2: ownership / fsGroup of its folder), or set build.local_repo to a writable path there")
+                f"and write the '<repository>-slot{data['slot']}' folder beside the Maven local repository on the shared "
+                f"volume that holds build.local_repo (ownership / fsGroup of that folder), or set build.local_repo to a "
+                f"writable path there")
     if data.get("local_repo"):
         return f"job slot {data['slot']}: own Maven local repository {data['local_repo']}"
     return f"job slot {data.get('slot')}: the Maven local repository is unchanged"

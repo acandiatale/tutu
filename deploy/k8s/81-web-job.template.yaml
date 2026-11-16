@@ -57,10 +57,10 @@ spec:
             # - {name: SBMIG_LLM__RECORD_DIR, value: "/data/llm-records"}
             # ── 회사 artifacts.yml 은 이미지에 구워져 있다(/app/config/artifacts.yml — PC 에서 시험한 파일 그대로). 그 안의 PC 경로를 컨테이너 값으로
             #    덮어쓴다(환경 변수 SBMIG_<섹션>__<키> 가 yml 보다 우선; 40-deployment.yaml 과 같은 값). kb.dir 은 위 SBMIG_KB_DIR 가 정한다
-            - {name: SBMIG_BUILD__SETTINGS_FILE, value: "/etc/sbmig/settings.xml"}   # ConfigMap sbmig-config 의 settings.xml(아래 마운트)
+            - {name: SBMIG_BUILD__SETTINGS_FILE, value: "/data/.m2/settings.xml"}    # 데이터 볼륨에 운영자가 넣은 파일(README §3)
             - {name: SBMIG_BUILD__JAVA_HOME, value: "/opt/java21"}                   # 이미지의 JDK 21
             - {name: SBMIG_BUILD__MVN, value: "mvn"}                                 # 이미지의 Maven(PATH)
-            - {name: SBMIG_BUILD__LOCAL_REPO, value: "null"}                         # null = Maven 기본 ~/.m2/repository(아래 m2 볼륨)
+            - {name: SBMIG_BUILD__LOCAL_REPO, value: "/data/.m2/repository"}           # 데이터 볼륨의 .m2 폴더
             - {name: SBMIG_SCRIPT__PYTHON, value: "null"}                            # null = sbmig 를 돌리는 그 python
             # 비밀 아닌 LLM 게이트웨이 값 — ConfigMap sbmig-env 의 그룹 2 키 하나씩(20-configmap.yaml). Job 파드는 만들어질 때 그 ConfigMap 을 읽는다
             - {name: LLM_GATEWAY, valueFrom: {configMapKeyRef: {name: sbmig-env, key: LLM_GATEWAY, optional: true}}}
@@ -119,9 +119,7 @@ spec:
             - {name: IVAS_PASSWORD, valueFrom: {secretKeyRef: {name: sbmig-llm, key: IVAS_PASSWORD, optional: true}}}
           volumeMounts:
             - {name: data, mountPath: /data}                             # 웹 파드와 같은 PVC, 같은 경로
-            - {name: m2, mountPath: /home/sbmig/.m2}
             # - {name: config, mountPath: /app/config/artifacts.yml, subPath: artifacts.yml, readOnly: true}   # artifacts.yml 을 ConfigMap 으로 줄 때만(20-configmap.yaml 맨 아래; 웹 파드도 같이)
-            - {name: config, mountPath: /etc/sbmig/settings.xml, subPath: settings.xml, readOnly: true}
           resources:
             # 회사 값(2026-11-12): 빌드 파드 하나에 CPU 2 / 메모리 8Gi, 동시에 3개(SBMIG_JOB_MAX_PARALLEL). requests = limits.
             # 메모리 8Gi 는 Maven 힙 -Xmx4g(openrewrite.jvm_args) + JVM 의 힙 밖 메모리 + Python 을 담는다 — 힙을 올리면 여기도 올린다
@@ -131,7 +129,5 @@ spec:
       volumes:
         - name: data
           persistentVolumeClaim: {claimName: sbmig-data}                 # 10-storage.yaml — ReadWriteMany
-        - name: m2
-          persistentVolumeClaim: {claimName: sbmig-m2}                   # 공유 .m2 (없으면 emptyDir: {} 로 바꾼다 — 매 Job 이 다시 받는다)
-        - name: config                                                 # settings.xml
-          configMap: {name: sbmig-config}
+        # - name: config                                               # artifacts.yml 을 ConfigMap 으로 줄 때만(위 마운트 줄과 같이 푼다)
+        #   configMap: {name: sbmig-config}

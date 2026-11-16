@@ -31,6 +31,8 @@ CASES = [
      "and rerun",
      "Maven이 Java 17.0.9에서 실행됩니다(runtime /opt/jdk-17). Java 21이 필요합니다. build.java_home(또는 JAVA_HOME)을 "
      "JDK 21 경로로 설정한 뒤 다시 실행해 주세요."),
+    ("Maven settings file not found: /data/.m2/settings.xml (build.settings_file) — put the settings.xml there and rerun",
+     "Maven settings.xml을 찾지 못했습니다(/data/.m2/settings.xml). 이 경로에 settings.xml을 넣은 뒤 다시 실행해 주세요."),
     ("build.setup_command failed (rc=1): connection refused",
      "실행 준비 명령(build.setup_command)이 실패했습니다(rc=1). connection refused"),
     (STOP_REQUEST_REASON, "사용자 요청으로 멈췄습니다. 최종 빌드(mvn clean package)는 실행하지 않았습니다."),
@@ -80,5 +82,6 @@ def test_the_orchestrator_texts_are_the_ones_in_the_table(cfg, tmp_path):
     src = inspect.getsource(orchestrator)
     for piece in ("is not runnable (install Maven or set build.mvn)", "cannot start: ", "— set ",
                   "build.setup_command failed (rc=", "vulnerability remediation not started (not ready): ",
-                  "internal error: ", "missing component: ", "and rerun"):
+                  "internal error: ", "missing component: ", "and rerun", "Maven settings file not found: ",
+                  "(build.settings_file) — put the "):
         assert piece in src, piece

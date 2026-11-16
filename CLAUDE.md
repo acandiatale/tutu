@@ -249,7 +249,7 @@ Then the final build again, the report (Handover first, "Structure review", fix 
   commits happen in the main session. Per round: append a "Status" table to `docs/PLAN.md`, update
   `docs/INTERFACES.md` on contract changes, add a fixture + `expected.json` (+ `replay/`) for every new scenario.
 - Setup: `uv venv && source .venv/bin/activate && uv pip install -e ".[dev]"` (plain `pip install -e ".[dev]"` works too).
-- Fast check (Python only, ~12 min): `python -m pytest -m "not integration"` → ≈ 5,360 passed, ≈ 62 deselected (2026-11-15)
+- Fast check (Python only, ~12 min): `python -m pytest -m "not integration"` → ≈ 5,375 passed, ≈ 62 deselected (2026-11-17)
   (`-q` on top of the `-q` in pyproject hides the summary line). Until 2026-11-12 `tests/build` (381 tests) was silently
   left out of every root-level run — pytest skips a directory named `build` by default; `norecursedirs` in pyproject now
   keeps it in. When a total does not grow by the number of tests added, compare per-file counts (`--collect-only -q`).
@@ -327,7 +327,7 @@ Then the final build again, the report (Handover first, "Structure review", fix 
   deletes only Jobs carrying its own `sbmig-owner` label and waits for them to vanish, and never reports an unverified result as success. **2026-11-10 (user: "일단 굽자!")**:
   the company `config/artifacts.yml` is **baked into the image** (the Dockerfile copies `config/`; the company build adds
   `--build-arg REQUIRE_CONFIG=artifacts.yml`, which stops the build when the git-ignored file is missing), ConfigMap `sbmig-config` carries
-  `settings.xml` only, and the machine paths of a PC-tested yml are overridden by literal `SBMIG_<SECTION>__<KEY>` env lines in each manifest
+  `settings.xml` only (since v2.1z-al the template for the file at `/data/.m2/settings.xml`, and what 80 mounts there), and the machine paths of a PC-tested yml are overridden by literal `SBMIG_<SECTION>__<KEY>` env lines in each manifest
   (`SBMIG_BUILD__SETTINGS_FILE` / `JAVA_HOME` / `MVN` / `LOCAL_REPO`, `SBMIG_SCRIPT__PYTHON` in 40 / 80 / 81; `SBMIG_KB__DIR` and
   `SBMIG_LLM__RECORD_DIR=${LLM_RECORD_DIR:-}` in 40 only — never in `sbmig-env`, which 80 reads by `envFrom`). The 81 template has one
   `configMapKeyRef` per `sbmig-env` key (no `envFrom` there): a new key in the ConfigMap needs its line in 81, `tests/deploy/test_manifests.py`
@@ -358,7 +358,7 @@ Then the final build again, the report (Handover first, "Structure review", fix 
   (web pod, read at startup; code default 1, shipped `"3"` in `sbmig-env`; `in-process` is always 1 — process-global LLM counter, per-thread log)
   is the number of build Jobs at a time; `runs._FifoTurns(slots)` keeps upload order and hands out slot numbers (lowest free, from 1):
   `ControlState.slot`, Job env `SBMIG_JOB_SLOT`, re-occupied as recorded after a web-pod restart (`occupy`, over the limit allowed). The
-  Worker gives slot k ≥ 2 its own Maven local repository `<base>-slot<k>` (inside PVC `sbmig-m2`; `SBMIG_BUILD__LOCAL_REPO` in the child's
+  Worker gives slot k ≥ 2 its own Maven local repository `<base>-slot<k>` (inside `/data/.m2`; `SBMIG_BUILD__LOCAL_REPO` in the child's
   environment only, after the env-pin check; never fails a run; journal `worker_slot`) — one repository written by several Maven
   processes is the thing avoided. `status()` carries `parallel {slots, running, waiting}` and, for a waiting run, `queue {position, ahead}`;
   the page shows the place in line and a notice on the upload card when every slot is busy. The shared file KB stays one folder: every
@@ -366,6 +366,13 @@ Then the final build again, the report (Handover first, "Structure review", fix 
   `fix_v<N>.py`, lock age on the KB file system's clock, exclusive LLM record files). Not in the 81 template, not an env pin; the 80 model (`run-job.sh`, git KB) stays
   sequential. Contract: `docs/INTERFACES.md` "v2.1z-ae"; operator text: `deploy/README.md` §3 "동시에 여러 건". Not measured on the
   company cluster / NFS yet; the gateway's concurrency limit for one app token is the company's to confirm.
+  **v2.1z-al (2026-11-17, the user: "/data/.m2에 뒀으면 좋겠어 일관되게")**: the Maven local repository is `/data/.m2/repository` on PVC
+  `sbmig-data` (`SBMIG_BUILD__LOCAL_REPO` literal in 40 / 80 / 81, slots `repository-slot<k>` beside it); no `sbmig-m2` PVC, no `m2`
+  volume in 40 / 81 (a mount nested in the NFS volume can fail under root squash), 80 mounts its own `m2` volume at `/data/.m2`.
+  Right after ("Settings도 저기로 옮겨가야하지않아!?"): `SBMIG_BUILD__SETTINGS_FILE=/data/.m2/settings.xml` in 40 / 80 / 81 — a file the
+  operator copies onto the data volume in 40 / 81 (no ConfigMap mount there), ConfigMap `sbmig-config` mounted at that path in 80;
+  a set but missing `build.settings_file` aborts at intake before any Maven call (flag `settings-not-found`, exit 3, both flows),
+  the web pod warns once at startup. Operator steps: `deploy/README.md` §3 "Maven 설정과 로컬 저장소".
   **v2.1z-af (same day, the user: "코드 검토 동시성 이슈 될만한거 … 찾아봐줘", five read-only reviews, every finding reproduced first)**:
   a Job run's terminal `control/state.json` is written while its slot is still held; recovery keeps the recorded slot number even when
   two runs recorded the same one (a new run only gets a number nobody holds); any failing API poll is "API unavailable"; a `Failed`
@@ -443,7 +450,7 @@ Then the final build again, the report (Handover first, "Structure review", fix 
   a cached file to the repository id it came from. A mirror's `<url>` is where requests go, not an allow list; Maven takes the
   first matching mirror (exact id, then patterns in order). The user's fix, which made the run pass on the company PC with the
   code from before v2.1z-ag: `,!<repository id>` for the other repositories in that mirror's `mirrorOf` (PC settings.xml AND
-  the pod's settings.xml in ConfigMap `sbmig-config`). **The id `maven-default-http-blocker` in a Maven message is therefore
+  the pods' `/data/.m2/settings.xml`, template in ConfigMap `sbmig-config`). **The id `maven-default-http-blocker` in a Maven message is therefore
   no evidence of blocking** (`Could not find artifact … in maven-default-http-blocker (<real URL>)` is an ordinary miss with
   such settings): `http_blocker_hit` needs `Blocked mirror for repositories` or the blocker address `http://0.0.0.0`. sbmig
   never edits settings; it passes `-s` only when `build.settings_file` is set. A real `Blocked mirror for repositories` is its

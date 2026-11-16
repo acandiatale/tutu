@@ -38,9 +38,9 @@ Worker 는 Main 의 존재를 모른다. Main 이 죽어도 Job 은 끝까지 �
 /data/out/_uploads/          Main 의 임시 업로드(.incoming-*.part) — in-process 모드의 zip 보관도 여기
 /data/out/_idempotency/      외부 접수 API 의 멱등 기록(만들 것)         ← `_` 로 시작하는 폴더는 실행이 아니다(list_runs 가 무시)
 /data/kb-v2/                 파일 KB(SBMIG_KB_DIR). 모든 Job 이 같은 KB 에 쓴다 → 쓰기는 `.lock` 으로 차례(§8)
-/home/sbmig/.m2/             Maven 로컬 저장소 PVC(sbmig-m2, 선택; 없으면 emptyDir). 자리마다 repository / repository-slot<k> (§8)
+/data/.m2/                   Maven 로컬 저장소(같은 PVC 의 폴더, SBMIG_BUILD__LOCAL_REPO=/data/.m2/repository). 자리마다 repository / repository-slot<k> (§8)
 /app/config/artifacts.yml    이미지에 구운 회사 설정(Main 과 Job 파드가 같은 이미지 → 같은 파일; 2026-11-10)
-/etc/sbmig/settings.xml      ConfigMap sbmig-config 의 파일. Job 파드도 같은 경로에 마운트
+/data/.m2/settings.xml       Maven 설정 파일(운영자가 넣는다, SBMIG_BUILD__SETTINGS_FILE). Main 과 Job 파드가 같은 파일을 읽는다
 ```
 
 Job 템플릿이 받는 실행별 env(Main 이 첫 컨테이너의 env 에 덧붙인다, 같은 이름은 바꾼다): `SBMIG_SOURCE_ZIP`, `SBMIG_OUT`, `SBMIG_RUN_ID`,
