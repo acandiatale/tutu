@@ -37,6 +37,7 @@ from sbmig.core import scrub as _scrub
 
 from .inhouse import inhouse_keys
 from .interfaces import Components, Journal, StopCheck
+from .matching import ga_key, version_key
 from .models import (
     AWAITING_APPROVAL,
     AWAITING_CONFIRMATION,
@@ -358,6 +359,18 @@ class _Holder:
         return out
 
     def fill_counts(self) -> None:
+        """``state.counts``를 채운다. 취약점 수는 검사 결과의 행에서, 남은 항목 수는 직접 확인 / 사내 항목의 행에서 센다.
+
+        What each count counts:
+        - `baseline_findings` / `final_findings`: actionable rows of the baseline / final scan (IVAS findings, not
+          inventory items), so a finding whose library was split into an in-house item and a project item is one row;
+          `*_ignored`: the rows of an `ignore_actions` code.
+        - `fixed`: baseline actionable findings (kind, CVE id, identifier compared case-insensitively) absent from the
+          complete final scan: a finding still reported for any module is not fixed, whichever part was changed.
+        - `residual`: residual ROWS in the state (one per g:a, version, reason after `_merge_residuals`); a library split
+          into an in-house part and a project part left for review is two rows, one per section.
+        - `residual_inhouse`: the `inhouse_artifact` rows among them (one per in-house item).
+        - `proposals*`: proposals of every round, applied / rejected / pending; a variant override is its own proposal."""
         st = self.state
         base = self.load_scan(st.baseline_scan)
         final = self.load_scan(st.final_scan)
@@ -387,7 +400,8 @@ class _Holder:
             counts["final_ignored"] = len(final_ign)
             if base is not None and base.complete:
                 def k(f: Any) -> str:
-                    return f"{f.kind}|{f.id}|{f.identifier}"
+                    # IVAS가 같은 라이브러리를 다른 대소문자로 보고해도 같은 취약점으로 센다
+                    return f"{f.kind}|{f.id}|{ga_key(f.identifier)}"
                 left = {k(f) for f in final_act}
                 counts["fixed"] = len({k(f) for f in base_act} - left)
         st.counts = counts
@@ -579,14 +593,20 @@ def _current_policy_hash(h: _Holder) -> str:
     return h.state.policy_hash
 
 
+def _residual_key(x: Residual) -> tuple[str, str, str]:
+    return (ga_key(x.ga), version_key(x.version), x.reason)
+
+
 def _merge_residuals(st: RemediationState, residuals: list[Residual]) -> None:
     """이번 라운드에서 조치하지 못한 항목을 작업 상태에 합친다. (ga, 버전, 사유)마다 한 항목으로 둔다.
-    이미 있는 항목이면 모듈, 사내 아티팩트 같은 보고서용 정보는 합쳐서 더하고, 경로는 비어 있을 때만 채운다.
+    g:a와 버전은 대소문자를 구분하지 않는다. 이미 있는 항목이면 모듈, 사내 아티팩트, 모듈별 출처는 합치고,
+    경로와 IVAS 표기는 비어 있을 때만 채운다.
 
-    Merge a round's residuals into the state, one per (ga, version, reason); facts of a repeat are unioned."""
-    by_key = {(x.ga, x.version, x.reason): x for x in st.residuals}
+    Merge a round's residuals into the state, one per (ga, version, reason) compared case-insensitively; facts of a
+    repeat are unioned (sources by module + variant)."""
+    by_key = {_residual_key(x): x for x in st.residuals}
     for x in residuals:
-        key = (x.ga, x.version, x.reason)
+        key = _residual_key(x)
         old = by_key.get(key)
         if old is None:
             by_key[key] = x
@@ -596,6 +616,31 @@ def _merge_residuals(st: RemediationState, residuals: list[Residual]) -> None:
         old.inhouse = sorted(set(old.inhouse or []) | set(x.inhouse or []))
         if not old.via and x.via:
             old.via = list(x.via)
+        have = {(s.module, s.variant) for s in old.sources or []}
+        extra = [s for s in x.sources or [] if (s.module, s.variant) not in have]
+        if extra:
+            old.sources = sorted([*(old.sources or []), *extra], key=lambda s: (s.module, s.variant))
+        if not old.reported_version and x.reported_version:
+            old.reported_version = x.reported_version
+
+
+def _rejected_key(p: Proposal) -> tuple[str, ...]:
+    """거절된 제안을 planner의 ``rejected`` 키로 바꾼다. 형식 / classifier가 있는 override는 그 변종까지 담는다."""
+    from .apply import override_variant
+    variant = override_variant(p)
+    return (p.ga, p.to_version, variant) if variant else (p.ga, p.to_version)
+
+
+def _inventory_items(h: _Holder, r: int) -> dict[tuple[str, str], Any]:
+    """라운드의 인벤토리 항목을 (g:a, 버전) 비교 키로 찾을 수 있게 반환한다. 파일이 없으면 빈 dict다."""
+    data = read_json(h.paths.round_dir(r) / "inventory.json")
+    if not isinstance(data, dict):
+        return {}
+    inv = Inventory.from_dict(data)
+    out: dict[tuple[str, str], Any] = {}
+    for it in inv.items:
+        out.setdefault((ga_key(it.ga), version_key(it.version)), it)
+    return out
 
 
 def _plan(h: _Holder) -> str | None:
@@ -615,11 +660,11 @@ def _plan(h: _Holder) -> str | None:
         plan = existing
         h.journal({"event": "plan_reused", "round": r, "proposals": len(plan.proposals)})
     else:
-        rejected = {(x.ga, x.to_version) for k in range(1, r) if (pl := h.load_plan(k)) is not None
+        rejected = {_rejected_key(x) for k in range(1, r) if (pl := h.load_plan(k)) is not None
                     for x in pl.proposals if x.decision == D_REJECTED}
         if existing is not None:
             # 트리나 정책 해시가 달라진 낡은 계획은 승인할 수 없으므로 기록으로만 남기고 새로 만든다
-            rejected |= {(x.ga, x.to_version) for x in existing.proposals if x.decision == D_REJECTED}
+            rejected |= {_rejected_key(x) for x in existing.proposals if x.decision == D_REJECTED}
             stale = p.round_dir(r) / "plan.stale.json"
             write_json_atomic(stale, existing.to_dict())
             h.journal({"event": "plan_stale", "round": r})
@@ -667,14 +712,19 @@ def _apply(h: _Holder) -> str | None:
     rs.applied = list(result.applied)
     by_id = {x.id: x for x in plan.proposals}
     # 건너뛴 제안은 적용되지 않았으므로 성공으로 볼 수 없어 직접 확인 항목으로 남긴다
-    _merge_residuals(st, [Residual(ga=by_id[pid].ga if pid in by_id else pid,
-                                   version=by_id[pid].from_version if pid in by_id else "",
-                                   origin="proposal", reason=R_MANUAL_REVIEW,
-                                   detail=f"proposal {pid} not applied: {why}",
-                                   finding_ids=list(by_id[pid].finding_ids) if pid in by_id else [],
-                                   modules=sorted(set(by_id[pid].modules) | set(by_id[pid].also_modules))
-                                   if pid in by_id else [])
-                          for pid, why in sorted(result.skipped.items())])
+    # 모듈별 출처와 IVAS 표기는 이 라운드의 인벤토리 항목에서 가져온다
+    items = _inventory_items(h, r) if result.skipped else {}
+    skipped: list[Residual] = []
+    for pid, why in sorted(result.skipped.items()):
+        prop = by_id.get(pid)
+        it = items.get((ga_key(prop.ga), version_key(prop.from_version))) if prop is not None else None
+        skipped.append(Residual(ga=prop.ga if prop else pid, version=prop.from_version if prop else "",
+                                origin="proposal", reason=R_MANUAL_REVIEW, detail=f"proposal {pid} not applied: {why}",
+                                finding_ids=list(prop.finding_ids) if prop else [],
+                                modules=sorted(set(prop.modules) | set(prop.also_modules)) if prop else [],
+                                sources=list(it.sources or []) if it is not None else [],
+                                reported_version=(it.reported_version or "") if it is not None else ""))
+    _merge_residuals(st, skipped)
     applied = [by_id[pid] for pid in result.applied if pid in by_id]
     if not applied:
         if st.delivery is None:

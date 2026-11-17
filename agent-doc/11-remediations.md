@@ -51,9 +51,9 @@ LLM 을 부르지 않는다. 이관 그래프(`sbmig/graph/`)와는 노드 하�
 - 바뀌는 것은 **기존 pom.xml 안의 버전 글자뿐**이다. 소스·구조·다른 파일은 그대로, 결과 ZIP 의 파일 집합 = 원본의 파일 집합.
   변경 하나(`TextEdit`, `op="replace"`) = pom 한 줄에서 버전 글자 `old` → `new`(태그·`${…}` 없음). 인코딩·BOM·CRLF·마지막 줄바꿈도 그대로 둔다.
 - **예외는 하나**: `managed_override` 제안은 루트 `pom.xml` 의 최상위 `<dependencyManagement><dependencies>` 안에 `<dependency>` 항목 하나
-  (groupId / artifactId / version 만)를 넣는다. 그 절이 없으면 그 항목 하나를 담은 `<dependencyManagement>` 절 전체를 최상위 `<dependencies>`
+  (groupId / artifactId / version, 변종이면 type·classifier 도)를 넣는다. 그 절이 없으면 그 항목 하나를 담은 `<dependencyManagement>` 절 전체를 최상위 `<dependencies>`
   → `<build>` → `</project>` 중 처음 있는 줄 앞에 넣는다. `TextEdit` 의 `op="insert"`, `old=""`, `line`(이 줄 앞에), `anchor`(그 줄의 지금 글자,
-  적용할 때 다시 확인), `override`(`{groupId, artifactId, version}`). 넣는 글자는 `render_override` 가 만드는 모양과 정확히 같아야 한다
+  적용할 때 다시 확인), `override`(그 좌표). 넣는 글자는 `render_override` 가 만드는 모양과 정확히 같아야 한다
   (들여쓰기는 형제 항목에서 복사, 줄 끝은 파일 것). 이 제안은 **설정과 무관하게 늘 승인을 기다린다**.
 - "계획한 것만 바뀌었나"(`verify_text_only`): 나머지 파일은 바이트가 같고, 받은 pom 은 원본에 계획한 replace·insert 를(같은 줄 앞 insert 는
   제안 ID 순) 적용한 바이트와 같고, XML 구조는 계획한 override 요소만큼만 는다.
@@ -120,8 +120,8 @@ deny·후보 없음·적용 안 된 제안) 없음, 최종 검사에 조치 대�
 부모·BOM 버전 변경은 그 부모·BOM 자체가 `remediation.policy.pins` 에 있을 때만 제안된다(`parent_version` / `bom_version`, override 아님).
 
 **관리 버전 override**: `transitive` · `parent_managed` · `bom_managed` 항목은 (관리자 pin 이 없으면) 직접 의존성과 같은 규칙(1절의 근거,
-같은 메이저 우선, deny·`remediation.policy.allow_major`)으로 버전을 고르고, 루트 pom 에 항목 하나를 넣는 `managed_override` 제안 하나를 낸다(같은
-g:a 는 한 항목). 그 g:a 의 관리 항목이 루트 pom 에 이미 있으면 두 번째는 넣지 않는다: 최상위 하나이고 버전 글자(또는 프로젝트 속성)가 해석된 버전과
+같은 메이저 우선, deny·`remediation.policy.allow_major`)으로 버전을 고르고, 루트 pom 에 항목 하나를 넣는 `managed_override` 제안을
+g:a·변종마다 하나씩 낸다. 그 g:a 의 관리 항목이 루트 pom 에 이미 있으면 두 번째는 넣지 않는다: 최상위 하나이고 버전 글자(또는 프로젝트 속성)가 해석된 버전과
 같으면 그 글자를 바꾸고(`own_management_version` / `property_version`), 아니면 잔여(6절 "자주 보는 경우").
 제안의 `note`(무엇을 고정하는지, "부모·BOM 이 따라잡으면 override 를 지울 것", "늘 승인 필요")는 `report.md` 제안 표 아래에 나온다.
 
@@ -190,7 +190,7 @@ g:a 는 한 항목). 그 g:a 의 관리 항목이 루트 pom 에 이미 있으�
 자주 보는 경우: `not_ready` → readiness 의 `missing`(`remediation.trusted_projects` 미확인, IVAS 세 값, JDK 21, Maven, settings.xml, 승인된 저장소 호스트). `execution_boundary_refused` →
 `state.boundary` 의 `code`(`project_maven_config`, `maven_extensions`, `maven_wrapper`, `symlink`, `foreign_repository`,
 `foreign_plugin_repository`, `unparsable_pom`). `manual_review` 만 남음 → `inventory.json` 의 `origin` 이 `plugin` / `vendored` / `unmapped` 이거나,
-`transitive` / 부모·BOM 관리인데 override 를 막은 사실이 잔여의 `detail` 에(분류자·jar 아님, 루트 pom 비상속·없음, 직접 선언 버전, 넣을 줄
+`transitive` / 부모·BOM 관리인데 override 를 막은 사실이 잔여의 `detail` 에(남은 classifier, 루트 pom 비상속·없음, 직접 선언 버전, 넣을 줄
 없음, 이미 있는 관리 항목). `resolution_mismatch` → 제안의 적용 범위 모듈이 계획 버전이 아니다(12 의 4절). `no_candidate_version` → 잔여의 `detail` 에 저장소가 준 버전 목록과 제외 이유(힌트 없음 포함)가 있다.
 
 ## 7. 설정 키 (`remediation:` 절, `config/default.yml` 에 한국어 설명)

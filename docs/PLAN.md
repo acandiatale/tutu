@@ -707,3 +707,24 @@ ConfigMap file at `/etc/sbmig/settings.xml`.
 | Tests | offline suite 5,375 passed, 62 deselected (19 added: the manifest invariants, the preflight check in both flows and both engines, the startup warning, the Korean reason, no path leak into a local-job run) | — | done |
 | The company's part | copy the settings file while the old ConfigMap mount is still there, change the lines in the hand-filled 40 / 81, re-create ConfigMap `sbmig-job-template`, restart the web pod; the first build per slot downloads its dependencies again; PVC `sbmig-m2` may be deleted once the new location works | company side | open |
 | Not seen yet | the new layout on the company cluster (NFS) | — | open |
+
+## Status — 2026-11-17, the remediation says where a library comes from (v2.1z-am)
+
+The user read a real report from the company cluster: 조치 완료 and 사내 라이브러리에서 발생한 취약점 came out well; four
+things did not. "루트 pom을 상속하지 않는 모듈이라는게 뭔지 모르겠어." "일부 모듈은 사내 라이브러리에서 가져옴. 이것도
+결국 사내 라이브러리에 속해야 하는거 아니야?" "얘도 좀 어디서 발생 되었는지 알아야 조치를 할거 같아!" "IVAS에서는
+2.2.0.release … 메이븐은 2.2.0.RELEASE … upper건 lower건 적용하게 해줘야" "classifier가 붙은 의존성은 뭐야?"
+
+| Item | Deliverable | Where | Status |
+|---|---|---|---|
+| Contract | `ModuleSource` (how one module gets the library); `InventoryItem.sources` / `reported_ga` / `reported_version` / `variants`; `Residual.sources` / `reported_version`; all default empty, an older `state.json` loads and renders as before | `sbmig/remediations/models.py`, `docs/INTERFACES.md` "v2.1z-am" | done |
+| Matching ignores case | one helper (`version_key`, `ga_key`, `same_version`, `same_ga`): exact g:a first, case-insensitive only when no exact g:a resolves; findings differing only by case are one group; items carry Maven's spelling, the IVAS spelling goes to `reported_*`; the resolution check, the rejected bookkeeping, the counts and the residual merge use it | `sbmig/remediations/matching.py`, `inventory.py`, `apply.py`, `planner.py`, `graph.py` | done |
+| In-house split by module | the modules that get a library through an in-house artifact form their own item (residual `inhouse_artifact`); the other modules are planned by their own facts. An editable version text is never split (it is the project's own). `Residual.inhouse` only on in-house residuals; the note "일부 모듈은 …" is gone | `inventory.py`, `planner.py` | done |
+| Provenance | one `ModuleSource` per module (origin, path, declaration line, manager, in-house artifacts, variant) on every item and residual | `inventory.py`, `planner.py`, `graph.py` | done |
+| Variant overrides | the override entry carries the dependency's `<type>` / `<classifier>`; one proposal per management key, each approved on its own; the plain-jar entry text and its `proposal_hash` unchanged; existing-entry, declared-version and resolution checks compare the full key; `locate_override(…, type_, classifier, pom)` works for any project pom (only the root is used) | `apply.py`, `planner.py` | done |
+| Report | 들어온 경로 under the 직접 확인 tables (per module when sources differ) and, where the 의존 경로 column does not already say it, under the 사내 라이브러리 tables; `not_inheriting_root` retitled 모듈 pom에 직접 지정해야 하는 버전 and explained without inheritance words; a classifier explained in one sentence; `2.2.0.RELEASE (IVAS 표기: 2.2.0.release)`; Korean rules for the new sentences and for three structure-check messages that used to print as 원문 | `sbmig/remediations/report.py`, `i18n.py` | done |
+| Docs | agent-doc 11 / 12 (the per-module in-house rule, the count semantics, 들어온 경로), INTERFACES, CLAUDE.md | `agent-doc/`, `docs/`, `CLAUDE.md` | done |
+| Tests | offline suite 5,470 passed, 62 deselected (95 added: the matching helper, the split and the sources in the inventory, variant overrides incl. byte identity of the plain entry, the in-house planner cases, a fake flow with lower-cased IVAS versions, the report sources and wording, the i18n samples) | — | done |
+| Open, the user's decision | override proposals in the module's own pom for modules that do not inherit the project root (asked 2026-11-17 with a recommendation; the user asked which cases it covers). Until then such libraries stay under 직접 확인 with their paths | — | open |
+| Known gap | an existing root entry for a classifier changed by version text is verified at g:a level | `apply.verify_resolution` | open |
+| Not seen yet | the changed report on a real company run | — | open |

@@ -312,14 +312,17 @@ GROUPS: dict[str, _Group] = {
     "root_entry_exists": _Group("루트 pom에 버전 지정이 이미 있음",
                                 "루트 pom의 dependencyManagement에 이 라이브러리 항목이 이미 있어 새로 추가하지 않습니다."),
     "variant": _Group("classifier가 붙은 의존성",
-                      "jar가 아닌 형식이거나 classifier가 붙은 의존성은 버전을 지정하는 방식으로 조치할 수 없습니다."),
+                      "classifier는 같은 버전의 jar를 용도별로 구분하는 이름입니다(예: jakarta). 아래 항목은 jar가 아닌 "
+                      "형식이거나 classifier가 붙어 있어 버전을 지정하는 방식으로 조치하지 못했습니다."),
     "root_unreadable": _Group("루트 pom을 읽을 수 없음",
                               "루트 pom.xml을 읽을 수 없어 dependencyManagement에 버전 지정을 추가하지 못했습니다.", False),
     "cannot_place": _Group("버전 지정을 추가할 위치를 정하지 못함",
                            "dependencyManagement에 버전 지정을 추가할 위치를 정하지 못했습니다."),
-    "not_inheriting_root": _Group("루트 pom을 상속하지 않는 모듈",
-                                  "이 모듈들은 프로젝트의 루트 pom이 아니라 회사 부모 pom을 상속합니다. 루트 pom에서 버전을 "
-                                  "지정해도 이 모듈들에는 적용되지 않아 자동으로 조치하지 못했습니다.", False),
+    "not_inheriting_root": _Group("모듈 pom에 직접 지정해야 하는 버전",
+                                  "이 모듈들은 프로젝트 최상위 pom.xml이 아니라 회사 부모 pom에서 설정을 물려받습니다. "
+                                  "도구는 최상위 pom.xml에만 버전을 지정할 수 있는데, 그렇게 해도 이 모듈들에는 적용되지 "
+                                  "않아 자동으로 조치하지 못했습니다. 해당 모듈의 pom.xml에서 dependencyManagement에 조치된 "
+                                  "버전을 추가하거나, 이 라이브러리를 가져오는 의존성의 버전을 올려 주세요.", False),
     "declared_wins": _Group("모듈 pom에서 버전을 직접 지정",
                             "모듈 pom에서 버전을 직접 지정하고 있어, 루트 pom의 dependencyManagement 로는 바뀌지 않습니다."),
     "rejected_earlier": _Group("이전에 적용하지 않기로 한 변경", "이전에 적용하지 않기로 한 변경이라 다시 제안하지 않습니다."),
@@ -387,6 +390,18 @@ def _variant_sentence(kw: str, ga: str, why: str) -> str:
     head = f"{_kw(kw)} {ga}의 형식이 jar가 아니거나 classifier가 붙어 있습니다"
     head += f"({', '.join(facts)})." if facts else "."
     return " ".join([head, *(ko_display(o) for o in others), "dependencyManagement의 버전 지정으로는 조치할 수 없습니다."])
+
+
+def _vkey(key: str) -> str:
+    """관리 키의 "<type>/<classifier>"를 "형식 X, classifier Y"로 바꾼다. 일반 jar 형식은 쓰지 않는다."""
+    typ, _sep, cls = (key or "").strip().partition("/")
+    words = ([f"형식 {typ}"] if typ and typ != "jar" else []) + ([f"classifier {cls}"] if cls else [])
+    return ", ".join(words) or key
+
+
+def _what_ko(x: str) -> str:
+    """"type X and classifier Y"를 "형식 X, classifier Y"로 바꾼다."""
+    return re.sub(r"(^|, )type ", r"\1형식 ", (x or "").replace(" and ", ", "))
 
 
 def _why(x: str | None) -> str:
@@ -475,6 +490,27 @@ RULES: list[_Rule] = [
        r"(?P<kw>transitive dependency|managed version) (?P<ga>\S+) resolves as a non-jar type or with a classifier "
        r"\((?P<why>.+)\); a plain override entry would not govern it",
        lambda g: _variant_sentence(g["kw"], g["ga"], g["why"]), "variant"),
+    _r("variant_key_not_plain",
+       r"(?P<kw>transitive dependency|managed version) (?P<ga>\S+) resolves as (?P<key>.+), which cannot be written as "
+       r"plain override coordinates",
+       lambda g: (f"{_kw(g['kw'])} {g['ga']}의 형식이나 classifier({_vkey(g['key'])})는 dependencyManagement 항목에 그대로 "
+                  "적을 수 있는 값이 아닙니다. 버전 지정으로는 조치할 수 없습니다."), "variant"),
+    _r("override_key_not_plain",
+       r"cannot place an override entry safely: (?:(?P<loc>\S+:\d+): )?override type / classifier "
+       r"(?P<t>'[^']*'|\"[^\"]*\") / (?P<c>'[^']*'|\"[^\"]*\") is not plain coordinate text",
+       lambda g: ((f"{loc_ko(g['loc'])}에 넣을 " if g.get("loc") else "")
+                  + f"dependencyManagement 항목의 형식({g['t']})이나 classifier({g['c']})가 그대로 적을 수 있는 값이 "
+                  "아니어서 버전 지정을 추가하지 않았습니다."), "cannot_place"),
+    _r("override_dtd",
+       r"cannot place an override entry safely: (?P<pom>the root pom|\S+) declares a DTD / entities; not edited",
+       lambda g: (f"{'루트 pom.xml' if g['pom'] == 'the root pom' else g['pom']} 파일에 DTD나 엔티티 선언이 있어 수정하지 "
+                  "않았습니다. dependencyManagement에 버전 지정을 추가하지 못했습니다."), "cannot_place"),
+    _r("override_twice", r"cannot place an override entry safely: (?P<p>\S+): two override entries for (?P<k>\S+)",
+       lambda g: f"{g['p']}에 {g['k']} 항목을 두 번 추가하게 되어 버전 지정을 추가하지 않았습니다.", "cannot_place"),
+    _r("override_exists",
+       r"cannot place an override entry safely: (?P<p>\S+): already has a <dependencyManagement> entry for (?P<k>\S+); "
+       r"a second entry is never added",
+       lambda g: f"{g['p']}의 dependencyManagement에 {g['k']} 항목이 이미 있어 더 추가하지 않았습니다.", "cannot_place"),
     _r("root_unreadable", r"cannot place an override entry safely: the root pom\.xml is not readable",
        lambda g: "루트 pom.xml을 읽을 수 없어 dependencyManagement에 버전 지정을 추가하지 못했습니다.", "root_unreadable"),
     # 내부 오류(apply.EditError)는 도구 내부 문장이므로 원문으로 둔다
@@ -482,8 +518,9 @@ RULES: list[_Rule] = [
        lambda g: f"dependencyManagement에 버전 지정을 추가할 위치를 정하지 못했습니다. {_raw(g['e'])}", "cannot_place"),
     _r("not_inheriting_root",
        r"module\(s\) (?P<mods>{A}) do not inherit from the root pom\.xml: an override entry there would not reach them",
-       lambda g: (f"{g['mods']} 모듈은 루트 pom.xml을 상속하지 않습니다. 루트 pom에서 버전을 지정해도 이 모듈들에는 "
-                  "적용되지 않습니다."), "not_inheriting_root"),
+       lambda g: (f"{g['mods']} 모듈은 프로젝트 최상위 pom.xml이 아니라 회사 부모 pom에서 설정을 물려받습니다. 최상위 "
+                  "pom.xml에 버전을 지정해도 이 모듈에는 적용되지 않으므로, 모듈의 pom.xml에 조치된 버전을 지정해야 "
+                  "합니다."), "not_inheriting_root"),
     _r("declared_wins",
        r"(?P<ga>\S+) is declared with a version in (?P<places>{A}): a declared version wins over <dependencyManagement>, "
        r"so an override entry would not change it",
@@ -540,6 +577,10 @@ RULES: list[_Rule] = [
     _r("override_approval",
        r"always needs approval: an inserted <dependencyManagement> entry is never applied automatically",
        lambda g: "dependencyManagement에 추가하는 항목은 자동으로 적용하지 않습니다. 항상 승인이 필요합니다."),
+    _r("variant_note",
+       r"the entry names (?P<what>{A}) like the resolved dependency: an entry without it would not govern that dependency",
+       lambda g: (f"추가하는 항목에 해석된 의존성과 같은 값을 적습니다({_what_ko(g['what'])}). 이 값이 없는 항목은 그 "
+                  "의존성에 적용되지 않습니다.")),
     _r("merge_covers", r"one (?P<w>override entry|edit) also covers (?P<others>{A}) \((?:same artifact|same version line)\)",
        lambda g: (f"추가하는 항목 하나로 {g['others']}도 함께 조치합니다(같은 라이브러리)." if g["w"] == "override entry"
                   else f"한 번의 수정으로 {g['others']}도 함께 조치합니다(같은 버전 표기).")),
@@ -730,6 +771,18 @@ RULES: list[_Rule] = [
        lambda g: f"{g['p']}: 계획한 dependencyManagement 항목이 최상위 dependencyManagement 한 곳에 모여 있지 않습니다."),
     _r("override_presence", r"(?P<p>\S+): <dependencyManagement> presence before / after does not match the planned override",
        lambda g: f"{g['p']}: 변경 전후의 dependencyManagement 유무가 계획과 맞지 않습니다."),
+    _r("override_count",
+       r"(?P<p>\S+): expected exactly one inserted <dependency> (?P<k>\S+), found (?P<n>\d+)",
+       lambda g: f"{g['p']}: 추가한 {g['k']} 항목이 정확히 하나여야 하는데 {g['n']}개 있습니다."),
+    _r("override_shape",
+       r"(?P<p>\S+): inserted <dependency> (?P<k>\S+) is not exactly groupId / artifactId / version (?P<v>\S+)"
+       r"(?: / type (?P<t>\S+))?(?: / classifier (?P<c>\S+))?",
+       lambda g: (f"{g['p']}: 추가한 {g['k']} 항목의 내용이 계획(groupId, artifactId, version {g['v']}"
+                  + (f", type {g['t']}" if g.get("t") else "") + (f", classifier {g['c']}" if g.get("c") else "")
+                  + ")과 다릅니다.")),
+    _r("override_extra",
+       r"(?P<p>\S+): the inserted <dependencyManagement> holds more than the planned override entries",
+       lambda g: f"{g['p']}: 추가한 dependencyManagement에 계획한 항목 외의 내용이 있습니다."),
     _r("outside_differs", r"a file outside the project folder differs from the accepted tree",
        lambda g: "프로젝트 폴더 밖의 파일이 작업 사본과 다릅니다."),
     # ---- graph / chain / service: 상태 메시지
@@ -971,9 +1024,14 @@ def variant_label(detail: str) -> str:
 
     The type / classifier variant a residual detail names, shown after the coordinates ("" when none)."""
     found: list[str] = []
-    for v in re.findall(r"type/classifier variant \(([^()]*)\)", str(detail or "")):
-        for one in v.split(", "):
-            typ, _sep, cls = one.partition("/")
+    text = str(detail or "")
+    keys = re.findall(r"type/classifier variant \(([^()]*)\)", text)
+    keys += re.findall(r"resolves as (.+?), which cannot be written as plain override coordinates", text)
+    for v in keys:
+        for one in v.split(","):
+            typ, _sep, cls = one.strip().partition("/")
+            if typ in ("", "jar") and not cls:
+                continue                     # 일반 jar("jar/")는 변종이 아니므로 표시하지 않는다
             text = cls if typ == "jar" and cls else (f"{typ}, {cls}" if cls else typ)
             if text and text not in found:
                 found.append(text)
@@ -999,7 +1057,7 @@ def row_memo(detail: str) -> str:
                 m = rule.rx.fullmatch(cand)
                 others = _variant_parts(m["why"])[1] if m else []
                 out += [ko_display(o) for o in others]
-            elif rule.key not in ("variant_paren", "variant_in"):
+            elif rule.key not in ("variant_paren", "variant_in", "variant_key_not_plain"):
                 out.append(k)
     s = " ".join(x for x in out if x)
     if raw:

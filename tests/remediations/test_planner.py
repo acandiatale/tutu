@@ -754,19 +754,6 @@ def test_every_module_through_inhouse_is_a_residual_no_override(tmp_path, origin
     assert r.via == [f"{INH}:4.0.0"] and f"brought in by the in-house artifact(s) {INH}" in r.detail
 
 
-def test_some_modules_through_inhouse_planned_as_today(tmp_path):
-    proj = _mm_project(tmp_path)
-    src = FakeSource({"example:t": ["1.1"]})
-    mixed = _plan(proj, [_inh_trans(inhouse_modules=("app-domain",))], source=src)
-    plain = _plan(proj, [_inh_trans(inhouse_modules=())], source=src)
-    assert [p.kind for p in mixed.proposals] == [p.kind for p in plain.proposals] == [K_MANAGED_OVERRIDE]
-    assert mixed.proposals[0].diff == plain.proposals[0].diff
-    # the same mixed item without an inheriting root: today's residual, now carrying the in-house facts
-    plan = _plan(_write(tmp_path / "flat", POM), [_inh_trans(inhouse_modules=("app-domain",))], source=src)
-    (r,) = plan.residuals
-    assert r.reason == "manual_review" and r.inhouse == [INH] and r.modules == ["app-domain", "app-web"]
-
-
 def test_direct_declaration_also_reached_through_inhouse_is_proposed(project):
     item = _direct()
     item.modules, item.also_modules = ["app-web", "app-domain"], ["app-domain"]
@@ -775,13 +762,7 @@ def test_direct_declaration_also_reached_through_inhouse_is_proposed(project):
     assert p.kind == K_DIRECT_VERSION and p.to_version == "1.2.5"
 
 
-def test_rejected_change_residual_carries_modules_and_inhouse(tmp_path):
-    proj = _mm_project(tmp_path)
-    plan = _plan(proj, [_inh_trans(inhouse_modules=("app-domain",))], source=FakeSource({"example:t": ["1.1"]}),
-                 rejected={("example:t", "1.1")})
-    (r,) = plan.residuals
-    assert r.reason == "rejected_proposals" and r.modules == ["app-domain", "app-web"] and r.inhouse == [INH]
-    assert r.via == [f"{INH}:4.0.0"]
+# the split inventory (an item never mixes in-house and project modules): tests/remediations/test_planner_inhouse_split.py
 
 
 def test_policy_hash_covers_the_inhouse_set():

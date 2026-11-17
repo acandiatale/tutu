@@ -51,8 +51,26 @@ SAMPLES: list[tuple[str, str, list[str]]] = [
     ("variant", (f"transitive dependency {GA} resolves as a non-jar type or with a classifier (type/classifier variant "
      "(jar/tests)); a plain override entry would not govern it"), [GA, "jar/tests"]),
     ("root_unreadable", "cannot place an override entry safely: the root pom.xml is not readable", []),
-    ("cannot_place", "cannot place an override entry safely: pom.xml: two override entries for org.example:lib",
-     ["pom.xml", GA]),
+    ("cannot_place", "cannot place an override entry safely: pom.xml: anchor line 12 is not </dependencies>",
+     ["pom.xml"]),
+    ("override_twice", f"cannot place an override entry safely: pom.xml: two override entries for {GA}:jar:jakarta",
+     ["pom.xml", f"{GA}:jar:jakarta"]),
+    ("override_exists", (f"cannot place an override entry safely: pom.xml: already has a <dependencyManagement> entry for "
+     f"{GA}:test-jar; a second entry is never added"), ["pom.xml", f"{GA}:test-jar"]),
+    ("override_key_not_plain", ("cannot place an override entry safely: pom.xml:58: override type / classifier 'jar' / "
+     "'${c}' is not plain coordinate text"), ["pom.xml 58행", "'jar'", "'${c}'"]),
+    ("override_dtd", "cannot place an override entry safely: app/pom.xml declares a DTD / entities; not edited",
+     ["app/pom.xml"]),
+    ("variant_key_not_plain", (f"managed version {GA} resolves as test-jar/${{x}}, which cannot be written as plain "
+     "override coordinates"), [GA, "test-jar", "${x}"]),
+    ("variant_note", ("the entry names type test-jar and classifier tests like the resolved dependency: an entry without "
+     "it would not govern that dependency"), ["test-jar", "tests"]),
+    ("override_count", f"pom.xml: expected exactly one inserted <dependency> {GA}:jar:jakarta, found 2",
+     ["pom.xml", f"{GA}:jar:jakarta", "2"]),
+    ("override_shape", (f"pom.xml: inserted <dependency> {GA}:test-jar:tests is not exactly groupId / artifactId / version "
+     "1.1 / type test-jar / classifier tests"), ["pom.xml", f"{GA}:test-jar:tests", "1.1", "test-jar", "tests"]),
+    ("override_extra", "pom.xml: the inserted <dependencyManagement> holds more than the planned override entries",
+     ["pom.xml"]),
     ("not_inheriting_root", ("module(s) app-boot, app-domain do not inherit from the root pom.xml: an override entry there "
      "would not reach them"), ["app-boot", "app-domain"]),
     ("declared_wins", (f"{GA} is declared with a version in app-domain/pom.xml (1.0): a declared version wins over "
@@ -278,7 +296,8 @@ def test_detail_group_has_a_stable_key_and_one_explanation():
     kb, tb = i18n.detail_group(b)
     assert ka == kb == "not_inheriting_root" and ta == tb
     assert "a-boot" not in ta and HANGUL.search(ta)
-    assert i18n.group_meta(ka) == ("루트 pom을 상속하지 않는 모듈", False)
+    assert i18n.group_meta(ka) == ("모듈 pom에 직접 지정해야 하는 버전", False)
+    assert "회사 부모 pom" in ta and "최상위 pom.xml" in ta and "상속" not in ta and "모듈의 pom.xml" in ta
     k, t = i18n.detail_group("version property ${x} is not defined in the project poms; managed by g:p:1")
     assert k == "external_property+external_manager" and "g:p:1" not in t
     assert i18n.group_meta(k)[1] is True
@@ -347,3 +366,50 @@ def test_labels_and_groups_attach_their_particles():
                  "BOUNDARY_KO"):
         texts += list(getattr(i18n, name).values())
     assert [t for t in texts if DETACHED.search(t)] == []
+
+
+def test_not_inheriting_root_and_variant_speak_to_a_project_owner():
+    """The user did not understand "루트 pom을 상속하지 않는 모듈" (2026-11-17): the words say what the tool can do, why
+    it does not reach these modules and what to do by hand, without Maven inheritance vocabulary."""
+    out = i18n.ko_text("module(s) app-boot, app-domain do not inherit from the root pom.xml: an override entry there "
+                       "would not reach them")
+    assert out.startswith("app-boot, app-domain 모듈은 프로젝트 최상위 pom.xml이 아니라 회사 부모 pom에서 설정을 물려받습니다.")
+    assert "모듈의 pom.xml에 조치된 버전을 지정해야 합니다." in out and "상속" not in out
+    g = i18n.GROUPS["not_inheriting_root"]
+    assert g.title == "모듈 pom에 직접 지정해야 하는 버전"
+    assert "도구는 최상위 pom.xml에만 버전을 지정할 수 있는데" in g.text and "dependencyManagement" in g.text
+    assert "classifier는 같은 버전의 jar를 용도별로 구분하는 이름입니다(예: jakarta)." in i18n.GROUPS["variant"].text
+
+
+def test_variant_override_sentences():
+    """Variant overrides (one proposal per management key): the note, the residual that cannot be written, the
+    apply / structure-check messages with the full key, and the existing rules with the new key shapes."""
+    note = i18n.ko_text("the entry names classifier jakarta like the resolved dependency: an entry without it would not "
+                        "govern that dependency")
+    assert note == ("추가하는 항목에 해석된 의존성과 같은 값을 적습니다(classifier jakarta). 이 값이 없는 항목은 그 "
+                    "의존성에 적용되지 않습니다.")
+    assert "(형식 pom)" in i18n.ko_text("the entry names type pom like the resolved dependency: an entry without it "
+                                       "would not govern that dependency")
+    detail = f"transitive dependency {GA} resolves as jar/a b, which cannot be written as plain override coordinates"
+    key, text = i18n.detail_group(detail)
+    assert key == "variant" and text == i18n.GROUPS["variant"].text
+    assert i18n.variant_label(detail) == "a b" and i18n.row_memo(detail) == ""
+    assert i18n.ko_text("cannot place an override entry safely: the root pom declares a DTD / entities; not edited"
+                        ).startswith("루트 pom.xml 파일에 DTD나 엔티티 선언이 있어")
+    assert i18n.ko_text("cannot place an override entry safely: override type / classifier 'jar' / \"it's\" is not plain "
+                        "coordinate text").startswith("dependencyManagement 항목의 형식('jar')이나 classifier(\"it's\")")
+    for ga in (GA, f"{GA}:jar:jakarta", f"{GA}:test-jar"):
+        assert i18n.rule_keys(f"the root pom.xml already has <dependencyManagement> entries for {ga} (top level, profile "
+                              "dev); a second entry is never added") == ["root_entries_many"]
+        assert i18n.rule_keys(f"the root pom.xml already has a <dependencyManagement> entry for {ga} whose version (1.0-x) "
+                              "is not the resolved 1.0 as plain text; a second entry is never added") == [
+            "root_entry_mismatch"]
+        assert i18n.rule_keys(f"{ga} is declared with a version in app/pom.xml (1.0): a declared version wins over "
+                              "<dependencyManagement>, so an override entry would not change it") == ["declared_wins"]
+        out = i18n.ko_text(f"pom.xml: inserted <dependency> {ga} is not exactly groupId / artifactId / version 1.1")
+        assert out == f"pom.xml: 추가한 {ga} 항목의 내용이 계획(groupId, artifactId, version 1.1)과 다릅니다."
+
+
+def test_variant_label_skips_the_plain_jar():
+    assert i18n.variant_label("type/classifier variant (jar/, jar/jakarta)") == "jakarta"
+    assert i18n.variant_label("type/classifier variant (jar/jdk8, test-jar/tests)") == "jdk8, test-jar, tests"

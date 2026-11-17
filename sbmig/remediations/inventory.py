@@ -13,13 +13,16 @@ apply가 줄 단위로 고칠 위치이므로, pom을 다시 읽어 그 줄에 �
   ``unmapped``는 문제를 숨기지 않도록 합치지 않는다
 - 나머지 모듈의 결과는 가장 많은 모듈을 관리하는 고칠 수 있는 항목에 합치고 ``also_modules``에 기록한다.
   그 모듈은 검증에서 실패로 치지 않고 다음 라운드에서 따로 계획한다
+- 사내 아티팩트를 거쳐 들어온 모듈과 그렇지 않은 모듈은 묶기 전에 나누므로 한 항목에 섞이지 않는다
+IVAS 표기와 Maven 표기는 ``matching``으로 비교하므로 버전의 대소문자만 다르면 같은 라이브러리로 본다.
 의존성 결과에 없는 라이브러리는 ``plugin`` -> ``vendored`` -> ``unmapped`` 순으로 분류하고, 파일 컴포넌트로
 찾은 항목은 항상 ``vendored``다.
 
 Links IVAS findings to what Maven resolved and to the exact line / literal text of the version in the project poms.
 Rules: see the Korean block above (one item per distinct editable location; non-editable module results fold into the
 item that governs most modules and are listed in its `also_modules` — the edit is not known to govern them; unmapped
-results never fold). Also holds the small lxml pom model `ProjectPoms`
+results never fold; modules with in-house artifacts on the path are grouped apart from the others first; IVAS and
+Maven spellings compare through `matching.py`, case-insensitively). Also holds the small lxml pom model `ProjectPoms`
 that `maven.py` reuses for module discovery.
 """
 from __future__ import annotations
@@ -35,6 +38,7 @@ from typing import Any
 from lxml import etree
 
 from .inhouse import inhouse_on_path
+from .matching import ga_key, same_version, version_key
 from .models import (
     O_BOM_MANAGED,
     O_DIRECT_LITERAL,
@@ -48,6 +52,7 @@ from .models import (
     Finding,
     Inventory,
     InventoryItem,
+    ModuleSource,
     PomLocation,
     ResolvedDep,
     ResolvedModel,
@@ -544,7 +549,7 @@ def _from_ref(pp: ProjectPoms, mod: PomFile, ga: str, version: str, ref: Version
         loc = location_of(decl_pom, vel, element)
         if loc is None:
             return _Res(O_UNMAPPED, reason=f"version text of {ga} in {decl_pom.rel} could not be located on one line")
-        if ref.value != version:
+        if not same_version(ref.value, version):      # Maven은 한정자의 대소문자를 구분하지 않는다
             return _Res(O_UNMAPPED, reason=f"{decl_pom.rel} declares {ga} {ref.value}, Maven resolves {version}")
         return _Res(origin_literal, location=loc)
     if ref.kind == "property":
@@ -552,7 +557,7 @@ def _from_ref(pp: ProjectPoms, mod: PomFile, ga: str, version: str, ref: Version
         loc = location_of(ref.pom, ref.el, "property", ref.prop)
         if loc is None:
             return _Res(O_UNMAPPED, reason=f"property {ref.prop} in {ref.pom.rel} could not be located on one line")
-        if ref.value != version:
+        if not same_version(ref.value, version):      # Maven은 한정자의 대소문자를 구분하지 않는다
             return _Res(O_UNMAPPED, reason=f"property {ref.prop} in {ref.pom.rel} is {ref.value}, Maven resolves {version}")
         return _Res(origin_prop, location=loc)
     names = " → ".join(f"${{{n}}}" for n in ref.names)
@@ -722,15 +727,10 @@ def _vendored_paths(project: Path, locations: list[str]) -> list[str]:
     return sorted(set(out))
 
 
-def _plugin_hits(resolved: ResolvedModel, ga: str) -> tuple[list[str], list[str]]:
-    mods, versions = [], []
-    for m in resolved.modules:
-        for p in m.plugins:
-            if p.ga == ga:
-                mods.append(m.dir)
-                if p.version:
-                    versions.append(p.version)
-    return sorted(set(mods)), sorted(set(versions))
+def _plugin_hits(resolved: ResolvedModel, gas: list[str]) -> list[tuple[str, ResolvedDep]]:
+    """IVAS의 g:a 표기에 맞는 빌드 플러그인과 그 의존성을 (모듈, 항목) 목록으로 반환한다."""
+    match = _matching_gas(gas, {p.ga for m in resolved.modules for p in m.plugins})
+    return [(m.dir, p) for m in resolved.modules for p in m.plugins if p.ga in match]
 
 
 def split_patched_versions(text: str) -> list[str]:
@@ -767,18 +767,100 @@ def _split_ga(identifier: str) -> str | None:
 
 
 # ---------------------------------------------------------------------------- 진입점
+def _matching_gas(reported: list[str], available: set[str]) -> set[str]:
+    """IVAS의 g:a 표기에 맞는 Maven g:a 집합을 반환한다. 똑같은 표기가 있으면 그것만, 없을 때만 대소문자를 무시해 찾는다.
+
+    Maven's g:a is case-sensitive: an exact spelling wins; the case-insensitive match is the fallback only."""
+    exact = set(reported) & available
+    if exact:
+        return exact
+    keys = {ga_key(r) for r in reported}
+    return {a for a in available if ga_key(a) in keys}
+
+
+def _variant_of(d: ResolvedDep) -> str:
+    """일반 jar면 빈 문자열을, 아니면 ``"<type>/<classifier>"``를 반환한다."""
+    t = d.type or "jar"
+    return "" if t == "jar" and not d.classifier else f"{t}/{d.classifier}"
+
+
+def _declared(pp: ProjectPoms, mod: PomFile, ga: str) -> PomLocation | None:
+    """프로젝트 pom이 이 모듈의 ``<dependencies>``에 ``ga``를 선언한 위치를 반환한다.
+    버전 문자열이 있으면 그 줄을, 없으면 ``<dependency>`` 줄을 ``text=""``로 반환한다."""
+    decl = _find_decl(pp, mod, ga, management=False)
+    if decl is None:
+        return None
+    dpom, del_ = decl
+    vel = _kid(del_, "version")
+    if _text(vel):
+        loc = location_of(dpom, vel, "dependency")
+        if loc is not None:
+            return loc
+    return PomLocation(pom=dpom.rel, line=int(del_.sourceline or 0), text="", element="dependency")
+
+
+@dataclass
+class _Mod:
+    """모듈 하나의 판정과 그 근거가 된 의존성 정보."""
+    res: _Res
+    dep: ResolvedDep
+    variants: list[str]
+    declared: PomLocation | None = None
+    plain: bool = False                          # 같은 버전을 일반 jar로도 해석했다
+
+    def source(self, mdir: str) -> ModuleSource:
+        # 변종이 있을 때만 일반 jar를 "jar/"로 앞에 적는다. 일반 jar만이면 빈 문자열이다
+        shown = (["jar/"] if self.plain and self.variants else []) + self.variants
+        return ModuleSource(module=mdir, how=self.res.origin, via=list(self.dep.path), declared=self.declared,
+                            manager=self.res.manager, inhouse=list(self.res.inhouse), variant=", ".join(shown))
+
+
+def _split_inhouse(ga: str, results: list[tuple[str, _Res]]) -> tuple[list[tuple[str, _Res]], list[tuple[str, _Res]]]:
+    """모듈 결과를 사내 아티팩트가 없는 쪽과 있는 쪽으로 나눈다.
+    고칠 수 있는 버전 문자열 위치는 프로젝트의 것이므로 나누지 않고, 라이브러리 자체가 사내 아티팩트일 때만 사내 쪽에 둔다.
+
+    Split per-module results into (no in-house artifact, in-house artifact) BEFORE grouping, so no item mixes the
+    two. An editable location is never split: the version text is the project's own and governs all its modules, so
+    its group stays whole on the plain side, unless the library itself is an in-house artifact (then every one of
+    its modules has `ga` in `inhouse` and the group goes to the in-house side)."""
+    inh_keys: set[tuple] = set()
+    by_key: dict[tuple, list[_Res]] = {}
+    for _m, r in results:
+        if r.editable:
+            by_key.setdefault(r.key(), []).append(r)
+    for k, rs in by_key.items():
+        if all(ga in r.inhouse for r in rs):
+            inh_keys.add(k)
+    plain: list[tuple[str, _Res]] = []
+    inh: list[tuple[str, _Res]] = []
+    for m, r in results:
+        side = (r.key() in inh_keys) if r.editable else bool(r.inhouse)
+        (inh if side else plain).append((m, r))
+    return plain, inh
+
+
 def build_inventory(project: Path, findings: list[Finding], resolved: ResolvedModel, *,
                     managed_by: Callable[[str], str | None] | None = None,
                     inhouse: Mapping[str, str] | None = None) -> Inventory:
     """IVAS가 찾은 취약점으로 ``Inventory``를 만든다(``interfaces.InventoryFn``). 의존성 결과와 g:a, 버전이
     같은 라이브러리만 출처를 정하고 나머지는 plugin / vendored / unmapped로 분류한다.
+    버전은 대소문자를 구분하지 않고 비교하며, g:a는 똑같은 표기가 없을 때만 대소문자를 무시한다.
+    항목은 Maven 표기를 쓰고 IVAS 표기가 다르면 ``reported_ga`` / ``reported_version``에 남긴다.
     의존성 결과가 불완전하거나 프로젝트 pom을 못 읽으면 ``complete=False``가 된다.
     항목은 (ga, 버전, 출처, pom, 줄) 순으로 정렬한다.
-    ``inhouse``를 주면 모듈마다 그 라이브러리를 끌어온 사내 아티팩트와 회사 부모를 항목의 ``inhouse`` /
-    ``inhouse_modules``에 기록한다.
+    ``inhouse``를 주면 사내 아티팩트를 거쳐 들어온 모듈과 그렇지 않은 모듈을 다른 항목으로 나눈다.
 
     Findings → inventory. Deterministic order; `complete=False` when the resolution is incomplete or a pom is unreadable.
-    With `inhouse` (in-house g:a → group) each item records the in-house artifacts that bring it and in which modules."""
+    Matching (`matching.py`): findings that differ only by case are one group; a group matches the resolution by exact
+    g:a first and by case-insensitive g:a only when no module resolves the exact one; versions compare
+    case-insensitively. The item carries Maven's spelling, the IVAS one in `reported_ga` / `reported_version` when no
+    IVAS spelling equals Maven's (several IVAS spellings: the first in sorted order).
+    With `inhouse` (in-house g:a → group) the modules whose result has in-house artifacts on the path form their own
+    items (`inhouse` = the union, `inhouse_modules` = all of `modules`); the other items have both lists empty
+    (`_split_inhouse` for the editable-location rule). Every item from the resolution has `sources` (one
+    `ModuleSource` per module, sorted) and `variants` (the non-plain-jar "<type>/<classifier>" of its modules, plain jar never listed).
+    `ModuleSource.variant`: "" when the module resolves only the plain jar; else its "<type>/<classifier>" values
+    joined with ", ", led by "jar/" when the module resolves the plain jar too ("jar/, jar/jakarta")."""
     project = Path(project)
     # 루트 aggregator 없이 서비스마다의 reactor로 의존성을 구했으면 같은 루트 목록으로 pom을 읽는다
     pp = ProjectPoms(project, roots=list(getattr(resolved, "roots", None) or []) or None)
@@ -790,9 +872,10 @@ def build_inventory(project: Path, findings: list[Finding], resolved: ResolvedMo
     items: list[InventoryItem] = []
     # 회사 부모(parents 그룹)는 의존 경로에 나오지 않으므로 모듈의 외부 부모로 따로 판단한다(_parent_inhouse)
     parent_keys = {k for k, grp in (inhouse or {}).items() if grp == PARENTS_GROUP}
+    resolved_gas = {d.ga for m in resolved.modules for d in m.dependencies}
 
-    # 라이브러리 발견 항목을 (g:a, 버전)으로 묶는다
-    lib_groups: dict[tuple[str, str], list[Finding]] = {}
+    # 라이브러리 발견 항목을 대소문자를 무시한 (g:a, 버전)으로 묶는다
+    lib_groups: dict[tuple[str, str], list[tuple[str, Finding]]] = {}
     unparsable: dict[tuple[str, str], list[Finding]] = {}
     file_groups: dict[tuple[str, str], list[Finding]] = {}
     for f in findings:
@@ -801,7 +884,7 @@ def build_inventory(project: Path, findings: list[Finding], resolved: ResolvedMo
             if ga is None:
                 unparsable.setdefault((f.identifier, f.version), []).append(f)
             else:
-                lib_groups.setdefault((ga, f.version), []).append(f)
+                lib_groups.setdefault((ga_key(ga), version_key(f.version)), []).append((ga, f))
         elif f.kind in FILE_KINDS:
             file_groups.setdefault((f.identifier, f.version), []).append(f)
         else:
@@ -815,44 +898,65 @@ def build_inventory(project: Path, findings: list[Finding], resolved: ResolvedMo
         it.patched_versions = sorted({", ".join(alts) for f in fs if (alts := split_patched_versions(f.patched_version))})
         return it
 
-    for (ga, version), fs in sorted(lib_groups.items()):
-        results: list[tuple[str, _Res]] = []
+    for (_gk, vkey), pairs in sorted(lib_groups.items()):
+        fs = [f for _, f in pairs]
+        ivas_gas = sorted({ga for ga, _ in pairs})
+        ivas_versions = sorted({f.version or "" for f in fs})
+        gas = _matching_gas(ivas_gas, resolved_gas)
+        # Maven 표기 (g:a, 버전)마다 모듈 결과를 모은다
+        sub: dict[tuple[str, str], list[tuple[str, _Res]]] = {}
+        info: dict[tuple[str, str], dict[str, _Mod]] = {}
         for m in resolved.modules:
-            for dep in m.dependencies:
-                if dep.ga != ga or dep.version != version or not version:
-                    continue
-                pf = pp.poms.get(m.dir)
-                if pf is None:
-                    pf = parse_pom_file(project, m.dir)
-                if not pf.ok:
-                    inv.complete = False
-                    note = f"module {m.dir}: pom not readable ({pf.error or 'missing'})"
-                    if note not in inv.notes:
-                        inv.notes.append(note)
-                    results.append((m.dir, _Res(O_UNMAPPED, reason=note,
-                                                inhouse=inhouse_on_path(dep.ga, dep.path, inhouse))))
-                    continue
-                res = _classify(pp, pf, dep, managed_by)
-                res.inhouse = inhouse_on_path(dep.ga, dep.path, inhouse)
-                for pga in _parent_inhouse(pp, pf, dep, res, parent_keys):
-                    if pga not in res.inhouse:
-                        res.inhouse.append(pga)
-                variants = sorted({f"{d.type or 'jar'}/{d.classifier}" for d in m.dependencies
-                                   if d.ga == ga and d.version == version and ((d.type or "jar") != "jar" or d.classifier)})
-                if variants and not res.editable:
-                    res.reason = "; ".join(x for x in [res.reason, f"{VARIANT_MARK} ({', '.join(variants)})"] if x)
-                results.append((m.dir, res))
-                break                                   # 모듈마다 한 번만 센다. classifier만 다른 같은 g:a는 같은 위치다
-        if results:
-            marked = sorted({m for m, r in results if VARIANT_MARK in r.reason})
-            for it in _group(ga, version, results):
-                # 다른 모듈의 결과가 합쳐지면 그 모듈의 reason이 사라지므로, override를 막으려면 변종 표시를 남겨야 한다
-                if it.origin not in EDITABLE and VARIANT_MARK not in it.reason and set(marked) & set(it.modules):
-                    it.reason = "; ".join(x for x in [it.reason, f"{VARIANT_MARK} in {', '.join(marked)}"] if x)
-                _fill_inhouse(it, results)
-                items.append(decorate(it, fs))
+            hits = [d for d in m.dependencies if vkey and d.ga in gas and same_version(d.version, vkey)]
+            if not hits:
+                continue
+            dep = hits[0]                               # 모듈마다 한 번만 센다. classifier만 다른 같은 g:a는 같은 위치다
+            ga, version = dep.ga, dep.version
+            variants = sorted({v for d in m.dependencies
+                               if d.ga == ga and same_version(d.version, version) and (v := _variant_of(d))})
+            plain = any(d.ga == ga and same_version(d.version, version) and not _variant_of(d) for d in m.dependencies)
+            pf = pp.poms.get(m.dir)
+            if pf is None:
+                pf = parse_pom_file(project, m.dir)
+            if not pf.ok:
+                inv.complete = False
+                note = f"module {m.dir}: pom not readable ({pf.error or 'missing'})"
+                if note not in inv.notes:
+                    inv.notes.append(note)
+                res = _Res(O_UNMAPPED, reason=note, inhouse=inhouse_on_path(dep.ga, dep.path, inhouse))
+                sub.setdefault((ga, version), []).append((m.dir, res))
+                info.setdefault((ga, version), {})[m.dir] = _Mod(res, dep, variants, plain=plain)
+                continue
+            res = _classify(pp, pf, dep, managed_by)
+            res.inhouse = inhouse_on_path(dep.ga, dep.path, inhouse)
+            for pga in _parent_inhouse(pp, pf, dep, res, parent_keys):
+                if pga not in res.inhouse:
+                    res.inhouse.append(pga)
+            if variants and not res.editable:
+                res.reason = "; ".join(x for x in [res.reason, f"{VARIANT_MARK} ({', '.join(variants)})"] if x)
+            sub.setdefault((ga, version), []).append((m.dir, res))
+            info.setdefault((ga, version), {})[m.dir] = _Mod(res, dep, variants, _declared(pp, pf, ga), plain)
+        if not sub:
+            items.append(decorate(_unresolved(project, resolved, ivas_gas, ivas_versions, fs, gas), fs))
             continue
-        items.append(decorate(_unresolved(project, resolved, ga, version, fs), fs))
+        for (ga, version), results in sorted(sub.items()):
+            mods = info[(ga, version)]
+            marked = sorted({m for m, r in results if VARIANT_MARK in r.reason})
+            plain, inh = _split_inhouse(ga, results)
+            for part, in_house in ((plain, False), (inh, True)):
+                if not part:
+                    continue
+                for it in _group(ga, version, part):
+                    # 다른 모듈의 결과가 합쳐지면 그 모듈의 reason이 사라지므로, override를 막으려면 변종 표시를 남겨야 한다
+                    if it.origin not in EDITABLE and VARIANT_MARK not in it.reason and set(marked) & set(it.modules):
+                        it.reason = "; ".join(x for x in [it.reason, f"{VARIANT_MARK} in {', '.join(marked)}"] if x)
+                    if in_house:
+                        _fill_inhouse(it, part)
+                    it.sources = [mods[m].source(m) for m in sorted(it.modules) if m in mods]
+                    it.variants = sorted({v for m in it.modules if m in mods for v in mods[m].variants})
+                    it.reported_ga = "" if ga in ivas_gas else ivas_gas[0]
+                    it.reported_version = "" if version in ivas_versions else ivas_versions[0]
+                    items.append(decorate(it, fs))
 
     for (ident, version), fs in sorted(unparsable.items()):
         paths = _vendored_paths(project, [loc for f in fs for loc in f.locations])
@@ -880,12 +984,23 @@ def build_inventory(project: Path, findings: list[Finding], resolved: ResolvedMo
     return inv
 
 
-def _unresolved(project: Path, resolved: ResolvedModel, ga: str, version: str, fs: list[Finding]) -> InventoryItem:
+def _unresolved(project: Path, resolved: ResolvedModel, ivas_gas: list[str], ivas_versions: list[str],
+                fs: list[Finding], gas: set[str]) -> InventoryItem:
     """의존성 결과에 그 버전으로 없는 라이브러리의 항목을 만든다.
-    plugin -> vendored -> unmapped 순으로 분류하고 근거를 기록한다."""
-    mods, pversions = _plugin_hits(resolved, ga)
-    if mods:
-        return InventoryItem(ga=ga, version=version, origin=O_PLUGIN, modules=mods,
+    plugin -> vendored -> unmapped 순으로 분류하고 근거를 기록한다.
+    ``gas``는 이 발견 항목에 맞는 Maven g:a 집합이며, 대소문자만 다른 같은 버전은 다른 버전으로 보지 않는다."""
+    ga, version = ivas_gas[0], ivas_versions[0]
+    hits = _plugin_hits(resolved, ivas_gas)
+    if hits:
+        pga = min({p.ga for _, p in hits})
+        mods = sorted({mdir for mdir, _ in hits})
+        pversions = sorted({p.version for _, p in hits if p.version})
+        first: dict[str, ResolvedDep] = {}
+        for mdir, p in hits:
+            first.setdefault(mdir, p)
+        return InventoryItem(ga=pga, version=version, origin=O_PLUGIN, modules=mods,
+                             reported_ga="" if pga in ivas_gas else ga,
+                             sources=[ModuleSource(module=m, how=O_PLUGIN, via=list(first[m].path)) for m in mods],
                              reason=("build plugin or plugin dependency"
                                      + (f" (declared {', '.join(pversions)})" if pversions else "")
                                      + "; plugin versions are declared, not resolved; not changed automatically"))
@@ -893,7 +1008,13 @@ def _unresolved(project: Path, resolved: ResolvedModel, ga: str, version: str, f
     if paths:
         return InventoryItem(ga=ga, version=version, origin=O_VENDORED, paths=paths,
                              reason="file in the tree (not resolved by Maven); not changed automatically")
-    seen = sorted(resolved.versions_of(ga))
+    # Maven이 고른 버전을 대소문자 무시로 하나씩만 보여 주고, 보고된 버전과 같은 것은 빼고 보여 준다
+    seen_by_key: dict[str, str] = {}
+    for v in sorted({d.version for m in resolved.modules for d in m.dependencies if d.ga in gas}):
+        if version and same_version(v, version):
+            continue
+        seen_by_key.setdefault(version_key(v), v)
+    seen = sorted(seen_by_key.values())
     shown = version or "no version"
     if not version:
         reason = f"IVAS reports {ga} without a version" + (f"; Maven resolves {', '.join(seen)}" if seen else "")

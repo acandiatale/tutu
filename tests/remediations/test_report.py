@@ -353,14 +353,16 @@ def test_company_case_groups_the_repeated_detail_once(tmp_path):
     state, paths = _company(tmp_path)
     people = _section(report.build_report_md(state, paths), "직접 확인이 필요한 취약점")
     assert people.count("### ") == 2
-    assert "### 루트 pom을 상속하지 않는 모듈 — 라이브러리 3개" in people
-    assert people.count("이 모듈들은 프로젝트의 루트 pom이 아니라 회사 부모 pom을 상속합니다") == 1
+    assert "### 모듈 pom에 직접 지정해야 하는 버전 — 라이브러리 3개" in people
+    assert people.count("이 모듈들은 프로젝트 최상위 pom.xml이 아니라 회사 부모 pom에서 설정을 물려받습니다") == 1
+    assert "상속" not in people
     assert "do not inherit" not in people and "override entry" not in people
     assert "| 위험도 | 라이브러리 | 버전 | 사용 모듈 | 취약점 |" in people          # origin lifted: the same on every row
     assert "아래 항목은 모두 간접 의존성입니다." in people
     assert "| `org.example:m2` | 1.0 | app-a, app-b, app-c 외 2개 |" in people        # long module list cut
-    assert "`org.example:m1` — 일부 모듈은 사내 라이브러리에서 가져옴" in people
-    assert "`org.example:m0` — 일부" not in people
+    assert "일부 모듈은 사내 라이브러리에서 가져옴" not in people               # the item is split by module now
+    assert "| 🟠 7.5 | `org.example:m1` | 1.0 | app-c | 🟠 CVE-2026-0201 (7.5) |" in people
+    assert "들어온 경로" not in people                                # no module sources: no list
     variant = people.split("### classifier가 붙은 의존성 — 라이브러리 1개", 1)[1]
     assert "아래 항목은 모두" not in variant and "내용:" not in variant      # a one-row group lifts nothing
     assert "| 위험도 | 라이브러리 | 버전 | 구분 | 사용 모듈 | 취약점 |" in variant

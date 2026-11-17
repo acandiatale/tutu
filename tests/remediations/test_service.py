@@ -1046,7 +1046,7 @@ def test_proposals_carry_korean_display_fields(tmp_path, base_cfg):
     out = mgr.proposals(rid)
     p, r = out["proposals"][0], out["residuals"][0]
     assert p["note"].startswith("uses the existing") and p["note_ko"].startswith("루트 pom.xml의 dependencyManagement에 이미 있는")
-    assert r["detail"].startswith("module(s)") and "app-a 모듈은 루트 pom.xml을 상속하지 않습니다" in r["detail_ko"]
+    assert r["detail"].startswith("module(s)") and "app-a 모듈은 프로젝트 최상위 pom.xml이 아니라 회사 부모 pom에서 설정을 물려받습니다" in r["detail_ko"]
     assert r["origin_ko"] == "간접 의존성" and r["reason_ko"] == "직접 확인 필요"
     every = mgr.proposals(rid, all_rounds=True)
     assert every["residuals"][0]["reason_ko"] == "직접 확인 필요"

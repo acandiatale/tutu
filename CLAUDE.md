@@ -249,7 +249,7 @@ Then the final build again, the report (Handover first, "Structure review", fix 
   commits happen in the main session. Per round: append a "Status" table to `docs/PLAN.md`, update
   `docs/INTERFACES.md` on contract changes, add a fixture + `expected.json` (+ `replay/`) for every new scenario.
 - Setup: `uv venv && source .venv/bin/activate && uv pip install -e ".[dev]"` (plain `pip install -e ".[dev]"` works too).
-- Fast check (Python only, ~12 min): `python -m pytest -m "not integration"` → ≈ 5,375 passed, ≈ 62 deselected (2026-11-17)
+- Fast check (Python only, ~12 min): `python -m pytest -m "not integration"` → ≈ 5,470 passed, ≈ 62 deselected (2026-11-17)
   (`-q` on top of the `-q` in pyproject hides the summary line). Until 2026-11-12 `tests/build` (381 tests) was silently
   left out of every root-level run — pytest skips a directory named `build` by default; `norecursedirs` in pyproject now
   keeps it in. When a total does not grow by the number of tests added, compare per-file counts (`--collect-only -q`).
@@ -503,6 +503,19 @@ Then the final build again, the report (Handover first, "Structure review", fix 
   library table with the worst rows on top, per-level counts (before / after) in 요약. Emoji because Markdown has no colour — whether the
   company PC's Windows renders 🟠 / 🟡 is to be checked there.
   Still the user's to decide: transitives under a dependency the project itself declares, in modules outside the root's reach.
+- **Remediation: where a library comes from (v2.1z-am, 2026-11-17, after the user read a real report from the cluster)**:
+  "루트 pom을 상속하지 않는 모듈이라는게 뭔지 모르겠어", "일부 모듈은 사내 라이브러리에서 가져옴. 이것도 결국 사내 라이브러리에
+  속해야 하는거 아니야?", "얘도 좀 어디서 발생 되었는지 알아야 조치를 할거 같아!", "IVAS에서는 2.2.0.release의 버전을 보고했는데
+  메이븐은 2.2.0.RELEASE를 사용해서 남겨뒀다는데 이건 upper건 lower건 적용하게 해줘야", "classifier가 붙은 의존성은 뭐야?". Now: IVAS
+  ↔ Maven matching ignores case (Maven's spelling in `ga` / `version`, the IVAS one in `reported_*`); an item is split by module —
+  only the modules that get the library through an in-house artifact become the `inhouse_artifact` residual, the rest is planned on
+  its own facts (`Residual.inhouse` only on in-house residuals; the note is gone); every item / residual carries one `ModuleSource`
+  per module (`how`, `via`, `declared`, `manager`, `inhouse`, `variant`); a classifier / non-jar dependency gets an override entry
+  with the same `<type>` / `<classifier>` (plain-jar entries unchanged byte for byte). `report.md` prints "들어온 경로:" under the
+  사내 / 직접 확인 tables (once per row when the modules share it, else per module group), "(IVAS 표기: …)" in the version cell,
+  and the group `not_inheriting_root` is "모듈 pom에 직접 지정해야 하는 버전" in owner words (no "상속"). Module-level override
+  entries are NOT built (the user has not decided; `apply.locate_override` takes the target pom for that). Contract:
+  `docs/INTERFACES.md` "v2.1z-am"; report rules: `agent-doc/12-remediation-report.md`.
 - **Run flows and the page (v2.1z-aj, 2026-11-12)**: a run is `full` (the migration, then the chained remediation) or
   `remediation` (no migration — the user: already-migrated projects are checked against IVAS again later, "이때는 마이그레이션을
   안타고 remediation만"): `sbmig run --flow remediation`, `POST /api/runs?flow=remediation`, on the page 전체 진행 (default) /

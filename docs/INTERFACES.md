@@ -25,7 +25,7 @@ type: `sbmig/core/models.py`, `sbmig/core/interfaces.py`, `sbmig/core/config.py`
 | web app | Base "Graph engine", "Web app"; v2.1z-w (page, server-chosen configs), v2.1z-ae (queue / slots on the page), v2.1z-af (page re-attach), v2.1z-aj (run flows, page header); v2.1z-ak (framework label, skipped stages) |
 | Job mode (Main / Worker, slots, env pins) | v2.1z-z "k8s Job dispatch mode", v2.1z-ab (kubeconfig, template ConfigMap), v2.1z-ac (Main ↔ Worker contract), v2.1z-ad (end confirmation, ownership, env pins, write-time redaction), v2.1z-ae (parallel slots), v2.1z-af |
 | deploy | v2.1z-s (build hooks), v2.1z-t (one Job per request), v2.1z-u, deploy (baked config, container paths), v2.1z-ad "Shipped mode" |
-| remediations | remediations; v2.1z-ak (in-house group `framework`) |
+| remediations | remediations; v2.1z-ak (in-house group `framework`); v2.1z-am (case-insensitive matching, per-module in-house split, module sources, variant overrides, 들어온 경로) |
 
 ## Base contracts (in force; written before v2)
 
@@ -3979,6 +3979,66 @@ else that persists is already under `/data`; right after: "Settings도 저기로
 - **Operator steps** for an existing deployment (copy settings.xml from the still-mounted ConfigMap first, then the manifest
   lines): `deploy/README.md` §3 "Maven 설정과 로컬 저장소 — `/data/.m2`". Tests: `tests/deploy/test_manifests.py`,
   `tests/loop/test_preflight_settings_file.py`, `tests/web/test_settings_file_warning.py`, `tests/report/test_abort_reasons_ko.py`.
+
+## v2.1z-am — the remediation says where a library comes from
+
+The user, after reading a real report from the company cluster: the 조치 완료 and 사내 라이브러리 sections read well; five
+things did not — "루트 pom을 상속하지 않는 모듈이라는게 뭔지 모르겠어", "일부 모듈은 사내 라이브러리에서 가져옴. 이것도 결국 사내
+라이브러리에 속해야 하는거 아니야?", "얘도 좀 어디서 발생 되었는지 알아야 조치를 할거 같아!", "IVAS에서는 2.2.0.release의 버전을
+보고했는데 메이븐은 2.2.0.RELEASE를 사용해서 남겨뒀다는데 이건 upper건 lower건 적용하게 해줘야", and "classifier가 붙은 의존성은
+뭐야?".
+
+- **Matching ignores case.** One helper decides equality wherever an IVAS-reported `(g:a, version)` meets a Maven-resolved one
+  (inventory, the rescan evaluation, every comparison): exact first, else `str.casefold` on the version and — only when no exact
+  g:a exists — on the g:a (Maven compares qualifiers case-insensitively). Findings that differ only by case are one group. Items,
+  proposals and residuals carry **Maven's** spelling in `ga` / `version` (pom edits and the resolution check look for that text);
+  the IVAS spelling is kept in `InventoryItem.reported_ga` / `reported_version` and `Residual.reported_version` when it differs.
+  A fixed library reported with another case is not "new". `report.md` counts and scores rows against findings case-insensitively.
+- **The in-house split is per module.** When only some modules of an item get the library through an in-house artifact (same
+  per-module rules as before: the `parents` group's unambiguous-provenance rule, the `policy.pins` exception), those modules form
+  their own item → residual `inhouse_artifact` naming them and that artifact; the remaining modules form the other item and are
+  planned as if the in-house modules did not exist (proposal, override or residual by their own facts). `Residual.inhouse` is
+  non-empty only on `inhouse_artifact` residuals; a split library left for review is two residual rows, one per section.
+  `counts` (`graph.fill_counts`): `baseline_findings` / `final_findings` count scan rows, so a finding of a split library
+  counts once; `fixed` = baseline findings missing from a complete final scan; `residual` counts residual rows (a split
+  library = two); `residual_inhouse` the `inhouse_artifact` rows; `proposals*` approval units (a variant override is its own).
+- **`ModuleSource`** (`sbmig/remediations/models.py`): how ONE module gets the library — `module`, `how` (the module's own
+  origin code), `via` (g:a:v path, the module's own dependency first, the library itself not included), `declared`
+  (`PomLocation` where a project pom declares the dependency for this module, or none), `manager` (parent / BOM g:a:v that sets
+  the version), `inhouse` (in-house artifacts on this module's path), `variant` (`""` = plain jar, else `"<type>/<classifier>"`).
+  `InventoryItem.sources` holds one per module of `modules` (also the merged `also_modules`), `InventoryItem.variants` the
+  `"<type>/<classifier>"` of the resolved dependencies (`[]` = plain jar only); `Residual.sources` copies the item's. Every new
+  field defaults to empty, so a `state.json` written before loads and renders as before.
+- **Variant-aware override entries.** Maven's management key is `groupId:artifactId:type[:classifier]`, so an entry without the
+  classifier does not govern a dependency declared with one. A `managed_override` entry carries the resolved dependency's `<type>`
+  (when not `jar`) and `<classifier>`: `<dependency><groupId/><artifactId/><version/>[<type/>][<classifier/>]</dependency>` — ONE
+  proposal per management key (g:a + type + classifier) that resolves at the vulnerable version, each its own insert at the
+  same anchor, approved or rejected on its own; still one fixed shape, still kind `managed_override`, still always waiting
+  for approval; such a proposal's note says why the entry names the type / classifier; the plain jar's entry text is unchanged byte for byte. The existing-entry check, the
+  "declared version wins" check and the resolution check after the build compare the full key. `apply.locate_override` takes the
+  target pom as a parameter (default the root pom). The residual reason `variant` remains for what still cannot be overridden.
+- **Report (`report.md`, Korean).** Under every table of 사내 라이브러리에서 발생한 취약점 and 직접 확인이 필요한 취약점 a list
+  "들어온 경로:" says per row how the library arrives: a direct declaration "`back/pom.xml` 123행에 직접 선언", a transitive path
+  "`a:b:1` > `c:d:2` 경로로 가져옴", a managed version "`g:parent:1.2.3`에서 버전 지정" (with the declaring line when known), a
+  variant "classifier `jakarta`" / "형식 `test-jar`", several (`ModuleSource.variant` "jar/, jar/jakarta": the plain jar listed
+  first) "사용 형태 2가지(일반 jar, classifier `jakarta`)" — a raw `jar/` is never printed. The source is printed once for the row when every module shares it, else one
+  sub-item per group of modules with the same source (`` `app-a`, `app-b` 모듈: … ``). In the 사내 section, whose table has
+  the `의존 경로` column, only rows whose modules differ or whose source has a declaration line / variant get an entry. When a
+  module source's `how` differs from the row's origin, the origin is not lifted above the table ("아래 항목은 모두 …") and
+  that row's 구분 cell reads "모듈마다 다름 (들어온 경로 참고)". Rows without `sources` get no entry, and a
+  table without any gets no list (old states render as before apart from the wording below). A row whose `reported_version` is
+  set shows Maven's version and once `(IVAS 표기: <reported_version>)`. The note "일부 모듈은 사내 라이브러리에서 가져옴" is gone.
+  When an item was split, the result block adds "그중 N건은 모듈에 따라 사내 라이브러리 담당자와 프로젝트 양쪽에서 조치해야 해서
+  두 절에 모두 나옵니다." and counts that finding once against the remaining total.
+- **Wording.** The group `not_inheriting_root` is titled "모듈 pom에 직접 지정해야 하는 버전" and says, without Maven inheritance
+  words, what the tool can do (a version line in the project's top pom.xml only), why that does not reach these modules (they
+  take their settings from the company parent pom) and what to do by hand (in the module's own pom.xml: a dependencyManagement
+  entry with the fixed version, or a higher version of the dependency that brings it — 들어온 경로 shows which). The group
+  `variant` starts with what a classifier is ("같은 버전의 jar를 용도별로 구분하는 이름입니다(예: jakarta)"). Stored data and the
+  API keep the English sentences and codes; `sbmig/remediations/i18n.py` translates for display, and a new English sentence needs
+  a `ko_text` rule and a sample in `tests/remediations/test_i18n.py`. Operator text: `agent-doc/12-remediation-report.md` (2절
+  "들어온 경로", 3절, 5절), `agent-doc/11-remediations.md`. Tests: `tests/remediations/test_report_sources.py`, `test_report.py`,
+  `test_i18n.py`.
 
 ## remediations (취약점 조치) — `/api/remediations`, IVAS, version-text fixes + approved managed overrides (2026-11-11)
 

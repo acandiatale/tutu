@@ -8,6 +8,7 @@
 - 상태와 사유 코드는 접힌 처리 기록에만 쓰고, 영어 문장은 ``i18n.ko_display``로 바꿔 보여 준다.
   report.json에는 영어 문장과 코드를 그대로 쓴다
 - ``inhouse_artifact`` 항목은 아티팩트별로 묶고 ``remediation.inhouse_message``를 붙인다
+- 사내 라이브러리와 직접 확인 표 아래에 모듈마다 라이브러리가 들어온 경로를 쓴다
 - ``remediation.ignore_actions``에 해당하는 항목은 제외 항목 절에만 쓰고 취약점 개수에 넣지 않는다
 
 Remediation report: `report.json` (the state, the scan summaries, per-round plan summaries) and `report.md` (Korean, for
@@ -477,6 +478,14 @@ def _key(f: Any) -> tuple[str, str]:
     return (f.identifier, f.version)
 
 
+def _fold(ga: Any, version: Any) -> tuple[str, str]:
+    """(g:a, 버전)을 대소문자 구분 없이 비교할 키로 만든다.
+
+    IVAS may spell a version in another case than Maven (`2.2.0.release` / `2.2.0.RELEASE`); rows carry Maven's
+    spelling, findings IVAS's, so the report counts and scores by the case-folded pair."""
+    return (str(ga or "").casefold(), str(version or "").casefold())
+
+
 class _Facts:
     """report.md의 여러 절이 함께 쓰는 값을 한 번만 계산해 두는 클래스."""
 
@@ -509,7 +518,7 @@ class _Facts:
             for f in scan.findings:
                 if f.score is None:
                     continue
-                k = (f.id, f.identifier, f.version)
+                k = (f.id, *_fold(f.identifier, f.version))
                 exact[k] = max(exact.get(k, f.score), f.score)
                 by_id[f.id] = max(by_id.get(f.id, f.score), f.score)
             self._exact.append(exact)
@@ -518,10 +527,24 @@ class _Facts:
     def matching(self, items: list[Any]) -> int:
         """이 항목이나 제안에 해당하는, 조치 전 검사의 조치 대상 취약점 수를 센다.
         조치 전 검사가 없으면 취약점 ID 수를 반환한다."""
-        keys = {(getattr(r, "ga", ""), getattr(r, "version", None) or getattr(r, "from_version", "")) for r in items}
+        keys = self._keys(items)
         if self.base is not None:
-            return sum(1 for f in self.b_act if _key(f) in keys)
+            return sum(1 for f in self.b_act if _fold(*_key(f)) in keys)
         return sum(len(set(r.finding_ids)) for r in items)
+
+    @staticmethod
+    def _keys(items: list[Any]) -> set[tuple[str, str]]:
+        return {_fold(getattr(r, "ga", ""), getattr(r, "version", None) or getattr(r, "from_version", "")) for r in items}
+
+    def overlap(self) -> int:
+        """사내 라이브러리 절과 직접 확인 절에 모두 나오는 취약점 수를 센다.
+        모듈에 따라 나뉜 항목이면 같은 취약점이 두 절에 모두 있다.
+
+        Findings that sit in both the in-house and the manual part (an item split by module)."""
+        if self.base is None or not self.inhouse or not self.manual:
+            return 0
+        a, b = self._keys(self.inhouse), self._keys(self.manual)
+        return sum(1 for f in self.b_act if _fold(*_key(f)) in a and _fold(*_key(f)) in b)
 
     def fixed(self) -> int | None:
         """조치 전 검사의 조치 대상 중 완료된 조치 후 검사에서 사라진 취약점 수를 센다.
@@ -533,9 +556,10 @@ class _Facts:
 
     def cve_score(self, cve: str, ga: str, version: str) -> float | None:
         """취약점 하나의 점수를 반환한다. 검사 결과에 없으면 None을 반환한다."""
+        k = (cve, *_fold(ga, version))
         for exact in self._exact:
-            if (cve, ga, version) in exact:
-                return exact[(cve, ga, version)]
+            if k in exact:
+                return exact[k]
         for by_id in self._by_id:
             if cve in by_id:
                 return by_id[cve]
@@ -622,8 +646,9 @@ def _numbers(state: RemediationState, fx: _Facts) -> list[str]:
     else:
         out = [f"취약점 {_num(total)}건 가운데 {_num(fixed)}건을 조치했고 {_num(left or 0)}건이 남았습니다."]
     n_in, n_man = fx.matching(fx.inhouse), fx.matching(fx.manual)
+    both = fx.overlap()
     if n_in or n_man:
-        whole = left is not None and left == n_in + n_man
+        whole = left is not None and left == n_in + n_man - both
         lead = f"남은 {_num(left or 0)}건" if whole else "남은 취약점"
         to_in = f"{_num(n_in)}건은 사내 라이브러리 담당자에게 요청해야" if n_in else ""
         to_man = f"{_num(n_man)}건은 프로젝트에서 직접 확인해야" if n_man else ""
@@ -634,6 +659,10 @@ def _numbers(state: RemediationState, fx: _Facts) -> list[str]:
                                             else "프로젝트에서 직접 확인해야 합니다."))
         else:
             out.append(f"{lead} 중 {to_in or to_man} 합니다.")
+        if both:
+            # 모듈에 따라 나뉜 항목의 취약점은 두 절에 모두 나오므로 한 번만 센 사실을 밝힌다
+            out.append(f"그중 {_num(both)}건은 모듈에 따라 사내 라이브러리 담당자와 프로젝트 양쪽에서 조치해야 해서 두 절에 "
+                       "모두 나옵니다.")
     return out
 
 
@@ -760,6 +789,132 @@ def _lib_cell(r: Residual) -> str:
     return lib
 
 
+def _version_cell(r: Residual) -> str:
+    """버전 칸을 만든다. IVAS 표기가 대소문자만 다르면 Maven 표기 뒤에 IVAS 표기를 한 번 붙인다.
+
+    Maven's version; the IVAS spelling once when it differs (`2.2.0.RELEASE (IVAS 표기: 2.2.0.release)`)."""
+    rv = getattr(r, "reported_version", "") or ""
+    text = _md_cell(r.version)
+    return f"{text} (IVAS 표기: {_md_cell(rv)})" if rv and rv != r.version else text
+
+
+def _one_variant(part: str) -> str:
+    """"<type>/<classifier>" 하나를 말로 바꾼다. 일반 jar("jar/" 또는 빈 값)는 빈 문자열이다."""
+    typ, _sep, cls = part.strip().partition("/")
+    words = ([f"형식 `{_md_cell(typ)}`"] if typ and typ != "jar" else []) + \
+        ([f"classifier `{_md_cell(cls)}`"] if cls else [])
+    return " ".join(words)
+
+
+def _variant_words(variant: str) -> str:
+    """``ModuleSource.variant``("jar/, jar/jakarta"처럼 ", "로 이은 목록)를 말로 바꾼다. "jar/"는 쓰지 않는다.
+
+    One readable phrase for a module's variants: "" for a plain jar only; one variant alone as its words
+    ("classifier `jakarta`", "형식 `test-jar` classifier `tests`"); several (the plain jar listed as "jar/" first)
+    as "사용 형태 N가지(일반 jar, classifier `jakarta`)". The raw "jar/" never shows."""
+    parts = [p.strip() for p in variant.split(",") if p.strip()]
+    words = [_one_variant(p) or "일반 jar" for p in parts]
+    words = list(dict.fromkeys(words))
+    if not words or words == ["일반 jar"]:
+        return ""
+    if len(words) == 1:
+        return words[0]
+    return f"사용 형태 {len(words)}가지({', '.join(words)})"
+
+
+def _source_text(s: Any) -> str:
+    """모듈 하나에 라이브러리가 들어온 경로를 한 줄로 만든다. 값 뒤에는 바뀌는 조사를 붙이지 않는다.
+
+    One module's source in words: a direct declaration (pom and line), the transitive path (the module's own dependency
+    first), the parent / BOM that sets the version, the classifier / type. "" when the source says nothing."""
+    parts: list[str] = []
+    how = str(getattr(s, "how", "") or "")
+    via = [str(x) for x in (getattr(s, "via", None) or []) if x]
+    d = getattr(s, "declared", None)
+    where = ""
+    if d is not None and getattr(d, "pom", ""):
+        where = f"`{_md_cell(d.pom)}`" + (f" {d.line}행" if getattr(d, "line", 0) else "")
+    if via:
+        parts.append(" > ".join(f"`{_md_cell(x)}`" for x in via) + " 경로로 가져옴")
+        if where:
+            parts.append(f"선언 위치 {where}")
+    elif where:
+        if how in ("direct_literal", "direct_property"):
+            parts.append(f"{where}에 직접 선언")
+        elif how == "own_management":
+            parts.append(f"{where}의 dependencyManagement에서 버전 지정")
+        else:
+            parts.append(f"{where}에 선언")
+    prop = getattr(d, "property", "") if d is not None else ""
+    if prop:
+        parts.append(f"버전 property `{_md_cell(prop)}`")
+    manager = str(getattr(s, "manager", "") or "")
+    if manager:
+        parts.append(f"`{_md_cell(manager)}`에서 버전 지정")
+    variant = _variant_words(str(getattr(s, "variant", "") or ""))
+    if variant:
+        parts.append(variant)
+    if not parts and how:
+        parts.append(label(ORIGIN_KO, how))
+    return ", ".join(parts)
+
+
+def _row_sources(r: Residual) -> list[tuple[list[str], str]]:
+    """행의 모듈들을 들어온 경로가 같은 것끼리 묶어 (모듈 목록, 경로 문장) 목록으로 반환한다.
+
+    The row's modules grouped by identical source text, in the order of `sources`."""
+    groups: dict[str, list[str]] = {}
+    for s in getattr(r, "sources", None) or []:
+        text = _source_text(s)
+        if text:
+            mods = groups.setdefault(text, [])
+            mod = str(getattr(s, "module", "") or "")
+            if mod and mod not in mods:
+                mods.append(mod)
+    return [(mods, text) for text, mods in groups.items()]
+
+
+def _source_adds(s: Any) -> bool:
+    """의존 경로 칸이 보여 주지 못하는 사실(선언한 줄, 형식이나 classifier)이 경로에 있는지 확인한다."""
+    d = getattr(s, "declared", None)
+    return bool((d is not None and getattr(d, "pom", "")) or _variant_words(str(getattr(s, "variant", "") or "")))
+
+
+def _mixed_origin(r: Residual) -> bool:
+    """모듈별 경로의 출처 코드가 행의 출처와 다른 모듈이 있는지 확인한다. 경로가 없으면 False다.
+
+    True when a module source names another origin than the row's (an also-module declaring the library itself)."""
+    hows = {str(getattr(s, "how", "") or "") for s in getattr(r, "sources", None) or []} - {""}
+    return bool(hows) and hows != {r.origin}
+
+
+def _sources_block(L: list[str], rows: list[Residual], *, beside_path: bool = False) -> None:
+    """표 아래에 행마다 "들어온 경로" 목록을 쓴다. 모든 모듈이 같으면 한 줄, 다르면 모듈별로 쓴다.
+    들어온 경로가 있는 행이 없으면 아무것도 쓰지 않는다(이전 상태 파일).
+
+    Under a table, how each row's library arrives: once for the row when every module shares the source, else one
+    sub-item per group of modules. Nothing at all for rows without sources (states written before `sources`)."""
+    items = [(r, _row_sources(r)) for r in rows]
+    items = [(r, g) for r, g in items if g]
+    if beside_path:
+        # 의존 경로 칸이 이미 경로를 보여 주므로 모듈마다 다르거나 칸에 없는 사실이 있는 행만 쓴다
+        items = [(r, g) for r, g in items if len(g) > 1 or any(_source_adds(x) for x in r.sources)]
+    if not items:
+        return
+    L.append("")
+    L.append("들어온 경로:")
+    L.append("")
+    for r, groups in items:
+        head = f"- `{_md_cell(r.ga)}` {_md_cell(r.version)}"
+        if len(groups) == 1:
+            L.append(f"{head}: {groups[0][1]}")
+            continue
+        L.append(head)
+        for mods, text in groups:
+            who = ", ".join(f"`{_md_cell(m)}`" for m in mods)
+            L.append(f"  - {who} 모듈: {text}" if who else f"  - {text}")
+
+
 def _inhouse_section(L: list[str], fx: _Facts, message: str, inhouse: Mapping[str, str] | None = None) -> None:
     L.append(f"## 사내 라이브러리에서 발생한 취약점 — {_num(fx.matching(fx.inhouse))}건")
     L.append("")
@@ -793,12 +948,13 @@ def _inhouse_section(L: list[str], fx: _Facts, message: str, inhouse: Mapping[st
         L.append("| " + " | ".join(cols) + " |")
         L.append("|" + "---|" * len(cols))
         for r in rows:
-            cells = [fx.sev_cell(fx.row_score(r.finding_ids, r.ga, r.version)), _lib_cell(r), _md_cell(r.version),
+            cells = [fx.sev_cell(fx.row_score(r.finding_ids, r.ga, r.version)), _lib_cell(r), _version_cell(r),
                      _md_cell(_dep_path(r, ga))]
             if common is None:
                 cells.append(_md_cell(_mods(r.modules)))
             cells.append(_md_cell(fx.cve_cell(r.ga, r.version, r.finding_ids)))
             L.append("| " + " | ".join(cells) + " |")
+        _sources_block(L, rows, beside_path=True)
 
 
 def _manual_section(L: list[str], fx: _Facts) -> None:
@@ -840,7 +996,8 @@ def _manual_section(L: list[str], fx: _Facts) -> None:
         L.append(_md_cell(texts[gk] or "-"))
         # 모든 행이 같은 값인 칸은 표에서 빼고 표 위에 한 번만 쓴다
         origins = {r.origin for r in rows}
-        lift_origin = len(rows) > 1 and len(origins) == 1
+        # 모듈별 경로가 행의 출처와 다르면 "모두 간접 의존성" 같은 문장이 틀리므로 표 위로 올리지 않는다
+        lift_origin = len(rows) > 1 and len(origins) == 1 and not any(_mixed_origin(r) for r in rows)
         common = _common_modules(rows) if len(rows) > 1 else None
         no_mods = all(not r.modules for r in rows)
         memos = [i18n.row_memo(r.detail) if memo else "" for r in rows]
@@ -863,18 +1020,16 @@ def _manual_section(L: list[str], fx: _Facts) -> None:
         L.append("| " + " | ".join(cols) + " |")
         L.append("|" + "---|" * len(cols))
         for r, m in zip(rows, memos):
-            lib = _lib_cell(r)
-            if r.inhouse:
-                lib += " — 일부 모듈은 사내 라이브러리에서 가져옴"
-            cells = [fx.sev_cell(fx.row_score(r.finding_ids, r.ga, r.version)), lib, _md_cell(r.version)]
+            cells = [fx.sev_cell(fx.row_score(r.finding_ids, r.ga, r.version)), _lib_cell(r), _version_cell(r)]
             if not lift_origin:
-                cells.append(_md_cell(label(ORIGIN_KO, r.origin)))
+                cells.append("모듈마다 다름 (들어온 경로 참고)" if _mixed_origin(r) else _md_cell(label(ORIGIN_KO, r.origin)))
             if common is None and not no_mods:
                 cells.append(_md_cell(_mods(r.modules)))
             cells.append(_md_cell(fx.cve_cell(r.ga, r.version, r.finding_ids)))
             if memo_col:
                 cells.append(_md_cell(m))
             L.append("| " + " | ".join(cells) + " |")
+        _sources_block(L, rows)
 
 
 def _ivas_action(code: str) -> str:

@@ -401,6 +401,26 @@ class PomLocation(Record):
 
 
 @dataclass
+class ModuleSource(Record):
+    """모듈 하나에서 취약한 라이브러리가 어떤 경로로 들어왔는지 담는 데이터 클래스.
+    보고서가 모듈마다 직접 선언인지, 어떤 의존성이 가져왔는지, 어떤 부모 pom이나 BOM이 버전을 정하는지 보여 줄 때 쓴다.
+
+    How one module gets the library (the provenance the report prints per module). `how` is the module's own origin
+    code (`O_*`); `via` the g:a:v path from the module's own dependency down to the library's parent (empty for a
+    direct dependency); `declared` where a project pom declares the dependency for this module; `manager` the parent /
+    BOM that sets the version; `inhouse` the in-house artifacts on this module's path; `variant` is "" for a plain jar,
+    else "<type>/<classifier>"."""
+    module: str
+    how: str = ""
+    via: list[str] = field(default_factory=list)
+    declared: PomLocation | None = None
+    manager: str = ""
+    inhouse: list[str] = field(default_factory=list)
+    variant: str = ""
+    _nested = {"declared": PomLocation}
+
+
+@dataclass
 class InventoryItem(Record):
     """취약한 라이브러리 하나(g:a와 해석된 버전)와 그것을 가리키는 발견 항목들을 담는 데이터 클래스.
     ``origin``에 따라 자동으로 바꿀 수 있는지가 정해진다.
@@ -428,7 +448,14 @@ class InventoryItem(Record):
     manager_location: PomLocation | None = None
     reason: str = ""
     paths: list[str] = field(default_factory=list)                # vendored 파일 경로
-    _nested = {"location": PomLocation, "manager_location": PomLocation}
+    # 모듈마다 이 라이브러리가 들어온 경로다. ``modules``의 모듈마다 하나씩 담는다
+    sources: list[ModuleSource] = field(default_factory=list)
+    # IVAS가 보고한 표기가 Maven 표기와 대소문자만 다를 때 IVAS 쪽 표기를 담는다. 같으면 빈 문자열이다
+    reported_ga: str = ""
+    reported_version: str = ""
+    # 이 버전으로 해석된 의존성의 형식과 classifier 목록이다("<type>/<classifier>"). 일반 jar만 있으면 빈 목록이다
+    variants: list[str] = field(default_factory=list)
+    _nested = {"location": PomLocation, "manager_location": PomLocation, "sources": ModuleSource}
 
 
 @dataclass
@@ -470,14 +497,16 @@ class TextEdit(Record):
     - insert: ``line``번째 줄 앞에 ``new`` 줄들을 넣는다.
       ``old``는 빈 문자열이고, 적용할 때 그 줄이 ``anchor``와 같은지 확인한다
     insert로 넣을 수 있는 내용은 ``override``의 groupId / artifactId / version으로 만든 ``<dependency>``
-    하나, 또는 그것을 담은 ``<dependencyManagement>`` 절뿐이다."""
+    하나, 또는 그것을 담은 ``<dependencyManagement>`` 절뿐이다. 의존성에 형식이나 classifier가 있으면
+    ``override``에 type / classifier도 담아 같은 항목에 넣는다."""
     pom: str
     line: int
     old: str
     new: str
     op: str = E_REPLACE
     anchor: str = ""
-    override: dict[str, str] = field(default_factory=dict)    # insert일 때 {"groupId", "artifactId", "version"}
+    # insert일 때 {"groupId", "artifactId", "version"}이고, 필요하면 "type" / "classifier"도 담는다
+    override: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -534,6 +563,10 @@ class Residual(Record):
     modules: list[str] = field(default_factory=list)
     via: list[str] = field(default_factory=list)
     inhouse: list[str] = field(default_factory=list)
+    # 모듈마다 들어온 경로(``InventoryItem.sources``의 복사본)와 IVAS 쪽 버전 표기다
+    sources: list[ModuleSource] = field(default_factory=list)
+    reported_version: str = ""
+    _nested = {"sources": ModuleSource}
 
 
 @dataclass

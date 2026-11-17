@@ -193,7 +193,7 @@ def test_same_library_outside_the_framework_is_still_planned(tmp_path):
     assert all(x.ga != FW and x.kind != "managed_override" for x in plan.proposals)
 
 
-def test_transitive_reached_both_under_and_outside_the_framework_is_planned(tmp_path):
+def test_transitive_reached_both_under_and_outside_the_framework_is_split(tmp_path):
     p = _write(tmp_path, {"pom.xml": _root(["app-a", "app-b"]), "app-a/pom.xml": _pom(_dep(FW, "1.2.0"), "app-a"),
                           "app-b/pom.xml": _pom(_dep("org.example:other", "1"), "app-b")})
     resolved = _model({"app-a": [_rd(FW, "1.2.0"), _rd(LIB, "1.2.3", direct=False, path=[f"{FW}:1.2.0"])],
@@ -202,11 +202,16 @@ def test_transitive_reached_both_under_and_outside_the_framework_is_planned(tmp_
     findings = [_f(LIB, "1.2.3", "CVE-LIB")]
     inv, plan = _run(p, findings, resolved, _cfg())
     _inv_old, old = _run(p, findings, resolved, _cfg(groups=OLD, patterns=()))
-    (it,) = inv.items
-    assert it.inhouse == [FW] and it.inhouse_modules == ["app-a"]
-    assert "inhouse_artifact" not in {r.reason for r in plan.residuals}
+    # round "where it comes from" (contract B): app-a (under the framework) and app-b (the project's) are two items
+    (inh,) = [i for i in inv.items if i.inhouse]
+    (own,) = [i for i in inv.items if not i.inhouse]
+    assert inh.modules == inh.inhouse_modules == ["app-a"] and inh.inhouse == [FW]
+    assert own.modules == ["app-b"] and own.inhouse_modules == []
+    assert [(r.reason, r.modules) for r in plan.residuals if r.reason == "inhouse_artifact"] == [
+        ("inhouse_artifact", ["app-a"])]
+    # app-b is planned by its own facts, as the whole item was without the in-house rule
     assert [x.kind for x in plan.proposals] == [x.kind for x in old.proposals]
-    assert [r.reason for r in plan.residuals] == [r.reason for r in old.residuals]
+    assert [r.reason for r in plan.residuals if r.reason != "inhouse_artifact"] == [r.reason for r in old.residuals]
 
 
 def test_without_the_group_the_old_behaviour(tmp_path):
