@@ -112,6 +112,8 @@ from sbmig.web.k8s import (
     EXIT_GRACE_ENV,
     MODE_ENV,
     MODES,
+    NOT_STARTED_PHASES,
+    PENDING_NOTICE_ENV,
     POLL_ENV,
     REQUIRED_PERMISSIONS,
     STATUS_GRACE_ENV,
@@ -125,6 +127,8 @@ from sbmig.web.k8s import (
     in_cluster_available,
     job_name,
     kubeconfig_path,
+    pod_wait_hint_ko,
+    pod_wait_reason,
     render_job,
     validate_worker_template,
 )
@@ -162,6 +166,13 @@ HOLD_WARN_S = 60.0                 # 끝나지 않는 Job을 기다리는 동안
 DELETE_RETRY_S = 15.0              # Job 삭제 요청이 실패했을 때 다시 시도하는 간격
 API_REMIND_S = 600.0               # Kubernetes API가 계속 응답하지 않을 때 로그를 다시 남기는 간격
 CREATE_CONFIRM_POLLS = 3           # 생성 응답이 불확실하고 Job이 보이지 않을 때 더 조회하는 횟수
+# 시작하지 못한 파드의 안내는 이유가 바뀌거나 이 간격이 지나면 다시 보낸다
+PENDING_RESEND_S = 300.0
+PENDING_EVENTS_EVERY_S = 15.0      # 파드 이벤트를 다시 조회하는 최소 간격
+POD_WAIT_MESSAGE_MAX = 300
+STOP_BEFORE_START_ERROR = "stopped: the build pod had not started — the job was deleted"
+STOP_BEFORE_START_KO = "빌드 파드가 시작되기 전이라 작업을 바로 정리했습니다."
+EVENTS_UNREADABLE_LINE = "pod events are not readable with this account — the page will not show why a pod does not start"
 
 
 class _ServerClosing(Exception):
@@ -235,6 +246,10 @@ class Run:
     flow: str = FLOW_FULL
     # 사용자가 올린 파일 이름 그대로이며 화면이 실행을 이 이름으로 보여 준다
     upload: str | None = None
+    # 파드가 시작하지 못한 이유 안내다. status()의 job.pending으로 나가며 파드가 시작하면 None이 된다
+    job_pending: dict[str, Any] | None = None
+    # 그 안내를 만들 때 쓰는 감시별 기록(처음 본 시각, 마지막으로 보낸 시각, 이미 알린 이유)
+    pod_wait: dict[str, Any] = field(default_factory=dict)
 
     @property
     def key(self) -> str:
@@ -655,6 +670,9 @@ class RunManager:
         # 파드가 끝났는데 job-status.json이 보이지 않으면 잠시 기다린다. NFS 속성 캐시(기본 최대 60초)
         # 때문에 파일이 늦게 보일 수 있으므로 이 유예 시간이 캐시보다 길어야 한다
         self.job_status_grace_s = max(0.0, float(os.environ.get(STATUS_GRACE_ENV, "90") or 90))
+        # 파드가 이 초 동안 시작하지 못하면 이유를 찾아 화면에 알린다. 0이면 알리지 않는다
+        self.job_pending_notice_s = max(0.0, float(os.environ.get(PENDING_NOTICE_ENV, "120") or 120))
+        self._events_readable = True           # 시작 점검에서 이벤트 조회 권한이 없으면 False가 된다
         # 환경 변수 고정 정책(SBMIG_JOB_ENV_PIN)의 기본값은 k8s-job에서 refuse, local-job에서 off다.
         # 로컬 Worker는 이 프로세스의 환경을 물려받으므로 .env를 고치면 잘못된 경고만 나기 때문이다
         # recover()가 Job을 만들 수 있으므로 그보다 먼저 정한다
@@ -756,6 +774,13 @@ class RunManager:
                 raise ValueError(f"cannot check the web pod's permissions in {ns} ({verb} {resource}): {e}") from e
         if denied:
             raise ValueError(f"the web pod may not {', '.join(denied)} in {ns} — RBAC: deploy/k8s/45-web-rbac.yaml or the kubeconfig's user")
+        # 이벤트 조회는 파드가 시작하지 못한 이유를 보여 줄 때만 쓰므로, 권한이 없어도 시작은 막지 않는다
+        try:
+            if not can_i("list", "events", ""):
+                self._events_readable = False
+                log.info(EVENTS_UNREADABLE_LINE)
+        except K8sError as e:
+            log.debug("cannot check the events permission (%s) — events are asked when needed", e)
 
     # ---- restart recovery (v2.1z-ac)
     def recover(self) -> list[str]:
@@ -1579,7 +1604,9 @@ class RunManager:
         """Job이 끝날 때까지 감시하고 종료 코드를 반환한다. 생성 직후와 이어받은 뒤에 모두 쓴다.
         - 파드가 Running이 되면 ``running``으로 바꾸고, 끝나면 ``job-status.json``이나 컨테이너 종료
           코드(확인되지 않은 결과)를 쓰며, Job이 사라졌으면 ``lost``로 끝낸다
-        - 중지 요청이 오면 ``stop.request``를 기록하고, 유예 시간이 지나면 우리 라벨의 Job만 지운다
+        - 중지 요청이 오면 ``stop.request``를 기록하고, 유예 시간이 지나면 우리 라벨의 Job만 지운다.
+          파드가 아직 시작하지 않았으면(Creating / Pending) 유예 없이 바로 지운다
+        - 파드가 ``job_pending_notice_s``초 넘게 시작하지 못하면 이유를 찾아 화면에 알린다
         - Job 종료를 확인한 뒤에만 반환하며, 서버 종료와 다른 요청의 Job만 예외다
 
         Watch the Job to its end (shared by a fresh create and an adoption). Returns only once the Job is confirmed ended,
@@ -1588,6 +1615,7 @@ class RunManager:
         last: tuple[str, str | None] | None = None
         stop_sent: float | None = None
         run.pod_step_closed = False                # one closing event for the pod step per watch (fresh create or adoption alike)
+        run.pod_wait, run.job_pending = {}, None
         while True:
             code = self._accept_status(run)
             if code is not None:                   # the pod said it finished, on the volume — the turn waits until it really ended
@@ -1607,6 +1635,10 @@ class RunManager:
                                                                             "pod": st.pod, "message": st.message}})
                     log.info("run %s: job %s %s%s%s", run.run_id, name, st.phase, f" pod {st.pod}" if st.pod else "",
                              f" ({st.message})" if st.message else "")
+                if st.phase in NOT_STARTED_PHASES:
+                    self._note_pod_waiting(run, client, name, st)
+                elif run.pod_wait:
+                    self._pod_started(run, name, st)
                 if st.phase == "Running" and run.control is not None and run.control.state in (
                         RunState.QUEUED.value, RunState.CREATING.value, RunState.CREATED.value):
                     self._transition_soft(run, RunState.RUNNING, job=name)
@@ -1660,15 +1692,25 @@ class RunManager:
                 return EXIT_ABORTED
             if run.cancel.is_set():
                 if stop_sent is None:
-                    try:
-                        (run.run_dir / STOP_REQUEST_FILE).write_text("stop requested from the web UI\n", encoding="utf-8")
-                    except OSError as e:           # the volume hiccuped: ask again on the next poll, never drop the watch
-                        log.warning("run %s: %s not written (%s) — retrying", run.run_id, STOP_REQUEST_FILE, e)
+                    stop_file = run.run_dir / STOP_REQUEST_FILE
+                    if run.action and stop_file.is_file():
+                        stop_sent = time.monotonic()   # 조치 재개는 stop_remediation이 이미 기록하고 저널에 남겼다
                     else:
-                        stop_sent = time.monotonic()
-                        _append_journal(run.run_dir, {"event": "stop_request_sent", "run_id": run.run_id, "job": name})
-                        log.info("run %s: stop requested — %s written for job %s", run.run_id, STOP_REQUEST_FILE, name)
-                elif st is not None and time.monotonic() - stop_sent > self.job_stop_grace_s:
+                        try:
+                            stop_file.write_text("stop requested from the web UI\n", encoding="utf-8")
+                        except OSError as e:       # the volume hiccuped: ask again on the next poll, never drop the watch
+                            log.warning("run %s: %s not written (%s) — retrying", run.run_id, STOP_REQUEST_FILE, e)
+                        else:
+                            stop_sent = time.monotonic()
+                            _append_journal(run.run_dir, {"event": "stop_request_sent", "run_id": run.run_id, "job": name})
+                            log.info("run %s: stop requested — %s written for job %s", run.run_id, STOP_REQUEST_FILE, name)
+                if st is not None and st.phase in NOT_STARTED_PHASES:
+                    # 파드가 시작하지 않았으면 stop.request를 읽을 Worker가 없으므로 유예 없이 Job을 지운다
+                    return self._delete_before_start(run, client, name, st)
+                if run.action:
+                    # 실행 중인 조치 재개는 stop.request로만 멈추고 Job을 지우지 않는다
+                    pass
+                elif stop_sent is not None and st is not None and time.monotonic() - stop_sent > self.job_stop_grace_s:
                     run.final_state = RunState.STOPPED.value
                     if not self._owned(run, st):
                         # 같은 이름이라도 라벨이 다르면 다른 요청의 Job이므로 지우지 않는다
@@ -1685,6 +1727,98 @@ class RunManager:
                     return EXIT_ABORTED
             with run.cond:
                 run.cond.wait(self.job_poll_s)
+
+    def _delete_before_start(self, run: Run, client: Any, name: str, st: JobState) -> int:
+        """중지 요청을 받았는데 파드가 아직 시작하지 않았으면 우리 Job을 바로 지우고 사라질 때까지 기다린다.
+        우리 것이 아닌 Job은 지우지 않는다. 실행은 stopped로 끝난다.
+
+        Stop while the Job is `Creating` / `Pending`: no Worker can read `stop.request`, so our Job is deleted at once (the
+        `_owned` rule; a foreign Job is refused as for the grace delete) and the slot waits until it is gone. Journal
+        `job_deleted_before_start`; the run ends STOPPED with `STOP_BEFORE_START_ERROR`. A container that starts in the
+        same second sees `stop.request` or the SIGTERM of the delete (the Worker handles both)."""
+        run.final_state = RunState.STOPPED.value
+        if not self._owned(run, st):
+            run.error = f"job {name} is not owned by this request — not deleted"
+            log.error("run %s: %s (labels %s)", run.run_id, run.error, st.labels)
+            _append_journal(run.run_dir, {"event": "job_delete_refused", "run_id": run.run_id, "job": name})
+            return EXIT_ABORTED
+        pending = run.job_pending or {}
+        reason = pending.get("reason") or st.waiting_reason or st.sched_reason or st.message or st.phase
+        run.error = STOP_BEFORE_START_ERROR
+        _append_journal(run.run_dir, {"event": "job_deleted_before_start", "run_id": run.run_id, "job": name,
+                                      "phase": st.phase, "reason": reason,
+                                      **({"action": run.action} if run.action else {})})
+        log.warning("run %s: stop requested while job %s is %s (the build pod has not started) — deleting it now",
+                    run.run_id, name, st.phase)
+        run.job_pending = None
+        self._hold_until_ended(run, client, name, delete_after=0.0, why="the stop came before the build pod started")
+        self._push(run, "node", {"node": "job", "update": {"state": "stopped-before-start", "job": name, "phase": st.phase,
+                                                            "message_ko": STOP_BEFORE_START_KO}})
+        return EXIT_ABORTED
+
+    def _note_pod_waiting(self, run: Run, client: Any, name: str, st: JobState) -> None:
+        """파드가 시작하지 못한 채 ``job_pending_notice_s``초가 지나면 이유를 찾아 화면에 알린다.
+        이유가 바뀌거나 ``PENDING_RESEND_S``가 지나면 다시 보낸다. 실행을 실패로 끝내거나 Job을 지우지 않는다.
+
+        The pod has not started: past `job_pending_notice_s` find why (waiting reason, unschedulable condition, pod events)
+        and tell the page (`job` node update `pod-pending`, `status().job.pending`); re-sent when the reason changes or every
+        `PENDING_RESEND_S`. Journal `job_pod_pending` and one WARNING per distinct reason. Never fails, frees or deletes."""
+        w = run.pod_wait
+        now = time.monotonic()
+        since = w.setdefault("since", now)
+        if self.job_pending_notice_s <= 0:
+            return
+        waited = now - since
+        if waited < self.job_pending_notice_s:
+            return
+        events: list[dict[str, str]] = w.get("events") or []
+        wr = st.waiting_reason
+        needs_events = not ((wr and wr not in ("ContainerCreating", "PodInitializing")) or st.sched_reason or st.sched_message)
+        pod_events = getattr(client, "pod_events", None)
+        if (needs_events and st.pod and callable(pod_events) and self._events_readable
+                and getattr(client, "events_readable", True) and now - w.get("events_at", -1e18) >= PENDING_EVENTS_EVERY_S):
+            w["events_at"] = now
+            try:
+                events = list(pod_events(st.pod) or [])
+            except Exception as e:  # noqa: BLE001 - 이벤트를 읽지 못해도 감시는 계속한다
+                log.debug("run %s: events of pod %s not read (%s)", run.run_id, st.pod, e)
+                events = []
+            w["events"] = events
+            if getattr(client, "events_readable", True) is False:
+                self._events_readable = False
+        family, reason, message, source = pod_wait_reason(st, events if needs_events else [])
+        message = message[:POD_WAIT_MESSAGE_MAX]
+        if output_scrubbing():
+            message, reason = scrub(message), scrub(reason)
+        info = {"seconds": int(waited), "reason": reason, "message": message, "family": family, "source": source,
+                "hint_ko": pod_wait_hint_ko(family, waited, st.pod, name), "pod": st.pod, "phase": st.phase}
+        run.job_pending = info
+        key = (family, reason)
+        if key == w.get("key") and now - w.get("sent", -1e18) < PENDING_RESEND_S:
+            return
+        w["key"], w["sent"] = key, now
+        self._push(run, "node", {"node": "job", "update": {"state": "pod-pending", "job": name, "pod": st.pod,
+                                                            "pending": dict(info)}})
+        seen = w.setdefault("seen", set())
+        if key in seen:
+            return
+        seen.add(key)
+        _append_journal(run.run_dir, {"event": "job_pod_pending", "run_id": run.run_id, "job": name, "pod": st.pod,
+                                      "phase": st.phase, "seconds": int(waited), "family": family, "reason": reason,
+                                      "message": message, "source": source})
+        log.warning("run %s: job %s pod %s has not started for %ds: %s", run.run_id, name, st.pod or "-", int(waited),
+                    f"{reason}: {message}" if reason else "no reason reported (events not readable or empty)")
+
+    def _pod_started(self, run: Run, name: str, st: JobState) -> None:
+        """파드가 시작했거나 끝났으면 시작하지 못한 이유 안내를 지운다.
+
+        The pod left `Creating` / `Pending`: clear the waiting notice (the page hides it on the next `job` update)."""
+        had = run.job_pending is not None
+        run.pod_wait, run.job_pending = {}, None
+        if had:
+            log.info("run %s: job %s pod %s left %s — the waiting notice is cleared", run.run_id, name, st.pod or "-",
+                     "/".join(NOT_STARTED_PHASES))
+            self._push(run, "node", {"node": "job", "update": {"state": "pod-started", "job": name, "pod": st.pod}})
 
     def _close_pod_step(self, run: Run, name: str, *, code: int | None = None, ended: JobState | None = None) -> None:
         """'파드' 단계를 닫는 이벤트를 이 감시에서 한 번만 보낸다.
@@ -1820,11 +1954,13 @@ class RunManager:
     def stop(self, run_id: str) -> bool:
         """현재 그래프 노드가 끝나면 실행을 중지하도록 요청한다. 진행 중인 Maven이나 LLM 호출은 끊지 않는다.
         모르는 실행이거나 이미 끝났으면 False를 반환한다. Job 모드에서 대기 중인 실행은 바로 줄에서 빠지고
-        Job 없이 stopped로 끝나며, in-process의 대기 실행은 차례가 와서 첫 노드를 마친 뒤 멈춘다.
+        Job 없이 stopped로 끝나며, 파드가 아직 시작하지 않은 Job은 바로 지운다.
+        in-process의 대기 실행은 차례가 와서 첫 노드를 마친 뒤 멈춘다.
 
         Ask a running run to stop after the current graph node. False if the run is unknown or finished. In the Job modes a
-        run still waiting leaves the line at once and ends stopped (no Job is created); in-process it stops after its first
-        node when its turn comes, as before."""
+        run still waiting leaves the line at once and ends stopped (no Job is created); a Job whose pod has not started yet
+        (`Creating` / `Pending`) is deleted at once by its watcher (`_delete_before_start`); in-process it stops after its
+        first node when its turn comes, as before."""
         run = self.runs.get(run_id)
         if run is None or run.done.is_set():
             return False
@@ -1833,6 +1969,8 @@ class RunManager:
             log.info("run %s: stop requested while waiting — it leaves the line", run_id)
         else:
             log.info("run %s: stop requested", run_id)
+            with run.cond:                     # 감시 스레드가 다음 조회를 기다리지 않고 바로 확인한다
+                run.cond.notify_all()
         return True
 
     # ---- remediation resume in a new build pod (2026-11-11, wave 4)
@@ -1931,6 +2069,8 @@ class RunManager:
                 info["phase"] = run.job_phase
             if run.job_note:
                 info["note"] = run.job_note
+            if run.job_pending and state != "finished":
+                info["pending"] = dict(run.job_pending)
             if state == "finished":
                 info["exit_code"] = run.exit_code
                 info["verified"] = run.verified
@@ -1969,11 +2109,14 @@ class RunManager:
     def stop_remediation(self, run_id: str) -> str | None:
         """조치 재개 시도를 중지한다.
         대기 중이면 바로 줄에서 빠지고 Job 없이 stopped로 끝나며 ``"withdrawn"``을 반환한다.
-        Job이 이미 있으면 ``stop.request``만 기록하고 ``"requested"``를 반환한다.
-        조치는 다음 단계 경계에서 멈추고 Job은 지우지 않는다. 실행 중인 재개가 없으면 None을 반환한다.
+        Job이 이미 있으면 ``stop.request``를 기록하고 ``"requested"``를 반환한다.
+        실행 중인 파드는 다음 단계 경계에서 멈추고 Job은 지우지 않는다. 파드가 아직 시작하지 않았으면 감시
+        스레드가 Job을 바로 지운다. 실행 중인 재개가 없으면 None을 반환한다.
 
         Stop a remediation resume attempt: a waiting one leaves the line now (`"withdrawn"`); one whose Job exists gets
-        `stop.request` only (`"requested"`, never a Job deletion); None when no resume is queued or running."""
+        `stop.request` (`"requested"`; a RUNNING resume pod is never deleted, it stops at its next step boundary). The
+        cancel flag is set too, so the watcher deletes the Job at once while its pod has not started (`Creating` /
+        `Pending`: nobody could read the file), like a migration Job. None when no resume is queued or running."""
         run = self.resumes.get(run_id)
         if run is None or run.done.is_set():
             return None
@@ -1993,6 +2136,9 @@ class RunManager:
         _append_journal(run.run_dir, {"event": "stop_request_sent", "run_id": run_id, "job": run.job_name,
                                       "action": run.action})
         log.info("run %s: remediation resume — %s written for job %s", run_id, STOP_REQUEST_FILE, run.job_name)
+        run.cancel.set()                       # 파드가 아직 시작하지 않았으면 _watch_job이 Job을 바로 지운다
+        with run.cond:
+            run.cond.notify_all()
         return "requested"
 
     def shutdown(self, reason: str = "server shutdown") -> dict[str, Any]:
@@ -2075,6 +2221,8 @@ class RunManager:
                 info["job"] = {"name": run.job_name, "phase": run.job_phase, "pod": run.job_pod}
                 if run.job_note:               # e.g. the Kubernetes API does not answer: why this run still holds its turn
                     info["job"]["note"] = run.job_note
+                if run.job_pending and not run.done.is_set():   # 파드가 시작하지 못한 이유이며 다시 연결한 화면도 보여 준다
+                    info["job"]["pending"] = dict(run.job_pending)
                 info["attempt"] = run.attempt
                 info["verified"] = run.verified
                 if run.control is not None:
@@ -2120,6 +2268,9 @@ class RunManager:
                 else:
                     info["state"] = "finished" if (rd / "report.json").is_file() else ("unknown" if rd.is_dir() else "missing")
                 info["exit_code"] = None
+        # 파드가 시작하기 전에 중지해 Job을 지운 실행은 화면에 그 사실을 한 줄로 보여 준다
+        if str(info.get("error") or "").startswith(STOP_BEFORE_START_ERROR):
+            info["stop_reason_ko"] = STOP_BEFORE_START_KO
         # 조치 재개 Job이 있으면 이관의 상태와 따로 보여 준다
         rjob = self.remediation_job(run_id)
         if rjob is not None:

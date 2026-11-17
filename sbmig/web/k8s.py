@@ -42,6 +42,8 @@ DEFAULT_TEMPLATE = "deploy/k8s/81-web-job.template.yaml"
 SA_DIR = Path("/var/run/secrets/kubernetes.io/serviceaccount")
 MODES = ("in-process", "k8s-job", "local-job")    # local-job: the Job-mode flow with a local subprocess as the "pod" (development)
 TERMINAL_PHASES = ("Succeeded", "Failed", "Missing")
+NOT_STARTED_PHASES = ("Creating", "Pending")   # 파드가 없거나 컨테이너가 아직 시작하지 않은 상태다
+PENDING_NOTICE_ENV = "SBMIG_JOB_PENDING_NOTICE_S"   # 파드가 이 초 동안 시작하지 못하면 이유를 찾아 화면에 알린다(기본 120, 0은 끔)
 TEMPLATE_INVALID = "MIGRATION_TEMPLATE_INVALID"   # 시작 검증에서 거부할 때 메시지 앞에 붙는 값으로 배포팀이 로그에서 찾는다
 # Worker에 있으면 안 되는 환경 변수다.
 # LLM 원문 기록은 공유 볼륨에 소스를 남기고, 빌드 파드는 웹 API를 호출하지 않으므로 웹 토큰이 필요 없다
@@ -109,6 +111,18 @@ class JobState:
     # Job이 Succeeded / Failed여도 아직 실행 중이거나 종료 중인 파드 수다. activeDeadlineSeconds로 Failed가
     # 된 Job도 종료 유예 동안 파드의 Maven이 계속 파일을 쓸 수 있으므로 0이 되어야 끝난 것으로 본다
     active_pods: int = 0
+    # 파드가 아직 시작하지 못한 이유다. 컨테이너 waiting 이유와 메시지, PodScheduled=False 조건의 이유와 메시지를 담는다
+    waiting_reason: str = ""
+    waiting_message: str = ""
+    sched_reason: str = ""
+    sched_message: str = ""
+
+    @property
+    def started(self) -> bool:
+        """파드의 컨테이너가 한 번이라도 시작했는지 확인한다. Creating / Pending이면 아직 시작하지 않은 것이다.
+
+        False while the Job is `Creating` (no pod yet) or `Pending` (no container of the pod has started)."""
+        return self.phase not in NOT_STARTED_PHASES
 
     @property
     def finished(self) -> bool:
@@ -117,6 +131,72 @@ class JobState:
 
         Ended: a terminal phase AND no pod of it still running or terminating (may its slot be handed on)."""
         return self.phase in TERMINAL_PHASES and not self.active_pods
+
+
+# 파드가 시작하지 못한 이유를 화면에 보일 한국어 문장으로 나눈다. 이유의 종류(family)마다 한 문장이다
+_IGNORED_WAITING = ("ContainerCreating", "PodInitializing")
+_IMAGE_WAITING = ("ErrImagePull", "ImagePullBackOff", "InvalidImageName", "ErrImageNeverPull", "RegistryUnavailable",
+                  "ImageInspectError")
+_WARNING_REASONS = ("FailedMount", "FailedAttachVolume", "FailedCreatePodSandBox", "Failed", "FailedScheduling")
+POD_WAIT_KO = {
+    "mount": "볼륨을 붙이지 못하고 있습니다. 인프라 담당자에게 문의해 주세요.",
+    "multiattach": "볼륨이 다른 노드에 붙어 있어 이 노드에서 쓸 수 없습니다. 인프라 담당자에게 문의해 주세요.",
+    "image": "이미지를 받지 못하고 있습니다.",
+    "pulling": "이미지를 받는 중입니다. 이미지가 크면 몇 분 걸립니다.",
+    "unschedulable": "파드를 띄울 노드가 없습니다. 자원이 부족할 수 있습니다.",
+    "sandbox": "노드에서 파드 네트워크를 준비하지 못하고 있습니다. 인프라 담당자에게 문의해 주세요.",
+    "config": "파드 설정을 읽지 못하고 있습니다. ConfigMap과 Secret을 확인해 주세요.",
+    "unknown": "이유는 kubectl describe {kind} {name}의 Events에서 볼 수 있습니다.",
+}
+
+
+def _event_family(reason: str, message: str) -> str:
+    # 경고 이벤트 하나를 이유 종류로 나눈다
+    if "Multi-Attach" in message:
+        return "multiattach"
+    if reason in ("FailedMount", "FailedAttachVolume"):
+        return "mount"
+    if reason == "FailedCreatePodSandBox":
+        return "sandbox"
+    if reason == "FailedScheduling":
+        return "unschedulable"
+    if reason == "Failed" and re.search(r"(?i)image|pull", message):
+        return "image"
+    return "unknown"
+
+
+def pod_wait_reason(st: JobState, events: list[dict[str, str]] | None = None) -> tuple[str, str, str, str]:
+    """시작하지 못한 파드의 이유를 ``(family, reason, message, source)``로 반환한다.
+    컨테이너 waiting 이유, PodScheduled=False 조건, 파드 이벤트 순으로 찾고, 없으면 family는 unknown이다.
+
+    Why a pod has not started, in this order: (1) a container `waiting.reason` other than ContainerCreating /
+    PodInitializing, (2) the `PodScheduled=False` condition, (3) the newest Warning event of the known reasons, else the
+    newest Normal `Pulling`. `source` is waiting | condition | event | none."""
+    wr = st.waiting_reason
+    if wr and wr not in _IGNORED_WAITING:
+        family = "image" if wr in _IMAGE_WAITING else ("config" if wr == "CreateContainerConfigError" else "unknown")
+        return family, wr, st.waiting_message, "waiting"
+    if st.sched_reason or st.sched_message:
+        return "unschedulable", st.sched_reason or "Unschedulable", st.sched_message, "condition"
+    evs = list(events or [])
+    warn = next((e for e in evs if e.get("type") == "Warning" and e.get("reason") in _WARNING_REASONS), None)
+    if warn is not None:
+        return _event_family(warn["reason"], warn.get("message", "")), warn["reason"], warn.get("message", ""), "event"
+    pulling = next((e for e in evs if e.get("type") == "Normal" and e.get("reason") == "Pulling"), None)
+    if pulling is not None:
+        return "pulling", "Pulling", pulling.get("message", ""), "event"
+    return "unknown", "", "", "none"
+
+
+def pod_wait_hint_ko(family: str, seconds: float, pod: str | None, job: str) -> str:
+    """파드가 시작하지 못한 시간과 이유 종류로 화면 안내 두 문장을 만든다.
+
+    The page's two Korean sentences: how long the pod has waited (whole minutes, at least 1) and what the reason family means."""
+    minutes = max(1, int(seconds // 60))
+    tail = POD_WAIT_KO.get(family) or POD_WAIT_KO["unknown"]
+    if "{kind}" in tail:
+        tail = tail.format(kind="pod" if pod else "job", name=pod or job)
+    return f"빌드 파드가 아직 시작되지 못했습니다({minutes}분째). {tail}"
 
 
 def job_name(run_id: str) -> str:
@@ -261,6 +341,8 @@ class K8sClient:
         self.source = ""                        # 접속 정보를 어디서 읽었는지 사람이 읽을 수 있게 남긴다
         self._tmp: Any = None                   # kubeconfig의 base64 인증서를 풀어 둔 임시 폴더이며 클라이언트와 수명이 같다
         self._headers = {"Accept": "application/json", "Content-Type": "application/json"}
+        # 이벤트 조회가 403이면 False가 되고 이 프로세스에서는 다시 묻지 않는다
+        self.events_readable = True
         if token:
             self._headers["Authorization"] = f"Bearer {token}"
 
@@ -464,14 +546,19 @@ class K8sClient:
         pod_name = ((pod or {}).get("metadata") or {}).get("name")
         pstatus = (pod or {}).get("status") or {}
         exit_code, message = None, ""
+        waiting_reason = waiting_message = ""
         for cs in pstatus.get("containerStatuses") or []:
             state = cs.get("state") or {}
             if "terminated" in state:
                 exit_code = state["terminated"].get("exitCode")
                 message = state["terminated"].get("reason") or message
             elif "waiting" in state:
-                w = state["waiting"]
+                w = state["waiting"] or {}
                 message = " ".join(x for x in (w.get("reason"), w.get("message")) if x)[:300]
+                waiting_reason, waiting_message = str(w.get("reason") or ""), str(w.get("message") or "")[:300]
+        sched = next((c for c in pstatus.get("conditions") or []
+                      if isinstance(c, dict) and c.get("type") == "PodScheduled" and str(c.get("status")) == "False"), {})
+        sched_reason, sched_message = str(sched.get("reason") or ""), str(sched.get("message") or "")[:300]
         if (status.get("succeeded") or 0) > 0:
             return JobState("Succeeded", pod_name, exit_code if exit_code is not None else 0, message, labels, active_pods)
         if (status.get("failed") or 0) > 0:
@@ -483,7 +570,48 @@ class K8sClient:
         phase = pstatus.get("phase") or "Pending"
         if phase in ("Succeeded", "Failed"):          # the pod ended, the Job status lags a moment behind
             return JobState(phase, pod_name, exit_code, message, labels, live)
-        return JobState(phase, pod_name, None, message, labels)
+        return JobState(phase, pod_name, None, message, labels, waiting_reason=waiting_reason,
+                        waiting_message=waiting_message, sched_reason=sched_reason, sched_message=sched_message)
+
+    def pod_events(self, pod_name: str) -> list[dict[str, str]]:
+        """파드의 이벤트를 최신순으로 반환한다. 각 항목은 ``type``, ``reason``, ``message``, ``time``을 담는다.
+        403이거나 응답 형식이 이상하면 빈 목록을 반환하고 이 프로세스에서는 다시 묻지 않는다.
+        전송 오류나 다른 HTTP 오류는 이번에만 빈 목록이다.
+
+        The pod's events, newest first (`GET …/events?fieldSelector=involvedObject.kind=Pod,involvedObject.name=<pod>`).
+        A 403 (events need their own RBAC) or an odd body → [] and `events_readable` turns False for the process; a
+        transport error or another HTTP status → [] this time only. Never raises."""
+        if not self.events_readable or not pod_name:
+            return []
+        try:
+            r = self._req("GET", f"/api/v1/namespaces/{self.namespace}/events", ok=(200, 403),
+                          params={"fieldSelector": f"involvedObject.kind=Pod,involvedObject.name={pod_name}"})
+        except K8sError as e:
+            log.debug("k8s: events of pod %s not read this time (%s)", pod_name, e)
+            return []
+        if r.status_code == 403:
+            self.events_readable = False
+            log.info("k8s: pod events are not readable with this account (HTTP 403) — not asked again")
+            return []
+        try:
+            items = self._body(r, "GET events").get("items") or []
+            if not isinstance(items, list):
+                raise TypeError("items is not a list")
+            out = []
+            for it in items:
+                if not isinstance(it, dict):
+                    continue
+                meta = it.get("metadata") or {}
+                when = (it.get("lastTimestamp") or it.get("eventTime") or it.get("firstTimestamp")
+                        or meta.get("creationTimestamp") or "")
+                out.append({"type": str(it.get("type") or ""), "reason": str(it.get("reason") or ""),
+                            "message": str(it.get("message") or ""), "time": str(when)})
+        except (K8sError, AttributeError, TypeError, ValueError) as e:
+            self.events_readable = False
+            log.info("k8s: the events answer is not usable (%s) — pod events are not asked again", e)
+            return []
+        out.sort(key=lambda e: e["time"], reverse=True)
+        return out
 
     def delete_job(self, name: str) -> None:
         """Job과 그 파드를 지운다(propagationPolicy Foreground). 이미 없으면 무시한다."""

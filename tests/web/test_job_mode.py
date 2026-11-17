@@ -149,7 +149,8 @@ def test_stop_writes_the_request_file_then_deletes_after_the_grace_period(tmp_pa
     mgr = RunManager(tmp_path / "out", repo, mode="k8s-job", job_client=jc, job_template=TEMPLATE)
     rid = mgr.start(b"PK\x05\x06" + b"\0" * 18, "p.zip", ["artifacts.local-e2e.yml"])
     deadline = time.time() + 5
-    while mgr.status(rid)["state"] != "running" and time.time() < deadline:
+    # v2.1z-aq: the stop must reach a STARTED pod — a stop while Pending deletes the Job at once (test_pod_not_started)
+    while mgr.runs[rid].job_phase != "Running" and time.time() < deadline:
         time.sleep(0.02)
     assert mgr.stop(rid)
     run = mgr.runs[rid]

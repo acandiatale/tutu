@@ -24,6 +24,9 @@ rules:
   - apiGroups: [""]
     resources: ["pods/log"]
     verbs: ["get"]                                        # 진행 화면에 흘릴 로그
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["list"]                                       # 빌드 파드가 뜨지 않는 이유를 화면에 보여 준다(없어도 동작한다)
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

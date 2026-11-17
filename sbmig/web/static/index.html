@@ -147,6 +147,13 @@
   .fwnote { margin: 10px 0 0; font-size: 13px; color: var(--ink); display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; word-break: keep-all; overflow-wrap: anywhere; }
   .fwnote .chip { background: var(--blue-tint); color: var(--blue-deep); border-color: transparent; font-weight: 600; }
   .result .fwnote { margin: 0 0 12px; }
+  /* 빌드 파드가 시작하지 못한 이유 안내. 파드 단계 아래에 두고 파드가 시작하면 숨긴다 */
+  .podwait { margin: 10px 0 0; padding: 10px 14px; border: 1px solid var(--warn-tint); border-left: 3px solid var(--warn); border-radius: var(--radius-s);
+             background: var(--warn-tint); font-size: 13px; word-break: keep-all; overflow-wrap: anywhere; }
+  .podwait p { margin: 0; }
+  .podwait .pwhint { color: var(--ink); font-weight: 600; }
+  .podwait .pwraw { margin-top: 4px; color: var(--muted); font-family: var(--mono); font-size: 12px; word-break: break-all; }
+  .podwait .pwstop { margin-top: 4px; color: var(--muted); }
   .railnote { color: var(--muted); font-size: 12.5px; margin: 4px 0 0; min-height: 1.4em; word-break: keep-all; overflow-wrap: anywhere; }   /* 한글은 단어 단위로 줄을 바꾼다 */
 
   /* 진행 기록 / 로그 탭 */
@@ -410,6 +417,12 @@
     <!-- 사내 프레임워크 프로젝트(분석에서 찾으면 표시) -->
     <p class="fwnote" id="fwnote" hidden><span class="chip">프레임워크 프로젝트</span><span>JDK 21과 jakarta만 적용합니다. 재구성과 구조 검토는 하지 않습니다.</span></p>
     <div class="rail" id="rail" role="list" aria-label="진행 단계"></div>
+    <!-- 빌드 파드가 시작하지 못하고 있을 때만 표시한다. 문장은 서버가 이유에 맞게 만든다 -->
+    <div class="podwait" id="podwait" role="status" hidden>
+      <p class="pwhint" id="podwaithint"></p>
+      <p class="pwraw" id="podwaitraw" hidden></p>
+      <p class="pwstop">중단을 누르면 이 실행을 바로 정리합니다.</p>
+    </div>
     <p class="railnote" id="railnote"></p>
 
     <div class="tabs" role="tablist">
@@ -750,6 +763,7 @@
     if (st.resolved) bits.push(`해결한 오류 ${st.resolved}건`);
     setText('summary', bits.join(' · '));
     $('stop').disabled = !live || !!st.stop_requested;
+    setPodWait(live && st.job ? st.job.pending : null);
     $('stop').hidden = !live;
     setText('stop', st.stop_requested ? '중단 요청됨' : '중단');
     if (st.parallel) setParallel(st.parallel);
@@ -763,6 +777,15 @@
     const q = qpos(st.queue), key = `${st.state}|${q ? q.position : ''}`;
     if (statusKey && key !== statusKey && st.state !== 'finished') loadRuns();
     statusKey = key;
+  }
+  // 빌드 파드가 시작하지 못한 이유를 보여 준다. 서버가 만든 한국어 문장과 쿠버네티스 원문 한 줄이며, 없으면 숨긴다
+  function setPodWait(p) {
+    const box = $('podwait');
+    if (!p || !p.hint_ko) { box.hidden = true; return; }
+    setText('podwaithint', String(p.hint_ko));
+    const raw = p.reason ? String(p.reason) + (p.message ? ': ' + String(p.message) : '') : '';
+    setText('podwaitraw', raw); $('podwaitraw').hidden = !raw;
+    box.hidden = false;
   }
   function readyText() { return runFlow === FLOW_REM ? '준비를 마쳤습니다. 취약점 조치를 시작합니다.' : '준비를 마쳤습니다. 이관을 시작합니다.'; }
   function jobStep() {
@@ -838,6 +861,11 @@
     if (name === 'job') {                                       // 쿠버네티스 Job 모드: 파드 생성 중 -> 준비됨
       el = jobStep();
       const s = u.state || '';
+      // 파드가 시작하지 못한 이유 안내는 단계 표시와 안내 줄을 바꾸지 않는다
+      if (s === 'pod-pending') { setPodWait(u.pending); return; }
+      if (s === 'pod-started') { setPodWait(null); return; }
+      if (s === 'stopped-before-start') { setPodWait(null); $('railnote').textContent = String(u.message_ko || ''); return; }
+      if (!['creating', 'pending', 'created', 'api-unavailable', 'api-back'].includes(s)) setPodWait(null);
       // 늦게 온 running은 이미 시작한 엔진 단계의 표시(현재 단계, 안내 줄)를 되돌리지 않는다
       if (s === 'running') { el.classList.add('done'); if (!engineSeen()) { setCurrent(railSteps()[1]); $('railnote').textContent = readyText(); } }
       else if (s === 'failed' || s === 'missing') { el.classList.remove('done'); el.classList.add('failed'); setCurrent(null); $('railnote').textContent = `실행 환경을 준비하지 못했습니다: ${u.message || s}`; }
@@ -981,7 +1009,8 @@
     const files = st.files || [];
     $('resultcard').hidden = false;
     // 진행하지 못한 실행: 사유 한 문장을 결과 영역 맨 위에 표시한다(로그 탭에 묻히지 않도록)
-    const why = st.exit_code === 3 && !st.stop_requested ? abortText(st) : '';
+    // 중단한 실행은 제목(중단되었습니다) 아래에 서버가 준 사유 한 줄만 보여 준다(파드가 시작하기 전에 정리한 경우)
+    const why = st.exit_code === 3 && !st.stop_requested ? abortText(st) : (st.stop_requested ? String(st.stop_reason_ko || '') : '');
     $('abortbox').hidden = !why; setText('aborttext', why);
     // 취약점 해결 실행에는 이관 결과(report.md / result.zip 버튼)가 없고 아래 '취약점 조치' 영역이 결과다
     const remOnly = (st.flow || runFlow) === FLOW_REM;
@@ -1548,7 +1577,7 @@
     if (es) { es.close(); es = null; }
     current = runId; lastState = '';
     runFlow = flowHint === FLOW_REM ? FLOW_REM : FLOW_FULL;   // 실제 값은 첫 status에서 받는다(setStatus)
-    $('abortbox').hidden = true;
+    $('abortbox').hidden = true; setPodWait(null);
     logBuf = []; logTotal = 0; logDropped = 0; renderLog();
     $('runcard').hidden = false; $('resultcard').hidden = true; hideRemediation();
     $('runid').textContent = runId; $('summary').textContent = ''; setRunName(nameHint || '');

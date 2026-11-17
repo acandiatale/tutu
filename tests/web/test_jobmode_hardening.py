@@ -406,7 +406,8 @@ def test_startup_accepts_a_valid_template_and_checks_every_rbac_verb(tmp_path: P
     assert mgr._job_client is rbac and mgr._job_template_doc is not None
     assert set(rbac.asked) == {("create", "jobs", "batch"), ("get", "jobs", "batch"), ("list", "jobs", "batch"),
                                ("watch", "jobs", "batch"), ("delete", "jobs", "batch"),
-                               ("get", "pods", ""), ("list", "pods", ""), ("watch", "pods", "")}
+                               ("get", "pods", ""), ("list", "pods", ""), ("watch", "pods", ""),
+                               ("list", "events", "")}      # v2.1z-aq: asked once, never fatal (test_pod_not_started)
 
 
 def test_startup_refuses_an_envfrom_template(tmp_path: Path, repo: Path, monkeypatch):

@@ -53,7 +53,8 @@
 | `SBMIG_JOB_SLOT` | (웹 파드가 Job 마다 넣는다) | 그 Job 의 자리 번호(1 부터). 손으로 넣지 않는다 — Worker 가 2 번 자리부터 `SBMIG_BUILD__LOCAL_REPO` 를 그 자리의 저장소로 바꿔 `sbmig run` 에 넘긴다(저널 `worker_slot`) |
 | `SBMIG_FLOW` | (웹 파드가 Job 마다 넣는다) | 그 실행의 진행 방식 `full`(전체 진행) / `remediation`(취약점 해결). 손으로 넣지 않는다 — 화면에서 고른 값이 `request.json` 에 고정되고 Worker 가 대조한 뒤 `sbmig run --flow` 로 넘긴다. 81 틀에 줄이 필요 없다 |
 | `SBMIG_JOB_POLL_S` | `2` | Job 상태 조회 간격(초) |
-| `SBMIG_JOB_STOP_GRACE_S` | `2700` | 멈춤 요청(stop.request) 뒤 Job 을 지우기까지 기다리는 시간(초) — Maven 빌드 + OpenRewrite 한 번보다 길게 |
+| `SBMIG_JOB_STOP_GRACE_S` | `2700` | 멈춤 요청(stop.request) 뒤 Job 을 지우기까지 기다리는 시간(초) — Maven 빌드 + OpenRewrite 한 번보다 길게. 파드가 아직 시작하지 않았으면(`ContainerCreating` 등) 기다리지 않고 바로 지운다 |
+| `SBMIG_JOB_PENDING_NOTICE_S` | `120` | 빌드 파드가 이 초 동안 시작하지 못하면 웹 파드가 이유(컨테이너 대기 이유, 스케줄 실패, 파드 Events)를 찾아 화면의 파드 단계 아래에 알리고 로그 WARNING · 저널 `job_pod_pending` 에 남긴다. `0` = 알리지 않는다. 알림만 하며 실행을 끝내거나 Job 을 지우지 않는다. 웹 파드만 읽는다(81 틀 · 대조 대상 아님, 바꾸면 재시작). 매니페스트에 없으면 기본값 |
 | `SBMIG_JOB_EXIT_GRACE_S` | `120` | Worker 가 결과(`job-status.json`)를 쓴 뒤에도 파드가 남아 있으면 이 초 뒤에 그 Job(우리 라벨인 것만)을 지우고 사라질 때까지 기다린다. 그 자리는 Job 이 끝난 것을 확인한 뒤에 다음 업로드로 넘어간다 |
 | `SBMIG_JOB_API_GRACE_S` | `300` | **알림만**(2026-11-10 부터): 쿠버네티스 API 가 이 초 동안 답하지 않으면 로그 ERROR 한 줄·저널 `job_api_unavailable`·화면 안내로 한 번 알리고 그 뒤 10분마다 로그에 다시 남긴다. 실행을 실패로 끝내지도, 자리를 넘기지도 않는다 — API 가 다시 답해(`job_api_back`) Job 이 끝난 것을 확인할 때까지 그 자리는 비지 않는다(자리가 다 찼으면 다음 업로드는 `queued`) |
 | `SBMIG_JOB_ENV_PIN` | `refuse` (k8s-job 기본) / `warn` / `off` (local-job 기본) | Job 파드의 환경 변수(설정 파일의 `${…}` 변수, `SBMIG_<섹션>__<키>`)가 그 Job 을 만든 웹 파드와 다를 때: `refuse` = 그 Job 은 돌지 않고 다른 키 이름을 적고 끝난다, `warn` = 저널 `worker_env_differs` 에 적고 Job 파드의 값으로 돈다, `off` = 대조하지 않는다. 웹 파드가 시작할 때 읽는다(바꾸면 재시작). 81 틀에는 줄이 필요 없다 — Worker 는 웹 파드가 `control/state.json` 에 적은 정책을 따른다. `warn` 은 개발 PC 가 `KUBECONFIG` 로 클러스터에 Job 을 만들 때처럼 두 환경이 원래 다른 경우에만 |

@@ -446,7 +446,7 @@ PC 에서 시험한 파일을 그대로 `20-configmap.yaml` 의 `sbmig-config` �
 | Maven 로컬 저장소 | 자리마다 따로 쓴다. 1 번은 `/data/.m2/repository`, 2 · 3 번은 같은 폴더(`/data/.m2`) 안의 `repository-slot2` / `repository-slot3`(Worker 가 만든다). 한 저장소에 Maven 여럿이 동시에 쓰는 일을 없앤다. 2 · 3 번 자리의 첫 이관은 의존성을 처음부터 받아 느리다(자리마다 한 번). 그 폴더를 만들거나 쓸 수 없으면 공용 저장소가 아니라 **파드 안의 임시 저장소**(`/tmp/sbmig-m2-slot<k>`)를 쓴다: 느리지만 다른 파드와 겹치지 않는다. 저널 `worker_slot` 의 `pod_local: true` 와 파드 로그의 WARNING 이 그 표시이고, 데이터 볼륨의 `/data/.m2` 폴더 소유자 / `fsGroup` 을 고치면 없어진다 |
 | KB (`/data/kb-v2`) | 세 파드가 같은 폴더를 읽고 쓴다. 쓰기는 `<kb>/.lock` 파일 하나로 차례를 지킨다: 잠금 안에서 다시 읽고, 임시 파일에 쓴 뒤 이름을 바꿔 넣는다. 한 번의 쓰기는 짧아서(수십 밀리초) 서로 기다리는 시간은 보이지 않는다. 새 케이스 폴더와 스크립트 파일(`fix_v<N>.py`)은 "없을 때만 만들기"로 만들어서 두 파드가 같은 케이스를 동시에 처음 만나도 서로 덮어쓰지 않는다(둘 다 LLM 을 부르고 v1 · v2 로 나란히 남는다). 파드가 잠금을 쥔 채 죽으면 다른 파드는 `kb.lock_timeout_seconds`(300 초)까지 한 번 기다린 뒤 이어 간다(실행이 잠금 때문에 실패하지는 않는다). 낡은 잠금을 깨는 일은 `.lock.breaker` 파일로 한 번에 한 파드만 한다. **KB 를 통째로 바꾸는 `sbmig kb import --replace` 는 도는 Job 이 없을 때만** 한다(폴더를 바꿔 끼우면서 잠금 파일도 같이 옮겨진다) |
 | 웹 파드 재시작 | 돌던 Job 은 그대로 돈다. 다시 뜬 웹 파드가 적어 둔 자리 번호 그대로 이어받고, 기다리던 업로드는 접수 순서로 다시 줄을 선다 |
-| 멈춤 | 도는 이관은 지금처럼 노드 사이에서 멈춘다. 기다리는 이관에 누른 멈춤은 **바로** 먹힌다: 줄에서 빠지고 `stopped` 로 끝나며(Job 을 만들지 않는다) 뒤에서 기다리던 이관들의 순번이 한 칸씩 당겨진다 |
+| 멈춤 | 도는 이관은 지금처럼 노드 사이에서 멈춘다. 기다리는 이관에 누른 멈춤은 **바로** 먹힌다: 줄에서 빠지고 `stopped` 로 끝나며(Job 을 만들지 않는다) 뒤에서 기다리던 이관들의 순번이 한 칸씩 당겨진다. Job 은 있는데 파드가 아직 시작하지 못한 이관(`ContainerCreating`, `Pending`)에 누른 멈춤도 바로 먹힌다: 웹 파드가 그 Job 을 지우고 사라진 것을 확인한 뒤 `stopped` 로 끝내고 자리를 넘긴다(아래 "파드가 `ContainerCreating` 에서 넘어가지 않으면") |
 
 **인프라팀에 확인할 것.** 파드 크기는 회사 값으로 맞춰 두었다: 웹 파드 1개와 빌드 파드 3개 모두 CPU 2 / 메모리 8Gi, requests 와 limits 가
 같다(40 · 81 의 `resources`). 넷이 같이 돌려면 CPU 8 / 메모리 32Gi 의 여유가
@@ -468,6 +468,26 @@ namespace 에 ResourceQuota 가 있으면 파드가 만들어지지 않을 수 �
 
 **되돌리기.** `SBMIG_JOB_MAX_PARALLEL: "1"` 로 고쳐 apply 하고 웹 파드를 재시작한다. 돌던 Job 은 끝까지 돌고(한도보다 많아도 그대로 둔다), 기다리던
 업로드는 도는 수가 한도 아래로 내려온 뒤에 시작한다.
+
+**파드가 `ContainerCreating` 에서 넘어가지 않으면.** sbmig 가 아니라 쿠버네티스 쪽에서 파드를 띄우지 못하고 있는 것이다(볼륨 붙이기 / 마운트,
+이미지 받기, 파드 네트워크). 화면의 '파드' 단계가 넘어가지 않고, `SBMIG_JOB_PENDING_NOTICE_S`(기본 120 초)가 지나면 웹 파드가 이유를 찾아 그 단계 아래에
+"빌드 파드가 아직 시작되지 못했습니다(N분째)." 와 이유 한 문장, 쿠버네티스 원문 한 줄을 보여 준다(로그 WARNING `… has not started for Ns: <Reason>: <message>`,
+저널 `job_pod_pending`). 원문은 `kubectl -n agent describe pod <파드 이름>` 의 Events 에 있는 것과 같다:
+
+| Events 에 보이는 줄 | 뜻 | 할 일 |
+|---|---|---|
+| `FailedAttachVolume` … `Multi-Attach error for volume … already exclusively attached` | 데이터 볼륨이 ReadWriteOnce 라 다른 노드의 파드가 이미 붙여 쓰고 있다 | 볼륨을 ReadWriteMany 로(아래) |
+| `FailedMount` … `mount failed` … `nfs` (시간 초과, `access denied`) | 이 노드에서 NFS 를 마운트하지 못한다(네트워크, export 허용 목록, nfs 도구) | 인프라 담당자에게 그 노드 이름과 원문을 전달 |
+| `FailedMount` … `mount.nfs: rpc.statd is not running but is required for remote locking` | 이 노드에서 NFS 잠금 서비스(rpc.statd)가 꺼져 있다. 서비스가 켜진 다른 노드에 뜬 파드는 잘 돈다 | 인프라 담당자에게 그 노드 이름과 원문을 전달: 노드에서 `rpcbind` · `rpc-statd` 를 켜거나 볼륨 마운트 옵션을 `nfsvers=4.1` 또는 `nolock` 으로. sbmig 의 KB · 조치 잠금은 파일을 없을 때만 만드는 방식이라 NFS 잠금 서비스가 필요 없다. 고쳐질 때까지는 81 틀의 `restartPolicy` 아래에 `nodeSelector: {kubernetes.io/hostname: <되는 노드>}` 를 넣어 빌드 파드를 되는 노드에만 띄울 수 있다(웹 파드는 그동안 재시작하지 않는다) |
+| `FailedMount` … `not found` (`configmap` / `secret` / `persistentvolumeclaim … not found`) | 틀이 가리키는 ConfigMap · Secret · PVC 가 namespace 에 없다 | 이름을 확인하고 만든다(§2, §3 "켜는 법") |
+| `Pulling` … `Pulling image` (그 뒤 `Pulled` 가 오래 없음) | 이미지를 받는 중이다. 노드마다 처음 한 번은 몇 분 걸린다 | 기다린다. 10 분이 넘으면 레지스트리 속도를 인프라 담당자에게 |
+| `FailedCreatePodSandBox` | 노드가 파드 네트워크(CNI)를 만들지 못한다 | 인프라 담당자에게 그 노드 이름과 원문을 전달 |
+
+끝내는 법: 화면의 **중단** 버튼. 파드가 아직 시작하지 않았으면 기다리지 않고 Job 을 지우고 `stopped` 로 끝낸다(저널 `job_deleted_before_start`).
+`kubectl -n agent delete job <Job 이름>` 으로 지워도 된다 — 웹 파드는 그 Job 이 사라진 것을 보고 실행을 끝난 것으로 기록하고 자리를 넘긴다.
+빌드 파드 둘이 서로 다른 노드에서 같이 돌려면 데이터 PVC(`sbmig-data`)가 **ReadWriteMany** 이고, 모든 노드가 마운트할 수 있는 볼륨(회사: `nfs-csi`)이어야
+한다. 파드 Events 를 읽으려면 웹 파드의 계정에 `events` `list` 권한이 있어야 한다(`45-web-rbac.yaml` 에 있다. kubeconfig 계정의 권한은 인프라팀이 준다).
+없으면 시작 로그에 `pod events are not readable with this account …` 한 줄이 남고, 화면은 이유 대신 `kubectl describe pod` 를 보라고 안내한다.
 
 ### 켜는 법
 

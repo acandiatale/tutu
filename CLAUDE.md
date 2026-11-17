@@ -253,7 +253,7 @@ Then the final build again, the report (Handover first, "Structure review", fix 
   commits happen in the main session. Per round: append a "Status" table to `docs/PLAN.md`, update
   `docs/INTERFACES.md` on contract changes, add a fixture + `expected.json` (+ `replay/`) for every new scenario.
 - Setup: `uv venv && source .venv/bin/activate && uv pip install -e ".[dev]"` (plain `pip install -e ".[dev]"` works too).
-- Fast check (Python only, ~12 min): `python -m pytest -m "not integration"` → ≈ 5,640 passed, ≈ 62 deselected (2026-11-17)
+- Fast check (Python only, ~12 min): `python -m pytest -m "not integration"` → ≈ 5,670 passed, ≈ 62 deselected (2026-11-17)
   (`-q` on top of the `-q` in pyproject hides the summary line). Until 2026-11-12 `tests/build` (381 tests) was silently
   left out of every root-level run — pytest skips a directory named `build` by default; `norecursedirs` in pyproject now
   keeps it in. When a total does not grow by the number of tests added, compare per-file counts (`--collect-only -q`).
@@ -395,6 +395,11 @@ Then the final build again, the report (Handover first, "Structure review", fix 
   `llm.busy_wait_seconds` (600: a 429 / 5xx with Retry-After queues instead of failing) and `llm.auth_retries` (2: a 401 right after
   an exchange). The page re-attaches by itself after a web-pod restart. Contract: `docs/INTERFACES.md` "v2.1z-af". To ask the gateway
   team: the concurrency limit per app token, and whether a new token exchange revokes earlier tokens.
+  **v2.1z-aq (2026-11-17, company cluster: a second build pod sat in `ContainerCreating` for 28 minutes)**: a stop while the Job is
+  `Creating` / `Pending` deletes our Job at once (`_owned` rule, waits until gone, STOPPED, journal `job_deleted_before_start`; a
+  running pod keeps the grace, a running remediation resume is never deleted). Past `SBMIG_JOB_PENDING_NOTICE_S` (120, 0 = off)
+  Main tells the page why the pod does not start (waiting reason, `PodScheduled=False`, pod events via `K8sClient.pod_events`;
+  `status().job.pending`, journal `job_pod_pending`) and never acts on it; contract `docs/INTERFACES.md` "v2.1z-aq".
 - **Vulnerability remediation (2026-11-11, `sbmig/remediations/`, `/api/remediations`)**: a LangGraph flow SEPARATE from the migration
   graph. **Where it runs (user, same day: "웹파드는 안돼고 빌드 파드로 … 마이그레이션이 build 성공인 경우는 해당 취약점 노드를 타면")**: in
   the BUILD POD, chained after a migration that ended BUILD SUCCESS — the migration graph's last node `remediation` (after `finalize`)

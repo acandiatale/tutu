@@ -500,3 +500,19 @@ def test_no_override_in_sbmig_env_is_left_empty():
     data = _sbmig_env_data()
     assert not [k for k, v in data.items() if k.startswith("SBMIG_") and "__" in k and not v.strip()]
     assert not [n for n, (_, v) in _commented_keys().items() if n.startswith("SBMIG_") and "__" in n and not v.strip()]
+
+
+def test_the_web_rbac_role_lists_pod_events_for_the_pending_notice():
+    """v2.1z-aq: the page says why a build pod does not start from the pod's events; the service-account alternative grants
+    `events: list` (the startup check asks for it once and only logs one info line when it is missing). The Job dispatch's
+    required verbs stay the ones startup refuses without."""
+    from sbmig.web.k8s import PENDING_NOTICE_ENV, REQUIRED_PERMISSIONS
+    role = next(d for d in _docs(K8S / "45-web-rbac.yaml") if d.get("kind") == "Role")
+    rules = {(tuple(r.get("apiGroups") or []), tuple(r.get("resources") or [])): set(r.get("verbs") or []) for r in role["rules"]}
+    assert rules[(("",), ("events",))] == {"list"}
+    assert ("list", "events", "") not in REQUIRED_PERMISSIONS                      # never a startup failure
+    for verb, resource, group in REQUIRED_PERMISSIONS:
+        assert verb in rules[((group,), (resource,))], (verb, resource)
+    # a web-pod setting only: not a Job template line, not an env pin
+    assert PENDING_NOTICE_ENV not in (K8S / "81-web-job.template.yaml").read_text(encoding="utf-8")
+    assert f"| `{PENDING_NOTICE_ENV}` | `120`" in (PACKAGE_ROOT / "deploy" / "ENV.md").read_text(encoding="utf-8")

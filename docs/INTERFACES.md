@@ -23,7 +23,7 @@ type: `sbmig/core/models.py`, `sbmig/core/interfaces.py`, `sbmig/core/config.py`
 | report & result line | Base "Report and the result line", "Advisories and the Handover"; v2 "As built (step 1)" (`review=`); v2.1d (`major=`); remediations (`remediation=`); v2.1z-ak (`scope=`, the framework block) |
 | fleet | Base "Fleet" |
 | web app | Base "Graph engine", "Web app"; v2.1z-w (page, server-chosen configs), v2.1z-ae (queue / slots on the page), v2.1z-af (page re-attach), v2.1z-aj (run flows, page header); v2.1z-ak (framework label, skipped stages); v2.1z-ao (admin page `/admin`: token usage per project, log ZIPs) |
-| Job mode (Main / Worker, slots, env pins) | v2.1z-z "k8s Job dispatch mode", v2.1z-ab (kubeconfig, template ConfigMap), v2.1z-ac (Main ↔ Worker contract), v2.1z-ad (end confirmation, ownership, env pins, write-time redaction), v2.1z-ae (parallel slots), v2.1z-af |
+| Job mode (Main / Worker, slots, env pins) | v2.1z-z "k8s Job dispatch mode", v2.1z-ab (kubeconfig, template ConfigMap), v2.1z-ac (Main ↔ Worker contract), v2.1z-ad (end confirmation, ownership, env pins, write-time redaction), v2.1z-ae (parallel slots), v2.1z-af, v2.1z-aq (a build pod that does not start: stop, the reason notice) |
 | deploy | v2.1z-s (build hooks), v2.1z-t (one Job per request), v2.1z-u, deploy (baked config, container paths), v2.1z-ad "Shipped mode" |
 | remediations | remediations; v2.1z-ak (in-house group `framework`); v2.1z-am (case-insensitive matching, per-module in-house split, module sources, variant overrides, 들어온 경로); v2.1z-an (override proposals in module poms, the owners' choice) |
 
@@ -4277,6 +4277,75 @@ approval`), journal `approvals_dropped`; Korean via `i18n` (`policy_replanned`),
 In-process mode, a resumed chained run builds with the migration's Maven repository (no `-remediation` suffix); the
 standalone upload keeps `<repo>-remediation`. Tests: `tests/remediations/test_resume_claim.py`,
 `tests/remediations/test_drop_crash_safety.py`, `tests/remediations/test_service.py` (claim / M1), `test_i18n.py`.
+
+## v2.1z-aq — a build pod that does not start
+
+Company cluster, two uploads at once (`SBMIG_JOB_MAX_PARALLEL=3`): one build pod ran, the other stayed in `ContainerCreating`
+for 28 minutes (a Kubernetes-side cause: volume attach / mount on another node, image pull, sandbox). The stop button did
+nothing useful (`stop.request` has no reader before the container starts; the Job was deleted only after
+`SBMIG_JOB_STOP_GRACE_S`, 2700 s) and nothing said why the pod did not start.
+
+**Not started.** `JobState.started` is False for `Creating` (no pod) and `Pending` (no container started)
+(`k8s.NOT_STARTED_PHASES`). `JobState` grew `waiting_reason` / `waiting_message` (the container's `state.waiting`) and
+`sched_reason` / `sched_message` (pod condition `PodScheduled=False`); the existing fields keep their meaning.
+
+**Stop before start.** `_watch_job` with `run.cancel` set writes `stop.request` first (unchanged), then, when that poll's
+state is `Creating` / `Pending`, `_delete_before_start`: the `_owned` rule (both labels; an unowned Job is never deleted,
+journal `job_delete_refused`, run STOPPED with `job … is not owned by this request — not deleted`, as for the grace delete),
+journal `job_deleted_before_start` `{run_id, job, phase, reason[, action]}` (`reason` = the notice's reason when one was
+found, else the waiting reason / unschedulable reason / Kubernetes message / phase), `_hold_until_ended(delete_after=0.0)`
+(the slot is held until the Job is gone; journal `job_deleted` as before), run STOPPED with error
+`stopped: the build pod had not started — the job was deleted` (`runs.STOP_BEFORE_START_ERROR`), `job` node update
+`{state: "stopped-before-start", phase, message_ko}`. `status()` adds `stop_reason_ko` = `빌드 파드가 시작되기 전이라 작업을 바로
+정리했습니다.` for a run whose error starts with that text (in memory and from `control/state.json`); the page keeps the title
+`중단되었습니다` and shows that line in the result card's 사유 box. A container that starts in the same second reads
+`stop.request` or gets the delete's SIGTERM (the Worker handles both). A stop while `Running` keeps the grace. `stop()`
+wakes the watcher (`run.cond`) so the delete does not wait for the next poll. The same code runs for an adopted Job after
+a web-pod restart (the adoption shares `_watch_job`; a `stop.request` left by the earlier Main does not set `cancel` by
+itself, the user presses 중단 again).
+
+**Remediation resume.** Shares `_worker` → `_run_job` → `_watch_job`. `stop_remediation` still writes `stop.request` and
+returns `"requested"`, and now also sets the resume run's `cancel`: while its pod has not started the watcher deletes the
+Job at once exactly as above (`job_deleted_before_start` carries `action`; the watcher does not write or journal
+`stop.request` a second time). A RUNNING resume pod is never deleted: for a resume run the grace delete is skipped (it stops
+at its next step boundary), so "never a Job deletion" stays true for it.
+
+**Why it does not start.** `SBMIG_JOB_PENDING_NOTICE_S` (web pod env, read at startup, default `120`, `0` = never; not in the
+81 template, not an env pin). While the Job is `Creating` / `Pending`, counted from the first such poll of this watch (an
+adopted Job starts counting again), past the threshold `_note_pod_waiting` looks for the reason, in this order
+(`k8s.pod_wait_reason`): (1) a container `waiting.reason` other than `ContainerCreating` / `PodInitializing`
+(`ErrImagePull` / `ImagePullBackOff` / … → image, `CreateContainerConfigError` → config, others → unknown) with its
+message; (2) `PodScheduled=False` → unschedulable; (3) the pod's events, `K8sClient.pod_events(pod)` = `GET
+/api/v1/namespaces/{ns}/events?fieldSelector=involvedObject.kind=Pod,involvedObject.name=<pod>`, newest first, asked at
+most every 15 s (`runs.PENDING_EVENTS_EVERY_S`) and only when (1) / (2) found nothing: the newest `Warning` of
+`FailedMount` / `FailedAttachVolume` (a `Multi-Attach` message → multiattach, else mount) / `FailedCreatePodSandBox` →
+sandbox / `Failed` naming an image or pull → image / `FailedScheduling` → unschedulable, else the newest `Normal`
+`Pulling` → pulling; nothing → unknown. `pod_events` returns `[]` and sets `events_readable = False` for the process on
+a 403 (events need their own RBAC) or an odd body; a transport error or another status is "no events this time".
+Startup asks `can_i("list", "events")` once after the required verbs: not allowed = ONE info line `pod events are not
+readable with this account — the page will not show why a pod does not start`, never a failure (not in
+`REQUIRED_PERMISSIONS`).
+What goes out: `run.job_pending` = **`{seconds, reason, message, hint_ko, family, source, pod, phase}`** (`family` =
+mount | multiattach | image | pulling | unschedulable | sandbox | config | unknown, `source` = waiting | condition | event |
+none; `message` capped at 300 characters and scrubbed like other event strings), refreshed every poll; `status().job.pending`
+(and `remediation_job.pending` for a resume) carries it while the run is live, so a re-attached page shows it. The `job`
+node update `{state: "pod-pending", job, pod, pending}` is pushed when the reason (`family`, `reason`) changes or every
+5 minutes (`runs.PENDING_RESEND_S`) with the new waiting time; journal `job_pod_pending` `{run_id, job, pod, phase,
+seconds, family, reason, message, source}` and ONE WARNING `run … job … pod … has not started for Ns: <Reason>: <message>`
+per distinct reason. When the pod leaves `Creating` / `Pending` the notice is cleared (`job_pending` None, update
+`{state: "pod-started"}`). It never fails the run, frees the slot or deletes anything.
+`hint_ko` (`k8s.pod_wait_hint_ko`, `k8s.POD_WAIT_KO`): `빌드 파드가 아직 시작되지 못했습니다(N분째).` + one sentence per family
+(mount `볼륨을 붙이지 못하고 있습니다. 인프라 담당자에게 문의해 주세요.`, multiattach `볼륨이 다른 노드에 붙어 있어 이 노드에서 쓸 수
+없습니다. 인프라 담당자에게 문의해 주세요.`, image `이미지를 받지 못하고 있습니다.`, pulling `이미지를 받는 중입니다. 이미지가 크면 몇 분
+걸립니다.`, unschedulable `파드를 띄울 노드가 없습니다. 자원이 부족할 수 있습니다.`, sandbox `노드에서 파드 네트워크를 준비하지 못하고
+있습니다. 인프라 담당자에게 문의해 주세요.`, config `파드 설정을 읽지 못하고 있습니다. ConfigMap과 Secret을 확인해 주세요.`, unknown
+`이유는 kubectl describe pod <파드>의 Events에서 볼 수 있습니다.`, `describe job <job>` while no pod exists). The page shows it in
+a box under the rail (`#podwait`, directly below the 파드 step), then `Reason: message` in a muted line and
+`중단을 누르면 이 실행을 바로 정리합니다.`; the box goes on `pod-started`, on any other pod-step state than creating / pending /
+created / api-*, and when the run ends.
+RBAC: `deploy/k8s/45-web-rbac.yaml` grants `events: list`; the kubeconfig model's permissions are the infra team's.
+Operator text: `deploy/README.md` §3 "동시에 여러 건" (the Events table, how to end such a run, ReadWriteMany), `deploy/ENV.md`.
+Tests: `tests/web/test_pod_not_started.py`; `tests/deploy/test_manifests.py` (the RBAC line).
 
 ## remediations (취약점 조치) — `/api/remediations`, IVAS, version-text fixes + approved managed overrides (2026-11-11)
 

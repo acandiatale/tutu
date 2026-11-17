@@ -2,7 +2,7 @@
 
 > 다루는 것: PC 준비(`.env`, JDK 21, Maven, 첫 점검 명령), `sbmig` 명령과 옵션, 실행 디렉터리(`out/<run id>/`)의 파일과 로그 줄, 저널 이벤트, 종료 코드와 `attn=` 코드, 차단 사유, 진단 순서와 요약 카드, 회사 Windows PC 에서 줄을 물어보는 법.
 > 언제 읽나: sbmig 를 돌리기 전, 그리고 실행이 실패·미완(exit 2 / 3)으로 끝나 "왜" 를 찾아야 할 때.
-> 함께 읽을 파일: [02-flow-and-nodes.md](02-flow-and-nodes.md), [04-cases-scripts-kb.md](04-cases-scripts-kb.md), [05-llm-gateway-and-prompts.md](05-llm-gateway-and-prompts.md), [07-config-and-knowledge.md](07-config-and-knowledge.md), [../docs/RUNBOOK.md](../docs/RUNBOOK.md)
+> 함께 읽을 파일: [02](02-flow-and-nodes.md), [04](04-cases-scripts-kb.md), [05](05-llm-gateway-and-prompts.md), [07](07-config-and-knowledge.md), [../docs/RUNBOOK.md](../docs/RUNBOOK.md)
 
 ## 1. PC 준비
 
@@ -175,6 +175,7 @@ verify_guide …), `metadata`(run_id, 케이스 등). 키·헤더는 들어가�
 | `blocked`, `blocked_resolved`, `declined`, `decline_rejected`, `same_cause_blocked` | 차단, LLM 거절, 거절 거부, 같은 원인 형제 차단 |
 | `only_blocked`, `budget_exhausted`, `loop_end`, `verify_loop_end`, `abort`, `run_aborted` | 루프·실행 종료 |
 | `error_list`, `handover`, `operator_checks`, `javax_api_inventory`, `report` | 마무리 |
+| `job_pod_pending`, `job_deleted_before_start` | Job 모드 웹 파드: 빌드 파드가 못 뜨는 이유, 시작 전 멈춤의 Job 삭제([09](09-deploy-and-ops.md)) |
 
 전체 목록: `grep -rhoE '"event": *"[a-z_]+"' sbmig | sort -u`.
 
@@ -214,7 +215,7 @@ verify_guide …), `metadata`(run_id, 케이스 등). 키·헤더는 들어가�
 
 1. `SBMIG-RESULT` 한 줄: `exit`, `build`, `unresolved`, `blocked`, `attn=`. `infra:` 면 코드가 아니라 환경(LLM / Maven / 저장소 / 잠금)부터.
 2. `out/<run id>/report.md` 의 **Handover** 와 **Notes**(루프 종료 문장 → 왜 멈췄나), Blocked 표(사유·제안), Fixes by case(케이스별 시도 수와 마지막 결과).
-3. `out/<run id>/errors.md` 에서 대상 항목의 `tries` 와 Tries 절(원인 / 해결 / 수정 / diff). 되돌린 시도도 여기 남는다.
+3. `out/<run id>/errors.md` 의 대상 항목 `tries` 와 Tries 절(원인 / 해결 / 수정 / diff). 되돌린 시도도 남는다.
 4. `out/<run id>/journal.jsonl`: 그 케이스의 `decision`(rationale), `attempt_scored`, `revert`, `stall` / `oscillation`, `library_hints.lines`, `declined` / `decline_rejected`.
 5. 마지막 빌드 로그: `out/<run id>/logs/` 의 `NNN-build-verify*.log` 중 번호가 가장 큰 것(첫 빌드 `build-verify`, 라운드 빌드 `build-verify-2` …): `[ERROR]` 줄, javac 의 `symbol:` / `location:` 두 줄.
 6. `project/` 의 `git log --oneline` 으로 시도 커밋과 되돌림을 짝짓고 `git show` 로 실제 변경 확인. 사라진 클래스는 as-is 스냅샷에서 찾는다
@@ -226,7 +227,7 @@ verify_guide …), `metadata`(run_id, 케이스 등). 키·헤더는 들어가�
    - **c 프로젝트 밖** — jakarta 빌드가 정말 없음, 컨테이너 전용 API, 공급업체 결정 → Handover 가 맞는 결말.
    - **d sbmig 버그** — 잘못된 분류·차단, 이관 누락(`hollow-reactor`), 서명 분리 등. 트리 안 jar 가 제공하는 패키지인데 `needs_owner` 로
      끝났다면 sbmig 버그다 — `out/<run id>/logs/bundled-jars.json` 의 `provides` 를 먼저 본다.
-9. 가능하면 로컬 검증: `project/` 의 해당 모듈에서 가설 수정을 넣고 `mvn -q -Dmaven.test.skip=true package`. 통하면 그 diff 가 "검증된 수정".
+9. 가능하면 로컬 검증: `project/` 의 그 모듈에 가설 수정을 넣고 `mvn -q -Dmaven.test.skip=true package`. 통하면 그 diff 가 "검증된 수정".
 
 ### 6.1 요약 카드 (15줄 안팎, 로그를 못 보는 쪽에 보내는 양식)
 
@@ -247,16 +248,16 @@ LLM 응답 핵심(마지막 2회): <무엇을 바꾸려 했나 / 거절이면 �
 sbmig 에 바라는 것: <사실 추가 / 규칙 / 한도 / 버그 수정> 한 줄
 ```
 
-같은 L2 가 여러 프로젝트 카드에 나오면 묶어서 보낸다. KB 등록(스크립트 버전·고정)은 sbmig 쪽에서 `sbmig kb …` 로 한다.
+같은 L2 가 여러 카드에 나오면 묶어 보낸다. KB 등록(스크립트 버전·고정)은 sbmig 쪽 `sbmig kb …` 로.
 
 ## 7. 회사 PC 제약 (Windows, 복사·붙여넣기 불가)
 
-- 로그 파일을 통째로 달라고 하지 말고 **특정 줄**을 묻는다: `SBMIG-RESULT`, `preflight:`, `cause=`, `KB 탐색`, `LLM-PROBE`, `REPO-PROBE`, 특정 `build N:`.
+- 로그 파일을 통째로 받지 말고 **특정 줄**을 묻는다: `SBMIG-RESULT`, `preflight:`, `cause=`, `KB 탐색`, `LLM-PROBE`, `REPO-PROBE`, 특정 `build N:`.
 - 콘솔은 cp949 — `SBMIG-RESULT` / `LLM-PROBE` 줄은 ASCII 만(한글은 `?`)이라 손으로 옮겨 적을 수 있다.
 - PowerShell: `Select-String -Path out\<run id>\sbmig.log -Pattern 'SBMIG-RESULT|cause=|KB 탐색' | Select-Object -Last 20`,
   `Get-Content out\<run id>\sbmig.log -Tail 40`, `Select-String -Path out\<run id>\journal.jsonl -Pattern '"event": "decision"'`,
   `Get-ChildItem out\<run id>\logs | Sort-Object Name | Select-Object -Last 3`. 출력은 `-Encoding utf8` 로 읽는다.
-- 멈춘 것 같으면: 수정 루프 감시견이 60초 조용하면 경고, 300초면 실행 폴더에 스레드 덤프를 스스로 남긴다(실행 폴더에 `dump-threads` 파일을 만들어도 덤프).
+- 멈춘 것 같으면: 수정 루프 감시견이 60초 조용하면 경고, 300초면 실행 폴더에 스레드 덤프를 남긴다(실행 폴더에 `dump-threads` 파일을 만들어도 덤프).
 
 ## 확인하는 법
 

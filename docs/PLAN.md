@@ -822,3 +822,21 @@ zipped) filled the developer's disk; briefs now require a size cap and a time ca
 | Tests | offline suite 5,639 passed, 62 deselected (this round and the two rounds above: admin page, plain settings file) | — | done |
 | Known gaps | a kill between moving an earlier verified ZIP aside and freezing a failed candidate leaves the verified ZIP on disk without a pointer in the state (older than this round); the refused second resume's sentence is in `sbmig.log` only, not in `remediation-job-status.json`; the web pod's local temp dir is node disk without an `ephemeral-storage` limit in the manifests | — | open |
 | Not seen yet | three pods on the company cluster / NFS | — | open |
+
+## Status — 2026-11-17, a build pod that does not start (v2.1z-aq)
+
+The first two uploads at once on the company cluster: one build pod ran, the other stayed in `ContainerCreating` for
+28 minutes — "이거 죽이는 방법좀 알려줘 이거 왜 둘이 동시에 넣으니까 하나는 생성만 계속 시도하지?" The pods had landed on
+different nodes and the second node could not mount the NFS volume (`FailedMount`, `mount.nfs: rpc.statd is not running
+but is required for remote locking`): a node setup problem, the infra team's to fix. Two gaps on our side showed: the
+stop button waited the whole 45-minute grace for a pod that had no Worker to read the stop file, and nothing on the
+page said why the pod did not start.
+
+| Item | Deliverable | Where | Status |
+|---|---|---|---|
+| Stop before the pod started | a stop while the Job is `Creating` / `Pending` deletes our Job at once (both labels, as before), ends STOPPED, frees the slot; journal `job_deleted_before_start`; a running pod keeps the grace; a running remediation resume is never deleted | `sbmig/web/runs.py`, `sbmig/web/k8s.py` | done |
+| Why the pod does not start | after `SBMIG_JOB_PENDING_NOTICE_S` (120) the web pod reads the container's waiting reason, the scheduling condition and the pod's events and shows a Korean sentence by reason family plus the raw line under the pod step; `status()` carries `job.pending`; journal `job_pod_pending`, one WARNING per reason; never fails the run or frees the slot | `sbmig/web/runs.py`, `sbmig/web/k8s.py`, `sbmig/web/static/index.html` | done |
+| Events permission | `list events` asked once at startup (denied = one info line, the page then points at `kubectl describe pod`); added to the service-account RBAC manifest | `sbmig/web/runs.py`, `deploy/k8s/45-web-rbac.yaml` | done |
+| Operator text | what `ContainerCreating` for minutes means, the Events lines and what to do (the `rpc.statd` case of this run included: start statd on the node or mount with `nfsvers=4.1` / `nolock`; sbmig's own locks are exclusive creates and need no NFS lock service; `nodeSelector` in the 81 template as a stopgap), how to end such a run | `deploy/README.md` §3, `deploy/ENV.md`, INTERFACES "v2.1z-aq", agent-doc 03 / 09 / 10 | done |
+| Tests | offline suite 5,672 passed, 62 deselected | — | done |
+| Not seen yet | the notice and the immediate stop on the company cluster; whether the kubeconfig account may list events | — | open |
