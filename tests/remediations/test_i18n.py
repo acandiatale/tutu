@@ -53,6 +53,34 @@ SAMPLES: list[tuple[str, str, list[str]]] = [
     ("root_unreadable", "cannot place an override entry safely: the root pom.xml is not readable", []),
     ("cannot_place", "cannot place an override entry safely: pom.xml: anchor line 12 is not </dependencies>",
      ["pom.xml"]),
+    ("module_pom_unreadable_override",
+     "cannot place an override entry safely: the pom.xml of module app-back is not readable", ["app-back"]),
+    ("place_not_project", "cannot place an override entry safely: app-back/pom.xml: the root element is not <project>",
+     ["app-back/pom.xml"]),
+    ("place_two_sections",
+     "cannot place an override entry safely: app-back/pom.xml: more than one <dependencyManagement> section",
+     ["app-back/pom.xml"]),
+    ("place_dependencies_count", ("cannot place an override entry safely: app-back/pom.xml: <dependencyManagement> does not "
+     "hold exactly one <dependencies> section"), ["app-back/pom.xml"]),
+    ("place_close_dependencies", ("cannot place an override entry safely: app-back/pom.xml:40: the closing </dependencies> "
+     "of <dependencyManagement> is not on its own line"), ["app-back/pom.xml 40행"]),
+    ("place_tag_line", "cannot place an override entry safely: app-back/pom.xml:12: <dependencies> does not start its own line",
+     ["app-back/pom.xml 12행", "dependencies"]),
+    ("place_close_project",
+     "cannot place an override entry safely: app-back/pom.xml:88: the closing </project> is not on its own line",
+     ["app-back/pom.xml 88행"]),
+    ("override_no_effect", ("the override entries in app-back/pom.xml, app-front/pom.xml did not change the resolved version "
+     f"of {GA} (1.0 stays): a dependency declared with a version, here or in a parent, wins over <dependencyManagement>; "
+     "the entries were removed again"), ["app-back/pom.xml, app-front/pom.xml", GA, "1.0"]),
+    ("override_no_effect_earlier", (f"the override entry for {GA} → 1.1 in app-back/pom.xml had no effect in an earlier round "
+     "of this run; not proposed again"), [GA, "1.1", "app-back/pom.xml"]),
+    ("info_outside_entry", (f"info: {GA} in module app-x still resolves at 1.0 — outside the modules the inserted entry in "
+     "app-back/pom.xml governs (p-1-2); left for the next round"), [GA, "app-x", "1.0", "app-back/pom.xml", "p-1-2"]),
+    ("ineffective_not_removed", ("the ineffective override entr(ies) p-1-2, p-1-3 were not removed and rebuilt: a stop was "
+     "requested or the time budget is used up"), ["p-1-2, p-1-3"]),
+    ("after_removing_ineffective", "after removing the ineffective override entr(ies) p-1-2", ["p-1-2"]),
+    ("rebuild_without_failed", "the candidate without p-1-2 could not be rebuilt: p-1-1: pom.xml:12: anchor changed",
+     ["p-1-2", "p-1-1"]),
     ("override_twice", f"cannot place an override entry safely: pom.xml: two override entries for {GA}:jar:jakarta",
      ["pom.xml", f"{GA}:jar:jakarta"]),
     ("override_exists", (f"cannot place an override entry safely: pom.xml: already has a <dependencyManagement> entry for "
@@ -377,7 +405,7 @@ def test_not_inheriting_root_and_variant_speak_to_a_project_owner():
     assert "모듈의 pom.xml에 조치된 버전을 지정해야 합니다." in out and "상속" not in out
     g = i18n.GROUPS["not_inheriting_root"]
     assert g.title == "모듈 pom에 직접 지정해야 하는 버전"
-    assert "도구는 최상위 pom.xml에만 버전을 지정할 수 있는데" in g.text and "dependencyManagement" in g.text
+    assert "모듈 pom에 버전 지정을 제안하는 설정이 꺼져 있어" in g.text and "dependencyManagement" in g.text
     assert "classifier는 같은 버전의 jar를 용도별로 구분하는 이름입니다(예: jakarta)." in i18n.GROUPS["variant"].text
 
 
@@ -413,3 +441,37 @@ def test_variant_override_sentences():
 def test_variant_label_skips_the_plain_jar():
     assert i18n.variant_label("type/classifier variant (jar/, jar/jakarta)") == "jakarta"
     assert i18n.variant_label("type/classifier variant (jar/jdk8, test-jar/tests)") == "jdk8, test-jar, tests"
+
+
+def test_module_pom_overrides_name_their_pom():
+    """Override sentences name the module pom they edit (v2.1z-an); the root keeps its old wording."""
+    pom = "app-back/pom.xml"
+    cases = {
+        f"adds a <dependencyManagement> entry {GA}:1.1 to {pom}: pins the transitive dependency brought by "
+        "org.example:a:1 → org.example:b:2 (1.0 → 1.1)": "override_transitive",
+        f"adds a <dependencyManagement> entry {GA}:1.1 to {pom}: overrides the version managed by org.example:bom:5 "
+        "(1.0 → 1.1)": "override_managed",
+        f"uses the existing <dependencyManagement> entry of {pom}": "uses_existing",
+        f"{pom} already has <dependencyManagement> entries for {GA} (top level, profile dev); a second entry is never "
+        "added": "root_entries_many",
+        f"{pom} already has a <dependencyManagement> entry for {GA} whose version (${{v}}) is not the resolved 1.0 as "
+        "plain text; a second entry is never added": "root_entry_mismatch",
+    }
+    for sentence, key in cases.items():
+        assert i18n.rule_keys(sentence) == [key], sentence
+        out = i18n.ko_text(sentence)
+        assert out.startswith(f"{pom}의 dependencyManagement에") and "루트" not in out, out
+        assert not DETACHED.search(out), out
+    assert i18n.ko_text("uses the existing <dependencyManagement> entry of the root pom.xml").startswith("루트 pom.xml의")
+
+
+def test_an_ineffective_override_entry():
+    one = (f"the override entry in app-back/pom.xml did not change the resolved version of {GA} (1.0 stays): a dependency "
+           "declared with a version, here or in a parent, wins over <dependencyManagement>; the entry was removed again")
+    key, text = i18n.detail_group(one)
+    assert key == "override_no_effect" and i18n.group_meta(key) == ("버전 지정을 넣어도 바뀌지 않는 버전", False)
+    assert "다시 뺐습니다" in text and "그 선언을 찾아 버전을 직접 올려 주세요." in text
+    assert i18n.ko_text(one).startswith(f"app-back/pom.xml에 {GA}의 버전 지정을 넣었지만 실제 버전이 바뀌지 않아(1.0 그대로)")
+    assert i18n.label(i18n.DECISION_KO, "ineffective") == "효과가 없어 다시 뺌"
+    msg = f"{GA} still resolves at 1.0 (p-1-1) | after removing the ineffective override entr(ies) p-1-2"
+    assert i18n.rule_keys(msg) == ["still_resolves", "after_removing_ineffective"]

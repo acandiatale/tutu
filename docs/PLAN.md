@@ -728,3 +728,23 @@ things did not. "루트 pom을 상속하지 않는 모듈이라는게 뭔지 모
 | Open, the user's decision | override proposals in the module's own pom for modules that do not inherit the project root (asked 2026-11-17 with a recommendation; the user asked which cases it covers). Until then such libraries stay under 직접 확인 with their paths | — | open |
 | Known gap | an existing root entry for a classifier changed by version text is verified at g:a level | `apply.verify_resolution` | open |
 | Not seen yet | the changed report on a real company run | — | open |
+
+## Status — 2026-11-17, override proposals in a module's own pom, chosen by the owners; settings.xml seeded from the ConfigMap (v2.1z-an)
+
+The user, after asking which cases a module-level entry covers and whether it still works when a parent brings a
+version: "일단 본인들이 선택하도록 만들자. 취약점 해결이니까 선택해서 박을지 아니면 검토 후에 진행할지는 본인들 선택으로
+할 수 있도록 해야할것 같아!" And, reading the deployment steps of v2.1z-al: "configmap 에 설정되어있으면 파드 배포할때
+자동으로 나가는게 아니야?" — the hand copy of settings.xml was an out-of-band step.
+
+| Item | Deliverable | Where | Status |
+|---|---|---|---|
+| Module-level proposals | a library that reaches a module transitively (or through a parent / BOM outside the project that is not in-house) and whose module does not inherit the project root: one `managed_override` proposal per (module pom, management key) inserting the entry into that module's own pom; modules that inherit the root keep the root entry; existing-entry, declared-version and placement checks per target pom. Switch `remediation.module_overrides` (default true; in the policy hash only when false) | `sbmig/remediations/planner.py`, `apply.py`, `graph.py`, `sbmig/core/config.py`, `config/default.yml` | done |
+| Always the owners' choice | every such proposal waits for approval whatever `require_approval` says; the run stays `AWAITING_APPROVAL` until they decide (at once or after their review); checked = applied, unchecked = reported as their choice with the pom, the entry and the path | unchanged rule, `report.py` | done |
+| An entry without effect | an inserted entry that does not change the resolved version (a dependency declared with a version wins) is removed again, the candidate is rebuilt once and the rest of the round is kept: `decision: "ineffective"`, one residual per library naming the poms, journal `override_ineffective`. A version TEXT change without effect, any other verification problem, a second failure or no time left keep `FAILED resolution_mismatch` | `apply.split_ineffective`, `graph.py` | done |
+| Approval screen | proposals grouped by library (+ type / classifier) with a group checkbox; each row says which pom is edited and how the library arrives; 전체 선택 / 전체 해제; the button reads 선택한 N건 적용; a notice that nothing is applied until then; the selection survives the status refresh; verified in a browser against a fake server (12 proposals, 390 px and wide, keyboard) | `sbmig/web/static/index.html` | done |
+| Report | 승인 대기 grouped by library, one line per pom (pom, entry, 들어온 경로); new section 선택하지 않아 적용하지 않은 변경; group 버전 지정을 넣어도 바뀌지 않는 버전; the top of the report tells the owner to choose on the page; Korean rules for every new sentence | `sbmig/remediations/report.py`, `i18n.py` | done |
+| settings.xml from the ConfigMap | ConfigMap `sbmig-config` is the source again: the web pod mounts it at `/etc/sbmig/settings.xml` and, at start, copies it to `/data/.m2/settings.xml` (`SBMIG_SETTINGS_SEED`, atomic replace, no write when equal, a WARNING when it cannot); Job pods read the file on the shared volume; the hand copy is gone from every document. `SBMIG_REMEDIATION__MODULE_OVERRIDES` line in `sbmig-env` (commented) and 81 | `sbmig/web/runs.py`, `contract.py`, `localjob.py`, `deploy/k8s/20`, `40`, `81`, `deploy/README.md`, `deploy/ENV.md` | done |
+| Docs | INTERFACES "v2.1z-an" and the seed in "v2.1z-al", agent-doc 09 / 11 / 12, RUNBOOK, PROGRESS, CLAUDE.md | `docs/`, `agent-doc/` | done |
+| Tests | offline suite 5,552 passed, 62 deselected (82 added: module-level proposals incl. approve-one-reject-other, existing entries, variants, a DTD pom, hash and plan pins; the drop-and-rebuild path; the report sections and Korean rules; the page; the settings seed and the manifest invariants) | — | done |
+| Known gaps | a dropped entry's residual merges into an existing `manual_review` residual of the same library and version, whose earlier detail then stands; an existing root entry for a classifier changed by version text is verified at g:a level | `graph._merge_residuals`, `apply.verify_resolution` | open |
+| Not seen yet | module-level proposals and the new approval screen on a real company run; the seeded settings file on the company cluster (NFS) | — | open |

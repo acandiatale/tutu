@@ -217,6 +217,8 @@
             border-radius: var(--radius-s); background: var(--blue-soft); font-size: 13px; }
   .selbar label { display: inline-flex; align-items: center; gap: 8px; font-weight: 600; cursor: pointer; }
   .selbar .count { color: var(--blue-deep); margin-left: auto; }
+  .selbar .btn { padding: 5px 12px; font-size: 12.5px; }
+  .remed .act .busynote { margin: 0 0 10px; }
   input[type=checkbox].pick { width: 18px; height: 18px; margin: 0; accent-color: var(--blue); flex: none; cursor: pointer; }
   .prop { border: 1px solid var(--line); border-radius: var(--radius-s); padding: 12px 14px; margin-top: 10px; background: #fff; min-width: 0; }
   .prop.on { border-color: var(--blue-mid); background: var(--blue-soft); }
@@ -233,6 +235,27 @@
   .prop .pnote { margin: 4px 0 0 28px; font-size: 12.5px; color: var(--ink); overflow-wrap: anywhere; white-space: pre-wrap; }
   .prop details { margin: 8px 0 0 28px; min-width: 0; }
   .prop details summary { cursor: pointer; color: var(--blue); font-size: 12.5px; font-weight: 600; width: fit-content; }
+  .prop:has(> .prophead input:focus-visible) { box-shadow: 0 0 0 1px var(--blue); }
+  /* 모듈 pom마다 하나씩 생기는 제안을 라이브러리별로 묶는다. 묶음 체크박스는 아래 항목 전체를 체크하거나 해제한다 */
+  .pgroup { border: 1px solid var(--line); border-radius: var(--radius-s); margin-top: 10px; background: var(--paper); padding: 12px 14px; min-width: 0; }
+  .pgroup:has(> .prophead input:focus-visible) { box-shadow: 0 0 0 1px var(--blue); }
+  .pgroup > .prophead { display: flex; gap: 10px; align-items: flex-start; cursor: pointer; }
+  .pgroup > .prophead input { margin-top: 2px; }
+  .pgroup .what { min-width: 0; flex: 1; }
+  .pgroup .ga { display: block; font-family: var(--mono); font-size: 13px; font-weight: 600; color: var(--ink); overflow-wrap: anywhere; }
+  .pgroup .ver { display: block; font-family: var(--mono); font-size: 12.5px; color: var(--muted); overflow-wrap: anywhere; }
+  .pgroup .ver b { color: var(--blue-deep); font-weight: 700; }
+  .pgroup .gcount { display: block; font-size: 12px; color: var(--blue-deep); margin-top: 2px; }
+  .pgroup > .tags { display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0 0 28px; }
+  .pgroup > .facts { margin: 6px 0 0 28px; font-size: 12.5px; color: var(--muted); overflow-wrap: anywhere; }
+  .pgroup > .pnote { margin: 4px 0 0 28px; font-size: 12.5px; color: var(--ink); overflow-wrap: anywhere; white-space: pre-wrap; }
+  .pgroup .gitems { margin: 4px 0 0 28px; min-width: 0; }
+  .pgroup .gitems .prop { padding: 8px 12px; margin-top: 6px; }
+  .prop .todo { display: block; font-size: 13px; font-weight: 600; color: var(--ink); overflow-wrap: anywhere; word-break: keep-all; }
+  .prop .facts .k { color: var(--ink); font-weight: 600; margin-right: 4px; }
+  .prop .facts code, .pgroup code { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; word-break: break-all; }
+  .prop .paths { margin: 2px 0 0; padding-left: 18px; }
+  .prop .paths li { margin-top: 2px; }
   pre.diff { margin: 8px 0 0; max-height: 320px; max-width: 100%; overflow: auto; background: var(--paper); border: 1px solid var(--line-soft);
              border-radius: var(--radius-s); padding: 10px 12px; font: 12px/1.5 var(--mono); white-space: pre; }
   pre.diff .add { color: var(--ok); background: var(--ok-tint); display: inline-block; min-width: 100%; }
@@ -1122,43 +1145,74 @@
   }
 
   // ---- 승인 대기: 제안마다 체크박스 하나. 체크하면 적용하고 체크하지 않으면 적용하지 않는다. 버튼 하나로 결정과 이어서 진행을 함께 보낸다
+  // 한 라이브러리에 제안이 여러 건(모듈 pom마다 하나)이면 묶음 하나로 보여 준다. 보내는 내용은 묶음과 상관없이 제안 단위다
   function approvalsView(runId, pending) {
     const key = pending.map((p) => p.id + ':' + (p.proposal_hash || '')).join('|');
     if (key !== rem.propKey) { rem.propKey = key; rem.sel = new Map(); }   // 제안이 바뀌면 선택을 초기화한다
     const wrap = el('div');
     wrap.appendChild(el('p', 'head', '적용할 변경을 고르세요'));
     wrap.appendChild(el('p', 'lead', '체크한 변경만 적용하고, 체크하지 않은 변경은 적용하지 않습니다. 적용하면 빌드와 IVAS 재검사까지 이어서 합니다.'));
+    // 바로 고르지 않고 검토한 뒤에 정해도 된다는 안내. 실행은 승인 대기 상태로 저장되어 있다
+    wrap.appendChild(el('p', 'busynote', '버튼을 누르기 전에는 아무것도 적용하지 않습니다. 이 화면을 닫고 검토한 뒤 다시 와서 골라도 됩니다. 그동안 실행은 승인 대기 상태로 기다립니다.'));
     const bar = el('div', 'selbar');
-    const allLab = el('label');
-    const all = el('input', 'pick'); all.type = 'checkbox'; all.id = 'remed-all';
-    allLab.append(all, document.createTextNode('전체 선택'));
+    const all = el('button', 'btn quiet', '전체 선택'); all.type = 'button'; all.id = 'remed-all';
+    const none = el('button', 'btn quiet', '전체 해제'); none.type = 'button'; none.id = 'remed-none';
     const count = el('span', 'count'); count.id = 'remed-selcount'; count.setAttribute('aria-live', 'polite');
-    bar.append(allLab, count);
+    bar.append(all, none, count);
     wrap.appendChild(bar);
     const list = el('div'); list.id = 'remed-props';
-    const boxes = [];
+    const boxes = [], groups = [];
     pending.forEach((p, i) => {
-      const card = proposalRow(p, i);
-      boxes.push(card.querySelector('input'));
-      list.appendChild(card);
+      const k = groupKey(p);
+      let g = groups.find((x) => x.key === k);
+      if (!g) { g = { key: k, items: [] }; groups.push(g); }
+      g.items.push({ p, i });
+    });
+    groups.forEach((g, gi) => {
+      if (g.items.length === 1) {
+        const card = proposalRow(g.items[0].p, g.items[0].i, null);
+        boxes[g.items[0].i] = card.querySelector('input');
+        list.appendChild(card);
+        return;
+      }
+      const box = groupBox(g, gi);
+      g.cb = box.querySelector('input'); g.count = box.querySelector('.gcount');
+      const items = el('div', 'gitems');
+      for (const { p, i } of g.items) {
+        const card = proposalRow(p, i, g.common);
+        boxes[i] = card.querySelector('input');
+        items.appendChild(card);
+      }
+      box.appendChild(items);
+      list.appendChild(box);
     });
     wrap.appendChild(list);
     const err = el('p', 'err', rem.err); err.setAttribute('role', 'alert'); wrap.appendChild(err);
     const row = el('div', 'actions');
-    const apply = el('button', 'btn', '선택한 항목 적용'); apply.type = 'button'; apply.id = 'remed-apply';
-    row.appendChild(apply);
+    const apply = el('button', 'btn'); apply.type = 'button'; apply.id = 'remed-apply';
+    row.append(apply, el('span', 'note', '체크하지 않은 항목은 적용하지 않고 진행합니다.'));
     wrap.appendChild(row);
     const confirmSlot = el('div'); wrap.appendChild(confirmSlot);
     const chosen = () => pending.filter((p) => rem.sel.get(p.id)).length;
     const sync = () => {
       const n = chosen(), m = pending.length;
       count.textContent = `${n}건 선택 / 전체 ${m}건`;
-      all.checked = n === m && m > 0; all.indeterminate = n > 0 && n < m;
+      apply.textContent = `선택한 ${n}건 적용`;
       boxes.forEach((b, i) => { b.checked = !!rem.sel.get(pending[i].id); b.closest('.prop').classList.toggle('on', b.checked); });
+      for (const g of groups) {
+        if (!g.cb) continue;
+        const k = g.items.filter(({ p }) => rem.sel.get(p.id)).length, t = g.items.length;
+        g.cb.checked = k === t; g.cb.indeterminate = k > 0 && k < t;
+        g.count.textContent = `${t}건 중 ${k}건 선택`;
+      }
     };
     boxes.forEach((b, i) => b.addEventListener('change', () => { rem.sel.set(pending[i].id, b.checked); sync(); }));
-    all.addEventListener('change', () => { for (const p of pending) rem.sel.set(p.id, all.checked); sync(); });
-    const lock = (on) => { for (const b of [all, ...boxes, apply]) b.disabled = on; };
+    for (const g of groups) {
+      if (g.cb) g.cb.addEventListener('change', () => { for (const { p } of g.items) rem.sel.set(p.id, g.cb.checked); sync(); });
+    }
+    all.addEventListener('click', () => { for (const p of pending) rem.sel.set(p.id, true); sync(); });
+    none.addEventListener('click', () => { for (const p of pending) rem.sel.set(p.id, false); sync(); });
+    const lock = (on) => { for (const b of [all, none, ...boxes, ...groups.map((g) => g.cb).filter(Boolean), apply]) b.disabled = on; };
     apply.addEventListener('click', () => {
       if (rem.busy || confirmSlot.firstChild) return;
       const n = chosen(), m = pending.length - n;
@@ -1181,29 +1235,156 @@
     sync();
     return wrap;
   }
-  function proposalRow(p, i) {
+  // 묶는 기준은 라이브러리와 형식, classifier다. classifier가 다른 항목은 dependencyManagement에서 다른 항목이기 때문이다
+  function groupKey(p) {
+    const o = editOverride(p);
+    return [p.ga || p.id || '', o.type || '', o.classifier || ''].join('|');
+  }
+  function editOverride(p) {
+    const e = Array.isArray(p.edits) && p.edits.length ? p.edits[0] : null;
+    return e && e.override && typeof e.override === 'object' ? e.override : {};
+  }
+  // 묶음 머리: 라이브러리, 버전, 묶음 체크박스. 모든 제안에 같은 위험 표시와 근거는 여기에 한 번만 쓴다
+  function groupBox(g, gi) {
+    const ps = g.items.map((x) => x.p), first = ps[0];
+    const box = el('div', 'pgroup'); box.setAttribute('role', 'group');
+    const id = 'remed-group-' + gi;
+    const head = el('label', 'prophead'); head.htmlFor = id;
+    const cb = el('input', 'pick'); cb.type = 'checkbox'; cb.id = id;
+    const what = el('span', 'what');
+    const ga = el('span', 'ga', first.ga || first.id || ''); ga.id = id + '-name';
+    box.setAttribute('aria-labelledby', ga.id);
+    what.appendChild(ga);
+    const uniq = (f) => [...new Set(ps.map(f).map((v) => String(v || '?')))];
+    const froms = uniq((p) => p.from_version), tos = uniq((p) => p.to_version);
+    const ver = el('span', 'ver', froms.join(', ') + ' → ');
+    ver.appendChild(el('b', null, tos.join(', ')));
+    what.appendChild(ver);
+    what.appendChild(el('span', 'gcount'));
+    head.append(cb, what);
+    box.appendChild(head);
+    const risks = (p) => (Array.isArray(p.risks) ? p.risks : []);
+    const common = { risks: risks(first).filter((r) => ps.every((p) => risks(p).includes(r))), mixedVer: froms.length > 1 || tos.length > 1 };
+    common.evidence = !!first.evidence && ps.every((p) => p.evidence === first.evidence);
+    const note = (p) => p.note_ko || p.note || '';
+    common.note = !!note(first) && ps.every((p) => note(p) === note(first));
+    g.common = common;
+    const tags = el('div', 'tags');
+    const vw = variantWords(editOverride(first).type, editOverride(first).classifier);
+    if (vw) tags.appendChild(el('span', 'tag', vw));
+    for (const r of common.risks) tags.appendChild(el('span', 'tag risk', RISK_KO[r] || r));
+    if (tags.childElementCount) box.appendChild(tags);
+    if (common.evidence) box.appendChild(el('p', 'facts', '버전 확인: ' + evidenceText(first.evidence)));
+    if (common.note) box.appendChild(el('p', 'pnote', note(first)));
+    return box;
+  }
+  // 제안 한 건. 묶음 안이면(common이 있으면) 라이브러리 대신 수정할 pom을 제목으로 쓰고 묶음 머리에 쓴 내용은 뺀다
+  function proposalRow(p, i, common) {
     const card = el('div', 'prop');
     const id = 'remed-pick-' + i;
     const head = el('label', 'prophead'); head.htmlFor = id;
     const cb = el('input', 'pick'); cb.type = 'checkbox'; cb.id = id; cb.value = String(p.id || '');
     const what = el('span', 'what');
-    what.appendChild(el('span', 'ga', p.ga || p.id || ''));
-    const ver = el('span', 'ver', (p.from_version || '?') + ' → ');
-    ver.appendChild(el('b', null, p.to_version || '?'));
-    what.appendChild(ver);
+    const fresh = Array.isArray(p.sources);                  // sources가 없는 이전 상태 파일은 예전 모양 그대로 보여 준다
+    const todo = fresh ? todoText(p) : '';
+    if (common && todo) what.appendChild(el('span', 'todo', todo));
+    else what.appendChild(el('span', 'ga', p.ga || p.id || ''));
+    if (!common || common.mixedVer || !todo) {
+      const ver = el('span', 'ver', (p.from_version || '?') + ' → ');
+      ver.appendChild(el('b', null, p.to_version || '?'));
+      what.appendChild(ver);
+    }
     head.append(cb, what);
     card.appendChild(head);
+    if (todo && !common) {
+      const f = el('p', 'facts'); f.appendChild(el('span', 'k', '할 일')); f.appendChild(document.createTextNode(todo));
+      card.appendChild(f);
+    }
+    const path = fresh ? pathFacts(p, !Object.keys(editOverride(p)).length) : null;
+    if (path) { path.id = id + '-path'; cb.setAttribute('aria-describedby', path.id); card.appendChild(path); }
     const tags = el('div', 'tags');
-    if (p.kind) tags.appendChild(el('span', 'tag', KIND_KO[p.kind] || p.kind));
-    for (const r of Array.isArray(p.risks) ? p.risks : []) tags.appendChild(el('span', 'tag risk', RISK_KO[r] || r));
+    if (p.kind && !todo) tags.appendChild(el('span', 'tag', KIND_KO[p.kind] || p.kind));
+    const o = editOverride(p), vw = variantWords(o.type, o.classifier);
+    if (vw && !common) tags.appendChild(el('span', 'tag', vw));
+    for (const r of Array.isArray(p.risks) ? p.risks : []) {
+      if (!common || !common.risks.includes(r)) tags.appendChild(el('span', 'tag risk', RISK_KO[r] || r));
+    }
     if (tags.childElementCount) card.appendChild(tags);
-    if (p.evidence) card.appendChild(el('p', 'facts', '버전 확인: ' + evidenceText(p.evidence)));
-    if (p.note_ko || p.note) card.appendChild(el('p', 'pnote', p.note_ko || p.note));
+    if (p.evidence && !(common && common.evidence)) card.appendChild(el('p', 'facts', '버전 확인: ' + evidenceText(p.evidence)));
+    if ((p.note_ko || p.note) && !(common && common.note)) card.appendChild(el('p', 'pnote', p.note_ko || p.note));
     const det = el('details');
     det.appendChild(el('summary', null, '변경 내용 보기'));
     det.appendChild(diffPre(p.diff || ''));
     card.appendChild(det);
     return card;
+  }
+  // 무엇을 바꾸는지 한 줄로 쓴다. 값 뒤에는 앞말에 따라 모양이 바뀌는 조사를 붙이지 않는다
+  function todoText(p) {
+    const ed = Array.isArray(p.edits) ? p.edits.filter((e) => e && e.pom) : [];
+    if (!ed.length) return '';
+    const e = ed[0], where = e.pom === 'pom.xml' ? '최상위 pom.xml' : String(e.pom);
+    const more = ed.length > 1 ? ` 외 ${ed.length - 1}곳` : '';
+    if (e.op === 'insert' || p.kind === 'managed_override') return `${where}에 버전 지정 추가${more}`;
+    return `${where}${e.line ? ` ${e.line}행` : ''}${more}: ${KIND_KO[p.kind] || p.kind || '버전 표기 수정'}`;
+  }
+  // 형식과 classifier를 말로 쓴다. 일반 jar는 빈 문자열이다
+  function variantWords(type, cls) {
+    const w = [];
+    if (type && type !== 'jar') w.push('형식 ' + type);
+    if (cls) w.push('classifier ' + cls);
+    return w.join(' ');
+  }
+  // 경로 문장으로 쓸 수 없을 때 보여 주는 출처 이름. sbmig/remediations/i18n.py의 ORIGIN_KO와 같다
+  const ORIGIN_KO = { transitive: '간접 의존성', direct_literal: '직접 의존성 (pom에 버전 표기)', direct_property: '직접 의존성 (property로 버전 지정)',
+                      own_management: '프로젝트의 dependencyManagement', parent_managed: '부모 pom에서 버전 지정', bom_managed: 'BOM에서 버전 지정' };
+  // 모듈 하나에 라이브러리가 들어온 경로를 한 줄로 만든다. report.md의 들어온 경로와 같은 문장이다
+  function sourceText(s, withVariant) {
+    const parts = [], how = String(s.how || '');
+    const via = (Array.isArray(s.via) ? s.via : []).filter(Boolean).map(String);
+    const d = s.declared && typeof s.declared === 'object' ? s.declared : null;
+    const where = d && d.pom ? String(d.pom) + (d.line ? ` ${d.line}행` : '') : '';
+    if (via.length) {
+      parts.push(via.join(' > ') + ' 경로로 가져옴');
+      if (where) parts.push('선언 위치 ' + where);
+    } else if (where) {
+      if (how === 'direct_literal' || how === 'direct_property') parts.push(where + '에 직접 선언');
+      else if (how === 'own_management') parts.push(where + '의 dependencyManagement에서 버전 지정');
+      else parts.push(where + '에 선언');
+    }
+    if (d && d.property) parts.push('버전 property ' + d.property);
+    if (s.manager) parts.push(String(s.manager) + '에서 버전 지정');
+    if (withVariant) {
+      const vs = [...new Set(String(s.variant || '').split(',').map((x) => x.trim()).filter(Boolean)
+                  .map((x) => { const [t, c] = x.split('/'); return variantWords(t, c) || '일반 jar'; }))];
+      if (vs.length === 1 && vs[0] !== '일반 jar') parts.push(vs[0]);
+      else if (vs.length > 1) parts.push(`사용 형태 ${vs.length}가지(${vs.join(', ')})`);
+    }
+    if (!parts.length && how) parts.push(ORIGIN_KO[how] || how);
+    return parts.join(', ');
+  }
+  // 들어온 경로. 모듈이 모두 같은 경로면 한 줄, 다르면 모듈마다 한 줄씩 쓴다
+  function pathFacts(p, withVariant) {
+    const groups = new Map();
+    for (const s of p.sources) {
+      if (!s || typeof s !== 'object') continue;
+      const text = sourceText(s, withVariant);
+      if (!text) continue;
+      const mods = groups.get(text) || [];
+      if (s.module && !mods.includes(String(s.module))) mods.push(String(s.module));
+      groups.set(text, mods);
+    }
+    if (!groups.size) return null;
+    const box = el('div', 'facts');
+    box.appendChild(el('span', 'k', '들어온 경로'));
+    if (groups.size === 1) {
+      const [[text, mods]] = [...groups];
+      box.appendChild(document.createTextNode(text + (mods.length > 1 ? ` (모듈 ${mods.join(', ')})` : '')));
+      return box;
+    }
+    const ul = el('ul', 'paths');
+    for (const [text, mods] of groups) ul.appendChild(el('li', null, (mods.length ? `${mods.join(', ')} 모듈: ` : '') + text));
+    box.appendChild(ul);
+    return box;
   }
   function evidenceText(ev) {
     const s = String(ev);

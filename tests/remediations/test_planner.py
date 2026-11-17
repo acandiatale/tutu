@@ -621,8 +621,14 @@ def test_module_not_inheriting_from_the_root_is_residual(tmp_path):
     src = FakeSource({"example:t": ["1.1"]})
     (p,) = _plan(tmp_path, [_trans(modules=["core"])], source=src).proposals
     assert p.kind == K_MANAGED_OVERRIDE and p.edits[0].pom == "pom.xml" and p.edits[0].anchor == "</project>"
-    plan = _plan(tmp_path, [_trans(modules=["core", "other"])], source=src)
+    off = _cfg()
+    off.remediation.module_overrides = False
+    plan = _plan(tmp_path, [_trans(modules=["core", "other"])], cfg=off, source=src)
     assert not plan.proposals and "other do not inherit from the root pom.xml" in plan.residuals[0].detail
+    # default: the root entry for core and an entry in other/pom.xml
+    plan = _plan(tmp_path, [_trans(modules=["core", "other"])], source=src)
+    assert [(p.edits[0].pom, p.modules) for p in plan.proposals] == [("other/pom.xml", ["other"]),
+                                                                     ("pom.xml", ["core"])]
 
 
 def test_declared_version_in_a_module_is_residual(tmp_path):

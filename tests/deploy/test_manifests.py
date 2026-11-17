@@ -74,7 +74,8 @@ def test_every_manifest_overrides_the_machine_paths_and_mounts_no_artifacts_yml(
     assert {k: lit.get(k) for k in PATHS} == PATHS
     mounts = {m["mountPath"]: m for m in c["volumeMounts"]}
     assert not [p for p in mounts if p.endswith("artifacts.yml")]        # baked, not mounted
-    assert not [p for p in mounts if p.startswith("/etc/sbmig")]
+    # only the web pod mounts the ConfigMap's settings.xml, as the seed it copies at start (v2.1z-al)
+    assert [p for p in mounts if p.startswith("/etc/sbmig")] == (["/etc/sbmig/settings.xml"] if path == WEB else [])
 
 
 def test_web_pod_also_pins_kb_dir_and_neutralizes_a_pc_record_dir():
@@ -317,26 +318,46 @@ def test_every_mount_has_its_volume_and_every_volume_is_mounted(path: Path):
 
 def test_maven_settings_is_a_file_at_data_m2_in_every_pod():
     """v2.1z-al (the user: "Settings도 저기로 옮겨가야하지않아!?"): `/data/.m2` holds `settings.xml` and `repository/`, as
-    `~/.m2` on a PC. 40 / 81 read a real file the operator places on the data volume (no ConfigMap mount nested inside the
-    NFS volume); 80 has no data PVC and mounts ConfigMap `sbmig-config` there (inside its emptyDir, on the node's disk)."""
-    for path in (WEB, WEB_JOB):
+    `~/.m2` on a PC. ConfigMap `sbmig-config` is the source ("configmap 에 설정되어있으면 파드 배포할때 자동으로 나가는게
+    아니야?"): the web pod (40) mounts it read-only at `/etc/sbmig/settings.xml` and copies it to `/data/.m2/settings.xml` at
+    start (`SBMIG_SETTINGS_SEED`); 81 reads the copy on the shared volume (no ConfigMap mount nested inside the NFS volume,
+    no seed); 80 has no data PVC and mounts the ConfigMap there (inside its emptyDir, on the node's disk)."""
+    for path in (WEB, WEB_JOB, BUILD_JOB):
         assert _literals(path)["SBMIG_BUILD__SETTINGS_FILE"] == SETTINGS, path.name
-        spec = _spec(path)
-        assert not [m for m in spec["containers"][0]["volumeMounts"] if m["mountPath"].endswith("settings.xml")]
-        assert not [v for v in spec["volumes"] if (v.get("configMap") or {}).get("name") == "sbmig-config"], path.name
-        # the artifacts.yml alternative stays documented: a commented volume line and a commented mount line
-        text = path.read_text(encoding="utf-8")
-        assert "# - name: config" in text and "#   configMap: {name: sbmig-config}" in text
-        assert "# - {name: config, mountPath: /app/config/artifacts.yml, subPath: artifacts.yml" in text
-    assert _literals(BUILD_JOB)["SBMIG_BUILD__SETTINGS_FILE"] == SETTINGS
-    job = _spec(BUILD_JOB)
-    mount = next(m for m in job["containers"][0]["volumeMounts"] if m["mountPath"] == SETTINGS)
+    web = _spec(WEB)
+    assert _literals(WEB)[contract.SETTINGS_SEED_ENV] == "/etc/sbmig/settings.xml"
+    mount = next(m for m in web["containers"][0]["volumeMounts"] if m["mountPath"] == "/etc/sbmig/settings.xml")
     assert mount["subPath"] == "settings.xml" and mount.get("readOnly") is True
-    volume = next(v for v in job["volumes"] if v["name"] == mount["name"])
+    assert next(v for v in web["volumes"] if v["name"] == mount["name"])["configMap"]["name"] == "sbmig-config"
+    job = _spec(WEB_JOB)
+    assert contract.SETTINGS_SEED_ENV not in {e["name"] for e in _container(WEB_JOB)["env"]}
+    assert not [m for m in job["containers"][0]["volumeMounts"] if m["mountPath"].endswith("settings.xml")]
+    assert not [v for v in job["volumes"] if (v.get("configMap") or {}).get("name") == "sbmig-config"]
+    # the artifacts.yml alternative stays documented: 40 has the volume, only the mount line is commented; 81 both
+    for path in (WEB, WEB_JOB):
+        assert "# - {name: config, mountPath: /app/config/artifacts.yml, subPath: artifacts.yml" in path.read_text(encoding="utf-8")
+    assert "# - name: config" in WEB_JOB.read_text(encoding="utf-8")
+    assert "# - name: config" not in WEB.read_text(encoding="utf-8")
+    assert contract.SETTINGS_SEED_ENV not in {e["name"] for e in _container(BUILD_JOB)["env"]}
+    build = _spec(BUILD_JOB)
+    mount = next(m for m in build["containers"][0]["volumeMounts"] if m["mountPath"] == SETTINGS)
+    assert mount["subPath"] == "settings.xml" and mount.get("readOnly") is True
+    volume = next(v for v in build["volumes"] if v["name"] == mount["name"])
     assert volume["configMap"]["name"] == "sbmig-config"
     assert SETTINGS.rsplit("/", 1)[0] == LOCAL_REPO.rsplit("/", 1)[0] == "/data/.m2"
     cm = next(d for d in _docs(CONFIGMAP) if d["metadata"]["name"] == "sbmig-config")
-    assert "${env.NEXUS_PASSWORD}" in cm["data"]["settings.xml"]       # the template points at the Secret, never a value
+    assert "${env.NEXUS_PASSWORD}" in cm["data"]["settings.xml"]       # the file points at the Secret, never a value
+
+
+def test_the_settings_seed_is_the_web_pods_own_variable():
+    """`SBMIG_SETTINGS_SEED` is set in Main only: it is no config override, so it is not pinned and the Worker never
+    misses it."""
+    cm = _configmap(False)
+    main_env, worker_env = _main_env(cm), _worker_env(cm)
+    assert contract.SETTINGS_SEED_ENV in main_env and contract.SETTINGS_SEED_ENV not in worker_env
+    main, worker = _pins(main_env), _pins(worker_env)
+    assert contract.SETTINGS_SEED_ENV not in main
+    assert contract.compare_env_pins(main, worker) == NO_DIFF
 
 
 def test_the_maven_local_repository_lives_at_data_m2_in_every_pod():

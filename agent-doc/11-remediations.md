@@ -50,11 +50,11 @@ LLM 을 부르지 않는다. 이관 그래프(`sbmig/graph/`)와는 노드 하�
 
 - 바뀌는 것은 **기존 pom.xml 안의 버전 글자뿐**이다. 소스·구조·다른 파일은 그대로, 결과 ZIP 의 파일 집합 = 원본의 파일 집합.
   변경 하나(`TextEdit`, `op="replace"`) = pom 한 줄에서 버전 글자 `old` → `new`(태그·`${…}` 없음). 인코딩·BOM·CRLF·마지막 줄바꿈도 그대로 둔다.
-- **예외는 하나**: `managed_override` 제안은 루트 `pom.xml` 의 최상위 `<dependencyManagement><dependencies>` 안에 `<dependency>` 항목 하나
+- **예외는 하나**: `managed_override` 제안은 대상 pom(루트 `pom.xml`, 루트를 상속하지 않는 모듈은 그 모듈 pom)의 최상위 `<dependencyManagement><dependencies>` 안에 `<dependency>` 항목 하나
   (groupId / artifactId / version, 변종이면 type·classifier 도)를 넣는다. 그 절이 없으면 그 항목 하나를 담은 `<dependencyManagement>` 절 전체를 최상위 `<dependencies>`
   → `<build>` → `</project>` 중 처음 있는 줄 앞에 넣는다. `TextEdit` 의 `op="insert"`, `old=""`, `line`(이 줄 앞에), `anchor`(그 줄의 지금 글자,
-  적용할 때 다시 확인), `override`(그 좌표). 넣는 글자는 `render_override` 가 만드는 모양과 정확히 같아야 한다
-  (들여쓰기는 형제 항목에서 복사, 줄 끝은 파일 것). 이 제안은 **설정과 무관하게 늘 승인을 기다린다**.
+  적용할 때 다시 확인), `override`(그 좌표). 넣는 글자는 `render_override` 가 만드는 모양과 정확히 같아야 한다.
+  이 제안은 **설정과 무관하게 늘 승인을 기다린다**.
 - "계획한 것만 바뀌었나"(`verify_text_only`): 나머지 파일은 바이트가 같고, 받은 pom 은 원본에 계획한 replace·insert 를(같은 줄 앞 insert 는
   제안 ID 순) 적용한 바이트와 같고, XML 구조는 계획한 override 요소만큼만 는다.
 - 원본 ZIP·파일 목록(manifest)·작업 트리 `accepted/` 는 따로. 변경은 후보 사본에 먼저 하고, 빌드되고 해석 결과가 계획과 같을 때만 `accepted/` 로
@@ -120,10 +120,10 @@ deny·후보 없음·적용 안 된 제안) 없음, 최종 검사에 조치 대�
 부모·BOM 버전 변경은 그 부모·BOM 자체가 `remediation.policy.pins` 에 있을 때만 제안된다(`parent_version` / `bom_version`, override 아님).
 
 **관리 버전 override**: `transitive` · `parent_managed` · `bom_managed` 항목은 (관리자 pin 이 없으면) 직접 의존성과 같은 규칙(1절의 근거,
-같은 메이저 우선, deny·`remediation.policy.allow_major`)으로 버전을 고르고, 루트 pom 에 항목 하나를 넣는 `managed_override` 제안을
-g:a·변종마다 하나씩 낸다. 그 g:a 의 관리 항목이 루트 pom 에 이미 있으면 두 번째는 넣지 않는다: 최상위 하나이고 버전 글자(또는 프로젝트 속성)가 해석된 버전과
+같은 메이저 우선, deny·`remediation.policy.allow_major`)으로 버전을 고르고, 대상 pom 에 항목 하나를 넣는 `managed_override` 제안을
+(pom, g:a·변종)마다 하나씩 낸다(`remediation.module_overrides` false 면 모듈은 잔여). 그 관리 항목이 그 pom 에 이미 있으면 두 번째는 넣지 않는다: 최상위 하나이고 버전 글자(또는 프로젝트 속성)가 해석된 버전과
 같으면 그 글자를 바꾸고(`own_management_version` / `property_version`), 아니면 잔여(6절 "자주 보는 경우").
-제안의 `note`(무엇을 고정하는지, "부모·BOM 이 따라잡으면 override 를 지울 것", "늘 승인 필요")는 `report.md` 제안 표 아래에 나온다.
+제안의 `note` 는 `report.md` 제안 아래에 나온다.
 
 자동으로 하지 않고 제안도 하지 않는 것(잔여·수동 검토): `plugin`, `vendored`, `unmapped`, `remediation.policy.deny` 에 걸린 것,
 `remediation.policy.allow_major` 가 false 일 때의 메이저.
@@ -131,16 +131,16 @@ g:a·변종마다 하나씩 낸다. 그 g:a 의 관리 항목이 루트 pom 에 
 
 승인 요청은 **제안 해시 · 원본 트리 해시 · 정책 해시 · diff** 가 저장된 제안과 모두 같고, 제안이 지금의 `accepted/` 와 정책에도 맞고(낡지 않음),
 아직 `pending` 일 때만 받아들인다. 하나라도 다르면 요청 전체가 409 `approval_mismatch`(+ `fields`), 아무것도 쓰지 않는다(전부 아니면 전무).
-정책 해시에는 `remediation.policy` 전부 + `require_approval` + `always_approve` + `failed_candidate` + `ignore_actions` + 사내 g:a(+ 프레임워크 패턴, 12)가 들어간다. 하나만 바꿔도 열린 제안은 모두
-무효가 되어 계획을 다시 만든다(`ivas_summary_check` 는 안 들어간다). 제안 해시는 edit 전부(`op` · `anchor` · `override` 포함)를 덮는다. 거절한 (g:a, 버전)은 그 작업의 다음 라운드에서 다시 제안하지 않는다(잔여 `rejected_proposals`). `by` 는 비워도 된다. 화면의 승인은 체크박스 목록과
-버튼 하나 `선택한 항목 적용`: 체크 = approved, 안 함 = rejected, 그다음 자동 재개(`"resume": true`). 그 값이 없으면 승인은 재개가 아니다.
+정책 해시에는 `remediation.policy` 전부 + `require_approval` + `always_approve` + `failed_candidate` + `ignore_actions` + 사내 g:a(+ 프레임워크 패턴, 12) + false 일 때의 `module_overrides` 가 들어간다. 하나만 바꿔도 열린 제안은 모두
+무효가 되어 계획을 다시 만든다(`ivas_summary_check` 는 안 들어간다). 제안 해시는 edit 전부(`op` · `anchor` · `override` 포함)를 덮는다. 거절한 (g:a, 버전)은 그 작업에서 다시 제안하지 않는다(잔여 `rejected_proposals`, 다음 실행은 다시 제안). `by` 는 비워도 된다. 화면의 승인은 체크박스 목록과
+적용 버튼 `선택한 N건 적용`: 체크 = approved, 안 함 = rejected, 그다음 자동 재개(`"resume": true`). 그 값이 없으면 승인은 재개가 아니다.
 
 ## 4. 상태와 운영자가 할 일
 
 | 상태 | 뜻 | 할 일 |
 |---|---|---|
 | `QUEUED` / `RUNNING` | 대기 / 실행 중(단독 업로드는 한 번에 한 건) | 기다린다. 멈추려면 stop(다음 경계에서) |
-| `AWAITING_APPROVAL` | 승인 대기 제안이 있다 | 화면의 체크박스 + `선택한 항목 적용`, 또는 `GET …/proposals` → `POST …/approvals`(3절) |
+| `AWAITING_APPROVAL` | 승인 대기 제안이 있다 | 화면의 체크박스 + 적용 버튼, 또는 `GET …/proposals` → `POST …/approvals`(3절) |
 | `AWAITING_CONFIRMATION` | 업로드를 보냈는데 결과를 모른다 | IVAS 화면에서 그 프로젝트 이름(`<앞머리>-<작업 ID>-<라벨>`)의 분석이 있는지 본다. 없으면 resume `{"confirm": "reupload"}`, 있으면 `{"confirm": "receipt", "label", "project_id", "analysis_id"}` |
 | `STOPPED` | 중지 요청을 경계에서 처리했다. 원격 IVAS 분석은 취소되지 않았다 | resume(영수증이 있으면 다시 올리지 않고 이어서 조회) |
 | `INTERRUPTED` | 서버가 실행 중에 내려갔다 | 상태를 보고 resume — 자동 재개 없음 |

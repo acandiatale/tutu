@@ -4,7 +4,7 @@
 planner도 ``render_diff``와 ``locate_override``를 호출한다.
 - 버전 교체(replace)는 줄 단위 문자열 치환이다. ``edit.line`` 줄에 ``edit.old``가 정확히 한 번 있어야 하고,
   그 밖의 바이트(인코딩, BOM, CRLF, 마지막 줄바꿈)는 그대로 둔다. XML을 다시 쓰지 않는다
-- 유일한 예외는 ``K_MANAGED_OVERRIDE`` 제안의 삽입(insert)이다. 루트 ``pom.xml``의 정해진 줄 앞에
+- 유일한 예외는 ``K_MANAGED_OVERRIDE`` 제안의 삽입(insert)이다. 루트 ``pom.xml``이나 모듈 pom의 정해진 줄 앞에
   ``render_override``가 만든 ``<dependency>`` 항목 하나, 또는 그 항목을 담은 절 전체만 넣는다. 넣기 전에
   기준 줄, 형태, 같은 관리 키(g:a, 형식, classifier)의 기존 항목을 확인한다
 - 한 pom의 변경은 모두 원래 줄 번호 기준으로 한 번에 적용한다
@@ -12,7 +12,7 @@ planner도 ``render_diff``와 ``locate_override``를 호출한다.
 - 경로는 프로젝트 폴더 안이어야 하고 ``old`` / ``new``는 버전 문자열 형태여야 한다
 
 Apply + verify for the remediation feature: approved version-text replacements on a candidate copy plus the one approved
-exception, the managed-version override entry inserted into the root pom (fixed shape, validated before writing), the
+exception, the managed-version override entry inserted into the root pom or a module pom (fixed shape, validated), the
 "only the planned text changed" check and the "resolution matches the plan" check. All edits of one pom are applied in
 one pass against the original line numbers; inserts before the same line go in proposal-id order (two whole sections at
 one place become one section holding the entries in that order). An override entry carries `<type>` (not jar) and
@@ -59,7 +59,7 @@ _SHARED_KINDS = (K_PROPERTY_VERSION, K_PARENT_VERSION, K_BOM_VERSION)
 # override 항목의 groupId / artifactId로 인정하는 형태. XML 특수문자, 공백, 따옴표, ``$``가 없어야 한다
 _COORD_TEXT = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.\-]*")
 _WS = re.compile(r"[ \t]*")
-ROOT_POM = "pom.xml"                     # override 항목은 프로젝트 루트(reactor 부모) pom에만 넣는다
+ROOT_POM = "pom.xml"                     # 프로젝트 루트(reactor 부모) pom. override 항목은 모듈 pom에도 넣을 수 있다
 _OVERRIDE_KEYS = ("groupId", "artifactId", "version")
 # 해석된 의존성이 jar가 아니거나 classifier가 있을 때만 넣는 키다. Maven의 관리 키(g:a:type:classifier)를 맞추기 위해서다
 _OVERRIDE_OPTIONAL = ("type", "classifier")
@@ -155,16 +155,13 @@ def is_coordinate_text(text: str) -> bool:
     return bool(text) and _COORD_TEXT.fullmatch(text) is not None
 
 
-def _check_edit_shape(e: TextEdit, *, any_pom: bool = False) -> None:
-    """변경 하나의 형태를 확인한다. ``any_pom``은 ``locate_override``가 모듈 pom의 항목을 미리 만들어 볼 때만 켠다.
-    적용 경로는 이 라운드에서 루트 pom의 삽입만 받는다."""
+def _check_edit_shape(e: TextEdit) -> None:
+    """변경 하나의 형태를 확인한다. 경로가 프로젝트 안의 pom인지는 파일을 읽을 때 ``_safe_path``가 확인한다."""
     if not isinstance(e.line, int) or e.line < 1:
         raise EditError(f"{e.pom}:{e.line}: invalid line {e.line!r}")
     op = e.op or E_REPLACE
     if op == E_INSERT:
         _override_parts(e)
-        if e.pom != ROOT_POM and not any_pom:
-            raise EditError(f"{e.pom}: an override entry goes into the project root {ROOT_POM} only")
         if e.old:
             raise EditError(f"{e.pom}:{e.line}: an insert edit has no old text")
         if not e.anchor or e.anchor != e.anchor.strip():
@@ -375,7 +372,7 @@ def _check_inserts(text: str, lines: list[str], inserts: list[TextEdit], name: s
             raise EditError(f"{name}: already has a <{_DM}> entry for {shown}; a second entry is never added")
 
 
-def _apply_to_text(text: str, edits: list[TextEdit], name: str, *, any_pom: bool = False) -> str:
+def _apply_to_text(text: str, edits: list[TextEdit], name: str) -> str:
     """한 파일에 변경들을 원래 줄 번호 기준으로 한 번에 적용한 새 문자열을 반환한다.
     교체는 각 줄에 ``old``가 정확히 한 번 있어야 하고, 삽입은 ``edits`` 순서(호출하는 쪽이 제안 ID 순으로
     넘긴다)대로 기준 줄 앞에 넣는다. 같은 줄 앞에 절 전체를 넣는 삽입이 여럿이면 절 하나에 그 순서로 모은다."""
@@ -383,7 +380,7 @@ def _apply_to_text(text: str, edits: list[TextEdit], name: str, *, any_pom: bool
     by_line: dict[int, TextEdit] = {}
     inserts: dict[int, list[TextEdit]] = {}
     for e in edits:
-        _check_edit_shape(e, any_pom=any_pom)
+        _check_edit_shape(e)
         if (e.op or E_REPLACE) == E_INSERT:
             inserts.setdefault(e.line, []).append(e)
             continue
@@ -533,8 +530,8 @@ def locate_override(project: Path, group_id: str, artifact_id: str, version: str
     Build the insert edit for one override entry against the pom's current text; `EditError` when it cannot be placed
     safely (closing tag not on its own line, odd section shape, an existing entry for the same management key
     g:a:type:classifier). `type_` / `classifier` are the resolved dependency's (a plain jar gives today's entry byte
-    for byte). `pom` is the target pom's project-relative path; the planner passes the root pom only, and the apply
-    path still accepts inserts into the root pom only (a module-level override is a later increment)."""
+    for byte). `pom` is the target pom's project-relative path: the root pom, or the own pom of a module that does
+    not inherit from the root (checked by `_safe_path`: inside the project, no `..`, no symbolic link)."""
     t, c = _variant_parts(type_, classifier)
     path = _safe_path(Path(project), pom)
     doc = _PomText(path.read_bytes(), pom)
@@ -589,9 +586,8 @@ def locate_override(project: Path, group_id: str, artifact_id: str, version: str
     edit = TextEdit(pom=pom, line=line, old="", op=E_INSERT, anchor=lines[line - 1].strip(), override=override,
                     new=render_override(group_id, artifact_id, version, indent, eol, with_section, unit,
                                         type_=t or "jar", classifier=c))
-    any_pom = pom != ROOT_POM
     # 기존 항목, 형태, 기준 줄 검사를 지금 미리 실행한다
-    after = doc.encode(_apply_to_text(doc.text, [edit], pom, any_pom=any_pom))
+    after = doc.encode(_apply_to_text(doc.text, [edit], pom))
     problems = _structure_problems(pom, doc.raw, after, _overrides([edit]))
     if problems:
         raise EditError(problems[0])
@@ -891,6 +887,10 @@ def _proposal_variant(p: Proposal) -> str | None:
     return None
 
 
+def _insert_pom(p: Proposal) -> str:
+    return next((e.pom for e in p.edits or [] if (e.op or E_REPLACE) == E_INSERT), ROOT_POM)
+
+
 def _stale_packaged(p: Proposal, lib: PackagedLib, variant: str | None) -> str:
     """패키징된 jar가 이 제안의 from 버전 그대로 남은 것인지 보고, 그렇다면 설명 문자열을, 아니면 빈 문자열을 반환한다."""
     artifact = p.ga.split(":", 1)[1] if ":" in p.ga else p.ga
@@ -974,8 +974,14 @@ def verify_resolution(proposals: list[Proposal], before: ResolvedModel, after: R
                     got = ", ".join(sorted(now)) or "nothing"
                     problems.append(f"{p.ga} in module {mdir} resolves at {got}, planned {p.to_version} ({p.id})")
             elif _has(now, p.from_version):
-                problems.append(f"info: {p.ga} in module {mdir} still resolves at {p.from_version} — not governed by "
-                                f"the edited version text ({p.id}); left for the next round")
+                if variant is not None:
+                    # 넣은 override 항목은 그 pom이 닿는 모듈만 다루므로 버전 문자열과 다른 문장으로 남긴다
+                    problems.append(f"info: {p.ga} in module {mdir} still resolves at {p.from_version} — outside the "
+                                    f"modules the inserted entry in {_insert_pom(p)} governs ({p.id}); left for the "
+                                    "next round")
+                else:
+                    problems.append(f"info: {p.ga} in module {mdir} still resolves at {p.from_version} — not governed "
+                                    f"by the edited version text ({p.id}); left for the next round")
     bmap, amap = maps_for(None)
     direct = _direct_gas(before)
     shared = [p for p in proposals if p.kind in _SHARED_KINDS]
@@ -1011,3 +1017,52 @@ def verify_resolution(proposals: list[Proposal], before: ResolvedModel, after: R
             else:
                 problems.append(f"{lib.artifact} still packages {lib.entry} ({what}, {p.id})")
     return problems
+
+
+_LINE_ID = re.compile(r"\((?:[^()]*, )?(p-\d+-\d+)\)$")
+
+
+def split_ineffective(proposals: list[Proposal], lines: list[str]) -> tuple[list[Proposal], list[str]]:
+    """검증 문제 중 효과가 없던 override 삽입 항목의 것을 가려 (그 제안 목록, 나머지 문제)를 반환한다.
+    효과가 없다는 것은 넣은 항목이 다루는 모듈이 여전히 from 버전으로 해석된다는 뜻이다.
+
+    Attribute the problem lines of `verify_resolution` (`info:` lines ignored) to proposals by their `(p-…)` id. A
+    proposal is ineffective when it is an inserted override entry (kind `managed_override`, an insert edit) with at
+    least one "still resolves at <from>" / "in module m resolves at <…from…>, planned <to>" line, and every line
+    naming it is one of those or a stale packaged jar of its `from` version. Everything else is returned as the
+    remaining problems: a version-text proposal that did not move the resolution, an incomplete resolution, an
+    uncovered change, a missing module, an entry that moved the version somewhere else than planned."""
+    by_id = {p.id: p for p in proposals}
+    per: dict[str, list[str]] = {}
+    other: list[str] = []
+    for ln in lines:
+        if ln.startswith("info:"):
+            continue
+        m = _LINE_ID.search(ln)
+        if m is None or m.group(1) not in by_id:
+            other.append(ln)
+            continue
+        per.setdefault(m.group(1), []).append(ln)
+    out: list[Proposal] = []
+    for pid, mine in per.items():
+        p = by_id[pid]
+        if _proposal_variant(p) is None or not all(_left_at_from(p, ln) is not None for ln in mine) \
+                or not any(_left_at_from(p, ln) for ln in mine):
+            other.extend(mine)
+            continue
+        out.append(p)
+    out.sort(key=_order)
+    return out, other
+
+
+def _left_at_from(p: Proposal, line: str) -> bool | None:
+    """문제 한 줄이 이 제안의 from 버전이 그대로 남았다는 내용이면 True(해석 결과), False(패키징된 jar)를, 아니면 None을 반환한다."""
+    if line == f"{p.ga} still resolves at {p.from_version} ({p.id})":
+        return True
+    m = re.fullmatch(rf"{re.escape(p.ga)} in module .+ resolves at (?P<got>.+), planned {re.escape(p.to_version)} "
+                     rf"\({re.escape(p.id)}\)", line)
+    if m is not None:
+        return True if any(same_version(v, p.from_version) for v in m.group("got").split(", ")) else None
+    if " still packages " in line and line.endswith(f", {p.id})"):
+        return False
+    return None

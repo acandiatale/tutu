@@ -136,6 +136,9 @@ def policy_hash(cfg: Any) -> str:
     patterns = sorted(getattr(keys, "patterns", ()) or ())
     if patterns:
         data["inhouse_framework"] = patterns
+    # 모듈 pom 제안을 끈 설정만 해시에 넣는다. 기본 설정은 이 값이 생기기 전의 해시를 그대로 유지한다
+    if not bool(getattr(rem, "module_overrides", True)):
+        data["module_overrides"] = False
     return sha256_text(canonical_json(data))
 
 
@@ -334,13 +337,19 @@ def _variant_sources(item: InventoryItem, variant: str | None) -> list[ModuleSou
     return hit or list(item.sources or [])
 
 
-def _residual(item: InventoryItem, reason: str, detail: str, *, variant: str | None = None) -> Residual:
+def _residual(item: InventoryItem, reason: str, detail: str, *, variant: str | None = None,
+              modules: list[str] | None = None) -> Residual:
     # 사내 아티팩트 g:a는 inhouse_artifact 항목에만 남긴다. 다른 사유의 항목은 프로젝트가 고칠 몫이다
+    # modules를 주면 그 모듈(한 pom이 다루는 모듈)만의 항목이다
+    mods = sorted(set(item.modules or [])) if modules is None else sorted(set(modules))
+    srcs = _variant_sources(item, variant)
+    if modules is not None:
+        srcs = [s for s in srcs if s.module in set(mods)] or srcs
     return Residual(ga=item.ga, version=item.version, origin=item.origin, reason=reason, detail=detail,
-                    finding_ids=list(item.finding_ids), modules=sorted(set(item.modules or [])),
+                    finding_ids=list(item.finding_ids), modules=mods,
                     via=list(item.via or []),
                     inhouse=sorted(set(item.inhouse or [])) if reason == R_INHOUSE_ARTIFACT else [],
-                    sources=_variant_sources(item, variant), reported_version=item.reported_version or "")
+                    sources=srcs, reported_version=item.reported_version or "")
 
 
 def _change_residual(c: _Change, reason: str, detail: str) -> Residual:
@@ -472,14 +481,15 @@ def _choose_target(item: InventoryItem, policy: Any, source: Any, current: str) 
 
 
 def _change_for(project: Path, item: InventoryItem, policy: Any, source: Any, poms: _Poms, *,
-                parents: frozenset[str] = frozenset()) -> list[_Change | Residual]:
-    """인벤토리 항목 하나를 변경과 조치하지 못한 항목의 목록으로 바꾼다. override는 형식 / classifier마다 하나다."""
-    got = _change_for_one(project, item, policy, source, poms, parents=parents)
+                parents: frozenset[str] = frozenset(), module_overrides: bool = True) -> list[_Change | Residual]:
+    """인벤토리 항목 하나를 변경과 조치하지 못한 항목의 목록으로 바꾼다. override는 대상 pom과 형식 / classifier마다 하나다."""
+    got = _change_for_one(project, item, policy, source, poms, parents=parents, module_overrides=module_overrides)
     return got if isinstance(got, list) else [got]
 
 
 def _change_for_one(project: Path, item: InventoryItem, policy: Any, source: Any, poms: _Poms, *,
-                    parents: frozenset[str] = frozenset()) -> _Change | Residual | list[_Change | Residual]:
+                    parents: frozenset[str] = frozenset(),
+                    module_overrides: bool = True) -> _Change | Residual | list[_Change | Residual]:
     if item.origin in MANUAL_ORIGINS:
         return _residual(item, R_MANUAL_REVIEW, item.reason or f"{item.origin}: not changed automatically")
     if _denied(item.ga, policy.deny):
@@ -498,9 +508,10 @@ def _change_for_one(project: Path, item: InventoryItem, policy: Any, source: Any
         return inhouse
     if item.origin in (O_PARENT_MANAGED, O_BOM_MANAGED):
         got = _managed_change(project, item, policy)
-        return got if got is not None else _override_change(project, item, policy, source, poms)
+        return got if got is not None else _override_change(project, item, policy, source, poms,
+                                                            module_overrides=module_overrides)
     if item.origin == O_TRANSITIVE:
-        return _override_change(project, item, policy, source, poms)
+        return _override_change(project, item, policy, source, poms, module_overrides=module_overrides)
     if item.origin not in (O_DIRECT_LITERAL, O_DIRECT_PROPERTY, O_OWN_MANAGEMENT):
         return _residual(item, R_MANUAL_REVIEW, f"unknown origin {item.origin!r}")
     loc = item.location
@@ -617,18 +628,22 @@ def _same_key(pp: Any, pom: Any, dep: Any, ga: str, variant: str) -> bool:
     return (t, c) == _split_variant(variant)
 
 
-def _root_entries(pp: Any, ga: str, variant: str = "") -> list[tuple[Any, str]]:
-    """루트 pom의 ``<dependencyManagement>``에서 이 관리 키(g:a, 형식, classifier)의 항목 중 import가 아닌 것을 찾는다.
+def _pom_entries(pp: Any, pf: Any, ga: str, variant: str = "") -> list[tuple[Any, str]]:
+    """pom의 ``<dependencyManagement>``에서 이 관리 키(g:a, 형식, classifier)의 항목 중 import가 아닌 것을 찾는다.
     각 항목의 위치는 최상위면 빈 문자열, 프로필이면 "profile <id>"다.
     일반 jar의 항목은 classifier가 붙은 의존성을 관리하지 않으므로 그 classifier의 항목으로 세지 않는다."""
-    root = pp.poms.get(".")
     out = []
-    for dep, where in _inv._deps(root, management=True):
+    for dep, where in _inv._deps(pf, management=True):
         if _inv._text(_inv._kid(dep, "scope")) == "import":
             continue
-        if _same_key(pp, root, dep, ga, variant):
+        if _same_key(pp, pf, dep, ga, variant):
             out.append((dep, where))
     return out
+
+
+def _root_entries(pp: Any, ga: str, variant: str = "") -> list[tuple[Any, str]]:
+    """루트 pom에서 이 관리 키의 기존 ``<dependencyManagement>`` 항목을 찾는다."""
+    return _pom_entries(pp, pp.poms.get("."), ga, variant)
 
 
 def _declared_with_version(pp: Any, mdir: str, ga: str, variant: str) -> str:
@@ -647,48 +662,75 @@ def _declared_with_version(pp: Any, mdir: str, ga: str, variant: str) -> str:
     return ""
 
 
+def _pom_words(pp: Any, pf: Any) -> str:
+    # 루트 pom은 예전 문장 그대로 "the root pom.xml"로 쓰고, 모듈 pom은 프로젝트 기준 경로로 쓴다
+    return "the root pom.xml" if pf is pp.poms.get(".") else pf.rel
+
+
+def _key_modules(item: InventoryItem, variant: str, scope: list[str]) -> list[str]:
+    """이 관리 키로 해석된 모듈 중 ``scope`` 안의 모듈을 반환한다."""
+    mods = _variant_modules(item, variant) if item.variants else sorted(set(item.modules))
+    if not item.modules:
+        return mods                    # 모듈을 모르는 항목(예전 인벤토리)은 범위를 좁히지 않는다
+    return sorted(set(mods) & set(scope))
+
+
+def _scoped_sources(item: InventoryItem, variant: str | None, modules: list[str]) -> list[ModuleSource]:
+    srcs = _variant_sources(item, variant if item.variants else None)
+    hit = [s for s in srcs if s.module in set(modules)]
+    return hit or srcs
+
+
 def _existing_entry_change(project: Path, item: InventoryItem, policy: Any, source: Any, pp: Any,
-                           entries: list[tuple[Any, str]], variant: str = "") -> _Change | Residual:
-    """루트 pom이 이미 이 관리 키를 관리할 때 항목을 하나 더 넣지 않고 기존 항목으로 처리한다.
-    최상위 항목의 버전 값이 해석된 버전과 같으면 그 값을 바꾸는 제안을, 아니면 조치하지 못한 항목을 반환한다."""
+                           entries: list[tuple[Any, str]], variant: str = "", *, pf: Any = None,
+                           scope: list[str] | None = None) -> _Change | Residual:
+    """pom이 이미 이 관리 키를 관리할 때 항목을 하나 더 넣지 않고 기존 항목으로 처리한다.
+    최상위 항목의 버전 값이 해석된 버전과 같으면 그 값을 바꾸는 제안을, 아니면 조치하지 못한 항목을 반환한다.
+
+    `pf` is the pom holding the entries (default: the root pom); `scope` the modules that pom's entry governs
+    (default: every module of the item)."""
     root = pp.poms.get(".")
+    pf = pf if pf is not None else root
+    where_pom = _pom_words(pp, pf)
+    scope = sorted(set(scope if scope is not None else item.modules))
     dep, where = entries[0]
     if where or len(entries) > 1:
         places = ", ".join(w or "top level" for _d, w in entries)
-        return _residual(item, R_MANUAL_REVIEW, f"the root pom.xml already has <dependencyManagement> entries for "
-                                                f"{item.ga} ({places}); a second entry is never added", variant=variant)
+        return _residual(item, R_MANUAL_REVIEW, f"{where_pom} already has <dependencyManagement> entries for "
+                                                f"{item.ga} ({places}); a second entry is never added", variant=variant,
+                         modules=scope)
     vel = _inv._kid(dep, "version")
-    ref = pp.resolve_version(root, _inv._text(vel))
+    ref = pp.resolve_version(pf, _inv._text(vel))
     loc = None
     if ref.kind == "literal":
-        loc = _inv.location_of(root, vel, "management")
+        loc = _inv.location_of(pf, vel, "management")
     elif ref.kind == "property" and ref.pom is not None:
         loc = _inv.location_of(ref.pom, ref.el, "property", ref.prop)
     if loc is None or not same_version(ref.value, item.version) or not _apply.is_version_text(loc.text):
         return _residual(item, R_MANUAL_REVIEW,
-                         f"the root pom.xml already has a <dependencyManagement> entry for {item.ga} whose version "
+                         f"{where_pom} already has a <dependencyManagement> entry for {item.ga} whose version "
                          f"({_inv._text(vel) or 'none'}) is not the resolved {item.version} as plain text; "
-                         "a second entry is never added", variant=variant)
+                         "a second entry is never added", variant=variant, modules=scope)
     stale = _stale(project, loc)
     if stale:
-        return _residual(item, R_STALE_LOCATION, stale, variant=variant)
+        return _residual(item, R_STALE_LOCATION, stale, variant=variant, modules=scope)
     target, evidence, reason, notes = _choose_target(item, policy, source, item.version)
     if not target:
-        return _residual(item, reason, "; ".join(notes), variant=variant)
+        return _residual(item, reason, "; ".join(notes), variant=variant, modules=scope)
     kind = K_PROPERTY_VERSION if loc.property else K_OWN_MANAGEMENT_VERSION
     if loc.property:
         notes.append(f"property ${{{loc.property}}} may govern other artifacts")
-    notes.append("uses the existing <dependencyManagement> entry of the root pom.xml")
+    notes.append(f"uses the existing <dependencyManagement> entry of {where_pom}")
     risks = [RISK_MAJOR] if _major(target) != _major(item.version) else []
-    modules = _variant_modules(item, variant) if item.variants else sorted(set(item.modules))
+    modules = _key_modules(item, variant, scope)
     return _Change(ga=item.ga, from_version=item.version, to_version=target, kind=kind,
                    edit=TextEdit(pom=loc.pom, line=loc.line, old=loc.text, new=target), evidence=evidence,
                    finding_ids=list(item.finding_ids), risks=risks, notes=notes, origin=item.origin,
-                   modules=modules, sources=_variant_sources(item, variant))
+                   modules=modules, sources=_scoped_sources(item, variant, modules))
 
 
-def _override_note(item: InventoryItem, target: str) -> str:
-    what = f"adds a <dependencyManagement> entry {item.ga}:{target} to the root pom.xml"
+def _override_note(item: InventoryItem, target: str, where: str = "the root pom.xml") -> str:
+    what = f"adds a <dependencyManagement> entry {item.ga}:{target} to {where}"
     if item.origin == O_TRANSITIVE:
         chain = " → ".join(item.via) or "another dependency"
         return f"{what}: pins the transitive dependency brought by {chain} ({item.version} → {target})"
@@ -712,16 +754,51 @@ def _override_keys(item: InventoryItem) -> list[str] | None:
     return ([""] if plain else []) + variants
 
 
-def _override_change(project: Path, item: InventoryItem, policy: Any, source: Any, poms: _Poms
-                     ) -> list[_Change | Residual]:
-    """간접 의존성과 부모 / BOM 관리 버전을 루트 pom의 override 항목으로 고친다.
-    해석된 형식 / classifier마다 항목 하나와 변경 하나를 만들고, 막히는 조건이 있으면 조치하지 못한 항목을 반환한다.
-    확인 순서: 형식 / classifier를 아는지 -> 루트 pom을 읽을 수 있는지 -> 기존 관리 항목 -> 모듈이 루트 pom을
-    상속하는지 -> 모듈에 직접 선언된 버전 -> 새 버전 고르기 -> 넣을 줄 정하기.
+@dataclass
+class _Target:
+    """override 항목을 넣을 pom 하나와 그 항목이 닿는 모듈들이다."""
+    pf: Any
+    modules: list[str]
 
-    One override change per management key (`_override_keys`): the plain jar keeps today's entry text and today's
-    single-change result; a classifier / non-jar variant gets its own entry with `<type>` / `<classifier>`, its own
-    proposal and its own approval. The existing-entry and declared-version checks compare the full key."""
+
+def _module_targets(pp: Any, root: Any, item: InventoryItem
+                    ) -> tuple[list[str], list[_Target], list[str]]:
+    """항목의 모듈을 (루트 pom을 상속하는 모듈, 루트 밖 모듈의 대상 pom 목록, pom을 읽지 못한 모듈)로 나눈다.
+    루트 밖 모듈이 같은 항목의 다른 루트 밖 모듈을 프로젝트 안에서 상속하면 가장 가까운 그 모듈의 pom에 함께 묶는다.
+
+    A module outside the root's reach whose in-project chain holds another outside module of the item is governed
+    by the nearest such module's pom (an entry there is inherited); every other outside module gets its own pom."""
+    inside, unreadable = [], []
+    outside: dict[str, Any] = {}
+    for mdir in sorted(set(item.modules or [])):
+        pf = pp.poms.get(mdir)
+        if pf is None or not pf.ok:
+            unreadable.append(mdir)
+        elif root in pp.chain(pf):
+            inside.append(mdir)
+        else:
+            outside[mdir] = pf
+    owner_of = {id(pf): mdir for mdir, pf in outside.items()}
+    groups: dict[str, list[str]] = {}
+    for mdir, pf in outside.items():
+        owner = next((owner_of[id(p)] for p in pp.chain(pf)[1:] if id(p) in owner_of), mdir)
+        groups.setdefault(owner, []).append(mdir)
+    targets = [_Target(outside[o], sorted(ms)) for o, ms in sorted(groups.items())]
+    return inside, targets, unreadable
+
+
+def _override_change(project: Path, item: InventoryItem, policy: Any, source: Any, poms: _Poms, *,
+                     module_overrides: bool = True) -> list[_Change | Residual]:
+    """간접 의존성과 부모 / BOM 관리 버전을 override 항목으로 고친다.
+    루트 pom을 상속하는 모듈은 루트 pom에, 상속하지 않는 모듈은 그 모듈의 pom에 넣고(``module_overrides``),
+    대상 pom과 형식 / classifier마다 변경 하나를 만든다. 막히는 조건은 그 pom의 모듈만 조치하지 못한 항목으로 남긴다.
+
+    Per target pom (the root pom for the modules inheriting from it; with `module_overrides`, the module's own pom
+    for every module outside the root's reach, see `_module_targets`) and per management key (`_override_keys`):
+    an existing entry for the key in that pom → its version text; a version declared on the dependency in the
+    module's in-project chain → residual; else one inserted entry. The target version is chosen once per item.
+    With `module_overrides` false, a module outside the root's reach leaves today's residual "module(s) … do not
+    inherit from the root pom.xml" (the plan is the one made before module poms were a target)."""
     kind_word = "transitive dependency" if item.origin == O_TRANSITIVE else "managed version"
     keys = _override_keys(item)
     if keys is None:
@@ -733,41 +810,56 @@ def _override_change(project: Path, item: InventoryItem, policy: Any, source: An
     if root is None or not root.ok:
         return [_residual(item, R_MANUAL_REVIEW, "cannot place an override entry safely: the root pom.xml is not readable")]
     out: list[_Change | Residual] = []
-    inserts: list[str] = []
+    good: list[str] = []
     for key in keys:
         t, c = _split_variant(key)
         if key and not (_apply.is_coordinate_text(t) and (not c or _apply.is_coordinate_text(c))):
             out.append(_residual(item, R_MANUAL_REVIEW,
                                  f"{kind_word} {item.ga} resolves as {key}, which cannot be written as plain override "
                                  "coordinates", variant=key))
-            continue
-        entries = _root_entries(pp, item.ga, key)
-        if entries:
-            out.append(_existing_entry_change(project, item, policy, source, pp, entries, key))
         else:
-            inserts.append(key)
+            good.append(key)
+    inside, module_targets, unreadable = _module_targets(pp, root, item)
+    all_modules = sorted(set(item.modules or []))
+    if not module_overrides or not (module_targets or unreadable):
+        # 루트 pom 하나만 대상이다. 루트 밖 모듈이 있으면 예전처럼 기존 항목만 쓰고 나머지는 남긴다
+        targets = [_Target(root, all_modules)]
+        outside = sorted(set(unreadable) | {m for tg in module_targets for m in tg.modules})
+    else:
+        targets = ([_Target(root, inside)] if inside else []) + module_targets
+        outside = []
+        for mdir in unreadable:
+            out.append(_residual(item, R_MANUAL_REVIEW, f"cannot place an override entry safely: the pom.xml of module "
+                                                        f"{mdir} is not readable", modules=[mdir]))
+    inserts: list[tuple[_Target, str]] = []
+    for tg in targets:
+        for key in good:
+            scope = _key_modules(item, key, tg.modules) if item.variants else list(tg.modules)
+            if not scope and item.modules:
+                continue
+            entries = _pom_entries(pp, tg.pf, item.ga, key)
+            if entries:
+                out.append(_existing_entry_change(project, item, policy, source, pp, entries, key, pf=tg.pf,
+                                                  scope=tg.modules))
+            else:
+                inserts.append((tg, key))
     if not inserts:
         return out
-    outside = []
-    for mdir in item.modules:
-        pf = pp.poms.get(mdir)
-        if pf is None or not pf.ok or root not in pp.chain(pf):
-            outside.append(mdir)
     if outside:
         return out + [_residual(item, R_MANUAL_REVIEW,
-                                f"module(s) {', '.join(sorted(outside))} do not inherit from the root pom.xml: an "
+                                f"module(s) {', '.join(outside)} do not inherit from the root pom.xml: an "
                                 "override entry there would not reach them")]
-    ready: list[str] = []
-    for key in inserts:
-        mods = _variant_modules(item, key) if item.variants else list(item.modules)
+    ready: list[tuple[_Target, str]] = []
+    for tg, key in inserts:
+        mods = _key_modules(item, key, tg.modules) if item.variants else list(tg.modules)
         declared = [hit for mdir in mods if (hit := _declared_with_version(pp, mdir, item.ga, key))]
         if declared:
             out.append(_residual(item, R_MANUAL_REVIEW,
                                  f"{item.ga} is declared with a version in {', '.join(sorted(set(declared)))}: a declared "
                                  "version wins over <dependencyManagement>, so an override entry would not change it",
-                                 variant=key))
+                                 variant=key, modules=tg.modules))
         else:
-            ready.append(key)
+            ready.append((tg, key))
     if not ready:
         return out
     current = item.version
@@ -778,19 +870,21 @@ def _override_change(project: Path, item: InventoryItem, policy: Any, source: An
         return out + [_residual(item, reason, "; ".join(notes))]
     g, a = _ga_parts(item.ga)
     risks = [RISK_MANAGED_OVERRIDE] + ([RISK_MAJOR] if _major(target) != _major(current) else [])
-    for key in ready:
+    for tg, key in ready:
         t, c = _split_variant(key)
         try:
-            edit = _apply.locate_override(project, g, a, target, t, c)
+            edit = _apply.locate_override(project, g, a, target, t, c, pom=tg.pf.rel)
         except (_apply.EditError, OSError) as e:
-            out.append(_residual(item, R_MANUAL_REVIEW, f"cannot place an override entry safely: {e}", variant=key))
+            out.append(_residual(item, R_MANUAL_REVIEW, f"cannot place an override entry safely: {e}", variant=key,
+                                 modules=tg.modules))
             continue
         extra = [VARIANT_NOTE.format(what=_variant_words(key))] if key else []
-        modules = _variant_modules(item, key) if item.variants else sorted(set(item.modules))
+        modules = _key_modules(item, key, tg.modules)
         out.append(_Change(ga=item.ga, from_version=current, to_version=target, kind=K_MANAGED_OVERRIDE, edit=edit,
                            evidence=evidence, finding_ids=list(item.finding_ids), risks=list(risks), origin=item.origin,
-                           notes=[_override_note(item, target), *extra, *notes, OVERRIDE_WARNING, OVERRIDE_APPROVAL],
-                           modules=modules, variant=key, sources=_variant_sources(item, key if item.variants else None)))
+                           notes=[_override_note(item, target, _pom_words(pp, tg.pf)), *extra, *notes,
+                                  OVERRIDE_WARNING, OVERRIDE_APPROVAL],
+                           modules=modules, variant=key, sources=_scoped_sources(item, key, modules)))
     return out
 
 
@@ -816,7 +910,7 @@ def _merge(group: list[_Change], project: Path | None = None) -> _Change:
     if insert:
         g, a = _ga_parts(first.ga)
         t, c = _split_variant(first.variant)
-        edit = _apply.locate_override(Path(project or "."), g, a, best.to_version, t, c)
+        edit = _apply.locate_override(Path(project or "."), g, a, best.to_version, t, c, pom=first.edit.pom)
     else:
         edit = TextEdit(pom=first.edit.pom, line=first.edit.line, old=first.edit.old, new=best.to_version)
     # 버전을 정하는 모듈은 모두 합치고, 그중 하나라도 정하는 모듈은 also에서 뺀다
@@ -837,15 +931,29 @@ def _merge(group: list[_Change], project: Path | None = None) -> _Change:
                    sources=[sources[k] for k in sorted(sources)], reported_version=first.reported_version)
 
 
-def _was_rejected(c: _Change, to_version: str, rejected: set[tuple[str, ...]]) -> bool:
-    """이전 결정에서 거절된 (g:a, 목표 버전[, 형식/classifier])인지 확인한다. 버전은 대소문자를 구분하지 않는다.
-    형식 / classifier가 없는 2-튜플은 일반 jar와 다른 모든 변경에 해당한다."""
+def _governed_sources(change: _Change) -> list[ModuleSource]:
+    """제안이 다루는 모듈의 출처만 반환한다. 다루는 모듈이 비어 있으면(부모 / BOM 제안) 모두 반환한다."""
+    if not change.modules:
+        return list(change.sources)
+    governed = set(change.modules)
+    return [s for s in change.sources if s.module in governed]
+
+
+def _was_rejected(c: _Change, to_version: str, rejected: set[tuple[str, ...]]) -> str:
+    """이전 결정에서 거절됐거나 효과가 없어 뺀 변경인지 확인하고 "rejected" / "ineffective" / ""를 반환한다.
+    버전은 대소문자를 구분하지 않는다. 형식 / classifier가 없는 2-튜플은 일반 jar와 다른 모든 변경에 해당하고,
+    pom까지 담은 4-튜플은 그 pom에 넣는 override 항목에만 해당한다."""
     for r in rejected:
         if len(r) < 2 or not same_ga(r[0], c.ga) or not same_version(r[1], to_version):
             continue
-        if (r[2] if len(r) > 2 else "") == c.variant:
-            return True
-    return False
+        if (r[2] if len(r) > 2 else "") != c.variant:
+            continue
+        if len(r) > 3:
+            if c.edit.op == E_INSERT and c.edit.pom == r[3]:
+                return "ineffective"
+            continue
+        return "rejected"
+    return ""
 
 
 def plan_round(project: Path, inventory: Inventory, cfg: Any, source: Any, *, round: int, source_tree_hash: str,
@@ -856,7 +964,8 @@ def plan_round(project: Path, inventory: Inventory, cfg: Any, source: Any, *, ro
 
     One round's plan: proposals + residuals, merged per pom line, with approval classes, diff and hashes; deterministic.
     `rejected` holds (g:a, to_version) for earlier rejected proposals, or (g:a, to_version, "<type>/<classifier>") for
-    a rejected variant override (`apply.override_variant`); g:a and version compare case-insensitively."""
+    a rejected variant override (`apply.override_variant`), or (g:a, to_version, variant, pom) for an override entry
+    the graph dropped as ineffective in this run; g:a and version compare case-insensitively."""
     project = Path(project)
     rem = _rem(cfg)
     policy = rem.policy
@@ -865,6 +974,8 @@ def plan_round(project: Path, inventory: Inventory, cfg: Any, source: Any, *, ro
     # 부모가 관리하는 버전은 서버 pin이 있으면 부모 버전 제안을 먼저 검토한다
     parents = frozenset(k for k, grp in inhouse_keys(cfg).items() if grp == "parents")
     rejected = set(rejected or set())
+    # 루트 pom을 상속하지 않는 모듈에는 그 모듈의 pom에 override 항목을 제안한다(설정에 없으면 켠 것으로 본다)
+    module_overrides = bool(getattr(rem, "module_overrides", True))
     plan = RoundPlan(round=round, source_tree_hash=source_tree_hash, policy_hash=phash)
     items = sorted(inventory.items, key=lambda i: (i.ga, i.version, i.origin,
                                                    i.location.pom if i.location else "", i.location.line if i.location else 0))
@@ -876,7 +987,7 @@ def plan_round(project: Path, inventory: Inventory, cfg: Any, source: Any, *, ro
     changes: list[_Change] = []
     poms = _Poms(project)
     for item in items:
-        for got in _change_for(project, item, policy, source, poms, parents=parents):
+        for got in _change_for(project, item, policy, source, poms, parents=parents, module_overrides=module_overrides):
             if isinstance(got, Residual):
                 plan.residuals.append(got)
                 continue
@@ -909,11 +1020,19 @@ def plan_round(project: Path, inventory: Inventory, cfg: Any, source: Any, *, ro
     always = set(rem.always_approve or [])
     n = 0
     for change, group in merged:
-        if any(_was_rejected(c, change.to_version, rejected) for c in group):
+        seen = [k for c in group if (k := _was_rejected(c, change.to_version, rejected))]
+        if "rejected" in seen:
             for c in group:
                 plan.residuals.append(_change_residual(c, R_REJECTED_PROPOSALS,
                                                        f"{change.ga} → {change.to_version} was rejected in an earlier "
                                                        "decision; not proposed again"))
+            continue
+        if seen:
+            for c in group:
+                plan.residuals.append(_change_residual(c, R_MANUAL_REVIEW,
+                                                       f"the override entry for {change.ga} → {change.to_version} in "
+                                                       f"{change.edit.pom} had no effect in an earlier round of this "
+                                                       "run; not proposed again"))
             continue
         try:
             diff = _apply.render_diff(project, [change.edit])
@@ -930,7 +1049,8 @@ def plan_round(project: Path, inventory: Inventory, cfg: Any, source: Any, *, ro
                      decision=D_PENDING if needs else D_AUTO, evidence=change.evidence,
                      finding_ids=list(change.finding_ids), edits=[change.edit], diff=diff,
                      source_tree_hash=source_tree_hash, policy_hash=phash, note="; ".join(change.notes),
-                     modules=list(change.modules), also_modules=list(change.also_modules))
+                     modules=list(change.modules), also_modules=list(change.also_modules),
+                     sources=_governed_sources(change))
         p.proposal_hash = p.compute_hash()
         plan.proposals.append(p)
     plan.residuals.sort(key=lambda r: (r.ga, r.version, r.reason))

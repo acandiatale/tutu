@@ -766,7 +766,9 @@ def test_edit_that_does_not_govern_every_module_commits_and_leaves_the_rest_to_r
     comps = make_components(scan=FakeScanner({"baseline": [scan_result(f)], "final-r1": [scan_result(f)]}),
                             maven=maven, versions=FakeVersions({ga: ["2.25.4", "2.25.5"]}),
                             inventory=inventory_mod.build_inventory, plan=planner_mod.plan_round, apply=apply_mod)
-    out, _ = run(state, paths, comps)
+    # module_overrides off: round 2 leaves app-service / app-store to the owners (module poms are covered in
+    # tests/remediations/test_module_overrides.py)
+    out, _ = run(state, paths, comps, cfg=make_cfg(module_overrides=False))
 
     assert out.status == INCOMPLETE, (out.reason, out.message)
     assert out.reason != "resolution_mismatch" and "resolution_mismatch" not in out.reasons

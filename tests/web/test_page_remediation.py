@@ -73,8 +73,8 @@ def test_one_post_with_every_pending_proposal_and_resume() -> None:
 
 def test_checkbox_list_select_all_and_count() -> None:
     view = _function("approvalsView")
-    assert "'선택한 항목 적용'" in view and "'전체 선택'" in view
-    assert "all.indeterminate = n > 0 && n < m" in view
+    # the button carries the live count (0 is allowed: then nothing is applied and the run goes on)
+    assert "apply.textContent = `선택한 ${n}건 적용`" in view and "'전체 선택'" in view and "'전체 해제'" in view
     assert "`${n}건 선택 / 전체 ${m}건`" in view
     row = _function("proposalRow")
     assert "cb.type = 'checkbox'" in row and "head.htmlFor = id" in row and "el('label', 'prophead')" in row

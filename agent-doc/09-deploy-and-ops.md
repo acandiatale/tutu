@@ -98,7 +98,7 @@ docker run --rm <registry>/sbmig:<tag> python -m sbmig.cli --help
 덮어쓴다 — `SBMIG_KB__DIR=/data/kb-v2`(웹 파드), `SBMIG_BUILD__SETTINGS_FILE=/data/.m2/settings.xml`, `SBMIG_BUILD__JAVA_HOME=/opt/java21`,
 `SBMIG_BUILD__MVN=mvn`, `SBMIG_BUILD__LOCAL_REPO=/data/.m2/repository`, `SBMIG_SCRIPT__PYTHON=null`, 웹 파드의 `SBMIG_LLM__RECORD_DIR=${LLM_RECORD_DIR:-}`. 이 값들은
 `tests/deploy/test_manifests.py` 가 세 매니페스트에서 지킨다. 설정을 바꾸려면 이미지를 다시 만든다(숫자 손잡이는 `sbmig-env` 로 충분).
-비밀값과 settings.xml 은 이미지 밖: ConfigMap `deploy/k8s/20-configmap.yaml`(`sbmig-config` = `/data/.m2/settings.xml` 의 틀, `sbmig-env` = 환경 변수),
+비밀값과 settings.xml 은 이미지 밖: ConfigMap `deploy/k8s/20-configmap.yaml`(`sbmig-config` = settings.xml, 웹 파드가 시작할 때 `/data/.m2/settings.xml` 로 복사, `sbmig-env` = 환경 변수),
 Secret 견본 `deploy/k8s/30-secret.example.yaml`(복사해 `deploy/k8s/30-secret.yaml` 로 채움, git-ignore): `sbmig-llm`(= PC 의 `.env` + `SBMIG_WEB_TOKEN`),
 `sbmig-git`(저장소 토큰). 자원: OpenRewrite 가 `openrewrite.jvm_args`(`-Xmx4g`)로 돌므로 메모리 6~8 GiB, CPU 2~4.
 

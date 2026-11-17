@@ -51,7 +51,8 @@ KIND_KO: dict[str, str] = {
 RISK_KO: dict[str, str] = {
     "major": "메이저 버전 변경", "parent": "부모 pom 변경", "bom": "BOM 변경", "managed_override": "dependencyManagement 항목 추가",
 }
-DECISION_KO: dict[str, str] = {"auto": "자동 적용", "pending": "승인 대기", "approved": "승인 후 적용", "rejected": "적용 안 함"}
+DECISION_KO: dict[str, str] = {"auto": "자동 적용", "pending": "승인 대기", "approved": "승인 후 적용", "rejected": "선택하지 않음",
+                               "ineffective": "효과가 없어 다시 뺌"}
 # 사유 코드(models.R_*와 chain_budget)의 짧은 한국어 이름.
 # 표, 묶음 제목, 화면 표시에 쓰며 자세한 설명은 report._REASON_KO에 있다
 REASON_KO: dict[str, str] = {
@@ -59,7 +60,7 @@ REASON_KO: dict[str, str] = {
     "upload_uncertain": "업로드 결과 확인 불가", "zip_hash_mismatch": "검사한 파일 불일치",
     "text_only_violation": "버전 표기 외 변경 감지", "resolution_mismatch": "적용 결과가 계획과 다름",
     "execution_boundary_refused": "빌드 설정 점검에서 중단", "not_ready": "실행 환경 미비", "pending_approval": "승인 대기",
-    "rejected_proposals": "적용하지 않은 변경", "residual_findings": "남은 취약점", "manual_review": "직접 확인 필요",
+    "rejected_proposals": "선택하지 않은 변경", "residual_findings": "남은 취약점", "manual_review": "직접 확인 필요",
     "no_candidate_version": "올릴 수 있는 버전 없음", "rounds_exhausted": "반복 횟수 한도 도달", "stop_requested": "중지 요청",
     "internal_error": "내부 오류", "policy_denied": "정책상 허용되지 않음", "unknown_provenance": "버전을 지정한 곳을 찾지 못함",
     "stale_location": "pom이 그 사이 변경됨", "inventory_incomplete": "의존성 목록을 다 읽지 못함",
@@ -309,8 +310,9 @@ GROUPS: dict[str, _Group] = {
     "parent_pin_no_text": _Group("서버 정책의 부모 pom·BOM 버전을 적용할 곳 없음",
                                  "서버 정책이 부모 pom 또는 BOM의 버전을 지정했지만, 프로젝트 pom에 그 버전 표기가 없습니다."),
     "parent_deny": _Group("부모 pom·BOM 변경 금지", "버전을 지정하는 부모 pom 또는 BOM을 서버 정책에서 변경 금지했습니다."),
-    "root_entry_exists": _Group("루트 pom에 버전 지정이 이미 있음",
-                                "루트 pom의 dependencyManagement에 이 라이브러리 항목이 이미 있어 새로 추가하지 않습니다."),
+    "root_entry_exists": _Group("pom에 버전 지정이 이미 있음",
+                                "버전을 지정할 pom.xml의 dependencyManagement에 이 라이브러리 항목이 이미 있어 새로 추가하지 "
+                                "않습니다."),
     "variant": _Group("classifier가 붙은 의존성",
                       "classifier는 같은 버전의 jar를 용도별로 구분하는 이름입니다(예: jakarta). 아래 항목은 jar가 아닌 "
                       "형식이거나 classifier가 붙어 있어 버전을 지정하는 방식으로 조치하지 못했습니다."),
@@ -320,12 +322,19 @@ GROUPS: dict[str, _Group] = {
                            "dependencyManagement에 버전 지정을 추가할 위치를 정하지 못했습니다."),
     "not_inheriting_root": _Group("모듈 pom에 직접 지정해야 하는 버전",
                                   "이 모듈들은 프로젝트 최상위 pom.xml이 아니라 회사 부모 pom에서 설정을 물려받습니다. "
-                                  "도구는 최상위 pom.xml에만 버전을 지정할 수 있는데, 그렇게 해도 이 모듈들에는 적용되지 "
-                                  "않아 자동으로 조치하지 못했습니다. 해당 모듈의 pom.xml에서 dependencyManagement에 조치된 "
-                                  "버전을 추가하거나, 이 라이브러리를 가져오는 의존성의 버전을 올려 주세요.", False),
+                                  "최상위 pom.xml에 버전을 지정해도 이 모듈들에는 적용되지 않습니다. 모듈 pom에 버전 지정을 "
+                                  "제안하는 설정이 꺼져 있어 제안하지 않았습니다. 해당 모듈의 pom.xml에서 "
+                                  "dependencyManagement에 조치된 버전을 추가하거나, 이 라이브러리를 가져오는 의존성의 버전을 "
+                                  "올려 주세요.", False),
     "declared_wins": _Group("모듈 pom에서 버전을 직접 지정",
-                            "모듈 pom에서 버전을 직접 지정하고 있어, 루트 pom의 dependencyManagement 로는 바뀌지 않습니다."),
-    "rejected_earlier": _Group("이전에 적용하지 않기로 한 변경", "이전에 적용하지 않기로 한 변경이라 다시 제안하지 않습니다."),
+                            "모듈 pom에서 버전을 직접 지정하고 있어, dependencyManagement의 버전 지정으로는 바뀌지 않습니다."),
+    "override_no_effect": _Group("버전 지정을 넣어도 바뀌지 않는 버전",
+                                 "버전 지정을 넣었지만 실제 버전이 바뀌지 않아 다시 뺐습니다. 의존성 선언에 버전이 직접 적혀 "
+                                 "있으면(이 pom이나 부모 pom) 버전 지정보다 그 값이 우선합니다. 아래 들어온 경로에서 그 선언을 "
+                                 "찾아 버전을 직접 올려 주세요.", False),
+    "rejected_earlier": _Group("선택하지 않은 변경",
+                               "담당자가 조치 화면에서 선택하지 않은 변경이라 이번 실행에서는 다시 제안하지 않습니다. 조치를 "
+                               "다시 실행하면 다시 제안합니다."),
     "inventory_incomplete": _Group("의존성 목록을 다 읽지 못함",
                                    "의존성 목록을 다 읽지 못해 조치 계획을 세우지 않았습니다.", False),
     "inhouse_self": _Group("사내 라이브러리",
@@ -404,6 +413,14 @@ def _what_ko(x: str) -> str:
     return re.sub(r"(^|, )type ", r"\1형식 ", (x or "").replace(" and ", ", "))
 
 
+_PLACE = "dependencyManagement에 버전 지정을 추가할 위치를 정하지 못했습니다."
+
+
+def _pomk(x: str | None) -> str:
+    """planner가 쓰는 pom 이름("the root pom.xml" 또는 모듈 pom 경로)을 한국어 표시로 바꾼다."""
+    return "루트 pom.xml" if x in (None, "", "the root pom.xml") else x
+
+
 def _why(x: str | None) -> str:
     """안쪽 문장(이유)을 번역해서 앞 문장 뒤에 붙일 " 이유: …" 문자열을 만든다.
     규칙에 없는 조각은 " 원문: `…`"으로 붙인다."""
@@ -476,14 +493,14 @@ RULES: list[_Rule] = [
     _r("parent_denied", r"the (?P<kw>parent|BOM) (?P<mga>\S+) matches policy\.deny",
        lambda g: f"서버 정책에서 {_kw(g['kw'])} {g['mga']}의 변경을 금지했습니다.", "parent_deny"),
     _r("root_entries_many",
-       r"the root pom\.xml already has <dependencyManagement> entries for (?P<ga>\S+) \((?P<places>{A})\); "
+       r"(?P<pom>the root pom\.xml|\S+) already has <dependencyManagement> entries for (?P<ga>\S+) \((?P<places>{A})\); "
        r"a second entry is never added",
-       lambda g: (f"루트 pom.xml의 dependencyManagement에 {g['ga']} 항목이 이미 여러 곳에 있습니다"
+       lambda g: (f"{_pomk(g['pom'])}의 dependencyManagement에 {g['ga']} 항목이 이미 여러 곳에 있습니다"
                   f"({_places(g['places'])}). 항목을 더 추가하지 않습니다."), "root_entry_exists"),
     _r("root_entry_mismatch",
-       r"the root pom\.xml already has a <dependencyManagement> entry for (?P<ga>\S+) whose version \((?P<v>{A})\) "
+       r"(?P<pom>the root pom\.xml|\S+) already has a <dependencyManagement> entry for (?P<ga>\S+) whose version \((?P<v>{A})\) "
        r"is not the resolved (?P<res>\S+) as plain text; a second entry is never added",
-       lambda g: (f"루트 pom.xml의 dependencyManagement에 {g['ga']} 항목이 이미 있습니다. 그 버전({_none(g['v'])})은 Maven이 "
+       lambda g: (f"{_pomk(g['pom'])}의 dependencyManagement에 {g['ga']} 항목이 이미 있습니다. 그 버전({_none(g['v'])})은 Maven이 "
                   f"사용하는 버전({g['res']})과 같은 일반 버전 표기가 아닙니다. 항목을 더 추가하지 않습니다."),
        "root_entry_exists"),
     _r("variant",
@@ -511,6 +528,29 @@ RULES: list[_Rule] = [
        r"cannot place an override entry safely: (?P<p>\S+): already has a <dependencyManagement> entry for (?P<k>\S+); "
        r"a second entry is never added",
        lambda g: f"{g['p']}의 dependencyManagement에 {g['k']} 항목이 이미 있어 더 추가하지 않았습니다.", "cannot_place"),
+    _r("module_pom_unreadable_override",
+       r"cannot place an override entry safely: the pom\.xml of module (?P<m>\S+) is not readable",
+       lambda g: f"{g['m']} 모듈의 pom.xml을 읽을 수 없어 dependencyManagement에 버전 지정을 추가하지 못했습니다.",
+       "cannot_place"),
+    _r("place_not_project", r"cannot place an override entry safely: (?P<pom>\S+): the root element is not <project>",
+       lambda g: f"{_PLACE} {g['pom']} 파일의 최상위 요소가 project가 아닙니다.", "cannot_place"),
+    _r("place_two_sections",
+       r"cannot place an override entry safely: (?P<pom>\S+): more than one <dependencyManagement> section",
+       lambda g: f"{_PLACE} {g['pom']} 파일에 dependencyManagement 절이 둘 이상 있습니다.", "cannot_place"),
+    _r("place_dependencies_count",
+       r"cannot place an override entry safely: (?P<pom>\S+): <dependencyManagement> does not hold exactly one "
+       r"<dependencies> section",
+       lambda g: f"{_PLACE} {g['pom']} 파일의 dependencyManagement 안에 dependencies 절이 하나가 아닙니다.", "cannot_place"),
+    _r("place_close_dependencies",
+       r"cannot place an override entry safely: (?P<loc>\S+:\d+): the closing </dependencies> of <dependencyManagement> "
+       r"is not on its own line",
+       lambda g: f"{_PLACE} {loc_ko(g['loc'])}: dependencyManagement의 dependencies 닫는 태그가 한 줄에 따로 있지 않습니다.",
+       "cannot_place"),
+    _r("place_tag_line", r"cannot place an override entry safely: (?P<loc>\S+:\d+): <(?P<t>[\w.-]+)> does not start its own line",
+       lambda g: f"{_PLACE} {loc_ko(g['loc'])}: {g['t']} 태그가 줄의 처음에서 시작하지 않습니다.", "cannot_place"),
+    _r("place_close_project",
+       r"cannot place an override entry safely: (?P<loc>\S+:\d+): the closing </project> is not on its own line",
+       lambda g: f"{_PLACE} {loc_ko(g['loc'])}: project 닫는 태그가 한 줄에 따로 있지 않습니다.", "cannot_place"),
     _r("root_unreadable", r"cannot place an override entry safely: the root pom\.xml is not readable",
        lambda g: "루트 pom.xml을 읽을 수 없어 dependencyManagement에 버전 지정을 추가하지 못했습니다.", "root_unreadable"),
     # 내부 오류(apply.EditError)는 도구 내부 문장이므로 원문으로 둔다
@@ -526,8 +566,21 @@ RULES: list[_Rule] = [
        r"so an override entry would not change it",
        lambda g: (f"{g['places']}에서 {g['ga']}의 버전을 직접 지정합니다. 직접 지정한 버전이 dependencyManagement보다 "
                   "우선하므로, dependencyManagement의 버전 지정으로는 바뀌지 않습니다."), "declared_wins"),
+    _r("override_no_effect",
+       r"the override entr(?:y|ies) in (?P<poms>{A}) did not change the resolved version of (?P<ga>\S+) \((?P<v>\S+) stays\): "
+       r"a dependency declared with a version, here or in a parent, wins over <dependencyManagement>; "
+       r"the entr(?:y was|ies were) removed again",
+       lambda g: (f"{g['poms']}에 {g['ga']}의 버전 지정을 넣었지만 실제 버전이 바뀌지 않아({g['v']} 그대로) 다시 뺐습니다. "
+                  "의존성 선언에 버전이 직접 적혀 있으면(이 pom이나 부모 pom) 버전 지정보다 그 값이 우선합니다. 그 선언의 "
+                  "버전을 직접 올려야 합니다."), "override_no_effect"),
+    _r("override_no_effect_earlier",
+       r"the override entry for (?P<ga>\S+) → (?P<v>\S+) in (?P<pom>\S+) had no effect in an earlier round of this run; "
+       r"not proposed again",
+       lambda g: (f"{g['pom']}에 넣은 {g['ga']}의 {g['v']} 버전 지정은 이 실행의 앞 라운드에서 효과가 없었으므로 다시 제안하지 "
+                  "않습니다."), "override_no_effect"),
     _r("rejected_earlier", r"(?P<ga>\S+) → (?P<v>\S+) was rejected in an earlier decision; not proposed again",
-       lambda g: f"{g['ga']} → {g['v']} 변경은 이전에 적용하지 않기로 한 것이라 다시 제안하지 않습니다.", "rejected_earlier"),
+       lambda g: (f"{g['ga']}의 {g['v']} 버전 변경은 담당자가 선택하지 않은 것이라 이번 실행에서는 다시 제안하지 "
+                  "않습니다."), "rejected_earlier"),
     _r("inventory_incomplete_plan", r"inventory incomplete: nothing planned \((?P<n>.*)\)",
        lambda g: "의존성 목록을 다 읽지 못해 조치 계획을 세우지 않았습니다." + _why(g["n"])),
     _r("inventory_incomplete", r"inventory incomplete",
@@ -555,18 +608,18 @@ RULES: list[_Rule] = [
        r"the versions it manages may change too",
        lambda g: (f"{g['gav']} 취약점을 조치하려고 {_kw(g['kw'])} {g['mga']}의 버전을 {g['cur']}에서 {g['pin']} 버전으로 올립니다(서버 정책에 "
                   f"지정한 버전). 이 {_kw(g['kw'])}에서 버전을 지정하는 다른 라이브러리도 함께 바뀔 수 있습니다.")),
-    _r("uses_existing", r"uses the existing <dependencyManagement> entry of the root pom\.xml",
-       lambda g: "루트 pom.xml의 dependencyManagement에 이미 있는 항목의 버전을 수정합니다."),
+    _r("uses_existing", r"uses the existing <dependencyManagement> entry of (?P<pom>the root pom\.xml|\S+)",
+       lambda g: f"{_pomk(g['pom'])}의 dependencyManagement에 이미 있는 항목의 버전을 수정합니다."),
     _r("override_transitive",
-       r"adds a <dependencyManagement> entry (?P<gav>\S+) to the root pom\.xml: pins the transitive dependency brought "
+       r"adds a <dependencyManagement> entry (?P<gav>\S+) to (?P<pom>the root pom\.xml|\S+): pins the transitive dependency brought "
        r"by (?P<chain>{A}) \((?P<a>\S+) → (?P<b>\S+)\)",
-       lambda g: (f"루트 pom.xml의 dependencyManagement에 {g['gav']} 항목을 추가해 간접 의존성의 버전을 지정합니다"
+       lambda g: (f"{_pomk(g['pom'])}의 dependencyManagement에 {g['gav']} 항목을 추가해 간접 의존성의 버전을 지정합니다"
                   f"({g['a']} → {g['b']}). 의존 경로: "
                   f"{'다른 의존성' if g['chain'] == 'another dependency' else g['chain']}.")),
     _r("override_managed",
-       r"adds a <dependencyManagement> entry (?P<gav>\S+) to the root pom\.xml: overrides the version managed by "
+       r"adds a <dependencyManagement> entry (?P<gav>\S+) to (?P<pom>the root pom\.xml|\S+): overrides the version managed by "
        r"(?P<mgr>{A}) \((?P<a>\S+) → (?P<b>\S+)\)",
-       lambda g: (f"루트 pom.xml의 dependencyManagement에 {g['gav']} 항목을 추가해, "
+       lambda g: (f"{_pomk(g['pom'])}의 dependencyManagement에 {g['gav']} 항목을 추가해, "
                   f"{'프로젝트 밖의 부모 pom 또는 BOM' if g['mgr'] == 'a parent / BOM outside the project' else g['mgr']}"
                   f"에서 지정한 버전 대신 사용합니다({g['a']} → {g['b']}).")),
     _r("override_warning",
@@ -735,6 +788,20 @@ RULES: list[_Rule] = [
        lambda g: ((f"{g['m']} 모듈에서 {g['ga']} 라이브러리를 찾을 수 없습니다." if _none(g["got"]) == "없음"
                    else f"{g['m']} 모듈의 {g['ga']} 버전은 {g['got']}입니다.")
                   + f" 계획한 버전은 {g['to']} 입니다({g['pid']}).")),
+    _r("info_outside_entry",
+       r"info: (?P<ga>\S+) in module (?P<m>\S+) still resolves at (?P<v>\S+) — outside the modules the inserted entry in "
+       r"(?P<pom>\S+) governs \((?P<pid>[^()\s]+)\); left for the next round",
+       lambda g: (f"참고: {g['m']} 모듈의 {g['ga']} 버전은 아직 {g['v']}입니다. {g['pom']}에 넣은 버전 지정이 적용되지 않는 "
+                  f"모듈이므로 다음 라운드에서 조치합니다({g['pid']}).")),
+    _r("ineffective_not_removed",
+       r"the ineffective override entr\(ies\) (?P<ids>{A}) were not removed and rebuilt: a stop was requested or the time "
+       r"budget is used up",
+       lambda g: (f"효과가 없는 버전 지정({g['ids']})을 빼고 다시 빌드하지 못했습니다. 중지 요청을 받았거나 쓸 수 있는 시간을 "
+                  "다 썼습니다.")),
+    _r("after_removing_ineffective", r"after removing the ineffective override entr\(ies\) (?P<ids>{A})",
+       lambda g: f"효과가 없는 버전 지정({g['ids']})을 뺀 뒤에도 그렇습니다."),
+    _r("rebuild_without_failed", r"the candidate without (?P<ids>.+?) could not be rebuilt: (?P<e>.+)",
+       lambda g: f"효과가 없는 버전 지정({g['ids']})을 뺀 수정본을 만들지 못했습니다. {_raw(g['e'])}"),
     _r("info_not_governed",
        r"info: (?P<ga>\S+) in module (?P<m>\S+) still resolves at (?P<v>\S+) — not governed by the edited version text "
        r"\((?P<pid>[^()\s]+)\); left for the next round",

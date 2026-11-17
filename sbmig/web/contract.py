@@ -53,6 +53,8 @@ RUN_ENV = ("SBMIG_SOURCE_ZIP", "SBMIG_OUT", "SBMIG_RUN_ID", "SBMIG_CONFIG", "SBM
            "SBMIG_JOB_SLOT", "SBMIG_WORKER_ACTION", "SBMIG_FLOW")
 FLOW_ENV = "SBMIG_FLOW"                     # Main이 기록하고 Worker가 request.json의 flow와 비교한다
 SLOT_ENV = "SBMIG_JOB_SLOT"                 # Main이 기록하고 Worker가 읽는다
+# 웹 파드가 시작할 때 build.settings_file 위치로 복사하는 원본 settings.xml이다. 설정 키가 아니고 Job에 넘기지 않는다
+SETTINGS_SEED_ENV = "SBMIG_SETTINGS_SEED"
 # 취약점 조치 재개 시도
 ACTION_ENV = "SBMIG_WORKER_ACTION"          # 비어 있으면 이관(sbmig run)을 하고, 아니면 아래 action 중 하나를 한다
 ACTION_REMEDIATION_RESUME = "remediation-resume"

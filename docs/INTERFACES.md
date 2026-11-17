@@ -25,7 +25,7 @@ type: `sbmig/core/models.py`, `sbmig/core/interfaces.py`, `sbmig/core/config.py`
 | web app | Base "Graph engine", "Web app"; v2.1z-w (page, server-chosen configs), v2.1z-ae (queue / slots on the page), v2.1z-af (page re-attach), v2.1z-aj (run flows, page header); v2.1z-ak (framework label, skipped stages) |
 | Job mode (Main / Worker, slots, env pins) | v2.1z-z "k8s Job dispatch mode", v2.1z-ab (kubeconfig, template ConfigMap), v2.1z-ac (Main ↔ Worker contract), v2.1z-ad (end confirmation, ownership, env pins, write-time redaction), v2.1z-ae (parallel slots), v2.1z-af |
 | deploy | v2.1z-s (build hooks), v2.1z-t (one Job per request), v2.1z-u, deploy (baked config, container paths), v2.1z-ad "Shipped mode" |
-| remediations | remediations; v2.1z-ak (in-house group `framework`); v2.1z-am (case-insensitive matching, per-module in-house split, module sources, variant overrides, 들어온 경로) |
+| remediations | remediations; v2.1z-ak (in-house group `framework`); v2.1z-am (case-insensitive matching, per-module in-house split, module sources, variant overrides, 들어온 경로); v2.1z-an (override proposals in module poms, the owners' choice) |
 
 ## Base contracts (in force; written before v2)
 
@@ -3174,7 +3174,7 @@ is the image's file — one copy, no hand-kept twin in a ConfigMap.
   exist under `/app/config/`, else the build stops (`ERROR: config/<name> is missing from the build context (REQUIRE_CONFIG)…`). The
   company build passes `--build-arg REQUIRE_CONFIG=artifacts.yml` (the file is git-ignored — a fresh checkout would silently build an image
   without the company config, and `RunManager.default_configs()` only warns about a missing `SBMIG_WEB_CONFIGS` name). Empty = no check.
-- **ConfigMap `sbmig-config`** carries `settings.xml` only (since v2.1z-al the template for `/data/.m2/settings.xml`, mounted by 80 only;
+- **ConfigMap `sbmig-config`** carries `settings.xml` only (since v2.1z-al the source of `/data/.m2/settings.xml`: the web pod copies it there at start, 80 mounts it;
   the `artifacts.yml` key and its mounts are commented alternatives in 20 / 40 /
   80 / 81). The baked file must hold no secret (an image is readable by whoever pulls it).
 - **Machine paths** of a PC-tested yml are overridden by literal `env` lines in each manifest (env beats every yml):
@@ -3941,7 +3941,8 @@ dotted keys into nested journal values (`evidence.0.source`), `regex:` values, `
 
 The user (2026-11-17): "/data/.m2에 뒀으면 좋겠어 일관되게" — the Maven local repository cannot live in the pod, and everything
 else that persists is already under `/data`; right after: "Settings도 저기로 옮겨가야하지않아!?" — `/data/.m2` is to the pods what
-`~/.m2` is on a PC: `settings.xml`, `repository/`, `repository-slot2/`, `repository-slot3/`.
+`~/.m2` is on a PC: `settings.xml`, `repository/`, `repository-slot2/`, `repository-slot3/`; and on reading the operator steps:
+"configmap 에 설정되어있으면 파드 배포할때 자동으로 나가는게 아니야?" — the ConfigMap is the source and deploying it is the whole step.
 
 - **Manifests.** `SBMIG_BUILD__LOCAL_REPO: "/data/.m2/repository"` in 40, 80 and 81 (was `"null"` = Maven's `~/.m2/repository`).
   40 and 81 have no `m2` volume any more: the repository is a folder of PVC `sbmig-data`, and PVC `sbmig-m2` is gone from
@@ -3951,11 +3952,20 @@ else that persists is already under `/data`; right after: "Settings도 저기로
   its own volume mounted at `/data/.m2` in 40 and 81 alike. 80 has no data PVC: its `m2` volume (emptyDir, PVC optional) is
   mounted at `/data/.m2`, so the path is the same in every pod.
 - **settings.xml.** `SBMIG_BUILD__SETTINGS_FILE: "/data/.m2/settings.xml"` in 40, 80 and 81 (an env pin: the same literal in 40 and
-  81). In 40 / 81 it is a real file on the data volume that the operator copies there (no ConfigMap mount nested in the NFS
-  volume, for the same root-squash reason); the ConfigMap `sbmig-config` mount at `/etc/sbmig/settings.xml` is gone, the `config`
-  volume is a commented line that goes with the commented `artifacts.yml` mount. 80 mounts ConfigMap `sbmig-config` with
-  `subPath: settings.xml` at `/data/.m2/settings.xml` (inside its emptyDir, on the node's disk). `sbmig-config` is therefore the
-  template of the file (passwords as `${env.NEXUS_USER}` / `${env.NEXUS_PASSWORD}`, values in the Secret).
+  81). In 40 / 81 it is a real file on the data volume (no ConfigMap mount nested in the NFS volume, for the same root-squash
+  reason). ConfigMap `sbmig-config` is its source (passwords as `${env.NEXUS_USER}` / `${env.NEXUS_PASSWORD}`, values in the
+  Secret): 80 mounts it with `subPath: settings.xml` at `/data/.m2/settings.xml` (inside its emptyDir, on the node's disk); 81
+  mounts nothing (its `config` volume is a commented line that goes with the commented `artifacts.yml` mount).
+- **Seed (`SBMIG_SETTINGS_SEED`).** The web pod (40) mounts `sbmig-config` read-only at `/etc/sbmig/settings.xml` and has the
+  literal `SBMIG_SETTINGS_SEED=/etc/sbmig/settings.xml`. At web start (`RunManager.__init__`, every mode but `local-job`, before
+  the missing-file warning) `runs.seed_settings_file(seed, build.settings_file)` copies the seed when the two paths differ: the
+  target folder is created, the bytes go to a temp file in that folder and `os.replace` puts it in place (a Maven call in a
+  running build pod sees the old or the new file); no fsync (a crash before the replace keeps the old file, the next start
+  writes again). Same content → nothing written (DEBUG `Maven settings <target> unchanged (same as <seed>)`); written → INFO
+  `Maven settings <target> written from <seed>`; a seed that cannot be read or a copy that fails → one WARNING naming both paths,
+  never fatal. `SBMIG_SETTINGS_SEED` (`contract.SETTINGS_SEED_ENV`) is a web-pod variable like `SBMIG_JOB_TEMPLATE`: no config key,
+  no env pin, not in 81 / 80, removed from a `local-job` child's environment. Operator rule, as for `sbmig-env`: after changing
+  `sbmig-config`, apply it and restart the web pod; the next Job reads the new file.
 - **Preflight `settings-not-found`.** `Orchestrator._preflight` first checks `build.settings_file`: set (not empty / `null`) and
   not a readable file at the absolute path Maven would get as `-s` → flag `settings-not-found` (+ `infra:maven`), journal
   `preflight {settings_file: "missing (<path>)"}`, no Maven call; `_step_intake` aborts with
@@ -3963,11 +3973,11 @@ else that persists is already under `/data`; right after: "Settings도 저기로
   (the remediation flow's intake runs the preflight before `chain.run_only`, so its own readiness line `server settings.xml not
   found (<path>)` is never reached for this). Korean (`sbmig.report.i18n`): `Maven settings.xml을 찾지 못했습니다(<path>). 이 경로에
   settings.xml을 넣은 뒤 다시 실행해 주세요.` Unset = Maven's default settings as on a PC, unchanged. The web pod logs one WARNING at
-  startup (`RunManager._warn_missing_settings_file`, not in `local-job`): `Maven settings file <path> is missing — copy settings.xml
-  there before the first run`; never fatal.
+  startup when the file is still missing after the seed copy (`RunManager._warn_missing_settings_file`, not in `local-job`):
+  `Maven settings file <path> is missing — copy settings.xml there before the first run`; never fatal.
 - **Pins.** `env_pins` hash the VALUE of `SBMIG_BUILD__SETTINGS_FILE` (the path), `request.json` digests the config files only;
   the content of settings.xml is pinned nowhere (it was not with the ConfigMap either). Both pods read the same file on the
-  shared volume, so nothing changes there.
+  shared volume, so nothing changes there. The seed variable is set in Main only and is not pinned.
 - **Slots** follow the v2.1z-ae rule: `/data/.m2/repository-slot2`, `-slot3`. The env pin of `SBMIG_BUILD__LOCAL_REPO` is now a real
   path, the same literal in 40 and 81; the slot override still happens in the child's environment after the pin check.
 - **Image.** `VOLUME ["/data"]` only; `/data` is created and owned by uid 1000 in the image, so `/data/.m2` can be created without
@@ -3976,8 +3986,8 @@ else that persists is already under `/data`; right after: "Settings도 저기로
   that folder)" instead of the old PVC; `POD_LOCAL_REPO_NAME` (`sbmig-m2-slot<k>`) is only a temp-folder name and stays.
 - **local-job.** Both template values are container paths; `LocalJobClient._env_of` passes only `contract.RUN_ENV`, so a
   developer-PC Worker gets neither (`tests/web/test_local_job_mode.py`).
-- **Operator steps** for an existing deployment (copy settings.xml from the still-mounted ConfigMap first, then the manifest
-  lines): `deploy/README.md` §3 "Maven 설정과 로컬 저장소 — `/data/.m2`". Tests: `tests/deploy/test_manifests.py`,
+- **Operator steps** for an existing deployment (the manifest lines, `sbmig-job-template`, apply 40 + restart; no hand copy):
+  `deploy/README.md` §3 "Maven 설정과 로컬 저장소 — `/data/.m2`". Tests: `tests/deploy/test_manifests.py`,
   `tests/loop/test_preflight_settings_file.py`, `tests/web/test_settings_file_warning.py`, `tests/report/test_abort_reasons_ko.py`.
 
 ## v2.1z-am — the remediation says where a library comes from
@@ -4031,8 +4041,8 @@ things did not — "루트 pom을 상속하지 않는 모듈이라는게 뭔지 
   When an item was split, the result block adds "그중 N건은 모듈에 따라 사내 라이브러리 담당자와 프로젝트 양쪽에서 조치해야 해서
   두 절에 모두 나옵니다." and counts that finding once against the remaining total.
 - **Wording.** The group `not_inheriting_root` is titled "모듈 pom에 직접 지정해야 하는 버전" and says, without Maven inheritance
-  words, what the tool can do (a version line in the project's top pom.xml only), why that does not reach these modules (they
-  take their settings from the company parent pom) and what to do by hand (in the module's own pom.xml: a dependencyManagement
+  words, why a version line in the project's top pom.xml does not reach these modules (they take their settings from the
+  company parent pom), that no module-pom proposal was made (`remediation.module_overrides` off, v2.1z-an) and what to do by hand (in the module's own pom.xml: a dependencyManagement
   entry with the fixed version, or a higher version of the dependency that brings it — 들어온 경로 shows which). The group
   `variant` starts with what a classifier is ("같은 버전의 jar를 용도별로 구분하는 이름입니다(예: jakarta)"). Stored data and the
   API keep the English sentences and codes; `sbmig/remediations/i18n.py` translates for display, and a new English sentence needs
@@ -4040,12 +4050,76 @@ things did not — "루트 pom을 상속하지 않는 모듈이라는게 뭔지 
   "들어온 경로", 3절, 5절), `agent-doc/11-remediations.md`. Tests: `tests/remediations/test_report_sources.py`, `test_report.py`,
   `test_i18n.py`.
 
+## v2.1z-an — override proposals in a module's own pom, chosen by the owners
+
+In the company layout the modules inherit the company parent poms, not the project's root pom, so an override entry in the
+root pom reaches none of them. The user, after asking which cases a module-level proposal covers: "일단 본인들이 선택하도록
+만들자. 취약점 해결이니까 선택해서 박을지 아니면 검토 후에 진행할지는 본인들 선택으로 할 수 있도록 해야할것 같아!" — the
+tool proposes the entry in the module's own pom, and the project's owners choose on the approval screen.
+
+- **Which libraries.** Exactly those that reach the override route (`planner._override_change`): origin transitive or
+  parent- / BOM-managed, not in-house (in-house items never get there), no editable version text. Per module of the item: a
+  module inheriting from the root pom → the root entry (one proposal for all such modules, as before); a module that does not
+  → an entry in **that module's own pom** (`<module dir>/pom.xml`). One proposal per (target pom, management key g:a + type +
+  classifier). `Proposal.modules` = the modules that entry governs, `Proposal.sources` = their `ModuleSource`s (not in
+  `proposal_hash`; empty for an older state).
+- **Per-pom checks.** Everything the root route checks is checked per target pom: an existing `<dependencyManagement>` entry for
+  the key in that pom → the existing-entry route (its version text changes; the note names that pom); a version declared on
+  the dependency in the module's in-project chain → residual "a declared version wins"; a pom that cannot be read or edited
+  safely (DTD / entities, no safe insertion line) → residual `cannot place …` for that module only ("the pom.xml of module
+  `<m>` is not readable"). The target version and its evidence are chosen once per item.
+- **Always the owners' choice.** Kind and risk `managed_override` (+ `major` when it applies): `requires_approval` whatever
+  `remediation.require_approval` / `always_approve` say. The run saves `AWAITING_APPROVAL`; the owners decide at once or after
+  their own review (the state waits; the resume runs in a new build pod as before). Checked = applied; unchecked = `rejected`:
+  not applied, not proposed again within that run (residual `rejected_proposals`, "… was rejected in an earlier decision"), and
+  proposed again by a later run.
+- **Apply and verify.** `apply` inserts the fixed-shape entry (or the section holding it) into any project pom the plan names —
+  never a pom outside the project; the structure check after applying runs per target pom. `verify_resolution` requires
+  from → to in each proposal's governed modules only. An inserted entry that did not change the resolved version (a
+  dependency declared with a version, in that pom or in a parent, wins over `<dependencyManagement>`) is removed again, the
+  candidate is rebuilt once and the rest of the round is kept; the proposal becomes a residual under 직접 확인 with its path
+  ("the override entry in `<pom>` did not change the resolved version of `<ga>` …; the entry was removed again"). Stored facts:
+  the proposal's plan `decision` becomes `"ineffective"`, it is not in `rounds[r].applied`; one residual (`manual_review`) per
+  (g:a, version) naming every pom whose entry was dropped ("the override entries in `<pom1>`, `<pom2>` … were removed again"),
+  with the proposals' module sources; journal `override_ineffective {round, proposal, pom, ga, modules}` per entry; a later
+  round of the run does not propose that pom's entry again ("… had no effect in an earlier round of this run; not proposed
+  again"). Conditions: only inserted entries are dropped; any other verification problem, or a second failure after the
+  rebuild, keeps `FAILED resolution_mismatch` (message suffix " | after removing the ineffective override entr(ies) …", or
+  " | the candidate without … could not be rebuilt: …"); a stop request or no time left → `FAILED resolution_mismatch` with
+  " | the ineffective override entr(ies) … were not removed and rebuilt: …"; nothing left to apply → the round ends like a round
+  with nothing applied (INCOMPLETE). In `report.md` the residual is the 직접 확인 group "버전 지정을 넣어도 바뀌지 않는 버전" with
+  its 들어온 경로, and the record shows the decision as "효과가 없어 다시 뺌" (neither applied nor "선택하지 않은 변경"). A
+  version TEXT change without effect is still `resolution_mismatch` and fails the round.
+- **Switch and hashes.** `remediation.module_overrides` (default `true`): `false` = no module-pom proposal; a module outside the
+  root's reach leaves the residual "module(s) … do not inherit from the root pom.xml" and the plan is byte-identical to the one
+  made before this increment. The switch enters `policy_hash` only when `false` (a default configuration keeps its hash); a root
+  proposal keeps its `proposal_hash`.
+- **Report (`report.md`).** 승인 대기: `managed_override` proposals that carry module sources or edit a module pom are grouped per
+  (library, from, to) — one table row whose "수정할 곳" lists every pom ("최상위 pom.xml" for the root), then under the library one
+  line per pom: "`app-back/pom.xml`에 버전 지정 추가 (제안 `p-1-2`) · 항목 `g:a:2.1` classifier `jakarta` · `app-back` 모듈: … 경로로
+  가져옴". A root proposal of an older state without sources keeps its one-row form. The result block and the first step of
+  해야 할 일 ("적용할 변경 고르기") say to open the run's page, check the changes and press the apply button (「선택한 N건 적용」), and that nothing is applied before
+  that, so the owners may review first. A new section "선택하지 않아 적용하지 않은 변경 — 제안 N건" (after 승인 대기) lists the
+  rejected proposals with the same facts as the owners' choice, not a failure: "조치 화면에서 선택하지 않은 변경입니다. 이번 실행에서는
+  다시 제안하지 않습니다. 검토한 뒤 조치를 다시 실행해 선택하거나, 아래 내용을 해당 pom.xml에 직접 추가할 수 있습니다."; 요약 gets
+  the row "선택하지 않은 변경", 해야 할 일 "선택하지 않은 변경 검토하기 (N건)", the record's decision column "선택하지 않음". The
+  group `not_inheriting_root` now says the module-pom proposal is switched off; `rejected_earlier` is "선택하지 않은 변경" ("이번
+  실행에서는 다시 제안하지 않습니다. 조치를 다시 실행하면 다시 제안합니다."); the planner sentences that named "the root pom.xml"
+  (`adds a <dependencyManagement> entry … to <pom>`, `uses the existing … entry of <pom>`, `<pom> already has …`) are translated
+  for a module pom too. The approval screen (`sbmig/web/static/index.html`) groups the proposals per library (+ type + classifier)
+  with a group checkbox, says per row `app-back/pom.xml에 버전 지정 추가` (root: `최상위 pom.xml에 버전 지정 추가`) and 들어온 경로,
+  has `전체 선택` / `전체 해제`, a notice that nothing is applied until the apply button `선택한 N건 적용` is pressed (the run waits
+  in 승인 대기), and beside the button `체크하지 않은 항목은 적용하지 않고 진행합니다.` Operator text:
+  `agent-doc/12-remediation-report.md` ("승인 대기 읽는 법"), `agent-doc/11-remediations.md`. Tests:
+  `tests/remediations/test_report_module_overrides.py`, `test_i18n.py`.
+
 ## remediations (취약점 조치) — `/api/remediations`, IVAS, version-text fixes + approved managed overrides (2026-11-11)
 
 A second, independent flow beside the migration: an uploaded Maven project ZIP is built as it is (baseline), scanned by
 **IVAS** (the company's vulnerability scanner), the vulnerable libraries whose version is written in the project's own poms
 get a new **version text** on an isolated candidate copy (transitive / parent- / BOM-managed ones get one approved
-`<dependencyManagement>` override entry in the root pom instead — the single exception, below), the candidate is built and
+`<dependencyManagement>` override entry in the root pom, or in the module's own pom for a module that does not inherit from
+it (v2.1z-an), instead — the single exception, below), the candidate is built and
 verified, the frozen delivery ZIP is rescanned, and a report + `result.zip` come out. Package `sbmig/remediations/` (package map in its `__init__.py`); the
 contract types are `sbmig/remediations/models.py` and `sbmig/remediations/interfaces.py`; settings `cfg.remediation.*`
 (`RemediationConfig` / `RemediationPolicyConfig` in `sbmig/core/config.py`, section `remediation:` of `config/default.yml`).
@@ -4116,10 +4190,11 @@ It never touches the migration KB; since the later decision of the same day it i
   A `replace` edit (`TextEdit.op="replace"`, the default) is one line of one pom, `old` → `new`, both plain version strings (no
   tag, no `${…}`); bytes outside the replaced span (encoding, BOM, CRLF, final newline) are preserved.
 - **The one exception** (user decision 2026-11-11): a `managed_override` proposal inserts ONE `<dependency>` entry
-  (groupId / artifactId / version only) into the **root** `pom.xml`'s top-level `<dependencyManagement><dependencies>` — or a
-  whole `<dependencyManagement>` section holding that one entry when the root pom has none (placed before the top-level
+  (groupId / artifactId / version, plus `<type>` / `<classifier>` for a variant) into the top-level
+  `<dependencyManagement><dependencies>` of the **root** `pom.xml` or, for a module that does not inherit from it, of that
+  module's own pom (v2.1z-an) — or a whole `<dependencyManagement>` section holding that one entry when that pom has none (placed before the top-level
   `<dependencies>`, else `<build>`, else `</project>`). It is a `TextEdit` with `op="insert"`, `old=""`, `line` (insert before),
-  `anchor` (that line's current stripped text, re-checked when applied) and `override` (`{groupId, artifactId, version}`);
+  `anchor` (that line's current stripped text, re-checked when applied) and `override` (`{groupId, artifactId, version[, type][, classifier]}`);
   `new` must equal exactly what `apply.render_override` produces from `override` (indentation copied from sibling entries, the
   file's line ending) — no other XML can be inserted. Such a proposal **always waits for approval**, whatever
   `require_approval` and `always_approve` say. `verify_text_only` refuses a candidate with any other difference: untouched files
@@ -4324,13 +4399,14 @@ changes are proposed only when the server pins that parent / BOM itself in `poli
 Managed-version override (user decision 2026-11-11): a `transitive`, `parent_managed` or `bom_managed` finding whose manager is
 not pinned gets a target by the same rules as a direct dependency (an IVAS patched-version hint is required unless a policy pin
 names the g:a, evidence from the policy or an approved repository host, same-major preferred, `policy.deny` /
-`deny_versions` / `allow_major` apply) and then ONE `managed_override` proposal: one `op="insert"` edit into the root pom
-(shape in "Hard rules"); findings of the same g:a share one entry. When the root pom already has a `<dependencyManagement>` entry
+`deny_versions` / `allow_major` apply) and then `managed_override` proposals: one `op="insert"` edit per target pom (the root
+pom, or a non-inheriting module's own pom, v2.1z-an) and management key (v2.1z-am) (shape in "Hard rules"); findings of the
+same g:a share one entry per pom and key. When the target pom already has a `<dependencyManagement>` entry
 for that g:a, no second entry is ever added: a single top-level entry whose version text (literal or project property) equals the
 resolved version takes the replace route (`own_management_version` / `property_version`), anything else is residual. Residual
 (`manual_review` / `no_candidate_version`) instead of an override when: no hint / no candidate version; the resolved dependency
 is a non-jar type or has a classifier (an override entry without type / classifier would not govern it); a module holding it does
-not inherit from the root pom; a module declares the dependency with its own version (a declared version wins over management);
+not inherit from the root pom and `remediation.module_overrides` is false; a module declares the dependency with its own version (a declared version wins over management);
 no safe insertion line (the anchor tag not on its own line, e.g. single-line XML; more than one `<dependencyManagement>`); the
 root pom is unreadable. The proposal `note` states what the entry pins (the transitive chain or the manager) and always says that
 later parent / BOM / direct-dependency upgrades will NOT move this version any more and that the owners must remove the override
@@ -4353,7 +4429,7 @@ made every plan saved before it stale once — it is re-made at the next resume)
 `approval_mismatch` naming the `fields`, nothing written. Decisions are appended to `approvals.jsonl`; approving does not resume.
 A rejected `(g:a, version)` is not proposed again in later rounds of that job (residual `rejected_proposals`). The `by` field is
 optional (empty allowed) and recorded as given; identity is whatever the app's TokenGuard admits. The page's approval is a
-checkbox list with one button `선택한 항목 적용`: checked = approved, unchecked = rejected, a confirm step ("N건 적용, M건은 적용하지
+checkbox list (grouped per library since v2.1z-an) with one apply button that reads `선택한 N건 적용` (N = checked rows, 0 allowed): checked = approved, unchecked = rejected, a confirm step ("N건 적용, M건은 적용하지
 않음"), then the resume happens automatically (`"resume": true`).
 
 ### HTTP API
@@ -4488,7 +4564,7 @@ Symlinks are always refused; a `settings.xml` inside the project is recorded and
 
 Answered by the user (2026-11-11), no longer open: the failed-candidate policy (`include`, `discard` kept as an option); which
 classes need approval (shipped `always_approve`, `managed_override` always); the multipart file field (`file`); the analysis id
-field (`lbrdrAnlId`, else `analysisId`); transitive / managed findings (approved override entries in the root pom); the meaning
+field (`lbrdrAnlId`, else `analysisId`); transitive / managed findings (approved override entries in the root pom, or in a module's own pom since v2.1z-an); the meaning
 of the action codes (`actionDivCd`, table above); several logins / tokens at once (they work); whether PC / IG are left out (no:
 `ignore_actions` is empty by default, like the existing client).
 

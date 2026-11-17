@@ -126,8 +126,10 @@ def test_pending_proposal_decision_label(tmp_path):
     report.write_report(out, paths)               # the service may still render one on demand
     md = paths.report_md.read_text(encoding="utf-8")
     assert "승인 대기" in md and "메이저 버전 변경" in md and "`pending_approval`" in md
-    assert "## 승인 대기 — 제안 1건" in md and "체크박스" in md and "| 승인 대기 | 1건 | 1개 |" in md
-    assert md.splitlines()[2] == "> ⏸ **승인을 기다리고 있습니다.**" and "1. **변경 승인하기 (1건)**" in md
+    assert "## 승인 대기 — 제안 1건" in md and "「선택한 N건 적용」" in md and "| 승인 대기 | 1건 | 1개 |" in md
+    assert md.splitlines()[2] == "> ⏸ **승인을 기다리고 있습니다.**" and "1. **적용할 변경 고르기 (1건)**" in md
+    # the owners may decide after their own review: nothing is applied until they choose
+    assert "고르기 전에는 아무것도 적용하지 않으므로" in md.splitlines()[3]
 
 
 def test_report_scrubs_secret_env_values_without_the_output_hook(tmp_path, monkeypatch):

@@ -189,7 +189,15 @@ def test_transitive_under_a_dependency_the_project_declares_is_not_the_parents(t
     inv, plan = _run(p, [_f("org.example:lib", "1.2.3")], resolved, _cfg())
     (it,) = inv.items
     assert it.origin == O_TRANSITIVE and it.inhouse == [] and it.inhouse_modules == []
-    (r,) = plan.residuals
+    # app-back does not inherit from the root pom: the entry goes into its own pom (module_overrides, default on)
+    assert all(r.reason != "inhouse_artifact" for r in plan.residuals)
+    assert [(x.kind, x.edits[0].pom, x.modules) for x in plan.proposals] == [
+        ("managed_override", "app-back/pom.xml", ["app-back"])]
+    # switched off: today's residual
+    off = _cfg()
+    off.remediation.module_overrides = False
+    _inv2, plan2 = _run(p, [_f("org.example:lib", "1.2.3")], resolved, off)
+    (r,) = plan2.residuals
     assert r.reason == "manual_review" and "do not inherit from the root pom.xml" in r.detail and r.inhouse == []
 
 

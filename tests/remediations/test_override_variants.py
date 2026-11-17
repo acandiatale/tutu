@@ -156,7 +156,7 @@ def test_existing_entry_for_another_variant_does_not_block(tmp_path):
         A.locate_override(_write(tmp_path / "c", with_cls), "example", "t", "1.1", classifier="jakarta")
 
 
-def test_locate_override_for_a_module_pom_but_apply_takes_the_root_only(tmp_path):
+def test_locate_override_for_a_module_pom_and_apply_it(tmp_path):
     _write(tmp_path, PLAIN_POM)
     _write(tmp_path, PLAIN_POM.replace("<artifactId>app</artifactId>", "<artifactId>core</artifactId>"), "core/pom.xml")
     e = A.locate_override(tmp_path, "example", "t", "1.1", classifier="jakarta", pom="core/pom.xml")
@@ -164,7 +164,8 @@ def test_locate_override_for_a_module_pom_but_apply_takes_the_root_only(tmp_path
     p = Proposal(id="p-1-1", round=1, ga="example:t", from_version="1.0", to_version="1.1", kind=K_MANAGED_OVERRIDE,
                  decision=D_APPROVED, edits=[e])
     res = A.apply_proposals(tmp_path, [p])
-    assert res.applied == [] and "project root pom.xml only" in res.skipped["p-1-1"]
+    assert res.applied == ["p-1-1"] and res.changed_files == ["core/pom.xml"]
+    assert (tmp_path / "pom.xml").read_text() == PLAIN_POM
 
 
 # ------------------------------------------------------------------------------------------------- planning

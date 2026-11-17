@@ -538,7 +538,9 @@ class Proposal(Record):
     # 둘 다 ``proposal_hash``에 넣지 않는다
     modules: list[str] = field(default_factory=list)
     also_modules: list[str] = field(default_factory=list)
-    _nested = {"edits": TextEdit}
+    # 이 제안이 다루는 모듈마다 라이브러리가 들어온 경로다. 승인 화면과 보고서가 보여 주며 ``proposal_hash``에 넣지 않는다
+    sources: list["ModuleSource"] = field(default_factory=list)
+    _nested = {"edits": TextEdit, "sources": ModuleSource}
 
     def compute_hash(self) -> str:
         """``proposal_hash``를 계산한다. decision / note / modules / also_modules는 해시에 넣지 않는다."""

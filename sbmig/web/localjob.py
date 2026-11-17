@@ -27,7 +27,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .contract import ACTION_ENV, RUN_ENV, WORKER_MODULE, status_file_for
+from .contract import ACTION_ENV, RUN_ENV, SETTINGS_SEED_ENV, WORKER_MODULE, status_file_for
 from .k8s import JobState, K8sError
 
 log = logging.getLogger("sbmig.web.localjob")
@@ -123,6 +123,7 @@ class LocalJobClient:
         # 템플릿 값은 컨테이너 경로이므로 이 Main의 저장소 경로를 넣는다
         if self.repo_root is not None:
             child_env["SBMIG_APP_DIR"] = str(self.repo_root)
+        child_env.pop(SETTINGS_SEED_ENV, None)      # 웹 파드만 쓰는 변수다
         # its own process group / session: delete_job must take the Maven / Java grandchildren with it (review 2026-11-05)
         group: dict[str, Any] = ({"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)} if os.name == "nt"
                                  else {"start_new_session": True})

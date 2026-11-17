@@ -249,7 +249,7 @@ Then the final build again, the report (Handover first, "Structure review", fix 
   commits happen in the main session. Per round: append a "Status" table to `docs/PLAN.md`, update
   `docs/INTERFACES.md` on contract changes, add a fixture + `expected.json` (+ `replay/`) for every new scenario.
 - Setup: `uv venv && source .venv/bin/activate && uv pip install -e ".[dev]"` (plain `pip install -e ".[dev]"` works too).
-- Fast check (Python only, ~12 min): `python -m pytest -m "not integration"` → ≈ 5,470 passed, ≈ 62 deselected (2026-11-17)
+- Fast check (Python only, ~12 min): `python -m pytest -m "not integration"` → ≈ 5,550 passed, ≈ 62 deselected (2026-11-17)
   (`-q` on top of the `-q` in pyproject hides the summary line). Until 2026-11-12 `tests/build` (381 tests) was silently
   left out of every root-level run — pytest skips a directory named `build` by default; `norecursedirs` in pyproject now
   keeps it in. When a total does not grow by the number of tests added, compare per-file counts (`--collect-only -q`).
@@ -327,7 +327,7 @@ Then the final build again, the report (Handover first, "Structure review", fix 
   deletes only Jobs carrying its own `sbmig-owner` label and waits for them to vanish, and never reports an unverified result as success. **2026-11-10 (user: "일단 굽자!")**:
   the company `config/artifacts.yml` is **baked into the image** (the Dockerfile copies `config/`; the company build adds
   `--build-arg REQUIRE_CONFIG=artifacts.yml`, which stops the build when the git-ignored file is missing), ConfigMap `sbmig-config` carries
-  `settings.xml` only (since v2.1z-al the template for the file at `/data/.m2/settings.xml`, and what 80 mounts there), and the machine paths of a PC-tested yml are overridden by literal `SBMIG_<SECTION>__<KEY>` env lines in each manifest
+  `settings.xml` only (since v2.1z-al the source of `/data/.m2/settings.xml`: the web pod copies it there at start, 80 mounts it there), and the machine paths of a PC-tested yml are overridden by literal `SBMIG_<SECTION>__<KEY>` env lines in each manifest
   (`SBMIG_BUILD__SETTINGS_FILE` / `JAVA_HOME` / `MVN` / `LOCAL_REPO`, `SBMIG_SCRIPT__PYTHON` in 40 / 80 / 81; `SBMIG_KB__DIR` and
   `SBMIG_LLM__RECORD_DIR=${LLM_RECORD_DIR:-}` in 40 only — never in `sbmig-env`, which 80 reads by `envFrom`). The 81 template has one
   `configMapKeyRef` per `sbmig-env` key (no `envFrom` there): a new key in the ConfigMap needs its line in 81, `tests/deploy/test_manifests.py`
@@ -369,10 +369,13 @@ Then the final build again, the report (Handover first, "Structure review", fix 
   **v2.1z-al (2026-11-17, the user: "/data/.m2에 뒀으면 좋겠어 일관되게")**: the Maven local repository is `/data/.m2/repository` on PVC
   `sbmig-data` (`SBMIG_BUILD__LOCAL_REPO` literal in 40 / 80 / 81, slots `repository-slot<k>` beside it); no `sbmig-m2` PVC, no `m2`
   volume in 40 / 81 (a mount nested in the NFS volume can fail under root squash), 80 mounts its own `m2` volume at `/data/.m2`.
-  Right after ("Settings도 저기로 옮겨가야하지않아!?"): `SBMIG_BUILD__SETTINGS_FILE=/data/.m2/settings.xml` in 40 / 80 / 81 — a file the
-  operator copies onto the data volume in 40 / 81 (no ConfigMap mount there), ConfigMap `sbmig-config` mounted at that path in 80;
-  a set but missing `build.settings_file` aborts at intake before any Maven call (flag `settings-not-found`, exit 3, both flows),
-  the web pod warns once at startup. Operator steps: `deploy/README.md` §3 "Maven 설정과 로컬 저장소".
+  Right after ("Settings도 저기로 옮겨가야하지않아!?"): `SBMIG_BUILD__SETTINGS_FILE=/data/.m2/settings.xml` in 40 / 80 / 81 — a real
+  file on the data volume for 40 / 81 (no ConfigMap mount nested in NFS), ConfigMap `sbmig-config` mounted at that path in 80;
+  then ("configmap 에 설정되어있으면 파드 배포할때 자동으로 나가는게 아니야?"): `sbmig-config` is the source — the web pod mounts it at
+  `/etc/sbmig/settings.xml`, `SBMIG_SETTINGS_SEED` (web-pod variable, no config key / pin, never in a Job or `local-job` child) and
+  `runs.seed_settings_file` copies it at web start (temp file + `os.replace`, unchanged = no write, failure = WARNING, never fatal);
+  after editing `sbmig-config` restart the web pod. A set but missing `build.settings_file` aborts at intake before any Maven call
+  (flag `settings-not-found`, exit 3, both flows); the web pod warns once at startup if the file is still missing. Operator steps: `deploy/README.md` §3 "Maven 설정과 로컬 저장소".
   **v2.1z-af (same day, the user: "코드 검토 동시성 이슈 될만한거 … 찾아봐줘", five read-only reviews, every finding reproduced first)**:
   a Job run's terminal `control/state.json` is written while its slot is still held; recovery keeps the recorded slot number even when
   two runs recorded the same one (a new run only gets a number nobody holds); any failing API poll is "API unavailable"; a `Failed`
@@ -401,7 +404,7 @@ Then the final build again, the report (Handover first, "Structure review", fix 
   `sbmig remediation-resume --run-dir` (→ `chain.resume`), writes `remediation-job-status.json`, and never touches the migration's own
   files / verdict. The state on the shared volume carries the IVAS projectId / analysisId (no re-upload); an
   `AWAITING_CONFIRMATION` answer (`reupload` or `receipt` + ids) is written into state.json by the web pod before the Job exists.
-  Page (user: "체크박스로 선택해서 승인 … 승인자는 필요 없고"): a checkbox list + ONE button `선택한 항목 적용` → one
+  Page (user: "체크박스로 선택해서 승인 … 승인자는 필요 없고"): a checkbox list (grouped per library) + ONE apply button reading `선택한 N건 적용` → one
   `POST …/approvals` with every pending proposal (checked = approved, unchecked = rejected, `"resume": true`, no `by`) → the new pod
   continues; the word "재개" does not appear. A chained approval is checked against the policy hash the build pod recorded.
   IVAS `actionDivCd` (company document): NE 조치 필요 / NP 조치계획 미등록 / PL 조치예정 / OT 조치일 경과 / PC 패치 완료 / IG 조치 예외 —
@@ -412,8 +415,9 @@ Then the final build again, the report (Handover first, "Structure review", fix 
   A matched-files component id may contain `|` (`11560|934982`), sent as one encoded path segment. Flow: source ZIP → `baseline_build → baseline_scan → inventory → plan →
   apply → build → freeze_delivery → rescan → evaluate → report` with the company's scanner **IVAS** (LabradorLabs; env
   `IVAS_BASE_URL` / `IVAS_USER_ID` / `IVAS_PASSWORD`, Secret only). Hard rules: only approved Maven **version text** changes in existing
-  poms, plus ONE exception — a `managed_override` proposal inserts one fixed-shape `<dependency>` entry into the root pom's
-  `<dependencyManagement>` for a transitive / parent- / BOM-managed library and ALWAYS waits for approval (whatever `require_approval` /
+  poms, plus ONE exception — a `managed_override` proposal inserts one fixed-shape `<dependency>` entry into the
+  `<dependencyManagement>` of the root pom or, for a module that does not inherit from it, of that module's own pom
+  (`remediation.module_overrides`, default true) for a transitive / parent- / BOM-managed library and ALWAYS waits for approval (whatever `require_approval` /
   `always_approve` say); no source / structure change; plugin, vendored, unmapped → residual / manual review; original ZIP + manifest +
   `accepted/` kept apart, changes on an isolated candidate first; a failed baseline build never reaches the scan; an uncertain IVAS
   upload is never re-sent (`AWAITING_CONFIRMATION`), an incomplete scan is never "0 findings"; the frozen delivery ZIP's exact bytes are
@@ -450,7 +454,7 @@ Then the final build again, the report (Handover first, "Structure review", fix 
   a cached file to the repository id it came from. A mirror's `<url>` is where requests go, not an allow list; Maven takes the
   first matching mirror (exact id, then patterns in order). The user's fix, which made the run pass on the company PC with the
   code from before v2.1z-ag: `,!<repository id>` for the other repositories in that mirror's `mirrorOf` (PC settings.xml AND
-  the pods' `/data/.m2/settings.xml`, template in ConfigMap `sbmig-config`). **The id `maven-default-http-blocker` in a Maven message is therefore
+  the pods' `/data/.m2/settings.xml`, whose source is ConfigMap `sbmig-config`). **The id `maven-default-http-blocker` in a Maven message is therefore
   no evidence of blocking** (`Could not find artifact … in maven-default-http-blocker (<real URL>)` is an ordinary miss with
   such settings): `http_blocker_hit` needs `Blocked mirror for repositories` or the blocker address `http://0.0.0.0`. sbmig
   never edits settings; it passes `-s` only when `build.settings_file` is set. A real `Blocked mirror for repositories` is its
@@ -474,12 +478,14 @@ Then the final build again, the report (Handover first, "Structure review", fix 
   rule — use it for any new write path). **Proposal scope** since then: `InventoryItem.also_modules`, `Proposal.modules` / `also_modules` (outside
   `proposal_hash`); `verify_resolution` requires from → to in the governed modules and their artifacts only, an also-module left
   behind is an `info:` memo and the next round's business (round commits, delivery exists, INCOMPLETE instead of FAILED); the
-  `chained remediation <id>: <status> <reason> — <message>` line of `sbmig.log` carries the reason sentence. **Open, the user's
-  decision**: in the company layout the modules inherit the role parents, not the project root, so a root-pom
-  `<dependencyManagement>` override reaches none of them — every transitive finding the user read out was `manual_review`
-  ("do not inherit from the root pom.xml"; one row a classifier variant). Options put to the user: an override entry in each
-  affected module's pom (recommended, always approved), root only (as is), or raising the versions in the company parent with
-  sbmig only listing them.
+  `chained remediation <id>: <status> <reason> — <message>` line of `sbmig.log` carries the reason sentence. In the company
+  layout the modules inherit the role parents, not the project root, so a root-pom `<dependencyManagement>` override reaches
+  none of them. **Decided (2026-11-17, v2.1z-an)**: "일단 본인들이 선택하도록 만들자. 취약점 해결이니까 선택해서 박을지 아니면
+  검토 후에 진행할지는 본인들 선택으로 할 수 있도록 해야할것 같아!" — the tool proposes the entry in each such module's own pom
+  (one proposal per pom and management key, always waiting for approval); the owners check what to apply now, an unchecked one
+  is reported as "선택하지 않아 적용하지 않은 변경" with the pom, the entry and the path (not proposed again in that run, a later
+  run proposes again). `remediation.module_overrides: false` restores the residual (plan byte-identical; in `policy_hash` only
+  when false). Contract: `docs/INTERFACES.md` "v2.1z-an".
 - **Remediation: in-house artifacts and the Korean report (user, 2026-11-12: "규격을 받아왔어")**: a vulnerable library that
   comes from the company's own artifacts is NOT the project's to fix — "해당 사내 라이브러리 아키텍처 담당자가 pom 을 수정해줘야
   반영 가능". In-house = the artifacts yml groups named by `remediation.inhouse_groups` (shipped `[mandatory, optional, parents]`;
@@ -514,7 +520,7 @@ Then the final build again, the report (Handover first, "Structure review", fix 
   with the same `<type>` / `<classifier>` (plain-jar entries unchanged byte for byte). `report.md` prints "들어온 경로:" under the
   사내 / 직접 확인 tables (once per row when the modules share it, else per module group), "(IVAS 표기: …)" in the version cell,
   and the group `not_inheriting_root` is "모듈 pom에 직접 지정해야 하는 버전" in owner words (no "상속"). Module-level override
-  entries are NOT built (the user has not decided; `apply.locate_override` takes the target pom for that). Contract:
+  entries came with v2.1z-an (below in "Remediation, first run against the real IVAS"). Contract:
   `docs/INTERFACES.md` "v2.1z-am"; report rules: `agent-doc/12-remediation-report.md`.
 - **Run flows and the page (v2.1z-aj, 2026-11-12)**: a run is `full` (the migration, then the chained remediation) or
   `remediation` (no migration — the user: already-migrated projects are checked against IVAS again later, "이때는 마이그레이션을

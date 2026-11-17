@@ -1,7 +1,7 @@
 # sbmig 쿠버네티스 환경 변수 목록 (인프라팀 전달용)
 
 작성 2026-11-05, 고침 2026-11-10(회사 설정을 이미지에 굽는다; Job 모드의 환경 변수 대조·Job 종료 확인·출력 정제). 기준 매니페스트: `deploy/k8s/20-configmap.yaml`(ConfigMap `sbmig-config` =
-`settings.xml` 의 틀, ConfigMap `sbmig-env` = 환경 변수), `deploy/k8s/30-secret.example.yaml`(Secret `sbmig-llm`, `sbmig-git`),
+`settings.xml`, ConfigMap `sbmig-env` = 환경 변수), `deploy/k8s/30-secret.example.yaml`(Secret `sbmig-llm`, `sbmig-git`),
 `deploy/k8s/40-deployment.yaml`(웹 UI 에이전트), `deploy/k8s/81-web-job.template.yaml`(웹 파드가 업로드마다 만드는 Job 의 틀),
 `deploy/k8s/80-build-job.template.yaml`(git 으로 받는 요청별 빌드 Job). 자세한 운영 설명은 `deploy/README.md`.
 
@@ -47,6 +47,7 @@
 | `SBMIG_WEB_MODE` | `k8s-job` (매니페스트 값) / `in-process` (변수가 없을 때) / `local-job` | `k8s-job` = 업로드마다 Job 하나(공유 PVC). 켜진 채로 나가므로 권한(회사: kubeconfig Secret, 없는 클러스터: 45)과 Job 틀 ConfigMap 이 웹 파드보다 먼저 있어야 한다(README §3 "켜는 법"); 줄을 주석 처리하면 웹 파드가 직접 돌린다. 개발 PC 에서는 `k8s-job` 이 자동으로 `local-job`(파드 자리에 로컬 서브프로세스)으로 내려간다 |
 | `SBMIG_K8S_NAMESPACE` | `agent` (매니페스트 값) | Job 을 만드는 namespace. 줄이 없으면 kubeconfig 방식은 그 context 의 namespace, 그것도 없으면 `default`(PVC `sbmig-data` 를 못 찾는다); 서비스 계정 방식은 파드의 namespace |
 | `SBMIG_JOB_TEMPLATE` | `/templates/81-web-job.template.yaml` (Deployment 의 env) | 채운 Job 틀을 ConfigMap `sbmig-job-template` 으로 `/templates` 에 마운트한다(README §3). 이미지 안의 `deploy/k8s/81-web-job.template.yaml` 은 자리표시자 그대로라 쓰지 않는다 |
+| `SBMIG_SETTINGS_SEED` | `/etc/sbmig/settings.xml` (Deployment 의 env) | 웹 파드가 시작할 때 이 파일(ConfigMap `sbmig-config` 의 settings.xml, 읽기 전용 마운트)을 `build.settings_file`(`/data/.m2/settings.xml`) 자리로 복사한다. 내용이 같으면 쓰지 않는다. 설정 키가 아니라 환경 대조 대상이 아니고 Job 파드에는 없다 |
 | `SBMIG_WORKER_LLM_RECORDS` | (없음) / `"1"` (Job 틀의 env) | Worker 가 LLM 원문 기록을 허용할지. 기본은 끈다(원본 프롬프트 = 소스 코드가 공유 볼륨에 더 남지 않게). 진단 때만 틀의 두 줄을 같이 푼다: 이 스위치 + `SBMIG_LLM__RECORD_DIR: "/data/llm-records"`. 스위치 없이 폴더만 주면 Worker 가 그 변수를 넘기지 않는다 |
 | `KUBECONFIG` | `/etc/kube/config` (Deployment 의 env, 매니페스트 값) | 회사 방식: 인프라팀이 준 kubeconfig Secret(`agent-kubeconfig`, 키 `config`)을 `/etc/kube` 에 마운트한다. 파일이 있으면 서비스 계정 토큰 대신 이것으로 쿠버네티스 API 를 부른다(token / 클라이언트 인증서 사용자; `exec` 는 거절). 개발 PC 에서 `k8s-job` 이 `local-job` 으로 내려가지 않게도 한다 |
 | `SBMIG_JOB_MAX_PARALLEL` | `3` (매니페스트 값) / `1` (변수가 없을 때) | 동시에 도는 빌드 파드(Job) 수. 넘는 업로드는 올린 순서대로 `queued` 로 기다리고 화면에 대기 순번이 보인다. 자리(1 · 2 · 3)마다 Maven 로컬 저장소를 따로 쓴다(`/data/.m2` 안의 `repository`, `repository-slot2`, `repository-slot3`). 웹 파드가 시작할 때 읽는다(바꾸면 재시작). `in-process` 모드는 언제나 1. 1 이상의 정수가 아니면 경고를 찍고 1. 81 틀에는 줄이 필요 없다(README §3 "동시에 여러 건") |
@@ -115,6 +116,7 @@
 | `SBMIG_FLEET__MIN_FREE_GB` | `5` | 실행 전 디스크 여유 하한 |
 | `SBMIG_REMEDIATION__AFTER_MIGRATION` | **`true` (켜진 채 나감)**, 코드 기본 `false` | BUILD SUCCESS 뒤 같은 빌드 파드에서 취약점 조치를 이어 돈다(README §6). 웹 파드와 Job 파드가 같은 값을 받도록 `sbmig-env` 에 둔다 — 한쪽에만 있으면 환경 대조로 Job 이 멈춘다 |
 | `SBMIG_REMEDIATION__REQUIRE_APPROVAL` | `false` | `true` = 모든 버전 변경에 사람 승인 |
+| `SBMIG_REMEDIATION__MODULE_OVERRIDES` | `true` | `false` = 모듈 pom에 버전 지정을 넣는 제안을 만들지 않는다(직접 확인 항목으로 남긴다). 81 틀에도 줄이 있어야 빌드 파드에 닿는다 |
 | `SBMIG_REMEDIATION__FAILED_CANDIDATE` | `include` | 빌드가 실패한 수정본도 `result.zip` 으로 낸다 / `discard` |
 | `SBMIG_REMEDIATION__IVAS_ANALYSIS_TIMEOUT_MINUTES` | `30` | IVAS 분석 한 번의 대기 한도(넘으면 검사 미완료 — 0건이 아니다) |
 | `SBMIG_REMEDIATION__CHAIN_BUDGET_MINUTES` | `90` | 빌드 파드에서 이관에 이어 돈 조치의 시간 한도(분, 0 = 없음). 넘으면 다음 경계에서 `STOPPED` `chain_budget` — 재개하면 새 빌드 파드가 이어 간다 |
@@ -148,7 +150,7 @@
 | 항목 | 어디에 | 비고 |
 |---|---|---|
 | `artifacts.yml` | 이미지 안 `/app/config/artifacts.yml` | 회사 아티팩트·레이아웃·Nexus 주소. 이관팀이 빌드 때 굽는다(`--build-arg REQUIRE_CONFIG=artifacts.yml`). 바꾸려면 이미지를 다시 만든다. 틀은 `config/artifacts.example.yml` |
-| `settings.xml` | 데이터 볼륨 `/data/.m2/settings.xml`(운영자가 복사해 넣는다. 틀은 ConfigMap `sbmig-config`, 80 은 그 ConfigMap 을 같은 경로에 마운트) | Maven 미러(`mirrorOf *` 또는 `external:*`) → Nexus 그룹. 로그인은 `${env.NEXUS_USER}`. 없으면 이관이 접수 단계에서 멈춘다(`settings-not-found`, README §3 "Maven 설정과 로컬 저장소") |
+| `settings.xml` | ConfigMap `sbmig-config`(원본) → 웹 파드가 시작할 때 데이터 볼륨 `/data/.m2/settings.xml` 로 복사(80 은 그 ConfigMap 을 같은 경로에 마운트) | Maven 미러(`mirrorOf *` 또는 `external:*`) → Nexus 그룹. 로그인은 `${env.NEXUS_USER}`. 없으면 이관이 접수 단계에서 멈춘다(`settings-not-found`, README §3 "Maven 설정과 로컬 저장소") |
 | `<kb.dir>/jar_names.yml` | KB 볼륨 `/data/kb-v2` | jar 파일 이름 → Nexus 좌표(이관팀이 채움). 이미지와 무관 |
 | `<kb.dir>/libraries.yml` | KB 볼륨 `/data/kb-v2` | 사람이 승인한 라이브러리 표(javax → jakarta 좌표 등) |
 | `knowledge/` (노트·자문·레시피 카탈로그) | 이미지 안 `/app/knowledge` | 바꾸려면 이미지를 다시 만든다 |
@@ -158,12 +160,11 @@
 매니페스트마다 `namespace: agent` 가 들어 있어 `apply` 에는 `-n` 이 필요 없다.
 
 ```bash
-kubectl apply -f deploy/k8s/20-configmap.yaml                 # sbmig-config(settings.xml 틀) + sbmig-env (<…> 자리를 채운 뒤)
+kubectl apply -f deploy/k8s/20-configmap.yaml                 # sbmig-config(settings.xml) + sbmig-env (<…> 자리를 채운 뒤)
 cp deploy/k8s/30-secret.example.yaml deploy/k8s/30-secret.yaml && $EDITOR deploy/k8s/30-secret.yaml
 kubectl apply -f deploy/k8s/30-secret.yaml
 kubectl -n agent create configmap sbmig-job-template --from-file=deploy/k8s/81-web-job.template.yaml --dry-run=client -o yaml | kubectl apply -f -   # Job 모드: 81 틀을 새로 받았을 때
-kubectl -n agent rollout restart deploy/sbmig && kubectl -n agent rollout status deploy/sbmig   # sbmig-env / Job 틀을 바꾼 뒤에는 언제나
-kubectl -n agent cp settings.xml <웹 파드 이름>:/data/.m2/settings.xml   # 채운 settings.xml 을 데이터 볼륨에(처음 한 번, 고칠 때마다)
+kubectl -n agent rollout restart deploy/sbmig && kubectl -n agent rollout status deploy/sbmig   # sbmig-env / sbmig-config / Job 틀을 바꾼 뒤에는 언제나
 kubectl -n agent logs deploy/sbmig | grep -E "config: |sbmig web UI ready|open to the network"   # 틀린 키 이름 / 시작 상태
 kubectl -n agent exec deploy/sbmig -- ls /app/config/artifacts.yml                               # 회사 설정이 이미지에 들어 있는지
 kubectl -n agent exec deploy/sbmig -- python -m sbmig.cli llm-probe                              # 게이트웨이 토큰 교환 … HTTP 200

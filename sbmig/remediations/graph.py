@@ -89,6 +89,8 @@ from .models import (
     write_json_atomic,
 )
 
+# 효과가 없어 수정본에서 다시 뺀 override 제안의 decision 값이다. 승인된 뒤 빌드 결과로 정해진다
+D_INEFFECTIVE = "ineffective"
 log = logging.getLogger("sbmig.remediations.graph")
 
 ROUTE = "route"
@@ -625,9 +627,16 @@ def _merge_residuals(st: RemediationState, residuals: list[Residual]) -> None:
 
 
 def _rejected_key(p: Proposal) -> tuple[str, ...]:
-    """거절된 제안을 planner의 ``rejected`` 키로 바꾼다. 형식 / classifier가 있는 override는 그 변종까지 담는다."""
+    """거절된 제안을 planner의 ``rejected`` 키로 바꾼다. 형식 / classifier가 있는 override는 그 변종까지 담는다.
+    효과가 없어 뺀 항목은 그 pom까지 담아, 같은 실행에서 그 pom에만 다시 제안하지 않는다.
+
+    (ga, to[, variant]) for a rejected proposal; (ga, to, variant, pom) for an override entry dropped as ineffective
+    (`D_INEFFECTIVE`), so only that pom's entry is never proposed again in this run."""
     from .apply import override_variant
     variant = override_variant(p)
+    if p.decision == D_INEFFECTIVE:
+        pom = next((e.pom for e in p.edits if e.op == "insert"), "")
+        return (p.ga, p.to_version, variant, pom)
     return (p.ga, p.to_version, variant) if variant else (p.ga, p.to_version)
 
 
@@ -661,10 +670,10 @@ def _plan(h: _Holder) -> str | None:
         h.journal({"event": "plan_reused", "round": r, "proposals": len(plan.proposals)})
     else:
         rejected = {_rejected_key(x) for k in range(1, r) if (pl := h.load_plan(k)) is not None
-                    for x in pl.proposals if x.decision == D_REJECTED}
+                    for x in pl.proposals if x.decision in (D_REJECTED, D_INEFFECTIVE)}
         if existing is not None:
             # 트리나 정책 해시가 달라진 낡은 계획은 승인할 수 없으므로 기록으로만 남기고 새로 만든다
-            rejected |= {_rejected_key(x) for x in existing.proposals if x.decision == D_REJECTED}
+            rejected |= {_rejected_key(x) for x in existing.proposals if x.decision in (D_REJECTED, D_INEFFECTIVE)}
             stale = p.round_dir(r) / "plan.stale.json"
             write_json_atomic(stale, existing.to_dict())
             h.journal({"event": "plan_stale", "round": r})
@@ -722,7 +731,9 @@ def _apply(h: _Holder) -> str | None:
                                 origin="proposal", reason=R_MANUAL_REVIEW, detail=f"proposal {pid} not applied: {why}",
                                 finding_ids=list(prop.finding_ids) if prop else [],
                                 modules=sorted(set(prop.modules) | set(prop.also_modules)) if prop else [],
-                                sources=list(it.sources or []) if it is not None else [],
+                                # 제안이 다루는 모듈의 출처가 있으면 그것을, 없으면(예전 계획) 인벤토리 항목의 것을 쓴다
+                                sources=(list(prop.sources) if prop is not None and prop.sources
+                                         else list(it.sources or []) if it is not None else []),
                                 reported_version=(it.reported_version or "") if it is not None else ""))
     _merge_residuals(st, skipped)
     applied = [by_id[pid] for pid in result.applied if pid in by_id]
@@ -777,6 +788,46 @@ def _recover_accepted(paths: RunPaths) -> None:
         _safe_rmtree(old)
 
 
+def _build_failed(h: _Holder, r: int, outcome: Any) -> str | None:
+    """수정본 빌드가 실패했을 때 정책(``failed_candidate``)대로 끝낸다."""
+    st, p = h.state, h.paths
+    rs = h.round_state(r)
+    if h.stop():
+        h.halt(STOPPED, R_STOP_REQUESTED, "build", f"stop requested during the round {r} candidate build")
+        return None
+    if getattr(h.rcfg, "failed_candidate", "include") == "include":
+        # 정책이 include면 실패한 수정본도 결과 ZIP으로 내보내지만, 성공일 수 없으므로 재검사는 하지 않는다
+        # accepted/, 원본 ZIP, candidate.patch, build.log는 그대로 남는다
+        kept = h.deliver_failed_candidate(r)
+        ids = ", ".join(rs.applied) or "-"
+        msg = (f"delivery/result.zip contains the round {r} change set whose candidate build FAILED "
+               f"(proposals: {ids}; build log {h.rel(p.build_log(r))}); it was not rescanned; "
+               "the original is preserved as original/source.zip")
+        if kept:
+            msg += f"; the verified delivery of an earlier round is kept as {kept}"
+        return h.finish(FAILED, R_CANDIDATE_BUILD_FAILED, f"{msg} | {outcome.summary}")
+    # 정책이 discard면 실패한 수정본은 결과 ZIP에 넣지 않는다.
+    # accepted/는 그대로 두고 candidate.patch는 남긴다
+    # 이전 라운드에서 검증을 마친 결과 ZIP이 있으면 그것은 남는다
+    h.discard_candidate(r)
+    msg = outcome.summary
+    if st.delivery is not None:
+        msg = (f"round {r} candidate discarded; delivery/result.zip is the verified state of round "
+               f"{st.delivery.round}, without the failed change | {msg}")
+    return h.finish(FAILED, R_CANDIDATE_BUILD_FAILED, msg)
+
+
+def _verify(h: _Holder, r: int, cand: Path, proposals: list[Proposal]) -> list[str]:
+    """수정본의 의존성을 다시 해석하고 제안과 비교한 검증 줄을 반환한다."""
+    c, p = h.c, h.paths
+    after = c.maven.resolve(h.project(cand), p.round_dir(r) / "work-after", **h.target_kw)
+    write_json_atomic(p.resolved(r), after.to_dict())
+    packaged = list(c.maven.packaged(h.project(cand), **h.target_kw))
+    before_data = read_json(p.round_dir(r) / "before.json")
+    before = ResolvedModel.from_dict(before_data) if isinstance(before_data, dict) else ResolvedModel(complete=False)
+    return list(c.apply.verify_resolution(proposals, before, after, packaged))
+
+
 def _build(h: _Holder) -> str | None:
     st, c, p = h.state, h.c, h.paths
     r = st.round
@@ -785,44 +836,121 @@ def _build(h: _Holder) -> str | None:
     outcome = h.build_outcome(c.maven.package(h.project(cand), p.build_log(r), h.stop, **h.target_kw), p.build_log(r))
     rs.build = outcome
     if not outcome.ok:
-        if h.stop():
-            h.halt(STOPPED, R_STOP_REQUESTED, "build", f"stop requested during the round {r} candidate build")
-            return None
-        if getattr(h.rcfg, "failed_candidate", "include") == "include":
-            # 정책이 include면 실패한 수정본도 결과 ZIP으로 내보내지만, 성공일 수 없으므로 재검사는 하지 않는다
-            # accepted/, 원본 ZIP, candidate.patch, build.log는 그대로 남는다
-            kept = h.deliver_failed_candidate(r)
-            ids = ", ".join(rs.applied) or "-"
-            msg = (f"delivery/result.zip contains the round {r} change set whose candidate build FAILED "
-                   f"(proposals: {ids}; build log {h.rel(p.build_log(r))}); it was not rescanned; "
-                   "the original is preserved as original/source.zip")
-            if kept:
-                msg += f"; the verified delivery of an earlier round is kept as {kept}"
-            return h.finish(FAILED, R_CANDIDATE_BUILD_FAILED, f"{msg} | {outcome.summary}")
-        # 정책이 discard면 실패한 수정본은 결과 ZIP에 넣지 않는다.
-        # accepted/는 그대로 두고 candidate.patch는 남긴다
-        # 이전 라운드에서 검증을 마친 결과 ZIP이 있으면 그것은 남는다
-        h.discard_candidate(r)
-        msg = outcome.summary
-        if st.delivery is not None:
-            msg = (f"round {r} candidate discarded; delivery/result.zip is the verified state of round "
-                   f"{st.delivery.round}, without the failed change | {msg}")
-        return h.finish(FAILED, R_CANDIDATE_BUILD_FAILED, msg)
-    after = c.maven.resolve(h.project(cand), p.round_dir(r) / "work-after", **h.target_kw)
-    write_json_atomic(p.resolved(r), after.to_dict())
-    packaged = list(c.maven.packaged(h.project(cand), **h.target_kw))
-    before_data = read_json(p.round_dir(r) / "before.json")
-    before = ResolvedModel.from_dict(before_data) if isinstance(before_data, dict) else ResolvedModel(complete=False)
-    lines = list(c.apply.verify_resolution(_applied_proposals(h, r), before, after, packaged))
+        return _build_failed(h, r, outcome)
+    applied = _applied_proposals(h, r)
+    lines = _verify(h, r, cand, applied)
     rs.verify_problems = lines
     problems = [ln for ln in lines if not ln.startswith("info:")]
     if problems:
+        split = getattr(c.apply, "split_ineffective", None)
+        drop, other = split(applied, lines) if callable(split) else ([], problems)
+        if drop and not other:
+            return _drop_ineffective(h, r, applied, drop, problems)
         h.discard_candidate(r)
         return h.finish(FAILED, R_RESOLUTION_MISMATCH, "; ".join(problems[:5]))
+    return _commit_round(h, r, cand)
+
+
+def _commit_round(h: _Holder, r: int, cand: Path) -> str:
+    rs = h.round_state(r)
     _commit(h, cand)
     rs.committed = True
     h.journal({"event": "round_committed", "round": r, "applied": list(rs.applied)})
     return "freeze_delivery"
+
+
+def _drop_ineffective(h: _Holder, r: int, applied: list[Proposal], drop: list[Proposal],
+                      problems: list[str]) -> str | None:
+    """효과가 없던 override 항목을 빼고 수정본을 다시 만들어 한 번 더 빌드하고 검증한다.
+    다시 만들 시간이 없거나 두 번째 검증도 실패하면 예전처럼 ``resolution_mismatch``로 끝낸다.
+
+    The only problems of the round are inserted override entries whose governed modules still resolve the old
+    version (`apply.split_ineffective`). They are dropped: plan decision `ineffective` (`D_INEFFECTIVE`), one
+    `manual_review` residual each, journal `override_ineffective`; the candidate is rebuilt from accepted/ with the
+    remaining proposals only (byte for byte what applying them alone gives) and built + verified ONCE more. Nothing
+    left → the round ends like a round with nothing to apply. A stop / used-up time budget before the rebuild, a
+    failed second build or a second verification problem → today's outcome."""
+    st, c, p = h.state, h.c, h.paths
+    rs = h.round_state(r)
+    cand = p.candidate(r)
+    ids = ", ".join(x.id for x in drop)
+    if h.stop():
+        h.discard_candidate(r)
+        return h.finish(FAILED, R_RESOLUTION_MISMATCH,
+                        "; ".join(problems[:5]) + f" | the ineffective override entr(ies) {ids} were not removed and "
+                        "rebuilt: a stop was requested or the time budget is used up")
+    plan = h.load_plan(r)
+    gone = {x.id for x in drop}
+    items = _inventory_items(h, r)
+    groups: dict[tuple[str, str], list[Proposal]] = {}
+    for x in drop:
+        pom = next((e.pom for e in x.edits if e.op == "insert"), "")
+        groups.setdefault((ga_key(x.ga), version_key(x.from_version)), []).append(x)
+        h.journal({"event": "override_ineffective", "round": r, "proposal": x.id, "pom": pom, "ga": x.ga,
+                   "modules": list(x.modules)})
+        log.info("remediation round %s: override entry %s in %s had no effect on %s; removed, rebuilding without it",
+                 r, x.id, pom, x.ga)
+    # 상태는 (g:a, 버전, 사유)마다 항목 하나이므로 같은 라이브러리의 뺀 항목은 pom을 모두 적은 항목 하나로 만든다
+    residuals: list[Residual] = []
+    for key, xs in groups.items():
+        x = xs[0]
+        poms = [next((e.pom for e in y.edits if e.op == "insert"), "") for y in xs]
+        it = items.get(key)
+        if len(xs) == 1:
+            detail = (f"the override entry in {poms[0]} did not change the resolved version of {x.ga} "
+                      f"({x.from_version} stays): a dependency declared with a version, here or in a parent, wins "
+                      "over <dependencyManagement>; the entry was removed again")
+        else:
+            detail = (f"the override entries in {', '.join(poms)} did not change the resolved version of {x.ga} "
+                      f"({x.from_version} stays): a dependency declared with a version, here or in a parent, wins "
+                      "over <dependencyManagement>; the entries were removed again")
+        srcs = [sc for y in xs for sc in y.sources]
+        residuals.append(Residual(
+            ga=x.ga, version=x.from_version, origin=it.origin if it is not None else "proposal", reason=R_MANUAL_REVIEW,
+            detail=detail, finding_ids=sorted({f for y in xs for f in y.finding_ids}),
+            modules=sorted({m for y in xs for m in [*y.modules, *y.also_modules]}),
+            sources=srcs or (list(it.sources or []) if it is not None else []),
+            reported_version=(it.reported_version or "") if it is not None else ""))
+    if plan is not None:
+        for x in plan.proposals:
+            if x.id in gone:
+                x.decision = D_INEFFECTIVE
+        write_json_atomic(p.plan(r), plan.to_dict())
+    _merge_residuals(st, residuals)
+    keep = [x for x in applied if x.id not in gone]
+    rs.applied = [x.id for x in keep]
+    _safe_rmtree(cand)
+    if not keep:
+        # 남은 변경이 없으면 적용할 것이 없던 라운드와 같이 끝낸다
+        if st.delivery is None:
+            h.deliver_original()
+        return "evaluate"
+    c.intake.copy_tree(p.accepted, cand, h.paths_list)
+    result = c.apply.apply_proposals(h.project(cand), keep)
+    p.patch(r).write_text(result.patch or "", encoding="utf-8")
+    write_json_atomic(p.round_dir(r) / "apply.json", result.to_dict())
+    if result.skipped or list(result.applied) != rs.applied:
+        h.discard_candidate(r)
+        return h.finish(FAILED, R_RESOLUTION_MISMATCH,
+                        "; ".join(problems[:5]) + f" | the candidate without {ids} could not be rebuilt: "
+                        + "; ".join(f"{k}: {v}" for k, v in sorted(result.skipped.items())))
+    violations = list(c.apply.verify_text_only(h.project(p.accepted), h.project(cand), keep, h.project_paths))
+    if violations:
+        rs.verify_problems = violations
+        h.discard_candidate(r)
+        return h.finish(FAILED, R_TEXT_ONLY_VIOLATION, "; ".join(violations[:5]))
+    outcome = h.build_outcome(c.maven.package(h.project(cand), p.build_log(r), h.stop, **h.target_kw), p.build_log(r))
+    rs.build = outcome
+    if not outcome.ok:
+        return _build_failed(h, r, outcome)
+    lines = _verify(h, r, cand, keep)
+    rs.verify_problems = lines
+    again = [ln for ln in lines if not ln.startswith("info:")]
+    if again:
+        h.discard_candidate(r)
+        return h.finish(FAILED, R_RESOLUTION_MISMATCH,
+                        "; ".join(again[:5]) + f" | after removing the ineffective override entr(ies) {ids}")
+    return _commit_round(h, r, cand)
 
 
 def _freeze_delivery(h: _Holder) -> str | None:

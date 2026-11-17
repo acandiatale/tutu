@@ -375,7 +375,8 @@ def test_render_override_shapes():
     lambda e: e.override.update(version="1.1 "),
     lambda e: e.override.update(extra="x"),
     lambda e: setattr(e, "old", "1.0"),
-    lambda e: setattr(e, "pom", "sub/pom.xml"),
+    lambda e: setattr(e, "pom", "../pom.xml"),
+    lambda e: setattr(e, "pom", "missing/pom.xml"),
     lambda e: setattr(e, "op", "delete"),
 ])
 def test_tampered_insert_is_rejected(tmp_path, tamper):

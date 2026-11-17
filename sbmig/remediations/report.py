@@ -3,7 +3,7 @@
 ``write_report``를 호출하고, API 목록은 ``summary``를 쓴다.
 - 비밀 값, 토큰, 서버 절대 경로를 넣지 않는다. 경로는 실행 폴더 기준 상대 경로만 쓴다
 - 입력이 같으면 내용도 같아야 하므로 현재 시각을 넣지 않고 정렬 순서를 고정한다
-- report.md 순서: 결과 블록, 요약, 해야 할 일, 조치 완료, 승인 대기, 사내 라이브러리, 직접 확인, 제외 항목,
+- report.md 순서: 결과 블록, 요약, 해야 할 일, 조치 완료, 승인 대기, 선택하지 않은 변경, 사내 라이브러리, 직접 확인, 제외 항목,
   변경하지 않은 것, 처리 기록. 빈 절은 쓰지 않는다
 - 상태와 사유 코드는 접힌 처리 기록에만 쓰고, 영어 문장은 ``i18n.ko_display``로 바꿔 보여 준다.
   report.json에는 영어 문장과 코드를 그대로 쓴다
@@ -48,6 +48,7 @@ from .models import (
     AWAITING_APPROVAL,
     AWAITING_CONFIRMATION,
     D_PENDING,
+    D_REJECTED,
     E_INSERT,
     FAILED,
     INCOMPLETE,
@@ -115,11 +116,12 @@ _REASON_KO: dict[str, tuple[str, str]] = {
     "not_ready": ("조치 서버의 실행 환경(IVAS 설정, settings.xml, JDK 21, Maven)이 준비되지 않았습니다.",
                   "**운영 담당자에게 알리기** — 운영 담당자에게 서버 설정 확인을 요청해 주세요."),
     "pending_approval": ("승인을 기다리는 변경이 있습니다.",
-                         "**변경 승인하기** — 「승인 대기」의 변경을 확인한 뒤, 조치 화면의 체크박스 목록에서 적용할 변경을 "
-                         "골라 「선택한 항목 적용」을 눌러 주세요."),
-    "rejected_proposals": ("적용하지 않기로 한 변경이 있어 그 취약점은 남아 있습니다.",
-                           "**적용하지 않은 변경 조치하기** — 적용하지 않기로 한 변경의 취약점은 담당 팀에서 직접 조치해 "
-                           "주세요."),
+                         "**적용할 변경 고르기** — 고르기 전에는 아무것도 적용하지 않으므로 먼저 검토해도 됩니다. 조치 화면을 "
+                         "열어 「승인 대기」의 변경을 확인하고, 적용할 항목을 체크한 뒤 적용 버튼(「선택한 N건 적용」)을 "
+                         "눌러 주세요."),
+    "rejected_proposals": ("조치 화면에서 선택하지 않은 변경이 있어 그 취약점은 남아 있습니다.",
+                           "**선택하지 않은 변경 검토하기** — 「선택하지 않아 적용하지 않은 변경」의 내용을 검토한 뒤, 조치를 "
+                           "다시 실행해 선택하거나 해당 pom.xml에 직접 추가해 주세요."),
     "residual_findings": ("조치 후 검사에서 취약점이 남아 있습니다.",
                           "**남은 취약점 확인하기** — 「처리 기록」의 남은 취약점 전체 목록을 확인하고 담당 팀에서 조치해 "
                           "주세요."),
@@ -373,7 +375,8 @@ def _next_steps(state: RemediationState, fx: "_Facts | None" = None) -> list[str
     out: list[str] = []
     if state.status == SUCCEEDED:
         out.append(_SUCCEEDED_STEP)
-    others = [_reason_text(state, c)[1] for c in codes
+    others = [_with_count(_reason_text(state, c)[1], fx.matching(fx.skipped))
+              if c == "rejected_proposals" and fx is not None else _reason_text(state, c)[1] for c in codes
               if c not in ("pending_approval", R_INHOUSE_ARTIFACT, "manual_review", "residual_findings")]
     if state.status in (FAILED, STOPPED, INTERRUPTED, AWAITING_CONFIRMATION):
         # 실패, 중단, 확인 대기는 원인을 먼저 해결해야 다음 단계로 갈 수 있으므로 앞에 둔다
@@ -503,6 +506,9 @@ class _Facts:
             if rs.committed and pl is not None:
                 ids = set(rs.applied)
                 self.committed += [p for p in pl.proposals if p.id in ids]
+        # 담당자가 승인 화면에서 고르지 않은 제안이다. 실패가 아니라 담당자의 선택으로 보여 준다
+        self.skipped = [p for n in sorted(self.plans) if self.plans[n] is not None
+                        for p in self.plans[n].proposals if p.decision == D_REJECTED]
         self.pending = [p for n in sorted(self.plans) if self.plans[n] is not None
                         for p in self.plans[n].proposals if p.decision == D_PENDING]
         self.inhouse = [r for r in state.residuals if r.reason == R_INHOUSE_ARTIFACT]
@@ -675,7 +681,8 @@ def _result_lines(state: RemediationState, fx: _Facts) -> list[str]:
         n = len(fx.pending)
         body += _numbers(state, fx)[:1]
         body.append((f"제안 {n}건이 승인을 기다립니다." if n else "승인을 기다리는 변경이 있습니다.")
-                    + " 조치 화면에서 적용할 변경을 고르면 이어서 진행합니다.")
+                    + " 조치 화면에서 적용할 변경을 체크하고 적용 버튼(「선택한 N건 적용」)을 누르면 이어서 진행합니다. 고르기 전에는 "
+                    "아무것도 적용하지 않으므로 검토한 뒤에 골라도 됩니다.")
     elif state.status == INTERRUPTED:
         ko, _raw = _known_and_raw(state.message)
         body += ko or ["서버가 다시 시작되면서 조치가 멈췄습니다. 자동으로 다시 실행하지 않습니다."]
@@ -715,39 +722,137 @@ def _note_lines(text: str) -> list[str]:
     return [k for k in ko if k] + ([f"원문: `{raw.replace('`', chr(39))}`"] if raw else [])
 
 
-def _proposal_section(L: list[str], fx: _Facts, props: list[Proposal], *, pending: bool) -> None:
-    head = (["위험도", "라이브러리", "버전 변경", "수정할 곳", "주의", "해결할 취약점"] if pending
-            else ["위험도", "라이브러리", "버전 변경", "수정한 곳", "해결된 취약점"])
+_PENDING_HEAD = ["위험도", "라이브러리", "버전 변경", "수정할 곳", "주의", "해결할 취약점"]
+_DONE_HEAD = ["위험도", "라이브러리", "버전 변경", "수정한 곳", "해결된 취약점"]
+_SKIPPED_HEAD = ["위험도", "라이브러리", "버전 변경", "수정할 곳", "해당 취약점"]
+
+
+def _by_pom(p: Proposal) -> bool:
+    """pom마다 묶어 보여 줄 버전 지정 추가 제안인지 확인한다. 모듈별 경로가 없는 이전 형식의 최상위 제안은 아니다.
+
+    A `managed_override` proposal shown per pom under its library: one with module sources or one that edits a module
+    pom. A root override of an older state (no sources) keeps the one-row-per-proposal form."""
+    return p.kind == K_MANAGED_OVERRIDE and bool(p.edits) and (bool(p.sources) or p.edits[0].pom != "pom.xml")
+
+
+def _pom_words(pom: str) -> str:
+    return "최상위 pom.xml" if pom == "pom.xml" else f"`{_md_cell(pom)}`"
+
+
+def _entry_words(p: Proposal) -> str:
+    """추가할 항목을 "`g:a:v` classifier `x`" 형식으로 만든다."""
+    o = p.edits[0].override or {} if p.edits else {}
+    g, a = o.get("groupId", ""), o.get("artifactId", "")
+    coord = f"{g}:{a}" if g and a else p.ga
+    text = f"`{_md_cell(coord)}:{_md_cell(o.get('version') or p.to_version)}`"
+    variant = _one_variant(f"{o.get('type') or 'jar'}/{o.get('classifier') or ''}")
+    return text + (f" {variant}" if variant else "")
+
+
+def _sources_words(p: Any) -> str:
+    """제안이나 항목의 모듈별 들어온 경로를 한 줄로 만든다. 경로가 없으면 적용 범위를 쓴다."""
+    groups = _row_sources(p)
+    if groups:
+        return "; ".join((f"{', '.join(f'`{_md_cell(m)}`' for m in mods)} 모듈: " if mods else "") + text
+                         for mods, text in groups)
+    mods = getattr(p, "modules", None) or []
+    return f"적용 범위 {_mods_code(mods)}" if mods else ""
+
+
+def _pom_line(p: Proposal) -> str:
+    """pom 하나에 버전 지정을 추가하는 제안을 한 줄로 만든다. 수정할 pom, 추가할 항목, 들어온 경로를 담는다."""
+    pom = p.edits[0].pom if p.edits else ""
+    parts = [f"{_pom_words(pom)}에 버전 지정 추가 (제안 `{_md_cell(p.id)}`)", f"항목 {_entry_words(p)}"]
+    src = _sources_words(p)
+    if src:
+        parts.append(src)
+    return " · ".join(parts)
+
+
+def _proposal_section(L: list[str], fx: _Facts, props: list[Proposal], *, pending: bool, skipped: bool = False) -> None:
+    """제안 표와 제안별 설명을 쓴다. 버전 지정 추가 제안은 라이브러리별로 묶고 pom마다 한 줄로 쓴다.
+
+    The proposal table and the notes under it. `managed_override` proposals with module sources or a module pom are
+    grouped per (library, from, to): one table row, then one line per pom (entry, path). Others as one row each."""
+    head = _PENDING_HEAD if pending else (_SKIPPED_HEAD if skipped else _DONE_HEAD)
     L.append("| " + " | ".join(head) + " |")
     L.append("|" + "---|" * len(head))
-    scores = {p.id: fx.row_score(p.finding_ids, p.ga, p.from_version) for p in props}
-    props = sorted(props, key=lambda p: (*fx.order(scores[p.id], p.ga, p.from_version), p.id))
+    units: list[list[Proposal]] = []
+    grouped: dict[tuple[str, str, str], list[Proposal]] = {}
     for p in props:
-        cells = [fx.sev_cell(scores[p.id]), f"`{_md_cell(p.ga)}`", f"{_md_cell(p.from_version)} → {_md_cell(p.to_version)}",
-                 _place(p)]
+        if _by_pom(p):
+            key = (p.ga, p.from_version, p.to_version)
+            if key not in grouped:
+                grouped[key] = []
+                units.append(grouped[key])
+            grouped[key].append(p)
+        else:
+            units.append([p])
+    for u in units:
+        u.sort(key=lambda p: (p.edits[0].pom if p.edits else "", p.id))
+
+    def ids(u: list[Proposal]) -> list[str]:
+        return [i for p in u for i in p.finding_ids]
+
+    scores = {id(u): fx.row_score(ids(u), u[0].ga, u[0].from_version) for u in units}
+    units.sort(key=lambda u: (*fx.order(scores[id(u)], u[0].ga, u[0].from_version), u[0].id))
+    for u in units:
+        p = u[0]
+        if _by_pom(p):
+            poms = list(dict.fromkeys(_pom_words(x.edits[0].pom) for x in u))
+            place = _cut(poms, unit="곳")
+        else:
+            place = _place(p)
+        cells = [fx.sev_cell(scores[id(u)]), f"`{_md_cell(p.ga)}`",
+                 f"{_md_cell(p.from_version)} → {_md_cell(p.to_version)}", place]
         if pending:
-            cells.append(_md_cell(", ".join(label(RISK_KO, r) for r in sorted(p.risks)) or "-"))
-        cells.append(_md_cell(fx.cve_cell(p.ga, p.from_version, p.finding_ids)))
+            risks = sorted({r for x in u for r in x.risks})
+            cells.append(_md_cell(", ".join(label(RISK_KO, r) for r in risks) or "-"))
+        cells.append(_md_cell(fx.cve_cell(p.ga, p.from_version, ids(u))))
         L.append("| " + " | ".join(cells) + " |")
     L.append("")
-    for p in props:
-        L.append(f"- **`{_md_cell(_aid(p.ga))}` {_md_cell(p.from_version)} → {_md_cell(p.to_version)}** "
-                 f"(제안 `{_md_cell(p.id)}`)")
+    for u in units:
+        p = u[0]
+        if not _by_pom(p):
+            _proposal_notes(L, p)
+            continue
+        ref = f"제안 `{_md_cell(p.id)}`" if len(u) == 1 else f"제안 {len(u)}건"
+        L.append(f"- **`{_md_cell(_aid(p.ga))}` {_md_cell(p.from_version)} → {_md_cell(p.to_version)}** ({ref})")
         if p.evidence:
             L.append(f"  - 버전 확인: {_md_cell(evidence_ko(p.evidence))}")
-        if p.kind and p.kind != K_DIRECT_VERSION:
-            L.append(f"  - 수정 방식: {_md_cell(label(KIND_KO, p.kind))}")
-        if p.modules:
-            L.append(f"  - 적용 범위: {_md_cell(_mods_code(p.modules))}")
-        notes = _note_lines(p.note) if p.note else []
+        L.append(f"  - 수정 방식: {_md_cell(label(KIND_KO, p.kind))}")
+        if len(u) == 1:
+            L.append(f"  - {_md_cell(_pom_line(p))}")
+        else:
+            L.append("  - 수정할 pom:")
+            L += [f"    - {_md_cell(_pom_line(x))}" for x in u]
+        notes = list(dict.fromkeys(n for x in u for n in (_note_lines(x.note) if x.note else [])))
         if len(notes) == 1:
             L.append(f"  - 참고: {_md_cell(notes[0])}")
         elif notes:
             L.append("  - 참고:")
             L += [f"    - {_md_cell(n)}" for n in notes]
-        if p.also_modules and "also_resolved_edit" not in i18n.rule_keys(p.note):
-            L.append(f"  - 적용되지 않을 수 있는 모듈: {_md_cell(_mods_code(p.also_modules))} — 같은 라이브러리를 다른 경로로 "
-                     "가져옵니다.")
+
+
+def _proposal_notes(L: list[str], p: Proposal) -> None:
+    """제안 하나의 설명 줄(버전 확인, 수정 방식, 적용 범위, 참고)을 쓴다."""
+    L.append(f"- **`{_md_cell(_aid(p.ga))}` {_md_cell(p.from_version)} → {_md_cell(p.to_version)}** "
+             f"(제안 `{_md_cell(p.id)}`)")
+    if p.evidence:
+        L.append(f"  - 버전 확인: {_md_cell(evidence_ko(p.evidence))}")
+    if p.kind and p.kind != K_DIRECT_VERSION:
+        L.append(f"  - 수정 방식: {_md_cell(label(KIND_KO, p.kind))}")
+    if p.modules:
+        L.append(f"  - 적용 범위: {_md_cell(_mods_code(p.modules))}")
+    notes = _note_lines(p.note) if p.note else []
+    if len(notes) == 1:
+        L.append(f"  - 참고: {_md_cell(notes[0])}")
+    elif notes:
+        L.append("  - 참고:")
+        L += [f"    - {_md_cell(n)}" for n in notes]
+    if p.also_modules and "also_resolved_edit" not in i18n.rule_keys(p.note):
+        L.append(f"  - 적용되지 않을 수 있는 모듈: {_md_cell(_mods_code(p.also_modules))} — 같은 라이브러리를 다른 경로로 "
+                 "가져옵니다.")
 
 
 def _dep_path(r: Residual, owner: str) -> str:
@@ -1089,6 +1194,8 @@ def _summary_section(L: list[str], state: RemediationState, fx: _Facts, paths: R
         n_pend = fx.matching(fx.pending)
         if fx.pending:
             L.append(f"| 승인 대기 | {_num(n_pend)}건 | {_num(len({p.ga for p in fx.pending}))}개 |")
+        if fx.skipped:
+            L.append(f"| 선택하지 않은 변경 | {_num(fx.matching(fx.skipped))}건 | {_num(len({p.ga for p in fx.skipped}))}개 |")
         if fx.inhouse:
             L.append(f"| 사내 라이브러리 담당자 요청 | {_num(fx.matching(fx.inhouse))}건 | {_num(len(fx.inhouse))}개 |")
         if fx.manual:
@@ -1248,7 +1355,7 @@ def _record_section(L: list[str], state: RemediationState, fx: _Facts, paths: Ru
 
 
 def _shown_above(fx: _Facts) -> set[str]:
-    return {p.id for p in fx.committed} | {p.id for p in fx.pending}
+    return {p.id for p in fx.committed} | {p.id for p in fx.pending} | {p.id for p in fx.skipped}
 
 
 def _round_block(L: list[str], state: RemediationState, fx: _Facts, rs: RoundState, step: int) -> None:
@@ -1393,9 +1500,20 @@ def build_report_md(state: RemediationState, paths: RunPaths, *, ignore_actions:
     if fx.pending:
         L.append(f"## 승인 대기 — 제안 {len(fx.pending)}건")
         L.append("")
-        L.append("아래 변경은 승인해야 적용됩니다. 적용하면 빌드와 재검사를 이어서 진행합니다.")
+        L.append("아래 변경은 조치 화면에서 골라야 적용됩니다. 고른 변경만 적용하고 빌드와 재검사를 이어서 진행하며, 고르지 "
+                 "않은 변경은 적용하지 않습니다.")
         L.append("")
         _proposal_section(L, fx, fx.pending, pending=True)
+        L.append("")
+
+    # 5-1. 선택하지 않아 적용하지 않은 변경
+    if fx.skipped:
+        L.append(f"## 선택하지 않아 적용하지 않은 변경 — 제안 {len(fx.skipped)}건")
+        L.append("")
+        L.append("조치 화면에서 선택하지 않은 변경입니다. 이번 실행에서는 다시 제안하지 않습니다. 검토한 뒤 조치를 다시 "
+                 "실행해 선택하거나, 아래 내용을 해당 pom.xml에 직접 추가할 수 있습니다.")
+        L.append("")
+        _proposal_section(L, fx, fx.skipped, pending=False, skipped=True)
         L.append("")
 
     # 6. 사내 라이브러리에서 발생한 취약점

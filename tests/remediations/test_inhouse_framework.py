@@ -209,8 +209,11 @@ def test_transitive_reached_both_under_and_outside_the_framework_is_split(tmp_pa
     assert own.modules == ["app-b"] and own.inhouse_modules == []
     assert [(r.reason, r.modules) for r in plan.residuals if r.reason == "inhouse_artifact"] == [
         ("inhouse_artifact", ["app-a"])]
-    # app-b is planned by its own facts, as the whole item was without the in-house rule
-    assert [x.kind for x in plan.proposals] == [x.kind for x in old.proposals]
+    # app-b is planned by its own facts: an entry in its own pom (it does not inherit from the root); the old
+    # whole item got one per module pom, app-a's included
+    assert [(x.kind, x.edits[0].pom, x.modules) for x in plan.proposals] == [
+        ("managed_override", "app-b/pom.xml", ["app-b"])]
+    assert sorted(x.edits[0].pom for x in old.proposals) == ["app-a/pom.xml", "app-b/pom.xml"]
     assert [r.reason for r in plan.residuals if r.reason != "inhouse_artifact"] == [r.reason for r in old.residuals]
 
 
