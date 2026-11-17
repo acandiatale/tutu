@@ -31,6 +31,8 @@ from .contract import ACTION_ENV, RUN_ENV, WORKER_MODULE, status_file_for
 from .k8s import JobState, K8sError
 
 log = logging.getLogger("sbmig.web.localjob")
+# 웹 프로세스만 쓰는 변수(admin.ADMIN_PASSWORD_ENV)이며 로컬 Worker 자식에게 넘기지 않는다
+WEB_ONLY_ENV = ("SBMIG_ADMIN_PASSWORD",)
 
 
 def _kill_tree(proc: subprocess.Popen) -> None:
@@ -123,6 +125,9 @@ class LocalJobClient:
         # 템플릿 값은 컨테이너 경로이므로 이 Main의 저장소 경로를 넣는다
         if self.repo_root is not None:
             child_env["SBMIG_APP_DIR"] = str(self.repo_root)
+        # 관리자 비밀번호는 웹 프로세스만 쓰므로 Worker에 넘기지 않는다
+        for key in WEB_ONLY_ENV:
+            child_env.pop(key, None)
         # its own process group / session: delete_job must take the Maven / Java grandchildren with it (review 2026-11-05)
         group: dict[str, Any] = ({"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)} if os.name == "nt"
                                  else {"start_new_session": True})

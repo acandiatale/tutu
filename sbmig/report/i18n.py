@@ -641,10 +641,8 @@ PATTERNS: dict[str, list[tuple[re.Pattern[str], Union[str, Callable[[re.Match[st
      r"JDK \g<want> 경로로 설정한 뒤 다시 실행해 주세요."),
     (r"^Maven settings file not found: (?P<p>.+) \(build\.settings_file\) — put the settings\.xml there and rerun$",
      r"Maven settings.xml을 찾지 못했습니다(\g<p>). 이 경로에 settings.xml을 넣은 뒤 다시 실행해 주세요."),
-    (r"^Maven settings file is empty: (?P<p>.+) \(build\.settings_file\) — the ConfigMap is not mounted there; check the "
-     r"volumeMounts of the pod and rerun$",
-     r"Maven settings.xml이 비어 있습니다(\g<p>). ConfigMap이 이 경로에 마운트되지 않았습니다. 파드의 volumeMounts를 확인한 뒤 다시 "
-     r"실행해 주세요."),
+    (r"^Maven settings file is empty: (?P<p>.+) \(build\.settings_file\) — copy the settings\.xml there and rerun$",
+     r"Maven settings.xml이 비어 있습니다(\g<p>). 이 경로에 settings.xml 내용을 넣은 뒤 다시 실행해 주세요."),
     (r"^build\.setup_command failed \(rc=(?P<rc>-?\d+)\): ?(?P<t>.*)$",
      r"실행 준비 명령(build.setup_command)이 실패했습니다(rc=\g<rc>). \g<t>"),
     (r"^stopped by user \(stop\.request\) — the final `mvn clean package` did not run$",

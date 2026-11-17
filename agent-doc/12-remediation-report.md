@@ -178,6 +178,9 @@ pom · BOM · classifier · dependencyManagement · property · scope · jar는 
 - 승인 화면: `GET /api/remediations/<id>/proposals` 가 제안마다 `note_ko`, 잔여마다 `detail_ko` · `origin_ko` · `reason_ko` 를 더 싣고,
   화면은 `note_ko` 를 보여 준다. 상태 응답(`GET /api/remediations/<id>`)은 `message_ko` · `status_ko` 를 더 싣고 화면은
   `message_ko` 를 먼저 보여 준다. 원래 키는 그대로다.
+- 승인한 뒤 서버 설정(정책 해시)이 바뀌어 재개한 파드가 계획을 다시 세우면, 다시 승인 대기가 되고 `message` 가 그 이유로 시작한다
+  (규칙 `policy_replanned`: "서버 설정이 바뀌어 앞서 승인한 내용은 적용하지 않고 계획을 다시 세웠습니다. 변경 내용을 다시 확인해 주세요.").
+  승인 대기에서는 보고서를 다시 쓰지 않으므로 이 문장은 화면과 `sbmig.log` 의 `chained remediation …` 줄에 나온다.
 - **새 영어 문장을 코드에 더하면** `RULES`에 규칙을 더하고 `tests/remediations/test_i18n.py`에 표본 문장을 더한다. 그 시험은 규칙마다 표본이
   있는지, 옮긴 글에 한글이 있고 식별자가 남았는지 본다. 잔여 설명이면 `GROUPS`에 묶음도 더한다. 한국어는 2절의 용어표대로,
   합니다체로 한 문장에 사실 하나만 쓴다. 조사는 앞말에 붙인다(pom을, ZIP은, jar가). 값(좌표·버전·모듈·경로) 뒤에는 받침에 따라

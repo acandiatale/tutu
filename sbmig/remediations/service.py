@@ -8,7 +8,9 @@
   approvals.jsonl에 기록하고, 하나라도 틀리면 아무것도 쓰지 않는다
 - 재개는 사람이 요청할 때만 한다.
   서버가 재시작되면 QUEUED / RUNNING으로 남은 작업은 INTERRUPTED가 되고 자동으로 다시 실행하지 않는다
-- ``build.local_repo``가 있으면 ``<그 경로>-remediation``을 써서 이관 빌드 파드와 로컬 저장소를 나눈다
+- 단독 업로드는 ``build.local_repo``가 있으면 ``<그 경로>-remediation``을 써서 이관 빌드 파드와 로컬 저장소를 나눈다.
+  이관 뒤 이어서 실행한 조치를 재개할 때는 그 이관이 쓴 저장소를 그대로 쓴다
+- 승인 기록은 ``claim.json`` 점유가 살아 있으면 거절하고, 웹 파드는 점유하지 않는다
 - 상태는 ``state.json`` 파일에서 읽는다(DB 없음)
 이관 뒤 이어서 실행하는 조치(빌드 파드가 이관 성공 뒤 ``<out>/<이관 실행 id>/remediation/``에 남긴 조치)도
 같은 API로 보여 준다. Job 모드에서 이를 재개하면 확인 응답을 state.json에 먼저 기록하고
@@ -86,6 +88,7 @@ ID_RE = re.compile(r"^r\d{8}-\d{6}-[0-9a-f]{6,32}$")
 # 이관 뒤 이어서 실행한 조치의 ID는 이관 실행 id이며 sbmig.web.runs.RUN_ID_RE와 같은 규칙이다
 RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$")
 from .chain import CHAIN_DIR  # noqa: E402. 이관 실행 폴더 안의 조치 폴더 이름
+from .chain import RunClaim, claim_info  # noqa: E402. 상태를 진행시키는 프로세스 하나만 작업 폴더를 쓰게 하는 점유
 STOP_REQUEST_FILE = "stop.request"            # sbmig.core.workspace.STOP_REQUEST_FILE. 다른 파드의 실행을 멈추는 파일
 JOB_MODES = ("k8s-job", "local-job")
 IN_PROCESS = "in-process"
@@ -99,6 +102,7 @@ NOT_AVAILABLE_MESSAGE = ("remediation runs in the build pod after a successful m
 RESUME_UNSUPPORTED = ("this web server cannot dispatch a build pod for the resume ({mode} mode without a run manager that "
                       "resumes remediations)")
 RESUME_ACTIVE_NOTE = "이미 새 빌드 파드에서 이어서 진행 중이거나 자리를 기다리고 있습니다."      # 화면에 그대로 보이는 문장
+CLAIM_HELD_NOTE = "다른 프로세스가 이 실행을 진행하고 있습니다. 끝난 뒤에 다시 시도해 주세요."    # 화면에 그대로 보이는 문장
 CONFIG_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$")
 FALLBACK_CONFIGS = ("artifacts.yml", "artifacts.local-e2e.yml")       # RunManager.FALLBACK_CONFIGS와 같은 규칙
 LOCAL_REPO_SUFFIX = "-remediation"
@@ -684,6 +688,12 @@ class RemediationManager:
                 return
             if state.status != QUEUED:
                 return
+            try:
+                # 상태를 진행시키는 동안 작업 폴더를 점유한다. 다른 프로세스가 점유 중이면 아무것도 바꾸지 않는다
+                claim = RunClaim(paths.root, purpose="service").acquire()
+            except StateConflict as e:
+                log.warning("remediation %s: not started: %s", rid, graph_mod.scrub_message(str(e), paths.root))
+                return
             state.owner = self.owner
             self._save(paths, state)
             with self._lock:
@@ -735,6 +745,7 @@ class RemediationManager:
                     self._save(paths, state)
             log.info("remediation %s: %s %s", rid, state.status, state.reason)
         finally:
+            claim.release()
             self._detach_log(handler)
 
     @staticmethod
@@ -762,7 +773,9 @@ class RemediationManager:
         try:
             try:
                 chain = self._chain_module()
-                cfg = remediation_config(self._config(self.chained_configs(rid)))
+                # 이어서 진행하는 조치는 그 이관 실행이 쓴 Maven 로컬 저장소를 그대로 쓴다.
+                # -remediation 저장소는 단독 업로드 전용이다
+                cfg = self._config(self.chained_configs(rid))
                 components = self.components_factory(cfg, paths)
 
                 def journal(event: dict[str, Any]) -> None:
@@ -775,6 +788,9 @@ class RemediationManager:
                 log.info("remediation %s (chained): resume at %s", rid, state.next_node)
                 out = chain.resume(paths.root.parent, cfg, journal=journal, stop=stop, components=components)
                 log.info("remediation %s (chained): %s %s", rid, getattr(out, "status", "?"), getattr(out, "reason", ""))
+            except StateConflict as e:
+                # 다른 프로세스가 점유 중이거나 그 사이에 상태가 바뀌었다. 그 프로세스의 상태를 덮어쓰지 않는다
+                log.warning("remediation %s (chained): resume refused: %s", rid, graph_mod.scrub_message(str(e), paths.root))
             except Exception as e:  # noqa: BLE001 — a crash must leave a visible FAILED, never a silent RUNNING
                 log.error("remediation %s (chained) crashed: %s", rid, graph_mod.scrub_message(repr(e), paths.root))
                 self._journal_safe(paths, {"event": "resume_failed", "error": type(e).__name__})
@@ -1118,6 +1134,9 @@ class RemediationManager:
                 raise StateConflict(f"remediation {rid} is {st.status}, not {AWAITING_APPROVAL}", status=st.status)
             if chained and self._resume_active(rid):
                 raise StateConflict(RESUME_ACTIVE_NOTE, status=st.status)
+            if claim_info(paths.root) is not None:
+                # 상태를 진행시키는 프로세스가 점유 중이면 plan.json을 고치지 않는다. 웹 파드는 점유하지 않고 확인만 한다
+                raise StateConflict(CLAIM_HELD_NOTE, status=st.status)
             if chained and self._withheld(rid):
                 raise self._withheld_error(rid, "plan.json")
             plan = self._current_plan(paths, st)

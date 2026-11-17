@@ -36,6 +36,9 @@ Routes:
                                          POST (zip body) / GET list / GET readiness /
                                          GET {id} / result / proposals / POST approvals / resume / stop /
                                          GET files/{name} / DELETE {id} — `sbmig.remediations.api` (contract API.md)
+    GET  /admin                          the admin page (static/admin.html; 404 text when the file is missing)
+    /admin/api/…                         admin login / session / usage per project / log ZIPs — `sbmig.web.admin`
+                                         (its own password + cookie `sbmig_admin`, behind the site token guard)
 
 Runs execute in worker threads of this process (see `sbmig.web.runs`); the SSE generator blocks on the run's events
 in a threadpool thread, never on the event loop.
@@ -96,6 +99,9 @@ CONFIGS_ENV = "SBMIG_WEB_CONFIGS"   # comma-separated config/*.yml names every u
 TOKEN_COOKIE = "sbmig_token"
 COOKIE_MAX_AGE_S = 7 * 24 * 3600   # the browser keeps access for a week (the token itself never leaves the server)
 _LOOPBACK_NAMES = {"localhost", "localhost.localdomain", "ip6-localhost"}
+ADMIN_PAGE = "admin.html"          # GET /admin (v2.1z-ao): the admin page, static/admin.html
+# 사이트 토큰 검사에서 페이지로 다루는 주소다. ?token= 뒤 이동과 안내 HTML이 이 주소에만 적용된다
+PAGE_PATHS = ("/", "/index.html", "/admin")
 
 
 def _ip_is_loopback(addr: str) -> bool:
@@ -199,7 +205,7 @@ class TokenGuard:
         given = req.query_params.get("token", "")
         if given and secrets.compare_digest(given, self.token):
             query = urlencode([(k, v) for k, v in req.query_params.multi_items() if k != "token"])
-            if req.method == "GET" and req.url.path in ("/", "/index.html"):
+            if req.method == "GET" and req.url.path in PAGE_PATHS:
                 resp = RedirectResponse(req.url.path + (f"?{query}" if query else ""), status_code=303)
             else:          # an API call with ?token= works once and leaves the cookie for the next ones
                 resp = None
@@ -232,7 +238,7 @@ class TokenGuard:
         if scope["type"] == "websocket":
             await send({"type": "websocket.close", "code": 1008})
             return
-        if req.method == "GET" and req.url.path in ("/", "/index.html"):
+        if req.method == "GET" and req.url.path in PAGE_PATHS:
             resp = HTMLResponse(f"<!doctype html><meta charset='utf-8'><title>sbmig</title>"
                                 f"<body style='font-family:sans-serif;padding:2em'><h3>sbmig web UI</h3>"
                                 f"<p>{message}</p></body>", status_code=status)
@@ -397,12 +403,25 @@ def create_app(out_dir: Path, repo_root: Path = PACKAGE_ROOT, max_upload_mb: int
     app.add_middleware(TokenGuard, token=token, open_network=open_network)
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
     app.include_router(create_remediation_router(rem_mgr))
+    # 관리자 페이지(프로젝트별 토큰 사용량, 로그 ZIP)는 사이트 토큰 검사 뒤에서 자기 로그인을 한 번 더 요구한다
+    from .admin import AdminAuth, create_admin_router
+    app.state.admin_auth = AdminAuth()
+    app.include_router(create_admin_router(mgr, app.state.admin_auth))
 
     @app.get("/", include_in_schema=False)
     @app.get("/index.html", include_in_schema=False)
     def page() -> FileResponse:
         return FileResponse(STATIC_DIR / "index.html", media_type="text/html; charset=utf-8",
                             headers={"Cache-Control": "no-store"})
+
+    @app.get("/admin", include_in_schema=False)
+    def admin_page():
+        # 정적 파일 위치는 요청할 때 읽는다(테스트가 STATIC_DIR을 바꿀 수 있다)
+        path = STATIC_DIR / ADMIN_PAGE
+        if not path.is_file():
+            return PlainTextResponse(f"admin page not installed: sbmig/web/static/{ADMIN_PAGE} is missing in this "
+                                     f"image", status_code=404)
+        return FileResponse(path, media_type="text/html; charset=utf-8", headers={"Cache-Control": "no-store"})
 
     @app.get("/api/configs")
     def configs() -> dict:

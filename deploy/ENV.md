@@ -82,6 +82,7 @@
 | `LLM_APP_TOKEN` | `sbmig-llm` | 토큰 교환에 쓰는 앱 토큰. 교환이 없는 게이트웨이면 대신 `LLM_API_KEY` 에 Bearer 값 |
 | `NEXUS_USER` / `NEXUS_PASSWORD` | `sbmig-llm` | Nexus 그룹이 로그인을 요구할 때만. `settings.xml` 의 `<server>` 가 `${env.NEXUS_USER}` / `${env.NEXUS_PASSWORD}` 로 읽는다 |
 | `SBMIG_WEB_TOKEN` | `sbmig-llm` (선택) | 웹 토큰 보호를 켤 때만. 켜면 브라우저는 `http://<host>:8765/?token=<값>` 으로 한 번 연다 |
+| `SBMIG_ADMIN_PASSWORD` | `sbmig-llm` (선택) | 관리자 페이지 `http://<host>:8765/admin` 의 비밀번호를 바꿀 때만. 없거나 비어 있으면 이미지에 내장된 비밀번호를 쓴다(설정할 것 없음). 웹 파드(40, `envFrom`)만 읽는다 — 81 Job 틀에는 넣지 않는다. 80 모델은 `sbmig-llm` 을 통째로 받지만 쓰지 않고, 이름에 PASSWORD 가 있어 로그에서 지워진다. 바꾼 뒤 웹 파드 재시작 |
 | `IVAS_BASE_URL` / `IVAS_USER_ID` / `IVAS_PASSWORD` | `sbmig-llm` (선택) | 취약점 조치(README §6). 이관이 BUILD SUCCESS 로 끝난 **빌드 파드**가 이어서 쓴다 — 81 Job 틀이 `secretKeyRef`(optional) 세 줄로, 80 이 `envFrom` 으로 받는다(웹 파드도 envFrom 으로 받지만 Job 모드에서는 쓰지 않는다). 없으면 조치만 건너뛴다(저널 `remediation_skipped`). `sbmig-env` 에는 넣지 않는다. 로그·보고서에서 `IVAS_USER_ID` 도 비밀로 지운다. 주소는 `https://CHANGE_ME_IVAS_HOST[:port]/<base path>` 모양(https, 끝의 `/` 없이) |
 | `GIT_TOKEN` (+ `GIT_USER`) | `sbmig-git` | 요청별 Job 모델만: 소스 clone, 결과·KB push |
 
@@ -130,7 +131,7 @@
 | 변수 | 값 | 들어 있는 매니페스트 |
 |---|---|---|
 | `SBMIG_KB__DIR` | `/data/kb-v2` | 40 (81 은 `SBMIG_KB_DIR`, 80 은 `run-job.sh`) |
-| `SBMIG_BUILD__SETTINGS_FILE` | `/data/.m2/settings.xml` (ConfigMap `sbmig-config` 의 마운트) | 40 · 81 · 80 |
+| `SBMIG_BUILD__SETTINGS_FILE` | `/data/.m2/settings.xml` (40 · 81 은 데이터 볼륨의 일반 파일, 80 은 ConfigMap 마운트) | 40 · 81 · 80 |
 | `SBMIG_BUILD__JAVA_HOME` | `/opt/java21` | 40 · 81 · 80 |
 | `SBMIG_BUILD__MVN` | `mvn` | 40 · 81 · 80 |
 | `SBMIG_BUILD__LOCAL_REPO` | `/data/.m2/repository` (데이터 볼륨의 `.m2` 폴더, 80 은 `/data/.m2` 의 `m2` 볼륨) | 40 · 81 · 80 |
@@ -149,7 +150,7 @@
 | 항목 | 어디에 | 비고 |
 |---|---|---|
 | `artifacts.yml` | 이미지 안 `/app/config/artifacts.yml` | 회사 아티팩트·레이아웃·Nexus 주소. 이관팀이 빌드 때 굽는다(`--build-arg REQUIRE_CONFIG=artifacts.yml`). 바꾸려면 이미지를 다시 만든다. 틀은 `config/artifacts.example.yml` |
-| `settings.xml` | ConfigMap `sbmig-config` → 40 · 81 · 80 의 `/data/.m2/settings.xml`(`subPath` 마운트. 40 · 81 은 NFS 볼륨 안이라 40 의 initContainer 가 마운트 자리를 만든다) | Maven 미러(`mirrorOf *` 또는 `external:*`) → Nexus 그룹. 로그인은 `${env.NEXUS_USER}`. 없거나 비어 있으면 이관이 접수 단계에서 멈춘다(`settings-not-found`, README §3 "Maven 설정과 로컬 저장소") |
+| `settings.xml` | 데이터 볼륨의 일반 파일 `/data/.m2/settings.xml`. 원본은 ConfigMap `sbmig-config`(40 이 `/etc/sbmig/settings.xml` 에 마운트) — 한 번 복사한다: `kubectl -n agent exec deploy/sbmig -- sh -c "mkdir -p /data/.m2 && cp /etc/sbmig/settings.xml /data/.m2/settings.xml"`. 80 은 그 ConfigMap 을 같은 경로에 마운트 | Maven 미러(`mirrorOf *` 또는 `external:*`) → Nexus 그룹. 로그인은 `${env.NEXUS_USER}`. 없거나 비어 있으면 이관이 접수 단계에서 멈춘다(`settings-not-found`, README §3 "Maven 설정과 로컬 저장소") |
 | `<kb.dir>/jar_names.yml` | KB 볼륨 `/data/kb-v2` | jar 파일 이름 → Nexus 좌표(이관팀이 채움). 이미지와 무관 |
 | `<kb.dir>/libraries.yml` | KB 볼륨 `/data/kb-v2` | 사람이 승인한 라이브러리 표(javax → jakarta 좌표 등) |
 | `knowledge/` (노트·자문·레시피 카탈로그) | 이미지 안 `/app/knowledge` | 바꾸려면 이미지를 다시 만든다 |

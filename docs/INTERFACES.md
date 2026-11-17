@@ -22,7 +22,7 @@ type: `sbmig/core/models.py`, `sbmig/core/interfaces.py`, `sbmig/core/config.py`
 | LLM gateway | Base "LLM client tier and adapter seams"; v2.1z-m (agent gateway, token exchange), v2.1z-n, v2.1z-o, v2.1z-p (case thread), v2.1z-q, v2.1z-x, v2.1z-af (busy wait, auth retries) |
 | report & result line | Base "Report and the result line", "Advisories and the Handover"; v2 "As built (step 1)" (`review=`); v2.1d (`major=`); remediations (`remediation=`); v2.1z-ak (`scope=`, the framework block) |
 | fleet | Base "Fleet" |
-| web app | Base "Graph engine", "Web app"; v2.1z-w (page, server-chosen configs), v2.1z-ae (queue / slots on the page), v2.1z-af (page re-attach), v2.1z-aj (run flows, page header); v2.1z-ak (framework label, skipped stages) |
+| web app | Base "Graph engine", "Web app"; v2.1z-w (page, server-chosen configs), v2.1z-ae (queue / slots on the page), v2.1z-af (page re-attach), v2.1z-aj (run flows, page header); v2.1z-ak (framework label, skipped stages); v2.1z-ao (admin page `/admin`: token usage per project, log ZIPs) |
 | Job mode (Main / Worker, slots, env pins) | v2.1z-z "k8s Job dispatch mode", v2.1z-ab (kubeconfig, template ConfigMap), v2.1z-ac (Main ↔ Worker contract), v2.1z-ad (end confirmation, ownership, env pins, write-time redaction), v2.1z-ae (parallel slots), v2.1z-af |
 | deploy | v2.1z-s (build hooks), v2.1z-t (one Job per request), v2.1z-u, deploy (baked config, container paths), v2.1z-ad "Shipped mode" |
 | remediations | remediations; v2.1z-ak (in-house group `framework`); v2.1z-am (case-insensitive matching, per-module in-house split, module sources, variant overrides, 들어온 경로); v2.1z-an (override proposals in module poms, the owners' choice) |
@@ -3174,7 +3174,8 @@ is the image's file — one copy, no hand-kept twin in a ConfigMap.
   exist under `/app/config/`, else the build stops (`ERROR: config/<name> is missing from the build context (REQUIRE_CONFIG)…`). The
   company build passes `--build-arg REQUIRE_CONFIG=artifacts.yml` (the file is git-ignored — a fresh checkout would silently build an image
   without the company config, and `RunManager.default_configs()` only warns about a missing `SBMIG_WEB_CONFIGS` name). Empty = no check.
-- **ConfigMap `sbmig-config`** carries `settings.xml` only (since v2.1z-al mounted at `/data/.m2/settings.xml` in 40 / 81 / 80;
+- **ConfigMap `sbmig-config`** carries `settings.xml` only (since v2.1z-al the source of the plain file `/data/.m2/settings.xml`: mounted at `/etc/sbmig/settings.xml` in 40 and copied
+  once; 80 mounts it at `/data/.m2/settings.xml`;
   the `artifacts.yml` key and its mounts are commented alternatives in 20 / 40 /
   80 / 81). The baked file must hold no secret (an image is readable by whoever pulls it).
 - **Machine paths** of a PC-tested yml are overridden by literal `env` lines in each manifest (env beats every yml):
@@ -3943,8 +3944,9 @@ The user (2026-11-17): "/data/.m2에 뒀으면 좋겠어 일관되게" — the M
 else that persists is already under `/data`; right after: "Settings도 저기로 옮겨가야하지않아!?" — `/data/.m2` is to the pods what
 `~/.m2` is on a PC: `settings.xml`, `repository/`, `repository-slot2/`, `repository-slot3/`; and on reading the operator steps:
 "configmap 에 설정되어있으면 파드 배포할때 자동으로 나가는게 아니야?" and "어차피 … 웹 파드 재배포 하면 복사 필요 없는거 아냐? 만들어지는거
-아니야?" — the ConfigMap mount is the only delivery; the user created the mount point in the running pod ("내가 쉘로 붙어서 .m2파일을
-만들어 두면 될까!?" → "지금 만들어 두었어!"), and 40's initContainer does the same on a fresh volume.
+아니야?"; a ConfigMap mount nested in `/data` then needed a mount point, and the initContainer that made it hit a file owned by
+another user. The user, finally: "어차피 /data 볼륨 마운트를 하는데 … 하나 마운트 된곳에다가 다같이 쓰면 안되는거야?" and "어차피
+settings.xml은 바뀔일이 거의 없잖아? 일반 파일로 두고 가는것도 좋을거 같은데!" — so settings.xml is a plain file on the data volume.
 
 - **Manifests.** `SBMIG_BUILD__LOCAL_REPO: "/data/.m2/repository"` in 40, 80 and 81 (was `"null"` = Maven's `~/.m2/repository`).
   40 and 81 have no `m2` volume any more: the repository is a folder of PVC `sbmig-data`, and PVC `sbmig-m2` is gone from
@@ -3954,32 +3956,31 @@ else that persists is already under `/data`; right after: "Settings도 저기로
   its own volume mounted at `/data/.m2` in 40 and 81 alike. 80 has no data PVC: its `m2` volume (emptyDir, PVC optional) is
   mounted at `/data/.m2`, so the path is the same in every pod.
 - **settings.xml.** `SBMIG_BUILD__SETTINGS_FILE: "/data/.m2/settings.xml"` in 40, 80 and 81 (an env pin: the same literal in 40 and
-  81). ConfigMap `sbmig-config` (passwords as `${env.NEXUS_USER}` / `${env.NEXUS_PASSWORD}`, values in the Secret) is mounted
-  read-only with `subPath: settings.xml` at that path in 40, 81 and 80 — in 40 / 81 after (inside) the `data` mount at `/data`,
-  in 80 inside its emptyDir. Nothing copies the file.
-- **Mount point.** A mount nested in the NFS volume needs its mount point to exist; the runtime would create it as root, which a
-  root-squashing export refuses (the pod does not start). 40 has an initContainer `m2-mountpoint` (same image, the pod's
-  securityContext, only the `data` volume at `/data`, small fixed resources) running `mkdir -p /data/.m2 && touch
-  /data/.m2/settings.xml` — it never truncates an existing file. 81 has none: a Job exists only after the web pod has started.
-  Fallback when the mount still fails: mount the ConfigMap at `/etc/sbmig/settings.xml` (outside NFS) and set
-  `SBMIG_BUILD__SETTINGS_FILE` there in 40 and 81 alike. Operator rule, as for `sbmig-env`: after changing `sbmig-config`, apply
-  it and restart the web pod; running Job pods keep the content they started with (`subPath`), new ones read the new one.
+  81). In 40 / 81 it is a PLAIN FILE on the data volume, like `~/.m2/settings.xml` on a PC: nothing is mounted inside `/data`,
+  no initContainer, no mount point. 81 mounts no settings at all (its `config` volume + `artifacts.yml` mount are commented lines).
+- **Source and copy.** ConfigMap `sbmig-config` keeps the reviewed content (passwords as `${env.NEXUS_USER}` /
+  `${env.NEXUS_PASSWORD}`, values in the Secret); 40 mounts it read-only at `/etc/sbmig/settings.xml` (outside `/data`) and the
+  operator copies it once: `kubectl -n agent exec deploy/sbmig -- sh -c "mkdir -p /data/.m2 && cp /etc/sbmig/settings.xml
+  /data/.m2/settings.xml"` — as the pod's user, so folder and file belong to that user (Maven creates `repository` beside it).
+  To change it: edit `sbmig-config`, apply 20, restart the web pod, run the same line. sbmig has no copy code. 80 (no data PVC,
+  nothing survives between Jobs) keeps mounting the ConfigMap file with `subPath` at `/data/.m2/settings.xml` inside its emptyDir.
+  `/data/.m2` must be writable by uid 1000 (check `id; ls -lnd /data/.m2` in the pod; a folder made by another user is removed or
+  chowned from the shell that made it).
 - **Preflight `settings-not-found`.** `Orchestrator._preflight` first checks `build.settings_file`: set (not empty / `null`) and
   not a readable file at the absolute path Maven would get as `-s` → flag `settings-not-found` (+ `infra:maven`), journal
   `preflight {settings_file: "missing (<path>)"}`, no Maven call; `_step_intake` aborts with
   `Maven settings file not found: <path> (build.settings_file) — put the settings.xml there and rerun` (exit 3). Both flows
   (the remediation flow's intake runs the preflight before `chain.run_only`, so its own readiness line `server settings.xml not
   found (<path>)` is never reached for this). Korean (`sbmig.report.i18n`): `Maven settings.xml을 찾지 못했습니다(<path>). 이 경로에
-  settings.xml을 넣은 뒤 다시 실행해 주세요.` An EMPTY file (the mount point without the ConfigMap over it) is the same flag with
-  `Maven settings file is empty: <path> (build.settings_file) — the ConfigMap is not mounted there; check the volumeMounts of the
-  pod and rerun` (journal `settings_file: "empty (<path>)"`; Korean `Maven settings.xml이 비어 있습니다(<path>). ConfigMap이 이 경로에
-  마운트되지 않았습니다. 파드의 volumeMounts를 확인한 뒤 다시 실행해 주세요.`). Unset = Maven's default settings as on a PC, unchanged.
-  The web pod logs one WARNING at startup (`RunManager._warn_missing_settings_file`, not in `local-job`): `Maven settings file <path>
-  is missing — mount ConfigMap sbmig-config there before the first run` / `… is empty — the ConfigMap is not mounted there; check
-  the volumeMounts of the pod`; never fatal.
+  settings.xml을 넣은 뒤 다시 실행해 주세요.` An EMPTY file (created but never filled) is the same flag with
+  `Maven settings file is empty: <path> (build.settings_file) — copy the settings.xml there and rerun` (journal `settings_file:
+  "empty (<path>)"`; Korean `Maven settings.xml이 비어 있습니다(<path>). 이 경로에 settings.xml 내용을 넣은 뒤 다시 실행해 주세요.`).
+  Unset = Maven's default settings as on a PC, unchanged. The web pod logs one WARNING at startup
+  (`RunManager._warn_missing_settings_file`, not in `local-job`): `Maven settings file <path> is missing — copy settings.xml there
+  before the first run (deploy/README.md §3)` / `… is empty — …` (same tail); never fatal.
 - **Pins.** `env_pins` hash the VALUE of `SBMIG_BUILD__SETTINGS_FILE` (the path), `request.json` digests the config files only;
   the content of settings.xml is pinned nowhere (it was not with the ConfigMap either). Both pods read the same file on the
-  shared volume (the same ConfigMap mounted in both), so nothing changes there.
+  shared volume, so nothing changes there.
 - **Slots** follow the v2.1z-ae rule: `/data/.m2/repository-slot2`, `-slot3`. The env pin of `SBMIG_BUILD__LOCAL_REPO` is now a real
   path, the same literal in 40 and 81; the slot override still happens in the child's environment after the pin check.
 - **Image.** `VOLUME ["/data"]` only; `/data` is created and owned by uid 1000 in the image, so `/data/.m2` can be created without
@@ -3988,8 +3989,7 @@ else that persists is already under `/data`; right after: "Settings도 저기로
   that folder)" instead of the old PVC; `POD_LOCAL_REPO_NAME` (`sbmig-m2-slot<k>`) is only a temp-folder name and stays.
 - **local-job.** Both template values are container paths; `LocalJobClient._env_of` passes only `contract.RUN_ENV`, so a
   developer-PC Worker gets neither (`tests/web/test_local_job_mode.py`).
-- **Operator steps** for an existing deployment (the manifest lines incl. 40's initContainer, `sbmig-job-template`, apply 40 +
-  restart):
+- **Operator steps** for an existing deployment (the manifest lines, `sbmig-job-template`, apply 40 + restart, the copy line):
   `deploy/README.md` §3 "Maven 설정과 로컬 저장소 — `/data/.m2`". Tests: `tests/deploy/test_manifests.py`,
   `tests/loop/test_preflight_settings_file.py`, `tests/web/test_settings_file_warning.py`, `tests/report/test_abort_reasons_ko.py`.
 
@@ -4115,6 +4115,168 @@ tool proposes the entry in the module's own pom, and the project's owners choose
   in 승인 대기), and beside the button `체크하지 않은 항목은 적용하지 않고 진행합니다.` Operator text:
   `agent-doc/12-remediation-report.md` ("승인 대기 읽는 법"), `agent-doc/11-remediations.md`. Tests:
   `tests/remediations/test_report_module_overrides.py`, `test_i18n.py`.
+
+## v2.1z-ao — the admin page: token usage per project, log download
+
+The user: "현재까지 프로젝트 별로 사용된 토큰량 볼 수 있는 페이지가 필요한데, 하드코딩으로 [a fixed password]으로 접속 할 수 있는
+url하나 fastapi에 붙여서 해당 비밀번호로 접속해서 볼 수 있도록 하나 하자. 그리고 총 로그들 다운로드 받을 수 있도록도 하고!" — one
+URL on the existing app, behind a fixed password, no manifest change. Code: `sbmig/web/admin.py` (router, auth, aggregation, ZIPs),
+`GET /admin` in `sbmig/web/app.py`, the page `sbmig/web/static/admin.html`. Tests: `tests/web/test_admin.py`.
+
+- **Routes.** `GET /admin` = `static/admin.html` (404 text "admin page not installed …" when the file is missing; the page shows
+  its own login form after `GET /admin/api/session`). `POST /admin/api/login` body `{"password": "…"}` → 200
+  `{"authenticated": true}` + cookie, 401 `{"error": "bad_password"}`, 429 `{"error": "too_many_attempts", "retry_after_s": n}`
+  (+ `Retry-After`). `POST /admin/api/logout` → `{"authenticated": false}`, the session is forgotten, the cookie deleted.
+  `GET /admin/api/session` → `{"authenticated": bool}`. `GET /admin/api/usage`, `GET /admin/api/logs.zip`,
+  `GET /admin/api/runs/{run_id}/logs.zip` → 401 `{"error": "login_required"}` without a valid session (never 403);
+  `GET /admin/api/session` always answers 200 once the site guard let the request through, so a 401 / 403 there is the site
+  guard's. The main page does not link to `/admin`; the admin page links a run as `/#<run id>`.
+- **Auth.** Built-in password = `admin.ADMIN_PASSWORD_PBKDF2` (PBKDF2-HMAC-SHA256, 200,000 iterations, salt + hash in hex; the
+  plain text is nowhere in the repository); a non-empty `SBMIG_ADMIN_PASSWORD` (web pod, Secret `sbmig-llm`) replaces it —
+  not a config override, not an env pin, a secret name for the redaction (`contract.is_secret_name`: `PASSWORD`), dropped from a
+  `local-job` child's environment (`localjob.WEB_ONLY_ENV`), absent from the 81 template. Comparison with
+  `hmac.compare_digest`; PBKDF2 runs in a worker thread. Session = random token (`secrets.token_urlsafe(32)`) in the process's
+  memory, 12 hours; cookie `sbmig_admin`, HttpOnly, SameSite=Strict, Path=/admin, Max-Age 43200, `Secure` only when the request
+  came over https (the intranet serves plain http). A web-pod restart logs everybody out. Failed logins: each waits 1 s
+  (`asyncio.sleep`, `AdminAuth.fail_delay_s`); 5 failures from one `request.client.host` within 10 minutes → 429 for every
+  further attempt (the right password too) until the oldest of the five is 10 minutes old; a success clears the address's
+  count; per process. Behind a Kubernetes Service every browser may share one address — the limit is then global. The attempted
+  password is never logged. The site guard (`TokenGuard`, `SBMIG_WEB_TOKEN` / `SBMIG_WEB_OPEN`) is unchanged in front: with a
+  site token the admin routes need it AND the admin cookie; `/admin` is a page path of the guard (`?token=` → 303 to `/admin`,
+  denial as HTML), like `/`.
+- **Usage (`GET /admin/api/usage`).** Read from disk at request time, no cache: every real directory directly under the output
+  root (`RunManager.out_dir`) whose name matches `RUN_ID_RE` and does not start with `_` / `.`; symlinks are never followed (the
+  folder, and any file inside a run folder reached through a symlink, are skipped). A folder is a run when it has
+  `control/request.json`, `report.json` or `web-status.json`, or the manager holds it in memory (an in-process run). Files are
+  read as plain JSON with `.get` (an older / newer report never fails the page); an unreadable / half-written request.json or
+  report.json sets `"partial": true` and the run is listed with what could be read. Shape:
+  ```json
+  {"generated_at": "ISO", "out_root": "/data/out",
+   "totals": {"projects": 0, "runs": 0, "calls": 0, "input_tokens": 0, "output_tokens": 0, "total_tokens": 0,
+              "cost": null, "currency": null, "unpriced_runs": 0},
+   "by_model": [{"model": "…", "calls": 0, "input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "cost": null}],
+   "projects": [{"project": "…", "runs": 0, "calls": 0, "input_tokens": 0, "output_tokens": 0, "total_tokens": 0,
+                 "cost": null, "unpriced_runs": 0, "first_run_at": "ISO", "last_run_at": "ISO",
+                 "run_list": [{"run_id": "…", "accepted_at": "ISO", "flow": "full|remediation",
+                               "scope": "full|jdk-jakarta|null", "status": "queued|running|finished|unknown",
+                               "result": "ok|incomplete|aborted|null", "calls": 0, "input_tokens": 0, "output_tokens": 0,
+                               "total_tokens": 0, "cost": null, "by_model": [], "usage_known": true,
+                               "partial": false, "has_logs": true}]}]}
+  ```
+  Project = the uploaded file name without its last extension (`upload_name`, else `upload`, else the manager's / web-status
+  upload), else `report.project_name`, else the run id's slug (`<slug>-YYYYMMDD-HHMMSS-<hex>`), else the run id. `accepted_at`
+  = request.json, else `report.started_at`, else the folder's mtime. `status` = `RunManager.status()["state"]`; `result` = the
+  result line's words for the exit code (0 `ok`, 2 `incomplete`, 3 `aborted`, another code `exit <n>`; from the manager /
+  `job-status.json` / `web-status.json`, else computed from the report like `report_exit_code`), null while unknown. `scope` =
+  `report.plan.scope`, else `jdk-jakarta` when `report.profile.reduced_scope`, else null. A run's numbers come from
+  `report.llm_usage` (the report's own total, so `calls` also counts calls that returned no usage), its `by_model` from
+  `report.llm_usage_by_model`. **A run without a readable report** (running, or stopped before the report) counts the
+  `llm call provider=… model=… in=… out=…` lines of its `sbmig.log` (one per answered call of the built-in LLM clients:
+  fix, structure review, plan advisor, verify guide; read line by line), else the `llm_script` / `llm_verify_guide` events of
+  `journal.jsonl` (fix loop only); nothing found → zeros and `"usage_known": false`. **Cost**: a run's `cost` = `llm_cost.total`
+  when the report priced every model it used (no `unpriced_models`, no `usage_missing`); a run with known zero usage costs
+  0.0; otherwise null. A sum (project, model, totals) is null as soon as one run in it is null — never a partial sum — and
+  null when the priced runs use different currencies. `totals.currency` = the currency every priced run shares, even when
+  `totals.cost` is null (the page labels each priced row with it); null when nothing is priced or the currencies differ.
+  `unpriced_runs` (totals and each project, an integer) = how many runs in that sum have `cost: null`. Order:
+  projects by `total_tokens` descending (then name), `run_list` newest first, `by_model` by `total_tokens` descending.
+- **Log ZIPs.** Members per run, as `<run id>/<file>`: `sbmig.log`, `journal.jsonl`, `control/request.json`,
+  `remediation/remediation.log`; never raw LLM records, `result.zip` / `source.zip`, `logs/`, `report.md`. Why each is safe:
+  `sbmig.log` / `journal.jsonl` are redacted line by line as written when `SBMIG_REDACT_OUTPUT=1` (`LIVE_FILES`, the run file
+  route's rule); `control/request.json` is written once, atomically, by Main at intake and holds names, digests and the sbmig
+  version only; `remediation/remediation.log` is redacted only by the final pass, so it is left out while ANYTHING may still
+  write that run's remediation — the remediation API's own rule object `RemediationManager._withheld` (the migration run before
+  its final pass, or a remediation resume queued / creating / running, in memory or recovered from
+  `control/remediation-resume.json` after a web-pod restart); the router takes it from `app.state.remediations` (or the
+  `remediations` argument of `create_admin_router`); no rule reachable or an error → left out. A run without `sbmig.log` /
+  `journal.jsonl` / `remediation.log` is left out; nothing left → a valid ZIP holding only `README.txt`. No serve-time
+  redaction exists for the web's files, so the bytes are the files'. Names: all runs `sbmig-logs-YYYYMMDD-HHMMSS.zip`
+  (server local time), one run `sbmig-logs-<run id>.zip`. The one-run route picks the folder from the root's own listing
+  (never a path built from the URL): an id that is not a real run folder → 404 `unknown run`.
+- **Log ZIP limits (v2.1z-ap).** The temp file `sbmig-logs-*.zip` lives in the pod's LOCAL temp dir (`admin.zip_tmp_dir()` =
+  `tempfile.gettempdir()`, `/tmp` in the container), never on the shared volume and with no fallback to it; it is streamed in
+  64 KiB chunks with `Content-Length` and deleted in `finally` (`TempFileResponse`: finished, client gone, error). There is no
+  periodic sweep any more; at startup `create_admin_router` removes, once, the files matching `ZIP_TMP_NAME` that an earlier
+  version left in `<out root>/_admin/` (regular files only, never through a symlink, nothing else; the folder itself only when
+  it is then empty). One archive per process (`admin.ZIP_GATE`, held from the size check until the temp file is deleted, so at
+  most one temp file exists): another request meanwhile → 409 `{"error": "busy"}` at once (not queued). Before building, the
+  members are planned with their sizes (`plan_logs_zip`): a single file over `ZIP_FILE_LIMIT` (512 MiB) is left out and listed
+  in a `SKIPPED.txt` member (`<arc name>\t<bytes>`); uncompressed total over `ZIP_TOTAL_LIMIT` (2 GiB) → 413
+  `{"error": "too_large", "bytes", "limit_bytes"}`; free space of the temp dir (`shutil.disk_usage`) below the worst-case
+  archive (total + deflate / header overhead) + `ZIP_FREE_FLOOR` (1 GiB) → 507 `{"error": "no_space", "needed_bytes",
+  "free_bytes"}` (`needed_bytes` = worst case + floor). Each member is copied only up to the size it had when planned (and
+  never past its size when opened), so a log being appended cannot grow the archive. Preflight without building:
+  `GET /admin/api/logs/check` and `GET /admin/api/runs/{run_id}/logs/check` → 200 `{"ok": true, "bytes": n, "runs": n,
+  "skipped": n}` or the same 409 / 413 / 507 bodies (401 / 404 as the ZIP routes). The page asks the preflight after its session
+  check and shows a Korean sentence instead of navigating: busy "다른 로그 ZIP을 만드는 중입니다. 잠시 뒤에 다시 해 주세요.",
+  too large "로그가 너무 커서 한 번에 받을 수 없습니다. 실행별 로그를 받아 주세요." (one run over the cap: "이 실행의 로그가 너무 커서
+  ZIP으로 받을 수 없습니다. 운영 담당자에게 문의해 주세요."), no space "서버에 임시 공간이 부족해 ZIP을 만들 수 없습니다.".
+
+## v2.1z-ap — what the three-pods review found
+
+**Admin page.** (W1) The log ZIP shipped `remediation/remediation.log` while a resume build pod was still writing it
+before its final redaction pass: the router asked `RunManager.file_withheld`, which knows only the migration run. It now
+asks the remediation API's own rule object (`RemediationManager._withheld`: migration final pass pending OR a resume
+queued / creating / running, also after a web-pod restart). (W2) The all-runs ZIP could fill `/data` (built under
+`<out>/_admin/`, no free-space check, no cap, any number at once): now one archive per process (409 `busy`), the temp file
+in the pod's local temp dir with a 1 GiB free-space floor (507 `no_space`), a 2 GiB uncompressed cap (413 `too_large`), files
+over 512 MiB listed in `SKIPPED.txt`, members copied only up to their planned size, preflight routes `…/logs/check` the page
+asks first. (W3) The hour-old sweep that could unlink a ZIP still being streamed is gone (the temp file is deleted in
+`finally`; `<out>/_admin/` leftovers are removed once at startup). Contract: "v2.1z-ao", bullets "Log ZIPs" and "Log ZIP
+limits". Tests: `tests/web/test_admin.py`, `tests/web/test_admin_page.py`.
+
+**KB.** (K1) Full-migration and reduced-scope (`jdk-jakarta`) scripts of one case are told apart. `CaseScript.scope` =
+the scope of the run that wrote the version, `ScriptRun.scope` = the scope of each credited run (`full` /
+`jdk-jakarta`; `""` = written before scopes were recorded = `full`; an older-image pod's writes are such legacy records,
+nothing is migrated). Reuse (`CaseStore.best(case_id, scope)`, `sbmig.triage.scripts.stored_next` / `plan_script_step`,
+the scope read from the fix loop's `CaseScripts.run_scope`) ranks **(same scope, proven, version)**: every version of
+the asking run's scope comes first; a version of the other scope is still tried when none of the run's own is left
+(a full-migration script for a pure `javax → jakarta` import case works in a reduced run too — the KB is not
+partitioned), at most ONE per case and run, inside `script.reuse_versions`. `successes` / `failures` / `projects` /
+`last_failure` / `last_result` and the status (unverified → proven) count only runs of the version's own scope; a run
+of the other scope stays in `runs[]` with its scope. New run result **`out_of_scope`** (`sbmig.errors.cases.OUT_OF_SCOPE`,
+in neither `SUCCESS_RESULTS` nor `FAILURE_RESULTS`): the framework guard rolled back a reused version of the other
+scope (journal `script_credit` carries `credited: out_of_scope`; the attempt itself stays `apply_failed` in the report,
+`errors.md` and the ladder); on a version of the run's own scope the same rollback is recorded as `apply_failed`. A
+rebuild from `errors.jsonl` (`kb reindex`) reads a try whose note holds the guard sentence the same way. The hint line
+of `kb.match` labels a last solution written by a run of the other scope (`last solution [from a full-migration run] —
+…`; `case.json` key `solution_scope`); the augment prompt's version history says `written by a full run` for such
+versions. `sbmig kb cases show` prints each version's scope (`scope full (not recorded)` for legacy) and each run's;
+`cases.md` / `kb cases list` mark reduced-scope versions (`v2 jdk-jakarta proven 1/0`). Everything stays inside the
+`<kb>/.lock` read-modify-write. (K2) A case id a re-sign moved while a pod held it: `credit` resolves it through the
+moved case's `aliases` (the version whose stored code is the code that ran — the fix loop passes `code`; the same number
+without code), else ONE WARNING naming the id; a credit whose `code` is not the version found under the id is not
+recorded there. `add_script(old id, …, parent=N)` stores into the alias target when its L2 is the L2 asked for; a case
+created fresh under the old id drops a `parent` it does not have (WARNING) and numbers the new version above it.
+Tests: `tests/kb/test_case_scope.py`, `tests/loop/test_fixloop_scope_credit.py`.
+
+**Remediation.** (R1) One driver per run folder: whatever drives the state — the chained first run, `chain.run_only`,
+`chain.resume`, the in-process service's worker — holds `<remediation dir>/claim.json` (`chain.RunClaim`: created with
+`O_CREAT | O_EXCL`, `{pid, host, attempt (resume: control/remediation-resume.json), started, purpose, token}`), removed in
+`finally` on every end (`AWAITING_*`, `STOPPED`, terminal, exceptions; a default SIGTERM handler is swapped for one raising
+`SystemExit` in the main thread while held). A fresh claim of another process → `StateConflict`
+`another process is already working on this run: pid … on host … since … (attempt N)`, nothing touched; the CLI exits 3
+(`SBMIG-REMEDIATION … status=REFUSED reason=state_conflict`, the sentence in `sbmig.log`), the Worker writes
+`remediation-job-status.json` with exit code 3 like any refused resume; the chained first run / `run_only` return without
+creating anything. A claim is stale when its pid is dead on the same host or its mtime (file system clock, probe file)
+is older than `chain.CLAIM_STALE_SECONDS` (600 s); a keep-alive thread touches it every 30 s
+(`CLAIM_REFRESH_SECONDS`), so a Maven build or an IVAS wait never looks silent; a stale claim is moved aside, inode-checked,
+removed, journal `remediation_claim_taken_over` naming the old holder. The web pod never takes it: `chain.claim_info`
+(read-only) makes `decide` answer 409 "다른 프로세스가 이 실행을 진행하고 있습니다. 끝난 뒤에 다시 시도해 주세요." while a live
+claim exists (besides the active-resume refusal). (R2) `_drop_ineffective` saves `applied` without the dropped
+proposals, their "did not change the resolved version" residual and `next_node=apply` BEFORE writing `ineffective` into
+`plan.json` and removing the candidate; a resume rebuilds it from `accepted/` (`apply` skips `ineffective`); a build that
+meets a drop again in a round that already dropped once fails as before (`after removing the ineffective override
+entr(ies) …`). Completeness marker `rounds/<n>/candidate.ready.json` (`{round, applied}`; written after copy + apply + the
+text-only check, removed before every rebuild): `build` without a matching marker goes back to `apply` (journal
+`candidate_rebuilt`), `deliver_failed_candidate` freezes nothing without it (FAILED `candidate_build_failed`,
+`the round N candidate was not delivered: …`, journal `candidate_not_vouched`). (R3) A resume that finds another policy
+hash and drops a plan with human decisions says so: `state.message` = `the server policy changed since these proposals were
+approved: the earlier approvals were not applied and the plan was made again` (+ ` | N proposal(s) of round R wait for
+approval`), journal `approvals_dropped`; Korean via `i18n` (`policy_replanned`), shown by the page's `message_ko`. (M1)
+In-process mode, a resumed chained run builds with the migration's Maven repository (no `-remediation` suffix); the
+standalone upload keeps `<repo>-remediation`. Tests: `tests/remediations/test_resume_claim.py`,
+`tests/remediations/test_drop_crash_safety.py`, `tests/remediations/test_service.py` (claim / M1), `test_i18n.py`.
 
 ## remediations (취약점 조치) — `/api/remediations`, IVAS, version-text fixes + approved managed overrides (2026-11-11)
 

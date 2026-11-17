@@ -699,8 +699,8 @@ class RunManager:
         """기본 설정의 ``build.settings_file``이 없거나 비어 있으면 시작할 때 WARNING 한 줄을 남긴다. 시작은 막지 않는다.
 
         v2.1z-al: one WARNING at startup when the default configs name a `build.settings_file` that is not a file, or is
-        an empty file (the mount-point file the initContainer creates, without the ConfigMap mounted over it). Never
-        fatal (the run's preflight aborts a run that starts without a usable file)."""
+        an empty file (in the cluster a plain file the operator copies onto the data volume). Never fatal (the run's
+        preflight aborts a run that starts without a usable file)."""
         try:
             from sbmig.core.config import load_config
             configs = self.default_configs()
@@ -710,11 +710,11 @@ class RunManager:
                 return
             path = Path(str(value).strip()).expanduser().absolute()
             if not path.is_file():
-                log.warning("Maven settings file %s is missing — mount ConfigMap sbmig-config there before the first run",
-                            path)
+                log.warning("Maven settings file %s is missing — copy settings.xml there before the first run "
+                            "(deploy/README.md §3)", path)
             elif path.stat().st_size == 0:
-                log.warning("Maven settings file %s is empty — the ConfigMap is not mounted there; check the volumeMounts "
-                            "of the pod", path)
+                log.warning("Maven settings file %s is empty — copy settings.xml there before the first run "
+                            "(deploy/README.md §3)", path)
         except Exception as e:  # noqa: BLE001 - 시작 점검은 앱 시작을 막지 않는다
             log.debug("web: settings file check skipped (%s: %s)", type(e).__name__, e)
 

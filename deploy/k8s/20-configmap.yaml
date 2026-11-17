@@ -1,6 +1,7 @@
 # Maven 설정(+ 아래 두 번째 문서 = 환경 변수 ConfigMap). settings.xml 은 Maven 이 Nexus 를 보게 하는 미러 설정이고 고치는 곳은 여기다.
-# 40 · 81 · 80 모두 이 파일을 /data/.m2/settings.xml 에 마운트한다(README §3 "Maven 설정과 로컬 저장소"). 고친 뒤에는 apply 하고
-# 웹 파드를 다시 띄운다. 새로 만들어지는 Job 파드부터 새 내용을 읽는다.
+# 40 · 81 이 읽는 것은 데이터 볼륨의 일반 파일 /data/.m2/settings.xml 이고 이 ConfigMap 은 그 내용을 두고 검토하는 원본이다. 웹 파드(40)가
+# /etc/sbmig/settings.xml 에 마운트하고 운영자가 한 번 복사한다(README §3 "Maven 설정과 로컬 저장소"). 고친 뒤에는 apply, 웹 파드 재시작,
+# 같은 복사 명령. 80 은 이 파일을 /data/.m2/settings.xml 에 그대로 마운트한다.
 # 키·토큰은 여기 두지 않는다(Secret 으로).
 # 회사 artifacts.yml 은 여기 없다(2026-11-10): PC 에서 시험한 config/artifacts.yml 을 이미지에 굽는다 — docker build 가 /app/config/ 로 복사한다
 # (README §1; --build-arg REQUIRE_CONFIG=artifacts.yml 이 그 파일 없는 빌드를 막는다). 그 파일에 적힌 PC 경로(kb.dir, build.settings_file,
@@ -35,7 +36,7 @@ data:
       -->
     </settings>
   # ── ConfigMap 으로 줄 때(이미지를 다시 굽지 않고 artifacts.yml 전체를 바꿔야 할 때만): 아래 주석을 풀어 회사 artifacts.yml 내용을 붙이고,
-  #    40-deployment.yaml · 81-web-job.template.yaml · 80-build-job.template.yaml 의 artifacts.yml 마운트 줄 주석을 푼다 — 마운트가 이미지 안의 파일을 가린다.
+  #    40-deployment.yaml 과 80-build-job.template.yaml 은 artifacts.yml 마운트 줄, 81-web-job.template.yaml 은 config 볼륨 줄과 마운트 줄 주석을 푼다 — 마운트가 이미지 안의 파일을 가린다.
   #    웹 파드와 Job 파드가 같은 내용을 봐야 한다(접수 때 적은 sha256 을 Worker 가 대조한다): 이 키를 고치면 웹 파드를 재시작한다.
   # artifacts.yml: |
   #   artifacts:

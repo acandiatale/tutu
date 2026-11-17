@@ -204,6 +204,12 @@ SAMPLES: list[tuple[str, str, list[str]]] = [
     ("maven_incomplete", "Maven resolution incomplete: build target svc-a: no pom.xml", ["svc-a"]),
     ("scan_missing", "the scan this round plans from is missing or incomplete", []),
     ("pending_halt", "3 proposal(s) of round 2 wait for approval", ["3", "2"]),
+    ("policy_replanned", ("the server policy changed since these proposals were approved: the earlier approvals were not "
+     "applied and the plan was made again"), ["서버 설정이 바뀌어"]),
+    ("claim_held", ("another process is already working on this run: pid 41 on host sbmig-run-rem2 since "
+     "2026-11-17T10:00:00Z (attempt 2)"), ["41", "sbmig-run-rem2", "2026-11-17T10:00:00Z", "시도 2"]),
+    ("candidate_not_vouched", ("the round 2 candidate was not delivered: the files on disk are not the complete change set "
+     "this state records"), ["라운드 2"]),
     ("failed_included", ("delivery/result.zip contains the round 2 change set whose candidate build FAILED (proposals: "
      "p-2-1, p-2-2; build log rounds/2/build.log); it was not rescanned; the original is preserved as original/source.zip; "
      "the verified delivery of an earlier round is kept as delivery/result-r1-verified.zip"),
@@ -475,3 +481,18 @@ def test_an_ineffective_override_entry():
     assert i18n.label(i18n.DECISION_KO, "ineffective") == "효과가 없어 다시 뺌"
     msg = f"{GA} still resolves at 1.0 (p-1-1) | after removing the ineffective override entr(ies) p-1-2"
     assert i18n.rule_keys(msg) == ["still_resolves", "after_removing_ineffective"]
+
+
+def test_three_pods_review_sentences():
+    """v2.1z-ap: the re-plan reason, the claim refusal and the unvouched candidate read in Korean."""
+    from sbmig.remediations import chain, graph
+    note = graph.POLICY_CHANGED_NOTE
+    assert i18n.ko_text(note) == ("서버 설정이 바뀌어 앞서 승인한 내용은 적용하지 않고 계획을 다시 세웠습니다. "
+                                  "변경 내용을 다시 확인해 주세요.")
+    both = i18n.ko_text(f"{note} | 2 proposal(s) of round 1 wait for approval")
+    assert both.startswith("서버 설정이 바뀌어") and both.endswith("라운드 1의 제안 2건이 승인을 기다립니다.")
+    assert i18n.ko_text(chain.claim_refusal(None)) == "다른 프로세스가 이미 이 실행을 진행하고 있습니다."
+    assert i18n.ko_text(chain.CLAIM_HELD) == "다른 프로세스가 이미 이 실행을 진행하고 있습니다."
+    assert i18n.ko_text(chain.claim_refusal({"pid": 7, "host": "pod-a", "started": "2026-11-17T00:00:00Z"})) == (
+        "다른 프로세스가 이미 이 실행을 진행하고 있습니다(pid 7, 호스트 pod-a, 시작 2026-11-17T00:00:00Z).")
+    assert "라운드 3의 수정본" in i18n.ko_text(graph.CANDIDATE_NOT_VOUCHED.format(r=3))

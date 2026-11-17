@@ -887,6 +887,18 @@ RULES: list[_Rule] = [
        lambda g: "이번 라운드의 계획에 쓸 검사 결과가 없거나 검사가 끝나지 않았습니다."),
     _r("pending_halt", r"(?P<n>\d+) proposal\(s\) of round (?P<r>\d+) wait for approval",
        lambda g: f"라운드 {g['r']}의 제안 {g['n']}건이 승인을 기다립니다."),
+    _r("policy_replanned", r"the server policy changed since these proposals were approved: the earlier approvals were not "
+       r"applied and the plan was made again",
+       lambda g: "서버 설정이 바뀌어 앞서 승인한 내용은 적용하지 않고 계획을 다시 세웠습니다. 변경 내용을 다시 확인해 주세요."),
+    _r("claim_held", r"another process is already working on this run(?:: (?:pid (?P<pid>\S+) on host (?P<host>\S+) "
+       r"since (?P<since>\S+)(?: \(attempt (?P<a>[^()]+)\))?|an unknown process))?",
+       lambda g: "다른 프로세스가 이미 이 실행을 진행하고 있습니다"
+                 + (f"(pid {g['pid']}, 호스트 {g['host']}, 시작 {g['since']}"
+                    + (f", 시도 {g['a']}" if g.get("a") else "") + ")" if g.get("pid") else "") + "."),
+    _r("candidate_not_vouched", r"the round (?P<r>\d+) candidate was not delivered: the files on disk are not the complete "
+       r"change set this state records",
+       lambda g: f"라운드 {g['r']}의 수정본은 상태에 기록된 변경을 모두 담은 트리라는 표시가 없어 결과 ZIP으로 내보내지 "
+                 "않았습니다."),
     _r("failed_included",
        r"delivery/result\.zip contains the round (?P<r>\d+) change set whose candidate build FAILED "
        r"\(proposals: (?P<ids>.*?); build log (?P<log>\S+)\); it was not rescanned; the original is preserved as "

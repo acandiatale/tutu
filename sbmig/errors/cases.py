@@ -31,6 +31,11 @@ the newest proven version, else the newest unverified one; v2.1y: a version the 
 (:meth:`CaseStore.mark_non_idempotent`: a second run right after ``ok`` changed the tree again) is never selected. A script whose code holds a secret value is stored
 masked and retired at once (the masked code is not the code that ran; a secret never lands in the KB).
 
+Scopes (v2.1z-ap): a version records the scope of the run that wrote it (``full`` / ``jdk-jakarta``; ``""`` =
+written before scopes were recorded = ``full``), every credited run its own scope. ``best(case_id, scope)`` ranks
+(same scope, proven, version); counters, ``last_failure``, ``projects`` and the status count only runs of the
+version's own scope; a framework-guard rollback of another scope's version is ``out_of_scope`` (runs[] only).
+
 Every write holds the KB lock and is atomic; texts are masked (:mod:`sbmig.kb.redact`). Readers never lock and
 never raise on a damaged file (it is skipped with a warning; ``sbmig kb validate`` lists it). File-based on purpose
 (invariant 3).
@@ -93,6 +98,14 @@ KB_MARKER = "kb.json"             # {"sig": <rule version the KB was re-signed t
 RESIGN_PENDING = "resign-pending.json"   # the folder clean-up a re-sign still owes (written before errors.jsonl)
 SUCCESS_RESULTS = frozenset({"improved", "build_ok"})
 FAILURE_RESULTS = frozenset({"no_change", "regressed", "reverted", "apply_failed", "blocked"})
+# 범위를 줄인 실행의 프레임워크 검사가 되돌린 다른 범위 버전의 실행. 그 버전의 실패로 세지 않는다
+# v2.1z-ap: a run of a version of the OTHER scope that the framework guard rolled back (it touched what a reduced run
+# must not touch) — not a failure of the version, neither a success: in runs[] only. On a version of the run's own
+# scope the same rollback is a real failure and is recorded as apply_failed.
+OUT_OF_SCOPE = "out_of_scope"
+SCOPE_FULL = "full"
+SCOPE_REDUCED = "jdk-jakarta"
+GUARD_NOTE = "framework project:"  # the framework guard's sentence starts so (sbmig.loop.fixloop.FRAMEWORK_GUARD_PREFIX)
 TEXT_CHARS = 4000
 REASON_CHARS = 600                # ScriptRun.reason / CaseScript.reason / last_failure (one line)
 RUN_FILES = 50                    # ScriptRun.files kept
@@ -143,6 +156,29 @@ class CaseKeyMismatch(OSError):
 _MISMATCH_SAID: set[tuple[str, str]] = set()
 
 
+def scope_of(value: Any) -> str:
+    """기록된 이관 범위를 반환한다. 빈 값은 범위를 기록하기 전의 기록이므로 full로 본다.
+
+    A recorded scope as compared: "" (written before scopes were recorded) and None are ``full``."""
+    v = str(value or "").strip()
+    return v or SCOPE_FULL
+
+
+def own_run(s: CaseScript, r: ScriptRun) -> bool:
+    """실행 기록이 그 버전 자신의 범위에서 실행된 것인지 확인한다.
+
+    Did run ``r`` happen in the version's own scope (the only runs its counters and status count)?"""
+    return scope_of(r.scope) == scope_of(s.scope)
+
+
+def scope_label(scope: Any) -> str:
+    """로그와 힌트에 쓸 범위 이름을 반환한다.
+
+    ``full migration`` / ``jdk-jakarta (reduced scope)`` — for hint lines and logs."""
+    v = scope_of(scope)
+    return "full migration" if v == SCOPE_FULL else f"{v} (reduced scope)"
+
+
 def _no_hard_links(e: OSError) -> bool:
     # 하드 링크를 지원하지 않는다는 뜻의 오류인지 확인한다. 그 밖의 오류는 실제 실패로 본다
     if getattr(e, "winerror", None) in _NO_LINK_WINERRORS:
@@ -181,9 +217,11 @@ def scripts_text(case: CaseInfo, *, failures: bool = False) -> str:
     ``failures``면 버전마다 마지막 실패 이유를 붙인다.
 
     ``v1 proven 3/0, v2 unverified 0/1`` (successes / failures); ``failures`` (cases.md, v2.1e) adds each
-    version's last failure: ``v1 proven 3/0; v2 unverified 0/1 — no_change: 3 of 3 targeted error(s) remained``."""
+    version's last failure: ``v1 proven 3/0; v2 unverified 0/1 — no_change: 3 of 3 targeted error(s) remained``.
+    v2.1z-ap: a version written by a reduced-scope run says so (``v2 jdk-jakarta proven 1/0``); full ones stay bare."""
     def one(s: CaseScript) -> str:
-        t = f"v{s.version} {s.status}{' non-idempotent' if s.non_idempotent else ''} {s.successes}/{s.failures}"
+        sc = "" if scope_of(s.scope) == SCOPE_FULL else f" {scope_of(s.scope)}"
+        t = f"v{s.version}{sc} {s.status}{' non-idempotent' if s.non_idempotent else ''} {s.successes}/{s.failures}"
         return t + (f" — {_short(s.last_failure, 80)}" if failures and s.last_failure else "")
     return ("; " if failures else ", ").join(one(s) for s in case.scripts) or "-"
 
@@ -225,7 +263,8 @@ def run_line(r: ScriptRun) -> str:
 
     ``run r-1 demo r2 try 1: no_change — no_change: 3 of 3 targeted error(s) remained [errors 5 → 5, new 0;
     files: a/B.java]`` (``sbmig kb cases show``)."""
-    s = f"run {r.run_id or '-'} {r.project or '-'} r{r.round} try {r.n}: {r.result or '-'}"
+    s = f"run {r.run_id or '-'} {r.project or '-'} r{r.round} try {r.n}: {r.result or '-'}" + \
+        (f" (scope {r.scope})" if r.scope else "")
     if r.reason:
         s += f" — {r.reason}"
     facts = []
@@ -271,7 +310,8 @@ def _resolved_elsewhere(s: CaseScript) -> bool:
     if s.project:
         return any(p and p != s.project for p in s.projects)
     # 이전 기록은 project가 비어 있어 자기 프로젝트도 다른 곳으로 보이므로 실행 ID와 프로젝트 수로만 판단한다
-    if s.created_by and any(r.result in SUCCESS_RESULTS and r.run_id and r.run_id != s.created_by for r in s.runs):
+    if s.created_by and any(r.result in SUCCESS_RESULTS and r.run_id and r.run_id != s.created_by and own_run(s, r)
+                            for r in s.runs):
         return True
     return len({p for p in s.projects if p}) > 1
 
@@ -628,21 +668,24 @@ class CaseStore:
         except (OSError, UnicodeDecodeError):
             return None
 
-    def best(self, case_id: str) -> Optional[tuple[CaseScript, str]]:
+    def best(self, case_id: str, scope: str = "") -> Optional[tuple[CaseScript, str]]:
         """먼저 실행할 스크립트를 고른다.
-        가장 최신 proven 버전을, 없으면 가장 최신 unverified 버전을 반환한다.
+        묻는 실행과 범위가 같은 버전을 먼저 보고, 그 안에서 최신 proven, 최신 unverified 순으로 반환한다.
         retired, 비멱등(``non_idempotent``), 파일이 없는 버전은 고르지 않는다.
         고를 것이 없으면 None을 반환한다.
 
-        The script to run first: the newest proven version, else the newest unverified one; retired never, nor a
-        version marked ``non_idempotent`` (v2.1y: a second run changed the tree again), nor one whose file is
-        missing. None = nothing stored (also for a case id held by another signature, :meth:`same_case`)."""
+        The script to run first: rank = (same scope as ``scope``, proven, version), newest first — v2.1z-ap: a
+        version of the asking run's scope always comes before one of the other scope (``""`` = ``full`` on both
+        sides). Retired never, nor a version marked ``non_idempotent`` (v2.1y: a second run changed the tree again),
+        nor one whose file is missing. None = nothing stored (also for a case id held by another signature,
+        :meth:`same_case`)."""
         if case_id in self._foreign:
             return None
+        want = scope_of(scope)
         # 두 번째 실행에서 또 파일을 바꾸는 스크립트는 다음 프로젝트를 반쯤 고친
         # 채로 망가뜨리므로 기록만 남기고 재사용하지 않는다
         ranked = sorted((s for s in self.scripts(case_id) if s.status != "retired" and not s.non_idempotent),
-                        key=lambda s: (s.status == "proven", s.version), reverse=True)
+                        key=lambda s: (scope_of(s.scope) == want, s.status == "proven", s.version), reverse=True)
         for s in ranked:
             code = self.code(case_id, s.version)
             if code:
@@ -663,14 +706,22 @@ class CaseStore:
 
     def add_script(self, case_id: str, l2: str, code: str, *, source: str = "llm-new", run_id: str = "",
                    project: str = "", analysis: str = "", solution: str = "", name: str = "",
-                   kind: Optional[ErrorKind] = None, parent: int | None = None, reason: str = "") -> CaseScript:
+                   kind: Optional[ErrorKind] = None, parent: int | None = None, reason: str = "",
+                   scope: str = "") -> CaseScript:
         """``code``를 케이스의 다음 버전(unverified)으로 저장한다.
         같은 코드가 이미 있으면 그 버전을 반환한다.
         비밀 값이 든 코드는 마스킹해서 저장하고 바로 retired로 둔다.
+        ``scope``는 스크립트를 만든 실행의 이관 범위다.
+        보강본의 케이스 ID가 재서명으로 옮겨 갔으면 같은 L2의 새 케이스에 저장하고, 케이스에 없는 ``parent``는 버린다.
 
         Store ``code`` as the case's next version (``unverified``); identical code returns the stored version
         (unchanged). v2.1e: ``parent`` = the version an augment extends, ``reason`` = why this version was made (the
-        parent's failure in words, ``v1: no_change: …``)."""
+        parent's failure in words, ``v1: no_change: …``). v2.1z-ap: ``scope`` = the scope of the run that wrote it
+        (``full`` / ``jdk-jakarta``; recorded on the version, and as ``solution_scope`` beside ``last_solution``).
+        An augment's case id a re-sign moved while the caller held it (``parent`` given, no case.json, the id in
+        another case's ``aliases``) is resolved to that case when its L2 is the L2 asked for; a ``parent`` the case does not have is dropped (a case
+        created fresh under the old id never names a version of the moved case — nor itself — as parent) and the new
+        number is taken above it, so the caller's tries that name the old number never land on this script."""
         if not (code or "").strip():
             raise ValueError("empty script")
         try:
@@ -678,8 +729,19 @@ class CaseStore:
         except (TypeError, ValueError):
             parent = None
         why = self._reason(reason)
+        floor = 0
         with stage("kb"), self.lock():
+            # 부모가 있는데 케이스가 없으면 이 실행이 본 뒤에 재서명으로 옮겨 간 케이스다
+            if parent and self._read(case_id, quiet=True) is None:
+                moved = self._alias_case(case_id, l2)
+                if moved:
+                    log.info("kb: case %s was moved to %s by a re-sign — the script is stored there", case_id, moved)
+                    case_id = moved
             case, extra = self._case_or_new(case_id, l2, name, kind)
+            if parent and all(s.version != parent for s in case.scripts):
+                log.warning("kb: cases/%s has no v%d — the new script's parent is dropped (the case was moved or "
+                            "created fresh meanwhile)", case_id, parent)
+                floor, parent = parent, None
             # 같은 ID를 다른 L2가 쓰고 있으면 그 케이스에 쓰지 않는다. 어댑터가 OSError를 WARNING으로 끝낸다
             if (l2 and case.l2 and case.l2 != l2) or (not l2 and case_id in self._foreign):
                 self._mismatch(case_id, case.l2, l2)
@@ -696,14 +758,19 @@ class CaseStore:
                 if _sha(self.code(case_id, s.version) or "") == _sha(stored):
                     log.info("cases/%s/fix_v%d.py: the same script is already stored", case_id, s.version)
                     return s
-            v = self._claim_script(case_id, self._next_version(case), stored.encode("utf-8"))
+            v = self._claim_script(case_id, max(self._next_version(case), floor + 1), stored.encode("utf-8"))
             s = CaseScript(version=v, file=f"fix_v{v}.py", status="retired" if secret else "unverified",
-                           source=source, created_by=run_id, project=project, parent=parent, reason=why)
+                           source=source, created_by=run_id, project=project, parent=parent, reason=why,
+                           scope=(scope or "").strip())
             case.scripts.append(s)
             if analysis:
                 case.last_analysis = self.clean(analysis, TEXT_CHARS)
             if solution:
                 case.last_solution = self.clean(solution, TEXT_CHARS)
+                if (scope or "").strip():
+                    extra["solution_scope"] = scope_of(scope)
+                else:
+                    extra.pop("solution_scope", None)
             case.updated_at = utcnow()
             self._save(case, extra)
             if secret:
@@ -841,12 +908,25 @@ class CaseStore:
 
     def credit(self, case_id: str, version: int, result: str, project: str = "", run_id: str = "", *,
                reason: str = "", round: int = 0, n: int = 0, errors_before: int | None = None,
-               errors_left: int | None = None, errors_new: int | None = None, files: Iterable[Any] = ()
-               ) -> Optional[CaseScript]:
+               errors_left: int | None = None, errors_new: int | None = None, files: Iterable[Any] = (),
+               scope: str = "", code: str = "") -> Optional[CaseScript]:
         """버전 N을 실행한 결과를 그 버전에 기록한다.
         - improved / build_ok: 성공 수를 1 늘리고, 그 버전을 만든 프로젝트가 아니면 proven으로 바꾼다
         - no_change / regressed / reverted / apply_failed / blocked: 실패 수를 1 늘린다
         - partial / inconclusive는 ``last_result``만 바꾸고, pending은 무시한다
+        - 실행 범위(``scope``)가 버전의 범위와 다르면 실행 기록에만 남기고 성공, 실패 수와 상태는 바꾸지 않는다
+        - 케이스나 버전이 없으면 재서명으로 옮겨 간 케이스에서 같은 코드(``code``)의 버전을 찾아 기록한다
+
+        v2.1z-ap: ``scope`` = the scope of the run (``""`` = ``full``). A run in the version's own scope counts as
+        before; a run in the other scope is kept in ``runs[]`` with its scope and touches neither ``successes`` /
+        ``failures`` / ``projects`` / ``last_failure`` nor the status (they mean "in the version's own scope").
+        ``out_of_scope`` (the framework guard rolled the run back) on a version of the run's own scope is a real
+        failure there and is recorded as ``apply_failed``. A case id that no longer reads, or a version the case
+        does not have (a re-sign moved the case while the caller held the id): the case whose ``aliases`` hold the
+        id is credited instead — the version whose stored code is ``code`` (the same number when no code is given
+        and one case holds the alias); nothing found → one WARNING naming the id, None. When ``code`` is given and
+        the version found under the id holds other code, the alias is looked up too.
+
 
         The scored result of a run of version N: improved / build_ok → successes +1 (project added; ``proven``
         once that is a project other than the one that created it); no_change / regressed / reverted /
@@ -857,17 +937,31 @@ class CaseStore:
         if not result or result == "pending" or case_id in self._foreign:
             return None
         why = self._reason(reason)
+        run_scope = scope_of(scope)
         with stage("kb"), self.lock():
             hit = self._read(case_id)
-            if hit is None:
-                return None
-            case, extra = hit
-            s = next((x for x in case.scripts if x.version == int(version)), None)
+            s = None
+            if hit is not None:
+                s = next((x for x in hit[0].scripts if x.version == int(version)), None)
+                if s is not None and code and not self._same_code(case_id, s.version, code):
+                    s = None
             if s is None:
-                log.warning("cases/%s: no script v%s to credit", case_id, version)
-                return None
-            s.last_result = result
-            if result in SUCCESS_RESULTS:
+                moved = self._moved_version(case_id, int(version), code)
+                if moved is None:
+                    log.warning("cases/%s: no script v%s to credit (%s) — the %s run is not recorded", case_id,
+                                version, "no such case" if hit is None else "no such version", result)
+                    return None
+                old, (case_id, hit, s) = case_id, moved
+                log.info("kb: case %s v%s was moved to %s v%d by a re-sign — credited there", old, version, case_id,
+                         s.version)
+            case, extra = hit
+            own = scope_of(s.scope) == run_scope
+            if result == OUT_OF_SCOPE and own:
+                result = "apply_failed"                   # the guard rolled back a script of its own scope
+            # 다른 범위의 실행은 실행 기록에만 남기고 성공, 실패 수와 상태는 그 버전 범위의 실행으로만 센다
+            if own:
+                s.last_result = result
+            if own and result in SUCCESS_RESULTS:
                 s.successes += 1
                 if project and project not in s.projects:
                     s.projects.append(project)
@@ -878,17 +972,57 @@ class CaseStore:
                 if s.status == "unverified" and other:
                     s.status = "proven"
                     log.info("cases/%s/fix_v%d.py: proven (resolved the case in %s)", case_id, s.version, project)
-            elif result in FAILURE_RESULTS:
+            elif own and result in FAILURE_RESULTS:
                 s.failures += 1
                 s.last_failure = why or result
             self._add_run(s, ScriptRun(run_id=run_id or "", project=project or "", round=int(round or 0),
                                        n=int(n or 0), result=result, reason=why, errors_before=errors_before,
-                                       errors_left=errors_left, errors_new=errors_new, files=self._run_files(files)))
+                                       errors_left=errors_left, errors_new=errors_new, files=self._run_files(files),
+                                       scope=(scope or "").strip()))
             case.updated_at = utcnow()
             self._save(case, extra)
-            log.info("cases/%s/fix_v%d.py: %s (성공 %d / 실패 %d)%s", case_id, s.version, result, s.successes,
-                     s.failures, f" — {_short(why, 300)}" if why else "")
+            log.info("cases/%s/fix_v%d.py: %s (성공 %d / 실패 %d)%s%s", case_id, s.version, result, s.successes,
+                     s.failures, "" if own else f" [{run_scope} 실행, {scope_of(s.scope)} 버전: 집계 제외]",
+                     f" — {_short(why, 300)}" if why else "")
         return s
+
+    def _same_code(self, case_id: str, version: int, code: str) -> bool:
+        """저장된 ``fix_v<N>.py``가 ``code``를 저장한 결과와 같은지 확인한다. 비밀 값 마스킹도 반영한다.
+
+        Is the stored file of the version what ``add_script`` would store for ``code`` (masking applied)?"""
+        return _sha(self.code(case_id, version) or "") == _sha(self._stored_form(code))
+
+    def _stored_form(self, code: str) -> str:
+        """``add_script``가 ``code``를 저장할 때의 내용을 반환한다(비밀 값이 있으면 마스킹과 머리말)."""
+        masked = self.clean.red.redact(code) or ""
+        return SECRET_HEADER + masked if masked != code else code
+
+    def _alias_case(self, case_id: str, l2: str = "") -> str:
+        """``case_id``를 ``aliases``에 가진 케이스 ID를 반환한다. 없거나 여럿이거나 L2가 다르면 빈 문자열이다.
+
+        The one case whose ``aliases`` hold ``case_id`` (a re-sign moved it there) and whose L2 is ``l2`` (when
+        given); "" when none, several or another L2. Reads every case.json: called only on a miss."""
+        hits = [c.case_id for c, _ in self.cases() if case_id in c.aliases and c.case_id != case_id
+                and (not l2 or not c.l2 or c.l2 == l2)]
+        return hits[0] if len(hits) == 1 else ""
+
+    def _moved_version(self, case_id: str, version: int, code: str
+                       ) -> Optional[tuple[str, tuple[CaseInfo, dict[str, Any]], CaseScript]]:
+        """재서명으로 옮겨 간 케이스에서 그 스크립트 버전을 찾아 (케이스 ID, (케이스, 추가 키), 버전)을 반환한다.
+        ``code``가 있으면 같은 코드의 버전을, 없으면 같은 번호를 쓴다. 찾지 못하면 None을 반환한다.
+
+        The script a re-sign moved: in the cases whose ``aliases`` hold ``case_id``, the version whose stored code
+        is ``code`` (numbers may change in a merge); without ``code``, the same number in the only such case."""
+        targets = [(c, x) for c, x in self.cases() if case_id in c.aliases and c.case_id != case_id]
+        want = _sha(self._stored_form(code)) if (code or "").strip() else ""
+        for c, x in targets:
+            if want:
+                s = next((s for s in c.scripts if _sha(self.code(c.case_id, s.version) or "") == want), None)
+            else:
+                s = next((s for s in c.scripts if s.version == version), None) if len(targets) == 1 else None
+            if s is not None:
+                return c.case_id, (c, x), s
+        return None
 
     def mark_non_idempotent(self, case_id: str, version: int, note: str = "") -> Optional[CaseScript]:
         """버전 N을 비멱등으로 표시한다. ok로 끝난 직후 다시 실행했을 때 트리가 또 바뀐 경우다.
@@ -955,13 +1089,14 @@ class CaseStore:
         Undo a retire: proven when it resolved the case in another project, else unverified."""
         return self._set_status(case_id, version, False)
 
-    def describe(self, case_id: str) -> str:
+    def describe(self, case_id: str, scope: str = "") -> str:
         """KB 조회 결과를 로그용 한 구절로 만든다.
 
         The KB lookup result as one log phrase: ``저장된 스크립트 없음 (처음 보는 케이스)``, ``저장된
         스크립트 v2 (proven,
         성공 3 / 실패 0, 프로젝트 2)``, ``pin block: <reason>``,
-        ``케이스는 있으나 쓸 스크립트 없음 (v1 retired)``."""
+        ``케이스는 있으나 쓸 스크립트 없음 (v1 retired)``. v2.1z-ap: ``best(case_id, scope)``; a version of the
+        other scope says so (``…, 다른 범위: full)``)."""
         if case_id in self._foreign:
             return "저장된 스크립트 없음 (케이스 ID 를 다른 서명이 차지함 — 재사용·기록 안 함)"
         case = self.find(case_id)
@@ -970,13 +1105,14 @@ class CaseStore:
         pin = self.pin_of(case_id)
         if pin:
             return f"pin {pin.replace(':', ': ', 1)}"
-        best = self.best(case_id)
+        best = self.best(case_id, scope)
         if best is None:
             return ("케이스는 있으나 쓸 스크립트 없음 (" + scripts_text(case) + ")") if case.scripts else \
                 f"저장된 스크립트 없음 (케이스는 {len(case.projects)}개 프로젝트에서 봄)"
         s = best[0]
+        other = f", 다른 범위: {scope_of(s.scope)}" if scope_of(s.scope) != scope_of(scope) else ""
         return (f"저장된 스크립트 v{s.version} ({s.status}, 성공 {s.successes} / 실패 {s.failures}, "
-                f"프로젝트 {len(s.projects)})")
+                f"프로젝트 {len(s.projects)}{other})")
 
     # ------------------------------------------------------------------ errors.jsonl + cases
     def _known_ids(self) -> set[str]:
@@ -1136,7 +1272,16 @@ class CaseStore:
         if with_text:
             t = max(with_text, key=lambda t: (t.round, t.n))
             case.last_analysis = t.analysis or case.last_analysis
-            case.last_solution = t.solution or case.last_solution
+            if t.solution and t.solution != case.last_solution:
+                case.last_solution = t.solution
+                # 해결 문장의 범위는 그 시도가 저장한 버전, 없으면 같은 실행이 만든 버전의 범위로 정한다
+                run_id = es[-1].run_id
+                src = next((s for s in case.scripts if t.script_version and s.version == int(t.script_version)), None) \
+                    or next((s for s in reversed(case.scripts) if run_id and s.created_by == run_id), None)
+                if src is not None and src.scope:
+                    extra["solution_scope"] = scope_of(src.scope)
+                else:
+                    extra.pop("solution_scope", None)
         status: dict[str, int] = {}
         for e in es:
             status[e.status] = status.get(e.status, 0) + 1
@@ -1320,6 +1465,9 @@ class CaseStore:
             return "apply_failed" if _RAN_THEN_EDITS in note else None
         if any(x in note for x in _NOT_RUN):
             return None
+        # 프레임워크 검사가 되돌린 시도는 범위를 줄인 실행에서만 생긴다(_rebuild_runs가 범위를 정한다)
+        if t.result == "apply_failed" and GUARD_NOTE in note:
+            return OUT_OF_SCOPE
         return t.result
 
     def _rebuild_runs(self, case: CaseInfo, es: list[ErrorEntry]) -> int:
@@ -1344,7 +1492,8 @@ class CaseStore:
                 head = result if result == "no_change" and result not in (t.note or "") else ""
                 per[key] = ScriptRun(run_id=e.run_id, project=e.project, round=int(t.round), n=int(t.n),
                                      result=result, reason=self._reason(run_reason(result, t.note, head)),
-                                     files=self._run_files(t.files), at=e.at)
+                                     files=self._run_files(t.files), at=e.at,
+                                     scope=SCOPE_REDUCED if result == OUT_OF_SCOPE else "")
                 if t.source == "llm-augment":
                     augments.setdefault(v, []).append(key)
         n = 0
@@ -1358,7 +1507,7 @@ class CaseStore:
                 have = keyed.get(key)
                 # 오류 수가 들어 있는 저장소 자체 기록이 우선이고, 재집계한 기록은 빈 칸만 채운다
                 if have is None:                          # the store's own record wins (it has the counts)
-                    keyed[key] = r
+                    keyed[key] = self._derived_scope(s, r)
                     continue
                 fill = {f: getattr(r, f) for f in ("project", "reason", "files") if not getattr(have, f)
                         and getattr(r, f) and not (f == "reason" and have.result in SUCCESS_RESULTS)}
@@ -1366,7 +1515,7 @@ class CaseStore:
                     keyed[key] = have.model_copy(update=fill)
             merged[s.version] = keyed
             runs = sorted(loose + list(keyed.values()), key=lambda r: (_ts(r.at), r.round, r.n))
-            failed = [r for r in runs if r.result in FAILURE_RESULTS]
+            failed = [r for r in runs if r.result in FAILURE_RESULTS and own_run(s, r)]
             if failed:
                 s.last_failure = failed[-1].reason or failed[-1].result
             s.runs = self._cap_runs(runs)
@@ -1374,6 +1523,20 @@ class CaseStore:
             if s.parent is None and s.version in augments:
                 self._lineage(s, augments[s.version], merged)
         return n
+
+    @staticmethod
+    def _derived_scope(s: CaseScript, r: ScriptRun) -> ScriptRun:
+        """errors.jsonl에서 다시 만든 실행 기록의 범위를 정한다.
+        그 버전을 만든 실행이면 버전의 범위를 쓰고, 자기 범위에서 되돌린 시도는 apply_failed로 바꾼다.
+
+        The scope of a run rebuilt from errors.jsonl (the entries do not carry it): the run that wrote the version
+        ran in the version's scope; a guard rollback is a reduced run's. ``out_of_scope`` in the version's own scope
+        is ``apply_failed`` (as :meth:`credit` records it). Others stay ``""`` (= full)."""
+        if not r.scope and s.scope and r.run_id and r.run_id == s.created_by:
+            r = r.model_copy(update={"scope": s.scope})
+        if r.result == OUT_OF_SCOPE and own_run(s, r):
+            r = r.model_copy(update={"result": "apply_failed"})
+        return r
 
     def _lineage(self, s: CaseScript, keys: list[tuple[str, int, int]],
                  runs: dict[int, dict[tuple[str, int, int], ScriptRun]]) -> None:
@@ -2198,9 +2361,10 @@ class CaseStore:
             mine = keys.get(s.version, set())
             s.runs = [r for r in s.runs if _run_key(r) in mine]
             self._rebuild_runs(CaseInfo(case_id=case.case_id, scripts=[s]), entries)
-            s.successes = sum(1 for r in s.runs if r.result in SUCCESS_RESULTS)
-            s.failures = sum(1 for r in s.runs if r.result in FAILURE_RESULTS)
-            s.projects = list(dict.fromkeys(r.project for r in s.runs if r.result in SUCCESS_RESULTS and r.project))
+            s.successes = sum(1 for r in s.runs if r.result in SUCCESS_RESULTS and own_run(s, r))
+            s.failures = sum(1 for r in s.runs if r.result in FAILURE_RESULTS and own_run(s, r))
+            s.projects = list(dict.fromkeys(r.project for r in s.runs if r.result in SUCCESS_RESULTS and r.project
+                                            and own_run(s, r)))
             if s.status != "retired":
                 s.status = "proven" if _resolved_elsewhere(s) else "unverified"
 

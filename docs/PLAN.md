@@ -765,3 +765,60 @@ which a root-squashing export refuses): "내가 쉘로 붙어서 .m2파일을 �
 | Docs | why the mount point must exist, what a failure looks like (`describe pod` Events) and the fallback to `/etc/sbmig/settings.xml`; the operator's line list | `deploy/README.md`, `deploy/ENV.md`, INTERFACES "v2.1z-al", RUNBOOK, agent-doc 02 / 09, CLAUDE.md | done |
 | Tests | offline suite 5,546 passed, 62 deselected (the manifest invariants for the nested mount and the initContainer, the empty-file preflight case in both flows, its Korean reason, the startup warning; the seed tests removed) | — | done |
 | Not seen yet | the nested mount and the initContainer on a cluster — not run here (no local cluster was up) nor on the company's NFS; the fallback is one path change | — | open |
+
+## Status — 2026-11-17, settings.xml is a plain file on the data volume
+
+The nested ConfigMap mount of the round above was deployed on the company cluster and stopped at its first step: the
+initContainer failed with `touch: cannot touch '/data/.m2/settings.xml': Permission denied` (the mount point the user had
+made by hand belongs to another user than the pod's). The user then asked the simpler question — "어차피 /data 볼륨
+마운트를 하는데 /data/.m2를 마운트를 별도로 해야해? 하나 마운트 된곳에다가 다같이 쓰면 안되는거야?" — and decided: "어차피
+settings.xml은 바뀔일이 거의 없잖아? 일반 파일로 두고 가는것도 좋을거 같은데!"
+
+| Item | Deliverable | Where | Status |
+|---|---|---|---|
+| The file | `/data/.m2/settings.xml` is a plain file on PVC `sbmig-data`, like `~/.m2/settings.xml` on a PC; `SBMIG_BUILD__SETTINGS_FILE` unchanged in 40 / 80 / 81 | `deploy/k8s/40`, `81`, `80` | done |
+| Nothing mounted inside `/data` | 40 and 81 mount only `data` at `/data`; the initContainer is gone; 81 has no `config` volume (it stays as commented lines for `artifacts.yml` by ConfigMap) | `deploy/k8s/40`, `81`, `tests/deploy/test_manifests.py` | done |
+| Source and copy | ConfigMap `sbmig-config` stays the reviewed source: 40 mounts it read-only at `/etc/sbmig/settings.xml`, the operator copies it once as the pod's user (`mkdir -p /data/.m2 && cp /etc/sbmig/settings.xml /data/.m2/settings.xml`), again after each change; no copy code in sbmig | `deploy/README.md` §3, `20-configmap.yaml` | done |
+| 80 | no data PVC, so it keeps the ConfigMap file mounted at `/data/.m2/settings.xml` inside its emptyDir | `80-build-job.template.yaml` | done |
+| Messages | the missing-file and empty-file abort (`settings-not-found`) and the web pod's startup WARNING point at the copy, in English and Korean | `sbmig/loop/orchestrator.py`, `sbmig/web/runs.py`, `sbmig/report/i18n.py` | done |
+| Folder owner | `/data/.m2` must be writable by the pod's user (uid 1000); the check and the remedy for a folder made by another user are in the operator text | `deploy/README.md` §3 | done |
+| Image | `VOLUME ["/data"]` only since the `.m2` move; a hand-kept Dockerfile with `/home/sbmig/.m2` in that line can drop it (no effect in Kubernetes) | `deploy/docker/Dockerfile` | done |
+| Not seen yet | the copy and the first build on the company cluster (the user is deploying) | — | open |
+
+## Status — 2026-11-17, the admin page: token usage per project and log download (v2.1z-ao)
+
+The user, while waiting for the deployment: "현재까지 프로젝트 별로 사용된 토큰량 볼 수 있는 페이지가 필요한데, 하드코딩으로
+[a fixed password]으로 접속 할 수 있는 url하나 fastapi에 붙여서 해당 비밀번호로 접속해서 볼 수 있도록 하나 하자. 그리고 총
+로그들 다운로드 받을 수 있도록도 하고!"
+
+| Item | Deliverable | Where | Status |
+|---|---|---|---|
+| Page and routes | `GET /admin` (one static file, not linked from the main page) and `/admin/api/login`, `logout`, `session`, `usage`, `logs.zip`, `runs/{run_id}/logs.zip` (+ the `…/check` preflights of the review round) | `sbmig/web/admin.py`, `sbmig/web/static/admin.html`, `sbmig/web/app.py` | done |
+| Password | built in as a salted PBKDF2 hash (the plain text holds a company name and never enters the repository); a non-empty `SBMIG_ADMIN_PASSWORD` replaces it (web pod only, a secret name, dropped from a `local-job` child); session token in process memory, cookie `sbmig_admin` for 12 h; 5 failures per address in 10 minutes → 429 | `sbmig/web/admin.py`, `sbmig/web/localjob.py` | done |
+| Usage | read from the run folders at each request, grouped by the uploaded file name: `report.json` (`llm_usage`, `llm_usage_by_model`, `llm_cost`), else the `llm call … in=… out=…` lines of `sbmig.log`; a cost sum is null when any run in it is unpriced | `sbmig/web/admin.py` | done |
+| Logs | a ZIP per run or for all runs: `sbmig.log`, `journal.jsonl`, `control/request.json`, and `remediation/remediation.log` once nothing writes it any more | `sbmig/web/admin.py` | done |
+| Docs | contract, operator text, repo map | INTERFACES "v2.1z-ao", `deploy/README.md`, `deploy/ENV.md`, agent-doc 01 / 09, `CLAUDE.md`, PROGRESS | done |
+| Not seen yet | the page on the company cluster (it arrives with the next image) | — | open |
+
+## Status — 2026-11-17, what the three-pods review found (v2.1z-ap)
+
+The user, after the admin page: "그거 작업 끝나면 3개 병렬실행에 문제될만한 기능이 있을지 검토한번만 해줘!" Four read-only
+reviewers went through everything added since the last concurrency round (v2.1z-ag … v2.1z-ao) and reproduced each
+finding with a scratch test before reporting it. One of those scratch tests (a log appended without a limit while it was
+zipped) filled the developer's disk; briefs now require a size cap and a time cap for any test that writes in a loop.
+
+| Item | Deliverable | Where | Status |
+|---|---|---|---|
+| Maven and build environment | reviewed, nothing found for three pods (each slot its own repository, settings read-only); in-process mode only: a resumed chained remediation now uses the chained run's own repository, the standalone upload keeps `<repo>-remediation` | `sbmig/remediations/service.py` | done |
+| KB: scripts of two scopes in one case | `CaseScript.scope` / `ScriptRun.scope` (`""` = `full`); reuse ranks (same scope, proven, version), a version of the other scope is tried only after the run's own and once per case and run; counters, `last_failure` and proven status count own-scope runs only; a framework-guard rollback of an other-scope version is the run result `out_of_scope`, not a failure; the hint line labels a solution from the other scope; `kb cases show` and `cases.md` print the scope | `sbmig/core/models.py`, `sbmig/errors/cases.py`, `sbmig/kb/store.py`, `sbmig/kb/cli.py`, `sbmig/triage/scripts.py`, `sbmig/loop/fixloop.py` | done |
+| KB: a case id moved by a re-sign while a pod held it | `credit` follows the moved case's aliases (by the code that ran), else one WARNING; an augment is stored in the moved case when the L2 matches; a `parent` the case does not have is dropped | `sbmig/errors/cases.py` | done |
+| Remediation: one driver per run folder | `<run>/remediation/claim.json` created exclusively by whatever drives the state, released on every end, refreshed every 30 s, stale after 600 s or a dead pid on the same host (journal `remediation_claim_taken_over`); a second process refuses and changes nothing; the web pod's approval write answers 409 while a live claim exists | `sbmig/remediations/chain.py`, `service.py` | done |
+| Remediation: a kill during drop-and-rebuild | state (`applied`, the residual, `next_node=apply`) is saved before the candidate is removed; marker `rounds/<n>/candidate.ready.json` — no build and no delivery of a candidate without it | `sbmig/remediations/graph.py` | done |
+| Remediation: proposals that come back after a policy change | `state.message` says why (English + Korean), journal `approvals_dropped` | `sbmig/remediations/graph.py`, `i18n.py` | done |
+| Admin log ZIP: a log still being written | `remediation/remediation.log` follows the remediation API's own withholding rule (an active or recovered resume included) | `sbmig/web/admin.py` | done |
+| Admin log ZIP: disk use | built in the pod's local temp dir, one at a time (409), 2 GiB cap (413), 1 GiB free floor (507), files over 512 MiB skipped and listed, members copied up to their size at the start, preflight routes and Korean messages on the page; the hour-old sweep is gone | `sbmig/web/admin.py`, `sbmig/web/static/admin.html` | done |
+| Checked, nothing found | double resume on the Job side, slots and the FIFO line, approvals validation, env pins, the usage scan skipping `_admin` (by code reading; part of the web review's own tests never ran because of the disk incident) | — | done |
+| Docs | INTERFACES "v2.1z-ap" (+ "v2.1z-ao" log rules), agent-doc 04 / 11 / 12, `deploy/README.md`, `CLAUDE.md`, PROGRESS | — | done |
+| Tests | offline suite 5,639 passed, 62 deselected (this round and the two rounds above: admin page, plain settings file) | — | done |
+| Known gaps | a kill between moving an earlier verified ZIP aside and freezing a failed candidate leaves the verified ZIP on disk without a pointer in the state (older than this round); the refused second resume's sentence is in `sbmig.log` only, not in `remediation-job-status.json`; the web pod's local temp dir is node disk without an `ephemeral-storage` limit in the manifests | — | open |
+| Not seen yet | three pods on the company cluster / NFS | — | open |

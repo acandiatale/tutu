@@ -38,7 +38,7 @@ from typing import Any, Iterable, Optional
 
 from sbmig.core.config import Config
 from sbmig.core.models import CaseAction, CaseHit, ErrorCluster, ErrorEntry, KBMatch, utcnow
-from sbmig.errors.cases import CASES_DIR, CASES_MD, KB_ERRORS, CaseStore
+from sbmig.errors.cases import CASES_DIR, CASES_MD, KB_ERRORS, SCOPE_FULL, SCOPE_REDUCED, CaseStore, scope_of
 from sbmig.errors.common import atomic_write, case_id_of
 from sbmig.errors.resign import ResignReport, current_version
 
@@ -51,6 +51,20 @@ HINT_CHARS = 400
 EXPORT_FILES = (KB_ERRORS, CASES_MD)
 
 __all__ = ["FileKnowledgeBase", "atomic_write"]
+
+# 힌트 줄에 쓸 범위 이름
+SOURCE_LABELS = {SCOPE_FULL: "full-migration", SCOPE_REDUCED: "jdk-jakarta (reduced-scope)"}
+
+
+def run_scope(profile: Any) -> str:
+    """실행의 이관 범위를 반환한다. 프레임워크 프로젝트면 jdk-jakarta, 아니면 full이다.
+
+    The scope of a run: ``jdk-jakarta`` when ``profile.reduced_scope``, else ``full`` (also without a profile)."""
+    try:
+        return SCOPE_REDUCED if profile is not None and getattr(profile, "reduced_scope", False) is True else SCOPE_FULL
+    except Exception:  # noqa: BLE001 - a foreign profile object
+        return SCOPE_FULL
+
 
 # 같은 KB 디렉토리는 프로세스당 한 번만 확인하면 되므로 확인한 경로를 기억해 둔다
 _FIRST_MATCH_CHECKED: set[str] = set()
@@ -111,8 +125,14 @@ class FileKnowledgeBase:
         What the KB has for the cluster's case(s): a CaseHit per case with a usable stored script (action
         ``script`` with the version :meth:`CaseStore.best` picks; status active = proven, candidate = unverified) or
         a person's ``block`` pin (``pinned``; the triage obeys it), and hint lines (the case's last solution). Empty
-        for an unknown case. Never raises."""
+        for an unknown case. Never raises.
+
+        v2.1z-ap: the run's scope comes from ``profile.reduced_scope`` (``jdk-jakarta``, else ``full``): the CaseHit
+        names ``best(case_id, scope)``, and a last solution written by a run of the other scope is labelled in its
+        hint line (``last solution [from a full-migration run] — …``) — kept, not dropped: most javax → jakarta
+        solutions hold in both scopes, and the label tells the LLM what it may not take over."""
         out = KBMatch()
+        scope = run_scope(profile)
         self._first_match_check()
         try:
             if not self.cases.cases_dir.is_dir():
@@ -140,10 +160,13 @@ class FileKnowledgeBase:
                 # 마지막 해결 요약(HINT_CHARS자)을 힌트로 넘기면 새 스크립트를 쓰는 LLM 프롬프트에 들어간다
                 if case.last_solution:
                     text = " ".join(case.last_solution.split())[:HINT_CHARS]
+                    # 다른 범위의 실행이 쓴 해결 문장이면 어느 범위에서 나온 것인지 붙인다
+                    came = scope_of(self.cases.extra(cid).get("solution_scope"))
+                    label = f" [from a {SOURCE_LABELS.get(came, came)} run]" if came != scope else ""
                     out.hints.append(f"case {cid} ({case.name or case.l2}; seen in {len(case.projects)} project(s)): "
-                                     f"last solution — {text}")
+                                     f"last solution{label} — {text}")
                 # 성공이 많고 최신인 저장 스크립트를 고르고, 없으면 힌트만 넘겨 LLM이 새로 쓰게 한다
-                best = self.cases.best(cid)
+                best = self.cases.best(cid, scope)
                 if best is None:
                     continue
                 s = best[0]

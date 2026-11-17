@@ -1,0 +1,702 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>panacea-remediating-oss 관리</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%231F5BD8'/%3E%3Cpath d='M9 22V10l7 7 7-7v12' fill='none' stroke='%23fff' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<style>
+  /* 메인 화면(index.html)과 같은 색, 글꼴, 간격을 복사해서 쓴다. 사내망은 오프라인이라 외부 파일을 하나도 불러오지 않는다.
+     숫자가 이 화면의 내용이므로 숫자 칸은 오른쪽 정렬과 고정폭 숫자(tabular-nums)로 맞춘다. */
+  :root {
+    --blue: #1F5BD8; --blue-deep: #0E2E6E; --blue-mid: #3C73E3; --blue-tint: #E9F0FD; --blue-soft: #F3F7FE;
+    --paper: #F4F7FC; --card: #FFFFFF; --line: #D5DEEE; --line-soft: #E6ECF6;
+    --ink: #13213A; --muted: #5E6E8C; --faint: #8A98B3;
+    --ok: #1E8A4C; --ok-tint: #E6F5EC; --warn: #B8730E; --warn-tint: #FCF2E3; --bad: #C9372C; --bad-tint: #FCEBE9;
+    --radius: 12px; --radius-s: 8px;
+    --sans: "Segoe UI", "Malgun Gothic", "Apple SD Gothic Neo", "Pretendard", system-ui, -apple-system, sans-serif;
+    --mono: Consolas, "Cascadia Mono", "D2Coding", Menlo, ui-monospace, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--paper); color: var(--ink); }
+  body { font: 14px/1.55 var(--sans); -webkit-font-smoothing: antialiased; }
+  button, input { font: inherit; color: inherit; }
+  a { color: var(--blue); text-decoration: none; } a:hover { text-decoration: underline; }
+  :focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+  [hidden] { display: none !important; }
+  [tabindex="-1"]:focus { outline: none; }   /* 화면을 바꾼 뒤 제목으로 옮긴 포커스는 테두리를 그리지 않는다 */
+  .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+  /* ---- 헤더 */
+  .top { background: var(--blue-deep); color: #fff; }
+  .top .in { max-width: 1120px; margin: 0 auto; padding: 14px 20px; display: flex; align-items: baseline; gap: 10px; }
+  .top .name { font-weight: 700; font-size: 17px; letter-spacing: .01em; }
+  .top .sect { font-size: 13px; color: rgba(255,255,255,.75); padding-left: 10px; border-left: 1px solid rgba(255,255,255,.3); }
+
+  main { max-width: 1120px; margin: 0 auto; padding: 24px 20px 56px; display: flex; flex-direction: column; gap: 16px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); min-width: 0; }
+  h1 { margin: 0; font-size: 20px; font-weight: 700; line-height: 1.3; }
+  h2 { margin: 0; font-size: 15px; font-weight: 700; }
+  .muted { color: var(--muted); } .faint { color: var(--faint); } .small { font-size: 12.5px; }
+  .mono { font-family: var(--mono); font-size: 12px; }
+  .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+  .btn { display: inline-flex; align-items: center; gap: 8px; padding: 9px 16px; border-radius: var(--radius-s); border: 1px solid var(--blue);
+         background: var(--blue); color: #fff; font-weight: 600; cursor: pointer; text-decoration: none; white-space: nowrap; }
+  .btn:hover { background: #1A4FC0; border-color: #1A4FC0; text-decoration: none; }
+  .btn:disabled, .btn[aria-disabled=true] { opacity: .45; cursor: default; pointer-events: none; }
+  .btn.quiet { background: #fff; color: var(--blue); }
+  .btn.quiet:hover { background: var(--blue-tint); }
+  .btn.ghost { background: transparent; border-color: var(--line); color: var(--ink); }
+  .btn.ghost:hover { background: var(--paper); }
+  .btn svg { width: 16px; height: 16px; flex: none; }
+  .chip { display: inline-flex; align-items: center; gap: 6px; padding: 1px 9px; border-radius: 999px; font-size: 12px; background: var(--paper);
+          color: var(--muted); border: 1px solid var(--line-soft); white-space: nowrap; }
+  .chip.ok { background: var(--ok-tint); color: var(--ok); border-color: transparent; }
+  .chip.warn { background: var(--warn-tint); color: var(--warn); border-color: transparent; }
+  .chip.bad { background: var(--bad-tint); color: var(--bad); border-color: transparent; }
+  .chip.run { background: var(--blue-tint); color: var(--blue-deep); border-color: transparent; }
+  .flowtag { display: inline-block; padding: 0 7px; border-radius: 999px; font-size: 11.5px; font-weight: 600; border: 1px solid var(--line);
+             color: var(--muted); background: #fff; white-space: nowrap; }
+  .flowtag.rem { border-color: transparent; background: var(--blue-tint); color: var(--blue-deep); }
+
+  /* ---- 로그인 */
+  .login { max-width: 400px; width: 100%; margin: 40px auto 0; padding: 24px 24px 22px; }
+  .login h1 { font-size: 18px; }
+  .login .lead { margin: 4px 0 18px; color: var(--muted); font-size: 13px; word-break: keep-all; overflow-wrap: anywhere; }
+  .login label { display: block; font-weight: 600; font-size: 13px; margin-bottom: 6px; }
+  .login input { width: 100%; padding: 9px 12px; border: 1px solid var(--line); border-radius: var(--radius-s); background: #fff; }
+  .login input:focus-visible { outline: 2px solid var(--blue); outline-offset: 0; border-color: var(--blue); }
+  .login .btn { width: 100%; justify-content: center; margin-top: 14px; padding: 10px 16px; }
+  .note { margin: 0 0 14px; padding: 9px 12px; border: 1px solid var(--line); border-left: 3px solid var(--blue); border-radius: var(--radius-s);
+          background: var(--blue-soft); color: var(--blue-deep); font-size: 13px; word-break: keep-all; overflow-wrap: anywhere; }
+  .note:empty { display: none; }
+  .err { margin: 8px 0 0; color: var(--bad); font-size: 13px; word-break: keep-all; overflow-wrap: anywhere; }
+  .err:empty { display: none; }
+
+  /* ---- 사용량 화면 머리 */
+  .bar { padding: 16px 20px; display: flex; align-items: center; gap: 12px 16px; flex-wrap: wrap; }
+  .bar .who { flex: 1 1 260px; min-width: 0; }
+  .bar .sub { margin: 2px 0 0; color: var(--muted); font-size: 12.5px; display: flex; gap: 2px 12px; flex-wrap: wrap; }
+  .bar .sub .mono { overflow-wrap: anywhere; }
+  .bar .acts { display: flex; gap: 8px; flex-wrap: wrap; }
+  /* ZIP 안내는 표를 내려 본 상태에서도 보이도록 화면 위에 붙어 있다 */
+  .zipnote { margin: 0; position: sticky; top: 8px; z-index: 5; box-shadow: 0 2px 8px rgba(14, 46, 110, .08); }
+  .note.bad { border-left-color: var(--bad); background: var(--bad-tint); color: var(--bad); }
+
+  /* 불러오는 중, 오류, 빈 목록 */
+  .state { padding: 28px 22px; text-align: center; }
+  .state .h { margin: 0; font-size: 15px; font-weight: 700; }
+  .state .d { margin: 6px 0 0; color: var(--muted); font-size: 13px; word-break: keep-all; overflow-wrap: anywhere; }
+  .state .btn { margin-top: 14px; }
+  .state.bad .h { color: var(--bad); }
+
+  /* ---- 합계 */
+  .sec { padding: 16px 20px 18px; }
+  .sechead { display: flex; align-items: baseline; gap: 8px 12px; flex-wrap: wrap; margin-bottom: 12px; }
+  .sechead .n { color: var(--muted); font-size: 12.5px; }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); border: 1px solid var(--line-soft); border-radius: var(--radius-s);
+           overflow: hidden; gap: 1px; background: var(--line-soft); }
+  .tile { background: var(--card); padding: 12px 14px; min-width: 0; }
+  .tile .k { display: block; font-size: 12px; color: var(--muted); font-weight: 600; }
+  .tile .v { display: block; margin-top: 2px; font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1.25;
+             overflow-wrap: anywhere; }
+  .tile .c { display: block; font-size: 12px; color: var(--faint); font-variant-numeric: tabular-nums; min-height: 1.5em; }
+  .tile.main { background: var(--blue-soft); }
+  .tile.main .v { color: var(--blue-deep); }
+  .costnote { margin: 10px 0 0; color: var(--muted); font-size: 12.5px; word-break: keep-all; overflow-wrap: anywhere; }
+  .costnote:empty { display: none; }
+
+  /* ---- 표: 넓으면 상자 안에서만 가로로 스크롤하고 첫 칸(이름)은 고정한다 */
+  .tablebox { overflow-x: auto; border: 1px solid var(--line-soft); border-radius: var(--radius-s); }
+  table.grid { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 13px; }
+  .grid th, .grid td { padding: 8px 12px; border-bottom: 1px solid var(--line-soft); text-align: left; vertical-align: middle; white-space: nowrap; }
+  .grid thead th { background: var(--paper); color: var(--muted); font-size: 12px; font-weight: 600; padding-top: 7px; padding-bottom: 7px; }
+  .grid tbody tr:last-child > td { border-bottom: 0; }
+  .grid th.num, .grid td.num { text-align: right; }
+  .grid .stick { position: sticky; left: 0; z-index: 1; background: var(--card); border-right: 1px solid var(--line-soft); }
+  .grid thead .stick { background: var(--paper); z-index: 2; }
+  .grid tfoot td { background: var(--paper); font-weight: 700; border-top: 1px solid var(--line); border-bottom: 0; }
+  .grid tfoot .stick { background: var(--paper); }
+  .grid .total { font-weight: 700; }
+  .grid .share { color: var(--muted); min-width: 64px; }
+  .grid .cmp { display: block; font-size: 11.5px; color: var(--faint); font-weight: 400; }
+  .grid .dash { color: var(--faint); }
+
+  /* 정렬 머리글: 버튼이다. 현재 정렬한 칸만 방향 표시를 보인다 */
+  .sort { display: inline-flex; align-items: center; gap: 4px; padding: 0; border: 0; background: none; cursor: pointer; color: inherit;
+          font: inherit; font-weight: 600; white-space: nowrap; }
+  th.num .sort { flex-direction: row-reverse; }
+  .sort .caret { width: 8px; height: 8px; flex: none; opacity: 0; }
+  .sort .caret::before { content: ""; display: block; width: 0; height: 0; margin: 1px auto 0; border-left: 4px solid transparent;
+                         border-right: 4px solid transparent; border-top: 5px solid currentColor; }
+  .sort:hover .caret { opacity: .35; }
+  th[aria-sort] { color: var(--blue-deep); }
+  th[aria-sort] .caret { opacity: 1; }
+  th[aria-sort=ascending] .caret::before { border-top: 0; border-bottom: 5px solid currentColor; }
+
+  /* 프로젝트 이름: 행을 여닫는 버튼. 길면 두 줄까지 보이고 전체 이름은 title로 보인다 */
+  .grid td.pcell { white-space: normal; min-width: 180px; max-width: 300px; }
+  .open { display: flex; align-items: flex-start; gap: 8px; width: 100%; padding: 0; border: 0; background: none; cursor: pointer; text-align: left;
+          color: var(--ink); font-weight: 600; }
+  .open .chev { width: 14px; height: 14px; flex: none; margin-top: 3px; color: var(--muted); transition: transform .15s; }
+  .open[aria-expanded=true] .chev { transform: rotate(90deg); color: var(--blue); }
+  .open .pname { min-width: 0; overflow: hidden; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+  .open:hover .pname { color: var(--blue-deep); text-decoration: underline; }
+  .pmeta { display: block; margin: 2px 0 0 22px; font-size: 11.5px; color: var(--warn); }
+  tr.prow.on > td { background: var(--blue-soft); }
+  tr.prow:hover > td { background: var(--blue-soft); }
+  .filter { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+  .filter input { width: 220px; max-width: 100%; padding: 6px 10px; border: 1px solid var(--line); border-radius: var(--radius-s); background: #fff; font-size: 13px; }
+  .filter input:focus-visible { outline: 2px solid var(--blue); outline-offset: 0; border-color: var(--blue); }
+  .nomatch td { color: var(--muted); padding: 18px 12px; white-space: normal; }
+
+  /* 펼친 행: 표 상자 너비(--boxw)로 왼쪽에 붙어 있고 실행 목록은 자기 상자 안에서 스크롤한다 */
+  tr.detail > td { padding: 0; background: var(--paper); border-bottom: 1px solid var(--line); }
+  .runsbox { position: sticky; left: 0; width: var(--boxw, 100%); max-width: 100%; padding: 10px 12px 12px 34px; }
+  .runsbox .tablebox { background: var(--card); }
+  .runsbox .cap { margin: 0 0 6px; font-size: 12px; color: var(--muted); white-space: normal; word-break: keep-all; overflow-wrap: anywhere; }
+  table.runs td.when { min-width: 150px; }
+  .rid { display: block; font-family: var(--mono); font-size: 11.5px; color: var(--muted); }
+  a.rid:hover { color: var(--blue); }
+  .partial { display: block; margin-top: 2px; font-size: 11.5px; color: var(--warn); cursor: help; }
+  .unknown { color: var(--muted); text-align: center !important; font-style: normal; }
+
+  @media (max-width: 640px) {
+    .top .in { padding: 12px 16px; }
+    main { padding: 16px 16px 40px; gap: 12px; }
+    .bar, .sec { padding: 14px 14px 16px; }
+    .bar .acts { width: 100%; }
+    .bar .acts .btn { flex: 1 1 auto; justify-content: center; padding: 9px 12px; }
+    .tiles { grid-template-columns: 1fr 1fr; }
+    .tile { padding: 10px 12px; }
+    .tile .v { font-size: 17px; }
+    .grid td.pcell { min-width: 140px; max-width: 160px; }
+    .filter { margin-left: 0; width: 100%; }
+    .filter input { width: 100%; }
+    .runsbox { padding: 8px; }
+    table.runs td.when { min-width: 0; }
+    .rid { max-width: 120px; overflow: hidden; text-overflow: ellipsis; }
+    .login { margin-top: 16px; padding: 20px 16px; }
+  }
+  @media (prefers-reduced-motion: reduce) { .open .chev { transition: none; } }
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="in">
+    <span class="name">panacea-remediating-oss</span>
+    <span class="sect">관리</span>
+  </div>
+</header>
+
+<main>
+  <!-- 세션을 확인하는 동안만 보인다 -->
+  <section class="card state" id="view-boot"><p class="d">확인하는 중입니다.</p></section>
+
+  <!-- 로그인 -->
+  <section class="card login" id="view-login" hidden aria-labelledby="login-title">
+    <form id="loginform" novalidate>
+      <h1 id="login-title">관리 화면</h1>
+      <p class="lead">프로젝트별 토큰 사용량을 보고 실행 로그를 받습니다.</p>
+      <p class="note" id="loginnote" role="status"></p>
+      <label for="pw">비밀번호</label>
+      <input type="password" id="pw" name="password" autocomplete="current-password" required aria-describedby="loginerr">
+      <p class="err" id="loginerr" role="alert"></p>
+      <button class="btn" id="loginbtn" type="submit">들어가기</button>
+    </form>
+  </section>
+
+  <!-- 사용량 -->
+  <section class="card bar" id="usagebar" hidden aria-labelledby="usage-title">
+    <div class="who">
+      <h1 id="usage-title" tabindex="-1">토큰 사용량</h1>
+      <p class="sub"><span id="stamp"></span><span class="mono" id="outroot"></span></p>
+    </div>
+    <div class="acts">
+      <a class="btn quiet" id="allzip" href="/admin/api/logs.zip" data-zip="all" title="모든 실행의 로그를 ZIP 하나로 받습니다">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M2 4.5h12v9H2z"/><path d="M2 4.5l1.5-2.5h9L14 4.5M8 7v4m0 0-2-2m2 2 2-2"/></svg>
+        <span>전체 로그 받기</span>
+      </a>
+      <button class="btn ghost" id="reload" type="button">새로 고침</button>
+      <button class="btn ghost" id="logout" type="button">나가기</button>
+    </div>
+  </section>
+  <p class="note zipnote" id="zipnote" role="status"></p>
+
+  <section class="card state" id="ustate" hidden aria-live="polite"></section>
+
+  <div id="udata" hidden style="display:flex; flex-direction:column; gap:16px;">
+    <section class="card sec" aria-labelledby="t-total">
+      <div class="sechead"><h2 id="t-total">전체</h2></div>
+      <div class="tiles" id="tiles"></div>
+      <p class="costnote" id="costnote"></p>
+    </section>
+
+    <section class="card sec" aria-labelledby="t-model">
+      <div class="sechead"><h2 id="t-model">모델별</h2><span class="n" id="modelcount"></span></div>
+      <div class="tablebox" tabindex="0" role="region" aria-labelledby="t-model"><table class="grid" id="models"></table></div>
+    </section>
+
+    <section class="card sec" aria-labelledby="t-proj">
+      <div class="sechead">
+        <h2 id="t-proj">프로젝트별</h2><span class="n" id="projcount" aria-live="polite"></span>
+        <label class="filter"><span class="sr">프로젝트 이름으로 찾기</span>
+          <input type="search" id="filter" placeholder="프로젝트 이름으로 찾기" autocomplete="off" spellcheck="false">
+        </label>
+      </div>
+      <div class="tablebox" id="projbox"><table class="grid" id="projects"></table></div>
+      <p class="costnote small">행을 누르면 그 프로젝트의 실행 목록이 열립니다.</p>
+    </section>
+  </div>
+</main>
+<p class="sr" id="live" aria-live="polite"></p>
+
+<script>
+(() => {
+  'use strict';
+  const $ = (id) => document.getElementById(id);
+  const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+  const pad2 = (n) => String(n).padStart(2, '0');
+  const API = '/admin/api';
+
+  // ---------------------------------------------------------------- 숫자와 날짜
+  const nf = new Intl.NumberFormat('ko-KR');
+  const int = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
+  const fmtInt = (v) => nf.format(Math.round(int(v)));
+  // 좁은 칸 옆에 붙이는 짧은 표기(1.2M). 정확한 값은 항상 함께 보여 준다
+  function compact(v) {
+    const n = int(v), a = Math.abs(n);
+    if (a < 1000) return String(Math.round(n));
+    const units = [['B', 1e9], ['M', 1e6], ['K', 1e3]];
+    for (let i = 0; i < units.length; i++) {
+      const [u, base] = units[i];
+      if (a < base) continue;
+      let x = n / base;
+      let s = Math.abs(x) >= 100 ? String(Math.round(x)) : x.toFixed(1).replace(/\.0$/, '');
+      // 999.95K처럼 반올림해서 1000이 되면 한 단위 위로 올린다
+      if (Math.abs(Number(s)) >= 1000 && i > 0) { x = n / units[i - 1][1]; s = x.toFixed(1).replace(/\.0$/, ''); return s + units[i - 1][0]; }
+      return s + u;
+    }
+    return String(n);
+  }
+  // 비용은 API가 준 값만 쓰고, 통화도 API가 준 이름(totals.currency)만 붙인다. 기호는 만들지 않는다
+  let currency = null;
+  function fmtCost(c) {
+    if (c == null || !Number.isFinite(Number(c))) return '';
+    const n = Number(c);
+    const s = n.toLocaleString('ko-KR', { minimumFractionDigits: 2, maximumFractionDigits: Math.abs(n) < 1 ? 4 : 2 });
+    return currency ? `${s} ${currency}` : s;
+  }
+  function fmtDate(iso) {
+    if (!iso) return '';
+    const d = new Date(iso);
+    if (isNaN(d)) return String(iso);
+    return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+  }
+  // 합계 토큰 중 비중. 아주 작은 값은 0%로 보이지 않도록 '0.1% 미만'으로 쓴다
+  function share(part, whole) {
+    const w = int(whole);
+    if (!w) return '';
+    const p = int(part) / w * 100;
+    if (p > 0 && p < 0.1) return '0.1% 미만';
+    return (p >= 10 || p === 0 ? p.toFixed(0) : p.toFixed(1)) + '%';
+  }
+  const numCell = (v, cls) => `<td class="num${cls ? ' ' + cls : ''}">${fmtInt(v)}</td>`;
+  const costCell = (c) => c == null ? '<td class="num dash" title="가격 정보가 없습니다">-</td>' : `<td class="num">${esc(fmtCost(c))}</td>`;
+
+  // ---------------------------------------------------------------- 실행 결과 표시
+  // status / result는 서버(RunManager, 결과 줄)의 단어 그대로 온다. 아는 단어만 한국어로 바꾸고 모르는 단어는 그대로 보인다
+  const RESULT = {
+    succeeded: ['ok', '성공'], success: ['ok', '성공'], ok: ['ok', '성공'], completed: ['ok', '끝'], done: ['ok', '끝'],
+    failed: ['bad', '실패'], fail: ['bad', '실패'], error: ['bad', '오류'], crash: ['bad', '오류'],
+    stopped: ['bad', '중단'], interrupted: ['bad', '중단'], aborted: ['bad', '진행 못 함'], rejected: ['bad', '진행 못 함'],
+    incomplete: ['warn', '미완료'], blocked: ['warn', '차단'], partial: ['warn', '일부 조치'],
+    awaiting_approval: ['warn', '승인 대기'], awaiting_confirmation: ['warn', '확인 필요'],
+    running: ['run', '진행 중'], queued: ['run', '대기'], unknown: ['', '알 수 없음'],
+  };
+  function resultChip(run) {
+    const status = String(run.status || '').toLowerCase();
+    const raw = (status === 'running' || status === 'queued') ? status : String(run.result || run.status || '');
+    const hit = RESULT[raw.toLowerCase()];
+    const title = [run.status, run.result].filter(Boolean).join(' / ');
+    if (!raw) return '<span class="dash">-</span>';
+    const code = /^exit (-?\d+)$/.exec(raw);         // 결과 줄에 없는 종료 코드는 서버가 'exit <n>'으로 보낸다
+    if (code) return `<span class="chip bad" title="${esc(title)}">종료 코드 ${esc(code[1])}</span>`;
+    return `<span class="chip ${hit ? hit[0] : ''}" title="${esc(title)}">${esc(hit ? hit[1] : raw)}</span>`;
+  }
+  const flowTag = (f) => f === 'remediation' ? '<span class="flowtag rem">취약점 해결</span>' : '<span class="flowtag">전체</span>';
+  const scopeText = (s) => s === 'jdk-jakarta' ? '<span class="chip" title="JDK 21과 jakarta만 적용한 실행">JDK·jakarta만</span>' : '';
+
+  // ---------------------------------------------------------------- 화면 전환
+  let data = null;               // 마지막으로 받은 사용량. 나가면 지운다
+  let sort = { key: 'total_tokens', dir: 'desc' };
+  const opened = new Set();      // 펼친 프로젝트 이름. 새로 고침해도 유지한다
+  let loadSeq = 0;
+
+  function show(view) {
+    $('view-boot').hidden = view !== 'boot';
+    $('view-login').hidden = view !== 'login';
+    for (const id of ['usagebar', 'zipnote']) $(id).hidden = view !== 'usage';
+    if (view !== 'usage') { $('ustate').hidden = true; $('udata').hidden = true; }
+  }
+  function showLogin(note) {
+    show('login');
+    $('loginnote').textContent = note || '';
+    $('loginerr').textContent = '';
+    $('loginbtn').disabled = false;
+    $('pw').focus();
+  }
+  // 데이터 요청이 401이면 세션이 끝난 것이다(12시간 만료, 웹 파드 재시작). 찾기 칸의 글은 그대로 둔다
+  function expired() {
+    loadSeq++;
+    data = null;
+    $('projects').innerHTML = ''; $('models').innerHTML = ''; $('tiles').innerHTML = '';
+    showLogin('세션이 끝났습니다. 다시 들어가 주세요.');
+  }
+
+  // ---------------------------------------------------------------- 로그인과 나가기
+  // 비밀번호는 입력 칸에서 바로 요청 본문으로 보내고 변수나 저장소에 두지 않는다. 요청이 끝나면 칸을 비운다
+  $('loginform').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const pw = $('pw'), err = $('loginerr');
+    if (!pw.value) { err.textContent = '비밀번호를 입력해 주세요.'; pw.focus(); return; }
+    err.textContent = '';
+    $('loginbtn').disabled = true;
+    let r = null;
+    try {
+      r = await fetch(API + '/login', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                        body: JSON.stringify({ password: pw.value }), credentials: 'same-origin', cache: 'no-store' });
+    } catch (x) { r = null; }
+    pw.value = '';
+    $('loginbtn').disabled = false;
+    if (r && r.ok) { $('loginnote').textContent = ''; enterUsage(); return; }
+    if (!r) err.textContent = '서버에 연결하지 못했습니다. 잠시 뒤에 다시 해 주세요.';
+    else if (r.status === 429) err.textContent = '시도 횟수가 많습니다. 잠시 뒤에 다시 해 주세요.';
+    else if (r.status === 401) err.textContent = '비밀번호가 맞지 않습니다.';
+    else err.textContent = `들어가지 못했습니다(응답 ${r.status}). 잠시 뒤에 다시 해 주세요.`;
+    pw.focus();
+  });
+  $('logout').addEventListener('click', async () => {
+    $('logout').disabled = true;
+    try { await fetch(API + '/logout', { method: 'POST', credentials: 'same-origin' }); } catch (x) { /* 쿠키는 서버가 지운다. 실패해도 화면은 로그인으로 돌린다 */ }
+    $('logout').disabled = false;
+    loadSeq++;
+    data = null; opened.clear();
+    $('projects').innerHTML = ''; $('models').innerHTML = ''; $('tiles').innerHTML = '';
+    showLogin('나갔습니다.');
+  });
+
+  function enterUsage() {
+    show('usage');
+    $('usage-title').focus();
+    load();
+  }
+
+  // ---------------------------------------------------------------- 사용량 불러오기
+  function setState(kind) {
+    const box = $('ustate');
+    box.className = 'card state' + (kind === 'error' ? ' bad' : '');
+    if (kind === 'loading') {
+      box.innerHTML = '<p class="d">사용량을 불러오는 중입니다.</p>';
+    } else if (kind === 'error') {
+      box.innerHTML = '<p class="h">사용량을 불러오지 못했습니다.</p>' +
+        '<p class="d">서버가 다시 시작하는 중일 수 있습니다. 잠시 뒤에 다시 시도해 주세요.</p>' +
+        '<button class="btn quiet" type="button" id="retry">다시 시도</button>';
+      $('retry').addEventListener('click', () => load());
+    } else if (kind === 'empty') {
+      box.innerHTML = '<p class="h">아직 실행 기록이 없습니다.</p>' +
+        '<p class="d">메인 화면에서 프로젝트를 이관하면 실행마다 사용량이 여기에 쌓입니다.</p>';
+    }
+    box.hidden = !kind;
+  }
+  async function load() {
+    const my = ++loadSeq;
+    const btn = $('reload');
+    btn.disabled = true; btn.textContent = '불러오는 중';
+    if (!data) { $('udata').hidden = true; setState('loading'); }
+    let r = null, d = null;
+    try {
+      r = await fetch(API + '/usage', { credentials: 'same-origin', cache: 'no-store' });
+      if (r.ok) d = await r.json();
+    } catch (x) { d = null; }
+    if (my !== loadSeq) return;                    // 그 사이 나갔거나 다시 불렀다
+    btn.disabled = false; btn.textContent = '새로 고침';
+    if (r && r.status === 401) { expired(); return; }
+    if (!r || !r.ok || !d || !Array.isArray(d.projects)) {
+      data = null; $('udata').hidden = true; setState('error'); $('retry').focus();
+      $('stamp').textContent = ''; $('outroot').textContent = '';
+      return;
+    }
+    data = d;
+    currency = d.totals && d.totals.currency ? String(d.totals.currency) : null;
+    $('stamp').textContent = d.generated_at ? `기준 ${fmtDate(d.generated_at)}` : '';
+    $('outroot').textContent = d.out_root ? String(d.out_root) : '';
+    $('outroot').title = '실행 폴더를 읽은 위치';
+    if (!d.projects.length || !int(d.totals && d.totals.runs)) {
+      $('udata').hidden = true; setState('empty');
+      return;
+    }
+    setState('');
+    renderTotals(); renderModels(); renderProjects();
+    $('udata').hidden = false;
+    $('live').textContent = '사용량을 불러왔습니다.';
+  }
+  $('reload').addEventListener('click', () => load());
+
+  // ---------------------------------------------------------------- 전체
+  function renderTotals() {
+    const t = data.totals || {};
+    const tile = (k, v, c, main) => `<div class="tile${main ? ' main' : ''}"><span class="k">${k}</span>` +
+      `<span class="v">${v}</span><span class="c">${c || ''}</span></div>`;
+    const tok = (v) => int(v) >= 10000 ? compact(v) : '';
+    let html = tile('합계 토큰', fmtInt(t.total_tokens), tok(t.total_tokens), true) +
+      tile('입력 토큰', fmtInt(t.input_tokens), tok(t.input_tokens)) +
+      tile('출력 토큰', fmtInt(t.output_tokens), tok(t.output_tokens)) +
+      tile('호출 수', fmtInt(t.calls), '') +
+      tile('실행 수', fmtInt(t.runs), '') +
+      tile('프로젝트 수', fmtInt(t.projects), '');
+    if (t.cost != null) html += tile('비용', esc(fmtCost(t.cost)), '');
+    $('tiles').innerHTML = html;
+    // 가격이 없는 실행이 섞이면 서버는 합계 비용을 비우거나(null) 가격 있는 합과 unpriced_runs를 함께 준다. 둘 다 안내한다
+    const unpriced = int(t.unpriced_runs);
+    let note = '';
+    if (t.cost != null && unpriced > 0) note = `가격 정보가 없는 실행 ${fmtInt(unpriced)}건은 비용 합계에서 뺐습니다.`;
+    else if (t.cost == null && anyCost()) note = '가격 정보가 없는 실행이 있어 전체 비용은 표시하지 않습니다.';
+    $('costnote').textContent = note;
+  }
+  const anyCost = () => (data.by_model || []).some((m) => m.cost != null) || data.projects.some((p) => p.cost != null);
+
+  // ---------------------------------------------------------------- 모델별
+  function renderModels() {
+    const rows = (data.by_model || []).slice().sort((a, b) => int(b.total_tokens) - int(a.total_tokens));
+    const withCost = rows.some((m) => m.cost != null);
+    const whole = int(data.totals && data.totals.total_tokens);
+    $('modelcount').textContent = rows.length ? `${rows.length}개` : '';
+    let html = '<thead><tr><th class="stick" scope="col">모델</th><th class="num" scope="col">호출</th><th class="num" scope="col">입력 토큰</th>' +
+      '<th class="num" scope="col">출력 토큰</th><th class="num" scope="col">합계 토큰</th><th class="num" scope="col">비중</th>' +
+      (withCost ? '<th class="num" scope="col">비용</th>' : '') + '</tr></thead><tbody>';
+    if (!rows.length) html += `<tr class="nomatch"><td colspan="${withCost ? 7 : 6}">모델별 기록이 없습니다.</td></tr>`;
+    for (const m of rows) {
+      html += `<tr><td class="stick mono" style="font-size:12.5px">${esc(m.model || '(이름 없음)')}</td>` + numCell(m.calls) + numCell(m.input_tokens) +
+        numCell(m.output_tokens) + numCell(m.total_tokens, 'total') + `<td class="num share">${share(m.total_tokens, whole)}</td>` +
+        (withCost ? costCell(m.cost) : '') + '</tr>';
+    }
+    $('models').innerHTML = html + '</tbody>';
+  }
+
+  // ---------------------------------------------------------------- 프로젝트별
+  // 이름과 마지막 실행은 처음 누르면 오름차순, 숫자는 처음 누르면 큰 값부터 보인다
+  const COLS = [
+    { key: 'project', label: '프로젝트', text: true },
+    { key: 'runs', label: '실행' },
+    { key: 'calls', label: '호출' },
+    { key: 'input_tokens', label: '입력 토큰' },
+    { key: 'output_tokens', label: '출력 토큰' },
+    { key: 'total_tokens', label: '합계 토큰' },
+    { key: 'share', label: '비중', fixed: true },
+    { key: 'cost', label: '비용', cost: true },
+    { key: 'last_run_at', label: '마지막 실행', date: true },
+  ];
+  const DIR_KO = { asc: '오름차순', desc: '내림차순' };
+  function sortValue(p, key) {
+    if (key === 'project') return String(p.project || '');
+    if (key === 'last_run_at') { const t = Date.parse(p.last_run_at || ''); return isNaN(t) ? null : t; }
+    if (key === 'cost') return p.cost == null ? null : Number(p.cost);
+    return int(p[key]);
+  }
+  function sorted(list) {
+    const { key, dir } = sort, k = dir === 'asc' ? 1 : -1;
+    return list.slice().sort((a, b) => {
+      const x = sortValue(a, key), y = sortValue(b, key);
+      if (x == null && y != null) return 1;        // 값이 없는 행(가격 없음)은 방향과 상관없이 맨 뒤로 보낸다
+      if (y == null && x != null) return -1;
+      let c = 0;
+      if (typeof x === 'string') c = x.localeCompare(y, 'ko');
+      else if (x != null) c = x - y;
+      return c * k || String(a.project || '').localeCompare(String(b.project || ''), 'ko');
+    });
+  }
+  function headCell(col) {
+    const cls = (col.text ? 'stick' : 'num');
+    if (col.fixed) return `<th class="${cls}" scope="col">${col.label}</th>`;
+    const on = sort.key === col.key;
+    const aria = on ? ` aria-sort="${sort.dir === 'asc' ? 'ascending' : 'descending'}"` : '';
+    const hint = on ? `${col.label} 기준, ${DIR_KO[sort.dir]}으로 정렬됨` : `${col.label} 기준으로 정렬`;
+    return `<th class="${cls}" scope="col"${aria}><button class="sort" type="button" data-key="${col.key}" aria-label="${hint}">` +
+      `<span>${col.label}</span><span class="caret" aria-hidden="true"></span></button></th>`;
+  }
+  function renderProjects() {
+    const all = data.projects;
+    const q = $('filter').value.trim().toLowerCase();
+    const rows = sorted(q ? all.filter((p) => String(p.project || '').toLowerCase().includes(q)) : all);
+    const withCost = all.some((p) => p.cost != null) || (data.totals && data.totals.cost != null);
+    const cols = COLS.filter((c) => !c.cost || withCost);
+    const whole = int(data.totals && data.totals.total_tokens);
+    $('projcount').textContent = q ? `${all.length}개 중 ${rows.length}개` : `${all.length}개`;
+    let html = '<thead><tr>' + cols.map(headCell).join('') + '</tr></thead><tbody>';
+    if (!rows.length) html += `<tr class="nomatch"><td colspan="${cols.length}">찾는 말 '${esc($('filter').value.trim())}'에 맞는 프로젝트가 없습니다.</td></tr>`;
+    rows.forEach((p, i) => {
+      const name = String(p.project || '');
+      const isOpen = opened.has(name);
+      const did = `runs-${i}`;
+      const runList = Array.isArray(p.run_list) ? p.run_list : [];
+      const unknown = runList.filter((r) => r.usage_known === false).length;
+      html += `<tr class="prow${isOpen ? ' on' : ''}">` +
+        `<td class="stick pcell"><button class="open" type="button" aria-expanded="${isOpen}" aria-controls="${did}" data-name="${esc(name)}" title="${esc(name)}">` +
+        '<svg class="chev" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M6 3.5 10.5 8 6 12.5"/></svg>' +
+        `<span class="pname">${esc(name)}</span></button>` +
+        (unknown ? `<span class="pmeta">집계 전 실행 ${unknown}건</span>` : '') + '</td>' +
+        numCell(p.runs) + numCell(p.calls) + numCell(p.input_tokens) + numCell(p.output_tokens) +
+        `<td class="num total">${fmtInt(p.total_tokens)}<span class="cmp">${int(p.total_tokens) >= 10000 ? compact(p.total_tokens) : ''}</span></td>` +
+        `<td class="num share">${share(p.total_tokens, whole)}</td>` +
+        (withCost ? costCell(p.cost) : '') +
+        `<td class="num">${esc(fmtDate(p.last_run_at))}</td></tr>`;
+      html += `<tr class="detail" id="${did}"${isOpen ? '' : ' hidden'}><td colspan="${cols.length}">` +
+        (isOpen ? runsTable(p, withCost) : '') + '</td></tr>';
+    });
+    $('projects').innerHTML = html + '</tbody>';
+    sizeBox();
+  }
+  function runsTable(p, withCost) {
+    const runs = (Array.isArray(p.run_list) ? p.run_list : []).slice()
+      .sort((a, b) => (Date.parse(b.accepted_at || '') || 0) - (Date.parse(a.accepted_at || '') || 0));
+    const head = '<thead><tr><th class="stick" scope="col">날짜</th><th scope="col">진행 방식</th><th scope="col">범위</th><th scope="col">결과</th>' +
+      '<th class="num" scope="col">호출</th><th class="num" scope="col">입력 토큰</th><th class="num" scope="col">출력 토큰</th><th class="num" scope="col">합계 토큰</th>' +
+      (withCost ? '<th class="num" scope="col">비용</th>' : '') + '<th scope="col">로그</th></tr></thead>';
+    let body = '';
+    for (const r of runs) {
+      const id = String(r.run_id || '');
+      const tokens = r.usage_known === false
+        ? '<td class="num unknown" colspan="4" title="이 실행의 토큰 사용량은 아직 알 수 없습니다">집계 전</td>'
+        : numCell(r.calls) + numCell(r.input_tokens) + numCell(r.output_tokens) + numCell(r.total_tokens, 'total');
+      const log = r.has_logs === false ? '<span class="dash" title="이 실행에는 로그 파일이 없습니다">없음</span>'
+        : `<a href="${API}/runs/${encodeURIComponent(id)}/logs.zip" data-zip="run" title="${esc(id)} 로그 ZIP">로그</a>`;
+      body += '<tr>' +
+        `<td class="stick when">${esc(fmtDate(r.accepted_at)) || '<span class="dash">-</span>'}` +
+        `<a class="rid" href="/#${encodeURIComponent(id)}" title="${esc(id)} 실행을 메인 화면에서 엽니다">${esc(id)}</a></td>` +
+        `<td>${flowTag(r.flow)}</td><td>${scopeText(r.scope)}</td>` +
+        `<td>${resultChip(r)}${r.partial ? '<span class="partial" title="기록 파일 일부를 읽지 못했습니다. 값이 실제보다 적을 수 있습니다.">일부만 읽음</span>' : ''}</td>` +
+        tokens + (withCost ? costCell(r.cost) : '') + `<td>${log}</td></tr>`;
+    }
+    if (!runs.length) body = `<tr class="nomatch"><td colspan="${withCost ? 10 : 9}">실행 기록이 없습니다.</td></tr>`;
+    const part = runs.some((r) => r.partial) ? ' 일부만 읽음은 기록 파일 일부를 읽지 못해 값이 실제보다 적을 수 있다는 뜻입니다.' : '';
+    return `<div class="runsbox"><p class="cap">실행 ${runs.length}건, 최근 실행부터.${part}</p>` +
+      `<div class="tablebox"><table class="grid runs" aria-label="${esc(p.project)} 실행 목록">${head}<tbody>${body}</tbody></table></div></div>`;
+  }
+
+  // 펼친 행의 상자 너비를 표 상자 너비에 맞춘다. 표가 가로로 스크롤해도 실행 목록은 화면 왼쪽에 붙어 있다
+  function sizeBox() { const box = $('projbox'); box.style.setProperty('--boxw', box.clientWidth + 'px'); }
+  if (window.ResizeObserver) new ResizeObserver(sizeBox).observe($('projbox'));
+  else window.addEventListener('resize', sizeBox);
+
+  $('projects').addEventListener('click', (e) => {
+    const s = e.target.closest('button.sort');
+    if (s) {
+      const key = s.dataset.key, col = COLS.find((c) => c.key === key);
+      if (sort.key === key) sort.dir = sort.dir === 'asc' ? 'desc' : 'asc';
+      else sort = { key, dir: col && col.text ? 'asc' : 'desc' };
+      renderProjects();
+      const again = $('projects').querySelector(`button.sort[data-key="${key}"]`);
+      if (again) again.focus();                    // 표를 다시 그려도 키보드 위치를 잃지 않는다
+      $('live').textContent = `${col ? col.label : ''} 기준 ${DIR_KO[sort.dir]}으로 정렬했습니다.`;
+      return;
+    }
+    const b = e.target.closest('button.open');
+    if (b) toggle(b);
+  });
+  function toggle(b) {
+    const name = b.dataset.name, row = $(b.getAttribute('aria-controls'));
+    const p = data && data.projects.find((x) => String(x.project || '') === name);
+    if (!row || !p) return;
+    const open = b.getAttribute('aria-expanded') !== 'true';
+    b.setAttribute('aria-expanded', String(open));
+    b.closest('tr').classList.toggle('on', open);
+    if (open) {
+      opened.add(name);
+      const withCost = data.projects.some((x) => x.cost != null) || (data.totals && data.totals.cost != null);
+      row.firstElementChild.innerHTML = runsTable(p, withCost);
+      row.hidden = false;
+    } else {
+      opened.delete(name);
+      row.hidden = true;
+    }
+  }
+  $('filter').addEventListener('input', () => { if (data) renderProjects(); });
+  $('filter').addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && $('filter').value) { $('filter').value = ''; if (data) renderProjects(); }
+  });
+
+  // ---------------------------------------------------------------- 로그 ZIP
+  // 세션이 끝난 뒤 링크를 누르면 오류 JSON 화면으로 넘어가므로 먼저 세션을 확인하고 받는다.
+  // 그다음 같은 주소의 /check로 ZIP을 만들 수 있는지 물어보고, 안 되면 이 화면에 이유를 보인다.
+  // 첨부 파일 응답이라 주소를 바꿔도 이 화면은 그대로 남는다
+  const ZIP_ERR = {
+    busy: '다른 로그 ZIP을 만드는 중입니다. 잠시 뒤에 다시 해 주세요.',
+    too_large: '로그가 너무 커서 한 번에 받을 수 없습니다. 실행별 로그를 받아 주세요.',
+    no_space: '서버에 임시 공간이 부족해 ZIP을 만들 수 없습니다.',
+  };
+  // 실행 하나가 한도를 넘으면 실행별로 받으라는 안내가 맞지 않으므로 따로 쓴다
+  const ZIP_RUN_TOO_LARGE = '이 실행의 로그가 너무 커서 ZIP으로 받을 수 없습니다. 운영 담당자에게 문의해 주세요.';
+  let zipTimer = null;
+  function zipNote(text, bad) {
+    const box = $('zipnote');
+    box.classList.toggle('bad', !!bad);
+    box.textContent = text || '';
+    clearTimeout(zipTimer);
+    if (text) zipTimer = setTimeout(() => { box.textContent = ''; box.classList.remove('bad'); }, bad ? 30000 : 20000);
+  }
+  async function zipCheck(href, kind) {
+    let r = null, d = null;
+    try {
+      r = await fetch(href.replace(/logs\.zip$/, 'logs/check'), { credentials: 'same-origin', cache: 'no-store' });
+      try { d = await r.json(); } catch (x) { d = null; }
+    } catch (x) { r = null; }
+    if (r && r.status === 401) return { expired: true };
+    if (r && r.ok && d && d.ok === true) return { ok: true, skipped: int(d.skipped) };
+    const code = d && d.error;
+    if (code === 'too_large' && kind !== 'all') return { msg: ZIP_RUN_TOO_LARGE };
+    if (code && ZIP_ERR[code]) return { msg: ZIP_ERR[code] };
+    if (!r) return { msg: '서버에 연결하지 못했습니다. 잠시 뒤에 다시 해 주세요.' };
+    return { msg: `로그 ZIP을 준비하지 못했습니다(응답 ${r.status}). 새로 고침한 뒤 다시 해 주세요.` };
+  }
+  document.addEventListener('click', async (e) => {
+    const a = e.target.closest('a[data-zip]');
+    if (!a || e.ctrlKey || e.metaKey || e.shiftKey || e.button !== 0) return;
+    e.preventDefault();
+    let ok = true;
+    try {
+      const r = await fetch(API + '/session', { credentials: 'same-origin', cache: 'no-store' });
+      const s = r.ok ? await r.json() : null;
+      ok = !(r.status === 401 || (s && s.authenticated === false));
+    } catch (x) { ok = true; }                     // 확인에 실패하면 미리 확인 단계에서 다시 알 수 있다
+    if (!ok) { expired(); return; }
+    const kind = a.dataset.zip, href = a.getAttribute('href');
+    const pre = await zipCheck(href, kind);
+    if (pre.expired) { expired(); return; }
+    if (!pre.ok) { zipNote(pre.msg, true); return; }
+    const skip = pre.skipped ? ` 너무 큰 로그 파일 ${fmtInt(pre.skipped)}개는 빼고 받습니다. 목록은 ZIP 안의 SKIPPED.txt에 있습니다.` : '';
+    if (kind === 'all') {
+      const n = int(data && data.totals && data.totals.runs);
+      zipNote(`전체 로그 ZIP을 만들고 있습니다${n ? `(실행 ${fmtInt(n)}건)` : ''}. 실행이 많으면 다운로드가 시작될 때까지 시간이 걸립니다.${skip}`);
+    } else {
+      zipNote(skip.trim());
+    }
+    window.location.assign(href);
+  });
+
+  // ---------------------------------------------------------------- 시작
+  // 사이트 접근 토큰(SBMIG_WEB_TOKEN)이 없으면 세션 확인 자체가 401 / 403이 된다. 그때는 토큰 안내를 보인다
+  (async () => {
+    let r = null, s = null;
+    try { r = await fetch(API + '/session', { credentials: 'same-origin', cache: 'no-store' }); s = r.ok ? await r.json() : null; } catch (x) { r = null; }
+    if (r && r.ok && s && s.authenticated === true) { enterUsage(); return; }
+    showLogin();
+    if (!r) $('loginerr').textContent = '서버에 연결하지 못했습니다. 잠시 뒤에 새로 고침해 주세요.';
+    else if (r.status === 401 || r.status === 403) $('loginnote').textContent = '이 서버의 접근 토큰이 필요합니다. 메인 화면을 ?token=<토큰> 주소로 한 번 연 뒤 다시 오세요.';
+  })();
+})();
+</script>
+</body>
+</html>

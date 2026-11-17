@@ -1312,6 +1312,8 @@ class ScriptRun(BaseModel):
     result: str = ""                               # AttemptOutcome as scored (improved / build_ok / partial / no_change /
                                                    # regressed / reverted / apply_failed / inconclusive / blocked)
     reason: str = ""                               # why (the try's note) — "" when it simply resolved the case
+    # 이 실행의 이관 범위(full / jdk-jakarta). 빈 값은 범위를 기록하기 전의 실행이며 full로 본다
+    scope: str = ""
     errors_before: Optional[int] = None            # the case's errors before the run
     errors_left: Optional[int] = None              # still there after the rebuild
     errors_new: Optional[int] = None               # new errors in the touched files (regressions)
@@ -1345,6 +1347,12 @@ class CaseScript(BaseModel):
     # ok로 끝난 직후 다시 실행했을 때 또 파일을 바꾼 스크립트(비멱등).
     # 기록은 남기지만 재사용 대상에서는 뺀다
     non_idempotent: bool = False
+    # 이 스크립트를 만든 실행의 이관 범위(full / jdk-jakarta). 빈 값은 범위를 기록하기 전의 스크립트이며 full로 본다.
+    # 재사용할 버전을 고를 때 같은 범위의 것을 먼저 쓴다
+    # v2.1z-ap: the scope of the run that wrote this version ("" = written before scopes were recorded = full).
+    # Reuse prefers a version of the asking run's scope; a version of the other scope is never ranked above one
+    # of the same scope, and its out-of-scope rollback is not a failure of the version.
+    scope: str = ""
 
 
 class CaseInfo(BaseModel):

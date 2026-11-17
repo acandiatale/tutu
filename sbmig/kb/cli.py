@@ -17,7 +17,7 @@ import typer
 from pydantic import ValidationError
 
 from sbmig.core.config import Config, load_config
-from sbmig.errors.cases import CaseStore, entry_lines, run_line, scripts_text, valid_case_id
+from sbmig.errors.cases import CaseStore, entry_lines, run_line, scope_of, scripts_text, valid_case_id
 from sbmig.errors.entries import fmt_entry, tries_text
 
 from .store import FileKnowledgeBase
@@ -292,7 +292,8 @@ def cases_show_cmd(ctx: typer.Context, key: str = typer.Argument(..., metavar="C
     if case.last_solution:
         typer.echo(f"  last 해결: {case.last_solution}")
     for s in sorted(case.scripts, key=lambda s: s.version):
-        typer.echo(f"  script v{s.version} ({s.file}) {s.status}, {s.source}, successes {s.successes} / failures "
+        typer.echo(f"  script v{s.version} ({s.file}) {s.status}, scope {scope_of(s.scope)}"
+                   + ("" if s.scope else " (not recorded)") + f", {s.source}, successes {s.successes} / failures "
                    f"{s.failures}, projects {', '.join(s.projects) or '-'}, made by {s.project or '-'} "
                    f"{s.created_by or ''}".rstrip() + (f", last {s.last_result}" if s.last_result else ""))
         # v2.1e: lineage, why it was made, why it failed, every run

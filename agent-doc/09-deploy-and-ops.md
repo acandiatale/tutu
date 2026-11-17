@@ -19,15 +19,16 @@ UI 에 올리면** 에이전트가 이관을 돌린다. 담당자는 sbmig 를 �
 - 화면(머리 이름 `panacea-remediating-oss`, 임시): 진행 방식 **전체 진행**(기본, 이관 후 취약점 조치) / **취약점 해결**(조치만, [11](11-remediations.md)) → zip 놓기 → `마이그레이션 시작`(취약점 해결은 `취약점 조치 시작`) → 단계 레일과 진행 기록 / 로그 탭 →
   끝나면 `보고서 받기(report.md)` / `변환된 프로젝트 받기(result.zip)` 버튼. **설정 파일은 서버가 정한다**: `sbmig serve --config <이름>`
   (여러 번) 또는 `SBMIG_WEB_CONFIGS=a.yml,b.yml`, 없으면 `config/artifacts.yml` → `artifacts.local-e2e.yml` 중 있는 것(`GET /api/configs` 의
-  `default`). 담당자는 고르지 않고, 개발자는 "고급 설정"을 펼쳐 설정 파일 / LLM(fake) / 여기까지만 실행을 바꾼다. 로그 탭은 마지막 1,500 줄만
-  그린다(전체는 `sbmig.log` 링크). 실행 폴더 이름은 올린 파일 이름의 앞머리로 시작한다(`<앞머리>-YYYYMMDD-HHMMSS-<hex 6>`, 긴 이름은 자름, 쓸 글자가 없으면 `web`). 접수에서 거절된 실행(Ant 등)은 사유를 문장으로 보인다. 화면은 `sbmig/web/static/index.html` 한 파일(HTML + CSS + JS, 웹 폰트·CDN 없음 — 사내망).
+  `default`). 개발자만 "고급 설정"에서 설정 파일 / LLM / 여기까지만 실행을 바꾼다. 로그 탭은 마지막 1,500 줄만
+  그린다. 실행 폴더 이름은 올린 파일 이름의 앞머리로 시작한다(`<앞머리>-YYYYMMDD-HHMMSS-<hex 6>`, 긴 이름은 자름, 쓸 글자가 없으면 `web`). 접수에서 거절된 실행(Ant 등)은 사유를 문장으로 보인다. 화면은 `sbmig/web/static/index.html` 한 파일(웹 폰트·CDN 없음).
 - **웹 파드가 직접 돌리면 한 번에 하나, Job 모드는 동시에 `SBMIG_JOB_MAX_PARALLEL` 건**(기본 1, 매니페스트 값 3). 넘는 zip 은 `queued` 로 기다리고 화면에 순번이 보인다.
-- **중지**는 그래프 노드 사이에서만 먹힌다(지금 노드가 끝난 뒤).
+- **중지**는 그래프 노드 사이에서만 먹힌다.
 - **접근 제어**: 사내망 전용 페이지라 기본 배포는 `SBMIG_WEB_OPEN=1`(또는 `--open`)로 토큰 없이 모든 클라이언트를 받는다 — 시작 때
   `open to the network WITHOUT a token` 경고 한 줄. 토큰을 두려면 `SBMIG_WEB_TOKEN`(또는 `--token`): 결과 zip 에 회사 소스가 들어가므로
   토큰이 있으면 모든 요청에 요구하고(open 보다 우선), 브라우저는 `http://<host>:8765/?token=<토큰>` 로 한 번 열면 HttpOnly 쿠키가 남는다.
   둘 다 없으면 이 PC(루프백)만 받고, `--host 0.0.0.0` 이면 `sbmig serve` 가 뜨지 않는다.
 - **업로드 상한**: `--max-upload-mb`, 기본 `$SBMIG_MAX_UPLOAD_MB` 또는 512 MB, 0 = 없음.
+- **관리자 페이지 `/admin`**(링크 없음): 내장 비밀번호(`SBMIG_ADMIN_PASSWORD` 로 교체 가능)로 들어가 프로젝트별 LLM 토큰 사용량을 보고 로그 ZIP 을 받는다. `sbmig/web/admin.py`, `deploy/README.md` §2.
 - `sbmig serve` 가 곧 uvicorn 이다(안에서 `uvicorn.run`). 실행 큐가 프로세스 안에 있으므로 **워커는 하나**여야 한다.
   종료 시 `--graceful-timeout`(기본 5초) 뒤 SSE 연결을 닫고, 실행 중인 Maven / OpenRewrite 프로세스를 정리한다. 중단된 실행은 `aborted`.
 - 플레인 uvicorn 으로도 뜬다: `SBMIG_WEB_OUT=out/web uvicorn sbmig.web.app:app --port 8765` (이때 `--timeout-graceful-shutdown 5` 를 직접).
@@ -98,7 +99,7 @@ docker run --rm <registry>/sbmig:<tag> python -m sbmig.cli --help
 덮어쓴다 — `SBMIG_KB__DIR=/data/kb-v2`(웹 파드), `SBMIG_BUILD__SETTINGS_FILE=/data/.m2/settings.xml`, `SBMIG_BUILD__JAVA_HOME=/opt/java21`,
 `SBMIG_BUILD__MVN=mvn`, `SBMIG_BUILD__LOCAL_REPO=/data/.m2/repository`, `SBMIG_SCRIPT__PYTHON=null`, 웹 파드의 `SBMIG_LLM__RECORD_DIR=${LLM_RECORD_DIR:-}`. 이 값들은
 `tests/deploy/test_manifests.py` 가 세 매니페스트에서 지킨다. 설정을 바꾸려면 이미지를 다시 만든다(숫자 손잡이는 `sbmig-env` 로 충분).
-비밀값과 settings.xml 은 이미지 밖: ConfigMap `deploy/k8s/20-configmap.yaml`(`sbmig-config` = `/data/.m2` 의 settings.xml, `sbmig-env` = 환경 변수),
+비밀값과 settings.xml 은 이미지 밖: ConfigMap `deploy/k8s/20-configmap.yaml`(`sbmig-config` = settings.xml 원본, `/data/.m2` 로 한 번 복사, `sbmig-env` = 환경 변수),
 Secret 견본 `deploy/k8s/30-secret.example.yaml`(복사해 `deploy/k8s/30-secret.yaml` 로 채움, git-ignore): `sbmig-llm`(= PC 의 `.env` + `SBMIG_WEB_TOKEN`),
 `sbmig-git`(저장소 토큰). 자원: OpenRewrite 가 `openrewrite.jvm_args`(`-Xmx4g`)로 돌므로 메모리 6~8 GiB, CPU 2~4.
 
@@ -282,6 +283,4 @@ grep -n "REDACT_OUTPUT_ENV\|WITHHELD" sbmig/core/scrub.py; grep -n "def install_
 grep -n "PACKAGE_ROOT\s*=" sbmig/core/config.py         # 레포 루트를 자기 위치에서 잡는 줄
 grep -o 'SBMIG_[A-Z_]*' deploy/docker/run-job.sh | sort -u
 ls deploy/docker deploy/k8s && cat deploy/README.md
-grep -n "def write_summaries" -A25 sbmig/fleet/summary.py
-grep -n "SBMIG-RESULT" sbmig/report/result_line.py | head
 ```

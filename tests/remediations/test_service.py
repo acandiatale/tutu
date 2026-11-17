@@ -3,6 +3,7 @@ restart rule — driven by fakes (no IVAS, Nexus, Maven or network; tmp_path onl
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import sys
 import threading
@@ -1050,3 +1051,53 @@ def test_proposals_carry_korean_display_fields(tmp_path, base_cfg):
     assert r["origin_ko"] == "간접 의존성" and r["reason_ko"] == "직접 확인 필요"
     every = mgr.proposals(rid, all_rounds=True)
     assert every["residuals"][0]["reason_ko"] == "직접 확인 필요"
+
+
+# ---------------------------------------------------------------------------- v2.1z-ap: the run claim and M1
+def test_decide_is_refused_while_a_driver_holds_the_run_claim(tmp_path, base_cfg):
+    from sbmig.remediations import chain
+    paths = chained(tmp_path, base_cfg)
+    mgr = job_manager(tmp_path, base_cfg)
+    p = mgr.proposals(RUN_ID)["proposals"][0]
+    plan_before = paths.plan(1).read_bytes()
+    holder = chain.RunClaim(paths.root, purpose="resume").acquire()
+    try:
+        with pytest.raises(StateConflict) as ei:
+            mgr.decide(RUN_ID, [_decision(p)], "alice")
+        assert str(ei.value) == service_mod.CLAIM_HELD_NOTE
+        assert paths.plan(1).read_bytes() == plan_before and not paths.approvals.exists()
+        assert mgr.status(RUN_ID)["status"] == AWAITING_APPROVAL       # readers never take the claim
+    finally:
+        holder.release()
+    assert mgr.decide(RUN_ID, [_decision(p)], "alice")["accepted"] == [p["id"]]
+
+
+def test_the_standalone_worker_holds_the_claim_while_it_drives(tmp_path, base_cfg):
+    from sbmig.remediations import chain
+    gate = Gate()
+    f = Factory(maven=FakeMaven(on_package=gate))
+    mgr = manager(tmp_path, base_cfg, f)
+    st = mgr.submit(upload(tmp_path), "app.zip", None)
+    try:
+        assert gate.entered.wait(WAIT)
+        info = chain.claim_info(mgr.paths(st.id).root)
+        assert info is not None and info["purpose"] == "service" and info["pid"] == os.getpid()
+    finally:
+        gate.release.set()
+    assert mgr.wait(st.id, WAIT)
+    assert not chain.claim_path(mgr.paths(st.id).root).exists()
+
+
+def test_a_resumed_chained_run_uses_the_migration_repository_and_an_upload_its_own(tmp_path, base_cfg, monkeypatch):
+    """M1: in-process mode, a resumed CHAINED remediation builds with the Maven repository of the run it continues (no
+    `-remediation` suffix, like the chained run itself); the standalone upload keeps `<repo>-remediation`."""
+    cfg = cfg_with(base_cfg, build={"local_repo": "/m2/repository/"})
+    chained(tmp_path, cfg, status=STOPPED)
+    monkeypatch.setitem(sys.modules, "sbmig.remediations.chain", FakeChain())
+    f = Factory()
+    mgr = job_manager(tmp_path, cfg, rm=FakeRunManager(tmp_path / "out", state="finished"), factory=f, mode="in-process")
+    mgr.resume(RUN_ID)
+    assert mgr.wait(RUN_ID, WAIT)
+    assert f.cfgs[-1].build.local_repo == "/m2/repository/"
+    submit_and_wait(mgr, tmp_path)
+    assert f.cfgs[-1].build.local_repo == "/m2/repository-remediation"

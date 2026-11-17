@@ -74,9 +74,9 @@ def test_every_manifest_overrides_the_machine_paths_and_mounts_no_artifacts_yml(
     assert {k: lit.get(k) for k in PATHS} == PATHS
     mounts = {m["mountPath"]: m for m in c["volumeMounts"]}
     assert not [p for p in mounts if p.endswith("artifacts.yml")]        # baked, not mounted
-    assert not [p for p in mounts if p.startswith("/etc/sbmig")]
-    # every pod that runs Maven gets settings.xml from ConfigMap sbmig-config at the settings path (v2.1z-al)
-    assert mounts[PATHS["SBMIG_BUILD__SETTINGS_FILE"]]["subPath"] == "settings.xml"
+    # settings.xml: the web pod mounts the ConfigMap source at /etc/sbmig, 80 mounts it at the settings path (v2.1z-al)
+    assert [p for p in mounts if "settings.xml" in p] == {WEB: ["/etc/sbmig/settings.xml"], WEB_JOB: [],
+                                                         BUILD_JOB: [PATHS["SBMIG_BUILD__SETTINGS_FILE"]]}[path]
 
 
 def test_web_pod_also_pins_kb_dir_and_neutralizes_a_pc_record_dir():
@@ -317,35 +317,35 @@ def test_every_mount_has_its_volume_and_every_volume_is_mounted(path: Path):
     assert sorted(mounted - volumes) == [] and sorted(volumes - mounted) == []
 
 
-def test_maven_settings_is_the_configmap_mounted_at_data_m2_in_every_pod():
-    """v2.1z-al (the user: "Settings도 저기로 옮겨가야하지않아!?"): `/data/.m2` holds `settings.xml` and `repository/`, as
-    `~/.m2` on a PC. The file comes only from ConfigMap `sbmig-config`, mounted with `subPath` at `/data/.m2/settings.xml` in
-    40, 81 and 80 (the user, on a copy step: "웹 파드 재배포 하면 복사 필요 없는거 아냐?"). In 40 / 81 that mount sits inside
-    the NFS data volume, so its mount point must exist: 40's initContainer creates it as the pod's user ("내가 쉘로 붙어서
-    .m2파일을 만들어 두면 될까!?"); 81 has none (the web pod always exists before any Job)."""
+def test_maven_settings_is_a_plain_file_on_the_data_volume():
+    """v2.1z-al (the user: "Settings도 저기로 옮겨가야하지않아!?"; after the nested mount and its mount point failed:
+    "어차피 /data 볼륨 마운트를 하는데 … 하나 마운트 된곳에다가 다같이 쓰면 안되는거야?", "어차피 settings.xml은 바뀔일이
+    거의 없잖아? 일반 파일로 두고 가는것도 좋을거 같은데!"): `/data/.m2/settings.xml` is a plain file on the data volume, as
+    `~/.m2/settings.xml` on a PC. Nothing is mounted inside `/data` in 40 / 81 and there is no initContainer; 40 mounts
+    ConfigMap `sbmig-config` at `/etc/sbmig/settings.xml` as the source the operator copies from; 81 mounts no settings at
+    all; 80 (no data PVC) keeps mounting the ConfigMap file inside its emptyDir."""
     for path in (WEB, WEB_JOB, BUILD_JOB):
         assert _literals(path)["SBMIG_BUILD__SETTINGS_FILE"] == SETTINGS, path.name
-        spec = _spec(path)
-        assert not [e for e in spec["containers"][0]["env"] if "SEED" in e["name"]], path.name
-        mount = next(m for m in spec["containers"][0]["volumeMounts"] if m["mountPath"] == SETTINGS)
-        assert mount["subPath"] == "settings.xml" and mount.get("readOnly") is True, path.name
-        volume = next(v for v in spec["volumes"] if v["name"] == mount["name"])
-        assert volume["configMap"]["name"] == "sbmig-config", path.name
-        # the artifacts.yml alternative stays documented: one commented mount line on the same `config` volume
+        assert "initContainers" not in _spec(path), path.name
+        # the artifacts.yml alternative stays documented as a commented mount line
         assert "# - {name: config, mountPath: /app/config/artifacts.yml, subPath: artifacts.yml" in path.read_text(encoding="utf-8")
-    for path in (WEB, WEB_JOB):
-        spec = _spec(path)
-        mounts = [m["mountPath"] for m in spec["containers"][0]["volumeMounts"]]
-        assert mounts.index("/data") < mounts.index(SETTINGS), path.name        # the data volume first, the file inside it
-        data = next(v for v in spec["volumes"] if v["name"] == "data")
-        assert data["persistentVolumeClaim"]["claimName"] == "sbmig-data", path.name
     web = _spec(WEB)
-    (init,) = web["initContainers"]
-    assert init["image"] == web["containers"][0]["image"]
-    assert init["command"] == ["sh", "-c", "mkdir -p /data/.m2 && touch /data/.m2/settings.xml"]
-    assert init["volumeMounts"] == [{"name": "data", "mountPath": "/data"}]
-    assert "securityContext" not in init and web["securityContext"]["runAsUser"] == 1000      # the pod's own user
-    assert "initContainers" not in _spec(WEB_JOB) and "initContainers" not in _spec(BUILD_JOB)
+    assert [m["mountPath"] for m in web["containers"][0]["volumeMounts"]] == \
+        ["/data", "/etc/sbmig/settings.xml", "/templates", "/etc/kube"]
+    source = next(m for m in web["containers"][0]["volumeMounts"] if m["mountPath"] == "/etc/sbmig/settings.xml")
+    assert source["subPath"] == "settings.xml" and source.get("readOnly") is True
+    assert next(v for v in web["volumes"] if v["name"] == source["name"])["configMap"]["name"] == "sbmig-config"
+    job = _spec(WEB_JOB)
+    assert [m["mountPath"] for m in job["containers"][0]["volumeMounts"]] == ["/data"]
+    assert not [v for v in job["volumes"] if "configMap" in v]
+    text = WEB_JOB.read_text(encoding="utf-8")
+    assert "# - name: config" in text and "#   configMap: {name: sbmig-config}" in text     # the commented alternative
+    for spec in (web, job):
+        assert not [m for m in spec["containers"][0]["volumeMounts"] if m["mountPath"].startswith("/data/")]
+    build = _spec(BUILD_JOB)
+    mount = next(m for m in build["containers"][0]["volumeMounts"] if m["mountPath"] == SETTINGS)
+    assert mount["subPath"] == "settings.xml" and mount.get("readOnly") is True
+    assert next(v for v in build["volumes"] if v["name"] == mount["name"])["configMap"]["name"] == "sbmig-config"
     assert SETTINGS.rsplit("/", 1)[0] == LOCAL_REPO.rsplit("/", 1)[0] == "/data/.m2"
     cm = next(d for d in _docs(CONFIGMAP) if d["metadata"]["name"] == "sbmig-config")
     assert "${env.NEXUS_PASSWORD}" in cm["data"]["settings.xml"]       # the file points at the Secret, never a value
@@ -362,8 +362,8 @@ def test_the_maven_local_repository_lives_at_data_m2_in_every_pod():
         mounts = {m["mountPath"]: m["name"] for m in spec["containers"][0]["volumeMounts"]}
         volumes = {v["name"]: v for v in spec["volumes"]}
         assert volumes[mounts["/data"]]["persistentVolumeClaim"]["claimName"] == "sbmig-data", path.name
-        # no own volume for .m2: only the settings.xml file mount sits inside it
-        assert "m2" not in volumes and [p for p in mounts if ".m2" in p] == ["/data/.m2/settings.xml"], path.name
+        # no own volume for .m2 and nothing mounted inside it
+        assert "m2" not in volumes and not [p for p in mounts if ".m2" in p], path.name
     job = _docs(BUILD_JOB)[0]["spec"]["template"]["spec"]
     assert _literals(BUILD_JOB)["SBMIG_BUILD__LOCAL_REPO"] == LOCAL_REPO
     mounts = {m["mountPath"]: m["name"] for m in job["containers"][0]["volumeMounts"]}

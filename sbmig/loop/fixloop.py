@@ -111,6 +111,7 @@ from sbmig.core.stage import stage
 
 from sbmig.analyze.bundled_jars import providers
 from sbmig.restructure.system_jars import WiredJar, bundled_jar_followup, wire_bundled_jar
+from sbmig.errors.cases import OUT_OF_SCOPE, SCOPE_FULL, SCOPE_REDUCED
 
 from .blocked_registry import (BlockedRegistry, attribute, compose_suggestion, is_in_house, is_javax_api_artifact,
                                sanitize_errors)
@@ -982,6 +983,8 @@ class BuildFixLoop:
         # v2 fix scripts: scripts credited (attempt → outcome credited), attempts rolled back before the next try, the
         # errors the last fix round's rollbacks brought back (added to the next scoring's baseline)
         self._credited: dict[int, str] = {}
+        # 프레임워크 검사가 되돌린 시도. KB에는 out_of_scope로 기록한다
+        self._out_of_scope: set[int] = set()        # v2.1z-ap: attempts the framework guard rolled back
         self._rolled_back: set[int] = set()
         self._ref_paths: dict[int, set[str]] = {}   # attempt → merge-conflict reference labels shown to the LLM
         self._target: Optional[str] = None
@@ -1018,6 +1021,8 @@ class BuildFixLoop:
         # 프레임워크 아티팩트 자신이 javax로 컴파일되어 차단한 케이스와 그 프레임워크 좌표
         self._framework_blocks: dict[str, GAV] = {}  # v2.1z-ak: cluster id → the framework artifact it was blocked on
         self._cases = CaseScripts.of(kb)
+        # 재사용할 버전을 고를 때 이 실행의 범위를 쓰도록 어댑터에 알려 준다(트리아지도 같은 어댑터를 쓴다)
+        self._cases.run_scope = self._run_scope       # v2.1z-ap: read by sbmig.triage.scripts.plan_script_step
         attach = getattr(triager, "attach_run", None)
         if callable(attach):
             try:
@@ -2856,8 +2861,12 @@ class BuildFixLoop:
         'v1 [proven]: 2 ok / 1 failed — last: no_change' per stored version, then this run's tries."""
         out: list[str] = []
         info = self.cases.find(case_id) if self.cases.active else None
+        mine = self._run_scope()
         for m in list(getattr(info, "scripts", None) or [])[-SCRIPT_HISTORY:]:
-            out.append(f"v{m.version} [{m.status}]: {m.successes} ok / {m.failures} failed — last: "
+            # 다른 범위의 실행이 만든 버전은 그 범위를 밝힌다(성공, 실패 수는 그 범위의 것이다)
+            sc = (getattr(m, "scope", "") or "").strip() if isinstance(getattr(m, "scope", ""), str) else ""
+            other = f", written by a {sc} run" if (sc or SCOPE_FULL) != mine else ""
+            out.append(f"v{m.version} [{m.status}{other}]: {m.successes} ok / {m.failures} failed — last: "
                        f"{m.last_result or '-'}")
         for a in _same_cluster(c, self.history, self.blocked.canonical_file):
             if a.decision.kind == DecisionKind.SCRIPT:
@@ -3111,7 +3120,7 @@ class BuildFixLoop:
         # the adapter (sbmig.loop.entries.CaseScripts) drops the v2.1e keywords an older store does not take
         cs = store.add_script(step.case_id, sig, code, source=att.source or "llm-new", run_id=self.ws.run_id,
                               project=self._project(), analysis=getattr(ans, "analysis", "") or "",
-                              solution=getattr(ans, "solution", "") or "", **lineage)
+                              solution=getattr(ans, "solution", "") or "", scope=self._run_scope(), **lineage)
         if cs is None:
             att.notes.append("fix script not stored (kb.cases.add_script failed): v0")
             return True
@@ -4561,6 +4570,10 @@ class BuildFixLoop:
         """사내 프레임워크 프로젝트라 JDK와 jakarta만 올리는 실행인지 확인한다."""
         return bool(getattr(self.profile, "reduced_scope", False))
 
+    def _run_scope(self) -> str:
+        """KB에 기록할 이 실행의 이관 범위(jdk-jakarta 또는 full)를 반환한다."""
+        return SCOPE_REDUCED if self._reduced_scope() else SCOPE_FULL
+
     def _chain_label(self) -> str:
         """프롬프트 정보 줄에 쓸 부모 체인 이름을 반환한다. 범위를 줄인 실행은 프로젝트 자신의 부모다."""
         return "parent chain" if self._reduced_scope() else "new parent chain"
@@ -4708,6 +4721,7 @@ class BuildFixLoop:
         if not why:
             return False
         self._fail(att, why)
+        self._out_of_scope.add(id(att))
         log.warning("적용 취소 (%s): 프레임워크 프로젝트에서 바꾸면 안 되는 것을 바꿈 — %s", name, _first_sentence(why, 300))
         self.ws.journal({"event": "framework_guard", "attempt": att.id, "case": att.script_case_id, "reason": why})
         return True
@@ -5699,13 +5713,22 @@ class BuildFixLoop:
         run = {"reason": reason, "round": int(rnd or 0), "n": int(n or 0), "errors_before": att.errors_before,
                "errors_left": att.errors_after, "errors_new": len(att.introduced_errors),
                "files": list(dict.fromkeys(ch.new_path or ch.path for ch in att.changes))}
+        # 프레임워크 검사가 되돌린 시도는 스크립트 실패가 아니므로 out_of_scope로 넘긴다.
+        # 그 버전이 이 실행과 같은 범위면 저장소가 apply_failed로 기록한다
+        # v2.1z-ap: a framework-guard rollback is credited as out_of_scope (the store records it as apply_failed on a
+        # version of this run's own scope); the run's scope and the code that ran go along (a moved case id is
+        # resolved by the code)
+        result = OUT_OF_SCOPE if id(att) in self._out_of_scope and att.outcome == "apply_failed" else att.outcome
+        run["scope"] = self._run_scope()
+        run["code"] = att.script_code or ""
         # the adapter (sbmig.loop.entries.CaseScripts) drops the v2.1e keywords an older store does not take
-        if not self.cases.credit(att.script_case_id, att.script_version, att.outcome, project=self._project(),
+        if not self.cases.credit(att.script_case_id, att.script_version, result, project=self._project(),
                                  run_id=self.ws.run_id, **run):
             return
         self._credited[id(att)] = att.outcome
         self.ws.journal({"event": "script_credit", "case": att.script_case_id, "version": att.script_version,
-                         "attempt": att.id, "outcome": att.outcome, "reason": reason})
+                         "attempt": att.id, "outcome": att.outcome, "reason": reason,
+                         **({"credited": result} if result != att.outcome else {})})
 
     def _run_reason(self, att: FixAttempt) -> str:
         """평가된 시도가 케이스를 해결하지 못한 이유 한 줄(ScriptRun.reason, 보강 버전의

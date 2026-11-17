@@ -1705,8 +1705,8 @@ class Orchestrator:
         if problem is not None:
             state, path = problem
             if state == "empty":
-                self._settings_problem = (f"Maven settings file is empty: {path} (build.settings_file) — the ConfigMap is "
-                                          "not mounted there; check the volumeMounts of the pod and rerun")
+                self._settings_problem = (f"Maven settings file is empty: {path} (build.settings_file) — copy the "
+                                          "settings.xml there and rerun")
             else:
                 self._settings_problem = (f"Maven settings file not found: {path} (build.settings_file) — put the "
                                           "settings.xml there and rerun")
@@ -1793,9 +1793,9 @@ class Orchestrator:
         """``build.settings_file``이 설정되어 있는데 읽을 수 없거나 비어 있으면 (``missing`` | ``empty``, 경로)를 반환한다.
 
         (`missing` | `empty`, the absolute path Maven would get as `-s`) when `build.settings_file` is set and is not a
-        readable file, or is an empty one (v2.1z-al: in the cluster the ConfigMap is mounted over a zero-byte mount-point
-        file; without the mount Maven would read an empty settings file); None when it is unset (Maven's default settings,
-        as on a PC) or the file has content."""
+        readable file, or is an empty one (v2.1z-al: in the cluster it is a plain file the operator copies onto the data
+        volume; an empty one was created but never filled); None when it is unset (Maven's default settings, as on a PC)
+        or the file has content."""
         value = self.cfg.build.settings_file
         if value is None or not str(value).strip() or str(value).strip().lower() == "null":
             return None

@@ -22,8 +22,8 @@ LLM 을 부르지 않는다. 이관 그래프(`sbmig/graph/`)와는 노드 하�
   같고, 캐시된 해결 실패는 `-U` 로 한 번 더(`remediation_negative_cache_retry`), 줄마다 `remediation mvn … (cwd=…)`. 이관은 통과했는데
   baseline 이 실패하면 메시지가 그 사실로 시작한다(`remediation_baseline_differs`; 빌드 사본에는 `.git/` 이 없다).
 - 조치의 결과는 이관의 성공 판정·종료 코드·보고서 판정을 **바꾸지 않는다**. `SBMIG-RESULT … remediation=<상태|skipped>`.
-  IVAS 세 값이나 Maven 준비가 없으면 건너뛰고 저널에 `remediation_skipped`(빠진 것의 이름만). 이 경로는
-  `remediation.trusted_projects` 를 묻지 않는다(이관이 이미 그 프로젝트를 빌드했다) — 그 스위치는 단독 업로드만 막는다.
+  IVAS 세 값이나 Maven 준비가 없으면 건너뛰고 저널에 `remediation_skipped`(빠진 것의 이름만). 
+  `remediation.trusted_projects` 는 묻지 않는다(단독 업로드만 막는다).
 - 빌드 파드는 사람을 기다리지 못한다: `AWAITING_APPROVAL` / `AWAITING_CONFIRMATION` 이면 상태를 저장하고 끝난다. Job 모드의 resume 은
   **새 빌드 파드**(같은 Job 틀·실행 폴더, Worker 동작 `remediation-resume` → `chain.resume`)이고 업로드와 같은 FIFO 줄·자리를 기다린다. `state.json` 의 `pending_receipt`(IVAS projectId / analysisId) 덕분에 다시 올리지 않는다.
   확인 대기면 웹 파드가 `confirm` 등을 Job 을 만들기 **전에** `state.json` 에 쓴다.
@@ -63,7 +63,8 @@ LLM 을 부르지 않는다. 이관 그래프(`sbmig/graph/`)와는 노드 하�
 - IVAS 업로드 결과가 불확실하면 **자동으로 다시 올리지 않는다**. 미완료 검사·빠진 쪽·중복·ZIP 해시 불일치는 "0건" 이 아니다.
 - 새 버전의 근거는 서버 정책(`remediation.policy.pins`) 또는 승인된 저장소가 실제로 가진 버전뿐이다. IVAS 의 patched 버전은 하한 힌트일 뿐이고,
   pin 이 없으면 그 힌트가 있어야 제안한다(없으면 `no_candidate_version`).
-- 서버가 다시 떠도 아무것도 자동으로 재개·재전송하지 않는다(`INTERRUPTED` + 명시적 resume).
+- 서버가 다시 떠도 아무것도 자동으로 재개·재전송하지 않는다(`INTERRUPTED` + 명시적 resume). 상태를 진행시키는 것은
+  `remediation/claim.json` 을 가진 프로세스 하나뿐(`RunClaim`, 30 초 갱신, 600 초 갱신 없으면 넘겨받음, 둘째는 거절).
 - IVAS 아이디·비밀번호·토큰, Nexus 자격증명은 코드·설정·로그·보고서·예외 문장 어디에도 쓰지 않는다.
 
 ## 2. 흐름 — 노드별
@@ -78,7 +79,7 @@ LLM 을 부르지 않는다. 이관 그래프(`sbmig/graph/`)와는 노드 하�
 | `inventory` | 빌드 대상마다 `dependency:tree`, 발견 항목 → `Inventory`(출처 판정) | 해석·인벤토리 불완전 → INCOMPLETE `manual_review` |
 | `plan` | 제안·잔여, 승인 부류, 해시 세 개. 트리·정책 해시가 바뀐 옛 계획은 `rounds/<n>/plan.stale.json` 으로 두고 새로 만든다 | 승인 대기 제안 → AWAITING_APPROVAL. 적용할 것 없음 → `evaluate` |
 | `apply` | `accepted/` → 후보 사본, 자동+승인 제안 적용, `rounds/<n>/candidate.patch`, "계획한 것만 바뀌었나" 검사 | 위반 → FAILED `text_only_violation`(결과 ZIP 에 넣지 않음) |
-| `build` | 후보 빌드, 다시 해석, 산출물 안 jar 목록, "해석 결과 = 계획" 검사(적용 범위), 통과하면 `accepted/` 로 확정 | 빌드 실패 → FAILED `candidate_build_failed`(include 면 실패한 수정본이 결과 ZIP, 재검사 없음), 불일치 → FAILED `resolution_mismatch` |
+| `build` | 후보 빌드, 다시 해석, 산출물 안 jar 목록, "해석 결과 = 계획" 검사(적용 범위), 통과하면 `accepted/` 로 확정. `candidate.ready.json` 이 없으면 `apply` 로 | 빌드 실패 → FAILED `candidate_build_failed`(include 면 실패한 수정본이 결과 ZIP, 재검사 없음), 불일치 → FAILED `resolution_mismatch` |
 | `freeze_delivery` | `accepted/` 로 결정적인 전달 ZIP(`delivery/result.zip`) | — |
 | `rescan` | 전달 ZIP sha256 재확인, 같은 바이트를 IVAS 검사(라벨 `final-r<n>`) | 미완료 → INCOMPLETE, sha 다름 → FAILED `zip_hash_mismatch`, 불확실 → AWAITING_CONFIRMATION |
 | `evaluate` | 조치 대상 취약점이 남았고 이번 라운드가 확정됐고 라운드 < `remediation.max_rounds` → 다음 라운드 | `inventory` 로 돌아가거나 성공 판정 |
@@ -88,11 +89,11 @@ LLM 을 부르지 않는다. 이관 그래프(`sbmig/graph/`)와는 노드 하�
 있으면 올리지 않고 이어서 조회, `pending_upload` 만 있으면 확인 없이는 다시 멈춘다.
 파일 컴포넌트 ID 에는 `|` 가 있을 수 있다(`11560|934982`): matchedfiles 경로에 조각 하나로 인코딩(`11560%7C934982`)해 보낸다.
 ID 는 `fileComponent.id`, 없을 때만 `ossId`(메모).
-요약 대조(`remediation.ivas_summary_check`): `exact`(기본, 기존 사내 구현과 같음) = 요약 `components.total` == 모든 쪽의 라이브러리
+요약 대조(`remediation.ivas_summary_check`): `exact`(기본) = 요약 `components.total` == 모든 쪽의 라이브러리
 취약점 행 수(중복 제거 전), 다르면 `summary_mismatch`. `swComponents` · `fileComponents` 는 0 / 0 아님만. `nonzero` = components 도 그렇게.
 
 **조치 구분 코드**(`action.actionDivCd`, 뜻은 ivas.py 의 `ACTION_MEANINGS`): NE 조치 필요, NP 조치계획 미등록, PL 조치예정,
-OT 조치일 경과, PC 패치 완료, IG 조치 예외. `remediation.ignore_actions`(기본 비어 있음 = 모두 조치 대상, 기존 사내 구현도 PC·IG 를 거르지 않음; 예 `[PC, IG]`; 공백·대소문자 무시)의
+OT 조치일 경과, PC 패치 완료, IG 조치 예외. `remediation.ignore_actions`(기본 비어 있음 = 모두 조치 대상; 예 `[PC, IG]`; 공백·대소문자 무시)의
 코드는 검사 파일과 보고서 표 "조치 대상에서 제외한 항목"에만 남고 인벤토리·계획·남은 취약점에서 빠진다(`counts` 의 `*_findings` 는 조치 대상만,
 `*_ignored` 따로). 빈·모르는 코드는 조치 대상, 한 번 기록(저널 `ivas_action_unknown`).
 
@@ -133,7 +134,7 @@ deny·후보 없음·적용 안 된 제안) 없음, 최종 검사에 조치 대�
 아직 `pending` 일 때만 받아들인다. 하나라도 다르면 요청 전체가 409 `approval_mismatch`(+ `fields`), 아무것도 쓰지 않는다(전부 아니면 전무).
 정책 해시에는 `remediation.policy` 전부 + `require_approval` + `always_approve` + `failed_candidate` + `ignore_actions` + 사내 g:a(+ 프레임워크 패턴, 12) + false 일 때의 `module_overrides` 가 들어간다. 하나만 바꿔도 열린 제안은 모두
 무효가 되어 계획을 다시 만든다(`ivas_summary_check` 는 안 들어간다). 제안 해시는 edit 전부(`op` · `anchor` · `override` 포함)를 덮는다. 거절한 (g:a, 버전)은 그 작업에서 다시 제안하지 않는다(잔여 `rejected_proposals`, 다음 실행은 다시 제안). `by` 는 비워도 된다. 화면의 승인은 체크박스 목록과
-적용 버튼 `선택한 N건 적용`: 체크 = approved, 안 함 = rejected, 그다음 자동 재개(`"resume": true`). 그 값이 없으면 승인은 재개가 아니다.
+적용 버튼 `선택한 N건 적용`: 체크 = approved, 안 함 = rejected, 그다음 자동 재개(`"resume": true`).
 
 ## 4. 상태와 운영자가 할 일
 

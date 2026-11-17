@@ -1,6 +1,6 @@
 """v2.1z-al: the web pod warns once at startup when the default configs name a `build.settings_file` that is not there,
-or that is an empty file (in the cluster the ConfigMap `sbmig-config` is mounted over a zero-byte mount-point file at
-`/data/.m2/settings.xml`; without the mount only that empty file is left). Never fatal."""
+or that is an empty file (in the cluster `/data/.m2/settings.xml` is a plain file the operator copies onto the data
+volume). Never fatal."""
 from __future__ import annotations
 
 import logging
@@ -29,8 +29,8 @@ def test_a_missing_settings_file_is_one_warning_not_a_failure(tmp_path, clean_en
     clean_env.setenv("SBMIG_BUILD__SETTINGS_FILE", str(missing))
     with caplog.at_level(logging.WARNING, logger="sbmig"):
         RunManager(tmp_path / "out", PACKAGE_ROOT, default_configs=CONFIGS, mode="in-process")
-    assert _warnings(caplog) == [f"Maven settings file {missing} is missing — mount ConfigMap sbmig-config there before "
-                                 "the first run"]
+    assert _warnings(caplog) == [f"Maven settings file {missing} is missing — copy settings.xml there before the first "
+                                 "run (deploy/README.md §3)"]
 
 
 def test_an_empty_settings_file_is_one_warning(tmp_path, clean_env, caplog):
@@ -40,8 +40,8 @@ def test_an_empty_settings_file_is_one_warning(tmp_path, clean_env, caplog):
     clean_env.setenv("SBMIG_BUILD__SETTINGS_FILE", str(empty))
     with caplog.at_level(logging.WARNING, logger="sbmig"):
         RunManager(tmp_path / "out", PACKAGE_ROOT, default_configs=CONFIGS, mode="in-process")
-    assert _warnings(caplog) == [f"Maven settings file {empty} is empty — the ConfigMap is not mounted there; check the "
-                                 "volumeMounts of the pod"]
+    assert _warnings(caplog) == [f"Maven settings file {empty} is empty — copy settings.xml there before the first run "
+                                 "(deploy/README.md §3)"]
 
 
 def test_a_present_or_unset_settings_file_says_nothing(tmp_path, clean_env, caplog):

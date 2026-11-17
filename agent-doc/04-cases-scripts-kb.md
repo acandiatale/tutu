@@ -58,8 +58,9 @@
 
 한 실행에서 케이스마다, 이 순서:
 
-1. **KB 탐색 → 저장본 재사용**(출처 `kb-script`, LLM 0회): KB 의 best 버전(proven 최신, 없으면 unverified 최신; retired·non_idempotent 제외)을
-   그대로 돌린다. 실행당 `script.reuse_versions`(1)개까지. `script.reuse: false` 면 건너뛴다.
+1. **KB 탐색 → 저장본 재사용**(출처 `kb-script`, LLM 0회): KB 의 best 버전(실행과 같은 범위 우선, 그 안에서 proven 최신, 없으면 unverified 최신;
+   retired·non_idempotent 제외)을 그대로 돌린다. 실행당 `script.reuse_versions`(1)개까지. `script.reuse: false` 면 건너뛴다.
+   다른 범위(`full` ↔ `jdk-jakarta`)의 버전은 같은 범위 버전이 없을 때만, 실행당 하나까지 돌린다.
 2. **LLM 보강**(`augment` → `llm-augment`): 이 실행에서 그 케이스의 마지막 스크립트(실패한 저장본이나 LLM 스크립트)를 LLM 이 늘린 **완전한** 새
    스크립트. 실패한 시도는 되돌린 뒤 묻는다(프롬프트가 "되돌린 트리에서 돈다" 고 말함). 케이스당 `script.max_augments_per_case`(15)번.
 3. **LLM 신규**(`new` → `llm-new`): 늘릴 스크립트가 없거나 보강을 다 썼을 때. 답의 `<edits>` 를 바로 적용하고 `<script>` 는 unverified 로 저장.
@@ -103,6 +104,11 @@ LLM 이 적용한 시도도 커밋 전에 `_fill_versions` 가 버전 없는 의
 프레임워크 아티팩트는 보호 키라서 사전 시도가 버전을 박거나 바꾸지 않고, `sbmig-parent`는 돌지 않는다. LLM 시도가 프레임워크 선언이나
 `<parent>`를 바꾸면 커밋 전에 되돌린다(저널 `framework_guard`). 프레임워크 자신이 javax 기준이면 LLM 없이 `external_javax_api`로 차단한다.
 자세한 것은 [13-framework-projects.md](13-framework-projects.md) 5절.
+
+**범위와 KB 실적**: 저장 버전은 만든 실행의 범위(`CaseScript.scope`), 실행 기록은 그 실행의 범위(`ScriptRun.scope`)를 남긴다(빈 값 = 범위를
+기록하기 전 = `full`). 성공·실패 수, `last_failure`, proven 판정은 버전 자기 범위의 실행만 센다. 범위를 줄인 실행이 재사용한 `full` 버전을
+프레임워크 검사가 되돌리면 그 실행은 `out_of_scope` 로 `runs[]` 에만 남는다(실패 아님; 시도 자체는 보고서에서 `apply_failed`). 자기 범위
+버전을 되돌린 것은 `apply_failed` 실패다. 다른 범위 실행이 쓴 마지막 해결 힌트에는 `[from a full-migration run]` 같은 표시가 붙는다.
 
 ## 6. 채점 — 재빌드만이 판정한다
 
@@ -166,7 +172,7 @@ KB 는 파일뿐이다(DB 금지). 위치 `kb.dir`(기본 `kb-v2`). 원본은 `e
 
 `scripts[]` 한 칸 = `CaseScript`: `version`, `file`, `status`(`unverified` 저장 시 → `proven` 만든 프로젝트가 **아닌** 곳에서 재사용으로 해결했을 때 → `retired`
 사람이 끔), `source`, `created_by`, `project`, `successes`, `failures`, `projects`, `last_result`, `parent`(보강의 원본 버전), `reason`, `last_failure`,
-`runs[]`(실행 기록, `errors.script_runs` 30개), `non_idempotent`. 비밀 값이 든 스크립트는 가려서 저장하고 곧바로 retired. 마스킹 규칙 `kb.redact_file`.
+`runs[]`(실행 기록, `errors.script_runs` 30개, 기록마다 `scope`), `non_idempotent`, `scope`(만든 실행의 범위). 비밀 값이 든 스크립트는 가려서 저장하고 곧바로 retired. 마스킹 규칙 `kb.redact_file`.
 예전 판의 `reviews.jsonl`, `fix_attempts.jsonl`, catalog, views, audit, quarantine, `scripts/*/meta.json` 은 지금 코드가 읽지도 쓰지도 않는다.
 
 | 명령 | 사람이 언제 |

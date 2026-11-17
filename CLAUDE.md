@@ -232,6 +232,10 @@ Then the final build again, the report (Handover first, "Structure review", fix 
   wrote later. Exact-key guard: a stored case whose L2 is not the L2 asked for is never reused or written. Still merged by
   name / phrase only (to decide from real company cases): members of project-owned types (`…|cannot_find_symbol|save`),
   syntax errors (`';' expected`), `unreported exception <type>`. Reactor artifactIds are masked as `<module>` in L1 / L2.
+  Scopes (v2.1z-ap, three-pods review): a version and each credited run record their scope (`full` / `jdk-jakarta`, `""` =
+  full); reuse ranks (same scope, proven, version) with at most one other-scope version per case and run, counters / status
+  count only the version's own scope, a framework-guard rollback of another scope's version is `out_of_scope` (not a
+  failure), and `credit` / `add_script` on an id a re-sign moved follow the `aliases` (INTERFACES "v2.1z-ap", **KB.**).
 - `script.python` must have pydantic and lxml installed (else the run reports `ModuleNotFoundError`); Windows paths
   over 260 characters are not handled specially.
 - Items to validate in the company environment: `docs/RUNBOOK.md` §0; the first v2 runs should be compared with
@@ -249,7 +253,7 @@ Then the final build again, the report (Handover first, "Structure review", fix 
   commits happen in the main session. Per round: append a "Status" table to `docs/PLAN.md`, update
   `docs/INTERFACES.md` on contract changes, add a fixture + `expected.json` (+ `replay/`) for every new scenario.
 - Setup: `uv venv && source .venv/bin/activate && uv pip install -e ".[dev]"` (plain `pip install -e ".[dev]"` works too).
-- Fast check (Python only, ~12 min): `python -m pytest -m "not integration"` → ≈ 5,550 passed, ≈ 62 deselected (2026-11-17)
+- Fast check (Python only, ~12 min): `python -m pytest -m "not integration"` → ≈ 5,640 passed, ≈ 62 deselected (2026-11-17)
   (`-q` on top of the `-q` in pyproject hides the summary line). Until 2026-11-12 `tests/build` (381 tests) was silently
   left out of every root-level run — pytest skips a directory named `build` by default; `norecursedirs` in pyproject now
   keeps it in. When a total does not grow by the number of tests added, compare per-file counts (`--collect-only -q`).
@@ -327,7 +331,7 @@ Then the final build again, the report (Handover first, "Structure review", fix 
   deletes only Jobs carrying its own `sbmig-owner` label and waits for them to vanish, and never reports an unverified result as success. **2026-11-10 (user: "일단 굽자!")**:
   the company `config/artifacts.yml` is **baked into the image** (the Dockerfile copies `config/`; the company build adds
   `--build-arg REQUIRE_CONFIG=artifacts.yml`, which stops the build when the git-ignored file is missing), ConfigMap `sbmig-config` carries
-  `settings.xml` only (since v2.1z-al mounted at `/data/.m2/settings.xml` in 40 / 81 / 80), and the machine paths of a PC-tested yml are overridden by literal `SBMIG_<SECTION>__<KEY>` env lines in each manifest
+  `settings.xml` only (since v2.1z-al the source of the plain file `/data/.m2/settings.xml`: mounted at `/etc/sbmig/settings.xml` in 40 and copied once by the operator; 80 mounts it at `/data/.m2/settings.xml`), and the machine paths of a PC-tested yml are overridden by literal `SBMIG_<SECTION>__<KEY>` env lines in each manifest
   (`SBMIG_BUILD__SETTINGS_FILE` / `JAVA_HOME` / `MVN` / `LOCAL_REPO`, `SBMIG_SCRIPT__PYTHON` in 40 / 80 / 81; `SBMIG_KB__DIR` and
   `SBMIG_LLM__RECORD_DIR=${LLM_RECORD_DIR:-}` in 40 only — never in `sbmig-env`, which 80 reads by `envFrom`). The 81 template has one
   `configMapKeyRef` per `sbmig-env` key (no `envFrom` there): a new key in the ConfigMap needs its line in 81, `tests/deploy/test_manifests.py`
@@ -371,13 +375,15 @@ Then the final build again, the report (Handover first, "Structure review", fix 
   volume in 40 / 81 (a mount nested in the NFS volume can fail under root squash), 80 mounts its own `m2` volume at `/data/.m2`.
   Right after ("Settings도 저기로 옮겨가야하지않아!?"): `SBMIG_BUILD__SETTINGS_FILE=/data/.m2/settings.xml` in 40 / 80 / 81; then
   ("configmap 에 설정되어있으면 파드 배포할때 자동으로 나가는게 아니야?", "어차피 … 웹 파드 재배포 하면 복사 필요 없는거 아냐? 만들어지는거
-  아니야?"): ConfigMap `sbmig-config` is the ONLY delivery, mounted with `subPath` at `/data/.m2/settings.xml` in 40, 81 and 80 (no copy
-  code). Inside the NFS volume that mount needs its mount point to exist (the runtime would create it as root; root squash refuses):
-  the user created it by hand ("내가 쉘로 붙어서 .m2파일을 만들어 두면 될까!?" → "지금 만들어 두었어!"), and 40's initContainer
-  `m2-mountpoint` runs `mkdir -p /data/.m2 && touch /data/.m2/settings.xml` as the pod's user for a fresh volume; 81 has none (the web pod
-  always exists before a Job). After editing `sbmig-config` restart the web pod; running Jobs keep their content. A set but missing
-  or EMPTY `build.settings_file` aborts at intake before any Maven call (flag `settings-not-found`, exit 3, both flows; empty = the
-  mount is missing); the web pod warns once at startup. Operator steps: `deploy/README.md` §3 "Maven 설정과 로컬 저장소".
+  아니야?"): a ConfigMap mount nested in `/data` was tried; it needed a mount point, and the initContainer that made it failed on a file
+  owned by another user (`touch: … Permission denied`). Final (the user: "어차피 /data 볼륨 마운트를 하는데 … 하나 마운트 된곳에다가
+  다같이 쓰면 안되는거야?", "어차피 settings.xml은 바뀔일이 거의 없잖아? 일반 파일로 두고 가는것도 좋을거 같은데!"): `/data/.m2/settings.xml`
+  is a PLAIN FILE on the data volume; nothing is mounted inside `/data` in 40 / 81, no initContainer; ConfigMap `sbmig-config` is the
+  reviewed source, mounted read-only at `/etc/sbmig/settings.xml` in 40, and the operator copies it once (`kubectl -n agent exec
+  deploy/sbmig -- sh -c "mkdir -p /data/.m2 && cp /etc/sbmig/settings.xml /data/.m2/settings.xml"`, as the pod's user; again after
+  each change + web-pod restart); no copy code in sbmig. 80 (no data PVC) keeps the ConfigMap mount at `/data/.m2/settings.xml` in its
+  emptyDir. A set but missing or EMPTY `build.settings_file` aborts at intake before any Maven call (flag `settings-not-found`, exit
+  3, both flows; both messages point at the copy); the web pod warns once at startup. Operator steps: `deploy/README.md` §3 "Maven 설정과 로컬 저장소".
   **v2.1z-af (same day, the user: "코드 검토 동시성 이슈 될만한거 … 찾아봐줘", five read-only reviews, every finding reproduced first)**:
   a Job run's terminal `control/state.json` is written while its slot is still held; recovery keeps the recorded slot number even when
   two runs recorded the same one (a new run only gets a number nobody holds); any failing API poll is "API unavailable"; a `Failed`
@@ -424,7 +430,10 @@ Then the final build again, the report (Handover first, "Structure review", fix 
   `accepted/` kept apart, changes on an isolated candidate first; a failed baseline build never reaches the scan; an uncertain IVAS
   upload is never re-sent (`AWAITING_CONFIRMATION`), an incomplete scan is never "0 findings"; the frozen delivery ZIP's exact bytes are
   rescanned; approvals bind proposal hash + source tree hash + policy hash + diff (`AWAITING_APPROVAL` → approvals → resume); a restart
-  turns running jobs into `INTERRUPTED` (explicit resume only). `remediation.trusted_projects` (default false) must be set true by the
+  turns running jobs into `INTERRUPTED` (explicit resume only). One process drives a run folder (v2.1z-ap, three-pods review):
+  `remediation/claim.json` (`chain.RunClaim`, refreshed every 30 s, taken over after 600 s without refresh, a second driver
+  gets `StateConflict` and touches nothing, the web pod only reads it), and a step that rewrites the candidate saves its
+  decision with `next_node=apply` first (completeness marker `rounds/<n>/candidate.ready.json` guards build / freeze). `remediation.trusted_projects` (default false) must be set true by the
   operator before anything is accepted (Maven runs the project's plugins; not a sandbox); `remediation.require_approval` default false
   (major / parent / bom always wait). No version is chosen without an IVAS patched-version hint AND evidence from the policy or an
   approved repository host. Contract: `sbmig/remediations/models.py` + `interfaces.py`, `docs/INTERFACES.md` "remediations"; operators:
@@ -590,6 +599,22 @@ Then the final build again, the report (Handover first, "Structure review", fix 
   are the server's choice (`sbmig serve --config` / `SBMIG_WEB_CONFIGS`, else `artifacts.yml` / `artifacts.local-e2e.yml`;
   `GET /api/configs` → `default`); the page shows the list only under 고급 설정. Stop takes effect between graph nodes
   only. In-process: one migration at a time, further uploads are `queued`; Job mode: `SBMIG_JOB_MAX_PARALLEL` at a time (v2.1z-ae).
+- **Admin page (v2.1z-ao, 2026-11-17)**, the user: "현재까지 프로젝트 별로 사용된 토큰량 볼 수 있는 페이지가 필요한데, 하드코딩으로
+  [a fixed password]으로 접속 할 수 있는 url하나 fastapi에 붙여서 해당 비밀번호로 접속해서 볼 수 있도록 하나 하자. 그리고 총 로그들
+  다운로드 받을 수 있도록도 하고!" → `GET /admin` (`static/admin.html`, not linked from the main page) + `/admin/api/*`
+  (`sbmig/web/admin.py`). The password contains a company name, so it is built in as a salted PBKDF2 hash
+  (`admin.ADMIN_PASSWORD_PBKDF2`); **the plain password never goes into the repo** (code, tests, docs, commit text) — tests
+  monkeypatch the hash with a test password; a non-empty `SBMIG_ADMIN_PASSWORD` (Secret, web pod only, a secret name, dropped
+  from a `local-job` child) replaces it. Session = random token in process memory, cookie `sbmig_admin` (HttpOnly, SameSite=Strict,
+  Path=/admin, 12 h; a restart logs out); 5 failures per client address in 10 min → 429. Usage is read from the run folders on
+  disk at every request (report.json's `llm_usage` / `llm_usage_by_model` / `llm_cost`; a run without a report counts the
+  `llm call … in=… out=…` lines of its sbmig.log), grouped by the uploaded file name; a cost sum is null when any run in it is
+  unpriced. Log ZIPs (`sbmig.log`, `journal.jsonl`, `control/request.json`; `remediation/remediation.log` only when nothing
+  can still write it — the remediation API's own withholding rule, an active resume pod included) are built in the web pod's
+  LOCAL temp dir, never on `/data`: one build at a time (409 `busy`), 2 GiB total cap (413), 1 GiB free-space floor (507), a
+  single file over 512 MiB is left out and listed in `SKIPPED.txt`, a growing log is copied up to its size at the start; the
+  page asks `…/logs/check` first and says why in Korean. The site token guard still applies in front. Contract:
+  `docs/INTERFACES.md` "v2.1z-ao" / "v2.1z-ap".
 - Cloud sessions may lack JDK / Maven (the 2026-10-18 cloud image had JDK 21 at `/usr/lib/jvm/java-21-openjdk-amd64`
   and Maven at `/opt/maven`); without JDK 8/11 run `fixtures/libs/install.sh` with `JAVA8_HOME=$JAVA21_HOME` (JDK 21
   compiles the 1.8-target lib with a warning) and skip the `-m integration` as-is builds. Commit and push to a

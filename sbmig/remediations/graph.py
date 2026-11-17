@@ -41,6 +41,7 @@ from .matching import ga_key, version_key
 from .models import (
     AWAITING_APPROVAL,
     AWAITING_CONFIRMATION,
+    D_APPROVED,
     D_PENDING,
     D_REJECTED,
     FAILED,
@@ -95,6 +96,14 @@ log = logging.getLogger("sbmig.remediations.graph")
 
 ROUTE = "route"
 BASELINE_LABEL = "baseline"
+# 수정본 복사와 적용이 끝났다는 표시 파일이다. 수정본 폴더 밖(rounds/<n>/)에 두어 결과 ZIP에 들어가지 않게 한다
+CANDIDATE_READY = "candidate.ready.json"
+# 서버 정책이 바뀌어 승인한 계획을 버리고 다시 계획했을 때 state.message 앞에 붙이는 문장
+POLICY_CHANGED_NOTE = ("the server policy changed since these proposals were approved: the earlier approvals were not "
+                       "applied and the plan was made again")
+# 상태가 보증하지 않는 수정본을 결과 ZIP으로 내보내지 않았을 때의 문장
+CANDIDATE_NOT_VOUCHED = ("the round {r} candidate was not delivered: the files on disk are not the complete change set "
+                         "this state records")
 # 노드 하나가 그래프 한 단계이고 라운드마다 7단계가 필요하므로, LangGraph 기본값 25로는 모자라 넉넉히 둔다
 RECURSION_BASE = 100
 RECURSION_PER_ROUND = 20
@@ -290,14 +299,44 @@ class _Holder:
             return
         self.discard_delivery()
 
-    def deliver_failed_candidate(self, r: int) -> str:
+    # -- candidate completeness marker
+    def _ready_path(self, r: int) -> Path:
+        return self.paths.round_dir(r) / CANDIDATE_READY
+
+    def mark_candidate(self, r: int) -> None:
+        """라운드 ``r``의 수정본이 복사와 적용을 모두 마쳤다고 기록한다. 내용은 적용한 제안 id 목록이다.
+
+        Written after copy + apply (and the text-only check) of round `r`'s candidate: {round, applied}."""
+        write_json_atomic(self._ready_path(r), {"round": r, "applied": list(self.round_state(r).applied)})
+
+    def unmark_candidate(self, r: int) -> None:
+        """수정본을 지우거나 다시 만들기 전에 완료 표시를 지운다."""
+        try:
+            self._ready_path(r).unlink()
+        except FileNotFoundError:
+            pass
+
+    def candidate_vouched(self, r: int) -> bool:
+        """라운드 ``r``의 수정본이 상태에 기록된 적용 목록 그대로 완성된 트리인지 확인한다.
+
+        The candidate exists and its completeness marker names exactly the state's `applied` of round `r`."""
+        data = read_json(self._ready_path(r))
+        return (isinstance(data, dict) and data.get("applied") == list(self.round_state(r).applied)
+                and self.paths.candidate(r).is_dir())
+
+    def deliver_failed_candidate(self, r: int) -> str | None:
         """정책이 include일 때 빌드에 실패한 라운드 ``r``의 수정본 트리를 결과 ZIP으로
         확정한다(build_ok=False, scanned=False). accepted/는 바꾸지 않는다.
         이전 라운드의 검증된 결과 ZIP이 있으면 사람이 고를 수 있도록 ``delivery/result-r<k>-verified.zip``(+
         ``.json``)으로 옮기고 그 경로(실행 폴더 기준)를 반환한다. 없으면 빈 문자열을 반환한다.
+        수정본이 완성됐다는 표시가 없으면 아무것도 확정하지 않고 None을 반환한다.
 
-        Policy include: freeze the failed candidate tree as the delivery; keep an earlier verified ZIP beside it."""
+        Policy include: freeze the failed candidate tree as the delivery; keep an earlier verified ZIP beside it.
+        None (nothing frozen, nothing moved) when the state does not vouch for the candidate (`candidate_vouched`)."""
         st, p = self.state, self.paths
+        if not self.candidate_vouched(r):
+            self.journal({"event": "candidate_not_vouched", "round": r})
+            return None
         kept = ""
         if self.verified_earlier(r):
             d = st.delivery
@@ -658,11 +697,14 @@ def _plan(h: _Holder) -> str | None:
     rs = h.round_state(r)
     tree_hash = c.intake.tree_hash(p.accepted, h.paths_list)
     current = _current_policy_hash(h)
-    if current and current != st.policy_hash:
+    policy_changed = bool(current and current != st.policy_hash)
+    if policy_changed:
         # 서버 정책이 바뀌었으면 지금 정책으로 다시 계획하고, 이전 정책으로 승인한 수정본은 다시 쓰지 않는다
         h.journal({"event": "policy_changed", "round": r})
         st.policy_hash = current
     existing = h.load_plan(r)
+    # 사람이 결정한 계획을 정책 변경 때문에 버리면 그 이유를 state.message로 알린다
+    decided = existing is not None and any(x.decision in (D_APPROVED, D_REJECTED) for x in existing.proposals)
     reuse = (existing is not None and existing.source_tree_hash == tree_hash and existing.policy_hash == st.policy_hash
              and all(x.source_tree_hash == tree_hash and x.policy_hash == st.policy_hash for x in existing.proposals))
     if reuse:
@@ -691,9 +733,16 @@ def _plan(h: _Holder) -> str | None:
                    "residuals": len(plan.residuals)})
     rs.plan = h.rel(p.plan(r))
     _merge_residuals(st, plan.residuals)
+    replanned = policy_changed and decided and not reuse
+    if replanned:
+        h.journal({"event": "approvals_dropped", "round": r, "reason": "policy_changed"})
+        log.warning("remediation %s round %s: the server policy changed since the proposals were approved; planned again",
+                    st.id, r)
+        st.message = POLICY_CHANGED_NOTE
     if plan.pending():
+        waiting = f"{len(plan.pending())} proposal(s) of round {r} wait for approval"
         h.halt(AWAITING_APPROVAL, R_PENDING_APPROVAL, "plan",
-               f"{len(plan.pending())} proposal(s) of round {r} wait for approval")
+               f"{POLICY_CHANGED_NOTE} | {waiting}" if replanned else waiting)
         h.fill_counts()
         return None
     if not plan.to_apply():
@@ -711,6 +760,7 @@ def _apply(h: _Holder) -> str | None:
     if plan is None:
         raise RuntimeError(f"round {r} has no plan file")
     cand = p.candidate(r)
+    h.unmark_candidate(r)
     _safe_rmtree(cand)
     c.intake.copy_tree(p.accepted, cand, h.paths_list)
     to_apply = plan.to_apply()
@@ -751,6 +801,7 @@ def _apply(h: _Holder) -> str | None:
         rs.verify_problems = violations
         h.discard_candidate(r)
         return h.finish(FAILED, R_TEXT_ONLY_VIOLATION, "; ".join(violations[:5]))
+    h.mark_candidate(r)
     return "build"
 
 
@@ -799,6 +850,11 @@ def _build_failed(h: _Holder, r: int, outcome: Any) -> str | None:
         # 정책이 include면 실패한 수정본도 결과 ZIP으로 내보내지만, 성공일 수 없으므로 재검사는 하지 않는다
         # accepted/, 원본 ZIP, candidate.patch, build.log는 그대로 남는다
         kept = h.deliver_failed_candidate(r)
+        if kept is None:
+            # 완성됐다는 표시가 없는 수정본은 잘린 트리일 수 있으므로 결과 ZIP으로 내보내지 않는다
+            h.discard_candidate(r)
+            return h.finish(FAILED, R_CANDIDATE_BUILD_FAILED,
+                            f"{CANDIDATE_NOT_VOUCHED.format(r=r)} | {outcome.summary}")
         ids = ", ".join(rs.applied) or "-"
         msg = (f"delivery/result.zip contains the round {r} change set whose candidate build FAILED "
                f"(proposals: {ids}; build log {h.rel(p.build_log(r))}); it was not rescanned; "
@@ -833,6 +889,11 @@ def _build(h: _Holder) -> str | None:
     r = st.round
     rs = h.round_state(r)
     cand = p.candidate(r)
+    if not h.candidate_vouched(r):
+        # 복사나 적용 도중에 파드가 끝나 수정본이 덜 만들어졌을 수 있으므로 accepted/에서 다시 만든다
+        h.journal({"event": "candidate_rebuilt", "round": r})
+        log.warning("remediation round %s: the candidate has no completeness marker; it is made again from accepted/", r)
+        return "apply"
     outcome = h.build_outcome(c.maven.package(h.project(cand), p.build_log(r), h.stop, **h.target_kw), p.build_log(r))
     rs.build = outcome
     if not outcome.ok:
@@ -844,6 +905,15 @@ def _build(h: _Holder) -> str | None:
     if problems:
         split = getattr(c.apply, "split_ineffective", None)
         drop, other = split(applied, lines) if callable(split) else ([], problems)
+        plan = h.load_plan(r)
+        dropped = [x.id for x in (plan.proposals if plan else []) if x.decision == D_INEFFECTIVE]
+        if drop and not other and dropped:
+            # 이번 라운드에서 이미 한 번 빼고 다시 만든 수정본이다(중단 뒤 재개).
+            # 중단이 없었을 때처럼 두 번째 검증 문제는 실패로 끝낸다
+            h.discard_candidate(r)
+            return h.finish(FAILED, R_RESOLUTION_MISMATCH,
+                            "; ".join(problems[:5]) + f" | after removing the ineffective override entr(ies) "
+                            f"{', '.join(dropped)}")
         if drop and not other:
             return _drop_ineffective(h, r, applied, drop, problems)
         h.discard_candidate(r)
@@ -911,14 +981,20 @@ def _drop_ineffective(h: _Holder, r: int, applied: list[Proposal], drop: list[Pr
             modules=sorted({m for y in xs for m in [*y.modules, *y.also_modules]}),
             sources=srcs or (list(it.sources or []) if it is not None else []),
             reported_version=(it.reported_version or "") if it is not None else ""))
+    _merge_residuals(st, residuals)
+    keep = [x for x in applied if x.id not in gone]
+    rs.applied = [x.id for x in keep]
+    # 수정본을 지우기 전에 결정한 내용(남길 항목, 적용 목록)을 상태에 저장한 뒤 plan.json에 ineffective를 쓴다.
+    # 다음 노드를 apply로 두므로 어디서 파드가 끝나도 재개하면 accepted/에서 수정본을 다시 만든다.
+    # 상태 저장과 plan.json 사이에서 끝나면 apply가 뺄 제안까지 다시 적용하고 build가 같은 판단을 다시 한다
+    h.unmark_candidate(r)
+    st.next_node = "apply"
+    h.save()
     if plan is not None:
         for x in plan.proposals:
             if x.id in gone:
                 x.decision = D_INEFFECTIVE
         write_json_atomic(p.plan(r), plan.to_dict())
-    _merge_residuals(st, residuals)
-    keep = [x for x in applied if x.id not in gone]
-    rs.applied = [x.id for x in keep]
     _safe_rmtree(cand)
     if not keep:
         # 남은 변경이 없으면 적용할 것이 없던 라운드와 같이 끝낸다
@@ -939,6 +1015,7 @@ def _drop_ineffective(h: _Holder, r: int, applied: list[Proposal], drop: list[Pr
         rs.verify_problems = violations
         h.discard_candidate(r)
         return h.finish(FAILED, R_TEXT_ONLY_VIOLATION, "; ".join(violations[:5]))
+    h.mark_candidate(r)
     outcome = h.build_outcome(c.maven.package(h.project(cand), p.build_log(r), h.stop, **h.target_kw), p.build_log(r))
     rs.build = outcome
     if not outcome.ok:

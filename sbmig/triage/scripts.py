@@ -19,7 +19,9 @@ Per case and run, in this order:
    FAILED here (every reuse of this run failed: no_change / regressed / reverted / apply_failed / inconclusive) is
    followed by the next one in the same order — proven newest first, then unverified newest; retired never
    (`stored_next`, over `find(case_id).scripts` + `code(case_id, v)`). A reuse that helped (improved / partial) goes
-   to the LLM augment instead: extending what worked beats starting over from an older version.
+   to the LLM augment instead: extending what worked beats starting over from an older version. v2.1z-ap: with the
+   run's scope known (`full` / `jdk-jakarta`, the fix loop's `CaseScripts.run_scope`), the order is (same scope,
+   proven, version): the run's own scope first, at most one version of the other scope per case and run.
 2. **LLM augment** (`augment`) — there is a script to extend and `script.max_augments_per_case` (15) augment steps
    are not used up: this run's last try of the case that had code (a stored version that failed here, or an LLM
    script), else — reuse switched off — the stored version. The prompt gets the
@@ -52,6 +54,7 @@ from sbmig.core.models import DecisionKind, ErrorCluster, FixAttempt
 log = logging.getLogger("sbmig.triage")
 
 LLM_MODES = ("new", "augment")              # script modes that ask the LLM (reuse runs a stored version)
+SCOPE_FULL = "full"                         # a stored version's scope "" (written before scopes) counts as full
 # 차단 정책의 LLM 실패 횟수와 다음 저장 버전으로 넘어갈지 판단할 때 실패로 보는 결과. decide.py도 사용한다
 FAILED_OUTCOMES = frozenset({"no_change", "regressed", "reverted", "apply_failed", "inconclusive"})
 
@@ -105,13 +108,37 @@ def cluster_case_id(cluster: ErrorCluster) -> str:
     return case_id_of(cluster.errors[0]) if cluster.errors else ""
 
 
-def stored_best(store: Any, case_id: str) -> Optional[tuple[Any, str]]:
+def _scope(value: Any) -> str:
+    # 빈 값은 범위를 기록하기 전의 기록이므로 full로 본다
+    v = value.strip() if isinstance(value, str) else ""
+    return v or SCOPE_FULL
+
+
+def asking_scope(store: Any, scope: Optional[str] = None) -> Optional[str]:
+    """재사용할 버전을 고를 실행의 이관 범위를 반환한다. 알 수 없으면 None을 반환한다.
+
+    The asking run's scope: `scope` when given, else the store's `run_scope` (the fix loop sets it on its
+    `CaseScripts` adapter: a string or a callable returning one); None = not known (the store's own `best` order)."""
+    if isinstance(scope, str):
+        return _scope(scope)
+    rs = getattr(store, "run_scope", None) if store is not None else None
+    try:
+        rs = rs() if callable(rs) else rs
+    except Exception:  # noqa: BLE001 - a foreign store
+        rs = None
+    return _scope(rs) if isinstance(rs, str) else None
+
+
+def stored_best(store: Any, case_id: str, scope: Optional[str] = None) -> Optional[tuple[Any, str]]:
     """KB 저장소의 ``best(case_id)``에서 (CaseScript, 코드)를 가져온다.
     저장된 스크립트가 없거나, 코드가 비었거나, 사람이 끈 retired 버전이거나, 저장소 오류면 None을 반환한다.
+    ``scope``가 있으면 같은 범위의 버전을 먼저 고른다.
 
     (CaseScript, code) from `store.best(case_id)` (a `CaseScripts` adapter or E1's `CaseStore`); None = nothing
     stored or the store failed (logged). v2.1y: a `non_idempotent` best (a store that does not skip it) → the next
-    stored version (`stored_next`)."""
+    stored version (`stored_next`). v2.1z-ap: with `scope` (the asking run's) and a `best` answer (None stays None:
+    nothing usable, or a case id held by another signature), the order is `stored_next`'s (same scope, proven,
+    version) over the case's scripts; a store that cannot list them keeps `best`'s answer."""
     fn = getattr(store, "best", None) if store is not None else None
     if not callable(fn) or not case_id:
         return None
@@ -128,6 +155,13 @@ def stored_best(store: Any, case_id: str) -> Optional[tuple[Any, str]]:
         return None
     if meta is None or not (code or "").strip() or getattr(meta, "status", "") == "retired":
         return None
+    # 저장소의 best가 고를 것이 있다고 한 경우에만 실행 범위로 다시 순위를 매긴다(다른 서명의 케이스 ID는 None)
+    # 범위가 기록된 버전이 하나도 없으면 모두 full이므로 best의 순서와 같다
+    if scope is not None and any(isinstance(getattr(x, "scope", ""), str) and getattr(x, "scope", "").strip()
+                                 for x in _stored_scripts(store, case_id)):
+        ranked = stored_next(store, case_id, (), scope=scope)
+        if ranked is not None:
+            return ranked
     # 여러 번 실행하면 결과가 달라지는 버전은 재사용하지 않고 다음 저장 버전을 쓴다.
     # CaseStore.best는 이미 건너뛰지만 다른 저장소 구현에 대비한다
     if getattr(meta, "non_idempotent", False):
@@ -154,21 +188,32 @@ def _stored_scripts(store: Any, case_id: str) -> list[Any]:
         return []
 
 
-def stored_next(store: Any, case_id: str, skip: Iterable[int]) -> tuple[Any, str] | None:
+def stored_next(store: Any, case_id: str, skip: Iterable[int], scope: Optional[str] = None
+                ) -> tuple[Any, str] | None:
     """이번 실행에서 이미 실행한 버전(``skip``)을 뺀 다음 저장 버전 (CaseScript, 코드)를 반환한다.
     남은 것이 없으면 None을 반환한다.
     순서는 ``best``와 같이 proven 최신, unverified 최신 순이며 retired, 비멱등, 빈 코드 버전은 건너뛴다.
+    ``scope``가 있으면 같은 범위의 버전을 모두 먼저 보고, 다른 범위의 버전은 실행마다 하나까지만 고른다.
 
     The next stored version not in `skip` (the versions this run already ran), in `best`'s order: proven newest,
     then unverified newest; retired ones, `non_idempotent` ones (v2.1y) and versions without code never. None =
-    nothing left (A14)."""
+    nothing left (A14). v2.1z-ap: with `scope` (the asking run's), rank = (same scope, proven, version): every
+    version of the run's scope comes first, and a version of the other scope is picked only when none of the run's
+    scope is left and no other-scope version is in `skip` yet (one per case and run, within `script.reuse_versions`).
+    A version's `scope` "" counts as `full`."""
     if store is None or not case_id:
         return None
     done = {int(v) for v in skip}
-    ranked = sorted((s for s in _stored_scripts(store, case_id)
+    scripts = _stored_scripts(store, case_id)
+    want = _scope(scope) if scope is not None else None
+    other_tried = want is not None and any(int(getattr(s, "version", 0) or 0) in done
+                                           and _scope(getattr(s, "scope", "")) != want for s in scripts)
+    ranked = sorted((s for s in scripts
                      if getattr(s, "status", "") != "retired" and not getattr(s, "non_idempotent", False)
-                     and int(getattr(s, "version", 0) or 0) not in done),
-                    key=lambda s: (getattr(s, "status", "") == "proven", int(getattr(s, "version", 0) or 0)),
+                     and int(getattr(s, "version", 0) or 0) not in done
+                     and not (other_tried and _scope(getattr(s, "scope", "")) != want)),
+                    key=lambda s: (want is None or _scope(getattr(s, "scope", "")) == want,
+                                   getattr(s, "status", "") == "proven", int(getattr(s, "version", 0) or 0)),
                     reverse=True)
     code_of = getattr(store, "code", None)
     if not callable(code_of):
@@ -188,19 +233,29 @@ def stored_next(store: Any, case_id: str, skip: Iterable[int]) -> tuple[Any, str
 NOTHING_STORED = "저장된 스크립트 없음 (처음 보는 케이스)"
 
 
-def describe_stored(meta: Any) -> str:
+def describe_stored(meta: Any, scope: Optional[str] = None) -> str:
     """저장된 스크립트 설명 구절(``저장된 스크립트 v2 (proven, 성공 3 / 실패 0, 프로젝트 2)``)을 만든다.
+    ``scope``와 범위가 다른 버전이면 그 범위를 붙인다.
 
-    '저장된 스크립트 v2 (proven, 성공 3 / 실패 0, 프로젝트 2)' — the phrase of `CaseStore.describe`."""
+    '저장된 스크립트 v2 (proven, 성공 3 / 실패 0, 프로젝트 2)' — the phrase of `CaseStore.describe`; v2.1z-ap: a
+    version of another scope than `scope` ends with `, 다른 범위: full`."""
+    own = _scope(getattr(meta, "scope", ""))
+    other = f", 다른 범위: {own}" if scope is not None and own != _scope(scope) else ""
     return (f"저장된 스크립트 v{getattr(meta, 'version', '?')} ({getattr(meta, 'status', '?')}, 성공 "
             f"{getattr(meta, 'successes', 0)} / 실패 {getattr(meta, 'failures', 0)}, 프로젝트 "
-            f"{len(list(getattr(meta, 'projects', None) or []))})")
+            f"{len(list(getattr(meta, 'projects', None) or []))}{other})")
 
 
-def kb_found(store: Any, case_id: str, best: Optional[tuple[Any, str]]) -> str:
+def kb_found(store: Any, case_id: str, best: Optional[tuple[Any, str]], scope: Optional[str] = None) -> str:
     """KB 탐색이 찾은 것을 한 구절로 만든다. 저장소에 ``describe(case_id)``가 있으면 그것을 쓴다.
+    실행 범위를 알고 고른 버전이 있으면 그 버전으로 직접 만든다.
 
-    What the KB search found, one phrase: the store's own `describe(case_id)` when it has one, else built here."""
+    What the KB search found, one phrase: the store's own `describe(case_id)` when it has one, else built here.
+    v2.1z-ap: with the asking run's `scope` and a chosen version that has a recorded scope, the phrase names THAT
+    version (the store's `describe` ranks without the scope)."""
+    sc = getattr(best[0], "scope", "") if best is not None else ""
+    if scope is not None and isinstance(sc, str) and sc.strip():
+        return describe_stored(best[0], scope)
     fn = getattr(store, "describe", None) if store is not None else None
     if callable(fn) and case_id:
         try:
@@ -212,7 +267,8 @@ def kb_found(store: Any, case_id: str, best: Optional[tuple[Any, str]]) -> str:
     return describe_stored(best[0]) if best is not None else NOTHING_STORED
 
 
-def plan_script_step(cluster: ErrorCluster, previous: Iterable[FixAttempt], store: Any, cfg: Any) -> ScriptStep:
+def plan_script_step(cluster: ErrorCluster, previous: Iterable[FixAttempt], store: Any, cfg: Any,
+                     scope: Optional[str] = None) -> ScriptStep:
     """케이스의 다음 단계를 정한다. 순서는 모듈 docstring에 있다.
     ``previous``는 이 실행에서 같은 케이스에 대해 결과가 나온 시도 목록이다. 저장된 스크립트는 이번 실행에서
     아직 실행하지 않은 버전만 재사용하고, best가 이미 실패했으면 ``script.reuse_versions``개까지 다음 저장
@@ -220,7 +276,10 @@ def plan_script_step(cluster: ErrorCluster, previous: Iterable[FixAttempt], stor
 
     The case's next step (see the module doc). `previous` = this run's scored tries on the same case (the loop
     passes `_previous(cluster)`: no pending ones, no cooled-down transport failures). v2.1z: `llm_used` counts new +
-    augment against `script.max_llm_tries_per_case`, `augments_used` the augments against `script.max_augments_per_case`."""
+    augment against `script.max_llm_tries_per_case`, `augments_used` the augments against `script.max_augments_per_case`.
+    v2.1z-ap: `scope` = the asking run's scope (`full` / `jdk-jakarta`; None = the store's `run_scope`, which the fix
+    loop sets on its adapter): stored versions are ranked (same scope, proven, version) and at most one version of
+    the other scope runs per case and run (`stored_next`)."""
     sc = getattr(cfg, "script", None)
     reuse_on = bool(getattr(sc, "reuse", True))
     reuse_n = max(1, int(getattr(sc, "reuse_versions", 1) or 1))
@@ -234,8 +293,9 @@ def plan_script_step(cluster: ErrorCluster, previous: Iterable[FixAttempt], stor
     augments_used = sum(1 for a in tried if a.script_mode == "augment")
     step = ScriptStep(case_id=case_id, llm_used=llm_used, llm_limit=max_llm, stored_used=stored_used,
                       augments_used=augments_used, augment_limit=max_aug)
-    best = stored_best(store, case_id)
-    stored_text = kb_found(store, case_id, best)
+    want = asking_scope(store, scope)
+    best = stored_best(store, case_id, want)
+    stored_text = kb_found(store, case_id, best, want)
     step.kb_found = stored_text
 
     failed_here = [a for a in tried if a.script_mode == "reuse"]
@@ -255,7 +315,7 @@ def plan_script_step(cluster: ErrorCluster, previous: Iterable[FixAttempt], stor
         # best가 이번 실행에서 실패했고 더 실행해도 되면 다음 저장 버전을 쓴다.
         # 도움이 된 재사용이 있었다면 그것을 LLM이 보강하는 편이 낫다
         if reuse_n > 1 and failed_here and all(a.outcome in FAILED_OUTCOMES for a in failed_here):
-            nxt = stored_next(store, case_id, tried_versions)
+            nxt = stored_next(store, case_id, tried_versions, scope=want)
             if nxt is not None:
                 meta, code = nxt
                 v = int(getattr(meta, "version", 0) or 0)
@@ -264,7 +324,7 @@ def plan_script_step(cluster: ErrorCluster, previous: Iterable[FixAttempt], stor
                             f"{getattr(meta, 'successes', 0)} success(es), {getattr(meta, 'failures', 0)} "
                             f"failure(s)) after v{failed_here[-1].script_version} failed in this run "
                             f"(stored version {stored_used + 1}/{reuse_n}) — no LLM call")
-                step.kb_line = (f"KB 탐색: {stored_part} → 다음 저장본 {describe_stored(meta)} 실행 "
+                step.kb_line = (f"KB 탐색: {stored_part} → 다음 저장본 {describe_stored(meta, want)} 실행 "
                                 f"({stored_used + 1}/{reuse_n})")
                 return step
 

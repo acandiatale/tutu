@@ -1,7 +1,7 @@
-"""v2.1z-al: in the cluster Maven's settings file is a file the operator places on the data volume
+"""v2.1z-al: in the cluster Maven's settings file is a plain file the operator copies onto the data volume
 (`/data/.m2/settings.xml`), so the preflight checks it: `build.settings_file` set and not a readable file → flag
-`settings-not-found`, abort at intake before any Maven call (exit 3), in both run flows. An EMPTY file (the mount-point
-file without the ConfigMap mounted over it) is the same flag with its own reason. Unset = Maven's default
+`settings-not-found`, abort at intake before any Maven call (exit 3), in both run flows. An EMPTY file (created but
+never filled) is the same flag with its own reason. Unset = Maven's default
 settings, as on a PC: nothing changes."""
 from __future__ import annotations
 
@@ -113,11 +113,10 @@ def test_an_empty_settings_file_aborts_with_its_own_reason(cfg, ws, tmp_path, mo
     orch = make_orch(cfg, ws, build=build)
     orch._build_runner = None
     report = orch.run()
-    reason = (f"Maven settings file is empty: {empty} (build.settings_file) — the ConfigMap is not mounted there; "
-              "check the volumeMounts of the pod and rerun")
+    reason = f"Maven settings file is empty: {empty} (build.settings_file) — copy the settings.xml there and rerun"
     assert {"settings-not-found", "aborted"} <= set(report.flags) and run_exit_code(report) == 3
     assert mvn == [] and build.calls == [] and orch.abort_reason == reason
     events = journal_events(ws)
     assert next(e for e in events if e["event"] == "preflight")["settings_file"] == f"empty ({empty})"
-    assert tr_line("ko", reason) == (f"Maven settings.xml이 비어 있습니다({empty}). ConfigMap이 이 경로에 마운트되지 "
-                                     "않았습니다. 파드의 volumeMounts를 확인한 뒤 다시 실행해 주세요.")
+    assert tr_line("ko", reason) == (f"Maven settings.xml이 비어 있습니다({empty}). 이 경로에 settings.xml 내용을 넣은 뒤 "
+                                     "다시 실행해 주세요.")

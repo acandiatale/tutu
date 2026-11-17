@@ -63,7 +63,7 @@ spec:
             - {name: workspace, mountPath: /workspace}
             - {name: m2, mountPath: /data/.m2}                      # 40 · 81 과 같은 경로
             # - {name: config, mountPath: /app/config/artifacts.yml, subPath: artifacts.yml, readOnly: true}   # artifacts.yml 을 ConfigMap 으로 줄 때만(20-configmap.yaml 맨 아래)
-            - {name: config, mountPath: /data/.m2/settings.xml, subPath: settings.xml, readOnly: true}   # emptyDir 안이라 노드 디스크에 마운트된다. m2 를 PVC 로 바꾸면 40 처럼 initContainer 로 이 자리를 먼저 만든다
+            - {name: config, mountPath: /data/.m2/settings.xml, subPath: settings.xml, readOnly: true}   # 이 파드는 /data PVC 가 없어 Job 사이에 파일을 남기지 못하므로 ConfigMap 을 emptyDir 안에 그대로 마운트한다
           resources:
             requests: {cpu: "2", memory: 8Gi}   # 회사 값(2026-11-12): 빌드 파드 하나에 CPU 2 / 메모리 8Gi, requests = limits
             limits: {cpu: "2", memory: 8Gi}     # build.jvm_args -Xmx4g + JVM 의 힙 밖 메모리 + Python

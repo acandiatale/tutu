@@ -10,21 +10,30 @@ remediation``)은 ``run_only``를 호출한다.
   재개할 때는 새 빌드 파드가 ``resume``을 호출한다
 - ``remediation.chain_budget_minutes``를 넘기면 STOPPED(사유 ``chain_budget``)로 멈추고 나중에 재개할 수 있다
 - ``run_only``는 준비가 안 됐으면 상태를 만들지 않고 ``RemediationNotReady``를 던진다
+- 상태를 진행시키는 동안 ``claim.json``으로 조치 폴더를 점유하며, 다른 프로세스가 점유 중이면 아무것도 바꾸지 않는다
 
 Chained remediation: runs in the build pod after a migration that ended in BUILD SUCCESS. The migration graph's
 `remediation` node calls `run_after_migration`; the remediation graph stays a separate feature. Its outcome never changes
 the migration's verdict and no exception leaves this module's entry points. `run_only` is the entry point of the
 `remediation` run flow (no migration): same files, state id and driver; the only exception it raises is
-`RemediationNotReady` (no state was created).
+`RemediationNotReady` (no state was created). Whatever drives the state (the chained first run, `run_only`, `resume`,
+the in-process service's worker) holds the run claim `claim.json` (`RunClaim`) for the time it drives; a second process
+that finds a fresh claim refuses without touching anything.
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
+import signal
+import socket
+import threading
 import time
 import traceback
+import uuid
 import zipfile
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -72,6 +81,296 @@ def load_state(run_dir: Path | str) -> RemediationState | None:
         return RemediationState.from_dict(data) if isinstance(data, dict) else None
     except Exception:
         log.debug("chained remediation state unreadable", exc_info=True)
+        return None
+
+
+# ---------------------------------------------------------------------------- 실행 폴더 점유 / run claim
+# 상태를 진행시키는 프로세스는 조치 폴더 하나에 하나뿐이어야 한다.
+# 웹 파드의 조회와 승인 기록은 점유하지 않고 claim_info로 확인만 한다
+CLAIM_NAME = "claim.json"
+CLAIM_STALE_SECONDS = 600.0               # 이 시간 동안 갱신되지 않은 점유는 넘겨받을 수 있다
+CLAIM_REFRESH_SECONDS = 30.0              # 점유한 프로세스가 claim.json의 mtime을 갱신하는 간격
+CLAIM_HELD = "another process is already working on this run"
+CLAIM_EVENT_TAKEN = "remediation_claim_taken_over"
+
+
+def claim_path(root: Path | str) -> Path:
+    """조치 폴더의 점유 파일 ``<root>/claim.json`` 경로를 반환한다.
+
+    The claim file of one remediation directory."""
+    return Path(root) / CLAIM_NAME
+
+
+def _read_claim(path: Path) -> dict[str, Any] | None:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else None
+    except (OSError, ValueError):
+        return None
+
+
+def _fs_now(root: Path) -> float:
+    """조치 폴더가 있는 파일 시스템의 현재 시각을 잰다. 실패하면 이 호스트의 시각을 반환한다.
+    NFS에서는 서버가 mtime을 기록하므로 파드 사이의 시계 차이가 점유 판단에 끼어들지 않는다.
+
+    Now on the claim's file system clock (a probe file's mtime, removed at once); this host's clock on failure."""
+    probe = Path(root) / f".claim.probe.{os.getpid()}.{uuid.uuid4().hex[:8]}"
+    made = False
+    try:
+        fd = os.open(str(probe), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        made = True
+        try:
+            os.write(fd, b"p")
+        finally:
+            os.close(fd)
+        return os.stat(str(probe)).st_mtime
+    except OSError:
+        return time.time()
+    finally:
+        if made:
+            try:
+                os.unlink(str(probe))
+            except OSError:
+                pass
+
+
+def _claim_stale(root: Path, info: dict[str, Any], mtime: float) -> bool:
+    """점유가 오래되어 넘겨받아도 되는지 판단한다.
+    같은 호스트에서 pid가 죽었거나, 파일 시스템 시계로 ``CLAIM_STALE_SECONDS``초 넘게 갱신되지 않았으면 오래된 것이다."""
+    from sbmig.kb.lock import pid_alive
+    if info.get("host") == socket.gethostname() and info.get("pid") is not None and not pid_alive(info.get("pid")):
+        return True
+    return _fs_now(root) - mtime > float(CLAIM_STALE_SECONDS)
+
+
+def _holder_text(info: dict[str, Any] | None) -> str:
+    if not info:
+        return "an unknown process"
+    text = f"pid {info.get('pid', '?')} on host {info.get('host', '?')} since {info.get('started', '?')}"
+    if info.get("attempt") not in (None, ""):
+        text += f" (attempt {info['attempt']})"
+    return text
+
+
+def claim_info(root: Path | str) -> dict[str, Any] | None:
+    """지금 조치 폴더를 점유한 프로세스 정보를 반환한다. 점유가 없거나 오래되어 넘겨받을 수 있으면 None이다.
+    읽기만 하며 점유 파일을 만들거나 지우지 않는다.
+
+    The live holder of a remediation directory (pid, host, attempt, started, purpose), or None when there is no claim
+    or it is stale. Read-only: the web pod's readers and its approval writer use this; they never take the claim."""
+    root = Path(root)
+    path = claim_path(root)
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    info = _read_claim(path) or {}
+    if _claim_stale(root, info, st.st_mtime):
+        return None
+    return info or {"pid": "?", "host": "?"}
+
+
+def claim_refusal(info: dict[str, Any] | None) -> str:
+    """점유 때문에 거절할 때 쓰는 영어 문장을 만든다.
+
+    The refusal sentence that names the holder."""
+    return f"{CLAIM_HELD}: {_holder_text(info)}"
+
+
+class RunClaim:
+    """조치 폴더 하나를 상태를 진행시키는 프로세스 하나만 쓰도록 점유하는 클래스.
+    ``acquire``가 ``claim.json``을 배타적으로 만들고, ``with`` 블록이 끝나면 어떤 경로로 끝나든 지운다.
+
+    One driver per remediation directory: `claim.json` created with ``O_CREAT | O_EXCL`` holding pid, host, attempt,
+    start time, purpose and a token. A fresh claim of anyone else → `StateConflict` (nothing touched). A stale claim (the
+    holder's pid gone on this host, or not refreshed for `CLAIM_STALE_SECONDS` on the file system's clock — a pod that
+    was OOM-killed never releases it) is moved aside, checked to be the one judged, removed and journaled
+    (`remediation_claim_taken_over`, the old holder named). While held, a daemon thread refreshes the mtime every
+    `CLAIM_REFRESH_SECONDS` (so a long Maven build or IVAS wait never makes it look stale). Leaving the `with` block
+    stops the thread, restores the SIGTERM handler and removes the file when it still holds our token. In the main
+    thread a default SIGTERM handler is replaced by one that raises `SystemExit` for the time of the block, so a
+    SIGTERM still runs the release."""
+
+    def __init__(self, root: Path | str, *, purpose: str, attempt: Any = None, journal: Journal | None = None):
+        self.root = Path(root)
+        self.path = claim_path(self.root)
+        self.purpose = purpose
+        self.attempt = attempt
+        self.token = uuid.uuid4().hex
+        self.held = False
+        self._jr = journal
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._restore: Callable[[], None] | None = None
+        self._lost_said = False
+
+    def acquire(self) -> RunClaim:
+        """점유 파일을 만든다. 다른 프로세스가 살아 있는 점유를 가졌으면 아무것도 바꾸지 않고 ``StateConflict``를 던진다.
+
+        Take the claim; `StateConflict` naming the holder when a fresh claim of another process exists."""
+        self.root.mkdir(parents=True, exist_ok=True)
+        info: dict[str, Any] | None = None
+        for _ in range(5):
+            try:
+                fd = os.open(str(self.path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+            except FileExistsError:
+                try:
+                    st = os.stat(self.path)
+                except FileNotFoundError:
+                    continue
+                info = _read_claim(self.path)
+                if not _claim_stale(self.root, info or {}, st.st_mtime):
+                    raise StateConflict(claim_refusal(info), holder=dict(info or {})) from None
+                self._take_over(st, info)
+                continue
+            payload = {"pid": os.getpid(), "host": socket.gethostname(), "attempt": self.attempt,
+                       "started": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "purpose": self.purpose,
+                       "token": self.token}
+            try:
+                os.write(fd, json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+                try:
+                    os.fsync(fd)
+                except OSError:
+                    pass
+            finally:
+                os.close(fd)
+            self.held = True
+            self._thread = threading.Thread(target=self._keep_alive, name="sbmig-remediation-claim", daemon=True)
+            self._thread.start()
+            return self
+        raise StateConflict(claim_refusal(info or _read_claim(self.path)), holder=dict(info or {}))
+
+    def _take_over(self, judged: os.stat_result, info: dict[str, Any] | None) -> None:
+        """오래된 점유 파일을 옆으로 옮기고, 옮긴 파일이 판단한 그 파일인지 확인한 뒤 지운다.
+        다른 프로세스가 그 사이에 새로 만든 점유였으면 제자리에 되돌린다."""
+        aside = self.path.with_name(f"{CLAIM_NAME}.stale.{uuid.uuid4().hex[:8]}")
+        try:
+            os.rename(self.path, aside)
+        except FileNotFoundError:
+            return                           # another taker moved it first
+        try:
+            st = os.stat(aside)
+            if (st.st_ino, st.st_mtime_ns) != (judged.st_ino, judged.st_mtime_ns):
+                try:
+                    os.link(aside, self.path)      # exclusive: never replaces a claim made in between
+                except OSError:
+                    log.warning("remediation claim %s: a claim moved aside by mistake could not be put back", self.path)
+                return
+            log.warning("remediation claim %s: taking over a stale claim of %s", self.path, _holder_text(info))
+            if self._jr is not None:
+                try:
+                    self._jr({"event": CLAIM_EVENT_TAKEN, "holder": {k: v for k, v in (info or {}).items() if k != "token"},
+                              "purpose": self.purpose})
+                except Exception:  # noqa: BLE001 - 저널 기록 실패로 점유를 막지 않는다
+                    log.debug("claim journal line not written", exc_info=True)
+        finally:
+            try:
+                os.unlink(aside)
+            except OSError:
+                pass
+
+    def refresh(self) -> bool:
+        """점유 파일이 아직 이 프로세스의 것이면 mtime을 지금으로 갱신한다.
+
+        Touch the claim while it still holds our token; False when it is not ours any more."""
+        info = _read_claim(self.path)
+        if not info or info.get("token") != self.token:
+            if not self._lost_said:
+                self._lost_said = True
+                log.warning("remediation claim %s is no longer held by this process", self.path)
+            return False
+        try:
+            os.utime(self.path, None)
+            return True
+        except OSError:
+            log.debug("remediation claim not refreshed", exc_info=True)
+            return False
+
+    def _keep_alive(self) -> None:
+        while not self._stop.wait(float(CLAIM_REFRESH_SECONDS)):
+            self.refresh()
+
+    def release(self) -> None:
+        """갱신 스레드를 멈추고, 점유 파일이 아직 이 프로세스의 것이면 지운다.
+
+        Stop the keep-alive and remove the claim when it still holds our token."""
+        self._stop.set()
+        if self._thread is not None and self._thread is not threading.current_thread():
+            self._thread.join(timeout=5)
+        if not self.held:
+            return
+        self.held = False
+        info = _read_claim(self.path)
+        if info and info.get("token") == self.token:
+            try:
+                os.unlink(self.path)
+            except OSError:
+                log.warning("remediation claim %s could not be removed", self.path, exc_info=True)
+
+    def __enter__(self) -> RunClaim:
+        self._restore = _sigterm_to_exit()
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        try:
+            if self._restore is not None:
+                self._restore()
+        finally:
+            self.release()
+
+
+def _sigterm_to_exit() -> Callable[[], None]:
+    """메인 스레드의 SIGTERM 처리가 기본값이면 ``SystemExit``를 던지는 처리로 잠시 바꾸고, 되돌리는 함수를 반환한다.
+    점유 해제가 ``finally``에서 실행되게 하기 위해서다."""
+    try:
+        if threading.current_thread() is not threading.main_thread():
+            return lambda: None
+        old = signal.getsignal(signal.SIGTERM)
+        if old not in (signal.SIG_DFL, None):
+            return lambda: None
+
+        def handler(signum: int, _frame: Any) -> None:
+            raise SystemExit(128 + signum)
+        signal.signal(signal.SIGTERM, handler)
+    except (ValueError, OSError, AttributeError):
+        return lambda: None
+
+    def restore() -> None:
+        try:
+            signal.signal(signal.SIGTERM, old)
+        except (ValueError, OSError):
+            pass
+    return restore
+
+
+def _try_claim(paths: RunPaths, jr: Journal, purpose: str, attempt: Any = None) -> RunClaim | None:
+    """점유를 시도하고, 다른 프로세스가 가졌으면 WARNING 한 줄을 남기고 None을 반환한다."""
+    try:
+        return RunClaim(paths.root, purpose=purpose, attempt=attempt, journal=jr).acquire()
+    except StateConflict as e:
+        log.warning("vulnerability remediation %s: not started here: %s", paths.root.parent.name, e)
+        return None
+
+
+def _clear_root(root: Path) -> None:
+    """상태 파일 없이 남은 조치 폴더의 내용을 지운다. 이 프로세스의 점유 파일은 남긴다."""
+    import shutil
+    root.mkdir(parents=True, exist_ok=True)
+    for child in root.iterdir():
+        if child.name == CLAIM_NAME:
+            continue
+        if child.is_dir() and not child.is_symlink():
+            shutil.rmtree(child)
+        else:
+            child.unlink()
+
+
+def _resume_attempt(run_dir: Path) -> Any:
+    """Main이 기록한 재개 시도 번호(``control/remediation-resume.json``의 attempt)를 반환한다. 없으면 None이다."""
+    try:
+        data = read_json(Path(run_dir) / "control" / "remediation-resume.json")
+        return data.get("attempt") if isinstance(data, dict) else None
+    except Exception:  # noqa: BLE001 - 시도 번호는 점유 파일의 참고 정보일 뿐이다
         return None
 
 
@@ -362,8 +661,20 @@ def run_after_migration(run_dir: Path | str, project_dir: Path | str, cfg: Any, 
             log.warning("vulnerability remediation skipped (not ready): %s", "; ".join(missing))
             return None
         real_stop = _safe_stop(stop)
-        return _start(paths, Path(project_dir), cfg, comps, run_id=run_id, jr=jr, stop=budget.wrap(real_stop),
-                      exclude_dirs=exclude_dirs, budget=budget, real_stop=real_stop, build_targets=build_targets)
+        claim = _try_claim(paths, jr, "chained")
+        if claim is None:
+            # 다른 프로세스가 이 조치 폴더를 쓰고 있으면 아무것도 바꾸지 않는다
+            return load_state(run_dir)
+        with claim:
+            try:
+                existing = load_state(run_dir)
+                if existing is not None:
+                    jr({"event": "remediation_exists", "remediation": existing.id, "status": existing.status})
+                    return existing
+                return _start(paths, Path(project_dir), cfg, comps, run_id=run_id, jr=jr, stop=budget.wrap(real_stop),
+                              exclude_dirs=exclude_dirs, budget=budget, real_stop=real_stop, build_targets=build_targets)
+            except Exception as e:  # noqa: BLE001 — the migration's verdict must never depend on the remediation
+                return _error(paths, jr, e, run_id, state)
     except Exception as e:  # noqa: BLE001 — the migration's verdict must never depend on the remediation
         return _error(paths, jr, e, run_id, state)
 
@@ -374,12 +685,9 @@ def _start(paths: RunPaths, project_dir: Path, cfg: Any, comps: Components, *, r
     from . import intake as intake_mod
     from . import planner as planner_mod
     from .models import IntakeRejected
-    if paths.root.exists():
-        # 상태 파일 없이 남은 폴더는 접수 중에 중단된 이전 시도다.
-        # IVAS에 보낸 기록은 상태가 생긴 뒤에만 있으므로 지우고 다시 시작한다
-        import shutil
-        shutil.rmtree(paths.root)
-    paths.root.mkdir(parents=True)
+    # 상태 파일 없이 남은 폴더는 접수 중에 중단된 이전 시도다.
+    # IVAS에 보낸 기록은 상태가 생긴 뒤에만 있으므로 지우고 다시 시작한다. 점유 파일은 남긴다
+    _clear_root(paths.root)
     policy = planner_mod.policy_hash(cfg)
     jr({"event": "remediation_start", "remediation": run_id})
     log.info("vulnerability remediation %s: start (after the migration's BUILD SUCCESS)", run_id)
@@ -473,8 +781,21 @@ def run_only(run_dir: Path | str, source: Path | str, cfg: Any, *, run_id: str, 
             jr({"event": "remediation_skipped", "reason": "not_ready", "missing": missing})
             raise RemediationNotReady(missing)
         real_stop = _safe_stop(stop)
-        return _start_only(paths, Path(source), cfg, comps, run_id=run_id, jr=jr, stop=budget.wrap(real_stop),
-                           budget=budget, real_stop=real_stop, build_targets=build_targets)
+        claim = _try_claim(paths, jr, "remediation-only")
+        if claim is None:
+            # 다른 프로세스가 이 조치 폴더를 쓰고 있으면 아무것도 바꾸지 않고, 저장하지 않은 FAILED 상태를 반환한다
+            return load_state(run_dir) or _failed_state(run_id, StateConflict.code,
+                                                        claim_refusal(_read_claim(claim_path(paths.root))))
+        with claim:
+            try:
+                existing = load_state(run_dir)
+                if existing is not None:
+                    jr({"event": "remediation_exists", "remediation": existing.id, "status": existing.status})
+                    return existing
+                return _start_only(paths, Path(source), cfg, comps, run_id=run_id, jr=jr, stop=budget.wrap(real_stop),
+                                   budget=budget, real_stop=real_stop, build_targets=build_targets)
+            except Exception as e:  # noqa: BLE001 — a saved FAILED state, never a traceback out of here
+                return _error(paths, jr, e, run_id, load_state(run_dir))
     except RemediationNotReady:
         raise
     except Exception as e:  # noqa: BLE001 — a saved FAILED state, never a traceback out of here
@@ -487,12 +808,9 @@ def _start_only(paths: RunPaths, source: Path, cfg: Any, comps: Components, *, r
     from . import intake as intake_mod
     from . import planner as planner_mod
     from .models import IntakeRejected
-    if paths.root.exists():
-        # 상태 파일 없이 남은 폴더는 접수 중에 중단된 이전 시도다.
-        # IVAS에 보낸 기록은 상태가 생긴 뒤에만 있으므로 지워도 된다
-        import shutil
-        shutil.rmtree(paths.root)
-    paths.root.mkdir(parents=True)
+    # 상태 파일 없이 남은 폴더는 접수 중에 중단된 이전 시도다.
+    # IVAS에 보낸 기록은 상태가 생긴 뒤에만 있으므로 지워도 된다. 점유 파일은 남긴다
+    _clear_root(paths.root)
     policy = planner_mod.policy_hash(cfg)
     jr({"event": "remediation_start", "remediation": run_id, "flow": "remediation"})
     log.info("vulnerability remediation %s: start (remediation only — the project as uploaded, no migration)", run_id)
@@ -558,7 +876,9 @@ def resume(run_dir: Path | str, cfg: Any, *, journal: Journal | None, stop: Stop
     재개할 수 없는 상태면 ``StateConflict``를 던지고, 아니면 ``stop_requested``를 지우고 ``next_node``부터
     그래프를 실행한다. 시간 한도는 이 호출부터 다시 잰다.
 
-    Continue a RESUMABLE chained remediation (`StateConflict` otherwise)."""
+    Continue a RESUMABLE chained remediation (`StateConflict` otherwise). The run claim (`RunClaim`) is taken first:
+    a fresh claim of another process → `StateConflict` ("another process is already working on this run: …") with
+    nothing touched; the state is read again under the claim."""
     paths = chain_paths(run_dir)
     jr = _scoped(journal)
     state = load_state(run_dir)
@@ -567,15 +887,27 @@ def resume(run_dir: Path | str, cfg: Any, *, journal: Journal | None, stop: Stop
     if not graph_mod.can_resume(state):
         raise StateConflict(f"chained remediation {state.id} cannot be resumed from {state.status}")
     try:
-        budget = _Budget(cfg, jr)            # 재개한 이 파드에서 시간 한도를 처음부터 다시 잰다
-        comps = components if components is not None else graph_mod.default_components(cfg, journal=jr)
-        state.stop_requested = False
-        jr({"event": "remediation_resume", "remediation": state.id, "next_node": state.next_node})
-        real_stop = _safe_stop(stop)
-        return _drive(paths, state, cfg, comps, jr=jr, stop=budget.wrap(real_stop), budget=budget, real_stop=real_stop,
-                      chained=_run_flow(Path(run_dir)) != "remediation")
-    except Exception as e:  # noqa: BLE001
-        return _error(paths, jr, e, state.id, state)
+        claim = RunClaim(paths.root, purpose="resume", attempt=_resume_attempt(Path(run_dir)), journal=jr).acquire()
+    except StateConflict as e:
+        log.error("chained remediation %s: resume refused: %s", state.id, e)
+        raise
+    with claim:
+        # 점유하기 전에 다른 프로세스가 상태를 바꿨을 수 있으므로 다시 읽는다
+        state = load_state(run_dir)
+        if state is None:
+            raise StateConflict("no chained remediation in this run directory")
+        if not graph_mod.can_resume(state):
+            raise StateConflict(f"chained remediation {state.id} cannot be resumed from {state.status}")
+        try:
+            budget = _Budget(cfg, jr)            # 재개한 이 파드에서 시간 한도를 처음부터 다시 잰다
+            comps = components if components is not None else graph_mod.default_components(cfg, journal=jr)
+            state.stop_requested = False
+            jr({"event": "remediation_resume", "remediation": state.id, "next_node": state.next_node})
+            real_stop = _safe_stop(stop)
+            return _drive(paths, state, cfg, comps, jr=jr, stop=budget.wrap(real_stop), budget=budget,
+                          real_stop=real_stop, chained=_run_flow(Path(run_dir)) != "remediation")
+        except Exception as e:  # noqa: BLE001
+            return _error(paths, jr, e, state.id, state)
 
 
 def summary(state: RemediationState | None, run_dir: Path | str, *, skipped: dict[str, Any] | None = None) -> dict[str, Any]:
