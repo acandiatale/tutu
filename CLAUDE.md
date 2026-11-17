@@ -253,12 +253,26 @@ Then the final build again, the report (Handover first, "Structure review", fix 
   commits happen in the main session. Per round: append a "Status" table to `docs/PLAN.md`, update
   `docs/INTERFACES.md` on contract changes, add a fixture + `expected.json` (+ `replay/`) for every new scenario.
 - Setup: `uv venv && source .venv/bin/activate && uv pip install -e ".[dev]"` (plain `pip install -e ".[dev]"` works too).
-- Fast check (Python only, ~12 min): `python -m pytest -m "not integration"` → ≈ 5,670 passed, ≈ 62 deselected (2026-11-17)
+- Fast check (Python only, ~13 min): `python -m pytest -m "not integration"` → ≈ 5,710 passed, ≈ 62 deselected (2026-11-17)
   (`-q` on top of the `-q` in pyproject hides the summary line). Until 2026-11-12 `tests/build` (381 tests) was silently
   left out of every root-level run — pytest skips a directory named `build` by default; `norecursedirs` in pyproject now
   keeps it in. When a total does not grow by the number of tests added, compare per-file counts (`--collect-only -q`).
   `ruff check sbmig tests` has pre-existing style findings (mostly `UP045`); lint is not a gate here, so fix only what
   you touch and never run a repo-wide `ruff --fix` inside a feature round.
+- **Disk walls for test runs (2026-11-17)**: a review subagent's scratch test (a writer thread with no size or time
+  limit) wrote one 118 GB file and filled the developer's disk. A rule in a brief is a promise; these are the walls.
+  The root `conftest.py` gives every pytest run whose tests are under the repository a per-file size cap
+  (`RLIMIT_FSIZE`, 1024 MiB: the writer gets `OSError: File too large`), a free-space floor (5120 MiB) and a cap on
+  the run's own basetemp (4096 MiB); the last two end the run with exit 125 and `bounded: STOPPED: <reason>`. Env
+  `BOUNDED_FILE_MB` / `BOUNDED_FLOOR_MB` / `BOUNDED_GROWTH_MB`, `0` = off. The run's header prints a `bounded:` line;
+  **a pytest run without that line has no wall** (its tests are outside the repository), so scratch tests live under
+  `out/scratch/<topic>/` (ignored by git), never in a session scratchpad or `/tmp`. Everything else (a scratch
+  script, a demo run, a test that must live outside) runs through
+  `.venv/bin/python scripts/bounded.py [--file-mb N] [--seconds N] [--tmp-mb N] -- <command>`: the same caps plus a
+  wall-clock cap (default 1800 s), the whole process group is killed, the command's `TMPDIR` is a folder the wrapper
+  measures and removes; exit 124 = time, 125 = disk, 126 = refused to start. The walls bound the amount, not the
+  judgment: a scratch run that timed out or was stopped is never started again before looking at what it wrote, and
+  every brief still says so.
 - **Korean handover comments (2026-10-28, the business team's request; rewritten 2026-11-12 after the same team said
   the Korean "너무 ai티 난다")**: every module under `sbmig/` starts its docstring with a Korean block and every public
   top-level class / function has Korean first in its docstring, the English original kept unchanged after it. The Korean

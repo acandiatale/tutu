@@ -841,3 +841,18 @@ page said why the pod did not start.
 | Tests | offline suite 5,672 passed, 62 deselected | — | done |
 | Not seen yet | the notice and the immediate stop on the company cluster; whether the kubeconfig account may list events | — | open |
 | Maven repository shared by the build pods | asked by the business team, decided the same day: the per-slot repositories stay ("일단!! 이걸로 가고! 나중에 얘기나오면 공용으로 해결봐야할거같아!"). If it comes back: slot 1's repository as a read-only tail for slots 2 / 3 (`maven.repo.local.tail`, Maven ≥ 3.9.0) behind a switch; one repository with Maven's `file-lock` named locks needs NFS locks that work across nodes (NFSv4.1 or statd everywhere, never `nolock`) | — | open |
+
+## Status — 2026-11-17, disk walls for test runs
+
+A review subagent's scratch test reproduced "zip a log while it is being appended" with a writer thread that had no
+size limit and no time limit; two runs wrote one 118 GB file into pytest's temp folder and filled the developer's
+disk, and every other session on the machine started failing. The briefs already got a written rule that day. The user
+asked to tighten it ("응 한번 조여줘봐!"): limits that hold when a brief forgets them.
+
+| Item | Deliverable | Where | Status |
+|---|---|---|---|
+| Walls on every pytest run under the repository | per-file size cap (`RLIMIT_FSIZE`, 1024 MiB: the writer fails with `File too large`), free-space floor (5120 MiB, checked before the run and every second), cap on the run's own basetemp (4096 MiB, walked at most ~5 % of the time); a trip prints `bounded: STOPPED: <reason>` past pytest's capture and exits 125; the header's `bounded:` line shows the limits in force; env `BOUNDED_FILE_MB` / `BOUNDED_FLOOR_MB` / `BOUNDED_GROWTH_MB`, `0` = off | `conftest.py` (root) | done |
+| Wrapper for everything else | `scripts/bounded.py [--file-mb N] [--seconds N] [--tmp-mb N] [--floor-mb N] [--tmp DIR] [--keep] -- <command>`: the same caps in the child, a wall-clock cap (the whole process group is stopped), the command's `TMPDIR` is a folder the wrapper measures and removes, nothing is left running after the command; exit 124 time, 125 disk, 126 refused, 127 not started | `scripts/bounded.py` | done |
+| Working rules | scratch tests live under `out/scratch/<topic>/` so the root conftest applies; a pytest run without the `bounded:` header line has no wall; anything else goes through the wrapper; a run that timed out or was stopped is not started again before looking at what it wrote | `CLAUDE.md` "How to work here" | done |
+| Tests | `tests/devtools` (41: the wrapper end to end with small caps, the decision logic with fakes, the suite guard in a throwaway project); offline suite 5,713 passed, 62 deselected (its basetemp held about 360 MB) | `tests/devtools/` | done |
+| Known limits | a test outside the repository run without the wrapper has no wall; the basetemp is read through pytest's private `_tmp_path_factory._basetemp` (a rename would be caught by `test_growth_cap_stops_the_process_with_125`); no per-test time cap inside pytest (the wrapper's `--seconds` covers a whole run); the file-size cap does not exist on Windows (the header says so) | — | open |
