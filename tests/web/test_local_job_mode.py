@@ -245,8 +245,7 @@ MAVEN_PATHS = {"SBMIG_BUILD__LOCAL_REPO": "/data/.m2/repository", "SBMIG_BUILD__
 def test_the_pods_maven_folder_never_reaches_the_local_worker(tmp_path: Path, repo: Path, monkeypatch):
     """v2.1z-al: the template names real container paths in `/data/.m2` for the Maven local repository and the settings
     file (`SBMIG_BUILD__LOCAL_REPO` was `"null"` before, so a leak would not have shown). A `local-job` Worker on a
-    developer PC must take neither: its build uses the developer's own repository and settings. Nor does it get the web
-    pod's own `SBMIG_SETTINGS_SEED`, even when the shell that started `sbmig serve` has it."""
+    developer PC must take neither: its build uses the developer's own repository and settings."""
     import yaml
     template_env = yaml.safe_load(TEMPLATE.read_text(encoding="utf-8"))["spec"]["template"]["spec"]["containers"][0]["env"]
     for name, value in MAVEN_PATHS.items():
@@ -258,11 +257,10 @@ def test_the_pods_maven_folder_never_reaches_the_local_worker(tmp_path: Path, re
     script = tmp_path / "dump_env.py"
     script.write_text("import json, os, sys\njson.dump(dict(os.environ), open(sys.argv[1], 'w'))\n", encoding="utf-8")
     monkeypatch.setenv("SBMIG_JOB_POLL_S", "0.05")
-    monkeypatch.setenv("SBMIG_SETTINGS_SEED", str(tmp_path / "seed-settings.xml"))
     jc = LocalJobClient(repo, command_factory=lambda env: [sys.executable, str(script), str(dump)], echo=False)
     mgr = RunManager(tmp_path / "out", repo, mode="local-job", job_client=jc, job_template=TEMPLATE)
     rid = mgr.start(b"PK\x05\x06" + b"\0" * 18, "p.zip", ["artifacts.local-e2e.yml"], stop_after="plan")
     assert mgr.runs[rid].done.wait(10)
     child = json.loads(dump.read_text(encoding="utf-8"))
-    assert not set(MAVEN_PATHS) & set(child) and "SBMIG_SETTINGS_SEED" not in child
+    assert not set(MAVEN_PATHS) & set(child)
     assert not [k for k, v in child.items() if "/data/.m2" in v]

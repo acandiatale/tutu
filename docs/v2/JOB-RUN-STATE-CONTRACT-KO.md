@@ -40,7 +40,7 @@ Worker 는 Main 의 존재를 모른다. Main 이 죽어도 Job 은 끝까지 �
 /data/kb-v2/                 파일 KB(SBMIG_KB_DIR). 모든 Job 이 같은 KB 에 쓴다 → 쓰기는 `.lock` 으로 차례(§8)
 /data/.m2/                   Maven 로컬 저장소(같은 PVC 의 폴더, SBMIG_BUILD__LOCAL_REPO=/data/.m2/repository). 자리마다 repository / repository-slot<k> (§8)
 /app/config/artifacts.yml    이미지에 구운 회사 설정(Main 과 Job 파드가 같은 이미지 → 같은 파일; 2026-11-10)
-/data/.m2/settings.xml       Maven 설정 파일(SBMIG_BUILD__SETTINGS_FILE). Main 이 시작할 때 ConfigMap sbmig-config 에서 복사하고 Job 파드가 읽는다
+/data/.m2/settings.xml       Maven 설정 파일(SBMIG_BUILD__SETTINGS_FILE). ConfigMap sbmig-config 를 Main 과 Job 파드가 이 경로에 마운트한다
 ```
 
 Job 템플릿이 받는 실행별 env(Main 이 첫 컨테이너의 env 에 덧붙인다, 같은 이름은 바꾼다): `SBMIG_SOURCE_ZIP`, `SBMIG_OUT`, `SBMIG_RUN_ID`,

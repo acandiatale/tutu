@@ -74,7 +74,6 @@ import logging
 import os
 import re
 import shutil
-import tempfile
 import threading
 import time
 import uuid
@@ -607,59 +606,6 @@ def _recorded_flow(rd: Path) -> str:
     return FLOW_FULL
 
 
-SETTINGS_SEED_ENV = contract.SETTINGS_SEED_ENV
-
-
-def seed_settings_file(seed: str | Path, target: str | Path) -> str:
-    """``seed`` 파일을 ``target``으로 복사하고 결과(``written`` / ``unchanged`` / ``failed``)를 반환한다.
-    같은 폴더의 임시 파일에 쓴 뒤 ``os.replace``로 바꾸고, 실패해도 예외를 던지지 않는다.
-
-    v2.1z-al: copy the web pod's seed (ConfigMap `sbmig-config` mounted read-only) to the settings path on the data volume
-    that the Job pods read. Same content → nothing written (DEBUG); written → one INFO; a missing / unreadable seed or a
-    failed copy → one WARNING naming both paths. The write goes to a temp file in the target folder and `os.replace`s it,
-    so a Maven call in a running build pod sees the old or the new file, never half of one. No fsync (a crash before the
-    replace keeps the old file; a crash after it can at worst leave a file the next start writes again)."""
-    src, dst = Path(seed), Path(target)
-    if src.resolve() == dst.resolve():
-        return "unchanged"
-    try:
-        data = src.read_bytes()
-    except OSError as e:
-        log.warning("Maven settings seed %s cannot be read (%s) — %s is not written from it", src, e.strerror or e, dst)
-        return "failed"
-    try:
-        if dst.is_file() and dst.read_bytes() == data:
-            log.debug("Maven settings %s unchanged (same as %s)", dst, src)
-            return "unchanged"
-    except OSError:
-        pass                                  # 읽지 못하면 새로 쓴다
-    tmp: Path | None = None
-    try:
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        fd, name = tempfile.mkstemp(dir=str(dst.parent), prefix=f".{dst.name}.", suffix=".tmp")
-        tmp = Path(name)
-        with os.fdopen(fd, "wb") as f:
-            f.write(data)
-        try:
-            os.chmod(tmp, 0o644)              # 같은 uid가 아닌 파드도 읽을 수 있게 한다
-        except OSError:
-            pass
-        os.replace(tmp, dst)
-        tmp = None
-    except OSError as e:
-        log.warning("Maven settings %s cannot be written from %s (%s) — check the folder's owner / fsGroup",
-                    dst, src, e.strerror or e)
-        return "failed"
-    finally:
-        if tmp is not None:
-            try:
-                tmp.unlink()
-            except OSError:
-                pass
-    log.info("Maven settings %s written from %s", dst, src)
-    return "written"
-
-
 class RunManager:
     """이관을 작업 스레드로 시작하고, 상태와 이벤트 요청에 메모리와 실행 폴더의 정보로 응답하는 클래스.
     ``_lock``은 ``runs`` dict를 보호하고, ``_turns``는 업로드 순서대로 ``max_parallel``개(in-process는
@@ -750,12 +696,11 @@ class RunManager:
             self._warn_missing_settings_file()
 
     def _warn_missing_settings_file(self) -> None:
-        """시작할 때 ``SBMIG_SETTINGS_SEED`` 파일을 ``build.settings_file`` 위치로 복사하고, 그래도 그 파일이 없으면
-        WARNING 한 줄을 남긴다. 파드가 뜬 뒤에 파일을 넣을 수도 있으므로 시작을 막지 않는다.
+        """기본 설정의 ``build.settings_file``이 없거나 비어 있으면 시작할 때 WARNING 한 줄을 남긴다. 시작은 막지 않는다.
 
-        v2.1z-al: at web start, copy the seed (`SBMIG_SETTINGS_SEED`, the web pod's read-only ConfigMap file) to
-        `build.settings_file` of the default configs (`seed_settings_file`), then one WARNING when that file is still not
-        there. Never fatal (the run's preflight aborts a run that starts without it)."""
+        v2.1z-al: one WARNING at startup when the default configs name a `build.settings_file` that is not a file, or is
+        an empty file (the mount-point file the initContainer creates, without the ConfigMap mounted over it). Never
+        fatal (the run's preflight aborts a run that starts without a usable file)."""
         try:
             from sbmig.core.config import load_config
             configs = self.default_configs()
@@ -764,11 +709,12 @@ class RunManager:
             if value is None or not str(value).strip() or str(value).strip().lower() == "null":
                 return
             path = Path(str(value).strip()).expanduser().absolute()
-            seed = (os.environ.get(SETTINGS_SEED_ENV) or "").strip()
-            if seed:
-                seed_settings_file(seed, path)
             if not path.is_file():
-                log.warning("Maven settings file %s is missing — copy settings.xml there before the first run", path)
+                log.warning("Maven settings file %s is missing — mount ConfigMap sbmig-config there before the first run",
+                            path)
+            elif path.stat().st_size == 0:
+                log.warning("Maven settings file %s is empty — the ConfigMap is not mounted there; check the volumeMounts "
+                            "of the pod", path)
         except Exception as e:  # noqa: BLE001 - 시작 점검은 앱 시작을 막지 않는다
             log.debug("web: settings file check skipped (%s: %s)", type(e).__name__, e)
 

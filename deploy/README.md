@@ -9,7 +9,7 @@
 | `docker/pip-deps.py` | 이미지가 설치할 의존성을 `pyproject.toml` 에서 읽는다(목록을 두 곳에 두지 않기 위해) |
 | `docker/run-job.sh` | 요청별 Job 파드의 진입 스크립트: 소스 → KB → `sbmig run` → 결과 push → 종료 코드 |
 | `k8s/10-storage.yaml` | PVC 하나: `/data`(웹 UI 에이전트의 업로드·실행·KB·LLM 기록, Maven 로컬 저장소 `/data/.m2`) |
-| `k8s/20-configmap.yaml` | Nexus `settings.xml`(`sbmig-config`, 웹 파드가 시작할 때 `/data/.m2/settings.xml` 로 복사한다; 80 은 그대로 마운트) + 비밀 아닌 환경 변수(`sbmig-env`). 회사 설정 `artifacts.yml` 은 이미지에 굽는다(§1) |
+| `k8s/20-configmap.yaml` | Nexus `settings.xml`(`sbmig-config`, 40 · 81 · 80 이 `/data/.m2/settings.xml` 에 마운트) + 비밀 아닌 환경 변수(`sbmig-env`). 회사 설정 `artifacts.yml` 은 이미지에 굽는다(§1) |
 | `k8s/30-secret.example.yaml` | 비밀값 예시 — `sbmig-llm`(= PC 의 `.env` + 웹 토큰), `sbmig-git`(저장소 토큰). **복사해 채우고 커밋하지 않는다**(`30-secret.yaml` 은 git-ignore) |
 | `k8s/40-deployment.yaml`, `k8s/50-service.yaml` | 웹 UI 에이전트(`sbmig serve`) Deployment(replica 1, Recreate) + Service — Job 모델만 쓰면 불필요 |
 | `k8s/45-web-rbac.yaml` | 웹 파드가 Job 을 만들고 지켜보는 최소 권한(ServiceAccount + Role + RoleBinding). kubeconfig Secret 이 없는 클러스터용 — 회사는 인프라팀의 kubeconfig 로 권한을 받으므로 쓰지 않는다 |
@@ -125,7 +125,7 @@ kubectl apply -f deploy/k8s/30-secret.yaml
 kubectl -n agent describe secret agent-kubeconfig   # 회사: 인프라팀의 kubeconfig Secret, Data 에 config 가 보여야 한다(없는 클러스터는 §3 "켜는 법" 2 의 b)
 kubectl -n agent create configmap sbmig-job-template --from-file=deploy/k8s/81-web-job.template.yaml --dry-run=client -o yaml | kubectl apply -f -
 kubectl apply -f deploy/k8s/40-deployment.yaml -f deploy/k8s/50-service.yaml
-kubectl -n agent rollout status deploy/sbmig                                  # 웹 파드가 시작하며 sbmig-config 의 settings.xml 을 /data/.m2/settings.xml 로 복사한다
+kubectl -n agent rollout status deploy/sbmig
 kubectl -n agent exec deploy/sbmig -- python -m sbmig.cli llm-probe             # token exchange: ok … HTTP 200
 ```
 
@@ -140,7 +140,7 @@ Secret 의 `SBMIG_WEB_TOKEN` 을 채운다 — 그때는 `http://<host>:8765/?to
 * **회사 설정**: 이미지 안 `/app/config/artifacts.yml`(§1 에서 구운 파일)이고, `sbmig-env` 의 `SBMIG_WEB_CONFIGS=artifacts.yml`
   (= `sbmig serve --config artifacts.yml`) 이 **모든 업로드를 이 설정으로 돌린다** — 담당자는 화면에서 설정을 고르지 않는다(고급 설정을
   펼쳐야 목록이 보인다). 그 이름의 파일이 이미지에 없으면 웹 파드는 경고 한 줄만 남기고 회사 설정 없이 돈다 — 그래서 빌드에 `REQUIRE_CONFIG` 를 붙인다.
-* **Maven `settings.xml`**: ConfigMap `sbmig-config` 에서 고치고, 웹 파드가 시작할 때 데이터 볼륨의 `/data/.m2/settings.xml` 로 복사한다(Nexus 미러, §3 "Maven 설정과 로컬 저장소"). 이미지의 Maven 3.9 도 `http://` 저장소를
+* **Maven `settings.xml`**: ConfigMap `sbmig-config` 에서 고치고, 파드마다 `/data/.m2/settings.xml` 에 마운트된다(Nexus 미러, §3 "Maven 설정과 로컬 저장소"). 이미지의 Maven 3.9 도 `http://` 저장소를
   막는 기본 미러 `maven-default-http-blocker` 를 갖고 있다 — Nexus 주소가 `http://` 면 차단 미러의 `<mirrorOf>` 에 `,!<저장소 ID>` 를 붙여 그 저장소를 예외로 빼거나(회사 settings.xml 이 쓰는 방식 — 쓰는 저장소 ID 를 모두 적는다),
   Nexus 미러에 `<blocked>false</blocked>` 를 둔다(아니면 실행이 `attn=infra:http-blocked` 로 멈춘다).
   미러의 `<url>` 은 허용 목록이 아니라 **대신 물어볼 주소**다: `maven-default-http-blocker` 를 실제 주소(릴리스 저장소 등)로 재정의한
@@ -153,8 +153,7 @@ Secret 의 `SBMIG_WEB_TOKEN` 을 채운다 — 그때는 `http://<host>:8765/?to
   | env (매니페스트에 고정) | 값 | 어디에 |
   |---|---|---|
   | `SBMIG_KB__DIR` | `/data/kb-v2` | 40 (81 은 `SBMIG_KB_DIR`, 80 은 `run-job.sh`) |
-  | `SBMIG_BUILD__SETTINGS_FILE` | `/data/.m2/settings.xml` (40 · 81 은 데이터 볼륨의 파일, 80 은 ConfigMap 마운트) | 40 · 81 · 80 |
-  | `SBMIG_SETTINGS_SEED` | `/etc/sbmig/settings.xml` (ConfigMap `sbmig-config` 마운트, 시작할 때 위 파일로 복사) | 40 |
+  | `SBMIG_BUILD__SETTINGS_FILE` | `/data/.m2/settings.xml` (ConfigMap `sbmig-config` 의 마운트) | 40 · 81 · 80 |
   | `SBMIG_BUILD__JAVA_HOME` | `/opt/java21` | 40 · 81 · 80 |
   | `SBMIG_BUILD__MVN` | `mvn` | 40 · 81 · 80 |
   | `SBMIG_BUILD__LOCAL_REPO` | `/data/.m2/repository` (데이터 볼륨의 `.m2` 폴더, 80 은 `/data/.m2` 에 마운트한 `m2` 볼륨) | 40 · 81 · 80 |
@@ -234,7 +233,7 @@ Secret 의 `SBMIG_WEB_TOKEN` 을 채운다 — 그때는 `http://<host>:8765/?to
 | `SBMIG_REMEDIATION__CHAIN_BUDGET_MINUTES` / `IGNORE_ACTIONS` | ConfigMap(선택) | `90` / 비어 있음(예 `'["PC","IG"]'`) | 빌드 파드 안 조치의 시간 한도(0 = 없음)·계획에서 뺄 IVAS 조치 코드(기본 없음 = 모두 고칠 대상, §6) |
 | `SBMIG_REMEDIATION__IVAS_SUMMARY_CHECK` | ConfigMap(선택) | `exact` | IVAS 요약 `components` 건수와 라이브러리 취약점 행 수를 같은지 대조 / `nonzero` = 0 인지만(§6) |
 
-env 가 아닌 것: `artifacts.yml`(이미지에 구운 파일), `settings.xml`(ConfigMap `sbmig-config`, 웹 파드가 `/data/.m2/settings.xml` 로 복사하는 파일), 이관팀이 고치는 회사 지식 **`<kb.dir>/jar_names.yml`**(jar
+env 가 아닌 것: `artifacts.yml`(이미지에 구운 파일), `settings.xml`(ConfigMap `sbmig-config`, `/data/.m2/settings.xml` 에 마운트되는 파일), 이관팀이 고치는 회사 지식 **`<kb.dir>/jar_names.yml`**(jar
 이름 → 좌표)과 **`<kb.dir>/libraries.yml`**(사람이 승인한 라이브러리 표) — KB 볼륨(`/data/kb-v2`)에 있어 이미지와 무관하게 바꾼다. 이미지
 안의 `knowledge/`(노트, 자문, 레시피 카탈로그)는 이미지를 다시 만들어야 바뀐다.
 
@@ -288,7 +287,7 @@ PVC 가 RWO 만 되는 클러스터라면 Job 템플릿과 Deployment 의 hostna
 `/data/.m2` 는 PC 의 `~/.m2` 와 같은 폴더다. 데이터 볼륨(`sbmig-data`) 안에 이렇게 있다:
 
 ```
-/data/.m2/settings.xml            Maven 설정(Nexus 미러). 웹 파드가 시작할 때 ConfigMap sbmig-config 에서 복사한다. SBMIG_BUILD__SETTINGS_FILE
+/data/.m2/settings.xml            Maven 설정(Nexus 미러). ConfigMap sbmig-config 의 마운트. SBMIG_BUILD__SETTINGS_FILE
 /data/.m2/repository/             Maven 로컬 저장소(자리 1). SBMIG_BUILD__LOCAL_REPO
 /data/.m2/repository-slot2/       자리 2 · 3 의 저장소(Worker 가 만든다, §3 "동시에 여러 건")
 /data/.m2/repository-slot3/
@@ -296,47 +295,54 @@ PVC 가 RWO 만 되는 클러스터라면 Job 템플릿과 Deployment 의 hostna
 
 40 · 81 · 80 모두 `SBMIG_BUILD__SETTINGS_FILE: "/data/.m2/settings.xml"`, `SBMIG_BUILD__LOCAL_REPO: "/data/.m2/repository"` 이다.
 40 과 81 에는 `.m2` 용 볼륨이 없다: 둘 다 데이터 볼륨 안의 파일과 폴더다. 저장소는 처음 빌드 때 Maven 이 uid 1000 으로 만든다.
-settings.xml 을 고치는 곳은 ConfigMap `sbmig-config` 다. 웹 파드(40)는 그 파일을 `/etc/sbmig/settings.xml` 에 읽기 전용으로 마운트하고
-(`SBMIG_SETTINGS_SEED`), 시작할 때 `/data/.m2/settings.xml` 로 복사한다: 같은 폴더의 임시 파일에 쓴 뒤 이름을 바꿔 넣으므로 도는 빌드
-파드는 옛 파일이나 새 파일 하나만 본다. 내용이 같으면 쓰지 않는다. 로그에는 `Maven settings /data/.m2/settings.xml written from
-/etc/sbmig/settings.xml`(INFO) 한 줄, 복사하지 못하면 두 경로를 적은 WARNING 한 줄이 남고 웹 파드는 그대로 뜬다. Job 파드(81)는
-ConfigMap 을 마운트하지 않고 공유 볼륨의 그 파일을 읽는다. ConfigMap 을 `/data/.m2/settings.xml` 에 바로 마운트하지 않는 까닭: NFS 볼륨
-안에 마운트 지점을 만들어야 하는데 root 를 막는(root squash) export 에서는 그 일이 거절되어 파드가 뜨지 않는다. 80 은 `/data` PVC 가 없어서
-자기 `m2` 볼륨(기본 emptyDir)을 `/data/.m2` 에 마운트하고, settings.xml 은 ConfigMap `sbmig-config` 를 그 안에 `subPath` 로 마운트한다(emptyDir
-은 노드 디스크라 괜찮다). 80 의 `m2` 를 PVC 로 바꾸면 settings.xml 을 그 PVC 에 두고 그 마운트 줄을 지운다.
+settings.xml 은 ConfigMap `sbmig-config` 의 파일이고, 40 · 81 · 80 모두 `subPath` 로 `/data/.m2/settings.xml` 에 읽기 전용으로 마운트한다.
+
+**마운트 자리가 먼저 있어야 하는 까닭.** 40 · 81 에서는 ConfigMap 의 파일을 NFS 볼륨(`/data`) 안의 한 자리에 붙인다. 그 자리
+(`/data/.m2/settings.xml`)가 없으면 쿠버네티스가 root 로 NFS 위에 만들어야 하는데, root 를 막는(root squash) export 는 그것을 거절한다.
+그래서 40 의 initContainer `m2-mountpoint` 가 파드의 사용자(uid 1000)로 `mkdir -p /data/.m2 && touch /data/.m2/settings.xml` 을 먼저
+실행한다(있는 파일은 그대로 둔다). 81 에는 initContainer 가 없다: Job 은 웹 파드가 뜬 뒤에만 만들어지므로 자리가 이미 있다.
+안 되면 파드가 `Running` 이 되지 않는다(`kubectl -n agent get pod` 에 `CreateContainerConfigError` / `ContainerCreating`).
+`kubectl -n agent describe pod <파드 이름>` 의 Events 에 마운트 오류(`subPath` · `permission denied` · `not a directory` 등)가 보인다.
+그때의 대안: ConfigMap 을 NFS 밖 `/etc/sbmig/settings.xml` 에 마운트하고 40 · 81 의 `SBMIG_BUILD__SETTINGS_FILE` 을 둘 다 그 경로로 바꾼다.
+80 은 `/data` PVC 가 없어서 자기 `m2` 볼륨(기본 emptyDir, 노드 디스크)을 `/data/.m2` 에 마운트하고 그 안에 settings.xml 을 마운트한다.
+80 의 `m2` 를 PVC 로 바꾸면 40 과 같은 문제가 생기므로 같은 initContainer 를 붙인다.
 NFS 에서 `.m2` 가 너무 느리면 `.m2` 만 따로 볼륨을 주고 40 과 81 **둘 다** `/data/.m2` 에 마운트한다(`10-storage.yaml` 끝의 주석).
-이때도 마운트 지점 문제가 같으므로 폴더 `/data/.m2` 를 먼저 만들어 둔다(settings.xml 은 웹 파드가 새 볼륨에 다시 복사한다).
+이때는 그 새 볼륨 안에 마운트 자리가 필요하므로 initContainer 도 그 볼륨을 `/data/.m2` 에 마운트해야 한다.
 
 **settings.xml**: PC 에서 시험한 파일을 그대로 `20-configmap.yaml` 의 `sbmig-config` 에 넣는다. 비밀번호는 파일에 넣지 않는다:
 `<server>` 에 `${env.NEXUS_USER}` / `${env.NEXUS_PASSWORD}` 로 두고 값은 Secret `sbmig-llm` 에 둔다(Maven 이 환경 변수로 푼다).
 나중에 고칠 때: `sbmig-config` 를 고치고 `kubectl apply -f deploy/k8s/20-configmap.yaml` 뒤 웹 파드를 다시 띄운다
-(`kubectl -n agent rollout restart deploy/sbmig` — `sbmig-env` 와 같은 규칙). 다음 Job 부터 새 파일을 읽는다. 80 은 apply 만 하면 된다.
-**파일이 없으면** 이관은 Maven 을 한 번도 부르지 않고 접수 단계에서 멈춘다(종료 코드 3, 플래그 `settings-not-found`). 화면과 보고서에는
-"Maven settings.xml을 찾지 못했습니다(/data/.m2/settings.xml). 이 경로에 settings.xml을 넣은 뒤 다시 실행해 주세요.", 로그에는
-`run aborted: Maven settings file not found: /data/.m2/settings.xml (build.settings_file) — put the settings.xml there and rerun` 이 남는다.
-취약점 해결 실행도 같은 줄로 멈춘다. 웹 파드는 시작할 때(복사 뒤에도) 파일이 없으면 WARNING 한 줄만 남기고 그대로 뜬다
-(`Maven settings file /data/.m2/settings.xml is missing — copy settings.xml there before the first run`).
+(`kubectl -n agent rollout restart deploy/sbmig` — `sbmig-env` 와 같은 규칙). 이미 도는 Job 파드는 예전 내용을 그대로 쓰고, 새로 만들어지는
+Job 파드부터 새 내용을 읽는다(`subPath` 마운트는 파드가 뜰 때의 내용으로 고정된다). 80 은 apply 만 하면 된다.
+**파일이 없거나 비어 있으면** 이관은 Maven 을 한 번도 부르지 않고 접수 단계에서 멈춘다(종료 코드 3, 플래그 `settings-not-found`).
+없을 때 화면과 보고서에는 "Maven settings.xml을 찾지 못했습니다(/data/.m2/settings.xml). 이 경로에 settings.xml을 넣은 뒤 다시 실행해 주세요.",
+비어 있을 때(마운트 없이 initContainer 가 만든 빈 파일만 있을 때)는 "Maven settings.xml이 비어 있습니다(/data/.m2/settings.xml).
+ConfigMap이 이 경로에 마운트되지 않았습니다. 파드의 volumeMounts를 확인한 뒤 다시 실행해 주세요." 가 나온다. 로그에는 그 영어 원문
+(`run aborted: Maven settings file not found: …` / `run aborted: Maven settings file is empty: …`)이 남는다. 취약점 해결 실행도 같은 줄로
+멈춘다. 웹 파드는 시작할 때 파일이 없거나 비어 있으면 WARNING 한 줄만 남기고 그대로 뜬다.
 
 **손으로 채운 매니페스트를 쓰는 배포에서 바꿀 것** (순서대로):
 
 1. 40(`40-deployment.yaml`):
    * env `SBMIG_BUILD__SETTINGS_FILE` 의 값 `/etc/sbmig/settings.xml` → `"/data/.m2/settings.xml"`
-   * env 에 한 줄 더한다: `- {name: SBMIG_SETTINGS_SEED, value: /etc/sbmig/settings.xml}`
    * env `SBMIG_BUILD__LOCAL_REPO` 의 값 `"null"` → `"/data/.m2/repository"`
-   * `volumeMounts` 의 `{name: m2, mountPath: /home/sbmig/.m2}` 줄을 지운다. `{name: config, mountPath: /etc/sbmig/settings.xml, …}` 줄은 그대로 둔다
+   * `volumeMounts` 의 `{name: m2, mountPath: /home/sbmig/.m2}` 줄을 지운다
+   * `volumeMounts` 의 `{name: config, mountPath: /etc/sbmig/settings.xml, …}` 줄은 `mountPath: /data/.m2/settings.xml` 로 바꾼다(`data` 줄 다음에 둔다)
    * `volumes` 의 `m2`(`claimName: sbmig-m2`) 두 줄을 지운다. `config`(`configMap: {name: sbmig-config}`) 두 줄은 그대로 둔다
+   * `containers:` 바로 위에 `initContainers:` 블록(`m2-mountpoint`, 새 40 그대로, `image:` 는 아래 컨테이너와 같은 값)을 더한다.
+     마운트 자리를 이미 손으로 만들어 둔 볼륨이면 없어도 된다(회사 클러스터는 `/data/.m2/settings.xml` 을 만들어 두었다). 새 볼륨에는 필요하다
 2. 81(`81-web-job.template.yaml`):
    * env `SBMIG_BUILD__SETTINGS_FILE` 의 값 `"/etc/sbmig/settings.xml"` → `"/data/.m2/settings.xml"`, env `SBMIG_BUILD__LOCAL_REPO` 의 값 `"null"` → `"/data/.m2/repository"`
-   * `volumeMounts` 의 `m2` 줄과 `config`(`/etc/sbmig/settings.xml`) 줄을 지운다
-   * `volumes` 의 `m2` 두 줄을 지우고, `config` 두 줄은 주석 처리한다(artifacts.yml 을 ConfigMap 으로 줄 때만 마운트 줄과 같이 푼다)
+   * `volumeMounts` 의 `m2` 줄을 지우고, `config` 줄은 `mountPath: /data/.m2/settings.xml` 로 바꾼다(`data` 줄 다음에 둔다)
+   * `volumes` 의 `m2` 두 줄을 지운다. `config` 두 줄은 그대로 둔다. initContainer 는 넣지 않는다
    * 선택: `sbmig-env` 에서 `SBMIG_REMEDIATION__MODULE_OVERRIDES` 를 끌(`"false"`) 때만 env 에 그 키의 `configMapKeyRef … optional: true`
      줄을 더한다(새 81 의 `SBMIG_REMEDIATION__REQUIRE_APPROVAL` 다음 줄 그대로). 기본(켜짐)으로 쓰면 필요 없다
 3. 80(`80-build-job.template.yaml`, 쓰는 경우만): env `SBMIG_BUILD__SETTINGS_FILE` `"/etc/sbmig/settings.xml"` → `"/data/.m2/settings.xml"`,
    env `SBMIG_BUILD__LOCAL_REPO` `"null"` → `"/data/.m2/repository"`, `m2` 마운트의 `mountPath: /home/sbmig/.m2` → `/data/.m2`,
    `config` 마운트의 `mountPath: /etc/sbmig/settings.xml` → `/data/.m2/settings.xml`(`m2` · `config` 볼륨은 그대로).
 4. ConfigMap `sbmig-job-template` 을 새 81 로 다시 만든다(§3 "켜는 법" 4 의 명령).
-5. `kubectl apply -f deploy/k8s/40-deployment.yaml` 뒤 웹 파드를 재시작한다(`kubectl -n agent rollout restart deploy/sbmig`). 새 웹 파드가
-   시작하며 settings.xml 을 `/data/.m2/settings.xml` 로 복사한다(로그의 `Maven settings … written from …` 줄). 웹 파드와 Job 파드의
+5. `kubectl apply -f deploy/k8s/40-deployment.yaml` 뒤 웹 파드를 재시작한다(`kubectl -n agent rollout restart deploy/sbmig`). 웹 파드가
+   `Running` 이 되지 않으면 위 "마운트 자리" 문단을 본다. 웹 파드와 Job 파드의
    `SBMIG_BUILD__SETTINGS_FILE` · `SBMIG_BUILD__LOCAL_REPO` 가 다르면 환경 변수 대조가 Job 을 멈춘다.
 6. 자리마다 첫 빌드는 의존성을 처음부터 다시 받아 느리다(새 폴더가 비어 있다).
 7. 옛 PVC `sbmig-m2` 는 더 쓰이지 않는다. 새 위치로 이관이 잘 도는 것을 본 뒤에 지워도 된다(`kubectl -n agent delete pvc sbmig-m2`).
@@ -544,7 +550,7 @@ preflight / ADF / 내부 오류)이면 3. `SBMIG_FAIL_JOB_ON_BUILD_FAIL=1` 이�
 
 두 곳에 들어간다. (1) `settings.xml` 의 `<mirror><url>` — mvn 이 모든 저장소를 그쪽으로 돌린다(`mirrorOf *`). (2) `artifacts.yml` 의
 `build.repository_url` — sbmig 가 메타데이터 / pom 을 직접 읽어 릴리스 목록과 jakarta 빌드를 찾는 주소. (1) 은 `k8s/20-configmap.yaml` 의
-`<https://nexus.company/…>` 자리(웹 파드가 `/data/.m2/settings.xml` 로 복사한다), (2) 는 이미지에 구운 `artifacts.yml` 의 값이다(클러스터에서 다른 주소를 써야 하면 `sbmig-env` 의
+`<https://nexus.company/…>` 자리(파드의 `/data/.m2/settings.xml` 에 마운트된다), (2) 는 이미지에 구운 `artifacts.yml` 의 값이다(클러스터에서 다른 주소를 써야 하면 `sbmig-env` 의
 `SBMIG_BUILD__REPOSITORY_URL`). Nexus 에 인증이 필요하면 `settings.xml` 의 `<servers>` 는 `${env.NEXUS_USER}` / `${env.NEXUS_PASSWORD}` 로 두고 값은 Secret 에 넣는다.
 미러는 꼭 둔다: Maven 3.8 이상은 http:// 저장소를 기본 차단 미러(`maven-default-http-blocker`)로 막는데, Job 파드는 처음에 `/data/.m2` 캐시가
 없어서 미러 없이 http Nexus 만 믿으면 사내 아티팩트마다 `Blocked mirror for repositories` 로 실패한다. `mirrorOf *` 미러가

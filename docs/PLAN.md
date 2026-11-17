@@ -748,3 +748,20 @@ version: "일단 본인들이 선택하도록 만들자. 취약점 해결이니�
 | Tests | offline suite 5,552 passed, 62 deselected (82 added: module-level proposals incl. approve-one-reject-other, existing entries, variants, a DTD pom, hash and plan pins; the drop-and-rebuild path; the report sections and Korean rules; the page; the settings seed and the manifest invariants) | — | done |
 | Known gaps | a dropped entry's residual merges into an existing `manual_review` residual of the same library and version, whose earlier detail then stands; an existing root entry for a classifier changed by version text is verified at g:a level | `graph._merge_residuals`, `apply.verify_resolution` | open |
 | Not seen yet | module-level proposals and the new approval screen on a real company run; the seeded settings file on the company cluster (NFS) | — | open |
+
+## Status — 2026-11-17, settings.xml is the ConfigMap mounted at `/data/.m2/settings.xml`; the copy is gone
+
+The user, on the seed copy of v2.1z-an: "40번 SBMIG_SETTINGS_SEED는 필요없는내용 아니야?" … "어차피 보내서 웹 파드 재배포
+하면 복사 필요 없는거 아냐? 만들어지는거 아니야? 저 복사로직이 필요한 이유가 뭐야?" After the explanation (a ConfigMap
+file attached inside the NFS volume needs its attachment point to exist there; the runtime would create it as root,
+which a root-squashing export refuses): "내가 쉘로 붙어서 .m2파일을 만들어 두면 될까!?" → "지금 만들어 두었어!"
+
+| Item | Deliverable | Where | Status |
+|---|---|---|---|
+| Delivery | settings.xml reaches every pod that runs Maven only through the ConfigMap mount: 40 and 81 mount `sbmig-config`'s `settings.xml` at `/data/.m2/settings.xml` (inside the `/data` PVC mount), 80 inside its emptyDir; `SBMIG_BUILD__SETTINGS_FILE` unchanged | `deploy/k8s/40`, `81`, `80`, `20` | done |
+| Copy removed | `seed_settings_file`, `SBMIG_SETTINGS_SEED`, their constants, tests and every sentence about seeding | `sbmig/web/runs.py`, `contract.py`, `localjob.py`, docs | done |
+| Mount point on a fresh volume | 40 has an initContainer (same image and user, mounts only `data`) that runs `mkdir -p /data/.m2 && touch /data/.m2/settings.xml`, so the attachment point is created by the pod's own user and nothing has to be created on NFS as root; optional where it was created by hand (the company cluster) | `deploy/k8s/40-deployment.yaml` | done |
+| An empty settings file | a zero-byte file at `build.settings_file` (the mount is missing) aborts at intake like a missing one (`settings-not-found`), with its own reason in English and Korean; the web pod's startup WARNING covers it | `sbmig/loop/orchestrator.py`, `sbmig/report/i18n.py`, `sbmig/web/runs.py` | done |
+| Docs | why the mount point must exist, what a failure looks like (`describe pod` Events) and the fallback to `/etc/sbmig/settings.xml`; the operator's line list | `deploy/README.md`, `deploy/ENV.md`, INTERFACES "v2.1z-al", RUNBOOK, agent-doc 02 / 09, CLAUDE.md | done |
+| Tests | offline suite 5,546 passed, 62 deselected (the manifest invariants for the nested mount and the initContainer, the empty-file preflight case in both flows, its Korean reason, the startup warning; the seed tests removed) | — | done |
+| Not seen yet | the nested mount and the initContainer on a cluster — not run here (no local cluster was up) nor on the company's NFS; the fallback is one path change | — | open |

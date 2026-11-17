@@ -3174,7 +3174,7 @@ is the image's file — one copy, no hand-kept twin in a ConfigMap.
   exist under `/app/config/`, else the build stops (`ERROR: config/<name> is missing from the build context (REQUIRE_CONFIG)…`). The
   company build passes `--build-arg REQUIRE_CONFIG=artifacts.yml` (the file is git-ignored — a fresh checkout would silently build an image
   without the company config, and `RunManager.default_configs()` only warns about a missing `SBMIG_WEB_CONFIGS` name). Empty = no check.
-- **ConfigMap `sbmig-config`** carries `settings.xml` only (since v2.1z-al the source of `/data/.m2/settings.xml`: the web pod copies it there at start, 80 mounts it;
+- **ConfigMap `sbmig-config`** carries `settings.xml` only (since v2.1z-al mounted at `/data/.m2/settings.xml` in 40 / 81 / 80;
   the `artifacts.yml` key and its mounts are commented alternatives in 20 / 40 /
   80 / 81). The baked file must hold no secret (an image is readable by whoever pulls it).
 - **Machine paths** of a PC-tested yml are overridden by literal `env` lines in each manifest (env beats every yml):
@@ -3942,7 +3942,9 @@ dotted keys into nested journal values (`evidence.0.source`), `regex:` values, `
 The user (2026-11-17): "/data/.m2에 뒀으면 좋겠어 일관되게" — the Maven local repository cannot live in the pod, and everything
 else that persists is already under `/data`; right after: "Settings도 저기로 옮겨가야하지않아!?" — `/data/.m2` is to the pods what
 `~/.m2` is on a PC: `settings.xml`, `repository/`, `repository-slot2/`, `repository-slot3/`; and on reading the operator steps:
-"configmap 에 설정되어있으면 파드 배포할때 자동으로 나가는게 아니야?" — the ConfigMap is the source and deploying it is the whole step.
+"configmap 에 설정되어있으면 파드 배포할때 자동으로 나가는게 아니야?" and "어차피 … 웹 파드 재배포 하면 복사 필요 없는거 아냐? 만들어지는거
+아니야?" — the ConfigMap mount is the only delivery; the user created the mount point in the running pod ("내가 쉘로 붙어서 .m2파일을
+만들어 두면 될까!?" → "지금 만들어 두었어!"), and 40's initContainer does the same on a fresh volume.
 
 - **Manifests.** `SBMIG_BUILD__LOCAL_REPO: "/data/.m2/repository"` in 40, 80 and 81 (was `"null"` = Maven's `~/.m2/repository`).
   40 and 81 have no `m2` volume any more: the repository is a folder of PVC `sbmig-data`, and PVC `sbmig-m2` is gone from
@@ -3952,32 +3954,32 @@ else that persists is already under `/data`; right after: "Settings도 저기로
   its own volume mounted at `/data/.m2` in 40 and 81 alike. 80 has no data PVC: its `m2` volume (emptyDir, PVC optional) is
   mounted at `/data/.m2`, so the path is the same in every pod.
 - **settings.xml.** `SBMIG_BUILD__SETTINGS_FILE: "/data/.m2/settings.xml"` in 40, 80 and 81 (an env pin: the same literal in 40 and
-  81). In 40 / 81 it is a real file on the data volume (no ConfigMap mount nested in the NFS volume, for the same root-squash
-  reason). ConfigMap `sbmig-config` is its source (passwords as `${env.NEXUS_USER}` / `${env.NEXUS_PASSWORD}`, values in the
-  Secret): 80 mounts it with `subPath: settings.xml` at `/data/.m2/settings.xml` (inside its emptyDir, on the node's disk); 81
-  mounts nothing (its `config` volume is a commented line that goes with the commented `artifacts.yml` mount).
-- **Seed (`SBMIG_SETTINGS_SEED`).** The web pod (40) mounts `sbmig-config` read-only at `/etc/sbmig/settings.xml` and has the
-  literal `SBMIG_SETTINGS_SEED=/etc/sbmig/settings.xml`. At web start (`RunManager.__init__`, every mode but `local-job`, before
-  the missing-file warning) `runs.seed_settings_file(seed, build.settings_file)` copies the seed when the two paths differ: the
-  target folder is created, the bytes go to a temp file in that folder and `os.replace` puts it in place (a Maven call in a
-  running build pod sees the old or the new file); no fsync (a crash before the replace keeps the old file, the next start
-  writes again). Same content → nothing written (DEBUG `Maven settings <target> unchanged (same as <seed>)`); written → INFO
-  `Maven settings <target> written from <seed>`; a seed that cannot be read or a copy that fails → one WARNING naming both paths,
-  never fatal. `SBMIG_SETTINGS_SEED` (`contract.SETTINGS_SEED_ENV`) is a web-pod variable like `SBMIG_JOB_TEMPLATE`: no config key,
-  no env pin, not in 81 / 80, removed from a `local-job` child's environment. Operator rule, as for `sbmig-env`: after changing
-  `sbmig-config`, apply it and restart the web pod; the next Job reads the new file.
+  81). ConfigMap `sbmig-config` (passwords as `${env.NEXUS_USER}` / `${env.NEXUS_PASSWORD}`, values in the Secret) is mounted
+  read-only with `subPath: settings.xml` at that path in 40, 81 and 80 — in 40 / 81 after (inside) the `data` mount at `/data`,
+  in 80 inside its emptyDir. Nothing copies the file.
+- **Mount point.** A mount nested in the NFS volume needs its mount point to exist; the runtime would create it as root, which a
+  root-squashing export refuses (the pod does not start). 40 has an initContainer `m2-mountpoint` (same image, the pod's
+  securityContext, only the `data` volume at `/data`, small fixed resources) running `mkdir -p /data/.m2 && touch
+  /data/.m2/settings.xml` — it never truncates an existing file. 81 has none: a Job exists only after the web pod has started.
+  Fallback when the mount still fails: mount the ConfigMap at `/etc/sbmig/settings.xml` (outside NFS) and set
+  `SBMIG_BUILD__SETTINGS_FILE` there in 40 and 81 alike. Operator rule, as for `sbmig-env`: after changing `sbmig-config`, apply
+  it and restart the web pod; running Job pods keep the content they started with (`subPath`), new ones read the new one.
 - **Preflight `settings-not-found`.** `Orchestrator._preflight` first checks `build.settings_file`: set (not empty / `null`) and
   not a readable file at the absolute path Maven would get as `-s` → flag `settings-not-found` (+ `infra:maven`), journal
   `preflight {settings_file: "missing (<path>)"}`, no Maven call; `_step_intake` aborts with
   `Maven settings file not found: <path> (build.settings_file) — put the settings.xml there and rerun` (exit 3). Both flows
   (the remediation flow's intake runs the preflight before `chain.run_only`, so its own readiness line `server settings.xml not
   found (<path>)` is never reached for this). Korean (`sbmig.report.i18n`): `Maven settings.xml을 찾지 못했습니다(<path>). 이 경로에
-  settings.xml을 넣은 뒤 다시 실행해 주세요.` Unset = Maven's default settings as on a PC, unchanged. The web pod logs one WARNING at
-  startup when the file is still missing after the seed copy (`RunManager._warn_missing_settings_file`, not in `local-job`):
-  `Maven settings file <path> is missing — copy settings.xml there before the first run`; never fatal.
+  settings.xml을 넣은 뒤 다시 실행해 주세요.` An EMPTY file (the mount point without the ConfigMap over it) is the same flag with
+  `Maven settings file is empty: <path> (build.settings_file) — the ConfigMap is not mounted there; check the volumeMounts of the
+  pod and rerun` (journal `settings_file: "empty (<path>)"`; Korean `Maven settings.xml이 비어 있습니다(<path>). ConfigMap이 이 경로에
+  마운트되지 않았습니다. 파드의 volumeMounts를 확인한 뒤 다시 실행해 주세요.`). Unset = Maven's default settings as on a PC, unchanged.
+  The web pod logs one WARNING at startup (`RunManager._warn_missing_settings_file`, not in `local-job`): `Maven settings file <path>
+  is missing — mount ConfigMap sbmig-config there before the first run` / `… is empty — the ConfigMap is not mounted there; check
+  the volumeMounts of the pod`; never fatal.
 - **Pins.** `env_pins` hash the VALUE of `SBMIG_BUILD__SETTINGS_FILE` (the path), `request.json` digests the config files only;
   the content of settings.xml is pinned nowhere (it was not with the ConfigMap either). Both pods read the same file on the
-  shared volume, so nothing changes there. The seed variable is set in Main only and is not pinned.
+  shared volume (the same ConfigMap mounted in both), so nothing changes there.
 - **Slots** follow the v2.1z-ae rule: `/data/.m2/repository-slot2`, `-slot3`. The env pin of `SBMIG_BUILD__LOCAL_REPO` is now a real
   path, the same literal in 40 and 81; the slot override still happens in the child's environment after the pin check.
 - **Image.** `VOLUME ["/data"]` only; `/data` is created and owned by uid 1000 in the image, so `/data/.m2` can be created without
@@ -3986,7 +3988,8 @@ else that persists is already under `/data`; right after: "Settings도 저기로
   that folder)" instead of the old PVC; `POD_LOCAL_REPO_NAME` (`sbmig-m2-slot<k>`) is only a temp-folder name and stays.
 - **local-job.** Both template values are container paths; `LocalJobClient._env_of` passes only `contract.RUN_ENV`, so a
   developer-PC Worker gets neither (`tests/web/test_local_job_mode.py`).
-- **Operator steps** for an existing deployment (the manifest lines, `sbmig-job-template`, apply 40 + restart; no hand copy):
+- **Operator steps** for an existing deployment (the manifest lines incl. 40's initContainer, `sbmig-job-template`, apply 40 +
+  restart):
   `deploy/README.md` §3 "Maven 설정과 로컬 저장소 — `/data/.m2`". Tests: `tests/deploy/test_manifests.py`,
   `tests/loop/test_preflight_settings_file.py`, `tests/web/test_settings_file_warning.py`, `tests/report/test_abort_reasons_ko.py`.
 

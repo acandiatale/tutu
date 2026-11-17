@@ -327,7 +327,7 @@ Then the final build again, the report (Handover first, "Structure review", fix 
   deletes only Jobs carrying its own `sbmig-owner` label and waits for them to vanish, and never reports an unverified result as success. **2026-11-10 (user: "일단 굽자!")**:
   the company `config/artifacts.yml` is **baked into the image** (the Dockerfile copies `config/`; the company build adds
   `--build-arg REQUIRE_CONFIG=artifacts.yml`, which stops the build when the git-ignored file is missing), ConfigMap `sbmig-config` carries
-  `settings.xml` only (since v2.1z-al the source of `/data/.m2/settings.xml`: the web pod copies it there at start, 80 mounts it there), and the machine paths of a PC-tested yml are overridden by literal `SBMIG_<SECTION>__<KEY>` env lines in each manifest
+  `settings.xml` only (since v2.1z-al mounted at `/data/.m2/settings.xml` in 40 / 81 / 80), and the machine paths of a PC-tested yml are overridden by literal `SBMIG_<SECTION>__<KEY>` env lines in each manifest
   (`SBMIG_BUILD__SETTINGS_FILE` / `JAVA_HOME` / `MVN` / `LOCAL_REPO`, `SBMIG_SCRIPT__PYTHON` in 40 / 80 / 81; `SBMIG_KB__DIR` and
   `SBMIG_LLM__RECORD_DIR=${LLM_RECORD_DIR:-}` in 40 only — never in `sbmig-env`, which 80 reads by `envFrom`). The 81 template has one
   `configMapKeyRef` per `sbmig-env` key (no `envFrom` there): a new key in the ConfigMap needs its line in 81, `tests/deploy/test_manifests.py`
@@ -369,13 +369,15 @@ Then the final build again, the report (Handover first, "Structure review", fix 
   **v2.1z-al (2026-11-17, the user: "/data/.m2에 뒀으면 좋겠어 일관되게")**: the Maven local repository is `/data/.m2/repository` on PVC
   `sbmig-data` (`SBMIG_BUILD__LOCAL_REPO` literal in 40 / 80 / 81, slots `repository-slot<k>` beside it); no `sbmig-m2` PVC, no `m2`
   volume in 40 / 81 (a mount nested in the NFS volume can fail under root squash), 80 mounts its own `m2` volume at `/data/.m2`.
-  Right after ("Settings도 저기로 옮겨가야하지않아!?"): `SBMIG_BUILD__SETTINGS_FILE=/data/.m2/settings.xml` in 40 / 80 / 81 — a real
-  file on the data volume for 40 / 81 (no ConfigMap mount nested in NFS), ConfigMap `sbmig-config` mounted at that path in 80;
-  then ("configmap 에 설정되어있으면 파드 배포할때 자동으로 나가는게 아니야?"): `sbmig-config` is the source — the web pod mounts it at
-  `/etc/sbmig/settings.xml`, `SBMIG_SETTINGS_SEED` (web-pod variable, no config key / pin, never in a Job or `local-job` child) and
-  `runs.seed_settings_file` copies it at web start (temp file + `os.replace`, unchanged = no write, failure = WARNING, never fatal);
-  after editing `sbmig-config` restart the web pod. A set but missing `build.settings_file` aborts at intake before any Maven call
-  (flag `settings-not-found`, exit 3, both flows); the web pod warns once at startup if the file is still missing. Operator steps: `deploy/README.md` §3 "Maven 설정과 로컬 저장소".
+  Right after ("Settings도 저기로 옮겨가야하지않아!?"): `SBMIG_BUILD__SETTINGS_FILE=/data/.m2/settings.xml` in 40 / 80 / 81; then
+  ("configmap 에 설정되어있으면 파드 배포할때 자동으로 나가는게 아니야?", "어차피 … 웹 파드 재배포 하면 복사 필요 없는거 아냐? 만들어지는거
+  아니야?"): ConfigMap `sbmig-config` is the ONLY delivery, mounted with `subPath` at `/data/.m2/settings.xml` in 40, 81 and 80 (no copy
+  code). Inside the NFS volume that mount needs its mount point to exist (the runtime would create it as root; root squash refuses):
+  the user created it by hand ("내가 쉘로 붙어서 .m2파일을 만들어 두면 될까!?" → "지금 만들어 두었어!"), and 40's initContainer
+  `m2-mountpoint` runs `mkdir -p /data/.m2 && touch /data/.m2/settings.xml` as the pod's user for a fresh volume; 81 has none (the web pod
+  always exists before a Job). After editing `sbmig-config` restart the web pod; running Jobs keep their content. A set but missing
+  or EMPTY `build.settings_file` aborts at intake before any Maven call (flag `settings-not-found`, exit 3, both flows; empty = the
+  mount is missing); the web pod warns once at startup. Operator steps: `deploy/README.md` §3 "Maven 설정과 로컬 저장소".
   **v2.1z-af (same day, the user: "코드 검토 동시성 이슈 될만한거 … 찾아봐줘", five read-only reviews, every finding reproduced first)**:
   a Job run's terminal `control/state.json` is written while its slot is still held; recovery keeps the recorded slot number even when
   two runs recorded the same one (a new run only gets a number nobody holds); any failing API poll is "API unavailable"; a `Failed`

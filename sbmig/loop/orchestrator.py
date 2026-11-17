@@ -1700,14 +1700,19 @@ class Orchestrator:
         ``build.require_java_major``(21)인지, 사내 parent와 역할 parent 설정이 채워졌는지 확인한다.
         결과는 저널 ``preflight`` 한 줄과 후속 조치로 남긴다."""
         checks: dict[str, Any] = {}
-        # build.settings_file이 없으면 모든 Maven 호출이 실패하므로 Maven을 호출하기 전에 멈춘다
-        missing = self._missing_settings_file()
-        if missing is not None:
-            self._settings_problem = (f"Maven settings file not found: {missing} (build.settings_file) — put the "
-                                      "settings.xml there and rerun")
+        # build.settings_file이 없거나 비어 있으면 모든 Maven 호출이 실패하므로 Maven을 호출하기 전에 멈춘다
+        problem = self._settings_file_problem()
+        if problem is not None:
+            state, path = problem
+            if state == "empty":
+                self._settings_problem = (f"Maven settings file is empty: {path} (build.settings_file) — the ConfigMap is "
+                                          "not mounted there; check the volumeMounts of the pod and rerun")
+            else:
+                self._settings_problem = (f"Maven settings file not found: {path} (build.settings_file) — put the "
+                                          "settings.xml there and rerun")
             report.flags.append("settings-not-found")
             log.error("preflight: %s", self._settings_problem)
-            self.ws.journal({"event": "preflight", "settings_file": f"missing ({missing})"})
+            self.ws.journal({"event": "preflight", "settings_file": f"{state} ({path})"})
             return
         if self._build_runner is None:
             try:
@@ -1784,22 +1789,23 @@ class Orchestrator:
     _jdk_problem = ""
     _settings_problem = ""
 
-    def _missing_settings_file(self) -> str | None:
-        """``build.settings_file``이 설정되어 있는데 읽을 수 있는 파일이 아니면 그 경로를 반환한다.
+    def _settings_file_problem(self) -> tuple[str, str] | None:
+        """``build.settings_file``이 설정되어 있는데 읽을 수 없거나 비어 있으면 (``missing`` | ``empty``, 경로)를 반환한다.
 
-        The absolute path Maven would get as `-s` when `build.settings_file` is set and is not a readable file; None
-        when it is unset (Maven's default settings, as on a PC) or the file is there (v2.1z-al: in the cluster the file
-        is placed on the data volume by hand)."""
+        (`missing` | `empty`, the absolute path Maven would get as `-s`) when `build.settings_file` is set and is not a
+        readable file, or is an empty one (v2.1z-al: in the cluster the ConfigMap is mounted over a zero-byte mount-point
+        file; without the mount Maven would read an empty settings file); None when it is unset (Maven's default settings,
+        as on a PC) or the file has content."""
         value = self.cfg.build.settings_file
         if value is None or not str(value).strip() or str(value).strip().lower() == "null":
             return None
         path = Path(str(value).strip()).expanduser().absolute()
         try:
             if path.is_file() and os.access(path, os.R_OK):
-                return None
+                return ("empty", str(path)) if path.stat().st_size == 0 else None
         except OSError:
             pass
-        return str(path)
+        return ("missing", str(path))
 
     def _java_major_wanted(self) -> int:
         return int(getattr(self.cfg.build, "require_java_major", 0) or 0) or 21

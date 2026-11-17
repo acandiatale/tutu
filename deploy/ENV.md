@@ -47,7 +47,6 @@
 | `SBMIG_WEB_MODE` | `k8s-job` (매니페스트 값) / `in-process` (변수가 없을 때) / `local-job` | `k8s-job` = 업로드마다 Job 하나(공유 PVC). 켜진 채로 나가므로 권한(회사: kubeconfig Secret, 없는 클러스터: 45)과 Job 틀 ConfigMap 이 웹 파드보다 먼저 있어야 한다(README §3 "켜는 법"); 줄을 주석 처리하면 웹 파드가 직접 돌린다. 개발 PC 에서는 `k8s-job` 이 자동으로 `local-job`(파드 자리에 로컬 서브프로세스)으로 내려간다 |
 | `SBMIG_K8S_NAMESPACE` | `agent` (매니페스트 값) | Job 을 만드는 namespace. 줄이 없으면 kubeconfig 방식은 그 context 의 namespace, 그것도 없으면 `default`(PVC `sbmig-data` 를 못 찾는다); 서비스 계정 방식은 파드의 namespace |
 | `SBMIG_JOB_TEMPLATE` | `/templates/81-web-job.template.yaml` (Deployment 의 env) | 채운 Job 틀을 ConfigMap `sbmig-job-template` 으로 `/templates` 에 마운트한다(README §3). 이미지 안의 `deploy/k8s/81-web-job.template.yaml` 은 자리표시자 그대로라 쓰지 않는다 |
-| `SBMIG_SETTINGS_SEED` | `/etc/sbmig/settings.xml` (Deployment 의 env) | 웹 파드가 시작할 때 이 파일(ConfigMap `sbmig-config` 의 settings.xml, 읽기 전용 마운트)을 `build.settings_file`(`/data/.m2/settings.xml`) 자리로 복사한다. 내용이 같으면 쓰지 않는다. 설정 키가 아니라 환경 대조 대상이 아니고 Job 파드에는 없다 |
 | `SBMIG_WORKER_LLM_RECORDS` | (없음) / `"1"` (Job 틀의 env) | Worker 가 LLM 원문 기록을 허용할지. 기본은 끈다(원본 프롬프트 = 소스 코드가 공유 볼륨에 더 남지 않게). 진단 때만 틀의 두 줄을 같이 푼다: 이 스위치 + `SBMIG_LLM__RECORD_DIR: "/data/llm-records"`. 스위치 없이 폴더만 주면 Worker 가 그 변수를 넘기지 않는다 |
 | `KUBECONFIG` | `/etc/kube/config` (Deployment 의 env, 매니페스트 값) | 회사 방식: 인프라팀이 준 kubeconfig Secret(`agent-kubeconfig`, 키 `config`)을 `/etc/kube` 에 마운트한다. 파일이 있으면 서비스 계정 토큰 대신 이것으로 쿠버네티스 API 를 부른다(token / 클라이언트 인증서 사용자; `exec` 는 거절). 개발 PC 에서 `k8s-job` 이 `local-job` 으로 내려가지 않게도 한다 |
 | `SBMIG_JOB_MAX_PARALLEL` | `3` (매니페스트 값) / `1` (변수가 없을 때) | 동시에 도는 빌드 파드(Job) 수. 넘는 업로드는 올린 순서대로 `queued` 로 기다리고 화면에 대기 순번이 보인다. 자리(1 · 2 · 3)마다 Maven 로컬 저장소를 따로 쓴다(`/data/.m2` 안의 `repository`, `repository-slot2`, `repository-slot3`). 웹 파드가 시작할 때 읽는다(바꾸면 재시작). `in-process` 모드는 언제나 1. 1 이상의 정수가 아니면 경고를 찍고 1. 81 틀에는 줄이 필요 없다(README §3 "동시에 여러 건") |
@@ -131,7 +130,7 @@
 | 변수 | 값 | 들어 있는 매니페스트 |
 |---|---|---|
 | `SBMIG_KB__DIR` | `/data/kb-v2` | 40 (81 은 `SBMIG_KB_DIR`, 80 은 `run-job.sh`) |
-| `SBMIG_BUILD__SETTINGS_FILE` | `/data/.m2/settings.xml` (40 · 81 은 데이터 볼륨의 파일, 80 은 ConfigMap 마운트) | 40 · 81 · 80 |
+| `SBMIG_BUILD__SETTINGS_FILE` | `/data/.m2/settings.xml` (ConfigMap `sbmig-config` 의 마운트) | 40 · 81 · 80 |
 | `SBMIG_BUILD__JAVA_HOME` | `/opt/java21` | 40 · 81 · 80 |
 | `SBMIG_BUILD__MVN` | `mvn` | 40 · 81 · 80 |
 | `SBMIG_BUILD__LOCAL_REPO` | `/data/.m2/repository` (데이터 볼륨의 `.m2` 폴더, 80 은 `/data/.m2` 의 `m2` 볼륨) | 40 · 81 · 80 |
@@ -150,7 +149,7 @@
 | 항목 | 어디에 | 비고 |
 |---|---|---|
 | `artifacts.yml` | 이미지 안 `/app/config/artifacts.yml` | 회사 아티팩트·레이아웃·Nexus 주소. 이관팀이 빌드 때 굽는다(`--build-arg REQUIRE_CONFIG=artifacts.yml`). 바꾸려면 이미지를 다시 만든다. 틀은 `config/artifacts.example.yml` |
-| `settings.xml` | ConfigMap `sbmig-config`(원본) → 웹 파드가 시작할 때 데이터 볼륨 `/data/.m2/settings.xml` 로 복사(80 은 그 ConfigMap 을 같은 경로에 마운트) | Maven 미러(`mirrorOf *` 또는 `external:*`) → Nexus 그룹. 로그인은 `${env.NEXUS_USER}`. 없으면 이관이 접수 단계에서 멈춘다(`settings-not-found`, README §3 "Maven 설정과 로컬 저장소") |
+| `settings.xml` | ConfigMap `sbmig-config` → 40 · 81 · 80 의 `/data/.m2/settings.xml`(`subPath` 마운트. 40 · 81 은 NFS 볼륨 안이라 40 의 initContainer 가 마운트 자리를 만든다) | Maven 미러(`mirrorOf *` 또는 `external:*`) → Nexus 그룹. 로그인은 `${env.NEXUS_USER}`. 없거나 비어 있으면 이관이 접수 단계에서 멈춘다(`settings-not-found`, README §3 "Maven 설정과 로컬 저장소") |
 | `<kb.dir>/jar_names.yml` | KB 볼륨 `/data/kb-v2` | jar 파일 이름 → Nexus 좌표(이관팀이 채움). 이미지와 무관 |
 | `<kb.dir>/libraries.yml` | KB 볼륨 `/data/kb-v2` | 사람이 승인한 라이브러리 표(javax → jakarta 좌표 등) |
 | `knowledge/` (노트·자문·레시피 카탈로그) | 이미지 안 `/app/knowledge` | 바꾸려면 이미지를 다시 만든다 |

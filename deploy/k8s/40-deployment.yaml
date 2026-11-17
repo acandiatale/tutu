@@ -3,7 +3,7 @@
 # Job 디스패치 모드(README §3, ConfigMap 의 SBMIG_WEB_MODE=k8s-job)에서는 이 파드가 Agent 다: 업로드마다 Job 을 만들고 공유 PVC 로 결과를 받는다 —
 # 쿠버네티스 API 권한(회사: 인프라팀의 kubeconfig Secret — 아래 spec 의 설명)과 ReadWriteMany PVC(10-storage.yaml, nfs-csi)가 그 전제다.
 # 회사 값(2026-11-09): namespace agent. 이미지는 인프라팀이 자기 레지스트리에 push 한 전체 이름을 받아 image: 에 넣는다(README §1).
-# 회사 artifacts.yml 은 이미지에 굽는다(2026-11-10). Maven settings.xml 은 ConfigMap sbmig-config 에서 고치고, 이 파드가 시작할 때 /data/.m2/settings.xml 로 복사한다.
+# 회사 artifacts.yml 은 이미지에 굽는다(2026-11-10). Maven settings.xml 은 ConfigMap sbmig-config 를 /data/.m2/settings.xml 에 마운트한다.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -35,6 +35,14 @@ spec:
         runAsGroup: 1000
         fsGroup: 1000
       terminationGracePeriodSeconds: 60      # --graceful-timeout 30 + Maven 자식 프로세스(sbmig 이 트리를 정리한다)
+      # settings.xml 을 NFS 볼륨 안(/data/.m2/settings.xml)에 마운트하려면 그 자리에 파일이 먼저 있어야 한다. 파드의 사용자(uid 1000)로 만든다(있으면 그대로 둔다)
+      initContainers:
+        - name: m2-mountpoint
+          image: CHANGE_ME_REGISTRY/sbmig:CHANGE_ME_TAG   # 아래 agent 와 같은 이미지
+          command: ["sh", "-c", "mkdir -p /data/.m2 && touch /data/.m2/settings.xml"]
+          resources: {requests: {cpu: 100m, memory: 64Mi}, limits: {cpu: 100m, memory: 64Mi}}
+          volumeMounts:
+            - {name: data, mountPath: /data}
       containers:
         - name: agent
           image: CHANGE_ME_REGISTRY/sbmig:CHANGE_ME_TAG   # 인프라팀이 push 한 전체 이름 그대로(README §1); 81-web-job.template 과 같은 값. 태그는 빌드마다 새로(latest 금지)
@@ -48,12 +56,10 @@ spec:
             # Job 틀은 ConfigMap sbmig-job-template 로 들어온다(아래 volumes; README §3). 이미지 안의 사본은 CHANGE_ME 그대로라 쓰지 않는다
             - {name: SBMIG_JOB_TEMPLATE, value: /templates/81-web-job.template.yaml}
             - {name: KUBECONFIG, value: /etc/kube/config}   # 회사 방식(위 설명): 아래 kubeconfig 볼륨의 파일
-            # ConfigMap sbmig-config 의 settings.xml(아래 마운트). 시작할 때 SBMIG_BUILD__SETTINGS_FILE 자리로 복사한다(같으면 그대로 둔다)
-            - {name: SBMIG_SETTINGS_SEED, value: /etc/sbmig/settings.xml}
             # ── 회사 artifacts.yml 은 이미지에 구워져 있다(/app/config/artifacts.yml — PC 에서 시험한 파일 그대로, README §1). 그 안의 PC 경로를 컨테이너
             #    값으로 덮어쓴다: 환경 변수 SBMIG_<섹션>__<키> 가 yml 보다 우선하고, yml 에 그 키가 없어도 해가 없다. 81-web-job.template.yaml 에도 같은 줄이 있다
             - {name: SBMIG_KB__DIR, value: /data/kb-v2}                            # kb.dir — 볼륨의 파일 KB(이미지 안 kb-v2/ 는 비어 있다)
-            - {name: SBMIG_BUILD__SETTINGS_FILE, value: "/data/.m2/settings.xml"}    # 데이터 볼륨의 파일. 위 SBMIG_SETTINGS_SEED 가 채운다(README §3)
+            - {name: SBMIG_BUILD__SETTINGS_FILE, value: "/data/.m2/settings.xml"}    # 아래 config 마운트(ConfigMap sbmig-config, README §3)
             - {name: SBMIG_BUILD__JAVA_HOME, value: /opt/java21}                   # 이미지의 JDK 21
             - {name: SBMIG_BUILD__MVN, value: mvn}                                 # 이미지의 Maven(PATH)
             - {name: SBMIG_BUILD__LOCAL_REPO, value: "/data/.m2/repository"}         # 데이터 볼륨의 .m2 폴더
@@ -69,7 +75,7 @@ spec:
           volumeMounts:
             - {name: data, mountPath: /data}
             # - {name: config, mountPath: /app/config/artifacts.yml, subPath: artifacts.yml, readOnly: true}   # artifacts.yml 을 ConfigMap 으로 줄 때만(20-configmap.yaml 맨 아래) — 이미지에 구운 파일을 가린다
-            - {name: config, mountPath: /etc/sbmig/settings.xml, subPath: settings.xml, readOnly: true}   # SBMIG_SETTINGS_SEED
+            - {name: config, mountPath: /data/.m2/settings.xml, subPath: settings.xml, readOnly: true}   # 위 data 마운트 안. 자리는 initContainer 가 만든다
             - {name: job-template, mountPath: /templates, readOnly: true}
             - {name: kubeconfig, mountPath: /etc/kube, readOnly: true}   # 회사 방식: Secret 의 키 config → /etc/kube/config
           resources:
