@@ -406,7 +406,14 @@ def advisory_item(f: AdvisoryFinding, changed: Iterable[str] = ()) -> str:
                 else "이번 전환에서는 자동으로 바꾸지 않았습니다.")
         if f.outcome != "still-present":
             kept = "전환 후에도 남아 있는지는 확인하지 못했습니다. " + kept
-        lead.append(kept + (" 아래 「할 일」을 확인해 주세요." if follow else ""))
+        rep_there = bool(_replacement_text(f))
+        if rep_there and follow:
+            kept += " 아래 「대체할 라이브러리」로 바꾸고 「할 일」을 확인해 주세요."
+        elif rep_there:
+            kept += " 아래 「대체할 라이브러리」로 바꿔 주세요."
+        elif follow:
+            kept += " 아래 「할 일」을 확인해 주세요."
+        lead.append(kept)
     rep = _replacement_text(f)
     subs = []
     if rep:

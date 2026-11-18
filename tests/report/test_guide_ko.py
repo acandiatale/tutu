@@ -400,7 +400,7 @@ def test_check_list_advisories_first_with_sub_bullets():
     s = sec(ko(guide_report()), "## 확인해 주세요")
     first = item_block(s, 1)
     assert first[0] == ("1. **Netflix Hystrix는 지원이 종료되었습니다.** 이번 전환에서는 자동으로 바꾸지 않고 기존 버전(2.2.10.RELEASE)을 그대로 두었습니다. "
-                        "아래 「할 일」을 확인해 주세요.")
+                        "아래 「대체할 라이브러리」로 바꾸고 「할 일」을 확인해 주세요.")
     assert first[1:] == [f"   - 대체할 라이브러리: `{R4J}`",
                          "   - 설명: Hystrix는 지원이 종료된 라이브러리이고 Spring Boot 4에서는 지원되지 않습니다.",
                          "   - 할 일: 서킷 브레이커는 이름별로 설정해 주세요.",
@@ -420,13 +420,18 @@ def test_advisory_lead_by_outcome():
     from sbmig.report.guide_ko import advisory_item
     title = "**Netflix Hystrix는 지원이 종료되었습니다.**"
     kept = "이번 전환에서는 자동으로 바꾸지 않고 기존 버전(2.2.10.RELEASE)을 그대로 두었습니다."
-    assert advisory_item(hystrix()).split("\n")[0] == f"{title} {kept} 아래 「할 일」을 확인해 주세요."
+    swap = "아래 「대체할 라이브러리」로 바꾸고 「할 일」을 확인해 주세요."
+    assert advisory_item(hystrix()).split("\n")[0] == f"{title} {kept} {swap}"
+    # no replacement named: only the to-do; no to-do either: nothing to point at
+    assert advisory_item(hystrix(replacement=None)).split("\n")[0] == f"{title} {kept} 아래 「할 일」을 확인해 주세요."
+    assert advisory_item(hystrix(followup="", followup_ko="")).split("\n")[0] == (
+        f"{title} {kept} 아래 「대체할 라이브러리」로 바꿔 주세요.")
     assert advisory_item(hystrix(outcome="replaced")).split("\n")[0] == (
         f"{title} 이번 전환에서 교체했습니다. 아래 「할 일」대로 동작을 확인해 주세요.")
     assert advisory_item(hystrix(outcome="unknown")).split("\n")[0] == (
-        f"{title} 전환 후에도 남아 있는지는 확인하지 못했습니다. {kept} 아래 「할 일」을 확인해 주세요.")
+        f"{title} 전환 후에도 남아 있는지는 확인하지 못했습니다. {kept} {swap}")
     assert advisory_item(hystrix(detected_version=None)).split("\n")[0] == (
-        f"{title} 이번 전환에서는 자동으로 바꾸지 않았습니다. 아래 「할 일」을 확인해 주세요.")
+        f"{title} 이번 전환에서는 자동으로 바꾸지 않았습니다. {swap}")
     replaced = advisory_item(hystrix(outcome="replaced", replacement_ko="사내 대체 모듈"))
     assert "\n- 교체한 라이브러리: 사내 대체 모듈\n" in replaced and "그대로 두었습니다" not in replaced
 

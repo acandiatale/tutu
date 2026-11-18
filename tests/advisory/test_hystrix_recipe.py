@@ -176,7 +176,9 @@ def test_the_advisory_texts_say_what_was_replaced(cfg) -> None:
     for needle in ("resilience4j.circuitbreaker.instances", "resilience4j.timelimiter", "Throwable", '"default"',
                    "Thread-pool isolation", "spring-boot-starter-aspectj", "Turbine"):
         assert needle in e.followup, needle
-    assert "바꿨습니다" in e.summary_ko and "자동 수정 단계" in e.summary_ko
+    # the Korean summary says what replaces what; whether THIS run did it is said by the report item's lead
+    assert "바꿔야 합니다" in e.summary_ko and "`@CircuitBreaker`" in e.summary_ko
+    assert not any(w in e.summary_ko for w in ("바꿨습니다", "지웠습니다", "옮겼습니다"))
     for needle in ("resilience4j.circuitbreaker.instances.<name>", "resilience4j.timelimiter.*", "`Throwable`",
                    "spring-boot-starter-aspectj", "스레드 풀 격리", "Turbine", "MIGRATION-TODO"):
         assert needle in e.followup_ko, needle

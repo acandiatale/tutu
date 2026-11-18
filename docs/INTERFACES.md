@@ -4426,7 +4426,8 @@ person writes.
 - **확인해 주세요.** ONE numbered list replaces today's three places (the library table, "From here on" and "Manual
   follow-ups"); no item twice. First the library advisories, one item each, built from `RunReport.advisories`: the
   advisory's title sentence in bold (`**Netflix Hystrix는 지원이 종료되었습니다.**`), then what the run did by outcome
-  (`still-present`: "이번 전환에서는 자동으로 바꾸지 않고 기존 버전(…)을 그대로 두었습니다. 아래 「할 일」을 확인해 주세요.";
+  (`still-present`: "이번 전환에서는 자동으로 바꾸지 않고 기존 버전(…)을 그대로 두었습니다. 아래 「대체할 라이브러리」로 바꾸고
+  「할 일」을 확인해 주세요." — the half about the replacement only when the advisory names one;
   `replaced`: "이번 전환에서 교체했습니다. 아래 「할 일」대로 동작을 확인해 주세요."), and under it sub-bullets — 대체할 /
   교체한 라이브러리, 설명 (`summary_ko`), 할 일 (`followup_ko`), 수정한 파일 (the files the LLM rewrote for it), 문서 —
   each left out when empty. On a failed build the pointers to 「해결하지 못한 오류」 and 「진행하지 않은 항목」 come before
@@ -4495,7 +4496,7 @@ Hystrix stayed in migrated projects: no recipe touched it, its version was carri
   with the `## fix-loop: hystrix` note. What the fix loop cannot port stays as open errors — the build is not green
   with dead Hystrix code any more.
 - **Advisory `hystrix`.** Outcome `replaced` when no Hystrix artifact is left. Its texts (English and `_ko`) say what
-  was replaced and what the owners review at runtime (instance names, timeouts, the `Throwable` parameter of fallback
+  replaces what — not who did it, since the report item's lead says whether this run replaced it — and what the owners review at runtime (instance names, timeouts, the `Throwable` parameter of fallback
   methods, `spring-boot-starter-aspectj`). `still-present` remains for a configuration that switched the set off.
 - **Reference projects.** `fixtures/projects/boot2-cloud-legacy`: `hystrix` ends `replaced`, the sources carry
   `@CircuitBreaker`, no Hystrix artifact is carried over. `fixtures/projects/boot2-hystrix-command`: the starter is

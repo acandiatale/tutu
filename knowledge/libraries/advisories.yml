@@ -76,7 +76,8 @@ advisories:
     title: Netflix Hystrix is discontinued (not in any current Spring Cloud train)
     summary: >-
       Hystrix is in maintenance-only mode since 2018, was removed from Spring Cloud 2020.0 and does not work on Boot
-      3+/4. The recipe com.company.migrate.HystrixToResilience4j replaces it with Resilience4j:
+      3+/4. Resilience4j replaces it (sbmig's recipe com.company.migrate.HystrixToResilience4j, set
+      hystrix_resilience4j, does the swap when the set is on):
       spring-cloud-starter-netflix-hystrix / spring-cloud-starter-hystrix become
       spring-cloud-starter-circuitbreaker-resilience4j (no version of its own: the Spring Cloud BOM manages it),
       @HystrixCommand becomes @CircuitBreaker (name from commandKey, else "default"; fallbackMethod kept; Hystrix-only
@@ -98,12 +99,12 @@ advisories:
     title_ko: "Netflix Hystrix는 지원이 종료되었습니다"
     summary_ko: >-
       Hystrix는 2018년부터 유지보수만 하다가 Spring Cloud 2020.0에서 삭제되었고, Spring Boot 3 이상에서는 동작하지 않습니다.
-      그래서 레시피로 Resilience4j로 바꿨습니다. Hystrix starter는
-      `org.springframework.cloud:spring-cloud-starter-circuitbreaker-resilience4j`로 바꿨고, 버전은 Spring Cloud BOM이
-      정합니다. `@HystrixCommand`는 `@CircuitBreaker`로 바꿨습니다(이름은 commandKey를 쓰고 없으면 `default`입니다.
+      Resilience4j로 바꿔야 합니다. Hystrix starter는
+      `org.springframework.cloud:spring-cloud-starter-circuitbreaker-resilience4j`로 바꾸고, 버전은 Spring Cloud BOM이
+      정합니다. `@HystrixCommand`는 `@CircuitBreaker`로 바꿉니다(이름은 commandKey를 쓰고 없으면 `default`입니다.
       fallbackMethod는 그대로 둡니다). Hystrix 전용 속성과 `@HystrixProperty`, `@EnableHystrix` / `@EnableCircuitBreaker` /
-      `@EnableHystrixDashboard`, `hystrix-javanica` / `hystrix-core` / 대시보드 starter는 지웠습니다. `HystrixCommand`를
-      상속한 클래스처럼 레시피가 바꾸지 못하는 코드는 자동 수정 단계에서 Resilience4j로 옮겼습니다.
+      `@EnableHystrixDashboard`, `hystrix-javanica` / `hystrix-core` / 대시보드 starter는 지웁니다. `HystrixCommand`를
+      상속한 클래스는 Resilience4j의 `CircuitBreaker`를 거쳐 실행하는 일반 클래스로 옮깁니다.
     followup_ko: >-
       실행 환경에서 서킷 브레이커 동작을 확인해 주세요. 서킷 브레이커는 이름별로 설정합니다(commandKey가 없었다면 인스턴스
       이름은 `default`입니다: `resilience4j.circuitbreaker.instances.<name>` 또는 `configs.default`).
