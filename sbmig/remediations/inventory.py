@@ -501,6 +501,55 @@ def _find_decl(pp: ProjectPoms, mod: PomFile, ga: str, *, management: bool) -> t
     return None
 
 
+def _active_by_default(profile: Any) -> bool:
+    act = _kid(profile, "activation")
+    return _text(_kid(act, "activeByDefault")).lower() == "true"
+
+
+def _decl_key(pp: ProjectPoms, mod: PomFile, dep: Any) -> tuple[str, str]:
+    return (pp.interp(mod, _text(_kid(dep, "type"))) or "jar", pp.interp(mod, _text(_kid(dep, "classifier"))))
+
+
+def _decl_problem(pp: ProjectPoms, mod: PomFile, ga: str, *, management: bool) -> str:
+    """``_find_decl``이 고르는 pom의 선언을 고쳐도 되는지 확인하고, 안 되면 이유 한 줄을 반환한다.
+    기본으로 켜지지 않는 프로필에만 있는 선언과, 한 ``<dependencies>`` 안에 같은 키로 두 번 있는 선언은 고치지 않는다.
+
+    The declaration `_find_decl` picks must be safe to edit: in the first pom of the chain that declares `ga`, a
+    declaration that sits only in profiles not active by default (Maven may not use it), or the same management key
+    (g:a:type:classifier) twice in one `<dependencies>` block (Maven uses one of them), is not edited. "" = fine."""
+    for p in pp.chain(mod):
+        if not p.ok:
+            continue
+        blocks: list[tuple[str, bool, list[Any]]] = []
+        bases = [("", True, p.root)] + [(_text(_kid(prof, "id")), _active_by_default(prof), prof)
+                                        for prof in _kids(_kid(p.root, "profiles"), "profile")]
+        for pid, active, base in bases:
+            holder = _kid(base, "dependencyManagement") if management else base
+            hits = []
+            for dep in _kids(_kid(holder, "dependencies"), "dependency"):
+                if management and _text(_kid(dep, "scope")) == "import":
+                    continue
+                if f"{pp.interp(mod, _text(_kid(dep, 'groupId')))}:{pp.interp(mod, _text(_kid(dep, 'artifactId')))}" == ga:
+                    hits.append(dep)
+            if hits:
+                blocks.append((pid, active, hits))
+        if not blocks:
+            continue
+        for _pid, active, hits in blocks:
+            if not active:
+                continue                     # 꺼진 프로필 안의 중복은 Maven이 쓰지 않으므로 보지 않는다
+            keys = [_decl_key(pp, mod, d) for d in hits]
+            dup = max(keys.count(k) for k in keys)
+            if dup > 1:
+                return f"{ga} is declared {dup} times in one <dependencies> block of {p.rel}; not changed automatically"
+        if not any(active for _pid, active, _h in blocks):
+            names = ", ".join(pid or "?" for pid, _a, _h in blocks)
+            return (f"{ga} is declared in {p.rel} only inside profile(s) {names}, which are not active by default; "
+                    "not changed automatically")
+        return ""
+    return ""
+
+
 def _manager_loc(pp: ProjectPoms, mod: PomFile, pf: PomFile, vel: Any, element: str) -> PomLocation | None:
     ref = pp.resolve_version(mod, _text(vel))
     if ref.kind == "literal":
@@ -576,11 +625,18 @@ def _classify(pp: ProjectPoms, mod: PomFile, dep: ResolvedDep,
         dpom, del_ = decl
         vel = _kid(del_, "version")
         if _text(vel):
+            # 꺼진 프로필에만 있거나 두 번 선언된 버전은 고쳐도 Maven이 쓰는 버전이 바뀐다는 보장이 없다
+            problem = _decl_problem(pp, mod, ga, management=False)
+            if problem:
+                return _Res(O_UNMAPPED, reason=problem)
             ref = pp.resolve_version(mod, _text(vel))      # Maven은 자식(모듈) 기준으로 속성 값을 정한다
             return _from_ref(pp, mod, ga, version, ref, dpom, vel, O_DIRECT_LITERAL, O_DIRECT_PROPERTY, "dependency",
                              managed_by)
     mg = _find_decl(pp, mod, ga, management=True)
     if mg is not None and _text(_kid(mg[1], "version")):
+        problem = _decl_problem(pp, mod, ga, management=True)
+        if problem:
+            return _Res(O_UNMAPPED, reason=problem)
         mpom, mel = mg
         vel = _kid(mel, "version")
         ref = pp.resolve_version(mod, _text(vel))

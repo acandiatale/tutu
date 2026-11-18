@@ -1,0 +1,515 @@
+{
+ "adf-jdev/replay/llm-001.json": {
+  "edits": "4f53cda18c2baa0c",
+  "issues": 0,
+  "ok": true,
+  "role": "structure_review",
+  "script": "12ae32cb1ec02d01"
+ },
+ "ant-webapp/replay/llm-001.json": {
+  "edits": "4f53cda18c2baa0c",
+  "issues": 1,
+  "ok": true,
+  "role": "structure_review",
+  "script": "12ae32cb1ec02d01"
+ },
+ "boot-asis-parent-unpublished/replay/llm-001.json": {
+  "edits": "4f53cda18c2baa0c",
+  "issues": 0,
+  "ok": true,
+  "role": "structure_review",
+  "script": "12ae32cb1ec02d01"
+ },
+ "boot-stray-pom-copy/replay/llm-001.json": {
+  "edits": "4f53cda18c2baa0c",
+  "issues": 0,
+  "ok": true,
+  "role": "structure_review",
+  "script": "12ae32cb1ec02d01"
+ },
+ "boot2-cloud-legacy/replay/llm-001.json": {
+  "edits": "4f53cda18c2baa0c",
+  "issues": 2,
+  "ok": true,
+  "role": "structure_review",
+  "script": "12ae32cb1ec02d01"
+ },
+ "boot2-fix-failures/replay/llm-001.json": {
+  "edits": "4f53cda18c2baa0c",
+  "issues": 0,
+  "ok": true,
+  "role": "structure_review",
+  "script": "12ae32cb1ec02d01"
+ },
+ "boot2-fix-failures/replay/llm-002.json": {
+  "code": "ef916809aca30f69",
+  "edits": "4f53cda18c2baa0c",
+  "role": "fix",
+  "usable": true
+ },
+ "boot2-fix-failures/replay/llm-003.json": {
+  "code": "73701a73be6fe7bf",
+  "edits": "4f53cda18c2baa0c",
+  "role": "fix",
+  "usable": true
+ },
+ "boot2-hystrix-command/replay/llm-001.json": {
+  "edits": "4f53cda18c2baa0c",
+  "issues": 0,
+  "ok": true,
+  "role": "structure_review",
+  "script": "12ae32cb1ec02d01"
+ },
+ "boot2-hystrix-command/replay/llm-002.json": {
+  "code": "f1a292b9ea5d7f7f",
+  "edits": "4f53cda18c2baa0c",
+  "role": "fix",
+  "usable": true
+ },
+ "boot2-hystrix-command/replay/llm-003.json": {
+  "code": "f1a292b9ea5d7f7f",
+  "edits": "4f53cda18c2baa0c",
+  "role": "fix",
+  "usable": true
+ },
+ "boot2-javax-lib-optional/replay/llm-001.json": {
+  "edits": "4f53cda18c2baa0c",
+  "issues": 0,
+  "ok": true,
+  "role": "structure_review",
+  "script": "12ae32cb1ec02d01"
+ },
+ "boot2-javax-lib/replay/llm-001.json": {
+  "edits": "4f53cda18c2baa0c",
+  "issues": 1,
+  "ok": true,
+  "role": "structure_review",
+  "script": "12ae32cb1ec02d01"
+ },
+ "boot2-javax-lib/replay/llm-002.json": {
+  "code": "12ae32cb1ec02d01",
+  "edits": "4f53cda18c2baa0c",
+  "role": "fix",
+  "usable": false
+ },
+ "boot2-method-rename/replay/llm-001.json": {
+  "edits": "4f53cda18c2baa0c",
+  "issues": 0,
+  "ok": true,
+  "role": "structure_review",
+  "script": "12ae32cb1ec02d01"
+ },
+ "boot2-method-rename/replay/llm-002.json": {
+  "code": "73701a73be6fe7bf",
+  "edits": "4f53cda18c2baa0c",
+  "role": "fix",
+  "usable": true
+ },
+ "boot2-qlrm-javax/replay/llm-001.json": {
+  "edits": "4f53cda18c2baa0c",
+  "issues": 1,
+  "ok": true,
+  "role": "structure_review",
+  "script": "12ae32cb1ec02d01"
+ },
+ "boot2-qlrm-javax/replay/llm-002.json": {
+  "code": "189588807b5763ba",
+  "edits": "4f53cda18c2baa0c",
+  "role": "fix",
+  "usable": true
+ },
+ "boot2-rewrite-excluded/replay/llm-001.json": {
+  "edits": "4f53cda18c2baa0c",
+  "issues": 0,
+  "ok": true,
+  "role": "structure_review",
+  "script": "12ae32cb1ec02d01"
+ },
+ "boot2-rewrite-excluded/replay/llm-002.json": {
+  "code": "04cbbd6658f879b7",
+  "edits": "4f53cda18c2baa0c",
+  "role": "fix",
+  "usable": true
+ },
+ "boot2-rewrite-excluded/replay/llm-003.json": {
+  "code": "d6270b11f3e4f95b",
+  "edits": "4f53cda18c2baa0c",
+  "role": "fix",
+  "usable": true
+ },
+ "boot2/replay/llm-001.json": {
+  "edits": "4f53cda18c2baa0c",
+  "issues": 1,
+  "ok": true,
+  "role": "structure_review",
+  "script": "12ae32cb1ec02d01"
+ },
+ "boot3/replay/llm-001.json": {
+  "edits": "4f53cda18c2baa0c",
+  "issues": 0,
+  "ok": true,
+  "role": "structure_review",
+  "script": "12ae32cb1ec02d01"
+ },
+ "boot3/replay/llm-002.json": {
+  "code": "42da539d42c87b5b",
+  "edits": "4f53cda18c2baa0c",
+  "role": "fix",
+  "usable": true
+ },
+ "company-boot-single/replay/llm-001.json": {
+  "edits": "4f53cda18c2baa0c",
+  "issues": 0,
+  "ok": true,
+  "role": "structure_review",
+  "script": "12ae32cb1ec02d01"
+ },
+ "company-servlet-jsp/replay/llm-001.json": {
+  "edits": "4f53cda18c2baa0c",
+  "issues": 1,
+  "ok": true,
+  "role": "structure_review",
+  "script": "12ae32cb1ec02d01"
+ },
+ "company-spring5-web/replay/llm-001.json": {
+  "edits": "4f53cda18c2baa0c",
+  "issues": 0,
+  "ok": true,
+  "role": "structure_review",
+  "script": "12ae32cb1ec02d01"
+ },
+ "ear-sibling-poms/replay/llm-001.json": {
+  "edits": "4f53cda18c2baa0c",
+  "issues": 1,
+  "ok": true,
+  "role": "structure_review",
+  "script": "12ae32cb1ec02d01"
+ },
+ "enforcer-java8-werror/replay/llm-001.json": {
+  "edits": "4f53cda18c2baa0c",
+  "issues": 1,
+  "ok": true,
+  "role": "structure_review",
+  "script": "12ae32cb1ec02d01"
+ },
+ "enforcer-java8-werror/replay/llm-002.json": {
+  "code": "c7f479c7708d06fc",
+  "edits": "4f53cda18c2baa0c",
+  "role": "fix",
+  "usable": true
+ },
+ "enforcer-java8-werror/replay/llm-003.json": {
+  "code": "29bb315345229b5b",
+  "edits": "4f53cda18c2baa0c",
+  "role": "fix",
+  "usable": true
+ },
+ "euckr-legacy/replay/llm-001.json": {
+  "edits": "4f53cda18c2baa0c",
+  "issues": 0,
+  "ok": true,
+  "role": "structure_review",
+  "script": "12ae32cb1ec02d01"
+ },
+ "filtered-binary-resources/replay/llm-001.json": {
+  "edits": "4f53cda18c2baa0c",
+  "issues": 0,
+  "ok": true,
+  "role": "structure_review",
+  "script": "12ae32cb1ec02d01"
+ },
+ "fw-transitive-note/replay/llm-001.json": {
+  "edits": "4f53cda18c2baa0c",
+  "issues": 0,
+  "ok": true,
+  "role": "structure_review",
+  "script": "12ae32cb1ec02d01"
+ },
+ "hollow-reactor/replay/llm-001.json": {
+  "edits": "4f53cda18c2baa0c",
+  "issues": 0,
+  "ok": true,
+  "role": "structure_review",
+  "script": "12ae32cb1ec02d01"
+ },
+ "java6-legacy/replay/llm-001.json": {
+  "edits": "4f53cda18c2baa0c",
+  "issues": 2,
+  "ok": true,
+  "role": "structure_review",
+  "script": "12ae32cb1ec02d01"
+ },
+ "java6-legacy/replay/llm-002.json": {
+  "code": "7cb3b40563bca9bb",
+  "edits": "4f53cda18c2baa0c",
+  "role": "fix",
+  "usable": true
+ },
+ "java6-legacy/replay/llm-003.json": {
+  "code": "1c886fc7b68516f9",
+  "edits": "4f53cda18c2baa0c",
+  "role": "fix",
+  "usable": true
+ },
+ "legacy-external-config/replay/llm-001.json": {
+  "edits": "4f53cda18c2baa0c",
+  "issues": 0,
+  "ok": true,
+  "role": "structure_review",
+  "script": "12ae32cb1ec02d01"
+ },
+ "legacy-external-parent/replay/llm-001.json": {
+  "edits": "4f53cda18c2baa0c",
+  "issues": 0,
+  "ok": true,
+  "role": "structure_review",
+  "script": "12ae32cb1ec02d01"
+ },
+ "legacy-ibatis/replay/llm-001.json": {
+  "edits": "4f53cda18c2baa0c",
+  "issues": 1,
+  "ok": true,
+  "role": "structure_review",
+  "script": "12ae32cb1ec02d01"
+ },
+ "legacy-ibatis/replay/llm-002.json": {
+  "code": "12ae32cb1ec02d01",
+  "edits": "4f53cda18c2baa0c",
+  "role": "fix",
+  "usable": false
+ },
+ "legacy-role-parents/replay/llm-001.json": {
+  "edits": "4f53cda18c2baa0c",
+  "issues": 1,
+  "ok": true,
+  "role": "structure_review",
+  "script": "12ae32cb1ec02d01"
+ },
+ "missing-artifact/replay/llm-001.json": {
+  "edits": "4f53cda18c2baa0c",
+  "issues": 1,
+  "ok": true,
+  "role": "structure_review",
+  "script": "12ae32cb1ec02d01"
+ },
+ "missing-artifact/replay/llm-002.json": {
+  "code": "12ae32cb1ec02d01",
+  "edits": "4f53cda18c2baa0c",
+  "role": "fix",
+  "usable": false
+ },
+ "msa-shared-lib/replay/llm-001.json": {
+  "edits": "4f53cda18c2baa0c",
+  "issues": 1,
+  "ok": true,
+  "role": "structure_review",
+  "script": "12ae32cb1ec02d01"
+ },
+ "msa-shared-lib/replay/llm-002.json": {
+  "code": "9aa22436199049e4",
+  "edits": "4f53cda18c2baa0c",
+  "role": "fix",
+  "usable": true
+ },
+ "msa-shared-lib/replay/llm-003.json": {
+  "code": "9aa22436199049e4",
+  "edits": "4f53cda18c2baa0c",
+  "role": "fix",
+  "usable": true
+ },
+ "msa-shared-lib/replay/llm-004.json": {
+  "code": "01dd34be1c662527",
+  "edits": "4f53cda18c2baa0c",
+  "role": "fix",
+  "usable": true
+ },
+ "msa/replay/llm-001.json": {
+  "edits": "4f53cda18c2baa0c",
+  "issues": 0,
+  "ok": true,
+  "role": "structure_review",
+  "script": "12ae32cb1ec02d01"
+ },
+ "multi-module-conflict/replay/llm-001.json": {
+  "edits": "4f53cda18c2baa0c",
+  "issues": 0,
+  "ok": true,
+  "role": "structure_review",
+  "script": "12ae32cb1ec02d01"
+ },
+ "multi-module-conflict/replay/llm-002.json": {
+  "code": "c2d6df0a8900f8ba",
+  "edits": "4f53cda18c2baa0c",
+  "role": "fix",
+  "usable": true
+ },
+ "multi-module-merge/replay/llm-001.json": {
+  "edits": "4f53cda18c2baa0c",
+  "issues": 0,
+  "ok": true,
+  "role": "structure_review",
+  "script": "12ae32cb1ec02d01"
+ },
+ "pure-java/replay/llm-001.json": {
+  "edits": "4f53cda18c2baa0c",
+  "issues": 0,
+  "ok": true,
+  "role": "structure_review",
+  "script": "12ae32cb1ec02d01"
+ },
+ "pure-java/replay/llm-002.json": {
+  "code": "42199b171d4e7b1c",
+  "edits": "4f53cda18c2baa0c",
+  "role": "fix",
+  "usable": true
+ },
+ "pure-java/replay/llm-003.json": {
+  "code": "42199b171d4e7b1c",
+  "edits": "4f53cda18c2baa0c",
+  "role": "fix",
+  "usable": true
+ },
+ "rootless-unlisted-module/replay/llm-001.json": {
+  "edits": "4f53cda18c2baa0c",
+  "issues": 0,
+  "ok": true,
+  "role": "structure_review",
+  "script": "12ae32cb1ec02d01"
+ },
+ "servlet-javax-grid/replay/llm-001.json": {
+  "edits": "4f53cda18c2baa0c",
+  "issues": 0,
+  "ok": true,
+  "role": "structure_review",
+  "script": "12ae32cb1ec02d01"
+ },
+ "servlet-nonstandard-dirs/replay/llm-001.json": {
+  "edits": "4f53cda18c2baa0c",
+  "issues": 1,
+  "ok": true,
+  "role": "structure_review",
+  "script": "12ae32cb1ec02d01"
+ },
+ "servlet-tomcat/replay/llm-001.json": {
+  "edits": "4f53cda18c2baa0c",
+  "issues": 0,
+  "ok": true,
+  "role": "structure_review",
+  "script": "12ae32cb1ec02d01"
+ },
+ "servlet-war-overlay/replay/llm-001.json": {
+  "edits": "4f53cda18c2baa0c",
+  "issues": 0,
+  "ok": true,
+  "role": "structure_review",
+  "script": "12ae32cb1ec02d01"
+ },
+ "servlet-webxml-legacy/replay/llm-001.json": {
+  "edits": "4f53cda18c2baa0c",
+  "issues": 0,
+  "ok": true,
+  "role": "structure_review",
+  "script": "12ae32cb1ec02d01"
+ },
+ "sibling-aggregator-dup/replay/llm-001.json": {
+  "edits": "4f53cda18c2baa0c",
+  "issues": 0,
+  "ok": true,
+  "role": "structure_review",
+  "script": "12ae32cb1ec02d01"
+ },
+ "spring5-legacy-startup/replay/llm-001.json": {
+  "edits": "4f53cda18c2baa0c",
+  "issues": 0,
+  "ok": true,
+  "role": "structure_review",
+  "script": "12ae32cb1ec02d01"
+ },
+ "spring5-security-batch/replay/llm-001.json": {
+  "edits": "4f53cda18c2baa0c",
+  "issues": 1,
+  "ok": true,
+  "role": "structure_review",
+  "script": "12ae32cb1ec02d01"
+ },
+ "spring5-security-batch/replay/llm-002.json": {
+  "code": "ccacd84afc56c269",
+  "edits": "4f53cda18c2baa0c",
+  "role": "fix",
+  "usable": true
+ },
+ "spring5-security-batch/replay/llm-003.json": {
+  "code": "7556dd908a45c02c",
+  "edits": "4f53cda18c2baa0c",
+  "role": "fix",
+  "usable": true
+ },
+ "spring5-security-batch/replay/llm-004.json": {
+  "code": "c2332a32d3957da8",
+  "edits": "4f53cda18c2baa0c",
+  "role": "fix",
+  "usable": true
+ },
+ "spring5-security-batch/replay/llm-005.json": {
+  "code": "35d7108025e12c27",
+  "edits": "4f53cda18c2baa0c",
+  "role": "fix",
+  "usable": true
+ },
+ "spring5-security-batch/replay/llm-006.json": {
+  "code": "7f379eaaecfefcbf",
+  "edits": "4f53cda18c2baa0c",
+  "role": "fix",
+  "usable": true
+ },
+ "spring5-security-batch/replay/llm-007.json": {
+  "code": "1c886fc7b68516f9",
+  "edits": "4f53cda18c2baa0c",
+  "role": "fix",
+  "usable": true
+ },
+ "spring5-security-batch/replay/llm-008.json": {
+  "code": "4d5b5c5bcfca4d3f",
+  "edits": "4f53cda18c2baa0c",
+  "role": "fix",
+  "usable": true
+ },
+ "spring5-security-batch/replay/llm-009.json": {
+  "code": "1167938cd558971f",
+  "edits": "4f53cda18c2baa0c",
+  "role": "fix",
+  "usable": true
+ },
+ "spring5-security-batch/replay/llm-010.json": {
+  "code": "c89210bff9916f0a",
+  "edits": "4f53cda18c2baa0c",
+  "role": "fix",
+  "usable": true
+ },
+ "spring5-xml/replay/llm-001.json": {
+  "edits": "4f53cda18c2baa0c",
+  "issues": 0,
+  "ok": true,
+  "role": "structure_review",
+  "script": "12ae32cb1ec02d01"
+ },
+ "spring5-xml/replay/llm-002.json": {
+  "code": "42a2f1fef3f69229",
+  "edits": "4f53cda18c2baa0c",
+  "role": "fix",
+  "usable": true
+ },
+ "spring5-xml/replay/llm-003.json": {
+  "code": "29338badf9e9d944",
+  "edits": "4f53cda18c2baa0c",
+  "role": "fix",
+  "usable": true
+ },
+ "webapp-bundled-jar/replay/llm-001.json": {
+  "edits": "4f53cda18c2baa0c",
+  "issues": 0,
+  "ok": true,
+  "role": "structure_review",
+  "script": "12ae32cb1ec02d01"
+ }
+}

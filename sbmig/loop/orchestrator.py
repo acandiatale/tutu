@@ -57,6 +57,7 @@ from sbmig.core.models import (FLOW_FULL, FLOW_REMEDIATION, GAV, RUN_FLOWS, Bloc
                                PhaseResult, PlanStep, ProjectProfile, RunReport, StepKind, utcnow)
 from sbmig.core.stage import stage
 from sbmig.core.workspace import Workspace, logs_dir
+from sbmig.triage.blocked import TRANSFER_CAUSE_PATTERN
 
 from .blocked_registry import BlockedRegistry, default_locator
 from .budget import LoopBudget
@@ -80,10 +81,33 @@ _JAVA_HOME_PROBLEM_RE = re.compile(r"(?i)JAVA_HOME|UnsupportedClassVersionError|
                                    r"java: (?:command )?not found|'java' is not recognized|no java runtime")
 # infrastructure classification at finalize (round 10, fleet circuit breaker): a resolution error that points at the
 # repository / network rather than at the project
-_INFRA_REPO_RE = re.compile(r"(?i)could not transfer|failed to transfer|connection refused|connection reset|timed out|"
+# 수정 루프가 repository_unreachable로 차단하는 전송 실패 문구(TRANSFER_CAUSE_PATTERN)도 모두 포함한다
+_INFRA_REPO_RE = re.compile(r"(?i)" + TRANSFER_CAUSE_PATTERN + r"|could not transfer|failed to transfer|connection refused|connection reset|timed out|"
                             r"unknown ?host|no route to host|pkix path building failed|"
                             r"(?:status code|return code is):?\s*(?:401|403|5\d\d)\b|"
                             r"was cached in the local repository")
+# 멈춤 요청으로 수정 루프를 일찍 끝낸 실행의 중단 사유다. 최종 빌드는 실행되었으므로 STOP_REQUEST_REASON을 쓰지 않는다
+# review 2026-11-18 L4: the abort reason when a stop request made the fix loop leave (a final build did run)
+STOP_LOOP_REASON = ("stopped by user (stop.request) — the fix loop was left early; the last build shows the tree as it "
+                    "was left")
+# 사내 프레임워크 검사가 부모 pom과 의존성 트리를 모두 읽지 못해 판단하지 못했을 때의 플래그와 인수인계 문장이다
+# review 2026-11-18 T1: framework artifacts configured, the parent and the transitive lookup both unchecked, nothing found
+FRAMEWORK_UNCHECKED_FLAG = "framework-unchecked"
+FRAMEWORK_UNCHECKED_LINE = ("framework check could not run (the parent pom and the dependency tree could not be read): if "
+                            "this project uses the in-house framework it must not be migrated in full — confirm before "
+                            "using the result")
+
+
+def _framework_undecided(use: Any) -> bool:
+    """사내 프레임워크 검사가 부모 pom(as-is effective pom)과 의존성 트리를 모두 읽지 못하고 아무것도 찾지 못했는지 확인한다.
+
+    True when nothing was found and both deciding sources are in `unchecked` (`parent: …` and `transitive: …`); a
+    transitive lookup switched off or not made (dry run, custom runner) is not "could not be read"."""
+    unchecked = [str(u) for u in getattr(use, "unchecked", None) or []]
+    return not getattr(use, "found", False) and any(u.startswith("parent:") for u in unchecked) \
+        and any(u.startswith("transitive:") for u in unchecked)
+
+
 # 디스크가 가득 차면 infra:disk 플래그를 붙여, 플릿이 다음 프로젝트까지 실패시키지 않고 멈추게 한다
 # a full disk during a build (javac / Maven / git on Windows and POSIX; "디스크 공간이 부족" = the Korean Windows text)
 _INFRA_DISK_RE = re.compile(r"(?i)no space left on device|not enough space on the disk|disk quota exceeded|"
@@ -459,7 +483,9 @@ class Orchestrator:
         `chain.run_only`, then the short report (no LLM, no KB); ValueError with `stop_after` / `dry_run`."""
         flow = check_flow(flow, stop_after, dry_run)
         with self._run_guard(dry_run, flow=flow) as report:
-            if self.engine == "graph":
+            if self.refused_at_intake(report):
+                pass                                # 접수에서 거절한 작업 공간은 아무 단계도 실행하지 않는다
+            elif self.engine == "graph":
                 from sbmig.graph import run_graph
                 run_graph(self, stop_after=stop_after, dry_run=dry_run, flow=flow)
             elif flow == FLOW_REMEDIATION:
@@ -654,6 +680,24 @@ class Orchestrator:
             and "restructure-failed" not in flags and "hollow-reactor" not in flags \
             and not _aborted(flags) and not self._verify_missing()
 
+    def refused_at_intake(self, report: RunReport) -> bool:
+        """작업 공간이 접수에서 거절되었으면(``ws.intake_refusal``) 그 사유로 실행을 중단하고 True를 반환한다.
+        이미 같은 사유로 중단했으면 다시 기록하지 않는다.
+
+        Review 2026-11-18 W3 follow-up: a workspace refused at intake (`Workspace.intake_refusal`, an uploaded ZIP over
+        the unpacking limits, nothing unpacked) ends the run with exactly that reason — the record of the other intake
+        refusals (`run aborted: <reason>`, flag `aborted`, exit 3) — before preflight, Maven, the LLM or any intake
+        edit. Called first inside the run guard by `run()` (both engines, every flow) and by `sbmig.graph.run_graph` /
+        `stream_graph` called directly. Idempotent: a run already aborted for that reason (the CLI's `refuse_intake`)
+        is not recorded twice. False for an accepted workspace."""
+        why = getattr(self.ws, "intake_refusal", None)
+        if not why:
+            return False
+        why = str(why)
+        if self.abort_reason != why:
+            self._abort(report, why)
+        return True
+
     def _abort(self, report: RunReport, why: str) -> None:
         """실행 중단을 기록한다.
         ``aborted`` 플래그, 후속 조치, 운영자가 찾는 ERROR 로그 한 줄, 저널을 남긴다."""
@@ -692,7 +736,7 @@ class Orchestrator:
             if self._stop_file_abort(report, f"phase {phase.value}"):
                 return
             self.step_phase(report, phase, items, stop_after)
-        if self._stop_file_abort(report, "finalize"):
+        if self.late_stop(report) == "aborted":
             return
         self.step_finish(report, stop_after)
         self._note_inline_remediation(report, stop_after, dry_run)
@@ -736,6 +780,34 @@ class Orchestrator:
         if "aborted" not in report.flags:
             self._abort(report, STOP_REQUEST_REASON)
         return True
+
+    def late_stop(self, report: RunReport) -> str:
+        """마지막 단계 묶음 뒤(finalize 직전)에 ``stop.request``를 처리하고 결과를 반환한다.
+        파일이 없으면 빈 문자열, 계획한 최종 빌드 중 결과가 없는 것이 있으면 지금처럼 중단(``aborted``), 수정 루프가
+        멈춤 요청으로 끝났으면 다른 사유로 중단(``aborted``), 최종 빌드가 모두 끝났으면 요청을 무시(``ignored``)한다.
+
+        Review 2026-11-18 L1 / L4, shared by both engines: the stop request found after the last phase group. No file → "".
+        A planned final build without a result (or none ran) → today's abort (`STOP_REQUEST_REASON`, "did not run" is true)
+        → "aborted". The fix loop left because of the request → abort with `STOP_LOOP_REASON` (the final build ran) →
+        "aborted". Otherwise every planned final build has a result: the request came too late to stop anything, the run
+        finishes as what it is (log line + journal `stop_request` with `ignored`) → "ignored"; a chained remediation still
+        skips itself on the present file, as before."""
+        fn = getattr(self.ws, "stop_requested", None)
+        if not callable(fn) or not fn():
+            return ""
+        if not self._verify_results or self._verify_missing():
+            self._stop_file_abort(report, "finalize")
+            return "aborted"
+        if self.loop is not None and getattr(self.loop, "stopped_by_request", False):
+            log.warning("stop requested (stop.request) — the fix loop was left early; the last build stands")
+            self.ws.journal({"event": "stop_request", "node": "finalize", "file": "stop.request", "after": "fix loop"})
+            if "aborted" not in report.flags:
+                self._abort(report, STOP_LOOP_REASON)
+            return "aborted"
+        log.warning("stop requested (stop.request) after every final build ran — ignored, the run finishes as it is")
+        self.ws.journal({"event": "stop_request", "node": "finalize", "file": "stop.request",
+                         "ignored": "every final build ran"})
+        return "ignored"
 
     # ------------------------------------------------------------------ steps (shared by both engines)
     def step_intake(self, report: RunReport, stop_after: Phase | None) -> bool:
@@ -1339,6 +1411,12 @@ class Orchestrator:
                 self.ws.save_model("profile.json", profile)
             if not use.found:
                 self.ws.journal({"event": "framework_check", "found": False, "unchecked": list(use.unchecked)})
+                # 판단에 필요한 두 곳(부모 pom, 의존성 트리)을 모두 읽지 못했으면 실행은 그대로 하되 그 사실을 알린다
+                if _framework_undecided(use):
+                    self._flag(FRAMEWORK_UNCHECKED_FLAG)
+                    log.warning("분석: 사내 프레임워크 여부를 확인하지 못함 (%s)", "; ".join(use.unchecked)[:300])
+                    if FRAMEWORK_UNCHECKED_LINE not in report.manual_followups:
+                        report.manual_followups.insert(self._first_lines_end(report), FRAMEWORK_UNCHECKED_LINE)
                 return
             self._flag(fw.FLAG)
             self.ws.journal({"event": "framework_project", "scope": use.scope, "artifacts": use.keys(),
@@ -2414,10 +2492,12 @@ class Orchestrator:
         except Exception as e:
             log.exception("restructure failed")
             pr.notes.append(f"{step.id}: restructure crashed: {type(e).__name__}: {e}")
-            if self.ws.is_dirty():
-                self.ws.discard_uncommitted()
+            self._reset_restructure(step, pre)
             self._restructure_failed(step, mode, f"{type(e).__name__}: {e}")
             return False
+        # 실패한 재구성이 남긴 커밋과 변경을 되돌려 트리를 단계 전 커밋으로 둔다(이미 되돌렸으면 아무것도 하지 않는다)
+        if not getattr(res, "ok", True):
+            self._reset_restructure(step, pre)
         sha = self.ws.commit(f"restructure: {step.id}") if self.ws.is_dirty() else self.ws.head()
         if sha != pre:
             self._follow_moves(step, pre, sha)
@@ -2849,6 +2929,27 @@ class Orchestrator:
         n = self.blocked.note_moves(moves)
         self.ws.journal({"event": "restructure_moves", "step": step.id, "moved": len(moves), "blocked_rekeyed": n})
 
+    def _reset_restructure(self, step: PlanStep, pre: str) -> None:
+        """실패한 재구성 단계가 남긴 커밋과 변경을 버리고 트리를 단계 전 커밋 ``pre``로 되돌린다. 예외를 던지지 않는다.
+
+        Review 2026-11-18 P2: a restructure step that crashed or returned ok=False may have made its own commits and
+        left files half moved; the tree goes back to `pre` (the commit before the step) so that "the tree keeps the as-is
+        layout / parents" is true. A no-op when the restructurer already restored it. Journal `restructure_reset`."""
+        try:
+            moved = bool(pre) and self.ws.head() != pre
+            dirty = self.ws.is_dirty()
+            if not moved and not dirty:
+                return
+            if moved:
+                self.ws.revert_to(pre)
+            else:
+                self.ws.discard_uncommitted()
+        except Exception as e:  # noqa: BLE001 - a git problem: the failure is still recorded
+            log.warning("restructure step %s: tree not reset to %s: %s: %s", step.id, pre, type(e).__name__, e)
+            return
+        log.warning("restructure step %s failed: tree reset to the commit before the step (%s)", step.id, pre[:10])
+        self.ws.journal({"event": "restructure_reset", "step": step.id, "to": pre, "commits_dropped": moved})
+
     def _restructure_failed(self, step: PlanStep, mode: str, why: str) -> None:
         """재구성 실패를 기록해 성공한 이관처럼 보이지 않게 한다.
         as-is 트리로도 최종 빌드는 통과할 수 있지만 회사 레이아웃과 parent는 적용되지 않았기 때문이다.
@@ -3168,6 +3269,14 @@ class Orchestrator:
         if not res.ok and not blocked_http and self._verify_fix_loop(pr, step, res):
             if self.loop is not None and self.loop.aborted:
                 pr.notes.append(f"{step.id}: final fix loop aborted the run ({self.loop.aborted}); the failed build stands")
+            elif self.loop is not None and getattr(self.loop, "left_on_stop", False) \
+                    and not getattr(self.loop, "end_rollbacks", 0) and getattr(self.loop, "last_build", None) is not None:
+                # 멈춤 요청으로 루프를 빠져나왔고 그 뒤 트리가 바뀌지 않았으면 같은 트리를 다시 빌드하지 않는다
+                pr.notes.append(f"{step.id}: final build not repeated — the fix loop left on a stop request and the tree "
+                                "is unchanged since its last build")
+                log.info("stop requested: the fix loop's last build stands as the final build (tree unchanged)")
+                res = self.loop.last_build
+                self._observe_build(goal, res, step.target)
             else:
                 pr.notes.append(f"{step.id}: final build repeated after the fix loop")
                 log.info("repeating `mvn %s` after the fix loop", goal)
@@ -3178,7 +3287,9 @@ class Orchestrator:
             self._verify_done.append(step.id)
         skip_tests, skip_run = _skip_flags()
         assert self.report is not None
-        self.report.final_build = res
+        # 서비스마다 최종 빌드가 있는 MSA에서 앞 서비스가 실패했으면 그 결과를 남겨 보고서가 실패를 보게 한다
+        if self.report.final_build is None or self.report.final_build.ok:
+            self.report.final_build = res
         pr.iterations += 1
         pr.remaining_errors += res.errors
         pr.iteration_records.append(IterationRecord(phase=Phase.VERIFY, iteration=pr.iterations, build_ok=res.ok,
@@ -3725,10 +3836,11 @@ class Orchestrator:
     def _finalize_code_diff(self) -> None:
         """웹 화면의 「코드 변경」 기록(codediff/)을 쓴다. 예외를 던지지 않고, 실패하면 경고 로그만 남긴다.
 
-        `<run dir>/codediff/` (`sbmig.report.codediff`): not for a dry run, with `report.code_diff` false or without
-        `<project>/.git`. Never raises (one WARNING); not listed in `report.outputs` (the report text stays as it is)."""
-        if self._dry_run or not getattr(self.cfg.report, "code_diff", False) \
-                or not (self.ws.root / ".git").exists():
+        `<run dir>/codediff/` (`sbmig.report.codediff`): not for a dry run. Review R4: `report.code_diff` false and a
+        project without `.git` are the writer's to handle (it journals `code_diff_skipped` with the reason and removes a
+        record an earlier attempt left in the same run folder), so every other run calls it. Never raises (one
+        WARNING); not listed in `report.outputs` (the report text stays as it is)."""
+        if self._dry_run:
             return
         try:
             from sbmig.report.codediff import write_code_diff

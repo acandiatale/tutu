@@ -75,5 +75,8 @@ EXPOSE 8765
 # 루프백이 아닌 --host 는 SBMIG_WEB_TOKEN(Secret) 또는 SBMIG_WEB_OPEN=1(사내망 전용 페이지 — Deployment 의 env, 2026-11-05 결정)
 # 둘 중 하나가 있어야 뜬다. 이미지에는 둘 다 없다. --graceful-timeout 은 종료 때 SSE 스트림을 닫는 여유.
 # 요청별 Job 모델은 이 CMD 대신 /app/deploy/docker/run-job.sh 를 command 로 쓴다.
+# 업로드 상한은 명령줄에 두지 않는다: --max-upload-mb 가 환경 변수보다 우선이라 ConfigMap 의 SBMIG_MAX_UPLOAD_MB 가 먹지 않았다.
+# 이미지 기본값은 아래 ENV 이고 파드의 env(ConfigMap sbmig-env)가 그 값을 덮어쓴다.
+ENV SBMIG_MAX_UPLOAD_MB=1024
 CMD ["python", "-m", "sbmig.cli", "serve", "--host", "0.0.0.0", "--port", "8765", "--out", "/data/out", \
-     "--graceful-timeout", "30", "--max-upload-mb", "1024"]
+     "--graceful-timeout", "30"]

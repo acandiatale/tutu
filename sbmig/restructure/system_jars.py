@@ -75,26 +75,36 @@ def _module_dir(module_pom: str) -> str:
 def copy_jar_to_module_lib(ws: Any, src_rel: str, module_dir: str, artifact_id: str) -> tuple[str, str, bool]:
     """jar ``src_rel``을 ``<module_dir>/lib/<이름>``으로 복사한다.
     같은 이름의 다른 jar가 이미 있으면 ``<artifactId>-<이름>``으로 복사해
-    둘 다 남기고, 원본과 대상이 같으면 복사하지 않는다.
+    둘 다 남기고(그 이름도 다른 jar면 ``<artifactId>-<n>-<이름>``), 원본과 대상이 같으면 복사하지 않는다.
     (대상 상대 경로, systemPath에 쓸 파일 이름, 이번에 복사했는지 여부)를 반환한다.
 
     Copy the jar `src_rel` to `<module_dir>/lib/<name>` (shared by the restructure's E7 relocation and the
-    bundled-jar wiring); another jar of the same name already there → `<artifactId>-<name>`. Returns
+    bundled-jar wiring); another jar of the same name already there → `<artifactId>-<name>`, then
+    `<artifactId>-<n>-<name>` (review P7: the content is compared at every name; a jar of the same content is reused,
+    never one that only has the name). Returns
     (destination, file name for `${project.basedir}/lib/<name>`, copied this time)."""
     name = posixpath.basename(src_rel)
     lib = f"{module_dir}/lib" if module_dir not in ("", ".") else "lib"
     dst = f"{lib}/{name}"
     if dst == src_rel:
         return dst, name, False
-    # lib/에 같은 이름의 다른 jar가 있으면 덮어쓰지 않도록 artifactId를 앞에 붙여 둘 다 남긴다
-    if ws.abs(dst).exists() and ws.abs(dst).read_bytes() != ws.abs(src_rel).read_bytes():
-        name = f"{artifact_id}-{name}"
+    # lib/에 같은 이름의 다른 jar가 있으면 덮어쓰지 않도록 artifactId를 앞에 붙여 둘 다 남긴다.
+    # 시도하는 이름마다 내용을 비교한다. 이름만 같은 다른 jar를 연결하면 엉뚱한 jar가 빌드에 들어가기 때문이다
+    data = ws.abs(src_rel).read_bytes()
+    base = name
+    for i in range(1, 1000):
+        name = base if i == 1 else (f"{artifact_id}-{base}" if i == 2 else f"{artifact_id}-{i - 1}-{base}")
         dst = f"{lib}/{name}"
-    if ws.abs(dst).exists():
-        return dst, name, False
-    ws.abs(dst).parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(ws.abs(src_rel), ws.abs(dst))
-    return dst, name, True
+        if dst == src_rel:
+            return dst, name, False
+        target = ws.abs(dst)
+        if not target.exists():
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(ws.abs(src_rel), target)
+            return dst, name, True
+        if target.is_file() and target.read_bytes() == data:
+            return dst, name, False
+    raise OSError(f"cannot copy {src_rel}: every candidate name under {lib}/ holds another file")
 
 
 def _sha1(ws: Any, rel: str) -> str:

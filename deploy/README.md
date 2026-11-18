@@ -76,7 +76,27 @@ docker build --build-arg APP_DIR=src/migration-agent --build-arg DEPLOY_DIR=depl
 **전체 이름**을 받아 `k8s/40-deployment.yaml` 과 `k8s/81-web-job.template.yaml` 의 `image:` 두 줄(`CHANGE_ME_REGISTRY/sbmig:CHANGE_ME_TAG` 자리)에 글자
 그대로, 같은 값으로 넣는다. 레지스트리가 pull 에 인증을 요구하면 인프라팀이 준 Secret 이름으로 양쪽의 `imagePullSecrets`
 주석을 푼다. 매니페스트는 `imagePullPolicy: Always` 다: 파드가 뜰 때마다 레지스트리와 대조해 바뀐 이미지만 새로 받으므로 **같은 태그로 다시 올려도
-반영된다**. 이미지를 새로 올린 뒤에는 `kubectl -n agent rollout restart deploy/sbmig` 로 웹 파드를 다시 띄운다(빌드 파드는 뜰 때마다 스스로 받는다).
+반영된다**.
+
+**같은 태그로 이미지를 다시 올린 뒤 운영자가 할 일**:
+
+1. 웹 파드를 다시 띄운다: `kubectl -n agent rollout restart deploy/sbmig`. 빌드 파드는 뜰 때마다 스스로 새 이미지를 받으므로 따로 할 일이 없다.
+2. **처음 한 번만**(pull 정책이 `Always` 인 매니페스트로 처음 바꿀 때): Job 틀 ConfigMap 을 다시 만들고 40 을 apply 한 뒤 1 을 한다 — 웹 파드는
+   시작할 때 틀을 읽어 두고, 틀과 Deployment 에 새 정책이 들어 있어야 두 파드가 새 이미지를 받는다.
+   ```bash
+   kubectl -n agent create configmap sbmig-job-template --from-file=deploy/k8s/81-web-job.template.yaml --dry-run=client -o yaml | kubectl apply -f -
+   kubectl apply -f deploy/k8s/40-deployment.yaml
+   kubectl -n agent rollout restart deploy/sbmig
+   ```
+
+**push 와 웹 파드 재시작 사이에 올린 실행**은 웹 파드(옛 이미지)와 빌드 파드(새 이미지)의 코드가 달라 빌드 파드가 시작하자마자 거절한다(exit 3,
+화면: "웹 파드와 빌드 파드가 서로 다른 이미지로 실행되고 있어 진행하지 않았습니다. …", `job-status.json` 의 `error` 끝: `the web pod and the build pod
+run different images: restart the web pod after pushing an image (and upload the project again)`). 웹 파드를 재시작한 뒤 **그 프로젝트를 다시 올린다**.
+재시작 전에 줄에서 기다리던 실행과, 옛 이미지가 만든 실행의 취약점 조치 재개는 그대로 돈다 — Worker 는 그 Job 을 **만든** 웹 파드가 적은 값과
+대조한다. 두 파드가 어느 빌드인지는 `kubectl -n agent exec deploy/sbmig -- python -m sbmig.cli version`(→ `sbmig 0.1.0+<12자>`)과 실행 폴더
+`journal.jsonl` 의 `worker_started` 줄의 `sbmig_version` 으로 비교한다. 이 값은 이미지 안의 코드·`config/*.yml`·`knowledge/` 에서 계산되므로 빌드
+인자가 따로 필요 없다.
+
 `IfNotPresent` 로 두면 노드에 그 태그가 이미 있을 때 레지스트리를 보지 않아, 같은 태그를 다시 올려도 노드마다 처음 받은 이미지가 그대로 돈다(웹 파드와
 빌드 파드의 코드가 서로 다를 수 있다). 그 정책을 쓰려면 태그를 빌드마다 새로 붙인다. `Always` 는 레지스트리가 응답하지 않으면 새 파드가 뜨지 못한다. 첫 파드가 `ImagePullBackOff` 면 대개 노드가 그 레지스트리의
 인증서를 신뢰하지 않는 것이다(인프라팀 몫).
@@ -175,7 +195,7 @@ Secret 의 `SBMIG_WEB_TOKEN` 을 채운다 — 그때는 `http://<host>:8765/?to
   "Maven 변환 후 신청 부탁드립니다."). 로그는 화면에
   마지막 1,500 줄만 그린다(전체는 `sbmig.log` 링크) — 몇 만 줄이 쌓여 브라우저가 느려지던 문제의 답. 사내망이라 웹 폰트·CDN 없음.
 * **리소스**: Maven / OpenRewrite 는 `openrewrite.jvm_args: ["-Xmx4g"]` 로 돈다 → 메모리 limit 6~8 GiB, CPU 2~4. 업로드 상한
-  `SBMIG_MAX_UPLOAD_MB`(기본 512, 매니페스트는 1024). **프로브**: 인증 없는 health 경로가 없어 `tcpSocket`.
+  `SBMIG_MAX_UPLOAD_MB`(코드 기본 512, 이미지와 매니페스트는 1024 — 이미지의 명령줄에는 상한을 두지 않아 ConfigMap 값이 그대로 먹는다). **프로브**: 인증 없는 health 경로가 없어 `tcpSocket`.
 * `sbmig serve` 가 **곧 uvicorn** 이다(안에서 `uvicorn.run`). 워커는 하나여야 한다 — 실행 큐가 프로세스 안에 있어 `--workers 2` 나
   gunicorn 은 큐를 갈라 놓는다.
 
@@ -206,6 +226,12 @@ Secret 의 `SBMIG_WEB_TOKEN` 을 채운다 — 그때는 `http://<host>:8765/?to
   한 번에 1 초씩 기다리고, 한 주소에서 10 분 안에 5 번 틀리면 그 10 분이 끝날 때까지 429 다. Service 뒤에서는 모든 브라우저가 같은
   주소로 보일 수 있어 이 제한이 **모두에게 한꺼번에** 걸릴 수 있다(그때는 10 분 기다리거나 웹 파드를 재시작한다). `SBMIG_WEB_TOKEN` 을
   켰다면 `/admin` 도 사이트 토큰과 관리자 로그인을 **둘 다** 요구한다.
+* **열린 모드(`SBMIG_WEB_OPEN: "1"`, 매니페스트 기본)에서 비밀번호가 지키는 것과 못 지키는 것**: 비밀번호는 `/admin` 화면과 `/admin/api/…`
+  (모든 프로젝트의 사용량을 모은 표, 여러 실행의 로그를 한 번에 담은 ZIP)만 막는다. 메인 화면의 API 는 열린 모드에서 누구에게나 열려 있어,
+  실행 id 를 아는 사람은(실행 목록 `GET /api/runs` 도 열려 있다) 실행마다 `sbmig.log`, `journal.jsonl`, `report.json`(LLM 호출 수와 토큰 사용량
+  포함), `report.md`, `result.zip`(회사 소스)을 비밀번호 없이 받는다. 곧 열린 모드의 관리자 비밀번호는 "모아 보기" 와 "한꺼번에 받기" 만 막고
+  내용 자체를 감추지 않는다. 내용까지 막으려면 `SBMIG_WEB_OPEN` 을 지우고 Secret 에 `SBMIG_WEB_TOKEN` 을 둔다(그러면 모든 화면이 토큰을
+  요구한다).
 
 ### env 목록 — ConfigMap `sbmig-env` / Secret `sbmig-llm` 에 올리는 것
 
@@ -260,7 +286,7 @@ Secret 의 `SBMIG_WEB_TOKEN` 을 채운다 — 그때는 `http://<host>:8765/?to
 | `SBMIG_LAYOUT__WIRE_BUNDLED_JARS` | ConfigMap(선택) | `true` | WEB-INF/lib 의 선언 없는 jar 연결을 끌 때 |
 | `SBMIG_LIBRARIES__NEXUS_SEARCH` / `INCLUDE_PRERELEASE` | ConfigMap(선택) | `true` / `false` | jakarta 빌드 탐색 범위 |
 | `SBMIG_REVIEW__FIX_CRITICAL` | ConfigMap(선택) | `true` | 구조 리뷰의 critical 자동 수정을 끌 때 |
-| `SBMIG_FLEET__MIN_FREE_GB` | ConfigMap(선택) | `5` | 실행 전 디스크 여유 하한 |
+| `SBMIG_FLEET__MIN_FREE_GB` | ConfigMap(선택) | `5` | 데이터 볼륨 여유 공간 하한(GB). 웹 파드가 업로드를 받기 전에 확인하고 모자라면 HTTP 507 로 거절한다(화면: "서버의 저장 공간이 부족해 시작하지 못했습니다"). `0` = 확인 안 함. 실행 폴더(`/data/out/<실행 id>`)는 저절로 지워지지 않는다 — 공간이 모자라면 운영자가 지운다 |
 | `SBMIG_REMEDIATION__AFTER_MIGRATION` | ConfigMap | `true` (켜서 내보냄; 코드 기본 false) | BUILD SUCCESS 뒤 빌드 파드에서 취약점 조치를 이어 돌릴지(§6). 끄면 `"false"` + 웹 파드 재시작 |
 | `SBMIG_REMEDIATION__REQUIRE_APPROVAL` / `FAILED_CANDIDATE` / `IVAS_ANALYSIS_TIMEOUT_MINUTES` | ConfigMap(선택) | `false` / `include` / `30` | 조치의 승인(`false` = 모든 제안을 승인 없이 적용)·실패한 수정본·IVAS 분석 대기(§6). 40 에만 literal 로 넣지 않는다(Job 이 멈춘다) |
 | `SBMIG_REMEDIATION__CHAIN_BUDGET_MINUTES` / `IGNORE_ACTIONS` | ConfigMap(선택) | `90` / 비어 있음(예 `'["PC","IG"]'`) | 빌드 파드 안 조치의 시간 한도(0 = 없음)·계획에서 뺄 IVAS 조치 코드(기본 없음 = 모두 고칠 대상, §6) |
@@ -383,9 +409,11 @@ PC 에서 시험한 파일을 그대로 `20-configmap.yaml` 의 `sbmig-config` �
 
 ### Main 이 지키는 것 (v2.1z-ac, 2026-11-09 — 배포팀 명세를 우리 코드로)
 
-- **입력 고정**: 접수 때 `<run dir>/control/request.json` 에 zip 의 sha256, 설정 파일의 digest, sbmig 버전을 적는다. Worker(`python -m sbmig.web.worker`)는
-  시작할 때 같은 값을 다시 계산해 다르면 돌지 않는다(exit 3, `job-status.json` 의 `error`, 저널 `worker_refused`). Main 과 Worker 가 같은 이미지
-  여야 하는 이유가 여기 있다(설정 파일이 이미지에 있다. ConfigMap 으로 줄 때는 고친 뒤 웹 파드도 재시작해야 digest 가 맞는다).
+- **입력 고정**: 접수 때 `<run dir>/control/request.json` 에 zip 의 sha256, 설정 파일의 digest, sbmig 버전을 적고, Job 을 **만드는** 웹 파드가
+  `control/state.json` 의 `creating` 기록에 설정 파일 digest 와 sbmig 버전(`0.1.0+<코드 지문>`)을 다시 적는다. Worker(`python -m sbmig.web.worker`)는
+  zip 은 접수 때 값과, 설정 digest 와 버전은 Job 을 만든 웹 파드의 값과 대조해 다르면 돌지 않는다(exit 3, `job-status.json` 의 `error`, 저널
+  `worker_refused`). Main 과 Worker 가 같은 이미지여야 하는 이유가 여기 있다(설정 파일이 이미지에 있다. ConfigMap 으로 줄 때는 고친 뒤 웹 파드도
+  재시작해야 digest 가 맞는다). 이미지를 다시 올린 뒤의 할 일은 §1.
 - **생성 의도 먼저**: Job 을 만들기 전에 `control/state.json` 을 `creating` + Job 이름으로 쓴다. 생성 응답이 끊겨도(타임아웃, 409) 같은 이름의 Job 을 찾아
   이어받는다 — 같은 요청으로 Job 이 두 개 뜨지 않는다. 상태는 `queued → creating → created → running → finished | stopped | lost | failed`.
 - **재시작 복구**: Main 이 다시 뜨면 끝나지 않은 `control/state.json` 을 찾아 `queued` 는 접수 순서로 다시 줄에 세우고, `created` / `running` 은 Job 을 이어서

@@ -41,6 +41,25 @@ SAMPLES: list[tuple[str, str, list[str]]] = [
      "1.4); needed > 1.0 and ≥ patched hint 1.3, 2.0; 1.4; the hinted 1.3, 1.4 are not in the repository"),
      ["1.0", "1.1", "1.2", "1.3", "2.0", "1.4"]),
     ("no_evidence", "the repository gave no evidence for 1.2.6", ["1.2.6"]),
+    ("major_not_hinted", ("only other major versions are available (2.0.0, 20030203.000550 (date-stamped)) and no IVAS "
+     "patched hint names that major (hint 1.2.5)"), ["2.0.0", "20030203.000550", "1.2.5"]),
+    ("dated_current", ("the current version 20030203.000550 is date-stamped and cannot be compared with the IVAS patched "
+     "hint 2.7; not chosen automatically"), ["20030203.000550", "2.7"]),
+    ("meets_hint", ("IVAS still reports 2.15.0 although it meets the patched hint 2.12.7.1, 2.13.4.2; 2.14.0: ask the IVAS "
+     "team to check the finding"), ["2.15.0", "2.12.7.1, 2.13.4.2; 2.14.0"]),
+    ("shared_property", ("version property ${jackson.version} (pom.xml) also sets the version of com.example:core, "
+     "com.example:annotations; 2.12.7.1 is not in the repository for com.example:core: the property is not changed "
+     "automatically"), ["${jackson.version}", "pom.xml", "com.example:core, com.example:annotations", "2.12.7.1"]),
+    ("profile_only", (f"{GA} is declared in app-back/pom.xml only inside profile(s) legacy, jdk8, which are not active by "
+     "default; not changed automatically"), [GA, "app-back/pom.xml", "legacy, jdk8"]),
+    ("declared_twice", f"{GA} is declared 2 times in one <dependencies> block of app-back/pom.xml; not changed automatically",
+     [GA, "app-back/pom.xml", "2번"]),
+    ("structure_unparsable", "app/pom.xml: XML could not be parsed for the structure check (XMLSyntaxError)",
+     ["app/pom.xml", "XMLSyntaxError"]),
+    ("structure_changed", "app/pom.xml: XML element structure changed", ["app/pom.xml"]),
+    ("structure_text_between", "app/pom.xml: text between elements changed after <dependency>", ["app/pom.xml", "dependency"]),
+    ("structure_text_of", "app/pom.xml: text of <groupId> changed (only <version> / property values may change)",
+     ["app/pom.xml", "groupId"]),
     ("parent_pin_no_text", "policy pins the BOM org.example:bom at 5.0, but its version text is not in the project poms",
      ["org.example:bom", "5.0"]),
     ("parent_denied", "the parent org.example:parent matches policy.deny", ["org.example:parent"]),
@@ -498,3 +517,16 @@ def test_three_pods_review_sentences():
     assert i18n.ko_text(chain.claim_refusal({"pid": 7, "host": "pod-a", "started": "2026-11-17T00:00:00Z"})) == (
         "다른 프로세스가 이미 이 실행을 진행하고 있습니다(pid 7, 호스트 pod-a, 시작 2026-11-17T00:00:00Z).")
     assert "라운드 3의 수정본" in i18n.ko_text(graph.CANDIDATE_NOT_VOUCHED.format(r=3))
+
+
+def test_structure_violation_sentences_reach_the_report_in_korean():
+    """Review finding M6: the structure-check sentences of apply.verify_text_only had no rule (shown raw)."""
+    before = b"<project><groupId>a</groupId><version>1</version></project>"
+    cases = [b"<project><groupId>a</groupId><version>1</version><x/></project>",       # structure changed
+             b"<project><groupId>b</groupId><version>1</version></project>",            # text of <groupId>
+             b"<project><groupId>a</groupId>x<version>1</version></project>",           # text between elements
+             b"<project><groupId>a</groupId>"]                                          # unparsable
+    for after in cases:
+        (problem,) = apply_mod._structure_problems("app/pom.xml", before, after)
+        out = i18n.ko_display(problem)
+        assert HANGUL.search(out) and "원문" not in out and "app/pom.xml" in out, (problem, out)

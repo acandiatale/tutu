@@ -577,6 +577,7 @@ class LoopConfig(BaseModel):
         "reactor_duplicate": 0,                      # v2.1k: a pom structure problem — handed over, never asked of the LLM
         "file_lock": 0,                              # v2.1r: target/ locked by another process — environment, not code
         "needs_owner": 0,                            # v2.1y: the LLM declined (blocker outside the project) — handed over
+        "repository_unreachable": 0,                 # a repository did not answer (transfer failure): environment, not code
     })
     # LLM이 만든 의존성 하나가 모든 컴파일 오류를 가릴 수 있으므로 pom 수정
     # 뒤 이 종류의 오류가 나오면 개수와 관계없이 되돌린다
@@ -921,6 +922,11 @@ class IntakeConfig(BaseModel):
     build.xml and the directories, jar coordinates from the jar's pom.properties, the name table, then a sha1 repository
     lookup; unknown jars follow `unknown_jar`. A tree with neither pom.xml nor build.xml is always rejected."""
     ant_to_maven: bool = False                              # true = synthesize a pom.xml for an Ant project and go on (v2.1j)
+    # limits of an uploaded ZIP when it is unpacked (0 = no limit): the whole tree, one entry, and the ratio of unpacked
+    # to packed size. A ZIP over a limit is refused at intake before anything is written (exit 3)
+    max_unpacked_mb: int = Field(default=4096, ge=0)
+    max_entry_mb: int = Field(default=1024, ge=0)
+    max_compression_ratio: int = Field(default=200, ge=0)
     ant_message: str = "Maven 변환 후 신청 부탁드립니다."    # what an Ant project's owner is told when it is refused
     synth_group_id: str = "com.company.migrated"           # placeholder groupId of a synthesized pom (company config overrides)
     synth_version: str = "1.0.0-SNAPSHOT"                   # version of a synthesized pom when build.xml names none
@@ -1266,6 +1272,46 @@ def _apply_env_overrides(data: dict) -> dict:
     return data
 
 
+def _env_override_paths() -> dict[tuple[str, ...], str]:
+    # SBMIG_<섹션>__<키> 환경 변수의 설정 경로와 변수 이름
+    out: dict[tuple[str, ...], str] = {}
+    for key in os.environ:
+        if key.startswith("SBMIG_") and "__" in key:
+            path = tuple(p.lower() for p in key[len("SBMIG_"):].split("__") if p)
+            if path:
+                out[path] = key
+    return out
+
+
+def _leaf_paths(d: dict, prefix: tuple[str, ...] = ()) -> list[tuple[str, ...]]:
+    out: list[tuple[str, ...]] = []
+    for k, v in d.items():
+        path = (*prefix, str(k).lower())
+        if isinstance(v, dict) and v:
+            out.extend(_leaf_paths(v, path))
+        else:
+            out.append(path)
+    return out
+
+
+def merge_explicit(data: dict, explicit: dict, label: str = "config: ") -> dict:
+    """명시한 값(명령줄 옵션, 일괄 실행 매니페스트의 프로젝트별 값)을 환경 변수가 적용된 설정 위에 합친다.
+    환경 변수 값을 바꾸게 되면 INFO 한 줄을 남긴다.
+
+    Merge explicit values (a command-line option, a fleet manifest's per-project override) over a configuration the
+    `SBMIG_<SECTION>__<KEY>` environment values were already applied to; one INFO line per environment value replaced
+    (review 2026-11-18, S3: the documented PC `.env` recipe sets SBMIG_BUILD__SETTINGS_FILE, and `sbmig run --settings`
+    silently lost to it)."""
+    env_paths = _env_override_paths()
+    if env_paths:
+        for leaf in _leaf_paths(explicit):
+            for path, name in sorted(env_paths.items()):
+                n = min(len(path), len(leaf))
+                if path[:n] == leaf[:n]:
+                    log.info("%s%s given explicitly replaces %s from the environment", label, ".".join(leaf), name)
+    return deep_merge(data, explicit)
+
+
 _DOTENV_LOADED: dict[str, float] = {}     # resolved path → mtime it was read at
 _DOTENV_SET: dict[str, str] = {}          # keys this loader put into os.environ (a later edit of the file may update them)
 
@@ -1553,11 +1599,13 @@ def _warn_removed_keys(data: dict) -> list[str]:
 
 def load_config(*paths: str | Path, overrides: Optional[dict] = None, repo_root: Optional[Path] = None) -> Config:
     """설정을 읽어 합친다.
-    순서는 default.yml -> 주어진 yml들 -> overrides -> SBMIG_* 환경 변수 -> `${VAR}` 치환이다.
+    순서는 default.yml -> 주어진 yml들 -> SBMIG_* 환경 변수 -> overrides(명시한 값) -> `${VAR}` 치환이다.
     모든 명령과 sbmig.api.migrate가 이 함수로 시작하며, .env는 그 전에 환경 변수로 읽힌다.
 
-    Load default.yml, then each given yml (artifacts yml, site yml ...), then dict overrides, then env
-    (`.env` files are read into the environment first, see `load_dotenv_files`)."""
+    Load default.yml, then each given yml (artifacts yml, site yml ...), then env (`.env` files are read into the
+    environment first, see `load_dotenv_files`), then dict overrides — an explicit value (a command-line option, an API
+    argument) beats an `SBMIG_<SECTION>__<KEY>` environment value, with one INFO line when it replaces one (review
+    2026-11-18, S3); the environment still beats the yml files."""
     load_dotenv_files()
     data: dict = {}
     warnings: list[str] = []
@@ -1570,9 +1618,10 @@ def load_config(*paths: str | Path, overrides: Optional[dict] = None, repo_root:
     warnings += _warn_unknown_keys(data)
     # the SBMIG_<SECTION>__<KEY> overrides (k8s ConfigMap env, 2026-11-05): a mistyped name is reported the same way
     warnings += _warn_unknown_keys(_env_override_dict(), label="env override SBMIG_*__*: ")
-    if overrides:
-        data = deep_merge(data, overrides)
     data = _apply_env_overrides(data)
+    # 명령줄 옵션처럼 명시한 값은 SBMIG_<섹션>__<키> 환경 변수보다 우선하므로 환경 변수를 적용한 뒤에 합친다
+    if overrides:
+        data = merge_explicit(data, overrides, "config: ")
     data = _expand_env(data)
     if repo_root:
         data["repo_root"] = str(repo_root)

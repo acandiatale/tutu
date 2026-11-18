@@ -43,6 +43,8 @@ spec:
         - name: build
           image: CHANGE_ME_REGISTRY/sbmig:CHANGE_ME_TAG                 # 웹 파드와 같은 이미지·같은 태그(40-deployment.yaml) — 인프라팀이 push 한 전체 이름
           imagePullPolicy: Always                                       # 빌드 파드가 뜰 때마다 레지스트리와 대조해 바뀐 이미지만 새로 받는다. 레지스트리 없이 노드에 직접 적재하면 Never (README §1.1)
+          # 이미지를 다시 올린 뒤 웹 파드를 재시작하기 전에 만들어진 빌드 파드는 웹 파드와 코드가 달라 시작하자마자 거절한다
+          # ("the web pod and the build pod run different images …"). 웹 파드를 재시작하고 그 프로젝트를 다시 올린다(README §1)
           command: ["python", "-m", "sbmig.web.worker"]      # v2.1z-ac Worker (입력 검증 → sbmig run → 비밀 정제 → job-status.json). 인프라 one-Job 모델은 80-build-job.template
           env:
             # ── Worker 틀 규칙(sbmig.web.k8s validate_worker_template): envFrom 금지 — 변수마다 출처를 적는다. 이름에 TOKEN / PASSWORD / SECRET /

@@ -827,6 +827,15 @@ def _env_check(run_dir: Path, record: contract.RequestRecord, environ: dict[str,
     return check_environment(record, state, environ, repo_root)
 
 
+def started_attempt(environ: dict[str, str]) -> int | None:
+    """Main이 ``SBMIG_JOB_ATTEMPT``로 넘긴 이 Job의 시도 번호를 반환한다. 없거나 숫자가 아니면 None이다.
+
+    The attempt this Job was created for (`SBMIG_JOB_ATTEMPT`, set by Main); None when absent or not a positive number (a
+    Job made by an older Main). Review 2026-11-18, W6: a status file without an attempt matched every later attempt."""
+    raw = (environ.get(contract.ATTEMPT_ENV) or "").strip()
+    return int(raw) if raw.isdigit() and int(raw) >= 1 else None
+
+
 def _refuse(run_dir: Path, run_id: str, reason: str, attempt: int | None, action: str | None = None) -> int:
     _say(f"REFUSED: {reason}")
     _journal(run_dir, "worker_refused", {"run_id": run_id, "reason": reason, **({"action": action} if action else {})})
@@ -899,24 +908,32 @@ def main(argv: list[str] | None = None, *, environ: dict[str, str] | None = None
         _say(f"REFUSED: {reason}")
         _journal(run_dir, "worker_refused", {"run_id": run_id, "reason": reason})
         return 3
+    # Main이 넘긴 이 Job의 시도 번호다. 제어 상태를 읽기 전에 거절해도 결과 파일에 이 번호를 적는다
+    started_for = started_attempt(env)
     record = contract.RequestRecord.read(run_dir)
     if record is None:
-        return _refuse(run_dir, run_id, REFUSE_NO_REQUEST, None, action)
+        return _refuse(run_dir, run_id, REFUSE_NO_REQUEST, started_for, action)
     if action == contract.ACTION_REMEDIATION_RESUME:
         try:
             resume_state = contract.ControlState.read(run_dir, contract.RESUME_STATE_FILE)
         except Exception:  # noqa: BLE001 — unreadable = not recorded by Main: refuse
             resume_state = None
         if resume_state is None or resume_state.action != action:
-            return _refuse(run_dir, run_id, REFUSE_NO_RESUME, None, action)
-        attempt = int(resume_state.attempt)
-        # 재개는 이관 zip을 읽지 않으므로 sha256은 확인하지 않는다
-        problems = contract.verify_request(record, repo_root, None, run_id)
+            return _refuse(run_dir, run_id, REFUSE_NO_RESUME, started_for, action)
+        attempt = started_for if started_for is not None else int(resume_state.attempt)
+        # 재개는 이관 zip을 읽지 않으므로 sha256은 확인하지 않는다.
+        # 설정 해시와 버전은 이 재개 Job을 만든 Main이 기록한 값과 비교한다
+        problems = contract.verify_request(record, repo_root, None, run_id, pinned=resume_state)
         if not (run_dir / "remediation" / "state.json").is_file():
             problems.append(REFUSE_NO_CHAIN)
     else:
-        attempt = int(record.attempt)
-        problems = contract.verify_request(record, repo_root, Path(zip_path), run_id)
+        attempt = started_for if started_for is not None else int(record.attempt)
+        try:
+            created_by = contract.ControlState.read(run_dir)
+        except Exception:  # noqa: BLE001 - 읽지 못하면 접수 때 고정한 값과 비교한다
+            created_by = None
+        # 설정 해시와 버전은 이 Job을 만든 Main이 creating과 함께 기록한 값과 비교한다
+        problems = contract.verify_request(record, repo_root, Path(zip_path), run_id, pinned=created_by)
     if problems:
         return _refuse(run_dir, run_id, "; ".join(problems), attempt, action)
     # 파일이 같아도 환경 변수가 다르면 다른 설정으로 실행되므로 Job을 만든 Main의 env_pins와 비교한다

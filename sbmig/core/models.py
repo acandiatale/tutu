@@ -144,6 +144,10 @@ class BlockReason(str, Enum):
     # v2.1k (2026-10-29): a module reached twice in the reactor ("Project … is duplicated in the reactor") — a pom structure
     # problem the intake de-duplicates; when it still reaches the build it is handed over, never given to the LLM
     REACTOR_DUPLICATE = "reactor_duplicate"
+    # 저장소가 응답하지 않아 의존성을 받지 못한 경우다. 프로젝트 문제가 아니므로 LLM에 요청하지 않는다
+    # a repository did not answer (connect timed out, 5xx, "Could not transfer artifact"): not "not found" — no LLM try,
+    # nothing credited to a stored script; the run says the repository was unreachable
+    REPOSITORY_UNREACHABLE = "repository_unreachable"
     # Windows에서 다른 프로세스가 target/의 파일을 잠가 빌드가 실패한 경우다.
     # 빌드 환경 문제이므로 LLM에 요청하지 않는다
     # v2.1r (2026-10-30): a file under target/ locked by another process (antivirus / IDE / a leftover JVM) — an

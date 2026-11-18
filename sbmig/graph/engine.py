@@ -156,6 +156,17 @@ def _journal_node_end(orch: Orchestrator, node: str, out: dict) -> None:
         log.debug("graph_node_end journal line for %s not written", node, exc_info=True)
 
 
+def _abort_text(orch: Orchestrator, e: BaseException) -> str:
+    """노드에서 던진 예외를 화면의 단계 메모로 쓸 문장으로 바꾼다. 실행 중단 예외는 클래스 이름 없이 사유만 쓴다.
+
+    The stage note of a raising node: a run abort (`_RunAborted`) shows its reason only (review 2026-11-18 S2: the rail
+    showed "중단: _RunAborted: …"); any other exception keeps `<class>: <message>` (an internal error names its class)."""
+    from sbmig.loop.orchestrator import _RunAborted
+    if isinstance(e, _RunAborted):
+        return str(e) or getattr(orch, "abort_reason", None) or "aborted"
+    return f"{type(e).__name__}: {e}"
+
+
 def _staged(name: str | Callable[[MigrationState], str], fn: Callable[[MigrationState], dict],
             orch: Orchestrator | None = None) -> Callable[[MigrationState], dict]:
     """노드 함수를 로그 단계(`name` 또는 `name(state)`) 안에서 실행하는 함수를 만든다.
@@ -175,7 +186,7 @@ def _staged(name: str | Callable[[MigrationState], str], fn: Callable[[Migration
             return out
         except BaseException as e:            # a raising node (phase abort, internal error) still gets its end line (Job-mode UI)
             if orch is not None:
-                _journal_node_end(orch, node_id, {"aborted": f"{type(e).__name__}: {e}"[:300]})
+                _journal_node_end(orch, node_id, {"aborted": _abort_text(orch, e)[:300]})
             raise
         finally:
             reset_stage(token)
@@ -397,8 +408,13 @@ def build_graph(orch: Orchestrator, flow: str | None = None) -> Any:
         report = _report(orch)
         # the inline engine runs step_finish only after the phase loop; a user stop (stop.request) skips the final build —
         # also when the request arrived during the last phase (the fix loop leaves between build rounds, then lands here)
+        # 최종 빌드가 모두 끝난 뒤의 요청은 무시하고, 루프를 멈춘 요청은 다른 사유로 중단한다(inline 엔진과 같은 규칙)
         if not holder["user_stopped"] and stop_requested(orch):
-            user_stop("finalize", None)
+            late = orch.late_stop(report) if holder["planned"] else "aborted"
+            if not holder["planned"]:
+                user_stop("finalize", None)
+            elif late == "aborted":
+                holder["user_stopped"] = True
         if holder["planned"] and not holder["user_stopped"]:
             orch.step_finish(report, _stop_phase(state))
         return {"phase": None, "summary": _summary(orch, report)}
@@ -487,6 +503,9 @@ def run_graph(orch: Orchestrator, stop_after: Phase | None = None, dry_run: bool
     `orch.report`. `flow` picks the graph (`full` | `remediation`)."""
     flow = _check(orch, stop_after, dry_run, flow)
     with _guard(orch, dry_run, flow):
+        # 접수에서 거절한 작업 공간은 그 사유로 중단하고 노드를 실행하지 않는다
+        if orch.refused_at_intake(orch.report):
+            return _report(orch)
         graph = build_graph(orch, flow)
         graph.invoke(_initial_state(orch, stop_after, dry_run), config={"recursion_limit": RECURSION_LIMIT})
     return _report(orch)
@@ -504,6 +523,9 @@ def stream_graph(orch: Orchestrator, stop_after: Phase | None = None,
     `remediation` yields intake, remediation and finalize."""
     flow = _check(orch, stop_after, dry_run, flow)
     with _guard(orch, dry_run, flow):
+        # 접수에서 거절한 작업 공간은 그 사유로 중단하고 노드를 실행하지 않는다
+        if orch.refused_at_intake(orch.report):
+            return
         graph = build_graph(orch, flow)
         for chunk in graph.stream(_initial_state(orch, stop_after, dry_run), stream_mode="updates",
                                   config={"recursion_limit": RECURSION_LIMIT}):

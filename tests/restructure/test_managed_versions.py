@@ -134,3 +134,17 @@ def test_msa_prefers_the_declaring_services_chain(tmp_path: Path, cfg: Config) -
     assert versions(ws, "order-service/pom.xml")[JAXB_API] is None
     assert versions(ws, "user-service/pom.xml")[JAXB_API] == "3.0.1"
     assert res.managed_versions_dropped == [f"{JAXB_API}: 3.0.1 → managed 4.0.2 (order-service/pom.xml)"]
+
+
+def test_a_dead_version_property_a_resource_references_stays(tmp_path: Path, cfg: Config) -> None:
+    """Review P5 (neighbour): the property of a dropped version stays when a filtered resource names it."""
+    cfg.layout.drop_managed_versions = "gte"  # type: ignore[assignment]
+    files = legacy_files()
+    files["src/main/resources/version.properties"] = "jaxb=${jaxb.version}\n"
+    ws = make_ws(tmp_path, files, "deadres")
+    prof = profile(ws, CaseType.PURE_JAVA, artifact_id="tool", version="1", base_package="com.acme.tool")
+    res = Restructurer().apply(ws, prof, cfg, mode="layout",
+                               params={"effective_pom": lambda: {"managed": MANAGED, "by_module": {}}})
+    assert res.ok, res.error
+    assert "<jaxb.version>3.0.2</jaxb.version>" in (ws.root / "pom.xml").read_text()
+    assert res.version_properties_removed == []

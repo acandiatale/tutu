@@ -112,11 +112,12 @@ def test_an_in_place_change_with_the_configured_context(tmp_path, cfg):
     assert "seconds" in ev
 
 
-def test_nothing_changed_gives_an_empty_index(tmp_path, cfg):
+def test_nothing_changed_writes_no_record(tmp_path, cfg):
+    # review 2026-11-18, R4: an empty index made the page show an empty block (this test pinned the empty index)
     ws = make_ws(tmp_path, {"pom.xml": "<project/>\n"})
-    write_code_diff(ws, cfg)
-    index, patch = load(ws)
-    assert index["files"] == [] and index["summary"]["files"] == 0 and patch == b"" and index["moves"] == []
+    assert write_code_diff(ws, cfg) is None
+    assert not (ws.run_dir / "codediff").exists()
+    assert events(ws, "code_diff_skipped")[-1]["reason"] == "the run changed no file"
 
 
 def test_a_restructure_move_with_some_files_changed(tmp_path, cfg):
@@ -162,6 +163,7 @@ def test_same_named_files_of_two_packages_find_their_own_origin(tmp_path, cfg):
         move(ws, f"src/com/{pkg}/Same.java", f"m/src/main/java/com/{pkg}/Same.java")
     put(ws, "m/src/main/java/com/a/Util.java", util_a.replace("return 1", "return 10"))
     put(ws, "m/src/main/java/com/b/Util.java", util_b.replace("\"g\"", "\"G\""))
+    ws.commit("migration")                       # the migration commits what it changed
     write_code_diff(ws, cfg)
     index, _ = load(ws)
     for pkg in ("a", "b"):
@@ -178,6 +180,7 @@ def test_a_new_file_is_not_paired_with_an_unrelated_vanished_one(tmp_path, cfg):
     ws = make_ws(tmp_path, {"pom.xml": "<project/>\n", "old/Config.java": old})
     ws.delete("old/Config.java")
     put(ws, "new/Config.java", new)
+    ws.commit("migration")                       # the migration commits what it changed
     write_code_diff(ws, cfg)
     index, patch = load(ws)
     assert by_path(index, "new/Config.java")["status"] == "added"
@@ -192,6 +195,7 @@ def test_a_moved_and_edited_file_is_paired_by_similarity(tmp_path, cfg):
     ws = make_ws(tmp_path, {"pom.xml": "<project/>\n", "src/x/Thing.java": f"class Thing {{\n{body}}}\n"})
     ws.delete("src/x/Thing.java")
     put(ws, "mod/src/main/java/x/Thing.java", f"class Thing {{\n{body}  int extra = 1;\n}}\n")
+    ws.commit("migration")                       # the migration commits what it changed
     write_code_diff(ws, cfg)
     index, _ = load(ws)
     t = by_path(index, "mod/src/main/java/x/Thing.java")
@@ -223,6 +227,7 @@ def test_added_deleted_binary_and_empty_files(tmp_path, cfg):
     ws.delete("gone-empty.txt")
     put(ws, "src/New.java", "class New {}\n")
     put(ws, "src/Empty.txt", "")
+    ws.commit("migration")                       # the migration commits what it changed
     write_code_diff(ws, cfg)
     index, patch = load(ws)
     a = by_path(index, "lib/a.jar")
@@ -252,6 +257,7 @@ def test_encodings_line_ends_and_names(tmp_path, cfg):
     put(ws, "src/NoEol.txt", "x\nz")
     move(ws, "docs/설명 파일.txt", "my docs/설명 파일.txt")
     put(ws, "my docs/설명 파일.txt", "하나\n둘\n셋\n")
+    ws.commit("migration")                       # the migration commits what it changed
     write_code_diff(ws, cfg)
     index, patch = load(ws)
     k = by_path(index, "src/K.java")
@@ -281,7 +287,9 @@ def test_uncommitted_changes_are_included_and_git_state_is_untouched(tmp_path, c
     status = ws._git("--no-optional-locks", "status", "--porcelain", "-z", "--untracked-files=all").stdout
     write_code_diff(ws, cfg)
     index, _ = load(ws)
-    assert by_path(index, "a.txt")["status"] == "modified" and by_path(index, "untracked.txt")["status"] == "added"
+    # an uncommitted change to a committed file stays; a file the last commit does not have is a build leftover
+    # (review 2026-11-18, R3: this test listed untracked.txt as "added" before)
+    assert by_path(index, "a.txt")["status"] == "modified" and [f["path"] for f in index["files"]] == ["a.txt"]
     assert ws.head() == head and (ws.root / ".git/index").read_bytes() == index_bytes
     assert ws._git("--no-optional-locks", "status", "--porcelain", "-z", "--untracked-files=all").stdout == status
 
@@ -295,6 +303,7 @@ def test_build_output_ignored_dirs_and_mode_only_changes_are_not_listed(tmp_path
     os.chmod(ws.root / "run.sh", 0o755)
     ws.ignored_dirs = {"boot/bin"}
     put(ws, "boot/bin/pom.xml", "<project><x/></project>\n")
+    ws.commit("migration")                       # the migration commits what it changed
     write_code_diff(ws, cfg)
     index, _ = load(ws)
     assert [f["path"] for f in index["files"]] == ["mod/pom.xml"]
@@ -339,6 +348,7 @@ def test_max_files_keeps_changed_files_first(tmp_path, cfg, monkeypatch):
     put(ws, "a/F3.txt", "3\nmore\n")
     put(ws, "z.txt", "new\n")
     monkeypatch.setattr(cd, "MAX_FILES", 3)
+    ws.commit("migration")                       # the migration commits what it changed
     write_code_diff(ws, cfg)
     index, _ = load(ws)
     assert index["files_total"] == 5 and index["summary"]["files"] == 5
@@ -377,8 +387,9 @@ def test_without_a_git_repository_nothing_is_written(tmp_path, cfg):
 
 def test_a_failing_git_call_leaves_no_artifact(tmp_path, cfg, monkeypatch):
     ws = make_ws(tmp_path, {"pom.xml": "<project/>\n"})
-    write_code_diff(ws, cfg)                                   # an earlier artifact is removed too
     put(ws, "pom.xml", "<project><x/></project>\n")
+    write_code_diff(ws, cfg)                                   # an earlier artifact is removed too
+    assert (ws.run_dir / "codediff" / "index.json").is_file()
 
     def boom(*a, **k):
         raise GitError("git write-tree failed: simulated")

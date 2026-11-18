@@ -27,3 +27,12 @@ def same_version(a: str | None, b: str | None) -> bool:
 def same_ga(a: str | None, b: str | None) -> bool:
     """두 g:a가 대소문자와 앞뒤 공백만 다르면 True를 반환한다."""
     return ga_key(a) == ga_key(b)
+
+
+def finding_key(kind: str | None, cve: str | None, identifier: str | None) -> str:
+    """같은 취약점인지 가리는 키를 반환한다. 종류, 취약점 ID, 대소문자를 무시한 식별자이고 버전은 넣지 않는다.
+
+    The identity of "the same finding" for counting what was fixed: kind, finding id and the case-folded identifier,
+    no version. A finding a complete final scan still reports for the library at any version (or in another spelling
+    of the version) is not fixed. `graph.fill_counts` and the Korean report both use this key."""
+    return f"{kind or ''}|{cve or ''}|{ga_key(identifier)}"

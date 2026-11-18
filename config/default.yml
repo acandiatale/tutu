@@ -45,6 +45,11 @@ intake:
   #   true: build.xml의 javac / war 설정과 폴더 구조를 읽어 pom.xml을 만든 뒤 진행한다.
   #         변환 기능은 지우지 않고 남겨 두었다. 다시 받기로 하면 이 값만 true로 바꾼다.
   ant_to_maven: false
+  # 올린 ZIP을 풀 때의 한도(0이면 한도 없음). 넘으면 아무것도 쓰지 않고 접수에서 끝낸다(종료 코드 3).
+  # 작은 ZIP이 풀리면서 공유 볼륨을 가득 채우는 것을 막는다.
+  max_unpacked_mb: 4096            # 풀린 전체 크기(MiB)
+  max_entry_mb: 1024               # 파일 하나의 풀린 크기(MiB)
+  max_compression_ratio: 200       # 풀린 크기 / ZIP 크기의 최대 배수
   # Ant 프로젝트를 받지 않을 때 신청자에게 보여 주는 안내 문구.
   ant_message: "Maven 변환 후 신청 부탁드립니다."
   # Ant 프로젝트에 만드는 pom.xml의 groupId. 지금 값은 플레이스홀더이므로
@@ -498,6 +503,7 @@ loop:
     external_api_incompatible: 2   # 라이브러리 API가 새 버전과 맞지 않음
     artifact_not_found: 2          # 의존성을 저장소에서 찾지 못함
     parent_not_found: 0            # 사내 부모 pom을 찾지 못함: settings / Nexus 문제라 코드로 고칠 수 없다
+    repository_unreachable: 0      # 저장소가 응답하지 않아 받지 못함(시간 초과 등): 프로젝트 문제가 아니다
     plugin_incompatible: 2         # Maven 플러그인이 JDK 21과 맞지 않음
     unsupported_source: 0          # 지원하지 않는 소스 수준
     encoding: 0                    # 인코딩 문제(재구성과 구조 검토가 따로 다룬다)

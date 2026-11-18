@@ -13,8 +13,9 @@
 0. load_dotenv_files()      .env 들을 os.environ 으로 읽는다 (설정 dict 에는 넣지 않는다)
 1. config/default.yml       항상 먼저 (DEFAULT_CONFIG_PATH = <repo>/config/default.yml)
 2. --config a.yml --config b.yml ...   주어진 순서대로 deep_merge (뒤의 것이 이김)
-3. overrides (dict)         CLI 옵션(--java-home, --settings, --llm-provider ...), 플릿 매니페스트의 프로젝트별 overrides
-4. SBMIG_<SECTION>__<KEY>   환경 변수 덮어쓰기 (밑줄 두 개 = 한 단계 중첩, 값은 YAML 로 해석)
+3. SBMIG_<SECTION>__<KEY>   환경 변수 덮어쓰기 (밑줄 두 개 = 한 단계 중첩, 값은 YAML 로 해석)
+4. overrides (dict)         명시한 값: CLI 옵션(--java-home, --settings, --llm-provider ...), 플릿 매니페스트의 프로젝트별 overrides.
+                            환경 값보다 이긴다(바꾼 값마다 INFO "config: <키> given explicitly replaces <변수> from the environment")
 5. ${VAR} / ${VAR:-기본값}  문자열 안의 환경 변수 펼침 (없고 기본값도 없으면 그대로 남음)
 6. 옛 키 경고 (_warn_removed_keys) → Config.model_validate (pydantic, 모르는 값은 여기서 실패)
 ```
@@ -52,7 +53,7 @@
 | `target` | 목표 버전(정보용 문자열). Java 21 / Boot 4.1.0 / Framework 7.0.x | 보통 그대로: `target.java_version`, `target.spring_boot_version` |
 | `artifacts` | 회사 부모 pom 과 사내 아티팩트. 루트 pom 의 부모, boot 모듈·그 외 모듈의 부모, 필수 2개, 선택 8개 | `artifacts.parent`, `artifacts.boot_parent`, `artifacts.comp_parent`, `artifacts.mandatory`, `artifacts.optional`, `artifacts.parent_manages_spring_boot` |
 | `layout` | 재구성 모양: 모듈 이름(`{name}-boot` / `-back` / `-front`), Boot as-is 를 제자리로 둘지, JSP 패키징, 다중 모듈 정책, 버전 정리 규칙, 레거시 Spring 컨텍스트 스위치(`layout.legacy_context.*`) | `layout.boot_module`, `layout.comp_module`, `layout.front_module`, `layout.boot_as_is`, `layout.multi_module_policy`, `layout.wire_bundled_jars` |
-| `intake` | 접수 규칙: Ant 거절과 안내 문구(스위치를 켜면 pom 합성), 동봉 jar 스캔, jar 이름 표, ADF 정책 | `intake.ant_to_maven`(기본 false = 거절), `intake.ant_message`, `intake.synth_group_id`, `intake.unknown_jar`, `intake.bundled_jars`, `intake.adf_policy` |
+| `intake` | 접수 규칙: 올린 ZIP 의 풀기 한도, Ant 거절과 안내 문구(스위치를 켜면 pom 합성), 동봉 jar 스캔, jar 이름 표, ADF 정책 | `intake.max_unpacked_mb`(4096), `intake.max_entry_mb`(1024), `intake.max_compression_ratio`(200; 셋 다 0 = 없음), `intake.ant_to_maven`(기본 false = 거절), `intake.ant_message`, `intake.synth_group_id`, `intake.unknown_jar`, `intake.bundled_jars`, `intake.adf_policy` |
 | `framework` | 사내 프레임워크 프로젝트 판정과 줄인 실행(범위 `jdk-jakarta`). 비우면 검사하지 않는다([13](13-framework-projects.md)) | `framework.artifacts`(회사 좌표, 회사 yml에만), `framework.scope`, `framework.transitive`, `framework.recipe_sets` |
 | `openrewrite` | OpenRewrite 1회 실행: 플러그인·레시피 BOM 버전, 레시피 세트, JVM 옵션, 제외 파일 | `openrewrite.recipes.jakarta`, `openrewrite.recipes.extra`, `openrewrite.jvm_args`, `openrewrite.timeout_minutes`, `openrewrite.recipe_bom_version` |
 | `build` | Maven 호출: `mvn` 경로, settings.xml, JDK, 테스트 건너뛰기, 타임아웃, 저장소 조회 주소, 파일 잠금 재시도, 실행 전후 훅 | `build.mvn`, `build.settings_file`, `build.java_home`, `build.repository_url`, `build.local_repo`, `build.non_filtered_extensions` |
@@ -65,7 +66,7 @@
 | `libraries` | 의존성 버전 정책과 jakarta 빌드 찾기: 저장소 조회, 회사 표 파일, Nexus 검색, jar 스캔 한도 | `libraries.lookup`, `libraries.company_file`, `libraries.discover_jakarta_builds`, `libraries.nexus_search` |
 | `kb` | 파일 KB 위치·비밀 마스킹 규칙·잠금 대기 | `kb.dir`, `kb.redact_file`, `kb.lock_timeout_seconds` |
 | `plan` | 계획: 레시피 카탈로그 파일, LLM 계획 조언자, 변환 직후 컴파일 여부 | `plan.catalog_file`, `plan.advisor`, `plan.compile_after_rewrite` |
-| `fleet` | 일괄 실행: 순서, 재시도, 사전 점검, 인프라 차단기, 정리, 요약 형식 | `fleet.order`, `fleet.preflight`, `fleet.cleanup`, `fleet.min_free_gb`, `fleet.max_llm_calls_total` |
+| `fleet` | 일괄 실행: 순서, 재시도, 사전 점검, 인프라 차단기, 정리, 요약 형식. `fleet.min_free_gb` 는 웹 업로드의 여유 공간 하한이기도 하다(모자라면 HTTP 507, 0 = 안 봄) | `fleet.order`, `fleet.preflight`, `fleet.cleanup`, `fleet.min_free_gb`, `fleet.max_llm_calls_total` |
 | `report` | 보고서: 형식, 결과 zip, diff 포함, 언어(report.md 만: `ko` = 요청자용 한국어 안내서 `sbmig/report/guide_ko.py`, `en` = 진단용 배치 `sbmig/report/markdown.py`) | `report.language`, `report.formats`, `report.zip_result` |
 | `advisories` | EOL 라이브러리 권고(안내만, 차단 없음): 기본 파일, 회사 추가 파일, 항목 끄기 | `advisories.extra_files`, `advisories.policy_overrides`, `advisories.enabled` |
 | `externalized` | 코드가 읽지만 어떤 리소스도 정의하지 않는 설정 키 → 자리표시자 블록과 인수인계 목록 | `externalized.enabled`, `externalized.sentinel`, `externalized.rules_file` |
@@ -75,7 +76,7 @@
 - `build.skip_test_compile: true` — 모든 빌드가 `-Dmaven.test.skip=true` 로 돈다(테스트는 범위 밖).
 - `loop.phases.verify` 의 기본 `max_iterations` 는 `config/default.yml` 에서 50 이다. 다른 단계(`jdk21`, `spring`, `restructure`)는 꺼져 있다.
 - `loop.max_llm_calls: 0` 은 "상한 없음", `-1` 은 "LLM 호출 전혀 없음" 이다.
-- `loop.blocked_policy` 는 차단 이유별 LLM 시도 수다(`reactor_duplicate`, `file_lock`, `needs_owner`, `parent_not_found` 는 0 = LLM 에 묻지 않음).
+- `loop.blocked_policy` 는 차단 이유별 LLM 시도 수다(`reactor_duplicate`, `file_lock`, `needs_owner`, `parent_not_found`, `repository_unreachable` 은 0 = LLM 에 묻지 않음).
 - `plan.compile_after_rewrite: false` — 재구성 전에는 빌드하지 않는다.
 - `llm.case_thread: false` — 케이스 스레드는 기본 꺼짐.
 - `openrewrite.recipe_bom_version` 은 3.37.0 으로 고정(아래 4절).

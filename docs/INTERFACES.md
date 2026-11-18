@@ -17,15 +17,15 @@ type: `sbmig/core/models.py`, `sbmig/core/interfaces.py`, `sbmig/core/config.py`
 | transform (OpenRewrite) | Base "Plan, transform"; v2.1l "Recipes"; v2.1o (Framework 7); v2.1w |
 | restructure & layout | Base "Restructure and the company layout"; v2.1g, v2.1h (JSP jakarta), v2.1l / v2.1s (version pins), v2.1m (resource filtering), v2.1n (optional triggers), v2.1o / v2.1p / v2.1t (parent-chain facts, BOM imports), v2.1q (embedded Tomcat), v2.1x (legacy Spring context), v2.1z-j (bundled jars), v2.1z-k, v2.1z-l |
 | structure review | v2 "Structure review (R)"; v2.1u … v2.1y (review prompt, invariant check, unsupported issues); v2.1z-h (review guard) |
-| verify & script fix loop | Base "Fix-loop invariants"; v2 "Script fix loop (L)", "Script contract (S)", "As built (step 1)"; v2.1d (versions, operator checks), v2.1l / v2.1m pre-tries, v2.1r (file locks), v2.1y (declines, idempotency), v2.1z (ladder caps, case keys), v2.1z-e (jakarta discovery), v2.1z-i, v2.1z-n, v2.1z-y, v2.1z-z, v2.1z-aa; v2.1z-ak (reduced run: as-is chain facts, framework guard) |
+| verify & script fix loop | Base "Fix-loop invariants"; v2 "Script fix loop (L)", "Script contract (S)", "As built (step 1)"; v2.1d (versions, operator checks), v2.1l / v2.1m pre-tries, v2.1r (file locks), v2.1y (declines, idempotency), v2.1z (ladder caps, case keys), v2.1z-e (jakarta discovery), v2.1z-i, v2.1z-n, v2.1z-y, v2.1z-z, v2.1z-aa; v2.1z-ak (reduced run: as-is chain facts, framework guard); v2.1z-av (stop around the final build, the last unhelpful try rolled back, `repository_unreachable`, cut answers, managed versions per parent) |
 | cases & KB | v2 intro + "Script KB (K)"; Base "KB plumbing"; v2.1e (learning records), v2.1f (probable fixers), v2.1z (masked case keys), v2.1z-ae / v2.1z-af (several pods on one KB), v2.1z-ai (rule versions, member-symbol keys, re-sign, exact-key guard) |
 | LLM gateway | Base "LLM client tier and adapter seams"; v2.1z-m (agent gateway, token exchange), v2.1z-n, v2.1z-o, v2.1z-p (case thread), v2.1z-q, v2.1z-x, v2.1z-af (busy wait, auth retries) |
 | report & result line | Base "Report and the result line", "Advisories and the Handover"; v2 "As built (step 1)" (`review=`); v2.1d (`major=`); remediations (`remediation=`); v2.1z-ak (`scope=`, the framework block) |
 | fleet | Base "Fleet" |
-| web app | Base "Graph engine", "Web app"; v2.1z-w (page, server-chosen configs), v2.1z-ae (queue / slots on the page), v2.1z-af (page re-attach), v2.1z-aj (run flows, page header); v2.1z-ak (framework label, skipped stages); v2.1z-ao (admin page `/admin`: token usage per project, log ZIPs); v2.1z-au (the code-change view: artifact `codediff/`, `/api/runs/{id}/codediff`, the page block) |
-| Job mode (Main / Worker, slots, env pins) | v2.1z-z "k8s Job dispatch mode", v2.1z-ab (kubeconfig, template ConfigMap), v2.1z-ac (Main ↔ Worker contract), v2.1z-ad (end confirmation, ownership, env pins, write-time redaction), v2.1z-ae (parallel slots), v2.1z-af, v2.1z-aq (a build pod that does not start: stop, the reason notice) |
+| web app | Base "Graph engine", "Web app"; v2.1z-w (page, server-chosen configs), v2.1z-ae (queue / slots on the page), v2.1z-af (page re-attach), v2.1z-aj (run flows, page header); v2.1z-ak (framework label, skipped stages); v2.1z-ao (admin page `/admin`: token usage per project, log ZIPs); v2.1z-au (the code-change view: artifact `codediff/`, `/api/runs/{id}/codediff`, the page block); v2.1z-av (cross-site requests refused, the free-space floor for uploads, unpacking limits) |
+| Job mode (Main / Worker, slots, env pins) | v2.1z-z "k8s Job dispatch mode", v2.1z-ab (kubeconfig, template ConfigMap), v2.1z-ac (Main ↔ Worker contract), v2.1z-ad (end confirmation, ownership, env pins, write-time redaction), v2.1z-ae (parallel slots), v2.1z-af, v2.1z-aq (a build pod that does not start: stop, the reason notice); v2.1z-av (the build identity, pins taken at Job creation, the resume attempt) |
 | deploy | v2.1z-s (build hooks), v2.1z-t (one Job per request), v2.1z-u, deploy (baked config, container paths), v2.1z-ad "Shipped mode" |
-| remediations | remediations; v2.1z-ak (in-house group `framework`); v2.1z-am (case-insensitive matching, per-module in-house split, module sources, variant overrides, 들어온 경로); v2.1z-an (override proposals in module poms, the owners' choice) |
+| remediations | remediations; v2.1z-ak (in-house group `framework`); v2.1z-am (case-insensitive matching, per-module in-house split, module sources, variant overrides, 들어온 경로); v2.1z-an (override proposals in module poms, the owners' choice); v2.1z-ar (no approval unless switched on); v2.1z-av (fixed = gone from the rescan, the planner's new residual groups, `remediation.log` for every run) |
 
 ## Base contracts (in force; written before v2)
 
@@ -4623,6 +4623,158 @@ component `CodeDiff` (`mount(host, runId)` / `unmount()`; its own state, its DOM
 `.cdiff`), so a dialog can host it later without a rewrite. It reads `code_diff` from the status the page already
 gets (the SSE `status` event and `GET /api/runs/{id}`). Needs a browser with CSS container queries and `:has()`
 (current Chrome / Edge).
+
+## v2.1z-av — what the whole-code review found
+
+The user (2026-11-18), after a long series of feature rounds: "전체 코드 검사 한번 해보자! 문제될 사항들이 보이는지 비어있는곳이
+있는지!" Seven read-only reviews (the newest changes; the run loop; the LLM / case / KB side; analyze / restructure / build;
+web / Job / deploy; remediation and report; the seams between the parts) plus one pass over the modules nobody had reached.
+Every finding was reproduced before it was reported, and fixed test first. What changed, by area; where an earlier section
+says otherwise, this one counts.
+
+**The run.**
+- *A stop request around the final build* (`Orchestrator.late_stop`, the same in both engines). A planned final build
+  without a result → the run is aborted with `STOP_REQUEST_REASON` as before. The fix loop left because of the request →
+  aborted with `STOP_LOOP_REASON` ("… the fix loop was left early; the last build shows the tree as it was left"); the final
+  build is not repeated when the tree is unchanged since the loop's last build (that build stands as `final_build`).
+  Every planned final build has a result → the request is ignored and the run ends as what it is; a chained remediation
+  still skips itself with `stop_requested`. Journal `stop_request {node: finalize, ignored | after}`.
+- *The last try of a case that did not help is not delivered.* When the fix loop ends, each case's last applied try with
+  the outcome `no_change` or `inconclusive` is rolled back before the final build (`BuildFixLoop._rollback_unhelpful`,
+  journal `script_rollback {where: "loop end"}`, attempt note "rolled back before the final build (it did not help)"). A
+  partial try stays, also when its case did not end blocked. Before a case's next try the rule is unchanged.
+- *`report.final_build` of an MSA run* is the first failing final build when one failed (it was the last one run).
+- *A fixer plugin that returns no proposal* fails that attempt (`apply_failed`), not the run.
+- *Framework guard* (reduced scope): the framework artifacts' versions are compared before and after an attempt with
+  `${…}` resolved through the project's own parent chain, so a version changed through a property of another pom, or a
+  property a framework-matched import uses, is rolled back like a direct change.
+- *Framework check that could not look* (framework artifacts configured, nothing found, the parent pom AND the transitive
+  lookup both unreadable): flag `framework-unchecked` and the Handover line "framework check could not run (…): if this
+  project uses the in-house framework it must not be migrated in full — confirm before using the result". The run goes on
+  in full scope; the exit code is unchanged.
+- *A repository that did not answer is not "not found".* A resolution error with a network cause (time-out, refused or
+  reset connection, unknown host, no route, PKIX, a 5xx) is `BlockReason.REPOSITORY_UNREACHABLE` (`sbmig/triage/blocked.py`
+  `classify_transfer`): `loop.blocked_policy.repository_unreachable: 0`, no LLM try, decided before stored-script reuse so
+  that a rebuild that passes because the network came back credits nothing. 401 / 403 and a "not found" answer keep their
+  reasons. The `sbmig-bundled` pre-try follows the same rule (below).
+- *A restructure that fails leaves the as-is tree.* `Restructurer.apply` records HEAD at its start (when the tree is clean)
+  and, when the step fails after it moved files or made commits, resets to it; the result carries the note "restructure
+  undone: the tree was reset to <sha>, …" (or "restructure not undone: …" when it could not). The orchestrator does the
+  same for a restructure that raises (journal `restructure_reset`).
+- *The stage note of an abort inside the loop* carries the reason only (no exception class name).
+
+**The project side.**
+- *Source-encoding sample*: a module that gets no sample because the total budget (1,500 files) is used up is reported
+  "not sampled" (`ModuleEncoding.not_sampled`); the modules before it keep their result. (It used to raise, and no module
+  got its `project.build.sourceEncoding`.)
+- *Hollow reactor*: a module's build directories (`sourceDirectory`, test sources, `<resources>`, the war plugin's
+  directories) are taken from its parent chain inside the project, the child's own values first.
+- *Optional-artifact bump*: the property edited is the one the module inherits (its own pom, then its parents inside the
+  project); with none there, the literal version is written into the module.
+- *Orphan version properties*: a property is kept when any text file of the project other than the poms holds `${name}`
+  or `@name@` (filtered resources, assembly descriptors); the same for dead version properties.
+- *Pom encoding*: a pom is saved in its declared encoding when that can hold the text, else in the encoding it was read
+  with; character references only as the last resort.
+- *Bundled jars*: content is compared at every candidate name before a jar in `lib/` is reused. The repository lookup has
+  three answers (`restructure.bundled_jars.repository_state_fn`: present / absent / unreadable): an unreadable repository
+  means the jar is left alone with the reason "repository unreadable …"; nothing asks the owners to publish it. The
+  `sbmig-bundled` pre-try of the fix loop asks the same way: an unreadable lookup blocks the case
+  `repository_unreachable` (nothing wired, no LLM try, nothing credited).
+- *`-Werror`*: the compile error's message is the cause line ("error: warnings found and -Werror specified"); refined case
+  keys are unchanged.
+- *Managed versions per company parent*: `ParentChainFacts.root_managed` / `addon_managed` and
+  `managed_for(parent, *, own=False)`. Where the capture after the restructure is unavailable, each pom is judged against
+  the parent it has (the root pom → the base parent, a module → its role parent): the fallback capture, the Spring Cloud
+  BOM import, the as-is version pin, own management entries, and the fix loop's `VersionResolver` (full scope only;
+  a reduced `jdk-jakarta` run keeps taking its facts from the project's own chain).
+- *Binary resources under filtering*: the extensions are collected over every matching file; only the reported list is
+  capped (`ResourcePlan.files_total`).
+
+**LLM answers, cases, the KB.**
+- *Structure review*: the JSON is decoded leniently (control characters inside strings); when only a fragment decodes or
+  the answer was cut (`finish_reason` length / max tokens) the answer is unreadable and the one retry runs (with a request
+  for a shorter answer); two unreadable answers = verdict `failed`. Never a review reduced to its first issue.
+- *Token exchange*: a failed exchange (5xx, 429, 401 / 403 from the token endpoint, a non-JSON body, no `access_token`,
+  a transport error) is `TokenExchangeError`, retried like a chat call, and its text carries `status=<code>` or `cause=…`,
+  so the fix loop counts it as an LLM outage (cool-down), not as an answer. The response body of the token endpoint is
+  never logged.
+- *An answer cut at the token limit* whose `<script>` / `<edits>` block is not closed is not used and not stored; the
+  feedback round asks for a shorter answer; cut again → the attempt fails as an answer problem.
+- *Script blocks*: an opening tag with attributes is recognised; of several blocks the last complete one is taken (warning).
+- *The feedback round failing* keeps the usable part of the first answer.
+- *Requested files* (`<need_files>`) are cut by characters as well as lines; the context message respects
+  `llm.max_context_chars`.
+- *`case.json`*: unknown fields of a script version and of a run record survive a re-save (as top-level ones did).
+  `kb import` writes each script to `fix_v<N>.py` inside its case folder whatever the imported file names.
+- New replay fixtures need an entry in `tests/fix/data/replay_parse_golden.json`.
+
+**Remediation.**
+- *Fixed means gone from the rescan.* One key for "the same finding" (kind, id, case-folded identifier; no version) in
+  the counts and the Korean report: 요약, 조치 완료 and 「해결된 취약점」 show only what a complete final scan no longer
+  reports; a change whose finding is still reported shows "-" with one explaining sentence.
+- *Planner rules that keep a wrong version out* (all end as residuals for a person, groups in `i18n.GROUPS`): a version
+  property that several artifacts share is changed only when the target exists for each of them (`shared_property`); a
+  jump to another major only when a scanner hint names that major (`major_not_hinted`); a version whose first number is
+  over 9999 is a date, never an upgrade (`dated_current`, "(date-stamped)"); a current version that already meets every
+  hint is not bumped (`meets_hint`; a policy pin still wins); a declaration only inside a profile that is not active by
+  default (`profile_only`) and a g:a declared twice in one `<dependencies>` block (`declared_twice`) are not edited.
+- *`remediation/remediation.log`* is written for every remediation that ran: chained, `--flow remediation`, and a resume
+  in a new pod (`chain.remediation_log`). An in-process chained resume builds on `<build.local_repo>-remediation`.
+
+**Reports and the code-change view.**
+- The Korean guide's head says "빌드까지 진행하지 못했습니다" only for a run without any build; an aborted run that built
+  says "실행 중단 (마지막 빌드는 통과했습니다 / 통과하지 않았습니다)".
+- The code-change record lists only paths the last commit has (leftovers of the final build are not "added"; journal
+  field `untracked_left_out`); a run that changed no file writes no record (`code_diff_skipped`, "the run changed no
+  file") and a record of an earlier attempt is removed.
+
+**Web, Job mode, deployment.**
+- *Requests from another web site are refused.* The token guard answers 403 to any request other than GET / HEAD / OPTIONS
+  that carries `Sec-Fetch-Site: cross-site` or an `Origin` whose host is not the request's own (`Host` /
+  `X-Forwarded-Host`; `Origin: null` counts as foreign), before the token and open-mode checks, for every route (runs,
+  remediations, admin). A client that sends neither header (curl, scripts) and the page itself are unaffected.
+  `Sec-Fetch-Site: same-origin` (the browser's own statement) is accepted without comparing hosts, so a proxy that
+  rewrites `Host` cannot lock the page out; on a plain-http page (browsers send no `Sec-Fetch-Site` there) such a proxy
+  needs `X-Forwarded-Host` or the page's host in `SBMIG_WEB_ALLOWED_ORIGINS` (web pod; `host` / `host:port`,
+  comma-separated; `*` switches the check off).
+- *A build identity.* `sbmig_version()` is `<package version>+<12 hex>`: a digest of the `sbmig/**/*.py` files,
+  `config/*.yml` and `knowledge/**` of the running tree, computed once per process (`sbmig version` prints it). Two
+  different builds differ; the same image gives the same value in Main and Worker with no build step.
+- *Pins are taken when the Job is created.* The Main that creates a Job records `config_digests` and `sbmig_version` in
+  `control/state.json` (and `remediation-resume.json`) with the `creating` transition; the Worker compares against those
+  (the ZIP's sha256 stays pinned from intake; a state file without them falls back to `request.json`). A run that waited
+  in line across a web-pod restart, and a remediation resume of a run an older image made, are accepted when Main and
+  Worker agree now. A mismatch is refused (`worker_refused`, exit 3) with "config <name> differs between the web pod and
+  the build pod" / "sbmig version differs: web pod <v>, build pod <v>" and the closing sentence "the web pod and the build
+  pod run different images: restart the web pod after pushing an image (and upload the project again)"; the status
+  carries the Korean sentence as `abort_reason_ko`. Operator rule: after pushing an image, restart the web pod; a run
+  uploaded between the push and the restart is refused and has to be uploaded again.
+- *Unpacking limits of an uploaded ZIP* (`intake.max_unpacked_mb` 4096, `max_entry_mb` 1024, `max_compression_ratio` 200;
+  0 = no limit; the ratio is judged per entry from 1 MiB unpacked, as in the remediation intake): checked from the ZIP's
+  directory before anything is written and again while unpacking. A refused ZIP: `Workspace.intake_refusal`, journal
+  `intake_refused`, the run ends at intake (`run aborted: ZIP refused: …`, exit 3, no Maven, no LLM; `Orchestrator.run`
+  itself honours it); the in-process web answers 400.
+- *Free space before an upload*: `fleet.min_free_gb` (5) is also the floor of the web path: below it an upload is refused
+  with HTTP 507 before the body is read (the page shows a Korean notice); 0 = off. Nothing deletes old run folders
+  (`sbmig clean` is manual and removes `project/` copies and uploads of finished runs only).
+- *Redaction keeps structured files intact*: in `.json` a secret is replaced inside string values only (keys, numbers and
+  layout untouched), `.jsonl` line by line, anything that does not parse as text; a secret value shorter than 6
+  characters is replaced only as a whole token (also at write time).
+- *Remediation resume*: the previous `remediation-job-status.json` is removed before a new attempt is queued; Main passes
+  `SBMIG_JOB_ATTEMPT` and the Worker writes that attempt on every status.
+- *Abort reason of an http-blocked run* reaches the status (`abort_reason`, Korean through the existing rule).
+- *Explicit values win over the environment*: a command-line option (`--settings`, `--java-home`, …) and a fleet
+  manifest's per-project override are applied after the `SBMIG_<SECTION>__<KEY>` values (one INFO line per replaced value);
+  the environment still wins over the yml files.
+- *`sbmig clean`* recognises uploads of today's run ids (`<slug>-YYYYMMDD-HHMMSS-<hex>`), so uploads of running, waiting
+  and (with `--keep-failed`) failed runs are kept.
+- *Image*: the Dockerfile no longer passes `--max-upload-mb` (`SBMIG_MAX_UPLOAD_MB` from the ConfigMap takes effect).
+
+**Left as they are** (the owner's decisions): a second web pod is not detected (the Deployment's `replicas: 1` and
+`strategy: Recreate` are what keeps it at one: do not change them); no retention of old run folders; untracked leftovers
+of the final build outside `target/` (`node/`, `node_modules/`, a shade plugin's `dependency-reduced-pom.xml`) are in
+`result.zip` and in the remediation's source ZIP (not in the code-change view); the admin password in open mode guards the
+aggregated views only.
 
 ## remediations (취약점 조치) — `/api/remediations`, IVAS, version-text fixes + managed overrides (2026-11-11)
 

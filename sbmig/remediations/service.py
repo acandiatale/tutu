@@ -8,7 +8,7 @@
   approvals.jsonl에 기록하고, 하나라도 틀리면 아무것도 쓰지 않는다
 - 재개는 사람이 요청할 때만 한다.
   서버가 재시작되면 QUEUED / RUNNING으로 남은 작업은 INTERRUPTED가 되고 자동으로 다시 실행하지 않는다
-- 단독 업로드는 ``build.local_repo``가 있으면 ``<그 경로>-remediation``을 써서 이관 빌드 파드와 로컬 저장소를 나눈다.
+- 단독 업로드와 in-process 모드의 이어서 진행은 ``build.local_repo``가 있으면 ``<그 경로>-remediation``을 써서 이관 빌드와 로컬 저장소를 나눈다.
   이관 뒤 이어서 실행한 조치를 재개할 때는 그 이관이 쓴 저장소를 그대로 쓴다
 - 승인 기록은 ``claim.json`` 점유가 살아 있으면 거절하고, 웹 파드는 점유하지 않는다
 - 상태는 ``state.json`` 파일에서 읽는다(DB 없음)
@@ -773,9 +773,9 @@ class RemediationManager:
         try:
             try:
                 chain = self._chain_module()
-                # 이어서 진행하는 조치는 그 이관 실행이 쓴 Maven 로컬 저장소를 그대로 쓴다.
-                # -remediation 저장소는 단독 업로드 전용이다
-                cfg = self._config(self.chained_configs(rid))
+                # 이어서 진행하는 조치는 RunManager 대기열을 거치지 않으므로 다른 이관이 빌드 중일 수 있다.
+                # 같은 저장소를 두 Maven이 쓰지 않도록 단독 업로드처럼 -remediation 저장소를 쓴다
+                cfg = remediation_config(self._config(self.chained_configs(rid)))
                 components = self.components_factory(cfg, paths)
 
                 def journal(event: dict[str, Any]) -> None:

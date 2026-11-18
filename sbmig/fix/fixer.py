@@ -81,6 +81,11 @@ log = logging.getLogger("sbmig.fix.fixer")
 
 PROMPTS_DIR = Path(__file__).resolve().parent / "prompts"
 MAX_SERVED_FILES = 6
+SERVED_MIN_FILE_CHARS = 2000   # 요청 파일 하나에 보내는 최소 문자 수
+SERVED_RESERVE_CHARS = 4000    # 문맥 메시지에서 파일 밖(grep 결과, 안내 문구)에 남겨 두는 문자 수
+# 토큰 한도에서 잘린 답(닫는 태그가 없는 <script> / <edits>)을 쓰지 않을 때 남기는 이유
+CUT_ANSWER = "the answer was cut off at the output token limit (finish_reason={reason}) before {blocks} closed"
+CUT_REASONS = ("length", "max_tokens")
 MAX_SERVED_LINES = 300
 SERVED_HEAD_LINES = 200
 SERVED_TAIL_LINES = 80
@@ -369,6 +374,21 @@ def _same_code(a: str, b: str) -> bool:
     return norm(a) == norm(b)
 
 
+def cut_chars(text: str, limit: int) -> str:
+    """텍스트가 limit자를 넘으면 앞부분과 뒷부분만 남기고 가운데를 뺐다는 표시를 넣는다.
+
+    `text` within about `limit` characters: head (two thirds) and tail (one third) with a marker naming how many
+    characters were left out; unchanged when it fits."""
+    if limit <= 0 or len(text) <= limit:
+        return text
+    marker_room = 80
+    keep = max(0, limit - marker_room)
+    head_n, tail_n = keep * 2 // 3, keep - keep * 2 // 3
+    omitted = len(text) - head_n - tail_n
+    tail = text[len(text) - tail_n:] if tail_n else ""
+    return (f"{text[:head_n]}\n// … {omitted} characters omitted (use <need_grep> to locate code there) …\n{tail}")
+
+
 class LLMFixer:
     """기본 fixer(ScriptFixerLike) 클래스.
     채팅 완성 요청으로 케이스마다 파이썬 수정 스크립트 하나와 이 프로젝트용 편집을 받는다.
@@ -508,18 +528,37 @@ class LLMFixer:
             notes: list[str] = []
             sbase = base if mode == "augment" else None
             problems = self._script_problems(parsed, sbase)
+            cut_first = False
             if self._wants_feedback(parsed, problems):
                 rounds += 1
+                cut_first = bool(parsed.cut)
                 fb = self._feedback_problems(parsed, problems)
                 log.info("answer for %s cannot be used (%s) → one feedback round", cluster.id, fb[0][:160])
                 fb_text = self.script_feedback_message(parsed, fb, mode)
+                first, first_problems, first_messages = parsed, problems, messages
                 messages = self._follow_up(messages, last, fb_text, meta)
-                last, parsed = self._call(messages, model, usage, transcript, role=role, metadata=meta, parse=parse)
-                verify = parsed.verify or verify
-                problems = self._script_problems(parsed, sbase)
-                if not (parsed.code and not problems) and not (parsed.edits and not parsed.edits_problem):
-                    notes.append("feedback round did not give a usable script or edits (first answer: "
-                                 f"{fb[0][:200]})")
+                try:
+                    last, parsed = self._call(messages, model, usage, transcript, role=role, metadata=meta,
+                                              parse=parse)
+                except LLMError as exc:
+                    # 피드백 호출이 실패해도 첫 답의 유효한 편집(과 쓸 수 있는 스크립트)은 버리지 않는다
+                    kept_code = bool(first.code and not first_problems)
+                    kept_edits = bool(first.edits and not first.edits_problem)
+                    if not (kept_code or kept_edits):
+                        raise
+                    log.warning("feedback round for %s failed (llm-error: %s): the first answer's usable part is "
+                                "kept (%d edit(s)%s)", cluster.id, str(exc)[:300], len(first.edits) if kept_edits else 0,
+                                ", the script" if kept_code else "")
+                    kept = ("valid edits and script are" if kept_edits and kept_code else
+                            "valid edits are" if kept_edits else "script is")
+                    notes.append(f"feedback round failed (llm-error: {str(exc)[:200]}); the first answer's {kept} used")
+                    parsed, problems, messages = first, first_problems, first_messages
+                else:
+                    verify = parsed.verify or verify
+                    problems = self._script_problems(parsed, sbase)
+                    if not (parsed.code and not problems) and not (parsed.edits and not parsed.edits_problem):
+                        notes.append("feedback round did not give a usable script or edits (first answer: "
+                                     f"{fb[0][:200]})")
 
             code = parsed.code if not problems else ""
             edits = list(parsed.edits) if not parsed.edits_problem else []
@@ -527,7 +566,7 @@ class LLMFixer:
             no_script = parsed.no_script_reason
             error = ""
             if not code and not edits:
-                error = self._answer_error(parsed, problems)
+                error = self._answer_error(parsed, problems, again=cut_first)
                 if not parsed.candidate and not parsed.wants_context and PROTOCOL_WARNING in parsed.warnings:
                     analysis = "llm-error: response did not follow the protocol: " + parsed.raw.strip()[:300]
                 elif parsed.wants_context and not parsed.candidate and not parsed.blocked_reason:
@@ -817,6 +856,8 @@ class LLMFixer:
 
         Why the parsed answer's script is not usable ([] = usable, or no script at all next to valid edits /
         a <no_script> reason)."""
+        if parsed.cut:
+            return [parsed.cut]
         if parsed.code:
             problems = self._static_problems(parsed.code)
             if not problems and base is not None and _same_code(parsed.code, base.code):
@@ -838,6 +879,8 @@ class LLMFixer:
         """피드백에 넣을 문제(읽을 수 없는 편집과 스크립트의 문제)를 모은다.
 
         What the feedback round names: the unreadable edits and / or the script's problems."""
+        if parsed.cut:
+            return [parsed.cut]
         out = [parsed.edits_problem] if parsed.edits_problem else []
         if parsed.candidate or parsed.used_patches:
             out += problems
@@ -852,12 +895,15 @@ class LLMFixer:
         One feedback round when a script block is there but unusable, the answer used v1 patches, or the edits
         block cannot be read. An answer without any fix (only an analysis / a <no_script> without edits) is the
         model's decision: no feedback round."""
-        return bool(parsed.edits_problem) or bool(problems and (parsed.candidate or parsed.used_patches))
+        return bool(parsed.cut) or bool(parsed.edits_problem) or bool(problems and (parsed.candidate or
+                                                                                    parsed.used_patches))
 
-    def _answer_error(self, parsed: ParsedScript, problems: list[str]) -> str:
+    def _answer_error(self, parsed: ParsedScript, problems: list[str], again: bool = False) -> str:
         """쓸 수 있는 스크립트도 유효한 편집도 없는 답에 대해 짧은 이유를 만든다(ScriptProposal.error).
 
         The short reason of an answer with neither a usable script nor valid edits (ScriptProposal.error)."""
+        if parsed.cut:
+            return f"{parsed.cut} (also after asking for a shorter answer)" if again else parsed.cut
         if parsed.blocked_reason and not parsed.candidate and not parsed.edits_problem:
             return f"blocked: {parsed.blocked_reason[:200]}"
         err = self._script_error(parsed, problems)
@@ -891,6 +937,10 @@ class LLMFixer:
         parts += [f"- {p}" for p in problems[:10]]
         if len(problems) > 10:
             parts.append(f"- … and {len(problems) - 10} more problem(s)")
+        if parsed.cut:
+            parts.append("Your answer was cut off at the output token limit before its closing tag, so none of it is "
+                         "used. Re-send a SHORTER complete answer: a short <analysis> and <solution>, only the edits "
+                         "this case needs, a compact script, and close every tag.")
         if parsed.used_patches and not parsed.candidate:
             parts.append("This loop does not take SEARCH/REPLACE patches: give the changes as <edits> (a JSON list of "
                          "{\"op\": \"replace\", \"path\": …, \"old\": …, \"new\": …} objects) and ONE Python fix script "
@@ -992,6 +1042,14 @@ class LLMFixer:
         usage.input_tokens += u.input_tokens
         usage.output_tokens += u.output_tokens
         parsed = parse(resp.content)
+        finish = getattr(resp, "finish_reason", None) or ""
+        if isinstance(parsed, ParsedScript) and finish in CUT_REASONS and parsed.unclosed:
+            # 잘린 스크립트가 파싱되더라도 실행하거나 KB에 저장하지 않도록 쓸 수 있는 내용을 비운다
+            parsed.cut = CUT_ANSWER.format(reason=finish, blocks=" and ".join(f"<{b}>" for b in parsed.unclosed))
+            parsed.code, parsed.edits = "", []
+            parsed.warnings.append(parsed.cut)
+            log.warning("LLM answer cut at the output token limit (finish_reason=%s, %s not closed): not used",
+                        finish, ", ".join(f"<{b}>" for b in parsed.unclosed))
         sent = sum(len(m.content) for m in messages)
         in_session = bool(metadata and metadata.get("session_id"))
         if in_session:                       # v2.1z-p: the measurement the company lacks a document for (history re-billed?)
@@ -1048,6 +1106,11 @@ class LLMFixer:
         파일은 라운드당 MAX_SERVED_FILES개까지 보내고 길면 앞뒤만 보낸다.
         grep 결과와 남은 라운드 안내를 붙이고, 마지막 라운드면 지금 답하라고 쓴다."""
         parts: list[str] = ["Here is the requested context."]
+        # 한 줄짜리 큰 파일도 있으므로 줄 수와 함께 문자 수로도 자르고, 메시지 전체를 llm.max_context_chars 안에 둔다
+        budget = int(getattr(self.cfg.llm, "max_context_chars", 0) or 0)
+        per_file = max(SERVED_MIN_FILE_CHARS, (budget - SERVED_RESERVE_CHARS) // max(1, min(len(need_files),
+                                                                                         MAX_SERVED_FILES))) \
+            if budget > 0 else 0
         for want in need_files[:MAX_SERVED_FILES]:
             path, cands = self.resolve_path(ws, want)
             if not path:
@@ -1063,12 +1126,21 @@ class LLMFixer:
             lang = lang_for(path)
             if len(lines) <= MAX_SERVED_LINES:
                 body = "\n".join(lines)
+                if per_file and len(body) > per_file:
+                    body = cut_chars(body, per_file)
+                    f = fence_for(body)
+                    parts.append(f"// {path} lines 1-{len(lines)} (whole file, {len(text)} characters: cut to fit the "
+                                 f"context budget)\n{f}{lang}\n{body}\n{f}")
+                    continue
                 f = fence_for(body)
                 parts.append(f"// {path} lines 1-{len(lines)} (whole file)\n{f}{lang}\n{body}\n{f}")
             else:
                 head = "\n".join(lines[:SERVED_HEAD_LINES])
                 tail_start = len(lines) - SERVED_TAIL_LINES + 1
                 tail = "\n".join(lines[tail_start - 1:])
+                if per_file and len(head) + len(tail) > per_file:
+                    head = cut_chars(head, max(1, per_file * 2 // 3))
+                    tail = cut_chars(tail, max(1, per_file // 3))
                 f = fence_for(head + tail)
                 parts.append(
                     f"// {path} lines 1-{SERVED_HEAD_LINES} (of {len(lines)})\n{f}{lang}\n{head}\n{f}\n"
@@ -1086,7 +1158,11 @@ class LLMFixer:
         else:
             parts.append(f"You may ask for more context {remaining_rounds} more time(s), but prefer answering now "
                          "(<analysis>, <solution>, <edits>, <changes>, <script>).")
-        return "\n\n".join(parts) + "\n"
+        out = "\n\n".join(parts) + "\n"
+        if budget > 0 and len(out) > budget:
+            # 끝의 답변 안내가 남도록 앞과 뒤를 남기고 가운데를 자른다
+            out = cut_chars(out, budget)
+        return out
 
     def grep(self, ws: Workspace, patterns: list[str]) -> str:
         """LLM의 `<need_grep>` 요청을 처리한다.

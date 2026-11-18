@@ -32,7 +32,8 @@
   `EXTERNAL_PACKAGE_PREFIXES` + `build.external_package_prefixes` + 사내 groupId 는 남긴다).
 - **케이스 ID** = `sha1(L2)[:10]`(`case_id_for`). L2 가 없으면 `sha1(kind|file|L1)[:10]`. 클러스터 id 는 `case:<case_id>`(범위가 있으면 `@scope`).
 - **포괄 L2 세분**(`refine_signature`): 둘째 칸이 `build` / `other` 이거나 셋째 칸이 빈 컴파일 L2 는 `<kind>|<분류>|<원문 첫 줄 정규화>` 로 바뀐다
-  (아니면 무관한 실패가 한 케이스가 되어 엉뚱한 스크립트가 재사용된다). 같은 값을 오류 목록·KB·채점·클러스터가 모두 쓴다.
+  (아니면 무관한 실패가 한 케이스가 되어 엉뚱한 스크립트가 재사용된다). 같은 값을 오류 목록·KB·채점·클러스터가 모두 쓴다. 컴파일러 플러그인 실패가
+  요약 `Compilation failure` 뿐이면 블록의 첫 원인 줄이 메시지다(`-Werror`: `error: warnings found and -Werror specified`; 세분 키는 그대로).
 - 같은 L2 = 프로젝트가 달라도 같은 케이스 → 같은 저장 스크립트가 LLM 없이 재사용된다. 이것이 500 개 프로젝트를 도는 이유다.
 - **멤버 심볼은 주인 타입까지 키**: `cannot find symbol` 의 심볼이 `method` / `variable` / `constructor` 이고 위치가 라이브러리 타입이면
   (`variable headers of type org.springframework.http.HttpHeaders`, `class org.apache.commons.lang.StringUtils`) L2 는
@@ -80,11 +81,17 @@
   (`external_javax_api` / `external_api_incompatible`)으로도 차단하지 않는다 — 직접 수정 한도가 끝을 정한다.
 - **차단 정책** `loop.blocked_policy.<사유>`: `classify_blocked`(`sbmig/triage/blocked.py`)가 "프로젝트 밖" 으로 분류한 케이스에 LLM 시도를
   몇 번 줄지(0 = 바로 차단). 사유 표는 [03](03-run-debug-and-logs.md) §5. 사람이 `block` 으로 고정한 케이스는 시도 없이 차단.
+  저장소가 답하지 않은 해결 오류(시간 초과, 연결 거부, 5xx 등 — `sbmig/triage/blocked.py` `classify_transfer`)는 `repository_unreachable`
+  (`loop.blocked_policy.repository_unreachable` 0)로 **저장본 재사용보다 먼저** 차단한다: 네트워크가 돌아와 재빌드가 통과해도 어떤 스크립트에도 실적을 주지 않는다.
+  `sbmig-bundled` 도 저장소가 답하지 않으면 jar 를 붙이지도, 없다고 하지도 않는다.
 - **정체 / 진동**: 오류 집합이 직전 빌드와 같으면 `stall`, 더 이전 빌드(`loop.oscillation_window` 4 개 안)와 같으면 `oscillation`. 둘 다 정체
   단계를 올리고, 정체 단계가 `loop.stall_limit`(2) 이상이면 더 센 모델을 쓴다. 진동이 `loop.oscillation_limit`(2)번이면 관련 케이스를 `oscillation` 으로 차단.
 - **더 센 모델**(`llm.escalation_model`): 정체 단계가 `loop.stall_limit` 이상일 때, 그리고 케이스의 **세 번째** LLM 요청부터(보강이든 신규든).
 - 개선되지 않은 시도(`improved` / `build_ok` 가 아님)는 그 케이스의 다음 시도 **전에** 되돌린다(HEAD 면 reset, 아니면 `git revert`). 되돌린 시도의
   결과와 이유는 다음 요청의 "Previous attempts" 절로 간다.
+- **루프가 끝날 때**(한도·예산·정체·멈춤·차단) 케이스마다 마지막으로 적용한 시도가 `no_change` / `inconclusive` 면 최종 빌드 전에 되돌린다
+  (`BuildFixLoop._rollback_unhelpful`, 저널 `script_rollback` `where: "loop end"`, 시도 메모 "rolled back before the final build (it did not help)").
+  도움이 안 된 시도는 결과물에 들어가지 않는다. `partial` 은 케이스가 차단으로 끝나지 않았어도 남긴다.
 
 ## 5. LLM 없는 사전 시도 (`_pre_tries`, 이 순서로 처음 맞는 것 하나)
 
@@ -123,7 +130,7 @@ LLM 이 적용한 시도도 커밋 전에 `_fill_versions` 가 버전 없는 의
 | `no_change` | 그대로 | 되돌림, KB 실패 |
 | `regressed` | 손댄 파일에 새 오류, 오류 수가 `loop.regression_ratio`(1.5)배 초과, 또는 pom 수정 뒤 구조적 오류(`loop.structural_regression_kinds`)·더 이른 단계 오류 | `loop.revert_on_regression` 이면 되돌림 → `reverted` |
 | `inconclusive` | 빌드가 말해 주지 못함(타임아웃, 파싱된 오류 없음, 원인과 무관한 이른 단계에서 멈춤) | KB 실적 없음, 시도로는 셈 |
-| `apply_failed` | 스크립트·편집이 적용되지 않음 | 커밋 안 된 변경 버림 |
+| `apply_failed` | 스크립트·편집이 적용되지 않음(수정 플러그인이 제안을 돌려주지 않은 것 포함: `LLM fixer returned no script proposal (<type>)`) | 커밋 안 된 변경 버림. 실행은 계속 |
 
 ## 7. 스크립트 실행 환경 (`sbmig/script/`)
 
@@ -163,7 +170,7 @@ KB 는 파일뿐이다(DB 금지). 위치 `kb.dir`(기본 `kb-v2`). 원본은 `e
 |---|---|
 | `kb-v2/errors.jsonl` | 모든 실행의 오류 항목(실행 끝에 그 실행의 errors.jsonl 을 덧붙임, 이미 있는 id 는 건너뜀). 항목마다 서명 사실 `sig`, `l1`, `symbol`, `location`, `artifact`, `goal` 과 옛 케이스 ID `was` |
 | `kb-v2/cases.md` | 사람용 케이스 표: case, name, projects, seen / resolved, scripts(`v1 proven 3/0; v2 unverified 0/1 — 마지막 실패`), pin, last result |
-| `kb-v2/cases/<case_id>/case.json` | `CaseInfo`: `case_id`, `l2`, `name`, `kind`, `projects`, `seen`, `resolved`, `scripts[]`, `last_analysis`, `last_solution`, `updated_at`, `sig`, `aliases`(재서명으로 이 케이스에 합쳐진 옛 ID) + 모델 밖 키 `pin`(`block[:<reason>]`), `last_result` |
+| `kb-v2/cases/<case_id>/case.json` | `CaseInfo`: `case_id`, `l2`, `name`, `kind`, `projects`, `seen`, `resolved`, `scripts[]`, `last_analysis`, `last_solution`, `updated_at`, `sig`, `aliases`(재서명으로 이 케이스에 합쳐진 옛 ID) + 모델 밖 키 `pin`(`block[:<reason>]`), `last_result`. 모르는 필드는 최상위든 `scripts[]` · `runs[]` 안이든 다시 저장해도 남는다(옛 이미지가 새 필드를 지우지 않게) |
 | `kb-v2/cases/<case_id>/fix_v<N>.py` | 저장 스크립트(같은 코드는 한 번만) |
 | `kb-v2/cases/<case_id>/errors/<run id>-<entry id>.json` | 오류 한 건씩 읽기 쉬운 JSON(`errors.json_files`); 케이스 없는 항목은 `cases/_other/` |
 | `kb-v2/.lock` | 프로세스 간 쓰기 잠금(웹·플릿·`sbmig kb`·동시에 도는 빌드 파드가 공유, `kb.lock_timeout_seconds`). 옆에 잠깐 생기는 `.lock.probe.*`(파일 시스템 시계 재기), `.lock.breaker`(낡은 잠금을 깨는 차례)와 케이스 폴더의 `.fix.*.tmp` 는 임시 파일이다. 0 이하의 `kb.lock_timeout_seconds` 는 300 으로 읽는다 |
@@ -185,7 +192,7 @@ KB 는 파일뿐이다(DB 금지). 위치 `kb.dir`(기본 `kb-v2`). 원본은 `e
 | `sbmig kb cases activate <case_id> <N>` | retire 취소(다른 프로젝트에서 해결한 적 있으면 proven, 아니면 unverified) |
 | `sbmig kb cases pin <case_id> block[:REASON] [--create]` / `sbmig kb cases unpin <case_id>` | 케이스를 시도 없이 차단으로 고정(보고서 「진행하지 않은 항목」이 이유를 보여 줌) / 풀기 |
 | `sbmig kb stats [--json]`, `sbmig kb validate` | 숫자 / 파일 점검(문제 있으면 exit 1) |
-| `sbmig kb export <OUT.zip>` / `sbmig kb import <IN.zip> [--replace]` | 다른 PC 로 옮기기(기본 합치기, `--replace` 는 예전 것을 `.bak-*` 로) |
+| `sbmig kb export <OUT.zip>` / `sbmig kb import <IN.zip> [--replace]` | 다른 PC 로 옮기기(기본 합치기, `--replace` 는 예전 것을 `.bak-*` 로). 가져온 스크립트는 들어온 `file` 이름과 상관없이 케이스 폴더의 `fix_v<N>.py` 로 쓴다 |
 | `sbmig kb reindex [--dry-run]` | 옛 규칙으로 서명된 기록을 지금 규칙으로 재서명하고(케이스·스크립트가 새 ID 로 옮겨짐), errors.jsonl 로 케이스 수치·실행 기록을 다시 셈. `--dry-run` 은 무엇이 옮겨질지만 보여 준다 |
 
 KB 위치는 그룹 옵션으로 바꾼다: `sbmig kb --kb-dir <dir> cases list`(`--config` 도 같은 자리). 좋은 스크립트를 "고정 사용" 하는 명령은 없다: best 는 proven 최신이므로, 나쁜 버전을 retire 하면 좋은 버전이 선택된다.

@@ -300,6 +300,26 @@ review", fix attempts as `script:<case>:v<N>`; `ko`, the company setting: the re
   the build it had pulled first (the approval list of v2.1z-ar "came back" because the build pods ran old code). The
   manifests now say `imagePullPolicy: Always`; after a push the operator restarts the web pod, build pods pull at
   start. When a deployed change "does not arrive", ask which image the BUILD pod runs before anything else.
+- **The whole-code review (2026-11-18, v2.1z-av).** The user asked for an inspection of everything ("문제될 사항들이
+  보이는지 비어있는곳이 있는지"). Seven read-only reviewers by area plus one for what nobody had reached; 51 findings,
+  each reproduced before it was reported, fixed test first on disjoint files (`docs/INTERFACES.md` "v2.1z-av" lists
+  every changed behaviour). What to carry forward:
+  - Rules that changed and are easy to get wrong again: at the end of the fix loop the last try that did not help
+    (`no_change` / `inconclusive`) is rolled back, a partial one stays; a stop request is ignored once every planned
+    final build has a result; a transfer failure is `repository_unreachable` (never "not found", never an LLM try);
+    managed versions are judged per company parent (`ParentChainFacts.managed_for`), not on the merged set; the
+    remediation planner never jumps to a major the scanner did not name, never bumps a version that already meets
+    the hint, never changes a property several artifacts share unless the target exists for all of them.
+  - Main and Worker: `sbmig_version()` carries a digest of the running code, and the configuration digests and the
+    version are pinned when the Job is CREATED (not at upload). After pushing an image the web pod must be
+    restarted; a run uploaded in between is refused with a sentence that says so.
+  - Where the gaps were: borders between two people's code (a field written on one side and never read on the
+    other, a flow or mode a change forgot, a report sentence naming a file nobody writes, a config key documented
+    for a path that does not read it). When a feature spans parts, check both ends of each border before calling
+    it done, and render what the reader will see.
+  - Left to the user: a second web pod is not detected (`replicas: 1` + `Recreate` in 40 are the control, the user
+    manages it by yaml); retention of old run folders ("회의 나눠보기로 해서 아직 안나왔구"); build leftovers outside
+    `target/` in `result.zip`.
 - **Disk walls for test runs (2026-11-17)**: a review subagent's scratch test (a writer thread with no size or time
   limit) wrote one 118 GB file and filled the developer's disk. A rule in a brief is a promise; these are the walls.
   The root `conftest.py` gives every pytest run whose tests are under the repository a per-file size cap

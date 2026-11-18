@@ -1088,9 +1088,10 @@ def test_the_standalone_worker_holds_the_claim_while_it_drives(tmp_path, base_cf
     assert not chain.claim_path(mgr.paths(st.id).root).exists()
 
 
-def test_a_resumed_chained_run_uses_the_migration_repository_and_an_upload_its_own(tmp_path, base_cfg, monkeypatch):
-    """M1: in-process mode, a resumed CHAINED remediation builds with the Maven repository of the run it continues (no
-    `-remediation` suffix, like the chained run itself); the standalone upload keeps `<repo>-remediation`."""
+def test_a_resumed_chained_run_and_an_upload_both_use_the_remediation_repository(tmp_path, base_cfg, monkeypatch):
+    """In-process mode: a resumed CHAINED remediation takes no turn in the RunManager line, so it must not run Maven
+    on the migrations' own local repository while another migration may be building (review 2026-11-18, S5; this
+    test pinned the migration's repository before). Like the standalone upload it builds with `<repo>-remediation`."""
     cfg = cfg_with(base_cfg, build={"local_repo": "/m2/repository/"})
     chained(tmp_path, cfg, status=STOPPED)
     monkeypatch.setitem(sys.modules, "sbmig.remediations.chain", FakeChain())
@@ -1098,6 +1099,6 @@ def test_a_resumed_chained_run_uses_the_migration_repository_and_an_upload_its_o
     mgr = job_manager(tmp_path, cfg, rm=FakeRunManager(tmp_path / "out", state="finished"), factory=f, mode="in-process")
     mgr.resume(RUN_ID)
     assert mgr.wait(RUN_ID, WAIT)
-    assert f.cfgs[-1].build.local_repo == "/m2/repository/"
+    assert f.cfgs[-1].build.local_repo == "/m2/repository-remediation"
     submit_and_wait(mgr, tmp_path)
     assert f.cfgs[-1].build.local_repo == "/m2/repository-remediation"

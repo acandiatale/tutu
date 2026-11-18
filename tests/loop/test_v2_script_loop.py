@@ -124,8 +124,9 @@ def test_ladder_new_then_augment_then_blocked_repeated_failure(cfg, ws):
         ("new", 1, None, "no_change"), ("augment", 2, 1, "no_change"), ("augment", 3, 2, "no_change")]
     # every version measured from the same base: v1 and v2 were rolled back before the next try
     assert "rolled back before v2" in atts[0].notes and "rolled back before v3" in atts[1].notes
-    assert not any(n.startswith("rolled back") for n in atts[2].notes)
-    assert ws.read("notes.txt") == "try 3\n"
+    # review 2026-11-18 L3: the last try (no_change, case blocked at its cap) is rolled back before the final build too
+    assert "rolled back before the final build (it did not help)" in atts[2].notes
+    assert not ws.exists("notes.txt")
     [blk] = pr.blocked
     assert blk.reason == BlockReason.REPEATED_FAILURE and "max_llm_tries_per_case 3" in " ".join(blk.notes)
     assert [(sc.version, kw["source"]) for _c, sc, kw in kb.cases.added] == [

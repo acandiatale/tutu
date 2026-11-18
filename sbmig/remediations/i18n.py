@@ -28,7 +28,7 @@ ORIGIN_KO: dict[str, str] = {
     "transitive": "간접 의존성", "direct_literal": "직접 의존성 (pom에 버전 표기)",
     "direct_property": "직접 의존성 (property로 버전 지정)", "own_management": "프로젝트의 dependencyManagement",
     "parent_managed": "부모 pom에서 버전 지정", "bom_managed": "BOM에서 버전 지정", "plugin": "빌드 플러그인",
-    "vendored": "프로젝트에 포함된 jar 파일", "unmapped": "의존성 트리에서 찾지 못함", "proposal": "적용하지 못한 제안",
+    "vendored": "프로젝트에 포함된 jar 파일", "unmapped": "자동으로 수정할 위치를 정하지 못함", "proposal": "적용하지 못한 제안",
 }
 # 묶음의 모든 행이 같은 출처일 때, 출처 칸을 빼고 표 위에 한 번만 쓰는 문장
 ORIGIN_ALL_KO: dict[str, str] = {
@@ -184,6 +184,7 @@ def _vlist(x: str | None) -> str:
     s = _none(x)
     s = _MORE.sub(r" 외 \1개", s)
     s = s.replace(" (deny_versions)", " (서버 정책에서 금지)").replace(" (prerelease)", " (시험판)")
+    s = s.replace(" (date-stamped)", " (날짜로 번호를 매긴 옛 빌드)")
     s = s.replace("(< patched hint ", "(패치 버전 미만: ")
     return s
 
@@ -305,6 +306,25 @@ GROUPS: dict[str, _Group] = {
                              "IVAS가 알려 준 패치 버전이 일반 버전 형식이 아니어서(범위 등) 자동으로 고르지 않았습니다."),
     "only_major": _Group("메이저 버전 변경만 가능",
                          "패치된 버전이 다음 메이저 버전에만 있고, 서버 정책이 메이저 버전 변경을 허용하지 않습니다."),
+    "major_not_hinted": _Group("다른 메이저 버전에만 있는 패치",
+                               "조건을 만족하는 버전이 다른 메이저 버전에만 있습니다. 메이저 버전은 IVAS가 알려 준 패치 버전이 "
+                               "그 메이저 버전일 때만 올립니다. 올릴 버전은 담당 팀에서 정해 주세요."),
+    "dated_current": _Group("날짜로 번호를 매긴 옛 버전",
+                            "현재 버전이 날짜로 번호를 매긴 옛 빌드(예: 20030203.000550)라 패치 버전과 비교할 수 없습니다. "
+                            "올릴 버전은 담당 팀에서 정해 주세요."),
+    "meets_hint": _Group("이미 패치 버전 이상인데 보고됨",
+                         "현재 버전이 IVAS가 알려 준 패치 버전 조건을 이미 만족하는데도 IVAS가 취약점으로 보고합니다. 버전을 "
+                         "더 올리지 않았습니다. IVAS 담당 팀에 검사 결과 확인을 요청해 주세요."),
+    "shared_property": _Group("여러 라이브러리가 함께 쓰는 버전 property",
+                              "버전 property 하나를 여러 라이브러리가 함께 씁니다. 조치할 버전이 그중 일부 라이브러리에는 "
+                              "저장소에 없어 property를 바꾸지 않았습니다. 라이브러리마다 버전을 따로 지정하거나, 모두에 있는 "
+                              "버전을 담당 팀에서 정해 주세요."),
+    "profile_only": _Group("꺼진 프로필에만 있는 선언",
+                           "기본으로 켜지지 않는 프로필 안에만 버전 선언이 있어, 그 값을 고쳐도 실제 버전이 바뀐다는 보장이 "
+                           "없습니다. 어느 프로필로 빌드하는지 확인한 뒤 담당 팀에서 버전을 올려 주세요."),
+    "declared_twice": _Group("같은 의존성을 두 번 선언",
+                             "pom의 dependencies 한 곳에 같은 의존성이 두 번 이상 선언되어 있어 자동으로 수정하지 않았습니다. "
+                             "중복된 선언 하나를 지운 뒤 버전을 올려 주세요."),
     "no_repo_version": _Group("저장소에 올릴 수 있는 버전 없음", "승인된 저장소에 패치 버전 조건을 만족하는 버전이 없습니다."),
     "no_evidence": _Group("저장소에서 버전 확인 실패", "올릴 버전은 정했지만 승인된 저장소에서 그 버전을 확인하지 못했습니다."),
     "parent_pin_no_text": _Group("서버 정책의 부모 pom·BOM 버전을 적용할 곳 없음",
@@ -478,6 +498,26 @@ RULES: list[_Rule] = [
     _r("only_major", r"only major upgrades are available \((?P<vs>.+)\) and policy\.allow_major is false",
        lambda g: (f"메이저 버전 변경({_vlist(g['vs'])})만 가능합니다. 서버 정책이 메이저 버전 변경을 허용하지 않습니다."),
        "only_major"),
+    _r("major_not_hinted",
+       r"only other major versions are available \((?P<vs>.+)\) and no IVAS patched hint names that major "
+       r"\(hint (?P<h>.+)\)",
+       lambda g: (f"조건을 만족하는 버전이 다른 메이저 버전({_vlist(g['vs'])})에만 있습니다. IVAS가 알려 준 패치 버전"
+                  f"({g['h']})은 그 메이저 버전이 아니어서 자동으로 올리지 않았습니다."), "major_not_hinted"),
+    _r("dated_current",
+       r"the current version (?P<cur>\S+) is date-stamped and cannot be compared with the IVAS patched hint (?P<h>.+); "
+       r"not chosen automatically",
+       lambda g: (f"현재 {g['cur']} 버전은 날짜로 번호를 매긴 옛 빌드라 IVAS가 알려 준 패치 버전({g['h']})과 비교할 수 "
+                  "없습니다. 자동으로 고르지 않았습니다."), "dated_current"),
+    _r("meets_hint",
+       r"IVAS still reports (?P<cur>\S+) although it meets the patched hint (?P<h>.+): ask the IVAS team to check the "
+       r"finding",
+       lambda g: (f"현재 {g['cur']} 버전은 IVAS가 알려 준 패치 버전({g['h']}) 조건을 이미 만족하는데도 IVAS가 취약점으로 "
+                  "보고합니다."), "meets_hint"),
+    _r("shared_property",
+       r"version property \$\{(?P<p>[^}]*)\} \((?P<pom>\S+)\) also sets the version of (?P<others>{A}); (?P<t>\S+) is not "
+       r"in the repository for (?P<miss>.+): the property is not changed automatically",
+       lambda g: (f"{g['pom']}의 버전 property ${{{g['p']}}}에서 {g['others']}의 버전도 함께 지정합니다. 저장소에 "
+                  f"{g['miss']}의 {g['t']} 버전이 없어 property를 자동으로 바꾸지 않았습니다."), "shared_property"),
     _r("repo_listed",
        r"repository listed (?P<listed>.+?); excluded: (?P<excl>.+?); needed > (?P<cur>\S+) and ≥ patched hint (?P<hint>.+?)"
        r"(?:; the hinted (?P<miss>.+) (?:is|are) not in the repository)?",
@@ -672,6 +712,15 @@ RULES: list[_Rule] = [
        lambda g: f"jar가 아닌 형식이거나 classifier가 붙은 의존성으로도 사용됩니다({g['v']}).", "variant"),
     _r("variant_in", r"type/classifier variant in (?P<mods>{A})",
        lambda g: f"{g['mods']} 모듈에서는 jar가 아닌 형식이거나 classifier가 붙은 의존성으로 사용됩니다.", "variant"),
+    _r("profile_only",
+       r"(?P<ga>\S+) is declared in (?P<pom>\S+) only inside profile\(s\) (?P<ids>{A}), which are not active by default; "
+       r"not changed automatically",
+       lambda g: (f"{g['pom']}에서 {g['ga']}의 선언이 기본으로 켜지지 않는 프로필({g['ids']})에만 있습니다. Maven이 이 "
+                  "선언을 쓰는지 알 수 없어 자동으로 수정하지 않습니다."), "profile_only"),
+    _r("declared_twice",
+       r"(?P<ga>\S+) is declared (?P<n>\d+) times in one <dependencies> block of (?P<pom>\S+); not changed automatically",
+       lambda g: (f"{g['pom']}의 dependencies 한 곳에 {g['ga']} 선언이 {g['n']}번 있습니다. Maven은 그중 하나만 쓰므로 "
+                  "자동으로 수정하지 않습니다."), "declared_twice"),
     _r("module_pom_unreadable", r"module (?P<m>\S+): pom not readable \((?P<e>{A})\)",
        lambda g: f"{g['m']} 모듈의 pom을 읽을 수 없습니다({g['e']}).", "pom_unreadable"),
     _r("vendored_dep", r"file in the tree \(not a Maven dependency\); not changed automatically",
@@ -850,6 +899,15 @@ RULES: list[_Rule] = [
     _r("override_extra",
        r"(?P<p>\S+): the inserted <dependencyManagement> holds more than the planned override entries",
        lambda g: f"{g['p']}: 추가한 dependencyManagement에 계획한 항목 외의 내용이 있습니다."),
+    _r("structure_unparsable", r"(?P<p>\S+): XML could not be parsed for the structure check \((?P<e>\w+)\)",
+       lambda g: f"{g['p']}: 구조를 비교하려고 XML을 읽었지만 읽지 못했습니다({g['e']})."),
+    _r("structure_changed", r"(?P<p>\S+): XML element structure changed",
+       lambda g: f"{g['p']}: XML 요소의 구조가 원본과 다릅니다."),
+    _r("structure_text_between", r"(?P<p>\S+): text between elements changed after <(?P<t>[^<>\s]+)>",
+       lambda g: f"{g['p']}: {g['t']} 요소 뒤의 요소 사이 내용이 원본과 다릅니다."),
+    _r("structure_text_of",
+       r"(?P<p>\S+): text of <(?P<t>[^<>\s]+)> changed \(only <version> / property values may change\)",
+       lambda g: f"{g['p']}: {g['t']} 요소의 값이 원본과 다릅니다. 버전 표기와 property 값만 바꿀 수 있습니다."),
     _r("outside_differs", r"a file outside the project folder differs from the accepted tree",
        lambda g: "프로젝트 폴더 밖의 파일이 작업 사본과 다릅니다."),
     # ---- graph / chain / service: 상태 메시지

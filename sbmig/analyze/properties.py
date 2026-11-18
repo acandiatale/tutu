@@ -1061,14 +1061,16 @@ def _filtered_resource_specs(ws: Any, poms: list[PomInfo]) -> list[tuple[str, li
 
 
 def filtered_binary_resources(ws: Any, poms: list[PomInfo],
-                              extensions: Iterable[str] = BINARY_RESOURCE_EXTENSIONS) -> list[str]:
+                              extensions: Iterable[str] = BINARY_RESOURCE_EXTENSIONS, *,
+                              limit: int | None = MAX_BINARY_RESOURCES) -> list[str]:
     """필터링되는 리소스 아래의 바이너리 파일 목록을 정렬해서 반환한다. 예외를 던지지 않는다.
     필터를 거치면 빌드는 통과해도 jar 안의 바이트가 바뀌므로 찾는다.
     알려진 바이너리 확장자이거나 :func:`looks_binary`가 True인 파일이 해당한다.
 
     Root-relative binary files a filtered resource would run through the filter (includes / excludes honoured),
     sorted and capped at MAX_BINARY_RESOURCES: a known binary extension, or (round 10 follow-up) a file of an unknown
-    extension whose content is binary (`looks_binary`). Never raises."""
+    extension whose content is binary (`looks_binary`). `limit=None` returns every file (review T5: the restructure
+    plans the extensions over the whole set; only the list kept for reporting is capped). Never raises."""
     try:
         specs = _filtered_resource_specs(ws, poms)
         if not specs:
@@ -1097,7 +1099,7 @@ def filtered_binary_resources(ws: Any, poms: list[PomInfo],
                 if known or looks_binary(ws.abs(rel)):
                     out.add(rel)
                 break
-        return sorted(out)[:MAX_BINARY_RESOURCES]
+        return sorted(out) if limit is None else sorted(out)[:limit]
     except Exception:  # noqa: BLE001 - never fail the analysis over this
         log.exception("filtered binary resource scan failed")
         return []

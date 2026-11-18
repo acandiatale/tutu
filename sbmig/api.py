@@ -101,7 +101,9 @@ def migrate(
     elif kb is not None and kb is not True:
         kb_obj = kb
 
-    ws = Workspace.from_input(input, out, run_id=run_id)
+    # 올린 ZIP의 풀기 한도는 설정(intake.max_*)을 따른다. 넘으면 run()이 접수 거절로 끝낸다
+    from sbmig.core.workspace import ZipLimits
+    ws = Workspace.from_input(input, out, run_id=run_id, limits=ZipLimits.from_config(cfg.intake))
     extra = dict(components or {})
     extra.setdefault("source", input)
     orch = Orchestrator(cfg, ws, llm=client, fixer=fixer, kb=kb_obj, **extra)

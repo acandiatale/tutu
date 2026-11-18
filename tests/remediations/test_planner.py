@@ -156,12 +156,13 @@ def test_nothing_left_lists_the_facts(project):
 
 
 def test_major_fallback_and_allow_major_false(project):
+    # the hint names major 2 (a major jump is planned only then: test_planner_hints.py)
     src = FakeSource({"example:lib": ["1.2.3", "2.0.0", "2.1.0", "3.0.0"]})
-    (p,) = _plan(project, [_direct()], source=src).proposals
+    (p,) = _plan(project, [_direct(hints=("2.0.0",))], source=src).proposals
     assert p.to_version == "2.0.0" and p.risks == ["major"] and not p.requires_approval and p.decision == D_AUTO
-    (p,) = _plan(project, [_direct()], cfg=_cfg(always_approve=["major"]), source=src).proposals
+    (p,) = _plan(project, [_direct(hints=("2.0.0",))], cfg=_cfg(always_approve=["major"]), source=src).proposals
     assert p.requires_approval and p.decision == D_PENDING
-    plan = _plan(project, [_direct()], cfg=_cfg(policy={"allow_major": False}), source=src)
+    plan = _plan(project, [_direct(hints=("2.0.0",))], cfg=_cfg(policy={"allow_major": False}), source=src)
     assert not plan.proposals
     assert plan.residuals[0].reason == "no_candidate_version" and "allow_major is false" in plan.residuals[0].detail
 
@@ -263,7 +264,7 @@ def test_require_approval_true_makes_everything_pending(project):
 
 def test_always_approve_controls_major(project):
     src = FakeSource({"example:lib": ["2.0.0"]})
-    (p,) = _plan(project, [_direct()], cfg=_cfg(always_approve=[]), source=src).proposals
+    (p,) = _plan(project, [_direct(hints=("2.0.0",))], cfg=_cfg(always_approve=[]), source=src).proposals
     assert p.risks == ["major"] and p.decision == D_AUTO
 
 

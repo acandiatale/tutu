@@ -71,3 +71,19 @@ def test_migrate_dry_run_real_maven(pure, tmp_path):
     report = migrate(pure, configs=[E2E], out=tmp_path / "out", kb=False, stop_after="plan", dry_run=True,
                      repo_root=REPO)
     assert "dry-run" in report.flags and "stopped-after-plan" in report.flags
+
+
+def test_migrate_refuses_a_zip_over_the_configured_unpacking_limit(tmp_path):
+    """The embedding entry point passes `intake.max_*` to the workspace (the CLI does the same): a ZIP over the limit ends
+    at intake with the refusal as the abort reason, and nothing builds."""
+    import zipfile
+
+    z = tmp_path / "p.zip"
+    with zipfile.ZipFile(z, "w", zipfile.ZIP_DEFLATED) as f:
+        f.writestr("p/pom.xml", "<project/>")
+        f.writestr("p/big.txt", b"0" * (3 * 1024 * 1024))
+    report = migrate(z, configs=[E2E], out=tmp_path / "out", kb=False, overrides={"intake": {"max_entry_mb": 1}},
+                     components=NO_MAVEN)
+    assert "aborted" in report.flags and exit_code(report) == 3
+    assert any(x.startswith("run aborted: ZIP refused: the entry") and "intake.max_entry_mb" in x
+               for x in report.manual_followups)

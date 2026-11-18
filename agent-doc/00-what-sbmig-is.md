@@ -37,7 +37,7 @@ as-is 담당팀의 몫이다 — sbmig 는 빌드와 패키징까지만 책임�
  입력(폴더 / zip)
       |
       v
- [intake 접수] ---- Gradle / Ant / pom·build.xml 없음 / EAR 만 ----> 중단 (exit 3)
+ [intake 접수] ---- 풀기 한도 넘은 ZIP / Gradle / Ant / pom·build.xml 없음 / EAR 만 ----> 중단 (exit 3)
   - Maven 만. Ant(build.xml)는 "Maven 변환 후 신청 부탁드립니다." 로 거절(intake.ant_to_maven: true 면 pom 합성 후 계속)
   - 루트 pom 없는 형제 pom -> 루트 aggregator 생성
   - pom 복사본(stray) 무시, reactor 중복 정리, 사전 점검(Maven, JDK 21, 부모 설정)
@@ -70,7 +70,8 @@ as-is 담당팀의 몫이다 — sbmig 는 빌드와 패키징까지만 책임�
       시도마다 커밋 -> 재빌드로 채점 -> 도움 안 되면 되돌림       (최대 50 라운드)
       |
       v
- [최종 빌드]  mvn clean package 를 반드시 한 번 더
+ [최종 빌드]  mvn clean package 를 반드시 한 번 더(도움 안 된 마지막 시도는 그 전에 되돌림;
+              멈춤 요청으로 루프를 나왔고 트리가 그대로면 루프의 마지막 빌드가 최종 빌드)
       |
       v
  [finalize 마무리]  report.md(요청자용 안내서) / report.json / SBMIG-RESULT 한 줄
@@ -130,7 +131,7 @@ KB 에 저장되어 다음 프로젝트가 LLM 호출 없이 재사용한다. �
 |---|---|
 | 0 | 최종 빌드 성공, 차단 없음, 성공 판정 |
 | 2 | 끝까지 돌았지만 성공이 아님: 미해결 오류·차단 케이스 남음, 재구성 실패, `hollow-reactor` 등 |
-| 3 | 중단·거부: Maven 아님(Ant 포함), 루트 pom 없음, ADF, Maven/JDK 문제, 사내 부모 pom 해석 불가 |
+| 3 | 중단·거부: Maven 아님(Ant 포함), 풀기 한도를 넘은 ZIP, 루트 pom 없음, ADF, Maven/JDK 문제, 사내 부모 pom 해석 불가, 사용자 멈춤(최종 빌드가 다 끝난 뒤의 멈춤 요청은 무시) |
 
 마지막 줄 `SBMIG-RESULT run=<id> exit=<n> build=<ok|FAIL> unresolved=<n> blocked=<n> … attn=<codes> review=<v>` 는 운영자가 회사 PC
 화면에서 손으로 옮겨 적는 줄이다(`sbmig/report/result_line.py`). 읽는 법은 [03-run-debug-and-logs.md](03-run-debug-and-logs.md).
@@ -157,7 +158,7 @@ KB 에 저장되어 다음 프로젝트가 LLM 호출 없이 재사용한다. �
 | 저장된 스크립트 | stored script | `kb-v2/cases/<case_id>/fix_v<N>.py` | 케이스 폴더에 버전별로 쌓이는 수정 스크립트 |
 | 스크립트 없는 직접 수정 | `no_script` + edits | `sbmig/script/edits.py` | LLM 이 스크립트 대신 편집 목록을 돌려줌 |
 | 채점 | scoring | `_score` (fixloop) | 재빌드 결과로 개선 / 부분 / 변화 없음 / 악화 / 판정 불가 |
-| 되돌리기 | rollback / revert | `script_rollback` 저널 | 도움이 안 된 시도의 커밋을 되돌림 |
+| 되돌리기 | rollback / revert | `script_rollback` 저널 | 도움이 안 된 시도의 커밋을 되돌림(케이스의 다음 시도 전, 그리고 루프가 끝날 때 마지막 시도가 `no_change` / `inconclusive` 면 최종 빌드 전) |
 | 차단 / 차단 정책 | BLOCKED / blocked_policy | `loop.blocked_policy`, `sbmig/triage/blocked.py` | 더 시도하지 않는 케이스와 그 기준. `repeated_failure`, `needs_owner` 등 |
 | 소유팀 결정 | needs_owner | `BlockReason.NEEDS_OWNER` | LLM 이 프로젝트 밖 장애물을 이유로 거절 → 담당팀이 정함 |
 | 지식베이스(파일) | KB | `kb.dir`, `sbmig/errors/cases.py` | `errors.jsonl`, `cases.md`, `cases/<case_id>/` — DB 금지 |

@@ -6,12 +6,14 @@ from pathlib import Path
 
 from sbmig.web.contract import (
     CONTROL_DIR,
+    IMAGE_DIFFERS_HINT,
     ControlState,
     JobStatus,
     RequestRecord,
     RunState,
     config_digests,
     secret_env_names,
+    sbmig_version,
     secret_values,
     sha256_file,
     verify_request,
@@ -34,7 +36,7 @@ def test_request_record_pins_the_inputs_and_the_worker_detects_every_change(tmp_
     zip_path.write_bytes(b"PK\x05\x06" + b"\0" * 18)
     rec = RequestRecord(run_id="web-1", accepted_at="2026-11-09T00:00:00Z", upload="p.zip", configs=["artifacts.yml"],
                         zip_sha256=sha256_file(zip_path), config_digests=config_digests(repo, ["artifacts.yml"]),
-                        sbmig_version="0.1.0", mode="k8s-job")
+                        sbmig_version=sbmig_version(), mode="k8s-job")
     rec.write(run_dir)
     back = RequestRecord.read(run_dir)
     assert back == rec and (run_dir / CONTROL_DIR / "request.json").is_file()
@@ -45,7 +47,8 @@ def test_request_record_pins_the_inputs_and_the_worker_detects_every_change(tmp_
     problems = verify_request(RequestRecord.from_json({**back.to_json(), "sbmig_version": "9.9.9"}), repo, zip_path, "web-2")
     text = "\n".join(problems)
     assert "run id differs" in text and "source zip changed" in text and "config artifacts.yml differs" in text
-    assert "sbmig version differs" in text and len(problems) == 4
+    # review 2026-11-18 (W2): a config / version mismatch ends with ONE sentence telling the operator what to do
+    assert "sbmig version differs" in text and len(problems) == 5 and problems[-1] == IMAGE_DIFFERS_HINT
     assert "source zip missing" in "\n".join(verify_request(back, repo, run_dir / "nope.zip"))
 
 

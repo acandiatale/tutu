@@ -30,7 +30,7 @@ from .pom_editor import PomEditError, PomEditor
 from .system_jars import WiredJar, wire_bundled_jar
 
 __all__ = ["TRUSTED_SOURCES", "VERDICTS", "BundledItem", "BundledPlan", "apply_bundled_jars", "jar_name", "plan_bundled_jars",
-           "repository_has_fn", "unused_jar_followup"]
+           "repository_has_fn", "repository_state_fn", "unused_jar_followup"]
 
 log = logging.getLogger(__name__)
 
@@ -106,6 +106,30 @@ def repository_has_fn(lookup: Any) -> Callable[[str, str, str], bool]:
     return _has
 
 
+def repository_state_fn(lookup: Any) -> Callable[[str, str, str], tuple[str, str]]:
+    """저장소에 g:a:v가 있는지 ``present`` / ``absent`` / ``unreadable``로 답하는 함수를 만든다.
+    원격 저장소가 응답하지 않아 찾지 못한 것은 없다고 하지 않고 ``unreadable``과 사유를 반환한다.
+
+    Review T3: "does the repository have exactly g:a:v" in three answers — `("present", "")` (the pom of g:a:v, else
+    the version in the metadata, remote or local), `("absent", "")` (asked and not there, or no lookup configured, as
+    before), `("unreadable", <reason>)` (nothing found while no remote answered: `lookup.remote_failures(g, a)`'s
+    sentence, or the exception of the lookup). A caller must not treat `unreadable` as "not in the repository"."""
+    def _state(g: str, a: str, v: str) -> tuple[str, str]:
+        if lookup is None:
+            return "absent", ""
+        try:
+            if lookup.pom_text(g, a, v):
+                return "present", ""
+            if v in list(lookup.versions(g, a) or []):
+                return "present", ""
+            failures = lookup.remote_failures(g, a) if hasattr(lookup, "remote_failures") else ""
+        except Exception as e:  # noqa: BLE001 - a lookup that failed is no answer
+            log.debug("repository check %s:%s:%s: %s: %s", g, a, v, type(e).__name__, e)
+            return "unreadable", f"{type(e).__name__}: {e}"[:300]
+        return ("unreadable", str(failures)) if failures else ("absent", "")
+    return _state
+
+
 def unused_jar_followup(name: str) -> str:
     """참조가 없어 선언하지 않은 동봉 jar에 대한 인수인계 문구를 만든다.
     i18n PATTERNS가 번역하므로 고칠 때 함께 고친다.
@@ -135,7 +159,7 @@ def _declares(ws: Any, pom: str, g: str, a: str) -> bool:
 
 def plan_bundled_jars(ws: Any, cfg: Any, jars: Iterable[JarCoordinate], *, module_pom: str,
                       boot_poms: Iterable[str] = (), managed_keys: Iterable[str] = (),
-                      repository: Callable[[str, str, str], bool] | None = None,
+                      repository: Callable[[str, str, str], Any] | None = None,
                       source_roots: Iterable[str] = (), extra_dirs: Iterable[str] = (),
                       current: dict[str, str] | None = None, managed_known: bool = True) -> BundledPlan:
     """jar마다 결과를 하나 정한다. 아래 순서로 처음 맞는 규칙을 쓰며 파일은 바꾸지 않는다.
@@ -194,13 +218,25 @@ def plan_bundled_jars(ws: Any, cfg: Any, jars: Iterable[JarCoordinate], *, modul
                                               "loop's pre-try may wire it on a build error)")
         else:
             has = False
+            unreadable = ""
             if j.source in TRUSTED_SOURCES and g and a and ver and repository is not None:
                 try:
-                    has = bool(repository(g, a, ver))
+                    answer = repository(g, a, ver)
+                    # repository_state_fn은 (상태, 사유)를 주고, bool을 주는 호출자도 있다
+                    if isinstance(answer, tuple):
+                        has = answer[0] == "present"
+                        unreadable = (answer[1] or "no reason given") if answer[0] == "unreadable" else ""
+                    else:
+                        has = bool(answer)
                 except Exception as e:  # noqa: BLE001 - "not there" on any failure
                     log.debug("repository check %s:%s:%s failed: %s", g, a, ver, e)
                     has = False
-            if has:
+            if unreadable:
+                # 저장소가 응답하지 않은 것을 "저장소에 없음"으로 보고 Nexus 등록을 요청하면 안 되므로 그대로 둔다
+                item.verdict, item.why = "skip", (f"skip: repository unreadable — {g}:{a}:{ver} could not be looked up "
+                                                  f"({unreadable}); not wired and not called missing — run again when "
+                                                  "the repository answers")
+            elif has:
                 item.verdict, item.why = "compile", f"compile: {g}:{a}:{ver} is in the repository"
             elif policy == "skip":
                 item.verdict, item.why = "skip", ("skip: not in the repository and intake.unknown_jar is skip — "

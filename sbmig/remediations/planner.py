@@ -233,8 +233,22 @@ class RepositoryVersionSource:
 
 # ---------------------------------------------------------------------------------------------------- 도우미
 def _major(v: str) -> int | None:
-    first = parse_version(v)[0]
-    return first[1] if first[0] == 2 else None
+    key = parse_version(v)
+    first = key[0] if key else None
+    return first[1] if first and first[0] == 2 else None
+
+
+# 첫 숫자가 이보다 크면 날짜로 매긴 옛 빌드(20030203.000550)로 보고 메이저 번호로 쓰지 않는다
+_DATE_MAJOR = 9999
+
+
+def _dated(v: str) -> bool:
+    """첫 숫자가 날짜(8자리 등 9999보다 큰 수)인 버전인지 확인한다. 예: commons-io의 "20030203.000550".
+
+    A version whose first number is a date (more than 9999, e.g. eight digits): an old build numbered by date, never
+    an upgrade of a normal version and never comparable with a normal hint."""
+    m = _major(v)
+    return m is not None and m > _DATE_MAJOR
 
 
 def _newer(a: str, b: str) -> bool:
@@ -443,14 +457,27 @@ def _choose_target(item: InventoryItem, policy: Any, source: Any, current: str) 
         return "", "", R_NO_CANDIDATE_VERSION, [
             "IVAS patched version hint(s) " + ", ".join(repr(h) for h in bad) + " are not plain versions; "
             "not chosen automatically"]
+    shown = "; ".join(", ".join(alts) for alts in groups)
+    cur_dated = _dated(current)
+    if cur_dated and not any(_dated(h) for alts in groups for h in alts):
+        # 날짜로 매긴 옛 빌드는 숫자로는 어떤 힌트보다 높아 보이므로 비교하지 않고 사람이 정하도록 남긴다
+        return "", "", R_NO_CANDIDATE_VERSION, [
+            f"the current version {current} is date-stamped and cannot be compared with the IVAS patched hint "
+            f"{shown}; not chosen automatically"]
+    if all(_fixes(current, alts) for alts in groups):
+        # 현재 버전이 이미 힌트를 만족하면 올릴 근거가 없다. 라운드마다 올리지 않도록 검사 쪽 확인을 요청하는 항목으로 남긴다
+        return "", "", R_MANUAL_REVIEW, [
+            f"IVAS still reports {current} although it meets the patched hint {shown}: ask the IVAS team to check "
+            "the finding"]
     listed = list(source.versions(g, a))
     excluded: list[str] = []
     cands: list[str] = []
-    shown = "; ".join(", ".join(alts) for alts in groups)
     for v in listed:
         if not _newer(v, current):
             continue                                     # ≤ current: not an upgrade (not worth listing as excluded)
-        if v in deny_versions:
+        if _dated(v) and not cur_dated:
+            excluded.append(f"{v} (date-stamped)")
+        elif v in deny_versions:
             excluded.append(f"{v} (deny_versions)")
         elif is_prerelease(v) and not policy.allow_prerelease:
             excluded.append(f"{v} (prerelease)")
@@ -468,6 +495,13 @@ def _choose_target(item: InventoryItem, policy: Any, source: Any, current: str) 
         if higher and not policy.allow_major:
             return "", "", R_NO_CANDIDATE_VERSION, [
                 f"only major upgrades are available ({_cap(higher)}) and policy.allow_major is false"]
+        # 다른 메이저로 올리는 것은 IVAS 힌트가 그 메이저를 가리킬 때만 한다
+        named = {_major(h) for alts in groups for h in alts}
+        if higher and not [v for v in higher if _major(v) in named]:
+            return "", "", R_NO_CANDIDATE_VERSION, [
+                f"only other major versions are available ({_cap(higher)}) and no IVAS patched hint names that "
+                f"major (hint {shown})"]
+        higher = [v for v in higher if _major(v) in named]
         if not higher:
             facts = (f"repository listed {_cap(listed)}; excluded: {_cap(excluded)}; "
                      f"needed > {current} and ≥ patched hint {shown}")
@@ -480,6 +514,82 @@ def _choose_target(item: InventoryItem, policy: Any, source: Any, current: str) 
     if not evidence:
         return "", "", R_NO_CANDIDATE_VERSION, [f"the repository gave no evidence for {target}"]
     return target, evidence, "", []
+
+
+# 버전 property를 쓰는 곳으로 세는 요소. 이 요소의 <version>이 property를 쓰면 그 g:a도 같은 값으로 바뀐다
+_VERSION_HOLDERS = ("dependency", "plugin", "extension")
+
+
+def _property_users(pp: Any, loc: PomLocation) -> list[tuple[str, str, Any]]:
+    """``loc``이 가리키는 property 정의를 버전으로 쓰는 (g:a, 버전 문자열, pom) 목록을 반환한다.
+    같은 이름을 다시 정의한 pom의 사용처는 다른 값이므로 뺀다.
+
+    Every dependency / plugin / extension whose `<version>` uses the property defined at `loc`, in every project pom
+    whose own chain resolves the name to that same definition (a pom redefining it uses another value)."""
+    home = next((pf for pf in pp.poms.values() if pf.ok and pf.rel == loc.pom), None)
+    defn = home.props.get(loc.property) if home is not None else None
+    if defn is None:
+        return []
+    needle = "${" + loc.property + "}"
+    out: list[tuple[str, str, Any]] = []
+    for pf in pp.poms.values():
+        if not pf.ok:
+            continue
+        hit = pp.lookup(pf, loc.property)
+        if hit is None or hit[1] is not defn:
+            continue
+        for el in pf.root.iter():
+            if _inv._local(el) != "version" or needle not in (el.text or ""):
+                continue
+            holder = el.getparent()
+            kind = _inv._local(holder)
+            if kind not in _VERSION_HOLDERS:
+                continue
+            g = pp.interp(pf, _inv._text(_inv._kid(holder, "groupId")))
+            if not g and kind == "plugin":
+                g = "org.apache.maven.plugins"            # 플러그인의 groupId 기본값이다
+            a = pp.interp(pf, _inv._text(_inv._kid(holder, "artifactId")))
+            out.append((f"{g}:{a}", (el.text or "").strip(), pf))
+    return out
+
+
+def _shared_property_problem(poms: _Poms, loc: PomLocation, ga: str, target: str, policy: Any, source: Any) -> str:
+    """property를 다른 아티팩트도 쓰는데 그중 하나라도 ``target`` 버전이 없으면 이유 한 줄을, 아니면 빈 문자열을 반환한다.
+    버전 근거는 첫 아티팩트와 같은 곳(서버 정책의 pin, 승인된 저장소)에서 찾는다.
+
+    A version property shared by several artifacts is changed only when the target exists for every one of them
+    (a policy pin naming that version, or the same version source's listing with evidence). One user = ""."""
+    if not loc.property:
+        return ""
+    try:
+        users = _property_users(poms.pp, loc)
+    except Exception as e:  # noqa: BLE001 - an unreadable model leaves the plan as it was before this check
+        log.warning("remediation: users of ${%s} not determined: %s", loc.property, type(e).__name__)
+        return ""
+    others = sorted({u for u, _t, _pf in users if not same_ga(u, ga)})
+    if not others:
+        return ""
+    needle = "${" + loc.property + "}"
+    missing: list[str] = []
+    seen: set[tuple[str, str]] = set()
+    for uga, text, pf in users:
+        if same_ga(uga, ga):
+            continue
+        wanted = poms.pp.interp(pf, text.replace(needle, target))
+        if (uga, wanted) in seen:
+            continue
+        seen.add((uga, wanted))
+        pin = (policy.pins or {}).get(uga)
+        if pin and same_version(pin, wanted):
+            continue
+        g, a = _ga_parts(uga)
+        hit = None if "${" in wanted else next((v for v in source.versions(g, a) if same_version(v, wanted)), None)
+        if hit is None or not source.evidence(g, a, hit):
+            missing.append(uga)
+    if not missing:
+        return ""
+    return (f"version property ${{{loc.property}}} ({loc.pom}) also sets the version of {', '.join(others)}; {target} is "
+            f"not in the repository for {', '.join(sorted(set(missing)))}: the property is not changed automatically")
 
 
 def _change_for(project: Path, item: InventoryItem, policy: Any, source: Any, poms: _Poms, *,
@@ -535,6 +645,10 @@ def _change_for_one(project: Path, item: InventoryItem, policy: Any, source: Any
     else:
         kind = K_OWN_MANAGEMENT_VERSION
     if kind == K_PROPERTY_VERSION:
+        # property를 함께 쓰는 아티팩트 중 목표 버전이 없는 것이 있으면 바꾸지 않고 직접 확인 항목으로 남긴다
+        shared = _shared_property_problem(poms, loc, item.ga, target, policy, source)
+        if shared:
+            return _residual(item, R_MANUAL_REVIEW, shared)
         prop = loc.property or "?"
         notes.append(f"property ${{{prop}}} may govern other artifacts")
     governed, also = _scope(item)
@@ -603,6 +717,14 @@ class _Poms:
         if self._pp is None:
             self._pp = _inv.ProjectPoms(self.project)
         return self._pp
+
+
+class _PomsOf(_Poms):
+    """이미 읽은 ``ProjectPoms``를 ``_Poms``처럼 넘길 때 쓰는 클래스."""
+
+    def __init__(self, pp: Any):
+        super().__init__(pp.project)
+        self._pp = pp
 
 
 def _split_variant(variant: str) -> tuple[str, str]:
@@ -721,6 +843,9 @@ def _existing_entry_change(project: Path, item: InventoryItem, policy: Any, sour
         return _residual(item, reason, "; ".join(notes), variant=variant, modules=scope)
     kind = K_PROPERTY_VERSION if loc.property else K_OWN_MANAGEMENT_VERSION
     if loc.property:
+        shared = _shared_property_problem(_PomsOf(pp), loc, item.ga, target, policy, source)
+        if shared:
+            return _residual(item, R_MANUAL_REVIEW, shared, variant=variant, modules=scope)
         notes.append(f"property ${{{loc.property}}} may govern other artifacts")
     notes.append(f"uses the existing <dependencyManagement> entry of {where_pom}")
     risks = [RISK_MAJOR] if _major(target) != _major(item.version) else []

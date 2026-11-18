@@ -64,6 +64,8 @@ data:
   # ── 1. 웹 파드 ──────────────────────────────────────────────────────────────────────────────────
   SBMIG_WEB_CONFIGS: "artifacts.yml"      # 모든 업로드가 이 config 로 돈다(= sbmig serve --config). 쉼표로 여러 개
   SBMIG_WEB_OPEN: "1"                   # 사내망 전용 페이지(2026-11-05 결정): 토큰 없이 연다. 토큰을 쓰려면 지우고 Secret 의 SBMIG_WEB_TOKEN
+  # SBMIG_WEB_ALLOWED_ORIGINS: "CHANGE_ME_HOST"   # 다른 사이트의 화면에서 온 요청(실행 시작·중지)은 403 으로 거절한다. 주소가 맞는데도
+  #                                              # 업로드가 403 (cross-site request refused) 이면 브라우저 주소창의 호스트를 적는다(쉼표로 여러 개)
   SBMIG_MAX_UPLOAD_MB: "1024"           # 업로드 zip 상한(MB). 0 = 없음. 기본 512
   # 클러스터에서 프록시로 나가야 할 때만(웹 파드와 Job 파드가 같이 읽는다). 사내 게이트웨이 / Nexus 는 보통 NO_PROXY 에 둔다
   # HTTP_PROXY: "http://<프록시 호스트>:<포트>"
@@ -76,7 +78,7 @@ data:
   # 동시에 도는 빌드 파드(Job) 수(회사 값 2026-11-10: 처음에는 3). 넘는 업로드는 올린 순서대로 기다리고 화면에 대기 순번이 보인다.
   # 자리(1 · 2 · 3)마다 Maven 로컬 저장소를 따로 쓴다(/data/.m2 폴더의 repository, repository-slot2, repository-slot3 — 한 저장소에
   # 여러 Maven 이 동시에 쓰면 깨질 수 있다). 1 로 두면 예전처럼 한 번에 하나. 바꾼 뒤에는 웹 파드를 다시 띄운다(시작할 때 한 번 읽는다).
-  # 파드 하나가 CPU 2 / 메모리 6Gi 를 요청한다(81 의 resources) — 3 이면 노드에 CPU 6 / 메모리 18Gi 여유가 있어야 셋이 같이 돈다
+  # 파드 하나가 CPU 2 / 메모리 8Gi 를 요청한다(81 의 resources) — 3 이면 노드에 CPU 6 / 메모리 24Gi 여유가 있어야 셋이 같이 돈다
   SBMIG_JOB_MAX_PARALLEL: "3"
   # SBMIG_JOB_TEMPLATE 은 Deployment 의 env 가 /templates/81-web-job.template.yaml 로 정한다(ConfigMap sbmig-job-template) — 여기서는 안 건드린다
   # SBMIG_JOB_STOP_GRACE_S: "2700"      # 멈춤 요청 뒤 Job 삭제까지(초). Maven 빌드 한 번 + OpenRewrite 보다 길어야 보고서를 잃지 않는다
@@ -121,7 +123,8 @@ data:
   # SBMIG_LIBRARIES__NEXUS_SEARCH: "true"            # jakarta 빌드 탐색에 Nexus 검색 API 사용
   # SBMIG_LIBRARIES__INCLUDE_PRERELEASE: "false"
   # SBMIG_REVIEW__FIX_CRITICAL: "true"               # 구조 리뷰의 critical 을 자동 수정
-  # SBMIG_FLEET__MIN_FREE_GB: "5"                    # 디스크 여유 하한(실행 전 확인)
+  # SBMIG_FLEET__MIN_FREE_GB: "5"                    # 데이터 볼륨(/data) 여유 공간 하한(GB). 웹 파드가 업로드를 받기 전에 확인하고 모자라면
+  #                                                  # 507 로 거절한다(화면: 저장 공간 부족). 0 = 확인 안 함. 오래된 실행 폴더는 저절로 지워지지 않는다(운영자가 지운다)
   #    취약점 조치(README §6, 2026-11-11): 이관이 BUILD SUCCESS 로 끝나면 같은 빌드 파드에서 IVAS 검사 → pom 의 버전 표기 수정 → 재검사를 이어 돈다.
   #    결과는 실행 폴더의 remediation/ 아래. 조치의 성패는 이관의 판정·종료 코드를 바꾸지 않고, Secret 에 IVAS 세 값이 없으면 건너뛴다.
   #    여기(sbmig-env)에 두는 까닭: 웹 파드(40, envFrom)와 Job 파드(81, 아래 키 줄)가 같은 값을 받아야 Worker 의 환경 대조를 통과한다

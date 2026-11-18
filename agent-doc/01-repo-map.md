@@ -47,7 +47,7 @@
 
 | 패키지 | 한 줄 역할 | 핵심 모듈(한 줄씩) |
 |---|---|---|
-| `sbmig/core/` | 모든 패키지가 import 하는 공유 계약 | `models.py` 모든 pydantic 모델·Enum(ProjectProfile, PlanStep, BuildError, FixAttempt, RunReport …) · `config.py` 설정 스키마와 `load_config`(default.yml → `--config` → 덮어쓰기 → `SBMIG_*` 환경 변수, 뒤가 이김) · `interfaces.py` 플러그인 Protocol(이음새) · `workspace.py` 작업 사본·실행 디렉토리·git·저널 · `stage.py` 로그 줄의 단계 태그 · `diag.py` 스레드 덤프 · `jakarta_libraries.py` jakarta 릴리스 표 읽기 |
+| `sbmig/core/` | 모든 패키지가 import 하는 공유 계약 | `models.py` 모든 pydantic 모델·Enum(ProjectProfile, PlanStep, BuildError, FixAttempt, RunReport …) · `config.py` 설정 스키마와 `load_config`(default.yml → `--config` → `SBMIG_*` 환경 변수 → 명령줄·매니페스트의 명시 값, 뒤가 이김) · `interfaces.py` 플러그인 Protocol(이음새) · `workspace.py` 작업 사본(올린 ZIP 의 풀기 한도 포함)·실행 디렉토리·git·저널 · `stage.py` 로그 줄의 단계 태그 · `diag.py` 스레드 덤프 · `jakarta_libraries.py` jakarta 릴리스 표 읽기 |
 | `sbmig/analyze/` | 접수 보조 + 프로필 만들기 | `analyzer.py` `analyze_project` 본체 · `pom_parser.py` pom 그래프(Maven 호출 없음), `find_stray_pom_copies` · `classifier.py` 유형 판정·MSA 서비스 루트 · `source_scanner.py` 정규식 소스 스캔 · `libraries.py` 표 기반 라이브러리 탐지 · `build_tool.py` Maven / Ant / Gradle 판별 · `ant.py` build.xml → pom.xml 합성 · `jar_coords.py` jar → Maven 좌표 · `aggregator.py` 루트 없는 트리의 aggregator, reactor 중복 정리 · `bundled_jars.py` 동봉 jar 스캔 · `hollow.py` 속 빈 리액터 · `adf.py` Oracle ADF 판정 · `framework.py` 사내 프레임워크 프로젝트 판정 · `edges.py` 특이 사항 경고 · `properties.py` 외부 설정 키 · `webxml.py` web.xml 모델 · `jsp.py` JSP 코드 영역 · `webapp_inventory.py` `sbmig inventory` 용 목록 · `jakarta_packages.yml` javax → jakarta 패키지 표 |
 | `sbmig/plan/` | 규칙 기반 계획 + 레시피 카탈로그 | `planner.py` `build_plan`(단계 목록) · `catalog.py` 레시피 카탈로그 · `catalog_cli.py` `sbmig recipes …` · `jarcheck.py` 레시피 jar 검사 · `versions.py` 버전 비교 |
 | `sbmig/rewrite/` | OpenRewrite 1회 실행 | `runner.py` `OpenRewriteRunner` · `compose.py` 이번 실행의 `rewrite.yml` 합성 · `versions.py` 레시피 아티팩트 버전(BOM 3.37.0) |
@@ -65,7 +65,7 @@
 | `sbmig/report/` | 보고서 | `writer.py` `write_report` · `markdown.py` `render_markdown`(진입점, en 진단 보고서의 절 순서) · `guide_ko.py` `render_guide_ko`(`report.language: ko` 의 요청자용 안내서) · `changes.py` `collect_code_changes`(파일별 순변경 diff) · `handover.py` 인수인계 데이터 · `result_line.py` `SBMIG-RESULT` 줄·종료 코드 · `i18n.py` 한국어 문구 · `errors.py` 오류 목록 가공 · `cost.py` LLM 비용 · `inventory.py` `sbmig inventory` 산출물 |
 | `sbmig/fleet/` | 순차 일괄 실행 | `runner.py` `FleetRunner` · `manifest.py` 매니페스트 · `preflight.py` 인프라 점검 · `summary.py` 요약 파일 · `cleanup.py` 디스크 정리 · `cli.py` `sbmig fleet …` |
 | `sbmig/graph/` | LangGraph 엔진 | `engine.py` 노드 intake → analyze → plan → phase → finalize (→ remediation, 켜졌을 때) |
-| `sbmig/web/` | 웹 UI | `app.py` 라우트(`/api/runs`, `/api/runs/{run_id}/events` …) · `runs.py` 실행 관리자·SSE 이벤트 · `static/index.html` 화면(바닐라 JS) · `admin.py`와 `static/admin.html` 관리자 페이지(`/admin`: 프로젝트별 토큰 사용량, 로그 ZIP) · `codediff.py` 코드 변경 화면의 API(`/api/runs/{run_id}/codediff`: 실행 폴더의 `codediff/`와 `result.zip`만 읽는다. 기록은 빌드 쪽 `sbmig/report/codediff.py`가 마무리에서 쓴다) |
+| `sbmig/web/` | 웹 UI | `app.py` 라우트(`/api/runs`, `/api/runs/{run_id}/events` …)와 토큰 가드(다른 사이트의 요청 거절 포함) · `contract.py` Main ↔ Worker 파일 계약(빌드 식별값 `sbmig_version`, 고정값 대조) · `runs.py` 실행 관리자·SSE 이벤트 · `static/index.html` 화면(바닐라 JS) · `admin.py`와 `static/admin.html` 관리자 페이지(`/admin`: 프로젝트별 토큰 사용량, 로그 ZIP) · `codediff.py` 코드 변경 화면의 API(`/api/runs/{run_id}/codediff`: 실행 폴더의 `codediff/`와 `result.zip`만 읽는다. 기록은 빌드 쪽 `sbmig/report/codediff.py`가 마무리에서 쓴다) |
 
 모듈마다 docstring 맨 앞에 짧은 한국어 블록(역할, 호출 위치, 진입점, 지켜야 할 규칙)이 있고 그 뒤에 영어 상세 기록이 있다. 규약: `docs/v2/CODE-COMMENTS-KO.md`.
 

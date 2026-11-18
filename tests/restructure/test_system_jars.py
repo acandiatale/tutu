@@ -242,3 +242,19 @@ def test_webinf_left_followup():
     assert "(`sbmig-bundled`)" in line and line.endswith("; move the classes into src/main/java")
     assert "\n" not in line
     assert not webinf_left_followup(left[:2], "w").endswith("src/main/java")
+
+
+def test_copy_helper_never_reuses_a_different_jar_under_the_fallback_name(tmp_path):
+    """Review P7: the content is compared at every name tried, the fallback name included."""
+    ws = _ws(tmp_path)
+    src = f"shop-back/{AS_IS}"
+    lib = ws.abs("shop-back/lib")
+    lib.mkdir(parents=True, exist_ok=True)
+    (lib / "acme-seed-1.0.jar").write_bytes(b"other jar one")
+    (lib / "seed-acme-seed-1.0.jar").write_bytes(b"other jar two")
+    dst, name, copied = copy_jar_to_module_lib(ws, src, "shop-back", "seed")
+    assert copied and dst == "shop-back/lib/seed-2-acme-seed-1.0.jar" and name == "seed-2-acme-seed-1.0.jar"
+    assert ws.abs(dst).read_bytes() == ws.abs(src).read_bytes()
+    assert (lib / "seed-acme-seed-1.0.jar").read_bytes() == b"other jar two"
+    # the same jar again → the copy made above is reused, nothing new
+    assert copy_jar_to_module_lib(ws, src, "shop-back", "seed") == (dst, name, False)

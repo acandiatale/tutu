@@ -101,3 +101,25 @@ def test_layout_restructure_of_an_ms949_pom(tmp_path: Path, cfg: Config) -> None
     root = (ws.root / "pom.xml").read_bytes().decode("cp949")
     assert root.startswith('<?xml version="1.0" encoding="MS949"?>') and "<name>똠방 쇼핑몰</name>" in root
     assert "<artifactId>base-parent</artifactId>" in root
+
+
+# ---------------------------------------------------------------------------------------------- review P6
+def test_a_declared_encoding_that_cannot_hold_the_text_keeps_the_text(tmp_path: Path) -> None:
+    """ISO-8859-1 declared, UTF-8 Korean held: comments and CDATA keep their characters (no `&#…;`) on save."""
+    text = _pom("ISO-8859-1").replace("</project>", "    <x><![CDATA[한글 데이터]]></x>\r\n</project>")
+    p = tmp_path / "pom.xml"
+    p.write_bytes(text.encode("utf-8"))
+    ed = PomEditor(p)
+    ed.set_property("k", "v")
+    ed.save()
+    got = p.read_bytes().decode("utf-8")
+    assert "&#" not in got
+    assert "<!-- 사내 공통 pom: 담당 홍길동 -->" in got and "<![CDATA[한글 데이터]]>" in got
+    assert got.startswith('<?xml version="1.0" encoding="ISO-8859-1"?>') and "<k>v</k>" in got
+    again = PomEditor(p)
+    assert again.to_string() == got
+
+
+def test_from_string_with_a_declaration_that_cannot_hold_the_text() -> None:
+    ed = PomEditor.from_string(_pom("ISO-8859-1"))
+    assert "&#" not in ed.to_string() and "<!-- 사내 공통 pom: 담당 홍길동 -->" in ed.to_string()

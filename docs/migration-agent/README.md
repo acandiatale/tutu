@@ -42,6 +42,7 @@
 | Gradle, pom 도 build.xml 도 없는 트리 | 거부(exit 3). 담당팀 안내문은 읽기 전용 `sbmig inventory <dir>` |
 | Oracle ADF(근거 계열 둘 이상) | 분석에서 멈춤(exit 3, "ADF 프로젝트라 변환이 불가능합니다") |
 | 리액터가 아무것도 컴파일하지 않는 속 빈 모양 | 계속하지만 성공 아님(`hollow-reactor`, exit 2) |
+| 풀면 너무 큰 ZIP(`intake.max_unpacked_mb` / `intake.max_entry_mb` / `intake.max_compression_ratio`) | 아무것도 풀지 않고 거부(exit 3, `run aborted: ZIP refused: …`) |
 
 ### 1.3 지키는 규칙
 
@@ -98,7 +99,7 @@ flowchart LR
 ```mermaid
 flowchart TD
   START(["폴더 / zip"]) --> INTAKE["intake: 작업 사본 · git · preflight · 빌드 도구 · 트리 모양"]
-  INTAKE -->|"Gradle · Ant · 빌드 파일 없음 · Maven/JDK 문제"| FIN
+  INTAKE -->|"풀기 한도 넘은 ZIP · Gradle · Ant · 빌드 파일 없음 · Maven/JDK 문제"| FIN
   INTAKE --> ANALYZE["analyze: 케이스 유형 · 라이브러리 · 권고 · 동봉 jar · ADF · 사내 프레임워크"]
   ANALYZE -->|"ADF · 루트 pom 없음"| FIN
   ANALYZE --> PLAN["plan: 레시피 세트 · 단계 목록"]
@@ -122,6 +123,7 @@ flowchart TD
 LangGraph 노드는 `intake` → `analyze` → `plan` → `phase`(단계 묶음마다 반복: transform, restructure(재구성 + 검토), verify) → `finalize` → `remediation` → END 입니다. 그래프의 `finalize` 노드는 멈춤 표시만 정리하고, 보고서 · KB 기록 · `changes.patch` · `result.zip` 은 그래프가 끝난 뒤, 곧 취약점 조치가 끝난 뒤에 씁니다. 그래서 이관 보고서에 취약점 조치 요약 절이 들어갑니다.
 위 그림은 실행 방식 `full`(기본, 전체 진행)입니다. 실행 방식 `remediation`(취약점 해결)은 `intake` → `remediation` → `finalize` 만 지나갑니다: 프로젝트를 고치지 않는 접수(작업 사본, preflight, 빌드 도구 판별과 거부), 올린 그대로의 프로젝트에 대한 취약점 조치, 짧은 보고서. 이관 단계·LLM·KB 는 쓰지 않습니다(10절).
 멈춤(`--stop-after`, 웹의 Stop)이나 중단은 곧바로 `finalize` 로 갑니다. Stop 은 노드 사이에서만 반영되고, 진행 중인 Maven·LLM 호출은 끊지 않습니다.
+마지막 단계 묶음 뒤의 멈춤 요청은 이렇게 처리합니다(`Orchestrator.late_stop`, 두 엔진 같음): 계획한 최종 빌드에 결과가 없으면 중단, 수정 루프가 요청으로 나왔으면 중단(트리가 루프의 마지막 빌드 뒤 그대로면 최종 빌드를 다시 하지 않고 그 빌드가 최종 빌드), 최종 빌드가 모두 끝난 뒤에 온 요청은 무시하고 실행을 그대로 끝냅니다(저널 `stop_request`).
 
 사내 프레임워크 프로젝트는 계획의 범위가 `jdk-jakarta` 라서 재구성과 구조 검토를 건너뛰고 변환에서 곧바로 검증으로 갑니다(4.9절).
 
@@ -134,13 +136,14 @@ MSA 는 공유 라이브러리 루트 먼저, 그다음 서비스마다 `transfo
 - `build.setup_command`(있으면) → preflight(Maven 실행, `mvn -v` 의 Java 가 21, 사내 부모 좌표가 채워졌는지) → 빌드 도구 판별(Maven 통과 / Ant 는 `intake.ant_message` 로 거부, `intake.ant_to_maven: true` 면 pom 합성 / Gradle·빌드 파일 없음 거부).
 - 트리 모양: 떠도는 pom 복사본(IDE 출력 폴더의 모듈 사본) 무시, 루트 pom 없으면 aggregator 생성, 리액터에 두 번 닿는 모듈 제거, 배포 전송 빌드 확장(wagon) 제거, 사내 부모 체인의 빌드 확장 점검.
 - as-is effective dependencyManagement 캡처 → `logs/effective-depmgmt.json`(나중에 버전 이어받기와 보고서 「전환 내용」의 의존성 버전 표).
-- 멈춤(exit 3): `mvn-not-found`, `jdk-not-21`, `unsupported-build-tool:<도구>`, `ear-without-modules`.
+- 멈춤(exit 3): 올린 ZIP 이 풀기 한도(`intake.max_unpacked_mb` 4096, `intake.max_entry_mb` 1024, `intake.max_compression_ratio` 200)를 넘음(아무것도 풀지 않음, `run aborted: ZIP refused: …`, 저널 `intake_refused`, preflight 전), `mvn-not-found`, `jdk-not-21`, `unsupported-build-tool:<도구>`, `ear-without-modules`.
 
 ### 4.2 analyze
 
 - 모든 pom(Maven 호출 없이), 소스, web.xml, JSP, 트리 안 jar 를 읽어 `ProjectProfile` 을 만듭니다: 케이스 유형(`pure_java` | `servlet_tomcat` | `spring_legacy` | `spring_boot` | `msa`), Java·Spring·Boot 버전, 라이브러리, 외부 설정 키, 동봉 jar.
 - EOL 라이브러리 권고(`knowledge/libraries/advisories.yml`)는 **안내만** 합니다: 수정 프롬프트의 힌트와 보고서 「확인해 주세요」의 항목. 차단 정책은 없습니다.
-- 멈춤: ADF 근거 계열 둘 이상(`intake.adf_policy: stop`), 루트 pom 없고 MSA 아님. 계속하지만 성공 아님: `hollow-reactor`.
+- 멈춤: ADF 근거 계열 둘 이상(`intake.adf_policy: stop`), 루트 pom 없고 MSA 아님. 계속하지만 성공 아님: `hollow-reactor`(모듈의 빌드 디렉터리는 프로젝트 안 부모 체인에서 물려받은 값까지 봅니다).
+- 사내 프레임워크 검사가 아무것도 찾지 못했는데 부모 pom 과 의존성 트리를 둘 다 읽지 못했으면 플래그 `framework-unchecked` 와 인수인계 한 줄을 남기고 전체 범위로 계속합니다.
 
 ### 4.3 plan
 
@@ -171,7 +174,7 @@ Boot 4 상위 레시피는 Springfox 를 springdoc 으로, `spring-cloud-starter
 
 `Restructurer.apply` 가 모드별 작업(디렉터리 이동, 루트 → aggregator, 부모 교체, 필수·선택 아티팩트, boot 모듈과 Application 생성, web.xml 등록)을 하고, 모든 pom 을 정리합니다:
 필터링되는 바이너리의 `nonFilteredFileExtensions` → as-is 버전 이어 적기 → 부모 체인이 관리하는 버전 지우기 → 체인을 덮는 버전 속성 지우기 → 참조 없는 버전 속성 지우기 → 동봉 jar 연결 → JSP javax → jakarta.
-실패하면 `restructure-failed`(나머지 재구성은 건너뛰고 빌드는 돎, 성공 아님). 규칙은 §8.
+실패하면 트리를 단계 전 커밋으로 되돌리고(저널 `restructure_reset`) `restructure-failed`(나머지 재구성은 건너뛰고 빌드는 돎, 성공 아님). 규칙은 §8.
 
 ### 4.6 structure review
 
@@ -179,16 +182,17 @@ LLM 이 재구성된 pom 전부와 재구성 메모, 부모 체인 사실, 인�
 
 - critical → LLM 답의 `<edits>` 를 적용(`review.fix_critical`; 스크립트는 받지 않음, `review.ask_script: false`). `review.invariant_check` 가 재구성 불변식(예: 떠도는 pom 사본을 모듈로 등록하지 않기)을 다시 검사해 어긴 편집은 되돌리고 한 번 다시 묻습니다. 성공하면 커밋 `review: fix critical structure issues (<n>)`.
 - warning → 보고서 「확인해 주세요」의 항목과 `errors.md` 의 note 항목. 검토 재료에 없는 버전을 말한 이슈는 적용하지 않습니다.
+- 답을 읽지 못하면(JSON 조각만 읽힘, 토큰 한도에서 잘림) 짧게 답하라고 한 번 다시 묻고, 두 번 다 못 읽으면 판정 `failed` 입니다. 첫 이슈만 남긴 검토는 만들지 않습니다.
 - 실행을 멈추지 않습니다. 판정은 `SBMIG-RESULT … review=<verdict>`.
 
 ### 4.7 verify
 
-`mvn clean package -Dmaven.test.skip=true`. 실패하면 수정 루프(§5), 루프가 돌았으면 최종 빌드를 **반드시** 한 번 더 합니다.
+`mvn clean package -Dmaven.test.skip=true`. 실패하면 수정 루프(§5), 루프가 돌았으면 최종 빌드를 **반드시** 한 번 더 합니다(루프가 멈춤 요청으로 나왔고 트리가 그대로면 루프의 마지막 빌드가 최종 빌드). MSA 의 `report.final_build` 는 실패한 첫 최종 빌드입니다.
 Windows `target/` 잠금은 기다렸다 다시(`build.file_lock_retries`), 로컬 저장소 부정 캐시는 `-U` 로 한 번 더.
 
 ### 4.8 finalize
 
-LLM 사용량·비용, 성공 판정(계획한 최종 빌드 전부 성공 + `restructure-failed` / `hollow-reactor` / 중단 없음), 미해결·차단 목록, 오류 목록과 KB 기록, 보고서 쓰기, 그다음 `changes.patch` / `result.zip`(KB 와 보고서가 먼저), 끝으로 웹 화면 「코드 변경」에 쓰는 기록 `codediff/`.
+LLM 사용량·비용, 성공 판정(계획한 최종 빌드 전부 성공 + `restructure-failed` / `hollow-reactor` / 중단 없음), 미해결·차단 목록, 오류 목록과 KB 기록, 보고서 쓰기, 그다음 `changes.patch` / `result.zip`(KB 와 보고서가 먼저), 끝으로 웹 화면 「코드 변경」에 쓰는 기록 `codediff/`(마지막 커밋에 있는 경로만, 바뀐 파일이 없는 실행은 기록을 쓰지 않음 — 저널 `code_diff_skipped`).
 마지막 줄 `SBMIG-RESULT run=… exit=… build=… unresolved=… blocked=… llm=… attn=… review=…`. 종료 코드: 0 성공, 2 차단·미해결·성공 아님, 3 중단.
 
 ### 4.9 사내 프레임워크 프로젝트 (범위 `jdk-jakarta`)
@@ -219,7 +223,7 @@ flowchart TD
 - 레시피가 compile 로 바꾼 as-is `provided` scope 는 변환 직후 되돌립니다(커밋 `transform: as-is provided scopes restored`, 저널 `scopes_restored`).
 - 커밋 순서: `transform: source encodings written` → `rewrite: transform.rewrite` → `transform: as-is provided scopes restored` → `transform: JSP javax → jakarta`. 두 정정은 보고서 「코드 수정 내역」의 자동 변환 줄과 `errors.md` 에 `transform` 단계의 pom 정정으로 나옵니다.
 - 부모 pom 을 회사 부모로 맞추지 않습니다. 저장소가 부모 pom 을 주지 않으면 LLM 없이 `aborted:parent-not-found` 로 멈춥니다.
-- 수정 루프: 버전 사실은 프로젝트 자기 부모 체인에서 오고 Boot BOM 은 쓰지 않습니다. 프레임워크 선언·버전이나 `<parent>` 를 바꾼 시도는 되돌립니다(저널 `framework_guard`). 프레임워크 자신이 javax 기준이면 LLM 없이 `external_javax_api` 로 차단하고 담당자에게 jakarta 빌드를 요청하라고 적습니다.
+- 수정 루프: 버전 사실은 프로젝트 자기 부모 체인에서 오고 Boot BOM 은 쓰지 않습니다. 프레임워크 선언·버전이나 `<parent>` 를 바꾼 시도는 되돌립니다(저널 `framework_guard`; 버전의 `${…}` 는 프로젝트 안 부모 체인으로 풀어 비교하므로 루트 pom 의 속성을 바꾼 것도 잡습니다). 프레임워크 자신이 javax 기준이면 LLM 없이 `external_javax_api` 로 차단하고 담당자에게 jakarta 빌드를 요청하라고 적습니다.
 - 결과: `SBMIG-RESULT … scope=jdk-jakarta`, 보고서의 `## 사내 프레임워크 프로젝트` 절, 화면의 `프레임워크 프로젝트` 표시와 `하지 않음` 단계(재구성, 구조 검토).
 - 취약점 조치: 프레임워크와 그것이 가져오는 라이브러리는 사내 그룹 `framework` 몫이라 제안하지 않습니다.
 
@@ -241,7 +245,8 @@ flowchart TD
   CM --> B
 ```
 
-- 끝나는 조건은 언제나 빌드 뒤: 성공, 라운드 소진(`loop.phases.verify.max_iterations` 50), 손댈 케이스 없음, 차단만 남음, 시간 초과(`loop.max_total_minutes`).
+- 끝나는 조건은 언제나 빌드 뒤: 성공, 라운드 소진(`loop.phases.verify.max_iterations` 50), 손댈 케이스 없음, 차단만 남음, 시간 초과(`loop.max_total_minutes`), 멈춤 요청.
+- 루프가 끝나면 케이스마다 마지막으로 적용한 시도가 `no_change` / `inconclusive` 일 때 최종 빌드 전에 되돌립니다(저널 `script_rollback` 의 `where: "loop end"`). 도움이 안 된 시도는 결과물에 넣지 않습니다. `partial` 은 남깁니다.
 - 순서: parent → pom → 의존성 → 플러그인 해석 → … → 컴파일(리액터 순서) 순, 같은 순위면 `package does not exist` 같은 근본 원인 먼저.
 - 정체(같은 오류 집합)·진동(이전 빌드로 돌아감)이 반복되면 더 센 모델(`llm.escalation_model`)로, 계속되면 `oscillation` 으로 차단.
 
@@ -273,21 +278,23 @@ flowchart TD
 | `sbmig-version` | 의존성 버전 누락 | 새 부모 체인이 관리 → 버전 없음; as-is 빌드의 버전; 방금 추가된 것만 저장소 최신 릴리스 |
 | `sbmig-resources` | 필터링되는 바이너리에서 리소스 플러그인 실패 | `nonFilteredFileExtensions` 에 확장자 추가 |
 | `sbmig-jakarta` | javax 라이브러리이고 저장소에서 jakarta 빌드를 확인 | 의존성 선언 교체(상위 메이저면 보고서 「운영자 확인」에 ⚠) |
-| `sbmig-bundled` | 잃은 패키지를 트리 안 동봉 jar 가 제공 | 좌표가 저장소에 있으면 의존성, 없으면 `lib/` + `system` 스코프 |
+| `sbmig-bundled` | 잃은 패키지를 트리 안 동봉 jar 가 제공 | 좌표가 저장소에 있으면 의존성, 없으면 `lib/` + `system` 스코프. 저장소가 답하지 않으면 붙이지도, 없다고 하지도 않음 |
 
 - 한도: 케이스마다 실행당 LLM 요청 20회(`script.max_llm_tries_per_case`), 그중 보강 15회(`script.max_augments_per_case`), 직접 수정 4회(`script.max_edit_tries_per_case`), 거절 1회(`script.max_declines_per_case`). 세 번째 요청부터 더 센 모델.
 - 거절이 sbmig 가 확인한 사실(저장소에 jakarta 빌드가 있음, 동봉 jar 가 그 패키지를 줌, 프로젝트 코드로 대체하는 노트가 있음)과 모순이면 받지 않고 사실과 함께 다시 묻습니다.
 - "프로젝트 밖" 원인(외부 javax API, 없는 아티팩트, 맞지 않는 플러그인)은 `loop.blocked_policy` 가 정한 횟수만 시도합니다.
+- 저장소가 답하지 않은 해결 오류(시간 초과, 연결 거부, 5xx 등)는 "없음" 이 아니라 `repository_unreachable` 입니다. LLM 에 묻지 않고(`loop.blocked_policy.repository_unreachable: 0`) 저장 스크립트 재사용보다 먼저 정해, 네트워크가 돌아와 빌드가 통과해도 어떤 스크립트에도 실적을 주지 않습니다.
+- 토큰 교환 실패는 LLM 장애로 세고(쉼, `llm_unavailable`), 토큰 한도에서 잘려 `<script>` / `<edits>` 가 닫히지 않은 답은 쓰지도 저장하지도 않습니다(짧은 답을 다시 청함).
 
 ### 5.3 채점
 
 | 결과 | 조건 | 뒤처리 |
 |---|---|---|
 | `build_ok` / `improved` | 빌드 성공 / 대상 오류가 전부 사라지고 빌드가 그 단계까지 감 | 유지, KB 성공 |
-| `partial` | 일부만 사라짐, 손댄 파일에 새 오류 없음 | 다음 시도 전에 되돌림 |
-| `no_change` | 그대로 | 되돌림, KB 실패 |
+| `partial` | 일부만 사라짐, 손댄 파일에 새 오류 없음 | 다음 시도 전에 되돌림(케이스의 마지막 시도면 남김) |
+| `no_change` | 그대로 | 되돌림(다음 시도 전, 또는 루프 끝), KB 실패 |
 | `regressed` → `reverted` | 손댄 파일에 새 오류, 오류 수 1.5배 초과, pom 수정 뒤 구조적 오류 | 되돌림 |
-| `inconclusive` | 빌드가 판정을 못 함(타임아웃 등) | 실적 없음 |
+| `inconclusive` | 빌드가 판정을 못 함(타임아웃 등) | 실적 없음, 케이스의 마지막 시도면 루프 끝에 되돌림 |
 | `apply_failed` | 적용 실패 | 변경 버림 |
 
 ### 5.4 스크립트 계약
@@ -310,6 +317,7 @@ flowchart LR
 - 케이스 = L2 시그니처(`종류|분류|핵심 심볼`, 경로·줄·버전·모듈 이름 없음), 폴더 이름 = `sha1(L2)` 앞 10자.
 - 스크립트 상태: `unverified`(저장) → `proven`(만든 프로젝트가 아닌 곳에서 재사용으로 해결) → `retired`(사람).
 - 모든 쓰기는 `<kb>/.lock` 아래(웹 파드·빌드 파드 여러 개가 같은 KB 를 씀). 테스트와 데모는 `out/` 아래 KB 만 씁니다.
+- `case.json` 의 모르는 필드는 최상위든 스크립트 버전·실행 기록 안이든 다시 저장해도 남습니다. `sbmig kb import` 는 스크립트를 가져온 파일 이름과 상관없이 케이스 폴더의 `fix_v<N>.py` 로 씁니다.
 - 파일·키·필드 전체: `docs/kb-map/`(현업용 데이터 지도), `docs/v2/PLAN-v2.1.md` §3.3–§3.4.
 
 ## 7. 보고서
@@ -318,7 +326,7 @@ flowchart LR
 
 | 절 | 내용 |
 |---|---|
-| 머리 표 | 결과, `SBMIG-RESULT` 줄, 전환 후, 실행 ID, 시작 / 종료, 플래그 |
+| 머리 표 | 결과, `SBMIG-RESULT` 줄, 전환 후, 실행 ID, 시작 / 종료, 플래그. 중단된 실행의 결과는 빌드가 하나도 없을 때만 "빌드까지 진행하지 못했습니다", 빌드가 있었으면 "실행 중단 (마지막 빌드는 통과했습니다 / 통과하지 않았습니다)" |
 | 전환 내용 | Java · Spring Boot · 부모 pom 의 변경 전과 후, 의존성 버전 표(⚠ = 새 부모 pom 에 버전이 없어 기존 버전을 유지한 의존성), 추가 · 제거한 의존성 |
 | 확인해 주세요 | 담당 팀이 확인할 일을 번호 목록 하나로. 지원이 끝난 라이브러리 안내(대체할 라이브러리, 설명, 할 일, 문서)가 먼저 나옵니다 |
 | 코드 수정 내역 | 자동 변환(OpenRewrite, 재구성)은 요약만, 그 뒤 빌드 오류를 해결하려고 고친 파일은 파일마다 설명 · 수정 이유 · 최종 diff 하나 |
@@ -345,8 +353,8 @@ flowchart TD
 ```
 
 - 루트 pom 은 사내 `base-parent`(`artifacts.parent`)를 상속하는 aggregator 이고, 필수 아티팩트 2개는 모든 루트 pom 에(`artifacts.mandatory_target: root`), 선택 아티팩트는 이미 쓸 때만 맞추거나 `when_present` 트리거로 추가합니다. `{name}` = 루트 artifactId.
-- 버전: as-is 부모가 관리하던 버전은 as-is effective pom 에서 이어 적고(Handover ⚠), 새 부모 체인이 관리하는 버전은 지우고, 체인을 덮는 as-is 버전 속성은 지웁니다. 체인 사실은 effective-pom 캡처, 실패하면 저장소의 회사 부모 pom 에서 읽습니다.
-- 동봉 jar(WEB-INF/lib 의 벤더 jar): 첫 빌드 전에 연결합니다(`layout.wire_bundled_jars`) — 좌표를 저장소가 주면 의존성, 아니면 `lib/` + `system`. 목표 체인이 관리하는 g:a 의 옛 jar 는 붙이지 않습니다.
+- 버전: as-is 부모가 관리하던 버전은 as-is effective pom 에서 이어 적고(Handover ⚠), 새 부모 체인이 관리하는 버전은 지우고, 체인을 덮는 as-is 버전 속성은 지웁니다. 체인 사실은 effective-pom 캡처, 실패하면 저장소의 회사 부모 pom 에서 읽고, 관리 버전은 회사 부모마다 따로 둬 pom 마다 자기 부모의 것으로 판단합니다(루트 → base-parent, 모듈 → 역할 부모). pom 이 아닌 텍스트 파일(필터링 리소스 등)이 `${이름}` / `@이름@` 으로 쓰는 속성은 지우지 않습니다.
+- 동봉 jar(WEB-INF/lib 의 벤더 jar): 첫 빌드 전에 연결합니다(`layout.wire_bundled_jars`) — 좌표를 저장소가 주면 의존성, 아니면 `lib/` + `system`. 저장소가 답하지 않으면 그 jar 는 건드리지 않습니다("repository unreadable"). 목표 체인이 관리하는 g:a 의 옛 jar 는 붙이지 않습니다.
 - 예전 레이아웃(`module/boot-jar` + `module/comp-jar`)은 `layout.*` 로 남아 있습니다. 규칙 하나하나: `agent-doc/06-company-rules-restructure.md`.
 
 ## 9. 실행 방식 — CLI, 웹, Job, 플릿
@@ -371,19 +379,23 @@ flowchart LR
 
 웹 화면의 결과 카드에는 「코드 변경」 블록이 있습니다. 변환된 프로젝트의 파일을 최종 경로 기준으로, 원래 파일과 비교해 보여 줍니다. 재구성으로 위치가 바뀐 파일은 「원래 위치」를 함께 보여 주고, 폴더가 어디로 옮겨졌는지는 「폴더 구조가 바뀌었습니다」 표로 묶어 보여 줍니다. 바뀐 줄의 위아래 줄은 기본으로 10줄이 보이고 더 펼칠 수 있습니다. 화면은 실행 폴더의 `codediff/`(마무리에서 `sbmig/report/codediff.py` 가 씀)와 `result.zip` 만 읽습니다(`sbmig/web/codediff.py`). 웹 파드는 git 을 실행하지 않습니다.
 
+- 다른 웹 사이트의 페이지가 보낸 요청(GET / HEAD / OPTIONS 가 아니고 `Sec-Fetch-Site: cross-site` 이거나 `Origin` 호스트가 다름)은 토큰 검사보다 먼저 403 으로 거절합니다.
+- 업로드는 본문을 받기 전에 출력 볼륨 여유를 봅니다(`fleet.min_free_gb` 5 GB 미만이면 HTTP 507). 오래된 실행 폴더를 지우는 것은 없습니다(`sbmig clean` 은 손으로, 끝난 실행의 사본·업로드만).
+- 빌드 식별값 `sbmig version`(`0.1.0+<12자>`)과 설정 파일 digest 는 Job 을 만드는 웹 파드가 `control/state.json` 에 적고, 빌드 파드가 다르면 돌지 않습니다(exit 3, 화면 「웹 파드와 빌드 파드가 서로 다른 이미지로 …」). 이미지를 올린 뒤에는 웹 파드를 재시작하고, 그사이 올린 프로젝트는 다시 올립니다.
+
 Main ↔ Worker 의 파일·종료 코드·멈춤·복구 약속: `docs/v2/JOB-RUN-STATE-CONTRACT-KO.md`. 매니페스트와 운영: `deploy/README.md`.
 
 ## 10. 취약점 조치
 
 이관이 BUILD SUCCESS 로 끝나고 `remediation.after_migration` 이 켜져 있으면, 마지막 노드 `remediation` 이 같은 빌드 파드 안에서 별도 그래프를 부릅니다:
 IVAS 로 이관된 프로젝트를 검사하고, 취약 라이브러리의 **버전 글자만** 고쳐(간접 의존성은 `dependencyManagement` 항목 하나를 추가) 다시 빌드·재검사합니다. 결과는 `<실행 폴더>/remediation/` 에 남고 이관의 판정·종료 코드는 바꾸지 않습니다(`SBMIG-RESULT … remediation=<상태>`).
-기본 설정에서는 사람의 승인을 기다리지 않고 같은 파드에서 끝까지 진행합니다. 검토 없이 적용한 메이저 버전 변경과 추가한 항목은 조치 보고서의 「주의」 열과 「해야 할 일」에 표시합니다. 승인을 켠 설치에서만 승인 대기로 파드가 끝나고, 재개는 새 빌드 파드로 이어 갑니다. 노드·상태·API·설정: `agent-doc/11-remediations.md`.
+기본 설정에서는 사람의 승인을 기다리지 않고 같은 파드에서 끝까지 진행합니다. 검토 없이 적용한 메이저 버전 변경과 추가한 항목은 조치 보고서의 「주의」 열과 「해야 할 일」에 표시합니다. 승인을 켠 설치에서만 승인 대기로 파드가 끝나고, 재개는 새 빌드 파드로 이어 갑니다. 「조치 완료」와 「해결된 취약점」은 완전한 최종 검사에서 사라진 취약점만 셉니다. 잘못된 버전이 들어가지 않도록, 여러 라이브러리가 함께 쓰는 버전 property, 패치 힌트가 없는 다른 메이저, 날짜로 번호를 매긴 옛 버전, 이미 패치 힌트를 만족하는 버전, 꺼진 프로필에만 있는 선언, 두 번 선언된 의존성은 바꾸지 않고 담당 팀 몫으로 남깁니다. 모든 조치는 `remediation/remediation.log` 를 남깁니다. 노드·상태·API·설정: `agent-doc/11-remediations.md`.
 
 이미 이관된 프로젝트를 다시 점검할 때는 실행 방식 `remediation` 으로 조치만 돌립니다: `sbmig run <zip|폴더> --flow remediation`, 웹 `POST /api/runs?flow=remediation`, 화면의 **취약점 해결**. 이관 단계·LLM·KB 를 쓰지 않고, 올린 프로젝트를 그대로 빌드해 검사·조치·재검사합니다(파일은 같은 `<실행 폴더>/remediation/`). `remediation.after_migration` · `remediation.trusted_projects` 는 묻지 않습니다. 결과 줄은 `SBMIG-RESULT … flow=remediation … remediation=<상태>`, 종료 코드 0 = SUCCEEDED, 2 = 그 밖의 저장 상태, 3 = 시작 못 함(접수 거절, IVAS 값·Maven 준비가 없으면 `remediation:not-ready`). Job 모드에서도 같은 대기 줄·자리에서 도는 보통 실행입니다.
 
 ## 11. 운영과 검증
 
-- 설정: `config/default.yml` ← 회사 `config/artifacts.yml` ← `--config` 로 더 준 파일 ← 환경 변수 `SBMIG_<SECTION>__<KEY>`. LLM 키는 환경 / `.env` 에서만(`LLM_API_KEY`).
+- 설정: `config/default.yml` ← 회사 `config/artifacts.yml` ← `--config` 로 더 준 파일 ← 환경 변수 `SBMIG_<SECTION>__<KEY>` ← 명령줄 옵션(`--settings`, `--java-home` …)과 플릿 매니페스트의 프로젝트별 값(바꾼 값마다 INFO 한 줄). LLM 키는 환경 / `.env` 에서만(`LLM_API_KEY`).
 - LLM: provider `company`(`requests.post` 한 번, `sbmig/fix/company.py`), 사내 GPT agent 게이트웨이는 `llm.gateway: agent`. 새 게이트웨이에서는 `sbmig llm-probe` 먼저.
 - 로그: 실행마다 `sbmig.log`(DEBUG, 줄마다 `[단계]`), `journal.jsonl`(이벤트 한 줄씩), LLM 기록 `llm.record_dir`.
 - 검증: 오프라인 테스트 `python -m pytest -m "not integration"`, 실제 Maven e2e `scripts/e2e.sh`(픽스처마다 재생 LLM 답, `fixtures/projects/README.md`), 문서 검사 `tests/docs/`.

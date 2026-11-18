@@ -45,7 +45,10 @@ max_tokens / temperature are left to the gateway. The reply is found at `choices
 async: false, params: {role: <LLM_MODEL or LLM_ESCALATION_MODEL>}, trace_id, max_tokens, temperature,
 **llm.agent_extra}`; the gateway maps the role names to its models. With `LLM_TOKEN_URL` set, `TokenManager` first
 exchanges the app token for an access token, refreshes it `llm.token_refresh_margin_s` (300 s) before expiry and
-once more after a 401 (`llm.auth_retries`). **Sessions:** sbmig sends no `session_id` (and never `thread_id`); the
+once more after a 401 (`llm.auth_retries`). A failed exchange (5xx, 429, 401 / 403 from the token endpoint, a non-JSON
+body, no `access_token`, a transport error) raises `TokenExchangeError` (an `LLMError`): it is retried like a chat call and its
+text carries `status=<code>` or `cause=…` (`token exchange failed: HTTP 503 (status=503)`), so the fix loop counts it as an LLM
+outage, not as an answer; the token endpoint's response body is never logged. **Sessions:** sbmig sends no `session_id` (and never `thread_id`); the
 gateway creates a session and returns its id (`LLMResponse.session_id`). A call that passes
 `metadata["session_id"]` continues that session.
 
@@ -159,8 +162,10 @@ mygateway = "mypkg.adapter:make_adapter"
   `LLM adapter <name> failed (status=<status>, cause=<ExceptionClass>): …`. `status=None|401|403|404|408|429|5xx`,
   `cause=…` or a transport exception class name are transport / configuration failures: two in a row pause the loop
   once for `llm.cooldown_seconds`, the next streak marks the LLM unavailable (`llm_unavailable`; stored-script reuse
-  and the zero-LLM pre-tries keep running). `status=400|413|422`, a content filter and `finish_reason=length` reject
-  only that request; the same HTTP 400 body for two different prompts is a configuration error (flag
+  and the zero-LLM pre-tries keep running). `status=400|413|422`, a content filter and an empty answer with
+  `finish_reason=length` reject only that request; a non-empty answer cut at the output token limit (`finish_reason`
+  `length` / `max_tokens`) whose `<script>` / `<edits>` block is not closed is neither used nor stored — the feedback round
+  asks for a shorter answer, and a second cut fails the attempt as an answer problem; the same HTTP 400 body for two different prompts is a configuration error (flag
   `llm-config-error`, no more LLM calls in the run).
 
 ### What the plugin must do (tier 1)
@@ -198,7 +203,11 @@ Unknown roles become `other` with the original value in `metadata["role_detail"]
   `sbmig.script` (static check, `python -I` child process, helper API `p` limited to the project, timeout), applies
   edits through `sbmig.script.apply_edits`, commits, rebuilds, scores and rolls back.
 - Report unreachability as `ScriptProposal(error="… status=<code> …")` or `cause=<ExceptionClass>: …`; those markers
-  count as transport failures. An answer with neither script nor edits and a `blocked_reason` is a decline.
+  count as transport failures. An answer with neither script nor edits and a `blocked_reason` is a decline. Returning no
+  proposal at all (`None`, or an object without the `ScriptProposal` fields) fails that attempt (`apply_failed`, `LLM fixer returned
+  no script proposal (<type>)`); the run goes on.
+- Script blocks: an opening tag with attributes (`<script type="python">`) is recognised; of several blocks the last complete one
+  is taken (WARNING `several <script> blocks (N); took the last complete one`).
 - The prompt sbmig would send is available: `ContextPacker(cfg)` in `sbmig/fix/context.py`.
 
 ## Embedding: `sbmig.api`
@@ -227,7 +236,7 @@ shape `fn(ws, edits, *, cfg, errors=None) -> ScriptRunResult`; `errors` is passe
 | `unknown llm.provider 'x' ... no entry point` | The entry point is not installed or the name differs; the message lists the installed names. |
 | `requires N positional argument(s)` | Your factory takes more than `(options, cfg)` (tier 1) or `(options, cfg, llm)` (tier 2); give the extras defaults. |
 | `LLM adapter X returned int, expected LLMResponse` | Return an `LLMResponse`, a dict with `content`, or a `str`. |
-| Run reports `llm-unavailable` | Two transport / configuration failures in a row after the one cool-down. Check the `llm_call` journal events and the `error` field in `llm-NNNN.json`; rerun `sbmig llm-probe`. |
+| Run reports `llm-unavailable` | Two transport / configuration failures in a row after the one cool-down (failed token exchanges included: `token exchange failed: …`). Check the `llm_call` journal events and the `error` field in `llm-NNNN.json`; rerun `sbmig llm-probe`. |
 | Run reports `llm-config-error` | The gateway answered the same HTTP 400 body to two different prompts (model name, a payload field). Fix `.env` / `llm.*` and rerun. |
 | `LLM-PROBE FAIL` with a reply in an unexpected field | Set `LLM_RESPONSE_PATH` to the field the probe's response JSON shows. |
 | Fixer plugin is never called | Every case was fixed by a stored script (reuse) or a zero-LLM pre-try first. Look for `fixer` / `llm_script` events in `journal.jsonl`. |

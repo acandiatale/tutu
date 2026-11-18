@@ -739,8 +739,29 @@ PATTERNS: dict[str, list[tuple[re.Pattern[str], Union[str, Callable[[re.Match[st
      r"실행 준비 명령(build.setup_command)이 실패했습니다(rc=\g<rc>). \g<t>"),
     (r"^stopped by user \(stop\.request\) — the final `mvn clean package` did not run$",
      r"사용자 요청으로 멈췄습니다. 최종 빌드(mvn clean package)는 실행하지 않았습니다."),
+    (r"^stopped by user \(stop\.request\) — the fix loop was left early; the last build shows the tree as it was left$",
+     r"사용자 요청으로 멈췄습니다. 오류 수정을 중간에 그만두었고, 마지막 빌드 결과가 지금 프로젝트의 상태입니다."),
     (r"^stopped by user \(web UI\) — the final `mvn clean package` did not run$",
      r"화면에서 멈춤을 요청해 멈췄습니다. 최종 빌드(mvn clean package)는 실행하지 않았습니다."),
+    # 올린 ZIP이 풀기 한도를 넘어 접수하지 않은 경우(intake.max_unpacked_mb / max_entry_mb / max_compression_ratio)
+    (r"^ZIP refused: it unpacks to (?P<n>[\d.,]+) MiB, over the limit of (?P<m>[\d.,]+) MiB \(intake\.max_unpacked_mb\) — "
+     r"nothing was unpacked$",
+     r"올린 ZIP을 풀면 \g<n> MiB가 되어 한도(\g<m> MiB)를 넘습니다. 접수하지 않았습니다."),
+    (r"^ZIP refused: the entry (?P<e>.+) unpacks to (?P<n>[\d.,]+) MiB, over the limit of (?P<m>[\d.,]+) MiB "
+     r"\(intake\.max_entry_mb\) — nothing was unpacked$",
+     r"올린 ZIP 안의 파일 하나가 풀면 \g<n> MiB가 되어 한도(\g<m> MiB)를 넘습니다(\g<e>). 접수하지 않았습니다."),
+    (r"^ZIP refused: the entry (?P<e>.+) is compressed (?P<r>[\d.,]+):1, over the limit of (?P<m>[\d.,]+):1 "
+     r"\(intake\.max_compression_ratio\) — nothing was unpacked$",
+     r"올린 ZIP 안의 파일 하나가 \g<r>배로 압축되어 있어 한도(\g<m>배)를 넘습니다(\g<e>). 접수하지 않았습니다."),
+    (r"^ZIP refused while unpacking: the entry (?P<e>.+) wrote more than (?P<m>[\d.,]+) MiB \(intake\.max_entry_mb\) — the "
+     r"ZIP's directory understates its sizes$",
+     r"올린 ZIP을 푸는 중에 파일 하나가 한도(\g<m> MiB)를 넘어 멈췄습니다(\g<e>). ZIP에 적힌 크기가 실제와 다릅니다."),
+    (r"^ZIP refused while unpacking: more than (?P<m>[\d.,]+) MiB written \(intake\.max_unpacked_mb\) — the ZIP's "
+     r"directory understates its sizes$",
+     r"올린 ZIP을 푸는 중에 전체 크기가 한도(\g<m> MiB)를 넘어 멈췄습니다. ZIP에 적힌 크기가 실제와 다릅니다."),
+    (r"^ZIP refused while unpacking: the entry (?P<e>.+) expanded more than (?P<m>[\d.,]+):1 "
+     r"\(intake\.max_compression_ratio\) — the ZIP's directory understates its sizes$",
+     r"올린 ZIP을 푸는 중에 파일 하나가 한도(\g<m>배)보다 크게 풀려 멈췄습니다(\g<e>). ZIP에 적힌 크기가 실제와 다릅니다."),
     (r"^build tool '(?P<t>[^']+)' is not supported \(Maven only\)$",
      r"지원하지 않는 빌드 도구입니다(\g<t>). Maven 프로젝트만 받습니다."),
     (r"^no pom\.xml found in the project$", r"프로젝트에서 pom.xml을 찾지 못했습니다. Maven 프로젝트만 받습니다."),
@@ -1154,6 +1175,19 @@ PATTERNS: dict[str, list[tuple[re.Pattern[str], Union[str, Callable[[re.Match[st
                 + (f"(프로젝트 코드는 `{m.group('f')}` 타입을 넘깁니다)" if m.group("f") else "")
                 + ". 어느 클래스인지 찾지 못했습니다. 모듈의 클래스패스(mvn dependency:tree)에서 javax 기준 라이브러리를 찾아 "
                 "Jakarta 빌드로 올려 주세요.")),
+    ((r"^bundled jar `(?P<j>[^`]+)` provides package `(?P<p>[^`]+)` needed by `(?P<pom>[^`]+)`, but the repository did "
+      r"not answer whether it has `(?P<c>[^`]+)` \((?P<why>.+)\) — not wired and not called missing; not a project problem: "
+      r"check the repository and the network, then rerun$"),
+     lambda m: (f"프로젝트에 들어 있는 jar `{m.group('j')}`가 `{m.group('pom')}`에 필요한 패키지 `{m.group('p')}`를 "
+                f"제공하지만, 저장소가 응답하지 않아 `{m.group('c')}`가 저장소에 있는지 확인하지 못했습니다"
+                f"({m.group('why')}). 이 jar는 연결하지 않았고, 없는 것으로 처리하지도 않았습니다. 프로젝트 문제가 "
+                "아니니 저장소와 네트워크를 확인한 뒤 다시 실행해 주세요.")),
+    ((r"^`(?P<c>[^`]+)` could not be downloaded: the repository did not answer(?: \((?P<r>[^)]+)\))? \(timeout, refused "
+      r"connection or server error\) — not a project problem: check the repository and the network, then rerun$"),
+     lambda m: (f"`{m.group('c')}` 아티팩트를 내려받지 못했습니다. 저장소가 응답하지 않았습니다"
+                + (f"(확인한 저장소: {m.group('r')})" if m.group("r") else "")
+                + ". 시간 초과, 연결 거부 또는 서버 오류로 보이며 프로젝트 문제가 아닙니다. 저장소와 네트워크를 확인한 뒤 "
+                "다시 실행해 주세요.")),
     ((r"^`(?P<c>[^`]+)` is not in any repository: proxy it in Nexus or fix the coordinates \(checked repositories: "
       r"(?P<r>.+)\); the LLM is never asked to invent versions$"),
      lambda m: (f"`{m.group('c')}` 아티팩트를 어느 저장소에서도 찾지 못했습니다{_repos_ko(m.group('r'))}. "
@@ -1229,6 +1263,10 @@ PATTERNS: dict[str, list[tuple[re.Pattern[str], Union[str, Callable[[re.Match[st
      r"artifacts.parent가 설정되어 있지 않습니다. 회사 artifacts yml을 --config로 지정해 주세요."),
     (r"^optional artifact bump step (?P<s>\S+) failed: (?P<w>.+) — bump the in-house optional artifacts by hand$",
      r"사내 선택 아티팩트 버전 맞춤 단계(\g<s>)가 실패했습니다: \g<w>. 사내 선택 아티팩트의 버전을 직접 올려 주세요."),
+    (r"^framework check could not run \(the parent pom and the dependency tree could not be read\): if this project uses "
+     r"the in-house framework it must not be migrated in full — confirm before using the result$",
+     r"사내 프레임워크를 쓰는 프로젝트인지 확인하지 못했습니다(부모 pom과 의존성 트리를 읽지 못했습니다). 사내 프레임워크를 "
+     r"쓰는 프로젝트는 전체 마이그레이션 대상이 아니므로, 결과를 쓰기 전에 운영 담당자에게 확인해 주세요."),
     (r"^restructure step (?P<s>\S+) \((?P<m>[^)]+)\) failed: (?P<w>.+) — the tree keeps the as-is layout / parents; the "
      r"final build ran on it, so BUILD SUCCESS here does not mean the migration is complete$",
      r"구조 재구성 단계(\g<s>, \g<m>)가 실패했습니다: \g<w>. 프로젝트는 기존 구조와 부모 pom을 그대로 둔 채 최종 빌드를 "

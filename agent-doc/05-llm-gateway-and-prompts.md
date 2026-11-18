@@ -43,6 +43,10 @@
 - **토큰 교환**(`TokenManager`): `LLM_TOKEN_URL` 이 있으면 먼저 `POST <token_url>` 에 `Authorization: Bearer <앱 토큰>`(`LLM_APP_TOKEN`, 없으면
   `LLM_API_KEY`) → `{access_token, token_type, expires_in}`. 만료 `llm.token_refresh_margin_s`(300초) 전에 다시 받고, 401 이 오면 새 토큰으로 한 번 더.
   토큰 교환을 쓰고 `LLM_APP_TOKEN` 이 있으면 `LLM_API_KEY` 는 없어도 된다. 로그: `llm token refreshed: expires in …`.
+  교환 실패(5xx, 429, 토큰 엔드포인트의 401 / 403, JSON 아닌 본문, `access_token` 없음, 전송 오류)는 `TokenExchangeError` 로 채팅 호출처럼 재시도하고,
+  문구에 `status=<코드>` 또는 `cause=…` 가 붙어(`token exchange failed: HTTP 503 (status=503)`, `token exchange failed: transport (<Class>) (cause=…)`)
+  수정 루프가 **LLM 장애**(쉼, `llm_unavailable`)로 센다 — 답으로 세지 않는다. 토큰 엔드포인트의 본문은 로그에 남기지 않는다
+  (ERROR `llm token exchange HTTP <코드> (<n> character(s) of body, not logged: …)`).
 - **세션**: sbmig 는 `session_id` 를 기본으로 보내지 않는다. 게이트웨이가 세션을 만들어 응답에 넣어 주면 `LLMResponse.session_id` 로 받고
   (`llm gateway session_id=… (returned by the gateway; sbmig sends none)` 로그), 대화를 **이어갈** 호출만 `metadata["session_id"]` 로 되돌려 보낸다.
   `thread_id` 는 보내지 않는다.
@@ -118,7 +122,8 @@ token_url=… app_token_env=… escalation_model=…` ③ `request payload: …`
 (what to migrate TO)`(권고) → `Module merge notes` → `Knowledge-base hints (similar cases)` → `Previous attempts on this case (they did NOT resolve it — do not
 repeat them)` → `Other error cases in this build` → `Plan notes`(transform / restructure / warning / msa / followup 으로 시작하는 줄만) → `Migration note: <제목>`
 (최대 4개) → `Files with errors (N)` → `Source (exact text around the error lines; …)`. 예산은 `llm.max_context_chars`(60000); 넘치면 선택 절부터 줄이고
-"Context was shortened" 를 붙인다. LLM 이 `<need_files>` / `<need_grep>` 로 더 달라면 `llm.max_context_rounds`(2)번까지 내준다.
+"Context was shortened" 를 붙인다. LLM 이 `<need_files>` / `<need_grep>` 로 더 달라면 `llm.max_context_rounds`(2)번까지 내준다(요청 파일은 줄 수와 글자 수로 자르고 `llm.max_context_chars` 를 지킨다;
+머리 `// <path> lines 1-N (whole file, C characters: cut to fit the context budget)`, 자국 `// … N characters omitted (use <need_grep> to locate code there) …`).
 
 사내 프레임워크 프로젝트(범위 `jdk-jakarta`)에서는 `Project after the restructure` 대신 `Scope of this run`(`FixContext.scope_facts`)이 들어간다:
 이번 실행이 Java 21과 jakarta만 한다는 것, 프레임워크 아티팩트마다 버전을 바꾸거나 지우지 말라는 줄, 해도 되는 것과 안 되는 것(Spring Boot·
@@ -147,7 +152,11 @@ repeat them)` → `Other error cases in this build` → `Plan notes`(transform /
 `report.language: ko` 면 한국어. 구조 검토 프롬프트의 problem / hint / analysis 도 같다. 전에 KB 에 저장된 설명은 그 언어 그대로다.
 
 파서는 관대하고 예외를 내지 않는다(펜스, CRLF, 닫는 태그 빠짐, JSON 의 꼬리 쉼표·주석·작은따옴표 수리). 산문·편집 블록을 먼저 떼어 내므로 JSP 편집 속
-`<script>` 를 스크립트로 오인하지 않는다. 쓸 수 없는 스크립트·못 읽는 편집이면 피드백 한 번. 진짜 정적 검사는 `sbmig/script/check.py`.
+`<script>` 를 스크립트로 오인하지 않는다. 속성이 붙은 여는 태그(`<script type="python">`)도 알아보고, 블록이 여럿이면 마지막 완전한 것을 쓴다(WARNING
+`several <script> blocks (N); took the last complete one`). 쓸 수 없는 스크립트·못 읽는 편집이면 피드백 한 번. 진짜 정적 검사는 `sbmig/script/check.py`.
+**토큰 한도에서 잘린 답**(`finish_reason` length / max_tokens)에서 `<script>` / `<edits>` 가 닫히지 않았으면 쓰지도 저장하지도 않고, 피드백 라운드에서
+짧은 답을 청한다. 또 잘리면 그 시도는 답 문제로 실패한다(`the answer was cut off at the output token limit (finish_reason=<r>) before <script> closed`).
+피드백 라운드가 실패해도(503 / 429 등) 첫 답의 쓸 수 있는 편집은 쓴다(메모 `[sbmig] feedback round failed (llm-error: …); the first answer's valid edits are used`).
 
 ### 7.3 프롬프트가 주는 규칙 (system 프롬프트 "Rules" 1–14 요지)
 

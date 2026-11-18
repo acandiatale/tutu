@@ -496,6 +496,28 @@ def _loop_followup_lines() -> list[str]:
         "review error: LLMError: 503",
         ("OpenAI list prices as of 2026-10-22 (developers.openai.com model pages); the company gateway may bill "
          "differently"),
+        # the whole-code review of 2026-11-18: a stop that made the fix loop leave, the framework check that could not
+        # look, a repository that did not answer, and a ZIP over an unpacking limit
+        "stopped by user (stop.request) — the fix loop was left early; the last build shows the tree as it was left",
+        ("framework check could not run (the parent pom and the dependency tree could not be read): if this project uses "
+         "the in-house framework it must not be migrated in full — confirm before using the result"),
+        ("`com.example:lib:1.0` could not be downloaded: the repository did not answer (https://nexus.invalid/repo) "
+         "(timeout, refused connection or server error) — not a project problem: check the repository and the network, "
+         "then rerun"),
+        ("bundled jar `vendor-sso.jar` provides package `com.vendor.sso` needed by `shop-back/pom.xml`, but the repository "
+         "did not answer whether it has `com.vendor:vendor-sso:2.1` (timeout) — not wired and not called missing; not a "
+         "project problem: check the repository and the network, then rerun"),
+        "ZIP refused: it unpacks to 5,120 MiB, over the limit of 4,096 MiB (intake.max_unpacked_mb) — nothing was unpacked",
+        ("ZIP refused: the entry app/big.bin unpacks to 2,048 MiB, over the limit of 1,024 MiB (intake.max_entry_mb) — "
+         "nothing was unpacked"),
+        ("ZIP refused: the entry app/big.bin is compressed 1026:1, over the limit of 200:1 (intake.max_compression_ratio) "
+         "— nothing was unpacked"),
+        ("ZIP refused while unpacking: the entry app/big.bin wrote more than 1,024 MiB (intake.max_entry_mb) — the ZIP's "
+         "directory understates its sizes"),
+        ("ZIP refused while unpacking: more than 4,096 MiB written (intake.max_unpacked_mb) — the ZIP's directory "
+         "understates its sizes"),
+        ("ZIP refused while unpacking: the entry app/big.bin expanded more than 200:1 (intake.max_compression_ratio) — the "
+         "ZIP's directory understates its sizes"),
     ]
 
 

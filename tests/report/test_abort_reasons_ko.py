@@ -38,6 +38,16 @@ CASES = [
     ("build.setup_command failed (rc=1): connection refused",
      "실행 준비 명령(build.setup_command)이 실패했습니다(rc=1). connection refused"),
     (STOP_REQUEST_REASON, "사용자 요청으로 멈췄습니다. 최종 빌드(mvn clean package)는 실행하지 않았습니다."),
+    ("ZIP refused: it unpacks to 5,120 MiB, over the limit of 4,096 MiB (intake.max_unpacked_mb) — nothing was unpacked",
+     "올린 ZIP을 풀면 5,120 MiB가 되어 한도(4,096 MiB)를 넘습니다. 접수하지 않았습니다."),
+    ("ZIP refused: the entry app/big.bin is compressed 1026:1, over the limit of 200:1 (intake.max_compression_ratio) — "
+     "nothing was unpacked",
+     "올린 ZIP 안의 파일 하나가 1026배로 압축되어 있어 한도(200배)를 넘습니다(app/big.bin). 접수하지 않았습니다."),
+    ("ZIP refused while unpacking: more than 4,096 MiB written (intake.max_unpacked_mb) — the ZIP's directory understates "
+     "its sizes",
+     "올린 ZIP을 푸는 중에 전체 크기가 한도(4,096 MiB)를 넘어 멈췄습니다. ZIP에 적힌 크기가 실제와 다릅니다."),
+    ("stopped by user (stop.request) — the fix loop was left early; the last build shows the tree as it was left",
+     "사용자 요청으로 멈췄습니다. 오류 수정을 중간에 그만두었고, 마지막 빌드 결과가 지금 프로젝트의 상태입니다."),
     ("stopped by user (web UI) — the final `mvn clean package` did not run",
      "화면에서 멈춤을 요청해 멈췄습니다. 최종 빌드(mvn clean package)는 실행하지 않았습니다."),
     ("internal error: KeyError: 'x'", "내부 오류로 멈췄습니다: KeyError: 'x'"),

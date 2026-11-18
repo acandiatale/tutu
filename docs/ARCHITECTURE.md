@@ -17,14 +17,14 @@ intake ─► analyze ─► plan ─► transform ─► restructure ─► str
 
 | Node | What runs | Stops the run when |
 |---|---|---|
-| intake | copy the input into `out/<run id>/project/`, `git init`, commit `sbmig: as-is snapshot`; preflight (Maven runs, `mvn -v` reports Java `build.require_java_major`, company parents set); build-tool check (an Ant project is refused with `intake.ant_message` "Maven 변환 후 신청 부탁드립니다."; with `intake.ant_to_maven: true` a pom.xml is synthesized by `sbmig/analyze/ant.py` instead); stray pom copies ignored, a root aggregator generated for a tree without a root pom, duplicate reactor listings removed, deploy transport extensions removed; as-is effective dependencyManagement captured to `logs/effective-depmgmt.json` | `mvn-not-found`, `jdk-not-21`, `unsupported-build-tool:<tool>` (Gradle, no build file, Ant), `ear-without-modules` (exit 3) |
-| analyze | pom graph (`sbmig/analyze/pom_parser.py`, no Maven) + regex source scan → `ProjectProfile` (case type, versions, libraries, MSA services, bundled jars, externalized settings, warnings); EOL advisories matched (guide only) | Oracle ADF with two or more evidence families (`intake.adf_policy: stop`), no root pom (exit 3); a hollow reactor goes on but is never a success |
+| intake | copy the input into `out/<run id>/project/`, `git init`, commit `sbmig: as-is snapshot`; preflight (Maven runs, `mvn -v` reports Java `build.require_java_major`, company parents set); build-tool check (an Ant project is refused with `intake.ant_message` "Maven 변환 후 신청 부탁드립니다."; with `intake.ant_to_maven: true` a pom.xml is synthesized by `sbmig/analyze/ant.py` instead); stray pom copies ignored, a root aggregator generated for a tree without a root pom, duplicate reactor listings removed, deploy transport extensions removed; as-is effective dependencyManagement captured to `logs/effective-depmgmt.json` | an uploaded ZIP over the unpacking limits (`intake.max_unpacked_mb` / `max_entry_mb` / `max_compression_ratio`: nothing unpacked, `run aborted: ZIP refused: …`, before preflight), `mvn-not-found`, `jdk-not-21`, `unsupported-build-tool:<tool>` (Gradle, no build file, Ant), `ear-without-modules` (exit 3) |
+| analyze | pom graph (`sbmig/analyze/pom_parser.py`, no Maven) + regex source scan → `ProjectProfile` (case type, versions, libraries, MSA services, bundled jars, externalized settings, warnings); EOL advisories matched (guide only) | Oracle ADF with two or more evidence families (`intake.adf_policy: stop`), no root pom (exit 3); a hollow reactor (judged with the build directories a module inherits from its parents inside the project) goes on but is never a success; a framework check that could read neither the parent pom nor the dependency tree flags `framework-unchecked` and goes on in full scope |
 | plan | rules only (`sbmig/plan/planner.py`) → ordered `PlanStep`s: `transform.rewrite`, `restructure.apply` / `restructure.boot_pom` / `restructure.pom_only` / `restructure.msa_pom`, `restructure.review`, `verify.build` (MSA: per service) | – |
 | transform | one OpenRewrite run of every planned recipe on the as-is classpath, no build (`sbmig/rewrite/runner.py`) | never (the build shows what is left) |
-| restructure | the company layout and every pom cleanup, no LLM (§8) | never; a failed step flags `restructure-failed` and the run is not a success |
-| structure review | one LLM call checks the restructured poms against the company rules; critical findings are fixed by edits, warnings go to the report (`sbmig/review/reviewer.py`) | never |
-| verify | `mvn clean package -Dmaven.test.skip=true`; on failure the script fix loop (§3), then the final build again | never |
-| finalize | success verdict, advisories verified on the final tree, Handover, error list, KB records, code changes (`sbmig/report/changes.py`), `report.md` / `report.json`, then `changes.patch` / `result.zip` and the code-change record `codediff/` (`sbmig/report/codediff.py`) | – |
+| restructure | the company layout and every pom cleanup, no LLM (§8) | never; a failed step resets the tree to the commit before it (journal `restructure_reset`), flags `restructure-failed` and the run is not a success |
+| structure review | one LLM call checks the restructured poms against the company rules; critical findings are fixed by edits, warnings go to the report (`sbmig/review/reviewer.py`). An unreadable answer (only a fragment of the JSON decodes, or cut at the token limit) gets the one retry with a request for a shorter answer; two unreadable answers = verdict `failed` | never |
+| verify | `mvn clean package -Dmaven.test.skip=true`; on failure the script fix loop (§3), then the final build again (MSA: `report.final_build` is the first failing final build) | a stop request (§7.7) |
+| finalize | success verdict, advisories verified on the final tree, Handover, error list, KB records, code changes (`sbmig/report/changes.py`), `report.md` / `report.json`, then `changes.patch` / `result.zip` and the code-change record `codediff/` (`sbmig/report/codediff.py`: only paths the last commit has; none for a run that changed no file, journal `code_diff_skipped`) | – |
 | remediation | only when `remediation.after_migration` is on and the final build succeeded: the vulnerability-remediation graph (§11) | – |
 
 The run flow `remediation` (`sbmig run --flow remediation`, web `?flow=remediation`) uses only `intake → remediation → finalize`:
@@ -100,11 +100,15 @@ for round in 1..max_iterations:
     errors → cases (L2), root causes first; cases whose files / module pom this round already touched wait
     per case: pre-try (zero LLM) → reuse stored script → augment (LLM) → new (LLM) → BLOCKED
     commit each attempt
-stop also when no case is left to try, only blocked cases remain, or the time budget is spent
+stop also when no case is left to try, only blocked cases remain, the time budget is spent, or a stop is requested
+at loop end: each case's last applied attempt scored no_change / inconclusive is rolled back
 ```
 
 Hard rules: the orchestrator owns the loop and the LLM never decides whether to build; an attempt counts only by what the next
-build shows; every attempt is a commit; after the loop the final `mvn clean package` always runs again. Budgets:
+build shows; every attempt is a commit; nothing that did not help is delivered (the last unhelpful try of a case is rolled back
+at loop end, `script_rollback` with `where: "loop end"`); after the loop the final `mvn clean package` runs again — except
+when the loop was left on a stop request and the tree is unchanged since its last build, which then stands as the final build.
+A resolution error with a network cause is blocked `repository_unreachable` (no LLM, before stored-script reuse). Budgets:
 `loop.max_llm_calls`, `loop.max_total_minutes`, the per-case caps in `script.*`. The ladder, the caps, the scoring outcomes and
 the blocked policies are in `docs/ERROR-HANDLING.md`.
 
@@ -203,6 +207,9 @@ ended — after the chained remediation, whose summary is a section of the migra
   missing final build is never a success.
 - `run_graph` (CLI) and `stream_graph` (web UI: `(node, state update)` pairs); each node start writes journal `graph_node`.
 - `--stop-after intake|analyze|plan|transform|restructure|verify` and `--dry-run` behave the same in both engines.
+- A stop request (`stop.request`) is checked between nodes; after the last phase group `Orchestrator.late_stop` (both engines)
+  aborts when a planned final build has no result or the fix loop was left because of the request, and otherwise ignores the
+  request (journal `stop_request {node: finalize, ignored | after}`); a chained remediation still skips itself.
 
 ## 8. Restructure (company layout)
 
@@ -244,7 +251,13 @@ orphan version properties dropped → bundled jars wired (`layout.wire_bundled_j
 repository has → dependency, else copied to `<module>/lib/` with `system` scope; superseded / container-API / unreferenced jars
 untouched) → JSP / tag files renamed javax → jakarta (`layout.jsp_jakarta_rename`). The managed versions come from
 `help:effective-pom` of the restructured tree, or, when that capture fails, from the company parents' own poms read from the
-repository (`sbmig/build/parent_chain.py`). Versions are never guessed.
+repository (`sbmig/build/parent_chain.py`), kept per company parent (`ParentChainFacts.root_managed` / `addon_managed`,
+`managed_for(parent, *, own=False)`): without the capture each pom is judged against the parent it has (the root pom → the base
+parent, a module → its role parent) — the fallback capture, the Spring Cloud BOM import, the as-is pin, own management entries
+and the fix loop's `VersionResolver` alike. Orphan and dead version properties stay when a non-pom text file of the project uses
+`${name}` / `@name@`. A pom is saved in its declared encoding when that can hold the text, else in the encoding it was read with.
+The bundled-jar repository lookup answers present / absent / unreadable; an unreadable repository leaves the jar alone ("repository
+unreadable …"). Versions are never guessed.
 
 **web.xml → `WebXmlRegistrations`** (`layout.web_xml_registrations: generate`): Boot never reads web.xml, so the restructure
 parses it (`sbmig/analyze/webxml.py`) and generates one `ServletRegistrationBean` / `FilterRegistrationBean` /
@@ -285,8 +298,10 @@ also written here.
 
 `sbmig serve` (uvicorn `sbmig.web.app:app`) serves one HTML page (`sbmig/web/static/index.html`, no CDN) and streams `status`,
 `node`, `journal`, `log`, `report` events over SSE. The config files every upload runs with are the server's choice
-(`sbmig serve --config` / `SBMIG_WEB_CONFIGS`). Stop takes effect between graph nodes. `RunManager` (`sbmig/web/runs.py`) has three
-modes (`SBMIG_WEB_MODE`):
+(`sbmig serve --config` / `SBMIG_WEB_CONFIGS`). Stop takes effect between graph nodes. The token guard refuses with 403 any
+request other than GET / HEAD / OPTIONS that carries `Sec-Fetch-Site: cross-site` or an `Origin` whose host is not the request's
+own, before the token and open-mode checks. An upload is refused with 507 below `fleet.min_free_gb` free on the output volume,
+before the body is read. `RunManager` (`sbmig/web/runs.py`) has three modes (`SBMIG_WEB_MODE`):
 
 * `in-process` — the web process runs one migration at a time in a worker thread through `stream_graph`; further uploads queue.
 * `k8s-job` — the web pod (**Main**) writes the upload to the shared volume and creates a Kubernetes Job from the template
@@ -301,10 +316,16 @@ the slug made from the uploaded file's name (lowercase letters, digits, hyphens;
 
 The Main / Worker file contract (`sbmig/web/contract.py`): only Main writes `<run dir>/control/` — `request.json` pins the zip
 sha256, config digests and sbmig version at intake; `state.json` is the control state (queued → creating → created → running →
-finished | stopped | lost | failed), written atomically with the intent recorded before the Job is created, plus `env_pins`
-(fingerprints of the environment values the config reads). The Worker verifies the pins before running anything
+finished | stopped | lost | failed), written atomically with the intent recorded before the Job is created, plus — recorded with
+the `creating` transition by the Main that creates the Job — `config_digests`, `sbmig_version` and `env_pins` (fingerprints of the
+environment values the config reads). `sbmig_version()` is `<package version>+<12 hex>`, a digest of `sbmig/**/*.py`,
+`config/*.yml` and `knowledge/**` (`sbmig version` prints it). The Worker verifies the zip against `request.json` and the digests
+and version against `state.json` (an older state without them: `request.json`); a mismatch refuses the run (exit 3,
+`worker_refused`, "… the web pod and the build pod run different images: restart the web pod after pushing an image (and upload
+the project again)"). The Worker verifies the pins before running anything
 (`SBMIG_JOB_ENV_PIN = refuse | warn | off`), writes the outputs and `job-status.json` for its attempt, and redacts secrets
-from every line (`SBMIG_REDACT_OUTPUT`). Main owns only Jobs carrying both its `sbmig-owner` and run labels, adopts an existing Job
+from every line (`SBMIG_REDACT_OUTPUT`; in `.json` only inside string values, `.jsonl` line by line, a value shorter than 6
+characters only as a whole token). Main owns only Jobs carrying both its `sbmig-owner` and run labels, adopts an existing Job
 after a restart, and never reports an unverified result as success.
 
 Slots: `SBMIG_JOB_MAX_PARALLEL` build Jobs at a time (FIFO, `_FifoTurns`); each gets a slot number (`SBMIG_JOB_SLOT`), and
@@ -321,4 +342,8 @@ build pod as the migration graph's last node when `remediation.after_migration` 
 pod serves status, proposals and approvals under `/api/remediations/…`, and resumes a stopped remediation in a new build pod.
 With the shipped configuration (`remediation.require_approval` false, `remediation.always_approve` `[]`) every proposal is
 applied without approval, so a chained remediation normally ends in the build pod that ran the migration.
-Settings `remediation.*`. Contract: `docs/INTERFACES.md` section "remediations"; Korean: `agent-doc/11-remediations.md`.
+The planner keeps a wrong version out and leaves a residual for a person instead: a version property several artifacts share
+(target missing for one of them), a jump to another major no scanner hint names, a date-stamped current version (first number
+over 9999), a current version that already meets every hint, a declaration only inside a profile not active by default, a g:a
+declared twice in one `<dependencies>` block. "Fixed" means gone from a complete final scan. Every remediation writes
+`remediation/remediation.log`. Settings `remediation.*`. Contract: `docs/INTERFACES.md` section "remediations"; Korean: `agent-doc/11-remediations.md`.

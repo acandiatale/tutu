@@ -352,3 +352,53 @@ def test_known_coordinates_are_not_wired_blind_when_the_chain_facts_are_unknown(
     plan2 = plan_bundled_jars(ws, None, [spring], module_pom="pom.xml", managed_keys={"x:y"}, managed_known=True,
                               repository=lambda g, a, v: True)
     assert plan2.items[0].verdict == "compile"
+
+
+# ---------------------------------------------------------------------------------------------- review T3
+class _Unreadable:
+    """A lookup whose remotes timed out: nothing found, `remote_failures` says why."""
+
+    def pom_text(self, g, a, v):
+        return None
+
+    def versions(self, g, a):
+        return ["1.0"] if a == "local-only" else []
+
+    def remote_failures(self, g, a):
+        return "remote repositories unreadable: https://nexus.invalid/repository/public/ timed out"
+
+
+def test_repository_state_tells_the_three_cases_apart() -> None:
+    from sbmig.restructure.bundled_jars import repository_state_fn
+
+    class Answering(_Unreadable):
+        def remote_failures(self, g, a):
+            return ""
+
+    state = repository_state_fn(_Unreadable())
+    assert state("com.vendor", "thing", "2.0") == (
+        "unreadable", "remote repositories unreadable: https://nexus.invalid/repository/public/ timed out")
+    assert state("com.vendor", "local-only", "1.0") == ("present", "")          # the local repository had it
+    assert repository_state_fn(Answering())("com.vendor", "thing", "2.0") == ("absent", "")
+    assert repository_state_fn(None)("g", "a", "1") == ("absent", "")
+
+    class Boom(_Unreadable):
+        def versions(self, g, a):
+            raise OSError("connect timed out")
+
+    assert repository_state_fn(Boom())("g", "a", "1") == ("unreadable", "OSError: connect timed out")
+
+
+def test_an_unreadable_repository_leaves_the_jar_alone(tmp_path: Path, cfg: Config) -> None:
+    from sbmig.restructure.bundled_jars import repository_state_fn
+
+    ws = _plain_ws(tmp_path)
+    jars = [_jc("thing-2.0.jar", ["com.vendor.lib"], group_id="com.vendor", artifact_id="thing", version="2.0",
+                source="pom_properties")]
+    plan = _plan(ws, cfg, jars, repo=repository_state_fn(_Unreadable()))
+    (item,) = plan.items
+    assert item.verdict == "skip"
+    assert item.why == ("skip: repository unreadable — com.vendor:thing:2.0 could not be looked up (remote repositories "
+                        "unreadable: https://nexus.invalid/repository/public/ timed out); not wired and not called "
+                        "missing — run again when the repository answers")
+    assert apply_bundled_jars(ws, cfg, plan) == [] and "thing" not in (ws.root / "shop-back/pom.xml").read_text()

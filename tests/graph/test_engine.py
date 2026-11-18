@@ -256,9 +256,11 @@ def test_stop_request_file_stops_between_nodes_without_the_final_build(cfg, tmp_
     assert ev[-1]["event"] == "report"
 
 
-def test_stop_request_during_the_last_phase_skips_the_final_build(cfg, tmp_path):
-    """The request lands while a phase runs (the fix loop leaves between rounds): finalize must not run step_finish."""
-    from sbmig.graph.engine import STOP_REQUEST_FILE, STOP_REQUEST_REASON
+def test_stop_request_after_the_final_build_ran_is_ignored(cfg, tmp_path):
+    """The request lands after the last phase's final build ran (review 2026-11-18 L1: it used to abort the run with "the
+    final mvn clean package did not run", which was false): every planned final build has a result, so the run finishes
+    as what it is; the request is journaled as ignored."""
+    from sbmig.graph.engine import STOP_REQUEST_FILE
     ws = new_ws(tmp_path, "stoplate")
     orch = make_orch(cfg, ws, build=FakeBuildRunner(ws, fn=files_build), rewrite=FakeRewriteRunner(ws))
     orig_phase, finished = orch.step_phase, []
@@ -271,10 +273,29 @@ def test_stop_request_during_the_last_phase_skips_the_final_build(cfg, tmp_path)
     orch.step_phase = phase_then_stop
     orch.step_finish = lambda *a, **k: finished.append(1)
     seen = [n for n, _ in stream_graph(orch)]
-    assert seen[-1] == "finalize" and finished == [] and "aborted" in orch.report.flags
-    assert orch.abort_reason == STOP_REQUEST_REASON and run_exit_code(orch.report) == 3
+    assert seen[-1] == "finalize" and finished == [1] and "aborted" not in orch.report.flags
+    assert orch.abort_reason is None and run_exit_code(orch.report) == 0
     ev = journal_events(ws)
-    assert any(e["event"] == "stop_request" and e["node"] == "finalize" for e in ev)
+    assert any(e["event"] == "stop_request" and e["node"] == "finalize" and e.get("ignored") for e in ev)
+
+
+def test_stop_request_before_the_verify_phase_skips_the_final_build(cfg, tmp_path):
+    """A request that lands before the final build ran still skips it (the abort text is true)."""
+    from sbmig.graph.engine import STOP_REQUEST_FILE, STOP_REQUEST_REASON
+    ws = new_ws(tmp_path, "stopearly")
+    runner = FakeBuildRunner(ws, fn=files_build)
+    orch = make_orch(cfg, ws, build=runner, rewrite=FakeRewriteRunner(ws))
+    orig_phase = orch.step_phase
+
+    def phase_then_stop(report, ph, items, stop):
+        out = orig_phase(report, ph, items, stop)
+        if ph == Phase.RESTRUCTURE:
+            (ws.run_dir / STOP_REQUEST_FILE).write_text("stop\n", encoding="utf-8")
+        return out
+    orch.step_phase = phase_then_stop
+    list(stream_graph(orch))
+    assert "aborted" in orch.report.flags and orch.abort_reason == STOP_REQUEST_REASON
+    assert run_exit_code(orch.report) == 3 and not [c for c in runner.calls if c["label"] == "verify"]
 
 
 def test_skipped_phase_end_line_lists_only_the_remaining_phases(cfg, tmp_path):
@@ -559,7 +580,9 @@ def test_remediation_not_chained_after_a_user_stop(cfg, tmp_path, chain_spy):
         return out
     orch.step_phase = phase_then_stop
     orch.run()
-    assert chain_spy.calls == [] and "aborted" in orch.report.flags
+    # review 2026-11-18 L1: the final build had run, so the run is not aborted; the chained remediation still skips itself
+    assert chain_spy.calls == [] and "aborted" not in orch.report.flags
+    assert any(e["event"] == "remediation_skipped" and e.get("reason") == "stop_requested" for e in journal_events(ws))
 
 
 def test_remediation_stream_yields_the_node_only_when_it_ran(cfg, tmp_path, chain_spy):

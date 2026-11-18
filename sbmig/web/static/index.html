@@ -833,6 +833,8 @@
       const r = await fetch('/api/runs?' + q.toString(), { method: 'POST', headers: { 'Content-Type': 'application/zip' }, body: file });
       let d = {}; try { d = await r.json(); } catch (e) {}
       if (authProblem(r, d)) return;
+      // 서버 볼륨의 여유 공간이 하한(fleet.min_free_gb)보다 작아 거절된 업로드는 요청자가 할 일을 한국어로 알린다
+      if (r.status === 507) { toast('서버의 저장 공간이 부족해 시작하지 못했습니다. 운영 담당자에게 알려 주세요.', true); return; }
       if (!r.ok) { toast('시작하지 못했습니다: ' + (d.error || r.status), true); return; }
       const st = d.status || {};
       if (st.parallel) setParallel(st.parallel);

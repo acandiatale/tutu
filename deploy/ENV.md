@@ -42,6 +42,7 @@
 | `SBMIG_WEB_CONFIGS` | `artifacts.yml` | 모든 업로드가 이 설정으로 돈다(= `sbmig serve --config`). 이미지 `/app/config/` 아래 파일 이름, 쉼표로 여러 개 |
 | `SBMIG_WEB_OPEN` | `1` | 사내망 전용 페이지라 토큰 없이 연다. 토큰 보호를 켜려면 이 변수를 지우고 Secret 의 `SBMIG_WEB_TOKEN` 을 채운다 |
 | `SBMIG_MAX_UPLOAD_MB` | `1024` | 업로드 zip 상한(MB). 기본 512, `0` = 없음 |
+| `SBMIG_WEB_ALLOWED_ORIGINS` | (없음) | 다른 호스트의 화면에서 이 페이지의 API 를 써야 할 때만: `호스트` 또는 `호스트:포트` 를 쉼표로 나열. 업로드가 `cross-site request refused` (403) 로 막히는데 주소는 맞다면(앞단 프록시가 Host 를 바꾸는 경우) 브라우저 주소창의 호스트를 적는다. `*` 는 검사를 끈다 |
 | `HTTP_PROXY` / `HTTPS_PROXY` | `http://<프록시 호스트>:<포트>` | 클러스터에서 프록시로 나가야 할 때만(웹 파드와 Job 파드가 같이 읽는다) |
 | `NO_PROXY` | `<게이트웨이 호스트>,<nexus 호스트>,localhost,127.0.0.1` | 프록시를 켰을 때 사내 주소를 빼는 목록 |
 | `SBMIG_WEB_MODE` | `k8s-job` (매니페스트 값) / `in-process` (변수가 없을 때) / `local-job` | `k8s-job` = 업로드마다 Job 하나(공유 PVC). 켜진 채로 나가므로 권한(회사: kubeconfig Secret, 없는 클러스터: 45)과 Job 틀 ConfigMap 이 웹 파드보다 먼저 있어야 한다(README §3 "켜는 법"); 줄을 주석 처리하면 웹 파드가 직접 돌린다. 개발 PC 에서는 `k8s-job` 이 자동으로 `local-job`(파드 자리에 로컬 서브프로세스)으로 내려간다 |
@@ -114,7 +115,7 @@
 | `SBMIG_LIBRARIES__NEXUS_SEARCH` | `true` | jakarta 빌드 탐색에 Nexus 검색 API 사용 |
 | `SBMIG_LIBRARIES__INCLUDE_PRERELEASE` | `false` | 프리릴리스 버전도 후보로 |
 | `SBMIG_REVIEW__FIX_CRITICAL` | `true` | 구조 리뷰의 critical 을 자동 수정 |
-| `SBMIG_FLEET__MIN_FREE_GB` | `5` | 실행 전 디스크 여유 하한 |
+| `SBMIG_FLEET__MIN_FREE_GB` | `5` | 데이터 볼륨 여유 공간 하한(GB). 웹 파드가 업로드를 받기 전에 확인하고, 모자라면 HTTP 507 로 거절한다(화면: "서버의 저장 공간이 부족해 시작하지 못했습니다"). `0` = 확인 안 함. 오래된 실행 폴더는 저절로 지워지지 않는다 |
 | `SBMIG_REMEDIATION__AFTER_MIGRATION` | **`true` (켜진 채 나감)**, 코드 기본 `false` | BUILD SUCCESS 뒤 같은 빌드 파드에서 취약점 조치를 이어 돈다(README §6). 웹 파드와 Job 파드가 같은 값을 받도록 `sbmig-env` 에 둔다 — 한쪽에만 있으면 환경 대조로 Job 이 멈춘다 |
 | `SBMIG_REMEDIATION__REQUIRE_APPROVAL` | `false` | `false`(기본) = 모든 제안을 승인 없이 적용하고 어떤 실행도 승인 대기로 멈추지 않는다. `true` = 모든 제안이 사람 승인을 기다린다(바꾸면 웹 파드 재시작). 부류만 기다리게 하는 `remediation.always_approve` 는 env 키가 없고 이미지에 굽는 회사 yml 에만 적는다(README §6) |
 | `SBMIG_REMEDIATION__MODULE_OVERRIDES` | `true` | `false` = 모듈 pom에 버전 지정을 넣는 제안을 만들지 않는다(직접 확인 항목으로 남긴다). 81 틀에도 줄이 있어야 빌드 파드에 닿는다 |

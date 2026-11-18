@@ -144,7 +144,12 @@ class PomEditor:
             # 파일에서 읽은 것과 같은 경로(_load)로 파싱한다
             m = _ENC_RE.match(text.encode("ascii", "replace"))
             # Java 인코딩 이름(x-windows-949)과 한글 계열 이름(EUC-KR / MS949는 cp949)도 파이썬 코덱 이름으로 바꾼다
-            raw = text.encode((xml_codec(m.group(1).decode()) if m else None) or "utf-8", "xmlcharrefreplace")
+            declared = (xml_codec(m.group(1).decode()) if m else None) or "utf-8"
+            try:
+                raw = text.encode(declared)
+            except (UnicodeEncodeError, LookupError):
+                # 선언 인코딩이 담지 못하는 글자는 문자 참조로 바꾸면 주석 / CDATA 내용이 바뀌므로 UTF-8로 읽는다
+                raw = text.encode("utf-8")
         else:
             try:
                 raw = self.path.read_bytes()
@@ -180,6 +185,7 @@ class PomEditor:
         except (LookupError, UnicodeDecodeError) as e:
             raise PomEditError(f"{self.path}: cannot decode as {codec} (declared {self.encoding}): {e}") from e
         self.codec = "utf-8" if self._bom else (xml_codec(m.group(1).decode()) if m else None) or codec
+        self._read_codec = "utf-8" if codec == "utf-8-sig" else codec
         # 줄 끝 때문에 git diff가 파일 전체 변경이 되지 않도록 CRLF 파일은
         # 내부에서 LF로 다루고 저장할 때 CRLF로 되돌린다
         self.newline = "\r\n" if "\r\n" in text else "\n"
@@ -256,10 +262,26 @@ class PomEditor:
         ``path``를 주면 그 위치에 쓰며, 원래 파일에 쓴 경우에만 변경 여부의 기준을 갱신한다."""
         target = Path(path) if path else self.path
         target.parent.mkdir(parents=True, exist_ok=True)
-        data = self.to_string().encode(self.codec, "xmlcharrefreplace")
+        data = self._encoded(self.to_string())
         target.write_bytes((b"\xef\xbb\xbf" if self._bom else b"") + data)
         if path is None or target == self.path:
             self._original = self.to_string()
+
+    def _encoded(self, text: str) -> bytes:
+        """저장할 바이트를 만든다. 선언 계열(``self.codec``)이 내용을 담지 못하면 읽을 때 쓴 인코딩으로 쓴다.
+        문자 참조(``&#...;``)는 주석과 CDATA 안에서는 글자가 아니므로 내용이 바뀌기 때문이다.
+
+        Review P6: the declared family when it holds every character; else the codec the file was read with (a pom
+        declaring ISO-8859-1 that holds UTF-8 Korean stays UTF-8, as it was); character references only when neither
+        can hold the text (they change the text of comments and CDATA)."""
+        try:
+            return text.encode(self.codec)
+        except (UnicodeEncodeError, LookupError):
+            pass
+        try:
+            return text.encode(self._read_codec)
+        except (UnicodeEncodeError, LookupError):
+            return text.encode(self.codec, "xmlcharrefreplace")
 
     @property
     def changed(self) -> bool:

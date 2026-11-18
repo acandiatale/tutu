@@ -13,7 +13,7 @@
   을 만들고 `--config` 로 넘긴다. 좌표를 코드에 넣지 않는다(불변조건 2).
 - 재구성은 **LLM 없이 결정적**이다. 본체는 `sbmig/restructure/restructurer.py` 의 `Restructurer.apply(ws, profile, cfg, mode=…)`,
   pom 편집은 서식을 지키는 `sbmig/restructure/pom_editor.py`. 다시 돌려도 결과가 같고(이미 재구성된 프로젝트는 pom 정리만),
-  프로젝트 밖 경로는 읽지도 바꾸지도 않는다. 실패하면 `ok=False` + 플래그 `restructure-failed`(성공 아님).
+  프로젝트 밖 경로는 읽지도 바꾸지도 않는다. 실패하면 `ok=False` + 플래그 `restructure-failed`(성공 아님), 트리는 단계 전 커밋으로 되돌린다.
 - 사내 프레임워크 프로젝트(`framework.artifacts`, 범위 `jdk-jakarta`)에는 이 문서의 규칙이 적용되지 않는다. 재구성과 구조 검토가 없고
   부모 pom과 프레임워크 버전을 그대로 둔다. JSP의 javax 이름 바꾸기(9절)만 변환 단계에서 한다([13-framework-projects.md](13-framework-projects.md)).
 - 규칙의 결과는 보고서가 사람에게 말한다. 한국어 안내서(`sbmig/report/guide_ko.py`)는 부모·버전 변경을 「전환 내용」에, 인수인계 할 일을
@@ -37,7 +37,7 @@ artifacts yml with --config" 후속 조치를 남긴다.
 | 항목 | 내용 |
 |---|---|
 | 필수 | `artifacts.mandatory` 2개를 `artifacts.mandatory_target: root` 에 따라 모든 루트 pom 에 선언(MSA 는 서비스 루트마다 + 맨 위 집계 pom; `modules` 는 예전 방식). `version: null` = 부모가 관리 — sbmig 는 버전을 지어내지 않는다 |
-| 선택 | `artifacts.optional` 8개는 **이미 쓰는 것만** 버전을 맞춘다(별칭 `aliases` → 정식 이름, `property_name` 속성 경유 포함). `artifacts.optional_version_policy`: `floor`(기본, 내리지 않음) / `pin` |
+| 선택 | `artifacts.optional` 8개는 **이미 쓰는 것만** 버전을 맞춘다(별칭 `aliases` → 정식 이름, `property_name` 속성 경유 포함). 속성으로 쓴 버전은 그 모듈이 물려받는 속성(자기 pom, 그다음 프로젝트 안 부모 체인)을 고치고, 체인에 없으면 모듈에 버전 글자를 적는다(형제 pom 의 속성은 건드리지 않는다). `artifacts.optional_version_policy`: `floor`(기본, 내리지 않음) / `pin` |
 | 트리거 | 선택 아티팩트에 `when_present`(g:a 또는 glob)가 있으면 그 의존성을 선언한 pom 에 **새로 추가**. `replaces: true`(기본)면 찾은 원래 선언을 지운다 — 회사가 다듬은 아티팩트가 원래 라이브러리를 대신(예: `hibernate-core` → 사내 JPA 스타터) |
 | 지우기 | `artifacts.remove_when_present` 의 g:a 는 어느 pom 에 있든 지운다(옛 사내 BOM 등) |
 | 한 버전 줄 | 사내 아티팩트는 모두 한 버전 줄(예: 4.0.0)을 쓴다. 옛 이관 도구가 남긴 옛 `boot-jar` / `comp-jar` 버전도 설정의 버전으로 옮긴다 |
@@ -103,13 +103,16 @@ pre-9c 레이아웃(`module/boot-jar` + `module/comp-jar`, front 없음, Boot �
 | 2 | `_pin_asis_versions` | 새 부모로 옮기며 버전을 잃은 의존성에 as-is 빌드의 버전을 적음 → 「전환 내용」 의존성 버전 표의 ⚠ 행(en: Handover "carried over") | — |
 | 3 | `_drop_managed_versions` | 새 부모 체인이 같거나 더 새 버전으로 관리하는 명시 버전을 지움. 사내·필수·선택·system scope·자기 모듈은 건드리지 않음 | `layout.drop_managed_versions`(`gte` 기본 / `any` / `off`) |
 | 4 | `_drop_bom_property_overrides` | 부모 체인이 정의하는 버전 속성(`spring-boot.version=2.5.15` …)을 프로젝트 pom 에서 지움 — Maven 속성 상속으로 부모 값을 덮기 때문. 아직 `${이름}` 으로 참조되면 남기고 메모 | `layout.drop_bom_property_overrides`, `layout.parent_property_names`(비상구, 기본 빈 목록) |
-| 5 | `_drop_orphan_version_properties` | 이름과 상관없이 값이 버전·Java 수준 모양이고 어느 pom 도 참조하지 않는 속성을 지움(`java-version=1.8`, `org.springSecurity-version=4.2.7.RELEASE` 같은 철자). 부모 체인 사실을 읽었을 때만 | 같은 스위치 |
+| 5 | `_drop_orphan_version_properties` | 이름과 상관없이 값이 버전·Java 수준 모양이고 어느 pom 도 참조하지 않는 속성을 지움(`java-version=1.8`, `org.springSecurity-version=4.2.7.RELEASE` 같은 철자). 부모 체인 사실을 읽었을 때만. pom 이 아닌 프로젝트 텍스트 파일(필터링 리소스, assembly 기술자)에 `${이름}` / `@이름@` 이 있으면 남긴다(쓰지 않는 버전 속성을 지울 때도 같음) | 같은 스위치 |
 | 6 | `_wire_bundled_jars` | 동봉 jar 연결(§6) | `layout.wire_bundled_jars` |
 
 그 밖의 규칙:
 
 - **부모 체인 사실**(`sbmig/build/parent_chain.py`, `load_parent_chain_facts`): 설정한 사내 부모 pom 을 저장소에서 읽어 `<parent>` 와
   BOM import 를 따라 관리 버전·속성 이름을 모은다. 재구성 뒤 `help:effective-pom` 캡처가 실패하면 이것이 대체 출처다. 저널 `parent_chain_facts`.
+  관리 버전은 부모마다 따로 둔다(`ParentChainFacts.root_managed` / `addon_managed`, `managed_for(parent, *, own=False)`): 캡처가 없을 때 pom 마다
+  자기 `<parent>` 의 집합으로 판단한다(루트 pom → 기반 부모, 모듈 → 역할 부모). 대체 캡처, Spring Cloud BOM import, as-is 버전 고정, 자기 관리 항목,
+  수정 루프의 `VersionResolver` 가 모두 이 규칙이다 — `comp-jar` 가 관리하는 버전을 `boot-jar` 모듈에서 지우지 않는다.
 - **`artifacts.parent_manages_spring_boot: auto`**(기본): 체인이 `spring-boot-dependencies` 에 닿으면(상속·import) true, 아니면 false 로 보고
   재구성이 Boot BOM 을 직접 import 한다(버전 자리에는 체인이 정의한 속성 이름 — `layout.bom_version_properties` — 이 있으면 그것, 없으면
   값). 체인을 못 읽으면 true. 명시한 `true` 인데 체인에 Boot BOM 이 없으면 플래그 `parent-chain-no-boot-bom` + 인수인계 맨 앞 줄(그 실행의
@@ -130,8 +133,8 @@ pre-9c 레이아웃(`module/boot-jar` + `module/comp-jar`, front 없음, Boot �
 |---|---|
 | 무엇 | 트리 안에 있지만 어떤 pom 도 선언하지 않은 jar(`WEB-INF/lib` 의 벤더 암호화 / SSO jar 등). IDE 빌드는 봤고 Maven 은 모른다 |
 | 스캔 | 분석 단계, 폴더 규칙이 아니라 내용 기반(`sbmig/analyze/bundled_jars.py`, `scan_bundled_jars`; 좌표는 jar 의 pom.properties → `knowledge/libraries/jar_names.yml` + KB 의 `jar_names.yml` → sha1 저장소 조회). 키 `intake.bundled_jars`. 플래그 `bundled-jars`, 저널 `bundled_jars`, `logs/bundled-jars.json` |
-| 판정 | `sbmig/restructure/bundled_jars.py` 의 `plan_bundled_jars`, jar 마다 하나: `superseded`(목표 부모 체인 / Boot BOM 이 그 g:a 를 관리 — 옛 spring-webmvc 4.x 같은 것, 연결하지 않음) · `container`(서블릿 / JSP API 사본, Tomcat 이 줌) · `unused`(소스·JSP·XML·properties 어디서도 참조 안 함 — 인수인계에 이름만) · `declared`(대상 pom 이 이미 선언) · `compile`(좌표를 알고 저장소에 있음 → 보통 의존성) · `system`(좌표 모름 / 저장소에 없음) · `skip`(`intake.unknown_jar: skip` 또는 연결 오류) |
-| 연결 | **첫 빌드 전에** 재구성이 연결한다(`layout.wire_bundled_jars`, 쓰기는 `wire_bundled_jar` in `sbmig/restructure/system_jars.py`): `system` 이면 jar 를 `<module>/lib/<name>` 으로 복사하고 `${project.basedir}/lib/<name>` system scope 로 선언 + boot 모듈 spring-boot-maven-plugin 에 `includeSystemScope`. 좌표는 추측하지 않고 자리표시 좌표(프로젝트 groupId + 파일 stem, 버전 = 파일명 버전 또는 "0") |
+| 판정 | `sbmig/restructure/bundled_jars.py` 의 `plan_bundled_jars`(저장소 조회는 `repository_state_fn`: present / absent / unreadable), jar 마다 하나: `superseded`(목표 부모 체인 / Boot BOM 이 그 g:a 를 관리 — 옛 spring-webmvc 4.x 같은 것, 연결하지 않음) · `container`(서블릿 / JSP API 사본, Tomcat 이 줌) · `unused`(소스·JSP·XML·properties 어디서도 참조 안 함 — 인수인계에 이름만) · `declared`(대상 pom 이 이미 선언) · `compile`(좌표를 알고 저장소에 있음 → 보통 의존성) · `system`(좌표 모름 / 저장소에 없음) · `skip`(`intake.unknown_jar: skip`, 연결 오류, 또는 저장소가 답하지 않음 — `skip: repository unreadable — <g:a:v> could not be looked up (…)`: 붙이지도, Nexus 에 올려 달라고 하지도 않는다. 저장소가 답할 때 다시 실행) |
+| 연결 | **첫 빌드 전에** 재구성이 연결한다(`layout.wire_bundled_jars`, 쓰기는 `wire_bundled_jar` in `sbmig/restructure/system_jars.py`): `system` 이면 jar 를 `<module>/lib/<name>` 으로 복사하고(그 이름에 다른 내용의 파일이 있으면 다음 후보 이름, 모두 차 있으면 오류 `cannot copy <src>: every candidate name under <lib>/ holds another file`) `${project.basedir}/lib/<name>` system scope 로 선언 + boot 모듈 spring-boot-maven-plugin 에 `includeSystemScope`. 좌표는 추측하지 않고 자리표시 좌표(프로젝트 groupId + 파일 stem, 버전 = 파일명 버전 또는 "0") |
 | 왜 재구성에서 | 런타임 전용 jar(JDBC 드라이버, web.xml 의 필터, taglib 구현)는 컴파일 오류를 내지 않으므로 빌드 오류를 기다리면 영영 연결되지 않는다 |
 | 안전망 | 빌드 오류가 그 jar 의 패키지를 필요로 하면 수정 루프의 사전 시도 `sbmig-bundled`(LLM 0회). LLM 에게는 "the project bundles `<jar>` which provides package `<p>`" 사실을 주고, 동봉 jar 가 패키지를 주는데도 좌표·라이브러리 없음으로 거절하면 그 거절은 기각된다(저널 `decline_rejected`) |
 | 금지 | **찾은 jar 를 전부 연결하는 것은 안티패턴**(현업 지적). `superseded` jar 는 절대 연결하지 않고, LLM 에게도 다시 넣지 말라고 한다 |
@@ -164,7 +167,7 @@ pre-9c 레이아웃(`module/boot-jar` + `module/comp-jar`, front 없음, Boot �
 | 배포 전송 확장 | `<build><extensions>` 의 wagon-webdav / wagon-ssh / wagon-ftp 류(목록 `knowledge/libraries/build_extensions.yml`)를 첫 Maven 호출 전에 모든 pom(프로필 포함)에서 제거. `mvn deploy` 전용이라 패키징에 필요 없고, 저장소에 없으면 OpenRewrite 까지 `Unresolveable build extension` 으로 막는다. 목록에 없는 확장은 기록만 | `sbmig/analyze/build_extensions.py` | `intake.strip_deploy_extensions` | `deploy-extensions-removed` + 인수인계 한 줄씩 |
 | EAR 루트 | 모듈이 트리에 없는 EAR 루트는 거부(EAR 은 코드가 없고 WAR 의존성이 back 으로 가면 안 됨) | `ear_without_modules` | — | `ear-without-modules` |
 | pom 복사본 | IDE 출력·백업 폴더(`boot/bin/`)의 모듈 통째 복사본: 등록 안 된 pom 의 g:a 가 다른 pom 과 같으면(그 아래 중첩이거나 reactor 에 닿는 것 옆) 모든 파싱에서 빼고 그 폴더를 모든 스캔에서 가지치기. 구조 검토 불변식 검사는 그런 복사본을 모듈로 넣은 편집을 복원한다 | `sbmig/analyze/pom_parser.py`(`stray_pom_copies`, `find_stray_pom_copies`), `Workspace.ignored_dirs` | `review.invariant_check` | `stray-pom-ignored` + 인수인계 한 줄 |
-| 속 빈 리액터 | 모듈이 컴파일·포장하는 소스 루트에는 소스가 없고 트리 다른 곳(JDeveloper 작업공간 `DEV/`, `STATIC/`)에 있음 → 계속 돌지만 **성공 아님**(exit 2). 그 소스를 모듈로 옮기는 것은 다음 단계의 일 | `sbmig/analyze/hollow.py` | — | `hollow-reactor`, 인수인계 첫 줄, `attn=hollow-reactor` |
+| 속 빈 리액터 | 모듈이 컴파일·포장하는 소스 루트(`sourceDirectory`, 테스트 소스, `<resources>`, war 플러그인 디렉토리 — 프로젝트 안 부모 체인에서 물려받은 값 포함, 자기 값 우선)에는 소스가 없고 트리 다른 곳(JDeveloper 작업공간 `DEV/`, `STATIC/`)에 있음 → 계속 돌지만 **성공 아님**(exit 2). 그 소스를 모듈로 옮기는 것은 다음 단계의 일 | `sbmig/analyze/hollow.py` | — | `hollow-reactor`, 인수인계 첫 줄, `attn=hollow-reactor` |
 | ADF | Oracle ADF(JDeveloper) 는 변환하지 않는다. 근거 네 계열(BC4J XML, `oracle.jbo` / `oracle.adf` / `oracle.binding` import, ADF Model 바인딩, ADF Faces / 태스크 플로) 중 **둘 이상**이면 분석에서 중단. 하나뿐이면 흔적 메모만. `.jpr` 이름·`adf-config.xml` 만으로는 아무 뜻 없음 | `sbmig/analyze/adf.py` | `intake.adf_policy`(`stop` 기본 / `continue`) | `adf-project`(exit 3, "ADF sizing" 절) / `adf-traces` |
 
 ## 9. JSP javax → jakarta, 필터링되는 바이너리, 테스트
@@ -172,9 +175,10 @@ pre-9c 레이아웃(`module/boot-jar` + `module/comp-jar`, front 없음, Boot �
 | 규칙 | 무엇 / 왜 | 어디 | 키 | 보고서 |
 |---|---|---|---|---|
 | JSP jakarta 이름 | OpenRewrite 는 JSP 를 파싱하지 않으므로, 파일이 최종 위치에 간 뒤 모든 모드에서 JSP / 태그 파일의 **코드 영역**에 있는 javax EE 이름을 jakarta 로 바꾼다(표 `sbmig/analyze/jakarta_packages.yml`). taglib URI 는 그대로(JSTL 3 이 `java.sun.com` URI 도 서빙). 재구성이 실패했으면 손대지 않음 | `sbmig/restructure/jsp_jakarta.py`(`rename_jsp_files`) | `layout.jsp_jakarta_rename`(false = 인수인계 한 줄만) | 커밋 `restructure: JSP javax -> jakarta`, 저널 `jsp_jakarta`, 노트 "JSP javax → jakarta: N files" |
-| 필터링되는 바이너리 | `<filtering>true</filtering>` 리소스 안의 바이너리(웹폰트, 압축, 회사 `.dmdb`)를 maven-resources-plugin 이 텍스트로 읽다 `MalformedInputException: Input length = 1` 로 실패 → 재구성이 그 확장자를 `nonFilteredFileExtensions` 에 미리 적는다(필터링은 끄지 않고 파일은 지우지 않음, 플러그인 기본값·텍스트 확장자는 적지 않음). 바이너리 판정은 알려진 표 또는 내용 — 설정 없이 `.dmdb` 도 잡힌다 | `sbmig/restructure/resources_filtering.py` | `build.non_filtered_extensions`(텍스트로 읽히는 형식만) | 저널 `non_filtered_extensions`; 안전망은 사전 시도 `sbmig-resources` |
+| 필터링되는 바이너리 | `<filtering>true</filtering>` 리소스 안의 바이너리(웹폰트, 압축, 회사 `.dmdb`)를 maven-resources-plugin 이 텍스트로 읽다 `MalformedInputException: Input length = 1` 로 실패 → 재구성이 그 확장자를 `nonFilteredFileExtensions` 에 미리 적는다(필터링은 끄지 않고 파일은 지우지 않음, 플러그인 기본값·텍스트 확장자는 적지 않음). 바이너리 판정은 알려진 표 또는 내용 — 설정 없이 `.dmdb` 도 잡힌다. 확장자는 맞는 파일 전부에서 모으고 보고하는 목록만 줄인다(`ResourcePlan.files_total`) | `sbmig/restructure/resources_filtering.py` | `build.non_filtered_extensions`(텍스트로 읽히는 형식만) | 저널 `non_filtered_extensions`; 안전망은 사전 시도 `sbmig-resources` |
 | 테스트 건너뛰기 | 범위 = 패키징 + 빌드 통과. 모든 빌드가 `-Dmaven.test.skip=true` | `_step_verify`, `sbmig/build/runner.py` | `build.skip_test_compile: true`(기본) | 플래그 `tests-not-compiled`, 후속 조치 "담당팀이 `mvn test-compile` 로 테스트를 고친다" |
-| 소스 인코딩 | MS949 / EUC-KR 소스 모듈에 `project.build.sourceEncoding` 을 적는다(소스는 UTF-8 로 바꾸지 않음) | `layout.legacy_context` 의 `write_source_encoding` | `build.encoding_candidates` | 구조 검토는 누락을 critical 로 본다 |
+| 소스 인코딩 | MS949 / EUC-KR 소스 모듈에 `project.build.sourceEncoding` 을 적는다(소스는 UTF-8 로 바꾸지 않음). 표본은 전체 1,500 파일 / 모듈당 400 까지: 몫이 바닥난 뒤의 모듈은 "표본 없음"(`ModuleEncoding.not_sampled`, 검토 입력에 `… not sampled (the sample limit was reached before this module)`)이고 앞 모듈의 판정은 그대로 쓴다 | `layout.legacy_context` 의 `write_source_encoding` | `build.encoding_candidates` | 구조 검토는 누락을 critical 로 본다 |
+| pom 저장 인코딩 | pom 은 선언한 인코딩이 글자를 다 담으면 그 인코딩으로, 아니면 읽은 인코딩으로 저장한다. 문자 참조(`&#…;`)는 마지막 수단 | `sbmig/restructure/pom_editor.py` | — | — |
 | 외부 설정 자리표시 | as-is 가 외장 Tomcat 에서 받던 설정 키 중 패키지된 리소스가 정의하지 않는 것 → boot 모듈 `application.properties` 에 `__SET_ME__` 자리표시 | `sbmig/analyze/properties.py` | `externalized.*` | 저널 `placeholders`, 인수인계 |
 
 ## 10. 규칙을 바꾸는 법

@@ -49,7 +49,7 @@ from sbmig.core.stage import stage
 
 from .inputs import (ReviewInput, collect_review_input, invariant_violations, java_charset, raw_poms,
                      source_encodings)
-from .parse import ParsedReview, changes_note, mark_unsupported, parse_review_answer
+from .parse import CUT_REASONS, ParsedReview, changes_note, mark_unsupported, parse_review_answer
 
 log = logging.getLogger("sbmig.review")
 
@@ -67,6 +67,9 @@ APPLY_RETRY_MESSAGE = ("Your edits could not be applied: {error}. The project wa
                        "edits. Answer again with the COMPLETE answer (<review>, <analysis>, <solution>, corrected "
                        "<edits> each with its \"desc\"): copy every `old` text exactly from the poms shown (indentation "
                        "and line breaks included), prefer `op: pom` editor calls, change build files only.")
+# 토큰 한도에서 잘린 답변을 다시 요청할 때 더 짧게 답하라고 덧붙인다
+CUT_RETRY_TAIL = (" Your previous answer was cut off at the output token limit: keep this one shorter (a short analysis, "
+                  "only the issues that matter, edits only for the critical ones).")
 # v2.1y (D-M2): review.ask_script true — the retry texts ask for the optional script as before
 SCRIPT_RETRY_TAIL = " Optionally add <script> with <changes>."
 # v2.1y (D-M2): the script-only parts of review_v1.md sit between these markers (left out unless review.ask_script)
@@ -332,7 +335,7 @@ class StructureReviewer:
         resp = self._call(rv, cfg, messages)
         if isinstance(resp, str):
             return None, resp, messages
-        parsed = parse_review_answer(resp.content)
+        parsed = parse_review_answer(resp.content, getattr(resp, "finish_reason", None))
         convo = messages + [ChatMessage(role="assistant", content=resp.content[:8000] or "(empty)")]
         if parsed.ok and not (parsed.edits_problem and parsed.critical):
             return parsed, "", convo
@@ -343,6 +346,8 @@ class StructureReviewer:
             log.info("structure review: answer unreadable (%s%s) — asking once more for the format", parsed.error,
                      ", cut at the token limit" if (resp.finish_reason or "") == "length" else "")
             ask = _retry_text(RETRY_MESSAGE, cfg)
+            if (getattr(resp, "finish_reason", None) or "") in CUT_REASONS:
+                ask += CUT_RETRY_TAIL
         first, first_error = parsed, parsed.error
         retry = convo + [ChatMessage(role="user", content=ask)]
         resp2 = self._call(rv, cfg, retry)
@@ -350,7 +355,7 @@ class StructureReviewer:
             if first.ok:                                  # the review itself was readable: keep it, without edits
                 return first, "", convo
             return None, f"unreadable answer ({first_error}), then {resp2}", retry
-        parsed = parse_review_answer(resp2.content)
+        parsed = parse_review_answer(resp2.content, getattr(resp2, "finish_reason", None))
         convo2 = retry + [ChatMessage(role="assistant", content=resp2.content[:8000] or "(empty)")]
         if parsed.ok:
             return parsed, "", convo2
@@ -554,7 +559,7 @@ class StructureReviewer:
         if isinstance(resp, str):
             rv.note = f"{error}; asking again failed: {resp}"
             return
-        parsed = parse_review_answer(resp.content)
+        parsed = parse_review_answer(resp.content, getattr(resp, "finish_reason", None))
         if not parsed.ok or not parsed.edits:
             why = parsed.error or parsed.edits_problem or "no edits in the answer"
             rv.note = f"{error}; the corrected answer had no usable edits ({_short(why, 200)})"

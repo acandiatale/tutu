@@ -53,3 +53,27 @@ def test_version_like_values():
     no = ["UTF-8", "true", "${other}", "https://x", "a.b", "", "1.8 ", "release"]
     assert all(VERSION_LIKE_RE.match(v) for v in yes), [v for v in yes if not VERSION_LIKE_RE.match(v)]
     assert not any(VERSION_LIKE_RE.match(v) for v in no), [v for v in no if VERSION_LIKE_RE.match(v)]
+
+
+# ---------------------------------------------------------------------------------------------- review P5
+def test_a_property_referenced_outside_the_poms_stays(tmp_path: Path):
+    """A filtered resource (`${name}` / `@name@`) or an assembly descriptor is a place Maven substitutes too."""
+    from sbmig.core.workspace import Workspace
+    from sbmig.restructure.restructurer import names_referenced_outside_poms
+
+    src = tmp_path / "in"
+    (src / "src/main/resources").mkdir(parents=True)
+    (src / "src/assembly").mkdir(parents=True)
+    (src / "pom.xml").write_text(_pom({"app.release": "1.4.2", "dist.version": "2.0", "label.version": "3.1",
+                                       "stale.version": "4.2.7.RELEASE"}), encoding="utf-8")
+    (src / "src/main/resources/app.properties").write_text("release=${app.release}\n", encoding="utf-8")
+    (src / "src/main/resources/banner.txt").write_text("v@label.version@\n", encoding="utf-8")
+    (src / "src/assembly/dist.xml").write_text("<assembly><id>${dist.version}</id></assembly>\n", encoding="utf-8")
+    (src / "src/main/resources/logo.bin").write_bytes(b"\x00\x01${stale.version}")     # binary: not a reference
+    ws = Workspace.from_input(src, tmp_path / "out", run_id="t")
+    names = ["app.release", "dist.version", "label.version", "stale.version"]
+    assert names_referenced_outside_poms(ws, names, {"pom.xml"}) == {"app.release", "dist.version", "label.version"}
+    ed = PomEditor(ws.abs("pom.xml"))
+    removed = orphan_version_properties({"pom.xml": ed}, set(),
+                                        outside=lambda n: names_referenced_outside_poms(ws, n, {"pom.xml"}))
+    assert removed == [("pom.xml", "stale.version", "4.2.7.RELEASE")]

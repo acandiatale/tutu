@@ -316,6 +316,45 @@ def _resolved_elsewhere(s: CaseScript) -> bool:
     return len({p for p in s.projects if p}) > 1
 
 
+def _unknown(obj: Any, fields: Any) -> dict[str, Any]:
+    return {k: v for k, v in obj.items() if k not in fields} if isinstance(obj, dict) else {}
+
+
+def _keep_nested_extra(case: CaseInfo, data: dict[str, Any]) -> None:
+    """case.json의 스크립트 버전과 실행 기록에 있는, 모델이 모르는 키를 객체에 붙여 둔다.
+    새 버전의 코드가 쓴 필드를 이전 버전이 다시 저장할 때 잃지 않기 위해서다.
+
+    Unknown keys of a script version / a run record (written by a newer version of the code) are attached to the
+    parsed objects (`__pydantic_extra__`; the models ignore unknown keys) so that `_save` writes them back and a
+    model_copy / a re-sign move carries them along. Matched by position: the models keep the list order."""
+    raw_scripts = data.get("scripts")
+    if not isinstance(raw_scripts, list) or len(raw_scripts) != len(case.scripts):
+        return
+    for s, raw in zip(case.scripts, raw_scripts):
+        extra = _unknown(raw, CaseScript.model_fields)
+        if extra:
+            object.__setattr__(s, "__pydantic_extra__", extra)
+        raw_runs = raw.get("runs") if isinstance(raw, dict) else None
+        if not isinstance(raw_runs, list) or len(raw_runs) != len(s.runs):
+            continue
+        for r, raw_r in zip(s.runs, raw_runs):
+            extra = _unknown(raw_r, ScriptRun.model_fields)
+            if extra:
+                object.__setattr__(r, "__pydantic_extra__", extra)
+
+
+def _put_nested_extra(case: CaseInfo, data: dict[str, Any]) -> None:
+    """`_keep_nested_extra`가 붙여 둔 키를 저장할 JSON에 다시 넣는다. 모델 필드는 덮어쓰지 않는다.
+
+    The kept unknown keys back into the dumped case (after the model's own fields, never over them)."""
+    for s, d in zip(case.scripts, data.get("scripts") or []):
+        for k, v in (getattr(s, "__pydantic_extra__", None) or {}).items():
+            d.setdefault(k, v)
+        for r, dr in zip(s.runs, d.get("runs") or []):
+            for k, v in (getattr(r, "__pydantic_extra__", None) or {}).items():
+                dr.setdefault(k, v)
+
+
 class CaseStore:
     """KB의 케이스와 오류 기록을 읽고 쓰는 클래스.
     ``<kb>/cases/<case_id>/``, ``<kb>/errors.jsonl``, ``<kb>/cases.md``를 다룬다.
@@ -425,6 +464,7 @@ class CaseStore:
             return None, "damaged", f"names case {case.case_id}"
         # CaseInfo에 없는 키(pin, last_result, 사람이 넣은 값)는 따로 두었다가 저장할 때 다시 넣는다
         extra = {k: v for k, v in data.items() if k not in CaseInfo.model_fields}
+        _keep_nested_extra(case, data)
         return (case, extra), "ok", ""
 
     def _keep_alive(self) -> None:
@@ -437,6 +477,7 @@ class CaseStore:
     def _save(self, case: CaseInfo, extra: Optional[dict[str, Any]] = None) -> None:
         """case.json을 원자적으로 다시 쓴다. 추가 키는 모델 필드를 덮어쓰지 않도록 뒤에 붙인다."""
         data = case.model_dump(mode="json")
+        _put_nested_extra(case, data)
         data.update({k: v for k, v in (extra or {}).items() if k not in data})
         atomic_write(self.case_dir(case.case_id) / CASE_FILE, json.dumps(data, ensure_ascii=False, indent=2) + "\n")
 
@@ -2671,6 +2712,8 @@ class CaseStore:
                         continue
                 if mine is None and not self._disk_versions(cid):
                     for s in t_case.scripts:
+                        # 가져온 case.json의 file 값은 믿지 않고 항상 케이스 폴더 안의 정해진 이름으로 쓴다
+                        s.file = f"fix_v{int(s.version)}.py"
                         code = other.code(cid, s.version)
                         if code is not None:
                             atomic_write_bytes(self.case_dir(cid) / s.file, code.encode("utf-8"))

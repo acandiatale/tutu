@@ -199,8 +199,11 @@ def _parents(value: Optional[str]) -> str:
 
 def head_lines(r: RunReport) -> list[str]:
     """제목 아래 머리 표를 만든다. 결과, SBMIG-RESULT, 전환 후, 실행 ID, 시작 / 종료, 플래그 순이다."""
-    if _aborted(r):
+    if _aborted(r) and r.final_build is None:
         result = "❌ 실행 중단 (빌드까지 진행하지 못했습니다)"
+    elif _aborted(r):
+        # 빌드를 한 뒤에 멈춘 실행은 멈췄다는 사실과 마지막 빌드 결과를 함께 쓴다
+        result = f"❌ 실행 중단 ({_last_build_ko(r)})"
     else:
         ok = tr(LANG, "✅ BUILD SUCCESS") if r.success else tr(LANG, "❌ NOT BUILDING")
         result = f"{ok} (최종 `mvn clean package`)"
@@ -217,10 +220,21 @@ def head_lines(r: RunReport) -> list[str]:
     return L
 
 
+def _last_build_ko(r: RunReport) -> str:
+    """중단된 실행의 마지막 빌드 결과를 한 문장으로 만든다. 빌드가 없었으면 빈 문자열을 반환한다."""
+    if r.final_build is None:
+        return ""
+    return "마지막 빌드는 통과했습니다" if r.final_build.ok else "마지막 빌드는 통과하지 않았습니다"
+
+
 def purpose_lines(r: RunReport) -> list[str]:
     """머리 표 아래 안내 문장을 만든다. 빌드가 실패했으면 그 사실과 먼저 볼 절을 앞에 쓴다."""
     if _aborted(r):
-        return ["이번 실행은 끝까지 진행하지 못했습니다. 멈춘 이유와 다시 실행하기 전에 확인하실 사항을 아래에 적었습니다.", ""]
+        last = (f" {_last_build_ko(r)}." if r.final_build is not None else "")
+        if r.final_build is not None and r.final_build.log_path:
+            last += " 마지막 빌드 로그는 「참고」에 있습니다."
+        return ["이번 실행은 끝까지 진행하지 못했습니다. 멈춘 이유와 다시 실행하기 전에 확인하실 사항을 아래에 적었습니다."
+                + last, ""]
     L: list[str] = []
     if _build_failed(r):
         where = [x for x, has in (("「해결하지 못한 오류」", bool(open_errors(r))), ("「진행하지 않은 항목」", bool(r.blocked)))

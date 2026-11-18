@@ -288,6 +288,17 @@ def _view_workspace(input_path: Path, out: Optional[Path] = None, prefix: str = 
     return Workspace.from_input(input_path, base, run_id=run_id)
 
 
+def refuse_intake(orch, reason: str, flow: str = "full"):
+    """접수에서 거절한 실행을 마무리한다. 보고서에 ``run aborted: <reason>``을 남기고 Maven이나 LLM은 호출하지 않는다.
+
+    End a run refused at intake before the pipeline starts (an uploaded ZIP over an unpacking limit, review 2026-11-18
+    W3): the same abort record as the orchestrator's own intake refusals (`run aborted: <reason>`, flag `aborted`,
+    report, exit 3), no Maven, no LLM. Returns the report."""
+    with orch._run_guard(False, flow=flow) as report:
+        orch._abort(report, reason)
+    return report
+
+
 # 운영자, 일괄 실행, 작업 스케줄러가 판단에 쓰는 종료 코드: 0 성공, 2 미완(차단이나 미해결 남음), 3 중단
 EXIT_SUCCESS = 0          # final `mvn clean package` passed and nothing is blocked
 EXIT_INCOMPLETE = 2       # finished, but with blocked and/or unresolved errors (see report.md)
@@ -378,13 +389,19 @@ def run(
     from sbmig.report import console_summary
     from sbmig.report.result_line import report_result_line, result_line
 
-    ws = Workspace.from_input(input, out, run_id=run_id)
+    from sbmig.core.workspace import ZipLimits
+
+    ws = Workspace.from_input(input, out, run_id=run_id, limits=ZipLimits.from_config(cfg.intake))
     log_path = attach_file_log(ws.run_dir / "sbmig.log")
     log.info("run %s", ws.run_id)
     orch = Orchestrator(cfg, ws, source=input)
     try:
-        # flow= only for a non-default flow: a full run calls run() exactly as before (in-house wrappers keep working)
-        report = orch.run(stop_after=phase, dry_run=dry_run, **({"flow": flow} if flow != "full" else {}))
+        if ws.intake_refusal:
+            # 풀기 한도를 넘어 아무것도 풀지 않은 zip은 다른 접수 거절처럼 보고서와 종료 코드 3으로 끝낸다
+            report = refuse_intake(orch, ws.intake_refusal, flow=flow)
+        else:
+            # flow= only for a non-default flow: a full run calls run() exactly as before (in-house wrappers keep working)
+            report = orch.run(stop_after=phase, dry_run=dry_run, **({"flow": flow} if flow != "full" else {}))
     except Exception:
         log.exception("run aborted by an unexpected error (see %s)", log_path)
         line = result_line(ws.run_id, 1, False, attention=["crash"])
@@ -1037,12 +1054,12 @@ def clean_cmd(out: Path = typer.Option(Path("out"), "--out", "-o",
 
 @app.command()
 def version() -> None:
-    """sbmig 버전을 출력한다.
+    """sbmig 버전과 코드 트리 지문을 출력한다. 웹 파드와 빌드 파드가 같은 이미지인지 비교할 때 쓴다.
 
-    Print the sbmig version."""
-    from sbmig import __version__
+    Print the sbmig version with the running tree's digest (`0.1.0+<12 hex>`, the value the Job-mode Worker compares)."""
+    from sbmig.web.contract import sbmig_version
 
-    typer.echo(f"sbmig {__version__}")
+    typer.echo(f"sbmig {sbmig_version()}")
 
 
 # --------------------------------------------------------------------------- sub-apps (kb, recipes, fleet)

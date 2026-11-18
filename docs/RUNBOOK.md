@@ -76,7 +76,7 @@ Details: `agent-doc/13-framework-projects.md`. To validate in the company enviro
 | Switch it on | `framework.artifacts` in the company `config/artifacts.yml` with the real coordinates (placeholder: `["com.example.fw:example-fw-core"]`; a bare artifactId matches any groupId, matching is case-sensitive). In the cluster the file is baked into the image: rebuild and push the image (`deploy/README.md` §7) |
 | Recipe sets | `framework.recipe_sets` (default `[jdk21, jakarta]`). The jakarta set moves the servlet API to the Jakarta EE 9 line (servlet 5.0); for projects that will run on Tomcat 10.1+ add `servlet_jakarta_10` — the company decides |
 | First run on a real framework project | `SBMIG-RESULT … scope=jdk-jakarta`; `sbmig.log` INFO `분석: 사내 프레임워크 프로젝트 (…) - JDK와 jakarta만 적용`; journal `framework_project` (`evidence`, `unchecked`), `plan` with `"scope": "jdk-jakarta"`, (MS949 / EUC-KR sources) `source_encodings` before the rewrite and `scopes_restored` after it, commits in the order `transform: source encodings written` → `rewrite: transform.rewrite` → `transform: as-is provided scopes restored` → `transform: JSP javax → jakarta`, notes `source encoding written: <pom>: project.build.sourceEncoding=MS949 (…)` — an encoding the kept parent sets differently stays and becomes a hand-over item (「확인해 주세요」); `report.md` block `## 사내 프레임워크 프로젝트`, the two corrections listed under 「코드 수정 내역」 → 자동 변환 ("sbmig가 변환 단계에서 직접 고친 pom") and in `errors.md` as `seen: transform` entries; the page shows 프레임워크 프로젝트 and 재구성 / 구조 검토 as 하지 않음 |
-| Not recognised | journal `framework_check` with `unchecked`: `parent: no as-is effective pom` (the intake capture failed, so inheritance from a parent pom was not checked), `transitive: <why>` (`dependency:tree` failed), nothing = the pattern does not match the real groupId / artifactId |
+| Not recognised | journal `framework_check` with `unchecked`: `parent: no as-is effective pom` (the intake capture failed, so inheritance from a parent pom was not checked), `transitive: <why>` (`dependency:tree` failed), nothing = the pattern does not match the real groupId / artifactId. Both `parent:` and `transitive:` present = the check could not look: flag `framework-unchecked`, WARNING `분석: 사내 프레임워크 여부를 확인하지 못함 (…)`, Handover line "framework check could not run (the parent pom and the dependency tree could not be read): if this project uses the in-house framework it must not be migrated in full — confirm before using the result"; the run goes on in full scope, the exit code is unchanged |
 | Cost of the transitive check | when the poms, the parent capture and the bundled jars show nothing, every project pays one `mvn dependency:tree -Dincludes=…` on the as-is tree at analyze (one per service root for an MSA without a covering aggregator); `framework.transitive: off` saves it |
 | A framework still on javax | BLOCKED `external_javax_api` without an LLM call, the suggestion names the framework artifact and says its owner must provide a jakarta build — expected, not an sbmig failure |
 | An unresolvable parent | exit 3, `aborted:parent-not-found`: a framework project keeps its own parent, so Nexus must serve it (or fix the settings / mirror) |
@@ -93,10 +93,16 @@ sbmig run path/to/project.zip --config config/artifacts.yml --out out/
 
 The flow: intake → analyze → plan → one OpenRewrite run → company restructure → LLM structure review →
 `mvn clean package -Dmaven.test.skip=true` → on failure the script fix loop (stored script reuse → augment → new;
-every attempt rebuilt, scored, rolled back if it did not help) → final build → report. Tests are never compiled
-(`build.skip_test_compile: true`, flag `tests-not-compiled`).
+every attempt rebuilt, scored, rolled back if it did not help; when the loop ends, each case's last applied attempt
+that scored `no_change` / `inconclusive` is rolled back too, so nothing that did not help is delivered) → final build →
+report. Tests are never compiled (`build.skip_test_compile: true`, flag `tests-not-compiled`). A restructure step that
+fails resets the tree to the commit before the step (journal `restructure_reset`) and the run goes on with the as-is
+layout (flag `restructure-failed`, exit 2).
 
-Inputs: a Maven tree (a missing root pom gets a generated aggregator). An Ant tree (`build.xml`, no pom) is refused
+Inputs: a Maven tree (a missing root pom gets a generated aggregator). An uploaded ZIP is checked against
+`intake.max_unpacked_mb` (4096), `intake.max_entry_mb` (1024) and `intake.max_compression_ratio` (200, per entry from
+1 MiB unpacked; 0 = no limit), first from its directory and again while unpacking; a ZIP over a limit is refused
+before anything is written (`run aborted: ZIP refused: …`, journal `intake_refused`, exit 3, no Maven, no LLM). An Ant tree (`build.xml`, no pom) is refused
 at intake with the notice "Maven 변환 후 신청 부탁드립니다." (`intake.ant_message`; exit 3, flag
 `unsupported-build-tool:ant`); the pom synthesis comes back with `intake.ant_to_maven: true` (section "Ant 프로젝트" below).
 Gradle and trees with neither pom nor build.xml are rejected (exit 3, flag `unsupported-build-tool:<tool>`); for
@@ -104,8 +110,9 @@ the latter `sbmig inventory <dir> --out out/inventory/<name>` writes a read-only
 ADF projects stop at analyze (exit 3, flag `adf-project`).
 
 **Exit codes**: `0` final `mvn clean package` passed and nothing is blocked; `2` finished with blocked and / or
-unresolved errors (or `hollow-reactor`); `3` aborted (no Maven, Maven not on Java 21, unsupported input, ADF,
-in-house parent not resolvable); `1` crash. Library advisories never change the exit code. The last console line
+unresolved errors (or `hollow-reactor`, `restructure-failed`); `3` aborted (no Maven, Maven not on Java 21, unsupported
+input, a ZIP over the unpacking limits, ADF, in-house parent not resolvable, a stop request — one that arrives after
+every planned final build has a result is ignored); `1` crash. Library advisories never change the exit code. The last console line
 (also in `sbmig.log`, ASCII, retypeable):
 
 ```text
@@ -127,7 +134,7 @@ Outputs in `out/<run id>/`:
 | `logs/NNN-<label>.log` | every Maven / OpenRewrite call — the real error messages |
 | `project/` | the migrated working copy (git branch `sbmig/<run id>`, one commit per step / attempt) |
 | `changes.patch`, `result.zip` | full diff vs as-is, the migrated project |
-| `codediff/` | what the page's 「코드 변경」 block shows: each file of the migrated tree at its final path against the as-is file it came from, with the old place of a moved file (`report.code_diff: false` leaves it out) |
+| `codediff/` | what the page's 「코드 변경」 block shows: each file of the migrated tree at its final path against the as-is file it came from, with the old place of a moved file; only paths the last commit has (untracked leftovers of the final build are not "added", journal `code_diff.untracked_left_out`); a run that changed no file writes no record (journal `code_diff_skipped`, "the run changed no file") and a record of an earlier attempt is removed (`report.code_diff: false` leaves it out) |
 
 `report.language: ko` writes `report.md` as the Korean guide, `en` as the diagnostic layout. LLM requests / responses go to `llm.record_dir` (`LLM_RECORD_DIR`)
 as `llm-NNNN.json`, without keys.
@@ -146,11 +153,22 @@ as `llm-NNNN.json`, without keys.
 6. **`project/`**: `git log --oneline` pairs attempt commits (`fix(script:<case_id>:v<N> …)`) with rollbacks.
 7. **LLM records**: was a fact missing from the prompt, did the LLM ignore it, or did it decline?
 
+Symptoms an operator meets and where to look:
+
+| You see | Look at / do |
+|---|---|
+| `blocked:repository_unreachable` in `attn`, BLOCKED `repository_unreachable` | a repository did not answer (time-out, refused or reset connection, unknown host, no route, PKIX, 5xx): `<g:a:v> could not be downloaded: the repository did not answer (<repos>)`. No LLM try, nothing credited in the KB (`loop.blocked_policy.repository_unreachable: 0`). Not a project problem: check the repository and the network, then rerun. A 401 / 403 or a "not found" answer keeps its own reason |
+| flag `framework-unchecked`, Handover "framework check could not run (…)" | the framework check could read neither the parent pom (no as-is effective pom) nor the dependency tree, and found nothing; the run went on in full scope. If the project uses the in-house framework, do not use the result: fix the repository / settings and rerun (journal `framework_check`) |
+| `run aborted: ZIP refused: …` (exit 3) | journal `intake_refused`; the sentence names the `intake.*` limit that was exceeded |
+| a web run refused at once, 「웹 파드와 빌드 파드가 서로 다른 이미지로 실행되고 있어 …」 | the image was pushed and the web pod not restarted: §5 |
+| upload answers HTTP 507 / HTTP 403 `cross-site request refused: …` | §5 |
+
 Details per file, log line and journal event: `agent-doc/03-run-debug-and-logs.md`. `sbmig parse-log <log>`
 re-parses any Maven log into errors with signatures.
 
 **What the owners read** (`report.language: ko`, the company setting — `sbmig/report/guide_ko.py`): a head table
-(결과, `SBMIG-RESULT`, 전환 후, 실행 ID, 시작 / 종료, 플래그), then 「전환 내용」 (Java / Boot / parent as-is → final, every
+(결과, `SBMIG-RESULT`, 전환 후, 실행 ID, 시작 / 종료, 플래그; an aborted run reads "❌ 실행 중단 (빌드까지 진행하지 못했습니다)" only
+when no build ran, else "❌ 실행 중단 (마지막 빌드는 통과했습니다)" / "(마지막 빌드는 통과하지 않았습니다)"), then 「전환 내용」 (Java / Boot / parent as-is → final, every
 changed dependency; **⚠** = pinned at the version the as-is parent managed because the new chain does not — confirm or
 replace), 「확인해 주세요」 (one numbered list: the library advisories with their Korean texts, see
 [ADVISORIES.md](ADVISORIES.md), then the hand-over items and follow-ups, capped by `advisories.max_from_here`),
@@ -191,7 +209,12 @@ New-Item "$run\dump-threads" -ItemType File; Start-Sleep 3; Get-ChildItem $run -
 
 LLM lines worth retyping: a transport failure carries `cause=<Class>: <message>`; an empty answer with
 `finish_reason=length` is a rejection of that request (prompt too big — lower `llm.max_context_chars`); the same
-HTTP 400 body for two prompts stops the LLM for the run (`llm-config-error`; check the model names in `.env`).
+HTTP 400 body for two prompts stops the LLM for the run (`llm-config-error`; check the model names in `.env`). A
+failed token exchange (`token exchange failed: HTTP <code> (status=<code>)`, `… transport (<Class>) (cause=…)`, no
+JSON, no `access_token`) is retried like a chat call and counts as an LLM outage (cool-down, then `llm_unavailable`),
+never as an answer; the token endpoint's body is not logged. An answer cut at the output token limit whose `<script>` /
+`<edits>` block is not closed is neither used nor stored: the feedback round asks for a shorter answer, a second cut
+fails the attempt (`the answer was cut off at the output token limit (finish_reason=<r>) before <script> closed`).
 
 On the company PC without copy-paste, ask for specific lines (`SBMIG-RESULT`, `preflight: … FAIL`, `run aborted:`,
 `cause=`, `LLM-PROBE`, `REPO-PROBE`), each found with one `Select-String -Encoding UTF8` command — not for files.
@@ -206,7 +229,9 @@ On the company PC without copy-paste, ask for specific lines (`SBMIG-RESULT`, `p
 - Curate: `sbmig kb cases retire <case_id> <N>` (never run version N again), `activate <case_id> <N>` (undo),
   `pin <case_id> block[:REASON]` (no script / LLM tries; the report's 「진행하지 않은 항목」 shows the reason), `unpin`.
 - Move / back up: `sbmig kb export kb-YYYYMMDD.zip` → `sbmig kb import kb-YYYYMMDD.zip [--replace]` (the old KB is
-  kept as `.bak-*`); `sbmig kb reindex` after manual edits. Back up with export, not git.
+  kept as `.bak-*`; every imported script is written as `fix_v<N>.py` inside its case folder whatever the imported
+  `case.json` names it); `sbmig kb reindex` after manual edits. Back up with export, not git. Fields a `case.json`
+  holds that this image does not know (top level, per script version, per run record) survive a re-save.
 - Every write runs under `<kb>/.lock` (`kb.lock_timeout_seconds`), so the web server, a fleet and `sbmig kb …` can
   share one KB. Secrets are masked before anything is stored (built-in rules + `knowledge/kb/redact.yml`).
 - Offline demo: `scripts/demo-kb/run.sh` (run 2 reuses run 1's stored script without the LLM).
@@ -236,14 +261,37 @@ sbmig clean --fleet out\fleet --older-than 7 --keep-failed --dry-run
 - **Local web UI**: `sbmig serve --port 8765 --out out/web` (FastAPI on uvicorn, bound to 127.0.0.1): upload a zip,
   choose 전체 진행 (migration, then the remediation) or 취약점 해결 (remediation only, §6), follow the stage rail /
   journal / log, download `report.md` and `result.zip`. A run's folder name starts with a slug of the uploaded file's
-  name; a run refused at intake shows its reason as a sentence. Sharing on the LAN needs a token
+  name; a run refused at intake, or aborted by Maven's HTTP repository blocker, shows its reason as a sentence. Sharing on the LAN needs a token
   (`SBMIG_WEB_TOKEN` or `--token`; `--open` only on a trusted intranet). The configs every upload runs with are the
   server's choice (`--config` / `SBMIG_WEB_CONFIGS`). In-process mode runs one migration at a time (the others are
-  `queued`); "중단" takes effect between graph nodes.
+  `queued`); "중단" takes effect between graph nodes, and a stop that arrives after every planned final build has a
+  result is ignored (journal `stop_request` with `ignored`; a fix loop left on the request ends the run as aborted with
+  "… the fix loop was left early; the last build shows the tree as it was left").
+- **Requests from another web site are refused**: any request other than GET / HEAD / OPTIONS carrying
+  `Sec-Fetch-Site: cross-site`, or an `Origin` whose host is not the request's own (`Host` / `X-Forwarded-Host`;
+  `Origin: null` counts as foreign), gets HTTP 403 `{"error": "cross-site request refused: a page of another web site
+  cannot start, stop or change a run (Origin / Sec-Fetch-Site)"}` before the token and open-mode checks, on every route.
+  The page itself and clients that send neither header (curl, scripts) are unaffected.
+- **Uploads**: below `fleet.min_free_gb` (5 GB; 0 = off) free on the output volume an upload is refused with HTTP 507
+  before the body is read (the page: 「서버의 저장 공간이 부족해 시작하지 못했습니다. 운영 담당자에게 알려 주세요.」). Nothing deletes
+  old run folders; `sbmig clean` is manual and removes only `project/` copies, uploads and LLM records of finished runs
+  (uploads of running, waiting and, with `--keep-failed`, failed runs are kept; never a run folder, `source.zip` or
+  `result.zip`). An uploaded ZIP over the unpacking limits (§1) ends the run at intake; the in-process web answers 400.
+- **Command-line values win over the environment**: `--settings`, `--java-home`, … and a fleet manifest's per-project
+  overrides are applied after the `SBMIG_<SECTION>__<KEY>` values (INFO `config: <key> given explicitly replaces
+  <VAR> from the environment`); the environment still wins over the yml files.
 - **Containers / Kubernetes**: `deploy/README.md` — the image, the web pod, and `sbmig serve --mode k8s-job`
   (one build Job per upload, up to `SBMIG_JOB_MAX_PARALLEL` at a time, the shared file KB, env pins). Operator rule:
   after changing ConfigMap `sbmig-env` restart the web pod; after a new Job template re-create ConfigMap
-  `sbmig-job-template`. Operations summary for in-house LLMs: `agent-doc/09-deploy-and-ops.md`.
+  `sbmig-job-template`; **after pushing an image restart the web pod** (build pods pull at start). The build identity is
+  `sbmig version` (`0.1.0+<12 hex>`, a digest of `sbmig/**/*.py`, `config/*.yml` and `knowledge/**`); the Main that
+  creates a Job records its config digests and version in `control/state.json`, and a build pod that differs refuses to
+  run (exit 3, journal `worker_refused`, "config <name> differs between the web pod and the build pod" / "sbmig version
+  differs: web pod <v>, build pod <v>" + "the web pod and the build pod run different images: restart the web pod after
+  pushing an image (and upload the project again)"; the page shows the Korean sentence). A run uploaded between the push
+  and the restart has to be uploaded again; runs that waited in line across the restart and remediation resumes of runs
+  an older image made are accepted when the two pods agree now. Operations summary for in-house LLMs:
+  `agent-doc/09-deploy-and-ops.md`.
 
 ## 6. Vulnerability remediation
 
@@ -255,7 +303,9 @@ is switched on with `SBMIG_REMEDIATION__REQUIRE_APPROVAL: "true"` in `sbmig-env`
 `remediation.always_approve` in the company yml baked into the image (single classes). Files
 go to `<run dir>/remediation/`; the outcome never changes the migration's exit code and is appended to `SBMIG-RESULT`
 as `remediation=<STATUS|skipped>`. Approvals (when switched on), upload confirmations and resume (a new build pod) happen
-in the web UI. Operator text:
+in the web UI. Every remediation (chained, `--flow remediation`, a resume in a new pod) writes
+`remediation/remediation.log`. In the Korean remediation report 조치 완료 and 「해결된 취약점」 count only findings a complete
+final scan no longer reports (a change whose finding is still reported shows 「-」). Operator text:
 `deploy/README.md` §6; flow, states, API and diagnosis: `agent-doc/11-remediations.md`; `sbmig remediation-resume
 --run-dir <dir>` resumes outside Kubernetes.
 
@@ -278,7 +328,8 @@ on a PC — are missing; the report names what is missing). `--stop-after` is re
 | `script.max_llm_tries_per_case` / `script.max_augments_per_case` | 20 / 15 | LLM asks per case and run; then BLOCKED `repeated_failure` |
 | `script.max_declines_per_case` | 1 | an LLM decline → BLOCKED `needs_owner` |
 | `script.max_edit_tries_per_case` | 4 | `<no_script>` + edits answers per case |
-| `loop.blocked_policy.<reason>` | 0–2 | script attempts before a case of that reason is blocked |
+| `loop.blocked_policy.<reason>` | 0–2 | script attempts before a case of that reason is blocked (`repository_unreachable`: 0) |
+| `intake.max_unpacked_mb` / `intake.max_entry_mb` / `intake.max_compression_ratio` | 4096 / 1024 / 200 | unpacking limits of an uploaded ZIP (0 = no limit) |
 | `llm.escalation_model` (`LLM_ESCALATION_MODEL`) | empty = `llm.model` | stronger model from a case's third ask or after a stall |
 | `llm.case_thread` | false | agent gateway: augments continue the case's session with the delta only |
 | `llm.pricing.<model>` | list prices | per-run cost in the report and the fleet summary |
@@ -291,7 +342,7 @@ on a PC — are missing; the report names what is missing). `--stop-after` is re
 | `layout.*` | see yml | company layout (role parents, module names, JSP jakarta rename, bundled-jar wiring) |
 | `advisories.*` | see yml | advisory files, off switches, carried-over listing, cap of the hand-over list |
 | `kb.dir` / `kb.lock_timeout_seconds` | kb-v2 / 300 | KB folder, cross-process lock |
-| `fleet.*` | see [FLEET.md](FLEET.md) | fleet order, budgets, infrastructure guard, cleanup |
+| `fleet.*` | see [FLEET.md](FLEET.md) | fleet order, budgets, infrastructure guard, cleanup; `fleet.min_free_gb` (5) is also the free-space floor of web uploads |
 | `report.language` | en | `ko` = the Korean guide for the requester (`sbmig/report/guide_ko.py`), `en` = the diagnostic layout (`sbmig/report/markdown.py`); the company config sets `ko` |
 
 ## 8. Safety notes

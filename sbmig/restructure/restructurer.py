@@ -69,7 +69,8 @@ import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Literal
+from collections.abc import Callable, Iterable
+from typing import Any, Literal, Optional
 
 import jinja2
 
@@ -91,7 +92,7 @@ from .bundled_jars import (
     apply_bundled_jars,
     jar_name,
     plan_bundled_jars,
-    repository_has_fn,
+    repository_state_fn,
     unused_jar_followup,
 )
 from .jsp_jakarta import rename_jsp_files
@@ -426,15 +427,70 @@ class _Ctx:
 VERSION_LIKE_RE = re.compile(r"^(?:\d{1,2}|\d+(?:\.\d+)+(?:[.-][A-Za-z0-9]+)*)$")
 
 
-def orphan_version_properties(eds: dict[str, "PomEditor"], skip: set[str]) -> list[tuple[str, str, str]]:
+_SCAN_CHUNK = 1 << 20
+
+
+def names_referenced_outside_poms(ws: Any, names: Iterable[str], poms: Iterable[str]) -> set[str]:
+    """``names`` 중 ``poms`` 밖의 텍스트 파일이 ``${이름}`` 또는 ``@이름@``으로 참조하는 이름을 반환한다.
+    필터링되는 리소스와 assembly descriptor도 Maven이 치환하므로 그런 속성을 지우면 안 되기 때문이다.
+
+    Review P5: the names of `names` that a text file of the project other than `poms` references as `${name}` or
+    `@name@` (Maven's default filtering delimiters). Maven substitutes properties in filtered resources, assembly
+    descriptors and other plugin-filtered files; which files a build filters is spread over resources, war,
+    assembly and copy-resources settings, so every text file counts (build output, `.git` and the intake's ignored
+    folders excluded; a file with a NUL byte in its first chunk is binary and skipped). Read in chunks, any size.
+    An unreadable file is skipped; a scan that cannot walk the tree returns every name (keep them all)."""
+    want = sorted({n for n in names if n})
+    if not want:
+        return set()
+    skip = {str(q).replace("\\", "/") for q in poms}
+    alt = b"|".join(re.escape(n.encode("utf-8")) for n in want)
+    pat = re.compile(rb"\$\{(" + alt + rb")\}|@(" + alt + rb")@")
+    keep = max(len(n.encode("utf-8")) for n in want) + 3
+    found: set[str] = set()
+    try:
+        for rel_dir, _dirs, files in ws.walk():
+            for name in files:
+                rel = f"{rel_dir}/{name}" if rel_dir else name
+                if rel in skip:
+                    continue
+                try:
+                    with open(ws.abs(rel), "rb") as fh:
+                        tail, first = b"", True
+                        while True:
+                            chunk = fh.read(_SCAN_CHUNK)
+                            if not chunk:
+                                break
+                            if first and b"\x00" in chunk[:8192]:
+                                break                  # 바이너리 파일은 치환 대상이 아니다
+                            first = False
+                            buf = tail + chunk
+                            for m in pat.finditer(buf):
+                                found.add((m.group(1) or m.group(2)).decode("utf-8"))
+                            tail = buf[-keep:]
+                except OSError:
+                    continue
+                if len(found) == len(want):
+                    return found
+    except Exception as e:  # noqa: BLE001 - not knowing means keeping every name
+        log.warning("reference scan outside the poms failed (%s: %s); every candidate property is kept",
+                    type(e).__name__, e)
+        return set(want)
+    return found
+
+
+def orphan_version_properties(eds: dict[str, "PomEditor"], skip: set[str], *,
+                              outside: Optional[Callable[[list[str]], set[str]]] = None
+                              ) -> list[tuple[str, str, str]]:
     """값이 버전이나 Java 수준처럼 생겼는데(``VERSION_LIKE_RE``) 어느 pom도 ``${이름}``으로 참조하지 않는 속성을 지운다.
     ``skip``에 있는 이름은 건드리지 않고, 지운 (pom, 이름, 값) 목록을 반환한다.
-    파일 저장은 호출하는 쪽이 한다.
+    ``outside``는 pom 밖에서 참조되는 이름을 돌려주는 함수이고, 그 이름도 남긴다. 파일 저장은 호출하는 쪽이 한다.
 
     Remove (in memory; the caller saves) every property of `eds` whose value matches `VERSION_LIKE_RE` and that no
-    pom of `eds` references as `${name}`; names in `skip` are left alone. Returns (pom, name, value)."""
+    pom of `eds` references as `${name}`; names in `skip` are left alone, and so are the names `outside` (given the
+    candidates) says a file outside the poms references (review P5). Returns (pom, name, value)."""
     texts = {q: ed.to_string() for q, ed in eds.items()}
-    out: list[tuple[str, str, str]] = []
+    cands: list[tuple[str, str, str]] = []
     for q, ed in eds.items():
         for name, value in list(ed.properties().items()):
             if name in skip or not VERSION_LIKE_RE.match((value or "").strip()):
@@ -442,9 +498,16 @@ def orphan_version_properties(eds: dict[str, "PomEditor"], skip: set[str]) -> li
             ref = f"${{{name}}}"
             if any(ref in t for t in texts.values()):
                 continue
-            ed.remove_property(name)
-            ed.remove_if_empty(ed.child(ed.root, "properties"))
-            out.append((q, name, (value or "").strip()))
+            cands.append((q, name, value))
+    used = outside(sorted({n for _q, n, _v in cands})) if (outside is not None and cands) else set()
+    out: list[tuple[str, str, str]] = []
+    for q, name, value in cands:
+        ed = eds[q]
+        if name in used:
+            continue
+        ed.remove_property(name)
+        ed.remove_if_empty(ed.child(ed.root, "properties"))
+        out.append((q, name, (value or "").strip()))
     return out
 
 
@@ -474,6 +537,7 @@ class Restructurer(LegacyContextMixin):
         capture), zero-arg callables."""
         result = RestructureResult(ok=True)
         c = _Ctx(ws, profile, cfg, result, dict(params or {}), self.commit_enabled)
+        start = self._start_point(ws)
         try:
             if mode == "layout":
                 self._layout(c)
@@ -500,7 +564,47 @@ class Restructurer(LegacyContextMixin):
         except Exception as e:  # noqa: BLE001 - bookkeeping only
             log.debug("parent_manages_spring_boot not resolved: %s", e)
         result.changed_files = sorted(c.changed)
+        if not result.ok:
+            return self._undo_failed(ws, start, result)
         return result
+
+    @staticmethod
+    def _start_point(ws: Workspace) -> Optional[str]:
+        """시작 커밋을 반환한다. 트리가 깨끗하지 않거나 git이 없으면 되돌릴 수 없으므로 None을 반환한다.
+
+        The commit a failed step can be reset to: HEAD when the tree is clean at the start, else None (resetting would
+        also throw away changes that are not this step's)."""
+        try:
+            return None if ws.is_dirty() else ws.head()
+        except Exception:  # noqa: BLE001 - no git: nothing to reset to
+            return None
+
+    @staticmethod
+    def _undo_failed(ws: Workspace, start: Optional[str], result: RestructureResult) -> RestructureResult:
+        """실패한 단계가 파일을 옮기거나 커밋했으면 시작 커밋으로 되돌리고 그 사실을 담은 결과를 반환한다.
+
+        Review P2: a step that ends with ok=False after it already moved files or made commits of its own puts the
+        tree back to the commit it started from, so that "the tree keeps the as-is layout" (the orchestrator's
+        Handover sentence) is true. The returned result lists nothing as changed and carries one note saying so; a
+        tree that was not clean at the start, or a reset that fails, is left as it is with a note."""
+        if start is None:
+            if result.changed_files:
+                result.notes.append("restructure not undone: the tree had uncommitted changes before this step, "
+                                    "so the partial changes of the failed step are still in it")
+            return result
+        try:
+            if ws.head() == start and not ws.is_dirty():
+                return result
+            ws.revert_to(start)
+        except Exception as e:  # noqa: BLE001 - say so instead of hiding the half-moved tree
+            log.error("restructure: resetting the failed step to %s failed: %s", start[:12], e)
+            result.notes.append(f"restructure not undone: resetting the tree to {start[:12]} failed ({e}); the "
+                                "partial changes of the failed step are still in it")
+            return result
+        log.warning("restructure failed: the tree was reset to %s, the commit before this step", start[:12])
+        return RestructureResult(ok=False, error=result.error,
+                                 notes=[f"restructure undone: the tree was reset to {start[:12]}, the commit "
+                                        "before this step, because the step failed"])
 
     # ================================================================== v2.1h: JSP javax → jakarta
     def _jsp_jakarta(self, c: _Ctx) -> None:
@@ -3187,7 +3291,8 @@ class Restructurer(LegacyContextMixin):
         if not groups and not skipped:
             return set()
         managed = self._target_managed_keys(c)
-        has = repository_has_fn(self._repo_lookup(c))
+        # 원격 저장소가 응답하지 않은 jar는 system으로 연결하지 않도록 세 가지 답을 받는다
+        has = repository_state_fn(self._repo_lookup(c))
         try:
             group = PomEditor(c.ws.abs(c.p("pom.xml"))).effective_group_id() or ""
         except (PomEditError, OSError):
@@ -3219,6 +3324,8 @@ class Restructurer(LegacyContextMixin):
                     wired_paths.add(item.current)
                     continue
                 by_verdict.setdefault(item.verdict, []).append(jar_name(item.jar.path))
+                if item.why.startswith("skip: repository unreadable"):
+                    c.note(f"bundled jar {jar_name(item.jar.path)}: {item.why}")
                 if item.verdict == "unused":
                     c.followup(unused_jar_followup(jar_name(item.jar.path)))
             c.result.jars_wired += plan.wired()
@@ -3867,8 +3974,8 @@ class Restructurer(LegacyContextMixin):
         if "spring-cloud" not in libs:
             return
         key = f"{CLOUD_GROUP}:{CLOUD_BOM}"
-        chain = self._chain_facts(c)
-        own = getattr(chain, "own_managed", None) or {} if chain is not None else {}
+        # 이 pom이 상속하는 부모 체인만 본다. 다른 역할 부모가 Spring Cloud를 관리해도 이 pom에는 오지 않는다
+        own = self._parent_managed(c, ed, rel, own=True)
         if any(k.startswith(CLOUD_GROUP + ":") for k in own):
             return                                            # the parent chain manages Spring Cloud
         if ed.has_managed_dependency(CLOUD_GROUP, CLOUD_BOM) or self._project_manages(c, key):
@@ -4168,7 +4275,6 @@ class Restructurer(LegacyContextMixin):
         keys = c.cfg.optional_keys()
         if not keys or not eds:
             return
-        root_path = next(iter(eds))
         targets = {p: ed for p, ed in eds.items() if editable is None or p in editable}
         for p, ed in targets.items():                  # 1. alias → canonical coordinates
             for ref in ed.artifact_refs():
@@ -4180,8 +4286,10 @@ class Restructurer(LegacyContextMixin):
         done_props: set[tuple[str, str]] = set()
 
         def owner_of(prop: str, here: str) -> tuple[str, PomEditor] | None:
-            for cand in (here, root_path, *eds.keys()):
-                if eds[cand].has_property(prop):
+            # 모듈이 실제로 상속하는 pom(자신, 프로젝트 안 부모 체인)에서만 찾는다. 형제 pom의 같은 이름 속성을
+            # 바꾸면 모듈 버전은 그대로인데 올린 것으로 보고되기 때문이다
+            for cand in self._chain(c, here):
+                if cand in eds and eds[cand].has_property(prop):
                     return cand, eds[cand]
             return None
 
@@ -4475,8 +4583,6 @@ class Restructurer(LegacyContextMixin):
                 c.note(f"as-is version carry-over: skipped unparsable pom {p}: {e}")
         own = self._own_keys(eds)
         # 부모 체인이 직접 관리하는 버전(Boot BOM으로 추가된 것 제외)과 대상 Boot BOM의 관리 버전
-        chain = self._chain_facts(c)
-        chain_own: set[str] = set(getattr(chain, "own_managed", None) or {}) if chain is not None else set()
         boot = self._boot_bom_facts(c)
         boot_managed: dict[str, str] = dict(getattr(boot, "managed", None) or {}) if boot is not None else {}
         boot_source = f"Boot {getattr(boot, 'version', '') or '?'} BOM (not managed by the parent chain)"
@@ -4489,6 +4595,8 @@ class Restructurer(LegacyContextMixin):
         c.asis_keys = asis_keys
         for p, ed in eds.items():
             mkey, mod = self._capture_module(by_module, ed)
+            # 부모 체인이 직접 관리하는 버전은 이 pom이 상속하는 사내 부모의 것만 본다
+            chain_own = set(self._parent_managed(c, ed, p, own=True))
             # 프로젝트 pom 체인(자기 pom, 프로젝트 안 조상)의
             # dependencyManagement가 관리하는 의존성은 그쪽에서 버전을 받는다
             local: set[str] = set()
@@ -5034,6 +5142,35 @@ class Restructurer(LegacyContextMixin):
                 self._warn_no_boot_bom(c, f)
         return c.chain_facts
 
+    def _parent_managed(self, c: _Ctx, ed: PomEditor | None, rel: str | None, *, own: bool) -> dict[str, str]:
+        """이 pom이 실제로 상속하는 사내 부모의 관리 버전을 반환한다. 루트 pom은 base-parent, 모듈은 역할 부모의 것이다.
+        부모별 정보가 없으면 합친 관리 버전을 반환한다.
+
+        Review T2: the managed versions of the company parent this pom really inherits — its own `<parent>`, else its
+        top-most in-repo ancestor's (`ParentChainFacts.managed_for`); `own` leaves the Boot BOM add-on out. Facts
+        without per-parent sets (a test stand-in, an older object) → the merged view as before."""
+        chain = self._chain_facts(c)
+        if chain is None or getattr(chain, "empty", True):
+            return {}
+        fn = getattr(chain, "managed_for", None)
+        if not callable(fn) or not getattr(chain, "root_managed", None):
+            return dict(getattr(chain, "own_managed" if own else "managed", None) or {})
+        roots = {":".join(r.split(":")[:2]) for r in (getattr(chain, "roots", None) or [])}
+        coords: list[str] = []
+        par = ed.get_parent() if ed is not None else None
+        if par is not None:
+            coords.append(f"{par.group_id}:{par.artifact_id}:{par.version or ''}")
+        if rel and c.ws.exists(rel):
+            top = self._chain(c, rel)[-1]
+            try:
+                tpar = PomEditor(c.ws.abs(top)).get_parent()
+                if tpar is not None:
+                    coords.append(f"{tpar.group_id}:{tpar.artifact_id}:{tpar.version or ''}")
+            except PomEditError:
+                pass
+        root = next((x for x in coords if ":".join(x.split(":")[:2]) in roots), None)
+        return dict(fn(root, own=own))
+
     def _warn_no_boot_bom(self, c: _Ctx, facts: Any) -> None:
         """부모가 Boot를 관리한다고 설정했는데(``parent_manages_spring_boot``) 사내 부모 체인에 Boot BOM이
         없는 경우(``boot_bom_added``)를 알린다.
@@ -5070,12 +5207,22 @@ class Restructurer(LegacyContextMixin):
         # Boot BOM 추가분으로 명시 버전을 지우면 버전 없는 의존성이 남으므로 체인이 직접 관리하는 것만 쓴다
         chain_managed: dict[str, str] = dict(chain.own_managed) if chain is not None and not chain.empty else {}
         per_pom: dict[str, dict[str, str]] | None = None
+        # 부모별 관리 버전이 있으면 pom마다 실제로 상속하는 부모의 것을 쓴다. 다른 부모가 관리하는 버전을 지우지 않기 위해서다
+        if chain_managed and getattr(chain, "root_managed", None):
+            per_pom = {}
+            for p in self._project_poms(c):
+                try:
+                    ed = PomEditor(c.ws.abs(p))
+                except PomEditError:
+                    continue
+                per_pom[p] = self._parent_managed(c, ed, p, own=True)
         extra = ""
         if not self._manages_boot(c):
             importers = self._bom_importers(c)
             boot = self._boot_bom_facts(c) if importers else None
             if boot is not None and not getattr(boot, "empty", True):
-                per_pom = {p: {**boot.managed, **chain_managed} for p in importers}
+                per_pom = dict(per_pom or {})
+                per_pom.update({p: {**boot.managed, **per_pom.get(p, chain_managed)} for p in importers})
                 extra = (f"Boot BOM {boot.version} ({len(boot.managed)} managed) for the {len(importers)} pom(s) "
                          "importing it")
         if not chain_managed and not per_pom:
@@ -5139,11 +5286,12 @@ class Restructurer(LegacyContextMixin):
             if chain is None or getattr(chain, "empty", True):
                 return out
             manages_boot = self._manages_boot(c)
-            base: dict[str, str] = dict(chain.managed if manages_boot else chain.own_managed)
             importers = self._bom_importers(c) if not manages_boot else set()
             boot = self._boot_bom_facts(c) if importers else None
             boot_managed: dict[str, str] = dict(getattr(boot, "managed", None) or {}) if boot is not None else {}
             for p, ed in eds.items():
+                # pom마다 실제로 상속하는 사내 부모의 관리 버전과 비교한다
+                base = self._parent_managed(c, ed, p, own=not manages_boot)
                 facts_m = {**(boot_managed if p in importers else {}), **base}
                 if not facts_m:
                     continue
@@ -5184,9 +5332,13 @@ class Restructurer(LegacyContextMixin):
             return
         skip = self._override_names(c)
         removed: list[str] = []
-        for p, prop in dict.fromkeys(refs):
-            if prop in skip or self._referencing_poms(eds, prop):
-                continue                     # the override step decides / another dependency still uses it
+        cands = [(p, prop) for p, prop in dict.fromkeys(refs)
+                 if prop not in skip and not self._referencing_poms(eds, prop)]
+        # pom 밖(필터링되는 리소스, assembly descriptor)에서 참조하는 속성은 Maven이 치환하므로 남긴다
+        used = names_referenced_outside_poms(c.ws, [prop for _p, prop in cands], eds.keys()) if cands else set()
+        for p, prop in cands:
+            if prop in used:
+                continue
             for q in self._chain(c, p):
                 ed = eds.get(q)
                 if ed is not None and ed.has_property(prop):
@@ -5232,7 +5384,9 @@ class Restructurer(LegacyContextMixin):
             # 프로젝트 값이 체인에 반영되므로 남긴다
             chain_refs = set(getattr(facts, "referenced_properties", None) or ())
             skip = set(self._override_names(c)) | set(JAVA_PROPS) | set(getattr(facts, "properties", None) or {}) | chain_refs
-            removed = orphan_version_properties(eds, skip)
+            # 필터링되는 리소스나 assembly descriptor가 참조하는 속성은 Maven이 치환하므로 남긴다
+            removed = orphan_version_properties(
+                eds, skip, outside=lambda names: names_referenced_outside_poms(c.ws, names, eds.keys()))
             if not removed:
                 return
             for q, _name, _value in removed:

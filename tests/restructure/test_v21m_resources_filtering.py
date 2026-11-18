@@ -420,3 +420,23 @@ def test_the_review_fact_line_reports_what_is_left(tmp_path: Path, cfg: Config) 
     assert "`src/main/resources/data/BLOB`" in after
     (ws.root / "src/main/resources/data/BLOB").unlink()
     assert line() == ""
+
+
+# ---------------------------------------------------------------------------------------------- review T5
+def test_extensions_are_collected_over_every_filtered_binary(tmp_path: Path) -> None:
+    """More than MAX_BINARY_RESOURCES filtered binaries: the extension of a file sorted after the cap is planned too;
+    only the analyzer's reporting list stays capped."""
+    from sbmig.analyze.properties import MAX_BINARY_RESOURCES, filtered_binary_resources
+
+    ws = _ws(tmp_path, {"pom.xml": _filtered_pom()})
+    res = ws.root / "src/main/resources"
+    (res / "a").mkdir(parents=True)
+    (res / "z").mkdir(parents=True)
+    for i in range(MAX_BINARY_RESOURCES + 5):
+        (res / "a" / f"f{i:04d}.woff2").write_bytes(b"wOF2\x00\x01")
+    (res / "z/last.ttf").write_bytes(b"\x00\x01\x00\x00")
+    plan = binary_resource_plan(ws, _cfg(), ["pom.xml"])
+    assert plan.extensions_by_pom == {"pom.xml": ["ttf", "woff2"]}
+    from sbmig.analyze.pom_parser import parse_poms
+    poms, _w = parse_poms(ws)
+    assert len(filtered_binary_resources(ws, poms)) == MAX_BINARY_RESOURCES          # the reporting list is capped

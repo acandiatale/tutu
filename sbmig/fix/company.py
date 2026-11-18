@@ -235,17 +235,25 @@ class TokenManager:
             self._token, self._expires_at = "", 0.0
 
     def _refresh_locked(self) -> None:
-        resp = self._post(self.token_url, headers={"Authorization": f"Bearer {self._app_token}"}, timeout=self.timeout)
-        if resp.status_code >= 300:
-            log.error("llm token exchange HTTP %d: %s", resp.status_code, ascii_safe(resp.text, 200))
-            raise LLMError(resp.status_code, resp.text[:300], f"token exchange failed: HTTP {resp.status_code}")
+        try:
+            resp = self._post(self.token_url, headers={"Authorization": f"Bearer {self._app_token}"},
+                              timeout=self.timeout)
+        except requests.RequestException as exc:
+            # 연결 실패도 게이트웨이 장애로 보고 재시도한다. 예외 문구에 앱 토큰이 들어가지 않게 원인 이름만 남긴다
+            raise TokenExchangeError(None, f"transport ({type(exc).__name__})",
+                                     cause=transport_cause(exc)) from None
+        code = resp.status_code
+        if code >= 300:
+            log.error("llm token exchange HTTP %d (%d character(s) of body, not logged: a token endpoint's answer may "
+                      "carry credentials)", code, len(getattr(resp, "text", "") or ""))
+            raise TokenExchangeError(code, f"HTTP {code}")
         try:
             data = resp.json()
-        except ValueError as exc:
-            raise LLMError(resp.status_code, resp.text[:300], "token exchange: the answer is not JSON") from exc
+        except ValueError:
+            raise TokenExchangeError(code, "the answer is not JSON") from None
         tok = data.get("access_token") if isinstance(data, dict) else None
         if not tok:
-            raise LLMError(resp.status_code, "", "token exchange: no access_token in the answer")
+            raise TokenExchangeError(code, "no access_token in the answer")
         try:
             ttl = float(data.get("expires_in") or 3600)
         except (TypeError, ValueError):
@@ -254,6 +262,28 @@ class TokenManager:
         note_secret(self._token)     # 환경 변수에 없는 비밀 값이므로 출력 마스킹 대상에 등록
         self.refreshes += 1
         log.info("llm token refreshed: expires in %.0fs (refreshed again %.0fs before expiry)", ttl, self.margin_s)
+
+
+# 토큰 엔드포인트가 응답 내용 때문에 거절한 것은 없으므로 400도 status= 대신 cause=로 전송 장애에 넣는다
+_TOKEN_TRANSPORT_STATUS = frozenset({401, 403, 404, 408, 429})
+
+
+class TokenExchangeError(LLMError):
+    """토큰 교환이 실패했을 때 던지는 예외. 게이트웨이 장애로 보고 채팅 호출처럼 재시도한다.
+    메시지에는 상태 코드와 원인 이름만 넣고 응답 본문이나 토큰은 넣지 않는다.
+
+    A failed token exchange (HTTP error, connection failure, non-JSON answer, no `access_token`). An LLM outage, never
+    the request's fault: `CompanyClient` retries it like a failed chat call. The message carries `status=<code>` for
+    the statuses the fix loop's `is_llm_transport_error` counts (401 / 403 / 404 / 408 / 429 / 5xx) and
+    `cause=TokenExchangeError` otherwise; no response body, no token ever."""
+
+    def __init__(self, status: Optional[int], what: str, *, cause: Optional[str] = None):
+        if status is not None and (status in _TOKEN_TRANSPORT_STATUS or 500 <= status < 600):
+            marker = f"status={status}"
+        else:
+            marker = f"cause={cause or 'TokenExchangeError'}" if status is None else "cause=TokenExchangeError"
+        super().__init__(status, "", f"token exchange failed: {what} ({marker})")
+        self.what = what
 
 
 class CompanyClient:
@@ -445,6 +475,7 @@ class CompanyClient:
         label = self._label(payload, role)
         chars = sum(len(m.content) for m in messages)
         cause: Optional[str] = None             # `<Class>: <message>` of the last transport failure (None after an HTTP answer)
+        token_error: Optional[TokenExchangeError] = None   # the last attempt failed in the token exchange
         auth_retried = False                    # v2.1z-m: one extra attempt after a 401 with a fresh token
         auth_rounds = 0                         # 2026-11-10: further rounds after a 401 that followed a fresh exchange
         total = self.max_retries + 1            # grows by one only when a 401 round happens (other failures keep max_retries)
@@ -466,13 +497,19 @@ class CompanyClient:
             sent: dict[str, str] = {}
             try:
                 resp = self._post_with_heartbeat(payload, label, sent)
+            except TokenExchangeError as exc:
+                # 토큰 교환 실패는 게이트웨이 장애이므로 채팅 호출의 전송 장애처럼 다시 시도한다
+                token_error, cause = exc, None
+                last_status, last_body = exc.status, ""
+                log.warning("llm company %s (attempt %d/%d)", exc, attempt + 1, self.max_retries + 1)
             except (requests.RequestException, LLMHardDeadline) as exc:
+                token_error = None
                 cause = transport_cause(exc)
                 last_status, last_body = None, f"{type(exc).__name__}: {exc}"
                 log.warning("llm company transport error (attempt %d/%d): %s cause=%s", attempt + 1,
                             self.max_retries + 1, type(exc).__name__, cause)
             else:
-                cause = None
+                cause, token_error = None, None
                 if resp.status_code < 300:
                     try:
                         data = resp.json()
@@ -539,8 +576,12 @@ class CompanyClient:
                 # 더해 여러 파드가 동시에 재시도하지 않게 한다
                 delay = min(wait, 120.0) if wait is not None else min(30.0, 2.0 ** attempt) * self._rand(1.0, 1.25)
                 log.info("llm call retrying in %.0fs (attempt %d/%d failed: status=%s%s)", delay, attempt + 1,
-                         self.max_retries + 1, last_status, f" cause={cause}" if cause else "")
+                         self.max_retries + 1, last_status, f" cause={cause}" if cause else
+                         (" in the token exchange" if token_error is not None else ""))
                 self._sleep(delay)
+        if token_error is not None:
+            log.error("llm company giving up after %d attempt(s): %s", self.max_retries + 1, token_error)
+            raise LLMError(last_status, "", f"LLM request failed after {self.max_retries + 1} attempt(s): {token_error}")
         if cause:
             log.error("llm company giving up after %d attempt(s): status=%s cause=%s", self.max_retries + 1,
                       last_status, cause)

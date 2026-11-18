@@ -110,6 +110,7 @@ from sbmig.core.workspace import Workspace
 from sbmig.core.stage import stage
 
 from sbmig.analyze.bundled_jars import providers
+from sbmig.restructure.bundled_jars import repository_state_fn
 from sbmig.restructure.system_jars import WiredJar, bundled_jar_followup, wire_bundled_jar
 from sbmig.errors.cases import OUT_OF_SCOPE, SCOPE_FULL, SCOPE_REDUCED
 
@@ -656,6 +657,56 @@ def chain_own_managed(facts: Any, boot: Callable[[], dict] | dict | None = None)
     return {k: v for k, v in managed.items() if not (k in bom and bom[k] == v)}
 
 
+def _module_parent_coords(ws: Any, module: str) -> list[str] | None:
+    """모듈(g:a 또는 artifactId)의 pom을 찾아 그 pom의 ``<parent>``와 프로젝트 안 최상위 조상의 ``<parent>`` 좌표를
+    반환한다. 모듈 pom을 찾지 못하면 None을 반환한다.
+
+    Review T2: [the module pom's own `<parent>` g:a:v, the `<parent>` of its top-most in-project ancestor] — the
+    restructurer's `_parent_managed` / `_chain` rule (follow `<relativePath>`, default `../pom.xml`, stop at an empty
+    one, outside the project, a missing pom or an artifactId mismatch). The pom is matched by g:a, else by artifactId
+    (as `VersionResolver._module` does). None when no pom of the tree is that module."""
+    from sbmig.restructure.pom_editor import PomEditor
+
+    def editor(rel: str) -> Any:
+        try:
+            return PomEditor(ws.abs(rel))
+        except Exception:  # noqa: BLE001 - an unreadable pom is no module
+            return None
+
+    eds = {_norm_path(p): editor(p) for p in ws.pom_files()}
+    aid = module.split(":")[-1]
+    hit = next((p for p, ed in eds.items() if ed is not None and ed.artifact_id()
+                and f"{ed.effective_group_id() or ''}:{ed.artifact_id()}" == module), None)
+    if hit is None:
+        hit = next((p for p, ed in eds.items() if ed is not None and aid and ed.artifact_id() == aid), None)
+    if hit is None:
+        return None
+    coords: list[str] = []
+    par = eds[hit].get_parent()
+    if par is not None:
+        coords.append(f"{par.group_id}:{par.artifact_id}:{par.version or ''}")
+    chain, cur = [hit], hit
+    for _ in range(20):
+        ed = eds.get(cur)
+        parent = ed.get_parent() if ed is not None else None
+        rp = ed.parent_relative_path() if ed is not None else None
+        if parent is None or rp == "":
+            break
+        target = posixpath.normpath(posixpath.join(posixpath.dirname(cur), rp or "../pom.xml"))
+        if not target.endswith(".xml"):
+            target = posixpath.join(target, "pom.xml")
+        ped = eds.get(target)
+        if target.startswith("..") or target in chain or ped is None or ped.artifact_id() != parent.artifact_id:
+            break
+        chain.append(target)
+        cur = target
+    top = eds.get(chain[-1])
+    tpar = top.get_parent() if top is not None and len(chain) > 1 else None
+    if tpar is not None:
+        coords.append(f"{tpar.group_id}:{tpar.artifact_id}:{tpar.version or ''}")
+    return coords
+
+
 class VersionResolver:
     """버전이 없는 의존성의 버전을 정하는 클래스. 재구성과 수정 루프가 같은 규칙을 쓴다.
     순서: 새 부모 체인이 관리 ``(None, "managed")`` -> 목표 Boot BOM이 관리 ``(v, "boot-bom")``, 단 as-is
@@ -676,14 +727,17 @@ class VersionResolver:
     `repository` a zero-arg callable returning the run's `RepositoryLookup` (or None). Never raises."""
 
     def __init__(self, asis: dict | None = None, after: dict | None = None,
-                 repository: Callable[[], Any] | None = None, chain: Any = None, boot: Any = None):
+                 repository: Callable[[], Any] | None = None, chain: Any = None, boot: Any = None,
+                 per_parent: Callable[[str], dict[str, str] | None] | None = None):
         """as-is 캡처와 재구성 뒤 캡처(없으면 빈 dict), 저장소 조회기를 반환하는 함수, 재구성 뒤 캡처가 없을
         때 쓸 사내 부모 체인 정보를 받는다.
         ``chain``과 ``boot``는 dict이거나 dict를 반환하는 함수이며, 함수는 처음 필요할 때 한 번만 호출한다.
 
         `chain`: the parent-chain facts used when the post-restructure capture is missing (a capture-shaped dict, or a
         zero-arg callable returning one, called once when first needed). `boot` (v2.1s): the target Boot BOM's
-        managed versions (g:a → version, or a zero-arg callable returning them, called once)."""
+        managed versions (g:a → version, or a zero-arg callable returning them, called once). `per_parent` (review
+        T2): module (g:a or artifactId) → the managed versions of the company parent that module's pom inherits, or
+        None when that is not known (no per-parent sets, no such pom): then the merged `chain` view answers."""
         self.asis: dict = asis if isinstance(asis, dict) else {}
         self.after: dict = after if isinstance(after, dict) else {}
         self._repository = repository
@@ -692,6 +746,7 @@ class VersionResolver:
         self._chain: dict | None = None
         self._boot_src = boot
         self._boot: dict | None = None
+        self._per_parent = per_parent
 
     @classmethod
     def for_workspace(cls, ws: Any, repository: Callable[[], Any] | None = None,
@@ -723,17 +778,38 @@ class VersionResolver:
             from sbmig.build import boot_bom
             return dict(boot_bom.load_boot_bom_facts(cfg).managed)
 
+        loaded: dict[str, Any] = {}
+
         def chain() -> dict | None:
             from sbmig.build import parent_chain
             facts = parent_chain.load_parent_chain_facts(cfg)
+            loaded["facts"] = facts
             data = facts.as_capture()
             data["managed"] = chain_own_managed(facts, boot)
             # Spring / Boot pom의 속성은 회사 체인에서 참조할 수 없으므로 회사 체인 pom이 정의한 속성만 쓴다
             data["company_properties"], data["company_property_sources"] = chain_company_properties(facts, cfg)
             return data
 
+        parents: dict[Any, list[str] | None] = {}
+
+        def per_parent(module: str) -> dict[str, str] | None:
+            # 모듈 pom이 실제로 상속하는 사내 부모의 관리 버전을 쓴다. 재구성의 _parent_managed와 같은 규칙이다
+            facts = loaded.get("facts")
+            fn = getattr(facts, "managed_for", None)
+            if facts is None or not callable(fn) or not getattr(facts, "root_managed", None):
+                return None
+            sig = (module, tuple(sorted(ws.pom_files())))
+            if sig not in parents:
+                parents[sig] = _module_parent_coords(ws, module)
+            coords = parents[sig]
+            if coords is None:
+                return None
+            roots = {":".join(str(r).split(":")[:2]) for r in getattr(facts, "roots", None) or []}
+            root = next((x for x in coords if ":".join(x.split(":")[:2]) in roots), None)
+            return dict(fn(root, own=True))
+
         return cls(asis, after, repository, chain=chain if cfg is not None else None,
-                   boot=boot if cfg is not None else None)
+                   boot=boot if cfg is not None else None, per_parent=per_parent if cfg is not None else None)
 
     @staticmethod
     def _has(data: dict) -> bool:
@@ -809,9 +885,20 @@ class VersionResolver:
 
         The version the new chain manages g:a at: the declaring module's effective dependencyManagement when the
         capture has the module (another module's chain does not manage this one), else the merged `managed`; without
-        the post-restructure capture, the parent-chain facts' `managed`."""
+        the post-restructure capture, the parent-chain facts: review T2, the set of the company parent the module's pom
+        inherits (`per_parent`; a parent that is no configured root manages nothing) when the facts carry per-parent
+        sets and the module's pom is found, else the merged `managed` as before."""
         if not self.has_after:
-            return (self.chain.get("managed") or {}).get(key) or None
+            chain = self.chain
+            if module and callable(self._per_parent):
+                try:
+                    mine = self._per_parent(module)
+                except Exception as e:  # noqa: BLE001 - unknown parent: the merged view below
+                    log.debug("per-parent managed versions of %s unavailable: %s: %s", module, type(e).__name__, e)
+                    mine = None
+                if mine is not None:
+                    return mine.get(key) or None
+            return (chain.get("managed") or {}).get(key) or None
         own = self._module(self.after, module)
         if own is not None:
             return (own.get("managed") or {}).get(key) or None
@@ -956,6 +1043,15 @@ class BuildFixLoop:
         self.llm_config_error: Optional[str] = None   # round 10: the same HTTP 400 for different prompts (the short body)
         self._http400: dict[str, set[str]] = {}  # short 400 body → prompt hashes (cluster ids when a fixer sets none)
         self.aborted: Optional[str] = None       # set when the run must stop (configured parent not resolvable)
+        # 멈춤 요청으로 루프를 빠져나왔는지, 마지막 루프 실행의 마지막 빌드, 루프 끝에 되돌린 시도 수를 남긴다.
+        # 최종 빌드를 다시 할지 오케스트레이터가 이 값으로 정한다
+        # review 2026-11-18 L1 / L4: whether a stop request made a loop leave (sticky for the run), and of the LAST run():
+        # whether it left on the stop, its last build, how many tries the loop-end rollback took back (the orchestrator
+        # repeats the final build only when the tree differs from that last build)
+        self.stopped_by_request = False
+        self.left_on_stop = False
+        self.last_build: Optional[BuildResult] = None
+        self.end_rollbacks = 0
         self._llm_streak: list[tuple[ErrorCluster, str]] = []
         self._milestone = "idle"                 # last point the loop passed (watchdog, round 9c)
         self._milestone_at = time.monotonic()
@@ -1155,6 +1251,7 @@ class BuildFixLoop:
         이런 라운드도 ``max_iterations``에 포함되며, 루프는 항상 빌드 뒤에 끝난다."""
         pr = PhaseResult(phase=phase)
         self._phase_items = []
+        self.left_on_stop, self.last_build, self.end_rollbacks = False, None, 0
         self._cur_phase = phase
         self._target = target
         self._mark(f"loop start ({goal})")
@@ -1236,6 +1333,7 @@ class BuildFixLoop:
                     pr.notes.append(f"build {build_no}: stop requested (stop.request) — leaving the fix loop before the next build")
                     log.warning("stop requested (stop.request) — leaving the fix loop after build %d (no further fix)", build_no)
                     self.ws.journal({"event": "stop_request", "phase": phase.value, "iteration": build_no, "where": "fix loop"})
+                    self.left_on_stop = self.stopped_by_request = True
                     break
                 # Maven의 HTTP 차단 미러에 막혔으면 부모 버전 맞추기, 사전 시도, LLM
                 # 어느 것으로도 해결할 수 없으므로 바로 중단한다
@@ -1326,6 +1424,10 @@ class BuildFixLoop:
             self._maybe_skip_test_compile(pr, phase, goal, target, last)
         if not pr.build_ok and not self.dry_run and not self.aborted:
             self._maybe_skip_tests(pr, phase, goal, target, last)
+        self.last_build = last
+        # 도움이 되지 않은 케이스의 마지막 시도는 다음 시도 전처럼 루프 끝에서도 되돌려 결과물에 남기지 않는다
+        if not pr.build_ok and not self.dry_run and not self.aborted:
+            self.end_rollbacks = self._rollback_unhelpful(pr, phase, build_no)
         if pr.build_ok and not self.test_compile_skipped_in(pr) and not self.tests_skipped_in(pr):
             pr.remaining_errors = []
         elif not pr.remaining_errors:
@@ -1454,7 +1556,7 @@ class BuildFixLoop:
         if reason in (BlockReason.EXTERNAL_JAVAX_API, BlockReason.EXTERNAL_API_INCOMPATIBLE):
             owner, required, found = self._classpath_hints(errs, owner, required, found)
             artifact, owner, notes = attribute(self.locator, self.ws, self.cfg, owner, errs, c.module or target)
-        elif reason in (BlockReason.ARTIFACT_NOT_FOUND, BlockReason.PARENT_NOT_FOUND):
+        elif reason in (BlockReason.ARTIFACT_NOT_FOUND, BlockReason.PARENT_NOT_FOUND, BlockReason.REPOSITORY_UNREACHABLE):
             artifact = next((e.artifact for e in errs if e.artifact is not None), None)
         elif reason == BlockReason.NEEDS_OWNER:
             # javax 라이브러리 거절이나 없는 아티팩트 케이스도 인수인계 표에 그 라이브러리가 남도록 한다
@@ -2318,6 +2420,11 @@ class BuildFixLoop:
             # the zero-LLM pre-try (decided on the triage decision, run after the deferral check below)
             pre, pre_poms = self._pre_try_for(c, d) if forced is None or forced.reason != BlockReason.EXTERNAL_JAVAX_API \
                 else (None, [])
+            # 번들 jar를 연결하려는데 저장소가 응답하지 않았으면 jar가 없다고 보지 않고 저장소 장애로 차단한다
+            if pre is not None and pre.source == SBMIG_BUNDLED_SOURCE:
+                unreachable = self._bundled_unreachable(c)
+                if unreachable is not None:
+                    forced, pre, pre_poms = unreachable, None, []
             if forced is not None:
                 d = TriageDecision(cluster_id=c.id, kind=DecisionKind.BLOCKED,
                                    rationale=prefix + f"blocked: {forced.reason.value} — {forced.evidence[0]}")
@@ -2926,6 +3033,59 @@ class BuildFixLoop:
         return a, restored, (f"the previous attempt {a.id} ({what}, {a.outcome}) was rolled back ({how}) before this "
                              "one"), True
 
+    def _rollback_unhelpful(self, pr: PhaseResult, phase: Phase, iteration: int) -> int:
+        """루프가 끝날 때 케이스마다 마지막으로 적용된 시도가 no_change나 inconclusive면 되돌리고 되돌린 수를 반환한다.
+        partial 시도는 케이스 상태와 상관없이 남긴다.
+
+        Review 2026-11-18 L3: when the loop ends (cap, budget, stall, stop, a case blocked at its cap) the case's last
+        applied try that did not help is rolled back so it is not delivered: outcomes no_change / inconclusive only
+        (`NO_ROLLBACK` and regressed-kept tries stay, a rollback already done stays done). A PARTIAL try stays whatever
+        the state of its case (blocked or not, LLM or zero-LLM pre-try): it removed some errors and no next try comes, so
+        taking it out would only hand the owner a tree with more errors (PM decision after the first fix wave; before a
+        case's NEXT try `_rollback_previous` keeps its own rule). Newest first (a reset to the base needs the try at
+        HEAD); a revert that fails is a note. The caller repeats the final build on the rolled-back tree. Returns the
+        number rolled back."""
+        last: dict[str, FixAttempt] = {}
+        for a in pr.attempts:
+            if a.decision.kind == DecisionKind.SCRIPT and a.applied and a.commit:
+                last[a.cluster_id] = a
+        order = {id(a): i for i, a in enumerate(pr.attempts)}
+        todo = [a for a in last.values()
+                if a.outcome in ("no_change", "inconclusive") and id(a) not in self._rolled_back]
+        done = 0
+        for a in sorted(todo, key=lambda x: order[id(x)], reverse=True):
+            what = f"v{a.script_version}" if a.script_version and not a.edits_applied else (a.source or "edits")
+            try:
+                if self.ws.head() == a.commit and a.base_commit:
+                    if self.ws.is_dirty():
+                        self.ws.discard_uncommitted()
+                    self.ws.revert_to(a.base_commit)
+                    how = "reset"
+                else:
+                    res = self.ws._git("revert", "--no-edit", a.commit, check=False)   # noqa: SLF001
+                    if res.returncode != 0:
+                        self.ws._git("revert", "--abort", check=False)                  # noqa: SLF001
+                        why = (res.stderr or res.stdout or "").strip()[:200]
+                        a.notes.append(f"rollback before the final build failed: {why}")
+                        log.warning("롤백 실패: %s (%s, %s) — 최종 빌드에 남음 (%s)", what, a.id, a.outcome, why)
+                        continue
+                    how = "git revert"
+            except Exception as e:  # noqa: BLE001 - a git problem leaves the try in the tree (noted)
+                a.notes.append(f"rollback before the final build failed: {type(e).__name__}: {e}")
+                continue
+            self._rolled_back.add(id(a))
+            a.notes.append(ROLLED_BACK_NOTE + "the final build (it did not help)")
+            self._sync_try(a)
+            done += 1
+            self.ws.journal({"event": "script_rollback", "phase": phase.value, "iteration": iteration,
+                             "attempt": a.id, "case": a.script_case_id, "version": a.script_version,
+                             "outcome": a.outcome, "commit": a.commit, "mode": how, "restored_errors": 0,
+                             "where": "loop end"})
+            log.info("롤백: %s (%s, %s) 되돌림 (%s) — 루프 끝, 최종 빌드 전", what, a.id, a.outcome, how)
+        if done:
+            pr.notes.append(f"{done} attempt(s) that did not help rolled back before the final build")
+        return done
+
     def _undo_rollback(self, st: "_Round", prev_att: FixAttempt, head_before: str, restored: list[BuildError],
                        att: FixAttempt) -> None:
         """다음 시도가 아무것도 바꾸지 못했을 때 되돌렸던 시도를 되살려 트리를 마지막 빌드 때 상태로 둔다.
@@ -3008,6 +3168,13 @@ class BuildFixLoop:
             self._fail(att, f"LLM fixer failed: {type(e).__name__}: {e}")
             if is_llm_transport_error(f"llm-error: {type(e).__name__}: {e}"):
                 self._llm_transport_failure(att, c, f"{type(e).__name__}: {e}")
+            return None
+        # 플러그인이 제안 대신 None이나 다른 값을 반환하면 예외와 같이 이 시도만 실패로 처리한다
+        if proposal is None or not all(hasattr(proposal, k) for k in ("llm_usage", "analysis")):
+            self.budget.charge_llm(1)
+            why = f"LLM fixer returned no script proposal ({type(proposal).__name__})"
+            log.warning("fixer.propose_script for %s: %s", c.id, why)
+            self._fail(att, why)
             return None
         self.budget.charge_llm(max(1, proposal.llm_usage.calls))
         self._mark(f"LLM answered for {c.id}")
@@ -4365,25 +4532,56 @@ class BuildFixLoop:
         return list(dict.fromkeys(p for p, _j, _k in plan)) or None
 
     def _bundled_in_repository(self, jar: JarCoordinate) -> bool:
-        """jar 자신의 좌표(pom.properties, sha1 조회, 이름표 중 버전이 있는 것)가 저장소에 실제로 있는지
-        판단한다. 조회기가 없거나 읽을 수 없으면 False를 반환하며, 이때는 system scope로 연결한다.
+        """jar 자신의 좌표가 저장소에 실제로 있는지(``_bundled_repo_state``가 present인지) 판단한다.
 
-        True only when the jar's own coordinates (with a version) are found in the repository set (the v2.1z-e
-        `RepositoryLookup`: the pom of exact `g:a:v`, else the version in the metadata); no / unreadable lookup → False."""
+        True only when `_bundled_repo_state` answers `present`; `absent` and `unreadable` → False."""
+        return self._bundled_repo_state(jar)[0] == "present"
+
+    def _bundled_repo_state(self, jar: JarCoordinate) -> tuple[str, str]:
+        """jar 자신의 좌표(pom.properties, sha1 조회, 이름표 중 버전이 있는 것)를 저장소에서 찾아
+        ``present`` / ``absent`` / ``unreadable``과 사유를 반환한다. 좌표나 조회기가 없으면 absent다.
+
+        The jar's own coordinates (with a version, from a trusted source) looked up in the repository set through
+        `repository_state_fn` (review T3): `("present", "")`, `("absent", "")` (asked and not there; also no coordinates /
+        no lookup, as before) or `("unreadable", <reason>)` (no remote answered)."""
         g, a, v = jar.group_id, jar.artifact_id, jar.version
         if jar.source not in BUNDLED_TRUSTED_SOURCES or not (g and a and v):
-            return False
+            return "absent", ""
         lookup = self._repository()
         if lookup is None:
-            return False
+            return "absent", ""
+        self._mark(f"repository lookup {g}:{a}:{v}")
         try:
-            self._mark(f"repository lookup {g}:{a}:{v}")
-            if lookup.pom_text(g, a, v):
-                return True
-            return v in (lookup.versions(g, a) or [])
-        except Exception as e:  # noqa: BLE001 - an unreadable repository counts as "not there"
-            log.debug("repository check %s:%s:%s: %s: %s", g, a, v, type(e).__name__, e)
-            return False
+            state, why = repository_state_fn(lookup)(g, a, v)
+        except Exception as e:  # noqa: BLE001 - a lookup that failed is no answer
+            state, why = "unreadable", f"{type(e).__name__}: {e}"[:300]
+        return state, why
+
+    def _bundled_unreachable(self, c: ErrorCluster) -> Any:
+        """번들 jar 사전 시도가 연결할 jar 중 저장소가 응답하지 않은 것이 있으면 케이스를
+        ``repository_unreachable``로 차단할 근거(BlockedCandidate)를, 없으면 None을 반환한다.
+
+        Review T3: when the repository did not answer for a jar the `sbmig-bundled` pre-try would wire, the case is a
+        repository that did not answer, not a missing jar: a `repository_unreachable` candidate (the transfer-failure
+        reason of T4, same policy `loop.blocked_policy.repository_unreachable`: only at 0, the shipped value) covering the
+        whole case, its evidence / suggestion naming the jar, its coordinates and the reason. None otherwise."""
+        from sbmig.triage.blocked import BlockedCandidate
+        if int(self.cfg.loop.blocked_policy.get(BlockReason.REPOSITORY_UNREACHABLE.value, 0)) > 0:
+            return None
+        for pom, jar, pkg in self._bundled_plan(c):
+            state, why = self._bundled_repo_state(jar)
+            if state != "unreadable":
+                continue
+            name = PurePosixPath(jar.path).name
+            coords = f"{jar.group_id}:{jar.artifact_id}:{jar.version}"
+            evidence = (f"bundled jar `{name}` ({coords}) could not be looked up: the repository did not answer "
+                        f"({why or 'no reason given'})")
+            suggestion = (f"bundled jar `{name}` provides package `{pkg}` needed by `{pom}`, but the repository did not "
+                          f"answer whether it has `{coords}` ({why or 'no reason given'}) — not wired and not called "
+                          "missing; not a project problem: check the repository and the network, then rerun")
+            return BlockedCandidate(reason=BlockReason.REPOSITORY_UNREACHABLE, errors=list(c.errors),
+                                    evidence=[evidence], suggestion=suggestion)
+        return None
 
     def _bundled_boot_poms(self, module_pom: str = "") -> list[str]:
         """현재 트리에서 spring-boot-maven-plugin을 가진 pom과 분석 단계의
@@ -4449,7 +4647,12 @@ class BuildFixLoop:
         policy = str(getattr(getattr(self.cfg, "intake", None), "unknown_jar", "system") or "system")
         items: list[tuple[str, JarCoordinate, str, bool]] = []
         for pom, jar, pkg in plan:
-            has = self._bundled_in_repository(jar)
+            state, _why = self._bundled_repo_state(jar)
+            if state == "unreadable":
+                # 저장소가 응답하지 않은 jar는 없다고 보지 않으므로 연결하지도, Nexus 등록 안내를 쓰지도 않는다
+                self._pre_tried.add((SBMIG_BUNDLED_SOURCE, pom, jar.path))
+                continue
+            has = state == "present"
             if not has and policy == "skip":
                 self._pre_tried.add((SBMIG_BUNDLED_SOURCE, pom, jar.path))
                 self._followup(f"bundled jar `{PurePosixPath(jar.path).name}` provides package `{pkg}` needed by "
@@ -4735,14 +4938,26 @@ class BuildFixLoop:
         poms = [p for p in dict.fromkeys(_norm_path(f) for f in [*changed, *(reported or [])] if f)
                 if PurePosixPath(p).name == "pom.xml"]
         problems: list[str] = []
+        if not poms:
+            return ""
+        # 다른 pom에 정의된 속성으로 버전을 쓰는 선언도 보도록 프로젝트의 모든 pom을 읽어 부모 체인으로 속성을 푼다
+        # review 2026-11-18 L2: every project pom (before / after) so that a version written as `${prop}` resolves through
+        # the project's own parent chain — a property changed in the root reaches the module's framework declaration
+        try:
+            every = [_norm_path(p) for p in self.ws.pom_files()]
+        except Exception:  # noqa: BLE001 - a stand-in workspace: the touched poms only
+            every = []
+        every = list(dict.fromkeys([*poms, *every]))
+        eds0 = _parse_poms({p: self.ws.file_at(pre, p) if pre else None for p in every}, PomEditor)
+        eds1 = _parse_poms({p: self.ws.read(p) if self.ws.exists(p) else None for p in every}, PomEditor)
         for p in poms:
-            before_text = self.ws.file_at(pre, p) if pre else None
-            if before_text is None:
+            if p not in eds0:
                 continue                                 # a new pom: nothing to keep in it
-            after_text = self.ws.read(p) if self.ws.exists(p) else None
-            ed0 = PomEditor.from_string(before_text, p)
-            ed1 = PomEditor.from_string(after_text, p) if after_text is not None else None
-            b, a = self._framework_decls(ed0), (self._framework_decls(ed1) if ed1 is not None else {})
+            ed0, ed1 = eds0[p], eds1.get(p)
+            if ed1 is None and self.ws.exists(p):
+                continue                                 # a pom that does not parse is left to the build
+            b = self._framework_decls(ed0, _chain_properties(p, eds0))
+            a = self._framework_decls(ed1, _chain_properties(p, eds1)) if ed1 is not None else {}
             known = {v for (_m, k, _c, _t), v in b.items() if v} | \
                 {v for (_m, k, _c, _t) in b for v in self._framework_versions(k)}
             for ident, v in b.items():
@@ -4760,6 +4975,19 @@ class BuildFixLoop:
                 if p0 != p1:
                     problems.append(f"changed the <parent> of {p} from {p0[0] or '(none)'} to {p1[0] or '(none)'}"
                                     if p0[0] != p1[0] else f"changed the <parent> relativePath of {p}")
+        # 시도가 건드리지 않은 pom이라도 부모 pom의 속성이 바뀌어 프레임워크 버전이 달라졌으면 같은 문제로 본다
+        for p in every:
+            if p in poms or p not in eds0 or p not in eds1:
+                continue
+            b = self._framework_decls(eds0[p], _chain_properties(p, eds0))
+            if not b:
+                continue
+            a = self._framework_decls(eds1[p], _chain_properties(p, eds1))
+            for ident, v in b.items():
+                if ident in a and a[ident] != v:
+                    problems.append(f"changed the version of the framework artifact {ident[1]} in {p} from "
+                                    f"{v or '(managed)'} to {a[ident] or '(none)'} (through a property in "
+                                    f"{', '.join(poms[:3])})")
         if not problems:
             return ""
         shown = "; ".join(problems[:4]) + (f"; … (+{len(problems) - 4})" if len(problems) > 4 else "")
@@ -4767,8 +4995,10 @@ class BuildFixLoop:
                 "every <parent> and the framework artifact's declaration and version must stay exactly as they are; fix "
                 "the code instead, or answer <blocked> naming the framework artifact when only its owner can fix it")
 
-    def _framework_decls(self, ed: Any) -> dict[tuple[bool, str, str, str], Optional[str]]:
-        """pom의 프레임워크 아티팩트 선언을 {(관리 여부, g:a, classifier, type): 속성을 푼 버전}으로 반환한다."""
+    def _framework_decls(self, ed: Any, props: Optional[dict[str, str]] = None
+                         ) -> dict[tuple[bool, str, str, str], Optional[str]]:
+        """pom의 프레임워크 아티팩트 선언을 {(관리 여부, g:a, classifier, type): 속성을 푼 버전}으로 반환한다.
+        ``props``를 주면 부모 체인까지 모은 속성으로 푼다."""
         out: dict[tuple[bool, str, str, str], Optional[str]] = {}
         for managed in (False, True):
             for g in (ed.managed_dependencies() if managed else ed.dependencies()):
@@ -4776,7 +5006,7 @@ class BuildFixLoop:
                     v = g.version
                     if v and "${" in v:
                         try:
-                            v = ed.resolve(v) or v
+                            v = (_resolve_props(v, props) if props is not None else ed.resolve(v)) or v
                         except Exception:  # noqa: BLE001
                             pass
                     out[(managed, g.key, g.classifier or "", g.type or "jar")] = v or None
@@ -6149,6 +6379,83 @@ def _try_note(att: FixAttempt) -> str:
     parts = list(dict.fromkeys([*att.apply_errors, *att.notes]))
     text = "; ".join(" ".join(p.split()) for p in parts if p)
     return text if len(text) <= TRY_NOTE_CHARS else text[:TRY_NOTE_CHARS - 1] + "…"
+
+
+_PROP_REF_RE = re.compile(r"\$\{([^}]+)\}")
+_CHAIN_DEPTH = 12                                     # project parent chain levels followed for the framework guard
+
+
+def _parse_poms(texts: dict[str, Optional[str]], editor: Any) -> dict[str, Any]:
+    """{경로: pom 텍스트}를 {경로: PomEditor}로 바꾼다. 없거나 읽지 못한 pom은 빠진다."""
+    out: dict[str, Any] = {}
+    for p, text in texts.items():
+        if text is None:
+            continue
+        try:
+            out[p] = editor.from_string(text, p)
+        except Exception:  # noqa: BLE001 - an unparsable pom is left to the build
+            continue
+    return out
+
+
+def _parent_pom_path(path: str, ed: Any, eds: dict[str, Any]) -> Optional[str]:
+    """프로젝트 안에서 pom의 부모 pom 경로를 찾는다. relativePath(기본 ``../pom.xml``)를 먼저 보고 없으면 g:a로 찾는다."""
+    g = ed.get_parent()
+    if g is None:
+        return None
+    rel = ed.parent_relative_path()
+    if rel is None:
+        rel = "../pom.xml"
+    if rel.strip():
+        cand = posixpath.normpath(posixpath.join(posixpath.dirname(path), rel.strip().replace("\\", "/")))
+        if not cand.endswith("pom.xml"):
+            cand = posixpath.join(cand, "pom.xml")
+        other = eds.get(cand)
+        if other is not None and other.artifact_id() == g.artifact_id:
+            return cand
+    for p, other in eds.items():
+        if p != path and other.artifact_id() == g.artifact_id and (other.effective_group_id() or "") == (g.group_id or ""):
+            return p
+    return None
+
+
+def _chain_properties(path: str, eds: dict[str, Any]) -> dict[str, str]:
+    """pom과 프로젝트 안의 부모 체인에서 속성을 모아 반환한다. 자식 pom의 값이 이긴다.
+
+    Review 2026-11-18 L2: the properties a pom sees through the project's own parent chain (child wins), plus
+    project.version / groupId / artifactId of the pom itself. Parents outside the project are not read."""
+    chain: list[Any] = []
+    cur: Optional[str] = path
+    seen: set[str] = set()
+    while cur and cur not in seen and cur in eds and len(chain) < _CHAIN_DEPTH:
+        seen.add(cur)
+        chain.append(eds[cur])
+        cur = _parent_pom_path(cur, eds[cur], eds)
+    props: dict[str, str] = {}
+    for ed in reversed(chain):
+        try:
+            props.update(ed.properties())
+        except Exception:  # noqa: BLE001
+            continue
+    if chain:
+        me = chain[0]
+        for k, fn in (("project.version", me.effective_version), ("project.groupId", me.effective_group_id),
+                      ("project.artifactId", me.artifact_id)):
+            try:
+                props.setdefault(k, fn() or "")
+            except Exception:  # noqa: BLE001
+                pass
+    return props
+
+
+def _resolve_props(value: str, props: dict[str, str]) -> str:
+    """``${name}``을 ``props``로 여러 단계까지 푼다. 풀지 못한 참조는 그대로 둔다."""
+    for _ in range(_CHAIN_DEPTH):
+        new = _PROP_REF_RE.sub(lambda m: props.get(m.group(1), m.group(0)), value)
+        if new == value:
+            break
+        value = new
+    return value
 
 
 def _kept_partial(a: FixAttempt) -> bool:

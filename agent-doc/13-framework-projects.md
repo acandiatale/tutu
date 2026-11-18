@@ -76,6 +76,10 @@ profile·속성 선언)는 `direct`로 적고, 더 깊은 노드는 `transitive`
 
 - 분석: 찾으면 플래그 `framework-project`(attn 코드 아님), 저널 `framework_project`, INFO 줄 하나, 인수인계 줄 하나(ADF·속 빈 reactor 줄 다음).
   못 찾으면 저널 `framework_check`만 남긴다. `profile.json`의 `framework`에 근거가 저장된다.
+  못 찾았는데 `unchecked`에 `parent: …`와 `transitive: …`가 둘 다 있으면(부모 pom도 의존성 트리도 읽지 못함) 판단을 못 한 것이다: 플래그
+  `framework-unchecked`(attn 코드 아님, 종료 코드 그대로), WARNING `분석: 사내 프레임워크 여부를 확인하지 못함 (…)`, 인수인계 줄 "framework check could not run
+  (the parent pom and the dependency tree could not be read): if this project uses the in-house framework it must not be migrated in full — confirm
+  before using the result"(ko 보고서는 「사내 프레임워크를 쓰는 프로젝트인지 확인하지 못했습니다 …」). 실행은 전체 범위로 계속한다.
 - 계획(`sbmig/plan/planner.py`): `MigrationPlan.scope`가 `jdk-jakarta`이고 레시피는 `framework.recipe_sets`의 세트만이다. 단계는 `transform.rewrite[@서비스]`, (JSP가 있고 jakarta 세트를
   계획했고 `layout.jsp_jakarta_rename`이 켜져 있으면) `transform.jsp_jakarta`, `verify.build[@서비스]`뿐이다. `restructure.*`,
   `restructure.review`, `transform.compile`은 만들지 않는다. 첫 계획 노트는 `scope: jdk-jakarta — framework project (…)`로 시작한다.
@@ -108,7 +112,8 @@ profile·속성 선언)는 `direct`로 적고, 더 깊은 노드는 `transitive`
 - 프레임워크 버전은 sbmig가 쓰거나 바꾸거나 지우지 않는다. 프레임워크 키는 보호 키라서 사전 시도도 건드리지 않는다
   (`sbmig-version`은 버전을 박지 않고, `sbmig-jakarta`는 다른 라인으로 바꾸지 않는다). `sbmig-parent`는 돌지 않는다.
 - 가드(`_framework_guard`): LLM의 스크립트나 편집이 프레임워크 아티팩트 선언을 지우거나 버전을 바꾸거나, 프로젝트가 쓰지 않던 버전으로
-  더하거나, 어떤 pom의 `<parent>`를 바꾸면 커밋하지 않고 되돌린다. 실패 문장은 `framework project:`로 시작하고 다음 요청의 이전 시도에
+  더하거나, 어떤 pom의 `<parent>`를 바꾸면 커밋하지 않고 되돌린다. 버전의 `${…}`는 프로젝트 안 부모 체인으로 풀어 앞뒤를 비교하므로 다른 pom
+  (루트)의 속성으로 바꾼 것, 프레임워크에 맞는 import가 쓰는 속성을 바꾼 것도 같다(g:a가 패턴에 맞지 않는 BOM import는 알아보지 못한다). 실패 문장은 `framework project:`로 시작하고 다음 요청의 이전 시도에
   보인다. WARNING `적용 취소 (…): 프레임워크 프로젝트에서 바꾸면 안 되는 것을 바꿈 — …`, 저널 `framework_guard {attempt, case, reason}`.
 - javax 기준 프레임워크: javax 케이스의 라이브러리가 프레임워크 아티팩트 자신이면 사전 시도·LLM 없이 바로 `external_javax_api`로
   차단한다. 제안 문장은 그 아티팩트를 이름으로 적고 담당자가 jakarta 빌드를 내야 한다고 말한다. 로그 `프레임워크 아티팩트가 javax 로 컴파일됨: <g:a> …`.
@@ -140,13 +145,14 @@ profile·속성 선언)는 `direct`로 적고, 더 깊은 노드는 `transitive`
 
 | 증상 | 볼 곳과 원인 |
 |---|---|
+| 플래그 `framework-unchecked` | 부모 pom과 `dependency:tree`를 둘 다 읽지 못해 판단하지 못했다. 저널 `framework_check`의 `unchecked`와 `effective_depmgmt`, `deptree-*.txt`를 본다. 사내 프레임워크를 쓰는 프로젝트면 결과를 쓰지 말고, 저장소·settings를 고쳐 다시 돌린다 |
 | 프레임워크 프로젝트인데 전체 이관이 돌았다 | `framework_check`가 있으면 못 찾은 것이다. `unchecked`에 `parent: no as-is effective pom`이면 부모 pom 상속을 확인하지 못했다(접수의 캡처 실패, 저널 `effective_depmgmt`). `transitive: …`면 `dependency:tree` 실패. 아무것도 없으면 패턴이 실제 groupId·artifactId와 다르다(대소문자, `groupId:` 부분). `framework_project`인데 `scope: full`이면 `reason`이 설정 때문이라고 말한다 |
 | 프레임워크가 아닌데 줄인 실행이 돌았다 | `framework_project.evidence`의 `source`와 `where`. artifactId만 쓴 패턴은 다른 groupId의 같은 이름에도 맞는다 |
 | BLOCKED `external_javax_api`, 제안에 프레임워크 이름 | 프레임워크 아티팩트(또는 그것이 가져오는 라이브러리)가 아직 javax 기준이다. 프로젝트에서 고칠 수 없고 프레임워크 담당자가 jakarta 빌드를 내야 한다. LLM 호출 없음이 정상이다 |
 | exit 3, `aborted:parent-not-found` | 저장소가 프로젝트의 부모 pom을 주지 않는다. settings·미러를 고치거나 부모 pom을 Nexus에 올린 뒤 다시 돌린다 |
 | `unmappable character for encoding UTF8` | 저널 `source_encodings`와 인수인계의 인코딩 줄. 부모가 다른 값을 정했거나 소스가 섞였거나 스위치가 꺼져 있다 |
 | 서블릿 API가 WAR에 들어갔다 | 저널 `scopes_restored`가 없으면 `layout.legacy_context.restore_asis_scopes`가 꺼져 있거나 as-is가 `provided`가 아니었다 |
-| 시도가 계속 되돌려진다 | 저널 `framework_guard`의 `reason`. LLM이 프레임워크 선언이나 `<parent>`를 건드렸다 |
+| 시도가 계속 되돌려진다 | 저널 `framework_guard`의 `reason`. LLM이 프레임워크 선언, 그 버전을 정하는 속성(루트 pom의 것 포함), `<parent>`를 건드렸다 |
 
 간접 검사의 비용: 패턴이 설정되어 있으면 앞의 세 곳에서 못 찾은 모든 프로젝트가 분석 단계에서 `dependency:tree`를 한 번 더 돈다
 (as-is 의존성을 내려받는 시간). 이 비용이 문제면 `framework.transitive: off`로 끈다.

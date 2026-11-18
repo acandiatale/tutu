@@ -36,7 +36,7 @@ scored like any attempt.
 | `sbmig-parent` | a `Non-resolvable parent POM` whose g:a is a configured company parent (`artifacts.parent` / `boot_parent` / `comp_parent`, or an alias) at another version than the configured one (`openrewrite.unresolvable_asis_parent: align`) | sets the configured version in every pom whose `<parent>` is that g:a at that version (`sbmig/restructure/asis_parent.py`, text-preserving); journal `asis_parent_aligned` (`where: fix loop`), flag `asis-parent-aligned`, one Handover line. Tried even though triage blocks the case as `parent_not_found` |
 | `sbmig-version` | L2 `pom_invalid\|missing_version` | fills the version: managed by the new parent chain → no version; else the as-is build's version; a dependency just added → the repository's newest release |
 | `sbmig-resources` | resources / war plugin fails on a binary under filtering (`MalformedInputException`, `Input length = 1`) | adds the extension to `nonFilteredFileExtensions` in the pom that declares the filtering (`sbmig/restructure/resources_filtering.py`) |
-| `sbmig-bundled` | a package the case misses is provided by a jar in the tree no pom declares (`logs/bundled-jars.json`) | plain dependency when the jar's own coordinates are in the repository, else copied to `<module>/lib/` and declared `system` scope + `includeSystemScope` on the boot module (`sbmig/restructure/system_jars.py`); a jar whose g:a the target chain manages (superseded) is never wired |
+| `sbmig-bundled` | a package the case misses is provided by a jar in the tree no pom declares (`logs/bundled-jars.json`) | plain dependency when the jar's own coordinates are in the repository, else copied to `<module>/lib/` and declared `system` scope + `includeSystemScope` on the boot module (`sbmig/restructure/system_jars.py`); a jar whose g:a the target chain manages (superseded) is never wired. The repository lookup answers present / absent / unreadable (`repository_state_fn`): when no repository answered, the jar is neither wired nor called missing and no "publish it to Nexus" follow-up is written |
 | `sbmig-jakarta` | a javax case whose library has a jakarta build sbmig verified in the repository set (`sbmig/build/jakarta_discovery.py`) | swaps the declaration (other coordinates, or the same coordinates' jakarta version / classifier); a higher major is flagged ⚠ in the Handover |
 
 Every LLM attempt also passes `_fill_versions` before its commit: a version-less dependency the LLM added gets its version by the
@@ -71,6 +71,15 @@ Other rules:
   `loop.stall_limit`). Error sets toggling within `loop.oscillation_window` builds `loop.oscillation_limit` times block the cases
   involved as `oscillation`.
 * A pinned case (`sbmig kb cases pin <case_id> block[:REASON]`) is blocked without a try.
+* A resolution error with a network cause is blocked `repository_unreachable` (§5) before stored-script reuse, so a rebuild
+  that passes because the network came back credits no script.
+* When the loop ends (cap, budget, stall, stop, a case blocked at its cap), each case's last applied try that scored
+  `no_change` or `inconclusive` is rolled back before the final build (`BuildFixLoop._rollback_unhelpful`, journal
+  `script_rollback` with `where: "loop end"`, attempt note "rolled back before the final build (it did not help)", phase note
+  `<n> attempt(s) that did not help rolled back before the final build`). A `partial` try stays, also when its case did not
+  end blocked.
+* A fixer plugin whose `propose_script` returns no proposal fails that attempt (`apply_failed`, `LLM fixer returned no script
+  proposal (<type>)`); the run goes on.
 
 ## 4. Scoring by rebuild
 
@@ -80,10 +89,10 @@ Only the next build judges an attempt (`BuildFixLoop._score`; outcomes `AttemptO
 |---|---|---|
 | `build_ok` | the build passed | kept, KB success |
 | `improved` | every targeted error is gone and the build reached the stage that reports them ("not visible" is not "resolved") | kept, KB success |
-| `partial` | some targeted errors gone, no new error in touched files | resolved items recorded; reverted before the case's next try (a pre-try's partial is kept); no KB credit either way |
-| `no_change` | nothing changed | reverted, KB failure |
+| `partial` | some targeted errors gone, no new error in touched files | resolved items recorded; reverted before the case's next try (a pre-try's partial is kept; the last try of a case is kept at loop end); no KB credit either way |
+| `no_change` | nothing changed | reverted (before the case's next try, or at loop end), KB failure |
 | `regressed` | new errors in touched files, error count above `loop.regression_ratio` (1.5) ×, or structural errors (`loop.structural_regression_kinds`) after a pom edit — a pom fix that only uncovers the next build stage is not a regression | reverted (`loop.revert_on_regression`) → `reverted` |
-| `inconclusive` | the build could not tell (timeout, no parsed error, stopped at an unrelated earlier stage) | no KB credit, counts as tried |
+| `inconclusive` | the build could not tell (timeout, no parsed error, stopped at an unrelated earlier stage) | no KB credit, counts as tried; rolled back at loop end when it is the case's last try |
 | `apply_failed` | the script or edits did not apply | uncommitted changes discarded |
 
 Credit goes to the stored script version (`case.json`: successes, failures, projects, runs); a script becomes `proven` when it
@@ -99,7 +108,8 @@ go to the report's "Blocked" section with a suggestion composed by `compose_sugg
 |---|---|---|---|---|
 | X1 | `external_javax_api` | a dependency's API still takes `javax.*` types (`… cannot be converted to javax…`, `required: javax… found: jakarta…`), the project no longer imports that javax package and the owner class is not a project class | 2 | via the dependency tree: (1) a library in `knowledge/libraries/jakarta_libraries.yml` → raise / relocate to its jakarta release; (2) an in-house artifact → needs a Jakarta build, add it to `artifacts.optional`; (3) another library → upgrade or replace; (4) the javax API jar declared in a pom → remove it; else `mvn dependency:tree -Dincludes=<api jar>` |
 | X2 | `external_api_incompatible` | a library API changed (non-javax `cannot find symbol` / `cannot be applied` with a library owner) | 2 | upgrade the library or adapt the call |
-| X3 | `artifact_not_found` | `Could not find artifact g:a:v` | 2 | proxy it in Nexus or fix the coordinates; the LLM never invents versions |
+| X3 | `artifact_not_found` | `Could not find artifact g:a:v` (a repository answered "not found") | 2 | proxy it in Nexus or fix the coordinates; the LLM never invents versions |
+| – | `repository_unreachable` | a resolution error with a network cause (`classify_transfer`, `TRANSFER_CAUSE_PATTERN`): time-out, refused or reset connection, unknown host, no route, PKIX, a 5xx. 401 / 403 and a "not found" answer keep their reasons | 0 | `` `<g:a:v>` could not be downloaded: the repository did not answer (<repos>) (timeout, refused connection or server error) — not a project problem: check the repository and the network, then rerun ``; no LLM try, decided before stored-script reuse, nothing credited |
 | X4 | `parent_not_found` | `Non-resolvable parent POM` | 0 | settings / mirror / `artifacts.parent`. Only the configured coordinates themselves (g:a and the configured version) abort the run (`aborted:parent-not-found`; the message names the coordinates Maven could not resolve, says that this is the configured version and names the settings file). A company parent g:a at another (as-is) version is aligned by `sbmig-parent` (§2) under `openrewrite.unresolvable_asis_parent: align`, blocked without abort under `continue`, and aborts only under `abort`; a foreign parent is blocked without abort |
 | X5 | `plugin_incompatible` | a build plugin fails on JDK 21 | 2 | raise the plugin version or remove it |
 | X6 | `unsupported_source` | Kotlin / Groovy / Scala or source-generator plugin failures | 0 | migrate by hand |
@@ -117,7 +127,9 @@ cap ends it instead.
 
 * **LLM unavailable**: transport / configuration failures (explicit status 401 / 403 / 404 / 408 / 429 / 5xx, exception class,
   missing key) twice in a row pause the loop once for `llm.cooldown_seconds` (flag `llm-cooldown`); a second streak blocks the
-  remaining LLM-only cases `llm_unavailable`. A 400 / 413 / 422 or a content-filter answer is the request's fault and never counts;
+  remaining LLM-only cases `llm_unavailable`. A failed token exchange (`TokenExchangeError`: 5xx, 429, 401 / 403 from the token
+  endpoint, a non-JSON body, no `access_token`, a transport error) is retried like a chat call and carries `status=<code>` or
+  `cause=…`, so it counts here — not as an answer. A 400 / 413 / 422 or a content-filter answer is the request's fault and never counts;
   the same 400 body for two different prompts flags `llm-config-error` and stops LLM calls for the run. A 429 / 5xx with
   `Retry-After` waits up to `llm.busy_wait_seconds`.
 * **Budgets**: `loop.max_llm_calls` (0 = unlimited, -1 = stored scripts only) and `loop.max_total_minutes`; exhausted → remaining
@@ -126,8 +138,22 @@ cap ends it instead.
   Where a config runs tests, `build.allow_skip_test_compile_fallback` / `allow_skip_tests_fallback` rebuild without them when only
   test errors remain (flags `test-compile-skipped` / `tests-skipped`).
 * **Internal error / abort**: the run guard flags `aborted` (exit 3), still runs the planned final build (not for deliberate aborts
-  such as no Maven or an unresolvable parent) and writes the report; an aborted run is never a success.
-* **Restructure step failed**: flag `restructure-failed`, the verify build still runs, the run is not a success (exit 2).
+  such as no Maven or an unresolvable parent) and writes the report; an aborted run is never a success. The stage note of an
+  abort inside the loop carries the reason only.
+* **Stop request** (`stop.request`, checked between graph nodes; `Orchestrator.late_stop` after the last phase group, the same in
+  both engines): a planned final build without a result → abort ("stopped by user (stop.request) — the final `mvn clean
+  package` did not run"); the fix loop left because of the request → abort ("stopped by user (stop.request) — the fix loop was
+  left early; the last build shows the tree as it was left"), and the final build is not repeated when the tree is unchanged
+  since the loop's last build (that build stands as the final build); every planned final build has a result → the request is
+  ignored and the run ends as what it is (a chained remediation still skips itself with `stop_requested`). Journal
+  `stop_request {node: finalize, ignored | after}`.
+* **Restructure step failed**: the tree is reset to the commit before the step when it was clean at the step's start (note
+  "restructure undone: the tree was reset to <sha>, …", or "restructure not undone: …" when it could not; a restructure that
+  raises is reset by the orchestrator, journal `restructure_reset`); flag `restructure-failed`, the verify build still runs on
+  that tree, the run is not a success (exit 2).
+* **Uploaded ZIP over the unpacking limits** (`intake.max_unpacked_mb` / `max_entry_mb` / `max_compression_ratio`): refused
+  before anything is written (`Workspace.intake_refusal`, journal `intake_refused`, `run aborted: ZIP refused: …`, exit 3,
+  no Maven, no LLM).
 * **OpenRewrite**: OOM → one retry with `openrewrite.oom_retry_jvm_args`; download failures → wait and retry
   (`openrewrite.download_retry`); literal `4.0.x`-style versions left in a pom → reset and rerun once, else flag
   `rewrite-unresolved-versions`; files the plugin could not parse → flag `rewrite-parse-problems`. The run continues — the
@@ -159,7 +185,8 @@ cap ends it instead.
 
 At finalize a run that ended for an infrastructure reason gets `infra:<kind>`: `llm` (LLM unavailable / configuration error on a
 failed run), `maven` (`mvn-not-found`), `jdk` (Maven on another JDK), `repository` (the configured parent not found —
-`aborted:parent-not-found` — or every error of the failed final build is a resolution error with network / repository text;
+`aborted:parent-not-found` — or every error of the failed final build is a resolution error with network / repository text, which
+includes every `repository_unreachable` error;
 an as-is parent version that sbmig aligned leaves no `infra:repository` on a run that then builds), `disk` (no space left),
 `file-lock`, `http-blocked` (Maven's HTTP repository blocker refused a repository, flag `aborted:http-blocked`; it replaces
 `infra:repository`: the fix is in the Maven settings, not in the repository). The code appears in

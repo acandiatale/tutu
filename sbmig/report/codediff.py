@@ -7,7 +7,11 @@
 
 The build side of the code-change view (docs/INTERFACES.md "v2.1z-au"): `<run dir>/codediff/` with `patch.bin`,
 `summary.json` and `index.json`. Every regular file of the final tree (the working tree at finalize, through a
-temporary index) is compared AT ITS FINAL PATH with its origin, the as-is file (first commit) it came from:
+temporary index, limited to the paths the last commit has: a file neither committed nor ignored is a leftover of the
+final build — a shade plugin's `dependency-reduced-pom.xml`, `node/`, `node_modules/`, a jar copied beside the
+sources — never a change of the migration, which commits every stage; uncommitted changes to committed files stay,
+journal `code_diff.untracked_left_out` counts what was left out) is compared AT ITS FINAL PATH with its origin, the
+as-is file (first commit) it came from:
 1. the as-is file at the same path;
 2. same name + identical bytes, its own path gone from the final tree (longest shared trailing path, then the
    smallest path);
@@ -318,23 +322,32 @@ def write_code_diff(ws: Any, cfg: Any, *, run_id: Optional[str] = None) -> Optio
     """실행 폴더에 codediff/(patch.bin, summary.json, index.json)를 쓰고 summary를 반환한다.
     꺼져 있거나 git 저장소가 없으면 쓰지 않고 None을 반환한다. 실패하면 쓰던 파일을 지우고 예외를 던진다.
 
-    Write `<run dir>/codediff/` and return its summary. `report.code_diff` false or no `<project>/.git`: nothing is
-    written, journal `code_diff_skipped`, None. Any failure removes the folder, journals `code_diff_skipped` with
-    the error and re-raises (the caller logs one warning). Journal `code_diff` on success."""
+    Write `<run dir>/codediff/` and return its summary. `report.code_diff` false, no `<project>/.git`, or a run that
+    changed no file (refused or aborted at intake; only build leftovers): nothing is written, a record an earlier
+    attempt left in the same run folder is removed, journal `code_diff_skipped` with the reason, None. Any failure
+    removes the folder, journals `code_diff_skipped` with the error and re-raises (the caller logs one warning).
+    Journal `code_diff` on success."""
     rc = cfg.report
+    out = ws.run_dir / DIR_NAME
     if not getattr(rc, "code_diff", True):
+        _remove_artifact(out)                    # 같은 실행 폴더의 앞선 시도가 남긴 기록을 지운다
         ws.journal({"event": "code_diff_skipped", "reason": "report.code_diff is false"})
         return None
     if not (ws.root / ".git").exists():
+        _remove_artifact(out)
         ws.journal({"event": "code_diff_skipped", "reason": "the project has no git repository"})
         return None
     t0 = time.monotonic()
-    out = ws.run_dir / DIR_NAME
     _remove_artifact(out)
     out.mkdir(parents=True)
     raws = [out / ".diff-1.raw", out / ".diff-2.raw"]
     try:
         summary = _build(ws, cfg, out, raws, run_id or ws.run_id, t0)
+        if summary is None:
+            # 바뀐 파일이 없는 실행(접수에서 거부되거나 멈춘 실행)은 화면에 빈 블록이 생기지 않도록 기록하지 않는다
+            _remove_artifact(out)
+            ws.journal({"event": "code_diff_skipped", "reason": "the run changed no file"})
+            return None
     except BaseException as e:
         _remove_artifact(out)
         try:
@@ -351,12 +364,17 @@ def write_code_diff(ws: Any, cfg: Any, *, run_id: Optional[str] = None) -> Optio
     return summary
 
 
-def _build(ws: Any, cfg: Any, out: Path, raws: list[Path], run_id: str, t0: float) -> dict[str, Any]:
+def _build(ws: Any, cfg: Any, out: Path, raws: list[Path], run_id: str, t0: float) -> Optional[dict[str, Any]]:
     context = int(getattr(cfg.report, "code_diff_context", 10))
     base_commit = ws.first_commit()
     snapshot = ws.snapshot_tree()
     asis = _keep(ws, ws.tree_entries(base_commit))
-    final = _keep(ws, ws.tree_entries(snapshot))
+    # 마지막 커밋에 없는 파일은 마지막 빌드가 남긴 것(dependency-reduced-pom.xml, node_modules/ 등)이라 넣지 않는다.
+    # 추적 중인 파일의 커밋하지 않은 변경은 그대로 넣는다
+    committed = ws.tree_entries(ws.head())
+    snap = _keep(ws, ws.tree_entries(snapshot))
+    final = {p: v for p, v in snap.items() if p in committed}
+    left_out = len(snap) - len(final)
     origins, deleted, deleted_enc = compute_origins(
         asis, final, lambda shas: ws._cat_blobs(shas, CONTENT_LIMIT), tuple(ws.encoding_candidates))
 
@@ -387,6 +405,8 @@ def _build(ws: Any, cfg: Any, out: Path, raws: list[Path], run_id: str, t0: floa
     for a in deleted:
         entries.append({"path": a, "old_path": None, "status": "deleted", "changed": True, "_diff": d2,
                         "encoding": deleted_enc.get(a, "utf-8")})
+    if not entries:
+        return None                                         # 바뀐 파일이 없으면 기록하지 않는다
     for e in entries:
         d: Optional[_Diff] = e["_diff"]
         if d is None:                                       # moved only: nothing to diff
@@ -474,7 +494,10 @@ def _build(ws: Any, cfg: Any, out: Path, raws: list[Path], run_id: str, t0: floa
     _write_atomic(out / "summary.json", json.dumps(summary_doc, ensure_ascii=False, indent=1).encode("utf-8"))
     _write_atomic(out / "index.json", json.dumps(index, ensure_ascii=False, indent=1).encode("utf-8"))   # last
     seconds = round(time.monotonic() - t0, 2)
-    ws.journal({"event": "code_diff", "files": summary_counts["files"], "moved": summary_counts["moved"],
-                "added_lines": summary_counts["added_lines"], "removed_lines": summary_counts["removed_lines"],
-                "seconds": seconds})
+    event = {"event": "code_diff", "files": summary_counts["files"], "moved": summary_counts["moved"],
+             "added_lines": summary_counts["added_lines"], "removed_lines": summary_counts["removed_lines"],
+             "seconds": seconds}
+    if left_out:
+        event["untracked_left_out"] = left_out
+    ws.journal(event)
     return summary_counts

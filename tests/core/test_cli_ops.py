@@ -230,3 +230,15 @@ def test_repo_probe_prints_the_summary_line_and_rejects_bad_coordinates(tmp_path
     assert lines[-1].startswith("REPO-PROBE none com.example.grid8:grid8 versions=0 jakarta=-")
     r = CliRunner().invoke(app, ["repo-probe", "no-colon"])
     assert r.exit_code == 2 and "groupId:artifactId" in r.output
+
+
+def test_version_prints_the_build_identity():
+    """Review 2026-11-18 (W2 / R1): `sbmig version` prints what the Job-mode Worker compares, so an operator can ask both
+    pods which build they run."""
+    from typer.testing import CliRunner
+
+    from sbmig.cli import app
+    from sbmig.web.contract import sbmig_version
+
+    r = CliRunner().invoke(app, ["version"])
+    assert r.exit_code == 0 and r.output.strip() == f"sbmig {sbmig_version()}" and "+" in r.output

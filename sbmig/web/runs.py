@@ -96,6 +96,7 @@ from sbmig.web.contract import (
     CONTROL_DIR,
     OWNER_LABEL,
     RESUME_STATE_FILE,
+    RESUME_STATUS_FILE,
     RUN_LABEL,
     STATE_FILE,
     ControlState,
@@ -599,9 +600,16 @@ def check_flow(flow: str | None) -> str:
 def _abort_reason(report: dict[str, Any]) -> str | None:
     # 엔진이 실행을 중단한 사유를 찾는다.
     # Orchestrator._abort가 manual_followups에 "run aborted: <사유>"로 남기며, 첫 줄이 첫 사유다
-    for item in report.get("manual_followups") or []:
-        if isinstance(item, str) and item.startswith("run aborted: "):
+    followups = [item for item in report.get("manual_followups") or [] if isinstance(item, str)]
+    for item in followups:
+        if item.startswith("run aborted: "):
             return item[len("run aborted: "):].strip() or None
+    # 수정 루프가 HTTP 저장소 차단으로 멈춘 실행은 "run aborted:" 줄 없이 인수인계 문장만 남기므로 그 문장을 사유로 쓴다
+    from sbmig.report.handover import HTTP_BLOCKED_FLAG, HTTP_BLOCKED_PREFIX
+    if HTTP_BLOCKED_FLAG in (report.get("flags") or []):
+        for item in followups:
+            if item.startswith(HTTP_BLOCKED_PREFIX):
+                return item.strip() or None
     return None
 
 
@@ -712,6 +720,31 @@ class RunManager:
             self.recover()
         if self.effective_mode != "local-job":
             self._warn_missing_settings_file()
+
+    def free_space_problem(self, configs: list[str] | None = None) -> str | None:
+        """출력 폴더가 있는 볼륨의 여유 공간이 ``fleet.min_free_gb``보다 작으면 거절 문장을, 아니면 None을 반환한다.
+        0이면 확인하지 않고, 설정을 읽지 못하거나 공간을 잴 수 없으면 막지 않는다(그 오류는 접수가 알린다).
+
+        The refusal sentence when the free space of the output volume is under `fleet.min_free_gb` (review 2026-11-18,
+        W4: the key was documented as the floor before a run but only the fleet runner read it), else None. 0 = no check;
+        a config that cannot be read or a volume that cannot be measured never blocks (the intake reports the first)."""
+        from sbmig.core.config import load_config
+        from sbmig.fleet.preflight import check_disk
+        names = self.default_configs() if configs is None else list(configs)
+        try:
+            if any(not RUN_ID_RE.match(c) or not (self.repo_root / "config" / c).is_file() for c in names):
+                return None
+            cfg = load_config(*[self.repo_root / "config" / c for c in names], repo_root=self.repo_root)
+            floor = float(cfg.fleet.min_free_gb or 0)
+            check = check_disk(self.out_dir, floor)
+        except Exception:  # noqa: BLE001 - 여유 공간 확인이 접수 자체를 깨뜨리면 안 된다
+            log.debug("free space check skipped", exc_info=True)
+            return None
+        if check.ok or check.skipped:
+            return None
+        free = (check.data or {}).get("free_gb")
+        return (f"not enough free space on the output volume: {free:.1f} GB free on {self.out_dir}, at least {floor:g} GB "
+                f"needed (fleet.min_free_gb) — free space on the volume (old run folders: sbmig clean) or enlarge it")
 
     def _warn_missing_settings_file(self) -> None:
         """기본 설정의 ``build.settings_file``이 없거나 비어 있으면 시작할 때 WARNING 한 줄을 남긴다. 시작은 막지 않는다.
@@ -964,7 +997,7 @@ class RunManager:
         workspace + orchestrator, start the worker. ValueError = bad request — `incoming` is then left to the caller
         (the web route deletes it); after the move it belongs to the run."""
         from sbmig.core.config import load_config
-        from sbmig.core.workspace import Workspace
+        from sbmig.core.workspace import Workspace, ZipLimits
         from sbmig.loop import Orchestrator, parse_stop_after
 
         # ``../``로 config 폴더 밖의 파일을 읽지 못하도록 설정 이름도 RUN_ID_RE로 검사한다
@@ -994,7 +1027,10 @@ class RunManager:
         zip_path = uploads / f"{run_id}-{safe}"
         Path(incoming).replace(zip_path)
         try:
-            ws = Workspace.from_input(zip_path, self.out_dir, run_id=run_id)
+            ws = Workspace.from_input(zip_path, self.out_dir, run_id=run_id, limits=ZipLimits.from_config(cfg.intake))
+            if ws.intake_refusal:
+                # 풀기 한도를 넘은 zip은 아무것도 풀지 않았으므로 실행을 만들지 않고 사유를 400으로 돌려준다
+                raise ValueError(ws.intake_refusal)
         except Exception:                      # BadZipFile / OSError: no run was started, leave no ghost run dir
             shutil.rmtree(self.out_dir / run_id, ignore_errors=True)
             zip_path.unlink(missing_ok=True)
@@ -1369,6 +1405,8 @@ class RunManager:
             env["SBMIG_LLM_PROVIDER"] = run.llm_provider
         if run.slot is not None:               # v2.1z-ae: the Worker builds with one Maven local repository per slot
             env[contract.SLOT_ENV] = str(run.slot)
+        # Worker가 제어 상태를 읽지 못하고 거절해도 이 시도의 번호를 결과 파일에 적게 한다
+        env[contract.ATTEMPT_ENV] = str(run.attempt)
         if run.action:                         # 2026-11-11 wave 4: the Worker runs this action instead of `sbmig run`
             env[contract.ACTION_ENV] = run.action
         # Worker가 request.json의 flow와 비교하므로 full이어도 항상 기록한다.
@@ -1392,6 +1430,19 @@ class RunManager:
             log.warning("run %s: the job environment is not pinned (%s: %s) — the Worker will not compare its environment",
                         run.run_id, type(e).__name__, scrub(str(e)))
             return None
+
+    def _image_pins(self, run: Run) -> dict[str, Any]:
+        """Job을 만드는 시점의 설정 파일 해시와 sbmig 버전을 반환한다. 계산에 실패하면 빈 dict를 반환하고 Worker는
+        ``request.json``의 값과 비교한다.
+
+        The config digests and sbmig version of the Main creating the Job (review 2026-11-18, W2 / R1); {} when they cannot
+        be computed (the Worker then compares with `request.json`, as before)."""
+        try:
+            return {"config_digests": config_digests(self.repo_root, list(run.configs)), "sbmig_version": sbmig_version()}
+        except Exception as e:  # noqa: BLE001 — never a failed create over a pin
+            log.warning("run %s: config digests not recorded at job creation (%s: %s) — the Worker compares the intake pins",
+                        run.run_id, type(e).__name__, scrub(str(e)))
+            return {}
 
     def _create_job(self, run: Run, client: Any, name: str) -> None:
         """템플릿에 owner 라벨까지 채워 매니페스트를 만들고, ``creating`` 상태를 기록한 뒤 Job을 만든다.
@@ -1418,8 +1469,12 @@ class RunManager:
         # 프로세스가 여기서 죽어도 다음 Main이 creating 상태와 이름으로 Job을 찾을 수 있도록 생성 의도를
         # 먼저 기록한다. 환경 해시는 접수한 Main이 아니라 Job을 만드는 이 Main의 현재 환경으로 만든다
         pins = self._env_pins(run)
+        # 설정 파일 해시와 sbmig 버전도 접수 때가 아니라 지금 Job을 만드는 이 Main의 값으로 기록한다.
+        # 대기 중에 웹 파드가 새 이미지로 재시작했거나 이전 이미지가 만든 실행을 재개할 때 지금 두 파드가 같으면 통과한다
+        image_pins = self._image_pins(run)
         # 재시작한 Main이 같은 번호를 다시 잡을 수 있도록 슬롯 번호도 같은 상태 기록에 넣는다
-        self._transition(run, RunState.CREATING, job=name, env_pins=pins, env_pin_policy=self.env_pin_policy, slot=run.slot)
+        self._transition(run, RunState.CREATING, job=name, env_pins=pins, env_pin_policy=self.env_pin_policy, slot=run.slot,
+                         **image_pins)
         if pins is not None:
             log.info("run %s: %d environment value(s) pinned for job %s (%s=%s)", run.run_id, len(pins), name,
                      contract.ENV_PIN_POLICY_ENV, self.env_pin_policy)
@@ -2022,6 +2077,11 @@ class RunManager:
                     # 새 재개 시도가 바로 멈추지 않도록 지운다
                     stop_file.unlink()
                     log.info("run %s: a leftover %s removed before the remediation resume", run_id, STOP_REQUEST_FILE)
+                # 시도 번호 없이 기록된 이전 재개 결과는 어느 시도와도 맞는 것으로 읽히므로 새 시도를 넣기 전에 지운다
+                old_status = rd / RESUME_STATUS_FILE
+                if old_status.is_file():
+                    old_status.unlink()
+                    log.info("run %s: the previous %s removed before the remediation resume", run_id, RESUME_STATUS_FILE)
                 control = ControlState(run_id=run_id, state=RunState.QUEUED.value, attempt=attempt,
                                        action=ACTION_REMEDIATION_RESUME)
                 control.write(rd, RESUME_STATE_FILE)          # intent first: the next Main picks the request up
@@ -2271,6 +2331,9 @@ class RunManager:
         # 파드가 시작하기 전에 중지해 Job을 지운 실행은 화면에 그 사실을 한 줄로 보여 준다
         if str(info.get("error") or "").startswith(STOP_BEFORE_START_ERROR):
             info["stop_reason_ko"] = STOP_BEFORE_START_KO
+        # 웹 파드와 빌드 파드의 이미지가 달라 Worker가 거절한 실행은 화면 결과 칸에 한국어 문장을 보여 준다
+        if contract.IMAGE_DIFFERS_HINT in str(info.get("error") or ""):
+            info["abort_reason_ko"] = contract.IMAGE_DIFFERS_KO
         # 조치 재개 Job이 있으면 이관의 상태와 따로 보여 준다
         rjob = self.remediation_job(run_id)
         if rjob is not None:

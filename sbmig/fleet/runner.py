@@ -52,6 +52,7 @@ output / the project copy (:mod:`sbmig.fleet.cleanup`). Every project logs DEBUG
 from __future__ import annotations
 
 import errno
+import json
 import logging
 import tempfile
 import time
@@ -60,7 +61,6 @@ from collections import deque
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Optional
-
 
 from sbmig.core.config import Config, _apply_env_overrides, _expand_env, deep_merge
 from sbmig.core.models import CaseType, FleetProjectResult, FleetState, RunReport, utcnow
@@ -153,6 +153,21 @@ def report_infra_kind(report: RunReport, code: int) -> Optional[str]:
     `infra:<kind>` (and the older equivalent flags) of a run that did not end green; a green run keeps its success
     even when the LLM was unavailable for a while."""
     return infra_kind(report.flags) if code != EXIT_ALL_SUCCESS else None
+
+
+def _env_over_yml(yml: dict) -> dict:
+    """프로젝트 yml 값 가운데 ``SBMIG_<섹션>__<키>`` 환경 변수가 정한 키를 환경 변수 값으로 바꾼 사본을 반환한다.
+
+    A copy of a project's yml data where every key an `SBMIG_<SECTION>__<KEY>` environment value names (and the yml
+    sets) takes the environment value: the environment beats the project's yml, and keys the yml does not set keep the
+    fleet configuration's value (which already holds the environment and the fleet's explicit options)."""
+    full = _apply_env_overrides(json.loads(json.dumps(yml)))
+
+    def keep(src: Any, envd: Any) -> Any:
+        if isinstance(src, dict) and isinstance(envd, dict):
+            return {k: keep(v, envd.get(k, v)) for k, v in src.items()}
+        return envd
+    return keep(yml, full)
 
 
 class FleetRunner:
@@ -293,14 +308,15 @@ class FleetRunner:
         if self._analyze is not None:
             return self._analyze(proj, self.cfg)
         from sbmig.analyze import analyze_project
-        from sbmig.core.workspace import Workspace
+        from sbmig.core.workspace import Workspace, ZipLimits
 
         src = Path(proj.input)
         with tempfile.TemporaryDirectory(prefix="sbmig-fleet-analyze-") as tmp:
             if src.is_dir():
                 ws = Workspace(src, Path(tmp) / "run", "fleet-analyze")
             else:
-                ws = Workspace.from_input(src, tmp, run_id="fleet-analyze")
+                ws = Workspace.from_input(src, tmp, run_id="fleet-analyze",
+                                          limits=ZipLimits.from_config(getattr(self.cfg, "intake", None)))
             return analyze_project(ws, self.cfg).case_type
 
     def result_for(self, proj: FleetProject) -> FleetProjectResult:
@@ -335,20 +351,23 @@ class FleetRunner:
         return "run"  # pending, or running (the fleet process died during this project)
 
     # ------------------------------------------------------------------ per-project config
-    def project_config(self, proj: FleetProject, remaining_llm: Optional[int]) -> Config:
+    def project_config(self, proj: FleetProject, remaining_llm: Optional[int]) -> Config:  # noqa: C901
         """일괄 실행 설정 위에 프로젝트별 ``configs`` / ``overrides``를 덮어써서 프로젝트 하나의 설정을 만든다.
         KB는 하나여야 하므로 ``kb.dir``은 항상 일괄 실행의 값을 쓴다.
         LLM 호출 상한은 남은 예산으로 자르고, 예산을 다 썼으면 -1(LLM 호출 없음)로 둔다."""
         data = self.cfg.model_dump(mode="json")
-        from sbmig.core.config import _read_yaml, _warn_unknown_keys   # the same duplicate-key / unknown-key WARNINGs as load_config
+        from sbmig.core.config import _read_yaml, _warn_unknown_keys, merge_explicit   # the same duplicate-key / unknown-key WARNINGs as load_config
+        proj_yml: dict = {}
         for c in proj.configs:
-            data = deep_merge(data, _expand_env(_read_yaml(Path(c))))
+            proj_yml = deep_merge(proj_yml, _expand_env(_read_yaml(Path(c))))
+        # 환경 변수는 프로젝트의 yml보다 우선하고, 매니페스트에 적은 프로젝트별 값은 환경 변수보다 우선한다.
+        # 환경 변수는 프로젝트 yml이 정한 키에만 다시 적용해 일괄 실행 명령줄의 명시 값을 덮지 않게 한다
+        if proj.configs:
+            data = deep_merge(data, _env_over_yml(proj_yml))
         if proj.overrides:
-            data = deep_merge(data, _expand_env(proj.overrides))
+            data = merge_explicit(data, _expand_env(proj.overrides), f"fleet project {proj.name}: ")
         if proj.configs or proj.overrides:
             _warn_unknown_keys(data, label=f"fleet project {proj.name}: ")
-        if proj.configs or proj.overrides:
-            data = _apply_env_overrides(data)
         # 학습이 프로젝트 사이에 이어지려면 KB가 하나여야 하므로 프로젝트 설정의 kb.dir은 무시한다
         data["kb"]["dir"] = self.cfg.kb.dir  # the KB is fleet-wide
         data["repo_root"] = self.cfg.repo_root
@@ -377,8 +396,13 @@ class FleetRunner:
         from sbmig.core.workspace import Workspace
         from sbmig.loop import Orchestrator
 
-        ws = Workspace.from_input(proj.input, out_dir, run_id=run_id)
-        return Orchestrator(cfg, ws, kb=self.kb).run()
+        from sbmig.cli import refuse_intake
+        from sbmig.core.workspace import ZipLimits
+
+        ws = Workspace.from_input(proj.input, out_dir, run_id=run_id, limits=ZipLimits.from_config(cfg.intake))
+        orch = Orchestrator(cfg, ws, kb=self.kb)
+        # 풀기 한도를 넘은 zip은 아무것도 풀지 않았으므로 접수 거절로 끝낸다
+        return refuse_intake(orch, ws.intake_refusal) if ws.intake_refusal else orch.run()
 
     def _run_id(self, index: int, proj: FleetProject, attempt: int) -> str:
         """실행 ID ``<fleet id>-<매니페스트 순번>-<이름>``을 만든다. 재시도에는 ``-r<n>``을 붙인다.

@@ -17,7 +17,8 @@ every try and diff is in `errors.md` / `errors.jsonl`.
 
 ```
 intake       Maven only (Ant: refused with `intake.ant_message`, exit 3 — pom synthesis behind `intake.ant_to_maven`;
-             Gradle / trees with neither pom.xml nor build.xml: rejected, exit 3);
+             Gradle / trees with neither pom.xml nor build.xml: rejected, exit 3; a ZIP over `intake.max_unpacked_mb` /
+             `max_entry_mb` / `max_compression_ratio`: refused before anything is unpacked, exit 3);
              root aggregator generated for sibling poms, stray pom copies ignored, preflight (Maven, JDK 21)
 analyze      case (pure_java | servlet_tomcat | spring_legacy | spring_boot | msa), libraries, advisories, bundled jars,
              ADF stop (exit 3), hollow reactor (exit 2), framework project (scope jdk-jakarta: no restructure / review)
@@ -35,8 +36,10 @@ Script fix loop, per error case (case = L2 signature, one script for every file 
 (missing version, binary resource filtering, jakarta library swap, bundled jar) → **reuse** the best stored script (no
 LLM) → **augment** this run's last script (LLM, ≤ 15 per case: `script.max_augments_per_case`) → a fresh **new** script
 (LLM) → BLOCKED after 20 LLM asks per case (`script.max_llm_tries_per_case`) or a decline (`needs_owner`). Every attempt
-is committed and scored by a rebuild; what did not help is rolled back (git); every script version and its outcome is
-recorded in `kb-v2/cases/<case_id>/`.
+is committed and scored by a rebuild; what did not help is rolled back (git), and when the loop ends a case's last
+attempt that did not help is rolled back before the final build; every script version and its outcome is recorded in
+`kb-v2/cases/<case_id>/`. A repository that does not answer is not "not found": such a case is blocked
+`repository_unreachable` without an LLM call.
 
 The remediation step (vulnerable library versions, IVAS) is a separate graph chained after a successful migration; it
 never changes the migration's verdict. Details: `agent-doc/11-remediations.md`.
@@ -90,7 +93,8 @@ Python unless `script.python` names another one (it needs pydantic + lxml, `docs
 | `sbmig kb cases list\|show\|retire\|activate\|pin\|unpin` | stored fix scripts per case (versions, successes, lineage) |
 | `sbmig kb errors …` / `stats` / `validate` / `reindex` / `export` / `import` | error list, KB upkeep |
 | `sbmig recipes …` / `advisories …` | the OpenRewrite recipe catalog, the library advisories |
-| `sbmig llm-probe` / `repo-probe` / `build` / `parse-log` / `clean` | gateway check, repository lookup, Maven debugging aids, disk cleanup |
+| `sbmig llm-probe` / `repo-probe` / `build` / `parse-log` / `clean` | gateway check, repository lookup, Maven debugging aids, disk cleanup (manual; project copies, uploads and LLM records of finished runs only) |
+| `sbmig version` | the build identity `<version>+<12 hex>` (a digest of the code, `config/*.yml` and `knowledge/`) |
 | `sbmig remediation-resume` | continue a remediation that stopped (upload confirmation, time budget, stop, or an approval when approval is switched on; used by the build Job) |
 
 In-house LLM gateway or agent platform through the adapter seams (`docs/ADAPTERS.md`): `--llm-plugin pkg.mod:attr`
@@ -100,8 +104,10 @@ example `examples/adapters/agent_fixer.py`).
 ## Web UI and Kubernetes
 
 `sbmig serve` runs migrations in-process (one at a time). In the cluster the web pod dispatches one build **Job** per
-upload (`SBMIG_WEB_MODE=k8s-job`), up to `SBMIG_JOB_MAX_PARALLEL` at a time, the rest wait in upload order. Image,
-manifests and the operator text: `deploy/README.md`.
+upload (`SBMIG_WEB_MODE=k8s-job`), up to `SBMIG_JOB_MAX_PARALLEL` at a time, the rest wait in upload order. Requests from
+another web site are refused (403), an upload is refused with 507 when the output volume has less than
+`fleet.min_free_gb` free, and a build pod that runs another image than the web pod refuses the run (restart the web pod
+after pushing an image). Image, manifests and the operator text: `deploy/README.md`.
 
 ## Local demos (offline: public artifacts + replayed LLM answers)
 

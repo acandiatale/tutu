@@ -186,3 +186,37 @@ def test_cache_and_never_raises(repo: Path, cfg, monkeypatch) -> None:
     clear_cache()
     assert load_parent_chain_facts(cfg).sources == ["failed: RuntimeError: disk on fire"]
     assert ParentChainFacts().empty
+
+
+# ---------------------------------------------------------------------------------------------- review T2
+BOOTJ = "com.company:boot-jar:4.0.0"
+COMPJ = "com.company:comp-jar:4.0.0"
+
+
+def test_managed_versions_are_kept_per_parent(tmp_path: Path, cfg, monkeypatch) -> None:
+    """A module inherits ONE company parent: comp-jar manages X, boot-jar does not, so X is "managed" only for a pom
+    whose parent is comp-jar; the merged `managed` view stays for existing readers."""
+    r = tmp_path / "m2"
+    _write(r, BASE, _pom(BASE, deps=[_dep("org.example", "base-only", "1.0")]))
+    _write(r, BOOTJ, _pom(BOOTJ, parent=BASE, deps=[_dep("org.example", "shared", "2.0")]))
+    _write(r, COMPJ, _pom(COMPJ, parent=BASE, deps=[_dep("org.example", "x", "3.0.4"),
+                                                    _dep("org.example", "shared", "1.0")]))
+    cfg.build.local_repo = str(r)
+    cfg.artifacts.parent, cfg.artifacts.boot_parent, cfg.artifacts.comp_parent = _spec(BASE), _spec(BOOTJ), _spec(COMPJ)
+    bb = boot_bom.BootBomFacts(version="4.1.0", managed={"org.example:boot-only": "9.0", "org.example:x": "9.9"},
+                               sources=["stub BOM"])
+    monkeypatch.setattr(boot_bom, "load_boot_bom_facts", lambda c, version=None: bb)
+    cfg.artifacts.parent_manages_spring_boot = True
+    f = load_parent_chain_facts(cfg)
+    assert f.managed["org.example:x"] == "3.0.4" and f.managed["org.example:shared"] == "2.0"   # merged view unchanged
+    assert f.root_managed[COMPJ] == {"org.example:x": "3.0.4", "org.example:shared": "1.0", "org.example:base-only": "1.0"}
+    assert f.root_managed[BOOTJ] == {"org.example:shared": "2.0", "org.example:base-only": "1.0"}
+    assert f.managed_for(BOOTJ, own=True) == {"org.example:shared": "2.0", "org.example:base-only": "1.0"}
+    assert f.managed_for("com.company:boot-jar") == {"org.example:shared": "2.0", "org.example:base-only": "1.0",
+                                                     "org.example:boot-only": "9.0", "org.example:x": "9.9"}
+    assert f.managed_for(COMPJ)["org.example:x"] == "3.0.4"                     # its own chain wins over the add-on
+    assert f.managed_for(BASE, own=True) == {"org.example:base-only": "1.0"}
+    assert f.managed_for("org.other:parent:1") == {} and f.managed_for(None) == {}
+    # facts without the per-parent sets (built by hand, an older pickle): the merged view, as before
+    old = ParentChainFacts(managed={"a:b": "1"}, chain_managed={"a:b": "1"})
+    assert old.managed_for(BOOTJ) == {"a:b": "1"} and old.managed_for(None, own=True) == {"a:b": "1"}

@@ -195,6 +195,7 @@ class ModuleEncoding:
     examples: dict[str, list[str]] = field(default_factory=dict)
     declared: Optional[str] = None              # effective source encoding inside the project poms
     declared_in: str = ""                       # "<pom> property" | "<pom> maven-compiler-plugin <encoding>"
+    not_sampled: bool = False                   # the total sample budget was used up before this module
 
     @property
     def legacy(self) -> list[str]:
@@ -223,6 +224,10 @@ class ModuleEncoding:
         where = f"`{self.module or '(root)'}` (`{self.pom}`)"
         if not self.files:
             return f"- {where}: no .java files"
+        if self.not_sampled:
+            # 표본 한도를 앞 모듈이 다 써서 읽지 않았으므로 인코딩을 판단하지 않는다
+            return (f"- {where}: {self.files} .java file(s) not sampled (the sample limit was reached before "
+                    "this module)")
         counts = ", ".join(f"{k} {v}" + (f" (Java charset {java_charset(k)})" if not is_utf8(k) else "")
                            for k, v in sorted(self.counts.items(), key=lambda kv: -kv[1]))
         sampled = f"{self.sampled} of {self.files}" if self.sampled < self.files else f"{self.files}"
@@ -308,6 +313,8 @@ def _owning(file: str, poms: list[PomInfo]) -> Optional[PomInfo]:
 
 
 def _spread(items: list[str], n: int) -> list[str]:
+    if n <= 0:
+        return []                                   # 표본 한도를 다 쓴 모듈은 읽지 않는다
     if len(items) <= n:
         return items
     step = len(items) / float(n)
@@ -342,6 +349,7 @@ def source_encodings(ws: Any, poms: list[PomInfo], candidates: Optional[Iterable
         me = ModuleEncoding(module=posixpath.dirname(pom.path), pom=pom.path, files=len(mine))
         me.declared, me.declared_in = declared_encoding(pom, poms)
         share = min(ENCODING_SAMPLE_PER_MODULE, max(0, budget))
+        me.not_sampled = bool(mine) and share <= 0
         sample = _spread(mine, share)
         counts: Counter = Counter()
         for f in sample:
@@ -1386,7 +1394,9 @@ def filtered_binary_lines(ws: Any, poms: list[PomInfo]) -> list[str]:
     Never raises."""
     try:
         from sbmig.restructure.resources_filtering import binary_resource_plan
-        files = binary_resource_plan(ws, None, poms).files
+        plan = binary_resource_plan(ws, None, poms)
+        files = plan.files
+        total = max(len(files), int(getattr(plan, "files_total", 0) or 0))
     except Exception:  # a fact line is never worth a failed review
         log.debug("filtered binary resource scan for the review failed", exc_info=True)
         return []
@@ -1394,7 +1404,7 @@ def filtered_binary_lines(ws: Any, poms: list[PomInfo]) -> list[str]:
         return []
     exts = sorted({f.rsplit(".", 1)[1].lower() for f in files if "." in posixpath.basename(f)})
     shown = ", ".join(f"`{f}`" for f in files[:MAX_BINARY_FACTS])
-    more = f" (+{len(files) - MAX_BINARY_FACTS})" if len(files) > MAX_BINARY_FACTS else ""
+    more = f" (+{total - MAX_BINARY_FACTS})" if total > MAX_BINARY_FACTS else ""
     return [f"- binary files under a filtered `<resource>` (Maven filtering rewrites their bytes unless "
             f"maven-resources-plugin `<nonFilteredFileExtensions>` lists the extension): {shown}{more}"
             + (f"; extensions: {', '.join(exts)}" if exts else "")]

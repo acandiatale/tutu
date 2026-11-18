@@ -37,7 +37,7 @@ from typing import Any, Callable, Iterable, Optional
 from sbmig.core.config import Config
 from sbmig.core.models import BlockReason, DecisionKind, ErrorCluster, FixAttempt, KBMatch, ProjectProfile, TriageDecision
 
-from .blocked import BlockedCandidate, classify_blocked, note_text
+from .blocked import BlockedCandidate, classify_blocked, classify_transfer, note_text
 from .cluster import FILE_KINDS, RESOLUTION_KINDS, cluster_label
 from .scripts import FAILED_OUTCOMES, LLM_MODES, ScriptStep, plan_script_step, script_attempts
 
@@ -271,6 +271,14 @@ class DecisionEngine:
         d = self._pinned_block(cluster, kb_match)
         if d is not None:
             return d
+
+        # 0c. 저장소가 응답하지 않은 전송 실패는 프로젝트 문제가 아니므로 정책이 0이면 저장된 스크립트도 실행하지 않는다.
+        #   네트워크가 돌아와 통과한 재빌드를 스크립트 실적으로 기록하지 않기 위해서다
+        # 0c. a transfer failure (review 2026-11-18 T4): with policy 0 not even a stored script runs — a rebuild that
+        #     passes because the network came back must not be credited to it
+        transfer = classify_transfer(cluster)
+        if transfer is not None and int(self.cfg.loop.blocked_policy.get(transfer.reason.value, 0)) <= 0:
+            return self._blocked(cluster, transfer, " (policy: no LLM script for this reason)")
 
         # 1. 저장된 스크립트는 LLM 호출이 없으므로 차단 정책이나 LLM 예산과 장애에 막히지 않게 가장 먼저
         #   시도한다. 프로젝트를 많이 처리할수록 LLM 호출을 줄여 주는 핵심 경로다

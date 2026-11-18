@@ -22,6 +22,7 @@ that finds a fresh claim refuses without touching anything.
 """
 from __future__ import annotations
 
+import contextvars
 import json
 import logging
 import os
@@ -62,6 +63,10 @@ ZIP_DATE = (1980, 1, 1, 0, 0, 0)          # ZIP 내용이 매번 같도록 시�
 # 프로젝트 폴더 안의 sbmig 작업 파일과 VCS 폴더는 조치에 넘길 ZIP에 넣지 않는다
 EXCLUDED_DIRS = (".git", ".sbmig")
 _MAVEN_OUTPUT_MARKERS = ("maven-status", "maven-archiver")
+# remediation.log 한 줄의 형식이다. 단독 업로드의 service.LOG_FORMAT과 같다
+LOG_FORMAT = "%(asctime)s %(levelname)-7s %(name)s: %(message)s"
+# 조치를 실행하는 컨텍스트 표시. LangGraph가 노드를 다른 스레드에서 실행해도 컨텍스트를 복사하므로 그 줄도 파일에 들어간다
+_REM_LOG: contextvars.ContextVar[object | None] = contextvars.ContextVar("sbmig_remediation_log", default=None)
 
 
 def chain_paths(run_dir: Path | str) -> RunPaths:
@@ -319,6 +324,74 @@ class RunClaim:
             self.release()
 
 
+class _LogFormatter(logging.Formatter):
+    """파일에 쓰기 직전에 비밀 값, URL 속 계정 정보, 실행 폴더 절대 경로를 지우는 포매터 클래스."""
+
+    def __init__(self, root: Path):
+        super().__init__(LOG_FORMAT)
+        self.root = root
+
+    def format(self, record: logging.LogRecord) -> str:
+        return graph_mod.scrub_message(super().format(record), self.root, limit=200_000)
+
+
+class _LogFilter(logging.Filter):
+    """조치를 실행하는 스레드와 그 컨텍스트를 물려받은 스레드의 줄만 통과시키는 필터 클래스."""
+
+    def __init__(self, thread_id: int, token: object):
+        super().__init__()
+        self.thread_id = thread_id
+        self.token = token
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return record.thread == self.thread_id or _REM_LOG.get() is self.token
+
+
+@contextmanager
+def remediation_log(paths: RunPaths) -> Iterator[logging.Handler | None]:
+    """조치를 실행하는 동안 ``remediation/remediation.log``에 sbmig 로그를 DEBUG까지 덧붙인다.
+    같은 파일의 핸들러가 이미 있으면 새로 달지 않고 None을 넘기며, 끝나면 단 핸들러를 떼고 닫는다.
+
+    Append the sbmig log (DEBUG) of this remediation to `remediation/remediation.log` while the block runs: the
+    chained run, the remediation-only run and a resume get the file the standalone run has. Lines pass the same
+    scrubbing as the service's handler (`graph.scrub_message`: secret env values, URL userinfo, the run dir's absolute
+    path, then the process-wide output scrubber); only this thread and threads running in its context write to it.
+    A handler for the same file already on the `sbmig` logger (the in-process service's) is reused, never doubled; the
+    handler added here is removed in `finally`. A file that cannot be opened yields None (the run goes on)."""
+    target = os.path.abspath(paths.log)
+    root = logging.getLogger("sbmig")
+    if any(isinstance(h, logging.FileHandler) and os.path.abspath(h.baseFilename) == target for h in root.handlers):
+        yield None
+        return
+    try:
+        paths.root.mkdir(parents=True, exist_ok=True)
+        fh = logging.FileHandler(paths.log, encoding="utf-8")
+    except OSError:
+        log.debug("remediation.log not attached", exc_info=True)
+        yield None
+        return
+    token = object()
+    ctx = _REM_LOG.set(token)
+    fh.setLevel(logging.DEBUG)
+    fh.setFormatter(_LogFormatter(paths.root))
+    fh.addFilter(_LogFilter(threading.get_ident(), token))
+    if root.level == logging.NOTSET or root.level > logging.DEBUG:
+        for h in root.handlers:     # 파일에는 DEBUG까지, 콘솔에는 원래 수준대로 남긴다
+            if h.level == logging.NOTSET:
+                h.setLevel(logging.INFO if root.level in (logging.NOTSET, logging.INFO) else root.level)
+        root.setLevel(logging.DEBUG)
+    root.addHandler(fh)
+    try:
+        yield fh
+    finally:
+        root.removeHandler(fh)
+        fh.close()
+        try:
+            _REM_LOG.reset(ctx)
+        except ValueError:
+            _REM_LOG.set(None)
+
+
 def _sigterm_to_exit() -> Callable[[], None]:
     """메인 스레드의 SIGTERM 처리가 기본값이면 ``SystemExit``를 던지는 처리로 잠시 바꾸고, 되돌리는 함수를 반환한다.
     점유 해제가 ``finally``에서 실행되게 하기 위해서다."""
@@ -357,7 +430,8 @@ def _clear_root(root: Path) -> None:
     import shutil
     root.mkdir(parents=True, exist_ok=True)
     for child in root.iterdir():
-        if child.name == CLAIM_NAME:
+        # 점유 파일과 지금 열어 둔 remediation.log는 남긴다. 로그에는 앞선 시도의 줄도 이어서 남는다
+        if child.name in (CLAIM_NAME, "remediation.log"):
             continue
         if child.is_dir() and not child.is_symlink():
             shutil.rmtree(child)
@@ -665,7 +739,7 @@ def run_after_migration(run_dir: Path | str, project_dir: Path | str, cfg: Any, 
         if claim is None:
             # 다른 프로세스가 이 조치 폴더를 쓰고 있으면 아무것도 바꾸지 않는다
             return load_state(run_dir)
-        with claim:
+        with claim, remediation_log(paths):
             try:
                 existing = load_state(run_dir)
                 if existing is not None:
@@ -786,7 +860,7 @@ def run_only(run_dir: Path | str, source: Path | str, cfg: Any, *, run_id: str, 
             # 다른 프로세스가 이 조치 폴더를 쓰고 있으면 아무것도 바꾸지 않고, 저장하지 않은 FAILED 상태를 반환한다
             return load_state(run_dir) or _failed_state(run_id, StateConflict.code,
                                                         claim_refusal(_read_claim(claim_path(paths.root))))
-        with claim:
+        with claim, remediation_log(paths):
             try:
                 existing = load_state(run_dir)
                 if existing is not None:
@@ -891,7 +965,7 @@ def resume(run_dir: Path | str, cfg: Any, *, journal: Journal | None, stop: Stop
     except StateConflict as e:
         log.error("chained remediation %s: resume refused: %s", state.id, e)
         raise
-    with claim:
+    with claim, remediation_log(paths):
         # 점유하기 전에 다른 프로세스가 상태를 바꿨을 수 있으므로 다시 읽는다
         state = load_state(run_dir)
         if state is None:

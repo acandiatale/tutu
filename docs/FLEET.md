@@ -37,7 +37,11 @@ Manifest forms:
 Paths are relative to the manifest file. Manifests are read in UTF-8 (with or without BOM), UTF-16 or cp949. Project
 names become run ids and directory names, so they are ASCII: a non-ASCII name (`주문관리-v2`) becomes its ASCII slug
 plus a short hash of the input path, and a colliding name gets the hash too. Per-project `configs` / `overrides` are
-merged over the fleet config, except `kb.dir`: the KB is always fleet-wide.
+merged over the fleet config, except `kb.dir`: the KB is always fleet-wide. A per-project override is applied after the
+`SBMIG_<SECTION>__<KEY>` environment values, so it wins over them (one INFO line `fleet project <name>: <key> given explicitly
+replaces <VAR> from the environment` per replaced value); the environment still wins over the yml files. A ZIP input is unpacked
+under the `intake.max_unpacked_mb` / `intake.max_entry_mb` / `intake.max_compression_ratio` limits; a ZIP over them ends that
+project at intake (`run aborted: ZIP refused: …`, exit 3).
 
 A missing input is `skipped` (it runs on a later resume once it exists). A project rejected at intake as an
 unsupported build tool (Gradle, no build file; flag `unsupported-build-tool:<tool>`) is `skipped` too: the reason is
@@ -101,7 +105,9 @@ becomes `proven`). `fleet.reindex_every` re-indexes the KB every N projects. Ins
   `logs/`; `none` keeps everything.
 - **`sbmig clean [--out DIR] [--fleet DIR] [--older-than DAYS] [--keep-failed] [--dry-run] [--records DIR]`** frees
   the project copies of finished runs, the web UI's uploads, stale `.part` uploads and the LLM records
-  (`llm-*.json`); running / queued runs are never touched.
+  (`llm-*.json`); running / queued runs and their uploads are never touched (an upload is matched to its run by the run id
+  in its name, `<slug>-YYYYMMDD-HHMMSS-<hex>` or `web-…`; with `--keep-failed` the uploads of failed runs stay too). It is
+  manual: nothing deletes whole run folders, `source.zip` or `result.zip`.
 
 ## The one-line result and attention codes
 
@@ -143,7 +149,7 @@ project's `report.md` lists them for the owners: with `report.language: ko` in �
 | `fleet.infra_retry_minutes` | `15` | wait before re-checking (`0` = stop at once, state kept) |
 | `fleet.infra_max_waits` | `4` | re-checks without a healthy project before the fleet stops |
 | `fleet.cleanup` | `build-output` | after each project: `none` \| `build-output` \| `workspace` |
-| `fleet.min_free_gb` | `5` | free space on the output drive before each project (`0` = no check) |
+| `fleet.min_free_gb` | `5` | free space on the output drive before each project (`0` = no check); also the web pod's floor before it reads an upload (HTTP 507 below it) |
 | `kb.dir` | `kb-v2` | the shared KB folder; in production an absolute path outside the checkout |
 | `kb.lock_timeout_seconds` | `300` | wait for the KB lock; past it only that write is given up (logged) |
 

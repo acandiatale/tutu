@@ -78,6 +78,11 @@ class ParentChainFacts(BaseModel):
     build_extension_sources: dict[str, str] = Field(default_factory=dict)
     # the raw declarations (groupId, artifactId, version, declaring pom) — resolved after the chain's properties are merged
     extension_decls: list[tuple[str, str, str, str]] = Field(default_factory=list)
+    # 모듈은 사내 부모 하나만 상속하므로 관리 버전도 루트 부모별로 둔다(Boot BOM 보충분 제외)
+    # review T2: root parent g:a:v → the managed versions of ITS chain (own entries + their imports, no Boot add-on)
+    root_managed: dict[str, dict[str, str]] = Field(default_factory=dict)
+    # the Boot BOM add-on's managed versions (empty unless `boot_bom_added`), applied at the lowest priority per root
+    addon_managed: dict[str, str] = Field(default_factory=dict)
 
     @property
     def own_managed(self) -> dict[str, str]:
@@ -85,6 +90,26 @@ class ParentChainFacts(BaseModel):
 
         The chain's own managed versions, without the Boot BOM add-on."""
         return self.managed if self.chain_managed is None else self.chain_managed
+
+    def managed_for(self, parent: str | None, *, own: bool = False) -> dict[str, str]:
+        """이 부모(``g:a:v`` 또는 ``g:a``)를 상속하는 pom이 받는 관리 버전을 반환한다.
+        루트 부모별 정보가 없으면 합친 ``managed``를, 사내 루트 부모가 아니면 빈 dict를 반환한다.
+
+        Review T2: the managed versions a pom whose `<parent>` is `parent` (g:a:v, else matched by g:a) inherits — that
+        root's chain only, plus the Boot BOM add-on at the lowest priority unless `own`. A parent that is not one of
+        the roots → {} (no company parent manages anything for it). Facts without per-root sets (built by hand, read
+        before this field existed) → the merged view (`managed`, or `own_managed` with `own`), as before."""
+        if not self.root_managed:
+            return dict(self.own_managed if own else self.managed)
+        hit = self.root_managed.get(parent or "")
+        if hit is None and parent:
+            ga = ":".join(parent.split(":")[:2])
+            hit = next((m for r, m in self.root_managed.items() if ":".join(r.split(":")[:2]) == ga), None)
+        if hit is None:
+            return {}
+        if own or not self.boot_bom_added:
+            return dict(hit)
+        return {**self.addon_managed, **hit}
 
     @property
     def empty(self) -> bool:
@@ -227,6 +252,8 @@ def _merge_root(reader: PomReader, chain: list[PomSummary], facts: ParentChainFa
                 facts.unreadable.append(coord)
     for k, v in managed.items():
         facts.managed.setdefault(k, v)
+    if root and root not in facts.root_managed:
+        facts.root_managed[root] = dict(managed)
     return reached
 
 
@@ -261,6 +288,7 @@ def _load(cfg: Any, roots: list[tuple[str, str, str]], local: Any) -> ParentChai
         if not bb.empty:
             facts.boot_bom_added = True
             facts.chain_managed = dict(facts.managed)          # v2.1s: what the chain itself manages
+            facts.addon_managed = dict(bb.managed)
             for k, v in bb.managed.items():
                 facts.managed.setdefault(k, v)
             # 보충한 Boot BOM은 import와 같아서 속성이 상속되지 않으므로 properties에는 넣지 않는다

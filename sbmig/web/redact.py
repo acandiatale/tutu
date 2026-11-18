@@ -71,16 +71,91 @@ def _mask_userinfo(text: str, mask: str) -> str:
     return _URL_USERINFO.sub(lambda m: f"{m.group('scheme')}{mask}@", text)
 
 
+def _token_pattern(value: str) -> re.Pattern[str]:
+    # 짧은 값은 앞뒤에 영문자나 숫자가 붙지 않은 하나의 토큰일 때만 바꾼다(날짜, 해시, 숫자 안의 일치를 피한다).
+    # 숫자 사이의 - . : 는 날짜, 시각, 버전을 잇는 문자로 본다
+    return re.compile(r"(?<![A-Za-z0-9])(?<![0-9][-.:])" + re.escape(value) + r"(?![A-Za-z0-9])(?![-.:][0-9])")
+
+
+def _compile(values: Iterable[str]) -> tuple[tuple[str, re.Pattern[str] | None], ...]:
+    # 펼친 값마다 바꾸는 방법을 정한다. MIN_SECRET_LEN 이상은 그대로 바꾸고, 짧은 값은 토큰 정규식으로 바꾼다
+    return tuple((v, _token_pattern(v) if len(v) < contract.MIN_SECRET_LEN else None) for v in values)
+
+
+def _replace(text: str, compiled: Iterable[tuple[str, re.Pattern[str] | None]], mask: str) -> str:
+    for v, pattern in compiled:
+        if v in text:
+            text = text.replace(v, mask) if pattern is None else pattern.sub(mask, text)
+    return text
+
+
 def redact_text(text: str, values: list[str], mask: str = "***") -> str:
     """텍스트에서 ``values``와 그 출력 표기를 모두 ``mask``로 바꾸고 URL 사용자 정보를 가린다.
     짧은 값이 긴 값의 일부만 지우면 나머지가 남으므로 긴 값부터 바꾼다.
+    ``contract.MIN_SECRET_LEN``보다 짧은 값은 앞뒤에 영문자나 숫자가 없는 하나의 토큰일 때만 바꾼다.
 
     Replace every occurrence of each value and of its output spellings (longest first) and mask URL userinfo
-    (`https://u:p@h` → `https://***@h`)."""
-    for v in expand_values(values):
-        if v in text:
-            text = text.replace(v, mask)
-    return _mask_userinfo(text, mask)
+    (`https://u:p@h` → `https://***@h`). A value shorter than `MIN_SECRET_LEN` (a 4-character IVAS user id) is replaced
+    only as a whole token — not inside a date, a hash or a longer number (review 2026-11-18, W5)."""
+    return _mask_userinfo(_replace(text, _compile(expand_values(values)), mask), mask)
+
+
+# JSON 문자열 리터럴 하나. 올바른 JSON에서 큰따옴표는 문자열 안팎을 가르는 데에만 쓰이므로 왼쪽부터 찾으면 정확하다
+_JSON_STRING = re.compile(r'"(?:[^"\\]|\\.)*"')
+
+
+def redact_json_text(text: str, values: list[str], mask: str = "***") -> str | None:
+    """JSON 텍스트의 문자열 값 안에서만 비밀 값을 바꾼다. 키, 숫자, 구조와 나머지 바이트는 그대로 둔다.
+    JSON으로 읽히지 않으면 None을 반환한다(호출한 쪽이 텍스트로 처리한다).
+
+    Redact inside the string VALUES of a JSON text only: keys, numbers, structure and every other byte stay as they are
+    (review 2026-11-18, W5: a plain substring pass over `report.json` replaced a short id inside numbers and hashes and
+    left the file unparsable). None when `text` is not JSON (the caller treats it as text, as before)."""
+    try:
+        json.loads(text)
+    except ValueError:
+        return None
+    compiled = _compile(expand_values(values))
+    out: list[str] = []
+    pos = 0
+    for m in _JSON_STRING.finditer(text):
+        j = m.end()
+        while j < len(text) and text[j] in " \t\r\n":
+            j += 1
+        if j < len(text) and text[j] == ":":
+            continue                                   # 키는 바꾸지 않는다
+        raw = m.group(0)
+        value = json.loads(raw)
+        new = _mask_userinfo(_replace(value, compiled, mask), mask)
+        if new != value:
+            out.append(text[pos:m.start()])
+            out.append(json.dumps(new, ensure_ascii=not _has_non_ascii(raw)))
+            pos = m.end()
+    if not out:
+        return text
+    out.append(text[pos:])
+    return "".join(out)
+
+
+def _has_non_ascii(raw: str) -> bool:
+    return any(ord(ch) > 127 for ch in raw)
+
+
+def _redact_structured(path: Path, text: str, values: list[str], mask: str) -> str:
+    # .json은 파일 전체를, .jsonl은 줄마다 JSON으로 읽어 문자열 값 안에서만 바꾸고, 읽히지 않으면 텍스트로 처리한다
+    suffix = path.suffix.lower()
+    if suffix == ".json":
+        new = redact_json_text(text, values, mask)
+        return redact_text(text, values, mask) if new is None else new
+    if suffix == ".jsonl":
+        parts: list[str] = []
+        for line in text.splitlines(keepends=True):
+            body = line.rstrip("\r\n")
+            end = line[len(body):]
+            new = redact_json_text(body, values, mask) if body.strip() else body
+            parts.append((redact_text(body, values, mask) if new is None else new) + end)
+        return "".join(parts)
+    return redact_text(text, values, mask)
 
 
 class Redactor:
@@ -98,6 +173,7 @@ class Redactor:
         self._lock = threading.Lock()
         self._key: frozenset[str] | None = None
         self._values: tuple[str, ...] = ()
+        self._compiled: tuple[tuple[str, re.Pattern[str] | None], ...] = ()
         self._next = 0.0
         self.refresh()
 
@@ -112,15 +188,15 @@ class Redactor:
         with self._lock:
             if raw != self._key:
                 self._key, self._values = raw, tuple(expand_values(raw))
+                self._compiled = _compile(self._values)
             if self._refresh_s is not None:
                 self._next = time.monotonic() + self._refresh_s
 
     def __call__(self, text: str) -> str:
         if self._refresh_s is not None and time.monotonic() >= self._next:
             self.refresh()
-        for v in self._values:
-            if v in text:
-                text = text.replace(v, self.mask)
+        # 짧은 값은 하나의 토큰일 때만 바꾼다(redact_text와 같은 규칙)
+        text = _replace(text, self._compiled, self.mask)
         if "://" in text and "@" in text:          # URL 사용자 정보가 있을 수 있는 줄에만 정규식을 적용한다
             text = _mask_userinfo(text, self.mask)
         return text
@@ -169,7 +245,7 @@ def redact_file(path: Path, values: list[str], mask: str = "***") -> bool:
         if b"\x00" in raw[:8192]:          # a binary file: decoding with "replace" and writing back would corrupt it
             return False
         text = raw.decode("utf-8", errors="replace")
-        new = redact_text(text, values, mask)
+        new = _redact_structured(path, text, values, mask)
         if new == text:
             return False
         # 웹 파드가 같은 순간 state.json을 읽어도 반쯤 쓰인 JSON을 보지 않도록 임시 파일에 쓰고 os.replace로

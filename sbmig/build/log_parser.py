@@ -107,6 +107,24 @@ _AP_MARKERS = ("com.sun.tools.javac", "lombok", "ExceptionInInitializerError", "
                "NoSuchFieldError", "annotation processor", "AnnotationProcessor", "Processor")
 
 
+_BARE_FAILURE_RE = re.compile(r"(?:Compilation failure:?\s*)+")
+
+
+def _cause_line(lines: list[str]) -> str:
+    """'Failed to execute goal … Compilation failure' 블록에서 요약 문구와 Maven 안내 문구가 아닌 첫 줄을 반환한다.
+
+    Review P8: the first line of a compiler plugin's failed-goal block that is neither the goal line, the
+    `Compilation failure` summary nor Maven boilerplate (`warnings found and -Werror specified` …); "" when none."""
+    for ln in lines:
+        body = ln.strip()
+        if not body or body.startswith("Failed to execute goal") or _is_boilerplate(body):
+            continue
+        if _BARE_FAILURE_RE.fullmatch(body) or body.rstrip(": ") == "COMPILATION ERROR":
+            continue
+        return body
+    return ""
+
+
 def strip_ansi(text: str) -> str:
     """텍스트에서 ANSI 색상과 커서 제어 코드를 제거한다.
     ``-B`` 없이 실행한 Maven이나 Windows 콘솔의 출력도 똑같이 파싱하기 위해서다."""
@@ -766,6 +784,9 @@ class _Parser:
                     msg = message.replace("Compilation failure:", "").strip() or message
                     if msg.startswith("Fatal error compiling:"):
                         msg = msg.split(":", 1)[1].strip() or msg
+                    if msg.rstrip(": ") == "Compilation failure":
+                        # 요약 문구만 있으면 원인을 알 수 없으므로 블록의 첫 원인 줄(-Werror 등)을 메시지로 쓴다
+                        msg = _cause_line(blk.lines) or msg
                 self._add(BuildError(kind=kind, message=msg, module=blk.module, goal=blk.goal, raw=raw))
                 return
         if plugin == "enforcer":

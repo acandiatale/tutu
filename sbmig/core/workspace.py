@@ -326,11 +326,87 @@ def new_run_id(prefix: str = "run") -> str:
     return f"{prefix}-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
 
 
-def _safe_extract(zf: zipfile.ZipFile, dest: Path) -> None:
+_MIB = 1024 * 1024
+RATIO_MIN_BYTES = _MIB              # 이보다 작게 풀리는 항목은 압축률을 보지 않는다(취약점 조치 접수와 같은 규칙)
+_UNPACK_CHUNK = 1024 * 1024
+_LIES = "the ZIP's directory understates its sizes"
+
+
+class ZipRefused(ValueError):
+    """올린 ZIP이 풀기 한도를 넘어 접수를 거절할 때 던지는 예외. 메시지가 보고서와 화면에 나가는 사유 문장이다.
+
+    An uploaded ZIP over an unpacking limit; the message is the reason sentence of the refusal."""
+
+
+class ZipLimits(BaseModel):
+    """올린 ZIP을 풀 때의 한도(바이트, 배수)를 담는 클래스. 0이면 그 한도는 없다.
+
+    Limits of unpacking an uploaded ZIP (0 = none): the whole tree, one entry, and one entry's unpacked / packed size
+    (judged from `RATIO_MIN_BYTES` unpacked on), the meanings of `intake.max_unpacked_mb` / `max_entry_mb` /
+    `max_compression_ratio` and of the remediation intake's limits."""
+    max_unpacked_bytes: int = 0
+    max_entry_bytes: int = 0
+    max_compression_ratio: int = 0
+
+    @classmethod
+    def from_mb(cls, unpacked_mb: int, entry_mb: int, ratio: int) -> "ZipLimits":
+        """MiB 단위 값으로 한도를 만든다."""
+        return cls(max_unpacked_bytes=int(unpacked_mb) * _MIB, max_entry_bytes=int(entry_mb) * _MIB,
+                   max_compression_ratio=int(ratio))
+
+    @classmethod
+    def from_config(cls, intake: Any = None) -> "ZipLimits":
+        """``intake`` 설정(``IntakeConfig``)의 세 값으로 한도를 만든다. None이면 그 기본값을 쓴다."""
+        if intake is None:
+            from .config import IntakeConfig
+            intake = IntakeConfig()
+        return cls.from_mb(getattr(intake, "max_unpacked_mb", 0) or 0, getattr(intake, "max_entry_mb", 0) or 0,
+                           getattr(intake, "max_compression_ratio", 0) or 0)
+
+
+def _mib(n: int) -> str:
+    return f"{n / _MIB:.0f}" if n >= _MIB else f"{n / _MIB:.1f}"
+
+
+def _shown(name: str) -> str:
+    # 사유 문장에 들어가는 항목 이름에서 제어 문자를 빼고 길이를 줄인다
+    clean = "".join(ch if ch >= " " and ch != "\x7f" else "?" for ch in name)
+    return clean if len(clean) <= 200 else clean[:197] + "..."
+
+
+def _check_declared(plan: list[tuple[zipfile.ZipInfo, Path, str]], limits: ZipLimits) -> None:
+    # ZIP 디렉토리에 적힌 크기로 한도를 먼저 판단한다. 아무것도 쓰기 전이다
+    total = 0
+    for member, _target, name in plan:
+        if member.is_dir():
+            continue
+        size = int(member.file_size)
+        if limits.max_entry_bytes and size > limits.max_entry_bytes:
+            raise ZipRefused(f"ZIP refused: the entry {_shown(name)} unpacks to {_mib(size)} MiB, over the limit of "
+                             f"{_mib(limits.max_entry_bytes)} MiB (intake.max_entry_mb) — nothing was unpacked")
+        if limits.max_compression_ratio and size >= RATIO_MIN_BYTES:
+            packed = int(member.compress_size)
+            if packed <= 0 or size / packed > limits.max_compression_ratio:
+                ratio = f"{size / packed:.0f}" if packed > 0 else "∞"
+                raise ZipRefused(f"ZIP refused: the entry {_shown(name)} is compressed {ratio}:1, over the limit of "
+                                 f"{limits.max_compression_ratio}:1 (intake.max_compression_ratio) — nothing was unpacked")
+        total += size
+    if limits.max_unpacked_bytes and total > limits.max_unpacked_bytes:
+        raise ZipRefused(f"ZIP refused: it unpacks to {_mib(total)} MiB, over the limit of "
+                         f"{_mib(limits.max_unpacked_bytes)} MiB (intake.max_unpacked_mb) — nothing was unpacked")
+
+
+def _safe_extract(zf: zipfile.ZipFile, dest: Path, limits: ZipLimits | None = None) -> None:
     """zip을 안전하게 푼다.
-    파일 이름을 복원(fix_zip_name)하고, 대상 디렉토리 밖으로 나가는 항목(zip slip)은 거부한다."""
+    파일 이름을 복원(fix_zip_name)하고, 대상 디렉토리 밖으로 나가는 항목(zip slip)은 거부한다.
+    ``limits``가 있으면 쓰기 전에 ZIP 디렉토리의 크기로, 푸는 동안 실제로 쓴 바이트로 한도를 확인하고 넘으면
+    ``ZipRefused``를 던진다. 이미 쓴 파일은 호출한 쪽이 지운다.
+
+    Unpack safely (zip slip blocked). With `limits` (review 2026-11-18, W3) the directory's sizes are judged before
+    anything is written and the bytes really written while unpacking (the directory can lie); `ZipRefused` names the
+    limit — the caller removes what was written."""
     dest = dest.resolve()
-    plan: list[tuple[zipfile.ZipInfo, Path]] = []
+    plan: list[tuple[zipfile.ZipInfo, Path, str]] = []
     for member in zf.infolist():
         name = fix_zip_name(member)
         if name != member.filename:
@@ -338,14 +414,38 @@ def _safe_extract(zf: zipfile.ZipFile, dest: Path) -> None:
         target = (dest / name).resolve()
         if not str(target).startswith(str(dest) + os.sep) and target != dest:
             raise ValueError(f"zip slip blocked: {name}")
-        plan.append((member, target))
-    for member, target in plan:
+        plan.append((member, target, name))
+    if limits is not None:
+        _check_declared(plan, limits)
+    total = 0
+    for member, target, name in plan:
         if member.is_dir():
             target.mkdir(parents=True, exist_ok=True)
             continue
         target.parent.mkdir(parents=True, exist_ok=True)
         with zf.open(member) as src, open(target, "wb") as dst:
-            shutil.copyfileobj(src, dst)
+            if limits is None:
+                shutil.copyfileobj(src, dst)
+                continue
+            size = 0
+            while True:
+                chunk = src.read(_UNPACK_CHUNK)
+                if not chunk:
+                    break
+                size += len(chunk)
+                total += len(chunk)
+                # ZIP 디렉토리의 크기는 거짓일 수 있으므로 실제로 쓴 바이트로 다시 확인한다
+                if limits.max_entry_bytes and size > limits.max_entry_bytes:
+                    raise ZipRefused(f"ZIP refused while unpacking: the entry {_shown(name)} wrote more than "
+                                     f"{_mib(limits.max_entry_bytes)} MiB (intake.max_entry_mb) — {_LIES}")
+                if limits.max_unpacked_bytes and total > limits.max_unpacked_bytes:
+                    raise ZipRefused(f"ZIP refused while unpacking: more than {_mib(limits.max_unpacked_bytes)} MiB "
+                                     f"written (intake.max_unpacked_mb) — {_LIES}")
+                if limits.max_compression_ratio and size >= RATIO_MIN_BYTES and (
+                        member.compress_size <= 0 or size / member.compress_size > limits.max_compression_ratio):
+                    raise ZipRefused(f"ZIP refused while unpacking: the entry {_shown(name)} expanded more than "
+                                     f"{limits.max_compression_ratio}:1 (intake.max_compression_ratio) — {_LIES}")
+                dst.write(chunk)
 
 
 _ROOT_BUILD_FILES = ("pom.xml", "build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts",
@@ -399,6 +499,8 @@ class Workspace:
         # walk / glob이 target/처럼 건너뛴다
         # v2.1z-h: project-relative directories every scan prunes like build output (stray pom copies found at intake)
         self.ignored_dirs: set[str] = set()
+        # 올린 zip이 풀기 한도를 넘어 접수에서 거절한 사유. None이면 정상 접수다
+        self.intake_refusal: Optional[str] = None
         try:                                           # `dump-threads` file in the run dir → thread dump (diag)
             from sbmig.core.diag import watch_dump_trigger
             watch_dump_trigger(self.run_dir)
@@ -407,11 +509,16 @@ class Workspace:
 
     # ------------------------------------------------------------------ factory
     @classmethod
-    def from_input(cls, src: str | Path, out_dir: str | Path, run_id: Optional[str] = None) -> "Workspace":
+    def from_input(cls, src: str | Path, out_dir: str | Path, run_id: Optional[str] = None,
+                   limits: ZipLimits | None = None) -> "Workspace":
         """입력 디렉토리를 복사하거나 zip을 풀어 `<out_dir>/<run_id>/project`를 만들고 Workspace를 반환한다.
-        접수 단계에서 호출한다.
+        접수 단계에서 호출한다. zip이 풀기 한도(``limits``, None이면 ``intake`` 기본값)를 넘으면 아무것도 남기지 않고
+        빈 project 폴더와 ``intake_refusal``(사유 문장)을 가진 Workspace를 반환한다.
 
-        Copy a directory or extract a zip into <out_dir>/<run_id>/project and return a Workspace."""
+        Copy a directory or extract a zip into <out_dir>/<run_id>/project and return a Workspace. A zip over an
+        unpacking limit (`limits`, None = the `intake` defaults) leaves nothing unpacked: the Workspace has an empty
+        project folder and `intake_refusal` set to the reason sentence (journal `intake_refused`); the caller ends the
+        run like an intake refusal."""
         src = Path(src).resolve()
         run_id = run_id or new_run_id()
         run_dir = Path(out_dir).resolve() / run_id
@@ -424,8 +531,21 @@ class Workspace:
             root = project_dir
         elif zipfile.is_zipfile(src):
             tmp = Path(tempfile.mkdtemp(prefix="sbmig-unzip-", dir=str(run_dir)))
-            with zipfile.ZipFile(src) as zf:
-                _safe_extract(zf, tmp)
+            try:
+                with zipfile.ZipFile(src) as zf:
+                    _safe_extract(zf, tmp, limits if limits is not None else ZipLimits.from_config())
+            except ZipRefused as e:
+                # 한도를 넘은 zip은 쓴 것을 모두 지우고 빈 project 폴더로 접수 거절을 알린다
+                shutil.rmtree(tmp, ignore_errors=True)
+                project_dir.mkdir()
+                ws = cls(project_dir, run_dir, run_id)
+                ws.intake_refusal = str(e)
+                log.error("intake: %s", e)
+                ws.journal({"event": "intake_refused", "source": str(src), "reason": str(e)})
+                return ws
+            except BaseException:
+                shutil.rmtree(tmp, ignore_errors=True)
+                raise
             detected = _detect_project_root(tmp)
             shutil.copytree(detected, project_dir, symlinks=False, ignore=_intake_ignore(detected))
             shutil.rmtree(tmp, ignore_errors=True)

@@ -26,6 +26,7 @@ from sbmig.core import scrub as _scrub
 
 from . import i18n
 from .inhouse import FRAMEWORK_GROUP
+from .matching import finding_key, ga_key
 from .i18n import (
     BOUNDARY_KO,
     COUNT_KO,
@@ -537,6 +538,10 @@ class _Facts:
         self.inhouse = [r for r in state.residuals if r.reason == R_INHOUSE_ARTIFACT]
         self.manual = [r for r in state.residuals if r.reason != R_INHOUSE_ARTIFACT]
         self.final_ok = self.final is not None and self.final.complete
+        # 완료된 조치 후 검사에 남은 취약점이다. 버전과 상관없이 같은 라이브러리에 남아 있으면 조치하지 않은 것으로 본다
+        self._left = {finding_key(f.kind, f.id, f.identifier) for f in self.f_act} if self.final_ok else set()
+        self._left_ids = ({(f.id, ga_key(":".join(str(f.identifier or "").split(":")[:2]))) for f in self.f_act}
+                          if self.final_ok else set())
         # 조치한 취약점은 조치 후 검사에 없으므로 점수는 완료된 조치 후 검사에서 먼저, 다음에 조치 전 검사에서 찾는다
         # 같은 ID가 여러 라이브러리에 있으면 (ID, 대상, 버전)이 맞는 점수를, 없으면 그 ID의 최고 점수를 쓴다
         self._exact: list[dict[tuple[str, str, str], float]] = []
@@ -580,8 +585,19 @@ class _Facts:
         조치 후 검사가 없거나 완료되지 않았으면 None을 반환한다."""
         if self.base is None or not self.final_ok:
             return None
-        left = {f.key for f in self.f_act}
-        return sum(1 for f in self.b_act if f.key not in left)
+        # graph.fill_counts와 같은 키로 센다. 버전이 바뀌어도 같은 라이브러리에 남은 취약점은 조치한 것이 아니다
+        return len({finding_key(f.kind, f.id, f.identifier) for f in self.b_act} - self._left)
+
+    def resolved_ids(self, ga: str, ids: Iterable[str]) -> list[str]:
+        """제안의 취약점 ID 중 완료된 조치 후 검사가 그 라이브러리에 더 이상 보고하지 않는 것만 반환한다.
+        조치 후 검사가 없거나 완료되지 않았으면 그대로 반환한다.
+
+        The ids of a committed proposal that a complete final scan no longer reports for the library (any version);
+        unchanged when there is no complete final scan."""
+        if not self.final_ok:
+            return list(ids)
+        g = ga_key(ga)
+        return [i for i in ids if (i, g) not in self._left_ids]
 
     def cve_score(self, cve: str, ga: str, version: str) -> float | None:
         """취약점 하나의 점수를 반환한다. 검사 결과에 없으면 None을 반환한다."""
@@ -835,7 +851,9 @@ def _proposal_section(L: list[str], fx: _Facts, props: list[Proposal], *, pendin
         if pending or risky_done:
             risks = sorted({r for x in u for r in x.risks})
             cells.append(_md_cell(", ".join(label(RISK_KO, r) for r in risks) or "-"))
-        cells.append(_md_cell(fx.cve_cell(p.ga, p.from_version, ids(u))))
+        # 조치 완료 표의 해결된 취약점은 완료된 재검사에서 사라진 것만 쓴다
+        shown = ids(u) if pending or skipped else fx.resolved_ids(p.ga, ids(u))
+        cells.append(_md_cell(fx.cve_cell(p.ga, p.from_version, shown)))
         L.append("| " + " | ".join(cells) + " |")
     L.append("")
     for u in units:
@@ -1217,7 +1235,8 @@ def _summary_section(L: list[str], state: RemediationState, fx: _Facts, paths: R
         L.append("| 구분 | 취약점 | 라이브러리 |")
         L.append("|---|---|---|")
         L.append(f"| 조치 전 | {found} | {_num(libs)}개 |")
-        n_lib = len({p.ga for p in fx.committed})
+        # 재검사에서 취약점이 하나도 사라지지 않은 변경의 라이브러리는 조치 완료로 세지 않는다
+        n_lib = len({p.ga for p in fx.committed if fx.resolved_ids(p.ga, p.finding_ids)})
         L.append(f"| 조치 완료 | {_num(fixed_n)}건 | " + (f"{_num(n_lib)}개 |" if n_lib else "- |"))
         n_pend = fx.matching(fx.pending)
         if fx.pending:
@@ -1521,6 +1540,10 @@ def build_report_md(state: RemediationState, paths: RunPaths, *, ignore_actions:
         n = fixed if fixed is not None else fx.matching(fx.committed)
         L.append(f"## 조치 완료 — {_num(n)}건")
         L.append("")
+        if any(not fx.resolved_ids(p.ga, p.finding_ids) for p in fx.committed):
+            L.append("「해결된 취약점」 칸이 「-」인 변경은 적용했지만 재검사에서 같은 취약점이 아직 보고됩니다. 남은 취약점은 "
+                     "「처리 기록」의 남은 취약점 목록에서 확인해 주세요.")
+            L.append("")
         _proposal_section(L, fx, fx.committed, pending=False)
         L.append("")
 

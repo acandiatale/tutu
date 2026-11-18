@@ -48,11 +48,13 @@ OWNER_LABEL = "sbmig-owner"                 # Job / 파드 라벨이며 요청�
 # Main이 Job마다 넣어 주는 실행별 환경 변수 이름이다.
 # 나머지 환경 변수는 템플릿의 리터럴, ConfigMap, Secret이 채운다
 # SBMIG_JOB_SLOT은 슬롯 번호(1부터), SBMIG_WORKER_ACTION은 할 일(비어 있으면 이관), SBMIG_FLOW는 실행
-# 방식(full | remediation)이다
+# 방식(full | remediation)이다. SBMIG_JOB_ATTEMPT는 이 Job이 맡은 시도 번호다
 RUN_ENV = ("SBMIG_SOURCE_ZIP", "SBMIG_OUT", "SBMIG_RUN_ID", "SBMIG_CONFIG", "SBMIG_STOP_AFTER", "SBMIG_LLM_PROVIDER",
-           "SBMIG_JOB_SLOT", "SBMIG_WORKER_ACTION", "SBMIG_FLOW")
+           "SBMIG_JOB_SLOT", "SBMIG_WORKER_ACTION", "SBMIG_FLOW", "SBMIG_JOB_ATTEMPT")
 FLOW_ENV = "SBMIG_FLOW"                     # Main이 기록하고 Worker가 request.json의 flow와 비교한다
 SLOT_ENV = "SBMIG_JOB_SLOT"                 # Main이 기록하고 Worker가 읽는다
+# Worker가 제어 상태를 읽기 전에 거절해도 상태 파일에 자기 시도 번호를 적도록 Main이 넘긴다
+ATTEMPT_ENV = "SBMIG_JOB_ATTEMPT"
 # 취약점 조치 재개 시도
 ACTION_ENV = "SBMIG_WORKER_ACTION"          # 비어 있으면 이관(sbmig run)을 하고, 아니면 아래 action 중 하나를 한다
 ACTION_REMEDIATION_RESUME = "remediation-resume"
@@ -172,13 +174,66 @@ def config_digests(repo_root: Path, configs: list[str]) -> dict[str, str]:
     return out
 
 
+BUILD_DIGEST_LEN = 12
+# 빌드 식별값에 넣는 파일이다. 패키지의 .py, 함께 배포되는 config/*.yml, knowledge/ 아래 전부를 넣는다
+BUILD_DIGEST_PARTS = (("sbmig", "**/*.py"), ("config", "*.yml"), ("knowledge", "**/*"))
+_build_digest_cache: dict[str, str] = {}
+
+
+def build_digest(root: Path | None = None) -> str:
+    """실행 중인 코드 트리의 짧은 지문을 반환한다. 같은 체크아웃이나 이미지면 Main과 Worker가 같은 값을 얻는다.
+    상대 경로를 정렬해 경로와 파일 바이트를 넣고, 점으로 시작하는 이름(.env 등)과 ``__pycache__``, ``out/``은 넣지 않는다.
+    읽을 수 없는 파일은 경로와 표시만 넣는다. 프로세스마다 한 번만 계산한다.
+
+    A short digest of the running code tree (the package's `*.py`, the shipped `config/*.yml`, `knowledge/**`): sorted
+    relative paths + file bytes; dot-names (`.env`), `__pycache__` and `out/` never; an unreadable file contributes its
+    path and a marker. Computed once per process and root (review 2026-11-18, W2 / R1: `__version__` alone never changes,
+    so a web pod and a build pod running different images could not be told apart)."""
+    base = Path(root) if root is not None else Path(__file__).resolve().parents[2]
+    key = str(base)
+    if key in _build_digest_cache:
+        return _build_digest_cache[key]
+    files: set[Path] = set()
+    for top, pattern in BUILD_DIGEST_PARTS:
+        d = base / top
+        if not d.is_dir():
+            continue
+        try:
+            found = list(d.glob(pattern))
+        except OSError:
+            found = []
+        for p in found:
+            rel = p.relative_to(base)
+            if any(part.startswith(".") or part in ("__pycache__", "out") for part in rel.parts):
+                continue
+            if p.is_file():
+                files.add(rel)
+    h = hashlib.sha256()
+    for rel in sorted(files, key=lambda r: r.as_posix()):
+        h.update(rel.as_posix().encode("utf-8") + b"\0")
+        try:
+            h.update(hashlib.sha256((base / rel).read_bytes()).digest())
+        except OSError:
+            h.update(b"<unreadable>")
+    value = h.hexdigest()[:BUILD_DIGEST_LEN]
+    _build_digest_cache[key] = value
+    return value
+
+
 def sbmig_version() -> str:
-    """이 코드의 sbmig 버전을 반환한다. Main과 Worker가 같은 이미지인지 확인할 때 쓴다."""
+    """이 코드의 sbmig 버전과 코드 트리 지문(``0.1.0+<12자>``)을 반환한다. Main과 Worker가 같은 이미지인지 확인할 때 쓴다.
+
+    The package version plus the running tree's digest (`build_digest`), e.g. `0.1.0+3f2a9c1b0d4e`: the same checkout or
+    image gives the same value in Main and Worker without a build argument; two different builds differ."""
     try:
         from sbmig import __version__
     except ImportError:  # pragma: no cover
         return "unknown"
-    return str(__version__)
+    try:
+        digest = build_digest()
+    except Exception:  # noqa: BLE001 - 지문을 만들지 못해도 버전 비교 자체는 이어 간다
+        digest = "unknown"
+    return f"{__version__}+{digest}"
 
 
 def new_owner_token() -> str:
@@ -390,6 +445,10 @@ class ControlState:
     env_pin_policy: str | None = None           # refuse | warn | off 중 하나이며 Worker가 이 값을 따른다
     slot: int | None = None                     # 이 Job의 슬롯 번호이며 None이면 1번 슬롯으로 본다
     action: str | None = None                   # None은 이관 시도이고 "remediation-resume"은 조치 재개 시도다
+    # Job을 만드는 Main이 creating과 함께 기록하는 설정 파일 해시와 sbmig 버전이다. Worker는 이 값과 비교하고,
+    # 이 값이 없는 이전 state.json이면 request.json의 값과 비교한다
+    config_digests: dict[str, str] | None = None
+    sbmig_version: str | None = None
 
     @property
     def terminal(self) -> bool:
@@ -470,12 +529,24 @@ class JobStatus:
             return None
 
 
-def verify_request(record: RequestRecord, repo_root: Path, zip_path: Path | None, run_id: str | None = None) -> list[str]:
-    """Worker가 받은 입력이 접수 때와 같은지 확인한다.
-    zip의 sha256, 설정 파일 해시, sbmig 버전, run id를 ``request.json``과 비교한다.
+IMAGE_DIFFERS_HINT = ("the web pod and the build pod run different images: restart the web pod after pushing an image "
+                      "(and upload the project again)")
+IMAGE_DIFFERS_KO = ("웹 파드와 빌드 파드가 서로 다른 이미지로 실행되고 있어 진행하지 않았습니다. "
+                    "운영 담당자에게 웹 파드 재시작을 요청한 뒤 프로젝트를 다시 올려 주세요.")
+
+
+def verify_request(record: RequestRecord, repo_root: Path, zip_path: Path | None, run_id: str | None = None,
+                   pinned: ControlState | None = None) -> list[str]:
+    """Worker가 받은 입력이 Main이 고정한 값과 같은지 확인한다.
+    zip sha256과 run id는 ``request.json``과, 설정 파일 해시와 sbmig 버전은 Job을 만든 Main이 ``pinned``에 기록한 값과
+    비교한다. ``pinned``에 그 값이 없으면(이전 버전의 state.json) ``request.json``의 값과 비교한다.
     다른 점을 문장 목록으로 반환하고, 빈 목록이면 통과다. ``zip_path``가 None이면 zip 비교는 건너뛴다.
 
-    The Worker's check of the pinned inputs; returns the mismatches as sentences (empty = ok)."""
+    The Worker's check of the pinned inputs; returns the mismatches as sentences (empty = ok). The zip's sha256 stays the
+    intake pin (it identifies the input); the config digests and the version are the ones the Main that CREATED this Job
+    recorded with `creating` (`pinned`), so a run that waited across a web-pod restart, or a remediation resume of a run
+    an older image made, is accepted when Main and Worker agree now. A state file without them (written by the version
+    before) falls back to `request.json`'s pins. A digest / version mismatch ends with `IMAGE_DIFFERS_HINT` once."""
     problems: list[str] = []
     if run_id and record.run_id != run_id:
         problems.append(f"run id differs: request.json says {record.run_id}, the Worker was started for {run_id}")
@@ -486,11 +557,19 @@ def verify_request(record: RequestRecord, repo_root: Path, zip_path: Path | None
             got = sha256_file(Path(zip_path))
             if got != record.zip_sha256:
                 problems.append(f"source zip changed since intake (sha256 {got[:12]}… ≠ pinned {record.zip_sha256[:12]}…)")
+    want_digests = pinned.config_digests if pinned is not None and pinned.config_digests is not None \
+        else record.config_digests
+    want_version = pinned.sbmig_version if pinned is not None and pinned.sbmig_version else record.sbmig_version
+    image = False
     mine = config_digests(repo_root, list(record.configs))
-    for name, want in (record.config_digests or {}).items():
+    for name, want in (want_digests or {}).items():
         got = mine.get(name, "missing")
         if got != want:
-            problems.append(f"config {name} differs from the pinned copy (Main and Worker must mount the same ConfigMap)")
-    if record.sbmig_version and record.sbmig_version != sbmig_version():
-        problems.append(f"sbmig version differs: Main {record.sbmig_version}, Worker {sbmig_version()} (same image tag for both pods)")
+            problems.append(f"config {name} differs between the web pod and the build pod")
+            image = True
+    if want_version and want_version != sbmig_version():
+        problems.append(f"sbmig version differs: web pod {want_version}, build pod {sbmig_version()}")
+        image = True
+    if image:
+        problems.append(IMAGE_DIFFERS_HINT)
     return problems

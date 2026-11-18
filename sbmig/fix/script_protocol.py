@@ -52,6 +52,10 @@ proper is `sbmig.script.check_script`. Edits: a ```json fence, trailing commas, 
 not read is `edits_problem` "edits JSON unreadable: …"; items are validated into `Edit` models by
 `sbmig.script.edits.edits_from_json` (unknown op / pom call, path outside the project → "edits invalid: …"). The
 blocks are located before the script, so a `<script>` inside an edit (a JSP) or the analysis never opens the script.
+An opening tag may carry attributes (`<script type="python">`); of several script blocks the last one that is closed
+and parses is taken (warning SEVERAL_SCRIPTS). `ParsedScript.unclosed` names a `<script>` / `<edits>` block that ran
+to the end of the answer without its closing tag: with `finish_reason` length the fixer treats such an answer as cut
+(not used, not stored, one feedback round asking for a shorter answer).
 
 
 """
@@ -75,10 +79,12 @@ PATCHES_WARNING = "answered with v1 <patches> instead of a <script>"
 CHANGES_UNREADABLE = "changes unreadable"
 CHANGES_MISSING = "the answer did not describe its changes"   # a script without a <changes> list ([sbmig] note)
 BLOCKED_MAX_CHARS = 400                                        # v2.1y: the <blocked> sentence kept
+MISSING_CLOSE_SCRIPT = "missing </script> (block closed at the end of the answer)"
+SEVERAL_SCRIPTS = "several <script> blocks ({n}); took the last complete one"
 
 _TAG_NAMES = ("analysis", "solution", "verify", "edits", "changes", "no_script", "blocked", "script", "need_files?",
               "need_grep", "confidence", "patches")
-_OPEN_SCRIPT_RE = re.compile(r"<\s*script\s*>", re.IGNORECASE)
+_OPEN_SCRIPT_RE = re.compile(r"<\s*script(?:\s+[^<>]*)?>", re.IGNORECASE)   # also <script type="python">
 _CLOSE_SCRIPT_LINE_RE = re.compile(r"^[ \t]*<\s*/\s*script\s*>", re.IGNORECASE | re.MULTILINE)
 _CLOSE_SCRIPT_RE = re.compile(r"<\s*/\s*script\s*>", re.IGNORECASE)
 _NEXT_TAG_LINE_RE = re.compile(
@@ -113,6 +119,10 @@ class ParsedScript:
     need_files: list[str] = field(default_factory=list)
     need_grep: list[str] = field(default_factory=list)
     problem: str = ""                              # why `code` is empty: NO_SCRIPT, NO_FIX_DEF, "script does not parse…"
+    # 닫는 태그 없이 답변 끝까지 이어진 블록 이름(script / edits). 토큰 한도에서 잘린 답인지 판단할 때 쓴다
+    unclosed: list[str] = field(default_factory=list)   # blocks that ran to the end of the answer without a closing tag
+    # 토큰 한도에서 잘려 쓰지 않는 답의 이유. 파서가 아니라 LLMFixer가 finish_reason을 보고 채운다
+    cut: str = ""                                  # set by LLMFixer: why the answer is not used (cut at the token limit)
     raw: str = ""
     warnings: list[str] = field(default_factory=list)
 
@@ -268,27 +278,53 @@ def script_problem(code: str) -> str:
     return ""
 
 
-def _script_from_tag(t: str, start: int, warnings: list[str]) -> Optional[str]:
-    """`start` 위치부터 <script>…</script> 안의 텍스트를 꺼낸다. 코드 안에도 `</script>`가 나올 수 있으므로
-    자기 줄에 홀로 있고 앞의 코드가 파싱되는 닫는 태그를 먼저 고른다.
+def _script_block_at(rest: str) -> tuple[str, bool]:
+    """여는 태그 뒤의 텍스트에서 스크립트 내용과 닫는 태그가 있었는지를 반환한다.
 
-    The text inside <script>…</script> searched from `start`. The closing tag is the first one on its own line
-    whose block parses (a `</script>` can sit inside the code, e.g. a JSP edit), then any later one; without a
-    closing tag the block ends at a following <analysis>/<need_*> line or EOF."""
-    m = _OPEN_SCRIPT_RE.search(t, start)
-    if not m:
-        return None
-    rest = t[m.end():]
+    (the script text after one opening tag, closed). The closing tag is the first one on its own line whose block
+    parses (a `</script>` can sit inside the code, e.g. a JSP edit), then any later one; without a closing tag the
+    block ends at a following <analysis>/<need_*> line or EOF."""
     closes = [c.start() for c in _CLOSE_SCRIPT_LINE_RE.finditer(rest)]
     closes += [c.start() for c in _CLOSE_SCRIPT_RE.finditer(rest) if c.start() not in closes]
     for pos in closes:
         if not script_problem(clean_code(rest[:pos])):
-            return rest[:pos]
+            return rest[:pos], True
     if closes:
-        return rest[:closes[0]]
-    warnings.append("missing </script> (block closed at the end of the answer)")
+        return rest[:closes[0]], True
     nxt = _NEXT_TAG_LINE_RE.search(rest)
-    return rest[:nxt.start()] if nxt else rest
+    return (rest[:nxt.start()] if nxt else rest), False
+
+
+def _script_from_tag(t: str, start: int, warnings: list[str]) -> Optional[str]:
+    """`start` 위치부터 <script>…</script> 안의 텍스트를 꺼낸다. 코드 안에도 `</script>`가 나올 수 있으므로
+    자기 줄에 홀로 있고 앞의 코드가 파싱되는 닫는 태그를 먼저 고른다.
+    스크립트 블록이 여러 개면 닫혀 있고 파싱되는 마지막 블록을 쓰고 경고를 남긴다.
+
+    The text inside <script>…</script> searched from `start` (`_script_block_at`). Several opening tags: the last
+    block that is closed and parses with a module-level fix is taken (the earlier ones are drafts) with a
+    SEVERAL_SCRIPTS warning; an opening tag inside such a block's code (a script writing a JSP) never counts. When no
+    block is complete the first opening tag decides, as before."""
+    opens = list(_OPEN_SCRIPT_RE.finditer(t, start))
+    if not opens:
+        return None
+    complete: list[tuple[int, int, str]] = []
+    for m in opens:
+        body, closed = _script_block_at(t[m.end():])
+        if closed and not script_problem(clean_code(body)):
+            complete.append((m.start(), m.end() + len(body), body))
+    # 다른 완성 블록의 코드 안에 있는 여는 태그는 블록으로 세지 않는다
+    outer = [c for c in complete if not any(o[0] < c[0] < o[1] for o in complete)]
+    if outer:
+        if len(outer) > 1:
+            warnings.append(SEVERAL_SCRIPTS.format(n=len(outer)))
+        # 마지막 완성 블록 뒤에 닫히지 않은 블록이 있으면 답이 잘렸을 수 있으므로 표시해 둔다
+        if any(m.start() >= outer[-1][1] and not _script_block_at(t[m.end():])[1] for m in opens):
+            warnings.append(MISSING_CLOSE_SCRIPT)
+        return outer[-1][2]
+    body, closed = _script_block_at(t[opens[0].end():])
+    if not closed:
+        warnings.append(MISSING_CLOSE_SCRIPT)
+    return body
 
 
 def _script_from_fence(t: str, warnings: list[str]) -> Optional[str]:
@@ -462,6 +498,14 @@ def blocked_text(body: str) -> str:
     return text if len(text) <= BLOCKED_MAX_CHARS else text[:BLOCKED_MAX_CHARS - 1].rstrip() + "…"
 
 
+def _unclosed(masked: str, name: str) -> bool:
+    """`<name>` 블록이 있는데 닫는 태그가 없는지 확인한다.
+
+    A `<name>` block is there and no `</name>` follows it."""
+    m = re.search(rf"<\s*{name}\s*>", masked, re.IGNORECASE)
+    return bool(m) and not re.search(rf"<\s*/\s*{name}\s*>", masked[m.end():], re.IGNORECASE)
+
+
 def _mask(t: str, start: int, end: int) -> str:
     """`t` with [start, end) blanked (newlines kept, offsets unchanged)."""
     return t[:start] + re.sub(r"[^\n]", " ", t[start:end]) + t[end:]
@@ -509,6 +553,8 @@ def parse_script_response(text: str) -> ParsedScript:
     body, masked = _take_block(t, masked, "verify")
     if body is not None:
         res.verify = _strip_outer_fence(body).strip()
+    if _unclosed(masked, "edits"):
+        res.unclosed.append("edits")
     body, masked = _take_block(t, masked, "edits")
     if body is not None:
         res.edits_block = True
@@ -542,6 +588,8 @@ def parse_script_response(text: str) -> ParsedScript:
     body = _script_from_tag(masked, 0, res.warnings)
     if body is None:
         body = _script_from_fence(masked, res.warnings)
+    if MISSING_CLOSE_SCRIPT in res.warnings:
+        res.unclosed.append("script")
     if body is not None:
         res.candidate = clean_code(body)
         res.problem = script_problem(res.candidate)
@@ -572,10 +620,12 @@ __all__ = [
     "CHANGES_UNREADABLE",
     "EDITS_INVALID",
     "EDITS_UNREADABLE",
+    "MISSING_CLOSE_SCRIPT",
     "NO_FIX_DEF",
     "NO_SCRIPT",
     "PATCHES_WARNING",
     "PROTOCOL_WARNING",
+    "SEVERAL_SCRIPTS",
     "ParsedScript",
     "blocked_text",
     "clean_code",

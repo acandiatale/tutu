@@ -36,6 +36,7 @@ from lxml import etree
 from pydantic import BaseModel, Field
 
 from sbmig.analyze.properties import (
+    MAX_BINARY_RESOURCES,
     PLUGIN_UNFILTERED_DEFAULTS,
     TEXT_RESOURCE_EXTENSIONS,
     filtered_binary_resources,
@@ -73,11 +74,14 @@ class ResourcePlan(BaseModel):
     What `apply_non_filtered_extensions` writes: per pom the missing extensions (lower-case, no dot, sorted) and
     the plugins they go to (maven-resources-plugin first); `files` = the filtered binary files no
     `<nonFilteredFileExtension>` covers yet (this plan's and the extension-less ones — what the structure review
-    reports as left); `followups` = extension-less binaries `nonFilteredFileExtensions` cannot cover."""
+    reports as left; at most MAX_BINARY_RESOURCES, `files_total` = how many there are); `followups` = extension-less
+    binaries `nonFilteredFileExtensions` cannot cover."""
     extensions_by_pom: dict[str, list[str]] = Field(default_factory=dict)
     plugins_by_pom: dict[str, list[str]] = Field(default_factory=dict)
     files: list[str] = Field(default_factory=list)
     followups: list[str] = Field(default_factory=list)
+    # 보고용 ``files``는 MAX_BINARY_RESOURCES개까지만 두고 전체 개수는 따로 둔다
+    files_total: int = 0
 
     @property
     def empty(self) -> bool:
@@ -337,7 +341,8 @@ def _resources_owner(facts: dict[str, _Facts], path: str) -> str | None:
 
 def _scan(view: _View, pom: str) -> list[str]:
     try:
-        return filtered_binary_resources(view, [SimpleNamespace(path=pom)])
+        # 확장자는 찾은 파일 전체에서 모아야 하므로 보고용 개수 제한 없이 받는다
+        return filtered_binary_resources(view, [SimpleNamespace(path=pom)], limit=None)
     except Exception as e:  # noqa: BLE001 - the scan itself never raises; belt and braces
         log.debug("resources filtering: scan of %s failed: %s", pom, e)
         return []
@@ -525,7 +530,9 @@ def _settle(ws: Any, facts: dict[str, _Facts], want: dict[str, _Want], company: 
             plan.extensions_by_pom[t] = sorted(added)
             plan.plugins_by_pom[t] = plugins
         files |= {rel for rel, e in w.files.items() if e in added}
-    plan.files = sorted(files | set(noext))
+    every = sorted(files | set(noext))
+    plan.files_total = len(every)
+    plan.files = every[:MAX_BINARY_RESOURCES]
     noext.sort()
     for rel in noext[:MAX_FOLLOWUP_FILES]:
         plan.followups.append(f"binary file without an extension under a filtered resource dir: {rel} — exclude it "

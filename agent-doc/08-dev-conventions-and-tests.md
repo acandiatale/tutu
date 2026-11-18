@@ -101,7 +101,8 @@ ruff check sbmig/loop/fixloop.py
    `llm.base_url: "replay:fixtures/projects/<이름>/replay"`, 그리고 **자기 KB** `kb.dir: out/e2e/kb-<이름>`.
 4. `replay/llm-NNN.json`: 재생할 LLM 답. 필드 `replay_role`(`fix` 또는 `structure_review`), `match`(`"case: <case_id>"` —
    case_id 는 L2 서명 sha1 의 앞 10자리; 맞는 것 중 안 쓴 첫 항목, 마지막 것은 반복, 없으면 "수정 없음"), `response`, `note`.
-   구조 검토는 거의 모든 실행에서 LLM 호출 1회다.
+   구조 검토는 거의 모든 실행에서 LLM 호출 1회다. 새 재생 파일은 `tests/fix/data/replay_parse_golden.json` 에도 항목을 더한다(파서가 저장된 답을
+   같게 읽는지 보는 시험).
 5. `tests/fixtures/test_fixture_projects.py` 의 `SCENARIOS` 와 `BUILD_MATRIX` 에 이름을 더하고, `fixtures/projects/README.md` 의 표에 한 줄.
 6. `scripts/e2e.sh --only <이름>` 으로 실제 Maven 에서 확인.
 

@@ -448,3 +448,27 @@ def test_own_pom_problem_keeps_the_project_pom_and_takes_the_line():
     (e,) = parse_maven_log(text, ROOT)
     assert (e.file, e.line, e.column, e.module) == ("app-back/pom.xml", 12, 21, "app-back")
 
+
+
+# ---------------------------------------------------------------------------------------------- review P8
+WERROR_LOG = """[INFO] --- maven-compiler-plugin:3.14.0:compile (default-compile) @ pricing-core ---
+[WARNING] COMPILATION WARNING :
+[WARNING] /work/proj/src/main/java/com/example/P.java:[5,20] [deprecation] Integer(int) in Integer has been deprecated
+[INFO] 1 warning
+[ERROR] COMPILATION ERROR :
+[ERROR] error: warnings found and -Werror specified
+[INFO] 1 error
+[INFO] BUILD FAILURE
+[ERROR] Failed to execute goal org.apache.maven.plugins:maven-compiler-plugin:3.14.0:compile (default-compile) on project pricing-core: Compilation failure
+[ERROR] error: warnings found and -Werror specified
+[ERROR] -> [Help 1]
+"""
+
+
+def test_werror_names_the_cause_line_not_the_bare_compilation_failure():
+    (e,) = parse_maven_log(WERROR_LOG, ROOT)
+    assert e.kind == ErrorKind.COMPILE and e.message == "error: warnings found and -Werror specified"
+    # the case identity stays what it was: the refined L1 / L2 are computed from the raw block
+    from sbmig.triage import refine_signatures
+    (r,) = refine_signatures([e])
+    assert r.signature == r.signature_generic == "compile|build|warnings found and -werror specified"

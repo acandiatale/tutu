@@ -138,9 +138,8 @@ def _norm(rel: str) -> str:
     return "" if rel in (".", "") else rel.strip("/")
 
 
-def _chain_props(pom: PomInfo, by_key: dict[tuple[str, str], PomInfo]) -> dict[str, str]:
-    """pom의 ``<properties>``에 저장소 안 부모 pom의 속성을 합쳐 실제로 적용되는 속성을 만든다(자식 우선).
-    ``basedir`` 계열은 ``.``으로 둔다."""
+def _chain(pom: PomInfo, by_key: dict[tuple[str, str], PomInfo]) -> list[PomInfo]:
+    """pom과 저장소 안 부모 pom들을 자식부터 순서대로 반환한다."""
     chain: list[PomInfo] = []
     cur: PomInfo | None = pom
     seen: set[str] = set()
@@ -149,6 +148,13 @@ def _chain_props(pom: PomInfo, by_key: dict[tuple[str, str], PomInfo]) -> dict[s
         chain.append(cur)
         par = cur.parent
         cur = by_key.get(((par.group_id or ""), par.artifact_id)) if par is not None and par.artifact_id else None
+    return chain
+
+
+def _chain_props(pom: PomInfo, by_key: dict[tuple[str, str], PomInfo]) -> dict[str, str]:
+    """pom의 ``<properties>``에 저장소 안 부모 pom의 속성을 합쳐 실제로 적용되는 속성을 만든다(자식 우선).
+    ``basedir`` 계열은 ``.``으로 둔다."""
+    chain = _chain(pom, by_key)
     props: dict[str, str] = {}
     for p in reversed(chain):
         props.update(p.properties or {})
@@ -201,36 +207,65 @@ def module_roots(ws: Any, poms: Iterable[PomInfo]) -> tuple[list[str], list[str]
         if d is not None and d not in lst:
             lst.append(d)
 
+    builds: dict[str, Any] = {}
+
+    def build_of(q: PomInfo) -> Any:
+        if q.path not in builds:
+            try:
+                root_el = _xml_root(read_pom_text(ws, q.path))
+            except Exception:  # noqa: BLE001 - unreadable pom: defaults only
+                root_el = None
+            builds[q.path] = _kid(root_el, "build") if root_el is not None else None
+        return builds[q.path]
+
+    def war_confs(build: Any) -> list[Any]:
+        out = []
+        for plugins in (_kid(build, "plugins"), _kid(_kid(build, "pluginManagement"), "plugins")):
+            for pl in _kids(plugins, "plugin"):
+                if _ktext(pl, "artifactId") == "maven-war-plugin":
+                    out.append(_kid(pl, "configuration"))
+        return out
+
     for p in pom_list:
         base = posixpath.dirname(p.path.replace("\\", "/"))
         war = war or (p.packaging or "").lower() == "war"
         props = _chain_props(p, by_key)
-        try:
-            root_el = _xml_root(read_pom_text(ws, p.path))
-        except Exception:  # noqa: BLE001 - unreadable pom: defaults only
-            root_el = None
-        build = _kid(root_el, "build") if root_el is not None else None
-        src = _resolve_dir(_ktext(build, "sourceDirectory"), base, props, unresolved) if build is not None else None
+        # 저장소 안 부모 pom의 <build> 디렉토리도 상속되므로 자식부터 부모 순으로 보고 먼저 나온 값을 쓴다
+        chain = [b for b in (build_of(q) for q in _chain(p, by_key)) if b is not None]
+
+        def first(name: str) -> str | None:
+            for b in chain:
+                if _kid(b, name) is not None:
+                    return _ktext(b, name)
+            return None
+
+        src = _resolve_dir(first("sourceDirectory"), base, props, unresolved)
         add(roots, src if src is not None else _norm(posixpath.join(base, "src/main/java")))
-        if build is not None:
-            add(roots, _resolve_dir(_ktext(build, "scriptSourceDirectory"), base, props, unresolved))
-            tsrc = _resolve_dir(_ktext(build, "testSourceDirectory"), base, props, unresolved)
+        if chain:
+            add(roots, _resolve_dir(first("scriptSourceDirectory"), base, props, unresolved))
+            tsrc = _resolve_dir(first("testSourceDirectory"), base, props, unresolved)
             add(ignored, tsrc if tsrc is not None else _norm(posixpath.join(base, "src/test")))
-            res = _kid(build, "resources")
+            res = next((_kid(b, "resources") for b in chain if _kid(b, "resources") is not None), None)
             if res is None:
                 add(roots, _norm(posixpath.join(base, "src/main/resources")))
             for r in _kids(res, "resource"):
                 d = _resolve_dir(_ktext(r, "directory"), base, props, unresolved) if _kid(r, "directory") is not None \
                     else _norm(posixpath.join(base, "src/main/resources"))
                 add(roots, d)
-            for plugins in (_kid(build, "plugins"), _kid(_kid(build, "pluginManagement"), "plugins")):
-                for pl in _kids(plugins, "plugin"):
-                    if _ktext(pl, "artifactId") != "maven-war-plugin":
-                        continue
-                    conf = _kid(pl, "configuration")
-                    add(roots, _resolve_dir(_ktext(conf, "warSourceDirectory"), base, props, unresolved))
-                    for r in _kids(_kid(conf, "webResources"), "resource"):
-                        add(roots, _resolve_dir(_ktext(r, "directory"), base, props, unresolved))
+            # war 플러그인 설정도 항목마다 자식 값이 이기므로 그 항목을 가진 가장 가까운 pom의 값만 쓴다
+            for b in chain:
+                confs = [cf for cf in war_confs(b) if _kid(cf, "warSourceDirectory") is not None]
+                if confs:
+                    for cf in confs:
+                        add(roots, _resolve_dir(_ktext(cf, "warSourceDirectory"), base, props, unresolved))
+                    break
+            for b in chain:
+                confs = [cf for cf in war_confs(b) if _kid(cf, "webResources") is not None]
+                if confs:
+                    for cf in confs:
+                        for r in _kids(_kid(cf, "webResources"), "resource"):
+                            add(roots, _resolve_dir(_ktext(r, "directory"), base, props, unresolved))
+                    break
         else:
             add(roots, _norm(posixpath.join(base, "src/main/resources")))
             add(ignored, _norm(posixpath.join(base, "src/test")))

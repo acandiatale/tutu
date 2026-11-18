@@ -21,9 +21,9 @@ step_intake --> step_analyze --> step_plan --> step_phase(transform)
 `_run_guard` 가 전체를 감싼다: 어떤 예외·중단이 나도 `_finalize` 가 돌아 보고서가 남는다(불변조건 1). 중단 사유는
 `_abort` 가 플래그 `aborted`, 후속 조치 `run aborted: <이유>`, ERROR 로그 한 줄 `run aborted: …`, 저널 `abort` 로 남긴다.
 
-실행 디렉토리에 남는 것: `project/`, `logs/`(Maven·OpenRewrite 로그 `NNN-<label>.log`, `logs/effective-depmgmt.json` 등),
-`journal.jsonl`(이벤트 한 줄씩), `sbmig.log`(DEBUG, 줄마다 `[단계]` 태그), 오류 목록(`out/<run id>/errors.jsonl` + 사람용 md),
-`out/<run id>/profile.json`, `out/<run id>/plan.json`, `out/<run id>/report.md`, `out/<run id>/report.json`, `changes.patch`, `result.zip`.
+실행 디렉토리에 남는 것: `project/`, `logs/`(Maven·OpenRewrite 로그 `NNN-<label>.log`, `logs/effective-depmgmt.json` 등), `journal.jsonl`,
+`sbmig.log`(DEBUG, `[단계]` 태그), 오류 목록(`out/<run id>/errors.jsonl` + md), `out/<run id>/profile.json`, `out/<run id>/plan.json`,
+`out/<run id>/report.md`, `out/<run id>/report.json`, `changes.patch`, `result.zip`.
 
 ## 1. 접수 (intake) — `step_intake`
 
@@ -33,7 +33,7 @@ step_intake --> step_analyze --> step_plan --> step_phase(transform)
 | 읽는 것 | 입력 트리, `artifacts.parent` / `artifacts.boot_parent` / `artifacts.comp_parent`, `build.mvn`, `build.java_home` |
 | 하는 일 | (0) `build.setup_command` 가 있으면 먼저 실행(실패 = 중단). (1) 사전 점검: Maven 이 도는지, `mvn -v` 의 Java 가 `build.require_java_major`(21)인지, 사내 부모 좌표가 채워졌는지 → 저널 `preflight`. (2) 빌드 도구: `sbmig/analyze/build_tool.py` 의 판별. Maven 이면 통과. Ant(build.xml 만)는 기본으로 거절한다(`_refuse_ant`: 플래그 `unsupported-build-tool:ant`, exit 3, 중단 사유 = `intake.ant_message` "Maven 변환 후 신청 부탁드립니다." — ERROR 줄·보고서 첫 줄·웹 화면에 그대로). `intake.ant_to_maven: true` 일 때만 `sbmig/analyze/ant.py` 의 `synthesize_pom` 이 pom.xml 을 쓰고 커밋 `intake: pom.xml synthesized from build.xml`, 플래그 `pom-synthesized`(좌표 모르는 jar 가 있으면 `jar-coordinates-unknown`). Gradle·빌드 파일 없음 → 중단. (3) 레이아웃: 떠도는 pom 복사본 무시(`find_stray_pom_copies`, 폴더를 `Workspace.ignored_dirs` 에 넣음, 플래그 `stray-pom-ignored`, 커밋 없음) → 모듈이 트리에 없는 EAR 루트면 중단(`ear-without-modules`) → 루트 pom 없는 형제 pom 이면 루트 aggregator 생성(`layout.generate_aggregator`, 커밋 `intake: generated root aggregator pom (…)`, 플래그 `aggregator-generated`) → reactor 에 두 번 닿는 모듈의 중복 `<module>` 제거(커밋, 플래그 `reactor-duplicate-removed`) → 배포 전송 빌드 확장(`<build><extensions>` 의 wagon-*, 목록 `knowledge/libraries/build_extensions.yml`) 제거(`sbmig/analyze/build_extensions.py`, 커밋 `intake: deploy transport extension(s) removed (…)`, 플래그 `deploy-extensions-removed`, 인수인계 한 줄씩 — 저장소에 없는 확장 하나가 OpenRewrite 까지 막기 때문, `intake.strip_deploy_extensions`) → 사내 부모 체인이 선언한 빌드 확장 점검(`sbmig/build/parent_extensions.py`: 저장소가 주는데 로컬 `~/.m2` 에 묵은 `*.lastUpdated` 표식만 있으면 그 폴더의 표식 제거, 어디서도 못 읽으면 WARNING + 플래그 `parent-extension-unresolvable` + 인수인계, 저널 `parent_build_extensions`). (4) as-is effective dependencyManagement 캡처(`sbmig/build/effective.py` 의 `capture_effective_depmgmt` → `logs/effective-depmgmt.json`) — 나중에 버전 이어받기와 인수인계의 "바뀐 버전" 에 쓴다 |
 | 저널 | `build_hook`, `preflight`, `build_tool`, `pom_synthesized`, `stray_pom_ignored`, `ear_without_modules`, `aggregator_generated`, `reactor_dedupe`, `effective_depmgmt` |
-| 멈춤 | `build.settings_file` 파일이 없거나 비어 있음(`settings-not-found`, Maven 호출 전), Maven 실행 불가(`mvn-not-found`), JDK 가 21 아님(`jdk-not-21`), `unsupported-build-tool:<도구>`, `ear-without-modules` → 모두 exit 3 |
+| 멈춤 | 올린 ZIP 이 풀기 한도(`intake.max_unpacked_mb` / `intake.max_entry_mb` / `intake.max_compression_ratio`)를 넘음(`Workspace.intake_refusal`, 저널 `intake_refused`, `run aborted: ZIP refused: …`, 사전 점검보다 먼저), `build.settings_file` 파일이 없거나 비어 있음(`settings-not-found`, Maven 호출 전), Maven 실행 불가(`mvn-not-found`), JDK 가 21 아님(`jdk-not-21`), `unsupported-build-tool:<도구>`, `ear-without-modules` → 모두 exit 3 |
 
 pom 이 없고 build.xml 도 없는 트리(풀어 놓은 Tomcat 웹앱)는 거부된다. 담당팀에 보낼 설명서는 읽기 전용 `sbmig inventory <dir>` 가 만든다.
 
@@ -52,7 +52,7 @@ pom 이 없고 build.xml 도 없는 트리(풀어 놓은 Tomcat 웹앱)는 거�
 | 정하는 것 | `ProjectProfile`: 유형(`case_type`, `sbmig/analyze/classifier.py`), Java·Spring·Boot 버전, 라이브러리(`sbmig/analyze/libraries.py`), MSA 서비스 루트, 경고, 외부 설정 키, 동봉 jar 목록(`sbmig/analyze/bundled_jars.py`, `intake.bundled_jars`), ADF 요약(`sbmig/analyze/adf.py`) |
 | 쓰는 것 | `out/<run id>/profile.json`, 동봉 jar 가 있으면 `logs/bundled-jars.json` + 플래그 `bundled-jars` |
 | 권고 | `sbmig/advisory/evaluate.py` 가 EOL 라이브러리 권고를 찾는다. 안내만(차단 없음): 계획 노트, 수정 프롬프트 힌트, 인수인계 |
-| 사내 프레임워크 | `framework.artifacts`가 있으면 `sbmig/analyze/framework.py`가 직접 선언, 부모 pom 상속, 동봉 jar 순으로 찾고, 못 찾으면 `_check_framework`가 `dependency:tree` 1회로 간접 의존성을 본다. 찾으면 플래그 `framework-project`, 인수인계 한 줄, 범위 `jdk-jakarta`(아래 "범위") |
+| 사내 프레임워크 | `framework.artifacts`가 있으면 `sbmig/analyze/framework.py`가 직접 선언, 부모 pom 상속, 동봉 jar 순으로 찾고, 못 찾으면 `_check_framework`가 `dependency:tree` 1회로 간접 의존성을 본다. 찾으면 플래그 `framework-project`, 인수인계 한 줄, 범위 `jdk-jakarta`(아래 "범위"). 아무것도 못 찾았는데 부모 pom 과 의존성 트리를 둘 다 읽지 못했으면 플래그 `framework-unchecked` + 인수인계 "framework check could not run (…)"; 전체 범위로 계속, 종료 코드 그대로 |
 | 저널 | `analyze`, `adf_project` / `adf_traces`, `hollow_reactor` / `sources_outside_reactor`, `bundled_jars`, `framework_project` / `framework_check`, `advisories`, `no_root_pom` |
 | 멈춤 | ADF 근거 계열이 둘 이상이고 `intake.adf_policy: stop`(기본) → 플래그 `adf-project`, 인수인계 첫 줄 "ADF 프로젝트라 변환이 불가능합니다 (…)", exit 3(Maven·LLM 호출 없음). 루트 pom.xml 이 없고 MSA 도 아님 → `no-root-pom`, exit 3 |
 | 계속하지만 성공 아님 | 속 빈 리액터 → 플래그 `hollow-reactor`, 인수인계 첫 줄, exit 2. 계열 하나뿐인 ADF 흔적 → `adf-traces` 메모만 |
@@ -121,7 +121,7 @@ MSA: 공유 라이브러리 루트 먼저, 그다음 서비스마다 `transform.
 | 쓰는 것 | 커밋 `restructure: <단계 id>` + 중간 커밋 `restructure: …`(JSP 는 `restructure: JSP javax -> jakarta`), 저널 `restructure`, `restructure_moves`, `parent_chain_facts`, `versions_pinned`, `bom_property_overrides`, `non_filtered_extensions`, `bundled_jar_wired` / `bundled_jars_skipped`, `jsp_jakarta`, `placeholders` |
 | 설정 | `layout.*`(모듈 이름, `layout.jsp_boot_packaging`, `layout.drop_managed_versions`, `layout.drop_bom_property_overrides`, `layout.wire_bundled_jars`, `layout.jsp_jakarta_rename`, `layout.legacy_context`), `artifacts.*`, `build.non_filtered_extensions` |
 | 플래그 | `parent-chain-no-boot-bom`(`artifacts.parent_manages_spring_boot: true` 인데 사내 체인이 Boot BOM 을 import 하지 않음, 인수인계 맨 앞 줄), `web-xml-registered` 등 |
-| 실패 | `RestructureResult.ok=False` → 플래그 `restructure-failed`, 나머지 재구성 단계는 건너뛰지만 검증 빌드는 돈다. 최종 빌드가 통과해도 성공 아님(exit 2) |
+| 실패 | `RestructureResult.ok=False`(또는 예외) → 트리를 단계 시작 때의 커밋으로 되돌린다(단계 전 트리가 깨끗했을 때; 메모 `restructure undone: the tree was reset to <sha>, …` 또는 `restructure not undone: …`, 저널 `restructure_reset`). 플래그 `restructure-failed`, 나머지 재구성 단계는 건너뛰지만 검증 빌드는 as-is 배치로 돈다. 최종 빌드가 통과해도 성공 아님(exit 2) |
 
 규칙 하나하나는 [06-company-rules-restructure.md](06-company-rules-restructure.md).
 
@@ -134,7 +134,7 @@ MSA: 공유 라이브러리 루트 먼저, 그다음 서비스마다 `transform.
 | 정하는 것 | 판정 `ok` / `issues` / `skipped` / `failed`, 이슈마다 `critical` 또는 `warning`. critical 예: 틀린 부모, 부모 체인을 덮는 속성, 다른 줄(line)의 Spring 계열 버전 고정, 인코딩 누락 |
 | 하는 일 | critical 이 있고 `review.fix_critical` 이면 LLM 답의 `<edits>` 를 적용(기본은 편집만, `review.ask_script: false`). `review.invariant_check` 가 재구성 불변식을 다시 검사해 어긴 편집은 복원하고 한 번 재질의 |
 | 쓰는 것 | 커밋 `review: fix critical structure issues (<n>)`(수정이 성공했을 때만; 실패면 바뀐 것을 버림), 저널 `structure_review`, 입력 사본 `logs/review-input.md`(`review.save_input`), warning 은 오류 목록 메모와 보고서(ko: 「확인해 주세요」의 "구조 점검 경고", 판정은 참고 → 실행 정보; en: "Structure review" 절) |
-| 실패 | 실행을 멈추지 않는다. LLM 이 없거나 예산이 없으면 `failed` / `skipped` 로 적고 계속. LLM 1회(형식 오류면 1회 재시도) |
+| 실패 | 실행을 멈추지 않는다. LLM 이 없거나 예산이 없으면 `failed` / `skipped` 로 적고 계속. LLM 1회. 못 읽는 답(JSON 조각만 읽힘, 토큰 한도에서 잘림 — `finish_reason` length / max_tokens)이면 짧게 답하라고 1회 재시도, 두 번 다 못 읽으면 `failed`(메모 `unreadable answer twice (…)`). 첫 이슈만 남긴 검토는 없다 |
 
 `SBMIG-RESULT` 줄 끝의 `review=<판정>` 이 이 결과다.
 
@@ -144,9 +144,9 @@ MSA: 공유 라이브러리 루트 먼저, 그다음 서비스마다 `transform.
 |---|---|
 | 코드 | `Orchestrator._step_verify` → `build_runner.run("clean package", …)`(`sbmig/build/runner.py`) → 실패면 `_verify_fix_loop` → 최종 빌드 한 번 더 |
 | 명령 | `mvn clean package -Dmaven.test.skip=true`(`build.skip_test_compile: true`), `build.extra_args`, `build.settings_file`, `build.java_home` |
-| 쓰는 것 | 빌드 로그 `logs/NNN-verify.log`, 오류 목록에 오류 추가, 저널 `build`, `verify` |
+| 쓰는 것 | 빌드 로그 `logs/NNN-verify.log`, 오류 목록, 저널 `build`, `verify` |
 | 특이 | Windows 의 `target/` 파일 잠금이면 기다렸다 다시(`build.file_lock_retries`), 로컬 저장소 부정 캐시면 `-U` 로 한 번 더(`build.retry_negative_cache`) |
-| 수정 루프로 | 남은 클러스터가 모두 이미 차단된 것이면 루프를 돌리지 않는다. 시간 예산(`loop.max_total_minutes`)이 끝났으면 돌리지 않는다 |
+| 수정 루프로 | 남은 클러스터가 모두 이미 차단됐거나 시간 예산(`loop.max_total_minutes`)이 끝났으면 돌리지 않는다 |
 
 ## 8. 수정 루프 (개요만 — 자세히는 [04-cases-scripts-kb.md](04-cases-scripts-kb.md))
 
@@ -166,7 +166,9 @@ MSA: 공유 라이브러리 루트 먼저, 그다음 서비스마다 `transform.
      -> 시도마다 커밋 fix(script:<case>:v<N> <mode>) 또는 fix(edits:<case> <source>)
 ```
 
-끝나는 조건은 언제나 빌드 뒤: 성공, 라운드 소진, 손댈 케이스 없음, 차단만 남음, 시간 초과. 저널 `loop_start`, `triage`,
+끝나는 조건은 언제나 빌드 뒤: 성공, 라운드 소진, 손댈 케이스 없음, 차단만 남음, 시간 초과, 멈춤 요청. 끝날 때 케이스마다 마지막으로 적용한 시도가
+`no_change` / `inconclusive` 면 최종 빌드 전에 되돌린다(저널 `script_rollback` `where: "loop end"`, 시도 메모 "rolled back before the final build
+(it did not help)"; `partial` 은 남긴다). 저널 `loop_start`, `triage`,
 `decision`, `attempt`, `attempt_scored`, `script_rollback`, `script_stored`, `script_credit`, `version_try`, `resources_try`,
 `jakarta_try`, `blocked`, `loop_end`, 그리고 오케스트레이터 쪽 `verify_loop_start` / `verify_loop_end`. 루프가 돌았으면
 `_step_verify` 가 최종 `mvn clean package` 를 **반드시** 다시 한다(불변조건 1).
@@ -175,30 +177,19 @@ MSA: 공유 라이브러리 루트 먼저, 그다음 서비스마다 `transform.
 
 | 항목 | 내용 |
 |---|---|
-| 하는 일 | LLM 사용량·비용(`sbmig/report/cost.py`, `llm.pricing`), 루프의 플래그·후속 조치 합치기, 성공 판정, 미해결 오류, 차단 목록, 인프라 플래그(`infra:<kind>`), 운영자 확인, 권고 검증, 오류 목록·KB 기록, 코드 수정 내역(`sbmig/report/changes.py`), 보고서 쓰기, 그다음 느린 `changes.patch` / `result.zip`(KB 와 보고서가 먼저 — zip 도중 죽어도 잃는 것이 없게), 끝으로 웹 화면 「코드 변경」의 기록 `codediff/`(`sbmig/report/codediff.py`, `report.code_diff`) |
-| 성공 판정 | 계획한 최종 빌드가 전부 돌았고 전부 성공 + `restructure-failed` 없음 + `hollow-reactor` 없음 + 중단 아님 |
+| 하는 일 | LLM 사용량·비용(`sbmig/report/cost.py`, `llm.pricing`), 루프의 플래그·후속 조치 합치기, 성공 판정, 미해결 오류, 차단 목록, 인프라 플래그(`infra:<kind>`), 운영자 확인, 권고 검증, 오류 목록·KB 기록, 코드 수정 내역(`sbmig/report/changes.py`), 보고서 쓰기, 그다음 느린 `changes.patch` / `result.zip`(KB 와 보고서가 먼저 — zip 도중 죽어도 잃는 것이 없게), 끝으로 웹 화면 「코드 변경」의 기록 `codediff/`(`sbmig/report/codediff.py`, `report.code_diff`: 마지막 커밋에 있는 경로만, 바뀐 파일이 없으면 쓰지 않고 앞선 시도의 기록도 지움 — 저널 `code_diff_skipped`) |
+| 성공 판정 | 계획한 최종 빌드가 전부 돌았고 전부 성공 + `restructure-failed` 없음 + `hollow-reactor` 없음 + 중단 아님. MSA 의 `report.final_build` 는 실패한 첫 최종 빌드(없으면 마지막) |
 | `tests-not-compiled` | `build.skip_test_compile` 이고 빌드가 한 번이라도 돌았으면 항상 붙는 플래그 + 후속 조치("테스트는 담당팀이 `mvn test-compile` 로") |
 | 종료 코드 | `report_exit_code`(`sbmig/report/result_line.py`): `aborted` / `aborted:…` / `mvn-not-found` → 3, 성공이고 차단 없음 → 0, 그 밖 → 2 |
 | 마지막 줄 | `SBMIG-RESULT run=… exit=… build=… unresolved=… blocked=… open=… resolved=… llm=… attn=…[ review=…][ major=…][ scope=jdk-jakarta]` — 콘솔·`sbmig.log`·보고서 머리 표 |
 | 저널 | `report`, 그리고 `build_hook`(teardown: `build.teardown_command`, 실패는 WARNING 만) |
 
 `out/<run id>/report.md` 는 `report.language` 로 갈린다(진입점은 둘 다 `render_markdown`). 회사 설정 `ko` 는 마이그레이션을
-요청한 담당자에게 주는 안내서(`render_guide_ko`, `sbmig/report/guide_ko.py`, 한국어로 직접 쓴다). 내용이 없는 절은 빠진다:
-
-```
-머리 표 (결과, SBMIG-RESULT, 전환 후, 실행 ID, 시작 / 종료, 플래그) -> 사내 프레임워크 프로젝트 (찾았을 때)
-전환 내용 (Java / Boot / 부모 pom, 의존성 버전) -> 확인해 주세요 (권고 -> 인수인계 할 일 -> 후속 조치, 번호 목록 하나)
-코드 수정 내역 (자동 변환, 직접 수정한 파일 + 파일당 diff) -> 해결하지 못한 오류 (남은 것만) -> 진행하지 않은 항목 (차단)
-특수 절 (운영자 확인, pom 합성 (Ant), ADF, 포함된 jar, javax API jar, 외부 설정 값, 취약점 조치)
-참고 (접힘: 실행 정보 = 유형·전환 전·단계·레시피·구조 점검 판정·플래그 설명, LLM 사용량과 비용, 산출물, 진단용 기록 = 계획·단계 노트)
-```
-
-해결된 오류는 안내서 어디에도 없다. 오류마다 시도와 diff 는 `errors.md` / `errors.jsonl` 에 있다. 「직접 수정한 파일」은
+요청한 담당자에게 주는 안내서(`render_guide_ko`, `sbmig/report/guide_ko.py`, 한국어로 직접 쓴다). 절 순서는 [03](03-run-debug-and-logs.md) 3.1,
+내용이 없는 절은 빠진다. 「확인해 주세요」는 권고 → 인수인계 할 일 → 후속 조치의 번호 목록 하나다. 해결된 오류는 안내서 어디에도 없다. 오류마다 시도와 diff 는 `errors.md` / `errors.jsonl` 에 있다. 「직접 수정한 파일」은
 `RunReport.code_changes`(`sbmig/report/changes.py` 의 `collect_code_changes`, 마무리에서 만듦): 저널 `code_changes_base` 의 커밋
 (자동 변환 직후)과 최종 트리 사이의 파일별 순변경. diff 는 앞 30개 파일, 파일당 80줄, 목록은 500개까지.
-`en` 은 진단용 배치(`sbmig/report/markdown.py`): 머리 표 → Handover → ADF sizing → Error list → Fixes by case →
-Structure review → Bundled jars → Blocked → javax API jars → Manual follow-ups → Flags → What we changed → LLM usage and cost →
-Notes → Outputs. `report.json`, `errors.md`, `SBMIG-RESULT` 줄은 언어와 상관없이 같다(JSON 은 영어).
+`en` 은 진단용 배치(`sbmig/report/markdown.py`, 절 순서 03 3.1). `report.json`, `errors.md`, `SBMIG-RESULT` 줄은 언어와 상관없이 같다(JSON 은 영어).
 
 KB 쪽: 실행의 오류 목록이 `kb-v2/errors.jsonl` 에 덧붙고, 케이스 폴더 `kb-v2/cases/<case_id>/case.json` 과 저장 스크립트
 `kb-v2/cases/<case_id>/fix_v<N>.py` 의 실적이 갱신되고, `kb-v2/cases.md` 가 다시 쓰인다(모두 `kb-v2/.lock` 아래).
@@ -212,6 +203,7 @@ KB 쪽: 실행의 오류 목록이 `kb-v2/errors.jsonl` 에 덧붙고, 케이스
 | `settings-not-found`, `mvn-not-found`, `jdk-not-21`, `unsupported-build-tool:<x>`(Gradle, 빌드 파일 없음, Ant), `ear-without-modules`, `no-root-pom` | 접수·분석 | 3 |
 | `adf-project` | 분석(ADF 2계열 이상, `stop`) | 3 |
 | `hollow-reactor` | 분석 | 2 (빌드가 통과해도) |
+| `framework-unchecked` | 분석(프레임워크 검사가 부모 pom 과 의존성 트리를 못 읽음) | 기록만(인수인계 한 줄) |
 | `restructure-failed` | 재구성 | 2 |
 | `parent-chain-no-boot-bom` | 재구성 | 알림(attn 코드) |
 | `tests-not-compiled` | 마무리 | 알림 |
@@ -230,8 +222,11 @@ KB 쪽: 실행의 오류 목록이 `kb-v2/errors.jsonl` 에 덧붙고, 케이스
 - 웹 UI: `sbmig serve`(= uvicorn `sbmig.web.app:app`). zip 업로드(진행 방식 전체 진행 / 취약점 해결 → `?flow=full|remediation`) → `RunManager`(`sbmig/web/runs.py`)가 실행마다 작업 스레드
   하나에서 `stream_graph` 를 돌린다. 한 번에 이관 하나, 나머지는 `queued`(파일 KB 를 같이 쓰므로). SSE(`/api/runs/{run_id}/events`)
   이벤트: `status`(처음과 끝), `node`(그래프 노드 하나가 끝날 때), `journal`(저널 한 줄), `log`(`sbmig.log` 한 줄), `report`
-  (끝난 뒤 보고서 본문), `error`, `ping`, `end`. 중지(Stop)는 노드 사이에서만 반영된다 — 진행 중인 Maven·LLM 호출은 끊지 않고,
-  중지된 실행은 최종 빌드 없이 중단(exit 3)으로 마무리된다.
+  (끝난 뒤 보고서 본문), `error`, `ping`, `end`. 중지(Stop, `stop.request`)는 노드 사이에서만 반영된다 — 진행 중인 Maven·LLM 호출은 끊지 않는다.
+  마지막 단계 묶음 뒤(`Orchestrator.late_stop`, 두 엔진 같음): 계획한 최종 빌드에 결과 없는 것이 있으면 중단(`STOP_REQUEST_REASON`, exit 3); 수정
+  루프가 요청으로 나왔으면 중단(`STOP_LOOP_REASON` "… the fix loop was left early; the last build shows the tree as it was left") — 트리가 그대로면
+  최종 빌드를 다시 하지 않고 루프의 마지막 빌드가 최종 빌드다; 최종 빌드가 다 끝난 뒤 온 요청은 무시한다(이어지는 조치는 `stop_requested` 로
+  건너뜀). 저널 `stop_request {node: finalize, after | ignored}`.
 - `--stop-after intake|analyze|plan|transform|restructure|verify` 와 `--dry-run`(결정만 기록, 적용 없음)은 두 엔진에서 같다.
 
 ## 확인하는 법

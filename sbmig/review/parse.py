@@ -37,11 +37,17 @@ FILE_CHARS = 300
 
 _SCRIPT_RE = re.compile(r"<script>(.*?)(?:</script>|\Z)", re.S | re.I)
 _REVIEW_RE = re.compile(
-    r"<review>(.*?)(?:</review>|(?=<(?:analysis|solution|verify|edits|changes|no_script|script)>)|\Z)", re.S | re.I)
-_FIX_BLOCK_RE = re.compile(r"<(analysis|solution|verify|edits|changes|no_script|script)>.*?(?:</\1>|\Z)", re.S | re.I)
+    r"<review>(.*?)(?:</review>|(?=<(?:analysis|solution|verify|edits|changes|no_script|script(?:\s[^<>]*)?)>)|\Z)",
+    re.S | re.I)
+_FIX_BLOCK_RE = re.compile(r"<(analysis|solution|verify|edits|changes|no_script|script)(?:\s[^<>]*)?>.*?(?:</\1>|\Z)",
+                           re.S | re.I)
 _ANALYSIS_RE = re.compile(r"<analysis>(.*?)</analysis>", re.S | re.I)
 _FENCE_RE = re.compile(r"```[ \t]*([A-Za-z0-9_+-]*)[ \t]*\n(.*?)(?:```|\Z)", re.S)
 _TRAILING_COMMA_RE = re.compile(r",(\s*[}\]])")
+_JSON_START_RE = re.compile(r"[{\[]\s*(?:\"|\{|\[|\]|\}|$)")   # an opener that starts JSON, not prose
+CUT_REASONS = ("length", "max_tokens")
+CUT_ERROR = "answer cut at the output token limit (finish_reason={reason})"
+FRAGMENT_ERROR = "only a fragment of the review JSON could be read"
 _KEYS = ("verdict", "issues")
 _ISSUE_KEYS = ("severity", "problem", "fix_hint", "issue", "message")
 _FILE_KEYS = ("file", "path", "pom", "module")
@@ -113,36 +119,71 @@ def _json_candidates(text: str) -> list[str]:
     return out
 
 
-def _decode(s: str) -> Optional[Any]:
-    """텍스트에서 리뷰로 보이는 첫 JSON을 찾는다.
-    verdict / issues 키가 있는 객체를 먼저 찾고, 없으면 이슈처럼 생긴 첫 객체나 배열을 고른다.
+def _depth(s: str) -> int:
+    """`s` 안에서 닫히지 않은 `{` / `[`의 수를 센다. 문자열 안의 괄호는 세지 않는다.
 
-    The first JSON object (or array) in `s` that looks like a review; trailing text / commas tolerated."""
+    The bracket depth at the end of `s` (brackets inside JSON strings not counted)."""
+    depth, in_str, esc = 0, False, False
+    for ch in s:
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+        elif ch == '"':
+            in_str = True
+        elif ch in "{[":
+            depth += 1
+        elif ch in "}]":
+            depth = max(0, depth - 1)
+    return depth
+
+
+def _decode(s: str) -> tuple[Optional[Any], bool]:
+    """텍스트에서 리뷰로 보이는 첫 JSON을 찾아 (객체, 조각 여부)를 반환한다.
+    verdict / issues 키가 있는 객체를 먼저 찾고, 없으면 이슈처럼 생긴 첫 객체나 배열을 고른다.
+    앞에서 읽지 못한 JSON 안에 들어 있는 객체는 조각이므로 두 번째 값이 True가 된다.
+
+    (the first JSON object (or array) in `s` that looks like a review, fragment). Trailing text / commas and raw
+    control characters inside strings are tolerated. `fragment` is True when the value found sits inside an earlier
+    JSON value that did not decode (an answer cut at the token limit, a broken outer object): only a piece of the
+    answer was read, so the caller must not take it for the review."""
     s = s.strip()
     if not s:
-        return None
+        return None, False
     for attempt in (s, _TRAILING_COMMA_RE.sub(r"\1", s)):
-        try:
-            return json.loads(attempt)
-        except ValueError:
-            pass
-    dec = json.JSONDecoder()
+        for strict in (True, False):
+            try:
+                return json.loads(attempt, strict=strict), False
+            except ValueError:
+                pass
+    dec = json.JSONDecoder(strict=False)
     first: Optional[Any] = None
+    first_fragment = False
     for variant in (s, _TRAILING_COMMA_RE.sub(r"\1", s)):
+        failed: Optional[int] = None                    # the first JSON-looking opener that did not decode
         for i, ch in enumerate(variant):
             if ch not in "{[":
                 continue
             try:
                 obj, _end = dec.raw_decode(variant, i)
             except ValueError:
+                # `${project.version}` 같은 글 속 괄호는 JSON 시작으로 보지 않는다
+                if failed is None and _JSON_START_RE.match(variant, i):
+                    failed = i
                 continue
+            fragment = failed is not None and _depth(variant[failed:i]) > 0
             if isinstance(obj, dict) and any(k in obj for k in _KEYS):
-                return obj
+                return obj, fragment
             if isinstance(obj, dict) and any(k in obj for k in _ISSUE_KEYS):
-                first = first if first is not None else obj
+                if first is None:
+                    first, first_fragment = obj, fragment
             if isinstance(obj, list) and obj and all(isinstance(x, dict) for x in obj):
-                first = first if first is not None else obj
-    return first
+                if first is None:
+                    first, first_fragment = obj, fragment
+    return first, first_fragment
 
 
 def _pick(d: dict, keys: tuple[str, ...]) -> str:
@@ -197,11 +238,14 @@ def _fix_blocks(text: str, out: ParsedReview) -> None:
     out.warnings += [w for w in fx.warnings if w != PROTOCOL_WARNING]
 
 
-def parse_review_answer(text: str) -> ParsedReview:
+def parse_review_answer(text: str, finish_reason: Optional[str] = None) -> ParsedReview:
     """LLM 답변 하나를 ParsedReview로 만든다. `<review>` 블록에서 JSON을 찾고, 수정 블록은 따로 읽는다.
     이슈가 MAX_ISSUES개를 넘으면 critical 이슈를 남기고 나머지를 자른다.
+    토큰 한도에서 잘린 답변이나 JSON 조각만 읽힌 답변은 `ok=False`로 둔다.
 
-    `ParsedReview` of one LLM answer (see the module docstring)."""
+    `ParsedReview` of one LLM answer (see the module docstring). An answer cut at the output token limit
+    (`finish_reason` length / max_tokens) or one of which only a fragment of the review JSON decodes is unreadable
+    (`ok=False`, `error` says which), so the reviewer's one retry asks again instead of taking a partial review."""
     text = text or ""
     out = ParsedReview(raw=text)
     m = _REVIEW_RE.search(text)
@@ -213,12 +257,16 @@ def parse_review_answer(text: str) -> ParsedReview:
         rest = text
     _fix_blocks(rest, out)
     obj: Optional[Any] = None
+    fragment = False
     for cand in _json_candidates(body):
-        obj = _decode(cand)
+        obj, fragment = _decode(cand)
         if obj is not None:
             break
     if obj is None:
         out.error = "no review JSON in the answer" if text.strip() else "empty answer"
+        return out
+    if fragment:
+        out.error = FRAGMENT_ERROR
         return out
     if isinstance(obj, list):
         obj = {"issues": obj}
@@ -267,6 +315,10 @@ def parse_review_answer(text: str) -> ParsedReview:
         if notes:
             out.changes = answer_notes(notes, out.edits)
             out.changes_described = any(n.change or n.where for n in notes)
+    if (finish_reason or "") in CUT_REASONS:
+        # 잘린 답변은 JSON이 온전해도 뒤의 이슈나 편집이 빠졌을 수 있으므로 읽지 못한 답으로 본다
+        out.error = CUT_ERROR.format(reason=finish_reason)
+        return out
     out.ok = True
     return out
 

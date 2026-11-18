@@ -232,7 +232,10 @@ def test_earlier_stage_the_attempt_did_not_cause_is_inconclusive(cfg, ws, profil
     a = pr.attempts[0]
     assert a.outcome == "inconclusive" and a.cluster_resolved is None
     assert any("stopped before the stage" in n for n in a.notes)
-    assert ws.read(FOO) == "class Foo { ok }\n"                 # not reverted
+    # not reverted by the scoring; review 2026-11-18 L3: the loop ends on its cap with this unconfirmed try as the case's
+    # last one, so it is rolled back before the final build (not delivered)
+    assert "rolled back before the final build (it did not help)" in a.notes
+    assert "broken" in ws.read(FOO)
 
 
 def test_inconclusive_attempt_is_scored_again_after_a_revert(cfg, ws, profile):

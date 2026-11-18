@@ -64,6 +64,16 @@ _LOCATION_RAW_RE = re.compile(rf"^\s*(?:\[ERROR\]\s*)?location\s*:\s*(?P<v>.+?)\
 # infra ---------------------------------------------------------------------------------------------------------------
 _NOT_FOUND_RE = re.compile(r"(?i)could not find artifact|could not be resolved|was not found in|"
                            r"failure to find|could not resolve dependencies")
+# 저장소가 응답하지 않은 전송 실패의 원인 문구다. 오케스트레이터의 infra:repository 판단도 같은 문구를 쓴다
+# review 2026-11-18 T4: the network causes of a transfer failure (the repository did not answer); the orchestrator's
+# infra:repository pattern includes this one, so every repository_unreachable error also counts there
+TRANSFER_CAUSE_PATTERN = (r"timed out|connection refused|connection reset|unknown ?host|no route to host|"
+                          r"pkix path building failed|remote host terminated|"
+                          r"(?:status code|return code is):?\s*5\d\d\b|"
+                          r"\b5\d\d\b[^\n]{0,40}(?:internal server error|bad gateway|service unavailable|gateway time-?out)")
+_TRANSFER_CAUSE_RE = re.compile("(?i)" + TRANSFER_CAUSE_PATTERN)
+# 저장소가 답한 "없음"이다. 이 문구가 있는 오류는 전송 실패로 보지 않는다
+_NOT_FOUND_ANSWER_RE = re.compile(r"(?i)could not find artifact|was not found in|failure to find")
 _REPO_RE = re.compile(r"\bin\s+(?P<id>[\w.\-]+)\s+\((?P<url>[a-z]+://[^)\s]+)\)")
 _URL_RE = re.compile(r"\b(?:https?|file)://[^\s)'\"]+")
 _PLUGIN_BROKEN_RE = re.compile(r"Unsupported class file major version|NoSuchMethodError|"
@@ -134,6 +144,10 @@ class BlockedCandidate:
             art = next((e.artifact.coordinates for e in self.errors if e.artifact is not None), None)
             where = f" in {', '.join(self.repositories)}" if self.repositories else ""
             return f"{art or 'artifact'} not found{where}"
+        if r == BlockReason.REPOSITORY_UNREACHABLE:
+            art = next((e.artifact.coordinates for e in self.errors if e.artifact is not None), None)
+            where = f" ({', '.join(self.repositories)})" if self.repositories else ""
+            return f"{art or 'artifact'} could not be downloaded: the repository did not answer{where}"
         if r == BlockReason.PLUGIN_INCOMPATIBLE:
             return f"build plugin {self.plugin or '?'} fails on JDK 21" + (f": {self.evidence[0]}" if self.evidence else "")
         if r == BlockReason.UNSUPPORTED_SOURCE:
@@ -509,10 +523,38 @@ def _classify_external_api(cluster: ErrorCluster, profile, ws) -> Optional[Block
 # ---------------------------------------------------------------------------------------------------------------------
 # X3–X6
 # ---------------------------------------------------------------------------------------------------------------------
+def is_transfer_failure(text: str) -> bool:
+    """오류 텍스트가 저장소가 응답하지 않은 전송 실패(시간 초과, 연결 거부, 5xx)인지 확인한다. 저장소가 없다고 답했으면 False다.
+
+    Review 2026-11-18 T4: the repository did not answer (connect / read timed out, refused / reset, unknown host, PKIX, a
+    5xx status) and did not answer "not found" for the artifact either."""
+    t = text or ""
+    return bool(_TRANSFER_CAUSE_RE.search(t)) and not _NOT_FOUND_ANSWER_RE.search(t)
+
+
+def classify_transfer(cluster: ErrorCluster) -> Optional[BlockedCandidate]:
+    """해결 오류(parent, 의존성, 플러그인) 중 전송 실패인 것을 ``repository_unreachable`` 후보로 반환한다. 없으면 None이다.
+
+    Review 2026-11-18 T4: the resolution errors of `cluster` that are transfer failures → a `repository_unreachable`
+    candidate covering only those errors (an artifact the repository answered "not found" for keeps its own reason)."""
+    if cluster.kind not in (ErrorKind.PARENT_RESOLUTION, ErrorKind.DEPENDENCY_RESOLUTION, ErrorKind.PLUGIN_RESOLUTION):
+        return None
+    hits = [e for e in cluster.errors if is_transfer_failure(_text(e))]
+    if not hits:
+        return None
+    text = "\n".join(_text(e) for e in hits)
+    return BlockedCandidate(reason=BlockReason.REPOSITORY_UNREACHABLE, evidence=[hits[0].message[:300]], errors=hits,
+                            repositories=repositories_in(text))
+
+
 def _classify_infra(cluster: ErrorCluster) -> Optional[BlockedCandidate]:
     """X3에서 X5까지를 판단한다.
-    parent를 찾지 못함, 아티팩트 없음, 코드 생성 플러그인 실패, JDK 21에서 깨지는 플러그인을 본다."""
+    저장소가 응답하지 않은 전송 실패, parent를 찾지 못함, 아티팩트 없음, 코드 생성 플러그인 실패, JDK 21에서 깨지는
+    플러그인을 본다."""
     errs = cluster.errors
+    transfer = classify_transfer(cluster)
+    if transfer is not None:
+        return transfer
     if cluster.kind == ErrorKind.PARENT_RESOLUTION:
         text = "\n".join(_text(e) for e in errs)
         return BlockedCandidate(reason=BlockReason.PARENT_NOT_FOUND, evidence=[errs[0].message[:300]] if errs else [],

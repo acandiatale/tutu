@@ -63,6 +63,10 @@ Access (round 10): the page hands out company source code (`result.zip`) and run
   `SBMIG_WEB_OPEN=1` serves every client without a token — the company runs the page on its intranet only, so the
   token (one URL per owner, a 7-day cookie) was a cost without a threat model; the server logs ONE warning at start.
   A configured token still wins (open mode changes nothing when a token is set).
+* in every mode a state-changing request (not GET / HEAD / OPTIONS) that carries an `Origin` of another host or
+  `Sec-Fetch-Site: cross-site` is refused with 403 (W1, review 2026-11-18: a page of another site could otherwise
+  upload a ZIP, stop a run or answer approvals through an employee's browser); clients that send neither header
+  (curl, scripts) are unaffected.
 
 
 """
@@ -166,6 +170,104 @@ def open_network_requested(value: str | None = None) -> bool:
     return v in ("1", "true", "yes", "on")
 
 
+# 상태를 바꾸지 않는 메서드다. 이 밖의 요청만 다른 사이트에서 왔는지 검사한다
+SAFE_METHODS = ("GET", "HEAD", "OPTIONS")
+ALLOWED_ORIGINS_ENV = "SBMIG_WEB_ALLOWED_ORIGINS"   # extra hosts whose pages may send state-changing requests ("*" = no check)
+CROSS_SITE_MESSAGE = ("cross-site request refused: a page of another web site cannot start, stop or change a run "
+                      "(Origin / Sec-Fetch-Site)")
+_DEFAULT_PORTS = {"http": 80, "https": 443}
+
+
+def _split_host(value: str, scheme: str | None = None) -> tuple[str, int | None]:
+    """``host[:port]`` 값을 소문자 호스트 이름과 포트로 나눈다. 포트가 없으면 ``scheme``의 기본 포트, 그것도 없으면 None이다."""
+    v = value.strip().lower()
+    host, port = v, None
+    if v.startswith("["):                        # IPv6 리터럴은 대괄호 뒤의 콜론만 포트로 본다
+        end = v.find("]")
+        host, rest = v[:end + 1], v[end + 1:]
+        if rest.startswith(":") and rest[1:].isdigit():
+            port = int(rest[1:])
+    elif v.count(":") == 1:
+        h, _, p = v.partition(":")
+        if p.isdigit():
+            host, port = h, int(p)
+    if port is None and scheme:
+        port = _DEFAULT_PORTS.get(scheme.lower())
+    return host, port
+
+
+def _same_host(origin: str, headers) -> bool:
+    """``Origin`` 값이 요청의 자기 호스트(``Host``, 프록시가 남긴 ``X-Forwarded-Host``)를 가리키는지 확인한다.
+    호스트 값에 포트가 적혀 있을 때만 포트도 비교한다(TLS를 앞단에서 끝내면 브라우저는 https, 앱은 http로 본다).
+
+    Does the `Origin` name this request's own host (`Host`, or a proxy's `X-Forwarded-Host`)? The port is compared only
+    when the host value spells one: with TLS ended at an ingress the browser says https while the app sees http."""
+    scheme, sep, rest = origin.strip().partition("://")
+    if not sep or not rest or "/" in rest:
+        return False                               # "null" (sandboxed frame, file://) or a malformed value
+    o_host, o_port = _split_host(rest, scheme)
+    candidates = [headers.get("host", "")]
+    fwd = headers.get("x-forwarded-host", "")
+    if fwd:
+        candidates.append(fwd.split(",")[0])
+    for cand in candidates:
+        if not cand.strip():
+            continue
+        c_host, c_port = _split_host(cand)
+        if c_host == o_host and (c_port is None or c_port == o_port):
+            return True
+    return False
+
+
+def cross_site_request(scope: Scope) -> bool:
+    """상태를 바꾸는 요청(GET / HEAD / OPTIONS 밖)이 다른 사이트의 페이지에서 왔는지 확인한다.
+    ``Origin``의 호스트가 자기 호스트가 아니거나 ``Sec-Fetch-Site: cross-site``이면 참이다. 둘 다 없는 클라이언트(curl,
+    운영 스크립트)는 지금처럼 받는다.
+
+    A state-changing request (not GET / HEAD / OPTIONS) sent by a page of another site: an `Origin` whose host is not
+    ours, or `Sec-Fetch-Site: cross-site`. A client that sends neither header (curl, scripts) is not cross-site (W1).
+    `Sec-Fetch-Site: same-origin` (the browser's own statement, a page cannot set it) is accepted without comparing hosts,
+    so a proxy that rewrites `Host` cannot lock the page out; hosts in `SBMIG_WEB_ALLOWED_ORIGINS` are accepted too."""
+    if scope["type"] != "http" or scope.get("method", "GET").upper() in SAFE_METHODS:
+        return False
+    allowed = _allowed_origin_hosts()
+    if "*" in allowed:
+        return False
+    req = Request(scope)
+    origin = req.headers.get("origin")
+    if origin is not None and _origin_host(origin) in allowed:
+        return False
+    site = req.headers.get("sec-fetch-site", "").strip().lower()
+    if site == "cross-site":
+        return True
+    # 브라우저가 같은 출처라고 알려 준 요청은 호스트를 비교하지 않는다. 앞단 프록시가 Host를 바꿔도 화면이 막히지 않는다
+    if site == "same-origin":
+        return False
+    return origin is not None and not _same_host(origin, req.headers)
+
+
+def _origin_host(origin: str) -> str:
+    """``Origin`` 값에서 ``host`` 또는 ``host:port``를 소문자로 꺼낸다. 형식이 맞지 않으면 빈 문자열이다."""
+    _scheme, sep, rest = origin.strip().lower().partition("://")
+    return rest if sep and rest and "/" not in rest else ""
+
+
+def _allowed_origin_hosts() -> set[str]:
+    """``SBMIG_WEB_ALLOWED_ORIGINS``에 적힌 호스트 집합을 반환한다. 다른 호스트의 화면에서 이 API를 써야 할 때만 쓴다.
+
+    Hosts (`host` or `host:port`, comma-separated; a full origin `https://host` is accepted too) whose pages may send
+    state-changing requests although they are not this request's own host: a portal on another host, or a proxy that
+    rewrites `Host` without leaving `X-Forwarded-Host` on a plain-http page (where browsers send no `Sec-Fetch-Site`).
+    `*` switches the cross-site check off. Read at every request: the web pod's environment, never a Job's."""
+    out: set[str] = set()
+    for item in os.environ.get(ALLOWED_ORIGINS_ENV, "").split(","):
+        v = item.strip().lower()
+        if not v:
+            continue
+        out.add(v.partition("://")[2].rstrip("/") if "://" in v else v)
+    return out
+
+
 def _cookie_value(token: str) -> str:
     """토큰의 해시를 쿠키 값으로 만들어 반환한다. 토큰 자체는 브라우저에 남지 않는다."""
     return hashlib.sha256(("sbmig-web:" + token).encode("utf-8")).hexdigest()
@@ -194,6 +296,10 @@ class TokenGuard:
             await self.app(scope, receive, send)
             return
         req = Request(scope)
+        # 다른 사이트의 페이지가 직원 브라우저로 업로드, 중지, 승인을 보내지 못하게 토큰과 열린 모드보다 먼저 거부한다
+        if cross_site_request(scope):
+            await self._deny(scope, receive, send, req, 403, CROSS_SITE_MESSAGE)
+            return
         if self.token is None:
             if _remote_client(scope) and not self.open_network:
                 await self._deny(scope, receive, send, req, 403,
@@ -470,6 +576,12 @@ def create_app(out_dir: Path, repo_root: Path = PACKAGE_ROOT, max_upload_mb: int
         length = request.headers.get("content-length")
         if max_upload and length and length.isdigit() and int(length) > max_upload:
             return too_large()
+        # 출력 볼륨의 여유 공간이 fleet.min_free_gb보다 작으면 본문을 받기 전에 거절한다(507)
+        no_space = await run_in_threadpool(mgr.free_space_problem,
+                                           None if configs is None else [c for c in configs.split(",") if c])
+        if no_space:
+            log.warning("upload refused: %s", no_space)
+            return JSONResponse({"error": no_space}, status_code=507)
         # 본문을 메모리에 올리지 않도록 ``_uploads/.incoming-*.part``에 스트리밍으로 기록하면서 조각마다
         # 크기 상한과 zip 서명(PK)을 확인한다. 거부된 업로드 파일은 마지막에 지운다
         # The body is streamed to <out>/_uploads/.incoming-*.part and checked on the way: a project zip close to a

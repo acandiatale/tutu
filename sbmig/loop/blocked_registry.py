@@ -638,6 +638,11 @@ def compose_suggestion(item: BlockedItem, cfg=None, *, settings_file: Optional[s
         repos = ", ".join(repositories or []) or "the configured repositories"
         return (f"`{coords}` is not in any repository: proxy it in Nexus or fix the coordinates "
                 f"(checked repositories: {repos}); the LLM is never asked to invent versions")
+    if r == BlockReason.REPOSITORY_UNREACHABLE:
+        coords = a.coordinates if a else "the artifact"
+        repos = f" ({', '.join(repositories)})" if repositories else ""
+        return (f"`{coords}` could not be downloaded: the repository did not answer{repos} (timeout, refused connection or "
+                "server error) — not a project problem: check the repository and the network, then rerun")
     if r == BlockReason.PARENT_NOT_FOUND:
         coords = a.coordinates if a else "the parent POM"
         s = settings_file or "default ~/.m2/settings.xml"

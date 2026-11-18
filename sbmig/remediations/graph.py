@@ -37,7 +37,7 @@ from sbmig.core import scrub as _scrub
 
 from .inhouse import inhouse_keys
 from .interfaces import Components, Journal, StopCheck
-from .matching import ga_key, version_key
+from .matching import finding_key, ga_key, version_key
 from .models import (
     AWAITING_APPROVAL,
     AWAITING_CONFIRMATION,
@@ -441,8 +441,8 @@ class _Holder:
             counts["final_ignored"] = len(final_ign)
             if base is not None and base.complete:
                 def k(f: Any) -> str:
-                    # IVAS가 같은 라이브러리를 다른 대소문자로 보고해도 같은 취약점으로 센다
-                    return f"{f.kind}|{f.id}|{ga_key(f.identifier)}"
+                    # IVAS가 같은 라이브러리를 다른 대소문자로 보고해도 같은 취약점으로 센다. 보고서와 같은 키를 쓴다
+                    return finding_key(f.kind, f.id, f.identifier)
                 left = {k(f) for f in final_act}
                 counts["fixed"] = len({k(f) for f in base_act} - left)
         st.counts = counts
