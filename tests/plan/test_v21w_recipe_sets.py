@@ -216,4 +216,5 @@ def test_v2_recipe_scope_and_sets_cli(cfg) -> None:
     assert per["servlet_tomcat"]["transform"] == [J21, JAKARTA, SERVLET10]
     assert BATCH in per["spring_legacy"]["transform_conditional"] and HIB in per["spring_legacy"]["transform_conditional"]
     assert SERVLET10 in per["pure_java"]["transform_conditional"]
-    assert per["spring_boot"]["transform_conditional"] == []
+    # v2.1z-at: the Hystrix set is the one conditional set every case gets (library `hystrix`)
+    assert per["spring_boot"]["transform_conditional"] == ["com.company.migrate.HystrixToResilience4j"]

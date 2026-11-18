@@ -16,7 +16,8 @@
   프로젝트 밖 경로는 읽지도 바꾸지도 않는다. 실패하면 `ok=False` + 플래그 `restructure-failed`(성공 아님).
 - 사내 프레임워크 프로젝트(`framework.artifacts`, 범위 `jdk-jakarta`)에는 이 문서의 규칙이 적용되지 않는다. 재구성과 구조 검토가 없고
   부모 pom과 프레임워크 버전을 그대로 둔다. JSP의 javax 이름 바꾸기(9절)만 변환 단계에서 한다([13-framework-projects.md](13-framework-projects.md)).
-- 보고서의 "Handover"(인수인계) 절이 규칙의 결과를 사람에게 말한다. 문구는 `sbmig/report/handover.py`, 번역은 `sbmig/report/i18n.py`.
+- 규칙의 결과는 보고서가 사람에게 말한다. 한국어 안내서(`sbmig/report/guide_ko.py`)는 부모·버전 변경을 「전환 내용」에, 인수인계 할 일을
+  「확인해 주세요」에 쓰고, en 보고서는 "Handover" 절에 쓴다. 인수인계 문구는 `sbmig/report/handover.py`, 번역은 `sbmig/report/i18n.py`.
 
 ## 1. 루트 pom → `base-parent`, aggregator
 
@@ -26,7 +27,7 @@
 | 왜 | 회사 레이아웃: 모든 루트 pom 이 사내 base-parent 를 상속한다 |
 | 어디 | `Restructurer._layout` / `_boot_pom` / `_msa`(+ `_msa_aggregator`) |
 | 키 | `artifacts.parent`, `artifacts.parent_manages_java_version`(false 면 `maven.compiler.release` 를 적음) |
-| 보고서 | "What we changed" 의 부모 변경. 부모가 저장소에서 안 풀리면 `aborted:parent-not-found`(exit 3, 설정·Nexus 문제) |
+| 보고서 | 「전환 내용」의 부모 pom 행(en: "What we changed"). 부모가 저장소에서 안 풀리면 `aborted:parent-not-found`(exit 3, 설정·Nexus 문제) |
 
 사전 점검이 `artifacts.parent` 가 비었거나 `CHANGE` 자리표시가 남아 있으면 "artifacts.parent is not configured: pass the company
 artifacts yml with --config" 후속 조치를 남긴다.
@@ -41,7 +42,7 @@ artifacts yml with --config" 후속 조치를 남긴다.
 | 지우기 | `artifacts.remove_when_present` 의 g:a 는 어느 pom 에 있든 지운다(옛 사내 BOM 등) |
 | 한 버전 줄 | 사내 아티팩트는 모두 한 버전 줄(예: 4.0.0)을 쓴다. 옛 이관 도구가 남긴 옛 `boot-jar` / `comp-jar` 버전도 설정의 버전으로 옮긴다 |
 | 어디 | `Restructurer` 의 모든 모드(선택 아티팩트 처리와 `remove_when_present` 는 모든 pom 에), 판정 `ArtifactSpec.triggered_by`(`sbmig/core/config.py`) |
-| 보고서 | 재구성 노트 `mandatory added: … ; optional bumped: …`, 저널 `restructure` 의 `mandatory_added` / `optional_bumped` / `optional_added` / `optional_replaced`, `optional_triggers` |
+| 보고서 | 「전환 내용」의 추가한 의존성, 재구성 노트 `mandatory added: … ; optional bumped: …`(참고 → 진단용 기록), 저널 `restructure` 의 `mandatory_added` / `optional_bumped` / `optional_added` / `optional_replaced`, `optional_triggers` |
 
 ## 3. 비 Boot 프로젝트의 분할: `{name}-boot` / `{name}-back` / `{name}-front`
 
@@ -99,7 +100,7 @@ pre-9c 레이아웃(`module/boot-jar` + `module/comp-jar`, front 없음, Boot �
 | 단계 | 메서드 | 무엇 | 키 |
 |---|---|---|---|
 | 1 | `_non_filtered_extensions` | 필터링되는 리소스의 바이너리 확장자를 `nonFilteredFileExtensions` 에(§9) | `build.non_filtered_extensions` |
-| 2 | `_pin_asis_versions` | 새 부모로 옮기며 버전을 잃은 의존성에 as-is 빌드의 버전을 적음 → 인수인계 ⚠ "carried over" | — |
+| 2 | `_pin_asis_versions` | 새 부모로 옮기며 버전을 잃은 의존성에 as-is 빌드의 버전을 적음 → 「전환 내용」 의존성 버전 표의 ⚠ 행(en: Handover "carried over") | — |
 | 3 | `_drop_managed_versions` | 새 부모 체인이 같거나 더 새 버전으로 관리하는 명시 버전을 지움. 사내·필수·선택·system scope·자기 모듈은 건드리지 않음 | `layout.drop_managed_versions`(`gte` 기본 / `any` / `off`) |
 | 4 | `_drop_bom_property_overrides` | 부모 체인이 정의하는 버전 속성(`spring-boot.version=2.5.15` …)을 프로젝트 pom 에서 지움 — Maven 속성 상속으로 부모 값을 덮기 때문. 아직 `${이름}` 으로 참조되면 남기고 메모 | `layout.drop_bom_property_overrides`, `layout.parent_property_names`(비상구, 기본 빈 목록) |
 | 5 | `_drop_orphan_version_properties` | 이름과 상관없이 값이 버전·Java 수준 모양이고 어느 pom 도 참조하지 않는 속성을 지움(`java-version=1.8`, `org.springSecurity-version=4.2.7.RELEASE` 같은 철자). 부모 체인 사실을 읽었을 때만 | 같은 스위치 |
@@ -134,7 +135,7 @@ pre-9c 레이아웃(`module/boot-jar` + `module/comp-jar`, front 없음, Boot �
 | 왜 재구성에서 | 런타임 전용 jar(JDBC 드라이버, web.xml 의 필터, taglib 구현)는 컴파일 오류를 내지 않으므로 빌드 오류를 기다리면 영영 연결되지 않는다 |
 | 안전망 | 빌드 오류가 그 jar 의 패키지를 필요로 하면 수정 루프의 사전 시도 `sbmig-bundled`(LLM 0회). LLM 에게는 "the project bundles `<jar>` which provides package `<p>`" 사실을 주고, 동봉 jar 가 패키지를 주는데도 좌표·라이브러리 없음으로 거절하면 그 거절은 기각된다(저널 `decline_rejected`) |
 | 금지 | **찾은 jar 를 전부 연결하는 것은 안티패턴**(현업 지적). `superseded` jar 는 절대 연결하지 않고, LLM 에게도 다시 넣지 말라고 한다 |
-| 보고서 | "Bundled jars" 절(구조 검토 바로 뒤)의 jar 별 단계·상태, 인수인계 ⚠ "Nexus 에 올리고 system 항목을 바꿔 달라", 저널 `bundled_jar_wired`(stage restructure / fix), `bundled_jars_skipped` |
+| 보고서 | 특수 절 「포함된 jar」(en: "Bundled jars", 구조 검토 바로 뒤)의 jar 별 단계·상태, 인수인계 ⚠ "Nexus 에 올리고 system 항목을 바꿔 달라", 저널 `bundled_jar_wired`(stage restructure / fix), `bundled_jars_skipped` |
 | fixture | `fixtures/projects/webapp-bundled-jar/` |
 
 ## 7. javax 시절 라이브러리와 jakarta 빌드 찾기

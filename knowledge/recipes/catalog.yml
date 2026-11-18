@@ -26,6 +26,9 @@
 #   sets:        config/default.yml openrewrite.recipes sets that reference it              (informational, checked)
 #   verified:    when the id was verified against docs.openrewrite.org / a recipe jar (YYYY-MM)
 #   notes:       optional pointer to a knowledge/notes/*.md migration note
+#   file:        optional — a declarative recipe file (repo-relative) that defines this id; the run's rewrite.yml
+#                inlines it (`check` verifies that the file exists, defines the id and that every recipe its
+#                recipeList names is catalogued). Such a recipe runs on the core recipes only (artifact null).
 #
 # Order matters for the advisor: advisor entries are shown to the LLM in file order.
 version: 1
@@ -198,6 +201,23 @@ recipes:
     sets: []   # v1: [junit5] — not in the v2 sets (flow-v2)
     verified: "2026-10"
     notes: knowledge/notes/junit4-to-5.md
+
+  # ------------------------------------------------------------------ Netflix Hystrix -> Resilience4j
+  # Planned when the analyzer found the library `hystrix` (every case with a transform step), before the Boot /
+  # Framework sets. Its building blocks are the core recipes catalogued at the end of this file.
+  - id: com.company.migrate.HystrixToResilience4j
+    origin: openrewrite
+    artifact: null                 # declarative recipe of this repository (`file`), built from core recipes
+    file: knowledge/recipes/base/hystrix-to-resilience4j.yml
+    phase: spring
+    description: Hystrix → Resilience4j (@HystrixCommand → @CircuitBreaker, starter swap without a version, @Enable* annotations dropped, hystrix-javanica / hystrix-core / dashboard removed)
+    docs: https://docs.spring.io/spring-cloud-circuitbreaker/reference/spring-cloud-circuitbreaker-resilience4j.html
+    covers: []
+    gate: null
+    advisor: false
+    sets: [hystrix_resilience4j]   # planner gate: library `hystrix`
+    verified: "2026-11"
+    notes: knowledge/notes/spring-cloud.md
 
   # ------------------------------------------------------------------ non-advisor upstream recipes
   - id: org.openrewrite.java.spring.boot4.SpringBootProperties_4_0
@@ -634,3 +654,27 @@ recipes:
     advisor: false
     sets: []
     verified: "2026-10"
+
+  - id: org.openrewrite.xml.RemoveXmlTag
+    origin: openrewrite
+    artifact: null                 # core recipe (rewrite-xml), bundled with rewrite-maven-plugin
+    phase: spring
+    description: building block — remove XML tags selected by XPath (no Maven resolution, no network)
+    docs: https://docs.openrewrite.org/recipes/xml/removexmltag
+    covers: []
+    gate: null
+    advisor: false
+    sets: []
+    verified: "2026-11"
+
+  - id: org.openrewrite.maven.RemoveManagedDependency
+    origin: openrewrite
+    artifact: null                 # core recipe (rewrite-maven), bundled with rewrite-maven-plugin
+    phase: spring
+    description: building block — remove a dependencyManagement entry
+    docs: https://docs.openrewrite.org/recipes/maven/removemanageddependency
+    covers: []
+    gate: null
+    advisor: false
+    sets: []
+    verified: "2026-11"

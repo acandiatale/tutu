@@ -182,7 +182,10 @@ After the final build, javax EE API jars still on a module's classpath are liste
   (`sbmig-version`, `kb-script`, `llm-augment`, …), cause, solution, before / after snippets, diff, score.
 * `kb-v2/errors.jsonl` gets the run's list at the end; `kb-v2/cases/<case_id>/case.json` and `fix_v<N>.py` carry the scripts and
   their record; `kb-v2/cases.md` is regenerated (`sbmig kb errors list`, `sbmig kb cases show <case_id>`).
-* `report.md`: Handover first (blocked items and unresolved errors are pointed to from "From here on, your team"), then "Error
+* `report.md` with `report.language: ko` (the company setting): the Korean guide for the requester — 「확인해 주세요」 points
+  to 「해결하지 못한 오류」 (open errors only, file / line / message) and 「진행하지 않은 항목」 (blocked), and 「코드 수정 내역」
+  shows one net diff per file the fix loop changed; resolved errors, cases and tries are only in `errors.md` / `errors.jsonl`.
+  With `en`: Handover first (blocked items and unresolved errors are pointed to from "From here on, your team"), then "Error
   list", "Fixes by case" (`script:<case>:v<N>`), "Structure review", "Blocked", "javax API jars", flags. Exit code: 0 success,
   2 finished with blocked / unresolved / attention flags, 3 aborted. EOL library advisories are guidance only and never change it
   (`docs/ADVISORIES.md`).

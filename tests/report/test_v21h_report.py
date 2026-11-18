@@ -86,7 +86,9 @@ def test_what_we_changed_shows_the_rename_and_notes_do_not_repeat_it():
     notes = md.split("## Notes", 1)[1].split("\n## ", 1)[0]
     assert "JSP javax → jakarta" not in notes and "other note" in notes
     ko = render_markdown(_jsp_report(files=1, refs=1), language="ko")
-    assert "JSP javax → jakarta: 파일 1개, 참조 1곳 — 재구성이 JSP / 태그 파일" in ko
+    # v2.1z-as: the Korean guide says it under 코드 수정 내역 / 자동 변환, in a sentence of its own
+    assert "- JSP 파일 1개에서 javax 이름 1곳을 jakarta로 바꿨습니다." in ko.split("### 자동 변환", 1)[1]
+    assert "JSP javax → jakarta: 3 files" not in render_markdown(_jsp_report(), language="ko")
     assert "JSP javax → jakarta" not in render_markdown(make_report())
 
 
@@ -107,8 +109,8 @@ def test_handover_follow_up_for_jsps_left_with_javax(tmp_path, cfg):
     r2 = _jsp_report(files=0, found=5)
     line = jsp_javax_item(r2, off)
     assert line is not None and line.startswith("JSP javax references remain (5 files)") and line.endswith(JSP_RENAME_OFF)
-    assert tr_line("ko", line).startswith("JSP 에 javax 참조가 남아 있다(파일 5개)") and "꺼져 있다" in tr_line("ko", line)
-    assert tr_line("ko", item).startswith("JSP 에 javax 참조가 남아 있다(파일 1개)")
+    assert tr_line("ko", line).startswith("JSP에 javax 참조가 남아 있습니다(파일 5개).") and "꺼져 있습니다" in tr_line("ko", line)
+    assert tr_line("ko", item).startswith("JSP에 javax 참조가 남아 있습니다(파일 1개).")
     # no JSP with javax found → nothing
     assert jsp_javax_item(_jsp_report(files=0, found=0), off) is None
 

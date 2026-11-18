@@ -4,14 +4,16 @@
 - 합성 레시피 ``com.company.migrate.Run``의 ``recipeList``는 요청한 id를 요청 순서대로 중복 없이 담는다.
   이것 하나만 활성화하므로 적용 순서가 항상 같다
 - 호출자가 준 ``extra_files``의 선언형 레시피는 ``{{SPRING_BOOT_VERSION}}`` 등을 채워 앞에 붙인다
+- 카탈로그가 ``file``을 지정한 레시피(Hystrix 전환)는 실행기가 그 파일을 ``extra_files``로 넘긴다
 
 Compose the run-specific ``rewrite.yml``.
 
 One composite recipe ``com.company.migrate.Run`` whose ``recipeList`` is the requested recipe ids in order; only that
 composite is activated, so ordering is deterministic. Declarative recipe files a caller passes (``extra_files``, a
 ``RecipeRef.file``) are concatenated in front of it after templating ``{{SPRING_BOOT_VERSION}}``,
-``{{JAVA_VERSION}}``, ``{{SPRING_FRAMEWORK_VERSION}}``. v2 plans OpenRewrite recipes only, so a planned run is the
-composite alone (no project or KB recipe files).
+``{{JAVA_VERSION}}``, ``{{SPRING_FRAMEWORK_VERSION}}``. A planned run is the composite plus the declarative files the
+recipe catalog names for the planned ids (`file`, v2.1z-at: the Hystrix composite); the runner passes those as
+``extra_files``. No KB recipe files.
 
 
 """

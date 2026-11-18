@@ -122,11 +122,11 @@ profile·속성 선언)는 `direct`로 적고, 더 깊은 노드는 `transitive`
 | 자리 | 줄인 실행에서 보이는 것 |
 |---|---|
 | `SBMIG-RESULT` 줄 | `major=` 뒤, `flow=`·`remediation=` 앞에 ` scope=jdk-jakarta`. 전체 이관에는 이 토큰이 없다 |
-| `report.md` 머리 표 | `범위` 줄 "JDK 21과 jakarta만 적용(사내 프레임워크 프로젝트)" |
-| `report.md` 머리 표 바로 아래 | 절 `## 사내 프레임워크 프로젝트`: 근거마다 한 줄(직접 선언, 부모 pom에서 상속, jar 파일로 포함, 다른 라이브러리를 통해 들어옴), 이번 실행에서 한 일, 하지 않은 일(재구성, 구조 검토, 부모 pom·프레임워크 버전 유지), "확인하지 못한 곳" |
-| `report.md` 에러 목록 | 두 정정(인코딩, scope)은 빌드 오류가 아니라 `seen` `transform` 항목으로 "transform — sbmig의 pom 정정, 다음 빌드에서 검증" 아래에 있다. 머리 표는 "빌드 오류 없음. sbmig가 고친 pom N건…"처럼 따로 세고, 인수인계에 `sbmig가 고친 pom` 소절이 있다. 고친 시도가 없었던 버전 행의 이유는 `레시피`다 |
+| `report.md` 머리 표 | 한국어 안내서는 `SBMIG-RESULT` 줄의 `scope=jdk-jakarta`. en 보고서는 `Scope` 줄 "JDK 21 and jakarta only (in-house framework project)" |
+| `report.md` 머리 표 아래 | 절 `## 사내 프레임워크 프로젝트`: 근거마다 한 줄(직접 선언, 부모 pom에서 상속, jar 파일로 포함, 다른 라이브러리를 통해 들어옴), 이번 실행에서 한 일, 하지 않은 일(재구성, 구조 검토, 부모 pom·프레임워크 버전 유지), "확인하지 못한 곳" |
+| 두 pom 정정 | 인코딩과 scope 정정은 빌드 오류가 아니다. 한국어 안내서는 「코드 수정 내역」의 자동 변환에 "sbmig가 변환 단계에서 직접 고친 pom" 으로 적는다. `errors.md` 에서는 `seen` `transform` 항목이다(en 보고서: Error list 의 "transform — pom corrections by sbmig, verified by the next build", Handover 의 `pom corrections by sbmig`). 고친 시도가 없었던 버전 행의 비고는 "OpenRewrite 레시피"(en: `recipe`)다 |
 | 찾았지만 전체 이관 | 절 제목이 `## 사내 프레임워크`, 설정(`framework.scope: full` 또는 `framework.transitive: note`)에 따라 전체 이관했다는 한 줄 |
-| 인수인계 | "사내 프레임워크 프로젝트입니다(…). JDK 21과 jakarta만 올렸고 재구성과 구조 검토는 하지 않았습니다. 부모 pom과 프레임워크 버전은 그대로입니다." |
+| 「확인해 주세요」(인수인계) | "사내 프레임워크 프로젝트입니다(…). JDK 21과 jakarta만 올렸고 재구성과 구조 검토는 하지 않았습니다. 부모 pom과 프레임워크 버전은 그대로입니다." |
 | 웹 화면 | 실행 카드와 결과 카드에 `프레임워크 프로젝트` 칩과 "JDK 21과 jakarta만 적용합니다." 안내. 단계 줄의 재구성·구조 검토는 점선 원과 `하지 않음`으로 보인다(저널 `framework_project`나 `plan`의 `scope`를 받으면 켜짐) |
 
 ## 7. 진단
@@ -168,7 +168,7 @@ profile·속성 선언)는 `direct`로 적고, 더 깊은 노드는 `transitive`
 | scope 되돌리기, 소스 인코딩 | `sbmig/loop/orchestrator.py` (`_restore_scopes_reduced`, `_write_encodings_reduced`), `sbmig/restructure/scope_restore.py`, `sbmig/restructure/source_encoding.py` |
 | 보호 키, 가드, javax 차단, 제안 문장 | `sbmig/loop/fixloop.py` (`_framework_guard`, `_framework_javax_block`, `framework_owner_suggestion`, `framework_via_suggestions`) |
 | 프롬프트 | `sbmig/fix/prompts/script_system_v1.md`, `sbmig/fix/context.py` |
-| 보고서 절, 결과 줄 | `sbmig/report/markdown.py` (`framework_lines`), `sbmig/report/result_line.py` (`run_scope`), 한국어 `sbmig/report/i18n.py` |
+| 보고서 절, 결과 줄 | `sbmig/report/markdown.py` (`framework_lines`, 한국어 안내서 `sbmig/report/guide_ko.py` 가 같은 함수를 부름), `sbmig/report/result_line.py` (`run_scope`), 한국어 `sbmig/report/i18n.py` |
 | 화면 | `sbmig/web/static/index.html` (`setFramework`, `SKIP_STEPS`) |
 | 조치의 `framework` 그룹 | `sbmig/remediations/inhouse.py` (`InhouseKeys`, `framework_patterns`) |
 

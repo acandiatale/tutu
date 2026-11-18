@@ -164,9 +164,9 @@ def test_followup_wording_and_korean(tmp_path, monkeypatch):
                     "`pom-nexus` (same URL, "
                     f"`<blocked>false</blocked>`); blocker from {glob}")
     ko = tr_line("ko", line)
-    assert ko.startswith("Maven(3.8.1 이상)이 HTTP 저장소 `pom-nexus` (http://nexus.invalid/repository/releases/) 를 차단 미러")
-    assert f"(b) {settings} (build.settings_file)에서" in ko and ko.endswith(f"차단 미러 출처: {glob}")
-    assert "`,!<저장소 ID>` 를 붙여 `pom-nexus` 를 예외로" in ko          # the company's own way: an exception in the blocker's mirrorOf
+    assert ko.startswith("Maven(3.8.1 이상)이 HTTP 저장소 `pom-nexus` (http://nexus.invalid/repository/releases/) 접근을 차단 미러")
+    assert f"(b) {settings} (build.settings_file)에서" in ko and ko.endswith(f"차단 미러를 정의한 파일: {glob}")
+    assert "`,!<저장소 ID>`를 붙여 `pom-nexus` 저장소를 제외하거나" in ko          # the company's own way: an exception in the blocker's mirrorOf
     # two repositories: plural + every id
     two = http_blocked_followup(http_blocker_hit(PARENT_LOG), cfg)
     assert "HTTP repositories `company-nexus`" in two and "mirror for `company-nexus`, `company-snap`" in two

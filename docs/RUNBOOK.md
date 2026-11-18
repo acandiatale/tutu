@@ -7,14 +7,14 @@
 | Python | ≥ 3.10 (+ `uv` or `pip`); `script.python` (default: the interpreter running sbmig) must have pydantic and lxml | `python --version` |
 | JDK | **21** (`build.java_home` or `--java-home`). The as-is project is never built on its old JDK | the run preflight compares `mvn -v` with `build.require_java_major` (21); a mismatch aborts with exit 3, flag `jdk-not-21` |
 | Maven | 3.9.x; `build.settings_file` = a settings.xml with a **catch-all mirror** to the Nexus group (§0.1); in the cluster the file is the plain file `/data/.m2/settings.xml` on the data volume, copied once from ConfigMap `sbmig-config` (mounted in the web pod at `/etc/sbmig/settings.xml`): `kubectl -n agent exec deploy/sbmig -- sh -c "mkdir -p /data/.m2 && cp /etc/sbmig/settings.xml /data/.m2/settings.xml"` (`deploy/README.md` §3). A set but missing or empty file stops the run at intake, before any Maven call (exit 3, flag `settings-not-found`) | `mvn -v`; `sbmig repo-probe` |
-| Maven HTTP blocker | Maven ≥ 3.8.1 refuses `http://` repositories through `maven-default-http-blocker` in `<maven home>/conf/settings.xml` (`mvn -v` prints the Maven home). If a company repository is `http://`, the user settings must redefine that mirror id (`<mirrorOf>none</mirrorOf>`), exempt the repository (`,!<repository id>` in that mirror's `mirrorOf`) or mirror the repository with `<blocked>false</blocked>`. A settings file that redefines the id as a real mirror (a repository URL, not blocked) answers every repository its `mirrorOf` covers from that one URL: exempt the repositories that live elsewhere (snapshots, public), or their artifacts are "not found" | the run's preflight WARNING `Maven's HTTP blocker covers …`; a blocked run ends `attn=infra:http-blocked,aborted:http-blocked` with the fix in the Handover's first line |
+| Maven HTTP blocker | Maven ≥ 3.8.1 refuses `http://` repositories through `maven-default-http-blocker` in `<maven home>/conf/settings.xml` (`mvn -v` prints the Maven home). If a company repository is `http://`, the user settings must redefine that mirror id (`<mirrorOf>none</mirrorOf>`), exempt the repository (`,!<repository id>` in that mirror's `mirrorOf`) or mirror the repository with `<blocked>false</blocked>`. A settings file that redefines the id as a real mirror (a repository URL, not blocked) answers every repository its `mirrorOf` covers from that one URL: exempt the repositories that live elsewhere (snapshots, public), or their artifacts are "not found" | the run's preflight WARNING `Maven's HTTP blocker covers …`; a blocked run ends `attn=infra:http-blocked,aborted:http-blocked` with the fix as the first item of the report's 「확인해 주세요」 |
 | Nexus | proxies Maven Central incl. `org.openrewrite.*` (rewrite-maven-plugin 6.46.1, `rewrite-recipe-bom` **3.37.0** → rewrite-migrate-java 3.42.0, rewrite-spring 6.37.0, …), `org.springframework.boot:*:4.1.0`, the jakarta artifacts, the in-house parents | `sbmig recipes check --jars -c config/artifacts.yml` |
 | LLM gateway | `.env` with `LLM_BASE_URL` / `LLM_API_KEY` / `LLM_MODEL` (agent gateway: + `LLM_GATEWAY=agent`, `LLM_ASSET_ID`, `LLM_TOKEN_URL`, `LLM_APP_TOKEN`) — see [ADAPTERS.md](ADAPTERS.md) | `sbmig llm-probe` → last line `LLM-PROBE ok …` |
 | Company config | `config/artifacts.yml` from `config/artifacts.example.yml`: `base-parent`, `boot-jar` / `comp-jar` role parents, the 2 mandatory and 8 optional in-house artifacts | `sbmig analyze <project> -c config/artifacts.yml` |
 | git | any | per-attempt commits / rollbacks / `changes.patch` |
 
 Validate in this order on the company PC: `sbmig llm-probe` → `sbmig repo-probe <g:a:v> --project <dir>` →
-`sbmig analyze` → one `sbmig run` on a small project → read `SBMIG-RESULT` and the report's Handover.
+`sbmig analyze` → one `sbmig run` on a small project → read `SBMIG-RESULT` and the report's 「확인해 주세요」.
 
 ### 0.1 Repositories declared inside the project poms
 
@@ -75,7 +75,7 @@ Details: `agent-doc/13-framework-projects.md`. To validate in the company enviro
 |---|---|
 | Switch it on | `framework.artifacts` in the company `config/artifacts.yml` with the real coordinates (placeholder: `["com.example.fw:example-fw-core"]`; a bare artifactId matches any groupId, matching is case-sensitive). In the cluster the file is baked into the image: rebuild and push the image (`deploy/README.md` §7) |
 | Recipe sets | `framework.recipe_sets` (default `[jdk21, jakarta]`). The jakarta set moves the servlet API to the Jakarta EE 9 line (servlet 5.0); for projects that will run on Tomcat 10.1+ add `servlet_jakarta_10` — the company decides |
-| First run on a real framework project | `SBMIG-RESULT … scope=jdk-jakarta`; `sbmig.log` INFO `분석: 사내 프레임워크 프로젝트 (…) - JDK와 jakarta만 적용`; journal `framework_project` (`evidence`, `unchecked`), `plan` with `"scope": "jdk-jakarta"`, (MS949 / EUC-KR sources) `source_encodings` before the rewrite and `scopes_restored` after it, commits in the order `transform: source encodings written` → `rewrite: transform.rewrite` → `transform: as-is provided scopes restored` → `transform: JSP javax → jakarta`, notes `source encoding written: <pom>: project.build.sourceEncoding=MS949 (…)` — an encoding the kept parent sets differently stays and becomes a Handover line; `report.md` row `범위`, block `## 사내 프레임워크 프로젝트`, the two corrections as error-list entries under `transform — sbmig의 pom 정정, 다음 빌드에서 검증` and in the Handover subsection `sbmig가 고친 pom`; the page shows 프레임워크 프로젝트 and 재구성 / 구조 검토 as 하지 않음 |
+| First run on a real framework project | `SBMIG-RESULT … scope=jdk-jakarta`; `sbmig.log` INFO `분석: 사내 프레임워크 프로젝트 (…) - JDK와 jakarta만 적용`; journal `framework_project` (`evidence`, `unchecked`), `plan` with `"scope": "jdk-jakarta"`, (MS949 / EUC-KR sources) `source_encodings` before the rewrite and `scopes_restored` after it, commits in the order `transform: source encodings written` → `rewrite: transform.rewrite` → `transform: as-is provided scopes restored` → `transform: JSP javax → jakarta`, notes `source encoding written: <pom>: project.build.sourceEncoding=MS949 (…)` — an encoding the kept parent sets differently stays and becomes a hand-over item (「확인해 주세요」); `report.md` block `## 사내 프레임워크 프로젝트`, the two corrections listed under 「코드 수정 내역」 → 자동 변환 ("sbmig가 변환 단계에서 직접 고친 pom") and in `errors.md` as `seen: transform` entries; the page shows 프레임워크 프로젝트 and 재구성 / 구조 검토 as 하지 않음 |
 | Not recognised | journal `framework_check` with `unchecked`: `parent: no as-is effective pom` (the intake capture failed, so inheritance from a parent pom was not checked), `transitive: <why>` (`dependency:tree` failed), nothing = the pattern does not match the real groupId / artifactId |
 | Cost of the transitive check | when the poms, the parent capture and the bundled jars show nothing, every project pays one `mvn dependency:tree -Dincludes=…` on the as-is tree at analyze (one per service root for an MSA without a covering aggregator); `framework.transitive: off` saves it |
 | A framework still on javax | BLOCKED `external_javax_api` without an LLM call, the suggestion names the framework artifact and says its owner must provide a jakarta build — expected, not an sbmig failure |
@@ -120,7 +120,7 @@ Outputs in `out/<run id>/`:
 
 | file | content |
 |---|---|
-| `report.md` / `report.json` | **Handover** first, then error list, fixes by case, structure review, blocked items, manual follow-ups, flags, what changed, LLM usage and cost, Notes (why the fix loop ended) |
+| `report.md` / `report.json` | the report: with `report.language: ko` a Korean guide for the requester (below, "What the owners read"); `report.json` is the same data in English |
 | `errors.md` / `errors.jsonl` | one entry per error with every try (cause, solution, edits, diff, result) |
 | `journal.jsonl` | machine-readable event log (decisions, attempts, scores, blocks, LLM calls) |
 | `sbmig.log` | DEBUG log, one stage tag per line (`[fix r3 <case_id>]`) |
@@ -128,17 +128,17 @@ Outputs in `out/<run id>/`:
 | `project/` | the migrated working copy (git branch `sbmig/<run id>`, one commit per step / attempt) |
 | `changes.patch`, `result.zip` | full diff vs as-is, the migrated project |
 
-`report.language: ko` writes `report.md` in Korean. LLM requests / responses go to `llm.record_dir` (`LLM_RECORD_DIR`)
+`report.language: ko` writes `report.md` as the Korean guide, `en` as the diagnostic layout. LLM requests / responses go to `llm.record_dir` (`LLM_RECORD_DIR`)
 as `llm-NNNN.json`, without keys.
 
 ## 2. Reading a run
 
 1. **`SBMIG-RESULT`**: `exit`, `build`, `attn`. `infra:` means the environment (LLM, Maven, repository, file lock),
    not the code.
-2. **`report.md`**: the Handover (what the owning team must know), Notes (the sentence saying why the loop ended,
-   e.g. `max iterations (50) reached with N error(s) left`), "Blocked — needs human / library action" (reason and
-   suggestion per item), "Fixes by case".
-3. **`errors.md`**: the tries of one error; reverted attempts stay listed here with their diff.
+2. **`report.md`**: 「확인해 주세요」 (what the owning team must know), 「해결하지 못한 오류」, 「진행하지 않은 항목」
+   (reason and suggestion per item), 참고 → 진단용 기록 (the sentence saying why the loop ended, e.g. `max iterations (50)
+   reached with N error(s) left`). With `en`: Handover, Notes, "Blocked — needs human / library action", "Fixes by case".
+3. **`errors.md`**: every error (resolved ones too) with its tries; reverted attempts stay listed here with their diff.
 4. **`journal.jsonl`**: the case's `decision` (ladder step, KB lookup), `attempt_scored`, `revert`, `stall` /
    `oscillation`, `library_hints`, `declined` / `decline_rejected`.
 5. **`logs/`**: the highest-numbered `NNN-build-verify*.log` — the `[ERROR]` lines, javac's `symbol:` / `location:`.
@@ -148,14 +148,24 @@ as `llm-NNNN.json`, without keys.
 Details per file, log line and journal event: `agent-doc/03-run-debug-and-logs.md`. `sbmig parse-log <log>`
 re-parses any Maven log into errors with signatures.
 
-**Handover sections**: Versions replaced (parent / Java / Boot as-is → final, every changed dependency; **⚠ carried
-over** = pinned at the version the as-is parent managed because the new chain does not — confirm or replace), major
-upgrades to check at runtime, Libraries needing your attention (advisories, see [ADVISORIES.md](ADVISORIES.md)),
-Properties to set before running (keys the external Tomcat used to supply: JNDI, context-param, `-D`; written as
-`key=__SET_ME__` placeholders in the boot module's `application.properties`), and the numbered "From here on, your
-team" list (`advisories.max_from_here`). Runtime behaviour is never verified by sbmig; before deploying, the owners
-check `grep -rn __SET_ME__` and supply the values outside the jar (env variables, `-D`, an external
-`application.properties`).
+**What the owners read** (`report.language: ko`, the company setting — `sbmig/report/guide_ko.py`): a head table
+(결과, `SBMIG-RESULT`, 전환 후, 실행 ID, 시작 / 종료, 플래그), then 「전환 내용」 (Java / Boot / parent as-is → final, every
+changed dependency; **⚠** = pinned at the version the as-is parent managed because the new chain does not — confirm or
+replace), 「확인해 주세요」 (one numbered list: the library advisories with their Korean texts, see
+[ADVISORIES.md](ADVISORIES.md), then the hand-over items and follow-ups, capped by `advisories.max_from_here`),
+「코드 수정 내역」 (the automatic conversion in a few lines; every file the fix loop or the structure review changed, with
+its net diff from the commit right after the automatic conversion to the final tree — journal `code_changes_base`,
+`sbmig/report/changes.py`; diffs for the first 30 files, 80 lines each), 「해결하지 못한 오류」 (open errors only),
+「진행하지 않은 항목」 (blocked), the special sections when they apply (운영자 확인 = major upgrades to check at runtime,
+pom 합성 (Ant), ADF, 포함된 jar, javax API jar, 외부 설정 값, 취약점 조치) and 「참고」 (collapsed: 실행 정보 with the
+structure review's verdict and each flag explained, LLM 사용량과 비용, 산출물, 진단용 기록 = the plan / phase notes).
+Resolved errors are listed only in `errors.md` / `errors.jsonl`. `report.language: en` renders the diagnostic layout of
+`sbmig/report/markdown.py` (Handover with Versions replaced, Libraries needing your attention, Properties to set before
+running and "From here on, your team"; Error list, Fixes by case, Structure review, Blocked, Manual follow-ups, Flags,
+What we changed, LLM usage and cost, Notes, Outputs). 외부 설정 값 (en: Properties to set before running) lists the keys
+the external Tomcat used to supply (JNDI, context-param, `-D`), written as `key=__SET_ME__` placeholders in the boot
+module's `application.properties`. Runtime behaviour is never verified by sbmig; before deploying, the owners check
+`grep -rn __SET_ME__` and supply the values outside the jar (env variables, `-D`, an external `application.properties`).
 
 ### "Is it stuck?"
 
@@ -193,7 +203,7 @@ On the company PC without copy-paste, ask for specific lines (`SBMIG-RESULT`, `p
 - Inspect: `sbmig kb cases list`, `sbmig kb cases show <case_id>`, `sbmig kb errors list|show`, `sbmig kb stats`,
   `sbmig kb validate`.
 - Curate: `sbmig kb cases retire <case_id> <N>` (never run version N again), `activate <case_id> <N>` (undo),
-  `pin <case_id> block[:REASON]` (no script / LLM tries; the Handover shows the reason), `unpin`.
+  `pin <case_id> block[:REASON]` (no script / LLM tries; the report's 「진행하지 않은 항목」 shows the reason), `unpin`.
 - Move / back up: `sbmig kb export kb-YYYYMMDD.zip` → `sbmig kb import kb-YYYYMMDD.zip [--replace]` (the old KB is
   kept as `.bak-*`); `sbmig kb reindex` after manual edits. Back up with export, not git.
 - Every write runs under `<kb>/.lock` (`kb.lock_timeout_seconds`), so the web server, a fleet and `sbmig kb …` can
@@ -278,10 +288,10 @@ on a PC — are missing; the report names what is missing). `--stop-after` is re
 | `plan.advisor` | none | optional LLM plan review (additive, catalog-only; [RECIPES.md](RECIPES.md)) |
 | `openrewrite.download_retry` / `download_retry_wait_s` | 1 / 30 | recipe run retried after a download failure |
 | `layout.*` | see yml | company layout (role parents, module names, JSP jakarta rename, bundled-jar wiring) |
-| `advisories.*` | see yml | advisory files, off switches, carried-over listing, Handover cap |
+| `advisories.*` | see yml | advisory files, off switches, carried-over listing, cap of the hand-over list |
 | `kb.dir` / `kb.lock_timeout_seconds` | kb-v2 / 300 | KB folder, cross-process lock |
 | `fleet.*` | see [FLEET.md](FLEET.md) | fleet order, budgets, infrastructure guard, cleanup |
-| `report.language` | en | `ko` writes `report.md` in Korean |
+| `report.language` | en | `ko` = the Korean guide for the requester (`sbmig/report/guide_ko.py`), `en` = the diagnostic layout (`sbmig/report/markdown.py`); the company config sets `ko` |
 
 ## 8. Safety notes
 

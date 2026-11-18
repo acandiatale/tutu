@@ -48,8 +48,8 @@ def test_no_section_without_bundled_jars():
 
 def test_korean():
     md = render_markdown(_report(manual_followups=[WIRED]), "ko")
-    assert "## 동봉 jar (pom 미선언)" in md and "| jar | 좌표 | 패키지 | 사용 | 연결 |" in md
-    assert "| `src/main/webapp/WEB-INF/lib/acme-seed-1.0.jar` | 모름 | 2 | 예 | system |" in md
+    assert "## 프로젝트에 포함된 jar" in md and "| jar | 좌표 | 패키지 수 | 사용 | 추가 방식 | 상태 |" in md
+    assert "| `src/main/webapp/WEB-INF/lib/acme-seed-1.0.jar` | 미확인 | 2 | 예 | system | 좌표 미확인 |" in md
     assert flag_help("bundled-jars", "ko").startswith("어느 pom에도 선언되지 않은 jar")
 
 
@@ -83,6 +83,6 @@ def test_section_stage_and_status_v21zj():
 
 def test_section_stage_korean_v21zj():
     md = render_markdown(_staged(), "ko")
-    assert "| system (재구성) |" in md and "| system (수정 루프) |" in md
+    assert "| system (구조 재구성) |" in md and "| system (빌드 오류 수정) |" in md
     assert "| 참조 없음 |" in md and "| 컨테이너 API |" in md
-    assert "재구성이 첫 빌드 전에 참조되는 jar 를 모두 연결했다" in md
+    assert "구조 재구성에서 첫 빌드 전에 참조되는 jar를 모두 pom에 추가했습니다" in md

@@ -10,7 +10,7 @@ from types import SimpleNamespace
 from sbmig.core.models import DependencyChange, ErrorEntry, FixTry, OperatorCheck, RunReport
 from sbmig.report import build_handover, render_markdown, write_report
 from sbmig.report.handover import operator_checks_item
-from sbmig.report.markdown import FLAG_HELP, handover_lines
+from sbmig.report.markdown import FLAG_HELP, fixes_by_case_lines, handover_lines
 from sbmig.report.result_line import report_result_line, result_line
 
 from .test_handover import EFFECTIVE, as_is_profile, final_tree, make_report
@@ -38,22 +38,26 @@ def report_with_checks(tmp_path, cfg, checks=(LLM_CHECK, SBMIG_CHECK), **kw) -> 
 
 
 def test_korean_handover_starts_with_the_operator_checks(tmp_path, cfg):
+    # v2.1z-as: in the Korean guide the block is a section of its own after 확인해 주세요, before 참고
     md = render_markdown(report_with_checks(tmp_path, cfg), language="ko")
-    start = md.index("### 운영자 확인 필요 (메이저 업그레이드 2건)")
-    assert md.index("## 인수인계") < start < md.index("### 교체된 버전")
-    block = md[start:md.index("### 교체된 버전")]
-    assert ("- **org.sitemesh:sitemesh 2.4.2 → 3.2.1** — `xxx-back/pom.xml` (dependencies), 케이스 `abc1234567`, "
+    start = md.index("## 운영자 확인 필요 (메이저 업그레이드 2건)")
+    assert md.index("## 확인해 주세요") < start < md.index("## 참고")
+    block = md[start:md.index("## 참고")]
+    assert ("- **org.sitemesh:sitemesh 2.4.2 → 3.2.1** — `xxx-back/pom.xml` (dependencies), 수정 기록 `abc1234567`, "
             "fix r3 try 2, 커밋 `1a2b3c4`\n"
             "  - web.xml 의 SiteMeshFilter 등록을 확인\n"
             "  - decorators.xml 을 sitemesh3.xml 로 옮겼는지 확인\n"
-            "  - 가이드 출처: LLM\n") in block
+            "  - 안내 작성: LLM\n") in block
     assert ("- **opensymphony:oscache 2.4.1 → com.example:cache-jakarta 1.0.0** — `pom.xml` (dependencyManagement), "
-            "구조 점검, 커밋 `9f8e7d6` — 승인됨 (libraries.yml)\n") in block
-    assert "  - 가이드 출처: sbmig 자동 생성" in block
+            "구조 점검, 커밋 `9f8e7d6` — libraries.yml에서 승인한 변경\n") in block
+    assert "  - 안내 작성: sbmig 자동 생성" in block
     assert "빌드는 통과했지만" in block
-    # "from here on": the pointer comes first
-    todo = md[md.index("### 이후 담당 팀이 할 일"):]
-    assert todo.split("\n")[2] == '1. 운영자 확인 필요: 메이저 업그레이드 2건 — 위 "운영자 확인 필요" 참조'
+    # 확인해 주세요: the library advisories first, then the pointer as the first hand-over item
+    report = report_with_checks(tmp_path, cfg)
+    n = len(report.advisories) + 1
+    todo = md[md.index("## 확인해 주세요"):md.index("## 운영자 확인 필요")]
+    item = next(x for x in todo.split("\n") if "**메이저 버전을 올린 변경 2건** — " in x)
+    assert item.startswith(f"{n}. ") and "아래 「운영자 확인 필요」" in item
 
 
 def test_english_rendering_and_the_flag_help(tmp_path, cfg):
@@ -87,14 +91,14 @@ def test_a_shipped_table_approval_names_the_shipped_file(cfg):
     shipped = SBMIG_CHECK.model_copy(deep=True)
     shipped.change.note = "approved by the shipped table: QLRM 4 is the jakarta line"
     lines = handover_lines(make_report(operator_checks=[shipped]), "ko")
-    assert any(x.endswith(" — 승인됨 (jakarta_libraries.yml)") for x in lines)
+    assert any(x.endswith(" — jakarta_libraries.yml에서 승인한 변경") for x in lines)
 
 
 def test_a_check_without_a_guide_says_so(tmp_path, cfg):
     bare = LLM_CHECK.model_copy(update={"guide": "", "guide_source": "sbmig", "case_id": "", "commit": ""})
     md = render_markdown(report_with_checks(tmp_path, cfg, checks=[bare]), language="ko")
     assert "- **org.sitemesh:sitemesh 2.4.2 → 3.2.1** — `xxx-back/pom.xml` (dependencies), fix r3 try 2\n" in md
-    assert "  - (가이드 없음)\n  - 가이드 출처: sbmig 자동 생성" in md
+    assert "  - (남긴 안내 없음)\n  - 안내 작성: sbmig 자동 생성" in md
 
 
 def test_result_line_major_token():
@@ -128,9 +132,9 @@ def test_fixes_by_case_marks_a_case_whose_deciding_try_made_a_major_upgrade(cfg)
                           resolved="r1 try 1", seen="build", tries=[t]),
                ErrorEntry(id="e2", case_id="def7654321", message="other", status="unresolved", seen="build",
                           tries=[rolled])]
-    md_ko = render_markdown(make_report(error_entries=entries), language="ko")
+    md_ko = "\n".join(fixes_by_case_lines(make_report(error_entries=entries), "ko"))   # not in the Korean guide
     row = next(ln for ln in md_ko.splitlines() if ln.startswith("| `abc1234567`"))
-    assert '⚠ 메이저 (1건, "운영자 확인 필요" 참조)' in row
+    assert "⚠ 메이저 버전 변경 1건 (「운영자 확인 필요」 참고)" in row
     other = next(ln for ln in md_ko.splitlines() if ln.startswith("| `def7654321`"))
     assert "⚠" not in other                                   # a rolled-back try is not in the tree
     md_en = render_markdown(make_report(error_entries=entries), language="en")

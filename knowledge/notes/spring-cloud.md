@@ -27,19 +27,26 @@ smallest change; do NOT start a library migration the advisory says the team own
   Minimal fix: `version: null` on that dependency (sbmig fills the as-is version; the Handover lists it).
 
 ## Hystrix → Resilience4j
-- `hystrix` is a guide advisory: no recipe runs for it; its errors reach the fix loop with this note and the
-  advisory's "Library migration guidance", and the Handover lists every file the fix scripts rewrote for it.
-- Target: `spring-cloud-starter-netflix-hystrix` / `-starter-hystrix` → `spring-cloud-starter-circuitbreaker-resilience4j`
-  (`version: null`: the Spring Cloud BOM manages it, else sbmig resolves it), `hystrix-javanica` / `hystrix-core` /
-  the dashboard starter removed, `@HystrixCommand` → `@CircuitBreaker` (io.github.resilience4j.circuitbreaker.annotation),
+- A recipe replaces Hystrix: `com.company.migrate.HystrixToResilience4j` (`knowledge/recipes/base/hystrix-to-resilience4j.yml`,
+  recipe set `openrewrite.recipes.hystrix_resilience4j`) runs in the one OpenRewrite run whenever the analyzer found
+  `hystrix`, before the Boot / Framework sets. What it cannot port reaches the fix loop with the section below.
+- What it does: `spring-cloud-starter-netflix-hystrix` / `-starter-hystrix` → `spring-cloud-starter-circuitbreaker-resilience4j`
+  WITHOUT a version (the as-is Hystrix version is removed before the swap; the Spring Cloud BOM manages the new starter —
+  the restructure imports the BOM when nothing else manages Spring Cloud), `hystrix-javanica` / `hystrix-core` / the
+  dashboard starter removed, `@HystrixCommand` → `@CircuitBreaker` (io.github.resilience4j.circuitbreaker.annotation),
   `commandKey` → `name`, otherwise `name = "default"`, `fallbackMethod` kept, Hystrix-only attributes and nested
   `@HystrixProperty` removed, `@EnableHystrix` / `@EnableCircuitBreaker` / `@EnableHystrixDashboard` deleted.
   `@CircuitBreaker` comes from `resilience4j-annotations` (the starter → spring-cloud-circuitbreaker-resilience4j →
   resilience4j-spring-boot3 → resilience4j-spring6).
+- Not ported by the recipe: `extends HystrixCommand` / `HystrixObservableCommand`, `HystrixRequestContext`,
+  `org.springframework.cloud.netflix.hystrix.*` configuration, dashboards. With the Hystrix artifacts gone they do not
+  compile; the errors (`package com.netflix.hystrix does not exist`, a caller's `cannot find symbol execute()`) come
+  to the fix loop.
 
 ## fix-loop: hystrix
-Rewrite, do not re-add: the Hystrix starter and `hystrix-core` were removed on purpose; never put
-`com.netflix.hystrix:*` back into the pom. Keep every public signature so callers still compile.
+Rewrite, do not re-add: the recipe replaced the Hystrix starter with `spring-cloud-starter-circuitbreaker-resilience4j`
+and removed `hystrix-core` on purpose; never put `com.netflix.hystrix:*` back into the pom. Keep every public signature
+so callers still compile (a caller's `cannot find symbol execute()` is fixed by porting the command class it calls).
 - `class X extends HystrixCommand<T>` (`run()` / `getFallback()`, called with `.execute()` / `.queue()`): turn it into
   a plain class that keeps the public entry point (`public T execute()`), runs the former `run()` body through a
   Resilience4j circuit breaker — `io.github.resilience4j.circuitbreaker.CircuitBreaker` (on the classpath via
@@ -52,8 +59,9 @@ Rewrite, do not re-add: the Hystrix starter and `hystrix-core` were removed on p
   original exception propagate into the fallback catch.
 - `org.springframework.cloud.netflix.hystrix.*` (dashboard, `HystrixCommands` for WebFlux): delete the dead
   configuration; dashboards/Turbine are replaced by Micrometer/Actuator metrics (team work, see Handover).
-- `cannot find symbol CircuitBreaker` means the new starter is missing from the module that uses the annotation:
-  add `org.springframework.cloud:spring-cloud-starter-circuitbreaker-resilience4j` without a version.
+- `cannot find symbol CircuitBreaker` means the new starter is missing from the module that uses the annotation
+  (a project that declared only `hystrix-javanica`, which the recipe removes without a replacement): add
+  `org.springframework.cloud:spring-cloud-starter-circuitbreaker-resilience4j` without a version.
 - Mark every hand-ported class with a `// MIGRATION-TODO: review Resilience4j config (instance name, timeouts)`
   comment so the owning team finds it; the Handover points at the file as well.
 

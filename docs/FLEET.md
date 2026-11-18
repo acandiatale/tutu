@@ -124,7 +124,8 @@ attention" in `summary.md`, and `sbmig fleet status --attention`.
 `summary.md` / `summary.csv` have the columns `advisories` (library advisory findings; outcomes in `state.json` as
 `"<advisory_id>:<outcome>"`) and `carried_over` (dependencies pinned at the version the as-is parent managed).
 `summary.md` adds **Libraries flagged across the fleet** (advisory → projects, replaced, still present). Each
-project's `report.md` starts with the **Handover** section for the owners. See [ADVISORIES.md](ADVISORIES.md).
+project's `report.md` lists them for the owners: with `report.language: ko` in 「확인해 주세요」 (one item per advisory) and the
+⚠ rows of 「전환 내용」, with `en` in the **Handover** section. See [ADVISORIES.md](ADVISORIES.md).
 
 ## Knobs
 

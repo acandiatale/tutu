@@ -93,6 +93,21 @@ def recipe_artifact_for(recipe_id: str) -> str | None:
     return best
 
 
+def catalog_recipe_files(recipes: Sequence[RecipeRef], cfg: Config) -> list[Path]:
+    """카탈로그에서 ``file``이 지정된 레시피의 선언형 레시피 파일 경로를 요청 순서대로 중복 없이 반환한다.
+
+    The declarative recipe files the catalog names (`file`) for the requested ids, in order, once each."""
+    from sbmig.plan.catalog import default_catalog, recipe_file_path
+
+    cat = default_catalog(cfg)
+    out: list[Path] = []
+    for r in recipes:
+        path = recipe_file_path(cat.get(r.id), cfg)
+        if path is not None and path not in out:
+            out.append(path)
+    return out
+
+
 class OpenRewriteRunner:
     """OpenRewrite 플러그인을 실행하고 결과를 RewriteResult로 반환하는 클래스.
     실행이 실패해도 예외를 던지지 않는다.
@@ -116,8 +131,10 @@ class OpenRewriteRunner:
     # ------------------------------------------------------------------ composition
     def compose(self, recipes: Sequence[RecipeRef], extra_recipe_files: Iterable[Path] = ()) -> tuple[Path, str]:
         """이번 실행의 rewrite.yml을 ``logs/rewrite-<n>.yml``에 새 번호로 저장하고 (경로, 텍스트)를 반환한다.
-        앞 실행의 파일을 덮어쓰지 않으므로 재시도마다 무엇을 실행했는지 남는다."""
-        text = compose_rewrite_yaml(recipes, extra_files=list(extra_recipe_files), target=self.cfg.target)
+        앞 실행의 파일을 덮어쓰지 않으므로 재시도마다 무엇을 실행했는지 남는다.
+        카탈로그 항목에 ``file``이 있는 레시피는 그 파일도 함께 넣는다."""
+        files = list(extra_recipe_files) + catalog_recipe_files(recipes, self.cfg)
+        text = compose_rewrite_yaml(recipes, extra_files=files, target=self.cfg.target)
         self.work_dir.mkdir(parents=True, exist_ok=True)
         n = len(list(self.work_dir.glob("rewrite-*.yml"))) + 1
         path = self.work_dir / f"rewrite-{n}.yml"

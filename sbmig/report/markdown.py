@@ -1379,6 +1379,10 @@ def render_markdown(report: RunReport, language: str = "en", cfg: Any = None) ->
     r = report
     if getattr(r, "flow", "full") == "remediation":
         return render_remediation_flow(r, lang)
+    # 한국어 보고서는 줄마다 번역하지 않고 요청 담당자용 안내서(guide_ko)를 따로 만든다
+    if lang == "ko":
+        from .guide_ko import render_guide_ko
+        return render_guide_ko(r, cfg)
     L: list[str] = []
     ok = tr(lang, "✅ BUILD SUCCESS") if r.success else tr(lang, "❌ NOT BUILDING")
     L.append(tr(lang, "# Migration report — {name}", name=r.project_name))

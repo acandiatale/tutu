@@ -1,42 +1,47 @@
-// ⑧ ~ ⑩ 검증 빌드, 수정 루프, 최종 빌드를 한 장에: 첫 빌드 → 실패면 케이스마다 한 가지 시도 → 다시 빌드, 멈추는 곳 세 군데.
+// ⑧ ~ ⑩ 검증 빌드, 수정 루프, 최종 빌드를 한 장에: 첫 빌드 → 실패면 오류 묶음마다 한 가지 시도 → 다시 빌드, 멈추는 곳.
 module.exports = {
-  title: "⑧ ~ ⑩ 빌드와 수정: 통과할 때까지 고치고 빌드",
-  notes: "빌드는 매번 mvn clean package -Dmaven.test.skip=true 입니다(build.skip_test_compile: true, 테스트는 범위 밖). " +
-    "첫 빌드가 실패하면 그 빌드가 수정 루프의 첫 빌드가 되고(sbmig/loop/orchestrator.py _step_verify → sbmig/loop/fixloop.py BuildFixLoop), " +
-    "한 바퀴에 케이스는 기본 8개까지(loop.max_clusters_per_iteration), 이번 바퀴에 이미 손댄 파일이나 모듈 pom 의 케이스는 다음 빌드까지 미룹니다. " +
-    "케이스마다 순서: LLM 없는 사전 시도(sbmig-version → sbmig-resources → sbmig-bundled → sbmig-jakarta, 맞는 것 하나) → 저장된 스크립트 1개 재사용(script.reuse_versions) → " +
-    "LLM 보강(script.max_augments_per_case 15) → 새로 작성, LLM 요청이 script.max_llm_tries_per_case(20)에 닿으면 repeated_failure 로 막힙니다(직접 수정만 하는 케이스는 4번, 거절은 1번). " +
-    "루프는 언제나 빌드 뒤에서 끝납니다: 성공, 바퀴 한도(loop.phases.verify.max_iterations 기본 50, 같은 빌드로 다시 묻는 바퀴도 셈), 막힌 케이스만 남음, 더 할 시도 없음, 시간 한도(loop.max_total_minutes 240). " +
-    "루프를 돌았으면 최종 빌드를 한 번 더 하고 그 결과가 종료 코드를 정합니다(0 = 성공이고 막힌 것 없음, 2 = 오류나 막힌 케이스가 남음, 3 = 사내 parent 를 못 찾는 등 중단).",
+  title: "⑧ ~ ⑩ 빌드와 수정: 통과할 때까지 고치고 다시 빌드합니다",
+  notes: "변환과 구조 정리가 끝나면 처음으로 프로젝트 전체를 mvn clean package로 빌드합니다. 테스트는 이번 전환의 범위가 아니어서 컴파일도 실행도 하지 않으며, 보고서에 테스트는 따로 확인해 달라고 적어 드립니다. " +
+    "이 첫 빌드가 성공하면 그대로 최종 결과가 되고, 수정 루프 없이 다음 단계(취약점 조치)로 넘어갑니다.\n\n" +
+    "빌드가 실패하면 수정 루프에 들어갑니다. 빌드 로그의 오류를 원인이 같은 것끼리 묶고, 다른 오류를 일으키는 근본 원인부터 다룹니다. 한 바퀴에 다루는 묶음은 기본 8개이며, 이번 바퀴에 이미 손댄 파일이나 모듈 pom.xml의 오류는 다음 빌드 결과를 본 뒤에 다룹니다. " +
+    "묶음마다 고치는 순서는 이렇습니다. 먼저 빠진 의존성 버전, 프로젝트에 포함된 jar, 리소스 필터링, javax 라이브러리의 jakarta 버전, 사내 부모 pom 버전처럼 답이 정해진 문제는 LLM 없이 바로 처리합니다. " +
+    "다음으로 다른 프로젝트에서 같은 오류를 고친 수정 스크립트가 지식베이스에 있으면 LLM 없이 그대로 실행합니다. 그래도 안 되면 LLM에게 오류와 관련 파일, pom.xml, 저장소에서 확인한 라이브러리 버전 정보를 주고 수정 스크립트를 받습니다. " +
+    "한 묶음에 LLM은 기본 20번까지 부르고, 그 가운데 15번까지는 앞서 받은 스크립트를 실패 이유를 붙여 보강합니다.\n\n" +
+    "고친 내용은 매번 git에 커밋하고 다시 빌드해서 판정합니다. 효과가 없거나 오히려 나빠진 수정은 되돌립니다. " +
+    "루프는 언제나 빌드 결과를 보고 끝납니다. 빌드가 성공했을 때, 50바퀴에 닿았을 때, 더 해 볼 방법이 없거나 막힌 오류만 남았을 때, 전체 실행 시간 4시간을 넘었을 때입니다. " +
+    "루프를 돌았으면 마지막으로 최종 빌드를 한 번 더 하고, 그 결과가 보고서 맨 위의 결과(빌드 성공 또는 실패)가 됩니다. " +
+    "끝까지 고치지 못한 오류는 보고서의 「해결하지 못한 오류」에, 사람이 판단해야 해서 손대지 않은 문제는 「진행하지 않은 항목」에 무엇을 시도했는지와 함께 적어 드립니다.\n\n" +
+    "환경 문제는 코드로 고칠 수 없으므로 루프에 들어가지 않고 실행을 멈춥니다. 사내 부모 pom을 저장소에서 받을 수 없을 때, Maven 설정이 http 저장소를 막고 있을 때가 그렇습니다. 이때 보고서에는 실행을 멈춘 이유와 고칠 곳이 나옵니다." +
+    "서버에 Maven 설정 파일(settings.xml)이 없는 경우는 이보다 앞선 접수 단계에서 이미 멈춥니다.",
   lines: [
-    "빌드는 매번 mvn clean package, 테스트는 건너뜁니다. 첫 빌드가 성공하면 바로 끝납니다.",
-    "실패하면 케이스마다 한 가지씩 시도하고 다시 빌드해 채점합니다. 도움 안 된 수정은 되돌립니다.",
-    "바퀴 한도에 닿거나 막힌 케이스만 남으면 멈추고, 막힌 이유를 보고서 맨 앞에 적어 넘깁니다.",
+    "빌드는 매번 mvn clean package이고 테스트는 건너뜁니다. 첫 빌드가 성공하면 수정 루프 없이 다음 단계로 넘어갑니다.",
+    "실패하면 오류를 묶어 하나씩 고치고 다시 빌드해 판정합니다. 효과 없는 수정은 되돌립니다.",
+    "고치지 못한 오류는 보고서의 「해결하지 못한 오류」와 「진행하지 않은 항목」에 남깁니다.",
   ],
   draw(s, H) {
     const w = 1.5, h = 0.66, g = 0.3, x0 = H.AREA.x;
     const col = i => x0 + i * (w + g);
     const ys = [1.66, 2.56, 3.46];
-    const A = H.node(s, col(0), ys[0], w, h, "⑧ 검증 빌드", "mvn clean package, 바퀴마다 다시 돕니다", "build");
-    const B = H.node(s, col(0), ys[1], w, h, "빌드 성공?", "실패면 로그에서 오류를 읽습니다", "ask");
+    const A = H.node(s, col(0), ys[0], w, h, "⑧ 검증 빌드", "mvn clean package, 바퀴마다 다시 합니다", "build");
+    const B = H.node(s, col(0), ys[1], w, h, "빌드 성공?", "실패하면 로그에서 오류를 읽습니다", "ask");
     const E = H.node(s, col(0), ys[2], w, h, "⑩ 최종 빌드", "루프를 돌았으면 한 번 더, 이것이 결과", "build");
-    const C = H.node(s, col(1), ys[1], w, h, "케이스로 묶기", "같은 원인은 한 케이스, 근본 원인부터", "auto");
-    const Q = H.node(s, col(2), ys[1], w, h, "더 시도할까?", "바퀴 한도 전이고 안 막힌 케이스가 있나", "ask");
-    const K = H.node(s, col(2), ys[2], w, h, "사람에게 인계", "막힌 케이스를 이유와 함께 보고서에", "loop");
-    const P = H.node(s, col(3), ys[0], w, h, "LLM 없는 시도", "빠진 버전, jakarta 빌드처럼 정해진 처리", "auto");
-    const G = H.node(s, col(3), ys[1], w, h, "저장된 스크립트", "있으면 LLM 없이 그대로 실행", "auto");
+    const C = H.node(s, col(1), ys[1], w, h, "오류 묶기", "원인이 같은 것끼리, 근본 원인부터", "auto");
+    const Q = H.node(s, col(2), ys[1], w, h, "더 고쳐 볼까?", "한도 전이고 고칠 오류가 남았나", "ask");
+    const K = H.node(s, col(2), ys[2], w, h, "사람이 확인", "남은 오류를 보고서에 적습니다", "loop");
+    const P = H.node(s, col(3), ys[0], w, h, "LLM 없이 먼저", "빠진 버전처럼 답이 정해진 문제", "auto");
+    const G = H.node(s, col(3), ys[1], w, h, "저장된 수정 방법", "다른 프로젝트에서 통한 스크립트", "auto");
     const L = H.node(s, col(3), ys[2], w, h, "LLM 수정", "스크립트를 보강하거나 새로 받습니다", "llm");
-    const R = H.node(s, col(4), ys[1], w, h, "커밋", "다음 빌드가 채점, 안 되면 되돌림", "loop");
+    const R = H.node(s, col(4), ys[1], w, h, "커밋", "다음 빌드가 판정, 안 되면 되돌림", "loop");
 
-    // 첫 빌드 → 성공? ; 성공 → 최종 빌드 ; 실패 → 묶기 → 더 시도할까?
+    // 첫 빌드 → 성공? ; 성공 → 최종 빌드 ; 실패 → 묶기 → 더 고쳐 볼까?
     H.seg(s, A.cx, A.b, B.cx, B.t, { head: true });
     H.seg(s, B.cx, B.b, E.cx, E.t, { head: true }); H.label(s, B.cx + 0.3, (B.b + E.t) / 2, "성공", { w: 0.4 });
     H.seg(s, B.r, B.cy, C.l, C.cy, { head: true }); H.label(s, (B.r + C.l) / 2, B.cy - 0.2, "실패", { w: 0.3 });
     H.seg(s, C.r, C.cy, Q.l, Q.cy, { head: true });
-    // 아니오 → 인계 → 최종 빌드
+    // 아니오 → 사람이 확인 → 최종 빌드
     H.seg(s, Q.cx, Q.b, K.cx, K.t, { head: true }); H.label(s, Q.cx + 0.35, (Q.b + K.t) / 2, "아니오", { w: 0.45 });
     H.seg(s, K.l, K.cy, E.r, E.cy, { head: true });
-    // 예 → 사다리: LLM 없는 시도 → 저장된 스크립트 → LLM
+    // 예 → 사다리: LLM 없이 → 저장된 수정 방법 → LLM
     H.route(s, [[Q.cx, Q.t], [Q.cx, P.cy], [P.l, P.cy]]); H.label(s, Q.cx + 0.18, (Q.t + P.cy) / 2 + 0.05, "예", { w: 0.25 });
     H.seg(s, P.cx, P.b, G.cx, G.t, { head: true }); H.label(s, P.cx + 0.47, (P.b + G.t) / 2, "해당 없음", { w: 0.65 });
     H.seg(s, G.cx, G.b, L.cx, L.t, { head: true }); H.label(s, G.cx + 0.52, (G.b + L.t) / 2, "없거나 실패", { w: 0.75 });

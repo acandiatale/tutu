@@ -34,7 +34,7 @@ def test_korean_markdown_keeps_identifiers(tmp_path, cfg):
     ko_cfg = cfg.model_copy(update={"report": cfg.report.model_copy(update={"language": "ko"})})
     paths = write_inventory(inv, tmp_path, ko_cfg)
     ko = Path(paths["inventory_md"]).read_text(encoding="utf-8")
-    for s in ("# 웹앱 인벤토리 — legacy-exploded", "## Maven 모듈 제안", "## 다음 할 일", "| 웹앱 루트 | 2 |",
+    for s in ("# 웹앱 인벤토리 — legacy-exploded", "## Maven 모듈 제안", "## 다음에 할 일", "| 웹앱 루트 | 2 |",
               "좌표 미확인", "`portal/WEB-INF/lib/acme-util.jar`", "`commons-lang:commons-lang`", "spring-mvc"):
         assert s in ko, s
     for s in ("## Maven module proposal", "## What to do next", "| Webapp roots |", "unknown coordinates"):
@@ -47,4 +47,4 @@ def test_korean_markdown_keeps_identifiers(tmp_path, cfg):
 
 def test_empty_inventory_renders(tmp_path):
     md = render_inventory(WebappInventory(root=str(tmp_path)), "ko")
-    assert "`WEB-INF`가 있는 디렉터리를 찾지 못했다." in md and "제안할 것이 없다" in md
+    assert "`WEB-INF`가 있는 폴더를 찾지 못했습니다." in md and "제안할 내용이 없습니다" in md

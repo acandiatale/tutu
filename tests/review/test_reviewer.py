@@ -291,3 +291,19 @@ def test_korean_report_language_asks_for_korean_text(tmp_path, cfg):
     llm = FakeLLM(OK)
     StructureReviewer(ko, llm).review(ws, profile(), ko, run_id="r")
     assert "in Korean" in llm.calls[0]["messages"][1].content
+
+
+def test_review_prompt_names_the_language_of_problem_hint_and_analysis(tmp_path, cfg):
+    sentence = ("Write `problem`, `fix_hint`, `analysis` and the `<analysis>` / `<solution>` texts below in {lang};\n"
+                "identifiers, paths and coordinates stay as they are.")
+    for lang, named in (("ko", "Korean (한국어)"),
+                        ("en", ("the language of the project's code comments — Korean (한국어) when they are Korean "
+                                "or when unsure, English when they are English"))):
+        c = cfg.model_copy(update={"report": cfg.report.model_copy(update={"language": lang})})
+        llm = FakeLLM(OK)
+        StructureReviewer(c, llm).review(make_ws(tmp_path / lang), profile(), c, run_id="r")
+        system = llm.calls[0]["messages"][0].content
+        assert sentence.format(lang=named) in system, lang
+        # the sentence sits in the answer format, after the <review> block and before the fix blocks
+        assert system.index("</review>") < system.index(sentence.format(lang=named)) < system.index("<analysis>원인")
+        assert "{{" not in system

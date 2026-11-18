@@ -103,11 +103,13 @@ class CatalogEntry(BaseModel):
     sets: list[str] = Field(default_factory=list)
     verified: Optional[str] = None
     notes: Optional[str] = None
+    # 이 id를 정의하는 선언형 레시피 파일(저장소 기준 경로)이다. 실행용 rewrite.yml에 그대로 넣는다
+    file: Optional[str] = None
 
 
 # 설정 레시피 세트 이름(``openrewrite.recipes.*``, extra 제외). catalog.yml의 ``sets:``와 대조한다
 _RECIPE_SET_NAMES = ("jdk21", "jakarta", "servlet_jakarta_10", "spring_boot_4", "spring_framework_7", "spring_security_7",
-                     "spring_batch_6", "hibernate_7", "junit5")
+                     "spring_batch_6", "hibernate_7", "hystrix_resilience4j", "junit5")
 
 
 def config_recipe_sets(cfg: Config) -> dict[str, list[str]]:
@@ -251,12 +253,44 @@ class RecipeCatalog:
             elif e.artifact and not e.artifact.startswith(CORE_GROUP):
                 if e.artifact not in artifacts and (e.provided_by or "") not in artifacts:
                     problems.append(f"catalog {e.id}: artifact {e.artifact} is not in openrewrite.recipe_artifacts")
+            if e.file:
+                problems += self._check_file(e, cfg)
         return problems
+
+    def _check_file(self, e: CatalogEntry, cfg: Config) -> list[str]:
+        """``file``이 있는 항목의 파일이 그 id를 정의하고, 그 안에서 쓰는 레시피가 모두 카탈로그에 있는지 확인한다."""
+        path = recipe_file_path(e, cfg)
+        if path is None or not path.is_file():
+            return [f"catalog {e.id}: file {e.file} not found"]
+        try:
+            docs = [d for d in yaml.safe_load_all(path.read_text(encoding="utf-8")) if isinstance(d, dict)]
+        except (OSError, yaml.YAMLError) as exc:
+            return [f"catalog {e.id}: file {e.file} is not readable YAML ({exc})"]
+        doc = next((d for d in docs if d.get("name") == e.id), None)
+        if doc is None:
+            return [f"catalog {e.id}: file {e.file} does not define it"]
+        out: list[str] = []
+        defined = {str(d.get("name")) for d in docs if d.get("name")}
+        for item in doc.get("recipeList") or []:
+            rid = item if isinstance(item, str) else (str(next(iter(item))) if isinstance(item, dict) and item else "")
+            if rid and rid not in defined and rid not in self:
+                out.append(f"catalog {e.id}: building block {rid} (in {e.file}) is not in the catalog")
+        return out
 
     # ---- listing -------------------------------------------------------
     def rows(self) -> list[dict[str, Any]]:
         """``sbmig recipes list``에 출력할 dict 목록을 만든다."""
         return [e.model_dump() for e in self.entries]
+
+
+def recipe_file_path(entry: Optional[CatalogEntry], cfg: Optional[Config] = None) -> Optional[Path]:
+    """항목의 ``file``을 절대 경로로 반환한다. ``file``이 없으면 None을 반환한다."""
+    if entry is None or not entry.file:
+        return None
+    p = Path(entry.file)
+    if p.is_absolute():
+        return p
+    return cfg.resolve_path(p) if cfg is not None else PACKAGE_ROOT / p
 
 
 def prefix_artifact(recipe_id: str) -> Optional[str]:

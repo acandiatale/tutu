@@ -24,7 +24,7 @@ intake ─► analyze ─► plan ─► transform ─► restructure ─► str
 | restructure | the company layout and every pom cleanup, no LLM (§8) | never; a failed step flags `restructure-failed` and the run is not a success |
 | structure review | one LLM call checks the restructured poms against the company rules; critical findings are fixed by edits, warnings go to the report (`sbmig/review/reviewer.py`) | never |
 | verify | `mvn clean package -Dmaven.test.skip=true`; on failure the script fix loop (§3), then the final build again | never |
-| finalize | success verdict, advisories verified on the final tree, Handover, error list, KB records, `report.md` / `report.json`, then `changes.patch` / `result.zip` | – |
+| finalize | success verdict, advisories verified on the final tree, Handover, error list, KB records, code changes (`sbmig/report/changes.py`), `report.md` / `report.json`, then `changes.patch` / `result.zip` | – |
 | remediation | only when `remediation.after_migration` is on and the final build succeeded: the vulnerability-remediation graph (§11) | – |
 
 The run flow `remediation` (`sbmig run --flow remediation`, web `?flow=remediation`) uses only `intake → remediation → finalize`:
@@ -40,7 +40,8 @@ Boot 2/3 classes). Swapping the parent first would resolve a Boot 4.1 classpath 
 Recipe sets per case (`openrewrite.recipes`; every id must be in `knowledge/recipes/catalog.yml`, details in `docs/RECIPES.md`):
 `jdk21` for everyone; `jakarta` for `spring_legacy`, `servlet_tomcat` and `pure_java` with Java EE javax imports;
 `servlet_jakarta_10`; `spring_framework_7` for `spring_legacy`, plus `spring_security_7` when it uses spring-security;
-`spring_batch_6` / `hibernate_7` when used; `spring_boot_4` (`UpgradeSpringBoot_4_0` + `SpringBootProperties_4_1`) for `spring_boot`.
+`spring_batch_6` / `hibernate_7` when used; `spring_boot_4` (`UpgradeSpringBoot_4_0` + `SpringBootProperties_4_1`) for `spring_boot`;
+`hystrix_resilience4j` (the in-house composite `com.company.migrate.HystrixToResilience4j`) for any project that uses Hystrix, before the Boot / Framework sets.
 
 ### Workspace and run directory
 
@@ -76,7 +77,7 @@ out/<run id>/
 | `sbmig/script/` | the fix-script runtime (§7.6) |
 | `sbmig/errors/`, `sbmig/kb/` | run error list, case store, file KB, `sbmig kb …` |
 | `sbmig/advisory/` | EOL library advisories (guide only, `docs/ADVISORIES.md`) |
-| `sbmig/report/` | `report.md` / `report.json`, Handover, `SBMIG-RESULT` line, Korean wording |
+| `sbmig/report/` | `report.md` (Korean guide `guide_ko.py`, English diagnostic layout `markdown.py`) / `report.json`, Handover, code changes (`changes.py`), `SBMIG-RESULT` line, Korean wording |
 | `sbmig/graph/` | LangGraph engine (§7.7) |
 | `sbmig/fleet/` | sequential multi-project runs (§7.5) |
 | `sbmig/web/` | FastAPI web UI, run manager, Kubernetes Job dispatch, Main / Worker contract (§10) |
@@ -190,7 +191,9 @@ and run the same way (`edits.py`). This guards against mistakes; it is not a san
 The company deploys agents on LangGraph, so a `StateGraph` drives the run (`sbmig/graph/engine.py`, `loop.engine: graph`, the
 default). Nodes `intake → analyze → plan → phase (once per phase group) → finalize → remediation → END`; each node calls one
 `Orchestrator.step_*` method, so `loop.engine: inline` (`Orchestrator._run`, no LangGraph) produces the same report, flags,
-exit code and journal (asserted by `tests/graph/test_engine.py`).
+exit code and journal (asserted by `tests/graph/test_engine.py`). The node `finalize` only settles a stop; the report, the
+KB records, `changes.patch` and `result.zip` are written by the run guard (`Orchestrator._finalize`) after the graph has
+ended — after the chained remediation, whose summary is a section of the migration report.
 
 - The graph state holds small JSON values (`run_id`, remaining phase groups, `aborted`, `stopped`, a summary); the `RunReport`,
   the plan and the `BuildFixLoop` stay on the orchestrator.
@@ -233,8 +236,8 @@ to the configured ones. Every parent set is listed in `RestructureResult.parents
 is added when a matching dependency is declared (`replaces: true` removes the matched declarations).
 
 **Pom cleanup** (every mode, in this order): `nonFilteredFileExtensions` for binary files under filtered resources
-(`resources_filtering.py`) → as-is managed versions pinned from `logs/effective-depmgmt.json` (`versions_pinned`, Handover ⚠
-"carried over") → explicit versions the new parent chain manages dropped (`layout.drop_managed_versions: gte`;
+(`resources_filtering.py`) → as-is managed versions pinned from `logs/effective-depmgmt.json` (`versions_pinned`, ⚠ in the
+report's dependency versions) → explicit versions the new parent chain manages dropped (`layout.drop_managed_versions: gte`;
 `managed_versions_dropped`) → version properties that override the chain dropped (`layout.drop_bom_property_overrides`) →
 orphan version properties dropped → bundled jars wired (`layout.wire_bundled_jars`, `bundled_jars.py`: known coordinates the
 repository has → dependency, else copied to `<module>/lib/` with `system` scope; superseded / container-API / unreferenced jars
@@ -255,10 +258,22 @@ also written here.
 
 ## 9. Outputs
 
-* `report.md` — header table and `SBMIG-RESULT` line, then **Handover** (operator checks → Ant pom synthesis (only with `intake.ant_to_maven` on) → versions
-  replaced (⚠ carried over) → libraries needing attention → "From here on, your team"), then Error list, Fixes by case,
-  Structure review, Bundled jars, Blocked, javax API jars, Manual follow-ups, Flags, What we changed, LLM usage and cost, Notes,
-  Outputs (`sbmig/report/markdown.py`). `report.language: ko` for the company.
+* `report.md` — rendered by `render_markdown` in the language of `report.language`. `ko` (the company setting) is a guide
+  for the person who asked for the migration, written in Korean by `sbmig/report/guide_ko.py`: head table (결과,
+  `SBMIG-RESULT`, 전환 후, 실행 ID, 시작 / 종료, 플래그) → 전환 내용 → 확인해 주세요 (advisories, hand-over items, follow-ups
+  in one numbered list) → 코드 수정 내역 (자동 변환; 직접 수정한 파일 with one net diff per file) → 해결하지 못한 오류 (open
+  entries only) → 진행하지 않은 항목 (blocked) → the special sections when they apply (운영자 확인, pom 합성 (Ant), ADF, 포함된
+  jar, javax API jar, 외부 설정 값, 취약점 조치) → 참고 (collapsed: 실행 정보 with the structure review's verdict and the
+  flags explained, LLM 사용량과 비용, 산출물, 진단용 기록 = the plan / phase notes). Resolved errors are not listed in it.
+  `en` keeps the diagnostic layout of `sbmig/report/markdown.py`: header table, **Handover** (operator checks → Ant pom
+  synthesis → versions replaced (⚠ carried over) → libraries needing attention → "From here on, your team"), Error list,
+  Fixes by case, Structure review, Bundled jars, Blocked, javax API jars, Manual follow-ups, Flags, What we changed, LLM
+  usage and cost, Notes, Outputs.
+* Code changes — `RunReport.code_changes` / `code_changes_total` / `code_changes_base`, built at finalize by
+  `sbmig/report/changes.py` (`collect_code_changes`) from the workspace's git history: the net change per file between the
+  commit right after the automatic conversion (journal `code_changes_base`: after OpenRewrite and the restructure, before
+  the structure review's fix and the first fix try) and the final tree, one entry per file, `.java` first; diff text for
+  the first 30 files, 80 lines per file, 500 files listed. Empty when the run never reached the fix loop.
 * `report.json` — the serialized `RunReport` (`sbmig/core/models.py`), always English.
 * `errors.jsonl` / `errors.md` — every error of the run with every try (cause, solution, diff); `errors.jsonl` is appended to
   `<kb>/errors.jsonl` at the end.

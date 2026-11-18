@@ -8,6 +8,7 @@ LLM은 사용하지 않는다.
   계획한다. 그 밖의 문제는 빌드 오류로 두고 수정 루프의 스크립트가 고친다
 - 예외로 spring_legacy에는 Framework 7과, 사용하는 경우에만 Security / Batch 6 / Hibernate 7.1 세트를 넣고
   servlet_tomcat에는 Servlet 6 제거 API 세트를 넣는다. Boot 프로젝트는 Boot 4 묶음 레시피가 같은 일을 한다
+- 분석기가 Hystrix를 찾으면 케이스와 상관없이 Resilience4j 전환 세트를 Boot / Framework 세트 앞에 넣는다
 - MSA는 공유 라이브러리를 먼저, 그다음 서비스별 단계를 만든다
 - 권고는 계획 노트 한 줄씩 남길 뿐 레시피가 되지 않는다
 - 사내 프레임워크 프로젝트(``jdk-jakarta`` 범위)는 Java 21과 jakarta 변환, JSP 이름 변경, 검증 빌드만 계획한다
@@ -28,7 +29,10 @@ restructure.pom_only, restructure.review, verify.build. The only build before ve
   with the analyzer's `spring-batch` / `hibernate` library — `hibernate` is the native ORM rule, a JPA-only project
   has `jpa` only); `spring_boot_4` (spring_boot; the umbrella covers Batch, Hibernate and the Servlet removals);
   `junit5` (junit4 detected) — empty by default; `extra.<case>` + `extra.all`. OpenRewrite recipes only: no project,
-  library or KB recipes (business decision, PLAN-v2 §2).
+  library or KB recipes (business decision, PLAN-v2 §2). `hystrix_resilience4j` (v2.1z-at): every case whose plan has
+  the transform step, when the analyzer found `hystrix`, right after the jakarta bucket and before the Framework /
+  Security / … / Boot sets (the starter swap sees the as-is Spring Cloud BOM); one plan note. The composite is a
+  declarative recipe of this repository (`knowledge/recipes/base/hystrix-to-resilience4j.yml`, catalog `file`).
 * `transform.compile` (StepKind.BUILD, Phase.TRANSFORM, `mvn clean compile`, v2.1 — "OpenRewrite 를 다 돌린 뒤
   compile 을 한 번"): every error goes on the run's error list (seen `compile`), nothing is fixed. Planned whenever the
   project has java sources (also when no recipe applied). MSA: one at the root aggregator, else
@@ -90,12 +94,14 @@ V1_LOOP_PHASES = ("jdk21", "spring", "restructure")
 
 # 변환 1회의 레시피 묶음과 실행 순서.
 # Servlet 6 제거 레시피는 jakarta.servlet 타입에 적용되므로 javax에서 jakarta로 바꾼 다음에 실행한다
+# Hystrix 전환은 as-is Spring Cloud BOM이 pom에 남아 있을 때 starter를 바꾸도록 Boot / Framework 세트보다 먼저 실행한다
 # recipe buckets of one transform run, in run order (labels for the step title). v2.1w: Java 21 → jakarta (+ the
 # Servlet 6 removals, which match jakarta.servlet types and so run after the javax → jakarta rename) → Framework 7 →
 # Security chain → Batch 6 → Hibernate 7.1 → Boot 4 (Boot projects only; never together with the legacy sets) →
 # JUnit 5 → extra
 _BUCKETS: tuple[tuple[str, str], ...] = (
-    ("jdk21", "Java 21"), ("jakarta", "jakarta"), ("framework", "Spring Framework 7"),
+    ("jdk21", "Java 21"), ("jakarta", "jakarta"), ("hystrix", "Hystrix → Resilience4j"),
+    ("framework", "Spring Framework 7"),
     ("security", "Spring Security 7"), ("batch", "Spring Batch 6"), ("hibernate", "Hibernate 7.1"),
     ("boot", "Spring Boot 4.1"), ("junit5", "JUnit 5"), ("extra", "extra recipes"),
 )
@@ -226,6 +232,8 @@ def _case_buckets(facts: _Facts, cfg: Config, notes: list[str], label: str = "")
         out["boot"] = list(rs.spring_boot_4)
         notes.append(f"transform{where}: spring_boot → Spring Boot 4 set (the umbrella migrates javax → jakarta "
                      "itself)")
+    if "hystrix" in facts.libs:
+        _hystrix_bucket(rs, out, notes, where)
     if "junit4" in facts.libs and case != CaseType.UNKNOWN:
         if rs.junit5:
             out["junit5"] = list(rs.junit5)
@@ -237,6 +245,19 @@ def _case_buckets(facts: _Facts, cfg: Config, notes: list[str], label: str = "")
         out["extra"] = list(extra)
         notes.append(f"transform{where}: extra recipes from config ({case.value}/all): {', '.join(extra)}")
     return out
+
+
+def _hystrix_bucket(rs: RecipeSetConfig, out: dict[str, list[str]], notes: list[str], where: str) -> None:
+    """분석기가 Hystrix를 찾았을 때 ``hystrix_resilience4j`` 세트를 넣고 노트 한 줄을 남긴다.
+    세트가 비어 있으면 넣지 않고 Hystrix가 그대로 남는다는 노트만 남긴다."""
+    ids = list(rs.hystrix_resilience4j)
+    if ids:
+        out["hystrix"] = ids
+        notes.append(f"transform{where}: hystrix detected → Hystrix → Resilience4j set {_chain(ids)} before the Boot / "
+                     "Framework sets (no version written: the restructure's version rules decide the new starter)")
+    else:
+        notes.append(f"transform{where}: hystrix detected, the hystrix_resilience4j set is empty → Hystrix stays at "
+                     "its as-is version")
 
 
 def _flatten(buckets: dict[str, list[str]]) -> list[str]:
@@ -687,7 +708,7 @@ def _scope_note(profile: ProjectProfile) -> str:
 _REDUCED_SET_BUCKET: dict[str, str] = {
     "jdk21": "jdk21", "jakarta": "jakarta", "servlet_jakarta_10": "jakarta", "spring_framework_7": "framework",
     "spring_security_7": "security", "spring_batch_6": "batch", "hibernate_7": "hibernate", "spring_boot_4": "boot",
-    "junit5": "junit5",
+    "hystrix_resilience4j": "hystrix", "junit5": "junit5",
 }
 
 
@@ -867,10 +888,10 @@ def v2_recipe_scope(cfg: Optional[Config] = None) -> set[str]:
     조언자의 허용 목록을 이 범위로 좁히기 위해 사용한다.
 
     Every recipe id v2 may run: the configured sets (jdk21, jakarta, servlet_jakarta_10, spring_boot_4, framework,
-    the conditional security / batch / hibernate sets and junit5) plus every `extra` list."""
+    the conditional security / batch / hibernate / hystrix sets and junit5) plus every `extra` list."""
     rs = cfg.openrewrite.recipes if cfg is not None else RecipeSetConfig()
     ids = {*rs.jdk21, *rs.jakarta, *rs.servlet_jakarta_10, *rs.spring_boot_4, *rs.spring_framework_7,
-           *rs.spring_security_7, *rs.spring_batch_6, *rs.hibernate_7, *rs.junit5}
+           *rs.spring_security_7, *rs.spring_batch_6, *rs.hibernate_7, *rs.hystrix_resilience4j, *rs.junit5}
     for extra in (rs.extra or {}).values():
         ids.update(extra)
     return ids

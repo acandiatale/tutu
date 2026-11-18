@@ -29,11 +29,11 @@ UI 에 올리면** 에이전트가 이관을 돌린다. 담당자는 sbmig 를 �
   둘 다 없으면 이 PC(루프백)만 받고, `--host 0.0.0.0` 이면 `sbmig serve` 가 뜨지 않는다.
 - **업로드 상한**: `--max-upload-mb`, 기본 `$SBMIG_MAX_UPLOAD_MB` 또는 512 MB, 0 = 없음.
 - **관리자 페이지 `/admin`**(링크 없음): 내장 비밀번호(`SBMIG_ADMIN_PASSWORD` 로 교체 가능)로 들어가 프로젝트별 LLM 토큰 사용량을 보고 로그 ZIP 을 받는다. `sbmig/web/admin.py`, `deploy/README.md` §2.
-- `sbmig serve` 가 곧 uvicorn 이다(안에서 `uvicorn.run`). 실행 큐가 프로세스 안에 있으므로 **워커는 하나**여야 한다.
+- `sbmig serve` 가 곧 uvicorn 이다. 실행 큐가 프로세스 안에 있으므로 **워커는 하나**여야 한다.
   종료 시 `--graceful-timeout`(기본 5초) 뒤 SSE 연결을 닫고, 실행 중인 Maven / OpenRewrite 프로세스를 정리한다. 중단된 실행은 `aborted`.
 - 플레인 uvicorn 으로도 뜬다: `SBMIG_WEB_OUT=out/web uvicorn sbmig.web.app:app --port 8765` (이때 `--timeout-graceful-shutdown 5` 를 직접).
 
-**CLI 명령(`sbmig run`, `sbmig fleet`, `sbmig kb …`)은 개발자·테스트·진단용이다.** 운영 경로는 위의 웹 UI 다.
+**CLI 명령(`sbmig run`, `sbmig fleet`, `sbmig kb …`)은 개발자·테스트·진단용이다.**
 
 ## 2. PC 에 설치 (Windows / macOS / Linux)
 
@@ -262,7 +262,7 @@ KB 를 쓸 때의 프로세스 간 잠금, `kb.lock_timeout_seconds`).
    `SBMIG-RESULT run=<id> exit=<n> build=<ok|FAIL> unresolved=<n> blocked=<n> llm=<calls> attn=<codes|->`
    (`Select-String -Path out\<run id>\sbmig.log -Pattern "SBMIG-RESULT" -Encoding UTF8`)
 2. **사전 점검 실패**: `preflight: <check> FAIL …` 줄.
-3. **원인 줄**: `cause=` 가 들어간 줄(LLM 게이트웨이·사전 점검 실패의 원인), 보고서의 Handover 첫 줄들, 미해결 오류 표의 케이스 id.
+3. **원인 줄**: `cause=` 가 들어간 줄(LLM 게이트웨이·사전 점검 실패의 원인), 보고서 「확인해 주세요」 첫 항목, 「해결하지 못한 오류」의 파일·줄(케이스 id 는 `errors.md`).
 4. **케이스 id** 로 KB 에서: `sbmig kb cases show <case_id>`, `sbmig kb errors show <id>`.
 5. 빌드 오류 원문: `logs\NNN-build-*.log` 의 `[ERROR]` 줄 몇 개.
 6. 어느 단계가 어떤 줄을 썼나: `git -C out\<run id>\project log --oneline` (첫 커밋은 as-is 스냅샷), `git log -S "<문자열>" -- pom.xml`.

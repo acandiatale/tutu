@@ -86,8 +86,8 @@ def test_adf_project_stops_at_analyze_with_the_message_first(cfg, tmp_path):
     assert "| entities (BC4J) / tables | 1 / 1 |" in md and "### Evidence" in md and "- **java** (1): `DEV/s10/src/model/EmpImpl.java`" in md
     assert "rewrite" not in md.lower()
     ko = render_markdown(report, "ko", cfg)
-    assert "## ADF 규모" in ko and "판정: **ADF 프로젝트라 변환이 불가능합니다** (근거 계열 4개: bc4j, java, model, faces)" in ko
-    assert "### 판정 근거 / evidence" in ko and "ADF 프로젝트라 변환이 불가능합니다 (근거: bc4j, java, model, faces; 엔티티 1개" in ko
+    assert "## ADF 규모" in ko and "판정: **ADF 프로젝트라 변환이 불가능합니다** (근거 4종류: bc4j, java, model, faces)" in ko
+    assert "### 판정 근거" in ko and "ADF 프로젝트라 변환이 불가능합니다(근거: bc4j, java, model, faces; 엔티티 1개" in ko
 
 
 def test_adf_policy_continue_reports_only_and_runs_on(cfg, tmp_path):

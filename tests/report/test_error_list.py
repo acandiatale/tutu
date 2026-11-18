@@ -17,9 +17,9 @@ from sbmig.report.markdown import ERROR_LIST_MAX_ROWS
 from .test_report import sample_report
 
 EN_TITLE = "## Error list"
-KO_TITLE = "## 에러 목록"
+KO_TITLE = "## 오류 목록"
 FIXES_EN = "## Fixes by case"
-FIXES_KO = "## 케이스별 해결"
+FIXES_KO = "## 오류 유형별 수정"
 POM_DIFF = ("diff --git a/module/comp-jar/pom.xml b/module/comp-jar/pom.xml\n--- a/module/comp-jar/pom.xml\n"
             "+++ b/module/comp-jar/pom.xml\n@@ -10,3 +10,9 @@\n <dependencies>\n+    <dependency>\n"
             "+      <groupId>jakarta.xml.bind</groupId>\n+      <artifactId>jakarta.xml.bind-api</artifactId>\n"
@@ -179,16 +179,25 @@ def test_fixes_by_case_section():
 
 
 def test_korean_sections():
-    md = render_markdown(report_with(entries()), language="ko")
-    sec = section(md, KO_TITLE)
-    assert "이번 실행의 에러 7건" in sec and "### compile — OpenRewrite 뒤 `mvn compile` (3)" in sec
-    assert "### fix r2 — 라운드 2 빌드의 새 에러 (1)" in sec and "| # | 케이스 | 파일:줄 | 메시지 | 상태 | 시도 | 해결 |" in sec
-    fx = section(md, FIXES_KO)
-    assert "| 케이스 | 에러 | 원인 | 해결 방법 | 변경 파일 (+/−) | 수정 | 스크립트 |" in fx and "2/2 해결" in fx
+    # v2.1z-as: the Korean report.md is the guide — no error list, no per-case table; the section helpers keep
+    # their Korean wording for the console / other readers
+    from sbmig.report.markdown import error_list_lines, fixes_by_case_lines
+    r = report_with(entries())
+    sec = "\n".join(error_list_lines(r, "ko"))
+    assert "이번 실행의 오류 7건을 한 줄씩 적었습니다" in sec and "### compile — OpenRewrite 뒤 `mvn compile` (3)" in sec
+    assert "### fix r2 — 2번째 수정 뒤 빌드에서 새로 나온 오류 (1)" in sec
+    assert "| # | 오류 유형 | 파일:줄 | 메시지 | 상태 | 수정 기록 | 해결 |" in sec
+    fx = "\n".join(fixes_by_case_lines(r, "ko"))
+    assert "| 오류 유형 | 오류 | 원인 | 해결 방법 | 변경 파일 (+/−) | 직접 수정 | 스크립트 |" in fx and "2/2 해결" in fx
     assert "| module/comp-jar/pom.xml +11–14 (<dependencies> 블록) — jakarta.xml.bind-api 의존성을 추가합니다 |" in fx
     assert "스크립트 없음: generated code differs per project" in fx
-    assert "| **에러 목록** | 7건: unresolved 2, pom-verify 1, resolved 4 (\"에러 목록\" 참조) |" in md
-    assert EN_TITLE not in md and FIXES_EN not in md
+    md = render_markdown(r, language="ko")
+    assert KO_TITLE not in md and FIXES_KO not in md and EN_TITLE not in md and FIXES_EN not in md
+    assert "에러 목록" not in md and "오류 목록" not in md
+    # the two errors still open after the final build are listed; resolved ones are not
+    open_sec = section(md, "## 해결하지 못한 오류")
+    assert open_sec.startswith("## 해결하지 못한 오류 — 2건")
+    assert "declare jakarta.xml.bind-api" not in md
 
 
 def test_group_cap_points_at_errors_md():

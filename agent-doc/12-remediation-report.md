@@ -216,7 +216,7 @@ pom · BOM · classifier · dependencyManagement · property · scope · jar는 
 | 위험도 표시의 기준 점수·표시 글자 | `remediation.severity_red` 등 세 키, `sbmig/remediations/i18n.py` (`severity_of`, `SEVERITY_LEVELS`) |
 | 보고서의 절·표·줄임 규칙 | `sbmig/remediations/report.py` (`build_report_md`) |
 | 한국어 라벨·문장·묶음 | `sbmig/remediations/i18n.py` |
-| 이관 보고서의 조치 절 | `sbmig/report/markdown.py`, 한국어는 `sbmig/report/i18n.py` |
+| 이관 보고서의 조치 절 | `sbmig/report/markdown.py` (`remediation_lines`, 한국어 안내서 `sbmig/report/guide_ko.py` 의 특수 절), 문구는 `sbmig/report/i18n.py` |
 | 승인 화면의 문구 | `sbmig/web/static/index.html`, `sbmig/remediations/service.py` (`proposals`) |
 
 ## 확인하는 법

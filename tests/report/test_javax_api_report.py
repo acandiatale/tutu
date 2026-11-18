@@ -67,11 +67,12 @@ def test_section_absent_when_empty():
 
 def test_korean_section():
     ko = render_markdown(report_with_jars(), language="ko")
-    assert "## 클래스패스에 남은 javax API jar" in ko and "| javax API jar | 5개 |" in ko
-    assert "| 아티팩트 | 모듈 | 스코프 | via (직접 의존성) | pom에 선언 | 할 일 |" in ko
-    assert "4.2.1(으)로 올림 (4.0.1부터 jakarta.*), Java 17 이상 필요" in ko
-    assert "| (루트) |" in ko and "pom에서 선언 제거" in ko and "업그레이드 / 교체" in ko
-    assert "좌표가 바뀜: `org.qlrm:qlrm:4.2.1`(으)로 이전" in ko
+    # v2.1z-as: the head-table count row is gone from the Korean guide; the section itself stays
+    assert "## 클래스패스에 남은 javax API jar" in ko and "| javax API jar |" not in ko
+    assert "| 아티팩트 | 모듈 | scope | via (직접 의존성) | pom에 선언 | 할 일 |" in ko
+    assert "4.2.1 버전으로 업그레이드 (4.0.1부터 jakarta.*), Java 17 이상 필요" in ko
+    assert "| (루트) |" in ko and "pom에서 선언 삭제" in ko and "업그레이드 또는 교체" in ko
+    assert "새 좌표 `org.qlrm:qlrm:4.2.1` 사용 (4.0.1부터 jakarta.*)" in ko
     assert JAVAX_JARS_TITLE not in ko
 
 

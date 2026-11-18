@@ -29,6 +29,7 @@
 - [x] OpenRewrite 를 한 번만 돌린다: Java 21, javax → jakarta(필요할 때), Boot 프로젝트에는 Boot 4.0 + 4.1 속성 레시피
 - [x] Spring Framework 7 레시피는 레거시 Spring 프로젝트 전부에, Spring Security 6 → 7 체인은 Security 를 쓰는 프로젝트에만 돌린다
 - [x] Spring Batch 6 · Hibernate 7 레시피는 쓰는 경우만, 서블릿 jakarta 10 레시피는 Tomcat 서블릿 프로젝트에 돌린다
+- [x] Hystrix 를 쓰는 프로젝트는 사내 레시피로 Resilience4j 로 바꾼다(`@HystrixCommand` → `@CircuitBreaker`, starter 교체). 버전은 적지 않고 Spring Cloud BOM 이나 재구성 규칙이 정한다. 레시피가 못 바꾸는 코드(`HystrixCommand` 상속 등)는 수정 루프가 옮긴다. Springfox 와 `spring-cloud-starter-sleuth` 는 Boot 4 상위 레시피가 바꾼다
 - [x] 레시피 목록은 `knowledge/recipes/catalog.yml` 한 곳에만 있고 `sbmig recipes check` 가 어긋남을 잡는다
 - [x] 구조 정리를 마치기 전에는 빌드를 돌리지 않는다(반쯤 바뀐 트리에서 빌드하지 않음) (v2.1o)
 
@@ -53,7 +54,9 @@
 **빌드와 수정 · 마무리**
 - [x] `mvn clean package -Dmaven.test.skip=true` 로 판정하고, 실패하면 2절의 수정 루프를 돈다
 - [x] 어떤 실행도 마지막 빌드 시도와 남은 오류 목록 없이 끝나지 않는다(빌드 게이트)
-- [x] 보고서(report.md, 인수인계가 맨 앞), `errors.md` / `errors.jsonl`, 운영자가 옮겨 적는 `SBMIG-RESULT …` 한 줄을 남긴다
+- [x] 보고서 report.md: 한국어(회사 설정)는 요청 담당자용 안내서다. 전환 내용 → 확인해 주세요 → 코드 수정 내역(파일별 최종 diff) → 해결하지 못한 오류 → 참고 순서이고, 해결된 오류 목록과 라운드별 수정 표는 싣지 않는다. 영어는 진단용 구성 그대로다
+- [x] 라이브러리 안내문(Hystrix, Sleuth, Springfox 등 67개)은 한국어 문장으로 보여 준다
+- [x] `errors.md` / `errors.jsonl`(오류별 상세 기록), 운영자가 옮겨 적는 `SBMIG-RESULT …` 한 줄을 남긴다
 - [x] Windows 에서 `target/` 파일 잠금으로 빌드가 실패하면 LLM 에 묻지 않고 기다렸다 다시 빌드한다 (v2.1r)
 - [x] 부모 pom 에서 물려받은 pom 문제는 자식이 아니라 부모 pom 을 가리킨다 (v2.1z-y)
 - [x] 실행마다 `sbmig.log`(DEBUG)와 저널을 남기고, LLM 요청 · 응답 기록은 켤 때만 남긴다
@@ -203,7 +206,7 @@
 - [x] 한국어 주석을 개발자가 직접 쓴 주석처럼 짧게 다시 썼다(줄표·화살표·버전 태그·날짜 없음, 조사 붙여쓰기). 테스트가 검사한다
 - [x] `config/*.yml` 주석을 값을 정하는 사람을 위한 한국어 설명으로 바꿨다
 - [x] `agent-doc/`: 사내 LLM 이 실행을 진단하고 코드를 고칠 때 읽는 한국어 문서 묶음(00…13), 테스트가 경로 · 키 · 크기를 지킨다
-- [x] 흐름 안내 덱 `docs/migration-agent/migration-agent.pptx`(단계마다 고칠 수 있는 도형 한 장)와 설계 README
+- [x] 사용자용 흐름 안내 덱 `docs/migration-agent/migration-agent.pptx`(20장: 전체 흐름 12단계, 프로젝트별 갈래, 단계마다 고칠 수 있는 도형 한 장, 수정 루프, 취약점 조치, 보고서 읽는 법, 지식베이스)와 설계 README
 - [x] KB 지도 `docs/kb-map/`
 - [x] 배포 안내 `deploy/README.md`, 인프라팀용 env 목록 `deploy/ENV.md`(한국어)
 - [x] Main ↔ Job 파드 실행 상태 계약 `docs/v2/JOB-RUN-STATE-CONTRACT-KO.md`

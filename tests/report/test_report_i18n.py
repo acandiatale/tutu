@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import ast
 import json
+import re
 import string
 from pathlib import Path
 
@@ -25,10 +26,9 @@ EN_HEADINGS = ("# Migration report — ", "## Handover — what we replaced, wha
                "## Manual follow-ups", "## Flags",
                "### Versions replaced", "### Libraries needing your attention", "### From here on, your team",
                "### Properties to set before running", "| Run id |", "**Merge conflicts**")
-KO_HEADINGS = ("# 마이그레이션 보고서 — ", "## 인수인계 — 교체한 것과 이제 팀이 맡을 것", "## 에러 목록",
-               "## 수동 후속 조치", "## 플래그",
-               "### 교체된 버전", "### 조치가 필요한 라이브러리", "### 이후 담당 팀이 할 일",
-               "### 실행 전에 설정할 프로퍼티", "| 실행 ID |", "**병합 충돌**")
+GUIDE_HEADINGS = ("# 마이그레이션 보고서 — ", "## 전환 내용", "### 의존성 버전", "## 확인해 주세요", "## 해결하지 못한 오류",
+                  "## 진행하지 않은 항목", "## 실행 전에 설정할 프로퍼티", "| 실행 ID |", "**모듈 병합에서 겹친 파일**",
+                  "## 참고")
 
 
 def _full_report(tmp_path, cfg):
@@ -43,44 +43,50 @@ def _full_report(tmp_path, cfg):
 
 
 def test_korean_headings_replace_english(tmp_path, cfg):
+    # v2.1z-as: `ko` renders the guide (sbmig/report/guide_ko.py); the English report keeps its diagnostic layout
     report = _full_report(tmp_path, cfg)
     ko = render_markdown(report, language="ko")
     en = render_markdown(report)
-    for e, k in zip(EN_HEADINGS, KO_HEADINGS):
+    for e in EN_HEADINGS:
         assert e in en, e
-        assert k in ko and e not in ko, (e, k)
+        assert e not in ko, e
+    for k in GUIDE_HEADINGS:
+        assert k in ko, k
+    for gone in ("## 인수인계", "## 에러 목록", "## 수동 후속 조치", "## 플래그", "### 이후 담당 팀이 할 일"):
+        assert gone not in ko, gone
     assert "❌ 빌드 실패" in ko and "NOT BUILDING" not in ko
-    assert "| 항목 | 이전 | 이후 | 사유 |" in ko and "as-is 버전 유지 (더 이상 관리되지 않음)" in ko
-    assert "| 키 | 마이그레이션 전 공급처 | 참조 위치 | 기록한 값 | 설정 방법 |" in ko
+    assert "| 항목 | 변경 전 | 변경 후 | 비고 |" in ko and "새 부모 pom에 버전이 없어 기존 버전을 유지" in ko
+    assert "| 키 | 변경 전 설정 위치 | 참조 위치 | 기록한 값 | 설정 방법 |" in ko
     # Handover data lines (English in report.json) are rendered in Korean …
-    assert "클러스터 1개 차단됨 — '차단됨' 참조" in ko and "1 cluster(s) blocked" not in ko
-    assert "org.apache.commons:commons-lang3: 3.12.0(으)로 고정함" in ko
-    assert "동일한 중복 1개 제외" in ko and "kept the copy from" not in ko
+    assert "**진행하지 않은 항목 1건**" in ko and "1 cluster(s) blocked" not in ko
+    assert "**기존 버전을 유지한 의존성** — `org.apache.commons:commons-lang3`" in ko
+    assert "중복 파일 1개를 하나로 합쳤습니다" in ko and "kept the copy from" not in ko
     # … identifiers, free-text follow-ups and compiler messages stay English
-    assert "`test-compile-skipped`: 메인 코드는 빌드되지만" in ko
-    assert "web.xml not migrated" in ko and "cannot find symbol — 심볼: `class Foo`" in ko
+    assert "- 플래그 `test-compile-skipped`: 메인 코드는 빌드되지만" in ko
+    assert "web.xml not migrated" in ko and "| `src/A.java` | 3 | cannot find symbol |" in ko
 
 
 def test_blocked_not_building_in_korean():
     r = sample_report()
     r.blocked = blocked_items()
     ko = render_markdown(r, language="ko")
-    assert "## 차단됨 — 사람 / 라이브러리 조치 필요" in ko and "## Blocked" not in ko
-    assert "| **차단됨** | 3건 — external_javax_api 1, artifact_not_found 1, repeated_failure 1 (아래 참조) |" in ko
-    assert "| 사유 | 아티팩트 / 소유 클래스 | 필요 → 실제 | 파일 | 시도 | 제안 |" in ko
+    assert "## 진행하지 않은 항목" in ko and "## Blocked" not in ko and "## 차단됨" not in ko
+    assert "| **차단됨** |" not in ko                       # the head table holds six rows only
+    assert "| 구분 | 아티팩트 / 클래스 | 필요한 타입 → 실제 타입 | 파일 | 수정 횟수 | 조치 방법 |" in ko
     assert "(클래스 `com.company.legacy.web.LegacyRequestHelper`)" in ko
-    assert "<details><summary><code>blk-1</code> — 오류 1건</summary>" in ko
-    assert "이번 실행은 에러 목록을 남기지 않았다. 마지막 빌드 후 남은 오류 5건 (파일별):" in ko
-    assert "### `모듈 core`" in ko and "### `(파일 없음)`" in ko
+    assert "<details><summary><code>blk-1</code> 관련 오류 1건</summary>" in ko
+    # no error list was kept: the last build's unresolved errors are listed by file
+    sec = ko.split("## 해결하지 못한 오류 — 5건", 1)[1].split("\n## ", 1)[0]
+    assert "| `src/A.java` | 3 | cannot find symbol |" in sec and "| `core` | - | weird |" in sec
     assert "| 시작 / 종료 |" in ko and "(2분 05초)" in ko and "핸들러" not in ko
-    assert "- 계획: plan note" in ko and "- spring: spring note" in ko
+    assert "- plan: plan note" in ko and "- spring: spring note" in ko
     assert "Blocked —" not in ko and "item(s)" not in ko and "error(s)" not in ko
 
 
 def test_success_in_korean():
     ok = render_markdown(sample_report(success=True).model_copy(update={"timings_s": {}}), language="ko")
-    assert "✅ 빌드 성공" in ok and "없음. 최종 빌드가 통과했다." in ok and "지식 베이스" not in ok
-    assert "BUILD SUCCESS" not in ok and "이번 실행에서 기록된 버전 변경과 라이브러리 어드바이저리가 없다." in ok
+    assert "✅ 빌드 성공" in ok and "## 해결하지 못한 오류" not in ok and "지식 베이스" not in ok
+    assert "BUILD SUCCESS" not in ok and "## 전환 내용" not in ok
 
 
 def test_english_default_is_unchanged(tmp_path, cfg):
@@ -206,8 +212,8 @@ def _reactor_lines(root: Path) -> list[str]:
     return out
 
 
-def test_every_handover_pattern_matches_a_real_handover_line(tmp_path, cfg):
-    """Lines produced by handover.py → each `PATTERNS` entry is exercised and every templated line is translated."""
+def handover_lines(tmp_path, cfg) -> list[str]:
+    """Real English lines from the code: one or more per `PATTERNS` entry (also used by the sample renderer)."""
     lines: list[str] = []
     report = _full_report(tmp_path, cfg)
     lines += report.handover.from_here + report.handover.merge_conflicts
@@ -368,7 +374,134 @@ def test_every_handover_pattern_matches_a_real_handover_line(tmp_path, cfg):
     lines += [en for en, _ in FW_SUGGESTIONS]
     from .test_framework_scope import KO_SAMPLES as FW_KO_SAMPLES
     lines += [en for en, _ in FW_KO_SAMPLES]
+    lines += _suggestion_lines(cfg)
+    lines += _more_abort_lines(tmp_path / "abort")
+    lines += _loop_followup_lines()
+    return lines
 
+
+def _suggestion_lines(cfg) -> list[str]:
+    """The blocked-table suggestions of `compose_suggestion` (every reason, the javax ladder) from the real code."""
+    from sbmig.core.models import GAV, JavaxApiJar
+    from sbmig.loop.blocked_registry import compose_suggestion
+
+    def item(reason, **kw):
+        return BlockedItem(id="b", reason=reason, phase=Phase.VERIFY, cluster_id="c", **kw)
+
+    lib, api = GAV.parse("com.vendor:grid:1.0.6"), "javax.servlet.ServletRequest"
+    out = [compose_suggestion(item(BlockReason.EXTERNAL_JAVAX_API, artifact=lib, owner_class="com.vendor.Grid",
+                                   required_type=api), cfg),
+           compose_suggestion(item(BlockReason.EXTERNAL_API_INCOMPATIBLE, artifact=lib), cfg),
+           compose_suggestion(item(BlockReason.EXTERNAL_JAVAX_API, artifact=GAV.parse("javax.servlet:servlet-api:2.5"),
+                                   required_type=api), cfg),
+           compose_suggestion(item(BlockReason.EXTERNAL_JAVAX_API, owner_class="com.vendor.Grid", required_type=api), cfg),
+           compose_suggestion(item(BlockReason.EXTERNAL_JAVAX_API, found_type="jakarta.servlet.ServletRequest"), cfg),
+           compose_suggestion(item(BlockReason.ARTIFACT_NOT_FOUND, artifact=GAV.parse("com.example:gone:2.1")), cfg),
+           compose_suggestion(item(BlockReason.ARTIFACT_NOT_FOUND, artifact=GAV.parse("com.example:gone:2.1")), cfg,
+                              repositories=["https://repo.example.com/maven2"]),
+           compose_suggestion(item(BlockReason.PARENT_NOT_FOUND, artifact=GAV.parse("com.example:base-parent:4.0.0")), cfg,
+                              settings_file="/data/.m2/settings.xml"),
+           compose_suggestion(item(BlockReason.PLUGIN_INCOMPATIBLE), cfg, extra="maven-antrun-plugin"),
+           compose_suggestion(item(BlockReason.LLM_UNAVAILABLE), cfg, extra="HTTP 503"),
+           compose_suggestion(item(BlockReason.REPEATED_FAILURE, attempts=20), cfg)]
+    out += [compose_suggestion(item(r), cfg) for r in (BlockReason.UNSUPPORTED_SOURCE, BlockReason.ENCODING,
+                                                       BlockReason.BUDGET_EXHAUSTED, BlockReason.OSCILLATION)]
+    jar = JavaxApiJar(artifact=GAV.parse("javax.persistence:javax.persistence-api:2.2"), module="shop-back")
+    for via in ("org.qlrm:qlrm:2.1.1", "ch.simas.qlrm:qlrm:1.7.1", "org.vendor:mailer:2.0"):
+        out.append(compose_suggestion(item(BlockReason.EXTERNAL_JAVAX_API, via_direct=GAV.parse(via)), cfg, javax_jar=jar))
+    c = cfg.model_copy(deep=True)
+    c.artifacts.optional = [*c.artifacts.optional, c.artifacts.optional[0].model_copy(
+        update={"group_id": "com.example.inhouse", "artifact_id": "legacy-dao", "version": "4.0.0"})] \
+        if c.artifacts.optional else c.artifacts.optional
+    if c.artifacts.optional:
+        out.append(compose_suggestion(item(BlockReason.EXTERNAL_JAVAX_API,
+                                           via_direct=GAV.parse("com.example.inhouse:legacy-dao:1.4.0")), c, javax_jar=jar))
+        out.append(compose_suggestion(item(BlockReason.EXTERNAL_JAVAX_API,
+                                           artifact=GAV.parse("com.example.inhouse:legacy-dao:1.4.0")), c))
+    out.append(compose_suggestion(item(BlockReason.EXTERNAL_JAVAX_API),
+                                  cfg, javax_jar=jar.model_copy(update={"declared": True})))
+    out += ["needs a human",
+            "iBATIS 2 has no Spring 7 support; the owning team must choose MyBatis or plain JDBC — 소유팀 결정 필요",
+            "a person pinned case 1a2b3c4d5e to `block`: handle it by hand (see `sbmig kb cases show 1a2b3c4d5e`)",
+            ("build extension `org.apache.maven.wagon:wagon-webdav-jackrabbit:3.5.3` declared by the company parent "
+             "`com.example:base-parent:4.0.0` cannot be downloaded: make the repository serve its pom, jar, parent poms and "
+             "dependencies, or drop the extension from the parent (a deploy transport is not needed for packaging); nothing "
+             "in the project can change an inherited extension"),
+            "EOL: Netflix Hystrix is discontinued — replacement: org.springframework.cloud:spring-cloud-starter-circuitbreaker-resilience4j"]
+    return out
+
+
+def _more_abort_lines(root: Path) -> list[str]:
+    """Abort reasons of the analyze step, the parent checks and the HTTP blocker (beyond tests/report/test_abort_reasons_ko)."""
+    from sbmig.analyze.adf import adf_abort_reason
+    from sbmig.analyze.aggregator import no_root_pom_reason
+    from sbmig.analyze.analyzer import PathView
+    from sbmig.build.env_errors import http_blocked_reason, http_blocker_hit
+
+    from ..build.test_http_blocker import DEP_LOG
+    for rel, aid in (("APP/pom.xml", "app"), ("BATCH/pom.xml", "batch")):
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_text(f'<project xmlns="http://maven.apache.org/POM/4.0.0"><groupId>g</groupId>'
+                                f"<artifactId>{aid}</artifactId><version>1</version></project>", encoding="utf-8")
+    hit = http_blocker_hit(DEP_LOG)
+    return [no_root_pom_reason(PathView(root), True), no_root_pom_reason(PathView(root), False),
+            adf_abort_reason("stop"), "build tool 'gradle' is not supported (Maven only)", "no pom.xml found in the project",
+            http_blocked_reason(hit), f"{http_blocked_reason(hit)} — run aborted: fix the Maven settings (see the Handover)",
+            ("Maven cannot resolve the parent com.example:base-parent:4.0.0, which is the configured version "
+             "(artifacts.parent = com.example:base-parent:4.0.0) — the repository does not serve it (settings: default); fix "
+             "the repository / settings, or the version in artifacts.parent, and rerun"),
+            ("Maven cannot resolve the as-is parent com.example:base-parent:1.0.0-SNAPSHOT; the configured version is "
+             "com.example:base-parent:4.0.0 (artifacts.parent) — the run stops because openrewrite.unresolvable_asis_parent "
+             "is abort (settings: default); set it to align to use the configured version instead"),
+            ("the company parent com.example:base-parent:4.0.0 declares the build extension "
+             "org.apache.maven.wagon:wagon-webdav-jackrabbit:3.5.3, which Maven cannot download from the repository "
+             "(settings: default) — every Maven call fails before any goal; make Nexus serve its pom, jar, parent poms and "
+             "dependencies (or drop the extension from the parent: a deploy transport is not needed for packaging) and rerun")]
+
+
+def _loop_followup_lines() -> list[str]:
+    """Follow-ups of the fix loop / orchestrator / resources filtering, review notes and the default price note, written
+    the way the code writes them (f-strings of sbmig/loop/fixloop.py, orchestrator.py, restructure/resources_filtering.py,
+    review/reviewer.py and config/default.yml `llm.pricing_note`)."""
+    return [
+        ("bundled jar `vendor-crypto.jar` provides package `com.vendor.crypto` needed by `shop-back/pom.xml` but is not in "
+         "the repository and intake.unknown_jar is skip — declare it as a Maven dependency (publish it to Nexus first)"),
+        ("the LLM is not configured — no LLM fix script could be written in this run; the cases that needed one are "
+         "blocked (llm_unavailable)"),
+        ("the LLM was unavailable during this run (HTTP 503 twice); cases that needed it are listed as blocked "
+         "(llm_unavailable) — proven stored fix scripts were still reused"),
+        ("the LLM gateway rejected 3 different prompts with the same HTTP 400 (unknown field (x)) — a configuration error "
+         "(model name / payload fields in .env or llm.*), not the prompts; LLM calls stopped for this run, fix the setting "
+         "and rerun"),
+        "test sources do not compile (build passes only with -Dmaven.test.skip=true): src/test/java/A.java:3 cannot find symbol",
+        ("test fails at runtime (packaged with -DskipTests): OrderServiceTest — Connection refused — likely an externalized "
+         "setting (see Handover 'Properties to set') or infrastructure not reachable at build time"),
+        ("sibling poms without a root pom: the aggregator pom could not be written (OSError: read-only) — add a root pom.xml "
+         "listing APP, BATCH"),
+        ("no aggregator pom: sbmig generated pom.xml (shop-aggregator, modules APP, BATCH) — sibling poms depend on each "
+         "other; the as-is build of each module stays as it was"),
+        ("no aggregator pom: sbmig generated pom.xml (shop-aggregator, modules APP) — one aggregator below the root; the "
+         "as-is build of each module stays as it was; not linked to them and left out: OLD/pom.xml"),
+        "'mvn' is not runnable (exit 127): install Maven or set build.mvn; every build below will fail",
+        "artifacts.parent is not configured: pass the company artifacts yml with --config",
+        ("optional artifact bump step restructure.optional failed: KeyError: 'x' — bump the in-house optional artifacts "
+         "by hand"),
+        ("restructure step restructure.apply (layout) failed: OSError: busy — the tree keeps the as-is layout / parents; "
+         "the final build ran on it, so BUILD SUCCESS here does not mean the migration is complete"),
+        ("binary file without an extension under a filtered resource dir: src/main/resources/data/seed — exclude it from "
+         "filtering (a second <resource> with <filtering>false</filtering>) or rename it"),
+        ("… and 4 more binary file(s) without an extension under filtered resource dirs (see the structure review "
+         "facts)"),
+        "review.enabled is off", "no LLM client for this run (dry run or LLM off)", "no pom.xml in the workspace",
+        "review error: LLMError: 503",
+        ("OpenAI list prices as of 2026-10-22 (developers.openai.com model pages); the company gateway may bill "
+         "differently"),
+    ]
+
+
+def test_every_handover_pattern_matches_a_real_handover_line(tmp_path, cfg):
+    """Lines produced by handover.py → each `PATTERNS` entry is exercised and every templated line is translated."""
+    lines = handover_lines(tmp_path, cfg)
     translated = {x: tr_line("ko", x) for x in lines}
     for rx, _ in PATTERNS["ko"]:
         assert any(rx.match(x) for x in lines), f"pattern never matched a handover line: {rx.pattern}"
@@ -377,3 +510,90 @@ def test_every_handover_pattern_matches_a_real_handover_line(tmp_path, cfg):
                "final poms: ")
     assert all(x.startswith(allowed) for x in untranslated), untranslated
     assert all(tr_line("en", x) == x for x in lines)
+
+
+# ---------------------------------------------------------------- wording of the Korean side (v2.1z-as)
+# A sentence ends in 합니다체; the plain 한다체, "~할 것" and "~함 / ~됨" endings are the machine-translated tells the
+# company reader named. Table headers and short labels stay noun phrases (not checked by these patterns).
+PLAIN_ENDING = re.compile(r"(?<![니마보])다(?=$|[.,;:)\]」—]|\s+—)")     # 마다 / 보다 are not endings
+WILL_DO = re.compile(r"[가-힣] 것(?=$|[\s.,;:)\]」—])")
+NOMINAL_ENDING = re.compile(r"[가-힣](?<!포)(함|됨)(?=$|[\s.,;:)\]」—])")
+BANNED = ("사유", "관리됨", "as-is 버전으로 고정", "케이스", "시도", "라운드", "인수인계", "차단", "후속 조치",
+          "다스리", "닿", "들어오", "들어옵", "들어온", "들어옴", " 길", "자리")
+ALLOWED = ("차단 미러",)                  # Maven's own term (maven-default-http-blocker), not the blocked-item concept
+GUIDE_SECTIONS = ("전환 내용", "확인해 주세요", "코드 수정 내역", "해결하지 못한 오류", "진행하지 않은 항목", "참고",
+                  "운영자 확인 필요", "Ant 프로젝트의 pom.xml 생성", "ADF 규모", "프로젝트에 포함된 jar",
+                  "클래스패스에 남은 javax API jar", "실행 전에 설정할 프로퍼티", "사내 프레임워크 프로젝트",
+                  "LLM 사용량과 비용")
+# named groups whose value a rule rewrites on purpose (a location phrase, a fixed English list, a path joined with ">")
+REWRITTEN_GROUPS = {"w", "pom", "r", "why", "abort", "jk", "tail", "path"}
+# the pom path of a source-encoding correction: the line is printed after "`<pom>`:" already
+LEFT_OUT = {("^source encoding written: ", "p")}
+
+
+def _wording_problems(text: str) -> list[str]:
+    plain = text
+    for ok in ALLOWED:
+        plain = plain.replace(ok, "")
+    out = [f"banned word {w!r}" for w in BANNED if w in plain]
+    for rx, what in ((PLAIN_ENDING, "plain style"), (WILL_DO, "'~할 것'"), (NOMINAL_ENDING, "'~함 / ~됨' ending")):
+        m = rx.search(plain)
+        if m:
+            out.append(f"{what} at …{plain[max(0, m.start() - 12):m.end() + 2]}…")
+    out += [f"unknown section 「{s}」" for s in re.findall(r"「([^」]+)」", text) if s not in GUIDE_SECTIONS]
+    return out
+
+
+def _korean_rule_outputs(tmp_path, cfg) -> dict[str, str]:
+    return {x: tr_line("ko", x) for x in handover_lines(tmp_path, cfg)}
+
+
+def test_korean_values_are_polite_sentences_without_code_vocabulary():
+    bad = {en: p for en, ko in KO.items() if (p := _wording_problems(ko))}
+    assert not bad, bad
+
+
+def test_korean_rule_outputs_are_polite_sentences_without_code_vocabulary(tmp_path, cfg):
+    bad = {en: p for en, ko in _korean_rule_outputs(tmp_path, cfg).items()
+           if ko != en and (p := _wording_problems(ko))}
+    assert not bad, bad
+
+
+def test_every_rule_keeps_its_captured_values(tmp_path, cfg):
+    """Identifiers, coordinates, paths, keys and commands a rule captures reach the Korean sentence unchanged."""
+    seen: set[str] = set()
+    lost: list[tuple[str, str, str]] = []
+    for line, ko in _korean_rule_outputs(tmp_path, cfg).items():
+        rx = next((rx for rx, _ in PATTERNS["ko"] if rx.match(line)), None)
+        if rx is None:
+            continue
+        seen.add(rx.pattern)
+        for name, value in rx.match(line).groupdict().items():
+            if value and value.strip() and name not in REWRITTEN_GROUPS \
+                    and not any(rx.pattern.startswith(p) and name == g for p, g in LEFT_OUT):
+                if value.strip() not in ko:
+                    lost.append((rx.pattern[:60], name, value))
+        if rx.match(line).groupdict().get("path"):
+            for hop in rx.match(line).group("path").split("→"):
+                assert hop.strip() in ko, (line, hop, ko)
+    assert not lost, lost
+    assert len(seen) == len(PATTERNS["ko"])
+
+
+def test_rule_keeps_the_location_and_repositories_it_rewrites():
+    via = ("`javax.persistence:javax.persistence-api:2.2` comes through `org.vendor:mailer:2.0` (direct dependency of "
+           "module `shop-back`), which is still compiled against javax: upgrade it to a Jakarta release (check its "
+           "changelog) or replace it; left unchanged on purpose")
+    assert "모듈 `shop-back`의 직접 의존성" in tr_line("ko", via)
+    nf = ("`com.example:gone:2.1` is not in any repository: proxy it in Nexus or fix the coordinates (checked "
+          "repositories: https://repo.example.com/maven2); the LLM is never asked to invent versions")
+    assert "(확인한 저장소: https://repo.example.com/maven2)" in tr_line("ko", nf)
+
+
+def test_price_note_and_review_note_are_translated_through_the_line_rules():
+    note = ("OpenAI list prices as of 2026-10-22 (developers.openai.com model pages); the company gateway may bill "
+            "differently")
+    assert tr("ko", "Prices: {note}.", note=note).startswith("단가 기준: OpenAI 공개 가격(2026-10-22 기준")
+    assert tr("en", "Prices: {note}.", note=note) == f"Prices: {note}."
+    assert tr("ko", "skipped ({note})", note="review.enabled is off") == "실행하지 않음 (review.enabled 설정이 꺼져 있습니다)"
+    assert tr("ko", "skipped ({note})", note="a free note") == "실행하지 않음 (a free note)"

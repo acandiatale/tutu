@@ -97,6 +97,7 @@ MSA: 공유 라이브러리 루트 먼저, 그다음 서비스마다 `transform.
 | `spring_security_7` (6_0 … 6_5, 7_0 체인) | `spring-security` 를 쓰는 `spring_legacy` |
 | `spring_batch_6`, `hibernate_7` | 그 라이브러리를 쓰는 `spring_legacy` |
 | `spring_boot_4` (`UpgradeSpringBoot_4_0` + `SpringBootProperties_4_1`) | `spring_boot` |
+| `hystrix_resilience4j` (사내 레시피 `com.company.migrate.HystrixToResilience4j`, `knowledge/recipes/base/`) | Hystrix 를 쓰는 모든 종류. Boot · Framework 세트보다 먼저 돈다. 버전은 적지 않는다(BOM 또는 재구성이 정함). 레시피가 못 바꾸는 코드는 수정 루프로 |
 | `junit5` | junit4 를 쓸 때 — 기본은 빈 목록(꺼짐) |
 
 ## 4. 변환 (transform) — `_step_rewrite`
@@ -132,7 +133,7 @@ MSA: 공유 라이브러리 루트 먼저, 그다음 서비스마다 `transform.
 | 읽는 것 | 재구성된 pom 전부(`review.max_pom_chars`, `review.max_poms`), 재구성 노트, 부모 체인 사실, 인코딩·필터링 리소스 사실 |
 | 정하는 것 | 판정 `ok` / `issues` / `skipped` / `failed`, 이슈마다 `critical` 또는 `warning`. critical 예: 틀린 부모, 부모 체인을 덮는 속성, 다른 줄(line)의 Spring 계열 버전 고정, 인코딩 누락 |
 | 하는 일 | critical 이 있고 `review.fix_critical` 이면 LLM 답의 `<edits>` 를 적용(기본은 편집만, `review.ask_script: false`). `review.invariant_check` 가 재구성 불변식을 다시 검사해 어긴 편집은 복원하고 한 번 재질의 |
-| 쓰는 것 | 커밋 `review: fix critical structure issues (<n>)`(수정이 성공했을 때만; 실패면 바뀐 것을 버림), 저널 `structure_review`, 입력 사본 `logs/review-input.md`(`review.save_input`), warning 은 보고서 "Structure review" 절과 오류 목록 메모 |
+| 쓰는 것 | 커밋 `review: fix critical structure issues (<n>)`(수정이 성공했을 때만; 실패면 바뀐 것을 버림), 저널 `structure_review`, 입력 사본 `logs/review-input.md`(`review.save_input`), warning 은 오류 목록 메모와 보고서(ko: 「확인해 주세요」의 "구조 점검 경고", 판정은 참고 → 실행 정보; en: "Structure review" 절) |
 | 실패 | 실행을 멈추지 않는다. LLM 이 없거나 예산이 없으면 `failed` / `skipped` 로 적고 계속. LLM 1회(형식 오류면 1회 재시도) |
 
 `SBMIG-RESULT` 줄 끝의 `review=<판정>` 이 이 결과다.
@@ -174,25 +175,30 @@ MSA: 공유 라이브러리 루트 먼저, 그다음 서비스마다 `transform.
 
 | 항목 | 내용 |
 |---|---|
-| 하는 일 | LLM 사용량·비용(`sbmig/report/cost.py`, `llm.pricing`), 루프의 플래그·후속 조치 합치기, 성공 판정, 미해결 오류, 차단 목록, 인프라 플래그(`infra:<kind>`), 운영자 확인, 권고 검증, 오류 목록·KB 기록, 보고서 쓰기, 그다음 느린 `changes.patch` / `result.zip`(KB 와 보고서가 먼저 — zip 도중 죽어도 잃는 것이 없게) |
+| 하는 일 | LLM 사용량·비용(`sbmig/report/cost.py`, `llm.pricing`), 루프의 플래그·후속 조치 합치기, 성공 판정, 미해결 오류, 차단 목록, 인프라 플래그(`infra:<kind>`), 운영자 확인, 권고 검증, 오류 목록·KB 기록, 코드 수정 내역(`sbmig/report/changes.py`), 보고서 쓰기, 그다음 느린 `changes.patch` / `result.zip`(KB 와 보고서가 먼저 — zip 도중 죽어도 잃는 것이 없게) |
 | 성공 판정 | 계획한 최종 빌드가 전부 돌았고 전부 성공 + `restructure-failed` 없음 + `hollow-reactor` 없음 + 중단 아님 |
 | `tests-not-compiled` | `build.skip_test_compile` 이고 빌드가 한 번이라도 돌았으면 항상 붙는 플래그 + 후속 조치("테스트는 담당팀이 `mvn test-compile` 로") |
 | 종료 코드 | `report_exit_code`(`sbmig/report/result_line.py`): `aborted` / `aborted:…` / `mvn-not-found` → 3, 성공이고 차단 없음 → 0, 그 밖 → 2 |
 | 마지막 줄 | `SBMIG-RESULT run=… exit=… build=… unresolved=… blocked=… open=… resolved=… llm=… attn=…[ review=…][ major=…][ scope=jdk-jakarta]` — 콘솔·`sbmig.log`·보고서 머리 표 |
 | 저널 | `report`, 그리고 `build_hook`(teardown: `build.teardown_command`, 실패는 WARNING 만) |
 
-`out/<run id>/report.md` 의 절 순서(`render_markdown`, `sbmig/report/markdown.py`):
+`out/<run id>/report.md` 는 `report.language` 로 갈린다(진입점은 둘 다 `render_markdown`). 회사 설정 `ko` 는 마이그레이션을
+요청한 담당자에게 주는 안내서(`render_guide_ko`, `sbmig/report/guide_ko.py`, 한국어로 직접 쓴다). 내용이 없는 절은 빠진다:
 
 ```
-머리 표 (Result, SBMIG-RESULT 줄, Case, As-is, 범위(프레임워크 프로젝트만), To-be, LLM, Flags, Blocked, Structure review)
-사내 프레임워크 (찾았을 때)
-인수인계 (운영자 확인 필요 -> Ant pom 합성 -> 교체된 버전 -> 주의 라이브러리 -> 이제부터 할 일)
-ADF sizing (ADF 일 때)
-Error list -> Fixes by case -> Structure review -> Bundled jars -> Blocked -> javax API jars
-Manual follow-ups -> Flags -> What we changed -> LLM usage and cost -> Notes -> Outputs
+머리 표 (결과, SBMIG-RESULT, 전환 후, 실행 ID, 시작 / 종료, 플래그) -> 사내 프레임워크 프로젝트 (찾았을 때)
+전환 내용 (Java / Boot / 부모 pom, 의존성 버전) -> 확인해 주세요 (권고 -> 인수인계 할 일 -> 후속 조치, 번호 목록 하나)
+코드 수정 내역 (자동 변환, 직접 수정한 파일 + 파일당 diff) -> 해결하지 못한 오류 (남은 것만) -> 진행하지 않은 항목 (차단)
+특수 절 (운영자 확인, pom 합성 (Ant), ADF, 포함된 jar, javax API jar, 외부 설정 값, 취약점 조치)
+참고 (접힘: 실행 정보 = 유형·전환 전·단계·레시피·구조 점검 판정·플래그 설명, LLM 사용량과 비용, 산출물, 진단용 기록 = 계획·단계 노트)
 ```
 
-문구 언어는 `report.language`(en | ko). 운영자용 회사 설정은 ko 를 쓴다. JSON(`out/<run id>/report.json`)은 영어.
+해결된 오류는 안내서 어디에도 없다. 오류마다 시도와 diff 는 `errors.md` / `errors.jsonl` 에 있다. 「직접 수정한 파일」은
+`RunReport.code_changes`(`sbmig/report/changes.py` 의 `collect_code_changes`, 마무리에서 만듦): 저널 `code_changes_base` 의 커밋
+(자동 변환 직후)과 최종 트리 사이의 파일별 순변경. diff 는 앞 30개 파일, 파일당 80줄, 목록은 500개까지.
+`en` 은 진단용 배치(`sbmig/report/markdown.py`): 머리 표 → Handover → ADF sizing → Error list → Fixes by case →
+Structure review → Bundled jars → Blocked → javax API jars → Manual follow-ups → Flags → What we changed → LLM usage and cost →
+Notes → Outputs. `report.json`, `errors.md`, `SBMIG-RESULT` 줄은 언어와 상관없이 같다(JSON 은 영어).
 
 KB 쪽: 실행의 오류 목록이 `kb-v2/errors.jsonl` 에 덧붙고, 케이스 폴더 `kb-v2/cases/<case_id>/case.json` 과 저장 스크립트
 `kb-v2/cases/<case_id>/fix_v<N>.py` 의 실적이 갱신되고, `kb-v2/cases.md` 가 다시 쓰인다(모두 `kb-v2/.lock` 아래).
@@ -219,6 +225,7 @@ KB 쪽: 실행의 오류 목록이 `kb-v2/errors.jsonl` 에 덧붙고, 케이스
 - 기본 엔진은 `loop.engine: graph`: `build_graph`(`sbmig/graph/engine.py`)가 `StateGraph` 노드 `intake` → `analyze` → `plan` →
   `phase`(phase 묶음마다 반복) → `finalize` (→ `remediation`: `remediation.after_migration` 이고 BUILD SUCCESS 일 때 취약점 조치, 11 문서) → END 를 만든다(실행 방식 `remediation` 은 `intake` → `remediation` → `finalize`). 노드마다 오케스트레이터의 같은 `step_*` 메서드를 하나씩 부르고,
   그래프 상태에는 작은 JSON 값만 둔다(무거운 객체는 오케스트레이터에). 노드는 오류를 처리하지 않는다 — 예외는 run guard 로 올라간다.
+  노드 `finalize` 는 멈춤 표시만 정리한다. 보고서·KB 기록·`changes.patch`·`result.zip` 은 그래프가 끝난 뒤 run guard 의 `_finalize` 가 쓰므로, 취약점 조치가 먼저 끝나고 그 요약이 이관 보고서에 들어간다.
 - `loop.engine: inline` 은 같은 순서를 `Orchestrator._run` 이 그래프 없이 돈다. 보고서·저널·종료 코드가 같다(테스트로 보장).
 - 웹 UI: `sbmig serve`(= uvicorn `sbmig.web.app:app`). zip 업로드(진행 방식 전체 진행 / 취약점 해결 → `?flow=full|remediation`) → `RunManager`(`sbmig/web/runs.py`)가 실행마다 작업 스레드
   하나에서 `stream_graph` 를 돌린다. 한 번에 이관 하나, 나머지는 `queued`(파일 KB 를 같이 쓰므로). SSE(`/api/runs/{run_id}/events`)
@@ -238,6 +245,6 @@ grep -n "recipes:" -A40 config/default.yml                                      
 grep -n "self._non_filtered_extensions(c)" -A6 sbmig/restructure/restructurer.py     # pom 정리 순서
 grep -n "report.success =" -A3 sbmig/loop/orchestrator.py                            # 성공 판정
 grep -n "NODES = " sbmig/graph/engine.py; sed -n 15,32p sbmig/web/runs.py           # 그래프 노드, SSE 이벤트
-grep -n "L += " sbmig/report/markdown.py | head -20                                  # 보고서 절 순서
+grep -n "L += " sbmig/report/guide_ko.py | tail -12                                  # ko 안내서 절 순서
 .venv/bin/python -m pytest tests/docs/test_agent_doc.py -p no:cacheprovider -q
 ```

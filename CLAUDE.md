@@ -155,7 +155,8 @@ first, cases whose files / module pom a script already touched this round wait f
 → augments used up: a fresh **new** (LLM) → BLOCKED `repeated_failure` at `script.max_llm_tries_per_case` 20 asks (v2.1z); every attempt is committed, scored by the rebuild (round-10 rules: improved / partial
 / no_change / regressed → reverted / inconclusive), rolled back before the case's next try unless it improved, and
 credited to the stored version (`kb-v2/cases/<case_id>/fix_v<N>.py` + `case.json`: lineage, successes / failures / projects).
-Then the final build again, the report (Handover first, "Structure review", fix attempts as `script:<case>:v<N>`),
+Then the final build again, the report (`report.language: en`: the diagnostic layout — Handover first, "Structure
+review", fix attempts as `script:<case>:v<N>`; `ko`, the company setting: the requester's guide of v2.1z-as, below),
 `errors.md` / `errors.jsonl` in the run dir and the KB (`errors.jsonl`, `cases.md`, `cases/<case_id>/`; the v1-era
 `error_cases.*` / `fix_attempts.jsonl` / catalog / audit / quarantine files are no longer written). `SBMIG-RESULT … review=<verdict>` is the line operators retype.
 
@@ -202,7 +203,19 @@ Then the final build again, the report (Handover first, "Structure review", fix 
   the javax EE names of the analyzer's table inside every JSP / tag file's code regions after the files reached their
   final place, in every mode (`layout.jsp_jakarta_rename`, default true; `sbmig/restructure/jsp_jakarta.py`). Off →
   Handover follow-up only. Taglib URIs stay (JSTL 3 serves the `java.sun.com` URIs).
-- Guide advisories (hystrix, ribbon, zuul, …) leave compiling code as it is; the Handover lists them.
+- Guide advisories (ribbon, zuul, …) leave compiling code as it is; the report lists them. **Hystrix is replaced again
+  (2026-11-18, v2.1z-at)**: the user had found Hystrix and a Sleuth artifact "pinned at the as-is version" in a company
+  report while Springfox was replaced, and after hearing why (the round-6 in-house recipe was deleted with the v1 flow;
+  the as-is version is carried over, so the old jar compiles and the build is green although Hystrix does not work on
+  Boot 4) decided: "이게 동작하지 않는건 되살려서 동작하도록 해주는건 맞는거 같아!" Recipe set `hystrix_resilience4j`
+  (`knowledge/recipes/base/hystrix-to-resilience4j.yml`, composite `com.company.migrate.HystrixToResilience4j`), planned
+  when the analyzer finds `hystrix`, before the Boot / Framework sets in the one OpenRewrite run; it writes NO version
+  (the upgraded Spring Cloud BOM, or the restructure's rules, decide); code it cannot port (`extends HystrixCommand`)
+  reaches the fix loop with the `## fix-loop: hystrix` note; advisory `hystrix` ends `replaced`. Proven on the real
+  pipeline with `boot2-cloud-legacy` and `boot2-hystrix-command`. Springfox and `spring-cloud-starter-sleuth` are
+  replaced by the Boot 4 umbrella; other Sleuth-family artifacts are not (the company report's artifact name is still
+  unknown). My reading of the principle, to confirm before widening it: a library that cannot work on the target and
+  has a mechanical replacement should be replaced, not carried over.
 - javax-era libraries (v2.1z-e, 2026-11-02): sbmig looks for the jakarta build itself — the repository SET (explicit
   `build.repository_url` first, then every settings mirror by Maven's `mirrorOf` rules, pom repositories unless mirrored,
   the global settings, Central), the same coordinates' higher line (`2.0.5-jakarta`, verified by the version qualifier /
@@ -253,12 +266,25 @@ Then the final build again, the report (Handover first, "Structure review", fix 
   commits happen in the main session. Per round: append a "Status" table to `docs/PLAN.md`, update
   `docs/INTERFACES.md` on contract changes, add a fixture + `expected.json` (+ `replay/`) for every new scenario.
 - Setup: `uv venv && source .venv/bin/activate && uv pip install -e ".[dev]"` (plain `pip install -e ".[dev]"` works too).
-- Fast check (Python only, ~13 min): `python -m pytest -m "not integration"` → ≈ 5,740 passed, ≈ 62 deselected (2026-11-18)
+- Fast check (Python only, ~14 min): `python -m pytest -m "not integration"` → ≈ 5,850 passed, ≈ 62 deselected (2026-11-18)
   (`-q` on top of the `-q` in pyproject hides the summary line). Until 2026-11-12 `tests/build` (381 tests) was silently
   left out of every root-level run — pytest skips a directory named `build` by default; `norecursedirs` in pyproject now
   keeps it in. When a total does not grow by the number of tests added, compare per-file counts (`--collect-only -q`).
   `ruff check sbmig tests` has pre-existing style findings (mostly `UP045`); lint is not a gate here, so fix only what
   you touch and never run a repo-wide `ruff --fix` inside a feature round.
+- **The Korean report.md is a guide for the requester (2026-11-18, v2.1z-as).** The user, after reading a company
+  report: "너무 기계적으로 리포트가 나왔다"; its purpose is "마이그레이션을 요청한 담당자한테 우리 이렇게 마이그레이션 했고
+  이런거 확인해주세요~ 라고 가이드"; no error lists, no per-round fix tables ("굳이 fix r1,r2 이렇게 보여주지 않아도
+  되구"), the modified files with their final diff; head table = 결과, SBMIG-RESULT, 전환 후, 실행 ID, 시작 / 종료, 플래그
+  only; the words 사유, 관리됨 and "as-is 버전으로 고정했다" were named as odd. So `report.language: ko` renders
+  `sbmig/report/guide_ko.py` (Korean written directly: 전환 내용 → 확인해 주세요 → 코드 수정 내역 → 해결하지 못한 오류 →
+  진행하지 않은 항목 → special sections → 참고), `en` keeps `markdown.py`'s diagnostic layout byte for byte
+  (`tests/report/golden/`). `RunReport.code_changes` (`sbmig/report/changes.py`) = the NET diff per file between the
+  commit right after the automatic conversion and the final tree. Advisories carry `*_ko` texts
+  (`knowledge/libraries/advisories.yml`); the fix / review prompts ask for their explanations in the description
+  language. When Korean text for a reader is added anywhere: write it as a Korean colleague would (합니다체, no
+  word-for-word code vocabulary), render a sample and read it top to bottom before shipping. A new report section
+  must be added to BOTH renderers. Contract: `docs/INTERFACES.md` "v2.1z-as".
 - **Disk walls for test runs (2026-11-17)**: a review subagent's scratch test (a writer thread with no size or time
   limit) wrote one 118 GB file and filled the developer's disk. A rule in a brief is a promise; these are the walls.
   The root `conftest.py` gives every pytest run whose tests are under the repository a per-file size cap

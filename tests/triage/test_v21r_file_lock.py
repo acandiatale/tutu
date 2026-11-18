@@ -19,8 +19,9 @@ LOCK_LOG = ("[INFO] --- war:3.4.0:war (default-war) @ app ---\n"
             "project app: Error assembling WAR: Problem creating war: Execution exception: "
             f"java.nio.file.FileSystemException: {JAR}: 다른 프로세스가 파일을 사용 중이기 때문에 프로세스가 파일에 "
             "액세스할 수 없습니다 -> [Help 1]\n[INFO] BUILD FAILURE\n")
-KO_SUGGESTION = ("빌드 산출물(target/)을 다른 프로세스가 잠갔습니다 — 백신 실시간 검사에서 프로젝트의 target/ 를 예외 "
-                 "처리하고, 열려 있는 IDE/탐색기/이전 java 프로세스를 닫은 뒤 다시 실행하세요")
+KO_SUGGESTION = ("빌드 결과 폴더(target/)를 다른 프로세스가 잠그고 있었습니다. 백신 실시간 검사에서 프로젝트의 target/ 폴더를 "
+                 "예외로 등록하고, 열려 있는 IDE나 탐색기 창, 남아 있는 java 프로세스를 닫은 뒤 다시 실행해 주세요. LLM에는 "
+                 "맡기지 않았습니다.")
 
 
 def _cluster():

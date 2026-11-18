@@ -132,6 +132,13 @@ def test_found_in_another_artifact_is_a_problem(world):
     assert rep.problems == [f"catalog com.a.Two: artifact {B} does not declare it; found in {A}:1.0"]
 
 
+def test_an_entry_defined_by_its_own_file_is_not_looked_up_in_the_jars(world):
+    # v2.1z-at: the Hystrix composite lives in a repository file, no recipe jar declares it
+    rep = _run(world, {"id": "com.x.Local", "artifact": None, "file": "knowledge/recipes/base/x.yml"})
+    assert rep.problems == []
+    assert _row(rep, "com.x.Local").found_in == "knowledge/recipes/base/x.yml"
+
+
 def test_not_found_is_a_problem(world):
     rep = _run(world, {"id": "com.x.Missing", "artifact": A})
     assert _row(rep, "com.x.Missing").found_in == ""

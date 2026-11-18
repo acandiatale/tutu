@@ -893,6 +893,32 @@ class Workspace:
         out = self._git("diff", "--name-only", "-z", from_sha, to_sha).stdout
         return [f for f in out.split("\0") if f.strip()]
 
+    def numstat_since(self, sha: str) -> list[tuple[str, str, Optional[int], Optional[int]]]:
+        """커밋 sha와 지금 작업 트리 사이에 달라진 추적 파일마다 (경로, 상태, 추가 줄, 삭제 줄)을 반환한다.
+        상태는 M / A / D 중 하나이고 이름 변경은 삭제와 추가로 나눈다. 바이너리 파일은 줄 수가 None이다.
+
+        (path, status M|A|D, added, removed) per tracked file that differs between `sha` and the working tree
+        (`--no-renames`: a rename is a delete + an add; added / removed None for a binary file). Raises GitError."""
+        names = self._git("diff", "--name-status", "--no-renames", "-z", sha).stdout.split("\0")
+        status: dict[str, str] = {}
+        for i in range(0, len(names) - 1, 2):
+            if names[i].strip():
+                status[names[i + 1]] = names[i].strip()[:1]
+        out: list[tuple[str, str, Optional[int], Optional[int]]] = []
+        for item in self._git("diff", "--numstat", "--no-renames", "-z", sha).stdout.split("\0"):
+            parts = item.split("\t", 2)
+            if len(parts) != 3 or not parts[2]:
+                continue
+            a, r, path = parts
+            out.append((path, status.get(path, "M"), int(a) if a.isdigit() else None, int(r) if r.isdigit() else None))
+        return out
+
+    def diff_file_bytes(self, sha: str, rel: str) -> bytes:
+        """커밋 sha와 지금 작업 트리 사이의 파일 하나의 diff를 원본 바이트로 반환한다.
+
+        `git diff <sha> -- <rel>` as raw bytes (the file's own encoding kept). Raises GitError."""
+        return _as_bytes(self._git_bytes("diff", "--no-color", "--no-renames", sha, "--", rel).stdout)
+
     def file_at(self, sha: str, rel: str) -> Optional[str]:
         """커밋 sha 시점의 파일 내용을 반환한다(`git show <sha>:<path>`).
         파일이 없거나 git이 실패하면 None을 반환하고 예외를 던지지 않는다.

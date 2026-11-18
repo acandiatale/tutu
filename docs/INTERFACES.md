@@ -4392,6 +4392,117 @@ second pod out of three, so the shipped configuration applies every proposal on 
   `test_report.py`, `test_report_module_overrides.py`; operator text `agent-doc/11-remediations.md`,
   `agent-doc/12-remediation-report.md`, `deploy/ENV.md`.
 
+## v2.1z-as — the Korean report.md is a guide for the person who asked for the migration
+
+The user, after reading a company report (2026-11-18): the report reads like machine output ("너무 기계적으로 리포트가
+나왔다"). Its purpose: "마이그레이션을 요청한 담당자한테 우리 이렇게 마이그레이션 했고 이런거 확인해주세요~ 라고 가이드를
+줄려고 만드는거라 에러 목록들 안보여줘도 되고 … 수정 적용된 최종 코드들 java파일이랑 diff만 보여주면돼! 굳이 fix r1,r2
+이렇게 보여주지 않아도 되구!" Named points: the head table holds 결과, SBMIG-RESULT, 전환 후, 실행 ID, 시작 / 종료, 플래그
+only; the column name 사유 and the word 관리됨 are odd; "의존성 3개를 as-is 버전으로 고정했다: …" is not a sentence a
+person writes.
+
+- **Two renderers.** `report.language: ko` (the company setting) renders the guide: `sbmig/report/guide_ko.py`
+  (`render_guide_ko(report, cfg=None) -> str`), written in Korean directly, not translated line by line.
+  `report.language: en` keeps the diagnostic layout of `sbmig/report/markdown.py` unchanged. `render_markdown(report,
+  language, cfg)` stays the one entry: `ko` → the guide (a `remediation` flow run keeps `render_remediation_flow`).
+  `report.json`, `errors.md`, `errors.jsonl`, `changes.patch`, the console and the `SBMIG-RESULT` line do not change.
+- **Order of the guide.** Title `# 마이그레이션 보고서 — <project>` → the intake notice (Ant refusal) → head table → one
+  sentence saying whom the document is for → 사내 프레임워크 (when the scope is reduced) → `## 전환 내용` → `## 확인해
+  주세요` → `## 코드 수정 내역` → `## 해결하지 못한 오류` (only with open entries) → `## 진행하지 않은 항목` (blocked, only when
+  present) → the special sections when they apply (운영자 확인, pom 합성 (Ant), ADF, 포함된 jar, javax API jar, 외부 설정
+  값, 취약점 조치) → `## 참고` (collapsed `<details>` blocks). A section without content is left out; sections are not
+  numbered.
+- **Head table.** Exactly these rows, in this order: `**결과**` (✅ 빌드 성공 / ❌ 빌드 실패; an aborted run reads
+  `❌ 실행 중단 (빌드까지 진행하지 못했습니다)`), `SBMIG-RESULT` (the
+  line, unchanged), `전환 후`, `실행 ID`, `시작 / 종료`, `플래그` (only when there are flags). The rows 에러 목록, 유형, 전환 전,
+  LLM, LLM 비용, 차단, javax API jar and 구조 점검 are not in the head table (유형, 전환 전, LLM and 구조 점검 move to 참고).
+- **전환 내용.** A table 항목 / 변경 전 / 변경 후 for Java, Spring Boot and the parent pom (rows without a change left out;
+  an absent value reads 없음 or 사용하지 않음). `### 의존성 버전`: columns 항목 / 변경 전 / 변경 후 / 비고 (never 사유). A
+  version the pom does not write because a parent or BOM gives it reads `부모 pom에서 지정` (with the version in front when it
+  is known: `2.2.10.RELEASE (부모 pom에서 지정)`), never 관리됨; under the table one sentence explains the phrase when it
+  occurs. A carried-over row keeps its ⚠ and reads `<version> (pom에 직접 지정)` with the 비고 `새 부모 pom에 버전이 없어 기존
+  버전을 유지`; under the table: "⚠ 표시한 의존성 N개는 새 부모 pom과 Spring Boot BOM에 버전이 없습니다. 빌드가 되도록 기존에
+  쓰던 버전을 pom에 직접 적어 두었으며, Spring Boot 4에서 동작하는지는 확인이 필요합니다." Then 추가한 의존성 / 제거한 의존성.
+- **확인해 주세요.** ONE numbered list replaces today's three places (the library table, "From here on" and "Manual
+  follow-ups"); no item twice. First the library advisories, one item each, built from `RunReport.advisories`: the
+  advisory's title sentence in bold (`**Netflix Hystrix는 지원이 종료되었습니다.**`), then what the run did by outcome
+  (`still-present`: "이번 전환에서는 자동으로 바꾸지 않고 기존 버전(…)을 그대로 두었습니다. 아래 「할 일」을 확인해 주세요.";
+  `replaced`: "이번 전환에서 교체했습니다. 아래 「할 일」대로 동작을 확인해 주세요."), and under it sub-bullets — 대체할 /
+  교체한 라이브러리, 설명 (`summary_ko`), 할 일 (`followup_ko`), 수정한 파일 (the files the LLM rewrote for it), 문서 —
+  each left out when empty. On a failed build the pointers to 「해결하지 못한 오류」 and 「진행하지 않은 항목」 come before
+  the advisories. Then the remaining hand-over items, each with a short bold lead where its kind is known (`HandoverSummary.from_here` without the lines derived from an
+  advisory, then `manual_followups` not already said), through the polished line rules of `i18n`. Nothing to check →
+  one sentence saying so.
+- **Advisory texts in Korean.** `LibraryAdvisory` / `AdvisoryFinding` carry `title_ko`, `summary_ko`, `followup_ko`,
+  `replacement_ko` (default ""; the loader copies them into the finding). `knowledge/libraries/advisories.yml` gives them
+  for every shipped entry. The guide shows the `_ko` text and falls back to the English one when it is empty.
+- **코드 수정 내역.** `### 자동 변환`: one line per automatic step with its counts (OpenRewrite: files and what the recipes
+  cover in words; the restructure; the JSP javax → jakarta rename; the pom synthesis) and a pointer to `changes.patch` — no
+  diff. `### 직접 수정한 파일 — N개`: the files of `RunReport.code_changes`, each with its path and `(+a −r)`, the sentences
+  of `notes` as a list, `수정 이유:` with `reasons`, and the diff in a fenced `diff` block; files stored without a diff
+  follow in one table (파일 / 변경) with the pointer to `changes.patch`. No error rows, no case ids, no rounds, no tries.
+- **`RunReport.code_changes`** (`CodeChange`: `path`, `status`, `added`, `removed`, `notes`, `reasons`, `diff`,
+  `truncated`), `code_changes_total`, `code_changes_base`: built at finalize by `sbmig.report.changes.collect_code_changes`
+  from the workspace's git history — the NET change of every file between the commit right after the automatic conversion
+  (OpenRewrite, restructure; before the structure review's fix and the first fix try) and the final tree. One entry per
+  file however many tries touched it; a file whose changes were rolled back is not in the list. Order: `.java`, then
+  `pom.xml`, then the rest, each by path. Caps (module constants): diff text for the first 30 files, 80 diff lines per
+  file (`truncated`), 500 listed files; `code_changes_total` counts all. `notes` = the kept tries' `EditNote`s the LLM
+  wrote for the path (`source == "llm"`; notes made from the diff are left out), `reasons` = the `analysis` of each case
+  whose kept try changed the file, shortened to its first sentences. Build output, binary files and `.git` are never
+  listed. Text goes through the same scrubbing as `errors.md`. A run that never reached the fix loop has an empty list.
+- **해결하지 못한 오류.** Only the entries still open after the final build, as a table 파일 / 줄 / 오류 (grouped by file,
+  capped, the rest counted) with the pointer to `errors.md`. Resolved errors are not listed anywhere in the guide.
+- **참고.** `<details>` blocks: 실행 정보 (유형, 전환 전, the executed steps in words, the recipes, the structure review's
+  verdict, each flag with its explanation), LLM 사용량과 비용, 산출물 (file names relative to the run directory), 진단용 기록
+  (the plan / phase notes as they are, English).
+- **Language of the LLM's explanations.** The fix prompt asks for `<analysis>` and `<solution>` in the language it
+  already names for the change descriptions (`describe_language`: Korean with `report.language: ko`); the structure
+  review prompt asks the same for its problem / hint / analysis texts. Explanations stored in the KB earlier keep their
+  language.
+- **Wording.** Workplace Korean: polite 합니다체 sentences a senior developer would write to a colleague; no word-for-word
+  rendering of code vocabulary (as-is 버전으로 고정, 관리됨, 사유, 케이스, 시도, 라운드 do not appear in the guide); Maven and
+  product words stay as they are (pom, BOM, parent 는 "부모 pom", dependencyManagement, OpenRewrite). The line rules of
+  `sbmig/report/i18n.py` that the guide still uses (follow-ups, flags, blocked rows, the special sections) are reworded
+  to the same standard.
+- Tests: `tests/report/test_guide_ko.py`, `tests/report/test_code_changes.py`, `tests/advisory/`; operator text
+  `agent-doc/03-run-debug-and-logs.md`, `agent-doc/10-*.md`.
+
+## v2.1z-at — Hystrix is replaced with Resilience4j by a recipe again
+
+Hystrix stayed in migrated projects: no recipe touched it, its version was carried over from the as-is build
+(v2.1l), so it compiled against the old jar, the build was green, and the library does not work on Boot 4. The user
+(2026-11-18), on hearing that the automatic replacement of an earlier round had been deleted with the v1 flow: "이게
+동작하지 않는건 되살려서 동작하도록 해주는건 맞는거 같아!"
+
+- **The recipe.** `knowledge/recipes/base/hystrix-to-resilience4j.yml`: the declarative composite
+  `com.company.migrate.HystrixToResilience4j` — `@HystrixCommand` → Resilience4j `@CircuitBreaker` (`commandKey` → `name`,
+  `name = "default"` when there was none, `fallbackMethod` kept, the Hystrix-only attributes and nested `@HystrixProperty`
+  removed), `@EnableHystrix` / `@EnableCircuitBreaker` / `@EnableHystrixDashboard` removed, the starters
+  `spring-cloud-starter-netflix-hystrix` / `spring-cloud-starter-hystrix` → `spring-cloud-starter-circuitbreaker-resilience4j`,
+  `hystrix-javanica` / `hystrix-core` / the dashboard starter removed. Its building blocks are in
+  `knowledge/recipes/catalog.yml` like every recipe id.
+- **When it runs.** Recipe set `openrewrite.recipes.hystrix_resilience4j` (default: the composite; `[]` switches it off).
+  The planner adds the set when the analyzer found the library `hystrix`, for every case type whose plan has the
+  transform step, in the ONE OpenRewrite run and before the Boot / Framework sets (the swap happens while the as-is
+  Spring Cloud BOM is still in the pom). One plan note names it.
+- **Versions are not made up.** The recipe writes no version of its own. The as-is Hystrix version never stays on the
+  new starter; the starter is left without a version and the rules of v2.1l decide: managed by the new parent chain or
+  the (upgraded) Spring Cloud BOM → no version in the pom; otherwise the restructure takes the newest release the
+  repository has and the existing "confirm …" follow-up asks the owners to check it.
+- **Code the recipe cannot port** (`extends HystrixCommand` / `HystrixObservableCommand`, `HystrixRequestContext`,
+  dashboards): with the Hystrix artifacts gone it does not compile; those errors reach the fix loop, which ports them
+  with the `## fix-loop: hystrix` note. What the fix loop cannot port stays as open errors — the build is not green
+  with dead Hystrix code any more.
+- **Advisory `hystrix`.** Outcome `replaced` when no Hystrix artifact is left. Its texts (English and `_ko`) say what
+  was replaced and what the owners review at runtime (instance names, timeouts, the `Throwable` parameter of fallback
+  methods, `spring-boot-starter-aspectj`). `still-present` remains for a configuration that switched the set off.
+- **Reference projects.** `fixtures/projects/boot2-cloud-legacy`: `hystrix` ends `replaced`, the sources carry
+  `@CircuitBreaker`, no Hystrix artifact is carried over. `fixtures/projects/boot2-hystrix-command`: the starter is
+  swapped and the `HystrixCommand` subclass is ported by the fix loop.
+- Sleuth and Springfox are unchanged: the Boot 4 umbrella replaces `spring-cloud-starter-sleuth` (Micrometer Tracing)
+  and Springfox (springdoc); other Sleuth-family artifacts the umbrella does not know are carried over and reported.
+
 ## remediations (취약점 조치) — `/api/remediations`, IVAS, version-text fixes + managed overrides (2026-11-11)
 
 A second, independent flow beside the migration: an uploaded Maven project ZIP is built as it is (baseline), scanned by

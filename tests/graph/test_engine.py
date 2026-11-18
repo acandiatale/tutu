@@ -44,7 +44,7 @@ def run_engine(cfg, tmp_path, engine: str, *, name: str | None = None, stop_afte
     return orch, ws, report
 
 
-TIME_KEYS = {"started_at", "finished_at", "created_at", "timestamp", "duration_s", "commit",   # + git SHAs (time-stamped)
+TIME_KEYS = {"started_at", "finished_at", "created_at", "timestamp", "duration_s", "commit", "code_changes_base",   # + git SHAs (time-stamped)
              "base_commit", "at", "at", "seconds", "commit"}   # v2.1 error entries: timestamps, try duration, git sha   # error cases (2026-10-23): HEAD before an attempt, record timestamps
 
 

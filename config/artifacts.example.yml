@@ -92,7 +92,7 @@ artifacts:
 # 이전 도구 설정의 plan.parent_phase: spring이나 loop.phases.verify.max_iterations: 4를
 # 옮겨 오지 않는다. 옮겨 오면 수정 루프 라운드가 줄어든다.
 
-# 보고서 report.md를 한국어로 작성한다(운영자용). report.json, 콘솔, 로그는 영어로 남는다.
+# 보고서 report.md를 한국어 안내서(요청 담당자용)로 작성한다. report.json, 콘솔, 로그는 영어로 남는다.
 report:
   language: ko
 
@@ -104,7 +104,7 @@ report:
 build:
   # 테스트는 이관 범위 밖이다(회사 결정). 모든 빌드에 -Dmaven.test.skip=true를 붙여 테스트 소스를 컴파일하지도
   # 실행하지도 않으므로 테스트 코드 오류가 이관을 막지 않는다. 보고서에는 tests-not-compiled 플래그가 붙고,
-  # 인수인계 섹션에서 담당 팀에게 테스트를 컴파일하고 고치도록 안내한다.
+  # 보고서의 「확인해 주세요」에서 담당 팀에게 테스트를 컴파일하고 고치도록 안내한다.
   # skip_tests: true만으로는 테스트가 여전히 컴파일된다는 점에 주의한다.
   # config/default.yml의 기본값도 true이지만, 회사 파일에서 이 결정이 보이도록 여기에도 지정해 둔다.
   skip_test_compile: true

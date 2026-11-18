@@ -64,8 +64,11 @@ def test_report_sections_en_and_ko(cfg):
     assert "| **Total** | | | | | **$0.6460** |" in en and "| LLM cost | $0.6460 (+ unpriced: in-house-x)" in en
     assert "No price for `in-house-x`" in en and "OpenAI list prices as of 2026-10-22" in en
     ko = render_markdown(r, language="ko")
-    assert "## LLM 사용량과 비용" in ko and "| **합계** | | | | | **$0.6460** |" in ko
-    assert "단가 없음: in-house-x" in ko and "## LLM usage and cost" not in ko
+    # v2.1z-as: the Korean guide keeps the table under 참고, in a collapsed block
+    assert "<details><summary>LLM 사용량과 비용</summary>" in ko and "| **합계** | | | | | **$0.6460** |" in ko
+    assert "`in-house-x` 모델은 `llm.pricing`에 단가가 없어 합계에 넣지 않았습니다." in ko and "## LLM usage and cost" not in ko
+    # the configured price note (llm.pricing_note) is a stored English line: its default wording has Korean too
+    assert "_단가 기준: OpenAI 공개 가격(2026-10-22 기준)._" in ko
 
 
 def test_report_json_and_console_carry_the_cost(cfg, tmp_path):

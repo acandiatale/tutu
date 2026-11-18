@@ -1,8 +1,9 @@
 # Recipes — what runs and how the list is managed
 
 sbmig runs **one OpenRewrite run** (`transform.rewrite`) before the restructure, with no build in between. Only the
-Java 21, javax → jakarta and Spring 7 / Boot 4 recipe sets run; everything else surfaces as a build error that the
-script fix loop fixes (business rule: "레시피가 무엇을 바꿀지 모르니 넣지 않는다").
+Java 21, javax → jakarta and Spring 7 / Boot 4 recipe sets run, plus the Hystrix → Resilience4j recipe for projects
+that use Hystrix; everything else surfaces as a build error that the script fix loop fixes (business rule: "레시피가
+무엇을 바꿀지 모르니 넣지 않는다").
 
 ## Where recipe ids live
 
@@ -13,8 +14,11 @@ script fix loop fixes (business rule: "레시피가 무엇을 바꿀지 모르�
 | `config/default.yml` → `openrewrite.recipe_artifacts`, `recipe_bom_version`, `recipe_artifact_versions` | Which recipe jars are on the plugin classpath, at which versions | `sbmig/rewrite/runner.py`, `sbmig/rewrite/versions.py` |
 
 The catalog does not change what runs; it describes every id the config sets may reference, and
-`sbmig recipes check` fails when the two drift apart. Only `origin: openrewrite` entries are allowed (no project,
-library or KB recipes).
+`sbmig recipes check` fails when the two drift apart. Only `origin: openrewrite` entries are allowed (no library or KB
+recipes). One entry is a declarative recipe of this repository: `com.company.migrate.HystrixToResilience4j`, whose
+`file:` (`knowledge/recipes/base/hystrix-to-resilience4j.yml`) the runner inlines into the run's `rewrite.yml`; it is
+built from core recipes only (`ChangeType`, `RemoveAnnotation`, `RemoveXmlTag`, `ChangeDependencyGroupIdAndArtifactId`,
+`RemoveDependency`, `RemoveManagedDependency`, …), each catalogued as a building block.
 
 ## The sets and when they run
 
@@ -27,12 +31,14 @@ library or KB recipes).
 | `spring_security_7` | `UpgradeSpringSecurity_6_0` … `6_5`, `UpgradeSpringSecurity_7_0` | `spring_legacy` whose analyzer found `spring-security` ("쓰는 경우만"). `6_0` chains 5_8 → 5_7; `6_1` … `7_0` do not chain, so all are listed |
 | `spring_batch_6` | `SpringBatch5To6Migration` | `spring_legacy` with `spring-batch` |
 | `hibernate_7` | `MigrateToHibernate71` | `spring_legacy` with native Hibernate ORM (`hibernate`; a JPA-only project has `jpa` and gets nothing) |
+| `hystrix_resilience4j` | `com.company.migrate.HystrixToResilience4j` | every case with a transform step whose analyzer found `hystrix` (not the jdk-jakarta scope of framework projects unless `framework.recipe_sets` lists it). `[]` switches it off and Hystrix stays at its as-is version |
 | `spring_boot_4` | `UpgradeSpringBoot_4_0`, `SpringBootProperties_4_1` | `spring_boot` projects. The umbrella already runs Framework 7, Security 6.x / 7, Spring Cloud 2025.1, Batch 6, Hibernate 7.1, springfox → springdoc, Sleuth → Micrometer (its catalog `covers`) |
 | `junit5` | empty | off — tests are out of scope (`-Dmaven.test.skip=true`) |
 | `extra.<case>` / `extra.all` | empty by default | company additions per case |
 
-Run order inside the one run (`_BUCKETS`): Java 21 → jakarta (+ Servlet 6 removals) → Framework 7 → Security chain →
-Batch 6 → Hibernate 7.1 → Boot 4 (Boot projects only) → JUnit 5 → extra. MSA: per service with its own sub-case.
+Run order inside the one run (`_BUCKETS`): Java 21 → jakarta (+ Servlet 6 removals) → Hystrix → Resilience4j →
+Framework 7 → Security chain → Batch 6 → Hibernate 7.1 → Boot 4 (Boot projects only) → JUnit 5 → extra. The Hystrix
+recipe runs before the Boot / Framework sets so the starter swap sees the as-is Spring Cloud BOM. MSA: per service with its own sub-case.
 Every decision is a plan note (`transform: spring_legacy → jakarta set + Spring Framework 7 set + Spring Security set
 … (spring-security detected)`); an empty set is noted, not planned. `sbmig recipes sets` prints the sets and what each
 case gets.
@@ -42,6 +48,26 @@ case gets.
 `advisor: true` inside the configured sets (`advisor_whitelist`), not already planned or covered by a planned
 composite (`covers`), and backed by the entry's `gate` on the profile (`has_javax_ee`, `has_spring_security`, `is_boot`,
 … — `GATES` in `sbmig/plan/catalog.py`). Anything else is ignored with a plan note; the call never fails the plan.
+
+## Hystrix → Resilience4j
+
+`com.company.migrate.HystrixToResilience4j` turns `@HystrixCommand` into Resilience4j `@CircuitBreaker` (`commandKey` →
+`name`, else `name = "default"`; `fallbackMethod` kept; the Hystrix-only attributes and nested `@HystrixProperty`
+removed), deletes `@EnableHystrix` / `@EnableCircuitBreaker` / `@EnableHystrixDashboard`, swaps
+`spring-cloud-starter-netflix-hystrix` / `spring-cloud-starter-hystrix` for `spring-cloud-starter-circuitbreaker-resilience4j`
+and removes `hystrix-javanica` / `hystrix-core` / the dashboard starter (declared and managed entries).
+
+It writes no version. The as-is Hystrix version is removed before the swap, so the new starter is left without one
+and the usual version rules decide: the Spring Cloud BOM manages it — upgraded to the 2025.1 train by the Boot
+umbrella, added by the umbrella's `AddSpringCloudDependenciesBom` or by the restructure's Spring Cloud BOM import when
+the project had none — so the pom keeps no version; if nothing manages it, the restructure takes the newest release the
+repository has and the "confirm …" follow-up asks the owners to check it.
+
+Code the recipe cannot port (`extends HystrixCommand` / `HystrixObservableCommand`, `HystrixRequestContext`,
+dashboards) no longer compiles once the Hystrix artifacts are gone; those errors reach the fix loop, which ports them
+with the `## fix-loop: hystrix` section of `knowledge/notes/spring-cloud.md`. The `hystrix` advisory ends `replaced`
+when no Hystrix artifact or import is left (`still-present` otherwise, e.g. with the set switched off). Reference
+fixtures: `boot2-cloud-legacy` (annotations), `boot2-hystrix-command` (a `HystrixCommand` subclass ported by the loop).
 
 ## Recipe BOM pin
 
@@ -78,6 +104,7 @@ entries' `sets:` too. Otherwise `sbmig recipes check` reports the drift. Steps f
   sets: [spring_boot_4]          # config sets that reference it (checked)
   verified: "2026-10"
   notes: knowledge/notes/boot3-to-4.md
+  file: null                     # a repository recipe file that defines the id (only the Hystrix composite has one)
 ```
 
 The catalog also lists building blocks (`ChangeType`, `ChangeTagValue`, `ChangeDependencyGroupIdAndArtifactId`,
@@ -89,8 +116,10 @@ planning never fails because of it.
 ## `sbmig recipes check`
 
 Offline. Reports ids in config sets missing from the catalog, `sets:` fields that disagree with the config, unknown
-gates, `covers` ids not in the catalog, origins other than `openrewrite`, and artifacts not in
-`openrewrite.recipe_artifacts` (core `org.openrewrite:` recipes and configured `provided_by` exempt). Exit 1 on a problem.
+gates, `covers` ids not in the catalog, origins other than `openrewrite`, artifacts not in
+`openrewrite.recipe_artifacts` (core `org.openrewrite:` recipes and configured `provided_by` exempt), and for an entry
+with `file:` a missing file, a file that does not define the id, or a building block of its `recipeList` that is not
+catalogued. Exit 1 on a problem. `--jars` does not look for a `file:` entry in the recipe jars.
 
 **`--jars`** (`sbmig/plan/jarcheck.py::check_jars`) then resolves each configured recipe artifact through
 `rewrite-recipe-bom:<recipe_bom_version>` with `maven-dependency-plugin build-classpath`, scans the jars

@@ -316,6 +316,6 @@ def test_the_handover_tags_the_added_optional_and_the_removed_trigger(tmp_path: 
 def test_the_trigger_reason_is_translated() -> None:
     from sbmig.report.handover import tr_reason
 
-    assert tr_reason("ko", f"optional (trigger: {HIB})") == f"선택 아티팩트 도입 (트리거: {HIB})"
+    assert tr_reason("ko", f"optional (trigger: {HIB})") == f"사내 선택 아티팩트 적용 (대상 의존성: {HIB})"
     assert tr_reason("en", f"optional (trigger: {HIB})") == f"optional (trigger: {HIB})"
-    assert tr_reason("ko", "optional bump") == "선택 아티팩트 버전 상향"
+    assert tr_reason("ko", "optional bump") == "사내 선택 아티팩트 버전 맞춤"

@@ -14,7 +14,7 @@ from sbmig.core.workspace import Workspace
 from sbmig.report import build_handover, console_summary, render_markdown, write_report
 from sbmig.report.handover import REVIEW_FOLLOWUPS_MAX, review_followups
 from sbmig.report.i18n import tr_line
-from sbmig.report.markdown import review_summary
+from sbmig.report.markdown import review_summary, structure_review_lines
 from sbmig.report.result_line import report_result_line, result_line
 from sbmig.report.writer import review_console_line
 
@@ -78,13 +78,16 @@ def test_section_english():
 
 
 def test_section_korean():
-    md = render_markdown(review_report(script="error"), language="ko")
-    sec = section(md, KO_TITLE)
-    assert "- 판정: `issues` — 심각 2건, 경고 1건; 수정 error, 변경 되돌림" in sec
-    assert "| 심각도 | 파일 | 문제 | 수정 힌트 |" in sec and "| **심각** |" in sec and "| 경고 |" in sec
-    assert "- 수정 (edits / script): 결과 `error`, 파일 0개 변경" in sec and "- 수정한 내용은 되돌렸다" in sec
+    # v2.1z-as: the Korean guide keeps only the verdict (참고 / 실행 정보); the section helper keeps its Korean
+    r = review_report(script="error")
+    md = render_markdown(r, language="ko")
+    sec = "\n".join(structure_review_lines(r, "ko"))
+    assert sec.startswith(KO_TITLE)
+    assert "- 판정: `issues` — 심각 2건, 경고 1건; 수정 결과 error, 변경은 되돌렸습니다" in sec
+    assert "| 심각도 | 파일 | 문제 | 수정 방법 |" in sec and "| **심각** |" in sec and "| 경고 |" in sec
+    assert "- 수정 결과: `error`, 수정한 파일 0개" in sec and "- 수정 내용은 되돌렸습니다." in sec
     assert "- 수정 오류: NameError: name 'x'" in sec and "- 메모: review script failed" in sec
-    assert "| 구조 점검 | 심각 2건, 경고 1건; 수정 error, 변경 되돌림 |" in md
+    assert "- 구조 점검: 심각 2건, 주의 1건" in md and KO_TITLE + "\n" not in md and "| 구조 점검 |" not in md
     assert "Structure review" not in md and "verdict:" not in md
 
 
@@ -92,11 +95,11 @@ def test_verdict_variants_and_no_section_without_a_review():
     assert EN_TITLE not in render_markdown(sample_report())
     assert "| Structure review |" not in render_markdown(sample_report())
     ok = review(script="", verdict="ok")
-    assert review_summary(ok) == "ok — no issues" and review_summary(ok, "ko") == "ok — 문제 없음"
+    assert review_summary(ok) == "ok — no issues" and review_summary(ok, "ko") == "문제 없음"
     skipped = StructureReview(verdict="skipped", note="review.enabled is off")
     assert review_summary(skipped) == "skipped (review.enabled is off)"
     failed = StructureReview(verdict="failed", note="llm-error: LLMError: 503")
-    assert review_summary(failed, "ko") == "실패 — 쓸 수 있는 답이 없어 점검 없이 빌드함 (llm-error: LLMError: 503)"
+    assert review_summary(failed, "ko") == "실패: 쓸 수 있는 답을 받지 못해 점검 없이 빌드를 진행했습니다 (llm-error: LLMError: 503)"
     r = sample_report()
     r.structure_review = failed
     sec = section(render_markdown(r))
@@ -122,10 +125,11 @@ def test_handover_followups():
     assert failed[0].startswith("structure review: critical issue not fixed — shop-back/pom.xml: the module")
     assert failed[-1] == "… and 7 more structure review issue(s) — see Structure review"
     assert review_followups(sample_report()) == []
-    assert tr_line("ko", lines[0]) == ("구조 점검 수정(edits / script)이 심각한 문제 1건 때문에 파일 1개를 바꿈: "
-                                       "shop-back/pom.xml (커밋 abcdef12) — 이 pom 변경을 확인할 것")
-    assert tr_line("ko", lines[2]).startswith("구조 점검 경고 — m0/pom.xml")
-    assert tr_line("ko", failed[-1]) == "… 외 구조 점검 문제 7건 — '구조 점검' 참조"
+    assert tr_line("ko", lines[0]) == ("구조 점검에서 심각한 문제 1건을 고치면서 파일 1개를 바꿨습니다: "
+                                       "shop-back/pom.xml (커밋 abcdef12). 이 pom 변경을 확인해 주세요.")
+    assert tr_line("ko", lines[2]).startswith("구조 점검 경고: m0/pom.xml")
+    assert tr_line("ko", failed[-1]) == ("구조 점검에서 나온 문제가 7건 더 있습니다. report.json의 `structure_review`에서 "
+                                         "볼 수 있습니다.")
 
 
 def test_handover_from_here_lists_the_review(tmp_path, cfg):
@@ -134,7 +138,7 @@ def test_handover_from_here_lists_the_review(tmp_path, cfg):
     items = [x for x in h.from_here if x.startswith("structure review")]
     assert len(items) == 3 and items[0].startswith("structure review: critical issue not fixed")
     md = render_markdown(report.model_copy(update={"handover": h}), language="ko")
-    assert "구조 점검: 고치지 못한 심각한 문제 — shop-back/pom.xml" in md
+    assert "고치지 못한 심각한 문제: shop-back/pom.xml" in md
 
 
 def test_v21_answer_lines():
@@ -150,8 +154,9 @@ def test_v21_answer_lines():
     assert review_summary(pending).endswith("; fix not applied")
     r.structure_review.answer = ScriptProposal(analysis="only the answer has it", no_script_reason="one-off")
     r.structure_review.analysis = ""
-    ko = section(render_markdown(r, language="ko"), KO_TITLE)
-    assert "- KB용 스크립트: 없음 — one-off" in ko and "분석: only the answer has it" in ko
+    ko = "\n".join(structure_review_lines(r, "ko"))
+    assert "- KB용 스크립트: 없음 (one-off)" in ko and "분석: only the answer has it" in ko
+    assert "- structure review: only the answer has it" in render_markdown(r, language="ko")   # 참고 / 진단용 기록
 
 
 def test_result_line_review_token_and_console_line():

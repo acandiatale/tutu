@@ -323,7 +323,7 @@ Invoke-RestMethod -Method Post -Uri "http://sbmig.internal/api/migrations?projec
 ```
 
 `state` 가 `succeeded` / `finished_with_issues` / `failed` / `cancelled` 가 되면 끝이다. `finished_with_issues` 와 `failed` 는
-`report.md` 의 맨 앞 **Handover(인수인계)** 절이 담당팀이 할 일을 적어 둔다; `failed` 의 `error` 는 sbmig 쪽 사유(설정·Nexus·ADF).
+`report.md`(한국어 안내서)의 「확인해 주세요」가 담당팀이 할 일을, 「해결하지 못한 오류」·「진행하지 않은 항목」이 남은 것을 적어 둔다; `failed` 의 `error` 는 sbmig 쪽 사유(설정·Nexus·ADF).
 
 ## 7. 완료 체크리스트
 

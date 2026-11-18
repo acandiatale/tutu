@@ -10,7 +10,7 @@ sbmig 는 회사의 Maven 프로젝트를 **JDK 21 + Spring Boot 4.1.0** 으로 
 명령 `sbmig`). 입력은 as-is 프로젝트 폴더나 zip 이고, 출력은 회사 레이아웃으로 바뀐 프로젝트(git 저장소, 단계마다 커밋)와
 보고서다. **끝의 기준은 하나다: `mvn clean package -Dmaven.test.skip=true` 가 BUILD SUCCESS.** 테스트는 컴파일도 실행도
 하지 않는다(현업 결정 "테스트는 다 스킵", `build.skip_test_compile: true`, 플래그 `tests-not-compiled`). 기동(runtime) 오류는
-as-is 담당팀의 몫이다 — sbmig 는 빌드와 패키징까지만 책임지고, 나머지는 보고서 맨 앞 **인수인계(Handover)** 절로 넘긴다.
+as-is 담당팀의 몫이다 — sbmig 는 빌드와 패키징까지만 책임지고, 나머지는 **인수인계(Handover)**(한국어 보고서의 「확인해 주세요」)로 넘긴다.
 
 목표 버전은 `target.java_version` ("21"), `target.spring_boot_version` ("4.1.0"), `target.spring_framework_version` 에 있다.
 
@@ -73,7 +73,7 @@ as-is 담당팀의 몫이다 — sbmig 는 빌드와 패키징까지만 책임�
  [최종 빌드]  mvn clean package 를 반드시 한 번 더
       |
       v
- [finalize 마무리]  report.md(인수인계 먼저) / report.json / SBMIG-RESULT 한 줄
+ [finalize 마무리]  report.md(요청자용 안내서) / report.json / SBMIG-RESULT 한 줄
                     + KB 기록(kb-v2/: 오류 목록, 케이스, 저장 스크립트)
 ```
 
@@ -119,7 +119,7 @@ KB 에 저장되어 다음 프로젝트가 LLM 호출 없이 재사용한다. �
 - 모든 실행이 같은 파일 KB(`kb.dir`, 기본 `kb-v2/`)를 쓴다. 앞 프로젝트가 저장한 스크립트를 뒤 프로젝트가 먼저 재사용한다
   (사다리의 "재사용" 칸, LLM 0회). 사람은 `sbmig kb cases list` / `sbmig kb cases show <case_id>` 로 본다.
 - EOL 라이브러리(springfox, hystrix, sleuth …)에 `block` 정책은 **없다**("500 개가 모두 완벽할 수 없다"). 권고는 안내만:
-  수정 프롬프트의 힌트 + 인수인계 절.
+  수정 프롬프트의 힌트 + 보고서 「확인해 주세요」. 교체는 레시피가 한다: Springfox · Sleuth 는 Boot 4 상위 레시피, Hystrix 는 사내 레시피(Resilience4j).
 - LLM 키는 환경 변수(`LLM_API_KEY` 등, `.env`)에서만 온다. 키를 저장소·설정·로그에 쓰지 않는다.
 - 회사 LLM 게이트웨이와 사내 에이전트 프레임워크는 어댑터 이음새(`llm.plugin`, `fix.plugin`)로 끼운다
   ([05-llm-gateway-and-prompts.md](05-llm-gateway-and-prompts.md)).
@@ -162,7 +162,8 @@ KB 에 저장되어 다음 프로젝트가 LLM 호출 없이 재사용한다. �
 | 소유팀 결정 | needs_owner | `BlockReason.NEEDS_OWNER` | LLM 이 프로젝트 밖 장애물을 이유로 거절 → 담당팀이 정함 |
 | 지식베이스(파일) | KB | `kb.dir`, `sbmig/errors/cases.py` | `errors.jsonl`, `cases.md`, `cases/<case_id>/` — DB 금지 |
 | 재색인 | reindex | `sbmig kb reindex` | 원본 오류 기록으로 케이스·실적을 다시 셈 |
-| 인수인계 섹션 | Handover | `sbmig/report/handover.py` | 보고서 맨 앞, 사람이 이어서 할 일 |
+| 인수인계 | Handover | `sbmig/report/handover.py` | 사람이 이어서 할 일. ko 보고서는 「확인해 주세요」, en 보고서는 맨 앞 Handover 절 |
+| 코드 수정 내역 | code changes | `sbmig/report/changes.py`, `RunReport.code_changes` | 자동 변환 직후 커밋과 최종 트리 사이의 파일별 순변경(diff). ko 보고서 「코드 수정 내역」 |
 | 운영자 확인 필요 | operator check | `major=` 필드 | 메이저 업그레이드·라이브러리 교체 등 사람이 봐야 하는 것 |
 | 권고 | advisory | `knowledge/libraries/advisories.yml` | EOL 라이브러리 안내(차단 없음) |
 | 필수 / 선택 사내 아티팩트 | mandatory / optional | `artifacts.mandatory`, `artifacts.optional` | 루트 pom 의 필수 2개, 쓰던 것만 올리는 선택 8개 |

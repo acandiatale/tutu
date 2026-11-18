@@ -68,7 +68,7 @@ def test_suggestion_names_the_coordinates_in_english_and_korean():
     assert s.startswith("`com.xxx.xxx:xxx:1.0.0-SNAPSHOT` is reached more than once through the reactor's <module> "
                         "lists") and s.endswith("the LLM is not asked")
     ko = tr_line("ko", s)
-    assert ko != s and ko.startswith("`com.xxx.xxx:xxx:1.0.0-SNAPSHOT` 가 reactor 의 <module> 목록으로 두 번 이상 닿는다")
+    assert ko != s and ko.startswith("`com.xxx.xxx:xxx:1.0.0-SNAPSHOT` 프로젝트가 reactor의 <module> 목록에 두 번 이상 포함되어 있습니다")
     item.suggestion = s
     assert any(ko in row for row in blocked_rows([item], "ko"))
     assert any(s in row for row in blocked_rows([item], "en"))

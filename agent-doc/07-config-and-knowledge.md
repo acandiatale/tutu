@@ -66,7 +66,7 @@
 | `kb` | 파일 KB 위치·비밀 마스킹 규칙·잠금 대기 | `kb.dir`, `kb.redact_file`, `kb.lock_timeout_seconds` |
 | `plan` | 계획: 레시피 카탈로그 파일, LLM 계획 조언자, 변환 직후 컴파일 여부 | `plan.catalog_file`, `plan.advisor`, `plan.compile_after_rewrite` |
 | `fleet` | 일괄 실행: 순서, 재시도, 사전 점검, 인프라 차단기, 정리, 요약 형식 | `fleet.order`, `fleet.preflight`, `fleet.cleanup`, `fleet.min_free_gb`, `fleet.max_llm_calls_total` |
-| `report` | 보고서: 형식, 결과 zip, diff 포함, 언어(보고서 md 만 en / ko) | `report.language`, `report.formats`, `report.zip_result` |
+| `report` | 보고서: 형식, 결과 zip, diff 포함, 언어(report.md 만: `ko` = 요청자용 한국어 안내서 `sbmig/report/guide_ko.py`, `en` = 진단용 배치 `sbmig/report/markdown.py`) | `report.language`, `report.formats`, `report.zip_result` |
 | `advisories` | EOL 라이브러리 권고(안내만, 차단 없음): 기본 파일, 회사 추가 파일, 항목 끄기 | `advisories.extra_files`, `advisories.policy_overrides`, `advisories.enabled` |
 | `externalized` | 코드가 읽지만 어떤 리소스도 정의하지 않는 설정 키 → 자리표시자 블록과 인수인계 목록 | `externalized.enabled`, `externalized.sentinel`, `externalized.rules_file` |
 
@@ -110,7 +110,7 @@ settings.xml 의 Nexus 그룹 URL 과 `build.repository_url`(같은 Nexus — �
 - 각 항목: `id`, `origin`(openrewrite 만), `artifact`(레시피 jar), `phase`, `description`, `docs`, `covers`(묶음 레시피가 이미 포함하는 것),
   `gate`(프로필 조건), `advisor`(LLM 조언자가 더할 수 있나), `sets`(이 id 를 참조하는 `openrewrite.recipes` 세트 이름), `verified`, `notes`.
 - **카탈로그는 무엇을 돌릴지 정하지 않는다.** 실제 실행 세트는 `openrewrite.recipes` 의 `jdk21`, `jakarta`, `spring_boot_4`,
-  `spring_framework_7`, `spring_security_7`, `junit5`(빈 목록), `spring_batch_6`, `hibernate_7`, `servlet_jakarta_10`, `extra` 이고,
+  `spring_framework_7`, `spring_security_7`, `junit5`(빈 목록), `spring_batch_6`, `hibernate_7`, `servlet_jakarta_10`, `hystrix_resilience4j`, `extra` 이고,
   계획기가 케이스 종류와 감지된 라이브러리로 세트를 고른다(`sbmig recipes sets` 가 보여 준다).
 - 회사 yml 이 빈 세트를 채우거나 `openrewrite.recipes.extra` 에 id 를 더하면, 그 id 를 카탈로그 항목의 `sets:` 에도 적어야 한다.
   어긋나면 `sbmig recipes check` 가 exit 1 이다(`--jars` 를 주면 Maven 으로 레시피 jar 를 받아 id 가 정말 있는지도 본다 — 네트워크 필요).
@@ -123,7 +123,7 @@ settings.xml 의 Nexus 그룹 URL 과 `build.repository_url`(같은 Nexus — �
 
 | 파일 | 내용 | 읽는 코드 |
 |---|---|---|
-| `knowledge/libraries/advisories.yml` | EOL / 관리 끊긴 라이브러리 권고(springfox, hystrix …): 상태, 대체품, 노트. 안내와 인수인계만, 차단 없음 | `sbmig/analyze/libraries.py`, `sbmig/advisory/` (`advisories.file`, 회사 추가는 `advisories.extra_files`) |
+| `knowledge/libraries/advisories.yml` | EOL / 관리 끊긴 라이브러리 권고(springfox, hystrix …): 상태, 대체품, 노트, 한국어 문구(`title_ko`, `summary_ko`, `followup_ko`, `replacement_ko`; 비면 영어). 안내와 인수인계만, 차단 없음 | `sbmig/analyze/libraries.py`, `sbmig/advisory/` (`advisories.file`, 회사 추가는 `advisories.extra_files`) |
 | `knowledge/libraries/jakarta_libraries.yml` | javax 시대 서드파티 라이브러리의 jakarta 릴리스(어느 버전부터, 권장 버전, 필요한 Java) | `sbmig/core/jakarta_libraries.py` |
 | `knowledge/libraries/libraries.company.example.yml` | 위와 같은 스키마의 회사 표 견본 → `<kb>/libraries.yml` 로 둔다 | 같음(`libraries.company_file`, 회사 항목이 이김) |
 | `knowledge/libraries/jar_names.yml` | jar 파일 이름 줄기 → Maven 좌표 표(Ant 접수, 동봉 jar) | `sbmig/analyze/jar_coords.py` (`intake.jar_names_file`) |

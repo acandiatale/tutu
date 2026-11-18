@@ -6,8 +6,12 @@ switched on), migrates it to JDK 21 + Spring Boot 4.1, restructures it into
 the company layout (in-house parent, 2 mandatory dependencies, optional in-house artifacts, `{name}-boot` / `-back` /
 `-front` modules) and stops only after a final `mvn clean package` (tests skipped). Build errors are fixed by
 **LLM-written Python fix scripts** that are stored per error case in a file-based knowledge base, so a later project with
-the same case runs the stored script first — without an LLM call. The report starts with a **Handover** for the as-is
-owners (versions replaced, ⚠ pins carried over, EOL libraries that still compile, properties to set, blocked items).
+the same case runs the stored script first — without an LLM call. With `report.language: ko` (the company setting)
+`report.md` is a Korean guide for the person who asked for the migration (`sbmig/report/guide_ko.py`): what was converted
+(Java / Boot / parent, dependency versions with ⚠ pins carried over), 「확인해 주세요」 (EOL libraries, the hand-over items),
+the code changes (one net diff per file the fix loop or the review changed, `sbmig/report/changes.py`), open errors, blocked
+items, then reference blocks. `report.language: en` keeps the diagnostic layout with the **Handover** first. Every error with
+every try and diff is in `errors.md` / `errors.jsonl`.
 
 ## The flow
 
@@ -23,7 +27,7 @@ restructure  company layout (parent / mandatory / optional, module split, or pom
              over from the as-is effective pom, bundled jars wired, JSP javax → jakarta
 review       the LLM checks poms, dependencies and modules; critical issues are fixed by its edits and committed
 verify       mvn clean package -Dmaven.test.skip=true; on failure the script fix loop, then the final build again
-finalize     report.md / report.json (Handover first), errors.md / errors.jsonl, KB records (kb-v2/)
+finalize     report.md (ko: guide for the requester) / report.json, errors.md / errors.jsonl, KB records (kb-v2/)
 remediation  only after BUILD SUCCESS and when switched on: IVAS vulnerability scan, version-text fixes, rescan
 ```
 
@@ -56,7 +60,7 @@ attempt that touches them). `SBMIG-RESULT … scope=jdk-jakarta`. Details: `agen
 
 * Scope = packaging + build passing. Runtime errors belong to the as-is owners; tests are not compiled.
 * OpenRewrite only for Java 21, javax → jakarta and Spring (Boot / Framework / Security); everything else is fixed by LLM scripts.
-* EOL / unmanaged libraries are never a blocker: advisories (`guide`) give the LLM hints and go into the Handover.
+* EOL / unmanaged libraries are never a blocker: advisories (`guide`) give the LLM hints and go into the report's hand-over items (「확인해 주세요」).
 * Versions are never guessed: they come from the as-is build, the company parent chain or the repository.
 * One agent migrates ~500 projects (`sbmig fleet`, or the web UI's build Jobs); the KB is file-based, no database.
 * Real in-house coordinates live in `config/artifacts.yml` (from `config/artifacts.example.yml`); LLM keys only in

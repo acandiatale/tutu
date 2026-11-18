@@ -1982,6 +1982,11 @@ class LibraryAdvisory(BaseModel):
     resolved_min_version: Optional[str] = None     # outcome "replaced" when the library is still present but at
                                                    # least this version (release-train bumps)
     notes: Optional[str] = None                    # knowledge/notes/*.md pointer
+    # 한국어 보고서에 쓰는 문장. 비어 있으면 영어 문장을 그대로 보여 준다
+    title_ko: str = ""
+    summary_ko: str = ""
+    followup_ko: str = ""
+    replacement_ko: str = ""                       # only when `replacement` is free text, not a coordinate
 
 
 class AdvisoryFinding(BaseModel):
@@ -2009,6 +2014,11 @@ class AdvisoryFinding(BaseModel):
     llm_fixed_files: list[str] = Field(default_factory=list)   # files the LLM rewrote for this library (round 6:
                                                    # successful llm_fix attempts whose advisory_ids include this id)
     llm_fix_notes: list[str] = Field(default_factory=list)     # one line per such attempt (its analysis), for the Handover
+    # 한국어 보고서에 쓰는 문장(LibraryAdvisory의 같은 이름 필드에서 옮긴다). 비어 있으면 영어 문장을 쓴다
+    title_ko: str = ""
+    summary_ko: str = ""
+    followup_ko: str = ""
+    replacement_ko: str = ""
 
     @property
     def replaced(self) -> bool:
@@ -2087,6 +2097,27 @@ class HandoverSummary(BaseModel):
 # ---------------------------------------------------------------------------
 # Report
 # ---------------------------------------------------------------------------
+class CodeChange(BaseModel):
+    """자동 변환 뒤에 sbmig가 고친 파일 하나를 담는 데이터 클래스. 구조 검토와 수정 단계가 남긴 최종 변경이다.
+    라운드별 시도가 아니라 변환 직후 상태와 최종 상태를 비교한 결과이므로, 한 파일을 여러 번 고쳐도 한 건이다.
+    보고서의 "코드 수정 내역"이 읽는다.
+
+    One file sbmig changed after the automatic conversion (structure review + fix loop): the NET change between the
+    tree right after OpenRewrite / the restructure and the final tree, not one record per try. Built at finalize
+    (`sbmig.report.changes.collect_code_changes`), read by the Korean report's "코드 수정 내역"."""
+    path: str                                      # final repo-relative path
+    status: Literal["modified", "added", "deleted"] = "modified"
+    added: int = 0                                 # lines added / removed in the net diff
+    removed: int = 0
+    notes: list[str] = Field(default_factory=list)     # what was changed where: the kept tries' EditNotes the LLM
+                                                       # wrote for this path (one sentence each, first seen order)
+    reasons: list[str] = Field(default_factory=list)   # why: the cause text (FixTry.analysis) of each case whose kept
+                                                       # try changed this file, one per case
+    diff: str = ""                                 # unified diff of this file, base → final ("" = not stored: over
+                                                   # the file cap, binary, or the diff could not be read)
+    truncated: bool = False                        # `diff` was cut at the line cap
+
+
 class JarCoordinate(BaseModel):
     """Ant 프로젝트 lib의 jar 하나와 찾아낸 Maven 좌표를 담는 데이터 클래스.
     접수 단계의 pom 생성이 만들고 보고서의 Handover가 읽는다.
@@ -2194,6 +2225,10 @@ class RunReport(BaseModel):
     error_case_counts: dict[str, int] = Field(default_factory=dict)   # status → count
     structure_review: Optional[StructureReview] = None           # v2: LLM review of poms / modules before the first build
     error_entries: list[ErrorEntry] = Field(default_factory=list)    # v2.1: the run's error list (diffs capped)
+    # 자동 변환 뒤에 고친 파일들의 최종 변경. Java 파일, pom, 나머지 순서이고 diff는 앞의 일부 파일에만 담는다
+    code_changes: list[CodeChange] = Field(default_factory=list)
+    code_changes_total: int = 0                    # every file changed after the conversion (may exceed the list)
+    code_changes_base: str = ""                    # the commit the diffs start from ("" = not collected)
     operator_checks: list[OperatorCheck] = Field(default_factory=list)   # 운영자 확인 필요 (major upgrades /
                                                    # library replacements still in the final tree, with their guide)
     # 빌드 성공 뒤 이어서 실행한 취약점 조치의 요약(``sbmig.remediations.chain.summary``)

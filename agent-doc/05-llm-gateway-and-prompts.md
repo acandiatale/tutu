@@ -133,7 +133,7 @@ repeat them)` → `Other error cases in this build` → `Plan notes`(transform /
 
 | 태그 | 뜻 |
 |---|---|
-| `<analysis>` | 원인(KB 에 남음) |
+| `<analysis>` | 원인(KB 에 남음, 보고서 「직접 수정한 파일」의 "수정 이유") |
 | `<solution>` | 해결 방법 한 문단 |
 | `<verify>` | 운영자 확인 줄 — 메이저 버전 변경·라이브러리 교체 뒤에만, 그때는 필수. 이것만 있는 답은 답이 아님 |
 | `<edits>` | 이 프로젝트에 바로 적용할 JSON 목록. op: `replace`(path, old, new, count) / `write` / `create`(path, content) / `delete` / `move`(path, to) / `pom`(편집기 호출), 항목마다 `desc` 한 문장 |
@@ -142,6 +142,9 @@ repeat them)` → `Other error cases in this build` → `Plan notes`(transform /
 | `<no_script>` | 스크립트로 만들 수 없는 이유 — 그때는 `<edits>` 가 수정(출처 `llm-edit`) |
 | `<need_files>` / `<need_grep>` | 문맥 요청 |
 | `<blocked>` | 프로젝트 안에서 못 고치는 이유 한 문장(400자) → 거절 |
+
+`<analysis>`, `<solution>`, `<changes>`·`desc` 는 `describe_language`(`sbmig/script/notes.py`)가 정한 언어로 쓰라고 프롬프트가 요구한다:
+`report.language: ko` 면 한국어. 구조 검토 프롬프트의 problem / hint / analysis 도 같다. 전에 KB 에 저장된 설명은 그 언어 그대로다.
 
 파서는 관대하고 예외를 내지 않는다(펜스, CRLF, 닫는 태그 빠짐, JSON 의 꼬리 쉼표·주석·작은따옴표 수리). 산문·편집 블록을 먼저 떼어 내므로 JSP 편집 속
 `<script>` 를 스크립트로 오인하지 않는다. 쓸 수 없는 스크립트·못 읽는 편집이면 피드백 한 번. 진짜 정적 검사는 `sbmig/script/check.py`.
@@ -163,7 +166,8 @@ Jackson 3 규칙) · 9 런타임 걱정은 `MIGRATION-TODO` 주석 · 10 "Librar
   노트의 `fix-loop:` 절은 규칙 10 처럼 읽힌다(예 `knowledge/notes/spring-mobile.md`: 바이트코드 변환이 아니라 호환 대체 코드를 쓰라).
 - **권고** `knowledge/libraries/advisories.yml`(+ `advisories.extra_files`): EOL·관리 안 되는 라이브러리(hystrix, springfox …). 정책은 안내뿐(`guide`) —
   빌드를 막지 않는다. 오류가 그 라이브러리의 패키지·아티팩트·대체 아티팩트를 언급하면 `sbmig/advisory/hints.py` 가 "Library migration guidance" 줄을 더하고,
-  보고서 Handover 의 "Libraries needing your attention" 에 남는다.
+  보고서에 남는다(ko: 「확인해 주세요」 맨 앞에 권고마다 한 항목, `title_ko` / `summary_ko` / `followup_ko` / `replacement_ko` 문구;
+  en: Handover 의 "Libraries needing your attention").
 - **라이브러리 힌트**(`_library_hints`, `libraries.lookup`): 케이스 뒤의 라이브러리를 표(`knowledge/libraries/jakarta_libraries.yml` + `kb-v2/libraries.yml`)와
   저장소(maven-metadata.xml, pom, jar 스캔)로 조회해 "Dependency versions" 절을 만든다. 저장소 목록과 조회 결과는 `sbmig repo-probe` 로 본다.
 

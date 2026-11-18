@@ -92,22 +92,27 @@ def test_english_handover_block(tmp_path, cfg):
 def test_korean_handover_block(tmp_path, cfg):
     md = render_markdown(ant_report(tmp_path, cfg), language="ko", cfg=cfg)
     assert "### Ant project" not in md and "Left out" not in md and "pom.xml synthesized from build.xml (" not in md
-    assert md.index("### 운영자 확인 필요") < md.index("### Ant 프로젝트: pom.xml 합성") < md.index("### 교체된 버전")
-    block = _section(md, "### Ant 프로젝트: pom.xml 합성", "### 교체된 버전")
-    assert ("Ant `build.xml` 만 있고 pom.xml 이 없는 프로젝트라 sbmig 가 접수에서 build.xml 과 폴더 구조로 `pom.xml` 을 "
-            "만들었다(커밋 `intake: pom.xml synthesized from build.xml`). build.xml 은 그대로 두었다.") in block
+    # v2.1z-as: in the Korean guide both blocks are sections of their own, after 확인해 주세요
+    assert md.index("## 확인해 주세요") < md.index("## 운영자 확인 필요") < md.index("## Ant 프로젝트의 pom.xml 생성") \
+        < md.index("## 참고")
+    block = _section(md, "## Ant 프로젝트의 pom.xml 생성", "## 참고")
+    assert ("Ant 빌드 파일 `build.xml`만 있고 pom.xml이 없어서, sbmig가 접수 단계에서 build.xml과 폴더 구조를 읽어 "
+            "`pom.xml` 파일을 만들었습니다(커밋 `intake: pom.xml synthesized from build.xml`). build.xml은 그대로 "
+            "두었습니다.") in block
     assert "- pom: `com.company.migrated:legacy-web:1.0.0-SNAPSHOT` (war), Java 1.8, 인코딩 MS949" in block
     assert "- 구조: 소스 `src`, `src-gen`, 웹 루트 `WebContent`, 리소스 `conf`, lib `lib`" in block
-    assert "- jar: 6개 — pom.properties 1 · 이름표 1 · 저장소 조회 1 · 미상 3" in block
-    assert "**Maven 좌표를 찾지 못한 jar 2개** — `system` scope(`<systemPath>`)로 선언했다" in block
-    assert "WAR / boot jar 에 들어가지 않아 실행 시 실패한다" in block
+    assert "- jar 6개: pom.properties 1개, 이름표 1개, 저장소 조회 1개, 미확인 3개" in block
+    assert "**Maven 좌표를 찾지 못한 jar 2개** — `system` scope(`<systemPath>`)로 선언했습니다." in block
+    assert "WAR / boot jar에 포함되지 않아 실행하면 실패합니다" in block
     assert f"```\n{CMD_1}\n{CMD_2}\n```" in block                 # commands are never translated
-    assert "뺀 jar(좌표도 없고 어떤 소스도 그 패키지를 import 하지 않음): `lib/old-unused-0.9.jar`" in block
-    assert "Maven 으로 옮기지 못한 build.xml 단계 — 빌드에 아직 필요한지 확인할 것:" in block
-    assert "합성 경고:" in block
-    assert "build.xml 에서 pom.xml 합성 (jar 6개: pom.properties 1 · 이름표 1 · 조회 1 · 미상 3)" in md
-    assert "- `pom-synthesized`: Ant build.xml 만 있고 pom.xml 이 없는 프로젝트라" in md
-    assert "- `jar-coordinates-unknown`: Ant 프로젝트의 jar 중 Maven 좌표를 찾지 못한 것이 있다" in md
+    assert "좌표도 없고 어느 소스도 패키지를 import하지 않아 뺀 jar: `lib/old-unused-0.9.jar`" in block
+    assert "Maven으로 옮기지 못한 build.xml 단계입니다. 빌드에 아직 필요한지 확인해 주세요." in block
+    assert "pom 생성 경고:" in block
+    auto = md.split("### 자동 변환", 1)[1].split("\n## ", 1)[0]
+    assert "- Ant 프로젝트여서 빌드 파일(`build.xml`)과 폴더 구조를 읽어 pom을 새로 만들었습니다(`pom.xml`). jar 6개 " \
+           "가운데 좌표를 찾지 못한 jar는 3개입니다." in auto
+    assert "- 플래그 `pom-synthesized`: Ant build.xml만 있고 pom.xml이 없어서" in md
+    assert "- 플래그 `jar-coordinates-unknown`: Ant 프로젝트의 jar 일부는 Maven 좌표를 찾지 못했습니다" in md
 
 
 def test_block_without_operator_checks_or_versions(cfg):

@@ -877,3 +877,52 @@ three. The shipped configuration now applies every proposal on its own; approval
 | Tests | offline suite 5,736 passed, 62 deselected | — | done |
 | Known limits | a change set that breaks the candidate build fails as a whole (`candidate_build_failed`; the failed candidate is delivered and marked): nothing is retried without single proposals, so one breaking major change costs the safe changes of that round too. A deployment whose `sbmig-env` has `SBMIG_REMEDIATION__REQUIRE_APPROVAL: "true"` keeps approval on | — | open |
 | Not seen yet | an unattended remediation on the company cluster (how often a major change breaks the build, whether the teams read 「주의」) | — | open |
+
+## Status — 2026-11-18, the Korean report.md is a guide for the requester (v2.1z-as)
+
+The user read a company report and found it hard to read: "너무 기계적으로 리포트가 나왔다". Its purpose in their words:
+a guide for the person who asked for the migration ("우리 이렇게 마이그레이션 했고 이런거 확인해주세요~"); no error lists,
+no per-round fix tables, the modified files with their final diff; the head table reduced to six rows; the words 사유,
+관리됨 and "as-is 버전으로 고정했다" named as odd.
+
+| Item | Deliverable | Where | Status |
+|---|---|---|---|
+| Two renderers | `report.language: ko` renders the guide, written in Korean directly: head table (결과, SBMIG-RESULT, 전환 후, 실행 ID, 시작 / 종료, 플래그) → 전환 내용 → 확인해 주세요 → 코드 수정 내역 → 해결하지 못한 오류 → 진행하지 않은 항목 → special sections → 참고; `en` keeps the diagnostic layout byte for byte | `sbmig/report/guide_ko.py`, `sbmig/report/markdown.py` (hook), `tests/report/test_guide_ko.py`, `tests/report/golden/` | done |
+| One net diff per modified file | `RunReport.code_changes` / `code_changes_total` / `code_changes_base`: the change of each file between the commit right after the automatic conversion and the final tree, with the LLM's change sentences and the cause; caps 30 files with diff / 80 lines / 500 listed; mode-only changes left out | `sbmig/report/changes.py`, `sbmig/loop/orchestrator.py`, `sbmig/core/workspace.py`, `tests/report/test_code_changes.py`, `tests/loop/test_code_changes_flow.py` | done |
+| Library advisories in Korean | `title_ko` / `summary_ko` / `followup_ko` / `replacement_ko` for all 67 entries; an item of 확인해 주세요 = the title sentence, what the run did, then 대체할 라이브러리 / 설명 / 할 일 / 수정한 파일 / 문서 | `knowledge/libraries/advisories.yml`, `sbmig/advisory/evaluate.py`, `tests/advisory/test_korean_texts.py` | done |
+| The remaining translated lines | 204 of 344 phrase values and 58 of 80 line rules reworded (polite 합니다체, no word-for-word code vocabulary), 52 rules added for texts that used to stay English; tests forbid the plain style, "~할 것" endings and the banned words | `sbmig/report/i18n.py`, `tests/report/test_report_i18n.py` | done |
+| Explanations of the LLM | the fix prompt asks for `<analysis>` / `<solution>`, the review prompt for its problem / hint / analysis, in the language of the change descriptions (Korean with `report.language: ko`) | `sbmig/fix/prompts/script_user_v1.md.j2`, `sbmig/review/prompts/review_v1.md` | done |
+| Operator and design text | the report chapter of the design README, the agent-doc pack, RUNBOOK, ARCHITECTURE, config comments | `docs/migration-agent/README.md`, `agent-doc/`, `docs/` | done |
+| Known limits | texts the LLM stored in the KB earlier stay in their language; a few follow-up families are still English (the web.xml registration lines, the operator-check guide line generated in code); the 구분 column of 진행하지 않은 항목 shows the reason code; the Korean report's remediation section and the remediation report keep their own vocabulary (라운드, 사유) | — | open |
+| Not seen yet | a company run's report in the new form | — | open |
+
+## Status — 2026-11-18, Hystrix is replaced with Resilience4j by a recipe again (v2.1z-at)
+
+In the same report the user saw Hystrix and a Sleuth artifact kept at their as-is versions while Springfox was
+replaced, and remembered an automatic replacement. It had existed (round 6, an in-house recipe) and was deleted with
+the v1 flow; since then the as-is version was carried over, the old jar compiled and the build was green although
+Hystrix does not work on Boot 4. Decision: "이게 동작하지 않는건 되살려서 동작하도록 해주는건 맞는거 같아!"
+
+| Item | Deliverable | Where | Status |
+|---|---|---|---|
+| The recipe | composite `com.company.migrate.HystrixToResilience4j`: `@HystrixCommand` → `@CircuitBreaker`, the starters swapped, the Hystrix artifacts and enable-annotations removed; it writes no version | `knowledge/recipes/base/hystrix-to-resilience4j.yml`, `knowledge/recipes/catalog.yml` | done |
+| When it runs | set `openrewrite.recipes.hystrix_resilience4j` (`[]` = off), planned when the analyzer finds `hystrix`, after Java 21 / jakarta and before the Framework / Boot sets in the one OpenRewrite run; in the framework scope only when `framework.recipe_sets` names it | `config/default.yml`, `sbmig/plan/planner.py`, `sbmig/plan/catalog.py`, `sbmig/rewrite/runner.py` | done |
+| Versions | the new starter leaves the recipe without a version: the upgraded Spring Cloud BOM manages it (the Boot umbrella adds the BOM when a Boot project has none; the restructure imports it for a non-Boot Spring project); otherwise the existing repository lookup | — | done |
+| Code the recipe cannot port | `extends HystrixCommand` no longer compiles and is ported by the fix loop with the `## fix-loop: hystrix` note | `knowledge/notes/spring-cloud.md`, `fixtures/projects/boot2-hystrix-command/replay/` | done |
+| Advisory | `hystrix` ends `replaced`; its English and Korean texts say what was replaced and what to review at runtime | `knowledge/libraries/advisories.yml` | done |
+| Real pipeline | `scripts/e2e.py` (Maven + OpenRewrite): `boot2-cloud-legacy` PASS (hystrix / sleuth / springfox / spring-cloud-bom `replaced`), `boot2-hystrix-command` PASS (the command class ported), four fixtures without Hystrix unchanged | `fixtures/projects/` | done |
+| Known limits | a project that declares only `hystrix-javanica` gets the annotations swapped but no Resilience4j dependency (the fix loop adds it; not run for real); Sleuth-family artifacts other than `spring-cloud-starter-sleuth` are still carried over (the artifact in the company report is not known yet) | — | open |
+
+## Status — 2026-11-18, the flow deck is brought up to date and written for users
+
+The user asked for the deck's latest state and, while it was being redone: "사용자들한테 나갈거라 기계적 문구 말고 한국인
+사용자를 대상을 고려해서 내용을 써줘!" The deck goes to the developers who upload projects and read the results.
+
+| Item | Deliverable | Where | Status |
+|---|---|---|---|
+| 20 slides | overview of 12 steps (⑪ 취약점 조치 before ⑫ 마무리, as the code runs them), 프로젝트에 따라 길이 달라집니다 (the two run flows, the framework road, what is not accepted), the nine step slides plus ⑪ 취약점 조치, the four fix-loop slides, 보고서는 이렇게 읽습니다, 취약점 조치 결과는 이렇게 봅니다, the knowledge base | `docs/migration-agent/migration-agent.pptx`, `scripts/handbook/build_migration_agent_deck.js`, `scripts/handbook/steps/` | done |
+| Facts | every slide checked against the code (Ant projects are refused with a notice; three pods; the reduced scope of framework projects; no approval in the remediation; the report sections; Hystrix / Springfox / Sleuth replacements; 50 rounds, 8 groups a round, 20 LLM asks) | — | done |
+| Wording | for the user: what happens to my project, what I see, what I do; no setting keys, file / function names, flags or exit codes in slides; speaker notes as what a presenter says | — | done |
+| Checks | `validate.py` passes; all 20 slides rendered to images and read | `scripts/handbook/README.md` (build and check commands) | done |
+| Found on the way | the report, the KB records and `result.zip` are written after the chained remediation (the graph node `finalize` only settles a stop) — design README, ARCHITECTURE and agent-doc 02 corrected; the web page's stage rail shows 보고서 before 취약점 조치 although report.md is ready only after it | `docs/migration-agent/README.md`, `docs/ARCHITECTURE.md`, `agent-doc/02-flow-and-nodes.md` | page order open |
+| Tests | offline suite 5,846 passed, 62 deselected | — | done |

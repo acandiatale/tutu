@@ -82,6 +82,9 @@ Always the review block:
 {"verdict": "ok" | "issues", "issues": [{"severity": "critical" | "warning", "file": "<pom path relative to the project root, or \"\" for the whole project>", "problem": "<one sentence>", "fix_hint": "<one sentence: what to change>"}], "analysis": "<two to five sentences: what you checked and what is wrong>"}
 </review>
 
+Write `problem`, `fix_hint`, `analysis` and the `<analysis>` / `<solution>` texts below in {{ desc_language }};
+identifiers, paths and coordinates stay as they are.
+
 When there is at least one critical issue that can be fixed in the poms (or other build files), fix exactly those
 critical issues yourself — add after the review block:
 

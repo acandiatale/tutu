@@ -15,7 +15,7 @@
 4. [노드별 설명](#4-노드별-설명)
 5. [수정 루프](#5-수정-루프)
 6. [지식베이스](#6-지식베이스)
-7. [보고서와 Handover](#7-보고서와-handover)
+7. [보고서](#7-보고서)
 8. [재구성 — 회사 레이아웃](#8-재구성--회사-레이아웃)
 9. [실행 방식 — CLI, 웹, Job, 플릿](#9-실행-방식--cli-웹-job-플릿)
 10. [취약점 조치](#10-취약점-조치)
@@ -28,7 +28,7 @@
 ### 1.1 목적과 범위
 
 - 입력: as-is 프로젝트 하나(폴더 또는 zip). 순수 Java, Spring 4/5, 서블릿 / Tomcat, Spring Boot 2/3, MSA(서비스 여러 개).
-- 출력: JDK 21 + Spring Boot 4.1 로 옮기고 회사 레이아웃으로 재구성한 프로젝트, 보고서(`report.md` / `report.json`, Handover 가 맨 앞), `result.zip`, `changes.patch`.
+- 출력: JDK 21 + Spring Boot 4.1 로 옮기고 회사 레이아웃으로 재구성한 프로젝트, 보고서(`report.md` / `report.json`: 요청 담당자가 읽는 안내서), `result.zip`, `changes.patch`.
 - 범위: **패키징과 빌드 통과까지**(`mvn clean package -Dmaven.test.skip=true` → BUILD SUCCESS). 런타임 오류는 as-is 담당팀 몫, 테스트는 컴파일하지 않습니다.
 - 운영 모델: 에이전트 하나가 ~500 개 프로젝트를 옮깁니다. 빌드 오류를 고친 스크립트는 케이스(L2 시그니처)마다 KB 에 남아 뒤의 프로젝트가 LLM 없이 다시 씁니다.
 
@@ -111,15 +111,15 @@ flowchart TD
   RV --> V["verify: mvn clean package"]
   V -->|"실패"| LOOP["수정 루프 (≤ 50 라운드)"]
   LOOP --> VF["최종 mvn clean package"]
-  V -->|"성공"| FIN["finalize: 보고서 · 오류 목록 · KB · result.zip"]
-  VF --> FIN
-  FIN --> REM{"BUILD SUCCESS 이고 remediation.after_migration?"}
-  REM -->|"예"| RM["remediation: IVAS 검사 · 승인된 버전 수정 · 재검사"]
-  REM -->|"아니오"| END(["끝"])
-  RM --> END
+  V -->|"성공"| REM{"BUILD SUCCESS 이고 remediation.after_migration?"}
+  VF --> REM
+  REM -->|"예"| RM["remediation: IVAS 검사 · 버전 수정 · 재검사 (승인 없이 끝까지)"]
+  REM -->|"아니오"| FIN["finalize: 보고서 · errors.md · KB · result.zip"]
+  RM --> FIN
+  FIN --> END(["끝"])
 ```
 
-LangGraph 노드는 `intake` → `analyze` → `plan` → `phase`(단계 묶음마다 반복: transform, restructure(재구성 + 검토), verify) → `finalize` → `remediation` → END 입니다.
+LangGraph 노드는 `intake` → `analyze` → `plan` → `phase`(단계 묶음마다 반복: transform, restructure(재구성 + 검토), verify) → `finalize` → `remediation` → END 입니다. 그래프의 `finalize` 노드는 멈춤 표시만 정리하고, 보고서 · KB 기록 · `changes.patch` · `result.zip` 은 그래프가 끝난 뒤, 곧 취약점 조치가 끝난 뒤에 씁니다. 그래서 이관 보고서에 취약점 조치 요약 절이 들어갑니다.
 위 그림은 실행 방식 `full`(기본, 전체 진행)입니다. 실행 방식 `remediation`(취약점 해결)은 `intake` → `remediation` → `finalize` 만 지나갑니다: 프로젝트를 고치지 않는 접수(작업 사본, preflight, 빌드 도구 판별과 거부), 올린 그대로의 프로젝트에 대한 취약점 조치, 짧은 보고서. 이관 단계·LLM·KB 는 쓰지 않습니다(10절).
 멈춤(`--stop-after`, 웹의 Stop)이나 중단은 곧바로 `finalize` 로 갑니다. Stop 은 노드 사이에서만 반영되고, 진행 중인 Maven·LLM 호출은 끊지 않습니다.
 
@@ -133,13 +133,13 @@ MSA 는 공유 라이브러리 루트 먼저, 그다음 서비스마다 `transfo
 
 - `build.setup_command`(있으면) → preflight(Maven 실행, `mvn -v` 의 Java 가 21, 사내 부모 좌표가 채워졌는지) → 빌드 도구 판별(Maven 통과 / Ant 는 `intake.ant_message` 로 거부, `intake.ant_to_maven: true` 면 pom 합성 / Gradle·빌드 파일 없음 거부).
 - 트리 모양: 떠도는 pom 복사본(IDE 출력 폴더의 모듈 사본) 무시, 루트 pom 없으면 aggregator 생성, 리액터에 두 번 닿는 모듈 제거, 배포 전송 빌드 확장(wagon) 제거, 사내 부모 체인의 빌드 확장 점검.
-- as-is effective dependencyManagement 캡처 → `logs/effective-depmgmt.json`(나중에 버전 이어받기와 Handover 의 "바뀐 버전").
+- as-is effective dependencyManagement 캡처 → `logs/effective-depmgmt.json`(나중에 버전 이어받기와 보고서 「전환 내용」의 의존성 버전 표).
 - 멈춤(exit 3): `mvn-not-found`, `jdk-not-21`, `unsupported-build-tool:<도구>`, `ear-without-modules`.
 
 ### 4.2 analyze
 
 - 모든 pom(Maven 호출 없이), 소스, web.xml, JSP, 트리 안 jar 를 읽어 `ProjectProfile` 을 만듭니다: 케이스 유형(`pure_java` | `servlet_tomcat` | `spring_legacy` | `spring_boot` | `msa`), Java·Spring·Boot 버전, 라이브러리, 외부 설정 키, 동봉 jar.
-- EOL 라이브러리 권고(`knowledge/libraries/advisories.yml`)는 **안내만** 합니다: 수정 프롬프트의 힌트와 Handover. 차단 정책은 없습니다.
+- EOL 라이브러리 권고(`knowledge/libraries/advisories.yml`)는 **안내만** 합니다: 수정 프롬프트의 힌트와 보고서 「확인해 주세요」의 항목. 차단 정책은 없습니다.
 - 멈춤: ADF 근거 계열 둘 이상(`intake.adf_policy: stop`), 루트 pom 없고 MSA 아님. 계속하지만 성공 아님: `hollow-reactor`.
 
 ### 4.3 plan
@@ -155,6 +155,9 @@ MSA 는 공유 라이브러리 루트 먼저, 그다음 서비스마다 `transfo
 | `spring_batch_6`, `hibernate_7` | 그 라이브러리를 쓰는 `spring_legacy` |
 | `servlet_jakarta_10` | `servlet_tomcat` 등 서블릿 프로젝트 |
 | `spring_boot_4` (`UpgradeSpringBoot_4_0` + `SpringBootProperties_4_1`) | `spring_boot` |
+| `hystrix_resilience4j` (사내 레시피) | Hystrix 를 쓰는 프로젝트. `@HystrixCommand` 를 Resilience4j `@CircuitBreaker` 로, starter 를 `spring-cloud-starter-circuitbreaker-resilience4j` 로 바꿉니다 |
+
+Boot 4 상위 레시피는 Springfox 를 springdoc 으로, `spring-cloud-starter-sleuth` 를 Micrometer Tracing 으로 바꿉니다. Hystrix 는 OpenRewrite 에 교체 레시피가 없어 사내 레시피로 바꾸며, `HystrixCommand` 를 상속한 코드처럼 레시피가 못 바꾸는 부분은 빌드 오류로 드러나 수정 루프가 옮깁니다.
 
 단계: `transform.rewrite` → `restructure.apply` | `restructure.boot_pom` | `restructure.pom_only` | `restructure.msa_pom` → `restructure.review` → `verify.build`.
 `transform.compile` 은 `plan.compile_after_rewrite: true` 일 때만 생깁니다(기본 false — 재구성 전 빌드는 as-is 클래스패스라 의미가 없음).
@@ -175,7 +178,7 @@ MSA 는 공유 라이브러리 루트 먼저, 그다음 서비스마다 `transfo
 LLM 이 재구성된 pom 전부와 재구성 메모, 부모 체인 사실, 인코딩·필터링 리소스 사실을 회사 규칙에 비춰 봅니다. 이슈마다 `critical` 또는 `warning`.
 
 - critical → LLM 답의 `<edits>` 를 적용(`review.fix_critical`; 스크립트는 받지 않음, `review.ask_script: false`). `review.invariant_check` 가 재구성 불변식(예: 떠도는 pom 사본을 모듈로 등록하지 않기)을 다시 검사해 어긴 편집은 되돌리고 한 번 다시 묻습니다. 성공하면 커밋 `review: fix critical structure issues (<n>)`.
-- warning → 보고서 "Structure review" 절과 오류 목록의 note 항목. 검토 재료에 없는 버전을 말한 이슈는 적용하지 않습니다.
+- warning → 보고서 「확인해 주세요」의 항목과 `errors.md` 의 note 항목. 검토 재료에 없는 버전을 말한 이슈는 적용하지 않습니다.
 - 실행을 멈추지 않습니다. 판정은 `SBMIG-RESULT … review=<verdict>`.
 
 ### 4.7 verify
@@ -214,10 +217,10 @@ flowchart TD
 - 레시피: `framework.recipe_sets`(기본 `jdk21`, `jakarta`). 기본 jakarta 세트는 서블릿 API 를 서블릿 5.0 기준으로 올리므로, Tomcat 10.1 이상에 올릴 프로젝트는 `servlet_jakarta_10` 을 더합니다(회사가 정할 스위치).
 - 레시피 전에 MS949·EUC-KR 소스 모듈의 pom 에 `project.build.sourceEncoding` 을 적습니다. JDK 18부터 javac 기본 인코딩이 UTF-8 이라 선언이 없으면 JDK 21 에서 컴파일되지 않고, OpenRewrite 도 읽지 못하는 파일은 건너뛰어(`rewrite_parse_problems`) javax import 가 남기 때문입니다(커밋 `transform: source encodings written`, 저널 `source_encodings`, 스위치 `layout.legacy_context.write_source_encoding`). 유지하는 부모가 다른 값을 정했으면 부모 값을 두고 Handover 한 줄을 남깁니다.
 - 레시피가 compile 로 바꾼 as-is `provided` scope 는 변환 직후 되돌립니다(커밋 `transform: as-is provided scopes restored`, 저널 `scopes_restored`).
-- 커밋 순서: `transform: source encodings written` → `rewrite: transform.rewrite` → `transform: as-is provided scopes restored` → `transform: JSP javax → jakarta`. 두 정정은 보고서 에러 목록에 `transform` 단계의 pom 정정으로 나오고 머리 표는 빌드 오류와 따로 셉니다.
+- 커밋 순서: `transform: source encodings written` → `rewrite: transform.rewrite` → `transform: as-is provided scopes restored` → `transform: JSP javax → jakarta`. 두 정정은 보고서 「코드 수정 내역」의 자동 변환 줄과 `errors.md` 에 `transform` 단계의 pom 정정으로 나옵니다.
 - 부모 pom 을 회사 부모로 맞추지 않습니다. 저장소가 부모 pom 을 주지 않으면 LLM 없이 `aborted:parent-not-found` 로 멈춥니다.
 - 수정 루프: 버전 사실은 프로젝트 자기 부모 체인에서 오고 Boot BOM 은 쓰지 않습니다. 프레임워크 선언·버전이나 `<parent>` 를 바꾼 시도는 되돌립니다(저널 `framework_guard`). 프레임워크 자신이 javax 기준이면 LLM 없이 `external_javax_api` 로 차단하고 담당자에게 jakarta 빌드를 요청하라고 적습니다.
-- 결과: `SBMIG-RESULT … scope=jdk-jakarta`, 보고서 머리 표의 `범위` 줄과 `## 사내 프레임워크 프로젝트` 절, 화면의 `프레임워크 프로젝트` 표시와 `하지 않음` 단계(재구성, 구조 검토).
+- 결과: `SBMIG-RESULT … scope=jdk-jakarta`, 보고서의 `## 사내 프레임워크 프로젝트` 절, 화면의 `프레임워크 프로젝트` 표시와 `하지 않음` 단계(재구성, 구조 검토).
 - 취약점 조치: 프레임워크와 그것이 가져오는 라이브러리는 사내 그룹 `framework` 몫이라 제안하지 않습니다.
 
 진단과 고칠 자리: `agent-doc/13-framework-projects.md`.
@@ -262,14 +265,14 @@ flowchart TD
   SC -->|"improved / build_ok"| KEEP["유지 · 성공 기록"]
   SC -->|"partial / no_change / regressed"| RB["되돌림 → 다음 칸"]
   RB --> K
-  SC -->|"LLM 요청 20회 · 거절"| BLK["BLOCKED (repeated_failure / needs_owner) → Handover"]
+  SC -->|"LLM 요청 20회 · 거절"| BLK["BLOCKED (repeated_failure / needs_owner) → 보고서 「진행하지 않은 항목」"]
 ```
 
 | pre-try | 언제 | 하는 일 |
 |---|---|---|
 | `sbmig-version` | 의존성 버전 누락 | 새 부모 체인이 관리 → 버전 없음; as-is 빌드의 버전; 방금 추가된 것만 저장소 최신 릴리스 |
 | `sbmig-resources` | 필터링되는 바이너리에서 리소스 플러그인 실패 | `nonFilteredFileExtensions` 에 확장자 추가 |
-| `sbmig-jakarta` | javax 라이브러리이고 저장소에서 jakarta 빌드를 확인 | 의존성 선언 교체(상위 메이저면 Handover ⚠) |
+| `sbmig-jakarta` | javax 라이브러리이고 저장소에서 jakarta 빌드를 확인 | 의존성 선언 교체(상위 메이저면 보고서 「운영자 확인」에 ⚠) |
 | `sbmig-bundled` | 잃은 패키지를 트리 안 동봉 jar 가 제공 | 좌표가 저장소에 있으면 의존성, 없으면 `lib/` + `system` 스코프 |
 
 - 한도: 케이스마다 실행당 LLM 요청 20회(`script.max_llm_tries_per_case`), 그중 보강 15회(`script.max_augments_per_case`), 직접 수정 4회(`script.max_edit_tries_per_case`), 거절 1회(`script.max_declines_per_case`). 세 번째 요청부터 더 센 모델.
@@ -309,10 +312,24 @@ flowchart LR
 - 모든 쓰기는 `<kb>/.lock` 아래(웹 파드·빌드 파드 여러 개가 같은 KB 를 씀). 테스트와 데모는 `out/` 아래 KB 만 씁니다.
 - 파일·키·필드 전체: `docs/kb-map/`(현업용 데이터 지도), `docs/v2/PLAN-v2.1.md` §3.3–§3.4.
 
-## 7. 보고서와 Handover
+## 7. 보고서
 
-`report.md` 절 순서: 머리 표(Result, `SBMIG-RESULT` 줄, Case, As-is, To-be, LLM, Flags, Blocked, Structure review) → **인수인계**(운영자 확인 필요 → Ant pom 합성 → 교체된 버전 → 주의 라이브러리 → 이제부터 할 일) → ADF sizing → Error list → Fixes by case → Structure review → Bundled jars → Blocked → javax API jars → Manual follow-ups → Flags → What we changed → LLM usage and cost → Notes → Outputs.
-문구 언어는 `report.language`(en | ko). Handover 는 as-is 담당팀이 할 일(⚠ 이어 적은 버전, 컴파일은 되는 EOL 라이브러리, 설정할 속성, Nexus 에 올릴 동봉 jar, 차단 항목)을 맨 앞에 모읍니다.
+`report.md` 는 마이그레이션을 요청한 담당자에게 주는 안내서입니다. 무엇을 어떻게 바꿨는지와 전환 후 확인할 것을 순서대로 적습니다(`report.language: ko`, 회사 설정).
+
+| 절 | 내용 |
+|---|---|
+| 머리 표 | 결과, `SBMIG-RESULT` 줄, 전환 후, 실행 ID, 시작 / 종료, 플래그 |
+| 전환 내용 | Java · Spring Boot · 부모 pom 의 변경 전과 후, 의존성 버전 표(⚠ = 새 부모 pom 에 버전이 없어 기존 버전을 유지한 의존성), 추가 · 제거한 의존성 |
+| 확인해 주세요 | 담당 팀이 확인할 일을 번호 목록 하나로. 지원이 끝난 라이브러리 안내(대체할 라이브러리, 설명, 할 일, 문서)가 먼저 나옵니다 |
+| 코드 수정 내역 | 자동 변환(OpenRewrite, 재구성)은 요약만, 그 뒤 빌드 오류를 해결하려고 고친 파일은 파일마다 설명 · 수정 이유 · 최종 diff 하나 |
+| 해결하지 못한 오류 | 최종 빌드에 남은 오류만(파일 · 줄 · 오류). 해결된 오류는 보고서에 싣지 않습니다 |
+| 진행하지 않은 항목 | 프로젝트 안에서 해결할 수 없어 손대지 않은 것 |
+| 그 밖의 절 | 해당할 때만: 운영자 확인(메이저 업그레이드), Ant pom 합성, ADF, 포함된 jar, javax API jar, 외부 설정 값, 취약점 조치 |
+| 참고 | 접어 둔 블록: 실행 정보, LLM 사용량과 비용, 산출물, 진단용 기록 |
+
+- 오류 하나하나의 기록(시도, diff, 로그)은 `errors.md` / `errors.jsonl` 에, 전체 변경은 `changes.patch` 에 있습니다.
+- 코드 수정 내역의 diff 는 자동 변환 직후 커밋과 최종 결과를 비교한 것입니다. 같은 파일을 여러 번 고쳐도 한 건으로 나옵니다.
+- `report.language: en` 은 개발 · 진단용 구성입니다(Handover → Error list → Fixes by case → Structure review → … → Notes → Outputs).
 
 ## 8. 재구성 — 회사 레이아웃
 
@@ -357,8 +374,8 @@ Main ↔ Worker 의 파일·종료 코드·멈춤·복구 약속: `docs/v2/JOB-R
 ## 10. 취약점 조치
 
 이관이 BUILD SUCCESS 로 끝나고 `remediation.after_migration` 이 켜져 있으면, 마지막 노드 `remediation` 이 같은 빌드 파드 안에서 별도 그래프를 부릅니다:
-IVAS 로 이관된 프로젝트를 검사하고, 승인된 취약 라이브러리의 **버전 글자만** 고쳐 다시 빌드·재검사합니다. 결과는 `<실행 폴더>/remediation/` 에 남고 이관의 판정·종료 코드는 바꾸지 않습니다(`SBMIG-RESULT … remediation=<상태>`).
-승인을 기다리면 파드가 끝나고, 재개는 새 빌드 파드로 이어 갑니다. 노드·상태·API·설정: `agent-doc/11-remediations.md`.
+IVAS 로 이관된 프로젝트를 검사하고, 취약 라이브러리의 **버전 글자만** 고쳐(간접 의존성은 `dependencyManagement` 항목 하나를 추가) 다시 빌드·재검사합니다. 결과는 `<실행 폴더>/remediation/` 에 남고 이관의 판정·종료 코드는 바꾸지 않습니다(`SBMIG-RESULT … remediation=<상태>`).
+기본 설정에서는 사람의 승인을 기다리지 않고 같은 파드에서 끝까지 진행합니다. 검토 없이 적용한 메이저 버전 변경과 추가한 항목은 조치 보고서의 「주의」 열과 「해야 할 일」에 표시합니다. 승인을 켠 설치에서만 승인 대기로 파드가 끝나고, 재개는 새 빌드 파드로 이어 갑니다. 노드·상태·API·설정: `agent-doc/11-remediations.md`.
 
 이미 이관된 프로젝트를 다시 점검할 때는 실행 방식 `remediation` 으로 조치만 돌립니다: `sbmig run <zip|폴더> --flow remediation`, 웹 `POST /api/runs?flow=remediation`, 화면의 **취약점 해결**. 이관 단계·LLM·KB 를 쓰지 않고, 올린 프로젝트를 그대로 빌드해 검사·조치·재검사합니다(파일은 같은 `<실행 폴더>/remediation/`). `remediation.after_migration` · `remediation.trusted_projects` 는 묻지 않습니다. 결과 줄은 `SBMIG-RESULT … flow=remediation … remediation=<상태>`, 종료 코드 0 = SUCCEEDED, 2 = 그 밖의 저장 상태, 3 = 시작 못 함(접수 거절, IVAS 값·Maven 준비가 없으면 `remediation:not-ready`). Job 모드에서도 같은 대기 줄·자리에서 도는 보통 실행입니다.
 

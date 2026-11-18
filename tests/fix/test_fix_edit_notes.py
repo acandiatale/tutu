@@ -175,3 +175,17 @@ def test_user_prompt_names_the_language(cfg, proj):  # noqa: F811
     cfg.report.language = "en"
     assert describe_language(cfg).startswith("the language of the project's code comments — Korean (한국어)")
     assert describe_language(None).startswith("the language of the project's code comments")
+
+
+def test_user_prompt_names_the_language_of_analysis_and_solution(cfg, proj):  # noqa: F811
+    sentence = ("Write <analysis> (원인) and <solution> (해결 방법) in that same language; identifiers, paths and "
+                "coordinates stay as they are.")
+    for lang, named in (("ko", "written in Korean (한국어).\n"),
+                        ("en", "written in the language of the project's code comments")):
+        cfg.report.language = lang
+        client = FakeLLMClient([DESCRIBED])
+        LLMFixer(cfg, client).propose_script(proj, cluster(), ctx())
+        user = client.calls[0]["messages"][1].content
+        assert named in user and sentence in user, lang
+        # the sentence follows the line that names the language
+        assert user.index(named) < user.index(sentence) < user.index("Answer now using only the output format")

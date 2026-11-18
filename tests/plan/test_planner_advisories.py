@@ -17,6 +17,7 @@ FOX = "org.openrewrite.java.springdoc.SpringFoxToSpringDoc"
 BOOT4 = "org.openrewrite.java.spring.boot4.UpgradeSpringBoot_4_0"
 PROPS41 = "org.openrewrite.java.spring.boot4.SpringBootProperties_4_1"
 GUIDE = "guide (LLM hints + Handover)"
+HYSTRIX = "com.company.migrate.HystrixToResilience4j"
 
 
 def _guide(f) -> bool:
@@ -48,9 +49,11 @@ def test_advisories_are_guide_only(tmp_path: Path, cfg) -> None:
     assert {"springfox", "hystrix"} <= {f.advisory_id for f in findings}
     before = [f.model_copy(deep=True) for f in findings]
     plan = build_plan(profile, cfg, None, advisories=findings)
-    assert _recipes(plan) == [J21, JAKARTA, FW7]                         # no advisory recipe in the transform (FW7 = a set, v2.1o)
+    # no advisory recipe in the transform (FW7 = a set, v2.1o); the Hystrix set comes from the analyzer's library
+    # `hystrix` (recipe set hystrix_resilience4j, v2.1z-at), not from the advisory
+    assert _recipes(plan) == [J21, JAKARTA, HYSTRIX, FW7]
     step = next(s for s in plan.steps if s.id == "transform.rewrite")
-    assert step.title == "OpenRewrite in one run: Java 21 + jakarta + Spring Framework 7"
+    assert step.title == "OpenRewrite in one run: Java 21 + jakarta + Hystrix → Resilience4j + Spring Framework 7"
     assert f"advisory: springfox → {GUIDE}" in plan.notes and f"advisory: hystrix → {GUIDE}" in plan.notes
     assert findings == before                                           # the planner never mutates a finding
     assert all(_guide(f) for f in findings)

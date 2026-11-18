@@ -81,7 +81,7 @@ def test_report_md_follows_report_language(cfg, ws):
     cfg.report.language = "ko"
     report = make_orch(cfg, ws, build=FakeBuildRunner(ws, fn=files_build)).run()
     md = (ws.run_dir / "report.md").read_text(encoding="utf-8")
-    assert report.success and "빌드 성공" in md and "## 에러 목록" in md and "## Phases" not in md
+    assert report.success and "빌드 성공" in md and "## 확인해 주세요" in md and "## Phases" not in md
     assert (ws.run_dir / "report.json").exists()
 
 

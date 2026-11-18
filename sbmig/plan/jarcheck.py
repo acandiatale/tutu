@@ -328,6 +328,11 @@ def check_jars(catalog: RecipeCatalog, cfg: Config, *, work_dir: Path | None = N
 
     for e in entries:
         row = JarCheckRow(id=e.id, origin=e.origin, artifact=e.artifact, provided_by=e.provided_by)
+        if getattr(e, "file", None):
+            # 저장소의 선언형 레시피 파일이 정의하는 id라 jar에는 없다. 파일 확인은 오프라인 check가 한다
+            row.found_in = str(e.file)
+            report.rows.append(row)
+            continue
         core = not e.artifact or e.artifact.startswith(CORE_GROUP)
         if core:
             owner = None

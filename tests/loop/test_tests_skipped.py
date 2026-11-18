@@ -149,7 +149,10 @@ def test_graph_and_inline_same_report_on_tests_skipped(cfg, tmp_path):
     kw = {"build": lambda w: FakeBuildRunner(w, fn=runtime_fail_build())}
     _, _, rg = run_engine(cfg, tmp_path, "graph", **kw)
     _, _, ri = run_engine(cfg, tmp_path, "inline", **kw)
-    assert "tests-skipped" in rg.flags and comparable(rg) == comparable(ri)
+    # code_changes_base is a time-stamped git sha, different in each workspace
+    same = [{k: v for k, v in comparable(r).items() if k != "code_changes_base"} for r in (rg, ri)]
+    assert "tests-skipped" in rg.flags and same[0] == same[1]
+    assert bool(rg.code_changes_base) == bool(ri.code_changes_base)
     assert run_exit_code(rg) == run_exit_code(ri)
 
 

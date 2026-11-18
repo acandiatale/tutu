@@ -24,7 +24,7 @@
   "expect": {
     "success": true,
     "exit_code": 0,
-    "max_llm_calls": 2,
+    "max_llm_calls": 1,
     "blocked": [],
     "unresolved_max": 0,
     "structure_review": {
@@ -34,26 +34,15 @@
       "script_status": "none",
       "llm_calls_max": 1,
       "issues_contain": [
-        "regex:warning module/comp-jar/pom.xml: .*hystrix.*"
+        "regex:warning module/comp-jar/pom.xml: .*spring-boot-starter-aspectj.*"
       ]
     },
     "scripts": {
       "attempts": {
-        "new": 1,
+        "new": 0,
         "augment": 0,
         "reuse": 0
-      },
-      "cases": [
-        {
-          "l2": "compile|cannot_find_symbol|EnableCircuitBreaker",
-          "modes": [
-            "new"
-          ],
-          "outcomes": [
-            "build_ok"
-          ]
-        }
-      ]
+      }
     },
     "kb": {
       "dir": "out/e2e/kb-boot2-cloud-legacy"
@@ -70,7 +59,7 @@
       {
         "id": "hystrix",
         "policy": "guide",
-        "outcome": "still-present"
+        "outcome": "replaced"
       },
       {
         "id": "spring-cloud-bom",
@@ -86,10 +75,12 @@
       ],
       "removed_contains": [
         "io.springfox:springfox-boot-starter",
-        "org.springframework.cloud:spring-cloud-starter-sleuth"
+        "org.springframework.cloud:spring-cloud-starter-sleuth",
+        "org.springframework.cloud:spring-cloud-starter-netflix-hystrix"
       ],
       "added_contains": [
-        "org.springdoc:springdoc-openapi-starter-webmvc-ui"
+        "org.springdoc:springdoc-openapi-starter-webmvc-ui",
+        "org.springframework.cloud:spring-cloud-starter-circuitbreaker-resilience4j"
       ]
     },
     "post_checks": [
@@ -98,7 +89,10 @@
           "path": "**/pom.xml",
           "artifacts": [
             "io.springfox:springfox-boot-starter",
-            "org.springframework.cloud:spring-cloud-starter-sleuth"
+            "org.springframework.cloud:spring-cloud-starter-sleuth",
+            "org.springframework.cloud:spring-cloud-starter-netflix-hystrix",
+            "com.netflix.hystrix:hystrix-javanica",
+            "com.netflix.hystrix:hystrix-core"
           ]
         }
       },
@@ -108,21 +102,37 @@
           "artifacts": [
             "org.springdoc:springdoc-openapi-starter-webmvc-ui",
             "net.sf.ehcache:ehcache",
-            "org.springframework.cloud:spring-cloud-starter-netflix-hystrix"
+            "org.springframework.cloud:spring-cloud-starter-circuitbreaker-resilience4j"
+          ]
+        }
+      },
+      {
+        "pom_dependency_unversioned": {
+          "path": "module/comp-jar/pom.xml",
+          "artifacts": [
+            "org.springframework.cloud:spring-cloud-starter-circuitbreaker-resilience4j"
           ]
         }
       },
       {
         "file_contains": {
           "path": "**/com/example/orders/OrderApiApplication.java",
-          "contains": "MIGRATION-TODO: @EnableCircuitBreaker removed",
-          "not_contains": "import org.springframework.cloud.client.circuitbreaker.EnableCircuitBreaker;"
+          "contains": "@SpringBootApplication",
+          "not_contains": "EnableCircuitBreaker"
         }
       },
       {
         "file_contains": {
           "path": "**/com/example/orders/service/InventoryClient.java",
-          "contains": "@HystrixCommand(fallbackMethod = \"stockFallback\")"
+          "contains": "@CircuitBreaker(name = \"default\", fallbackMethod = \"stockFallback\")",
+          "not_contains": "hystrix"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "**/com/example/orders/service/InventoryClient.java",
+          "contains": "@CircuitBreaker(name = \"inventoryReserve\"",
+          "not_contains": "HystrixProperty"
         }
       }
     ]

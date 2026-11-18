@@ -107,7 +107,7 @@ def test_result_line_without_a_report():
 def test_flag_help_for_infra_flags():
     assert "infrastructure" in flag_help("infra:llm") and "infrastructure" in flag_help("infra:repository")
     assert "JDK 21" in flag_help("jdk-not-21") and "llm-probe" in flag_help("llm-config-error")
-    assert "인프라" in flag_help("infra:disk", "ko")
+    assert "실행 환경" in flag_help("infra:disk", "ko")
 
 
 def test_no_fix_token_and_no_fix_mode_parameter():

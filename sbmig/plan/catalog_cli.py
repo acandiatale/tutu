@@ -215,7 +215,7 @@ def sets_cmd(
 ) -> None:
     """설정 레시피 세트와 케이스마다 계획기가 한 번의 변환에서 고를 레시피를 보여 준다.
     조건부 레시피(EE javax import, javax.servlet, junit4, spring-security,
-    spring-batch, hibernate가 있을 때)는 따로 보여 준다.
+    spring-batch, hibernate, hystrix가 있을 때)는 따로 보여 준다.
 
     The config recipe sets and, per case, the one transform run the v2 planner resolves from them."""
     from sbmig.core.models import CaseType
@@ -225,7 +225,8 @@ def sets_cmd(
 
     cfg = _load(config)
     lo = ({}, set())
-    hi = ({"javax.servlet": 1}, {"junit4", "spring-security", "spring-batch", "hibernate", "javax-annotation"})
+    hi = ({"javax.servlet": 1}, {"junit4", "spring-security", "spring-batch", "hibernate", "hystrix",
+                                    "javax-annotation"})
     resolved: dict[str, dict[str, list[str]]] = {}
     for case in (CaseType.PURE_JAVA, CaseType.SERVLET_TOMCAT, CaseType.SPRING_LEGACY, CaseType.SPRING_BOOT):
         base = [r.id for r in transform_recipes(_Facts(case, lo[1], lo[0]), cfg, [])]
@@ -242,7 +243,7 @@ def sets_cmd(
         typer.echo(f"  {case}: {', '.join(d['transform']) or '-'}")
         if d["transform_conditional"]:
             typer.echo(f"    + when detected (EE javax / javax.servlet imports, libraries junit4 / spring-security / "
-                       f"spring-batch / hibernate): "
+                       f"spring-batch / hibernate / hystrix): "
                        f"{', '.join(d['transform_conditional'])}")
     typer.echo("\nmsa: one run per library root / service with its own case (library roots never get the Boot set); "
                "top-aggregator: one run at the root with the union.")

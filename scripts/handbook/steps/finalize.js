@@ -1,45 +1,39 @@
-// 마지막 빌드 뒤: 성공 판정, 오류 목록, 지식베이스 기록, 보고서, result.zip, 결과 한 줄, 종료 코드 0 / 2 / 3.
+// ⑫ 마무리: 취약점 조치 뒤(그래프의 finalize·remediation 노드가 끝나면) Orchestrator._finalize 가 판정 → 오류 기록(errors.md) →
+// 지식베이스 기록 → 보고서(report.md, 요청자 안내서, 취약점 조치 요약 포함) → changes.patch → result.zip 순서로 만든다.
+// 확인한 코드: sbmig/loop/orchestrator.py (_run_guard, build_succeeded, _finalize, _finalize_errors), sbmig/report/guide_ko.py
+// (head_lines, purpose_lines), sbmig/web/static/index.html (보고서 받기 / 변환된 프로젝트 받기).
 module.exports = {
-  title: "⑪ 마무리: 결과를 판정하고 보고서와 지식을 남긴다",
-  notes: "Orchestrator._finalize 가 차례로 한다: 성공 = 계획된 최종 빌드가 모두 돌고 모두 통과, restructure-failed · hollow-reactor · aborted 플래그 없음. " +
-    "그다음 차단 항목 정리, 열린 오류를 unresolved 로 바꿔 실행 폴더에 errors.jsonl / errors.md, KB 에 kb.record_run(케이스별 seen · resolved · projects 갱신, cases.md 다시 씀), " +
-    "report.md / report.json(인수인계 → Error list → Fixes by case → Structure review …), 마지막으로 changes.patch 와 result.zip(느린 것을 뒤에 두어 도중에 죽어도 보고서는 남는다). " +
-    "스크립트 fix_v<N>.py 와 성공·실패 횟수(case.json)는 수정 루프가 시도마다 이미 기록했다. 종료 코드는 report_exit_code: 중단 플래그면 3, 성공이고 차단 없음이면 0, 그 밖은 2. " +
-    "멈춤(stop.request)이면 최종 빌드 없이 여기로 오고, 내부 오류로 중단된 실행은 보고서 전에 최선을 다한 최종 빌드를 한 번 더 시도한다.",
+  title: "⑫ 마무리: 결과를 정리해 보고서와 파일로 드립니다",
+  notes: "마지막 단계에서는 결과를 판정하고, 보고서와 결과 파일을 만들어 드립니다. 취약점 조치를 이어서 했다면 그것까지 끝난 뒤에 이 단계가 진행되고, 이관 보고서에 조치 결과가 짧게 들어갑니다. 그래서 보고서와 결과 파일은 취약점 조치까지 끝나야 내려받을 수 있습니다.\n\n" +
+    "결과는 세 가지 중 하나입니다. 계획한 최종 빌드가 모두 통과하면 빌드 성공입니다. 서비스가 여러 개인 프로젝트는 모두 통과해야 하고, 구조 정리가 실패했거나 소스가 실제로 빌드 대상에 들어가지 않았다면 빌드가 통과해도 성공으로 보지 않습니다. 빌드가 남은 오류로 끝나면 빌드 실패, 처음 단계에서 받지 않았거나 멈춤을 눌렀거나 환경 문제로 끝까지 가지 못했으면 실행 중단입니다. 중단된 경우에도 최종 빌드를 해 볼 수 있으면 한 번 해 보고, 남은 오류를 보고서에 적습니다.\n\n" +
+    "그다음 이번 실행에서 나온 모든 오류와 처리 과정을 errors.md에 정리합니다. 끝까지 남은 오류는 해결하지 못한 것으로 닫습니다. 같은 내용을 지식베이스에도 더해서, 다음 프로젝트가 같은 오류를 만나면 이번에 고친 방법을 바로 쓰게 합니다.\n\n" +
+    "보고서 report.md는 요청하신 분께 드리는 안내서입니다. 읽는 법은 뒤에서 따로 설명드립니다. 보고서를 먼저 쓰고, 시간이 걸리는 changes.patch와 result.zip은 맨 마지막에 만듭니다. 결과를 묶다가 문제가 생겨도 보고서는 남게 하려는 순서입니다.\n\n" +
+    "화면에서는 '보고서 받기'로 report.md를, '변환된 프로젝트 받기'로 result.zip을 받습니다. result.zip은 이관만 한 프로젝트입니다. 취약점 조치까지 반영된 프로젝트는 그 아래 취약점 조치 영역의 결과 ZIP으로 받으셔야 합니다.\n\n" +
+    "보고서 맨 위 표에는 SBMIG-RESULT로 시작하는 결과 한 줄이 있습니다. 빌드 결과, 남은 오류 수, 취약점 조치 결과가 이 한 줄에 들어 있으니, 문의하실 때 이 줄을 함께 보내 주시면 됩니다.",
   lines: [
-    "성공은 모든 최종 빌드가 통과하고 구조 정리가 성공했으며 중단이 없을 때입니다",
-    "담당팀은 보고서 맨 앞의 인수인계만 읽어도 할 일을 알 수 있습니다",
-    "고친 방법은 지식베이스에 남아 다음 프로젝트가 LLM 없이 다시 씁니다",
+    "결과는 빌드 성공, 빌드 실패, 실행 중단 가운데 하나로 보고서 맨 위에 나옵니다. 취약점 조치를 했다면 그 결과도 보고서에 들어갑니다.",
+    "모든 오류와 처리 과정은 errors.md에, 고친 방법은 지식베이스에 남겨 다음 프로젝트가 다시 씁니다.",
+    "화면에서 보고서(report.md)와 변환된 프로젝트(result.zip)를 받습니다. 취약점 조치가 반영된 프로젝트는 취약점 조치 영역에서 받습니다.",
   ],
   draw(s, H) {
-    const w = 1.5, gx = 0.375, col = i => H.AREA.x + i * (w + gx);
-    const r1 = 1.42, r2 = 2.45, r3 = 3.47, h = 0.7;
-    const A = H.node(s, col(0), r1, w, h, "최종 빌드 결과", "⑩ 의 mvn clean package\n결과를 받습니다", "build");
-    const B = H.node(s, col(1), r1, w, h, "성공 판정", "모든 빌드 통과,\n구조 정리 성공, 중단 없음", "auto");
-    const C = H.node(s, col(2), r1, w, h, "오류 목록 정리", "못 고친 오류는 미해결로\n목록 파일에 적습니다", "auto");
-    const D = H.node(s, col(3), r1, w, h, "지식베이스 기록", "케이스마다 본 횟수,\n해결 수, 프로젝트 갱신", "auto");
-    const E = H.node(s, col(4), r1, w, h, "보고서 쓰기", "인수인계를 맨 앞에,\n구조 검토와 수정 내역", "auto");
-    const F = H.node(s, col(4), r2, w, h, "결과 묶기", "바뀐 프로젝트를\nresult.zip 으로", "auto");
-    const G = H.node(s, col(3), r2, w, h, "결과 한 줄", "SBMIG-RESULT 줄에\n빌드·오류·종료 코드", "auto");
-    const Q = H.node(s, col(2), r2, w, h, "종료 코드는?", "보고서 내용으로 정합니다", "ask");
-    const O3 = H.node(s, col(1), r3, w, 0.66, "3 중단", "멈춤·거부·준비 실패.\n이유는 보고서에", "loop");
-    const O2 = H.node(s, col(2), r3, w, 0.66, "2 확인 필요", "빌드 실패나 차단이 남음.\n인수인계부터 봅니다", "loop");
-    const O0 = H.node(s, col(3), r3, w, 0.66, "0 성공", "빌드 통과, 차단 없음", "done");
-    const DL = H.node(s, col(4), r3, w, 0.66, "화면에서 받기", "report.md 와\nresult.zip 두 버튼", "auto");
-    H.para(s, "스크립트와 그 성공·실패 기록은 수정 루프에서 시도마다 이미 쌓였습니다. 여기서는 이번 실행의 오류 목록을 지식베이스에 더합니다.",
-      col(0), r2 + 0.05, 2 * w + gx - 0.1, 0.62, { size: 9, italic: true, color: "4A4F4A" });
+    const w = 1.95, gx = 0.4, h = 0.68, col = i => H.AREA.x + i * (w + gx);
+    const r1 = 1.45, r2 = 2.43, r3 = 3.42;
+    const A = H.node(s, col(0), r1, w, h, "최종 빌드와 취약점 조치", "둘 다 끝난 뒤에 시작합니다", "build");
+    const B = H.node(s, col(1), r1, w, h, "결과 판정", "빌드 성공 · 빌드 실패 · 실행 중단", "ask");
+    const C = H.node(s, col(2), r1, w, h, "오류 기록 정리", "모든 오류와 처리 과정을 errors.md에", "auto");
+    const D = H.node(s, col(3), r1, w, h, "지식베이스에 저장", "고친 방법을 다음 프로젝트가 다시 씁니다", "auto");
+    const E = H.node(s, col(3), r2, w, h, "보고서 쓰기", "요청하신 분께 드리는 안내서 report.md", "done");
+    const F = H.node(s, col(2), r2, w, h, "결과 파일 묶기", "변환된 프로젝트 result.zip, 전체 변경 changes.patch", "auto");
+    const G = H.node(s, col(1), r2, w, h, "화면에서 받기", "보고서 받기, 변환된 프로젝트 받기", "auto");
     const hz = (p, q) => H.seg(s, p.r, p.cy, q.l, q.cy, { head: true });
     const back = (p, q) => H.seg(s, p.l, p.cy, q.r, q.cy, { head: true });
-    hz(A, B); hz(B, C); hz(C, D); hz(D, E);
-    H.seg(s, E.cx, E.b, F.cx, F.t, { head: true });
-    back(F, G); back(G, Q);
-    H.seg(s, F.cx, F.b, DL.cx, DL.t, { head: true });
-    // 세 갈래: 왼쪽 3, 가운데 2, 오른쪽 0
-    const my = (Q.b + O2.t) / 2;
-    H.route(s, [[Q.cx - 0.45, Q.b], [Q.cx - 0.45, my], [O3.cx, my], [O3.cx, O3.t]], { head: true });
-    H.label(s, (Q.cx - 0.45 + O3.cx) / 2, my, "중단", { w: 0.38 });
-    H.seg(s, Q.cx, Q.b, O2.cx, O2.t, { head: true }); H.label(s, Q.cx, my, "그 밖", { w: 0.42 });
-    H.route(s, [[Q.cx + 0.45, Q.b], [Q.cx + 0.45, my], [O0.cx, my], [O0.cx, O0.t]], { head: true });
-    H.label(s, (Q.cx + 0.45 + O0.cx) / 2, my, "성공, 차단 없음", { w: 1.0 });
+    hz(A, B); hz(B, C); hz(C, D);
+    H.seg(s, D.cx, D.b, E.cx, E.t, { head: true });
+    back(E, F); back(F, G);
+    H.para(s, "보고서를 열면 맨 위 결과에 따라 먼저 볼 곳이 다릅니다", H.AREA.x, r3 - 0.27, 9, 0.24, { size: 9.5, italic: true, color: "4A4F4A" });
+    H.node(s, col(0), r3, w, h, "빌드 성공", "「확인해 주세요」부터 봅니다", "done");
+    H.node(s, col(1), r3, w, h, "빌드 실패", "「해결하지 못한 오류」와 「진행하지 않은 항목」부터", "loop");
+    H.node(s, col(2), r3, w, h, "실행 중단", "보고서 첫머리에 멈춘 이유가 있습니다", "loop");
+    H.node(s, col(3), r3, w, h, "문의할 때", "보고서 맨 위의 결과 한 줄을 함께 보내 주세요", "ask");
   },
 };

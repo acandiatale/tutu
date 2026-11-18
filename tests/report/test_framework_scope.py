@@ -92,17 +92,19 @@ def test_reduced_block_korean():
     md = render_markdown(r, "ko")
     lines = framework_lines(r, "ko")
     assert lines[0] == "## 사내 프레임워크 프로젝트"
-    assert "| 범위 | JDK 21과 jakarta만 적용(사내 프레임워크 프로젝트) |" in md
+    # v2.1z-as: the scope row moved from the head table to 참고 / 실행 정보; the framework block stays on top
+    assert "- 범위: JDK 21과 jakarta만 적용(사내 프레임워크 프로젝트)" in md and "| 범위 |" not in md
+    assert "\n".join(lines) in md and md.index("## 사내 프레임워크 프로젝트") < md.index("## 참고")
     assert f"- `{FW}` 1.2.0: `pom.xml`에 직접 선언" in lines
     assert (f"- `{FW}` 1.2.0: 부모 pom `com.example.fw:example-fw-parent:1.2.0`에서 상속(모듈 `com.example:shop-web`)"
             in lines)
-    assert "- `example-fw-core-1.2.0.jar`: 프로젝트 안에 jar 파일로 포함(`src/main/webapp/WEB-INF/lib/example-fw-core-1.2.0.jar`)" in lines
-    assert any(x.startswith(f"- `{FW}` 1.2.0: 다른 라이브러리를 통해 들어옴. 경로는 `com.example.lib:shared-lib:3.0 > ")
+    assert "- `example-fw-core-1.2.0.jar`: 프로젝트 안의 jar 파일(`src/main/webapp/WEB-INF/lib/example-fw-core-1.2.0.jar`)" in lines
+    assert any(x.startswith(f"- `{FW}` 1.2.0: 다른 라이브러리의 의존성(경로 `com.example.lib:shared-lib:3.0 > ")
                for x in lines)
     # the remediation did not run: not claimed
     assert "이번 실행에서 한 일: JDK 21과 jakarta 적용, 빌드 오류 수정" in lines
-    assert ("하지 않은 일: 재구성, 구조 검토. 프레임워크 프로젝트는 이 두 단계를 실행하지 않습니다. 부모 pom과 프레임워크 버전은 "
-            "그대로 둡니다.") in lines
+    assert ("하지 않은 일: 구조 재구성, 구조 점검. 사내 프레임워크 프로젝트는 이 두 단계를 실행하지 않습니다. 부모 pom과 "
+            "프레임워크 버전은 그대로 두었습니다.") in lines
     assert "확인하지 못한 곳: transitive: dependency:tree failed" in lines
     text = "\n".join(lines)
     assert "—" not in text and "→" not in text
@@ -118,11 +120,11 @@ def test_parent_without_coordinates():
 @pytest.mark.parametrize("reason,en,ko", [
     ("framework.scope=full → full migration",
      "The full migration ran because the configuration says so (framework.scope: full).",
-     "설정(framework.scope: full)에 따라 전체 이관을 진행했습니다."),
+     "설정(framework.scope: full)에 따라 전체 마이그레이션을 진행했습니다."),
     (f"framework artifact {FW} found only as a transitive dependency and framework.transitive=note → full migration",
      "The artifact arrives only through another library: the full migration ran because the configuration says so "
      "(framework.transitive: note).",
-     "다른 라이브러리를 통해서만 들어오는 아티팩트라서 설정(framework.transitive: note)에 따라 전체 이관을 진행했습니다."),
+     "다른 라이브러리의 의존성으로만 포함된 아티팩트여서 설정(framework.transitive: note)에 따라 전체 마이그레이션을 진행했습니다."),
 ])
 def test_found_but_full(reason, en, ko):
     r = _report(_use(TRANSITIVE, scope="full", reason=reason), scope="full")
@@ -198,9 +200,9 @@ def _suggestions():
                        f"API `{api}`). {owner}"),
         # (c) a javax API comes through the framework artifact
         (fos(fw, api, ["com.example:shop-web:1.0", fw, api]),
-         f"javax 기준 API가 사내 프레임워크 아티팩트를 통해 들어옵니다(`{api}`, 프레임워크 `{fw}`, 경로 "
+         f"javax 기준 API가 사내 프레임워크 아티팩트의 의존성으로 포함되어 있습니다(`{api}`, 프레임워크 `{fw}`, 경로 "
          f"com.example:shop-web:1.0 > {fw} > {api}). {owner}"),
-        (fos(fw, None, [fw]), f"javax 기준 라이브러리가 사내 프레임워크 아티팩트를 통해 들어옵니다(프레임워크 `{fw}`, 경로 {fw}). "
+        (fos(fw, None, [fw]), f"javax 기준 라이브러리가 사내 프레임워크 아티팩트의 의존성으로 포함되어 있습니다(프레임워크 `{fw}`, 경로 {fw}). "
                               f"{owner}"),
     ]
 
@@ -275,10 +277,10 @@ def test_superseded_wording_is_neutral_in_a_reduced_run():
     r.profile.bundled_jars = [jar]
     ko = "\n".join(bundled_jars_lines(r, "ko"))
     en = "\n".join(bundled_jars_lines(r, "en"))
-    assert "대체됨 (부모 체인이 관리)" in ko and "목표" not in ko
+    assert "추가 안 함 (부모 pom에서 지정)" in ko and "새 부모 pom" not in ko
     assert "superseded (the parent chain manages it)" in en and "target" not in en
     r.plan.scope = "full"
-    assert "대체됨 (목표 체인이 관리)" in "\n".join(bundled_jars_lines(r, "ko"))
+    assert "추가 안 함 (새 부모 pom에서 지정)" in "\n".join(bundled_jars_lines(r, "ko"))
 
 
 # ---------------------------------------------------------------------------------------------- To-be in a reduced run
@@ -330,7 +332,7 @@ def test_reduced_run_without_boot_claims_no_boot(tmp_path, cfg):
     assert r.handover.spring_boot_after is None and r.handover.spring_boot_before is None
     for lang in ("en", "ko"):
         md = render_markdown(r, lang)
-        to_be = next(x for x in md.splitlines() if x.startswith(("| To-be |", "| 전환 후 |")))
+        to_be = next(x for x in md.splitlines() if x.startswith(("| To-be |", "| 전환 후 |"))).lower()
         assert "spring boot" not in to_be and "java 21" in to_be, to_be
         assert cfg.target.spring_boot_version not in md and "- spring boot:" not in md
     assert '"spring_boot_after": null' in r.model_dump_json() or '"spring_boot_after":null' in r.model_dump_json()
@@ -369,7 +371,7 @@ def test_build_error_fixes_only_with_attempts():
 # ---------------------------------------------------------------------------------------------- reduced-run report texts
 KO_SAMPLES = [
     ("scope restored: provided (as-is): jakarta.servlet:jakarta.servlet-api (was compile)",
-     "scope를 as-is와 같은 provided로 되돌렸습니다(jakarta.servlet:jakarta.servlet-api, 레시피 뒤에는 compile)"),
+     "scope를 변경 전과 같은 provided로 되돌렸습니다(jakarta.servlet:jakarta.servlet-api, 레시피 뒤에는 compile)"),
     ("source encoding written: project.build.sourceEncoding=MS949",
      "소스 인코딩을 pom에 기록했습니다(project.build.sourceEncoding=MS949)"),
     ("source encoding written: pom.xml: project.build.sourceEncoding=MS949",
@@ -408,7 +410,7 @@ def test_transform_heading_and_order():
     r.error_entries = [build, *r.error_entries]
     assert list(seen_groups(r.error_entries)) == ["transform", "build"]
     ko = "\n".join(error_list_lines(r, "ko"))
-    assert "### transform — sbmig의 pom 정정, 다음 빌드에서 검증 (2)" in ko
+    assert "### transform — sbmig가 고친 pom, 다음 빌드로 확인 (2)" in ko
     assert KO_SAMPLES[0][1] in ko and "cannot find symbol" in ko
 
 
@@ -416,7 +418,10 @@ def test_header_row_counts_pom_corrections_apart():
     r = _clean_reduced()
     en, ko = render_markdown(r, "en"), render_markdown(r, "ko")
     assert '| **Error list** | 2 pom correction(s) by sbmig (resolved 2); no build error (see "Error list") |' in en
-    assert '| **에러 목록** | 빌드 오류 없음. sbmig가 고친 pom 2건(resolved 2) ("에러 목록" 참조) |' in ko
+    # v2.1z-as: the guide has no error-list row; the pom corrections are listed under 자동 변환, no open error
+    assert "에러 목록" not in ko and "## 해결하지 못한 오류" not in ko
+    auto = ko.split("### 자동 변환", 1)[1].split("\n## ", 1)[0]
+    assert "- sbmig가 변환 단계에서 직접 고친 pom:" in auto and f"  - `pom.xml`: {KO_SAMPLES[1][1]} (빌드로 확인)" in auto
     r.error_entries.append(_pom_fix("cannot find symbol", status="unresolved", seen="build").model_copy(
         update={"case_id": "c1", "l2": "x", "raw": "x"}))
     en = render_markdown(r, "en")
@@ -433,7 +438,7 @@ def test_handover_lists_the_pom_corrections():
     assert "### pom corrections by sbmig" in en
     assert f"- `pom.xml`: {KO_SAMPLES[0][0]} (verified)" in en
     ko = "\n".join(handover_lines(r, "ko"))
-    assert "### sbmig가 고친 pom" in ko and f"- `pom.xml`: {KO_SAMPLES[1][1]} (빌드로 확인함)" in ko
+    assert "### sbmig가 고친 pom" in ko and f"- `pom.xml`: {KO_SAMPLES[1][1]} (빌드로 확인)" in ko
     r.plan.scope = "full"
     assert "pom corrections by sbmig" not in "\n".join(handover_lines(r))
 
@@ -456,7 +461,7 @@ def test_reason_is_recipe_without_fix_attempts(tmp_path, cfg):
     row = next(c for c in r.handover.changes if c.key.endswith("maven-war-plugin"))
     assert row.reason == "recipe"
     ko = render_markdown(r, "ko")
-    assert "| 플러그인 `org.apache.maven.plugins:maven-war-plugin` | 3.4.0 | 3.5.1 | 레시피 |" in ko
+    assert "| 플러그인 `org.apache.maven.plugins:maven-war-plugin` | 3.4.0 | 3.5.1 | OpenRewrite 레시피 |" in ko
     att = FixAttempt(id="a1", phase=Phase.VERIFY, iteration=1, cluster_id="case:c1", outcome="build_ok",
                      decision=TriageDecision(cluster_id="case:c1", kind=DecisionKind.SCRIPT))
     r.phases = [PhaseResult(phase=Phase.VERIFY, attempts=[att])]

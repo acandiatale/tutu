@@ -1,7 +1,7 @@
 # Library advisories
 
 Some libraries are end of life or no longer version-managed by the company parent or the Boot 4 BOM, yet they
-**still compile** (springfox, Hystrix, Sleuth, old Spring Cloud trains, iBATIS 2, …). Without advisories such a run
+**still compile** (springfox, Sleuth, old Spring Cloud trains, iBATIS 2, …). Without advisories such a run
 looks green. Advisories make them visible.
 
 Advisories are **guide-only**: they never add a recipe, never fail a run and never change the exit code. There is no
@@ -35,11 +35,22 @@ advisories:
     applies_when_version_below: null   # e.g. "2025.1"; unparsable versions (Hoxton.SR12) count as below
     resolved_min_version: null         # still present but at least this version → outcome "replaced"
     notes: knowledge/notes/spring-cloud.md
+    title_ko: "Springfox(Swagger 2)는 개발이 중단되었습니다"   # Korean texts of the report (default "")
+    summary_ko: 무엇이 문제이고 무엇으로 바꾸는지, 두세 문장
+    followup_ko: 담당 팀이 할 일과 확인할 것을 문장으로
+    replacement_ko: ""                 # only when `replacement` is free text, not a plain coordinate
 ```
 
 The model is `LibraryAdvisory` in `sbmig/core/models.py`; a `policy` / `recipes` key left in a file is ignored. An
 entry needs `library` or `artifacts` (artifact globs such as `com.company:legacy-*` work without an analyzer rule).
 A broken entry is skipped and reported by `sbmig advisories check`; a missing file means no findings.
+
+`title_ko`, `summary_ko`, `followup_ko` and `replacement_ko` are the texts the Korean `report.md` shows; each
+finding carries them from its entry (`AdvisoryFinding`, also for entries from `advisories.extra_files`). Every shipped
+entry has the first three, and `replacement_ko` where `replacement` is free text. An entry without them loads with
+empty strings and the report shows the English text. They are written for the owning team in polite workplace Korean
+(합니다체, "~해 주세요" for actions); coordinates, annotations, property keys, class / method names, URLs and versions
+stay exactly as in the English text. The script-prompt hints keep using the English fields.
 
 ## From advisory to finding, hint and Handover line
 
@@ -67,7 +78,10 @@ A broken entry is skipped and reported by `sbmig advisories check`; a missing fi
 6. **Handover.** `followups_for(findings)` gives one sentence per finding, not-replaced first; the report's Handover
    section lists them first in "from here on", then the files the LLM rewrote for each library (review them), the
    versions carried over from the as-is build (`advisories.report_carried_over`), and the other follow-ups, capped at
-   `advisories.max_from_here` lines.
+   `advisories.max_from_here` lines. In the Korean report (`report.language: ko`, the requester's guide) each finding
+   is one item at the top of 「확인해 주세요」, built from the finding itself: the Korean title sentence, what the run
+   did, then 대체할 라이브러리 / 설명 / 할 일 / 수정한 파일 / 문서 (`title_ko`, `summary_ko`, `followup_ko`,
+   `replacement_ko`; the English texts when a Korean one is empty).
 
 ## `knowledge/notes` and `replacement: true`
 
@@ -118,8 +132,14 @@ Use extra files for in-house EOL libraries or to rewrite a follow-up sentence fo
 - **unmanaged** — commons-chain, jasypt-spring-boot, atomikos.
 
 Several of these libraries are migrated by recipes the plan already runs (springfox, Sleuth, the Spring Cloud train,
-HttpClient 5, Jackson 1 → 2 inside the Boot umbrella / Framework 7 — see [RECIPES.md](RECIPES.md)); the advisory then
-ends `replaced` and the Handover says to review the result. Libraries with a `## fix-loop:` section (ibatis2,
+HttpClient 5, Jackson 1 → 2 inside the Boot umbrella / Framework 7, Hystrix by the recipe set `hystrix_resilience4j` —
+see [RECIPES.md](RECIPES.md)); the advisory then ends `replaced` and the Handover says to review the result. For
+Hystrix the recipe set is planned because the analyzer found the library, not because of the advisory: the
+annotations and starters are converted by `com.company.migrate.HystrixToResilience4j`, a `HystrixCommand` subclass is
+ported by the fix loop (`## fix-loop: hystrix`), and `hystrix` ends `replaced` once no Hystrix artifact or import is
+left. Its follow-up names the runtime review: instance names, `hystrix.command.*` timeouts →
+`resilience4j.timelimiter.*`, the `Throwable` parameter of fallback methods, `spring-boot-starter-aspectj`, no
+thread-pool isolation, dashboards / Turbine by hand. Libraries with a `## fix-loop:` section (ibatis2,
 jdk-removed-apis, jdk-generified-apis, hibernate-commons-annotations, the era libraries in
 `knowledge/notes/era-libraries.md`, …) get a porting guide in the script prompt.
 

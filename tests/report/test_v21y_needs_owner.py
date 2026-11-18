@@ -24,11 +24,11 @@ def test_needs_owner_attention_code():
 def test_needs_owner_suggestions_in_korean():
     sentence = "iBATIS 2 has no Spring 7 support; the owning team must choose MyBatis or plain JDBC"
     sibling = f"same cause as 70cf5d17c7: {sentence} — {NEEDS_OWNER_KO}"
-    assert tr_line("ko", sibling) == f"70cf5d17c7 와 같은 원인: {sentence} — 소유팀 결정 필요"
+    assert tr_line("ko", sibling) == f"앞의 오류(70cf5d17c7)와 원인이 같습니다. {sentence} — 담당 팀의 결정이 필요합니다."
     assert tr_line("en", sibling) == sibling
     fallback = compose_suggestion(BlockedItem(id="b1", reason=BlockReason.NEEDS_OWNER, phase=Phase.VERIFY, cluster_id="c1"))
     ko = tr_line("ko", fallback)
-    assert fallback.endswith("— 소유팀 결정 필요") and ko != fallback and ko.startswith("LLM 이 프로젝트 밖의 차단 사유")
-    # the declined case's own suggestion is the LLM's sentence: left as it is
+    assert fallback.endswith("— 소유팀 결정 필요") and ko != fallback and ko.startswith("LLM이 프로젝트 밖의 원인을 짚었습니다")
+    # the declined case's own suggestion is the LLM's sentence: kept as written, only sbmig's tail is reworded
     own = f"{sentence} — {NEEDS_OWNER_KO}"
-    assert tr_line("ko", own) == own
+    assert tr_line("ko", own) == f"{sentence} — 담당 팀의 결정이 필요합니다."

@@ -22,15 +22,20 @@
 
 ## Expected sbmig outcome (v2, asserted by `scripts/e2e.py`, see `expected.json` → `expect`)
 
-This is the **reference run** for library advisories and the Handover section (`docs/ADVISORIES.md`). Success, exit 0,
-**2 LLM calls**: the replayed structure review (verdict `issues`, warnings on the hystrix pin and the `springfox.version`
-property) and one new fix script for the only build error, `@EnableCircuitBreaker` (removed from spring-cloud-commons;
-case `compile|cannot_find_symbol|EnableCircuitBreaker`, `ec7cf32b91`), which it deletes with a `MIGRATION-TODO`. The
-Boot 4 umbrella run replaces springfox (→ `springdoc-openapi-starter-webmvc-ui`), sleuth (→ Micrometer Tracing) and the
-Spring Cloud train (advisories `replaced`). v2 has no advisory recipes, so **Hystrix stays**: the starter and both
-`@HystrixCommand` methods are kept and compile; advisory `hystrix` is `guide` / `still-present` and the Handover names
-it, next to ehcache pinned at its as-is 2.10.x (carried over) and the owners' follow-ups (swagger UI path, tracing
-configuration, the Resilience4j port).
+This is the **reference run** for library advisories and the Handover section (`docs/ADVISORIES.md`) and for the
+Hystrix recipe (`docs/RECIPES.md`, "Hystrix → Resilience4j"). Success, exit 0, **1 LLM call**: the replayed structure
+review (verdict `issues`, warnings on the missing `spring-boot-starter-aspectj` for the `@CircuitBreaker` aspect and on
+ehcache 2 pinned in the root's dependencyManagement). No fix script: the build passes after the one OpenRewrite run and
+the restructure. In that run `com.company.migrate.HystrixToResilience4j` (recipe set `hystrix_resilience4j`, before the
+Boot set) swaps the starter for `spring-cloud-starter-circuitbreaker-resilience4j`, which ends **without a version** in
+`module/comp-jar/pom.xml` (the as-is 2.2.10.RELEASE is removed before the swap; the Spring Cloud BOM, moved to the
+2025.1 train by the umbrella, manages it), turns `stockFor` into `@CircuitBreaker(name = "default", fallbackMethod =
+"stockFallback")` and `reserve` into `@CircuitBreaker(name = "inventoryReserve", fallbackMethod = "reserveFallback")`
+(the Hystrix-only attributes and the nested `@HystrixProperty` go) and deletes `@EnableCircuitBreaker`. The Boot 4
+umbrella replaces springfox (→ `springdoc-openapi-starter-webmvc-ui`), sleuth (→ Micrometer Tracing) and the Spring
+Cloud train. Advisories `hystrix`, `springfox`, `sleuth`, `spring-cloud-bom` end `replaced`; no Hystrix artifact is
+carried over. The Handover names the Resilience4j runtime review, ehcache pinned at its as-is 2.10.x (carried over)
+and the owners' other follow-ups (swagger UI path, tracing configuration).
 
 ## Build as-is
 

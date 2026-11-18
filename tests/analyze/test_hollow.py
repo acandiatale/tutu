@@ -61,7 +61,7 @@ def test_a_war_whose_sources_live_outside_its_roots_is_hollow(tmp_path):
     line = hollow_followup(res)
     assert line.startswith(HOLLOW_PREFIX) and "2 java, 1 jsp, 2 web files" in line
     assert "(DEV: java 2, jsp 1; STATIC: web 2)" in line and "unresolved" not in line
-    assert tr_line("ko", line).startswith("Maven 리액터가 컴파일하는 소스가 없다: 모듈 밖에 2 java, 1 jsp, 2 web files이(가) 있고")
+    assert tr_line("ko", line).startswith("Maven reactor가 컴파일하는 소스가 없습니다. 모듈 밖에 있는 소스(2 java, 1 jsp, 2 web files; ")
     assert HOLLOW_FLAG == "hollow-reactor"
 
 
@@ -102,7 +102,7 @@ def test_unresolved_property_directories_are_recorded_not_guessed(tmp_path):
     assert "DEV" not in " ".join(res.roots)
     line = hollow_followup(res)
     assert "(unresolved directories: ${DIR_xxxJAR}, ${DIR_RMIJAR}, ${DIR_xxxWEB})" in line
-    assert "못 푼 디렉토리 식: ${DIR_xxxJAR}, ${DIR_RMIJAR}, ${DIR_xxxWEB}" in tr_line("ko", line)
+    assert "풀지 못한 폴더 변수: ${DIR_xxxJAR}, ${DIR_RMIJAR}, ${DIR_xxxWEB}" in tr_line("ko", line)
 
 
 def test_properties_of_the_in_repo_parent_resolve_a_directory(tmp_path):
@@ -124,7 +124,7 @@ def test_more_java_outside_than_inside_is_the_soft_verdict(tmp_path):
     assert not res.hollow and res.sources_outside and res.outside == {"java": 3, "jsp": 0, "web": 0}
     line = outside_followup(res)
     assert line.startswith(OUTSIDE_PREFIX) and "(old: java 2; tools: java 1)" in line
-    assert tr_line("ko", line).startswith("Maven 리액터 밖의 소스: 모듈의 소스 루트 밖에 3 java files이(가) 있고")
+    assert tr_line("ko", line).startswith("Maven reactor 밖에 소스가 있습니다. 모듈의 소스 루트 밖에 있는 소스(3 java files; ")
 
 
 def test_multi_module_reactor_with_sources_in_a_module_and_no_poms(tmp_path):

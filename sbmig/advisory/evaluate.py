@@ -171,7 +171,9 @@ def evaluate_advisories(profile: ProjectProfile, cfg: Config,
             summary=entry.summary, policy="guide", detected_version=m["version"],
             evidence=m["evidence"], artifacts=m["artifacts"], outcome="unknown",
             replacement=entry.replacement, replacement_version=entry.replacement_version,
-            followup=entry.followup.strip(), docs=list(entry.docs), notes=notes)
+            followup=entry.followup.strip(), docs=list(entry.docs), notes=notes,
+            title_ko=entry.title_ko.strip(), summary_ko=entry.summary_ko.strip(),
+            followup_ko=entry.followup_ko.strip(), replacement_ko=entry.replacement_ko.strip())
     return sorted(out.values(), key=_sort_key)
 
 

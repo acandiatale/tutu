@@ -231,7 +231,7 @@ flowchart TD
   S -->|"케이스 오류가 모두 사라짐"| OK["resolved · 버전 성공 +1"]
   S -->|"일부만 / 그대로 / 악화"| RB["되돌림 (git), 다시 사다리로"]
   RB --> Q1
-  S -->|"LLM 요청 20회 소진 또는 거절"| BLK["blocked → Handover"]
+  S -->|"LLM 요청 20회 소진 또는 거절"| BLK["blocked → 보고서 「진행하지 않은 항목」"]
 </pre>
   </div>
 </section>

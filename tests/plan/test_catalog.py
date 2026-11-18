@@ -83,7 +83,9 @@ def test_catalog_loads_and_is_cached():
     e = cat.get("org.openrewrite.java.migrate.UpgradeToJava21")
     assert e is not None and e.origin == "openrewrite" and e.phase == "jdk21"
     assert all(x.origin == "openrewrite" for x in cat.entries)               # v2: no project recipes
-    assert not any(x.id.startswith("com.company.") for x in cat.entries)
+    # v2.1z-at: the one in-repository recipe is the Hystrix composite, defined by its own declarative file
+    assert [x.id for x in cat.entries if x.id.startswith("com.company.")] == ["com.company.migrate.HystrixToResilience4j"]
+    assert [x.id for x in cat.entries if x.file] == ["com.company.migrate.HystrixToResilience4j"]
     assert cat.get("nope") is None
 
 
@@ -93,7 +95,7 @@ def test_repo_catalog_is_consistent_with_every_source(cfg):
     assert cat.check(cfg) == []
     rs = cfg.openrewrite.recipes
     for rid in [*rs.jdk21, *rs.jakarta, *rs.servlet_jakarta_10, *rs.spring_boot_4, *rs.spring_framework_7,
-                *rs.spring_security_7, *rs.spring_batch_6, *rs.hibernate_7, *rs.junit5]:
+                *rs.spring_security_7, *rs.spring_batch_6, *rs.hibernate_7, *rs.hystrix_resilience4j, *rs.junit5]:
         assert rid in cat, rid
 
 
@@ -224,7 +226,8 @@ def test_cli_list_show_check(tmp_path):
     import json
     rows = json.loads(res.output)
     assert any(x["id"] == "org.openrewrite.java.migrate.jakarta.RemovalsServletJakarta10" for x in rows)
-    assert not any("rules" in x or "file" in x for x in rows)
+    assert not any("rules" in x for x in rows)
+    assert [x["id"] for x in rows if x.get("file")] == ["com.company.migrate.HystrixToResilience4j"]
     assert "--kb" not in r.invoke(recipes_cli, ["list", "--help"]).output
     res = r.invoke(recipes_cli, ["show", "org.openrewrite.java.migrate.jakarta.JavaxMigrationToJakarta"])
     assert res.exit_code == 0

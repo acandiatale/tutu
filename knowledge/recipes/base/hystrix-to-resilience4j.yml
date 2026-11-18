@@ -1,0 +1,116 @@
+# Declarative OpenRewrite recipe: Netflix Hystrix -> Resilience4j via Spring Cloud Circuit Breaker.
+# Planned through the recipe set `openrewrite.recipes.hystrix_resilience4j` (config/default.yml) when the analyzer found
+# the library `hystrix`; it runs in the one OpenRewrite run BEFORE the Spring Boot 4 / Framework 7 sets, while the
+# as-is Spring Cloud BOM is still in the pom. Catalogued in knowledge/recipes/catalog.yml with every building block.
+# Versions: this recipe writes none. The Hystrix starter loses its as-is version before the swap, so the new starter
+# ends without a <version>; the restructure's version rules decide (managed by the new parent chain / the upgraded
+# Spring Cloud BOM -> nothing in the pom, else the newest release the repository has, with a "confirm" follow-up).
+# Runtime behaviour (instance names, timeouts, fallback signatures, thread-pool isolation) is handed over to the owning
+# team through the `hystrix` advisory's follow-up.
+# Not covered (the fix loop ports them with the `## fix-loop: hystrix` note of knowledge/notes/spring-cloud.md):
+# programmatic HystrixCommand / HystrixObservableCommand subclasses, HystrixRequestContext, dashboards / Turbine streams.
+---
+type: specs.openrewrite.org/v1beta/recipe
+name: com.company.migrate.HystrixToResilience4j
+displayName: Migrate Netflix Hystrix to Resilience4j (Spring Cloud Circuit Breaker)
+description: >
+  Replaces @HystrixCommand with Resilience4j @CircuitBreaker and the Hystrix starters with
+  spring-cloud-starter-circuitbreaker-resilience4j. commandKey becomes the circuit breaker name; when no commandKey
+  existed, name = "default" is used (configure resilience4j.circuitbreaker.instances.default or configs.default).
+  fallbackMethod is kept. Hystrix-only attributes (groupKey, threadPoolKey, commandProperties with their
+  @HystrixProperty values, threadPoolProperties, ignoreExceptions, observableExecutionMode, defaultFallback,
+  raiseHystrixExceptions) are removed, @EnableHystrix / @EnableCircuitBreaker / @EnableHystrixDashboard are dropped,
+  and hystrix-javanica / hystrix-core / the Hystrix dashboard starter are removed from the pom. No version is written:
+  the as-is Hystrix version is removed before the swap and the new starter is left without a version.
+recipeList:
+  # --- annotations: attributes first (while the type is still HystrixCommand), then the type swap
+  - org.openrewrite.java.ChangeAnnotationAttributeName:
+      annotationType: com.netflix.hystrix.contrib.javanica.annotation.HystrixCommand
+      oldAttributeName: commandKey
+      newAttributeName: name
+  # nested @HystrixProperty values go first: RemoveAnnotation also drops their import (RemoveAnnotationAttribute does not)
+  - org.openrewrite.java.RemoveAnnotation:
+      annotationPattern: "@com.netflix.hystrix.contrib.javanica.annotation.HystrixProperty"
+  - org.openrewrite.java.RemoveAnnotationAttribute:
+      annotationType: com.netflix.hystrix.contrib.javanica.annotation.HystrixCommand
+      attributeName: groupKey
+  - org.openrewrite.java.RemoveAnnotationAttribute:
+      annotationType: com.netflix.hystrix.contrib.javanica.annotation.HystrixCommand
+      attributeName: threadPoolKey
+  - org.openrewrite.java.RemoveAnnotationAttribute:
+      annotationType: com.netflix.hystrix.contrib.javanica.annotation.HystrixCommand
+      attributeName: commandProperties
+  - org.openrewrite.java.RemoveAnnotationAttribute:
+      annotationType: com.netflix.hystrix.contrib.javanica.annotation.HystrixCommand
+      attributeName: threadPoolProperties
+  - org.openrewrite.java.RemoveAnnotationAttribute:
+      annotationType: com.netflix.hystrix.contrib.javanica.annotation.HystrixCommand
+      attributeName: ignoreExceptions
+  - org.openrewrite.java.RemoveAnnotationAttribute:
+      annotationType: com.netflix.hystrix.contrib.javanica.annotation.HystrixCommand
+      attributeName: observableExecutionMode
+  - org.openrewrite.java.RemoveAnnotationAttribute:
+      annotationType: com.netflix.hystrix.contrib.javanica.annotation.HystrixCommand
+      attributeName: defaultFallback
+  - org.openrewrite.java.RemoveAnnotationAttribute:
+      annotationType: com.netflix.hystrix.contrib.javanica.annotation.HystrixCommand
+      attributeName: raiseHystrixExceptions
+  - org.openrewrite.java.ChangeType:
+      oldFullyQualifiedTypeName: com.netflix.hystrix.contrib.javanica.annotation.HystrixCommand
+      newFullyQualifiedTypeName: io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker
+  # @CircuitBreaker.name is mandatory. It runs after ChangeType: the new type is a shallow type without attribute
+  # metadata (resilience4j is not on the parse classpath), so the value is inserted verbatim (quotes included) and
+  # addOnly keeps a name that came from commandKey.
+  - org.openrewrite.java.AddOrUpdateAnnotationAttribute:
+      annotationType: io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker
+      attributeName: name
+      attributeValue: '"default"'
+      addOnly: true
+  - org.openrewrite.java.RemoveAnnotation:
+      annotationPattern: "@org.springframework.cloud.netflix.hystrix.EnableHystrix"
+  - org.openrewrite.java.RemoveAnnotation:
+      annotationPattern: "@org.springframework.cloud.client.circuitbreaker.EnableCircuitBreaker"
+  - org.openrewrite.java.RemoveAnnotation:
+      annotationPattern: "@org.springframework.cloud.netflix.hystrix.dashboard.EnableHystrixDashboard"
+  # --- pom: the as-is Hystrix version must not survive on the new artifact (no such version exists for it).
+  # Managed entries of the Hystrix starters go entirely; the version tag of a declared starter goes before the swap,
+  # so the swap carries no version over. Removing it before (not after) the swap leaves a version a project already
+  # wrote on its own Resilience4j starter alone.
+  - org.openrewrite.maven.RemoveManagedDependency:
+      groupId: org.springframework.cloud
+      artifactId: spring-cloud-starter-netflix-hystrix
+  - org.openrewrite.maven.RemoveManagedDependency:
+      groupId: org.springframework.cloud
+      artifactId: spring-cloud-starter-hystrix
+  - org.openrewrite.xml.RemoveXmlTag:
+      xPath: "/project/dependencies/dependency[artifactId='spring-cloud-starter-netflix-hystrix']/version"
+  - org.openrewrite.xml.RemoveXmlTag:
+      xPath: "/project/dependencies/dependency[artifactId='spring-cloud-starter-hystrix']/version"
+  # No newVersion on the swaps on purpose: a newVersion would be a made-up version, and it makes the swap download
+  # maven-metadata first (on a failed download it silently leaves the Hystrix starter in place).
+  - org.openrewrite.maven.ChangeDependencyGroupIdAndArtifactId:
+      oldGroupId: org.springframework.cloud
+      oldArtifactId: spring-cloud-starter-netflix-hystrix
+      newGroupId: org.springframework.cloud
+      newArtifactId: spring-cloud-starter-circuitbreaker-resilience4j
+  - org.openrewrite.maven.ChangeDependencyGroupIdAndArtifactId:
+      oldGroupId: org.springframework.cloud
+      oldArtifactId: spring-cloud-starter-hystrix
+      newGroupId: org.springframework.cloud
+      newArtifactId: spring-cloud-starter-circuitbreaker-resilience4j
+  # --- pom: drop the plain Hystrix artifacts and the dashboard (declared and managed)
+  - org.openrewrite.maven.RemoveDependency:
+      groupId: com.netflix.hystrix
+      artifactId: hystrix-javanica
+  - org.openrewrite.maven.RemoveDependency:
+      groupId: com.netflix.hystrix
+      artifactId: hystrix-core
+  - org.openrewrite.maven.RemoveDependency:
+      groupId: org.springframework.cloud
+      artifactId: spring-cloud-starter-netflix-hystrix-dashboard
+  - org.openrewrite.maven.RemoveManagedDependency:
+      groupId: com.netflix.hystrix
+      artifactId: hystrix-javanica
+  - org.openrewrite.maven.RemoveManagedDependency:
+      groupId: com.netflix.hystrix
+      artifactId: hystrix-core

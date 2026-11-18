@@ -386,6 +386,11 @@ class RecipeSetConfig(BaseModel):
     servlet_jakarta_10: list[str] = Field(default_factory=lambda: [
         "org.openrewrite.java.migrate.jakarta.RemovalsServletJakarta10",
     ])
+    # Hystrix를 쓰는 프로젝트에만 넣는다. Boot / Framework 세트보다 먼저 실행해 Resilience4j로 바꾼다
+    # 빈 목록이면 끄고 Hystrix는 그대로 남는다
+    hystrix_resilience4j: list[str] = Field(default_factory=lambda: [
+        "com.company.migrate.HystrixToResilience4j",
+    ])
     extra: dict[str, list[str]] = Field(default_factory=dict)
 
 

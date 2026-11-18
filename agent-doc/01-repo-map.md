@@ -62,7 +62,7 @@
 | `sbmig/errors/` | 실행 오류 목록과 KB 저장소 | `entries.py` `ErrorList`(실행 디렉토리의 오류 목록) · `cases.py` `CaseStore`(케이스 폴더, 저장 스크립트, 실적) · `common.py` ID·마스킹·원자적 쓰기 |
 | `sbmig/kb/` | KB 창구와 `sbmig kb` 명령 | `store.py` `FileKnowledgeBase` · `cli.py` `sbmig kb …` · `lock.py` 프로세스 간 잠금 · `jsonl.py` 덧붙이기 전용 jsonl · `redact.py` 비밀값 마스킹 · `catalog.py` 옛 ID 호환 |
 | `sbmig/advisory/` | EOL 라이브러리 권고(안내만) | `catalog.py` 권고 목록 합치기 · `evaluate.py` 프로젝트에 맞는 권고 · `hints.py` 프롬프트 힌트 · `verify.py` 마무리 검증 · `cli.py` `sbmig advisories …` |
-| `sbmig/report/` | 보고서 | `writer.py` `write_report` · `markdown.py` `render_markdown`(절 순서) · `handover.py` 인수인계 데이터 · `result_line.py` `SBMIG-RESULT` 줄·종료 코드 · `i18n.py` 한국어 문구 · `errors.py` 오류 목록 가공 · `cost.py` LLM 비용 · `inventory.py` `sbmig inventory` 산출물 |
+| `sbmig/report/` | 보고서 | `writer.py` `write_report` · `markdown.py` `render_markdown`(진입점, en 진단 보고서의 절 순서) · `guide_ko.py` `render_guide_ko`(`report.language: ko` 의 요청자용 안내서) · `changes.py` `collect_code_changes`(파일별 순변경 diff) · `handover.py` 인수인계 데이터 · `result_line.py` `SBMIG-RESULT` 줄·종료 코드 · `i18n.py` 한국어 문구 · `errors.py` 오류 목록 가공 · `cost.py` LLM 비용 · `inventory.py` `sbmig inventory` 산출물 |
 | `sbmig/fleet/` | 순차 일괄 실행 | `runner.py` `FleetRunner` · `manifest.py` 매니페스트 · `preflight.py` 인프라 점검 · `summary.py` 요약 파일 · `cleanup.py` 디스크 정리 · `cli.py` `sbmig fleet …` |
 | `sbmig/graph/` | LangGraph 엔진 | `engine.py` 노드 intake → analyze → plan → phase → finalize (→ remediation, 켜졌을 때) |
 | `sbmig/web/` | 웹 UI | `app.py` 라우트(`/api/runs`, `/api/runs/{run_id}/events` …) · `runs.py` 실행 관리자·SSE 이벤트 · `static/index.html` 화면(바닐라 JS) · `admin.py`와 `static/admin.html` 관리자 페이지(`/admin`: 프로젝트별 토큰 사용량, 로그 ZIP) |
@@ -96,7 +96,7 @@
 | 구조 검토 프롬프트 | `sbmig/review/prompts/review_v1.md` | `sbmig/review/inputs.py`, `sbmig/review/parse.py` |
 | LLM 게이트웨이 호출 | `sbmig/fix/company.py` | `sbmig/fix/client.py`, `llm.*`, [05-llm-gateway-and-prompts.md](05-llm-gateway-and-prompts.md) |
 | 스크립트 실행 API(`p`) | `sbmig/script/api.py` | `sbmig/script/check.py`(허용 import), `sbmig/script/runner.py`, `script.*` |
-| 보고서 절 추가·순서 | `sbmig/report/markdown.py` | `sbmig/report/handover.py`, 문구 번역 `sbmig/report/i18n.py` |
+| 보고서 절 추가·순서 | ko 안내서 `sbmig/report/guide_ko.py`, en 보고서 `sbmig/report/markdown.py` | `sbmig/report/handover.py`, `sbmig/report/changes.py`, 문구 번역 `sbmig/report/i18n.py` |
 | `SBMIG-RESULT` 줄·attn 코드·종료 코드 | `sbmig/report/result_line.py` | `sbmig/cli.py` (`run_exit_code`) |
 | 저널 이벤트 추가 | 이벤트를 내는 모듈의 `self.ws.journal({...})` | `Workspace.journal` in `sbmig/core/workspace.py` |
 | 설정 키 추가 | `sbmig/core/config.py` | `config/default.yml`, 문서 `docs/INTERFACES.md` |

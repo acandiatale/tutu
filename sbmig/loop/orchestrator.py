@@ -310,6 +310,7 @@ class Orchestrator:
         self.plan: Optional[MigrationPlan] = None
         self.loop: Optional[BuildFixLoop] = None
         self.errors = RunErrors(None)               # v2.1: the run's error list (errors.jsonl), set in step_plan
+        self._change_base = ""                      # 자동 변환 직후 커밋. 보고서의 코드 수정 내역이 여기서 시작한다
         self._verify_results: list[BuildResult] = []
         self._review_usage: dict[str, LLMUsage] = {}       # v2: structure-review calls, by model
         self._review_commit_pre: str | None = None          # v2.1d: HEAD before the review commit (read-back)
@@ -518,6 +519,7 @@ class Orchestrator:
         self._pending_notes = []
         self.loop = None
         self.errors = RunErrors(None)
+        self._change_base = ""
         t0 = self.clock()
         report = RunReport(run_id=self.ws.run_id, project_name=self.ws.root.name, case_type=CaseType.UNKNOWN,
                            started_at=utcnow())
@@ -2590,6 +2592,7 @@ class Orchestrator:
                     case_type=self.profile.case_type if self.profile is not None else CaseType.UNKNOWN)
         rv: Optional[StructureReview] = None
         pre: Optional[str] = None
+        self._mark_change_base(step)
         if not self._dry_run:
             try:
                 pre = self.ws.head()
@@ -2635,6 +2638,23 @@ class Orchestrator:
         log.info("%s", line[:600])
         self._timed("review", t)
         return True
+
+    def _mark_change_base(self, step: PlanStep) -> None:
+        """자동 변환(OpenRewrite, 재구성)이 끝난 지금의 커밋을 코드 수정 내역의 시작점으로 한 번만 기억한다.
+        구조 검토나 첫 검증 빌드 직전에 호출하며, 드라이런이거나 git이 없으면 기억하지 않는다.
+
+        Remember HEAD once, right after the automatic conversion: called before the structure review and before
+        the first verify build (whichever comes first), so a run without the review or without the restructure
+        (`scope=jdk-jakarta`) gets its base too. Not taken by the best-effort build after an abort (that run never
+        reached the fix loop). Journal `code_changes_base`."""
+        if self._change_base or self._dry_run or getattr(self, "_after_abort", False):
+            return
+        try:
+            self._change_base = self.ws.head()
+        except Exception as e:  # noqa: BLE001 - no git: the report has no code change list
+            log.debug("code change base not taken: %s", e)
+            return
+        self.ws.journal({"event": "code_changes_base", "commit": self._change_base, "step": step.id})
 
     def _commit_review(self, pr: PhaseResult, step: PlanStep, rv: Any) -> Optional[str]:
         """구조 검토가 남긴 변경을 커밋한다. 검토의 수정이 성공(``script_result.status == ok``)하지 않았는데
@@ -3104,6 +3124,7 @@ class Orchestrator:
         if not self.cfg.loop.always_final_verify and self._phase_failed:
             pr.notes.append(f"{step.id}: skipped (an earlier phase failed and loop.always_final_verify=false)")
             return False
+        self._mark_change_base(step)
         label = "verify" + (f"-{step.params['service']}" if step.params.get("service") else "")
         from .fixloop import build_target_args
         module, extra = build_target_args(self.profile, step.target)
@@ -3690,6 +3711,17 @@ class Orchestrator:
         return all(e.kind in self._RESOLUTION_KINDS and _INFRA_REPO_RE.search(f"{e.message}\n{e.raw}")
                    for e in errs)
 
+    def _finalize_code_changes(self, report: RunReport) -> None:
+        """자동 변환 뒤에 고친 파일 목록(``report.code_changes``)을 채운다. 시작점이 없으면 빈 목록으로 둔다.
+
+        `RunReport.code_changes` from the base taken by `_mark_change_base` (empty when the run never got there)."""
+        base = "" if self._dry_run else (getattr(self, "_change_base", "") or "")
+        try:
+            from sbmig.report.changes import collect_code_changes
+            collect_code_changes(self.ws, report, base, self.cfg)
+        except Exception as e:  # noqa: BLE001 - never lose the report over this list
+            log.warning("code changes not collected: %s", e)
+
     def _finalize(self, report: RunReport) -> None:
         """실행을 마무리한다. ``_run_guard``가 어떤 경우에도 호출한다.
         LLM 사용량과 비용, 수정 루프의 플래그와 후속 조치, 성공 여부, 미해결 오류, 차단 목록, infra 플래그, 운영자 확인,
@@ -3789,6 +3821,7 @@ class Orchestrator:
         self._finalize_operator_checks(report)
         self._finalize_advisories(report)
         self._finalize_errors(report)
+        self._finalize_code_changes(report)
         writer = self._report_writer
         if writer is None:
             from sbmig.report import write_report

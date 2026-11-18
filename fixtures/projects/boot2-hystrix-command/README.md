@@ -16,8 +16,15 @@ JAVA_HOME=$JAVA11_HOME mvn -q -DskipTests package
 
 ## Expected sbmig outcome (v2, asserted by `scripts/e2e.py`, see `expected.json` → `expect`)
 
-Success, exit 0, **1 LLM call** (the replayed structure review: one warning on the hystrix pin), no fix script. v2 has
-no advisory recipes, so `spring-cloud-starter-netflix-hystrix` stays in `module/comp-jar/pom.xml` and `InventoryCommand`
-still `extends HystrixCommand<Integer>` and compiles against it. Advisories exactly `hystrix` (`guide`,
-`still-present` → Handover: the Resilience4j port is the owners' job) and `spring-cloud-bom` (`replaced`). Own KB
-directory `out/e2e/kb-boot2-hystrix-command` (cleared by `scripts/e2e.py`).
+Success, exit 0, **3 LLM calls**: the replayed structure review (verdict `ok`) and two fix-script answers. The recipe
+`com.company.migrate.HystrixToResilience4j` (recipe set `hystrix_resilience4j`) swaps the starter for
+`spring-cloud-starter-circuitbreaker-resilience4j`, left **without a version** in `module/comp-jar/pom.xml` (the Spring
+Cloud 2025.1 BOM manages it). It cannot port the subclass: with the Hystrix artifacts gone, `InventoryCommand` fails
+with `package com.netflix.hystrix does not exist` (case `d4ff1cf456`) and `StockService` with `cannot find symbol`
+for `execute()` (case `cc167595c4`). The fix loop gets the `## fix-loop: hystrix` note: `replay/llm-002.json` ports every
+class that still extends `HystrixCommand` to a plain class with a shared Resilience4j `CircuitBreaker`
+(`CircuitBreaker.ofDefaults("InventoryCommand")`), a public `execute()` that runs the former `run()` through
+`executeCallable` and returns `getFallback()` on failure, and a `MIGRATION-TODO` comment (build_ok);
+`replay/llm-003.json` answers the caller's case with the same script, which finds nothing left to port (the class was
+ported in the same round), and the rebuild resolves it. Advisories exactly `hystrix` (`replaced`) and
+`spring-cloud-bom` (`replaced`). Own KB directory `out/e2e/kb-boot2-hystrix-command` (cleared by `scripts/e2e.py`).

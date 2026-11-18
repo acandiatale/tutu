@@ -8,7 +8,9 @@
 #
 # Schema (version 1): see LibraryAdvisory in sbmig/core/models.py — id, library (analyzer rule name) and/or
 # artifacts (g:a globs), status (eol|unmanaged|incompatible|superseded), title, summary, replacement,
-# replacement_version, followup, docs, applies_to, applies_when_version_below, resolved_min_version, notes.
+# replacement_version, followup, docs, applies_to, applies_when_version_below, resolved_min_version, notes, and the
+# Korean texts of the report: title_ko, summary_ko, followup_ko, and replacement_ko where `replacement` is free text
+# rather than a plain coordinate (empty = the guide shows the English text; identifiers stay as they are).
 # (`policy` / `recipes` keys are no longer read.)
 #
 # Company additions / overrides: advisories.extra_files (same schema, merged by id, later wins);
@@ -29,6 +31,14 @@ advisories:
     followup: >-
       Review the generated GroupedOpenApi beans and the TODO comments the recipe left on complex Docket code,
       then check /swagger-ui/index.html and /v3/api-docs (springdoc.* properties replace springfox.*).
+    title_ko: "Springfox(Swagger 2)는 개발이 중단되었습니다"
+    summary_ko: >-
+      Springfox는 2020년 3.0.0 이후 새 릴리스가 없고, Spring Framework 6 이상에서는 실행 중에 동작하지 않습니다(경로 매칭, jakarta).
+      지금도 개발되고 있는 springdoc-openapi로 바꿔야 합니다.
+    followup_ko: >-
+      자동 변환으로 만든 `GroupedOpenApi` 빈과, 복잡한 `Docket` 설정에 레시피가 남긴 TODO 주석을 확인해 주세요. 그다음
+      `/swagger-ui/index.html`과 `/v3/api-docs`가 열리는지 확인해 주세요. 설정은 `springfox.*` 대신 `springdoc.*` 속성을
+      씁니다.
     docs:
       - https://springdoc.org/#migrating-from-springfox
       - https://docs.openrewrite.org/recipes/java/springdoc/springfoxtospringdoc
@@ -47,6 +57,14 @@ advisories:
     followup: >-
       Remove the explicit micrometer-tracing 1.0.x version if the recipe left one (the Boot BOM manages it), then
       check management.tracing.sampling.probability, the exporter (zipkin/otlp) and the traceId/spanId log pattern.
+    title_ko: "Spring Cloud Sleuth는 지원이 종료되었습니다(Micrometer Tracing으로 대체)"
+    summary_ko: >-
+      Sleuth는 Spring Cloud 2021.0.x를 끝으로 지원이 종료되었습니다. Spring Boot 3 이상에서는 Micrometer Tracing(Brave 또는
+      OpenTelemetry 브리지)으로 추적하며, 버전은 Spring Boot BOM이 정합니다.
+    followup_ko: >-
+      레시피가 micrometer-tracing 1.0.x 버전을 pom에 직접 남겼다면 지워 주세요(버전은 Spring Boot BOM이 정합니다). 그다음
+      `management.tracing.sampling.probability`, exporter 설정(zipkin / otlp), 로그 패턴의 traceId / spanId를
+      확인해 주세요.
     docs:
       - https://github.com/micrometer-metrics/tracing/wiki/Spring-Cloud-Sleuth-3.1-Migration-Guide
       - https://docs.spring.io/spring-boot/reference/actuator/tracing.html
@@ -57,21 +75,44 @@ advisories:
     status: eol
     title: Netflix Hystrix is discontinued (not in any current Spring Cloud train)
     summary: >-
-      Hystrix is in maintenance-only mode since 2018 and was removed from Spring Cloud 2020.0. It may still compile
-      against the pinned 2.2.x starter, but it is unsupported on Boot 3+/4. The replacement is
-      spring-cloud-starter-circuitbreaker-resilience4j with Resilience4j @CircuitBreaker instead of @HystrixCommand
-      (name from commandKey, else "default"; fallbackMethod kept; Hystrix-only attributes and
-      @EnableHystrix/@EnableCircuitBreaker dropped); the fix loop ports what the build reports with this guidance.
+      Hystrix is in maintenance-only mode since 2018, was removed from Spring Cloud 2020.0 and does not work on Boot
+      3+/4. The recipe com.company.migrate.HystrixToResilience4j replaces it with Resilience4j:
+      spring-cloud-starter-netflix-hystrix / spring-cloud-starter-hystrix become
+      spring-cloud-starter-circuitbreaker-resilience4j (no version of its own: the Spring Cloud BOM manages it),
+      @HystrixCommand becomes @CircuitBreaker (name from commandKey, else "default"; fallbackMethod kept; Hystrix-only
+      attributes and nested @HystrixProperty removed), @EnableHystrix / @EnableCircuitBreaker /
+      @EnableHystrixDashboard are deleted and hystrix-javanica / hystrix-core / the dashboard starter are removed. Code
+      the recipe cannot port (HystrixCommand / HystrixObservableCommand subclasses, HystrixRequestContext) is ported by
+      the fix loop.
     replacement: org.springframework.cloud:spring-cloud-starter-circuitbreaker-resilience4j
     replacement_version: managed by the Spring Cloud BOM
     followup: >-
-      Configure the circuit breakers by name (instance "default" unless a commandKey existed:
+      Review the circuit breakers at runtime: configure them by name (instance "default" unless a commandKey existed:
       resilience4j.circuitbreaker.instances.<name> or configs.default), move hystrix.command.* timeouts to
-      resilience4j.timelimiter.*, give every fallback method a trailing Throwable parameter (Resilience4j does not find
-      fallbacks without it) and re-test failure paths: thread-pool isolation, groupKey/threadPoolKey,
-      commandProperties and ignoreExceptions were removed, and the @CircuitBreaker aspect needs
-      spring-boot-starter-aspectj at runtime. Code the LLM fix scripts rewrote with Resilience4j guidance is listed
-      in the Handover — review it; dashboards/Turbine stay manual.
+      resilience4j.timelimiter.*, give every fallback method a trailing Throwable parameter (Resilience4j does not
+      find fallbacks without it) and add spring-boot-starter-aspectj so the @CircuitBreaker aspect runs.
+      Thread-pool isolation, groupKey / threadPoolKey, commandProperties and ignoreExceptions are gone (a Resilience4j
+      bulkhead replaces isolation where it mattered): re-test the failure paths. Review the classes the fix loop
+      ported (they carry a MIGRATION-TODO comment); dashboards / Turbine streams are not migrated — move them to
+      Micrometer / Actuator metrics.
+    title_ko: "Netflix Hystrix는 지원이 종료되었습니다"
+    summary_ko: >-
+      Hystrix는 2018년부터 유지보수만 하다가 Spring Cloud 2020.0에서 삭제되었고, Spring Boot 3 이상에서는 동작하지 않습니다.
+      그래서 레시피로 Resilience4j로 바꿨습니다. Hystrix starter는
+      `org.springframework.cloud:spring-cloud-starter-circuitbreaker-resilience4j`로 바꿨고, 버전은 Spring Cloud BOM이
+      정합니다. `@HystrixCommand`는 `@CircuitBreaker`로 바꿨습니다(이름은 commandKey를 쓰고 없으면 `default`입니다.
+      fallbackMethod는 그대로 둡니다). Hystrix 전용 속성과 `@HystrixProperty`, `@EnableHystrix` / `@EnableCircuitBreaker` /
+      `@EnableHystrixDashboard`, `hystrix-javanica` / `hystrix-core` / 대시보드 starter는 지웠습니다. `HystrixCommand`를
+      상속한 클래스처럼 레시피가 바꾸지 못하는 코드는 자동 수정 단계에서 Resilience4j로 옮겼습니다.
+    followup_ko: >-
+      실행 환경에서 서킷 브레이커 동작을 확인해 주세요. 서킷 브레이커는 이름별로 설정합니다(commandKey가 없었다면 인스턴스
+      이름은 `default`입니다: `resilience4j.circuitbreaker.instances.<name>` 또는 `configs.default`).
+      `hystrix.command.*`의 타임아웃은 `resilience4j.timelimiter.*`로 옮겨 주세요. fallback 메서드에는 마지막 파라미터로
+      `Throwable`을 추가해야 합니다(없으면 Resilience4j가 fallback을 찾지 못합니다). `@CircuitBreaker`가 동작하려면
+      `spring-boot-starter-aspectj`를 의존성에 추가해 주세요. 스레드 풀 격리, groupKey / threadPoolKey, commandProperties,
+      ignoreExceptions는 더 이상 없으므로(격리가 필요했다면 Resilience4j bulkhead를 씁니다) 실패 상황을 다시 테스트해
+      주세요. 자동 수정 단계에서 옮긴 클래스에는 `MIGRATION-TODO` 주석이 있으니 검토해 주세요. 대시보드와 Turbine은 옮기지
+      않았으므로 Micrometer / Actuator 지표로 직접 옮겨 주세요.
     docs:
       - https://docs.spring.io/spring-cloud-circuitbreaker/reference/spring-cloud-circuitbreaker-resilience4j.html
       - https://resilience4j.readme.io/docs/getting-started-3
@@ -87,6 +128,13 @@ advisories:
     followup: >-
       Replace the Ribbon starter with spring-cloud-starter-loadbalancer, delete IRule/IPing beans and
       <client>.ribbon.* properties, and configure spring.cloud.loadbalancer.* (or a ServiceInstanceListSupplier).
+    title_ko: "Netflix Ribbon은 지원이 종료되었습니다(Spring Cloud LoadBalancer로 대체)"
+    summary_ko: >-
+      Ribbon은 Spring Cloud 2020.0에서 삭제되었습니다. 클라이언트 측 로드 밸런싱에는 Spring Cloud LoadBalancer를 씁니다.
+    followup_ko: >-
+      Ribbon starter를 `spring-cloud-starter-loadbalancer`로 바꾸고, `IRule` / `IPing` 빈과
+      `<client>.ribbon.*` 속성을 지워 주세요. 설정은 `spring.cloud.loadbalancer.*`(또는
+      `ServiceInstanceListSupplier`)로 다시 해 주세요.
     docs:
       - https://docs.spring.io/spring-cloud-commons/reference/spring-cloud-commons/loadbalancer.html
     notes: knowledge/notes/spring-cloud.md
@@ -101,6 +149,13 @@ advisories:
     followup: >-
       Rebuild the zuul.routes.* as Spring Cloud Gateway (server-webmvc) routes and port ZuulFilter subclasses to
       gateway filter functions; test every route, header and timeout.
+    title_ko: "Netflix Zuul 1은 지원이 종료되었습니다(Spring Cloud Gateway로 대체)"
+    summary_ko: >-
+      Zuul 1은 Spring Cloud 2020.0에서 삭제되었고 jakarta 서블릿에서는 동작하지 않습니다. Spring Cloud
+      Gateway(server-webmvc)로 옮겨야 합니다.
+    followup_ko: >-
+      `zuul.routes.*` 설정을 Spring Cloud Gateway(server-webmvc) 라우트로 다시 만들고, `ZuulFilter` 하위 클래스는
+      gateway 필터 함수로 옮겨 주세요. 라우트, 헤더, 타임아웃은 모두 테스트해 주세요.
     docs:
       - https://docs.spring.io/spring-cloud-gateway/reference/spring-cloud-gateway-server-webmvc.html
     notes: knowledge/notes/spring-cloud.md
@@ -117,6 +172,15 @@ advisories:
     followup: >-
       Move com.netflix.feign imports to io.github.openfeign (feign.*) and use
       org.springframework.cloud.openfeign.@FeignClient/@EnableFeignClients; check the starter rename in the pom.
+    title_ko: "Netflix Feign과 spring-cloud-starter-feign은 지원이 종료되었습니다(OpenFeign으로 대체)"
+    summary_ko: >-
+      `com.netflix.feign`은 2016년 8.18이 마지막이고, `spring-cloud-starter-feign`은
+      `spring-cloud-starter-openfeign`으로 이름이 바뀌었습니다. starter 이름은 Spring Boot 레시피가 바꾸지만
+      `com.netflix.feign` 코드는 그대로 남습니다.
+    followup_ko: >-
+      `com.netflix.feign` import를 `io.github.openfeign`(`feign.*`)으로 옮기고,
+      `org.springframework.cloud.openfeign`의 `@FeignClient` / `@EnableFeignClients`를 써 주세요. pom에서
+      starter 이름이 바뀌었는지도 확인해 주세요.
     docs:
       - https://docs.spring.io/spring-cloud-openfeign/reference/
     notes: knowledge/notes/spring-cloud.md
@@ -135,6 +199,13 @@ advisories:
     followup: >-
       Verify the Spring Cloud train matches the Boot line (2025.1.x is the Boot 4.0 train — check the Spring Cloud
       compatibility matrix for Boot 4.1) and that every org.springframework.cloud:* dependency is BOM-managed.
+    title_ko: "Spring Cloud 릴리스 트레인이 Spring Boot 4보다 오래된 버전입니다"
+    summary_ko: >-
+      `spring-cloud-dependencies` BOM(또는 `spring-cloud-starter-parent`)이 이전 Spring Boot용 트레인을 지정하고
+      있습니다. Spring Boot 4.0에 맞는 트레인은 Spring Cloud 2025.1입니다.
+    followup_ko: >-
+      Spring Cloud 트레인이 Spring Boot 버전과 맞는지 확인해 주세요. 2025.1.x는 Spring Boot 4.0용이므로, Spring Boot 4.1은
+      Spring Cloud 호환 표에서 확인해야 합니다. `org.springframework.cloud:*` 의존성의 버전을 모두 BOM이 정하는지도 확인해 주세요.
     docs:
       - https://spring.io/projects/spring-cloud#overview
       - https://github.com/spring-cloud/spring-cloud-release/wiki/Supported-Versions
@@ -154,6 +225,15 @@ advisories:
     followup: >-
       Replace @EnableResourceServer/@EnableOAuth2Sso/@EnableAuthorizationServer and OAuth2RestTemplate with
       http.oauth2ResourceServer()/oauth2Login() and WebClient/RestClient OAuth2 support; re-test token validation.
+    title_ko: "Spring Security OAuth(spring-security-oauth2 / oauth2-autoconfigure)는 지원이 종료되었습니다"
+    summary_ko: >-
+      기존 `org.springframework.security.oauth` 프로젝트는 2022년에 지원이 종료되었고 Spring Security 6/7에서는 동작하지 않습니다.
+      클라이언트와 리소스 서버 기능은 Spring Security에 들어 있고, 인가 서버는 Spring Authorization Server로 옮겨야 합니다.
+    followup_ko: >-
+      `@EnableResourceServer` / `@EnableOAuth2Sso` / `@EnableAuthorizationServer`와
+      `OAuth2RestTemplate`을 `http.oauth2ResourceServer()` / `oauth2Login()`, 그리고 WebClient /
+      RestClient의 OAuth2 지원으로 바꿔 주세요. 바꾼 뒤에는 토큰 검증을 다시 테스트해 주세요.
+    replacement_ko: "`org.springframework.boot:spring-boot-starter-oauth2-resource-server`(또는 `-oauth2-client`)"
     docs:
       - https://github.com/spring-projects/spring-security/wiki/OAuth-2.0-Migration-Guide
       - https://docs.spring.io/spring-authorization-server/reference/
@@ -170,6 +250,13 @@ advisories:
     followup: >-
       Owning team: remove log4j:log4j, log through SLF4J (org.slf4j.Logger), convert log4j.properties/xml to
       logback-spring.xml (or add log4j-1.2-api only as a temporary bridge); the build keeps the as-is jar meanwhile.
+    title_ko: "Log4j 1.x는 지원이 종료되었습니다(2015년부터, 보안 취약점이 고쳐지지 않음)"
+    summary_ko: >-
+      `log4j:log4j` 1.2.x는 지원이 종료되었고 알려진 보안 취약점이 있습니다. Spring Boot는 Logback(또는 Log4j 2)으로 로그를 남깁니다.
+    followup_ko: >-
+      `log4j:log4j`를 빼고 SLF4J(`org.slf4j.Logger`)로 로그를 남기도록 바꿔 주세요. `log4j.properties` / `log4j.xml`은
+      `logback-spring.xml`로 옮겨 주세요(`log4j-1.2-api`는 임시 브리지로만 추가할 수 있습니다). 그때까지는 기존 jar로 빌드합니다.
+    replacement_ko: "`ch.qos.logback:logback-classic`(Spring Boot 기본값) 또는 log4j-core 2.x"
     docs:
       - https://logging.apache.org/log4j/2.x/migrate-from-log4j1.html
     notes: knowledge/notes/era-libraries.md
@@ -184,6 +271,12 @@ advisories:
     followup: >-
       Owning team: replace org.apache.commons.lang.* imports with org.apache.commons.lang3.* (StringEscapeUtils moved
       to commons-text) and drop commons-lang:commons-lang; the build keeps commons-lang 2 meanwhile.
+    title_ko: "Apache Commons Lang 2.x는 지원이 종료되었습니다"
+    summary_ko: >-
+      `commons-lang:commons-lang` 2.6(2011)은 더 이상 유지보수되지 않습니다. 지원되는 버전은 Commons Lang 3입니다.
+    followup_ko: >-
+      `org.apache.commons.lang.*` import를 `org.apache.commons.lang3.*`로 바꾸고(`StringEscapeUtils`는
+      commons-text로 옮겨졌습니다) `commons-lang:commons-lang`을 빼 주세요. 그때까지는 commons-lang 2로 빌드합니다.
     docs:
       - https://commons.apache.org/proper/commons-lang/article3_0.html
     notes: knowledge/notes/era-libraries.md
@@ -207,6 +300,16 @@ advisories:
       Re-test the migrated HTTP client code: timeouts (TimeUnit / Timeout), connection pooling
       (PoolingHttpClientConnectionManagerBuilder), TLS / SSLContext setup and retry handling; drop any explicit
       httpclient 4.x version left in the poms.
+    title_ko: "Apache HttpClient 4.x는 HttpClient 5로 대체되었습니다(Spring Boot 4의 RestTemplate / RestClient는 5를 씁니다)"
+    summary_ko: >-
+      Spring Framework 6 이상의 `HttpComponentsClientHttpRequestFactory`는 HttpClient 5만 지원합니다. 4.5.x는 직접
+      호출하는 코드에서만 동작하고 Spring Boot BOM에는 버전이 없습니다. Spring Framework 6.0 레시피가
+      `UpgradeApacheHttpClient_5`를 실행해 의존성, 클래스(`org.apache.http`에서 `org.apache.hc.client5` /
+      `hc.core5`로), deprecated 메서드, `TimeUnit` 타임아웃을 바꾸고, 레시피가 바꾸지 못한 부분은 자동 수정 단계에서 옮깁니다.
+    followup_ko: >-
+      옮긴 HTTP 클라이언트 코드를 다시 테스트해 주세요. 타임아웃(`TimeUnit` / `Timeout`), 커넥션
+      풀(`PoolingHttpClientConnectionManagerBuilder`), TLS / `SSLContext` 설정, 재시도 처리를 확인해야 합니다. pom에
+      httpclient 4.x 버전이 직접 남아 있으면 지워 주세요.
     docs:
       - https://hc.apache.org/httpcomponents-client-5.4.x/migration-guide/
       - https://docs.openrewrite.org/recipes/apache/httpclient5/upgradeapachehttpclient_5
@@ -224,6 +327,13 @@ advisories:
     followup: >-
       Move org.apache.http.* client code to org.apache.hc.client5/hc.core5 (or RestClient), drop the explicit
       httpclient 4.x version and re-test timeouts, connection pooling and TLS settings.
+    title_ko: "Apache HttpClient 4.x는 HttpClient 5로 대체되었습니다(이 프로젝트 유형에는 자동 변환 레시피가 없습니다)"
+    summary_ko: >-
+      4.5.x는 직접 호출하는 코드에서는 계속 동작하지만 Spring Boot BOM에 버전이 없어 기존 버전을 그대로 씁니다. Spring을 쓰지 않는 프로젝트는
+      HttpClient 5로 자동 변환되지 않습니다.
+    followup_ko: >-
+      `org.apache.http.*` 클라이언트 코드를 `org.apache.hc.client5` / `hc.core5`(또는 RestClient)로 옮기고, pom에 직접
+      적은 httpclient 4.x 버전을 지워 주세요. 그다음 타임아웃, 커넥션 풀, TLS 설정을 다시 테스트해 주세요.
     docs:
       - https://hc.apache.org/httpcomponents-client-5.4.x/migration-guide/
 
@@ -243,6 +353,18 @@ advisories:
       Remove the Undertow customizer beans, move server.undertow.* properties to server.tomcat.* (threads, max
       connections, access log) and re-test HTTP/2, WebSocket and buffer settings under Tomcat; exclusions of
       spring-boot-starter-tomcat on the web starter can go.
+    title_ko: "Spring Boot 4는 Undertow를 지원하지 않습니다(spring-boot-starter-undertow가 없습니다)"
+    summary_ko: >-
+      `spring-boot-starter-undertow`는 Maven Central에서 4.0.0-M1이 마지막이고, `spring-boot-dependencies`
+      4.1.0 BOM에는 이 starter도 `io.undertow`도 없습니다. pom의 starter는 `spring-boot-starter-tomcat`(Spring
+      Boot 기본 컨테이너)으로 바꿔야 하며, 빌드 오류에 나오면 자동 수정 단계에서 바꿉니다. `io.undertow.*`나 Spring Boot의 Undertow
+      커스터마이저(`UndertowServletWebServerFactory`, `UndertowBuilderCustomizer` 등)를 쓰는 코드는 더 이상 컴파일되지
+      않습니다.
+    followup_ko: >-
+      Undertow 커스터마이저 빈을 지우고 `server.undertow.*` 속성을 `server.tomcat.*`(스레드, 최대 연결 수, 접근 로그)로 옮겨 주세요.
+      HTTP/2, WebSocket, 버퍼 설정은 Tomcat에서 다시 테스트해 주세요. web starter에 걸어 둔 `spring-boot-starter-tomcat`
+      exclusion은 지워도 됩니다.
+    replacement_ko: "`org.springframework.boot:spring-boot-starter-tomcat`(또는 `spring-boot-starter-jetty`)"
     docs:
       - https://github.com/spring-projects/spring-boot/wiki/Spring-Boot-4.0-Migration-Guide
       - https://repo1.maven.org/maven2/org/springframework/boot/spring-boot-starter-undertow/
@@ -272,6 +394,25 @@ advisories:
       both); javax.annotation.* → jakarta.annotation:jakarta.annotation-api; javax.activation →
       jakarta.activation-api; `_` is no longer an identifier (renamed); Thread.stop/suspend/resume throw
       UnsupportedOperationException — use interrupt-based cancellation; com.sun.image.codec.jpeg → javax.imageio.ImageIO.
+    title_ko: "JDK 내부 API나 JDK에서 삭제된 API를 사용합니다(sun.misc, sun.security, com.sun.image, javax.activation)"
+    summary_ko: >-
+      기존 코드가 JDK 내부 패키지나, JDK 11에서 삭제된(JEP 320) 또는 JDK 17에서 캡슐화된(JEP 403) Java EE 모듈을 import합니다.
+      `--release 21`로 컴파일하는 javac 21에서는 이 패키지를 쓸 수 없습니다. `UpgradeToJava21`(Java8toJava11) 레시피가 JAXB /
+      JAX-WS / common-annotations 의존성을 추가하고 처리할 수 있는 코드를 바꿉니다(`RenameUnderscoreIdentifier`,
+      `Thread.stop` / `destroy`). `UseJavaUtilBase64`도 실행되지만 OpenRewrite가 JDK 21에서 코드를 읽기 때문에
+      `sun.misc.BASE64Encoder` / `BASE64Decoder` 호출은 대부분 그대로 남습니다. JDK 21에서 타입을 찾을 수 없는 코드는 자동 수정 단계에서
+      `java.util.Base64` 등으로 옮기고, 결과가 달라질 수 있는 곳에는 MIGRATION-TODO 주석을 남깁니다.
+    followup_ko: >-
+      옮긴 JDK API 호출을 검토해 주세요. `sun.misc.BASE64Encoder`를 `java.util.Base64.getEncoder()`로 바꾸면 JDK 8
+      인코더가 76자마다 넣던 줄바꿈이 없어집니다. 저장하거나 비교하는 값이 줄바꿈을 포함해야 하면 `Base64.getMimeEncoder()`를 써
+      주세요(`BASE64Decoder` 대신 쓰는 `Base64.getMimeDecoder()`는 줄바꿈이 있어도 읽습니다). `sun.misc.Unsafe`는 아직
+      컴파일되므로(jdk.unsupported) 그대로 두되, VarHandle / FFM으로 옮길 계획을 세워 주세요. JAXB는
+      `jakarta.xml.bind:jakarta.xml.bind-api`와 실행용 `org.glassfish.jaxb:jaxb-runtime`이 필요합니다(둘 다 Spring
+      Boot 4 BOM에 버전이 있습니다). `javax.annotation.*`은 `jakarta.annotation:jakarta.annotation-api`로,
+      `javax.activation`은 `jakarta.activation-api`로 바꿔 주세요. `_`는 더 이상 식별자로 쓸 수 없어 이름을 바꿨습니다.
+      `Thread.stop` / `suspend` / `resume`은 `UnsupportedOperationException`을 던지므로 interrupt 방식으로 취소하도록
+      바꿔 주세요. `com.sun.image.codec.jpeg`는 `javax.imageio.ImageIO`로 바꿔 주세요.
+    replacement_ko: "`java.util.Base64` / `javax.imageio` / `java.security` 같은 JDK 대체 API와 jakarta.* API jar"
     docs:
       - https://openjdk.org/jeps/320
       - https://openjdk.org/jeps/403
@@ -298,6 +439,22 @@ advisories:
       update / delete → selectList / selectOne / insert / update / delete, <sqlMapConfig> → <configuration>);
       result maps and dynamic SQL tags (<isNotEmpty>, <iterate>, <dynamic> → <if>, <foreach>, <where>) differ —
       a mechanical but manual port per DAO; re-test every statement against the database and drop the iBATIS jars.
+    title_ko: "iBATIS 2(SqlMapClient)는 Spring 4부터 지원되지 않습니다(org.springframework.orm.ibatis 삭제)"
+    summary_ko: >-
+      `org.springframework.orm.ibatis`가 있는 마지막 Spring 버전은 3.2입니다. iBATIS 2는 2010년에 개발이 끝났지만 Maven
+      Central에 jar가 남아 있어 의존성은 받아집니다. 다만 Spring 7로 올리면 `SqlMapClientDaoSupport` /
+      `SqlMapClientTemplate` / `SqlMapClientFactoryBean`을 쓰는 코드는 모두 컴파일 오류가 납니다. OpenRewrite 레시피가 없어
+      DAO는 자동 수정 단계에서 이 안내에 따라 옮깁니다.
+    followup_ko: >-
+      자동 수정 단계에서 옮기지 못한 DAO는 iBATIS 2를 그대로 쓰므로, 담당 팀이 MyBatis로 옮기기 전까지 빌드가 실패합니다(자동으로 옮긴 DAO에는
+      MIGRATION-TODO 주석이 있으니 다시 테스트해 주세요). `SqlMapClient` / `SqlMapClientTemplate`은
+      `SqlSessionTemplate`이나 mapper 인터페이스로 바꿔 주세요. sqlmap XML은 MyBatis mapper XML로 옮겨야 합니다. `#name#`은
+      `#{name}`, `$name$`은 `${name}`, `queryForList` / `queryForObject` / `insert` / `update` /
+      `delete`는 `selectList` / `selectOne` / `insert` / `update` / `delete`, `<sqlMapConfig>`는
+      `<configuration>`으로 바꿉니다. result map과 동적 SQL 태그(`<isNotEmpty>`, `<iterate>`, `<dynamic>`을
+      `<if>`, `<foreach>`, `<where>`로)도 달라서 DAO마다 손으로 옮겨야 합니다. 모든 SQL을 실제 데이터베이스에서 다시 테스트하고 iBATIS
+      jar를 빼 주세요.
+    replacement_ko: "`org.mybatis:mybatis`와 `org.mybatis:mybatis-spring`"
     docs:
       - https://mybatis.org/mybatis-3/
       - https://mybatis.org/spring/
@@ -321,6 +478,20 @@ advisories:
       Review the ported tree code: Enumeration<DefaultMutableTreeNode> e = node.children() →
       Enumeration<TreeNode> e = node.children() and cast each element ((DefaultMutableTreeNode) e.nextElement()),
       or iterate node.children().asIterator(); Collections.list(node.children()) is a List<TreeNode> now.
+    title_ko: "JDK 9에서 javax.swing.tree에 제네릭이 적용되었습니다(children()이 Enumeration<TreeNode>를 반환합니다)"
+    summary_ko: >-
+      JDK 9부터 `DefaultMutableTreeNode.children()` / `preorderEnumeration()` /
+      `depthFirstEnumeration()` / `breadthFirstEnumeration()` / `pathFromAncestorEnumeration()`과
+      `TreeNode.children()`은 `Enumeration<TreeNode>`를 반환합니다. Java 9 이전 코드처럼 raw `Enumeration`이나
+      `Enumeration<DefaultMutableTreeNode>`에 대입하면 javac 21에서 "incompatible types: inference variable T
+      has incompatible equality constraints" 또는 "incompatible types: Enumeration<TreeNode> cannot be
+      converted" 오류가 납니다. 의존성과는 관계없는 소스 수정이며, 자동 수정 단계에서 이 안내에 따라 바꿉니다.
+    followup_ko: >-
+      옮긴 트리 코드를 검토해 주세요. `Enumeration<DefaultMutableTreeNode> e = node.children()`은
+      `Enumeration<TreeNode> e = node.children()`으로 바꾸고 요소마다 `(DefaultMutableTreeNode)
+      e.nextElement()`로 캐스트하거나, `node.children().asIterator()`로 순회합니다.
+      `Collections.list(node.children())`는 이제 `List<TreeNode>`입니다.
+    replacement_ko: "`Enumeration<TreeNode>` 또는 `Enumeration<? extends TreeNode>`로 받고 요소마다 캐스트(JDK API)"
     docs:
       - https://docs.oracle.com/en/java/javase/21/docs/api/java.desktop/javax/swing/tree/DefaultMutableTreeNode.html
     notes: knowledge/notes/jdk21.md
@@ -343,6 +514,19 @@ advisories:
       Review the ported logger / reflection code (jboss-logging Logger keeps the BasicLogger calls, SLF4J needs
       format changes for infof / debugv); if a module still declares org.hibernate.common:hibernate-commons-annotations
       7.0.3.Final explicitly (EOL, not managed by Boot 4), plan its removal.
+    title_ko: "hibernate-commons-annotations(org.hibernate.annotations.common.*)는 Hibernate ORM 7 / Spring Boot 4에 없습니다"
+    summary_ko: >-
+      Hibernate ORM 3.x~6.x는 `org.hibernate.common:hibernate-commons-annotations`(HCANN)를 전이 의존성으로
+      가져왔기 때문에, jar를 선언하지 않고도 `org.hibernate.annotations.common.*`(주로 `...util.impl`의 `LoggerFactory`
+      / `Log`, 또는 `XClass` / `ReflectionManager` 리플렉션 API)를 import할 수 있었습니다. Spring Boot 4.x가 쓰는
+      Hibernate ORM 7.0부터 이 jar가 빠져(내부는 hibernate-models로 대체) "package
+      org.hibernate.annotations.common.util.impl does not exist" 컴파일 오류가 나며, 사내 실행에서는 보통 마지막 패키지 빌드에서만
+      나타납니다. OpenRewrite 레시피가 없어 자동 수정 단계에서 이 안내에 따라 옮깁니다.
+    followup_ko: >-
+      옮긴 로거 / 리플렉션 코드를 검토해 주세요. jboss-logging `Logger`는 `BasicLogger` 호출을 그대로 쓸 수 있고, SLF4J로 옮겼다면
+      `infof` / `debugv`의 포맷을 바꿔야 합니다. 아직 `org.hibernate.common:hibernate-commons-annotations`
+      7.0.3.Final을 직접 선언한 모듈이 있다면, 이 버전은 지원이 종료되었고 Spring Boot 4 BOM에도 없으니 제거할 계획을 세워 주세요.
+    replacement_ko: "`LoggerFactory` / `Log`는 `org.jboss.logging.Logger.getLogger(Foo.class)`(또는 SLF4J)로, `XClass` / `ReflectionManager`는 `java.lang.reflect`로"
     docs:
       - https://docs.jboss.org/hibernate/orm/7.0/migration-guide/migration-guide.html
       - https://repo1.maven.org/maven2/org/hibernate/common/hibernate-commons-annotations/
@@ -369,6 +553,16 @@ advisories:
     followup: >-
       Replace the Tiles definitions (tiles*.xml) with layout templates (Thymeleaf layout:decorate or SiteMesh 3
       decorators), remove the TilesConfigurer / TilesViewResolver beans; JSPs can keep <jsp:include> fragments.
+    title_ko: "Apache Tiles는 개발이 중단되었고 Spring Framework 6부터 Tiles 뷰를 지원하지 않습니다"
+    summary_ko: >-
+      마지막 릴리스는 3.0.8(2017)이고, Apache Attic으로 옮겨진 javax.servlet 전용 프로젝트입니다. Spring 6.0에서
+      `org.springframework.web.servlet.view.tiles3`(`TilesConfigurer`, `TilesViewResolver`,
+      `TilesView`)가 삭제되었습니다(tiles2는 Spring 5.0에서 이미 삭제). `TilesConfigurer`를 쓰는 Java 설정은 컴파일 오류가 나고,
+      XML 설정은 기동할 때 실패합니다.
+    followup_ko: >-
+      Tiles 정의(`tiles*.xml`)를 레이아웃 템플릿(Thymeleaf `layout:decorate` 또는 SiteMesh 3 데코레이터)으로 바꾸고
+      `TilesConfigurer` / `TilesViewResolver` 빈을 지워 주세요. JSP는 `<jsp:include>` 조각을 그대로 써도 됩니다.
+    replacement_ko: "Thymeleaf와 thymeleaf-layout-dialect(Spring Boot BOM에 버전 있음), SiteMesh 3(`org.sitemesh:sitemesh`) 또는 JSP include"
     docs:
       - https://attic.apache.org/projects/tiles.html
       - https://github.com/spring-projects/spring-framework/wiki/Spring-Framework-6.0-Release-Notes
@@ -390,6 +584,18 @@ advisories:
       Port .vm web views to Thymeleaf / FreeMarker; for mail / text templates switch to velocity-engine-core 2.4.1 and
       replace VelocityEngineUtils.mergeTemplateIntoString(...) with engine.getTemplate(name, encoding).merge(...);
       retest template loading (Velocity 2 renamed configuration keys such as resource.loader).
+    title_ko: "Spring 5부터 Velocity를 지원하지 않고, velocity-tools-view에는 Jakarta 버전이 없습니다"
+    summary_ko: >-
+      Spring 5.0에서 `VelocityConfigurer`, `VelocityViewResolver`, `VelocityLayoutViewResolver`와 메일 템플릿에
+      자주 쓰던 `org.springframework.ui.velocity.VelocityEngineUtils`가 삭제되었습니다.
+      `org.apache.velocity:velocity`는 1.7(2010)이 마지막이고, 엔진은 서블릿 의존성이 없는 velocity-engine-core 2.4.1로
+      이어집니다. velocity-tools-view 3.1은 javax.servlet 기반이며 Jakarta 릴리스가 없습니다.
+    followup_ko: >-
+      `.vm` 웹 화면은 Thymeleaf나 FreeMarker로 옮겨 주세요. 메일이나 텍스트 템플릿은 velocity-engine-core 2.4.1로 바꾸고
+      `VelocityEngineUtils.mergeTemplateIntoString(...)`을 `engine.getTemplate(name,
+      encoding).merge(...)`로 바꿔 주세요. Velocity 2에서 `resource.loader` 같은 설정 키 이름이 바뀌었으니 템플릿 로딩을 다시 테스트해
+      주세요.
+    replacement_ko: "웹 화면은 Thymeleaf나 FreeMarker, 웹이 아닌 템플릿은 `org.apache.velocity:velocity-engine-core`"
     docs:
       - https://github.com/spring-projects/spring-framework/wiki/Spring-Framework-5.0-Release-Notes
       - https://repo1.maven.org/maven2/org/apache/velocity/velocity-engine-core/
@@ -416,6 +622,21 @@ advisories:
       spring.thymeleaf.mode=LEGACYHTML5 and nekohtml, replace layout:decorator="x" with layout:decorate="~{x}", fix the
       LayoutDialect import (or delete the bean — Boot configures it) and move ${#request…} / ${#session…} values into
       the model.
+    title_ko: "Thymeleaf 2.x / thymeleaf-spring4 / Layout Dialect 1.x~2.x는 Thymeleaf 3.1 + spring6 버전으로 올려야 합니다"
+    summary_ko: >-
+      Spring Boot 4.1 BOM에는 thymeleaf, thymeleaf-spring6,
+      thymeleaf-extras-springsecurity6(3.1.5.RELEASE)와 thymeleaf-layout-dialect 4.0.1이 있습니다. 레시피
+      `MigrateThymeleafDependencies`는 spring5에서 spring6으로만 바꾸므로 thymeleaf-spring4 /
+      extras-springsecurity4의 `org.thymeleaf.spring4` import는 그대로 남습니다. Thymeleaf 2.x 템플릿(LEGACYHTML5
+      / nekohtml)과 커스텀 dialect는 3.x API로 바꿔야 하고, Layout Dialect 3.0에서 `layout:decorator`가 삭제되고 패키지가
+      `nz.net.ultraq.thymeleaf.layoutdialect`로 옮겨졌습니다. Thymeleaf 3.1에서는 `#request` / `#session` /
+      `#servletContext` 표현식 객체가 삭제되어 실행 중에 오류가 납니다.
+    followup_ko: >-
+      thymeleaf-spring4를 thymeleaf-spring6으로 바꾸고(import `org.thymeleaf.spring4`를
+      `org.thymeleaf.spring6`으로), `spring.thymeleaf.mode=LEGACYHTML5`와 nekohtml을 빼 주세요.
+      `layout:decorator="x"`는 `layout:decorate="~{x}"`로 바꾸고, `LayoutDialect` import를 고치거나 빈을 지워
+      주세요(Spring Boot가 설정합니다). `${#request…}` / `${#session…}` 값은 model에 담아 넘겨 주세요.
+    replacement_ko: "`org.thymeleaf:thymeleaf-spring6` / `thymeleaf-extras-springsecurity6` / `thymeleaf-layout-dialect`(Spring Boot BOM에 버전 있음)"
     docs:
       - https://www.thymeleaf.org/doc/articles/thymeleaf31whatsnew.html
       - https://www.thymeleaf.org/doc/articles/thymeleaf3migration.html
@@ -440,6 +661,21 @@ advisories:
       spring.servlet.multipart.max-file-size / max-request-size / file-size-threshold; port direct ServletFileUpload
       code to MultipartFile / Part, or accept the FileUpload 2 milestone (JakartaServletFileUpload,
       DiskFileItemFactory.builder().get()).
+    title_ko: "CommonsMultipartResolver는 Spring 6에서 삭제되었고, FileUpload 2 Jakarta는 패키지가 바뀐 마일스톤 버전뿐입니다"
+    summary_ko: >-
+      Spring 6.0에서 `org.springframework.web.multipart.commons.CommonsMultipartResolver`가 삭제되어
+      `StandardServletMultipartResolver`만 남았고, commons-fileupload 1.x는 javax 전용입니다.
+      `JavaxMigrationToJakarta`에 들어 있는 레시피 `FileuploadToFileUpload2`가 의존성을 commons-fileupload2-jakarta
+      2.0.0-M4로 바꾸지만, 패키지 이름을 `org.apache.commons.fileload…`로 잘못 적어 두어
+      `org.apache.commons.fileupload.*` import가 그대로 남고 컴파일 오류("package org.apache.commons.fileupload
+      does not exist")가 납니다. FileUpload 2(패키지 `org.apache.commons.fileupload2.core` /
+      `.jakarta.servlet6`)는 마일스톤 버전만 있습니다.
+    followup_ko: >-
+      `CommonsMultipartResolver` 빈을 지우고 `maxUploadSize` / `maxInMemorySize`를
+      `spring.servlet.multipart.max-file-size` / `max-request-size` / `file-size-threshold`로 옮겨 주세요.
+      `ServletFileUpload`를 직접 쓰는 코드는 `MultipartFile` / `Part`로 옮기거나, FileUpload 2
+      마일스톤(`JakartaServletFileUpload`, `DiskFileItemFactory.builder().get()`)을 쓰기로 정해 주세요.
+    replacement_ko: "`StandardServletMultipartResolver` / Spring Boot multipart(`spring.servlet.multipart.*`)와 `MultipartFile`, 또는 `org.apache.commons:commons-fileupload2-jakarta-servlet6`"
     docs:
       - https://github.com/spring-projects/spring-framework/wiki/Spring-Framework-6.0-Release-Notes
       - https://docs.openrewrite.org/recipes/java/migrate/jakarta/fileuploadtofileupload2
@@ -458,6 +694,14 @@ advisories:
     followup: >-
       Port com.sun.jersey.spi.* / ClientConfig / WebResource client code to jakarta.ws.rs.client or RestClient;
       resource classes keep their JAX-RS annotations (jakarta.ws.rs).
+    title_ko: "Jersey 1.x(com.sun.jersey)에는 Jakarta 릴리스가 없습니다"
+    summary_ko: >-
+      마지막 릴리스는 1.19.4(2017)이고 javax.ws.rs 1.1 / javax.servlet 기반입니다. `com.sun.jersey.*` 패키지를 같은 이름으로
+      잇는 후속 버전은 없습니다.
+    followup_ko: >-
+      `com.sun.jersey.spi.*` / `ClientConfig` / `WebResource` 클라이언트 코드를 `jakarta.ws.rs.client`나
+      RestClient로 옮겨 주세요. 리소스 클래스의 JAX-RS 어노테이션(`jakarta.ws.rs`)은 그대로 씁니다.
+    replacement_ko: "Jersey 4(`org.glassfish.jersey.*`, Spring Boot BOM에 버전 있음, `spring-boot-starter-jersey`) 또는 Spring MVC `@RestController`"
     docs:
       - https://repo1.maven.org/maven2/com/sun/jersey/jersey-server/
 
@@ -474,6 +718,16 @@ advisories:
     replacement: org.springframework.hateoas:spring-hateoas (Boot-managed) / spring-boot-starter-hateoas
     replacement_version: 3.1.1 (Boot 4.1 managed)
     followup: Apply the 1.0 type renames (the project's migrate-to-1.0 script or the fix loop), then rebuild; HAL output is unchanged.
+    title_ko: "Spring HATEOAS 1.0부터 representation model 타입 이름이 바뀌었습니다"
+    summary_ko: >-
+      Spring Boot 4.1 BOM의 버전은 3.1.1이지만, 0.2x(Spring Boot 1.x / 2.0~2.1)용 코드는 컴파일되지 않습니다.
+      `ResourceSupport`는 `RepresentationModel`, `Resource`는 `EntityModel`, `Resources`는
+      `CollectionModel`, `PagedResources`는 `PagedModel`, `ResourceAssembler`는
+      `RepresentationModelAssembler`(`toResource`는 `toModel`), `ControllerLinkBuilder`는
+      `WebMvcLinkBuilder`로 바뀌었습니다. sbmig가 쓰는 rewrite-spring에는 이 변환 레시피가 없습니다.
+    followup_ko: >-
+      1.0의 타입 이름 변경을 적용하고(프로젝트의 migrate-to-1.0 스크립트나 자동 수정 단계) 다시 빌드해 주세요. HAL 출력은 바뀌지 않습니다.
+    replacement_ko: "`org.springframework.hateoas:spring-hateoas`(Spring Boot BOM에 버전 있음) / `spring-boot-starter-hateoas`"
     docs:
       - https://docs.spring.io/spring-hateoas/docs/1.0.0.RELEASE/reference/html/#migrate-to-1.0
 
@@ -487,6 +741,13 @@ advisories:
     replacement: Spring MVC controllers (servlet) — the portal integration must be redesigned
     replacement_version: n/a
     followup: Port the portlet controllers (@RenderMapping / @ActionMapping) to servlet MVC or the portal vendor's current API.
+    title_ko: "Spring Portlet MVC는 Spring 5.0에서 삭제되었습니다"
+    summary_ko: >-
+      마지막 릴리스는 4.3.30.RELEASE(2020)입니다. Spring 5.0부터 Portlet을 지원하지 않고, `javax.portlet`은 Spring에
+      Jakarta 후속 버전이 없으며 jakarta 패키지 변환 대상도 아닙니다.
+    followup_ko: >-
+      포틀릿 컨트롤러(`@RenderMapping` / `@ActionMapping`)를 서블릿 MVC나 포털 제품의 현재 API로 옮겨 주세요.
+    replacement_ko: "Spring MVC 컨트롤러(서블릿)로 옮기고, 포털 연동은 새로 설계해야 합니다"
     docs:
       - https://github.com/spring-projects/spring-framework/wiki/Spring-Framework-5.0-Release-Notes
       - https://repo1.maven.org/maven2/org/springframework/spring-webmvc-portlet/
@@ -501,6 +762,13 @@ advisories:
     replacement: User-Agent parsing in an own HandlerInterceptor (e.g. ua-parser) or a responsive front end
     replacement_version: n/a
     followup: Replace Device / DeviceUtils / SitePreference usages with a small in-house User-Agent check and remove the interceptor beans.
+    title_ko: "Spring Mobile은 지원이 종료되었고 Spring 5 이상 / Jakarta 릴리스가 없습니다"
+    summary_ko: >-
+      마지막 릴리스는 1.1.5.RELEASE(2016)이고 저장소는 spring-attic에 보관 처리되었습니다. javax.servlet
+      기반입니다(`DeviceResolverHandlerInterceptor`, `DeviceUtils`).
+    followup_ko: >-
+      `Device` / `DeviceUtils` / `SitePreference`를 쓰는 곳을 간단한 User-Agent 확인 코드로 바꾸고 인터셉터 빈을 지워 주세요.
+    replacement_ko: "직접 만든 `HandlerInterceptor`에서 User-Agent를 해석(예: ua-parser)하거나 반응형 화면으로 전환"
     notes: knowledge/notes/spring-mobile.md
     docs:
       - https://github.com/spring-attic/spring-mobile
@@ -521,6 +789,17 @@ advisories:
       Convert every .jrxml / .jrtx with Jaspersoft Studio 7, recompile .jasper at build time, add the exporter
       artifacts (PDF / XLSX) and replace JasperReportsPdfView / JasperReportsMultiFormatView with a controller that
       calls JasperExportManager (staying on 6.21.x compiles only without Jasper's javax servlet classes).
+    title_ko: "JasperReports 7은 Jakarta 버전이지만 .jrxml / .jasper 호환성이 깨지고 jar가 나뉘었습니다"
+    summary_ko: >-
+      6.x core jar에는 javax.servlet 기반 뷰어 클래스가 들어 있습니다. 7.0.0(2024)은 Jakarta 기준으로 바뀌면서 선택 기능이 별도
+      아티팩트(jasperreports-pdf / -openpdf, -excel-poi, -jdt, -servlets, -spring 등)로 나뉘고 일부 패키지가 바뀌었습니다.
+      `.jasper` 파일은 다시 컴파일해야 하며, 6에서 만든 `.jrxml` / `.jrtx` 파일은 더 이상 읽을 수 없습니다. Spring의
+      `JasperReportsView` 계열은 Spring 5.0에서 삭제되었습니다.
+    followup_ko: >-
+      모든 `.jrxml` / `.jrtx`를 Jaspersoft Studio 7로 변환하고, `.jasper`는 빌드할 때 컴파일되게 해 주세요. 쓰는 exporter
+      아티팩트(PDF / XLSX)를 추가하고, `JasperReportsPdfView` / `JasperReportsMultiFormatView`는
+      `JasperExportManager`를 호출하는 컨트롤러로 바꿔 주세요. 6.21.x에 머무르면 Jasper의 javax 서블릿 클래스를 쓰지 않는 경우에만 컴파일됩니다.
+    replacement_ko: "`net.sf.jasperreports:jasperreports` 7.1.0과 사용하는 exporter의 확장 아티팩트"
     docs:
       - https://github.com/Jaspersoft/jasperreports/releases
       - https://repo1.maven.org/maven2/net/sf/jasperreports/jasperreports/
@@ -541,6 +820,17 @@ advisories:
       Upgrade every struts2-* artifact to 7.4.0, rename com.opensymphony.xwork2.* imports (ActionSupport,
       ActionContext, Preparable, ModelDriven …) to org.apache.struts2.*, fix custom FreeMarker themes, review struts.xml
       constants (allowlist / static access) and replace the sitemesh plugin with a SiteMesh 3 filter.
+    title_ko: "Struts 2를 Jakarta로 옮기려면 7.x가 필요하고, 7.x에서 com.opensymphony.xwork2가 org.apache.struts2로 옮겨졌습니다"
+    summary_ko: >-
+      Struts 6.x(마지막 6.12.0)는 javax.servlet 기반입니다. Struts 7.0 이상(7.4.0, 2026-10)은 Java 17과 Jakarta
+      Servlet 6이 필요하고, `com.opensymphony.xwork2.*`가 `org.apache.struts2.*`로 옮겨졌으며, FreeMarker 테마는
+      `parameters` 대신 `attributes`를 쓰고 보안 상수의 기본값도 바뀌었습니다. struts2-sitemesh-plugin은 6.12.0이 마지막이고,
+      sbmig가 쓰는 레시피에는 Struts 7 변환이 없습니다.
+    followup_ko: >-
+      모든 struts2-* 아티팩트를 7.4.0으로 올리고 `com.opensymphony.xwork2.*` import(`ActionSupport`,
+      `ActionContext`, `Preparable`, `ModelDriven` 등)를 `org.apache.struts2.*`로 바꿔 주세요. 커스텀 FreeMarker
+      테마를 고치고, `struts.xml` 상수(allowlist / static access)를 검토하고, sitemesh 플러그인은 SiteMesh 3 필터로 바꿔 주세요.
+    replacement_ko: "`org.apache.struts:struts2-core` 7.4.0(플러그인도 같은 버전). 장기적으로는 Spring MVC"
     docs:
       - https://cwiki.apache.org/confluence/display/WW/Struts+6.x.x+to+7.x.x+migration
       - https://repo1.maven.org/maven2/org/apache/struts/struts2-core/
@@ -558,6 +848,14 @@ advisories:
     followup: >-
       Decide between a rewrite to Spring MVC and the weblegacy RC; Action / ActionForm code compiles against the fork
       only after the javax → jakarta sweep.
+    title_ko: "Struts 1은 지원이 종료되었습니다(1.3.10, 2008). Jakarta 버전은 커뮤니티 포크의 릴리스 후보뿐입니다"
+    summary_ko: >-
+      `org.apache.struts:struts-core`는 1.3.10(javax)이 마지막입니다. 포크인 `io.github.weblegacy:struts-core`는
+      1.4.5까지 javax이고, 1.5.0-RC2(2024, 릴리스 후보)만 Jakarta입니다.
+    followup_ko: >-
+      Spring MVC로 다시 만들지, weblegacy RC를 쓸지 정해 주세요. Action / ActionForm 코드는 javax를 jakarta로 바꾼 뒤에야 포크
+      버전으로 컴파일됩니다.
+    replacement_ko: "Spring MVC(권장) 또는 `io.github.weblegacy:struts-*` 1.5.0-RC2(릴리스 후보, 지원 없음)"
     docs:
       - https://repo1.maven.org/maven2/io/github/weblegacy/struts-core/
 
@@ -573,6 +871,15 @@ advisories:
     replacement: keep commons-chain 1.2 for the core; web layer → io.github.weblegacy:commons-chain-web-jakarta-servlet
     replacement_version: 1.3.0
     followup: Only when org.apache.commons.chain.web.servlet.* is used — switch to the weblegacy Jakarta artifact and rename the package.
+    title_ko: "Commons Chain은 개발이 멈췄고, 서블릿 / 포틀릿 웹 계층은 javax 전용입니다"
+    summary_ko: >-
+      마지막 릴리스는 1.2입니다. 코어(`org.apache.commons.chain`: `Command`, `Chain`, `Context`, `Catalog`)는 EE
+      의존성이 없어 컴파일되지만, `org.apache.commons.chain.web.*`은 javax.servlet / javax.portlet / javax.faces를
+      씁니다. 포크 `io.github.weblegacy:commons-chain-web-jakarta-servlet` 1.3.0에 Jakarta 웹 계층(패키지
+      `org.apache.commons.chain.web.jakarta.servlet`)이 있습니다.
+    followup_ko: >-
+      `org.apache.commons.chain.web.servlet.*`을 쓰는 경우에만 weblegacy Jakarta 아티팩트로 바꾸고 패키지 이름을 바꿔 주세요.
+    replacement_ko: "코어는 commons-chain 1.2를 그대로 쓰고, 웹 계층은 `io.github.weblegacy:commons-chain-web-jakarta-servlet`"
     docs:
       - https://commons.apache.org/dormant/index.html
       - https://repo1.maven.org/maven2/io/github/weblegacy/commons-chain-web-jakarta-servlet/
@@ -594,6 +901,20 @@ advisories:
       EgovAbstractMapper, EgovPropertyService …) and take the 5.0 artifactIds (egovframe-rte-fdl-cmmn, -ptl-mvc,
       -psl-dataaccess …); add the eGovFrame repository (or the company Nexus proxy); take copied common-component
       sources from the 5.0 distribution; test on Spring 7 or keep the project on Boot 3.5 until a Spring 7 line ships.
+    title_ko: "전자정부 표준프레임워크 3.x / 4.x는 javax + Spring 4/5 기반이고, 5.0.x는 Jakarta지만 Spring 7이 아닌 Spring 6.2 / Spring Boot 3.5 기반입니다"
+    summary_ko: >-
+      maven.egovframe.go.kr에서 받습니다(Maven Central에는 없습니다). 3.x(`egovframework.rte:*`, 패키지
+      `egovframework.rte.*`, Spring 4.3), 4.x(`org.egovframe.rte:org.egovframe.rte.*`, 패키지
+      `org.egovframe.rte.*`, Spring 5.3, javax), 5.0.x(`org.egovframe.rte:egovframe-rte-*`, artifactId
+      다시 변경, Java 17, Spring 6.2.11, jakarta.servlet 6.0) 순서로 바뀌었습니다. Spring 7 / Spring Boot 4용
+      eGovFrame 릴리스는 아직 없어서, Spring Boot 4.1로 빌드하면 eGovFrame 5와 Spring 7이 섞입니다(대부분 컴파일은 되지만 실행 호환성은
+      확인되지 않았습니다).
+    followup_ko: >-
+      3.x 프로젝트는 `egovframework.rte.*` import를 `org.egovframe.rte.*`로 바꾸고(`EgovAbstractServiceImpl`,
+      `EgovAbstractMapper`, `EgovPropertyService` 등) 5.0의 artifactId(egovframe-rte-fdl-cmmn, -ptl-mvc,
+      -psl-dataaccess 등)를 써야 합니다. eGovFrame 저장소(또는 사내 Nexus 프록시)를 추가하고, 복사해 쓰던 공통 컴포넌트 소스는 5.0 배포본에서
+      다시 가져와 주세요. Spring 7에서 테스트할지, Spring 7용 버전이 나올 때까지 Spring Boot 3.5에 머무를지 정해 주세요.
+    replacement_ko: "`org.egovframe.rte:egovframe-rte-*` 5.0.2(Jakarta 버전)"
     docs:
       - https://github.com/eGovFramework/egovframe-runtime/releases
       - https://raw.githubusercontent.com/eGovFramework/egovframe-runtime/v5.0.2-Final/pom.xml
@@ -612,6 +933,15 @@ advisories:
     followup: >-
       Replace `new WebJarsResourceResolver()` with `new LiteWebJarsResourceResolver()` in the resource-handler
       configuration; version-less /webjars/… URLs keep working with -lite.
+    title_ko: "Spring 7은 webjars-locator-core를 지원하지 않습니다. webjars-locator-lite를 써 주세요"
+    summary_ko: >-
+      Spring Framework 7.0에서 webjars-locator-core 기반 WebJars 지원이 빠지고 webjars-locator-lite만 남았습니다.
+      spring-webmvc 7.0.8에는 `LiteWebJarsResourceResolver`만 있어서 `WebJarsResourceResolver`를 쓰는 Java 설정은
+      컴파일 오류가 납니다. 의존성은 레시피 `UpgradeSpringBoot_3_4`가 이미 바꿉니다.
+    followup_ko: >-
+      리소스 핸들러 설정에서 `new WebJarsResourceResolver()`를 `new LiteWebJarsResourceResolver()`로 바꿔 주세요. 버전 없는
+      `/webjars/…` URL은 -lite에서도 그대로 동작합니다.
+    replacement_ko: "`org.webjars:webjars-locator-lite`(Spring Boot BOM에 버전 있음)"
     docs:
       - https://github.com/spring-projects/spring-framework/wiki/Spring-Framework-7.0-Release-Notes
       - https://repo1.maven.org/maven2/org/webjars/webjars-locator-lite/
@@ -635,6 +965,19 @@ advisories:
       Either stay on what the recipe leaves (2.0.x + classifier jakarta, EOL) or move every org.apache.shiro:* to
       3.0.1 and delete the <classifier>jakarta</classifier>; then check the 3.0 breaking changes (immutable default
       PrincipalCollection, case-insensitive path matching).
+    title_ko: "Apache Shiro 1.x / 2.x는 지원이 종료되었고, 3.0.1은 Jakarta 전용입니다(레시피는 3.x에 없는 classifier를 붙입니다)"
+    summary_ko: >-
+      Shiro 1.x는 javax 전용이고 2.0~2.2는 `jakarta` classifier jar를 따로 배포합니다. 3.0.0 / 3.0.1(2026)은
+      classifier 없는 Jakarta 전용 jar로 Spring 7.0.8 / Spring Boot 4.1.0(JDK 17) 기반이며, Shiro 팀은 1.x / 2.x
+      지원 종료를 발표했습니다. 레시피 `UpdateApacheShiroDependencies`(JakartaEE10)는 `org.apache.shiro:*`를 2.0.x +
+      classifier `jakarta`로 바꾸고 `org.apache.shiro.codec` / `util.ByteSource` / `StringUtils`를
+      `org.apache.shiro.lang.*`으로 옮깁니다. 3.0.1로 올리려면 이 classifier를 지워야 하고(3.0.1-jakarta jar가 없어 의존성을 받지
+      못합니다), 그래서 Shiro는 jakarta_libraries.yml에 넣지 않았습니다.
+    followup_ko: >-
+      레시피가 남긴 상태(2.0.x + classifier `jakarta`, 지원 종료)를 그대로 쓸지, 모든 `org.apache.shiro:*`를 3.0.1로 올리고
+      `<classifier>jakarta</classifier>`를 지울지 정해 주세요. 3.0으로 올리면 바뀐 동작(기본 `PrincipalCollection`이 불변이
+      되고, 경로 매칭이 대소문자를 구분하지 않음)을 확인해 주세요.
+    replacement_ko: "`org.apache.shiro:shiro-*` 3.0.1(classifier 없음)"
     docs:
       - https://shiro.apache.org/blog/2026/06/apache-shiro-300-released.html
       - https://shiro.apache.org/migration-guide.html
@@ -658,6 +1001,22 @@ advisories:
       HibernateTransactionManager, SpringSessionContext} (and hibernate3 / 4) → org.springframework.orm.jpa.hibernate.*,
       also in Spring XML class="…"; HibernateTemplate / HibernateDaoSupport DAOs → an injected SessionFactory with
       getCurrentSession() (Hibernate 7 Query API, knowledge/notes/hibernate-7.md); re-test transactions.
+    title_ko: "Spring 7에서 org.springframework.orm.hibernate5가 orm.jpa.hibernate로 옮겨졌고 HibernateTemplate / HibernateDaoSupport가 삭제되었습니다"
+    summary_ko: >-
+      Spring Framework 7.0은 Hibernate 네이티브 지원을 `org.springframework.orm.jpa.hibernate`로 옮기고
+      `LocalSessionFactoryBean` / `LocalSessionFactoryBuilder`, `HibernateTransactionManager`,
+      `SpringBeanContainer`, `SpringSessionContext`만 남겼습니다. `HibernateTemplate`, `HibernateCallback`,
+      `HibernateDaoSupport`와 `orm.hibernate3` / `4` 패키지는 삭제되었습니다(spring-orm 7.0.8 jar에서 확인). Spring
+      3/4 시절의 DAO는 보통 "package org.springframework.orm.hibernate5 does not exist"나 "cannot find symbol
+      HibernateTemplate" 오류가 나며, 이를 바꾸는 레시피는 없습니다.
+    followup_ko: >-
+      옮긴 DAO를 검토해 주세요. `org.springframework.orm.hibernate5.{LocalSessionFactoryBean,
+      HibernateTransactionManager, SpringSessionContext}` import(hibernate3 / 4 포함)는
+      `org.springframework.orm.jpa.hibernate.*`로 바꾸고, Spring XML의 `class="…"`도 같이 바꿔야 합니다.
+      `HibernateTemplate` / `HibernateDaoSupport`를 쓰는 DAO는 `SessionFactory`를 주입받아
+      `getCurrentSession()`을 쓰도록 바꿉니다(Hibernate 7 Query API, knowledge/notes/hibernate-7.md). 트랜잭션은 다시
+      테스트해 주세요.
+    replacement_ko: "`org.springframework.orm.jpa.hibernate.LocalSessionFactoryBean` / `HibernateTransactionManager`와 `SessionFactory.getCurrentSession()`(또는 JPA `EntityManager`)"
     docs:
       - https://github.com/spring-projects/spring-framework/wiki/Spring-Framework-7.0-Release-Notes
       - https://repo1.maven.org/maven2/org/springframework/spring-orm/7.0.8/
@@ -673,6 +1032,14 @@ advisories:
     replacement: remove it — org.hibernate.orm:hibernate-core (Boot-managed, via spring-boot-starter-data-jpa)
     replacement_version: 7.4.1.Final (Boot 4.1 managed)
     followup: Remove the hibernate-entitymanager dependency (no new coordinates) and check dependency:tree for a leftover hibernate-core 5.x.
+    title_ko: "hibernate-entitymanager는 hibernate-core에 합쳐졌습니다(마지막 릴리스 5.6.15.Final)"
+    summary_ko: >-
+      5.6.15.Final 이후 Final 릴리스가 없고, 5.2부터는 hibernate-core 5.x(javax.persistence)에 의존하는 빈 껍데기입니다.
+      Spring Boot 4 pom에 남겨 두면 hibernate-core 7.x 옆에 5.x가 함께 들어옵니다.
+    followup_ko: >-
+      hibernate-entitymanager 의존성을 지워 주세요(대신 추가할 좌표는 없습니다). `dependency:tree`에 hibernate-core 5.x가 남아
+      있는지도 확인해 주세요.
+    replacement_ko: "의존성을 지웁니다. `org.hibernate.orm:hibernate-core`(Spring Boot BOM에 버전 있음)는 `spring-boot-starter-data-jpa`로 들어옵니다"
     docs:
       - https://repo1.maven.org/maven2/org/hibernate/hibernate-entitymanager/
 
@@ -689,6 +1056,18 @@ advisories:
     followup: >-
       Set hibernate.cache.region.factory_class=jcache, hibernate.javax.cache.provider=
       org.ehcache.jsr107.EhcacheCachingProvider and convert ehcache.xml to the Ehcache 3 schema (runtime only).
+    title_ko: "hibernate-ehcache(Ehcache 2 region factory)는 Hibernate 5.6을 끝으로 지원이 종료되었습니다"
+    summary_ko: >-
+      5.6.15.Final 이후 Final 릴리스가 없습니다. Hibernate 6 / 7의 2차 캐시는
+      JCache(`org.hibernate.orm:hibernate-jcache`, Spring Boot BOM에 버전 있음)와
+      `org.ehcache:ehcache`(classifier `jakarta`) 같은 provider로만 동작합니다.
+      `hibernate.cache.region.factory_class=…EhCacheRegionFactory` 설정과 Ehcache 2용 ehcache.xml을 바꿔야
+      합니다.
+    followup_ko: >-
+      `hibernate.cache.region.factory_class=jcache`,
+      `hibernate.javax.cache.provider=org.ehcache.jsr107.EhcacheCachingProvider`로 설정하고 ehcache.xml을
+      Ehcache 3 스키마로 바꿔 주세요. 실행할 때만 드러나는 문제라 빌드로는 확인되지 않습니다.
+    replacement_ko: "`org.hibernate.orm:hibernate-jcache`와 `org.ehcache:ehcache`(classifier `jakarta`)"
     docs:
       - https://repo1.maven.org/maven2/org/hibernate/hibernate-ehcache/
       - https://repo1.maven.org/maven2/org/hibernate/orm/hibernate-jcache/
@@ -709,6 +1088,16 @@ advisories:
     followup: >-
       Swap the dependency, change imports com.vladmihalcea.hibernate.type.* → io.hypersistence.utils.hibernate.type.*,
       replace @TypeDef / @Type(type="jsonb") by @Type(JsonBinaryType.class) or @JdbcTypeCode(SqlTypes.JSON).
+    title_ko: "hibernate-types(com.vladmihalcea)는 2.21.1이 마지막입니다. Hibernate 7.3 / 7.4에는 hypersistence-utils-hibernate-73이 필요합니다"
+    summary_ko: >-
+      `com.vladmihalcea:hibernate-types-*`는 2.21.1(2022)이 마지막이고 Hibernate 5.x / 6.0만 지원합니다. 후속 라이브러리는
+      Hibernate 버전마다 아티팩트를 따로 냅니다. -73은 Hibernate 7.3 / 7.4(Spring Boot 4.1은 7.4.1), -71은 7.1 / 7.2,
+      -70은 7.0, -6x는 Hibernate 6용입니다(-72 / -74는 없습니다). 패키지는 `io.hypersistence.utils.hibernate.type.*`로
+      옮겨졌고, Hibernate 6부터 `@TypeDef`가 없어 `@Type(JsonType.class)`를 써야 합니다.
+    followup_ko: >-
+      의존성을 바꾸고 `com.vladmihalcea.hibernate.type.*` import를 `io.hypersistence.utils.hibernate.type.*`로
+      바꿔 주세요. `@TypeDef` / `@Type(type="jsonb")`는 `@Type(JsonBinaryType.class)`나
+      `@JdbcTypeCode(SqlTypes.JSON)`으로 바꿔 주세요.
     docs:
       - https://github.com/vladmihalcea/hypersistence-utils
       - https://repo1.maven.org/maven2/io/hypersistence/hypersistence-utils-hibernate-73/
@@ -730,6 +1119,18 @@ advisories:
       Port mappings (@Field → @FullTextField / @KeywordField / @GenericField), queries (FullTextEntityManager →
       Search.session(em).search(...)) and configuration keys (hibernate.search.backend.*), then reindex with the
       MassIndexer.
+    title_ko: "Hibernate ORM 7.4에는 Hibernate Search 8.4가 필요합니다(5 / 6과 API, 좌표가 다르고 재색인이 필요합니다)"
+    summary_ko: >-
+      Search 5(`org.hibernate:hibernate-search-orm`, 마지막 5.11.12.Final, javax, Lucene 5)에는 Jakarta 버전이
+      없고, 그 API(`FullTextEntityManager`, `QueryBuilder`, `@Field` / `@Indexed`)는 Search
+      6(`org.hibernate.search:hibernate-search-mapper-orm`, `@FullTextField`, `SearchSession`)에서
+      바뀌었습니다. ORM 7.4에 맞는 버전은 Hibernate Search 8.4입니다(8.3은 7.3, 8.2는 7.2용). 인덱스 형식이 바뀌어 전체 재색인이 필요하고,
+      변환 레시피는 없습니다.
+    followup_ko: >-
+      매핑(`@Field`를 `@FullTextField` / `@KeywordField` / `@GenericField`로), 쿼리(`FullTextEntityManager`를
+      `Search.session(em).search(...)`로), 설정 키(`hibernate.search.backend.*`)를 옮긴 뒤 `MassIndexer`로 재색인해
+      주세요.
+    replacement_ko: "`org.hibernate.search:hibernate-search-mapper-orm`과 `hibernate-search-backend-lucene`(또는 `-backend-elasticsearch`)"
     docs:
       - https://hibernate.org/search/releases/8.4/
       - https://docs.jboss.org/hibernate/search/6.0/migration/html_single/
@@ -751,6 +1152,19 @@ advisories:
       Either port HibernateQueryFactory / HibernateQuery code to JPAQueryFactory (stay on com.querydsl 5.1.0:jakarta) or
       swap every com.querydsl:* artifact for io.github.openfeign.querydsl:* 7.7 (same packages, drop the jakarta
       classifier, regenerate the Q-classes).
+    title_ko: "QueryDSL의 Hibernate 네이티브 API(com.querydsl.jpa.hibernate.*)는 Hibernate 6 / 7에서 동작하지 않습니다"
+    summary_ko: >-
+      Spring Boot BOM의 com.querydsl 5.1.0(classifier `jakarta`)은 `JPAQuery` / `JPAQueryFactory`에는 문제가
+      없습니다. 하지만 `com.querydsl.jpa.hibernate.*`(`HibernateQueryFactory`, `HibernateQuery`,
+      `HibernateUtil`)와 `com.querydsl.jpa.support`의 `Q*Dialect` 클래스는 Hibernate 7.4에서 삭제된
+      `org.hibernate.Query` / `org.hibernate.type.*Type` / 예전 dialect를 참조합니다. OpenFeign 포크는
+      `com.querydsl.*` 패키지를 새 좌표로 유지하면서 Hibernate 7을 지원합니다(Spring Boot BOM에는 없고, `JPAQueryFactory`만 쓰는
+      프로젝트는 BOM 버전을 그대로 쓰므로 일괄 교체 대상은 아닙니다).
+    followup_ko: >-
+      `HibernateQueryFactory` / `HibernateQuery` 코드를 `JPAQueryFactory`로 옮기거나(com.querydsl
+      5.1.0:jakarta 유지), 모든 `com.querydsl:*` 아티팩트를 `io.github.openfeign.querydsl:*` 7.7로 바꿔 주세요. 바꾸는
+      경우 패키지는 같고, `jakarta` classifier를 지우고 Q 클래스를 다시 생성해야 합니다.
+    replacement_ko: "`io.github.openfeign.querydsl:querydsl-jpa` / `querydsl-apt`(classifier 없음)"
     docs:
       - https://github.com/OpenFeign/querydsl/releases
       - https://repo1.maven.org/maven2/io/github/openfeign/querydsl/querydsl-jpa/
@@ -770,6 +1184,18 @@ advisories:
       Replace EhCacheCacheManager with JCacheCacheManager (or spring.cache.type=jcache +
       spring.cache.jcache.config=classpath:ehcache.xml), rewrite ehcache.xml to the Ehcache 3 schema (<cache alias> /
       <heap> / <expiry>) and drop net.sf.ehcache; direct net.sf.ehcache.CacheManager use is ported to javax.cache.
+    title_ko: "Ehcache 2: Spring 6부터 org.springframework.cache.ehcache(EhCacheCacheManager)가 삭제되었습니다"
+    summary_ko: >-
+      `net.sf.ehcache:ehcache`는 2.10.9.2(2021)가 마지막이고 Spring Boot 4 BOM에 없습니다. spring-context-support
+      7.0.8에는 cache/caffeine, cache/jcache, cache/transaction만 있어서, `EhCacheCacheManager` /
+      `EhCacheManagerFactoryBean`을 쓰면 Java 설정은 "package org.springframework.cache.ehcache does not
+      exist" 오류가, XML 빈 클래스는 ClassNotFound 오류가 납니다.
+    followup_ko: >-
+      `EhCacheCacheManager`를 `JCacheCacheManager`로 바꾸거나 `spring.cache.type=jcache`와
+      `spring.cache.jcache.config=classpath:ehcache.xml`을 설정해 주세요. ehcache.xml은 Ehcache 3 스키마(`<cache
+      alias>` / `<heap>` / `<expiry>`)로 다시 쓰고 `net.sf.ehcache`를 빼 주세요. `net.sf.ehcache.CacheManager`를
+      직접 쓰는 코드는 `javax.cache`로 옮깁니다.
+    replacement_ko: "JCache(`javax.cache:cache-api`)를 통한 `org.ehcache:ehcache`(classifier `jakarta`) 또는 Caffeine"
     docs:
       - https://www.ehcache.org/documentation/3.10/107.html
       - https://repo1.maven.org/maven2/net/sf/ehcache/ehcache/
@@ -788,6 +1214,16 @@ advisories:
     replacement: com.hazelcast:hazelcast (Boot-managed)
     replacement_version: 5.5.0
     followup: Port the 3.x API usages (IMap / ITopic / ILock packages, client config) and hazelcast.xml; drop hazelcast-client / hazelcast-all.
+    title_ko: "Hazelcast 3.x에서 5.x(Spring Boot BOM의 5.5.0)로 올리면 핵심 API(IMap 등)의 위치가 바뀝니다"
+    summary_ko: >-
+      Spring Boot 4.1 BOM에는 `com.hazelcast:hazelcast` 5.5.0이 있어 4.x / 5.x 프로젝트는 문제가 없습니다. 3.x 코드는 BOM
+      버전으로 올라가면서 깨집니다. `com.hazelcast.core.IMap`이 `com.hazelcast.map.IMap`으로 옮겨졌고, hazelcast-client와
+      hazelcast-all은 hazelcast에 합쳐졌으며, 설정 XML 스키마도 바뀌었습니다. Spring Boot 4는 Spring Session Hazelcast를 더
+      이상 직접 지원하지 않습니다.
+    followup_ko: >-
+      3.x API를 쓰는 코드(`IMap` / `ITopic` / `ILock` 패키지, 클라이언트 설정)와 hazelcast.xml을 옮기고 hazelcast-client /
+      hazelcast-all을 빼 주세요.
+    replacement_ko: "`com.hazelcast:hazelcast`(Spring Boot BOM에 버전 있음)"
     docs:
       - https://docs.hazelcast.com/hazelcast/5.5/migrate/upgrading-from-imdg-3
 
@@ -807,6 +1243,19 @@ advisories:
       Swap the dependency, rename the class in XML / Java (org.apache.commons.dbcp.BasicDataSource →
       org.apache.commons.dbcp2.BasicDataSource) and the renamed properties, check validationQuery / testOnBorrow and
       start the application once against the real database.
+    title_ko: "Commons DBCP 1.4는 지원이 종료되었습니다. commons-dbcp2에서는 패키지와 풀 속성 이름이 바뀝니다"
+    summary_ko: >-
+      `commons-dbcp:commons-dbcp`는 1.4가 마지막이고 Spring Boot 4 BOM에 없지만, javax EE 의존성이 없어 지금도 동작합니다.
+      dbcp2는 패키지가 `org.apache.commons.dbcp`에서 `org.apache.commons.dbcp2`로 바뀌고 `BasicDataSource` 속성 이름도
+      바뀝니다(`maxActive`는 `maxTotal`, `maxWait`는 `maxWaitMillis`, `removeAbandoned`는
+      `removeAbandonedOnBorrow` / `removeAbandonedOnMaintenance`). eGov 방식 Spring XML(`<bean
+      class="org.apache.commons.dbcp.BasicDataSource">`에 `<property name="maxActive">`)은 패키지만 바꾸면 빌드는
+      성공하고 실행할 때 실패합니다.
+    followup_ko: >-
+      의존성을 바꾸고 XML / Java의 클래스 이름(`org.apache.commons.dbcp.BasicDataSource`를
+      `org.apache.commons.dbcp2.BasicDataSource`로)과 이름이 바뀐 속성을 고쳐 주세요. `validationQuery` /
+      `testOnBorrow`를 확인하고, 실제 데이터베이스에 연결해 애플리케이션을 한 번 기동해 주세요.
+    replacement_ko: "`org.apache.commons:commons-dbcp2`(Spring Boot BOM에 버전 있음) 또는 HikariCP(Spring Boot 기본값)"
     docs:
       - https://commons.apache.org/proper/commons-dbcp/
       - https://repo1.maven.org/maven2/org/apache/commons/commons-dbcp2/
@@ -826,6 +1275,18 @@ advisories:
     followup: >-
       Swap the starter artifactId, change StatViewServlet / WebStatFilter imports and web.xml classes from
       com.alibaba.druid.support.http to com.alibaba.druid.support.jakarta and verify /druid/* on Boot 4.1.
+    title_ko: "Druid 웹 모니터(support.http)는 javax.servlet 기반이고, Spring Boot 4에는 druid-spring-boot-4-starter가 필요합니다"
+    summary_ko: >-
+      `com.alibaba:druid` 1.2.28에는
+      `com.alibaba.druid.support.http.{StatViewServlet,WebStatFilter}`(javax.servlet)와, 1.2.18부터 들어간
+      `com.alibaba.druid.support.jakarta.*`(jakarta.servlet)가 함께 있습니다. Spring Boot starter는 Spring
+      Boot 세대별로 나뉩니다. druid-spring-boot-starter는 Boot 2, -3-starter는 Boot 3, -4-starter는 Boot 4용이며
+      -4-starter는 1.2.28만 있고 Spring Boot 4.0 마일스톤으로 빌드되었습니다.
+    followup_ko: >-
+      starter의 artifactId를 바꾸고, `StatViewServlet` / `WebStatFilter` import와 web.xml의 클래스를
+      `com.alibaba.druid.support.http`에서 `com.alibaba.druid.support.jakarta`로 바꿔 주세요. Spring Boot
+      4.1에서 `/druid/*`가 열리는지 확인해 주세요.
+    replacement_ko: "`com.alibaba:druid-spring-boot-4-starter`(Spring Boot) 또는 `com.alibaba:druid` 1.2.28과 `com.alibaba.druid.support.jakarta.*`"
     docs:
       - https://github.com/alibaba/druid
       - https://repo1.maven.org/maven2/com/alibaba/druid-spring-boot-4-starter/
@@ -844,6 +1305,16 @@ advisories:
       Bump to 4.0.4, start the application once and confirm the ENC(...) values decrypt; values encrypted with the old
       PBEWithMD5AndDES default need jasypt.encryptor.algorithm=PBEWithMD5AndDES and
       iv-generator-classname=org.jasypt.iv.NoIvGenerator.
+    title_ko: "jasypt-spring-boot에는 Spring Boot 4용 릴리스가 없습니다(4.0.4는 Spring Boot 3.5용)"
+    summary_ko: >-
+      3.0.x는 Spring Boot 2용, 4.0.x는 Spring Boot 3.5 이상(Java 17)용이고, Spring Boot 4용 빌드는 없습니다(upstream
+      이슈 #429 진행 중). 4.0.4는 Spring Boot 4에서 대체로 동작하지만 환경 변수의 `ENC(...)` 값은 복호화되지 않았다는 보고가 있습니다. 문제가
+      생기면 빌드 오류가 아니라 실행 중 복호화 실패(DB 비밀번호 등)로 나타납니다.
+    followup_ko: >-
+      4.0.4로 올리고 애플리케이션을 한 번 기동해 `ENC(...)` 값이 복호화되는지 확인해 주세요. 예전 기본값 PBEWithMD5AndDES로 암호화한 값은
+      `jasypt.encryptor.algorithm=PBEWithMD5AndDES`와
+      `iv-generator-classname=org.jasypt.iv.NoIvGenerator`를 설정해야 합니다.
+    replacement_ko: "`com.github.ulisesbocchio:jasypt-spring-boot-starter`(최신 버전)"
     docs:
       - https://github.com/ulisesbocchio/jasypt-spring-boot
       - https://github.com/ulisesbocchio/jasypt-spring-boot/issues/429
@@ -863,6 +1334,15 @@ advisories:
       Replace spring-boot-starter-jta-atomikos with transactions-spring-boot4-starter 6.0.1 (or transactions-jta /
       -jdbc 6.0.1 with classifier jakarta for plain Spring), rename the spring.jta.atomikos.* properties per the
       Atomikos starter and verify the XA datasources at startup.
+    title_ko: "Spring Boot는 더 이상 Atomikos JTA 자동 설정을 제공하지 않습니다. Atomikos 6.0.x(jakarta)와 Atomikos의 Spring Boot 4 starter를 써 주세요"
+    summary_ko: >-
+      `spring-boot-starter-jta-atomikos`(Spring Boot 2)에 해당하는 starter가 4.1.0 BOM에는 없습니다. Atomikos가
+      `com.atomikos:transactions-spring-boot4-starter` 6.0.1을 배포하며, transactions-jta 6.0.1에는 `jakarta`
+      classifier jar가 있고 4.x / 5.x는 javax.transaction 기반입니다.
+    followup_ko: >-
+      `spring-boot-starter-jta-atomikos`를 `transactions-spring-boot4-starter` 6.0.1로 바꿔 주세요(Spring
+      Boot를 쓰지 않는 Spring 프로젝트는 classifier `jakarta`를 붙인 transactions-jta / -jdbc 6.0.1).
+      `spring.jta.atomikos.*` 속성 이름은 Atomikos starter 기준으로 바꾸고, 기동할 때 XA 데이터소스가 정상인지 확인해 주세요.
     docs:
       - https://repo1.maven.org/maven2/com/atomikos/transactions-spring-boot4-starter/
       - https://repo1.maven.org/maven2/com/atomikos/transactions-jta/6.0.1/
@@ -877,6 +1357,14 @@ advisories:
     replacement: com.atomikos:transactions-spring-boot4-starter (or Narayana)
     replacement_version: 6.0.1
     followup: Replace the transaction-manager configuration (XA datasources, BitronixTransactionManager bean) with Atomikos 6 or Narayana and test the XA flows.
+    title_ko: "Bitronix Transaction Manager는 지원이 종료되었고(2.1.4, 2014) javax.transaction 전용입니다"
+    summary_ko: >-
+      `org.codehaus.btm:btm`은 2.1.4가 마지막이고 javax.transaction을 구현합니다. Jakarta 버전이 없고 Spring Boot에서도
+      starter가 빠져서, jakarta.transaction 코드에는 쓸 수 없습니다.
+    followup_ko: >-
+      트랜잭션 매니저 설정(XA 데이터소스, `BitronixTransactionManager` 빈)을 Atomikos 6이나 Narayana로 바꾸고 XA 흐름을 테스트해
+      주세요.
+    replacement_ko: "`com.atomikos:transactions-spring-boot4-starter`(또는 Narayana)"
     docs:
       - https://repo1.maven.org/maven2/org/codehaus/btm/btm/
 
@@ -896,6 +1384,16 @@ advisories:
     followup: >-
       Migrate to commons-collections4 (raw-type / generics fixes included); leave commons-collections 3 on the
       classpath while commons-beanutils 1.x still needs it.
+    title_ko: "Commons Collections 3.2.2는 지원이 종료되었습니다. commons-collections4로 옮겨 주세요"
+    summary_ko: >-
+      3.2.2(2015)가 마지막 3.x입니다. Java 21에서 컴파일되고 javax 의존성도 없어 빌드는 성공합니다(commons-beanutils 1.11.0이 아직 이
+      라이브러리에 의존합니다). sbmig가 실행하지 않는 upstream 레시피 `UpgradeApacheCommonsCollections_3_4`(rewrite-apache
+      2.30.0)에 변환 기준이 있습니다. 의존성은 commons-collections4로, `IdentityMap`은 `IdentityHashMap`,
+      `FastArrayList`는 `CopyOnWriteArrayList`, `MapUtils.EMPTY_MAP` / `ListUtils.EMPTY_LIST`는
+      `Collections.*`, `org.apache.commons.collections`는 `collections4`로 바꾸며, 제네릭 수정도 함께 필요합니다.
+    followup_ko: >-
+      commons-collections4로 옮겨 주세요(raw 타입 / 제네릭 수정 포함). commons-beanutils 1.x가 필요로 하는 동안은
+      commons-collections 3을 classpath에 남겨 두세요.
     docs:
       - https://docs.openrewrite.org/recipes/apache/commons/collections/upgradeapachecommonscollections_3_4
       - https://commons.apache.org/proper/commons-collections/
@@ -914,6 +1412,17 @@ advisories:
     followup: >-
       Swap the coordinates, rewrite org.dozer imports to com.github.dozermapper.core, replace new DozerBeanMapper(...)
       with DozerBeanMapperBuilder.create()…build() and update the mapping XML namespace — or port the mappers to MapStruct.
+    title_ko: "Dozer 5(net.sf.dozer)는 com.github.dozermapper:dozer-core 7.0.0으로 바뀌었습니다(패키지 변경, 프로젝트는 비활성 상태)"
+    summary_ko: >-
+      `net.sf.dozer:dozer`는 5.5.1(2014)이 마지막입니다. 후속인 `com.github.dozermapper:dozer-core` 7.0.0(2024)은
+      jakarta.xml.bind / jakarta.el 기반이고, 패키지가 `org.dozer.*`에서 `com.github.dozermapper.core.*`로
+      옮겨졌습니다(`DozerBeanMapper`는 `DozerBeanMapperBuilder`로). README에는 프로젝트가 비활성 상태이며 MapStruct를 쓰라고 적혀
+      있습니다.
+    followup_ko: >-
+      좌표를 바꾸고 `org.dozer` import를 `com.github.dozermapper.core`로, `new DozerBeanMapper(...)`를
+      `DozerBeanMapperBuilder.create()…build()`로 바꾼 뒤 매핑 XML의 네임스페이스를 고쳐 주세요. 아니면 매퍼를 MapStruct로 옮겨
+      주세요.
+    replacement_ko: "`com.github.dozermapper:dozer-core`(단기) 또는 MapStruct"
     docs:
       - https://github.com/DozerMapper/dozer
       - https://repo1.maven.org/maven2/com/github/dozermapper/dozer-core/7.0.0/
@@ -930,6 +1439,14 @@ advisories:
     followup: >-
       Short term start the JVM with --add-opens java.base/java.lang=ALL-UNNAMED (and java.util as needed) on the
       external Tomcat / java -jar; long term port the mappers to MapStruct.
+    title_ko: "Orika 1.5.4(2019)는 지원이 종료되었고, Java 17 이상에서는 --add-opens 없이 실패합니다"
+    summary_ko: >-
+      마지막 릴리스는 1.5.4(2019)입니다. 컴파일은 되지만 Java 17 이상에서는 실행 중에 `InaccessibleObjectException`("module
+      java.base does not open java.lang")이 납니다(upstream 이슈 #377, 2021년부터 해결되지 않음).
+    followup_ko: >-
+      당장은 외부 Tomcat이나 `java -jar`로 실행할 때 JVM 옵션에 `--add-opens java.base/java.lang=ALL-UNNAMED`(필요하면
+      java.util도)를 추가해 주세요. 길게 보면 매퍼를 MapStruct로 옮겨야 합니다.
+    replacement_ko: "MapStruct(`org.mapstruct:mapstruct`) 또는 ModelMapper"
     docs:
       - https://github.com/orika-mapper/orika/issues/377
 
@@ -946,6 +1463,17 @@ advisories:
     followup: >-
       Port RestHighLevelClient calls (SearchRequest / SearchSourceBuilder / QueryBuilders) to ElasticsearchClient
       builders; short-term fallback: pin 7.17.29 explicitly (compiles; cluster compatibility is the owners' call).
+    title_ko: "Elasticsearch RestHighLevelClient는 지원이 종료되었고(마지막 7.17.29) Spring Boot 4 BOM에 없습니다"
+    summary_ko: >-
+      7.17.29 이후 HLRC 릴리스가 없고, Spring Boot 4.1 BOM에는 대신 `co.elastic.clients:elasticsearch-java` 9.4.2가
+      있습니다. 그래서 부모 pom을 바꾸면 이 의존성은 버전이 없어지거나("dependencies.dependency.version is missing"), 버전을 직접 적으면
+      `org.elasticsearch:elasticsearch` 7.x가 classpath에 함께 들어옵니다. Spring Data Elasticsearch 6.1은 Java
+      API client를 씁니다.
+    followup_ko: >-
+      `RestHighLevelClient` 호출(`SearchRequest` / `SearchSourceBuilder` / `QueryBuilders`)을
+      `ElasticsearchClient` 빌더로 옮겨 주세요. 당장은 7.17.29를 pom에 직접 적어 두는 방법도 있습니다(컴파일은 되며, 클러스터 호환성은 담당 팀이
+      판단해 주세요).
+    replacement_ko: "`co.elastic.clients:elasticsearch-java`(Spring Boot BOM에 버전 있음)"
     docs:
       - https://www.elastic.co/guide/en/elasticsearch/client/java-api-client/current/migrate-hlrc.html
       - https://repo1.maven.org/maven2/co/elastic/clients/elasticsearch-java/
@@ -961,6 +1489,15 @@ advisories:
     replacement: org.apache.solr:solr-solrj (a SolrClient bean defined by the project)
     replacement_version: 9.11.0 (Solr 9 servers) / 10.0.0
     followup: Replace SolrTemplate / SolrCrudRepository with a SolrClient bean and explicit queries; match the SolrJ major to the Solr server.
+    title_ko: "Spring Data Solr는 지원이 종료되었고(4.3.15, 2021) Spring Boot 3부터 Solr 지원이 없습니다. SolrJ를 직접 써 주세요"
+    summary_ko: >-
+      spring-data-solr는 4.3.15가 마지막이고 spring-boot-starter-data-solr도 없어졌습니다(Spring Boot 4.1 BOM에 Solr
+      아티팩트가 없습니다). SolrJ 자체는 javax EE 의존성이 없지만(9.11.0은 Java 11, 10.0.0은 Java 17) Spring Boot BOM에 없고,
+      `SolrRepository` / `SolrTemplate` 코드는 Spring 7에서 동작하지 않습니다.
+    followup_ko: >-
+      `SolrTemplate` / `SolrCrudRepository`를 `SolrClient` 빈과 직접 작성한 쿼리로 바꿔 주세요. SolrJ 메이저 버전은 Solr 서버
+      버전에 맞춰 주세요.
+    replacement_ko: "`org.apache.solr:solr-solrj`(프로젝트에서 `SolrClient` 빈을 직접 정의)"
     docs:
       - https://repo1.maven.org/maven2/org/springframework/data/spring-data-solr/
       - https://solr.apache.org/guide/solr/latest/deployment-guide/solrj.html
@@ -985,6 +1522,19 @@ advisories:
     followup: >-
       Review the remaining org.codehaus.jackson.* code the fix loop ported (JsonNode, TypeReference, custom
       (de)serializers) and @JsonSerialize(include=...) behaviour.
+    title_ko: "Jackson 1.x(org.codehaus.jackson)는 지원이 종료되었습니다"
+    summary_ko: >-
+      마지막 릴리스는 1.9.13(2013)입니다. Spring Framework 7 / Spring Boot 4 레시피가 `CodehausToFasterXML`을 실행하지만,
+      이 레시피는 타입 11개(`ObjectMapper`, `JsonSerializer`, `map.annotate.JsonSerialize`(+`Inclusion`),
+      `AnnotationIntrospector`(+`Pair`), `Jaxb` / `Jackson` / `NopAnnotationIntrospector`,
+      `Serialization` / `DeserializationConfig$Feature`)와 패키지 3개(`annotate`, `map.ext`, `map.ser`)만
+      바꿉니다. `org.codehaus.jackson.JsonNode` / `JsonParser` / `JsonGenerator` / `JsonFactory`,
+      `type.TypeReference`, `map.JsonMappingException`, `map.JsonDeserializer`, `node.*`은 바뀌지 않아 자동 수정
+      단계에서 "package org.codehaus.jackson… does not exist" 오류로 나타납니다.
+    followup_ko: >-
+      자동 수정 단계에서 옮긴 나머지 `org.codehaus.jackson.*` 코드(`JsonNode`, `TypeReference`, 커스텀 serializer /
+      deserializer)와 `@JsonSerialize(include=...)`의 동작을 검토해 주세요.
+    replacement_ko: "`tools.jackson.core:jackson-databind`(Jackson 3, Spring Boot 4 기본값) 또는 `com.fasterxml.jackson.core:jackson-databind`"
     docs:
       - https://docs.openrewrite.org/recipes/java/jackson/codehaustofasterxml
       - https://repo1.maven.org/maven2/org/codehaus/jackson/jackson-mapper-asl/
@@ -1003,6 +1553,15 @@ advisories:
     followup: >-
       Port org.codehaus.jackson.* to com.fasterxml.jackson.* (ObjectMapper, JsonNode, TypeReference, custom
       (de)serializers; @JsonSerialize(include=...) → @JsonInclude) and drop jackson-mapper-asl / jackson-core-asl.
+    title_ko: "Jackson 1.x(org.codehaus.jackson)는 지원이 종료되었습니다(이 프로젝트 유형에는 자동 변환 레시피가 없습니다)"
+    summary_ko: >-
+      마지막 릴리스는 1.9.13(2013)입니다. jackson-mapper-asl / jackson-core-asl이 기존 버전 그대로 남아 컴파일은 되지만, Spring을
+      쓰지 않는 프로젝트는 Jackson 2 / 3으로 자동 변환되지 않습니다.
+    followup_ko: >-
+      `org.codehaus.jackson.*`을 `com.fasterxml.jackson.*`으로 옮기고(`ObjectMapper`, `JsonNode`,
+      `TypeReference`, 커스텀 serializer / deserializer, `@JsonSerialize(include=...)`는 `@JsonInclude`로)
+      jackson-mapper-asl / jackson-core-asl을 빼 주세요.
+    replacement_ko: "`tools.jackson.core:jackson-databind`(Jackson 3, Spring Boot 4 기본값) 또는 `com.fasterxml.jackson.core:jackson-databind`"
     docs:
       - https://docs.openrewrite.org/recipes/java/jackson/codehaustofasterxml
       - https://repo1.maven.org/maven2/org/codehaus/jackson/jackson-mapper-asl/
@@ -1019,6 +1578,15 @@ advisories:
     replacement: Jackson (tools.jackson.core:jackson-databind, Boot 4 default) or com.google.code.gson:gson
     replacement_version: Boot 4.1 managed
     followup: Replace JSONObject.fromObject / JSONArray / JSONSerializer with ObjectMapper; keep the jdk15 classifier while json-lib is still used.
+    title_ko: "json-lib(net.sf.json)은 지원이 종료되었습니다"
+    summary_ko: >-
+      마지막 릴리스는 2.4(2010)입니다. 2.4에는 classifier가 붙은 jar(json-lib-2.4-jdk15.jar)만 있어서 의존성에
+      `<classifier>jdk15</classifier>`가 없으면 받아지지 않습니다. Java 21에서 컴파일은 되지만 commons-lang 2,
+      commons-collections 3, commons-beanutils, ezmorph가 compile classpath에 함께 들어옵니다.
+    followup_ko: >-
+      `JSONObject.fromObject` / `JSONArray` / `JSONSerializer`를 `ObjectMapper`로 바꿔 주세요. json-lib을 쓰는
+      동안은 jdk15 classifier를 그대로 두어야 합니다.
+    replacement_ko: "Jackson(`tools.jackson.core:jackson-databind`, Spring Boot 4 기본값) 또는 `com.google.code.gson:gson`"
     docs:
       - https://json-lib.sourceforge.net/
       - https://repo1.maven.org/maven2/net/sf/json-lib/json-lib/2.4/
@@ -1036,6 +1604,15 @@ advisories:
     replacement: com.thoughtworks.xstream:xstream (bump) or Jackson XML (tools.jackson.dataformat:jackson-dataformat-xml)
     replacement_version: 1.4.21
     followup: Bump to 1.4.21, call xstream.allowTypes(...) / allowTypesByWildcard(...) and add the needed --add-opens to the run script (runtime).
+    title_ko: "XStream은 Java 17 이상에서 --add-opens와 허용 타입 목록이 필요합니다"
+    summary_ko: >-
+      최신 버전은 1.4.21(2024)입니다. Java 21에서 컴파일은 되지만 리플렉션 기반 converter는 실행할 때 `--add-opens
+      java.base/java.util=ALL-UNNAMED` 등이 필요합니다("since Java 17 it is no longer possible to allow this
+      access with a single runtime option"). 보안 프레임워크를 설정하지 않은 예전 버전은 역직렬화 취약점(CVE)에 노출됩니다.
+    followup_ko: >-
+      1.4.21로 올리고 `xstream.allowTypes(...)` / `allowTypesByWildcard(...)`를 호출하도록 고친 뒤, 실행 스크립트에 필요한
+      `--add-opens`를 추가해 주세요(실행 환경 설정).
+    replacement_ko: "`com.thoughtworks.xstream:xstream`(버전 올림) 또는 Jackson XML(`tools.jackson.dataformat:jackson-dataformat-xml`)"
     docs:
       - https://x-stream.github.io/faq.html
       - https://x-stream.github.io/security.html
@@ -1052,6 +1629,13 @@ advisories:
     replacement: org.jdom:jdom2
     replacement_version: 2.0.6.1 (Boot 4.1 managed)
     followup: Rename org.jdom.* imports to org.jdom2.* (the API is close) and swap the dependency.
+    title_ko: "JDOM 1.x는 지원이 종료되었습니다(JDOM 2는 패키지 org.jdom2를 씁니다)"
+    summary_ko: >-
+      JDOM 1(jdom:jdom 1.0, org.jdom:jdom 1.1.x, 마지막 1.1.3)은 패키지 `org.jdom`을 쓰고, JDOM 2는
+      `org.jdom:jdom2`(2.0.6.1, Spring Boot BOM에 버전 있음)이며 패키지는 `org.jdom2`입니다(org.jdom:jdom 2.0.x는 이미
+      JDOM 2입니다). Java 21에서 컴파일되며, sbmig가 쓰는 레시피에는 변환이 없습니다.
+    followup_ko: >-
+      `org.jdom.*` import를 `org.jdom2.*`로 바꾸고(API는 거의 같습니다) 의존성을 바꿔 주세요.
     docs:
       - https://github.com/hunterhacker/jdom/wiki/JDOM2-Migration-Issues
 
@@ -1069,6 +1653,16 @@ advisories:
     followup: >-
       Keep the javax.xml.rpc / javax.xml.soap imports in Axis code (exclude them from the jakarta rename), declare
       axis-jaxrpc and axis-saaj 1.4 explicitly and plan the regeneration of the stubs with JAX-WS (wsimport) or CXF.
+    title_ko: "Apache Axis 1.x(JAX-RPC)는 지원이 종료되었습니다"
+    summary_ko: >-
+      마지막 릴리스는 1.4(2006)이고 javax.xml.rpc / javax.xml.soap 기반이며 Jakarta 버전이 없습니다. 클라이언트 stub은
+      axis-jaxrpc와 axis-saaj(javax 네임스페이스)가 classpath에 있을 때만 컴파일됩니다(javax.xml.soap은 JDK 11에서 빠졌습니다).
+      jakarta 패키지 변환이 `javax.xml.soap`을 `jakarta.xml.soap`으로 바꾸면 SOAP 객체를 Axis 1 API에 넘기는 코드가 깨지고,
+      `AxisServlet`(javax.servlet)은 Tomcat 11 / Spring Boot 4에서 실행되지 않습니다.
+    followup_ko: >-
+      Axis 코드의 `javax.xml.rpc` / `javax.xml.soap` import는 그대로 두고(jakarta 이름 변경에서 제외), axis-jaxrpc와
+      axis-saaj 1.4를 pom에 직접 선언해 주세요. stub은 JAX-WS(wsimport)나 CXF로 다시 생성할 계획을 세워 주세요.
+    replacement_ko: "WSDL로 생성한 JAX-WS 클라이언트(`com.sun.xml.ws:jaxws-rt`와 jaxws-maven-plugin), Apache CXF 4.x 또는 Spring WS `WebServiceTemplate`"
     docs:
       - https://axis.apache.org/axis/
       - https://repo1.maven.org/maven2/org/apache/axis/axis-saaj/1.4/
@@ -1088,6 +1682,18 @@ advisories:
     followup: >-
       After the recipe check the pom: if commons-email2-jakarta has no resolvable version set 2.0.0-M1 explicitly (a
       milestone in production is the owners' call) or move to JavaMailSender.
+    title_ko: "Commons Email 1.x는 javax.mail 전용이고, Jakarta 버전 commons-email2-jakarta는 마일스톤뿐입니다"
+    summary_ko: >-
+      commons-email 1.6.0은 `javax.mail.*`을 참조합니다. Jakarta 버전은 좌표와 패키지가
+      바뀌었고(`org.apache.commons:commons-email2-jakarta`의 `org.apache.commons.mail2.jakarta.*`,
+      `commons-email2-core`의 `org.apache.commons.mail2.core.EmailException` 등), Maven Central에는
+      2.0.0-M1(2024)만 있습니다. `UpgradeSpringBoot_4_0`이 이미
+      `UpdateApacheCommonsEmailDependencies`(newVersion 2.0.x)를 실행하지만, 이 레시피가 마일스톤 버전을 받아들이는지는 확인되지
+      않았습니다.
+    followup_ko: >-
+      레시피가 실행된 뒤 pom을 확인해 주세요. commons-email2-jakarta의 버전을 받을 수 없으면 2.0.0-M1을 직접 적거나(운영에 마일스톤 버전을 쓸지는
+      담당 팀이 정해 주세요) `JavaMailSender`로 옮겨 주세요.
+    replacement_ko: "`org.apache.commons:commons-email2-jakarta`(또는 Spring `JavaMailSender`, `spring-boot-starter-mail`)"
     docs:
       - https://docs.openrewrite.org/recipes/java/migrate/jakarta/updateapachecommonsemaildependencies
       - https://repo1.maven.org/maven2/org/apache/commons/commons-email2-jakarta/
@@ -1102,6 +1708,13 @@ advisories:
     replacement: org.apache.commons:commons-configuration2
     replacement_version: 2.15.1
     followup: Rewrite PropertiesConfiguration / XMLConfiguration use to configuration2 builders (FileBasedConfigurationBuilder) or Spring @ConfigurationProperties.
+    title_ko: "Commons Configuration 1.x는 유지보수되지 않습니다(마지막 1.10, 2013). 2.x는 패키지 org.apache.commons.configuration2를 씁니다"
+    summary_ko: >-
+      1.10은 Java 21에서 컴파일되지만 commons-lang 2에 의존합니다. Commons Configuration 2는 좌표와 패키지가 바뀌었고 builder 기반
+      API를 씁니다.
+    followup_ko: >-
+      `PropertiesConfiguration` / `XMLConfiguration`을 쓰는 코드를 configuration2
+      builder(`FileBasedConfigurationBuilder`)나 Spring `@ConfigurationProperties`로 다시 작성해 주세요.
     docs:
       - https://commons.apache.org/proper/commons-configuration/userguide/upgradeto2_0.html
 
@@ -1117,6 +1730,16 @@ advisories:
     replacement: net.bytebuddy:byte-buddy (Boot-managed) or MapStruct / BeanUtils.copyProperties
     replacement_version: Boot 4.1 managed
     followup: Remove cglib when nothing uses it directly; replace BeanCopier / Enhancer use (MapStruct, BeanUtils.copyProperties, ByteBuddy).
+    title_ko: "cglib은 유지보수되지 않고 JDK 17 이상에서 안정적으로 동작하지 않습니다"
+    summary_ko: >-
+      마지막 릴리스는 3.3.0(2019)이고 README에 "does not work well (or possibly at all?) in newer JDKs,
+      particularly JDK17+"라고 적혀 있습니다. 컴파일은 되고 Spring은 자체 재패키징한 `org.springframework.cglib`을 쓰므로,
+      `net.sf.cglib.*`(`Enhancer`, `BeanCopier`)를 직접 호출하는 프로젝트 코드만 `--add-opens
+      java.base/java.lang=ALL-UNNAMED` 없이 실행할 때 `InaccessibleObjectException`이 납니다.
+    followup_ko: >-
+      cglib을 직접 쓰는 곳이 없으면 의존성을 빼 주세요. `BeanCopier` / `Enhancer`를 쓰는 곳은 MapStruct,
+      `BeanUtils.copyProperties`, ByteBuddy로 바꿔 주세요.
+    replacement_ko: "`net.bytebuddy:byte-buddy`(Spring Boot BOM에 버전 있음) 또는 MapStruct / `BeanUtils.copyProperties`"
     docs:
       - https://github.com/cglib/cglib
 
@@ -1130,6 +1753,14 @@ advisories:
     replacement: org.apache.httpcomponents.client5:httpclient5 (or Spring RestClient)
     replacement_version: Boot 4.1 managed (5.6.1)
     followup: Rewrite HttpClient / GetMethod / PostMethod / NameValuePair code to httpclient5 (or RestClient) and drop commons-httpclient.
+    title_ko: "Jakarta Commons HttpClient 3.x는 지원이 종료되었습니다(2011년부터)"
+    summary_ko: >-
+      commons-httpclient 3.1(2007, 패키지 `org.apache.commons.httpclient`)은 지원이 종료되었습니다. Java 21에서 컴파일은
+      되지만 더 이상 수정이 나오지 않습니다. httpclient4 안내는 이 라이브러리를 다루지 않고, httpclient5 레시피는 4.x 코드만 바꿉니다.
+    followup_ko: >-
+      `HttpClient` / `GetMethod` / `PostMethod` / `NameValuePair` 코드를 httpclient5(또는 RestClient)로 다시
+      작성하고 commons-httpclient를 빼 주세요.
+    replacement_ko: "`org.apache.httpcomponents.client5:httpclient5`(또는 Spring RestClient)"
     docs:
       - https://hc.apache.org/httpclient-legacy/
       - https://hc.apache.org/httpcomponents-client-5.4.x/migration-guide/
@@ -1150,6 +1781,18 @@ advisories:
     followup: >-
       Short term keep 0.9.1 and add javax.xml.bind:jaxb-api 2.3.1 (runtime); proper fix: 0.13.0 with
       Jwts.parser().verifyWith(key).build().parseSignedClaims(..) and signWith(Keys.hmacShaKeyFor(bytes)).
+    title_ko: "JJWT 0.9.x는 실행할 때 javax.xml.bind가 필요하고, 0.12에서 API가 새로 바뀌었습니다"
+    summary_ko: >-
+      jjwt 0.9.1(`io.jsonwebtoken.impl.Base64Codec`)은 JDK 11에서 빠진 `javax.xml.bind.DatatypeConverter`를
+      호출하므로, `javax.xml.bind:jaxb-api` 2.3.1이 classpath에 없으면 실행 중에 `NoClassDefFoundError`가 납니다. 0.10에서
+      jar가 jjwt-api, jjwt-impl, jjwt-jackson으로 나뉘었고, 0.12에서 `Jwts.parserBuilder()`(이제 `Jwts.parser()`가
+      builder를 반환합니다)와 parser setter가 삭제되었으며 `parseClaimsJws`(`parseSignedClaims`로 대체)와
+      `SignatureAlgorithm`은 deprecated되었습니다.
+    followup_ko: >-
+      당장은 0.9.1을 유지하고 `javax.xml.bind:jaxb-api` 2.3.1(runtime)을 추가해 주세요. 제대로 고치려면 0.13.0으로 올리고
+      `Jwts.parser().verifyWith(key).build().parseSignedClaims(..)`와
+      `signWith(Keys.hmacShaKeyFor(bytes))`를 써 주세요.
+    replacement_ko: "`io.jsonwebtoken:jjwt-api`와 `jjwt-impl`(runtime), `jjwt-jackson`(runtime)"
     docs:
       - https://github.com/jwtk/jjwt/blob/master/CHANGELOG.md
       - https://github.com/jwtk/jjwt#installation
@@ -1173,6 +1816,19 @@ advisories:
     followup: >-
       Review the ported constants / style calls and HSSFColor / IndexedColors use, then re-test the generated Excel
       files (fonts, borders, merged cells).
+    title_ko: "Apache POI 3.x / 4.x의 API 일부가 POI 5에서 삭제되었습니다"
+    summary_ko: >-
+      POI 5.5.1에서 3.15~3.17에 deprecated된 int / short 상수가 삭제되었습니다. `Cell.CELL_TYPE_*`(`CellType`으로),
+      `CellStyle.ALIGN_*` / `VERTICAL_*`(`HorizontalAlignment` / `VerticalAlignment`로),
+      `BORDER_*`(`BorderStyle`로), fill pattern(`FillPatternType`으로),
+      `Hyperlink.LINK_*`(`HyperlinkType`으로), `Font.setBoldweight`(`setBold`로), `setCellType(int)`이
+      해당하고, poi-ooxml-schemas는 poi-ooxml-lite로, ooxml-schemas는 poi-ooxml-full로 바뀌었습니다. rewrite-apache
+      레시피 `UpgradeApachePoi_5`가 이 변경을 다루지만 타입 정보가 필요해 예전 POI가 아직 받아지는 상태에서 실행해야 하고, 레시피 목록에는 아직 들어 있지
+      않습니다. `HSSFColor.*` 내부 클래스는 이 레시피도 다루지 않습니다.
+    followup_ko: >-
+      옮긴 상수 / 스타일 호출과 `HSSFColor` / `IndexedColors`를 쓰는 코드를 검토한 뒤, 생성되는 Excel 파일(글꼴, 테두리, 병합 셀)을 다시
+      테스트해 주세요.
+    replacement_ko: "`org.apache.poi:poi`와 `poi-ooxml`"
     docs:
       - https://docs.openrewrite.org/recipes/apache/poi/upgradeapachepoi_5
       - https://poi.apache.org/changes.html
@@ -1189,6 +1845,15 @@ advisories:
     replacement: org.jxls:jxls-poi (2.x for minimal change, 3.x current)
     replacement_version: 2.14.0 / 3.2.0
     followup: Keep POI 3.x pinned for the JXLS 1 modules (if the owners accept it) or port the templates to jx:area markup and JxlsHelper (2.x).
+    title_ko: "JXLS 1.x(XLSTransformer)는 POI 3.x용이고 유지보수되지 않습니다"
+    summary_ko: >-
+      `net.sf.jxls:jxls-core` 1.0.6(2014)은 poi 3.9에 의존하므로, POI가 5.x가 되면 `XLSTransformer`가 삭제된 POI 3
+      API 때문에 실행 중에 실패합니다. JXLS 2(`org.jxls:jxls-poi` 2.14.0, POI 5.2.2, Java 8)와 JXLS 3(3.2.0, Java
+      17)은 템플릿 문법(jx:area 주석)과 API가 다릅니다.
+    followup_ko: >-
+      JXLS 1을 쓰는 모듈에 POI 3.x 버전을 직접 지정해 둘지(담당 팀이 받아들이는 경우), 템플릿을 jx:area 표기와 `JxlsHelper`(2.x)로 옮길지 정해
+      주세요.
+    replacement_ko: "`org.jxls:jxls-poi`(변경을 최소로 하려면 2.x, 최신은 3.x)"
     docs:
       - https://jxls.sourceforge.net/
       - https://repo1.maven.org/maven2/org/jxls/jxls-poi/
@@ -1201,6 +1866,12 @@ advisories:
     replacement: org.apache.poi:poi (HSSF / XSSF)
     replacement_version: 5.5.1
     followup: Port Workbook / WritableWorkbook code to POI when the module is next touched.
+    title_ko: "JExcelApi(jxl)는 지원이 종료되었습니다(2.6.12, .xls만 지원)"
+    summary_ko: >-
+      javax EE 참조가 없어 Java 21에서 컴파일되고 실행되지만, 유지보수되지 않고 BIFF8 `.xls`만 읽고 쓸 수 있습니다. 대신 Apache POI를 씁니다.
+    followup_ko: >-
+      다음에 이 모듈을 수정할 때 `Workbook` / `WritableWorkbook` 코드를 POI로 옮겨 주세요.
+    replacement_ko: "`org.apache.poi:poi`(HSSF / XSSF 사용)"
     docs:
       - https://jexcelapi.sourceforge.net/
 
@@ -1220,6 +1891,17 @@ advisories:
     followup: >-
       Drop explicit versions on org.slf4j:* and logback, remove slf4j-log4j12 / slf4j-jdk14 / slf4j-simple bindings and
       jcl-over-slf4j; keep log4j-over-slf4j only for leftover Log4j 1 calls.
+    title_ko: "SLF4J 1.7 버전 지정이나 바인딩이 남아 있으면 Spring Boot 4(SLF4J 2 + Logback 1.5)에서 로그가 조용히 꺼지거나 중복됩니다"
+    summary_ko: >-
+      Spring Boot 4.1 BOM은 모든 `org.slf4j` 아티팩트의 버전을 2.0.18로 정합니다. slf4j-api 1.7.x를 직접 적으면 이 버전을 덮어써
+      Logback 1.5에서 provider를 찾지 못하고, 빌드는 성공하지만 로그가 출력되지 않습니다(재구성 단계는 새 부모 pom이 정하는 버전을 지우므로 이 안내는 바인딩
+      아티팩트로 찾습니다). slf4j-log4j12 2.x는 slf4j-reload4j(Log4j 1)로 relocation된 아티팩트입니다. Spring Framework
+      7은 commons-logging 1.3을 직접 쓰므로, jcl-over-slf4j가 함께 있으면 `org.apache.commons.logging.*`이 두 벌
+      들어옵니다.
+    followup_ko: >-
+      `org.slf4j:*`와 logback에 직접 적은 버전을 지우고, slf4j-log4j12 / slf4j-jdk14 / slf4j-simple 바인딩과
+      jcl-over-slf4j를 빼 주세요. log4j-over-slf4j는 Log4j 1 호출이 남아 있을 때만 두세요.
+    replacement_ko: "`org.slf4j:slf4j-api`(Spring Boot BOM에 버전 있음)와 `spring-boot-starter-logging`"
     docs:
       - https://www.slf4j.org/faq.html#changesInVersion200
       - https://www.slf4j.org/codes.html#noProviders
@@ -1236,6 +1918,15 @@ advisories:
     replacement: org.mockito:mockito-core (+ mockito-junit-jupiter)
     replacement_version: 5.23.0 (Boot 4.1 managed)
     followup: Replace mockito-all with mockito-core and run Mockito1to5Migration when the tests come back into scope.
+    title_ko: "Mockito 1.x / 2.x 테스트는 Spring Boot BOM의 Mockito 5로 컴파일되지 않습니다"
+    summary_ko: >-
+      Spring Boot 4.1 BOM의 mockito 버전은 5.23.0이고, mockito-all은 1.10.19 / 2.0.2-beta가 마지막이며 BOM에 없습니다.
+      검증된 레시피 `Mockito1to5Migration`이 있고, Spring Boot 4에서는 `@MockBean` / `@SpyBean`도
+      삭제되었습니다(`@MockitoBean` / `@MockitoSpyBean`으로 대체). `build.skip_test_compile`이 true인 동안(사내 실행)은
+      영향이 없습니다.
+    followup_ko: >-
+      테스트를 다시 빌드 대상에 넣을 때 mockito-all을 mockito-core로 바꾸고 `Mockito1to5Migration`을 실행해 주세요.
+    replacement_ko: "`org.mockito:mockito-core`와 `mockito-junit-jupiter`"
     docs:
       - https://docs.openrewrite.org/recipes/java/testing/mockito/mockito1to5migration
 
@@ -1249,6 +1940,15 @@ advisories:
     replacement: org.mockito:mockito-core (MockedStatic / MockedConstruction)
     replacement_version: 5.23.0 (Boot 4.1 managed)
     followup: Remove PowerMock and rewrite private / final / static mocking with Mockito 5 (or refactor the code under test) when the tests come back into scope.
+    title_ko: "PowerMock은 유지보수되지 않고(마지막 2.0.9, 2020) Mockito 2 / JUnit 4만 지원합니다"
+    summary_ko: >-
+      powermock-api-mockito2 2.0.9는 Mockito 2 API에 의존하고 JUnit 5 runner가 없어서, Spring Boot BOM의 Mockito
+      5에서는 테스트가 실패합니다. 검증된 레시피 `ReplacePowerMockito`가 `mockStatic` / `when` / `spy` / `Whitebox`를 일반
+      Mockito 코드로 바꿉니다.
+    followup_ko: >-
+      테스트를 다시 빌드 대상에 넣을 때 PowerMock을 빼고, private / final / static mocking은 Mockito 5로 다시 작성하거나 테스트 대상
+      코드를 고쳐 주세요.
+    replacement_ko: "`org.mockito:mockito-core`(`MockedStatic` / `MockedConstruction` 사용)"
     docs:
       - https://docs.openrewrite.org/recipes/java/testing/mockito/replacepowermockito
       - https://github.com/powermock/powermock

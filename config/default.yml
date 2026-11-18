@@ -24,7 +24,7 @@
 # target: 목표 버전
 # --------------------------------------------------------------------------------------
 # 이 도구가 프로젝트를 어느 버전까지 올리는지 지정한다. 재구성(BOM import 버전, maven.compiler.release),
-# 구조 검토와 수정 LLM에 전달하는 목표 문장, 보고서 인수인계 섹션의 "이후 버전"이 이 값을 읽는다.
+# 구조 검토와 수정 LLM에 전달하는 목표 문장, 보고서의 "전환 후" 버전이 이 값을 읽는다.
 # 실행할 OpenRewrite 레시피는 이 값으로 바뀌지 않는다(레시피는 openrewrite.recipes에 고정).
 # 회사 목표가 바뀌기 전에는 수정하지 않는다.
 target:
@@ -53,7 +53,7 @@ intake:
   synth_version: 1.0.0-SNAPSHOT    # 만드는 pom.xml의 버전(build.xml에 버전이 없을 때 쓴다)
   # Ant 프로젝트의 lib 폴더 jar 중 Maven 좌표를 끝내 찾지 못한 jar의 처리 방식.
   #   system: 그 jar를 원래 경로 그대로 system scope 의존성으로 선언한다. 빌드는 통과하고,
-  #           보고서 인수인계 섹션에 사내 저장소에 올리는 mvn install:install-file 명령을 기록한다.
+  #           보고서에 사내 저장소에 올리는 mvn install:install-file 명령을 기록한다.
   #   skip: 선언하지 않는다. 그 jar가 필요하면 빌드 오류로 드러나고 수정 루프가 처리한다.
   unknown_jar: system
   # pom.properties도 없고 이름 표에도 없는 jar를 sha1 값으로 저장소에서 조회할지 여부.
@@ -342,6 +342,12 @@ openrewrite:
       - org.openrewrite.hibernate.MigrateToHibernate71
     servlet_jakarta_10:
       - org.openrewrite.java.migrate.jakarta.RemovalsServletJakarta10
+    # Netflix Hystrix를 쓰는 프로젝트에만 넣는다(케이스와 상관없이). Boot / Framework 레시피보다 먼저 실행해
+    # @HystrixCommand를 Resilience4j @CircuitBreaker로, Hystrix starter를 Resilience4j starter로 바꾼다.
+    # 새 starter에는 버전을 쓰지 않으며, 버전은 재구성이 다른 의존성과 같은 규칙으로 정한다.
+    # 빈 목록([])이면 끄고, 그때 Hystrix는 as-is 버전 그대로 남는다.
+    hystrix_resilience4j:
+      - com.company.migrate.HystrixToResilience4j
   timeout_minutes: 40                    # 레시피 실행 한 번의 시간 상한(분). 큰 프로젝트에서 타임아웃이 나면 늘린다
   # 레시피를 실행하는 Maven JVM 옵션. 메모리 부족(OutOfMemoryError)이 나면 한 번은 더 큰 메모리로 다시 실행한다.
   jvm_args: ["-Xmx4g"]
@@ -767,7 +773,9 @@ report:
   formats: [md, json]              # 작성할 보고서 형식: md는 report.md(사람용), json은 report.json(기계용)
   zip_result: true                 # 바뀐 프로젝트를 result.zip으로 묶어 남길지 여부
   include_diff: true               # as-is 대비 전체 변경을 changes.patch로 남길지 여부
-  language: en                     # report.md 언어: en | ko. report.json, 콘솔, 로그는 항상 영어(회사 설정은 ko)
+  # report.md 언어와 구성: ko는 요청 담당자가 읽는 안내서(회사 설정), en은 개발과 진단에 쓰는 구성이다.
+  # report.json, 콘솔, 로그는 항상 영어다.
+  language: en
   # 최종 빌드 뒤 모듈마다 mvn dependency:tree를 실행해, classpath에 아직 남은 javax API jar와
   # 그것을 가져오는 직접 의존성을 보고서 "javax API jars" 섹션에 기록한다. 끄면 그 섹션이 빠지고 시간이 줄어든다.
   javax_api_inventory: true

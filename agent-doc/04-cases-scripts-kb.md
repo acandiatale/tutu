@@ -64,7 +64,7 @@
 2. **LLM 보강**(`augment` → `llm-augment`): 이 실행에서 그 케이스의 마지막 스크립트(실패한 저장본이나 LLM 스크립트)를 LLM 이 늘린 **완전한** 새
    스크립트. 실패한 시도는 되돌린 뒤 묻는다(프롬프트가 "되돌린 트리에서 돈다" 고 말함). 케이스당 `script.max_augments_per_case`(15)번.
 3. **LLM 신규**(`new` → `llm-new`): 늘릴 스크립트가 없거나 보강을 다 썼을 때. 답의 `<edits>` 를 바로 적용하고 `<script>` 는 unverified 로 저장.
-4. **차단**: 케이스의 LLM 요청(신규 + 보강)이 `script.max_llm_tries_per_case`(20)에 닿으면 `repeated_failure` → Handover.
+4. **차단**: 케이스의 LLM 요청(신규 + 보강)이 `script.max_llm_tries_per_case`(20)에 닿으면 `repeated_failure` → 보고서 「진행하지 않은 항목」.
 
 그 밖의 규칙:
 
@@ -79,7 +79,7 @@
   거절로 세지 않고 사실과 함께 다시 묻는다; 거절 답에 든 edits / script 는 버리지 않고 적용한다). 그런 노트가 맞는 라이브러리는 차단 정책
   (`external_javax_api` / `external_api_incompatible`)으로도 차단하지 않는다 — 직접 수정 한도가 끝을 정한다.
 - **차단 정책** `loop.blocked_policy.<사유>`: `classify_blocked`(`sbmig/triage/blocked.py`)가 "프로젝트 밖" 으로 분류한 케이스에 LLM 시도를
-  몇 번 줄지(0 = 바로 Handover). 사유 표는 [03](03-run-debug-and-logs.md) §5. 사람이 `block` 으로 고정한 케이스는 시도 없이 차단.
+  몇 번 줄지(0 = 바로 차단). 사유 표는 [03](03-run-debug-and-logs.md) §5. 사람이 `block` 으로 고정한 케이스는 시도 없이 차단.
 - **정체 / 진동**: 오류 집합이 직전 빌드와 같으면 `stall`, 더 이전 빌드(`loop.oscillation_window` 4 개 안)와 같으면 `oscillation`. 둘 다 정체
   단계를 올리고, 정체 단계가 `loop.stall_limit`(2) 이상이면 더 센 모델을 쓴다. 진동이 `loop.oscillation_limit`(2)번이면 관련 케이스를 `oscillation` 으로 차단.
 - **더 센 모델**(`llm.escalation_model`): 정체 단계가 `loop.stall_limit` 이상일 때, 그리고 케이스의 **세 번째** LLM 요청부터(보강이든 신규든).
@@ -96,7 +96,7 @@
 | `sbmig-version` | L2 `pom_invalid|missing_version` | 빠진 버전을 `VersionResolver` 순서로 채움: 새 부모 체인이 관리 → 버전 없음; as-is 빌드의 버전; 방금 추가된 것만 저장소의 최신 릴리스 |
 | `sbmig-resources` | 리소스 / war 플러그인이 필터링되는 바이너리에서 실패(`MalformedInputException`, `Input length = 1`) | 그 pom 의 maven-resources-plugin `nonFilteredFileExtensions` 에 확장자 추가(`sbmig/restructure/resources_filtering.py`) |
 | `sbmig-bundled` | 케이스가 잃은 패키지를 트리 안 동봉 jar 가 제공(`out/<run id>/logs/bundled-jars.json` 의 `provides`) | 저장소에 그 jar 자신의 좌표가 있으면 보통 의존성, 없으면 `<module>/lib/<이름>` 으로 복사 + `system` 스코프 + boot 모듈 `includeSystemScope`(`sbmig/restructure/system_jars.py`); 목표 체인이 관리하는 g:a 의 jar(superseded)는 절대 안 붙임 |
-| `sbmig-jakarta` | javax 를 말하는 케이스이고 저장소에서 jakarta 빌드를 **확인**했을 때(`libraries.discover_jakarta_builds`) | 의존성 선언 교체(다른 좌표면 replace, 같은 좌표면 버전·classifier). 같은 좌표의 상위 메이저면 메이저 변경으로 Handover ⚠ |
+| `sbmig-jakarta` | javax 를 말하는 케이스이고 저장소에서 jakarta 빌드를 **확인**했을 때(`libraries.discover_jakarta_builds`) | 의존성 선언 교체(다른 좌표면 replace, 같은 좌표면 버전·classifier). 같은 좌표의 상위 메이저면 메이저 변경으로 보고서 「운영자 확인」 ⚠ |
 
 LLM 이 적용한 시도도 커밋 전에 `_fill_versions` 가 버전 없는 의존성을 같은 순서로 채운다(LLM 은 버전을 모르면 `null` 로 둔다).
 
@@ -107,7 +107,7 @@ LLM 이 적용한 시도도 커밋 전에 `_fill_versions` 가 버전 없는 의
 
 **범위와 KB 실적**: 저장 버전은 만든 실행의 범위(`CaseScript.scope`), 실행 기록은 그 실행의 범위(`ScriptRun.scope`)를 남긴다(빈 값 = 범위를
 기록하기 전 = `full`). 성공·실패 수, `last_failure`, proven 판정은 버전 자기 범위의 실행만 센다. 범위를 줄인 실행이 재사용한 `full` 버전을
-프레임워크 검사가 되돌리면 그 실행은 `out_of_scope` 로 `runs[]` 에만 남는다(실패 아님; 시도 자체는 보고서에서 `apply_failed`). 자기 범위
+프레임워크 검사가 되돌리면 그 실행은 `out_of_scope` 로 `runs[]` 에만 남는다(실패 아님; 시도 자체는 `errors.md` 에서 `apply_failed`). 자기 범위
 버전을 되돌린 것은 `apply_failed` 실패다. 다른 범위 실행이 쓴 마지막 해결 힌트에는 `[from a full-migration run]` 같은 표시가 붙는다.
 
 ## 6. 채점 — 재빌드만이 판정한다
@@ -183,7 +183,7 @@ KB 는 파일뿐이다(DB 금지). 위치 `kb.dir`(기본 `kb-v2`). 원본은 `e
 | `sbmig kb cases show <case_id> [--no-code --last N --diff]` | case.json, 스크립트 코드·계보·실행 기록, 최근 항목, `KB 탐색:` 줄 |
 | `sbmig kb cases retire <case_id> <N>` | 나쁜 스크립트 버전을 다시 안 쓰게 |
 | `sbmig kb cases activate <case_id> <N>` | retire 취소(다른 프로젝트에서 해결한 적 있으면 proven, 아니면 unverified) |
-| `sbmig kb cases pin <case_id> block[:REASON] [--create]` / `sbmig kb cases unpin <case_id>` | 케이스를 시도 없이 차단으로 고정(Handover 가 이유를 보여 줌) / 풀기 |
+| `sbmig kb cases pin <case_id> block[:REASON] [--create]` / `sbmig kb cases unpin <case_id>` | 케이스를 시도 없이 차단으로 고정(보고서 「진행하지 않은 항목」이 이유를 보여 줌) / 풀기 |
 | `sbmig kb stats [--json]`, `sbmig kb validate` | 숫자 / 파일 점검(문제 있으면 exit 1) |
 | `sbmig kb export <OUT.zip>` / `sbmig kb import <IN.zip> [--replace]` | 다른 PC 로 옮기기(기본 합치기, `--replace` 는 예전 것을 `.bak-*` 로) |
 | `sbmig kb reindex [--dry-run]` | 옛 규칙으로 서명된 기록을 지금 규칙으로 재서명하고(케이스·스크립트가 새 ID 로 옮겨짐), errors.jsonl 로 케이스 수치·실행 기록을 다시 셈. `--dry-run` 은 무엇이 옮겨질지만 보여 준다 |

@@ -154,7 +154,7 @@ def test_followup_lines_and_their_korean_rendering():
     assert line.startswith(ADF_PREFIX + " " + ADF_MESSAGE_KO + " (evidence: bc4j, java; 12 entities / 11 tables, 20 view objects")
     assert line.endswith("900 of 1546 java files on ADF)") and "rewrite" not in line
     ko = tr_line("ko", line)
-    assert ko.startswith("ADF 프로젝트라 변환이 불가능합니다 (근거: bc4j, java; 엔티티 12개 / 테이블 11개") and ko.endswith("java 1546개 중 900개가 ADF)")
+    assert ko.startswith("ADF 프로젝트라 변환이 불가능합니다(근거: bc4j, java; 엔티티 12개 / 테이블 11개") and ko.endswith("java 파일 1546개 중 900개가 ADF 사용).")
     cont = adf_followup(s, "continue")
     assert cont.endswith(" — intake.adf_policy: continue (report only, the run goes on; not recommended)")
     assert tr_line("ko", cont).startswith("ADF 프로젝트라 변환이 불가능합니다") and tr_line("ko", cont) != cont
@@ -164,7 +164,7 @@ def test_followup_lines_and_their_korean_rendering():
     note = traces_followup(t)
     assert note.startswith(TRACES_PREFIX + " (one evidence family only — faces: p/main.jspx, p/WEB-INF/adfc-config.xml)")
     assert "ADF 흔적: 변환은 계속하되 확인 필요" in note
-    assert tr_line("ko", note).startswith("ADF 흔적(근거 계열 하나 — faces: p/main.jspx, p/WEB-INF/adfc-config.xml) — 변환은 계속하되 확인 필요 (")
+    assert tr_line("ko", note).startswith("ADF 흔적이 있습니다(근거 한 종류, faces: p/main.jspx, p/WEB-INF/adfc-config.xml). 변환은 계속했으니 ADF 프로젝트인지 확인해 주세요(")
     sizing = adf_sizing_lines(s)
     assert sizing[0].startswith("ADF: ADF project — conversion is not possible; families: bc4j, java; 12 entities / 11 tables")
     assert any(l.strip().startswith("evidence: bc4j: m/Emp.xml; java: m/EmpImpl.java") for l in sizing)

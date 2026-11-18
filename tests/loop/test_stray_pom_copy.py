@@ -61,7 +61,7 @@ def test_the_copy_is_ignored_at_intake_and_named_in_the_handover(cfg, tmp_path):
         assert f not in report.flags
     assert ws.ignored_dirs == {"boot/bin"}
     assert report.manual_followups.count(FOLLOWUP) == 1
-    assert tr_line("ko", FOLLOWUP).startswith("pom 복사본 무시: `boot/bin/pom.xml` 은(는) `boot/pom.xml` 와 좌표가 같고")
+    assert tr_line("ko", FOLLOWUP).startswith("pom 복사본을 무시했습니다. `boot/bin/pom.xml` 파일은 `boot/pom.xml` 파일과 좌표가 같고")
     [ev] = [e for e in journal_events(ws) if e["event"] == "stray_pom_ignored"]
     assert ev["poms"] == ["boot/bin/pom.xml"] and ev["duplicates_of"] == ["boot/pom.xml"]
     assert ev["coordinates"] == ["com.example:app-boot"] and ev["dirs"] == ["boot/bin"]

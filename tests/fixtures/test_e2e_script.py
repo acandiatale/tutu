@@ -335,12 +335,13 @@ def test_expect_only_lists_all_fixtures(e2e, capsys):
     assert "boot2-javax-lib-optional [X1] +sbmig.e2e.yml" in out
     assert e2e.discover_fixtures().index("boot2-cloud-legacy") == e2e.discover_fixtures().index("msa-shared-lib") + 1
     line = next(ln for ln in out.splitlines() if ln.startswith("boot2-cloud-legacy ["))
-    # v2: no advisory recipes — hystrix stays (guide), the Boot 4 umbrella replaces springfox / sleuth
-    assert "advisories=[springfox:outcome=replaced, sleuth:outcome=replaced, hystrix:policy=guide:outcome=still-present" \
+    # v2.1z-at: the Hystrix recipe set replaces hystrix (the advisory stays guide), the Boot 4 umbrella springfox /
+    # sleuth; no fix script is needed any more
+    assert "advisories=[springfox:outcome=replaced, sleuth:outcome=replaced, hystrix:policy=guide:outcome=replaced" \
         in line
     assert "handover(carried_over_min=1, spring_boot_after=4.1.0, from_here_contains=2" in line
     assert "review(verdict=issues, critical=0, script_status=none)" in line
-    assert 'scripts(attempts={"augment": 0, "new": 1, "reuse": 0}, cases=1)' in line and "post_checks=4" in line
+    assert 'scripts(attempts={"augment": 0, "new": 0, "reuse": 0})' in line and "post_checks=6" in line
     java6 = next(ln for ln in out.splitlines() if ln.startswith("java6-legacy ["))
     assert "kb(dir=out/e2e/kb-jaxb, after=pure-java)" in java6
     assert 'scripts(attempts={"augment": 0, "new": 2, "reuse": 1}, cases=2, stored=1, reuse_without_llm)' in java6
@@ -470,34 +471,39 @@ def test_advisory_summary_columns(e2e, tmp_path, monkeypatch):
 
 
 def test_boot2_cloud_legacy_expectations_against_synthetic_report(e2e, tmp_path):
-    """The fixture's own expect block (minus post_checks) passes against a report shaped like the v2 run: the Boot 4
-    umbrella replaces springfox / sleuth / the cloud train (recipe_source plan), hystrix stays (guide, still-present —
-    advisories are LLM hints + Handover in v2), one fix script drops @EnableCircuitBreaker."""
+    """The fixture's own expect block (minus post_checks) passes against a report shaped like the v2.1z-at run: the Boot
+    4 umbrella replaces springfox / sleuth / the cloud train (recipe_source plan), the Hystrix recipe set replaces
+    hystrix (the advisory stays guide; outcome replaced), no fix script, one LLM call (the structure review)."""
     exp = dict(e2e.load_expected("boot2-cloud-legacy")["expect"])
     exp.pop("post_checks")
     advisories = [dict(a, recipe_source="plan") for a in ADVISORY_REPORT["advisories"] if a["advisory_id"] != "hystrix"]
     advisories += [{"advisory_id": "hystrix", "library": "hystrix", "status": "eol", "policy": "guide",
-                    "recipe_source": "none", "outcome": "still-present"},
+                    "recipe_source": "none", "outcome": "replaced"},
                    {"advisory_id": "spring-cloud-bom", "policy": "recipe", "recipe_source": "plan",
                     "outcome": "replaced"}]
     handover = dict(ADVISORY_REPORT["handover"],
-                    from_here=["Netflix Hystrix is discontinued (not in any current Spring Cloud train): Configure …",
+                    removed=[*ADVISORY_REPORT["handover"]["removed"],
+                             "org.springframework.cloud:spring-cloud-starter-netflix-hystrix"],
+                    added=[*ADVISORY_REPORT["handover"]["added"],
+                           "org.springframework.cloud:spring-cloud-starter-circuitbreaker-resilience4j (advisory:hystrix)"],
+                    from_here=["Netflix Hystrix is discontinued (not in any current Spring Cloud train): Review …",
                                "net.sf.ehcache:ehcache pinned at 2.10.9.2 — the new parent/Boot BOM no longer "
                                "manages it: confirm the version or replace"])
     review = {"verdict": "issues", "llm_usage": {"calls": 1}, "issues": [
-        {"severity": "warning", "file": "module/comp-jar/pom.xml", "problem": "spring-cloud-starter-netflix-hystrix "
-         "is pinned: Hystrix is EOL"}, {"severity": "warning", "file": "pom.xml", "problem": "springfox.version left"}]}
-    phases = [{"phase": "verify", "ok": True, "attempts": [_att(1, "ec7cf32b91", outcome="build_ok")]}]
+        {"severity": "warning", "file": "module/comp-jar/pom.xml", "problem": "no module declares "
+         "spring-boot-starter-aspectj for the @CircuitBreaker aspect"},
+        {"severity": "warning", "file": "pom.xml", "problem": "net.sf.ehcache:ehcache 2.10.9.2 is pinned"}]}
+    phases = [{"phase": "verify", "ok": True, "attempts": []}]
     rep = dict(ADVISORY_REPORT, advisories=advisories, handover=handover, structure_review=review, phases=phases,
-               llm_usage={"calls": 2})
+               llm_usage={"calls": 1})
     (tmp_path / exp["kb"]["dir"]).mkdir(parents=True)
     def ev(r):
         return e2e.evaluate(e2e.FixtureResult(fixture="x", exit_code=0), exp, r, [], None, tmp_path)
     assert ev(rep) == []
-    # the v1 shape (hystrix converted by an advisory recipe) no longer satisfies the fixture
-    v1 = dict(rep, advisories=[dict(a, policy="recipe", outcome="replaced") if a["advisory_id"] == "hystrix" else a
-                               for a in advisories])
-    assert "advisory hystrix: policy='recipe' expected 'guide'" in ev(v1)
+    # the shape before v2.1z-at (hystrix kept, still-present) no longer satisfies the fixture
+    kept = dict(rep, advisories=[dict(a, outcome="still-present") if a["advisory_id"] == "hystrix" else a
+                                 for a in advisories])
+    assert "advisory hystrix: outcome='still-present' expected 'replaced'" in ev(kept)
 
 
 # ------------------------------------------------------------------------------------------- kb (round 5)
