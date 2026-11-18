@@ -305,7 +305,8 @@ before the body is read. `RunManager` (`sbmig/web/runs.py`) has three modes (`SB
 
 * `in-process` — the web process runs one migration at a time in a worker thread through `stream_graph`; further uploads queue.
 * `k8s-job` — the web pod (**Main**) writes the upload to the shared volume and creates a Kubernetes Job from the template
-  (`deploy/k8s/81-web-job.template.yaml`, ConfigMap `sbmig-job-template`); the Job pod (**Worker**, `python -m sbmig.web.worker`)
+  (`deploy/k8s/81-web-job.template.yaml`, read from the image's own copy at startup; `SBMIG_JOB_TEMPLATE` points
+  at another file, e.g. a ConfigMap mount); the Job pod (**Worker**, `python -m sbmig.web.worker`)
   runs `sbmig run` into the same run directory and Main tails its journal and log. `sbmig/web/k8s.py` is a requests-based client
   (in-cluster service account or `KUBECONFIG`).
 * `local-job` — the same dispatch with local processes (dev PCs).

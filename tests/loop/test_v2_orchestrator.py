@@ -11,7 +11,7 @@ from sbmig.core.models import (
     ReviewIssue,
     StructureReview,
 )
-from sbmig.loop import Orchestrator, parse_stop_after
+from sbmig.loop import Orchestrator
 from sbmig.loop.orchestrator import _BudgetedLLM
 from sbmig.triage import Triager
 
@@ -74,7 +74,7 @@ def subjects(ws) -> list[str]:
 
 
 # ------------------------------------------------------------------------------------------ the flow
-@pytest.mark.parametrize("engine", ["graph", "inline"])
+@pytest.mark.parametrize("engine", ["graph"])
 def test_v2_plan_runs_transform_restructure_review_verify_in_order(cfg, ws, engine):
     cfg.loop.engine = engine
     rw = FakeRewriteRunner(ws, effect=lambda w, refs: (w.write("rewritten.txt", "x") or ["rewritten.txt"]))
@@ -100,18 +100,6 @@ def test_v2_plan_runs_transform_restructure_review_verify_in_order(cfg, ws, engi
     assert att.script_mode == "new" and att.cluster_id == f"case:{case_of('compile|x')}"
     ev = [e["event"] for e in journal_events(ws)]
     assert ev.index("rewrite") < ev.index("restructure") < ev.index("structure_review") < ev.index("verify")
-
-
-def test_the_rewrite_gets_only_the_step_recipes_and_the_kb_no_learning_calls(cfg, ws):
-    kb = FakeKB()
-    rw = FakeRewriteRunner(ws)
-    report = make_v2(cfg, ws, kb=kb, rewrite=rw).run()
-    assert report.success
-    assert rw.runs[0]["files"] == []                             # no KB recipe files ride along
-    ev = journal_events(ws)
-    assert not {e["event"] for e in ev} & {"handlers_preemptive", "harvest", "kb_credit"}
-    plan_ev = next(e for e in ev if e["event"] == "plan")
-    assert "pre_handlers" not in plan_ev
 
 
 def test_the_error_list_reaches_the_report_and_the_kb(cfg, ws):
@@ -149,17 +137,6 @@ def test_final_build_is_always_attempted_when_the_scripts_fail(cfg, ws):
     assert [c["goal"] for c in build.calls][0] == build.calls[-1]["goal"] == "clean package"
     assert [b.reason.value for b in report.blocked] == ["repeated_failure"]
     assert report.final_build is not None and not report.final_build.ok
-
-
-@pytest.mark.parametrize("engine", ["graph", "inline"])
-def test_stop_after_transform(cfg, ws, engine):
-    cfg.loop.engine = engine
-    restr = FakeRestructurer()
-    reviewer = FakeReviewer()
-    report = make_v2(cfg, ws, restructurer=restr, reviewer=reviewer).run(stop_after=parse_stop_after("transform"))
-    assert [p.phase for p in report.phases] == [Phase.TRANSFORM]
-    assert "stopped-after-transform" in report.flags and restr.calls == [] and reviewer.calls == []
-    assert any(e["event"] == "phase_skipped" for e in journal_events(ws))
 
 
 # ------------------------------------------------------------------------------------------ structure review

@@ -1,5 +1,8 @@
 # 웹 파드의 Job 디스패치 모드(2026-11-05 결정: 전달·결과·KB 전부 공유 PVC)가 업로드마다 만드는 Job 의 틀. `sbmig serve` 가
-# SBMIG_WEB_MODE=k8s-job 일 때 이 파일(SBMIG_JOB_TEMPLATE)을 읽어 metadata.name(sbmig-<run id>)과 실행별 env 를 채워 생성한다.
+# SBMIG_WEB_MODE=k8s-job 일 때 이 파일을 읽어 metadata.name(sbmig-<run id>)과 실행별 env 를 채워 생성한다.
+# 웹 파드는 이미지 안의 사본(/app/deploy/k8s/81-web-job.template.yaml)을 읽는다. 이미지를 빌드하는 체크아웃에서 이 파일을 채운다.
+# 고친 뒤에는 이미지를 빌드 · push 하고 웹 파드를 재시작한다. CHANGE_ME 가 남은 값(주석 줄은 빼고)이 있으면 웹 파드가 뜨지 않는다
+# (MIGRATION_TEMPLATE_INVALID). 이미지 없이 틀만 바꾸는 클러스터는 ConfigMap 으로 마운트하고 SBMIG_JOB_TEMPLATE 으로 가리킨다(40-deployment.yaml).
 #   SBMIG_SOURCE_ZIP=/data/out/<run id>/source.zip, SBMIG_OUT=/data/out, SBMIG_RUN_ID, SBMIG_CONFIG(/app/config/<yml> …),
 #   SBMIG_STOP_AFTER / SBMIG_LLM_PROVIDER(고급 설정일 때만) — 그 밖의 값은 이 파일 그대로.
 # 웹 파드(40-deployment.yaml)와 같은 이미지(회사 artifacts.yml 이 그 안에 구워져 있다), 같은 ConfigMap / Secret, 같은 PVC 를 같은 경로(/data)에 마운트해야 한다. 두 파드가 동시에
@@ -20,7 +23,7 @@ metadata:
   namespace: agent
   labels: {app: sbmig, kind: run}
   # Secret 은 immutable 로(30-secret.example.yaml): 값을 바꾸면 새 이름(sbmig-llm-2 …)으로 만들고 아래 secretKeyRef 의 name 과 40-deployment.yaml 의 secretRef 를
-  # 함께 바꾼 뒤 이 ConfigMap 을 다시 apply 한다.
+  # 함께 바꾼 뒤 이미지를 다시 빌드 · push 하고 웹 파드를 재시작한다(ConfigMap 으로 주는 클러스터는 그 ConfigMap 을 다시 만든다).
 spec:
   backoffLimit: 0                       # 이관을 무턱대고 재시도하지 않는다(실패한 실행의 보고서가 곧 결과)
   activeDeadlineSeconds: 14400          # 4 시간 — 이관 + (BUILD SUCCESS 면) 이어 도는 취약점 조치까지. 조치가 보태는 시간은 README §6 "시간"

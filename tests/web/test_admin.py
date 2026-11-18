@@ -310,15 +310,59 @@ def test_built_in_hash_is_the_contract_value_and_this_file_does_not_hold_the_pas
     spec = admin.ADMIN_PASSWORD_PBKDF2
     assert spec == {"iterations": 200_000, "salt_hex": "bfadb8a1a0a6a71e0571005ea6840ae3",
                     "hash_hex": "39baec1e83416b257be2de09e9ae13461ba0dfea532602f0f4a2445f6c763930"}
-    words: set[str] = set()
-    for node in ast.walk(ast.parse(Path(__file__).read_text(encoding="utf-8"))):
-        if isinstance(node, ast.Constant) and isinstance(node.value, str):
-            words |= {w for w in node.value.split() if 4 <= len(w) <= 40}
-            if 4 <= len(node.value) <= 40:
-                words.add(node.value)
+    # The plain password must never be written here. PBKDF2 at 200,000 rounds costs ~20 ms per word, so only the
+    # strings in a password position are hashed (every string of the file took 8 s): what a login call, a password
+    # variable / parameter / keyword, a "password" field or a password env variable is given.
+    words = _password_position_strings(ast.parse(Path(__file__).read_text(encoding="utf-8")))
+    assert {TEST_PASSWORD, "wrong-pass", "nope-nope", "guess-123456"} <= words      # the scan reaches those positions
     salt, iters, want = bytes.fromhex(spec["salt_hex"]), spec["iterations"], bytes.fromhex(spec["hash_hex"])
     for w in words:
         assert hashlib.pbkdf2_hmac("sha256", w.encode(), salt, iters) != want
+
+
+def _password_position_strings(tree: ast.AST) -> set[str]:
+    def passwordish(name: str) -> bool:
+        low = name.lower()
+        return "pass" in low or low == "pw" or low.endswith("_pw") or low.startswith("pw_")
+
+    def name_of(node: ast.AST) -> str:
+        if isinstance(node, ast.Name):
+            return node.id
+        if isinstance(node, ast.Attribute):
+            return node.attr
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return node.value
+        return ""
+
+    picked: list[ast.AST] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            fn = name_of(node.func).lower()
+            if "login" in fn:
+                picked += node.args
+            if fn in ("setenv", "setdefault", "__setitem__") and node.args and passwordish(name_of(node.args[0])):
+                picked += node.args[1:]
+            picked += [k.value for k in node.keywords if k.arg and passwordish(k.arg)]
+        elif isinstance(node, ast.Dict):
+            picked += [v for k, v in zip(node.keys, node.values) if k is not None and passwordish(name_of(k))]
+        elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            if node.value is not None and any(passwordish(name_of(t)) for t in targets):
+                picked.append(node.value)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            args = node.args.posonlyargs + node.args.args
+            picked += [d for a, d in zip(args[len(args) - len(node.args.defaults):], node.args.defaults)
+                       if passwordish(a.arg)]
+            picked += [d for a, d in zip(node.args.kwonlyargs, node.args.kw_defaults)
+                       if d is not None and passwordish(a.arg)]
+    words: set[str] = set()
+    for root in picked:
+        for node in ast.walk(root):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                words |= {w for w in node.value.split() if 4 <= len(w) <= 40}
+                if 4 <= len(node.value) <= 40:
+                    words.add(node.value)
+    return words
 
 
 def test_the_admin_password_variable_is_a_secret_and_never_reaches_a_local_job(tmp_path, repo, monkeypatch):

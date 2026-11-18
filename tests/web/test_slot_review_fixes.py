@@ -185,7 +185,7 @@ class _Flaky(Cluster):
         return super().job_state(name)
 
 
-@pytest.mark.parametrize("error", [ValueError, AttributeError, KeyError])
+@pytest.mark.parametrize("error", [ValueError])   # one `except Exception` in the watch: other types take the same path
 def test_a_non_k8s_error_from_job_state_keeps_the_slot_and_the_run(tmp_path: Path, repo: Path, managers, error):
     """Was the reviewer's repro R2: the error escaped the watch, the run failed and the next Job started on the same slot."""
     out = tmp_path / "out"
@@ -194,6 +194,9 @@ def test_a_non_k8s_error_from_job_state_keeps_the_slot_and_the_run(tmp_path: Pat
     mgr = _mgr(tmp_path, repo, cluster, managers, max_parallel=1)
     a = mgr.start(ZIP, "a.zip", CFG)
     assert _wait(lambda: len(cluster.created) == 1)
+    # the watch must have seen the Job running before the API breaks: else the run is still "creating" (a race
+    # under load, seen with -n 8)
+    assert _wait(lambda: _state(out, a).state == "running")
     cluster.bad = job_name(a)
     b = mgr.start(ZIP, "b.zip", CFG)
     assert not _wait(lambda: len(cluster.created) == 2, timeout=0.8)

@@ -189,7 +189,11 @@ def test_finalize_inventory_exception_never_fails_the_run(cfg, ws):
 
 
 def test_no_inventory_with_a_fake_build_runner_by_default(cfg, ws, monkeypatch):
+    # the call is recorded before anything could be raised: the orchestrator swallows any exception of the inventory,
+    # so only the record (and the missing journal line) can show that the Maven-backed default was never called
     import sbmig.build.deptree as dt
-    monkeypatch.setattr(dt, "javax_api_inventory", lambda *a, **k: (_ for _ in ()).throw(AssertionError("mvn")))
+    called: list = []
+    monkeypatch.setattr(dt, "javax_api_inventory", lambda *a, **k: called.append(a) or [])
     report = make_orch(cfg, ws).run()
-    assert report.javax_api_jars == []
+    assert called == [] and report.javax_api_jars == []
+    assert not [e for e in journal_events(ws) if e["event"] == "javax_api_inventory"]

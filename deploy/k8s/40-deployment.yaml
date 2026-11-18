@@ -40,16 +40,18 @@ spec:
           image: CHANGE_ME_REGISTRY/sbmig:CHANGE_ME_TAG   # 인프라팀이 push 한 전체 이름 그대로(README §1); 81-web-job.template 과 같은 값. 같은 태그로 다시 올려도 된다(아래 Always)
           imagePullPolicy: Always                # 파드가 뜰 때마다 레지스트리와 대조해 바뀐 이미지만 새로 받는다(같은 태그로 다시 올려도 반영된다). 레지스트리 없이 노드에 직접 적재하면 Never (README §1.1)
           # 같은 태그로 이미지를 다시 올린 뒤에는 이 파드를 재시작한다(kubectl -n agent rollout restart deploy/sbmig). 빌드 파드는 뜰 때 스스로 받는다.
-          # 재시작 전에 올라온 실행은 두 파드의 이미지가 달라 빌드 파드가 거절하므로 재시작 뒤 다시 올린다. 이 정책을 처음 받을 때는 Job 틀 ConfigMap 을
-          # 다시 만들고 이 파일을 apply 한 뒤 재시작한다(README §1)
+          # 재시작 전에 올라온 실행은 두 파드의 이미지가 달라 빌드 파드가 거절하므로 재시작 뒤 다시 올린다(README §1)
           ports:
             - {name: http, containerPort: 8765}
           # 운영자가 고치는 환경 변수는 두 곳에서: ConfigMap sbmig-env(비밀 아닌 것 — 웹 파드 동작, LLM 게이트웨이 주소·role, SBMIG_<섹션>__<키> 설정
           # 덮어쓰기)와 Secret sbmig-llm(토큰·비밀번호). 뒤의 것이 이기므로 Secret 을 뒤에 둔다. 값은 20-configmap.yaml 의 설명을 본다.
-          # 아래 env 는 이 파드에 고정인 값(틀 위치, 컨테이너 경로)이고 같은 이름이 envFrom 에 있어도 env 가 이긴다
+          # 아래 env 는 이 파드에 고정인 값(컨테이너 경로)이고 같은 이름이 envFrom 에 있어도 env 가 이긴다
           env:
-            # Job 틀은 ConfigMap sbmig-job-template 로 들어온다(아래 volumes; README §3). 이미지 안의 사본은 CHANGE_ME 그대로라 쓰지 않는다
-            - {name: SBMIG_JOB_TEMPLATE, value: /templates/81-web-job.template.yaml}
+            # Job 틀은 이미지 안의 사본(/app/deploy/k8s/81-web-job.template.yaml)을 읽는다. 81 은 이미지를 빌드하는 체크아웃에서 채운다.
+            # 81 을 고친 뒤에는 이미지를 빌드 · push 하고 이 파드를 재시작한다. 81 에 CHANGE_ME 가 남아 있으면 이 파드가 뜨지 않는다.
+            # 이미지를 새로 만들지 않고 틀을 바꿔야 하는 클러스터만: 채운 틀로 ConfigMap 을 만들어 마운트하고(아래 volumeMounts 의 한 줄,
+            # volumes 의 두 줄인 job-template) 이 줄의 주석을 푼다(README §3)
+            # - {name: SBMIG_JOB_TEMPLATE, value: /templates/81-web-job.template.yaml}
             - {name: KUBECONFIG, value: /etc/kube/config}   # 회사 방식(위 설명): 아래 kubeconfig 볼륨의 파일
             # ── 회사 artifacts.yml 은 이미지에 구워져 있다(/app/config/artifacts.yml — PC 에서 시험한 파일 그대로, README §1). 그 안의 PC 경로를 컨테이너
             #    값으로 덮어쓴다: 환경 변수 SBMIG_<섹션>__<키> 가 yml 보다 우선하고, yml 에 그 키가 없어도 해가 없다. 81-web-job.template.yaml 에도 같은 줄이 있다
@@ -71,7 +73,7 @@ spec:
             - {name: data, mountPath: /data}
             # - {name: config, mountPath: /app/config/artifacts.yml, subPath: artifacts.yml, readOnly: true}   # artifacts.yml 을 ConfigMap 으로 줄 때만(20-configmap.yaml 맨 아래) — 이미지에 구운 파일을 가린다
             - {name: config, mountPath: /etc/sbmig/settings.xml, subPath: settings.xml, readOnly: true}   # 원본. /data/.m2/settings.xml 로 복사하는 명령은 README §3
-            - {name: job-template, mountPath: /templates, readOnly: true}
+            # - {name: job-template, mountPath: /templates, readOnly: true}   # Job 틀을 ConfigMap 으로 줄 때만(위 env 설명)
             - {name: kubeconfig, mountPath: /etc/kube, readOnly: true}   # 회사 방식: Secret 의 키 config → /etc/kube/config
           resources:
             # 회사 값(2026-11-12): 웹 파드 1개와 빌드 파드 3개를 모두 CPU 2 / 메모리 8Gi 로 맞춘다. requests = limits 라서 다른 파드에
@@ -92,7 +94,7 @@ spec:
           persistentVolumeClaim: {claimName: sbmig-data}
         - name: config                          # settings.xml
           configMap: {name: sbmig-config}
-        - name: job-template                    # kubectl -n agent create configmap sbmig-job-template --from-file=deploy/k8s/81-web-job.template.yaml
-          configMap: {name: sbmig-job-template, optional: true}   # Job 모드(sbmig-env 의 SBMIG_WEB_MODE=k8s-job, 기본)에서는 이 ConfigMap 이 없으면 시작 검증이 MIGRATION_TEMPLATE_INVALID 로 멈춘다 — 40 보다 먼저 만든다
+        # - name: job-template                  # Job 틀을 ConfigMap 으로 줄 때만: kubectl -n agent create configmap sbmig-job-template --from-file=deploy/k8s/81-web-job.template.yaml
+        #   configMap: {name: sbmig-job-template}   # 81 을 고칠 때마다 다시 만들고 이 파드를 재시작한다
         - name: kubeconfig                      # 회사 방식: 인프라팀이 준 Secret 이름(없으면 파드가 ContainerCreating 에서 기다린다)
           secret: {secretName: agent-kubeconfig, defaultMode: 0400}

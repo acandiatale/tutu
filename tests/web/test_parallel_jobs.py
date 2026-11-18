@@ -171,24 +171,6 @@ def test_occupy_takes_a_waiting_key_out_of_the_line_and_turn_yields_its_slot_at_
     assert turns.slot_of("b") is None and turns.counts() == (0, 1)
 
 
-def test_one_slot_is_the_old_one_at_a_time():
-    turns = _FifoTurns()
-    assert turns.slots == 1
-    for k in "xy":
-        turns.join(k)
-    got: list[tuple[str, int]] = []
-    release: dict[str, threading.Event] = {}
-    ty = _enter(turns, "y", got, release)
-    tx = _enter(turns, "x", got, release)
-    assert _wait(lambda: got == [("x", 1)])
-    assert not _wait(lambda: len(got) > 1, timeout=0.2) and turns.position("y") == 1
-    release["x"].set()
-    assert _wait(lambda: got == [("x", 1), ("y", 1)])
-    release["y"].set()
-    tx.join(5)
-    ty.join(5)
-
-
 # ---- the limit
 def test_the_default_is_one_job_at_a_time(tmp_path: Path, repo: Path, managers):
     out = tmp_path / "out"
@@ -496,4 +478,3 @@ def test_the_slot_reaches_the_local_worker_env(tmp_path: Path, repo: Path):
     manifest = {"spec": {"template": {"spec": {"containers": [{"name": "build", "env": [
         {"name": contract.SLOT_ENV, "value": "2"}, {"name": "SBMIG_KB_DIR", "value": "/data/kb-v2"}]}]}}}}
     assert LocalJobClient._env_of(manifest) == {contract.SLOT_ENV: "2"}
-

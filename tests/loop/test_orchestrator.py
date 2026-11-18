@@ -142,17 +142,13 @@ def test_synthetic_verify_and_time_budget(cfg, ws):
 
 def test_stop_after_transform(cfg, ws):
     build = FakeBuildRunner(ws, fn=files_build)
-    report = make_orch(cfg, ws, build=build).run(stop_after=Phase.TRANSFORM)
+    restr, reviewer = FakeRestructurer(), FakeReviewer()
+    report = make_orch(cfg, ws, build=build, restructurer=restr, reviewer=reviewer).run(stop_after=Phase.TRANSFORM)
     assert [p.phase for p in report.phases] == [Phase.TRANSFORM]
     assert "stopped-after-transform" in report.flags and not report.success and build.calls == []
+    assert restr.calls == [] and reviewer.calls == []          # no restructure, no structure review
+    assert any(e["event"] == "phase_skipped" for e in journal_events(ws))
     assert (ws.run_dir / "report.md").exists()
-
-
-@pytest.mark.parametrize("phase", [Phase.INTAKE, Phase.ANALYZE, Phase.PLAN])
-def test_stop_after_early(cfg, ws, phase):
-    report = make_orch(cfg, ws).run(stop_after=phase)
-    assert report.phases == [] and f"stopped-after-{phase.value}" in report.flags
-    assert (report.plan is not None) == (phase == Phase.PLAN)
 
 
 def test_dry_run_applies_nothing(cfg, ws):
@@ -245,16 +241,15 @@ def test_abort_no_poms_and_internal_error(cfg, tmp_path, ws):
     assert "aborted" in report.flags and "internal error" in report.manual_followups[-1]
 
 
-def test_missing_component_reports_workstream(cfg, ws, monkeypatch):
+def test_missing_component_reports_workstream(cfg, ws):
     with pytest.raises(MissingComponentError, match="workstream Z"):
         lazy_attr("sbmig.does_not_exist", "X", "Z")
     with pytest.raises(MissingComponentError, match="does not expose"):
         lazy_attr("sbmig.core", "Nope", "Z")
-    import sbmig.build as b       # the real preflight runs here: never depend on the host's `mvn -v` (JDK 21 check)
-    monkeypatch.setattr(b, "maven_available", lambda *a, **k: (True, "Apache Maven 3.9.10; Java version: 21.0.1"))
+    # a fake build runner: without one the intake starts the host's Maven (`mvn -v`, `help:effective-pom`)
     orch = Orchestrator(cfg, ws, analyzer=lambda w, c: (_ for _ in ()).throw(
         MissingComponentError("sbmig.analyze (workstream A) missing")), kb=NullKnowledgeBase(),
-        report_writer=lambda r, w: {"x": "y"})
+        build_runner=FakeBuildRunner(ws, fn=files_build), report_writer=lambda r, w: {"x": "y"})
     report = orch.run()
     assert "aborted" in report.flags and "workstream A" in report.manual_followups[-1]
     assert report.outputs["x"] == "y"

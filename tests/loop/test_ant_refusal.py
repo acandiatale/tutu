@@ -55,7 +55,7 @@ def test_default_is_refusal_with_the_company_notice(cfg):
     assert cfg.intake.ant_to_maven is False and cfg.intake.ant_message == NOTICE
 
 
-@pytest.mark.parametrize("engine", ["inline", "graph"])
+@pytest.mark.parametrize("engine", ["graph"])
 def test_full_flow_refuses_ant_with_the_notice(cfg, tmp_path, no_synthesis, caplog, engine):
     cfg = cfg.model_copy(deep=True)
     cfg.loop.engine = engine

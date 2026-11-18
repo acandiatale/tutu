@@ -463,22 +463,6 @@ def test_a_run_gets_the_normal_kb_and_records_no_switches(client, tmp_path):
     assert "fix_mode=" not in (rd / "sbmig.log").read_text(encoding="utf-8")
 
 
-def test_old_status_files_with_the_v21i_switches_still_load(tmp_path, repo):
-    """A web-status.json / report.json written by a v2.1i server (fix_mode / kb keys) is read without error;
-    the keys are ignored."""
-    mgr = RunManager(tmp_path / "out", repo)
-    rd = tmp_path / "out" / "web-a"
-    rd.mkdir(parents=True)
-    (rd / "web-status.json").write_text(json.dumps({"run_id": "web-a", "exit_code": 2, "fix_mode": "edits",
-                                                    "kb": "off", "stop_requested": False}))
-    (rd / "report.json").write_text(json.dumps({"success": False, "fix_mode": "edits", "blocked": [{}]}))
-    st = mgr.status("web-a")
-    assert st["state"] == "finished" and st["exit_code"] == 2 and st["success"] is False and st["blocked"] == 1
-    assert "fix_mode" not in st and "kb" not in st
-    (row,) = mgr.list_runs()
-    assert row["run_id"] == "web-a" and "fix_mode" not in row
-
-
 def test_page_has_no_v21i_switches(client):
     html = client.get("/").text
     assert 'id="fixedits"' not in html and 'id="nokb"' not in html and "fix_mode" not in html

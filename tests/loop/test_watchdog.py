@@ -36,7 +36,11 @@ def test_watchdog_names_the_last_milestone(cfg, ws, monkeypatch, caplog):
     assert any("mvn compile (build 1)" in m for m in marks) and any("deciding " in m for m in marks)
     assert any("KB 탐색 for " in m for m in marks)
     assert marks[-1].endswith("→ idle")                    # the loop always ends on the idle milestone
-    assert not [t for t in threading.enumerate() if t.name == "fixloop-watchdog" and t.is_alive()] or True
+    # the watchdog ends with the loop (the thread is not joined: give it a moment to see its stop event)
+    deadline = time.monotonic() + 5
+    while any(t.name == "fixloop-watchdog" and t.is_alive() for t in threading.enumerate()):
+        assert time.monotonic() < deadline, "a fixloop-watchdog thread outlived its loop"
+        time.sleep(0.01)
 
 
 def test_dump_threads_writes_every_stack(tmp_path):

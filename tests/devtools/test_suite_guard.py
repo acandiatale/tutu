@@ -66,6 +66,28 @@ def test_capfd_writer(tmp_path, capfd):
 
 def test_marker(tmp_path):
     Path(os.environ["GUARD_MARKER"]).write_text("ran")
+
+
+def test_which_git(tmp_path):
+    import shutil
+    Path(os.environ["GUARD_MARKER"]).write_text(shutil.which("git") or "")
+
+
+def _hold(tmp_path, name):
+    # under -n 2 each worker runs one of these: 3 MiB (count cap), its pid on record, then a hold of 20 s at most
+    (tmp_path / "held.bin").write_bytes(b"x" * (3 * MIB))
+    Path(os.environ["GUARD_MARKER"] + "." + name).write_text(str(os.getpid()))
+    deadline = time.monotonic() + 20
+    while time.monotonic() < deadline:
+        time.sleep(0.1)
+
+
+def test_hold_a(tmp_path):
+    _hold(tmp_path, "a")
+
+
+def test_hold_b(tmp_path):
+    _hold(tmp_path, "b")
 '''
 
 
@@ -81,15 +103,16 @@ def project(tmp_path: Path) -> Path:
     return proj
 
 
-def run_inner(project: Path, select: str, *, timeout: float = 30, **env_extra: str):
+def run_inner(project: Path, select: str, *, timeout: float = 30, args_extra: tuple[str, ...] = (),
+              **env_extra: str):
     env = {k: v for k, v in os.environ.items()
            if not k.startswith("BOUNDED") and k not in ("PYTEST_CURRENT_TEST", "PYTEST_ADDOPTS")}
     env["TMPDIR"] = str(project.parent / "tmp")
     env["GUARD_MARKER"] = str(project.parent / "marker")
     env.setdefault("BOUNDED_FLOOR_MB", "0")          # never depend on the real disk's free space
     env.update(env_extra)
-    args = [sys.executable, "-m", "pytest", "-p", "no:cacheprovider", "-o", "addopts=", "test_inner.py",
-            "-k", select]
+    args = [sys.executable, "-m", "pytest", "-p", "no:cacheprovider", "-o", "addopts=", *args_extra,
+            "test_inner.py", "-k", select]
     proc = subprocess.Popen(args, cwd=project, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
     try:
         out, err = proc.communicate(timeout=timeout)
@@ -173,3 +196,64 @@ def test_bad_environment_value_is_a_usage_error(project):
     assert r.returncode == 4, r.stdout + r.stderr
     assert "BOUNDED_FILE_MB" in r.stdout + r.stderr
     assert not (project.parent / "marker").exists()
+
+
+# ------------------------------------------------------------------------------------- the walls under pytest-xdist
+def test_under_xdist_a_workers_file_cap_makes_the_write_fail(project):
+    pytest.importorskip("xdist")
+    r = run_inner(project, "write_3_mib", args_extra=("-n", "2"), BOUNDED_FILE_MB="1")
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "File too large" in r.stdout and "1 failed" in r.stdout
+    assert "file cap 1 MiB" in header(r)
+
+
+def test_under_xdist_the_controllers_temp_cap_holds_for_the_sum_of_the_workers(project):
+    """Two workers hold 3 MiB each: neither worker's own folder passes the cap of 4 MiB, the sum does. The controller
+    watches the whole basetemp, stops the run with 125 and no worker is left behind."""
+    pytest.importorskip("xdist")
+    marker = project.parent / "marker"
+    t0 = time.monotonic()
+    r = run_inner(project, "hold", timeout=30, args_extra=("-n", "2"), BOUNDED_GROWTH_MB="4")
+    assert r.returncode == 125, r.stdout + r.stderr
+    assert time.monotonic() - t0 < 25                    # before the 20 s holds would have ended both tests
+    both = r.stdout + r.stderr
+    stopped = [ln for ln in both.splitlines() if ln.startswith("bounded: STOPPED:")]
+    assert stopped and all("BOUNDED_GROWTH_MB" in ln for ln in stopped), both
+    # the controller's watch tripped (its basetemp `pytest-N`), not a worker's (`pytest-N/popen-gwK`)
+    folders = [Path(ln.split("temp folder ", 1)[1].split(" holds ", 1)[0]).name for ln in stopped]
+    assert folders and all(f.startswith("pytest-") for f in folders), both
+    pids = [int(Path(f"{marker}.{n}").read_text()) for n in ("a", "b")]
+    deadline = time.monotonic() + 10
+    while any(_alive(p) for p in pids) and time.monotonic() < deadline:
+        time.sleep(0.1)
+    assert not any(_alive(p) for p in pids), "a worker outlived the stopped controller"
+
+
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:  # pragma: no cover - someone else's process took the number
+        return False
+    return True
+
+
+def test_header_names_the_git_in_use(project):
+    # PATH without the outer run's link folder: the inner run decides for itself
+    path = os.pathsep.join(p for p in os.environ.get("PATH", "").split(os.pathsep) if "sbmig-real-git-" not in p)
+    r = run_inner(project, "which_git", PATH=path)
+    assert r.returncode == 0, r.stdout + r.stderr
+    git_lines = [ln for ln in r.stdout.splitlines() if ln.startswith("git: ")]
+    assert len(git_lines) == 1, r.stdout
+    used = (project.parent / "marker").read_text()
+    outer = shutil.which("git", path=path)
+    if outer is None:
+        assert git_lines[0] == "git: not found on PATH" and used == ""
+    elif sys.platform == "darwin" and os.path.realpath(outer) == "/usr/bin/git" and shutil.which("xcrun", path=path):
+        real = subprocess.run(["xcrun", "-f", "git"], capture_output=True, text=True).stdout.strip()
+        assert git_lines[0].startswith(f"git: {real} (the real binary"), git_lines
+        assert "sbmig-real-git-" in used and used.endswith(os.sep + "git")   # the link (its folder is gone now)
+    else:
+        assert git_lines[0] == f"git: {outer}" and used == outer
+    assert not list((project.parent / "tmp").glob("sbmig-real-git-*"))   # the link folder is gone after the run

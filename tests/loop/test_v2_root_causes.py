@@ -266,7 +266,9 @@ def test_file_less_cases_are_never_deferred(cfg, ws):
 # ------------------------------------------------------------------------------------------ an LLM that never answers
 def test_a_run_whose_llm_never_answers_ends_with_blocked_items_only(cfg, ws):
     """The fixture probe without LLM answers: every case ends BLOCKED, no exception, nothing 'unresolved', the final
-    build ran (twice: before and after the loop)."""
+    build ran (twice: before and after the loop). Two tries per case instead of the production 20: the same path."""
+    cfg.script.max_llm_tries_per_case = 2
+
     def build(w, call):
         errs = [jerr(f, "cannot_find_symbol", f.rsplit("/", 1)[-1], location="class X") for f in (FOO, BAR)
                 if "broken" in w.read(f)]

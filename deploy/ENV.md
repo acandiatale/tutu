@@ -23,8 +23,8 @@
 
 - `sbmig-env` 를 바꾼 뒤에는 **웹 파드를 재시작한다**(`kubectl -n agent rollout restart deploy/sbmig`). 웹 파드는 시작할 때 한 번 읽고 Job 파드는
   만들어질 때 읽는다 — Job 모드에서는 Worker 가 자기 환경을 그 Job 을 만든 웹 파드의 것과 대조해, 다르면 몇 초 만에 다른 키 이름을 적고
-  멈춘다(기본; §2 `SBMIG_JOB_ENV_PIN`, README §3 "환경 변수 대조"). 81 틀을 새로 받았으면 ConfigMap `sbmig-job-template` 도 다시 만든 뒤
-  재시작한다(웹 파드는 시작할 때 틀을 읽어 둔다; §8).
+  멈춘다(기본; §2 `SBMIG_JOB_ENV_PIN`, README §3 "환경 변수 대조"). 81 틀은 이미지 안의 사본을 읽으므로 81 을 새로 받거나 고쳤으면
+  이미지를 빌드 · push 한 뒤 재시작한다(웹 파드는 시작할 때 틀을 읽어 둔다; README §1 "무엇을 바꾸면 무엇을 하나").
 - **값을 비워 두지 않는다.** `SBMIG_<섹션>__<키>: ""` 는 YAML null 로 읽혀 구운 yml 의 값을 "없음" 으로 덮는다(기본값으로 돌아가지 않고,
   키에 따라 실행이 시작부터 실패한다). 안 쓸 키는 값을 지우지 말고 줄째 주석으로 둔다.
 - 키 이름이 틀리면(철자, 들여쓰기) 시작 로그에 `config: … is not a known key and is ignored` 로 뜬다. env 이름이 틀려도 같은 줄이
@@ -45,9 +45,9 @@
 | `SBMIG_WEB_ALLOWED_ORIGINS` | (없음) | 다른 호스트의 화면에서 이 페이지의 API 를 써야 할 때만: `호스트` 또는 `호스트:포트` 를 쉼표로 나열. 업로드가 `cross-site request refused` (403) 로 막히는데 주소는 맞다면(앞단 프록시가 Host 를 바꾸는 경우) 브라우저 주소창의 호스트를 적는다. `*` 는 검사를 끈다 |
 | `HTTP_PROXY` / `HTTPS_PROXY` | `http://<프록시 호스트>:<포트>` | 클러스터에서 프록시로 나가야 할 때만(웹 파드와 Job 파드가 같이 읽는다) |
 | `NO_PROXY` | `<게이트웨이 호스트>,<nexus 호스트>,localhost,127.0.0.1` | 프록시를 켰을 때 사내 주소를 빼는 목록 |
-| `SBMIG_WEB_MODE` | `k8s-job` (매니페스트 값) / `in-process` (변수가 없을 때) / `local-job` | `k8s-job` = 업로드마다 Job 하나(공유 PVC). 켜진 채로 나가므로 권한(회사: kubeconfig Secret, 없는 클러스터: 45)과 Job 틀 ConfigMap 이 웹 파드보다 먼저 있어야 한다(README §3 "켜는 법"); 줄을 주석 처리하면 웹 파드가 직접 돌린다. 개발 PC 에서는 `k8s-job` 이 자동으로 `local-job`(파드 자리에 로컬 서브프로세스)으로 내려간다 |
+| `SBMIG_WEB_MODE` | `k8s-job` (매니페스트 값) / `in-process` (변수가 없을 때) / `local-job` | `k8s-job` = 업로드마다 Job 하나(공유 PVC). 켜진 채로 나가므로 권한(회사: kubeconfig Secret, 없는 클러스터: 45)이 웹 파드보다 먼저 있어야 하고, 이미지 안의 81 틀이 채워져 있어야 한다(README §3 "켜는 법"); 줄을 주석 처리하면 웹 파드가 직접 돌린다. 개발 PC 에서는 `k8s-job` 이 자동으로 `local-job`(파드 자리에 로컬 서브프로세스)으로 내려간다 |
 | `SBMIG_K8S_NAMESPACE` | `agent` (매니페스트 값) | Job 을 만드는 namespace. 줄이 없으면 kubeconfig 방식은 그 context 의 namespace, 그것도 없으면 `default`(PVC `sbmig-data` 를 못 찾는다); 서비스 계정 방식은 파드의 namespace |
-| `SBMIG_JOB_TEMPLATE` | `/templates/81-web-job.template.yaml` (Deployment 의 env) | 채운 Job 틀을 ConfigMap `sbmig-job-template` 으로 `/templates` 에 마운트한다(README §3). 이미지 안의 `deploy/k8s/81-web-job.template.yaml` 은 자리표시자 그대로라 쓰지 않는다 |
+| `SBMIG_JOB_TEMPLATE` | (없음) → 이미지 안의 `/app/deploy/k8s/81-web-job.template.yaml` | Job 틀 파일. 매니페스트는 이 변수를 두지 않는다: 이미지를 빌드하는 체크아웃에서 81 을 채우고, 81 을 바꾸면 이미지를 빌드 · push 하고 웹 파드를 재시작한다. `CHANGE_ME` 가 남은 틀이면 웹 파드가 `MIGRATION_TEMPLATE_INVALID` 로 시작하지 않는다. 대안: 이미지 없이 틀을 바꿔야 하는 클러스터는 채운 틀을 ConfigMap `sbmig-job-template` 으로 `/templates` 에 마운트하고 이 변수를 `/templates/81-web-job.template.yaml` 로 둔다(40 의 주석 세 자리, README §3 "켜는 법" 4) |
 | `SBMIG_WORKER_LLM_RECORDS` | (없음) / `"1"` (Job 틀의 env) | Worker 가 LLM 원문 기록을 허용할지. 기본은 끈다(원본 프롬프트 = 소스 코드가 공유 볼륨에 더 남지 않게). 진단 때만 틀의 두 줄을 같이 푼다: 이 스위치 + `SBMIG_LLM__RECORD_DIR: "/data/llm-records"`. 스위치 없이 폴더만 주면 Worker 가 그 변수를 넘기지 않는다 |
 | `KUBECONFIG` | `/etc/kube/config` (Deployment 의 env, 매니페스트 값) | 회사 방식: 인프라팀이 준 kubeconfig Secret(`agent-kubeconfig`, 키 `config`)을 `/etc/kube` 에 마운트한다. 파일이 있으면 서비스 계정 토큰 대신 이것으로 쿠버네티스 API 를 부른다(token / 클라이언트 인증서 사용자; `exec` 는 거절). 개발 PC 에서 `k8s-job` 이 `local-job` 으로 내려가지 않게도 한다 |
 | `SBMIG_JOB_MAX_PARALLEL` | `3` (매니페스트 값) / `1` (변수가 없을 때) | 동시에 도는 빌드 파드(Job) 수. 넘는 업로드는 올린 순서대로 `queued` 로 기다리고 화면에 대기 순번이 보인다. 자리(1 · 2 · 3)마다 Maven 로컬 저장소를 따로 쓴다(`/data/.m2` 안의 `repository`, `repository-slot2`, `repository-slot3`). 웹 파드가 시작할 때 읽는다(바꾸면 재시작). `in-process` 모드는 언제나 1. 1 이상의 정수가 아니면 경고를 찍고 1. 81 틀에는 줄이 필요 없다(README §3 "동시에 여러 건") |
@@ -55,7 +55,7 @@
 | `SBMIG_FLOW` | (웹 파드가 Job 마다 넣는다) | 그 실행의 진행 방식 `full`(전체 진행) / `remediation`(취약점 해결). 손으로 넣지 않는다 — 화면에서 고른 값이 `request.json` 에 고정되고 Worker 가 대조한 뒤 `sbmig run --flow` 로 넘긴다. 81 틀에 줄이 필요 없다 |
 | `SBMIG_JOB_POLL_S` | `2` | Job 상태 조회 간격(초) |
 | `SBMIG_JOB_STOP_GRACE_S` | `2700` | 멈춤 요청(stop.request) 뒤 Job 을 지우기까지 기다리는 시간(초) — Maven 빌드 + OpenRewrite 한 번보다 길게. 파드가 아직 시작하지 않았으면(`ContainerCreating` 등) 기다리지 않고 바로 지운다 |
-| `SBMIG_JOB_PENDING_NOTICE_S` | `120` | 빌드 파드가 이 초 동안 시작하지 못하면 웹 파드가 이유(컨테이너 대기 이유, 스케줄 실패, 파드 Events)를 찾아 화면의 파드 단계 아래에 알리고 로그 WARNING · 저널 `job_pod_pending` 에 남긴다. `0` = 알리지 않는다. 알림만 하며 실행을 끝내거나 Job 을 지우지 않는다. 웹 파드만 읽는다(81 틀 · 대조 대상 아님, 바꾸면 재시작). 매니페스트에 없으면 기본값 |
+| `SBMIG_JOB_PENDING_NOTICE_S` | `300` | 빌드 파드가 이 초 동안 시작하지 못하면 웹 파드가 이유(컨테이너 대기 이유, 스케줄 실패, 파드 Events)를 찾아 화면의 파드 단계 아래에 알리고 로그 WARNING · 저널 `job_pod_pending` 에 남긴다. 정상 파드도 볼륨 마운트 · 이미지 받기에 3분 넘게 걸릴 수 있어 기본이 5분이다. `0` = 알리지 않는다. 알림만 하며 실행을 끝내거나 Job 을 지우지 않는다. 웹 파드만 읽는다(81 틀 · 대조 대상 아님, 바꾸면 재시작). 매니페스트에 없으면 기본값 |
 | `SBMIG_JOB_EXIT_GRACE_S` | `120` | Worker 가 결과(`job-status.json`)를 쓴 뒤에도 파드가 남아 있으면 이 초 뒤에 그 Job(우리 라벨인 것만)을 지우고 사라질 때까지 기다린다. 그 자리는 Job 이 끝난 것을 확인한 뒤에 다음 업로드로 넘어간다 |
 | `SBMIG_JOB_API_GRACE_S` | `300` | **알림만**(2026-11-10 부터): 쿠버네티스 API 가 이 초 동안 답하지 않으면 로그 ERROR 한 줄·저널 `job_api_unavailable`·화면 안내로 한 번 알리고 그 뒤 10분마다 로그에 다시 남긴다. 실행을 실패로 끝내지도, 자리를 넘기지도 않는다 — API 가 다시 답해(`job_api_back`) Job 이 끝난 것을 확인할 때까지 그 자리는 비지 않는다(자리가 다 찼으면 다음 업로드는 `queued`) |
 | `SBMIG_JOB_ENV_PIN` | `refuse` (k8s-job 기본) / `warn` / `off` (local-job 기본) | Job 파드의 환경 변수(설정 파일의 `${…}` 변수, `SBMIG_<섹션>__<키>`)가 그 Job 을 만든 웹 파드와 다를 때: `refuse` = 그 Job 은 돌지 않고 다른 키 이름을 적고 끝난다, `warn` = 저널 `worker_env_differs` 에 적고 Job 파드의 값으로 돈다, `off` = 대조하지 않는다. 웹 파드가 시작할 때 읽는다(바꾸면 재시작). 81 틀에는 줄이 필요 없다 — Worker 는 웹 파드가 `control/state.json` 에 적은 정책을 따른다. `warn` 은 개발 PC 가 `KUBECONFIG` 로 클러스터에 Job 을 만들 때처럼 두 환경이 원래 다른 경우에만 |
@@ -165,8 +165,7 @@
 kubectl apply -f deploy/k8s/20-configmap.yaml                 # sbmig-config(settings.xml) + sbmig-env (<…> 자리를 채운 뒤)
 cp deploy/k8s/30-secret.example.yaml deploy/k8s/30-secret.yaml && $EDITOR deploy/k8s/30-secret.yaml
 kubectl apply -f deploy/k8s/30-secret.yaml
-kubectl -n agent create configmap sbmig-job-template --from-file=deploy/k8s/81-web-job.template.yaml --dry-run=client -o yaml | kubectl apply -f -   # Job 모드: 81 틀을 새로 받았을 때
-kubectl -n agent rollout restart deploy/sbmig && kubectl -n agent rollout status deploy/sbmig   # sbmig-env / sbmig-config / Job 틀을 바꾼 뒤에는 언제나
+kubectl -n agent rollout restart deploy/sbmig && kubectl -n agent rollout status deploy/sbmig   # sbmig-env / sbmig-config 를 바꾼 뒤, 새 이미지(81 틀 포함)를 올린 뒤에는 언제나
 kubectl -n agent logs deploy/sbmig | grep -E "config: |sbmig web UI ready|open to the network"   # 틀린 키 이름 / 시작 상태
 kubectl -n agent exec deploy/sbmig -- ls /app/config/artifacts.yml                               # 회사 설정이 이미지에 들어 있는지
 kubectl -n agent exec deploy/sbmig -- python -m sbmig.cli llm-probe                              # 게이트웨이 토큰 교환 … HTTP 200

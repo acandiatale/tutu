@@ -152,7 +152,6 @@ def test_reduced_jsp_rename_is_not_credited_to_the_restructure():
     from sbmig.report.markdown import jsp_jakarta_lines
     lines = jsp_jakarta_lines(r)
     assert "by the restructure" not in lines[0] and "renamed by sbmig in JSP / tag files" in lines[0]
-    assert "sbmig가 JSP / 태그 파일" in jsp_jakarta_lines(r, "ko")[0]
     r.plan.scope = "full"
     assert "renamed by the restructure" in jsp_jakarta_lines(r)[0]
 
@@ -409,9 +408,9 @@ def test_transform_heading_and_order():
     build = _pom_fix("cannot find symbol", status="open", seen="build").model_copy(update={"case_id": "c1", "l2": "x"})
     r.error_entries = [build, *r.error_entries]
     assert list(seen_groups(r.error_entries)) == ["transform", "build"]
-    ko = "\n".join(error_list_lines(r, "ko"))
-    assert "### transform — sbmig가 고친 pom, 다음 빌드로 확인 (2)" in ko
-    assert KO_SAMPLES[0][1] in ko and "cannot find symbol" in ko
+    en = "\n".join(error_list_lines(r))
+    assert "### transform — pom corrections by sbmig, verified by the next build (2)" in en
+    assert KO_SAMPLES[0][0] in en and "cannot find symbol" in en
 
 
 def test_header_row_counts_pom_corrections_apart():
@@ -438,7 +437,8 @@ def test_handover_lists_the_pom_corrections():
     assert "### pom corrections by sbmig" in en
     assert f"- `pom.xml`: {KO_SAMPLES[0][0]} (verified)" in en
     ko = "\n".join(handover_lines(r, "ko"))
-    assert "### sbmig가 고친 pom" in ko and f"- `pom.xml`: {KO_SAMPLES[1][1]} (빌드로 확인)" in ko
+    # the item line is what guide_ko shows (pom_correction_lines' "- " lines); the heading never reaches a reader
+    assert f"- `pom.xml`: {KO_SAMPLES[1][1]} (빌드로 확인)" in ko
     r.plan.scope = "full"
     assert "pom corrections by sbmig" not in "\n".join(handover_lines(r))
 
@@ -479,16 +479,12 @@ def test_error_list_opening_matches_the_header_row():
     from sbmig.report.markdown import error_list_lines, handover_lines
     r = _clean_reduced()
     assert "No build error in this run. 2 pom correction(s) by sbmig, verified by the build." in error_list_lines(r)
-    assert "이번 실행에는 빌드 오류가 없습니다. sbmig가 고친 pom 2건을 빌드로 확인했습니다." in error_list_lines(r, "ko")
     r.error_entries[1] = _pom_fix(KO_SAMPLES[1][0], status="pom-verify")
-    assert ("이번 실행에는 빌드 오류가 없습니다. sbmig가 고친 pom은 2건이고 그중 1건은 아직 빌드로 확인하지 못했습니다."
-            in error_list_lines(r, "ko"))
+    assert "No build error in this run. 2 pom correction(s) by sbmig, 1 of them not verified yet." in error_list_lines(r)
     r.error_entries.append(_pom_fix("cannot find symbol", status="unresolved", seen="build").model_copy(
         update={"case_id": "c1", "l2": "x", "raw": "x"}))
     en = "\n".join(error_list_lines(r))
     assert "1 build error(s) in this run, one line each" in en and ": unresolved 1. Besides, 2 pom correction(s) by sbmig." in en
-    assert "그 밖에 sbmig가 고친 pom 2건이 있습니다." in "\n".join(error_list_lines(r, "ko"))
     assert "sbmig changed these poms itself in the transform step." in handover_lines(r)
-    assert "변환 단계에서 sbmig가 직접 고친 pom입니다." in handover_lines(r, "ko")
     r.plan.scope = "full"
     assert "3 error(s) in this run, one line each" in "\n".join(error_list_lines(r))

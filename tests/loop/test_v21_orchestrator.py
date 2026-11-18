@@ -74,7 +74,7 @@ class PomRestructurer:
 
 
 # ------------------------------------------------------------------------------------------ compile + build
-@pytest.mark.parametrize("engine", ["graph", "inline"])
+@pytest.mark.parametrize("engine", ["graph"])
 def test_compile_records_every_error_and_the_build_adds_only_new_ones(cfg, ws, logs, engine):
     cfg.loop.engine = engine
     build = FakeBuildRunner(ws, fn=staged_build)

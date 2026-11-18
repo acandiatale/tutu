@@ -146,18 +146,6 @@ def test_a_stop_before_start_refuses_an_unowned_job(tmp_path, repo, managers):
     assert _state(out, rid).state == "stopped"
 
 
-def test_a_stop_while_running_keeps_the_grace(tmp_path, repo, managers, monkeypatch):
-    monkeypatch.setenv("SBMIG_JOB_STOP_GRACE_S", "60")
-    out = tmp_path / "out"
-    cluster = PodCluster(out, None, phases=["Running"])
-    mgr = _mgr(tmp_path, repo, cluster, managers)
-    rid = mgr.start(ZIP, "a.zip", CFG)
-    assert _wait(lambda: _state(out, rid).state == "running")
-    assert mgr.stop(rid) and _wait(lambda: (out / rid / STOP_REQUEST_FILE).is_file())
-    assert not mgr.runs[rid].done.wait(0.4) and cluster.deleted == []
-    assert not any(e["event"] == "job_deleted_before_start" for e in _journal(out, rid))
-
-
 def test_a_pod_that_starts_after_the_stop_request_keeps_the_grace(tmp_path, repo, managers, monkeypatch):
     """The pod was Pending for a while and then started: a stop now is a stop of a running pod (grace, no early delete)."""
     monkeypatch.setenv("SBMIG_JOB_STOP_GRACE_S", "60")
@@ -367,7 +355,13 @@ def test_notice_off_with_zero(tmp_path, repo, managers, monkeypatch):
     assert run.job_pending is None and run.history == [] and client.event_calls == []
 
 
-def test_the_default_threshold_is_two_minutes(tmp_path, repo, managers):
+def test_the_default_threshold_is_five_minutes(tmp_path, repo, managers):
+    """2026-11-18: a healthy pod on the company cluster needs more than three minutes to start (volume, image pull)."""
+    assert _manager_for_unit(tmp_path, repo, managers).job_pending_notice_s == 300
+
+
+def test_an_explicit_threshold_wins_over_the_default(tmp_path, repo, managers, monkeypatch):
+    monkeypatch.setenv("SBMIG_JOB_PENDING_NOTICE_S", "120")
     assert _manager_for_unit(tmp_path, repo, managers).job_pending_notice_s == 120
 
 

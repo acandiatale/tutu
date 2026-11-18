@@ -127,7 +127,7 @@ def test_refuse_names_the_keys_and_nothing_else(setup, capsys, main_extra, worke
     status = json.loads((setup["run_dir"] / "job-status.json").read_text(encoding="utf-8"))
     assert status["exit_code"] == 3 and status["run_id"] == RUN_ID and status["attempt"] == 1
     assert status["error"].startswith("environment differs from the web pod's: ") and expected in status["error"]
-    for hint in ("restart the web pod", "ConfigMap sbmig-env", "ConfigMap sbmig-job-template",
+    for hint in ("restart the web pod", "ConfigMap sbmig-env", "rebuild and push the image",
                  "SBMIG_JOB_ENV_PIN=warn (or off)"):
         assert hint in status["error"]
     events = journal(setup["run_dir"])

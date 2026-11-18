@@ -283,9 +283,55 @@ def test_the_shipped_configmap_runs_the_company_operating_mode():
     assert _sbmig_env_data().get("SBMIG_K8S_NAMESPACE") == "agent" and "SBMIG_K8S_NAMESPACE" not in _commented_keys()
     # the Job pod calls no Kubernetes API: no kubeconfig, no service account in the template
     assert "kubeconfig" not in WEB_JOB.read_text(encoding="utf-8").lower() and "KUBECONFIG" not in _literals(WEB_JOB)
-    assert env["SBMIG_JOB_TEMPLATE"].startswith(mounts["job-template"] + "/")
-    volume = next(v for v in spec["volumes"] if v["name"] == "job-template")
-    assert volume["configMap"]["name"] == "sbmig-job-template"
+    # the Job template is the image's copy (test_the_web_pod_reads_the_job_template_from_its_own_image)
+    assert "SBMIG_JOB_TEMPLATE" not in env and "job-template" not in mounts
+
+
+def test_the_web_pod_reads_the_job_template_from_its_own_image():
+    """2026-11-18, the company cluster: the operator edited 81 (imagePullPolicy), rebuilt and pushed the image, and the build
+    pods kept the old setting — 40 pointed SBMIG_JOB_TEMPLATE at a ConfigMap mount that had to be re-created by hand. The
+    operator expected "edit 81, build, done": the image is built from a checkout whose 81 is filled. Now 40 sets no
+    SBMIG_JOB_TEMPLATE and mounts no template; the code's default path is the image's copy; the Dockerfile copies deploy/
+    to that path and neither .dockerignore drops it. The ConfigMap route stays as commented lines in 40."""
+    from sbmig.web.k8s import DEFAULT_TEMPLATE, TEMPLATE_ENV
+    spec = _spec(WEB)
+    c = spec["containers"][0]
+    assert TEMPLATE_ENV not in {e["name"] for e in c["env"]}
+    assert TEMPLATE_ENV not in {k for d in _docs(CONFIGMAP) for k in (d.get("data") or {})}
+    assert not [m for m in c["volumeMounts"] if m["mountPath"] == "/templates" or m["name"] == "job-template"]
+    assert not [v for v in spec["volumes"] if v["name"] == "job-template" or (v.get("configMap") or {}).get("name") == "sbmig-job-template"]
+    text = WEB.read_text(encoding="utf-8")
+    for alt in ("# - {name: SBMIG_JOB_TEMPLATE, value: /templates/81-web-job.template.yaml}",
+                "# - {name: job-template, mountPath: /templates, readOnly: true}",
+                "#   configMap: {name: sbmig-job-template}"):
+        assert alt in text, alt
+    # the default path the code reads is the shipped 81, under /app in the image
+    assert DEFAULT_TEMPLATE == "deploy/k8s/81-web-job.template.yaml" and (PACKAGE_ROOT / DEFAULT_TEMPLATE) == WEB_JOB
+    docker = (PACKAGE_ROOT / "deploy" / "docker" / "Dockerfile").read_text(encoding="utf-8")
+    assert "COPY --chown=sbmig:sbmig ${DEPLOY_DIR}/ /app/deploy/" in docker and "WORKDIR /app" in docker
+    assert "ARG DEPLOY_DIR=deploy" in docker and "PYTHONPATH=/app" in docker
+    for ignore in (PACKAGE_ROOT / ".dockerignore", PACKAGE_ROOT / "deploy" / "docker" / "root.dockerignore.example"):
+        lines = [ln.strip() for ln in ignore.read_text(encoding="utf-8").splitlines()]
+        rules = [ln for ln in lines if ln and not ln.startswith(("#", "!"))]
+        for rule in rules:
+            bare = rule.lstrip("*/").rstrip("/")
+            assert bare not in ("deploy", "deploy/k8s", "k8s", "*.yaml", "*.template.yaml", "81-web-job.template.yaml"), \
+                (ignore.name, rule)
+        assert "deploy/k8s/30-secret.yaml" in rules         # only the filled Secret stays out
+
+
+def test_without_sbmig_job_template_the_web_pod_reads_the_package_copy(tmp_path: Path, monkeypatch):
+    """`RunManager` (and `create_app`) default to the package root — `/app` in the image — and resolve the template there."""
+    from sbmig.web.k8s import DEFAULT_TEMPLATE, TEMPLATE_ENV
+    from sbmig.web.runs import RunManager
+    monkeypatch.delenv(TEMPLATE_ENV, raising=False)
+    monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
+    monkeypatch.delenv("KUBECONFIG", raising=False)
+    mgr = RunManager(tmp_path / "out", mode="local-job")
+    try:
+        assert Path(mgr.job_template) == PACKAGE_ROOT.resolve() / DEFAULT_TEMPLATE == WEB_JOB.resolve()
+    finally:
+        mgr.shutdown("test teardown")
 
 
 def test_the_shipped_configmap_runs_three_build_pods_at_a_time():
@@ -331,7 +377,7 @@ def test_maven_settings_is_a_plain_file_on_the_data_volume():
         assert "# - {name: config, mountPath: /app/config/artifacts.yml, subPath: artifacts.yml" in path.read_text(encoding="utf-8")
     web = _spec(WEB)
     assert [m["mountPath"] for m in web["containers"][0]["volumeMounts"]] == \
-        ["/data", "/etc/sbmig/settings.xml", "/templates", "/etc/kube"]
+        ["/data", "/etc/sbmig/settings.xml", "/etc/kube"]
     source = next(m for m in web["containers"][0]["volumeMounts"] if m["mountPath"] == "/etc/sbmig/settings.xml")
     assert source["subPath"] == "settings.xml" and source.get("readOnly") is True
     assert next(v for v in web["volumes"] if v["name"] == source["name"])["configMap"]["name"] == "sbmig-config"
@@ -413,7 +459,7 @@ def test_a_key_switched_on_after_the_web_pod_started_is_worker_only():
 @pytest.mark.parametrize(("all_on", "key"), [(False, "LLM_ESCALATION_MODEL"), (True, "SBMIG_SCRIPT__MAX_LLM_TRIES_PER_CASE"),
                                              (True, "LLM_RECIPE_MODEL")])
 def test_a_key_the_job_template_does_not_forward_is_main_only(all_on: bool, key: str):
-    """A key added to sbmig-env without its configMapKeyRef line in 81 (or a stale sbmig-job-template ConfigMap)."""
+    """A key added to sbmig-env without its configMapKeyRef line in 81 (or a web pod still running an image with the old 81)."""
     cm = _configmap(all_on)
     assert _compare(_main_env(cm), _worker_env(cm, drop=key)) == {**NO_DIFF, "main_only": [key]}
 
@@ -430,7 +476,8 @@ def test_sbmig_env_header_tells_the_operator_to_restart_the_web_pod():
     header = text[text.index("\n---\n"):text.index("name: sbmig-env")]
     assert "rollout restart" in header and "SBMIG_JOB_ENV_PIN" in header
     assert "kubectl -n agent rollout restart deploy/sbmig" in header
-    assert "sbmig-job-template" in header                     # a changed Job template needs the same restart
+    # a changed Job template: rebuild and push the image, restart the web pod (the ConfigMap only on that route)
+    assert "81(Job 틀)은 이미지 안의 사본을 읽으므로" in header and "이미지를 빌드 · push 하고 웹 파드를 재시작한다" in header
     commented = _commented_keys()
     assert commented["SBMIG_JOB_ENV_PIN"] == ("1", contract.ENV_PIN_REFUSE)
 
@@ -515,4 +562,4 @@ def test_the_web_rbac_role_lists_pod_events_for_the_pending_notice():
         assert verb in rules[((group,), (resource,))], (verb, resource)
     # a web-pod setting only: not a Job template line, not an env pin
     assert PENDING_NOTICE_ENV not in (K8S / "81-web-job.template.yaml").read_text(encoding="utf-8")
-    assert f"| `{PENDING_NOTICE_ENV}` | `120`" in (PACKAGE_ROOT / "deploy" / "ENV.md").read_text(encoding="utf-8")
+    assert f"| `{PENDING_NOTICE_ENV}` | `300`" in (PACKAGE_ROOT / "deploy" / "ENV.md").read_text(encoding="utf-8")

@@ -43,8 +43,9 @@ SA_DIR = Path("/var/run/secrets/kubernetes.io/serviceaccount")
 MODES = ("in-process", "k8s-job", "local-job")    # local-job: the Job-mode flow with a local subprocess as the "pod" (development)
 TERMINAL_PHASES = ("Succeeded", "Failed", "Missing")
 NOT_STARTED_PHASES = ("Creating", "Pending")   # 파드가 없거나 컨테이너가 아직 시작하지 않은 상태다
-PENDING_NOTICE_ENV = "SBMIG_JOB_PENDING_NOTICE_S"   # 파드가 이 초 동안 시작하지 못하면 이유를 찾아 화면에 알린다(기본 120, 0은 끔)
+PENDING_NOTICE_ENV = "SBMIG_JOB_PENDING_NOTICE_S"   # 파드가 이 초 동안 시작하지 못하면 이유를 찾아 화면에 알린다(기본 300, 0은 끔)
 TEMPLATE_INVALID = "MIGRATION_TEMPLATE_INVALID"   # 시작 검증에서 거부할 때 메시지 앞에 붙는 값으로 배포팀이 로그에서 찾는다
+PLACEHOLDER = "CHANGE_ME"   # 저장소의 81 틀에 남아 있는 자리표시자다. 채우지 않은 틀로는 Job 이미지를 받을 수 없다
 # Worker에 있으면 안 되는 환경 변수다.
 # LLM 원문 기록은 공유 볼륨에 소스를 남기고, 빌드 파드는 웹 API를 호출하지 않으므로 웹 토큰이 필요 없다
 FORBIDDEN_WORKER_ENV = ("LLM_RECORD_DIR", "SBMIG_WEB_TOKEN", "WEB_API_TOKEN")
@@ -254,23 +255,43 @@ def _invalid(reason: str) -> K8sError:
     return K8sError(f"{TEMPLATE_INVALID}: {reason}")
 
 
-def validate_worker_template(template: str | Path | dict, out_dir: Path | None) -> dict:
+# 틀을 읽지 못하거나 채우지 않았을 때 운영자에게 보여 주는 조치 안내다
+TEMPLATE_HINT = (f"the web pod reads the image's copy {DEFAULT_TEMPLATE} unless {TEMPLATE_ENV} names another file: fill "
+                 f"{DEFAULT_TEMPLATE} in the checkout the image is built from, build and push the image and restart the web "
+                 f"pod, or point {TEMPLATE_ENV} at a filled copy (deploy/README.md §3)")
+
+
+def _placeholders(node: Any, path: str = "") -> list[str]:
+    # 읽은 틀에서 자리표시자가 남은 값의 위치를 찾는다. 주석은 YAML을 읽을 때 빠지므로 세지 않는다
+    if isinstance(node, dict):
+        return [p for k, v in node.items() for p in _placeholders(v, f"{path}.{k}" if path else str(k))]
+    if isinstance(node, list):
+        return [p for i, v in enumerate(node) for p in _placeholders(v, f"{path}[{i}]")]
+    if isinstance(node, str) and PLACEHOLDER in node:
+        return [f"{path}={node}"]
+    return []
+
+
+def validate_worker_template(template: str | Path | dict, out_dir: Path | None, *, allow_placeholders: bool = False) -> dict:
     """Worker Job 템플릿이 규칙에 맞는지 시작할 때 검사한다.
     위반하면 ``K8sError("MIGRATION_TEMPLATE_INVALID: <이유>")``를 던지고, 통과하면 읽은 dict를 반환한다.
     Job 매니페스트인지, 컨테이너가 하나인지, ``backoffLimit`` 0, ``restartPolicy`` Never, ``envFrom`` 없음,
     ``out_dir``를 포함하는 쓰기 가능한 PVC 마운트 하나, 비밀 이름 env에 직접 쓴 값이 없는지 등을 확인한다.
     ``out_dir``가 None이면 테스트 클라이언트로 보고 마운트 규칙만 건너뛴다.
+    ``CHANGE_ME``가 남은 값이 있으면 거부하며, ``allow_placeholders``가 True이면 이 검사만 건너뛴다.
 
     Validate the Worker Job template at startup; raises `K8sError("MIGRATION_TEMPLATE_INVALID: …")`, returns the parsed dict.
-    `out_dir=None` skips the mount rules only (an injected test client: the output dir is not a pod path)."""
+    `out_dir=None` skips the mount rules only (an injected test client: the output dir is not a pod path).
+    A value that still contains the repository's `CHANGE_ME` placeholder (comments do not count: they are not parsed) is
+    refused — such a template only makes Jobs whose image can never be pulled; `allow_placeholders=True` skips that rule
+    (the startup check with an injected test client, which renders the repository's unfilled template)."""
     if isinstance(template, dict):
         data: Any = template
     else:
         try:
             data = yaml.safe_load(Path(template).read_text(encoding="utf-8"))
         except (OSError, yaml.YAMLError) as e:
-            raise _invalid(f"job template {template} is not readable ({type(e).__name__}: {e}) — mount the ConfigMap "
-                           f"sbmig-job-template at /templates (deploy/README.md §3) or point {TEMPLATE_ENV} at the filled template") from e
+            raise _invalid(f"job template {template} is not readable ({type(e).__name__}: {e}) — {TEMPLATE_HINT}") from e
     if not isinstance(data, dict) or data.get("apiVersion") != "batch/v1" or data.get("kind") != "Job":
         where = "" if isinstance(template, dict) else f" {template}"
         raise _invalid(f"the job template{where} is not a batch/v1 Job")
@@ -317,6 +338,11 @@ def validate_worker_template(template: str | Path | dict, out_dir: Path | None) 
         below = [str(x["mountPath"]) for x in mounts if x is not m and Path(str(x["mountPath"])).is_relative_to(out)]
         if below:
             raise _invalid(f"no mount may sit under the output directory {out}: {', '.join(below)}")
+    left = [] if allow_placeholders else _placeholders(data)
+    if left:
+        where = "" if isinstance(template, dict) else f" {template}"
+        raise _invalid(f"the job template{where} still has the repository placeholder {PLACEHOLDER} ({'; '.join(left)}) — "
+                       f"{TEMPLATE_HINT}")
     return data
 
 

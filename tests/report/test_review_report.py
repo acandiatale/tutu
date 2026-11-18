@@ -14,7 +14,7 @@ from sbmig.core.workspace import Workspace
 from sbmig.report import build_handover, console_summary, render_markdown, write_report
 from sbmig.report.handover import REVIEW_FOLLOWUPS_MAX, review_followups
 from sbmig.report.i18n import tr_line
-from sbmig.report.markdown import review_summary, structure_review_lines
+from sbmig.report.markdown import review_summary
 from sbmig.report.result_line import report_result_line, result_line
 from sbmig.report.writer import review_console_line
 
@@ -78,17 +78,18 @@ def test_section_english():
 
 
 def test_section_korean():
-    # v2.1z-as: the Korean guide keeps only the verdict (참고 / 실행 정보); the section helper keeps its Korean
+    # v2.1z-as: the Korean guide keeps only the verdict (참고 / 실행 정보); structure_review_lines never runs for "ko"
+    # (render_markdown hands it to guide_ko first), so its Korean wording reaches no reader
     r = review_report(script="error")
     md = render_markdown(r, language="ko")
-    sec = "\n".join(structure_review_lines(r, "ko"))
-    assert sec.startswith(KO_TITLE)
-    assert "- 판정: `issues` — 심각 2건, 경고 1건; 수정 결과 error, 변경은 되돌렸습니다" in sec
-    assert "| 심각도 | 파일 | 문제 | 수정 방법 |" in sec and "| **심각** |" in sec and "| 경고 |" in sec
-    assert "- 수정 결과: `error`, 수정한 파일 0개" in sec and "- 수정 내용은 되돌렸습니다." in sec
-    assert "- 수정 오류: NameError: name 'x'" in sec and "- 메모: review script failed" in sec
     assert "- 구조 점검: 심각 2건, 주의 1건" in md and KO_TITLE + "\n" not in md and "| 구조 점검 |" not in md
     assert "Structure review" not in md and "verdict:" not in md
+    # the failed-fix branch of the section, in the language a reader sees it (it was checked in Korean only)
+    sec = section(render_markdown(r))
+    assert "- verdict: `issues` — 2 critical, 1 warning(s); fix error, changes restored" in sec
+    assert "- fix (edits / script): `error`, 0 file(s) changed" in sec
+    assert "- the fix's changes were restored: they are not in the result" in sec
+    assert "- fix error: NameError: name 'x'" in sec and "- note: review script failed (error): NameError: name 'x'" in sec
 
 
 def test_verdict_variants_and_no_section_without_a_review():
@@ -154,8 +155,8 @@ def test_v21_answer_lines():
     assert review_summary(pending).endswith("; fix not applied")
     r.structure_review.answer = ScriptProposal(analysis="only the answer has it", no_script_reason="one-off")
     r.structure_review.analysis = ""
-    ko = "\n".join(structure_review_lines(r, "ko"))
-    assert "- KB용 스크립트: 없음 (one-off)" in ko and "분석: only the answer has it" in ko
+    sec = section(render_markdown(r))
+    assert "- script for the KB: none — one-off" in sec and "Analysis: only the answer has it" in sec
     assert "- structure review: only the answer has it" in render_markdown(r, language="ko")   # 참고 / 진단용 기록
 
 

@@ -10,7 +10,7 @@ from sbmig.core.models import EditNote
 from sbmig.review import parse_review_answer
 from sbmig.review.reviewer import system_prompt
 
-from .test_review_edits import REVIEW, SCRIPT, answer, run
+from .test_review_edits import REVIEW, answer, run
 from .test_reviewer import make_ws
 
 DESC = "module/comp-jar/pom.xml 의 <properties> 에서 project.build.sourceEncoding 을 MS949 로 설정합니다"
@@ -64,11 +64,6 @@ def test_desc_without_changes_is_used_for_the_log_line(tmp_path, cfg, caplog):
     assert rv.answer is not None and rv.answer.analysis == "MS949 sources, UTF-8 build"   # no script: nothing missing
     msgs = [r.getMessage() for r in caplog.records if r.name.startswith("sbmig.review")]
     assert any(m.startswith("structure review 수정: module/comp-jar/pom.xml") and f"— {DESC}" in m for m in msgs)
-
-
-def test_script_without_changes_gets_the_note(tmp_path, cfg):
-    rv, _ = run(cfg, make_ws(tmp_path), answer(edits=EDITS, script=SCRIPT))
-    assert rv.answer.analysis.endswith("[sbmig] the answer did not describe its changes")
 
 
 def test_review_prompt_teaches_the_description_rule(cfg):

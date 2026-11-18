@@ -179,18 +179,9 @@ def test_fixes_by_case_section():
 
 
 def test_korean_sections():
-    # v2.1z-as: the Korean report.md is the guide — no error list, no per-case table; the section helpers keep
-    # their Korean wording for the console / other readers
-    from sbmig.report.markdown import error_list_lines, fixes_by_case_lines
+    # v2.1z-as: the Korean report.md is the guide — no error list, no per-case table (render_markdown hands "ko" to
+    # guide_ko before error_list_lines / fixes_by_case_lines run, so their Korean wording reaches no reader)
     r = report_with(entries())
-    sec = "\n".join(error_list_lines(r, "ko"))
-    assert "이번 실행의 오류 7건을 한 줄씩 적었습니다" in sec and "### compile — OpenRewrite 뒤 `mvn compile` (3)" in sec
-    assert "### fix r2 — 2번째 수정 뒤 빌드에서 새로 나온 오류 (1)" in sec
-    assert "| # | 오류 유형 | 파일:줄 | 메시지 | 상태 | 수정 기록 | 해결 |" in sec
-    fx = "\n".join(fixes_by_case_lines(r, "ko"))
-    assert "| 오류 유형 | 오류 | 원인 | 해결 방법 | 변경 파일 (+/−) | 직접 수정 | 스크립트 |" in fx and "2/2 해결" in fx
-    assert "| module/comp-jar/pom.xml +11–14 (<dependencies> 블록) — jakarta.xml.bind-api 의존성을 추가합니다 |" in fx
-    assert "스크립트 없음: generated code differs per project" in fx
     md = render_markdown(r, language="ko")
     assert KO_TITLE not in md and FIXES_KO not in md and EN_TITLE not in md and FIXES_EN not in md
     assert "에러 목록" not in md and "오류 목록" not in md

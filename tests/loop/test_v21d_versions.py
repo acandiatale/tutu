@@ -467,7 +467,7 @@ def _orch_fix(w, c, ctx):
     return answer(edits=[write_edit(FOO, FIXED), write_edit("pom.xml", NEW_POM)], verify="LLM: check the filter")
 
 
-@pytest.mark.parametrize("engine", ["graph", "inline"])
+@pytest.mark.parametrize("engine", ["graph"])
 def test_finalize_builds_operator_checks_from_the_tries_and_the_review(cfg, ws, orch_readback, engine):
     from .test_v2_orchestrator import make_v2
     cfg.loop.engine = engine

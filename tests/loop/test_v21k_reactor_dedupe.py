@@ -56,7 +56,7 @@ def _modules(ws: Workspace, rel: str) -> list[str]:
     return PomEditor(ws.abs(rel)).modules()
 
 
-@pytest.mark.parametrize("engine", ["inline", "graph"])
+@pytest.mark.parametrize("engine", ["graph"])
 def test_intake_removes_the_nested_duplicate_before_maven(cfg, tmp_path, engine):
     cfg = cfg.model_copy(deep=True)
     cfg.loop.engine = engine
@@ -109,7 +109,7 @@ def test_a_single_top_below_the_root_gets_an_aggregator_listing_it(cfg, tmp_path
     assert "intake: generated root aggregator pom (APP)" in ws._git("log", "-1", "--format=%s").stdout
 
 
-@pytest.mark.parametrize("engine", ["inline", "graph"])
+@pytest.mark.parametrize("engine", ["graph"])
 def test_a_rootless_tree_that_is_not_msa_stops_at_analyze(cfg, tmp_path, engine):
     cfg = cfg.model_copy(deep=True)
     cfg.loop.engine = engine

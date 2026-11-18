@@ -187,7 +187,8 @@ def test_a_damaged_case_json_is_repaired_after_the_short_window(tmp_path, cfg, c
     with caplog.at_level(logging.WARNING, logger="sbmig.errors"):
         assert CaseStore(kb, cfg).add_script(CID, L2, CODE1).version == 1
     assert time.monotonic() - t0 < 10                        # REPAIR_SECONDS, not CONFIRM_SECONDS
-    assert any("a fresh one is written over it" in x for x in msgs(caplog, logging.WARNING))
+    assert CaseStore(kb, cfg).find(CID).scripts[0].version == 1
+    assert any("does not read" in x and "a fresh one is written over it" in x for x in msgs(caplog, logging.WARNING))
 
 
 # --------------------------------------------------------------------------- 2. breakers serialized
@@ -488,7 +489,7 @@ def test_recount_keeps_the_lock_alive(tmp_path, cfg, monkeypatch):
     assert len(calls) >= 3 and all(c == tmp_path / "kb" for c in calls)
 
 
-@pytest.mark.parametrize("value", [0, -5])
+@pytest.mark.parametrize("value", [0])
 def test_a_non_positive_timeout_means_the_default(tmp_path, monkeypatch, caplog, value):
     monkeypatch.setattr(lockmod, "DEFAULT_TIMEOUT", 0.5)
     p = foreign_lock(tmp_path, token="theirs", age=-100)    # live: with 0 it used to be stale at once

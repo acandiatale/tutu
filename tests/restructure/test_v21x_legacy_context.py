@@ -508,17 +508,6 @@ def test_source_encoding_written_for_ms949_module(tmp_path: Path, ccfg: Config) 
     assert "안녕하세요" in next(ws.root.rglob("Greeting.java")).read_bytes().decode("cp949")   # never re-encoded
 
 
-def test_source_encoding_mixed_module_sentence_only(tmp_path: Path, ccfg: Config) -> None:
-    ws = make_ws(tmp_path, _cp949_tree(), "enc-mixed")
-    src = ws.root / "src/main/java/com/acme/shop"
-    src.mkdir(parents=True)
-    (src / "A.java").write_bytes("package com.acme.shop;\nclass A { String s = \"가나다\"; }\n".encode("cp949"))
-    (src / "B.java").write_text("package com.acme.shop;\nclass B { String s = \"라마바\"; }\n", encoding="utf-8")
-    res = Restructurer(commit=False).apply(ws, analyze_project(ws, ccfg), ccfg, mode="layout")
-    assert res.ok, res.error
-    assert res.source_encodings_written == [] and "the sources mix MS949 and UTF-8 files" in fu(res)
-
-
 def test_source_encoding_switch_off(tmp_path: Path, ccfg: Config) -> None:
     ccfg.layout.legacy_context.write_source_encoding = False
     ws = make_ws(tmp_path, _cp949_tree(), "enc-off")

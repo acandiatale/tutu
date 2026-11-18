@@ -282,8 +282,12 @@ sbmig clean --fleet out\fleet --older-than 7 --keep-failed --dry-run
   <VAR> from the environment`); the environment still wins over the yml files.
 - **Containers / Kubernetes**: `deploy/README.md` — the image, the web pod, and `sbmig serve --mode k8s-job`
   (one build Job per upload, up to `SBMIG_JOB_MAX_PARALLEL` at a time, the shared file KB, env pins). Operator rule:
-  after changing ConfigMap `sbmig-env` restart the web pod; after a new Job template re-create ConfigMap
-  `sbmig-job-template`; **after pushing an image restart the web pod** (build pods pull at start). The build identity is
+  image only → build, push, restart the web pod; `20-configmap.yaml` → apply it, restart the web pod;
+  `40-deployment.yaml` → apply it; `81-web-job.template.yaml` → build and push the image, restart the web pod (the web
+  pod reads the image's copy `/app/deploy/k8s/81-web-job.template.yaml`, filled in the checkout the image is built
+  from; a value still containing `CHANGE_ME` stops the web pod at startup with `MIGRATION_TEMPLATE_INVALID`; a cluster
+  that must change the template without a new image mounts it as a ConfigMap and sets `SBMIG_JOB_TEMPLATE`, then
+  re-creates that ConfigMap instead). Build pods pull at start, so **after pushing an image restart the web pod**. The build identity is
   `sbmig version` (`0.1.0+<12 hex>`, a digest of `sbmig/**/*.py`, `config/*.yml` and `knowledge/**`); the Main that
   creates a Job records its config digests and version in `control/state.json`, and a build pod that differs refuses to
   run (exit 3, journal `worker_refused`, "config <name> differs between the web pod and the build pod" / "sbmig version

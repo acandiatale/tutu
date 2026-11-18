@@ -20,7 +20,7 @@ def base_events(ws) -> list[dict]:
     return [e for e in journal_events(ws) if e["event"] == "code_changes_base"]
 
 
-@pytest.mark.parametrize("engine", ["graph", "inline"])
+@pytest.mark.parametrize("engine", ["graph"])
 def test_base_is_the_restructure_commit_and_the_fix_loop_changes_are_listed(cfg, ws, engine):
     cfg.loop.engine = engine
     rw = FakeRewriteRunner(ws, effect=lambda w, refs: (w.write("rewritten.txt", "x") or ["rewritten.txt"]))

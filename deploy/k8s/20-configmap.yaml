@@ -48,8 +48,8 @@ data:
 #   envFrom 을 못 써서 그 틀에 키마다 configMapKeyRef 가 적혀 있다 — 그룹 2 · 3 의 키는 전부 81 에 있다(여기 새 키를 더하면 81 에도 한 줄; tests/deploy 가 본다).
 # 언제 읽나: 웹 파드는 시작할 때, Job 파드는 만들어질 때 읽는다. 그래서 이 ConfigMap 을 고친 뒤에는 웹 파드를 재시작한다
 #   (kubectl -n agent rollout restart deploy/sbmig) — 안 하면 다음 Job 이 몇 초 만에 웹 파드와 값이 다른 키 이름을 적고 멈춘다(Worker 가 자기
-#   환경을 웹 파드의 것과 대조한다; 그룹 1 의 SBMIG_JOB_ENV_PIN 을 warn / off 로 두면 완화된다). 81(Job 틀)을 고쳤을 때도 ConfigMap
-#   sbmig-job-template 을 다시 만들고 웹 파드를 재시작한다(웹 파드는 시작할 때 틀을 읽어 둔다).
+#   환경을 웹 파드의 것과 대조한다; 그룹 1 의 SBMIG_JOB_ENV_PIN 을 warn / off 로 두면 완화된다). 81(Job 틀)은 이미지 안의 사본을 읽으므로
+#   고쳤으면 이미지를 빌드 · push 하고 웹 파드를 재시작한다(웹 파드는 시작할 때 틀을 읽어 둔다. ConfigMap 으로 주는 클러스터는 그 ConfigMap 도 다시 만든다).
 #   그룹 1 — 웹 파드 동작.   그룹 2 — LLM 게이트웨이(비밀 아닌 것).   그룹 3 — 이미지에 구운 artifacts.yml / default.yml 의 설정 키를 덮어쓰는
 #   SBMIG_<섹션>__<키>(밑줄 두 개 = 한 단계 아래; 값은 YAML 로 읽으므로 숫자·true/false·["목록"] 그대로). 시험 운영 중 자주 손대는
 #   키만 적었고, 주석을 풀면 그 값이 artifacts.yml 보다 우선한다. 모르는 키 이름은 시작 로그에 `config: … is not a known key` 로 뜬다.
@@ -72,7 +72,7 @@ data:
   # HTTPS_PROXY: "http://<프록시 호스트>:<포트>"
   # NO_PROXY: "<게이트웨이 호스트>,<nexus 호스트>,localhost,127.0.0.1"
   # 회사 운영 방식(2026-11-10): 업로드마다 Job 하나(공유 PVC). 켜 둔 채로 나간다 — 웹 파드는 시작할 때 권한(kubeconfig Secret)과 Job 틀
-  # (ConfigMap sbmig-job-template, README §3 "켜는 법" 4)을 검사하고 어긋나면 뜨지 않는다. 웹 파드가 직접 돌리게 하려면 이 줄을 주석 처리
+  # (이미지 안의 81, README §3 "켜는 법" 4)을 검사하고 어긋나면 뜨지 않는다. 웹 파드가 직접 돌리게 하려면 이 줄을 주석 처리
   SBMIG_WEB_MODE: "k8s-job"
   SBMIG_K8S_NAMESPACE: "agent"          # Job 을 만드는 namespace(회사 값). 이 줄이 없으면 kubeconfig context 의 namespace, 그것도 없으면 default 로 간다
   # 동시에 도는 빌드 파드(Job) 수(회사 값 2026-11-10: 처음에는 3). 넘는 업로드는 올린 순서대로 기다리고 화면에 대기 순번이 보인다.
@@ -80,7 +80,7 @@ data:
   # 여러 Maven 이 동시에 쓰면 깨질 수 있다). 1 로 두면 예전처럼 한 번에 하나. 바꾼 뒤에는 웹 파드를 다시 띄운다(시작할 때 한 번 읽는다).
   # 파드 하나가 CPU 2 / 메모리 8Gi 를 요청한다(81 의 resources) — 3 이면 노드에 CPU 6 / 메모리 24Gi 여유가 있어야 셋이 같이 돈다
   SBMIG_JOB_MAX_PARALLEL: "3"
-  # SBMIG_JOB_TEMPLATE 은 Deployment 의 env 가 /templates/81-web-job.template.yaml 로 정한다(ConfigMap sbmig-job-template) — 여기서는 안 건드린다
+  # SBMIG_JOB_TEMPLATE 은 여기서 안 건드린다. 비워 두면 이미지 안의 81 을 읽고, ConfigMap 으로 줄 때는 Deployment 의 env 에서 정한다(40-deployment.yaml)
   # SBMIG_JOB_STOP_GRACE_S: "2700"      # 멈춤 요청 뒤 Job 삭제까지(초). Maven 빌드 한 번 + OpenRewrite 보다 길어야 보고서를 잃지 않는다
   # SBMIG_JOB_EXIT_GRACE_S: "120"       # 결과 파일(job-status.json)을 쓴 뒤에도 파드가 남아 있으면 이 초 뒤에 그 Job 을 지운다
   # SBMIG_JOB_API_GRACE_S: "300"        # 쿠버네티스 API 가 이 초 동안 답하지 않으면 로그·화면에 크게 알린다. 실행은 실패로 끝나지 않고

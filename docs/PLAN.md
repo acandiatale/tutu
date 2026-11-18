@@ -979,3 +979,39 @@ disjoint files, then integrated. The test-suite audit is the next section.
 | Checks | offline suite 6,285 passed (5,915 before; about 370 regression tests added, each seen failing first); `scripts/e2e.py` on all 48 fixtures with real Maven: 48 PASS | `out/e2e-av/summary.md` | done |
 | Left to the owner | no protection against a second web pod (`replicas: 1` + `Recreate` are the control); no retention of old run folders (to be decided in a meeting); leftovers of the final build outside `target/` are in `result.zip` and the remediation's ZIP; the admin password in open mode guards the aggregated views only | `docs/INTERFACES.md` "v2.1z-av" | open |
 | Not reached by the review | `analyze/jar_coords.py`, `build/deptree.py`, `build/classpath.py`, `plan/planner.py` insides, `plan/jarcheck.py`, `rewrite/compose.py`, parts of `fleet/`, the rest of `fix/context.py`, renderer-by-renderer section parity of the two migration reports | — | open |
+
+## Status — 2026-11-18, the test suite: two minutes instead of sixteen, and what was not needed is gone
+
+The user in the same request as the code review: "테스트 케이스도 필요 없는거 있는지도 걸러내자! 테스트가 너무 오래도는데,
+이정도면 회귀문제 걱정해서 저번에 대화했던 수학적으로 검증하는 스킬을 도입하는게 좋나 아직은 테스트코드로 진행하는게
+좋나?" Answer given: stay with tests. The two "proof" skills looked at earlier do not check this code base (one proves
+mathematics, the other compares a migrated project with its original); the problem was the run time, and that had a
+plain cause.
+
+| Item | Deliverable | Where | Status |
+|---|---|---|---|
+| Where the time went | an audit with per-test timings and a trace of every child process: 26,473 git processes per run (about 70 per orchestrator-level test), and on macOS `/usr/bin/git` is the Xcode `xcrun` shim, about three times slower per call than the binary it dispatches to | `out/scratch/test-audit/` (not in git) | done |
+| Parallel by default | `addopts = "-n auto --dist load -m 'not integration'"`, pytest-xdist in the `dev` extras, `auto` capped at 8 workers; `-n 0` = serial; no shared state between tests was found (no fixed port, no path under the repository, environment only through monkeypatch) | `pyproject.toml`, `conftest.py` | done |
+| The real git on macOS | the first process of a run puts a private folder with one symlink to the real git first on `PATH` (workers and children inherit it; nothing else of the Xcode tool folder is shadowed); the header prints a `git:` line | `conftest.py` | done |
+| No automatic maintenance in a workspace | `maintenance.auto=false`, `gc.auto=0` on every workspace git call: no maintenance process per commit, no repack in the middle of a run on the NFS volume (product change) | `sbmig/core/workspace.py` | done |
+| Tests that were not needed | 66 removed, each with a named test that asserts the same (the inline-engine copies whose parity `tests/graph/test_engine.py` proves, duplicates between a round's file and a later round's, tests of events and switches that no longer exist); assertions moved into the covering test where it lacked one; 13 audit candidates kept because nothing else covers them fully or because they pin a decision or a review finding | `tests/` | done |
+| Tests that could not fail | an assertion ending in `or True`, a test whose failure the code under test swallowed, a test that set the value it then checked, a test of a state that cannot occur: repaired and shown to fail; a race that only load exposed (`test_slot_review_fixes`) fixed | `tests/loop/`, `tests/graph/`, `tests/review/`, `tests/web/` | done |
+| Offline means offline | two tests ran the host's real Maven (one needed the network): they use a fake runner / the preflight directly | `tests/graph/test_engine.py`, `tests/loop/test_orchestrator.py` | done |
+| The walls under parallel runs | every worker has its own file cap, the controller's cap on the run's temp folder holds for the sum of all workers; two `-n 2` cases added | `tests/devtools/test_suite_guard.py` | done |
+| Measured | five default runs in a row green: 105, 106, 106, 124, 123 s; serial 621 s (976 s before); 6,228 tests (6,288 before) | `out/scratch/test-speed/` (not in git) | done |
+| Not done | the audit's medium-risk ideas (shorter sleeps in timing tests, restructure tests without commits, one shared orchestrator run per module); `tests/remediations`, `analyze`, `core`, `errors`, `fix`, `fleet`, `plan`, `triage` were not read for unneeded tests | — | open |
+
+## Status — 2026-11-18, the Job template comes from the image; the "pod does not start" notice after five minutes
+
+From the company cluster the same day. The approval list kept appearing after the new image was pushed: the cluster's
+ConfigMap `sbmig-job-template` still said `imagePullPolicy: IfNotPresent`. The user had edited 81 and rebuilt the image,
+expecting the web pod to read the template from the image ("우리 이미지안에 내용을 읽게 하려고 81번 Dockerfile 만들때 복사
+뜨는거 아니었어?"); the Deployment pointed at the ConfigMap instead, which is re-created by a command of its own.
+
+| Item | Deliverable | Where | Status |
+|---|---|---|---|
+| Template from the image | the shipped Deployment sets no `SBMIG_JOB_TEMPLATE` and mounts no template: the web pod reads `/app/deploy/k8s/81-web-job.template.yaml`; the ConfigMap route stays as a commented alternative | `deploy/k8s/40-deployment.yaml`, `deploy/k8s/81-web-job.template.yaml`, `deploy/k8s/20-configmap.yaml` | done |
+| An unfilled template stops the web pod | `validate_worker_template` refuses a value that still contains `CHANGE_ME` (cluster mode only; commented lines do not count) with what to do | `sbmig/web/k8s.py`, `sbmig/web/runs.py` | done |
+| Operator text | one table "what you changed → what you do": image → restart the web pod; 20 → apply, restart; 40 → apply; 81 → build, push, restart | `deploy/README.md` §1, `deploy/ENV.md`, `agent-doc/09-deploy-and-ops.md`, `docs/RUNBOOK.md` | done |
+| Notice after five minutes | `SBMIG_JOB_PENDING_NOTICE_S` defaults to 300 (the user: "5분 넘게 생성 안되면 띄우도록 하자"; a healthy pod needs over three minutes on that cluster, which the Kubernetes team is looking into) | `sbmig/web/runs.py`, `deploy/ENV.md` | done |
+| On the cluster | the user removed the `SBMIG_JOB_TEMPLATE` line from their 40 and the pod came up; the result of that run (no approval list) is not reported yet | — | open (the user's) |

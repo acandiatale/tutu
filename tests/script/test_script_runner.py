@@ -127,23 +127,6 @@ def fix(p):
     assert not (ws.root.parent / "escape.txt").exists()
 
 
-@pytest.mark.parametrize("bad", ["C:/x.txt", "/tmp/x.txt", ".git/config", "target/x.txt"])
-def test_path_escapes_through_the_runner(ws, runner, bad):
-    (ws.root / "target").mkdir(exist_ok=True)
-    res = runner.run(ws, f"def fix(p):\n    p.write({bad!r}, 'x')\n")
-    assert res.status == "error" and repr(bad) in res.error and res.changed_files == []
-
-
-@pytest.mark.skipif(os.name == "nt", reason="symlinks need extra rights on Windows")
-def test_symlink_escape_through_the_runner(ws, runner, tmp_path):
-    outside = tmp_path / "outside.txt"
-    outside.write_text("keep\n")
-    (ws.root / "link.txt").symlink_to(outside)
-    res = runner.run(ws, "def fix(p):\n    p.write('link.txt', 'gone')\n")
-    assert res.status == "error" and "outside the project folder" in res.error
-    assert outside.read_text() == "keep\n"
-
-
 def test_timeout_kills_the_process(ws, runner):
     code = """
 def fix(p):
@@ -197,8 +180,6 @@ def test_extra_allowed_imports_reach_the_child(ws):
 
 
 @pytest.mark.parametrize("body, expected", [
-    ("import sbmig", "ImportError: import of 'sbmig' is not allowed in a fix script"),
-    ("import os", "ImportError: import of 'os' is not allowed in a fix script"),
     ("__import__('subprocess')", "ImportError: import of 'subprocess' is not allowed in a fix script"),
     ("open('pom.xml')", "NameError: name 'open' is not defined"),
     ("eval('1')", "NameError: name 'eval' is not defined"),

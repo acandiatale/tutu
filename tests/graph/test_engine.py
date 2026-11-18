@@ -116,6 +116,8 @@ def test_stop_after_same_in_both_engines(cfg, tmp_path, stop):
     assert comparable(rg) == comparable(ri)
     assert comparable_events(ws_g) == comparable_events(ws_i)
     nodes = [e["node"] for e in journal_events(ws_g) if e["event"] == "graph_node"]
+    if stop in (Phase.INTAKE, Phase.ANALYZE, Phase.PLAN):   # no phase group ran; only a stop after plan has a plan
+        assert rg.phases == [] and (rg.plan is not None) == (stop == Phase.PLAN)
     if stop == Phase.ANALYZE:
         assert nodes == ["intake", "analyze", "finalize"] and rg.plan is None
     if stop == Phase.TRANSFORM:                   # later groups are journaled as phase_skipped by `phase` nodes
@@ -355,9 +357,9 @@ def test_build_graph_has_the_five_nodes(cfg, tmp_path):
 
 
 def test_default_engine_is_graph(cfg, tmp_path):
+    # an orchestrator built from the default configuration, without naming an engine, drives the graph
     assert cfg.loop.engine == "graph"
-    orch, ws, _ = run_engine(cfg, tmp_path, "graph")
-    assert orch.engine == "graph" and any(e["event"] == "graph_node" for e in journal_events(ws))
+    assert make_orch(cfg, new_ws(tmp_path, "default")).engine == "graph"
 
 
 def test_mvn_not_found_with_the_real_tuple_return(cfg, tmp_path, monkeypatch):
@@ -373,11 +375,17 @@ def test_mvn_not_found_with_the_real_tuple_return(cfg, tmp_path, monkeypatch):
     r = orch.run()
     assert "mvn-not-found" in r.flags and run_exit_code(r) == 3
     assert any("boom" in f for f in r.manual_followups)
+    # the "Maven is there" tuple: the preflight alone (a whole run with no build runner would start the host's Maven)
+    from sbmig.core.models import RunReport, utcnow
     monkeypatch.setattr(b, "maven_available", lambda *a, **k: (True, "Apache Maven 3.9.10"))
     ws2 = new_ws(tmp_path, "tuple-ok")
     orch2 = make_orch(c, ws2)
     orch2._build_runner = None
-    assert "mvn-not-found" not in orch2.run().flags
+    report = RunReport(run_id="r", project_name="p", case_type=CaseType.UNKNOWN, started_at=utcnow())
+    orch2._preflight(report)
+    assert "mvn-not-found" not in report.flags and not any("not runnable" in f for f in report.manual_followups)
+    pre = [e for e in journal_events(ws2) if e["event"] == "preflight"]
+    assert pre and pre[-1]["mvn"] is True and pre[-1]["mvn_detail"] == "Apache Maven 3.9.10"
 
 
 # ------------------------------------------------------------------------------------------ v2.1 log stages

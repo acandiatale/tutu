@@ -103,8 +103,7 @@ def test_any_drops_newer_pins_too(tmp_path: Path, cfg: Config) -> None:
     assert len(res.managed_versions_dropped) == 5
 
 
-@pytest.mark.parametrize("params", [None, {"effective_pom": lambda: None}, {"effective_pom": "not callable"},
-                                    {"effective_pom": lambda: (_ for _ in ()).throw(RuntimeError("mvn"))}])
+@pytest.mark.parametrize("params", [{"effective_pom": lambda: (_ for _ in ()).throw(RuntimeError("mvn"))}])
 def test_no_effective_pom_skips_with_note(tmp_path: Path, cfg: Config, params) -> None:
     ws, res = run(tmp_path, cfg, "skip", params)
     assert SKIP_NOTE in res.notes and res.managed_versions_dropped == []

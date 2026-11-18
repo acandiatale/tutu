@@ -100,13 +100,14 @@ def run_once(setup, env: dict, resolver: Resolver | None = None, rc: int = 0):
 # ---- 1. no slot / slot 1: nothing changes
 
 @pytest.mark.parametrize("local_repo", [None, "null", "/opt/m2/repository"])
-def test_no_slot_child_env_and_command_unchanged(setup, capsys, local_repo):
+def test_no_slot_child_env_and_command_unchanged(setup, capsys, pod_tmp, local_repo):
     env = dict(setup["env"])
     if local_repo is not None:
         env[worker.LOCAL_REPO_ENV] = local_repo
     resolver = Resolver(exc=AssertionError("the resolver must not be called without a slot"))
     code, cmd, cwd, child = run_once(setup, env, resolver)
     assert code == 0 and cwd == setup["repo"]
+    assert list(pod_tmp.iterdir()) == []                    # no pod-local repository is made
     assert child == worker.child_environ(env)               # exactly today's child environment
     assert child.get(worker.LOCAL_REPO_ENV) == local_repo
     assert cmd == expected_cmd(setup)
@@ -124,11 +125,11 @@ def test_blank_slot_is_no_slot(setup, blank):
     assert not resolver.calls and slot_events(setup["run_dir"]) == []
 
 
-def test_slot_one_is_unchanged_and_journalled(setup, capsys):
+def test_slot_one_is_unchanged_and_journalled(setup, capsys, pod_tmp):
     env = {**setup["env"], contract.SLOT_ENV: "1", worker.LOCAL_REPO_ENV: "null"}
     resolver = Resolver(exc=AssertionError("not called"))
     code, cmd, _, child = run_once(setup, env, resolver)
-    assert code == 0
+    assert code == 0 and list(pod_tmp.iterdir()) == []     # no pod-local repository is made
     assert child == worker.child_environ(env) and child[worker.LOCAL_REPO_ENV] == "null"
     assert cmd == expected_cmd(setup)
     assert not resolver.calls

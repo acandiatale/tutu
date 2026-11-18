@@ -86,6 +86,9 @@ class FakeKB:
         self.reviews.append(name)
         raise AttributeError(name)
 
+    def __setattr__(self, name, value):
+        self.reviews.append(name)
+
 
 def make_ws(tmp_path: Path, *, java: Optional[bytes] = None, comp_pom: str = COMP_POM) -> Workspace:
     root = tmp_path / "project"
@@ -236,11 +239,15 @@ def test_disabled_or_no_llm_is_skipped(tmp_path, cfg):
 
 def test_the_reviewer_never_writes_the_kb(tmp_path, cfg):
     """v2.1: `kb` is kept in the signature (the orchestrator's factory passes it) but unused — the loop records the
-    review in the error list."""
+    review in the error list and stores its script. Checked on the path where a v2 reviewer wrote the KB: a critical
+    issue whose script ran and changed a pom."""
     ws = make_ws(tmp_path)
     kb = FakeKB()
-    _, rv = _review(cfg, ws, FakeLLM(OK), kb=kb)
-    assert rv.verdict == "ok" and kb.reviews == []
+    new_root = ROOT_POM.replace("<module>module/comp-jar</module>", "<module>module/comp-jar</module><!-- kb -->")
+    reviewer, rv = _review(cfg, ws, FakeLLM(CRITICAL), FakeRunner(edits={"pom.xml": new_root}), kb)
+    assert reviewer.kb is kb                                       # the spy really is the reviewer's KB
+    assert rv.script_result is not None and rv.script_result.status == "ok" and ws.is_dirty()
+    assert kb.reviews == []                                        # no attribute read, called or set
 
 
 def test_unexpected_errors_never_raise(tmp_path, cfg, monkeypatch):

@@ -120,7 +120,7 @@ def _subjects(ws: Workspace) -> list[str]:
     return ws._git("log", "--reverse", "--format=%s").stdout.splitlines()
 
 
-@pytest.mark.parametrize("engine", ["inline", "graph"])
+@pytest.mark.parametrize("engine", ["graph"])
 def test_ant_project_gets_a_synthesized_pom_at_intake(cfg, tmp_path, fake_ant, caplog, engine):
     cfg = cfg.model_copy(deep=True)
     cfg.loop.engine = engine
@@ -186,7 +186,7 @@ def test_no_unknown_jar_no_attention_flag(cfg, tmp_path, fake_ant):
     assert "pom-synthesized" in report.flags and "jar-coordinates-unknown" not in report.flags
 
 
-@pytest.mark.parametrize("engine", ["inline", "graph"])
+@pytest.mark.parametrize("engine", ["graph"])
 def test_ant_to_maven_off_keeps_the_rejection(cfg, tmp_path, fake_ant, engine):
     cfg = cfg.model_copy(deep=True)
     cfg.loop.engine = engine
@@ -202,7 +202,7 @@ def test_ant_to_maven_off_keeps_the_rejection(cfg, tmp_path, fake_ant, engine):
     assert not ws.exists("pom.xml") and "pom-synthesized" not in report.flags
 
 
-@pytest.mark.parametrize("engine", ["inline", "graph"])
+@pytest.mark.parametrize("engine", ["graph"])
 def test_failed_synthesis_aborts_with_its_error(cfg, tmp_path, fake_ant, engine):
     cfg = cfg.model_copy(deep=True)
     cfg.loop.engine = engine

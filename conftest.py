@@ -8,11 +8,21 @@
 ``0`` switches a limit off. A trip prints ``bounded: STOPPED: <reason>`` past pytest's capture and ends the process
 with exit code 125. The report header's ``bounded:`` line is the liveness signal: a run without it has no wall.
 Under the wrapper (``BOUNDED=1``) the wrapper watches the same folder, so no watch thread is started here.
+
+Speed, macOS only: ``/usr/bin/git`` is the Xcode ``xcrun`` shim, about three times slower per call than the binary it
+dispatches to, and the suite starts git some 26,000 times. The first process of a run (the xdist controller, or the
+only process of a serial run) puts a private folder holding just a ``git`` symlink to ``xcrun -f git`` first on
+``PATH``; xdist workers and every child inherit that ``PATH``. Only ``git`` is linked: the Xcode tool folder also
+holds ``python3``, ``make``, ``gcc`` … which must not shadow the user's. Nothing is done when ``xcrun`` is missing or
+fails, or when ``git`` already resolves to something other than the shim. The header's ``git:`` line says which git
+the run uses.
 """
 from __future__ import annotations
 
 import importlib.util
 import os
+import shutil
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -24,7 +34,41 @@ _spec = importlib.util.spec_from_file_location(
 _bounded = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_bounded)
 
-_state: dict = {"stop": None, "header": "bounded: not configured"}
+_state: dict = {"stop": None, "header": "bounded: not configured", "git": "git: not found on PATH",
+                "git_dir": None}
+
+_XCRUN_SHIM = "/usr/bin/git"
+
+
+def _use_real_git() -> None:
+    """On macOS, put the real git binary behind the xcrun shim first on PATH (see the module docstring)."""
+    found = shutil.which("git")
+    if found is None:
+        return
+    _state["git"] = f"git: {found}"
+    if sys.platform != "darwin" or os.path.realpath(found) != _XCRUN_SHIM:
+        return
+    try:
+        cp = subprocess.run(["xcrun", "-f", "git"], stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                            timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        return
+    real = cp.stdout.strip()
+    if cp.returncode != 0 or not real or not os.access(real, os.X_OK) or os.path.realpath(real) == _XCRUN_SHIM:
+        return
+    folder = tempfile.mkdtemp(prefix="sbmig-real-git-")
+    try:
+        os.symlink(real, os.path.join(folder, "git"))
+        probe = subprocess.run([os.path.join(folder, "git"), "--version"], stdin=subprocess.DEVNULL,
+                               capture_output=True, timeout=20)
+        if probe.returncode != 0:
+            raise OSError("the linked git does not start")
+    except (OSError, subprocess.SubprocessError):
+        shutil.rmtree(folder, ignore_errors=True)
+        return
+    os.environ["PATH"] = folder + os.pathsep + os.environ.get("PATH", "")
+    _state["git_dir"] = folder
+    _state["git"] = f"git: {real} (the real binary; {_XCRUN_SHIM} is the slower xcrun shim)"
 
 
 def pytest_configure(config):
@@ -41,6 +85,7 @@ def pytest_configure(config):
         if free < floor_mb:
             pytest.exit(f"bounded: REFUSED: free space on the volume of {floor_path} is {free} MiB, below the floor "
                         f"of {floor_mb} MiB (BOUNDED_FLOOR_MB); no test was run", returncode=b.EXIT_REFUSED)
+    _use_real_git()
     try:
         cap = b.cap_file_size(file_mb)
     except RuntimeError as exc:
@@ -97,8 +142,27 @@ def pytest_configure(config):
     _state["stop"] = b.watch_in_thread(watch, on_trip, tick_s=1.0)
 
 
+_MAX_AUTO_WORKERS = 8
+
+
+@pytest.hookimpl(optionalhook=True)        # an xdist hook: no error when pytest-xdist is not installed
+def pytest_xdist_auto_num_workers(config):
+    """``-n auto`` (the default in pyproject): one worker per CPU, at most 8.
+
+    Measured on a 10-core Mac (8 performance + 2 efficiency cores): 8 workers ran the suite in ~106 s, 10 in
+    ~115 s — the tests start git / python children, more workers than fast cores only add contention. A 4-core PC gets
+    4 workers. ``PYTEST_XDIST_AUTO_NUM_WORKERS`` or an explicit ``-n N`` still decide; ``-n 0`` is the serial run."""
+    env = os.environ.get("PYTEST_XDIST_AUTO_NUM_WORKERS", "").strip()
+    if env:
+        try:
+            return max(0, int(env))
+        except ValueError:
+            pass                                     # xdist's own rule would reject it too; fall back to the cap
+    return max(1, min(os.cpu_count() or 1, _MAX_AUTO_WORKERS))
+
+
 def pytest_report_header(config):
-    return _state["header"]
+    return [_state["header"], _state["git"]]
 
 
 def pytest_unconfigure(config):
@@ -106,3 +170,9 @@ def pytest_unconfigure(config):
     if stop is not None:
         stop.set()
         _state["stop"] = None
+    folder = _state.get("git_dir")
+    if folder is not None:
+        # the process that made the link folder removes it, after its xdist workers have ended
+        os.environ["PATH"] = os.pathsep.join(p for p in os.environ.get("PATH", "").split(os.pathsep) if p != folder)
+        shutil.rmtree(folder, ignore_errors=True)
+        _state["git_dir"] = None

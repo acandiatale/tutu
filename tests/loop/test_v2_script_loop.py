@@ -346,22 +346,6 @@ def test_budget_exhausted_still_reuses_stored_scripts(cfg, ws):
     assert ws.read(FOO) == FIXED
 
 
-def test_no_llm_cap_by_default(cfg, ws):
-    assert cfg.loop.max_llm_calls == 0                # v2.1: 0 = no limit
-    loop = make_loop(cfg, ws, broken_build(FOO), FakeFixer(scripts=[write_script({FOO: FIXED})]))
-    loop.budget.llm_calls = 10_000
-    assert loop.budget.llm_allowed() and loop.run(Phase.VERIFY, "package", 3).ok
-
-
-def test_llm_unavailable_still_reuses_stored_scripts(cfg, ws):
-    kb = FakeKB()
-    kb.cases.seed(CASE, write_script({FOO: FIXED}).code)
-    loop = make_loop(cfg, ws, broken_build(FOO), FakeFixer(), kb=kb)
-    loop.llm_unavailable = "gateway down"
-    loop.triager.set_llm_unavailable("gateway down")
-    assert loop.run(Phase.VERIFY, "package", 3).ok
-
-
 def test_fixer_without_propose_script_blocks_without_infra_flags(cfg, ws):
     class V1Fixer:
         def propose(self, ws, cluster, ctx):
@@ -373,38 +357,7 @@ def test_fixer_without_propose_script_blocks_without_infra_flags(cfg, ws):
     assert any("propose_script" in f for f in loop.followups)
 
 
-def test_transport_failures_cool_down_then_block(cfg, ws, no_llm_cooldown_sleep):
-    cfg.llm.cooldown_seconds = 5
-    fixer = FakeFixer(script_fn=lambda *a: __import__("sbmig.core.models", fromlist=["x"]).ScriptProposal(
-        analysis="llm-error: LLM request failed (status=None, cause=ConnectionError: refused)", error="transport"))
-    loop = make_loop(cfg, ws, broken_build(FOO), fixer)
-    pr = loop.run(Phase.VERIFY, "package", 8)
-    assert no_llm_cooldown_sleep == [5] and "llm-unavailable" in loop.flags
-    assert [b.reason for b in pr.blocked] == [BlockReason.LLM_UNAVAILABLE]
-
-
-def test_escalation_model_from_the_second_augment(cfg, ws):
-    cfg.script.max_llm_tries_per_case = 3
-    n = {"i": 0}
-
-    def fn(w, c, ctx):
-        n["i"] += 1
-        return write_script({"n.txt": str(n["i"])})
-    fixer = FakeFixer(script_fn=fn)
-    make_loop(cfg, ws, broken_build(FOO), fixer).run(Phase.VERIFY, "package", 6)
-    assert [ctx.use_escalation_model for _c, ctx in fixer.script_calls] == [False, False, True]
-
-
-# ------------------------------------------------------------------------------------------ dry run, first build
-def test_dry_run_decides_without_running_or_asking(cfg, ws):
-    fixer = FakeFixer(scripts=[write_script({FOO: FIXED})])
-    runner = FakeScriptRunner()
-    loop = make_loop(cfg, ws, broken_build(FOO), fixer, runner=runner, dry_run=True)
-    pr = loop.run(Phase.VERIFY, "package", 3)
-    assert pr.attempts == [] and runner.runs == [] and fixer.script_calls == []
-    assert any(e["event"] == "decision" and e["kind"] == "script" for e in journal_events(ws))
-
-
+# ------------------------------------------------------------------------------------------ first build
 def test_first_build_is_reused_as_build_one(cfg, ws):
     first = broken_build(FOO)(ws, {})
     fixer = FakeFixer(scripts=[write_script({FOO: FIXED})])

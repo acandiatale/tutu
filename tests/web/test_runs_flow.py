@@ -94,27 +94,6 @@ def test_stop_before_the_final_build_aborts_and_says_no_final_build(tmp_path, re
     assert any("final `mvn clean package` did not run" in f for f in run.report.manual_followups)
 
 
-def test_runs_are_serialized_and_report_queued(tmp_path, repo, monkeypatch):
-    release = threading.Event()
-    started: list[str] = []
-
-    def body(self, run):
-        started.append(run.run_id)
-        release.wait(10)
-        return SimpleNamespace(success=True, blocked=[], flags=[])
-    monkeypatch.setattr(RunManager, "_run_thread_body", body)
-    mgr = RunManager(tmp_path / "out", repo)
-    first = mgr.start(_zip_bytes(), "a.zip", ["artifacts.local-e2e.yml"])
-    second = mgr.start(_zip_bytes(), "b.zip", ["artifacts.local-e2e.yml"])
-    assert mgr.runs[first].active.wait(10)
-    assert mgr.status(first)["state"] == "running" and mgr.status(second)["state"] == "queued"
-    assert started == [first]
-    release.set()
-    assert mgr.runs[second].done.wait(10) and mgr.runs[first].done.wait(10)
-    assert started == [first, second]
-    assert mgr.status(second)["state"] == "finished" and mgr.status(second)["exit_code"] == 0
-
-
 def test_crash_before_the_body_still_finishes_the_run(tmp_path, repo, monkeypatch):
     import sbmig.cli as cli
 
@@ -172,6 +151,7 @@ def test_queued_runs_start_in_upload_order(tmp_path, repo, monkeypatch):
         mgr.runs[i].thread.join(10)
     assert started == ids
     assert [mgr.status(i)["exit_code"] for i in ids] == [0, 0, 0, 0]
+    assert [mgr.status(i)["state"] for i in ids] == ["finished"] * 4
 
 
 def test_fifo_turns_hand_over_in_order_even_after_an_exception():

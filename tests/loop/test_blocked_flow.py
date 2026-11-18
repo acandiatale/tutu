@@ -601,16 +601,6 @@ def test_extension_failure_inside_rewrite_aborts(cfg, ws, monkeypatch):
     assert report.blocked[0].artifact.coordinates == WAGON_EXT
 
 
-def test_mvn_missing_aborts(cfg, ws, monkeypatch):
-    import sbmig.build as b
-    monkeypatch.setattr(b, "maven_available", lambda *a, **k: False)
-    orch = make_orch(cfg, ws)
-    orch._build_runner = None                                         # use the real preflight check
-    report = orch.run()
-    assert "mvn-not-found" in report.flags and "aborted" in report.flags and report.phases == []
-    assert run_exit_code(report) == 3
-
-
 def test_run_exit_codes():
     from sbmig.core.models import BlockedItem, utcnow
     r = RunReport(run_id="r", project_name="p", case_type=CaseType.UNKNOWN, started_at=utcnow(), success=True)

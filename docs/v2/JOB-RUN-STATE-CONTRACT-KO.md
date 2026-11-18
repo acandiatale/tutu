@@ -63,8 +63,8 @@ ConfigMap `sbmig-env` 를 시작할 때 한 번, Job 파드는 만들어질 때 
   (`SBMIG_CONFIG` 가 가리키는 파일, `SBMIG_STOP_AFTER`, `SBMIG_LLM_PROVIDER`)도 `request.json` 과 맞춰 본다. 지문이 없으면(옛 Main, local-job) 대조하지 않는다.
   `refuse` → 거절(exit 3, 저널 `worker_refused` 에 다른 키 **이름**, `job-status.json` 의 `error`), `warn` → 저널 `worker_env_differs` 를 적고 Job 파드의 값으로 돈다.
   글에는 이름만 들어간다(값·지문은 없다).
-- **운영 규칙**: `sbmig-env` 를 고친 뒤에는 **웹 파드를 재시작한다**(안 하면 다음 Job 이 몇 초 만에 거절된다). Job 틀을 고친 뒤에는 ConfigMap
-  `sbmig-job-template` 을 다시 만들고 웹 파드를 재시작한다(Main 은 시작할 때 틀을 검증해 들고 있다). 덮어쓰기 값을 빈 문자열로 두지 않는다 —
+- **운영 규칙**: `sbmig-env` 를 고친 뒤에는 **웹 파드를 재시작한다**(안 하면 다음 Job 이 몇 초 만에 거절된다). Job 틀(81)은 이미지 안의 사본을 읽으므로
+  고친 뒤에는 이미지를 빌드 · push 하고 웹 파드를 재시작한다(Main 은 시작할 때 틀을 검증해 들고 있다. ConfigMap 으로 주는 클러스터는 그 ConfigMap 을 다시 만든다). 덮어쓰기 값을 빈 문자열로 두지 않는다 —
   `SBMIG_X__Y=""` 는 YAML null 로 읽혀 yml 의 값을 없애고, 두 파드가 똑같이 비어 있으면 대조도 잡지 못한다.
 
 ## 4. 종료 코드와 결과 판정

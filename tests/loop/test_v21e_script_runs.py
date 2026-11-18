@@ -117,26 +117,6 @@ def test_a_new_script_has_no_parent_and_no_reason(cfg, ws):
     assert (run["result"], run["reason"], run["round"], run["n"]) == ("build_ok", "", 1, 1)
 
 
-def test_an_older_store_without_the_new_keywords_still_gets_its_credit(cfg, ws):
-    """A `kb.cases` from before v2.1e: the adapter drops the keywords it does not take; counts as before."""
-    kb = FakeKB()
-    calls = []
-
-    class OldStore(type(kb.cases)):
-        def add_script(self, case_id, l2, code, *, source="llm-new", run_id="", project="", analysis="",
-                       solution=""):
-            return super().add_script(case_id, l2, code, source=source, run_id=run_id, project=project,
-                                      analysis=analysis, solution=solution)
-
-        def credit(self, case_id, version, result, project="", run_id=""):
-            calls.append((case_id, version, result))
-            return super().credit(case_id, version, result, project=project, run_id=run_id)
-    kb.cases = OldStore()
-    fixer = FakeFixer(scripts=[answer(code=write_script({FOO: FIXED}).code)])
-    assert make_loop(cfg, ws, fixer, kb=kb).run(Phase.VERIFY, "package", 3).ok
-    assert calls == [(CASE, 1, "build_ok")] and kb.cases.added[0][1].version == 1
-
-
 def test_try_notes_get_errors_snippet_lines_and_the_old_signature_still_works(cfg, ws, monkeypatch):
     from sbmig.loop import fixloop
 

@@ -264,22 +264,10 @@ def test_dry_run_applies_nothing(cfg, ws, profile):
     head = ws.head()
     fixer = FakeFixer(script_fn=fix_case())
     build = FakeBuildRunner(ws, fn=files_build)
-    pr = make_loop(cfg, ws, profile, fixer=fixer, build=build, dry_run=True).run(Phase.VERIFY, "package", 3)
-    assert ws.head() == head and not fixer.contexts
+    runner = FakeScriptRunner()
+    pr = make_loop(cfg, ws, profile, fixer=fixer, build=build, dry_run=True, runner=runner).run(
+        Phase.VERIFY, "package", 3)
+    assert ws.head() == head and not fixer.contexts and runner.runs == []      # no script ran, no LLM was asked
     assert len(build.calls) == 1 and pr.attempts == [] and any("dry-run" in n for n in pr.notes)
     assert pr.iteration_records[0].decisions
-
-
-def test_time_budget_stops_loop(cfg, ws, profile):
-    t = {"now": 0.0}
-    budget = LoopBudget(max_llm_calls=10, max_minutes=1, clock=lambda: t["now"])
-
-    def fix(w, c, ctx):
-        t["now"] += 120
-        return write_script({e.file: "class X { broken 2 }\n" for e in c.errors})
-
-    loop = make_loop(cfg, ws, profile, fixer=FakeFixer(script_fn=fix), budget=budget)
-    pr = loop.run(Phase.VERIFY, "package", 5)
-    assert not pr.ok and "time-budget-exhausted" in loop.flags
-    assert budget.time_left() < 0 and budget.time_exceeded()
-    assert {b.reason.value for b in pr.blocked} == {"budget_exhausted"}
+    assert any(e["event"] == "decision" and e["kind"] == "script" for e in journal_events(ws))

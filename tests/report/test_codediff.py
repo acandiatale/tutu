@@ -476,9 +476,3 @@ def test_finalize_goes_on_when_the_code_diff_fails(cfg, loop_ws, monkeypatch, ca
 def test_finalize_skips_a_dry_run(cfg, loop_ws):
     _orch(cfg, loop_ws).run(dry_run=True)
     assert not (loop_ws.run_dir / "codediff").exists()
-
-
-def test_finalize_skips_a_switched_off_config(cfg, loop_ws):
-    cfg.report.code_diff = False
-    _orch(cfg, loop_ws).run()
-    assert not (loop_ws.run_dir / "codediff").exists() and (loop_ws.run_dir / "report.md").exists()

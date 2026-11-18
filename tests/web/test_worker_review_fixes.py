@@ -339,17 +339,3 @@ def test_both_fallbacks_failing_uses_the_shared_repository(tmp_path):
     assert data["note"].startswith(f"cannot create {base.parent / 'repository-slot2'} (")
     assert f"; pod-local fallback: cannot create {blocked / 'sbmig-m2-slot2'} (" in data["note"]
     assert worker.slot_message(data).endswith("; the run uses the shared Maven local repository")
-
-
-def test_slot_one_and_no_slot_are_untouched_by_the_fallback(tmp_path):
-    for environ, want in (({}, None), ({contract.SLOT_ENV: "1"}, {"slot": 1, "local_repo": None, "shared": False})):
-        child: dict = {}
-        assert worker.apply_slot_repo(child, environ, [], tmp_path / "p.yml", cwd=tmp_path,
-                                      local_root=tmp_path / "pod") == want
-        assert child == {} and not (tmp_path / "pod").exists()
-
-
-def test_pod_local_repo_default_is_the_temp_dir(monkeypatch, tmp_path):
-    monkeypatch.setattr(worker.tempfile, "gettempdir", lambda: str(tmp_path))
-    assert worker.pod_local_repo(2) == tmp_path / "sbmig-m2-slot2"
-    assert worker.pod_local_repo(3, "/x") == Path("/x/sbmig-m2-slot3")

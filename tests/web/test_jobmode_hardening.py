@@ -276,6 +276,9 @@ def test_stop_deletes_its_own_job_and_waits_until_it_is_gone(tmp_path: Path, rep
     assert mgr.runs[rid].exit_code == 3 and "deleted after the grace period" in (mgr.runs[rid].error or "")
     cs = _state(out, rid)
     assert cs.state == "stopped" and cs.exit_code == 3
+    assert (out / rid / "stop.request").is_file()                  # the running pod was asked first
+    st = mgr.status(rid)
+    assert st["state"] == "finished" and st["stop_requested"] is True
 
 
 # ---- restart recovery
@@ -366,8 +369,13 @@ def test_directory_status_of_an_unfinished_control_state(tmp_path: Path, repo: P
 
 
 # ---- startup validation
+FILLED_IMAGE = "registry.example/sbmig:test"
+
+
 def _template(tmp_path: Path, mutate=None) -> Path:
+    """The repository's 81 template as the company fills it (image set), its PVC mount holding this test's output dir."""
     job = yaml.safe_load(TEMPLATE.read_text(encoding="utf-8"))
+    job["spec"]["template"]["spec"]["containers"][0]["image"] = FILLED_IMAGE
     for m in job["spec"]["template"]["spec"]["containers"][0]["volumeMounts"]:
         if m["mountPath"] == "/data":
             m["mountPath"] = str(tmp_path.resolve())                  # the PVC mount holds this test's output dir
@@ -470,6 +478,52 @@ def test_validate_worker_template_accepts_a_literal_config_override(tmp_path: Pa
     bad = _template(tmp_path, lambda j: _container(j)["env"].append({"name": "LLM_APP_TOKEN_2", "value": "hunter22"}))
     with pytest.raises(K8sError, match="MIGRATION_TEMPLATE_INVALID.*valueFrom"):
         validate_worker_template(bad, out)
+
+
+# ---- placeholders left in the template stop the web pod at startup
+def test_the_repository_template_still_carrying_change_me_is_refused(tmp_path: Path):
+    """The image's copy is the template the web pod reads; an unfilled one would only make Jobs whose image never pulls."""
+    out = tmp_path.resolve() / "out"
+    raw = _template(tmp_path, lambda j: _container(j).update(image=yaml.safe_load(TEMPLATE.read_text(encoding="utf-8"))
+                                                                ["spec"]["template"]["spec"]["containers"][0]["image"]))
+    with pytest.raises(K8sError) as e:
+        validate_worker_template(raw, out)
+    msg = str(e.value)
+    assert msg.startswith("MIGRATION_TEMPLATE_INVALID: ") and "spec.template.spec.containers[0].image=CHANGE_ME" in msg
+    assert "fill deploy/k8s/81-web-job.template.yaml" in msg and "point SBMIG_JOB_TEMPLATE at a filled copy" in msg
+    # the shipped file itself, as read from the checkout
+    with pytest.raises(K8sError, match="MIGRATION_TEMPLATE_INVALID: .*placeholder CHANGE_ME"):
+        validate_worker_template(TEMPLATE, None)
+    # the injected-client startup path renders the unfilled template on purpose
+    assert validate_worker_template(TEMPLATE, None, allow_placeholders=True)["kind"] == "Job"
+
+
+def test_a_filled_template_passes_and_commented_change_me_lines_do_not_count(tmp_path: Path):
+    """The 81 file as the company fills it: only the image line changes; its commented alternatives (nodeSelector,
+    imagePullSecrets, hostAliases) keep CHANGE_ME and do not count."""
+    text = TEMPLATE.read_text(encoding="utf-8")
+    image_line = next(ln for ln in text.splitlines() if ln.strip().startswith("image:"))
+    filled = tmp_path / "81-filled.yaml"
+    filled.write_text(text.replace(image_line, f"          image: {FILLED_IMAGE}   # CHANGE_ME in a trailing comment", 1),
+                      encoding="utf-8")
+    commented = [ln for ln in filled.read_text(encoding="utf-8").splitlines() if "CHANGE_ME" in ln]
+    assert commented and all("#" in ln.split("CHANGE_ME")[0] for ln in commented)
+    assert validate_worker_template(filled, Path("/data/out"))["kind"] == "Job"
+
+
+def test_any_used_value_with_change_me_is_refused(tmp_path: Path):
+    out = tmp_path.resolve() / "out"
+    bad = _template(tmp_path, lambda j: j["spec"]["template"]["spec"].update(
+        imagePullSecrets=[{"name": "CHANGE_ME_REGISTRY_PULL_SECRET"}]))
+    with pytest.raises(K8sError, match=r"MIGRATION_TEMPLATE_INVALID: .*spec\.template\.spec\.imagePullSecrets\[0\]\.name"):
+        validate_worker_template(bad, out)
+
+
+def test_startup_in_the_cluster_refuses_an_unfilled_template(tmp_path: Path, repo: Path, monkeypatch):
+    _production(monkeypatch, _Rbac())
+    raw = _template(tmp_path, lambda j: _container(j).update(image="CHANGE_ME_REGISTRY/sbmig:CHANGE_ME_TAG"))
+    with pytest.raises(ValueError, match="MIGRATION_TEMPLATE_INVALID: .*placeholder CHANGE_ME"):
+        RunManager(tmp_path / "out", repo, mode="k8s-job", job_template=raw)
 
 
 # ---- the client: labels and the access review
@@ -595,28 +649,6 @@ def test_a_stopped_job_keeps_the_turn_until_it_is_gone(tmp_path: Path, repo: Pat
     assert _state(out, first).state == "stopped" and "deleted after the grace period" in (mgr.runs[first].error or "")
     assert "still present" not in (mgr.runs[first].error or "")
     assert mgr.runs[second].exit_code == 0 and cluster.deleted == [job_name(first)]      # asked once, not on every poll
-
-
-def test_a_failed_delete_is_retried_and_the_turn_is_kept(tmp_path: Path, repo: Path, monkeypatch):
-    monkeypatch.setenv("SBMIG_JOB_STOP_GRACE_S", "0.1")
-    monkeypatch.setattr(runs_mod, "DELETE_RETRY_S", 0.1)
-    out = tmp_path / "out"
-    cluster = Cluster(out, phases=["Running"], pod_attempt=False)
-    refused = {"n": 2}
-    real_delete = cluster.delete_job
-
-    def delete_job(name):
-        if refused["n"]:
-            refused["n"] -= 1
-            raise K8sError("DELETE jobs: HTTP 500")
-        real_delete(name)
-    cluster.delete_job = delete_job
-    mgr = _mgr(tmp_path, repo, cluster)
-    rid = mgr.start(ZIP, "p.zip", ["artifacts.local-e2e.yml"])
-    assert _wait(lambda: _state(out, rid).state == "running")
-    assert mgr.stop(rid) and mgr.runs[rid].done.wait(10)
-    assert refused["n"] == 0 and cluster.deleted == [job_name(rid)] and job_name(rid) not in cluster.jobs
-    assert _state(out, rid).state == "stopped"
 
 
 def test_shutdown_while_the_pod_has_not_ended_keeps_the_control_state_for_the_next_main(tmp_path: Path, repo: Path, monkeypatch):

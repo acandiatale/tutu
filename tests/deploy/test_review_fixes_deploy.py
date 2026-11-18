@@ -69,13 +69,15 @@ def _section(text: str, start: str, end: str) -> str:
 
 
 def test_readme_section_1_says_what_to_do_after_pushing_the_same_tag():
-    """W2 / R1 item 4: restart the web pod; build pods pull at start; the first time after switching the pull policy
-    re-create the template ConfigMap and apply the Deployment; a run uploaded in between is refused and uploaded again."""
+    """W2 / R1 item 4: restart the web pod; build pods pull at start; the first time after switching the pull policy apply
+    the Deployment; the Job template travels in the image (no ConfigMap step); a run uploaded in between is refused and
+    uploaded again."""
     from sbmig.web.contract import IMAGE_DIFFERS_HINT
 
     s1 = _section(README.read_text(encoding="utf-8"), "## 1. 이미지 만들기", "### 1.1")
     assert "kubectl -n agent rollout restart deploy/sbmig" in s1
-    assert "create configmap sbmig-job-template" in s1 and "kubectl apply -f deploy/k8s/40-deployment.yaml" in s1
+    assert "create configmap sbmig-job-template" not in s1 and "kubectl apply -f deploy/k8s/40-deployment.yaml" in s1
+    assert "81-web-job.template.yaml" in s1
     assert "처음 한 번만" in s1 and "다시 올린다" in s1
     flat = " ".join(s1.split())
     assert " ".join(IMAGE_DIFFERS_HINT.split()) in flat

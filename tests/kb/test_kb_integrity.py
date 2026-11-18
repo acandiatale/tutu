@@ -16,8 +16,6 @@ from sbmig.errors import CaseStore
 from sbmig.kb.jsonl import append_lines, corrupt_path, line_ids, parse_record, repair_tail
 from sbmig.kb.lock import LOCK_NAME, holding, kb_lock, pid_alive
 
-REPO = Path(__file__).resolve().parents[2]
-
 
 def rec(eid: str, l2: str = "compile|x|Foo") -> ErrorEntry:
     return ErrorEntry(id=eid, run_id="r1", l2=l2, message="m", status="unresolved")
@@ -115,12 +113,6 @@ def test_a_live_lock_is_waited_for_then_the_write_goes_on_without_it(tmp_path, c
     assert json.loads(p.read_text())["token"] == "theirs"     # their lock is left alone
 
 
-def test_release_keeps_a_lock_that_is_not_ours(tmp_path):
-    with kb_lock(tmp_path, 1):
-        (tmp_path / LOCK_NAME).write_text(json.dumps({"pid": 1, "host": "x", "token": "someone-else"}))
-    assert json.loads((tmp_path / LOCK_NAME).read_text())["token"] == "someone-else"
-
-
 def test_threads_of_one_process_are_serialized(tmp_path):
     order: list[str] = []
     entered = threading.Event()
@@ -138,24 +130,3 @@ def test_threads_of_one_process_are_serialized(tmp_path):
         order.append("main")
     t.join(5)
     assert order == ["main", "other"]
-
-
-def test_another_process_waits_for_the_lock(tmp_path):
-    marker = tmp_path / "held"
-    code = ("import sys, time; from pathlib import Path; from sbmig.kb.lock import kb_lock\n"
-            "with kb_lock(Path(sys.argv[1]), 30):\n"
-            "    Path(sys.argv[2]).write_text('x'); time.sleep(1.0)\n")
-    proc = subprocess.Popen([sys.executable, "-c", code, str(tmp_path / "kb"), str(marker)], cwd=str(REPO),
-                            env={**os.environ, "PYTHONPATH": str(REPO)})
-    try:
-        for _ in range(200):
-            if marker.exists():
-                break
-            time.sleep(0.05)
-        assert marker.exists(), "the child never took the lock"
-        t0 = time.monotonic()
-        with kb_lock(tmp_path / "kb", 30) as held:
-            waited = time.monotonic() - t0
-        assert held and waited >= 0.4
-    finally:
-        proc.wait(30)

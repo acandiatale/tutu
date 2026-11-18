@@ -120,6 +120,7 @@ from sbmig.web.k8s import (
     STATUS_GRACE_ENV,
     STOP_GRACE_ENV,
     TEMPLATE_ENV,
+    TEMPLATE_HINT,
     TERMINAL_PHASES,
     JobState,
     K8sClient,
@@ -679,7 +680,7 @@ class RunManager:
         # 때문에 파일이 늦게 보일 수 있으므로 이 유예 시간이 캐시보다 길어야 한다
         self.job_status_grace_s = max(0.0, float(os.environ.get(STATUS_GRACE_ENV, "90") or 90))
         # 파드가 이 초 동안 시작하지 못하면 이유를 찾아 화면에 알린다. 0이면 알리지 않는다
-        self.job_pending_notice_s = max(0.0, float(os.environ.get(PENDING_NOTICE_ENV, "120") or 120))
+        self.job_pending_notice_s = max(0.0, float(os.environ.get(PENDING_NOTICE_ENV, "300") or 300))
         self._events_readable = True           # 시작 점검에서 이벤트 조회 권한이 없으면 False가 된다
         # 환경 변수 고정 정책(SBMIG_JOB_ENV_PIN)의 기본값은 k8s-job에서 refuse, local-job에서 off다.
         # 로컬 Worker는 이 프로세스의 환경을 물려받으므로 .env를 고치면 잘못된 경고만 나기 때문이다
@@ -784,7 +785,9 @@ class RunManager:
                 raise ValueError(f"{MODE_ENV}=k8s-job cannot reach the Kubernetes API: {e}") from e
         if constructed or Path(self.job_template).is_file():
             try:
-                self._job_template_doc = validate_worker_template(self.job_template, self.out_dir if constructed else None)
+                # 테스트가 넣은 클라이언트는 실제 클러스터가 아니므로 저장소의 채우지 않은 틀을 그대로 쓸 수 있다
+                self._job_template_doc = validate_worker_template(self.job_template, self.out_dir if constructed else None,
+                                                                  allow_placeholders=not constructed)
             except K8sError as e:
                 raise ValueError(str(e)) from e
         self._check_permissions(self._job_client)
@@ -1459,8 +1462,7 @@ class RunManager:
             if self.effective_mode == "k8s-job":
                 # 시작 검증을 건너뛴 경우(테스트 클라이언트)에만 여기에 온다.
                 # 빈 템플릿으로 Job을 만들지 않도록 예외를 던진다
-                raise K8sError(f"job template not found: {self.job_template} — mount the ConfigMap sbmig-job-template at /templates "
-                               f"(deploy/README.md §3) or point {TEMPLATE_ENV} at the filled template")
+                raise K8sError(f"job template not found: {self.job_template} — {TEMPLATE_HINT}")
             # the local "pod" needs only the env: a minimal manifest stands in for a template the checkout may lack
             template = {"kind": "Job", "metadata": {}, "spec": {"template": {"spec": {"containers": [{"name": "build"}]}}}}
         manifest = render_job(template, run.run_id, self._job_env(run), getattr(client, "namespace", None), owner=run.owner)

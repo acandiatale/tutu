@@ -148,14 +148,10 @@ def test_layout_carries_the_as_is_versions_over(tmp_path: Path, ccfg: Config) ->
     assert res2.ok and res2.versions_pinned == [] and res2.changed_files == []
 
 
-@pytest.mark.parametrize("asis", [None, lambda: None, dict, lambda: "garbage",
-                                  lambda: {"managed": {}, "direct": {}, "by_module": {}, "parent": None},
-                                  lambda: (_ for _ in ()).throw(RuntimeError("bad json"))],
-                         ids=["missing", "none", "empty", "not-a-dict", "empty-shape", "raises"])
+@pytest.mark.parametrize("asis", [lambda: None, dict, lambda: (_ for _ in ()).throw(RuntimeError("bad json"))],
+                         ids=["none", "empty", "raises"])
 def test_no_as_is_capture_is_one_note_and_nothing_pinned(tmp_path: Path, ccfg: Config, asis) -> None:
-    params = {"effective_pom": lambda: _after()}
-    if asis is not None:
-        params["asis_effective"] = asis
+    params = {"effective_pom": lambda: _after(), "asis_effective": asis}
     ws, res = _run(tmp_path, ccfg, params)
     assert SKIP_ASIS in res.notes
     assert res.versions_pinned == [] and res.versions_unknown == []

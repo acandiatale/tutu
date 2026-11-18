@@ -107,7 +107,7 @@ def test_old_runner_without_skip_tests_kwarg(cfg, ws, profile):
 
 
 # ---------------------------------------------------------------------------------------- orchestrator, both engines
-@pytest.mark.parametrize("engine", ["graph", "inline"])
+@pytest.mark.parametrize("engine", ["graph"])
 def test_orchestrator_tests_skipped_run(cfg, ws, engine):
     cfg.loop.engine = engine
     t1 = test_failure()

@@ -266,8 +266,18 @@ review", fix attempts as `script:<case>:v<N>`; `ko`, the company setting: the re
   commits happen in the main session. Per round: append a "Status" table to `docs/PLAN.md`, update
   `docs/INTERFACES.md` on contract changes, add a fixture + `expected.json` (+ `replay/`) for every new scenario.
 - Setup: `uv venv && source .venv/bin/activate && uv pip install -e ".[dev]"` (plain `pip install -e ".[dev]"` works too).
-- Fast check (Python only, ~14 min): `python -m pytest -m "not integration"` → ≈ 5,915 passed, ≈ 62 deselected (2026-11-18)
-  (`-q` on top of the `-q` in pyproject hides the summary line). Until 2026-11-12 `tests/build` (381 tests) was silently
+- Fast check (Python only): `python -m pytest` → ≈ 6,230 passed, 62 deselected, **about 2 minutes** (2026-11-18). It runs
+  in parallel by default (pytest-xdist: `addopts = "-n auto --dist load -m 'not integration'"`, at most 8 workers — the
+  root `conftest.py` caps `auto`); `-n 0` is the serial run (≈ 10 min), `-m integration` replaces the marker filter. After
+  pulling, `pip install -e ".[dev]"` once more: without pytest-xdist pytest refuses the `-n` option. Do NOT pass
+  `-o addopts=""` any more (it switches the parallel run and the marker filter off). The serial run took 16 minutes
+  until 2026-11-18; an audit found that the time was git, not slow tests: 26,000 git processes per run, and macOS's
+  `/usr/bin/git` is the Xcode `xcrun` shim, three times slower per call than the binary behind it. The root conftest
+  now puts a private folder holding only a symlink to the real git first on `PATH` (the header's `git:` line says
+  which git is used), and a workspace's git calls switch automatic maintenance off (`maintenance.auto=false`,
+  `gc.auto=0` in `Workspace.GIT_CONFIG`, also in production). The same audit removed 66 tests that another test
+  covers or that checked code that no longer exists, and repaired tests that could not fail; a test that pins a bug
+  from a company run or a review stays even when it looks redundant. Until 2026-11-12 `tests/build` (381 tests) was silently
   left out of every root-level run — pytest skips a directory named `build` by default; `norecursedirs` in pyproject now
   keeps it in. When a total does not grow by the number of tests added, compare per-file counts (`--collect-only -q`).
   `ruff check sbmig tests` has pre-existing style findings (mostly `UP045`); lint is not a gate here, so fix only what
@@ -395,8 +405,11 @@ review", fix attempts as `script:<case>:v<N>`; `ko`, the company setting: the re
   reviewers asked). `deploy/README.md` is the operator text. **2026-11-09 (the infra team's agent model, their temporary manifest)**: `K8sClient.connect()`
   uses the kubeconfig named by `KUBECONFIG` when present (the infra team mounts a kubeconfig Secret at `/etc/kube/config`; token / client-certificate
   users, `exec` refused) else the in-cluster service account; an explicit `KUBECONFIG` also keeps `k8s-job` from degrading to `local-job` on a dev PC.
-  The filled Job template reaches the web pod as ConfigMap `sbmig-job-template` at `/templates` (`SBMIG_JOB_TEMPLATE`; the image's copy keeps its
-  placeholders — `.dockerignore` no longer drops `deploy/k8s/`, only the filled `30-secret.yaml`). Company values in the manifests: namespace `agent`,
+  The web pod reads the Job template from ITS OWN IMAGE (`/app/deploy/k8s/81-web-job.template.yaml`, the code's default; since 2026-11-18 —
+  the user had edited 81 and rebuilt, and the build pods kept the old setting because 40 pointed at a ConfigMap `sbmig-job-template` that has
+  to be re-created by hand: "우리 이미지안에 내용을 읽게 하려고 81번 Dockerfile 만들때 복사 뜨는거 아니었어?"). The company builds from a checkout in
+  which 81 is filled; a template that still carries `CHANGE_ME` stops the web pod at startup (`MIGRATION_TEMPLATE_INVALID`). The ConfigMap
+  route (`SBMIG_JOB_TEMPLATE` + a mount) is the commented alternative in 40. `.dockerignore` drops only the filled `30-secret.yaml`. Company values in the manifests: namespace `agent`,
   `nfs-csi` ReadWriteMany, the image name from the infra team's registry (per push). Real company hostnames / IPs never go into the repo — placeholders. **v2.1z-ac (2026-11-09, the deployment team's spec built here — their own
   AI-written Main/Worker stays parked on a company branch, unverified)**: `sbmig/web/contract.py` is the Main ↔ Worker file contract (`control/request.json`
   pins zip sha256 / config digests / sbmig version at intake, `control/state.json` is Main's atomic control state with intent-before-create and an
@@ -421,8 +434,8 @@ review", fix attempts as `script:<case>:v<N>`; `ko`, the company setting: the re
   with the `creating` transition, and the Worker compares its own environment (plus `SBMIG_CONFIG` / `SBMIG_STOP_AFTER` /
   `SBMIG_LLM_PROVIDER` against `request.json`) before it runs anything — `SBMIG_JOB_ENV_PIN = refuse | warn | off` on the web pod
   (default refuse in `k8s-job`, off elsewhere; refuse = exit 3 `worker_refused` naming the keys, warn = journal `worker_env_differs`).
-  **Operator rule: after changing ConfigMap `sbmig-env` restart the web pod; after a new Job template re-create ConfigMap
-  `sbmig-job-template`.** (4) redaction at write time: `SBMIG_REDACT_OUTPUT=1` (literal in 40 / 80, forced by the Worker on its child)
+  **Operator rule: image only → restart the web pod; `sbmig-env` (20) → apply 20, restart the web pod; 40 → apply 40; the Job
+  template (81) → build and push the image, restart the web pod.** (4) redaction at write time: `SBMIG_REDACT_OUTPUT=1` (literal in 40 / 80, forced by the Worker on its child)
   hooks `sbmig/core/scrub.py` into every log / journal line (`sbmig.web.redact.install_output_redaction`; fail closed — a line that cannot
   be cleaned is withheld, the CLI exits 3 when the hook cannot be installed), the Worker redacts the child's pipe line by line, and result
   files other than `sbmig.log` / `journal.jsonl` answer HTTP 409 until the final pass is over. A `local-job` Worker takes only
@@ -472,7 +485,7 @@ review", fix attempts as `script:<case>:v<N>`; `ko`, the company setting: the re
   team: the concurrency limit per app token, and whether a new token exchange revokes earlier tokens.
   **v2.1z-aq (2026-11-17, company cluster: a second build pod sat in `ContainerCreating` for 28 minutes)**: a stop while the Job is
   `Creating` / `Pending` deletes our Job at once (`_owned` rule, waits until gone, STOPPED, journal `job_deleted_before_start`; a
-  running pod keeps the grace, a running remediation resume is never deleted). Past `SBMIG_JOB_PENDING_NOTICE_S` (120, 0 = off)
+  running pod keeps the grace, a running remediation resume is never deleted). Past `SBMIG_JOB_PENDING_NOTICE_S` (300 since 2026-11-18, the user: "5분 넘게 생성 안되면 띄우도록 하자" — a healthy pod needs over 3 minutes there; 0 = off)
   Main tells the page why the pod does not start (waiting reason, `PodScheduled=False`, pod events via `K8sClient.pod_events`;
   `status().job.pending`, journal `job_pod_pending`) and never acts on it; contract `docs/INTERFACES.md` "v2.1z-aq".
 - **Vulnerability remediation (2026-11-11, `sbmig/remediations/`, `/api/remediations`)**: a LangGraph flow SEPARATE from the migration

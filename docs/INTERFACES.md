@@ -4311,7 +4311,7 @@ Job at once exactly as above (`job_deleted_before_start` carries `action`; the w
 `stop.request` a second time). A RUNNING resume pod is never deleted: for a resume run the grace delete is skipped (it stops
 at its next step boundary), so "never a Job deletion" stays true for it.
 
-**Why it does not start.** `SBMIG_JOB_PENDING_NOTICE_S` (web pod env, read at startup, default `120`, `0` = never; not in the
+**Why it does not start.** `SBMIG_JOB_PENDING_NOTICE_S` (web pod env, read at startup, default `300`, `0` = never; not in the
 81 template, not an env pin). While the Job is `Creating` / `Pending`, counted from the first such poll of this watch (an
 adopted Job starts counting again), past the threshold `_note_pod_waiting` looks for the reason, in this order
 (`k8s.pod_wait_reason`): (1) a container `waiting.reason` other than `ContainerCreating` / `PodInitializing`
@@ -4769,6 +4769,18 @@ says otherwise, this one counts.
 - *`sbmig clean`* recognises uploads of today's run ids (`<slug>-YYYYMMDD-HHMMSS-<hex>`), so uploads of running, waiting
   and (with `--keep-failed`) failed runs are kept.
 - *Image*: the Dockerfile no longer passes `--max-upload-mb` (`SBMIG_MAX_UPLOAD_MB` from the ConfigMap takes effect).
+- *The Job template is read from the web pod's own image* (`deploy/k8s/81-web-job.template.yaml` under `/app`, the code's
+  default path): the shipped Deployment sets no `SBMIG_JOB_TEMPLATE` and mounts no template. The image is built from a
+  checkout in which 81 is filled; `validate_worker_template` refuses, in the real cluster mode, a template in which a
+  value a Job would use still contains `CHANGE_ME` (`MIGRATION_TEMPLATE_INVALID: the job template … still has the
+  repository placeholder CHANGE_ME (…)`; commented lines do not count). ConfigMap `sbmig-job-template` mounted at
+  `/templates` with `SBMIG_JOB_TEMPLATE` pointing at it remains possible (commented in 40) for a cluster that must change
+  the template without a new image; where earlier sections describe that ConfigMap as the way the template arrives, this
+  is the shape that ships now. What an operator does after a change: image only → restart the web pod; ConfigMap
+  `sbmig-env` → apply it, restart the web pod; the Deployment → apply it; the Job template → build and push the image,
+  restart the web pod.
+- *The "pod does not start" notice* waits 300 seconds by default (`SBMIG_JOB_PENDING_NOTICE_S`): on the company cluster a
+  healthy build pod needs more than three minutes to start.
 
 **Left as they are** (the owner's decisions): a second web pod is not detected (the Deployment's `replicas: 1` and
 `strategy: Recreate` are what keeps it at one: do not change them); no retention of old run folders; untracked leftovers

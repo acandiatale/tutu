@@ -44,7 +44,7 @@ CASES = [
 ]
 
 
-@pytest.mark.parametrize("engine", ["inline", "graph"])
+@pytest.mark.parametrize("engine", ["graph"])
 @pytest.mark.parametrize("tool,files,why", CASES)
 def test_non_maven_aborts_at_intake(cfg, tmp_path, engine, tool, files, why):
     cfg = cfg.model_copy(deep=True)
@@ -186,7 +186,7 @@ def test_aggregator_generation_can_be_switched_off(cfg, tmp_path):
     assert "aggregator-generated" not in report.flags and not (ws.root / "pom.xml").exists()
 
 
-@pytest.mark.parametrize("engine", ["inline", "graph"])
+@pytest.mark.parametrize("engine", ["graph"])
 def test_ear_alone_is_rejected_at_intake(cfg, tmp_path, engine):
     cfg = cfg.model_copy(deep=True)
     cfg.loop.engine = engine

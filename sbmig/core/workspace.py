@@ -59,7 +59,9 @@ GIT_TIMEOUT_S = 600.0      # one workspace git command (add / commit / status / 
 # `.sh` files with CRLF on `revert_to`; `core.quotepath` printed Korean names as "\355\225\234…" in name lists; a
 # run dir owned by another account ("dubious ownership") made every git call fail
 GIT_CONFIG: tuple[str, ...] = ("commit.gpgsign=false", "tag.gpgsign=false", "core.longpaths=true",
-                               "core.autocrlf=false", "core.quotepath=false", "safe.directory=*")
+                               "core.autocrlf=false", "core.quotepath=false", "safe.directory=*",
+                               # a run's repository is short-lived: no background repack after a commit (NFS volume)
+                               "maintenance.auto=false", "gc.auto=0")
 # 프로젝트의 .gitattributes보다 우선하므로, reset --hard가 줄바꿈, LFS, 인코딩을 변환하지 않게 한다
 # .git/info/attributes (beats every .gitattributes of the project): no EOL / filter / encoding conversion, ever —
 # a project's `* text=auto` / `eol=crlf` / LFS `filter=lfs` would otherwise rewrite files on `git reset --hard`

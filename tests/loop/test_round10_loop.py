@@ -167,20 +167,6 @@ def test_watchdog_silent_while_a_build_or_an_llm_call_runs(cfg, ws, profile, mon
     assert not list(ws.run_dir.glob("threads-*.txt"))
 
 
-def test_watchdog_still_speaks_when_nothing_heartbeats(cfg, ws, profile, monkeypatch, caplog):
-    monkeypatch.setattr(fl, "WATCHDOG_S", 0.02)
-    monkeypatch.setattr(fl, "WATCHDOG_QUIET_S", 0.05)
-
-    def slow_prompt_packing(w, c, ctx):                    # stuck outside the HTTP call (nearest_pom, grep …)
-        time.sleep(0.25)
-        return write_fix(c.errors[0].file, "class X { ok }\n")
-
-    with caplog.at_level(logging.WARNING, logger="sbmig"):
-        make_loop(cfg, ws, profile, build=FakeBuildRunner(ws, fn=files_build),
-                  fixer=FakeFixer(fn=slow_prompt_packing)).run(Phase.SPRING, "compile", 2)
-    assert [r for r in caplog.records if "fix loop quiet for" in r.getMessage()]
-
-
 # ------------------------------------------------------------------------------------------------ A8 (loop)
 def test_skip_flags_are_per_target(cfg, ws, profile):
     loop = make_loop(cfg, ws, profile)

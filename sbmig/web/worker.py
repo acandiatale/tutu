@@ -90,8 +90,9 @@ RUN_VALUE_FIELDS = (("SBMIG_STOP_AFTER", "stop_after"), ("SBMIG_LLM_PROVIDER", "
 RUN_VALUE_DEFAULTS = {contract.FLOW_ENV: contract.FLOW_FULL}
 # 거절이나 경고 메시지 끝에 붙이는 운영자 안내.
 # 네임스페이스와 디플로이먼트 이름은 설치마다 다르므로 넣지 않는다
-ENV_PIN_HINT = ("after changing ConfigMap sbmig-env or the Job template, restart the web pod and re-create ConfigMap "
-                f"sbmig-job-template; {contract.ENV_PIN_POLICY_ENV}=warn (or off) on the web pod relaxes this check")
+ENV_PIN_HINT = ("after changing ConfigMap sbmig-env restart the web pod; after changing the Job template rebuild and push the "
+                "image and restart the web pod (re-create the template ConfigMap first when SBMIG_JOB_TEMPLATE points at one); "
+                f"{contract.ENV_PIN_POLICY_ENV}=warn (or off) on the web pod relaxes this check")
 
 # ── 슬롯마다 Maven 로컬 저장소 하나 ──
 # 여러 파드가 build.local_repo가 있는 공유 볼륨을 같이 쓰는데 Maven은 여러 프로세스가 한 로컬 저장소에 동시에 쓰는 것을

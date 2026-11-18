@@ -11,7 +11,7 @@ from sbmig.core.stage import StageFilter
 from sbmig.review import parse_review_answer
 from sbmig.review.reviewer import APPLY_RETRY_MESSAGE, StructureReviewer
 
-from .test_reviewer import COMP_POM, ROOT_POM, FakeLLM, FakeRunner, make_ws, profile
+from .test_reviewer import ROOT_POM, FakeLLM, FakeRunner, make_ws, profile
 
 REVIEW = {"verdict": "issues", "issues": [
     {"severity": "critical", "file": "module/comp-jar/pom.xml", "problem": "no source encoding for MS949 sources",
@@ -150,14 +150,3 @@ def test_edits_for_warnings_only_are_not_applied(tmp_path, cfg):
     off = cfg.model_copy(update={"review": cfg.review.model_copy(update={"fix_critical": False})})
     rv = StructureReviewer(off, FakeLLM(answer())).review(ws, profile(), off, run_id="r")
     assert rv.note == "edits not applied: review.fix_critical is off" and not ws.is_dirty()
-
-
-def test_edits_apply_without_a_script_runner_and_a_v2_script_still_runs(tmp_path, cfg):
-    ws = make_ws(tmp_path)
-    rv, _ = run(cfg, ws, answer(), runner=None)                    # edits use apply_edits' own runner
-    assert rv.script_result.status == "ok" and ws.is_dirty()
-    ws2 = make_ws(tmp_path / "b", comp_pom=COMP_POM)
-    runner = FakeRunner(edits={"pom.xml": ROOT_POM + "<!-- v2 -->"})
-    rv, _ = run(cfg, ws2, answer(edits=None), runner=runner)
-    assert len(runner.calls) == 1 and rv.note.startswith("review script changed 1 file(s): pom.xml")
-    assert rv.answer.edits == [] and rv.answer.code == SCRIPT

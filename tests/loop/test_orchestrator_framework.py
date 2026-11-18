@@ -255,7 +255,7 @@ def test_jsp_step_logs_under_the_rewrite_tag():
                                title="r", params={"mode": "layout"})) == "restructure"
 
 
-@pytest.mark.parametrize("engine", ["graph", "inline"])
+@pytest.mark.parametrize("engine", ["graph"])
 def test_reduced_run_end_to_end(cfg, ws, fake_fw, engine):
     ws.write(JSP, JSP_TEXT)
     ws.commit("jsp")

@@ -142,25 +142,6 @@ def test_upload_creates_a_job_and_the_ui_sees_pod_then_nodes_then_files(client: 
     assert any(e["event"] == "graph_node_end" for e in journal)
 
 
-def test_stop_writes_the_request_file_then_deletes_after_the_grace_period(tmp_path: Path, repo: Path, monkeypatch):
-    monkeypatch.setenv("SBMIG_JOB_POLL_S", "0.05")
-    monkeypatch.setenv("SBMIG_JOB_STOP_GRACE_S", "0.2")
-    jc = FakeJobClient(phases=["Pending", "Running"], pod=None)        # the pod never finishes on its own
-    mgr = RunManager(tmp_path / "out", repo, mode="k8s-job", job_client=jc, job_template=TEMPLATE)
-    rid = mgr.start(b"PK\x05\x06" + b"\0" * 18, "p.zip", ["artifacts.local-e2e.yml"])
-    deadline = time.time() + 5
-    # v2.1z-aq: the stop must reach a STARTED pod — a stop while Pending deletes the Job at once (test_pod_not_started)
-    while mgr.runs[rid].job_phase != "Running" and time.time() < deadline:
-        time.sleep(0.02)
-    assert mgr.stop(rid)
-    run = mgr.runs[rid]
-    assert run.done.wait(5)
-    assert (tmp_path / "out" / rid / "stop.request").is_file() and jc.deleted == [job_name(rid)]
-    assert run.exit_code == 3 and "deleted after the grace period" in (run.error or "")
-    st = mgr.status(rid)
-    assert st["state"] == "finished" and st["stop_requested"] is True
-
-
 def test_shutdown_and_stop_never_create_a_queued_job(tmp_path: Path, repo: Path, monkeypatch):
     """Review 2026-11-05: the shutdown cascaded through the FIFO and created every queued Job; a stop on a queued run created the
     Job only to delete it. Neither may reach create_job."""
@@ -276,14 +257,14 @@ def test_server_shutdown_leaves_the_job_running(tmp_path: Path, repo: Path, monk
     assert "continues in the cluster" in (mgr.runs[rid].error or "")
 
 
-def test_outside_a_cluster_the_run_fails_readably(tmp_path: Path, repo: Path, monkeypatch):
-    """A pod that says it is in a cluster (KUBERNETES_SERVICE_HOST) but has no usable service account: the web app refuses to
-    start readably (v2.1z-ac: the client is built at startup, no longer on the first upload; outside a cluster the mode degrades
-    to local-job instead — tests/web/test_local_job_mode.py)."""
-    import sbmig.web.runs as runs_mod
-    monkeypatch.setattr(runs_mod, "in_cluster_available", lambda: True)              # no degrade …
-    monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)                        # … but in_cluster() cannot build a client
-    with pytest.raises(ValueError, match="not inside a Kubernetes cluster"):
+def test_a_client_that_cannot_be_built_refuses_to_start_readably(tmp_path: Path, repo: Path, monkeypatch):
+    """The client is built at startup (v2.1z-ac, no longer on the first upload): when it cannot be built the web app refuses
+    to start with a sentence that names the cause. Reachable shape: an explicit KUBECONFIG (no degrade to local-job) whose
+    user authenticates by `exec`, which the client refuses. (Outside a cluster without a kubeconfig the mode degrades to
+    local-job instead — tests/web/test_local_job_mode.py; a pod without a service account — test_inside_a_cluster_without_a_service_account_refuses_to_start.)"""
+    monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
+    monkeypatch.setenv("KUBECONFIG", str(_kubeconfig(tmp_path, {"exec": {"command": "aws"}})))
+    with pytest.raises(ValueError, match=r"k8s-job cannot reach the Kubernetes API: .*exec / auth-provider"):
         RunManager(tmp_path / "out", repo, mode="k8s-job", job_template=TEMPLATE)
 
 
@@ -446,6 +427,7 @@ def test_a_kubeconfig_outside_a_cluster_keeps_the_job_mode(tmp_path: Path, repo:
     real_connect = K8sClient.connect.__func__
     monkeypatch.setattr(K8sClient, "connect", classmethod(lambda cls, namespace=None, session_=None: real_connect(cls, namespace, session)))
     job = yaml.safe_load(TEMPLATE.read_text(encoding="utf-8"))
+    job["spec"]["template"]["spec"]["containers"][0]["image"] = "registry.example/sbmig:test"   # filled, as the company builds it
     for m in job["spec"]["template"]["spec"]["containers"][0]["volumeMounts"]:
         if m["mountPath"] == "/data":
             m["mountPath"] = str(tmp_path.resolve())                  # the PVC mount holds this test's output dir
@@ -457,13 +439,13 @@ def test_a_kubeconfig_outside_a_cluster_keeps_the_job_mode(tmp_path: Path, repo:
 
 
 def test_a_missing_job_template_fails_the_run_readably(tmp_path: Path, repo: Path, monkeypatch):
-    """The image's copy of the template keeps its CHANGE_ME placeholders; the pod mounts the filled one as a ConfigMap. A missing
-    file must not create a Job from nothing — v2.1z-ac: the web app refuses to start (MIGRATION_TEMPLATE_INVALID). With an injected
+    """The web pod reads the image's copy of the template unless SBMIG_JOB_TEMPLATE names another file. A missing file must
+    not create a Job from nothing — v2.1z-ac: the web app refuses to start (MIGRATION_TEMPLATE_INVALID). With an injected
     client (tests) the startup check is skipped and the run still fails readably without creating anything."""
     import sbmig.web.runs as runs_mod
     monkeypatch.setattr(runs_mod, "in_cluster_available", lambda: True)
     monkeypatch.setattr(K8sClient, "connect", classmethod(lambda cls, **kw: FakeJobClient()))
-    with pytest.raises(ValueError, match="MIGRATION_TEMPLATE_INVALID.*sbmig-job-template"):
+    with pytest.raises(ValueError, match="MIGRATION_TEMPLATE_INVALID.*not readable.*fill deploy/k8s/81-web-job.template.yaml"):
         RunManager(tmp_path / "out0", repo, mode="k8s-job", job_template=tmp_path / "templates" / "nope.yaml")
     monkeypatch.setenv("SBMIG_JOB_POLL_S", "0.05")
     jc = FakeJobClient()
@@ -471,7 +453,7 @@ def test_a_missing_job_template_fails_the_run_readably(tmp_path: Path, repo: Pat
     rid = mgr.start(b"PK\x05\x06" + b"\0" * 18, "p.zip", ["artifacts.local-e2e.yml"])
     assert mgr.runs[rid].done.wait(5)
     assert mgr.runs[rid].exit_code == 3 and "job template not found" in (mgr.runs[rid].error or "")
-    assert "sbmig-job-template" in (mgr.runs[rid].error or "") and jc.created == []
+    assert "build and push the image" in (mgr.runs[rid].error or "") and jc.created == []
 
 
 def test_the_worker_template_follows_the_company_worker_contract():
@@ -502,7 +484,8 @@ def test_the_worker_template_follows_the_company_worker_contract():
     assert not [m for m in c["volumeMounts"] if Path(m["mountPath"]).is_relative_to(out_dir)]
     # v2.1z-ac: Main's own startup validator accepts the shipped template against the pods' output dir
     from sbmig.web.k8s import validate_worker_template
-    assert validate_worker_template(TEMPLATE, out_dir)["kind"] == "Job"
+    # (the checkout's copy keeps the CHANGE_ME image; the placeholder rule is pinned in test_jobmode_hardening)
+    assert validate_worker_template(TEMPLATE, out_dir, allow_placeholders=True)["kind"] == "Job"
     # secret bindings (when the template carries them): annotation env → revision file; every listed env is a secretKeyRef; paths
     # absolute, on the shared volume, outside the run dirs
     paths = json.loads(((job["metadata"].get("annotations") or {}).get("sbmig-secret-revision-paths")) or "{}")
@@ -510,4 +493,3 @@ def test_the_worker_template_follows_the_company_worker_contract():
     for env_name, path in paths.items():
         assert next(e for e in c["env"] if e["name"] == env_name)["valueFrom"]["secretKeyRef"]["name"]
         assert Path(path).is_absolute() and Path(path).is_relative_to(Path("/data")) and not Path(path).is_relative_to(out_dir)
-

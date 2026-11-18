@@ -75,16 +75,16 @@ docker build --build-arg APP_DIR=src/migration-agent --build-arg DEPLOY_DIR=depl
 `docker load -i` → `docker tag sbmig:<tag> <registry>/sbmig:<tag>` → `docker push` 한다(Dockerfile 을 넘겨 그쪽에서 빌드해도 같다). push 된 이미지의
 **전체 이름**을 받아 `k8s/40-deployment.yaml` 과 `k8s/81-web-job.template.yaml` 의 `image:` 두 줄(`CHANGE_ME_REGISTRY/sbmig:CHANGE_ME_TAG` 자리)에 글자
 그대로, 같은 값으로 넣는다. 레지스트리가 pull 에 인증을 요구하면 인프라팀이 준 Secret 이름으로 양쪽의 `imagePullSecrets`
-주석을 푼다. 매니페스트는 `imagePullPolicy: Always` 다: 파드가 뜰 때마다 레지스트리와 대조해 바뀐 이미지만 새로 받으므로 **같은 태그로 다시 올려도
+주석을 푼다. **81 은 이미지 안에 들어간다**: 웹 파드는 이미지 안의 사본(`/app/deploy/k8s/81-web-job.template.yaml`)으로 빌드 Job 을 만든다.
+그래서 81 은 이미지를 빌드하는 체크아웃에서 채우고 빌드한다. `CHANGE_ME` 가 남은 값(주석 줄은 빼고)이 있으면 웹 파드가 시작하지 않는다(§3 "켜는 법" 4). 매니페스트는 `imagePullPolicy: Always` 다: 파드가 뜰 때마다 레지스트리와 대조해 바뀐 이미지만 새로 받으므로 **같은 태그로 다시 올려도
 반영된다**.
 
 **같은 태그로 이미지를 다시 올린 뒤 운영자가 할 일**:
 
 1. 웹 파드를 다시 띄운다: `kubectl -n agent rollout restart deploy/sbmig`. 빌드 파드는 뜰 때마다 스스로 새 이미지를 받으므로 따로 할 일이 없다.
-2. **처음 한 번만**(pull 정책이 `Always` 인 매니페스트로 처음 바꿀 때): Job 틀 ConfigMap 을 다시 만들고 40 을 apply 한 뒤 1 을 한다 — 웹 파드는
-   시작할 때 틀을 읽어 두고, 틀과 Deployment 에 새 정책이 들어 있어야 두 파드가 새 이미지를 받는다.
+2. **처음 한 번만**(pull 정책이 `Always` 인 매니페스트로 처음 바꿀 때): 40 을 apply 한 뒤 1 을 한다. 빌드 파드의 정책은 81 에 있고 81 은 이미지와
+   함께 들어가므로, 새 81 로 빌드한 이미지에 1 을 하면 된다.
    ```bash
-   kubectl -n agent create configmap sbmig-job-template --from-file=deploy/k8s/81-web-job.template.yaml --dry-run=client -o yaml | kubectl apply -f -
    kubectl apply -f deploy/k8s/40-deployment.yaml
    kubectl -n agent rollout restart deploy/sbmig
    ```
@@ -96,6 +96,18 @@ run different images: restart the web pod after pushing an image (and upload the
 대조한다. 두 파드가 어느 빌드인지는 `kubectl -n agent exec deploy/sbmig -- python -m sbmig.cli version`(→ `sbmig 0.1.0+<12자>`)과 실행 폴더
 `journal.jsonl` 의 `worker_started` 줄의 `sbmig_version` 으로 비교한다. 이 값은 이미지 안의 코드·`config/*.yml`·`knowledge/` 에서 계산되므로 빌드
 인자가 따로 필요 없다.
+
+**무엇을 바꾸면 무엇을 하나**:
+
+| 바꾼 것 | 할 일 |
+|---|---|
+| 이미지만(코드, 구운 `config/artifacts.yml`) | 빌드 · push, 웹 파드 재시작 |
+| `20-configmap.yaml`(`sbmig-env`, `sbmig-config`) | `kubectl apply -f deploy/k8s/20-configmap.yaml`, 웹 파드 재시작(`sbmig-config` 의 settings.xml 이면 §3 "Maven 설정과 로컬 저장소" 의 복사도) |
+| `40-deployment.yaml` | `kubectl apply -f deploy/k8s/40-deployment.yaml`(파드가 새로 뜬다. `unchanged` 면 바뀐 것이 없다) |
+| `81-web-job.template.yaml` | 이미지 빌드 · push, 웹 파드 재시작(웹 파드는 시작할 때 틀을 읽어 둔다. 재시작 뒤 만드는 Job 부터 새 틀) |
+
+웹 파드 재시작은 `kubectl -n agent rollout restart deploy/sbmig`. Job 틀을 ConfigMap 으로 주는 클러스터(§3 "켜는 법" 4 의 대안)만 81 을 바꿨을 때
+이미지 대신 그 ConfigMap 을 다시 만들고 웹 파드를 재시작한다.
 
 `IfNotPresent` 로 두면 노드에 그 태그가 이미 있을 때 레지스트리를 보지 않아, 같은 태그를 다시 올려도 노드마다 처음 받은 이미지가 그대로 돈다(웹 파드와
 빌드 파드의 코드가 서로 다를 수 있다). 그 정책을 쓰려면 태그를 빌드마다 새로 붙인다. `Always` 는 레지스트리가 응답하지 않으면 새 파드가 뜨지 못한다. 첫 파드가 `ImagePullBackOff` 면 대개 노드가 그 레지스트리의
@@ -144,9 +156,8 @@ kubectl apply -f deploy/k8s/10-storage.yaml
 kubectl apply -f deploy/k8s/20-configmap.yaml      # <…> 자리를 회사 값으로 채운 뒤
 cp deploy/k8s/30-secret.example.yaml deploy/k8s/30-secret.yaml && $EDITOR deploy/k8s/30-secret.yaml
 kubectl apply -f deploy/k8s/30-secret.yaml
-# Job 모드가 켜져 있다(sbmig-env 의 SBMIG_WEB_MODE) — 권한과 Job 틀이 먼저다(§3 "켜는 법" 2·3·4). 없으면 웹 파드가 시작 검증에서 멈춘다
+# Job 모드가 켜져 있다(sbmig-env 의 SBMIG_WEB_MODE) — 권한이 먼저고, 이미지 안의 81 이 채워져 있어야 한다(§3 "켜는 법" 2·3·4). 아니면 웹 파드가 시작 검증에서 멈춘다
 kubectl -n agent describe secret agent-kubeconfig   # 회사: 인프라팀의 kubeconfig Secret, Data 에 config 가 보여야 한다(없는 클러스터는 §3 "켜는 법" 2 의 b)
-kubectl -n agent create configmap sbmig-job-template --from-file=deploy/k8s/81-web-job.template.yaml --dry-run=client -o yaml | kubectl apply -f -
 kubectl apply -f deploy/k8s/40-deployment.yaml -f deploy/k8s/50-service.yaml
 kubectl -n agent rollout status deploy/sbmig
 kubectl -n agent exec deploy/sbmig -- sh -c "mkdir -p /data/.m2 && cp /etc/sbmig/settings.xml /data/.m2/settings.xml"   # Maven 설정을 데이터 볼륨에(§3 "Maven 설정과 로컬 저장소")
@@ -399,7 +410,7 @@ PC 에서 시험한 파일을 그대로 `20-configmap.yaml` 의 `sbmig-config` �
 3. 80(`80-build-job.template.yaml`, 쓰는 경우만): env `SBMIG_BUILD__SETTINGS_FILE` `"/etc/sbmig/settings.xml"` → `"/data/.m2/settings.xml"`,
    env `SBMIG_BUILD__LOCAL_REPO` `"null"` → `"/data/.m2/repository"`, `m2` 마운트의 `mountPath: /home/sbmig/.m2` → `/data/.m2`,
    `config` 마운트의 `mountPath: /etc/sbmig/settings.xml` → `/data/.m2/settings.xml`(`m2` · `config` 볼륨은 그대로).
-4. ConfigMap `sbmig-job-template` 을 새 81 로 다시 만든다(§3 "켜는 법" 4 의 명령).
+4. 새 81 로 이미지를 빌드 · push 한다(웹 파드는 이미지 안의 81 을 읽는다, §3 "켜는 법" 4).
 5. `kubectl apply -f deploy/k8s/40-deployment.yaml` 뒤 웹 파드를 재시작한다(`kubectl -n agent rollout restart deploy/sbmig`). 웹 파드와 Job 파드의
    `SBMIG_BUILD__SETTINGS_FILE` · `SBMIG_BUILD__LOCAL_REPO` 가 다르면 환경 변수 대조가 Job 을 멈춘다.
 6. 위의 복사 명령을 실행하고 `head` 로 확인한다(`/data/.m2` 가 다른 사용자의 것이면 먼저 위 문단대로 정리한다).
@@ -446,8 +457,8 @@ PC 에서 시험한 파일을 그대로 `20-configmap.yaml` 의 `sbmig-config` �
 - **다르면**(기본 `SBMIG_JOB_ENV_PIN=refuse`, k8s-job): Job 이 몇 초 만에 돌지 않고 끝난다(exit 3). 이유에는 키 이름만 세 갈래(값이 다름 / 웹 파드에만 /
   Job 파드에만)로 적힌다 — 화면의 결과 줄, 실행 폴더 `job-status.json` 의 `error`, 저널의 `worker_refused` 줄, 파드 로그의 `[worker] REFUSED:` 줄.
   zip·설정 파일·버전 대조의 거절은 zip sha256·설정 파일 이름·sbmig 버전을 말하고, 이 거절은 환경 변수 이름을 늘어놓고 `SBMIG_JOB_ENV_PIN` 을 안내한다.
-- **할 일**: `sbmig-env` 를 바꾸면 웹 파드를 재시작한다. 81 틀을 새로 받거나 고치면 ConfigMap `sbmig-job-template` 을 다시 만들고(아래 "켜는 법" 4)
-  웹 파드를 재시작한다. "웹 파드에만" 에 나온 키는 대개 81 틀에 그 키의 줄이 없거나 `sbmig-job-template` 이 옛 틀이라는 뜻이다. 고친 뒤 다시 올린다.
+- **할 일**: `sbmig-env` 를 바꾸면 웹 파드를 재시작한다. 81 틀을 새로 받거나 고치면 이미지를 빌드 · push 하고 웹 파드를 재시작한다(아래 "켜는 법" 4).
+  "웹 파드에만" 에 나온 키는 대개 81 틀에 그 키의 줄이 없거나 웹 파드가 옛 81 이 든 이미지로 돌고 있다는 뜻이다. 고친 뒤 다시 올린다.
 - **완화**: `sbmig-env` 에 `SBMIG_JOB_ENV_PIN: "warn"`(웹 파드 재시작) — Job 은 자기 값으로 돌고 저널에 `worker_env_differs` 한 줄(키 이름)과 파드 로그에
   경고를 남긴다. `off` 는 대조하지 않는다. 운영 클러스터에서는 `refuse` 로 둔다. `warn` 이 맞는 것은 두 환경이 원래 다를 때뿐이다 — 개발 PC 의
   `sbmig serve --mode k8s-job` 이 `KUBECONFIG` 로 클러스터에 Job 을 만들 때(웹 쪽은 PC 의 `.env`, Job 쪽은 클러스터의 ConfigMap). `local-job` 은 기본이 `off`.
@@ -501,7 +512,7 @@ namespace 에 ResourceQuota 가 있으면 파드가 만들어지지 않을 수 �
 업로드는 도는 수가 한도 아래로 내려온 뒤에 시작한다.
 
 **파드가 `ContainerCreating` 에서 넘어가지 않으면.** sbmig 가 아니라 쿠버네티스 쪽에서 파드를 띄우지 못하고 있는 것이다(볼륨 붙이기 / 마운트,
-이미지 받기, 파드 네트워크). 화면의 '파드' 단계가 넘어가지 않고, `SBMIG_JOB_PENDING_NOTICE_S`(기본 120 초)가 지나면 웹 파드가 이유를 찾아 그 단계 아래에
+이미지 받기, 파드 네트워크). 화면의 '파드' 단계가 넘어가지 않고, `SBMIG_JOB_PENDING_NOTICE_S`(기본 300 초)가 지나면 웹 파드가 이유를 찾아 그 단계 아래에
 "빌드 파드가 아직 시작되지 못했습니다(N분째)." 와 이유 한 문장, 쿠버네티스 원문 한 줄을 보여 준다(로그 WARNING `… has not started for Ns: <Reason>: <message>`,
 저널 `job_pod_pending`). 원문은 `kubectl -n agent describe pod <파드 이름>` 의 Events 에 있는 것과 같다:
 
@@ -532,17 +543,23 @@ namespace 에 ResourceQuota 가 있으면 파드가 만들어지지 않을 수 �
    (`sbmig/web/k8s.py` `K8sClient.connect`; kubeconfig 의 token / 클라이언트 인증서 사용자만 — `exec` 방식은 거절한다).
 3. `k8s/40-deployment.yaml` 과 `k8s/81-web-job.template.yaml` 의 `image:` 에 인프라팀이 push 한 이미지의 전체 이름을 **같은 값**으로 넣는다(§1,
    `imagePullPolicy: Always`; pull 인증이 필요하면 `imagePullSecrets`). 회사 설정이 이미지 안에 있으므로 두 이미지가 다르면 Worker 가 digest 불일치로 거절한다.
-4. 채운 Job 틀을 ConfigMap 으로 올린다 — 웹 파드는 `/templates/81-web-job.template.yaml`(`SBMIG_JOB_TEMPLATE`, Deployment 의 env)을 읽는다.
-   Main 은 **시작할 때** 틀을 검증하고 어긋나면 뜨지 않는다(`MIGRATION_TEMPLATE_INVALID: …`): 컨테이너 하나(backoffLimit 0, restartPolicy Never),
+4. Job 틀은 **이미지 안의 사본**이다 — 웹 파드는 `SBMIG_JOB_TEMPLATE` 이 없으면 `/app/deploy/k8s/81-web-job.template.yaml` 을 읽는다. 81 은 이미지를
+   빌드하는 체크아웃에서 채운다(image, 필요하면 nodeSelector · imagePullSecrets · hostAliases). 틀을 바꿀 때마다(새 버전의 81 틀을 받았을 때 포함)
+   이미지를 빌드 · push 하고 **웹 파드를 재시작한다** — Main 은 시작할 때 틀을 읽어 두므로 재시작 전에는 옛 틀로 Job 을 만든다(옛 틀에 없는 키는
+   환경 변수 대조에 걸린다).
+   Main 은 **시작할 때** 틀을 검증하고 어긋나면 뜨지 않는다(`MIGRATION_TEMPLATE_INVALID: …`): `CHANGE_ME` 가 남은 값 없음(주석 줄은 세지 않는다), 컨테이너 하나(backoffLimit 0, restartPolicy Never),
    **envFrom 금지**(변수마다 `valueFrom`), 비밀 env 는 `secretKeyRef` 만(설정 덮어쓰기 `SBMIG_<섹션>__<키>` 는 literal 가능), `LLM_RECORD_DIR` / `SBMIG_WEB_TOKEN` 없음, `/data` 는 PVC 전체를 쓰기 가능으로
    정확히 하나. 권한도 그때 확인한다(SelfSubjectAccessReview: jobs create/get/list/watch/delete, pods get/list/watch — 모자라면 어떤 동사인지 적고 멈춘다).
-   이미지 안의 틀 사본은 `CHANGE_ME` 그대로라 쓰지 않는다. 틀을 바꿀 때마다(새 버전의 81 틀을 받았을 때 포함) 같은 명령으로 다시 만들고 **웹 파드를
-   재시작한다** — Main 은 시작할 때 틀을 읽어 두므로 재시작 전에는 옛 틀로 Job 을 만든다(옛 틀에 없는 키는 환경 변수 대조에 걸린다).
+   채우지 않은 81 이 든 이미지면 시작 로그에 이렇게 남고 파드가 다시 시작하기를 되풀이한다:
+   `MIGRATION_TEMPLATE_INVALID: the job template /app/deploy/k8s/81-web-job.template.yaml still has the repository placeholder CHANGE_ME
+   (spec.template.spec.containers[0].image=CHANGE_ME_REGISTRY/sbmig:CHANGE_ME_TAG) — …`. 81 을 채워 이미지를 다시 빌드 · push 하고 웹 파드를 재시작한다.
+   **대안 — ConfigMap 으로 줄 때**(이미지를 새로 만들지 않고 틀을 바꿔야 하는 클러스터만): 채운 81 로 ConfigMap 을 만들고, 40 의 주석 세 자리
+   (env `SBMIG_JOB_TEMPLATE`, `volumeMounts` · `volumes` 의 `job-template`)를 풀어 apply 한다. 그 뒤로는 81 을 바꿀 때마다 같은 명령으로 다시 만들고 웹 파드를 재시작한다.
    ```bash
    kubectl -n agent create configmap sbmig-job-template --from-file=deploy/k8s/81-web-job.template.yaml --dry-run=client -o yaml | kubectl apply -f -
    ```
-   Secret 은 immutable 로 두는 걸 권한다(`30-secret.example.yaml`). 토큰을 바꿀 때: 새 이름의 Secret(`sbmig-llm-2`) → 틀의 `secretKeyRef.name` 과
-   `40-deployment.yaml` 의 `secretRef` → ConfigMap 틀 다시 apply → 파드 재시작.
+   Secret 은 immutable 로 두는 걸 권한다(`30-secret.example.yaml`). 토큰을 바꿀 때: 새 이름의 Secret(`sbmig-llm-2`) → 81 의 `secretKeyRef.name` 과
+   `40-deployment.yaml` 의 `secretRef` → 이미지 빌드 · push → 40 apply, 웹 파드 재시작.
 5. LLM 게이트웨이 주소가 사내 DNS 로 안 풀리면(인프라팀 임시 명세의 `hostAliases`) Deployment 와 Job 틀 **양쪽**의 `hostAliases` 주석을 같은 값으로 푼다 —
    LLM 을 부르는 쪽은 Job 파드다.
 6. **KB 를 먼저 올린다.** `/data/kb-v2` 는 비워 두고 시작하면 안 된다 — 케이스 스크립트뿐 아니라 회사 지식 파일 `jar_names.yml`(번들 jar 이름 → Nexus
@@ -567,7 +584,7 @@ namespace 에 ResourceQuota 가 있으면 파드가 만들어지지 않을 수 �
 81 틀의 `ttlSecondsAfterFinished`(3600 = 1 시간) 뒤 쿠버네티스가 지운다 — 하루 수십 건이 돌아도 목록에는 지난 한 시간에 끝난 것만 보인다. 결과와 `sbmig.log` 는
 볼륨(`/data/out/<run id>/`)에 남는다. 웹 파드가 Job 을 지우는 것은 예외 셋뿐이고 자기 라벨 둘이 붙은 Job 만 지운다: 중단을 눌렀는데 `SBMIG_JOB_STOP_GRACE_S`
 (2700초) 뒤에도 돌 때, 결과 파일을 쓰고도 파드가 `SBMIG_JOB_EXIT_GRACE_S`(120초) 넘게 남을 때, 웹 쪽 오류로 실행이 끝났는데 Job 이 남았을 때. 4 시간을 넘긴
-Job 은 쿠버네티스가 끊는다(`activeDeadlineSeconds`). 틀의 값을 바꾸면 ConfigMap `sbmig-job-template` 을 다시 만들고 웹 파드를 재시작한다(새 Job 부터 적용).
+Job 은 쿠버네티스가 끊는다(`activeDeadlineSeconds`). 틀의 값을 바꾸면 이미지를 빌드 · push 하고 웹 파드를 재시작한다(새 Job 부터 적용).
 
 ### 있는 것 / 다음 것
 
@@ -600,7 +617,7 @@ Job 은 쿠버네티스가 끊는다(`activeDeadlineSeconds`). 틀의 값을 바
 | "소스 처리 · 빌드 · 분석 · 결과 저장 · 커밋 뒤 종료" | `docker/run-job.sh`: zip(또는 git) → KB clone → `sbmig run` → 결과 전달 → 종료 코드 |
 | "결과 저장", "저장소 커밋" | 결과 POST(웹 파드) 또는 결과 저장소 push(`SBMIG_RESULT_GIT_URL`); 프로젝트 브랜치 `sbmig/<run id>` push |
 | `/workspace` emptyDir | `sbmig run --out /workspace/out`; 파드가 죽기 전에 밖으로 보낸 것만 남는다 |
-| Agent: `kubectl create -f /templates/build-job.yaml` | 웹 파드의 디스패치 모드(있음) — 같은 자리: ConfigMap `sbmig-job-template` 을 `/templates` 에 마운트, `SBMIG_JOB_TEMPLATE`; 손으로는 `k8s/submit-job.sh` |
+| Agent: `kubectl create -f /templates/build-job.yaml` | 웹 파드의 디스패치 모드(있음) — 틀은 이미지 안의 `/app/deploy/k8s/81-web-job.template.yaml`(대안: ConfigMap 을 `/templates` 에 마운트하고 `SBMIG_JOB_TEMPLATE`); 손으로는 `k8s/submit-job.sh` |
 | `/etc/kube/config` 는 Agent 에만 | 그대로 — 웹 파드가 `KUBECONFIG` 로 그 파일을 읽어 API 를 부른다(서비스 계정 대신, 2026-11-09). 빌드 파드는 쿠버네티스 API 를 부르지 않는다 |
 
 ### 템플릿에서 바꿀 자리 (가이드 2절 그대로 + sbmig 용)
@@ -714,8 +731,8 @@ preflight / ADF / 내부 오류)이면 3. `SBMIG_FAIL_JOB_ON_BUILD_FAIL=1` 이�
   20~75분이다. 최악은 설정 상한의 합 — 빌드 한 번 `remediation.build_timeout_minutes` 60분, 업로드 `ivas_upload_timeout_seconds` 30분, 분석 30분,
   `max_rounds` 3 → 60 + 60 + 3 × 120 = 약 8시간 — 이고, 이관 자체의 상한(`loop.max_total_minutes` 240분)이 이미 4시간이라 최악끼리는 어떤 숫자로도
   다 담기지 않는다. 기한에 걸리면 Worker 가 종료 신호를 받아 exit 3 으로 끝나고(이관 보고서는 남는다; `job-status.json` 의 오류 글에 이관의
-  `SBMIG-RESULT` 줄이 붙는다), 웹은 그 실행을 "중단" 으로 보인다. 큰 프로젝트가 기한에 자주 걸리면 81 의 숫자를 늘리고 ConfigMap
-  `sbmig-job-template` 을 다시 만든다. **조치의 시간 한도** `remediation.chain_budget_minutes`(기본 90분, 0 = 없음): 이 파드에서 조치가 그만큼
+  `SBMIG-RESULT` 줄이 붙는다), 웹은 그 실행을 "중단" 으로 보인다. 큰 프로젝트가 기한에 자주 걸리면 81 의 숫자를 늘리고 이미지를
+  빌드 · push 한 뒤 웹 파드를 재시작한다. **조치의 시간 한도** `remediation.chain_budget_minutes`(기본 90분, 0 = 없음): 이 파드에서 조치가 그만큼
   돌면 다음 경계에서 `STOPPED`, 이유 **`chain_budget`** 으로 멈추고(저널 `remediation_budget`) 파드는 정상으로 끝난다 — 재개하면 새 빌드 파드가
   이어 간다(한도는 파드마다 다시 잰다). 진행 중이던 IVAS 분석은 IVAS 에서 계속 돌고 재개가 같은 분석을 이어서 조회한다. 바꾸려면
   `sbmig-env` 의 `SBMIG_REMEDIATION__CHAIN_BUDGET_MINUTES` 주석을 풀고 웹 파드를 재시작한다.
@@ -749,12 +766,11 @@ preflight / ADF / 내부 오류)이면 3. `SBMIG_FAIL_JOB_ON_BUILD_FAIL=1` 이�
 
 ### 이 변경을 받은 뒤 운영자 점검표
 
-1. **이미지**: 새 태그로 빌드·push 하고(§1) 40 과 81 의 `image:` 를 그 태그로 바꾼다(두 파드가 같은 이미지여야 Worker 의 버전 대조가 맞는다).
+1. **이미지**: 40 과 81 의 `image:` 를 새 태그로 바꾸고, 2 의 81 변경까지 한 체크아웃에서 빌드·push 한다(§1; 두 파드가 같은 이미지여야 Worker 의 버전 대조가 맞는다).
 2. **Secret**: `30-secret.yaml` 에 IVAS 세 키를 넣고 **새 이름**(예: `sbmig-llm-2` — Secret 이 `immutable` 이라 키를 더할 수 없다)으로 만든다.
    40 의 `secretRef`, 81 의 `secretKeyRef` 일곱 줄(`LLM_APP_TOKEN` … `IVAS_PASSWORD`)의 `name`, (80 을 쓰면) 80 의 `secretRef` 를 새 이름으로 바꾼다.
 3. **ConfigMap `sbmig-env`**: `kubectl apply -f deploy/k8s/20-configmap.yaml`(그룹 3 의 `SBMIG_REMEDIATION__AFTER_MIGRATION: "true"`).
-4. **ConfigMap `sbmig-job-template`** 를 다시 만든다:
-   `kubectl -n agent delete configmap sbmig-job-template` → `kubectl -n agent create configmap sbmig-job-template --from-file=deploy/k8s/81-web-job.template.yaml`.
+4. **Job 틀**: 81 은 이미지 안에 들어가므로 1 의 빌드에 담긴다. Job 틀을 ConfigMap 으로 주는 클러스터만 그 ConfigMap 을 다시 만든다(§3 "켜는 법" 4 의 대안).
 5. **웹 파드**: `kubectl apply -f deploy/k8s/40-deployment.yaml` 뒤 `kubectl -n agent rollout restart deploy/sbmig` — 웹 파드는 시작할 때
    `sbmig-env` 와 Job 틀을 읽는다. 재시작하지 않으면 다음 Job 이 `SBMIG_REMEDIATION__AFTER_MIGRATION` 을 "set in the Job pod only" 로 적고 멈춘다.
 6. **확인**: 작은 프로젝트 하나를 올려 Job 파드 로그의 `SBMIG-RESULT … remediation=…` 줄을 본다. `remediation=skipped` 면 저널의
@@ -774,7 +790,7 @@ preflight / ADF / 내부 오류)이면 3. `SBMIG_FAIL_JOB_ON_BUILD_FAIL=1` 이�
   ```
 
 * 이 파일은 이미지에 굽는다(§1). 그래서 **이미지를 다시 만들고** 새 태그를 `40-deployment.yaml`과 `81-web-job.template.yaml`의 `image:`에 같이 넣는다.
-  ConfigMap `sbmig-env`, `sbmig-config`, Secret은 바뀌지 않는다. 81 틀을 바꿨으면 ConfigMap `sbmig-job-template`을 다시 만들고 웹 파드를 재시작한다(§6 점검표 4·5).
+  ConfigMap `sbmig-env`, `sbmig-config`, Secret은 바뀌지 않는다. 새 이미지에는 체크아웃의 81도 같이 들어가므로 이미지를 올린 뒤 웹 파드를 재시작한다(§1).
 * 함께 정할 수 있는 스위치(같은 파일의 `framework:` 아래, 기본값으로 두면 적지 않아도 된다):
   * `framework.scope`: `jdk-jakarta`(기본) 또는 `full`(찾은 사실만 보고서에 적고 전체 이관).
   * `framework.transitive`: 다른 라이브러리가 끌고 오기만 하는 경우. `apply`(기본, 직접 선언과 같게), `note`(보고서에만 적고 전체 이관), `off`(찾지 않음).

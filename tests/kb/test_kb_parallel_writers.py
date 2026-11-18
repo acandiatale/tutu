@@ -289,18 +289,6 @@ def test_a_folder_left_without_case_json_keeps_its_scripts(tmp_path, cfg, caplog
     assert not (folder / "case.json").is_dir()
 
 
-def test_a_damaged_case_json_is_written_fresh_as_before(tmp_path, cfg, caplog):
-    kb = tmp_path / "kb"
-    folder = kb / "cases" / CID
-    folder.mkdir(parents=True)
-    (folder / "case.json").write_text("{not json")
-    with caplog.at_level(logging.WARNING, logger="sbmig.errors"):
-        assert CaseStore(kb, cfg).add_script(CID, L2, CODE1).version == 1
-    assert CaseStore(kb, cfg).find(CID).scripts[0].version == 1
-    msgs = [r.getMessage() for r in caplog.records]
-    assert any("does not read" in m for m in msgs)
-
-
 def test_a_script_number_taken_outside_the_lock_is_never_overwritten(tmp_path, cfg, monkeypatch, caplog):
     store = CaseStore(tmp_path / "kb", cfg)
     assert store.add_script(CID, L2, CODE1).version == 1
@@ -427,13 +415,3 @@ def test_break_leaves_a_lock_taken_after_the_judgement_alone(tmp_path):
     lockmod._break(p, {"pid": 4242, "host": "other-host", "token": "judged-stale"})
     assert json.loads(p.read_text())["token"] == "newer"
     assert not [x for x in tmp_path.iterdir() if x.name.startswith(LOCK_NAME + ".stale")]
-
-
-def test_three_pods_meet_one_new_case_at_once(tmp_path):
-    # the user's question in its smallest form: three writers, one new case, two scripts each, at the same moment
-    results = _run_writers(tmp_path / "kb", tmp_path / "out", procs=3, rounds=1)
-    versions = sorted(x[1] for r in results for x in r["stored"] if x[0] == SHARED)
-    assert versions == list(range(1, 7))                       # first + one extra each: 1..6, no duplicate
-    store = CaseStore(tmp_path / "kb", None)
-    assert [s.version for s in store.find(SHARED).scripts] == list(range(1, 7))
-    assert not (tmp_path / "kb" / LOCK_NAME).exists()

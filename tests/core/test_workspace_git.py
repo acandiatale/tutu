@@ -109,6 +109,16 @@ def _real_git():
         pytest.skip("git not installed")
 
 
+def test_git_calls_switch_off_automatic_maintenance(ws):
+    """Every commit started `git maintenance run --auto`: a run's repository is short-lived, and on the product's NFS
+    volume a background repack in the middle of a run is unwanted. Both settings reach the git process itself."""
+    _real_git()
+    (ws.root / "a.txt").write_text("hello\n", encoding="utf-8")
+    ws.git_init()
+    assert ws._git("config", "--get", "maintenance.auto").stdout.strip() == "false"
+    assert ws._git("config", "--get", "gc.auto").stdout.strip() == "0"
+
+
 def test_korean_file_names_are_listed_verbatim(ws):
     _real_git()
     (ws.root / "pom.xml").write_text("<project/>")
