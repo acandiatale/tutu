@@ -472,10 +472,10 @@ class Inventory(Record):
 K_DIRECT_VERSION = "direct_version"               # 의존성의 <version> 값
 K_PROPERTY_VERSION = "property_version"           # 프로젝트 pom의 속성 값
 K_OWN_MANAGEMENT_VERSION = "own_management_version"   # 프로젝트 <dependencyManagement>의 버전 값
-K_MANAGED_OVERRIDE = "managed_override"           # 간접 / 부모 / BOM 관리 버전. 루트 pom에 override를 넣고 늘 승인받는다
+K_MANAGED_OVERRIDE = "managed_override"           # 간접 / 부모 / BOM 관리 버전. pom에 override 항목을 넣는다
 K_PARENT_VERSION = "parent_version"               # <parent><version>
 K_BOM_VERSION = "bom_version"                     # import한 BOM의 <version>
-# 승인이 필요한 위험 표시 / risk flags = `remediation.always_approve` 값
+# 제안의 위험 표시 / risk flags. `remediation.always_approve`에 넣을 수 있는 값이다
 RISK_MAJOR, RISK_PARENT, RISK_BOM, RISK_MANAGED_OVERRIDE = "major", "parent", "bom", "managed_override"
 
 # 제안의 결정 상태 / decision states

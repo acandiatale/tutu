@@ -132,7 +132,7 @@ DM_POM = """<project>
 
 
 def test_classifier_override_flow_with_lower_case_ivas(tmp_path):
-    cfg = make_cfg()
+    cfg = make_cfg(always_approve=["managed_override"])         # approval switched on: the flow stops once
     state, paths = make_run(tmp_path, {"pom.xml": DM_POM})
     item = InventoryItem(ga="example:lib", version="2.2.0.RELEASE", reported_version="2.2.0.release",
                          origin=O_TRANSITIVE, finding_ids=["CVE-1"], patched_versions=["2.2.1.release"], modules=["."],

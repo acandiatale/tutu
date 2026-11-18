@@ -47,6 +47,7 @@ from .i18n import (
 from .models import (
     AWAITING_APPROVAL,
     AWAITING_CONFIRMATION,
+    D_AUTO,
     D_PENDING,
     D_REJECTED,
     E_INSERT,
@@ -366,7 +367,7 @@ def _with_count(step: str, count: int | None, unit: str = "건") -> str:
 
 def _next_steps(state: RemediationState, fx: "_Facts | None" = None) -> list[str]:
     """현재 상태에서 담당자가 할 일 목록을 만든다. ``fx``가 있으면 개수를 붙인다.
-    순서: 결과 ZIP 받기 -> 변경 승인 -> 사내 라이브러리 담당자에게 요청 -> 직접 확인 -> 나머지 사유 코드.
+    순서: 결과 ZIP 받기 -> 자동으로 적용한 변경 확인 -> 변경 승인 -> 사내 라이브러리 담당자에게 요청 -> 직접 확인 -> 나머지 사유 코드.
 
     The actions for this state, in a fixed order; counts when the report facts are given."""
     inhouse = [r for r in state.residuals if r.reason == R_INHOUSE_ARTIFACT]
@@ -382,6 +383,10 @@ def _next_steps(state: RemediationState, fx: "_Facts | None" = None) -> list[str
         # 실패, 중단, 확인 대기는 원인을 먼저 해결해야 다음 단계로 갈 수 있으므로 앞에 둔다
         out += others
         others = []
+    if fx is not None:
+        auto = _auto_risky_step(fx.committed)
+        if auto:
+            out.append(auto)
     pending = fx.pending if fx is not None else []
     if "pending_approval" in codes or pending:
         out.append(_with_count(_reason_text(state, "pending_approval")[1], len(pending), "건"))
@@ -399,6 +404,24 @@ def _next_steps(state: RemediationState, fx: "_Facts | None" = None) -> list[str
     if state.status == INTERRUPTED and not out:
         out.append("**이어서 진행하기** — 상태를 확인한 뒤 조치 화면에서 「이어서 진행」을 눌러 주세요.")
     return list(dict.fromkeys(out)) or ["**처리 기록 확인하기** — 「처리 기록」과 `remediation.log` 파일을 확인해 주세요."]
+
+
+_RISK_ORDER = ("major", "parent", "bom", "managed_override")
+
+
+def _auto_risky_step(committed: list[Proposal]) -> str:
+    """승인 없이 적용한 변경 가운데 주의 항목이 있으면 확인을 요청하는 할 일을 만든다. 없으면 빈 문자열을 반환한다.
+
+    The step for committed proposals with decision `auto` and a risk flag; one count per proposal, one per class."""
+    props = [p for p in committed if p.decision == D_AUTO and p.risks]
+    if not props:
+        return ""
+    kinds = [r for r in _RISK_ORDER if any(r in p.risks for p in props)]
+    kinds += sorted({r for p in props for r in p.risks} - set(_RISK_ORDER))
+    counts = ", ".join(f"{label(RISK_KO, r)} {sum(1 for p in props if r in p.risks)}건" for r in kinds)
+    return (f"**자동으로 적용한 변경 확인하기 ({len(props)}건)** — 승인 절차 없이 적용한 변경 가운데 주의가 필요한 "
+            f"항목입니다({counts}). 「조치 완료」 표의 「주의」 열에서 해당 라이브러리를 확인하고 애플리케이션 동작을 "
+            "점검해 주세요.")
 
 
 def _default_inhouse_message() -> str:
@@ -774,7 +797,11 @@ def _proposal_section(L: list[str], fx: _Facts, props: list[Proposal], *, pendin
 
     The proposal table and the notes under it. `managed_override` proposals with module sources or a module pom are
     grouped per (library, from, to): one table row, then one line per pom (entry, path). Others as one row each."""
+    # 조치 완료 표는 주의 항목이 있을 때만 주의 열을 넣는다. 없으면 표가 이전과 같다
+    risky_done = not pending and not skipped and any(p.risks for p in props)
     head = _PENDING_HEAD if pending else (_SKIPPED_HEAD if skipped else _DONE_HEAD)
+    if risky_done:
+        head = head[:-1] + ["주의"] + head[-1:]
     L.append("| " + " | ".join(head) + " |")
     L.append("|" + "---|" * len(head))
     units: list[list[Proposal]] = []
@@ -805,7 +832,7 @@ def _proposal_section(L: list[str], fx: _Facts, props: list[Proposal], *, pendin
             place = _place(p)
         cells = [fx.sev_cell(scores[id(u)]), f"`{_md_cell(p.ga)}`",
                  f"{_md_cell(p.from_version)} → {_md_cell(p.to_version)}", place]
-        if pending:
+        if pending or risky_done:
             risks = sorted({r for x in u for r in x.risks})
             cells.append(_md_cell(", ".join(label(RISK_KO, r) for r in risks) or "-"))
         cells.append(_md_cell(fx.cve_cell(p.ga, p.from_version, ids(u))))
@@ -824,7 +851,8 @@ def _proposal_section(L: list[str], fx: _Facts, props: list[Proposal], *, pendin
         if len(u) == 1:
             L.append(f"  - {_md_cell(_pom_line(p))}")
         else:
-            L.append("  - 수정할 pom:")
+            # 조치 완료에서는 이미 적용한 변경이므로 지난 일로 적는다
+            L.append("  - 수정한 pom:" if not pending and not skipped else "  - 수정할 pom:")
             L += [f"    - {_md_cell(_pom_line(x))}" for x in u]
         notes = list(dict.fromkeys(n for x in u for n in (_note_lines(x.note) if x.note else [])))
         if len(notes) == 1:

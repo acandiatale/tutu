@@ -116,7 +116,7 @@
 | `SBMIG_REVIEW__FIX_CRITICAL` | `true` | 구조 리뷰의 critical 을 자동 수정 |
 | `SBMIG_FLEET__MIN_FREE_GB` | `5` | 실행 전 디스크 여유 하한 |
 | `SBMIG_REMEDIATION__AFTER_MIGRATION` | **`true` (켜진 채 나감)**, 코드 기본 `false` | BUILD SUCCESS 뒤 같은 빌드 파드에서 취약점 조치를 이어 돈다(README §6). 웹 파드와 Job 파드가 같은 값을 받도록 `sbmig-env` 에 둔다 — 한쪽에만 있으면 환경 대조로 Job 이 멈춘다 |
-| `SBMIG_REMEDIATION__REQUIRE_APPROVAL` | `false` | `true` = 모든 버전 변경에 사람 승인 |
+| `SBMIG_REMEDIATION__REQUIRE_APPROVAL` | `false` | `false`(기본) = 모든 제안을 승인 없이 적용하고 어떤 실행도 승인 대기로 멈추지 않는다. `true` = 모든 제안이 사람 승인을 기다린다(바꾸면 웹 파드 재시작). 부류만 기다리게 하는 `remediation.always_approve` 는 env 키가 없고 이미지에 굽는 회사 yml 에만 적는다(README §6) |
 | `SBMIG_REMEDIATION__MODULE_OVERRIDES` | `true` | `false` = 모듈 pom에 버전 지정을 넣는 제안을 만들지 않는다(직접 확인 항목으로 남긴다). 81 틀에도 줄이 있어야 빌드 파드에 닿는다 |
 | `SBMIG_REMEDIATION__FAILED_CANDIDATE` | `include` | 빌드가 실패한 수정본도 `result.zip` 으로 낸다 / `discard` |
 | `SBMIG_REMEDIATION__IVAS_ANALYSIS_TIMEOUT_MINUTES` | `30` | IVAS 분석 한 번의 대기 한도(넘으면 검사 미완료 — 0건이 아니다) |

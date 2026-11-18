@@ -141,8 +141,10 @@ Main 이 `<run dir>/stop.request` 를 쓴다(저널 `stop_request_sent`). Worker
 `status()` 는 `parallel {slots, running, waiting}` 과 기다리는 실행의 `queue {position, ahead}` 를 준다(계약: `docs/INTERFACES.md` "v2.1z-ae").
 자리는 그 Job 이 끝났거나 사라진 것을 API 로 확인한 뒤에야 넘어간다(v2.1z-ad) — 결과 파일을 받았을 때도, 멈춤으로 지웠을 때도, 웹 쪽 오류로 실패했을 때도
 (그때는 우리 Job 을 먼저 지운다). 예외는 서버 종료(`state.json` 을 그대로 두어 다음 Main 이 이어서 지켜본다)와 남의 Job(건드리지 않는다)뿐이다.
-취약점 조치(remediation)는 이관이 BUILD SUCCESS 로 끝난 **같은 빌드 파드** 안에서 이어 돌므로 따로 자리를 잡지 않는다. 승인 뒤 재개는 같은 Job 틀·
-같은 실행 폴더로 새 빌드 파드를 띄우고(Worker 동작 `remediation-resume`), 업로드와 같은 FIFO 줄에서 자리를 기다린다(`agent-doc/11-remediations.md` §1.1).
+취약점 조치(remediation)는 이관이 BUILD SUCCESS 로 끝난 **같은 빌드 파드** 안에서 이어 돌므로 따로 자리를 잡지 않는다. 기본 설정은 모든 제안을 승인 없이
+적용하므로 조치는 보통 그 파드에서 끝난다. 업로드 결과 확인 대기(`AWAITING_CONFIRMATION`), 시간 한도(`chain_budget`)나 멈춤, 승인을 켠 때의 승인 대기
+뒤 재개는 같은 Job 틀·같은 실행 폴더로 새 빌드 파드를 띄우고(Worker 동작 `remediation-resume`), 업로드와 같은 FIFO 줄에서 자리를 기다린다
+(`agent-doc/11-remediations.md` §1.1).
 
 ## 9. 디스패처를 두 가지 Job 에 쓰는 법 (포크하지 않기)
 

@@ -856,3 +856,24 @@ asked to tighten it ("응 한번 조여줘봐!"): limits that hold when a brief 
 | Working rules | scratch tests live under `out/scratch/<topic>/` so the root conftest applies; a pytest run without the `bounded:` header line has no wall; anything else goes through the wrapper; a run that timed out or was stopped is not started again before looking at what it wrote | `CLAUDE.md` "How to work here" | done |
 | Tests | `tests/devtools` (41: the wrapper end to end with small caps, the decision logic with fakes, the suite guard in a throwaway project); offline suite 5,713 passed, 62 deselected (its basetemp held about 360 MB) | `tests/devtools/` | done |
 | Known limits | a test outside the repository run without the wrapper has no wall; the basetemp is read through pytest's private `_tmp_path_factory._basetemp` (a rename would be caught by `test_growth_cap_stops_the_process_with_125`); no per-test time cap inside pytest (the wrapper's `--seconds` covers a whole run); the file-size cap does not exist on Windows (the header says so) | — | open |
+
+## Status — 2026-11-18, no proposal waits for approval (v2.1z-ar)
+
+Relayed from the project teams: "취약점진단 승인 없애고 그냥 쭉 다 일괄 승인해서 진행해서 결과만 알려 달래! 여기 빌드파드
+제한이 3개니까 이쪽까지 승인까지 하긴 힘들다고!" An approval ended the build pod and its resume took a second pod out of
+three. The shipped configuration now applies every proposal on its own; approval stays in the code as an opt-in.
+
+| Item | Deliverable | Where | Status |
+|---|---|---|---|
+| Defaults and the one rule | `remediation.always_approve` defaults to `[]`; `requires_approval = require_approval or (risks ∩ always_approve)`; the planner's fixed rule "an override entry always waits" and its note sentence are gone | `sbmig/core/config.py`, `config/default.yml`, `sbmig/remediations/planner.py` | done |
+| One pod | with the shipped configuration no run saves `AWAITING_APPROVAL`; a chained remediation ends in the migration's build pod (a further pod only after a stop, `chain_budget` or `AWAITING_CONFIRMATION`) | `tests/remediations/test_no_approval.py` | done |
+| Runs left waiting by an earlier version | one press of the page's apply button: the resume plans again under the new policy hash, unchecked proposals stay rejected, the rest is applied, no second wait | `tests/remediations/test_no_approval.py` | done |
+| Report | 조치 완료 gets the column 「주의」 when an applied change carries a risk flag (unchanged bytes without one); 해야 할 일 gets 「자동으로 적용한 변경 확인하기 (N건)」 for changes applied with decision `auto` and a flag; the list under a grouped library reads "수정한 pom" there | `sbmig/remediations/report.py` | done |
+| Page | the rail note no longer speaks of approved changes; the approval screen is unchanged and appears only with approval switched on | `sbmig/web/static/index.html` | done |
+| Switching approval on | `SBMIG_REMEDIATION__REQUIRE_APPROVAL: "true"` in `sbmig-env` (every proposal) or `remediation.always_approve` in the company yml (single classes; no env key, the Job template passes none) | `deploy/README.md` §6, `deploy/ENV.md`, `agent-doc/11-remediations.md` | done |
+| Operator text | the approval rule, how to read 「주의」 and the new step, the passage for an existing installation | `agent-doc/11-remediations.md`, `agent-doc/12-remediation-report.md`, `deploy/README.md`, `docs/RUNBOOK.md`, `docs/ARCHITECTURE.md` | done |
+| Disk walls: a faked `shutil.disk_usage` | a product test fakes `shutil.disk_usage` ("disk full"); the watch thread of the same pytest run could read the fake and stop the run with exit 125. The probe is bound when `scripts/bounded.py` is loaded | `scripts/bounded.py`, `tests/devtools/test_bounded.py` | done |
+| A timing race in a test | the pod-pending test read the journal right after the status it polled for; it waits for the journal line now | `tests/web/test_pod_not_started.py` | done |
+| Tests | offline suite 5,736 passed, 62 deselected | — | done |
+| Known limits | a change set that breaks the candidate build fails as a whole (`candidate_build_failed`; the failed candidate is delivered and marked): nothing is retried without single proposals, so one breaking major change costs the safe changes of that round too. A deployment whose `sbmig-env` has `SBMIG_REMEDIATION__REQUIRE_APPROVAL: "true"` keeps approval on | — | open |
+| Not seen yet | an unattended remediation on the company cluster (how often a major change breaks the build, whether the teams read 「주의」) | — | open |

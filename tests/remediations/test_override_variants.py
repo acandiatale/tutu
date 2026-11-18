@@ -12,7 +12,7 @@ from sbmig.remediations import apply as A
 from sbmig.remediations import planner as P
 from sbmig.remediations.models import (
     D_APPROVED,
-    D_PENDING,
+    D_AUTO,
     E_INSERT,
     K_MANAGED_OVERRIDE,
     K_OWN_MANAGEMENT_VERSION,
@@ -199,7 +199,7 @@ def test_plain_and_classifier_are_two_independent_proposals(tmp_path):
     assert not plan.residuals
     plain, cls = plan.proposals
     assert [p.kind for p in plan.proposals] == [K_MANAGED_OVERRIDE] * 2
-    assert all(p.requires_approval and p.decision == D_PENDING for p in plan.proposals)
+    assert all(not p.requires_approval and p.decision == D_AUTO for p in plan.proposals)
     assert A.override_variant(plain) == "" and A.override_variant(cls) == "jar/jakarta"
     assert plain.modules == ["web"] and cls.modules == ["api"]
     # the plain jar entry is the one a plain-only item gets

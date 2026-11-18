@@ -392,6 +392,19 @@ def test_free_mb_of_a_missing_path_uses_its_ancestor(tmp_path):
     assert bounded.free_mb(tmp_path) >= 0
 
 
+def test_free_mb_ignores_a_faked_shutil_disk_usage(tmp_path, monkeypatch):
+    # a product test may fake shutil.disk_usage ("disk full"); the watch of that pytest run must keep reading the disk
+    import shutil
+    from collections import namedtuple
+
+    real = bounded.free_mb(tmp_path)
+    usage = namedtuple("usage", "total used free")
+    monkeypatch.setattr(shutil, "disk_usage", lambda path: usage(10 ** 9, 10 ** 9, 0))
+    assert shutil.disk_usage(tmp_path).free == 0
+    got = bounded.free_mb(tmp_path)
+    assert got > 0 and abs(got - real) <= 64        # the real figure, allowing for other writers on the machine
+
+
 # ------------------------------------------------------------------------------------------------- DiskWatch
 
 class FakeClock:

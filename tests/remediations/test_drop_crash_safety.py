@@ -73,7 +73,7 @@ def _dropped_id(paths) -> str:
 
 @pytest.mark.parametrize("where", ["one_file", "copied", "applied", "rebuild", "plan_write"])
 def test_a_kill_inside_the_drop_path_resumes_into_a_consistent_round(tmp_path, monkeypatch, where):
-    c = make_cfg(max_rounds=1)
+    c = make_cfg(always_approve=["managed_override"], max_rounds=1)
     state, paths = make_run(tmp_path, company_files(back_body=DM_SECTION))
     calls = {"pkg": 0, "copy": 0, "apply": 0, "plan": 0}
 

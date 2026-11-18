@@ -165,7 +165,7 @@ def test_version_managed_by_the_company_parent_is_the_architecture_teams(tmp_pat
     # with a server pin for the parent: the parent-version proposal (the architecture team's published fix)
     _inv, plan = _run(p, [_f("org.example:managed", "1.0")], resolved, _cfg(pins={COMP: "4.0.1"}))
     (prop,) = plan.proposals
-    assert prop.kind == K_PARENT_VERSION and prop.ga == COMP and prop.to_version == "4.0.1" and prop.requires_approval
+    assert prop.kind == K_PARENT_VERSION and prop.ga == COMP and prop.to_version == "4.0.1" and not prop.requires_approval
     assert not plan.residuals
 
 

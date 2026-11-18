@@ -118,9 +118,14 @@ def _existing(path: Path) -> Path:
     return p
 
 
+# The real probe, bound when this file is loaded: a test that replaces ``shutil.disk_usage`` with a fake (to test a
+# "disk full" answer of the product) must not make the watch of its own pytest run see a full disk and stop the run.
+_disk_usage = shutil.disk_usage
+
+
 def free_mb(path) -> int:
     """Free space in MiB of the volume holding ``path`` (its nearest existing ancestor)."""
-    return int(shutil.disk_usage(_existing(Path(path))).free // MIB)
+    return int(_disk_usage(_existing(Path(path))).free // MIB)
 
 
 def tree_mb(path, *, stop_above_mb: int | None = None) -> int:

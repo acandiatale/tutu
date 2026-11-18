@@ -4026,8 +4026,8 @@ things did not — "루트 pom을 상속하지 않는 모듈이라는게 뭔지 
   classifier does not govern a dependency declared with one. A `managed_override` entry carries the resolved dependency's `<type>`
   (when not `jar`) and `<classifier>`: `<dependency><groupId/><artifactId/><version/>[<type/>][<classifier/>]</dependency>` — ONE
   proposal per management key (g:a + type + classifier) that resolves at the vulnerable version, each its own insert at the
-  same anchor, approved or rejected on its own; still one fixed shape, still kind `managed_override`, still always waiting
-  for approval; such a proposal's note says why the entry names the type / classifier; the plain jar's entry text is unchanged byte for byte. The existing-entry check, the
+  same anchor, a proposal of its own (decided on its own when approval is switched on, v2.1z-ar); still one fixed shape, still
+  kind `managed_override`; such a proposal's note says why the entry names the type / classifier; the plain jar's entry text is unchanged byte for byte. The existing-entry check, the
   "declared version wins" check and the resolution check after the build compare the full key. `apply.locate_override` takes the
   target pom as a parameter (default the root pom). The residual reason `variant` remains for what still cannot be overridden.
 - **Report (`report.md`, Korean).** Under every table of 사내 라이브러리에서 발생한 취약점 and 직접 확인이 필요한 취약점 a list
@@ -4053,12 +4053,12 @@ things did not — "루트 pom을 상속하지 않는 모듈이라는게 뭔지 
   "들어온 경로", 3절, 5절), `agent-doc/11-remediations.md`. Tests: `tests/remediations/test_report_sources.py`, `test_report.py`,
   `test_i18n.py`.
 
-## v2.1z-an — override proposals in a module's own pom, chosen by the owners
+## v2.1z-an — override proposals in a module's own pom
 
 In the company layout the modules inherit the company parent poms, not the project's root pom, so an override entry in the
-root pom reaches none of them. The user, after asking which cases a module-level proposal covers: "일단 본인들이 선택하도록
-만들자. 취약점 해결이니까 선택해서 박을지 아니면 검토 후에 진행할지는 본인들 선택으로 할 수 있도록 해야할것 같아!" — the
-tool proposes the entry in the module's own pom, and the project's owners choose on the approval screen.
+root pom reaches none of them. The tool proposes the entry in the module's own pom. Whether such a proposal is applied on its
+own or waits for the owners' choice on the approval screen follows the one approval rule (v2.1z-ar: applied on its own with
+the shipped configuration).
 
 - **Which libraries.** Exactly those that reach the override route (`planner._override_change`): origin transitive or
   parent- / BOM-managed, not in-house (in-house items never get there), no editable version text. Per module of the item: a
@@ -4071,11 +4071,11 @@ tool proposes the entry in the module's own pom, and the project's owners choose
   the dependency in the module's in-project chain → residual "a declared version wins"; a pom that cannot be read or edited
   safely (DTD / entities, no safe insertion line) → residual `cannot place …` for that module only ("the pom.xml of module
   `<m>` is not readable"). The target version and its evidence are chosen once per item.
-- **Always the owners' choice.** Kind and risk `managed_override` (+ `major` when it applies): `requires_approval` whatever
-  `remediation.require_approval` / `always_approve` say. The run saves `AWAITING_APPROVAL`; the owners decide at once or after
-  their own review (the state waits; the resume runs in a new build pod as before). Checked = applied; unchecked = `rejected`:
-  not applied, not proposed again within that run (residual `rejected_proposals`, "… was rejected in an earlier decision"), and
-  proposed again by a later run.
+- **Approval.** Kind and risk `managed_override` (+ `major` when it applies); `requires_approval` by the rule of v2.1z-ar.
+  When approval is switched on for that class the run saves `AWAITING_APPROVAL`; the owners decide at once or after their
+  own review (the state waits; the resume runs in a new build pod). Checked = applied; unchecked = `rejected`: not applied,
+  not proposed again within that run (residual `rejected_proposals`, "… was rejected in an earlier decision"), and proposed
+  again by a later run.
 - **Apply and verify.** `apply` inserts the fixed-shape entry (or the section holding it) into any project pom the plan names —
   never a pom outside the project; the structure check after applying runs per target pom. `verify_resolution` requires
   from → to in each proposal's governed modules only. An inserted entry that did not change the resolved version (a
@@ -4097,7 +4097,7 @@ tool proposes the entry in the module's own pom, and the project's owners choose
   root's reach leaves the residual "module(s) … do not inherit from the root pom.xml" and the plan is byte-identical to the one
   made before this increment. The switch enters `policy_hash` only when `false` (a default configuration keeps its hash); a root
   proposal keeps its `proposal_hash`.
-- **Report (`report.md`).** 승인 대기: `managed_override` proposals that carry module sources or edit a module pom are grouped per
+- **Report (`report.md`).** 조치 완료 and 승인 대기: `managed_override` proposals that carry module sources or edit a module pom are grouped per
   (library, from, to) — one table row whose "수정할 곳" lists every pom ("최상위 pom.xml" for the root), then under the library one
   line per pom: "`app-back/pom.xml`에 버전 지정 추가 (제안 `p-1-2`) · 항목 `g:a:2.1` classifier `jakarta` · `app-back` 모듈: … 경로로
   가져옴". A root proposal of an older state without sources keeps its one-row form. The result block and the first step of
@@ -4347,11 +4347,56 @@ RBAC: `deploy/k8s/45-web-rbac.yaml` grants `events: list`; the kubeconfig model'
 Operator text: `deploy/README.md` §3 "동시에 여러 건" (the Events table, how to end such a run, ReadWriteMany), `deploy/ENV.md`.
 Tests: `tests/web/test_pod_not_started.py`; `tests/deploy/test_manifests.py` (the RBAC line).
 
-## remediations (취약점 조치) — `/api/remediations`, IVAS, version-text fixes + approved managed overrides (2026-11-11)
+## v2.1z-ar — no proposal waits for approval unless an operator switches it on
+
+The project teams asked for the result only (the user, 2026-11-18): "취약점진단 승인 없애고 그냥 쭉 다 일괄 승인해서 진행해서 결과만
+알려 달래! 여기 빌드파드 제한이 3개니까 이쪽까지 승인까지 하긴 힘들다고!" An approval ends the build pod and its resume takes a
+second pod out of three, so the shipped configuration applies every proposal on its own.
+
+- **Defaults.** `remediation.require_approval: false` (as before) and `remediation.always_approve: []` (was `[major, parent,
+  bom, managed_override]`), in `RemediationConfig` and in `config/default.yml`.
+- **One rule.** `Proposal.requires_approval = require_approval or (risks ∩ always_approve ≠ ∅)`; `decision` is `pending` when
+  it is true, else `auto`. The planner's fixed rule "a `managed_override` proposal always waits" is removed: an override entry
+  (root pom or module pom, v2.1z-an) waits only when `require_approval` is true or one of its risk flags (`managed_override`,
+  plus `major` when it crosses a major) is listed. The note sentence `always needs approval: an inserted <dependencyManagement>
+  entry is never applied automatically` is no longer written (`planner.OVERRIDE_APPROVAL` is gone; `i18n` keeps its rule
+  `override_approval`, so a plan saved earlier still reads in Korean).
+- **With the shipped configuration** no run saves `AWAITING_APPROVAL`: `plan → apply → build → freeze_delivery → rescan →
+  evaluate → report`, every round, without a stop. A chained remediation ends in the build pod that ran the migration; a
+  further pod is needed only after a stop, the time budget (`chain_budget`) or `AWAITING_CONFIRMATION`.
+- **Switching approval on.** `require_approval: true` = every proposal waits (`SBMIG_REMEDIATION__REQUIRE_APPROVAL: "true"` in
+  `sbmig-env`, the key both pods already read; restart the web pod). Single classes: `remediation.always_approve` in the
+  company yml baked into the image, e.g. `[major, parent, bom, managed_override]` = the classes that waited before this
+  increment (no env line: the Job template `81` passes no `…__ALWAYS_APPROVE` key, and a key only the web pod has makes the
+  Worker's environment comparison refuse the Job). Everything under "Approval" below — decisions, hashes, the page's checkbox
+  list, the resume in a new pod — then works unchanged.
+- **What stands between a proposal and the delivery without a reviewer** (all as before): the isolated candidate, the text-only
+  check, the candidate build (a change set that breaks it fails as a whole: `FAILED candidate_build_failed`, delivered or not
+  by `failed_candidate`; nothing is retried without single proposals), `verify_resolution` (an override entry without effect is
+  removed again, v2.1z-an), the rescan of the frozen delivery ZIP.
+- **Policy hash.** Its inputs are unchanged, so a default configuration gets a new hash. A run an earlier version saved in
+  `AWAITING_APPROVAL`: the page's decisions are accepted as before (chained: checked against the hash in `state.json`); the
+  resume then plans again (`policy_changed`, `approvals_dropped`, `POLICY_CHANGED_NOTE`), the proposals the owners left
+  unchecked stay rejected for that run, every other one is applied.
+- **Report (`report.md`).** 조치 완료: when at least one committed proposal carries a risk flag, the table has the column 「주의」
+  before 「해결된 취약점」 with the labels 승인 대기 uses (메이저 버전 변경 / 부모 pom 변경 / BOM 변경 / dependencyManagement 항목 추가;
+  `-` for a row without a flag; a grouped row shows the union). With no flag at all the table is byte-identical to the earlier
+  one. 해야 할 일 gets the step "**자동으로 적용한 변경 확인하기 (N건)**" when N ≥ 1 committed proposals have decision `auto` and a
+  risk flag — a proposal a person approved is not counted. Its place: after the result-ZIP step and after the steps a failed /
+  stopped / waiting-for-confirmation state puts first, before the approval, in-house and manual-review steps. It names each
+  class with its count (a proposal with two flags counts in both classes, once in N) and points to the 「주의」 column. `report.json` is unchanged (`rounds[].plan.proposals[]`
+  already carry `risks` and `decision`).
+- **Page.** No new element: with nothing pending the checkbox list is never shown. The rail note of the remediation step no
+  longer speaks of approved changes.
+- Tests: `tests/remediations/test_planner.py`, `test_module_overrides.py`, `test_override_variants.py`, `test_integration.py`,
+  `test_report.py`, `test_report_module_overrides.py`; operator text `agent-doc/11-remediations.md`,
+  `agent-doc/12-remediation-report.md`, `deploy/ENV.md`.
+
+## remediations (취약점 조치) — `/api/remediations`, IVAS, version-text fixes + managed overrides (2026-11-11)
 
 A second, independent flow beside the migration: an uploaded Maven project ZIP is built as it is (baseline), scanned by
 **IVAS** (the company's vulnerability scanner), the vulnerable libraries whose version is written in the project's own poms
-get a new **version text** on an isolated candidate copy (transitive / parent- / BOM-managed ones get one approved
+get a new **version text** on an isolated candidate copy (transitive / parent- / BOM-managed ones get one
 `<dependencyManagement>` override entry in the root pom, or in the module's own pom for a module that does not inherit from
 it (v2.1z-an), instead — the single exception, below), the candidate is built and
 verified, the frozen delivery ZIP is rescanned, and a report + `result.zip` come out. Package `sbmig/remediations/` (package map in its `__init__.py`); the
@@ -4383,8 +4428,8 @@ It never touches the migration KB; since the later decision of the same day it i
   node. `SBMIG-RESULT … remediation=<STATUS|skipped>`. Skipped (journal `remediation_skipped`, names only) when disabled or not
   ready: readiness on this path = the three IVAS values + Maven readiness; `remediation.trusted_projects` is **not** required here
   (the migration already built the project) — it gates the standalone upload only.
-- **Waiting states**: a build pod cannot wait for a human. `AWAITING_APPROVAL` / `AWAITING_CONFIRMATION` (and `STOPPED`) are saved
-  and the pod ends.
+- **Waiting states**: a build pod cannot wait for a human. `AWAITING_APPROVAL` (only with approval switched on, v2.1z-ar) /
+  `AWAITING_CONFIRMATION` (and `STOPPED`) are saved and the pod ends.
 - **Resume in a NEW build pod** (Wave 4): `POST …/resume` (or `POST …/approvals` with `"resume": true`) on a chained remediation in a
   Job mode dispatches a new Job from the same template into the same run dir, Worker action `remediation-resume`, which calls
   `chain.resume(run_dir, cfg, …)`. It takes one of the `SBMIG_JOB_MAX_PARALLEL` slots and waits in the same FIFO line as uploads.
@@ -4419,7 +4464,7 @@ It never touches the migration KB; since the later decision of the same day it i
 
 ### Hard rules (company, all bind)
 
-- Only **approved Maven version text** is changed. Application sources, the project structure and every non-pom file are
+- Only **Maven version text** is changed, to a version the server policy or an approved repository names. Application sources, the project structure and every non-pom file are
   never modified; the delivery ZIP has exactly the original's file set, only version text inside existing `pom.xml` files differs.
   A `replace` edit (`TextEdit.op="replace"`, the default) is one line of one pom, `old` → `new`, both plain version strings (no
   tag, no `${…}`); bytes outside the replaced span (encoding, BOM, CRLF, final newline) are preserved.
@@ -4430,8 +4475,8 @@ It never touches the migration KB; since the later decision of the same day it i
   `<dependencies>`, else `<build>`, else `</project>`). It is a `TextEdit` with `op="insert"`, `old=""`, `line` (insert before),
   `anchor` (that line's current stripped text, re-checked when applied) and `override` (`{groupId, artifactId, version[, type][, classifier]}`);
   `new` must equal exactly what `apply.render_override` produces from `override` (indentation copied from sibling entries, the
-  file's line ending) — no other XML can be inserted. Such a proposal **always waits for approval**, whatever
-  `require_approval` and `always_approve` say. `verify_text_only` refuses a candidate with any other difference: untouched files
+  file's line ending) — no other XML can be inserted. Whether such a proposal waits for approval follows
+  `require_approval` and `always_approve` like every other proposal (v2.1z-ar). `verify_text_only` refuses a candidate with any other difference: untouched files
   byte-identical, edited poms equal to the original with exactly the planned replaces / inserts applied (inserts before the same
   line in proposal-id order; two whole sections at one place become one section), the XML structure grown by exactly the
   planned override elements.
@@ -4483,7 +4528,7 @@ Chained (build pod): `<migration run dir>/remediation/`. Standalone (in-process 
 | Status | Meaning | Next |
 |---|---|---|
 | `QUEUED` / `RUNNING` | accepted, waiting for / held by the worker thread | stop → `STOPPED` at the next boundary |
-| `AWAITING_APPROVAL` | proposals of the current round are `pending` | `GET …/proposals` → `POST …/approvals` → `POST …/resume` |
+| `AWAITING_APPROVAL` | proposals of the current round are `pending` (only with approval switched on, v2.1z-ar) | `GET …/proposals` → `POST …/approvals` → `POST …/resume` |
 | `AWAITING_CONFIRMATION` | an IVAS upload was sent but its outcome is unknown (`upload_uncertain`) | operator checks IVAS → `resume` with `confirm` |
 | `STOPPED` | a stop was honoured at a boundary | `resume` |
 | `INTERRUPTED` | the server went down while the job was QUEUED / RUNNING | explicit `resume` only |
@@ -4578,7 +4623,7 @@ before every node and inside builds / IVAS polling.
 | `baseline_scan` | original ZIP sha256 re-checked; IVAS scan of `original/source.zip` | actionable findings → `inventory`; none (or only `ignore_actions` codes) → delivery = byte copy of the original, `evaluate`; incomplete → `INCOMPLETE scan_incomplete`; uncertain upload → `AWAITING_CONFIRMATION` |
 | `inventory` | `dependency:tree` of the before-tree; findings → `Inventory` | `plan`; resolution / inventory incomplete → `INCOMPLETE manual_review` |
 | `plan` | proposals + residuals, approval classes, hashes; a plan whose tree / policy hash no longer matches is kept as `plan.stale.json` and re-made | pending → `AWAITING_APPROVAL`; something to apply → `apply`; nothing → `evaluate` |
-| `apply` | copy `accepted/` → candidate, apply auto + approved edits, write `candidate.patch`, text-only check | `build`; violation → `FAILED text_only_violation`; nothing applied → `evaluate` |
+| `apply` | copy `accepted/` → candidate, apply the `auto` and `approved` edits, write `candidate.patch`, text-only check | `build`; violation → `FAILED text_only_violation`; nothing applied → `evaluate` |
 | `build` | `package` the candidate, resolve again, list packaged jars, `verify_resolution`; then commit into `accepted/` | `freeze_delivery`; build failed → `FAILED candidate_build_failed` (with `include` the failed candidate is frozen as `result.zip` first, not rescanned); a governed module (or its artifact) not at the planned version → `FAILED resolution_mismatch` (never delivered) |
 | `freeze_delivery` | deterministic `delivery/result.zip` from `accepted/` (manifest paths only) | `rescan` |
 | `rescan` | delivery sha256 re-checked; IVAS scan of the same bytes (`final-r<n>`) | `evaluate`; incomplete → `INCOMPLETE scan_incomplete`; sha differs → `FAILED zip_hash_mismatch`; uncertain → `AWAITING_CONFIRMATION` |
@@ -4621,12 +4666,11 @@ User decision 2026-11-11 (after comparing with the company's older implementatio
 
 ### Approval
 
-`remediation.require_approval` defaults to **false**. What is then applied without approval: a proposal of kind
-`direct_version`, `property_version` or `own_management_version` (the version text sits in the project's own poms) whose target
-stays **within the same major** version. Always waiting for approval regardless of `require_approval`: every proposal carrying a
-risk flag listed in `remediation.always_approve` — shipped: `major` (major change), `parent` (`<parent><version>`), `bom` (an
-imported BOM's version), `managed_override` — and, as a fixed rule in the planner, **every `managed_override` proposal** even
-when an operator removes `managed_override` from `always_approve` (an XML insertion is never automatic). Parent / BOM version
+`remediation.require_approval` defaults to **false** and `remediation.always_approve` to **`[]`**: with the shipped
+configuration every proposal is applied without approval and no run waits (v2.1z-ar). A proposal waits for approval when
+`require_approval` is true, or when it carries a risk flag listed in `always_approve` — the flags are `major` (major change),
+`parent` (`<parent><version>`), `bom` (an imported BOM's version) and `managed_override` (an inserted
+`<dependencyManagement>` entry). There is no class that waits whatever the configuration says. Parent / BOM version
 changes are proposed only when the server pins that parent / BOM itself in `policy.pins` (a pinned manager takes the
 `parent_version` / `bom_version` route, never an override).
 
@@ -4644,12 +4688,12 @@ not inherit from the root pom and `remediation.module_overrides` is false; a mod
 no safe insertion line (the anchor tag not on its own line, e.g. single-line XML; more than one `<dependencyManagement>`); the
 root pom is unreadable. The proposal `note` states what the entry pins (the transitive chain or the manager) and always says that
 later parent / BOM / direct-dependency upgrades will NOT move this version any more and that the owners must remove the override
-when those catch up, and that it always needs approval; `report.md` shows every proposal note under the proposals table.
+when those catch up; `report.md` shows every proposal note under the proposals table.
 Never proposed, always residual / manual review: `plugin`, `vendored`, `unmapped`, `policy.deny` matches, majors when
-`policy.allow_major` is false. A `property_version` proposal notes that the property may govern other artifacts; it is still
-automatic when same-major. With `require_approval: true` every proposal waits. **A production deployment that needs human approval of every
-change must set `SBMIG_REMEDIATION__REQUIRE_APPROVAL=true` (or `remediation.require_approval: true` in the company yml)
-explicitly** — the shipped default applies same-major own-pom changes on its own.
+`policy.allow_major` is false. A `property_version` proposal notes that the property may govern other artifacts. With
+`require_approval: true` every proposal waits. **A deployment that needs human approval must switch it on explicitly**
+(`SBMIG_REMEDIATION__REQUIRE_APPROVAL=true` or `remediation.require_approval: true` in the company yml for every change;
+`always_approve` for single classes) — the shipped default applies every proposal on its own.
 
 A decision is accepted only when the **proposal hash, the source tree hash, the policy hash and the diff** all equal the stored
 proposal's, the stored proposal still matches its own hash, the current `accepted/` tree hash and policy hash (not stale), it is
@@ -4701,7 +4745,7 @@ Precedence as for every sbmig key: `config/default.yml` → the company yml (`ar
 built on this server — Maven runs the project's plugin code, this is not a sandbox; default **false** = nothing is accepted,
 readiness names it; set `SBMIG_REMEDIATION__TRUSTED_PROJECTS=true` explicitly), `max_upload_mb`, `max_entries`, `max_unpacked_mb`, `max_entry_mb`,
 `max_compression_ratio` (intake limits; the ratio applies to entries ≥ 1 MiB unpacked), `require_approval` (default false),
-`always_approve` (default `[major, parent, bom, managed_override]`; `managed_override` proposals wait even if it is removed),
+`always_approve` (default `[]`; the classes that wait although `require_approval` is false, v2.1z-ar),
 `max_rounds` (3), `failed_candidate` (`include` default | `discard`, see "Failed candidate"), `ignore_actions` (default `[]`,
 see "IVAS action codes"; part of the policy hash), `inhouse_groups` (default `[mandatory, optional, parents]`; the resolved keys are
 part of the policy hash) and `inhouse_message` (the sentence the report puts over the in-house section), `severity_red` / `severity_orange` /
@@ -4797,8 +4841,8 @@ Symlinks are always refused; a `settings.xml` inside the project is recorded and
 ### Open questions for the company
 
 Answered by the user (2026-11-11), no longer open: the failed-candidate policy (`include`, `discard` kept as an option); which
-classes need approval (shipped `always_approve`, `managed_override` always); the multipart file field (`file`); the analysis id
-field (`lbrdrAnlId`, else `analysisId`); transitive / managed findings (approved override entries in the root pom, or in a module's own pom since v2.1z-an); the meaning
+classes need approval (none: the project teams want the result only, v2.1z-ar); the multipart file field (`file`); the analysis id
+field (`lbrdrAnlId`, else `analysisId`); transitive / managed findings (override entries in the root pom, or in a module's own pom since v2.1z-an); the meaning
 of the action codes (`actionDivCd`, table above); several logins / tokens at once (they work); whether PC / IG are left out (no:
 `ignore_actions` is empty by default, like the existing client).
 
@@ -4811,8 +4855,8 @@ of the action codes (`actionDivCd`, table above); several logins / tokens at onc
 2. IVAS: how an operator checks whether an uncertain upload arrived (search by project name?), the token lifetime, rate limits /
    concurrent analyses per account, whether one IVAS project per scan (`<prefix>-<id>-<label>`) is acceptable, the internal CA.
 3. Which repository is "the approved internal repository" for version evidence, and who owns `remediation.policy` (pins / deny).
-4. Approval in production: `require_approval: true`? Who may approve (`by` is free text behind the TokenGuard)?
-5. Managed overrides: may two approved overrides share one newly created `<dependencyManagement>` section in one round (today:
+4. When approval is switched on: who may approve (`by` is free text behind the TokenGuard)?
+5. Managed overrides: may two overrides share one newly created `<dependencyManagement>` section in one round (today:
    yes — both inserts target the same line and become one section holding both entries in proposal-id order)? Is the inserted
    indentation style (copied from the sibling entries, else the closing tag + one indentation step of the file) acceptable? May
    sbmig later learn which parent / BOM version fixes a finding (so the override can be dropped)?

@@ -253,7 +253,7 @@ Then the final build again, the report (Handover first, "Structure review", fix 
   commits happen in the main session. Per round: append a "Status" table to `docs/PLAN.md`, update
   `docs/INTERFACES.md` on contract changes, add a fixture + `expected.json` (+ `replay/`) for every new scenario.
 - Setup: `uv venv && source .venv/bin/activate && uv pip install -e ".[dev]"` (plain `pip install -e ".[dev]"` works too).
-- Fast check (Python only, ~13 min): `python -m pytest -m "not integration"` → ≈ 5,710 passed, ≈ 62 deselected (2026-11-17)
+- Fast check (Python only, ~13 min): `python -m pytest -m "not integration"` → ≈ 5,740 passed, ≈ 62 deselected (2026-11-18)
   (`-q` on top of the `-q` in pyproject hides the summary line). Until 2026-11-12 `tests/build` (381 tests) was silently
   left out of every root-level run — pytest skips a directory named `build` by default; `norecursedirs` in pyproject now
   keeps it in. When a total does not grow by the number of tests added, compare per-file counts (`--collect-only -q`).
@@ -424,7 +424,7 @@ Then the final build again, the report (Handover first, "Structure review", fix 
   Job modes: it serves status / proposals / approvals / files for chained runs (`kind: chained`), the page shows a `취약점 조치` stage
   and a result block with 승인 / 거절 buttons; the standalone ZIP upload (`POST /api/remediations`, worker thread, own Maven repository
   `<build.local_repo>-remediation`, needs `trusted_projects`) works in `in-process` mode only (409 `not_available` in Job modes).
-  A build pod cannot wait for a human: it saves `AWAITING_APPROVAL` / `AWAITING_CONFIRMATION` (or `STOPPED` reason `chain_budget` after
+  A build pod cannot wait for a human: it saves `AWAITING_APPROVAL` (only when approval is switched on, v2.1z-ar) / `AWAITING_CONFIRMATION` (or `STOPPED` reason `chain_budget` after
   `remediation.chain_budget_minutes`, 90) and ends. **Resume = a NEW build pod** (same evening): `RunManager.resume_remediation` records
   the attempt in its own `control/remediation-resume.json` (action `remediation-resume`, intent before create, env pins, slot), takes a
   turn in the same FIFO line / slots as uploads, creates Job `<migration job>-rem<attempt>` with `SBMIG_WORKER_ACTION`; the Worker runs
@@ -441,11 +441,11 @@ Then the final build again, the report (Handover first, "Structure review", fix 
   (`nonzero` relaxes it; the older implementation compares the same way).
   A matched-files component id may contain `|` (`11560|934982`), sent as one encoded path segment. Flow: source ZIP → `baseline_build → baseline_scan → inventory → plan →
   apply → build → freeze_delivery → rescan → evaluate → report` with the company's scanner **IVAS** (LabradorLabs; env
-  `IVAS_BASE_URL` / `IVAS_USER_ID` / `IVAS_PASSWORD`, Secret only). Hard rules: only approved Maven **version text** changes in existing
-  poms, plus ONE exception — a `managed_override` proposal inserts one fixed-shape `<dependency>` entry into the
+  `IVAS_BASE_URL` / `IVAS_USER_ID` / `IVAS_PASSWORD`, Secret only). Hard rules: only Maven **version text** changes in existing
+  poms (to a version the policy or an approved repository names), plus ONE exception — a `managed_override` proposal inserts one fixed-shape `<dependency>` entry into the
   `<dependencyManagement>` of the root pom or, for a module that does not inherit from it, of that module's own pom
-  (`remediation.module_overrides`, default true) for a transitive / parent- / BOM-managed library and ALWAYS waits for approval (whatever `require_approval` /
-  `always_approve` say); no source / structure change; plugin, vendored, unmapped → residual / manual review; original ZIP + manifest +
+  (`remediation.module_overrides`, default true) for a transitive / parent- / BOM-managed library (applied on its own like every other proposal unless approval is switched
+  on, v2.1z-ar); no source / structure change; plugin, vendored, unmapped → residual / manual review; original ZIP + manifest +
   `accepted/` kept apart, changes on an isolated candidate first; a failed baseline build never reaches the scan; an uncertain IVAS
   upload is never re-sent (`AWAITING_CONFIRMATION`), an incomplete scan is never "0 findings"; the frozen delivery ZIP's exact bytes are
   rescanned; approvals bind proposal hash + source tree hash + policy hash + diff (`AWAITING_APPROVAL` → approvals → resume); a restart
@@ -454,13 +454,14 @@ Then the final build again, the report (Handover first, "Structure review", fix 
   gets `StateConflict` and touches nothing, the web pod only reads it), and a step that rewrites the candidate saves its
   decision with `next_node=apply` first (completeness marker `rounds/<n>/candidate.ready.json` guards build / freeze). `remediation.trusted_projects` (default false) must be set true by the
   operator before anything is accepted (Maven runs the project's plugins; not a sandbox); `remediation.require_approval` default false
-  (major / parent / bom always wait). No version is chosen without an IVAS patched-version hint AND evidence from the policy or an
+  and `remediation.always_approve` default `[]`: nothing waits for approval (v2.1z-ar). No version is chosen without an IVAS patched-version hint AND evidence from the policy or an
   approved repository host. Contract: `sbmig/remediations/models.py` + `interfaces.py`, `docs/INTERFACES.md` "remediations"; operators:
   `agent-doc/11-remediations.md`, `deploy/README.md` §6. Tests use fakes only (`tests/remediations/`, no IVAS / Nexus / mvn). Not run
   against the real IVAS yet; no UI page. **User decisions 2026-11-11** (after comparing with the company's older implementation —
   `pipeline.py` / `self_ivas.py`, not in this repo): a candidate whose build failed IS delivered (`failed_candidate: include`:
   result.zip = the failing change set, `delivery.build_ok=false`, status FAILED, not rescanned, an earlier verified delivery kept as
-  `result-verified.zip`); risky classes always need approval (the old code applied them automatically with `require_approval=false`);
+  `result-verified.zip`); risky classes always need approval (the old code applied them automatically with `require_approval=false`) —
+  superseded on 2026-11-18, v2.1z-ar below;
   override entries for transitives as above; upload limit 1024 MiB, analysis wait 1,800 s, poll 15 s. IVAS facts confirmed by that
   code: multipart file field `file`, analysis id `lbrdrAnlId` else `analysisId`; the user tested 2026-11-11: three separate logins →
   three tokens → three uploads at once all accepted (a new login does not revoke earlier tokens; one login per pod is fine). Still open with IVAS: token lifetime, how to check an
@@ -512,10 +513,21 @@ Then the final build again, the report (Handover first, "Structure review", fix 
   layout the modules inherit the role parents, not the project root, so a root-pom `<dependencyManagement>` override reaches
   none of them. **Decided (2026-11-17, v2.1z-an)**: "일단 본인들이 선택하도록 만들자. 취약점 해결이니까 선택해서 박을지 아니면
   검토 후에 진행할지는 본인들 선택으로 할 수 있도록 해야할것 같아!" — the tool proposes the entry in each such module's own pom
-  (one proposal per pom and management key, always waiting for approval); the owners check what to apply now, an unchecked one
+  (one proposal per pom and management key); with approval switched on the owners check what to apply now, an unchecked one
   is reported as "선택하지 않아 적용하지 않은 변경" with the pom, the entry and the path (not proposed again in that run, a later
   run proposes again). `remediation.module_overrides: false` restores the residual (plan byte-identical; in `policy_hash` only
   when false). Contract: `docs/INTERFACES.md` "v2.1z-an".
+  **Decided (2026-11-18, v2.1z-ar)**, relayed from the project teams: "취약점진단 승인 없애고 그냥 쭉 다 일괄 승인해서 진행해서
+  결과만 알려 달래! 여기 빌드파드 제한이 3개니까 이쪽까지 승인까지 하긴 힘들다고!" — `remediation.always_approve` defaults to `[]`
+  and the planner's fixed rule "an override entry always waits" is gone: `requires_approval = require_approval or (risks ∩
+  always_approve)`. With the shipped configuration every proposal (major, parent, BOM, override entries in the root or a
+  module pom) is applied on its own, no run saves `AWAITING_APPROVAL`, and a chained remediation ends in the migration's
+  build pod. Approval is an opt-in: `SBMIG_REMEDIATION__REQUIRE_APPROVAL: "true"` in `sbmig-env` (all), or
+  `remediation.always_approve` in the company yml (single classes; no env key, the Job template passes none). A change set
+  that breaks the candidate build fails as a whole (`candidate_build_failed`; nothing is retried without single proposals).
+  The report marks what was applied unreviewed: 조치 완료 gets the column 「주의」, 해야 할 일 the step 「자동으로 적용한 변경
+  확인하기 (N건)」. A run an earlier version left waiting continues after one press of the page's apply button (the resume
+  plans again under the new policy hash; unchecked proposals stay rejected). Contract: `docs/INTERFACES.md` "v2.1z-ar".
 - **Remediation: in-house artifacts and the Korean report (user, 2026-11-12: "규격을 받아왔어")**: a vulnerable library that
   comes from the company's own artifacts is NOT the project's to fix — "해당 사내 라이브러리 아키텍처 담당자가 pom 을 수정해줘야
   반영 가능". In-house = the artifacts yml groups named by `remediation.inhouse_groups` (shipped `[mandatory, optional, parents]`;

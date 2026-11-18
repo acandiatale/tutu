@@ -238,9 +238,13 @@ sbmig clean --fleet out\fleet --older-than 7 --keep-failed --dry-run
 
 When a migration ends BUILD SUCCESS and `remediation.after_migration` is on (shipped on in the Kubernetes manifests,
 off in the code), the same build pod scans the migrated project with IVAS, changes only the version text of
-vulnerable libraries in the poms (a managed-version override always waits for approval), rebuilds and rescans. Files
+vulnerable libraries in the poms (or inserts one `<dependencyManagement>` override entry), rebuilds and rescans. With the
+shipped configuration every proposal is applied without approval and the remediation ends in the same build pod; approval
+is switched on with `SBMIG_REMEDIATION__REQUIRE_APPROVAL: "true"` in `sbmig-env` (every proposal) or
+`remediation.always_approve` in the company yml baked into the image (single classes). Files
 go to `<run dir>/remediation/`; the outcome never changes the migration's exit code and is appended to `SBMIG-RESULT`
-as `remediation=<STATUS|skipped>`. Approvals and resume (a new build pod) happen in the web UI. Operator text:
+as `remediation=<STATUS|skipped>`. Approvals (when switched on), upload confirmations and resume (a new build pod) happen
+in the web UI. Operator text:
 `deploy/README.md` §6; flow, states, API and diagnosis: `agent-doc/11-remediations.md`; `sbmig remediation-resume
 --run-dir <dir>` resumes outside Kubernetes.
 

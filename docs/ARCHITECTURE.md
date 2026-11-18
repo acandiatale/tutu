@@ -298,9 +298,11 @@ folder under `<kb>/.lock`. Operator text: `deploy/README.md`; contract detail: `
 
 ## 11. Remediation (vulnerabilities)
 
-`sbmig/remediations/` is a separate LangGraph (`graph.py`) that scans a project with the company's IVAS service, applies approved
+`sbmig/remediations/` is a separate LangGraph (`graph.py`) that scans a project with the company's IVAS service, applies
 Maven version-text fixes and managed-version overrides, rebuilds, rescans and delivers a report + `result.zip`. It runs in the
 build pod as the migration graph's last node when `remediation.after_migration` is on and the migration ended BUILD SUCCESS
 (`sbmig/remediations/chain.py`), or alone as the run flow `remediation` (§1); its outcome never changes the migration's verdict (`SBMIG-RESULT … remediation=<status>`). The web
-pod serves status, proposals and approvals under `/api/remediations/…`, and resumes an approved remediation in a new build pod.
+pod serves status, proposals and approvals under `/api/remediations/…`, and resumes a stopped remediation in a new build pod.
+With the shipped configuration (`remediation.require_approval` false, `remediation.always_approve` `[]`) every proposal is
+applied without approval, so a chained remediation normally ends in the build pod that ran the migration.
 Settings `remediation.*`. Contract: `docs/INTERFACES.md` section "remediations"; Korean: `agent-doc/11-remediations.md`.

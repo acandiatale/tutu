@@ -7,7 +7,9 @@
 - 같은 메이저에서 가장 낮은 버전을 먼저 고르고, 없으면 ``allow_major``일 때만 더 높은 메이저를 고른다
 - 부모 / BOM 버전은 서버가 그 부모 / BOM을 ``pins``로 지정했을 때만 바꾼다
 - 간접 의존성과 pin이 없는 부모 / BOM 관리 버전은 루트 pom의 ``<dependencyManagement>``에 override 항목을
-  넣는다. 이 제안은 설정과 관계없이 항상 승인을 기다린다
+  넣는다
+- 승인은 ``require_approval``이 true이거나 위험 표시가 ``always_approve``에 있을 때만 기다린다.
+  기본 설정에서는 모든 제안을 바로 적용한다
 - 사내 아티팩트 자체와 사내 아티팩트를 거쳐 들어온 항목은 제안하지 않는다(``inhouse_artifact``)
 - classifier나 jar가 아닌 형식으로 해석된 의존성은 같은 형식과 classifier를 적은 override 항목으로 고친다
 - 승인은 제안 해시, 원본 트리 해시, 정책 해시, diff가 모두 같을 때만 받아들인다
@@ -16,8 +18,9 @@ Planning for the remediation feature: proposals + residuals from the inventory, 
 bind a proposal to the current tree and policy. A target version comes only from `policy.pins` or a version the approved
 repository lists (IVAS patched versions are hints, never evidence). A parent / BOM version text changes only when the
 server pins that parent / BOM. Transitive items and parent / BOM managed versions without such a pin get a
-managed-version override entry in the root pom (user decision 2026-11-11); such a proposal ALWAYS waits for approval,
-whatever `require_approval` / `always_approve` say — inserting XML is never automatic. A library that is an in-house
+managed-version override entry in the root pom (user decision 2026-11-11). Approval follows one rule for every
+kind: a proposal waits only when `require_approval` is true or one of its risk flags is in `always_approve` (default
+`[]`, so nothing waits; the fixed "an override always waits" rule was removed). A library that is an in-house
 artifact, or an item the inventory marks as reached through an in-house artifact (the inventory splits an item by
 module, so such an item is in-house for every one of its modules), is an `inhouse_artifact` residual (its owner
 publishes the fix). An override entry carries the resolved dependency's `<type>` / `<classifier>` (Maven's management
@@ -94,7 +97,6 @@ EVIDENCE_PINS = "policy:pins"
 # 넣은 항목은 이후 부모, BOM, 직접 의존성을 올려도 바뀌지 않는다는 경고다
 OVERRIDE_WARNING = ("later upgrades of the parent / BOM / direct dependency will NOT move this version any more — "
                     "the owners must remove the override when the parent / BOM / direct dependency catches up")
-OVERRIDE_APPROVAL = "always needs approval: an inserted <dependencyManagement> entry is never applied automatically"
 # classifier / 형식이 있는 override 항목의 note다. 일반 jar 항목에는 붙이지 않는다
 VARIANT_NOTE = ("the entry names {what} like the resolved dependency: an entry without it would not govern that "
                 "dependency")
@@ -883,7 +885,7 @@ def _override_change(project: Path, item: InventoryItem, policy: Any, source: An
         out.append(_Change(ga=item.ga, from_version=current, to_version=target, kind=K_MANAGED_OVERRIDE, edit=edit,
                            evidence=evidence, finding_ids=list(item.finding_ids), risks=list(risks), origin=item.origin,
                            notes=[_override_note(item, target, _pom_words(pp, tg.pf)), *extra, *notes,
-                                  OVERRIDE_WARNING, OVERRIDE_APPROVAL],
+                                  OVERRIDE_WARNING],
                            modules=modules, variant=key, sources=_scoped_sources(item, key, modules)))
     return out
 
@@ -1041,9 +1043,8 @@ def plan_round(project: Path, inventory: Inventory, cfg: Any, source: Any, *, ro
                 plan.residuals.append(_change_residual(c, R_STALE_LOCATION, str(e)))
             continue
         n += 1
-        # override 항목은 XML을 새로 넣으므로 설정과 관계없이 항상 승인을 기다린다
-        needs = (change.kind == K_MANAGED_OVERRIDE or bool(rem.require_approval)
-                 or any(r in always for r in change.risks))
+        # 승인 규칙은 하나다. require_approval이거나 위험 표시가 always_approve에 있을 때만 기다린다
+        needs = bool(rem.require_approval) or any(r in always for r in change.risks)
         p = Proposal(id=f"p-{round}-{n}", round=round, ga=change.ga, from_version=change.from_version,
                      to_version=change.to_version, kind=change.kind, risks=sorted(change.risks), requires_approval=needs,
                      decision=D_PENDING if needs else D_AUTO, evidence=change.evidence,

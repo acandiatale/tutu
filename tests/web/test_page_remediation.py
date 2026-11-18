@@ -138,3 +138,9 @@ def test_resuming_state_polls_and_shows_queue() -> None:
 def test_no_control_labelled_resume_jargon() -> None:
     assert "재개" not in PAGE                                                  # the user did not know the word
     assert not re.search(r">\s*재개\s*<", PAGE)
+
+
+def test_rail_note_does_not_say_only_approved_changes_are_made() -> None:
+    # v2.1z-ar: by default every proposal is applied without approval, so the note names no approval
+    assert "'취약점 조치 중 — IVAS 검사와 버전 수정을 진행합니다.'" in SCRIPT
+    assert "승인된 버전 수정" not in PAGE

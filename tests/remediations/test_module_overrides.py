@@ -1,6 +1,6 @@
 """Override entries in a module's own pom (module_overrides): the company layout, where the modules inherit company
-parent poms and not the project root, gets one proposal per (module pom, management key), always waiting for the
-owners' choice; apply / verify per pom; the switched-off plan is the plan made before this increment."""
+parent poms and not the project root, gets one proposal per (module pom, management key), applied without approval
+by default and waiting for the owners' choice when approval is switched on; apply / verify per pom; the switched-off plan is the plan made before this increment."""
 from __future__ import annotations
 
 import types
@@ -15,6 +15,7 @@ from sbmig.remediations import planner as P
 from sbmig.remediations.models import (
     AWAITING_APPROVAL,
     D_APPROVED,
+    D_AUTO,
     D_PENDING,
     D_REJECTED,
     FAILED,
@@ -124,7 +125,7 @@ def test_company_layout_one_proposal_per_module_pom(tmp_path):
     props = by_pom(pl)
     assert sorted(props) == ["app-back/pom.xml", "app-boot/pom.xml"]
     for mod, p in (("app-back", props["app-back/pom.xml"]), ("app-boot", props["app-boot/pom.xml"])):
-        assert p.kind == K_MANAGED_OVERRIDE and p.requires_approval and p.decision == D_PENDING
+        assert p.kind == K_MANAGED_OVERRIDE and not p.requires_approval and p.decision == D_AUTO
         assert p.risks == ["managed_override"] and p.modules == [mod] and p.also_modules == []
         assert [s.module for s in p.sources] == [mod]
         assert f"adds a <dependencyManagement> entry example:t:1.1 to {mod}/pom.xml" in p.note
@@ -135,11 +136,17 @@ def test_company_layout_one_proposal_per_module_pom(tmp_path):
     assert boot.anchor == "</project>" and boot.new.lstrip().startswith("<dependencyManagement>")
 
 
-def test_even_without_approval_settings_a_module_entry_waits(tmp_path):
+def test_module_entry_follows_the_approval_rule(tmp_path):
     proj = write(tmp_path, company_files())
     pl = plan(proj, [item(modules=["app-back"])], c=cfg(require_approval=False, always_approve=[]))
     (p,) = pl.proposals
-    assert p.requires_approval and p.decision == D_PENDING
+    assert not p.requires_approval and p.decision == D_AUTO and not pl.pending()
+    assert "always needs approval" not in p.note
+    for c in (cfg(always_approve=["managed_override"]), cfg(require_approval=True)):
+        (p,) = plan(proj, [item(modules=["app-back"])], c=c).proposals
+        assert p.requires_approval and p.decision == D_PENDING
+    (p,) = plan(proj, [item(modules=["app-back"])], c=cfg(always_approve=["major"])).proposals
+    assert not p.requires_approval and p.decision == D_AUTO          # 1.0 -> 1.1 does not cross a major
 
 
 def test_existing_entry_in_the_module_pom_uses_its_version_text(tmp_path):
@@ -219,8 +226,10 @@ def test_two_items_of_one_key_in_one_module_pom_are_one_proposal(tmp_path):
 # sha256(canonical_json(plan)) with the policy hashes left out (the policy hash takes `module_overrides: false`).
 HEAD_OFF_PLAN = "0f84df2c227e38416ad97e28e042b0d804c19a255d32150c9f54c630a3ac867e"
 # the same digest and the proposal hashes for a project whose modules all inherit the root (plain jar + classifier
-# item of test_override_variants), default configuration
-HEAD_ROOT_PLAN = "8dbb4b82d76b036b32f8f2f9a4fe13450246c05f166944e8475b5da4e3021a9d"
+# item of test_override_variants), default configuration. Re-captured when the default stopped waiting for approval:
+# the earlier digest (8dbb4b82…) differed only in `requires_approval` / `decision`, the approval sentence in the
+# notes and the plan note about waiting; the proposal hashes below did not move.
+HEAD_ROOT_PLAN = "09b2109b3cab1af1555f95339f6d7d5455b2bc5fb5e47d039913263e79771e48"
 HEAD_ROOT_HASHES = ["1286564a1e2c739beec26853d2c913096cb4988936017c319088cdfdf228ded2",
                     "1109bb227d3f9bd2d59adc0f7b5e16eaf19db58ae25eb2aced1495f3cf476e9d"]
 
@@ -342,7 +351,7 @@ def _decide(paths, decisions):
 
 
 def test_approve_one_reject_other_through_the_flow(tmp_path):
-    c = make_cfg(max_rounds=1)
+    c = make_cfg(always_approve=["managed_override"], max_rounds=1)
     state, paths = make_run(tmp_path, company_files(back_body=DM_SECTION))
     before = _model(**{"app-boot": "1.0", "app-back": "1.0"})
     after = _model(**{"app-boot": "1.0", "app-back": "1.1"})
@@ -368,7 +377,7 @@ THREE = ("app-boot", "app-back", "app-front")
 
 def _flow(tmp_path, models, *, scans=None, items=None, files=None, max_rounds=1, maven=None, decide=None):
     """plan → AWAITING_APPROVAL → approve every proposal (or `decide`) → resume; returns (state, paths, comps, rec)"""
-    c = make_cfg(max_rounds=max_rounds)
+    c = make_cfg(always_approve=["managed_override"], max_rounds=max_rounds)
     state, paths = make_run(tmp_path, files or company_files(back_body=DM_SECTION))
     inv = [Inventory(items=x) for x in (items or [[item(modules=list(THREE))]])]
     comps = make_components(scan=FakeScanner(scans or {"baseline": [scan_result(_finding())]}),
@@ -479,7 +488,7 @@ def test_no_time_for_the_rebuild_fails_and_says_so(tmp_path):
             return super().packaged(project, targets)
 
     maven = StopAfterVerify(models=[_three(), _three(boot="1.0", back="1.1", front="1.1")])
-    c = make_cfg(max_rounds=1)
+    c = make_cfg(always_approve=["managed_override"], max_rounds=1)
     state, paths = make_run(tmp_path, company_files(back_body=DM_SECTION))
     comps = make_components(scan=FakeScanner({"baseline": [scan_result(_finding())]}),
                             inventory=ScriptedInventory([Inventory(items=[item(modules=list(THREE))])]), maven=maven,

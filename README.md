@@ -24,7 +24,7 @@ restructure  company layout (parent / mandatory / optional, module split, or pom
 review       the LLM checks poms, dependencies and modules; critical issues are fixed by its edits and committed
 verify       mvn clean package -Dmaven.test.skip=true; on failure the script fix loop, then the final build again
 finalize     report.md / report.json (Handover first), errors.md / errors.jsonl, KB records (kb-v2/)
-remediation  only after BUILD SUCCESS and when switched on: IVAS vulnerability scan, approved version-text fixes, rescan
+remediation  only after BUILD SUCCESS and when switched on: IVAS vulnerability scan, version-text fixes, rescan
 ```
 
 Script fix loop, per error case (case = L2 signature, one script for every file that has it): zero-LLM **pre-tries**
@@ -87,7 +87,7 @@ Python unless `script.python` names another one (it needs pydantic + lxml, `docs
 | `sbmig kb errors …` / `stats` / `validate` / `reindex` / `export` / `import` | error list, KB upkeep |
 | `sbmig recipes …` / `advisories …` | the OpenRewrite recipe catalog, the library advisories |
 | `sbmig llm-probe` / `repo-probe` / `build` / `parse-log` / `clean` | gateway check, repository lookup, Maven debugging aids, disk cleanup |
-| `sbmig remediation-resume` | continue a remediation that waited for an approval (used by the build Job) |
+| `sbmig remediation-resume` | continue a remediation that stopped (upload confirmation, time budget, stop, or an approval when approval is switched on; used by the build Job) |
 
 In-house LLM gateway or agent platform through the adapter seams (`docs/ADAPTERS.md`): `--llm-plugin pkg.mod:attr`
 (tier 1, chat completion) or `--fix-plugin pkg.mod:attr` (tier 2, a fixer with `propose_script`;

@@ -122,7 +122,9 @@ SAMPLES: list[tuple[str, str, list[str]]] = [
     ("override_managed", (f"adds a <dependencyManagement> entry {GA}:1.1 to the root pom.xml: overrides the version managed "
      "by org.example:bom:5 (1.0 → 1.1)"), [f"{GA}:1.1", "org.example:bom:5"]),
     ("override_warning", planner_mod.OVERRIDE_WARNING, []),
-    ("override_approval", planner_mod.OVERRIDE_APPROVAL, []),
+    # the planner no longer writes this sentence; plans saved by earlier versions still carry it
+    ("override_approval", "always needs approval: an inserted <dependencyManagement> entry is never applied "
+                          "automatically", []),
     ("merge_covers", f"one edit also covers {GA}-extra:1.0 (same version line)", [f"{GA}-extra:1.0"]),
     ("merge_target", f"target 1.2 chosen for {GA} (highest of the merged targets)", ["1.2", GA]),
     ("pending_note", "2 proposal(s) wait for approval of their exact diff", ["2"]),

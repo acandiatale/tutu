@@ -1089,12 +1089,12 @@ class RemediationConfig(BaseModel):
     # false(기본값)면 always_approve 대상만 승인을 기다리고 나머지는 자동 적용한다.
     # true면 모든 제안이 승인을 기다린다
     require_approval: bool = False
-    # 항상 승인이 필요한 대상이다. major(메이저 변경), parent(부모 pom 버전), bom(import한 BOM 버전),
-    # managed_override(루트 pom에 override 추가)
-    # XML 추가는 자동 적용하지 않으므로 managed_override는 이 목록에서 빼도 항상 승인을 기다린다
-    always_approve: list[str] = Field(default_factory=lambda: ["major", "parent", "bom", "managed_override"])
+    # 승인을 기다리게 할 위험 부류다. 기본값은 빈 목록이라 모든 제안을 바로 적용한다.
+    # 넣을 수 있는 값은 major(메이저 변경), parent(부모 pom 버전), bom(import한 BOM 버전),
+    # managed_override(dependencyManagement 항목 추가)다
+    always_approve: list[str] = Field(default_factory=list)
     # 프로젝트 루트 pom을 상속하지 않는 모듈에는 그 모듈의 pom에 버전 지정을 넣는 제안을 만든다.
-    # 항상 승인을 기다리므로 담당자가 화면에서 고른 것만 적용된다. false면 제안하지 않고 직접 확인 항목으로 남긴다
+    # 승인 여부는 다른 제안과 같은 규칙을 따른다. false면 제안하지 않고 직접 확인 항목으로 남긴다
     module_overrides: bool = True
     max_rounds: int = 3                      # 계획 -> 적용 -> 빌드 -> 재검사 반복 횟수 한도
     # 수정본 빌드가 실패했을 때의 처리다. include(기본값)는 실패한 수정본을 결과 ZIP으로 내고(상태 FAILED,

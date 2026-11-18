@@ -158,7 +158,9 @@ def test_nothing_left_lists_the_facts(project):
 def test_major_fallback_and_allow_major_false(project):
     src = FakeSource({"example:lib": ["1.2.3", "2.0.0", "2.1.0", "3.0.0"]})
     (p,) = _plan(project, [_direct()], source=src).proposals
-    assert p.to_version == "2.0.0" and p.risks == ["major"] and p.requires_approval and p.decision == D_PENDING
+    assert p.to_version == "2.0.0" and p.risks == ["major"] and not p.requires_approval and p.decision == D_AUTO
+    (p,) = _plan(project, [_direct()], cfg=_cfg(always_approve=["major"]), source=src).proposals
+    assert p.requires_approval and p.decision == D_PENDING
     plan = _plan(project, [_direct()], cfg=_cfg(policy={"allow_major": False}), source=src)
     assert not plan.proposals
     assert plan.residuals[0].reason == "no_candidate_version" and "allow_major is false" in plan.residuals[0].detail
@@ -216,7 +218,7 @@ def test_transitive_gets_an_override_proposal(project):
                          via=["example:lib:1.2.3"], finding_ids=["CVE-T"])
     (p,) = _plan(project, [item], source=FakeSource({"example:t": ["1.1"]})).proposals
     assert (p.kind, p.from_version, p.to_version, p.risks) == (K_MANAGED_OVERRIDE, "1.0", "1.1", ["managed_override"])
-    assert p.requires_approval and p.decision == D_PENDING and p.evidence == "repository:nexus.invalid"
+    assert not p.requires_approval and p.decision == D_AUTO and p.evidence == "repository:nexus.invalid"
     assert "pins the transitive dependency brought by example:lib:1.2.3" in p.note
     assert "will NOT move this version any more" in p.note and "must remove the override" in p.note
 
@@ -227,7 +229,7 @@ def test_managed_without_pin_gets_an_override_proposal(project):
     unknown = InventoryItem(ga="example:n", version="1.0", origin=O_BOM_MANAGED, patched_versions=["1.1"])
     plan = _plan(project, [known, unknown], source=FakeSource({"example:m": ["1.1"], "example:n": ["1.1"]}))
     assert [(p.ga, p.kind, p.decision) for p in plan.proposals] == [
-        ("example:m", K_MANAGED_OVERRIDE, D_PENDING), ("example:n", K_MANAGED_OVERRIDE, D_PENDING)]
+        ("example:m", K_MANAGED_OVERRIDE, D_AUTO), ("example:n", K_MANAGED_OVERRIDE, D_AUTO)]
     assert "overrides the version managed by example:parent:1.0.0" in plan.proposals[0].note
     assert "a parent / BOM outside the project" in plan.proposals[1].note and not plan.residuals
 
@@ -236,10 +238,12 @@ def test_managed_with_pinned_manager_proposes_parent_version(project):
     item = InventoryItem(ga="example:m", version="1.0", origin=O_PARENT_MANAGED, finding_ids=["CVE-9"],
                          manager="example:parent:1.0.0",
                          manager_location=PomLocation("pom.xml", L_PARENT, "1.0.0", element="parent"))
-    cfg = _cfg(policy={"pins": {"example:parent": "1.0.4"}})
+    cfg = _cfg(policy={"pins": {"example:parent": "1.0.4"}}, always_approve=["parent", "bom"])
     (p,) = _plan(project, [item], cfg=cfg).proposals
     assert (p.kind, p.ga, p.from_version, p.to_version) == (K_PARENT_VERSION, "example:parent", "1.0.0", "1.0.4")
     assert p.risks == ["parent"] and p.decision == D_PENDING and p.evidence == "policy:pins"
+    (p,) = _plan(project, [item], cfg=_cfg(policy={"pins": {"example:parent": "1.0.4"}})).proposals
+    assert p.risks == ["parent"] and p.decision == D_AUTO and not p.requires_approval
     assert "example:m:1.0" in p.note
     item.origin = O_BOM_MANAGED
     (p,) = _plan(project, [item], cfg=cfg).proposals
@@ -571,12 +575,15 @@ def test_existing_root_entry_uses_the_replace_route(tmp_path):
     assert "a second entry is never added" in plan.residuals[0].detail
 
 
-def test_override_always_needs_approval(tmp_path):
+def test_override_waits_only_when_its_class_is_listed(tmp_path):
     proj = _write(tmp_path, DM_POM)
+    src = FakeSource({"example:t": ["1.1"]})
     cfg = _cfg(always_approve=[], require_approval=False)
-    (p,) = _plan(proj, [_trans()], cfg=cfg, source=FakeSource({"example:t": ["1.1"]})).proposals
-    assert p.requires_approval and p.decision == D_PENDING and p.risks == ["managed_override"]
-    assert "never applied automatically" in p.note
+    (p,) = _plan(proj, [_trans()], cfg=cfg, source=src).proposals
+    assert not p.requires_approval and p.decision == D_AUTO and p.risks == ["managed_override"]
+    assert "always needs approval" not in p.note and "never applied automatically" not in p.note
+    (p,) = _plan(proj, [_trans()], cfg=_cfg(always_approve=["managed_override"]), source=src).proposals
+    assert p.requires_approval and p.decision == D_PENDING
 
 
 def test_override_major_flag(tmp_path):
@@ -797,3 +804,77 @@ def test_old_plan_json_without_residual_facts_loads():
                                                "reason": "manual_review"}]})
     r = plan.residuals[0]
     assert (r.modules, r.via, r.inhouse) == ([], [], [])
+
+
+# ------------------------------------------------------------------------------------------------- approval rule
+# One rule for every kind: a proposal waits only when `require_approval` is true or one of its risk flags is listed
+# in `always_approve` (default []). There is no class that waits whatever the configuration says.
+DEP_LIB = ("  <dependencies>\n    <dependency>\n      <groupId>example</groupId>\n      <artifactId>lib</artifactId>\n"
+           "      <version>1.2.3</version>\n    </dependency>\n  </dependencies>\n")
+APPROVAL_SRC = {"example:t": ["1.1"], "example:u": ["2.0"], "example:lib": ["1.2.3", "2.0.0"]}
+
+
+def _approval_project(tmp_path):
+    """root (inherited by core) with a direct dependency + `other` inheriting an external parent"""
+    root = ROOT.replace("</project>\n", DEP_LIB + "</project>\n")
+    _write(tmp_path, root)
+    _write(tmp_path, _mod("core"), "core/pom.xml")
+    _write(tmp_path, _mod("other", parent="external-parent"), "other/pom.xml")
+    line = root.splitlines().index("      <version>1.2.3</version>") + 1
+    direct = InventoryItem(ga="example:lib", version="1.2.3", origin=O_DIRECT_LITERAL, finding_ids=["CVE-L"],
+                           patched_versions=["2.0.0"], location=PomLocation("pom.xml", line, "1.2.3"))
+    same_major = _trans(modules=["core", "other"])                          # 1.0 -> 1.1: root + module override
+    cross_major = _trans(ga="example:u", version="1.0", hints=("2.0",), modules=["core"], fid="CVE-U")
+    return tmp_path, [direct, same_major, cross_major]
+
+
+def _by(plan):
+    return {(p.ga, p.edits[0].pom): p for p in plan.proposals}
+
+
+def test_default_configuration_applies_every_proposal_without_approval(tmp_path):
+    proj, items = _approval_project(tmp_path)
+    plan = _plan(proj, items, source=FakeSource(APPROVAL_SRC))
+    props = _by(plan)
+    assert sorted(props) == [("example:lib", "pom.xml"), ("example:t", "other/pom.xml"), ("example:t", "pom.xml"),
+                             ("example:u", "pom.xml")]
+    assert props[("example:t", "pom.xml")].kind == K_MANAGED_OVERRIDE                  # root-pom override
+    assert props[("example:t", "other/pom.xml")].kind == K_MANAGED_OVERRIDE            # module-pom override
+    assert props[("example:lib", "pom.xml")].risks == ["major"]                          # direct major change
+    assert props[("example:u", "pom.xml")].risks == ["major", "managed_override"]
+    for p in plan.proposals:
+        assert p.decision == D_AUTO and p.requires_approval is False, p.id
+        assert "always needs approval" not in p.note and "never applied automatically" not in p.note
+    assert plan.pending() == [] and len(plan.to_apply()) == 4
+    assert not any("wait" in n for n in plan.notes)
+    assert not hasattr(P, "OVERRIDE_APPROVAL")
+
+
+def test_always_approve_managed_override_holds_only_overrides(tmp_path):
+    proj, items = _approval_project(tmp_path)
+    src = FakeSource(dict(APPROVAL_SRC, **{"example:lib": ["1.2.3", "1.2.9"]}))
+    items[0].patched_versions = ["1.2.9"]                                               # a same-major direct change
+    plan = _plan(proj, items, cfg=_cfg(always_approve=["managed_override"]), source=src)
+    got = {k: p.decision for k, p in _by(plan).items()}
+    assert got == {("example:lib", "pom.xml"): D_AUTO, ("example:t", "pom.xml"): D_PENDING,
+                   ("example:t", "other/pom.xml"): D_PENDING, ("example:u", "pom.xml"): D_PENDING}
+    assert [p.ga for p in plan.pending()] == ["example:t", "example:t", "example:u"]
+    assert any("wait for approval" in n for n in plan.notes)
+
+
+def test_always_approve_major_holds_major_changes_only(tmp_path):
+    proj, items = _approval_project(tmp_path)
+    plan = _plan(proj, items, cfg=_cfg(always_approve=["major"]), source=FakeSource(APPROVAL_SRC))
+    got = {k: (p.decision, p.requires_approval) for k, p in _by(plan).items()}
+    assert got == {("example:lib", "pom.xml"): (D_PENDING, True),          # major direct change
+                   ("example:u", "pom.xml"): (D_PENDING, True),            # major-crossing override
+                   ("example:t", "pom.xml"): (D_AUTO, False),              # same-major overrides
+                   ("example:t", "other/pom.xml"): (D_AUTO, False)}
+
+
+def test_require_approval_holds_every_proposal(tmp_path):
+    proj, items = _approval_project(tmp_path)
+    plan = _plan(proj, items, cfg=_cfg(require_approval=True), source=FakeSource(APPROVAL_SRC))
+    assert len(plan.proposals) == 4 and plan.to_apply() == []
+    assert all(p.decision == D_PENDING and p.requires_approval for p in plan.proposals)
+    assert len(plan.pending()) == 4

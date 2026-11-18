@@ -941,7 +941,7 @@
     // 이관 성공 후 빌드 파드가 취약점 조치 노드를 시작하면(graph_node … node=remediation) 레일 끝에 단계를 추가하고 현재 단계로 표시한다
     if (name === 'graph_node' && ev.node === 'remediation') {
       const step = remStep();
-      if (!step.classList.contains('done')) { setCurrent(step); $('railnote').textContent = '취약점 조치 중 — IVAS 검사와 승인된 버전 수정을 합니다.'; }
+      if (!step.classList.contains('done')) { setCurrent(step); $('railnote').textContent = '취약점 조치 중 — IVAS 검사와 버전 수정을 진행합니다.'; }
     }
     if (name === 'phase_end' && ev.phase) {
       $('railnote').textContent = `${KO[ev.phase] || ev.phase} ${ev.ok === false ? '단계가 실패로 끝났습니다' : '단계 끝'}`;

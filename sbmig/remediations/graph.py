@@ -90,7 +90,7 @@ from .models import (
     write_json_atomic,
 )
 
-# 효과가 없어 수정본에서 다시 뺀 override 제안의 decision 값이다. 승인된 뒤 빌드 결과로 정해진다
+# 효과가 없어 수정본에서 다시 뺀 override 제안의 decision 값이다. 적용한 뒤 빌드 결과로 정해진다
 D_INEFFECTIVE = "ineffective"
 log = logging.getLogger("sbmig.remediations.graph")
 

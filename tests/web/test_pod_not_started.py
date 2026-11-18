@@ -260,6 +260,8 @@ def test_the_notice_names_the_reason_after_the_threshold_and_goes_when_the_pod_s
     assert p["hint_ko"].endswith(tail)
     if kw:                                           # (1) / (2) found it: no events call needed
         assert cluster.event_calls == []
+    # the manager sets the status first, then pushes the page event, then writes the journal line: wait for the last
+    assert _wait(lambda: any(e["event"] == "job_pod_pending" for e in _journal(out, rid)))
     run = mgr.runs[rid]
     assert any(k == "node" and d["node"] == "job" and d["update"]["state"] == "pod-pending" for k, d in run.history)
     journal = [e for e in _journal(out, rid) if e["event"] == "job_pod_pending"]

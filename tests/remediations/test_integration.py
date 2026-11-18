@@ -442,9 +442,11 @@ class Rec:
     def __init__(self, paths: RunPaths):
         self.paths = paths
         self.events: list[dict] = []
+        self.statuses: list[str] = []          # every status saved, in order
         self.stop_flag = False
 
     def save(self, st: RemediationState) -> None:
+        self.statuses.append(st.status)
         write_json_atomic(self.paths.state, st.to_dict())
 
     def journal(self, event: dict) -> None:
@@ -680,8 +682,19 @@ MAJOR = {"vulns": {"example:lib:1.2.3": Vuln("CVE-2026-2002", "2.0.1")},
          "versions": {"example:lib": ["1.2.3", "1.2.9", "2.0.1"]}}
 
 
-def test_major_only_fix_waits_for_approval_then_applies(tmp_path):
+def test_major_only_fix_is_applied_without_approval_by_default(tmp_path):
     env = start(tmp_path, {"pom.xml": war_pom(), **APP}, **MAJOR)
+    out = env.run()
+    assert_succeeded_delivery(env, out)
+    assert AWAITING_APPROVAL not in env.rec.statuses
+    (p,) = RoundPlan.from_dict(read_json(env.paths.plan(1))).proposals
+    assert (p.risks, p.to_version, p.decision, p.requires_approval) == (["major"], "2.0.1", "auto", False)
+    _old, new = assert_one_line_changed(env, "pom.xml")
+    assert "2.0.1" in new
+
+
+def test_major_only_fix_waits_for_approval_then_applies(tmp_path):
+    env = start(tmp_path, {"pom.xml": war_pom(), **APP}, **MAJOR, always_approve=["major"])
     out = env.run()
     assert out.status == AWAITING_APPROVAL and out.next_node == "plan"
     plan = RoundPlan.from_dict(read_json(env.paths.plan(1)))
@@ -698,7 +711,7 @@ def test_major_only_fix_waits_for_approval_then_applies(tmp_path):
 
 
 def test_major_only_fix_rejected_is_incomplete_with_the_original_bytes(tmp_path):
-    env = start(tmp_path, {"pom.xml": war_pom(), **APP}, **MAJOR)
+    env = start(tmp_path, {"pom.xml": war_pom(), **APP}, **MAJOR, always_approve=["major"])
     before = env.tree_hash()
     env.run()
     _approve_or_reject(env, D_REJECTED)
@@ -710,7 +723,7 @@ def test_major_only_fix_rejected_is_incomplete_with_the_original_bytes(tmp_path)
 
 
 def test_policy_change_before_resume_replans_and_never_uses_the_old_approval(tmp_path):
-    env = start(tmp_path, {"pom.xml": war_pom(), **APP}, **MAJOR)
+    env = start(tmp_path, {"pom.xml": war_pom(), **APP}, **MAJOR, always_approve=["major"])
     env.run()
     _approve_or_reject(env, D_APPROVED)
     env.cfg.remediation.policy.deny_versions = {"example:lib": ["1.2.9"]}    # the server policy changed meanwhile
@@ -793,11 +806,29 @@ def assert_only_inserted_lines(env: Env, pom: str) -> list[str]:
 
 
 @pytest.mark.parametrize("kind", sorted(OVERRIDE_CASES))
-def test_override_waits_for_approval_then_inserts_the_entry(tmp_path, kind):
-    root, world, vulns, versions, ga, frm, to, origin = OVERRIDE_CASES[kind]
-    # require_approval false and managed_override removed from always_approve: the override still waits
+def test_override_is_applied_without_approval_unless_its_class_is_listed(tmp_path, kind):
+    root, world, vulns, versions, ga, _frm, to, _origin = OVERRIDE_CASES[kind]
+    # require_approval false and managed_override not in always_approve: the same-major override does not wait
     env = start(tmp_path, {"pom.xml": root, **APP}, vulns=vulns, versions=versions, world=world,
                 always_approve=["major"])
+    out = env.run()
+    assert_succeeded_delivery(env, out)
+    assert AWAITING_APPROVAL not in env.rec.statuses
+    assert AWAITING_APPROVAL not in {e.get("status") for e in env.rec.events}
+    (p,) = RoundPlan.from_dict(read_json(env.paths.plan(1))).proposals
+    assert (p.ga, p.kind, p.decision, p.requires_approval) == (ga, "managed_override", "auto", False)
+    assert "always needs approval" not in p.note
+    assert out.rounds[0].applied == [p.id]
+    inserted = assert_only_inserted_lines(env, "pom.xml")
+    assert f"<version>{to}</version>" in [ln.strip() for ln in inserted]
+
+
+@pytest.mark.parametrize("kind", sorted(OVERRIDE_CASES))
+def test_override_waits_for_approval_then_inserts_the_entry(tmp_path, kind):
+    root, world, vulns, versions, ga, frm, to, origin = OVERRIDE_CASES[kind]
+    # approval switched on for the class: the override waits
+    env = start(tmp_path, {"pom.xml": root, **APP}, vulns=vulns, versions=versions, world=world,
+                always_approve=["managed_override"])
     before = env.tree_hash()
     out = env.run()
     assert out.status == AWAITING_APPROVAL and out.next_node == "plan", (out.reason, out.reasons, out.message)
@@ -824,7 +855,8 @@ def test_override_waits_for_approval_then_inserts_the_entry(tmp_path, kind):
 @pytest.mark.parametrize("kind", sorted(OVERRIDE_CASES))
 def test_override_rejected_is_incomplete_and_nothing_changes(tmp_path, kind):
     root, world, vulns, versions, *_ = OVERRIDE_CASES[kind]
-    env = start(tmp_path, {"pom.xml": root, **APP}, vulns=vulns, versions=versions, world=world)
+    env = start(tmp_path, {"pom.xml": root, **APP}, vulns=vulns, versions=versions, world=world,
+                always_approve=["managed_override"])
     before = env.tree_hash()
     assert env.run().status == AWAITING_APPROVAL
     _approve_or_reject(env, D_REJECTED)
