@@ -22,7 +22,10 @@ Legacy poms declare `<repositories>` of their own (an old Nexus host, Central, S
 host every one costs a resolution failure or a timeout. Copy `config/settings.nexus.example.xml`, set the group URL
 and point `build.settings_file` at it: its `<mirrorOf>external:*</mirrorOf>` rewrites every remote repository —
 the poms' included — to the group, and Maven's default `http://` blocker is overridden for it. sbmig passes `-s` to
-every Maven call. The pom URLs are still read for the jakarta-library lookup (`sbmig repo-probe` lists them unless
+every Maven call, and with it `-gs <maven home>/conf/settings.xml` (`build.ignore_project_settings`, default true; the
+home comes from the preflight's `mvn -v`, else from the installation beside `build.mvn`; not found → no `-gs`), so
+settings a project names in its `.mvn/maven.config` (`-s` or `-gs`) are never used; the run notes it (flag
+`project-maven-settings-ignored`, one Handover line) and leaves the file as it is. The pom URLs are still read for the jakarta-library lookup (`sbmig repo-probe` lists them unless
 the mirror covers them).
 
 If a build says an artifact "was cached from a remote repository ID that is unavailable in current build context",

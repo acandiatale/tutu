@@ -864,6 +864,7 @@ class Orchestrator:
             self._timed("intake", t)
             return False
         self._intake_parent_extensions(report)    # 2026-11-05: before the first Maven call (the capture below)
+        self._intake_project_settings(report)
         self._capture_effective(report)
         self._timed("intake", t)
         return not self._stop(stop_after, Phase.INTAKE)
@@ -1081,6 +1082,33 @@ class Orchestrator:
                              "kept": [f"{c} in {p}" for p, c in res.kept], "poms": res.poms_changed})
         except Exception as e:  # noqa: BLE001 - never lose the run over this: Maven then reports it as before
             log.warning("build extension check failed: %s: %s", type(e).__name__, e)
+
+    def _intake_project_settings(self, report: RunReport) -> None:
+        """프로젝트의 ``.mvn/maven.config``가 자체 settings를 지정하면 플래그, 인수인계 줄, 저널을 한 번 남긴다.
+        파일은 바꾸지 않고 예외를 던지지 않는다.
+
+        A project `.mvn/maven.config` naming its own settings (`sbmig.build.mvn.project_settings_note`): flag
+        `project-maven-settings-ignored` (or `-used` when Maven still reads a project `-gs`), one Handover line, journal
+        `project_maven_settings`. The file stays as the owners wrote it; the exit code does not change. Never raises."""
+        try:
+            from sbmig.build.mvn import project_maven_settings, project_settings_ignored, project_settings_note
+            found = project_maven_settings(self.ws.root)
+            note = project_settings_note(self.cfg, found)
+        except Exception as e:  # noqa: BLE001 - a note never stops the run
+            log.debug("project maven settings check failed: %s: %s", type(e).__name__, e)
+            return
+        if note is None or found is None:
+            return
+        flag, line = note
+        ignored = project_settings_ignored(self.cfg, found)
+        self._flag(flag)
+        if line not in report.manual_followups:
+            report.manual_followups.append(line)
+        log.info("intake: %s names its own Maven settings (%s): %s", found.path, found.shown(),
+                 "ignored, every build uses the server's settings" if ignored
+                 else "Maven still reads its global settings")
+        self.ws.journal({"event": "project_maven_settings", "file": found.path, "settings": found.settings,
+                         "global_settings": found.global_settings, "offline": found.offline, "ignored": ignored})
 
     def _intake_stray_poms(self, report: RunReport) -> None:
         """다른 pom과 좌표가 같은, IDE 출력이나 백업 폴더에 복제된 pom(``find_stray_pom_copies``)을 찾아

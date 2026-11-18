@@ -507,6 +507,8 @@ def _loop_followup_lines() -> list[str]:
         ("bundled jar `vendor-sso.jar` provides package `com.vendor.sso` needed by `shop-back/pom.xml`, but the repository "
          "did not answer whether it has `com.vendor:vendor-sso:2.1` (timeout) — not wired and not called missing; not a "
          "project problem: check the repository and the network, then rerun"),
+        ("the project's .mvn/maven.config points Maven at its own settings (-gs .mvn/settings.nexus.xml): ignored here — "
+         "every build of this run used the server's settings"),
         "ZIP refused: it unpacks to 5,120 MiB, over the limit of 4,096 MiB (intake.max_unpacked_mb) — nothing was unpacked",
         ("ZIP refused: the entry app/big.bin unpacks to 2,048 MiB, over the limit of 1,024 MiB (intake.max_entry_mb) — "
          "nothing was unpacked"),

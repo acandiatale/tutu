@@ -1015,3 +1015,16 @@ expecting the web pod to read the template from the image ("우리 이미지안�
 | Operator text | one table "what you changed → what you do": image → restart the web pod; 20 → apply, restart; 40 → apply; 81 → build, push, restart | `deploy/README.md` §1, `deploy/ENV.md`, `agent-doc/09-deploy-and-ops.md`, `docs/RUNBOOK.md` | done |
 | Notice after five minutes | `SBMIG_JOB_PENDING_NOTICE_S` defaults to 300 (the user: "5분 넘게 생성 안되면 띄우도록 하자"; a healthy pod needs over three minutes on that cluster, which the Kubernetes team is looking into) | `sbmig/web/runs.py`, `deploy/ENV.md` | done |
 | On the cluster | the user removed the `SBMIG_JOB_TEMPLATE` line from their 40 and the pod came up; the result of that run (no approval list) is not reported yet | — | open (the user's) |
+
+## Status — 2026-11-18, a project's own Maven settings are ignored
+
+A company project carried `.mvn/settings.nexus.xml` and a `.mvn/maven.config` pointing at it. The user: "우리도 프로젝트
+안에 있는 주소는 무시하도록 하면 안될까? 굳이 해당 설정에 막히는건 좀 아닌거 같은데".
+
+| Item | Deliverable | Where | Status |
+|---|---|---|---|
+| What Maven does | measured with Maven 3.9.10: a `-s` in the project's `.mvn/maven.config` loses to the command line; a `-gs` there is read as the global settings and merged with the server's; a `-D` there loses to the command line | `tests/build/test_project_settings_maven.py` (integration) | done |
+| The server's settings always win | every Maven command passes `-gs <maven home>/conf/settings.xml` beside `-s` (`build.ignore_project_settings`, default true); the Maven home comes from the preflight's `mvn -v`, else from the installation beside the executable; not found → no `-gs`, one WARNING | `sbmig/build/mvn.py`, `sbmig/core/config.py`, `config/default.yml` | done |
+| Said once | journal `project_maven_settings`, flag `project-maven-settings-ignored`, one hand-over line (Korean rule added); the project's file is delivered unchanged | `sbmig/loop/orchestrator.py`, `sbmig/report/i18n.py` | done |
+| The remediation does not refuse | `remediation.project_maven_config` defaults to `ignore`; the Korean report prints one line in 처리 기록, nothing under 해야 할 일 | `sbmig/remediations/`, `agent-doc/11-remediations.md` | done |
+| Open | Maven 3.9 reads one argument per line of `maven.config`: a file written for 3.8 can stop Maven before the build starts (rewriting it would change the project: the user's decision); `.mvn/extensions.xml` and `.mvn/jvm.config` still act on the build; the note is written in the full flow only | — | open |

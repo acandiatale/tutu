@@ -5,17 +5,18 @@
 ``sbmig.build.mvn`` 함수로 만든다.
 - 항상 서버에 설치된 Maven(``build.mvn``)만 쓴다.
   ``build.mvn``이 프로젝트의 wrapper를 가리키면 준비되지 않은 것으로 본다
-- 서버 settings.xml(``build.settings_file``)이 반드시 있어야 하고 ``-s``로 절대 경로를 넘긴다
+- 서버 settings.xml(``build.settings_file``)이 반드시 있어야 하고 ``-s``로 절대 경로를 넘긴다.
+  Maven 설치본의 전역 settings도 ``-gs``로 넘겨 프로젝트가 지정한 settings를 무시한다
 - ``build.extra_args``에 TLS 검증을 끄는 옵션이나 다른 ``-s`` / ``-f``가 있으면 빌드하지 않는다
 - 모든 명령에 ``-Dmaven.test.skip=true``를 붙인다
-- Maven은 프로젝트의 ``.mvn/`` 설정을 끌 수 없으므로 접수 단계에서
-  거절한다(``remediation.project_maven_config: refuse``, 기본값). ``ignore``이면 빌드할 때마다 WARNING과
-  저널 ``maven_project_config``를 남긴다
+- Maven은 프로젝트의 ``.mvn/`` 설정을 끌 수 없으므로 빌드할 때마다 WARNING과 저널 ``maven_project_config``를
+  남긴다(``remediation.project_maven_config: ignore``, 기본값). ``refuse``이면 접수 단계에서 거절한다
 
 Server-managed Maven for the remediation flow: package builds, `dependency:tree` resolution and the jars inside the
 built war / executable jar. Never the project's wrapper, always the server settings.xml, tests never run, insecure TLS
 flags stripped. `.mvn/` cannot be disabled on Maven 3.9 (the launcher always reads it from the first ancestor holding
-`.mvn`); the intake refuses it by default, and when the config says `ignore` every build logs a warning.
+`.mvn`); settings it names are overridden by the command line (`-s` + `-gs`, `sbmig.build.mvn.base_command`), every build
+logs a warning (`remediation.project_maven_config: ignore`, the default), and `refuse` makes the intake refuse it.
 """
 from __future__ import annotations
 

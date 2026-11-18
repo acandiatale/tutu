@@ -590,6 +590,32 @@ def _check_pom(pom: Path, rel: str, allowed: set[str], action: str) -> list[Boun
     return out
 
 
+def project_settings_detail(project: Path, cfg: Any) -> str:
+    """프로젝트의 ``.mvn/maven.config``가 지정한 settings를 빌드에서 어떻게 다뤘는지 한 문장으로 반환한다.
+    settings 옵션이 없거나 서버 settings가 없으면 빈 문자열을 반환한다.
+
+    The boundary detail of `.mvn/maven.config`: whether its settings options are overridden by the server's (`-s` /
+    `-gs` of `sbmig.build.mvn.base_command`), plus its offline option; "" without settings options or server settings."""
+    build = getattr(cfg, "build", None)
+    if build is None or not str(getattr(build, "settings_file", "") or "").strip():
+        return ""
+    from sbmig.build.mvn import project_maven_settings, project_settings_ignored
+    try:
+        found = project_maven_settings(Path(project))
+    except Exception:                                    # noqa: BLE001 - a detail never stops the intake
+        return ""
+    if found is None or not found.names_settings:
+        return ""
+    if project_settings_ignored(cfg, found):
+        out = f"names its own Maven settings ({found.shown()}), not used: every build used the server's settings"
+    else:
+        out = (f"names its own Maven settings ({found.shown()}), read by Maven as its global settings together with "
+               "the server's")
+    if found.offline and not getattr(build, "offline", False):
+        out += f"; also turns on offline mode ({', '.join(found.offline)}): Maven downloads nothing"
+    return out
+
+
 def check_boundary(project: Path, cfg: Any, allowed_hosts: list[str]) -> list[BoundaryFinding]:
     """프로젝트 안에서 서버의 Maven 실행 환경 제한을 우회할 수 있는 요소를 찾는다.
     아무것도 실행하지 않으며, 요소마다 처리 방법(``action``)은 설정에서 정한다.
@@ -624,7 +650,9 @@ def check_boundary(project: Path, cfg: Any, allowed_hosts: list[str]) -> list[Bo
                 add("settings_in_project", rel, "ignore", "the server's settings.xml is the only one used")
             if name == "pom.xml":
                 poms.append((full, rel))
-            if rel in (".mvn/maven.config", ".mvn/jvm.config"):
+            if rel == ".mvn/maven.config":
+                add("project_maven_config", rel, r.project_maven_config, project_settings_detail(project, cfg))
+            elif rel == ".mvn/jvm.config":
                 add("project_maven_config", rel, r.project_maven_config)
             elif rel == ".mvn/extensions.xml":
                 add("maven_extensions", rel, r.project_maven_config)

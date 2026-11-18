@@ -439,6 +439,8 @@ class BuildConfig(BaseModel):
     생략, 이전 소스 인코딩 후보, 버전 조회 저장소를 정한다."""
     mvn: str = "mvn"
     settings_file: Optional[str] = None
+    # settings_file을 넘길 때 Maven 설치본의 전역 settings도 -gs로 넘겨 프로젝트 .mvn/maven.config의 settings를 무시한다
+    ignore_project_settings: bool = True
     local_repo: Optional[str] = None
     java_home: Optional[str] = None                     # JDK 21 home; None → inherit
     offline: bool = False
@@ -1116,7 +1118,7 @@ class RemediationConfig(BaseModel):
     # discard는 실패한 수정본을 결과 ZIP에 넣지 않고 candidate.patch로만 남기며, 앞 라운드에서 검증된 결과 ZIP은 남는다
     failed_candidate: Literal["include", "discard"] = "include"
     # 프로젝트에서 서버 설정을 우회할 수 있는 요소를 발견했을 때 refuse(거부)하거나 ignore(무시하고 기록)한다
-    project_maven_config: Literal["refuse", "ignore"] = "refuse"     # .mvn/maven.config, jvm.config, extensions.xml
+    project_maven_config: Literal["refuse", "ignore"] = "ignore"     # .mvn/maven.config, jvm.config, extensions.xml
     maven_wrapper: Literal["refuse", "ignore"] = "ignore"            # mvnw / .mvn/wrapper. 서버 Maven만 쓰므로 실행되지 않는다
     # 승인된 저장소 호스트 목록이다.
     # 비어 있으면 서버 settings.xml의 미러와 저장소 호스트만 승인된 것으로 본다

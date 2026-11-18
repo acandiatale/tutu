@@ -546,3 +546,37 @@ def test_boundary_does_not_resolve_external_entities(tmp_path):
     # the entity is not expanded, so the host is never "evil.invalid" (approved) — it stays a finding
     assert all("evil.invalid" not in f.detail or f.code == "unparsable_pom" for f in fs)
     assert fs
+
+
+def _build_cfg(tmp_path: Path, **build):
+    """A remediation config with a server settings file and a Maven installation beside `build.mvn`."""
+    from sbmig.build import mvn as mvnmod
+    from sbmig.core.config import BuildConfig
+    home = tmp_path / "maven"
+    (home / "bin").mkdir(parents=True)
+    (home / "conf").mkdir()
+    (home / "bin" / "mvn").write_text("#!/bin/sh\n")
+    (home / "bin" / "m2.conf").write_text("x")
+    (home / "conf" / "settings.xml").write_text("<settings/>")
+    (tmp_path / "server.xml").write_text("<settings/>")
+    mvnmod._MAVEN_HOMES.clear()
+    b = BuildConfig(mvn=str(home / "bin" / "mvn"), settings_file=str(tmp_path / "server.xml"), **build)
+    return types.SimpleNamespace(remediation=RemediationConfig(), build=b)
+
+
+def test_boundary_project_settings_are_recorded_not_refused_by_default(tmp_path):
+    proj = _project(tmp_path, {"pom.xml": POM, ".mvn/maven.config": "-s .mvn/settings.nexus.xml -o\n",
+                               ".mvn/settings.nexus.xml": "<settings/>"})
+    [f] = intake.check_boundary(proj, _build_cfg(tmp_path), [])
+    assert (f.code, f.path, f.action) == ("project_maven_config", ".mvn/maven.config", "ignore")
+    assert f.detail == ("names its own Maven settings (-s .mvn/settings.nexus.xml), not used: every build used the "
+                        "server's settings; also turns on offline mode (-o): Maven downloads nothing")
+
+
+def test_boundary_project_global_settings_without_our_gs(tmp_path):
+    proj = _project(tmp_path, {"pom.xml": POM, ".mvn/maven.config": "-gs .mvn/global.nexus.xml\n"})
+    [f] = intake.check_boundary(proj, _build_cfg(tmp_path, ignore_project_settings=False), [])
+    assert f.detail == ("names its own Maven settings (-gs .mvn/global.nexus.xml), read by Maven as its global "
+                        "settings together with the server's")
+    [g] = intake.check_boundary(proj, _build_cfg(tmp_path / "b"), [])
+    assert g.detail.startswith("names its own Maven settings (-gs .mvn/global.nexus.xml), not used")

@@ -428,3 +428,29 @@ def test_build_env_withholds_this_servers_secrets(tmp_path, monkeypatch):
     env = runner.calls[0]["env"]
     assert "IVAS_PASSWORD" not in env and "IVAS_USER_ID" not in env and "LLM_API_KEY" not in env
     assert env["NEXUS_PASSWORD"] == "used-by-server-settings" and "MAVEN_OPTS" in env
+
+
+def test_remediation_builds_pass_the_maven_global_settings(tmp_path):
+    """The remediation's Maven calls carry `-gs <maven home>/conf/settings.xml` next to `-s`, so a `-gs` in the
+    project's .mvn/maven.config cannot add its mirrors."""
+    from sbmig.build import mvn as mvnmod
+    home = tmp_path / "server-maven"
+    (home / "bin").mkdir(parents=True)
+    (home / "conf").mkdir()
+    (home / "bin" / "mvn").write_text("#!/bin/sh\n")
+    (home / "bin" / "m2.conf").write_text("x")
+    (home / "conf" / "settings.xml").write_text("<settings/>")
+    mvnmod._MAVEN_HOMES.clear()
+    cfg = make_cfg(tmp_path, mvn=str(home / "bin" / "mvn"))
+    runner = FakeRunner()
+    project = write_project(tmp_path / "p")
+    (project / ".mvn").mkdir()
+    (project / ".mvn" / "maven.config").write_text("-gs .mvn/global.nexus.xml\n", encoding="utf-8")
+    gw = ServerMaven(cfg, runner, maven_probe=ok_probe)
+    gw.package(project, tmp_path / "a.log")
+    gw.resolve(project, tmp_path / "w")
+    assert runner.calls
+    for call in runner.calls:
+        cmd = call["cmd"]
+        i = cmd.index("-s")
+        assert cmd[i + 2:i + 4] == ["-gs", str(home / "conf" / "settings.xml")]

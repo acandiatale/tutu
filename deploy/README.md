@@ -393,6 +393,11 @@ PC 에서 시험한 파일을 그대로 `20-configmap.yaml` 의 `sbmig-config` �
 취약점 해결 실행도 같은 줄로 멈춘다. 웹 파드는 시작할 때 파일이 없거나 비어 있으면 WARNING 한 줄만 남기고 그대로 뜬다
 (`Maven settings file /data/.m2/settings.xml is missing — copy settings.xml there before the first run (deploy/README.md §3)`).
 
+**프로젝트가 자체 settings 를 지정해도 이 파일로 빌드한다.** 프로젝트의 `.mvn/maven.config` 에 `-s` / `-gs` 가 있어도 sbmig 은 모든 Maven 호출에
+`-s /data/.m2/settings.xml` 과 Maven 설치본의 전역 settings(`-gs <maven home>/conf/settings.xml`)를 넘기므로 프로젝트의 주소는 쓰이지 않는다
+(`build.ignore_project_settings`, 기본 true). 이관 보고서에는 플래그 `project-maven-settings-ignored` 와 인수인계 한 줄이 남고, 그 파일은 고치지 않는다.
+취약점 조치도 그런 프로젝트를 거절하지 않는다(`remediation.project_maven_config: ignore`, 기본값).
+
 **손으로 채운 매니페스트를 쓰는 배포에서 바꿀 것** (순서대로):
 
 1. 40(`40-deployment.yaml`):

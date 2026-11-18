@@ -7,7 +7,7 @@ sbmig가 실행하는 모든 mvn 명령이 이 모듈을 거친다.
 
 Shared Maven invocation helpers (used by MavenRunner and OpenRewriteRunner).
 
-* ``base_command(cfg)``  → ``[mvn, *extra_args, -s settings, -Dmaven.repo.local=…, -o]``
+* ``base_command(cfg)``  → ``[mvn, *extra_args, -s settings, -gs <maven home>/conf/settings.xml, -Dmaven.repo.local=…, -o]``
 * ``mvn_env(cfg)``       → inherited env + ``cfg.build.env`` + ``JAVA_HOME`` / ``PATH`` when ``java_home`` is set,
   ``MAVEN_OPTS`` += ``-Dstdout.encoding=UTF-8 -Dstderr.encoding=UTF-8`` (unless already set there)
 * ``run_logged(...)``    → runs a command in its own process group, streams merged stdout/stderr (ANSI stripped)
@@ -119,11 +119,215 @@ def base_command(cfg: Config) -> list[str]:
     # so a relative `config/settings.nexus.xml` would be looked up there and silently fall back to ~/.m2/settings.xml
     if not _blank(b.settings_file):
         cmd += ["-s", str(Path(b.settings_file).expanduser().absolute())]
+        # 프로젝트의 .mvn/maven.config에 있는 -gs가 Maven 전역 settings를 대신하지 못하도록 설치본의 파일을 명령줄에 준다
+        if getattr(b, "ignore_project_settings", True):
+            gs = maven_global_settings(cfg)
+            _log_global_settings(cmd[0], gs)
+            if gs is not None:
+                cmd += ["-gs", str(gs)]
     if not _blank(b.local_repo):
         cmd.append(f"-Dmaven.repo.local={Path(b.local_repo).expanduser().absolute()}")
     if b.offline:
         cmd.append("-o")
     return cmd
+
+
+# Maven 설치 폴더는 실행 파일마다 프로세스에서 한 번만 찾는다
+# One lookup per executable and process: filled by `maven_available` (the preflight's `mvn -v` prints `Maven home: …`),
+# else from the files beside the executable; None = not found (no `-gs`, never a guessed path).
+_MAVEN_HOMES: dict[str, Optional[Path]] = {}
+_MAVEN_HOME_LOGGED: set[str] = set()
+_MAVEN_HOME_RE = re.compile(r"^Maven home:\s*(.+?)\s*$", re.MULTILINE)
+
+
+def _home_beside(exe: Path) -> Optional[Path]:
+    """The Maven installation an executable belongs to: `<home>/bin/mvn` (symlinks followed) or a wrapper whose
+    installation is `<dir>/libexec` (Homebrew); recognised only by `bin/m2.conf` + `conf/settings.xml`."""
+    real = exe.resolve()
+    for cand in (real.parent.parent, real.parent.parent / "libexec"):
+        if (cand / "bin" / "m2.conf").is_file() and (cand / "conf" / "settings.xml").is_file():
+            return cand
+    return None
+
+
+def remember_maven_home(exe: str, version_text: str) -> Optional[Path]:
+    """``mvn -v`` 출력의 ``Maven home:`` 줄을 실행 파일별로 기억하고 그 경로를 반환한다.
+
+    Remember the `Maven home:` line of `mvn -v` for this executable (only when its `conf/settings.xml` exists)."""
+    m = _MAVEN_HOME_RE.search(version_text or "")
+    if not m:
+        return None
+    home = Path(m.group(1))
+    try:
+        if not (home / "conf" / "settings.xml").is_file():
+            return None
+    except OSError:
+        return None
+    _MAVEN_HOMES[exe] = home
+    return home
+
+
+def maven_home(cfg: Config) -> Optional[Path]:
+    """``build.mvn``이 실행하는 Maven의 설치 폴더를 반환한다. 찾지 못하면 None을 반환한다.
+
+    The installation behind `build.mvn` (resolved like every Maven call): the preflight's `Maven home:` when it ran,
+    else the installation beside the executable; cached per process. None when neither is found."""
+    exe = mvn_executable(cfg)
+    if exe in _MAVEN_HOMES:
+        return _MAVEN_HOMES[exe]
+    home: Optional[Path] = None
+    try:
+        p = Path(exe)
+        if p.is_absolute() and p.is_file():
+            home = _home_beside(p)
+    except OSError:
+        home = None
+    _MAVEN_HOMES[exe] = home
+    return home
+
+
+def maven_global_settings(cfg: Config) -> Optional[Path]:
+    """Maven 설치본의 전역 settings 파일(``<maven home>/conf/settings.xml``)을 반환한다. 없으면 None을 반환한다.
+
+    `<maven home>/conf/settings.xml`, the file Maven reads as global settings when nobody says otherwise; None when the
+    home is unknown or the file is missing."""
+    home = maven_home(cfg)
+    if home is None:
+        return None
+    f = home / "conf" / "settings.xml"
+    try:
+        return f if f.is_file() else None
+    except OSError:
+        return None
+
+
+def _log_global_settings(exe: str, gs: Optional[Path]) -> None:
+    if exe in _MAVEN_HOME_LOGGED:
+        return
+    _MAVEN_HOME_LOGGED.add(exe)
+    if gs is not None:
+        log.info("Maven global settings: %s (passed as -gs with -s, so a project's .mvn/maven.config cannot replace "
+                 "the server's settings)", gs)
+    else:
+        log.warning("Maven home of %s not found (no 'Maven home:' from mvn -v, no Maven installation beside the "
+                    "executable): builds pass -s only, a -gs in a project's .mvn/maven.config would still be read", exe)
+
+
+@dataclass
+class ProjectMavenSettings:
+    """프로젝트의 ``.mvn/maven.config``가 지정한 settings 관련 옵션을 담는 데이터 클래스.
+
+    The settings options of a project's `.mvn/maven.config`, each as written (an option with its value)."""
+    path: str
+    settings: list[str]
+    global_settings: list[str]
+    offline: list[str]
+
+    @property
+    def names_settings(self) -> bool:
+        return bool(self.settings or self.global_settings)
+
+    def shown(self) -> str:
+        return ", ".join([*self.settings, *self.global_settings])
+
+
+def _option_kind(tok: str) -> tuple[Optional[str], bool]:
+    """(kind, takes the next token) of one maven.config token: kind `s` / `gs` / `o` or None. Mirrors commons-cli as
+    Maven uses it: `-s x`, `-s=x`, `-sx`, `--settings[=x]`, unique long prefixes (`--sett`), single-dash long names."""
+    if tok.startswith("--"):
+        name, eq, _ = tok[2:].partition("=")
+        if len(name) >= 2 and "settings".startswith(name):
+            return "s", not eq
+        if len(name) >= 8 and "global-settings".startswith(name):
+            return "gs", not eq
+        if len(name) >= 2 and "offline".startswith(name) and not eq:
+            return "o", False
+        return None, False
+    if not tok.startswith("-") or len(tok) < 2:
+        return None, False
+    name, eq, _ = tok[1:].partition("=")
+    if name in ("s", "gs"):
+        return name, not eq
+    if len(name) >= 8 and "global-settings".startswith(name):
+        return "gs", not eq
+    if name.startswith("gs"):
+        return "gs", False
+    if name.startswith("s"):
+        return "s", not eq and len(name) >= 2 and "settings".startswith(name)
+    if name.startswith("o") and name.isalpha() and not eq:
+        return "o", False
+    return None, False
+
+
+def project_maven_settings(root: Path) -> Optional[ProjectMavenSettings]:
+    """프로젝트 루트의 ``.mvn/maven.config``에서 settings와 오프라인 옵션을 읽는다. 파일이 없으면 None을 반환한다.
+    파일은 바꾸지 않는다.
+
+    The `-s` / `--settings` / `-gs` / `--global-settings` / `-o` options of `<root>/.mvn/maven.config` (Maven 3.9
+    reads one argument per line and skips `#` lines; words of a line are split too, as older Maven did); None when the file is missing or unreadable. Never writes."""
+    p = Path(root) / ".mvn" / "maven.config"
+    try:
+        if not p.is_file():
+            return None
+        with open(p, "rb") as fh:
+            text = fh.read(256 * 1024).decode("utf-8", errors="replace")
+    except OSError:
+        return None
+    # Maven 3.9는 한 줄을 인자 하나로 읽고 '#'으로 시작하는 줄은 건너뛴다
+    toks = [w for ln in text.splitlines() if not ln.strip().startswith("#") for w in ln.split()]
+    out = ProjectMavenSettings(path=".mvn/maven.config", settings=[], global_settings=[], offline=[])
+    i = 0
+    while i < len(toks):
+        kind, takes_next = _option_kind(toks[i])
+        shown = toks[i]
+        if takes_next and i + 1 < len(toks):
+            shown = f"{toks[i]} {toks[i + 1]}"
+            i += 1
+        if kind == "s":
+            out.settings.append(shown)
+        elif kind == "gs":
+            out.global_settings.append(shown)
+        elif kind == "o":
+            out.offline.append(shown)
+        i += 1
+    return out
+
+
+def project_settings_ignored(cfg: Config, found: ProjectMavenSettings) -> bool:
+    """프로젝트가 지정한 settings가 이번 실행의 Maven 명령에서 무시되는지 판단한다.
+
+    True when every Maven call of this run overrides what the project names: `-s` is passed (`build.settings_file`),
+    and for a project `-gs` also our `-gs` (switch on, Maven home found)."""
+    b = cfg.build
+    if _blank(b.settings_file):
+        return False
+    if not found.global_settings:
+        return True
+    return bool(getattr(b, "ignore_project_settings", True)) and maven_global_settings(cfg) is not None
+
+
+def project_settings_note(cfg: Config, found: Optional[ProjectMavenSettings]) -> Optional[tuple[str, str]]:
+    """프로젝트의 ``.mvn/maven.config``가 settings를 지정했을 때 (플래그, 인수인계 줄)을 반환한다.
+    ``build.settings_file``이 없거나 settings 옵션이 없으면 None을 반환한다.
+
+    (flag, Handover line) for a project whose `.mvn/maven.config` names settings; None without `build.settings_file`
+    (Maven's own settings, as before) or without settings options."""
+    if found is None or not found.names_settings or _blank(cfg.build.settings_file):
+        return None
+    head = f"the project's .mvn/maven.config points Maven at its own settings ({found.shown()}): "
+    if project_settings_ignored(cfg, found):
+        flag, line = ("project-maven-settings-ignored",
+                      head + "ignored here — every build of this run used the server's settings")
+    else:
+        why = ("build.ignore_project_settings is false" if not getattr(cfg.build, "ignore_project_settings", True)
+               else "Maven home not found, so no -gs was passed")
+        flag, line = ("project-maven-settings-used",
+                      head + f"Maven read them in this run as its global settings, merged with the server's ({why})")
+    if found.offline and not cfg.build.offline:
+        line += (f". The same file also turns on offline mode ({', '.join(found.offline)}), which the command line "
+                 "cannot switch off: Maven downloads nothing in this run and builds only from what the local "
+                 "repository already holds")
+    return flag, line
 
 
 _CATCH_ALL_MIRROR_RE = re.compile(r"<mirrorOf>\s*(\*|external:\*|external:http:\*)\s*</mirrorOf>")
@@ -404,6 +608,7 @@ def maven_available(cfg: Config) -> tuple[bool, str]:
     out = strip_ansi(cp.stdout + cp.stderr)
     if cp.returncode != 0:
         return False, out.strip().splitlines()[-1] if out.strip() else f"mvn -v exited {cp.returncode}"
+    remember_maven_home(cmd[0], out)       # 빌드마다 mvn -v를 다시 실행하지 않도록 설치 폴더를 기억한다
     maven = next((ln.strip() for ln in out.splitlines() if ln.startswith("Apache Maven")), out.strip()[:80])
     line = next((ln.strip() for ln in out.splitlines() if ln.startswith("Java version")), "")
     # "Java version: 21.0.1, vendor: …, runtime: C:\jdk-21" → keep the version and the runtime home (the jdk-not-21

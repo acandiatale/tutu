@@ -330,6 +330,17 @@ review", fix attempts as `script:<case>:v<N>`; `ko`, the company setting: the re
   - Left to the user: a second web pod is not detected (`replicas: 1` + `Recreate` in 40 are the control, the user
     manages it by yaml); retention of old run folders ("회의 나눠보기로 해서 아직 안나왔구"); build leftovers outside
     `target/` in `result.zip`.
+- **A project's own Maven settings are ignored (2026-11-18).** A company project carried `.mvn/settings.nexus.xml` and a
+  `.mvn/maven.config` pointing at it; the builds asked only the Nexus `maven-central` repository and the remediation
+  refused the project. The user: "우리도 프로젝트 안에 있는 주소는 무시하도록 하면 안될까? 굳이 해당 설정에 막히는건 좀
+  아닌거 같은데". Measured with real Maven 3.9.10 before deciding anything: a `-s` in `.mvn/maven.config` loses to our
+  `-s`; a `-gs` there is read as the global settings and merged with ours (the hole); a `-D` there loses to ours. So
+  every Maven command passes `-gs <maven home>/conf/settings.xml` beside `-s` (`build.ignore_project_settings`, default
+  true), the migration notes it once (flag `project-maven-settings-ignored`, one hand-over line), and
+  `remediation.project_maven_config` defaults to `ignore`. The project's file is never edited. Open: Maven 3.9 reads
+  one argument per line of `maven.config` — a 3.8-style file (`-gs <path>` or several options on one line) stops Maven
+  with "Unable to parse maven.config file options"; whether sbmig may rewrite such a file is the user's call (I told
+  them the file is not touched); `.mvn/extensions.xml` and `.mvn/jvm.config` still act on the build.
 - **Disk walls for test runs (2026-11-17)**: a review subagent's scratch test (a writer thread with no size or time
   limit) wrote one 118 GB file and filled the developer's disk. A rule in a brief is a promise; these are the walls.
   The root `conftest.py` gives every pytest run whose tests are under the repository a per-file size cap

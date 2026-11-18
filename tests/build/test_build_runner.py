@@ -66,7 +66,9 @@ def script(tmp_path: Path, name: str, body: str) -> str:
 
 
 # ------------------------------------------------------------------------------------------------ composition
-def test_command_env_and_cwd_composition(ws, cfg, fake, tmp_path):
+def test_command_env_and_cwd_composition(ws, cfg, fake, tmp_path, monkeypatch):
+    # the Maven global settings beside -s (a project .mvn/maven.config -gs cannot replace them); pinned, not this host's
+    monkeypatch.setattr(mvn_mod, "maven_global_settings", lambda c: Path("/opt/maven/conf/settings.xml"))
     cfg.build.skip_test_compile = False                  # v2 default is on (-Dmaven.test.skip=true); test -DskipTests
     cfg.build.settings_file = "/etc/m2/settings.xml"
     cfg.build.local_repo = str(tmp_path / "repo")
@@ -76,7 +78,7 @@ def test_command_env_and_cwd_composition(ws, cfg, fake, tmp_path):
     res = MavenRunner(ws, cfg).run("clean package", extra_args=["-pl", "core"], label="verify")
     call = fake.calls[0]
     assert call["cmd"] == [mvn_mod.mvn_executable(cfg), "-B", "-ntp", "-Dstyle.color=never", "-s", "/etc/m2/settings.xml",
-                           f"-Dmaven.repo.local={tmp_path / 'repo'}", "-o", "clean", "package", "-pl", "core",
+                           "-gs", "/opt/maven/conf/settings.xml", f"-Dmaven.repo.local={tmp_path / 'repo'}", "-o", "clean", "package", "-pl", "core",
                            "-DskipTests"]
     assert res.command == call["cmd"]
     assert call["cwd"] == str(ws.root)

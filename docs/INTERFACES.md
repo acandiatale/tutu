@@ -4781,6 +4781,26 @@ says otherwise, this one counts.
   restart the web pod.
 - *The "pod does not start" notice* waits 300 seconds by default (`SBMIG_JOB_PENDING_NOTICE_S`): on the company cluster a
   healthy build pod needs more than three minutes to start.
+- *A project's own Maven settings are not used.* A project may carry `.mvn/maven.config` (the `mvn` launcher reads it
+  from the project root by itself) pointing at a settings file of its own. Measured with Maven 3.9: a `-s` there loses
+  to the `-s` on the command line, a `-gs` there was read as the global settings and merged with the server's. Every
+  Maven command sbmig builds (`sbmig.build.mvn.base_command`: the build, OpenRewrite, `dependency:tree`,
+  `help:effective-pom`, the classpath and jar checks, the remediation's builds) now passes
+  `-gs <maven home>/conf/settings.xml` whenever it passes `-s` (`build.ignore_project_settings`, default true; false =
+  the command line without `-gs`). The Maven home is the `Maven home:` line of the preflight's `mvn -v`, else the
+  installation beside the resolved executable; when it cannot be found no `-gs` is passed (one WARNING), never a
+  guessed path. Without `build.settings_file` nothing changes. A `-D` of the project's file also loses to the same
+  `-D` on the command line (the local repository). The migration says so once: journal `project_maven_settings`, flag
+  `project-maven-settings-ignored` and the hand-over line "the project's .mvn/maven.config points Maven at its own
+  settings (<what it says>): ignored here — every build of this run used the server's settings" (flag
+  `project-maven-settings-used` and "… Maven read them in this run as its global settings, merged with the server's
+  (…)" when no `-gs` could be passed; one more sentence when the file turns on offline mode, which the command line
+  cannot take back). The project's file is delivered as its owners wrote it; the exit code does not change.
+  `remediation.project_maven_config` defaults to `ignore`: a project with `.mvn/maven.config` / `jvm.config` /
+  `extensions.xml` is no longer refused; the finding is one line in the report's 처리 기록, never under 해야 할 일
+  (`refuse` still works for an operator who sets it). Not closed: `.mvn/extensions.xml` and `.mvn/jvm.config` still act
+  on the build (both flows), and Maven 3.9 reads ONE argument per line of `maven.config` (a file written for 3.8 with
+  `-gs <path>` or several options on one line makes Maven stop with "Unable to parse maven.config file options").
 
 **Left as they are** (the owner's decisions): a second web pod is not detected (the Deployment's `replicas: 1` and
 `strategy: Recreate` are what keeps it at one: do not change them); no retention of old run folders; untracked leftovers

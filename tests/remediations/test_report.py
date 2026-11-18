@@ -707,3 +707,21 @@ def test_summary_leaves_out_an_empty_approval_row(tmp_path):
     glance = _section(report.build_report_md(state, paths), "요약")
     assert "| 승인 대기 |" not in glance and "| 조치 전 |" in glance and "| 조치 완료 |" in glance
     assert "| 조치 후 남은 취약점 |" in glance
+
+
+def test_project_settings_are_one_calm_line_in_the_record(tmp_path):
+    b = [BoundaryFinding(code="project_maven_config", path=".mvn/maven.config", action="ignore",
+                         detail="names its own Maven settings (-s .mvn/settings.nexus.xml), not used: every build used "
+                                "the server's settings"),
+         BoundaryFinding(code="settings_in_project", path="settings.xml", action="ignore",
+                         detail="the server's settings.xml is the only one used")]
+    out, paths = _run(tmp_path, **{**_fixing(), "intake": FakeIntakeFns(boundary=b)})
+    md = paths.report_md.read_text(encoding="utf-8")
+    assert ("- `.mvn/maven.config` — .mvn 설정 파일: 기록만 함 — 프로젝트에 들어 있는 Maven 설정"
+            "(-s .mvn/settings.nexus.xml)은 사용하지 않고 서버의 설정으로 빌드했습니다.") in md
+    assert ("- `settings.xml` — 프로젝트 안의 settings.xml: 기록만 함 — 프로젝트에 들어 있는 Maven 설정 파일은 "
+            "사용하지 않고 서버의 설정으로 빌드했습니다.") in md
+    assert sum("maven.config" in ln for ln in md.splitlines()) == 1
+    todo = md.split("## 해야 할 일", 1)[1].split("\n## ", 1)[0] if "## 해야 할 일" in md else ""
+    assert "settings" not in todo and "maven.config" not in todo and "설정 파일" not in todo
+    assert "제거한 뒤" not in md and "원문:" not in md.split("빌드 설정 점검", 1)[1].split("</details>", 1)[0]

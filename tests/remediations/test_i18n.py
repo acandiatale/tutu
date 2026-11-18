@@ -275,6 +275,11 @@ SAMPLES: list[tuple[str, str, list[str]]] = [
     ("components_unbuilt", "remediation components cannot be built (RuntimeError)", ["RuntimeError"]),
     ("boundary_symlink", "symbolic link in the project", []),
     ("boundary_settings", "the server's settings.xml is the only one used", []),
+    ("boundary_project_settings_ignored", ("names its own Maven settings (-s .mvn/settings.nexus.xml), not used: every "
+     "build used the server's settings"), ["-s .mvn/settings.nexus.xml"]),
+    ("boundary_project_settings_used", ("names its own Maven settings (-gs .mvn/g.xml), read by Maven as its global "
+     "settings together with the server's"), ["-gs .mvn/g.xml"]),
+    ("boundary_project_offline", "also turns on offline mode (-o): Maven downloads nothing", ["-o"]),
     ("boundary_wrapper", "the server's Maven is used; the wrapper is never run", []),
     ("boundary_host", "host repo.example.invalid not approved: https://repo.example.invalid/maven2",
      ["repo.example.invalid", "https://repo.example.invalid/maven2"]),

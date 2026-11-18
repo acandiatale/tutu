@@ -1175,6 +1175,20 @@ PATTERNS: dict[str, list[tuple[re.Pattern[str], Union[str, Callable[[re.Match[st
                 + (f"(프로젝트 코드는 `{m.group('f')}` 타입을 넘깁니다)" if m.group("f") else "")
                 + ". 어느 클래스인지 찾지 못했습니다. 모듈의 클래스패스(mvn dependency:tree)에서 javax 기준 라이브러리를 찾아 "
                 "Jakarta 빌드로 올려 주세요.")),
+    # 프로젝트의 .mvn/maven.config가 자기 settings를 가리킬 때의 안내다. 서버 설정으로 빌드했는지, 섞였는지를 알린다
+    ((r"^the project's \.mvn/maven\.config points Maven at its own settings \((?P<what>.+?)\): (?:ignored here — "
+      r"every build of this run used the server's settings|Maven read them in this run as its global settings, merged "
+      r"with the server's \((?P<why>build\.ignore_project_settings is false|Maven home not found, so no -gs was "
+      r"passed)\))(?:\. The same file also turns on offline mode \((?P<off>[^)]+)\), which the command line cannot "
+      r"switch off: Maven downloads nothing in this run and builds only from what the local repository already holds)?$"),
+     lambda m: (f"프로젝트의 `.mvn/maven.config`가 자체 Maven 설정을 가리키고 있습니다({m.group('what')}). "
+                + ("이번 실행에서는 이 설정을 쓰지 않고 서버의 설정으로만 빌드했습니다."
+                   if not m.group("why") else
+                   "이번 실행에서 Maven이 이 설정을 서버의 설정과 함께 읽었습니다("
+                   + ("build.ignore_project_settings가 false입니다" if (m.group("why") or "").startswith("build.")
+                      else "Maven 설치 위치를 찾지 못해 서버의 전역 설정을 지정하지 못했습니다") + ").")
+                + (f" 같은 파일에 오프라인 모드({m.group('off')})가 켜져 있어 Maven이 아무것도 내려받지 않고 로컬 "
+                   "저장소에 있는 것만으로 빌드했습니다." if m.group("off") else ""))),
     ((r"^bundled jar `(?P<j>[^`]+)` provides package `(?P<p>[^`]+)` needed by `(?P<pom>[^`]+)`, but the repository did "
       r"not answer whether it has `(?P<c>[^`]+)` \((?P<why>.+)\) — not wired and not called missing; not a project problem: "
       r"check the repository and the network, then rerun$"),
