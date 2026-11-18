@@ -24,8 +24,15 @@ and point `build.settings_file` at it: its `<mirrorOf>external:*</mirrorOf>` rew
 the poms' included — to the group, and Maven's default `http://` blocker is overridden for it. sbmig passes `-s` to
 every Maven call, and with it `-gs <maven home>/conf/settings.xml` (`build.ignore_project_settings`, default true; the
 home comes from the preflight's `mvn -v`, else from the installation beside `build.mvn`; not found → no `-gs`), so
-settings a project names in its `.mvn/maven.config` (`-s` or `-gs`) are never used; the run notes it (flag
-`project-maven-settings-ignored`, one Handover line) and leaves the file as it is. The pom URLs are still read for the jakarta-library lookup (`sbmig repo-probe` lists them unless
+settings a project names in its `.mvn/maven.config` (`-s` or `-gs`) are never used. Beyond that, Maven reads no part
+of a project's `.mvn/` folder (`build.ignore_project_mvn`, default true): every Maven call gets `MAVEN_BASEDIR=<an empty
+folder of the sbmig process, in the system temp folder>`, so a JDK 8 `jvm.config` (`-XX:MaxPermSize`), a Maven 3.8
+style `maven.config` (several options on one line) or an `extensions.xml` cannot stop or change the build; the `-D` /
+`-P` options of the `maven.config` Maven would have found are passed on the command line (before sbmig's own `-D`, so
+sbmig's win; never `maven.repo.local`, `maven.multiModuleProjectDirectory`, `maven.test.skip`, `skipTests`), and
+`-Dmaven.multiModuleProjectDirectory=<project root>` gives the poms their root back. The run notes it once (flag
+`project-mvn-ignored`, one Handover line, journal `project_mvn`; with the switch off: flag
+`project-maven-settings-ignored` for settings named there) and the folder is delivered byte for byte. The pom URLs are still read for the jakarta-library lookup (`sbmig repo-probe` lists them unless
 the mirror covers them).
 
 If a build says an artifact "was cached from a remote repository ID that is unavailable in current build context",

@@ -210,7 +210,7 @@ deny·후보 없음·적용 안 된 제안) 없음, 최종 검사에 조치 대�
 | `remediation.failed_candidate` | 후보 빌드 실패: `include`(기본, 실패한 수정본도 결과 ZIP) / `discard`. 2절 |
 | `remediation.ignore_actions` | 계획에서 뺄 IVAS 조치 코드(2절, 정책 해시에 들어감) |
 | `remediation.chain_budget_minutes` | 이어 돈 조치의 파드당 시간 한도(기본 90분, 0 = 없음) |
-| `remediation.project_maven_config` | `.mvn/maven.config` · `jvm.config` · `extensions.xml` 이 있을 때 ignore(기본, 기록만) / refuse. 프로젝트가 정한 settings 는 명령줄 `-s` · `-gs` 가 덮는다 |
+| `remediation.project_maven_config` | `.mvn/maven.config` · `jvm.config` · `extensions.xml` 이 있을 때 ignore(기본, 기록만) / refuse. 빌드는 그 폴더를 읽지 않는다(`build.ignore_project_mvn`) |
 | `remediation.maven_wrapper` | `mvnw` 가 있을 때(서버 Maven 만 쓰므로 기본 ignore) |
 | `remediation.allowed_repository_hosts` | 승인된 저장소 호스트. 비우면 서버 settings.xml 의 미러·저장소 호스트 |
 | `remediation.foreign_repository` | pom 이 승인 안 된 호스트 저장소를 선언할 때 |
@@ -224,7 +224,7 @@ deny·후보 없음·적용 안 된 제안) 없음, 최종 검사에 조치 대�
 | `remediation.policy.allow_prerelease` / `remediation.policy.allow_major` | 시험판 허용 / 메이저 변경 제안 허용 |
 
 Maven 쪽은 이관과 같은 키를 쓴다: `build.mvn`, `build.java_home`, `build.settings_file`(조치에서는 필수), `build.local_repo`, `build.extra_args`
-(TLS 끄기·다른 `-s` / `-f` 가 있으면 빼지 않고 준비 안 됨, 인자 이름을 적는다), `build.ignore_project_settings`(기본 true, 설치본 전역 settings 를 `-gs` 로). 로컬 저장소는 1.1.
+(TLS 끄기·다른 `-s` / `-f` 가 있으면 빼지 않고 준비 안 됨, 인자 이름을 적는다), `build.ignore_project_settings`, `build.ignore_project_mvn`(이관과 같은 환경·옵션). 로컬 저장소는 1.1.
 
 ## 8. 고칠 자리
 

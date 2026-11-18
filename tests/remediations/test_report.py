@@ -709,6 +709,22 @@ def test_summary_leaves_out_an_empty_approval_row(tmp_path):
     assert "| 조치 후 남은 취약점 |" in glance
 
 
+def test_mvn_folder_not_used_is_one_calm_line_in_the_record(tmp_path):
+    b = [BoundaryFinding(code="project_maven_config", path=".mvn/maven.config", action="ignore",
+                         detail="not used: the build did not read the project's .mvn folder; carried over to the "
+                                "command line: -Drevision=1.2.3 -Pci"),
+         BoundaryFinding(code="project_maven_config", path=".mvn/jvm.config", action="ignore",
+                         detail="not used: the build did not read the project's .mvn folder")]
+    out, paths = _run(tmp_path, **{**_fixing(), "intake": FakeIntakeFns(boundary=b)})
+    md = paths.report_md.read_text(encoding="utf-8")
+    assert ("- `.mvn/maven.config` — .mvn 설정 파일: 기록만 함 — 프로젝트의 .mvn 폴더는 빌드에 사용하지 않았습니다. "
+            "이 파일의 -Drevision=1.2.3 -Pci 옵션은 명령줄로 넘겨 빌드에 반영했습니다.") in md
+    assert "- `.mvn/jvm.config` — .mvn 설정 파일: 기록만 함 — 프로젝트의 .mvn 폴더는 빌드에 사용하지 않았습니다." in md
+    todo = md.split("## 해야 할 일", 1)[1].split("\n## ", 1)[0] if "## 해야 할 일" in md else ""
+    assert ".mvn" not in todo and "maven.config" not in todo
+    assert _detached(md) == []
+
+
 def test_project_settings_are_one_calm_line_in_the_record(tmp_path):
     b = [BoundaryFinding(code="project_maven_config", path=".mvn/maven.config", action="ignore",
                          detail="names its own Maven settings (-s .mvn/settings.nexus.xml), not used: every build used "

@@ -16,7 +16,7 @@ from collections.abc import Iterable, Sequence
 from pathlib import Path
 
 from sbmig.build.log_parser import parse_maven_log
-from sbmig.build.mvn import base_command, mvn_env, run_logged
+from sbmig.build.mvn import base_command, mvn_env, run_logged, with_project_mvn
 from sbmig.build.runner import negative_cache_hits
 from sbmig.core.config import Config
 from sbmig.core.interfaces import KnowledgeBaseLike
@@ -552,6 +552,8 @@ class OpenRewriteRunner:
             return res
         coords = [f"{ga}:{v}" for ga, v in versions.items()]
         cmd = self.command(config_path, coords, dry_run=dry_run, fork=fork, extra_args=getattr(self, "_extra_args", ()))
+        # Maven이 프로젝트 .mvn을 읽지 않으므로 maven.config의 -D / -P와 프로젝트 루트를 명령에 넣는다
+        cmd = with_project_mvn(self.cfg, cmd, cwd, top=self.ws.root)
         goal = cmd[[i for i, c in enumerate(cmd) if c.startswith(PLUGIN_GA)][0]].rsplit(":", 1)[-1]
         forked = goal in ("run", "dryRun")
         head_before = None if dry_run else self._head()

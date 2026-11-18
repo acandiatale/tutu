@@ -36,7 +36,7 @@ from lxml import etree
 from sbmig.core.config import Config
 from sbmig.core.workspace import Workspace, logs_dir
 
-from .mvn import base_command, mvn_env, run_logged
+from .mvn import base_command, mvn_env, run_logged, with_project_mvn
 from .runner import negative_cache_hits
 
 log = logging.getLogger("sbmig.build.effective")
@@ -182,6 +182,7 @@ def capture_effective_depmgmt(ws: Workspace, cfg: Config, module: Optional[str] 
         if module:
             cmd += ["-pl", module]
         cmd += [f"{HELP_PLUGIN}:effective-pom", f"-Doutput={xml_path}", "-q"]
+        cmd = with_project_mvn(cfg, cmd, ws.root, top=ws.root)     # 프로젝트 .mvn 대신 옮겨 넘길 옵션을 넣는다
         log_path = ws.new_log_path(f"effective-pom-{stem}")
         pr = run_logged(cmd, cwd=ws.root, env=mvn_env(cfg), log_path=log_path, timeout_s=EFFECTIVE_TIMEOUT_S)
         if pr.exit_code != 0 and not xml_path.is_file() and getattr(cfg.build, "retry_negative_cache", True) \

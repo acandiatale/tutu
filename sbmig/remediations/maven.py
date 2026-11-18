@@ -9,14 +9,17 @@
   Maven 설치본의 전역 settings도 ``-gs``로 넘겨 프로젝트가 지정한 settings를 무시한다
 - ``build.extra_args``에 TLS 검증을 끄는 옵션이나 다른 ``-s`` / ``-f``가 있으면 빌드하지 않는다
 - 모든 명령에 ``-Dmaven.test.skip=true``를 붙인다
-- Maven은 프로젝트의 ``.mvn/`` 설정을 끌 수 없으므로 빌드할 때마다 WARNING과 저널 ``maven_project_config``를
-  남긴다(``remediation.project_maven_config: ignore``, 기본값). ``refuse``이면 접수 단계에서 거절한다
+- 이관과 같이 Maven이 프로젝트의 ``.mvn/`` 폴더를 읽지 않게 하고(``build.ignore_project_mvn``), maven.config의
+  ``-D`` / ``-P``만 명령줄로 넘긴다. 빌드할 때마다 저널 ``maven_project_config``를 남기고, ``refuse``이면 접수
+  단계에서 거절한다
 
 Server-managed Maven for the remediation flow: package builds, `dependency:tree` resolution and the jars inside the
 built war / executable jar. Never the project's wrapper, always the server settings.xml, tests never run, insecure TLS
-flags stripped. `.mvn/` cannot be disabled on Maven 3.9 (the launcher always reads it from the first ancestor holding
-`.mvn`); settings it names are overridden by the command line (`-s` + `-gs`, `sbmig.build.mvn.base_command`), every build
-logs a warning (`remediation.project_maven_config: ignore`, the default), and `refuse` makes the intake refuse it.
+flags stripped. The project's `.mvn/` is out of the way like in the migration (`build.ignore_project_mvn`: the
+empty `MAVEN_BASEDIR` of `sbmig.build.mvn.mvn_env`, the `-D` / `-P` of its maven.config carried over by
+`with_project_mvn`, insecure TLS properties never); every build journals `maven_project_config` (`read` false), and
+`remediation.project_maven_config: refuse` makes the intake refuse it. With the switch off Maven reads the folder and
+every build logs a warning.
 """
 from __future__ import annotations
 
@@ -33,7 +36,8 @@ from urllib.parse import urlsplit
 
 from sbmig.build.deptree import DEPENDENCY_PLUGIN, TreeNode, parse_tree
 from sbmig.build.env_errors import http_blocked_followup, http_blocker_hit
-from sbmig.build.mvn import ProcessResult, base_command, maven_available, mvn_env, run_logged
+from sbmig.build.mvn import (ProcessResult, base_command, ignore_project_mvn, maven_available, mvn_env, run_logged,
+                             with_project_mvn)
 from sbmig.build.repo_versions import is_blocking_mirror, read_settings
 
 from .interfaces import Journal, StopCheck
@@ -293,9 +297,16 @@ class ServerMaven:
         cmd = [a for a in [exe, *extra, *rest, *goals] if a != TEST_SKIP] + [TEST_SKIP]
         return cmd, ""
 
+    def _with_project_mvn(self, cmd: list[str], cwd: Path, project: Path) -> list[str]:
+        """이관과 같이 프로젝트 ``maven.config``의 ``-D`` / ``-P``와 프로젝트 루트를 명령에 넣는다.
+        TLS 검증을 약하게 하는 속성은 프로젝트에서 왔어도 넣지 않는다."""
+        out = with_project_mvn(self.cfg, cmd, Path(cwd), top=Path(project))
+        return [a for a in out if not _INSECURE_RE.match(a)]
+
     def _check_project_mvn(self, project: Path) -> None:
-        """프로젝트에 ``.mvn`` 설정 파일이 있으면 WARNING과 저널을 남긴다.
-        Maven처럼 상위 폴더로 올라가며 ``.mvn``이 있는 첫 폴더를 찾는다."""
+        """프로젝트에 ``.mvn`` 설정 파일이 있으면 로그와 저널을 남긴다.
+        Maven처럼 상위 폴더로 올라가며 ``.mvn``이 있는 첫 폴더를 찾는다.
+        ``build.ignore_project_mvn``이면 Maven이 읽지 않으므로 INFO, 아니면 WARNING으로 남긴다."""
         cur = Path(project).resolve()
         for d in [cur, *cur.parents]:
             mvn_dir = d / ".mvn"
@@ -303,13 +314,19 @@ class ServerMaven:
                 found = [f".mvn/{n}" for n in _PROJECT_MVN_FILES if (mvn_dir / n).exists()]
                 if found:
                     where = "project" if d == cur else "an ancestor of the project"
-                    log.warning("remediation build: %s in %s — Maven 3.9 reads these files and they cannot be disabled; "
-                                "remediation.project_maven_config=%s", ", ".join(found), where,
-                                getattr(self.cfg.remediation, "project_maven_config", "?"))
+                    read = not ignore_project_mvn(self.cfg)
+                    if read:
+                        log.warning("remediation build: %s in %s — Maven reads these files (build.ignore_project_mvn "
+                                    "is false); remediation.project_maven_config=%s", ", ".join(found), where,
+                                    getattr(self.cfg.remediation, "project_maven_config", "?"))
+                    else:
+                        log.info("remediation build: %s in %s — not read by Maven (MAVEN_BASEDIR); the -D / -P options "
+                                 "of maven.config are passed on the command line", ", ".join(found), where)
                     if self.journal:
                         try:
                             self.journal({"event": "maven_project_config", "files": found, "where": where,
-                                          "policy": getattr(self.cfg.remediation, "project_maven_config", "")})
+                                          "policy": getattr(self.cfg.remediation, "project_maven_config", ""),
+                                          "read": read})
                         except Exception:       # noqa: BLE001 - journal is best effort
                             pass
                 return
@@ -401,7 +418,7 @@ class ServerMaven:
         out: BuildOutcome | None = None
         for target, cwd, args in runs:
             lp = lp0 if len(runs) == 1 else lp0.with_name(f"{lp0.stem}-{target.replace('/', '_')}{lp0.suffix}")
-            cmd = [*cmd0[:-1], *args, cmd0[-1]]
+            cmd = self._with_project_mvn([*cmd0[:-1], *args, cmd0[-1]], cwd, project)
             t0 = time.monotonic()
             try:
                 pr = self._run_with_update_retry(cmd, cwd, lp, timeout_s)
@@ -467,8 +484,9 @@ class ServerMaven:
                 last_text = ""
                 for attempt, extra in enumerate(([], pkg)):
                     out_file.unlink(missing_ok=True)
-                    cmd = [*cmd0[:-1], *args, *extra, f"{DEPENDENCY_PLUGIN}:tree", f"-DoutputFile={out_file}",
-                           "-DappendOutput=true", TEST_SKIP]
+                    cmd = self._with_project_mvn([*cmd0[:-1], *args, *extra, f"{DEPENDENCY_PLUGIN}:tree",
+                                                  f"-DoutputFile={out_file}", "-DappendOutput=true", TEST_SKIP],
+                                                 cwd, project)
                     try:
                         pr = self._run_with_update_retry(cmd, cwd, work / f"deptree{tag}-{attempt + 1}.log",
                                                          RESOLVE_TIMEOUT_S)

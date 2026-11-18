@@ -238,6 +238,18 @@ def test_project_mvn_config_is_journaled(tmp_path):
     ServerMaven(cfg, FakeRunner(), maven_probe=ok_probe, journal=events.append).package(project, tmp_path / "a.log")
     assert events and events[0]["event"] == "maven_project_config" and events[0]["files"] == [".mvn/maven.config"]
     assert events[0]["policy"] == "ignore"
+    assert events[0]["read"] is False                    # build.ignore_project_mvn: Maven does not read the folder
+
+
+def test_project_mvn_config_read_when_switched_off(tmp_path):
+    project = write_project(tmp_path / "p")
+    (project / ".mvn").mkdir()
+    (project / ".mvn" / "jvm.config").write_text("-Xmx1g\n", encoding="utf-8")
+    events: list[dict] = []
+    cfg = make_cfg(tmp_path)
+    cfg.build.ignore_project_mvn = False
+    ServerMaven(cfg, FakeRunner(), maven_probe=ok_probe, journal=events.append).package(project, tmp_path / "a.log")
+    assert events[0]["files"] == [".mvn/jvm.config"] and events[0]["read"] is True
 
 
 # ---------------------------------------------------------------------------- readiness / hosts

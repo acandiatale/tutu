@@ -441,6 +441,8 @@ class BuildConfig(BaseModel):
     settings_file: Optional[str] = None
     # settings_file을 넘길 때 Maven 설치본의 전역 settings도 -gs로 넘겨 프로젝트 .mvn/maven.config의 settings를 무시한다
     ignore_project_settings: bool = True
+    # 프로젝트의 .mvn 폴더(jvm.config, maven.config, extensions.xml)를 Maven이 읽지 않게 MAVEN_BASEDIR에 빈 폴더를 준다
+    ignore_project_mvn: bool = True
     local_repo: Optional[str] = None
     java_home: Optional[str] = None                     # JDK 21 home; None → inherit
     offline: bool = False

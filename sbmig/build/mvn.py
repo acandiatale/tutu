@@ -9,7 +9,10 @@ Shared Maven invocation helpers (used by MavenRunner and OpenRewriteRunner).
 
 * ``base_command(cfg)``  → ``[mvn, *extra_args, -s settings, -gs <maven home>/conf/settings.xml, -Dmaven.repo.local=…, -o]``
 * ``mvn_env(cfg)``       → inherited env + ``cfg.build.env`` + ``JAVA_HOME`` / ``PATH`` when ``java_home`` is set,
-  ``MAVEN_OPTS`` += ``-Dstdout.encoding=UTF-8 -Dstderr.encoding=UTF-8`` (unless already set there)
+  ``MAVEN_OPTS`` += ``-Dstdout.encoding=UTF-8 -Dstderr.encoding=UTF-8`` (unless already set there),
+  ``MAVEN_BASEDIR`` = an empty folder of this process (``build.ignore_project_mvn``; never inherited)
+* ``with_project_mvn(cfg, cmd, cwd, top)`` → the `-D` / `-P` of the project's ``.mvn/maven.config`` and
+  ``-Dmaven.multiModuleProjectDirectory=<root>`` right after the executable
 * ``run_logged(...)``    → runs a command in its own process group, streams merged stdout/stderr (ANSI stripped)
   to a log file as it arrives, enforces a timeout by killing the whole group.
 
@@ -27,7 +30,7 @@ import subprocess
 import threading
 import time
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
@@ -64,10 +67,51 @@ def with_utf8_output(maven_opts: str | None) -> str:
     return opts
 
 
+def ignore_project_mvn(cfg: Any) -> bool:
+    """프로젝트의 ``.mvn/`` 폴더를 Maven이 읽지 않게 하는지(``build.ignore_project_mvn``) 반환한다.
+
+    `build.ignore_project_mvn` (default true): Maven reads no `.mvn/` folder of the project."""
+    return bool(getattr(getattr(cfg, "build", None), "ignore_project_mvn", True))
+
+
+# 프로세스마다 빈 폴더 하나를 만들어 모든 Maven 호출이 같이 쓰고, 종료할 때 지운다
+# One empty folder per process (the system temp folder: never inside a project tree, and `mvn.cmd` takes any path);
+# made on first use, made again when something removed it, removed at interpreter exit. It is only ever read by the
+# launcher (`$MAVEN_BASEDIR/.mvn/jvm.config`, missing) and by Maven (`.mvn/maven.config`, `.mvn/extensions.xml`, missing).
+_BASEDIR: Optional[Path] = None
+_BASEDIR_LOCK = threading.Lock()
+
+
+def _remove_basedir() -> None:
+    if _BASEDIR is not None:
+        shutil.rmtree(_BASEDIR, ignore_errors=True)
+
+
+def maven_basedir() -> Path:
+    """``MAVEN_BASEDIR``로 넘길 빈 폴더를 반환한다. 없으면 시스템 임시 폴더에 만든다.
+
+    The empty folder handed to Maven as `MAVEN_BASEDIR` (exists when this returns; holds no `.mvn`)."""
+    global _BASEDIR
+    import tempfile
+    with _BASEDIR_LOCK:
+        if _BASEDIR is not None and _BASEDIR.is_dir() and not (_BASEDIR / ".mvn").exists():
+            return _BASEDIR
+        first = _BASEDIR is None
+        _BASEDIR = Path(tempfile.mkdtemp(prefix="sbmig-maven-base-"))
+        if first:
+            atexit.register(_remove_basedir)
+        log.info("Maven base directory: %s (MAVEN_BASEDIR, empty: Maven reads no .mvn/ folder of a project; the -D / -P "
+                 "options of its .mvn/maven.config are passed on the command line)", _BASEDIR)
+        return _BASEDIR
+
+
 def mvn_env(cfg: Config, extra: Mapping[str, str] | None = None) -> dict[str, str]:
     """Maven을 실행할 환경 변수를 만든다.
-    현재 환경에 ``build.env``, JAVA_HOME / PATH, ``extra``, UTF-8 출력 속성을 더한다."""
+    현재 환경에 ``build.env``, JAVA_HOME / PATH, ``extra``, UTF-8 출력 속성을 더한다.
+    ``build.ignore_project_mvn``이면 ``MAVEN_BASEDIR``에 빈 폴더를 준다."""
     env = dict(os.environ)
+    # sbmig를 실행한 환경의 MAVEN_BASEDIR가 빌드에 섞이지 않게 뺀다
+    env.pop("MAVEN_BASEDIR", None)
     env.update({k: str(v) for k, v in (cfg.build.env or {}).items()})
     if not _blank(cfg.build.java_home):
         jh = str(Path(cfg.build.java_home).expanduser().absolute())
@@ -76,6 +120,8 @@ def mvn_env(cfg: Config, extra: Mapping[str, str] | None = None) -> dict[str, st
     if extra:
         env.update(extra)
     env["MAVEN_OPTS"] = with_utf8_output(env.get("MAVEN_OPTS"))
+    if ignore_project_mvn(cfg):
+        env["MAVEN_BASEDIR"] = str(maven_basedir())
     return env
 
 
@@ -222,6 +268,16 @@ class ProjectMavenSettings:
     settings: list[str]
     global_settings: list[str]
     offline: list[str]
+    properties: list[str] = field(default_factory=list)   # `-Dname=value` / `-Dname`, normalised
+    profiles: list[str] = field(default_factory=list)     # `-P<ids>`, normalised
+    options: list[str] = field(default_factory=list)      # every option with its value, as written
+
+    def carried(self, exclude: Iterable[str] = ()) -> list[str]:
+        """Maven이 이 파일을 읽지 않을 때 명령줄로 옮겨 넘길 ``-D`` / ``-P`` 옵션을 반환한다.
+
+        The `-D` / `-P` options carried over to the command line: never `RESERVED_PROPERTIES` or a name in `exclude`."""
+        skip = set(RESERVED_PROPERTIES) | set(exclude)
+        return [p for p in self.properties if _prop_name(p) not in skip] + list(self.profiles)
 
     @property
     def names_settings(self) -> bool:
@@ -274,14 +330,30 @@ def project_maven_settings(root: Path) -> Optional[ProjectMavenSettings]:
     except OSError:
         return None
     # Maven 3.9는 한 줄을 인자 하나로 읽고 '#'으로 시작하는 줄은 건너뛴다
-    toks = [w for ln in text.splitlines() if not ln.strip().startswith("#") for w in ln.split()]
+    toks = [w for ln in text.splitlines() if not ln.strip().startswith("#") for w in _config_line_words(ln)]
     out = ProjectMavenSettings(path=".mvn/maven.config", settings=[], global_settings=[], offline=[])
     i = 0
     while i < len(toks):
-        kind, takes_next = _option_kind(toks[i])
-        shown = toks[i]
+        tok = toks[i]
+        define, profile = _define_value(tok), _profile_value(tok)
+        if define is not None or profile is not None:
+            value = define if define is not None else profile
+            shown = tok
+            if value == "" and i + 1 < len(toks):          # `-D name=value`, `--activate-profiles ci`
+                value = toks[i + 1]
+                shown = f"{tok} {value}"
+                i += 1
+            if value:
+                out.options.append(shown)
+                (out.properties if define is not None else out.profiles).append(
+                    ("-D" if define is not None else "-P") + value)
+            i += 1
+            continue
+        kind, takes_next = _option_kind(tok)
+        takes_next = takes_next or (kind is None and tok in _VALUE_OPTIONS)
+        shown = tok
         if takes_next and i + 1 < len(toks):
-            shown = f"{toks[i]} {toks[i + 1]}"
+            shown = f"{tok} {toks[i + 1]}"
             i += 1
         if kind == "s":
             out.settings.append(shown)
@@ -289,8 +361,117 @@ def project_maven_settings(root: Path) -> Optional[ProjectMavenSettings]:
             out.global_settings.append(shown)
         elif kind == "o":
             out.offline.append(shown)
+        out.options.append(shown)
         i += 1
     return out
+
+
+# sbmig가 직접 정하는 속성은 프로젝트 maven.config에서 옮겨 오지 않는다
+RESERVED_PROPERTIES = frozenset({"maven.repo.local", "maven.multiModuleProjectDirectory", "maven.test.skip",
+                                 "skipTests"})
+# 다음 인자를 값으로 받는 Maven 옵션(설정 파일, 스레드, 모듈 선택 등)이다
+_VALUE_OPTIONS = frozenset({"-t", "--toolchains", "-gt", "--global-toolchains", "-f", "--file", "-l", "--log-file",
+                            "-T", "--threads", "-pl", "--projects", "-rf", "--resume-from", "-b", "--builder",
+                            "--color"})
+
+
+def _config_line_words(line: str) -> list[str]:
+    """Words of one maven.config line: whitespace-separated (Maven 3.8), except a line holding one `-Dname=value` whose
+    value has spaces and no further option (Maven 3.9 takes the whole line as one argument)."""
+    words = line.split()
+    if len(words) > 1 and _define_value(words[0]) and "=" in words[0] and not any(w.startswith("-") for w in words[1:]):
+        return [line.strip()]
+    return words
+
+
+def _define_value(tok: str) -> Optional[str]:
+    """The property of a `-D` option (`-Dx=y`, `--define=x=y`); "" = the value is the next token; None = not `-D`."""
+    if tok.startswith("--"):
+        name, eq, val = tok[2:].partition("=")
+        if len(name) >= 3 and "define".startswith(name):
+            return val if eq else ""
+        return None
+    if tok.startswith("-D"):
+        return tok[2:]
+    return None
+
+
+def _profile_value(tok: str) -> Optional[str]:
+    """The profile ids of a `-P` option (`-Pci`, `-P=ci`, `--activate-profiles=ci`); "" = next token; None = not `-P`."""
+    if tok.startswith("--"):
+        name, eq, val = tok[2:].partition("=")
+        if len(name) >= 2 and "activate-profiles".startswith(name):
+            return val if eq else ""
+        return None
+    if tok.startswith("-P"):
+        return tok[2:].removeprefix("=")
+    return None
+
+
+def _prop_name(opt: str) -> str:
+    """`-Dname=value` → `name`."""
+    return opt[2:].split("=", 1)[0] if opt.startswith("-D") else ""
+
+
+def project_mvn_dir(start: Path, top: Optional[Path] = None) -> Optional[Path]:
+    """``start``부터 ``top``까지 올라가며 ``.mvn`` 폴더가 있는 첫 폴더를 반환한다. 없으면 None을 반환한다.
+
+    The first directory from `start` up to `top` (inclusive) holding a `.mvn` folder, the one Maven's launcher would
+    have found; never above `top` (only `start` itself when `start` is not inside `top`)."""
+    start = Path(start).absolute()
+    chain = [start]
+    if top is not None:
+        top = Path(top).absolute()
+        if top == start or top in start.parents:
+            chain = [start, *[d for d in start.parents if d == top or top in d.parents]]
+    for d in chain:
+        try:
+            if (d / ".mvn").is_dir():
+                return d
+        except OSError:
+            return None
+    return None
+
+
+def _file_arg(cmd: Sequence[str]) -> Optional[str]:
+    for i, a in enumerate(cmd):
+        if a in ("-f", "--file") and i + 1 < len(cmd):
+            return cmd[i + 1]
+        if a.startswith("--file="):
+            return a.split("=", 1)[1]
+    return None
+
+
+def with_project_mvn(cfg: Any, cmd: Sequence[str], cwd: Path, top: Optional[Path] = None) -> list[str]:
+    """``build.ignore_project_mvn``이면 프로젝트 ``maven.config``의 ``-D`` / ``-P``와 프로젝트 루트
+    (``-Dmaven.multiModuleProjectDirectory``)를 실행 파일 바로 뒤에 넣은 명령을 반환한다.
+
+    With `build.ignore_project_mvn` (Maven gets the empty `MAVEN_BASEDIR`, `mvn_env`): the command with, right after
+    the executable, the `-D` / `-P` options of the `.mvn/maven.config` Maven would have found from where the call
+    starts (`cwd`, or the directory of `-f`; first ancestor with `.mvn`, never above `top`), minus every property the
+    command already sets, then `-Dmaven.multiModuleProjectDirectory=<that directory, else the start>` so a pom's
+    `${maven.multiModuleProjectDirectory}` is the project's root again (measured with Maven 3.9.10: the property on the
+    command line does not make Maven read the project's `.mvn/`). Everything sbmig passes comes later and wins. The
+    command unchanged when the switch is off or it already names the root (a retry)."""
+    cmd = list(cmd)
+    if not ignore_project_mvn(cfg) or not cmd or any(a.startswith(_MMPD) for a in cmd):
+        return cmd
+    start = Path(cwd).absolute()
+    f = _file_arg(cmd)
+    if f:
+        fp = Path(f) if Path(f).is_absolute() else start / f
+        start = fp if fp.is_dir() else fp.parent
+    root = project_mvn_dir(start, top if top is not None else start)
+    carried: list[str] = []
+    if root is not None:
+        found = project_maven_settings(root)
+        if found is not None:
+            own = {_prop_name(a) for a in cmd if a.startswith("-D")}
+            carried = found.carried(exclude=own)
+    return [cmd[0], *carried, f"{_MMPD}{root or start}", *cmd[1:]]
+
+
+_MMPD = "-Dmaven.multiModuleProjectDirectory="
 
 
 def project_settings_ignored(cfg: Config, found: ProjectMavenSettings) -> bool:
@@ -328,6 +509,134 @@ def project_settings_note(cfg: Config, found: Optional[ProjectMavenSettings]) ->
                  "cannot switch off: Maven downloads nothing in this run and builds only from what the local "
                  "repository already holds")
     return flag, line
+
+
+@dataclass
+class ProjectMvnFolder:
+    """프로젝트 안의 ``.mvn`` 폴더 하나가 담고 있는 내용을 정리한 데이터 클래스.
+
+    What one `.mvn` folder of the project holds (read, never changed)."""
+    rel: str                                      # ".mvn" or "svc-a/.mvn"
+    maven_config: Optional[ProjectMavenSettings]
+    has_jvm_config: bool
+    jvm_options: list[str]
+    has_extensions: bool
+    extensions: list[str]                         # g:a:v
+    wrapper: bool
+    other_files: list[str]
+
+    def carried(self) -> list[str]:
+        return self.maven_config.carried() if self.maven_config is not None else []
+
+    def names(self) -> list[str]:
+        out = [n for n, on in (("maven.config", self.maven_config is not None), ("jvm.config", self.has_jvm_config),
+                               ("extensions.xml", self.has_extensions)) if on]
+        if self.wrapper:
+            out.append("Maven wrapper")
+        if self.other_files:
+            out.append("other files: " + ", ".join(self.other_files))
+        return out
+
+    def holds(self) -> str:
+        parts: list[str] = []
+        if self.maven_config is not None:
+            parts.append("maven.config: " + (_capped(self.maven_config.options, ", ") or "empty"))
+        if self.has_jvm_config:
+            parts.append("jvm.config: " + (_capped(self.jvm_options, " ") or "empty"))
+        if self.has_extensions:
+            parts.append("extensions.xml: " + (_capped(self.extensions, ", ") or "no extension"))
+        if self.wrapper:
+            parts.append("Maven wrapper")
+        if self.other_files:
+            parts.append("other files: " + _capped(self.other_files, ", "))
+        return "; ".join(parts)
+
+
+def _capped(items: Sequence[str], sep: str, limit: int = 8) -> str:
+    shown = sep.join(items[:limit])
+    return shown + (f" (+{len(items) - limit} more)" if len(items) > limit else "")
+
+
+_EXTENSION_RE = re.compile(r"<extension>(.*?)</extension>", re.S)
+_SKIP_DIRS = frozenset({".git", "target", "node_modules", ".svn", ".idea"})
+
+
+def _read_text(p: Path, limit: int = 256 * 1024) -> str:
+    try:
+        with open(p, "rb") as fh:
+            return fh.read(limit).decode("utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+def _mvn_folder(root: Path, d: Path) -> Optional[ProjectMvnFolder]:
+    mvn = d / ".mvn"
+    try:
+        entries = sorted(p.name for p in mvn.iterdir())
+    except OSError:
+        return None
+    if not entries:
+        return None                               # 빈 .mvn은 루트 표시일 뿐이라 알릴 내용이 없다
+    jvm = mvn / "jvm.config"
+    jvm_opts = [w for ln in _read_text(jvm).splitlines() for w in ln.split("#", 1)[0].split()] if jvm.is_file() else []
+    ext = mvn / "extensions.xml"
+    exts: list[str] = []
+    if ext.is_file():
+        text = re.sub(r"<!--.*?-->", "", _read_text(ext), flags=re.S)
+        for block in _EXTENSION_RE.findall(text):
+            gav = [(re.search(rf"<{t}>\s*([^<]*?)\s*</{t}>", block) or [None, ""])[1]
+                   for t in ("groupId", "artifactId", "version")]
+            exts.append(":".join(x for x in gav if x))
+    rel = (d.relative_to(root).as_posix() + "/.mvn") if d != root else ".mvn"
+    return ProjectMvnFolder(rel=rel, maven_config=project_maven_settings(d), has_jvm_config=jvm.is_file(),
+                            jvm_options=jvm_opts, has_extensions=ext.is_file(), extensions=exts,
+                            wrapper=(mvn / "wrapper").is_dir(),
+                            other_files=[n for n in entries
+                                         if n not in ("maven.config", "jvm.config", "extensions.xml", "wrapper")])
+
+
+def project_mvn_folders(root: Path, skip: Iterable[str] = (), max_depth: int = 3) -> list[ProjectMvnFolder]:
+    """프로젝트 루트와 그 아래(깊이 ``max_depth``까지)의 ``.mvn`` 폴더를 찾아 내용을 정리한다. 빈 폴더는 뺀다.
+    파일은 바꾸지 않는다.
+
+    The non-empty `.mvn` folders of the project (root first, then services / modules up to `max_depth` levels; never
+    under `.git`, `target`, `node_modules` or a directory in `skip`). Never writes."""
+    root = Path(root)
+    skipped = {s.strip("/") for s in skip if s}
+    out: list[ProjectMvnFolder] = []
+    for dirpath, dirnames, _files in os.walk(root, followlinks=False):
+        d = Path(dirpath)
+        rel = "" if d == root else d.relative_to(root).as_posix()
+        if ".mvn" in dirnames:
+            f = _mvn_folder(root, d)
+            if f is not None:
+                out.append(f)
+        depth = 0 if not rel else rel.count("/") + 1
+        dirnames[:] = sorted(n for n in dirnames if depth < max_depth and not n.startswith(".")
+                             and n not in _SKIP_DIRS and (f"{rel}/{n}" if rel else n) not in skipped)
+    return out
+
+
+def project_mvn_note(cfg: Any, folders: Sequence[ProjectMvnFolder]) -> Optional[tuple[str, str]]:
+    """``build.ignore_project_mvn``이 켜져 있고 프로젝트에 ``.mvn`` 폴더가 있으면 (플래그, 인수인계 줄)을 반환한다.
+
+    (flag `project-mvn-ignored`, Handover line) when the switch is on and the project holds a non-empty `.mvn`
+    folder; None otherwise."""
+    if not ignore_project_mvn(cfg) or not folders:
+        return None
+    jdk = int(getattr(getattr(cfg, "build", None), "require_java_major", 21) or 21)
+    if len(folders) == 1:
+        f = folders[0]
+        holds, carried = f.holds(), " ".join(f.carried()) or "nothing"
+        subject, it, them = "folder was", "the folder is", "it"
+    else:
+        holds = "; ".join(f"{f.rel}: {', '.join(f.names())}" for f in folders)
+        carried = ", ".join(f"{' '.join(f.carried())} ({f.rel})" for f in folders if f.carried()) or "nothing"
+        subject, it, them = "folders were", "the folders are", "them"
+    line = (f"the project's .mvn/ {subject} not used for the builds of this run ({holds}); carried over to the command "
+            f"line: {carried}; {it} delivered unchanged — check {them} against JDK {jdk} and the Maven version in use "
+            f"before building with {them}")
+    return "project-mvn-ignored", line
 
 
 _CATCH_ALL_MIRROR_RE = re.compile(r"<mirrorOf>\s*(\*|external:\*|external:http:\*)\s*</mirrorOf>")

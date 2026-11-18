@@ -1,6 +1,8 @@
-"""A project whose `.mvn/maven.config` points Maven at its own settings: the migration notes it once at intake (flag
-`project-maven-settings-ignored`, one Handover line, journal `project_maven_settings`), the exit code does not change
-and `.mvn/maven.config` is delivered as the owners wrote it."""
+"""A project's `.mvn/` folder at intake. With `build.ignore_project_mvn` (default) the migration says once that the folder
+was not used (flag `project-mvn-ignored`, one Handover line, journal `project_mvn`), in every flow that builds; with the
+switch off a `.mvn/maven.config` pointing Maven at its own settings is noted as before (flag
+`project-maven-settings-ignored`, journal `project_maven_settings`). The exit code does not change and the folder is
+delivered byte for byte."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -37,6 +39,7 @@ def _with_settings(cfg, tmp_path: Path):
     s.write_text("<settings/>", encoding="utf-8")
     c = cfg.model_copy(deep=True)
     c.build.settings_file = str(s)
+    c.build.ignore_project_mvn = False               # the settings notes are the switch-off behaviour
     return c
 
 
@@ -62,6 +65,7 @@ def test_nothing_without_server_settings_or_without_settings_options(cfg, tmp_pa
     ws = _ws(tmp_path / "a", {"pom.xml": POM, ".mvn/maven.config": CONFIG})
     c = cfg.model_copy(deep=True)
     c.build.settings_file = None
+    c.build.ignore_project_mvn = False
     report = _run(c, ws)
     assert not any(f.startswith("project-maven-settings") for f in report.flags)
     assert not any("maven.config" in f for f in report.manual_followups)
@@ -69,3 +73,50 @@ def test_nothing_without_server_settings_or_without_settings_options(cfg, tmp_pa
     report2 = _run(_with_settings(cfg, tmp_path), ws2)
     assert not any(f.startswith("project-maven-settings") for f in report2.flags)
     assert not [e for e in journal_events(ws2) if e["event"] == "project_maven_settings"]
+
+
+# ---------------------------------------------------------------------------- the whole folder (switch on)
+MVN_FILES = {"pom.xml": POM, ".mvn/maven.config": "-s .mvn/settings.nexus.xml\n-Drevision=1.2.3\n-Pci\n",
+             ".mvn/jvm.config": "-XX:MaxPermSize=256m\n", ".mvn/settings.nexus.xml": "<settings/>",
+             ".mvn/wrapper/maven-wrapper.properties": "distributionUrl=https://repo.example.invalid/x.zip\n"}
+MVN_LINE = ("the project's .mvn/ folder was not used for the builds of this run (maven.config: -s .mvn/settings.nexus.xml, "
+            "-Drevision=1.2.3, -Pci; jvm.config: -XX:MaxPermSize=256m; Maven wrapper; other files: settings.nexus.xml); "
+            "carried over to the command line: -Drevision=1.2.3 -Pci; the folder is delivered unchanged — check it "
+            "against JDK 21 and the Maven version in use before building with it")
+
+
+def _switch_on(cfg, tmp_path):
+    c = _with_settings(cfg, tmp_path)
+    c.build.ignore_project_mvn = True
+    return c
+
+
+def test_the_folder_is_noted_once_instead_of_the_settings_line(cfg, tmp_path):
+    import zipfile
+    ws = _ws(tmp_path, MVN_FILES)
+    report = _run(_switch_on(cfg, tmp_path), ws)
+    assert report.flags.count("project-mvn-ignored") == 1
+    assert not any(f.startswith("project-maven-settings") for f in report.flags)
+    assert report.manual_followups.count(MVN_LINE) == 1
+    assert not any("points Maven at its own settings" in f for f in report.manual_followups)
+    [ev] = [e for e in journal_events(ws) if e["event"] == "project_mvn"]
+    assert not [e for e in journal_events(ws) if e["event"] == "project_maven_settings"]
+    [folder] = ev["folders"]
+    assert folder == {"dir": ".mvn", "maven_config": ["-s .mvn/settings.nexus.xml", "-Drevision=1.2.3", "-Pci"],
+                      "jvm_config": ["-XX:MaxPermSize=256m"], "extensions": None, "wrapper": True,
+                      "other_files": ["settings.nexus.xml"], "carried": ["-Drevision=1.2.3", "-Pci"]}
+    assert ev["carried"] == ["-Drevision=1.2.3", "-Pci"] and ev["basedir"] == str(mvnmod.maven_basedir())
+    assert report.success
+    for rel, text in MVN_FILES.items():
+        assert ws.read(rel) == text
+    with zipfile.ZipFile(ws.run_dir / "result.zip") as zf:
+        for rel, text in MVN_FILES.items():
+            assert zf.read(f"{ws.root.name}/{rel}") == text.encode("utf-8")
+
+
+def test_nothing_without_a_mvn_folder_or_with_an_empty_one(cfg, tmp_path):
+    ws = _ws(tmp_path, {"pom.xml": POM})
+    (ws.root / ".mvn").mkdir()
+    report = _run(_switch_on(cfg, tmp_path), ws)
+    assert "project-mvn-ignored" not in report.flags
+    assert not [e for e in journal_events(ws) if e["event"] == "project_mvn"]

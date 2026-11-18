@@ -507,6 +507,10 @@ def _loop_followup_lines() -> list[str]:
         ("bundled jar `vendor-sso.jar` provides package `com.vendor.sso` needed by `shop-back/pom.xml`, but the repository "
          "did not answer whether it has `com.vendor:vendor-sso:2.1` (timeout) — not wired and not called missing; not a "
          "project problem: check the repository and the network, then rerun"),
+        ("the project's .mvn/ folder was not used for the builds of this run (maven.config: -s .mvn/settings.nexus.xml, "
+         "-Drevision=1.2.3, -Pci; jvm.config: -XX:MaxPermSize=256m; Maven wrapper; other files: settings.nexus.xml); carried "
+         "over to the command line: -Drevision=1.2.3 -Pci; the folder is delivered unchanged — check it against JDK 21 and "
+         "the Maven version in use before building with it"),
         ("the project's .mvn/maven.config points Maven at its own settings (-gs .mvn/settings.nexus.xml): ignored here — "
          "every build of this run used the server's settings"),
         "ZIP refused: it unpacks to 5,120 MiB, over the limit of 4,096 MiB (intake.max_unpacked_mb) — nothing was unpacked",

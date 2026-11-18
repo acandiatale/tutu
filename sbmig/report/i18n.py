@@ -673,6 +673,15 @@ def _api_subject(m: "re.Match[str]") -> str:
     return f"{who}가 아직 `{t}` 타입을 받습니다" if t else f"{who}의 API가 이 코드와 맞지 않습니다"
 
 
+def _mvn_holds_ko(text: str) -> str:
+    """``.mvn`` 폴더에 든 것을 적은 영어 목록에서 설명 낱말만 한국어로 바꾼다. 옵션과 파일 이름은 그대로 둔다."""
+    out = text
+    for en, ko in (("other files: ", "그 밖의 파일: "), ("maven.config: empty", "maven.config: 비어 있음"),
+                   ("extensions.xml: no extension", "extensions.xml: 확장 없음")):
+        out = out.replace(en, ko)
+    return re.sub(r"\(\+(\d+) more\)", r"(외 \1개)", out)
+
+
 def _repos_ko(text: str) -> str:
     return "" if text.strip() == "the configured repositories" else f"(확인한 저장소: {text})"
 
@@ -1175,6 +1184,15 @@ PATTERNS: dict[str, list[tuple[re.Pattern[str], Union[str, Callable[[re.Match[st
                 + (f"(프로젝트 코드는 `{m.group('f')}` 타입을 넘깁니다)" if m.group("f") else "")
                 + ". 어느 클래스인지 찾지 못했습니다. 모듈의 클래스패스(mvn dependency:tree)에서 javax 기준 라이브러리를 찾아 "
                 "Jakarta 빌드로 올려 주세요.")),
+    # 프로젝트의 .mvn 폴더를 빌드에 쓰지 않았다는 안내다. 폴더에 든 것과 명령줄로 넘긴 옵션을 함께 알린다
+    ((r"^the project's \.mvn/ folders? (?:was|were) not used for the builds of this run \((?P<w>.*)\); carried over to the "
+      r"command line: (?P<tail>.+?); the folders? (?:is|are) delivered unchanged — check (?:it|them) against JDK "
+      r"(?P<n>\d+) and the Maven version in use before building with (?:it|them)$"),
+     lambda m: ("프로젝트의 `.mvn` 폴더는 이번 실행의 빌드에 쓰지 않았습니다(" + _mvn_holds_ko(m.group("w")) + "). "
+                + ("빌드에 필요한 옵션은 없어 넘긴 것이 없습니다." if m.group("tail") == "nothing"
+                   else f"이 가운데 `{m.group('tail')}` 옵션은 명령줄로 넘겨 빌드에 반영했습니다.")
+                + f" 폴더는 올리신 그대로 돌려드립니다. 이 폴더로 직접 빌드하기 전에 JDK {m.group('n')}과 사용하는 Maven "
+                "버전에 맞는지 확인해 주세요.")),
     # 프로젝트의 .mvn/maven.config가 자기 settings를 가리킬 때의 안내다. 서버 설정으로 빌드했는지, 섞였는지를 알린다
     ((r"^the project's \.mvn/maven\.config points Maven at its own settings \((?P<what>.+?)\): (?:ignored here — "
       r"every build of this run used the server's settings|Maven read them in this run as its global settings, merged "

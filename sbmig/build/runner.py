@@ -28,7 +28,7 @@ from .log_parser import (
     reactor_artifact_ids_from_poms,
     parse_reactor_summary,
 )
-from .mvn import base_command, maven_available, mvn_env, run_logged
+from .mvn import base_command, maven_available, mvn_env, run_logged, with_project_mvn
 from .signatures import external_prefixes_from_config, fill_signatures, register_external_prefixes, set_reactor_modules
 
 log = logging.getLogger("sbmig.build")
@@ -243,6 +243,8 @@ class MavenRunner:
         cwd, file_args = self._cwd(module)
         cmd = self.command(goal, extra_args=[*file_args, *extra_args], skip_test_compile=skip_test_compile,
                            skip_tests=skip_tests)
+        # Maven이 프로젝트 .mvn을 읽지 않으므로 maven.config의 -D / -P와 프로젝트 루트를 명령에 넣는다
+        cmd = with_project_mvn(self.cfg, cmd, cwd, top=self.ws.root)
         log_path = self.ws.new_log_path(f"build-{label or goal}")
         log.info("mvn %s (cwd=%s)", " ".join(cmd[1:]), self.ws.rel(cwd) if cwd != self.ws.root else ".")
         pr = run_logged(cmd, cwd=cwd, env=mvn_env(self.cfg), log_path=log_path, timeout_s=self.timeout_s)

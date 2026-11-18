@@ -4798,9 +4798,29 @@ says otherwise, this one counts.
   cannot take back). The project's file is delivered as its owners wrote it; the exit code does not change.
   `remediation.project_maven_config` defaults to `ignore`: a project with `.mvn/maven.config` / `jvm.config` /
   `extensions.xml` is no longer refused; the finding is one line in the report's 처리 기록, never under 해야 할 일
-  (`refuse` still works for an operator who sets it). Not closed: `.mvn/extensions.xml` and `.mvn/jvm.config` still act
-  on the build (both flows), and Maven 3.9 reads ONE argument per line of `maven.config` (a file written for 3.8 with
-  `-gs <path>` or several options on one line makes Maven stop with "Unable to parse maven.config file options").
+  (`refuse` still works for an operator who sets it).
+- *A project's `.mvn/` folder is not read by any Maven call* (`build.ignore_project_mvn`, default true; the user:
+  "프로젝트에 .mvn이 있으면 복사파일에는 없앨까? 운영 빌드 되도록만 맞춰주면 될거같은데 나중에 압축할때 동봉만 해주면
+  될거같고"). Measured with Maven 3.9 on JDK 21: a `.mvn/jvm.config` with JDK 8 options stops the JVM before Maven
+  starts; Maven 3.9 reads one argument per line of `maven.config` and stops on a file written for 3.8; with the
+  environment variable `MAVEN_BASEDIR` pointing at an empty folder none of `jvm.config`, `maven.config` and
+  `extensions.xml` is read. So nothing is moved or deleted: `sbmig.build.mvn.mvn_env` gives every Maven child
+  `MAVEN_BASEDIR=<an empty folder of this process>` (a temp folder created on first use, removed at exit; an inherited
+  value is dropped), and `with_project_mvn(cfg, cmd, cwd, top=…)` puts on the command line what a build needs from the
+  `maven.config` Maven would have found from that directory: its `-D<name>=<value>` properties and `-P` profiles (never
+  `maven.repo.local`, `maven.multiModuleProjectDirectory`, `maven.test.skip`, `skipTests` or a name the command sets
+  itself; sbmig's own options come later and win; both file styles are read) and
+  `-Dmaven.multiModuleProjectDirectory=<the project's root>` so that a pom using that property sees the project, not
+  the empty folder. Covered: the build, OpenRewrite, `dependency:tree`, `help:effective-pom`, the classpath check, the
+  remediation's package / resolve calls; the calls that run outside a project (`mvn -v`, the jar check) get the
+  environment only. Told once per run, in every flow that builds: journal `project_mvn` (`basedir`, `carried`, per
+  folder `maven_config` / `jvm_config` / `extensions` / `wrapper` / `other_files`), flag `project-mvn-ignored`, and the
+  hand-over line "the project's .mvn/ folder was not used for the builds of this run (<what it holds>); carried over
+  to the command line: <options | nothing>; the folder is delivered unchanged — check it against JDK <N> and the Maven
+  version in use before building with it" (it replaces the settings line above; with the switch off that line and
+  `-gs` are what remains). `result.zip` holds the folder byte for byte. The remediation's boundary findings for `.mvn`
+  files say "not used: the build did not read the project's .mvn folder" (+ the carried options). Not checked: `mvn.cmd`
+  on Windows (it takes `MAVEN_BASEDIR` the same way by its script) and a temp path with non-ASCII characters.
 
 **Left as they are** (the owner's decisions): a second web pod is not detected (the Deployment's `replicas: 1` and
 `strategy: Recreate` are what keeps it at one: do not change them); no retention of old run folders; untracked leftovers

@@ -858,6 +858,7 @@ class Orchestrator:
             self._timed("intake", t)
             return False
         if not edits:
+            self._intake_project_settings(report)   # 취약점 조치만 하는 실행도 빌드하므로 .mvn 안내를 남긴다
             self._timed("intake", t)
             return True
         if not self._intake_layout(report):
@@ -1089,7 +1090,13 @@ class Orchestrator:
 
         A project `.mvn/maven.config` naming its own settings (`sbmig.build.mvn.project_settings_note`): flag
         `project-maven-settings-ignored` (or `-used` when Maven still reads a project `-gs`), one Handover line, journal
-        `project_maven_settings`. The file stays as the owners wrote it; the exit code does not change. Never raises."""
+        `project_maven_settings`. The file stays as the owners wrote it; the exit code does not change. Never raises.
+        With `build.ignore_project_mvn` (default) the whole folder is out of the way of every build and this says so
+        instead, in every flow that builds (`_intake_project_mvn`)."""
+        from sbmig.build.mvn import ignore_project_mvn
+        if ignore_project_mvn(self.cfg):
+            self._intake_project_mvn(report)
+            return
         try:
             from sbmig.build.mvn import project_maven_settings, project_settings_ignored, project_settings_note
             found = project_maven_settings(self.ws.root)
@@ -1109,6 +1116,38 @@ class Orchestrator:
                  else "Maven still reads its global settings")
         self.ws.journal({"event": "project_maven_settings", "file": found.path, "settings": found.settings,
                          "global_settings": found.global_settings, "offline": found.offline, "ignored": ignored})
+
+    def _intake_project_mvn(self, report: RunReport) -> None:
+        """프로젝트의 ``.mvn`` 폴더를 빌드에 쓰지 않았다는 플래그, 인수인계 줄, 저널을 한 번 남긴다.
+        폴더는 바꾸지 않고 예외를 던지지 않는다.
+
+        Flag `project-mvn-ignored`, one Handover line and journal `project_mvn` (what each non-empty `.mvn` folder
+        holds, what is carried over to the command line) when the project has a `.mvn` folder that Maven does not read
+        in this run (`sbmig.build.mvn.project_mvn_note`). Nothing is changed; never raises."""
+        try:
+            from sbmig.build.mvn import maven_basedir, project_mvn_folders, project_mvn_note
+            folders = project_mvn_folders(self.ws.root, skip=getattr(self.ws, "ignored_dirs", ()) or ())
+            note = project_mvn_note(self.cfg, folders)
+            if note is None:
+                return
+            basedir = str(maven_basedir())
+        except Exception as e:  # noqa: BLE001 - a note never stops the run
+            log.debug("project .mvn check failed: %s: %s", type(e).__name__, e)
+            return
+        flag, line = note
+        self._flag(flag)
+        if line not in report.manual_followups:
+            report.manual_followups.append(line)
+        carried: list[str] = []
+        for f in folders:
+            carried += [a for a in f.carried() if a not in carried]
+        log.info("intake: %s not read by Maven in this run (MAVEN_BASEDIR=%s); carried over to the command line: %s",
+                 ", ".join(f.rel for f in folders), basedir, " ".join(carried) or "nothing")
+        self.ws.journal({"event": "project_mvn", "basedir": basedir, "carried": carried, "folders": [
+            {"dir": f.rel, "maven_config": list(f.maven_config.options) if f.maven_config is not None else None,
+             "jvm_config": f.jvm_options if f.has_jvm_config else None,
+             "extensions": f.extensions if f.has_extensions else None,
+             "wrapper": f.wrapper, "other_files": f.other_files, "carried": f.carried()} for f in folders]})
 
     def _intake_stray_poms(self, report: RunReport) -> None:
         """다른 pom과 좌표가 같은, IDE 출력이나 백업 폴더에 복제된 pom(``find_stray_pom_copies``)을 찾아

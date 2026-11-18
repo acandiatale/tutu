@@ -567,7 +567,7 @@ def _build_cfg(tmp_path: Path, **build):
 def test_boundary_project_settings_are_recorded_not_refused_by_default(tmp_path):
     proj = _project(tmp_path, {"pom.xml": POM, ".mvn/maven.config": "-s .mvn/settings.nexus.xml -o\n",
                                ".mvn/settings.nexus.xml": "<settings/>"})
-    [f] = intake.check_boundary(proj, _build_cfg(tmp_path), [])
+    [f] = intake.check_boundary(proj, _build_cfg(tmp_path, ignore_project_mvn=False), [])
     assert (f.code, f.path, f.action) == ("project_maven_config", ".mvn/maven.config", "ignore")
     assert f.detail == ("names its own Maven settings (-s .mvn/settings.nexus.xml), not used: every build used the "
                         "server's settings; also turns on offline mode (-o): Maven downloads nothing")
@@ -575,8 +575,22 @@ def test_boundary_project_settings_are_recorded_not_refused_by_default(tmp_path)
 
 def test_boundary_project_global_settings_without_our_gs(tmp_path):
     proj = _project(tmp_path, {"pom.xml": POM, ".mvn/maven.config": "-gs .mvn/global.nexus.xml\n"})
-    [f] = intake.check_boundary(proj, _build_cfg(tmp_path, ignore_project_settings=False), [])
+    [f] = intake.check_boundary(proj, _build_cfg(tmp_path, ignore_project_settings=False, ignore_project_mvn=False), [])
     assert f.detail == ("names its own Maven settings (-gs .mvn/global.nexus.xml), read by Maven as its global "
                         "settings together with the server's")
-    [g] = intake.check_boundary(proj, _build_cfg(tmp_path / "b"), [])
+    [g] = intake.check_boundary(proj, _build_cfg(tmp_path / "b", ignore_project_mvn=False), [])
     assert g.detail.startswith("names its own Maven settings (-gs .mvn/global.nexus.xml), not used")
+
+
+def test_boundary_mvn_folder_not_used_by_the_build(tmp_path):
+    proj = _project(tmp_path, {"pom.xml": POM, ".mvn/maven.config": "-s .mvn/settings.nexus.xml\n-Drevision=1.2.3\n-Pci\n",
+                               ".mvn/jvm.config": "-XX:MaxPermSize=256m\n", ".mvn/extensions.xml": "<extensions/>",
+                               ".mvn/settings.nexus.xml": "<settings/>"})
+    got = {f.path: (f.code, f.action, f.detail) for f in intake.check_boundary(proj, _build_cfg(tmp_path), [])}
+    assert got == {
+        ".mvn/maven.config": ("project_maven_config", "ignore",
+                              "not used: the build did not read the project's .mvn folder; carried over to the command "
+                              "line: -Drevision=1.2.3 -Pci"),
+        ".mvn/jvm.config": ("project_maven_config", "ignore", "not used: the build did not read the project's .mvn folder"),
+        ".mvn/extensions.xml": ("maven_extensions", "ignore", "not used: the build did not read the project's .mvn folder"),
+    }

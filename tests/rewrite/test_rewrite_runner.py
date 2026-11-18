@@ -103,7 +103,8 @@ def test_command_env_and_config_file(ws, rcfg, fake):
         del os.environ["MAVEN_OPTS"]
     call = fake.calls[0]
     cfg_path = ws.run_dir / "logs" / "rewrite-1.yml"           # v2.1: no rewrite/ directory
-    assert call["cmd"] == [mvn_mod.mvn_executable(rcfg), "-B", "-ntp", "-Dstyle.color=never", "-Dmaven.repo.local=/tmp/m2repo",
+    assert call["cmd"] == [mvn_mod.mvn_executable(rcfg), f"-Dmaven.multiModuleProjectDirectory={ws.root.absolute()}",
+                           "-B", "-ntp", "-Dstyle.color=never", "-Dmaven.repo.local=/tmp/m2repo",
                            "org.openrewrite.maven:rewrite-maven-plugin:6.46.1:run",
                            f"-Drewrite.activeRecipes={COMPOSITE_RECIPE_ID}",
                            f"-Drewrite.configLocation={cfg_path.resolve()}",
@@ -128,7 +129,7 @@ def test_dry_run_module_and_numbering(ws, rcfg, fake):
     r.run([RecipeRef(id=UP21)])
     res = r.run([RecipeRef(id=UP21)], dry_run=True, module="svc")
     call = fake.calls[-1]
-    assert call["cmd"][4] == "org.openrewrite.maven:rewrite-maven-plugin:6.46.1:dryRun"
+    assert call["cmd"][5] == "org.openrewrite.maven:rewrite-maven-plugin:6.46.1:dryRun"     # [1] = the root for the poms
     assert call["cwd"] == str(ws.root / "svc")
     assert res.dry_run and res.ok
     assert res.changed_files == ["svc/pom.xml", "svc/src/main/java/com/example/App.java"]

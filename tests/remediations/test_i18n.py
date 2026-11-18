@@ -281,6 +281,9 @@ SAMPLES: list[tuple[str, str, list[str]]] = [
      "settings together with the server's"), ["-gs .mvn/g.xml"]),
     ("boundary_project_offline", "also turns on offline mode (-o): Maven downloads nothing", ["-o"]),
     ("boundary_wrapper", "the server's Maven is used; the wrapper is never run", []),
+    ("boundary_mvn_not_used", "not used: the build did not read the project's .mvn folder", []),
+    ("boundary_mvn_carried", ("not used: the build did not read the project's .mvn folder; carried over to the command "
+     "line: -Drevision=1.2.3 -Pci"), ["-Drevision=1.2.3 -Pci"]),
     ("boundary_host", "host repo.example.invalid not approved: https://repo.example.invalid/maven2",
      ["repo.example.invalid", "https://repo.example.invalid/maven2"]),
     ("boundary_unresolved", "unresolved property in url ${repo.url}/maven2", ["${repo.url}/maven2"]),

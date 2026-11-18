@@ -77,7 +77,9 @@ def test_command_env_and_cwd_composition(ws, cfg, fake, tmp_path, monkeypatch):
     cfg.build.env = {"FOO": "bar"}
     res = MavenRunner(ws, cfg).run("clean package", extra_args=["-pl", "core"], label="verify")
     call = fake.calls[0]
-    assert call["cmd"] == [mvn_mod.mvn_executable(cfg), "-B", "-ntp", "-Dstyle.color=never", "-s", "/etc/m2/settings.xml",
+    # build.ignore_project_mvn: the project's root comes back for the poms (Maven gets an empty MAVEN_BASEDIR)
+    assert call["cmd"] == [mvn_mod.mvn_executable(cfg), f"-Dmaven.multiModuleProjectDirectory={ws.root.absolute()}",
+                           "-B", "-ntp", "-Dstyle.color=never", "-s", "/etc/m2/settings.xml",
                            "-gs", "/opt/maven/conf/settings.xml", f"-Dmaven.repo.local={tmp_path / 'repo'}", "-o", "clean", "package", "-pl", "core",
                            "-DskipTests"]
     assert res.command == call["cmd"]
@@ -87,6 +89,7 @@ def test_command_env_and_cwd_composition(ws, cfg, fake, tmp_path, monkeypatch):
     assert call["env"]["JAVA_HOME"] == "/opt/jdk21"
     assert call["env"]["PATH"].startswith("/opt/jdk21/bin" + os.pathsep)
     assert call["env"]["FOO"] == "bar"
+    assert call["env"]["MAVEN_BASEDIR"] == str(mvn_mod.maven_basedir())
     assert res.ok and res.exit_code == 0 and res.errors == []
     assert Path(res.log_path).name == "001-build-verify.log"
     assert "BUILD SUCCESS" in Path(res.log_path).read_text()
@@ -137,7 +140,7 @@ def test_module_dir_and_module_pom(ws, cfg, fake):
     assert fake.calls[-1]["cwd"] == str(ws.root / "svc")
     r.run("compile", module="svc/pom.xml")
     assert fake.calls[-1]["cwd"] == str(ws.root / "svc")
-    assert fake.calls[-1]["cmd"][4:7] == ["compile", "-f", "pom.xml"]
+    assert fake.calls[-1]["cmd"][5:8] == ["compile", "-f", "pom.xml"]     # [1] = the root for the poms
     assert Path(r.run("compile").log_path).name == "003-build-compile.log"
 
 

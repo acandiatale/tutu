@@ -415,3 +415,11 @@ def test_api_migrate_checks_the_flow(tmp_path):
         migrate(upload(tmp_path), flow="bogus", out=tmp_path / "out")
     with pytest.raises(ValueError, match="--dry-run"):
         migrate(upload(tmp_path), flow="remediation", dry_run=True, out=tmp_path / "out")
+
+
+def test_the_mvn_folder_is_noted_in_the_remediation_flow(cfg, tmp_path, ivas_env):
+    files = {**FILES, ".mvn/jvm.config": "-XX:MaxPermSize=256m\n"}
+    _orch, ws, report, _z, _build = run_flow(cfg, tmp_path, one_fix(), files=files)
+    assert report.flags.count("project-mvn-ignored") == 1
+    assert [f for f in report.manual_followups if f.startswith("the project's .mvn/ folder was not used")]
+    assert [e for e in journal_events(ws) if e["event"] == "project_mvn"]

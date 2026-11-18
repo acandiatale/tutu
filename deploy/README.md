@@ -395,8 +395,11 @@ PC 에서 시험한 파일을 그대로 `20-configmap.yaml` 의 `sbmig-config` �
 
 **프로젝트가 자체 settings 를 지정해도 이 파일로 빌드한다.** 프로젝트의 `.mvn/maven.config` 에 `-s` / `-gs` 가 있어도 sbmig 은 모든 Maven 호출에
 `-s /data/.m2/settings.xml` 과 Maven 설치본의 전역 settings(`-gs <maven home>/conf/settings.xml`)를 넘기므로 프로젝트의 주소는 쓰이지 않는다
-(`build.ignore_project_settings`, 기본 true). 이관 보고서에는 플래그 `project-maven-settings-ignored` 와 인수인계 한 줄이 남고, 그 파일은 고치지 않는다.
-취약점 조치도 그런 프로젝트를 거절하지 않는다(`remediation.project_maven_config: ignore`, 기본값).
+(`build.ignore_project_settings`, 기본 true). 더 나아가 Maven 은 프로젝트의 `.mvn/` 폴더를 아예 읽지 않는다(`build.ignore_project_mvn`, 기본 true):
+모든 Maven 호출에 환경 변수 `MAVEN_BASEDIR` 로 빈 폴더(sbmig 프로세스마다 하나, 파드의 임시 폴더)를 주므로 JDK 8 용 `jvm.config`, Maven 3.8 식
+`maven.config`, `extensions.xml` 때문에 빌드가 멈추지 않는다. `maven.config` 의 `-D` 속성과 `-P` 프로파일만 명령줄로 옮겨 넘긴다.
+이관 보고서에는 플래그 `project-mvn-ignored` 와 인수인계 한 줄이 남고, 폴더는 고치지 않고 result.zip 에 그대로 들어간다.
+취약점 조치도 같은 환경으로 빌드하고 그런 프로젝트를 거절하지 않는다(`remediation.project_maven_config: ignore`, 기본값).
 
 **손으로 채운 매니페스트를 쓰는 배포에서 바꿀 것** (순서대로):
 

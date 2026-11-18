@@ -337,10 +337,17 @@ review", fix attempts as `script:<case>:v<N>`; `ko`, the company setting: the re
   `-s`; a `-gs` there is read as the global settings and merged with ours (the hole); a `-D` there loses to ours. So
   every Maven command passes `-gs <maven home>/conf/settings.xml` beside `-s` (`build.ignore_project_settings`, default
   true), the migration notes it once (flag `project-maven-settings-ignored`, one hand-over line), and
-  `remediation.project_maven_config` defaults to `ignore`. The project's file is never edited. Open: Maven 3.9 reads
-  one argument per line of `maven.config` — a 3.8-style file (`-gs <path>` or several options on one line) stops Maven
-  with "Unable to parse maven.config file options"; whether sbmig may rewrite such a file is the user's call (I told
-  them the file is not touched); `.mvn/extensions.xml` and `.mvn/jvm.config` still act on the build.
+  `remediation.project_maven_config` defaults to `ignore`. The project's file is never edited. **The same evening the
+  whole folder went out of the way** (the user: "프로젝트에 .mvn이 있으면 복사파일에는 없앨까? 운영 빌드 되도록만
+  맞춰주면 될거같은데 나중에 압축할때 동봉만 해주면 될거같고"): measured first — a JDK 8 `.mvn/jvm.config` stops the
+  JVM on JDK 21, a 3.8-style `maven.config` stops Maven 3.9, and `MAVEN_BASEDIR` pointing at an empty folder makes
+  Maven read none of it — so nothing is deleted or put back: every Maven child gets `MAVEN_BASEDIR=<empty folder>`
+  (`build.ignore_project_mvn`, default true), the `-D` / `-P` options of the project's `maven.config` and
+  `-Dmaven.multiModuleProjectDirectory=<project root>` go onto the command line (`with_project_mvn`), flag
+  `project-mvn-ignored` and one hand-over line, and `result.zip` holds `.mvn/` byte for byte. Not checked: `mvn.cmd` on
+  the company's Windows PC, a temp path with a non-ASCII user name. Lesson worth keeping: before designing around a
+  tool's behaviour, run the tool (three five-line experiments decided this design, and one of them overturned the plan
+  to "set the folder aside and put it back").
 - **Disk walls for test runs (2026-11-17)**: a review subagent's scratch test (a writer thread with no size or time
   limit) wrote one 118 GB file and filled the developer's disk. A rule in a brief is a promise; these are the walls.
   The root `conftest.py` gives every pytest run whose tests are under the repository a per-file size cap

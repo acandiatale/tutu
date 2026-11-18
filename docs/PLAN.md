@@ -1028,3 +1028,18 @@ A company project carried `.mvn/settings.nexus.xml` and a `.mvn/maven.config` po
 | Said once | journal `project_maven_settings`, flag `project-maven-settings-ignored`, one hand-over line (Korean rule added); the project's file is delivered unchanged | `sbmig/loop/orchestrator.py`, `sbmig/report/i18n.py` | done |
 | The remediation does not refuse | `remediation.project_maven_config` defaults to `ignore`; the Korean report prints one line in 처리 기록, nothing under 해야 할 일 | `sbmig/remediations/`, `agent-doc/11-remediations.md` | done |
 | Open | Maven 3.9 reads one argument per line of `maven.config`: a file written for 3.8 can stop Maven before the build starts (rewriting it would change the project: the user's decision); `.mvn/extensions.xml` and `.mvn/jvm.config` still act on the build; the note is written in the full flow only | — | open |
+
+## Status — 2026-11-18, a project's `.mvn/` folder is not read by our builds
+
+The user, after the settings change of the section above: "프로젝트에 .mvn이 있으면 복사파일에는 없앨까? 운영 빌드 되도록만
+맞춰주면 될거같은데 나중에 압축할때 동봉만 해주면 될거같고".
+
+| Item | Deliverable | Where | Status |
+|---|---|---|---|
+| Why the whole folder | measured with Maven 3.9.10 on JDK 21: `.mvn/jvm.config` with JDK 8 options (`-XX:MaxPermSize`) stops the JVM before Maven starts; a `maven.config` written for 3.8 (`-gs path` on one line) stops Maven 3.9 | `tests/build/test_project_settings_maven.py` (integration) | done |
+| Nothing is deleted | `MAVEN_BASEDIR=<an empty folder of this process>` in every Maven child's environment makes Maven read no `.mvn/` of the project (`build.ignore_project_mvn`, default true); the files stay where they are, so the delivered tree and `result.zip` hold them unchanged | `sbmig/build/mvn.py` (`mvn_env`, `maven_basedir`) | done |
+| What a build needs is carried over | the `-D` properties and `-P` profiles of the project's `maven.config` go onto the command line (sbmig's own options win), and `-Dmaven.multiModuleProjectDirectory=<project root>` so that poms using that property still see the project (measured: it does not make Maven read `.mvn/` again) | `sbmig/build/mvn.py` (`with_project_mvn`), the build runner, OpenRewrite, deptree, effective-pom, classpath, the remediation's Maven runner | done |
+| Said once | journal `project_mvn`, flag `project-mvn-ignored`, one hand-over line with what the folder holds and what was carried over (Korean rule added); the remediation's record says the folder was not used | `sbmig/loop/orchestrator.py`, `sbmig/report/i18n.py`, `sbmig/remediations/` | done |
+| Tests | offline suite 6,318 passed; the integration test with the real Maven: switch off → the JVM does not start, switch on → exit 0 with `-Drevision` carried and `.mvn/` byte-identical | — | done |
+| Real pipeline | `scripts/e2e.py` on pure-java, boot2, company-spring5-web, msa, fw-direct: 5 PASS; a copy of pure-java with a JDK 8 `jvm.config`, a 3.8-style `maven.config` (`-gs` at an unreachable mirror, one `-D`) and a private settings file: BUILD ok, the `-D` carried over, the Korean line in the report, `.mvn/` in `result.zip` byte-identical | — | done |
+| Not checked | `mvn.cmd` on the company's Windows PC; a temp folder path with non-ASCII characters; a `.mvn/` deeper than three levels is ignored by Maven but not described in the line | — | open |

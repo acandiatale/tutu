@@ -43,7 +43,7 @@ from sbmig.core.models import GAV, JavaxApiJar
 from sbmig.core.workspace import Workspace, logs_dir
 
 from .classpath import _PACKAGE_SKIPS, _has_modules, _module_dir, _pom_stamp, _safe
-from .mvn import base_command, mvn_env, run_logged
+from .mvn import base_command, mvn_env, run_logged, with_project_mvn
 
 log = logging.getLogger("sbmig.build.deptree")
 
@@ -235,6 +235,7 @@ def _run_tree(ws: Workspace, cfg: Config, mdir: str, name: str, out_file: Path, 
     if includes:
         cmd.append("-Dincludes=" + ",".join(includes))
     cmd.append("-q")
+    cmd = with_project_mvn(cfg, cmd, ws.root, top=ws.root)     # 프로젝트 .mvn 대신 옮겨 넘길 옵션을 넣는다
     log_path = ws.new_log_path(f"deptree-{name}{'-pkg' if package else ''}")
     pr = run_logged(cmd, cwd=ws.root, env=mvn_env(cfg), log_path=log_path, timeout_s=DEPTREE_TIMEOUT_S)
     return pr, log_path

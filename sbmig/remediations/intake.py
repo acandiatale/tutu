@@ -29,7 +29,7 @@ import unicodedata
 import zipfile
 import zlib
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 from urllib.parse import urlsplit
 
 from .models import (BoundaryFinding, DeliveryInfo, IntakeLimits, IntakeRejected, IntakeResult, ManifestEntry,
@@ -616,6 +616,27 @@ def project_settings_detail(project: Path, cfg: Any) -> str:
     return out
 
 
+MVN_NOT_USED = "not used: the build did not read the project's .mvn folder"
+
+
+def project_mvn_detail(project: Path, cfg: Any, rel: str) -> Optional[str]:
+    """``build.ignore_project_mvn``이면 ``.mvn`` 설정 파일의 처리 내용을 한 문장으로 반환한다. 꺼져 있으면 None을 반환한다.
+
+    The boundary detail of a `.mvn` config file when Maven does not read the folder (`build.ignore_project_mvn`):
+    "not used", plus for `maven.config` the options carried over to the command line; None with the switch off."""
+    from sbmig.build.mvn import ignore_project_mvn, project_maven_settings
+    if not ignore_project_mvn(cfg):
+        return None
+    if rel != ".mvn/maven.config":
+        return MVN_NOT_USED
+    try:
+        found = project_maven_settings(Path(project))
+    except Exception:                                    # noqa: BLE001 - a detail never stops the intake
+        found = None
+    carried = found.carried() if found is not None else []
+    return MVN_NOT_USED + (f"; carried over to the command line: {' '.join(carried)}" if carried else "")
+
+
 def check_boundary(project: Path, cfg: Any, allowed_hosts: list[str]) -> list[BoundaryFinding]:
     """프로젝트 안에서 서버의 Maven 실행 환경 제한을 우회할 수 있는 요소를 찾는다.
     아무것도 실행하지 않으며, 요소마다 처리 방법(``action``)은 설정에서 정한다.
@@ -650,12 +671,14 @@ def check_boundary(project: Path, cfg: Any, allowed_hosts: list[str]) -> list[Bo
                 add("settings_in_project", rel, "ignore", "the server's settings.xml is the only one used")
             if name == "pom.xml":
                 poms.append((full, rel))
+            mvn_detail = project_mvn_detail(project, cfg, rel) if rel.startswith(".mvn/") else None
             if rel == ".mvn/maven.config":
-                add("project_maven_config", rel, r.project_maven_config, project_settings_detail(project, cfg))
+                add("project_maven_config", rel, r.project_maven_config,
+                    mvn_detail if mvn_detail is not None else project_settings_detail(project, cfg))
             elif rel == ".mvn/jvm.config":
-                add("project_maven_config", rel, r.project_maven_config)
+                add("project_maven_config", rel, r.project_maven_config, mvn_detail or "")
             elif rel == ".mvn/extensions.xml":
-                add("maven_extensions", rel, r.project_maven_config)
+                add("maven_extensions", rel, r.project_maven_config, mvn_detail or "")
             elif rel in ("mvnw", "mvnw.cmd") or rel.startswith(".mvn/wrapper/"):
                 add("maven_wrapper", rel, r.maven_wrapper, "the server's Maven is used; the wrapper is never run")
         # 링크인 폴더로는 내려가지 않는다

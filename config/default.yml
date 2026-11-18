@@ -391,6 +391,10 @@ build:
   # true면 Maven 설치본의 전역 settings(<maven home>/conf/settings.xml)도 -gs로 넘겨 항상 서버 설정으로 빌드한다.
   # false면 -s만 넘긴다. 이때 프로젝트의 -gs 설정은 서버 설정과 합쳐져 함께 쓰인다.
   ignore_project_settings: true
+  # 프로젝트에 .mvn 폴더(maven.config, jvm.config, extensions.xml, wrapper 등)가 있어도 빌드에 쓰지 않을지 여부.
+  # true면 Maven이 이 폴더를 읽지 않게 하고, maven.config의 -D 속성과 -P 프로파일만 명령줄로 옮겨 넘긴다.
+  # 폴더는 바꾸지 않고 결과물에 그대로 들어간다. false면 Maven이 평소처럼 프로젝트의 .mvn 폴더를 읽는다.
+  ignore_project_mvn: true
   # 로컬 Maven 저장소 위치(-Dmaven.repo.local). null이면 settings.xml의 값, 그것도 없으면 ~/.m2/repository
   local_repo: null
   # JDK 21 설치 폴더. 지정하면 Maven을 이 JDK로 실행한다. null이면 현재 환경의 JAVA_HOME을 쓴다.
