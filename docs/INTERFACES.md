@@ -22,7 +22,7 @@ type: `sbmig/core/models.py`, `sbmig/core/interfaces.py`, `sbmig/core/config.py`
 | LLM gateway | Base "LLM client tier and adapter seams"; v2.1z-m (agent gateway, token exchange), v2.1z-n, v2.1z-o, v2.1z-p (case thread), v2.1z-q, v2.1z-x, v2.1z-af (busy wait, auth retries) |
 | report & result line | Base "Report and the result line", "Advisories and the Handover"; v2 "As built (step 1)" (`review=`); v2.1d (`major=`); remediations (`remediation=`); v2.1z-ak (`scope=`, the framework block) |
 | fleet | Base "Fleet" |
-| web app | Base "Graph engine", "Web app"; v2.1z-w (page, server-chosen configs), v2.1z-ae (queue / slots on the page), v2.1z-af (page re-attach), v2.1z-aj (run flows, page header); v2.1z-ak (framework label, skipped stages); v2.1z-ao (admin page `/admin`: token usage per project, log ZIPs) |
+| web app | Base "Graph engine", "Web app"; v2.1z-w (page, server-chosen configs), v2.1z-ae (queue / slots on the page), v2.1z-af (page re-attach), v2.1z-aj (run flows, page header); v2.1z-ak (framework label, skipped stages); v2.1z-ao (admin page `/admin`: token usage per project, log ZIPs); v2.1z-au (the code-change view: artifact `codediff/`, `/api/runs/{id}/codediff`, the page block) |
 | Job mode (Main / Worker, slots, env pins) | v2.1z-z "k8s Job dispatch mode", v2.1z-ab (kubeconfig, template ConfigMap), v2.1z-ac (Main ↔ Worker contract), v2.1z-ad (end confirmation, ownership, env pins, write-time redaction), v2.1z-ae (parallel slots), v2.1z-af, v2.1z-aq (a build pod that does not start: stop, the reason notice) |
 | deploy | v2.1z-s (build hooks), v2.1z-t (one Job per request), v2.1z-u, deploy (baked config, container paths), v2.1z-ad "Shipped mode" |
 | remediations | remediations; v2.1z-ak (in-house group `framework`); v2.1z-am (case-insensitive matching, per-module in-house split, module sources, variant overrides, 들어온 경로); v2.1z-an (override proposals in module poms, the owners' choice) |
@@ -3078,7 +3078,8 @@ registry. Contract:
   `kubectl -n agent create configmap sbmig-job-template --from-file=deploy/k8s/81-web-job.template.yaml --dry-run=client -o yaml | kubectl apply -f -`.
   `.dockerignore` no longer drops `deploy/k8s/` (the default template path exists in the image again), only the filled `deploy/k8s/30-secret.yaml`.
 - **Manifests** (`deploy/k8s/`): `namespace: agent` on every resource; both PVCs `ReadWriteMany` + `storageClassName: nfs-csi`; image
-  `CHANGE_ME_REGISTRY/sbmig:CHANGE_ME_TAG` + `imagePullPolicy: IfNotPresent` (the registry exists after all; the node-import path is README §1.1);
+  `CHANGE_ME_REGISTRY/sbmig:CHANGE_ME_TAG` + `imagePullPolicy: Always` (the company pushes the same tag again: a pod start checks the registry and
+  pulls only a changed image; `IfNotPresent` kept each node on the build it pulled first; the node-import path is README §1.1);
   the kubeconfig access model and `k8s-job` mode switched on as shipped ("v2.1z-ad", Shipped mode); `hostAliases` as commented placeholders
   in the Deployment and the Job template (the Job pod is the one calling the LLM gateway). Real company hostnames / IPs stay out of the repo.
 - **One config file (same day, user)**: the company edits only `artifacts.yml` — the ConfigMap key, the Deployment mount (`/app/config/artifacts.yml`),
@@ -4503,6 +4504,125 @@ Hystrix stayed in migrated projects: no recipe touched it, its version was carri
   swapped and the `HystrixCommand` subclass is ported by the fix loop.
 - Sleuth and Springfox are unchanged: the Boot 4 umbrella replaces `spring-cloud-starter-sleuth` (Micrometer Tracing)
   and Springfox (springdoc); other Sleuth-family artifacts the umbrella does not know are carried over and reported.
+
+## v2.1z-au — the code-change view: every file of the migrated tree against where it came from
+
+Relayed by the user (2026-11-18): "마이그레이션 완료하면 github나 bitbucket처럼 소스코드 수정 화면으로 볼 수 있게 … 부트쪽은
+표현이 편할텐데, 스프링이나 논프레임워크 같은 경우 변환기준으로 보여주고 어디 있던 java 파일이 이 주소로 왔다도 표시 … 수정분만
+보여주지 말고 위 아래 코드들도 좀 보이도록", in a section of the result card that can become a modal later.
+
+Three parts: the build side writes one artifact per run (`sbmig/report/codediff.py`), the web serves it
+(`sbmig/web/codediff.py`), the page shows it (component `CodeDiff` in `sbmig/web/static/index.html`). The web pod runs
+no git and no diff: it reads the artifact and, for more context, the final file out of `result.zip`.
+
+**What is compared.** The as-is tree (the first commit of the run's workspace: the upload as intake stored it) and
+the final tree (what `result.zip` holds: the working tree at finalize, build output left out). Every file of the
+final tree is shown AT ITS FINAL PATH against its **origin**, the as-is file it came from; a file that changed place
+says where it was. `changes.patch` is unchanged and still written.
+
+**Origin of a final file** (decided in this order; each as-is file is the origin of at most one final file):
+1. the as-is file at the same path;
+2. *same content*: an as-is file with the same file name and identical bytes whose own path no longer exists in the
+   final tree; among several the one sharing the longest run of trailing path components, then the smallest path;
+3. *similar content*: an as-is file with the same file name, gone from its path and not taken by rule 2; candidates
+   by the longest shared trailing path, at most 5 tried, the first that passes is taken; it passes when at least half
+   of the final file's lines occur in it (`SIMILARITY` 0.5; lines as a multiset, surrounding whitespace trimmed, blank
+   lines not counted; never for a binary file or a blob over 8 MiB);
+4. none: the file is new.
+Where two final files want the same as-is file (rules 2 and 3), the pairs are decided best first: longer shared
+trailing path, then the final path, then the as-is path. An as-is file that is gone and nobody's origin is a deleted
+file. Only regular files (git modes 100644 / 100755); a file's mode plays no part (a moved file whose mode alone
+changed is `moved` with `changed: false`).
+
+**Config** (`report.*`): `code_diff: true` (write the artifact), `code_diff_context: 10` (unchanged lines kept above
+and below each change, 0 … 50). Not written for a dry run, for `--flow remediation`, or when the workspace has no git
+repository. Writing it never fails a run (one WARNING, no artifact).
+
+**Artifact** `<run dir>/codediff/` (not redacted: it is the project's own source, like `changes.patch` and
+`result.zip`; untouched by `fleet.cleanup`):
+- `index.json`
+  ```json
+  {"version": 1, "run_id": "…", "generated_at": "<UTC ISO-8601>", "base": "<first commit sha>", "context": 10,
+   "zip_root": "project",
+   "summary": {"files": 0, "modified": 0, "added": 0, "deleted": 0, "moved": 0, "moved_only": 0,
+               "added_lines": 0, "removed_lines": 0, "binary": 0},
+   "moves": [{"from": "src/", "to": "demo-back/src/main/java/", "files": 412}], "moves_total": 1,
+   "files": [{"id": 0, "path": "demo-back/src/main/java/com/x/Foo.java", "old_path": "src/com/x/Foo.java",
+              "status": "moved", "changed": true, "binary": false, "added": 3, "removed": 3,
+              "encoding": "utf-8", "patch": [0, 512], "omitted": ""}],
+   "files_total": 1}
+  ```
+  - `status`: `modified` (same path, content changed) | `added` (no origin) | `deleted` (`path` = the as-is path) |
+    `moved` (origin at another path; `old_path` set, `changed` says whether the content differs too). A file whose
+    path and content are both unchanged is not listed; neither is a mode-only change.
+  - `summary`: counted over every entry BEFORE the `MAX_FILES` cut (`summary.files` = `files_total`); `moved` =
+    all `moved` entries, `moved_only` = those with `changed: false`; line counts over text files; `binary` = binary
+    entries.
+  - `moves`: where folders went. Per moved file the shared trailing components of `old_path` and `path` are cut
+    off; what is left is `from` → `to` (`""` = the project root, otherwise with a trailing `/`), grouped, most files
+    first; at most 200 groups, `moves_total` = the number before the cut.
+  - `files` sorted by `path`; `id` = position. At most `MAX_FILES` (20,000) entries, `files_total` = the number
+    before the cut (changed files are kept before moved-only ones when cutting).
+  - `encoding`: the file's detected encoding (`Workspace.encoding_of`; a deleted file's from its bytes).
+  - `patch`: `[offset, length]` into `patch.bin`, or `null` with `omitted` = `binary` | `too_large` (one file's
+    hunks over 1 MiB) | `cap` (`patch.bin` would pass 64 MiB) | `unavailable` (git's patch sections and its name
+    list did not agree, so no range of that diff is trusted; the line counts are still right) | `""` (nothing to
+    show: a moved-only file, or an added / deleted empty file).
+  - `old_path` is `null` unless `status` is `moved`.
+- `patch.bin`: per file the unified hunks, from its first `@@ -a,b +c,d @@` line to the end of its section, in the
+  file's own bytes (`git diff --no-renames --histogram -U<context>`; the `diff --git` / `---` / `+++` header lines
+  are not in the file at all). Never larger than 64 MiB.
+- `summary.json`: `index.json` without `files` (what the status call reads).
+- Written in the order `patch.bin`, `summary.json`, `index.json`, each through a temporary file; a failure removes
+  the folder.
+- Journal: `{"event": "code_diff", "files": n, "moved": n, "added_lines": n, "removed_lines": n, "seconds": s}`,
+  or `{"event": "code_diff_skipped", "reason": "…"}`.
+
+**How it is built** (no rename detection of git, no per-file process: about twenty git calls whatever the size of
+the tree): `Workspace.snapshot_tree()` writes the working tree as a tree object through a temporary index (a copy of
+the real one WITH its timestamp, else git's racy-clean check misses a same-size edit made in the index's own second;
+ignored jars are added as `commit()` adds them; HEAD and the real index untouched); the origins are computed from
+`Workspace.tree_entries(<first commit>)` and `tree_entries(<snapshot>)`; `Workspace.make_tree(entries)` builds a base
+tree holding each origin's blob at the FINAL path; one `git diff <base tree> <snapshot>` gives every modified, moved
+and added file at its final path, a second one (deleted files against the empty tree) the deletions.
+
+**HTTP** (behind the site token like every route; ids through the run-id check; 409 while the run's final redaction
+pass is pending, like the other result files; 404 `{"error": "code diff not available"}` without the artifact):
+- `GET /api/runs/{id}/codediff` → `index.json`.
+- `GET /api/runs/{id}/codediff/files/{n}` →
+  `{id, path, old_path, status, changed, binary, added, removed, encoding, omitted, expandable,
+    hunks: [{old_start, old_lines, new_start, new_lines, section, lines: [[kind, old_no, new_no, text], …]}],
+    no_newline: {old, new}}` — `kind` is `" "`, `"+"` or `"-"`; a number is `null` on the side a line does not exist;
+  `text` is decoded with the entry's encoding (replacement characters, never an error), without the line end, cut at
+  5,000 characters with `…`; `expandable` = the final file can be read from `result.zip` (false for a deleted or
+  binary file, a missing ZIP or member, a member over 32 MiB). A stored range that cannot be read or parsed gives
+  `hunks: []` with `omitted: "unreadable"` (one WARNING), never a 500.
+- `GET /api/runs/{id}/codediff/files/{n}/lines?start=<a>&end=<b>` → `{start, end, total, lines: ["…"]}`: lines
+  `a … b` (1-based, inclusive) of the FINAL file, read from the member `<zip_root>/<path>` of `result.zip`. Whole
+  numbers are clamped (below 1 → 1, past the file → the last line, a span over 5,000 lines is cut); the returned
+  `end` is `start + len(lines) - 1`; defaults `start=1`, `end=start+199`; text that is not a whole number → 400.
+  404 `{"error": "lines not available", "reason": …}` for a deleted or binary file, a missing ZIP or member, a
+  member over 32 MiB, an unsafe path in the index.
+- 404 bodies carry `error` and, where there is one, `reason`; a bad run id is 400, an unknown run 404 `unknown run`,
+  an `n` outside the list 404 `no such file in the code diff`. Every response is `Cache-Control: no-store`. The
+  parsed index (4 runs) and each `result.zip`'s member list (8) are kept in small caches keyed by the file's
+  mtime, size and inode; no file handle stays open between requests.
+- `GET /api/runs/{id}` gains `code_diff`: the `summary` object, only when the artifact can be served.
+
+**Page.** One block 「코드 변경」 in the result card, after 「취약점 조치」 and before the report preview, shown when
+`status.code_diff` is there (never for a remediation-only run), closed until the user opens it; the index and each
+file's hunks are fetched when needed. Inside: the summary, 「폴더 구조가 바뀌었습니다」 (the `moves` table) when
+files moved, filters (전체 / 수정 / 추가 / 삭제 / 이동, a path search, 「위치만 바뀐 파일도 보기」), a file tree by final path
+and the files one under the other. A file's head says its state and, when it moved, 「원래 위치: …」; its body shows the
+hunks with both line numbers, the differing part of a changed pair of lines marked, and rows that load more lines
+above, below and between hunks (`…/lines`; 「파일 전체 보기」 in the head). Files are drawn 30 at a time and a
+file's hunks are fetched when it comes near the viewport; a change of more than 400 lines starts folded. Each state
+has its sentence (loading, a failed request with 「다시 시도」, results not released yet, binary, left out because
+of its size, `unavailable` / `unreadable`, moved only, nothing matches, the list cut at 20,000). The block is the
+component `CodeDiff` (`mount(host, runId)` / `unmount()`; its own state, its DOM built inside `host`, styles under
+`.cdiff`), so a dialog can host it later without a rewrite. It reads `code_diff` from the status the page already
+gets (the SSE `status` event and `GET /api/runs/{id}`). Needs a browser with CSS container queries and `:has()`
+(current Chrome / Edge).
 
 ## remediations (취약점 조치) — `/api/remediations`, IVAS, version-text fixes + managed overrides (2026-11-11)
 

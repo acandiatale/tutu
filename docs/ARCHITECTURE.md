@@ -24,7 +24,7 @@ intake ─► analyze ─► plan ─► transform ─► restructure ─► str
 | restructure | the company layout and every pom cleanup, no LLM (§8) | never; a failed step flags `restructure-failed` and the run is not a success |
 | structure review | one LLM call checks the restructured poms against the company rules; critical findings are fixed by edits, warnings go to the report (`sbmig/review/reviewer.py`) | never |
 | verify | `mvn clean package -Dmaven.test.skip=true`; on failure the script fix loop (§3), then the final build again | never |
-| finalize | success verdict, advisories verified on the final tree, Handover, error list, KB records, code changes (`sbmig/report/changes.py`), `report.md` / `report.json`, then `changes.patch` / `result.zip` | – |
+| finalize | success verdict, advisories verified on the final tree, Handover, error list, KB records, code changes (`sbmig/report/changes.py`), `report.md` / `report.json`, then `changes.patch` / `result.zip` and the code-change record `codediff/` (`sbmig/report/codediff.py`) | – |
 | remediation | only when `remediation.after_migration` is on and the final build succeeded: the vulnerability-remediation graph (§11) | – |
 
 The run flow `remediation` (`sbmig run --flow remediation`, web `?flow=remediation`) uses only `intake → remediation → finalize`:
@@ -57,6 +57,7 @@ out/<run id>/
   sbmig.log           DEBUG log, a [stage] tag per line
   errors.jsonl / errors.md   the run's error list (§9)
   profile.json  plan.json  report.json  report.md  changes.patch  result.zip
+  codediff/           index.json, summary.json, patch.bin: every final file against the as-is file it came from (the page's 코드 변경)
 ```
 
 ## 2. Package map

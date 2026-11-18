@@ -2302,6 +2302,11 @@ class RunManager:
         for name in SERVED_FILES:
             if (rd / name).is_file() and (not pending or name in LIVE_FILES):
                 info.setdefault("files", []).append(name)
+        if not pending:            # 코드 변경 요약도 다른 결과 파일처럼 마지막 마스킹이 끝난 뒤에만 내준다
+            from .codediff import read_summary
+            code_diff = read_summary(rd)
+            if code_diff is not None:
+                info["code_diff"] = code_diff
         return info
 
     def _mem_state(self, run: Run) -> str:

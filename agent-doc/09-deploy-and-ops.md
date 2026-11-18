@@ -89,8 +89,8 @@ docker run --rm <registry>/sbmig:<tag> python -m sbmig.cli --help
 회사 클러스터의 값은 매니페스트에 들어 있다(`deploy/README.md` §1, §3): namespace `agent`, 스토리지 클래스 `nfs-csi`(NFS CSI — ReadWriteMany 지원,
 두 PVC 모두 RWX), 이미지는 인프라팀이 자기 레지스트리에 push 한다. PC 에서는 `deploy/docker/save-image.sh <tag>` 가 `linux/amd64` 로 빌드해
 `out/images/sbmig-<tag>.tar` 로 저장하고, 인프라팀이 `docker load` → `docker tag` → `docker push` 한 **전체 이름**을 `40-deployment.yaml` 과
-`81-web-job.template.yaml` 의 `image:` 에 같은 값으로 넣는다(`imagePullPolicy: IfNotPresent`; pull 인증이 필요하면 `imagePullSecrets`). 태그는 빌드마다
-새로 쓴다(`latest` 금지 — 노드에 남은 옛 이미지가 그대로 돈다). 레지스트리를 못 쓰는 클러스터라면 tar 를 노드마다 적재하고(containerd 는
+`81-web-job.template.yaml` 의 `image:` 에 같은 값으로 넣는다(`imagePullPolicy: Always` 라 같은 태그로 다시 올려도 반영된다. 올린 뒤 웹 파드 재시작; pull
+인증이 필요하면 `imagePullSecrets`). 레지스트리를 못 쓰는 클러스터라면 tar 를 노드마다 적재하고(containerd 는
 `ctr -n k8s.io images import`, k3s 는 `k3s ctr images import`, docker 는 `docker load`) 이미지를 `sbmig:<tag>` + `imagePullPolicy: Never` 로 바꾼다;
 노드 하나에만 적재했으면 Deployment 와 Job 틀의 `nodeSelector: {kubernetes.io/hostname: <node>}` 를 푼다(이미지가 없는 노드에서는 `ErrImageNeverPull`).
 

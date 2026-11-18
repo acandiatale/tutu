@@ -127,6 +127,7 @@ Outputs in `out/<run id>/`:
 | `logs/NNN-<label>.log` | every Maven / OpenRewrite call — the real error messages |
 | `project/` | the migrated working copy (git branch `sbmig/<run id>`, one commit per step / attempt) |
 | `changes.patch`, `result.zip` | full diff vs as-is, the migrated project |
+| `codediff/` | what the page's 「코드 변경」 block shows: each file of the migrated tree at its final path against the as-is file it came from, with the old place of a moved file (`report.code_diff: false` leaves it out) |
 
 `report.language: ko` writes `report.md` as the Korean guide, `en` as the diagnostic layout. LLM requests / responses go to `llm.record_dir` (`LLM_RECORD_DIR`)
 as `llm-NNNN.json`, without keys.

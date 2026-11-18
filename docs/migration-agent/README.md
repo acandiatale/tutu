@@ -188,7 +188,7 @@ Windows `target/` 잠금은 기다렸다 다시(`build.file_lock_retries`), 로�
 
 ### 4.8 finalize
 
-LLM 사용량·비용, 성공 판정(계획한 최종 빌드 전부 성공 + `restructure-failed` / `hollow-reactor` / 중단 없음), 미해결·차단 목록, 오류 목록과 KB 기록, 보고서 쓰기, 그다음 `changes.patch` / `result.zip`(KB 와 보고서가 먼저).
+LLM 사용량·비용, 성공 판정(계획한 최종 빌드 전부 성공 + `restructure-failed` / `hollow-reactor` / 중단 없음), 미해결·차단 목록, 오류 목록과 KB 기록, 보고서 쓰기, 그다음 `changes.patch` / `result.zip`(KB 와 보고서가 먼저), 끝으로 웹 화면 「코드 변경」에 쓰는 기록 `codediff/`.
 마지막 줄 `SBMIG-RESULT run=… exit=… build=… unresolved=… blocked=… llm=… attn=… review=…`. 종료 코드: 0 성공, 2 차단·미해결·성공 아님, 3 중단.
 
 ### 4.9 사내 프레임워크 프로젝트 (범위 `jdk-jakarta`)
@@ -368,6 +368,8 @@ flowchart LR
   J2 --> PVC
   W -->|"journal / sbmig.log tail"| U
 ```
+
+웹 화면의 결과 카드에는 「코드 변경」 블록이 있습니다. 변환된 프로젝트의 파일을 최종 경로 기준으로, 원래 파일과 비교해 보여 줍니다. 재구성으로 위치가 바뀐 파일은 「원래 위치」를 함께 보여 주고, 폴더가 어디로 옮겨졌는지는 「폴더 구조가 바뀌었습니다」 표로 묶어 보여 줍니다. 바뀐 줄의 위아래 줄은 기본으로 10줄이 보이고 더 펼칠 수 있습니다. 화면은 실행 폴더의 `codediff/`(마무리에서 `sbmig/report/codediff.py` 가 씀)와 `result.zip` 만 읽습니다(`sbmig/web/codediff.py`). 웹 파드는 git 을 실행하지 않습니다.
 
 Main ↔ Worker 의 파일·종료 코드·멈춤·복구 약속: `docs/v2/JOB-RUN-STATE-CONTRACT-KO.md`. 매니페스트와 운영: `deploy/README.md`.
 

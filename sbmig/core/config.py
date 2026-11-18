@@ -881,6 +881,9 @@ class ReportConfig(BaseModel):
     formats: list[str] = Field(default_factory=lambda: ["md", "json"])
     zip_result: bool = True
     include_diff: bool = True
+    # the code-change view of the web page: <run dir>/codediff/ (every final file against the as-is file it came from)
+    code_diff: bool = True
+    code_diff_context: int = Field(default=10, ge=0, le=50)   # unchanged lines kept above and below each change
     language: Literal["en", "ko"] = "en"   # report.md language (report.json, console and logs stay English)
     # after the final build: `mvn dependency:tree` per module → javax EE API jars still on the classpath and the
     # direct dependency that drags each in (the library still compiled against javax); also fills BlockedItem.via

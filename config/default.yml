@@ -773,6 +773,10 @@ report:
   formats: [md, json]              # 작성할 보고서 형식: md는 report.md(사람용), json은 report.json(기계용)
   zip_result: true                 # 바뀐 프로젝트를 result.zip으로 묶어 남길지 여부
   include_diff: true               # as-is 대비 전체 변경을 changes.patch로 남길지 여부
+  # 웹 화면의 「코드 변경」에 쓰는 기록(실행 폴더의 codediff/)을 남길지 여부.
+  # 변환된 파일마다 원래 파일과 비교한 내용이고, 위치가 바뀐 파일은 원래 위치도 함께 남긴다.
+  code_diff: true
+  code_diff_context: 10            # 바뀐 줄의 위아래로 함께 남기는 줄 수(0~50). 화면에서 더 펼쳐 볼 수 있다
   # report.md 언어와 구성: ko는 요청 담당자가 읽는 안내서(회사 설정), en은 개발과 진단에 쓰는 구성이다.
   # report.json, 콘솔, 로그는 항상 영어다.
   language: en

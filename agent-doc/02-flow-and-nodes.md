@@ -175,7 +175,7 @@ MSA: 공유 라이브러리 루트 먼저, 그다음 서비스마다 `transform.
 
 | 항목 | 내용 |
 |---|---|
-| 하는 일 | LLM 사용량·비용(`sbmig/report/cost.py`, `llm.pricing`), 루프의 플래그·후속 조치 합치기, 성공 판정, 미해결 오류, 차단 목록, 인프라 플래그(`infra:<kind>`), 운영자 확인, 권고 검증, 오류 목록·KB 기록, 코드 수정 내역(`sbmig/report/changes.py`), 보고서 쓰기, 그다음 느린 `changes.patch` / `result.zip`(KB 와 보고서가 먼저 — zip 도중 죽어도 잃는 것이 없게) |
+| 하는 일 | LLM 사용량·비용(`sbmig/report/cost.py`, `llm.pricing`), 루프의 플래그·후속 조치 합치기, 성공 판정, 미해결 오류, 차단 목록, 인프라 플래그(`infra:<kind>`), 운영자 확인, 권고 검증, 오류 목록·KB 기록, 코드 수정 내역(`sbmig/report/changes.py`), 보고서 쓰기, 그다음 느린 `changes.patch` / `result.zip`(KB 와 보고서가 먼저 — zip 도중 죽어도 잃는 것이 없게), 끝으로 웹 화면 「코드 변경」의 기록 `codediff/`(`sbmig/report/codediff.py`, `report.code_diff`) |
 | 성공 판정 | 계획한 최종 빌드가 전부 돌았고 전부 성공 + `restructure-failed` 없음 + `hollow-reactor` 없음 + 중단 아님 |
 | `tests-not-compiled` | `build.skip_test_compile` 이고 빌드가 한 번이라도 돌았으면 항상 붙는 플래그 + 후속 조치("테스트는 담당팀이 `mvn test-compile` 로") |
 | 종료 코드 | `report_exit_code`(`sbmig/report/result_line.py`): `aborted` / `aborted:…` / `mvn-not-found` → 3, 성공이고 차단 없음 → 0, 그 밖 → 2 |

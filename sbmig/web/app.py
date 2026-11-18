@@ -30,6 +30,14 @@ Routes:
     POST /api/runs/{id}/stop             stop after the current graph node
     GET  /api/runs/{id}/files/{name}     report.md | report.json | result.zip | sbmig.log | journal.jsonl |
                                          changes.patch | plan.json | profile.json | errors.md | errors.jsonl
+    GET  /api/runs/{id}/codediff         the code-change view (v2.1z-au, `sbmig.web.codediff`): the stored
+                                         codediff/index.json; 404 {"error": "code diff not available"} without it,
+                                         409 while the run's final redaction pass is pending
+    GET  /api/runs/{id}/codediff/files/{n}
+                                         one file's entry + parsed hunks, no_newline, expandable
+    GET  /api/runs/{id}/codediff/files/{n}/lines?start=&end=
+                                         lines of the FINAL file read from result.zip (1-based, inclusive, clamped,
+                                         at most 5,000 per call)
     /api/remediations…                   vulnerability remediation (separate LangGraph flow; in-process: worker threads
                                          of this process, one at a time; Job modes: runs in the build pod after a
                                          successful migration, chained ones read here by run id):
@@ -407,6 +415,9 @@ def create_app(out_dir: Path, repo_root: Path = PACKAGE_ROOT, max_upload_mb: int
     from .admin import AdminAuth, create_admin_router
     app.state.admin_auth = AdminAuth()
     app.include_router(create_admin_router(mgr, app.state.admin_auth))
+    # 코드 변경 화면은 빌드 파드가 남긴 codediff/ 산출물과 result.zip만 읽는다
+    from .codediff import create_codediff_router
+    app.include_router(create_codediff_router(mgr))
 
     @app.get("/", include_in_schema=False)
     @app.get("/index.html", include_in_schema=False)

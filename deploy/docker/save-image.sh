@@ -8,7 +8,8 @@
 #   결과:  out/images/sbmig-<tag>.tar 와 sbmig-<tag>.tar.sha256 (SBMIG_IMAGE_OUT 으로 폴더 변경), 그리고 노드에서 칠 적재 명령.
 #   항상 linux/amd64 로 만든다 — 노드가 amd64 다(Apple silicon / arm64 PC 에서 만든 arm64 이미지는 노드에서 exec format error).
 #   buildx 가 있으면 --provenance=false --sbom=false: attestation 이 붙은 인덱스는 `ctr images import` 가 거부할 수 있다.
-#   태그는 tar 마다 새로(latest 금지): imagePullPolicy Never / IfNotPresent 는 노드에 있는 그 태그를 그대로 쓰므로 같은 태그를 다시 올려도 도는 파드는 옛 이미지다.
+#   노드에 직접 적재할 때 태그는 tar 마다 새로(latest 금지): imagePullPolicy Never / IfNotPresent 는 노드에 있는 그 태그를 그대로 쓰므로 같은 태그를 다시 올려도 도는 파드는 옛 이미지다.
+#   레지스트리에 올리는 경우 매니페스트는 Always 라 같은 태그로 다시 올려도 반영된다.
 set -euo pipefail
 TAG="${1:?사용: $0 <tag> [docker build 인자…]  — 태그는 tar 마다 새로(latest 금지)}"
 shift

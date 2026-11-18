@@ -27,7 +27,7 @@ spec:
       containers:
         - name: build
           image: CHANGE_ME_REGISTRY/sbmig:CHANGE_ME_TAG                 # deploy/docker/Dockerfile 을 인프라팀이 레지스트리에 push 한 전체 이름(README §1); 레지스트리 없이 노드에 적재하면 sbmig:<tag> (§1.1)
-          imagePullPolicy: IfNotPresent                                 # 레지스트리 없이 노드에 직접 적재하면 Never
+          imagePullPolicy: Always                                       # 파드가 뜰 때마다 레지스트리와 대조한다. 레지스트리 없이 노드에 직접 적재하면 Never
           command: ["/app/deploy/docker/run-job.sh"]
           env:
             # --- 요청 값(Agent 가 Job 마다 채운다: submit-job.sh 가 아래 SBMIG_* 의 value 를 바꿔 넣는다) ---

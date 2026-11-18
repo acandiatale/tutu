@@ -625,7 +625,8 @@ class Workspace:
         return p
 
     # ------------------------------------------------------------------ git snapshots
-    def _git(self, *args: str, check: bool = True) -> subprocess.CompletedProcess:
+    def _git(self, *args: str, check: bool = True, env: Optional[dict[str, str]] = None,
+             input: Optional[bytes] = None) -> subprocess.CompletedProcess:
         """작업 공간에서 git 명령을 실행한다. stdin을 닫고 프롬프트, 서명, 훅을 끄고 타임아웃을 건다.
         출력은 콘솔 코드 페이지가 아니라 UTF-8로 디코딩한다.
 
@@ -637,23 +638,41 @@ class Workspace:
         (and raw file bytes in diffs), and a `text=True` cp949 decode on Windows died inside subprocess's reader
         thread, which left `stdout=None` ("could not write changes.patch: data must be str, not NoneType",
         2026-10-21 company run). `_git_bytes` keeps the raw bytes (patch files)."""
-        cp = self._git_bytes(*args, check=check)
+        cp = self._git_bytes(*args, check=check, env=env, input=input)
         return subprocess.CompletedProcess(cp.args, cp.returncode, _as_text(cp.stdout), _as_text(cp.stderr))
 
-    def _git_bytes(self, *args: str, check: bool = True) -> subprocess.CompletedProcess:
-        """git 명령을 실행하고 출력을 바이트 그대로 반환한다(패치 파일용).
-        프롬프트와 편집기를 막고 작성자를 sbmig로 고정한다."""
+    def _git_env(self, extra: Optional[dict[str, str]] = None) -> dict[str, str]:
         env = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "echo", "GCM_INTERACTIVE": "never",
                "GIT_EDITOR": "true", "GIT_AUTHOR_NAME": "sbmig", "GIT_AUTHOR_EMAIL": "sbmig@local",
                "GIT_COMMITTER_NAME": "sbmig", "GIT_COMMITTER_EMAIL": "sbmig@local"}
+        if extra:
+            env.update(extra)
+        return env
+
+    def _git_cmd(self, args: Iterable[str]) -> list[str]:
         no_hooks = str(self.run_dir / "no-hooks")                       # a dir that does not exist = no hooks
         cmd = ["git"]
         for kv in (*GIT_CONFIG, f"core.hooksPath={no_hooks}"):
             cmd += ["-c", kv]
-        cmd += list(args)
+        return cmd + list(args)
+
+    def _git_bytes(self, *args: str, check: bool = True, env: Optional[dict[str, str]] = None,
+                   input: Optional[bytes] = None, stdout: Any = None) -> subprocess.CompletedProcess:
+        """git 명령을 실행하고 출력을 바이트 그대로 반환한다(패치 파일용).
+        프롬프트와 편집기를 막고 작성자를 sbmig로 고정한다.
+
+        Optional: `env` (extra variables over the fixed ones), `input` (bytes for stdin, else stdin is closed),
+        `stdout` (a binary file object: git's output goes straight there and `cp.stdout` is empty)."""
+        cmd = self._git_cmd(args)
+        io_kw: dict[str, Any] = {"stderr": subprocess.PIPE,
+                                 "stdout": stdout if stdout is not None else subprocess.PIPE}
+        if input is not None:
+            io_kw["input"] = input
+        else:
+            io_kw["stdin"] = subprocess.DEVNULL
         try:
-            cp = subprocess.run(cmd, cwd=self.root, capture_output=True, env=env,
-                                stdin=subprocess.DEVNULL, timeout=GIT_TIMEOUT_S, creationflags=_child_creationflags())
+            cp = subprocess.run(cmd, cwd=self.root, env=self._git_env(env), timeout=GIT_TIMEOUT_S,
+                                creationflags=_child_creationflags(), **io_kw)
         except subprocess.TimeoutExpired as e:
             raise GitError(f"git {' '.join(args)} timed out after {GIT_TIMEOUT_S:.0f}s in {self.root} — something "
                            "outside sbmig is blocking git (antivirus / indexer lock, a global hook, a credential or "
@@ -937,6 +956,147 @@ class Workspace:
     def first_commit(self) -> str:
         """as-is 상태를 저장한 첫 커밋의 sha를 반환한다."""
         return self._git("rev-list", "--max-parents=0", "HEAD").stdout.strip().splitlines()[-1]
+
+    # ------------------------------------------------------------------ tree objects (code-change view)
+    def _git_dir(self) -> Path:
+        d = self.root / ".git"
+        if d.is_dir():
+            return d
+        out = self._git("rev-parse", "--absolute-git-dir").stdout.strip()   # a worktree / `gitdir:` file
+        return Path(out)
+
+    def _temp_index(self) -> Path:
+        return self._git_dir() / f"sbmig-tmp-{os.getpid()}-{uuid.uuid4().hex[:12]}.index"
+
+    @staticmethod
+    def _drop_index(p: Path) -> None:
+        for q in (p, p.with_name(p.name + ".lock")):
+            try:
+                q.unlink()
+            except OSError:
+                pass
+
+    def snapshot_tree(self) -> str:
+        """작업 트리 전체를 tree 객체로 저장하고 sha를 반환한다. 임시 index를 쓰므로 HEAD와 실제 index는 그대로다.
+        커밋할 때처럼 무시된 jar도 넣는다.
+
+        The working tree as a tree object, written through a TEMPORARY index: `.git/index` is copied WITH its mtime
+        (unchanged files are not hashed again; a fresh mtime on the copy would defeat git's racy-clean check and a
+        same-size edit made in the index's second would be taken as unchanged), `GIT_INDEX_FILE` points at the copy, `git add -A`, the ignored jars outside build output
+        force-added exactly like `commit()` does, `git write-tree`. HEAD and the real index stay byte-identical (the
+        object store gains the new blobs). The tree is therefore what `commit()` would commit now. Raises GitError."""
+        tmp = self._temp_index()
+        try:
+            real = self._git_dir() / "index"
+            if real.is_file():
+                # 복사본의 수정 시각이 새로 찍히면 git이 같은 시각에 바뀐 파일을 그대로라고 판단하므로 시각도 복사한다
+                shutil.copy2(real, tmp)
+            env = {"GIT_INDEX_FILE": str(tmp)}
+            self._git("add", "-A", env=env)
+            cp = self._git("ls-files", "-z", "--others", "--ignored", "--exclude-standard", env=env, check=False)
+            jars = [f for f in (cp.stdout or "").split("\0")
+                    if f.lower().endswith(".jar") and "node_modules/" not in f and not is_build_output_path(f, self.root)]
+            if jars:
+                self._git("add", "-f", "--pathspec-from-file=-", "--pathspec-file-nul", check=False,
+                          env={**env, "GIT_LITERAL_PATHSPECS": "1"},         # a `[` in a jar name is no glob
+                          input="\0".join(jars).encode("utf-8"))
+            return self._git("write-tree", env=env).stdout.strip()
+        finally:
+            self._drop_index(tmp)
+
+    def tree_entries(self, treeish: str) -> dict[str, tuple[str, str]]:
+        """tree 안의 일반 파일(모드 100644, 100755)마다 경로와 (모드, sha)를 반환한다.
+
+        `{path: (mode, sha)}` of the regular files (100644 / 100755) of `treeish`, recursively (`git ls-tree -r -z`,
+        paths verbatim: no C quoting). Symlinks and submodules are left out. Raises GitError."""
+        out = self._git_bytes("ls-tree", "-r", "-z", "--full-tree", treeish).stdout or b""
+        entries: dict[str, tuple[str, str]] = {}
+        for rec in out.split(b"\0"):
+            if not rec:
+                continue
+            meta, _, path = rec.partition(b"\t")
+            parts = meta.split(b" ")
+            if len(parts) != 3 or parts[0] not in (b"100644", b"100755"):
+                continue
+            entries[path.decode("utf-8", errors="surrogateescape")] = (parts[0].decode(), parts[2].decode())
+        return entries
+
+    def make_tree(self, entries: Iterable[tuple[str, str, str]]) -> str:
+        """(모드, sha, 경로) 목록으로 tree 객체를 만들고 sha를 반환한다. 임시 index를 쓴다.
+
+        A tree object holding the given `(mode, sha, path)` blobs, built through a temporary index
+        (`git update-index -z --index-info`, `git write-tree`); no entries = the empty tree. The blobs must exist.
+        Raises GitError (a path that is a file and a directory at once, an unknown blob)."""
+        tmp = self._temp_index()
+        try:
+            env = {"GIT_INDEX_FILE": str(tmp)}
+            data = b"".join(f"{mode} blob {sha}\t".encode() + path.encode("utf-8", errors="surrogateescape") + b"\0"
+                            for mode, sha, path in entries)
+            if data:
+                self._git_bytes("update-index", "-z", "--index-info", env=env, input=data)
+            return self._git("write-tree", env=env).stdout.strip()
+        finally:
+            self._drop_index(tmp)
+
+    def _cat_blobs(self, shas: Iterable[str], limit: int) -> Iterator[tuple[str, Optional[bytes], int]]:
+        """Blob contents through ONE `git cat-file --batch`: yields `(sha, bytes, size)` in the order asked, bytes
+        None for a blob over `limit` bytes (read and dropped) or a missing object (size -1). Streams: one blob in
+        memory at a time; a writer thread feeds the requests so neither pipe can fill up. Raises GitError."""
+        wanted = list(shas)
+        if not wanted:
+            return
+        proc = subprocess.Popen(self._git_cmd(["cat-file", "--batch"]), cwd=self.root, env=self._git_env(),
+                                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                creationflags=_child_creationflags())
+        timer = threading.Timer(GIT_TIMEOUT_S, proc.kill)
+        timer.daemon = True
+        timer.start()
+
+        def feed() -> None:
+            try:
+                for i in range(0, len(wanted), 512):
+                    proc.stdin.write("".join(s + "\n" for s in wanted[i:i + 512]).encode())
+                proc.stdin.close()
+            except OSError:
+                pass
+
+        writer = threading.Thread(target=feed, daemon=True)
+        writer.start()
+        try:
+            out = proc.stdout
+            for sha in wanted:
+                head = out.readline()
+                if not head:
+                    raise GitError(f"git cat-file --batch ended early in {self.root}")
+                parts = head.split()
+                if len(parts) < 3 or parts[1] == b"missing":
+                    yield sha, None, -1
+                    continue
+                size = int(parts[2])
+                if size <= limit:
+                    data = out.read(size)
+                    if len(data) != size:
+                        raise GitError(f"git cat-file --batch: short read in {self.root}")
+                else:
+                    left = size
+                    while left > 0:
+                        chunk = out.read(min(left, 1 << 20))
+                        if not chunk:
+                            raise GitError(f"git cat-file --batch: short read in {self.root}")
+                        left -= len(chunk)
+                    data = None
+                out.read(1)                                      # the LF after the content
+                yield sha, data, size
+        finally:
+            timer.cancel()
+            try:
+                proc.stdout.close()
+            except OSError:
+                pass
+            if proc.poll() is None:
+                proc.kill()
+            proc.wait()
+            writer.join(timeout=5)
 
     # ------------------------------------------------------------------ outputs
     def write_patch(self, name: str = "changes.patch") -> Path:

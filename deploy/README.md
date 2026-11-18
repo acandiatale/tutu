@@ -74,8 +74,11 @@ docker build --build-arg APP_DIR=src/migration-agent --build-arg DEPLOY_DIR=depl
 **회사(2026-11-09)**: 인프라팀이 자기 레지스트리에 push 해 준다. PC 에서는 `deploy/docker/save-image.sh <tag>` 로 amd64 tar 를 만들어 넘기면 인프라팀이
 `docker load -i` → `docker tag sbmig:<tag> <registry>/sbmig:<tag>` → `docker push` 한다(Dockerfile 을 넘겨 그쪽에서 빌드해도 같다). push 된 이미지의
 **전체 이름**을 받아 `k8s/40-deployment.yaml` 과 `k8s/81-web-job.template.yaml` 의 `image:` 두 줄(`CHANGE_ME_REGISTRY/sbmig:CHANGE_ME_TAG` 자리)에 글자
-그대로, 같은 값으로 넣는다(`imagePullPolicy: IfNotPresent`). 레지스트리가 pull 에 인증을 요구하면 인프라팀이 준 Secret 이름으로 양쪽의 `imagePullSecrets`
-주석을 푼다. 태그는 빌드마다 새로(`latest` 금지 — 노드에 남은 옛 이미지가 그대로 돈다). 첫 파드가 `ImagePullBackOff` 면 대개 노드가 그 레지스트리의
+그대로, 같은 값으로 넣는다. 레지스트리가 pull 에 인증을 요구하면 인프라팀이 준 Secret 이름으로 양쪽의 `imagePullSecrets`
+주석을 푼다. 매니페스트는 `imagePullPolicy: Always` 다: 파드가 뜰 때마다 레지스트리와 대조해 바뀐 이미지만 새로 받으므로 **같은 태그로 다시 올려도
+반영된다**. 이미지를 새로 올린 뒤에는 `kubectl -n agent rollout restart deploy/sbmig` 로 웹 파드를 다시 띄운다(빌드 파드는 뜰 때마다 스스로 받는다).
+`IfNotPresent` 로 두면 노드에 그 태그가 이미 있을 때 레지스트리를 보지 않아, 같은 태그를 다시 올려도 노드마다 처음 받은 이미지가 그대로 돈다(웹 파드와
+빌드 파드의 코드가 서로 다를 수 있다). 그 정책을 쓰려면 태그를 빌드마다 새로 붙인다. `Always` 는 레지스트리가 응답하지 않으면 새 파드가 뜨지 못한다. 첫 파드가 `ImagePullBackOff` 면 대개 노드가 그 레지스트리의
 인증서를 신뢰하지 않는 것이다(인프라팀 몫).
 
 ### 1.1 레지스트리 없이 노드에 직접 적재해야 할 때 — `docker save` tar (대안; 2026-11-06 에 레지스트리가 없다고 들었다가 11-09 에 push 로 정리됨)
@@ -166,7 +169,7 @@ Secret 의 `SBMIG_WEB_TOKEN` 을 채운다 — 그때는 `http://<host>:8765/?to
   * **취약점 해결**: 이미 이관된 프로젝트의 취약점만 조치한다. 이관 단계·LLM·KB 를 쓰지 않고 올린 프로젝트를 그대로 빌드·검사·조치·재검사한다.
     `취약점 조치 시작` → 단계 레일(접수 → 취약점 조치 → 마무리), 결과는 조치 결과 칸과 조치 보고서 / 조치 결과 ZIP 버튼(§6 "취약점 해결만").
 
-  zip 을 끌어다 놓거나 파일 선택 → 시작 → 진행 기록 / 로그 탭 → 끝나면 `보고서 받기(report.md)` / `변환된 프로젝트 받기(result.zip)` 두 버튼.
+  zip 을 끌어다 놓거나 파일 선택 → 시작 → 진행 기록 / 로그 탭 → 끝나면 `보고서 받기(report.md)` / `변환된 프로젝트 받기(result.zip)` 두 버튼과, 바뀐 코드를 파일별로 보는 「코드 변경」 블록(위치가 바뀐 파일은 원래 위치도 표시).
   실행 폴더 이름은 올린 파일 이름에서 만든 앞머리로 시작한다(`<앞머리>-YYYYMMDD-HHMMSS-<hex 6>`; 소문자·숫자·하이픈, 긴 이름은 자르고, 쓸
   글자가 없으면 `web`). 실행 목록에는 올린 파일 이름이 그대로 보인다. 접수에서 거절된 실행은 그 사유를 문장으로 보인다(예: Ant 프로젝트 →
   "Maven 변환 후 신청 부탁드립니다."). 로그는 화면에
@@ -500,7 +503,7 @@ namespace 에 ResourceQuota 가 있으면 파드가 만들어지지 않을 수 �
    sbmig-web` 줄의 주석을 푼다. 코드는 `KUBECONFIG` 파일이 있으면 그것으로, 없으면 서비스 계정으로 API 를 부른다
    (`sbmig/web/k8s.py` `K8sClient.connect`; kubeconfig 의 token / 클라이언트 인증서 사용자만 — `exec` 방식은 거절한다).
 3. `k8s/40-deployment.yaml` 과 `k8s/81-web-job.template.yaml` 의 `image:` 에 인프라팀이 push 한 이미지의 전체 이름을 **같은 값**으로 넣는다(§1,
-   `imagePullPolicy: IfNotPresent`; pull 인증이 필요하면 `imagePullSecrets`). 회사 설정이 이미지 안에 있으므로 두 이미지가 다르면 Worker 가 digest 불일치로 거절한다.
+   `imagePullPolicy: Always`; pull 인증이 필요하면 `imagePullSecrets`). 회사 설정이 이미지 안에 있으므로 두 이미지가 다르면 Worker 가 digest 불일치로 거절한다.
 4. 채운 Job 틀을 ConfigMap 으로 올린다 — 웹 파드는 `/templates/81-web-job.template.yaml`(`SBMIG_JOB_TEMPLATE`, Deployment 의 env)을 읽는다.
    Main 은 **시작할 때** 틀을 검증하고 어긋나면 뜨지 않는다(`MIGRATION_TEMPLATE_INVALID: …`): 컨테이너 하나(backoffLimit 0, restartPolicy Never),
    **envFrom 금지**(변수마다 `valueFrom`), 비밀 env 는 `secretKeyRef` 만(설정 덮어쓰기 `SBMIG_<섹션>__<키>` 는 literal 가능), `LLM_RECORD_DIR` / `SBMIG_WEB_TOKEN` 없음, `/data` 는 PVC 전체를 쓰기 가능으로

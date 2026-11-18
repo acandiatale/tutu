@@ -83,9 +83,9 @@ Python unless `script.python` names another one (it needs pydantic + lxml, `docs
 
 | command | what it does |
 |---|---|
-| `sbmig run <input>` | migrate one project → `out/<run id>/` (`report.md`, `report.json`, `result.zip`, `changes.patch`, `sbmig.log`); exit 0 ok, 2 blocked / unresolved, 3 aborted. `--flow remediation`: no migration, only the vulnerability remediation of the project as uploaded (below) |
+| `sbmig run <input>` | migrate one project → `out/<run id>/` (`report.md`, `report.json`, `result.zip`, `changes.patch`, `codediff/`, `sbmig.log`); exit 0 ok, 2 blocked / unresolved, 3 aborted. `--flow remediation`: no migration, only the vulnerability remediation of the project as uploaded (below) |
 | `sbmig fleet run <manifest>` / `resume` / `status` | many projects, one after the other, one shared KB → `<out>/fleet/summary.md` |
-| `sbmig serve` | web UI (FastAPI on uvicorn, LangGraph engine): upload a zip, choose 전체 진행 or 취약점 해결, watch the run live, download the report |
+| `sbmig serve` | web UI (FastAPI on uvicorn, LangGraph engine): upload a zip, choose 전체 진행 or 취약점 해결, watch the run live, download the report, read the code changes file by file (코드 변경) |
 | `sbmig analyze` / `plan` / `inventory` | read-only: project profile, migration plan, a pom-less tree described for its owners |
 | `sbmig kb cases list\|show\|retire\|activate\|pin\|unpin` | stored fix scripts per case (versions, successes, lineage) |
 | `sbmig kb errors …` / `stats` / `validate` / `reindex` / `export` / `import` | error list, KB upkeep |

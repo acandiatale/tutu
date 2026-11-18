@@ -266,7 +266,7 @@ review", fix attempts as `script:<case>:v<N>`; `ko`, the company setting: the re
   commits happen in the main session. Per round: append a "Status" table to `docs/PLAN.md`, update
   `docs/INTERFACES.md` on contract changes, add a fixture + `expected.json` (+ `replay/`) for every new scenario.
 - Setup: `uv venv && source .venv/bin/activate && uv pip install -e ".[dev]"` (plain `pip install -e ".[dev]"` works too).
-- Fast check (Python only, ~14 min): `python -m pytest -m "not integration"` → ≈ 5,850 passed, ≈ 62 deselected (2026-11-18)
+- Fast check (Python only, ~14 min): `python -m pytest -m "not integration"` → ≈ 5,915 passed, ≈ 62 deselected (2026-11-18)
   (`-q` on top of the `-q` in pyproject hides the summary line). Until 2026-11-12 `tests/build` (381 tests) was silently
   left out of every root-level run — pytest skips a directory named `build` by default; `norecursedirs` in pyproject now
   keeps it in. When a total does not grow by the number of tests added, compare per-file counts (`--collect-only -q`).
@@ -285,6 +285,21 @@ review", fix attempts as `script:<case>:v<N>`; `ko`, the company setting: the re
   language. When Korean text for a reader is added anywhere: write it as a Korean colleague would (합니다체, no
   word-for-word code vocabulary), render a sample and read it top to bottom before shipping. A new report section
   must be added to BOTH renderers. Contract: `docs/INTERFACES.md` "v2.1z-as".
+- **The code-change view (2026-11-18, v2.1z-au).** Relayed by the user: a GitHub / Bitbucket style view of the
+  changed source in the result card ("지금 승인쪽 빠졌으니까 거기에 섹션하나 잡고 … 나중에 모달로 분리하기 쉽게"), for
+  restructured projects shown by the converted tree with where each file came from ("어디 있던 java 파일이 이 주소로
+  왔다도 표시"), with lines above and below a change ("수정분만 보여주지 말고 위 아래 코드들도 좀 보이도록"). Three
+  parts: `sbmig/report/codediff.py` writes `<run dir>/codediff/` at finalize (every final file at its final path
+  against its ORIGIN in the as-is tree: same path → same name and identical bytes → same name and half of the lines
+  shared; no git rename detection, a base tree with the origins' blobs at the final paths and one `git diff`);
+  `sbmig/web/codediff.py` serves it and reads more lines of the final file out of `result.zip` (the web pod runs no
+  git); the page block 「코드 변경」 is the component `CodeDiff` (`mount(host, runId)` / `unmount()`, styles under
+  `.cdiff`) so that a dialog can host it later. Not in the view: the chained remediation's pom changes; no block for
+  a remediation-only run; no side-by-side view. Contract: `docs/INTERFACES.md` "v2.1z-au".
+- **Image pulls (2026-11-18).** The company pushes the same image tag every time; with `IfNotPresent` each node kept
+  the build it had pulled first (the approval list of v2.1z-ar "came back" because the build pods ran old code). The
+  manifests now say `imagePullPolicy: Always`; after a push the operator restarts the web pod, build pods pull at
+  start. When a deployed change "does not arrive", ask which image the BUILD pod runs before anything else.
 - **Disk walls for test runs (2026-11-17)**: a review subagent's scratch test (a writer thread with no size or time
   limit) wrote one 118 GB file and filled the developer's disk. A rule in a brief is a promise; these are the walls.
   The root `conftest.py` gives every pytest run whose tests are under the repository a per-file size cap

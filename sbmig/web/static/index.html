@@ -283,6 +283,162 @@
   .choice { border: 1px solid var(--line); border-radius: var(--radius-s); padding: 12px 14px; margin-top: 10px; background: #fff; }
   .choice .head { margin: 0 0 8px; }
 
+  /* ---- 3c. 코드 변경: 결과 카드 안의 머리 줄. 열면 안쪽 화면을 CodeDiff가 그린다 */
+  .cdblock { margin-top: 18px; border-top: 1px solid var(--line-soft); padding-top: 16px; }
+  .cdblock > .line .btn { margin-left: auto; padding: 6px 14px; font-size: 13px; }
+  .cdblock .cdlead { margin: 6px 0 0; color: var(--muted); font-size: 12.5px; word-break: keep-all; overflow-wrap: anywhere; }
+  .cdblock .cdhost { margin-top: 14px; }
+
+  /* ---- CodeDiff 화면. 대화상자로 옮겨도 그대로 쓰도록 모든 규칙을 .cdiff 아래에 둔다 */
+  .cdiff { --cd-add: #E6F5EC; --cd-add-no: #D2ECDC; --cd-add-x: #A8DCBA; --cd-add-ink: #1C6B3E;
+           --cd-del: #FCEBE9; --cd-del-no: #F6D7D3; --cd-del-x: #F1B6AE; --cd-del-ink: #A12C22;
+           --cd-row: 20px; --cd-no: 56px;
+           container-type: inline-size; min-width: 0; font-size: 13px; }
+  .cdiff .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  .cdiff .cd-sum { margin: 0; color: var(--ink); word-break: keep-all; overflow-wrap: anywhere; }
+  .cdiff .cd-note { margin: 10px 0 0; padding: 8px 12px; border-left: 3px solid var(--warn); border-radius: var(--radius-s);
+                    background: var(--warn-tint); font-size: 12.5px; word-break: keep-all; overflow-wrap: anywhere; }
+  .cdiff .cd-msg { margin: 0; padding: 12px 14px; color: var(--muted); font-size: 13px; display: flex; gap: 8px 12px; align-items: center;
+                   flex-wrap: wrap; word-break: keep-all; overflow-wrap: anywhere; }
+  .cdiff .cd-msg.bad { color: var(--bad); }
+  .cdiff .cd-msg .btn, .cdiff .cd-more .btn, .cdiff .cd-active .btn { padding: 4px 12px; font-size: 12.5px; }
+  .cdiff .wait::before { content: ""; display: inline-block; width: 8px; height: 8px; margin-right: 8px; border-radius: 50%; background: var(--blue);
+                         vertical-align: 1px; animation: cd-blink 1.2s ease-in-out infinite; }
+  @keyframes cd-blink { 0%,100% { opacity: 1; } 50% { opacity: .3; } }
+  .cdiff .cd-empty { margin: 12px 0 0; padding: 18px 14px; text-align: center; color: var(--muted); border: 1px dashed var(--line);
+                     border-radius: var(--radius-s); background: var(--paper); }
+  /* 폴더 구조가 바뀐 경우의 이동 표 */
+  .cdiff .cd-moves { margin-top: 14px; padding: 12px 14px; border: 1px solid var(--line); border-left: 3px solid var(--blue);
+                     border-radius: var(--radius-s); background: var(--blue-soft); }
+  .cdiff .cd-moves h3 { margin: 0 0 4px; font-size: 13.5px; color: var(--blue-deep); }
+  .cdiff .cd-moves > p { margin: 0 0 10px; color: var(--ink); font-size: 12.5px; word-break: keep-all; overflow-wrap: anywhere; }
+  .cdiff .cd-moves > p.more { margin: 8px 0 0; color: var(--muted); }
+  .cdiff .cd-mwrap { max-height: 260px; overflow: auto; border: 1px solid var(--line-soft); border-radius: var(--radius-s); background: #fff; }
+  .cdiff .cd-mtable { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+  .cdiff .cd-mtable th { position: sticky; top: 0; z-index: 1; background: var(--paper); color: var(--muted); font-weight: 600; text-align: left;
+                         padding: 6px 10px; border-bottom: 1px solid var(--line-soft); white-space: nowrap; }
+  .cdiff .cd-mtable td { padding: 5px 10px; border-bottom: 1px solid var(--line-soft); font-family: var(--mono); font-size: 12px; vertical-align: top;
+                         overflow-wrap: anywhere; word-break: break-all; }
+  .cdiff .cd-mtable td.root { font-family: var(--sans); color: var(--muted); }
+  .cdiff .cd-mtable tbody tr { cursor: pointer; }
+  .cdiff .cd-mtable tbody tr:hover td { background: var(--paper); }
+  .cdiff .cd-mtable tbody tr.on td { background: var(--blue-tint); }
+  .cdiff .cd-mtable th.n, .cdiff .cd-mtable td.n { text-align: right; width: 1%; white-space: nowrap; font-family: var(--sans); }
+  .cdiff .cd-link { border: 0; background: none; padding: 0 2px; color: var(--blue); font-weight: 600; cursor: pointer; font-size: 12.5px; }
+  .cdiff .cd-link:hover { text-decoration: underline; }
+  /* 필터 줄 */
+  .cdiff .cd-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin-top: 14px; }
+  .cdiff .cd-seg { display: inline-flex; border: 1px solid var(--line); border-radius: var(--radius-s); background: #fff; overflow: hidden; flex: none; }
+  .cdiff .cd-seg button { border: 0; border-right: 1px solid var(--line-soft); background: none; padding: 5px 11px; font-size: 12.5px; color: var(--muted);
+                          cursor: pointer; white-space: nowrap; }
+  .cdiff .cd-seg button:last-child { border-right: 0; }
+  .cdiff .cd-seg button:hover { background: var(--paper); }
+  .cdiff .cd-seg button:focus-visible { outline-offset: -2px; }
+  .cdiff .cd-seg button[aria-pressed=true] { background: var(--blue); color: #fff; font-weight: 600; }
+  .cdiff .cd-seg .n { margin-left: 5px; font-variant-numeric: tabular-nums; opacity: .85; }
+  .cdiff .cd-search { flex: 1 1 200px; min-width: 0; padding: 6px 10px; border: 1px solid var(--line); border-radius: var(--radius-s); background: #fff;
+                      font-size: 13px; }
+  .cdiff .cd-chk { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12.5px; cursor: pointer; white-space: nowrap; }
+  .cdiff .cd-chk input { margin: 0; accent-color: var(--blue); }
+  .cdiff .cd-chk .n { color: var(--faint); }
+  .cdiff .cd-chk:has(input:disabled) { opacity: .5; cursor: default; }
+  .cdiff .cd-active { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin-top: 10px; padding: 8px 12px; border-radius: var(--radius-s);
+                      background: var(--blue-tint); color: var(--blue-deep); font-size: 12.5px; overflow-wrap: anywhere; }
+  .cdiff .cd-active code { font-family: var(--mono); font-size: 12px; word-break: break-all; }
+  /* 트리와 파일 목록. 영역이 좁으면 트리를 목록 위로 올리고 접을 수 있게 한다 */
+  .cdiff .cd-main { display: grid; grid-template-columns: 250px minmax(0, 1fr); gap: 14px; margin-top: 12px; align-items: start; }
+  .cdiff .cd-side { position: sticky; top: 12px; max-height: calc(100vh - 24px); display: flex; flex-direction: column; min-width: 0;
+                    border: 1px solid var(--line); border-radius: var(--radius-s); background: #fff; }
+  .cdiff .cd-sidehead { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-bottom: 1px solid var(--line-soft);
+                        color: var(--muted); font-size: 12.5px; font-weight: 600; }
+  .cdiff .cd-treebtn { display: none; margin-left: auto; border: 0; background: none; color: var(--blue); font-weight: 600; font-size: 12.5px; cursor: pointer; padding: 2px 4px; }
+  .cdiff .cd-tree { overflow: auto; padding: 4px 0 6px; font-size: 12.5px; min-height: 0; }
+  .cdiff .cd-tree button { display: flex; align-items: center; gap: 6px; width: 100%; min-width: 0; border: 0; background: none; padding: 3px 10px;
+                           text-align: left; color: var(--ink); cursor: pointer; white-space: nowrap; }
+  .cdiff .cd-tree button:hover { background: var(--paper); }
+  .cdiff .cd-tree button:focus-visible { outline-offset: -2px; }
+  .cdiff .cd-tree button[aria-current=true] { background: var(--blue-tint); color: var(--blue-deep); font-weight: 600; }
+  .cdiff .cd-tree .dir { color: var(--muted); }
+  .cdiff .cd-tree .nm { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+  .cdiff .cd-tree .chev { flex: none; width: 6px; height: 6px; margin: 0 3px 0 1px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor;
+                          transform: rotate(-45deg); transition: transform .15s; }
+  .cdiff .cd-tree [aria-expanded=true] > .chev { transform: rotate(45deg); }
+  .cdiff .cd-tree .dot { flex: none; width: 8px; height: 8px; border-radius: 2px; margin-left: 2px; background: var(--faint); }
+  .cdiff .cd-tgroup { margin: 8px 10px 2px; padding-top: 8px; border-top: 1px solid var(--line-soft); color: var(--muted); font-size: 12px; font-weight: 600; }
+  .cdiff .cd-tempty { margin: 8px 10px; color: var(--faint); }
+  .cdiff .dot.mod { background: var(--blue); } .cdiff .dot.add { background: var(--ok); } .cdiff .dot.del { background: var(--bad); }
+  .cdiff .dot.mv { background: var(--faint); } .cdiff .dot.mv-mod { background: var(--warn); }
+  .cdiff .cd-files { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+  .cdiff .cd-more { margin-top: 12px; display: flex; align-items: center; justify-content: center; gap: 12px; color: var(--muted); font-size: 12.5px; }
+  @container (max-width: 720px) {
+    .cdiff .cd-main { grid-template-columns: minmax(0, 1fr); }
+    .cdiff .cd-side { position: static; max-height: 300px; }
+    .cdiff .cd-treebtn { display: inline-block; }
+    .cdiff .cd-side.folded .cd-tree { display: none; }
+    .cdiff .cd-side.folded .cd-sidehead { border-bottom: 0; }
+  }
+  /* 파일 한 개. 머리 줄은 스크롤해도 위에 붙어 있다 */
+  .cdiff .cd-file { border: 1px solid var(--line); border-radius: var(--radius-s); background: #fff; min-width: 0; scroll-margin-top: 8px; }
+  .cdiff .cd-fhead { position: sticky; top: 0; z-index: 2; padding: 7px 12px; background: var(--paper); border-bottom: 1px solid var(--line-soft);
+                     border-radius: var(--radius-s) var(--radius-s) 0 0; }
+  .cdiff .cd-fhead:focus-visible { outline-offset: -2px; }
+  .cdiff .cd-file:has(> .cd-body[hidden]):has(> .cd-bignote[hidden]) .cd-fhead { border-bottom: 0; border-radius: var(--radius-s); }
+  .cdiff .cd-fl { display: flex; align-items: center; gap: 6px 10px; flex-wrap: wrap; min-width: 0; }
+  .cdiff .cd-fold { flex: none; width: 22px; height: 22px; display: inline-flex; align-items: center; justify-content: center; border: 1px solid transparent;
+                    border-radius: 6px; background: none; color: var(--muted); cursor: pointer; padding: 0; }
+  .cdiff .cd-fold:hover { background: #fff; border-color: var(--line); }
+  .cdiff .cd-fold::before { content: ""; width: 6px; height: 6px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor;
+                            transform: translateY(-1px) rotate(45deg); transition: transform .15s; }
+  .cdiff .cd-fold[aria-expanded=false]::before { transform: rotate(-45deg); }
+  .cdiff .cd-badge { flex: none; padding: 1px 8px; border-radius: 999px; font-size: 11.5px; font-weight: 700; white-space: nowrap; }
+  .cdiff .cd-badge.mod { background: var(--blue-tint); color: var(--blue-deep); }
+  .cdiff .cd-badge.add { background: var(--ok-tint); color: var(--ok); }
+  .cdiff .cd-badge.del { background: var(--bad-tint); color: var(--bad); }
+  .cdiff .cd-badge.mv { background: #fff; color: var(--muted); box-shadow: inset 0 0 0 1px var(--line); }
+  .cdiff .cd-badge.mv-mod { background: var(--warn-tint); color: var(--warn); }
+  .cdiff .cd-path { flex: 1 1 200px; min-width: 0; font-family: var(--mono); font-size: 12.5px; font-weight: 600; color: var(--ink); overflow-wrap: anywhere; }
+  .cdiff .cd-stat { flex: none; font-family: var(--mono); font-size: 12px; font-weight: 600; white-space: nowrap; }
+  .cdiff .cd-stat .a { color: var(--ok); } .cdiff .cd-stat .d { color: var(--bad); } .cdiff .cd-stat .a + .d { margin-left: 6px; }
+  .cdiff .cd-enc { flex: none; padding: 0 7px; border: 1px solid var(--line); border-radius: 999px; background: #fff; color: var(--muted); font-size: 11.5px; white-space: nowrap; }
+  .cdiff .cd-whole { flex: none; padding: 3px 10px; border: 1px solid var(--line); border-radius: 6px; background: #fff; color: var(--blue); font-size: 12px;
+                     font-weight: 600; cursor: pointer; white-space: nowrap; }
+  .cdiff .cd-whole:hover { border-color: var(--blue-mid); background: var(--blue-soft); }
+  .cdiff .cd-whole:disabled { color: var(--muted); cursor: default; }
+  .cdiff .cd-from { margin: 3px 0 0 28px; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+  .cdiff .cd-from .k { margin-right: 6px; font-weight: 600; }
+  .cdiff .cd-from .p { font-family: var(--mono); overflow-wrap: anywhere; }
+  .cdiff .cd-bignote { margin: 0; padding: 10px 14px; display: flex; gap: 8px 12px; align-items: center; flex-wrap: wrap; color: var(--muted); font-size: 13px; word-break: keep-all; }
+  .cdiff .cd-bignote .btn { padding: 4px 12px; font-size: 12.5px; }
+  /* 코드 표. 가로 스크롤은 파일 안에서만 생긴다 */
+  .cdiff .cd-scroll { overflow-x: auto; border-radius: 0 0 var(--radius-s) var(--radius-s); }
+  .cdiff .cd-scroll:focus-visible { outline-offset: -2px; }
+  .cdiff .cd-code { border-collapse: collapse; width: 100%; font: 12px/var(--cd-row) var(--mono); tab-size: 4; -moz-tab-size: 4; }
+  .cdiff .cd-code tr { height: var(--cd-row); }
+  .cdiff .cd-code td { padding: 0 8px; vertical-align: top; }
+  .cdiff .cd-code td.no { position: sticky; z-index: 1; width: var(--cd-no); min-width: var(--cd-no); max-width: var(--cd-no); text-align: right;
+                          color: var(--faint); background: #fff; user-select: none; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .cdiff .cd-code td.no.o { left: 0; } .cdiff .cd-code td.no.n { left: var(--cd-no); box-shadow: inset -1px 0 0 var(--line-soft); }
+  .cdiff .cd-code td.sg { position: sticky; z-index: 1; left: calc(var(--cd-no) * 2); width: 20px; min-width: 20px; padding: 0 0 0 8px; color: var(--faint); background: #fff; user-select: none; }
+  .cdiff .cd-code td.cd { white-space: pre; width: 100%; padding-right: 20px; color: var(--ink); }
+  .cdiff .cd-code tr.a td { background: var(--cd-add); }
+  .cdiff .cd-code tr.a td.no { background: var(--cd-add-no); color: var(--cd-add-ink); }
+  .cdiff .cd-code tr.a td.sg { color: var(--cd-add-ink); font-weight: 700; }
+  .cdiff .cd-code tr.d td { background: var(--cd-del); }
+  .cdiff .cd-code tr.d td.no { background: var(--cd-del-no); color: var(--cd-del-ink); }
+  .cdiff .cd-code tr.d td.sg { color: var(--cd-del-ink); font-weight: 700; }
+  .cdiff .cd-code tr.a .x { background: var(--cd-add-x); border-radius: 2px; }
+  .cdiff .cd-code tr.d .x { background: var(--cd-del-x); border-radius: 2px; }
+  .cdiff .cd-code tr.gap td { padding: 3px 0; background: var(--blue-soft); border-top: 1px solid var(--line-soft); border-bottom: 1px solid var(--line-soft);
+                              font: 12px/1.5 var(--sans); color: var(--muted); }
+  .cdiff .cd-code tr.gap:first-child td { border-top: 0; }
+  .cdiff .cd-code tr.gap .acts { position: sticky; left: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 2px 14px; padding: 0 12px; width: max-content; max-width: 100cqw; }
+  .cdiff .cd-code tr.gap button { border: 0; background: none; padding: 2px 4px; color: var(--blue); font-weight: 600; font-size: 12px; cursor: pointer; white-space: nowrap; }
+  .cdiff .cd-code tr.gap button:hover { text-decoration: underline; }
+  .cdiff .cd-code tr.gap .sec { font-family: var(--mono); color: var(--faint); white-space: pre; overflow: hidden; text-overflow: ellipsis; max-width: 48ch; }
+  .cdiff .cd-code tr.gap .bad { color: var(--bad); }
+  .cdiff .cd-code tr.eof td { padding: 3px 12px; background: #fff; font: 12px/1.5 var(--sans); color: var(--muted); border-top: 1px solid var(--line-soft); }
+  @media (prefers-reduced-motion: reduce) { .cdiff .wait::before { animation: none; } .cdiff .cd-tree .chev, .cdiff .cd-fold::before { transition: none; } }
+
   /* ---- 4. 지난 실행 */
   details.history summary { cursor: pointer; padding: 14px 22px; font-weight: 700; font-size: 15px; display: flex; align-items: center; gap: 10px; }
   details.history summary .n { color: var(--muted); font-weight: 400; font-size: 13px; }
@@ -478,6 +634,16 @@
       <div class="downloads" id="remed-dl"></div>
       <!-- 상태별 동작: 승인 대기는 체크한 항목을 한 번에 적용, 업로드 확인 대기는 두 가지 중 선택, 중지는 이어서 진행 -->
       <div class="act" id="remed-act"></div>
+    </div>
+    <!-- 코드 변경: 상태에 code_diff가 있을 때만 표시한다. 닫혀 있는 동안에는 아무것도 받아 오지 않는다 -->
+    <div class="cdblock" id="cdblock" hidden>
+      <div class="line">
+        <h2>코드 변경</h2>
+        <span class="counts" id="cd-counts"></span>
+        <button class="btn quiet" id="cd-toggle" type="button" aria-expanded="false" aria-controls="cd-host">변경 내용 보기</button>
+      </div>
+      <p class="cdlead">변환 전 프로젝트와 비교해 바뀐 파일을 옮긴 뒤의 위치 기준으로 보여 줍니다.</p>
+      <div class="cdhost" id="cd-host" hidden></div>
     </div>
     <details class="preview" id="preview">
       <summary>보고서 미리보기</summary>
@@ -1035,6 +1201,7 @@
     if (!remOnly && !why && !files.includes('result.zip')) $('otherfiles').insertAdjacentHTML('afterbegin', '<span class="muted">변환된 프로젝트 ZIP이 없습니다(중단되었거나 report.zip_result 설정이 꺼져 있습니다).</span>');
     if (files.includes('sbmig.log')) { $('logfull').href = fileUrl('sbmig.log'); $('logfull').hidden = false; }
     if (current) loadRemediation(current);
+    showCodeDiff(st, remOnly);                       // 코드 변경: 상태에 code_diff가 있을 때만 머리 줄을 보인다
   }
 
   // ---------------------------------------------------------------- 3b. 취약점 조치
@@ -1569,6 +1736,723 @@
     loadRemediation(runId, true);
   }
 
+  // ---------------------------------------------------------------- 3c. 코드 변경
+  // 변환된 프로젝트의 파일을 옮긴 뒤의 위치 기준으로 원래 파일과 비교해 보여 준다.
+  // 페이지의 상태를 쓰지 않고 화면, 상태, 타이머, 요청을 모두 이 안에 두므로 대화상자로 옮길 때는 CodeDiff.mount(대화상자 본문, 실행 id)만 호출하면 된다.
+  // 바깥에서 가져다 쓰는 것은 el뿐이고 스타일은 모두 .cdiff 아래에 있다. 서버에서 받은 글자는 모두 textContent로만 넣는다.
+  const CodeDiff = (() => {
+    const PAGE_FILES = 30;        // 한 번에 그리는 파일 수. 구조를 바꾼 프로젝트는 파일이 수천 개라 나눠서 그린다
+    const BIG_LINES = 400;        // 바뀐 줄이 이보다 많은 파일은 접은 채로 시작한다
+    const MOVED_ONLY_SHOWN = 200; // 위치만 바뀐 파일이 이 개수 이하면 처음부터 목록에 함께 보인다
+    const STEP = 20;              // 펼치기 한 번에 더 보여 주는 줄 수
+    const CHUNK = 5000;           // 줄 요청 한 번에 받는 최대 줄 수(서버 한도와 같다)
+    const WHOLE_MAX = 50000;      // 파일 전체 보기로 불러오는 최대 줄 수
+    const TIMEOUT_MS = 30000;     // 응답이 이보다 늦으면 요청을 끊고 다시 시도 버튼을 보여 준다
+    const TREE_OPEN_ALL = 150;    // 목록의 파일이 이보다 적으면 트리의 폴더를 모두 펼쳐 둔다
+    const CACHE_MAX = 200;        // 받아 둔 파일 변경 내용을 이 개수까지 기억해 필터를 바꿔도 다시 받지 않는다
+    const KINDS = [['all', '전체'], ['modified', '수정'], ['added', '추가'], ['deleted', '삭제'], ['moved', '이동']];
+    const NOT_SHOWN = '변환된 프로젝트(result.zip)나 changes.patch에서 확인해 주세요.';
+    const nf = (n) => (Number(n) || 0).toLocaleString('ko-KR');
+    let S = null;                 // 지금 붙어 있는 화면의 상태. unmount하면 null이 되고, 늦게 온 응답은 자기 상태가 아니면 버린다
+    let seq = 0;
+
+    function mount(host, runId) {
+      unmount();
+      const root = el('div', 'cdiff');
+      const s = { host, root, run: String(runId), uid: ++seq, reqs: new Set(), timers: new Set(), io: null, moreIo: null, idx: null, files: [],
+                  movedOnly: 0, f: { kind: 'all', q: '', movedOnly: false, move: null }, order: [], shown: 0, fs: new Map(),
+                  cache: new Map(), rows: new Map(), cur: null, ui: {} };
+      S = s;
+      host.replaceChildren(root);
+      loadIndex(s);
+    }
+    // 진행 중인 요청, 타이머, 관찰자를 모두 정리하고 화면을 지운다
+    function unmount() {
+      const s = S;
+      S = null;
+      if (!s) return;
+      for (const c of s.reqs) c.abort();
+      for (const t of s.timers) clearTimeout(t);
+      if (s.io) s.io.disconnect();
+      if (s.moreIo) s.moreIo.disconnect();
+      if (s.pinRo) s.pinRo.disconnect();
+      s.root.remove();
+    }
+    const live = (s) => S === s;
+    const apiUrl = (s, tail) => `/api/runs/${encodeURIComponent(s.run)}/codediff` + (tail || '');
+    function button(text, cls, fn) { const b = el('button', cls, text); b.type = 'button'; if (fn) b.addEventListener('click', fn); return b; }
+    // 요청마다 시간 한도를 두어 응답이 없어도 불러오는 중 표시가 계속 남지 않게 한다
+    async function getJson(s, url) {
+      const c = new AbortController();
+      s.reqs.add(c);
+      const t = setTimeout(() => c.abort(), TIMEOUT_MS);
+      try {
+        const r = await fetch(url, { signal: c.signal });
+        let d = null;
+        try { d = await r.json(); } catch (e) {}
+        return { ok: r.ok && d != null && typeof d === 'object', status: r.status, data: d };
+      } catch (e) {
+        return { ok: false, status: 0, data: null };
+      } finally {
+        clearTimeout(t); s.reqs.delete(c);
+      }
+    }
+    function later(s, ms, fn) {
+      clearTimeout(s.debounce); s.timers.delete(s.debounce);
+      const t = setTimeout(() => { s.timers.delete(t); if (live(s)) fn(); }, ms);
+      s.debounce = t; s.timers.add(t);
+    }
+    function note(text, cls) { return el('div', 'cd-msg' + (cls ? ' ' + cls : ''), text); }
+    function waitNote() { const n = note('불러오는 중입니다.', 'wait'); n.setAttribute('role', 'status'); return n; }
+    function failNote(status, retry) {
+      const n = note(status === 409 ? '결과 파일을 아직 정리하고 있습니다. 잠시 뒤에 다시 시도해 주세요.' : '변경 내용을 불러오지 못했습니다.', 'bad');
+      n.setAttribute('role', 'alert');
+      if (retry) n.appendChild(button('다시 시도', 'btn quiet', retry));
+      return n;
+    }
+
+    // ---- 목록(index.json)
+    async function loadIndex(s) {
+      s.root.replaceChildren(waitNote());
+      const r = await getJson(s, apiUrl(s));
+      if (!live(s)) return;
+      if (r.status === 404) { s.root.replaceChildren(note('이 실행에는 코드 변경 정보가 없습니다.')); return; }
+      if (!r.ok || !Array.isArray(r.data.files)) { s.root.replaceChildren(failNote(r.status, () => loadIndex(s))); return; }
+      s.idx = r.data;
+      s.files = r.data.files.filter((f) => f && typeof f.path === 'string' && Number.isInteger(f.id));
+      for (const f of s.files) {
+        f.mk = f.status === 'moved' ? moveKey(String(f.old_path || ''), f.path) : null;
+        if (movedOnly(f)) s.movedOnly++;
+      }
+      // 위치만 바뀐 파일이 많지 않으면 처음부터 함께 보인다. 많으면 실제 변경이 묻히므로 표와 체크박스로만 알린다
+      s.f.movedOnly = s.movedOnly > 0 && s.movedOnly <= MOVED_ONLY_SHOWN;
+      build(s);
+    }
+    const movedOnly = (f) => f.status === 'moved' && !f.changed;
+    // 원래 경로와 옮긴 경로에서 뒤쪽의 같은 부분을 떼어 이동 묶음의 키를 만든다(서버가 moves를 묶는 방법과 같다)
+    function moveKey(oldp, newp) {
+      const a = oldp.split('/'), b = newp.split('/');
+      let i = a.length, j = b.length;
+      while (i > 0 && j > 0 && a[i - 1] === b[j - 1]) { i--; j--; }
+      const from = a.slice(0, i).join('/'), to = b.slice(0, j).join('/');
+      return (from ? from + '/' : '') + '\n' + (to ? to + '/' : '');
+    }
+    // 긴 경로가 단어 중간이 아니라 / 뒤에서 줄바꿈되도록 wbr을 넣는다
+    function pathEl(cls, path) {
+      const span = el('span', cls);
+      path.split('/').forEach((part, i, all) => { span.append(part + (i < all.length - 1 ? '/' : '')); if (i < all.length - 1) span.appendChild(document.createElement('wbr')); });
+      return span;
+    }
+    const dirLabel = (p) => (p ? String(p) : '(프로젝트 최상위)');
+    function stateOf(f) {
+      if (f.status === 'moved') return f.changed ? ['mv-mod', '이동 후 수정'] : ['mv', '이동'];
+      return ({ modified: ['mod', '수정'], added: ['add', '추가'], deleted: ['del', '삭제'] })[f.status] || ['mod', String(f.status || '')];
+    }
+    function summaryText(sum, n) {
+      const files = Number(sum.files) || n;
+      const parts = [];
+      if (sum.modified) parts.push(`수정 ${nf(sum.modified)}개`);
+      if (sum.added) parts.push(`추가 ${nf(sum.added)}개`);
+      if (sum.deleted) parts.push(`삭제 ${nf(sum.deleted)}개`);
+      if (sum.moved) parts.push(`위치 이동 ${nf(sum.moved)}개`);
+      let t = `파일 ${nf(files)}개가 바뀌었습니다.` + (parts.length ? ` ${parts.join(', ')}입니다.` : '');
+      const both = (Number(sum.moved) || 0) - (Number(sum.moved_only) || 0);
+      if (sum.moved && both > 0) t += ` 옮긴 파일 가운데 ${nf(both)}개는 내용도 바뀌었습니다.`;
+      if (sum.added_lines || sum.removed_lines) t += ` 추가한 줄은 ${nf(sum.added_lines)}줄, 삭제한 줄은 ${nf(sum.removed_lines)}줄입니다.`;
+      if (sum.binary) t += ` 바이너리 파일 ${nf(sum.binary)}개는 내용을 비교하지 않습니다.`;
+      return t;
+    }
+    function build(s) {
+      const d = s.idx, ui = s.ui, root = s.root;
+      const sum = d.summary && typeof d.summary === 'object' ? d.summary : {};
+      root.replaceChildren();
+      if (!s.files.length) { root.appendChild(el('p', 'cd-empty', '바뀐 파일이 없습니다.')); return; }
+      root.appendChild(el('p', 'cd-sum', summaryText(sum, s.files.length)));
+      const total = Number(d.files_total) || 0;
+      if (total > s.files.length) {
+        root.appendChild(el('p', 'cd-note', `바뀐 파일이 많아 ${nf(total)}개 가운데 ${nf(s.files.length)}개만 보여 줍니다. 나머지는 ${NOT_SHOWN}`));
+      }
+      const moves = Array.isArray(d.moves) ? d.moves.filter((m) => m && Number(m.files) > 0) : [];
+      if (moves.length) root.appendChild(movesPanel(s, moves, Number(d.moves_total) || moves.length));
+      // 필터 줄: 변경 종류, 경로 검색, 위치만 바뀐 파일
+      const bar = el('div', 'cd-bar');
+      const seg = el('div', 'cd-seg'); seg.setAttribute('role', 'group'); seg.setAttribute('aria-label', '변경 종류');
+      ui.kinds = new Map();
+      for (const [k, w] of KINDS) {
+        const b = button(null, null, () => { s.f.kind = k; refresh(s); });
+        b.append(el('span', null, w), el('span', 'n'));
+        ui.kinds.set(k, b); seg.appendChild(b);
+      }
+      const q = el('input', 'cd-search'); q.type = 'search'; q.placeholder = '파일 경로 검색'; q.setAttribute('aria-label', '파일 경로 검색');
+      q.spellcheck = false; q.autocomplete = 'off';
+      q.addEventListener('input', () => later(s, 200, () => { s.f.q = q.value.trim(); refresh(s); }));
+      const chk = el('label', 'cd-chk');
+      const cb = el('input'); cb.type = 'checkbox'; cb.checked = s.f.movedOnly;
+      cb.addEventListener('change', () => { s.f.movedOnly = cb.checked; refresh(s); });
+      chk.append(cb, el('span', null, '위치만 바뀐 파일도 보기'), el('span', 'n', `(${nf(s.movedOnly)}개)`));
+      chk.hidden = !s.movedOnly;
+      ui.mvCheck = cb;
+      bar.append(seg, q, chk);
+      root.appendChild(bar);
+      ui.active = el('div', 'cd-active'); ui.active.hidden = true; ui.active.setAttribute('role', 'status');
+      root.appendChild(ui.active);
+      // 트리와 파일 목록
+      const main = el('div', 'cd-main');
+      const side = el('nav', 'cd-side'); side.setAttribute('aria-label', '바뀐 파일 트리');
+      const head = el('div', 'cd-sidehead');
+      ui.treeCount = el('span');
+      ui.tree = el('div', 'cd-tree'); ui.tree.id = `cdiff-tree-${s.uid}`;
+      const tb = button('트리 접기', 'cd-treebtn');
+      tb.setAttribute('aria-expanded', 'true'); tb.setAttribute('aria-controls', ui.tree.id);
+      tb.addEventListener('click', () => {
+        const open = tb.getAttribute('aria-expanded') !== 'true';
+        tb.setAttribute('aria-expanded', String(open)); tb.textContent = open ? '트리 접기' : '트리 펼치기';
+        side.classList.toggle('folded', !open);
+      });
+      head.append(ui.treeCount, tb);
+      side.append(head, ui.tree);
+      const col = el('div');
+      col.style.minWidth = '0';
+      ui.list = el('div', 'cd-files');
+      ui.more = el('div', 'cd-more'); ui.more.hidden = true;
+      ui.moreBtn = button('', 'btn quiet', () => renderMore(s));
+      ui.moreRest = el('span');
+      ui.more.append(ui.moreBtn, ui.moreRest);
+      col.append(ui.list, ui.more);
+      main.append(side, col);
+      root.appendChild(main);
+      // 파일 내용은 화면 근처에 왔을 때 받는다. 목록 끝이 가까워지면 다음 파일들을 그린다
+      s.io = new IntersectionObserver((list) => {
+        if (!live(s)) return;
+        for (const e of list) {
+          if (!e.isIntersecting) continue;
+          s.io.unobserve(e.target);
+          const st = s.fs.get(Number(e.target.dataset.id));
+          if (st && st.card === e.target && !st.folded) loadBody(s, st);
+        }
+      }, { rootMargin: '600px 0px' });
+      s.moreIo = new IntersectionObserver((list) => { if (live(s) && list.some((e) => e.isIntersecting)) renderMore(s); }, { rootMargin: '400px 0px' });
+      refresh(s);
+    }
+    function movesPanel(s, moves, total) {
+      const box = el('section', 'cd-moves'); box.setAttribute('aria-label', '폴더 구조 변경');
+      box.appendChild(el('h3', null, '폴더 구조가 바뀌었습니다'));
+      box.appendChild(el('p', null, '회사 표준 구조에 맞춰 파일 위치를 옮겼습니다. 원래 위치와 옮긴 위치는 아래 표와 같습니다. 줄을 누르면 그 묶음의 파일만 목록에 보여 줍니다.'));
+      const wrap = el('div', 'cd-mwrap'), t = el('table', 'cd-mtable');
+      const hr = el('tr');
+      hr.append(el('th', null, '원래 위치'), el('th', null, '옮긴 위치'), el('th', 'n', '파일 수'));
+      const thead = el('thead'); thead.appendChild(hr);
+      const tbody = el('tbody');
+      s.ui.mrows = [];
+      for (const m of moves) {
+        const key = String(m.from || '') + '\n' + String(m.to || '');
+        const tr = el('tr');
+        tr.append(el('td', m.from ? null : 'root', dirLabel(m.from)), el('td', m.to ? null : 'root', dirLabel(m.to)));
+        const td = el('td', 'n');
+        const b = button(`${nf(m.files)}개`, 'cd-link');
+        b.setAttribute('aria-label', `원래 위치 ${dirLabel(m.from)}, 옮긴 위치 ${dirLabel(m.to)}: 이 묶음의 파일 ${nf(m.files)}개만 보기`);
+        b.setAttribute('aria-pressed', 'false');
+        td.appendChild(b); tr.appendChild(td);
+        // 버튼을 눌러도 click이 줄까지 올라오므로 줄에만 연결한다
+        tr.addEventListener('click', () => { s.f.move = s.f.move === key ? null : key; refresh(s); });
+        s.ui.mrows.push({ key, tr, b, m });
+        tbody.appendChild(tr);
+      }
+      t.append(thead, tbody); wrap.appendChild(t); box.appendChild(wrap);
+      if (total > moves.length) box.appendChild(el('p', 'more', `옮긴 묶음이 많아 ${nf(total)}가지 가운데 ${nf(moves.length)}가지만 표에 실었습니다.`));
+      return box;
+    }
+
+    // ---- 필터를 적용해 트리와 목록을 다시 그린다
+    function refresh(s) {
+      const F = s.f, ui = s.ui, q = F.q.toLowerCase();
+      const base = [];
+      for (const f of s.files) {
+        if (F.move != null) { if (f.mk !== F.move) continue; }
+        else if (!F.movedOnly && movedOnly(f)) continue;
+        if (q && !f.path.toLowerCase().includes(q) && !String(f.old_path || '').toLowerCase().includes(q)) continue;
+        base.push(f);
+      }
+      const n = { all: base.length, modified: 0, added: 0, deleted: 0, moved: 0 };
+      for (const f of base) if (n[f.status] != null) n[f.status]++;
+      for (const [k, b] of ui.kinds) { b.setAttribute('aria-pressed', String(k === F.kind)); b.lastChild.textContent = nf(n[k]); }
+      ui.mvCheck.disabled = F.move != null;           // 이동 묶음을 고르면 위치만 바뀐 파일도 함께 보여 준다
+      for (const r of ui.mrows || []) { const on = r.key === F.move; r.tr.classList.toggle('on', on); r.b.setAttribute('aria-pressed', String(on)); }
+      paintActive(s);
+      const view = F.kind === 'all' ? base : base.filter((f) => f.status === F.kind);
+      const tree = buildTree(view);
+      s.order = [];
+      treeOrder(tree.root, s.order); treeOrder(tree.del, s.order);
+      ui.treeCount.textContent = `파일 ${nf(view.length)}개`;
+      drawTree(s, tree, view.length);
+      if (s.pinRo) { s.pinRo.disconnect(); s.pinRo = null; }
+      s.io.disconnect(); s.fs.clear(); s.shown = 0; s.cur = null;
+      ui.list.replaceChildren();
+      if (!view.length) ui.list.appendChild(el('p', 'cd-empty', '조건에 맞는 파일이 없습니다.'));
+      renderMore(s);
+    }
+    function paintActive(s) {
+      const box = s.ui.active, key = s.f.move;
+      box.replaceChildren();
+      box.hidden = key == null;
+      if (key == null) return;
+      const [from, to] = key.split('\n');
+      box.append(el('span', null, '옮긴 묶음 하나만 보고 있습니다. 원래 위치'), el('code', null, dirLabel(from)),
+                 el('span', null, '옮긴 위치'), el('code', null, dirLabel(to)));
+      box.appendChild(button('모든 파일 보기', 'btn quiet', () => { s.f.move = null; refresh(s); }));
+    }
+
+    // ---- 트리: 최종 경로 기준. 폴더 하나만 든 폴더는 한 줄로 합치고 삭제한 파일은 맨 아래에 따로 모은다
+    function buildTree(view) {
+      const node = () => ({ name: '', dirs: new Map(), files: [] });
+      const root = node(), del = node();
+      for (const f of view) {
+        const parts = f.path.split('/');
+        let n = f.status === 'deleted' ? del : root;
+        for (const p of parts.slice(0, -1)) {
+          let c = n.dirs.get(p);
+          if (!c) { c = node(); c.name = p; n.dirs.set(p, c); }
+          n = c;
+        }
+        n.files.push(f);
+      }
+      compact(root); compact(del);
+      return { root, del };
+    }
+    const cmp = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+    const baseName = (p) => p.slice(p.lastIndexOf('/') + 1);
+    function compact(n) {
+      const out = [];
+      for (let c of n.dirs.values()) {
+        while (c.dirs.size === 1 && !c.files.length) {
+          const g = c.dirs.values().next().value;
+          c = { name: c.name + '/' + g.name, dirs: g.dirs, files: g.files };
+        }
+        compact(c);
+        out.push(c);
+      }
+      out.sort((a, b) => cmp(a.name, b.name));
+      n.dirs = new Map(out.map((c) => [c.name, c]));
+      n.files.sort((a, b) => cmp(baseName(a.path), baseName(b.path)));
+    }
+    // 목록은 트리와 같은 순서(폴더 먼저, 그다음 파일)로 그린다
+    function treeOrder(n, acc) { for (const c of n.dirs.values()) treeOrder(c, acc); for (const f of n.files) acc.push(f); }
+    function drawTree(s, tree, count) {
+      const box = s.ui.tree;
+      box.replaceChildren(); s.rows = new Map();
+      const all = count <= TREE_OPEN_ALL;
+      treeDir(s, tree.root, 0, box, all);
+      if (tree.del.dirs.size || tree.del.files.length) { box.appendChild(el('p', 'cd-tgroup', '삭제한 파일')); treeDir(s, tree.del, 0, box, all); }
+      if (!count) box.appendChild(el('p', 'cd-tempty', '파일이 없습니다.'));
+    }
+    // 폴더의 하위 줄은 처음 펼칠 때 만든다. 파일이 수천 개여도 보이는 줄만 화면에 둔다
+    function treeDir(s, n, depth, box, all) {
+      const pad = (d) => `${10 + d * 14}px`;
+      for (const d of n.dirs.values()) {
+        const open = all || depth === 0;
+        const b = button(null, 'dir'); b.style.paddingLeft = pad(depth); b.title = d.name;
+        b.setAttribute('aria-expanded', String(open));
+        b.append(el('span', 'chev'), el('span', 'nm', d.name + '/'));
+        const kids = el('div'); kids.hidden = !open;
+        let built = false;
+        const fill = () => { if (!built) { built = true; treeDir(s, d, depth + 1, kids, all); } };
+        if (open) fill();
+        b.addEventListener('click', () => {
+          const on = b.getAttribute('aria-expanded') !== 'true';
+          b.setAttribute('aria-expanded', String(on));
+          if (on) fill();
+          kids.hidden = !on;
+        });
+        box.append(b, kids);
+      }
+      for (const f of n.files) {
+        const [cls, word] = stateOf(f);
+        const b = button(null, null, () => jump(s, f.id)); b.style.paddingLeft = pad(depth); b.title = f.path;
+        b.append(el('span', 'dot ' + cls), el('span', 'nm', baseName(f.path)), el('span', 'sr', ` (${word})`));
+        if (f.id === s.cur) b.setAttribute('aria-current', 'true');
+        s.rows.set(f.id, b);
+        box.appendChild(b);
+      }
+    }
+    // 아직 그리지 않은 파일이면 그 파일까지 목록을 그린 뒤 이동한다
+    function jump(s, id) {
+      const i = s.order.findIndex((f) => f.id === id);
+      if (i < 0) return;
+      if (i >= s.shown) renderMore(s, i);
+      const st = s.fs.get(id);
+      if (!st) return;
+      const old = s.rows.get(s.cur);
+      if (old) old.removeAttribute('aria-current');
+      s.cur = id;
+      const row = s.rows.get(id);
+      if (row) row.setAttribute('aria-current', 'true');
+      st.card.scrollIntoView({ block: 'start' });
+      st.head.focus({ preventScroll: true });
+      if (!st.folded) loadBody(s, st);
+      pin(s, st);
+    }
+    // 이동한 직후 위쪽 파일의 내용이 들어오면 목표 파일이 아래로 밀리므로 잠시 위치를 다시 맞춘다. 사용자가 스크롤하면 멈춘다
+    function pin(s, st) {
+      if (s.pinRo) s.pinRo.disconnect();
+      const stop = () => { if (s.pinRo) { s.pinRo.disconnect(); s.pinRo = null; } s.root.removeEventListener('wheel', stop); s.root.removeEventListener('touchmove', stop); };
+      s.pinRo = new ResizeObserver(() => { if (live(s) && st.card.isConnected) st.card.scrollIntoView({ block: 'start' }); });
+      s.pinRo.observe(s.ui.list);
+      s.root.addEventListener('wheel', stop, { passive: true });
+      s.root.addEventListener('touchmove', stop, { passive: true });
+      const t = setTimeout(() => { s.timers.delete(t); stop(); }, 1500);
+      s.timers.add(t);
+    }
+
+    // ---- 파일 목록: PAGE_FILES개씩 그린다
+    function renderMore(s, upto) {
+      const end = Math.min(s.order.length, Math.max(s.shown + PAGE_FILES, upto == null ? 0 : upto + 1));
+      const cards = [];
+      for (let i = s.shown; i < end; i++) cards.push(fileCard(s, s.order[i]));
+      if (cards.length) s.ui.list.append(...cards);
+      s.shown = Math.max(s.shown, end);
+      for (const c of cards) if (c.dataset.watch) s.io.observe(c);
+      const rest = s.order.length - s.shown, ui = s.ui;
+      s.moreIo.unobserve(ui.more);
+      ui.more.hidden = rest <= 0;
+      if (rest > 0) {
+        ui.moreBtn.textContent = `파일 ${nf(Math.min(PAGE_FILES, rest))}개 더 보기`;
+        ui.moreRest.textContent = rest > PAGE_FILES ? `남은 파일 ${nf(rest)}개` : '';
+        s.moreIo.observe(ui.more);
+      }
+    }
+    function fileCard(s, f) {
+      const [cls, word] = stateOf(f);
+      const card = el('section', 'cd-file'); card.dataset.id = String(f.id);
+      card.setAttribute('aria-label', `${word}: ${f.path}`);
+      const head = el('div', 'cd-fhead'); head.tabIndex = -1;
+      const line = el('div', 'cd-fl');
+      const fold = button(null, 'cd-fold');
+      line.append(fold, el('span', 'cd-badge ' + cls, word), pathEl('cd-path', f.path));
+      const a = Number(f.added) || 0, r = Number(f.removed) || 0;
+      if (!f.binary && (a || r)) {
+        const stat = el('span', 'cd-stat');
+        stat.setAttribute('aria-label', [a ? `${nf(a)}줄 추가` : '', r ? `${nf(r)}줄 삭제` : ''].filter(Boolean).join(', '));
+        if (a) stat.appendChild(el('span', 'a', '+' + nf(a)));
+        if (r) stat.appendChild(el('span', 'd', '−' + nf(r)));
+        line.appendChild(stat);
+      }
+      const enc = String(f.encoding || '');
+      if (enc && !/^(utf-?8|us-ascii|ascii)$/i.test(enc)) line.appendChild(el('span', 'cd-enc', `인코딩 ${enc}`));
+      const whole = button('파일 전체 보기', 'cd-whole'); whole.hidden = true;
+      line.appendChild(whole);
+      head.appendChild(line);
+      if (f.status === 'moved' && f.old_path) {
+        const from = el('div', 'cd-from');
+        from.append(el('span', 'k', '원래 위치:'), pathEl('p', String(f.old_path)));
+        head.appendChild(from);
+      }
+      const big = el('div', 'cd-bignote'); big.hidden = true;
+      const body = el('div', 'cd-body');
+      card.append(head, big, body);
+      const st = { f, card, head, fold, whole, big, body, folded: false, bigFold: false, loaded: false, loading: false, gaps: [], busy: false };
+      s.fs.set(f.id, st);
+      fold.addEventListener('click', () => setFold(s, st, !st.folded));
+      whole.addEventListener('click', () => wholeFile(s, st));
+      // 받을 내용이 없는 파일은 바로 문장을 넣고, 큰 파일은 접어 두고, 나머지는 화면 근처에 오면 받는다
+      if (f.binary || f.omitted === 'binary') { st.loaded = true; body.appendChild(note('바이너리 파일이라 내용을 표시하지 않습니다.')); }
+      else if (f.omitted === 'too_large' || f.omitted === 'cap') { st.loaded = true; body.appendChild(note(`변경 내용이 커서 화면에 싣지 않았습니다. ${NOT_SHOWN}`)); }
+      else if (f.omitted === 'unreadable' || f.omitted === 'unavailable') { st.loaded = true; body.appendChild(note(`이 파일의 변경 내용을 표시할 수 없습니다. ${NOT_SHOWN}`)); }
+      else if (a + r > BIG_LINES) {
+        st.bigFold = true;
+        big.append(el('span', null, `바뀐 줄이 ${nf(a + r)}줄로 많아 접어 두었습니다.`), button('펼쳐 보기', 'btn quiet', () => setFold(s, st, false)));
+      } else { body.appendChild(waitNote()); card.dataset.watch = '1'; }
+      setFold(s, st, st.bigFold, true);
+      return card;
+    }
+    function setFold(s, st, folded, quiet) {
+      st.folded = folded;
+      st.body.hidden = folded;
+      st.fold.setAttribute('aria-expanded', String(!folded));
+      st.fold.setAttribute('aria-label', folded ? '이 파일 펼치기' : '이 파일 접기');
+      st.big.hidden = !(folded && st.bigFold);
+      // 처음 그릴 때(quiet)는 받지 않는다. 화면 근처에 오면 관찰자가 받는다
+      if (!folded && !quiet) {
+        if (st.bigFold) { st.bigFold = false; st.fold.focus(); }
+        loadBody(s, st);
+      }
+      syncWhole(st);
+    }
+    function syncWhole(st) { st.whole.hidden = st.folded || !st.gaps.length; }
+    function remember(s, id, d) {
+      s.cache.set(id, d);
+      if (s.cache.size > CACHE_MAX) s.cache.delete(s.cache.keys().next().value);
+    }
+    async function loadBody(s, st) {
+      if (st.loading || st.loaded) return;
+      const id = st.f.id, hit = s.cache.get(id);
+      if (hit) { renderBody(s, st, hit); return; }
+      st.loading = true;
+      st.body.replaceChildren(waitNote());
+      const r = await getJson(s, apiUrl(s, `/files/${id}`));
+      if (!live(s)) return;
+      st.loading = false;
+      if (!r.ok || !Array.isArray(r.data.hunks)) { st.body.replaceChildren(failNote(r.status, () => loadBody(s, st))); return; }
+      remember(s, id, r.data);
+      renderBody(s, st, r.data);
+    }
+
+    // ---- 파일 본문: 변경 묶음마다 원래 줄 번호, 바뀐 뒤 줄 번호, 코드를 보여 주고 사이사이에 펼치기 줄을 둔다
+    function span(h) {
+      const os = Number(h.old_start) || 0, ol = Number(h.old_lines) || 0, ns = Number(h.new_start) || 0, nl = Number(h.new_lines) || 0;
+      return { oFirst: ol ? os : os + 1, oLast: ol ? os + ol - 1 : os, nFirst: nl ? ns : ns + 1, nLast: nl ? ns + nl - 1 : ns };
+    }
+    function renderBody(s, st, d) {
+      const f = st.f;
+      st.loaded = true; st.gaps = [];
+      const hunks = d.hunks.filter((h) => h && Array.isArray(h.lines));
+      const done = (node) => { st.body.replaceChildren(node); syncWhole(st); };
+      if (d.binary) return done(note('바이너리 파일이라 내용을 표시하지 않습니다.'));
+      if (d.omitted === 'too_large' || d.omitted === 'cap') return done(note(`변경 내용이 커서 화면에 싣지 않았습니다. ${NOT_SHOWN}`));
+      if (d.omitted === 'unreadable' || d.omitted === 'unavailable') return done(note(`이 파일의 변경 내용을 표시할 수 없습니다. ${NOT_SHOWN}`));
+      if (!hunks.length) {
+        if (movedOnly(f)) {
+          const box = note('내용은 그대로이고 위치만 바뀌었습니다.');
+          if (d.expandable) box.appendChild(button('파일 내용 보기', 'btn quiet', () => showContent(s, st, box)));
+          return done(box);
+        }
+        return done(note(f.status === 'added' ? '내용이 없는 빈 파일입니다.' : '줄 단위로 바뀐 내용은 없습니다.'));
+      }
+      // 삭제한 파일과 새로 만든 파일은 줄을 더 불러올 것이 없다
+      const canMore = !!d.expandable && f.status !== 'deleted' && f.status !== 'added';
+      const ctx = Math.max(0, Number(s.idx && s.idx.context) || 0);
+      const wrap = el('div', 'cd-scroll'); wrap.tabIndex = 0; wrap.setAttribute('aria-label', `${f.path} 변경 내용`);
+      const table = el('table', 'cd-code'), tbody = el('tbody');
+      table.appendChild(tbody); wrap.appendChild(table);
+      st.wrap = wrap;
+      let prev = null;
+      for (const h of hunks) {
+        const r = span(h);
+        if (canMore) {
+          const lo = prev ? prev.nLast + 1 : 1, hi = r.nFirst - 1;
+          if (hi >= lo) addGap(s, st, tbody, { lo, hi, delta: r.oFirst - r.nFirst, where: prev ? 'mid' : 'top', sec: String(h.section || '') });
+        } else if (prev || r.nFirst > 1 || r.oFirst > 1) {
+          tbody.appendChild(sepRow(String(h.section || '')));
+        }
+        hunkRows(tbody, h.lines);
+        prev = r;
+      }
+      const nn = d.no_newline && typeof d.no_newline === 'object' ? d.no_newline : {};
+      // 마지막 묶음 뒤의 같은 줄이 문맥 줄 수보다 적으면 파일 끝까지 보인 것이다
+      const last = hunks[hunks.length - 1].lines;
+      let tail = 0;
+      for (let i = last.length - 1; i >= 0 && Array.isArray(last[i]) && last[i][0] === ' '; i--) tail++;
+      if (canMore && !nn.new && tail >= ctx) addGap(s, st, tbody, { lo: prev.nLast + 1, hi: null, delta: prev.oLast - prev.nLast, where: 'bottom', sec: '' });
+      if (nn.new && !nn.old) tbody.appendChild(eofRow('파일 끝에 줄바꿈이 없습니다.'));
+      else if (nn.old && !nn.new && f.status !== 'deleted') tbody.appendChild(eofRow('원래 파일 끝에 없던 줄바꿈을 추가했습니다.'));
+      done(wrap);
+    }
+    function row(cls, oldNo, newNo, sign, text, mark) {
+      const tr = el('tr', cls || null);
+      tr.append(el('td', 'no o', oldNo == null ? '' : oldNo), el('td', 'no n', newNo == null ? '' : newNo), el('td', 'sg', sign));
+      const td = el('td', 'cd');
+      if (mark && mark[1] > mark[0]) td.append(text.slice(0, mark[0]), el('span', 'x', text.slice(mark[0], mark[1])), text.slice(mark[1]));
+      else td.textContent = text;
+      tr.appendChild(td);
+      return tr;
+    }
+    function lineRow(ln, mark) {
+      const k = ln[0], text = ln[3] == null ? '' : String(ln[3]);
+      if (k === '+') return row('a', null, ln[2], '+', text, mark);
+      if (k === '-') return row('d', ln[1], null, '−', text, mark);
+      return row(null, ln[1], ln[2], '', text, null);
+    }
+    // 바뀐 줄 쌍에서 앞뒤의 같은 부분을 빼고 달라진 부분만 표시한다
+    function diffMark(a, b) {
+      if (a.length > 2000 || b.length > 2000) return null;
+      let p = 0;
+      while (p < a.length && p < b.length && a[p] === b[p]) p++;
+      let q = 0;
+      while (q < a.length - p && q < b.length - p && a[a.length - 1 - q] === b[b.length - 1 - q]) q++;
+      if (!p && !q) return null;
+      // 단어 중간에서 끊기면 읽기 어려우므로 표시 범위를 단어 경계까지 넓힌다
+      const w = /[A-Za-z0-9_$\uAC00-\uD7A3]/;
+      while (p > 0 && w.test(a[p - 1])) p--;
+      while (q > 0 && w.test(a[a.length - q]) && w.test(b[b.length - q])) q--;
+      return [[p, a.length - q], [p, b.length - q]];
+    }
+    function hunkRows(tbody, lines) {
+      const frag = document.createDocumentFragment();
+      const kind = (i) => (Array.isArray(lines[i]) ? lines[i][0] : null);
+      const txt = (i) => String(lines[i][3] == null ? '' : lines[i][3]);
+      for (let i = 0; i < lines.length;) {
+        if (!Array.isArray(lines[i])) { i++; continue; }
+        if (kind(i) !== '-') { frag.appendChild(lineRow(lines[i], null)); i++; continue; }
+        let j = i; while (j < lines.length && kind(j) === '-') j++;
+        let m = j; while (m < lines.length && kind(m) === '+') m++;
+        const marks = [];
+        for (let p = 0; p < Math.min(j - i, m - j); p++) marks.push(diffMark(txt(i + p), txt(j + p)));
+        for (let x = i; x < j; x++) frag.appendChild(lineRow(lines[x], marks[x - i] && marks[x - i][0]));
+        for (let x = j; x < m; x++) frag.appendChild(lineRow(lines[x], marks[x - j] && marks[x - j][1]));
+        i = m;
+      }
+      tbody.appendChild(frag);
+    }
+    function wideRow(cls) {
+      const tr = el('tr', cls), td = el('td'), acts = el('div', 'acts');
+      td.colSpan = 4; td.appendChild(acts); tr.appendChild(td);
+      return { tr, acts };
+    }
+    function sepRow(sec) { const w = wideRow('gap'); w.acts.appendChild(el('span', null, '⋯')); if (sec) w.acts.appendChild(el('span', 'sec', sec)); return w.tr; }
+    function eofRow(text) { const w = wideRow('eof'); w.acts.textContent = text; return w.tr; }
+
+    // ---- 가려진 줄 펼치기. 가려진 범위는 바뀐 뒤 파일의 줄 번호이고 원래 줄 번호는 이웃한 변경 묶음과의 차이(delta)로 구한다
+    function addGap(s, st, tbody, g) {
+      const w = wideRow('gap');
+      g.tr = w.tr; g.acts = w.acts; g.busy = false; g.err = 0; g.how = '';
+      st.gaps.push(g);
+      tbody.appendChild(g.tr);
+      paintGap(s, st, g);
+    }
+    function paintGap(s, st, g) {
+      if (g.hi != null && g.hi < g.lo) {
+        g.tr.remove();
+        st.gaps = st.gaps.filter((x) => x !== g);
+        syncWhole(st);
+        return;
+      }
+      const acts = g.acts;
+      acts.replaceChildren();
+      if (g.busy) { acts.appendChild(el('span', 'wait', '불러오는 중입니다.')); return; }
+      if (g.err === 404) {
+        acts.appendChild(el('span', null, '이 파일의 나머지 줄은 불러올 수 없습니다.'));
+        st.gaps = st.gaps.filter((x) => x !== g); syncWhole(st);
+        return;
+      }
+      if (g.err) {
+        acts.append(el('span', 'bad', g.err === 409 ? '결과 파일을 아직 정리하고 있습니다.' : '줄을 불러오지 못했습니다.'),
+                    button('다시 시도', null, () => expand(s, st, g, g.how)));
+        return;
+      }
+      const n = g.hi == null ? null : g.hi - g.lo + 1;
+      const add = (t, how) => acts.appendChild(button(t, null, () => expand(s, st, g, how)));
+      if (n != null && n <= STEP) add(`가려진 ${nf(n)}줄 모두 보기`, 'all');
+      else {
+        if (g.where !== 'top') add(`아래로 ${STEP}줄 더 보기`, 'down');
+        if (g.where !== 'bottom') add(`위로 ${STEP}줄 더 보기`, 'up');
+        if (n != null) add(`가려진 ${nf(n)}줄 모두 보기`, 'all');
+      }
+      if (g.sec) acts.appendChild(el('span', 'sec', g.sec));
+    }
+    // 바뀐 뒤 파일의 a..b줄을 받는다. 서버가 한 번에 주는 줄 수를 넘으면 받은 끝 다음 줄부터 다시 요청한다
+    async function fetchLines(s, id, a, b) {
+      const out = [];
+      let total = null, start = a;
+      for (let calls = 0; start <= b && calls < Math.ceil(WHOLE_MAX / CHUNK) + 1; calls++) {
+        const r = await getJson(s, apiUrl(s, `/files/${id}/lines?start=${start}&end=${Math.min(b, start + CHUNK - 1)}`));
+        if (!live(s)) return null;
+        if (!r.ok || !Array.isArray(r.data.lines)) return { error: r.status || -1 };
+        const d = r.data, s0 = Number(d.start);
+        total = Number.isFinite(Number(d.total)) ? Number(d.total) : total;
+        d.lines.forEach((t, k) => { const no = s0 + k; if (no >= start && no <= b) out.push({ no, text: String(t) }); });
+        const end = Number(d.end);
+        if (!d.lines.length || !Number.isFinite(end) || end < start || (total != null && end >= total)) break;
+        start = end + 1;
+      }
+      return { lines: out, total };
+    }
+    async function expand(s, st, g, how) {
+      if (g.busy) return true;
+      let a, b;
+      if (how === 'up') { b = g.hi; a = Math.max(g.lo, g.hi - STEP + 1); }
+      else if (how === 'down') { a = g.lo; b = g.hi == null ? g.lo + STEP - 1 : Math.min(g.hi, g.lo + STEP - 1); }
+      else { a = g.lo; b = g.hi == null ? g.lo + WHOLE_MAX - 1 : g.hi; }
+      const focused = g.tr.contains(document.activeElement);
+      g.busy = true; g.err = 0; g.how = how;
+      paintGap(s, st, g);
+      const r = await fetchLines(s, st.f.id, a, b);
+      if (!live(s) || !r) return false;
+      g.busy = false;
+      if (r.error) { g.err = r.error; paintGap(s, st, g); return false; }
+      if (g.hi == null && r.total != null) g.hi = r.total;
+      const rows = r.lines;
+      const parent = g.tr.parentNode;
+      if (!rows.length) g.hi = g.lo - 1;
+      else if (how === 'up') {
+        const ref = g.tr.nextSibling;
+        for (const x of rows) parent.insertBefore(row(null, x.no + g.delta, x.no, '', x.text, null), ref);
+        g.hi = rows[0].no - 1;
+      } else {
+        for (const x of rows) parent.insertBefore(row(null, x.no + g.delta, x.no, '', x.text, null), g.tr);
+        g.lo = rows[rows.length - 1].no + 1;
+      }
+      paintGap(s, st, g);
+      // 키보드로 누른 경우 포커스가 사라지지 않도록 같은 줄의 첫 버튼이나 코드 영역으로 옮긴다
+      if (focused) { const nb = g.tr.isConnected && g.tr.querySelector('button'); (nb || st.wrap).focus({ preventScroll: true }); }
+      return true;
+    }
+    async function wholeFile(s, st) {
+      if (st.busy) return;
+      st.busy = true; st.whole.disabled = true; st.whole.textContent = '불러오는 중입니다.';
+      for (const g of [...st.gaps]) {
+        const ok = await expand(s, st, g, 'all');
+        if (!live(s)) return;
+        if (!ok) break;
+      }
+      st.busy = false; st.whole.disabled = false; st.whole.textContent = '파일 전체 보기';
+      syncWhole(st);
+    }
+    // 위치만 바뀐 파일: 버튼을 누르면 파일 내용을 그대로 보여 준다(원래 줄 번호와 같다)
+    async function showContent(s, st, box) {
+      const b = box.querySelector('button');
+      if (b) { b.disabled = true; b.textContent = '불러오는 중입니다.'; }
+      const r = await fetchLines(s, st.f.id, 1, WHOLE_MAX);
+      if (!live(s) || !r) return;
+      if (r.error) {
+        st.body.replaceChildren(box, failNote(r.error, () => { st.body.replaceChildren(box); showContent(s, st, box); }));
+        if (b) { b.disabled = false; b.textContent = '파일 내용 보기'; }
+        return;
+      }
+      if (b) b.remove();
+      const wrap = el('div', 'cd-scroll'); wrap.tabIndex = 0; wrap.setAttribute('aria-label', `${st.f.path} 내용`);
+      const table = el('table', 'cd-code'), tbody = el('tbody');
+      const frag = document.createDocumentFragment();
+      for (const x of r.lines) frag.appendChild(row(null, x.no, x.no, '', x.text, null));
+      tbody.appendChild(frag);
+      if (r.total != null && r.total > r.lines.length) tbody.appendChild(eofRow(`앞의 ${nf(r.lines.length)}줄만 보여 줍니다. 전체 ${nf(r.total)}줄입니다.`));
+      if (!r.lines.length) tbody.appendChild(eofRow('내용이 없는 빈 파일입니다.'));
+      table.appendChild(tbody); wrap.appendChild(table);
+      st.wrap = wrap;
+      st.body.replaceChildren(box, wrap);
+    }
+
+    return { mount, unmount };
+  })();
+
+  // 결과 카드의 머리 줄. 요약 칩과 열기 버튼만 페이지가 관리하고 안쪽은 CodeDiff에 맡긴다
+  const cdv = { run: null, open: false, mounted: false };
+  function showCodeDiff(st, remOnly) {
+    const sum = st.code_diff && typeof st.code_diff === 'object' ? st.code_diff : null;
+    if (remOnly || !sum || !current) { hideCodeDiff(); return; }
+    if (cdv.run !== current) { hideCodeDiff(); cdv.run = current; }
+    const nf = (n) => (Number(n) || 0).toLocaleString('ko-KR');
+    const chips = [el('span', 'chip', `파일 ${nf(sum.files)}개`)];
+    if (sum.added_lines) chips.push(el('span', 'chip ok', `+${nf(sum.added_lines)}줄`));
+    if (sum.removed_lines) chips.push(el('span', 'chip bad', `−${nf(sum.removed_lines)}줄`));
+    if (sum.moved) chips.push(el('span', 'chip', `위치 이동 ${nf(sum.moved)}개`));
+    $('cd-counts').replaceChildren(...chips);
+    $('cdblock').hidden = false;
+  }
+  function hideCodeDiff() {
+    CodeDiff.unmount();
+    cdv.run = null; cdv.open = false; cdv.mounted = false;
+    $('cdblock').hidden = true; $('cd-host').hidden = true; $('cd-host').replaceChildren();
+    $('cd-toggle').setAttribute('aria-expanded', 'false'); $('cd-toggle').textContent = '변경 내용 보기';
+  }
+  // 처음 열 때 화면을 붙이고, 접었다 다시 열면 붙여 둔 화면을 그대로 보여 준다
+  $('cd-toggle').addEventListener('click', () => {
+    if (!cdv.run) return;
+    cdv.open = !cdv.open;
+    $('cd-host').hidden = !cdv.open;
+    $('cd-toggle').setAttribute('aria-expanded', String(cdv.open));
+    $('cd-toggle').textContent = cdv.open ? '접기' : '변경 내용 보기';
+    if (cdv.open && !cdv.mounted) { cdv.mounted = true; CodeDiff.mount($('cd-host'), cdv.run); }
+  });
+
   // ---------------------------------------------------------------- 실행에 연결 (SSE)
   // resume은 끊긴 같은 실행에 다시 연결하는 경우다(아래 '다시 연결'). 사용자가 직접 선택한 실행이면 진행 중인 재연결을 멈춘다.
   // 화면(레일, 기록, 로그, 결과)은 매번 비우고 서버가 처음부터 다시 보내는 내용으로 채우므로 다시 연결해도 줄이 겹치지 않는다
@@ -1579,7 +2463,7 @@
     runFlow = flowHint === FLOW_REM ? FLOW_REM : FLOW_FULL;   // 실제 값은 첫 status에서 받는다(setStatus)
     $('abortbox').hidden = true; setPodWait(null);
     logBuf = []; logTotal = 0; logDropped = 0; renderLog();
-    $('runcard').hidden = false; $('resultcard').hidden = true; hideRemediation();
+    $('runcard').hidden = false; $('resultcard').hidden = true; hideRemediation(); hideCodeDiff();
     $('runid').textContent = runId; $('summary').textContent = ''; setRunName(nameHint || '');
     $('timeline').innerHTML = ''; $('log').replaceChildren(); $('report').textContent = ''; $('logfull').hidden = true;
     setTitle('', resume ? '다시 연결하는 중…' : '연결하는 중…', false); statusKey = '';

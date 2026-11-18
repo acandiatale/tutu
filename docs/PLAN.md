@@ -926,3 +926,34 @@ The user asked for the deck's latest state and, while it was being redone: "사�
 | Checks | `validate.py` passes; all 20 slides rendered to images and read | `scripts/handbook/README.md` (build and check commands) | done |
 | Found on the way | the report, the KB records and `result.zip` are written after the chained remediation (the graph node `finalize` only settles a stop) — design README, ARCHITECTURE and agent-doc 02 corrected; the web page's stage rail shows 보고서 before 취약점 조치 although report.md is ready only after it | `docs/migration-agent/README.md`, `docs/ARCHITECTURE.md`, `agent-doc/02-flow-and-nodes.md` | page order open |
 | Tests | offline suite 5,846 passed, 62 deselected | — | done |
+
+## Status — 2026-11-18, the code-change view of the result card (v2.1z-au)
+
+Relayed by the user: "마이그레이션 완료하면 github나 bitbucket처럼 소스코드 수정 화면으로 볼 수 있게 … 나중에 모달로 분리하기
+쉽게. 부트쪽은 표현이 편할텐데, 스프링이나 논프레임워크 같은 경우 변환기준으로 보여주고 어디 있던 java 파일이 이 주소로 왔다도
+표시 … 수정분만 보여주지 말고 위 아래 코드들도 좀 보이도록!" The place: the room the approval list left in the result card.
+
+| Item | Deliverable | Where | Status |
+|---|---|---|---|
+| The record | at finalize the build side writes `<run dir>/codediff/` (`index.json`, `summary.json`, `patch.bin`): every file of the final tree at its FINAL path against its origin in the as-is tree; statuses modified / added / deleted / moved (+ whether the content changed), the folder moves grouped (`moves`), 10 context lines (`report.code_diff`, `report.code_diff_context`) | `sbmig/report/codediff.py`, `Orchestrator._finalize_code_diff`, `sbmig/core/config.py`, `config/default.yml` | done |
+| Origins without rename detection | same path → same name and identical bytes → same name and at least half of the lines shared, candidates by the longest shared trailing path; a base tree holding each origin's blob at the final path makes ONE `git diff` show every file where it ended up; about twenty git calls whatever the size of the tree (1,500 moved files: under 3 s) | `sbmig/report/codediff.py`, `Workspace.snapshot_tree` / `tree_entries` / `make_tree` | done |
+| Web API | `GET /api/runs/{id}/codediff`, `…/files/{n}` (parsed hunks with both line numbers), `…/files/{n}/lines` (more lines of the final file out of `result.zip`); the web pod runs no git; `code_diff` in the run status; 409 until the results are released, damaged data is a 404 with a reason, never a 500 | `sbmig/web/codediff.py`, `sbmig/web/app.py`, `sbmig/web/runs.py` | done |
+| The page | block 「코드 변경」 after 「취약점 조치」: summary chips, 「폴더 구조가 바뀌었습니다」 (원래 위치 → 옮긴 위치, 파일 수), filters and path search, a file tree by final path, the files one under the other with 「원래 위치」, both line numbers, the differing part of a changed line marked, more lines above / below / between and 「파일 전체 보기」; files only moved are listed from the start when there are at most 200 of them, else behind a checkbox; drawn 30 files at a time, a file's changes fetched when it nears the viewport | `sbmig/web/static/index.html` | done |
+| A modal later | the block is the component `CodeDiff` (`mount(host, runId)` / `unmount()`, its own state, DOM inside `host`, styles under `.cdiff`): a dialog calls `mount` with its body | `sbmig/web/static/index.html` | done |
+| Found on the way | the temporary index of the snapshot must keep the real index's timestamp, else a same-size edit made in the index's own second is missed (git's racy-clean check) — reproduced by a test | `sbmig/core/workspace.py`, `tests/core/test_workspace_trees.py` | done |
+| Real pipeline | `scripts/e2e.py` on `company-servlet-jsp`, `company-spring5-web`, `boot2`: all PASS, each wrote the record in 0.27 s; the page was opened on those run folders in a browser (open / close, moves table, moved files with their old place, more lines) | `out/e2e-codediff/` | done |
+| Tests | 67 new (writer 25, workspace trees 8, API 21, page 13); offline suite 5,915 passed, 62 deselected | `tests/report/test_codediff.py`, `tests/core/test_workspace_trees.py`, `tests/web/test_codediff_api.py`, `tests/web/test_page_code_diff.py` | done |
+| Not covered | the chained remediation's pom changes are not part of this view (it compares the migration's as-is and final tree); a remediation-only run has no block; a side-by-side view; a real project of thousands of files in the browser; Windows / Edge; the company cluster | — | open |
+
+## Status — 2026-11-18, images are pulled at every pod start
+
+The company cluster kept showing the approval list after the image with v2.1z-ar was pushed. Cause: the company pushes
+the SAME tag every time (the user: "우리 태그는 계속 동일 태그 올리고있는데!") and the manifests said
+`imagePullPolicy: IfNotPresent`, so a node that already had the tag never asked the registry again; each node ran
+the build it had pulled first, and the web pod and a build pod could run different code.
+
+| Item | Deliverable | Where | Status |
+|---|---|---|---|
+| Manifests | `imagePullPolicy: Always` in the Deployment and both Job templates: a pod start checks the registry and pulls only a changed image | `deploy/k8s/40-deployment.yaml`, `80-build-job.template.yaml`, `81-web-job.template.yaml` | done |
+| Operator text | after a push: restart the web pod (`kubectl -n agent rollout restart deploy/sbmig`), build pods pull by themselves; `IfNotPresent` needs a new tag per build; `Always` needs the registry at pod start | `deploy/README.md` §1, `agent-doc/09-deploy-and-ops.md`, `docs/INTERFACES.md` | done |
+| On the cluster | the company's filled copies of 40 / 81 have to be changed there and the template ConfigMap re-created | — | open (the user's) |

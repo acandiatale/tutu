@@ -3722,6 +3722,20 @@ class Orchestrator:
         except Exception as e:  # noqa: BLE001 - never lose the report over this list
             log.warning("code changes not collected: %s", e)
 
+    def _finalize_code_diff(self) -> None:
+        """웹 화면의 「코드 변경」 기록(codediff/)을 쓴다. 예외를 던지지 않고, 실패하면 경고 로그만 남긴다.
+
+        `<run dir>/codediff/` (`sbmig.report.codediff`): not for a dry run, with `report.code_diff` false or without
+        `<project>/.git`. Never raises (one WARNING); not listed in `report.outputs` (the report text stays as it is)."""
+        if self._dry_run or not getattr(self.cfg.report, "code_diff", False) \
+                or not (self.ws.root / ".git").exists():
+            return
+        try:
+            from sbmig.report.codediff import write_code_diff
+            write_code_diff(self.ws, self.cfg, run_id=self.ws.run_id)
+        except Exception as e:  # noqa: BLE001 - the code-change view never fails a run
+            log.warning("code diff not written: %s", e)
+
     def _finalize(self, report: RunReport) -> None:
         """실행을 마무리한다. ``_run_guard``가 어떤 경우에도 호출한다.
         LLM 사용량과 비용, 수정 루프의 플래그와 후속 조치, 성공 여부, 미해결 오류, 차단 목록, infra 플래그, 운영자 확인,
@@ -3850,6 +3864,7 @@ class Orchestrator:
                 dropped.append(str(out.pop("zip", "")))
         if dropped:                        # the report named a file that does not exist: write it once more
             write()
+        self._finalize_code_diff()
         self.ws.journal({"event": "report", "success": report.success, "flags": report.flags,
                          "unresolved": len(report.unresolved), "blocked": len(report.blocked),
                          "llm_calls": report.llm_usage.calls,
