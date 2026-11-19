@@ -200,13 +200,23 @@ def pod_wait_hint_ko(family: str, seconds: float, pod: str | None, job: str) -> 
     return f"빌드 파드가 아직 시작되지 못했습니다({minutes}분째). {tail}"
 
 
-def job_name(run_id: str) -> str:
-    """실행 id로 Job 이름(``sbmig-<run id>``)을 만든다.
-    RFC 1123에 맞게 소문자, 숫자, ``-``만 쓰고 63자 이하로 자른다.
+# 실행 id 끝의 시각과 난수 부분이다. 같은 초에 시작한 두 실행은 이 부분의 난수로만 구분된다
+_RUN_ID_TAIL = re.compile(r"-\d{8}-\d{6}-[0-9a-f]{6}$")
 
-    `sbmig-<run id>` made a valid RFC 1123 name (lower-case, `-`, at most 63 characters)."""
+
+def job_name(run_id: str, limit: int = 63) -> str:
+    """실행 id로 Job 이름(``sbmig-<run id>``)을 만든다.
+    RFC 1123에 맞게 소문자, 숫자, ``-``만 쓰고 ``limit``자 이하로 줄인다. 줄일 때는 앞부분을 자르고 끝의 시각과 난수는 남긴다.
+
+    `sbmig-<run id>` made a valid RFC 1123 name (lower-case, `-`, at most `limit` characters). When it has to be cut, the
+    head is cut and the run id's `-YYYYmmdd-HHMMSS-<hex 6>` tail is kept: two runs of one project started in the same
+    second differ only in the random part (v2.1z-be: a 30-character project name leads the run id)."""
     base = re.sub(r"[^a-z0-9-]+", "-", f"sbmig-{run_id}".lower()).strip("-")
-    return (base[:63].rstrip("-")) or "sbmig-run"
+    if len(base) <= limit:
+        return base or "sbmig-run"
+    m = _RUN_ID_TAIL.search(base)
+    tail = m.group(0) if m and len(m.group(0)) < limit else ""
+    return (base[:limit - len(tail)].rstrip("-") + tail) or "sbmig-run"
 
 
 def render_job(template: str | Path | dict, run_id: str, env: dict[str, str], namespace: str | None = None,

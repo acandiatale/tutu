@@ -303,8 +303,8 @@ sbmig clean --fleet out\fleet --older-than 7 --keep-failed --dry-run
 
 - **Local web UI**: `sbmig serve --port 8765 --out out/web` (FastAPI on uvicorn, bound to 127.0.0.1): upload a zip,
   choose 전체 진행 (migration, then the remediation) or 취약점 해결 (remediation only, §6), follow the stage rail /
-  journal / log, download `report.md` and `result.zip`. A run's folder name starts with a slug of the uploaded file's
-  name; a run refused at intake, or aborted by Maven's HTTP repository blocker, shows its reason as a sentence. Sharing on the LAN needs a token
+  journal / log, download `report.md` and `result.zip`. Every upload needs a project name (letters, digits, `_`, `-`, at most 30 characters; rule and refusals in
+  `deploy/README.md` §2), and a run's folder name starts with it (`<project>-YYYYmmdd-HHMMSS-<hex 6>`; `ls /data/out | grep <project>`); a run refused at intake, or aborted by Maven's HTTP repository blocker, shows its reason as a sentence. Sharing on the LAN needs a token
   (`SBMIG_WEB_TOKEN` or `--token`; `--open` only on a trusted intranet). The configs every upload runs with are the
   server's choice (`--config` / `SBMIG_WEB_CONFIGS`). In-process mode runs one migration at a time (the others are
   `queued`); "중단" takes effect between graph nodes, and a stop that arrives after every planned final build has a

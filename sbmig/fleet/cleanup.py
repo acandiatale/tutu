@@ -47,7 +47,8 @@ KEEP_FILES = ("result.zip", "report.md", "report.json", "errors.jsonl", "errors.
               "sbmig.log", "plan.json", "profile.json")      # = workspace.RUN_DIR_FILES (+ logs/), PLAN-v2.1 §3.5
 _SKIP_DIRS = {".git", "node_modules", ".idea", ".svn"}
 # 웹 업로드 파일 이름 <실행 id>-<파일 이름>에서 실행 id(<앞부분>-YYYYMMDD-HHMMSS-<hex 6>, 예전의 web-… 포함)를 찾는다
-_UPLOAD_RE = re.compile(r"^([a-z0-9][a-z0-9-]*?-\d{8}-\d{6}-[0-9a-f]{6})-")
+# 앞부분은 사람이 적은 프로젝트명일 수 있으므로 대문자와 _도 받는다(웹의 RUN_ID_RE와 같은 글자)
+_UPLOAD_RE = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]*?-\d{8}-\d{6}-[0-9a-f]{6})-")
 # 웹 업로드 중에 쓰는 임시 파일이 하루가 지나도 남아 있으면 끊긴 업로드로 본다
 STALE_PART_S = 24 * 3600          # an `.incoming-*.part` older than this is a dead upload
 

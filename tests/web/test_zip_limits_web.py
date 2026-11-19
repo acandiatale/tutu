@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 from sbmig.core.config import PACKAGE_ROOT
 from sbmig.web import create_app
 from sbmig.web.app import OPEN_ENV, TOKEN_ENV
+from .uploads import runs_url
 
 MIB = 1024 * 1024
 
@@ -30,7 +31,7 @@ def test_an_in_process_upload_over_the_unpacked_limit_is_refused(tmp_path: Path,
         z.writestr("p/a.bin", os.urandom(2 * MIB))
     app = create_app(tmp_path / "out", repo, mode="in-process")
     with TestClient(app) as c:
-        r = c.post("/api/runs?name=p.zip", content=buf.getvalue())
+        r = c.post(runs_url("name=p.zip"), content=buf.getvalue())
         assert r.status_code == 400
         assert r.json()["error"] == ("ZIP refused: it unpacks to 2 MiB, over the limit of 1 MiB (intake.max_unpacked_mb) "
                                      "— nothing was unpacked")

@@ -1,7 +1,7 @@
 # 열린 과제와 역사
 
 > 다루는 것: sbmig가 어디까지 왔는지(v1 → v2 → v2.1 증분을 주제별로), 회사 실행에서 나온 진단 사례(증상 → 원인 → 만든 것), 사용자가 결정할 열린 과제, `docs/PLAN.md` / `docs/INTERFACES.md` 읽는 법. 이 팩에서 날짜와 버전 태그가 허용되는 유일한 파일이다.
-> 언제 읽나: "왜 이렇게 만들어졌나", "이 기능은 언제 왜 들어왔나", "다음에 무엇을 하기로 했나" 가 궁금할 때.
+> 언제 읽나: "왜 이렇게 만들어졌나", "이 기능은 언제 왜 들어왔나", "다음에 무엇을 하기로 했나"가 궁금할 때.
 > 함께 읽을 파일: [08-dev-conventions-and-tests.md](08-dev-conventions-and-tests.md), [09-deploy-and-ops.md](09-deploy-and-ops.md), [../docs/PLAN.md](../docs/PLAN.md), [../docs/INTERFACES.md](../docs/INTERFACES.md)
 
 ## 1. 큰 줄기
@@ -12,27 +12,27 @@
 | 2026-10-26 … 10-27 | **v2** (브랜치 `flow-v2`) | 현업 요청 "레시피가 무엇을 바꿀지 모르니 넣지 않는다": OpenRewrite 1회(Java 21 / jakarta / Boot 4 레시피만) → 회사 재구성 → LLM 구조 검토 → `mvn clean package` → 빌드 오류마다 **LLM이 쓴 Python 수정 스크립트**, 오류 케이스(L2 서명)별로 KB에 저장해 다음 프로젝트가 재사용. v1 코드 삭제 |
 | 2026-10-27 … 11-04 | **v2.1d … v2.1z-u** | 회사 실행에서 나온 문제를 하나씩 막은 증분들(아래 2절) |
 
-v1이 실패한 이전 사내 에이전트의 두 원인(빌드를 돌리지 않고 "끝났다" 고 한 LLM, 작은 LLM의 약한 레시피 선택)을 피하려고 만든 원칙 —
-결정적 계획, 빌드로 판정하는 실행 — 은 v2 에서도 그대로다. 설계 결정의 원문은 `docs/v2/PLAN-v2.md`, v2.1의 계획은 `docs/v2/PLAN-v2.1.md`.
+v1이 실패한 이전 사내 에이전트의 두 원인(빌드를 돌리지 않고 "끝났다"고 한 LLM, 작은 LLM의 약한 레시피 선택)을 피하려고 만든 원칙 —
+결정적 계획, 빌드로 판정하는 실행 — 은 v2에서도 그대로다. 설계 결정의 원문은 `docs/v2/PLAN-v2.md`, v2.1의 계획은 `docs/v2/PLAN-v2.1.md`.
 
 ## 2. v2.1 증분을 주제별로
 
-각 행의 "읽을 곳" 은 `docs/INTERFACES.md`의 절 제목(같은 이름의 Status 표가 `docs/PLAN.md` 에도 있다).
+각 행의 "읽을 곳"은 `docs/INTERFACES.md`의 절 제목(같은 이름의 Status 표가 `docs/PLAN.md`에도 있다).
 
 | 주제 | 무엇을 바꿨나 (지금 동작) | 읽을 곳 |
 |---|---|---|
-| **버전 정책** | LLM이 스스로 메이저를 올리거나 라이브러리를 바꾸지 않는다. as-is 부모가 관리하던 버전은 as-is 유효 pom에서 옮겨 고정, 버전 없는 의존성은 LLM 없이 채움(`sbmig-version`), 모르면 `null`. 재구성 전 빌드 없음, 회사 부모 체인의 사실은 그 pom 들에서 읽음(Boot BOM 포함), 체인이 관리하지 않는 버전은 목표 Boot BOM을 따름, as-is 버전 속성·고아 속성·체인을 가리는 관리 항목 제거 | v2.1d, v2.1l, v2.1o, v2.1p, v2.1s, v2.1t, v2.1z-k, v2.1z-l |
+| **버전 정책** | LLM이 스스로 메이저를 올리거나 라이브러리를 바꾸지 않는다. as-is 부모가 관리하던 버전은 as-is 유효 pom에서 옮겨 고정, 버전 없는 의존성은 LLM 없이 채움(`sbmig-version`), 모르면 `null`. 재구성 전 빌드 없음, 회사 부모 체인의 사실은 그 pom들에서 읽음(Boot BOM 포함), 체인이 관리하지 않는 버전은 목표 Boot BOM을 따름, as-is 버전 속성·고아 속성·체인을 가리는 관리 항목 제거 | v2.1d, v2.1l, v2.1o, v2.1p, v2.1s, v2.1t, v2.1z-k, v2.1z-l |
 | **리소스·JSP·레거시 컨텍스트** | 필터링되는 바이너리 → `nonFilteredFileExtensions`(내용 기반), JSP의 javax → jakarta 이름 바꾸기, 선택 사내 아티팩트의 트리거(`when_present`), 레거시 Spring 컨텍스트 스위치 | v2.1h, v2.1m, v2.1n, v2.1u … v2.1y |
 | **동봉 jar** | pom이 선언하지 않은 트리 안의 jar(WEB-INF/lib의 벤더 jar)를 분석에서 찾아, 재구성 때 첫 빌드 전에 연결: 저장소에 좌표가 있으면 일반 의존성, 없으면 `<module>/lib/` + `system` 스코프 + Nexus 게시 요청. 목표 체인이 관리하는 g:a는 대체됨(연결 안 함). 컴파일 오류 때의 LLM 없는 사전 시도(`sbmig-bundled`)는 안전망 | v2.1z-i, v2.1z-j |
 | **javax / jakarta 라이브러리** | sbmig가 jakarta 빌드를 직접 찾는다: 저장소 집합(명시 URL → settings 미러 → pom 저장소 → Central), 같은 좌표의 높은 라인(`-jakarta` 한정어, pom, jar 스캔), 표의 `jakarta_key`, Nexus 검색, 형제 이름 탐색 → LLM 없는 교체(`sbmig-jakarta`). 진단 명령 `sbmig repo-probe` | v2.1z-e |
-| **접수 규칙** | Ant 프로젝트는 받지 않고 안내 문구 "Maven 변환 후 신청 부탁드립니다." 를 보인다(2026-11-12 회사 결정, v2.1z-aj; v2.1j의 pom 합성은 `intake.ant_to_maven: true`로 남음); 루트 pom 없는 트리는 집계 pom 생성, 리액터 중복 제거(v2.1k, 외톨이 집계 pom은 2026-11-02); 소스가 모듈 밖에 있는 **속 빈 리액터**는 성공이 아님(v2.1z-c); **Oracle ADF** 는 증거 2종 이상이면 변환 불가로 멈춤(v2.1z-d); IDE 출력·백업 폴더의 **떠도는 pom 복사본**은 모듈이 아님(v2.1z-h) | v2.1j, v2.1k, v2.1z-c, v2.1z-d, v2.1z-h, v2.1z-aj |
+| **접수 규칙** | Ant 프로젝트는 받지 않고 안내 문구 "Maven 변환 후 신청 부탁드립니다."를 보인다(2026-11-12 회사 결정, v2.1z-aj; v2.1j의 pom 합성은 `intake.ant_to_maven: true`로 남음); 루트 pom 없는 트리는 집계 pom 생성, 리액터 중복 제거(v2.1k, 외톨이 집계 pom은 2026-11-02); 소스가 모듈 밖에 있는 **속 빈 리액터**는 성공이 아님(v2.1z-c); **Oracle ADF**는 증거 2종 이상이면 변환 불가로 멈춤(v2.1z-d); IDE 출력·백업 폴더의 **떠도는 pom 복사본**은 모듈이 아님(v2.1z-h) | v2.1j, v2.1k, v2.1z-c, v2.1z-d, v2.1z-h, v2.1z-aj |
 | **수정 사다리** | 재사용 → 보강 → 신규, 케이스당 LLM 20회 / 보강 15회(넉넉히 잡고 줄여 갈 값), 거절 1회면 `needs_owner`, 직접 편집 4회, 비교용 스위치(`fix.mode`, `--no-kb`) 삭제, 리액터 artifactId를 케이스 키에서 `<module>`로 가림, 진동 상한 설정화 | v2.1i(삭제된 것), v2.1z |
 | **LLM 게이트웨이** | legacy 모양 `{model, messages, need_origin}` → 사내 GPT **agent 게이트웨이**(`llm.gateway: agent`: asset id, `params.role`, 토큰 교환) → 게이트웨이가 돌려준 `session_id`를 다시 보내 세션을 잇는 배관(`thread_id` 폐기) → **케이스 스레드**(`llm.case_thread`, 기본 꺼짐: 케이스의 보강은 같은 세션에 변화분만) → URL 안의 asset id → 세션은 모델을 못 바꾸므로 모델이 바뀌는 요청은 새 세션 | v2.1z-m, v2.1z-n, v2.1z-o, v2.1z-p, v2.1z-q, v2.1z-x |
 | **배포** | 이미지 하나(`deploy/docker/Dockerfile`), 웹 UI Deployment, 인프라 가이드의 요청별 Job(`deploy/docker/run-job.sh`, `deploy/k8s/80-build-job.template.yaml`), 실행 전후 훅. 빌더 파드에 exec 하던 레이아웃은 Job 모델이 나오며 삭제, `deploy/` 주석 한국어 | v2.1z-r, v2.1z-s, v2.1z-t, v2.1z-u |
-| **Job 디스패치 검토** (2026-11-10) | 배포팀 명세를 옮긴 Main / Worker 코드(v2.1z-ac)의 리뷰에서 나온 네 지적과 회귀 하나: ① 다음 실행은 앞 Job이 **끝난 것을 API로 확인한 뒤**(`job-status.json` 만으로 끝내지 않는다; API 장애는 실패가 아니라 줄을 붙잡고 `SBMIG_JOB_API_GRACE_S`는 알림만, 새 `SBMIG_JOB_EXIT_GRACE_S`) ② 라벨 없는 Job은 남의 것(`sbmig-owner`와 `sbmig-run-id` 둘 다 맞아야) ③ Worker가 자기 환경 변수를 그 Job을 만든 Main의 것과 대조(`control/state.json`의 `env_pins` / `env_pin_policy`, `SBMIG_JOB_ENV_PIN` refuse / warn / off, 거절은 저널 `worker_refused`, 경고는 `worker_env_differs`) — 운영 규칙 "`sbmig-env`를 바꾸면 웹 파드 재시작, 81 틀을 바꾸면 `sbmig-job-template`을 다시 만들고 재시작" ④ 비밀 값은 끝난 뒤가 아니라 **쓰는 순간** 지운다(`sbmig/core/scrub.py`, `SBMIG_REDACT_OUTPUT`, 실행 중에는 `sbmig.log` / `journal.jsonl`만 내려받기). 회귀: local-job이 Job 틀의 컨테이너 경로를 PC 실행에 넘기던 것 → 실행별 값만 | v2.1z-ac, v2.1z-ad |
-| **동시 Job** (2026-11-10) | 웹 파드가 Job을 한 번에 하나가 아니라 `SBMIG_JOB_MAX_PARALLEL` 건까지 돌린다(코드 기본 1, 매니페스트 값 3; 웹 파드가 직접 도는 모드는 1). 올린 순서를 지키고, 도는 Job 마다 자리 번호(`control/state.json`의 `slot`, Job env `SBMIG_JOB_SLOT`)를 주며 2 번 자리부터는 Maven 로컬 저장소를 따로 쓴다(`repository-slot<k>`, 저널 `worker_slot`). 기다리는 실행은 `status()`의 `queue.position`으로 순번을 보고 화면이 알린다. KB는 폴더 하나 그대로: 쓰기는 모두 `<kb>/.lock` 안에서 하고, 여러 파드를 위해 새 케이스 폴더·스크립트 파일·LLM 기록 파일을 "없을 때만 만들기"로, 잠금의 나이를 KB 파일 시스템의 시계로 잰다. 회사 클러스터·NFS 에서는 아직 재지 않았다 | v2.1z-ae |
-| **동시 Job 검토** (2026-11-10) | 세 파드 동시 실행을 다섯 갈래로 검토해 재현된 것만 고침: 끝 상태를 적은 뒤에 자리를 비움, 재시작 복구는 적힌 자리 번호를 그대로 지킴, API의 이상한 응답은 실패가 아니라 "API 불가", 파드가 아직 끝나는 중인 `Failed` Job은 끝난 것이 아님, 대기 중 멈춤은 바로 줄에서 빠짐; Worker가 SIGTERM에 Maven까지 멈추고 자리 저장소를 못 만들면 파드 안 임시 저장소; KB는 서버가 있다고 한 `case.json`을 덮어쓰지 않음(`CaseUnreadable`), 낡은 잠금 깨기를 `.lock.breaker`로 한 줄 세움, 긴 구간의 잠금 갱신(`keep_alive`); 게이트웨이의 바쁨(429)은 `llm.busy_wait_seconds`까지 줄 서기, 갓 받은 토큰의 401은 `llm.auth_retries` 번 다시 받기; 화면은 웹 파드 재시작 뒤 스스로 다시 붙음 | v2.1z-af |
-| **못 뜨는 빌드 파드** (2026-11-17) | 회사 클러스터에서 두 건을 함께 올리자 한 파드가 28분 동안 `ContainerCreating`에 머물렀다(볼륨 붙이기·마운트, 이미지, 네트워크 같은 쿠버네티스 쪽 원인). 멈춤: Job이 `Creating` / `Pending`(컨테이너가 아직 시작 안 함)이면 `stop.request`를 쓴 뒤 유예 없이 우리 라벨의 Job을 지우고 사라질 때까지 기다려 `stopped`로 끝낸다(저널 `job_deleted_before_start`, 화면 제목은 그대로 "중단되었습니다"). 실행 중인 파드는 예전처럼 `SBMIG_JOB_STOP_GRACE_S`, 실행 중인 취약점 조치 재개 파드는 지우지 않는다. 안내: 파드가 `SBMIG_JOB_PENDING_NOTICE_S`(300초, 0 = 끔) 넘게 시작하지 못하면 웹 파드가 이유를 찾는다(컨테이너 대기 이유 → `PodScheduled=False` → 파드 Events, `K8sClient.pod_events`; Events 권한은 `deploy/k8s/45-web-rbac.yaml`의 `events: list`, 없으면 시작 로그 한 줄). 화면의 파드 단계 아래 "빌드 파드가 아직 시작되지 못했습니다(N분째)." + 이유 한 문장 + 원문, `status()`의 `job.pending`, 저널 `job_pod_pending`, 이유마다 WARNING 한 줄. 알림만 하고 실행을 끝내거나 Job을 지우지 않는다. 운영자 표: `deploy/README.md` §3 "동시에 여러 건" | v2.1z-aq |
+| **Job 디스패치 검토** (2026-11-10) | 배포팀 명세를 옮긴 Main / Worker 코드(v2.1z-ac) 리뷰의 네 지적과 회귀 하나: ① 다음 실행은 앞 Job이 **끝난 것을 API로 확인한 뒤**(`job-status.json`만으로 끝내지 않는다; API 장애는 실패가 아니라 줄을 붙잡고 `SBMIG_JOB_API_GRACE_S`는 알림만, 새 `SBMIG_JOB_EXIT_GRACE_S`) ② 라벨 없는 Job은 남의 것(`sbmig-owner`와 `sbmig-run-id` 둘 다 맞아야) ③ Worker가 자기 환경 변수를 그 Job을 만든 Main의 것과 대조(`control/state.json`의 `env_pins` / `env_pin_policy`, `SBMIG_JOB_ENV_PIN` refuse / warn / off, 거절은 저널 `worker_refused`, 경고는 `worker_env_differs`) ④ 비밀 값은 끝난 뒤가 아니라 **쓰는 순간** 지운다(`sbmig/core/scrub.py`, `SBMIG_REDACT_OUTPUT`, 실행 중에는 `sbmig.log` / `journal.jsonl`만 내려받기). 회귀: local-job이 Job 틀의 컨테이너 경로를 PC 실행에 넘기던 것 → 실행별 값만 | v2.1z-ac, v2.1z-ad |
+| **동시 Job** (2026-11-10) | 웹 파드가 Job을 한 번에 하나가 아니라 `SBMIG_JOB_MAX_PARALLEL` 건까지 돌린다(코드 기본 1, 매니페스트 3; 웹 파드가 직접 돌면 1). 올린 순서를 지키고, 도는 Job마다 자리 번호(`control/state.json`의 `slot`, Job env `SBMIG_JOB_SLOT`)를 주며 2번 자리부터는 Maven 로컬 저장소를 따로 쓴다(`repository-slot<k>`, 저널 `worker_slot`). 기다리는 실행은 `status()`의 `queue.position`으로 순번을 보고 화면이 알린다. KB는 폴더 하나 그대로: 쓰기는 모두 `<kb>/.lock` 안에서 하고, 여러 파드를 위해 새 케이스 폴더·스크립트 파일·LLM 기록 파일을 "없을 때만 만들기"로, 잠금의 나이를 KB 파일 시스템의 시계로 잰다. 회사 클러스터·NFS에서는 아직 재지 않았다 | v2.1z-ae |
+| **동시 Job 검토** (2026-11-10) | 세 파드 동시 실행을 다섯 갈래로 검토해 재현된 것만 고침: 끝 상태를 적은 뒤에 자리를 비움, 재시작 복구는 적힌 자리 번호를 그대로 지킴, API의 이상한 응답은 실패가 아니라 "API 불가", 파드가 아직 끝나는 중인 `Failed` Job은 끝난 것이 아님, 대기 중 멈춤은 바로 줄에서 빠짐; Worker가 SIGTERM에 Maven까지 멈추고 자리 저장소를 못 만들면 파드 안 임시 저장소; KB는 서버가 있다고 한 `case.json`을 덮어쓰지 않음(`CaseUnreadable`), 낡은 잠금 깨기를 `.lock.breaker`로 한 줄 세움, 긴 구간의 잠금 갱신(`keep_alive`); 게이트웨이의 바쁨(429)은 `llm.busy_wait_seconds`까지 줄 서기, 갓 받은 토큰의 401은 `llm.auth_retries`번 다시 받기; 화면은 웹 파드 재시작 뒤 스스로 다시 붙음 | v2.1z-af |
+| **못 뜨는 빌드 파드** (2026-11-17) | 회사 클러스터에서 두 건을 함께 올리자 한 파드가 28분 동안 `ContainerCreating`에 머물렀다(쿠버네티스 쪽 원인: 볼륨 붙이기·마운트, 이미지, 네트워크). 멈춤: Job이 `Creating` / `Pending`이면 `stop.request`를 쓴 뒤 유예 없이 우리 라벨의 Job을 지우고 사라질 때까지 기다려 `stopped`로 끝낸다(저널 `job_deleted_before_start`, 화면 제목은 그대로 "중단되었습니다"). 실행 중인 파드는 `SBMIG_JOB_STOP_GRACE_S`, 실행 중인 취약점 조치 재개 파드는 지우지 않는다. 안내: 파드가 `SBMIG_JOB_PENDING_NOTICE_S`(300초, 0 = 끔) 넘게 시작하지 못하면 웹 파드가 이유를 찾는다(컨테이너 대기 이유 → `PodScheduled=False` → 파드 Events, `K8sClient.pod_events`; Events 권한은 `deploy/k8s/45-web-rbac.yaml`의 `events: list`, 없으면 시작 로그 한 줄). 화면의 파드 단계 아래 "빌드 파드가 아직 시작되지 못했습니다(N분째)." + 이유 한 문장 + 원문, `status()`의 `job.pending`, 저널 `job_pod_pending`, 이유마다 WARNING 한 줄. 알림만 하고 실행·Job은 그대로 둔다. 운영자 표: `deploy/README.md` §3 "동시에 여러 건" | v2.1z-aq |
 | **실행 방식과 화면** (2026-11-12) | 실행 방식 두 가지: `full`(이관 → 성공하면 취약점 조치) / `remediation`(이관 없이 올린 프로젝트를 그대로 조치 — 이미 이관된 프로젝트를 다시 점검할 때). `sbmig run --flow`, `POST /api/runs?flow=`, 화면의 전체 진행 / 취약점 해결, Job env `SBMIG_FLOW`. 화면 머리 이름 `panacea-remediating-oss`(임시), 실행 폴더 이름은 올린 파일 이름의 앞머리로 시작, 접수 거절 사유를 문장으로 | v2.1z-aj |
 | **사내 프레임워크 프로젝트** (2026-11-15) | 사내 프레임워크 아티팩트(`framework.artifacts`)를 쓰는 프로젝트는 회사 레이아웃·Boot 4로 옮기지 않고 범위 `jdk-jakarta`로 돈다: `framework.recipe_sets`의 레시피(기본 Java 21과 jakarta), as-is `provided` scope 되돌리기, JSP 이름 바꾸기, 검증 빌드와 수정 루프, 이어지는 취약점 조치. 재구성·구조 검토 없음, 부모 pom과 프레임워크 버전 유지(수정 루프의 가드, javax 기준 프레임워크는 담당자 몫으로 차단, 받지 못하는 부모는 중단). 찾는 곳은 직접 선언, 부모 pom 상속, 동봉 jar, 간접 의존성(`dependency:tree` 1회). 결과 줄 `scope=jdk-jakarta`, 화면은 재구성·구조 검토를 `하지 않음`으로. 취약점 조치의 사내 그룹 `framework` | v2.1z-ak |
 | **사내 프레임워크 프로젝트: 변환만, 이름 표시** (2026-11-19) | 사용자: "사내 프레임워크는 llm도 돌리지 말고 그냥 jdk - jakarta까지만 하고 파일을 내려주도록 하자." 범위 `jdk-jakarta`는 변환 뒤 빌드 1회, 오류는 고치지 않는다([13](13-framework-projects.md)). 같은 날 사용자: "취약점은 빌드가 실패해도 이어가도록! 어차피 오픈소스 라이브러리 검사라!" 조치는 빌드가 실패해도 이어서 돈다(`remediation.after_failed_build`, 11의 1.1). `framework.fix_loop: true`면 수정 루프. 이름(`framework.name`)을 넣은 문장 "<이름> 프레임워크는 JDK 21, Jakarta만 적용합니다."를 보고서와 화면에 강조 | v2.1z-aw |
@@ -41,7 +41,8 @@ v1이 실패한 이전 사내 에이전트의 두 원인(빌드를 돌리지 않
 | **화면: 멈춘 실행은 주황, 지난 실행 3일** (2026-11-19) | 사용자: "중단 요청은 프로젝트에 표시 할 때 주황색으로 바꿔줘 ㅠ 너무 빨가니까 문제 투성이 에이전트 같아 ㅠㅠ 지난 실행은 3일치만 보여주도록 변경도 해줘!", "최근 3일내에 등록한 프로젝트만 보입니다. 라고 문구도 하나 넣어주고!" `user_stop`이면 주의 색, `GET /api/runs?days=3`과 「이전 실행 보기」(지우는 것은 없음, [09](09-deploy-and-ops.md)) | v2.1z-az |
 | **조치의 승인 단계 없앰** (2026-11-19) | 사용자: "우리 approval awaiting 기능 아예 빼버리자. 이렇게 안쓸거래. 환경변수도 없애고 기능도 없애고 화면에 보여주는것도 없애버리게!" 승인 대기 상태·설정·환경 변수·API·화면이 없어졌고 모든 제안을 묻지 않고 적용한다. 옛 설정은 WARNING 한 줄로 무시, 옛 승인 대기 조치는 끝난 것으로 보임([11](11-remediations.md) 3절) | v2.1z-ba |
 | **IVAS 파일 컴포넌트** (2026-11-19) | matchedfiles 주소의 단수 오타 `filecomponent`가 404 → `scan_incomplete`. 맞는 주소 `filecomponents`, 그 ID는 ossId이고 `|`도 받는다(사용자가 실제 IVAS에서 확인). 사용자: "우리 백엔드로직만 라이브러리 검사하고 프론트는 검사 안하려고 하는데 … 이건 적용은 하지말고 리포트만 보내도록 할까?" 파일 발견은 보고서에만(`remediation.file_components: report`, [11](11-remediations.md) 2절) | v2.1z-bc |
-| **한국어 보고서 = 요청자용 안내서** (2026-11-18) | 현업: 보고서가 기계 출력 같다, 요청한 담당자에게 "이렇게 바꿨고 이것을 확인해 달라" 고 주는 글이어야 한다. `report.language: ko`의 report.md는 `sbmig/report/guide_ko.py`가 한국어로 직접 쓴다(절 순서는 [03](03-run-debug-and-logs.md) 3.1, 순변경 diff는 `sbmig/report/changes.py`). 해결된 오류·시도·라운드는 보고서에 없고 `errors.md` / `errors.jsonl`에 있다. 권고의 한국어 문구(`title_ko` …), 수정·구조 검토 프롬프트의 설명도 보고서 언어로. `en`은 진단용 배치 그대로 | v2.1z-as |
+| **업로드에 프로젝트명 필수** (2026-11-20) | 사용자: "우리 접수 받을때 파일 올리고 프로젝트명 안적으면 거절당하게 … 프론트, 백엔드 둘 다 체크 하도록!", 이어서 "영어랑 _, - 로만 허용 … 리눅스에서 쉘 접속 했을때 치기 귀찮아서! 공백도 비허용!" 숫자도 허용(사용자에게 알림). 이름이 없거나 안 맞으면 화면·서버 모두 거절, 실행 폴더는 `<프로젝트명>-…`([09](09-deploy-and-ops.md) 1절) | v2.1z-be |
+| **한국어 보고서 = 요청자용 안내서** (2026-11-18) | 현업: 보고서가 기계 출력 같다, 요청한 담당자에게 "이렇게 바꿨고 이것을 확인해 달라"고 주는 글이어야 한다. `report.language: ko`의 report.md는 `sbmig/report/guide_ko.py`가 한국어로 직접 쓴다(절 순서는 [03](03-run-debug-and-logs.md) 3.1, 순변경 diff는 `sbmig/report/changes.py`). 해결된 오류·시도·라운드는 보고서에 없고 `errors.md` / `errors.jsonl`에 있다. 권고의 한국어 문구(`title_ko` …), 수정·구조 검토 프롬프트의 설명도 보고서 언어로. `en`은 진단용 배치 그대로 | v2.1z-as |
 | **전체 코드 검토** (2026-11-18) | 사용자: "전체 코드 검사 한번 해보자! 문제될 사항들이 보이는지 비어있는곳이 있는지!" 읽기 전용 검토 일곱 갈래 + 남은 모듈 한 번, 모든 지적은 재현한 뒤 시험부터 고침. 실행([02](02-flow-and-nodes.md), [03](03-run-debug-and-logs.md)): 늦은 멈춤 요청, 루프 끝의 되돌림(`no_change` / `inconclusive`), 답 없는 저장소 = `repository_unreachable`, 실패한 재구성 되돌림, `framework-unchecked`. 프로젝트 쪽: 회사 부모마다 따로 관리 버전, 저장소 조회의 세 답, 물려받은 빌드 디렉토리로 속 빈 리액터 판정, pom 밖에서 쓰는 속성은 남김, 인코딩 표본 몫. LLM: 못 읽거나 잘린 구조 검토 답은 재시도, 토큰 교환 실패는 LLM 장애, 잘린 스크립트는 쓰지 않음, `case.json`의 모르는 필드 유지. 조치: "해결" = 재검사에서 사라짐, 잘못된 버전을 막는 계획 규칙 여섯, 모든 조치에 `remediation.log`. 웹: 다른 사이트 요청 403, 빌드 식별값과 Job 생성 때의 고정값, ZIP 풀기 한도, 업로드 전 여유 공간(507), JSON 정제, 명시 값이 환경 값을 이김, `sbmig clean`의 업로드 인식 | v2.1z-av |
 | **Job 틀은 이미지 안의 사본, 못 뜨는 파드 알림 5분** (2026-11-18) | 회사 클러스터에서 81의 `imagePullPolicy`를 고쳐 이미지를 다시 올렸는데 빌드 파드가 옛 값으로 떴다. 40이 `SBMIG_JOB_TEMPLATE`으로 ConfigMap `sbmig-job-template`을 읽고 있었고, 그 ConfigMap은 손으로 다시 만들어야 했다. 이제 40 에는 그 env·마운트가 없고 웹 파드는 이미지 안의 `/app/deploy/k8s/81-web-job.template.yaml`을 읽는다(81을 바꾸면 이미지 빌드·push, 웹 파드 재시작). ConfigMap은 40의 주석 대안. `CHANGE_ME`가 남은 틀이면 시작 검증이 `MIGRATION_TEMPLATE_INVALID`로 멈춘다(주석 줄은 세지 않음, 테스트 가짜 클라이언트로 띄울 때는 검사하지 않음). 같은 날: 정상 파드도 시작에 3분 넘게 걸려 `SBMIG_JOB_PENDING_NOTICE_S` 기본을 120에서 300 초로 | - |
 | **KB 학습 기록** | 시도가 왜 실패했는지, 수정 전·후 코드, 시도 없이 해결된 오류의 해결자 | v2.1e, v2.1f |
@@ -52,11 +53,11 @@ v1이 실패한 이전 사내 에이전트의 두 원인(빌드를 돌리지 않
 git 기록)로 했다. 아래 사례는 모두 그런 줄에서 출발했다. 실제 벤더 좌표는 적지 않는다.
 
 **(a) 사내 암호화 jar → 동봉 jar (2026-11-04)**
-- 증상: `spring_legacy` WAR이 `package com….crypto.seed does not exist`로 실패, 수정 LLM이 "좌표를 모른다" 며 거절 → BLOCKED `needs_owner` 8건.
+- 증상: `spring_legacy` WAR이 `package com….crypto.seed does not exist`로 실패, 수정 LLM이 "좌표를 모른다"며 거절 → BLOCKED `needs_owner` 8건.
 - 원인: 사내 암호화·SSO jar가 `src/main/webapp/WEB-INF/lib/`에 있었고(pom.properties 없음) 어떤 pom도 선언하지 않았다. IDE 빌드는 보았지만
   Maven은 본 적이 없다. 재구성이 그 폴더를 back 모듈로 옮겼고, LLM은 jar가 있다는 사실을 몰랐다.
 - 만든 것: 동봉 jar 스캔(`sbmig/analyze/bundled_jars.py`), 재구성 때 연결(`sbmig/restructure/bundled_jars.py`, `layout.wire_bundled_jars`),
-  사전 시도(`sbmig/restructure/system_jars.py`), 프롬프트에 "프로젝트가 이 패키지를 제공하는 jar를 동봉한다" 는 사실, 그 상황의 좌표 거절은
+  사전 시도(`sbmig/restructure/system_jars.py`), 프롬프트에 "프로젝트가 이 패키지를 제공하는 jar를 동봉한다"는 사실, 그 상황의 좌표 거절은
   받아들이지 않음. 픽스처 `webapp-bundled-jar`. 같은 날 사용자 지적: 찾은 jar를 전부 연결하는 것은 안티패턴 → 대체됨(목표 체인이 관리하는 옛
   Spring jar 등)·컨테이너 API·참조 없는 jar는 건드리지 않고 이름만 적는다.
 
@@ -68,7 +69,7 @@ git 기록)로 했다. 아래 사례는 모두 그런 줄에서 출발했다. �
   제거, 구조 검토가 다른 라인의 Spring 계열 고정을 critical로 판정. (`docs/INTERFACES.md` v2.1z-k, v2.1z-l)
 
 **(c) Spring Mobile → 직접 편집 + 노트 (2026-11-04)**
-- 증상: `org.springframework.mobile`이 "jakarta 빌드 없음" 으로만 차단, 한 케이스가 스크립트 → 보강 → 되돌리기로 LLM 20회를 썼다.
+- 증상: `org.springframework.mobile`이 "jakarta 빌드 없음"으로만 차단, 한 케이스가 스크립트 → 보강 → 되돌리기로 LLM 20회를 썼다.
 - 원인: EOL 라이브러리이고 대체는 프로젝트 코드(작은 장치 판별기)를 쓰는 일이라 재사용할 스크립트가 아니다.
 - 만든 것: 차단 줄이 EOL 권고와 대체품을 말함, 동봉 jar로 들어온 라이브러리도 권고와 맞춤, `knowledge/notes/spring-mobile.md`(바이트코드 변환 금지,
   호환 대체 작성), 답은 `<no_script>` + `<edits>`로 받고 `script.max_edit_tries_per_case`(4)로 제한.
@@ -84,7 +85,7 @@ git 기록)로 했다. 아래 사례는 모두 그런 줄에서 출발했다. �
   pom에 `spring-boot-dependencies:${spring-boot.version}` import를 더함(v2.1s, v2.1t). 회사 쪽 근본 해결(base-parent에 BOM import)은 열린 결정.
 
 **(f) 떠도는 pom 복사본 (2026-11-03)** — `Project '…-boot:…' is duplicated in the reactor`로 0회 시도 종료. 입력 zip에 boot 모듈의 통째 복사
-(`boot/bin/`)가 있었고, 구조 검토 LLM이 그것을 "목록에 없는 모듈" 로 등록했다. 진단은 `git log -S "<module>…" -- pom.xml`로 그 줄을 쓴 커밋
+(`boot/bin/`)가 있었고, 구조 검토 LLM이 그것을 "목록에 없는 모듈"로 등록했다. 진단은 `git log -S "<module>…" -- pom.xml`로 그 줄을 쓴 커밋
 (`review: …`)을 찾아서 했다. → `stray_pom_copies`, 접수 단계 무시, 검토의 불변조건 재검사.
 
 ## 4. 열린 과제 (사용자가 결정)
@@ -93,9 +94,9 @@ git 기록)로 했다. 아래 사례는 모두 그런 줄에서 출발했다. �
 |---|---|
 | **케이스 스레드 측정** | 만들어졌고 기본 꺼짐. 세션의 이전 턴이 어떻게 과금되는지 문서가 없어 턴마다 `sent N chars → prompt_tokens=K`를 로그로 남겨 측정 중. 켤지는 회사 실행의 수치를 보고 |
 | **KB 케이스 키의 남은 뭉침** | 서명 규칙 버전과 재서명, 라이브러리 타입 멤버의 주인 타입 키, 정확 일치 보호는 있다(`04` 9절). 남은 것: 프로젝트 소유 타입의 멤버(`…|cannot_find_symbol|save`), 문법 오류(`';' expected`), `unreported exception <타입>`은 이름·문구만으로 묶인다. 회사 KB에서 실제로 잘못 재사용된 사례를 보고 다음 규칙 버전을 정한다 |
-| **웹 UI의 Job 디스패치 모드** | 있음(2026-11-05: 웹 파드가 업로드마다 Job, 공유 PVC; 지키는 규칙 v2.1z-ac 2026-11-09, v2.1z-ad 2026-11-10). 동시 Job은 2026-11-10부터(v2.1z-ae: `SBMIG_JOB_MAX_PARALLEL`, 매니페스트 값 3). 남은 것: 회사 클러스터·NFS 에서의 실측(RWX·이미지·권한, 세 파드 동시 실행, KB 잠금), 게이트웨이의 동시 호출 한도 확인, 외부 접수 API(`docs/v2/API-MIGRATIONS-KO.md`) |
+| **웹 UI의 Job 디스패치 모드** | 있음(2026-11-05; 2절 "Job 디스패치 검토", "동시 Job"). 남은 것: 회사 클러스터·NFS 실측(RWX·이미지·권한, 세 파드 동시 실행, KB 잠금), 게이트웨이의 동시 호출 한도 확인, 외부 접수 API(`docs/v2/API-MIGRATIONS-KO.md`) |
 | **Job 모드의 알려진 한계** (2026-11-10 검토 뒤) | (1) 끊긴 생성 요청이 확인 질의(`CREATE_CONFIRM_POLLS`) 뒤에 늦게 닿으면, Main이 실패로 끝내고 차례를 넘긴 뒤에 Job이 생길 수 있다 (2) 영구히 닿지 않는 쿠버네티스 API는 Main의 접근을 고칠 때까지 큐를 멈춘다(의도 — 두 이관이 겹치는 것보다 낫다) (3) 콘솔에서 접혀 두 줄에 걸친 비밀 값은 줄 단위 정제가 놓친다(Worker는 자식에 넓은 `COLUMNS`) (4) 자식 안에서 생긴 토큰은 Worker의 파이프 정제기가 모른다(자식의 자기 훅이 로그 줄은 지운다) (5) 6자 미만 비밀은 지우지 않는다(`IVAS_USER_ID`만 4자부터, 낱말 하나일 때만) (6) `logs/`의 Maven 출력은 끝날 때의 마지막 단계에서만 지운다 (7) uvicorn 접근 로그는 정제하지 않는다 (8) `deploy/docker/run-job.sh` 자신의 셸 출력은 sbmig가 정제하지 않는다 (9) 환경 대조는 비밀로 보이는 이름(`LLM_TOKEN_URL` 포함 — 같은 이름 규칙으로 그 값은 출력에서 `***`로 가려진다)과 프록시 변수를 비교하지 않는다 |
-| **LLM 에게 as-is 보기** | 첫 커밋(as-is 스냅샷)의 파일을 `asis:<path>`로 보여 주고 오류 파일의 as-is → 지금 diff를 자동으로 주는 아이디어. 케이스 스레드 증분에 포함 예정 |
+| **LLM에게 as-is 보기** | 첫 커밋(as-is 스냅샷)의 파일을 `asis:<path>`로 보여 주고 오류 파일의 as-is → 지금 diff를 자동으로 주는 아이디어, 케이스 스레드 증분에 포함 예정 |
 | **소스 채택(트리 프로필)** | 속 빈 리액터처럼 소스가 모듈 밖(`DEV/`, `STATIC/`)에 있는 트리를 모듈에 매핑하는 증분. 다음 증분으로 합의됨 |
 | **MSA의 비-Boot WAR 서비스** | 지금은 boot 부모만 주고 Boot 앱·레이아웃 분할은 안 함. "비-boot war는 일단 그대로" — 실제 프로젝트를 먼저 본다 |
 | **사다리 상한 낮추기** | LLM 20 / 보강 15는 넉넉히 잡은 값. 회사 실행에서 케이스가 실제로 몇 번 필요한지 보고 줄인다 |
@@ -108,9 +109,9 @@ git 기록)로 했다. 아래 사례는 모두 그런 줄에서 출발했다. �
 
 ## 5. `docs/PLAN.md`와 `docs/INTERFACES.md` 읽는 법
 
-- **`docs/PLAN.md`** 는 라운드마다 "Status — <날짜>, <라운드>" 표 하나다. **최신이 맨 아래.** 각 행은 증분 / 산출물 / 어디(파일) / 상태이고,
+- **`docs/PLAN.md`**는 라운드마다 "Status — <날짜>, <라운드>" 표 하나다. **최신이 맨 아래.** 각 행은 증분 / 산출물 / 어디(파일) / 상태이고,
   표 아래에 열린 과제가 붙는다. v2 이후는 "Status — 2026-10-27, v2" 부터.
-- **`docs/INTERFACES.md`** 는 계약(모델 필드, 설정 키, CLI, 보고서, 저널 이벤트)이다. 앞쪽(공개 진입점, 변경 기록, Error cases, Case catalog,
+- **`docs/INTERFACES.md`**는 계약(모델 필드, 설정 키, CLI, 보고서, 저널 이벤트)이다. 앞쪽(공개 진입점, 변경 기록, Error cases, Case catalog,
   Round 10)은 **역사**이고, **"v2 — flow-v2" 절과 그 뒤의 v2.1x 절들이 지금 유효한 계약**이다. 같은 주제가 여러 절에 나오면 뒤의 절이 이긴다
   (예: v2.1i의 `fix.mode`는 v2.1z에서 삭제).
 - 둘 다 길다(수천 줄). 통째로 읽지 말고 절 제목으로 찾는다: `grep -n "^## " docs/INTERFACES.md`.

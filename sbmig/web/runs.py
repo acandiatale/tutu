@@ -246,8 +246,10 @@ class Run:
     # 실행 방식으로 full(이관 전체) | remediation(이관 없이 취약점 조치만) 중 하나다.
     # Job 실행에서는 request.json의 값과 같다
     flow: str = FLOW_FULL
-    # 사용자가 올린 파일 이름 그대로이며 화면이 실행을 이 이름으로 보여 준다
+    # 사용자가 올린 파일 이름 그대로다
     upload: str | None = None
+    # 업로드할 때 입력한 프로젝트명이며 화면이 실행을 이 이름으로 보여 준다. 이전 실행에는 없다
+    project: str | None = None
     # 파드가 시작하지 못한 이유 안내다. status()의 job.pending으로 나가며 파드가 시작하면 None이 된다
     job_pending: dict[str, Any] | None = None
     # 그 안내를 만들 때 쓰는 감시별 기록(처음 본 시각, 마지막으로 보낸 시각, 이미 알린 이유)
@@ -500,14 +502,14 @@ def resume_job_name(run_id: str, attempt: int) -> str:
     """조치 재개 시도의 Job 이름을 만든다.
     이관 Job 이름(``job_name``)에 ``-rem<시도 번호>``를 붙이고 63자를 넘지 않게 한다.
 
-    The Job name of a remediation resume attempt: the migration's Job name + `-rem<attempt>` (≤ 63 characters)."""
+    The Job name of a remediation resume attempt: the migration's Job name + `-rem<attempt>` (≤ 63 characters); a name that
+    has to be cut loses its head, never the run id's random tail."""
     suffix = f"-rem{int(attempt)}"
-    return job_name(run_id)[:63 - len(suffix)].rstrip("-") + suffix
+    return job_name(run_id, 63 - len(suffix)) + suffix
 
 
-# 실행 id 앞부분을 올린 파일 이름으로 만들어 어느 프로젝트인지 알 수 있게 한다. 24자로 제한해야 실행 id가
-# 47자 이하가 되고, 재개 Job 이름이 시도 번호 네 자리까지 63자(DNS-1123 라벨 한도) 안에 들어간다
-# 이름이 잘리면 끝의 난수가 먼저 사라진다
+# 프로젝트명 없이 시작하는 호출자는 올린 파일 이름으로 실행 id 앞부분을 만들며 24자로 제한한다.
+# Job 이름이 63자를 넘으면 job_name이 앞부분을 자르고 끝의 난수는 남긴다
 RUN_ID_SLUG_MAX = 24
 RUN_ID_FALLBACK = "web"
 
@@ -529,13 +531,17 @@ def run_id_slug(upload_name: str | None) -> str:
     return slug if re.search(r"[a-z]", slug) else RUN_ID_FALLBACK
 
 
-def run_id_for(upload_name: str | None, now: datetime | None = None, token: str | None = None) -> str:
+def run_id_for(upload_name: str | None, now: datetime | None = None, token: str | None = None,
+               project: str | None = None) -> str:
     """새 실행 id ``<앞부분>-YYYYMMDD-HHMMSS-<hex 6>``를 만든다. ``now`` / ``token``은 테스트용이다.
-    같은 초에 같은 파일을 두 번 올려도 난수로 구분되며, 이미 있는 폴더면 ``RunManager``가 다시 만든다.
+    앞부분은 검사를 마친 프로젝트명이고, 없으면 올린 파일 이름으로 만든다.
+    같은 초에 같은 이름으로 두 번 올려도 난수로 구분되며, 이미 있는 폴더면 ``RunManager``가 다시 만든다.
 
-    A new run id `<slug>-YYYYMMDD-HHMMSS-<6 hex>`; `now` / `token` are for tests."""
+    A new run id `<prefix>-YYYYMMDD-HHMMSS-<6 hex>`: the prefix is the validated project name (v2.1z-be), else the
+    slug of the upload name (callers without a name); `now` / `token` are for tests."""
     stamp = (now or datetime.now()).strftime("%Y%m%d-%H%M%S")
-    return f"{run_id_slug(upload_name)}-{stamp}-{token or uuid.uuid4().hex[:6]}"
+    prefix = check_project(project) if project is not None else run_id_slug(upload_name)
+    return f"{prefix}-{stamp}-{token or uuid.uuid4().hex[:6]}"
 
 
 UPLOAD_NAME_MAX = 255                 # 기록하는 원래 파일 이름의 최대 문자 수
@@ -573,6 +579,34 @@ def _abort_reason_ko(reason: str) -> str | None:
     return None
 
 
+def _recorded_project(rd: Path) -> str | None:
+    # 메모리에 없는 실행의 프로젝트명을 request.json(Job 모드), web-status.json(in-process),
+    # journal 첫 줄들의 web_run(끝나기 전에 서버가 내려간 in-process 실행) 순으로 찾는다
+    rec = RequestRecord.read(rd)
+    if rec is not None:
+        return rec.project if isinstance(rec.project, str) and rec.project else None
+    web = _read_web_status(rd)
+    if web is not None and "project" in web:
+        val = web.get("project")
+        return val if isinstance(val, str) and val else None
+    try:
+        with open(rd / "journal.jsonl", encoding="utf-8", errors="replace") as fh:
+            for _ in range(20):
+                line = fh.readline()
+                if not line:
+                    break
+                try:
+                    ev = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(ev, dict) and ev.get("event") == "web_run":
+                    val = ev.get("project")
+                    return val if isinstance(val, str) and val else None
+    except OSError:
+        pass
+    return None
+
+
 def _recorded_upload(rd: Path) -> str | None:
     # 메모리에 없는 실행의 원래 파일 이름을 request.json(Job 모드), web-status.json(in-process) 순으로 찾는다
     rec = RequestRecord.read(rd)
@@ -584,6 +618,36 @@ def _recorded_upload(rd: Path) -> str | None:
         return None
     up = data.get("upload") if isinstance(data, dict) else None
     return up if isinstance(up, str) and up else None
+
+
+# 프로젝트명 규칙이다. 셸에서 치기 쉽도록 영문, 숫자, _, -만 받고 실행 id 앞부분으로 쓴다.
+# 화면(index.html의 PROJECT_RE)도 같은 식을 쓴다
+PROJECT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,29}$")
+PROJECT_REQUIRED = ("project name is required", "프로젝트명을 입력해 주세요.")
+PROJECT_INVALID = ("project name: letters, digits, _ and - only, at most 30 characters, starting with a letter or a digit",
+                   "프로젝트명은 영문, 숫자, _, - 만 쓸 수 있습니다(공백 없이 30자까지, 첫 글자는 영문이나 숫자).")
+
+
+class ProjectNameError(ValueError):
+    """프로젝트명이 규칙에 맞지 않을 때 던지는 예외. 메시지는 영어 문장이고 ``message_ko``에 화면 문장을 담는다.
+
+    A refused project name: the English sentence as the message, the page's sentence in `message_ko`."""
+
+    def __init__(self, error: str, message_ko: str) -> None:
+        super().__init__(error)
+        self.message_ko = message_ko
+
+
+def check_project(value: str | None) -> str:
+    """프로젝트명을 검사해 그대로 반환한다. 앞뒤 공백을 지우거나 고치지 않고, 맞지 않으면 ProjectNameError를 던진다.
+
+    Validate a project name against `PROJECT_RE` and return it unchanged (never trimmed or repaired); missing / empty
+    → `PROJECT_REQUIRED`, anything else that does not match → `PROJECT_INVALID` (both as a ProjectNameError)."""
+    if value is None or value == "":
+        raise ProjectNameError(*PROJECT_REQUIRED)
+    if not isinstance(value, str) or not PROJECT_RE.fullmatch(value):
+        raise ProjectNameError(*PROJECT_INVALID)
+    return value
 
 
 def check_flow(flow: str | None) -> str:
@@ -942,7 +1006,7 @@ class RunManager:
         action = cs.action or None
         run = Run(rd.name, rd, rd / SOURCE_ZIP, list(rec.configs or []), rec.stop_after, rec.llm_provider, job=True,
                   request=rec, control=cs, recover=mode, action=action, flow=rec.flow or FLOW_FULL,
-                  upload=rec.upload_name or rec.upload)
+                  upload=rec.upload_name or rec.upload, project=rec.project or None)
         if action:                             # 재개 시도의 Job 이름은 시도 번호로 처음부터 정해진다
             run.job_name = cs.job or resume_job_name(run.run_id, run.attempt)
         elif cs.state != RunState.QUEUED.value:
@@ -1107,7 +1171,7 @@ class RunManager:
         return uploads / f".incoming-{uuid.uuid4().hex}.part"
 
     def start(self, zip_bytes: bytes, name: str, configs: list[str], stop_after: str | None = None,
-              llm_provider: str | None = None, flow: str | None = None) -> str:
+              llm_provider: str | None = None, flow: str | None = None, project: str | None = None) -> str:
         """메모리에 있는 zip 본문으로 실행을 시작한다.
         테스트나 다른 코드에서 쓰며 ``start_file``과 같이 동작하고, 잘못된 요청이면 ValueError를 던진다.
 
@@ -1115,12 +1179,12 @@ class RunManager:
         tmp = self.incoming_path()
         tmp.write_bytes(zip_bytes)
         try:
-            return self.start_file(tmp, name, configs, stop_after, llm_provider, flow)
+            return self.start_file(tmp, name, configs, stop_after, llm_provider, flow, project=project)
         finally:
             tmp.unlink(missing_ok=True)
 
     def start_file(self, incoming: Path, name: str, configs: list[str], stop_after: str | None = None,
-                   llm_provider: str | None = None, flow: str | None = None) -> str:
+                   llm_provider: str | None = None, flow: str | None = None, project: str | None = None) -> str:
         """업로드된 zip으로 새 실행을 시작하고 실행 id를 반환한다. 입력 검사 -> zip을 실행 id 이름으로 이동
         -> 설정, 워크스페이스, 오케스트레이터 생성 -> 작업 스레드 시작 순으로 처리한다.
         ValueError가 나면 ``incoming`` 파일은 호출한 쪽이 지우고, 이동한 뒤에는 실행이 관리한다.
@@ -1140,6 +1204,8 @@ class RunManager:
         phase = parse_stop_after(stop_after)                  # ValueError names the accepted values
         stop_after = phase.value if phase is not None else None
         flow = check_flow(flow)                               # v2.1z-aj; ValueError names the accepted values
+        if project is not None:                               # 라우트가 이미 검사했지만 다른 호출자도 같은 규칙을 따른다
+            project = check_project(project)
         if flow == FLOW_REMEDIATION and stop_after:
             # 조치만 하는 실행에는 중지할 이관 단계가 없으므로 거부하며, CLI도 --stop-after와 --flow
             # remediation을 함께 받지 않는다
@@ -1152,9 +1218,9 @@ class RunManager:
 
         safe = re.sub(r"[^A-Za-z0-9._-]+", "_", Path(name or "project.zip").name) or "project.zip"
         shown = display_upload_name(name)                     # 화면에 보여 줄, 사용자가 올린 이름 그대로의 값
-        run_id = self._claim_run_id(name)
+        run_id = self._claim_run_id(name, project)
         if self.effective_mode in ("k8s-job", "local-job"):
-            return self._start_job(incoming, run_id, safe, list(configs), stop_after, llm_provider, flow, shown)
+            return self._start_job(incoming, run_id, safe, list(configs), stop_after, llm_provider, flow, shown, project)
         uploads = self.out_dir / "_uploads"
         uploads.mkdir(parents=True, exist_ok=True)
         zip_path = uploads / f"{run_id}-{safe}"
@@ -1168,12 +1234,13 @@ class RunManager:
             shutil.rmtree(self.out_dir / run_id, ignore_errors=True)
             zip_path.unlink(missing_ok=True)
             raise
-        run = Run(run_id, ws.run_dir, zip_path, list(configs), stop_after, llm_provider, flow=flow, upload=shown)
+        run = Run(run_id, ws.run_dir, zip_path, list(configs), stop_after, llm_provider, flow=flow, upload=shown,
+                  project=project)
         run.orch = Orchestrator(cfg, ws)
         # journal만 보고도 어떤 설정으로 실행했는지 알 수 있도록 실행 폴더에 처음으로 기록한다
         try:
             ws.journal({"event": "web_run", "configs": list(configs), "stop_after": stop_after, "llm_provider": llm_provider,
-                        "flow": flow, "upload": shown})
+                        "flow": flow, "upload": shown, "project": project})
         except OSError as e:                   # the journal line is a convenience; never refuse the run on it
             log.debug("run %s: web_run journal line not written: %s", run_id, e)
         # daemon 스레드라 서버 프로세스가 끝나면 함께 끝나므로, 정리는 shutdown의 중지 요청과 Maven 종료가 맡는다
@@ -1193,14 +1260,15 @@ class RunManager:
                  zip_path.name, ",".join(configs) or "-", stop_after or "-", llm_provider or "-", flow)
         return run_id
 
-    def _claim_run_id(self, upload_name: str) -> str:
-        """새 실행 id를 만들고 실행 폴더를 배타적으로 생성한다.
+    def _claim_run_id(self, upload_name: str, project: str | None = None) -> str:
+        """새 실행 id를 만들고 실행 폴더를 배타적으로 생성한다. 프로젝트명이 있으면 id가 그 이름으로 시작한다.
         폴더가 이미 있거나 메모리에 같은 id가 있으면 id를 다시 만든다.
 
-        Draw a run id and create its run directory exclusively (an existing directory or an id in memory → draw again)."""
+        Draw a run id (starting with the project name when given) and create its run directory exclusively (an existing
+        directory or an id in memory → draw again)."""
         self.out_dir.mkdir(parents=True, exist_ok=True)
         for _ in range(100):
-            rid = run_id_for(upload_name)
+            rid = run_id_for(upload_name, project=project) if project else run_id_for(upload_name)
             if rid in self.runs or not RUN_ID_RE.match(rid):
                 continue
             try:
@@ -1211,7 +1279,8 @@ class RunManager:
         raise OSError("no free run id after 100 tries")
 
     def _start_job(self, incoming: Path, run_id: str, safe_name: str, configs: list[str], stop_after: str | None,
-                   llm_provider: str | None, flow: str = FLOW_FULL, upload_name: str | None = None) -> str:
+                   llm_provider: str | None, flow: str = FLOW_FULL, upload_name: str | None = None,
+                   project: str | None = None) -> str:
         """k8s Job 모드에서 실행을 시작한다. 실행 폴더를 만들고 zip을 ``source.zip``으로 옮긴 뒤 첫 저널
         줄을 기록하고, Job을 만들어 감시할 작업 스레드를 시작한다.
         이 프로세스는 이관을 직접 실행하지 않는다.
@@ -1228,7 +1297,8 @@ class RunManager:
             request = RequestRecord(run_id=run_id, accepted_at=utc_now(), upload=safe_name, configs=list(configs),
                                     zip_sha256=sha256_file(zip_path), config_digests=config_digests(self.repo_root, configs),
                                     sbmig_version=sbmig_version(), mode=self.effective_mode, stop_after=stop_after,
-                                    llm_provider=llm_provider, attempt=1, flow=flow, upload_name=upload_name)
+                                    llm_provider=llm_provider, attempt=1, flow=flow, upload_name=upload_name,
+                                    project=project)
             request.write(run_dir)
             control = ControlState(run_id=run_id, state=RunState.QUEUED.value, attempt=request.attempt,
                                    accepted_at=request.accepted_at)
@@ -1237,10 +1307,10 @@ class RunManager:
             shutil.rmtree(run_dir, ignore_errors=True)
             raise
         run = Run(run_id, run_dir, zip_path, configs, stop_after, llm_provider, job=True, request=request, control=control,
-                  flow=flow, upload=upload_name or safe_name)
+                  flow=flow, upload=upload_name or safe_name, project=project)
         _append_journal(run_dir, {"event": "web_run", "run_id": run_id, "mode": self.effective_mode, "upload": safe_name,
                                   "configs": configs, "stop_after": stop_after, "llm_provider": llm_provider, "flow": flow,
-                                  "upload_name": upload_name})
+                                  "upload_name": upload_name, "project": project})
         run.thread = threading.Thread(target=self._worker, args=(run,), name=f"sbmig-job-{run_id}", daemon=True)
         with self._lock:
             self.runs[run_id] = run
@@ -2221,7 +2291,7 @@ class RunManager:
                 raise StateConflict(f"the resume request could not be recorded ({type(e).__name__})") from None
             run = Run(run_id, rd, rd / SOURCE_ZIP, list(rec.configs or []), rec.stop_after, rec.llm_provider, job=True,
                       request=rec, control=control, action=ACTION_REMEDIATION_RESUME, flow=rec.flow or FLOW_FULL,
-                      upload=rec.upload_name or rec.upload)
+                      upload=rec.upload_name or rec.upload, project=rec.project or None)
             run.job_name = resume_job_name(run_id, attempt)
             run.thread = threading.Thread(target=self._worker, args=(run,), name=f"sbmig-job-{run.key}", daemon=True)
             self.resumes[run_id] = run
@@ -2398,6 +2468,10 @@ class RunManager:
                                 # 사용자가 올린 파일 이름 그대로다.
                                 # 화면이 실행을 이 이름으로 보여 주며, 이전 in-process 실행에는 없을 수 있다
                                 "upload": (run.upload if run is not None else None) or _recorded_upload(rd)}
+        # 업로드할 때 입력한 프로젝트명이며, 이전 실행에는 이 키가 없고 화면은 파일 이름을 쓴다
+        project = (run.project if run is not None else None) or _recorded_project(rd)
+        if project:
+            info["project"] = project
         control: ControlState | None = None
         if run is not None:
             info["state"] = self._mem_state(run)
@@ -2711,6 +2785,7 @@ def _write_web_status(run: Run) -> None:
     기록에 실패해도 실행 결과에는 영향이 없다."""
     try:
         data = {"run_id": run.run_id, "exit_code": run.exit_code, "error": run.error, "flow": run.flow, "upload": run.upload,
+                **({"project": run.project} if run.project else {}),
                 "stop_requested": run.cancel.is_set(), "last_node": run.last_node,
                 "success": run.success if run.success is not None else getattr(run.report, "success", None)}
         (run.run_dir / WEB_STATUS_FILE).write_text(json.dumps(data, default=str), encoding="utf-8")

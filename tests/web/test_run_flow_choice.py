@@ -21,6 +21,7 @@ from sbmig.web.localjob import LocalJobClient
 from .test_app import _manager, _sse, _start, _zip_bytes, fake_body, repo  # noqa: F401
 from .test_jobmode_hardening import ZIP, Cluster, _mgr, _seed, _state, _wait
 from .test_worker_env_pin import MAIN_KB, SHARED, _rewrite_record, fake_child, journal, pin, setup, worker_env  # noqa: F401
+from .uploads import runs_url
 
 PAGE = (Path(sbmig.web.__file__).parent / "static" / "index.html").read_text(encoding="utf-8")
 SCRIPT = PAGE.split("<script>", 1)[1].split("</script>", 1)[0]
@@ -81,14 +82,14 @@ def test_remediation_flow_is_accepted_reported_and_survives_eviction(client: Tes
 
 @pytest.mark.parametrize("value", ["fast", "FULL", "remediation,full"])
 def test_another_flow_value_is_refused_before_the_body(client: TestClient, value: str):
-    r = client.post(f"/api/runs?name=p.zip&{CFG}&flow={value}", content=_zip_bytes(), headers={"Content-Type": "application/zip"})
+    r = client.post(runs_url(f"name=p.zip&{CFG}&flow={value}"), content=_zip_bytes(), headers={"Content-Type": "application/zip"})
     assert r.status_code == 400
     assert "unknown flow" in r.json()["error"] and "full, remediation" in r.json()["error"]
     assert client.get("/api/runs").json()["runs"] == []
 
 
 def test_stop_after_with_the_remediation_flow_is_refused(client: TestClient):
-    r = client.post(f"/api/runs?name=p.zip&{CFG}&flow=remediation&stop_after=plan", content=_zip_bytes(),
+    r = client.post(runs_url(f"name=p.zip&{CFG}&flow=remediation&stop_after=plan"), content=_zip_bytes(),
                     headers={"Content-Type": "application/zip"})
     assert r.status_code == 400 and "stop_after" in r.json()["error"]
 

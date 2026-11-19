@@ -19,6 +19,7 @@ from sbmig.web.runs import RUN_ID_RE, RUN_ID_SLUG_MAX, resume_job_name, run_id_f
 
 from .test_app import _sse, _zip_bytes, fake_body, repo  # noqa: F401
 from .test_jobmode_hardening import ZIP, Cluster, _mgr, _seed, _wait
+from .uploads import PROJECT
 
 PAGE = (Path(sbmig.web.__file__).parent / "static" / "index.html").read_text(encoding="utf-8")
 SCRIPT = PAGE.split("<script>", 1)[1].split("</script>", 1)[0]
@@ -99,11 +100,13 @@ def test_in_process_run_id_and_upload_name(tmp_path: Path, repo: Path, monkeypat
     monkeypatch.setattr(RunManager, "_run_thread_body", fake_body)
     client = TestClient(create_app(tmp_path / "out", repo))
     name = "주문 관리 <v2>.zip"
-    r = client.post("/api/runs", params={"name": name, "configs": "artifacts.local-e2e.yml"}, content=_zip_bytes(),
+    r = client.post("/api/runs", params={"name": name, "configs": "artifacts.local-e2e.yml", "project": PROJECT},
+                    content=_zip_bytes(),
                     headers={"Content-Type": "application/zip"})
     assert r.status_code == 202, r.text
     rid = r.json()["run_id"]
-    assert rid.startswith("v2-") and r.json()["status"]["upload"] == name
+    # v2.1z-be: the id starts with the entered project name; the file name is still shown as uploaded
+    assert rid.startswith(f"{PROJECT}-") and r.json()["status"]["upload"] == name
     _sse(client, rid)
     assert client.get(f"/api/runs/{rid}").json()["upload"] == name
     assert [row["upload"] for row in client.get("/api/runs").json()["runs"]] == [name]
@@ -193,7 +196,8 @@ def test_page_shows_the_upload_name():
     assert "const fname = run.upload ? String(run.upload) : run.run_id;" in SCRIPT
     assert '<span class="fname" title="${esc(fname)}">${esc(fname)}</span>' in SCRIPT     # escaped, full name in title
     assert "text-overflow: ellipsis" in PAGE
-    assert "n.textContent = name; n.title = name;" in SCRIPT and "if (st.upload) setRunName(st.upload);" in SCRIPT
+    # v2.1z-be: the project name leads, the file name beside it; an older run (no project) shows the file name alone
+    assert "n.textContent = name;" in SCRIPT and "if (st.upload || st.project) setRunName(st.project, st.upload);" in SCRIPT
 
 
 @pytest.mark.parametrize("name", ["주문관리시스템_최종본(2026년 11월 수정 반영) 배포용.zip", "2026-11-12.zip", "123.zip"])

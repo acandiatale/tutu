@@ -73,6 +73,18 @@
   .flowopt:has(input:focus-visible) input:focus-visible { outline: none; }   /* 항목 전체에 포커스 테두리가 있으므로 라디오 버튼에는 따로 그리지 않는다 */
   .flowpick.locked .flowopt { cursor: default; opacity: .6; }
   .actions { display: flex; align-items: center; gap: 12px; margin-top: 16px; flex-wrap: wrap; }
+  /* 프로젝트명 입력란. 비활성 시작 버튼을 눌러도 감싼 요소가 클릭을 받아 무엇이 빠졌는지 알려 준다 */
+  .projfield { margin: 0 0 14px; }
+  .projfield .plabel { display: block; margin: 0 0 6px; font-size: 12.5px; font-weight: 600; color: var(--muted); }
+  .projfield .req { color: var(--bad); margin-left: 2px; }
+  .projfield input { box-sizing: border-box; width: 100%; max-width: 420px; padding: 10px 12px; font: 15px/1.3 var(--mono);
+                     color: var(--ink); background: #fff; border: 1px solid var(--line); border-radius: var(--radius-s); }
+  .projfield input:focus { border-color: var(--blue); outline: none; box-shadow: 0 0 0 3px var(--blue-tint); }
+  .projfield input[aria-invalid=true] { border-color: var(--bad); box-shadow: 0 0 0 3px var(--bad-tint); }
+  .projfield .phint { margin: 6px 0 0; font-size: 12.5px; color: var(--faint); }
+  .projfield .pmsg { margin: 6px 0 0; font-size: 13px; font-weight: 600; color: var(--bad); }
+  .startwrap { display: inline-flex; }
+  .upname { font-weight: 400; color: var(--faint); margin-left: 8px; font-size: 12.5px; }
   .actions .note { color: var(--muted); font-size: 12.5px; }
   .actions .spacer { flex: 1; }
   /* 슬롯이 모두 사용 중일 때의 안내. 막지 않고 알리기만 하므로 빨간색 대신 파란색(정보)을 쓴다. 내용이 없으면 숨긴다.
@@ -536,6 +548,14 @@
         <span><span class="nm">취약점 해결</span><span class="ds">이미 이관된 프로젝트의 취약점만 조치합니다</span></span>
       </label>
     </fieldset>
+    <div class="projfield">
+      <label class="plabel" for="project">프로젝트명<span class="req" aria-hidden="true">*</span></label>
+      <input type="text" id="project" name="project" required maxlength="30" pattern="[A-Za-z0-9][A-Za-z0-9_\-]{0,29}"
+             autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="예: order-admin"
+             aria-describedby="project-hint">
+      <p class="pmsg" id="project-msg" hidden></p>
+      <p class="phint" id="project-hint">영문, 숫자, _, - 만 · 공백 없이 30자까지. 실행 목록과 결과 폴더 이름이 이 이름으로 시작합니다.</p>
+    </div>
     <label class="drop" id="drop" for="zip">
       <input type="file" id="zip" accept=".zip,application/zip,application/x-zip-compressed" aria-label="프로젝트 ZIP 파일">
       <svg class="icon" viewBox="0 0 44 44" fill="none" aria-hidden="true">
@@ -553,10 +573,12 @@
     <div class="actions">
       <span class="note" id="cfgnote"></span>
       <span class="spacer"></span>
-      <button class="btn big" id="start" disabled>
-        <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M4 2.5v11l9-5.5-9-5.5z"/></svg>
-        <span id="startlabel">마이그레이션 시작</span>
-      </button>
+      <span class="startwrap" id="startwrap">
+        <button class="btn big" id="start" disabled>
+          <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M4 2.5v11l9-5.5-9-5.5z"/></svg>
+          <span id="startlabel">마이그레이션 시작</span>
+        </button>
+      </span>
     </div>
     <details class="adv" id="adv">
       <summary>고급 설정</summary>
@@ -836,18 +858,57 @@
   }
   for (const r of document.querySelectorAll('input[name="flow"]')) r.addEventListener('change', syncFlow);
 
+  // ---- 프로젝트명: 서버(runs.PROJECT_RE)와 같은 규칙이다. 입력을 막거나 고치지 않고 값을 검사해 옆에 알린다
+  const PROJECT_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,29}$/;
+  const PROJECT_EMPTY = '프로젝트명을 입력해 주세요.';
+  const PROJECT_BAD = '프로젝트명은 영문, 숫자, _, - 만 쓸 수 있습니다(공백 없이 30자까지, 첫 글자는 영문이나 숫자).';
+  function projectValue() { return $('project').value; }
+  function projectOk() { return PROJECT_RE.test(projectValue()); }
+  function fileOk() { return !!file && !(maxUploadMb && file.size > maxUploadMb * 1048576); }
+  function canStart() { return !uploading && fileOk() && projectOk(); }
+  function showProjectMsg(text) {
+    const inp = $('project'), m = $('project-msg');
+    if (!text) {
+      m.hidden = true; m.textContent = '';
+      inp.removeAttribute('aria-invalid'); inp.setAttribute('aria-describedby', 'project-hint'); return;
+    }
+    m.textContent = text; m.hidden = false;
+    inp.setAttribute('aria-invalid', 'true'); inp.setAttribute('aria-describedby', 'project-msg project-hint');
+  }
+  // 빈 값이면 필수 안내를, 규칙에 맞지 않으면 규칙 안내를 반환한다
+  function projectProblem() { const v = projectValue(); return !v ? PROJECT_EMPTY : (PROJECT_RE.test(v) ? '' : PROJECT_BAD); }
+  // 시작하려 했는데 이름이 없거나 틀리면 입력란으로 보내고 이유를 옆에 보여 준다
+  function askProject() { showProjectMsg(projectProblem()); $('project').focus(); }
+  $('project').addEventListener('input', () => {
+    const v = projectValue();
+    showProjectMsg(v && !PROJECT_RE.test(v) ? PROJECT_BAD : '');   // 지우거나 고치면 안내가 사라진다
+    $('start').disabled = !canStart();
+  });
+  $('project').addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter' || e.isComposing) return;
+    e.preventDefault();
+    if (!projectOk()) { askProject(); return; }
+    if (canStart()) $('start').click();
+  });
+  // 비활성 버튼은 클릭을 받지 않으므로(pointer-events: none) 감싼 요소가 받아 빠진 것을 알려 준다
+  $('startwrap').addEventListener('click', (e) => {
+    if (e.target.closest('#start') && !$('start').disabled) return;
+    if (uploading) return;
+    if (fileOk() && !projectOk()) askProject();
+  });
+
   function setFile(f) {
     file = f || null;
     const drop = $('drop');
     if (!file) {
       drop.classList.remove('has'); $('droplead').textContent = '프로젝트 ZIP 파일을 여기에 놓으세요';
-      $('dropmeta').hidden = true; $('dropchange').hidden = true; $('start').disabled = true; return;
+      $('dropmeta').hidden = true; $('dropchange').hidden = true; $('start').disabled = !canStart(); return;
     }
     drop.classList.add('has');
     $('droplead').textContent = file.name;
     $('dropmeta').textContent = fmtMB(file.size) + (maxUploadMb && file.size > maxUploadMb * 1048576 ? ` — 업로드 한도 ${maxUploadMb} MB를 넘습니다` : '');
     $('dropmeta').hidden = false; $('dropchange').hidden = false;
-    $('start').disabled = !!(maxUploadMb && file.size > maxUploadMb * 1048576);
+    $('start').disabled = !canStart();
   }
   function pickZip(list) {
     const f = list && list[0];
@@ -866,8 +927,11 @@
 
   $('start').addEventListener('click', async () => {
     if (!file) return;
+    if (!projectOk()) { askProject(); return; }
     const upName = file.name;                                // setFile(null) 이후에도 실행 카드에 파일 이름을 바로 표시하기 위해 보관한다
     const q = new URLSearchParams({ name: upName });
+    const proj = projectValue();
+    q.set('project', projectValue());
     const cfgs = chosenConfigs();
     const same = cfgs.length === defaultConfigs.length && cfgs.every((x, i) => x === defaultConfigs[i]);
     if (!same) q.set('configs', cfgs.join(','));            // 서버 기본값과 같으면 보내지 않는다(서버가 정한다)
@@ -884,19 +948,22 @@
       if (authProblem(r, d)) return;
       // 서버 볼륨의 여유 공간이 하한(fleet.min_free_gb)보다 작아 거절된 업로드는 요청자가 할 일을 한국어로 알린다
       if (r.status === 507) { toast('서버의 저장 공간이 부족해 시작하지 못했습니다. 운영 담당자에게 알려 주세요.', true); return; }
+      // 서버가 프로젝트명을 거절하면 입력란 옆에 그 문장을 그대로 보여 준다
+      if (r.status === 400 && d.message_ko) { showProjectMsg(String(d.message_ko)); $('project').focus(); return; }
       if (!r.ok) { toast('시작하지 못했습니다: ' + (d.error || r.status), true); return; }
       const st = d.status || {};
       if (st.parallel) setParallel(st.parallel);
       toast(uploadToast(st), false, st.state === 'queued' ? 8000 : 0);   // 대기 안내는 조금 더 오래 보여 준다(화면에도 남는다)
       setFile(null); $('zip').value = '';
-      attach(d.run_id, false, st.flow || flow, st.upload || upName);
+      $('project').value = ''; showProjectMsg('');           // 다음 업로드는 새 이름으로 시작한다
+      attach(d.run_id, false, st.flow || flow, st.upload || upName, st.project || proj);
       if (st.state) setStatus(st);                     // SSE 연결 전에도 '대기 중'을 바로 표시한다(같은 status가 다시 와도 결과는 같다)
       $('runcard').scrollIntoView({ behavior: 'smooth', block: 'start' });
     } catch (e) {
       toast('서버에 보내지 못했습니다: ' + e, true);
     } finally {
       uploading = false; $('flowpick').disabled = false; $('flowpick').classList.remove('locked');
-      drop.classList.remove('busy'); $('startlabel').textContent = startLabel(); $('start').disabled = !file;
+      drop.classList.remove('busy'); $('startlabel').textContent = startLabel(); $('start').disabled = !canStart();
     }
   });
 
@@ -997,11 +1064,19 @@
     }
     return st.error ? String(st.error) : '';
   }
-  // 열린 실행의 맨 위에 업로드한 파일 이름을 표시한다(길면 말줄임, title에 전체 이름). 이름이 없는 이전 실행이면 숨긴다
-  function setRunName(name) {
+  // 열린 실행의 맨 위에 프로젝트명을, 그 옆에 올린 파일 이름을 흐리게 표시한다(길면 말줄임, title에 전체 이름).
+  // 프로젝트명이 없는 이전 실행은 파일 이름만, 둘 다 없으면 숨긴다
+  function setRunName(project, upload) {
     const n = $('runname');
-    if (!name) { n.hidden = true; n.textContent = ''; n.removeAttribute('title'); return; }
-    if (n.textContent !== name) { n.textContent = name; n.title = name; }
+    const name = project || upload || '';
+    if (!name) { n.hidden = true; n.textContent = ''; n.removeAttribute('title'); delete n.dataset.key; return; }
+    const key = `${project || ''}|${upload || ''}`;
+    if (n.dataset.key !== key) {
+      n.dataset.key = key;
+      n.textContent = name;
+      if (project && upload) n.appendChild(el('span', 'upname', upload));
+      n.title = project && upload ? `${project} · ${upload}` : name;
+    }
     n.hidden = false;
   }
   function setTitle(cls, text, live) {
@@ -1014,7 +1089,7 @@
   let queueText = '', statusKey = '';
   function setStatus(st) {
     lastState = st.state || '';
-    if (st.upload) setRunName(st.upload);
+    if (st.upload || st.project) setRunName(st.project, st.upload);
     // 진행 방식이 정해지면 레일을 그에 맞게 그린다. 이미 그린 진행을 지우지 않도록 엔진 단계가 아직 오지 않았을 때만 한다
     if (st.flow === FLOW_REM || st.flow === FLOW_FULL) {
       runFlow = st.flow;
@@ -2427,7 +2502,7 @@
   // ---------------------------------------------------------------- 실행에 연결 (SSE)
   // resume은 끊긴 같은 실행에 다시 연결하는 경우다(아래 '다시 연결'). 사용자가 직접 선택한 실행이면 진행 중인 재연결을 멈춘다.
   // 화면(레일, 기록, 로그, 결과)은 매번 비우고 서버가 처음부터 다시 보내는 내용으로 채우므로 다시 연결해도 줄이 겹치지 않는다
-  function attach(runId, resume, flowHint, nameHint) {
+  function attach(runId, resume, flowHint, nameHint, projectHint) {
     if (!resume) cancelRetry();
     if (es) { es.close(); es = null; }
     current = runId; lastState = '';
@@ -2435,7 +2510,7 @@
     $('abortbox').hidden = true; setPodWait(null);
     logBuf = []; logTotal = 0; logDropped = 0; renderLog();
     $('runcard').hidden = false; $('resultcard').hidden = true; hideRemediation(); hideCodeDiff();
-    $('runid').textContent = runId; $('summary').textContent = ''; setRunName(nameHint || '');
+    $('runid').textContent = runId; $('summary').textContent = ''; setRunName(projectHint || '', nameHint || '');
     $('timeline').innerHTML = ''; $('log').replaceChildren(); $('report').textContent = ''; $('logfull').hidden = true;
     setTitle('', resume ? '다시 연결하는 중…' : '연결하는 중…', false); statusKey = '';
     $('stop').disabled = true;                         // 이전 실행의 상태가 남지 않도록 이 실행의 status가 오기 전에는 비활성화한다
@@ -2586,12 +2661,17 @@
       const sfx = remShort(run);
       const cls = run.state === 'running' || run.state === 'queued' ? 'running' : s.cls;
       const tag = run.flow === FLOW_REM ? '<span class="flowtag rem">취약점 해결</span>' : '<span class="flowtag">전체 진행</span>';
-      // 각 행에 업로드한 파일 이름을 표시한다(이스케이프, 길면 말줄임하고 title에 전체 이름). 이름이 없는 이전 실행이면 실행 id를 쓴다
+      // 각 행에 프로젝트명을 먼저, 올린 파일 이름을 옆에 흐리게 표시한다(이스케이프, 길면 말줄임하고 title에 전체 이름).
+      // 프로젝트명이 없는 이전 실행은 파일 이름을, 그것도 없으면 실행 id를 쓴다
       const fname = run.upload ? String(run.upload) : run.run_id;
-      li.innerHTML = `<span class="who"><span class="fname" title="${esc(fname)}">${esc(fname)}</span>` +
+      const pname = run.project ? String(run.project) : '';
+      const label = pname
+        ? `<span class="fname" title="${esc(run.upload ? `${pname} · ${run.upload}` : pname)}">${esc(pname)}${run.upload ? `<span class="upname">${esc(String(run.upload))}</span>` : ''}</span>`
+        : `<span class="fname" title="${esc(fname)}">${esc(fname)}</span>`;
+      li.innerHTML = `<span class="who">${label}` +
                      `<span class="meta2"><span class="id">${esc(run.run_id)}</span>${tag}<span class="when">${esc(fmtWhen(run.started || 0))}</span></span></span>` +
                      `<span class="state ${cls}">${esc(s.short)}${sfx ? `<span class="sfx ${remShortCls(run)}"> · ${esc(sfx)}</span>` : ''}</span>`;
-      li.onclick = () => { attach(run.run_id, false, run.flow, run.upload); $('runcard').scrollIntoView({ behavior: 'smooth', block: 'start' }); };
+      li.onclick = () => { attach(run.run_id, false, run.flow, run.upload, run.project); $('runcard').scrollIntoView({ behavior: 'smooth', block: 'start' }); };
       ul.appendChild(li);
     }
     // 더 오래된 실행이 있으면 목록 끝에 전체 보기를, 전체를 보는 중이면 다시 접기를 둔다

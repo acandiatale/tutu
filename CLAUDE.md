@@ -792,6 +792,13 @@ review", fix attempts as `script:<case>:v<N>`; `ko`, the company setting: the re
   the pom is a file component too: told to the user. Also from that evening: a stopped background agent cannot be
   resumed, and an agent reused for a second task still shows the FIRST task's name to the user — the user stopped the
   IVAS work thinking it was a leftover; give a reused agent's new task a new agent when the name would mislead.
+- **An upload names its project (2026-11-20, v2.1z-be)**: `POST /api/runs?…&project=<name>` is required, checked on the
+  page and on the server before the body is read (`runs.PROJECT_RE` = `^[A-Za-z0-9][A-Za-z0-9_-]{0,29}$`; the user:
+  "영어랑 _, - 로만 … 리눅스에서 쉘 접속 했을때 치기 귀찮아서! 공백도 비허용!"). A web run's id, and so its folder under the
+  output root, is `<project>-YYYYmmdd-HHMMSS-<hex6>`; older notes in this file that say `run-…` or "a slug of the file
+  name" describe older folders, which keep working. Two things the new prefix exposed: the Job name cut the TAIL of a
+  long id (the unique part) and `sbmig clean`'s upload pattern knew lower-case letters only. When an identifier gets a
+  new alphabet or length, grep every pattern and every truncation that reads it, in every package, before shipping.
 - **Company convention (2026-10-20): agents run on LangGraph under uvicorn.** `loop.engine: graph` (default) drives
   the phases from a LangGraph `StateGraph` (`sbmig/graph/`, nodes intake → analyze → plan → phase×N → finalize;
   `inline` is the old loop, reports are identical by test); the web UI is FastAPI (`uvicorn sbmig.web.app:app` or

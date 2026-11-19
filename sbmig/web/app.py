@@ -24,13 +24,17 @@ Routes:
                                          runs started in the last N × 24 h (0 / omitted = all; not a non-negative
                                          integer → 400), queued / running runs, a remediation waiting for an IVAS check,
                                          queued, running or resumed, and `keep` always listed; "days" and "hidden" (left out) beside "runs"
-    POST /api/runs?name=<file.zip>[&configs=a.yml,b.yml][&stop_after=…][&llm_provider=…][&flow=full|remediation]
+    POST /api/runs?name=<file.zip>&project=<name>[&configs=a.yml,b.yml][&stop_after=…][&llm_provider=…][&flow=full|remediation]
          body = the zip bytes                                       → 202 {"run_id", "status"}
+         `project` (v2.1z-be) is required and must match `runs.PROJECT_RE` (letters, digits, `_`, `-`, 1–30, first a
+         letter or digit; not trimmed) → else 400 {"error", "message_ko"} before any body byte is read; the run id is
+         `<project>-YYYYmmdd-HHMMSS-<hex 6>`.
          `configs` omitted = the server default; `configs=` (empty) = default.yml only; `flow` (v2.1z-aj) omitted =
          `full` (migration, then the chained remediation), `remediation` = remediation only (no migration), another
          value → 400; `stop_after` with `flow=remediation` → 400
     GET  /api/runs/{id}                  status ("framework": {name, scope, fix_loop} for a run in the reduced
-                                         scope jdk-jakarta, from report.json or the journal; v2.1z-aw)
+                                         scope jdk-jakarta, from report.json or the journal; v2.1z-aw; "project" when the
+                                         upload carried one, absent for older runs)
     GET  /api/runs/{id}/events           SSE: status | node | error | journal | log | report | ping | end
     POST /api/runs/{id}/stop             stop after the current graph node
     GET  /api/runs/{id}/files/{name}     report.md | report.json | result.zip | sbmig.log | journal.jsonl |
@@ -102,7 +106,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from sbmig.core.config import PACKAGE_ROOT, load_dotenv_files
 
-from .runs import RUN_ID_RE, SERVED_FILES, RunManager, check_flow
+from .runs import RUN_ID_RE, SERVED_FILES, ProjectNameError, RunManager, check_flow, check_project
 
 log = logging.getLogger("sbmig.web")
 
@@ -581,7 +585,7 @@ def create_app(out_dir: Path, repo_root: Path = PACKAGE_ROOT, max_upload_mb: int
     @app.post("/api/runs", status_code=202)
     async def start(request: Request, name: str = "project.zip", configs: str | None = None,
                     stop_after: str | None = None, llm_provider: str | None = None,
-                    flow: str | None = None) -> JSONResponse:
+                    flow: str | None = None, project: str | None = None) -> JSONResponse:
         def too_large() -> JSONResponse:
             return JSONResponse({"error": f"zip too large (max {describe_max_upload(max_upload)})"}, status_code=413)
 
@@ -590,6 +594,11 @@ def create_app(out_dir: Path, repo_root: Path = PACKAGE_ROOT, max_upload_mb: int
             flow = check_flow(flow)
         except ValueError as e:
             return JSONResponse({"error": str(e)}, status_code=400)
+        # 프로젝트명도 본문을 받기 전에 확인한다. 거절 문장은 화면이 입력란 옆에 그대로 보여 준다
+        try:
+            project = check_project(project)
+        except ProjectNameError as e:
+            return JSONResponse({"error": str(e), "message_ko": e.message_ko}, status_code=400)
         length = request.headers.get("content-length")
         if max_upload and length and length.isdigit() and int(length) > max_upload:
             return too_large()
@@ -629,7 +638,7 @@ def create_app(out_dir: Path, repo_root: Path = PACKAGE_ROOT, max_upload_mb: int
             # 스레드풀에서 실행하고, 잘못된 요청에는 400을 반환한다
             try:
                 rid = await run_in_threadpool(mgr.start_file, tmp, name, cfgs, stop_after or None,
-                                              llm_provider or None, flow)
+                                              llm_provider or None, flow, project)
             except (ValueError, OSError, zipfile.BadZipFile) as e:
                 return JSONResponse({"error": str(e)}, status_code=400)
             return JSONResponse({"run_id": rid, "status": mgr.status(rid)}, status_code=202)

@@ -1145,3 +1145,20 @@ The user: "우리 웹페이지에 성공, 취약점 일부만 조치 이부분 �
 | Static files | by extension: never fetched, shown with their move and status only; JSP, Java, XML, properties, YAML, SQL and unknown extensions show their content | same | done |
 | Checked | in a browser with records of 50 files (3 and 15 move groups) at 1440, 1024 and 400 px; no patch request for a static file; console clean; the offline suite (figure in the commit) | `tests/web/test_page_code_dialog.py`, `test_page_code_diff.py` | done |
 | Not checked | Edge; a real project of thousands of files in the dialog | — | open (the user's) |
+
+## Status — 2026-11-20, an upload needs a project name, and the run folder starts with it (v2.1z-be)
+
+The user: "우리 접수 받을때 파일 올리고 프로젝트명 안적으면 거절당하게 해줄 수 있어!? 프론트, 백엔드 둘 다 체크 하도록!" and
+"영어랑 _, - 로만 허용 가능하도록 해줄래! 리눅스에서 쉘 접속 했을때 치기 귀찮아서! 공백도 비허용!"
+
+| Item | Deliverable | Where | Status |
+|---|---|---|---|
+| The rule | `^[A-Za-z0-9][A-Za-z0-9_-]{0,29}$`: letters, digits (my addition, told), `_`, `-`; no space; never trimmed. One pattern on the server (`runs.PROJECT_RE`), the same on the page | `sbmig/web/runs.py`, `static/index.html` | done |
+| The server refuses before the body | 400 with `message_ko` for a missing name and for a mismatch; tests call the app with a counting `receive()`: 0 reads | `sbmig/web/app.py` | done |
+| The page | the required field 「프로젝트명」 with its hint; the start button needs a file and a valid name; a wrong character is said at once; the run card and 「지난 실행」 show the name first | `static/index.html` | done |
+| The run folder | `<project>-YYYYmmdd-HHMMSS-<hex6>` (my reading of "쉘에서 치기 귀찮아서": the name is what a person types to find the folder; told); older folders keep working | `sbmig/web/runs.py` | done |
+| Job names | a long id is cut at the front, the timestamp and the random tail always stay (the earlier rule could cut the tail: two runs of one project in one second could collide) | `sbmig/web/k8s.py`, `runs.py` | done |
+| `sbmig clean` | ties an upload to its run when the id has upper-case letters or `_` (it could have planned the upload of a running run for deletion) | `sbmig/fleet/cleanup.py` | done |
+| The admin page | grouped by the entered name | `sbmig/web/admin.py` | done |
+| Checked | 94 new tests; a real start of `order-admin` in a browser: the id and the folder carry the name | `tests/web/test_project_name.py` | done |
+| Not checked | a Job started under a 30-character upper-case name on the cluster | — | open (the user's) |

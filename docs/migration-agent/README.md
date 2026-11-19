@@ -373,7 +373,7 @@ flowchart TD
 |---|---|
 | `sbmig run <폴더 또는 zip> --config <회사 yml>` | 한 프로젝트 → `out/<run id>/`. `--flow remediation` 이면 이관 없이 취약점 조치만(10절) |
 | `sbmig fleet run <manifest>` / `resume` / `status` | 여러 프로젝트를 하나씩, KB 하나 공유(개발·대량 시험용) |
-| `sbmig serve` (in-process) | 웹 UI: zip 업로드(진행 방식 전체 진행 / 취약점 해결, `POST /api/runs?flow=`) → 실행을 이 프로세스에서, 한 번에 하나(나머지는 `queued`), SSE 로 `node` / `journal` / `log` / `report` 이벤트. 「지난 실행」은 최근 3일 안에 등록한 실행만 보이고(`GET /api/runs?days=3`; 대기·실행 중, 조치 대기, 열어 둔 실행은 늘 보임; 「최근 3일 내에 등록한 프로젝트만 보입니다.」, 「이전 실행 보기」로 전체, 지우는 것 없음), 사람이 멈춘 실행(`user_stop`)은 빨강이 아닌 주황으로 「중단되었습니다」, 엔진이 받지 못한 실행도 주황으로 「처리할 수 없습니다」(목록 「처리 불가」)이고, 빨강은 서버 쪽 문제(「실행 오류」)에만 씁니다 |
+| `sbmig serve` (in-process) | 웹 UI: 「프로젝트명」(필수, 영문·숫자·`_`·`-` 30자까지, 첫 글자는 영문이나 숫자; 화면과 서버가 같은 규칙으로 검사하고 파일과 맞는 이름이 있어야 시작 버튼이 눌림; 실행 폴더가 `<프로젝트명>-YYYYmmdd-HHMMSS-<hex 6>`, 실행 카드와 「지난 실행」은 프로젝트명을 먼저, 올린 파일 이름을 옆에) + zip 업로드(진행 방식 전체 진행 / 취약점 해결, `POST /api/runs?name=…&project=…&flow=`) → 실행을 이 프로세스에서, 한 번에 하나(나머지는 `queued`), SSE 로 `node` / `journal` / `log` / `report` 이벤트. 「지난 실행」은 최근 3일 안에 등록한 실행만 보이고(`GET /api/runs?days=3`; 대기·실행 중, 조치 대기, 열어 둔 실행은 늘 보임; 「최근 3일 내에 등록한 프로젝트만 보입니다.」, 「이전 실행 보기」로 전체, 지우는 것 없음), 사람이 멈춘 실행(`user_stop`)은 빨강이 아닌 주황으로 「중단되었습니다」, 엔진이 받지 못한 실행도 주황으로 「처리할 수 없습니다」(목록 「처리 불가」)이고, 빨강은 서버 쪽 문제(「실행 오류」)에만 씁니다 |
 | `sbmig serve` + `SBMIG_WEB_MODE=k8s-job` | 웹 파드가 업로드마다 빌드 **Job** 을 만듦. 동시에 `SBMIG_JOB_MAX_PARALLEL` 개(매니페스트 3), 나머지는 올린 순서로 대기. 자리 k ≥ 2 는 자기 Maven 로컬 저장소. 공유 PVC 의 실행 폴더로만 만남(`control/state.json`, `job-status.json`) |
 
 ```mermaid
@@ -401,7 +401,7 @@ Main ↔ Worker 의 파일·종료 코드·멈춤·복구 약속: `docs/v2/JOB-R
 IVAS 로 이관된 프로젝트를 검사하고, 취약 라이브러리의 **버전 글자만** 고쳐(간접 의존성은 `dependencyManagement` 항목 하나를 추가) 다시 빌드·재검사합니다. IVAS 가 프로젝트 안의 파일(정적 파일, pom 밖의 jar)에서 찾은 취약점은 고치지 않고 조치 보고서의 「프로젝트 파일에서 찾은 취약점」에만 싣습니다(개수와 판정에 넣지 않음, `remediation.file_components: report`; `count` 면 판정에 넣음). 결과는 `<실행 폴더>/remediation/` 에 남고 이관의 판정·종료 코드는 바꾸지 않습니다(`SBMIG-RESULT … remediation=<상태>`).
 조치는 누구에게도 묻지 않고 변경을 적용하며 같은 파드에서 끝까지 진행합니다. 메이저 버전 변경과 추가한 항목은 조치 보고서의 「주의」 열과 「해야 할 일」에 표시합니다. IVAS 업로드 확인이 필요하거나 멈춘 조치는 새 빌드 파드에서 이어 갑니다. 「조치 완료」와 「해결된 취약점」은 완전한 최종 검사에서 사라진 취약점만 셉니다. 잘못된 버전이 들어가지 않도록, 여러 라이브러리가 함께 쓰는 버전 property, 패치 힌트가 없는 다른 메이저, 날짜로 번호를 매긴 옛 버전, 이미 패치 힌트를 만족하는 버전, 꺼진 프로필에만 있는 선언, 두 번 선언된 의존성은 바꾸지 않고 담당 팀 몫으로 남깁니다. 모든 조치는 `remediation/remediation.log` 를 남깁니다. 노드·상태·API·설정: `agent-doc/11-remediations.md`.
 
-이미 이관된 프로젝트를 다시 점검할 때는 실행 방식 `remediation` 으로 조치만 돌립니다: `sbmig run <zip|폴더> --flow remediation`, 웹 `POST /api/runs?flow=remediation`, 화면의 **취약점 해결**. 이관 단계·LLM·KB 를 쓰지 않고, 올린 프로젝트를 그대로 빌드해 검사·조치·재검사합니다(파일은 같은 `<실행 폴더>/remediation/`). `remediation.after_migration` · `remediation.trusted_projects` 는 묻지 않습니다. 결과 줄은 `SBMIG-RESULT … flow=remediation … remediation=<상태>`, 종료 코드 0 = SUCCEEDED, 2 = 그 밖의 저장 상태, 3 = 시작 못 함(접수 거절, IVAS 값·Maven 준비가 없으면 `remediation:not-ready`). Job 모드에서도 같은 대기 줄·자리에서 도는 보통 실행입니다.
+이미 이관된 프로젝트를 다시 점검할 때는 실행 방식 `remediation` 으로 조치만 돌립니다: `sbmig run <zip|폴더> --flow remediation`, 웹 `POST /api/runs?…&project=<프로젝트명>&flow=remediation`, 화면의 **취약점 해결**. 이관 단계·LLM·KB 를 쓰지 않고, 올린 프로젝트를 그대로 빌드해 검사·조치·재검사합니다(파일은 같은 `<실행 폴더>/remediation/`). `remediation.after_migration` · `remediation.trusted_projects` 는 묻지 않습니다. 결과 줄은 `SBMIG-RESULT … flow=remediation … remediation=<상태>`, 종료 코드 0 = SUCCEEDED, 2 = 그 밖의 저장 상태, 3 = 시작 못 함(접수 거절, IVAS 값·Maven 준비가 없으면 `remediation:not-ready`). Job 모드에서도 같은 대기 줄·자리에서 도는 보통 실행입니다.
 
 ## 11. 운영과 검증
 

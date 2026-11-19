@@ -37,7 +37,7 @@ step_intake --> step_analyze --> step_plan --> step_phase(transform)
 
 pom·build.xml 없는 트리(풀어 놓은 Tomcat 웹앱)의 담당팀 설명서는 읽기 전용 `sbmig inventory <dir>`가 만든다.
 
-**실행 방식.** `sbmig run --flow full|remediation`(기본 `full`, 웹 `POST /api/runs?flow=`). `full`은 이 문서의 흐름 전부다.
+**실행 방식.** `sbmig run --flow full|remediation`(기본 `full`, 웹 `POST /api/runs?…&project=<프로젝트명>&flow=`). `full`은 이 문서의 흐름 전부다.
 `remediation`(취약점 해결)은 엔진 노드 `intake → remediation → finalize`만 지나간다: 접수는 프로젝트를 고치지 않는 데까지만(작업 사본,
 사전 점검, 빌드 도구 판별과 거절 — aggregator 생성·확장 제거·pom 합성 없음) 돌고, `chain.run_only`가 올린 그대로의 프로젝트를 조치한다.
 분석·계획·변환·재구성·검토·검증·수정 루프·LLM·KB는 없다. 저널 첫 줄 `{"event": "flow", "flow": "remediation"}`, `--stop-after`는

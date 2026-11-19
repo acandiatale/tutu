@@ -24,6 +24,7 @@ from sbmig.web.runs import RUN_ID_RE, _jsonable, _new_lines
 
 
 from datetime import datetime, timezone
+from .uploads import runs_url
 
 
 def _now_iso() -> str:
@@ -72,7 +73,7 @@ def _zip_bytes() -> bytes:
 
 
 def _start(client: TestClient, query: str = "name=my%20proj.zip&configs=artifacts.local-e2e.yml") -> str:
-    r = client.post(f"/api/runs?{query}", content=_zip_bytes(), headers={"Content-Type": "application/zip"})
+    r = client.post(runs_url(query), content=_zip_bytes(), headers={"Content-Type": "application/zip"})
     assert r.status_code == 202, r.text
     rid = r.json()["run_id"]
     assert RUN_ID_RE.match(rid)
@@ -167,14 +168,14 @@ def test_run_log_holds_only_its_own_thread(client, tmp_path):
 
 
 def test_rejects_bad_requests(client):
-    r = client.post("/api/runs?name=a.zip", content=b"not a zip")
+    r = client.post(runs_url("name=a.zip"), content=b"not a zip")
     assert r.status_code == 400 and "not a zip" in r.json()["error"]
-    assert client.post("/api/runs?name=a.zip", content=b"").status_code == 400
-    r = client.post("/api/runs?name=a.zip&configs=missing.yml", content=_zip_bytes())
+    assert client.post(runs_url("name=a.zip"), content=b"").status_code == 400
+    r = client.post(runs_url("name=a.zip&configs=missing.yml"), content=_zip_bytes())
     assert r.status_code == 400 and "unknown config" in r.json()["error"]
-    r = client.post("/api/runs?name=a.zip&configs=../secret.yml", content=_zip_bytes())
+    r = client.post(runs_url("name=a.zip&configs=../secret.yml"), content=_zip_bytes())
     assert r.status_code == 400
-    r = client.post("/api/runs?name=a.zip&stop_after=nowhere", content=_zip_bytes())
+    r = client.post(runs_url("name=a.zip&stop_after=nowhere"), content=_zip_bytes())
     assert r.status_code == 400 and "stop_after" in r.json()["error"]
     assert client.get("/api/runs").json() == {"runs": [], "days": 0, "hidden": 0, "parallel": {"slots": 1, "running": 0, "waiting": 0}}
 
@@ -369,7 +370,7 @@ def test_upload_over_the_limit_is_413_before_and_while_reading(tmp_path, repo, m
     client = TestClient(create_app(tmp_path / "out", repo, max_upload_mb=1))
     assert client.get("/api/configs").json()["max_upload_mb"] == 1
     big = b"PK" + b"\0" * (1024 * 1024 + 10)
-    r = client.post("/api/runs?configs=artifacts.local-e2e.yml", content=big,
+    r = client.post(runs_url("configs=artifacts.local-e2e.yml"), content=big,
                     headers={"Content-Type": "application/zip"})               # Content-Length known → early 413
     assert r.status_code == 413 and r.json()["error"] == "zip too large (max 1 MB)"
 
@@ -378,14 +379,14 @@ def test_upload_over_the_limit_is_413_before_and_while_reading(tmp_path, repo, m
         yield b"\0" * 600_000
         yield b"\0" * 600_000
 
-    r = client.post("/api/runs?configs=artifacts.local-e2e.yml", content=chunks(),
+    r = client.post(runs_url("configs=artifacts.local-e2e.yml"), content=chunks(),
                     headers={"Content-Type": "application/zip"})
     assert r.status_code == 413
     assert _part_files(tmp_path) == []                                         # nothing left behind
     assert client.get("/api/runs").json()["runs"] == []
     # the same bytes under the default limit are not "too large" (they are not a zip either: that check comes first)
     client2 = TestClient(create_app(tmp_path / "out2", repo))
-    r = client2.post("/api/runs?configs=artifacts.local-e2e.yml", content=b"\0" * 10,
+    r = client2.post(runs_url("configs=artifacts.local-e2e.yml"), content=b"\0" * 10,
                      headers={"Content-Type": "application/zip"})
     assert r.status_code == 400 and "not a zip" in r.json()["error"]
 
@@ -418,7 +419,7 @@ def test_upload_is_streamed_to_disk_byte_exact(client, tmp_path):
         zf.writestr("proj/media/big.bin", bytes(range(256)) * 8192)           # 2 MB → several transport chunks
     data = buf.getvalue()
     pieces = [data[:1], data[1:3], data[3:70_000], data[70_000:]]            # the zip signature spans two chunks
-    r = client.post("/api/runs?name=big.zip&configs=artifacts.local-e2e.yml", content=iter(pieces),
+    r = client.post(runs_url("name=big.zip&configs=artifacts.local-e2e.yml"), content=iter(pieces),
                     headers={"Content-Type": "application/zip"})
     assert r.status_code == 202, r.text
     run = _manager(client).runs[r.json()["run_id"]]
@@ -435,7 +436,7 @@ def test_rejected_upload_leaves_no_partial_file(client, tmp_path):
         ("configs=artifacts.local-e2e.yml", b"", 400, "zip body required"),
         ("configs=artifacts.local-e2e.yml", b"PK\x03\x04garbage", 400, "zip"),  # BadZipFile from the workspace
     ]:
-        r = client.post(f"/api/runs?{query}", content=content, headers={"Content-Type": "application/zip"})
+        r = client.post(runs_url(query), content=content, headers={"Content-Type": "application/zip"})
         assert r.status_code == status and msg in r.json()["error"], (query, r.text)
         assert _part_files(tmp_path) == [], query
     assert client.get("/api/runs").json()["runs"] == []
@@ -520,5 +521,5 @@ def test_upload_without_configs_uses_the_server_default(tmp_path, repo, monkeypa
     assert mgr.runs[rid].configs == ["artifacts.local-e2e.yml"]
     _sse(client, rid)
     # `configs=` (empty) = default.yml only: this test repo's default.yml has no artifacts section → 400, not the default
-    r = client.post("/api/runs?name=p.zip&configs=", content=_zip_bytes(), headers={"Content-Type": "application/zip"})
+    r = client.post(runs_url("name=p.zip&configs="), content=_zip_bytes(), headers={"Content-Type": "application/zip"})
     assert r.status_code == 400 and "artifacts" in r.json()["error"]

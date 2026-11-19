@@ -44,8 +44,8 @@
 
 ### 1.2 취약점 해결만 — 실행 방식 `remediation`
 
-- 이관된 프로젝트를 다시 점검할 때: `sbmig run <zip|폴더> --flow remediation`, 웹 `POST /api/runs?flow=remediation`, 화면의
-  **취약점 해결**. Job 모드에서는 보통 실행과 같은 줄·자리(Job env `SBMIG_FLOW`는 웹 파드가 넣음).
+- 이관된 프로젝트를 다시 점검할 때: `sbmig run <zip|폴더> --flow remediation`, 웹 `POST /api/runs?…&flow=remediation`, 화면의
+  **취약점 해결**. Job 모드는 보통 실행과 같은 줄·자리(Job env `SBMIG_FLOW`는 웹 파드가 넣음).
 - 엔진 노드 `intake→remediation→finalize`. 접수는 고치지 않는 데까지만(사전 점검, 빌드 도구 판별·거절), 이관 단계·LLM·KB 없음.
   `chain.run_only`가 올린 ZIP 바이트(폴더는 그대로 묶어)를 접수에 넣는다. 올린 그대로 빌드되지 않으면 검사 전에 FAILED `baseline_build_failed`.
 - `remediation.after_migration`·`remediation.trusted_projects`는 묻지 않는다. IVAS 세 값·Maven 준비가 없으면 시작하지 않는다(exit 3,
@@ -71,11 +71,11 @@
   `not well-formed XML (line N): …`(XML 문법 오류(줄 N)), `cannot be opened (permission denied)`(파일을 열 수 없습니다(권한)), `(missing)`(파일이
   없습니다), `(a folder, not a file)`(파일이 아니라 폴더입니다), `character encoding unknown (…)`(글자 인코딩을 알 수 없습니다). 화면·보고서:
   「pom 파일을 읽을 수 없습니다. app-core/pom.xml: XML 문법 오류(줄 12).」, 할 일 「pom 파일 고치기」(`i18n.pom_why_ko`).
-- IVAS 업로드 결과가 불확실하면 **다시 올리지 않는다**. 미완료 검사·빠진 쪽·중복·ZIP 해시 불일치는 "0건" 이 아니다.
+- IVAS 업로드 결과가 불확실하면 **다시 올리지 않는다**. 미완료 검사·빠진 쪽·중복·ZIP 해시 불일치는 "0건"이 아니다.
 - 새 버전의 근거는 서버 정책(`remediation.policy.pins`)이나 승인된 저장소에 실제로 있는 버전뿐. IVAS의 patched 버전은 하한 힌트이고,
   pin이 없으면 힌트가 있어야 제안한다(없으면 `no_candidate_version`).
 - 서버가 다시 떠도 자동 재개·재전송은 없다(`INTERRUPTED` + 명시적 resume). 상태를 진행시키는 것은 `remediation/claim.json`을 가진 프로세스
-  하나뿐(`RunClaim`, 30 초 갱신, 600 초 갱신 없으면 넘겨받음, 둘째는 거절).
+  하나뿐(`RunClaim`, 30초 갱신, 600초 갱신 없으면 넘겨받음, 둘째는 거절).
 - IVAS 아이디·비밀번호·토큰, Nexus 자격증명은 코드·설정·로그·보고서·예외 문장에 쓰지 않는다.
 
 ## 2. 흐름 — 노드별

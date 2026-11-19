@@ -36,3 +36,23 @@ def test_uploads_of_running_and_failed_runs_are_kept(tmp_path):
     assert not any(running in name or old in name for _, name, _ in plan)
     kept = [i.path.name for i in plan_clean(out, what=["uploads"], keep_failed=True)]
     assert kept == [f"{ok}-ok.zip"]
+
+
+def test_uploads_of_runs_named_after_a_project_are_recognised(tmp_path):
+    """A web run id starts with the project name a person typed: upper-case letters and `_` are allowed there
+    (`runs.PROJECT_RE`). The upload of such a run that is still going must never be planned for deletion."""
+    out = tmp_path / "out"
+    up = out / "_uploads"
+    up.mkdir(parents=True)
+    running = "Shop_API2-20261120-101500-a1b2c3"
+    failed = "ORDER-admin_v2-20261120-101501-d4e5f6"
+    done = "x-20261120-101502-0a0b0c"
+    _run(out, running, None)
+    _run(out, failed, {"success": False, "flags": ["aborted"], "blocked": []})
+    _run(out, done, {"success": True, "flags": [], "blocked": []})
+    for rid in (running, failed, done):
+        (up / f"{rid}-upload.zip").write_bytes(b"PK")
+    plan = [(i.kind, i.path.name, i.owner) for i in plan_clean(out, what=["uploads"])]
+    assert not any(running in name for _, name, _ in plan)
+    assert ("upload", f"{failed}-upload.zip", failed) in plan and ("upload", f"{done}-upload.zip", done) in plan
+    assert [i.path.name for i in plan_clean(out, what=["uploads"], keep_failed=True)] == [f"{done}-upload.zip"]

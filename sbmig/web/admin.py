@@ -273,10 +273,14 @@ def _str(v: Any) -> str | None:
     return v if isinstance(v, str) and v else None
 
 
-def project_of(upload: str | None, project_name: str | None, run_id: str) -> str:
-    """실행의 프로젝트 이름을 정한다. 올린 파일 이름에서 확장자를 뺀 값, 보고서의 프로젝트 이름, 실행 id의 앞부분 순이다.
+def project_of(upload: str | None, project_name: str | None, run_id: str, entered: str | None = None) -> str:
+    """실행의 프로젝트 이름을 정한다. 업로드할 때 입력한 프로젝트명, 올린 파일 이름에서 확장자를 뺀 값,
+    보고서의 프로젝트 이름, 실행 id의 앞부분 순이다.
 
-    The uploaded file name without its extension, else the report's project name, else the run id's slug."""
+    The project name entered at upload (v2.1z-be), else the uploaded file name without its extension, else the report's
+    project name, else the run id's first part."""
+    if entered and entered.strip():
+        return entered.strip()
     if upload:
         name = upload.replace("\\", "/").rsplit("/", 1)[-1].strip()
         stem = name.rsplit(".", 1)[0] if "." in name.lstrip(".") else name
@@ -538,7 +542,8 @@ def run_usage(run_dir: Path, status: dict[str, Any] | None = None, live: bool = 
     st = status or {}
     upload = _str((req or {}).get("upload_name")) or _str((req or {}).get("upload")) or _str(st.get("upload")) \
         or _str((web or {}).get("upload"))
-    project = project_of(upload, _str((rep or {}).get("project_name")), rid)
+    entered = _str((req or {}).get("project")) or _str(st.get("project")) or _str((web or {}).get("project"))
+    project = project_of(upload, _str((rep or {}).get("project_name")), rid, entered)
     accepted = _parse_time((req or {}).get("accepted_at")) or _parse_time((rep or {}).get("started_at"))
     if accepted is None:
         try:

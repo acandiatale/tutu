@@ -45,7 +45,7 @@ The remediation step (vulnerable library versions, IVAS) is a separate graph cha
 never changes the migration's verdict. Details: `agent-doc/11-remediations.md`.
 
 A run has one of two **flows**: `full` (the default: the migration above, then the chained remediation) or
-`remediation` (`sbmig run <zip|dir> --flow remediation`, web `POST /api/runs?flow=remediation`, the page's 취약점 해결
+`remediation` (`sbmig run <zip|dir> --flow remediation`, web `POST /api/runs?name=…&project=<project name>&flow=remediation`, the page's 취약점 해결
 choice) — for a project migrated earlier and checked again: no migration step, no LLM call, no KB access; the upload is
 built as it is, scanned by IVAS, remediated and rescanned under `<run dir>/remediation/`. `SBMIG-RESULT … flow=remediation
 … remediation=<STATUS>`; exit 0 = SUCCEEDED, 2 = any other saved status, 3 = not started (refused at intake, or

@@ -106,7 +106,7 @@ becomes `proven`). `fleet.reindex_every` re-indexes the KB every N projects. Ins
 - **`sbmig clean [--out DIR] [--fleet DIR] [--older-than DAYS] [--keep-failed] [--dry-run] [--records DIR]`** frees
   the project copies of finished runs, the web UI's uploads, stale `.part` uploads and the LLM records
   (`llm-*.json`); running / queued runs and their uploads are never touched (an upload is matched to its run by the run id
-  in its name, `<slug>-YYYYMMDD-HHMMSS-<hex>` or `web-…`; with `--keep-failed` the uploads of failed runs stay too). It is
+  in its name, `<project or slug>-YYYYMMDD-HHMMSS-<hex>` (upper-case letters and `_` allowed before the timestamp) or `web-…`; with `--keep-failed` the uploads of failed runs stay too). It is
   manual: nothing deletes whole run folders, `source.zip` or `result.zip`.
 
 ## The one-line result and attention codes

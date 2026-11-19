@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 from sbmig.core.config import PACKAGE_ROOT
 from sbmig.web import create_app
 from sbmig.web.app import OPEN_ENV, TOKEN_ENV
+from .uploads import runs_url
 
 TOKEN = "cross-site-test-token"
 EVIL = "https://evil.example"
@@ -39,7 +40,7 @@ def _not_a_zip() -> bytes:
 
 
 STATE_CHANGING = [
-    ("post", "/api/runs?name=p.zip"),
+    ("post", runs_url("name=p.zip")),
     ("post", "/api/runs/p-20261118-101010-abcdef/stop"),
     ("post", "/admin/api/login"),
     ("post", "/admin/api/logout"),
@@ -73,7 +74,7 @@ def test_upload_from_a_foreign_page_never_starts_a_run(tmp_path, repo):
     with zipfile.ZipFile(buf, "w") as z:
         z.writestr("pom.xml", "<project/>")
     c = TestClient(app, client=("10.1.2.3", 5000), base_url="http://sbmig.example:8765")
-    r = c.post("/api/runs?name=p.zip", content=buf.getvalue(),
+    r = c.post(runs_url("name=p.zip"), content=buf.getvalue(),
                headers={"Origin": EVIL, "Content-Type": "text/plain", "Sec-Fetch-Site": "cross-site"})
     assert r.status_code == 403
     assert c.get("/api/runs").json()["runs"] == []
@@ -84,38 +85,38 @@ def test_same_origin_and_headerless_clients_keep_working(tmp_path, repo):
     c = TestClient(app, client=("10.1.2.3", 5000), base_url="http://sbmig.example:8765")
     # the page itself: same origin (default port spelled or not), same-origin fetch metadata
     for origin in ("http://sbmig.example:8765", "HTTP://SBMIG.example:8765"):
-        r = c.post("/api/runs?name=p.zip", content=_not_a_zip(),
+        r = c.post(runs_url("name=p.zip"), content=_not_a_zip(),
                    headers={"Origin": origin, "Sec-Fetch-Site": "same-origin"})
         assert r.status_code == 400 and "zip" in r.json()["error"]
     # curl / scripts: no Origin, no Sec-Fetch-Site
-    assert c.post("/api/runs?name=p.zip", content=_not_a_zip()).status_code == 400
+    assert c.post(runs_url("name=p.zip"), content=_not_a_zip()).status_code == 400
     # reads are never refused, whatever the headers say
     assert c.get("/api/runs", headers={"Origin": EVIL, "Sec-Fetch-Site": "cross-site"}).status_code == 200
     # default port: Host without a port matches an Origin without one
     c80 = TestClient(app, client=("10.1.2.3", 5000), base_url="http://sbmig.example")
-    assert c80.post("/api/runs?name=p.zip", content=_not_a_zip(),
+    assert c80.post(runs_url("name=p.zip"), content=_not_a_zip(),
                     headers={"Origin": "http://sbmig.example"}).status_code == 400
     # TLS ended at an ingress: the browser says https, the app sees http with the same host name
-    assert c80.post("/api/runs?name=p.zip", content=_not_a_zip(),
+    assert c80.post(runs_url("name=p.zip"), content=_not_a_zip(),
                     headers={"Origin": "https://sbmig.example"}).status_code == 400
     # Host names a port: an Origin on another port of the same host name is refused
-    assert c.post("/api/runs?name=p.zip", content=_not_a_zip(),
+    assert c.post(runs_url("name=p.zip"), content=_not_a_zip(),
                   headers={"Origin": "http://sbmig.example:9999"}).status_code == 403
     # a look-alike host name is refused
-    assert c80.post("/api/runs?name=p.zip", content=_not_a_zip(),
+    assert c80.post(runs_url("name=p.zip"), content=_not_a_zip(),
                     headers={"Origin": "http://sbmig.example.evil.example"}).status_code == 403
     # an opaque origin ("null": sandboxed frame, file://) is not ours
-    assert c.post("/api/runs?name=p.zip", content=_not_a_zip(), headers={"Origin": "null"}).status_code == 403
+    assert c.post(runs_url("name=p.zip"), content=_not_a_zip(), headers={"Origin": "null"}).status_code == 403
 
 
 def test_token_mode_refuses_a_foreign_origin_even_with_the_cookie(tmp_path, repo):
     app = create_app(tmp_path / "out", repo, token=TOKEN)
     c = TestClient(app, client=("10.1.2.3", 5000), base_url="http://sbmig.example:8765")
     assert c.get(f"/?token={TOKEN}", follow_redirects=False).status_code == 303       # the cookie is set
-    assert c.post("/api/runs?name=p.zip", content=_not_a_zip(), headers={"Origin": EVIL}).status_code == 403
-    assert c.post("/api/runs?name=p.zip", content=_not_a_zip(),
+    assert c.post(runs_url("name=p.zip"), content=_not_a_zip(), headers={"Origin": EVIL}).status_code == 403
+    assert c.post(runs_url("name=p.zip"), content=_not_a_zip(),
                   headers={"Origin": "http://sbmig.example:8765"}).status_code == 400
-    assert c.post("/api/runs?name=p.zip", content=_not_a_zip(),
+    assert c.post(runs_url("name=p.zip"), content=_not_a_zip(),
                   headers={"Authorization": f"Bearer {TOKEN}"}).status_code == 400
 
 
@@ -123,8 +124,8 @@ def test_loopback_mode_refuses_a_foreign_origin(tmp_path, repo):
     """No token, loopback only: a browser on the operator's own PC visiting a hostile page is the case."""
     app = create_app(tmp_path / "out", repo)
     c = TestClient(app, client=("127.0.0.1", 5000), base_url="http://127.0.0.1:8765")
-    assert c.post("/api/runs?name=p.zip", content=_not_a_zip(), headers={"Origin": EVIL}).status_code == 403
-    assert c.post("/api/runs?name=p.zip", content=_not_a_zip(),
+    assert c.post(runs_url("name=p.zip"), content=_not_a_zip(), headers={"Origin": EVIL}).status_code == 403
+    assert c.post(runs_url("name=p.zip"), content=_not_a_zip(),
                   headers={"Origin": "http://127.0.0.1:8765"}).status_code == 400
 
 
@@ -133,7 +134,7 @@ def test_a_proxy_forwarded_host_counts_as_our_host(tmp_path, repo):
     without a CORS preflight the app never answers)."""
     app = create_app(tmp_path / "out", repo, open_network=True)
     c = TestClient(app, client=("10.1.2.3", 5000), base_url="http://sbmig-svc:8765")
-    r = c.post("/api/runs?name=p.zip", content=_not_a_zip(),
+    r = c.post(runs_url("name=p.zip"), content=_not_a_zip(),
                headers={"Origin": "https://sbmig.example", "X-Forwarded-Host": "sbmig.example",
                         "X-Forwarded-Proto": "https"})
     assert r.status_code == 400
@@ -145,11 +146,11 @@ def test_the_browsers_same_origin_statement_is_enough_behind_a_host_rewriting_pr
     is the browser's own statement (a page cannot set a `Sec-` header), so no host comparison is made."""
     app = create_app(tmp_path / "out", repo, open_network=True)
     c = TestClient(app, client=("10.1.2.3", 5000), base_url="http://sbmig-svc:8765")
-    ok = c.post("/api/runs?name=p.zip", content=_not_a_zip(),
+    ok = c.post(runs_url("name=p.zip"), content=_not_a_zip(),
                 headers={"Origin": "https://sbmig.example", "Sec-Fetch-Site": "same-origin"})
     assert ok.status_code == 400                                   # reached the route (the body is not a ZIP)
     # without that statement (a plain-http page sends none) the rewritten Host makes the page look foreign
-    assert c.post("/api/runs?name=p.zip", content=_not_a_zip(),
+    assert c.post(runs_url("name=p.zip"), content=_not_a_zip(),
                   headers={"Origin": "http://sbmig.example"}).status_code == 403
 
 
@@ -158,7 +159,7 @@ def test_allowed_origins_env_admits_named_hosts_and_star_switches_the_check_off(
     c = TestClient(app, client=("10.1.2.3", 5000), base_url="http://sbmig-svc:8765")
 
     def post(origin, **extra):
-        return c.post("/api/runs?name=p.zip", content=_not_a_zip(), headers={"Origin": origin, **extra}).status_code
+        return c.post(runs_url("name=p.zip"), content=_not_a_zip(), headers={"Origin": origin, **extra}).status_code
 
     monkeypatch.setenv("SBMIG_WEB_ALLOWED_ORIGINS", "sbmig.example, https://portal.example:8443")
     assert post("http://sbmig.example") == 400

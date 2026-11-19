@@ -3773,13 +3773,15 @@ project is remediated as it was uploaded (already-migrated projects that are che
   accepted tree (`pom_parser.parse_poms`; a pom no other pom lists as a module), re-rooted onto the ZIP (`chain.zip_targets`).
   A ZIP whose project sits two or more folders deep is not accepted by this flow (`no_pom`). `sbmig fleet` runs `full` only.
 
-**Web.** `POST /api/runs?flow=full|remediation` (default `full`; another value → 400). The flow is a per-run value like
+**Web.** `POST /api/runs?flow=full|remediation` (default `full`; another value → 400; `project` is required as well: "v2.1z-be"). The flow is a per-run value like
 `stop_after`: `RequestRecord.flow` (pinned at intake), Job env `SBMIG_FLOW` (`contract.FLOW_ENV`, in `contract.RUN_ENV`;
 set by Main when it creates the Job, checked by the Worker against `request.json` like `SBMIG_STOP_AFTER`), `sbmig run
 --flow remediation` in the Worker's command; in-process mode passes it to the orchestrator. `status()` and the run list
 carry `flow`. Queue, slots and stop work as for any run. Nothing changes in the 81 template.
 
-**Run ids and names.** A web run's id is `<slug>-YYYYMMDD-HHMMSS-<6 hex>` (`runs.run_id_for`): the slug is the uploaded
+**Run ids and names.** (Since "v2.1z-be" an upload names its project and the id starts with THAT name; the slug rule
+below is what a caller without a project name still gets, and what older run folders look like.) A web run's id is
+`<slug>-YYYYMMDD-HHMMSS-<6 hex>` (`runs.run_id_for`): the slug is the uploaded
 file's base name without `.zip`, lowercased, every run of characters outside `[a-z0-9]` turned into one `-`, trimmed, cut
 to 24 characters (`RUN_ID_SLUG_MAX`: the Job name `sbmig-<id>` and the resume name `…-rem<attempt>` stay within the
 63-character label limit); a slug without a letter (a Korean name, digits only) is `web`, the earlier shape. The run
@@ -4767,7 +4769,8 @@ says otherwise, this one counts.
 - *Explicit values win over the environment*: a command-line option (`--settings`, `--java-home`, …) and a fleet
   manifest's per-project override are applied after the `SBMIG_<SECTION>__<KEY>` values (one INFO line per replaced value);
   the environment still wins over the yml files.
-- *`sbmig clean`* recognises uploads of today's run ids (`<slug>-YYYYMMDD-HHMMSS-<hex>`), so uploads of running, waiting
+- *`sbmig clean`* recognises uploads of today's run ids (`<slug>-YYYYMMDD-HHMMSS-<hex>`; since "v2.1z-be" also a
+  project name with upper-case letters and `_` in front), so uploads of running, waiting
   and (with `--keep-failed`) failed runs are kept.
 - *Image*: the Dockerfile no longer passes `--max-upload-mb` (`SBMIG_MAX_UPLOAD_MB` from the ConfigMap takes effect).
 - *The Job template is read from the web pod's own image* (`deploy/k8s/81-web-job.template.yaml` under `/app`, the code's
@@ -5267,6 +5270,78 @@ The user (2026-11-19 / 20): "우리 웹페이지에 성공, 취약점 일부만 
   with 원래 위치 and 옮긴 위치, or that it was added / deleted, or that its content changed (with the line counts)
   and that static files are not shown line by line. Everything else — JSP, tag files, Java, XML, properties, YAML, SQL,
   build files, and any extension not on the list — shows its content.
+
+## v2.1z-be — an upload needs a project name
+
+The user (2026-11-20): "우리 접수 받을때 파일 올리고 프로젝트명 안적으면 거절당하게 해줄 수 있어!? 프론트, 백엔드 둘 다 체크
+하도록!" Until now a run was known by the name of the uploaded file only.
+
+- **HTTP.** `POST /api/runs?name=<file name>&project=<프로젝트명>[&flow=…]`: `project` is required for every flow. The
+  user, a little later: "영어랑 _, - 로만 허용 가능하도록 해줄래! 리눅스에서 쉘 접속 했을때 치기 귀찮아서! 공백도 비허용!" So
+  the value must match `^[A-Za-z0-9][A-Za-z0-9_-]{0,29}$`: English letters, digits (my addition, told to the user),
+  `_` and `-`; 1 to 30 characters; it starts with a letter or a digit (a leading `-` reads as an option in a shell); no
+  space, no Korean, no dot. It is NOT trimmed or repaired: a value with a space before or after is refused like any
+  other that does not match. A missing or empty value → 400 `{"error": "project name is required", "message_ko":
+  "프로젝트명을 입력해 주세요."}`; any other mismatch → 400 `{"error": "project name: letters, digits, _ and - only, at most
+  30 characters, starting with a letter or a digit", "message_ko": "프로젝트명은 영문, 숫자, _, - 만 쓸 수 있습니다(공백
+  없이 30자까지, 첫 글자는 영문이나 숫자)."}`. The check comes BEFORE the body is read (as the flow check does), so a
+  refused upload costs no transfer.
+- **The run id starts with it.** The reason for the narrow alphabet is the shell: the run's folder is
+  `<project>-YYYYmmdd-HHMMSS-xxxxxx` instead of `run-…` (`ls /data/out | grep <project>`, tab completion). The id still
+  matches `RUN_ID_RE`; everything derived from a run id (the Job name and its 63-character limit, labels, the upload
+  folder's file name, the remediation's id) must stay valid and unique for a 30-character name with upper-case letters
+  and `_` in it.
+- **Kept with the run.** The name is written into the run's request record and status file and survives a restart of
+  the web pod; `GET /api/runs` and `GET /api/runs/{id}` carry `project`. A run made before this change has none: every
+  reader falls back to what it showed before (the upload's file name).
+- **The page.** A field 「프로젝트명」 in the upload card, marked as required, empty at first (not filled from the file
+  name: the point is that a person names the project), `maxlength` 30, with the rule as its hint and the same check
+  as the server (a character outside the alphabet is said at once, beside the field). 「마이그레이션 시작」 stays disabled until a file is chosen AND a
+  name is typed; trying to start without a name puts the focus on the field with 「프로젝트명을 입력해 주세요.」 beside it;
+  the server's refusal is shown the same way when it comes anyway. The run card and 「지난 실행」 show the project name
+  as the run's name, with the file name beside it.
+- **The admin page.** Runs are grouped by the entered project name; older runs keep their grouping by file name.
+- **As coded.** One pattern, `runs.PROJECT_RE`, used by `runs.check_project()`; the route calls it right after the flow
+  check and before the size check, the free-space check and the body (tests call the app with a `receive()` that
+  counts: 0 reads on a refusal). The page has the same pattern. The name is stored in `control/request.json`
+  (`project`), `web-status.json`, the in-memory run and the journal's `web_run` line; a restart gets it back from
+  those. Job names: `job_name(run_id, limit)` cuts the FRONT of a long id and always keeps the
+  `-YYYYmmdd-HHMMSS-<hex6>` tail, also for the resume name `…-rem<attempt>` (the earlier rule cut the tail, so two
+  runs of one long-named project in one second could have collided); ids of the earlier shapes give the names they gave
+  before. The label `sbmig-run-id` holds the id unchanged. `sbmig clean` ties an upload to its run for such ids too
+  (`fleet.cleanup._UPLOAD_RE` takes the characters `RUN_ID_RE` takes): without that the upload of a run that is still
+  going could have been planned for deletion. `POST /api/remediations` (in-process only; the page does not use it) is
+  unchanged.
+
+## v2.1z-bf — a single-module Spring Boot app is split into the company's modules
+
+The user (2026-11-20): "parent가 spring boot로 시작하는 프로젝트가 xxx-boot만 생성되었는데 여기 정적자원이랑 다 있거든!? 이거
+xxx-comp-jar, xxx-front-jar 로도 변환을 해줘야해! 이 케이스를 생각을 못했네!" Since round 9c a Spring Boot as-is project
+kept its directories and a root that was the app itself was WRAPPED: everything went into `{name}-boot`.
+
+- **`layout.boot_single_module`**: `split` (default) | `wrap` (the earlier behaviour). It applies when
+  `layout.boot_as_is` is `in-place` and the root pom is the application itself (no `<modules>`, sources present). A
+  Boot project with several modules and an MSA keep their directories whatever this says.
+- **`split`** gives the modules a non-Boot project gets, with the same names and parents (`layout.boot_module`,
+  `comp_module`, `front_module`; `artifacts.boot_parent` for the boot module, `comp_parent` for the two others; the
+  root becomes the aggregator on `artifacts.parent`):
+  - `{name}-boot`: the `@SpringBootApplication` class (and what must stay beside it to start the app) and the Boot
+    configuration (`application*.yml` / `.properties`, `bootstrap*`, banner, logging configuration); the Boot plugin and
+    packaging; it depends on the two other modules.
+  - the source module (`comp_module`): every other Java source and the classpath resources code reads (mapper XML,
+    message bundles, SQL …); the project's dependencies.
+  - the front module (`front_module`), only when such files exist: static files (`src/main/resources/static`,
+    `public`, `resources`, `META-INF/resources`, a `src/main/webapp` web root), JSPs and server-side templates
+    (`src/main/resources/templates`), each at the place Boot serves or resolves it from a jar on the classpath, so a URL
+    and a view name stay what they were. `front_module: null` keeps these files in the boot module, as for a non-Boot
+    project.
+  - Tests go where the classes they test go; a test that needs the application context goes to the boot module.
+  - The application must start with the same component scan as before (the base package of the application class
+    still covers the moved classes); when it would not, the restructure says so instead of guessing.
+- Recorded as every restructure is (journal `restructure` with its mode, the moves in the code-change record, hand-over
+  lines for what a person must check). The name of the mode and the notes are the implementer's to report.
+- The user named the modules `xxx-comp-jar` / `xxx-front-jar`; the module names come from the layout settings (the
+  repository default is `{name}-back` / `{name}-front`), as for every other project. Told to the user.
 
 ## remediations (취약점 조치) — `/api/remediations`, IVAS, version-text fixes + managed overrides (2026-11-11)
 

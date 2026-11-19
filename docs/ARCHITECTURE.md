@@ -312,9 +312,12 @@ before the body is read. `RunManager` (`sbmig/web/runs.py`) has three modes (`SB
   (in-cluster service account or `KUBECONFIG`).
 * `local-job` — the same dispatch with local processes (dev PCs).
 
-Every upload carries its run flow (`POST /api/runs?flow=full|remediation`, the page's 전체 진행 / 취약점 해결 choice): pinned in
-`request.json`, passed to the Job as `SBMIG_FLOW`, same queue and slots. A run directory is named `<slug>-YYYYMMDD-HHMMSS-<6 hex>`,
-the slug made from the uploaded file's name (lowercase letters, digits, hyphens; long names cut; `web` when nothing is left).
+Every upload carries a project name and its run flow (`POST /api/runs?name=<file>&project=<project>&flow=full|remediation`,
+the page's 프로젝트명 field and 전체 진행 / 취약점 해결 choice): the flow is pinned in `request.json`, passed to the Job as
+`SBMIG_FLOW`, same queue and slots. The project name must match `runs.PROJECT_RE` (`^[A-Za-z0-9][A-Za-z0-9_-]{0,29}$`), checked
+before the body is read (400 otherwise; rule and sentences in `deploy/README.md` §2), and is kept in `control/request.json`,
+`web-status.json` and the journal's `web_run`. A run directory is named `<project>-YYYYmmdd-HHMMSS-<6 hex>`; `job_name` cuts the
+front of a long id and keeps the timestamp tail (also for `…-rem<attempt>`). Older folders (`run-…`, `web-…`, file-name slugs) keep working.
 
 The Main / Worker file contract (`sbmig/web/contract.py`): only Main writes `<run dir>/control/` — `request.json` pins the zip
 sha256, config digests and sbmig version at intake; `state.json` is the control state (queued → creating → created → running →

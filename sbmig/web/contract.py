@@ -395,6 +395,9 @@ class RequestRecord:
     # 사용자가 올린 파일 이름 그대로다.
     # ``upload``는 파일 시스템에 맞게 다듬은 이름이고, 이전 기록에는 이 값이 없다
     upload_name: str | None = None
+    # 업로드할 때 입력한 프로젝트명이며 실행 id 앞부분과 같다. 화면과 관리 페이지가 보여 주기만 하고
+    # Worker는 읽지 않는다. 이전 기록에는 이 값이 없다
+    project: str | None = None
 
     def to_json(self) -> dict[str, Any]:
         return asdict(self)
