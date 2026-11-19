@@ -42,8 +42,8 @@ remediation report, not counted above: N`).
 빌드로 확인하지 못했습니다.」로 시작해 조치 전에도 빌드되지 않았다는 것, 같은 오류에서 멈췄고 새 오류는 없지만 그 뒤는 알 수 없다는 것을
 적고, 할 일 맨 앞이 「빌드 오류 고치기」(이관 보고서 「변환 뒤 남은 빌드 오류」), 「바꾼 버전으로 한 번 빌드하기」다. 바꾼 버전이 없으면
 보통 결과 문장 뒤에 `NOTHING_TO_CONFIRM_KO` 한 문장, 「빌드 오류 고치기」는 할 일 맨 뒤. 새 오류로 FAILED면 그 오류 3개까지. 사유가
-`baseline_build_failed` 하나뿐인 INCOMPLETE(`build_unconfirmed`)는 「일부만 조치됨」 대신 「조치함 · 빌드 미확인」, 「취약점 조치함(빌드 미확인)」
-(화면, 13의 8절), 「조치했지만 빌드로 확인하지 못했습니다」(이관 보고서)다.
+`baseline_build_failed` 하나뿐인 INCOMPLETE(`build_unconfirmed`)는 「일부만 조치됨」 대신 「조치함 · 빌드 미확인」(화면의 조치 영역, 13의 8절; 「지난 실행」에는
+조치 상태를 붙이지 않는다), 「조치했지만 빌드로 확인하지 못했습니다」(이관 보고서)다.
 
 위험도 표시: IVAS 점수가 `remediation.severity_red`/`remediation.severity_orange`/`remediation.severity_yellow`(기본 9.0 / 7.0 / 4.0)
 이상이면 🔴 심각 / 🟠 높음 / 🟡 보통, 그보다 낮거나 점수가 없으면 "낮음·점수 없음"(표시 글자 없음). 라이브러리 표는 맨 앞

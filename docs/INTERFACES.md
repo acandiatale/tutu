@@ -4609,16 +4609,17 @@ pass is pending, like the other result files; 404 `{"error": "code diff not avai
   mtime, size and inode; no file handle stays open between requests.
 - `GET /api/runs/{id}` gains `code_diff`: the `summary` object, only when the artifact can be served.
 
-**Page.** One block 「코드 변경」 in the result card, after 「취약점 조치」 and before the report preview, shown when
-`status.code_diff` is there (never for a remediation-only run), closed until the user opens it; the index and each
-file's hunks are fetched when needed. Inside: the summary, 「폴더 구조가 바뀌었습니다」 (the `moves` table) when
-files moved, filters (전체 / 수정 / 추가 / 삭제 / 이동, a path search, 「위치만 바뀐 파일도 보기」), a file tree by final path
-and the files one under the other. A file's head says its state and, when it moved, 「원래 위치: …」; its body shows the
-hunks with both line numbers, the differing part of a changed pair of lines marked, and rows that load more lines
-above, below and between hunks (`…/lines`; 「파일 전체 보기」 in the head). Files are drawn 30 at a time and a
-file's hunks are fetched when it comes near the viewport; a change of more than 400 lines starts folded. Each state
-has its sentence (loading, a failed request with 「다시 시도」, results not released yet, binary, left out because
-of its size, `unavailable` / `unreadable`, moved only, nothing matches, the list cut at 20,000). The block is the
+**Page** (the layout of "v2.1z-bd" below replaces the first form, in which the files stood one under the other
+inside the card). One row 「코드 변경」 in the result card, after 「취약점 조치」 and before the report preview, shown when
+`status.code_diff` is there (never for a remediation-only run): the summary chips and the button 「코드 변경 보기」,
+which opens a large dialog; nothing is fetched before that. In the dialog: the summary, 「폴더 구조가 바뀌었습니다」 (the
+`moves` table, foldable) when files moved, filters (전체 / 수정 / 추가 / 삭제 / 이동, a path search, 「위치만 바뀐 파일도
+보기」), a file tree by final path, and the ONE file selected in it. The file's head says its state and, when it
+moved, 「원래 위치: …」; its body shows the hunks with both line numbers, the differing part of a changed pair of lines
+marked, and rows that load more lines above, below and between hunks (`…/lines`; 「파일 전체 보기」 in the head); a
+change of more than 400 lines starts folded. Each state has its sentence (loading, a failed request with 「다시 시도」,
+results not released yet, binary, left out because of its size, `unavailable` / `unreadable`, moved only, nothing
+matches, the list cut at 20,000). The block is the
 component `CodeDiff` (`mount(host, runId)` / `unmount()`; its own state, its DOM built inside `host`, styles under
 `.cdiff`), so a dialog can host it later without a rewrite. It reads `code_diff` from the status the page already
 gets (the SSE `status` event and `GET /api/runs/{id}`). Needs a browser with CSS container queries and `:has()`
@@ -4885,8 +4886,8 @@ then the configured patterns; a pattern with a glob is skipped; trailing role wo
   run ends `INCOMPLETE` with first reason `baseline_build_failed` (`candidate_build_failed` is not among the reasons when
   the candidate added no error). When that is the only reason, people read "remediated, not confirmed by a build"
   instead of "partly remediated" (`report.build_unconfirmed(summary)`: `baseline_tolerated`, `INCOMPLETE`, reasons exactly
-  `[baseline_build_failed]`): 「조치함 · 빌드 미확인」 on the page's chip, 「취약점 조치함(빌드 미확인)」 in the run card's sub line
-  and 「지난 실행」, 「조치했지만 빌드로 확인하지 못했습니다」 in the migration report. When NOTHING is unconfirmed — nothing
+  `[baseline_build_failed]`): 「조치함 · 빌드 미확인」 on the page's chip (the short form 「취약점 조치함(빌드 미확인)」 of the run card's sub line
+  and 「지난 실행」 existed until "v2.1z-bd" took the suffix away), 「조치했지만 빌드로 확인하지 못했습니다」 in the migration report. When NOTHING is unconfirmed — nothing
   was changed (no finding to fix, or none that can be changed; the delivery is the original), or every candidate build
   PASSED (a bumped version removed the error) — there is nothing a build would still have to confirm
   (`_Holder.nothing_unconfirmed`):
@@ -4931,7 +4932,8 @@ then the configured patterns; a pattern with a glob is skipped; trailing role wo
   이어서 합니다.」 `GET /api/runs/{id}` → `remediation.baseline_tolerated` and `remediation.reasons` when the summary has them. In the 「취약점 조치」
   block the note 「…바꾼 라이브러리 버전을 빌드로 확인하지 못했습니다…」 and the ZIP badge 빌드 미확인 appear only for a
   delivery with `build_tolerated` (and applied changes); a change set that added a build error keeps 빌드 실패본. The run
-  card's sub line and 「지난 실행」 name the remediation's outcome after the migration's.
+  card's sub line and 「지난 실행」 named the remediation's outcome after the migration's ("v2.1z-bd": only for the
+  states a person must act on).
 
 ## v2.1z-ax — a library whose repository has the jar but no pom
 
@@ -5227,6 +5229,40 @@ the real IVAS. And the user's policy: "우리 백엔드로직만 라이브러리
   run that ended `INCOMPLETE` at the baseline scan (the cluster's case) cannot be resumed: it needs a new run.
 - The fake IVAS of the integration tests answers 404 to an address it does not know (it used to answer an empty
   page, which is how the singular path was never caught).
+
+## v2.1z-bd — the page: 「완료」, and the code changes in a large dialog
+
+The user (2026-11-19 / 20): "우리 웹페이지에 성공, 취약점 일부만 조치 이부분 그냥 완료 로만 나오게 해줘!"; "소스 변경사항
+보여주는거 크게 모달로 변경 가능해? 안에 내용 그대로 때서 모달로 만들 수 있지?"; "지금은 내용쪽에 휠로 내리면 계속 파일들
+보이잖아? 선택한 파일만 볼 수 있도록 해줘! 정적자원들은 위치 이동 표시만 하고 컨텐츠 내용은 없어도 돼!"
+
+- **「완료」.** In 「지난 실행」 a run whose migration succeeded reads 「완료」 (green) instead of 「성공」; the run card's title
+  keeps its sentence. The remediation's short form after it (and in the run card's sub line) is shown only for the
+  states a person must act on or know before opening the run: `FAILED` 「취약점 조치 실패」 (red), `AWAITING_CONFIRMATION`
+  「취약점 확인 필요」, `STOPPED` 「취약점 조치 멈춤」, `INTERRUPTED` 「취약점 조치 중단」 (orange), `QUEUED` 「취약점 조치 대기」,
+  `RUNNING` 「취약점 조치 중」. Nothing is appended for `SUCCEEDED`, `INCOMPLETE` (the build-unconfirmed form included),
+  skipped, none, an old approval-waiting state or an unknown value; the same rule follows every migration outcome
+  (미완료, 처리 불가, 중단, 실행 오류). The 「취약점 조치」 block of the result card keeps its chip and detail. A
+  remediation-only run keeps its own words (「조치 완료」, 「일부 조치」 …).
+- **The dialog.** The native `<dialog>` with `showModal()`: `min(96vw, 1680px)` wide, `92vh` tall, the whole screen at
+  640 px and below; a header (「코드 변경」, the upload's name, the summary chips, 「닫기」) that stays while the body
+  works; closed by the button, Esc or a click on the backdrop, each ending in the `close` event, which unmounts
+  `CodeDiff` and returns the focus to 「코드 변경 보기」; Tab stays inside; the page behind does not scroll; opening
+  another run closes it first. The summary and the folder-structure box take at most 28 % of the body (the box's head
+  「폴더 구조가 바뀌었습니다 · 묶음 N개, 파일 M개」 is a button with `aria-expanded`: open for at most three groups on a
+  screen of 640 px or more, folded otherwise; its table scrolls inside a bounded height); the file list and the pane
+  take the rest, each scrolling on its own.
+- **One file at a time.** The pane shows the file selected in the list, from its top; the wheel stays inside that
+  file. On opening, the first file in list order that has lines to show is selected; 「이전 파일」 / 「다음 파일」 and
+  「N / M」 stand above it. The list is one Tab stop: ↑ / ↓, Home / End, → / ← for folders, Enter or Space to select.
+  Drawing files 30 at a time (`PAGE_FILES`) and fetching "near the viewport" are gone; folders are drawn when opened
+  (all open below 150 files) and loaded diffs are cached.
+- **Static files show their move, not their content.** By extension (`js mjs cjs css scss sass less map html htm`,
+  images, fonts, media, archives including `jar war ear`, office documents and `pdf`; pinned by a test): never
+  requested from `/codediff/files/{n}`, never rendered as a diff. Selected, such a file shows 「위치만 옮긴 파일입니다.」
+  with 원래 위치 and 옮긴 위치, or that it was added / deleted, or that its content changed (with the line counts)
+  and that static files are not shown line by line. Everything else — JSP, tag files, Java, XML, properties, YAML, SQL,
+  build files, and any extension not on the list — shows its content.
 
 ## remediations (취약점 조치) — `/api/remediations`, IVAS, version-text fixes + managed overrides (2026-11-11)
 

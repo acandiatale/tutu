@@ -374,12 +374,14 @@ def test_page_tolerated_remediation_reads_plainly() -> None:
 def test_page_failed_build_and_remediation_both_readable() -> None:
     # the run card's sub line and the 지난 실행 list add the remediation's outcome AFTER the migration's
     fn = SCRIPT.split("function remShort(st) {", 1)[1].split("\n  }\n", 1)[0]
-    assert "st.flow === FLOW_REM" in fn and "r.status === 'skipped'" in fn and "st.state !== 'finished'" in fn
+    assert "st.flow === FLOW_REM" in fn and "st.state !== 'finished'" in fn   # skipped: not in REM_SHORT, so nothing
     assert "`취약점 ${REM_SHORT[r.status]}`" in fn
-    assert "INCOMPLETE: '일부만 조치'" in SCRIPT
+    # the owner (2026-11-19): a finished remediation adds nothing to the list (see test_page_list_word_*)
+    assert "INCOMPLETE:" not in SCRIPT.split("const REM_SHORT =", 1)[1].split("};", 1)[0]
     # the list: the migration's word first, then the remediation's
-    assert "const short = s.short + (remShort(run) ? ` · ${remShort(run)}` : '');" in SCRIPT
-    assert '<span class="state ${cls}">${esc(short)}</span>' in SCRIPT
+    assert "const sfx = remShort(run);" in SCRIPT
+    assert ('<span class="state ${cls}">${esc(s.short)}${sfx ? `<span class="sfx ${remShortCls(run)}"> · ${esc(sfx)}</span>`'
+            in SCRIPT)
     # the run card: the failure stays the title (describe() unchanged), the remediation goes into the sub line after it
     set_status = SCRIPT.split("function setStatus(st) {", 1)[1].split("\n  }\n", 1)[0]
     assert "const remS = remShort(st); if (remS) bits.push(remS);" in set_status
@@ -414,11 +416,10 @@ def test_page_fixed_but_not_built_is_not_called_partly() -> None:
     assert "const REM_UNCONFIRMED_KO = '조치함 · 빌드 미확인';" in SCRIPT
     render = SCRIPT.split("function renderRemediation(runId, st, force) {", 1)[1].split("\n  }\n", 1)[0]
     assert "remBuildOnly(st, remTolerated(st)) ? REM_UNCONFIRMED_KO : (REM_KO[st.status] || st.status)" in render
+    # the list and the sub line say nothing for an INCOMPLETE remediation any more (the block's chip still does)
     short = SCRIPT.split("function remShort(st) {", 1)[1].split("\n  }\n", 1)[0]
-    assert "if (remBuildOnly(r, r.baseline_tolerated === true)) return '취약점 조치함(빌드 미확인)';" in short
-    assert short.index("remBuildOnly") < short.index("REM_SHORT[r.status]")
-    # any other reason keeps the partly wording
-    assert "INCOMPLETE: '일부만 조치'" in SCRIPT and "INCOMPLETE: '일부만 조치됨'" in SCRIPT
+    assert "remBuildOnly" not in short and "조치함(빌드 미확인)" not in SCRIPT
+    assert "INCOMPLETE: '일부만 조치됨'" in SCRIPT
 
 
 def test_page_unchanged_original_after_a_failed_build_has_no_badge() -> None:
@@ -428,3 +429,36 @@ def test_page_unchanged_original_after_a_failed_build_has_no_badge() -> None:
     assert "const badBuild = failed && !(sameFailure && !applied);" in render
     assert "(badBuild ? 'ghost' : 'quiet')" in render
     assert "badBuild ? (sameFailure ? '빌드 미확인' : '빌드 실패본') : ''" in render
+
+
+# ---- the owner (2026-11-19): "성공, 취약점 일부만 조치 이부분 그냥 완료 로만 나오게 해줘!"
+
+def test_page_list_word_of_a_successful_run_is_done() -> None:
+    describe = SCRIPT.split("function describe(st) {", 1)[1].split("\n  }\n", 1)[0]
+    assert "if (st.success === true) return { cls: 'ok', text: '빌드에 성공했습니다', short: '완료' };" in describe
+    assert "short: '성공'" not in SCRIPT
+    # a remediation-only run keeps its own words
+    assert "if (st.success === true) return { cls: 'ok', text: '조치를 마쳤습니다', short: '조치 완료' };" in describe
+
+
+def test_page_list_suffix_only_when_a_person_must_know() -> None:
+    table = SCRIPT.split("const REM_SHORT =", 1)[1].split("};", 1)[0]
+    # rule 2: nothing for a remediation that ended without anything to do from the list
+    for quiet in ("SUCCEEDED", "INCOMPLETE", "skipped", "LEGACY_WAITING"):
+        assert quiet not in table, quiet
+    # rule 3: the states a person must act on or know about
+    for status, word in (("FAILED", "조치 실패"), ("AWAITING_CONFIRMATION", "확인 필요"), ("STOPPED", "조치 멈춤"),
+                         ("INTERRUPTED", "조치 중단"), ("QUEUED", "조치 대기"), ("RUNNING", "조치 중")):
+        assert f"{status}: '{word}'" in table, status
+    fn = SCRIPT.split("function remShort(st) {", 1)[1].split("\n  }\n", 1)[0]
+    # a remediation running again in a new pod (the report still shows the state it stopped in)
+    assert "rj.active === true" in fn and "return '취약점 조치 중';" in fn
+    # rule 4: the same suffix after every migration outcome; the list and the sub line share remShort
+    assert "const sfx = remShort(run);" in SCRIPT
+    assert "const remS = remShort(st); if (remS) bits.push(remS);" in SCRIPT
+    # the suffix keeps its own colour: 조치 실패 after 완료 is not green
+    cls = SCRIPT.split("function remShortCls(st) {", 1)[1].split("\n  }\n", 1)[0]
+    assert "status === 'FAILED'" in cls and "return 'bad';" in cls and "status === 'AWAITING_CONFIRMATION'" in cls
+    assert ".runs .state .sfx.bad { color: var(--bad); }" in PAGE
+    # a remediation-only run: its outcome is the remediation, no suffix
+    assert "st.flow === FLOW_REM" in fn

@@ -259,17 +259,41 @@
   .choice { border: 1px solid var(--line); border-radius: var(--radius-s); padding: 12px 14px; margin-top: 10px; background: #fff; }
   .choice .head { margin: 0 0 8px; }
 
-  /* ---- 3c. 코드 변경: 결과 카드 안의 머리 줄. 열면 안쪽 화면을 CodeDiff가 그린다 */
+  /* ---- 3c. 코드 변경: 결과 카드에는 요약 한 줄과 여는 버튼만 두고, 안쪽 화면은 큰 대화상자에서 CodeDiff가 그린다 */
   .cdblock { margin-top: 18px; border-top: 1px solid var(--line-soft); padding-top: 16px; }
   .cdblock > .line .btn { margin-left: auto; padding: 6px 14px; font-size: 13px; }
   .cdblock .cdlead { margin: 6px 0 0; color: var(--muted); font-size: 12.5px; word-break: keep-all; overflow-wrap: anywhere; }
-  .cdblock .cdhost { margin-top: 14px; }
+  /* 대화상자: 화면의 96% 너비(최대 1680px), 92% 높이. 휴대폰 너비에서는 화면 전체를 쓴다 */
+  .cdmodal { width: min(96vw, 1680px); max-width: none; height: 92vh; max-height: none; padding: 0; border: 1px solid var(--line);
+             border-radius: var(--radius); background: var(--card); color: var(--ink); overflow: hidden; }
+  .cdmodal[open] { display: flex; flex-direction: column; animation: cdm-in .14s ease-out; }
+  .cdmodal::backdrop { background: rgba(19, 33, 58, .55); }
+  @keyframes cdm-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+  .cdmodal .cdm-head { flex: none; display: flex; align-items: flex-start; gap: 6px 14px; flex-wrap: wrap; padding: 14px 18px 12px;
+                       border-bottom: 1px solid var(--line); background: var(--card); }
+  .cdmodal .cdm-title { flex: 1 1 260px; min-width: 0; }
+  .cdmodal .cdm-title h2 { margin: 0; font-size: 16px; }
+  .cdmodal .cdm-name { margin: 2px 0 0; color: var(--muted); font-size: 12.5px; overflow-wrap: anywhere; }
+  .cdmodal .cdm-counts { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .cdmodal .cdm-close { flex: none; margin-left: auto; padding: 6px 14px; font-size: 13px; }
+  .cdmodal .cdm-body { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 14px 18px 18px; }
+  html.cdm-lock, html.cdm-lock body { overflow: hidden; }
+  @media (max-width: 640px) {
+    .cdmodal { width: 100vw; height: 100dvh; max-height: none; margin: 0; border: 0; border-radius: 0; }
+    .cdmodal .cdm-head { padding: 12px 14px 10px; }
+    .cdmodal .cdm-body { padding: 10px 12px 14px; }
+  }
+  @media (prefers-reduced-motion: reduce) { .cdmodal[open] { animation: none; } }
 
   /* ---- CodeDiff 화면. 대화상자로 옮겨도 그대로 쓰도록 모든 규칙을 .cdiff 아래에 둔다 */
   .cdiff { --cd-add: #E6F5EC; --cd-add-no: #D2ECDC; --cd-add-x: #A8DCBA; --cd-add-ink: #1C6B3E;
            --cd-del: #FCEBE9; --cd-del-no: #F6D7D3; --cd-del-x: #F1B6AE; --cd-del-ink: #A12C22;
            --cd-row: 20px; --cd-no: 56px;
-           container-type: inline-size; min-width: 0; font-size: 13px; }
+           container-type: inline-size; min-width: 0; font-size: 13px;
+           display: flex; flex-direction: column; height: 100%; }
+  .cdiff > * { flex: none; }
+  /* 위쪽 상자(요약, 폴더 구조)는 대화상자 높이의 4분의 1 정도까지만 쓰고 넘치면 안에서 스크롤한다 */
+  .cdiff .cd-top { max-height: 28%; overflow: auto; min-height: 0; }
   .cdiff .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
   .cdiff .cd-sum { margin: 0; color: var(--ink); word-break: keep-all; overflow-wrap: anywhere; }
   .cdiff .cd-note { margin: 10px 0 0; padding: 8px 12px; border-left: 3px solid var(--warn); border-radius: var(--radius-s);
@@ -284,12 +308,18 @@
   .cdiff .cd-empty { margin: 12px 0 0; padding: 18px 14px; text-align: center; color: var(--muted); border: 1px dashed var(--line);
                      border-radius: var(--radius-s); background: var(--paper); }
   /* 폴더 구조가 바뀐 경우의 이동 표 */
-  .cdiff .cd-moves { margin-top: 14px; padding: 12px 14px; border: 1px solid var(--line); border-left: 3px solid var(--blue);
+  .cdiff .cd-moves { margin-top: 10px; padding: 9px 14px; border: 1px solid var(--line); border-left: 3px solid var(--blue);
                      border-radius: var(--radius-s); background: var(--blue-soft); }
-  .cdiff .cd-moves h3 { margin: 0 0 4px; font-size: 13.5px; color: var(--blue-deep); }
-  .cdiff .cd-moves > p { margin: 0 0 10px; color: var(--ink); font-size: 12.5px; word-break: keep-all; overflow-wrap: anywhere; }
-  .cdiff .cd-moves > p.more { margin: 8px 0 0; color: var(--muted); }
-  .cdiff .cd-mwrap { max-height: 260px; overflow: auto; border: 1px solid var(--line-soft); border-radius: var(--radius-s); background: #fff; }
+  .cdiff .cd-mhead { display: flex; align-items: center; gap: 6px; width: 100%; border: 0; background: none; padding: 0; text-align: left;
+                     color: var(--blue-deep); font-size: 13.5px; font-weight: 700; cursor: pointer; }
+  .cdiff .cd-mhead .n { color: var(--muted); font-weight: 600; font-size: 12.5px; }
+  .cdiff .cd-mhead .chev { flex: none; width: 7px; height: 7px; margin: 0 4px 0 1px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor;
+                           transform: rotate(-45deg); transition: transform .15s; }
+  .cdiff .cd-mhead[aria-expanded=true] .chev { transform: rotate(45deg); }
+  .cdiff .cd-minner { margin-top: 6px; }
+  .cdiff .cd-minner > p { margin: 0 0 8px; color: var(--ink); font-size: 12.5px; word-break: keep-all; overflow-wrap: anywhere; }
+  .cdiff .cd-minner > p.more { margin: 8px 0 0; color: var(--muted); }
+  .cdiff .cd-mwrap { max-height: 96px; overflow: auto; border: 1px solid var(--line-soft); border-radius: var(--radius-s); background: #fff; }
   .cdiff .cd-mtable { border-collapse: collapse; width: 100%; font-size: 12.5px; }
   .cdiff .cd-mtable th { position: sticky; top: 0; z-index: 1; background: var(--paper); color: var(--muted); font-weight: 600; text-align: left;
                          padding: 6px 10px; border-bottom: 1px solid var(--line-soft); white-space: nowrap; }
@@ -321,9 +351,10 @@
   .cdiff .cd-active { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin-top: 10px; padding: 8px 12px; border-radius: var(--radius-s);
                       background: var(--blue-tint); color: var(--blue-deep); font-size: 12.5px; overflow-wrap: anywhere; }
   .cdiff .cd-active code { font-family: var(--mono); font-size: 12px; word-break: break-all; }
-  /* 트리와 파일 목록. 영역이 좁으면 트리를 목록 위로 올리고 접을 수 있게 한다 */
-  .cdiff .cd-main { display: grid; grid-template-columns: 250px minmax(0, 1fr); gap: 14px; margin-top: 12px; align-items: start; }
-  .cdiff .cd-side { position: sticky; top: 12px; max-height: calc(100vh - 24px); display: flex; flex-direction: column; min-width: 0;
+  /* 트리와 선택한 파일 하나. 둘은 따로 스크롤한다. 영역이 좁으면 트리를 위로 올리고 접을 수 있게 한다 */
+  .cdiff .cd-main { flex: 1 1 auto; min-height: 0; display: grid; grid-template-columns: 280px minmax(0, 1fr);
+                    grid-template-rows: minmax(0, 1fr); gap: 14px; margin-top: 10px; }
+  .cdiff .cd-side { min-height: 0; display: flex; flex-direction: column; min-width: 0;
                     border: 1px solid var(--line); border-radius: var(--radius-s); background: #fff; }
   .cdiff .cd-sidehead { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-bottom: 1px solid var(--line-soft);
                         color: var(--muted); font-size: 12.5px; font-weight: 600; }
@@ -344,11 +375,21 @@
   .cdiff .cd-tempty { margin: 8px 10px; color: var(--faint); }
   .cdiff .dot.mod { background: var(--blue); } .cdiff .dot.add { background: var(--ok); } .cdiff .dot.del { background: var(--bad); }
   .cdiff .dot.mv { background: var(--faint); } .cdiff .dot.mv-mod { background: var(--warn); }
-  .cdiff .cd-files { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
-  .cdiff .cd-more { margin-top: 12px; display: flex; align-items: center; justify-content: center; gap: 12px; color: var(--muted); font-size: 12.5px; }
+  .cdiff .cd-pane { min-height: 0; min-width: 0; overflow: auto; overscroll-behavior: contain; display: flex; flex-direction: column; gap: 8px; }
+  .cdiff .cd-pane:focus-visible { outline-offset: -2px; }
+  .cdiff .cd-nav { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; color: var(--muted); font-size: 12.5px; }
+  .cdiff .cd-nav .pos { margin-right: auto; font-variant-numeric: tabular-nums; }
+  .cdiff .cd-nav button { padding: 3px 10px; border: 1px solid var(--line); border-radius: 6px; background: #fff; color: var(--blue); font-size: 12px; cursor: pointer; }
+  .cdiff .cd-nav button:disabled { color: var(--faint); cursor: default; }
+  .cdiff .cd-static { padding: 14px 16px; color: var(--ink); font-size: 13px; word-break: keep-all; overflow-wrap: anywhere; }
+  .cdiff .cd-static p { margin: 0 0 8px; }
+  .cdiff .cd-static .lead { font-weight: 600; }
+  .cdiff .cd-static .paths { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 4px 10px; margin: 0; }
+  .cdiff .cd-static .paths .k { color: var(--muted); font-weight: 600; font-size: 12px; }
+  .cdiff .cd-static .paths .p { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; }
   @container (max-width: 720px) {
-    .cdiff .cd-main { grid-template-columns: minmax(0, 1fr); }
-    .cdiff .cd-side { position: static; max-height: 300px; }
+    .cdiff .cd-main { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); gap: 10px; }
+    .cdiff .cd-side { max-height: 22vh; min-height: 96px; }
     .cdiff .cd-treebtn { display: inline-block; }
     .cdiff .cd-side.folded .cd-tree { display: none; }
     .cdiff .cd-side.folded .cd-sidehead { border-bottom: 0; }
@@ -413,7 +454,7 @@
   .cdiff .cd-code tr.gap .sec { font-family: var(--mono); color: var(--faint); white-space: pre; overflow: hidden; text-overflow: ellipsis; max-width: 48ch; }
   .cdiff .cd-code tr.gap .bad { color: var(--bad); }
   .cdiff .cd-code tr.eof td { padding: 3px 12px; background: #fff; font: 12px/1.5 var(--sans); color: var(--muted); border-top: 1px solid var(--line-soft); }
-  @media (prefers-reduced-motion: reduce) { .cdiff .wait::before { animation: none; } .cdiff .cd-tree .chev, .cdiff .cd-fold::before { transition: none; } }
+  @media (prefers-reduced-motion: reduce) { .cdiff .wait::before { animation: none; } .cdiff .cd-tree .chev, .cdiff .cd-fold::before, .cdiff .cd-mhead .chev { transition: none; } }
 
   /* ---- 4. 지난 실행 */
   details.history summary { cursor: pointer; padding: 14px 22px; font-weight: 700; font-size: 15px; display: flex; align-items: center; gap: 4px 10px; flex-wrap: wrap; }
@@ -441,6 +482,8 @@
                    border: 1px solid var(--line); color: var(--muted); background: #fff; vertical-align: 1px; white-space: nowrap; }
   .runs .flowtag.rem { border-color: transparent; background: var(--blue-tint); color: var(--blue-deep); }
   .runs .state.ok { color: var(--ok); } .runs .state.bad { color: var(--bad); } .runs .state.warn { color: var(--warn); } .runs .state.running { color: var(--blue); }
+  /* 이관 결과 뒤에 붙는 취약점 조치 상태는 그 상태의 색을 따로 쓴다(완료 뒤의 조치 실패가 초록으로 보이지 않게) */
+  .runs .state .sfx { color: var(--muted); } .runs .state .sfx.bad { color: var(--bad); } .runs .state .sfx.warn { color: var(--warn); }
 
   .toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); background: var(--ink); color: #fff; padding: 10px 16px; border-radius: var(--radius-s);
            font-size: 13px; max-width: min(640px, 90vw); opacity: 0; pointer-events: none; transition: opacity .2s; }
@@ -626,15 +669,14 @@
       <!-- 상태별 동작: 업로드 확인 대기는 두 가지 중 선택, 중지는 이어서 진행 -->
       <div class="act" id="remed-act"></div>
     </div>
-    <!-- 코드 변경: 상태에 code_diff가 있을 때만 표시한다. 닫혀 있는 동안에는 아무것도 받아 오지 않는다 -->
+    <!-- 코드 변경: 상태에 code_diff가 있을 때만 표시한다. 대화상자를 열기 전에는 아무것도 받아 오지 않는다 -->
     <div class="cdblock" id="cdblock" hidden>
       <div class="line">
         <h2>코드 변경</h2>
         <span class="counts" id="cd-counts"></span>
-        <button class="btn quiet" id="cd-toggle" type="button" aria-expanded="false" aria-controls="cd-host">변경 내용 보기</button>
+        <button class="btn quiet" id="cd-open" type="button" aria-haspopup="dialog" aria-controls="cd-dialog">코드 변경 보기</button>
       </div>
       <p class="cdlead">변환 전 프로젝트와 비교해 바뀐 파일을 옮긴 뒤의 위치 기준으로 보여 줍니다.</p>
-      <div class="cdhost" id="cd-host" hidden></div>
     </div>
     <details class="preview" id="preview">
       <summary>보고서 미리보기</summary>
@@ -649,6 +691,18 @@
   </details>
 </main>
 <div class="toast" id="toast" role="status"></div>
+<!-- 코드 변경 대화상자. 열 때 CodeDiff를 붙이고 닫을 때 떼어 낸다 -->
+<dialog class="cdmodal" id="cd-dialog" aria-labelledby="cd-title">
+  <div class="cdm-head">
+    <div class="cdm-title">
+      <h2 id="cd-title">코드 변경</h2>
+      <p class="cdm-name" id="cd-dname"></p>
+    </div>
+    <div class="cdm-counts" id="cd-dcounts"></div>
+    <button class="btn ghost cdm-close" id="cd-close" type="button">닫기</button>
+  </div>
+  <div class="cdm-body" id="cd-host"></div>
+</dialog>
 
 <script>
 (() => {
@@ -869,7 +923,7 @@
         const r = remTitle(st.remediation && st.remediation.status);
         if (r) return r;
       }
-      if (st.success === true) return { cls: 'ok', text: '빌드에 성공했습니다', short: '성공' };
+      if (st.success === true) return { cls: 'ok', text: '빌드에 성공했습니다', short: '완료' };
       if (st.success === false) {
         const open = st.open ?? st.unresolved ?? 0, blocked = st.blocked || 0;
         if (st.exit_code === 3) return { cls: 'bad', text: '실행이 중간에 끊겼습니다' + (st.error ? '. ' + st.error : ''), short: '끊김' };
@@ -908,18 +962,28 @@
                       STOPPED: ['warn', '조치를 멈췄습니다', '멈춤'], INTERRUPTED: ['bad', '조치가 중단되었습니다', '중단'],
                       FAILED: ['bad', '조치하지 못했습니다', '실패'], QUEUED: ['', '취약점 조치 진행 중', '진행 중'], RUNNING: ['', '취약점 조치 진행 중', '진행 중'] };
   function remTitle(status) { const t = REM_TITLE[status]; return t ? { cls: t[0], text: t[1], short: t[2] } : null; }
-  // 전체 진행에 이어서 한 취약점 조치의 결과를 짧게 쓴다. 조치를 시작하지 않았거나 끝나지 않은 실행이면 빈 문자열이다
-  const REM_SHORT = { SUCCEEDED: '조치 완료', INCOMPLETE: '일부만 조치', AWAITING_CONFIRMATION: '확인 필요',
-                      STOPPED: '조치 멈춤', INTERRUPTED: '조치 중단', FAILED: '조치 실패' };
+  // 전체 진행에 이어서 한 취약점 조치 중 목록에서 알아야 할 상태만 짧게 쓴다. 완료나 일부 조치로 끝난 조치는 붙이지 않는다
+  const REM_SHORT = { AWAITING_CONFIRMATION: '확인 필요', STOPPED: '조치 멈춤', INTERRUPTED: '조치 중단', FAILED: '조치 실패',
+                      QUEUED: '조치 대기', RUNNING: '조치 중' };
   // 빌드가 실패한 프로젝트에 이어서 한 조치가 고칠 것은 다 고치고 빌드 확인만 남았는지 확인한다(사유가 조치 전 빌드 실패 하나뿐)
   function remBuildOnly(r, tolerated) {
     return !!r && tolerated === true && r.status === 'INCOMPLETE' && Array.isArray(r.reasons)
       && r.reasons.length === 1 && r.reasons[0] === 'baseline_build_failed';
   }
+  // 목록에서 조치 상태에 쓰는 색이다. 중지 요청으로 멈춘 조치는 실패가 아니라 주의 색이다
+  function remShortCls(st) {
+    const r = st && st.remediation, status = r && typeof r === 'object' ? r.status : '';
+    if (status === 'FAILED' || (status === 'INTERRUPTED' && r.reason !== 'stop_requested')) return 'bad';
+    if (status === 'AWAITING_CONFIRMATION' || status === 'STOPPED' || status === 'INTERRUPTED') return 'warn';
+    return '';
+  }
   function remShort(st) {
-    const r = st && st.remediation;
-    if (!r || typeof r !== 'object' || st.flow === FLOW_REM || st.state !== 'finished' || r.status === 'skipped') return '';
-    if (remBuildOnly(r, r.baseline_tolerated === true)) return '취약점 조치함(빌드 미확인)';
+    if (!st || st.flow === FLOW_REM || st.state !== 'finished') return '';
+    // 새 빌드 파드에서 조치를 이어서 하는 중이면 보고서에 남은 멈춘 상태 대신 진행 중이라고 쓴다
+    const rj = st.remediation_job;
+    if (rj && typeof rj === 'object' && rj.active === true) return '취약점 조치 중';
+    const r = st.remediation;
+    if (!r || typeof r !== 'object') return '';
     return REM_SHORT[r.status] ? `취약점 ${REM_SHORT[r.status]}` : '';
   }
   // 진행하지 못한 사유 한 문장. 엔진의 중단 사유(접수 거절 등), 시작하지 못한 조치, 웹에서 알고 있는 오류 순으로 찾는다
@@ -1564,12 +1628,12 @@
 
   // ---------------------------------------------------------------- 3c. 코드 변경
   // 변환된 프로젝트의 파일을 옮긴 뒤의 위치 기준으로 원래 파일과 비교해 보여 준다.
-  // 페이지의 상태를 쓰지 않고 화면, 상태, 타이머, 요청을 모두 이 안에 두므로 대화상자로 옮길 때는 CodeDiff.mount(대화상자 본문, 실행 id)만 호출하면 된다.
+  // 페이지의 상태를 쓰지 않고 화면, 상태, 타이머, 요청을 모두 이 안에 두므로 대화상자에서는 CodeDiff.mount(대화상자 본문, 실행 id)만 호출한다.
   // 바깥에서 가져다 쓰는 것은 el뿐이고 스타일은 모두 .cdiff 아래에 있다. 서버에서 받은 글자는 모두 textContent로만 넣는다.
   const CodeDiff = (() => {
-    const PAGE_FILES = 30;        // 한 번에 그리는 파일 수. 구조를 바꾼 프로젝트는 파일이 수천 개라 나눠서 그린다
     const BIG_LINES = 400;        // 바뀐 줄이 이보다 많은 파일은 접은 채로 시작한다
     const MOVED_ONLY_SHOWN = 200; // 위치만 바뀐 파일이 이 개수 이하면 처음부터 목록에 함께 보인다
+    const MOVES_OPEN = 3;         // 폴더 구조 묶음이 이 개수 이하면 표를 펴 둔다
     const STEP = 20;              // 펼치기 한 번에 더 보여 주는 줄 수
     const CHUNK = 5000;           // 줄 요청 한 번에 받는 최대 줄 수(서버 한도와 같다)
     const WHOLE_MAX = 50000;      // 파일 전체 보기로 불러오는 최대 줄 수
@@ -1578,6 +1642,12 @@
     const CACHE_MAX = 200;        // 받아 둔 파일 변경 내용을 이 개수까지 기억해 필터를 바꿔도 다시 받지 않는다
     const KINDS = [['all', '전체'], ['modified', '수정'], ['added', '추가'], ['deleted', '삭제'], ['moved', '이동']];
     const NOT_SHOWN = '변환된 프로젝트(result.zip)나 changes.patch에서 확인해 주세요.';
+    // 정적 파일은 확장자로 정한다: 브라우저에 그대로 보내는 스크립트와 스타일, HTML, 이미지, 글꼴, 미디어, 압축 파일, 문서, 소스맵이다.
+    // 목록에 없는 확장자는 내용이 중요할 수 있으므로 정적 파일로 보지 않는다(JSP, Java, XML, properties, YAML, SQL, 빌드 파일 등)
+    const STATIC_EXT = new Set(['js', 'mjs', 'cjs', 'css', 'scss', 'sass', 'less', 'map', 'html', 'htm',
+      'png', 'jpg', 'jpeg', 'gif', 'bmp', 'ico', 'svg', 'webp', 'tif', 'tiff', 'woff', 'woff2', 'ttf', 'otf', 'eot',
+      'mp3', 'mp4', 'wav', 'ogg', 'webm', 'avi', 'mov', 'swf', 'zip', 'gz', 'tgz', 'tar', '7z', 'rar', 'jar', 'war', 'ear',
+      'pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'hwp']);
     const nf = (n) => (Number(n) || 0).toLocaleString('ko-KR');
     let S = null;                 // 지금 붙어 있는 화면의 상태. unmount하면 null이 되고, 늦게 온 응답은 자기 상태가 아니면 버린다
     let seq = 0;
@@ -1585,9 +1655,9 @@
     function mount(host, runId) {
       unmount();
       const root = el('div', 'cdiff');
-      const s = { host, root, run: String(runId), uid: ++seq, reqs: new Set(), timers: new Set(), io: null, moreIo: null, idx: null, files: [],
-                  movedOnly: 0, f: { kind: 'all', q: '', movedOnly: false, move: null }, order: [], shown: 0, fs: new Map(),
-                  cache: new Map(), rows: new Map(), cur: null, ui: {} };
+      const s = { host, root, run: String(runId), uid: ++seq, reqs: new Set(), timers: new Set(), idx: null, files: [],
+                  movedOnly: 0, f: { kind: 'all', q: '', movedOnly: false, move: null }, order: [], anc: new Map(),
+                  cache: new Map(), rows: new Map(), cur: null, st: null, rove: null, ui: {} };
       S = s;
       host.replaceChildren(root);
       loadIndex(s);
@@ -1599,9 +1669,6 @@
       if (!s) return;
       for (const c of s.reqs) c.abort();
       for (const t of s.timers) clearTimeout(t);
-      if (s.io) s.io.disconnect();
-      if (s.moreIo) s.moreIo.disconnect();
-      if (s.pinRo) s.pinRo.disconnect();
       s.root.remove();
     }
     const live = (s) => S === s;
@@ -1655,6 +1722,12 @@
       build(s);
     }
     const movedOnly = (f) => f.status === 'moved' && !f.changed;
+    function isStatic(path) {
+      const b = baseName(String(path || '')), i = b.lastIndexOf('.');
+      return i > 0 && STATIC_EXT.has(b.slice(i + 1).toLowerCase());
+    }
+    // 처음 고를 파일: 줄 단위로 보여 줄 내용이 있는 파일이다(정적 파일, 위치만 바뀐 파일, 바이너리나 생략된 파일은 아니다)
+    const hasContent = (f) => !isStatic(f.path) && !movedOnly(f) && !f.binary && !f.omitted;
     // 원래 경로와 옮긴 경로에서 뒤쪽의 같은 부분을 떼어 이동 묶음의 키를 만든다(서버가 moves를 묶는 방법과 같다)
     function moveKey(oldp, newp) {
       const a = oldp.split('/'), b = newp.split('/');
@@ -1674,18 +1747,18 @@
       if (f.status === 'moved') return f.changed ? ['mv-mod', '이동 후 수정'] : ['mv', '이동'];
       return ({ modified: ['mod', '수정'], added: ['add', '추가'], deleted: ['del', '삭제'] })[f.status] || ['mod', String(f.status || '')];
     }
-    function summaryText(sum, n) {
+    function summaryText(sum, n, nStatic) {
       const files = Number(sum.files) || n;
       const parts = [];
       if (sum.modified) parts.push(`수정 ${nf(sum.modified)}개`);
       if (sum.added) parts.push(`추가 ${nf(sum.added)}개`);
       if (sum.deleted) parts.push(`삭제 ${nf(sum.deleted)}개`);
       if (sum.moved) parts.push(`위치 이동 ${nf(sum.moved)}개`);
-      let t = `파일 ${nf(files)}개가 바뀌었습니다.` + (parts.length ? ` ${parts.join(', ')}입니다.` : '');
+      // 줄 수와 바이너리 파일 수는 머리의 칩과 파일마다의 안내에 있으므로 여기서는 종류별 수만 쓴다(넓은 화면에서 두 줄 이내)
       const both = (Number(sum.moved) || 0) - (Number(sum.moved_only) || 0);
-      if (sum.moved && both > 0) t += ` 옮긴 파일 가운데 ${nf(both)}개는 내용도 바뀌었습니다.`;
-      if (sum.added_lines || sum.removed_lines) t += ` 추가한 줄은 ${nf(sum.added_lines)}줄, 삭제한 줄은 ${nf(sum.removed_lines)}줄입니다.`;
-      if (sum.binary) t += ` 바이너리 파일 ${nf(sum.binary)}개는 내용을 비교하지 않습니다.`;
+      if (sum.moved && both > 0) parts[parts.length - 1] += `(내용도 바뀐 파일 ${nf(both)}개)`;
+      let t = `파일 ${nf(files)}개가 바뀌었습니다.` + (parts.length ? ` ${parts.join(', ')}입니다.` : '');
+      if (nStatic) t += ` 정적 파일 ${nf(nStatic)}개는 위치와 상태만 표시합니다.`;
       return t;
     }
     function build(s) {
@@ -1693,13 +1766,16 @@
       const sum = d.summary && typeof d.summary === 'object' ? d.summary : {};
       root.replaceChildren();
       if (!s.files.length) { root.appendChild(el('p', 'cd-empty', '바뀐 파일이 없습니다.')); return; }
-      root.appendChild(el('p', 'cd-sum', summaryText(sum, s.files.length)));
+      // 요약과 폴더 구조는 위쪽 상자에 모으고 높이를 제한한다. 필터 줄은 늘 보이고, 트리와 파일 내용이 나머지 높이를 모두 쓴다
+      const top = el('div', 'cd-top');
+      root.appendChild(top);
+      top.appendChild(el('p', 'cd-sum', summaryText(sum, s.files.length, s.files.filter((f) => isStatic(f.path)).length)));
       const total = Number(d.files_total) || 0;
       if (total > s.files.length) {
-        root.appendChild(el('p', 'cd-note', `바뀐 파일이 많아 ${nf(total)}개 가운데 ${nf(s.files.length)}개만 보여 줍니다. 나머지는 ${NOT_SHOWN}`));
+        top.appendChild(el('p', 'cd-note', `바뀐 파일이 많아 ${nf(total)}개 가운데 ${nf(s.files.length)}개만 보여 줍니다. 나머지는 ${NOT_SHOWN}`));
       }
       const moves = Array.isArray(d.moves) ? d.moves.filter((m) => m && Number(m.files) > 0) : [];
-      if (moves.length) root.appendChild(movesPanel(s, moves, Number(d.moves_total) || moves.length));
+      if (moves.length) top.appendChild(movesPanel(s, moves, Number(d.moves_total) || moves.length));
       // 필터 줄: 변경 종류, 경로 검색, 위치만 바뀐 파일
       const bar = el('div', 'cd-bar');
       const seg = el('div', 'cd-seg'); seg.setAttribute('role', 'group'); seg.setAttribute('aria-label', '변경 종류');
@@ -1728,6 +1804,7 @@
       const head = el('div', 'cd-sidehead');
       ui.treeCount = el('span');
       ui.tree = el('div', 'cd-tree'); ui.tree.id = `cdiff-tree-${s.uid}`;
+      ui.tree.addEventListener('keydown', (e) => treeKey(s, e));
       const tb = button('트리 접기', 'cd-treebtn');
       tb.setAttribute('aria-expanded', 'true'); tb.setAttribute('aria-controls', ui.tree.id);
       tb.addEventListener('click', () => {
@@ -1737,33 +1814,26 @@
       });
       head.append(ui.treeCount, tb);
       side.append(head, ui.tree);
-      const col = el('div');
-      col.style.minWidth = '0';
-      ui.list = el('div', 'cd-files');
-      ui.more = el('div', 'cd-more'); ui.more.hidden = true;
-      ui.moreBtn = button('', 'btn quiet', () => renderMore(s));
-      ui.moreRest = el('span');
-      ui.more.append(ui.moreBtn, ui.moreRest);
-      col.append(ui.list, ui.more);
-      main.append(side, col);
+      // 오른쪽에는 목록에서 고른 파일 하나만 보여 준다
+      ui.pane = el('section', 'cd-pane'); ui.pane.tabIndex = -1; ui.pane.setAttribute('aria-label', '고른 파일의 변경 내용');
+      main.append(side, ui.pane);
       root.appendChild(main);
-      // 파일 내용은 화면 근처에 왔을 때 받는다. 목록 끝이 가까워지면 다음 파일들을 그린다
-      s.io = new IntersectionObserver((list) => {
-        if (!live(s)) return;
-        for (const e of list) {
-          if (!e.isIntersecting) continue;
-          s.io.unobserve(e.target);
-          const st = s.fs.get(Number(e.target.dataset.id));
-          if (st && st.card === e.target && !st.folded) loadBody(s, st);
-        }
-      }, { rootMargin: '600px 0px' });
-      s.moreIo = new IntersectionObserver((list) => { if (live(s) && list.some((e) => e.isIntersecting)) renderMore(s); }, { rootMargin: '400px 0px' });
       refresh(s);
     }
     function movesPanel(s, moves, total) {
       const box = el('section', 'cd-moves'); box.setAttribute('aria-label', '폴더 구조 변경');
-      box.appendChild(el('h3', null, '폴더 구조가 바뀌었습니다'));
-      box.appendChild(el('p', null, '회사 표준 구조에 맞춰 파일 위치를 옮겼습니다. 원래 위치와 옮긴 위치는 아래 표와 같습니다. 줄을 누르면 그 묶음의 파일만 목록에 보여 줍니다.'));
+      // 머리 줄은 늘 보이고 표를 접고 편다. 묶음이 적으면 펴 두고, 많거나 좁은 화면이면 접어 둔다
+      const nFiles = moves.reduce((n, m) => n + (Number(m.files) || 0), 0);
+      const head = button(null, 'cd-mhead');
+      head.append(el('span', 'chev'), el('span', 't', '폴더 구조가 바뀌었습니다'), el('span', 'n', ` · 묶음 ${nf(total)}개, 파일 ${nf(nFiles)}개`));
+      const inner = el('div', 'cd-minner'); inner.id = `cdiff-moves-${s.uid}`;
+      head.setAttribute('aria-controls', inner.id);
+      const open = moves.length <= MOVES_OPEN && s.host.clientWidth >= 640;
+      const setOpen = (on) => { head.setAttribute('aria-expanded', String(on)); inner.hidden = !on; };
+      setOpen(open);
+      head.addEventListener('click', () => setOpen(head.getAttribute('aria-expanded') !== 'true'));
+      box.append(head, inner);
+      inner.appendChild(el('p', null, '회사 표준 구조에 맞춰 옮긴 위치입니다. 줄을 누르면 그 묶음의 파일만 목록에 보여 줍니다.'));
       const wrap = el('div', 'cd-mwrap'), t = el('table', 'cd-mtable');
       const hr = el('tr');
       hr.append(el('th', null, '원래 위치'), el('th', null, '옮긴 위치'), el('th', 'n', '파일 수'));
@@ -1784,8 +1854,8 @@
         s.ui.mrows.push({ key, tr, b, m });
         tbody.appendChild(tr);
       }
-      t.append(thead, tbody); wrap.appendChild(t); box.appendChild(wrap);
-      if (total > moves.length) box.appendChild(el('p', 'more', `옮긴 묶음이 많아 ${nf(total)}가지 가운데 ${nf(moves.length)}가지만 표에 실었습니다.`));
+      t.append(thead, tbody); wrap.appendChild(t); inner.appendChild(wrap);
+      if (total > moves.length) inner.appendChild(el('p', 'more', `옮긴 묶음이 많아 ${nf(total)}가지 가운데 ${nf(moves.length)}가지만 표에 실었습니다.`));
       return box;
     }
 
@@ -1810,12 +1880,20 @@
       s.order = [];
       treeOrder(tree.root, s.order); treeOrder(tree.del, s.order);
       ui.treeCount.textContent = `파일 ${nf(view.length)}개`;
+      s.anc = new Map();
+      ancestors(tree.root, [], s.anc); ancestors(tree.del, [], s.anc);
       drawTree(s, tree, view.length);
-      if (s.pinRo) { s.pinRo.disconnect(); s.pinRo = null; }
-      s.io.disconnect(); s.fs.clear(); s.shown = 0; s.cur = null;
-      ui.list.replaceChildren();
-      if (!view.length) ui.list.appendChild(el('p', 'cd-empty', '조건에 맞는 파일이 없습니다.'));
-      renderMore(s);
+      // 고른 파일이 새 목록에도 있으면 그대로 두고, 없으면 내용이 있는 첫 파일을 고른다
+      const keep = s.cur != null && s.order.some((f) => f.id === s.cur) ? s.cur : null;
+      const first = keep != null ? keep : (s.order.find(hasContent) || {}).id;
+      s.cur = null;
+      if (!view.length) { s.st = null; ui.pane.replaceChildren(el('p', 'cd-empty', '조건에 맞는 파일이 없습니다.')); return; }
+      if (first == null) {
+        s.st = null;
+        ui.pane.replaceChildren(el('p', 'cd-empty', '이 목록에는 줄 단위로 보여 줄 변경이 없으니, 목록에서 파일을 골라 이동과 상태를 확인해 주세요.'));
+        return;
+      }
+      select(s, first, false);
     }
     function paintActive(s) {
       const box = s.ui.active, key = s.f.move;
@@ -1863,92 +1941,103 @@
     }
     // 목록은 트리와 같은 순서(폴더 먼저, 그다음 파일)로 그린다
     function treeOrder(n, acc) { for (const c of n.dirs.values()) treeOrder(c, acc); for (const f of n.files) acc.push(f); }
+    // 파일마다 위쪽 폴더들을 기억해 두었다가, 접힌 폴더 안의 파일을 고르면 그 폴더들을 펼친다
+    function ancestors(n, chain, acc) {
+      for (const c of n.dirs.values()) ancestors(c, chain.concat(c), acc);
+      for (const f of n.files) acc.set(f.id, chain);
+    }
     function drawTree(s, tree, count) {
       const box = s.ui.tree;
       box.replaceChildren(); s.rows = new Map();
       const all = count <= TREE_OPEN_ALL;
+      s.rove = null;
       treeDir(s, tree.root, 0, box, all);
       if (tree.del.dirs.size || tree.del.files.length) { box.appendChild(el('p', 'cd-tgroup', '삭제한 파일')); treeDir(s, tree.del, 0, box, all); }
       if (!count) box.appendChild(el('p', 'cd-tempty', '파일이 없습니다.'));
+      const firstBtn = box.querySelector('button');
+      if (firstBtn) rove(s, firstBtn);
     }
     // 폴더의 하위 줄은 처음 펼칠 때 만든다. 파일이 수천 개여도 보이는 줄만 화면에 둔다
     function treeDir(s, n, depth, box, all) {
       const pad = (d) => `${10 + d * 14}px`;
       for (const d of n.dirs.values()) {
         const open = all || depth === 0;
-        const b = button(null, 'dir'); b.style.paddingLeft = pad(depth); b.title = d.name;
+        const b = button(null, 'dir'); b.style.paddingLeft = pad(depth); b.title = d.name; b.tabIndex = -1;
         b.setAttribute('aria-expanded', String(open));
         b.append(el('span', 'chev'), el('span', 'nm', d.name + '/'));
         const kids = el('div'); kids.hidden = !open;
         let built = false;
         const fill = () => { if (!built) { built = true; treeDir(s, d, depth + 1, kids, all); } };
         if (open) fill();
-        b.addEventListener('click', () => {
-          const on = b.getAttribute('aria-expanded') !== 'true';
-          b.setAttribute('aria-expanded', String(on));
-          if (on) fill();
-          kids.hidden = !on;
-        });
+        const setOpen = (on) => { b.setAttribute('aria-expanded', String(on)); if (on) fill(); kids.hidden = !on; };
+        d.open = () => setOpen(true);
+        b.addEventListener('click', () => setOpen(b.getAttribute('aria-expanded') !== 'true'));
         box.append(b, kids);
       }
       for (const f of n.files) {
         const [cls, word] = stateOf(f);
-        const b = button(null, null, () => jump(s, f.id)); b.style.paddingLeft = pad(depth); b.title = f.path;
+        const b = button(null, null, () => select(s, f.id, true)); b.style.paddingLeft = pad(depth); b.title = f.path; b.tabIndex = -1;
         b.append(el('span', 'dot ' + cls), el('span', 'nm', baseName(f.path)), el('span', 'sr', ` (${word})`));
         if (f.id === s.cur) b.setAttribute('aria-current', 'true');
         s.rows.set(f.id, b);
         box.appendChild(b);
       }
     }
-    // 아직 그리지 않은 파일이면 그 파일까지 목록을 그린 뒤 이동한다
-    function jump(s, id) {
+    // 목록에서 고른 파일 하나를 오른쪽에 그린다. 접힌 폴더 안이면 폴더를 펼치고 고른 줄이 보이게 한다
+    function select(s, id, fromList) {
       const i = s.order.findIndex((f) => f.id === id);
       if (i < 0) return;
-      if (i >= s.shown) renderMore(s, i);
-      const st = s.fs.get(id);
-      if (!st) return;
+      const f = s.order[i];
+      for (const d of s.anc.get(id) || []) if (d.open) d.open();
       const old = s.rows.get(s.cur);
       if (old) old.removeAttribute('aria-current');
       s.cur = id;
       const row = s.rows.get(id);
-      if (row) row.setAttribute('aria-current', 'true');
-      st.card.scrollIntoView({ block: 'start' });
-      st.head.focus({ preventScroll: true });
-      if (!st.folded) loadBody(s, st);
-      pin(s, st);
+      if (row) { row.setAttribute('aria-current', 'true'); row.scrollIntoView({ block: 'nearest' }); rove(s, row); }
+      const st = fileCard(s, f);
+      s.st = st;
+      s.ui.pane.replaceChildren(navBar(s, i), st.card);
+      s.ui.pane.scrollTop = 0; s.ui.pane.scrollLeft = 0;
+      if (!st.folded && !st.loaded) loadBody(s, st);
+      if (fromList === 'nav') st.head.focus({ preventScroll: true });
     }
-    // 이동한 직후 위쪽 파일의 내용이 들어오면 목표 파일이 아래로 밀리므로 잠시 위치를 다시 맞춘다. 사용자가 스크롤하면 멈춘다
-    function pin(s, st) {
-      if (s.pinRo) s.pinRo.disconnect();
-      const stop = () => { if (s.pinRo) { s.pinRo.disconnect(); s.pinRo = null; } s.root.removeEventListener('wheel', stop); s.root.removeEventListener('touchmove', stop); };
-      s.pinRo = new ResizeObserver(() => { if (live(s) && st.card.isConnected) st.card.scrollIntoView({ block: 'start' }); });
-      s.pinRo.observe(s.ui.list);
-      s.root.addEventListener('wheel', stop, { passive: true });
-      s.root.addEventListener('touchmove', stop, { passive: true });
-      const t = setTimeout(() => { s.timers.delete(t); stop(); }, 1500);
-      s.timers.add(t);
+    // 파일 머리 위의 이전 파일, 다음 파일 버튼과 순서
+    function navBar(s, i) {
+      const bar = el('div', 'cd-nav');
+      bar.appendChild(el('span', 'pos', `${nf(i + 1)} / ${nf(s.order.length)}`));
+      const prev = button('이전 파일', null, () => select(s, s.order[i - 1].id, 'nav'));
+      const next = button('다음 파일', null, () => select(s, s.order[i + 1].id, 'nav'));
+      prev.disabled = i <= 0; next.disabled = i >= s.order.length - 1;
+      bar.append(prev, next);
+      return bar;
     }
-
-    // ---- 파일 목록: PAGE_FILES개씩 그린다
-    function renderMore(s, upto) {
-      const end = Math.min(s.order.length, Math.max(s.shown + PAGE_FILES, upto == null ? 0 : upto + 1));
-      const cards = [];
-      for (let i = s.shown; i < end; i++) cards.push(fileCard(s, s.order[i]));
-      if (cards.length) s.ui.list.append(...cards);
-      s.shown = Math.max(s.shown, end);
-      for (const c of cards) if (c.dataset.watch) s.io.observe(c);
-      const rest = s.order.length - s.shown, ui = s.ui;
-      s.moreIo.unobserve(ui.more);
-      ui.more.hidden = rest <= 0;
-      if (rest > 0) {
-        ui.moreBtn.textContent = `파일 ${nf(Math.min(PAGE_FILES, rest))}개 더 보기`;
-        ui.moreRest.textContent = rest > PAGE_FILES ? `남은 파일 ${nf(rest)}개` : '';
-        s.moreIo.observe(ui.more);
-      }
+    // 트리 안에서는 한 줄만 Tab으로 들어오고, 위아래 화살표로 줄을 옮긴다. Enter와 Space는 버튼이 그대로 처리한다
+    function rove(s, b) {
+      if (s.rove && s.rove !== b) s.rove.tabIndex = -1;
+      s.rove = b; b.tabIndex = 0;
+    }
+    function treeKey(s, e) {
+      const cur = e.target.closest && e.target.closest('button');
+      if (!cur || !s.ui.tree.contains(cur)) return;
+      const rows = [...s.ui.tree.querySelectorAll('button')].filter((b) => b.getClientRects().length);
+      const i = rows.indexOf(cur);
+      let to = null;
+      if (e.key === 'ArrowDown') to = rows[i + 1];
+      else if (e.key === 'ArrowUp') to = rows[i - 1];
+      else if (e.key === 'Home') to = rows[0];
+      else if (e.key === 'End') to = rows[rows.length - 1];
+      else if ((e.key === 'ArrowRight' || e.key === 'ArrowLeft') && cur.classList.contains('dir')) {
+        const want = e.key === 'ArrowRight';
+        if ((cur.getAttribute('aria-expanded') === 'true') !== want) cur.click();
+        e.preventDefault();
+        return;
+      } else return;
+      e.preventDefault();
+      if (to) { rove(s, to); to.focus(); }
     }
     function fileCard(s, f) {
       const [cls, word] = stateOf(f);
-      const card = el('section', 'cd-file'); card.dataset.id = String(f.id);
+      const card = el('div', 'cd-file'); card.dataset.id = String(f.id);
       card.setAttribute('aria-label', `${word}: ${f.path}`);
       const head = el('div', 'cd-fhead'); head.tabIndex = -1;
       const line = el('div', 'cd-fl');
@@ -1976,19 +2065,39 @@
       const body = el('div', 'cd-body');
       card.append(head, big, body);
       const st = { f, card, head, fold, whole, big, body, folded: false, bigFold: false, loaded: false, loading: false, gaps: [], busy: false };
-      s.fs.set(f.id, st);
       fold.addEventListener('click', () => setFold(s, st, !st.folded));
       whole.addEventListener('click', () => wholeFile(s, st));
-      // 받을 내용이 없는 파일은 바로 문장을 넣고, 큰 파일은 접어 두고, 나머지는 화면 근처에 오면 받는다
-      if (f.binary || f.omitted === 'binary') { st.loaded = true; body.appendChild(note('바이너리 파일이라 내용을 표시하지 않습니다.')); }
+      // 정적 파일은 받지 않고 이동과 상태만 알린다. 받을 내용이 없는 파일은 바로 문장을 넣고, 큰 파일은 접어 둔다
+      if (isStatic(f.path)) { st.loaded = true; fold.hidden = true; body.appendChild(staticNote(f)); }
+      else if (f.binary || f.omitted === 'binary') { st.loaded = true; body.appendChild(note('바이너리 파일이라 내용을 표시하지 않습니다.')); }
       else if (f.omitted === 'too_large' || f.omitted === 'cap') { st.loaded = true; body.appendChild(note(`변경 내용이 커서 화면에 싣지 않았습니다. ${NOT_SHOWN}`)); }
       else if (f.omitted === 'unreadable' || f.omitted === 'unavailable') { st.loaded = true; body.appendChild(note(`이 파일의 변경 내용을 표시할 수 없습니다. ${NOT_SHOWN}`)); }
       else if (a + r > BIG_LINES) {
         st.bigFold = true;
         big.append(el('span', null, `바뀐 줄이 ${nf(a + r)}줄로 많아 접어 두었습니다.`), button('펼쳐 보기', 'btn quiet', () => setFold(s, st, false)));
-      } else { body.appendChild(waitNote()); card.dataset.watch = '1'; }
+      } else body.appendChild(waitNote());
       setFold(s, st, st.bigFold, true);
-      return card;
+      return st;
+    }
+    // 정적 파일을 골랐을 때 내용 대신 보여 주는 안내
+    function staticNote(f) {
+      const box = el('div', 'cd-static');
+      const a = Number(f.added) || 0, r = Number(f.removed) || 0;
+      const counts = !f.binary && (a || r) ? ` (추가 ${nf(a)}줄, 삭제 ${nf(r)}줄)` : '';
+      const paths = () => {
+        const p = el('div', 'paths');
+        p.append(el('span', 'k', '원래 위치'), pathEl('p', String(f.old_path || '')), el('span', 'k', '옮긴 위치'), pathEl('p', f.path));
+        box.appendChild(p);
+      };
+      if (f.status === 'moved' && !f.changed) { box.appendChild(el('p', 'lead', '위치만 옮긴 파일입니다.')); paths(); }
+      else if (f.status === 'added') box.appendChild(el('p', 'lead', '새로 추가한 정적 파일입니다. 정적 파일은 내용을 보여 주지 않습니다.'));
+      else if (f.status === 'deleted') box.appendChild(el('p', 'lead', '삭제한 정적 파일입니다. 정적 파일은 내용을 보여 주지 않습니다.'));
+      else {
+        const what = f.status === 'moved' ? '위치를 옮기면서 내용도 바뀐 정적 파일입니다' : '내용이 바뀐 정적 파일입니다';
+        box.appendChild(el('p', 'lead', `${what}${counts}. 정적 파일은 줄 단위로 보여 주지 않습니다.`));
+        if (f.status === 'moved') paths();
+      }
+      return box;
     }
     function setFold(s, st, folded, quiet) {
       st.folded = folded;
@@ -1996,7 +2105,7 @@
       st.fold.setAttribute('aria-expanded', String(!folded));
       st.fold.setAttribute('aria-label', folded ? '이 파일 펼치기' : '이 파일 접기');
       st.big.hidden = !(folded && st.bigFold);
-      // 처음 그릴 때(quiet)는 받지 않는다. 화면 근처에 오면 관찰자가 받는다
+      // 처음 그릴 때(quiet)는 받지 않는다. 파일을 고를 때 select가 받는다
       if (!folded && !quiet) {
         if (st.bigFold) { st.bigFold = false; st.fold.focus(); }
         loadBody(s, st);
@@ -2009,7 +2118,8 @@
       if (s.cache.size > CACHE_MAX) s.cache.delete(s.cache.keys().next().value);
     }
     async function loadBody(s, st) {
-      if (st.loading || st.loaded) return;
+      // 정적 파일은 어떤 경우에도 변경 내용을 요청하지 않는다
+      if (st.loading || st.loaded || isStatic(st.f.path)) return;
       const id = st.f.id, hit = s.cache.get(id);
       if (hit) { renderBody(s, st, hit); return; }
       st.loading = true;
@@ -2249,34 +2359,69 @@
     return { mount, unmount };
   })();
 
-  // 결과 카드의 머리 줄. 요약 칩과 열기 버튼만 페이지가 관리하고 안쪽은 CodeDiff에 맡긴다
-  const cdv = { run: null, open: false, mounted: false };
-  function showCodeDiff(st, remOnly) {
-    const sum = st.code_diff && typeof st.code_diff === 'object' ? st.code_diff : null;
-    if (remOnly || !sum || !current) { hideCodeDiff(); return; }
-    if (cdv.run !== current) { hideCodeDiff(); cdv.run = current; }
+  // 결과 카드의 요약 한 줄과 대화상자. 요약 칩, 열기와 닫기만 페이지가 관리하고 안쪽은 CodeDiff에 맡긴다
+  const cdv = { run: null, name: '', chips: [], opener: null };
+  function cdChips(sum) {
     const nf = (n) => (Number(n) || 0).toLocaleString('ko-KR');
     const chips = [el('span', 'chip', `파일 ${nf(sum.files)}개`)];
     if (sum.added_lines) chips.push(el('span', 'chip ok', `+${nf(sum.added_lines)}줄`));
     if (sum.removed_lines) chips.push(el('span', 'chip bad', `−${nf(sum.removed_lines)}줄`));
     if (sum.moved) chips.push(el('span', 'chip', `위치 이동 ${nf(sum.moved)}개`));
-    $('cd-counts').replaceChildren(...chips);
+    return chips;
+  }
+  function showCodeDiff(st, remOnly) {
+    const sum = st.code_diff && typeof st.code_diff === 'object' ? st.code_diff : null;
+    if (remOnly || !sum || !current) { hideCodeDiff(); return; }
+    if (cdv.run !== current) { hideCodeDiff(); cdv.run = current; }
+    cdv.sum = sum;
+    cdv.name = String(st.upload || current);
+    $('cd-counts').replaceChildren(...cdChips(sum));
     $('cdblock').hidden = false;
   }
   function hideCodeDiff() {
-    CodeDiff.unmount();
-    cdv.run = null; cdv.open = false; cdv.mounted = false;
-    $('cdblock').hidden = true; $('cd-host').hidden = true; $('cd-host').replaceChildren();
-    $('cd-toggle').setAttribute('aria-expanded', 'false'); $('cd-toggle').textContent = '변경 내용 보기';
+    closeCodeDiff();
+    cdv.run = null;
+    $('cdblock').hidden = true;
   }
-  // 처음 열 때 화면을 붙이고, 접었다 다시 열면 붙여 둔 화면을 그대로 보여 준다
-  $('cd-toggle').addEventListener('click', () => {
+  // 대화상자를 열 때 CodeDiff를 붙인다. 열기 전에는 아무것도 받아 오지 않는다
+  function openCodeDiff() {
     if (!cdv.run) return;
-    cdv.open = !cdv.open;
-    $('cd-host').hidden = !cdv.open;
-    $('cd-toggle').setAttribute('aria-expanded', String(cdv.open));
-    $('cd-toggle').textContent = cdv.open ? '접기' : '변경 내용 보기';
-    if (cdv.open && !cdv.mounted) { cdv.mounted = true; CodeDiff.mount($('cd-host'), cdv.run); }
+    const dlg = $('cd-dialog');
+    if (dlg.open) return;
+    cdv.opener = document.activeElement;
+    $('cd-dname').textContent = cdv.name;
+    $('cd-dcounts').replaceChildren(...(cdv.sum ? cdChips(cdv.sum) : []));
+    document.documentElement.classList.add('cdm-lock');      // 뒤의 페이지가 스크롤되지 않게 한다
+    dlg.showModal();
+    CodeDiff.mount($('cd-host'), cdv.run);
+  }
+  function closeCodeDiff() {
+    const dlg = $('cd-dialog');
+    if (dlg.open) dlg.close();
+    else onCodeDiffClosed();
+  }
+  // 닫기 버튼, Esc, 바깥 클릭 모두 이 close 이벤트로 끝난다. 화면을 떼어 내고 연 버튼으로 포커스를 돌려준다
+  function onCodeDiffClosed() {
+    CodeDiff.unmount();
+    $('cd-host').replaceChildren();
+    document.documentElement.classList.remove('cdm-lock');
+    const back = cdv.opener; cdv.opener = null;
+    if (back && back.isConnected && typeof back.focus === 'function') back.focus();
+  }
+  $('cd-open').addEventListener('click', openCodeDiff);
+  $('cd-close').addEventListener('click', () => $('cd-dialog').close());
+  $('cd-dialog').addEventListener('close', onCodeDiffClosed);
+  // 대화상자 바깥(어두운 배경)을 누르면 닫는다. 안쪽을 누르면 대상이 대화상자 자신이 아니다
+  $('cd-dialog').addEventListener('click', (e) => { if (e.target === $('cd-dialog')) $('cd-dialog').close(); });
+  // Tab이 대화상자 끝에서 브라우저 주소 표시줄로 빠지지 않고 처음으로 돌아오게 한다
+  $('cd-dialog').addEventListener('keydown', (e) => {
+    if (e.key !== 'Tab') return;
+    const all = [...$('cd-dialog').querySelectorAll('button, input, select, textarea, a[href], [tabindex]')]
+      .filter((x) => x.tabIndex >= 0 && !x.disabled && x.getClientRects().length);
+    if (!all.length) return;
+    const first = all[0], last = all[all.length - 1];
+    if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    else if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
   });
 
   // ---------------------------------------------------------------- 실행에 연결 (SSE)
@@ -2438,14 +2583,14 @@
       const li = document.createElement('li');
       li.className = (run.run_id === current) ? 'active' : '';
       const s = describe(run);
-      const short = s.short + (remShort(run) ? ` · ${remShort(run)}` : '');
+      const sfx = remShort(run);
       const cls = run.state === 'running' || run.state === 'queued' ? 'running' : s.cls;
       const tag = run.flow === FLOW_REM ? '<span class="flowtag rem">취약점 해결</span>' : '<span class="flowtag">전체 진행</span>';
       // 각 행에 업로드한 파일 이름을 표시한다(이스케이프, 길면 말줄임하고 title에 전체 이름). 이름이 없는 이전 실행이면 실행 id를 쓴다
       const fname = run.upload ? String(run.upload) : run.run_id;
       li.innerHTML = `<span class="who"><span class="fname" title="${esc(fname)}">${esc(fname)}</span>` +
                      `<span class="meta2"><span class="id">${esc(run.run_id)}</span>${tag}<span class="when">${esc(fmtWhen(run.started || 0))}</span></span></span>` +
-                     `<span class="state ${cls}">${esc(short)}</span>`;
+                     `<span class="state ${cls}">${esc(s.short)}${sfx ? `<span class="sfx ${remShortCls(run)}"> · ${esc(sfx)}</span>` : ''}</span>`;
       li.onclick = () => { attach(run.run_id, false, run.flow, run.upload); $('runcard').scrollIntoView({ behavior: 'smooth', block: 'start' }); };
       ul.appendChild(li);
     }

@@ -26,13 +26,16 @@ def _component() -> str:
     return SCRIPT[start:end]
 
 
-def test_block_sits_between_remediation_and_preview_closed_by_default() -> None:
+def test_block_sits_between_remediation_and_preview_as_one_row() -> None:
     remed, block, preview = PAGE.index('id="remed"'), PAGE.index('id="cdblock"'), PAGE.index('id="preview"')
     assert remed < block < preview
     assert '<div class="cdblock" id="cdblock" hidden>' in PAGE
     assert "<h2>코드 변경</h2>" in PAGE
-    assert re.search(r'id="cd-toggle" type="button" aria-expanded="false" aria-controls="cd-host">변경 내용 보기<', PAGE)
-    assert '<div class="cdhost" id="cd-host" hidden></div>' in PAGE
+    # one row: heading, the summary chips, one button that opens the dialog (the view itself lives in the dialog)
+    assert ('<button class="btn quiet" id="cd-open" type="button" aria-haspopup="dialog" aria-controls="cd-dialog">코드 변경 보기</button>'
+            in PAGE)
+    card = PAGE[PAGE.index('id="cdblock"'):PAGE.index('id="preview"')]
+    assert 'id="cd-host"' not in card
 
 
 def test_shown_from_the_status_hidden_for_remediation_runs_and_reset_on_attach() -> None:
@@ -40,19 +43,20 @@ def test_shown_from_the_status_hidden_for_remediation_runs_and_reset_on_attach()
     show = _function("showCodeDiff")
     assert "st.code_diff" in show and "if (remOnly || !sum || !current) { hideCodeDiff(); return; }" in show
     for chip in ("`파일 ${nf(sum.files)}개`", "`+${nf(sum.added_lines)}줄`", "`−${nf(sum.removed_lines)}줄`", "`위치 이동 ${nf(sum.moved)}개`"):
-        assert chip in show, chip
+        assert chip in _function("cdChips"), chip
     assert "hideCodeDiff();" in _function("attach")
     hide = _function("hideCodeDiff")
-    assert "CodeDiff.unmount();" in hide and "$('cdblock').hidden = true;" in hide
-    assert "setAttribute('aria-expanded', 'false')" in hide
+    assert "closeCodeDiff();" in hide and "$('cdblock').hidden = true;" in hide
+    # opening another run closes an open dialog first (attach → hideCodeDiff → closeCodeDiff)
+    assert "if (dlg.open) dlg.close();" in _function("closeCodeDiff")
 
 
-def test_nothing_is_fetched_until_the_block_is_opened() -> None:
-    # the page glue only mounts on the first open; the component fetches the index in mount
+def test_nothing_is_fetched_until_the_dialog_is_opened() -> None:
+    # the page glue mounts only when the dialog opens; the component fetches the index in mount
     glue = SCRIPT[SCRIPT.index("const cdv = {"):SCRIPT.index("// ---------------------------------------------------------------- 실행에 연결 (SSE)")]
     assert "fetch(" not in glue
-    assert "if (cdv.open && !cdv.mounted) { cdv.mounted = true; CodeDiff.mount($('cd-host'), cdv.run); }" in glue
-    assert "setAttribute('aria-expanded', String(cdv.open))" in glue
+    assert glue.count("CodeDiff.mount(") == 1 and "CodeDiff.mount($('cd-host'), cdv.run);" in _function("openCodeDiff")
+    assert "CodeDiff.mount" not in _function("showCodeDiff")
 
 
 def test_component_is_self_contained() -> None:
@@ -65,7 +69,7 @@ def test_component_is_self_contained() -> None:
     for page_thing in (r"\$\(", r"(?<![-\w])current\b", r"\brunFlow\b", r"\blastState\b", r"getElementById", r"\bauthProblem\b", r"\btoast\("):
         assert not re.search(page_thing, code), page_thing
     unmount = _function("unmount", "    ")
-    for token in ("c.abort()", "clearTimeout(t)", "s.io.disconnect()", "s.moreIo.disconnect()", "s.pinRo.disconnect()", "s.root.remove()"):
+    for token in ("c.abort()", "clearTimeout(t)", "s.root.remove()"):
         assert token in unmount, token
     # every rule of the component lives under .cdiff
     css = STYLE[STYLE.index("/* ---- CodeDiff"):STYLE.index("/* ---- 4. 지난 실행")]
@@ -92,12 +96,17 @@ def test_routes_of_the_contract() -> None:
     assert "d.end" in lines and "d.total" in lines and "start = end + 1" in lines   # ask again past a cut answer
 
 
-def test_lazy_bodies_paging_and_jump() -> None:
+def test_one_file_at_a_time() -> None:
+    """The owner (2026-11-19): "선택한 파일만 볼 수 있도록 해줘!" — the pane shows the file chosen in the list, no paging."""
     comp = _component()
-    assert "new IntersectionObserver(" in comp and "PAGE_FILES = 30" in comp and "BIG_LINES = 400" in comp
-    assert "`파일 ${nf(Math.min(PAGE_FILES, rest))}개 더 보기`" in comp
-    jump = _function("jump", "    ")
-    assert "if (i >= s.shown) renderMore(s, i);" in jump and "scrollIntoView" in jump
+    assert "PAGE_FILES" not in comp and "renderMore" not in comp and "IntersectionObserver" not in comp
+    assert "BIG_LINES = 400" in comp
+    sel = _function("select", "    ")
+    assert "s.ui.pane.replaceChildren(navBar(s, i), st.card);" in sel and "s.cur = id;" in sel
+    assert "row.setAttribute('aria-current', 'true'); row.scrollIntoView({ block: 'nearest' });" in sel
+    assert "s.ui.pane.scrollTop = 0;" in sel and "if (!st.folded && !st.loaded) loadBody(s, st);" in sel
+    # fileCard is called for the selected file only
+    assert comp.count("fileCard(s, ") == 2 and "const st = fileCard(s, f);" in sel   # the definition and this one call
 
 
 def test_texts_from_the_server_go_in_as_text() -> None:
@@ -108,7 +117,7 @@ def test_texts_from_the_server_go_in_as_text() -> None:
 
 def test_states_and_korean_texts() -> None:
     comp = _component()
-    for text in ("폴더 구조가 바뀌었습니다", "회사 표준 구조에 맞춰 파일 위치를 옮겼습니다. 원래 위치와 옮긴 위치는 아래 표와 같습니다.",
+    for text in ("폴더 구조가 바뀌었습니다", "회사 표준 구조에 맞춰 옮긴 위치입니다. 줄을 누르면 그 묶음의 파일만 목록에 보여 줍니다.",
                  "'(프로젝트 최상위)'", "'원래 위치'", "'옮긴 위치'", "'파일 수'", "'파일 경로 검색'", "'위치만 바뀐 파일도 보기'",
                  "['all', '전체'], ['modified', '수정'], ['added', '추가'], ['deleted', '삭제'], ['moved', '이동']",
                  "'이동 후 수정'", "'원래 위치:'", "'바이너리 파일이라 내용을 표시하지 않습니다.'", "변경 내용이 커서 화면에 싣지 않았습니다.",
@@ -117,7 +126,7 @@ def test_states_and_korean_texts() -> None:
                  "'파일 내용 보기'", "'파일 전체 보기'", "결과 파일을 아직 정리하고 있습니다.", "이 파일의 변경 내용을 표시할 수 없습니다.",
                  "`가려진 ${nf(n)}줄 모두 보기`", "`아래로 ${STEP}줄 더 보기`", "`위로 ${STEP}줄 더 보기`", "`바뀐 파일이 많아 ${nf(total)}개 가운데"):
         assert text in comp, text
-    assert "'변경 내용 보기'" in SCRIPT and "'접기'" in SCRIPT
+    assert ">코드 변경 보기</button>" in PAGE
     # omitted values of the API, each with its own sentence
     for value in ("'binary'", "'too_large'", "'cap'", "'unreadable'", "'unavailable'"):
         assert value in comp, value

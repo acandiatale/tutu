@@ -1129,3 +1129,19 @@ after a 200 on the upload. The user found the 404 and its cause ("원래는 file
 | Caveat told to the user | a jar that lies in the project outside the pom is a file component too and leaves the verdict under `report`; the section shows the paths | — | told |
 | Not checked | a whole scan of sbmig through the corrected call on the cluster; the stuck project needs a new run (an `INCOMPLETE` baseline scan cannot be resumed) | — | open (the user's) |
 | An interruption | the implementer was stopped by accident half-way (the task still carried the name of an earlier job, "Remove approval …"); a stopped agent cannot be resumed, so a new one finished from the partial work in the tree | — | note |
+
+## Status — 2026-11-20, the page: 「완료」, and the code changes in a large dialog (v2.1z-bd)
+
+The user: "우리 웹페이지에 성공, 취약점 일부만 조치 이부분 그냥 완료 로만 나오게 해줘!"; "소스 변경사항 보여주는거 크게 모달로
+변경 가능해? 안에 내용 그대로 때서 모달로 만들 수 있지?"; "선택한 파일만 볼 수 있도록 해줘! 정적자원들은 위치 이동 표시만
+하고 컨텐츠 내용은 없어도 돼!"
+
+| Item | Deliverable | Where | Status |
+|---|---|---|---|
+| 「완료」 | a successful run reads 「완료」 in 「지난 실행」; the remediation's short form follows only for the states a person must act on (실패, 확인 필요, 멈춤, 중단, 대기, 진행 중), in its own colour (my rule, told to the user) | `sbmig/web/static/index.html` | done |
+| The dialog | the result card keeps one row with the summary and 「코드 변경 보기」; the view opens in a native `<dialog>` (96 % × 92 % of the screen, full screen on a phone), closed by the button, Esc or the backdrop; nothing is fetched before it opens | same | done |
+| Room for the code | the summary and the folder-structure box take at most 28 % of the dialog (the box folds); the file list and the pane take the rest: 56–71 % of the dialog's height at 1440 × 900 | same | done |
+| One file at a time | the pane shows the file selected in the list; previous / next controls; the list by keyboard; drawing 30 files at a time is gone | same | done |
+| Static files | by extension: never fetched, shown with their move and status only; JSP, Java, XML, properties, YAML, SQL and unknown extensions show their content | same | done |
+| Checked | in a browser with records of 50 files (3 and 15 move groups) at 1440, 1024 and 400 px; no patch request for a static file; console clean; the offline suite (figure in the commit) | `tests/web/test_page_code_dialog.py`, `test_page_code_diff.py` | done |
+| Not checked | Edge; a real project of thousands of files in the dialog | — | open (the user's) |
