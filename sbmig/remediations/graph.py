@@ -1,7 +1,7 @@
 """취약점 조치의 전체 흐름을 LangGraph로 실행하는 모듈. 이관 그래프(``sbmig/graph/engine.py``)와는 별개다.
 노드: baseline_build -> baseline_scan -> inventory -> plan -> apply -> build -> freeze_delivery -> rescan ->
 evaluate -> report. evaluate에서 취약점이 남았고 라운드 한도 안이면 inventory로 돌아간다.
-진입점은 ``run_remediation``이며, 대기나 중지 뒤 재개하면 ``state.next_node``부터 다시 실행한다. 그래프 상태에는 작은
+진입점은 ``run_remediation``이며, 확인 대기나 중지 뒤 재개하면 ``state.next_node``부터 다시 실행한다. 그래프 상태에는 작은
 JSON 값만 두고 ``RemediationState``, 경로, ``Components``는 노드 함수들이 공유하는 holder 객체에 둔다.
 - 노드 경계마다 state를 저장한다
 - 조치 전 빌드가 실패하면 검사와 계획으로 넘어가지 않는다. ``state.baseline_tolerated``인 실행만 이어 가고,
@@ -13,11 +13,12 @@ JSON 값만 두고 ``RemediationState``, 경로, ``Components``는 노드 함수
   확정하고(build_ok=False, 재검사 없음, FAILED), 이전 라운드에서 검증된 ZIP은
   ``delivery/result-r<k>-verified.zip``으로 남긴다. discard면 결과 ZIP에 넣지 않는다
 - 버전 문자열 밖의 변경이 있거나 의존성 결과가 계획과 다른 수정본은 설정과 상관없이 내보내지 않는다
+- 계획의 제안은 모두 적용하며 사람의 승인을 기다리지 않는다
 
 Independent LangGraph of the remediation feature (not the migration graph). Only small JSON values live in the graph
 state; the `RemediationState`, the run paths and the `Components` live in a holder closed over by the node functions.
-Entry point: `run_remediation`; helpers for the service: `new_state`, `can_resume`; `build_graph` (node list for tests);
-`default_components(cfg)` wires the real implementations lazily.
+Entry point: `run_remediation`; helpers for the service: `new_state`, `can_resume`, `approval_removed`;
+`build_graph` (node list for tests); `default_components(cfg)` wires the real implementations lazily.
 """
 from __future__ import annotations
 
@@ -40,13 +41,12 @@ from .inhouse import inhouse_keys
 from .interfaces import Components, Journal, StopCheck
 from .matching import finding_key, ga_key, version_key
 from .models import (
-    AWAITING_APPROVAL,
     AWAITING_CONFIRMATION,
-    D_APPROVED,
-    D_PENDING,
-    D_REJECTED,
     FAILED,
     INCOMPLETE,
+    LEGACY_APPROVAL_MESSAGE,
+    LEGACY_APPROVAL_MESSAGE_KO,
+    LEGACY_AWAITING_APPROVAL,
     NODES,
     QUEUED,
     R_BASELINE_BUILD_FAILED,
@@ -57,8 +57,6 @@ from .models import (
     R_MANUAL_REVIEW,
     R_NO_CANDIDATE_VERSION,
     R_NOT_READY,
-    R_PENDING_APPROVAL,
-    R_REJECTED_PROPOSALS,
     R_RESIDUAL_FINDINGS,
     R_RESOLUTION_MISMATCH,
     R_ROUNDS_EXHAUSTED,
@@ -85,6 +83,7 @@ from .models import (
     RoundState,
     RunPaths,
     ScanResult,
+    StateConflict,
     UploadReceipt,
     read_json,
     sha256_file,
@@ -99,9 +98,6 @@ ROUTE = "route"
 BASELINE_LABEL = "baseline"
 # 수정본 복사와 적용이 끝났다는 표시 파일이다. 수정본 폴더 밖(rounds/<n>/)에 두어 결과 ZIP에 들어가지 않게 한다
 CANDIDATE_READY = "candidate.ready.json"
-# 서버 정책이 바뀌어 승인한 계획을 버리고 다시 계획했을 때 state.message 앞에 붙이는 문장
-POLICY_CHANGED_NOTE = ("the server policy changed since these proposals were approved: the earlier approvals were not "
-                       "applied and the plan was made again")
 # 상태가 보증하지 않는 수정본을 결과 ZIP으로 내보내지 않았을 때의 문장
 CANDIDATE_NOT_VOUCHED = ("the round {r} candidate was not delivered: the files on disk are not the complete change set "
                          "this state records")
@@ -109,10 +105,9 @@ CANDIDATE_NOT_VOUCHED = ("the round {r} candidate was not delivered: the files o
 RECURSION_BASE = 100
 RECURSION_PER_ROUND = 20
 # 성공이 아닌 사유의 우선순위.
-# 결과를 믿을 수 없는 사유, 사람이 결정할 사유, 남은 취약점 순이며 state.reason에는 첫 번째 사유가 들어간다
-_REASON_ORDER = (R_SCAN_INCOMPLETE, R_ZIP_HASH_MISMATCH, R_CANDIDATE_BUILD_FAILED, R_PENDING_APPROVAL,
-                 R_REJECTED_PROPOSALS, R_RESIDUAL_FINDINGS, R_MANUAL_REVIEW, R_NO_CANDIDATE_VERSION,
-                 R_INHOUSE_ARTIFACT)
+# 결과를 믿을 수 없는 사유, 남은 취약점 순이며 state.reason에는 첫 번째 사유가 들어간다
+_REASON_ORDER = (R_SCAN_INCOMPLETE, R_ZIP_HASH_MISMATCH, R_CANDIDATE_BUILD_FAILED, R_RESIDUAL_FINDINGS,
+                 R_MANUAL_REVIEW, R_NO_CANDIDATE_VERSION, R_INHOUSE_ARTIFACT)
 # 예외 메시지에서 마스킹할 값을 고르는 단어. 이름에 이 단어가 든 환경 변수의 값과 IVAS 아이디를 가린다
 _SECRET_WORDS = ("PASSWORD", "PASSWD", "SECRET", "TOKEN", "API_KEY", "APIKEY", "CREDENTIAL", "PRIVATE_KEY")
 _SECRET_NAMES = ("IVAS_USER_ID", "IVAS_PASSWORD")
@@ -256,7 +251,7 @@ class _Holder:
 
     # -- status helpers
     def halt(self, status: str, reason: str, next_node: str, message: str = "") -> None:
-        """승인, 확인, 중지 같은 대기 상태로 작업을 멈춘다. 보고서 노드는 실행하지 않는다."""
+        """확인, 중지 같은 대기 상태로 작업을 멈춘다. 보고서 노드는 실행하지 않는다."""
         st = self.state
         st.status, st.reason, st.next_node, st.message = status, reason, next_node, message
         st.reasons = [reason]
@@ -453,7 +448,8 @@ class _Holder:
         - `residual`: residual ROWS in the state (one per g:a, version, reason after `_merge_residuals`); a library split
           into an in-house part and a project part left for review is two rows, one per section.
         - `residual_inhouse`: the `inhouse_artifact` rows among them (one per in-house item).
-        - `proposals*`: proposals of every round, applied / rejected / pending; a variant override is its own proposal."""
+        - `proposals` / `proposals_applied`: proposals of every round and the applied ones; a variant override is its
+          own proposal."""
         st = self.state
         base = self.load_scan(st.baseline_scan)
         final = self.load_scan(st.final_scan)
@@ -465,8 +461,6 @@ class _Holder:
             "residual": len(st.residuals),
             "proposals": len(props),
             "proposals_applied": len(applied),
-            "proposals_rejected": sum(1 for p in props if p.decision == D_REJECTED),
-            "proposals_pending": sum(1 for p in props if p.decision == D_PENDING),
             # 사내 아티팩트 담당자가 처리해야 할 항목 수.
             # 보고서가 담당자 연락 안내와 함께 묶어 보여 주며, 없으면 0이다
             "residual_inhouse": sum(1 for x in st.residuals if x.reason == R_INHOUSE_ARTIFACT),
@@ -730,18 +724,14 @@ def _merge_residuals(st: RemediationState, residuals: list[Residual]) -> None:
             old.reported_version = x.reported_version
 
 
-def _rejected_key(p: Proposal) -> tuple[str, ...]:
-    """거절된 제안을 planner의 ``rejected`` 키로 바꾼다. 형식 / classifier가 있는 override는 그 변종까지 담는다.
-    효과가 없어 뺀 항목은 그 pom까지 담아, 같은 실행에서 그 pom에만 다시 제안하지 않는다.
+def _ineffective_key(p: Proposal) -> tuple[str, ...]:
+    """효과가 없어 뺀 override 제안을 planner의 ``rejected`` 키(g:a, 버전, 변종, pom)로 바꾼다.
+    같은 실행에서 그 pom에만 다시 제안하지 않는다.
 
-    (ga, to[, variant]) for a rejected proposal; (ga, to, variant, pom) for an override entry dropped as ineffective
-    (`D_INEFFECTIVE`), so only that pom's entry is never proposed again in this run."""
+    (ga, to, variant, pom) for an override entry dropped as ineffective (`D_INEFFECTIVE`)."""
     from .apply import override_variant
-    variant = override_variant(p)
-    if p.decision == D_INEFFECTIVE:
-        pom = next((e.pom for e in p.edits if e.op == "insert"), "")
-        return (p.ga, p.to_version, variant, pom)
-    return (p.ga, p.to_version, variant) if variant else (p.ga, p.to_version)
+    pom = next((e.pom for e in p.edits if e.op == "insert"), "")
+    return (p.ga, p.to_version, override_variant(p), pom)
 
 
 def _inventory_items(h: _Holder, r: int) -> dict[tuple[str, str], Any]:
@@ -764,23 +754,21 @@ def _plan(h: _Holder) -> str | None:
     current = _current_policy_hash(h)
     policy_changed = bool(current and current != st.policy_hash)
     if policy_changed:
-        # 서버 정책이 바뀌었으면 지금 정책으로 다시 계획하고, 이전 정책으로 승인한 수정본은 다시 쓰지 않는다
+        # 서버 정책이 바뀌었으면 이 라운드의 계획을 지금 정책으로 다시 만든다
         h.journal({"event": "policy_changed", "round": r})
         st.policy_hash = current
     existing = h.load_plan(r)
-    # 사람이 결정한 계획을 정책 변경 때문에 버리면 그 이유를 state.message로 알린다
-    decided = existing is not None and any(x.decision in (D_APPROVED, D_REJECTED) for x in existing.proposals)
     reuse = (existing is not None and existing.source_tree_hash == tree_hash and existing.policy_hash == st.policy_hash
              and all(x.source_tree_hash == tree_hash and x.policy_hash == st.policy_hash for x in existing.proposals))
     if reuse:
         plan = existing
         h.journal({"event": "plan_reused", "round": r, "proposals": len(plan.proposals)})
     else:
-        rejected = {_rejected_key(x) for k in range(1, r) if (pl := h.load_plan(k)) is not None
-                    for x in pl.proposals if x.decision in (D_REJECTED, D_INEFFECTIVE)}
+        rejected = {_ineffective_key(x) for k in range(1, r) if (pl := h.load_plan(k)) is not None
+                    for x in pl.proposals if x.decision == D_INEFFECTIVE}
         if existing is not None:
-            # 트리나 정책 해시가 달라진 낡은 계획은 승인할 수 없으므로 기록으로만 남기고 새로 만든다
-            rejected |= {_rejected_key(x) for x in existing.proposals if x.decision in (D_REJECTED, D_INEFFECTIVE)}
+            # 트리나 정책 해시가 달라진 낡은 계획은 기록으로만 남기고 새로 만든다
+            rejected |= {_ineffective_key(x) for x in existing.proposals if x.decision == D_INEFFECTIVE}
             stale = p.round_dir(r) / "plan.stale.json"
             write_json_atomic(stale, existing.to_dict())
             h.journal({"event": "plan_stale", "round": r})
@@ -798,18 +786,6 @@ def _plan(h: _Holder) -> str | None:
                    "residuals": len(plan.residuals)})
     rs.plan = h.rel(p.plan(r))
     _merge_residuals(st, plan.residuals)
-    replanned = policy_changed and decided and not reuse
-    if replanned:
-        h.journal({"event": "approvals_dropped", "round": r, "reason": "policy_changed"})
-        log.warning("remediation %s round %s: the server policy changed since the proposals were approved; planned again",
-                    st.id, r)
-        st.message = POLICY_CHANGED_NOTE
-    if plan.pending():
-        waiting = f"{len(plan.pending())} proposal(s) of round {r} wait for approval"
-        h.halt(AWAITING_APPROVAL, R_PENDING_APPROVAL, "plan",
-               f"{POLICY_CHANGED_NOTE} | {waiting}" if replanned else waiting)
-        h.fill_counts()
-        return None
     if not plan.to_apply():
         if st.delivery is None:
             h.deliver_original()
@@ -1209,11 +1185,6 @@ def _evaluate(h: _Holder) -> str | None:
             reasons.add(R_CANDIDATE_BUILD_FAILED)
         elif not st.delivery.scanned:
             reasons.add(R_ZIP_HASH_MISMATCH if complete else R_SCAN_INCOMPLETE)
-    props = [x for pl in h.all_plans() for x in pl.proposals]
-    if any(x.decision == D_PENDING for x in props):
-        reasons.add(R_PENDING_APPROVAL)
-    if any(x.decision == D_REJECTED for x in props):
-        reasons.add(R_REJECTED_PROPOSALS)
     residual_reasons = [x.reason or R_MANUAL_REVIEW for x in st.residuals]
     reasons.update(residual_reasons)
     if remaining:
@@ -1356,11 +1327,13 @@ def build_graph(holder: Any) -> Any:
 def run_remediation(state: RemediationState, paths: RunPaths, cfg: Any, components: Components, *,
                     save: Callable[[RemediationState], None], journal: Journal, stop: StopCheck) -> RemediationState:
     """작업 하나를 ``state.next_node``부터 끝 상태(SUCCEEDED / INCOMPLETE / FAILED)나 대기
-    상태(AWAITING_APPROVAL / AWAITING_CONFIRMATION / STOPPED)에 이를 때까지 실행한다.
-    노드 경계마다 ``save``를 호출하며, 이미 끝 상태면 아무것도 하지 않는다.
+    상태(AWAITING_CONFIRMATION / STOPPED)에 이를 때까지 실행한다.
+    노드 경계마다 ``save``를 호출하며, 이미 끝 상태이거나 이전 버전의 승인 대기 상태면 아무것도 하지 않는다.
 
-    Drive one remediation from `state.next_node` to a terminal or waiting status, saving at every node boundary."""
-    if state.status in TERMINAL:
+    Drive one remediation from `state.next_node` to a terminal or waiting status, saving at every node boundary. A
+    state an earlier version saved in `AWAITING_APPROVAL` is returned untouched like a terminal one."""
+    # 승인을 기다리던 이전 버전의 작업은 끝난 작업처럼 다루고 아무것도 실행하지 않는다
+    if state.status in TERMINAL or state.status == LEGACY_AWAITING_APPROVAL:
         return state
     _recover_accepted(paths)
     holder = _Holder(state, paths, cfg, components, save, journal, stop)
@@ -1402,20 +1375,32 @@ def find_verified_zip(paths: RunPaths) -> Path | None:
 def new_state(remediation_id: str, name: str, cfg: Any, intake: IntakeResult, configs: list[str], *,
               policy_hash: str) -> RemediationState:
     """접수가 끝난 작업의 첫 상태를 만든다.
-    QUEUED 상태로 첫 라운드의 첫 노드부터 시작하며 정책 해시와 승인 설정을 저장한다.
+    QUEUED 상태로 첫 라운드의 첫 노드부터 시작하며 정책 해시를 저장한다.
 
     The first state of an accepted remediation (QUEUED, round 1, next node = the first node)."""
     now = _now()
     return RemediationState(id=remediation_id, name=name, status=QUEUED, created=now, updated=now, node="",
                             next_node=NODES[0], round=1, configs=list(configs or []), policy_hash=policy_hash,
-                            require_approval=bool(cfg.remediation.require_approval), intake=intake)
+                            intake=intake)
 
 
 def can_resume(state: RemediationState) -> bool:
-    """작업을 재개할 수 있는 상태인지 확인한다. 대기, 중지, 중단 상태이고 다음 노드가 알려진 노드여야 한다.
+    """작업을 재개할 수 있는 상태인지 확인한다. 확인 대기, 중지, 중단 상태이고 다음 노드가 알려진 노드여야 한다.
 
-    Whether `state` can be resumed (a resumable status and a known next node)."""
+    Whether `state` can be resumed (a resumable status and a known next node). A state an earlier version saved in
+    `AWAITING_APPROVAL` never can (`approval_removed`)."""
     return state.status in RESUMABLE and state.next_node in NODES
+
+
+def approval_removed(state: RemediationState) -> StateConflict | None:
+    """승인을 기다리던 이전 버전의 작업이면 재개를 거절하는 오류를 반환하고, 아니면 None을 반환한다.
+
+    The refusal for a state an earlier version saved in `AWAITING_APPROVAL`: `StateConflict` (HTTP 409) with the
+    English reason as its message and the Korean sentence of the page in `details["message_ko"]`; None otherwise."""
+    if state.status != LEGACY_AWAITING_APPROVAL:
+        return None
+    return StateConflict(f"remediation {state.id}: {LEGACY_APPROVAL_MESSAGE}", status=state.status,
+                         message_ko=LEGACY_APPROVAL_MESSAGE_KO)
 
 
 def default_components(cfg: Any, journal: Journal | None = None) -> Components:

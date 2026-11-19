@@ -344,9 +344,8 @@ or, with `remediation.after_failed_build: framework`, was a framework project wi
 (`sbmig/remediations/chain.py`; it then tolerates the failing baseline build, accepts a candidate build that fails only with the
 baseline's errors (`maven.compare_with_baseline`) and ends `INCOMPLETE` `baseline_build_failed` when it changed versions, as an
 ordinary remediation when it changed nothing or the candidate build passed), or alone as the run flow `remediation` (§1); its outcome never changes the migration's verdict (`SBMIG-RESULT … remediation=<status>`). The web
-pod serves status, proposals and approvals under `/api/remediations/…`, and resumes a stopped remediation in a new build pod.
-With the shipped configuration (`remediation.require_approval` false, `remediation.always_approve` `[]`) every proposal is
-applied without approval, so a chained remediation normally ends in the build pod that ran the migration.
+pod serves status and files under `/api/remediations/…`, and resumes a stopped remediation in a new build pod. Every
+proposal of a plan is applied without asking anybody, so a chained remediation normally ends in the build pod that ran the migration.
 The planner keeps a wrong version out and leaves a residual for a person instead: a version property several artifacts share
 (target missing for one of them), a jump to another major no scanner hint names, a date-stamped current version (first number
 over 9999), a current version that already meets every hint, a declaration only inside a profile not active by default, a g:a

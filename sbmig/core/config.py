@@ -1096,7 +1096,7 @@ class ExternalizedConfig(BaseModel):
 
 class RemediationPolicyConfig(BaseModel):
     """취약점 조치의 서버 정책을 담는 클래스로, 새 버전을 고르는 근거 중 하나다.
-    이 값들의 해시가 승인 대기 제안에 묶이므로 정책이 바뀌면 이전 제안은 승인할 수 없다."""
+    이 값들의 해시가 계획에 묶이므로 정책이 바뀌면 멈춰 있던 조치는 이어 갈 때 계획을 다시 세운다."""
     pins: dict[str, str] = Field(default_factory=dict)        # "g:a"별로 서버가 정한 이 버전으로만 올린다
     deny: list[str] = Field(default_factory=list)             # "g:a" 또는 "g:*"는 자동으로 바꾸지 않고 직접 확인으로 남긴다
     deny_versions: dict[str, list[str]] = Field(default_factory=dict)   # "g:a"별로 후보에서 뺄 버전
@@ -1146,15 +1146,8 @@ class RemediationConfig(BaseModel):
     max_unpacked_mb: int = 4096              # 압축을 풀었을 때 전체 크기 한도(MiB)
     max_entry_mb: int = 1024                 # 항목 하나를 풀었을 때 크기 한도(MiB)
     max_compression_ratio: int = 200         # zip 폭탄을 막기 위한 항목별 압축률 한도
-    # false(기본값)면 always_approve 대상만 승인을 기다리고 나머지는 자동 적용한다.
-    # true면 모든 제안이 승인을 기다린다
-    require_approval: bool = False
-    # 승인을 기다리게 할 위험 부류다. 기본값은 빈 목록이라 모든 제안을 바로 적용한다.
-    # 넣을 수 있는 값은 major(메이저 변경), parent(부모 pom 버전), bom(import한 BOM 버전),
-    # managed_override(dependencyManagement 항목 추가)다
-    always_approve: list[str] = Field(default_factory=list)
     # 프로젝트 루트 pom을 상속하지 않는 모듈에는 그 모듈의 pom에 버전 지정을 넣는 제안을 만든다.
-    # 승인 여부는 다른 제안과 같은 규칙을 따른다. false면 제안하지 않고 직접 확인 항목으로 남긴다
+    # false면 제안하지 않고 직접 확인 항목으로 남긴다
     module_overrides: bool = True
     max_rounds: int = 3                      # 계획 -> 적용 -> 빌드 -> 재검사 반복 횟수 한도
     # 수정본 빌드가 실패했을 때의 처리다. include(기본값)는 실패한 수정본을 결과 ZIP으로 내고(상태 FAILED,
@@ -1504,7 +1497,8 @@ def _read_yaml(path: Path, sink: Optional[list[str]] = None) -> dict:
 
 
 # the keys _warn_removed_keys explains — _warn_unknown_keys does not report them a second time
-_REMOVED_KEYS = frozenset({"fix.mode", "fix.edits_max_asks_per_case", "build.pom_repositories"})
+_REMOVED_KEYS = frozenset({"fix.mode", "fix.edits_max_asks_per_case", "build.pom_repositories",
+                           "remediation.require_approval", "remediation.always_approve"})
 
 
 def _section_model(annotation: Any) -> Optional[type[BaseModel]]:
@@ -1633,6 +1627,20 @@ def _warn_removed_keys(data: dict) -> list[str]:
         out.append(f"config: build.pom_repositories={build['pom_repositories']!r} is ignored since v2 (the strip handler went with "
                    "the v1 handlers; pom-declared repositories are covered by the settings.xml mirror `mirrorOf external:*`, see "
                    "docs/RUNBOOK.md §0.1) — remove it from the yml")
+    # 취약점 조치의 승인 단계는 없어졌다. yml이나 환경 변수에 남은 값은 오류 없이 무시하고 한 번 알린다
+    env_rem = _env_override_dict().get("remediation")
+    env_rem = env_rem if isinstance(env_rem, dict) else {}
+    yml_rem = data.get("remediation") if isinstance(data.get("remediation"), dict) else {}
+    for key in ("require_approval", "always_approve"):
+        # 환경 변수 값은 합친 설정에도 들어 있으므로 환경 변수 쪽으로 한 번만 알린다
+        if key in env_rem:
+            where, shown = "env override SBMIG_*__*: ", ""
+        elif key in yml_rem:
+            where, shown = "", f"={yml_rem[key]!r}"
+        else:
+            continue
+        out.append(f"config: {where}remediation.{key}{shown} is ignored: the approval step of the vulnerability "
+                   "remediation was removed (every proposal is applied without waiting) — remove it")
     script = data.get("script") if isinstance(data.get("script"), dict) else {}
     if "max_augments_per_case" in script and "max_llm_tries_per_case" not in script:
         out.append(f"config: script.max_augments_per_case={script['max_augments_per_case']!r} counts augment steps only since "

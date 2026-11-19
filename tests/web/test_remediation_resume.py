@@ -1,4 +1,4 @@
-"""2026-11-11 (wave 4): a chained remediation that ended AWAITING_APPROVAL / AWAITING_CONFIRMATION / STOPPED in its build pod is
+"""2026-11-11 (wave 4): a chained remediation that ended AWAITING_CONFIRMATION / STOPPED in its build pod is
 resumed in a NEW build pod — a new attempt of the same run with the action `remediation-resume`. RunManager side: the Job (name
 `<migration job>-rem<attempt>`, the run label + an owner token of its own, env `SBMIG_WORKER_ACTION`), the same FIFO line and slots
 as uploads, one resume per run, restart recovery, stop. Worker side: the action runs `sbmig remediation-resume` (chain.resume), not
@@ -83,7 +83,7 @@ def finished_run(out: Path, rid: str, repo: Path | None = None) -> dict[str, byt
     (rd / "web-status.json").write_text(json.dumps({"run_id": rid, "exit_code": 0, "success": True}))
     (rd / "sbmig.log").write_text("2026-11-11 01:00:00,000 INFO x: SBMIG-RESULT ok run=" + rid + "\n")
     (rd / "remediation").mkdir()
-    (rd / "remediation" / "state.json").write_text(json.dumps({"id": rid, "status": "AWAITING_APPROVAL"}))
+    (rd / "remediation" / "state.json").write_text(json.dumps({"id": rid, "status": "STOPPED"}))
     return snapshot(rd)
 
 
@@ -458,8 +458,8 @@ def test_cli_remediation_resume_calls_chain_resume_and_prints_its_line(tmp_path,
         calls.append(Path(run_dir))
         journal({"event": "remediation_resume", "scope": "remediation"})
         assert stop() is False
-        return RemediationState(id=rd.name, name="source.zip", created=0.0, status="AWAITING_APPROVAL",
-                                reason="pending_approval")
+        return RemediationState(id=rd.name, name="source.zip", created=0.0, status="STOPPED",
+                                reason="stop_requested")
     monkeypatch.setattr(chain, "resume", fake_resume)
     cfgs = [PACKAGE_ROOT / "config" / CFG]
     try:
@@ -468,7 +468,7 @@ def test_cli_remediation_resume_calls_chain_resume_and_prints_its_line(tmp_path,
             cli.remediation_resume(run_dir=rd, config=cfgs, repo_root=None)
         assert ei.value.exit_code == 0
         printed = capsys.readouterr().out
-        assert "SBMIG-REMEDIATION run=web-20261111-030000-cccccc status=AWAITING_APPROVAL reason=pending_approval" in printed
+        assert "SBMIG-REMEDIATION run=web-20261111-030000-cccccc status=STOPPED reason=stop_requested" in printed
         assert calls == [rd.resolve()]
         ev = json.loads((rd / "journal.jsonl").read_text().splitlines()[0])
         assert ev["event"] == "remediation_resume" and ev["run_id"] == rd.name

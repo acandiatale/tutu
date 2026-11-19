@@ -1,6 +1,6 @@
 """「지난 실행」 shows the last three days (the owner, 2026-11-19: "지난 실행은 3일치만 보여주도록"): `GET /api/runs?days=N`
 cuts the list on the server so the page's 15-second refresh does not carry the whole history. Always listed whatever
-their age: runs that are queued or running, a remediation that waits for a person or runs again in a new pod, and the run
+their age: runs that are queued or running, a remediation that waits for an IVAS check or runs again in a new pod, and the run
 the page has open (`keep`). `days` = a non-negative integer, 0 / omitted = everything; anything else → 400.
 Also: a run a person stopped carries `user_stop: true` in its status, so the page can show it in the caution colour."""
 from __future__ import annotations
@@ -78,8 +78,10 @@ def test_always_listed_whatever_the_age(client) -> None:
     rd.mkdir(parents=True)
     ControlState(run_id="old-running", state=RunState.RUNNING.value, job="sbmig-old").write(rd)
     _age(rd, 10)
-    # a remediation waiting for a person
-    _run(client, "old-awaiting", 9, report={"remediation": {"status": "AWAITING_APPROVAL"}})
+    # a remediation waiting for a person to check an uncertain IVAS upload
+    _run(client, "old-awaiting", 9, report={"remediation": {"status": "AWAITING_CONFIRMATION"}})
+    # a remediation an older version left waiting for approval: that step is gone, the run ages out like any other
+    _run(client, "old-approval", 9, report={"remediation": {"status": "AWAITING_APPROVAL"}})
     # a remediation running again in a new pod
     rd2 = _run(client, "old-resumed", 8, report={"remediation": {"status": "STOPPED"}})
     ControlState(run_id="old-resumed", state=RunState.RUNNING.value, job="sbmig-old-rem2",
@@ -91,7 +93,7 @@ def test_always_listed_whatever_the_age(client) -> None:
     _run(client, "old-done", 7, report={"remediation": {"status": "SUCCEEDED"}})
     d = client.get("/api/runs?days=3&keep=old-open").json()
     assert _ids(d) == ["old-awaiting", "old-open", "old-resumed", "old-running"]
-    assert d["hidden"] == 1
+    assert d["hidden"] == 2
     states = {r["run_id"]: r["state"] for r in d["runs"]}
     assert states["old-running"] == "running"
 
@@ -134,3 +136,12 @@ def test_user_stop_flag(client) -> None:
              ("stopped", "stopped-file", "stopped-loop", "refused", "failed", "late-stop", "withdrawn", "lost")}
     assert flags == {"stopped": True, "stopped-file": True, "stopped-loop": True, "refused": None, "failed": None, "late-stop": None,
                      "withdrawn": True, "lost": None}
+
+
+def test_old_approval_state_of_a_run_is_reported_as_is(client) -> None:
+    """v2.1z-ba: a report written before the approval step was removed still says AWAITING_APPROVAL; the status passes
+    the value on unchanged (the page words it) and nothing breaks."""
+    _run(client, "legacy", 0, exit_code=0, report={"remediation": {"status": "AWAITING_APPROVAL",
+                                                                   "reason": "pending_approval"}})
+    st = client.get("/api/runs/legacy").json()
+    assert st["remediation"] == {"status": "AWAITING_APPROVAL", "reason": "pending_approval"}

@@ -103,7 +103,7 @@ Python unless `script.python` names another one (it needs pydantic + lxml, `docs
 | `sbmig recipes …` / `advisories …` | the OpenRewrite recipe catalog, the library advisories |
 | `sbmig llm-probe` / `repo-probe` / `build` / `parse-log` / `clean` | gateway check, repository lookup, Maven debugging aids, disk cleanup (manual; project copies, uploads and LLM records of finished runs only) |
 | `sbmig version` | the build identity `<version>+<12 hex>` (a digest of the code, `config/*.yml` and `knowledge/`) |
-| `sbmig remediation-resume` | continue a remediation that stopped (upload confirmation, time budget, stop, or an approval when approval is switched on; used by the build Job) |
+| `sbmig remediation-resume` | continue a remediation that stopped (upload confirmation, time budget, stop; used by the build Job) |
 
 In-house LLM gateway or agent platform through the adapter seams (`docs/ADAPTERS.md`): `--llm-plugin pkg.mod:attr`
 (tier 1, chat completion) or `--fix-plugin pkg.mod:attr` (tier 2, a fixer with `propose_script`;

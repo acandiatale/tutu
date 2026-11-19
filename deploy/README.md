@@ -205,7 +205,7 @@ Secret 의 `SBMIG_WEB_TOKEN` 을 채운다 — 그때는 `http://<host>:8765/?to
   글자가 없으면 `web`). 실행 목록에는 올린 파일 이름이 그대로 보인다. 접수에서 거절된 실행은 그 사유를 문장으로 보인다(예: Ant 프로젝트 →
   "Maven 변환 후 신청 부탁드립니다.").
   「지난 실행」은 최근 3일 안에 등록한 실행만 보인다(`GET /api/runs?days=3`, 제목 옆 「6건 · 최근 3일」, 그 아래 「최근 3일 내에 등록한 프로젝트만
-  보입니다.」). 대기·실행 중인 실행, 승인·확인을 기다리거나 도는 중인 취약점 조치, 지금 열어 둔 실행(`keep`)은 날짜와 상관없이 보인다. 목록 끝의
+  보입니다.」). 대기·실행 중인 실행, 업로드 확인을 기다리거나 도는 중인 취약점 조치, 지금 열어 둔 실행(`keep`)은 날짜와 상관없이 보인다. 목록 끝의
   「이전 실행 보기」는 전체를 불러오고(「최근 3일만 보기」로 돌아감, 다시 읽으면 3일로), 지우는 것은 없다(보기만 자른다; `days=0` 또는 없음 = 전체).
   사람이 멈춘 실행(`user_stop: true`: 결과 없이 끝났고 멈춤 요청, 대기 중 철회·시작 전 삭제, 멈춤 사유 문장 중 하나)은 빨강이 아니라 주의 색(주황)으로
   「중단되었습니다」와 함께 보인다. 엔진이 받지 못했거나 끝까지 가지 못한 실행(접수 거절, 그 밖의 중단 사유)도 주황으로 「처리할 수 없습니다」(목록 「처리 불가」)다. 빨강은 서버 쪽 문제에만 남는다: 내부 오류나 사유 없이 끝난 실행(「실행 중 오류가 났습니다」, 목록 「실행 오류」), 멈춤 요청 없이 실패한 파드, 잃어버린 파드, 조치 `FAILED`. 로그는 화면에
@@ -304,7 +304,7 @@ Secret 의 `SBMIG_WEB_TOKEN` 을 채운다 — 그때는 `http://<host>:8765/?to
 | `SBMIG_REVIEW__FIX_CRITICAL` | ConfigMap(선택) | `true` | 구조 리뷰의 critical 자동 수정을 끌 때 |
 | `SBMIG_FLEET__MIN_FREE_GB` | ConfigMap(선택) | `5` | 데이터 볼륨 여유 공간 하한(GB). 웹 파드가 업로드를 받기 전에 확인하고 모자라면 HTTP 507 로 거절한다(화면: "서버의 저장 공간이 부족해 시작하지 못했습니다"). `0` = 확인 안 함. 실행 폴더(`/data/out/<실행 id>`)는 저절로 지워지지 않는다 — 공간이 모자라면 운영자가 지운다 |
 | `SBMIG_REMEDIATION__AFTER_MIGRATION` | ConfigMap | `true` (켜서 내보냄; 코드 기본 false) | BUILD SUCCESS 뒤(사내 프레임워크 프로젝트는 빌드가 실패해도, §7) 빌드 파드에서 취약점 조치를 이어 돌릴지(§6). 끄면 `"false"` + 웹 파드 재시작 |
-| `SBMIG_REMEDIATION__REQUIRE_APPROVAL` / `FAILED_CANDIDATE` / `IVAS_ANALYSIS_TIMEOUT_MINUTES` | ConfigMap(선택) | `false` / `include` / `30` | 조치의 승인(`false` = 모든 제안을 승인 없이 적용)·실패한 수정본·IVAS 분석 대기(§6). 40 에만 literal 로 넣지 않는다(Job 이 멈춘다) |
+| `SBMIG_REMEDIATION__FAILED_CANDIDATE` / `IVAS_ANALYSIS_TIMEOUT_MINUTES` | ConfigMap(선택) | `include` / `30` | 실패한 수정본·IVAS 분석 대기(§6). 40 에만 literal 로 넣지 않는다(Job 이 멈춘다) |
 | `SBMIG_REMEDIATION__CHAIN_BUDGET_MINUTES` / `IGNORE_ACTIONS` | ConfigMap(선택) | `90` / 비어 있음(예 `'["PC","IG"]'`) | 빌드 파드 안 조치의 시간 한도(0 = 없음)·계획에서 뺄 IVAS 조치 코드(기본 없음 = 모두 고칠 대상, §6) |
 | `SBMIG_REMEDIATION__IVAS_SUMMARY_CHECK` | ConfigMap(선택) | `exact` | IVAS 요약 `components` 건수와 라이브러리 취약점 행 수를 같은지 대조 / `nonzero` = 0 인지만(§6) |
 
@@ -440,7 +440,7 @@ sbmig는 jar는 저장소에 있고 pom은 어디에도 없다는 것을 확인�
    * `volumeMounts` 의 `config`(`/etc/sbmig/settings.xml`) 줄과 `m2` 줄을 지운다
    * `volumes` 의 `config` 두 줄과 `m2` 두 줄을 지운다(artifacts.yml 을 ConfigMap 으로 줄 때만 `config` 볼륨과 마운트를 다시 둔다)
    * 선택: `sbmig-env` 에서 `SBMIG_REMEDIATION__MODULE_OVERRIDES` 를 끌(`"false"`) 때만 env 에 그 키의 `configMapKeyRef … optional: true`
-     줄을 더한다(새 81 의 `SBMIG_REMEDIATION__REQUIRE_APPROVAL` 다음 줄 그대로). 기본(켜짐)으로 쓰면 필요 없다
+     줄을 더한다(새 81 의 `SBMIG_REMEDIATION__AFTER_MIGRATION` 다음 줄 그대로). 기본(켜짐)으로 쓰면 필요 없다
 3. 80(`80-build-job.template.yaml`, 쓰는 경우만): env `SBMIG_BUILD__SETTINGS_FILE` `"/etc/sbmig/settings.xml"` → `"/data/.m2/settings.xml"`,
    env `SBMIG_BUILD__LOCAL_REPO` `"null"` → `"/data/.m2/repository"`, `m2` 마운트의 `mountPath: /home/sbmig/.m2` → `/data/.m2`,
    `config` 마운트의 `mountPath: /etc/sbmig/settings.xml` → `/data/.m2/settings.xml`(`m2` · `config` 볼륨은 그대로).
@@ -704,8 +704,8 @@ preflight / ADF / 내부 오류)이면 3. `SBMIG_FAIL_JOB_ON_BUILD_FAIL=1` 이�
 이관된 Maven 프로젝트를 그대로 빌드하고 IVAS 로 검사한 뒤, 프로젝트 pom 에 적힌 취약 라이브러리의 **버전 글자만** 고쳐 다시 빌드·재검사하고
 결과 ZIP 과 보고서를 낸다(소스·구조는 건드리지 않는다). 예외는 하나 — 간접 의존성·부모/BOM 이 관리하는 버전은 루트 pom 의
 `<dependencyManagement>` 에, 루트 pom 을 상속하지 않는 모듈이면 그 모듈 pom 의 `<dependencyManagement>` 에 `<dependency>` 항목 하나
-(groupId / artifactId / version, 변종이면 type·classifier)를 넣는 제안으로 고친다(pom 마다 제안 하나). 기본 설정에서는 **모든 제안을 승인 없이
-적용**한다(아래 "승인"). 모듈 pom 제안을 끄려면 `SBMIG_REMEDIATION__MODULE_OVERRIDES=false`(기본 true). 계약은 `docs/INTERFACES.md` "remediations (취약점 조치)", LLM 용 설명은 `agent-doc/11-remediations.md`.
+(groupId / artifactId / version, 변종이면 type·classifier)를 넣는 제안으로 고친다(pom 마다 제안 하나). 조치는 **누구에게도 묻지 않고 모든 제안을
+적용**해 끝까지 간다(아래 "승인 단계는 없다"). 모듈 pom 제안을 끄려면 `SBMIG_REMEDIATION__MODULE_OVERRIDES=false`(기본 true). 계약은 `docs/INTERFACES.md` "remediations (취약점 조치)", LLM 용 설명은 `agent-doc/11-remediations.md`.
 
 * **어디서 도나(사용자 결정 2026-11-11)**: 웹 파드가 아니라 **빌드 파드**다. 이관이 **BUILD SUCCESS** 로 끝나고 `remediation.after_migration` 이
   켜져 있으면 같은 `sbmig run` 프로세스가 이관 그래프의 `remediation` 노드(finalize 뒤)에서 별도의 조치 그래프를 부른다
@@ -720,32 +720,26 @@ preflight / ADF / 내부 오류)이면 3. `SBMIG_FAIL_JOB_ON_BUILD_FAIL=1` 이�
   프로젝트다(§7): `remediation.after_failed_build: framework`(기본)면 빌드가 실패해도 조치한다. 버전을 바꿨으면
   그 조치는 `INCOMPLETE`(`baseline_build_failed`, 화면 「조치함 · 빌드 미확인」)로 끝나고, 바꾼 것이 없거나 수정본이 빌드되면 보통 조치처럼 끝난다. `never`면 이 예외도 없다. `remediation.trusted_projects` 는 이 경로에서 묻지 않는다
   (이관이 이미 그 프로젝트를 빌드했다) — 단독 업로드만 막는 스위치다.
-* **승인 — 기본은 없음**: `remediation.require_approval` 은 false, `remediation.always_approve` 는 비어 있다. 모든 제안을 승인 없이 적용하고
-  어떤 실행도 승인 대기로 멈추지 않으므로, 이관에 이어 돈 조치는 **같은 빌드 파드에서 끝난다**(프로젝트 팀은 결과만 원하고, 빌드 파드 3개로는
-  승인 왕복을 넣기 어렵다). 사람 대신 남는 안전장치: 변경은 격리된 사본에 먼저 하고, 바꾼 프로젝트가 빌드되어야 한다(빌드를 깨는 변경 묶음은
-  통째로 조치 실패 `candidate_build_failed` — 기본 설정이면 그 수정본도 `result.zip` 으로 나오고 그렇게 표시된다, 아래 "후보 빌드가 실패하면"),
-  효과 없는 dependencyManagement 항목은 다시 빼며, 결과 ZIP 은 IVAS 로 다시 검사한다. 메이저·부모 pom·BOM 변경과 dependencyManagement 항목
-  추가는 보고서 「조치 완료」 표의 「주의」 칸과 「해야 할 일」의 "자동으로 적용한 변경 확인하기 (N건)" 으로 알린다.
-  * **승인을 다시 켜려면**: 모든 제안을 기다리게 하려면 ConfigMap `sbmig-env` 그룹 3 의 `SBMIG_REMEDIATION__REQUIRE_APPROVAL: "true"` 주석을 풀고
-    웹 파드를 재시작한다(81 에 키 줄이 이미 있다). 부류만 기다리게 하려면 이미지에 굽는 회사 yml(`config/artifacts.yml`)에
-    `remediation: {always_approve: [major, parent, bom, managed_override]}` 처럼 적고(값은 이 넷 중 필요한 것) 이미지를 다시 굽는다.
-    `always_approve` 는 env 줄로 넣지 않는다 — 81 틀이 넘기지 않아 웹 파드에만 있는 키가 되고, 그러면 Job 이 환경 대조에서 거절된다.
-  * **이미 설치한 곳의 운영자**: 이 동작에 따로 설정할 것은 없다 — 코드가 바뀔 때처럼 새 이미지로 바꾸고 웹 파드를 재시작한다.
-    `sbmig-env` 에 `SBMIG_REMEDIATION__REQUIRE_APPROVAL: "true"` 를 켜 둔 곳은 그 줄을 지우거나 `"false"` 로 바꿀 때까지 승인이 켜진 채다.
-    이미 승인 대기에 있는 실행은 그 실행 화면에서 적용 버튼을 한 번 누르면 이어 간다: 체크하지 않은 항목은 적용하지 않고 나머지를 적용하며,
-    승인이 꺼진 설정이면 다시 승인 대기로 멈추지 않는다.
-* **사람이 정할 것이 생기면**: 빌드 파드는 사람을 기다리지 못한다. `AWAITING_CONFIRMATION`(업로드 결과 확인), 승인을 켠 때의
-  `AWAITING_APPROVAL`(승인 대기)이면 상태를 저장하고 파드가 끝난다. 승인·제안·결과 파일은 웹 파드에서 본다. 화면의 승인은 라이브러리별로 묶은 체크박스 목록과 적용 버튼 하나 **`선택한 N건 적용`** 이다(N = 체크한 수):
-  체크한 제안 = 승인, 체크하지 않은 제안 = 거절, 확인 창("N건 적용, M건은 적용하지 않음") 뒤 **재개가 자동으로** 일어난다(API 로는
-  `POST …/approvals` 에 `"resume": true` — 답에 `resumed` 또는 `resume_error`, 결정은 어느 쪽이든 기록된다; 승인자 이름 `by` 는 비워도 된다).
-  체크하지 않은 제안은 보고서에 "선택하지 않아 적용하지 않은 변경" 으로 pom·항목·경로와 함께 남고, 그 작업에서는 다시 제안하지 않는다
-  (조치를 다시 실행하면 다시 제안한다). 담당자는 바로 고르지 않고 검토한 뒤에 골라도 된다 — 고르기 전에는 아무것도 적용하지 않는다.
+* **승인 단계는 없다**: 조치는 제안을 모두 적용하고 누구에게도 묻지 않으므로, 이관에 이어 돈 조치는 **같은 빌드 파드에서 끝난다**. 사람 대신
+  남는 안전장치: 변경은 격리된 사본에 먼저 하고, 바꾼 프로젝트가 빌드되어야 한다(빌드를 깨는 변경 묶음은 통째로 조치 실패
+  `candidate_build_failed` — 기본 설정이면 그 수정본도 `result.zip` 으로 나오고 그렇게 표시된다, 아래 "후보 빌드가 실패하면"), 효과 없는
+  dependencyManagement 항목은 다시 빼며, 결과 ZIP 은 IVAS 로 다시 검사한다. 메이저·부모 pom·BOM 변경과 dependencyManagement 항목 추가는
+  보고서 「조치 완료」 표의 「주의」 칸과 「해야 할 일」의 "자동으로 적용한 변경 확인하기 (N건)" 으로 알린다.
+  * **예전 설정이 남아 있어도 된다**: 회사 yml 의 `remediation:` 아래 `require_approval` · `always_approve`, 환경 변수
+    `SBMIG_REMEDIATION__REQUIRE_APPROVAL` 은 오류가 아니라 각각 WARNING 한 줄(`config: remediation.require_approval=… is ignored: the approval
+    step of the vulnerability remediation was removed (every proposal is applied without waiting) — remove it`)로 무시되고, 그 변수는 환경
+    대조에서도 빠지므로 Job 이 멈추지 않는다. 정리하려면 ConfigMap `sbmig-env` 에 그 키가 있으면 지우고(`kubectl apply -f deploy/k8s/20-configmap.yaml`,
+    웹 파드 재시작), 클러스터가 따로 고쳐 쓰는 81 사본에 그 키의 `configMapKeyRef` 줄이 있으면 지운 뒤 이미지를 다시 만든다.
+  * **승인 대기로 남아 있던 조치**: 옛 버전이 승인 대기로 저장한 조치는 끝난 것으로 보인다. 「지난 실행」에는 따로 표시하지 않고, 실행을 열면
+    「조치 미완료」와 「이 실행의 취약점 조치는 끝나지 않았습니다. 프로젝트를 다시 올리면 끝까지 진행합니다.」가 나온다(화면에 승인이라는 말은 없다). 만든 파일은 그대로 받을 수 있고, 이어서 진행은 되지 않는다(409) — 프로젝트를 다시 올린다.
+* **사람이 정할 것이 생기면**: 빌드 파드는 사람을 기다리지 못한다. `AWAITING_CONFIRMATION`(업로드 결과 확인)이면 상태를 저장하고
+  파드가 끝난다. 상태와 결과 파일은 웹 파드에서 본다.
 * **재개 = 새 빌드 파드**: Job 모드에서 이관에 이어 돈 조치의 `resume` 은 같은 Job 틀로 **새 Job** 을 같은 실행 폴더에 띄운다(Worker 동작
   `remediation-resume` → `chain.resume`). 업로드와 **같은 FIFO 줄**에서 `SBMIG_JOB_MAX_PARALLEL` 자리 하나를 기다린다(§3 "동시에 여러 건").
   필요한 것은 모두 공유 볼륨의 `state.json` 에 있다 — 검사 중에 멈췄으면 IVAS `projectId` / `analysisId`(`pending_receipt`)가 있어 **다시 올리지
   않고** 같은 분석을 이어서 조회한다. 업로드 결과 확인 대기면 웹 파드가 요청의 `confirm` / `label` / `project_id` / `analysis_id` 를 Job 을 만들기
   **전에** `state.json` 에 쓴다.
-* **웹 파드가 하는 일**: 상태·제안·승인 기록·파일 내려받기만(`/api/remediations/<이관 run id>/…`). 웹 파드는 조치를 돌리지 않으므로 Job 모드에서
+* **웹 파드가 하는 일**: 상태·파일 내려받기·재개만(`/api/remediations/<이관 run id>/…`). 웹 파드는 조치를 돌리지 않으므로 Job 모드에서
   IVAS 값을 쓰지 않는다(Secret 을 envFrom 으로 통째로 받기는 한다). 단독 업로드 `POST /api/remediations` 는 **in-process 모드에서만** 받고
   Job 모드(`k8s-job` / `local-job`)에서는 409 `not_available` 이다. in-process 모드의 단독 조치: 웹 파드 안의 작업 스레드, 한 번에 한 건,
   결과는 `/data/out/_remediations/<id>/`, `remediation.trusted_projects: true` 가 있어야 접수, 웹 파드가 다시 뜨면 `INTERRUPTED` + 명시적 재개.
@@ -753,7 +747,7 @@ preflight / ADF / 내부 오류)이면 3. `SBMIG_FAIL_JOB_ON_BUILD_FAIL=1` 이�
   설정 덮어쓰기라 Worker 의 환경 대조(§3) 대상이고, 웹 파드와 Job 파드의 값이 다르거나 한쪽에만 있으면 그 Job 은 `refuse` 로 멈춘다. `sbmig-env`
   한 곳에 두면 웹 파드(40, `envFrom`)·웹이 만드는 Job(81, 그 키의 `configMapKeyRef` 한 줄)·80 모델(`envFrom`)이 같은 값을 받는다. 40 / 81 의
   literal env 로 두면 두 파일을 늘 같이 고쳐야 하고 하나를 빠뜨리면 모든 업로드가 멈춘다 — 그래서 literal 로 두지 않았다. 끄려면 `"false"` 로 바꾸고
-  웹 파드를 재시작한다. 같은 이유로 조치 설정(`SBMIG_REMEDIATION__REQUIRE_APPROVAL`, `…__FAILED_CANDIDATE`, `…__IVAS_ANALYSIS_TIMEOUT_MINUTES`,
+  웹 파드를 재시작한다. 같은 이유로 조치 설정(`SBMIG_REMEDIATION__FAILED_CANDIDATE`, `…__IVAS_ANALYSIS_TIMEOUT_MINUTES`,
   `…__CHAIN_BUDGET_MINUTES`, `…__IGNORE_ACTIONS`, `…__IVAS_SUMMARY_CHECK`)도
   `sbmig-env` 그룹 3 에 주석으로 있고 81 에 키 줄이 있다. **40 에만 literal 로 넣으면 Job 이 멈춘다**.
 * **Secret 에 넣을 것**: `sbmig-llm` 에 `IVAS_BASE_URL`(https 주소, 끝의 `/` 없이, 주소 안에 계정·쿼리 금지), `IVAS_USER_ID`, `IVAS_PASSWORD`
@@ -786,12 +780,12 @@ preflight / ADF / 내부 오류)이면 3. `SBMIG_FAIL_JOB_ON_BUILD_FAIL=1` 이�
     빌드 Job 이다. 웹 파드가 Job env `SBMIG_FLOW` 를 넣으므로 운영자가 설정할 것은 없고 매니페스트도 그대로다(IVAS Secret 은 위와 같다).
   * PC: `sbmig run <zip|폴더> --config config/artifacts.yml --flow remediation`. `.env` 에 IVAS 세 값과 `SBMIG_BUILD__SETTINGS_FILE` 이 있어야 한다.
   * 하는 일: 이관 단계·LLM·KB 없이 올린 프로젝트를 그대로 기준 빌드(실패하면 검사 전에 `FAILED baseline_build_failed`) → 검사 → 조치 → 재검사.
-    파일·승인·재개는 이관에 이어 돈 조치와 같다(`<run dir>/remediation/`). `remediation.after_migration` · `remediation.trusted_projects` 는 묻지 않는다.
-  * 결과 줄 `SBMIG-RESULT … flow=remediation … remediation=<상태>`. 종료 코드 0 = SUCCEEDED, 2 = 그 밖의 저장 상태(승인을 켠 때의 승인 대기 포함), 3 = 시작 못 함
+    파일·재개는 이관에 이어 돈 조치와 같다(`<run dir>/remediation/`). `remediation.after_migration` · `remediation.trusted_projects` 는 묻지 않는다.
+  * 결과 줄 `SBMIG-RESULT … flow=remediation … remediation=<상태>`. 종료 코드 0 = SUCCEEDED, 2 = 그 밖의 저장 상태, 3 = 시작 못 함
     (접수 거절, 또는 IVAS 값·Maven 준비가 없을 때 플래그 `remediation:not-ready` — 보고서가 빠진 이름을 적는다).
 * **80 모델(요청별 Job, emptyDir)**: 같은 스위치·Secret 이 `envFrom` 으로 닿아 조치도 돈다. 그러나 작업 공간이 파드와 함께 사라지므로
   `run-job.sh` 는 결과 저장소에 `remediation/` 의 글로 된 요약(`report.md`, `report.json`, `state.json`, `journal.jsonl`, `delivery.json`)만 보낸다.
-  `result.zip` 은 git 에 넣지 않는다 — 필요하면 `RESULT_PUSH_CMD` 로 실행 폴더째 내보낸다. 이 모델에는 승인 화면이 없으므로 승인을 켜지 않는다.
+  `result.zip` 은 git 에 넣지 않는다 — 필요하면 `RESULT_PUSH_CMD` 로 실행 폴더째 내보낸다.
 * **후보 빌드가 실패하면**(`remediation.failed_candidate`, 기본 `include`): 실패한 수정본도 `result.zip` 으로 나온다 — 상태 `FAILED`
   `candidate_build_failed`, `delivery.build_ok` 가 `false`, IVAS 재검사 없음, `report.md` 첫 줄에 "빌드가 실패한 수정본" 경고. 앞 라운드에서 검증을
   마친 ZIP 이 있으면 `result-verified.zip`. `discard` 면 내지 않는다. "계획한 것만 바뀌었나"·해석 검증에 걸린 후보는 어느 값이든 내지 않는다.

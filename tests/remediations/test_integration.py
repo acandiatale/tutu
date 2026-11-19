@@ -33,16 +33,12 @@ from sbmig.remediations.interfaces import Components
 from sbmig.remediations.ivas import IvasHttpClient, IvasSettings, run_scan
 from sbmig.remediations.maven import ServerMaven
 from sbmig.remediations.models import (
-    AWAITING_APPROVAL,
     AWAITING_CONFIRMATION,
-    D_APPROVED,
-    D_PENDING,
-    D_REJECTED,
     FAILED,
+    LEGACY_AWAITING_APPROVAL,
     INCOMPLETE,
     STOPPED,
     SUCCEEDED,
-    Decision,
     RemediationState,
     RoundPlan,
     RunPaths,
@@ -664,77 +660,20 @@ def test_multi_module_version_in_the_root(tmp_path, shape):
     assert plan.proposals[0].kind == ("property_version" if shape == "property" else "own_management_version")
 
 
-def _approve_or_reject(env: Env, decision: str) -> None:
-    """Write the decision the way the service will: validate against the current tree / policy, then set it."""
-    data = read_json(env.paths.plan(1))
-    plan = RoundPlan.from_dict(data)
-    tree = env.tree_hash()
-    phash = planner_mod.policy_hash(env.cfg)
-    for i, p in enumerate(plan.proposals):
-        d = Decision(proposal_id=p.id, decision=decision, proposal_hash=p.proposal_hash,
-                     source_tree_hash=p.source_tree_hash, policy_hash=p.policy_hash, diff=p.diff, by="tester")
-        planner_mod.validate_decision(p, d, current_tree_hash=tree, current_policy_hash=phash)
-        data["proposals"][i]["decision"] = decision
-    write_json_atomic(env.paths.plan(1), data)
-
-
 MAJOR = {"vulns": {"example:lib:1.2.3": Vuln("CVE-2026-2002", "2.0.1")},
          "versions": {"example:lib": ["1.2.3", "1.2.9", "2.0.1"]}}
 
 
-def test_major_only_fix_is_applied_without_approval_by_default(tmp_path):
+def test_major_only_fix_is_applied_without_approval(tmp_path):
     env = start(tmp_path, {"pom.xml": war_pom(), **APP}, **MAJOR)
     out = env.run()
     assert_succeeded_delivery(env, out)
-    assert AWAITING_APPROVAL not in env.rec.statuses
+    assert LEGACY_AWAITING_APPROVAL not in env.rec.statuses
     (p,) = RoundPlan.from_dict(read_json(env.paths.plan(1))).proposals
-    assert (p.risks, p.to_version, p.decision, p.requires_approval) == (["major"], "2.0.1", "auto", False)
-    _old, new = assert_one_line_changed(env, "pom.xml")
-    assert "2.0.1" in new
-
-
-def test_major_only_fix_waits_for_approval_then_applies(tmp_path):
-    env = start(tmp_path, {"pom.xml": war_pom(), **APP}, **MAJOR, always_approve=["major"])
-    out = env.run()
-    assert out.status == AWAITING_APPROVAL and out.next_node == "plan"
-    plan = RoundPlan.from_dict(read_json(env.paths.plan(1)))
-    p = plan.proposals[0]
-    assert p.decision == D_PENDING and p.risks == ["major"] and p.to_version == "2.0.1"
+    assert (p.risks, p.to_version, p.decision) == (["major"], "2.0.1", "auto")
     assert "-      <version>1.2.3</version>" in p.diff and "+      <version>2.0.1</version>" in p.diff
-    assert not env.paths.report_md.exists() and len(env.ivas.uploads) == 1
-    _approve_or_reject(env, D_APPROVED)
-    out = env.run()
-    assert env.events("plan_reused") and not env.events("plan_stale")       # resume did not re-plan
-    assert_succeeded_delivery(env, out)
     _old, new = assert_one_line_changed(env, "pom.xml")
     assert "2.0.1" in new
-
-
-def test_major_only_fix_rejected_is_incomplete_with_the_original_bytes(tmp_path):
-    env = start(tmp_path, {"pom.xml": war_pom(), **APP}, **MAJOR, always_approve=["major"])
-    before = env.tree_hash()
-    env.run()
-    _approve_or_reject(env, D_REJECTED)
-    out = env.run()
-    assert out.status == INCOMPLETE and out.reason == "rejected_proposals"
-    assert env.paths.delivery_zip.read_bytes() == env.upload and env.tree_hash() == before
-    assert len(env.ivas.uploads) == 1
-    assert_clean_artifacts(env)
-
-
-def test_policy_change_before_resume_replans_and_never_uses_the_old_approval(tmp_path):
-    env = start(tmp_path, {"pom.xml": war_pom(), **APP}, **MAJOR, always_approve=["major"])
-    env.run()
-    _approve_or_reject(env, D_APPROVED)
-    env.cfg.remediation.policy.deny_versions = {"example:lib": ["1.2.9"]}    # the server policy changed meanwhile
-    out = env.run()
-    assert env.events("policy_changed") and env.events("plan_stale")
-    assert out.status == AWAITING_APPROVAL and out.policy_hash == planner_mod.policy_hash(env.cfg)
-    plan = RoundPlan.from_dict(read_json(env.paths.plan(1)))
-    assert plan.policy_hash == out.policy_hash and plan.proposals[0].decision == D_PENDING
-    assert (env.paths.round_dir(1) / "plan.stale.json").is_file()
-    assert len(env.ivas.uploads) == 1 and env.tree_hash() == intake_mod.tree_hash(
-        env.paths.accepted, intake_mod.manifest_paths(env.paths.manifest))
 
 
 BOM_ROOT = ("<project>\n  <modelVersion>4.0.0</modelVersion>\n  <groupId>example</groupId>\n"
@@ -806,43 +745,20 @@ def assert_only_inserted_lines(env: Env, pom: str) -> list[str]:
 
 
 @pytest.mark.parametrize("kind", sorted(OVERRIDE_CASES))
-def test_override_is_applied_without_approval_unless_its_class_is_listed(tmp_path, kind):
-    root, world, vulns, versions, ga, _frm, to, _origin = OVERRIDE_CASES[kind]
-    # require_approval false and managed_override not in always_approve: the same-major override does not wait
-    env = start(tmp_path, {"pom.xml": root, **APP}, vulns=vulns, versions=versions, world=world,
-                always_approve=["major"])
+def test_override_is_applied_without_approval(tmp_path, kind):
+    root, world, vulns, versions, ga, frm, to, _origin = OVERRIDE_CASES[kind]
+    env = start(tmp_path, {"pom.xml": root, **APP}, vulns=vulns, versions=versions, world=world)
     out = env.run()
     assert_succeeded_delivery(env, out)
-    assert AWAITING_APPROVAL not in env.rec.statuses
-    assert AWAITING_APPROVAL not in {e.get("status") for e in env.rec.events}
+    assert LEGACY_AWAITING_APPROVAL not in env.rec.statuses
+    assert LEGACY_AWAITING_APPROVAL not in {e.get("status") for e in env.rec.events}
     (p,) = RoundPlan.from_dict(read_json(env.paths.plan(1))).proposals
-    assert (p.ga, p.kind, p.decision, p.requires_approval) == (ga, "managed_override", "auto", False)
-    assert "always needs approval" not in p.note
-    assert out.rounds[0].applied == [p.id]
-    inserted = assert_only_inserted_lines(env, "pom.xml")
-    assert f"<version>{to}</version>" in [ln.strip() for ln in inserted]
-
-
-@pytest.mark.parametrize("kind", sorted(OVERRIDE_CASES))
-def test_override_waits_for_approval_then_inserts_the_entry(tmp_path, kind):
-    root, world, vulns, versions, ga, frm, to, origin = OVERRIDE_CASES[kind]
-    # approval switched on for the class: the override waits
-    env = start(tmp_path, {"pom.xml": root, **APP}, vulns=vulns, versions=versions, world=world,
-                always_approve=["managed_override"])
-    before = env.tree_hash()
-    out = env.run()
-    assert out.status == AWAITING_APPROVAL and out.next_node == "plan", (out.reason, out.reasons, out.message)
-    plan = RoundPlan.from_dict(read_json(env.paths.plan(1)))
-    (p,) = plan.proposals
     assert (p.ga, p.from_version, p.to_version, p.kind, p.risks, p.decision) == (
-        ga, frm, to, "managed_override", ["managed_override"], D_PENDING)
+        ga, frm, to, "managed_override", ["managed_override"], "auto")
     assert p.edits[0].op == "insert" and p.edits[0].pom == "pom.xml"
     assert f"+        <version>{to}</version>" in p.diff or f"+      <version>{to}</version>" in p.diff
-    assert "will NOT move this version any more" in p.note
-    assert env.tree_hash() == before and len(env.ivas.uploads) == 1
-    _approve_or_reject(env, D_APPROVED)
-    out = env.run()
-    assert_succeeded_delivery(env, out)
+    assert "will NOT move this version any more" in p.note and "always needs approval" not in p.note
+    assert out.rounds[0].applied == [p.id]
     inserted = assert_only_inserted_lines(env, "pom.xml")
     assert [ln.strip() for ln in inserted if "Id>" in ln or "<version>" in ln] == [
         f"<groupId>{ga.split(':')[0]}</groupId>", f"<artifactId>{ga.split(':')[1]}</artifactId>", f"<version>{to}</version>"]
@@ -850,21 +766,6 @@ def test_override_waits_for_approval_then_inserts_the_entry(tmp_path, kind):
     assert {d["version"] for m in resolved["modules"] for d in m["dependencies"]
             if f"{d['group_id']}:{d['artifact_id']}" == ga} == {to}
     assert out.counts["final_findings"] == 0 and out.residuals == []
-
-
-@pytest.mark.parametrize("kind", sorted(OVERRIDE_CASES))
-def test_override_rejected_is_incomplete_and_nothing_changes(tmp_path, kind):
-    root, world, vulns, versions, *_ = OVERRIDE_CASES[kind]
-    env = start(tmp_path, {"pom.xml": root, **APP}, vulns=vulns, versions=versions, world=world,
-                always_approve=["managed_override"])
-    before = env.tree_hash()
-    assert env.run().status == AWAITING_APPROVAL
-    _approve_or_reject(env, D_REJECTED)
-    out = env.run()
-    assert out.status == INCOMPLETE and out.reason == "rejected_proposals", (out.reason, out.reasons)
-    assert env.paths.delivery_zip.read_bytes() == env.upload and env.tree_hash() == before
-    assert len(env.ivas.uploads) == 1
-    assert_clean_artifacts(env)
 
 
 def test_baseline_build_failure_never_scans(tmp_path):

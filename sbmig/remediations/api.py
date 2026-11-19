@@ -4,16 +4,13 @@
   상한(``remediation.max_upload_mb``)과 ZIP 서명(PK)을 확인한다
 - ZIP 검사와 상태 파일 읽기는 이벤트 루프를 막지 않도록 스레드풀에서 실행한다
 - 오류 응답은 항상 ``{"error", "code", …}`` 형태이고, 비밀 값과 서버 절대 경로는 넣지 않는다
+- Job 모드의 웹 파드는 취약점 조치를 직접 실행하지 않는다. 단독 업로드는 본문을 받기 전에 409 ``not_available``을
+  반환하고, 이관에 이어 실행된 조치는 같은 경로로 조회한다. 재개는 새 빌드 파드가 진행한다
 
 The `/api/remediations` router (contract: API.md). Error mapping: IntakeRejected → 400, NotReady → 503,
-ApprovalMismatch / StateConflict / NotAvailable → 409, unknown id → 404, bad id → 400.
-Job 모드의 웹 파드는 취약점 조치를 직접 실행하지 않는다. 단독 업로드는 본문을 받기 전에 409 ``not_available``을
-반환하고, 이관에 이어 실행된 조치는 같은 경로로 조회하고 승인한다. 재개는 새 빌드 파드가 진행한다.
-승인 요청에 ``"resume": true``가 있으면 결정을 기록한 뒤 바로 재개한다.
-재개가 거절돼도 결정은 남고, 응답의 ``resumed: false``와 ``resume_error``에 이유를 담는다.
-
-Approvals with `"resume": true` resume right after the decisions are written; a refused resume keeps the decisions and is
-reported as `resumed: false` + `resume_error`. `by` is optional.
+StateConflict / NotAvailable → 409, unknown id → 404, bad id → 400. A 409 carries `message_ko` when the service gave
+one (the refused resume of a state saved in `AWAITING_APPROVAL` by an earlier version: the approval step, with its
+`proposals` / `approvals` routes, was removed).
 """
 from __future__ import annotations
 
@@ -26,13 +23,13 @@ from fastapi import APIRouter, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
 from starlette.concurrency import run_in_threadpool
 
-from .models import ApprovalMismatch, Decision, IntakeRejected, NotReady, StateConflict
+from .models import IntakeRejected, NotReady, StateConflict
 from .service import BadRemediationId, NotAvailable, RemediationManager, UnknownRemediation
 
 log = logging.getLogger("sbmig.remediations.api")
 
 # 경로나 내부 값이 응답에 섞이지 않도록 이 목록에 있는 세부 항목만 내보낸다
-_SAFE_DETAILS = ("missing", "fields", "proposals", "status", "pending", "proposal_id", "mode")
+_SAFE_DETAILS = ("missing", "status", "mode", "message_ko")
 _MEDIA = {".md": "text/markdown; charset=utf-8", ".json": "application/json", ".zip": "application/zip",
           ".jsonl": "application/x-ndjson", ".log": "text/plain; charset=utf-8", ".patch": "text/plain; charset=utf-8"}
 _ATTACH = (".zip", ".jsonl", ".patch")
@@ -50,7 +47,7 @@ def error_response(exc: BaseException) -> JSONResponse:
         status = 400
     elif isinstance(exc, NotReady):
         status = 503
-    elif isinstance(exc, (ApprovalMismatch, StateConflict, NotAvailable)):
+    elif isinstance(exc, (StateConflict, NotAvailable)):
         status = 409
     elif isinstance(exc, ValueError):
         return JSONResponse({"error": str(exc), "code": "bad_request"}, status_code=400)
@@ -154,43 +151,6 @@ def create_router(manager: RemediationManager, max_upload_bytes: int | None = No
     async def result(rid: str) -> JSONResponse:
         try:
             return JSONResponse(await _call(manager.result, rid))
-        except Exception as e:  # noqa: BLE001
-            return error_response(e)
-
-    @r.get("/{rid}/proposals")
-    async def proposals(rid: str, all: str | None = None) -> JSONResponse:
-        every = (all or "").strip().lower() in ("1", "true", "yes", "on")
-        try:
-            return JSONResponse(await _call(manager.proposals, rid, every))
-        except Exception as e:  # noqa: BLE001
-            return error_response(e)
-
-    @r.post("/{rid}/approvals")
-    async def approvals(rid: str, request: Request) -> JSONResponse:
-        try:
-            body = await _json_body(request)
-            by = str(body.get("by") or "").strip()
-            items = body.get("decisions")
-            if not isinstance(items, list) or not all(isinstance(x, dict) for x in items):
-                raise ValueError("decisions must be a list of objects")
-            decisions = [Decision.from_dict({**x, "by": by}) for x in items]
-            then_resume = body.get("resume")
-            if then_resume is not None and not isinstance(then_resume, bool):
-                raise ValueError("resume must be true or false")
-            out = await _call(manager.decide, rid, decisions, by)
-            if not then_resume:
-                return JSONResponse(out)
-            # 결정은 이미 기록됐으므로 재개가 거절돼도 그대로 두고 거절 내용(code / error)만 응답에 넣는다
-            try:
-                await _call(manager.resume, rid, None, None, None, None, by)
-            except Exception as e:  # noqa: BLE001 — the decisions stay written; the refusal is part of the answer
-                refused = json.loads(error_response(e).body)
-                return JSONResponse({**out, "resumed": False,
-                                     "resume_error": {"code": refused.get("code"), "error": refused.get("error")}})
-            return JSONResponse({**out, "resumed": True, "resume_error": None})
-        except TypeError:
-            return JSONResponse({"error": "each decision needs proposal_id and decision", "code": "bad_request"},
-                                status_code=400)
         except Exception as e:  # noqa: BLE001
             return error_response(e)
 

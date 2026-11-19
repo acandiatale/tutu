@@ -122,7 +122,6 @@ SAMPLES: list[tuple[str, str, list[str]]] = [
      "would not reach them"), ["app-boot", "app-domain"]),
     ("declared_wins", (f"{GA} is declared with a version in app-domain/pom.xml (1.0): a declared version wins over "
      "<dependencyManagement>, so an override entry would not change it"), [GA, "app-domain/pom.xml", "1.0"]),
-    ("rejected_earlier", f"{GA} → 1.1 was rejected in an earlier decision; not proposed again", [GA, "1.1"]),
     ("inventory_incomplete_plan", "inventory incomplete: nothing planned (module app: pom not readable (missing))", ["app"]),
     ("inventory_incomplete", "inventory incomplete", []),
     ("inventory_incomplete_msg", "inventory incomplete: Maven resolution is incomplete", []),
@@ -141,12 +140,8 @@ SAMPLES: list[tuple[str, str, list[str]]] = [
     ("override_managed", (f"adds a <dependencyManagement> entry {GA}:1.1 to the root pom.xml: overrides the version managed "
      "by org.example:bom:5 (1.0 → 1.1)"), [f"{GA}:1.1", "org.example:bom:5"]),
     ("override_warning", planner_mod.OVERRIDE_WARNING, []),
-    # the planner no longer writes this sentence; plans saved by earlier versions still carry it
-    ("override_approval", "always needs approval: an inserted <dependencyManagement> entry is never applied "
-                          "automatically", []),
     ("merge_covers", f"one edit also covers {GA}-extra:1.0 (same version line)", [f"{GA}-extra:1.0"]),
     ("merge_target", f"target 1.2 chosen for {GA} (highest of the merged targets)", ["1.2", GA]),
-    ("pending_note", "2 proposal(s) wait for approval of their exact diff", ["2"]),
     ("managed_by_direct", "managed by org.example:parent:3.0, which the project poms do not declare directly",
      ["org.example:parent:3.0"]),
     ("managed_by", "managed by org.example:bom:5.0", ["org.example:bom:5.0"]),
@@ -224,9 +219,6 @@ SAMPLES: list[tuple[str, str, list[str]]] = [
     ("scan_incomplete", "final scan incomplete: page_missing, total_mismatch", ["결과 페이지 누락", "전체 개수가 바뀜"]),
     ("maven_incomplete", "Maven resolution incomplete: build target svc-a: no pom.xml", ["svc-a"]),
     ("scan_missing", "the scan this round plans from is missing or incomplete", []),
-    ("pending_halt", "3 proposal(s) of round 2 wait for approval", ["3", "2"]),
-    ("policy_replanned", ("the server policy changed since these proposals were approved: the earlier approvals were not "
-     "applied and the plan was made again"), ["서버 설정이 바뀌어"]),
     ("claim_held", ("another process is already working on this run: pid 41 on host sbmig-run-rem2 since "
      "2026-11-17T10:00:00Z (attempt 2)"), ["41", "sbmig-run-rem2", "2026-11-17T10:00:00Z", "시도 2"]),
     ("candidate_not_vouched", ("the round 2 candidate was not delivered: the files on disk are not the complete change set "
@@ -304,8 +296,8 @@ SAMPLES: list[tuple[str, str, list[str]]] = [
     ("pom_cannot_open", "cannot be opened (permission denied)", ["권한"]),
     ("pom_encoding_unknown", "character encoding unknown (the bytes do not decode as utf-16-le)", []),
     ("report_not_written", "report not written: OSError: disk full", ["OSError: disk full"]),
-    ("stale_run", ("the migration run has ended while this remediation was AWAITING_APPROVAL (its build pod is gone); "
-     "nothing is re-sent automatically"), ["승인 대기"]),
+    ("stale_run", ("the migration run has ended while this remediation was RUNNING (its build pod is gone); "
+     "nothing is re-sent automatically"), ["진행 중"]),
 ]
 
 
@@ -525,13 +517,9 @@ def test_an_ineffective_override_entry():
 
 
 def test_three_pods_review_sentences():
-    """v2.1z-ap: the re-plan reason, the claim refusal and the unvouched candidate read in Korean."""
+    """v2.1z-ap: the claim refusal and the unvouched candidate read in Korean (the re-plan reason about approvals
+    went with the approval step)."""
     from sbmig.remediations import chain, graph
-    note = graph.POLICY_CHANGED_NOTE
-    assert i18n.ko_text(note) == ("서버 설정이 바뀌어 앞서 승인한 내용은 적용하지 않고 계획을 다시 세웠습니다. "
-                                  "변경 내용을 다시 확인해 주세요.")
-    both = i18n.ko_text(f"{note} | 2 proposal(s) of round 1 wait for approval")
-    assert both.startswith("서버 설정이 바뀌어") and both.endswith("라운드 1의 제안 2건이 승인을 기다립니다.")
     assert i18n.ko_text(chain.claim_refusal(None)) == "다른 프로세스가 이미 이 실행을 진행하고 있습니다."
     assert i18n.ko_text(chain.CLAIM_HELD) == "다른 프로세스가 이미 이 실행을 진행하고 있습니다."
     assert i18n.ko_text(chain.claim_refusal({"pid": 7, "host": "pod-a", "started": "2026-11-17T00:00:00Z"})) == (

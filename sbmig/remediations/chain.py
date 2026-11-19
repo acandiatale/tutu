@@ -6,8 +6,9 @@ remediation``)은 ``run_only``를 호출한다.
 - 이관이 끝난 프로젝트 트리를 ZIP으로 묶어 ``intake.accept_zip``에 넣는다.
   ``remediation.trusted_projects``는 확인하지 않는다
 - Maven 로컬 저장소는 이관과 같은 것을 쓴다
-- 빌드 파드는 승인을 기다리지 않는다. AWAITING_APPROVAL / AWAITING_CONFIRMATION 상태를 저장하고 끝나며,
+- 빌드 파드는 사람을 기다리지 않는다. AWAITING_CONFIRMATION 상태를 저장하고 끝나며,
   재개할 때는 새 빌드 파드가 ``resume``을 호출한다
+- 이전 버전이 AWAITING_APPROVAL로 저장한 조치는 재개하지 않고 ``StateConflict``를 던진다
 - ``remediation.chain_budget_minutes``를 넘기면 STOPPED(사유 ``chain_budget``)로 멈추고 나중에 재개할 수 있다
 - ``run_only``는 준비가 안 됐으면 상태를 만들지 않고 ``RemediationNotReady``를 던진다
 - 상태를 진행시키는 동안 ``claim.json``으로 조치 폴더를 점유하며, 다른 프로세스가 점유 중이면 아무것도 바꾸지 않는다
@@ -91,7 +92,7 @@ def load_state(run_dir: Path | str) -> RemediationState | None:
 
 # ---------------------------------------------------------------------------- 실행 폴더 점유 / run claim
 # 상태를 진행시키는 프로세스는 조치 폴더 하나에 하나뿐이어야 한다.
-# 웹 파드의 조회와 승인 기록은 점유하지 않고 claim_info로 확인만 한다
+# 웹 파드의 조회는 점유하지 않고 claim_info로 확인만 한다
 CLAIM_NAME = "claim.json"
 CLAIM_STALE_SECONDS = 600.0               # 이 시간 동안 갱신되지 않은 점유는 넘겨받을 수 있다
 CLAIM_REFRESH_SECONDS = 30.0              # 점유한 프로세스가 claim.json의 mtime을 갱신하는 간격
@@ -162,7 +163,7 @@ def claim_info(root: Path | str) -> dict[str, Any] | None:
     읽기만 하며 점유 파일을 만들거나 지우지 않는다.
 
     The live holder of a remediation directory (pid, host, attempt, started, purpose), or None when there is no claim
-    or it is stale. Read-only: the web pod's readers and its approval writer use this; they never take the claim."""
+    or it is stale. Read-only: the web pod's readers use this; they never take the claim."""
     root = Path(root)
     path = claim_path(root)
     try:
@@ -961,7 +962,9 @@ def resume(run_dir: Path | str, cfg: Any, *, journal: Journal | None, stop: Stop
     재개할 수 없는 상태면 ``StateConflict``를 던지고, 아니면 ``stop_requested``를 지우고 ``next_node``부터
     그래프를 실행한다. 시간 한도는 이 호출부터 다시 잰다.
 
-    Continue a RESUMABLE chained remediation (`StateConflict` otherwise). The run claim (`RunClaim`) is taken first:
+    Continue a RESUMABLE chained remediation (`StateConflict` otherwise; for a state an earlier version saved in
+    `AWAITING_APPROVAL` the conflict says that the approval step was removed, `graph.approval_removed`). The run claim
+    (`RunClaim`) is taken first:
     a fresh claim of another process → `StateConflict` ("another process is already working on this run: …") with
     nothing touched; the state is read again under the claim."""
     paths = chain_paths(run_dir)
@@ -969,6 +972,9 @@ def resume(run_dir: Path | str, cfg: Any, *, journal: Journal | None, stop: Stop
     state = load_state(run_dir)
     if state is None:
         raise StateConflict("no chained remediation in this run directory")
+    if (removed := graph_mod.approval_removed(state)) is not None:
+        log.error("chained remediation %s: resume refused: %s", state.id, removed)
+        raise removed
     if not graph_mod.can_resume(state):
         raise StateConflict(f"chained remediation {state.id} cannot be resumed from {state.status}")
     try:

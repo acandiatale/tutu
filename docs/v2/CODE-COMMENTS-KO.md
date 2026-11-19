@@ -65,7 +65,7 @@
 | operator / business team | 운영자 / 현업 |
 | in-house artifact / parent pom | 사내 아티팩트 / 부모 pom |
 | baseline build / candidate / delivery ZIP / rescan | 조치 전 빌드 / 수정본 / 결과 ZIP / 재검사 |
-| residual / manual review / pending approval | 조치하지 못한 항목 / 직접 확인 / 승인 대기 |
+| residual / manual review | 조치하지 못한 항목 / 직접 확인 |
 
 Maven과 쿠버네티스 용어는 영어 그대로 쓴다(pom, BOM, scope, classifier, dependencyManagement, Job, ConfigMap, Secret, PVC).
 파드, 워커, 저널, 플래그, 캐시, 토큰, 세션, 타임아웃처럼 굳어진 외래어는 한글로 쓴다.

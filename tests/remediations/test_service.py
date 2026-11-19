@@ -1,5 +1,5 @@
-"""RemediationManager (sbmig/remediations/service.py): worker thread, state files, approvals, resume / stop / delete and the
-restart rule — driven by fakes (no IVAS, Nexus, Maven or network; tmp_path only)."""
+"""RemediationManager (sbmig/remediations/service.py): worker thread, state files, resume / stop / delete, the restart
+rule and states an earlier version saved in AWAITING_APPROVAL — driven by fakes (no IVAS, Nexus, Maven or network; tmp_path only)."""
 from __future__ import annotations
 
 import json
@@ -14,23 +14,20 @@ import pytest
 from sbmig.core.config import PACKAGE_ROOT, load_config
 from sbmig.remediations import graph
 from sbmig.remediations import intake as intake_mod
-from sbmig.remediations import i18n as i18n_mod
 from sbmig.remediations import planner as planner_mod
 from sbmig.remediations import service as service_mod
 from sbmig.remediations.models import (
-    AWAITING_APPROVAL,
     AWAITING_CONFIRMATION,
-    D_APPROVED,
-    D_PENDING,
     INCOMPLETE,
     INTERRUPTED,
+    LEGACY_APPROVAL_MESSAGE,
+    LEGACY_APPROVAL_MESSAGE_KO,
+    LEGACY_AWAITING_APPROVAL,
     QUEUED,
     REMEDIATIONS_DIR,
     RUNNING,
     STOPPED,
     SUCCEEDED,
-    ApprovalMismatch,
-    Decision,
     IntakeRejected,
     NotReady,
     RemediationState,
@@ -50,6 +47,7 @@ from sbmig.remediations.service import (
 
 from .fakes import (
     DEFAULT_FILES,
+    STOP,
     UNCERTAIN,
     FakeMaven,
     FakeScanner,
@@ -131,10 +129,10 @@ def submit_and_wait(mgr, tmp_path, **kw):
     return mgr.status(st.id)
 
 
-def one_fix(decision=D_PENDING, cfg=None, **kw):
+def one_fix(cfg=None, **kw):
     scan = kw.pop("scan", None) or FakeScanner({"baseline": [scan_result(finding())], "final-r1": [scan_result()]})
     plan = ScriptedPlanner([RoundPlan(round=1, source_tree_hash="", policy_hash="",
-                                      proposals=[proposal(decision=decision, risks=["major"] if decision == D_PENDING else [])])],
+                                      proposals=[proposal(risks=["major"])])],
                            policy_hash=planner_mod.policy_hash(cfg))
     return Factory(scan=scan, plan=plan, **kw)
 
@@ -156,11 +154,12 @@ class Gate:
 
 # ---------------------------------------------------------------------------- submit / queue
 def test_submit_runs_to_succeeded_with_fakes(tmp_path, base_cfg):
-    f = one_fix(decision="auto", cfg=base_cfg)
+    f = one_fix(cfg=base_cfg)
     mgr = manager(tmp_path, base_cfg, f)
     st = submit_and_wait(mgr, tmp_path)
     assert st["status"] == SUCCEEDED, st
-    assert st["delivery"]["sha256"] and st["pending_approvals"] == 0
+    assert st["delivery"]["sha256"] and "pending_approvals" not in st
+    assert set(st["links"]) == {"self", "resume", "stop", "result", "files"}
     assert st["delivery"]["build_ok"] is True and st["delivery"]["scanned"] is True
     assert {"report.md", "report.json", "result.zip", "source.zip", "manifest.json", "journal.jsonl",
             "plan-r1.json", "candidate-r1.patch", "scan-baseline.json", "scan-final-r1.json"} <= set(st["files"])
@@ -234,7 +233,7 @@ def _foreign_run(tmp_path, cfg, rid, status):
 def test_restart_marks_running_and_queued_interrupted_and_runs_nothing(tmp_path, base_cfg):
     a = _foreign_run(tmp_path, base_cfg, "r20261111-100000-aaaaaa", RUNNING)
     b = _foreign_run(tmp_path, base_cfg, "r20261111-100001-bbbbbb", QUEUED)
-    c = _foreign_run(tmp_path, base_cfg, "r20261111-100002-cccccc", AWAITING_APPROVAL)
+    c = _foreign_run(tmp_path, base_cfg, "r20261111-100002-cccccc", LEGACY_AWAITING_APPROVAL)
     f = Factory()
     mgr = manager(tmp_path, base_cfg, f)
     assert sorted(mgr.interrupted) == [a, b]
@@ -242,7 +241,7 @@ def test_restart_marks_running_and_queued_interrupted_and_runs_nothing(tmp_path,
         st = mgr.status(rid)
         assert st["status"] == INTERRUPTED and st["reason"] == "kept-reason"
         assert "restarted" in st["message"] and "nothing is re-sent" in st["message"]
-    assert mgr.status(c)["status"] == AWAITING_APPROVAL
+    assert mgr.status(c)["status"] == LEGACY_AWAITING_APPROVAL         # an earlier version's waiting state: left alone
     assert mgr.wait_idle(1.0)
     assert f.calls == 0                                          # nothing ran, nothing was uploaded
     # explicit resume only
@@ -254,81 +253,56 @@ def test_restart_marks_running_and_queued_interrupted_and_runs_nothing(tmp_path,
     assert f.calls == 1
 
 
-# ---------------------------------------------------------------------------- approvals
-def _decision(p: dict, **override) -> Decision:
-    d = {"proposal_id": p["id"], "decision": D_APPROVED, "proposal_hash": p["proposal_hash"],
-         "source_tree_hash": p["source_tree_hash"], "policy_hash": p["policy_hash"], "diff": p["diff"], "comment": "ok"}
-    d.update(override)
-    return Decision.from_dict(d)
+# ---------------------------------------------------------------------------- approval step removed: old states
+def _legacy_run(tmp_path, cfg, rid="r20261111-100003-dddddd"):
+    """A standalone run the version with the approval step left waiting: status, reasons, message, counts and a plan
+    with a pending proposal exactly as it wrote them (and the two old approval fields)."""
+    _foreign_run(tmp_path, cfg, rid, LEGACY_AWAITING_APPROVAL)
+    paths = RunPaths(tmp_path / "out" / REMEDIATIONS_DIR / rid)
+    data = read_json(paths.state)
+    data.update(reason="pending_approval", reasons=["pending_approval"], next_node="plan", round=1,
+                message="1 proposal(s) of round 1 wait for approval", require_approval=True,
+                counts={"proposals": 1, "proposals_pending": 1, "proposals_rejected": 0})
+    write_json_atomic(paths.state, data)
+    plan = {"round": 1, "source_tree_hash": "t", "policy_hash": "old", "notes": [],
+            "proposals": [{**proposal().to_dict(), "decision": "pending", "requires_approval": True}], "residuals": []}
+    write_json_atomic(paths.plan(1), plan)
+    (paths.root / "approvals.jsonl").write_text("")
+    return rid, paths
 
 
-def test_approvals_all_or_nothing_then_resume_applies(tmp_path, base_cfg):
-    f = one_fix(cfg=base_cfg)
+def test_a_state_saved_awaiting_approval_is_served_as_ended_and_never_resumed(tmp_path, base_cfg):
+    rid, paths = _legacy_run(tmp_path, base_cfg)
+    (paths.report_md).write_text("# an old report\n", encoding="utf-8")
+    files_before = {f: f.read_bytes() for f in paths.root.rglob("*") if f.is_file()}
+    f = Factory()
     mgr = manager(tmp_path, base_cfg, f)
-    st = submit_and_wait(mgr, tmp_path)
-    rid = st["id"]
-    assert st["status"] == AWAITING_APPROVAL and st["pending_approvals"] == 1
-    paths = mgr.paths(rid)
-    props = mgr.proposals(rid)
-    assert props["round"] == 1 and props["policy_hash"] == planner_mod.policy_hash(base_cfg)
-    p = props["proposals"][0]
-    assert p["decision"] == D_PENDING and p["proposal_hash"]
-    assert p["note_ko"] == i18n_mod.ko_text(p["note"])                 # Korean beside the stored English note
-    before = paths.plan(1).read_bytes()
-
+    assert rid not in mgr.interrupted
+    st = mgr.status(rid)
+    assert st["status"] == LEGACY_AWAITING_APPROVAL and st["reasons"] == ["pending_approval"]
+    assert st["status_ko"] == "조치 미완료" and st["message_ko"] == LEGACY_APPROVAL_MESSAGE_KO
+    # the owner wants the word off the screen: nothing the page shows for an old state names the removed feature
+    assert "승인" not in st["status_ko"] + st["message_ko"]
+    assert st["message"] == "1 proposal(s) of round 1 wait for approval"           # the stored English stays
+    assert st["resume"] == {"available": False, "note": LEGACY_APPROVAL_MESSAGE_KO}
+    assert "pending_approvals" not in st and "approvals" not in st["links"] and "proposals" not in st["links"]
+    assert "report.md" in st["files"] and "plan-r1.json" in st["files"]
+    assert mgr.file_path(rid, "report.md").read_text(encoding="utf-8") == "# an old report\n"    # served as it is
+    row = next(r for r in mgr.list()["items"] if r["id"] == rid)
+    assert row["status"] == LEGACY_AWAITING_APPROVAL and "require_approval" not in row
+    with pytest.raises(StateConflict) as ei:
+        mgr.resume(rid)
+    assert LEGACY_APPROVAL_MESSAGE in str(ei.value)
+    assert ei.value.details == {"status": LEGACY_AWAITING_APPROVAL, "message_ko": LEGACY_APPROVAL_MESSAGE_KO}
     with pytest.raises(StateConflict):
-        mgr.resume(rid)                                         # proposals still pending
-    bad = [({"proposal_hash": "0" * 64}, "proposal_hash"), ({"source_tree_hash": "x"}, "source_tree_hash"),
-           ({"policy_hash": "y"}, "policy_hash"), ({"diff": "--- a\n+++ b\n"}, "diff")]
-    for override, field_name in bad:
-        with pytest.raises(ApprovalMismatch) as ei:
-            mgr.decide(rid, [_decision(p, **override)], "alice")
-        assert field_name in ei.value.details["fields"]
-        assert paths.plan(1).read_bytes() == before and not paths.approvals.exists()
-    with pytest.raises(ApprovalMismatch) as ei:               # duplicates in one request
-        mgr.decide(rid, [_decision(p), _decision(p)], "alice")
-    assert ei.value.details["fields"] == ["proposal_id"]
-    with pytest.raises(ApprovalMismatch):                     # one good + one unknown: nothing written
-        mgr.decide(rid, [_decision(p), _decision(p, proposal_id="p-1-99")], "alice")
-    assert paths.plan(1).read_bytes() == before and not paths.approvals.exists()
-
-    out = mgr.decide(rid, [_decision(p)], "alice")
-    assert out == {"accepted": ["p-1-1"], "pending": 0}
-    plan = RoundPlan.from_dict(read_json(paths.plan(1)))
-    assert plan.proposals[0].decision == D_APPROVED
-    lines = [json.loads(x) for x in paths.approvals.read_text().splitlines()]
-    assert len(lines) == 1
-    ln = lines[0]
-    assert ln["by"] == "alice" and ln["proposal_id"] == "p-1-1" and ln["decision"] == D_APPROVED
-    assert ln["proposal_hash"] == p["proposal_hash"] and ln["source_tree_hash"] == p["source_tree_hash"]
-    assert ln["policy_hash"] == p["policy_hash"] and len(ln["diff_sha256"]) == 64 and ln["comment"] == "ok" and ln["ts"]
-    assert mgr.status(rid)["status"] == AWAITING_APPROVAL      # decide does not resume
-    with pytest.raises(ApprovalMismatch):                     # already decided → not pending any more
-        mgr.decide(rid, [_decision(p)], "bob")
-
-    mgr.resume(rid)
-    assert mgr.wait(rid, WAIT)
-    final = mgr.status(rid)
-    assert final["status"] == SUCCEEDED, final
-    assert "<version>1.1</version>" in (paths.accepted / "pom.xml").read_text()
-
-
-def test_stale_tree_rejects_the_decision(tmp_path, base_cfg):
-    mgr = manager(tmp_path, base_cfg, one_fix(cfg=base_cfg))
-    rid = submit_and_wait(mgr, tmp_path)["id"]
-    p = mgr.proposals(rid)["proposals"][0]
-    pom = mgr.paths(rid).accepted / "pom.xml"
-    pom.write_text(pom.read_text() + "\n")
-    with pytest.raises(ApprovalMismatch) as ei:
-        mgr.decide(rid, [_decision(p)], "alice")
-    assert "source_tree_hash" in ei.value.details["fields"]
-
-
-def test_decide_outside_awaiting_approval_is_a_conflict(tmp_path, base_cfg):
-    mgr = manager(tmp_path, base_cfg)
-    rid = submit_and_wait(mgr, tmp_path)["id"]
+        mgr.resume(rid, confirm="reupload")
     with pytest.raises(StateConflict):
-        mgr.decide(rid, [Decision(proposal_id="p-1-1", decision=D_APPROVED)], "alice")
+        mgr.stop(rid)                                           # not active
+    with pytest.raises(NotFinished):
+        mgr.result(rid)
+    assert mgr.wait_idle(1.0) and f.calls == 0
+    assert {f: f.read_bytes() for f in paths.root.rglob("*") if f.is_file()} == files_before   # nothing rewritten
+    assert not hasattr(mgr, "decide") and not hasattr(mgr, "proposals")
 
 
 # ---------------------------------------------------------------------------- uncertain upload
@@ -441,7 +415,7 @@ def test_delete_rules(tmp_path, base_cfg):
 
 
 def test_file_whitelist_never_leaves_the_run_dir(tmp_path, base_cfg):
-    mgr = manager(tmp_path, base_cfg, one_fix(decision="auto", cfg=base_cfg))
+    mgr = manager(tmp_path, base_cfg, one_fix(cfg=base_cfg))
     rid = submit_and_wait(mgr, tmp_path)["id"]
     root = mgr.paths(rid).root.resolve()
     for name in ("report.md", "report.json", "result.zip", "source.zip", "manifest.json", "journal.jsonl",
@@ -480,7 +454,7 @@ def test_failed_candidate_is_the_result_zip_and_the_verified_one_is_downloadable
 
 
 def test_result_verified_is_absent_without_a_failed_candidate(tmp_path, base_cfg):
-    mgr = manager(tmp_path, base_cfg, one_fix(decision="auto", cfg=base_cfg))
+    mgr = manager(tmp_path, base_cfg, one_fix(cfg=base_cfg))
     st = submit_and_wait(mgr, tmp_path)
     assert "result-verified.zip" not in st["files"] and mgr.file_path(st["id"], "result-verified.zip") is None
 
@@ -498,11 +472,11 @@ def test_list_pages_newest_first(tmp_path, base_cfg):
 
 
 def test_result_before_the_end_is_not_finished(tmp_path, base_cfg):
-    mgr = manager(tmp_path, base_cfg, one_fix(cfg=base_cfg))
-    rid = submit_and_wait(mgr, tmp_path)["id"]
+    rid = _foreign_run(tmp_path, base_cfg, "r20261111-100004-eeeeee", STOPPED)
+    mgr = manager(tmp_path, base_cfg)
     with pytest.raises(NotFinished) as ei:
         mgr.result(rid)
-    assert ei.value.code == "not_finished" and ei.value.details["status"] == AWAITING_APPROVAL
+    assert ei.value.code == "not_finished" and ei.value.details["status"] == STOPPED
 
 
 # ---------------------------------------------------------------------------- maven local repository
@@ -612,12 +586,14 @@ class FakeRunManager:
         return "withdrawn"
 
 
-def chained(tmp_path: Path, cfg, run_id: str = RUN_ID, status: str = AWAITING_APPROVAL, configs=None,
+def chained(tmp_path: Path, cfg, run_id: str = RUN_ID, status: str = STOPPED, configs=None,
             owner: str = "a-build-pod") -> RunPaths:
-    """A chained remediation as the build pod leaves it: built by a throw-away in-process manager under build/ up to
-    AWAITING_APPROVAL (one pending proposal), then moved to out/<run id>/remediation/ with the run id as state id."""
-    builder = RemediationManager(tmp_path / "build", tmp_path / "repo", components_factory=one_fix(cfg=cfg),
-                                 config_loader=lambda names: cfg)
+    """A chained remediation as the build pod leaves it: built by a throw-away in-process manager under build/ up to a
+    stop during the final scan (round 1 planned, applied and committed; the receipt kept), then moved to
+    out/<run id>/remediation/ with the run id as state id."""
+    stopping = FakeScanner({"baseline": [scan_result(finding())], "final-r1": [STOP]})
+    builder = RemediationManager(tmp_path / "build", tmp_path / "repo",
+                                 components_factory=one_fix(cfg=cfg, scan=stopping), config_loader=lambda names: cfg)
     sid = builder.submit(upload(tmp_path), "app.zip", None).id
     assert builder.wait(sid, WAIT)
     builder.shutdown()
@@ -627,7 +603,7 @@ def chained(tmp_path: Path, cfg, run_id: str = RUN_ID, status: str = AWAITING_AP
     shutil.move(str(tmp_path / "build" / REMEDIATIONS_DIR / sid), str(target))
     paths = RunPaths(target)
     data = read_json(paths.state)
-    assert data["status"] == AWAITING_APPROVAL
+    assert data["status"] == STOPPED and data["next_node"] == "rescan", data
     data.update({"id": run_id, "status": status, "owner": owner})
     write_json_atomic(paths.state, data)
     if configs is not None:
@@ -679,7 +655,7 @@ def test_in_process_readiness_says_where_it_runs(tmp_path, base_cfg):
     assert info == {"ready": True, "missing": [], "mode": "in-process", "runs_in": "web"}
 
 
-def test_job_mode_chained_reads_and_approvals(tmp_path, base_cfg):
+def test_job_mode_chained_reads(tmp_path, base_cfg):
     paths = chained(tmp_path, base_cfg, configs=["company.yml"])
     loader = Loader(base_cfg)
     mgr = job_manager(tmp_path, base_cfg, loader=loader)
@@ -687,25 +663,17 @@ def test_job_mode_chained_reads_and_approvals(tmp_path, base_cfg):
     assert mgr.is_chained(RUN_ID) and mgr.paths(RUN_ID).root == paths.root
     st = mgr.status(RUN_ID)
     assert st["kind"] == "chained" and st["run_id"] == RUN_ID and st["id"] == RUN_ID
-    assert st["status"] == AWAITING_APPROVAL and st["pending_approvals"] == 1 and "stale" not in st
-    assert st["resume"]["available"] is False and "제안이 1건 남아" in st["resume"]["note"]
+    assert st["status"] == STOPPED and "pending_approvals" not in st and "stale" not in st
+    assert st["resume"] == {"available": True, "note": ""}       # a new build pod can resume it
     assert st["links"]["self"] == f"/api/remediations/{RUN_ID}"
     assert {"source.zip", "plan-r1.json", "journal.jsonl"} <= set(st["files"])
     rows = mgr.list()["items"]
     assert [(r["id"], r["kind"], r.get("run_id")) for r in rows] == [(RUN_ID, "chained", RUN_ID)]
     assert mgr.file_path(RUN_ID, "plan-r1.json").is_file()
     assert mgr.file_path(RUN_ID, "../state.json") is None
-    p = mgr.proposals(RUN_ID)["proposals"][0]
     with pytest.raises(NotFinished):
         mgr.result(RUN_ID)
-    out = mgr.decide(RUN_ID, [_decision(p)], "alice")
-    assert out == {"accepted": [p["id"]], "pending": 0}
-    # a chained approval is checked against the policy hash the BUILD POD recorded in state.json — the web pod does not
-    # recompute it from its own environment (a differing env value would refuse a valid approval)
-    assert loader.calls == []
-    assert RoundPlan.from_dict(read_json(paths.plan(1))).proposals[0].decision == D_APPROVED
-    assert json.loads(paths.approvals.read_text().splitlines()[0])["by"] == "alice"
-    assert mgr.status(RUN_ID)["resume"] == {"available": True, "note": ""}       # decided: a new build pod can resume it
+    assert loader.calls == []                                    # reading a chained run never loads the web pod's config
     with pytest.raises(StateConflict):
         mgr.stop(RUN_ID)                                         # not running
     with pytest.raises(StateConflict) as ei:
@@ -793,9 +761,6 @@ def test_chained_files_are_withheld_until_the_final_pass(tmp_path, base_cfg):
             mgr.file_path(RUN_ID, name)
         assert ei.value.code == "withheld"
     assert mgr.file_path(RUN_ID, "nope.txt") is None            # unknown names stay 404, not 409
-    p = mgr.proposals(RUN_ID)["proposals"][0]
-    with pytest.raises(service_mod.Withheld):
-        mgr.decide(RUN_ID, [_decision(p)], "alice")
     rm.withheld.clear()
     assert mgr.file_path(RUN_ID, "plan-r1.json").is_file()
 
@@ -862,16 +827,11 @@ def test_job_mode_resume_dispatches_a_build_pod_and_reports_the_resume_job(tmp_p
     paths = chained(tmp_path, base_cfg)
     rm = FakeRunManager(tmp_path / "out")
     mgr = job_manager(tmp_path, base_cfg, rm=rm)
-    p = mgr.proposals(RUN_ID)["proposals"][0]
-    with pytest.raises(StateConflict) as ei:
-        mgr.resume(RUN_ID)                                       # a proposal still waits for a decision
-    assert ei.value.details["pending"] == 1 and rm.resumed == []
-    mgr.decide(RUN_ID, [_decision(p)], "")                       # no approver name needed
     out = mgr.resume(RUN_ID)
     assert rm.resumed == [RUN_ID] and mgr._worker is None        # nothing runs in the web pod
     assert out["resume_job"]["state"] == "queued" and out["resume_job"]["queue"] == {"position": 1, "ahead": 0}
     assert out["resume"] == {"available": False, "note": service_mod.RESUME_ACTIVE_NOTE}
-    assert out["status"] == AWAITING_APPROVAL and out["withheld"] is True       # the build pod owns the files now
+    assert out["status"] == STOPPED and out["withheld"] is True                 # the build pod owns the files now
     with pytest.raises(StateConflict):
         mgr.resume(RUN_ID)                                       # one resume at a time
     stopped = mgr.stop(RUN_ID)
@@ -902,10 +862,7 @@ def test_job_mode_resume_refusals(tmp_path, base_cfg):
     chained(tmp_path, base_cfg)
     rm = FakeRunManager(tmp_path / "out")
     mgr = job_manager(tmp_path, base_cfg, rm=rm)
-    p = mgr.proposals(RUN_ID)["proposals"][0]
     rm.active_resumes.add(RUN_ID)                                # a resume pod (of another request) owns the state
-    with pytest.raises(StateConflict):
-        mgr.decide(RUN_ID, [_decision(p)], "")
     with pytest.raises(StateConflict):
         mgr.resume(RUN_ID)
     assert mgr.status(RUN_ID)["resume"]["note"] == service_mod.RESUME_ACTIVE_NOTE
@@ -1032,45 +989,18 @@ def test_job_mode_receipt_is_written_before_the_job_and_the_new_pod_never_reuplo
         rm.shutdown("test teardown")
 
 
-def test_proposals_carry_korean_display_fields(tmp_path, base_cfg):
-    """`note_ko` per proposal; `detail_ko` / `origin_ko` / `reason_ko` per residual; the stored fields stay English."""
-    from sbmig.remediations.models import Residual, RoundPlan, write_json_atomic
-    mgr = manager(tmp_path, base_cfg, one_fix(cfg=base_cfg))
-    st = submit_and_wait(mgr, tmp_path)
-    rid = st["id"]
-    paths = mgr.paths(rid)
-    plan = RoundPlan.from_dict(json.loads(paths.plan(1).read_text(encoding="utf-8")))
-    plan.proposals[0].note = "uses the existing <dependencyManagement> entry of the root pom.xml"
-    plan.residuals = [Residual(ga="org.example:m", version="1.0", origin="transitive", reason="manual_review",
-                               detail="module(s) app-a do not inherit from the root pom.xml: an override entry there would "
-                                      "not reach them")]
-    write_json_atomic(paths.plan(1), plan.to_dict())
-    out = mgr.proposals(rid)
-    p, r = out["proposals"][0], out["residuals"][0]
-    assert p["note"].startswith("uses the existing") and p["note_ko"].startswith("루트 pom.xml의 dependencyManagement에 이미 있는")
-    assert r["detail"].startswith("module(s)") and "app-a 모듈은 프로젝트 최상위 pom.xml이 아니라 회사 부모 pom에서 설정을 물려받습니다" in r["detail_ko"]
-    assert r["origin_ko"] == "간접 의존성" and r["reason_ko"] == "직접 확인 필요"
-    every = mgr.proposals(rid, all_rounds=True)
-    assert every["residuals"][0]["reason_ko"] == "직접 확인 필요"
-
-
 # ---------------------------------------------------------------------------- v2.1z-ap: the run claim and M1
-def test_decide_is_refused_while_a_driver_holds_the_run_claim(tmp_path, base_cfg):
+def test_readers_never_take_the_run_claim(tmp_path, base_cfg):
     from sbmig.remediations import chain
     paths = chained(tmp_path, base_cfg)
     mgr = job_manager(tmp_path, base_cfg)
-    p = mgr.proposals(RUN_ID)["proposals"][0]
-    plan_before = paths.plan(1).read_bytes()
     holder = chain.RunClaim(paths.root, purpose="resume").acquire()
     try:
-        with pytest.raises(StateConflict) as ei:
-            mgr.decide(RUN_ID, [_decision(p)], "alice")
-        assert str(ei.value) == service_mod.CLAIM_HELD_NOTE
-        assert paths.plan(1).read_bytes() == plan_before and not paths.approvals.exists()
-        assert mgr.status(RUN_ID)["status"] == AWAITING_APPROVAL       # readers never take the claim
+        claim_before = chain.claim_path(paths.root).read_bytes()
+        assert mgr.status(RUN_ID)["status"] == STOPPED and mgr.list()["items"][0]["id"] == RUN_ID
+        assert chain.claim_path(paths.root).read_bytes() == claim_before
     finally:
         holder.release()
-    assert mgr.decide(RUN_ID, [_decision(p)], "alice")["accepted"] == [p["id"]]
 
 
 def test_the_standalone_worker_holds_the_claim_while_it_drives(tmp_path, base_cfg):

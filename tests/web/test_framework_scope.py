@@ -352,7 +352,7 @@ def test_status_of_a_failed_framework_run_carries_the_remediation(tmp_path) -> N
 
 
 def test_page_tolerated_remediation_reads_plainly() -> None:
-    render = SCRIPT.split("function renderRemediation(runId, st, props, force) {", 1)[1].split("\n  }\n", 1)[0]
+    render = SCRIPT.split("function renderRemediation(runId, st, force) {", 1)[1].split("\n  }\n", 1)[0]
     # the flag from the remediation status, else from the run's status summary (report.remediation)
     assert "const tolerated = remTolerated(st);" in render
     fn = SCRIPT.split("function remTolerated(st) {", 1)[1].split("\n  }\n", 1)[0]
@@ -412,7 +412,7 @@ def test_page_fixed_but_not_built_is_not_called_partly() -> None:
     assert "r.status === 'INCOMPLETE'" in fn and "tolerated" in fn
     assert "r.reasons.length === 1 && r.reasons[0] === 'baseline_build_failed'" in fn
     assert "const REM_UNCONFIRMED_KO = '조치함 · 빌드 미확인';" in SCRIPT
-    render = SCRIPT.split("function renderRemediation(runId, st, props, force) {", 1)[1].split("\n  }\n", 1)[0]
+    render = SCRIPT.split("function renderRemediation(runId, st, force) {", 1)[1].split("\n  }\n", 1)[0]
     assert "remBuildOnly(st, remTolerated(st)) ? REM_UNCONFIRMED_KO : (REM_KO[st.status] || st.status)" in render
     short = SCRIPT.split("function remShort(st) {", 1)[1].split("\n  }\n", 1)[0]
     assert "if (remBuildOnly(r, r.baseline_tolerated === true)) return '취약점 조치함(빌드 미확인)';" in short
@@ -423,7 +423,7 @@ def test_page_fixed_but_not_built_is_not_called_partly() -> None:
 
 def test_page_unchanged_original_after_a_failed_build_has_no_badge() -> None:
     """Case A: nothing was applied, so the original ZIP gets no 빌드 미확인 / 빌드 실패본 badge."""
-    render = SCRIPT.split("function renderRemediation(runId, st, props, force) {", 1)[1].split("\n  }\n", 1)[0]
+    render = SCRIPT.split("function renderRemediation(runId, st, force) {", 1)[1].split("\n  }\n", 1)[0]
     assert "const applied = Number(c.proposals_applied || 0) > 0;" in render
     assert "const badBuild = failed && !(sameFailure && !applied);" in render
     assert "(badBuild ? 'ghost' : 'quiet')" in render

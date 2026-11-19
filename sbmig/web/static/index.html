@@ -240,7 +240,7 @@
   .badge { display: inline-block; margin-left: 4px; padding: 1px 8px; border-radius: 999px; font-size: 11.5px; font-weight: 700; }
   .badge.bad { background: var(--bad); color: #fff; }
   .badge.warn { background: var(--warn-tint); color: var(--warn); }
-  /* 상태에 따라 바뀌는 조치 영역(승인 목록, 업로드 확인, 이어서 진행). 통째로 다시 그린다 */
+  /* 상태에 따라 바뀌는 조치 영역(업로드 확인, 이어서 진행). 통째로 다시 그린다 */
   .remed .act { margin-top: 16px; }
   .remed .act:empty { display: none; }
   .remed .act .head { font-weight: 700; font-size: 13.5px; margin: 0 0 4px; }
@@ -248,59 +248,7 @@
   .remed .act .err { margin: 10px 0 0; padding: 8px 12px; border-radius: var(--radius-s); background: var(--bad-tint); color: var(--bad);
                      font-size: 13px; overflow-wrap: anywhere; }
   .remed .act .err:empty { display: none; }
-  .selbar { display: flex; align-items: center; gap: 8px 16px; flex-wrap: wrap; padding: 8px 12px; border: 1px solid var(--line);
-            border-radius: var(--radius-s); background: var(--blue-soft); font-size: 13px; }
-  .selbar label { display: inline-flex; align-items: center; gap: 8px; font-weight: 600; cursor: pointer; }
-  .selbar .count { color: var(--blue-deep); margin-left: auto; }
-  .selbar .btn { padding: 5px 12px; font-size: 12.5px; }
-  .remed .act .busynote { margin: 0 0 10px; }
-  input[type=checkbox].pick { width: 18px; height: 18px; margin: 0; accent-color: var(--blue); flex: none; cursor: pointer; }
-  .prop { border: 1px solid var(--line); border-radius: var(--radius-s); padding: 12px 14px; margin-top: 10px; background: #fff; min-width: 0; }
-  .prop.on { border-color: var(--blue-mid); background: var(--blue-soft); }
-  .prop .prophead { display: flex; gap: 10px; align-items: flex-start; cursor: pointer; }
-  .prop .prophead input { margin-top: 2px; }
-  .prop .what { min-width: 0; flex: 1; }
-  .prop .ga { display: block; font-family: var(--mono); font-size: 13px; font-weight: 600; color: var(--ink); overflow-wrap: anywhere; }
-  .prop .ver { display: block; font-family: var(--mono); font-size: 12.5px; color: var(--muted); overflow-wrap: anywhere; }
-  .prop .ver b { color: var(--blue-deep); font-weight: 700; }
-  .prop .tags { display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0 0 28px; }
-  .tag { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 11.5px; font-weight: 600; border: 1px solid var(--line); color: var(--muted); background: #fff; }
-  .tag.risk { border-color: transparent; background: var(--warn-tint); color: var(--warn); }
-  .prop .facts { margin: 6px 0 0 28px; font-size: 12.5px; color: var(--muted); overflow-wrap: anywhere; }
-  .prop .pnote { margin: 4px 0 0 28px; font-size: 12.5px; color: var(--ink); overflow-wrap: anywhere; white-space: pre-wrap; }
-  .prop details { margin: 8px 0 0 28px; min-width: 0; }
-  .prop details summary { cursor: pointer; color: var(--blue); font-size: 12.5px; font-weight: 600; width: fit-content; }
-  .prop:has(> .prophead input:focus-visible) { box-shadow: 0 0 0 1px var(--blue); }
-  /* 모듈 pom마다 하나씩 생기는 제안을 라이브러리별로 묶는다. 묶음 체크박스는 아래 항목 전체를 체크하거나 해제한다 */
-  .pgroup { border: 1px solid var(--line); border-radius: var(--radius-s); margin-top: 10px; background: var(--paper); padding: 12px 14px; min-width: 0; }
-  .pgroup:has(> .prophead input:focus-visible) { box-shadow: 0 0 0 1px var(--blue); }
-  .pgroup > .prophead { display: flex; gap: 10px; align-items: flex-start; cursor: pointer; }
-  .pgroup > .prophead input { margin-top: 2px; }
-  .pgroup .what { min-width: 0; flex: 1; }
-  .pgroup .ga { display: block; font-family: var(--mono); font-size: 13px; font-weight: 600; color: var(--ink); overflow-wrap: anywhere; }
-  .pgroup .ver { display: block; font-family: var(--mono); font-size: 12.5px; color: var(--muted); overflow-wrap: anywhere; }
-  .pgroup .ver b { color: var(--blue-deep); font-weight: 700; }
-  .pgroup .gcount { display: block; font-size: 12px; color: var(--blue-deep); margin-top: 2px; }
-  .pgroup > .tags { display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0 0 28px; }
-  .pgroup > .facts { margin: 6px 0 0 28px; font-size: 12.5px; color: var(--muted); overflow-wrap: anywhere; }
-  .pgroup > .pnote { margin: 4px 0 0 28px; font-size: 12.5px; color: var(--ink); overflow-wrap: anywhere; white-space: pre-wrap; }
-  .pgroup .gitems { margin: 4px 0 0 28px; min-width: 0; }
-  .pgroup .gitems .prop { padding: 8px 12px; margin-top: 6px; }
-  .prop .todo { display: block; font-size: 13px; font-weight: 600; color: var(--ink); overflow-wrap: anywhere; word-break: keep-all; }
-  .prop .facts .k { color: var(--ink); font-weight: 600; margin-right: 4px; }
-  .prop .facts code, .pgroup code { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; word-break: break-all; }
-  .prop .paths { margin: 2px 0 0; padding-left: 18px; }
-  .prop .paths li { margin-top: 2px; }
-  pre.diff { margin: 8px 0 0; max-height: 320px; max-width: 100%; overflow: auto; background: var(--paper); border: 1px solid var(--line-soft);
-             border-radius: var(--radius-s); padding: 10px 12px; font: 12px/1.5 var(--mono); white-space: pre; }
-  pre.diff .add { color: var(--ok); background: var(--ok-tint); display: inline-block; min-width: 100%; }
-  pre.diff .del { color: var(--bad); background: var(--bad-tint); display: inline-block; min-width: 100%; }
-  pre.diff .hunk { color: var(--blue); } pre.diff .meta { color: var(--faint); }
   .remed .act .actions { margin-top: 14px; }
-  .confirm { margin-top: 14px; padding: 14px 16px; border: 1px solid var(--blue); border-left-width: 3px; border-radius: var(--radius-s);
-             background: var(--blue-soft); }
-  .confirm p { margin: 0; color: var(--blue-deep); font-size: 13.5px; word-break: keep-all; overflow-wrap: anywhere; }
-  .confirm .actions { margin-top: 12px; }
   .going { display: flex; gap: 10px; align-items: flex-start; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--radius-s);
            background: var(--blue-soft); color: var(--blue-deep); font-size: 13.5px; }
   .going .pulse { margin-top: 5px; flex: none; }
@@ -511,8 +459,6 @@
     .rail .label .en { display: none; }
     .tabs { flex-wrap: wrap; } .tabs .tools { width: 100%; margin: 0; padding: 6px 12px 8px; }
     .runhead .right { margin-left: 0; }
-    .prop { padding: 10px 12px; } .prop .tags, .prop .facts, .prop .pnote, .prop details { margin-left: 0; }
-    .selbar .count { margin-left: 0; width: 100%; }
     .rform { grid-template-columns: 1fr; }
     .remed .act .actions .btn { flex: 1 1 auto; justify-content: center; }
   }
@@ -677,7 +623,7 @@
       <p class="msg" id="remed-msg"></p>
       <div class="counts reasons" id="remed-reasons"></div>
       <div class="downloads" id="remed-dl"></div>
-      <!-- 상태별 동작: 승인 대기는 체크한 항목을 한 번에 적용, 업로드 확인 대기는 두 가지 중 선택, 중지는 이어서 진행 -->
+      <!-- 상태별 동작: 업로드 확인 대기는 두 가지 중 선택, 중지는 이어서 진행 -->
       <div class="act" id="remed-act"></div>
     </div>
     <!-- 코드 변경: 상태에 code_diff가 있을 때만 표시한다. 닫혀 있는 동안에는 아무것도 받아 오지 않는다 -->
@@ -950,14 +896,20 @@
   }
   // 엔진이 멈춘 이유가 사람의 중단 요청인지 확인한다(sbmig.core.workspace.STOP_REQUEST_REASON)
   function isStopReason(r) { return /^stopped by user \(stop\.request\)/.test(String(r || '')); }
+  // 예전 버전이 사람의 결정을 기다리며 남긴 조치 상태다. 서버 쪽 상수 이름은 없어질 수 있으므로 값 그대로 비교한다
+  const LEGACY_WAITING = 'AWAITING_APPROVAL';
+  const LEGACY_WAITING_KO = '조치 미완료';
+  const LEGACY_WAITING_NOTE = '이 실행의 취약점 조치는 끝나지 않았습니다. 프로젝트를 다시 올리면 끝까지 진행합니다.';
+  // 그 상태와 함께 남은 사유 코드다. 화면에 보여 주지 않는다
+  const LEGACY_REASONS = ['pending_approval', 'rejected_proposals'];
   // 취약점 해결 실행의 제목. 조치 상태별로 한 문장(조치 보고서의 결과 문장과 같음)이고, 모르는 상태면 null
   const REM_TITLE = { SUCCEEDED: ['ok', '조치를 마쳤습니다', '조치 완료'], INCOMPLETE: ['warn', '일부만 조치되었습니다', '일부 조치'],
-                      AWAITING_APPROVAL: ['warn', '승인을 기다리고 있습니다', '승인 대기'], AWAITING_CONFIRMATION: ['warn', '확인이 필요합니다', '확인 필요'],
+                      AWAITING_CONFIRMATION: ['warn', '확인이 필요합니다', '확인 필요'], [LEGACY_WAITING]: ['', '조치가 끝나지 않았습니다', LEGACY_WAITING_KO],
                       STOPPED: ['warn', '조치를 멈췄습니다', '멈춤'], INTERRUPTED: ['bad', '조치가 중단되었습니다', '중단'],
                       FAILED: ['bad', '조치하지 못했습니다', '실패'], QUEUED: ['', '취약점 조치 진행 중', '진행 중'], RUNNING: ['', '취약점 조치 진행 중', '진행 중'] };
   function remTitle(status) { const t = REM_TITLE[status]; return t ? { cls: t[0], text: t[1], short: t[2] } : null; }
   // 전체 진행에 이어서 한 취약점 조치의 결과를 짧게 쓴다. 조치를 시작하지 않았거나 끝나지 않은 실행이면 빈 문자열이다
-  const REM_SHORT = { SUCCEEDED: '조치 완료', INCOMPLETE: '일부만 조치', AWAITING_APPROVAL: '승인 대기', AWAITING_CONFIRMATION: '확인 필요',
+  const REM_SHORT = { SUCCEEDED: '조치 완료', INCOMPLETE: '일부만 조치', AWAITING_CONFIRMATION: '확인 필요',
                       STOPPED: '조치 멈춤', INTERRUPTED: '조치 중단', FAILED: '조치 실패' };
   // 빌드가 실패한 프로젝트에 이어서 한 조치가 고칠 것은 다 고치고 빌드 확인만 남았는지 확인한다(사유가 조치 전 빌드 실패 하나뿐)
   function remBuildOnly(r, tolerated) {
@@ -1363,32 +1315,27 @@
   // ---------------------------------------------------------------- 3b. 취약점 조치
   // 이관 뒤 빌드 파드가 이어서 실행한 조치(상태 id는 이관 실행 id). 변환만 한 프레임워크 프로젝트는 빌드가 실패해도 이어서 한다. 서버 문자열(이유 코드, diff, 메시지, 라이브러리 이름)은 모두
   // textContent로만 넣는다. diff에는 '<dependency>' 같은 태그 문자가 그대로 들어 있기 때문이다
-  const REM_KO = { QUEUED: '대기', RUNNING: '진행 중', AWAITING_APPROVAL: '승인 대기', AWAITING_CONFIRMATION: '업로드 확인 대기',
+  const REM_KO = { QUEUED: '대기', RUNNING: '진행 중', AWAITING_CONFIRMATION: '업로드 확인 대기', [LEGACY_WAITING]: LEGACY_WAITING_KO,
                    STOPPED: '중지됨', INTERRUPTED: '중단됨', SUCCEEDED: '조치 완료', INCOMPLETE: '일부만 조치됨', FAILED: '실패' };
   // 고칠 것은 다 고쳤고 빌드로 확인만 하지 못한 조치의 상태 이름이다(remBuildOnly)
   const REM_UNCONFIRMED_KO = '조치함 · 빌드 미확인';
-  const REM_CLS = { SUCCEEDED: 'ok', INCOMPLETE: 'warn', AWAITING_APPROVAL: 'warn', AWAITING_CONFIRMATION: 'warn', STOPPED: 'warn',
+  const REM_CLS = { SUCCEEDED: 'ok', INCOMPLETE: 'warn', AWAITING_CONFIRMATION: 'warn', STOPPED: 'warn',
                     INTERRUPTED: 'bad', FAILED: 'bad' };
   // 이유 코드(sbmig/remediations/models.py R_*)를 사용자가 읽을 문장으로 바꾼다. 모르는 코드는 그대로 보여 준다(칩의 title에는 항상 코드)
   const REM_REASON_KO = {
     baseline_build_failed: '조치 전 빌드 실패', candidate_build_failed: '수정본 빌드 실패', scan_incomplete: 'IVAS 검사 미완료',
     upload_uncertain: '업로드 결과 확인 불가', zip_hash_mismatch: '검사한 파일 불일치', text_only_violation: '버전 표기 외 변경 감지',
     resolution_mismatch: '적용 결과가 계획과 다름', execution_boundary_refused: '빌드 설정 점검에서 중단', not_ready: '실행 환경 미비',
-    pending_approval: '승인 대기', rejected_proposals: '적용하지 않은 변경 있음', residual_findings: '남은 취약점 있음',
+    residual_findings: '남은 취약점 있음',
     manual_review: '직접 확인 필요', no_candidate_version: '올릴 수 있는 버전 없음', rounds_exhausted: '반복 횟수 한도 도달',
     stop_requested: '중지 요청', internal_error: '내부 오류', policy_denied: '정책상 허용되지 않음', unknown_provenance: '버전을 지정한 곳을 찾지 못함',
     stale_location: 'pom이 그 사이 변경됨', inventory_incomplete: '의존성 목록을 다 읽지 못함', chain_budget: '제한 시간 초과',
     inhouse_artifact: '사내 라이브러리 (담당자 요청)' };
-  // 제안 종류(K_*)와 위험 표시(RISK_*)
-  const KIND_KO = { direct_version: 'pom의 버전 표기 수정', property_version: 'property 값 수정', own_management_version: 'dependencyManagement의 버전 수정',
-                    managed_override: 'dependencyManagement에 버전 지정 추가', parent_version: '부모 pom 버전 변경', bom_version: 'BOM 버전 변경' };
-  const RISK_KO = { major: '메이저 버전 변경', parent: '부모 pom 변경', bom: 'BOM 변경', managed_override: 'dependencyManagement 항목 추가' };
   const ACTIVE_JOB_DONE = ['succeeded', 'failed', 'completed', 'finished', 'done', 'missing', 'ended'];
   const REM_POLL_MS = 4000;
   const REM_RUNNING_NOTE = '취약점 조치 중 — IVAS 검사와 버전 수정을 진행합니다.';
-  // 화면 상태: 제안 id별 체크 여부, 현재 그린 조치 영역의 키(같으면 다시 그리지 않아 체크와 입력 내용이 유지된다),
-  // 요청 중 여부(중복 전송 방지), 마지막 오류 한 줄
-  const rem = { run: null, sel: new Map(), propKey: '', viewKey: '', busy: false, err: '', resumeErr: '', poll: null, last: null };
+  // 화면 상태: 현재 그린 조치 영역의 키(같으면 다시 그리지 않아 입력 내용이 유지된다), 요청 중 여부(중복 전송 방지), 마지막 오류 한 줄
+  const rem = { run: null, viewKey: '', busy: false, err: '', resumeErr: '', poll: null, last: null };
   let remSeq = 0;
   // 실행 상태의 조치 요약(report.remediation). 조치 상태에 표시가 없을 때 빌드 실패 프로젝트 여부를 여기서 읽는다
   let runRem = null;
@@ -1405,7 +1352,7 @@
   function stopRemPoll() { clearTimeout(rem.poll); rem.poll = null; }
   function hideRemediation() {
     remSeq++; stopRemPoll(); $('remed').hidden = true; $('remed-act').replaceChildren();
-    rem.run = null; rem.sel = new Map(); rem.propKey = ''; rem.viewKey = ''; rem.busy = false; rem.err = ''; rem.resumeErr = ''; rem.last = null;
+    rem.run = null; rem.viewKey = ''; rem.busy = false; rem.err = ''; rem.resumeErr = ''; rem.last = null;
   }
   function remStep() {
     const rail = $('rail');
@@ -1426,7 +1373,7 @@
     try { r = await fetch(remUrl(runId)); try { st = await r.json(); } catch (e) {} } catch (e) { return; }
     if (seq !== remSeq || current !== runId) return;              // 그 사이 다른 실행을 선택했다
     if (!r.ok || !st || !st.status) { $('remed').hidden = true; return; }   // 404면 이 실행에는 이어서 실행된 조치가 없다
-    if (rem.run !== runId) { rem.run = runId; rem.sel = new Map(); rem.propKey = ''; rem.viewKey = ''; rem.err = ''; rem.resumeErr = ''; }
+    if (rem.run !== runId) { rem.run = runId; rem.viewKey = ''; rem.err = ''; rem.resumeErr = ''; }
     const step = remStep();
     if (remActive(st)) setCurrent(step);
     else {
@@ -1434,17 +1381,12 @@
       // 끝난 조치에는 진행 중 안내를 남기지 않는다(저널을 다시 읽을 때 그 문장이 다시 쓰인다)
       if ($('railnote').textContent === REM_RUNNING_NOTE) $('railnote').textContent = '';
     }
-    let props = null;
-    if (st.status === 'AWAITING_APPROVAL') {
-      try { const pr = await fetch(remUrl(runId, '/proposals')); if (pr.ok) props = await pr.json(); } catch (e) {}
-      if (seq !== remSeq || current !== runId) return;
-    }
-    renderRemediation(runId, st, props, force);
+    renderRemediation(runId, st, force);
     // 새 빌드 파드에서 이어서 실행되는 동안(대기, 진행)에만 몇 초마다 다시 읽는다
     stopRemPoll();
     if (remActive(st)) rem.poll = setTimeout(() => { if (current === runId) loadRemediation(runId); }, REM_POLL_MS);
   }
-  function renderRemediation(runId, st, props, force) {
+  function renderRemediation(runId, st, force) {
     $('remed').hidden = false;
     rem.last = st;
     const chip = $('remed-status');
@@ -1453,26 +1395,26 @@
     chip.className = 'chip ' + (remStopped && (st.status === 'STOPPED' || st.status === 'INTERRUPTED') ? 'warn' : (REM_CLS[st.status] || ''));
     setText('remed-status', (remBuildOnly(st, remTolerated(st)) ? REM_UNCONFIRMED_KO : (REM_KO[st.status] || st.status))
       + (st.stale ? ' (작업 종료)' : ''));
-    // 취약점 해결 실행은 이 영역이 결과이므로 제목도 현재 조치 상태를 따른다(승인 후 이어서 진행하면 바뀐다)
+    // 취약점 해결 실행은 이 영역이 결과이므로 제목도 현재 조치 상태를 따른다(이어서 진행하면 바뀐다)
     const solo = runFlow === FLOW_REM;
     if (solo && lastState === 'finished') { const t = remTitle(st.status); if (t) setTitle(t.cls, t.text, t.text === REM_TITLE.RUNNING[1]); }
     const c = st.counts || {}, counts = $('remed-counts');
     counts.replaceChildren();
     if (c.baseline_findings != null) counts.appendChild(el('span', 'chip', `취약점 ${c.baseline_findings}건 → ${c.final_findings != null ? c.final_findings + '건' : '검사 전'}`));
     if (c.proposals_applied) counts.appendChild(el('span', 'chip ok', `적용 ${c.proposals_applied}건`));
-    const pend = Number(st.pending_approvals || 0);
-    if (pend) counts.appendChild(el('span', 'chip warn', `승인 대기 ${pend}건`));
     // 빌드가 실패한 프로젝트라면 버전은 바꾸고 다시 검사했지만 빌드로 확인하지 못했다는 것을 한 문장으로 알린다
     const tolerated = remTolerated(st);
     // 버전을 바꾼 결과물이 조치 전과 같은 오류에서만 멈췄을 때만 이 안내를 보인다. 새 오류가 생긴 수정본은 빌드 실패본이다
     const unconfirmed = remUnconfirmed(st) && Number(c.proposals_applied || 0) > 0;
     $('remed-note').hidden = !unconfirmed;
     setText('remed-note', unconfirmed ? '빌드가 실패한 프로젝트라 바꾼 라이브러리 버전을 빌드로 확인하지 못했습니다. 빌드 오류를 고친 뒤 한 번 빌드해서 확인해 주세요.' : '');
-    $('remed-msg').textContent = st.message_ko || st.message || '';   // 서버가 추가한 한국어 문장(message_ko)을 먼저 쓴다
+    // 서버가 추가한 한국어 문장(message_ko)을 먼저 쓴다. 이전 방식으로 멈춘 조치는 아래 안내 한 줄만 보이고 저장된 원문은 보이지 않는다
+    $('remed-msg').textContent = st.status === LEGACY_WAITING ? '' : (st.message_ko || st.message || '');
     const reasons = $('remed-reasons');
     reasons.replaceChildren();
     const codes = Array.isArray(st.reasons) && st.reasons.length ? st.reasons : (st.reason ? [st.reason] : []);
     for (const code of codes) {
+      if (LEGACY_REASONS.includes(code)) continue;
       // 조치 전부터 빌드가 실패한 실행이면 그 사유를 조치의 실패처럼 읽히지 않게 적는다
       const label = tolerated && code === 'baseline_build_failed' ? (unconfirmed ? '빌드로 확인하지 못함' : '조치 전에도 빌드 실패')
         : (REM_REASON_KO[code] || code);
@@ -1499,19 +1441,19 @@
          badBuild ? (sameFailure ? '빌드 미확인' : '빌드 실패본') : '', sameFailure ? 'warn' : 'bad');
     link('result-verified.zip', '검증된 이전 라운드 결과 받기', 'quiet');
     if (st.withheld) dl.appendChild(el('span', 'note', solo ? '실행이 끝나면 받을 수 있습니다.' : '이관 실행이 끝나면(마지막 정제 뒤) 받을 수 있습니다.'));
-    // 상태별 동작. 같은 상태가 여러 번 와도 선택한 항목과 열린 확인 영역이 사라지지 않도록 내용이 같으면 다시 그리지 않는다
-    const pending = props && Array.isArray(props.proposals) ? props.proposals.filter((p) => p && p.decision === 'pending') : [];
+    // 상태별 동작. 같은 상태가 여러 번 와도 입력 중인 값과 열린 확인 영역이 사라지지 않도록 내용이 같으면 다시 그리지 않는다
     const rs = (st.resume && typeof st.resume === 'object') ? st.resume : {};
     const j = (st.resume_job && typeof st.resume_job === 'object') ? st.resume_job : {};
     const q = qpos(j.queue);
     const key = JSON.stringify([st.status, !!st.stale, st.reason || '', !!rs.available, rs.note || '', jobActive(j), j.state || '',
-                                q ? q.ahead : null, st.queue_position || null, pending.map((p) => p.id + ':' + (p.proposal_hash || ''))]);
+                                q ? q.ahead : null, st.queue_position || null]);
     if (rem.busy) return;                                       // 요청 중이면 응답이 온 뒤 다시 그린다
     if (!force && key === rem.viewKey) return;
     rem.viewKey = key;
     const act = $('remed-act');
     if (remActive(st)) act.replaceChildren(goingView(st));
-    else if (st.status === 'AWAITING_APPROVAL') act.replaceChildren(pending.length ? approvalsView(runId, pending) : decidedView(runId, rs));
+    // 예전 버전에서 사람의 결정을 기다리던 조치는 끝난 것으로 보고 안내 한 줄만 둔다(이어서 진행 없음)
+    else if (st.status === LEGACY_WAITING) act.replaceChildren(el('p', 'lead', LEGACY_WAITING_NOTE));
     else if (st.status === 'AWAITING_CONFIRMATION') act.replaceChildren(confirmationView(runId, st, rs));
     else if (st.status === 'STOPPED' || st.status === 'INTERRUPTED') act.replaceChildren(stoppedView(runId, st, rs));
     else act.replaceChildren();
@@ -1532,314 +1474,6 @@
     return box;
   }
 
-  // ---- 승인 대기: 제안마다 체크박스 하나. 체크하면 적용하고 체크하지 않으면 적용하지 않는다. 버튼 하나로 결정과 이어서 진행을 함께 보낸다
-  // 한 라이브러리에 제안이 여러 건(모듈 pom마다 하나)이면 묶음 하나로 보여 준다. 보내는 내용은 묶음과 상관없이 제안 단위다
-  function approvalsView(runId, pending) {
-    const key = pending.map((p) => p.id + ':' + (p.proposal_hash || '')).join('|');
-    if (key !== rem.propKey) { rem.propKey = key; rem.sel = new Map(); }   // 제안이 바뀌면 선택을 초기화한다
-    const wrap = el('div');
-    wrap.appendChild(el('p', 'head', '적용할 변경을 고르세요'));
-    wrap.appendChild(el('p', 'lead', '체크한 변경만 적용하고, 체크하지 않은 변경은 적용하지 않습니다. 적용하면 빌드와 IVAS 재검사까지 이어서 합니다.'));
-    // 바로 고르지 않고 검토한 뒤에 정해도 된다는 안내. 실행은 승인 대기 상태로 저장되어 있다
-    wrap.appendChild(el('p', 'busynote', '버튼을 누르기 전에는 아무것도 적용하지 않습니다. 이 화면을 닫고 검토한 뒤 다시 와서 골라도 됩니다. 그동안 실행은 승인 대기 상태로 기다립니다.'));
-    const bar = el('div', 'selbar');
-    const all = el('button', 'btn quiet', '전체 선택'); all.type = 'button'; all.id = 'remed-all';
-    const none = el('button', 'btn quiet', '전체 해제'); none.type = 'button'; none.id = 'remed-none';
-    const count = el('span', 'count'); count.id = 'remed-selcount'; count.setAttribute('aria-live', 'polite');
-    bar.append(all, none, count);
-    wrap.appendChild(bar);
-    const list = el('div'); list.id = 'remed-props';
-    const boxes = [], groups = [];
-    pending.forEach((p, i) => {
-      const k = groupKey(p);
-      let g = groups.find((x) => x.key === k);
-      if (!g) { g = { key: k, items: [] }; groups.push(g); }
-      g.items.push({ p, i });
-    });
-    groups.forEach((g, gi) => {
-      if (g.items.length === 1) {
-        const card = proposalRow(g.items[0].p, g.items[0].i, null);
-        boxes[g.items[0].i] = card.querySelector('input');
-        list.appendChild(card);
-        return;
-      }
-      const box = groupBox(g, gi);
-      g.cb = box.querySelector('input'); g.count = box.querySelector('.gcount');
-      const items = el('div', 'gitems');
-      for (const { p, i } of g.items) {
-        const card = proposalRow(p, i, g.common);
-        boxes[i] = card.querySelector('input');
-        items.appendChild(card);
-      }
-      box.appendChild(items);
-      list.appendChild(box);
-    });
-    wrap.appendChild(list);
-    const err = el('p', 'err', rem.err); err.setAttribute('role', 'alert'); wrap.appendChild(err);
-    const row = el('div', 'actions');
-    const apply = el('button', 'btn'); apply.type = 'button'; apply.id = 'remed-apply';
-    row.append(apply, el('span', 'note', '체크하지 않은 항목은 적용하지 않고 진행합니다.'));
-    wrap.appendChild(row);
-    const confirmSlot = el('div'); wrap.appendChild(confirmSlot);
-    const chosen = () => pending.filter((p) => rem.sel.get(p.id)).length;
-    const sync = () => {
-      const n = chosen(), m = pending.length;
-      count.textContent = `${n}건 선택 / 전체 ${m}건`;
-      apply.textContent = `선택한 ${n}건 적용`;
-      boxes.forEach((b, i) => { b.checked = !!rem.sel.get(pending[i].id); b.closest('.prop').classList.toggle('on', b.checked); });
-      for (const g of groups) {
-        if (!g.cb) continue;
-        const k = g.items.filter(({ p }) => rem.sel.get(p.id)).length, t = g.items.length;
-        g.cb.checked = k === t; g.cb.indeterminate = k > 0 && k < t;
-        g.count.textContent = `${t}건 중 ${k}건 선택`;
-      }
-    };
-    boxes.forEach((b, i) => b.addEventListener('change', () => { rem.sel.set(pending[i].id, b.checked); sync(); }));
-    for (const g of groups) {
-      if (g.cb) g.cb.addEventListener('change', () => { for (const { p } of g.items) rem.sel.set(p.id, g.cb.checked); sync(); });
-    }
-    all.addEventListener('click', () => { for (const p of pending) rem.sel.set(p.id, true); sync(); });
-    none.addEventListener('click', () => { for (const p of pending) rem.sel.set(p.id, false); sync(); });
-    const lock = (on) => { for (const b of [all, none, ...boxes, ...groups.map((g) => g.cb).filter(Boolean), apply]) b.disabled = on; };
-    apply.addEventListener('click', () => {
-      if (rem.busy || confirmSlot.firstChild) return;
-      const n = chosen(), m = pending.length - n;
-      const text = n === 0 ? `${pending.length}건 전부 적용하지 않습니다. 적용하지 않은 제안은 이 작업에서 다시 나오지 않습니다.`
-                 : (m === 0 ? `${n}건을 모두 적용합니다.` : `${n}건을 적용하고 ${m}건은 적용하지 않습니다. 적용하지 않은 제안은 이 작업에서 다시 나오지 않습니다.`);
-      const panel = el('div', 'confirm'); panel.setAttribute('role', 'group'); panel.setAttribute('aria-label', '적용 확인');
-      panel.appendChild(el('p', null, text));
-      const prow = el('div', 'actions');
-      const ok = el('button', 'btn', '적용'), cancel = el('button', 'btn ghost', '취소');
-      ok.type = 'button'; cancel.type = 'button'; ok.id = 'remed-confirm-ok';
-      prow.append(ok, cancel); panel.appendChild(prow);
-      const close = () => { confirmSlot.replaceChildren(); lock(false); apply.focus(); };
-      cancel.addEventListener('click', close);
-      panel.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !rem.busy) { e.preventDefault(); close(); } });
-      ok.addEventListener('click', () => submitDecisions(runId, pending, [ok, cancel]));
-      lock(true);
-      confirmSlot.replaceChildren(panel);
-      ok.focus();
-    });
-    sync();
-    return wrap;
-  }
-  // 묶는 기준은 라이브러리와 형식, classifier다. classifier가 다른 항목은 dependencyManagement에서 다른 항목이기 때문이다
-  function groupKey(p) {
-    const o = editOverride(p);
-    return [p.ga || p.id || '', o.type || '', o.classifier || ''].join('|');
-  }
-  function editOverride(p) {
-    const e = Array.isArray(p.edits) && p.edits.length ? p.edits[0] : null;
-    return e && e.override && typeof e.override === 'object' ? e.override : {};
-  }
-  // 묶음 머리: 라이브러리, 버전, 묶음 체크박스. 모든 제안에 같은 위험 표시와 근거는 여기에 한 번만 쓴다
-  function groupBox(g, gi) {
-    const ps = g.items.map((x) => x.p), first = ps[0];
-    const box = el('div', 'pgroup'); box.setAttribute('role', 'group');
-    const id = 'remed-group-' + gi;
-    const head = el('label', 'prophead'); head.htmlFor = id;
-    const cb = el('input', 'pick'); cb.type = 'checkbox'; cb.id = id;
-    const what = el('span', 'what');
-    const ga = el('span', 'ga', first.ga || first.id || ''); ga.id = id + '-name';
-    box.setAttribute('aria-labelledby', ga.id);
-    what.appendChild(ga);
-    const uniq = (f) => [...new Set(ps.map(f).map((v) => String(v || '?')))];
-    const froms = uniq((p) => p.from_version), tos = uniq((p) => p.to_version);
-    const ver = el('span', 'ver', froms.join(', ') + ' → ');
-    ver.appendChild(el('b', null, tos.join(', ')));
-    what.appendChild(ver);
-    what.appendChild(el('span', 'gcount'));
-    head.append(cb, what);
-    box.appendChild(head);
-    const risks = (p) => (Array.isArray(p.risks) ? p.risks : []);
-    const common = { risks: risks(first).filter((r) => ps.every((p) => risks(p).includes(r))), mixedVer: froms.length > 1 || tos.length > 1 };
-    common.evidence = !!first.evidence && ps.every((p) => p.evidence === first.evidence);
-    const note = (p) => p.note_ko || p.note || '';
-    common.note = !!note(first) && ps.every((p) => note(p) === note(first));
-    g.common = common;
-    const tags = el('div', 'tags');
-    const vw = variantWords(editOverride(first).type, editOverride(first).classifier);
-    if (vw) tags.appendChild(el('span', 'tag', vw));
-    for (const r of common.risks) tags.appendChild(el('span', 'tag risk', RISK_KO[r] || r));
-    if (tags.childElementCount) box.appendChild(tags);
-    if (common.evidence) box.appendChild(el('p', 'facts', '버전 확인: ' + evidenceText(first.evidence)));
-    if (common.note) box.appendChild(el('p', 'pnote', note(first)));
-    return box;
-  }
-  // 제안 한 건. 묶음 안이면(common이 있으면) 라이브러리 대신 수정할 pom을 제목으로 쓰고 묶음 머리에 쓴 내용은 뺀다
-  function proposalRow(p, i, common) {
-    const card = el('div', 'prop');
-    const id = 'remed-pick-' + i;
-    const head = el('label', 'prophead'); head.htmlFor = id;
-    const cb = el('input', 'pick'); cb.type = 'checkbox'; cb.id = id; cb.value = String(p.id || '');
-    const what = el('span', 'what');
-    const fresh = Array.isArray(p.sources);                  // sources가 없는 이전 상태 파일은 예전 모양 그대로 보여 준다
-    const todo = fresh ? todoText(p) : '';
-    if (common && todo) what.appendChild(el('span', 'todo', todo));
-    else what.appendChild(el('span', 'ga', p.ga || p.id || ''));
-    if (!common || common.mixedVer || !todo) {
-      const ver = el('span', 'ver', (p.from_version || '?') + ' → ');
-      ver.appendChild(el('b', null, p.to_version || '?'));
-      what.appendChild(ver);
-    }
-    head.append(cb, what);
-    card.appendChild(head);
-    if (todo && !common) {
-      const f = el('p', 'facts'); f.appendChild(el('span', 'k', '할 일')); f.appendChild(document.createTextNode(todo));
-      card.appendChild(f);
-    }
-    const path = fresh ? pathFacts(p, !Object.keys(editOverride(p)).length) : null;
-    if (path) { path.id = id + '-path'; cb.setAttribute('aria-describedby', path.id); card.appendChild(path); }
-    const tags = el('div', 'tags');
-    if (p.kind && !todo) tags.appendChild(el('span', 'tag', KIND_KO[p.kind] || p.kind));
-    const o = editOverride(p), vw = variantWords(o.type, o.classifier);
-    if (vw && !common) tags.appendChild(el('span', 'tag', vw));
-    for (const r of Array.isArray(p.risks) ? p.risks : []) {
-      if (!common || !common.risks.includes(r)) tags.appendChild(el('span', 'tag risk', RISK_KO[r] || r));
-    }
-    if (tags.childElementCount) card.appendChild(tags);
-    if (p.evidence && !(common && common.evidence)) card.appendChild(el('p', 'facts', '버전 확인: ' + evidenceText(p.evidence)));
-    if ((p.note_ko || p.note) && !(common && common.note)) card.appendChild(el('p', 'pnote', p.note_ko || p.note));
-    const det = el('details');
-    det.appendChild(el('summary', null, '변경 내용 보기'));
-    det.appendChild(diffPre(p.diff || ''));
-    card.appendChild(det);
-    return card;
-  }
-  // 무엇을 바꾸는지 한 줄로 쓴다. 값 뒤에는 앞말에 따라 모양이 바뀌는 조사를 붙이지 않는다
-  function todoText(p) {
-    const ed = Array.isArray(p.edits) ? p.edits.filter((e) => e && e.pom) : [];
-    if (!ed.length) return '';
-    const e = ed[0], where = e.pom === 'pom.xml' ? '최상위 pom.xml' : String(e.pom);
-    const more = ed.length > 1 ? ` 외 ${ed.length - 1}곳` : '';
-    if (e.op === 'insert' || p.kind === 'managed_override') return `${where}에 버전 지정 추가${more}`;
-    return `${where}${e.line ? ` ${e.line}행` : ''}${more}: ${KIND_KO[p.kind] || p.kind || '버전 표기 수정'}`;
-  }
-  // 형식과 classifier를 말로 쓴다. 일반 jar는 빈 문자열이다
-  function variantWords(type, cls) {
-    const w = [];
-    if (type && type !== 'jar') w.push('형식 ' + type);
-    if (cls) w.push('classifier ' + cls);
-    return w.join(' ');
-  }
-  // 경로 문장으로 쓸 수 없을 때 보여 주는 출처 이름. sbmig/remediations/i18n.py의 ORIGIN_KO와 같다
-  const ORIGIN_KO = { transitive: '간접 의존성', direct_literal: '직접 의존성 (pom에 버전 표기)', direct_property: '직접 의존성 (property로 버전 지정)',
-                      own_management: '프로젝트의 dependencyManagement', parent_managed: '부모 pom에서 버전 지정', bom_managed: 'BOM에서 버전 지정' };
-  // 모듈 하나에 라이브러리가 들어온 경로를 한 줄로 만든다. report.md의 들어온 경로와 같은 문장이다
-  function sourceText(s, withVariant) {
-    const parts = [], how = String(s.how || '');
-    const via = (Array.isArray(s.via) ? s.via : []).filter(Boolean).map(String);
-    const d = s.declared && typeof s.declared === 'object' ? s.declared : null;
-    const where = d && d.pom ? String(d.pom) + (d.line ? ` ${d.line}행` : '') : '';
-    if (via.length) {
-      parts.push(via.join(' > ') + ' 경로로 가져옴');
-      if (where) parts.push('선언 위치 ' + where);
-    } else if (where) {
-      if (how === 'direct_literal' || how === 'direct_property') parts.push(where + '에 직접 선언');
-      else if (how === 'own_management') parts.push(where + '의 dependencyManagement에서 버전 지정');
-      else parts.push(where + '에 선언');
-    }
-    if (d && d.property) parts.push('버전 property ' + d.property);
-    if (s.manager) parts.push(String(s.manager) + '에서 버전 지정');
-    if (withVariant) {
-      const vs = [...new Set(String(s.variant || '').split(',').map((x) => x.trim()).filter(Boolean)
-                  .map((x) => { const [t, c] = x.split('/'); return variantWords(t, c) || '일반 jar'; }))];
-      if (vs.length === 1 && vs[0] !== '일반 jar') parts.push(vs[0]);
-      else if (vs.length > 1) parts.push(`사용 형태 ${vs.length}가지(${vs.join(', ')})`);
-    }
-    if (!parts.length && how) parts.push(ORIGIN_KO[how] || how);
-    return parts.join(', ');
-  }
-  // 들어온 경로. 모듈이 모두 같은 경로면 한 줄, 다르면 모듈마다 한 줄씩 쓴다
-  function pathFacts(p, withVariant) {
-    const groups = new Map();
-    for (const s of p.sources) {
-      if (!s || typeof s !== 'object') continue;
-      const text = sourceText(s, withVariant);
-      if (!text) continue;
-      const mods = groups.get(text) || [];
-      if (s.module && !mods.includes(String(s.module))) mods.push(String(s.module));
-      groups.set(text, mods);
-    }
-    if (!groups.size) return null;
-    const box = el('div', 'facts');
-    box.appendChild(el('span', 'k', '들어온 경로'));
-    if (groups.size === 1) {
-      const [[text, mods]] = [...groups];
-      box.appendChild(document.createTextNode(text + (mods.length > 1 ? ` (모듈 ${mods.join(', ')})` : '')));
-      return box;
-    }
-    const ul = el('ul', 'paths');
-    for (const [text, mods] of groups) ul.appendChild(el('li', null, (mods.length ? `${mods.join(', ')} 모듈: ` : '') + text));
-    box.appendChild(ul);
-    return box;
-  }
-  function evidenceText(ev) {
-    const s = String(ev);
-    if (s === 'policy:pins') return '서버 정책에 지정한 버전';
-    if (s.startsWith('policy:')) return '서버 정책 ' + s.slice(7);
-    if (s.startsWith('repository:')) return '저장소 ' + s.slice(11);
-    return s;
-  }
-  // diff를 그대로 보여 준다. 줄마다 span 하나(textContent)를 만들고, 첫 문자로 추가된 줄과 삭제된 줄만 색을 입힌다
-  function diffPre(text) {
-    const pre = el('pre', 'diff');
-    pre.setAttribute('tabindex', '0');                          // 가로로 긴 줄을 키보드로도 스크롤할 수 있도록
-    const lines = String(text).split('\n');
-    if (lines.length && lines[lines.length - 1] === '') lines.pop();
-    for (const ln of lines) {
-      const cls = /^(\+\+\+|---)( |$)/.test(ln) ? 'meta' : ln.startsWith('@@') ? 'hunk' : ln.startsWith('+') ? 'add' : ln.startsWith('-') ? 'del' : '';
-      pre.appendChild(el('span', cls || null, ln));
-      pre.appendChild(document.createTextNode('\n'));
-    }
-    return pre;
-  }
-  // 대기 중인 제안 전부의 결정을 한 번의 요청으로 보낸다(체크하면 approved, 아니면 rejected). 서버는 제안 해시, 원본 트리 해시, 정책 해시, diff가
-  // 저장된 제안과 모두 같을 때만 받는다(하나라도 다르면 409 approval_mismatch, 아무것도 기록하지 않음). resume: true면 저장 후 이어서 진행한다
-  async function submitDecisions(runId, pending, btns) {
-    if (rem.busy) return;
-    rem.busy = true; rem.err = '';
-    for (const b of btns) b.disabled = true;
-    const body = {
-      decisions: pending.map((p) => ({ proposal_id: p.id, decision: rem.sel.get(p.id) ? 'approved' : 'rejected', proposal_hash: p.proposal_hash,
-                                        source_tree_hash: p.source_tree_hash, policy_hash: p.policy_hash, diff: p.diff })),
-      resume: true,
-    };
-    let r = null, d = {};
-    try {
-      r = await fetch(remUrl(runId, '/approvals'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-      try { d = await r.json(); } catch (e) {}
-    } catch (e) {}
-    rem.busy = false;
-    if (current !== runId) return;
-    if (r && authProblem(r, d)) { rem.err = '접근이 거부되었습니다.'; loadRemediation(runId, true); return; }
-    if (!r) { rem.err = '서버에 보내지 못했습니다. 연결을 확인하고 다시 눌러 주세요.'; loadRemediation(runId, true); return; }
-    if (r.status === 409 && d && d.code === 'approval_mismatch') {
-      rem.err = '제안이 바뀌었습니다. 목록을 새로 불러왔습니다.'; rem.sel = new Map(); rem.propKey = '';
-      loadRemediation(runId, true); return;
-    }
-    if (!r.ok) { rem.err = '적용하지 못했습니다: ' + ((d && d.error) || r.status); loadRemediation(runId, true); return; }
-    const n = body.decisions.filter((x) => x.decision === 'approved').length;
-    if (d.resumed) {
-      rem.resumeErr = '';
-      toast(`결정을 저장했습니다(적용 ${n}건). 이어서 진행합니다.`);
-      if (rem.last) $('remed-act').replaceChildren(goingView({ ...rem.last, status: 'QUEUED' }));   // 다음 상태가 오기 전에도 바로 표시한다
-    } else {
-      const re = d.resume_error && typeof d.resume_error === 'object' ? d.resume_error : null;
-      rem.resumeErr = (re && re.error) || '이어서 진행하지 못했습니다.';
-      toast('결정은 저장했습니다. 이어서 진행은 하지 못했습니다.', true);
-    }
-    loadRemediation(runId, true);
-  }
-  // ---- 모든 제안의 결정이 기록됐지만 이어서 진행하지 못한 경우(위 요청이 거절됐거나 이전 서버)에만 '이어서 진행' 버튼을 보인다
-  function decidedView(runId, rs) {
-    const wrap = el('div');
-    wrap.appendChild(el('p', 'head', '결정을 저장했습니다'));
-    wrap.appendChild(el('p', 'lead', '모든 제안에 결정이 남아 있습니다. 아래 버튼을 누르면 적용 · 빌드 · 재검사를 이어서 합니다.'));
-    const err = el('p', 'err', rem.err || rem.resumeErr); err.setAttribute('role', 'alert'); wrap.appendChild(err);
-    wrap.appendChild(resumeRow(runId, rs, {}, '이어서 진행'));
-    return wrap;
-  }
   // ---- 업로드 확인 대기: 사용자가 IVAS에서 확인한 결과를 선택한다(자동으로 다시 업로드하지 않는다)
   function confirmationView(runId, st, rs) {
     const labels = Array.isArray(st.pending_uploads) ? st.pending_uploads : [];

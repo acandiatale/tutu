@@ -500,9 +500,12 @@ def test_the_remediation_runs_in_the_build_pod_switched_on():
     assert AFTER_MIGRATION in main and AFTER_MIGRATION in worker and contract.compare_env_pins(main, worker) == NO_DIFF
     # the knobs an operator may want for the build pod are documented next to it and forwarded by 81
     commented = _commented_keys()
-    for key in ("SBMIG_REMEDIATION__REQUIRE_APPROVAL", "SBMIG_REMEDIATION__FAILED_CANDIDATE",
+    for key in ("SBMIG_REMEDIATION__FAILED_CANDIDATE",
                 "SBMIG_REMEDIATION__AFTER_FAILED_BUILD", "SBMIG_REMEDIATION__IVAS_ANALYSIS_TIMEOUT_MINUTES"):
         assert commented[key][0] == "3", key
+    # the approval step is gone: no manifest names its switch any more (an old one left in a cluster is ignored)
+    for name in (CONFIGMAP, WEB, WEB_JOB, BUILD_JOB):
+        assert "REQUIRE_APPROVAL" not in name.read_text(encoding="utf-8"), name.name
     for name in (WEB, BUILD_JOB):
         refs = next(d for d in _docs(name) if d["kind"] in ("Deployment", "Job"))["spec"]["template"]["spec"]
         assert {"configMapRef": {"name": "sbmig-env"}} in refs["containers"][0]["envFrom"], name.name

@@ -1,26 +1,21 @@
 """취약점 조치에서 버전 변경 제안과 조치하지 못한 항목을 만드는 계획 모듈.
-인벤토리를 받아 제안을 만들고 승인 필요 여부와 해시를 붙인다.
-순서는 inventory -> plan -> 승인 대기 -> apply이고, 진입점은 ``plan_round``, ``policy_hash``,
-``validate_decision``, ``RepositoryVersionSource``다.
+인벤토리를 받아 제안을 만들고 diff와 해시를 붙인다. 만든 제안은 모두 적용한다.
+순서는 inventory -> plan -> apply이고, 진입점은 ``plan_round``, ``policy_hash``, ``RepositoryVersionSource``다.
 - 새 버전은 ``policy.pins``에 있거나 승인된 저장소에 실제로 있는 버전에서만 고른다.
   IVAS 패치 버전은 힌트일 뿐 근거가 아니다
 - 같은 메이저에서 가장 낮은 버전을 먼저 고르고, 없으면 ``allow_major``일 때만 더 높은 메이저를 고른다
 - 부모 / BOM 버전은 서버가 그 부모 / BOM을 ``pins``로 지정했을 때만 바꾼다
 - 간접 의존성과 pin이 없는 부모 / BOM 관리 버전은 루트 pom의 ``<dependencyManagement>``에 override 항목을
   넣는다
-- 승인은 ``require_approval``이 true이거나 위험 표시가 ``always_approve``에 있을 때만 기다린다.
-  기본 설정에서는 모든 제안을 바로 적용한다
 - 사내 아티팩트 자체와 사내 아티팩트를 거쳐 들어온 항목은 제안하지 않는다(``inhouse_artifact``)
 - classifier나 jar가 아닌 형식으로 해석된 의존성은 같은 형식과 classifier를 적은 override 항목으로 고친다
-- 승인은 제안 해시, 원본 트리 해시, 정책 해시, diff가 모두 같을 때만 받아들인다
 
-Planning for the remediation feature: proposals + residuals from the inventory, approval classes, and the hashes that
-bind a proposal to the current tree and policy. A target version comes only from `policy.pins` or a version the approved
-repository lists (IVAS patched versions are hints, never evidence). A parent / BOM version text changes only when the
-server pins that parent / BOM. Transitive items and parent / BOM managed versions without such a pin get a
-managed-version override entry in the root pom (user decision 2026-11-11). Approval follows one rule for every
-kind: a proposal waits only when `require_approval` is true or one of its risk flags is in `always_approve` (default
-`[]`, so nothing waits; the fixed "an override always waits" rule was removed). A library that is an in-house
+Planning for the remediation feature: proposals + residuals from the inventory, and the hashes that bind a proposal to
+the current tree and policy. Every proposal is applied (decision `auto`); the approval step was removed. A target
+version comes only from `policy.pins` or a version the approved repository lists (IVAS patched versions are hints,
+never evidence). A parent / BOM version text changes only when the server pins that parent / BOM. Transitive items and parent / BOM managed versions without such a pin get a
+managed-version override entry in the root pom (user decision 2026-11-11). The risk flags (major, parent, bom,
+managed_override) describe a change for the report; they decide nothing. A library that is an in-house
 artifact, or an item the inventory marks as reached through an in-house artifact (the inventory splits an item by
 module, so such an item is in-house for every one of its modules), is an `inhouse_artifact` residual (its owner
 publishes the fix). An override entry carries the resolved dependency's `<type>` / `<classifier>` (Maven's management
@@ -45,10 +40,7 @@ from .inhouse import inhouse_keys
 from .inventory import split_patched_versions as split_hints
 from .matching import same_ga, same_version
 from .models import (
-    D_APPROVED,
     D_AUTO,
-    D_PENDING,
-    D_REJECTED,
     E_INSERT,
     K_BOM_VERSION,
     K_DIRECT_VERSION,
@@ -68,15 +60,12 @@ from .models import (
     R_MANUAL_REVIEW,
     R_NO_CANDIDATE_VERSION,
     R_POLICY_DENIED,
-    R_REJECTED_PROPOSALS,
     R_STALE_LOCATION,
     R_UNKNOWN_PROVENANCE,
     RISK_BOM,
     RISK_MAJOR,
     RISK_MANAGED_OVERRIDE,
     RISK_PARENT,
-    ApprovalMismatch,
-    Decision,
     Inventory,
     InventoryItem,
     ModuleSource,
@@ -115,12 +104,13 @@ def _policy_dict(policy: Any) -> dict[str, Any]:
 
 
 def policy_hash(cfg: Any) -> str:
-    """서버 정책의 해시를 계산한다. ``remediation.policy``, ``require_approval``, ``always_approve``,
-    ``failed_candidate``, ``ignore_actions``, 사내 아티팩트 설정, 프레임워크 패턴을 포함한다.
-    제안 내용이나 승인 대상을 바꾸는 값이 하나라도 바뀌면 해시가 바뀌고, 이전의 승인 대기 제안은 무효가 된다.
+    """서버 정책의 해시를 계산한다. ``remediation.policy``, ``failed_candidate``, ``ignore_actions``,
+    사내 아티팩트 설정, 프레임워크 패턴을 포함한다.
+    제안 내용을 바꾸는 값이 하나라도 바뀌면 해시가 바뀌고, 그 라운드의 계획을 다시 만든다.
 
-    Hash of everything that changes what is proposed or what needs approval (incl. `ignore_actions` and the sorted
-    in-house g:a keys). The framework patterns (group `framework` listed and `framework.artifacts` not empty) are an
+    Hash of everything that changes what is proposed (incl. `ignore_actions` and the sorted in-house g:a keys). The
+    removed approval settings are no longer part of it, so every hash an earlier version stored differs from today's:
+    a resumed run plans its current round again at the `plan` node (`graph._plan`). The framework patterns (group `framework` listed and `framework.artifacts` not empty) are an
     extra field `inhouse_framework`, left out when there are none, so a configuration without patterns hashes exactly
     as before the group existed (the group names themselves were never hashed, only the resolved keys)."""
     from .ivas import ignore_set
@@ -128,13 +118,11 @@ def policy_hash(cfg: Any) -> str:
     keys = inhouse_keys(cfg)
     data: dict[str, Any] = {
         "policy": _policy_dict(rem.policy),
-        "require_approval": bool(rem.require_approval),
-        "always_approve": sorted(str(x) for x in (rem.always_approve or [])),
         "failed_candidate": str(rem.failed_candidate),
         "ignore_actions": sorted(ignore_set(getattr(rem, "ignore_actions", None))),
         "inhouse": sorted(keys),
     }
-    # 패턴이 없을 때는 넣지 않아야 framework 그룹이 생기기 전에 받은 승인의 해시가 그대로 유지된다
+    # 패턴이 없을 때는 넣지 않아야 framework 그룹이 생기기 전의 설정과 해시가 같다
     patterns = sorted(getattr(keys, "patterns", ()) or ())
     if patterns:
         data["inhouse_framework"] = patterns
@@ -1066,33 +1054,27 @@ def _governed_sources(change: _Change) -> list[ModuleSource]:
     return [s for s in change.sources if s.module in governed]
 
 
-def _was_rejected(c: _Change, to_version: str, rejected: set[tuple[str, ...]]) -> str:
-    """이전 결정에서 거절됐거나 효과가 없어 뺀 변경인지 확인하고 "rejected" / "ineffective" / ""를 반환한다.
-    버전은 대소문자를 구분하지 않는다. 형식 / classifier가 없는 2-튜플은 일반 jar와 다른 모든 변경에 해당하고,
-    pom까지 담은 4-튜플은 그 pom에 넣는 override 항목에만 해당한다."""
+def _was_ineffective(c: _Change, to_version: str, rejected: set[tuple[str, ...]]) -> bool:
+    """이 실행의 앞 라운드에서 효과가 없어 뺀 override 항목인지 확인한다. 버전은 대소문자를 구분하지 않는다.
+    키는 (g:a, 버전, 형식 / classifier, pom)이며 그 pom에 넣는 override 항목에만 해당한다."""
     for r in rejected:
-        if len(r) < 2 or not same_ga(r[0], c.ga) or not same_version(r[1], to_version):
+        if len(r) < 4 or not same_ga(r[0], c.ga) or not same_version(r[1], to_version) or r[2] != c.variant:
             continue
-        if (r[2] if len(r) > 2 else "") != c.variant:
-            continue
-        if len(r) > 3:
-            if c.edit.op == E_INSERT and c.edit.pom == r[3]:
-                return "ineffective"
-            continue
-        return "rejected"
-    return ""
+        if c.edit.op == E_INSERT and c.edit.pom == r[3]:
+            return True
+    return False
 
 
 def plan_round(project: Path, inventory: Inventory, cfg: Any, source: Any, *, round: int, source_tree_hash: str,
                rejected: set[tuple[str, ...]] | None = None) -> RoundPlan:
     """라운드 하나의 계획을 만든다(``interfaces.PlanFn``). 항목마다 제안이나 조치하지 못한 항목을 만들고,
-    같은 pom 줄은 합친 뒤, 승인 필요 여부와 diff, 해시를 붙인다.
+    같은 pom 줄은 합친 뒤 diff와 해시를 붙인다. 제안은 모두 ``auto``다.
     입력이 같으면 결과도 항상 같고, 제안 ID는 ``p-<round>-<n>``이다.
 
-    One round's plan: proposals + residuals, merged per pom line, with approval classes, diff and hashes; deterministic.
-    `rejected` holds (g:a, to_version) for earlier rejected proposals, or (g:a, to_version, "<type>/<classifier>") for
-    a rejected variant override (`apply.override_variant`), or (g:a, to_version, variant, pom) for an override entry
-    the graph dropped as ineffective in this run; g:a and version compare case-insensitively."""
+    One round's plan: proposals + residuals, merged per pom line, with diff and hashes; deterministic; every proposal
+    has decision `auto`. `rejected` holds (g:a, to_version, variant, pom) for an override entry the graph dropped as
+    ineffective in this run (variant = `apply.override_variant`, "" for a plain jar); shorter keys match nothing.
+    g:a and version compare case-insensitively."""
     project = Path(project)
     rem = _rem(cfg)
     policy = rem.policy
@@ -1118,7 +1100,7 @@ def plan_round(project: Path, inventory: Inventory, cfg: Any, source: Any, *, ro
             if isinstance(got, Residual):
                 plan.residuals.append(got)
                 continue
-            # 나중에 거절이나 diff 실패로 남게 되어도 보고서가 경로와 모듈별 출처를 보여 줄 수 있도록 옮겨 둔다
+            # 나중에 diff 실패 등으로 남게 되어도 보고서가 경로와 모듈별 출처를 보여 줄 수 있도록 옮겨 둔다
             got.via, got.inhouse = list(item.via or []), sorted(set(item.inhouse or []))
             if not got.sources:
                 got.sources = list(item.sources or [])
@@ -1126,7 +1108,7 @@ def plan_round(project: Path, inventory: Inventory, cfg: Any, source: Any, *, ro
             changes.append(got)
     # 같은 pom 줄의 replace끼리, 같은 g:a의 override끼리 합친다. override 위치는 모두 원래 파일 기준이고
     # apply가 제안 ID 순서로 한 번에 넣는다
-    # 같은 g:a라도 형식 / classifier가 다르면 관리 키가 달라 따로 승인하는 제안이 된다
+    # 같은 g:a라도 형식 / classifier가 다르면 관리 키가 달라 따로 적용하는 제안이 된다
     groups: dict[tuple[str, int, str, str], list[_Change]] = {}
     for c in changes:
         key = (c.edit.pom, 0, c.ga, c.variant) if c.edit.op == E_INSERT else (c.edit.pom, c.edit.line, "", "")
@@ -1144,17 +1126,9 @@ def plan_round(project: Path, inventory: Inventory, cfg: Any, source: Any, *, ro
         except (_apply.EditError, OSError) as e:
             for c in group:
                 plan.residuals.append(_change_residual(c, R_MANUAL_REVIEW, f"cannot place an override entry safely: {e}"))
-    always = set(rem.always_approve or [])
     n = 0
     for change, group in merged:
-        seen = [k for c in group if (k := _was_rejected(c, change.to_version, rejected))]
-        if "rejected" in seen:
-            for c in group:
-                plan.residuals.append(_change_residual(c, R_REJECTED_PROPOSALS,
-                                                       f"{change.ga} → {change.to_version} was rejected in an earlier "
-                                                       "decision; not proposed again"))
-            continue
-        if seen:
+        if any(_was_ineffective(c, change.to_version, rejected) for c in group):
             for c in group:
                 plan.residuals.append(_change_residual(c, R_MANUAL_REVIEW,
                                                        f"the override entry for {change.ga} → {change.to_version} in "
@@ -1168,11 +1142,9 @@ def plan_round(project: Path, inventory: Inventory, cfg: Any, source: Any, *, ro
                 plan.residuals.append(_change_residual(c, R_STALE_LOCATION, str(e)))
             continue
         n += 1
-        # 승인 규칙은 하나다. require_approval이거나 위험 표시가 always_approve에 있을 때만 기다린다
-        needs = bool(rem.require_approval) or any(r in always for r in change.risks)
         p = Proposal(id=f"p-{round}-{n}", round=round, ga=change.ga, from_version=change.from_version,
-                     to_version=change.to_version, kind=change.kind, risks=sorted(change.risks), requires_approval=needs,
-                     decision=D_PENDING if needs else D_AUTO, evidence=change.evidence,
+                     to_version=change.to_version, kind=change.kind, risks=sorted(change.risks),
+                     decision=D_AUTO, evidence=change.evidence,
                      finding_ids=list(change.finding_ids), edits=[change.edit], diff=diff,
                      source_tree_hash=source_tree_hash, policy_hash=phash, note="; ".join(change.notes),
                      modules=list(change.modules), also_modules=list(change.also_modules),
@@ -1180,59 +1152,9 @@ def plan_round(project: Path, inventory: Inventory, cfg: Any, source: Any, *, ro
         p.proposal_hash = p.compute_hash()
         plan.proposals.append(p)
     plan.residuals.sort(key=lambda r: (r.ga, r.version, r.reason))
-    if plan.pending():
-        plan.notes.append(f"{len(plan.pending())} proposal(s) wait for approval of their exact diff")
     log.info("remediation plan round %s: %d proposal(s), %d residual(s)", round, len(plan.proposals), len(plan.residuals))
     return plan
 
 
-# 재개할 때 낡은 승인 대기 제안을 쓰지 않도록, 그래프가 계획 없이도 정책 해시를 계산할 수 있게 함수에 붙여 둔다
+# 재개할 때 낡은 계획을 쓰지 않도록, 그래프가 계획 없이도 정책 해시를 계산할 수 있게 함수에 붙여 둔다
 plan_round.policy_hash = policy_hash   # type: ignore[attr-defined]
-
-
-# ---------------------------------------------------------------------------------------------------- 승인 확인
-def _norm_diff(s: str) -> str:
-    return (s or "").replace("\r\n", "\n")
-
-
-def validate_decision(proposal: Proposal, decision: Decision, *, current_tree_hash: str, current_policy_hash: str) -> None:
-    """승인이나 거절 요청을 저장된 제안과 대조하고, 다르면 무엇이 다른지 담아 ``ApprovalMismatch``를 던진다.
-    네 값(제안 해시, 원본 트리 해시, 정책 해시, diff)이 모두 같고, 제안이 현재 트리와 정책 기준으로
-    만들어졌으며, 아직 ``pending``이어야 통과한다.
-
-    Raise `ApprovalMismatch` naming every differing item unless the four bindings all match and the proposal is current."""
-    problems: list[str] = []
-    fields: list[str] = []
-    if decision.proposal_id != proposal.id:
-        problems.append(f"proposal id {decision.proposal_id!r} does not match {proposal.id!r}")
-        fields.append("proposal_id")
-    if proposal.decision != D_PENDING:
-        problems.append(f"proposal {proposal.id} is not pending (decision={proposal.decision})")
-        fields.append("state")
-    if decision.decision not in (D_APPROVED, D_REJECTED):
-        problems.append(f"decision must be {D_APPROVED} or {D_REJECTED}, got {decision.decision!r}")
-        fields.append("decision")
-    if proposal.compute_hash() != proposal.proposal_hash:
-        problems.append("proposal hash: the stored proposal no longer matches its own hash")
-        fields.append("proposal_hash")
-    elif decision.proposal_hash != proposal.proposal_hash:
-        problems.append("proposal hash differs")
-        fields.append("proposal_hash")
-    if decision.source_tree_hash != proposal.source_tree_hash:
-        problems.append("source tree hash differs")
-        fields.append("source_tree_hash")
-    if proposal.source_tree_hash != current_tree_hash:
-        problems.append("source tree hash: the accepted tree changed since the proposal was made (stale proposal)")
-        fields.append("source_tree_hash")
-    if decision.policy_hash != proposal.policy_hash:
-        problems.append("policy hash differs")
-        fields.append("policy_hash")
-    if proposal.policy_hash != current_policy_hash:
-        problems.append("policy hash: the server policy changed since the proposal was made (stale proposal)")
-        fields.append("policy_hash")
-    if _norm_diff(decision.diff) != _norm_diff(proposal.diff):
-        problems.append("diff differs")
-        fields.append("diff")
-    if problems:
-        raise ApprovalMismatch(f"decision for {proposal.id} rejected: " + "; ".join(problems),
-                               proposal_id=proposal.id, fields=sorted(set(fields)))

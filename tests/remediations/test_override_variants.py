@@ -11,7 +11,6 @@ from sbmig.core.config import RemediationConfig, RemediationPolicyConfig
 from sbmig.remediations import apply as A
 from sbmig.remediations import planner as P
 from sbmig.remediations.models import (
-    D_APPROVED,
     D_AUTO,
     E_INSERT,
     K_MANAGED_OVERRIDE,
@@ -162,7 +161,7 @@ def test_locate_override_for_a_module_pom_and_apply_it(tmp_path):
     e = A.locate_override(tmp_path, "example", "t", "1.1", classifier="jakarta", pom="core/pom.xml")
     assert e.pom == "core/pom.xml" and e.anchor == "</project>" and "<classifier>jakarta</classifier>" in e.new
     p = Proposal(id="p-1-1", round=1, ga="example:t", from_version="1.0", to_version="1.1", kind=K_MANAGED_OVERRIDE,
-                 decision=D_APPROVED, edits=[e])
+                 edits=[e])
     res = A.apply_proposals(tmp_path, [p])
     assert res.applied == ["p-1-1"] and res.changed_files == ["core/pom.xml"]
     assert (tmp_path / "pom.xml").read_text() == PLAIN_POM
@@ -199,7 +198,7 @@ def test_plain_and_classifier_are_two_independent_proposals(tmp_path):
     assert not plan.residuals
     plain, cls = plan.proposals
     assert [p.kind for p in plan.proposals] == [K_MANAGED_OVERRIDE] * 2
-    assert all(not p.requires_approval and p.decision == D_AUTO for p in plan.proposals)
+    assert all(p.decision == D_AUTO for p in plan.proposals)
     assert A.override_variant(plain) == "" and A.override_variant(cls) == "jar/jakarta"
     assert plain.modules == ["web"] and cls.modules == ["api"]
     # the plain jar entry is the one a plain-only item gets
@@ -255,22 +254,23 @@ def test_declared_plain_version_blocks_only_the_plain_entry(tmp_path):
     assert [s.module for s in r.sources] == ["web"]
 
 
-def test_rejected_variant_does_not_reject_the_plain_entry(tmp_path):
+def test_an_ineffective_variant_entry_does_not_drop_the_plain_entry(tmp_path):
     proj = _mm(tmp_path)
-    plan = _plan(proj, [_both()], rejected={("example:t", "1.1", "jar/jakarta")})
+    plan = _plan(proj, [_both()], rejected={("example:t", "1.1", "jar/jakarta", "pom.xml")})
     (p,) = plan.proposals
     assert A.override_variant(p) == ""
     (r,) = plan.residuals
-    assert r.reason == "rejected_proposals"
-    plan = _plan(proj, [_both()], rejected={("EXAMPLE:t", "1.1")})                   # the plain jar, any case
+    assert r.reason == "manual_review" and "had no effect in an earlier round" in r.detail
+    plan = _plan(proj, [_both()], rejected={("EXAMPLE:t", "1.1", "", "pom.xml")})       # the plain jar, any case
     (p,) = plan.proposals
     assert A.override_variant(p) == "jar/jakarta"
+    # the keys of a person's rejection (approval step, removed) match nothing any more
+    old_keys = {("example:t", "1.1"), ("example:t", "1.1", "jar/jakarta")}
+    assert len(_plan(proj, [_both()], rejected=old_keys).proposals) == 2
 
 
 # ------------------------------------------------------------------------------------------------- applying
-def _approved(plan):
-    for p in plan.proposals:
-        p.decision = D_APPROVED
+def _proposals(plan):
     return plan.proposals
 
 
@@ -279,7 +279,7 @@ def test_apply_any_subset_and_reapply(tmp_path, base):
     base_in = base
     orig = _mm(tmp_path / "orig", base_in)
     base = (orig / "pom.xml").read_text()
-    plain, cls = _approved(_plan(orig, [_both()]))
+    plain, cls = _proposals(_plan(orig, [_both()]))
     outs = {}
     for name, chosen in (("both", [cls, plain]), ("plain", [plain]), ("cls", [cls])):
         cand = _mm(tmp_path / name, base_in)
@@ -294,7 +294,7 @@ def test_apply_any_subset_and_reapply(tmp_path, base):
     assert both.count("<dependencyManagement>") == 1 and both.count("<artifactId>t</artifactId>") == 2
     assert both.index("<version>1.1</version>\n") < both.index("<classifier>jakarta</classifier>")
     assert "<classifier>" not in outs["plain"] and outs["cls"].count("<classifier>jakarta</classifier>") == 1
-    # idempotent: the same approvals on a fresh copy give the same bytes ...
+    # idempotent: the same proposals on a fresh copy give the same bytes ...
     again = _mm(tmp_path / "again", base_in)
     A.apply_proposals(again, [plain, cls])
     assert (again / "pom.xml").read_text() == both
@@ -304,9 +304,9 @@ def test_apply_any_subset_and_reapply(tmp_path, base):
     assert (tmp_path / "both" / "pom.xml").read_text() == both
 
 
-def test_reject_one_apply_the_other_then_replan(tmp_path):
+def test_apply_one_then_replan(tmp_path):
     orig = _mm(tmp_path / "orig")
-    _plain, cls = _approved(_plan(orig, [_both()]))
+    _plain, cls = _proposals(_plan(orig, [_both()]))
     cand = _mm(tmp_path / "cand")
     assert A.apply_proposals(cand, [cls]).applied == [cls.id]
     # next plan on the changed tree: the classifier entry exists now, the plain jar still gets its insert
@@ -338,7 +338,7 @@ def _override(variant, modules, pid="p-1-1"):
 def test_verify_resolution_looks_at_the_variant_dependency():
     before = _model(api=[_dep("example:t", "1.0", c="jakarta")], web=[_dep("example:t", "1.0")])
     moved = _model(api=[_dep("example:t", "1.1", c="jakarta")], web=[_dep("example:t", "1.0")])
-    # the classifier entry moved the classifier dependency; the plain jar (not approved) stays: no problem
+    # the classifier entry moved the classifier dependency; the plain jar (not proposed here) stays: no problem
     assert A.verify_resolution([_override("jar/jakarta", ["api"])], before, moved, []) == []
     # a plain entry does not govern the classifier dependency: checking it against `api` finds nothing to move
     stayed = _model(api=[_dep("example:t", "1.0", c="jakarta")], web=[_dep("example:t", "1.1")])
@@ -368,7 +368,7 @@ def test_verify_resolution_packaged_classifier_jar():
     assert any("still packages WEB-INF/lib/t-1.0-jakarta.jar" in ln and not ln.startswith("info:")
                for ln in A.verify_resolution([cls], before, after, [stale_cls]))
     assert A.verify_resolution([cls], before, after, [plain_jar]) == []
-    # the plain entry ignores the (rejected) classifier jar but still sees a stale plain jar
+    # the plain entry ignores the (not proposed) classifier jar but still sees a stale plain jar
     plain = _override("", ["web"])
     after2 = _model(api=[_dep("example:t", "1.0", c="jakarta")], web=[_dep("example:t", "1.1")])
     assert A.verify_resolution([plain], before, after2, [stale_cls]) == []

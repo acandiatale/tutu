@@ -7,8 +7,6 @@ from sbmig.remediations import apply as apply_mod
 from sbmig.remediations import graph
 from sbmig.remediations import planner as planner_mod
 from sbmig.remediations.models import (
-    AWAITING_APPROVAL,
-    D_APPROVED,
     INCOMPLETE,
     K_MANAGED_OVERRIDE,
     O_DIRECT_LITERAL,
@@ -23,7 +21,6 @@ from sbmig.remediations.models import (
     ResolvedDep,
     ResolvedModel,
     read_json,
-    write_json_atomic,
 )
 
 from .fakes import (
@@ -132,7 +129,7 @@ DM_POM = """<project>
 
 
 def test_classifier_override_flow_with_lower_case_ivas(tmp_path):
-    cfg = make_cfg(always_approve=["managed_override"])         # approval switched on: the flow stops once
+    cfg = make_cfg()
     state, paths = make_run(tmp_path, {"pom.xml": DM_POM})
     item = InventoryItem(ga="example:lib", version="2.2.0.RELEASE", reported_version="2.2.0.release",
                          origin=O_TRANSITIVE, finding_ids=["CVE-1"], patched_versions=["2.2.1.release"], modules=["."],
@@ -145,13 +142,8 @@ def test_classifier_override_flow_with_lower_case_ivas(tmp_path):
     comps = _components(FakeScanner({"baseline": [scan_result(_finding())], "final-r1": [scan_result()]}),
                         [Inventory(items=[item])], [before, after])
     out = _run(state, paths, comps, cfg)
-    assert out.status == AWAITING_APPROVAL
-    data = read_json(paths.plan(1))
-    (p,) = data["proposals"]
+    (p,) = read_json(paths.plan(1))["proposals"]
     assert p["kind"] == K_MANAGED_OVERRIDE and p["edits"][0]["override"]["classifier"] == "jakarta"
-    p["decision"] = D_APPROVED
-    write_json_atomic(paths.plan(1), data)
-    out = _run(out, paths, comps, cfg)
     pom = (paths.accepted / "pom.xml").read_text()
     assert "<classifier>jakarta</classifier>" in pom and "<version>2.2.1.RELEASE</version>" in pom
     assert out.status == SUCCEEDED, (out.reason, out.message)

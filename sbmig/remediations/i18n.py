@@ -51,16 +51,15 @@ KIND_KO: dict[str, str] = {
 RISK_KO: dict[str, str] = {
     "major": "메이저 버전 변경", "parent": "부모 pom 변경", "bom": "BOM 변경", "managed_override": "dependencyManagement 항목 추가",
 }
-DECISION_KO: dict[str, str] = {"auto": "자동 적용", "pending": "승인 대기", "approved": "승인 후 적용", "rejected": "선택하지 않음",
-                               "ineffective": "효과가 없어 다시 뺌"}
+DECISION_KO: dict[str, str] = {"auto": "자동 적용", "ineffective": "효과가 없어 다시 뺌"}
 # 사유 코드(models.R_*와 chain_budget)의 짧은 한국어 이름.
 # 표, 묶음 제목, 화면 표시에 쓰며 자세한 설명은 report._REASON_KO에 있다
 REASON_KO: dict[str, str] = {
     "baseline_build_failed": "조치 전 빌드 실패", "candidate_build_failed": "수정본 빌드 실패", "scan_incomplete": "검사 미완료",
     "upload_uncertain": "업로드 결과 확인 불가", "zip_hash_mismatch": "검사한 파일 불일치",
     "text_only_violation": "버전 표기 외 변경 감지", "resolution_mismatch": "적용 결과가 계획과 다름",
-    "execution_boundary_refused": "빌드 설정 점검에서 중단", "not_ready": "실행 환경 미비", "pending_approval": "승인 대기",
-    "rejected_proposals": "선택하지 않은 변경", "residual_findings": "남은 취약점", "manual_review": "직접 확인 필요",
+    "execution_boundary_refused": "빌드 설정 점검에서 중단", "not_ready": "실행 환경 미비",
+    "residual_findings": "남은 취약점", "manual_review": "직접 확인 필요",
     "no_candidate_version": "올릴 수 있는 버전 없음", "rounds_exhausted": "반복 횟수 한도 도달", "stop_requested": "중지 요청",
     "internal_error": "내부 오류", "policy_denied": "정책상 허용되지 않음", "unknown_provenance": "버전을 지정한 곳을 찾지 못함",
     "stale_location": "pom이 그 사이 변경됨", "inventory_incomplete": "의존성 목록을 다 읽지 못함",
@@ -75,7 +74,7 @@ INHOUSE_GROUP_KO: dict[str, str] = {
 COUNT_KO: dict[str, str] = {
     "baseline_findings": "조치 전 취약점", "baseline_ignored": "조치 전 제외", "fixed": "조치한 취약점",
     "final_findings": "조치 후 남은 취약점", "final_ignored": "조치 후 제외", "rounds": "라운드", "proposals": "제안",
-    "proposals_applied": "적용한 제안", "proposals_pending": "승인 대기 제안", "proposals_rejected": "적용하지 않은 제안",
+    "proposals_applied": "적용한 제안",
     "residual": "조치하지 못한 항목", "residual_inhouse": "사내 라이브러리 항목",
 }
 FINDING_KIND_KO: dict[str, str] = {
@@ -297,7 +296,7 @@ def _build_why(x: str | None) -> str:
     return _raw(s)
 
 
-_STATE_KO = {"QUEUED": "대기 중", "RUNNING": "진행 중", "AWAITING_APPROVAL": "승인 대기",
+_STATE_KO = {"QUEUED": "대기 중", "RUNNING": "진행 중",
              "AWAITING_CONFIRMATION": "업로드 확인 필요", "STOPPED": "중지됨", "INTERRUPTED": "중단됨"}
 
 
@@ -399,9 +398,6 @@ GROUPS: dict[str, _Group] = {
                                  "버전 지정을 넣었지만 실제 버전이 바뀌지 않아 다시 뺐습니다. 의존성 선언에 버전이 직접 적혀 "
                                  "있으면(이 pom이나 부모 pom) 버전 지정보다 그 값이 우선합니다. 아래 들어온 경로에서 그 선언을 "
                                  "찾아 버전을 직접 올려 주세요.", False),
-    "rejected_earlier": _Group("선택하지 않은 변경",
-                               "담당자가 조치 화면에서 선택하지 않은 변경이라 이번 실행에서는 다시 제안하지 않습니다. 조치를 "
-                               "다시 실행하면 다시 제안합니다."),
     "inventory_incomplete": _Group("의존성 목록을 다 읽지 못함",
                                    "의존성 목록을 다 읽지 못해 조치 계획을 세우지 않았습니다.", False),
     "inhouse_self": _Group("사내 라이브러리",
@@ -665,9 +661,6 @@ RULES: list[_Rule] = [
        r"not proposed again",
        lambda g: (f"{g['pom']}에 넣은 {g['ga']}의 {g['v']} 버전 지정은 이 실행의 앞 라운드에서 효과가 없었으므로 다시 제안하지 "
                   "않습니다."), "override_no_effect"),
-    _r("rejected_earlier", r"(?P<ga>\S+) → (?P<v>\S+) was rejected in an earlier decision; not proposed again",
-       lambda g: (f"{g['ga']}의 {g['v']} 버전 변경은 담당자가 선택하지 않은 것이라 이번 실행에서는 다시 제안하지 "
-                  "않습니다."), "rejected_earlier"),
     _r("inventory_incomplete_plan", r"inventory incomplete: nothing planned \((?P<n>.*)\)",
        lambda g: "의존성 목록을 다 읽지 못해 조치 계획을 세우지 않았습니다." + _why(g["n"])),
     _r("inventory_incomplete", r"inventory incomplete",
@@ -714,9 +707,6 @@ RULES: list[_Rule] = [
        r"the owners must remove the override when the parent / BOM / direct dependency catches up",
        lambda g: ("이 항목을 추가하면 나중에 부모 pom, BOM, 직접 의존성의 버전을 올려도 이 버전은 바뀌지 않습니다. 부모 pom, "
                   "BOM, 직접 의존성이 이 버전 이상으로 올라가면 담당자가 이 항목을 삭제해야 합니다.")),
-    _r("override_approval",
-       r"always needs approval: an inserted <dependencyManagement> entry is never applied automatically",
-       lambda g: "dependencyManagement에 추가하는 항목은 자동으로 적용하지 않습니다. 항상 승인이 필요합니다."),
     _r("variant_note",
        r"the entry names (?P<what>{A}) like the resolved dependency: an entry without it would not govern that dependency",
        lambda g: (f"추가하는 항목에 해석된 의존성과 같은 값을 적습니다({_what_ko(g['what'])}). 이 값이 없는 항목은 그 "
@@ -726,8 +716,6 @@ RULES: list[_Rule] = [
                   else f"한 번의 수정으로 {g['others']}도 함께 조치합니다(같은 버전 표기).")),
     _r("merge_target", r"target (?P<v>\S+) chosen for (?P<ga>\S+) \(highest of the merged targets\)",
        lambda g: f"{g['ga']}의 목표 버전은 함께 조치하는 대상 가운데 가장 높은 {g['v']}입니다."),
-    _r("pending_note", r"(?P<n>\d+) proposal\(s\) wait for approval of their exact diff",
-       lambda g: f"제안 {g['n']}건이 승인을 기다립니다."),
     # ---- inventory: 사유
     _r("managed_by_direct", r"managed by (?P<f>\S+), which the project poms do not declare directly",
        lambda g: f"{g['f']}에서 버전을 지정합니다. 프로젝트 pom에는 직접 선언되어 있지 않습니다.", "external_manager"),
@@ -1011,11 +999,6 @@ RULES: list[_Rule] = [
        lambda g: "Maven 의존성 분석이 완전하지 않습니다." + _why(g["n"])),
     _r("scan_missing", r"the scan this round plans from is missing or incomplete",
        lambda g: "이번 라운드의 계획에 쓸 검사 결과가 없거나 검사가 끝나지 않았습니다."),
-    _r("pending_halt", r"(?P<n>\d+) proposal\(s\) of round (?P<r>\d+) wait for approval",
-       lambda g: f"라운드 {g['r']}의 제안 {g['n']}건이 승인을 기다립니다."),
-    _r("policy_replanned", r"the server policy changed since these proposals were approved: the earlier approvals were not "
-       r"applied and the plan was made again",
-       lambda g: "서버 설정이 바뀌어 앞서 승인한 내용은 적용하지 않고 계획을 다시 세웠습니다. 변경 내용을 다시 확인해 주세요."),
     _r("claim_held", r"another process is already working on this run(?:: (?:pid (?P<pid>\S+) on host (?P<host>\S+) "
        r"since (?P<since>\S+)(?: \(attempt (?P<a>[^()]+)\))?|an unknown process))?",
        lambda g: "다른 프로세스가 이미 이 실행을 진행하고 있습니다"

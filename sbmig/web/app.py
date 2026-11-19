@@ -22,8 +22,8 @@ Routes:
     GET  /api/runs[?days=N][&keep=<id>]  known runs (newest first) with status ("runs"; a waiting run carries "queue",
                                          a Job run its "slot") and "parallel": {slots, running, waiting}; `days` = only
                                          runs started in the last N × 24 h (0 / omitted = all; not a non-negative
-                                         integer → 400), queued / running runs, a remediation waiting for a person or
-                                         resumed, and `keep` always listed; "days" and "hidden" (left out) beside "runs"
+                                         integer → 400), queued / running runs, a remediation waiting for an IVAS check,
+                                         queued, running or resumed, and `keep` always listed; "days" and "hidden" (left out) beside "runs"
     POST /api/runs?name=<file.zip>[&configs=a.yml,b.yml][&stop_after=…][&llm_provider=…][&flow=full|remediation]
          body = the zip bytes                                       → 202 {"run_id", "status"}
          `configs` omitted = the server default; `configs=` (empty) = default.yml only; `flow` (v2.1z-aj) omitted =
@@ -48,7 +48,7 @@ Routes:
                                          successful migration, or after a framework project's failed build when its
                                          fix loop is off (v2.1z-aw), chained ones read here by run id):
                                          POST (zip body) / GET list / GET readiness /
-                                         GET {id} / result / proposals / POST approvals / resume / stop /
+                                         GET {id} / result / resume / stop /
                                          GET files/{name} / DELETE {id} — `sbmig.remediations.api` (contract API.md)
     GET  /admin                          the admin page (static/admin.html; 404 text when the file is missing)
     /admin/api/…                         admin login / session / usage per project / log ZIPs — `sbmig.web.admin`
@@ -71,7 +71,7 @@ Access (round 10): the page hands out company source code (`result.zip`) and run
   A configured token still wins (open mode changes nothing when a token is set).
 * in every mode a state-changing request (not GET / HEAD / OPTIONS) that carries an `Origin` of another host or
   `Sec-Fetch-Site: cross-site` is refused with 403 (W1, review 2026-11-18: a page of another site could otherwise
-  upload a ZIP, stop a run or answer approvals through an employee's browser); clients that send neither header
+  upload a ZIP, stop a run or resume a remediation through an employee's browser); clients that send neither header
   (curl, scripts) are unaffected.
 
 
@@ -303,7 +303,7 @@ class TokenGuard:
             await self.app(scope, receive, send)
             return
         req = Request(scope)
-        # 다른 사이트의 페이지가 직원 브라우저로 업로드, 중지, 승인을 보내지 못하게 토큰과 열린 모드보다 먼저 거부한다
+        # 다른 사이트의 페이지가 직원 브라우저로 업로드, 중지, 조치 재개를 보내지 못하게 토큰과 열린 모드보다 먼저 거부한다
         if cross_site_request(scope):
             await self._deny(scope, receive, send, req, 403, CROSS_SITE_MESSAGE)
             return
@@ -480,7 +480,7 @@ def create_app(out_dir: Path, repo_root: Path = PACKAGE_ROOT, max_upload_mb: int
     mgr = RunManager(Path(out_dir), Path(repo_root), default_configs=default_configs, mode=mode, job_client=job_client,
                      max_parallel=max_parallel)
     # 취약점 조치는 이관과 같은 기본 설정을 쓴다. in-process 모드에서만 이 프로세스의 작업 스레드로
-    # 실행하고, Job 모드에서는 빌드 파드가 실행한 결과를 보여 주고 승인만 받는다
+    # 실행하고, Job 모드에서는 빌드 파드가 실행한 결과를 보여 주고 재개 요청만 받는다
     from sbmig.remediations.api import create_router as create_remediation_router
     from sbmig.remediations.service import RemediationManager
     rem_mgr = RemediationManager(Path(out_dir), Path(repo_root), default_configs=mgr.default_configs,

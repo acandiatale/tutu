@@ -345,12 +345,19 @@ sbmig clean --fleet out\fleet --older-than 7 --keep-failed --dry-run
 When a migration ends BUILD SUCCESS and `remediation.after_migration` is on (shipped on in the Kubernetes manifests,
 off in the code) — and, with `remediation.after_failed_build: framework` (default; `never` switches it off), also when a
 framework project without the fix loop (§0.3) ended with a failed build — the same build pod scans the migrated project with IVAS, changes only the version text of
-vulnerable libraries in the poms (or inserts one `<dependencyManagement>` override entry), rebuilds and rescans. With the
-shipped configuration every proposal is applied without approval and the remediation ends in the same build pod; approval
-is switched on with `SBMIG_REMEDIATION__REQUIRE_APPROVAL: "true"` in `sbmig-env` (every proposal) or
-`remediation.always_approve` in the company yml baked into the image (single classes). Files
+vulnerable libraries in the poms (or inserts one `<dependencyManagement>` override entry), rebuilds and rescans. It applies
+its changes and goes to the end without asking anybody, normally in the same build pod. There is no approval step: a yml
+that still carries `require_approval` / `always_approve` under `remediation:`, or a ConfigMap that still carries
+`SBMIG_REMEDIATION__REQUIRE_APPROVAL`, is not an error — each is ignored with one WARNING (`config: remediation.require_approval=True is
+ignored: the approval step of the vulnerability remediation was removed (every proposal is applied without waiting) —
+remove it`; for the variable `config: env override SBMIG_*__*: remediation.require_approval is ignored: …`), and the
+variable is left out of the web pod / build pod environment comparison. Clean-up on a cluster: delete the key from
+ConfigMap `sbmig-env` if it is there (apply 20, restart the web pod) and delete its forward line from the cluster's own
+copy of `81-web-job.template.yaml` (rebuild and push the image). A remediation an older version left waiting for approval
+is shown as ended without the word 승인 anywhere on the page (nothing in 「지난 실행」; opened: 「조치 미완료」 and 「이 실행의 취약점 조치는 끝나지 않았습니다. 프로젝트를 다시 올리면 끝까지 진행합니다.」);
+its files stay downloadable, a resume is refused (409): upload the project again. Files
 go to `<run dir>/remediation/`; the outcome never changes the migration's exit code and is appended to `SBMIG-RESULT`
-as `remediation=<STATUS|skipped>`. Approvals (when switched on), upload confirmations and resume (a new build pod) happen
+as `remediation=<STATUS|skipped>`. Upload confirmations and resume (a new build pod) happen
 in the web UI. Every remediation (chained, `--flow remediation`, a resume in a new pod) writes
 `remediation/remediation.log`. In the Korean remediation report 조치 완료 and 「해결된 취약점」 count only findings a complete
 final scan no longer reports (a change whose finding is still reported shows 「-」). Operator text:

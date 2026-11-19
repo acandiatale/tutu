@@ -8,7 +8,6 @@ import pytest
 
 from sbmig.remediations import graph, report
 from sbmig.remediations.models import (
-    D_PENDING,
     FAILED,
     INCOMPLETE,
     SUCCEEDED,
@@ -117,19 +116,20 @@ def test_summary_is_small_and_json(tmp_path):
     json.dumps(s)
 
 
-def test_pending_proposal_decision_label(tmp_path):
-    scan = FakeScanner({"baseline": [scan_result(finding())]})
+def test_risk_labels_stay_as_facts_and_nothing_speaks_of_approval(tmp_path):
+    scan = FakeScanner({"baseline": [scan_result(finding())], "final-r1": [scan_result()]})
     plan = ScriptedPlanner([RoundPlan(round=1, source_tree_hash="", policy_hash="",
-                                      proposals=[proposal(decision=D_PENDING, risks=["major"])])])
+                                      proposals=[proposal(risks=["major"])])])
     out, paths = _run(tmp_path, scan=scan, plan=plan)
-    assert not paths.report_md.exists()          # a waiting status writes no report
-    report.write_report(out, paths)               # the service may still render one on demand
+    assert out.status == SUCCEEDED
     md = paths.report_md.read_text(encoding="utf-8")
-    assert "승인 대기" in md and "메이저 버전 변경" in md and "`pending_approval`" in md
-    assert "## 승인 대기 — 제안 1건" in md and "「선택한 N건 적용」" in md and "| 승인 대기 | 1건 | 1개 |" in md
-    assert md.splitlines()[2] == "> ⏸ **승인을 기다리고 있습니다.**" and "1. **적용할 변경 고르기 (1건)**" in md
-    # the owners may decide after their own review: nothing is applied until they choose
-    assert "고르기 전에는 아무것도 적용하지 않으므로" in md.splitlines()[3]
+    done = md.split("## 조치 완료", 1)[1].split("\n## ", 1)[0]
+    assert "| 주의 |" in done and "메이저 버전 변경" in done               # the label is a fact about the change
+    assert "**자동으로 적용한 변경 확인하기 (1건)** — 적용한 변경 가운데 주의가 필요한 항목입니다" in md
+    for gone in ("승인", "선택하지 않", "「선택한 N건 적용」", "적용할 변경 고르기"):
+        assert gone not in md, gone
+    data = json.loads(paths.report_json.read_text(encoding="utf-8"))
+    assert "require_approval" not in data["state"] and "proposals_pending" not in data["state"]["counts"]
 
 
 def test_report_scrubs_secret_env_values_without_the_output_hook(tmp_path, monkeypatch):
@@ -458,16 +458,16 @@ def test_counts_and_categories_have_korean_labels_and_long_tables_fold(tmp_path)
     assert "제외한 항목 전체" not in md and "| CVE-2026-9000 | `org.example:patched` |" in md
 
 
-def test_next_steps_order_approvals_first():
+def test_next_steps_order():
     from sbmig.remediations.models import RemediationState
     st = RemediationState(id="r", status="INCOMPLETE",
-                          reasons=["residual_findings", "no_candidate_version", "pending_approval", "manual_review"],
+                          reasons=["residual_findings", "no_candidate_version", "manual_review"],
                           residuals=[Residual(ga="g:a", version="1", origin="transitive", reason="inhouse_artifact")])
     steps = report._next_steps(st)
-    assert steps[0] == report._REASON_KO["pending_approval"][1]
-    assert steps[1] == report._REASON_KO["inhouse_artifact"][1]
-    assert steps[2] == report._REASON_KO["manual_review"][1]          # manual_review + residual_findings = one step
-    assert steps[3] == report._REASON_KO["no_candidate_version"][1] and len(steps) == 4
+    assert steps[0] == report._REASON_KO["inhouse_artifact"][1]
+    assert steps[1] == report._REASON_KO["manual_review"][1]          # manual_review + residual_findings = one step
+    assert steps[2] == report._REASON_KO["no_candidate_version"][1] and len(steps) == 3
+    assert "pending_approval" not in report._REASON_KO and "rejected_proposals" not in report._REASON_KO
     assert all(s.startswith("**") and s.endswith("주세요.") for s in steps)
     st.reasons = ["manual_review"]
     assert report._next_steps(st)[1] == report._REASON_KO["manual_review"][1]
@@ -577,14 +577,14 @@ BANNED_WORDS = ("다스리", "닿지", "들어온 길", "다른 길로", "버전
 
 
 def _status_cases():
-    from sbmig.remediations.models import AWAITING_APPROVAL, AWAITING_CONFIRMATION, INTERRUPTED, STOPPED
+    from sbmig.remediations.models import AWAITING_CONFIRMATION, INTERRUPTED, STOPPED
     failing = ["baseline_build_failed", "candidate_build_failed", "scan_incomplete", "zip_hash_mismatch",
                "text_only_violation", "resolution_mismatch", "execution_boundary_refused", "not_ready", "internal_error"]
     return ([(FAILED, c) for c in failing]
-            + [(INCOMPLETE, c) for c in ("scan_incomplete", "rounds_exhausted", "no_candidate_version", "rejected_proposals",
+            + [(INCOMPLETE, c) for c in ("scan_incomplete", "rounds_exhausted", "no_candidate_version",
                                          "manual_review", "residual_findings", "inhouse_artifact")]
             + [(STOPPED, "stop_requested"), (STOPPED, "chain_budget"), (AWAITING_CONFIRMATION, "upload_uncertain"),
-               (AWAITING_APPROVAL, "pending_approval"), (INTERRUPTED, ""), (SUCCEEDED, "")])
+               (INTERRUPTED, ""), (SUCCEEDED, "")])
 
 
 
@@ -601,7 +601,7 @@ def test_every_status_and_reason_has_a_verdict_and_an_action(tmp_path, status, r
     if reason:
         what, step = report._reason_text(state, reason)
         assert step in md
-        if status not in ("AWAITING_APPROVAL",) and reason not in ("manual_review", "residual_findings", "inhouse_artifact"):
+        if reason not in ("manual_review", "residual_findings", "inhouse_artifact"):
             assert what in md
     for word in BANNED_WORDS:
         assert word not in md, word
@@ -638,10 +638,9 @@ def _detached(text: str) -> list[str]:
 
 
 def _sample_states(tmp_path):
-    """The three sample shapes: INCOMPLETE (company), AWAITING_APPROVAL (a major + a dependencyManagement entry),
-    FAILED (the failing change set delivered)."""
+    """The three sample shapes: INCOMPLETE (company), INCOMPLETE with a major change and a dependencyManagement entry
+    applied, FAILED (the failing change set delivered)."""
     from sbmig.remediations.models import (
-        AWAITING_APPROVAL,
         BuildOutcome,
         DeliveryInfo,
         Proposal,
@@ -652,24 +651,22 @@ def _sample_states(tmp_path):
     out = [_company(tmp_path / "a")]
     state, paths = _company(tmp_path / "b")
     major = Proposal(id="p-1-1", round=1, ga="org.example:log", from_version="2.25.4", to_version="3.0.1",
-                     kind="direct_version", decision=D_PENDING, risks=["major"], evidence="policy:pins",
+                     kind="direct_version", risks=["major"], evidence="policy:pins",
                      finding_ids=["CVE-2026-0001"], edits=[TextEdit(pom="app-boot/pom.xml", line=41, old="2.25.4",
                                                                    new="3.0.1")], modules=["app-boot"])
     override = Proposal(
         id="p-1-2", round=1, ga="org.example:json", from_version="2.0", to_version="2.1", kind="managed_override",
-        decision=D_PENDING, risks=["managed_override"], evidence="repository:nexus.invalid", finding_ids=["CVE-2026-0101"],
+        risks=["managed_override"], evidence="repository:nexus.invalid", finding_ids=["CVE-2026-0101"],
         edits=[TextEdit(pom="pom.xml", line=58, old="", new="<dependency/>", op="insert", anchor="</dependencies>")],
         note=("adds a <dependencyManagement> entry org.example:json:2.1 to the root pom.xml: pins the transitive dependency "
               "brought by org.example:a:1 → org.example:json:2.0 (2.0 → 2.1); later upgrades of the parent / BOM / direct "
               "dependency will NOT move this version any more — the owners must remove the override when the parent / BOM "
-              "/ direct dependency catches up; always needs approval: an inserted <dependencyManagement> entry is never "
-              "applied automatically"), modules=["app-domain"])
+              "/ direct dependency catches up"), modules=["app-domain"])
     write_json_atomic(paths.plan(1), RoundPlan(round=1, source_tree_hash="t", policy_hash="p", proposals=[major, override],
                                                residuals=state.residuals).to_dict())
-    state.status, state.reason, state.reasons = AWAITING_APPROVAL, "pending_approval", ["pending_approval"]
-    state.final_scan, state.delivery = "", None
-    state.rounds = [RoundState(round=1)]
-    state.message = "2 proposal(s) of round 1 wait for approval"
+    state.status, state.reason, state.reasons = INCOMPLETE, "residual_findings", ["residual_findings"]
+    state.rounds = [RoundState(round=1, applied=["p-1-1", "p-1-2"], committed=True)]
+    state.message = ""
     out.append((state, paths))
     state, paths = _company(tmp_path / "c")
     state.status, state.reason, state.reasons = FAILED, "candidate_build_failed", ["candidate_build_failed"]
@@ -702,7 +699,7 @@ def test_status_matrix_attaches_its_particles(tmp_path, status, reason):
     assert "파드" not in md
 
 
-def test_summary_leaves_out_an_empty_approval_row(tmp_path):
+def test_summary_has_no_approval_row(tmp_path):
     state, paths = _company(tmp_path)
     glance = _section(report.build_report_md(state, paths), "요약")
     assert "| 승인 대기 |" not in glance and "| 조치 전 |" in glance and "| 조치 완료 |" in glance

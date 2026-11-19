@@ -145,7 +145,7 @@ def test_remediation_token_is_last_and_never_changes_the_verdict():
     """2026-11-11: ` remediation=<STATUS|skipped>` after every other token, only when a chained remediation ran or was
     skipped with the switch on; exit / build / attn stay the migration's."""
     base = report_result_line(_report(llm=1), 0)
-    for status in ("SUCCEEDED", "FAILED", "AWAITING_APPROVAL", "skipped"):
+    for status in ("SUCCEEDED", "FAILED", "AWAITING_CONFIRMATION", "skipped"):
         r = _report(llm=1, remediation={"status": status, "dir": "remediation"})
         assert report_result_line(r, 0) == f"{base} remediation={status}"
         assert report_exit_code(r) == 0

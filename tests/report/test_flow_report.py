@@ -28,7 +28,7 @@ def test_full_report_line_is_unchanged():
 
 def test_exit_codes_of_the_remediation_flow():
     ok = _report(flow="remediation", success=True, remediation={"status": "SUCCEEDED"})
-    waiting = _report(flow="remediation", remediation={"status": "AWAITING_APPROVAL"})
+    waiting = _report(flow="remediation", remediation={"status": "AWAITING_CONFIRMATION"})
     not_ready = _report(flow="remediation", flags=["remediation:not-ready", "aborted"],
                         remediation={"status": "skipped", "reason": "not_ready", "missing": ["IVAS_BASE_URL is not set"]})
     assert [report_exit_code(r) for r in (ok, waiting, not_ready)] == [0, 2, 3]
@@ -60,9 +60,9 @@ def test_short_report_for_a_run_refused_before_the_remediation():
 
 
 def test_no_path_line_while_the_remediation_report_does_not_exist():
-    # a run waiting for approval has no remediation/report.md yet (real-Maven run 2026-11-12): the short report must not
-    # point at a file that is not there
-    r = _report(flow="remediation", remediation={"status": "AWAITING_APPROVAL", "reason": "pending_approval",
+    # a waiting run has no remediation/report.md yet (real-Maven run 2026-11-12): the short report must not point at a
+    # file that is not there
+    r = _report(flow="remediation", remediation={"status": "AWAITING_CONFIRMATION", "reason": "upload_uncertain",
                                                  "dir": "remediation", "files": {}})
     assert "remediation/report.md" not in render_markdown(r, "en")
     assert "remediation/report.md" not in render_markdown(r, "ko")
@@ -86,7 +86,6 @@ def _rem(status, reason="", **kw):
 @pytest.mark.parametrize("rem,build", [
     (_rem("SUCCEEDED", baseline_build_ok=True, delivery={"build_ok": True}), "ok"),
     (_rem("INCOMPLETE", "inhouse_artifact", baseline_build_ok=True, delivery={"build_ok": True}), "ok"),
-    (_rem("AWAITING_APPROVAL", "pending_approval", baseline_build_ok=True), "ok"),
     (_rem("AWAITING_CONFIRMATION", "upload_uncertain", baseline_build_ok=True), "ok"),
     (_rem("STOPPED", "stop_requested", baseline_build_ok=True), "ok"),
     (_rem("FAILED", "resolution_mismatch", baseline_build_ok=True, delivery={"build_ok": True}), "ok"),

@@ -24,6 +24,7 @@ from ..remediations.fakes import (
     POM,
     FakeMaven,
     FakeScanner,
+    UNCERTAIN,
     ScriptedPlanner,
     deterministic_zip,
     finding,
@@ -193,13 +194,11 @@ def test_runs_with_after_migration_off_and_untrusted_projects(cfg, tmp_path, iva
 
 
 # ---------------------------------------------------------------------------------------------- other statuses
-def test_awaiting_approval_is_exit_2(cfg, tmp_path, ivas_env):
-    plan = ScriptedPlanner([RoundPlan(round=1, source_tree_hash="", policy_hash="",
-                                      proposals=[proposal(decision="pending", risks=["major"])])])
-    _, ws, report, _, _ = run_flow(cfg, tmp_path, one_fix(plan=plan))
-    assert report.remediation["status"] == "AWAITING_APPROVAL" and not report.success
+def test_awaiting_confirmation_is_exit_2(cfg, tmp_path, ivas_env):
+    _, ws, report, _, _ = run_flow(cfg, tmp_path, one_fix(scan=FakeScanner({"baseline": [UNCERTAIN]})))
+    assert report.remediation["status"] == "AWAITING_CONFIRMATION" and not report.success
     assert run_exit_code(report) == 2
-    assert report_result_line(report).endswith(" attn=incomplete flow=remediation remediation=AWAITING_APPROVAL")
+    assert report_result_line(report).endswith(" attn=incomplete flow=remediation remediation=AWAITING_CONFIRMATION")
     assert " exit=2 build=ok " in report_result_line(report)
 
 

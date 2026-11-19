@@ -1079,3 +1079,21 @@ All from the user's first runs of real projects on the cluster that day (v2.1z-a
 | Tests | offline suite and the real-Maven runs: figures in the commit. Real Maven with two loopback repositories (one serves the jar and 404 for the pom, one answers 502): off → the build stops, on → stub, rerun, pass; pom served somewhere → no stub; jar nowhere → no stub. Remediation on an MS949 pom with the real Maven and a fake IVAS: bumped, Korean bytes unchanged. New fixture `fw-pom-ms949` | `tests/`, `fixtures/projects/fw-pom-ms949/` | done |
 | Not checked | a real Nexus answering 502; hard links on the cluster's NFS (a rename fallback exists); the live stop's button and toast in a browser; the user's own projects after the new image | — | open (the user's) |
 | Open | the remediation-only flow writes a stub and says so only in the journal and the log; a library reached only transitively can be missed by "a later run is told" when no full dependency tree was captured; the fleet summary names a conversion-only failure "build failed" | — | open |
+
+## Status — 2026-11-19, the approval step of the remediation is removed (v2.1z-ba)
+
+The user: "우리 approval awaiting 기능 아예 빼버리자. 이렇게 안쓸거래. 환경변수도 없애고 기능도 없애고 화면에 보여주는것도
+없애버리게! … 그냥 코드도 없애버려 나중에 본인들이 구축하겠지 사용자한테 승인받는건". What set it off: after a deployment
+people saw 승인 대기 on the page again and asked why ("내가 스트레스 받아서 없애버릴라고"). My reading of the cause (not
+confirmed on the cluster): runs of the 2026-11-18 incident still stored as `AWAITING_APPROVAL`, which the release of
+that day had started to label in 「지난 실행」 and to keep listed whatever their age.
+
+| Item | Deliverable | Where | Status |
+|---|---|---|---|
+| Settings and environment | `remediation.require_approval`, `remediation.always_approve` and `SBMIG_REMEDIATION__REQUIRE_APPROVAL` are gone (model, default yml, 20, 81, ENV.md); a value left in a yml or a ConfigMap is ignored with one WARNING, never an error; the variable is left out of the pods' environment comparison | `sbmig/core/config.py`, `config/default.yml`, `deploy/k8s/`, `sbmig/web/contract.py` | done |
+| The mechanism | the state, the three decisions, the two reasons, the planner's and the graph's waiting, the service's and the API's approval and proposal operations, the report's sections; a default configuration plans and applies exactly what it did (pinned plan) | `sbmig/remediations/`, `sbmig/report/` | done |
+| The page | the approval list and every word for it (about 370 lines); neither page contains 승인 any more (a test holds it) | `sbmig/web/static/` | done |
+| Old runs | a state an earlier version left waiting is read, shown as ended without the word 승인 (「조치 미완료」, nothing in the list, no always-listed rule), its files stay, a resume is refused with 409 | `sbmig/remediations/service.py`, `graph.py`, `sbmig/web/` | done |
+| Stays | `AWAITING_CONFIRMATION` (an IVAS upload whose outcome is unknown) and the resume of a stopped remediation: the user, asked the same evening: "그건 일단 내버려 두자" | — | decided |
+| Documents and the deck | every description of approval removed; one place per audience says the step is gone and how to clean a cluster | `agent-doc/`, `docs/`, `deploy/README.md`, `scripts/handbook/` | done |
+| The cluster | delete the key from ConfigMap `sbmig-env` if present, delete the forward line from the cluster's own 81, rebuild the image; the order does not matter | — | open (the user's) |

@@ -14,8 +14,6 @@ from sbmig.remediations import apply as apply_mod
 from sbmig.remediations import graph
 from sbmig.remediations import planner as P
 from sbmig.remediations.models import (
-    AWAITING_APPROVAL,
-    D_APPROVED,
     FAILED,
     INTERRUPTED,
     BuildOutcome,
@@ -23,7 +21,6 @@ from sbmig.remediations.models import (
     RemediationState,
     RoundPlan,
     read_json,
-    write_json_atomic,
 )
 
 from .fakes import (
@@ -73,7 +70,7 @@ def _dropped_id(paths) -> str:
 
 @pytest.mark.parametrize("where", ["one_file", "copied", "applied", "rebuild", "plan_write"])
 def test_a_kill_inside_the_drop_path_resumes_into_a_consistent_round(tmp_path, monkeypatch, where):
-    c = make_cfg(always_approve=["managed_override"], max_rounds=1)
+    c = make_cfg(max_rounds=1)
     state, paths = make_run(tmp_path, company_files(back_body=DM_SECTION))
     calls = {"pkg": 0, "copy": 0, "apply": 0, "plan": 0}
 
@@ -119,16 +116,10 @@ def test_a_kill_inside_the_drop_path_resumes_into_a_consistent_round(tmp_path, m
                                                                       "split_ineffective")}})
     monkeypatch.setattr(graph, "write_json_atomic", write)
     rec = Recorder()
-    out = graph.run_remediation(state, paths, c, comps, save=rec.save, journal=rec.journal, stop=rec.stop)
-    assert out.status == AWAITING_APPROVAL
-    data = read_json(paths.plan(1))
-    for x in data["proposals"]:
-        x["decision"] = D_APPROVED
-    write_json_atomic(paths.plan(1), data)
-    dropped = _dropped_id(paths)
     with pytest.raises(Killed):
-        graph.run_remediation(out, paths, c, comps, save=rec.save, journal=rec.journal, stop=rec.stop)
+        graph.run_remediation(state, paths, c, comps, save=rec.save, journal=rec.journal, stop=rec.stop)
     monkeypatch.setattr(graph, "write_json_atomic", real_write)
+    dropped = _dropped_id(paths)
 
     # what state.json holds after the kill: the decision is there, and the next node rebuilds the candidate
     disk = RemediationState.from_dict(rec.saves[-1])

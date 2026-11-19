@@ -9,15 +9,15 @@ intake.py ZIP 검사, 원본 보관, manifest, 작업 트리, 실행 환경 검�
 ivas.py IVAS HTTP 클라이언트, 검사 절차, 검사 결과가 빠짐없는지 확인
 maven.py package 빌드, dependency:tree와 패키징 결과 읽기
 inventory.py IVAS가 찾은 취약점을 Maven 의존성과 pom 선언 위치에 연결
-planner.py 버전 선택, 변경 제안과 승인 필요 여부, 해시
+planner.py 버전 선택, 변경 제안, 해시
 apply.py 수정본에 버전 변경 적용, 버전 문자열만 바뀌었는지와 의존성 결과 검증
 graph.py baseline_build -> baseline_scan -> inventory -> plan -> apply ->
 build -> freeze_delivery -> rescan -> evaluate -> report
     report.py      report.md / report.json
-service.py 작업 관리자: 작업 스레드, state.json, 승인, 재개, 중지, 삭제, 재시작 뒤 INTERRUPTED 처리
+service.py 작업 관리자: 작업 스레드, state.json, 재개, 중지, 삭제, 재시작 뒤 INTERRUPTED 처리
 api.py FastAPI 라우터 /api/remediations…
 
-Vulnerability remediation — a LangGraph flow separate from the migration graph. Only approved Maven version text
-changes are applied; application sources and the project structure are never modified. Contract: `models.py` and
-`interfaces.py`; `docs/INTERFACES.md` "remediations".
+Vulnerability remediation — a LangGraph flow separate from the migration graph. Only planned Maven version text
+changes are applied (no approval step); application sources and the project structure are never modified. Contract:
+`models.py` and `interfaces.py`; `docs/INTERFACES.md` "remediations".
 """

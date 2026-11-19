@@ -1,16 +1,15 @@
-"""취약점 조치 작업의 접수, 실행, 상태 조회, 승인, 재개를 관리하는 모듈.
+"""취약점 조치 작업의 접수, 실행, 상태 조회, 재개를 관리하는 모듈.
 ``api.py``의 라우트가 :class:`RemediationManager`를 거쳐 ``graph.run_remediation``을 호출한다.
 - in-process 모드에서만 작업 스레드로 조치를 실행한다.
   한 번에 하나만 실행하고 나머지는 접수 순서대로 기다린다
 - Job 모드(``k8s-job`` / ``local-job``)에서는 아무것도 실행하지 않으며, 단독 업로드와 재개 요청에는
   ``NotAvailable``(HTTP 409)을 돌려준다
-- 승인(``decide``)은 네 해시 값이 모두 맞을 때만 plan.json과
-  approvals.jsonl에 기록하고, 하나라도 틀리면 아무것도 쓰지 않는다
 - 재개는 사람이 요청할 때만 한다.
   서버가 재시작되면 QUEUED / RUNNING으로 남은 작업은 INTERRUPTED가 되고 자동으로 다시 실행하지 않는다
 - 단독 업로드와 in-process 모드의 이어서 진행은 ``build.local_repo``가 있으면 ``<그 경로>-remediation``을 써서 이관 빌드와 로컬 저장소를 나눈다.
   이관 뒤 이어서 실행한 조치를 재개할 때는 그 이관이 쓴 저장소를 그대로 쓴다
-- 승인 기록은 ``claim.json`` 점유가 살아 있으면 거절하고, 웹 파드는 점유하지 않는다
+- 웹 파드는 ``claim.json``을 점유하지 않는다
+- 이전 버전이 AWAITING_APPROVAL로 저장한 조치는 끝난 작업으로 보여 주고 재개를 거절한다
 - 상태는 ``state.json`` 파일에서 읽는다(DB 없음)
 이관 뒤 이어서 실행하는 조치(빌드 파드가 이관 성공 뒤 ``<out>/<이관 실행 id>/remediation/``에 남긴 조치)도
 같은 API로 보여 준다. Job 모드에서 이를 재개하면 확인 응답을 state.json에 먼저 기록하고
@@ -18,11 +17,14 @@
 이관은 끝났는데 QUEUED / RUNNING으로 남은 조치는 파일을 고치지 않고 INTERRUPTED(``stale: true``)로 보여 준다.
 
 The remediation job manager: worker threads of this process (one remediation at a time), `state.json` per run,
-approvals (all-or-nothing hash checks), resume / stop / delete, and the restart rule (QUEUED / RUNNING of an earlier
+resume / stop / delete, and the restart rule (QUEUED / RUNNING of an earlier
 process → INTERRUPTED, never resumed automatically). File-based only. In the Job modes nothing runs here (submit /
 resume → `NotAvailable`); chained remediations (`<out>/<run id>/remediation/`, written by the build pod after a
 successful migration) are visible through the same API in every mode; in the Job modes they are resumed in a NEW build
 pod (`RunManager.resume_remediation`, wave 4) after the confirmation has been written to `state.json` here.
+A state an earlier version saved in `AWAITING_APPROVAL` (the approval step was removed) is served as it is, is neither
+active nor resumable, and a resume of it is refused (`StateConflict`, HTTP 409) with `LEGACY_APPROVAL_MESSAGE` and the
+Korean `message_ko`.
 """
 from __future__ import annotations
 
@@ -56,27 +58,24 @@ from .inhouse import inhouse_keys
 from .interfaces import Components
 from .models import (
     ACTIVE,
-    AWAITING_APPROVAL,
     AWAITING_CONFIRMATION,
     FAILED,
     INTERRUPTED,
+    LEGACY_APPROVAL_MESSAGE_KO,
+    LEGACY_AWAITING_APPROVAL,
     QUEUED,
     R_INTERNAL_ERROR,
     REMEDIATIONS_DIR,
     RESUMABLE,
     STOPPED,
     TERMINAL,
-    ApprovalMismatch,
-    Decision,
     NotReady,
     RemediationError,
     RemediationState,
-    RoundPlan,
     RunPaths,
     StateConflict,
     UploadReceipt,
     read_json,
-    sha256_text,
     write_json_atomic,
 )
 
@@ -88,7 +87,7 @@ ID_RE = re.compile(r"^r\d{8}-\d{6}-[0-9a-f]{6,32}$")
 # 이관 뒤 이어서 실행한 조치의 ID는 이관 실행 id이며 sbmig.web.runs.RUN_ID_RE와 같은 규칙이다
 RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$")
 from .chain import CHAIN_DIR  # noqa: E402. 이관 실행 폴더 안의 조치 폴더 이름
-from .chain import RunClaim, claim_info  # noqa: E402. 상태를 진행시키는 프로세스 하나만 작업 폴더를 쓰게 하는 점유
+from .chain import RunClaim  # noqa: E402. 상태를 진행시키는 프로세스 하나만 작업 폴더를 쓰게 하는 점유
 STOP_REQUEST_FILE = "stop.request"            # sbmig.core.workspace.STOP_REQUEST_FILE. 다른 파드의 실행을 멈추는 파일
 JOB_MODES = ("k8s-job", "local-job")
 IN_PROCESS = "in-process"
@@ -102,7 +101,7 @@ NOT_AVAILABLE_MESSAGE = ("remediation runs in the build pod after a successful m
 RESUME_UNSUPPORTED = ("this web server cannot dispatch a build pod for the resume ({mode} mode without a run manager that "
                       "resumes remediations)")
 RESUME_ACTIVE_NOTE = "이미 새 빌드 파드에서 이어서 진행 중이거나 자리를 기다리고 있습니다."      # 화면에 그대로 보이는 문장
-CLAIM_HELD_NOTE = "다른 프로세스가 이 실행을 진행하고 있습니다. 끝난 뒤에 다시 시도해 주세요."    # 화면에 그대로 보이는 문장
+LEGACY_STATUS_KO = "조치 미완료"     # 이전 버전이 승인 대기로 저장한 작업의 상태 이름이다. 화면에 보이므로 승인이라는 말을 쓰지 않는다
 CONFIG_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$")
 FALLBACK_CONFIGS = ("artifacts.yml", "artifacts.local-e2e.yml")       # RunManager.FALLBACK_CONFIGS와 같은 규칙
 LOCAL_REPO_SUFFIX = "-remediation"
@@ -148,6 +147,8 @@ def _status_ko(status: str) -> str:
 
     The report's verdict sentence for a status, without the mark and the bold markers."""
     from .report import _VERDICT
+    if status == LEGACY_AWAITING_APPROVAL:
+        return LEGACY_STATUS_KO
     v = _VERDICT.get(status, "")
     return v.split(" ", 1)[1].replace("**", "") if v else str(status or "")
 
@@ -466,7 +467,7 @@ class RemediationManager:
 
     def _resume_active(self, run_id: str) -> bool:
         """재개 Job이 대기 중이거나 실행 중인지 확인한다.
-        그동안에는 그 빌드 파드가 상태 파일을 관리하므로 승인과 재개를 거절하고 파일 제공을 보류한다."""
+        그동안에는 그 빌드 파드가 상태 파일을 관리하므로 재개를 거절하고 파일 제공을 보류한다."""
         fn = getattr(self.run_manager, "remediation_active", None) if self.run_manager is not None else None
         if not callable(fn):
             return False
@@ -865,10 +866,6 @@ class RemediationManager:
         return True
 
     # ------------------------------------------------------------------ reads
-    def _current_plan(self, paths: RunPaths, state: RemediationState) -> RoundPlan | None:
-        data = read_json(paths.plan(state.round)) if state.round else None
-        return RoundPlan.from_dict(data) if isinstance(data, dict) else None
-
     def _available_files(self, paths: RunPaths) -> list[str]:
         names = [n for n, f in _FIXED_FILES.items() if f(paths).is_file()]
         rounds = paths.root / "rounds"
@@ -893,8 +890,10 @@ class RemediationManager:
             except ValueError:
                 return None
 
-    def _resume_info(self, rid: str, st: RemediationState, chained: bool, shown: str, pending: int = 0) -> dict[str, Any]:
+    def _resume_info(self, rid: str, st: RemediationState, chained: bool, shown: str) -> dict[str, Any]:
         # 화면의 재개 버튼을 누를 수 있는지와, 누를 수 없다면 그 이유
+        if shown == LEGACY_AWAITING_APPROVAL:
+            return {"available": False, "note": LEGACY_APPROVAL_MESSAGE_KO}
         if self.job_mode and not chained:
             return {"available": False, "note": "이 서버에서는 단독 조치를 돌리지 않습니다. 조치는 이관이 성공한 뒤 빌드 파드에서 돕니다."}
         if self.job_mode and not self._can_dispatch():
@@ -906,8 +905,6 @@ class RemediationManager:
         with self._lock:
             if rid in self._active:
                 return {"available": False, "note": "이미 진행 중이거나 자리를 기다리고 있습니다."}
-        if shown == AWAITING_APPROVAL and pending:
-            return {"available": False, "note": f"결정하지 않은 제안이 {pending}건 남아 있습니다."}
         return {"available": True, "note": ""}
 
     def _shown(self, rid: str, st: RemediationState, chained: bool) -> tuple[str, bool]:
@@ -923,8 +920,6 @@ class RemediationManager:
         paths, chained = self._locate(rid)
         st = self._load(rid)
         shown, stale = self._shown(rid, st, chained)
-        plan = self._current_plan(paths, st)
-        pending = len(plan.pending()) if plan is not None else 0
         base = f"/api/remediations/{rid}"
         withheld = chained and self._withheld(rid)
         files = self._available_files(paths)
@@ -937,18 +932,17 @@ class RemediationManager:
             "id": rid, "name": st.name, "status": shown, "reason": st.reason, "reasons": list(st.reasons),
             "message": st.message, "node": st.node, "next_node": st.next_node, "round": st.round,
             "counts": dict(sorted(st.counts.items())), "created": st.created, "updated": st.updated,
-            "stop_requested": stop_requested, "pending_approvals": pending,
+            "stop_requested": stop_requested,
             "delivery": {"sha256": st.delivery.sha256, "size": st.delivery.size, "round": st.delivery.round,
                          "build_ok": st.delivery.build_ok, "scanned": st.delivery.scanned,
                          "build_tolerated": st.delivery.build_tolerated} if st.delivery else None,
             # 조치 전 빌드 실패를 받아들이는 실행인지 화면이 진행 중에도 알 수 있게 항상 넣는다
             "baseline_tolerated": bool(st.baseline_tolerated),
             "files": files,
-            "links": {"self": base, "proposals": f"{base}/proposals", "approvals": f"{base}/approvals",
-                      "resume": f"{base}/resume", "stop": f"{base}/stop", "result": f"{base}/result",
+            "links": {"self": base, "resume": f"{base}/resume", "stop": f"{base}/stop", "result": f"{base}/result",
                       "files": f"{base}/files/"},
             "kind": KIND_CHAINED if chained else KIND_STANDALONE, "mode": self.mode,
-            "resume": self._resume_info(rid, st, chained, shown, pending),
+            "resume": self._resume_info(rid, st, chained, shown),
         }
         if chained:
             out["run_id"] = rid
@@ -972,6 +966,9 @@ class RemediationManager:
         # 화면은 Markdown이 아니므로 번역하지 못한 부분은 원문 그대로 뒤에 붙인다
         ko, raw = i18n_mod.split_known(out["message"]) if out["message"] else ([], [])
         out["message_ko"] = " ".join([*ko, *raw])
+        if shown == LEGACY_AWAITING_APPROVAL:
+            # 승인을 기다리던 이전 버전의 작업이다. 저장된 영어 message는 그대로 두고 화면에는 끝난 이유를 보여 준다
+            out["message_ko"] = LEGACY_APPROVAL_MESSAGE_KO
         out["status_ko"] = _status_ko(shown)
         return out
 
@@ -1028,39 +1025,6 @@ class RemediationManager:
                 d["stale"] = True
             items.append(d)
         return {"items": items, "page": page, "size": size, "total": len(rows)}
-
-    def proposals(self, rid: str, all_rounds: bool = False) -> dict[str, Any]:
-        """현재 라운드의 제안 전체와 남긴 항목을 반환한다. ``all_rounds``면 모든 라운드를 반환한다.
-        화면용 한국어 필드 ``note_ko``, ``detail_ko``, ``origin_ko``, ``reason_ko``를 더하고 기존 필드는 그대로 둔다.
-
-        The current round's proposals (all rounds with `all_rounds`) with diffs, hashes and decisions, plus Korean
-        display fields (`note_ko`; `detail_ko` / `origin_ko` / `reason_ko`)."""
-        paths, chained = self._locate(rid)
-        st = self._load(rid)
-        plan = self._current_plan(paths, st)
-        out: dict[str, Any] = {"status": self._shown(rid, st, chained)[0], "round": st.round,
-                               "source_tree_hash": plan.source_tree_hash if plan else "",
-                               "policy_hash": plan.policy_hash if plan else ""}
-        if all_rounds:
-            plans = []
-            for rs in sorted(st.rounds, key=lambda r: r.round):
-                data = read_json(paths.plan(rs.round))
-                if isinstance(data, dict):
-                    plans.append(RoundPlan.from_dict(data))
-            out["proposals"] = [p.to_dict() for pl in plans for p in pl.proposals]
-            out["residuals"] = [r.to_dict() for pl in plans for r in pl.residuals]
-            out["rounds"] = [pl.round for pl in plans]
-        else:
-            out["proposals"] = [p.to_dict() for p in plan.proposals] if plan else []
-            out["residuals"] = [r.to_dict() for r in plan.residuals] if plan else []
-        # 화면용 한국어를 더한다. 저장된 영어 문장과 코드는 그대로 두고 옆에 붙인다
-        for p in out["proposals"]:
-            p["note_ko"] = i18n_mod.ko_text(p.get("note") or "")
-        for r in out["residuals"]:
-            r["detail_ko"] = i18n_mod.ko_text(r.get("detail") or "")
-            r["origin_ko"] = i18n_mod.label(i18n_mod.ORIGIN_KO, r.get("origin"))
-            r["reason_ko"] = i18n_mod.label(i18n_mod.REASON_KO, r.get("reason"))
-        return out
 
     def result(self, rid: str) -> dict[str, Any]:
         """작업이 끝났으면 report.json 내용을 반환하고, 아니면 ``NotFinished``를 던진다.
@@ -1120,91 +1084,11 @@ class RemediationManager:
         return Withheld(f"{name} of remediation {rid} is available once the migration run has finished (its outputs are "
                         f"redacted at the end of the run)", status="withheld")
 
-    # ------------------------------------------------------------------ approvals
-    def decide(self, rid: str, decisions: list[Decision], by: str) -> dict[str, Any]:
-        """AWAITING_APPROVAL 상태에서 승인과 거절을 받는다. 재개는 하지 않는다.
-        모든 결정을 ``planner.validate_decision``으로 먼저 확인하고, 하나라도 틀리면 아무것도 쓰지 않고
-        ``ApprovalMismatch``를 던진다. 통과하면 plan.json을 원자적으로 고치고 approvals.jsonl에 추가한다.
-
-        All-or-nothing approval: every decision is validated before anything is written. Does not resume.
-        Chained: the policy hash comes from the configs the migration run used (`chained_configs`); refused (`Withheld`)
-        while the migration run's final redaction pass may still rewrite the directory."""
-        paths, chained = self._locate(rid)
-        lock = self._run_lock(rid)
-        with lock:
-            st = self._load(rid)
-            if st.status != AWAITING_APPROVAL or rid in self._active:
-                raise StateConflict(f"remediation {rid} is {st.status}, not {AWAITING_APPROVAL}", status=st.status)
-            if chained and self._resume_active(rid):
-                raise StateConflict(RESUME_ACTIVE_NOTE, status=st.status)
-            if claim_info(paths.root) is not None:
-                # 상태를 진행시키는 프로세스가 점유 중이면 plan.json을 고치지 않는다. 웹 파드는 점유하지 않고 확인만 한다
-                raise StateConflict(CLAIM_HELD_NOTE, status=st.status)
-            if chained and self._withheld(rid):
-                raise self._withheld_error(rid, "plan.json")
-            plan = self._current_plan(paths, st)
-            if plan is None:
-                raise StateConflict(f"round {st.round} has no plan", status=st.status)
-            if not decisions:
-                raise ApprovalMismatch("no decision given", fields=["decisions"])
-            ids = [d.proposal_id for d in decisions]
-            dupes = sorted({i for i in ids if ids.count(i) > 1})
-            if dupes:
-                raise ApprovalMismatch(f"duplicate proposal id(s) in one request: {', '.join(dupes)}",
-                                       fields=["proposal_id"], proposals={i: ["proposal_id"] for i in dupes})
-            # 웹 파드의 환경 값이 조금만 달라도 해시가 달라져 정상 승인이 거부되므로, 이어서 실행한 조치는
-            # 빌드 파드가 state.json에 기록한 정책 해시를 기준으로 한다
-            # 정책이 실제로 바뀌었는지는 재개하는 빌드 파드가 다시 확인한다
-            if chained and st.policy_hash:
-                current_policy = st.policy_hash
-            else:
-                current_policy = planner_mod.policy_hash(self._config(self._configs_for(rid, st, chained)))
-            current_tree = intake_mod.tree_hash(paths.accepted, intake_mod.manifest_paths(paths.manifest))
-            by_id = {p.id: p for p in plan.proposals}
-            problems: list[str] = []
-            fields: set[str] = set()
-            per: dict[str, list[str]] = {}
-            for d in decisions:
-                p = by_id.get(d.proposal_id)
-                if p is None:
-                    problems.append(f"unknown proposal {d.proposal_id!r} in round {st.round}")
-                    fields.add("proposal_id")
-                    per[str(d.proposal_id)] = ["proposal_id"]
-                    continue
-                try:
-                    planner_mod.validate_decision(p, d, current_tree_hash=current_tree, current_policy_hash=current_policy)
-                except ApprovalMismatch as e:
-                    problems.append(str(e))
-                    f = list(e.details.get("fields") or [])
-                    fields.update(f)
-                    per[p.id] = f
-            if problems:
-                raise ApprovalMismatch("; ".join(problems), fields=sorted(fields), proposals=per)
-            now = _iso()
-            lines = []
-            for d in decisions:
-                p = by_id[d.proposal_id]
-                p.decision = d.decision
-                lines.append({"ts": now, "by": by, "proposal_id": p.id, "decision": d.decision, "round": st.round,
-                              "proposal_hash": p.proposal_hash, "source_tree_hash": p.source_tree_hash,
-                              "policy_hash": p.policy_hash, "diff_sha256": sha256_text(p.diff or ""),
-                              "comment": (d.comment or "")[:2000]})
-            write_json_atomic(paths.plan(st.round), plan.to_dict())
-            with open(paths.approvals, "a", encoding="utf-8") as f:
-                f.writelines(json.dumps(_scrub.scrub_json(ln), ensure_ascii=False) + "\n" for ln in lines)
-            pending = len(plan.pending())
-            st.counts = {**st.counts, "proposals_pending": pending}
-            st.updated = _now()
-            self._save(paths, st)
-            self._journal_safe(paths, {"event": "approvals", "by": by, "round": st.round,
-                                       "decisions": {d.proposal_id: d.decision for d in decisions}, "pending": pending})
-        return {"accepted": ids, "pending": pending}
-
     # ------------------------------------------------------------------ resume / stop / delete
     def resume(self, rid: str, confirm: str | None = None, label: str | None = None, project_id: str | None = None,
                analysis_id: str | None = None, by: str = "") -> dict[str, Any]:
         """사람이 요청한 재개를 처리한다. 재개할 수 있는 상태이고 실행 중인 스레드가 없어야 한다.
-        - 승인 대기 중에 결정되지 않은 제안이 남았거나, 업로드 확인 대기 중인데 ``confirm``이 없으면
+        - 업로드 확인 대기 중인데 ``confirm``이 없거나, 이전 버전이 승인 대기로 저장한 작업이면
           ``StateConflict``를 던진다
         - ``reupload``는 업로드가 IVAS에 전달되지 않았음을 사람이 확인한 것이므로 다시 업로드하고,
           ``receipt``는 사람이 IVAS에서 찾은 프로젝트, 분석 ID로 다시 업로드하지 않고 결과를 이어서 조회한다
@@ -1213,6 +1097,7 @@ class RemediationManager:
         거절되면 state.json을 되돌린다.
 
         Explicit resume. `confirm` is required in AWAITING_CONFIRMATION: "reupload" or "receipt" (+ project / analysis id).
+        A state saved in `AWAITING_APPROVAL` by an earlier version is refused (`graph.approval_removed`), in every mode.
         In-process, a chained state is resumed through `chain.resume` in a worker thread. Job modes: a standalone one is
         `NotAvailable`; a chained one gets the confirmation written to its `state.json` here, then
         `RunManager.resume_remediation` queues a new build pod (the state file is restored when that is refused)."""
@@ -1221,6 +1106,8 @@ class RemediationManager:
         dispatch = self.job_mode
         with lock:
             st = self._load(rid)
+            if (removed := graph_mod.approval_removed(st)) is not None:
+                raise removed
             if dispatch:
                 if not chained:
                     raise NotAvailable(NOT_AVAILABLE_MESSAGE.format(mode=self.mode), mode=self.mode, status=st.status)
@@ -1237,11 +1124,6 @@ class RemediationManager:
                     raise StateConflict(f"the migration run {rid} is still running", status=st.status)
             if alive or st.status not in RESUMABLE or not graph_mod.can_resume(st):
                 raise StateConflict(f"remediation {rid} is {st.status} and cannot be resumed", status=st.status)
-            if st.status == AWAITING_APPROVAL:
-                plan = self._current_plan(paths, st)
-                if plan is not None and plan.pending():
-                    raise StateConflict(f"{len(plan.pending())} proposal(s) still wait for a decision", status=st.status,
-                                        pending=len(plan.pending()))
             event: dict[str, Any] = {"event": "resume", "from": st.status, "by": by}
             if st.status == AWAITING_CONFIRMATION:
                 if confirm not in (CONFIRM_REUPLOAD, CONFIRM_RECEIPT):

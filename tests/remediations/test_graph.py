@@ -8,13 +8,13 @@ import pytest
 
 from sbmig.remediations import graph
 from sbmig.remediations.models import (
-    AWAITING_APPROVAL,
     AWAITING_CONFIRMATION,
-    D_APPROVED,
-    D_PENDING,
-    D_REJECTED,
     FAILED,
     INCOMPLETE,
+    INTERRUPTED,
+    LEGACY_APPROVAL_MESSAGE,
+    LEGACY_APPROVAL_MESSAGE_KO,
+    LEGACY_AWAITING_APPROVAL,
     NODES,
     STOPPED,
     SUCCEEDED,
@@ -24,6 +24,7 @@ from sbmig.remediations.models import (
     Residual,
     RoundPlan,
     ScanResult,
+    StateConflict,
     UploadReceipt,
     read_json,
     write_json_atomic,
@@ -85,12 +86,12 @@ def test_graph_nodes_are_route_plus_the_contract_nodes():
 
 
 def test_new_state_and_can_resume(tmp_path):
-    state, _ = make_run(tmp_path, cfg=make_cfg(require_approval=True))
-    assert state.round == 1 and state.next_node == NODES[0] and state.require_approval
+    state, _ = make_run(tmp_path)
+    assert state.round == 1 and state.next_node == NODES[0] and "require_approval" not in state.to_dict()
     assert state.policy_hash == "policy-hash-1" and state.created > 0
     assert not graph.can_resume(state)
     state.status = STOPPED
-    assert graph.can_resume(state)
+    assert graph.can_resume(state) and graph.approval_removed(state) is None
 
 
 # ---------------------------------------------------------------------------- happy paths
@@ -257,82 +258,142 @@ def test_stop_during_scan_keeps_the_receipt_and_never_says_cancelled(tmp_path):
     assert scanner.calls[-1].receipt.analysis_id == "anl-baseline-1"
 
 
-# ---------------------------------------------------------------------------- approvals / plans
-def _two_pending_plan():
+# ---------------------------------------------------------------------------- no approval; data of an earlier version
+def _two_major_plan():
     return RoundPlan(round=1, source_tree_hash="", policy_hash="", proposals=[
-        proposal(1, decision=D_PENDING, risks=["major"]),
-        proposal(2, ga="example:other", old="2.0", new="3.0", decision=D_PENDING, risks=["major"])])
+        proposal(1, risks=["major"]),
+        proposal(2, ga="example:other", old="2.0", new="3.0", risks=["major", "managed_override"])])
+
+
+def _two_findings(final=()):
+    return FakeScanner({"baseline": [scan_result(finding(), finding("example:other", "2.0"))],
+                        "final-r1": [scan_result(*final)]})
 
 
 def _decide(paths, decisions):
+    """Rewrite plan.json the way the version with the approval step left it (decision per proposal id)."""
     data = read_json(paths.plan(1))
     for p in data["proposals"]:
         p["decision"] = decisions[p["id"]]
+        p["requires_approval"] = decisions[p["id"]] != "auto"
     write_json_atomic(paths.plan(1), data)
 
 
-def test_approval_pending_then_resume_applies_approved_only(tmp_path):
+def _stop_after_plan(monkeypatch, rec):
+    real = graph._NODE_FNS["plan"]
+
+    def stopper(h):
+        nxt = real(h)
+        rec.stop_flag = True
+        return nxt
+
+    monkeypatch.setitem(graph._NODE_FNS, "plan", stopper)
+
+
+class _HashedPlanner:
+    """A `PlanFn` with `policy_hash(cfg)` like `planner.plan_round`, so the graph compares today's hash with the stored one."""
+
+    def __init__(self, inner: ScriptedPlanner):
+        self.inner, self.calls = inner, inner.calls
+
+    def __call__(self, *a, **kw):
+        return self.inner(*a, **kw)
+
+    def policy_hash(self, cfg):
+        return self.inner.policy_hash
+
+
+def test_every_proposal_is_applied_without_waiting(tmp_path):
     state, paths = make_run(tmp_path, {"pom.xml": POM2})
-    comps = make_components(scan=FakeScanner({"baseline": [scan_result(finding(), finding("example:other", "2.0"))],
-                                              "final-r1": [scan_result(finding("example:other", "2.0"))]}),
-                            plan=ScriptedPlanner([_two_pending_plan()]))
-    out, _ = run(state, paths, comps, cfg=make_cfg(max_rounds=1))
-    assert out.status == AWAITING_APPROVAL and out.reason == "pending_approval" and out.next_node == "plan"
-    assert comps.apply.applied_calls == [] and not paths.report_md.exists()
-    _decide(paths, {"p-1-1": D_APPROVED, "p-1-2": D_REJECTED})
-    out, _ = run(out, paths, comps, cfg=make_cfg(max_rounds=1))
-    assert len(comps.plan.calls) == 1          # the decided plan was reused, not re-planned
-    assert comps.apply.applied_calls == [["p-1-1"]]
+    comps = make_components(scan=_two_findings(), plan=ScriptedPlanner([_two_major_plan()]))
+    out, rec = run(state, paths, comps, cfg=make_cfg(max_rounds=1))
+    assert out.status == SUCCEEDED and comps.apply.applied_calls == [["p-1-1", "p-1-2"]]
     pom = (paths.accepted / "pom.xml").read_text()
-    assert "<version>1.1</version>" in pom and "<version>2.0</version>" in pom
-    assert out.status == INCOMPLETE and out.reason == "rejected_proposals"
-    assert "residual_findings" in out.reasons
+    assert "<version>1.1</version>" in pom and "<version>3.0</version>" in pom
+    assert LEGACY_AWAITING_APPROVAL not in {s["status"] for s in rec.saves}
+    assert out.counts["proposals_applied"] == 2
+    assert "proposals_pending" not in out.counts and "proposals_rejected" not in out.counts
 
 
-def test_all_rejected_applies_nothing(tmp_path):
+def test_resume_at_plan_with_an_older_policy_hash_plans_again(tmp_path, monkeypatch):
+    """A run the version with the approval step left inside `plan` (INTERRUPTED, next node `plan`, pending / rejected
+    decisions in plan.json) is resumed after the upgrade: the policy hash it stored differs from today's (the two
+    settings left the hash), so the round is planned again from the round's inventory, the old plan is kept as
+    plan.stale.json unchanged, no old decision is carried over and every new proposal is applied."""
     state, paths = make_run(tmp_path, {"pom.xml": POM2})
-    comps = make_components(scan=FakeScanner({"baseline": [scan_result(finding())]}),
-                            plan=ScriptedPlanner([_two_pending_plan()]))
-    out, _ = run(state, paths, comps)
-    _decide(paths, {"p-1-1": D_REJECTED, "p-1-2": D_REJECTED})
-    before = tree_hash(paths)
-    out, _ = run(out, paths, comps)
-    assert out.status == INCOMPLETE and out.reason == "rejected_proposals"
-    assert comps.apply.applied_calls == [] and tree_hash(paths) == before
-    assert len(comps.maven.package_calls) == 1
-    assert out.delivery.sha256 == state.intake.zip_sha256       # nothing changed: the original bytes
-    assert out.counts["proposals_rejected"] == 2
+    rec = Recorder()
+    planner = ScriptedPlanner([_two_major_plan(), _two_major_plan()])
+    comps = make_components(scan=_two_findings(), plan=_HashedPlanner(planner))
+    _stop_after_plan(monkeypatch, rec)
+    out, _ = run(state, paths, comps, rec, cfg=make_cfg(max_rounds=1))
+    monkeypatch.undo()
+    _decide(paths, {"p-1-1": "pending", "p-1-2": "rejected"})
+    out.status, out.next_node = INTERRUPTED, "plan"
+    planner.policy_hash = "policy-hash-2"                          # today's hash differs from the stored one
+    out, rec = run(out, paths, comps, cfg=make_cfg(max_rounds=1))
+    assert len(planner.calls) == 2 and planner.calls[1]["rejected"] == set()
+    changed = [e for e in rec.events if e.get("event") == "policy_changed"]
+    assert [e["round"] for e in changed] == [1] and out.policy_hash == "policy-hash-2"
+    stale = read_json(paths.round_dir(1) / "plan.stale.json")
+    assert [p["decision"] for p in stale["proposals"]] == ["pending", "rejected"]
+    assert comps.apply.applied_calls == [["p-1-1", "p-1-2"]] and out.status == SUCCEEDED, (out.reason, out.message)
 
 
-def test_stale_plan_policy_hash_is_replanned(tmp_path):
+def test_resume_after_plan_continues_with_the_stored_plan(tmp_path, monkeypatch):
+    """Stopped after `plan` (next node `apply`) by the earlier version: the stored plan is used as it is although the
+    policy hash differs (the plan node is not run again); an `approved` proposal is applied like an `auto` one, a
+    `pending` or `rejected` one is not, and neither old reason appears."""
+    state, paths = make_run(tmp_path, {"pom.xml": POM2})
+    rec = Recorder()
+    planner = ScriptedPlanner([_two_major_plan()])
+    comps = make_components(scan=_two_findings(final=[finding("example:other", "2.0")]), plan=_HashedPlanner(planner))
+    _stop_after_plan(monkeypatch, rec)
+    out, _ = run(state, paths, comps, rec, cfg=make_cfg(max_rounds=1))
+    monkeypatch.undo()
+    assert out.status == STOPPED and out.next_node == "apply"
+    _decide(paths, {"p-1-1": "approved", "p-1-2": "rejected"})
+    planner.policy_hash = "policy-hash-2"
+    rec.stop_flag = False
+    out, _ = run(out, paths, comps, rec, cfg=make_cfg(max_rounds=1))
+    assert len(planner.calls) == 1 and comps.apply.applied_calls == [["p-1-1"]]
+    assert out.status == INCOMPLETE and out.reason == "residual_findings"
+    assert not {"pending_approval", "rejected_proposals"} & set(out.reasons)
+    assert read_json(paths.plan(1))["proposals"][1]["decision"] == "rejected"      # never rewritten
+
+
+def test_stale_plan_tree_hash_is_replanned(tmp_path, monkeypatch):
     state, paths = make_run(tmp_path)
-    planner = ScriptedPlanner([_two_pending_plan(), RoundPlan(round=1, source_tree_hash="", policy_hash="",
-                                                              proposals=[proposal()])])
+    rec = Recorder()
+    planner = ScriptedPlanner([RoundPlan(round=1, source_tree_hash="", policy_hash="", proposals=[proposal()])])
     comps = make_components(scan=FakeScanner({"baseline": [scan_result(finding())]}), plan=planner)
-    out, _ = run(state, paths, comps)
-    assert out.status == AWAITING_APPROVAL
-    _decide(paths, {"p-1-1": D_APPROVED, "p-1-2": D_REJECTED})
-    out.policy_hash = planner.policy_hash = "policy-hash-2"       # the server policy changed meanwhile
-    out, _ = run(out, paths, comps)
-    assert len(planner.calls) == 2
-    assert ("example:other", "3.0") in planner.calls[1]["rejected"]
-    assert (paths.round_dir(1) / "plan.stale.json").is_file()
-    assert out.status == SUCCEEDED
-
-
-def test_stale_plan_tree_hash_is_replanned(tmp_path):
-    state, paths = make_run(tmp_path)
-    planner = ScriptedPlanner([RoundPlan(round=1, source_tree_hash="", policy_hash="",
-                                         proposals=[proposal(decision=D_PENDING)])])
-    comps = make_components(scan=FakeScanner({"baseline": [scan_result(finding())]}), plan=planner)
-    out, _ = run(state, paths, comps)
-    _decide(paths, {"p-1-1": D_APPROVED})
+    _stop_after_plan(monkeypatch, rec)
+    out, _ = run(state, paths, comps, rec)
+    monkeypatch.undo()
+    out.status, out.next_node = INTERRUPTED, "plan"
     (paths.accepted / "src/main/java/App.java").write_text("class App { }\n")
     out, _ = run(out, paths, comps)
     assert len(planner.calls) == 2
-    # the approval of the stale plan is not used: the re-plan (default: no proposal) leaves the finding
+    # the stale plan is not used: the re-plan (default: no proposal) leaves the finding
     assert comps.apply.applied_calls == []
     assert out.status == INCOMPLETE and out.reason == "residual_findings"
+
+
+def test_state_saved_awaiting_approval_by_an_earlier_version_is_not_resumed(tmp_path):
+    state, paths = make_run(tmp_path)
+    old = state.to_dict()
+    old.update(status=LEGACY_AWAITING_APPROVAL, reason="pending_approval", reasons=["pending_approval"],
+               next_node="plan", require_approval=True, message="1 proposal(s) of round 1 wait for approval")
+    write_json_atomic(paths.state, old)
+    loaded = graph.RemediationState.from_dict(read_json(paths.state))
+    assert loaded.status == LEGACY_AWAITING_APPROVAL and loaded.reasons == ["pending_approval"]
+    assert not graph.can_resume(loaded)
+    err = graph.approval_removed(loaded)
+    assert isinstance(err, StateConflict) and LEGACY_APPROVAL_MESSAGE in str(err)
+    assert err.details == {"status": LEGACY_AWAITING_APPROVAL, "message_ko": LEGACY_APPROVAL_MESSAGE_KO}
+    comps = one_fix_components()
+    out, rec = run(loaded, paths, comps)                   # even when driven directly nothing runs
+    assert out.status == LEGACY_AWAITING_APPROVAL and rec.saves == [] and comps.scan.calls == []
+    assert read_json(paths.state) == old                   # never rewritten
 
 
 # ---------------------------------------------------------------------------- candidate failures

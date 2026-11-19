@@ -901,19 +901,9 @@ remediation:
   max_unpacked_mb: 4096            # 풀었을 때 전체 크기 한도(MiB)
   max_entry_mb: 1024               # 파일 하나의 풀린 크기 한도(MiB)
   max_compression_ratio: 200       # 파일 하나의 압축률 한도(압축 폭탄 방지)
-  # 사람 승인. 기본값(false)이면 always_approve에 적은 부류만 승인을 기다리고 나머지 제안은 바로 적용한다.
-  # always_approve도 비어 있으면 모든 제안을 승인 없이 적용하고 결과만 알려 준다.
-  # true면 모든 제안이 승인을 기다린다. 운영에서 사람 승인이 필요하면 true로 지정한다.
-  require_approval: false
-  # 승인을 기다리게 할 위험 부류. 비워 두면(기본값) 어떤 제안도 승인을 기다리지 않는다.
-  # 넣을 수 있는 값: major(메이저 버전 변경), parent(부모 pom 버전), bom(가져온 BOM 버전),
-  # managed_override(간접 의존성이나 부모, BOM이 관리하는 버전을 고치려고 dependencyManagement에 항목을 넣는 제안)
-  # 예를 들어 [major, parent, bom, managed_override]로 지정하면 이 네 부류의 제안만 승인을 기다린다.
-  always_approve: []
   # 모듈 pom에 버전 지정을 넣는 제안.
   # 회사 레이아웃의 모듈은 프로젝트 루트 pom이 아니라 회사 부모 pom에서 설정을 물려받으므로, 루트 pom에 넣은
   # 버전 지정이 닿지 않는다. true면 그런 모듈마다 그 모듈의 pom.xml에 버전 지정을 넣는 제안을 만든다.
-  # 승인 여부는 다른 제안과 같다. 기본 설정에서는 바로 적용하고, 승인을 켠 경우에는 담당자가 체크한 것만 적용한다.
   # false면 제안을 만들지 않고 "직접 확인이 필요한 취약점"에 들어온 경로와 함께 남긴다.
   module_overrides: true
   max_rounds: 3                    # 계획 -> 적용 -> 빌드 -> 재검사를 반복하는 횟수 한도
@@ -939,7 +929,7 @@ remediation:
   # exact: 요약의 components 건수와 라이브러리 취약점 상세 행 수가 같아야 검사 완료로 본다.
   # nonzero: 0인지 아닌지만 비교한다. 실제 IVAS의 건수 의미가 다르면 이 값으로 바꾼다.
   ivas_summary_check: exact
-  policy:                          # 서버 정책: 버전 후보의 근거. 바뀌면 전에 만든 승인 대기 후보는 무효가 된다
+  policy:                          # 서버 정책: 버전 후보의 근거. 바뀌면 멈춰 있던 조치의 예전 계획은 무효가 된다
     pins: {}                       # "g:a": "버전" 형식. 이 버전으로만 올린다
     deny: []                       # "g:a" 또는 "g:*". 자동으로 바꾸지 않는다(직접 확인으로 남긴다)
     deny_versions: {}              # "g:a": [버전, ...] 형식. 후보에서 뺀다

@@ -20,7 +20,7 @@ v2.1: `open=` / `resolved=` count the run's error list (`report.error_entries`):
 (finalize turns open into unresolved), resolved = status resolved (pom-verify / note / blocked in neither; blocked
 items are `blocked=`). Present whenever the line is made from a report or a fleet result, absent on a crash line.
 2026-11-11: ` remediation=<STATUS|skipped>` is appended when a vulnerability remediation was chained after the
-migration's BUILD SUCCESS (`report.remediation`: SUCCEEDED / INCOMPLETE / FAILED / AWAITING_APPROVAL / …) or the switch
+migration's BUILD SUCCESS (`report.remediation`: SUCCEEDED / INCOMPLETE / FAILED / AWAITING_CONFIRMATION / …) or the switch
 `remediation.after_migration` was on and the chain was skipped (not ready, stop request, inline engine). It never changes
 `exit=` / `build=` / `attn=`. v2.1z-aw: a conversion-only framework run whose build failed is chained too, so the token
 also stands beside `exit=2 build=FAIL`.
@@ -30,7 +30,7 @@ succeeded (`remediation_build_ok`): `ok` when the baseline build of the project 
 (`report.remediation["baseline_build_ok"]` is true), neither `reason` nor `reasons` names `baseline_build_failed` /
 `candidate_build_failed`, and no delivery says `build_ok: false`; `FAIL` otherwise — not started (`remediation=skipped`,
 no summary, an intake refusal), stopped / rejected before the baseline build ran, or a build that failed. So an
-INCOMPLETE / AWAITING_* / STOPPED-after-baseline run or a FAILED `resolution_mismatch` after a passed build prints
+INCOMPLETE / AWAITING_CONFIRMATION / STOPPED-after-baseline run or a FAILED `resolution_mismatch` after a passed build prints
 `build=ok` with `exit=2`. A `full` run never prints `flow=` and its line is the one it always was.
 v2.1z-ak: ` scope=jdk-jakarta` (after `major=`, before `flow=` / `remediation=`) marks a framework project's reduced run
 (`report.plan.scope`, else `report.profile.reduced_scope` when the run ended before the plan): Java 21 + jakarta recipes,

@@ -1263,7 +1263,7 @@ def remediation_lines(r: RunReport, lang: str = "en") -> list[str]:
 
 def _remediation_lines_ko(rem: dict, *, chained: bool = True, after_failure: bool = False) -> list[str]:
     """한국어 이관 보고서의 ``## 취약점 조치`` 절을 만든다.
-    결과 문장, 취약점 개수, 승인 대기, 사내 라이브러리, 상태 메시지, 결과 파일을 담는다.
+    결과 문장, 취약점 개수, 사내 라이브러리, 상태 메시지, 결과 파일을 담는다.
     집계 키 이름은 보고서에 쓰지 않는다.
 
     The Korean remediation section: verdict + code, counts in words, the message in Korean, the files."""
@@ -1303,9 +1303,6 @@ def _remediation_lines_ko(rem: dict, *, chained: bool = True, after_failure: boo
              if isinstance(counts.get(key), int)]
     if parts:
         L.append("- 취약점: " + ", ".join(parts))
-    pending = counts.get("proposals_pending")
-    if isinstance(pending, int) and pending > 0:
-        L.append(f"- 승인 대기: 제안 {pending}건")
     n_inhouse = counts.get("residual_inhouse")
     if isinstance(n_inhouse, int) and n_inhouse > 0:
         L.append(tr("ko", "- In-house artifacts (exception possible, contact their owners): {n}", n=n_inhouse))

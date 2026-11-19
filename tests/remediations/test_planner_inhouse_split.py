@@ -97,10 +97,18 @@ def test_inhouse_part_is_a_residual_and_the_project_part_is_planned(tmp_path):
     assert alone.diff == p.diff and alone.proposal_hash == p.proposal_hash
 
 
+def _not_again(tmp_path):
+    """The key that keeps the project part's override entry from being proposed again (it had no effect)."""
+    probe = tmp_path / "probe"
+    probe.mkdir()
+    (p,) = _plan(_project(probe), list(_parts())).proposals
+    return {("example:t", "1.1", "", p.edits[0].pom)}
+
+
 def test_project_part_residual_carries_no_inhouse(tmp_path):
     inh, own = _parts()
-    plan = _plan(_project(tmp_path), [inh, own], rejected={("example:t", "1.1")})
-    rej = next(r for r in plan.residuals if r.reason == "rejected_proposals")
+    plan = _plan(_project(tmp_path), [inh, own], rejected=_not_again(tmp_path))
+    rej = next(r for r in plan.residuals if r.reason == "manual_review")
     assert rej.modules == ["app-web"] and rej.inhouse == [] and rej.via == ["example:web-lib:2.0"]
     assert [s.module for s in rej.sources] == ["app-web"]
     assert [r.reason for r in plan.residuals if r.inhouse] == ["inhouse_artifact"]
@@ -162,9 +170,9 @@ def test_a_finding_in_both_parts_is_counted_once(tmp_path):
     rows in `residual` but one finding in `baseline_findings` / `final_findings` / `fixed`."""
     st = RemediationState(id="r", name="n", status="RUNNING")
     inh, own = _parts()
-    plan = _plan(_project(tmp_path), [inh, own], rejected={("example:t", "1.1")})
+    plan = _plan(_project(tmp_path), [inh, own], rejected=_not_again(tmp_path))
     graph._merge_residuals(st, plan.residuals)
-    assert sorted(r.reason for r in st.residuals) == ["inhouse_artifact", "rejected_proposals"]
+    assert sorted(r.reason for r in st.residuals) == ["inhouse_artifact", "manual_review"]
     assert {fid for r in st.residuals for fid in r.finding_ids} == {"CVE-T"}
 
 

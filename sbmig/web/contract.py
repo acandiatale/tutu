@@ -76,7 +76,8 @@ ENV_PIN_REFUSE, ENV_PIN_WARN, ENV_PIN_OFF = "refuse", "warn", "off"
 ENV_PIN_POLICIES = (ENV_PIN_REFUSE, ENV_PIN_WARN, ENV_PIN_OFF)
 # 파드마다 달라도 되는 이름이다.
 # LLM 원문 기록 폴더는 진단용이고 Worker는 SBMIG_WORKER_LLM_RECORDS로 따로 켠다
-ENV_PIN_SKIP = frozenset({"SBMIG_LLM__RECORD_DIR", "LLM_RECORD_DIR"})
+# SBMIG_REMEDIATION__REQUIRE_APPROVAL은 없어진 설정이다. ConfigMap에 남아 있어도 Job을 거절하지 않게 비교에서 뺀다
+ENV_PIN_SKIP = frozenset({"SBMIG_LLM__RECORD_DIR", "LLM_RECORD_DIR", "SBMIG_REMEDIATION__REQUIRE_APPROVAL"})
 # Worker는 KB 위치를 SBMIG_KB_DIR로 받으므로 웹 파드의 SBMIG_KB__DIR과 같은 값이어야 한다.
 # 다르면 Worker가 이미지 안 yml의 경로에 KB를 기록해 파드와 함께 사라진다
 ENV_PIN_ALIASES: dict[str, tuple[str, ...]] = {"SBMIG_KB__DIR": ("SBMIG_KB_DIR",)}

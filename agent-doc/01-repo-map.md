@@ -113,7 +113,7 @@
 | 취약점 조치: IVAS 응답 필드·경로·상태 코드·완전성 규칙 | `sbmig/remediations/ivas.py` (`PAGE_PATHS`, `ANALYSIS_ID_KEYS`, `IN_PROGRESS`, `_library_finding`, `_reconcile`) | [11](11-remediations.md) |
 | 취약점 조치: ZIP 접수 규칙, 실행 경계, 전달 ZIP 모양 | `sbmig/remediations/intake.py` (`check_boundary`, `freeze_delivery`) | [11](11-remediations.md) |
 | 취약점 조치: 새 출처(origin) 판정, 발견 항목 ↔ pom 줄 연결 | `sbmig/remediations/inventory.py` | [11](11-remediations.md) |
-| 취약점 조치: 버전 고르기, 승인 부류, override를 낼지·잔여로 둘지, 정책 해시, 승인 검증 | `sbmig/remediations/planner.py` (`_choose_target`, `_override_change`, `plan_round`, `policy_hash`, `validate_decision`) | [11](11-remediations.md) |
+| 취약점 조치: 버전 고르기, 위험 부류, override를 낼지·잔여로 둘지, 정책 해시 | `sbmig/remediations/planner.py` (`_choose_target`, `_override_change`, `plan_round`, `policy_hash`) | [11](11-remediations.md) |
 | 취약점 조치: 글자 치환, override 모양·자리, "계획한 것만"·"해석 = 계획" | `sbmig/remediations/apply.py` (`render_override`, `locate_override`, `verify_text_only`, `verify_resolution`) | [11](11-remediations.md) |
 | 취약점 조치: 실패한 후보(include / discard), 검증된 ZIP 보존; 노드 순서, 멈춤·재개, 성공 판정 | `sbmig/remediations/graph.py` (`_build`, `deliver_failed_candidate`, `discard_candidate`; `_evaluate`, `_Holder.scan`) | [11](11-remediations.md) |
 | 취약점 조치: Maven 명령·준비 조건·해석 읽기 | `sbmig/remediations/maven.py` | [11](11-remediations.md) |

@@ -16,7 +16,8 @@ def test_korean_section_has_sentences_not_keys():
     ko = "\n".join(remediation_lines(types.SimpleNamespace(remediation=dict(REM)), "ko"))
     assert "- 결과: 일부만 조치되었습니다. `INCOMPLETE` (사유: 직접 확인 필요, 남은 취약점)" in ko
     assert "- 취약점: 조치 전 17건, 조치 완료 1건, 조치 후 남은 취약점 16건" in ko
-    assert "- 승인 대기: 제안 2건" in ko and "라이브러리 8개" in ko
+    assert "라이브러리 8개" in ko
+    assert "승인" not in ko                    # a count an earlier version wrote (proposals_pending) is not shown
     assert "- 상세: 조치 후 검사가 끝나지 않았습니다(사유: 결과 페이지 누락)." in ko
     assert "- 자세한 결과: `remediation/report.md`" in ko and "`remediation/delivery/result.zip`" in ko
     assert "baseline_findings" not in ko and "final scan incomplete" not in ko

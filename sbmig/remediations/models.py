@@ -3,11 +3,11 @@
 데이터는 ``to_dict`` / ``from_dict``로 JSON 파일에 저장하고, 비밀 값은 어디에도 넣지 않는다.
 실행 폴더 ``<out>/_remediations/<id>/``(``RunPaths``)의 구성은 아래와 같다.
 - ``original/source.zip``: 업로드한 ZIP 원본, ``original/manifest.json``: 원본 파일 목록
-- ``accepted/``: 작업 트리. 승인되어 적용된 변경만 들어간다
+- ``accepted/``: 작업 트리. 빌드와 검증을 통과한 변경만 들어간다
 - ``rounds/<n>/``: 라운드별 수정본(``candidate/``)과 plan.json, candidate.patch, build.log, resolved.json
 - ``scans/<label>.json``: 검사 결과, ``delivery/result.zip``과 delivery.json: 결과 ZIP. 뒤 라운드에서 빌드가
   실패한 수정본이 result.zip이 되면 앞 라운드에서 검증된 결과를 ``result-r<k>-verified.zip``으로 남긴다
-- ``state.json``: 작업 상태(통째로 교체해서 저장), ``approvals.jsonl``: 승인과 거절 기록(뒤에 추가만 한다)
+- ``state.json``: 작업 상태(통째로 교체해서 저장)
 - ``journal.jsonl`` / ``remediation.log`` / ``report.md`` / ``report.json``: 저널, 로그, 보고서
     journal.jsonl / remediation.log / report.md / report.json
 
@@ -29,17 +29,23 @@ REMEDIATIONS_DIR = "_remediations"       # under the web out dir; `_` keeps it o
 # ---------------------------------------------------------------------------- 상태 / statuses
 QUEUED = "QUEUED"                        # 접수되어 작업 스레드를 기다리는 중
 RUNNING = "RUNNING"
-AWAITING_APPROVAL = "AWAITING_APPROVAL"  # 승인을 기다린다. approvals 뒤에 resume한다
 AWAITING_CONFIRMATION = "AWAITING_CONFIRMATION"   # IVAS 업로드 결과를 알 수 없어 사람이 확인한 뒤 resume(confirm=…)한다
 STOPPED = "STOPPED"                      # 노드 사이에서 중지 요청을 처리했으며 resume할 수 있다
 INTERRUPTED = "INTERRUPTED"              # 실행 중에 서버가 내려갔다. 자동으로 재개하지 않고 명시적인 resume만 받는다
 SUCCEEDED = "SUCCEEDED"                  # 성공 조건을 모두 만족했다(evaluate 참고)
 INCOMPLETE = "INCOMPLETE"                # 끝났지만 성공은 아니다. 남은 취약점, 직접 확인, 미완료 검사 등
 FAILED = "FAILED"                        # 조치 전 빌드 실패, 수정본 빌드 실패, 검증 실패 등
-STATUSES = (QUEUED, RUNNING, AWAITING_APPROVAL, AWAITING_CONFIRMATION, STOPPED, INTERRUPTED, SUCCEEDED, INCOMPLETE, FAILED)
+STATUSES = (QUEUED, RUNNING, AWAITING_CONFIRMATION, STOPPED, INTERRUPTED, SUCCEEDED, INCOMPLETE, FAILED)
 TERMINAL = (SUCCEEDED, INCOMPLETE, FAILED)                       # 더 이상 진행하지 않는 상태
-RESUMABLE = (AWAITING_APPROVAL, AWAITING_CONFIRMATION, STOPPED, INTERRUPTED)
+RESUMABLE = (AWAITING_CONFIRMATION, STOPPED, INTERRUPTED)
 ACTIVE = (QUEUED, RUNNING)
+# 승인 단계가 있던 버전이 저장한 상태다. 읽기만 하며 재개하지 않고 끝난 작업으로 보여 준다
+LEGACY_AWAITING_APPROVAL = "AWAITING_APPROVAL"
+# 그런 작업의 재개를 거절할 때 쓰는 문장이다. 한국어 문장은 화면에 그대로 보인다
+LEGACY_APPROVAL_MESSAGE = ("the approval step of the remediation was removed: this remediation waited for an approval "
+                           "and cannot be resumed; upload the project again and it runs to the end without approval")
+# 화면에 그대로 보이는 문장이다. 없어진 기능의 이름을 화면에 다시 올리지 않도록 승인이라는 말을 쓰지 않는다
+LEGACY_APPROVAL_MESSAGE_KO = "이 실행의 취약점 조치는 끝나지 않았습니다. 프로젝트를 다시 올리면 끝까지 진행합니다."
 
 # 실행 순서대로 나열한 그래프 노드 이름 / graph nodes in order
 NODES = ("baseline_build", "baseline_scan", "inventory", "plan", "apply", "build", "freeze_delivery", "rescan",
@@ -55,8 +61,6 @@ R_TEXT_ONLY_VIOLATION = "text_only_violation"            # 수정본에 버전 �
 R_RESOLUTION_MISMATCH = "resolution_mismatch"            # 의존성 해석이나 패키징 결과가 계획과 다르다
 R_BOUNDARY_REFUSED = "execution_boundary_refused"        # .mvn 설정, 승인되지 않은 저장소 등
 R_NOT_READY = "not_ready"                                # 필수 설정이 없다. IVAS 주소와 계정, settings.xml, JDK 21
-R_PENDING_APPROVAL = "pending_approval"
-R_REJECTED_PROPOSALS = "rejected_proposals"
 R_RESIDUAL_FINDINGS = "residual_findings"                # 최종 검사에 취약점이 남았다
 R_MANUAL_REVIEW = "manual_review"                        # vendored, plugin, 매핑 불가, 출처 불명
 R_NO_CANDIDATE_VERSION = "no_candidate_version"
@@ -178,14 +182,9 @@ class IvasUploadUncertain(IvasError):
     code = R_UPLOAD_UNCERTAIN
 
 
-class ApprovalMismatch(RemediationError):
-    """승인 요청의 해시나 diff가 현재 수정본과 다를 때 던지는 오류(HTTP 409)."""
-    code = "approval_mismatch"
-
-
 class StateConflict(RemediationError):
     """현재 상태에서 할 수 없는 요청일 때 던지는 오류(HTTP 409).
-    실행 중인 작업 삭제, 재개할 수 없는 상태에서의 resume 등이다."""
+    실행 중인 작업 삭제, 재개할 수 없는 상태에서의 resume 등이다. 화면용 문장은 ``details["message_ko"]``에 담는다."""
     code = "state_conflict"
 
 
@@ -478,14 +477,13 @@ K_OWN_MANAGEMENT_VERSION = "own_management_version"   # 프로젝트 <dependency
 K_MANAGED_OVERRIDE = "managed_override"           # 간접 / 부모 / BOM 관리 버전. pom에 override 항목을 넣는다
 K_PARENT_VERSION = "parent_version"               # <parent><version>
 K_BOM_VERSION = "bom_version"                     # import한 BOM의 <version>
-# 제안의 위험 표시 / risk flags. `remediation.always_approve`에 넣을 수 있는 값이다
+# 제안의 위험 표시 / risk flags. 보고서가 주의할 변경으로 보여 준다
 RISK_MAJOR, RISK_PARENT, RISK_BOM, RISK_MANAGED_OVERRIDE = "major", "parent", "bom", "managed_override"
 
-# 제안의 결정 상태 / decision states
-D_AUTO = "auto"            # 승인 없이 적용되는 제안
-D_PENDING = "pending"      # 승인 대기
-D_APPROVED = "approved"
-D_REJECTED = "rejected"
+# 제안의 결정 상태 / decision states. 계획의 제안은 모두 적용한다
+D_AUTO = "auto"
+# 승인 단계가 있던 버전이 저장한 계획에서 적용한 제안의 결정 값이다. pending과 rejected는 적용하지 않는다
+LEGACY_D_APPROVED = "approved"
 
 
 E_REPLACE = "replace"     # 기존 버전 문자열을 바꾼다
@@ -514,10 +512,9 @@ class TextEdit(Record):
 
 @dataclass
 class Proposal(Record):
-    """변경 제안 하나를 담는 데이터 클래스이며, 승인은 이 단위로 한다.
+    """변경 제안 하나를 담는 데이터 클래스.
     ``diff``는 이 제안만 적용한 diff이고, ``evidence``는 새 버전의 근거다(계정 정보는 넣지 않는다).
-    세 해시로 승인을 현재 수정본에 묶는다: ``proposal_hash``, ``source_tree_hash``(제안을 만든 accepted
-    트리), ``policy_hash``(서버 정책)."""
+    ``source_tree_hash``는 제안을 만든 accepted 트리, ``policy_hash``는 서버 정책의 해시다."""
     id: str                           # p-<round>-<n>
     round: int
     ga: str
@@ -525,7 +522,6 @@ class Proposal(Record):
     to_version: str
     kind: str
     risks: list[str] = field(default_factory=list)
-    requires_approval: bool = False
     decision: str = D_AUTO
     evidence: str = ""
     finding_ids: list[str] = field(default_factory=list)
@@ -541,7 +537,7 @@ class Proposal(Record):
     # 둘 다 ``proposal_hash``에 넣지 않는다
     modules: list[str] = field(default_factory=list)
     also_modules: list[str] = field(default_factory=list)
-    # 이 제안이 다루는 모듈마다 라이브러리가 들어온 경로다. 승인 화면과 보고서가 보여 주며 ``proposal_hash``에 넣지 않는다
+    # 이 제안이 다루는 모듈마다 라이브러리가 들어온 경로다. 보고서가 보여 주며 ``proposal_hash``에 넣지 않는다
     sources: list["ModuleSource"] = field(default_factory=list)
     _nested = {"edits": TextEdit, "sources": ModuleSource}
 
@@ -586,13 +582,11 @@ class RoundPlan(Record):
     notes: list[str] = field(default_factory=list)
     _nested = {"proposals": Proposal, "residuals": Residual}
 
-    def pending(self) -> list[Proposal]:
-        """결정을 기다리는 제안 목록을 반환한다."""
-        return [p for p in self.proposals if p.decision == D_PENDING]
-
     def to_apply(self) -> list[Proposal]:
-        """적용할 제안, 곧 자동 적용 대상과 승인된 제안을 반환한다."""
-        return [p for p in self.proposals if p.decision in (D_AUTO, D_APPROVED)]
+        """적용할 제안을 반환한다. 이전 버전의 계획에서 승인된 제안도 적용한다.
+
+        The proposals to apply: decision `auto`, and `approved` in a plan an earlier version wrote."""
+        return [p for p in self.proposals if p.decision in (D_AUTO, LEGACY_D_APPROVED)]
 
 
 @dataclass
@@ -604,19 +598,6 @@ class ApplyResult(Record):
     changed_files: list[str] = field(default_factory=list)
     patch: str = ""
     candidate_tree_hash: str = ""
-
-
-@dataclass
-class Decision(Record):
-    """승인 요청 한 건을 담는 데이터 클래스. 세 해시와 diff가 저장된 제안과 모두 같아야 받아들인다."""
-    proposal_id: str
-    decision: str                     # approved / rejected
-    proposal_hash: str = ""
-    source_tree_hash: str = ""
-    policy_hash: str = ""
-    diff: str = ""
-    by: str = ""
-    comment: str = ""
 
 
 # ---------------------------------------------------------------------------- 작업 상태 / state
@@ -658,7 +639,6 @@ class RemediationState(Record):
     owner: str = ""
     configs: list[str] = field(default_factory=list)
     policy_hash: str = ""
-    require_approval: bool = False
     intake: IntakeResult | None = None
     boundary: list[BoundaryFinding] = field(default_factory=list)
     baseline_build: BuildOutcome | None = None
@@ -699,8 +679,6 @@ class RunPaths:
     def accepted(self) -> Path: return self.root / "accepted"
     @property
     def state(self) -> Path: return self.root / "state.json"
-    @property
-    def approvals(self) -> Path: return self.root / "approvals.jsonl"
     @property
     def journal(self) -> Path: return self.root / "journal.jsonl"
     @property

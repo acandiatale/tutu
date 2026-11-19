@@ -2288,7 +2288,7 @@ class RunManager:
 
     def remediation_active(self, run_id: str) -> bool:
         """이 실행의 조치 재개 시도가 대기 중이거나 실행 중인지 확인한다.
-        그동안은 그 시도가 조치 상태 파일을 관리하므로 승인과 재개를 막고,
+        그동안은 그 시도가 조치 상태 파일을 관리하므로 다른 재개를 막고,
         마지막 마스킹 전이므로 조치 파일을 내주지 않는다.
 
         Whether a remediation resume of `run_id` is queued or running now."""
@@ -2567,17 +2567,18 @@ class RunManager:
             rows.append(st)
         return sorted(rows, key=lambda r: r.get("started", 0), reverse=True)
 
-    # 사람의 손을 기다리는 조치 상태다. 오래된 실행이어도 목록에 남긴다
-    WAITING_REMEDIATION = ("AWAITING_APPROVAL", "AWAITING_CONFIRMATION", "QUEUED", "RUNNING")
+    # 사람의 확인을 기다리거나 아직 진행 중인 조치 상태다. 오래된 실행이어도 목록에 남긴다
+    WAITING_REMEDIATION = ("AWAITING_CONFIRMATION", "QUEUED", "RUNNING")
 
     def list_recent(self, days: int = 0, keep: str | None = None) -> dict[str, Any]:
         """최근 ``days``일 안에 시작한 실행만 담은 목록과 빠진 실행 수를 반환한다. 0이면 모두 담는다.
-        대기나 진행 중인 실행, 사람을 기다리거나 다시 진행 중인 조치, 화면이 열고 있는 실행(``keep``)은 항상 담는다.
+        대기나 진행 중인 실행, IVAS 확인을 기다리거나 진행 중인 조치, 화면이 열고 있는 실행(``keep``)은 항상 담는다.
 
         The 「지난 실행」 list cut to the runs started in the last `days` days (0 = all): `{"runs", "days", "hidden"}`.
-        Always listed whatever their age: queued / running runs, a remediation waiting for a person or resumed in a new
-        pod (`remediation_job.active`), and `keep` (the run the page has open). The boundary is inclusive (started at
-        or after now − days × 24 h)."""
+        Always listed whatever their age: queued / running runs, a remediation waiting for an IVAS confirmation, queued
+        or running, or resumed in a new pod (`remediation_job.active`), and `keep` (the run the page has open). A
+        remediation an older version left waiting for approval (v2.1z-ba removed that step) is not. The boundary is
+        inclusive (started at or after now − days × 24 h)."""
         rows = self.list_runs()
         if days <= 0:
             return {"runs": rows, "days": 0, "hidden": 0}

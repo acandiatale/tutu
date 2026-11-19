@@ -1,5 +1,5 @@
-"""승인된 버전 변경을 수정본의 pom에 적용하고 결과를 검증하는 모듈.
-승인된 버전 문자열만 바꿔 넣은 뒤, 바뀐 것이 그것뿐인지와 Maven이 계산한 의존성 버전이 계획과 같은지 확인한다.
+"""계획한 버전 변경을 수정본의 pom에 적용하고 결과를 검증하는 모듈.
+계획한 버전 문자열만 바꿔 넣은 뒤, 바뀐 것이 그것뿐인지와 Maven이 계산한 의존성 버전이 계획과 같은지 확인한다.
 흐름: plan -> apply(``apply_proposals``, ``verify_text_only``) -> build -> verify(``verify_resolution``).
 planner도 ``render_diff``와 ``locate_override``를 호출한다.
 - 버전 교체(replace)는 줄 단위 문자열 치환이다. ``edit.line`` 줄에 ``edit.old``가 정확히 한 번 있어야 하고,
@@ -11,7 +11,7 @@ planner도 ``render_diff``와 ``locate_override``를 호출한다.
 - 모든 제안의 변경을 먼저 검사하고, 잘못된 변경이 하나라도 있는 제안은 통째로 건너뛴다
 - 경로는 프로젝트 폴더 안이어야 하고 ``old`` / ``new``는 버전 문자열 형태여야 한다
 
-Apply + verify for the remediation feature: approved version-text replacements on a candidate copy plus the one approved
+Apply + verify for the remediation feature: planned version-text replacements on a candidate copy plus the one allowed
 exception, the managed-version override entry inserted into the root pom or a module pom (fixed shape, validated), the
 "only the planned text changed" check and the "resolution matches the plan" check. All edits of one pom are applied in
 one pass against the original line numbers; inserts before the same line go in proposal-id order (two whole sections at

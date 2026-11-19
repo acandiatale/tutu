@@ -5109,6 +5109,50 @@ The user (2026-11-19): "중단 요청은 프로젝트에 표시 할 때 주황�
   「처리 불가」; the status carries no field that tells them from a refusal of the project (the flags are in
   `report.json` only).
 
+## v2.1z-ba — the approval step of the remediation is removed
+
+The user (2026-11-19): "우리 approval awaiting 기능 아예 빼버리자. 이렇게 안쓸거래. 환경변수도 없애고 기능도 없애고 화면에
+보여주는것도 없애버리게! 아주 넣었다 빼달라하는데 그냥 코드도 없애버려 나중에 본인들이 구축하겠지 사용자한테 승인받는건".
+Since "v2.1z-ar" nothing waited for approval by default; now the mechanism itself is gone. Wherever an older section of
+this document describes approval (`AWAITING_APPROVAL`, `require_approval`, `always_approve`, `POST …/approvals`, the
+approval list of the page), this section wins: it no longer exists.
+
+**Gone.**
+- Settings `remediation.require_approval`, `remediation.always_approve`; the environment variable
+  `SBMIG_REMEDIATION__REQUIRE_APPROVAL` (its line in `deploy/k8s/20-configmap.yaml` and in
+  `81-web-job.template.yaml`, its row in `deploy/ENV.md`).
+- The state `AWAITING_APPROVAL`; the proposal decisions `pending`, `approved`, `rejected` (every proposal of a plan is
+  applied: one decision, `auto`; `ineffective` stays); the reasons `pending_approval`, `rejected_proposals`; everything
+  in the planner, the graph, the service and the report that computed, stored, waited for or rendered an approval.
+  The risk labels of a proposal (major, parent, bom, managed_override) stay where the report shows them as facts.
+- HTTP: `POST /api/remediations/{id}/approvals` and `GET /api/remediations/{id}/proposals` (404 like any unknown
+  route); `pending_approvals`, `links.approvals`, `links.proposals` in the status; resuming "after approvals".
+- The page: the approval list with its check boxes and buttons, the words 승인 대기 in every chip, title, short form
+  and count, the fetch of proposals; the rule that keeps an approval-waiting run in the three-day list; the admin page's
+  word for it.
+- The report and the documents: sections and sentences about proposals waiting for approval or rejected by a person.
+
+**Stays.** `AWAITING_CONFIRMATION` (an IVAS upload whose outcome is unknown; a person checks IVAS and resumes with
+`confirm`) is another mechanism and is untouched, with its resume and its always-listed rule. `STOPPED` /
+`INTERRUPTED` and their resume stay.
+
+**Old data and old settings never break anything.**
+- A `state.json`, plan or report file written before this change may hold `AWAITING_APPROVAL`, the old decisions and
+  the old reasons: every reader accepts them. Such a remediation is shown as ended, without any action and WITHOUT the
+  word 승인 anywhere on the page (the user, the same evening: after a deployment people saw 승인 대기 again — old runs
+  of an earlier incident, which the list had started to label and to keep listed — "이거 왜뜨냐고 그래서 내가 스트레스
+  받아서"): 「지난 실행」 and the run card's sub line add nothing for it; its block shows the neutral chip 「조치 미완료」
+  and 「이 실행의 취약점 조치는 끝나지 않았습니다. 프로젝트를 다시 올리면 끝까지 진행합니다.」; the old reasons are not
+  rendered; the files it had already produced stay downloadable; a resume request for it is refused with 409 and a
+  plain reason. It never counts as active (no always-listed rule, no polling).
+- `remediation.require_approval` / `remediation.always_approve` in a yml and `SBMIG_REMEDIATION__REQUIRE_APPROVAL` in
+  the environment are ignored with one WARNING each ("the approval step … was removed … remove it"), whatever their
+  value (`config._warn_removed_keys`); never a configuration error. The variable is left out of the comparison of the
+  web pod's and the build pod's environment (`contract.ENV_PIN_SKIP`), so a ConfigMap that still carries it while the
+  81 template no longer forwards it does not refuse a Job.
+- The policy hash no longer contains the two settings: a remediation that was stopped before the upgrade and is resumed
+  after it plans again from its last scan (say what happens in the report of the implementation).
+
 ## remediations (취약점 조치) — `/api/remediations`, IVAS, version-text fixes + managed overrides (2026-11-11)
 
 A second, independent flow beside the migration: an uploaded Maven project ZIP is built as it is (baseline), scanned by

@@ -302,3 +302,17 @@ def test_env_pin_policy_a_non_string_gives_the_default(value):
     """A damaged `state.json` may carry any JSON value: never an exception, always the default."""
     assert env_pin_policy(value, ENV_PIN_WARN) == ENV_PIN_WARN
     assert env_pin_policy(value) == ENV_PIN_REFUSE
+
+
+def test_removed_approval_setting_never_refuses_a_job(tmp_path: Path) -> None:
+    """v2.1z-ba: `SBMIG_REMEDIATION__REQUIRE_APPROVAL` is gone. A ConfigMap that still carries it reaches the web pod
+    (`envFrom`) but no longer the Job (the 81 template does not forward it): it must not be pinned, so the Worker's
+    comparison finds no difference."""
+    assert "SBMIG_REMEDIATION__REQUIRE_APPROVAL" in ENV_PIN_SKIP
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "default.yml").write_text("x: 1\n", encoding="utf-8")
+    main_env = {"SBMIG_REMEDIATION__REQUIRE_APPROVAL": "true", "SBMIG_BUILD__MVN": "mvn"}
+    worker_env = {"SBMIG_BUILD__MVN": "mvn"}
+    pinned = env_pins(tmp_path, [], main_env)
+    assert "SBMIG_REMEDIATION__REQUIRE_APPROVAL" not in pinned and "SBMIG_BUILD__MVN" in pinned
+    assert compare_env_pins(pinned, env_pins(tmp_path, [], worker_env)) == NO_DIFF

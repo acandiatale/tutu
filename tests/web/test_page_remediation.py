@@ -40,71 +40,24 @@ def test_block_is_fetched_per_run_and_hidden_on_404() -> None:
 
 
 def test_status_labels_counts_and_downloads() -> None:
-    for status, label in (("QUEUED", "대기"), ("RUNNING", "진행 중"), ("AWAITING_APPROVAL", "승인 대기"),
+    for status, label in (("QUEUED", "대기"), ("RUNNING", "진행 중"),
                           ("AWAITING_CONFIRMATION", "업로드 확인 대기"), ("STOPPED", "중지됨"), ("INTERRUPTED", "중단됨"),
                           ("SUCCEEDED", "조치 완료"), ("INCOMPLETE", "일부만 조치됨"), ("FAILED", "실패")):
         assert f"{status}: '{label}'" in SCRIPT, status
     render = _function("renderRemediation")
-    for token in ("c.baseline_findings", "c.final_findings", "c.proposals_applied", "st.pending_approvals", "st.reasons",
+    for token in ("c.baseline_findings", "c.final_findings", "c.proposals_applied", "st.reasons",
                   "'report.md'", "'result.zip'", "'result-verified.zip'", "'빌드 실패본'", "st.delivery.build_ok === false",
                   "st.resume", "rs.note", "st.stale", "st.message_ko || st.message"):
         assert token in render, token
 
 
-def test_one_post_with_every_pending_proposal_and_resume() -> None:
-    """Wave 4 (user, 2026-11-11): checkboxes, ONE button; checked = approved, unchecked = rejected, all in one POST that also
-    resumes (`resume: true`); no approver name."""
-    submit = _function("submitDecisions")
-    assert "remUrl(runId, '/approvals')" in submit and "method: 'POST'" in submit
-    assert submit.count("fetch(") == 1
-    assert "decisions: pending.map((p) =>" in submit                       # every pending proposal, not only the checked ones
-    assert "decision: rem.sel.get(p.id) ? 'approved' : 'rejected'" in submit
-    for field in ("proposal_id: p.id", "proposal_hash: p.proposal_hash", "source_tree_hash: p.source_tree_hash",
-                  "policy_hash: p.policy_hash", "diff: p.diff"):
-        assert field in submit, field
-    assert "resume: true" in submit
-    assert not re.search(r"\bby\b\s*[:,]", submit) and "remed-by" not in PAGE and "승인자" not in PAGE
-    assert "if (rem.busy) return;" in submit                                # no double submit
-    # outcomes: resumed / decisions saved but not resumed / proposals changed
-    for token in ("d.resumed", "d.resume_error", "re.error", "r.status === 409 && d && d.code === 'approval_mismatch'",
-                  "제안이 바뀌었습니다. 목록을 새로 불러왔습니다.", "rem.sel = new Map()"):
-        assert token in submit, token
 
 
-def test_checkbox_list_select_all_and_count() -> None:
-    view = _function("approvalsView")
-    # the button carries the live count (0 is allowed: then nothing is applied and the run goes on)
-    assert "apply.textContent = `선택한 ${n}건 적용`" in view and "'전체 선택'" in view and "'전체 해제'" in view
-    assert "`${n}건 선택 / 전체 ${m}건`" in view
-    row = _function("proposalRow")
-    assert "cb.type = 'checkbox'" in row and "head.htmlFor = id" in row and "el('label', 'prophead')" in row
-    assert "'변경 내용 보기'" in row and "el('details')" in row
-    for code, label in (("direct_version", "pom의 버전 표기 수정"), ("property_version", "property 값 수정"),
-                        ("managed_override", "dependencyManagement에 버전 지정 추가"), ("parent_version", "부모 pom 버전 변경"),
-                        ("bom_version", "BOM 버전 변경"), ("major", "메이저 버전 변경"), ("parent", "부모 pom 변경"),
-                        ("bom", "BOM 변경")):
-        assert f"{code}: '{label}'" in SCRIPT, code
-    assert "RISK_KO" in row and "KIND_KO" in row and "p.evidence" in row and "p.note" in row
-
-
-def test_confirmation_wording_and_focus() -> None:
-    view = _function("approvalsView")
-    for text in ("${n}건을 적용하고 ${m}건은 적용하지 않습니다. 적용하지 않은 제안은 이 작업에서 다시 나오지 않습니다.",
-                 "건 전부 적용하지 않습니다.", "'적용'", "'취소'"):
-        assert text in view, text
-    assert "ok.focus()" in view and "window.confirm" not in SCRIPT and "confirm(" not in view.replace("submitDecisions", "")
-
-
-def test_diff_lines_are_text_nodes() -> None:
-    pre = _function("diffPre")
-    assert "el('span', cls || null, ln)" in pre and "createTextNode('\\n')" in pre
-    assert "'add'" in pre and "'del'" in pre
-    assert "innerHTML" not in pre
 
 
 def test_server_strings_never_go_through_innerHTML() -> None:
-    for name in ("renderRemediation", "approvalsView", "proposalRow", "diffPre", "submitDecisions", "loadRemediation",
-                 "decidedView", "confirmationView", "stoppedView", "goingView", "resumeRow", "postResume"):
+    for name in ("renderRemediation", "loadRemediation", "confirmationView", "stoppedView", "goingView", "resumeRow",
+                 "postResume"):
         body = _function(name)
         assert "innerHTML" not in body and "insertAdjacentHTML" not in body, name
     assert "e.textContent = String(text)" in _function("el")
@@ -140,7 +93,43 @@ def test_no_control_labelled_resume_jargon() -> None:
     assert not re.search(r">\s*재개\s*<", PAGE)
 
 
-def test_rail_note_does_not_say_only_approved_changes_are_made() -> None:
-    # v2.1z-ar: by default every proposal is applied without approval, so the note names no approval
+def test_rail_note_names_no_approval() -> None:
     assert "'취약점 조치 중 — IVAS 검사와 버전 수정을 진행합니다.'" in SCRIPT
     assert "승인된 버전 수정" not in PAGE
+
+
+# ---- v2.1z-ba: the approval step of the remediation is removed
+
+ADMIN = (Path(sbmig.web.__file__).parent / "static" / "admin.html").read_text(encoding="utf-8")
+
+
+def test_no_approval_request_or_list_is_left() -> None:
+    assert "/approvals" not in SCRIPT and "/proposals" not in SCRIPT
+    for gone in ("approvalsView", "decidedView", "submitDecisions", "proposalRow", "groupBox", "rem.sel", "propKey",
+                 "pending_approvals", "KIND_KO", "RISK_KO", "ORIGIN_KO", "class=\"selbar\"", ".selbar", ".pgroup", ".prop ",
+                 "pre.diff", ".confirm {"):
+        assert gone not in PAGE, gone
+    # the word 승인 (remediation approval) is gone from both pages
+    assert "승인" not in PAGE and "승인" not in ADMIN
+
+
+def test_an_old_waiting_state_is_shown_as_ended() -> None:
+    # compared with the literal value: the server-side constant may disappear
+    assert "const LEGACY_WAITING = 'AWAITING_APPROVAL';" in SCRIPT
+    assert "const LEGACY_WAITING_KO = '조치 미완료';" in SCRIPT
+    assert "'이 실행의 취약점 조치는 끝나지 않았습니다. 프로젝트를 다시 올리면 끝까지 진행합니다.'" in SCRIPT
+    assert "[LEGACY_WAITING]: LEGACY_WAITING_KO" in SCRIPT
+    # neutral tone: no class for it
+    assert "LEGACY_WAITING" not in SCRIPT.split("const REM_CLS =", 1)[1].split("};", 1)[0]
+    render = _function("renderRemediation")
+    assert "else if (st.status === LEGACY_WAITING) act.replaceChildren(el('p', 'lead', LEGACY_WAITING_NOTE));" in render
+    assert "if (LEGACY_REASONS.includes(code)) continue;" in render
+    assert "const LEGACY_REASONS = ['pending_approval', 'rejected_proposals'];" in SCRIPT
+    # not active: no polling, no resume control
+    assert "LEGACY_WAITING" not in _function("remActive")
+    # the run card's sub line and 「지난 실행」 add nothing after the migration's outcome
+    assert "LEGACY_WAITING" not in SCRIPT.split("const REM_SHORT =", 1)[1].split("};", 1)[0]
+    # unknown values: the raw value in the neutral tone
+    assert "(REM_KO[st.status] || st.status)" in render and "(REM_CLS[st.status] || '')" in render
+    # the admin page: the same neutral word
+    assert "awaiting_approval: ['', '조치 미완료']" in ADMIN

@@ -1,6 +1,6 @@
 """Override entries in a module's own pom (module_overrides): the company layout, where the modules inherit company
-parent poms and not the project root, gets one proposal per (module pom, management key), applied without approval
-by default and waiting for the owners' choice when approval is switched on; apply / verify per pom; the switched-off plan is the plan made before this increment."""
+parent poms and not the project root, gets one proposal per (module pom, management key), applied like every proposal;
+apply / verify per pom; the switched-off plan is the plan made before this increment."""
 from __future__ import annotations
 
 import types
@@ -13,11 +13,7 @@ from sbmig.remediations import apply as apply_mod
 from sbmig.remediations import graph
 from sbmig.remediations import planner as P
 from sbmig.remediations.models import (
-    AWAITING_APPROVAL,
-    D_APPROVED,
     D_AUTO,
-    D_PENDING,
-    D_REJECTED,
     FAILED,
     INCOMPLETE,
     K_MANAGED_OVERRIDE,
@@ -35,7 +31,6 @@ from sbmig.remediations.models import (
     canonical_json,
     read_json,
     sha256_text,
-    write_json_atomic,
 )
 
 from .fakes import (
@@ -125,7 +120,7 @@ def test_company_layout_one_proposal_per_module_pom(tmp_path):
     props = by_pom(pl)
     assert sorted(props) == ["app-back/pom.xml", "app-boot/pom.xml"]
     for mod, p in (("app-back", props["app-back/pom.xml"]), ("app-boot", props["app-boot/pom.xml"])):
-        assert p.kind == K_MANAGED_OVERRIDE and not p.requires_approval and p.decision == D_AUTO
+        assert p.kind == K_MANAGED_OVERRIDE and p.decision == D_AUTO
         assert p.risks == ["managed_override"] and p.modules == [mod] and p.also_modules == []
         assert [s.module for s in p.sources] == [mod]
         assert f"adds a <dependencyManagement> entry example:t:1.1 to {mod}/pom.xml" in p.note
@@ -136,17 +131,12 @@ def test_company_layout_one_proposal_per_module_pom(tmp_path):
     assert boot.anchor == "</project>" and boot.new.lstrip().startswith("<dependencyManagement>")
 
 
-def test_module_entry_follows_the_approval_rule(tmp_path):
+def test_module_entry_is_applied_like_every_proposal(tmp_path):
     proj = write(tmp_path, company_files())
-    pl = plan(proj, [item(modules=["app-back"])], c=cfg(require_approval=False, always_approve=[]))
+    pl = plan(proj, [item(modules=["app-back"])])
     (p,) = pl.proposals
-    assert not p.requires_approval and p.decision == D_AUTO and not pl.pending()
+    assert p.decision == D_AUTO and pl.to_apply() == [p]
     assert "always needs approval" not in p.note
-    for c in (cfg(always_approve=["managed_override"]), cfg(require_approval=True)):
-        (p,) = plan(proj, [item(modules=["app-back"])], c=c).proposals
-        assert p.requires_approval and p.decision == D_PENDING
-    (p,) = plan(proj, [item(modules=["app-back"])], c=cfg(always_approve=["major"])).proposals
-    assert not p.requires_approval and p.decision == D_AUTO          # 1.0 -> 1.1 does not cross a major
 
 
 def test_existing_entry_in_the_module_pom_uses_its_version_text(tmp_path):
@@ -228,8 +218,10 @@ HEAD_OFF_PLAN = "0f84df2c227e38416ad97e28e042b0d804c19a255d32150c9f54c630a3ac867
 # the same digest and the proposal hashes for a project whose modules all inherit the root (plain jar + classifier
 # item of test_override_variants), default configuration. Re-captured when the default stopped waiting for approval:
 # the earlier digest (8dbb4b82…) differed only in `requires_approval` / `decision`, the approval sentence in the
-# notes and the plan note about waiting; the proposal hashes below did not move.
-HEAD_ROOT_PLAN = "09b2109b3cab1af1555f95339f6d7d5455b2bc5fb5e47d039913263e79771e48"
+# notes and the plan note about waiting; the proposal hashes below did not move. Re-captured again when the approval
+# step was removed: the field `requires_approval` left the proposals; with `requires_approval: false` put back the
+# plan hashes to the previous digest 09b2109b… exactly.
+HEAD_ROOT_PLAN = "14bd4ef566a81e53ff6533c30dd8628c01d804594ce85597482e3a030b26e993"
 HEAD_ROOT_HASHES = ["1286564a1e2c739beec26853d2c913096cb4988936017c319088cdfdf228ded2",
                     "1109bb227d3f9bd2d59adc0f7b5e16eaf19db58ae25eb2aced1495f3cf476e9d"]
 
@@ -272,18 +264,17 @@ def test_policy_hash_only_changes_when_switched_off():
 
 
 # ------------------------------------------------------------------------------------------------- apply / verify
-def test_apply_one_reject_other_and_reapply(tmp_path):
+def test_apply_one_entry_then_both_and_reapply(tmp_path):
     orig = write(tmp_path / "orig", company_files(back_body=DM_SECTION))
     props = by_pom(plan(orig, [item()]))
     back = props["app-back/pom.xml"]
-    back.decision = D_APPROVED
     cand = write(tmp_path / "cand", company_files(back_body=DM_SECTION))
     res = A.apply_proposals(cand, [back])
     assert res.applied == [back.id] and res.changed_files == ["app-back/pom.xml"]
     paths = sorted(company_files())
     assert A.verify_text_only(orig, cand, [back], paths) == []
     assert (cand / "app-boot/pom.xml").read_text() == (orig / "app-boot/pom.xml").read_text()
-    # both approved on a fresh copy: each pom gets its entry; idempotent bytes; never inserted twice
+    # both on a fresh copy: each pom gets its entry; idempotent bytes; never inserted twice
     both = list(props.values())
     one = write(tmp_path / "one", company_files(back_body=DM_SECTION))
     two = write(tmp_path / "two", company_files(back_body=DM_SECTION))
@@ -343,41 +334,13 @@ def _run(state, paths, comps, c):
     return graph.run_remediation(state, paths, c, comps, save=rec.save, journal=rec.journal, stop=rec.stop)
 
 
-def _decide(paths, decisions):
-    data = read_json(paths.plan(1))
-    for p in data["proposals"]:
-        p["decision"] = decisions[p["edits"][0]["pom"]]
-    write_json_atomic(paths.plan(1), data)
-
-
-def test_approve_one_reject_other_through_the_flow(tmp_path):
-    c = make_cfg(always_approve=["managed_override"], max_rounds=1)
-    state, paths = make_run(tmp_path, company_files(back_body=DM_SECTION))
-    before = _model(**{"app-boot": "1.0", "app-back": "1.0"})
-    after = _model(**{"app-boot": "1.0", "app-back": "1.1"})
-    comps = _components([before, after], {"baseline": [scan_result(_finding())], "final-r1": [scan_result(_finding())]})
-    out = _run(state, paths, comps, c)
-    assert out.status == AWAITING_APPROVAL
-    _decide(paths, {"app-back/pom.xml": D_APPROVED, "app-boot/pom.xml": D_REJECTED})
-    boot_before = (paths.accepted / "app-boot/pom.xml").read_text()
-    out = _run(out, paths, comps, c)
-    assert "<artifactId>t</artifactId>" in (paths.accepted / "app-back/pom.xml").read_text()
-    assert (paths.accepted / "app-boot/pom.xml").read_text() == boot_before
-    assert out.status == INCOMPLETE and out.reason == "rejected_proposals", (out.reason, out.message)
-    assert out.rounds[0].committed and out.counts["proposals_rejected"] == 1
-    pl = RoundPlan.from_dict(read_json(paths.plan(1)))
-    rejected = next(p for p in pl.proposals if p.decision == D_REJECTED)
-    assert rejected.edits[0].pom == "app-boot/pom.xml" and rejected.modules == ["app-boot"]
-    assert [s.module for s in rejected.sources] == ["app-boot"]
-
-
 # ------------------------------------------------------------------------------------------------- ineffective entries
 THREE = ("app-boot", "app-back", "app-front")
 
 
-def _flow(tmp_path, models, *, scans=None, items=None, files=None, max_rounds=1, maven=None, decide=None):
-    """plan → AWAITING_APPROVAL → approve every proposal (or `decide`) → resume; returns (state, paths, comps, rec)"""
-    c = make_cfg(always_approve=["managed_override"], max_rounds=max_rounds)
+def _flow(tmp_path, models, *, scans=None, items=None, files=None, max_rounds=1, maven=None):
+    """One run (every proposal applied); returns (state, paths, comps, rec)"""
+    c = make_cfg(max_rounds=max_rounds)
     state, paths = make_run(tmp_path, files or company_files(back_body=DM_SECTION))
     inv = [Inventory(items=x) for x in (items or [[item(modules=list(THREE))]])]
     comps = make_components(scan=FakeScanner(scans or {"baseline": [scan_result(_finding())]}),
@@ -386,12 +349,6 @@ def _flow(tmp_path, models, *, scans=None, items=None, files=None, max_rounds=1,
                             plan=P.plan_round, apply=apply_mod)
     rec = Recorder()
     out = graph.run_remediation(state, paths, c, comps, save=rec.save, journal=rec.journal, stop=rec.stop)
-    assert out.status == AWAITING_APPROVAL, (out.reason, out.message)
-    data = read_json(paths.plan(1))
-    for x in data["proposals"]:
-        x["decision"] = (decide or {}).get(x["edits"][0]["pom"], D_APPROVED)
-    write_json_atomic(paths.plan(1), data)
-    out = graph.run_remediation(out, paths, c, comps, save=rec.save, journal=rec.journal, stop=rec.stop)
     return out, paths, comps, rec
 
 
@@ -410,13 +367,13 @@ def test_one_ineffective_entry_is_dropped_and_the_rest_commits(tmp_path):
     pl = RoundPlan.from_dict(read_json(paths.plan(1)))
     dropped = [x for x in pl.proposals if x.decision == graph.D_INEFFECTIVE]
     assert [x.edits[0].pom for x in dropped] == ["app-boot/pom.xml"]
-    assert sorted(out.rounds[0].applied) == sorted(x.id for x in pl.proposals if x.decision == D_APPROVED)
+    assert sorted(out.rounds[0].applied) == sorted(x.id for x in pl.proposals if x.decision == D_AUTO)
     assert out.counts["proposals_applied"] == 2
     # the entry that had created the section is gone: app-boot's pom is the original byte for byte
     assert (paths.accepted / "app-boot/pom.xml").read_text() == orig["app-boot/pom.xml"]
     # the committed tree equals the two remaining proposals applied alone to the original
     fresh = write(tmp_path / "fresh", orig)
-    A.apply_proposals(fresh, [x for x in pl.proposals if x.decision == D_APPROVED])
+    A.apply_proposals(fresh, [x for x in pl.proposals if x.decision == D_AUTO])
     for rel in orig:
         assert (paths.accepted / rel).read_text() == (fresh / rel).read_text(), rel
     (r,) = [x for x in out.residuals if "did not change the resolved version" in x.detail]
@@ -488,20 +445,15 @@ def test_no_time_for_the_rebuild_fails_and_says_so(tmp_path):
             return super().packaged(project, targets)
 
     maven = StopAfterVerify(models=[_three(), _three(boot="1.0", back="1.1", front="1.1")])
-    c = make_cfg(always_approve=["managed_override"], max_rounds=1)
+    c = make_cfg(max_rounds=1)
     state, paths = make_run(tmp_path, company_files(back_body=DM_SECTION))
     comps = make_components(scan=FakeScanner({"baseline": [scan_result(_finding())]}),
                             inventory=ScriptedInventory([Inventory(items=[item(modules=list(THREE))])]), maven=maven,
                             versions=FakeVersions({"example:t": ["1.0", "1.1"]}), plan=P.plan_round, apply=apply_mod)
     rec = Recorder()
     rec_box["rec"] = rec
+    rec_box["armed"] = True                      # the stop arrives with the first packaged-jar listing (the candidate)
     out = graph.run_remediation(state, paths, c, comps, save=rec.save, journal=rec.journal, stop=rec.stop)
-    data = read_json(paths.plan(1))
-    for x in data["proposals"]:
-        x["decision"] = D_APPROVED
-    write_json_atomic(paths.plan(1), data)
-    rec_box["armed"] = True
-    out = graph.run_remediation(out, paths, c, comps, save=rec.save, journal=rec.journal, stop=rec.stop)
     assert out.status == FAILED and out.reason == "resolution_mismatch"
     assert "were not removed and rebuilt: a stop was requested or the time budget is used up" in out.message
     assert len(maven.package_calls) == 2

@@ -106,7 +106,6 @@ spec:
             # 취약점 조치(2026-11-11): 이관이 BUILD SUCCESS 로 끝나면 이 파드에서 이어 돈다(README §6). 스위치는 sbmig-env 에 켜져 있다 — 웹 파드와
             # 같은 값이 와야 Worker 의 환경 대조를 통과한다
             - {name: SBMIG_REMEDIATION__AFTER_MIGRATION, valueFrom: {configMapKeyRef: {name: sbmig-env, key: SBMIG_REMEDIATION__AFTER_MIGRATION, optional: true}}}
-            - {name: SBMIG_REMEDIATION__REQUIRE_APPROVAL, valueFrom: {configMapKeyRef: {name: sbmig-env, key: SBMIG_REMEDIATION__REQUIRE_APPROVAL, optional: true}}}
             - {name: SBMIG_REMEDIATION__MODULE_OVERRIDES, valueFrom: {configMapKeyRef: {name: sbmig-env, key: SBMIG_REMEDIATION__MODULE_OVERRIDES, optional: true}}}
             - {name: SBMIG_REMEDIATION__FAILED_CANDIDATE, valueFrom: {configMapKeyRef: {name: sbmig-env, key: SBMIG_REMEDIATION__FAILED_CANDIDATE, optional: true}}}
             - {name: SBMIG_REMEDIATION__AFTER_FAILED_BUILD, valueFrom: {configMapKeyRef: {name: sbmig-env, key: SBMIG_REMEDIATION__AFTER_FAILED_BUILD, optional: true}}}

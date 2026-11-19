@@ -9,16 +9,21 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from sbmig.core.config import PACKAGE_ROOT, load_config
-from sbmig.remediations import planner as planner_mod
 from sbmig.remediations import service as service_mod
 from sbmig.remediations.api import create_router
-from sbmig.remediations.models import AWAITING_APPROVAL, D_APPROVED, SUCCEEDED
+from sbmig.remediations.models import (
+    LEGACY_APPROVAL_MESSAGE,
+    LEGACY_APPROVAL_MESSAGE_KO,
+    LEGACY_AWAITING_APPROVAL,
+    STOPPED,
+    SUCCEEDED,
+)
 
 from .fakes import DEFAULT_FILES, FakeMaven, deterministic_zip
-from .test_service import RUN_ID, WAIT, Factory, FakeRunManager, Gate, _decision, chained, job_manager, manager, one_fix
+from .test_service import RUN_ID, WAIT, Factory, FakeRunManager, Gate, _legacy_run, chained, job_manager, manager, one_fix
 
 STATUS_KEYS = {"id", "name", "status", "reason", "reasons", "message", "node", "next_node", "round", "counts", "created",
-               "updated", "stop_requested", "pending_approvals", "delivery", "files", "links"}
+               "updated", "stop_requested", "delivery", "files", "links"}
 
 
 @pytest.fixture(scope="module")
@@ -141,43 +146,47 @@ def test_list_status_ids(tmp_path, base_cfg):
     assert c.get(f"/api/remediations/{a}").json()["links"]["self"] == f"/api/remediations/{a}"
 
 
-def test_result_proposals_approvals_resume(tmp_path, base_cfg):
-    mgr = manager(tmp_path, base_cfg, one_fix(cfg=base_cfg))
+def test_result_resume_and_the_removed_approval_routes(tmp_path, base_cfg):
+    gate = Gate()
+    mgr = manager(tmp_path, base_cfg, one_fix(cfg=base_cfg, maven=FakeMaven(on_package=gate)))
     c = make_client(mgr)
-    rid = started(c, mgr)
+    rid = started(c, mgr, wait=False)
+    assert gate.entered.wait(WAIT)
+    assert c.post(f"/api/remediations/{rid}/stop").status_code == 202
+    gate.release.set()
+    assert mgr.wait(rid, WAIT)
     st = c.get(f"/api/remediations/{rid}").json()
-    assert st["status"] == AWAITING_APPROVAL and st["pending_approvals"] == 1
+    assert st["status"] == STOPPED and "pending_approvals" not in st
+    assert "proposals" not in st["links"] and "approvals" not in st["links"]
     r = c.get(f"/api/remediations/{rid}/result")
-    assert r.status_code == 409 and r.json()["code"] == "not_finished" and r.json()["status"] == AWAITING_APPROVAL
-
-    props = c.get(f"/api/remediations/{rid}/proposals").json()
-    assert set(props) >= {"status", "round", "source_tree_hash", "policy_hash", "proposals", "residuals"}
-    assert props["policy_hash"] == planner_mod.policy_hash(base_cfg)
-    p = props["proposals"][0]
-    assert {"diff", "proposal_hash", "source_tree_hash", "policy_hash", "decision"} <= set(p)
-    assert "note_ko" in p and isinstance(p["note_ko"], str)              # Korean display text beside the stored note
-    assert c.get(f"/api/remediations/{rid}/proposals?all=1").json()["proposals"][0]["id"] == p["id"]
-
-    r = c.post(f"/api/remediations/{rid}/resume")
-    assert r.status_code == 409 and r.json()["code"] == "state_conflict"
-    dec = {"proposal_id": p["id"], "decision": D_APPROVED, "proposal_hash": p["proposal_hash"],
-           "source_tree_hash": p["source_tree_hash"], "policy_hash": p["policy_hash"], "diff": p["diff"], "comment": "c"}
-    r = c.post(f"/api/remediations/{rid}/approvals", json={"by": "alice", "decisions": [{**dec, "policy_hash": "x"}]})
-    assert r.status_code == 409 and r.json()["code"] == "approval_mismatch" and "policy_hash" in r.json()["fields"]
-    assert c.post(f"/api/remediations/{rid}/approvals", content=b"{not json").status_code == 400
-    assert c.post(f"/api/remediations/{rid}/approvals", json={"decisions": "x"}).status_code == 400
-    assert c.post(f"/api/remediations/{rid}/approvals", json={"decisions": [{"decision": "approved"}]}).status_code == 400
-    r = c.post(f"/api/remediations/{rid}/approvals", json={"by": "alice", "decisions": [dec]})
-    assert r.status_code == 200 and r.json() == {"accepted": [p["id"]], "pending": 0}
+    assert r.status_code == 409 and r.json()["code"] == "not_finished" and r.json()["status"] == STOPPED
+    # the approval step is gone: its two routes answer like any unknown route
+    assert c.get(f"/api/remediations/{rid}/proposals").status_code == 404
+    assert c.get(f"/api/remediations/{rid}/proposals?all=1").status_code == 404
+    assert c.post(f"/api/remediations/{rid}/approvals", json={"decisions": [], "resume": True}).status_code == 404
 
     r = c.post(f"/api/remediations/{rid}/resume", json={})
     assert r.status_code == 202 and STATUS_KEYS <= set(r.json())
     assert mgr.wait(rid, WAIT)
     r = c.get(f"/api/remediations/{rid}/result")
     assert r.status_code == 200 and r.json()["state"]["status"] == SUCCEEDED
-    r = c.post(f"/api/remediations/{rid}/approvals", json={"by": "bob", "decisions": [dec]})
-    assert r.status_code == 409 and r.json()["code"] == "state_conflict"
     assert c.post(f"/api/remediations/{rid}/resume").status_code == 409
+
+
+def test_resume_of_a_state_saved_awaiting_approval_is_409_with_the_reason(tmp_path, base_cfg):
+    rid, paths = _legacy_run(tmp_path, base_cfg)
+    before = paths.state.read_bytes()
+    c = make_client(manager(tmp_path, base_cfg))
+    st = c.get(f"/api/remediations/{rid}").json()
+    assert st["status"] == LEGACY_AWAITING_APPROVAL and st["message_ko"] == LEGACY_APPROVAL_MESSAGE_KO
+    assert st["resume"]["available"] is False
+    r = c.post(f"/api/remediations/{rid}/resume", json={})
+    assert r.status_code == 409
+    body = r.json()
+    assert body["code"] == "state_conflict" and LEGACY_APPROVAL_MESSAGE in body["error"]
+    assert body["message_ko"] == LEGACY_APPROVAL_MESSAGE_KO and body["status"] == LEGACY_AWAITING_APPROVAL
+    assert c.get(f"/api/remediations/{rid}/files/plan-r1.json").status_code == 200       # its files stay downloadable
+    assert paths.state.read_bytes() == before
 
 
 def test_stop_and_delete(tmp_path, base_cfg):
@@ -200,7 +209,7 @@ def test_stop_and_delete(tmp_path, base_cfg):
 
 
 def test_files_whitelist(tmp_path, base_cfg):
-    mgr = manager(tmp_path, base_cfg, one_fix(decision="auto", cfg=base_cfg))
+    mgr = manager(tmp_path, base_cfg, one_fix(cfg=base_cfg))
     c = make_client(mgr)
     rid = started(c, mgr)
     r = c.get(f"/api/remediations/{rid}/files/report.md")
@@ -280,9 +289,9 @@ def test_job_mode_routes(tmp_path, base_cfg):
     body = c.get("/api/remediations").json()
     assert body["total"] == 1 and body["items"][0]["kind"] == "chained" and body["items"][0]["run_id"] == RUN_ID
     st = c.get(f"/api/remediations/{RUN_ID}").json()
-    assert STATUS_KEYS <= set(st) and st["kind"] == "chained" and st["status"] == AWAITING_APPROVAL
-    assert st["status_ko"] == "승인을 기다리고 있습니다." and isinstance(st["message_ko"], str)
-    assert st["resume"]["available"] is False and "결정하지 않은 제안" in st["resume"]["note"]
+    assert STATUS_KEYS <= set(st) and st["kind"] == "chained" and st["status"] == STOPPED
+    assert st["status_ko"] == "조치를 멈췄습니다." and isinstance(st["message_ko"], str)
+    assert st["resume"] == {"available": True, "note": ""}
     assert str(tmp_path) not in c.get(f"/api/remediations/{RUN_ID}").text
     assert c.get(f"/api/remediations/{RUN_ID}/files/plan-r1.json").status_code == 200
     rm.withheld.add(RUN_ID)
@@ -290,10 +299,7 @@ def test_job_mode_routes(tmp_path, base_cfg):
     assert r.status_code == 409 and r.json()["code"] == "withheld"
     assert c.get(f"/api/remediations/{RUN_ID}/files/journal.jsonl").status_code == 200
     rm.withheld.clear()
-    p = c.get(f"/api/remediations/{RUN_ID}/proposals").json()["proposals"][0]
-    dec = _decision(p).to_dict()
-    r = c.post(f"/api/remediations/{RUN_ID}/approvals", json={"by": "alice", "decisions": [dec]})
-    assert r.status_code == 200 and r.json() == {"accepted": [p["id"]], "pending": 0}
+    assert c.get(f"/api/remediations/{RUN_ID}/proposals").status_code == 404
     r = c.post(f"/api/remediations/{RUN_ID}/resume", json={})
     assert r.status_code == 202 and r.json()["resume_job"]["state"] == "queued" and rm.resumed == [RUN_ID]
     r = c.post(f"/api/remediations/{RUN_ID}/resume", json={})              # one resume at a time
@@ -322,39 +328,3 @@ def test_web_app_in_local_job_mode_runs_no_remediation(tmp_path, monkeypatch):
         assert r.status_code == 409 and r.json()["code"] == "not_available"
         assert c.get("/api/remediations/readiness").json()["runs_in"] == "build_pod"
     assert factory.comps is None
-
-
-# ---------------------------------------------------------------------------- wave 4: approvals + resume in one request
-def test_approvals_with_resume_true_resume_and_a_refusal_keeps_the_decisions(tmp_path, base_cfg):
-    from sbmig.remediations.models import RoundPlan, StateConflict, read_json
-    paths = chained(tmp_path, base_cfg)
-    rm = FakeRunManager(tmp_path / "out")
-    rm.refuse = StateConflict("the web server is shutting down")
-    mgr = job_manager(tmp_path, base_cfg, rm=rm)
-    c = make_client(mgr)
-    p = c.get(f"/api/remediations/{RUN_ID}/proposals").json()["proposals"][0]
-    dec = _decision(p).to_dict()
-    r = c.post(f"/api/remediations/{RUN_ID}/approvals", json={"decisions": [dec], "resume": True})      # no "by"
-    assert r.status_code == 200
-    body = r.json()
-    assert body["accepted"] == [p["id"]] and body["pending"] == 0 and body["resumed"] is False
-    assert body["resume_error"] == {"code": "state_conflict", "error": "the web server is shutting down"}
-    assert RoundPlan.from_dict(read_json(paths.plan(1))).proposals[0].decision == D_APPROVED     # decisions stay written
-    rm.refuse = None
-    r = c.post(f"/api/remediations/{RUN_ID}/resume", json={})
-    assert r.status_code == 202 and rm.resumed == [RUN_ID]
-
-
-def test_approvals_with_resume_true_dispatches(tmp_path, base_cfg):
-    chained(tmp_path, base_cfg)
-    rm = FakeRunManager(tmp_path / "out")
-    mgr = job_manager(tmp_path, base_cfg, rm=rm)
-    c = make_client(mgr)
-    p = c.get(f"/api/remediations/{RUN_ID}/proposals").json()["proposals"][0]
-    r = c.post(f"/api/remediations/{RUN_ID}/approvals", json={"by": "", "decisions": [_decision(p).to_dict()], "resume": True})
-    assert r.status_code == 200 and r.json() == {"accepted": [p["id"]], "pending": 0, "resumed": True, "resume_error": None}
-    assert rm.resumed == [RUN_ID]
-    st = c.get(f"/api/remediations/{RUN_ID}").json()
-    assert st["resume_job"]["state"] == "queued" and st["resume"]["available"] is False
-    r = c.post(f"/api/remediations/{RUN_ID}/approvals", json={"decisions": [_decision(p).to_dict()], "resume": "yes"})
-    assert r.status_code == 400

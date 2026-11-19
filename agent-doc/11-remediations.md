@@ -30,12 +30,12 @@
   없음: 빌드 오류를 고친 뒤 바뀐 버전으로 한 번 빌드한다. 바꾼 것이 없거나 후보가 빌드되면 보통처럼 끝난다(`baseline_build_failed` 없음). 말은 12.
 - 조치의 결과는 이관의 성공 판정·종료 코드·보고서 판정을 **바꾸지 않는다**. `SBMIG-RESULT … remediation=<상태|skipped>`.
   IVAS 세 값이나 Maven 준비가 없으면 건너뛰고 저널에 `remediation_skipped`(이름만).
-- 기본 설정(승인 없음, 3절)이면 조치가 이관과 같은 파드에서 끝난다. 빌드 파드는 사람을 기다리지 못해
-  `AWAITING_CONFIRMATION`, (승인을 켠 때) `AWAITING_APPROVAL`이면 상태를 저장하고 끝난다. Job 모드의 resume =
+- 조치는 누구에게도 묻지 않고 변경을 적용해 이관과 같은 파드에서 끝까지 간다. 빌드 파드는 사람을 기다리지 못해
+  `AWAITING_CONFIRMATION`이면 상태를 저장하고 끝난다. Job 모드의 resume =
   **새 빌드 파드**(같은 Job 틀·실행 폴더, Worker 동작 `remediation-resume`→`chain.resume`), 업로드와 같은 FIFO 줄·자리.
   줄에 서기 전에 앞 시도의 `remediation-job-status.json`을 지우고 시도 번호를 Job env `SBMIG_JOB_ATTEMPT`로(Worker가 모든 상태 파일에 적음).
   확인 대기면 웹 파드가 `confirm` 등을 Job 생성 **전에** `state.json`에 쓴다.
-- 웹 파드는 상태·제안·승인·파일만 맡는다. 단독 업로드는 `in-process` 모드만(5절, 폴더 `<웹 out>/_remediations/<id>/`).
+- 웹 파드는 상태·파일·재개만 맡는다. 단독 업로드는 `in-process` 모드만(5절, 폴더 `<웹 out>/_remediations/<id>/`).
 - Job 파드의 IVAS 세 값은 Secret `sbmig-llm`에서(81 틀 `secretKeyRef`, optional), 환경 대조 지문에 없다. `IVAS_USER_ID`도 비밀로 지운다(`SECRET_NAMES`).
 - Maven 로컬 저장소는 그 파드의 자리 저장소(`repository-slot<k>`). `<local repo>-remediation`은 in-process의 단독 업로드와 이어 돈 조치의 재개에.
 - IVAS 로그인은 파드마다 해도 된다.
@@ -50,7 +50,7 @@
   `chain.run_only`가 올린 ZIP 바이트(폴더는 그대로 묶어)를 접수에 넣는다. 올린 그대로 빌드되지 않으면 검사 전에 FAILED `baseline_build_failed`.
 - `remediation.after_migration`·`remediation.trusted_projects`는 묻지 않는다. IVAS 세 값·Maven 준비가 없으면 시작하지 않는다(exit 3,
   플래그 `remediation:not-ready`, 저널 `remediation_skipped`에 이름만).
-- 폴더·상태·승인·재개는 1.1과 같다. 결과 줄 `SBMIG-RESULT … flow=remediation … remediation=<상태>`, 종료 코드 0 = SUCCEEDED, 2 = 그 밖의
+- 폴더·상태·재개는 1.1과 같다. 결과 줄 `SBMIG-RESULT … flow=remediation … remediation=<상태>`, 종료 코드 0 = SUCCEEDED, 2 = 그 밖의
   저장 상태, 3 = 시작 못 함. `report.md`는 짧다(이관 안 함 한 줄 + 조치 절 + `remediation/report.md` 경로). `--stop-after`는 못 쓴다.
 
 절대 규칙(회사 결정):
@@ -88,8 +88,8 @@
 | `baseline_build` | Maven 준비 확인(없으면 FAILED `not_ready`), 실행 경계 검사(refuse 하나라도→FAILED `execution_boundary_refused`), 사본에서 `mvn clean package -Dmaven.test.skip=true` | 실패→FAILED `baseline_build_failed`(견디는 방식이면 기록하고 계속, 1.1) |
 | `baseline_scan` | 원본 ZIP sha256 재확인, IVAS 검사(라벨 `baseline`) | 조치 대상 0건(완전한 검사)→원본 바이트 사본이 전달 ZIP, `evaluate`. 미완료→INCOMPLETE `scan_incomplete`. 업로드 불확실→AWAITING_CONFIRMATION |
 | `inventory` | 빌드 대상마다 `dependency:tree`, 발견 항목→`Inventory`(출처 판정) | 해석·인벤토리 불완전→INCOMPLETE `manual_review` |
-| `plan` | 제안·잔여, 승인 부류, 해시 세 개. 트리·정책 해시가 바뀐 옛 계획은 `rounds/<n>/plan.stale.json`으로 두고 새로 만든다 | 승인 대기 제안(승인을 켠 때)→AWAITING_APPROVAL. 적용할 것 없음→`evaluate` |
-| `apply` | `accepted/`→후보 사본, 자동+승인 제안 적용, `rounds/<n>/candidate.patch`, "계획한 것만 바뀌었나" 검사 | 위반→FAILED `text_only_violation` |
+| `plan` | 제안·잔여, 위험 부류, 해시 세 개. 트리·정책 해시가 바뀐 옛 계획은 `rounds/<n>/plan.stale.json`으로 두고 새로 만든다 | 적용할 것 없음→`evaluate` |
+| `apply` | `accepted/`→후보 사본, 계획의 제안 전부 적용, `rounds/<n>/candidate.patch`, "계획한 것만 바뀌었나" 검사 | 위반→FAILED `text_only_violation` |
 | `build` | 후보 빌드, 다시 해석, 산출물 안 jar 목록, "해석 결과 = 계획" 검사(적용 범위), 통과하면 `accepted/`로 확정. `candidate.ready.json`이 없으면 `apply`로 | 빌드 실패→(견디는 방식은 먼저 1.1의 비교) FAILED `candidate_build_failed`(2절 "실패한 후보"), 불일치→FAILED `resolution_mismatch` |
 | `freeze_delivery` | `accepted/`로 결정적인 전달 ZIP(`delivery/result.zip`) | — |
 | `rescan` | 전달 ZIP sha256 재확인, 같은 바이트를 IVAS 검사(라벨 `final-r<n>`) | 미완료→INCOMPLETE, sha 다름→FAILED `zip_hash_mismatch`, 불확실→AWAITING_CONFIRMATION |
@@ -109,7 +109,7 @@ OT 조치일 경과, PC 패치 완료, IG 조치 예외. `remediation.ignore_act
 `*_ignored` 따로). 빈·모르는 코드는 조치 대상, 한 번 기록(저널 `ivas_action_unknown`).
 
 **SUCCEEDED 조건**(전부): 기준 빌드 통과(견디는 방식의 예외는 1.1), 적용한 라운드는 모두 빌드·검증·확정, 최종 검사 완전, 전달 ZIP sha256 = 최종 검사 ZIP sha256,
-전달 ZIP의 `build_ok`(실패한 수정본 아님)·`scanned`(완전한 최종 검사가 이 바이트를 봄) 참, pending·rejected 제안 없음, 잔여(수동 검토·출처 불명·
+전달 ZIP의 `build_ok`(실패한 수정본 아님)·`scanned`(완전한 최종 검사가 이 바이트를 봄) 참, 잔여(수동 검토·출처 불명·
 deny·후보 없음·적용 안 된 제안) 없음, 최종 검사에 조치 대상 없음. 아니면 INCOMPLETE / FAILED(이유는 `state.reasons`; `build_ok`·`build_tolerated` 거짓 →
 `candidate_build_failed`, `scanned` 거짓→`zip_hash_mismatch` 또는 `scan_incomplete`).
 
@@ -122,15 +122,12 @@ deny·후보 없음·적용 안 된 제안) 없음, 최종 검사에 조치 대�
   `result.zip`, 없으면 전달 ZIP 없음.
 - 어느 값이든 `text_only_violation`·`resolution_mismatch` 후보는 결과 ZIP에 넣지 않는다.
 
-## 3. 승인 규칙
+## 3. 제안 규칙
 
-기본 설정(7절)은 **모든 제안을 승인 없이 적용**한다. 제안은 `require_approval`이 true 이거나 위험 부류(`risks`) 하나가 `always_approve`에 있을 때만 기다린다(`decision` `pending`, 아니면 `auto`). 부류: `major`(메이저 변경),
-`parent`(`<parent><version>`), `bom`(가져온 BOM 버전), `managed_override`(넣는 관리 항목).
-사람 대신 남는 안전장치: 격리된 후보, 후보 빌드(깨는 변경 묶음은 통째로 FAILED `candidate_build_failed`),
-효과 없는 override 항목 제거, 전달 ZIP 재검사. 위험 부류가 있는 적용 변경은 보고서의 「주의」 칸과 할 일에 나온다(12).
-
-승인 켜기: 모든 제안 = ConfigMap `sbmig-env`의 `SBMIG_REMEDIATION__REQUIRE_APPROVAL: "true"`(웹 파드 재시작). 부류만 = 이미지에 굽는
-회사 yml의 `remediation.always_approve`. `always_approve`는 env 줄로 넣지 않는다(81 틀에 없어 Job이 거절된다).
+계획의 제안은 모두 누구에게도 묻지 않고 적용한다(`decision` `auto`; 넣어도 효과가 없어 다시 뺀 override는 `ineffective`). 위험 부류
+(`risks`): `major`(메이저 변경), `parent`(`<parent><version>`), `bom`(가져온 BOM 버전), `managed_override`(넣는 관리 항목) — 보고서의
+「주의」 칸과 할 일에 사실로 나온다(12). 사람 대신 남는 안전장치: 격리된 후보, 후보 빌드(깨는 변경 묶음은 통째로 FAILED
+`candidate_build_failed`), 효과 없는 override 항목 제거, 전달 ZIP 재검사.
 부모·BOM 버전 변경은 그 부모·BOM 자체가 `remediation.policy.pins`에 있을 때만 제안된다(`parent_version`/`bom_version`, override 아님).
 
 **관리 버전 override**: `transitive`·`parent_managed`·`bom_managed` 항목은 (관리자 pin이 없으면) 직접 의존성과 같은 규칙(1절의 근거,
@@ -143,18 +140,21 @@ deny·후보 없음·적용 안 된 제안) 없음, 최종 검사에 조치 대�
 `remediation.policy.deny`에 걸린 것, `remediation.policy.allow_major`가 false 일 때의 메이저. 잘못된 버전을 막는 규칙(공유 property는
 모든 아티팩트에 목표 버전이 있을 때만, 다른 메이저는 힌트가 그 메이저일 때만, 날짜 버전 아님, 이미 만족한 힌트면 안 올림)은 12의 5절.
 
-승인 요청은 **제안 해시·원본 트리 해시·정책 해시·diff**가 저장된 제안과 같고, 지금의 `accepted/`와 정책에 맞고(낡지 않음), 아직
-`pending` 일 때만 받는다. 하나라도 다르면 요청 전체가 409 `approval_mismatch`(+ `fields`), 아무것도 쓰지 않는다.
-정책 해시 = `remediation.policy` 전부 + `require_approval` + `always_approve` + `failed_candidate` + `ignore_actions` + 사내 g:a(+ 프레임워크 패턴, 12) + false 일 때의 `module_overrides`. 하나만 바꿔도 열린 제안은
-모두 무효, 계획을 다시 만든다(`ivas_summary_check`는 안 들어감). 제안 해시는 edit 전부(`op`·`anchor`·`override` 포함)를 덮는다. 거절한 (g:a, 버전)은 그 작업에서 다시 제안하지 않는다(잔여 `rejected_proposals`, 다음 실행은 다시 제안). `by`는 비워도 된다. 화면의 승인은 체크박스 목록과
-`선택한 N건 적용`: 체크 = approved, 안 함 = rejected, 이어서 재개(`"resume": true`). 정책이 바뀐 뒤 누른 실행(`policy_changed`)도 같다(다시 기다리지 않음).
+정책 해시 = `remediation.policy` 전부 + `failed_candidate` + `ignore_actions` + 사내 g:a(+ 프레임워크 패턴, 12) + false 일 때의
+`module_overrides`(`ivas_summary_check`는 안 들어감). 바뀌면 열린 계획을 마지막 검사로 다시 만든다. 제안 해시는 edit 전부(`op`·`anchor`·`override`
+포함)를 덮는다.
+
+**승인 단계는 없다.** yml의 `remediation:` 아래 `require_approval`·`always_approve`, 환경 변수 `SBMIG_REMEDIATION__REQUIRE_APPROVAL`은 오류가
+아니라 각각 WARNING 한 줄로 무시된다(`config: remediation.require_approval=… is ignored: the approval step of the vulnerability remediation
+was removed (every proposal is applied without waiting) — remove it`, `config._warn_removed_keys`; 그 변수는 환경 대조에서도 빠진다). 옛 버전이
+승인 대기로 저장한 조치는 끝난 것으로 보인다(목록에는 표시 없음, 열면 「조치 미완료」와 「이 실행의 취약점 조치는 끝나지 않았습니다. 프로젝트를 다시
+올리면 끝까지 진행합니다.」; 화면에 승인이라는 말은 없다; 파일은 그대로 받음, resume은 409): 프로젝트를 다시 올린다. 클러스터 정리는 `docs/RUNBOOK.md` §6.
 
 ## 4. 상태와 운영자가 할 일
 
 | 상태 | 뜻 | 할 일 |
 |---|---|---|
 | `QUEUED`/`RUNNING` | 대기 / 실행 중(단독 업로드는 한 번에 한 건) | 기다린다. 멈추려면 stop |
-| `AWAITING_APPROVAL` | 승인 대기 제안이 있다(승인을 켠 때만) | 화면의 체크박스 + 적용 버튼, 또는 `GET …/proposals`→`POST …/approvals`(3절) |
 | `AWAITING_CONFIRMATION` | 업로드를 보냈는데 결과를 모른다 | IVAS 화면에 그 프로젝트(`<앞머리>-<작업 ID>-<라벨>`)의 분석이 있나 본다. 없으면 resume `{"confirm": "reupload"}`, 있으면 `{"confirm": "receipt", "label", "project_id", "analysis_id"}` |
 | `STOPPED` | 중지 요청을 경계에서 처리(원격 IVAS 분석은 취소 안 됨) | resume |
 | `INTERRUPTED` | 서버가 실행 중에 내려갔다 | 상태를 보고 resume |
@@ -163,7 +163,7 @@ deny·후보 없음·적용 안 된 제안) 없음, 최종 검사에 조치 대�
 | `FAILED` | 빌드·검증 실패, 경계 거부, 준비 안 됨, 내부 오류 | 이유 코드대로(6절). `delivery.build_ok` false면 `result.zip`은 실패한 수정본(배포 금지) |
 
 이유 코드(문자열 그대로가 API 계약): `baseline_build_failed`, `candidate_build_failed`, `scan_incomplete`, `upload_uncertain`, `zip_hash_mismatch`,
-`text_only_violation`, `resolution_mismatch`, `execution_boundary_refused`, `not_ready`, `pending_approval`, `rejected_proposals`,
+`text_only_violation`, `resolution_mismatch`, `execution_boundary_refused`, `not_ready`,
 `residual_findings`, `manual_review`, `no_candidate_version`, `rounds_exhausted`, `stop_requested`, `internal_error`, `policy_denied`,
 `unknown_provenance`, `stale_location`, `inventory_incomplete`, `inhouse_artifact`(12). 정의는 `sbmig/remediations/models.py`(이관에 이어 돈 조치만 `chain_budget`, chain.py).
 
@@ -174,10 +174,8 @@ deny·후보 없음·적용 안 된 제안) 없음, 최종 검사에 조치 대�
 | `POST /api/remediations?name=<file.zip>` (본문 = ZIP) | `in-process` 모드만: 202 `{id, status, url}` / 400 접수 거부(코드) / 413 크기 초과 / 503 `not_ready` + `missing`. Job 모드는 409 `not_available` |
 | `GET /api/remediations?page=&size=` | 목록(최신 먼저) |
 | `GET /api/remediations/readiness` | `{ready, missing}`(이름만) |
-| `GET /api/remediations/<id>` | 상태 dict(status, reason, reasons, node, next_node, round, counts, pending_approvals, delivery `{sha256, size, round, build_ok, scanned}`, files, links …) |
+| `GET /api/remediations/<id>` | 상태 dict(status, reason, reasons, node, next_node, round, counts, delivery `{sha256, size, round, build_ok, scanned}`, files, links …) |
 | `GET /api/remediations/<id>/result` | 끝 상태면 report.json(`delivery`, `verified_delivery` 포함), 아니면 409 `not_finished` |
-| `GET /api/remediations/<id>/proposals` | 지금 라운드의 제안(diff, 해시 세 개, 결정)과 잔여. `?all=1`은 모든 라운드 |
-| `POST /api/remediations/<id>/approvals` | 결정 목록→`{accepted, pending}` / 409 `approval_mismatch` / 409 `state_conflict`. `"resume": true`면 이어 재개, 답에 `resumed` 또는 `resume_error`(결정은 남음) |
 | `POST /api/remediations/<id>/resume` | 재개(확인 대기면 `confirm` 필수). Job 모드의 이어 돈 조치는 새 빌드 파드 |
 | `POST /api/remediations/<id>/stop` | 다음 경계에서 멈춤 |
 | `GET /api/remediations/<id>/files/<name>` | 정해진 파일만: 보고서 두 개, result.zip, source.zip, manifest.json, journal.jsonl, remediation.log, delivery.json, `result-verified.zip`(앞 라운드의 검증된 ZIP, 없으면 404), `plan-r<n>.json`, `candidate-r<n>.patch`, `build-r<n>.log`, baseline-build.log, `scan-<label>.json` |
@@ -199,7 +197,6 @@ deny·후보 없음·적용 안 된 제안) 없음, 최종 검사에 조치 대�
    `duplicate_result`, `summary_mismatch`, `unsupported_sw`, `zip_hash_mismatch`, `id_mismatch`, `http_error`, `stop_requested`), `findings`, `counts`, `notes`.
 5. **`rounds/<n>/`** — `before.json`(해석 결과), `inventory.json`(항목별 `origin`, `location`, `reason`), `plan.json`(제안·잔여), `apply.json`
    (적용·건너뜀), `candidate.patch`, `resolved.json`(후보 해석 결과).
-6. **`approvals.jsonl`** — 승인·거절 기록.
 
 자주 보는 경우: 이관 빌드가 실패했는데 조치가 돌았다→사내 프레임워크 실행이면 정상(1.1, 끄려면 `never`). `not_ready`→readiness의 `missing`(`remediation.trusted_projects`, IVAS 세 값, JDK 21, Maven, settings.xml, 승인된 저장소 호스트). `execution_boundary_refused` →
 `state.boundary`의 `code`(`project_maven_config`, `maven_extensions`, `maven_wrapper`, `symlink`, `foreign_repository`,
@@ -218,8 +215,6 @@ deny·후보 없음·적용 안 된 제안) 없음, 최종 검사에 조치 대�
 | `after_migration` | 이관에 이어 같은 빌드 파드에서 조치를 돌릴지(기본값과 매니페스트 값은 1.1) |
 | `after_failed_build` | `framework`(기본, 1.1) / `never` = 빌드가 실패한 실행은 잇지 않음 |
 | `trusted_projects` | (in-process 단독 업로드만) Maven이 올라온 프로젝트의 플러그인을 돌리므로 운영자가 true로 바꿔야 접수(기본 false) |
-| `require_approval` | false(기본) = `always_approve` 부류만 승인 대기, true = 모든 제안 |
-| `always_approve` | 승인을 기다릴 부류(기본 `[]` = 없음; major, parent, bom, managed_override) |
 | `max_rounds` | 계획→적용→빌드→재검사 반복(기본 3) |
 | `failed_candidate` | 후보 빌드 실패: `include`(기본, 실패한 수정본도 결과 ZIP) / `discard`. 2절 |
 | `ignore_actions` | 계획에서 뺄 IVAS 조치 코드(2절, 정책 해시에 들어감) |

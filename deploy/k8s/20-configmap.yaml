@@ -130,7 +130,6 @@ data:
   #    여기(sbmig-env)에 두는 까닭: 웹 파드(40, envFrom)와 Job 파드(81, 아래 키 줄)가 같은 값을 받아야 Worker 의 환경 대조를 통과한다
   #    (한쪽에만 있으면 그 Job 이 refuse 로 멈춘다). 끄려면 "false" 로 바꾸고 웹 파드를 재시작한다 — 줄을 지워도 된다(코드 기본값 false)
   SBMIG_REMEDIATION__AFTER_MIGRATION: "true"
-  # SBMIG_REMEDIATION__REQUIRE_APPROVAL: "false"     # true = 모든 제안이 사람 승인을 기다린다(기본 false: 모두 승인 없이 적용, 바꾸면 웹 파드 재시작)
   # SBMIG_REMEDIATION__MODULE_OVERRIDES: "true"   # false = 모듈 pom에 버전 지정을 넣는 제안을 만들지 않는다(직접 확인 항목으로 남긴다)
   # SBMIG_REMEDIATION__FAILED_CANDIDATE: "include"   # 빌드가 실패한 수정본도 result.zip 으로 낸다 | discard = 내지 않는다
   # SBMIG_REMEDIATION__AFTER_FAILED_BUILD: "framework"   # 사내 프레임워크 프로젝트는 빌드가 실패해도 조치한다 | never = 빌드가 통과한 실행만 조치한다

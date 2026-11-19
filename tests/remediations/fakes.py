@@ -293,7 +293,7 @@ def proposal(n: int = 1, *, round: int = 1, ga: str = "example:lib", old: str = 
              line: int = 0, decision: str = D_AUTO, pom: str = "pom.xml", risks: list[str] | None = None) -> Proposal:
     """A proposal editing `<version>old</version>` in `pom` (line found by `ScriptedPlanner` when 0)."""
     p = Proposal(id=f"p-{round}-{n}", round=round, ga=ga, from_version=old, to_version=new, kind="direct_version",
-                 risks=list(risks or []), requires_approval=decision != D_AUTO, decision=decision,
+                 risks=list(risks or []), decision=decision,
                  evidence="repository:nexus.invalid", finding_ids=["CVE-2026-0001"],
                  edits=[TextEdit(pom=pom, line=line, old=old, new=new)])
     return p

@@ -11,8 +11,10 @@ import pytest
 from sbmig.remediations import chain
 from sbmig.remediations import graph as graph_mod
 from sbmig.remediations.models import (
-    AWAITING_APPROVAL,
     FAILED,
+    LEGACY_APPROVAL_MESSAGE,
+    LEGACY_APPROVAL_MESSAGE_KO,
+    LEGACY_AWAITING_APPROVAL,
     STOPPED,
     SUCCEEDED,
     RemediationState,
@@ -154,12 +156,12 @@ def test_uses_the_pods_local_repository_unchanged(tmp_path, ivas_env, monkeypatc
     assert out.status == SUCCEEDED and seen["repo"] == "/m2/repo-slot2"
 
 
-def test_awaiting_approval_is_saved_and_returned(tmp_path, ivas_env):
+def test_a_proposal_with_a_risk_label_is_applied_in_the_build_pod(tmp_path, ivas_env):
     plan = ScriptedPlanner([RoundPlan(round=1, source_tree_hash="", policy_hash="",
-                                      proposals=[proposal(decision="pending", risks=["major"])])])
+                                      proposals=[proposal(risks=["major", "managed_override"])])])
     run_dir, root = project(tmp_path)
     out, _ = go(run_dir, root, comps=one_fix_components(plan=plan))
-    assert out.status == AWAITING_APPROVAL and chain.load_state(run_dir).status == AWAITING_APPROVAL
+    assert out.status == SUCCEEDED and chain.load_state(run_dir).status == SUCCEEDED
 
 
 # ---------------------------------------------------------------------------- source ZIP rules
@@ -258,6 +260,24 @@ def test_resume_rules(tmp_path, ivas_env):
     assert j.names()[0] == "remediation_resume" and all(e["scope"] == "remediation" for e in j.events)
     with pytest.raises(StateConflict):                     # terminal now
         chain.resume(run_dir, make_cfg(), journal=Journal(), stop=lambda: False, components=one_fix_components())
+
+
+def test_resume_refuses_a_state_saved_awaiting_approval_by_an_earlier_version(tmp_path, ivas_env):
+    run_dir, _root = project(tmp_path)
+    paths = chain.chain_paths(run_dir)
+    old = RemediationState(id="run-1", status=LEGACY_AWAITING_APPROVAL, reason="pending_approval",
+                           reasons=["pending_approval"], next_node="plan", round=1,
+                           message="1 proposal(s) of round 1 wait for approval").to_dict()
+    old["require_approval"] = True
+    write_json_atomic(paths.state, old)
+    before = paths.state.read_bytes()
+    comps = one_fix_components()
+    with pytest.raises(StateConflict) as ei:
+        chain.resume(run_dir, make_cfg(), journal=Journal(), stop=lambda: False, components=comps)
+    assert LEGACY_APPROVAL_MESSAGE in str(ei.value) and ei.value.code == "state_conflict"
+    assert ei.value.details["message_ko"] == LEGACY_APPROVAL_MESSAGE_KO
+    assert paths.state.read_bytes() == before and not chain.claim_path(paths.root).exists()
+    assert comps.maven.package_calls == [] and chain.load_state(run_dir).status == LEGACY_AWAITING_APPROVAL
 
 
 def test_summary_of_a_skip():

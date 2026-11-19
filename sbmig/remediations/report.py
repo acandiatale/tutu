@@ -3,8 +3,8 @@
 ``write_report``를 호출하고, API 목록은 ``summary``를 쓴다.
 - 비밀 값, 토큰, 서버 절대 경로를 넣지 않는다. 경로는 실행 폴더 기준 상대 경로만 쓴다
 - 입력이 같으면 내용도 같아야 하므로 현재 시각을 넣지 않고 정렬 순서를 고정한다
-- report.md 순서: 결과 블록, 요약, 해야 할 일, 조치 완료, 승인 대기, 선택하지 않은 변경, 사내 라이브러리, 직접 확인, 제외 항목,
-  변경하지 않은 것, 처리 기록. 빈 절은 쓰지 않는다
+- report.md 순서: 결과 블록, 요약, 해야 할 일, 조치 완료, 사내 라이브러리, 직접 확인, 제외 항목, 변경하지 않은 것,
+  처리 기록. 빈 절은 쓰지 않는다
 - 상태와 사유 코드는 접힌 처리 기록에만 쓰고, 영어 문장은 ``i18n.ko_display``로 바꿔 보여 준다.
   report.json에는 영어 문장과 코드를 그대로 쓴다
 - ``inhouse_artifact`` 항목은 아티팩트별로 묶고 ``remediation.inhouse_message``를 붙인다
@@ -46,11 +46,8 @@ from .i18n import (
     severity_thresholds,
 )
 from .models import (
-    AWAITING_APPROVAL,
     AWAITING_CONFIRMATION,
     D_AUTO,
-    D_PENDING,
-    D_REJECTED,
     E_INSERT,
     FAILED,
     INCOMPLETE,
@@ -80,18 +77,18 @@ REPORT_SCHEMA = "sbmig.remediation.report/1"
 
 # 처리 기록과 다른 화면에서 쓰는 상태 코드별 짧은 한국어 이름
 _STATUS_KO = {
-    SUCCEEDED: "조치 완료", INCOMPLETE: "일부만 조치됨", FAILED: "조치 실패", AWAITING_APPROVAL: "승인 대기",
+    SUCCEEDED: "조치 완료", INCOMPLETE: "일부만 조치됨", FAILED: "조치 실패",
     AWAITING_CONFIRMATION: "업로드 확인 필요", STOPPED: "중지됨", INTERRUPTED: "중단됨", QUEUED: "대기 중", RUNNING: "진행 중",
 }
 # 결과 블록 첫 줄에 굵게 쓰는 문장
 _VERDICT = {
     SUCCEEDED: "✅ **조치를 마쳤습니다.**", INCOMPLETE: "⚠️ **일부만 조치되었습니다.**", FAILED: "❌ **조치하지 못했습니다.**",
-    AWAITING_APPROVAL: "⏸ **승인을 기다리고 있습니다.**", AWAITING_CONFIRMATION: "⏸ **확인이 필요합니다.**",
+    AWAITING_CONFIRMATION: "⏸ **확인이 필요합니다.**",
     STOPPED: "⏹ **조치를 멈췄습니다.**", INTERRUPTED: "⏹ **조치가 중단되었습니다.**",
     QUEUED: "⏳ **조치를 기다리고 있습니다.**", RUNNING: "⏳ **조치를 진행하고 있습니다.**",
 }
 # 사유 코드별 (결과 줄에 쓸 설명, 해야 할 일)이다. "<n>"은 마지막 라운드 번호로 바뀐다
-# 승인, 사내, 직접 확인처럼 개수가 붙는 할 일은 _next_steps가 개수를 넣는다
+# 사내, 직접 확인처럼 개수가 붙는 할 일은 _next_steps가 개수를 넣는다
 _REASON_KO: dict[str, tuple[str, str]] = {
     "baseline_build_failed": ("올린 프로젝트가 조치 전 빌드에서 실패했습니다. 빌드되지 않는 프로젝트는 검사하지 않습니다.",
                               "**빌드 오류 고치기** — `baseline/build.log` 파일을 확인해 빌드 오류를 고친 뒤 프로젝트를 다시 "
@@ -117,13 +114,6 @@ _REASON_KO: dict[str, tuple[str, str]] = {
                                    "제거한 뒤 다시 올려 주세요."),
     "not_ready": ("조치 서버의 실행 환경(IVAS 설정, settings.xml, JDK 21, Maven)이 준비되지 않았습니다.",
                   "**운영 담당자에게 알리기** — 운영 담당자에게 서버 설정 확인을 요청해 주세요."),
-    "pending_approval": ("승인을 기다리는 변경이 있습니다.",
-                         "**적용할 변경 고르기** — 고르기 전에는 아무것도 적용하지 않으므로 먼저 검토해도 됩니다. 조치 화면을 "
-                         "열어 「승인 대기」의 변경을 확인하고, 적용할 항목을 체크한 뒤 적용 버튼(「선택한 N건 적용」)을 "
-                         "눌러 주세요."),
-    "rejected_proposals": ("조치 화면에서 선택하지 않은 변경이 있어 그 취약점은 남아 있습니다.",
-                           "**선택하지 않은 변경 검토하기** — 「선택하지 않아 적용하지 않은 변경」의 내용을 검토한 뒤, 조치를 "
-                           "다시 실행해 선택하거나 해당 pom.xml에 직접 추가해 주세요."),
     "residual_findings": ("조치 후 검사에서 취약점이 남아 있습니다.",
                           "**남은 취약점 확인하기** — 「처리 기록」의 남은 취약점 전체 목록을 확인하고 담당 팀에서 조치해 "
                           "주세요."),
@@ -435,7 +425,7 @@ def _with_count(step: str, count: int | None, unit: str = "건") -> str:
 
 def _next_steps(state: RemediationState, fx: "_Facts | None" = None) -> list[str]:
     """현재 상태에서 담당자가 할 일 목록을 만든다. ``fx``가 있으면 개수를 붙인다.
-    순서: 결과 ZIP 받기 -> 자동으로 적용한 변경 확인 -> 변경 승인 -> 사내 라이브러리 담당자에게 요청 -> 직접 확인 -> 나머지 사유 코드.
+    순서: 결과 ZIP 받기 -> 자동으로 적용한 변경 확인 -> 사내 라이브러리 담당자에게 요청 -> 직접 확인 -> 나머지 사유 코드.
 
     The actions for this state, in a fixed order; counts when the report facts are given."""
     inhouse = [r for r in state.residuals if r.reason == R_INHOUSE_ARTIFACT]
@@ -450,9 +440,8 @@ def _next_steps(state: RemediationState, fx: "_Facts | None" = None) -> list[str
         if state.delivery is not None and state.delivery.build_tolerated and state.delivery.round > 0:
             out.append(_TOLERATED_BUILD_STEP)
         codes = [c for c in codes if c != "baseline_build_failed"]
-    others = [_with_count(_reason_text(state, c)[1], fx.matching(fx.skipped))
-              if c == "rejected_proposals" and fx is not None else _reason_text(state, c)[1] for c in codes
-              if c not in ("pending_approval", R_INHOUSE_ARTIFACT, "manual_review", "residual_findings")]
+    others = [_reason_text(state, c)[1] for c in codes
+              if c not in (R_INHOUSE_ARTIFACT, "manual_review", "residual_findings")]
     if state.status in (FAILED, STOPPED, INTERRUPTED, AWAITING_CONFIRMATION):
         # 실패, 중단, 확인 대기는 원인을 먼저 해결해야 다음 단계로 갈 수 있으므로 앞에 둔다
         out += others
@@ -461,9 +450,6 @@ def _next_steps(state: RemediationState, fx: "_Facts | None" = None) -> list[str
         auto = _auto_risky_step(fx.committed)
         if auto:
             out.append(auto)
-    pending = fx.pending if fx is not None else []
-    if "pending_approval" in codes or pending:
-        out.append(_with_count(_reason_text(state, "pending_approval")[1], len(pending), "건"))
     if inhouse or R_INHOUSE_ARTIFACT in codes:
         # 다른 사유 때문에 evaluate의 사유 코드에 빠져 있어도 사내 아티팩트 항목은 항상 담당자 연락이 필요하다
         out.append(_with_count(_reason_text(state, R_INHOUSE_ARTIFACT)[1],
@@ -487,7 +473,7 @@ _RISK_ORDER = ("major", "parent", "bom", "managed_override")
 
 
 def _auto_risky_step(committed: list[Proposal]) -> str:
-    """승인 없이 적용한 변경 가운데 주의 항목이 있으면 확인을 요청하는 할 일을 만든다. 없으면 빈 문자열을 반환한다.
+    """적용한 변경 가운데 주의 항목이 있으면 확인을 요청하는 할 일을 만든다. 없으면 빈 문자열을 반환한다.
 
     The step for committed proposals with decision `auto` and a risk flag; one count per proposal, one per class."""
     props = [p for p in committed if p.decision == D_AUTO and p.risks]
@@ -496,7 +482,7 @@ def _auto_risky_step(committed: list[Proposal]) -> str:
     kinds = [r for r in _RISK_ORDER if any(r in p.risks for p in props)]
     kinds += sorted({r for p in props for r in p.risks} - set(_RISK_ORDER))
     counts = ", ".join(f"{label(RISK_KO, r)} {sum(1 for p in props if r in p.risks)}건" for r in kinds)
-    return (f"**자동으로 적용한 변경 확인하기 ({len(props)}건)** — 승인 절차 없이 적용한 변경 가운데 주의가 필요한 "
+    return (f"**자동으로 적용한 변경 확인하기 ({len(props)}건)** — 적용한 변경 가운데 주의가 필요한 "
             f"항목입니다({counts}). 「조치 완료」 표의 「주의」 열에서 해당 라이브러리를 확인하고 애플리케이션 동작을 "
             "점검해 주세요.")
 
@@ -606,11 +592,6 @@ class _Facts:
             if rs.committed and pl is not None:
                 ids = set(rs.applied)
                 self.committed += [p for p in pl.proposals if p.id in ids]
-        # 담당자가 승인 화면에서 고르지 않은 제안이다. 실패가 아니라 담당자의 선택으로 보여 준다
-        self.skipped = [p for n in sorted(self.plans) if self.plans[n] is not None
-                        for p in self.plans[n].proposals if p.decision == D_REJECTED]
-        self.pending = [p for n in sorted(self.plans) if self.plans[n] is not None
-                        for p in self.plans[n].proposals if p.decision == D_PENDING]
         self.inhouse = [r for r in state.residuals if r.reason == R_INHOUSE_ARTIFACT]
         self.manual = [r for r in state.residuals if r.reason != R_INHOUSE_ARTIFACT]
         self.final_ok = self.final is not None and self.final.complete
@@ -741,12 +722,11 @@ def _known_and_raw(text: str) -> tuple[list[str], str]:
 
 
 # 메시지가 빌드 요약이거나 결과 줄과 같은 내용이므로 결과 줄에 넣지 않는 사유 코드
-_MESSAGE_ELSEWHERE = ("baseline_build_failed", "candidate_build_failed", "pending_approval", "text_only_violation",
-                      "resolution_mismatch")
+_MESSAGE_ELSEWHERE = ("baseline_build_failed", "candidate_build_failed", "text_only_violation", "resolution_mismatch")
 # 상태 메시지가 더 구체적이므로 결과 줄의 일반 문장 대신 메시지를 쓰는 사유 코드
 _MESSAGE_SAYS_IT = ("chain_budget", "upload_uncertain", "stop_requested")
 # 결과 줄의 숫자 문장이 이미 설명하므로 따로 쓰지 않는 사유 코드
-_NUMBERS_EXPLAIN = ("manual_review", "residual_findings", R_INHOUSE_ARTIFACT, "pending_approval")
+_NUMBERS_EXPLAIN = ("manual_review", "residual_findings", R_INHOUSE_ARTIFACT)
 
 
 def _numbers(state: RemediationState, fx: _Facts) -> list[str]:
@@ -794,13 +774,7 @@ def _result_lines(state: RemediationState, fx: _Facts) -> list[str]:
     body: list[str] = []
     if _tolerated(state) and state.status in (SUCCEEDED, INCOMPLETE) and not _nothing_changed(state):
         return _tolerated_lines(state, fx, codes)
-    if state.status == AWAITING_APPROVAL:
-        n = len(fx.pending)
-        body += _numbers(state, fx)[:1]
-        body.append((f"제안 {n}건이 승인을 기다립니다." if n else "승인을 기다리는 변경이 있습니다.")
-                    + " 조치 화면에서 적용할 변경을 체크하고 적용 버튼(「선택한 N건 적용」)을 누르면 이어서 진행합니다. 고르기 전에는 "
-                    "아무것도 적용하지 않으므로 검토한 뒤에 골라도 됩니다.")
-    elif state.status == INTERRUPTED:
+    if state.status == INTERRUPTED:
         ko, _raw = _known_and_raw(state.message)
         body += ko or ["서버가 다시 시작되면서 조치가 멈췄습니다. 자동으로 다시 실행하지 않습니다."]
         return out + [" ".join(body)]
@@ -829,8 +803,6 @@ def _result_lines(state: RemediationState, fx: _Facts) -> list[str]:
         ko, _raw = _known_and_raw(state.message)
         if ko:
             body.append("상세: " + " ".join(ko))
-    if fx.pending and state.status not in (AWAITING_APPROVAL,):
-        body.append(f"승인을 기다리는 제안이 {len(fx.pending)}건 있습니다.")
     return out + ([" ".join(dict.fromkeys(body))] if body else [])
 
 
@@ -860,8 +832,6 @@ def _tolerated_lines(state: RemediationState, fx: _Facts, codes: list[str]) -> l
         ko, _raw = _known_and_raw(state.message)
         if ko:
             body.append("상세: " + " ".join(ko))
-    if fx.pending:
-        body.append(f"승인을 기다리는 제안이 {len(fx.pending)}건 있습니다.")
     return [verdict, " ".join(dict.fromkeys(body))]
 
 
@@ -894,9 +864,7 @@ def _note_lines(text: str) -> list[str]:
     return [k for k in ko if k] + ([f"원문: `{raw.replace('`', chr(39))}`"] if raw else [])
 
 
-_PENDING_HEAD = ["위험도", "라이브러리", "버전 변경", "수정할 곳", "주의", "해결할 취약점"]
 _DONE_HEAD = ["위험도", "라이브러리", "버전 변경", "수정한 곳", "해결된 취약점"]
-_SKIPPED_HEAD = ["위험도", "라이브러리", "버전 변경", "수정할 곳", "해당 취약점"]
 
 
 def _by_pom(p: Proposal) -> bool:
@@ -941,14 +909,14 @@ def _pom_line(p: Proposal) -> str:
     return " · ".join(parts)
 
 
-def _proposal_section(L: list[str], fx: _Facts, props: list[Proposal], *, pending: bool, skipped: bool = False) -> None:
-    """제안 표와 제안별 설명을 쓴다. 버전 지정 추가 제안은 라이브러리별로 묶고 pom마다 한 줄로 쓴다.
+def _proposal_section(L: list[str], fx: _Facts, props: list[Proposal]) -> None:
+    """적용한 제안의 표와 제안별 설명을 쓴다. 버전 지정 추가 제안은 라이브러리별로 묶고 pom마다 한 줄로 쓴다.
 
     The proposal table and the notes under it. `managed_override` proposals with module sources or a module pom are
     grouped per (library, from, to): one table row, then one line per pom (entry, path). Others as one row each."""
     # 조치 완료 표는 주의 항목이 있을 때만 주의 열을 넣는다. 없으면 표가 이전과 같다
-    risky_done = not pending and not skipped and any(p.risks for p in props)
-    head = _PENDING_HEAD if pending else (_SKIPPED_HEAD if skipped else _DONE_HEAD)
+    risky_done = any(p.risks for p in props)
+    head = _DONE_HEAD
     if risky_done:
         head = head[:-1] + ["주의"] + head[-1:]
     L.append("| " + " | ".join(head) + " |")
@@ -981,11 +949,11 @@ def _proposal_section(L: list[str], fx: _Facts, props: list[Proposal], *, pendin
             place = _place(p)
         cells = [fx.sev_cell(scores[id(u)]), f"`{_md_cell(p.ga)}`",
                  f"{_md_cell(p.from_version)} → {_md_cell(p.to_version)}", place]
-        if pending or risky_done:
+        if risky_done:
             risks = sorted({r for x in u for r in x.risks})
             cells.append(_md_cell(", ".join(label(RISK_KO, r) for r in risks) or "-"))
         # 조치 완료 표의 해결된 취약점은 완료된 재검사에서 사라진 것만 쓴다
-        shown = ids(u) if pending or skipped else fx.resolved_ids(p.ga, ids(u))
+        shown = fx.resolved_ids(p.ga, ids(u))
         cells.append(_md_cell(fx.cve_cell(p.ga, p.from_version, shown)))
         L.append("| " + " | ".join(cells) + " |")
     L.append("")
@@ -1003,7 +971,7 @@ def _proposal_section(L: list[str], fx: _Facts, props: list[Proposal], *, pendin
             L.append(f"  - {_md_cell(_pom_line(p))}")
         else:
             # 조치 완료에서는 이미 적용한 변경이므로 지난 일로 적는다
-            L.append("  - 수정한 pom:" if not pending and not skipped else "  - 수정할 pom:")
+            L.append("  - 수정한 pom:")
             L += [f"    - {_md_cell(_pom_line(x))}" for x in u]
         notes = list(dict.fromkeys(n for x in u for n in (_note_lines(x.note) if x.note else [])))
         if len(notes) == 1:
@@ -1371,11 +1339,6 @@ def _summary_section(L: list[str], state: RemediationState, fx: _Facts, paths: R
         # 재검사에서 취약점이 하나도 사라지지 않은 변경의 라이브러리는 조치 완료로 세지 않는다
         n_lib = len({p.ga for p in fx.committed if fx.resolved_ids(p.ga, p.finding_ids)})
         L.append(f"| 조치 완료 | {_num(fixed_n)}건 | " + (f"{_num(n_lib)}개 |" if n_lib else "- |"))
-        n_pend = fx.matching(fx.pending)
-        if fx.pending:
-            L.append(f"| 승인 대기 | {_num(n_pend)}건 | {_num(len({p.ga for p in fx.pending}))}개 |")
-        if fx.skipped:
-            L.append(f"| 선택하지 않은 변경 | {_num(fx.matching(fx.skipped))}건 | {_num(len({p.ga for p in fx.skipped}))}개 |")
         if fx.inhouse:
             L.append(f"| 사내 라이브러리 담당자 요청 | {_num(fx.matching(fx.inhouse))}건 | {_num(len(fx.inhouse))}개 |")
         if fx.manual:
@@ -1539,7 +1502,7 @@ def _record_section(L: list[str], state: RemediationState, fx: _Facts, paths: Ru
 
 
 def _shown_above(fx: _Facts) -> set[str]:
-    return {p.id for p in fx.committed} | {p.id for p in fx.pending} | {p.id for p in fx.skipped}
+    return {p.id for p in fx.committed}
 
 
 def _round_block(L: list[str], state: RemediationState, fx: _Facts, rs: RoundState, step: int) -> None:
@@ -1574,7 +1537,7 @@ def _round_block(L: list[str], state: RemediationState, fx: _Facts, rs: RoundSta
         for n in plan.notes:
             L.append(f"- 계획 참고: {_md_cell(ko_display(n))}")
     planned = {p.id for p in plan.proposals} if plan is not None else set()
-    if set(rs.applied) != {p.id for p in (plan.proposals if plan else []) if p.decision != "rejected"} or not planned:
+    if set(rs.applied) != planned or not planned:
         L.append(f"- 적용한 제안: {', '.join(rs.applied) if rs.applied else '없음'}")
     if rs.build is not None:
         L.append(f"- 수정본 빌드: {_build_line(rs.build)}" + (f" · 로그 `{rs.build.log}`" if rs.build.log else ""))
@@ -1694,46 +1657,26 @@ def build_report_md(state: RemediationState, paths: RunPaths, *, ignore_actions:
             L.append("「해결된 취약점」 칸이 「-」인 변경은 적용했지만 재검사에서 같은 취약점이 아직 보고됩니다. 남은 취약점은 "
                      "「처리 기록」의 남은 취약점 목록에서 확인해 주세요.")
             L.append("")
-        _proposal_section(L, fx, fx.committed, pending=False)
+        _proposal_section(L, fx, fx.committed)
         L.append("")
 
-    # 5. 승인 대기
-    if fx.pending:
-        L.append(f"## 승인 대기 — 제안 {len(fx.pending)}건")
-        L.append("")
-        L.append("아래 변경은 조치 화면에서 골라야 적용됩니다. 고른 변경만 적용하고 빌드와 재검사를 이어서 진행하며, 고르지 "
-                 "않은 변경은 적용하지 않습니다.")
-        L.append("")
-        _proposal_section(L, fx, fx.pending, pending=True)
-        L.append("")
-
-    # 5-1. 선택하지 않아 적용하지 않은 변경
-    if fx.skipped:
-        L.append(f"## 선택하지 않아 적용하지 않은 변경 — 제안 {len(fx.skipped)}건")
-        L.append("")
-        L.append("조치 화면에서 선택하지 않은 변경입니다. 이번 실행에서는 다시 제안하지 않습니다. 검토한 뒤 조치를 다시 "
-                 "실행해 선택하거나, 아래 내용을 해당 pom.xml에 직접 추가할 수 있습니다.")
-        L.append("")
-        _proposal_section(L, fx, fx.skipped, pending=False, skipped=True)
-        L.append("")
-
-    # 6. 사내 라이브러리에서 발생한 취약점
+    # 5. 사내 라이브러리에서 발생한 취약점
     if fx.inhouse:
         _inhouse_section(L, fx, message, inhouse)
         L.append("")
 
-    # 7. 직접 확인이 필요한 취약점
+    # 6. 직접 확인이 필요한 취약점
     if fx.manual:
         _manual_section(L, fx)
         L.append("")
 
-    # 8. 조치 대상에서 제외한 항목
+    # 7. 조치 대상에서 제외한 항목
     _excluded_section(L, state, fx, ignore)
 
-    # 9. 변경하지 않은 것
+    # 8. 변경하지 않은 것
     _unchanged_section(L, state, fx)
 
-    # 10. 처리 기록(접힘)
+    # 9. 처리 기록(접힘)
     _record_section(L, state, fx, paths)
     return "\n".join(_clean(x, roots) for x in L)
 
@@ -1763,7 +1706,7 @@ def summary(state: RemediationState) -> dict[str, Any]:
     return {"id": state.id, "name": state.name, "status": state.status, "reason": state.reason,
             "reasons": list(state.reasons), "node": state.node, "next_node": state.next_node, "round": state.round,
             "created": state.created, "updated": state.updated, "counts": dict(sorted(state.counts.items())),
-            "require_approval": state.require_approval, "baseline_tolerated": bool(state.baseline_tolerated),
+            "baseline_tolerated": bool(state.baseline_tolerated),
             "delivery": {"sha256": d.sha256, "size": d.size, "round": d.round, "build_ok": d.build_ok,
                          "scanned": d.scanned, "build_tolerated": d.build_tolerated} if d else None}
 

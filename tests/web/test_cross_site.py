@@ -44,7 +44,6 @@ STATE_CHANGING = [
     ("post", "/admin/api/login"),
     ("post", "/admin/api/logout"),
     ("post", "/api/remediations"),
-    ("post", "/api/remediations/r1/approvals"),
     ("post", "/api/remediations/r1/resume"),
     ("post", "/api/remediations/r1/stop"),
     ("delete", "/api/remediations/r1"),

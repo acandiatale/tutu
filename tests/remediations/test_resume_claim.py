@@ -1,8 +1,9 @@
 """One driver per run folder (v2.1z-ap, finding R1 of the three-pods review): the run claim `remediation/claim.json`.
 
 Ported from the reviewer's `par3/remediation/test_two_resumes.py`: two `chain.resume` calls on one run folder used to
-run the whole flow twice (two IVAS uploads, the last state.json wins). Also R3 (why the proposals came back) and M1
-(the Maven repository of a resumed chained run). Fakes only; every wait is bounded, nothing writes in a loop."""
+run the whole flow twice (two IVAS uploads, the last state.json wins). Also M1 (the Maven repository of a resumed
+chained run). R3 (why proposals waiting for approval came back) went with the approval step. Fakes only; every
+wait is bounded, nothing writes in a loop."""
 from __future__ import annotations
 
 import json
@@ -17,30 +18,16 @@ from pathlib import Path
 import pytest
 
 from sbmig.remediations import chain
-from sbmig.remediations import graph as graph_mod
 from sbmig.remediations.models import (
-    AWAITING_APPROVAL,
-    D_APPROVED,
     FAILED,
     STOPPED,
     SUCCEEDED,
-    RoundPlan,
     StateConflict,
-    read_json,
-    write_json_atomic,
 )
 
 from .fakes import (
     FakeMaven,
-    FakeScanner,
-    Recorder,
-    ScriptedPlanner,
-    finding,
     make_cfg,
-    make_components,
-    make_run,
-    proposal,
-    scan_result,
 )
 from .test_chain import Journal, go, ivas_env, one_fix_components, project  # noqa: F401 - fixture
 
@@ -217,14 +204,11 @@ class Seen:
         self.held.append(self.path.exists())
 
 
-@pytest.mark.parametrize("end", ["succeeded", "awaiting", "stopped", "failed", "crash"])
+@pytest.mark.parametrize("end", ["succeeded", "stopped", "failed", "crash"])
 def test_the_claim_exists_while_driving_and_is_gone_after_every_end(tmp_path, ivas_env, end):
     run_dir, root = project(tmp_path)
     seen = Seen(run_dir)
     kw = {}
-    if end == "awaiting":
-        kw["plan"] = ScriptedPlanner([RoundPlan(round=1, source_tree_hash="", policy_hash="",
-                                                proposals=[proposal(decision="pending", risks=["major"])])])
     maven = FakeMaven(on_package=seen, outcomes=[False] if end == "failed" else [])
     if end == "crash":
         def boom(_project):
@@ -233,8 +217,7 @@ def test_the_claim_exists_while_driving_and_is_gone_after_every_end(tmp_path, iv
         maven = FakeMaven(on_package=boom)
     out, _ = go(run_dir, root, comps=one_fix_components(maven=maven, **kw),
                 stop=(lambda: True) if end == "stopped" else None)
-    expected = {"succeeded": SUCCEEDED, "awaiting": AWAITING_APPROVAL, "stopped": STOPPED, "failed": FAILED,
-                "crash": FAILED}[end]
+    expected = {"succeeded": SUCCEEDED, "stopped": STOPPED, "failed": FAILED, "crash": FAILED}[end]
     assert out.status == expected
     assert not claim_file(run_dir).exists()
     if end != "stopped":
@@ -262,51 +245,3 @@ def test_a_first_run_finding_a_fresh_claim_creates_nothing(tmp_path, ivas_env):
     assert sorted(p.name for p in chain.chain_paths(run_dir).root.iterdir()) == ["claim.json"]
 
 
-# ---------------------------------------------------------------------------- R3: why the proposals came back
-class PolicyPlanner:
-    """A plan function whose current policy hash can change between two pods."""
-
-    def __init__(self, inner: ScriptedPlanner):
-        self.inner = inner
-
-    def __call__(self, *a, **kw):
-        return self.inner(*a, **kw)
-
-    def policy_hash(self, _cfg):
-        return self.inner.policy_hash
-
-
-def _pending_plan():
-    return RoundPlan(round=1, source_tree_hash="", policy_hash="", proposals=[proposal(decision="pending",
-                                                                                         risks=["major"])])
-
-
-def test_a_changed_policy_says_why_the_proposals_came_back(tmp_path):
-    state, paths = make_run(tmp_path)
-    inner = ScriptedPlanner([_pending_plan(), _pending_plan()])
-    comps = make_components(plan=PolicyPlanner(inner), scan=FakeScanner({"baseline": [scan_result(finding())]}))
-    rec = Recorder()
-    out = graph_mod.run_remediation(state, paths, make_cfg(), comps, save=rec.save, journal=rec.journal, stop=rec.stop)
-    assert out.status == AWAITING_APPROVAL and out.message == "1 proposal(s) of round 1 wait for approval"
-    data = read_json(paths.plan(1))
-    data["proposals"][0]["decision"] = D_APPROVED
-    write_json_atomic(paths.plan(1), data)
-    inner.policy_hash = "policy-hash-2"                  # the ConfigMap changed between the build pod and the resume pod
-    out = graph_mod.run_remediation(out, paths, make_cfg(), comps, save=rec.save, journal=rec.journal, stop=rec.stop)
-    assert out.status == AWAITING_APPROVAL and out.policy_hash == "policy-hash-2"
-    assert out.message == f"{graph_mod.POLICY_CHANGED_NOTE} | 1 proposal(s) of round 1 wait for approval"
-    assert (paths.round_dir(1) / "plan.stale.json").is_file()
-    assert [e for e in rec.events if e["event"] == "approvals_dropped"]
-    from sbmig.remediations import i18n
-    assert i18n.ko_text(out.message).startswith("서버 설정이 바뀌어 앞서 승인한 내용은 적용하지 않고 계획을 다시 세웠습니다.")
-
-
-def test_an_unchanged_policy_keeps_the_plain_message(tmp_path):
-    state, paths = make_run(tmp_path)
-    inner = ScriptedPlanner([_pending_plan()])
-    comps = make_components(plan=PolicyPlanner(inner), scan=FakeScanner({"baseline": [scan_result(finding())]}))
-    rec = Recorder()
-    out = graph_mod.run_remediation(state, paths, make_cfg(), comps, save=rec.save, journal=rec.journal, stop=rec.stop)
-    out.status = STOPPED                                  # a later resume of the same, undecided plan
-    out = graph_mod.run_remediation(out, paths, make_cfg(), comps, save=rec.save, journal=rec.journal, stop=rec.stop)
-    assert out.status == AWAITING_APPROVAL and graph_mod.POLICY_CHANGED_NOTE not in out.message

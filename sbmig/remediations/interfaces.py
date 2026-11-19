@@ -142,7 +142,8 @@ class InventoryFn(Protocol):
 
 class PlanFn(Protocol):
     """``planner.plan_round``의 인터페이스. 인벤토리에서 변경 제안과 조치하지 못한 항목을 만든다.
-    ``decided``는 이전 라운드에서 거절된 제안의 (ga, to_version)이며, 같은 제안을 다시 내지 않는 데 쓴다."""
+    ``rejected``는 이 실행에서 효과가 없어 뺀 override 항목의 (ga, to_version, 변종, pom)이며,
+    같은 pom에 다시 제안하지 않는 데 쓴다."""
 
     def __call__(self, project: Path, inventory: Inventory, cfg: Any, source: VersionSource, *, round: int,
                  source_tree_hash: str, rejected: set[tuple[str, str]] | None = None) -> RoundPlan: ...

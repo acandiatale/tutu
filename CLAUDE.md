@@ -767,6 +767,19 @@ review", fix attempts as `script:<case>:v<N>`; `ko`, the company setting: the re
   (c) an operator command I hand out (the manual stub pom) must be checked against the deployment's layout: there are
   three local repositories, my first instructions named one. Contracts: `docs/INTERFACES.md` "v2.1z-ax", "v2.1z-ay",
   "v2.1z-az".
+- **The remediation has no approval step (removed 2026-11-19, v2.1z-ba)** — the user: "우리 approval awaiting 기능 아예
+  빼버리자. 이렇게 안쓸거래. 환경변수도 없애고 기능도 없애고 화면에 보여주는것도 없애버리게! … 그냥 코드도 없애버려".
+  Every older note in this file that speaks of `AWAITING_APPROVAL`, `require_approval`, `always_approve`, the approval
+  list or `POST …/approvals` describes something that no longer exists. Gone: the settings and
+  `SBMIG_REMEDIATION__REQUIRE_APPROVAL` (ignored with a WARNING when still present, `config._warn_removed_keys`; in
+  `contract.ENV_PIN_SKIP`), the state, the decisions `pending` / `approved` / `rejected`, the reasons, the service's
+  and API's `approvals` / `proposals`, the page's list (neither page contains 승인; a test holds it). Kept:
+  `AWAITING_CONFIRMATION` and resume ("그건 일단 내버려 두자"). Old states are read and shown as ended WITHOUT the word
+  (`models.LEGACY_AWAITING_APPROVAL`, 「조치 미완료」): the feature came back to the user as a question from colleagues
+  when a release began to label and to pin old approval-waiting runs in 「지난 실행」. Lessons: (1) when a list starts to
+  show a state it did not show before, look at what is already stored in that state on the cluster; (2) "keep it
+  listed while it waits for a person" pins a run forever when nobody will ever answer. The word 승인 elsewhere
+  (approved repository hosts, libraries a person approved) is another thing and stays.
 - **Company convention (2026-10-20): agents run on LangGraph under uvicorn.** `loop.engine: graph` (default) drives
   the phases from a LangGraph `StateGraph` (`sbmig/graph/`, nodes intake → analyze → plan → phase×N → finalize;
   `inline` is the old loop, reports are identical by test); the web UI is FastAPI (`uvicorn sbmig.web.app:app` or

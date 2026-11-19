@@ -268,7 +268,7 @@ def redact_file(path: Path, values: list[str], mask: str = "***") -> bool:
 
 
 def _remediation_targets(root: Path) -> list[Path]:
-    # 취약점 조치는 트리 해시로 승인을 확인하므로 텍스트 출력만 마스킹하고
+    # 취약점 조치는 트리 해시로 결과를 확인하므로 텍스트 출력만 마스킹하고
     # 프로젝트 트리와 원본(original/)은 건드리지 않는다
     # ZIP은 확장자로 제외되고, 심볼릭 링크는 따라가지 않는다
     out: list[Path] = []
