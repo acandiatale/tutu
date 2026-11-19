@@ -684,8 +684,12 @@ def rule_lines(cfg: Any, profile: Optional[ProjectProfile], name: str, results: 
     front = lay.module_path("front", name)
     jsp = bool(profile is not None and profile.source.jsp_count)
     web = bool(profile is not None and (profile.source.jsp_count or profile.source.web_static_count))
+    # 모듈이 하나인 Boot 앱을 boot_single_module: split으로 나눴으면 Boot가 아닌 프로젝트와 같은 구조다
+    single_split = (case == CaseType.SPRING_BOOT and lay.boot_as_is == "in-place"
+                    and getattr(lay, "boot_single_module", "split") == "split" and profile is not None
+                    and profile.root_pom is not None and not profile.root_pom.modules)
     split = case in (CaseType.SPRING_LEGACY, CaseType.SERVLET_TOMCAT, CaseType.PURE_JAVA, CaseType.UNKNOWN) or (
-        case == CaseType.SPRING_BOOT and lay.boot_as_is == "layout")
+        case == CaseType.SPRING_BOOT and lay.boot_as_is == "layout") or single_split
     if case == CaseType.MSA:
         L.append(_msa_line(cfg, profile))
     elif split:
@@ -703,9 +707,11 @@ def rule_lines(cfg: Any, profile: Optional[ProjectProfile], name: str, results: 
         L.append(f"  - `{comp}`: every source incl. controllers, packaging jar, parent = "
                  + ("comp parent" if a.role_parents else "root pom"))
         if front and web:
-            L.append(f"  - `{front}`: web resources only (static under `{lay.front_static_dir}`, JSPs under "
-                     f"`{lay.front_jsp_dir}`), packaging jar, parent = " + ("comp parent" if a.role_parents
-                                                                             else "root pom"))
+            # 모듈 하나짜리 Boot 앱을 나눌 때 JSP는 웹 경로를 그대로 지켜 옮기므로 설정한 JSP 폴더가 아니다
+            jsp_place = ("JSPs at their as-is web path under `src/main/resources/META-INF/resources`" if single_split
+                         else f"JSPs under `{lay.front_jsp_dir}`")
+            L.append(f"  - `{front}`: web resources only (static under `{lay.front_static_dir}`, {jsp_place}), "
+                     "packaging jar, parent = " + ("comp parent" if a.role_parents else "root pom"))
         elif front:
             L.append(f"  - `{front}`: only when the project has web resources (none detected)")
         starter = _starter(cfg, case, results)
@@ -717,8 +723,11 @@ def rule_lines(cfg: Any, profile: Optional[ProjectProfile], name: str, results: 
     else:
         L.append(f"- layout (Spring Boot as-is, `layout.boot_as_is: {lay.boot_as_is}`): directories are kept, only the "
                  f"poms change — root → root parent; module dirs named like `{lay.boot_module_pattern}` whose pom is a "
-                 "Boot app → boot parent; every other module → comp parent; a single-module Boot app is wrapped "
-                 f"into `{boot}` under an aggregator root; a `war` module keeps its packaging")
+                 "Boot app → boot parent; every other module → comp parent; "
+                 + (f"a single-module Boot app is wrapped into `{boot}` under an aggregator root; "
+                    if getattr(lay, "boot_single_module", "split") == "wrap" else
+                    "a single-module Boot app is split like the other cases (`layout.boot_single_module: split`); ")
+                 + "a `war` module keeps its packaging")
     return L, external
 
 

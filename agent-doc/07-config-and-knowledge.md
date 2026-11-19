@@ -7,7 +7,7 @@
 ## 1. 설정이 읽히는 순서
 
 모든 명령(`sbmig run`, `sbmig fleet`, `sbmig serve`의 실행, `sbmig kb …`)과 `sbmig.api.migrate`는 `sbmig/core/config.py`의
-`load_config(*paths, overrides=None, repo_root=None)`로 시작한다. 이 함수가 하는 일을 순서대로 적으면 다음과 같다.
+`load_config(*paths, overrides=None, repo_root=None)`로 시작한다. 순서:
 
 ```
 0. load_dotenv_files()      .env 들을 os.environ 으로 읽는다 (설정 dict 에는 넣지 않는다)
@@ -52,7 +52,7 @@
 |---|---|---|
 | `target` | 목표 버전(정보용 문자열). Java 21 / Boot 4.1.0 / Framework 7.0.x | 보통 그대로: `target.java_version`, `target.spring_boot_version` |
 | `artifacts` | 회사 부모 pom과 사내 아티팩트. 루트 pom의 부모, boot 모듈·그 외 모듈의 부모, 필수 2개, 선택 8개 | `artifacts.parent`, `artifacts.boot_parent`, `artifacts.comp_parent`, `artifacts.mandatory`, `artifacts.optional`, `artifacts.parent_manages_spring_boot` |
-| `layout` | 재구성 모양: 모듈 이름(`{name}-boot` / `-back` / `-front`), Boot as-is를 제자리로 둘지, JSP 패키징, 다중 모듈 정책, 버전 정리 규칙, 레거시 Spring 컨텍스트 스위치(`layout.legacy_context.*`) | `layout.boot_module`, `layout.comp_module`, `layout.front_module`, `layout.boot_as_is`, `layout.multi_module_policy`, `layout.wire_bundled_jars` |
+| `layout` | 재구성 모양: 모듈 이름(`{name}-boot` / `-back` / `-front`), Boot as-is를 제자리로 둘지, 모듈 하나인 Boot 앱을 나눌지, JSP 패키징, 다중 모듈 정책, 버전 정리 규칙, 레거시 Spring 컨텍스트 스위치(`layout.legacy_context.*`) | `layout.boot_module`, `layout.comp_module`, `layout.front_module`, `layout.boot_as_is`, `layout.boot_single_module`, `layout.multi_module_policy`, `layout.wire_bundled_jars` |
 | `intake` | 접수 규칙: 올린 ZIP의 풀기 한도, Ant 거절과 안내 문구(스위치를 켜면 pom 합성), 동봉 jar 스캔, jar 이름 표, ADF 정책 | `intake.max_unpacked_mb`(4096), `intake.max_entry_mb`(1024), `intake.max_compression_ratio`(200; 셋 다 0 = 없음), `intake.ant_to_maven`(기본 false = 거절), `intake.ant_message`, `intake.synth_group_id`, `intake.unknown_jar`, `intake.bundled_jars`, `intake.adf_policy` |
 | `framework` | 사내 프레임워크 프로젝트 판정과 줄인 실행(범위 `jdk-jakarta`). 비우면 검사하지 않는다([13](13-framework-projects.md)) | `framework.artifacts`(회사 좌표, 회사 yml에만), `framework.name`(화면·보고서의 이름, 비우면 아티팩트 이름에서), `framework.fix_loop`(기본 false = 빌드 1회, 오류 수정 없음), `framework.scope`, `framework.transitive`, `framework.recipe_sets` |
 | `openrewrite` | OpenRewrite 1회 실행: 플러그인·레시피 BOM 버전, 레시피 세트, JVM 옵션, 제외 파일 | `openrewrite.recipes.jakarta`, `openrewrite.recipes.extra`, `openrewrite.jvm_args`, `openrewrite.timeout_minutes`, `openrewrite.recipe_bom_version` |
@@ -165,7 +165,7 @@ settings.xml의 Nexus 그룹 URL과 `build.repository_url`(같은 Nexus — 하�
 - **카탈로그는 무엇을 돌릴지 정하지 않는다.** 실제 실행 세트는 `openrewrite.recipes`의 `jdk21`, `jakarta`, `spring_boot_4`,
   `spring_framework_7`, `spring_security_7`, `junit5`(빈 목록), `spring_batch_6`, `hibernate_7`, `servlet_jakarta_10`, `hystrix_resilience4j`, `extra`이고,
   계획기가 케이스 종류와 감지된 라이브러리로 세트를 고른다(`sbmig recipes sets`가 보여 준다).
-- 회사 yml이 빈 세트를 채우거나 `openrewrite.recipes.extra`에 id를 더하면, 그 id를 카탈로그 항목의 `sets:` 에도 적어야 한다.
+- 회사 yml이 빈 세트를 채우거나 `openrewrite.recipes.extra`에 id를 더하면, 그 id를 카탈로그 항목의 `sets:`에도 적어야 한다.
   어긋나면 `sbmig recipes check`가 exit 1이다(`--jars`를 주면 Maven으로 레시피 jar를 받아 id가 정말 있는지도 본다 — 네트워크 필요).
 - 레시피 BOM은 `openrewrite.recipe_bom_version` = 3.37.0으로 고정이다(3.38.0은 Maven Central에서 불완전). 플러그인은
   `openrewrite.plugin_version`.

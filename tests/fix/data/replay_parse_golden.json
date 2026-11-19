@@ -164,6 +164,13 @@
   "role": "structure_review",
   "script": "12ae32cb1ec02d01"
  },
+ "company-boot-wrap/replay/llm-001.json": {
+  "edits": "4f53cda18c2baa0c",
+  "issues": 0,
+  "ok": true,
+  "role": "structure_review",
+  "script": "12ae32cb1ec02d01"
+ },
  "company-servlet-jsp/replay/llm-001.json": {
   "edits": "4f53cda18c2baa0c",
   "issues": 1,

@@ -180,9 +180,16 @@ layout:
   # Spring Boot 프로젝트(MSA 포함)의 재구성 방식.
   #   in-place: 디렉토리는 그대로 두고 pom만 바꾼다(회사 규칙). 루트는 artifacts.parent,
   #             boot_module_pattern에 맞고 pom이 Boot 앱인 모듈은 boot_parent, 나머지는 comp_parent를 상속한다.
-  #             모듈이 하나인 Boot 앱은 {name}-boot로 감싸 집계 루트 아래에 둔다.
+  #             모듈이 하나인 Boot 앱은 아래 boot_single_module에 따라 처리한다.
   #   layout: Boot가 아닌 프로젝트처럼 boot / back으로 나눈다.
   boot_as_is: in-place
+  # 모듈이 하나인 Spring Boot 앱(루트 pom이 곧 앱인 프로젝트)의 처리 방식. boot_as_is가 in-place일 때 쓴다.
+  #   split: Boot가 아닌 프로젝트처럼 나눈다. {name}-boot에는 Application 클래스와 Boot 설정만 두고,
+  #          나머지 소스는 소스 모듈(comp_module)로, 정적 파일·JSP·템플릿은 화면 모듈(front_module)로 옮긴다.
+  #          화면 모듈은 그런 자원이 있을 때만 만든다. 모듈 이름은 위 boot_module / comp_module / front_module을 따른다.
+  #   wrap: 소스와 자원을 통째로 {name}-boot 하나에 넣는다(모듈 하나).
+  # 모듈이 여러 개인 Boot 프로젝트와 MSA는 이 값과 상관없이 디렉토리를 그대로 둔다.
+  boot_single_module: split
   boot_module_pattern: "*-boot"          # Boot 프로젝트에서 Boot 앱 모듈로 볼 디렉토리 이름 패턴(pom으로 다시 확인)
   # JSP가 있을 때 Boot 모듈의 패키징.
   #   war: 실행 가능한 WAR. java -jar로 내장 Tomcat이 실행되고(이관의 목표),

@@ -32,6 +32,7 @@ sbmig 는 사내 Maven 프로젝트를 **JDK 21 + Spring Boot 4.1** 로 옮기�
 | [11-remediations.md](11-remediations.md) | 이관이 BUILD SUCCESS 로 끝난 빌드 파드에서 이어 돌거나 실행 방식 `remediation` 으로 따로 도는 취약점 조치(별도 그래프, `/api/remediations`, IVAS, 버전 글자만 수정): 노드, 상태별 할 일, 진단, 설정 키, 고칠 자리 | 조치 작업을 볼 때 |
 | [12-remediation-report.md](12-remediation-report.md) | 조치 보고서의 절과 절마다 할 일, 사내 라이브러리 안내(담당자 몫으로 빠지는 항목), 제안의 적용 범위, 용어표, 영어 문장을 한국어로 보여 주는 규칙 | 조치 보고서를 읽거나 바꿀 때 |
 | [13-framework-projects.md](13-framework-projects.md) | 사내 프레임워크 아티팩트를 쓰는 프로젝트: 찾는 곳과 순서, JDK 21과 jakarta 변환 뒤 빌드 1회만 하고 오류는 고치지 않는 실행(범위 `jdk-jakarta`), 켜는 법, 프레임워크 이름, 결과 줄·보고서·화면, 진단할 줄, 수정 루프를 켰을 때와 조치에서 달라지는 것 | 프레임워크 프로젝트를 볼 때 |
+| [14-boot-single-module-split.md](14-boot-single-module-split.md) | 모듈이 하나인 Spring Boot 앱을 boot / back / front 로 나누는 규칙: 적용 조건, 모듈마다 가는 것, 테스트, 인수인계 세 줄, 알려진 한계, `wrap` | Boot 프로젝트의 결과 구조를 볼 때 |
 
 새 주제는 다음 번호(14, 15 …)로 더하고 이 표와 아래 "일 종류별" 표에 한 줄씩 적는다. 날짜·버전 꼬리표는 여전히 10 번에만 쓴다.
 
@@ -41,7 +42,7 @@ sbmig 는 사내 Maven 프로젝트를 **JDK 21 + Spring Boot 4.1** 로 옮기�
 |---|---|
 | 끝난 실행이 왜 그렇게 끝났는지 진단 | 00, 03, 04 (+ 실행 디렉터리의 `report.md`, `errors.md`, `sbmig.log` 발췌) |
 | LLM 이 이상한 답을 한 이유 | 00, 05, 04 (+ `llm.record_dir` 의 기록 파일 하나) |
-| 회사 규칙(부모 pom, 모듈, 버전, jar) 을 바꾸기 | 00, 06, 07, 08, 01 |
+| 회사 규칙(부모 pom, 모듈, 버전, jar) 을 바꾸기 | 00, 06, 07, 08, 01 (모듈 하나인 Boot 앱은 + 14) |
 | 설정만 바꾸기 | 00, 07 (+ `config/default.yml` 의 해당 절 — 주석이 한국어 설명이다) |
 | 코드 고치기 전 온보딩 | 00, 01, 02, 08 |
 | 설치·배포·쿠버네티스 | 00, 09 (+ `deploy/README.md`) |

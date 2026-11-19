@@ -23,7 +23,7 @@
     "journal_events": [
       {
         "event": "restructure",
-        "mode": "boot_pom",
+        "mode": "layout",
         "ok": true
       }
     ],
@@ -64,6 +64,8 @@
         "pom_module_list": {
           "path": "pom.xml",
           "modules": [
+            "shop-back",
+            "shop-front",
             "shop-boot"
           ]
         }
@@ -119,23 +121,160 @@
         }
       },
       {
+        "pom_parent": {
+          "path": "shop-back/pom.xml",
+          "group_id": "org.springframework.boot",
+          "artifact_id": "spring-boot-starter-parent",
+          "version": "4.1.0"
+        }
+      },
+      {
+        "pom_packaging": {
+          "path": "shop-back/pom.xml",
+          "packaging": "jar"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "shop-back/pom.xml",
+          "contains": "<relativePath/>"
+        }
+      },
+      {
+        "pom_dependency_absent": {
+          "path": "shop-back/pom.xml",
+          "artifacts": [
+            "org.springframework.boot:spring-boot-starter-validation",
+            "org.springframework.boot:spring-boot-starter-actuator"
+          ]
+        }
+      },
+      {
+        "file_contains": {
+          "path": "shop-back/pom.xml",
+          "contains": "<groupId>com.example</groupId>"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "shop-back/pom.xml",
+          "contains": "<version>1.0.0-SNAPSHOT</version>"
+        }
+      },
+      {
+        "pom_parent": {
+          "path": "shop-front/pom.xml",
+          "group_id": "org.springframework.boot",
+          "artifact_id": "spring-boot-starter-parent",
+          "version": "4.1.0"
+        }
+      },
+      {
+        "pom_packaging": {
+          "path": "shop-front/pom.xml",
+          "packaging": "jar"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "shop-front/pom.xml",
+          "contains": "<relativePath/>"
+        }
+      },
+      {
+        "pom_dependency_absent": {
+          "path": "shop-front/pom.xml",
+          "artifacts": [
+            "org.springframework.boot:spring-boot-starter-validation",
+            "org.springframework.boot:spring-boot-starter-actuator"
+          ]
+        }
+      },
+      {
+        "file_contains": {
+          "path": "shop-front/pom.xml",
+          "contains": "<groupId>com.example</groupId>"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "shop-front/pom.xml",
+          "contains": "<version>1.0.0-SNAPSHOT</version>"
+        }
+      },
+      {
+        "pom_dependency_present": {
+          "path": "shop-back/pom.xml",
+          "artifacts": [
+            "org.springframework.boot:spring-boot-starter-webmvc",
+            "org.springframework.boot:spring-boot-starter-thymeleaf"
+          ]
+        }
+      },
+      {
+        "pom_dependency_absent": {
+          "path": "shop-boot/pom.xml",
+          "artifacts": [
+            "org.springframework.boot:spring-boot-starter-webmvc",
+            "org.springframework.boot:spring-boot-starter-thymeleaf"
+          ]
+        }
+      },
+      {
+        "file_contains": {
+          "path": "shop-boot/pom.xml",
+          "contains": "<artifactId>spring-boot-maven-plugin</artifactId>"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "shop-back/pom.xml",
+          "not_contains": "spring-boot-maven-plugin"
+        }
+      },
+      {
         "file_exists": {
           "path": "shop-boot/src/main/java/com/example/shop/ShopApplication.java"
         }
       },
       {
         "file_exists": {
-          "path": "shop-boot/src/main/java/com/example/shop/web/ProductController.java"
-        }
-      },
-      {
-        "file_exists": {
-          "path": "shop-boot/src/main/java/com/example/shop/service/ProductService.java"
-        }
-      },
-      {
-        "file_exists": {
           "path": "shop-boot/src/main/resources/application.properties"
+        }
+      },
+      {
+        "file_exists": {
+          "path": "shop-boot/src/test/java/com/example/shop/ShopApplicationTests.java"
+        }
+      },
+      {
+        "file_exists": {
+          "path": "shop-back/src/main/java/com/example/shop/web/ProductController.java"
+        }
+      },
+      {
+        "file_exists": {
+          "path": "shop-back/src/main/java/com/example/shop/web/HomeController.java"
+        }
+      },
+      {
+        "file_exists": {
+          "path": "shop-back/src/main/java/com/example/shop/service/ProductService.java"
+        }
+      },
+      {
+        "file_exists": {
+          "path": "shop-back/src/test/java/com/example/shop/service/ProductServiceTest.java"
+        }
+      },
+      {
+        "file_exists": {
+          "path": "shop-front/src/main/resources/static/css/shop.css"
+        }
+      },
+      {
+        "file_exists": {
+          "path": "shop-front/src/main/resources/templates/home.html"
         }
       },
       {
@@ -150,12 +289,76 @@
       },
       {
         "file_absent": {
-          "path": "shop-back"
+          "path": "shop-boot/src/main/java/com/example/shop/web"
         }
       },
       {
         "file_absent": {
-          "path": "shop-front"
+          "path": "shop-boot/src/main/resources/static"
+        }
+      },
+      {
+        "file_absent": {
+          "path": "shop-back/src/main/resources/static"
+        }
+      },
+      {
+        "file_absent": {
+          "path": "shop-back/src/main/resources/templates"
+        }
+      },
+      {
+        "file_absent": {
+          "path": "shop-back/src/main/java/com/example/shop/ShopApplication.java"
+        }
+      },
+      {
+        "file_absent": {
+          "path": "shop-back/src/main/resources/application.properties"
+        }
+      },
+      {
+        "archive_entries": {
+          "path": "shop-boot/target/shop-boot-1.0.0-SNAPSHOT.jar",
+          "present": [
+            "BOOT-INF/classes/com/example/shop/ShopApplication\\.class",
+            "BOOT-INF/classes/application\\.properties",
+            "BOOT-INF/lib/shop-front-1\\.0\\.0-SNAPSHOT\\.jar",
+            "BOOT-INF/lib/shop-(back|comp)-1\\.0\\.0-SNAPSHOT\\.jar",
+            "BOOT-INF/lib/thymeleaf-spring6-.*\\.jar"
+          ],
+          "absent": [
+            "BOOT-INF/classes/com/example/shop/web/.*",
+            "BOOT-INF/classes/static/.*",
+            "BOOT-INF/classes/templates/.*"
+          ]
+        }
+      },
+      {
+        "archive_entries": {
+          "path": "shop-front/target/shop-front-1.0.0-SNAPSHOT.jar",
+          "present": [
+            "static/css/shop\\.css",
+            "templates/home\\.html"
+          ],
+          "absent": [
+            ".*\\.class"
+          ]
+        }
+      },
+      {
+        "archive_entries": {
+          "path": "shop-back/target/shop-*-1.0.0-SNAPSHOT.jar",
+          "present": [
+            "com/example/shop/web/ProductController\\.class",
+            "com/example/shop/web/HomeController\\.class",
+            "com/example/shop/service/ProductService\\.class"
+          ],
+          "absent": [
+            "com/example/shop/ShopApplication\\.class",
+            "static/.*",
+            "application\\.properties"
+          ]
         }
       }
     ]

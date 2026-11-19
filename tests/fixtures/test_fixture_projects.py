@@ -51,7 +51,8 @@ SCENARIOS = ["boot2-javax-lib", "boot2-javax-lib-optional", "euckr-legacy", "enf
              "fw-direct", "fw-parent", "fw-transitive",  # v2.1z-ak: framework projects, reduced scope jdk-jakarta
              "fw-transitive-note",                       # v2.1z-ak: framework only transitive + transitive: note → full
              "fw-build-error",                           # v2.1z-aw: framework project, the build fails after the conversion
-             "fw-pom-ms949"]                             # v2.1z-ay: framework project, pom saved as MS949 under a UTF-8 header
+             "fw-pom-ms949",                             # v2.1z-ay: framework project, pom saved as MS949 under a UTF-8 header
+             "company-boot-wrap"]                        # v2.1z-bf: single-module Boot app, boot_single_module: wrap
 NAMES = HAPPY + SCENARIOS
 CP949_FIXTURES = {"euckr-legacy"}
 POM_MS949_FIXTURES = {"fw-pom-ms949"}     # v2.1z-ay: pom.xml saved as MS949 under a UTF-8 declaration
@@ -88,6 +89,7 @@ BUILD_MATRIX = [
     ("multi-module-conflict", ".", "11", ""),
     ("legacy-ibatis", ".", "8", ""),
     ("company-boot-single", ".", "11", ""),
+    ("company-boot-wrap", ".", "11", ""),               # v2.1z-bf: the company-boot-single sources before the split
     ("company-spring5-web", ".", "11", ""),
     ("company-servlet-jsp", ".", "8", ""),
     ("boot2-rewrite-excluded", ".", "11", ""),
@@ -718,7 +720,10 @@ COMPANY_OVERRIDES = {name: {"layout": {"module_dir", "boot_module", "comp_module
                                   "legacy-external-parent", "filtered-binary-resources", "spring5-legacy-startup",
                                   "rootless-unlisted-module", "hollow-reactor", "adf-jdev",
                                   "servlet-javax-grid", "boot-stray-pom-copy", "webapp-bundled-jar",
-                                  "boot-asis-parent-unpublished")}
+                                  "boot-asis-parent-unpublished", "company-boot-wrap")}
+# v2.1z-bf: the wrap variant keeps the earlier treatment of a single-module Boot app (the default is split)
+COMPANY_OVERRIDES["company-boot-wrap"]["layout"] = COMPANY_OVERRIDES["company-boot-wrap"]["layout"] | {"boot_single_module"}
+NON_DEFAULT_LAYOUT = {("company-boot-wrap", "boot_single_module"): "wrap"}
 # v2.1j: no sha1 lookup on Maven Central during e2e; v2.1z-aj: Ant is refused by default, the fixture switches the synthesis on
 COMPANY_OVERRIDES["ant-webapp"]["intake"] = {"ant_to_maven", "jar_lookup"}
 COMPANY_OVERRIDES["legacy-external-parent"]["artifacts"] = {"boot_parent", "comp_parent", "optional"}   # v2.1n trigger
@@ -748,7 +753,8 @@ def test_fixture_config_override_keeps_8_optionals():
         assert {k: set(v) for k, v in raw.items() if k not in LLM_KB} == keys, name
         cfg = _effective_cfg(name)
         for key in keys["layout"]:
-            assert getattr(cfg.layout, key) == getattr(company, key), (name, key)
+            want = NON_DEFAULT_LAYOUT.get((name, key), getattr(company, key))
+            assert getattr(cfg.layout, key) == want, (name, key)
         assert cfg.layout.module_path("boot", "shop") == "shop-boot", name
         assert cfg.artifacts.mandatory_target == "root", name
         assert cfg.artifacts.role_parents and len(cfg.artifacts.optional) == 8, name

@@ -14,7 +14,9 @@ Migration (`openrewrite.unresolvable_asis_parent: align`, the default):
   (commit `transform: as-is parent org.springframework.boot:spring-boot-starter-parent 2.7.18-NOT-PUBLISHED → 4.1.0 (as-is
   version not in the repository)`, journal `asis_parent_aligned`, flag `asis-parent-aligned`, one Handover line) and runs
   the recipes once more — on the target parent's classpath;
-* then the company layout as in `company-boot-single` (wrapped into `shop-boot`).
+* then the company layout as in `company-boot-single`: the single-module Boot app is split (`layout.boot_single_module:
+  split`, the default) into `shop-back` (every source but the application class) and `shop-boot` (`ShopApplication`,
+  `application.properties`); no `shop-front` (no static file, template or JSP).
 
 Expected (v2, `expected.json` → `expect`): BUILD SUCCESS, exit 0, no `aborted:parent-not-found`, no `infra:repository`,
 **1 LLM call** (the structure review, verdict `ok`), no fix script.

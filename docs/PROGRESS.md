@@ -50,7 +50,8 @@
 - [ ] 실제 회사 프레임워크 프로젝트로 돌려 보기, 그 프로젝트의 이어지는 취약점 조치(실제 IVAS), Job 모드 화면
 
 **구조 정리 (회사 레이아웃, 3절의 규칙)**
-- [x] 비-Boot 프로젝트는 `{name}-boot` / `{name}-back` / (웹 자원이 있으면) `{name}-front` 모듈로 나누고, Boot 프로젝트는 폴더를 그대로 두고 pom 만 바꾼다
+- [x] 비-Boot 프로젝트는 `{name}-boot` / `{name}-back` / (웹 자원이 있으면) `{name}-front` 모듈로 나누고, 모듈이 여러 개인 Boot 프로젝트와 MSA 는 폴더를 그대로 두고 pom 만 바꾼다
+- [x] 모듈이 하나인 Boot 앱도 같은 세 모듈로 나눈다(`layout.boot_single_module: split`, 기본). Application 클래스와 Boot 설정은 `{name}-boot`, 나머지 소스는 소스 모듈, 정적 파일 · JSP · 템플릿은 화면 모듈. `wrap` 이면 예전처럼 통째로 `{name}-boot` 에 넣는다 (v2.1z-bf)
 - [x] 동봉 jar 는 첫 빌드 전에 연결한다: 저장소에 좌표가 있으면 일반 의존성, 없으면 `<module>/lib/` + `system` 범위 + Nexus 게시 요청 (v2.1z-j)
 - [x] 목표 체인이 이미 관리하는 옛 jar(예: WEB-INF/lib 의 spring-webmvc 4.x), 컨테이너 API, 아무도 쓰지 않는 jar 는 연결하지 않고 이름만 적는다
 - [x] 레거시 Spring 컨텍스트(web.xml 필터, JNDI, 멀티파트, 정적 자원, 프로필 파일 등 14가지)를 Boot 설정으로 옮기는 규칙을 스위치로 둔다 (v2.1x)

@@ -256,6 +256,9 @@ class LayoutConfig(BaseModel):
     # Boot as-is 프로젝트 처리 방식이다.
     # in-place는 디렉토리를 유지하고 pom만 고치며(회사 규칙), layout은 다른 경우처럼 모듈로 나눈다
     boot_as_is: Literal["in-place", "layout"] = "in-place"   # Spring Boot as-is: keep directories (poms only) | split
+    # 모듈이 하나인 Boot 앱의 처리 방식이다(boot_as_is가 in-place일 때).
+    # split은 Boot가 아닌 프로젝트처럼 boot / 소스 / 화면 모듈로 나누고, wrap은 통째로 {name}-boot에 넣는다
+    boot_single_module: Literal["split", "wrap"] = "split"
     boot_module_pattern: str = "*-boot"                 # module dirs that are boot apps in Boot as-is / MSA (pom confirms)
     jsp_boot_packaging: Literal["war", "jar"] = "war"   # JSPs present → the boot module is an executable WAR (java -jar runs
                                                         # the embedded Tomcat; JSPs cannot be served from an executable jar)

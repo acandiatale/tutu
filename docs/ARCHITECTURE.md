@@ -232,7 +232,17 @@ in detail: `agent-doc/06-company-rules-restructure.md`.
   `spring.factories` / `*.imports` merged as a union); `wrap` keeps the modules and adds a boot module.
 * `boot_pom` (Spring Boot as-is, `layout.boot_as_is: in-place`, also MSA services): directories stay, poms only — root →
   `artifacts.parent`, modules matching `layout.boot_module_pattern` whose pom is a Boot app → `boot_parent`, every other module →
-  `comp_parent`, explicit coordinates and `<relativePath/>`; a single-module Boot app is wrapped into `{name}-boot`.
+  `comp_parent`, explicit coordinates and `<relativePath/>`. Several-module Boot projects and MSA services only.
+* A single-module Boot app (the root pom is the app: no `<modules>`, sources present) is split like a non-Boot project when
+  `layout.boot_single_module: split` (default): the planner (`boot_single_split`) plans `restructure.apply` with
+  `{"mode": "layout", "starter": "auto", "boot_single": True}` instead of `restructure.boot_pom`. `{name}-boot` gets the
+  `@SpringBootApplication` class, the sources that name it and the Boot configuration (`layout.boot_resources_glob`); the back
+  module every other source and the dependencies; the front module (only when such files exist) Boot's static / template
+  locations (`static`, `public`, `resources`, `META-INF/resources`, `templates`) and the `src/main/webapp` web root, JSPs keeping
+  their web path under the front jar's `META-INF/resources` so the app's own view prefix stays valid (JSPs → executable WAR).
+  Tests needing the application context go to the boot module; three `boot split: …` hand-over lines (classes moved with the
+  application class, a component scan that does not reach the back module's packages, web files read by a file path).
+  `wrap` keeps everything in `{name}-boot`. Rules and limits: `agent-doc/14-boot-single-module-split.md`.
 * `msa_pom`: per service root the same parents / mandatory / optional artifacts, structure untouched; library roots →
   `comp_parent`, the top aggregator → `artifacts.parent`.
 * `optional_bump`: only the optional in-house artifact versions.

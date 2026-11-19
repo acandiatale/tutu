@@ -23,7 +23,7 @@ as-is 담당팀의 몫이다 — sbmig 는 빌드와 패키징까지만 책임�
 |---|---|---|---|
 | 순수 Java | `pure_java` | `layout` | 루트 aggregator(부모 `base-parent`) + `{name}-boot`(Boot 설정만, 부모 `boot-jar`) + `{name}-back`(모든 소스, 부모 `comp-jar`). 실행 가능한 jar |
 | Spring Framework 4/5 (Boot 없음) | `spring_legacy` | `layout` | 위와 같음 + 웹 리소스가 있으면 `{name}-front`. JSP 가 있으면 boot 모듈은 실행 가능한 WAR |
-| Spring Boot 2/3 | `spring_boot` | `boot_pom` | 디렉토리는 그대로, pom 만 바꿈. 루트 → `base-parent`, `*-boot` 앱 모듈 → `boot-jar`, 나머지 → `comp-jar`. 단일 모듈 Boot 앱은 `{name}-boot` 로 감싼다 |
+| Spring Boot 2/3 | `spring_boot` | `boot_pom` | 모듈 여럿: 디렉토리는 그대로, pom 만 바꿈. 루트 → `base-parent`, `*-boot` 앱 모듈 → `boot-jar`, 나머지 → `comp-jar`. 모듈 하나(루트 pom 이 곧 앱)면 `layout`: 위 분할처럼 `{name}-boot`(Application 클래스와 Boot 설정) / `{name}-back` / `{name}-front`(`layout.boot_single_module: split` 기본, [14](14-boot-single-module-split.md)) |
 | Tomcat 서블릿 전용 | `servlet_tomcat` | `layout` | `spring_legacy` 와 같은 분할. web.xml 등록은 생성 클래스 `WebXmlRegistrations` 로 옮긴다 |
 | MSA (배포 서비스 여럿) | `msa` | `msa_pom` | 서비스마다 pom 만(부모·필수·선택 아티팩트). 디렉토리 구조는 손대지 않음 |
 

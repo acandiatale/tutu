@@ -492,6 +492,7 @@ def test_boot_pom_without_role_parents(tmp_path: Path, ccfg: Config) -> None:
 
 # ---------------------------------------------------------------------------------------------- (e) boot_pom single
 def test_boot_pom_single_module_is_wrapped(tmp_path: Path, ccfg: Config) -> None:
+    ccfg.layout.boot_single_module = "wrap"           # the split default is tested in test_boot_single_split.py
     ws = make_ws(tmp_path, boot2_files(), "boot-single")
     res = Restructurer().apply(ws, boot2_profile(ws), ccfg, mode="boot_pom")
     assert res.ok, res.error
@@ -526,6 +527,7 @@ def test_boot_pom_single_module_is_wrapped(tmp_path: Path, ccfg: Config) -> None
 
 
 def test_boot_pom_single_module_without_role_parents(tmp_path: Path, ccfg: Config) -> None:
+    ccfg.layout.boot_single_module = "wrap"
     ccfg.artifacts.boot_parent = ccfg.artifacts.comp_parent = None
     ws = make_ws(tmp_path, boot2_files(), "boot-single-norole")
     res = Restructurer().apply(ws, boot2_profile(ws), ccfg, mode="boot_pom")

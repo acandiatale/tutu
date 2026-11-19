@@ -41,6 +41,9 @@ restructure.pom_only, restructure.review, verify.build. The only build before ve
   "in-place"` (default) plans `restructure.boot_pom` (StepKind.MSA_POM, params {"mode": "boot_pom", "boot_modules"})
   — directories kept, poms only; `boot_as_is == "layout"` and every non-Boot case plan `restructure.apply`
   (StepKind.RESTRUCTURE, params {"mode": "layout", "starter"}: `{name}-boot` / `{name}-back` / `{name}-front`).
+  A single-module Boot app (the root pom lists no modules) under `in-place` is split the same way when
+  `layout.boot_single_module` is `split` (the default, v2.1z-bf): `restructure.apply` with `"boot_single": True`, which
+  adds the Boot placements in the restructure; `wrap` keeps `restructure.boot_pom` (wrapped into `{name}-boot`).
   The in-house optional artifacts are bumped inside the restructure step; v2 never plans `spring.optional_bump`.
 * `restructure.review` (StepKind.REVIEW, Phase.RESTRUCTURE, params {"restructure_step": <id>}): the LLM structure
   review of poms / dependencies / modules right after the restructure (business rule, PLAN-v2 §1.4); omitted with a
@@ -534,6 +537,19 @@ def _msa_steps(profile: ProjectProfile, cfg: Config, notes: list[str]) -> list[P
     return steps
 
 
+def boot_single_split(profile: Optional[ProjectProfile], cfg: Config) -> bool:
+    """모듈이 하나인 Spring Boot 앱을 Boot가 아닌 프로젝트처럼 나눌지 확인한다.
+
+    True when a single-module Spring Boot app (`layout.boot_as_is: in-place`, the root pom lists no modules) is split
+    into the company's modules (`layout.boot_single_module: split`) instead of being wrapped into `{name}-boot`."""
+    if profile is None or profile.case_type != CaseType.SPRING_BOOT:
+        return False
+    lay = cfg.layout
+    if lay.boot_as_is != "in-place" or getattr(lay, "boot_single_module", "split") != "split":
+        return False
+    return profile.root_pom is not None and not profile.root_pom.modules
+
+
 def _single_steps(profile: ProjectProfile, cfg: Config, notes: list[str]) -> list[PlanStep]:
     """단일 프로젝트 계획을 만든다. 소스가 없으면 pom만 고친다(``restructure.pom_only``).
     소스가 있으면 변환 -> 재구성 -> 구조 검토 -> 검증 빌드 순서다. 재구성은 Boot as-is(``layout.boot_as_is
@@ -565,7 +581,8 @@ def _single_steps(profile: ProjectProfile, cfg: Config, notes: list[str]) -> lis
         steps.append(_compile(notes))
     else:
         _no_compile_note(notes)
-    if case == CaseType.SPRING_BOOT and cfg.layout.boot_as_is == "in-place":
+    boot_split = boot_single_split(profile, cfg)
+    if case == CaseType.SPRING_BOOT and cfg.layout.boot_as_is == "in-place" and not boot_split:
         # round 9c company rule: a Boot as-is project keeps its directories; only the poms change
         steps.append(PlanStep(
             id="restructure.boot_pom", kind=StepKind.MSA_POM, phase=Phase.RESTRUCTURE,
@@ -580,7 +597,8 @@ def _single_steps(profile: ProjectProfile, cfg: Config, notes: list[str]) -> lis
             where = f"no module named {pat} with a boot pom → no boot parent assigned by name (see warnings)"
         else:
             name = cfg.layout.project_name or profile.name
-            where = f"single-module Boot app → wrapped into {cfg.layout.module_path('boot', name)}"
+            where = (f"single-module Boot app → wrapped into {cfg.layout.module_path('boot', name)} "
+                     "(layout.boot_single_module=wrap)")
         notes.append("restructure: rule boot-as-is (layout.boot_as_is=in-place) → pom-only edits in place "
                      f"(boot_pom), directories kept; {where}")
     else:
@@ -592,13 +610,20 @@ def _single_steps(profile: ProjectProfile, cfg: Config, notes: list[str]) -> lis
         src = profile.source
         has_web = bool(src.jsp_paths or src.web_static_count or src.jsp_count)
         mods = [comp_m, boot_m] + ([front_m] if front_m and has_web else [])
+        # 모듈이 하나인 Boot 앱을 나눌 때는 재구성이 Boot 전용 배치(Application 사용 클래스, Boot 정적 경로)를 더한다
+        params: dict[str, Any] = {"mode": "layout", "starter": starter, **({"boot_single": True} if boot_split else {})}
         steps.append(PlanStep(
             id="restructure.apply", kind=StepKind.RESTRUCTURE, phase=Phase.RESTRUCTURE,
             title=f"restructure into {', '.join(m for m in mods if m)} with the in-house parent",
-            params={"mode": "layout", "starter": starter},
+            params=params,
             reason=f"non-msa: company layout; boot module starter '{starter}' for {facts.case.value}"))
-        rule = ("rule boot-as-is=layout (Boot split like the other cases)" if case == CaseType.SPRING_BOOT
-                else f"rule non-boot ({facts.case.value})")
+        if boot_split:
+            rule = ("rule boot-single-module=split (layout.boot_as_is=in-place, single-module Boot app split like the "
+                    "other cases)")
+        elif case == CaseType.SPRING_BOOT:
+            rule = "rule boot-as-is=layout (Boot split like the other cases)"
+        else:
+            rule = f"rule non-boot ({facts.case.value})"
         notes.append(f"restructure: {rule} → layout split into {', '.join(m for m in mods if m)}, starter '{starter}'"
                      + (f", multi-module policy '{cfg.layout.multi_module_policy}'" if profile.is_multi_module else ""))
         if front_m and has_web:

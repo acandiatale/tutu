@@ -1053,6 +1053,21 @@ PATTERNS: dict[str, list[tuple[re.Pattern[str], Union[str, Callable[[re.Match[st
       r"\(the repository has it\)$"),
      r"\g<w>프로젝트에 포함된 jar `\g<n>` 파일을 `\g<p>`에 일반(compile) 의존성으로 추가했습니다(좌표 `\g<c>`, 저장소에 "
      r"있습니다)."),
+    # 모듈이 하나인 Boot 앱을 나눈 뒤의 인수인계 줄. sbmig/restructure/restructurer.py의 boot split 문구를 바꾸면 함께 바꾼다
+    ((r"^boot split: (?P<n>\d+) class\(es\) that use the application class (?P<cls>.+?) moved with it to (?P<b>\S+) "
+      r"\((?P<l>.+)\) because (?P<c>\S+) cannot depend on the boot module — check that they belong there$"),
+     r"애플리케이션 클래스(\g<cls>)를 사용하는 클래스 \g<n>개를 함께 \g<b> 모듈로 옮겼습니다(\g<l>). \g<c> 모듈은 boot "
+     r"모듈을 참조할 수 없기 때문입니다. 이 클래스들이 그 모듈에 있어도 되는지 확인해 주세요."),
+    ((r"^boot split: the component scan of (?P<p>\S+) \(the package of (?P<a>\S+)\) does not reach (?P<n>\d+) "
+      r"package\(s\) of (?P<c>\S+) \((?P<l>.+)\) — check how the application registered their beans before the split "
+      r"\(it was the same scan\) and that it still does$"),
+     r"\g<c> 모듈의 패키지 \g<n>개(\g<l>)는 애플리케이션 클래스(\g<a>)가 있는 \g<p> 패키지 밖에 있어 기본 컴포넌트 스캔에 "
+     r"들어가지 않습니다. 나누기 전에도 스캔 범위는 같았으니, 이 클래스들을 어떻게 빈으로 등록했는지와 지금도 그대로 "
+     r"등록되는지 확인해 주세요."),
+    ((r"^boot split: (?P<n>\d+) source\(s\) read web files by a file path \(getRealPath / src/main/webapp: (?P<l>.+)\); "
+      r"the web files now come from the (?P<w>\S+) jar, where no such path exists — read them as classpath resources$"),
+     r"소스 \g<n>개가 웹 파일을 파일 경로로 읽습니다(getRealPath / src/main/webapp: \g<l>). 웹 파일은 이제 \g<w> jar 안에 "
+     r"있어 그런 경로가 없으니 클래스패스 자원으로 읽도록 바꿔 주세요."),
     # 참조가 없어 선언하지 않은 jar의 줄. sbmig/restructure/bundled_jars.py의 unused_jar_followup을 바꾸면 함께 바꾼다
     ((r"^bundled jar `(?P<n>[^`]+)` is referenced by no source / JSP / XML / properties file — not declared \(add it by "
       r"hand if a runtime needs it\)$"),

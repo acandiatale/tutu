@@ -5,7 +5,7 @@ module.exports = {
     "자동 변환에는 OpenRewrite 레시피를 씁니다. 현업과 정한 원칙은 '무엇을 바꿀지 모르는 레시피는 넣지 않는다' 입니다. 그래서 Java 21, javax 에서 jakarta 로의 전환, Spring 과 Spring Boot 판올림만 레시피로 하고, 그 밖의 문제는 빌드 오류로 드러나면 수정 단계에서 고칩니다. " +
     "Spring Boot 프로젝트는 Boot 4 레시피 하나가 jakarta 전환과 Spring 7, Security, Batch, Hibernate 까지 함께 처리합니다. Boot 가 아닌 Spring 프로젝트는 jakarta 와 Spring 7 레시피를 받고, Spring Security, Spring Batch, Hibernate 레시피는 그 라이브러리를 실제로 쓸 때만 더합니다. 서블릿 프로젝트는 jakarta 전환과 함께 Servlet 6 에서 없어진 API 정리를 받고, 순수 자바 프로젝트는 Java EE 의 javax 를 쓸 때만 jakarta 전환을 받습니다. 자바 소스가 없는 프로젝트는 변환 단계 없이 pom 만 고칩니다. " +
     "Hystrix 는 지원이 끝난 라이브러리라 Spring Boot 4 에서 동작하지 않습니다. 분석에서 Hystrix 가 보이면 프로젝트 종류와 상관없이(범위를 줄인 사내 프레임워크 프로젝트는 빼고) Hystrix 를 Resilience4j 로 바꾸는 레시피를 더합니다. @HystrixCommand 는 @CircuitBreaker 로 바뀌고, Hystrix 스타터는 Resilience4j 스타터로, 나머지 Hystrix 라이브러리는 빠집니다. 새 스타터의 버전은 레시피가 정하지 않고 새 부모 pom 과 Spring Cloud BOM 이 정합니다. 레시피로 옮기지 못하는 코드(HystrixCommand 를 상속한 클래스 등)는 빌드 오류로 드러나 수정 단계에서 옮기고, 동작 확인할 것은 보고서의 「확인해 주세요」에 적습니다. " +
-    "구조는 회사 표준을 따릅니다. Spring Boot 프로젝트는 디렉토리를 그대로 두고 pom 만 고치며, 모듈이 하나뿐인 Boot 앱은 '이름-boot' 모듈로 감쌉니다. Boot 가 아닌 프로젝트는 boot 와 back 모듈로 나누고, JSP 나 정적 파일 같은 웹 자원이 있으면 front 모듈을 더합니다. MSA 는 서비스마다 같은 규칙을 적용하되 공유 라이브러리를 먼저 처리하고, 디렉토리는 그대로 두고 pom 만 고칩니다. " +
+    "구조는 회사 표준을 따릅니다. Spring Boot 프로젝트는 모듈이 여럿이면 디렉토리를 그대로 두고 pom 만 고치고, 모듈이 하나뿐이면 Boot 가 아닌 프로젝트와 같은 세 모듈로 나눕니다. Boot 가 아닌 프로젝트는 boot 와 back 모듈로 나누고, JSP 나 정적 파일 같은 웹 자원이 있으면 front 모듈을 더합니다. MSA 는 서비스마다 같은 규칙을 적용하되 공유 라이브러리를 먼저 처리하고, 디렉토리는 그대로 두고 pom 만 고칩니다. " +
     "사내 프레임워크 프로젝트는 범위를 줄여서 진행합니다. JDK 21 과 jakarta 레시피만 돌리고 JSP 안의 javax 이름도 jakarta 로 바꾼 뒤, 구조 정리와 구조 검토 없이 바로 빌드로 갑니다. 빌드는 한 번만 하고, 빌드 오류가 나도 고치지 않고 보고서에 남깁니다. 부모 pom 과 사내 프레임워크의 버전은 그대로 둡니다. 화면에는 구조 정리와 구조 검토가 '하지 않음' 으로 나오고, 화면과 보고서에는 '(프레임워크 이름) 프레임워크는 JDK 21, Jakarta만 적용합니다.' 라는 안내가 눈에 띄게 붙습니다. " +
     "어느 경우든 계획 끝에는 검증 빌드(mvn clean package)가 붙습니다. 일반 프로젝트는 그 앞에 LLM 구조 검토가 들어갑니다.",
   lines: [
@@ -32,7 +32,7 @@ module.exports = {
     ];
     // 오른쪽: 구조 정리 방식
     const mx = 6.0, mw = 1.65;
-    const m1 = H.node(s, mx, ry(0), mw, rh, "pom 만 고침", "디렉토리는 그대로", "auto", ds);
+    const m1 = H.node(s, mx, ry(0), mw, rh, "모듈 여럿: pom 만", "하나면 boot · back · front 로", "auto", ds);
     const m2 = H.node(s, mx, ry(1), mw, ry(2) + rh - ry(1), "모듈 나누기", "boot · back 으로 나누고 웹 자원이 있으면 front 도", "auto", { descSize: 8.5 });
     const m4 = H.node(s, mx, ry(3), mw, rh, "pom 만 고침", "나눌 모듈이 없습니다", "auto", ds);
     const m5 = H.node(s, mx, ry(4), mw, rh, "구조는 그대로", "구조 정리·검토 없음", "auto", ds);

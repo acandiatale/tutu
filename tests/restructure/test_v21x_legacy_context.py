@@ -483,6 +483,7 @@ def test_boot_pom_mode_reports_asis_starters_and_no_legacy_props(tmp_path: Path,
                         + dep("org.springframework.boot", "spring-boot-starter-web") + "    </dependencies>\n</project>\n"),
             "src/main/java/com/acme/shop/App.java": ("package com.acme.shop;\n\nimport org.springframework.boot.autoconfigure."
                                                      "SpringBootApplication;\n\n@SpringBootApplication\npublic class App {\n}\n")}
+    ccfg.layout.boot_single_module = "wrap"     # v2.1z-bf: `split` (the default) takes such an app to the layout mode
     ws, res = run(tmp_path, ccfg, "boot", boot, mode="boot_pom")
     assert res.starter == "as-is: spring-boot-starter-web" and res.legacy_properties_written == []
 

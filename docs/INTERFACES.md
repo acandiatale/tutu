@@ -5342,6 +5342,32 @@ kept its directories and a root that was the app itself was WRAPPED: everything 
   lines for what a person must check). The name of the mode and the notes are the implementer's to report.
 - The user named the modules `xxx-comp-jar` / `xxx-front-jar`; the module names come from the layout settings (the
   repository default is `{name}-back` / `{name}-front`), as for every other project. Told to the user.
+- **As coded.** The planner decides (`planner.boot_single_split`): for such a project the plan step is
+  `restructure.apply` with `{"mode": "layout", "starter": "auto", "boot_single": True}` (not `restructure.boot_pom`),
+  plan note `restructure: rule boot-single-module=split (…)`; the journal's `restructure` event says `mode: layout`, so
+  the fix loop's layout facts, the KB's re-keying after moves and the Korean guide treat it as any split project. The
+  restructurer reuses the single-module split of non-Boot projects (`Restructurer._single`) and adds, only for this
+  case (`_Ctx.boot_split`): Boot's other static folders (`resources`, `META-INF/resources`) go to the front module;
+  JSPs keep their web path inside the front jar's `META-INF/resources`, so the application's own
+  `spring.mvc.view.prefix` stays valid (the boot module is then an executable WAR, `jsp_boot_packaging`); with
+  `front_module: null` the web files go into the boot module at their as-is paths; a source that names the
+  application class moves to the boot module with it (the source module cannot depend on the boot module); slice tests
+  (`@WebMvcTest`, `@DataJpaTest` …) and tests that name a class which moved go to the boot module beside
+  `@SpringBootTest` classes. Summary note: `boot split: single-module Spring Boot app split into <back>, <front>, <boot>
+  (layout.boot_single_module: split) — …`. Three hand-over lines, each with a Korean rule, when they apply: classes
+  moved with the application class; packages of the source module outside the application class's package without an
+  explicit scan (`scanBasePackages` / `@ComponentScan`) — the scan itself is not changed by the split; sources that read
+  web files by a file path (`getRealPath`, `src/main/webapp`).
+- **Checked** with the real Maven: the fixture `company-boot-single` (a controller, a template, a static file, a
+  `@SpringBootTest`, a unit test) builds; the boot jar holds the application class, `application.properties` and the
+  two other modules' jars; the front jar holds `static/css/shop.css` and `templates/home.html`; `java -jar` starts
+  and answers `/` (the template), the CSS and the API. `company-boot-wrap` pins `wrap`;
+  `boot-asis-parent-unpublished` is split too.
+- **Limits**: the analyzer does not count `resources` / `META-INF/resources` as web files, so the plan's note can say
+  there is no front module while the restructure creates one; classpath reads from the source module's tests of files
+  that moved to the front module are not looked for; scans arranged through `@Import` or `spring.factories` are not
+  recognised as explicit; `front_module: null` together with a WAR was not built with the real Maven; under
+  `boot_as_is: layout` with `front_module: null` a static file still stays in the source module.
 
 ## remediations (취약점 조치) — `/api/remediations`, IVAS, version-text fixes + managed overrides (2026-11-11)
 

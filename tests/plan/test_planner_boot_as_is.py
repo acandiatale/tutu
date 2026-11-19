@@ -42,7 +42,7 @@ def _boot_multi(root: Path) -> Path:
 
 
 def test_boot_in_place_single_module(tmp_path: Path, cfg) -> None:
-    _company(cfg)
+    _company(cfg).layout.boot_single_module = "wrap"
     plan = build_plan(analyze_path(make_boot27(tmp_path), cfg), cfg)
     assert _ids(plan) == IN_PLACE
     st = _step(plan, "restructure.boot_pom")
@@ -56,6 +56,28 @@ def test_boot_in_place_single_module(tmp_path: Path, cfg) -> None:
     assert [r.id for r in _step(plan, "transform.rewrite").recipes] == [
         "org.openrewrite.java.migrate.UpgradeToJava21", "org.openrewrite.java.spring.boot4.UpgradeSpringBoot_4_0",
         "org.openrewrite.java.spring.boot4.SpringBootProperties_4_1"]
+
+
+def test_boot_in_place_single_module_split(tmp_path: Path, cfg) -> None:
+    """v2.1z-bf: `boot_single_module: split` (the default) plans the layout split for a single-module Boot app, marked
+    `boot_single` so the restructure adds the Boot placements."""
+    _company(cfg)
+    assert cfg.layout.boot_single_module == "split"
+    plan = build_plan(analyze_path(make_boot27(tmp_path), cfg), cfg)
+    assert "restructure.boot_pom" not in _ids(plan)
+    st = _step(plan, "restructure.apply")
+    assert st.kind == StepKind.RESTRUCTURE
+    assert st.params == {"mode": "layout", "starter": "auto", "boot_single": True}
+    assert _step(plan, "restructure.review").params == {"restructure_step": "restructure.apply"}
+    note = next(n for n in plan.notes if n.startswith("restructure: rule boot-single-module=split"))
+    assert "layout split into boot-app-back, boot-app-boot" in note
+
+
+def test_boot_in_place_multi_module_ignores_boot_single_module(tmp_path: Path, cfg) -> None:
+    for value in ("split", "wrap"):
+        _company(cfg).layout.boot_single_module = value
+        plan = build_plan(analyze_path(_boot_multi(tmp_path / value), cfg), cfg)
+        assert "restructure.boot_pom" in _ids(plan) and "restructure.apply" not in _ids(plan)
 
 
 def test_boot_in_place_multi_module_passes_boot_modules(tmp_path: Path, cfg) -> None:

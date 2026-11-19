@@ -185,6 +185,18 @@ JSP_EXTS = (".jsp", ".jspf", ".jspx")
 # META-INF/resources/WEB-INF/ — reachable by jsp:include / RequestDispatcher as before, never served directly
 WEBINF_CONFIG_EXTS = (".xml", ".properties", ".yml", ".yaml", ".conf", ".ini", ".cfg")
 WEB_RESOURCE_DIRS = ("static", "public", "templates")   # src/main/resources/<dir>/** → the front module, same path
+# Boot 앱은 classpath:/resources/와 /META-INF/resources/에서도 정적 파일을 서비스하므로 함께 front로 옮긴다
+BOOT_WEB_RESOURCE_DIRS = ("static", "public", "resources", "META-INF/resources", "templates")
+# 테스트 패키지에서 애플리케이션 클래스를 찾아 컨텍스트를 띄우는 테스트 어노테이션이다
+BOOT_CONTEXT_TEST_RE = re.compile(
+    r"@(?:SpringBootTest|WebMvcTest|WebFluxTest|DataJpaTest|DataJdbcTest|JdbcTest|JooqTest|JsonTest|RestClientTest|"
+    r"GraphQlTest|DataMongoTest|DataRedisTest|DataR2dbcTest|DataCassandraTest|DataCouchbaseTest|DataElasticsearchTest|"
+    r"DataLdapTest|DataNeo4jTest|WebServiceClientTest|WebServiceServerTest)\b")
+EXPLICIT_SCAN_RE = re.compile(r"\bscanBasePackages\b|\bscanBasePackageClasses\b|@ComponentScan\b")
+# 파일 경로로 웹 파일을 읽는 코드는 파일이 jar로 들어가면 동작하지 않으므로 찾아서 알린다
+REAL_PATH_RE = re.compile(r"\.getRealPath\s*\(|\"src/main/webapp")
+# 이름을 찾을 때 주석과 문자열 안의 단어는 쓰임으로 보지 않는다
+JAVA_NOISE_RE = re.compile(r'//[^\n]*|/\*.*?\*/|"(?:\\.|[^"\\\n])*"', re.DOTALL)
 JSTL_URI_RE = re.compile(r"""<%@\s*taglib\b[^%]*\buri\s*=\s*["'](?:https?://java\.sun\.com/jsp/jstl/|"""
                          r"""https?://xmlns\.jcp\.org/jsp/jstl/|jakarta\.tags\.)""", re.IGNORECASE)
 # verified in spring-boot-dependencies-4.1.0.pom (managed: jakarta-servlet-jsp-jstl.version 3.0.2,
@@ -322,6 +334,8 @@ class _Ctx:
     # after the bundled-jar wiring (`_wire_bundled_jars`) so it names only the jars the rule did not wire
     webinf_left: list[tuple[list[str], str]] = field(default_factory=list)
     bundled_done: set[str] = field(default_factory=set)    # as-is jar paths already planned this restructure
+    # 모듈이 하나인 Spring Boot 앱을 layout 방식으로 나누는 중이면 참이다(Boot 전용 배치를 더한다)
+    boot_split: bool = False
 
     def p(self, *parts: str) -> str:
         """프로젝트 루트(``base``) 기준 경로를 워크스페이스 기준의 정규화된 경로로 바꾼다.
@@ -539,6 +553,11 @@ class Restructurer(LegacyContextMixin):
         c = _Ctx(ws, profile, cfg, result, dict(params or {}), self.commit_enabled)
         start = self._start_point(ws)
         try:
+            # 모듈이 하나인 Boot 앱은 boot_single_module이 split이면 감싸지 않고 layout 방식으로 나눈다
+            if mode == "layout" and c.params.get("boot_single"):
+                c.boot_split = True
+            elif mode == "boot_pom" and self._boot_single_split(c):
+                c.boot_split, mode = True, "layout"
             if mode == "layout":
                 self._layout(c)
             elif mode == "msa_pom":
@@ -918,10 +937,16 @@ class Restructurer(LegacyContextMixin):
                    "the project is read or changed)")
         c.commit("restructure: move as-is sources to comp-jar")
         # JSP를 옮겼는지(c.jsp_moved)에 따라 boot 모듈이 WAR인지 jar인지 정해지므로 front를 boot보다 먼저 처리한다
-        self._populate_front(c, comp, boot, coords, [root])
+        # 모듈이 하나인 Boot 앱에서 front 모듈을 쓰지 않으면 웹 파일을 as-is 앱과 같은 경로로 boot 모듈에 둔다
+        if c.boot_split and not c.front_rel:
+            self._boot_web_into_boot(c, comp, boot, asis_packaging)
+        else:
+            self._populate_front(c, comp, boot, coords, [root])
         self._plan_overlays(c, [root], set())
         self._write_comp_pom(c, [root], coords, comp, asis_packaging)
         moved_main, moved_tests = self._populate_boot(c, [comp], boot)
+        if c.boot_split:
+            moved_tests += self._boot_split_moves(c, comp, boot, moved_main)
         lib = GAV(group_id="${project.groupId}", artifact_id=coords.artifact_id + L.comp_artifact_suffix,
                   version="${project.version}")
         self._write_boot(c, coords, boot, [lib, *self._front_lib(c, coords)], asis_deps, moved_main, moved_tests,
@@ -929,7 +954,142 @@ class Restructurer(LegacyContextMixin):
         self._rewrite_root(c, root, self._layout_modules(c), keep_deps=False, keep_build_plugins=False,
                            aggregator=self._role(c))
         self._packaging_followups(c, asis_packaging)
+        if c.boot_split:
+            self._boot_split_checks(c, comp, boot, moved_main)
         c.commit("restructure: comp-jar / boot-jar layout")
+
+    # ------------------------------------------------------------------ v2.1z-bf: single-module Boot app split
+    def _boot_web_into_boot(self, c: _Ctx, comp: str, boot: str, asis_packaging: str) -> None:
+        """front 모듈을 쓰지 않을 때 Boot 앱의 웹 파일을 as-is와 같은 경로로 boot 모듈에 옮긴다.
+
+        `front_module: null` in a Boot split: the web root and Boot's static / template locations move from the source
+        module into the boot module at the paths they had in the as-is app (it served them from there). The boot
+        module becomes an executable WAR when the web root holds JSPs (`jsp_boot_packaging: war`) or the as-is app
+        was a WAR."""
+        L = c.cfg.layout
+        moved: list[str] = []
+        for d in (DEFAULT_WEBAPP, *(f"src/main/resources/{x}" for x in BOOT_WEB_RESOURCE_DIRS)):
+            src = f"{comp}/{d}"
+            sabs = c.ws.abs(src)
+            if not sabs.is_dir() or not any(f.is_file() for f in sabs.rglob("*")):
+                continue
+            c.move(src, f"{boot}/{d}")
+            moved.append(d)
+        if not moved:
+            return
+        webapp = c.ws.abs(f"{boot}/{DEFAULT_WEBAPP}")
+        files = [f for f in webapp.rglob("*") if f.is_file()] if webapp.is_dir() else []
+        jsps = [f for f in files if f.name.lower().endswith(JSP_EXTS)]
+        c.jstl = c.jstl or any(JSTL_URI_RE.search(f.read_text(encoding="utf-8", errors="replace")) for f in jsps)
+        if files and ((jsps and L.jsp_boot_packaging == "war") or asis_packaging == "war"):
+            c.boot_war = True
+        c.note(f"boot split: no front module (layout.front_module: null) — {', '.join(moved)} moved into {boot} at "
+               "the as-is paths" + (" (executable WAR: the web root is served from it)" if c.boot_war else ""))
+
+    def _move_users(self, c: _Ctx, src_root: str, dst_root: str, names: set[str],
+                    extra: Optional[re.Pattern[str]] = None) -> list[str]:
+        """``names`` 중 하나를 코드에서 쓰는 소스를 ``dst_root``로 옮기고, 옮긴 클래스를 쓰는 소스도 이어서 옮긴다.
+
+        Move every source under `src_root` whose code (comments and string literals left out) names one of `names`, or
+        whose text matches `extra`, to the same path under `dst_root`; the moved classes join `names` and the walk is
+        repeated until nothing more moves (a class left behind that names a moved one would not compile). Returns the
+        FQCNs moved."""
+        moved: list[str] = []
+        rabs = c.ws.abs(src_root)
+        while rabs.is_dir():
+            found: list[Path] = []
+            for f in sorted(rabs.rglob("*.java")):
+                text = f.read_text(encoding="utf-8", errors="replace")
+                code = JAVA_NOISE_RE.sub("", text)
+                if (extra is not None and extra.search(code)) or any(
+                        re.search(rf"\b{re.escape(n)}\b", code) for n in names):
+                    found.append(f)
+            if not found:
+                break
+            for f in found:
+                rel = f.relative_to(rabs).as_posix()
+                m = PACKAGE_RE.search(f.read_text(encoding="utf-8", errors="replace"))
+                c.move(f"{src_root}/{rel}", f"{dst_root}/{rel}")
+                names.add(f.stem)
+                moved.append(f"{m.group(1)}.{f.stem}" if m else f.stem)
+            extra = None
+        return moved
+
+    def _boot_split_moves(self, c: _Ctx, comp: str, boot: str, moved_main: list[str]) -> list[str]:
+        """Application 클래스를 쓰는 소스와 앱 컨텍스트가 필요한 테스트를 boot 모듈로 옮기고 옮긴 테스트 목록을 반환한다.
+
+        The source module cannot depend on the boot module, so a source that names the application class goes with
+        it (and whatever names that one, `_move_users`), with a hand-over line. Tests follow the classes they test:
+        a test that needs the application context (`@SpringBootTest` and the slice annotations, which look the
+        application class up from their package) or names a class that moved goes to the boot module, with the Boot
+        test resources. Returns the FQCNs of the tests moved here (the analyzer's `@SpringBootTest` classes were
+        moved by `_populate_boot`)."""
+        names = {f.rsplit(".", 1)[-1] for f in moved_main}
+        if not names:
+            return []
+        users = self._move_users(c, f"{comp}/src/main/java", f"{boot}/src/main/java", set(names))
+        if users:
+            cls = ", ".join(sorted(names))
+            c.followup(f"boot split: {len(users)} class(es) that use the application class {cls} moved with it to "
+                       f"{c.boot_rel} ({', '.join(users[:5])}{' …' if len(users) > 5 else ''}) because "
+                       f"{c.comp_rel} cannot depend on the boot module — check that they belong there")
+        tests = self._move_users(c, f"{comp}/src/test/java", f"{boot}/src/test/java",
+                                 names | {u.rsplit(".", 1)[-1] for u in users}, extra=BOOT_CONTEXT_TEST_RE)
+        if tests:
+            res = f"{comp}/src/test/resources"
+            for f in self._boot_resource_files(c, res):
+                dst = f"{boot}/src/test/resources/{f[len(res) + 1:]}"
+                if not c.ws.exists(dst):
+                    c.move(f, dst)
+            c.note(f"boot split: {len(tests)} test(s) that need the application context moved to {c.boot_rel} "
+                   f"({', '.join(tests[:5])}{' …' if len(tests) > 5 else ''})")
+        return tests
+
+    def _boot_split_checks(self, c: _Ctx, comp: str, boot: str, moved_main: list[str]) -> None:
+        """나눈 뒤 앱이 그대로 뜨는지 확인할 점(컴포넌트 스캔 범위, 파일 경로로 읽는 웹 파일)을 인수인계로 남기고 노트를 쓴다.
+
+        After the split: (1) the component scan starts at the application class's package; classes of the source
+        module outside it (and no explicit scan on the class) get a hand-over line — the split does not change what
+        the scan sees, but a person must check how the app registered them; (2) a source that reads web files by a
+        file-system path (`getRealPath`, `"src/main/webapp…"`) while the web files now sit in a jar gets one; (3) the
+        summary note."""
+        for fqcn in moved_main:
+            pkg = fqcn.rsplit(".", 1)[0] if "." in fqcn else ""
+            app = self._locate_class(c, fqcn, [f"{boot}/src/main/java"])
+            if not pkg or not app or EXPLICIT_SCAN_RE.search(JAVA_NOISE_RE.sub("", c.ws.read(app))):
+                continue
+            outside: set[str] = set()
+            rabs = c.ws.abs(f"{comp}/src/main/java")
+            for f in sorted(rabs.rglob("*.java")) if rabs.is_dir() else []:
+                m = PACKAGE_RE.search(f.read_text(encoding="utf-8", errors="replace"))
+                p = m.group(1) if m else ""
+                if p != pkg and not p.startswith(pkg + "."):
+                    outside.add(p or "(default package)")
+            if outside:
+                ps = sorted(outside)
+                c.followup(f"boot split: the component scan of {pkg} (the package of {fqcn}) does not reach "
+                           f"{len(ps)} package(s) of {c.comp_rel} ({', '.join(ps[:5])}{' …' if len(ps) > 5 else ''}) "
+                           "— check how the application registered their beans before the split (it was the same "
+                           "scan) and that it still does")
+        web_moved = c.front_made or any(n.startswith("boot split: no front module") for n in c.result.notes)
+        if web_moved:
+            readers: list[str] = []
+            for d in (comp, boot):
+                rabs = c.ws.abs(f"{d}/src/main/java")
+                for f in sorted(rabs.rglob("*.java")) if rabs.is_dir() else []:
+                    if REAL_PATH_RE.search(f.read_text(encoding="utf-8", errors="replace")):
+                        readers.append(c.ws.rel(f))
+            if readers:
+                where = c.front_rel or c.boot_rel
+                c.followup(f"boot split: {len(readers)} source(s) read web files by a file path (getRealPath / "
+                           f"src/main/webapp: {', '.join(readers[:3])}{' …' if len(readers) > 3 else ''}); the web "
+                           f"files now come from the {where} jar, where no such path exists — read them as classpath "
+                           "resources")
+        mods = ", ".join(self._layout_modules(c))
+        front = (f", static files / JSPs / templates in {c.front_rel}" if c.front_made else "")
+        c.note(f"boot split: single-module Spring Boot app split into {mods} (layout.boot_single_module: split) — "
+               f"the application class and the Boot configuration in {c.boot_rel}, every other source in "
+               f"{c.comp_rel}{front}")
 
     def _source_roots(self, c: _Ctx, ed: PomEditor) -> list[str]:
         """옮길 최상위 소스 디렉토리 목록을 반환한다.
@@ -2595,7 +2755,8 @@ class Restructurer(LegacyContextMixin):
             self._generate_application(c, boot, comp_dirs)
         elif c.boot_war:
             self._initializer_followup(c, boot, moved_main)
-        if c.jsp_moved:
+        # Boot 앱을 나눌 때는 JSP의 웹 경로가 그대로이므로 앱의 뷰 설정을 고치지 않는다
+        if c.jsp_moved and not c.boot_split:
             self._jsp_view_props(c, boot)
         self._web_xml_registrations(c, boot, comp_dirs, moved_main)
         self._web_followups(c)
@@ -3049,7 +3210,10 @@ class Restructurer(LegacyContextMixin):
                 # WEB-INF 아래는 브라우저가 직접 열 수 없으므로 JSP는 jsp 디렉토리로, 설정은 boot 보관
                 # 폴더로, 나머지는 front jar의 WEB-INF에 그대로 둔다
                 if top == "WEB-INF" and sub:
-                    if sub.lower().endswith(JSP_EXTS):
+                    # Boot 앱은 spring.mvc.view.prefix를 이미 갖고 있으므로 JSP의 웹 경로를 바꾸지 않는다
+                    if sub.lower().endswith(JSP_EXTS) and c.boot_split and i >= 0:
+                        plan.append((src, f"{meta_dst}/WEB-INF/{sub}", "jsp", web))
+                    elif sub.lower().endswith(JSP_EXTS):
                         under = sub.removeprefix("jsp/")
                         plan.append((src, f"{jsp_dst}/{under}", "jsp", web))
                     elif sub.startswith("tags/") or sub.lower().endswith(".tld"):
@@ -3080,7 +3244,8 @@ class Restructurer(LegacyContextMixin):
                         plan.append((src, f"{static_dst}/{web}", "copy", web))
                 else:
                     plan.append((src, f"{static_dst}/{web}", "static", web))
-        for d in WEB_RESOURCE_DIRS:
+        res_dirs = BOOT_WEB_RESOURCE_DIRS if c.boot_split else WEB_RESOURCE_DIRS
+        for d in res_dirs:
             rabs = c.ws.abs(f"{comp}/src/main/resources/{d}")
             if not rabs.is_dir():
                 continue
@@ -3120,7 +3285,7 @@ class Restructurer(LegacyContextMixin):
             moved[kind] += 1
             if kind == "jsp" and src.lower().endswith(JSP_EXTS):
                 jsp_files += 1
-        for d in (*web_dirs, *(f"{comp}/src/main/resources/{x}" for x in WEB_RESOURCE_DIRS)):
+        for d in (*web_dirs, *(f"{comp}/src/main/resources/{x}" for x in res_dirs)):
             self._prune_empty_dirs(c, d)
         c.front_made = True
         # 같은 대상으로 가는 JSP가 둘이면 하나만 옮기고 나머지는 clash로 남기므로 실제로 옮긴 것만 센다
@@ -5530,13 +5695,15 @@ class Restructurer(LegacyContextMixin):
         루트는 ``artifacts.parent``(aggregator), boot 모듈(``profile.boot_modules``, 없으면
         spring-boot-maven-plugin이나 @SpringBootApplication이 있는 모듈)은 ``boot_parent``, 나머지는
         ``comp_parent``를 부모로 둔다. 역할 부모를 쓰지 않으면 모듈은 계속 루트를 상속한다.
-        모듈이 없는 단일 Boot 앱은 먼저 ``{name}-boot`` 모듈로 감싼다. 다시 실행해도 결과가 같다.
+        모듈이 없는 단일 Boot 앱은 ``layout.boot_single_module``이 wrap일 때 ``{name}-boot`` 모듈로 감싸고,
+        split이면 ``apply``가 이 모드 대신 ``_layout``으로 나눈다. 다시 실행해도 결과가 같다.
 
         `boot_pom`: a Spring Boot as-is project keeps its directories; only the poms change. Root with
         `<modules>`: root → `artifacts.parent` (aggregator), the boot modules (`profile.boot_modules`, else modules
         whose pom has spring-boot-maven-plugin or that hold a @SpringBootApplication class) → `boot_parent`, every
         other module → `comp_parent` (without role parents the modules keep inheriting the root). A root that is the
-        app itself (no modules, sources present) is first wrapped into `{name}-boot`. Idempotent."""
+        app itself (no modules, sources present) is first wrapped into `{name}-boot` with `layout.boot_single_module:
+        wrap`; with `split` (v2.1z-bf) `apply` hands such a project to `_layout` instead. Idempotent."""
         root_rel = c.profile.root_pom.path if c.profile.root_pom else "pom.xml"
         c.base = posixpath.dirname(root_rel)
         if not c.ws.exists(root_rel):
@@ -5583,6 +5750,27 @@ class Restructurer(LegacyContextMixin):
         if set(c.changed) == before and not wrapped:
             c.note("boot_pom: already in place (root and module parents already configured)")
         c.commit("restructure: boot_pom parents / mandatory / optional (directories kept)")
+
+    def _boot_single_split(self, c: _Ctx) -> bool:
+        """``boot_pom`` 모드에서 루트 pom이 곧 Boot 앱이고 ``layout.boot_single_module``이 split이면 참을 반환한다.
+
+        True when the `boot_pom` mode meets a root pom that is the application itself (no `<modules>`, sources
+        present) and `layout.boot_single_module` is `split` (v2.1z-bf): the project is then split like a non-Boot
+        project (`_layout`) instead of being wrapped into `{name}-boot`."""
+        if getattr(c.cfg.layout, "boot_single_module", "split") != "split":
+            return False
+        root_rel = c.profile.root_pom.path if c.profile.root_pom else "pom.xml"
+        if not c.ws.exists(root_rel):
+            return False
+        try:
+            root = PomEditor(c.ws.abs(root_rel))
+        except PomEditError:
+            return False
+        if root.modules():
+            return False
+        c.base = posixpath.dirname(root_rel)
+        self._resolve_names(c, root)
+        return any(c.ws.exists(c.p(d)) for d in self._source_roots(c, root))
 
     def _boot_dirs(self, c: _Ctx, root: PomEditor) -> list[str]:
         """boot 모듈 디렉토리 목록을 반환한다. 분석의 ``profile.boot_modules``(이름 규칙과

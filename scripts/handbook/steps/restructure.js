@@ -5,7 +5,8 @@ module.exports = {
     "Spring Boot가 아닌 프로젝트(Spring Framework, 서블릿, 순수 Java)는 루트 바로 아래에 모듈 세 개를 만듭니다. " +
     "boot 모듈에는 새로 만든 시작 클래스와 Boot 설정만 두고, back 모듈에는 컨트롤러를 포함한 기존 소스를 모두 옮기고, 웹 자원이 있을 때만 front 모듈을 만들어 정적 파일과 JSP를 둡니다. " +
     "JSP가 있으면 boot 모듈을 java -jar로 실행되는 WAR로 만들고, 없으면 실행 가능한 jar로 만듭니다. web.xml에 있던 서블릿·필터·리스너는 자바 설정 클래스로 옮겨 적습니다. " +
-    "Spring Boot 프로젝트와 MSA는 폴더 구조를 그대로 두고 pom.xml만 고칩니다. 이미 회사 구조로 바뀐 프로젝트도 pom.xml 정리만 합니다.\n\n" +
+    "Spring Boot 프로젝트도 모듈이 하나뿐이면(루트 pom.xml이 곧 앱이면) 다른 프로젝트와 같은 세 모듈로 나눕니다. boot 모듈에는 원래 시작 클래스와 Boot 설정만 두고, 나머지 소스는 back 모듈로, 정적 파일·JSP·템플릿은 front 모듈로 옮깁니다. 화면 주소와 뷰 이름은 그대로입니다. " +
+    "모듈이 여럿인 Spring Boot 프로젝트와 MSA는 폴더 구조를 그대로 두고 pom.xml만 고칩니다. 이미 회사 구조로 바뀐 프로젝트도 pom.xml 정리만 합니다.\n\n" +
     "pom.xml은 모든 갈래가 같은 순서로 고칩니다. 먼저 루트는 사내 parent를, boot 모듈은 boot-jar를, 나머지 모듈은 comp-jar를 부모로 지정합니다. " +
     "다음으로 사내 필수 라이브러리 두 개를 넣고, 선택 라이브러리는 이미 쓰고 있는 것만 회사 버전으로 맞춥니다. 특정 라이브러리를 쓰면 대신 들어가도록 정해 둔 사내 라이브러리는 그 자리에 넣습니다.\n\n" +
     "의존성 버전은 추측하지 않습니다. 새 부모 pom이 버전을 정해 주면 pom.xml에서 버전을 지우고, 보고서에는 '부모 pom에서 지정'으로 나옵니다. " +
@@ -20,7 +21,7 @@ module.exports = {
     "구조 정리가 실패하면 구조 검토를 건너뛰고 기존 구조 그대로 빌드만 해 봅니다. 이때는 빌드가 통과해도 전환이 끝난 것으로 보지 않으며, 보고서의 「확인해 주세요」에 이유를 적습니다. " +
     "사내 프레임워크를 쓰는 프로젝트는 이 단계를 하지 않습니다. 모듈 구조와 부모 pom을 그대로 둡니다.",
   lines: [
-    "Spring Boot가 아닌 프로젝트는 boot·back·front 모듈로 나누고, JSP가 있으면 WAR로 만듭니다.",
+    "Spring Boot가 아닌 프로젝트는 boot·back·front 모듈로 나누고, JSP가 있으면 WAR로 만듭니다. 모듈이 하나인 Spring Boot 프로젝트도 같은 세 모듈로 나누고, 모듈이 여럿이면 폴더를 그대로 둡니다.",
     "버전은 추측하지 않습니다. 부모 pom이 정하지 않으면 기존 버전을 유지하고 「확인해 주세요」에 적습니다.",
     "사내 프레임워크 프로젝트는 이 단계를 건너뛰고, 모듈 구조와 부모 pom을 그대로 둡니다.",
   ],
@@ -40,9 +41,9 @@ module.exports = {
     const done = at(2, 1, "⑦ 구조 검토로", "바뀐 pom.xml을 LLM이 점검합니다", "done");
     const fail = at(3, 2, "검토 없이 빌드만", "통과해도 전환 완료로 보지 않습니다", "loop");
     const hz = (p, q) => H.seg(s, p.r, p.cy, q.l, q.cy, { head: true });
-    // 갈래: Boot 아님 → 나누기, Boot / MSA → 폴더 그대로
-    hz(ask, split); H.label(s, (ask.r + split.l) / 2, ask.cy, "Boot 아님", { w: 0.6 });
-    H.seg(s, ask.cx, ask.b, keep.cx, keep.t, { head: true }); H.label(s, ask.cx + 0.42, (ask.b + keep.t) / 2, "Boot · MSA", { w: 0.75 });
+    // 갈래: Boot 아님·모듈 하나인 Boot → 나누기, 모듈 여럿인 Boot / MSA → 폴더 그대로
+    hz(ask, split); H.label(s, (ask.r + split.l) / 2, ask.cy, "그 밖", { w: 0.45 });
+    H.seg(s, ask.cx, ask.b, keep.cx, keep.t, { head: true }); H.label(s, ask.cx + 0.75, (ask.b + keep.t) / 2, "모듈 여럿인 Boot · MSA", { w: 1.3 });
     // 두 갈래가 같은 pom 작업으로 모인다
     hz(split, parent);
     const xg = (split.r + parent.l) / 2;

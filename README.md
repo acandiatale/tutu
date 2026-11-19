@@ -24,7 +24,8 @@ analyze      case (pure_java | servlet_tomcat | spring_legacy | spring_boot | ms
              ADF stop (exit 3), hollow reactor (exit 2), framework project (scope jdk-jakarta: no restructure / review / fix loop)
 plan         the recipes of the one OpenRewrite run (Java 21, javax → jakarta, Spring Framework 7 / Security 7, Boot 4.0 + 4.1)
 transform    one OpenRewrite run — no build in between
-restructure  company layout (parent / mandatory / optional, module split, or poms only for Boot / MSA), versions carried
+restructure  company layout (parent / mandatory / optional, module split, also for a single-module Boot app,
+             or poms only for several-module Boot / MSA), versions carried
              over from the as-is effective pom, bundled jars wired, JSP javax → jakarta
 review       the LLM checks poms, dependencies and modules; critical issues are fixed by its edits and committed
 verify       mvn clean package -Dmaven.test.skip=true; on failure the script fix loop, then the final build again

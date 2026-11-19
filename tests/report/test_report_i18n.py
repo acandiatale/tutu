@@ -379,6 +379,8 @@ def handover_lines(tmp_path, cfg) -> list[str]:
     lines += _suggestion_lines(cfg)
     lines += _more_abort_lines(tmp_path / "abort")
     lines += _loop_followup_lines()
+    # v2.1z-bf: the hand-over lines of a split single-module Spring Boot app (sbmig.restructure.restructurer)
+    lines += _boot_split_lines(tmp_path, cfg)
     return lines
 
 
@@ -534,6 +536,28 @@ def _loop_followup_lines() -> list[str]:
         # entry of each, and a failed conversion (sbmig.rewrite.failure)
         *_pom_charset_lines(),
     ]
+
+
+def _boot_split_lines(tmp_path, cfg) -> list[str]:
+    from sbmig.restructure import Restructurer
+    from tests.restructure.helpers import java, make_ws
+    from tests.restructure.test_restructurer import boot2_files, boot2_profile
+    c = cfg.model_copy(deep=True)
+    c.layout.module_dir, c.layout.boot_as_is = "", "in-place"
+    c.layout.boot_module, c.layout.comp_module, c.layout.front_module = "{name}-boot", "{name}-back", "{name}-front"
+    files = boot2_files()
+    files["src/main/java/com/acme/shop/support/Banner.java"] = java(
+        "com.acme.shop.support", "Banner", body="    Class<?> c = com.acme.shop.ShopApplication.class;")
+    files["src/main/java/com/other/lib/Helper.java"] = java("com.other.lib", "Helper", "@Component")
+    files["src/main/java/com/acme/shop/web/Download.java"] = java(
+        "com.acme.shop.web", "Download", body="    String p(jakarta.servlet.ServletContext x) "
+                                             "{ return x.getRealPath(\"/files/a.xlsx\"); }")
+    ws = make_ws(tmp_path / "boot-split", files, "boot-split")
+    res = Restructurer(commit=False).apply(ws, boot2_profile(ws), c, mode="boot_pom")
+    assert res.ok, res.error
+    out = [x for x in res.manual_followups if x.startswith("boot split: ")]
+    assert len(out) == 3, res.manual_followups
+    return out
 
 
 def _pom_charset_lines() -> list[str]:

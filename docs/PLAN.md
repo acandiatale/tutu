@@ -1162,3 +1162,21 @@ The user: "우리 접수 받을때 파일 올리고 프로젝트명 안적으면
 | The admin page | grouped by the entered name | `sbmig/web/admin.py` | done |
 | Checked | 94 new tests; a real start of `order-admin` in a browser: the id and the folder carry the name | `tests/web/test_project_name.py` | done |
 | Not checked | a Job started under a 30-character upper-case name on the cluster | — | open (the user's) |
+
+## Status — 2026-11-20, a single-module Spring Boot app is split into the company's modules (v2.1z-bf)
+
+The user: "parent가 spring boot로 시작하는 프로젝트가 xxx-boot만 생성되었는데 여기 정적자원이랑 다 있거든!? 이거 xxx-comp-jar,
+xxx-front-jar 로도 변환을 해줘야해! 이 케이스를 생각을 못했네!" Since round 9c such a project was wrapped into
+`{name}-boot` as a whole.
+
+| Item | Deliverable | Where | Status |
+|---|---|---|---|
+| The switch | `layout.boot_single_module: split` (default) / `wrap`; several-module Boot projects and MSA keep their directories | `sbmig/core/config.py`, `config/default.yml` | done |
+| The split | no second splitter: the planner sends such a project to the existing layout split (`restructure.apply`, mode `layout`, `boot_single`), which gets the Boot-only placements | `sbmig/plan/planner.py`, `sbmig/restructure/restructurer.py` | done |
+| Placement | boot: the application class, what names it, the Boot configuration; source module: every other source and resource; front module: static folders, a web root, JSPs at their web path, templates; tests follow their class, context and slice tests go to boot | same | done |
+| What a person must check | three hand-over lines (classes moved with the application class; packages outside the scan; file-path reads of web files) with Korean rules | `sbmig/restructure/restructurer.py`, `sbmig/report/i18n.py` | done |
+| The review's inputs | describe this case as the boot / back / front layout | `sbmig/review/inputs.py` | done |
+| Fixtures | `company-boot-single` pins the split (controller, template, static file, tests), `company-boot-wrap` pins `wrap`, `boot-asis-parent-unpublished` is split too | `fixtures/projects/` | done |
+| Checked | the offline suite and every fixture with the real Maven (figures in the commit); the split fixture's jars unpacked and the app started with `java -jar`: the template, the CSS and the API answer | — | done |
+| Module names | the user wrote `xxx-comp-jar` / `xxx-front-jar`; the names come from the layout settings (`{name}-back` / `{name}-front` by default), as for every other project: told, not answered | — | open (the user's) |
+| Limits | see INTERFACES "v2.1z-bf" (the plan's front note, test reads of moved files, scans through `@Import`, `front_module: null` with a WAR) | — | open |

@@ -799,6 +799,17 @@ review", fix attempts as `script:<case>:v<N>`; `ko`, the company setting: the re
   name" describe older folders, which keep working. Two things the new prefix exposed: the Job name cut the TAIL of a
   long id (the unique part) and `sbmig clean`'s upload pattern knew lower-case letters only. When an identifier gets a
   new alphabet or length, grep every pattern and every truncation that reads it, in every package, before shipping.
+- **A single-module Spring Boot app is split (2026-11-20, v2.1z-bf)** — the user: "parent가 spring boot로 시작하는
+  프로젝트가 xxx-boot만 생성되었는데 여기 정적자원이랑 다 있거든!? … 이 케이스를 생각을 못했네!" The sentence in "Company
+  constraints" above ("a single-module Boot app is wrapped into `{name}-boot`") now holds only for
+  `layout.boot_single_module: wrap`; the default `split` sends such a project through the layout split of non-Boot
+  projects (plan step `restructure.apply`, mode `layout`, `boot_single`; `planner.boot_single_split`,
+  `Restructurer._boot_single_split`): application class + Boot configuration in `{name}-boot`, every other source in
+  the source module, static folders / web root / JSPs (at their web path) / templates in the front module. Projects
+  with several modules and MSA keep their directories. The module NAMES come from `layout.comp_module` /
+  `front_module` (the user wrote `xxx-comp-jar` / `xxx-front-jar`; asked, not answered). Fixtures:
+  `company-boot-single` (split; its built jar is started in the check), `company-boot-wrap`. Contract and limits:
+  `docs/INTERFACES.md` "v2.1z-bf".
 - **Company convention (2026-10-20): agents run on LangGraph under uvicorn.** `loop.engine: graph` (default) drives
   the phases from a LangGraph `StateGraph` (`sbmig/graph/`, nodes intake → analyze → plan → phase×N → finalize;
   `inline` is the old loop, reports are identical by test); the web UI is FastAPI (`uvicorn sbmig.web.app:app` or

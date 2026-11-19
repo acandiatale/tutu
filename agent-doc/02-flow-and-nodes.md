@@ -71,8 +71,8 @@ pom·build.xml 없는 트리(풀어 놓은 Tomcat 웹앱)의 담당팀 설명서
 |---|---|---|
 | `transform.rewrite` | transform | 자바 소스가 있으면 |
 | `transform.compile` | transform | `plan.compile_after_rewrite: true` 일 때만(기본 false — 재구성 전에는 빌드하지 않는다) |
-| `restructure.apply` | restructure | 비 Boot 유형, 또는 `layout.boot_as_is: layout` (모드 `layout`) |
-| `restructure.boot_pom` | restructure | `spring_boot` + `layout.boot_as_is: in-place`(기본) (모드 `boot_pom`) |
+| `restructure.apply` | restructure | 비 Boot 유형, `layout.boot_as_is: layout`, 또는 모듈 하나인 Boot 앱 + `layout.boot_single_module: split`(기본, [14](14-boot-single-module-split.md)) (모드 `layout`) |
+| `restructure.boot_pom` | restructure | `spring_boot` + `layout.boot_as_is: in-place`(기본), 모듈 여럿이거나 `wrap` (모드 `boot_pom`) |
 | `restructure.pom_only` | restructure | 자바 소스가 없는 pom 전용 프로젝트 (모드 `msa_pom`) |
 | `restructure.review` | restructure | `review.enabled` 일 때 |
 | `verify.build` | verify | 항상(계획에 없어도 `loop.always_final_verify`가 덧붙임) |
@@ -117,7 +117,7 @@ as-is 부모는 회사 부모로 맞추지 않고, 받지 못하면 LLM 없이 `
 |---|---|
 | 코드 | `Orchestrator._step_restructure` → `Restructurer.apply(ws, profile, cfg, mode=…, params=…)`(`sbmig/restructure/restructurer.py`) |
 | 읽는 것 | 프로필, `artifacts.*`, `layout.*`, as-is 캡처(`params["asis_effective"]`), 재구성 뒤 effective-pom(`params["effective_pom"]`, 필요할 때 `logs/effective-depmgmt-after-restructure.json`으로 캡처), 사내 부모 체인 사실(`sbmig/build/parent_chain.py`) |
-| 하는 일(순서) | 모드별 작업(디렉토리 이동, 루트 → aggregator, 부모 교체, 필수·선택 아티팩트, Application·boot pom 생성, web.xml 등록, legacy 컨텍스트) → 모든 pom 정리: 필터링되는 바이너리의 `nonFilteredFileExtensions` → as-is 버전 이어 적기 → 부모 체인이 관리하는 버전 지우기 → 부모를 덮는 버전 속성 지우기 → 참조 없는 버전 모양 속성 지우기 → 동봉 jar 연결 → (모든 모드 공통) JSP javax → jakarta |
+| 하는 일(순서) | 모드별 작업(디렉토리 이동, 루트 → aggregator, 부모 교체, 필수·선택 아티팩트, Application·boot pom 생성, web.xml 등록, legacy 컨텍스트) → 모든 pom 정리(바이너리 확장자, as-is 버전, 관리 버전·속성 지우기, 동봉 jar 연결: [06](06-company-rules-restructure.md) 5절 표의 순서) → (모든 모드 공통) JSP javax → jakarta |
 | 쓰는 것 | 커밋 `restructure: <단계 id>` + 중간 커밋 `restructure: …`(JSP는 `restructure: JSP javax -> jakarta`), 저널 `restructure`, `restructure_moves`, `parent_chain_facts`, `versions_pinned`, `bom_property_overrides`, `non_filtered_extensions`, `bundled_jar_wired` / `bundled_jars_skipped`, `jsp_jakarta`, `placeholders` |
 | 설정 | `layout.*`(모듈 이름, `layout.jsp_boot_packaging`, `layout.drop_managed_versions`, `layout.drop_bom_property_overrides`, `layout.wire_bundled_jars`, `layout.jsp_jakarta_rename`, `layout.legacy_context`), `artifacts.*`, `build.non_filtered_extensions` |
 | 플래그 | `parent-chain-no-boot-bom`(`artifacts.parent_manages_spring_boot: true` 인데 사내 체인이 Boot BOM을 import 하지 않음, 인수인계 맨 앞 줄), `web-xml-registered` 등 |

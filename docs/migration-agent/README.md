@@ -354,13 +354,16 @@ flowchart LR
 ```mermaid
 flowchart TD
   P{"케이스 유형"} -->|"pure_java · servlet_tomcat · spring_legacy"| SPLIT["모듈 분할 (restructure.apply)"]
-  P -->|"spring_boot"| BOOT["pom 만 (restructure.boot_pom)"]
+  P -->|"spring_boot · 모듈 하나 (boot_single_module: split)"| SPLIT
+  P -->|"spring_boot · 모듈 여럿"| BOOT["pom 만 (restructure.boot_pom)"]
   P -->|"msa"| MSA["서비스마다 pom 만 (restructure.msa_pom)"]
   SPLIT --> S1["{name}-boot: Boot 설정만, parent boot-jar · JSP 있으면 실행형 WAR"]
   SPLIT --> S2["{name}-back: 모든 소스, parent comp-jar"]
   SPLIT --> S3["{name}-front: 웹 리소스가 있을 때만 (static, META-INF/resources/WEB-INF/jsp), parent comp-jar"]
-  BOOT --> B1["루트 → base-parent, Boot 앱 *-boot → boot-jar, 나머지 → comp-jar; 단일 모듈 Boot 앱은 {name}-boot 로 감쌈"]
+  BOOT --> B1["루트 → base-parent, Boot 앱 *-boot → boot-jar, 나머지 → comp-jar"]
 ```
+
+- 모듈이 하나인 Spring Boot 앱(루트 pom 이 곧 앱)은 `layout.boot_single_module: split`(기본)이면 다른 프로젝트처럼 세 모듈로 나눕니다(단계 `restructure.apply`): `{name}-boot` 에는 `@SpringBootApplication` 클래스와 Boot 설정(`layout.boot_resources_glob`)만, 나머지 소스와 의존성은 back 모듈, 정적 파일(`static`, `public`, `resources`, `META-INF/resources`, `src/main/webapp`)·JSP·템플릿은 Boot 가 jar 에서 찾는 자리에 둔 front 모듈로 가서 URL 과 뷰 이름이 그대로입니다. 모듈이 여럿인 Boot 프로젝트와 MSA 는 디렉토리를 그대로 둡니다. `wrap` 은 통째로 `{name}-boot` 하나에 넣습니다. 규칙: `agent-doc/14-boot-single-module-split.md`.
 
 - 루트 pom 은 사내 `base-parent`(`artifacts.parent`)를 상속하는 aggregator 이고, 필수 아티팩트 2개는 모든 루트 pom 에(`artifacts.mandatory_target: root`), 선택 아티팩트는 이미 쓸 때만 맞추거나 `when_present` 트리거로 추가합니다. `{name}` = 루트 artifactId.
 - 버전: as-is 부모가 관리하던 버전은 as-is effective pom 에서 이어 적고(Handover ⚠), 새 부모 체인이 관리하는 버전은 지우고, 체인을 덮는 as-is 버전 속성은 지웁니다. 체인 사실은 effective-pom 캡처, 실패하면 저장소의 회사 부모 pom 에서 읽고, 관리 버전은 회사 부모마다 따로 둬 pom 마다 자기 부모의 것으로 판단합니다(루트 → base-parent, 모듈 → 역할 부모). pom 이 아닌 텍스트 파일(필터링 리소스 등)이 `${이름}` / `@이름@` 으로 쓰는 속성은 지우지 않습니다.
