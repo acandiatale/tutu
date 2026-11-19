@@ -5340,8 +5340,9 @@ kept its directories and a root that was the app itself was WRAPPED: everything 
     still covers the moved classes); when it would not, the restructure says so instead of guessing.
 - Recorded as every restructure is (journal `restructure` with its mode, the moves in the code-change record, hand-over
   lines for what a person must check). The name of the mode and the notes are the implementer's to report.
-- The user named the modules `xxx-comp-jar` / `xxx-front-jar`; the module names come from the layout settings (the
-  repository default is `{name}-back` / `{name}-front`), as for every other project. Told to the user.
+- The user first named the modules `xxx-comp-jar` / `xxx-front-jar` and corrected it the same day: `xxx-boot` /
+  `xxx-back` / `xxx-front`. That is what the layout settings give (`{name}-back` / `{name}-front`), as for every other
+  project.
 - **As coded.** The planner decides (`planner.boot_single_split`): for such a project the plan step is
   `restructure.apply` with `{"mode": "layout", "starter": "auto", "boot_single": True}` (not `restructure.boot_pom`),
   plan note `restructure: rule boot-single-module=split (…)`; the journal's `restructure` event says `mode: layout`, so

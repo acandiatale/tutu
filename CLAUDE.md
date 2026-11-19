@@ -807,7 +807,8 @@ review", fix attempts as `script:<case>:v<N>`; `ko`, the company setting: the re
   `Restructurer._boot_single_split`): application class + Boot configuration in `{name}-boot`, every other source in
   the source module, static folders / web root / JSPs (at their web path) / templates in the front module. Projects
   with several modules and MSA keep their directories. The module NAMES come from `layout.comp_module` /
-  `front_module` (the user wrote `xxx-comp-jar` / `xxx-front-jar`; asked, not answered). Fixtures:
+  `front_module` (the user first wrote `xxx-comp-jar` / `xxx-front-jar` and corrected it the same day: `xxx-boot` /
+  `xxx-back` / `xxx-front`, which is what the settings give). Fixtures:
   `company-boot-single` (split; its built jar is started in the check), `company-boot-wrap`. Contract and limits:
   `docs/INTERFACES.md` "v2.1z-bf".
 - **Company convention (2026-10-20): agents run on LangGraph under uvicorn.** `loop.engine: graph` (default) drives
