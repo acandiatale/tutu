@@ -225,6 +225,7 @@ def _chain_remediation(orch: Orchestrator, report: RunReport, state: MigrationSt
     조건: 설정 켜짐, dry-run 아님, ``stop_after`` 없음, 계획 단계까지 진행, 사용자 중지와 중단 없음, 이관
     성공(``Orchestrator.build_succeeded``). 변환만 한 프레임워크 프로젝트는 최종 빌드가 실패해도 이어 간다
     (``Orchestrator.remediation_after_failed_build``, ``baseline_may_fail=True``).
+    변환이 실패해 성공이 아닌 프레임워크 실행은 빌드가 실패했을 때만 ``baseline_may_fail``이 True다.
     이 노드 직전에 ``stop.request``가 생겼으면 조치를 시작하지 않는다.
 
     Chain the remediation when every condition holds; the summary goes to `report.remediation`. None = not chained."""
@@ -260,7 +261,7 @@ def _chain_remediation(orch: Orchestrator, report: RunReport, state: MigrationSt
                                        stop=lambda: stop_requested(orch),
                                        exclude_dirs=list(getattr(orch.ws, "ignored_dirs", None) or []),
                                        build_targets=migration_build_targets(orch),
-                                       baseline_may_fail=after_failure)
+                                       baseline_may_fail=after_failure and orch.final_build_failed)
         report.timings_s["remediation"] = round(orch.clock() - t0, 3)
         if rs is None and not skipped:            # disabled after all (cannot happen with the switch on) — no token
             return None

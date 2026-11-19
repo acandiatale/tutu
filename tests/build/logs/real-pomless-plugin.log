@@ -1,0 +1,21 @@
+[INFO] Scanning for projects...
+[INFO] 
+[INFO] --------------------------< com.example:app >---------------------------
+[INFO] Building app 1.0
+[INFO]   from pom.xml
+[INFO] --------------------------------[ jar ]---------------------------------
+[INFO] ------------------------------------------------------------------------
+[INFO] BUILD FAILURE
+[INFO] ------------------------------------------------------------------------
+[INFO] Total time:  0.320 s
+[INFO] Finished at: 2026-11-19T10:10:48+09:00
+[INFO] ------------------------------------------------------------------------
+[ERROR] Plugin com.example:pomless:1.0 or one of its dependencies could not be resolved:
+[ERROR] 	The following artifacts could not be resolved: com.example:pomless:pom:1.0 (absent): Could not transfer artifact com.example:pomless:pom:1.0 from/to maven-central-proxy (http://127.0.0.1:52586/): status code: 502, reason phrase: Bad Gateway (502)
+[ERROR] -> [Help 1]
+[ERROR] 
+[ERROR] To see the full stack trace of the errors, re-run Maven with the -e switch.
+[ERROR] Re-run Maven using the -X switch to enable full debug logging.
+[ERROR] 
+[ERROR] For more information about the errors and possible solutions, please read the following articles:
+[ERROR] [Help 1] http://cwiki.apache.org/confluence/display/MAVEN/PluginResolutionException

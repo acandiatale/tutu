@@ -37,6 +37,7 @@ from sbmig.core.config import Config
 from sbmig.core.workspace import Workspace, logs_dir
 
 from .mvn import base_command, mvn_env, run_logged, with_project_mvn
+from .pomless import memo_for, run_logged_with_stubs
 from .runner import negative_cache_hits
 
 log = logging.getLogger("sbmig.build.effective")
@@ -184,7 +185,10 @@ def capture_effective_depmgmt(ws: Workspace, cfg: Config, module: Optional[str] 
         cmd += [f"{HELP_PLUGIN}:effective-pom", f"-Doutput={xml_path}", "-q"]
         cmd = with_project_mvn(cfg, cmd, ws.root, top=ws.root)     # 프로젝트 .mvn 대신 옮겨 넘길 옵션을 넣는다
         log_path = ws.new_log_path(f"effective-pom-{stem}")
-        pr = run_logged(cmd, cwd=ws.root, env=mvn_env(cfg), log_path=log_path, timeout_s=EFFECTIVE_TIMEOUT_S)
+        # 저장소에 pom이 없는 라이브러리 때문에 실패하면 최소 pom을 두고 다시 실행한다
+        pr, log_path = run_logged_with_stubs(cfg, cmd, cwd=ws.root, env=mvn_env(cfg), log_path=log_path,
+                                             timeout_s=EFFECTIVE_TIMEOUT_S, journal=ws.journal, memo=memo_for(ws),
+                                             project_root=ws.root, runner=run_logged)
         if pr.exit_code != 0 and not xml_path.is_file() and getattr(cfg.build, "retry_negative_cache", True) \
                 and not cfg.build.offline and not any(a in ("-U", "--update-snapshots", "-o", "--offline") for a in cmd):
             # 모델 단계의 해석 실패는 남아 있는 `*.lastUpdated` 표시 때문일 수 있으므로 -U로 한 번 다시 시도한다

@@ -1046,6 +1046,8 @@ def reactor_artifact_ids_from_poms(root: Path | str | None) -> list[str]:
     seen = 0
     try:
         import xml.etree.ElementTree as ET
+
+        from sbmig.analyze.pom_parser import pom_encoding
         for dirpath, dirnames, filenames in os.walk(base):
             dirnames[:] = [d for d in dirnames if d not in _POM_SKIP_DIRS and not d.startswith(".")]
             if "pom.xml" not in filenames:
@@ -1054,8 +1056,10 @@ def reactor_artifact_ids_from_poms(root: Path | str | None) -> list[str]:
             if seen > _POM_WALK_LIMIT:
                 break
             try:
-                tree = ET.parse(os.path.join(dirpath, "pom.xml"))
-                proj = tree.getroot()
+                # 표준 XML 파서는 EUC-KR 같은 멀티바이트 선언을 바이트로 받으면 읽지 못하므로 먼저 글자로 바꾼다
+                with open(os.path.join(dirpath, "pom.xml"), "rb") as fh:
+                    data = fh.read()
+                proj = ET.fromstring(data.decode(pom_encoding(data), errors="replace"))
                 if proj.tag.rsplit("}", 1)[-1] != "project":
                     continue
                 for child in proj:

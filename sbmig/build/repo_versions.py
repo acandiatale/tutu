@@ -55,6 +55,8 @@ log = logging.getLogger("sbmig.build.repo_versions")
 Fetch = Callable[[str, Optional[tuple[str, str]], float], Optional[str]]   # (url, (user, password) | None, timeout) → text
 # v2.1z-e: (url, credentials, timeout, max_bytes) → raw bytes (a candidate jar for the jakarta jar scan), None on any error
 FetchBytes = Callable[[str, Optional[tuple[str, str]], float, int], Optional[bytes]]
+# v2.1z-ax: (url, credentials, timeout, method "HEAD" | "GET" | "RANGE") → (HTTP status or None, what went wrong)
+Status = Callable[[str, Optional[tuple[str, str]], float, str], "tuple[Optional[int], str]"]
 
 CENTRAL = "https://repo1.maven.org/maven2/"
 MAX_FETCH_BYTES = 8 * 1024 * 1024
@@ -627,7 +629,7 @@ class RepositoryLookup:
     실행마다 하나를 만들고 조회 결과는 인스턴스에 캐시한다.
     테스트에서는 ``tests/conftest.py``가 오프라인 가짜 구현으로 바꾸므로 실제 저장소에 접속하지 않는다."""
     def __init__(self, cfg: Config, *, fetch: Optional[Fetch] = None, fetch_bytes: Optional[FetchBytes] = None,
-                 project_root: Optional[Path] = None) -> None:
+                 project_root: Optional[Path] = None, status: Optional[Status] = None) -> None:
         self.cfg = cfg
         self.project_root = Path(project_root) if project_root else None   # v2.1z-e: the poms' <repositories> join the set
         build = getattr(cfg, "build", None)
@@ -637,6 +639,7 @@ class RepositoryLookup:
         self.max_pom_checks = max(0, int(getattr(libs, "max_pom_checks", 6) or 0))
         self._fetch_fn: Fetch = fetch or self._urllib_fetch
         self._fetch_bytes_fn: FetchBytes = fetch_bytes or self._urllib_fetch_bytes   # v2.1z-e: jar downloads
+        self._status_fn: Status = status or self._urllib_status                    # v2.1z-ax: is this exact file there
         self._jars: dict[tuple[str, str, str, Optional[str]], Optional[bytes]] = {}
         self._url_done = False
         self._url: Optional[str] = None
@@ -1108,6 +1111,66 @@ class RepositoryLookup:
             text = None
         self._poms[key] = text or None
         return self._poms[key]
+
+    def _urllib_status(self, url: str, credentials: Optional[tuple[str, str]], timeout: float,
+                       method: str) -> tuple[Optional[int], str]:
+        """URL에 요청을 한 번 보내고 HTTP 상태 코드를 반환한다. 응답이 없으면 None과 이유를 반환한다.
+
+        One request: `HEAD`, `GET` (body read up to `MAX_FETCH_BYTES` and dropped) or `RANGE` (a GET of the first
+        byte only). Returns (status, "") or (HTTP status, "HTTP <code>") or (None, why) for a timeout / refused
+        connection / bad URL. Never raises."""
+        headers = {"User-Agent": "sbmig"}
+        if credentials:
+            token = base64.b64encode(f"{credentials[0]}:{credentials[1]}".encode()).decode("ascii")
+            headers["Authorization"] = f"Basic {token}"
+        if method == "RANGE":
+            headers["Range"] = "bytes=0-0"
+        try:
+            req = urllib.request.Request(url, headers=headers, method="HEAD" if method == "HEAD" else "GET")
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                if method != "HEAD":
+                    r.read(1 if method == "RANGE" else MAX_FETCH_BYTES)
+                return int(r.status), ""
+        except urllib.error.HTTPError as e:
+            return int(e.code), f"HTTP {e.code}"
+        except TimeoutError:
+            return None, f"timeout after {timeout:.0f}s"
+        except urllib.error.URLError as e:
+            reason = e.reason
+            return None, (f"timeout after {timeout:.0f}s" if isinstance(reason, (socket.timeout, TimeoutError))
+                          else f"unreachable ({reason})")
+        except Exception as e:  # noqa: BLE001 - ValueError (bad URL), OSError, http.client trouble
+            return None, f"{type(e).__name__}: {e}"[:120]
+
+    def file_answers(self, group_id: str, artifact_id: str, version: str, ext: str) -> list[tuple[str, str, str]]:
+        """저장소마다 ``<a>-<v>.<ext>`` 파일을 받을 수 있는지 묻고 (url, 결과, 설명) 목록을 반환한다.
+        결과는 ok / missing / denied / failed 가운데 하나이고, 받을 수 있는 저장소를 찾으면 거기서 멈춘다.
+
+        v2.1z-ax: whether each repository of the set (query order) can serve this exact file, stopping at the first
+        that can. Outcome: `ok` (200 / 206), `missing` (404 / 410), `denied` (401 / 403), `failed` (any other status,
+        timeout, refused connection). A pom is asked with GET (what Maven does; a pom is small); a jar with HEAD, and
+        when a server refuses HEAD (405 / 501) with a GET of its first byte — a jar is never downloaded to learn this.
+        URLs carry no credentials (they come from the settings' `<server>` entries)."""
+        out: list[tuple[str, str, str]] = []
+        rel = f"{group_id.replace('.', '/')}/{artifact_id}/{version}/{artifact_id}-{version}.{ext}"
+        try:
+            for url, creds, _o in self.repository_urls():
+                method = "GET" if ext == "pom" else "HEAD"
+                code, why = self._status_fn(f"{url}{rel}", creds, self.timeout, method)
+                if method == "HEAD" and code in (405, 501):
+                    code, why = self._status_fn(f"{url}{rel}", creds, self.timeout, "RANGE")
+                if code in (200, 206):
+                    out.append((url, "ok", ""))
+                    break
+                if code in (404, 410):
+                    out.append((url, "missing", why or f"HTTP {code}"))
+                elif code in (401, 403):
+                    out.append((url, "denied", why or f"HTTP {code}"))
+                else:
+                    out.append((url, "failed", why or (f"HTTP {code}" if code is not None else "no answer")))
+        except Exception as e:  # noqa: BLE001
+            log.debug("file_answers(%s:%s:%s %s): %s", group_id, artifact_id, version, ext, e)
+        return out
 
     def pom_source(self, group_id: str, artifact_id: str, version: str) -> Optional[str]:
         """``pom_text``가 그 pom을 읽은 저장소 URL을 반환한다(로컬이면 'local repository').

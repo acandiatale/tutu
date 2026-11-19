@@ -242,6 +242,37 @@ def _inc(x: str | None) -> str:
     return " Maven 의존성 분석은 완전하지 않습니다." if x else ""
 
 
+_POM_WHY: tuple[tuple[re.Pattern, Callable[[re.Match], str]], ...] = (
+    (re.compile(r"not well-formed XML \(line (?P<n>\d+)\)(?:: .*)?"), lambda m: f"XML 문법 오류(줄 {m['n']})"),
+    (re.compile(r"not well-formed XML(?:: .*)?"), lambda m: "XML 문법 오류"),
+    (re.compile(r"cannot be opened \(permission denied\)"), lambda m: "파일을 열 수 없습니다(권한)"),
+    (re.compile(r"cannot be opened \(missing\)"), lambda m: "파일이 없습니다"),
+    (re.compile(r"cannot be opened \(a folder, not a file\)"), lambda m: "파일이 아니라 폴더입니다"),
+    (re.compile(r"cannot be opened \((?P<w>.+)\)"), lambda m: f"파일을 열 수 없습니다({m['w']})"),
+    (re.compile(r"character encoding unknown(?: \(.*\))?"), lambda m: "글자 인코딩을 알 수 없습니다"),
+)
+
+
+def pom_why_ko(reason: str) -> str | None:
+    """pom을 읽지 못한 이유(apply.PomReadError, xml_reason)의 한국어를 반환한다. 모르는 문장이면 None을 반환한다.
+
+    Korean for a pom read reason (open failure, encoding, XML syntax); None when the sentence is not one of them."""
+    for rx, ko in _POM_WHY:
+        m = rx.fullmatch((reason or "").strip())
+        if m:
+            return ko(m)
+    return None
+
+
+def _unreadable(e: str, head: str) -> str:
+    """"cannot read <경로>: <이유>"를 "<head>. <경로>: <이유>."로 바꾸고, 모르는 이유면 예전처럼 괄호에 넣는다."""
+    m = re.fullmatch(r"cannot read (?P<p>\S+): (?P<w>.+)", e)
+    why = pom_why_ko(m["w"]) if m else pom_why_ko(e)
+    if m and why:
+        return f"{head}. {m['p']}: {why}."
+    return f"{head}. {why}." if why else f"{head}({e})."
+
+
 def _raw(x: str | None) -> str:
     """번역하지 않는 내부 문장(도구 내부 오류, Maven 메시지)을 원문 표시로 감싼다."""
     s = re.sub(r"\s+", " ", str(x or "")).replace("`", "'").strip()
@@ -738,7 +769,7 @@ RULES: list[_Rule] = [
        lambda g: (f"{g['pom']}의 dependencies 한 곳에 {g['ga']} 선언이 {g['n']}번 있습니다. Maven은 그중 하나만 쓰므로 "
                   "자동으로 수정하지 않습니다."), "declared_twice"),
     _r("module_pom_unreadable", r"module (?P<m>\S+): pom not readable \((?P<e>{A})\)",
-       lambda g: f"{g['m']} 모듈의 pom을 읽을 수 없습니다({g['e']}).", "pom_unreadable"),
+       lambda g: _unreadable(g["e"], f"{g['m']} 모듈의 pom을 읽을 수 없습니다"), "pom_unreadable"),
     _r("vendored_dep", r"file in the tree \(not a Maven dependency\); not changed automatically",
        lambda g: "프로젝트에 포함된 파일입니다(Maven 의존성이 아님). 자동으로 수정하지 않습니다.", "vendored"),
     _r("vendored_unresolved", r"file in the tree \(not resolved by Maven\); not changed automatically",
@@ -767,7 +798,9 @@ RULES: list[_Rule] = [
     _r("ivas_vs_maven", r"IVAS reports (?P<v>{A}), Maven resolves (?P<seen>{A})(?P<inc> \(resolution incomplete\))?",
        lambda g: f"IVAS는 {g['v']} 버전을 보고했지만, Maven은 {g['seen']} 버전을 사용합니다." + _inc(g.get("inc")),
        "ivas_vs_maven"),
-    _r("cannot_read", r"cannot read (?P<p>\S+): (?P<e>{A})", lambda g: f"{g['p']} 파일을 읽을 수 없습니다({g['e']})."),
+    _r("cannot_read", r"cannot read (?P<p>\S+): (?P<e>{A})",
+       lambda g: (f"{g['p']} 파일을 읽을 수 없습니다. {pom_why_ko(g['e'])}." if pom_why_ko(g["e"])
+                  else f"{g['p']} 파일을 읽을 수 없습니다({g['e']}).")),
     _r("cannot_parse", r"cannot parse (?P<p>\S+): (?P<e>.+)",
        lambda g: f"{g['p']} 파일을 분석할 수 없습니다. {_raw(g['e'])}"),
     _r("target_no_pom", r"build target (?P<t>\S+): no pom\.xml", lambda g: f"빌드 대상 {g['t']}에 pom.xml이 없습니다."),
@@ -829,6 +862,12 @@ RULES: list[_Rule] = [
        lambda g: f"조치 구성 요소를 준비하지 못했습니다({g['e']})."),
     # ---- intake: 빌드 설정 점검 설명
     _r("boundary_symlink", r"symbolic link in the project", lambda g: "프로젝트 안의 심볼릭 링크입니다."),
+    # 읽을 수 없는 pom: 실행 메시지(코드: 경로: 이유)와 점검 결과의 이유
+    _r("boundary_refused_pom", r"unparsable_pom: (?P<p>[^\s:]+)(?:: (?P<e>{A}))?",
+       lambda g: f"pom 파일을 읽을 수 없습니다. {g['p']}" + (f": {pom_why_ko(g['e']) or g['e']}." if g["e"] else ".")),
+    _r("pom_xml_syntax", r"(?P<w>not well-formed XML(?: \(line \d+\))?(?:: {A})?)", lambda g: f"{pom_why_ko(g['w'])}."),
+    _r("pom_cannot_open", r"(?P<w>cannot be opened \([^;]+\))", lambda g: f"{pom_why_ko(g['w'])}."),
+    _r("pom_encoding_unknown", r"(?P<w>character encoding unknown(?: \({A}\))?)", lambda g: f"{pom_why_ko(g['w'])}."),
     _r("boundary_settings", r"the server's settings\.xml is the only one used",
        lambda g: "프로젝트에 들어 있는 Maven 설정 파일은 사용하지 않고 서버의 설정으로 빌드했습니다."),
     _r("boundary_project_settings_ignored",

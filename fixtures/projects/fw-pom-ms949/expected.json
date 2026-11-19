@@ -1,0 +1,138 @@
+{
+  "case_type": "pure_java",
+  "java_version": "1.8",
+  "spring_boot_version": null,
+  "spring_version": null,
+  "packaging": "jar",
+  "libraries": [],
+  "optional_artifacts_in_use": [],
+  "main_classes": [],
+  "catalog": [],
+  "requires_libs": [
+    "com.example.fw:example-fw-core:1.0.0"
+  ],
+  "expect": {
+    "success": true,
+    "exit_code": 0,
+    "max_llm_calls": 0,
+    "blocked": [],
+    "flags": [
+      "framework-project",
+      "pom-encoding-corrected"
+    ],
+    "forbidden_flags": [
+      "regex:aborted.*",
+      "rewrite-failed",
+      "rewrite-parse-problems"
+    ],
+    "journal_events": [
+      {
+        "event": "pom_encodings",
+        "step": "transform.rewrite",
+        "entries.0.pom": "pom.xml",
+        "entries.0.declared": "UTF-8",
+        "entries.0.actual": "EUC-KR",
+        "entries.0.how": "declaration"
+      },
+      {
+        "event": "rewrite",
+        "step": "transform.rewrite",
+        "ok": true
+      },
+      {
+        "event": "verify",
+        "step": "verify.build",
+        "ok": true
+      }
+    ],
+    "journal_events_absent": [
+      {
+        "event": "rewrite_failed"
+      },
+      {
+        "event": "restructure"
+      },
+      {
+        "event": "structure_review"
+      }
+    ],
+    "phases": {
+      "restructure": "absent"
+    },
+    "followups_contains": [
+      "regex:^pom encodings corrected before the automatic conversion: `pom.xml` \\(declared UTF-8, saved as EUC-KR: declaration set to EUC-KR\\) — .*the Korean text itself is unchanged$"
+    ],
+    "scripts": {
+      "attempts": {
+        "new": 0,
+        "augment": 0,
+        "reuse": 0
+      }
+    },
+    "kb": {
+      "dir": "out/e2e/kb-fw-pom-ms949",
+      "may_be_empty": true
+    },
+    "post_checks": [
+      {
+        "file_decodes_as": {
+          "path": "pom.xml",
+          "encoding": "euc-kr",
+          "contains": "<name>인사말 모듈</name>"
+        }
+      },
+      {
+        "file_decodes_as": {
+          "path": "pom.xml",
+          "encoding": "euc-kr",
+          "contains": "<!-- 인사말 모듈: 사내 프레임워크를 쓰는 예전 프로젝트. 이 파일은 MS949로 저장되어 있다 -->"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "pom.xml",
+          "encoding": "euc-kr",
+          "contains": "<?xml version=\"1.0\" encoding=\"EUC-KR\"?>"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "pom.xml",
+          "encoding": "euc-kr",
+          "contains": "<maven.compiler.source>21</maven.compiler.source>"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "src/main/java/com/example/greet/Greeting.java",
+          "contains": "Integer.valueOf(5)"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "../report.md",
+          "contains": "자동 변환 전에 pom 파일의 글자 인코딩을 바로잡았습니다. `pom.xml`(선언은 UTF-8, 실제 저장은 EUC-KR, 선언을 EUC-KR로 변경)."
+        }
+      },
+      {
+        "file_contains": {
+          "path": "../report.md",
+          "contains": "`pom-encoding-corrected`"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "../report.md",
+          "contains": "이번 실행에서 한 일: JDK 21과 Jakarta 변환, 빌드 1회"
+        }
+      },
+      {
+        "file_decodes_as": {
+          "path": "pom.xml",
+          "encoding": "euc-kr",
+          "contains": "<artifactId>example-fw-core</artifactId>\n            <version>1.0.0</version>"
+        }
+      }
+    ]
+  }
+}

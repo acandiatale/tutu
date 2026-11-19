@@ -56,7 +56,8 @@ yml; empty = no check) runs in the reduced scope `jdk-jakarta`: the analyzer loo
 dependencies, in what a parent pom outside the project brings, in bundled jars and, when none of these has it, with one
 `dependency:tree`; the plan then holds only the recipe sets of `framework.recipe_sets` (default Java 21 + jakarta), the
 JSP javax → jakarta rename and ONE build: build errors are not fixed (no pre-try, no stored script, no LLM call) but
-reported, and the converted tree is delivered (a failed build ends with exit 2). The chained remediation follows whether the
+reported, and the converted tree is delivered (a failed build ends with exit 2; a failed conversion too, even when the
+unconverted tree builds: `exit=2 build=ok … attn=rewrite-failed`). The chained remediation follows whether the
 build passed or failed (`remediation.after_failed_build: framework`, default; `never` = only after a passing build). After a
 failed build the candidate build may fail only with the errors the project's build already had; when it changed versions,
 no build confirmed them, so it ends `INCOMPLETE` (`baseline_build_failed`; the page says 조치함 · 빌드 미확인); with nothing

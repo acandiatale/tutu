@@ -44,6 +44,7 @@ from sbmig.core.workspace import Workspace, logs_dir
 
 from .classpath import _PACKAGE_SKIPS, _has_modules, _module_dir, _pom_stamp, _safe
 from .mvn import base_command, mvn_env, run_logged, with_project_mvn
+from .pomless import memo_for, run_logged_with_stubs
 
 log = logging.getLogger("sbmig.build.deptree")
 
@@ -237,8 +238,9 @@ def _run_tree(ws: Workspace, cfg: Config, mdir: str, name: str, out_file: Path, 
     cmd.append("-q")
     cmd = with_project_mvn(cfg, cmd, ws.root, top=ws.root)     # 프로젝트 .mvn 대신 옮겨 넘길 옵션을 넣는다
     log_path = ws.new_log_path(f"deptree-{name}{'-pkg' if package else ''}")
-    pr = run_logged(cmd, cwd=ws.root, env=mvn_env(cfg), log_path=log_path, timeout_s=DEPTREE_TIMEOUT_S)
-    return pr, log_path
+    # 저장소에 pom이 없는 라이브러리 때문에 실패하면 최소 pom을 두고 다시 실행한다
+    return run_logged_with_stubs(cfg, cmd, cwd=ws.root, env=mvn_env(cfg), log_path=log_path, timeout_s=DEPTREE_TIMEOUT_S,
+                                 journal=ws.journal, memo=memo_for(ws), project_root=ws.root, runner=run_logged)
 
 
 def dependency_tree(ws: Workspace, cfg: Config, module: Optional[str] = None,

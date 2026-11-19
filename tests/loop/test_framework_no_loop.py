@@ -187,3 +187,25 @@ def test_other_failed_runs_are_not_chained(cfg, ws, spy, case):
         report = chained_run(cfg, ws, framework=case != "ordinary", fix_loop=case == "fix-loop-on",
                              after="never" if case == "never" else "framework")
     assert not report.success and spy.calls == [] and report.remediation is None
+
+
+# v2.1z-ay: a reduced run whose conversion failed is not a success; the chained remediation still follows it with
+# remediation.after_failed_build: framework, baseline_may_fail only when the build itself failed.
+def failed_conversion(ws):
+    from .fakes import FakeRewriteRunner
+    return FakeRewriteRunner(ws, ok=False, error="Failed to parse pom: Invalid UTF-8 middle byte 0xce")
+
+
+@pytest.mark.parametrize("build_ok", [True, False], ids=["build-passed", "build-failed"])
+@pytest.mark.parametrize("fix_loop", [False, True], ids=["loop-off", "loop-on"])
+@pytest.mark.parametrize("after", ["framework", "never"])
+def test_failed_conversion_and_the_chained_remediation(cfg, ws, spy, build_ok, fix_loop, after):
+    if not build_ok:
+        broken_ws(ws)
+    report = chained_run(cfg, ws, fix_loop=fix_loop, after=after, rewrite=failed_conversion(ws),
+                         build_fn=(lambda w, call: ok_build()) if build_ok else broken_build)
+    assert "rewrite-failed" in report.flags and not report.success and run_exit_code(report) == 2
+    assert report.final_build is not None and report.final_build.ok is build_ok
+    # chained: never with `never`; a failed build with the loop on stays unchained (v2.1z-aw scope)
+    chained = after == "framework" and (build_ok or not fix_loop)
+    assert [c["baseline_may_fail"] for c in spy.calls] == ([not build_ok] if chained else [])

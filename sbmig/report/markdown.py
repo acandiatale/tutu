@@ -45,7 +45,7 @@ from .handover import (
     unknown_jars_system,
 )
 from .i18n import normalize, tr, tr_line
-from .result_line import report_result_line, run_scope
+from .result_line import conversion_only_failed, report_result_line, run_scope
 
 # 플래그별로 보고서 "Flags" 섹션에 쓸 설명. 값이 i18n.py STRINGS의 키이기도 하므로 바꾸면 번역도 함께 바꾼다
 FLAG_HELP = {
@@ -112,6 +112,17 @@ FLAG_HELP = {
     "stray-pom-ignored": "a pom.xml with the same coordinates as a module that no pom lists (a stray copy in an IDE output / "
                          "backup folder such as `boot/bin/pom.xml`): ignored at intake — not built, not migrated, not shown "
                          "to the structure review; see Manual follow-ups",
+    # 선언과 다른 인코딩으로 저장된 pom을 변환 전에 맞춘 경우. 후속 조치에 한 줄 남긴다
+    "pom-encoding-corrected": "a pom's XML declaration named another encoding than the one its Korean text was saved in "
+                              "(OpenRewrite cannot read such a pom): sbmig made it consistent before the automatic "
+                              "conversion, the Korean text unchanged — see Manual follow-ups",
+    # 자동 변환이 실패했는데 실행은 이어 간 경우. 후속 조치 첫 줄에 적용하지 못한 레시피 세트와 원인을 남긴다
+    "rewrite-failed": "the automatic conversion (OpenRewrite) failed and its recipe sets were not applied — see the first "
+                      "line of Manual follow-ups",
+    # 저장소에 jar만 있고 pom이 없는 라이브러리를 sbmig가 만든 최소 pom으로 빌드한 경우. 후속 조치에 한 줄 남긴다
+    "pomless-library": "a library's repository has its jar but no pom: the build used a minimal pom that sbmig wrote into "
+                       "the server's local Maven repository, so Maven does not know that library's own dependencies — "
+                       "see Manual follow-ups",
     # 어느 pom도 선언하지 않은 jar가 트리 안에 있는 경우.
     # 빌드 오류가 그 jar를 필요로 하면 수정 루프가 연결한다
     "bundled-jars": "jars sit in the tree (e.g. WEB-INF/lib) that no pom declares — the as-is IDE build compiled against "
@@ -320,6 +331,21 @@ def no_fix_loop(r: RunReport) -> bool:
     return not any(pr.attempts for pr in r.phases or [])
 
 
+def converted_nothing(r: RunReport) -> bool:
+    """변환만 하는 실행에서 빌드는 통과했지만 자동 변환이 실패했는지 확인한다.
+
+    v2.1z-ay: a reduced run flagged `rewrite-failed` whose final build passed: not a success, nothing converted."""
+    return conversion_only_failed(r) and r.final_build is not None and bool(r.final_build.ok)
+
+
+def result_label(r: RunReport, lang: str = "en") -> str:
+    """머리 표의 결과 칸을 만든다. 빌드는 통과했지만 변환이 실패한 실행은 그렇다고 쓴다."""
+    # tests/report/test_report_i18n.py가 번역 표와 대조하므로 tr의 원문은 리터럴로 쓴다
+    if converted_nothing(r):
+        return tr(lang, "❌ NOT CONVERTED (the build passed)")
+    return tr(lang, "✅ BUILD SUCCESS") if r.success else tr(lang, "❌ NOT BUILDING")
+
+
 def framework_lines(r: RunReport, lang: str = "en") -> list[str]:
     """사내 프레임워크 아티팩트를 찾은 실행의 절을 만든다. 찾지 못했으면 빈 목록을 반환한다.
     프레임워크 이름과 적용 범위 문장, 어디에서 찾았는지, 이번 실행에서 한 일과 하지 않은 일, 확인하지 못한 곳을 담는다.
@@ -348,11 +374,17 @@ def framework_lines(r: RunReport, lang: str = "en") -> list[str]:
     L.append("")
     if reduced:
         looped = any(pr.attempts for pr in r.phases or [])
-        did = [tr(lang, "JDK 21 and Jakarta conversion")]
+        # 변환이 실패했으면 한 일에 변환을 쓰지 않고 실패했다고 따로 쓴다
+        failed = conversion_only_failed(r)
+        did = [] if failed else [tr(lang, "JDK 21 and Jakarta conversion")]
         # 수정 루프가 시도한 것이 있을 때만 빌드 오류 수정을 한 일로 쓴다
         did.append(tr(lang, "build error fixes") if looped else tr(lang, "one build"))
         if _remediation_ran(r):
             did.append(tr(lang, "vulnerability remediation"))
+        if failed:
+            L.append(tr(lang, "**The JDK 21 and Jakarta conversion failed: nothing was converted** (the reason is the "
+                              "first line of Manual follow-ups)."))
+            L.append("")
         L.append(tr(lang, "Done in this run: {what}", what=", ".join(did)))
         L.append("")
         if no_fix_loop(r):
@@ -889,7 +921,7 @@ def error_list_lines(r: RunReport, lang: str = "en") -> list[str]:
                 L.append(f"- [{e.kind.value}] {loc}{_cell(e.message, 300)}{extra}{at}")
             L.append("")
     else:
-        L += [tr(lang, "None. The final build passed.") if r.success
+        L += [tr(lang, "None. The final build passed.") if r.success or converted_nothing(r)
               else tr(lang, "None. No structured errors were captured; check the last build log."), ""]
     if r.final_build is not None and r.final_build.log_path:
         L += [tr(lang, "Last build log: `{path}`", path=r.final_build.log_path), ""]
@@ -1455,7 +1487,7 @@ def render_markdown(report: RunReport, language: str = "en", cfg: Any = None) ->
         from .guide_ko import render_guide_ko
         return render_guide_ko(r, cfg)
     L: list[str] = []
-    ok = tr(lang, "✅ BUILD SUCCESS") if r.success else tr(lang, "❌ NOT BUILDING")
+    ok = result_label(r, lang)
     L.append(tr(lang, "# Migration report — {name}", name=r.project_name))
     L.append("")
     L += intake_notice_lines(r, lang)       # Ant 거부이면 회사 안내 문구를 보고서 첫 줄에 둔다

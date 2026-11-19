@@ -19,8 +19,11 @@ Routes:
                                          shows the full list only under "고급 설정"; "max_parallel" = how many
                                          migrations run at a time (v2.1z-ae: Job modes, else 1); "framework" =
                                          {configured, name, fix_loop} of those configs (v2.1z-aw)
-    GET  /api/runs                       known runs (newest first) with status ("runs"; a waiting run carries "queue",
-                                         a Job run its "slot") and "parallel": {slots, running, waiting}
+    GET  /api/runs[?days=N][&keep=<id>]  known runs (newest first) with status ("runs"; a waiting run carries "queue",
+                                         a Job run its "slot") and "parallel": {slots, running, waiting}; `days` = only
+                                         runs started in the last N × 24 h (0 / omitted = all; not a non-negative
+                                         integer → 400), queued / running runs, a remediation waiting for a person or
+                                         resumed, and `keep` always listed; "days" and "hidden" (left out) beside "runs"
     POST /api/runs?name=<file.zip>[&configs=a.yml,b.yml][&stop_after=…][&llm_provider=…][&flow=full|remediation]
          body = the zip bytes                                       → 202 {"run_id", "status"}
          `configs` omitted = the server default; `configs=` (empty) = default.yml only; `flow` (v2.1z-aj) omitted =
@@ -80,6 +83,7 @@ import ipaddress
 import json
 import logging
 import os
+import re
 import secrets
 import zipfile
 from collections.abc import AsyncIterator, Iterator
@@ -553,8 +557,16 @@ def create_app(out_dir: Path, repo_root: Path = PACKAGE_ROOT, max_upload_mb: int
 
     # 화면이 슬롯 부족 알림과 대기 순번을 표시할 수 있도록 실행 목록과 함께 동시 실행 현황을 반환한다
     @app.get("/api/runs")
-    def runs() -> dict:
-        return {"runs": mgr.list_runs(), "parallel": mgr.parallel()}
+    def runs(days: str | None = None, keep: str | None = None) -> Any:
+        # 최근 며칠 안의 실행만 보낸다. 음이 아닌 정수만 받고 0이나 생략은 전체다
+        n = 0
+        if days is not None:
+            if not re.fullmatch(r"\d{1,6}", days):
+                return JSONResponse({"error": "days must be a non-negative integer (0 = all)"}, status_code=400)
+            n = int(days)
+        if keep is not None and not RUN_ID_RE.match(keep):
+            return JSONResponse({"error": "bad run id in keep"}, status_code=400)
+        return {**mgr.list_recent(n, keep), "parallel": mgr.parallel()}
 
     @app.get("/api/threads", response_class=PlainTextResponse)
     def threads() -> str:

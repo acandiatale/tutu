@@ -206,6 +206,7 @@ class ServerMaven:
         self.runner: Runner = runner or run_logged
         self.maven_probe: MavenProbe = maven_probe or maven_available
         self.journal = journal
+        self.last_log: Path | None = None               # 마지막으로 실행한 Maven 명령의 로그 경로다
 
     # ------------------------------------------------------------------ readiness / hosts
     def readiness(self) -> list[str]:
@@ -348,8 +349,17 @@ class ServerMaven:
         """로컬 저장소에 캐시된 다운로드 실패(``*.lastUpdated``) 때문에 빌드가 실패하면 ``-U``를 붙여 한 번
         더 실행하고 두 번째 결과를 반환한다.
         이관의 ``MavenRunner.run``과 같은 규칙이며, 재시도하면 저널 ``remediation_negative_cache_retry``를 남긴다."""
+        from sbmig.build.pomless import memo_for, round_log_path, run_with_stubs
         from sbmig.build.runner import negative_cache_hits
-        pr = self._run(cmd, cwd, log_path, timeout_s)
+        # 저장소에 pom이 없는 라이브러리 때문에 실패하면 -U보다 먼저 최소 pom을 두고 같은 명령을 다시 실행한다
+        last = [Path(log_path)]
+
+        def run(k: int) -> ProcessResult:
+            last[0] = round_log_path(Path(log_path), k)
+            return self._run(cmd, cwd, last[0], timeout_s)
+        pr = run_with_stubs(self.cfg, run, journal=self.journal, memo=memo_for(self), project_root=Path(cwd))
+        # 기준 빌드 비교가 결과의 로그 파일을 읽으므로 마지막으로 실행한 로그 경로를 남긴다
+        self.last_log = last[0]
         ok = pr.exit_code == 0 and not pr.timed_out and "BUILD SUCCESS" in (pr.text or "")
         if ok or pr.timed_out or not self._may_force_update(cmd):
             return pr
@@ -366,6 +376,7 @@ class ServerMaven:
             except Exception:                           # journal is best effort
                 log.debug("negative-cache journal line not written", exc_info=True)
         lp = Path(log_path)
+        self.last_log = lp
         return self._run([*cmd[:-1], "-U", cmd[-1]], cwd, lp.with_name(f"{lp.stem}-U{lp.suffix}"), timeout_s)
 
     # ------------------------------------------------------------------ build targets
@@ -421,7 +432,9 @@ class ServerMaven:
             cmd = self._with_project_mvn([*cmd0[:-1], *args, cmd0[-1]], cwd, project)
             t0 = time.monotonic()
             try:
+                self.last_log = lp
                 pr = self._run_with_update_retry(cmd, cwd, lp, timeout_s)
+                lp = Path(self.last_log)
             except Exception as exc:                    # noqa: BLE001 - the gateway never raises for a build
                 log.warning("remediation build could not run: %s", type(exc).__name__)
                 return BuildOutcome(ok=False, log=lp.as_posix(), summary=f"build could not run: {type(exc).__name__}",

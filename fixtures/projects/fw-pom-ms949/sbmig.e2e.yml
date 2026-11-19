@@ -1,0 +1,15 @@
+# Per-fixture config override (fw-pom-ms949), appended after config/artifacts.local-e2e.yml.
+# v2.1z-ay framework project whose pom.xml says UTF-8 but is saved as MS949 (Korean comment, <name>, <description>):
+# OpenRewrite cannot parse such a pom; sbmig corrects the declaration before the conversion.
+framework:
+  artifacts: ["example-fw-core"]
+# The Korean guide: the hand-over line and the flag are checked in Korean.
+report:
+  language: ko
+# No LLM request is expected (conversion + one build).
+llm:
+  provider: fake
+  base_url: "replay:fixtures/projects/fw-pom-ms949/replay"
+# Own KB; scripts/e2e.py clears it before the run.
+kb:
+  dir: out/e2e/kb-fw-pom-ms949

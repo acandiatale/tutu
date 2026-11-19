@@ -3412,7 +3412,7 @@ The user: "초반엔 무서우니까 3명까지는 빌드파드가 돌아가는 
   everything once; the repositories persist on the PVC.
 - **Status** (`RunManager.status`): every answer carries `parallel: {slots, running, waiting}`; a run waiting in this process's line
   carries `queue: {position, ahead}` (`position` 1 = next, `ahead = position - 1`); a Job run that holds or held a slot carries `slot`
-  (memory, else `ControlState.slot`). `GET /api/runs` → `{runs: [...], parallel: {...}}` (each listed run as before, plus `queue` /
+  (memory, else `ControlState.slot`). `GET /api/runs[?days=N&keep=<run id>]` → `{runs: [...], parallel: {...}, days, hidden}` (the list cut: "v2.1z-az"; each listed run as before, plus `queue` /
   `slot` when known); `GET /api/configs` adds `max_parallel`. **SSE**: `events()` sent `status` only when a stream opened and when the
   run ended; it now sends `status` again whenever the run's `(state, queue position)` changes — a waiting page sees itself move up
   and start without a reload.
@@ -4932,6 +4932,182 @@ then the configured patterns; a pattern with a glob is skipped; trailing role wo
   block the note 「…바꾼 라이브러리 버전을 빌드로 확인하지 못했습니다…」 and the ZIP badge 빌드 미확인 appear only for a
   delivery with `build_tolerated` (and applied changes); a change set that added a build error keeps 빌드 실패본. The run
   card's sub line and 「지난 실행」 name the remediation's outcome after the migration's.
+
+## v2.1z-ax — a library whose repository has the jar but no pom
+
+**Why.** The user's cluster (2026-11-19): an in-house library sits in the releases repository as a jar only. The build
+stopped with `Could not transfer artifact G:A:pom:V from/to maven-central (…)`, status 502. Measured with Maven 3.9.10:
+Maven asks EVERY repository for the pom of a dependency. When all answer "not found" it warns (`The POM for … is
+missing, no dependency information available`) and uses the jar. When one answers with a transfer error (a proxy of
+Maven Central in a closed network answers 502 for a path it never cached; a refused connection), the build stops:
+`Failed to read artifact descriptor for G:A:jar:V` caused by `Could not transfer artifact G:A:pom:V from/to <id>
+(<url>): …`. With a file `<local repository>/<g path>/<a>/<v>/<a>-<v>.pom` present, Maven asks no repository for the
+descriptor and downloads the jar from the repository that has it, in either repository order (a leftover
+`.pom.lastUpdated` does not matter). The user asked for a way that needs nobody else ("자체 라이브러리라 요청이 될지
+모르겠네. 이거는 해결 방법이 없어?"); a system-scoped jar in the project pom was rejected (such a jar is not packaged into
+the WAR, and the project would change).
+
+**What.** `build.pomless_stub` (default `true`), `build.pomless_stub_max` (default 20 per run). `sbmig/build/pomless.py`.
+- *Detection* in the log of a failed Maven command: a descriptor failure of a `jar` dependency without classifier whose
+  cause is a transfer error on its `pom` (the first form above and the cached repeat of it). Never: a parent pom
+  (`Non-resolvable parent POM`), an imported BOM (`Non-resolvable import POM`), a plugin or build extension, a plain
+  `Could not find artifact`.
+- *Proof before anything is written* (the repository set, mirrors and credentials of `RepositoryLookup`, with the project
+  poms' `<repositories>`): the JAR is obtainable from at least one repository (or is already in the local repository)
+  AND the POM is obtainable from none. Otherwise nothing is written and today's handling applies; journal
+  `pomless_check {ga, version, reason}` with `reason` = `pom-available` (a real transfer problem), `jar-unavailable`
+  (the repository is down or the library does not exist), `no-repository`, `cap`, `off`.
+- *The stub*: `<local repository>/<g path>/<a>/<v>/<a>-<v>.pom`, written atomically, never over an existing file (a
+  file another pod wrote counts as done): `modelVersion`, `groupId`, `artifactId`, `version`, `packaging` jar, and an XML
+  comment saying that sbmig wrote it because the repository has no pom for this library and that it must be deleted when
+  a real pom is uploaded. No dependencies: what Maven itself assumes for a missing pom. No other file is touched.
+- *Then* the same Maven command runs once more. A library is handled once per run; a command may need several rounds
+  (each failure names few libraries) up to the cap.
+- *Where*: one shared function behind every Maven call of sbmig that resolves dependencies: `MavenRunner.run` (builds,
+  `dependency:tree` …), the OpenRewrite run, the effective-pom capture of intake, the remediation's Maven calls.
+- It is a repair of the environment, not of the project: no project file changes, no LLM call, it also runs for a
+  framework project (no fix loop) and before any blocked-item classification (`repository_unreachable`).
+- *Said*: journal `pomless_stub {ga, version, path, jar_from, created}` (`created` false = the file was already there),
+  flag `pomless-library`, one INFO line per stub, one hand-over line naming the libraries (they have no pom in the
+  repository; a minimal pom was written on the server; their own dependencies are not known to Maven; the lasting fix is
+  a pom in the repository), with a Korean rule.
+
+**Names of this section, as coded.**
+- *Detection* (`pomless.py`): the descriptor line must name exactly `G:A:jar:V`, and a transfer clause for the same
+  `G:A:pom:V` must stand on that line or within the next three. Maven 3.9 prints the same pair of lines on the first
+  attempt and on every repeat (it does not cache a transfer error: there is no "was cached" form of this failure); the
+  one-line Maven 3.8 form and the resolver's "during a previous attempt" form are accepted too. Captured logs:
+  `tests/build/logs/real-pomless-*.log`.
+- *Proof* (`RepositoryLookup.file_answers(g, a, v, ext)`): the pom is asked with GET, the jar with HEAD (a server that
+  refuses HEAD gets a one-byte ranged GET; a jar is never downloaded). 200 / 206 = obtained, 404 / 410 = not there,
+  401 / 403 = denied (counts as "not obtained" for the pom and as "not obtainable" for the jar), anything else = failed.
+  Two more `pomless_check` reasons: `bad-coordinate` (not a plain coordinate), and `no-repository` also when the local
+  repository path cannot be resolved.
+- *The local repository* (`pomless.maven_local_repo`): `build.local_repo` → `-Dmaven.repo.local` in `build.extra_args`
+  → `<localRepository>` of the settings Maven uses → the global settings → `~/.m2/repository`. On the cluster each
+  slot has its own (`/data/.m2/repository`, `repository-slot2`, `repository-slot3`): a stub is written into the
+  repository of the pod that met the failure.
+- *The file*: starts with the comment `Written by sbmig: the repository has a jar but no pom for …`
+  (`pomless.STUB_MARKER`); written with a temp file and a hard link, so it never replaces a file.
+- *Order of the retries* in `MavenRunner.run`: HTTP blocker (no retry) → Windows file lock → stub pom → `-U` (which
+  cannot help with this failure and is skipped once a stub was written). Reruns are labelled `-pomless<k>`.
+- *Call sites*: `MavenRunner.run`, `rewrite/runner.py`, `build/effective.py`, `build/deptree.py`,
+  `build/classpath.py`, `plan/jarcheck.py`, `remediations/maven.py` (`package`, `resolve`). `rewrite/versions.py`
+  (the recipe BOM) is not wrapped.
+- *A later run is told too*: at finalize the run's known dependencies (an unfiltered dependency tree when one was
+  captured, else the effective-pom captures' direct dependencies and the declared ones) are checked against the local
+  repository; a pom that starts with the marker joins the same flag and line; journal `pomless_stub_used {ga, version,
+  path}`; at most 300 coordinates are checked. A library reached only transitively can be missed when no unfiltered
+  tree exists.
+- *Not said yet*: the remediation-only flow writes the stub and records it in the journal and the log only.
+
+## v2.1z-ay — a pom whose bytes do not match its XML declaration; a failed conversion is said
+
+**Why.** The user's cluster (2026-11-19): the chained remediation refused a project with 「읽을 수 없는 pom」, detail
+`OSError`. Measured: lxml raises `OSError` when a pom's bytes do not match its declaration (the header says UTF-8, or
+says nothing, and the Korean text is saved as MS949 / EUC-KR), and for `encoding="MS949"`. Maven 3.9.10 never refuses
+a pom for its bytes and never warns: it builds with the header UTF-8, none, EUC-KR, MS949, x-windows-949, CP949 over
+MS949 bytes (names print garbled when the header is wrong); it refuses only XML that is not well-formed and an
+encoding name Java does not know. Taking such a pom through the migration showed the larger defect: OpenRewrite
+cannot parse it (`Failed to parse pom: Invalid UTF-8 middle byte …`), the whole recipe run fails with 0 changed files,
+and the run went on to `exit=0 build=ok` with the failure only in the English recipe table and a phase note.
+
+**The remediation reads every pom Maven reads** (`sbmig/remediations/`). One way of reading, the migration's
+(`analyze.pom_parser.pom_encoding`: BOM → strict UTF-8 → the declared encoding, the Korean family as cp949 → the first
+of the candidates that decodes the whole file), behind `apply.read_pom_xml` / `apply.pom_xml_bytes`: the boundary
+check, the inventory, the planner's locations, the apply step and its structure check all use it. An applied change
+is written back in the encoding the file was read with: only the bytes of the changed text differ, the declaration
+and every other byte stay (tests compare bytes). A pom that really cannot be read is still refused, and the finding
+says what is wrong: `unparsable_pom: <path>: <detail>` with `not well-formed XML (line N): …`, `cannot be opened
+(permission denied | missing | a folder, not a file)`, `character encoding unknown (…)`; Korean on the page and in the
+report: 「pom 파일을 읽을 수 없습니다. app-core/pom.xml: XML 문법 오류(줄 12).」, step 「pom 파일 고치기」.
+
+**Before the conversion, such a pom is corrected** (`layout.legacy_context.correct_pom_encoding`, default `true`; both
+flows, before the first OpenRewrite run, beside the source-encoding step). A project pom whose bytes a strict XML
+reader cannot read under the pom's own declaration is made consistent, in the way that changes the fewest bytes while
+every later tool reads it right (OpenRewrite parses it and writes it back with the Korean text intact, Maven builds
+it): preferably only the declaration is changed to the encoding the bytes are in; when the measurement with the real
+rewrite plugin shows that is not enough, the file is saved again as UTF-8. The Korean text is never lost. Recorded
+like the source-encoding correction: its own commit (`transform: pom encodings corrected`), journal `pom_encodings
+{entries: [{pom, declared, actual, how}]}`, one error-list entry per pom with `seen = transform`, flag
+`pom-encoding-corrected`, one hand-over line with a Korean rule. A pom that is consistent is never touched.
+
+**A failed conversion is said, and a conversion-only run is not a success without its conversion.** When an OpenRewrite
+run fails (for any reason that does not already abort the run): flag `rewrite-failed`, one hand-over line FIRST among
+the follow-ups naming the recipe sets that were not applied and the cleaned reason, with a Korean rule; the Korean
+guide's lead says it; `SBMIG-RESULT` shows it among the attention codes. An ordinary run keeps its build-defined
+verdict (the restructure and the fix loop may still reach a passing build). A run in the reduced scope (a framework
+project: the conversion is all it does) whose conversion failed is NOT a success even when its build passes
+(`Orchestrator.build_succeeded`), ends exit 2, and its report block does not claim "JDK 21과 Jakarta 변환" among what
+was done. The chained remediation still follows such a run when `remediation.after_failed_build` is `framework`, with
+`baseline_may_fail` only if the build itself failed.
+
+**Names of this section, as coded.**
+- *What the rewrite plugin does* (measured: rewrite-maven-plugin 6.46.1, `UpgradeToJava21`, JDK 21, Maven 3.9.10): a
+  UTF-8 header or no declaration over MS949 bytes is not parsed (0 files changed); a pom declared `EUC-KR` with EUC-KR
+  bytes is parsed and written back with only the changed lines different; a pom declared `MS949`, `x-windows-949` or
+  `CP949` is parsed, but when its text holds a syllable EUC-KR cannot encode the plugin writes replacement characters
+  over the Korean text. lxml accepts `EUC-KR` and `CP949` and refuses `MS949` and `x-windows-949` as names.
+- *The correction* (`sbmig/restructure/pom_charset.py`, `Orchestrator._correct_pom_encodings`, at the start of every
+  `transform.rewrite`, before the source-encoding step): every project pom outside `src/`. Left alone: a file with a
+  BOM, a pom a strict parse accepts whose Korean-family declaration holds only EUC-KR bytes, XML that is not
+  well-formed, bytes only latin-1 or shift_jis explain. Bytes that are strict EUC-KR → only the declaration changes,
+  to `EUC-KR` (the one Korean name Maven, OpenRewrite and lxml all accept; added with the file's own line ending when
+  there was none). Anything else (MS949-only syllables) → saved again as UTF-8 with a UTF-8 declaration. Before a
+  write: the result parses strictly and the text without the declaration is identical. Journal `pom_encodings {step,
+  entries: [{pom, declared, actual, how}]}` with `how` = `declaration` | `utf-8`; the later writers (`PomEditor.save`,
+  the scope restore, the fix loop's pom helpers, `Workspace.write`) keep such a file consistent (tests).
+- *The standard library's XML parser* refuses a multi-byte declaration on bytes: every reader of a project pom
+  decodes first (`pom_encoding`), also `log_parser.reactor_artifact_ids_from_poms` and `scripts/e2e.py`.
+- *A failed conversion* (`sbmig/rewrite/failure.py`): journal `rewrite_failed {step, sets, reason}` (the configured
+  recipe-set names; the reason is the first line, scrubbed, paths made relative, ≤ 300 characters), flag
+  `rewrite-failed` (first among the attention codes of `SBMIG-RESULT`), the hand-over line placed before the
+  no-fix-loop line, Korean lead 「자동 변환 실패」 as the first item of 「확인해 주세요」.
+- *The success rule*: `Orchestrator.build_succeeded` adds `not (self.reduced_scope and self.conversion_failed)`.
+  Such a run prints `exit=2 build=ok … attn=rewrite-failed`, head cell 「❌ 변환 실패 (빌드는 통과)」 /
+  `❌ NOT CONVERTED (the build passed)`, and its framework block leaves the conversion out of what was done.
+  `remediation_after_failed_build` is true for a reduced run with `framework` whose build failed without the fix loop,
+  or whose build passed and whose conversion failed; `_chain_remediation` passes `baseline_may_fail` only when the
+  build failed. Open: `sbmig/fleet/runner.py` names its column from `report.success`, so the fleet summary calls that
+  case a failed build.
+- Fixture `fw-pom-ms949` (a framework project whose pom is MS949 under a UTF-8 header).
+
+## v2.1z-az — the page: a stop a person asked for is orange; 「지난 실행」 shows three days
+
+The user (2026-11-19): "중단 요청은 프로젝트에 표시 할 때 주황색으로 바꿔줘 ㅠ 너무 빨가니까 문제 투성이 에이전트 같아 ㅠㅠ
+지난 실행은 3일치만 보여주도록 변경도 해줘!" and "최근 3일내에 등록한 프로젝트만 보입니다. 라고 문구도 하나 넣어주고!"
+
+- **Stopped on request.** `GET /api/runs/{id}` (and the list) carries `user_stop: true` for a finished run without a
+  result (exit 3 or none) when a stop was requested, Main recorded the control state `stopped` (withdrawn while
+  waiting, deleted before its pod started or after the grace period), the abort reason starts with
+  `STOP_REQUEST_REASON`, or the error starts with `STOP_BEFORE_START_ERROR`. A stop that came too late (exit 0 or 2) is
+  not one. The page shows such a run in the caution colour (`warn`) everywhere: the title 「중단되었습니다」, its line in
+  「지난 실행」, the rail step (state `.stopped`: a pause mark), the note under the rail, the 중단 요청됨 button, the
+  log line of the stop click, the toasts, the reason box of the result card, and the remediation chip when its reason
+  is `stop_requested`. Red stays for a refused intake and every other abort of the engine, a pod that failed with no
+  stop asked, a lost pod, a failed stop request, `FAILED`.
+- **Three days.** `GET /api/runs?days=N[&keep=<run id>]`: runs that started at or after now − N × 24 h (inclusive);
+  `0` or no parameter = all; anything that is not a non-negative integer → 400; an invalid `keep` → 400. Listed
+  whatever their age: queued or running runs, a remediation in `AWAITING_APPROVAL` / `AWAITING_CONFIRMATION` / `QUEUED`
+  / `RUNNING` or with an active resume, and the run named by `keep` (the one the page has open). The response adds
+  `days` and `hidden` (how many were left out). The page asks for `RUNS_DAYS = 3`: heading count 「6건 · 최근 3일」, the
+  standing line 「최근 3일 내에 등록한 프로젝트만 보입니다.」 under the heading, 「이 기간에 등록한 프로젝트가 없습니다.」 for
+  an empty window with older runs. Older results stay reachable: 「이전 실행 보기」 (with 「N건 더」) at the end of the
+  list loads everything (count 「8건 · 전체」, line 「전체 실행을 보고 있습니다.」, control 「최근 3일만 보기」); the choice
+  lasts until the page is reloaded. Nothing is deleted: the cut is a view.
+- **「처리 불가」 instead of 「진행 못 함」.** The user: "진행 못 함은 우리 문제 때문에 진행 못하는 느낌이야 ㅋㅋㅋ 색은
+  주황색으로 하자!" A run the engine could not take on or carry through (finished, exit 3, an engine reason in
+  `abort_reason`, not an internal error, not a user stop: `engineRefusal(st)`) reads 「처리할 수 없습니다」 (title),
+  「처리 불가」 (list, sub line, the admin page), 「처리 불가: <reason>」 under the rail, in the caution colour, with its
+  own rail mark (`.refused`: a bar, not the pause mark of a user stop) and an orange reason box. A fault of the serving
+  side stays red and has its own words, 「실행 중 오류가 났습니다」 / 「실행 오류」 / 「오류: <reason>」: an abort reason that
+  starts with `internal error:` or `missing component:` or is an exception class name (`isInternalReason`), or no
+  engine reason at all (a lost pod, a result that could not be verified, a refused worker). A stop that left the fix
+  loop early counts as a user stop (`USER_STOP_PREFIX`). Open: environment problems the operator must fix
+  (`settings-not-found`, `mvn-not-found`, `jdk-not-21`, a failed setup command, `aborted:http-blocked`,
+  `aborted:parent-not-found`, `remediation:not-ready`) are engine aborts with a plain reason and therefore also read
+  「처리 불가」; the status carries no field that tells them from a refusal of the project (the flags are in
+  `report.json` only).
 
 ## remediations (취약점 조치) — `/api/remediations`, IVAS, version-text fixes + managed overrides (2026-11-11)
 

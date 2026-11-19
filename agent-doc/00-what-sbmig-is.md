@@ -8,7 +8,7 @@
 
 sbmig 는 회사의 Maven 프로젝트를 **JDK 21 + Spring Boot 4.1.0** 으로 옮기는 사내 이관 에이전트다(Python 3.10+,
 명령 `sbmig`). 입력은 as-is 프로젝트 폴더나 zip 이고, 출력은 회사 레이아웃으로 바뀐 프로젝트(git 저장소, 단계마다 커밋)와
-보고서다. **끝의 기준은 하나다: `mvn clean package -Dmaven.test.skip=true` 가 BUILD SUCCESS.** 테스트는 컴파일도 실행도
+보고서다. **끝의 기준은 하나다: `mvn clean package -Dmaven.test.skip=true` 가 BUILD SUCCESS**(변환만 하는 사내 프레임워크 실행은 변환도 성공해야 한다, 아래 "자동 변환이 실패한 실행"). 테스트는 컴파일도 실행도
 하지 않는다(현업 결정 "테스트는 다 스킵", `build.skip_test_compile: true`, 플래그 `tests-not-compiled`). 기동(runtime) 오류는
 as-is 담당팀의 몫이다 — sbmig 는 빌드와 패키징까지만 책임지고, 나머지는 **인수인계(Handover)**(한국어 보고서의 「확인해 주세요」)로 넘긴다.
 
@@ -86,6 +86,17 @@ as-is 담당팀의 몫이다 — sbmig 는 빌드와 패키징까지만 책임�
 구조 검토, 수정 루프를 빼고 JDK 21과 jakarta 레시피, 빌드 1회만 돈다. 빌드 오류는 고치지 않고(LLM 호출 없음) 보고서에 남기며,
 취약점 조치는 빌드가 실패해도 이어진다(버전을 바꿨으면 빌드 미확인 `INCOMPLETE`). 부모 pom과 프레임워크 버전은 그대로 둔다. 결과 줄에 `scope=jdk-jakarta`가 붙고, 화면과
 보고서에 `<이름> 프레임워크는 JDK 21, Jakarta만 적용합니다.`가 나온다([13-framework-projects.md](13-framework-projects.md)).
+
+**자동 변환이 실패한 실행.** OpenRewrite 실행이 실패하면(실행을 이미 멈추게 하는 원인이 아닐 때) 이관은 이어 가되 그 사실을 남긴다
+(`sbmig/rewrite/failure.py`, `Orchestrator._note_rewrite_failed`): 저널 `rewrite_failed {step, sets, reason}`(적용하지 못한 레시피 세트 이름, 이유는
+첫 줄·비밀 지움·상대 경로·300자 이하), 플래그 `rewrite-failed`(결과 줄 `attn=`의 맨 앞), 인수인계 맨 앞 줄(수정 루프 없는 실행의 줄보다 앞:
+「자동 변환(OpenRewrite)이 실패해 다음 변환을 적용하지 못했습니다: …. 원인: …. 파일은 변환되지 않았고, 빌드는 변환하지 않은 상태로 실행했습니다.
+원인을 해결한 뒤 마이그레이션을 다시 실행해 주세요.」), 한국어 안내서의 「확인해 주세요」 첫 항목 「자동 변환 실패」와 앞 문장(보통 실행: 「자동 변환(OpenRewrite)이 실패해 Java 21, Jakarta, Spring 버전 변환 레시피가 적용되지 않았습니다. …」; 변환만 하는 실행: 「빌드는 통과했지만 JDK 21과 Jakarta 자동 변환이 실패해 아무것도 변환되지 않았습니다. 그래서 이번 실행은 성공이 아닙니다. …」). 보통 실행은
+빌드가 판정한다(재구성과 수정 루프가 빌드를 통과시킬 수 있다). **변환만 하는 사내 프레임워크 실행(범위 `jdk-jakarta`)은 변환이 실패하면 빌드가
+통과해도 성공이 아니다**(`Orchestrator.build_succeeded`의 `not (self.reduced_scope and self.conversion_failed)`): `exit=2 build=ok … attn=rewrite-failed`,
+머리 표 「❌ 변환 실패 (빌드는 통과)」(en `❌ NOT CONVERTED (the build passed)`), 프레임워크 절은 한 일에서 변환을 빼고 「**JDK 21과 Jakarta 변환이
+실패해 아무것도 변환되지 않았습니다.**」로 알린다. 이어지는 취약점 조치는 `remediation.after_failed_build: framework`면 그래도 돌고, 빌드가 실패했을
+때만 `baseline_may_fail`이다. 플릿 요약(`sbmig/fleet/runner.py`)은 이 경우를 빌드 실패로 적는다(열린 과제, 10).
 
 단계마다 코드 위치와 입출력은 [02-flow-and-nodes.md](02-flow-and-nodes.md) 에 있다.
 

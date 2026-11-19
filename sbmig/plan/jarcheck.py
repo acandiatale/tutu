@@ -39,6 +39,7 @@ from xml.sax.saxutils import escape
 import yaml
 from pydantic import BaseModel, Field
 
+from sbmig.build.pomless import PomlessMemo
 from sbmig.core.config import Config
 
 from .catalog import CORE_GROUP, RecipeCatalog
@@ -139,6 +140,10 @@ def _pom_xml(cfg: Config, ga: str, version: str) -> str:
 """
 
 
+# 이 명령은 작업 공간 없이 실행되므로 라이브러리를 한 번만 처리했는지 프로세스 단위로 기억한다
+_POMLESS_MEMO = PomlessMemo()
+
+
 def resolve_classpath(cfg: Config, artifact_ga: str, version: str, *, work_dir: Path,
                       mvn_env: dict[str, str] | None = None, timeout_s: float = 600) -> list[Path]:
     """레시피 BOM을 import한 상태에서 ``artifact_ga[:version]``의 전이 runtime classpath(jar 목록)를 구한다.
@@ -158,8 +163,11 @@ def resolve_classpath(cfg: Config, artifact_ga: str, version: str, *, work_dir: 
     cp_file.unlink(missing_ok=True)
     cmd = base_command(cfg) + [f"{DEPENDENCY_PLUGIN}:build-classpath", f"-Dmdep.outputFile={cp_file}",
                                "-Dmdep.includeScope=runtime"]
-    res = run_logged(cmd, cwd=d, env=mvn_env if mvn_env is not None else _mvn_env(cfg),
-                     log_path=d / "build-classpath.log", timeout_s=timeout_s)
+    # 저장소에 pom이 없는 라이브러리 때문에 실패하면 최소 pom을 두고 같은 명령을 다시 실행한다
+    from sbmig.build.pomless import run_logged_with_stubs
+    res, _log = run_logged_with_stubs(cfg, cmd, cwd=d, env=mvn_env if mvn_env is not None else _mvn_env(cfg),
+                                      log_path=d / "build-classpath.log", timeout_s=timeout_s, journal=None,
+                                      memo=_POMLESS_MEMO, runner=run_logged)
     if res.exit_code != 0 or not cp_file.is_file():
         log.warning("build-classpath for %s:%s failed (exit %s); see %s", artifact_ga, version or "(bom)",
                     res.exit_code, d / "build-classpath.log")

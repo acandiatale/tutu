@@ -1,0 +1,40 @@
+[INFO] Scanning for projects...
+[INFO] ------------------------------------------------------------------------
+[INFO] Reactor Build Order:
+[INFO] 
+[INFO] root                                                               [pom]
+[INFO] mod-a                                                              [jar]
+[INFO] 
+[INFO] --------------------------< com.example:root >--------------------------
+[INFO] Building root 1.0                                                  [1/2]
+[INFO]   from pom.xml
+[INFO] --------------------------------[ pom ]---------------------------------
+[INFO] 
+[INFO] -------------------------< com.example:mod-a >--------------------------
+[INFO] Building mod-a 1.0                                                 [2/2]
+[INFO]   from mod-a/pom.xml
+[INFO] --------------------------------[ jar ]---------------------------------
+[INFO] ------------------------------------------------------------------------
+[INFO] Reactor Summary for root 1.0:
+[INFO] 
+[INFO] root ............................................... SUCCESS [  0.001 s]
+[INFO] mod-a .............................................. FAILURE [  0.334 s]
+[INFO] ------------------------------------------------------------------------
+[INFO] BUILD FAILURE
+[INFO] ------------------------------------------------------------------------
+[INFO] Total time:  0.383 s
+[INFO] Finished at: 2026-11-19T10:10:15+09:00
+[INFO] ------------------------------------------------------------------------
+[ERROR] Failed to execute goal on project mod-a: Could not collect dependencies for project com.example:mod-a:jar:1.0
+[ERROR] Failed to read artifact descriptor for com.example:pomless:jar:1.0
+[ERROR] 	Caused by: The following artifacts could not be resolved: com.example:pomless:pom:1.0 (absent): Could not transfer artifact com.example:pomless:pom:1.0 from/to maven-central-proxy (http://127.0.0.1:52516/): status code: 502, reason phrase: Bad Gateway (502)
+[ERROR] -> [Help 1]
+[ERROR] 
+[ERROR] To see the full stack trace of the errors, re-run Maven with the -e switch.
+[ERROR] Re-run Maven using the -X switch to enable full debug logging.
+[ERROR] 
+[ERROR] For more information about the errors and possible solutions, please read the following articles:
+[ERROR] [Help 1] http://cwiki.apache.org/confluence/display/MAVEN/DependencyResolutionException
+[ERROR] 
+[ERROR] After correcting the problems, you can resume the build with the command
+[ERROR]   mvn <args> -rf :mod-a

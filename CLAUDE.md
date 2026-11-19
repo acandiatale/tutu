@@ -739,6 +739,34 @@ review", fix attempts as `script:<case>:v<N>`; `ko`, the company setting: the re
   ZIP must come from the delivery (`build_tolerated`), not from the run's mode — a change set that ADDED an error is
   still a failed build. Fixture `fw-build-error` (a call removed after Java 8: builds on 8, fails on 21). Contract:
   `docs/INTERFACES.md` "v2.1z-aw".
+- **First real cluster projects, 2026-11-19 (v2.1z-ax / ay / az)** — three things the fixtures never had.
+  (1) **A library uploaded without its pom** (an in-house jar in the releases repository): Maven asks every repository
+  for the pom; "not found" everywhere is a warning, but ONE repository answering with an error (the Central proxy of a
+  closed network gives 502 for a path it never cached) stops the build with `Failed to read artifact descriptor` /
+  `Could not transfer artifact G:A:pom:V from/to …`, intermittently (Maven re-asks about a missing pom about once a
+  day, and does not cache a transfer error). A pom file in the local repository ends it. `sbmig/build/pomless.py`
+  (`build.pomless_stub`, default on): proof first (jar obtainable, pom obtainable nowhere: `RepositoryLookup.file_answers`),
+  then a minimal pom with a marker comment in the pod's own local repository (slots have separate ones), the same
+  command again; wrapped around every Maven call that resolves dependencies; a later run that builds on such a file is
+  told too (`pomless_stub_used`). The user's alternative, a system-scoped jar in the project pom, was rejected: not
+  packaged into the WAR, and it changes the project. (2) **A pom whose Korean text is MS949 under a UTF-8 header (or
+  none)**: Maven builds it without a warning; lxml raises `OSError` (the remediation refused the project with 「읽을 수
+  없는 pom」); OpenRewrite cannot parse it and the whole recipe run fails — which the run used to pass over in silence
+  (`exit=0 build=ok`, nothing converted). Now: the remediation reads poms with the migration's one decoding rule
+  (`pom_encoding`) and edits byte-true; before the first OpenRewrite run such a pom is made consistent
+  (`sbmig/restructure/pom_charset.py`: declaration → `EUC-KR` when the bytes are strict EUC-KR, else saved as UTF-8,
+  because the plugin writes replacement characters over MS949-only syllables; `layout.legacy_context.correct_pom_encoding`);
+  a failed conversion sets `rewrite-failed`, is the first hand-over line, and a conversion-only (framework) run whose
+  conversion failed is not a success even when its build passes (`exit=2 build=ok`). The standard library's XML parser
+  refuses a multi-byte declaration on bytes: decode with `pom_encoding` first, everywhere. (3) **Page**: a run a person
+  stopped is orange (`user_stop`; "너무 빨가니까 문제 투성이 에이전트 같아"), 「지난 실행」 lists three days with the line
+  「최근 3일 내에 등록한 프로젝트만 보입니다.」 and 「이전 실행 보기」 for older results (`GET /api/runs?days=`).
+  Lessons: (a) "the tool I wrapped tolerates X" must be measured for EVERY tool in the chain — Maven, the rewrite
+  plugin, lxml and the standard parser disagreed about one pom in four different ways; (b) a step that fails and lets
+  the run go on must own a flag and a first line in the report on the day it is written, not when a user finds it;
+  (c) an operator command I hand out (the manual stub pom) must be checked against the deployment's layout: there are
+  three local repositories, my first instructions named one. Contracts: `docs/INTERFACES.md` "v2.1z-ax", "v2.1z-ay",
+  "v2.1z-az".
 - **Company convention (2026-10-20): agents run on LangGraph under uvicorn.** `loop.engine: graph` (default) drives
   the phases from a LangGraph `StateGraph` (`sbmig/graph/`, nodes intake → analyze → plan → phase×N → finalize;
   `inline` is the old loop, reports are identical by test); the web UI is FastAPI (`uvicorn sbmig.web.app:app` or

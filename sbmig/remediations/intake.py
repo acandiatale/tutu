@@ -537,13 +537,18 @@ def _display_url(url: str) -> str:
 def _check_pom(pom: Path, rel: str, allowed: set[str], action: str) -> list[BoundaryFinding]:
     from lxml import etree
 
+    from .apply import PomReadError, read_pom_xml, xml_reason
+
     # XXE를 막기 위해 외부 엔티티, DTD, 네트워크를 읽지 않는 파서를 쓴다.
     # pom 안의 어떤 것도 실행하거나 조회하지 않는다
     parser = etree.XMLParser(resolve_entities=False, no_network=True, load_dtd=False, huge_tree=False, recover=False)
     try:
-        root = etree.parse(str(pom), parser).getroot()
-    except (etree.XMLSyntaxError, OSError, ValueError) as e:
-        return [BoundaryFinding(code="unparsable_pom", path=rel, action="refuse", detail=type(e).__name__)]
+        # Maven은 선언과 다른 인코딩(UTF-8 선언의 MS949 등)도 받으므로 이관 쪽 규칙으로 읽은 내용을 검사한다
+        root = etree.fromstring(read_pom_xml(pom), parser)
+    except PomReadError as e:
+        return [BoundaryFinding(code="unparsable_pom", path=rel, action="refuse", detail=str(e))]
+    except (etree.XMLSyntaxError, ValueError) as e:
+        return [BoundaryFinding(code="unparsable_pom", path=rel, action="refuse", detail=xml_reason(e))]
     props: dict[str, str] = {}
     for c in root:
         if _localname(c) == "properties":

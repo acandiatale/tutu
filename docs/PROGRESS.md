@@ -33,6 +33,13 @@
 - [x] 레시피 목록은 `knowledge/recipes/catalog.yml` 한 곳에만 있고 `sbmig recipes check` 가 어긋남을 잡는다
 - [x] 구조 정리를 마치기 전에는 빌드를 돌리지 않는다(반쯤 바뀐 트리에서 빌드하지 않음) (v2.1o)
 
+**저장소와 pom의 환경 문제 (LLM 없이 처리)**
+- [x] 저장소에 jar만 있고 pom이 없는 라이브러리: 한 저장소라도 pom 요청에 오류(예: Central 프록시의 502)로 답하면 Maven이 멈춘다. jar는 받을 수 있고 pom은 어디에도 없는지 확인한 뒤 파드의 로컬 저장소에 최소 pom을 만들고 같은 명령을 다시 실행한다(`build.pomless_stub`). 모든 Maven 호출에 적용, 플래그 `pomless-library`, 인수인계 한 줄, 그 pom으로 빌드한 다음 실행에도 알림 (v2.1z-ax)
+- [x] 한글이 MS949 · EUC-KR 로 저장됐는데 XML 선언이 다른 pom: 취약점 조치가 Maven과 같은 기준으로 읽고 바이트를 보존하며 고친다. 정말 못 읽는 pom은 파일과 이유를 적어 거절한다 (v2.1z-ay)
+- [x] 그런 pom은 자동 변환 전에 바로잡는다: 가능하면 선언만 `EUC-KR` 로, 아니면 UTF-8 로 다시 저장(`layout.legacy_context.correct_pom_encoding`). OpenRewrite가 읽지 못해 변환이 통째로 빠지던 문제 (v2.1z-ay)
+- [x] 자동 변환이 실패하면 숨기지 않는다: 플래그 `rewrite-failed`, 인수인계 첫 줄, 결과 줄의 주의 코드. 프레임워크 프로젝트는 변환이 실패하면 빌드가 통과해도 성공이 아니다(`exit=2 build=ok`) (v2.1z-ay)
+- [ ] 조치만 하는 실행이 최소 pom을 만들었을 때 보고서에 알리기(지금은 저널과 로그에만 남는다)
+
 **사내 프레임워크 프로젝트**
 - [x] 사내 프레임워크 아티팩트(`framework.artifacts`, 회사 yml)를 쓰는 프로젝트는 회사 레이아웃 · Boot 4 로 옮기지 않고 범위 `jdk-jakarta` 로 돈다: `framework.recipe_sets` 의 레시피(기본 Java 21 + jakarta), 레시피 전 MS949 · EUC-KR 소스 모듈의 `project.build.sourceEncoding` 쓰기(JDK 18부터 javac 기본이 UTF-8이고 OpenRewrite 도 못 읽는 파일은 건너뜀, 부모가 다른 값을 정하면 부모 값을 두고 인수인계), 레시피 뒤 as-is `provided` scope 되돌리기, JSP javax → jakarta, 빌드 1회, 빌드가 통과하든 실패하든 이어지는 취약점 조치. 재구성 · 구조 검토 · 빌드 오류 자동 수정 없음(LLM 0회), 부모 pom · 프레임워크 버전 유지, 결과 줄 `scope=jdk-jakarta` (v2.1z-ak, v2.1z-aw)
 - [x] 찾는 곳: pom 의 직접 선언 → 부모 pom 에서 상속(as-is effective pom) → 트리 안 jar → 간접 의존성(`dependency:tree` 1회). 확인하지 못한 곳은 보고서와 저널에 남긴다
@@ -177,6 +184,9 @@
 - [ ] 오래된 실행 폴더 정리 정책 — 회의에서 정하기로 함. 지금은 `sbmig clean` 을 손으로 실행한다
 - [ ] 외부 접수 API `/api/migrations` — 구현 지시서만 있음 (`docs/v2/API-MIGRATIONS-KO.md`)
 - [ ] 웹 이미지와 빌드 이미지 분리 — 현업 담당자의 바람, 미뤄 둠
+
+- [x] 사람이 중단한 실행은 주황색으로 보인다(`user_stop`). 접수 거절 · 파드 실패 같은 진짜 문제만 빨간색 (v2.1z-az)
+- [x] 「지난 실행」은 최근 3일만 보인다(`GET /api/runs?days=`, 안내 문구 「최근 3일 내에 등록한 프로젝트만 보입니다.」). 진행 · 대기 중인 실행은 항상 보이고 「이전 실행 보기」로 오래된 결과를 꺼낸다. 지우는 것은 없다 (v2.1z-az)
 
 ## 6. 취약점 조치 (IVAS)
 

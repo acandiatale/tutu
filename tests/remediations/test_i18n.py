@@ -298,6 +298,11 @@ SAMPLES: list[tuple[str, str, list[str]]] = [
     ("boundary_no_url", "no url", []),
     ("boundary_bad_url", "unparsable url", []),
     ("boundary_repo_id", "id=company-snapshots", ["company-snapshots"]),
+    ("boundary_refused_pom", "unparsable_pom: app/pom.xml: not well-formed XML (line 3): Premature end of data",
+     ["app/pom.xml", "XML 문법 오류(줄 3)"]),
+    ("pom_xml_syntax", "not well-formed XML (line 3): Premature end of data in tag project", ["줄 3"]),
+    ("pom_cannot_open", "cannot be opened (permission denied)", ["권한"]),
+    ("pom_encoding_unknown", "character encoding unknown (the bytes do not decode as utf-16-le)", []),
     ("report_not_written", "report not written: OSError: disk full", ["OSError: disk full"]),
     ("stale_run", ("the migration run has ended while this remediation was AWAITING_APPROVAL (its build pod is gone); "
      "nothing is re-sent automatically"), ["승인 대기"]),
@@ -545,3 +550,13 @@ def test_structure_violation_sentences_reach_the_report_in_korean():
         (problem,) = apply_mod._structure_problems("app/pom.xml", before, after)
         out = i18n.ko_display(problem)
         assert HANGUL.search(out) and "원문" not in out and "app/pom.xml" in out, (problem, out)
+
+
+def test_unreadable_pom_reasons_read_as_words():
+    assert i18n.ko_text("unparsable_pom: app/pom.xml") == "pom 파일을 읽을 수 없습니다. app/pom.xml."
+    assert i18n.ko_text("cannot be opened (missing)") == "파일이 없습니다."
+    assert i18n.ko_text("cannot be opened (a folder, not a file)") == "파일이 아니라 폴더입니다."
+    assert i18n.ko_text("cannot read app/pom.xml: cannot be opened (permission denied)") == (
+        "app/pom.xml 파일을 읽을 수 없습니다. 파일을 열 수 없습니다(권한).")
+    assert i18n.ko_text("module app: pom not readable (cannot read app/pom.xml: not well-formed XML (line 7): x)") == (
+        "app 모듈의 pom을 읽을 수 없습니다. app/pom.xml: XML 문법 오류(줄 7).")

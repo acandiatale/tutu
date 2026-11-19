@@ -17,6 +17,7 @@ from pathlib import Path
 
 from sbmig.build.log_parser import parse_maven_log
 from sbmig.build.mvn import base_command, mvn_env, run_logged, with_project_mvn
+from sbmig.build.pomless import memo_for, run_logged_with_stubs
 from sbmig.build.runner import negative_cache_hits
 from sbmig.core.config import Config
 from sbmig.core.interfaces import KnowledgeBaseLike
@@ -558,7 +559,10 @@ class OpenRewriteRunner:
         forked = goal in ("run", "dryRun")
         head_before = None if dry_run else self._head()
         log.info("rewrite %s (%s)", ", ".join(ids), goal)
-        pr = run_logged(cmd, cwd=cwd, env=env, log_path=log_path, timeout_s=self.timeout_s)
+        # 저장소에 pom이 없는 라이브러리 때문에 실패하면 최소 pom을 두고 같은 명령을 다시 실행한다
+        pr, log_path = run_logged_with_stubs(self.cfg, cmd, cwd=cwd, env=env, log_path=log_path, timeout_s=self.timeout_s,
+                                             journal=self.ws.journal, memo=memo_for(self.ws), project_root=self.ws.root,
+                                             runner=run_logged)
         out = pr.text
         ok = pr.exit_code == 0 and not pr.timed_out and "BUILD SUCCESS" in out
         # 이전 플러그인은 잘못된 레시피에도 성공으로 끝나므로 로그의 검증 문제로 실패 처리한다

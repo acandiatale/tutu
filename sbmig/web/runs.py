@@ -89,7 +89,7 @@ from typing import Any
 from sbmig.core.config import PACKAGE_ROOT
 from sbmig.core.models import FLOW_FULL, FLOW_REMEDIATION, RUN_FLOWS
 from sbmig.core.scrub import output_scrubbing, scrub, scrub_json
-from sbmig.core.workspace import STOP_REQUEST_FILE
+from sbmig.core.workspace import STOP_REQUEST_FILE, STOP_REQUEST_REASON
 from sbmig.web import contract
 from sbmig.web.contract import (
     ACTION_REMEDIATION_RESUME,
@@ -629,6 +629,10 @@ def _recorded_flow(rd: Path) -> str:
             return data["flow"]
     return FLOW_FULL
 
+
+# 사람의 중단 요청으로 멈춘 실행의 엔진 사유가 시작하는 문장이다(STOP_REQUEST_REASON, STOP_LOOP_REASON)
+USER_STOP_PREFIX = "stopped by user (stop.request)"
+assert STOP_REQUEST_REASON.startswith(USER_STOP_PREFIX)
 
 FRAMEWORK_SCOPE = "jdk-jakarta"
 # 저널에서 프레임워크 범위를 찾을 때 한 번에 읽는 최대 바이트 수다
@@ -2509,6 +2513,12 @@ class RunManager:
                 framework = None
         if framework is not None:
             info["framework"] = framework
+        # 사람이 중단을 요청해 결과 없이 끝난 실행이다. 화면은 실패가 아니라 주의 색으로 보여 준다
+        if info.get("state") == "finished" and info.get("exit_code") in (EXIT_ABORTED, None) and (
+                info.get("stop_requested") or info.get("control") == RunState.STOPPED.value
+                or str(info.get("abort_reason") or "").startswith(USER_STOP_PREFIX)
+                or str(info.get("error") or "").startswith(STOP_BEFORE_START_ERROR)):
+            info["user_stop"] = True
         pending = self._final_pass_pending(run, control)       # 마지막 마스킹 전에는 기록할 때 마스킹되는 파일만 목록에 넣는다
         for name in SERVED_FILES:
             if (rd / name).is_file() and (not pending or name in LIVE_FILES):
@@ -2556,6 +2566,31 @@ class RunManager:
                 st["started"] = 0
             rows.append(st)
         return sorted(rows, key=lambda r: r.get("started", 0), reverse=True)
+
+    # 사람의 손을 기다리는 조치 상태다. 오래된 실행이어도 목록에 남긴다
+    WAITING_REMEDIATION = ("AWAITING_APPROVAL", "AWAITING_CONFIRMATION", "QUEUED", "RUNNING")
+
+    def list_recent(self, days: int = 0, keep: str | None = None) -> dict[str, Any]:
+        """최근 ``days``일 안에 시작한 실행만 담은 목록과 빠진 실행 수를 반환한다. 0이면 모두 담는다.
+        대기나 진행 중인 실행, 사람을 기다리거나 다시 진행 중인 조치, 화면이 열고 있는 실행(``keep``)은 항상 담는다.
+
+        The 「지난 실행」 list cut to the runs started in the last `days` days (0 = all): `{"runs", "days", "hidden"}`.
+        Always listed whatever their age: queued / running runs, a remediation waiting for a person or resumed in a new
+        pod (`remediation_job.active`), and `keep` (the run the page has open). The boundary is inclusive (started at
+        or after now − days × 24 h)."""
+        rows = self.list_runs()
+        if days <= 0:
+            return {"runs": rows, "days": 0, "hidden": 0}
+        cutoff = time.time() - days * 86400
+
+        def always(r: dict[str, Any]) -> bool:
+            rem = r.get("remediation") if isinstance(r.get("remediation"), dict) else {}
+            rjob = r.get("remediation_job") if isinstance(r.get("remediation_job"), dict) else {}
+            return (r.get("state") in ("queued", "running") or r.get("run_id") == keep
+                    or rem.get("status") in self.WAITING_REMEDIATION or bool(rjob.get("active")))
+
+        shown = [r for r in rows if (r.get("started") or 0) >= cutoff or always(r)]
+        return {"runs": shown, "days": days, "hidden": len(rows) - len(shown)}
 
     # ---- streaming
     def events(self, run_id: str) -> Iterator[tuple[str, Any]]:

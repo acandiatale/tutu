@@ -290,6 +290,9 @@ layout:
     # 소스가 MS949 / EUC-KR인 모듈의 pom에 project.build.sourceEncoding을 기록한다
     # (JDK 18 이상은 기본값이 UTF-8이라 그대로 두면 한글이 깨진다).
     write_source_encoding: true
+    # pom의 글자 인코딩이 XML 선언과 다르면(예: 선언은 UTF-8인데 한글이 MS949로 저장됨) 자동 변환 전에 바로잡는다.
+    # Maven은 그런 pom도 빌드하지만 OpenRewrite는 읽지 못해 변환이 통째로 실패한다. 한글 내용은 그대로 둔다.
+    correct_pom_encoding: true
     # JNDI, DelegatingFilterProxy, *.do 매핑, <jsp-config>, log4j 1, Security XML처럼 자동으로 옮기지 못하는 항목을
     # 인수인계 문장과 XML 복사본 옆의 MIGRATION-TODO 주석으로 남긴다.
     handover_sentences: true
@@ -454,6 +457,13 @@ build:
   # 같은 URL의 미러나 저장소가 settings에 있으면 그 자격 증명을 자동으로 쓰므로 비워 둬도 된다.
   repository_server_id: null
   repository_timeout_seconds: 10   # 저장소 조회 HTTP 요청 하나의 시간 상한(초)
+  # 저장소에 jar만 올라가 있고 pom이 없는 라이브러리(주로 사내 라이브러리)의 처리.
+  # Maven은 pom을 모든 저장소에서 찾는데, 한 곳이라도 "없음"이 아니라 오류(예: 폐쇄망의 Central 프록시가 502)로 답하면
+  # jar를 받을 수 있어도 빌드를 멈춘다. true면 jar는 받을 수 있고 pom은 어느 저장소에도 없는지 확인한 뒤,
+  # 로컬 Maven 저장소에 최소 pom을 만들고 같은 Maven 명령을 한 번 더 실행한다. 프로젝트 파일은 바꾸지 않는다.
+  # 만든 파일은 보고서와 저널(pomless_stub)에 남는다. 저장소에 진짜 pom이 올라오면 그 파일을 지운다.
+  pomless_stub: true
+  pomless_stub_max: 20   # 한 실행에서 만드는 최소 pom의 상한
   # Windows에서 백신, IDE, 남은 java 프로세스가 target/의 파일을 잡고 있어 빌드가 실패하면,
   # file_lock_retry_wait_s초 기다렸다가 같은 빌드를 최대 file_lock_retries번 다시 실행한다(0이면 끔).
   # 환경 문제를 LLM에 보내지 않기 위해서다. 판별 패턴은 knowledge/config/build_env_errors.yml에 있다.

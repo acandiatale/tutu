@@ -65,6 +65,12 @@
   적용한 바이트와 같고, XML 구조는 계획한 override 요소만큼만 는다.
 - 원본 ZIP·파일 목록(manifest)·작업 트리 `accepted/`는 따로. 변경은 후보 사본에 먼저 하고, 빌드되고 해석이 계획과 같을 때만 `accepted/`로
   확정한다. `target/`은 해시·복사·전달 어디에도 없다(manifest 경로만).
+- pom은 Maven이 읽는 것은 모두 읽는다: 경계 검사·인벤토리·계획의 위치·적용·구조 검사가 `apply.read_pom_xml`/`apply.pom_xml_bytes`로 이관과 같이
+  디코드한다(`analyze.pom_parser.pom_encoding`: BOM→엄격한 UTF-8→선언한 인코딩, 한국어 계열은 cp949→파일 전체를 읽는 첫 후보). 변경은 읽은
+  인코딩으로 다시 써서 바뀐 글자의 바이트만 다르다. 정말 못 읽는 pom만 FAILED `execution_boundary_refused`, `unparsable_pom: <경로>: <이유>`:
+  `not well-formed XML (line N): …`(XML 문법 오류(줄 N)), `cannot be opened (permission denied)`(파일을 열 수 없습니다(권한)), `(missing)`(파일이
+  없습니다), `(a folder, not a file)`(파일이 아니라 폴더입니다), `character encoding unknown (…)`(글자 인코딩을 알 수 없습니다). 화면·보고서:
+  「pom 파일을 읽을 수 없습니다. app-core/pom.xml: XML 문법 오류(줄 12).」, 할 일 「pom 파일 고치기」(`i18n.pom_why_ko`).
 - IVAS 업로드 결과가 불확실하면 **다시 올리지 않는다**. 미완료 검사·빠진 쪽·중복·ZIP 해시 불일치는 "0건" 이 아니다.
 - 새 버전의 근거는 서버 정책(`remediation.policy.pins`)이나 승인된 저장소에 실제로 있는 버전뿐. IVAS의 patched 버전은 하한 힌트이고,
   pin이 없으면 힌트가 있어야 제안한다(없으면 `no_candidate_version`).
@@ -236,23 +242,7 @@ Maven 쪽은 이관과 같은 키를 쓴다: `build.mvn`, `build.java_home`, `bu
 
 ## 8. 고칠 자리
 
-| 요청 | 파일 |
-|---|---|
-| IVAS 응답 필드·경로·상태 코드·완전성 규칙 | `sbmig/remediations/ivas.py` (`PAGE_PATHS`, `ANALYSIS_ID_KEYS`, `IN_PROGRESS`, `_library_finding`, `_reconcile`) |
-| ZIP 접수 규칙, 실행 경계, 전달 ZIP 모양 | `sbmig/remediations/intake.py` (`check_boundary`, `freeze_delivery`) |
-| 새 출처(origin) 판정, 발견 항목 ↔ pom 줄 연결 | `sbmig/remediations/inventory.py` |
-| 버전 고르기, 승인 부류, override를 낼지·잔여로 둘지, 정책 해시, 승인 검증 | `sbmig/remediations/planner.py` (`_choose_target`, `_override_change`, `plan_round`, `policy_hash`, `validate_decision`) |
-| 글자 치환, override 모양·자리, "계획한 것만"·"해석 = 계획" | `sbmig/remediations/apply.py` (`render_override`, `locate_override`, `verify_text_only`, `verify_resolution`) |
-| 실패한 후보(include / discard), 검증된 ZIP 보존; 노드 순서, 멈춤·재개, 성공 판정 | `sbmig/remediations/graph.py` (`_build`, `deliver_failed_candidate`, `discard_candidate`; `_evaluate`, `_Holder.scan`) |
-| Maven 명령·준비 조건·해석 읽기 | `sbmig/remediations/maven.py` |
-| 보고서·한국어 문장·사내 라이브러리 안내·`framework` 그룹 | [12](12-remediation-report.md) |
-| 상태·이유 코드·자료형(계약) | `sbmig/remediations/models.py` — 바꾸면 `docs/INTERFACES.md`의 remediations 절도 |
-| 새 설정 키 | `sbmig/core/config.py`의 `RemediationConfig` + `config/default.yml` (한국어 설명) |
-| HTTP 경로·작업 관리 | 같은 패키지의 api.py / service.py |
-| 이관 뒤 이어 돌기(건너뜀 조건, 폴더, 재개, 로그) | 같은 패키지의 chain.py, 이관 그래프의 `remediation` 노드 |
-| Job 파드의 IVAS env·정제 범위 | `deploy/k8s/81-web-job.template.yaml`, `sbmig/web/contract.py` (`SECRET_NAMES`), `sbmig/web/redact.py` (`_remediation_targets`) |
-
-시험은 `tests/remediations/`(가짜 IVAS·Maven·저장소).
+파일별 자리는 [01](01-repo-map.md) 3절의 "취약점 조치:" 행. 시험은 `tests/remediations/`(가짜 IVAS·Maven·저장소).
 
 ## 확인하는 법
 

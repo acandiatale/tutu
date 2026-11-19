@@ -57,6 +57,7 @@ Codes, most important first:
                           decides (소유팀 결정 필요). Followed by `blocked:needs_owner`
     blocked:<reason>      one per distinct BlockReason (`blocked:external_javax_api`)
     unresolved:<n>        errors left after the final build
+    rewrite-failed (자동 변환이 실패해 레시피가 적용되지 않음),
     restructure-failed, llm-budget-exhausted, time-budget-exhausted, javax-api-on-classpath, tests-skipped,
 test-compile-skipped, tests-not-compiled, major-upgrade (운영자 확인 필요),
 jar-coordinates-unknown (Ant 합성 pom에 좌표를 모르는 jar가 있음),
@@ -74,7 +75,8 @@ from typing import Any, Iterable, Optional
 
 LEGACY_INFRA_FLAGS = {"llm-unavailable": "llm", "llm-config-error": "llm", "mvn-not-found": "maven",
                       "jdk-not-21": "jdk"}
-ATTENTION_FLAGS = ("restructure-failed", "llm-budget-exhausted", "time-budget-exhausted", "javax-api-on-classpath",
+ATTENTION_FLAGS = ("rewrite-failed",                   # v2.1z-ay: the automatic conversion (OpenRewrite) failed
+                   "restructure-failed", "llm-budget-exhausted", "time-budget-exhausted", "javax-api-on-classpath",
                    "tests-skipped", "test-compile-skipped", "tests-not-compiled", "major-upgrade",
                    "jar-coordinates-unknown", "parent-chain-no-boot-bom",
                    "hollow-reactor",                 # v2.1z-c: the reactor compiles nothing — sources were not migrated
@@ -251,6 +253,9 @@ def report_result_line(report: Any, exit_code: Optional[int] = None, run_id: Opt
     o, r = entry_counts(getattr(report, "error_entries", None) or [])
     flow = getattr(report, "flow", None)
     build_ok = remediation_build_ok(report) if flow == "remediation" else bool(getattr(report, "success", False))
+    # 변환이 실패해 성공이 아닌 프레임워크 실행도 빌드 자체는 통과했으면 build=ok로 쓴다
+    if not build_ok and flow != "remediation" and conversion_only_failed(report):
+        build_ok = bool(getattr(getattr(report, "final_build", None), "ok", False))
     return result_line(run_id or getattr(report, "run_id", "-"), code, build_ok,
                        unresolved=len(getattr(report, "unresolved", []) or []),
                        blocked=len(getattr(report, "blocked", []) or []),
@@ -262,6 +267,18 @@ def report_result_line(report: Any, exit_code: Optional[int] = None, run_id: Opt
 
 
 REDUCED_SCOPE = "jdk-jakarta"
+REWRITE_FAILED = "rewrite-failed"
+
+
+def conversion_only_failed(report: Any) -> bool:
+    """변환만 하는 실행(프레임워크 프로젝트)에서 자동 변환이 실패했는지 확인한다. 중단된 실행은 해당하지 않는다.
+
+    v2.1z-ay: a reduced run (scope jdk-jakarta) flagged `rewrite-failed` and not aborted: not a success even when its
+    build passed (`Orchestrator.build_succeeded`); the renderers and the `build=` token read it."""
+    flags = list(getattr(report, "flags", []) or [])
+    if REWRITE_FAILED not in flags or any(f == "aborted" or f.startswith("aborted:") for f in flags):
+        return False
+    return run_scope(report) is not None
 
 
 def run_scope(report: Any) -> Optional[str]:

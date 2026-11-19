@@ -337,6 +337,7 @@ class Orchestrator:
         self.errors = RunErrors(None)               # v2.1: the run's error list (errors.jsonl), set in step_plan
         self._change_base = ""                      # 자동 변환 직후 커밋. 보고서의 코드 수정 내역이 여기서 시작한다
         self._verify_results: list[BuildResult] = []
+        self._rewrite_failures: list[tuple[str, list[str], str]] = []   # 실패한 변환 단계, 레시피 세트, 원인
         self._review_usage: dict[str, LLMUsage] = {}       # v2: structure-review calls, by model
         self._review_commit_pre: str | None = None          # v2.1d: HEAD before the review commit (read-back)
         self._review_guide_source = ""                     # v2.1d: "llm" | "sbmig" — who wrote the review's guide
@@ -534,6 +535,7 @@ class Orchestrator:
         self.abort_reason = None
         # per-run state (an orchestrator is normally used once; a second run must not see the first one's results)
         self._verify_results = []
+        self._rewrite_failures = []
         self._verify_done = []
         self._run_steps = []
         self._review_usage = {}
@@ -677,9 +679,23 @@ class Orchestrator:
         The migration's success predicate (`report.success`): every planned final build ran and passed, no
         restructure failure, no hollow reactor, not aborted. Shared by `_finalize` and the graph's `remediation` node."""
         flags = list(report.flags) + (list(self.loop.flags) if self.loop is not None else [])
+        # 변환만 하는 실행(프레임워크 프로젝트)은 변환이 실패하면 빌드가 통과해도 성공이 아니다
         return bool(self._verify_results) and all(r.ok for r in self._verify_results) \
             and "restructure-failed" not in flags and "hollow-reactor" not in flags \
+            and not (self.reduced_scope and self.conversion_failed) \
             and not _aborted(flags) and not self._verify_missing()
+
+    @property
+    def conversion_failed(self) -> bool:
+        """이번 실행에서 실행을 중단하지 않은 OpenRewrite 실패가 있었는지 반환한다.
+
+        v2.1z-ay: True once a `transform.rewrite` failed and the run went on (flag `rewrite-failed`)."""
+        return bool(self._rewrite_failures)
+
+    @property
+    def final_build_failed(self) -> bool:
+        """계획한 최종 빌드 가운데 실패한 것이 있는지 반환한다."""
+        return any(not r.ok for r in self._verify_results)
 
     def refused_at_intake(self, report: RunReport) -> bool:
         """작업 공간이 접수에서 거절되었으면(``ws.intake_refusal``) 그 사유로 실행을 중단하고 True를 반환한다.
@@ -1540,13 +1556,19 @@ class Orchestrator:
         ``framework``일 때만 True다. 나머지 조건(스위치, 중단, 멈춤)은 호출한 쪽이 본다.
 
         v2.1z-aw: True when this is a conversion-only framework run (`no_fix_loop`) whose final build was attempted and
-        failed and `remediation.after_failed_build` is `framework`. The other chain conditions are the caller's."""
+        failed and `remediation.after_failed_build` is `framework`. The other chain conditions are the caller's.
+        v2.1z-ay: also a reduced run (fix loop on or off) whose build passed but whose conversion failed (not a
+        success by `build_succeeded`); the caller passes `baseline_may_fail` only when the build failed
+        (`final_build_failed`)."""
         rem = getattr(self.cfg, "remediation", None)
-        if str(getattr(rem, "after_failed_build", "never") or "never") != "framework" or not self.no_fix_loop:
+        if str(getattr(rem, "after_failed_build", "never") or "never") != "framework" or not self.reduced_scope:
             return False
         if not self._verify_results or report.final_build is None:
             return False
-        return any(not r.ok for r in self._verify_results)
+        if self.final_build_failed:
+            return self.no_fix_loop
+        # 빌드는 통과했지만 변환이 실패해 성공이 아닌 실행도 조치를 이어 간다
+        return self.conversion_failed
 
     def step_plan(self, report: RunReport, stop_after: Phase | None,
                   dry_run: bool) -> list[tuple[Phase, list[tuple[int, PlanStep]]]] | None:
@@ -2093,6 +2115,8 @@ class Orchestrator:
             pr.notes.append(f"{step.id} skipped: run time budget exhausted")
             self._flag("time-budget-exhausted")
             return True
+        # OpenRewrite가 선언과 바이트가 다른 pom을 읽지 못해 변환 전체가 실패하므로 레시피보다 먼저 바로잡는다
+        self._correct_pom_encodings(pr, step)
         if self.reduced_scope:
             # 레시피가 MS949 / EUC-KR 소스를 UTF-8로 읽어 건너뛰지 않도록 OpenRewrite보다 먼저 인코딩을 기록한다
             self._write_encodings_reduced(pr, step)
@@ -2147,7 +2171,77 @@ class Orchestrator:
                             "problem")
             pr.remaining_errors.append(BuildError(kind=ErrorKind.REWRITE, message=err[:500], raw=err,
                                                   module=step.target))
+            self._note_rewrite_failed(step, err)
         return True
+
+    def _note_rewrite_failed(self, step: PlanStep, err: str) -> None:
+        """실행을 중단하지 않은 OpenRewrite 실패를 플래그 ``rewrite-failed``와 저널로 남기고 인수인계 줄의 재료를 모은다.
+
+        v2.1z-ay: a failed OpenRewrite run the run goes on from (not the aborting cases: missing recipe id, HTTP
+        blocker, parent not found) → flag `rewrite-failed`, journal `rewrite_failed {step, sets, reason}`; the
+        hand-over line is written at finalize (`_rewrite_failed_followup`). A reduced run with this flag is not a
+        success (`build_succeeded`)."""
+        flags = list(self.report.flags if self.report is not None else []) + \
+            (list(self.loop.flags) if self.loop is not None else [])
+        if _aborted(flags):
+            return
+        from sbmig.rewrite.failure import FLAG, clean_reason, recipe_set_names
+        sets = recipe_set_names([r.id for r in step.recipes], self.cfg)
+        reason = clean_reason(err, roots=[str(self.ws.root), str(self.ws.run_dir)])
+        self._rewrite_failures.append((step.id, sets, reason))
+        self._flag(FLAG)
+        self.ws.journal({"event": "rewrite_failed", "step": step.id, "sets": sets, "reason": reason})
+        log.warning("%s: the automatic conversion failed (%s): %s", step.id, ", ".join(sets), reason)
+
+    def _rewrite_failed_followup(self, report: RunReport) -> None:
+        """변환이 실패한 실행의 인수인계 줄을 ADF / 소스 없는 reactor 줄 바로 뒤, 맨 앞에 넣는다.
+
+        v2.1z-ay: one line naming every recipe set not applied (all failed steps) and the first cleaned reason, first
+        among the follow-ups after the ADF / hollow-reactor lines (before the framework no-fix-loop line)."""
+        if not self._rewrite_failures:
+            return
+        from sbmig.rewrite.failure import rewrite_failed_followup
+        sets = list(dict.fromkeys(s for _, names, _ in self._rewrite_failures for s in names))
+        line = rewrite_failed_followup(sets, self._rewrite_failures[0][2])
+        if line not in report.manual_followups:
+            report.manual_followups.insert(self._first_lines_end(report), line)
+
+    def _correct_pom_encodings(self, pr: PhaseResult, step: PlanStep) -> None:
+        """XML 선언과 바이트의 인코딩이 다른 pom을 첫 OpenRewrite 실행 전에 일치시키고 커밋한다.
+        스위치 ``layout.legacy_context.correct_pom_encoding``이 꺼져 있으면 아무것도 하지 않는다. dry-run이면 메모만 남긴다.
+
+        v2.1z-ay, both flows, at the start of every `transform.rewrite` (idempotent: a second step finds nothing):
+        `sbmig.restructure.pom_charset.correct_pom_encodings` → commit `transform: pom encodings corrected`, journal
+        `pom_encodings {step, entries: [{pom, declared, actual, how}]}`, flag `pom-encoding-corrected`, one hand-over
+        line, one error-list entry per pom (`seen = transform`), a phase note per pom. Never raises."""
+        from sbmig.core.config import LegacyContextConfig
+        switches = getattr(self.cfg.layout, "legacy_context", None) or LegacyContextConfig()
+        if not bool(getattr(switches, "correct_pom_encoding", True)):
+            return
+        try:
+            from sbmig.restructure.pom_charset import FLAG, correct_pom_encodings, handover_line
+            out = correct_pom_encodings(self.ws, write=not self._dry_run)
+            if not out.fixes:
+                return
+            if self._dry_run:
+                pr.notes.append(f"{step.id}: dry-run → pom encodings not corrected: "
+                                + ", ".join(f.pom for f in out.fixes))
+                return
+            if self.ws.is_dirty():
+                self.ws.commit("transform: pom encodings corrected")
+            self.ws.journal({"event": "pom_encodings", "step": step.id, "entries": out.entries()})
+            self._flag(FLAG)
+            for f in out.fixes:
+                note = f"{f.pom}: {f.note()}"
+                pr.notes.append(note)
+                log.info("%s: %s", step.id, note)
+                self.errors.add_pom_verify(f.pom, f.note(), "transform")
+            line = handover_line(out.fixes)
+            if self.report is not None and line not in self.report.manual_followups:
+                self.report.manual_followups.append(line)
+        except Exception as e:  # noqa: BLE001 - an add-on: OpenRewrite and the build show what is left
+            log.warning("%s: pom encoding step skipped: %s: %s", step.id, type(e).__name__, e)
+            pr.notes.append(f"{step.id}: pom encodings not corrected ({type(e).__name__}: {e})")
 
     # catalog X8: literal versions the rewrite leaves when its resolver could not read maven-metadata.xml
     UNRESOLVED_VERSIONS_FLAG = "rewrite-unresolved-versions"
@@ -3596,6 +3690,36 @@ class Orchestrator:
             log.exception("error list failed")
             flag(f"errors-failed: {type(e).__name__}: {e}")
 
+    def _finalize_pomless(self, report: RunReport) -> None:
+        """이번 실행이나 앞선 실행이 만든 최소 pom으로 빌드한 라이브러리가 있으면 플래그 ``pomless-library``와 인수인계 줄 하나를 남긴다.
+        예외를 던지지 않는다.
+
+        v2.1z-ax: flag `pomless-library` and ONE Handover line naming the libraries for which a Maven call of this run
+        wrote (or found) a minimal pom (`sbmig.build.pomless`, the workspace's memo) plus the project's known
+        dependencies that resolve to a minimal pom an earlier run wrote (`stubs_used(known_coordinates(ws))`, journal
+        `pomless_stub_used`). No Maven call. Never raises."""
+        try:
+            from sbmig.build.pomless import FLAG, handover_line, known_coordinates, memo_for, stubs_used
+            libs = list(dict.fromkeys(f"{s['ga']}:{s['version']}" for s in memo_for(self.ws).stubs))
+            # 앞선 실행이 만든 최소 pom으로 조용히 빌드된 라이브러리도 같은 줄에 넣는다
+            for used in stubs_used(self.cfg, known_coordinates(self.ws), skip=set(libs)):
+                lib = f"{used['ga']}:{used['version']}"
+                if lib not in libs:
+                    libs.append(lib)
+                    self.ws.journal({"event": "pomless_stub_used", **used})
+                    log.info("maven: %s builds on a minimal pom an earlier run wrote (%s) — the repository has no pom "
+                             "for it", lib, used["path"])
+            if not libs:
+                return
+            self._flag(FLAG)
+            if FLAG not in report.flags:
+                report.flags.append(FLAG)
+            line = handover_line(libs)
+            if line not in report.manual_followups:
+                report.manual_followups.append(line)
+        except Exception as e:  # noqa: BLE001 - a note never stops the run
+            log.debug("pomless note failed: %s: %s", type(e).__name__, e)
+
     def _flag(self, flag: str) -> None:
         if self.report is not None and flag not in self.report.flags:
             self.report.flags.append(flag)
@@ -4044,6 +4168,9 @@ class Orchestrator:
             report.flags.append(f"blocked-finalize-failed: {e}")
         report.unresolved = [e for e in unresolved if not self.blocked.is_blocked_error(e)]
         self._no_fix_loop_followup(report)
+        # 변환 실패 줄은 프레임워크 줄보다 앞에 오도록 나중에 같은 위치에 넣는다
+        self._rewrite_failed_followup(report)
+        self._finalize_pomless(report)
         self._infra_flags(report)
         out = report.outputs
         out["run_dir"] = str(self.ws.run_dir)

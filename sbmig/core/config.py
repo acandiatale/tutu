@@ -203,6 +203,8 @@ class LegacyContextConfig(BaseModel):
     # project.build.sourceEncoding을 쓴다
     # D-M7: the restructure writes `project.build.sourceEncoding` for a module whose sources are not UTF-8
     write_source_encoding: bool = True
+    # 글자 인코딩이 XML 선언과 다른 pom을 자동 변환 전에 바로잡는다. 꺼 두면 OpenRewrite가 그 pom을 읽지 못한다
+    correct_pom_encoding: bool = True
     # JNDI 빈, DelegatingFilterProxy(보안 외), OpenEntityManagerInViewFilter, *.do 매핑, <jsp-config>,
     # WebApplicationInitializer, log4j 1, Security XML은
     # 인수인계 문장과 XML 복사본 옆 `<!-- MIGRATION-TODO -->` 주석으로 남긴다
@@ -502,6 +504,10 @@ class BuildConfig(BaseModel):
     # this server id (for a URL that appears nowhere in the settings).
     repository_server_id: Optional[str] = None
     repository_timeout_seconds: int = 10
+    # 저장소에 jar만 있고 pom이 없는 라이브러리 때문에 Maven이 멈추면 로컬 저장소에 최소 pom을 만들고 다시 실행한다
+    pomless_stub: bool = True
+    # 한 실행에서 만드는 최소 pom의 상한이다
+    pomless_stub_max: int = 20
     # 필터링되는 리소스 아래에서 항상 바이너리로 취급할 회사 확장자다(예: dmdb). 소문자로 점 없이 쓴다
     # 재구성이 스캔에서 찾은 확장자와 함께 <nonFilteredFileExtensions>에 넣어 MalformedInputException을 막는다
     # v2.1m: company extensions always written to `<nonFilteredFileExtensions>` of every pom that filters a resource,

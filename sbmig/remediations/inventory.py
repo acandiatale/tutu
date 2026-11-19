@@ -173,15 +173,17 @@ def parse_pom_file(project: Path, d: str) -> PomFile:
     rel = _pom_rel(d)
     path = project / rel
     pf = PomFile(dir=d, rel=rel, path=path)
+    from .apply import PomReadError, read_pom_xml, xml_reason
     try:
-        data = path.read_bytes()
-    except OSError as exc:
-        pf.error = f"cannot read {rel}: {type(exc).__name__}"
+        # Maven이 받는 pom(UTF-8 선언의 MS949 등)을 읽도록 apply와 같은 규칙으로 UTF-8로 바꾼다
+        data = read_pom_xml(path)
+    except PomReadError as exc:
+        pf.error = f"cannot read {rel}: {exc}"
         return pf
     try:
         root = etree.fromstring(data, _parser())
     except etree.XMLSyntaxError as exc:
-        pf.error = f"cannot parse {rel}: {str(exc)[:160]}"
+        pf.error = f"cannot read {rel}: {xml_reason(exc)}"
         return pf
     pf.root = root
     # 줄 내용 확인용 원문. libxml2는 '\n' 기준으로 줄을 세므로 같은 기준으로 나눈다

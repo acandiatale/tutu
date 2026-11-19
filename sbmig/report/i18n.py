@@ -400,7 +400,25 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
     "check whether they belong to the application":
         "모듈의 소스 루트 밖에 있는 java 파일이 안에 있는 파일보다 많습니다. 이 파일들은 빌드하지도 전환하지도 "
         "않았습니다. 애플리케이션에 속한 파일인지 확인해 주세요.",
+    # pom 인코딩을 맞춘 실행과 자동 변환이 실패한 실행의 플래그 설명, 결과 칸, 프레임워크 절 문장
+    "a pom's XML declaration named another encoding than the one its Korean text was saved in (OpenRewrite cannot read "
+    "such a pom): sbmig made it consistent before the automatic conversion, the Korean text unchanged — see Manual "
+    "follow-ups":
+        "pom 파일의 XML 선언에 적힌 인코딩과 한글이 실제로 저장된 인코딩이 달라(OpenRewrite가 읽지 못하는 pom입니다) 자동 "
+        "변환 전에 둘을 맞췄습니다. 한글 내용은 바뀌지 않았습니다. 자세한 내용은 「확인해 주세요」에 있습니다.",
+    "the automatic conversion (OpenRewrite) failed and its recipe sets were not applied — see the first line of Manual "
+    "follow-ups":
+        "자동 변환(OpenRewrite)이 실패해 변환이 적용되지 않았습니다. 원인은 「확인해 주세요」의 첫 항목에 있습니다.",
+    "❌ NOT CONVERTED (the build passed)": "❌ 변환 실패 (빌드는 통과)",
+    "**The JDK 21 and Jakarta conversion failed: nothing was converted** (the reason is the first line of Manual "
+    "follow-ups).":
+        "**JDK 21과 Jakarta 변환이 실패해 아무것도 변환되지 않았습니다.** 원인은 「확인해 주세요」의 첫 항목에 있습니다.",
     # 프로젝트에 포함된 jar의 bundled-jars 플래그 설명과 그 절. sbmig/report/markdown.py를 바꾸면 함께 바꾼다
+    "a library's repository has its jar but no pom: the build used a minimal pom that sbmig wrote into the server's "
+    "local Maven repository, so Maven does not know that library's own dependencies — see Manual follow-ups":
+        "저장소에 jar만 있고 pom이 없는 라이브러리가 있어 빌드 서버의 Maven 로컬 저장소에 최소한의 pom을 만들어 두고 "
+        "빌드했습니다. Maven은 이 라이브러리가 쓰는 다른 라이브러리를 알지 못합니다. 자세한 내용은 「확인해 주세요」에 "
+        "있습니다.",
     "jars sit in the tree (e.g. WEB-INF/lib) that no pom declares — the as-is IDE build compiled against them, Maven does "
     "not: when a build error needs one, sbmig wires it into the module pom (`sbmig-bundled`: a normal dependency when the "
     "repository has its coordinates, else system scope + includeSystemScope) — see \"Bundled jars (declared by no pom)\" "
@@ -740,6 +758,26 @@ def _aggregator_ko(m: "re.Match[str]") -> str:
 # 영어 문장을 바꾸면 패턴도 함께 바꿔야 하며, 맞지 않으면 영어 그대로 출력된다
 # Stored English lines → Korean, matched against the whole line. Unknown lines (free text from the LLM, advisory text
 # from the knowledge YAML, config values) stay as they are.
+# pom 인코딩 수정 한 건의 영어 표현(sbmig.restructure.pom_charset.PomCharsetFix._what)
+_POM_CHARSET = (r"(?:declared (?P<d>\S+)|no declaration), saved as (?P<a>\S+): "
+                r"(?:declaration set to (?P<t>\S+)|saved again as UTF-8)$")
+
+
+def _pom_charset_ko(m: "re.Match[str]") -> str:
+    said = f"선언은 {m.group('d')}" if m.group("d") else "선언 없음"
+    done = f"선언을 {m.group('t')}로 변경" if m.group("t") else "파일을 UTF-8로 다시 저장"
+    return f"{said}, 실제 저장은 {m.group('a')}, {done}"
+
+
+def _pom_charset_item_ko(item: str) -> str:
+    # "`pom.xml` (declared UTF-8, saved as EUC-KR: declaration set to EUC-KR)" 한 건을 한국어로 바꾼다
+    m = re.match(r"^(?P<pom>`[^`]+`) \((?P<rest>[^()]+)\)$", item)
+    if not m:
+        return item
+    inner = re.match(_POM_CHARSET, m.group("rest"))
+    return f"{m.group('pom')}({_pom_charset_ko(inner)})" if inner else item
+
+
 _W = r"(?:still takes `(?P<t>[^`]+)`|exposes an API this code no longer matches)"
 _OWNER = r"(?: \(class `(?P<o>[^`]+)`\))?"
 
@@ -828,6 +866,23 @@ PATTERNS: dict[str, list[tuple[re.Pattern[str], Union[str, Callable[[re.Match[st
      r"scope를 변경 전과 같은 provided로 되돌렸습니다(\g<k>, 레시피 뒤에는 \g<o>)"),
     (r"^source encoding written: (?:(?P<p>\S+): )?project\.build\.sourceEncoding=(?P<v>[^\s(]+)(?: \(.*\))?$",
      r"소스 인코딩을 pom에 기록했습니다(project.build.sourceEncoding=\g<v>)"),
+    # 변환 전에 sbmig가 맞춘 pom의 글자 인코딩(오류 목록 항목, sbmig.restructure.pom_charset.PomCharsetFix.note)
+    (r"^pom encoding corrected: " + _POM_CHARSET,
+     lambda m: f"pom의 글자 인코딩을 바로잡았습니다({_pom_charset_ko(m)})"),
+    # 변환 전에 pom의 글자 인코딩을 맞췄다는 인수인계 줄(sbmig.restructure.pom_charset.handover_line)
+    (r"^pom encodings corrected before the automatic conversion: (?P<r>.+?) — each pom's XML declaration named another "
+     r"encoding than the one its Korean text was saved in, which OpenRewrite cannot read; the Korean text itself is "
+     r"unchanged$",
+     lambda m: ("자동 변환 전에 pom 파일의 글자 인코딩을 바로잡았습니다. "
+                + "; ".join(_pom_charset_item_ko(x) for x in re.findall(r"`[^`]+` \([^()]+\)", m.group("r")))
+                + ". 이 파일들은 XML 선언에 적힌 인코딩과 한글이 실제로 저장된 인코딩이 달라 OpenRewrite가 읽지 못합니다. "
+                "한글 내용은 바뀌지 않았습니다.")),
+    # 자동 변환이 실패했는데 실행을 이어 간 경우의 첫 인수인계 줄(sbmig.rewrite.failure.rewrite_failed_followup)
+    (r"^the automatic conversion \(OpenRewrite\) failed — recipe sets not applied: (?P<sets>.+?); reason: (?P<why>.+) "
+     r"— the files were not converted and the build ran on the unconverted tree; fix the cause and run the migration "
+     r"again$",
+     r"자동 변환(OpenRewrite)이 실패해 다음 변환을 적용하지 못했습니다: \g<sets>. 원인: \g<why>. 파일은 변환되지 않았고, "
+     r"빌드는 변환하지 않은 상태로 실행했습니다. 원인을 해결한 뒤 마이그레이션을 다시 실행해 주세요."),
     # 테스트를 컴파일하지 않은 실행의 후속 조치(Orchestrator, build.skip_test_compile)
     (r"^test sources were neither compiled nor run \(build\.skip_test_compile: true\): the owning team compiles and "
      r"fixes the tests \(`mvn test-compile`\) before relying on CI$",
@@ -1215,6 +1270,15 @@ PATTERNS: dict[str, list[tuple[re.Pattern[str], Union[str, Callable[[re.Match[st
                    else f"이 가운데 `{m.group('tail')}` 옵션은 명령줄로 넘겨 빌드에 반영했습니다.")
                 + f" 폴더는 올리신 그대로 돌려드립니다. 이 폴더로 직접 빌드하기 전에 JDK {m.group('n')}과 사용하는 Maven "
                 "버전에 맞는지 확인해 주세요.")),
+    # 저장소에 pom 없이 jar만 있는 라이브러리를 최소 pom으로 빌드했다는 안내다. 이번 실행과 앞선 실행 어느 쪽이 만들었든 맞는 문장이다
+    ((r"^libraries with a jar but no pom in the repository: (?P<libs>.+?) — the build used a minimal pom that sbmig "
+      r"wrote for each into the server's local Maven repository; Maven therefore does not know what these libraries "
+      r"themselves depend on \(declare anything they need in the project\), and the lasting fix is that the library's "
+      r"owner uploads its pom to the repository$"),
+     lambda m: (f"저장소에 jar만 있고 pom이 없는 라이브러리가 있습니다: {m.group('libs')}. 빌드 서버의 Maven 로컬 저장소에 "
+                "최소한의 pom을 만들어 두고 빌드했습니다. 이 pom에는 라이브러리가 쓰는 다른 라이브러리가 적혀 있지 않아 "
+                "Maven은 그 목록을 알지 못합니다. 이 라이브러리가 동작하는 데 필요한 라이브러리가 있으면 프로젝트의 "
+                "pom.xml에 직접 추가해 주세요. 근본적인 해결은 라이브러리 담당자가 저장소에 pom을 올리는 것입니다.")),
     # 프로젝트의 .mvn/maven.config가 자기 settings를 가리킬 때의 안내다. 서버 설정으로 빌드했는지, 섞였는지를 알린다
     ((r"^the project's \.mvn/maven\.config points Maven at its own settings \((?P<what>.+?)\): (?:ignored here — "
       r"every build of this run used the server's settings|Maven read them in this run as its global settings, merged "

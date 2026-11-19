@@ -1170,7 +1170,11 @@ def _resolve(project: Path, pattern: str) -> list[Path]:
 
 def _pom_root(path: Path):
     import xml.etree.ElementTree as ET
-    return ET.parse(path).getroot()
+
+    from sbmig.analyze.pom_parser import pom_encoding
+    # the standard parser refuses a multi-byte declaration (EUC-KR) on bytes: decode first
+    data = Path(path).read_bytes()
+    return ET.fromstring(data.decode(pom_encoding(data), errors="replace"))
 
 
 def _pom_text(el, tag: str) -> str | None:

@@ -24,6 +24,15 @@ mvn log ─► log parser ─► BuildError (L1 / L2) ─► case (L2) ─► tr
 * **Environment errors** the runner handles before the loop: a file under `target/` locked by another process (Windows) is
   retried `build.file_lock_retries` times (patterns `knowledge/config/build_env_errors.yml`); a Maven negative-cache hit
   ("was cached in the local repository") reruns the build once with `-U` (`build.retry_negative_cache`).
+  A library whose repository has the jar but no pom, where one repository answers the pom request with a transfer error
+  (`Failed to read artifact descriptor for <g>:<a>:jar:<v>` caused by `Could not transfer artifact <g>:<a>:pom:<v> from/to …`):
+  once the jar is shown to be obtainable and the pom obtainable from no repository, a minimal pom is written into the local
+  repository and the same Maven command runs once more (`build.pomless_stub`, at most `build.pomless_stub_max` per run;
+  `sbmig/build/pomless.py`, in `MavenRunner.run` after the file-lock retry and before the `-U` retry, which it makes unnecessary;
+  also the OpenRewrite run, the effective-pom capture, `dependency:tree`, the classpath capture, `plan/jarcheck.py` and the
+  remediation's `package` / `resolve` — not `rewrite/versions.py`; before any blocked-reason classification such as `repository_unreachable`;
+  journal `pomless_stub` / `pomless_check`, flag `pomless-library`). Parent poms, imported BOMs, plugins and a plain
+  `Could not find artifact` are not handled this way. Details and the reasons of a declined case: `docs/RUNBOOK.md`.
 
 ## 2. Zero-LLM pre-tries
 
@@ -157,7 +166,15 @@ cap ends it instead.
 * **OpenRewrite**: OOM → one retry with `openrewrite.oom_retry_jvm_args`; download failures → wait and retry
   (`openrewrite.download_retry`); literal `4.0.x`-style versions left in a pom → reset and rerun once, else flag
   `rewrite-unresolved-versions`; files the plugin could not parse → flag `rewrite-parse-problems`. The run continues — the
-  build shows what is left.
+  build shows what is left. A recipe run that fails (for a reason that does not abort the run) is said: flag `rewrite-failed`
+  (the first attention code), journal `rewrite_failed {step, sets, reason}`, the first hand-over line and the Korean guide's
+  lead (`sbmig/rewrite/failure.py`). An ordinary run keeps its build-defined verdict; a conversion-only (framework) run is not a
+  success without its conversion (`Orchestrator.build_succeeded`): `exit=2 build=ok … attn=rewrite-failed`.
+* **A pom whose bytes do not match its XML declaration** (Korean text saved as MS949 / EUC-KR under a UTF-8 header or none):
+  Maven builds it, OpenRewrite cannot parse it. Before the first OpenRewrite run every project pom outside `src/` is made
+  consistent (`layout.legacy_context.correct_pom_encoding`, `sbmig/restructure/pom_charset.py`): strict EUC-KR bytes → only the
+  declaration becomes `EUC-KR`, else saved again as UTF-8; commit `transform: pom encodings corrected`, journal `pom_encodings`,
+  flag `pom-encoding-corrected`, one hand-over line, an error-list entry per pom with `seen = transform`. No LLM.
 * **OpenRewrite and an unresolvable parent** (the recipes run on the as-is poms, before the restructure sets the company
   parents): the configured parent coordinates missing → abort as in §5 X4. A company parent g:a at an as-is version the
   repository lacks → `openrewrite.unresolvable_asis_parent` (`align` by default: the poms are set to the configured version,

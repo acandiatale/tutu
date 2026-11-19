@@ -8,6 +8,7 @@ import string
 from pathlib import Path
 
 from sbmig.analyze.framework import no_fix_loop_followup
+from sbmig.build.pomless import handover_line
 from sbmig.core.models import BlockedItem, BlockReason, BuildError, ErrorKind, Phase
 from sbmig.core.workspace import Workspace
 from sbmig.report import build_handover, render_markdown, write_report
@@ -527,7 +528,37 @@ def _loop_followup_lines() -> list[str]:
          "understates its sizes"),
         ("ZIP refused while unpacking: the entry app/big.bin expanded more than 200:1 (intake.max_compression_ratio) — the "
          "ZIP's directory understates its sizes"),
+        # v2.1z-ax: libraries whose repository has the jar but no pom (sbmig.build.pomless.handover_line)
+        handover_line(["com.example:pomless:1.0", "com.example:other:2.0"]),
+        # v2.1z-ay: poms whose bytes did not match their declaration (sbmig.restructure.pom_charset), the error-list
+        # entry of each, and a failed conversion (sbmig.rewrite.failure)
+        *_pom_charset_lines(),
     ]
+
+
+def _pom_charset_lines() -> list[str]:
+    from sbmig.restructure.pom_charset import PomCharsetFix
+    from sbmig.restructure.pom_charset import handover_line as charset_line
+    from sbmig.rewrite.failure import rewrite_failed_followup
+    fixes = [PomCharsetFix("pom.xml", "UTF-8", "EUC-KR", "declaration", "EUC-KR"),
+             PomCharsetFix("web/pom.xml", "none", "MS949", "utf-8", "UTF-8")]
+    return [charset_line(fixes), *(f.note() for f in fixes),
+            rewrite_failed_followup(["jdk21", "jakarta"], "Failed to parse pom: Invalid UTF-8 middle byte 0xce (at char "
+                                                          "#421, byte #37)")]
+
+
+def test_pom_charset_and_rewrite_failed_lines_in_korean():
+    """v2.1z-ay: the samples a reader sees, read top to bottom."""
+    line, decl, utf8, failed = (tr_line("ko", x) for x in _pom_charset_lines())
+    assert line == ("자동 변환 전에 pom 파일의 글자 인코딩을 바로잡았습니다. `pom.xml`(선언은 UTF-8, 실제 저장은 EUC-KR, "
+                    "선언을 EUC-KR로 변경); `web/pom.xml`(선언 없음, 실제 저장은 MS949, 파일을 UTF-8로 다시 저장). 이 "
+                    "파일들은 XML 선언에 적힌 인코딩과 한글이 실제로 저장된 인코딩이 달라 OpenRewrite가 읽지 못합니다. "
+                    "한글 내용은 바뀌지 않았습니다.")
+    assert decl == "pom의 글자 인코딩을 바로잡았습니다(선언은 UTF-8, 실제 저장은 EUC-KR, 선언을 EUC-KR로 변경)"
+    assert utf8 == "pom의 글자 인코딩을 바로잡았습니다(선언 없음, 실제 저장은 MS949, 파일을 UTF-8로 다시 저장)"
+    assert failed == ("자동 변환(OpenRewrite)이 실패해 다음 변환을 적용하지 못했습니다: jdk21, jakarta. 원인: Failed to "
+                      "parse pom: Invalid UTF-8 middle byte 0xce (at char #421, byte #37). 파일은 변환되지 않았고, "
+                      "빌드는 변환하지 않은 상태로 실행했습니다. 원인을 해결한 뒤 마이그레이션을 다시 실행해 주세요.")
 
 
 def test_every_handover_pattern_matches_a_real_handover_line(tmp_path, cfg):

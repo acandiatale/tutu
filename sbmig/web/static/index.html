@@ -87,6 +87,8 @@
          background: var(--blue); color: #fff; font-weight: 600; cursor: pointer; text-decoration: none; white-space: nowrap; }
   .btn:hover { background: #1A4FC0; border-color: #1A4FC0; text-decoration: none; }
   .btn:disabled, .btn[aria-disabled=true] { opacity: .45; cursor: default; pointer-events: none; }
+  /* 중단을 요청한 뒤의 버튼은 흐리게 하지 않고 주의 색으로 요청 상태를 보여 준다 */
+  .btn.ghost.asked, .btn.ghost.asked:disabled { opacity: 1; color: var(--warn); border-color: var(--warn); background: var(--warn-tint); }
   .btn.quiet { background: #fff; color: var(--blue); }
   .btn.quiet:hover { background: var(--blue-tint); }
   .btn.ghost { background: transparent; border-color: var(--line); color: var(--ink); }
@@ -162,6 +164,16 @@
   .podwait .pwhint { color: var(--ink); font-weight: 600; }
   .podwait .pwraw { margin-top: 4px; color: var(--muted); font-family: var(--mono); font-size: 12px; word-break: break-all; }
   .podwait .pwstop { margin-top: 4px; color: var(--muted); }
+  /* 사람이 중단을 요청해 멈춘 단계: 실패(빨강)가 아니라 주의 색과 일시정지 표시로 그린다 */
+  .rail .step.stopped .dot { background: var(--warn); border-color: var(--warn); }
+  .rail .step.stopped .dot::before, .rail .step.stopped .dot::after { content: ""; position: absolute; top: 4px; width: 2px; height: 8px; background: #fff; }
+  .rail .step.stopped .dot::before { left: 5px; } .rail .step.stopped .dot::after { left: 9px; }
+  .rail .step.stopped .label { color: var(--warn); font-weight: 600; }
+  /* 엔진이 맡을 수 없어 멈춘 단계: 주의 색 점에 흰 가로줄을 그린다(일시정지 표시와 다르다) */
+  .rail .step.refused .dot { background: var(--warn); border-color: var(--warn); }
+  .rail .step.refused .dot::after { content: ""; position: absolute; left: 4px; top: 7px; width: 8px; height: 2px; background: #fff; }
+  .rail .step.refused .label { color: var(--warn); font-weight: 600; }
+  .railnote.warn { color: var(--warn); }
   .railnote { color: var(--muted); font-size: 12.5px; margin: 4px 0 0; min-height: 1.4em; word-break: keep-all; overflow-wrap: anywhere; }   /* 한글은 단어 단위로 줄을 바꾼다 */
 
   /* 진행 기록 / 로그 탭 */
@@ -185,7 +197,7 @@
             height: 320px; overflow: auto; white-space: pre-wrap; word-break: break-all; }
   .logbox:empty::before { content: "아직 로그가 없습니다."; color: #6D7FA3; }
   .logbox .ERROR, .logbox .CRITICAL, .logbox .runerror { color: #FF9A8F; } .logbox .runerror { font-weight: 700; }
-  .logbox .WARNING { color: #FFD48A; } .logbox .DEBUG { color: #7E90B5; } .logbox .console { color: #9FB3D9; }
+  .logbox .WARNING, .logbox .runstop { color: #FFD48A; } .logbox .runstop { font-weight: 700; } .logbox .DEBUG { color: #7E90B5; } .logbox .console { color: #9FB3D9; }
   .logfoot { display: flex; gap: 14px; color: var(--faint); font-size: 12px; margin-top: 8px; }
 
   /* ---- 3. 결과 카드 */
@@ -194,6 +206,9 @@
   .abort { margin: 0 0 16px; padding: 12px 16px; border: 1px solid var(--bad-tint); border-left: 3px solid var(--bad); border-radius: var(--radius-s);
            background: var(--bad-tint); color: var(--ink); }
   .abort .h { margin: 0 0 2px; font-weight: 700; color: var(--bad); font-size: 13px; }
+  /* 사람이 중단을 요청한 실행과 엔진이 맡을 수 없는 프로젝트의 안내 상자는 주의 색이다 */
+  .abort.stopped, .abort.refused { border-color: var(--warn-tint); border-left-color: var(--warn); background: var(--warn-tint); }
+  .abort.stopped .h, .abort.refused .h { color: var(--warn); }
   .abort .why { margin: 0; font-size: 15px; font-weight: 600; word-break: keep-all; overflow-wrap: anywhere; white-space: pre-wrap; }
   .result .line { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; }
   .counts { display: flex; gap: 8px; flex-wrap: wrap; }
@@ -453,7 +468,13 @@
   @media (prefers-reduced-motion: reduce) { .cdiff .wait::before { animation: none; } .cdiff .cd-tree .chev, .cdiff .cd-fold::before { transition: none; } }
 
   /* ---- 4. 지난 실행 */
-  details.history summary { cursor: pointer; padding: 14px 22px; font-weight: 700; font-size: 15px; display: flex; align-items: center; gap: 10px; }
+  details.history summary { cursor: pointer; padding: 14px 22px; font-weight: 700; font-size: 15px; display: flex; align-items: center; gap: 4px 10px; flex-wrap: wrap; }
+  /* 목록을 열지 않아도 보이도록 제목 아래 줄에 두는 안내다 */
+  details.history summary .scope { order: 3; flex-basis: 100%; color: var(--muted); font-weight: 400; font-size: 12.5px; }
+  .runs li.more { display: flex; gap: 8px; align-items: baseline; cursor: default; padding: 8px 12px; }
+  .runs li.more:hover { background: none; }
+  .runs li.more button { background: none; border: 0; padding: 0; color: var(--blue); font-weight: 600; font-size: 13px; cursor: pointer; }
+  .runs li.more .muted { font-size: 12.5px; }
   details.history summary .n { color: var(--muted); font-weight: 400; font-size: 13px; }
   details.history summary .refresh { margin-left: auto; color: var(--blue); font-weight: 600; font-size: 13px; background: none; border: 0; cursor: pointer; }
   .runs { list-style: none; margin: 0; padding: 0 10px 10px; max-height: 360px; overflow: auto; }
@@ -477,6 +498,7 @@
            font-size: 13px; max-width: min(640px, 90vw); opacity: 0; pointer-events: none; transition: opacity .2s; }
   .toast.show { opacity: 1; }
   .toast.bad { background: var(--bad); }
+  .toast.warn { background: var(--warn); }
 
   @media (max-width: 640px) {
     .top .in { padding: 12px 16px; } .top .right { display: none; }
@@ -676,7 +698,7 @@
 
   <!-- 4. 지난 실행 -->
   <details class="card history" id="history">
-    <summary>지난 실행 <span class="n" id="runcount"></span><button class="refresh" id="refresh" type="button">새로 고침</button></summary>
+    <summary>지난 실행 <span class="n" id="runcount"></span><button class="refresh" id="refresh" type="button">새로 고침</button><span class="scope" id="runscope"></span></summary>
     <ul class="runs" id="runs"></ul>
   </details>
 </main>
@@ -705,8 +727,9 @@
   // ---------------------------------------------------------------- 알림
   let toastTimer = null;
   function toast(msg, bad, ms) {
-    const t = $('toast'); t.textContent = msg; t.className = 'toast show' + (bad ? ' bad' : '');
-    clearTimeout(toastTimer); toastTimer = setTimeout(() => { t.className = 'toast'; }, ms || (bad ? 8000 : 4000));
+    // bad가 'warn'이면 실패가 아닌 주의 안내(중단 요청)로 주의 색을 쓴다
+    const t = $('toast'); t.textContent = msg; t.className = 'toast show' + (bad === 'warn' ? ' warn' : (bad ? ' bad' : ''));
+    clearTimeout(toastTimer); toastTimer = setTimeout(() => { t.className = 'toast'; }, ms || (bad === true ? 8000 : 4000));
   }
   // status가 여러 번 와도 깜빡이거나 화면 낭독기가 같은 말을 반복하지 않도록 같은 값이면 다시 쓰지 않는다
   function setText(id, s) { const el = $(id); if (el.textContent !== s) el.textContent = s; }
@@ -888,9 +911,13 @@
     const remOnly = st.flow === FLOW_REM;
     if (st.state === 'running') return { cls: '', text: remOnly ? '취약점 조치 진행 중' : '마이그레이션 진행 중', short: '진행 중' };
     if (st.state === 'finished') {
-      if (st.stop_requested && st.exit_code === 3) return { cls: 'bad', text: '중단되었습니다', short: '중단' };
+      // 사람이 요청한 중단은 실패가 아니므로 주의 색으로 보여 준다
+      if (userStop(st)) return { cls: 'warn', text: '중단되었습니다', short: '중단' };
       // 진행하지 못한 실행(접수 거절, 조치 환경 미비 등): 사유는 결과 영역 맨 위에 문장으로 표시하고(abortText) 제목은 짧게 쓴다
-      if (st.exit_code === 3 && abortText(st)) return { cls: 'bad', text: '진행하지 못했습니다', short: '진행 못 함' };
+      // 엔진이 맡을 수 없는 프로젝트(접수 거절 등)는 주의 색, 내부 오류나 실행 환경 문제는 빨간색이다
+      if (st.exit_code === 3 && abortText(st)) return engineRefusal(st)
+        ? { cls: 'warn', text: '처리할 수 없습니다', short: '처리 불가' }
+        : { cls: 'bad', text: '실행 중 오류가 났습니다', short: '실행 오류' };
       if (remOnly) {
         if (st.success === true) return { cls: 'ok', text: '조치를 마쳤습니다', short: '조치 완료' };
         const r = remTitle(st.remediation && st.remediation.status);
@@ -909,6 +936,20 @@
     }
     return { cls: '', text: st.state || '', short: st.state || '' };
   }
+  // 사람이 중단을 요청해 결과 없이 끝난 실행인지 확인한다. user_stop이 없는 이전 서버는 중단 요청과 종료 코드 3으로 판단한다
+  function userStop(st) {
+    return !!st && (st.user_stop === true || (!!st.stop_requested && st.exit_code === 3 && st.state === 'finished'));
+  }
+  // 엔진의 중단 사유가 내부 오류인지 확인한다. 노드에서 난 예외는 클래스 이름으로 시작한다
+  function isInternalReason(r) {
+    return /^(internal error|missing component):|^[A-Za-z_][\w.]*(Error|Exception)\b/.test(String(r || ''));
+  }
+  // 엔진이 이 프로젝트를 맡을 수 없어 멈춘 실행인지 확인한다. 웹이나 파드 쪽 오류(abort_reason 없음)와 내부 오류는 아니다
+  function engineRefusal(st) {
+    return !!st.abort_reason && !isInternalReason(st.abort_reason) && !userStop(st);
+  }
+  // 엔진이 멈춘 이유가 사람의 중단 요청인지 확인한다(sbmig.core.workspace.STOP_REQUEST_REASON)
+  function isStopReason(r) { return /^stopped by user \(stop\.request\)/.test(String(r || '')); }
   // 취약점 해결 실행의 제목. 조치 상태별로 한 문장(조치 보고서의 결과 문장과 같음)이고, 모르는 상태면 null
   const REM_TITLE = { SUCCEEDED: ['ok', '조치를 마쳤습니다', '조치 완료'], INCOMPLETE: ['warn', '일부만 조치되었습니다', '일부 조치'],
                       AWAITING_APPROVAL: ['warn', '승인을 기다리고 있습니다', '승인 대기'], AWAITING_CONFIRMATION: ['warn', '확인이 필요합니다', '확인 필요'],
@@ -978,6 +1019,8 @@
     setPodWait(live && st.job ? st.job.pending : null);
     $('stop').hidden = !live;
     setText('stop', st.stop_requested ? '중단 요청됨' : '중단');
+    $('stop').classList.toggle('asked', !!st.stop_requested);
+    if (st.stop_requested) stopAsked = true;
     if (st.parallel) setParallel(st.parallel);
     if (st.mode === 'k8s-job' || st.mode === 'local-job') jobStep();   // Job 모드(개발 PC의 local-job 포함)에서는 첫 current보다 먼저 접수 앞에 '파드' 단계를 넣는다
     if (st.state === 'finished') { setCurrent(null); showResult(st, d); }
@@ -1018,6 +1061,16 @@
   }
   // 엔진의 중단 사유(`중단: …`)는 끝까지 남긴다. 뒤에 오는 파드 안내(ending, api-back)가 덮어쓰면 중단 사유를 알 수 없게 된다
   let abortNote = '';
+  // 이 실행에 중단을 요청했는지 여부다. 중단 뒤 파드가 정리되면 실패가 아니라 중단으로 그린다
+  let stopAsked = false;
+  const STOP_NOTE = '중단 요청으로 멈췄습니다. 마지막 빌드는 하지 않았습니다.';
+  const STOP_JOB_NOTE = '중단 요청으로 작업을 정리했습니다.';
+  let stopNoteKo = '';          // 서버가 보낸 중단 안내 한 줄(파드가 시작하기 전에 정리한 경우)
+  // 안내 줄을 바꾸는 곳이 많으므로 내용이 중단 안내일 때만 주의 색을 쓴다
+  function toneRailNote() {
+    const n = $('railnote'), t = n.textContent;
+    n.classList.toggle('warn', !!t && (t === STOP_NOTE || t === STOP_JOB_NOTE || t === stopNoteKo || t.startsWith('처리 불가: ')));
+  }
   // 취약점 해결 실행의 단계: 접수 -> 취약점 조치 -> 마무리(엔진 노드 intake -> remediation -> finalize)
   const REM_STEPS = ['intake', FLOW_REM, 'finalize'];
   let railFlow = FLOW_FULL;
@@ -1035,7 +1088,7 @@
     placeSkipped();                                   // 범위를 이미 알고 있으면 하지 않는 단계를 다시 그린다
   }
   function railSteps() { return [...$('rail').querySelectorAll('.step')]; }
-  function engineSeen() { return railSteps().some((n) => n.dataset.node !== 'job' && (n.classList.contains('done') || n.classList.contains('failed'))); }
+  function engineSeen() { return railSteps().some((n) => n.dataset.node !== 'job' && (n.classList.contains('done') || n.classList.contains('failed') || n.classList.contains('stopped') || n.classList.contains('refused'))); }
   function setCurrent(el) {
     for (const n of railSteps()) n.classList.remove('current');
     if (el) el.classList.add('current');
@@ -1119,10 +1172,15 @@
       // 파드가 시작하지 못한 이유 안내는 단계 표시와 안내 줄을 바꾸지 않는다
       if (s === 'pod-pending') { setPodWait(u.pending); return; }
       if (s === 'pod-started') { setPodWait(null); return; }
-      if (s === 'stopped-before-start') { setPodWait(null); $('railnote').textContent = String(u.message_ko || ''); return; }
+      if (s === 'stopped-before-start') {
+        setPodWait(null); el.classList.remove('current'); el.classList.add('stopped');
+        stopNoteKo = String(u.message_ko || STOP_JOB_NOTE); $('railnote').textContent = stopNoteKo; return;
+      }
       if (!['creating', 'pending', 'created', 'api-unavailable', 'api-back'].includes(s)) setPodWait(null);
       // 늦게 온 running은 이미 시작한 엔진 단계의 표시(현재 단계, 안내 줄)를 되돌리지 않는다
       if (s === 'running') { el.classList.add('done'); if (!engineSeen()) { setCurrent(railSteps()[1]); $('railnote').textContent = readyText(); } }
+      // 중단을 요청한 뒤 정리된 파드는 실패가 아니라 중단으로 그린다
+      else if ((s === 'failed' || s === 'missing') && stopAsked) { el.classList.remove('done'); el.classList.add('stopped'); setCurrent(null); $('railnote').textContent = abortNote || STOP_JOB_NOTE; }
       else if (s === 'failed' || s === 'missing') { el.classList.remove('done'); el.classList.add('failed'); setCurrent(null); $('railnote').textContent = `실행 환경을 준비하지 못했습니다: ${u.message || s}`; }
       // completed는 결과 파일을 받았다는 뜻이므로 파드는 정상 종료한 것이다(이관 종료 코드가 3이어도). 안내 줄과 현재 단계는 엔진 이벤트가 정한다
       else if (s === 'succeeded' || s === 'completed') { el.classList.remove('failed'); el.classList.add('done'); }
@@ -1135,7 +1193,7 @@
     }
     // 엔진 단계가 왔으면 파드는 실행 중이다. running을 받지 못한 빠른 실행이나 job 이벤트 없이 저널로 다시 보는 끝난 실행도 '파드'를 완료로 표시한다
     const pod = rail.querySelector('.step[data-node="job"]');
-    if (pod && !pod.classList.contains('failed') && !pod.classList.contains('done')) {
+    if (pod && !pod.classList.contains('failed') && !pod.classList.contains('stopped') && !pod.classList.contains('done')) {
       if (pod.classList.contains('current')) $('railnote').textContent = readyText();   // '준비하는 중' 안내가 남지 않도록
       pod.classList.add('done');
     }
@@ -1158,13 +1216,18 @@
       el = railSteps().find((n) => n.dataset.node === name);
       if (!el) { rail.insertAdjacentHTML('beforeend', stepHtml(name, name)); el = rail.lastElementChild; }
     }
-    el.classList.add(u.aborted ? 'failed' : 'done');
-    if (u.aborted) { abortNote = `중단: ${u.aborted}`; $('railnote').textContent = abortNote; }
+    // 중단 요청은 일시정지, 엔진이 맡을 수 없는 프로젝트는 주의 표시, 내부 오류만 실패로 그린다
+    const kind = !u.aborted ? 'done' : (isStopReason(u.aborted) ? 'stopped' : (isInternalReason(u.aborted) ? 'failed' : 'refused'));
+    el.classList.add(kind);
+    if (u.aborted) {
+      abortNote = kind === 'stopped' ? STOP_NOTE : (kind === 'refused' ? `처리 불가: ${u.aborted}` : `오류: ${u.aborted}`);
+      $('railnote').textContent = abortNote;
+    }
     else if (u.stopped) $('railnote').textContent = '요청한 단계까지만 실행하고 멈췄습니다.';
     const steps = railSteps(); let last = -1;
-    steps.forEach((n, i) => { if (n.classList.contains('done') || n.classList.contains('failed')) last = i; });
+    steps.forEach((n, i) => { if (n.classList.contains('done') || n.classList.contains('failed') || n.classList.contains('stopped') || n.classList.contains('refused')) last = i; });
     // finalize 뒤에는 이어서 실행되는 취약점 조치(빌드 파드의 remediation 노드)만 남는다. 이미 시작했으면 그것이 현재 단계다
-    const remRunning = rail.querySelector('.step[data-node="remediation"]:not(.done):not(.failed)');
+    const remRunning = rail.querySelector('.step[data-node="remediation"]:not(.done):not(.failed):not(.stopped):not(.refused)');
     // 하지 않는 단계(skipped)는 현재 단계가 될 수 없으므로 건너뛴다
     const next = steps.slice(last + 1).find((n) => !n.classList.contains('skipped'));
     setCurrent(u.aborted ? null : (name === 'finalize' ? remRunning : next));
@@ -1219,7 +1282,7 @@
     // sbmig.log: "<date> <time> LEVEL   [stage] logger: message"
     const m = /^\S+ \S+ (DEBUG|INFO|WARNING|ERROR|CRITICAL)\s+(\[[^\]]*\] )?(\S+): (.*)$/.exec(line);
     const level = m ? m[1] : 'INFO';
-    return { cls: kind === 'error' ? 'runerror' : level + (kind === 'console' ? ' console' : ''), level,
+    return { cls: kind === 'error' ? 'runerror' : (kind === 'stop' ? 'runstop' : level + (kind === 'console' ? ' console' : '')), level,
              text: (m ? `${line.slice(11, 19)} ${level.padEnd(7)} ${m[2] || ''}${m[4]}` : line), debug: level === 'DEBUG' && kind !== 'error' };
   }
   function logLine(kind, line) {
@@ -1265,8 +1328,11 @@
     $('resultcard').hidden = false;
     // 진행하지 못한 실행: 사유 한 문장을 결과 영역 맨 위에 표시한다(로그 탭에 묻히지 않도록)
     // 중단한 실행은 제목(중단되었습니다) 아래에 서버가 준 사유 한 줄만 보여 준다(파드가 시작하기 전에 정리한 경우)
-    const why = st.exit_code === 3 && !st.stop_requested ? abortText(st) : (st.stop_requested ? String(st.stop_reason_ko || '') : '');
+    const stopped = userStop(st);
+    const why = st.exit_code === 3 && !stopped ? abortText(st) : (stopped ? String(st.stop_reason_ko || '') : '');
     $('abortbox').hidden = !why; setText('aborttext', why);
+    $('abortbox').classList.toggle('stopped', stopped);    // 중단 요청으로 끝난 실행의 안내는 주의 색이다
+    $('abortbox').classList.toggle('refused', !stopped && engineRefusal(st));
     // 취약점 해결 실행에는 이관 결과(report.md / result.zip 버튼)가 없고 아래 '취약점 조치' 영역이 결과다
     const remOnly = (st.flow || runFlow) === FLOW_REM;
     $('mainline').hidden = remOnly; $('maindl').hidden = remOnly;
@@ -1382,7 +1448,9 @@
     $('remed').hidden = false;
     rem.last = st;
     const chip = $('remed-status');
-    chip.className = 'chip ' + (REM_CLS[st.status] || '');
+    // 중지 요청으로 멈춘 조치는 파드가 사라진 경우(중단됨)에도 실패가 아니라 주의 색이다
+    const remStopped = st.reason === 'stop_requested' || st.stop_requested === true;
+    chip.className = 'chip ' + (remStopped && (st.status === 'STOPPED' || st.status === 'INTERRUPTED') ? 'warn' : (REM_CLS[st.status] || ''));
     setText('remed-status', (remBuildOnly(st, remTolerated(st)) ? REM_UNCONFIRMED_KO : (REM_KO[st.status] || st.status))
       + (st.stale ? ' (작업 종료)' : ''));
     // 취약점 해결 실행은 이 영역이 결과이므로 제목도 현재 조치 상태를 따른다(승인 후 이어서 진행하면 바뀐다)
@@ -2593,6 +2661,7 @@
     setTitle('', resume ? '다시 연결하는 중…' : '연결하는 중…', false); statusKey = '';
     $('stop').disabled = true;                         // 이전 실행의 상태가 남지 않도록 이 실행의 status가 오기 전에는 비활성화한다
     resetRail(runFlow); setFramework(null); runRem = null;
+    stopAsked = false; stopNoteKo = ''; $('stop').classList.remove('asked');
     try { history.replaceState(null, '', '#' + encodeURIComponent(runId)); } catch (e) {}
     const src = new EventSource(`/api/runs/${encodeURIComponent(runId)}/events`);
     es = src;
@@ -2683,12 +2752,12 @@
       loadRuns(); if (current === runId) refreshStatus(runId);
       return;
     }
-    if (!here) { toast('중단을 요청했습니다.'); loadRuns(); return; }
-    setText('stop', '중단 요청됨');
-    if (wasQueued) { toast('중단을 요청했습니다.'); }
+    if (!here) { toast('중단을 요청했습니다.', 'warn'); loadRuns(); return; }
+    setText('stop', '중단 요청됨'); $('stop').classList.add('asked'); stopAsked = true;
+    if (wasQueued) { toast('중단을 요청했습니다.', 'warn'); }
     else {
-      logLine('error', '[중단 요청 — 지금 돌고 있는 단계(빌드 또는 LLM 호출)가 끝나면 멈춥니다]');
-      toast('중단을 요청했습니다. 지금 돌고 있는 단계가 끝나면 멈춥니다.');
+      logLine('stop', '[중단 요청 — 지금 돌고 있는 단계(빌드 또는 LLM 호출)가 끝나면 멈춥니다]');
+      toast('중단을 요청했습니다. 지금 돌고 있는 단계가 끝나면 멈춥니다.', 'warn');
     }
   });
   // 현재 실행의 상태를 한 번 다시 읽는다(이미 끝난 실행의 중지 버튼 상태를 바로잡을 때 쓴다)
@@ -2705,6 +2774,9 @@
   // 늦게 온 이전 응답이 새 응답을 덮지 않도록 마지막 요청의 응답만 쓴다
   const RUNS_COALESCE_MS = 300;
   let runsSeq = 0, runsTimer = null;
+  // 지난 실행 목록은 최근 RUNS_DAYS일 안에 등록한 실행만 받아 온다. 이전 실행 보기를 누르면 이 페이지에서만 전체를 본다
+  const RUNS_DAYS = 3;
+  let runsAll = false;
   function loadRuns() {
     if (runsTimer) return;
     runsTimer = setTimeout(() => { runsTimer = null; fetchRuns(); }, RUNS_COALESCE_MS);
@@ -2712,14 +2784,22 @@
   async function fetchRuns() {
     const seq = ++runsSeq;
     let r, d;
-    try { r = await fetch('/api/runs'); d = await r.json(); } catch (e) { return; }   // 서버가 재시작 중이면 다음 주기에 다시 읽는다
+    const q = new URLSearchParams({ days: String(runsAll ? 0 : RUNS_DAYS) });
+    if (current) q.set('keep', current);              // 열어 둔 실행은 오래되었어도 목록에 남긴다
+    try { r = await fetch('/api/runs?' + q.toString()); d = await r.json(); } catch (e) { return; }   // 서버가 재시작 중이면 다음 주기에 다시 읽는다
     if (seq !== runsSeq) return;
     if (authProblem(r, d)) return;
     if (!d || !Array.isArray(d.runs)) return;
     setParallel(d.parallel);                           // 이전 서버(parallel 없음)면 안내를 숨긴다
     const ul = $('runs'); ul.innerHTML = '';
-    $('runcount').textContent = d.runs.length ? `${d.runs.length}건` : '';
-    if (!d.runs.length) { ul.innerHTML = '<li class="empty">아직 실행이 없습니다.</li>'; return; }
+    const hidden = Number(d.hidden) || 0;
+    // 제목 옆 건수와 그 아래 안내 줄이 지금 보이는 범위를 말한다
+    $('runcount').textContent = `${d.runs.length}건 · ${runsAll ? '전체' : `최근 ${RUNS_DAYS}일`}`;
+    setText('runscope', runsAll ? '전체 실행을 보고 있습니다.' : `최근 ${RUNS_DAYS}일 내에 등록한 프로젝트만 보입니다.`);
+    if (!d.runs.length) {
+      const empty = el('li', 'empty', !runsAll && hidden ? '이 기간에 등록한 프로젝트가 없습니다.' : '아직 실행이 없습니다.');
+      ul.appendChild(empty);
+    }
     for (const run of d.runs) {
       const li = document.createElement('li');
       li.className = (run.run_id === current) ? 'active' : '';
@@ -2735,10 +2815,20 @@
       li.onclick = () => { attach(run.run_id, false, run.flow, run.upload); $('runcard').scrollIntoView({ behavior: 'smooth', block: 'start' }); };
       ul.appendChild(li);
     }
+    // 더 오래된 실행이 있으면 목록 끝에 전체 보기를, 전체를 보는 중이면 다시 접기를 둔다
+    if (runsAll || hidden) {
+      const more = el('li', 'more');
+      const btn = el('button', null, runsAll ? `최근 ${RUNS_DAYS}일만 보기` : '이전 실행 보기'); btn.type = 'button'; btn.id = 'runsmore';
+      btn.onclick = () => { runsAll = !runsAll; fetchRuns(); };
+      more.appendChild(btn);
+      if (!runsAll) more.appendChild(el('span', 'muted', `${hidden}건 더`));
+      ul.appendChild(more);
+    }
   }
   $('refresh').addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); fetchRuns(); });
 
   // ---------------------------------------------------------------- 시작
+  new MutationObserver(toneRailNote).observe($('railnote'), { childList: true, characterData: true, subtree: true });
   resetRail(FLOW_FULL); syncFlow(); loadConfigs(); loadRuns(); setInterval(loadRuns, 15000);
   if (location.hash.length > 1) attach(decodeURIComponent(location.hash.slice(1)));   // #<run id>는 공유할 수 있는 주소다
 })();

@@ -203,7 +203,12 @@ Secret 의 `SBMIG_WEB_TOKEN` 을 채운다 — 그때는 `http://<host>:8765/?to
   zip 을 끌어다 놓거나 파일 선택 → 시작 → 진행 기록 / 로그 탭 → 끝나면 `보고서 받기(report.md)` / `변환된 프로젝트 받기(result.zip)` 두 버튼과, 바뀐 코드를 파일별로 보는 「코드 변경」 블록(위치가 바뀐 파일은 원래 위치도 표시).
   실행 폴더 이름은 올린 파일 이름에서 만든 앞머리로 시작한다(`<앞머리>-YYYYMMDD-HHMMSS-<hex 6>`; 소문자·숫자·하이픈, 긴 이름은 자르고, 쓸
   글자가 없으면 `web`). 실행 목록에는 올린 파일 이름이 그대로 보인다. 접수에서 거절된 실행은 그 사유를 문장으로 보인다(예: Ant 프로젝트 →
-  "Maven 변환 후 신청 부탁드립니다."). 로그는 화면에
+  "Maven 변환 후 신청 부탁드립니다.").
+  「지난 실행」은 최근 3일 안에 등록한 실행만 보인다(`GET /api/runs?days=3`, 제목 옆 「6건 · 최근 3일」, 그 아래 「최근 3일 내에 등록한 프로젝트만
+  보입니다.」). 대기·실행 중인 실행, 승인·확인을 기다리거나 도는 중인 취약점 조치, 지금 열어 둔 실행(`keep`)은 날짜와 상관없이 보인다. 목록 끝의
+  「이전 실행 보기」는 전체를 불러오고(「최근 3일만 보기」로 돌아감, 다시 읽으면 3일로), 지우는 것은 없다(보기만 자른다; `days=0` 또는 없음 = 전체).
+  사람이 멈춘 실행(`user_stop: true`: 결과 없이 끝났고 멈춤 요청, 대기 중 철회·시작 전 삭제, 멈춤 사유 문장 중 하나)은 빨강이 아니라 주의 색(주황)으로
+  「중단되었습니다」와 함께 보인다. 엔진이 받지 못했거나 끝까지 가지 못한 실행(접수 거절, 그 밖의 중단 사유)도 주황으로 「처리할 수 없습니다」(목록 「처리 불가」)다. 빨강은 서버 쪽 문제에만 남는다: 내부 오류나 사유 없이 끝난 실행(「실행 중 오류가 났습니다」, 목록 「실행 오류」), 멈춤 요청 없이 실패한 파드, 잃어버린 파드, 조치 `FAILED`. 로그는 화면에
   마지막 1,500 줄만 그린다(전체는 `sbmig.log` 링크) — 몇 만 줄이 쌓여 브라우저가 느려지던 문제의 답. 사내망이라 웹 폰트·CDN 없음.
 * **리소스**: Maven / OpenRewrite 는 `openrewrite.jvm_args: ["-Xmx4g"]` 로 돈다 → 메모리 limit 6~8 GiB, CPU 2~4. 업로드 상한
   `SBMIG_MAX_UPLOAD_MB`(코드 기본 512, 이미지와 매니페스트는 1024 — 이미지의 명령줄에는 상한을 두지 않아 ConfigMap 값이 그대로 먹는다). **프로브**: 인증 없는 health 경로가 없어 `tcpSocket`.
@@ -400,6 +405,27 @@ PC 에서 시험한 파일을 그대로 `20-configmap.yaml` 의 `sbmig-config` �
 `maven.config`, `extensions.xml` 때문에 빌드가 멈추지 않는다. `maven.config` 의 `-D` 속성과 `-P` 프로파일만 명령줄로 옮겨 넘긴다.
 이관 보고서에는 플래그 `project-mvn-ignored` 와 인수인계 한 줄이 남고, 폴더는 고치지 않고 result.zip 에 그대로 들어간다.
 취약점 조치도 같은 환경으로 빌드하고 그런 프로젝트를 거절하지 않는다(`remediation.project_maven_config: ignore`, 기본값).
+
+**pom 없이 jar만 있는 라이브러리 — sbmig가 쓰는 최소 pom.** 저장소에 jar만 올라와 있고 pom이 없는 라이브러리(대개 사내 라이브러리)는
+Maven Central 프록시가 그 pom 경로에 502 같은 전송 오류를 내면 빌드를 멈추게 한다(`Could not transfer artifact …:pom:… from/to …`).
+sbmig는 jar는 저장소에 있고 pom은 어디에도 없다는 것을 확인한 경우에만 그 파드의 로컬 저장소에 최소 pom 하나를 쓰고 같은 Maven 명령을
+한 번 더 실행한다(`build.pomless_stub`, 기본 켬, 한 실행에 `build.pomless_stub_max` 20개까지). 프로젝트 파일은 바꾸지 않는다. 보고서에는
+플래그 `pomless-library`와 인수인계 한 줄(「저장소에 jar만 있고 pom이 없는 라이브러리가 있습니다: … 근본적인 해결은 라이브러리 담당자가
+저장소에 pom을 올리는 것입니다.」)이, 저널에는 `pomless_stub`이 남는다. 앞선 실행이 만든 최소 pom을 쓴 실행도 같은 플래그와 줄, 저널
+`pomless_stub_used`로 알린다(진단은 `docs/RUNBOOK.md`).
+
+* 위치: `/data/.m2/repository/<그룹 경로>/<아티팩트>/<버전>/<아티팩트>-<버전>.pom`. 자리 2 · 3 의 파드는 자기 저장소
+  (`/data/.m2/repository-slot<k>/…`)에 쓴다. 데이터 볼륨에 남으므로 같은 저장소를 쓰는 다음 빌드 파드도 그 파일을 쓴다.
+* 목록: sbmig가 쓴 파일은 주석 `Written by sbmig: the repository has a jar but no pom for …`로 시작하므로 그 문구로 찾는다(세 자리의 저장소 모두).
+
+  ```bash
+  kubectl -n agent exec deploy/sbmig -- sh -c 'grep -rl --include="*.pom" "Written by sbmig: the repository has a jar but no pom for" /data/.m2/repository*'
+  ```
+
+* 지울 때: 그 라이브러리의 담당자가 저장소에 진짜 pom을 올렸을 때. 남겨 두면 Maven은 계속 최소 pom(의존성 없음)을 쓴다.
+  목록에 나온 경로마다 `kubectl -n agent exec deploy/sbmig -- rm <경로>`. 다음 빌드가 진짜 pom을 받는다.
+* 끄기: 회사 `config/artifacts.yml`에 `build:` 아래 `pomless_stub: false`를 넣고 이미지를 다시 만든다(이 파일은 이미지에 굽는다, §1).
+  끄면 그런 라이브러리는 예전처럼 빌드를 멈추게 하고, 저장소에 pom을 올리거나 위 위치에 손으로 pom을 두어야 한다(`docs/RUNBOOK.md`).
 
 **손으로 채운 매니페스트를 쓰는 배포에서 바꿀 것** (순서대로):
 

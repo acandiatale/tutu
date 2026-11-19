@@ -110,6 +110,22 @@
 | Spring XML 컨텍스트 전환 | `sbmig/restructure/legacy_apply.py` | `knowledge/config/legacy_context_rules.yml`, `layout.legacy_context` |
 | 외부 설정 자리표시자 | `sbmig/analyze/properties.py` | `knowledge/config/externalized.yml`, `externalized.*` |
 | 1단 / 2단 어댑터 끼우기 | `sbmig/llm/registry.py` | `examples/adapters/README.md`, [../docs/ADAPTERS.md](../docs/ADAPTERS.md) |
+| 취약점 조치: IVAS 응답 필드·경로·상태 코드·완전성 규칙 | `sbmig/remediations/ivas.py` (`PAGE_PATHS`, `ANALYSIS_ID_KEYS`, `IN_PROGRESS`, `_library_finding`, `_reconcile`) | [11](11-remediations.md) |
+| 취약점 조치: ZIP 접수 규칙, 실행 경계, 전달 ZIP 모양 | `sbmig/remediations/intake.py` (`check_boundary`, `freeze_delivery`) | [11](11-remediations.md) |
+| 취약점 조치: 새 출처(origin) 판정, 발견 항목 ↔ pom 줄 연결 | `sbmig/remediations/inventory.py` | [11](11-remediations.md) |
+| 취약점 조치: 버전 고르기, 승인 부류, override를 낼지·잔여로 둘지, 정책 해시, 승인 검증 | `sbmig/remediations/planner.py` (`_choose_target`, `_override_change`, `plan_round`, `policy_hash`, `validate_decision`) | [11](11-remediations.md) |
+| 취약점 조치: 글자 치환, override 모양·자리, "계획한 것만"·"해석 = 계획" | `sbmig/remediations/apply.py` (`render_override`, `locate_override`, `verify_text_only`, `verify_resolution`) | [11](11-remediations.md) |
+| 취약점 조치: 실패한 후보(include / discard), 검증된 ZIP 보존; 노드 순서, 멈춤·재개, 성공 판정 | `sbmig/remediations/graph.py` (`_build`, `deliver_failed_candidate`, `discard_candidate`; `_evaluate`, `_Holder.scan`) | [11](11-remediations.md) |
+| 취약점 조치: Maven 명령·준비 조건·해석 읽기 | `sbmig/remediations/maven.py` | [11](11-remediations.md) |
+| 취약점 조치: 보고서·한국어 문장·사내 라이브러리 안내·`framework` 그룹 | [12](12-remediation-report.md) | [11](11-remediations.md) |
+| 취약점 조치: 상태·이유 코드·자료형(계약) | `sbmig/remediations/models.py` — 바꾸면 `docs/INTERFACES.md`의 remediations 절도 | [11](11-remediations.md) |
+| 취약점 조치: 새 설정 키 | `sbmig/core/config.py`의 `RemediationConfig` + `config/default.yml` (한국어 설명) | [11](11-remediations.md) |
+| 취약점 조치: HTTP 경로·작업 관리 | 같은 패키지의 api.py / service.py | [11](11-remediations.md) |
+| 취약점 조치: 이관 뒤 이어 돌기(건너뜀 조건, 폴더, 재개, 로그) | 같은 패키지의 chain.py, 이관 그래프의 `remediation` 노드 | [11](11-remediations.md) |
+| 취약점 조치: Job 파드의 IVAS env·정제 범위 | `deploy/k8s/81-web-job.template.yaml`, `sbmig/web/contract.py` (`SECRET_NAMES`), `sbmig/web/redact.py` (`_remediation_targets`) | [11](11-remediations.md) |
+| pom 없이 jar만 있는 라이브러리의 최소 pom | `sbmig/build/pomless.py` | `sbmig/build/runner.py`(`MavenRunner.run`), `build.pomless_stub`, [07](07-config-and-knowledge.md) |
+| 변환 전 pom 인코딩 맞추기 | `sbmig/restructure/pom_charset.py` | `sbmig/loop/orchestrator.py`(`_correct_pom_encodings`), `layout.legacy_context.correct_pom_encoding`, [07](07-config-and-knowledge.md) |
+| 자동 변환 실패 알리기·변환만 하는 실행의 성공 판정 | `sbmig/rewrite/failure.py` | `sbmig/loop/orchestrator.py`(`_note_rewrite_failed`, `build_succeeded`), [00](00-what-sbmig-is.md) |
 | 컨테이너·k8s | `deploy/README.md` | `deploy/docker/Dockerfile`, `deploy/k8s/80-build-job.template.yaml`, [09-deploy-and-ops.md](09-deploy-and-ops.md) |
 
 ## 4. 지식 데이터(`knowledge/`)

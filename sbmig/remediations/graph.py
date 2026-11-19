@@ -598,8 +598,10 @@ def _baseline_build(h: _Holder) -> str | None:
     st.boundary = list(c.intake.check_boundary(accepted_project, h.cfg, list(c.maven.allowed_hosts())))
     refused = [b for b in st.boundary if b.action == "refuse"]
     if refused:
+        # 읽을 수 없는 pom은 화면에서도 이유가 보이도록 경로 뒤에 이유를 붙인다
         return h.finish(FAILED, R_BOUNDARY_REFUSED,
-                        "; ".join(f"{b.code}: {b.path}" for b in refused))
+                        "; ".join(f"{b.code}: {b.path}" + (f": {b.detail}" if b.code == "unparsable_pom" and b.detail
+                                                           else "") for b in refused))
     # 따로 복사한 트리에서 빌드한다. accepted/에 target/이 생기지 않아야 결과 ZIP의 파일 목록이 원본과 같다
     tree = h.baseline_tree
     _safe_rmtree(tree)

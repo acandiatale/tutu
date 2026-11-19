@@ -56,8 +56,13 @@ from .markdown import (
     pom_synthesis_lines,
     properties_lines,
     remediation_lines,
+    result_label,
     review_summary,
 )
+from sbmig.restructure.pom_charset import HANDOVER_PREFIX as POM_CHARSET_PREFIX
+from sbmig.rewrite.failure import FLAG as REWRITE_FAILED, HANDOVER_PREFIX as REWRITE_FAILED_PREFIX
+
+from .result_line import conversion_only_failed
 from .result_line import report_result_line, run_scope
 
 LANG = "ko"
@@ -216,8 +221,7 @@ def head_lines(r: RunReport) -> list[str]:
         # 빌드를 한 뒤에 멈춘 실행은 멈췄다는 사실과 마지막 빌드 결과를 함께 쓴다
         result = f"❌ 실행 중단 ({_last_build_ko(r)})"
     else:
-        ok = tr(LANG, "✅ BUILD SUCCESS") if r.success else tr(LANG, "❌ NOT BUILDING")
-        result = f"{ok} (최종 `mvn clean package`)"
+        result = f"{result_label(r, LANG)} (최종 `mvn clean package`)"
     L = ["| | |", "|---|---|", f"| **결과** | {result} |",
          f"| SBMIG-RESULT | `{report_result_line(r)}` |"]
     to_be = _to_be_ko(r)
@@ -247,6 +251,21 @@ def purpose_lines(r: RunReport) -> list[str]:
         return ["이번 실행은 끝까지 진행하지 못했습니다. 멈춘 이유와 다시 실행하기 전에 확인하실 사항을 아래에 적었습니다."
                 + last, ""]
     L: list[str] = []
+    if conversion_only_failed(r):
+        # 변환만 하는 실행은 변환이 전부이므로 빌드 결과와 상관없이 변환 실패를 먼저 쓰고 끝낸다
+        built = r.final_build is not None and r.final_build.ok
+        head = ("빌드는 통과했지만 JDK 21과 Jakarta 자동 변환이 실패해 아무것도 변환되지 않았습니다. 그래서 이번 실행은 "
+                "성공이 아닙니다." if built else
+                "JDK 21과 Jakarta 자동 변환이 실패해 아무것도 변환되지 않았고, 변환하지 않은 코드로 실행한 빌드도 "
+                "통과하지 않았습니다.")
+        L += [f"{head} 결과 파일의 코드는 변환 전과 같습니다. 실패 원인은 「확인해 주세요」의 첫 항목에 적었습니다. "
+              "원인을 해결한 뒤 다시 실행해 주세요.", ""]
+        return L + ["이 문서는 마이그레이션을 요청하신 담당자께 드리는 안내입니다. 무엇을 바꿨는지, 전환 후 무엇을 확인하셔야 "
+                    "하는지 순서대로 적었습니다.", ""]
+    if REWRITE_FAILED in (r.flags or []):
+        L += ["자동 변환(OpenRewrite)이 실패해 Java 21, Jakarta, Spring 버전 변환 레시피가 적용되지 않았습니다. 그 뒤의 구조 "
+              "정리와 빌드 오류 수정은 진행했지만, 레시피가 바꿨어야 할 코드는 바뀌지 않았을 수 있습니다. 실패 원인은 "
+              "「확인해 주세요」의 첫 항목에 적었습니다.", ""]
     if _build_failed(r) and no_fix_loop(r):
         # 고치려고 한 것이 없으므로 남은 오류를 정리했다는 것과 고칠 사람만 쓴다
         rest = (f"남은 오류를 아래 「{NO_FIX_TITLE}」에 정리했습니다." if open_errors(r)
@@ -547,7 +566,9 @@ _LEADS = ((re.compile(r"^test sources (were neither compiled nor run|do not comp
           (re.compile(r"^structure review fix \(edits / script\) changed"), "구조 점검에서 고친 pom"),
           (re.compile(r"^structure review: critical issue not fixed — "), "구조 점검에서 고치지 못한 문제"),
           (re.compile("^" + re.escape(HTTP_BLOCKED_PREFIX)), "Maven 저장소 접근 차단"),
-          (re.compile(r"^the LLM was unavailable during this run"), "LLM 호출 실패"))
+          (re.compile(r"^the LLM was unavailable during this run"), "LLM 호출 실패"),
+          (re.compile("^" + re.escape(REWRITE_FAILED_PREFIX)), "자동 변환 실패"),
+          (re.compile("^" + re.escape(POM_CHARSET_PREFIX)), "pom 글자 인코딩"))
 
 
 def _review_item(line: str, r: RunReport) -> Optional[str]:
@@ -655,6 +676,9 @@ def check_items(r: RunReport) -> list[str]:
     if _build_failed(r):
         top = [first[k] for k in ("unresolved", "blocked") if k in first]
         items = top + [x for x in items if x not in top]
+    # 자동 변환 실패는 결과 전체에 걸리므로 언제나 첫 항목으로 둔다
+    failed = [x for x in items if x.startswith("**자동 변환 실패**")]
+    items = failed + [x for x in items if x not in failed]
     return [x for x in dict.fromkeys(items) if x]
 
 

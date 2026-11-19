@@ -1,0 +1,15 @@
+[INFO] Scanning for projects...
+[ERROR] [ERROR] Some problems were encountered while processing the POMs:
+[ERROR] Non-resolvable import POM: The following artifacts could not be resolved: com.example:pomless:pom:1.0 (absent): Could not transfer artifact com.example:pomless:pom:1.0 from/to maven-central-proxy (http://127.0.0.1:52516/): status code: 502, reason phrase: Bad Gateway (502) @ line 1, column 506
+ @ 
+[ERROR] The build could not read 1 project -> [Help 1]
+[ERROR]   
+[ERROR]   The project com.example:app:1.0 (/work/bom/pom.xml) has 1 error
+[ERROR]     Non-resolvable import POM: The following artifacts could not be resolved: com.example:pomless:pom:1.0 (absent): Could not transfer artifact com.example:pomless:pom:1.0 from/to maven-central-proxy (http://127.0.0.1:52516/): status code: 502, reason phrase: Bad Gateway (502) @ line 1, column 506 -> [Help 2]
+[ERROR] 
+[ERROR] To see the full stack trace of the errors, re-run Maven with the -e switch.
+[ERROR] Re-run Maven using the -X switch to enable full debug logging.
+[ERROR] 
+[ERROR] For more information about the errors and possible solutions, please read the following articles:
+[ERROR] [Help 1] http://cwiki.apache.org/confluence/display/MAVEN/ProjectBuildingException
+[ERROR] [Help 2] http://cwiki.apache.org/confluence/display/MAVEN/UnresolvableModelException

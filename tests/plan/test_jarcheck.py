@@ -354,3 +354,35 @@ def test_real_repo_catalog_against_real_recipe_jars(cfg, tmp_path):
     assert all(r.found_in for r in rep.rows)
     deps = [r for r in rep.rows if r.provided_by]
     assert deps and all(r.provided_by_ok for r in deps)
+
+
+def test_resolve_classpath_writes_a_minimal_pom_and_runs_again(world, tmp_path, monkeypatch):
+    """v2.1z-ax: the `build-classpath` call goes through `sbmig.build.pomless`: a run that stops on a library whose
+    repository has the jar but no pom gets a minimal pom in the (tmp) local repository and the same command again."""
+    from sbmig.build import pomless
+
+    class FakeRepo:
+        def __init__(self, cfg, project_root=None):
+            pass
+
+        def repository_urls(self):
+            return [("https://nexus.invalid/releases/", None, "t")]
+
+        def file_answers(self, g, a, v, ext):
+            return [("https://nexus.invalid/releases/", "missing" if ext == "pom" else "ok", "")]
+    monkeypatch.setattr("sbmig.build.repo_versions.RepositoryLookup", FakeRepo)
+    monkeypatch.setattr("sbmig.plan.jarcheck._POMLESS_MEMO", pomless.PomlessMemo())
+    cfg = world["cfg"]
+    a = world["jars"]["a"]
+    count = tmp_path / "count"
+    cfg.build.mvn = _fake_mvn(tmp_path, f'if [ ! -f "{count}" ]; then touch "{count}"; '
+                              'echo "[ERROR] Failed to read artifact descriptor for com.example:pomless:jar:1.0"; '
+                              'echo "[ERROR] \tCaused by: The following artifacts could not be resolved: '
+                              'com.example:pomless:pom:1.0 (absent): Could not transfer artifact com.example:pomless:pom:1.0 '
+                              'from/to central (https://nexus.invalid/central/): status code: 502"; exit 1; fi\n'
+                              'for x in "$@"; do case "$x" in -Dmdep.outputFile=*) '
+                              f'printf "%s" "{a}" > "${{x#-Dmdep.outputFile=}}";; esac; done\necho ok\n')
+    assert resolve_classpath(cfg, A, "1.0", work_dir=tmp_path / "w") == [a]
+    stub = Path(cfg.build.local_repo) / "com" / "example" / "pomless" / "1.0" / "pomless-1.0.pom"
+    assert pomless.is_stub(stub)
+    assert (tmp_path / "w" / "org.openrewrite.recipe__rewrite-a" / "build-classpath-pomless1.log").is_file()

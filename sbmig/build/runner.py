@@ -175,6 +175,10 @@ class MavenRunner:
         result, text = self._retry_file_lock(goal, module=module, extra_args=extra_args, label=label,
                                              skip_test_compile=skip_test_compile, skip_tests=skip_tests,
                                              result=result, text=text)
+        # jar만 있고 pom이 없는 라이브러리는 -U로 해결되지 않으므로 -U 재시도보다 먼저 최소 pom을 두고 다시 실행한다
+        result, text = self._retry_pomless(goal, module=module, extra_args=extra_args, label=label,
+                                           skip_test_compile=skip_test_compile, skip_tests=skip_tests,
+                                           result=result, text=text)
         if result.ok or not self._may_force_update(result.command):
             return result
         # 정말 없는 아티팩트면 이후 빌드가 모두 두 번씩 실행되므로 -U 재시도는 아티팩트마다 실행당 한 번만 한다
@@ -226,6 +230,26 @@ class MavenRunner:
             log.warning("maven: target/ 가 %d번 다시 돌려도 잠겨 있다 — 백신 실시간 검사 예외 / IDE·탐색기·java 프로세스를 "
                         "확인할 것 (still locked after %d retries)", attempt, attempt)
         return result, text
+
+    def _retry_pomless(self, goal: str, *, module: str | None, extra_args: list[str], label: str,
+                       skip_test_compile: bool, skip_tests: bool, result: BuildResult,
+                       text: str) -> tuple[BuildResult, str]:
+        """저장소에 pom이 없는 라이브러리 때문에 실패했으면 최소 pom을 두고 같은 빌드를 다시 실행한다
+        (``sbmig.build.pomless.run_with_stubs``). 마지막 실행의 (결과, 로그)를 반환한다.
+
+        v2.1z-ax: a failure on a library whose repository has the jar but no pom gets a minimal pom in the local
+        repository and the same build again (labels `<label>-pomless<k>`). Runs before the -U retry: -U cannot help
+        here (Maven does not cache the transfer error; it asks the failing repository again)."""
+        from .pomless import memo_for, run_with_stubs
+        first = (result, text)
+
+        def run(k: int) -> tuple[BuildResult, str]:
+            if k == 0:
+                return first
+            return self._run_once(goal, module=module, extra_args=extra_args, label=f"{label or goal}-pomless{k}",
+                                  skip_test_compile=skip_test_compile, skip_tests=skip_tests)
+        return run_with_stubs(self.cfg, run, journal=self.ws.journal, memo=memo_for(self.ws), project_root=self.ws.root,
+                              text=lambda r: r[1], failed=lambda r: not r[0].ok and not r[0].timed_out)
 
     def _may_force_update(self, cmd: list[str]) -> bool:
         """-U 재시도를 해도 되는지 확인한다. offline이거나 명령에 이미 -U가 있으면 하지 않는다.

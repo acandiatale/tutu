@@ -162,6 +162,10 @@ _TOLERATED_KO = (("이 프로젝트는 조치 전에도 빌드되지 않았습�
 _TOLERATED_BUILD_STEP = ("**바꾼 버전으로 한 번 빌드하기** — 빌드 오류를 고친 뒤 결과 ZIP(`delivery/result.zip`)의 pom.xml 버전을 "
                          "그대로 두고 한 번 빌드해 주세요. 빌드가 통과해야 바꾼 버전을 그대로 쓸 수 있습니다.")
 _DECISION_KO = DECISION_KO          # 다른 곳에서 이전 이름으로 import해도 깨지지 않게 남겨 둔다
+# 빌드 설정 점검에서 읽을 수 없는 pom 때문에 멈췄을 때의 결과 줄 설명과 할 일
+_POM_REFUSED_WHAT = "pom 파일을 읽지 못해 작업을 중단했습니다."
+_POM_REFUSED_STEP = ("**pom 파일 고치기** — 위에 적힌 pom 파일을 열어 문법 오류나 파일 권한을 확인하고, Maven으로 빌드되는 "
+                     "상태로 고친 뒤 다시 올려 주세요.")
 
 
 def _clean(text: Any, roots: list[str]) -> Any:
@@ -388,6 +392,8 @@ def _reason_text(state: RemediationState, code: str) -> tuple[str, str]:
     """사유 코드에 맞는 (결과 줄 설명, 해야 할 일)을 반환한다.
     실패한 수정본을 냈거나 앞 라운드의 결과 ZIP이 남아 있으면 문장을 바꾼다."""
     what, step = _REASON_KO[code]
+    if code == "execution_boundary_refused":
+        what, step = _boundary_text(state, what, step)
     if code == "baseline_build_failed" and _tolerated(state):
         what, step = _TOLERATED_KO
     if code == "candidate_build_failed" and _failed_delivery(state):
@@ -401,6 +407,18 @@ def _reason_text(state: RemediationState, code: str) -> tuple[str, str]:
                 "빌드와 재검사를 마친 상태이며, 실패한 변경은 들어 있지 않습니다.")
     n = str(_last_round(state))
     return what.replace("<n>", n), step.replace("<n>", n)
+
+
+def _boundary_text(state: RemediationState, what: str, step: str) -> tuple[str, str]:
+    """읽을 수 없는 pom이 있으면 어느 파일이 왜 안 읽히는지를 결과 줄에 넣는다. pom만의 문제면 문장과 할 일도 바꾼다."""
+    refused = [b for b in state.boundary if b.action == "refuse"]
+    poms = [b for b in refused if b.code == "unparsable_pom"]
+    if not poms:
+        return what, step
+    where = " ".join(f"{b.path}: {i18n.pom_why_ko(b.detail) or label(BOUNDARY_KO, b.code)}." for b in poms)
+    if len(poms) == len(refused):
+        return f"{_POM_REFUSED_WHAT} {where}", _POM_REFUSED_STEP
+    return f"{what} 읽지 못한 pom 파일도 있습니다. {where}", step
 
 
 def _codes(state: RemediationState) -> list[str]:
@@ -804,7 +822,9 @@ def _result_lines(state: RemediationState, fx: _Facts) -> list[str]:
             body += _new_error_lines(state)
     from .graph import TOLERATED_HEAD  # 순환 import를 피하려고 함수 안에서 import한다
     # 조치 전 빌드 실패를 받아들인 실행의 문장은 위에서 이미 말했으므로 상세로 다시 쓰지 않는다
-    if (state.message and not (set(codes) & set(_MESSAGE_ELSEWHERE))
+    # 읽을 수 없는 pom의 경로와 이유는 위 문장(_boundary_text)에 이미 있으므로 상세로 다시 쓰지 않는다
+    pom_said = codes[:1] == ["execution_boundary_refused"] and any(b.code == "unparsable_pom" for b in state.boundary)
+    if (state.message and not (set(codes) & set(_MESSAGE_ELSEWHERE)) and not pom_said
             and not str(state.message).startswith(TOLERATED_HEAD)):
         ko, _raw = _known_and_raw(state.message)
         if ko:

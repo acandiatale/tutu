@@ -50,9 +50,11 @@ SCENARIOS = ["boot2-javax-lib", "boot2-javax-lib-optional", "euckr-legacy", "enf
              "adf-jdev",                                # v2.1z-d: an Oracle ADF (JDeveloper) workspace — recognised, sized, stopped
              "fw-direct", "fw-parent", "fw-transitive",  # v2.1z-ak: framework projects, reduced scope jdk-jakarta
              "fw-transitive-note",                       # v2.1z-ak: framework only transitive + transitive: note → full
-             "fw-build-error"]                           # v2.1z-aw: framework project, the build fails after the conversion
+             "fw-build-error",                           # v2.1z-aw: framework project, the build fails after the conversion
+             "fw-pom-ms949"]                             # v2.1z-ay: framework project, pom saved as MS949 under a UTF-8 header
 NAMES = HAPPY + SCENARIOS
 CP949_FIXTURES = {"euckr-legacy"}
+POM_MS949_FIXTURES = {"fw-pom-ms949"}     # v2.1z-ay: pom.xml saved as MS949 under a UTF-8 declaration
 ANT_FIXTURES = {"ant-webapp"}            # v2.1j: build.xml, no pom.xml — the intake synthesizes pom.xml
 
 # (fixture, sub-directory to build, JDK, needs) — mirrors the README of each fixture.
@@ -113,11 +115,13 @@ BUILD_MATRIX = [
     ("fw-transitive", ".", "8", "libs"),
     ("fw-transitive-note", ".", "8", "libs"),
     ("fw-build-error", ".", "8", "libs"),              # v2.1z-aw: builds on Java 8; System.runFinalizersOnExit is gone in 21
+    ("fw-pom-ms949", ".", "8", "libs"),                # v2.1z-ay: Maven builds the MS949 pom under its UTF-8 header
 ]
 # v2.1z-ak: framework projects in the reduced scope jdk-jakarta — no restructure, no structure review, no LLM answer
 # needed (no replay/ dir); their sbmig.e2e.yml sets `framework` besides llm / kb
-FRAMEWORK_REDUCED = {"fw-direct", "fw-parent", "fw-transitive", "fw-build-error"}
+FRAMEWORK_REDUCED = {"fw-direct", "fw-parent", "fw-transitive", "fw-build-error", "fw-pom-ms949"}
 FRAMEWORK_OVERRIDES = {"fw-direct": {"artifacts"}, "fw-parent": {"artifacts"}, "fw-build-error": {"artifacts"},
+                       "fw-pom-ms949": {"artifacts"},
                        "fw-transitive": {"artifacts", "recipe_sets"},             # + servlet_jakarta_10
                        "fw-transitive-note": {"artifacts", "transitive"}}
 REQUIRED_KEYS = {
@@ -525,8 +529,15 @@ def _poms(name: str) -> list[Path]:
     return sorted(p for p in (FIXTURES / name).rglob("pom.xml") if "target" not in p.parts)
 
 
+def _pom_tree(pom: Path):
+    """lxml root of a fixture pom; a pom whose bytes do not match its declaration (v2.1z-ay) is read like sbmig does."""
+    from sbmig.analyze.pom_parser import pom_encoding, xml_without_declaration
+    raw = pom.read_bytes()
+    return etree.fromstring(xml_without_declaration(raw.decode(pom_encoding(raw))).encode("utf-8"))
+
+
 def _declared_deps(pom: Path) -> set[str]:
-    root = etree.parse(str(pom)).getroot()
+    root = _pom_tree(pom)
     out = set()
     for dep in root.findall(".//m:dependencies/m:dependency", NS):
         g, a = dep.findtext("m:groupId", namespaces=NS), dep.findtext("m:artifactId", namespaces=NS)
@@ -581,7 +592,7 @@ def test_poms_parse_and_readme(name: str):
     assert poms or name in ANT_FIXTURES
     assert not (name in ANT_FIXTURES and poms), f"{name}: an Ant fixture has no pom.xml (the intake writes it)"
     for pom in poms:
-        root = etree.parse(str(pom)).getroot()
+        root = _pom_tree(pom) if name in POM_MS949_FIXTURES else etree.parse(str(pom)).getroot()
         assert root.tag == "{http://maven.apache.org/POM/4.0.0}project"
         assert root.findtext("m:artifactId", namespaces=NS)
     readme = (FIXTURES / name / "README.md").read_text(encoding="utf-8")
@@ -652,6 +663,20 @@ def test_cp949_sources_are_not_utf8(name: str):
     assert "<project.build.sourceEncoding>" not in pom and "<encoding>" not in pom
     assert "안녕하세요" in (FIXTURES / name / "src/main/java/com/example/greeting/Greeting.java").read_bytes() \
         .decode("cp949")
+
+
+@pytest.mark.parametrize("name", sorted(POM_MS949_FIXTURES))
+def test_ms949_pom_under_a_utf8_declaration(name: str):
+    """v2.1z-ay: the pom says UTF-8, its Korean text is MS949 (within EUC-KR); a strict XML reader refuses it."""
+    raw = (FIXTURES / name / "pom.xml").read_bytes()
+    assert raw.startswith(b'<?xml version="1.0" encoding="UTF-8"?>')
+    with pytest.raises(UnicodeDecodeError):
+        raw.decode("utf-8")
+    assert raw.decode("cp949") == raw.decode("euc_kr")
+    text = raw.decode("cp949")
+    assert "<name>인사말 모듈</name>" in text and "<!-- 인사말 모듈:" in text and "<description>사내 프레임워크" in text
+    with pytest.raises(etree.XMLSyntaxError):
+        etree.fromstring(raw)
 
 
 # v2.1x: spring5-legacy-startup keeps ONE package in MS949 (com/example/shop/notice/*.java) next to UTF-8 sources — the
@@ -773,7 +798,8 @@ def test_fixture_config_override_keeps_8_optionals():
         assert cfg.libraries.discover_jakarta_builds is False and len(cfg.artifacts.optional) == 8, name
     for name, keys in FRAMEWORK_OVERRIDES.items():                  # v2.1z-ak: `framework` only, besides llm / kb
         raw = yaml.safe_load((FIXTURES / name / "sbmig.e2e.yml").read_text(encoding="utf-8"))
-        assert set(raw) - LLM_KB == {"framework"} and set(raw["framework"]) == keys, name
+        extra = {"report"} if name in POM_MS949_FIXTURES else set()  # v2.1z-ay: its report is the Korean guide
+        assert set(raw) - LLM_KB == {"framework"} | extra and set(raw["framework"]) == keys, name
         cfg = _effective_cfg(name)
         assert cfg.framework.enabled and cfg.framework.matches("com.example.fw", "example-fw-core"), name
         assert len(cfg.artifacts.optional) == 8, name
@@ -1013,7 +1039,7 @@ def test_framework_fixtures_share_their_trees():
     pom = (FIXTURES / "fw-direct" / "pom.xml").read_text(encoding="utf-8")
     assert "<project.build.sourceEncoding>" not in pom and "<encoding>" not in pom
     assert _effective_cfg("fw-transitive").framework.recipe_sets == ["jdk21", "jakarta", "servlet_jakarta_10"]
-    for name in set(FRAMEWORK_OVERRIDES) - {"fw-build-error"}:      # v2.1z-aw: that one is a plain jar without servlet
+    for name in set(FRAMEWORK_OVERRIDES) - {"fw-build-error", "fw-pom-ms949"}:   # plain jars without servlet
         jsp = (FIXTURES / name / "src/main/webapp/index.jsp").read_text(encoding="utf-8")
         assert 'import="javax.servlet.http.HttpSession"' in jsp and "javax.servlet.http.Cookie[]" in jsp, name
         declared = _declared_deps(FIXTURES / name / "pom.xml")

@@ -1,8 +1,8 @@
 # 사내 프레임워크 프로젝트 (범위 `jdk-jakarta`)
 
-> 다루는 것: 사내 프레임워크 아티팩트를 쓰는 프로젝트를 어떻게 찾고, 그 실행이 무엇을 하고 무엇을 하지 않는지. 켜는 법, 프레임워크 이름, 결과 줄·보고서·화면에서 알아보는 법, 진단할 때 물어볼 줄, 수정 루프를 켰을 때와 취약점 조치에서 달라지는 것, 고칠 자리.
-> 언제 읽나: `SBMIG-RESULT` 줄에 `scope=jdk-jakarta`가 보일 때, 프레임워크 프로젝트의 빌드가 실패했을 때, 화면의 프레임워크 이름이 틀릴 때, 프레임워크 프로젝트인데 전체 이관이 돌았거나 그 반대일 때, 이 규칙을 바꾸기 전에.
-> 함께 읽을 파일: [02-flow-and-nodes.md](02-flow-and-nodes.md), [03-run-debug-and-logs.md](03-run-debug-and-logs.md), [04-cases-scripts-kb.md](04-cases-scripts-kb.md), [12-remediation-report.md](12-remediation-report.md)
+> 다루는 것: 사내 프레임워크 프로젝트를 찾는 법, 그 실행이 하는 일과 하지 않는 일, 켜는 법, 이름, 결과 줄·보고서·화면, 진단, 수정 루프를 켰을 때, 취약점 조치, 고칠 자리.
+> 언제 읽나: 결과 줄에 `scope=jdk-jakarta`가 있을 때, 프레임워크 프로젝트의 빌드·변환이 실패했을 때, 이름이 틀릴 때, 범위 판정이 틀렸을 때, 이 규칙을 바꾸기 전에.
+> 함께 읽을 파일: [00](00-what-sbmig-is.md), [02](02-flow-and-nodes.md), [03](03-run-debug-and-logs.md), [04](04-cases-scripts-kb.md), [07](07-config-and-knowledge.md), [12](12-remediation-report.md)
 
 ## 1. 규칙
 
@@ -108,7 +108,7 @@ profile·속성 선언)는 `direct`로 적고, 더 깊은 노드는 `transitive`
 - scope 되돌리기(OpenRewrite 뒤): jakarta 레시피는 `javax.servlet-api`의 `provided`를 `jakarta.servlet-api`의 compile로 바꿔 서블릿 API가 WAR에
   들어가게 한다. `transform.rewrite`가 끝나면 as-is에서 `provided`였던 scope를 되돌린다. 커밋 `transform: as-is provided scopes restored`, 저널
   `scopes_restored {step, entries}`. 스위치는 전체 이관과 같은 `layout.legacy_context.restore_asis_scopes`다.
-- 커밋 순서: `transform: source encodings written`, `rewrite: transform.rewrite`, `transform: as-is provided scopes restored`,
+- 커밋 순서: (고친 pom이 있으면) `transform: pom encodings corrected`([07](07-config-and-knowledge.md)), `transform: source encodings written`, `rewrite: transform.rewrite`, `transform: as-is provided scopes restored`,
   `transform: JSP javax → jakarta`. 전체 이관의 순서는 다르다(재구성이 레시피 뒤에 인코딩을 적는다).
 - `transform.jsp_jakarta`: 재구성기를 거치지 않고 JSP 이름 바꾸기만 한다. 커밋 `transform: JSP javax → jakarta`, 저널 `jsp_jakarta`.
 - 빌드(`verify.build`): `verify.build` 단계마다 빌드를 한 번 한다. 수정 루프가 꺼져 있으면(기본) 사전 시도, 저장된 스크립트, LLM 호출이
@@ -145,17 +145,18 @@ profile·속성 선언)는 `direct`로 적고, 더 깊은 노드는 `transitive`
 ## 6. 결과 읽기
 
 사람이 이 실행을 만나는 자리마다 이름을 넣은 문장 `<이름> 프레임워크는 JDK 21, Jakarta만 적용합니다.`가 나온다(이름이 없으면
-`사내 프레임워크 프로젝트는 JDK 21, Jakarta만 적용합니다.`). 이런 프로젝트가 덜 받는다는 것을 사람들이 모르기 쉬워서 눈에 띄게 둔다.
+`사내 프레임워크 프로젝트는 JDK 21, Jakarta만 적용합니다.`). 덜 받는 줄 모르기 쉬워 눈에 띄게 둔다.
 
 | 자리 | 줄인 실행에서 보이는 것 |
 |---|---|
 | `SBMIG-RESULT` 줄 | `major=` 뒤, `flow=`·`remediation=` 앞에 ` scope=jdk-jakarta`. 전체 이관에는 이 토큰이 없다. 수정 루프가 꺼져 있으면 `llm=0`, 빌드가 실패하면 `exit=2 build=FAIL`과 함께 `remediation=INCOMPLETE`(이어 돈 조치가 버전을 바꿨을 때) |
+| 변환 실패(`rewrite-failed`) | 빌드가 통과해도 성공이 아니다: `exit=2 build=ok … attn=rewrite-failed`, 머리 표 「❌ 변환 실패 (빌드는 통과)」, 프레임워크 절은 변환을 한 일에서 뺀다. 조치는 그래도 이어진다([00](00-what-sbmig-is.md)) |
 | `report.md` 머리 표 | 한국어 안내서는 `SBMIG-RESULT` 줄의 `scope=jdk-jakarta`. en 보고서는 `Scope` 줄 "JDK 21 and jakarta only (in-house framework project)" |
 | `report.md` 머리 표 바로 아래 | 절 `## <이름> 프레임워크 프로젝트`(이름이 없으면 `## 사내 프레임워크 프로젝트`). 첫 줄이 위 문장(굵게), 이어서 근거마다 한 줄(직접 선언, 부모 pom에서 상속, jar 파일로 포함, 다른 라이브러리를 통해 들어옴), 한 일(JDK 21, Jakarta 변환, 빌드 1회. 수정 루프를 켰으면 빌드 오류 수정, 조치가 돌았으면 취약점 조치), 하지 않은 일(구조 정리, 구조 검토, 수정 루프가 꺼져 있으면 빌드 오류 자동 수정. 부모 pom과 프레임워크 버전은 그대로), "확인하지 못한 곳". en 보고서는 `## <Name> framework project`, 첫 줄 "**<Name> framework projects get JDK 21 and Jakarta only.**" |
 | 「변환 뒤 남은 빌드 오류」 | 수정 루프가 꺼진 실행의 빌드가 실패하면 ko 안내서는 「해결하지 못한 오류」 대신 `## 변환 뒤 남은 빌드 오류 — N건`(`NO_FIX_TITLE`): 자동으로 고치지 않았고 프로젝트·프레임워크 담당자가 고칠 오류라는 앞 문장, 「확인해 주세요」 첫 줄이 이 절을 가리킨다. en 보고서는 "Error list"의 열린 항목(메모 `not tried: framework project — …`) |
-| 두 pom 정정 | 인코딩과 scope 정정은 빌드 오류가 아니다. 한국어 안내서는 「코드 수정 내역」의 자동 변환에 "sbmig가 변환 단계에서 직접 고친 pom" 으로 적는다. `errors.md` 에서는 `seen` `transform` 항목이다(en 보고서: Error list 의 "transform — pom corrections by sbmig, verified by the next build", Handover 의 `pom corrections by sbmig`). 고친 시도가 없었던 버전 행의 비고는 "OpenRewrite 레시피"(en: `recipe`)다 |
+| 변환 단계의 pom 정정 | pom 인코딩, 소스 인코딩, scope 정정은 빌드 오류가 아니다. 한국어 안내서는 「코드 수정 내역」의 자동 변환에 "sbmig가 변환 단계에서 직접 고친 pom" 으로 적는다. `errors.md` 에서는 `seen` `transform` 항목이다(en 보고서: Error list의 "transform — pom corrections by sbmig, verified by the next build", Handover의 `pom corrections by sbmig`). 고친 시도가 없었던 버전 행의 비고는 "OpenRewrite 레시피"(en: `recipe`)다 |
 | 찾았지만 전체 이관 | 절 제목이 `## 사내 프레임워크`, 설정(`framework.scope: full` 또는 `framework.transitive: note`)에 따라 전체 이관했다는 한 줄 |
-| 「확인해 주세요」(인수인계) | 사내 프레임워크 프로젝트라는 줄(근거, JDK 21과 jakarta만 올렸다는 것, 재구성·구조 검토를 하지 않았다는 것, 부모 pom과 프레임워크 버전은 그대로라는 것). 수정 루프가 꺼져 있으면 빌드 오류를 고치지 않았다는 한 줄이 더 붙는다 |
+| 「확인해 주세요」(인수인계) | 사내 프레임워크 프로젝트라는 줄(근거, JDK 21과 jakarta만, 재구성·구조 검토 없음, 부모 pom·프레임워크 버전 유지). 수정 루프가 꺼져 있으면 빌드 오류를 고치지 않았다는 한 줄이 더 붙는다 |
 | 웹 화면 | 실행 카드(저널이 알리는 즉시)와 결과 카드에 강조한 안내 상자: 위 문장을 굵게, 그 아래 하지 않는 일. 단계 줄의 재구성·구조 검토는 점선 원과 `하지 않음`으로 보인다(저널 `framework_project`나 `plan`의 `scope`를 받으면 켜짐). 서버 기본 설정에 `framework.artifacts`가 있고 `framework.scope`가 `jdk-jakarta`면 올리기 카드에도 늘 보인다. 수정 루프가 꺼져 있고 `remediation.after_migration`이 켜져 있고 `remediation.after_failed_build`가 `framework`면 안내에 「취약점 조치는 빌드 결과와 관계없이 이어서 합니다.」가 붙는다. 조치 표시는 8절 |
 | HTTP | `GET /api/configs`의 `framework: {configured, name, fix_loop, remediation_always}`(`remediation_always` = 위 조건), `GET /api/runs/{id}`의 `framework: {name, scope, fix_loop}`(줄인 범위로 돈 실행만)와 `remediation`의 `baseline_tolerated`, `reasons` |
 | 저장 파일 | `profile.json`과 `report.json`의 `framework`에 `name`, `fix_loop` |
@@ -171,7 +172,7 @@ profile·속성 선언)는 `direct`로 적고, 더 깊은 노드는 `transitive`
 
 | 증상 | 볼 곳과 원인 |
 |---|---|
-| `scope=jdk-jakarta`이고 exit 2, `build=FAIL` | 정상 동작이다. 변환 뒤 빌드에 남은 오류를 고치지 않고 보고했다. 「변환 뒤 남은 빌드 오류」가 프로젝트 담당자와 프레임워크 담당자에게 넘길 목록이고, `result.zip`은 변환한 트리다. 이어서 돈 조치가 버전을 바꿨으면 그 `INCOMPLETE`(`baseline_build_failed`)도 정상이다(빌드 오류를 고친 뒤 바뀐 버전으로 한 번 빌드해야 한다). sbmig가 시도한 것은 없다(`llm=0`, 저널에 `verify_loop_skipped`가 있고 `attempt`는 없음) |
+| `scope=jdk-jakarta`이고 exit 2, `build=FAIL` | 정상 동작이다. 변환 뒤 빌드에 남은 오류를 고치지 않고 보고했다. 「변환 뒤 남은 빌드 오류」가 프로젝트 담당자와 프레임워크 담당자에게 넘길 목록이고, `result.zip`은 변환한 트리다. 이어서 돈 조치의 `INCOMPLETE`(`baseline_build_failed`, 8절)도 정상이다. sbmig가 시도한 것은 없다(`llm=0`, 저널에 `verify_loop_skipped`가 있고 `attempt`는 없음) |
 | 화면·보고서의 프레임워크 이름이 틀리거나 "사내 프레임워크"로만 나온다 | 저널 `framework_project`의 `name`. 만든 이름이 틀리면 회사 yml에 `framework.name`을 적는다. 비어 있으면 아티팩트 이름에서 만들 수 없었다(패턴이 모두 `*`를 쓰는 등) |
 | 프레임워크 프로젝트인데 LLM이 불렸다 | 저널 `framework_project`·`plan`의 `fix_loop`가 `true`면 설정(`framework.fix_loop`)이 켜져 있다 |
 | 플래그 `framework-unchecked` | 부모 pom과 `dependency:tree`를 둘 다 읽지 못해 판단하지 못했다. 저널 `framework_check`의 `unchecked`와 `effective_depmgmt`, `deptree-*.txt`를 본다. 사내 프레임워크를 쓰는 프로젝트면 결과를 쓰지 말고, 저장소·settings를 고쳐 다시 돌린다 |
@@ -183,7 +184,7 @@ profile·속성 선언)는 `direct`로 적고, 더 깊은 노드는 `transitive`
 | 서블릿 API가 WAR에 들어갔다 | 저널 `scopes_restored`가 없으면 `layout.legacy_context.restore_asis_scopes`가 꺼져 있거나 as-is가 `provided`가 아니었다 |
 | (수정 루프를 켰을 때) 시도가 계속 되돌려진다 | 저널 `framework_guard`의 `reason`. LLM이 프레임워크 선언, 그 버전을 정하는 속성(루트 pom의 것 포함), `<parent>`를 건드렸다 |
 
-간접 검사의 비용: 패턴이 설정되어 있으면 앞의 세 곳에서 못 찾은 모든 프로젝트가 분석 단계에서 `dependency:tree`를 한 번 더 돈다
+간접 검사 비용: 패턴이 있으면 앞의 세 곳에서 못 찾은 모든 프로젝트가 분석 단계에서 `dependency:tree`를 한 번 더 돈다
 (as-is 의존성을 내려받는 시간). 이 비용이 문제면 `framework.transitive: off`로 끈다.
 
 ## 8. 취약점 조치에서
@@ -212,11 +213,11 @@ profile·속성 선언)는 `direct`로 적고, 더 깊은 노드는 `transitive`
 | scope 되돌리기, 소스 인코딩 | `sbmig/loop/orchestrator.py` (`_restore_scopes_reduced`, `_write_encodings_reduced`), `sbmig/restructure/scope_restore.py`, `sbmig/restructure/source_encoding.py` |
 | 보호 키, 가드, javax 차단, 제안 문장 | `sbmig/loop/fixloop.py` (`_framework_guard`, `_framework_javax_block`, `framework_owner_suggestion`, `framework_via_suggestions`) |
 | 프롬프트 | `sbmig/fix/prompts/script_system_v1.md`, `sbmig/fix/context.py` |
-| 보고서 절, 결과 줄 | `sbmig/report/markdown.py` (`framework_lines`, 한국어 안내서 `sbmig/report/guide_ko.py` 가 같은 함수를 부름), `sbmig/report/result_line.py` (`run_scope`), 한국어 `sbmig/report/i18n.py` |
+| 보고서 절, 결과 줄 | `sbmig/report/markdown.py` (`framework_lines`, 한국어 안내서 `sbmig/report/guide_ko.py`가 같은 함수를 부름), `sbmig/report/result_line.py` (`run_scope`), 한국어 `sbmig/report/i18n.py` |
 | 화면 | `sbmig/web/static/index.html` (`setFramework`, `SKIP_STEPS`, `fwBody`, `remBuildOnly`, `remUnconfirmed`, `remShort`), `sbmig/web/runs.py` (`framework_info`) |
 | 조치의 `framework` 그룹 | `sbmig/remediations/inhouse.py` (`InhouseKeys`, `framework_patterns`) |
 
-픽스처: `fixtures/projects/fw-direct`, `fixtures/projects/fw-parent`, `fixtures/projects/fw-transitive`, `fixtures/projects/fw-transitive-note`
+픽스처: `fixtures/projects/fw-pom-ms949`, `fixtures/projects/fw-direct`, `fixtures/projects/fw-parent`, `fixtures/projects/fw-transitive`, `fixtures/projects/fw-transitive-note`
 (공개 대역 프레임워크 `fixtures/libs/example-fw`). 계약: `docs/INTERFACES.md`의 framework 절.
 
 ## 확인하는 법

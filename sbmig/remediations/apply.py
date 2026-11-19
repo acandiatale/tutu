@@ -49,7 +49,6 @@ log = logging.getLogger("sbmig.remediations.apply")
 
 # 버전 문자열로 인정하는 형태. XML 특수문자, 공백, 따옴표가 없고, ``${``는 속성 참조이므로 받지 않는다
 _VERSION_TEXT = re.compile(r"[A-Za-z0-9][A-Za-z0-9._\-+]*")
-_XML_DECL = re.compile(rb"^<\?xml[^>]*?encoding\s*=\s*[\"']([A-Za-z0-9._\-]+)[\"']")
 _BOMS = ((codecs.BOM_UTF8, "utf-8"), (codecs.BOM_UTF32_LE, "utf-32-le"), (codecs.BOM_UTF32_BE, "utf-32-be"),
          (codecs.BOM_UTF16_LE, "utf-16-le"), (codecs.BOM_UTF16_BE, "utf-16-be"))
 # 속성, 부모, BOM 제안은 같은 값을 쓰는 다른 아티팩트도 함께 바꾸므로 그 변화는 문제가 아니라 참고 정보다
@@ -82,28 +81,87 @@ def is_version_text(text: str) -> bool:
 
 
 # ---------------------------------------------------------------------------------------------------- 파일 읽기
+class PomReadError(ValueError):
+    """pom을 읽지 못했을 때 이유를 담아 던지는 예외. 메시지는 사람이 읽는 영어 이유이고 i18n이 한국어로 바꾼다.
+
+    A pom could not be read; the message is the reason in words (open failure, encoding, XML syntax)."""
+
+
+def _decode(data: bytes) -> tuple[bytes, str, str]:
+    """pom 바이트를 (BOM, 인코딩, 문자열)로 나눈다. BOM이 없으면 이관 쪽과 같은 ``pom_encoding`` 규칙을 쓴다."""
+    from sbmig.analyze.pom_parser import pom_encoding
+    bom, encoding = b"", ""
+    for b, enc in _BOMS:
+        if data.startswith(b):
+            bom, encoding = b, enc
+            break
+    body = data[len(bom):]
+    # Maven은 선언과 다른 바이트도 받아 주므로 선언보다 실제로 읽히는 인코딩을 따른다
+    encoding = encoding or pom_encoding(body)
+    try:
+        return bom, encoding, body.decode(encoding)
+    except (LookupError, UnicodeDecodeError):
+        raise PomReadError(f"character encoding unknown (the bytes do not decode as {encoding})") from None
+
+
+_DECL_ENC = re.compile(r"^(\s*<\?xml\b[^>]*?\bencoding\s*=\s*[\"'])([^\"']*)([\"'])")
+
+
+def pom_xml_bytes(data: bytes) -> bytes:
+    """pom 바이트를 lxml이 읽을 수 있는 UTF-8 바이트로 바꿔 반환한다. 줄 번호는 그대로 두고 선언의 encoding만 UTF-8로 바꾼다.
+    인코딩을 알 수 없으면 ``PomReadError``를 던진다.
+
+    The pom as UTF-8 bytes for lxml: decoded by the migration's rule (`pom_encoding`), the declaration's `encoding=`
+    rewritten to UTF-8 so it cannot contradict the bytes; line numbers unchanged; an already consistent UTF-8 pom is
+    returned as it is. Raises `PomReadError`."""
+    bom, encoding, text = _decode(data)
+    if not bom and encoding == "utf-8":
+        return data
+    return _DECL_ENC.sub(lambda m: m.group(1) + "UTF-8" + m.group(3), text, count=1).encode("utf-8")
+
+
+def read_pom_xml(path: Path) -> bytes:
+    """pom 파일을 읽어 ``pom_xml_bytes``로 바꿔 반환한다. 열 수 없거나 인코딩을 알 수 없으면 이유를 담은 ``PomReadError``를 던진다.
+
+    Read a pom file into UTF-8 XML bytes; `PomReadError` says why it cannot be opened or decoded."""
+    try:
+        data = Path(path).read_bytes()
+    except OSError as e:
+        raise PomReadError(open_reason(e)) from None
+    return pom_xml_bytes(data)
+
+
+def open_reason(e: OSError) -> str:
+    """파일을 열지 못한 이유를 사람이 읽는 문장으로 반환한다(권한, 없음, 폴더).
+
+    Why a file could not be opened, in words."""
+    import errno
+    why = {errno.EACCES: "permission denied", errno.EPERM: "permission denied", errno.ENOENT: "missing",
+           errno.EISDIR: "a folder, not a file"}.get(e.errno or 0, (e.strerror or "read error").lower())
+    return f"cannot be opened ({why})"
+
+
+def xml_reason(e: Exception) -> str:
+    """XML 문법 오류를 줄 번호가 있는 문장으로 반환한다.
+
+    A malformed-XML error as "not well-formed XML (line N): <parser message>"."""
+    line = getattr(e, "lineno", None) or (getattr(e, "position", None) or (None,))[0]
+    msg = re.sub(r"[;|]", ",", str(getattr(e, "msg", "") or e)).strip()[:160]
+    return f"not well-formed XML (line {line})" + (f": {msg}" if msg else "") if line else \
+        "not well-formed XML" + (f": {msg}" if msg else "")
+
+
 class _PomText:
-    """pom 파일 하나의 바이트와 문자열을 서로 변환하는 클래스. 인코딩은 BOM, XML 선언, UTF-8 순으로 정한다.
+    """pom 파일 하나의 바이트와 문자열을 서로 변환하는 클래스. 인코딩은 BOM, 이관 쪽 ``pom_encoding`` 순으로 정한다.
     바꾼 곳 밖의 바이트를 보존하기 위해, 다시 인코딩했을 때 원래 바이트가 그대로 나오는 파일만 고친다."""
 
     def __init__(self, data: bytes, name: str):
         self.raw = data
-        self.bom = b""
-        self.encoding = "utf-8"
-        for bom, enc in _BOMS:
-            if data.startswith(bom):
-                self.bom, self.encoding = bom, enc
-                break
-        body = data[len(self.bom):]
-        if not self.bom:
-            m = _XML_DECL.match(body[:200])
-            if m:
-                self.encoding = m.group(1).decode("ascii").lower()
         try:
-            codecs.lookup(self.encoding)
-            self.text = body.decode(self.encoding)
-        except (LookupError, UnicodeDecodeError) as e:
-            raise EditError(f"{name}: cannot decode as {self.encoding}: {type(e).__name__}") from None
+            self.bom, self.encoding, self.text = _decode(data)
+        except PomReadError as e:
+            raise EditError(f"{name}: {e}") from None
+        body = data[len(self.bom):]
         # 원래 바이트로 되돌아오지 않는 인코딩이면 한 문자만 바꿔도 다른 줄의 바이트가 달라질 수 있으므로 거부한다
         if self.text.encode(self.encoding) != body:
             raise EditError(f"{name}: {self.encoding} does not round-trip byte for byte; not edited")
@@ -694,7 +752,8 @@ def _all_edits(proposals: list[Proposal]) -> dict[str, list[TextEdit]]:
 def _xml_root(data: bytes):
     from lxml import etree
     parser = etree.XMLParser(resolve_entities=False, no_network=True, remove_blank_text=False, huge_tree=False)
-    return etree.fromstring(data, parser=parser)
+    # 선언과 다른 인코딩으로 저장된 pom도 읽도록 UTF-8로 바꿔 넘긴다
+    return etree.fromstring(pom_xml_bytes(data), parser=parser)
 
 
 def _xml_shape(data: bytes, skip_root: object = None, skip: frozenset = frozenset()) -> list[tuple]:

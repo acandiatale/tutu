@@ -105,7 +105,7 @@ flowchart TD
   ANALYZE --> PLAN["plan: 레시피 세트 · 단계 목록"]
   PLAN --> SC{"범위 (MigrationPlan.scope)"}
   SC -->|"full"| T["transform: OpenRewrite 한 번 (빌드 없음)"]
-  SC -->|"jdk-jakarta (사내 프레임워크)"| TF["transform: 소스 인코딩 · framework.recipe_sets 레시피 · provided scope 되돌리기 · JSP jakarta"]
+  SC -->|"jdk-jakarta (사내 프레임워크)"| TF["transform: pom 인코딩 · 소스 인코딩 · framework.recipe_sets 레시피 · provided scope 되돌리기 · JSP jakarta"]
   TF --> VO["verify: mvn clean package 한 번 (빌드 오류 수정 없음)"]
   VO -->|"성공"| REM
   VO -->|"실패: 남은 오류를 보고서에"| REM
@@ -172,6 +172,10 @@ Boot 4 상위 레시피는 Springfox 를 springdoc 으로, `spring-cloud-starter
 계획한 레시피 전부를 rewrite-maven-plugin **한 번**에 돌립니다(as-is 클래스패스, 중간 빌드 없음, 레시피 BOM 3.37.0). JSP 는 파싱하지 않습니다.
 실패해도 멈추지 않습니다 — 빌드가 진짜 문제를 보여 줍니다. 커밋 `rewrite: transform.rewrite`.
 
+그 전에, XML 선언과 실제 바이트가 다른 pom(UTF-8 선언이나 선언 없이 한글을 MS949·EUC-KR로 저장한 pom)을 맞춥니다. Maven은 이런 pom을 그대로 빌드하지만 OpenRewrite는 파싱하지 못해 레시피 전체가 0개 파일로 실패하고, `MS949`처럼 선언해도 EUC-KR로 못 쓰는 음절은 대체 문자로 덮어씁니다(rewrite-maven-plugin 6.46.1로 잼). 그래서 `src/` 밖의 프로젝트 pom 가운데 바이트가 엄격한 EUC-KR이면 선언만 `EUC-KR`로 바꾸고, 그렇지 않으면 UTF-8로 다시 저장합니다. 한글 내용은 바뀌지 않고, BOM이 있는 파일, 이미 맞는 pom, 올바른 XML이 아닌 것, latin-1이나 shift_jis로만 설명되는 바이트는 건드리지 않습니다(`layout.legacy_context.correct_pom_encoding`, 기본 켬; 커밋 `transform: pom encodings corrected`, 저널 `pom_encodings`, 플래그 `pom-encoding-corrected`, 인수인계 한 줄 「자동 변환 전에 pom 파일의 글자 인코딩을 바로잡았습니다. …」). 두 범위 모두 같습니다.
+
+레시피 실행이 실패하면(실행을 멈추게 하는 원인이 아닐 때) 그 사실을 남깁니다: 플래그 `rewrite-failed`(결과 줄 `attn=`의 맨 앞), 저널 `rewrite_failed {step, sets, reason}`, 인수인계 첫 줄(적용하지 못한 레시피 세트와 원인), 한국어 안내서의 앞 문장과 「확인해 주세요」 첫 항목 「자동 변환 실패」. 보통 실행은 빌드가 판정하고, 변환만 하는 사내 프레임워크 실행은 빌드가 통과해도 성공이 아닙니다(4.9절).
+
 ### 4.5 restructure
 
 `Restructurer.apply` 가 모드별 작업(디렉터리 이동, 루트 → aggregator, 부모 교체, 필수·선택 아티팩트, boot 모듈과 Application 생성, web.xml 등록)을 하고, 모든 pom 을 정리합니다:
@@ -190,11 +194,11 @@ LLM 이 재구성된 pom 전부와 재구성 메모, 부모 체인 사실, 인�
 ### 4.7 verify
 
 `mvn clean package -Dmaven.test.skip=true`. 실패하면 수정 루프(§5), 루프가 돌았으면 최종 빌드를 **반드시** 한 번 더 합니다(루프가 멈춤 요청으로 나왔고 트리가 그대로면 루프의 마지막 빌드가 최종 빌드). MSA 의 `report.final_build` 는 실패한 첫 최종 빌드입니다. 사내 프레임워크 프로젝트는 기본으로 수정 루프 없이 이 빌드 한 번이 결과입니다(4.9절).
-Windows `target/` 잠금은 기다렸다 다시(`build.file_lock_retries`), 로컬 저장소 부정 캐시는 `-U` 로 한 번 더.
+Windows `target/` 잠금은 기다렸다 다시(`build.file_lock_retries`), 로컬 저장소 부정 캐시는 `-U` 로 한 번 더. 저장소에 jar만 있고 pom이 없는 라이브러리 때문에 한 저장소가 pom 요청에 전송 오류(닫힌 망의 Maven Central 프록시가 내는 502 등)를 내 Maven이 멈추면, jar는 받을 수 있고 pom은 어디에도 없다는 것을 확인한 경우에만 로컬 저장소에 최소 pom(좌표와 `packaging` jar, sbmig가 썼다는 주석)을 쓰고 같은 Maven 명령을 한 번 더 실행합니다(`build.pomless_stub`, 실행당 `build.pomless_stub_max` 20개까지). sbmig의 의존성 해석 Maven 호출 전부에 걸리고, 프로젝트 파일은 바꾸지 않으며 LLM도 부르지 않습니다. 저널 `pomless_stub` / `pomless_check`, 플래그 `pomless-library`, 인수인계 한 줄(저장소에 진짜 pom을 올리는 것이 오래 갈 해결)이 남습니다. 재시도 순서는 HTTP 차단(재시도 없음) → 파일 잠금 → 최소 pom → `-U`(최소 pom을 쓴 뒤에는 건너뜀)이고, OpenRewrite·effective-pom 캡처·`dependency:tree`·클래스패스 캡처·`plan/jarcheck.py`·취약점 조치의 Maven 호출에도 걸립니다(`rewrite/versions.py`는 빼고). 쓰기 전에 pom은 GET, jar는 HEAD로 묻습니다. 앞선 실행이 만든 최소 pom을 쓴 실행도 마무리에서 알아보고 같은 플래그와 줄을 남깁니다(저널 `pomless_stub_used`). 취약점 해결만 하는 실행은 저널과 로그에만 남깁니다. 파일 위치와 지우는 법은 `deploy/README.md` §3.
 
 ### 4.8 finalize
 
-LLM 사용량·비용, 성공 판정(계획한 최종 빌드 전부 성공 + `restructure-failed` / `hollow-reactor` / 중단 없음), 미해결·차단 목록, 오류 목록과 KB 기록, 보고서 쓰기, 그다음 `changes.patch` / `result.zip`(KB 와 보고서가 먼저), 끝으로 웹 화면 「코드 변경」에 쓰는 기록 `codediff/`(마지막 커밋에 있는 경로만, 바뀐 파일이 없는 실행은 기록을 쓰지 않음 — 저널 `code_diff_skipped`).
+LLM 사용량·비용, 성공 판정(계획한 최종 빌드 전부 성공 + `restructure-failed` / `hollow-reactor` / 중단 없음 + 변환만 하는 실행이면 `rewrite-failed` 없음), 미해결·차단 목록, 오류 목록과 KB 기록, 보고서 쓰기, 그다음 `changes.patch` / `result.zip`(KB 와 보고서가 먼저), 끝으로 웹 화면 「코드 변경」에 쓰는 기록 `codediff/`(마지막 커밋에 있는 경로만, 바뀐 파일이 없는 실행은 기록을 쓰지 않음 — 저널 `code_diff_skipped`).
 마지막 줄 `SBMIG-RESULT run=… exit=… build=… unresolved=… blocked=… llm=… attn=… review=…`. 종료 코드: 0 성공, 2 차단·미해결·성공 아님, 3 중단.
 
 ### 4.9 사내 프레임워크 프로젝트 (범위 `jdk-jakarta`)
@@ -224,13 +228,13 @@ flowchart TD
 - 레시피: `framework.recipe_sets`(기본 `jdk21`, `jakarta`). 기본 jakarta 세트는 서블릿 API 를 서블릿 5.0 기준으로 올리므로, Tomcat 10.1 이상에 올릴 프로젝트는 `servlet_jakarta_10` 을 더합니다(회사가 정할 스위치).
 - 레시피 전에 MS949·EUC-KR 소스 모듈의 pom 에 `project.build.sourceEncoding` 을 적습니다. JDK 18부터 javac 기본 인코딩이 UTF-8 이라 선언이 없으면 JDK 21 에서 컴파일되지 않고, OpenRewrite 도 읽지 못하는 파일은 건너뛰어(`rewrite_parse_problems`) javax import 가 남기 때문입니다(커밋 `transform: source encodings written`, 저널 `source_encodings`, 스위치 `layout.legacy_context.write_source_encoding`). 유지하는 부모가 다른 값을 정했으면 부모 값을 두고 Handover 한 줄을 남깁니다.
 - 레시피가 compile 로 바꾼 as-is `provided` scope 는 변환 직후 되돌립니다(커밋 `transform: as-is provided scopes restored`, 저널 `scopes_restored`).
-- 커밋 순서: `transform: source encodings written` → `rewrite: transform.rewrite` → `transform: as-is provided scopes restored` → `transform: JSP javax → jakarta`. 두 정정은 보고서 「코드 수정 내역」의 자동 변환 줄과 `errors.md` 에 `transform` 단계의 pom 정정으로 나옵니다.
+- 커밋 순서: (고친 pom이 있으면 `transform: pom encodings corrected` →) `transform: source encodings written` → `rewrite: transform.rewrite` → `transform: as-is provided scopes restored` → `transform: JSP javax → jakarta`. 두 정정은 보고서 「코드 수정 내역」의 자동 변환 줄과 `errors.md` 에 `transform` 단계의 pom 정정으로 나옵니다.
 - 부모 pom 을 회사 부모로 맞추지 않습니다. 저장소가 부모 pom 을 주지 않으면 LLM 없이 `aborted:parent-not-found` 로 멈춥니다.
 - 빌드: `verify.build` 마다 한 번 빌드합니다. 남은 오류는 보고서에서 「해결하지 못한 오류」가 아니라 「변환 뒤 남은 빌드 오류」로 나오고(자동으로 고치지 않았다는 앞 문장, 「확인해 주세요」 첫 줄이 이 절을 가리킴), 인수인계에 고치지 않았다는 한 줄이 붙습니다. 통과하면 exit 0, 실패하면 exit 2 이고 `result.zip` 은 변환한 트리입니다. 남은 오류는 프로젝트 담당자와 프레임워크 담당자가 봅니다.
 - 취약점 조치: 빌드가 통과하면 보통 조치이고, 실패해도 이어서 돕니다(`remediation.after_failed_build: framework`, 기본. `never` 면 통과한 실행만). 실패한 빌드 뒤의 조치는 기준 빌드의 실패를 견디며(`RemediationState.baseline_tolerated`, 저널 `remediation_baseline_failed` `tolerated: true`), 후보 빌드는 기준 빌드에 있던 오류로만 실패해야 하고(같은 빌드 대상, 같은 실패 모듈, 모든 오류가 기준 빌드의 것, `maven.compare_with_baseline`), 새 오류가 생기면 `FAILED`(`candidate_build_failed`, `baseline_build_failed`)입니다. 버전을 바꿨으면 빌드로 확인한 변경이 없으므로 `SUCCEEDED` 가 아니라 `INCOMPLETE`(첫 사유 `baseline_build_failed`, 요약 `baseline_tolerated: true`, 결과 줄 `exit=2 … remediation=INCOMPLETE`)로 끝나고, 다른 사유가 없으면 화면은 「조치함 · 빌드 미확인」, 이관 보고서는 「조치했지만 빌드로 확인하지 못했습니다」라고 씁니다. 빌드 오류를 고친 뒤 바뀐 버전으로 한 번 빌드해야 합니다. 바꾼 버전이 없거나 수정본이 빌드되면 보통 조치처럼 끝납니다. 기준 빌드가 시간 초과였으면 견디지 않습니다. 이관은 실패 그대로입니다.
 - 설정 두 가지: `framework.fix_loop`(기본 `false`, `true` 면 아래 수정 루프가 돕니다)와 `framework.name`(화면과 보고서에 보일 이름, 기본 `""`). 이름이 비어 있으면 프로젝트에서 찾은 아티팩트, 그다음 설정한 패턴의 artifactId 에서 끝의 역할 낱말(`core`, `framework`, `fw`, `starter`, `parent`, `bom`, `boot`, `common`, `base`, `api`)을 떼고 첫 글자를 대문자로 바꿔 만듭니다(`example-fw-core` → `Example`). 만든 이름이 틀리면 회사 `config/artifacts.yml` 에 `framework.name` 한 줄을 넣고 이미지를 다시 빌드합니다. 실제 이름은 회사 이름이라 이 저장소에는 적지 않습니다.
 - 수정 루프(`framework.fix_loop: true` 일 때만): 버전 사실은 프로젝트 자기 부모 체인에서 오고 Boot BOM 은 쓰지 않습니다. 프레임워크 선언·버전이나 `<parent>` 를 바꾼 시도는 되돌립니다(저널 `framework_guard`; 버전의 `${…}` 는 프로젝트 안 부모 체인으로 풀어 비교하므로 루트 pom 의 속성을 바꾼 것도 잡습니다). 프레임워크 자신이 javax 기준이면 LLM 없이 `external_javax_api` 로 차단하고 담당자에게 jakarta 빌드를 요청하라고 적습니다.
-- 결과: `SBMIG-RESULT … scope=jdk-jakarta`(수정 루프가 꺼져 있으면 `llm=0`). 사람이 이 실행을 만나는 곳마다 이름을 넣은 문장 `<이름> 프레임워크는 JDK 21, Jakarta만 적용합니다.`(이름이 없으면 `사내 프레임워크 프로젝트는 JDK 21, Jakarta만 적용합니다.`)를 강조해서 보여 줍니다. 이런 프로젝트가 덜 받는다는 것을 모르기 쉽기 때문입니다. 보고서는 머리 표 바로 아래 `## <이름> 프레임워크 프로젝트` 절이 이 문장(굵게)으로 시작하고 한 일과 하지 않은 일을 적습니다. 화면은 실행 카드와 결과 카드에 강조한 안내 상자를 띄우고, 서버 설정에 프레임워크 아티팩트가 있으면 올리기 카드에도 늘 보여 줍니다. 단계 줄의 재구성과 구조 검토는 `하지 않음` 입니다. 저널 `framework_project` 와 `plan` 에는 `name`, `fix_loop` 가 붙습니다.
+- 결과: `SBMIG-RESULT … scope=jdk-jakarta`(수정 루프가 꺼져 있으면 `llm=0`). 자동 변환이 실패했으면 빌드가 통과해도 성공이 아닙니다: `exit=2 build=ok … attn=rewrite-failed`, 머리 표 「❌ 변환 실패 (빌드는 통과)」, 프레임워크 절은 한 일에서 변환을 빼고 「**JDK 21과 Jakarta 변환이 실패해 아무것도 변환되지 않았습니다.**」라고 알리며, 취약점 조치는 그래도 이어집니다. 사람이 이 실행을 만나는 곳마다 이름을 넣은 문장 `<이름> 프레임워크는 JDK 21, Jakarta만 적용합니다.`(이름이 없으면 `사내 프레임워크 프로젝트는 JDK 21, Jakarta만 적용합니다.`)를 강조해서 보여 줍니다. 이런 프로젝트가 덜 받는다는 것을 모르기 쉽기 때문입니다. 보고서는 머리 표 바로 아래 `## <이름> 프레임워크 프로젝트` 절이 이 문장(굵게)으로 시작하고 한 일과 하지 않은 일을 적습니다. 화면은 실행 카드와 결과 카드에 강조한 안내 상자를 띄우고, 서버 설정에 프레임워크 아티팩트가 있으면 올리기 카드에도 늘 보여 줍니다. 단계 줄의 재구성과 구조 검토는 `하지 않음` 입니다. 저널 `framework_project` 와 `plan` 에는 `name`, `fix_loop` 가 붙습니다.
 - 사내 그룹: 프레임워크와 그것이 가져오는 라이브러리는 사내 그룹 `framework` 몫이라 제안하지 않습니다.
 
 진단과 고칠 자리: `agent-doc/13-framework-projects.md`.
@@ -369,7 +373,7 @@ flowchart TD
 |---|---|
 | `sbmig run <폴더 또는 zip> --config <회사 yml>` | 한 프로젝트 → `out/<run id>/`. `--flow remediation` 이면 이관 없이 취약점 조치만(10절) |
 | `sbmig fleet run <manifest>` / `resume` / `status` | 여러 프로젝트를 하나씩, KB 하나 공유(개발·대량 시험용) |
-| `sbmig serve` (in-process) | 웹 UI: zip 업로드(진행 방식 전체 진행 / 취약점 해결, `POST /api/runs?flow=`) → 실행을 이 프로세스에서, 한 번에 하나(나머지는 `queued`), SSE 로 `node` / `journal` / `log` / `report` 이벤트 |
+| `sbmig serve` (in-process) | 웹 UI: zip 업로드(진행 방식 전체 진행 / 취약점 해결, `POST /api/runs?flow=`) → 실행을 이 프로세스에서, 한 번에 하나(나머지는 `queued`), SSE 로 `node` / `journal` / `log` / `report` 이벤트. 「지난 실행」은 최근 3일 안에 등록한 실행만 보이고(`GET /api/runs?days=3`; 대기·실행 중, 조치 대기, 열어 둔 실행은 늘 보임; 「최근 3일 내에 등록한 프로젝트만 보입니다.」, 「이전 실행 보기」로 전체, 지우는 것 없음), 사람이 멈춘 실행(`user_stop`)은 빨강이 아닌 주황으로 「중단되었습니다」, 엔진이 받지 못한 실행도 주황으로 「처리할 수 없습니다」(목록 「처리 불가」)이고, 빨강은 서버 쪽 문제(「실행 오류」)에만 씁니다 |
 | `sbmig serve` + `SBMIG_WEB_MODE=k8s-job` | 웹 파드가 업로드마다 빌드 **Job** 을 만듦. 동시에 `SBMIG_JOB_MAX_PARALLEL` 개(매니페스트 3), 나머지는 올린 순서로 대기. 자리 k ≥ 2 는 자기 Maven 로컬 저장소. 공유 PVC 의 실행 폴더로만 만남(`control/state.json`, `job-status.json`) |
 
 ```mermaid
