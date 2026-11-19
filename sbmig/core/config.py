@@ -1154,6 +1154,9 @@ class RemediationConfig(BaseModel):
     # delivery.build_ok=false, 재검사 안 함) accepted/와 원본 ZIP은 그대로 둔다
     # discard는 실패한 수정본을 결과 ZIP에 넣지 않고 candidate.patch로만 남기며, 앞 라운드에서 검증된 결과 ZIP은 남는다
     failed_candidate: Literal["include", "discard"] = "include"
+    # IVAS가 프로젝트 안의 파일에서 찾은 취약점(파일 컴포넌트)의 처리다.
+    # report는 보고서에만 싣고 결과 판정에 넣지 않으며, count는 직접 확인 항목으로 남겨 판정에 넣는다
+    file_components: Literal["report", "count"] = "report"
     # 프로젝트에서 서버 설정을 우회할 수 있는 요소를 발견했을 때 refuse(거부)하거나 ignore(무시하고 기록)한다
     project_maven_config: Literal["refuse", "ignore"] = "ignore"     # .mvn/maven.config, jvm.config, extensions.xml
     maven_wrapper: Literal["refuse", "ignore"] = "ignore"            # mvnw / .mvn/wrapper. 서버 Maven만 쓰므로 실행되지 않는다

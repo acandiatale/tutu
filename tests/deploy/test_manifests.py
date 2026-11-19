@@ -500,7 +500,7 @@ def test_the_remediation_runs_in_the_build_pod_switched_on():
     assert AFTER_MIGRATION in main and AFTER_MIGRATION in worker and contract.compare_env_pins(main, worker) == NO_DIFF
     # the knobs an operator may want for the build pod are documented next to it and forwarded by 81
     commented = _commented_keys()
-    for key in ("SBMIG_REMEDIATION__FAILED_CANDIDATE",
+    for key in ("SBMIG_REMEDIATION__FAILED_CANDIDATE", "SBMIG_REMEDIATION__FILE_COMPONENTS",
                 "SBMIG_REMEDIATION__AFTER_FAILED_BUILD", "SBMIG_REMEDIATION__IVAS_ANALYSIS_TIMEOUT_MINUTES"):
         assert commented[key][0] == "3", key
     # the approval step is gone: no manifest names its switch any more (an old one left in a cluster is ignored)

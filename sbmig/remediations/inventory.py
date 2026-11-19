@@ -66,6 +66,16 @@ _FULL_PROP = re.compile(r"^\$\{([^}]+)\}$")
 _BUILTIN_PREFIXES = ("project.", "pom.", "env.", "settings.", "maven.")
 _BUILTIN_NAMES = {"version", "groupId", "artifactId", "basedir"}
 FILE_KINDS = ("file_component", "file_component_potential")
+# 파일 컴포넌트로 만든 vendored 항목의 설명. report 모드는 이 설명의 항목을 남은 항목으로 세지 않는다
+FILE_COMPONENT_REASON = "file component in the tree; not changed automatically"
+
+
+def is_file_residual(r: Any) -> bool:
+    """조치하지 못한 항목이 파일 컴포넌트에서 온 것인지 확인한다. 설정이 생기기 전의 상태 파일에도 쓴다.
+
+    True for a residual made from an IVAS file component (`vendored`, the inventory's file-component reason): such a
+    residual is what a state written before `remediation.file_components`, or under `count`, holds for a file finding."""
+    return getattr(r, "origin", "") == O_VENDORED and str(getattr(r, "detail", "") or "") == FILE_COMPONENT_REASON
 # Maven이 고른 의존성이 jar가 아니거나 classifier가 있을 때 reason에 붙는 표시
 # groupId / artifactId / version만 있는 jar 항목으로는 그 변종을 관리할 수 없으므로 planner는 이 표시가 있는
 # 항목에 override 항목을 넣지 않는다
@@ -1033,7 +1043,7 @@ def build_inventory(project: Path, findings: list[Finding], resolved: ResolvedMo
     for (ident, version), fs in sorted(file_groups.items()):
         locs = sorted({loc for f in fs for loc in f.locations})
         it = InventoryItem(ga=ident, version=version, origin=O_VENDORED, paths=locs,
-                           reason="file component in the tree; not changed automatically")
+                           reason=FILE_COMPONENT_REASON)
         items.append(decorate(it, fs))
 
     items.sort(key=lambda it: (it.ga, it.version, it.origin, it.location.pom if it.location else "",

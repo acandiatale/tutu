@@ -780,6 +780,18 @@ review", fix attempts as `script:<case>:v<N>`; `ko`, the company setting: the re
   show a state it did not show before, look at what is already stored in that state on the cluster; (2) "keep it
   listed while it waits for a person" pins a run forever when nobody will ever answer. The word 승인 elsewhere
   (approved repository hosts, libraries a person approved) is another thing and stays.
+- **IVAS file components (2026-11-19, v2.1z-bc)**: the matched-files address was wrong (`filecomponent` for
+  `filecomponents`) and had never met the real IVAS: the fake server of the integration tests answered an empty page to
+  ANY unknown address, so a misspelt path looked like "no files". It answers 404 now; when a fake stands in for an
+  outside service, an address it does not know must fail. The user's policy since then: only libraries are remediated
+  and judged ("우리 백엔드로직만 라이브러리 검사하고 프론트는 검사 안하려고"); findings IVAS makes in files of the project
+  are reported in a section of their own and never hold the verdict (`remediation.file_components: report`, default;
+  `count` = the earlier rule). A failure in the file part of a scan is a note; the library part goes on. An id with `|`
+  (the form the company calls ossId) is accepted by that path: confirmed by the user on the real IVAS; the client still
+  reads it from `fileComponent.id` first (whether that can differ from `ossId` is not known). A jar lying in the project outside
+  the pom is a file component too: told to the user. Also from that evening: a stopped background agent cannot be
+  resumed, and an agent reused for a second task still shows the FIRST task's name to the user — the user stopped the
+  IVAS work thinking it was a leftover; give a reused agent's new task a new agent when the name would mislead.
 - **Company convention (2026-10-20): agents run on LangGraph under uvicorn.** `loop.engine: graph` (default) drives
   the phases from a LangGraph `StateGraph` (`sbmig/graph/`, nodes intake → analyze → plan → phase×N → finalize;
   `inline` is the old loop, reports are identical by test); the web UI is FastAPI (`uvicorn sbmig.web.app:app` or

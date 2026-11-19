@@ -35,3 +35,18 @@ def test_korean_skipped_section():
     rem = {"status": "skipped", "reason": "not ready", "missing": ["server settings.xml not configured (build.settings_file)"]}
     ko = "\n".join(remediation_lines(types.SimpleNamespace(remediation=rem), "ko"))
     assert "- 실행하지 않았습니다(사유: `not ready`)." in ko and "서버의 settings.xml이 설정되어 있지 않습니다." in ko
+
+
+def test_file_findings_line_in_both_languages():
+    """`remediation.file_components: report`: the file findings are counted apart and named in one line."""
+    rem = dict(REM, counts={"baseline_findings": 1, "fixed": 1, "final_findings": 0, "baseline_file_findings": 2,
+                            "final_file_findings": 2}, reasons=[], reason="", status="SUCCEEDED", message="")
+    ko = "\n".join(remediation_lines(types.SimpleNamespace(remediation=rem), "ko"))
+    assert "- 취약점: 조치 전 1건, 조치 완료 1건, 조치 후 남은 취약점 0건" in ko
+    assert "- 프로젝트 파일에서 찾은 취약점 2건은 위 개수에 넣지 않고 자세한 결과에 따로 적었습니다." in ko
+    en = "\n".join(remediation_lines(types.SimpleNamespace(remediation=rem)))
+    assert "- File findings listed apart in the remediation report, not counted above: 2" in en
+    for counts in ({"baseline_findings": 1}, {"baseline_findings": 1, "baseline_file_findings": 0}):
+        rem2 = dict(rem, counts=counts)
+        assert "프로젝트 파일" not in "\n".join(remediation_lines(types.SimpleNamespace(remediation=rem2), "ko"))
+        assert "File findings" not in "\n".join(remediation_lines(types.SimpleNamespace(remediation=rem2)))

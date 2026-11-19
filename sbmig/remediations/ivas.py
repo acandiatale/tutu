@@ -10,11 +10,14 @@ API만 쓴다: ``POST /session`` 로그인과 ``X-API-KEY`` 헤더, ``POST /proj
 - TLS 검증은 끄지 않는다
 - 빠진 페이지, 바뀐 전체 개수, 중복 항목, 요약과 맞지 않는 개수, 지원하지 않는 범주(SW), HTTP 오류가
   하나라도 있으면 ``complete=False``이며, 이때 ``findings``가 비어 있어도 0건으로 보지 않는다
+- ``remediation.file_components: report``(기본값)면 파일 컴포넌트 목록, 파일 위치, 요약 대조의 실패는 메모로만
+  남기고 ``file_complete``와 ``Finding.files_unread``에 표시한다. ``count``는 라이브러리와 같은 규칙이다
 - ``remediation.ivas_summary_check: exact``면 ``components.total``이 모든 페이지에서 받은 라이브러리 취약점
   행 수(중복 제거 전)와 같아야 한다. swComponents / fileComponents와 ``nonzero`` 모드는 0인지 아닌지만 본다
 - 조치 구분 코드의 뜻은 ``ACTION_MEANINGS``에만 둔다. ``remediation.ignore_actions``에 따른 제외는 그래프가
   ``split_findings``로 처리하고, 빈 코드와 모르는 코드는 조치 대상이다
-- 파일 컴포넌트 ID에는 ``|``가 있을 수 있으므로(``11560|934982``) matchedfiles 경로에 경로 조각 하나로 인코딩해서 보낸다
+- 파일 컴포넌트 ID에는 ``|``가 있을 수 있으므로(``11560|934982``) ``…/result/filecomponents/{id}/matchedfiles``
+  경로에 경로 조각 하나로 인코딩해서 보낸다
 
 IVAS HTTP client and scan procedure. Only the HTTP contract the company gave is used; anything unknown makes the
 scan incomplete instead of being guessed. An upload is never retried automatically: any ambiguity after the body may
@@ -22,6 +25,10 @@ have left raises `IvasUploadUncertain`. Tokens / passwords never reach a log lin
 TLS verification is never disabled. `components.total` must equal the library rows returned (`ivas_summary_check: exact`).
 Action-code meanings live in `ACTION_MEANINGS`; the graph splits the findings by
 `remediation.ignore_actions` (`split_findings`), an empty / unknown code stays actionable.
+File components (`remediation.file_components`, v2.1z-bc): with `report` (default) a failure while reading the
+file-component lists, a component's matched files or the `fileComponents` summary comparison is a note of the scan,
+never an incomplete reason; `ScanResult.file_complete` / `Finding.files_unread` say what was not read. `count` keeps the
+rule above. `count_view` makes a scan stored under `report` incomplete for `count` when its file part was not read.
 """
 from __future__ import annotations
 
@@ -41,6 +48,7 @@ from urllib.parse import quote, urlsplit
 import requests
 
 from .interfaces import Journal, Page, StopCheck
+from .inventory import FILE_KINDS
 from .models import Finding, IvasError, IvasUploadUncertain, ScanResult, UploadReceipt
 
 log = logging.getLogger("sbmig.remediations.ivas")
@@ -73,6 +81,9 @@ ACTION_MEANINGS: dict[str, str] = {
 # 기본값이 비어 있으므로 모든 조치 구분 코드를 조치 대상으로 본다. 기존 사내 구현도 PC, IG를 거르지 않는다
 DEFAULT_IGNORE_ACTIONS: tuple[str, ...] = ()
 SUMMARY_CHECKS = ("exact", "nonzero")
+
+# report 모드에서 저장한 검사의 파일 부분을 다 읽지 못했을 때 count 모드가 쓰는 미완료 사유
+R_FILE_UNREAD = "file_components_unread"
 
 # 결과 종류별 URL 끝부분(analysis/{id}/ 뒤)
 PAGE_PATHS = {
@@ -108,6 +119,8 @@ class IvasSettings:
     project_prefix: str = "sbmig"
     # exact는 요약의 components 건수와 라이브러리 취약점 상세 행 수가 같아야 하고, nonzero는 0인지 아닌지만 본다
     summary_check: str = "exact"
+    # report면 파일 컴포넌트를 읽지 못해도 검사를 미완료로 보지 않고 메모로 남긴다. count는 라이브러리와 같은 규칙이다
+    file_components: str = "report"
 
 
 def ivas_settings(cfg: Any, env: Mapping[str, str] = os.environ) -> IvasSettings:
@@ -130,6 +143,7 @@ def ivas_settings(cfg: Any, env: Mapping[str, str] = os.environ) -> IvasSettings
         page_size=int(rem.ivas_page_size),
         project_prefix=str(rem.ivas_project_prefix),
         summary_check=str(getattr(rem, "ivas_summary_check", "exact")),
+        file_components=str(getattr(rem, "file_components", "report")),
     )
 
 
@@ -342,6 +356,41 @@ def split_findings(findings: list[Finding], ignore: frozenset[str]) -> tuple[lis
     for f in findings:
         (ign if is_ignored(f, ignore) else act).append(f)
     return act, ign
+
+
+def files_reported(mode: Any) -> bool:
+    """``remediation.file_components`` 값이 report(기본값)인지 확인한다. count가 아니면 report로 본다.
+
+    True for `report` (the default; anything but `count`)."""
+    return str(mode or "report").strip().lower() != "count"
+
+
+def count_view(scan: ScanResult | None, mode: Any) -> ScanResult | None:
+    """count 모드에서 report 모드로 저장한 검사를 읽을 때, 파일 부분을 다 읽지 못했으면 미완료로 바꾼 사본을 반환한다.
+
+    Under `count`, a scan stored under `report` whose file part was not read completely (`file_complete` false or a
+    file finding with `files_unread`) is incomplete (`file_components_unread`); a copy is returned, the file on disk is
+    not changed. Under `report`, or for a complete file part, the scan itself."""
+    if scan is None or files_reported(mode) or not scan.complete:
+        return scan
+    if scan.file_complete and not any(f.files_unread for f in scan.findings if f.kind in FILE_KINDS):
+        return scan
+    out = ScanResult.from_dict(scan.to_dict())
+    out.complete = False
+    out.incomplete_reasons = [*out.incomplete_reasons, R_FILE_UNREAD]
+    return out
+
+
+def split_files(findings: list[Finding], mode: Any) -> tuple[list[Finding], list[Finding]]:
+    """report 모드면 발견 항목을 (파일 컴포넌트가 아닌 것, 파일 컴포넌트)로 나눈다. count 모드면 나누지 않는다.
+
+    Under `report` (the default) the file findings (kinds in `FILE_KINDS`) go to a list of their own: they are listed,
+    never planned or counted. Under `count` everything stays in the first list (the old rule) and the second is empty."""
+    if not files_reported(mode):
+        return list(findings), []
+    rest = [f for f in findings if f.kind not in FILE_KINDS]
+    files = [f for f in findings if f.kind in FILE_KINDS]
+    return rest, files
 
 
 def unknown_actions(findings: list[Finding]) -> list[str]:
@@ -612,7 +661,7 @@ class IvasHttpClient:
         if kind == "matched_files":
             if not component_id:
                 raise IvasError("matched_files needs a component id", code="http_error")
-            segments = base + ("result", "filecomponent", component_id, "matchedfiles")
+            segments = base + ("result", "filecomponents", component_id, "matchedfiles")
         elif kind in PAGE_PATHS:
             segments = base + PAGE_PATHS[kind]
         else:
@@ -767,6 +816,10 @@ def run_scan(client: Any, zip_path: Path, zip_sha256: str, label: str, project_n
     One scan (`interfaces.Scanner`); only `IvasUploadUncertain` propagates, every other failure is an incomplete result."""
     st = settings or IvasSettings()
     col = _Collector()
+    # report 모드에서는 파일 컴포넌트 부분의 실패를 따로 모아 메모로만 남긴다
+    file_report = files_reported(st.file_components)
+    fcol = _Collector() if file_report else col
+    file_complete = True
 
     def emit(event: dict[str, Any]) -> None:
         if journal is not None:
@@ -780,7 +833,7 @@ def run_scan(client: Any, zip_path: Path, zip_sha256: str, label: str, project_n
               "reasons": list(col.reasons), "status": status_code})
         return ScanResult(label=label, zip_sha256=zip_sha256, complete=complete, receipt=receipt,
                           status_code=status_code, findings=fs, counts=dict(counts or {}),
-                          incomplete_reasons=list(col.reasons), notes=list(col.notes))
+                          incomplete_reasons=list(col.reasons), notes=list(col.notes), file_complete=file_complete)
 
     # ---- 업로드 / upload ----
     if receipt is None:
@@ -858,15 +911,15 @@ def run_scan(client: Any, zip_path: Path, zip_sha256: str, label: str, project_n
     page_totals: dict[str, int | None] = {}
     rows_returned: dict[str, int] = {}
 
-    def add(f: Finding, what: str) -> None:
+    def add(f: Finding, what: str, into: _Collector = col) -> None:
         if f.key in seen_keys:
-            col.bad("duplicate_result", f"{what}: {f.key} returned more than once")
+            into.bad("duplicate_result", f"{what}: {f.key} returned more than once")
             return
         seen_keys.add(f.key)
         findings.append(f)
 
-    def malformed(what: str, idx: int) -> None:
-        col.bad("http_error", f"{what}: item {idx} is malformed (no id / component id); scan cannot be trusted")
+    def malformed(what: str, idx: int, into: _Collector = col) -> None:
+        into.bad("http_error", f"{what}: item {idx} is malformed (no id / component id); scan cannot be trusted")
 
     # library
     items, total, pages = _all_pages(client, receipt, "library", size, col)
@@ -894,14 +947,15 @@ def run_scan(client: Any, zip_path: Path, zip_sha256: str, label: str, project_n
 
     # file components (main / potential) + matched files
     matched_cache: dict[str, list[str]] = {}
+    unread: set[str] = set()
     for kind, fkind in (("file_main", "file_component"), ("file_potential", "file_component_potential")):
-        items, total, pages = _all_pages(client, receipt, kind, size, col)
+        items, total, pages = _all_pages(client, receipt, kind, size, fcol)
         page_totals[kind] = total
         emit({"event": "ivas_pages", "label": label, "kind": kind, "items": len(items), "total": total, "pages": pages})
         for i, item in enumerate(items):
             f = _file_finding(item, fkind)
             if f is None:
-                malformed(kind, i)
+                malformed(kind, i, fcol)
                 continue
             _cid, where = _file_component_id(item)
             if where != "fileComponent.id":
@@ -910,26 +964,43 @@ def run_scan(client: Any, zip_path: Path, zip_sha256: str, label: str, project_n
                 col.note(f"{kind}: file component id taken from {where} (no fileComponent.id)")
             if f.component_id not in matched_cache:
                 paths: list[str] = []
-                mitems, mtotal, mpages = _all_pages(client, receipt, "matched_files", size, col,
+                # report 모드에서는 컴포넌트마다 따로 모아, 읽지 못한 컴포넌트만 표시하고 검사는 미완료로 보지 않는다
+                mcol = _Collector() if file_report else col
+                mitems, mtotal, mpages = _all_pages(client, receipt, "matched_files", size, mcol,
                                                     component_id=f.component_id)
                 emit({"event": "ivas_pages", "label": label, "kind": "matched_files", "component_id": f.component_id,
                       "items": len(mitems), "total": mtotal, "pages": mpages})
                 for j, m in enumerate(mitems):
                     p = _text(m.get("file") if isinstance(m, dict) else None, "fullPath")
                     if not p:
-                        col.bad("http_error", f"matched_files({f.component_id}): item {j} has no file.fullPath")
+                        mcol.bad("http_error", f"matched_files({f.component_id}): item {j} has no file.fullPath")
                         continue
                     if p in paths:
-                        col.bad("duplicate_result", f"matched_files({f.component_id}): {p} returned more than once")
+                        mcol.bad("duplicate_result", f"matched_files({f.component_id}): {p} returned more than once")
                         continue
                     paths.append(p)
                 matched_cache[f.component_id] = paths
+                if mcol is not col and mcol.reasons:
+                    unread.add(f.component_id)
+                    for n in mcol.notes:
+                        col.note(n)
+                    col.note(f"matched_files({f.component_id}): the files of this component were not read "
+                             f"({', '.join(mcol.reasons)}); the finding is listed without them")
             f.locations = list(matched_cache[f.component_id])
-            add(f, kind)
+            f.files_unread = f.component_id in unread
+            add(f, kind, fcol)
 
     # ---- 요약 대조 / summary reconciliation ----
     if counts:
-        _reconcile(counts, page_totals, col, rows_returned=rows_returned, mode=st.summary_check)
+        _reconcile(counts, page_totals, col, rows_returned=rows_returned, mode=st.summary_check,
+                   file_col=fcol if file_report else None)
+    if file_report:
+        file_complete = not fcol.reasons
+        for n in fcol.notes:
+            col.note(n)
+        if fcol.reasons:
+            col.note("file components are only listed (remediation.file_components: report): the file part was not "
+                     f"read completely ({', '.join(fcol.reasons)}); the scan is complete for the libraries")
     return result(True, last, findings, counts)
 
 
@@ -940,7 +1011,9 @@ _EXACT = {"components": "library"}
 
 
 def _reconcile(counts: dict[str, int], page_totals: dict[str, int | None], col: _Collector, *,
-               rows_returned: Mapping[str, int] | None = None, mode: str = "exact") -> None:
+               rows_returned: Mapping[str, int] | None = None, mode: str = "exact",
+               file_col: _Collector | None = None) -> None:
+    """요약의 범주별 개수를 상세 페이지와 대조한다. ``file_col``이 있으면 fileComponents의 불일치는 그쪽에만 남긴다."""
     rows = dict(rows_returned or {})
     exact_mode = str(mode).strip().lower() != "nonzero"
     compared = []
@@ -962,8 +1035,10 @@ def _reconcile(counts: dict[str, int], page_totals: dict[str, int | None], col: 
         pages_total = sum(t or 0 for t in totals)
         compared.append(f"{cat}↔{'+'.join(kinds)} (zero / non-zero)")
         if (counts.get(cat, 0) > 0) != (pages_total > 0):
-            col.bad("summary_mismatch", f"summary {cat}.total={counts.get(cat, 0)} but the {'+'.join(kinds)} pages "
-                                        f"report {pages_total} items")
+            # report 모드에서는 파일 컴포넌트 요약의 불일치를 파일 쪽 실패로만 남긴다
+            into = file_col if file_col is not None and cat == "fileComponents" else col
+            into.bad("summary_mismatch", f"summary {cat}.total={counts.get(cat, 0)} but the {'+'.join(kinds)} pages "
+                                         f"report {pages_total} items")
     uncovered = [c for c in SUMMARY_CATEGORIES if c not in {r[0] for r in _RECONCILE}]
     col.note("summary check (" + ("exact" if exact_mode else "nonzero") + "): " + (", ".join(compared) or "nothing")
              + "; the swComponents / fileComponents mapping is not confirmed, so only zero / non-zero is compared there"

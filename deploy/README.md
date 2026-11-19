@@ -309,6 +309,7 @@ Secret 의 `SBMIG_WEB_TOKEN` 을 채운다 — 그때는 `http://<host>:8765/?to
 | `SBMIG_REMEDIATION__AFTER_MIGRATION` | ConfigMap | `true` (켜서 내보냄; 코드 기본 false) | BUILD SUCCESS 뒤(사내 프레임워크 프로젝트는 빌드가 실패해도, §7) 빌드 파드에서 취약점 조치를 이어 돌릴지(§6). 끄면 `"false"` + 웹 파드 재시작 |
 | `SBMIG_REMEDIATION__FAILED_CANDIDATE` / `IVAS_ANALYSIS_TIMEOUT_MINUTES` | ConfigMap(선택) | `include` / `30` | 실패한 수정본·IVAS 분석 대기(§6). 40 에만 literal 로 넣지 않는다(Job 이 멈춘다) |
 | `SBMIG_REMEDIATION__CHAIN_BUDGET_MINUTES` / `IGNORE_ACTIONS` | ConfigMap(선택) | `90` / 비어 있음(예 `'["PC","IG"]'`) | 빌드 파드 안 조치의 시간 한도(0 = 없음)·계획에서 뺄 IVAS 조치 코드(기본 없음 = 모두 고칠 대상, §6) |
+| `SBMIG_REMEDIATION__FILE_COMPONENTS` | ConfigMap(선택) | `report` | IVAS 가 프로젝트 안 파일에서 찾은 취약점을 보고서에만 싣는다 / `count` = 판정에 넣는다(§6) |
 | `SBMIG_REMEDIATION__IVAS_SUMMARY_CHECK` | ConfigMap(선택) | `exact` | IVAS 요약 `components` 건수와 라이브러리 취약점 행 수를 같은지 대조 / `nonzero` = 0 인지만(§6) |
 
 env 가 아닌 것: `artifacts.yml`(이미지에 구운 파일), `settings.xml`(데이터 볼륨의 `/data/.m2/settings.xml`, 원본은 ConfigMap `sbmig-config`), 이관팀이 고치는 회사 지식 **`<kb.dir>/jar_names.yml`**(jar
@@ -751,7 +752,7 @@ preflight / ADF / 내부 오류)이면 3. `SBMIG_FAIL_JOB_ON_BUILD_FAIL=1` 이�
   한 곳에 두면 웹 파드(40, `envFrom`)·웹이 만드는 Job(81, 그 키의 `configMapKeyRef` 한 줄)·80 모델(`envFrom`)이 같은 값을 받는다. 40 / 81 의
   literal env 로 두면 두 파일을 늘 같이 고쳐야 하고 하나를 빠뜨리면 모든 업로드가 멈춘다 — 그래서 literal 로 두지 않았다. 끄려면 `"false"` 로 바꾸고
   웹 파드를 재시작한다. 같은 이유로 조치 설정(`SBMIG_REMEDIATION__FAILED_CANDIDATE`, `…__IVAS_ANALYSIS_TIMEOUT_MINUTES`,
-  `…__CHAIN_BUDGET_MINUTES`, `…__IGNORE_ACTIONS`, `…__IVAS_SUMMARY_CHECK`)도
+  `…__CHAIN_BUDGET_MINUTES`, `…__IGNORE_ACTIONS`, `…__IVAS_SUMMARY_CHECK`, `…__FILE_COMPONENTS`)도
   `sbmig-env` 그룹 3 에 주석으로 있고 81 에 키 줄이 있다. **40 에만 literal 로 넣으면 Job 이 멈춘다**.
 * **Secret 에 넣을 것**: `sbmig-llm` 에 `IVAS_BASE_URL`(https 주소, 끝의 `/` 없이, 주소 안에 계정·쿼리 금지), `IVAS_USER_ID`, `IVAS_PASSWORD`
   (`k8s/30-secret.example.yaml`). 81 은 세 키를 `secretKeyRef`(`optional: true` — IVAS 가 없는 클러스터에서도 이관은 돈다)로, 80 은 `envFrom` 으로 받는다.
@@ -778,6 +779,11 @@ preflight / ADF / 내부 오류)이면 3. `SBMIG_FAIL_JOB_ON_BUILD_FAIL=1` 이�
   취약점 상세 행 수(중복 제거 전)와 같아야 검사 완료다. 다르면 `summary_mismatch`(검사 미완료, 두 수는 검사 메모에). `fileComponents` · `swComponents`
   는 상세 행과의 대응이 확인되지 않아 0 인지 아닌지만 본다. 실제 IVAS 의 건수 뜻이 달라 멀쩡한 검사가 미완료로 끝나면
   `SBMIG_REMEDIATION__IVAS_SUMMARY_CHECK: "nonzero"` 주석을 풀고 웹 파드를 재시작한다(정책 해시와 무관).
+* **프로젝트 파일에서 찾은 취약점**(`remediation.file_components`, 기본 `report`): 조치는 pom 의 라이브러리 버전만 고친다. IVAS 가 프로젝트 안의
+  파일(프런트의 정적 파일, pom 밖에 놓인 jar)에서 찾은 취약점은 조치 보고서의 「프로젝트 파일에서 찾은 취약점」에 파일 위치와 함께 싣고, 개수와
+  결과 판정에는 넣지 않는다(그래서 그런 항목이 있어도 결과가 조치 완료일 수 있다). 파일 목록을 IVAS 에서 읽지 못해도 검사는 미완료가 아니다.
+  IVAS 주소는 `…/result/filecomponents/{id}/matchedfiles`(ID 는 ossId, `|` 가 든 그대로 한 경로 조각으로 보냄; 실제 IVAS 가 받는 것을 확인했다).
+  예전처럼 판정에 넣으려면 `SBMIG_REMEDIATION__FILE_COMPONENTS: "count"` 주석을 풀고 웹 파드를 재시작한다(81 에 키 줄이 있다).
 * **취약점 해결만**(이관 없이 조치만 — 이미 이관된 프로젝트를 다시 점검할 때): 실행 방식 `remediation`.
   * 클러스터: 화면에서 **취약점 해결** 을 고르고 ZIP 을 올린다(API 는 `POST /api/runs?flow=remediation`). 업로드와 같은 대기 줄·자리를 쓰는 보통
     빌드 Job 이다. 웹 파드가 Job env `SBMIG_FLOW` 를 넣으므로 운영자가 설정할 것은 없고 매니페스트도 그대로다(IVAS Secret 은 위와 같다).

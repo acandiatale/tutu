@@ -1110,3 +1110,22 @@ The user: "우리 어드민에 원본 소스 받을 수 있는 기능 하나만 
 | Where uploads live | Job modes: the run folder's `source.zip`; in-process: the upload folder; the remediation-only flow's own copy only for that flow | `admin.find_source` | done |
 | Checked | 14 tests; in a browser the downloaded files' sha256 equals the uploads' (a 3 MB Job upload, an upload with a Korean name) | `tests/web/test_admin_source.py` | done |
 | Not checked | a real upload of several hundred MiB through the cluster's ingress (its timeout and body limits apply to downloads too) | — | open (the user's) |
+
+## Status — 2026-11-19, IVAS file components: the right address, and report only (v2.1z-bc)
+
+The user's cluster: one project ended `INCOMPLETE scan_incomplete — baseline scan incomplete: http_error, page_missing`
+after a 200 on the upload. The user found the 404 and its cause ("원래는 filecomponents 여야 하는데 filecomponent로 요청을
+보냈네!"), confirmed on the real IVAS that the id of that path is the ossId and accepts `|`, and set the policy: "우리
+백엔드로직만 라이브러리 검사하고 프론트는 검사 안하려고 하는데 … 이건 적용은 하지말고 리포트만 보내도록 할까?"
+
+| Item | Deliverable | Where | Status |
+|---|---|---|---|
+| The address | matched files are read from `…/result/filecomponents/{id}/matchedfiles`; the other addresses compared with the call table: no other slip | `sbmig/remediations/ivas.py` | done |
+| Why it went unnoticed | the fake IVAS of the integration tests answered every unknown address with an empty page; it answers 404 now | `tests/remediations/test_integration.py` | done |
+| Report only (`remediation.file_components: report`, default) | file findings reach neither the inventory nor the plan nor the verdict; counts of their own; a failure in the file part of a scan is a note, the library part is planned and applied; `count` keeps the earlier rule and never trusts a scan whose file part was skipped | `sbmig/remediations/graph.py`, `ivas.py`, `inventory.py` | done |
+| The report | a line under the summary and a section 「프로젝트 파일에서 찾은 취약점」 with the files; one line in the migration report | `sbmig/remediations/report.py`, `i18n.py`, `sbmig/report/markdown.py` | done |
+| Deployment | `SBMIG_REMEDIATION__FILE_COMPONENTS` forwarded by 81, listed in 20 and ENV.md | `deploy/` | done |
+| Checked | offline suite and 11 integration tests with the real Maven and the fake IVAS (figures in the commit): library + `.js` finding → `SUCCEEDED` under `report`, `INCOMPLETE` under `count`; matched files 404 and file lists 500 → still `SUCCEEDED` with the note | `tests/remediations/test_file_components*.py` | done |
+| Caveat told to the user | a jar that lies in the project outside the pom is a file component too and leaves the verdict under `report`; the section shows the paths | — | told |
+| Not checked | a whole scan of sbmig through the corrected call on the cluster; the stuck project needs a new run (an `INCOMPLETE` baseline scan cannot be resumed) | — | open (the user's) |
+| An interruption | the implementer was stopped by accident half-way (the task still carried the name of an earlier job, "Remove approval …"); a stopped agent cannot be resumed, so a new one finished from the partial work in the tree | — | note |

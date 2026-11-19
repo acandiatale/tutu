@@ -321,9 +321,16 @@ class IvasServer:
     analysis from the emulated resolution of those bytes (plus tree files and declared plugins)."""
 
     def __init__(self, work: Path, world: World, vulns: dict[str, Vuln], *, with_top: bool = True,
-                 file_vulns: dict[str, tuple[str, str, Vuln]] | None = None):
+                 file_vulns: dict[str, tuple[str, str, Vuln]] | None = None,
+                 file_components: dict[str, tuple[str, str, str, Vuln]] | None = None):
         self.work, self.world, self.vulns, self.with_top = work, world, vulns, with_top
         self.file_vulns = dict(file_vulns or {})          # path suffix → (ga, version, vuln)
+        # path suffix → (component id, name, version, vuln): served as IVAS file components (main list)
+        self.file_components = dict(file_components or {})
+        self.file_items: dict[str, list[dict]] = {}
+        self.matched: dict[str, dict[str, list[str]]] = {}
+        self.matched_status: int | None = None            # e.g. 404: every matched-files call answers this
+        self.file_list_status: int | None = None          # e.g. 500: the file-component lists answer this
         self.uploads: list[bytes] = []
         self.analyses: dict[str, list[dict]] = {}
         self.status_calls: dict[str, int] = {}
@@ -390,6 +397,7 @@ class IvasServer:
             if n in self.uncertain_uploads:
                 raise requests.exceptions.ReadTimeout("read timed out")
             self.analyses[f"anl-{n}"] = self._findings(data, n)
+            self.file_items[f"anl-{n}"], self.matched[f"anl-{n}"] = self._file_components(data)
             return Resp(200, {"projectId": f"prj-{n}", "lbrdAnlId": f"anl-{n}"})
         parts = path.strip("/").split("/")          # projects SELF <p> analysis <a> ...
         assert parts[:2] == ["projects", "SELF"] and parts[3] == "analysis", path
@@ -403,14 +411,47 @@ class IvasServer:
         if rest == ["result", "summary"]:
             cats = ["components", "swComponents", "fileComponents", "codeSnippets", "file", "functionComponents",
                     "ospkgComponents", "binaryComponents"]
-            totals = {c: {"total": len(items) if c == "components" else 0} for c in cats}
+            files = self.file_items.get(aid) or []
+            totals = {c: {"total": len(items) if c == "components" else len(files) if c == "fileComponents" else 0}
+                      for c in cats}
             return Resp(200, {"summary": {"resultCount": {"vulnerabilities": totals}}})
         page, size = int(kw["params"]["page"]), int(kw["params"]["size"])
+
+        def paged(rows: list) -> Resp:
+            return Resp(200, {"content": rows[page * size:(page + 1) * size], "totalElements": len(rows)})
         if rest == ["result", "libraryvulnerabilities"]:
             if int(aid.split("-")[1]) in self.broken_library_page and page == 1:
                 return Resp(500, {"error": "boom"})
-            return Resp(200, {"content": items[page * size:(page + 1) * size], "totalElements": len(items)})
-        return Resp(200, {"content": [], "totalElements": 0})
+            return paged(items)
+        if rest == ["result", "swvulnerabilities"] or rest == ["result", "filecomponentvulnerabilities", "potential"]:
+            return paged([])
+        if rest == ["result", "filecomponentvulnerabilities", "main"]:
+            if self.file_list_status:
+                return Resp(self.file_list_status, {"error": "file list"})
+            return paged(self.file_items.get(aid) or [])
+        if len(rest) == 4 and rest[:2] == ["result", "filecomponents"] and rest[3] == "matchedfiles":
+            comp = requests.utils.unquote(rest[2])
+            known = self.matched.get(aid) or {}
+            if self.matched_status or comp not in known:
+                return Resp(self.matched_status or 404, {"error": "not found"})
+            return paged([{"file": {"fullPath": x}} for x in known[comp]])
+        # an unknown address is a 404 like the real IVAS (the singular `filecomponent` address lands here)
+        return Resp(404, {"error": f"no such address {path}"})
+
+    def _file_components(self, data: bytes) -> tuple[list[dict], dict[str, list[str]]]:
+        """The file-component rows and the matched files of one upload, from `file_components`."""
+        with zipfile.ZipFile(io.BytesIO(data)) as zf:
+            names = [i.filename for i in zf.infolist() if not i.is_dir()]
+        rows: dict[str, dict] = {}
+        matched: dict[str, list[str]] = {}
+        for name in names:
+            for suffix, (cid, comp, version, vuln) in self.file_components.items():
+                if name.endswith(suffix):
+                    rows.setdefault(cid, {"id": vuln.cve, "fileComponent": {"id": cid, "name": comp, "version": version,
+                                                                            "info": {"patchedVersion": vuln.patched}},
+                                          "action": {"actionDivCd": "NE"}, "rating": [{"version": "v3", "score": 6.1}]})
+                    matched.setdefault(cid, []).append(name)
+        return [rows[k] for k in sorted(rows)], matched
 
 
 # ============================================================================ harness
@@ -491,8 +532,11 @@ def make_cfg(tmp: Path, **rem: Any) -> SimpleNamespace:
 
 def start(tmp: Path, files: dict[str, str | bytes], *, vulns: dict[str, Vuln], versions: dict[str, list[str]],
           wrap: str | None = None, world: World | None = None, fail_on: set[str] | None = None, with_top: bool = True,
-          file_vulns: dict | None = None, version_source: Any = None, **rem: Any) -> Env:
+          file_vulns: dict | None = None, version_source: Any = None, file_components: dict | None = None,
+          **rem: Any) -> Env:
     tmp.mkdir(parents=True, exist_ok=True)
+    if "file_components_mode" in rem:
+        rem["file_components"] = rem.pop("file_components_mode")
     cfg = make_cfg(tmp, **rem)
     raw = {k: v.encode("utf-8") if isinstance(v, str) else v for k, v in files.items()}
     upload = zip_bytes(raw, wrap)
@@ -505,8 +549,10 @@ def start(tmp: Path, files: dict[str, str | bytes], *, vulns: dict[str, Vuln], v
     world = world or World()
     rec = Rec(paths)
     mvn = MavenEmu(world, fail_on)
-    server = IvasServer(tmp / "ivas-side", world, vulns, with_top=with_top, file_vulns=file_vulns)
-    st = IvasSettings(base_url=BASE, user_id="svc-user", password=PASSWORD, poll_seconds=0, page_size=2)
+    server = IvasServer(tmp / "ivas-side", world, vulns, with_top=with_top, file_vulns=file_vulns,
+                        file_components=file_components)
+    st = IvasSettings(base_url=BASE, user_id="svc-user", password=PASSWORD, poll_seconds=0, page_size=2,
+                      file_components=str(cfg.remediation.file_components))
     maven = ServerMaven(cfg, runner=mvn, maven_probe=lambda c: (True, "Apache Maven 3.9.9; Java version: 21.0.2"),
                         journal=rec.journal)
     comps = Components(ivas=IvasHttpClient(st, session=server, sleep=lambda _s: None),
@@ -980,3 +1026,62 @@ def test_intake_accepts_macos_metadata_beside_the_project(tmp_path):
     res = intake_mod.accept_zip(up, tmp_path / "run", intake_mod.limits_from_config(cfg))
     assert res.project_root == "app" and res.files == 3
 
+
+
+# ============================================================================ file components (remediation.file_components)
+JS = "src/main/webapp/js/jquery-1.8.1.min.js"
+FILE_COMPONENTS = {"jquery-1.8.1.min.js": ("11560|934982", "jquery", "1.8.1", Vuln("CVE-2020-11022", "3.5.0"))}
+FILE_APP = {**APP, JS: "/*! jQuery v1.8.1 */\n"}
+
+
+def file_section(env: Env) -> str:
+    text = env.paths.report_md.read_text(encoding="utf-8")
+    return text.split("## 프로젝트 파일에서 찾은 취약점")[1].split("\n## ")[0] if "## 프로젝트 파일에서" in text else ""
+
+
+def test_file_component_is_reported_and_the_library_fixed(tmp_path):
+    env = start(tmp_path, {"pom.xml": war_pom(), **FILE_APP}, vulns=LIB_VULN, versions=LIB_VERSIONS,
+                file_components=FILE_COMPONENTS)
+    out = env.run()
+    assert_succeeded_delivery(env, out)
+    assert out.counts["fixed"] == 1 and out.counts["final_findings"] == 0 and out.counts["final_file_findings"] == 1
+    assert ("GET", "/projects/SELF/prj-1/analysis/anl-1/result/filecomponents/11560%7C934982/matchedfiles") in env.ivas.calls
+    scan = read_json(env.paths.scan("baseline"))
+    js = next(f for f in scan["findings"] if f["kind"] == "file_component")
+    assert js["locations"] == [JS] and js["files_unread"] is False and js["component_id"] == "11560|934982"
+    sec = file_section(env)
+    assert "| `jquery` | 1.8.1 | 3.5.0 |" in sec and f"`{JS}`" in sec
+    assert "위 개수에 넣지 않고 아래" in env.paths.report_md.read_text(encoding="utf-8")
+
+
+def test_file_component_count_mode_is_incomplete_as_before(tmp_path):
+    env = start(tmp_path, {"pom.xml": war_pom(), **FILE_APP}, vulns=LIB_VULN, versions=LIB_VERSIONS,
+                file_components=FILE_COMPONENTS, file_components_mode="count")
+    out = env.run()
+    assert out.status == INCOMPLETE and out.reasons == ["residual_findings", "manual_review"], out.reasons
+    assert out.counts["final_findings"] == 1 and "final_file_findings" not in out.counts
+    assert any(r.origin == "vendored" and r.ga == "jquery" for r in out.residuals)
+    assert file_section(env) == ""
+
+
+@pytest.mark.parametrize("broken", ["matched_404", "list_500"])
+def test_file_component_unreadable_still_succeeds(tmp_path, broken):
+    env = start(tmp_path, {"pom.xml": war_pom(), **FILE_APP}, vulns=LIB_VULN, versions=LIB_VERSIONS,
+                file_components=FILE_COMPONENTS)
+    if broken == "matched_404":
+        env.ivas.matched_status = 404
+    else:
+        env.ivas.file_list_status = 500
+    out = env.run()
+    assert_succeeded_delivery(env, out)
+    scan = read_json(env.paths.scan("baseline"))
+    assert scan["complete"] is True and scan["incomplete_reasons"] == []
+    sec = file_section(env)
+    if broken == "matched_404":
+        assert scan["file_complete"] is True
+        assert any("matched_files(11560|934982)" in n and "404" in n for n in scan["notes"]), scan["notes"]
+        assert "파일 위치를 읽지 못했습니다" in sec
+    else:
+        assert scan["file_complete"] is False
+        assert any("file components are only listed" in n for n in scan["notes"]), scan["notes"]
+        assert "파일에서 찾은 취약점 목록을 IVAS에서 읽지 못했습니다" in sec

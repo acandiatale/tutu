@@ -5176,6 +5176,58 @@ The user (2026-11-19): "우리 어드민에 원본 소스 받을 수 있는 기�
   gone. The public page gets nothing: the original is company source and stays behind the admin password.
 - One INFO log line per download (run id and size, no client data). The logs bundle still leaves `source.zip` out.
 
+## v2.1z-bc — IVAS file components: the right address, and report only
+
+The user's cluster (2026-11-19): one project ended `INCOMPLETE scan_incomplete — baseline scan incomplete: http_error,
+page_missing` although the upload answered 200. The matched-files call got 404: sbmig asked for
+`…/result/filecomponent/{id}/matchedfiles`; the address is `…/result/filecomponents/{id}/matchedfiles` ("원래는
+filecomponents 여야 하는데 filecomponent로 요청을 보냈네!"). The call had been written from the API notes and never met
+the real IVAS. And the user's policy: "우리 백엔드로직만 라이브러리 검사하고 프론트는 검사 안하려고 하는데 … 이건 적용은
+하지말고 리포트만 보내도록 할까?"
+
+- **The address**: `filecomponents` (plural). The component id is still sent as one encoded path segment and kept as it
+  came. The user checked the real IVAS the same evening with the value sbmig had sent (`833|222121`, the form the
+  company calls ossId): the corrected path accepts it ("ossId는 | 받아준다!"). The client still takes the value from
+  `fileComponent.id` and only when that is missing from `ossId` (`ivas._file_component_id`): whether the two fields can
+  differ in a real answer is not known. Not seen yet: a whole scan of sbmig going through that call on the cluster.
+- **`remediation.file_components`**: `report` (default) | `count` (`SBMIG_REMEDIATION__FILE_COMPONENTS`, forwarded by
+  81, listed in 20 and ENV.md). The remediation changes library versions in poms only; a finding IVAS made in a FILE of
+  the project (kinds `file_main`, `file_potential`) was never fixed by it either way.
+  - `report`: such findings are information. They are listed in the report in a section of their own (component,
+    version, the matched files, the patched version when IVAS names one), produce no inventory item, no proposal and no
+    residual, are not counted as remaining findings, do not hold the verdict and do not start another round. The
+    verdict and the counts a person reads (`baseline_findings`, `final_findings`, fixed, remaining) are about libraries.
+    A failure while reading the file-component lists or the matched files of one component does NOT make the scan
+    incomplete: the library part is planned and applied as usual; the failure is a note of the scan and the section
+    says what could not be read. Completeness (`scan_incomplete`) is decided by the summary and the library and `sw`
+    lists as before.
+  - `count`: the behaviour before this change (file findings are `vendored` residuals that keep the result
+    `INCOMPLETE`; a page that cannot be read makes the scan incomplete).
+- A file component can be a static file of the front end or a jar that lies in the project outside the pom; `report`
+  takes both out of the verdict (the section shows the paths, so a reader sees which it is). Told to the user.
+- **Names, as coded.** `ivas.split_files` / `_Holder.split()` take the file findings out first, then split by
+  `ignore_actions` (a file finding with an ignored action code stays in the file group). Counts in `state.counts` and the
+  summary, only under `report`: `baseline_file_findings`, `final_file_findings`, and `file_lists_unread` (scans whose file
+  lists could not be read; such a scan gets no `*_file_findings` rather than a misleading 0). Journal:
+  `file_findings_reported {label, findings, unread, file_complete}` after each scan; `file_residuals_dropped` when a
+  resumed older state's file residuals leave. Scan result: `ScanResult.file_complete` (false: the file lists, a malformed
+  or duplicate item in them, or the `fileComponents` summary comparison failed) and `Finding.files_unread` (the matched
+  files of that component could not be read; `file_complete` stays true). `report.json`: `file_components`,
+  `file_findings`, `file_findings_complete`. Under `count`, a scan stored under `report` whose file part was not read is
+  incomplete (`ivas.count_view`, reason `file_components_unread`); the file on disk is not changed. The setting is not
+  part of `planner.policy_hash`: it changes no proposal, only what counts as remaining, and that is decided when a run
+  reads the scans.
+- **The report (`ko`)**: under the summary, when N > 0: 「프로젝트 파일에서 찾은 취약점 N건은 위 개수에 넣지 않고 아래 「프로젝트
+  파일에서 찾은 취약점」에 따로 적었습니다.」; the section `## 프로젝트 파일에서 찾은 취약점 — N건` with its lead and one row per
+  component (위험도, 컴포넌트, 버전, 패치된 버전, 취약점, 파일 위치; a long file list cut to three with 「외 N개」;
+  「파일 위치를 읽지 못했습니다」; 「(추정)」 for potential components); when the lists could not be read, the section has one
+  sentence instead of a table. The migration report's 취약점 조치 section adds one line when N > 0.
+- **Old data**: a state or scan written before this change loads (`file_complete` true, `files_unread` false). A
+  remediation resumed under `report` drops the file residuals an earlier version stored and recomputes its counts. A
+  run that ended `INCOMPLETE` at the baseline scan (the cluster's case) cannot be resumed: it needs a new run.
+- The fake IVAS of the integration tests answers 404 to an address it does not know (it used to answer an empty
+  page, which is how the singular path was never caught).
+
 ## remediations (취약점 조치) — `/api/remediations`, IVAS, version-text fixes + managed overrides (2026-11-11)
 
 A second, independent flow beside the migration: an uploaded Maven project ZIP is built as it is (baseline), scanned by
@@ -5568,7 +5620,7 @@ repository host (`remediation.allowed_repository_hosts`, else the mirrors / repo
 | library | `GET …/result/libraryvulnerabilities?page=&size=` | `content[]`: `id`, `library.identifier` (Maven `g:a`), `library.version`, `library.info.patchedVersion`, `detectedLocations[].filePath`, ratings, action; `totalElements` |
 | sw | `GET …/result/swvulnerabilities?page=&size=` | any item → scan incomplete (`unsupported_sw`) |
 | file components | `GET …/result/filecomponentvulnerabilities/main` and `/potential` `?page=&size=` | `id`, `fileComponent.id` (only when it is missing: `fileComponent.ossId`, else top-level `ossId`, with a scan note), version, patched version; always `vendored` |
-| matched files | `GET …/result/filecomponent/{componentId}/matchedfiles?page=&size=` | `content[].file.fullPath`. The id may contain `\|` (`11560\|934982`, the company calls it ossId): it is sent as ONE encoded path segment (`11560%7C934982`) and kept unchanged in `Finding.component_id` |
+| matched files | `GET …/result/filecomponents/{componentId}/matchedfiles?page=&size=` (plural: "v2.1z-bc") | `content[].file.fullPath`. The id may contain `\|` (`11560\|934982`, the company calls it ossId): it is sent as ONE encoded path segment (`11560%7C934982`) and kept unchanged in `Finding.component_id` |
 
 Completeness: pages start at 0 and are read until `totalElements` items arrived (safety cap total/size + 2); a page that cannot be
 read, an early empty page, a `totalElements` that changes between pages, more or fewer items than announced, a duplicate

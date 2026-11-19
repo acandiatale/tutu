@@ -398,7 +398,7 @@ Main ↔ Worker 의 파일·종료 코드·멈춤·복구 약속: `docs/v2/JOB-R
 ## 10. 취약점 조치
 
 이관이 BUILD SUCCESS 로 끝나고(수정 루프 없는 사내 프레임워크 프로젝트는 빌드가 실패해도, 4.9절) `remediation.after_migration` 이 켜져 있으면, 마지막 노드 `remediation` 이 같은 빌드 파드 안에서 별도 그래프를 부릅니다:
-IVAS 로 이관된 프로젝트를 검사하고, 취약 라이브러리의 **버전 글자만** 고쳐(간접 의존성은 `dependencyManagement` 항목 하나를 추가) 다시 빌드·재검사합니다. 결과는 `<실행 폴더>/remediation/` 에 남고 이관의 판정·종료 코드는 바꾸지 않습니다(`SBMIG-RESULT … remediation=<상태>`).
+IVAS 로 이관된 프로젝트를 검사하고, 취약 라이브러리의 **버전 글자만** 고쳐(간접 의존성은 `dependencyManagement` 항목 하나를 추가) 다시 빌드·재검사합니다. IVAS 가 프로젝트 안의 파일(정적 파일, pom 밖의 jar)에서 찾은 취약점은 고치지 않고 조치 보고서의 「프로젝트 파일에서 찾은 취약점」에만 싣습니다(개수와 판정에 넣지 않음, `remediation.file_components: report`; `count` 면 판정에 넣음). 결과는 `<실행 폴더>/remediation/` 에 남고 이관의 판정·종료 코드는 바꾸지 않습니다(`SBMIG-RESULT … remediation=<상태>`).
 조치는 누구에게도 묻지 않고 변경을 적용하며 같은 파드에서 끝까지 진행합니다. 메이저 버전 변경과 추가한 항목은 조치 보고서의 「주의」 열과 「해야 할 일」에 표시합니다. IVAS 업로드 확인이 필요하거나 멈춘 조치는 새 빌드 파드에서 이어 갑니다. 「조치 완료」와 「해결된 취약점」은 완전한 최종 검사에서 사라진 취약점만 셉니다. 잘못된 버전이 들어가지 않도록, 여러 라이브러리가 함께 쓰는 버전 property, 패치 힌트가 없는 다른 메이저, 날짜로 번호를 매긴 옛 버전, 이미 패치 힌트를 만족하는 버전, 꺼진 프로필에만 있는 선언, 두 번 선언된 의존성은 바꾸지 않고 담당 팀 몫으로 남깁니다. 모든 조치는 `remediation/remediation.log` 를 남깁니다. 노드·상태·API·설정: `agent-doc/11-remediations.md`.
 
 이미 이관된 프로젝트를 다시 점검할 때는 실행 방식 `remediation` 으로 조치만 돌립니다: `sbmig run <zip|폴더> --flow remediation`, 웹 `POST /api/runs?flow=remediation`, 화면의 **취약점 해결**. 이관 단계·LLM·KB 를 쓰지 않고, 올린 프로젝트를 그대로 빌드해 검사·조치·재검사합니다(파일은 같은 `<실행 폴더>/remediation/`). `remediation.after_migration` · `remediation.trusted_projects` 는 묻지 않습니다. 결과 줄은 `SBMIG-RESULT … flow=remediation … remediation=<상태>`, 종료 코드 0 = SUCCEEDED, 2 = 그 밖의 저장 상태, 3 = 시작 못 함(접수 거절, IVAS 값·Maven 준비가 없으면 `remediation:not-ready`). Job 모드에서도 같은 대기 줄·자리에서 도는 보통 실행입니다.

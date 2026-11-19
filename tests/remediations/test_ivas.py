@@ -153,7 +153,7 @@ def results_session(s: FakeSession, *, summary=None, library=None, sw=None, main
     s.on("GET", res("filecomponentvulnerabilities/main"), *(main or [page([], 0)]))
     s.on("GET", res("filecomponentvulnerabilities/potential"), *(potential or [page([], 0)]))
     for comp, pages in (matched or {}).items():
-        s.on("GET", res(f"filecomponent/{comp}/matchedfiles"), *pages)
+        s.on("GET", res(f"filecomponents/{comp}/matchedfiles"), *pages)
     return s
 
 
@@ -393,7 +393,7 @@ def test_summary_flattens_and_rejects_missing():
 
 
 def test_page_shapes():
-    s = FakeSession().on("GET", res("filecomponent/comp-1/matchedfiles"), page([{"file": {"fullPath": "a.js"}}], 1))
+    s = FakeSession().on("GET", res("filecomponents/comp-1/matchedfiles"), page([{"file": {"fullPath": "a.js"}}], 1))
     s.on("GET", res("libraryvulnerabilities"), Resp(200, {"content": [], "totalElements": "0"}))
     c = IvasHttpClient(settings(), session=s)
     pg = c.page(P, A, "matched_files", 0, 100, component_id="comp-1")
@@ -526,7 +526,7 @@ def test_file_components_with_matched_files_pagination(zip_file):
     assert by["CVE-1"].identifier == "comp-1"
     assert by["CVE-3"].kind == "file_component_potential" and by["CVE-3"].locations == ["x.js"]
     # matched files fetched once per component
-    assert s.count("GET", res("filecomponent/comp-1/matchedfiles")) == 2
+    assert s.count("GET", res("filecomponents/comp-1/matchedfiles")) == 2
 
 
 def test_sw_items_are_unsupported(zip_file):
@@ -577,8 +577,10 @@ def test_duplicate_result_across_pages(zip_file):
 def test_duplicate_matched_file(zip_file):
     s = results_session(done(FakeSession()), summary=summary_body(fileComponents=1), main=[page([file_item()], 1)],
                         matched={"comp-1": [page([{"file": {"fullPath": "a.js"}}, {"file": {"fullPath": "a.js"}}], 2)]})
-    r = scan(s, zip_file)
+    r = scan(s, zip_file, file_components="count")                 # today's rule
     assert r.incomplete_reasons == ["duplicate_result"]
+    r = scan(s, zip_file)                                          # report: the component is listed, marked
+    assert r.complete and r.findings[0].files_unread and r.findings[0].locations == ["a.js"]
 
 
 def test_page_safety_cap(zip_file):
@@ -678,11 +680,11 @@ def test_request_errors_before_sending_are_ivas_errors_not_crashes():
 
 # ---------------------------------------------------------------------------- file component ids with "|" (company: ossId)
 def test_pipe_component_id_is_one_encoded_path_segment():
-    s = FakeSession().on("GET", res("filecomponent/11560%7C934982/matchedfiles"),
+    s = FakeSession().on("GET", res("filecomponents/11560%7C934982/matchedfiles"),
                          page([{"file": {"fullPath": "a.js"}}], 1))
     pg = IvasHttpClient(settings(), session=s).page(P, A, "matched_files", 0, 100, component_id="11560|934982")
     assert pg.total == 1
-    assert s.calls[-1]["path"].endswith("/filecomponent/11560%7C934982/matchedfiles")
+    assert s.calls[-1]["path"].endswith("/result/filecomponents/11560%7C934982/matchedfiles")
 
 
 def test_pipe_component_id_round_trips_into_the_finding(zip_file):
@@ -737,3 +739,72 @@ def test_action_code_table_and_helpers():
     act, ign = split_findings(fs, ignore_set(None))                 # default: every code is actionable
     assert [f.id for f in act] == ["a", "b", "c", "d"] and ign == []
     assert unknown_actions(fs) == ["(empty)", "ZZ"]
+
+
+# ---------------------------------------------------------------------------- file components: report only (v2.1z-bc)
+def _file_scan(zip_file, mode, *, main=None, matched=None, summary=None):
+    s = results_session(done(FakeSession()), summary=summary or summary_body(components=1, fileComponents=1),
+                        library=[page([lib_item()], 1)], main=main, matched=matched)
+    return scan(s, zip_file, file_components=mode), s
+
+
+def test_report_mode_a_404_on_matched_files_lists_the_finding_without_files(zip_file):
+    """The cluster's case: the matched-files call answered 404. With `report` the scan stays complete, the component
+    is kept and marked, the note names the component and the cleaned error."""
+    s_main = [page([file_item("CVE-F1", "11560|934982")], 1)]
+    r, _s = _file_scan(zip_file, "report", main=s_main, matched={"11560%7C934982": [Resp(404, {"error": "nf"})]})
+    assert r.complete and r.incomplete_reasons == [] and r.file_complete, (r.incomplete_reasons, r.notes)
+    f = next(x for x in r.findings if x.kind == "file_component")
+    assert f.files_unread and f.locations == [] and f.component_id == "11560|934982"
+    assert any("matched_files(11560|934982)" in n and "404" in n for n in r.notes), r.notes
+    assert [x.kind for x in r.findings].count("library") == 1
+
+
+def test_report_mode_a_500_on_the_file_list_keeps_the_scan_complete(zip_file):
+    r, _s = _file_scan(zip_file, "report", main=[Resp(500, {"error": "boom"})] * 3)
+    assert r.complete and r.incomplete_reasons == [] and not r.file_complete, r.notes
+    assert any(n.startswith("file_main: page 0 could not be read") for n in r.notes), r.notes
+    assert any("file components are only listed" in n for n in r.notes), r.notes
+    assert [f.kind for f in r.findings] == ["library"]
+
+
+def test_report_mode_a_file_summary_mismatch_is_a_note(zip_file):
+    r, _s = _file_scan(zip_file, "report", summary=summary_body(components=1, fileComponents=4))
+    assert r.complete and "summary_mismatch" not in r.incomplete_reasons and not r.file_complete, r.notes
+    assert any("summary fileComponents.total=4" in n for n in r.notes)
+
+
+def test_report_mode_keeps_the_library_and_sw_rules(zip_file):
+    s = results_session(done(FakeSession()), summary=summary_body(components=2),
+                        library=[page([lib_item()], 1)])
+    r = scan(s, zip_file, file_components="report")
+    assert not r.complete and "summary_mismatch" in r.incomplete_reasons
+
+
+def test_report_mode_a_file_finding_returned_twice_is_a_note(zip_file):
+    """A duplicate inside the file lists is a failure of the file part: a note under `report`, as before under `count`."""
+    main = [page([file_item("CVE-F1", "comp-1"), file_item("CVE-F1", "comp-1")], 2)]
+    matched = {"comp-1": [page([{"file": {"fullPath": "a.js"}}], 1)]}
+    r, _s = _file_scan(zip_file, "report", main=main, matched=matched)
+    assert r.complete and r.incomplete_reasons == [] and not r.file_complete, r.notes
+    assert any("returned more than once" in n for n in r.notes)
+    assert [f.kind for f in r.findings].count("file_component") == 1
+    r, _s = _file_scan(zip_file, "count", main=main, matched=matched)
+    assert not r.complete and r.incomplete_reasons == ["duplicate_result"]
+
+
+def test_count_mode_keeps_todays_rule(zip_file):
+    s_main = [page([file_item("CVE-F1", "comp-1")], 1)]
+    r, _s = _file_scan(zip_file, "count", main=s_main, matched={"comp-1": [Resp(404, {"error": "nf"})]})
+    assert not r.complete and r.incomplete_reasons == ["http_error", "page_missing"], r.incomplete_reasons
+    r, _s = _file_scan(zip_file, "count", main=[Resp(500, {"error": "boom"})] * 3)
+    assert not r.complete and "page_missing" in r.incomplete_reasons
+
+
+def test_ivas_settings_reads_file_components():
+    from types import SimpleNamespace
+
+    from sbmig.core.config import RemediationConfig
+    from sbmig.remediations.ivas import ivas_settings
+    assert ivas_settings(SimpleNamespace(remediation=RemediationConfig())).file_components == "report"
+    assert ivas_settings(SimpleNamespace(remediation=RemediationConfig(file_components="count"))).file_components == "count"

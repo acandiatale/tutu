@@ -69,7 +69,7 @@
 | `fleet` | 일괄 실행: 순서, 재시도, 사전 점검, 인프라 차단기, 정리, 요약 형식. `fleet.min_free_gb`는 웹 업로드의 여유 공간 하한이기도 하다(모자라면 HTTP 507, 0 = 안 봄) | `fleet.order`, `fleet.preflight`, `fleet.cleanup`, `fleet.min_free_gb`, `fleet.max_llm_calls_total` |
 | `report` | 보고서: 형식, 결과 zip, diff 포함, 언어(report.md만: `ko` = 요청자용 한국어 안내서 `sbmig/report/guide_ko.py`, `en` = 진단용 배치 `sbmig/report/markdown.py`) | `report.language`, `report.formats`, `report.zip_result` |
 | `advisories` | EOL 라이브러리 권고(안내만, 차단 없음): 기본 파일, 회사 추가 파일, 항목 끄기 | `advisories.extra_files`, `advisories.policy_overrides`, `advisories.enabled` |
-| `remediation` | 취약점 조치(IVAS): 이관 뒤에 이어 돌지, 실패한 빌드 뒤에도 이어 돌지, 정책, 사내 그룹([11](11-remediations.md)) | `remediation.after_migration`, `remediation.after_failed_build`(기본 `framework` = 빌드 오류를 고치지 않는 사내 프레임워크 실행은 빌드가 실패해도 조치, `never` = 통과한 실행만), `remediation.inhouse_groups` |
+| `remediation` | 취약점 조치(IVAS): 이관 뒤에 이어 돌지, 실패한 빌드 뒤에도 이어 돌지, 정책, 사내 그룹([11](11-remediations.md)) | `remediation.after_migration`, `remediation.after_failed_build`(기본 `framework` = 빌드 오류를 고치지 않는 사내 프레임워크 실행은 빌드가 실패해도 조치, `never` = 통과한 실행만), `remediation.inhouse_groups`, `remediation.file_components`(`report` = 파일 발견은 보고서에만 / `count`) |
 | `externalized` | 코드가 읽지만 어떤 리소스도 정의하지 않는 설정 키 → 자리표시자 블록과 인수인계 목록 | `externalized.enabled`, `externalized.sentinel`, `externalized.rules_file` |
 
 몇 가지 주의할 기본값(지금 코드 기준):

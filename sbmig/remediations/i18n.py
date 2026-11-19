@@ -76,6 +76,9 @@ COUNT_KO: dict[str, str] = {
     "final_findings": "조치 후 남은 취약점", "final_ignored": "조치 후 제외", "rounds": "라운드", "proposals": "제안",
     "proposals_applied": "적용한 제안",
     "residual": "조치하지 못한 항목", "residual_inhouse": "사내 라이브러리 항목",
+    "baseline_file_findings": "조치 전 프로젝트 파일 취약점 (따로 적음)",
+    "final_file_findings": "조치 후 프로젝트 파일 취약점 (따로 적음)",
+    "file_lists_unread": "프로젝트 파일 목록을 읽지 못한 검사",
 }
 FINDING_KIND_KO: dict[str, str] = {
     "library": "라이브러리", "file_component": "파일 컴포넌트", "file_component_potential": "파일 컴포넌트(추정)",
@@ -87,6 +90,7 @@ SCAN_REASON_KO: dict[str, str] = {
     "http_error": "IVAS 응답 오류", "id_mismatch": "분석 ID 불일치", "page_missing": "결과 페이지 누락",
     "stop_requested": "중지 요청", "summary_mismatch": "요약과 상세 결과의 개수가 다름", "total_mismatch": "전체 개수가 바뀜",
     "unsupported_sw": "지원하지 않는 SW 취약점", "zip_hash_mismatch": "분석한 파일 불일치",
+    "file_components_unread": "프로젝트 파일 쪽 결과를 다 읽지 못함",
 }
 # 빌드 설정 점검(intake.check_boundary) 코드의 한국어 이름
 BOUNDARY_KO: dict[str, str] = {

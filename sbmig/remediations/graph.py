@@ -39,6 +39,8 @@ from sbmig.core import scrub as _scrub
 
 from .inhouse import inhouse_keys
 from .interfaces import Components, Journal, StopCheck
+from .inventory import is_file_residual
+from .ivas import files_reported, split_files
 from .matching import finding_key, ga_key, version_key
 from .models import (
     AWAITING_CONFIRMATION,
@@ -404,10 +406,16 @@ class _Holder:
 
     # -- data helpers
     def load_scan(self, rel: str) -> ScanResult | None:
+        """저장한 검사 결과를 읽는다. count 모드면 파일 부분을 다 읽지 못한 report 검사를 미완료로 본다.
+
+        A stored scan through `ivas.count_view` with the current `remediation.file_components`."""
         if not rel:
             return None
         data = read_json(self.paths.root / rel)
-        return ScanResult.from_dict(data) if isinstance(data, dict) else None
+        if not isinstance(data, dict):
+            return None
+        from .ivas import count_view
+        return count_view(ScanResult.from_dict(data), self.file_mode)
 
     def load_plan(self, n: int) -> RoundPlan | None:
         data = read_json(self.paths.plan(n))
@@ -442,7 +450,9 @@ class _Holder:
         What each count counts:
         - `baseline_findings` / `final_findings`: actionable rows of the baseline / final scan (IVAS findings, not
           inventory items), so a finding whose library was split into an in-house item and a project item is one row;
-          `*_ignored`: the rows of an `ignore_actions` code.
+          `*_ignored`: the rows of an `ignore_actions` code; `*_file_findings` (only under
+          `remediation.file_components: report`): the file-component rows, listed in the report and counted nowhere else;
+          left out for a scan whose file lists were not read (no rows), which `file_lists_unread` counts instead.
         - `fixed`: baseline actionable findings (kind, CVE id, identifier compared case-insensitively) absent from the
           complete final scan: a finding still reported for any module is not fixed, whichever part was changed.
         - `residual`: residual ROWS in the state (one per g:a, version, reason after `_merge_residuals`); a library split
@@ -466,22 +476,48 @@ class _Holder:
             "residual_inhouse": sum(1 for x in st.residuals if x.reason == R_INHOUSE_ARTIFACT),
         }
         # *_findings는 조치 대상만 세고, ignore_actions 코드의 항목은 *_ignored로 따로 센다
+        # report 모드의 파일 컴포넌트는 *_file_findings로 따로 센다
+        report_files = files_reported(self.file_mode)
+        # 파일 목록을 끝까지 읽지 못한 검사는 0건으로 세지 않고 file_lists_unread로 따로 센다
+        unread = 0
         base_act: list[Any] = []
         if base is not None and base.complete:
             base_act, base_ign = self.split(base)
             counts["baseline_findings"] = len(base_act)
             counts["baseline_ignored"] = len(base_ign)
+            if report_files:
+                unread += not base.file_complete
+                if base.file_complete or self.files(base):
+                    counts["baseline_file_findings"] = len(self.files(base))
         if final is not None and final.complete:
             final_act, final_ign = self.split(final)
             counts["final_findings"] = len(final_act)
             counts["final_ignored"] = len(final_ign)
+            if report_files and st.final_scan != st.baseline_scan:
+                unread += not final.file_complete
+            if report_files and (final.file_complete or self.files(final)):
+                counts["final_file_findings"] = len(self.files(final))
             if base is not None and base.complete:
                 def k(f: Any) -> str:
                     # IVAS가 같은 라이브러리를 다른 대소문자로 보고해도 같은 취약점으로 센다. 보고서와 같은 키를 쓴다
                     return finding_key(f.kind, f.id, f.identifier)
                 left = {k(f) for f in final_act}
                 counts["fixed"] = len({k(f) for f in base_act} - left)
+        if unread:
+            counts["file_lists_unread"] = unread
         st.counts = counts
+
+    # -- file components (remediation.file_components)
+    @property
+    def file_mode(self) -> str:
+        """``remediation.file_components`` 값을 반환한다. 이전 설정 객체에 없으면 report다."""
+        return str(getattr(self.rcfg, "file_components", "report") or "report")
+
+    def files(self, scan: ScanResult) -> list[Any]:
+        """report 모드에서 보고서에만 싣는 파일 컴포넌트 발견 항목을 반환한다. count 모드면 빈 목록이다.
+
+        The file findings listed apart under `report`; [] under `count`."""
+        return split_files(list(scan.findings), self.file_mode)[1]
 
     # -- action codes (remediation.ignore_actions)
     @property
@@ -494,10 +530,12 @@ class _Holder:
         제외 항목(``ignore_actions`` 코드, 기본값은 없음)은 검사 파일과 보고서에는 남지만 인벤토리, 계획,
         남은 취약점 수에는 들어가지 않는다. 표에 없거나 빈 코드는 조치 대상으로 보고 저널에 한 번만 남긴다.
 
-        (actionable, ignored) findings of a scan; unknown / empty codes stay actionable and are journaled once."""
+        (actionable, ignored) findings of a scan; unknown / empty codes stay actionable and are journaled once. Under
+        `remediation.file_components: report` the file findings are in neither list (`files`)."""
         from .ivas import split_findings, unknown_actions
-        act, ign = split_findings(list(scan.findings), self.ignored_codes)
-        new = [c for c in unknown_actions(list(scan.findings)) if c not in self._unknown_noted]
+        rest, _files = split_files(list(scan.findings), self.file_mode)
+        act, ign = split_findings(rest, self.ignored_codes)
+        new = [c for c in unknown_actions(rest) if c not in self._unknown_noted]
         if new:
             self._unknown_noted.update(new)
             log.info("IVAS action codes outside the known table treated as actionable: %s", ", ".join(new))
@@ -579,7 +617,14 @@ class _Holder:
         write_json_atomic(self.paths.scan(label), res.to_dict())
         self.journal({"event": "scan_done", "label": label, "complete": res.complete, "findings": len(res.findings),
                       "incomplete_reasons": list(res.incomplete_reasons)})
-        return res
+        files = self.files(res)
+        if files or not res.file_complete:
+            # 파일 컴포넌트는 보고서에만 싣는다. 몇 건이고 무엇을 읽지 못했는지 남긴다
+            self.journal({"event": "file_findings_reported", "label": label, "findings": len(files),
+                          "unread": sum(1 for f in files if f.files_unread), "file_complete": res.file_complete})
+        from .ivas import count_view
+        # 저장한 파일은 그대로 두고, 이 실행의 판단은 지금 설정으로 본 결과로 한다
+        return count_view(res, self.file_mode)
 
 
 # ---------------------------------------------------------------------------- nodes
@@ -1185,6 +1230,12 @@ def _evaluate(h: _Holder) -> str | None:
             reasons.add(R_CANDIDATE_BUILD_FAILED)
         elif not st.delivery.scanned:
             reasons.add(R_ZIP_HASH_MISMATCH if complete else R_SCAN_INCOMPLETE)
+    if files_reported(h.file_mode):
+        # 설정이 생기기 전이나 count 모드에서 만든 파일 컴포넌트 항목은 report 모드에서 남은 항목이 아니다
+        dropped = [x for x in st.residuals if is_file_residual(x)]
+        if dropped:
+            st.residuals = [x for x in st.residuals if not is_file_residual(x)]
+            h.journal({"event": "file_residuals_dropped", "residuals": len(dropped)})
     residual_reasons = [x.reason or R_MANUAL_REVIEW for x in st.residuals]
     reasons.update(residual_reasons)
     if remaining:
@@ -1232,7 +1283,7 @@ def _report(h: _Holder) -> str | None:
                 getattr(h.rcfg, "severity_yellow", 4.0))
     report_mod.write_report(h.state, h.paths, ignore_actions=sorted(h.ignored_codes),
                             inhouse_message=getattr(h.rcfg, "inhouse_message", None), severity=severity,
-                            inhouse=inhouse_keys(h.cfg))
+                            inhouse=inhouse_keys(h.cfg), file_components=h.file_mode)
     return None
 
 

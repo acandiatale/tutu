@@ -150,6 +150,8 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
     "- In-house artifacts (exception possible, contact their owners): {n}":
         "- 사내 라이브러리에서 발생한 취약점: 라이브러리 {n}개. 담당자에게 예외 처리를 요청할 수 있습니다.",
     "- Files: {files}": "- 파일: {files}",
+    "- File findings listed apart in the remediation report, not counted above: {n}":
+        "- 프로젝트 파일에서 찾은 취약점 {n}건은 위 개수에 넣지 않고 조치 보고서에 따로 적었습니다.",
     "| Structure review | {summary} |": "| 구조 점검 | {summary} |",
     "After the restructure and before the first build, the LLM checked the poms, dependencies and module layout "
     "against the company rules. It fixes critical issues itself (committed, revertible) and leaves a script for the "

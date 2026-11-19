@@ -359,7 +359,11 @@ its files stay downloadable, a resume is refused (409): upload the project again
 go to `<run dir>/remediation/`; the outcome never changes the migration's exit code and is appended to `SBMIG-RESULT`
 as `remediation=<STATUS|skipped>`. Upload confirmations and resume (a new build pod) happen
 in the web UI. Every remediation (chained, `--flow remediation`, a resume in a new pod) writes
-`remediation/remediation.log`. In the Korean remediation report 조치 완료 and 「해결된 취약점」 count only findings a complete
+`remediation/remediation.log`. Findings IVAS makes in files of the project (static front-end files, a jar lying outside the pom) are listed
+in the report's 「프로젝트 파일에서 찾은 취약점」 and are neither remediated nor part of the verdict (`remediation.file_components: report`,
+default; `count` = they count as remaining, as residuals); a failure while reading the file lists (`…/result/filecomponents/{id}/matchedfiles`)
+is a note, not an incomplete scan. A run that ended `INCOMPLETE scan_incomplete … http_error, page_missing` on a
+matched-files call cannot be resumed: run it again. In the Korean remediation report 조치 완료 and 「해결된 취약점」 count only findings a complete
 final scan no longer reports (a change whose finding is still reported shows 「-」). Operator text:
 `deploy/README.md` §6; flow, states, API and diagnosis: `agent-doc/11-remediations.md`; `sbmig remediation-resume
 --run-dir <dir>` resumes outside Kubernetes.

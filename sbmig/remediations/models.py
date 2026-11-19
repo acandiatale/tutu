@@ -278,6 +278,8 @@ class Finding(Record):
     action: str = ""                  # action.actionDivCd 그대로
     score: float | None = None        # rating 중 가장 높은 점수
     component_id: str = ""            # file component id
+    # True면 파일 컴포넌트의 파일 위치(matchedfiles)를 읽지 못했다(remediation.file_components: report)
+    files_unread: bool = False
 
     @property
     def key(self) -> str:
@@ -300,6 +302,9 @@ class ScanResult(Record):
     counts: dict[str, int] = field(default_factory=dict)      # 요약의 범주별 total
     incomplete_reasons: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    # False면 파일 컴포넌트 목록이나 요약 대조를 끝까지 하지 못했다. report 모드에서만 False가 되며
+    # 이때 ``complete``는 라이브러리와 SW 목록만 보고 정한 값이다
+    file_complete: bool = True
     _nested = {"receipt": UploadReceipt, "findings": Finding}
 
 

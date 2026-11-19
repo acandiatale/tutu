@@ -1,7 +1,7 @@
 # 취약점 조치 (remediations)
 
 > 다루는 것: 취약점 조치(별도 그래프, 1절). 노드·상태·운영자 할 일·API·진단·설정 키·고칠 자리.
-> 언제 읽나: 이관 실행 폴더의 `remediation/`이나 `/api/remediations` 작업이 왜 그렇게 끝났는지 볼 때, 조치 규칙·IVAS 연동을 바꾸기 전에.
+> 언제 읽나: 조치가 왜 그렇게 끝났는지 볼 때, 조치 규칙·IVAS 연동을 바꾸기 전에.
 > 함께 읽을 파일: [00](00-what-sbmig-is.md), [07](07-config-and-knowledge.md), [09](09-deploy-and-ops.md), [13](13-framework-projects.md)
 
 ## 1. 무엇을 하나
@@ -13,8 +13,8 @@
 
 - `remediation.after_migration`이 true이고 이관이 **BUILD SUCCESS** 이거나, 수정 루프 없는 사내 프레임워크 실행([13](13-framework-projects.md))의
   최종 빌드가 실패했고 `remediation.after_failed_build: framework`(기본)면, `finalize` 뒤의 `remediation` 노드가 같은 `sbmig run` 프로세스에서 조치 그래프를 부른다(chain.py의 `run_after_migration`,
-  둘째 경우 `baseline_may_fail=True`). 다른 실행의 빌드가 실패하면 잇지 않는다. 코드 기본값은 false,
-  매니페스트는 ConfigMap `sbmig-env`에 `SBMIG_REMEDIATION__AFTER_MIGRATION: "true"`로 켜서 내보낸다(두 파드가 같은 값이어야 환경 대조 통과 — 09).
+  둘째 경우 `baseline_may_fail=True`). 다른 실행의 빌드가 실패하면 잇지 않는다. 코드 기본 false,
+  매니페스트는 ConfigMap `sbmig-env`의 `SBMIG_REMEDIATION__AFTER_MIGRATION: "true"`(두 파드가 같아야 환경 대조 통과 — 09).
 - 파일은 **`<이관 실행 폴더>/remediation/`**, 조치 id = 이관 run id. 체인이 이관된 프로젝트 트리로 ZIP을 만들어 접수(`intake.accept_zip`)에 넣는다.
 - 이관과 **같은 빌드**: 최종 빌드 대상(`verify.build`의 target; 루트 한 번이면 빈 목록) = `state.build_targets`
   (루트 aggregator 없는 MSA는 서비스마다, 루트 pom 없이 접수). 명령 앞부분·settings·로컬 저장소·환경(IVAS_/LLM_ 만 뺌)이 같고, 캐시된 해결 실패는 `-U`로 한 번 더
@@ -98,10 +98,23 @@
 
 검사 기록: 올리기 전 `state.pending_upload[라벨]`, 영수증(프로젝트·분석 ID)을 받으면 곧 `state.pending_receipt[라벨]`. 재개 때 영수증이
 있으면 올리지 않고 이어 조회, `pending_upload`만 있으면 확인 없이는 다시 멈춘다.
-파일 컴포넌트 ID 에는 `|`가 있을 수 있다(`11560|934982`): matchedfiles 경로 조각 하나로 인코딩(`11560%7C934982`).
-ID는 `fileComponent.id`, 없을 때만 `ossId`(메모).
+파일 컴포넌트의 파일 목록 주소는 `…/result/filecomponents/{id}/matchedfiles`. ID는 받은 그대로 경로 조각 하나로 인코딩한다(`11560|934982`→
+`11560%7C934982`; 실제 IVAS에서 이 ID는 ossId이고 `|`도 받는다고 사용자가 확인). sbmig는 `fileComponent.id`를 먼저, 없을 때만
+`ossId`를 쓴다(메모).
 요약 대조(`remediation.ivas_summary_check`): `exact`(기본) = 요약 `components.total` == 모든 쪽의 라이브러리
 취약점 행 수(중복 제거 전), 다르면 `summary_mismatch`. `swComponents`·`fileComponents`는 0 / 0 아님만. `nonzero` = components도 그렇게.
+
+**파일 컴포넌트**(`remediation.file_components`, 기본 `report` | `count`): IVAS가 프로젝트 안 **파일**에서 찾은 것(`file_main`, `file_potential`:
+정적 파일, pom 밖의 jar)은 pom 버전만 바꾸는 이 조치가 고치지 않는다.
+- `report`: 정보다. `ivas.split_files`/`_Holder.split()`가 먼저 떼어 내고(무시 코드여도 파일 쪽), 인벤토리·제안·잔여·남은 취약점·판정·다음
+  라운드 어디에도 넣지 않고 보고서의 절 하나에 적는다(12). 파일 목록이나 한 컴포넌트의 matchedfiles를 못 읽어도 미완료가 아니라
+  검사의 메모, `ScanResult.file_complete` false(목록·그 안의 잘못되거나 겹친 항목·`fileComponents` 요약 대조 실패) 또는 `Finding.files_unread`.
+  완전성(`scan_incomplete`)은 요약과 라이브러리·`sw` 목록이 정한다. 개수(`state.counts`, 요약, `report`일 때만): `baseline_file_findings`,
+  `final_file_findings`, `file_lists_unread`(파일 목록을 못 읽은 검사 수; 그 검사의 `*_file_findings`는 없음). 저널
+  `file_findings_reported {label, findings, unread, file_complete}`(검사마다), `file_residuals_dropped`(옛 상태의 파일 잔여를 버림).
+  pom 밖의 jar도 파일 컴포넌트라 빠진다(경로로 구별).
+- `count`: 파일 발견은 `vendored` 잔여로 결과를 `INCOMPLETE`로 두고, 못 읽은 쪽은 검사를 미완료로 만든다. `report`로 저장된 검사가 파일 쪽을
+  못 읽었으면 미완료(`ivas.count_view`, 이유 `file_components_unread`; 파일은 그대로). 정책 해시에 들어가지 않는다.
 
 **조치 구분 코드**(`action.actionDivCd`, 뜻은 ivas.py의 `ACTION_MEANINGS`): NE 조치 필요, NP 조치계획 미등록, PL 조치예정,
 OT 조치일 경과, PC 패치 완료, IG 조치 예외. `remediation.ignore_actions`(기본 비어 있음 = 모두 조치 대상; 예 `[PC, IG]`; 공백·대소문자 무시)의
@@ -192,13 +205,13 @@ was removed (every proposal is applied without waiting) — remove it`, `config.
    `ivas_upload`, `ivas_status`, `ivas_pages`, `ivas_scan_done`, `plan_written`, `plan_reused`, `plan_stale`, `policy_hash_differs`,
    `round_committed`, `next_round`, `maven_project_config`, `ivas_action_unknown`, `remediation_budget`, `failed_candidate_delivered`, `verified_delivery_kept`, `earlier_delivery_kept`.
    결과 ZIP의 정체는 `delivery/delivery.json`의 `build_ok`·`build_tolerated`·`scanned`.
-3. **remediation.log** — 로그(비밀 없음; 이어 돈 조치·`--flow remediation`·새 파드 재개 모두). Maven 원문은 `baseline/build.log`, `rounds/<n>/build.log`(대상이 여럿이면 `build-<대상>.log`).
+3. **remediation.log** — 로그(비밀 없음, 모든 조치). Maven 원문은 `baseline/build.log`, `rounds/<n>/build.log`(대상이 여럿이면 `build-<대상>.log`).
 4. **`scans/<label>.json`** — 검사 하나: `complete`, `incomplete_reasons`(`analysis_failed`, `analysis_timeout`, `page_missing`, `total_mismatch`,
-   `duplicate_result`, `summary_mismatch`, `unsupported_sw`, `zip_hash_mismatch`, `id_mismatch`, `http_error`, `stop_requested`), `findings`, `counts`, `notes`.
+   `duplicate_result`, `summary_mismatch`, `unsupported_sw`, `zip_hash_mismatch`, `id_mismatch`, `http_error`, `stop_requested`, `count`일 때 `file_components_unread`), `file_complete`, `findings`, `counts`, `notes`.
 5. **`rounds/<n>/`** — `before.json`(해석 결과), `inventory.json`(항목별 `origin`, `location`, `reason`), `plan.json`(제안·잔여), `apply.json`
    (적용·건너뜀), `candidate.patch`, `resolved.json`(후보 해석 결과).
 
-자주 보는 경우: 이관 빌드가 실패했는데 조치가 돌았다→사내 프레임워크 실행이면 정상(1.1, 끄려면 `never`). `not_ready`→readiness의 `missing`(`remediation.trusted_projects`, IVAS 세 값, JDK 21, Maven, settings.xml, 승인된 저장소 호스트). `execution_boundary_refused` →
+자주 보는 경우: matchedfiles 호출의 `scan_incomplete … http_error, page_missing`→예전 단수 주소(`filecomponent`)의 404, 이어 갈 수 없고 새로 돌린다. 보고서에 파일 발견이 있는데 결과는 조치 완료→`report`에서 정상(`count`면 판정에 들어감). 이관 빌드가 실패했는데 조치가 돌았다→사내 프레임워크 실행이면 정상(1.1, 끄려면 `never`). `not_ready`→readiness의 `missing`(`remediation.trusted_projects`, IVAS 세 값, JDK 21, Maven, settings.xml, 승인된 저장소 호스트). `execution_boundary_refused` →
 `state.boundary`의 `code`(`project_maven_config`, `maven_extensions`, `maven_wrapper`, `symlink`, `foreign_repository`,
 `foreign_plugin_repository`, `unparsable_pom`). `manual_review`만 남음→`inventory.json`의 `origin`이 `plugin`/`vendored`/`unmapped` 이거나,
 `transitive` / 부모·BOM 관리인데 override를 막은 사실이 잔여의 `detail`에(남은 classifier, 루트 pom 비상속·없음, 직접 선언 버전, 넣을 줄
@@ -228,6 +241,7 @@ was removed (every proposal is applied without waiting) — remove it`, `config.
 | `ivas_poll_seconds`/`ivas_analysis_timeout_minutes` | 상태 조회 간격 / 분석 대기 한도(기본 30분, 넘으면 미완료) |
 | `ivas_page_size`/`ivas_project_prefix` | 결과 한 쪽 크기 / IVAS 프로젝트 이름 앞머리 |
 | `ivas_summary_check` | `exact`(기본) / `nonzero`. 2절 요약 대조 |
+| `file_components` | `report`(기본: 파일 발견은 보고서에만) / `count`(잔여로 판정에 넣음). 2절 |
 | `policy.pins` | "g:a"→이 버전으로만(부모·BOM은 3절) |
 | `policy.deny`/`policy.deny_versions` | 자동 변경 금지 / 후보에서 뺄 버전 |
 | `policy.allow_prerelease`/`policy.allow_major` | 시험판 허용 / 메이저 변경 제안 허용 |

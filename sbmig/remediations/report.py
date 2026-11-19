@@ -3,18 +3,20 @@
 ``write_report``를 호출하고, API 목록은 ``summary``를 쓴다.
 - 비밀 값, 토큰, 서버 절대 경로를 넣지 않는다. 경로는 실행 폴더 기준 상대 경로만 쓴다
 - 입력이 같으면 내용도 같아야 하므로 현재 시각을 넣지 않고 정렬 순서를 고정한다
-- report.md 순서: 결과 블록, 요약, 해야 할 일, 조치 완료, 사내 라이브러리, 직접 확인, 제외 항목, 변경하지 않은 것,
-  처리 기록. 빈 절은 쓰지 않는다
+- report.md 순서: 결과 블록, 요약, 해야 할 일, 조치 완료, 사내 라이브러리, 직접 확인, 제외 항목, 프로젝트 파일,
+  변경하지 않은 것, 처리 기록. 빈 절은 쓰지 않는다
 - 상태와 사유 코드는 접힌 처리 기록에만 쓰고, 영어 문장은 ``i18n.ko_display``로 바꿔 보여 준다.
   report.json에는 영어 문장과 코드를 그대로 쓴다
 - ``inhouse_artifact`` 항목은 아티팩트별로 묶고 ``remediation.inhouse_message``를 붙인다
 - 사내 라이브러리와 직접 확인 표 아래에 모듈마다 라이브러리가 들어온 경로를 쓴다
 - ``remediation.ignore_actions``에 해당하는 항목은 제외 항목 절에만 쓰고 취약점 개수에 넣지 않는다
+- ``remediation.file_components: report``면 파일 컴포넌트는 프로젝트 파일 절에만 쓰고 취약점 개수에 넣지 않는다
 
 Remediation report: `report.json` (the state, the scan summaries, per-round plan summaries) and `report.md` (Korean, for
 the project owners: a result line, a summary and the actions first; English sentences shown translated, residuals grouped by
 explanation, in-house residuals grouped per in-house artifact, codes only in the folded record). Deterministic for the same
-input; no secret, no absolute server path.
+input; no secret, no absolute server path. File components under `remediation.file_components: report` have a
+section of their own after the library sections and are counted nowhere else.
 """
 from __future__ import annotations
 
@@ -186,11 +188,15 @@ def _roots(paths: RunPaths) -> list[str]:
     return sorted(out, key=len, reverse=True)
 
 
-def _load_scan(paths: RunPaths, rel: str) -> ScanResult | None:
+def _load_scan(paths: RunPaths, rel: str, mode: str = "report") -> ScanResult | None:
     if not rel:
         return None
     data = read_json(paths.root / rel)
-    return ScanResult.from_dict(data) if isinstance(data, dict) else None
+    if not isinstance(data, dict):
+        return None
+    from .ivas import count_view
+    # count 모드는 파일 부분을 다 읽지 못한 report 검사를 미완료로 본다. 그래프와 같은 규칙이다
+    return count_view(ScanResult.from_dict(data), mode)
 
 
 def _load_plan(paths: RunPaths, n: int) -> RoundPlan | None:
@@ -203,29 +209,50 @@ def _ignore(ignore_actions: Iterable[str] | None) -> frozenset[str]:
     return ignore_set(None if ignore_actions is None else list(ignore_actions))
 
 
-def _split(scan: ScanResult | None, ignore: frozenset[str]) -> tuple[list[Any], list[Any]]:
+def _mode(file_components: str | None) -> str:
+    """``remediation.file_components`` 값을 정한다. None이면 기본값 report다."""
+    from .ivas import files_reported
+    return "report" if files_reported(file_components) else "count"
+
+
+def _split(scan: ScanResult | None, ignore: frozenset[str], mode: str = "report") -> tuple[list[Any], list[Any]]:
+    """(조치 대상, 제외 항목)을 반환한다. report 모드의 파일 컴포넌트는 어느 쪽에도 넣지 않는다."""
     if scan is None:
         return [], []
-    from .ivas import split_findings
-    return split_findings(list(scan.findings), ignore)
+    from .ivas import split_files, split_findings
+    return split_findings(split_files(list(scan.findings), mode)[0], ignore)
 
 
-def _scan_summary(scan: ScanResult | None, rel: str, ignore: frozenset[str] = frozenset()) -> dict[str, Any] | None:
+def _files(scan: ScanResult | None, mode: str) -> list[Any]:
+    """report 모드에서 따로 싣는 파일 컴포넌트 발견 항목을 반환한다. count 모드면 빈 목록이다."""
+    if scan is None:
+        return []
+    from .ivas import split_files
+    return split_files(list(scan.findings), mode)[1]
+
+
+def _scan_summary(scan: ScanResult | None, rel: str, ignore: frozenset[str] = frozenset(),
+                  mode: str = "report") -> dict[str, Any] | None:
     if scan is None:
         return None
     from .ivas import unknown_actions
-    act, ign = _split(scan, ignore)
-    return {"file": rel, "label": scan.label, "complete": scan.complete, "zip_sha256": scan.zip_sha256,
-            "findings": len(scan.findings), "actionable": len(act), "ignored": len(ign),
-            "unknown_actions": unknown_actions(list(scan.findings)), "counts": dict(sorted(scan.counts.items())),
-            "incomplete_reasons": list(scan.incomplete_reasons), "status_code": scan.status_code}
+    act, ign = _split(scan, ignore, mode)
+    out = {"file": rel, "label": scan.label, "complete": scan.complete, "zip_sha256": scan.zip_sha256,
+           "findings": len(scan.findings), "actionable": len(act), "ignored": len(ign),
+           "unknown_actions": unknown_actions(list(scan.findings)), "counts": dict(sorted(scan.counts.items())),
+           "incomplete_reasons": list(scan.incomplete_reasons), "status_code": scan.status_code}
+    if mode == "report":
+        # count 모드의 출력은 이 설정이 생기기 전과 같게 둔다
+        out["file_findings"] = len(_files(scan, mode))
+        out["file_complete"] = bool(scan.file_complete)
+    return out
 
 
-def _ignored_rows(scan: ScanResult | None, ignore: frozenset[str]) -> list[dict[str, Any]]:
+def _ignored_rows(scan: ScanResult | None, ignore: frozenset[str], mode: str = "report") -> list[dict[str, Any]]:
     """조치 대상에서 뺀 항목을 표의 행 목록(취약점, 종류, 대상, 버전, 코드, 뜻)으로 만든다.
     정렬 순서는 고정한다."""
     from .ivas import action_meaning
-    _act, ign = _split(scan, ignore)
+    _act, ign = _split(scan, ignore, mode)
     return [{"id": f.id, "kind": f.kind, "identifier": f.identifier, "version": f.version, "action": f.action,
              "meaning": action_meaning(f.action)}
             for f in sorted(ign, key=lambda x: (x.identifier, x.version, x.id, x.kind))]
@@ -318,7 +345,8 @@ def build_report_json(state: RemediationState, paths: RunPaths, *,
                       ignore_actions: Iterable[str] | None = None,
                       inhouse_message: str | None = None,
                       severity: tuple[float, float, float] | None = None,
-                      inhouse: Mapping[str, str] | None = None) -> dict[str, Any]:
+                      inhouse: Mapping[str, str] | None = None,
+                      file_components: str | None = None) -> dict[str, Any]:
     """``report.json``에 쓸 내용을 만든다. 상태 전체, 검사 요약, 라운드별 계획 요약, 결과 ZIP 일치 여부,
     ``ignored_findings``, 사내 아티팩트별 항목(``inhouse``)을 담는다.
     도구가 읽는 형식이므로 한국어 번역은 넣지 않는다.
@@ -326,25 +354,50 @@ def build_report_json(state: RemediationState, paths: RunPaths, *,
     ``inhouse``(``inhouse.inhouse_keys``)를 주면 사내 프레임워크 묶음에 ``group``을 적는다.
 
     The content of `report.json`; `ignore_actions` None = the default codes. With `inhouse` an in-house artifact group
-    of the `framework` group carries `"group": "framework"` (other groups unchanged)."""
+    of the `framework` group carries `"group": "framework"` (other groups unchanged). `file_components` None = `report`:
+    then `file_findings` lists the file-component rows of the scan the report shows and `file_findings_complete` says
+    whether its file part was read; under `count` neither key is written (the output before the setting existed)."""
     ignore = _ignore(ignore_actions)
-    base = _load_scan(paths, state.baseline_scan)
-    final = _load_scan(paths, state.final_scan)
+    mode = _mode(file_components)
+    base = _load_scan(paths, state.baseline_scan, mode)
+    final = _load_scan(paths, state.final_scan, mode)
     rounds = []
     for rs in state.rounds:
         rounds.append({"round": rs.round, "plan": _plan_summary(_load_plan(paths, rs.round)),
                        "applied": list(rs.applied), "build": rs.build.to_dict() if rs.build else None,
                        "verify": list(rs.verify_problems), "committed": rs.committed, "scan_label": rs.scan_label})
     data = {"schema": REPORT_SCHEMA, "state_schema": SCHEMA, "state": state.to_dict(),
-            "baseline_scan": _scan_summary(base, state.baseline_scan, ignore),
-            "final_scan": _scan_summary(final, state.final_scan, ignore),
+            "baseline_scan": _scan_summary(base, state.baseline_scan, ignore, mode),
+            "final_scan": _scan_summary(final, state.final_scan, ignore, mode),
             "ignore_actions": sorted(ignore),
-            "ignored_findings": _ignored_rows(final if final is not None else base, ignore),
+            "ignored_findings": _ignored_rows(final if final is not None else base, ignore, mode),
             "delivery_matches_scanned_zip": _delivery_matches(state, final), "delivery": _delivery_dict(state),
             "verified_delivery": _verified_kept(paths), "rounds": rounds,
             "inhouse": _inhouse_json(state, inhouse_message or _default_inhouse_message(), inhouse),
-            "severity": _severity_json(base, final, ignore, severity_thresholds(severity))}
+            "severity": _severity_json(base, final, ignore, severity_thresholds(severity), mode)}
+    if mode == "report":
+        shown, _from_base = _files_scan(base, final)
+        data["file_components"] = mode
+        data["file_findings"] = [{"id": f.id, "kind": f.kind, "identifier": f.identifier, "version": f.version,
+                                  "patched_version": f.patched_version, "files": list(f.locations),
+                                  "files_unread": bool(f.files_unread), "score": f.score, "action": f.action}
+                                 for f in sorted(_files(shown, mode), key=lambda x: (x.identifier, x.version, x.id, x.kind))]
+        data["file_findings_complete"] = bool(shown.file_complete) if shown is not None else None
     return _clean_json(data, _roots(paths))
+
+
+def _files_scan(base: ScanResult | None, final: ScanResult | None) -> tuple[ScanResult | None, bool]:
+    """파일 컴포넌트 절에 쓸 검사를 고른다. 끝난 검사 가운데 조치 후 검사를 먼저 쓰고, 그 파일 부분을 읽지 못했으면
+    조치 전 검사를 쓴다. 두 번째 값은 조치 후 검사 대신 조치 전 검사를 썼는지다.
+
+    The scan whose file findings the report lists: the complete final scan, else the complete baseline; a final scan
+    whose file part was not read gives way to a baseline whose file part was (the remediation changes no file)."""
+    done = [x for x in (final, base) if x is not None and x.complete]
+    if not done:
+        return None, False
+    read = [x for x in done if x.file_complete]
+    pick = read[0] if read else done[0]
+    return pick, pick is base and final is not None and final.complete
 
 
 def _sev_counts(findings: Iterable[Any], th: tuple[float, float, float]) -> dict[str, int]:
@@ -356,12 +409,13 @@ def _sev_counts(findings: Iterable[Any], th: tuple[float, float, float]) -> dict
 
 
 def _severity_json(base: ScanResult | None, final: ScanResult | None, ignore: frozenset[str],
-                   th: tuple[float, float, float]) -> dict[str, Any]:
+                   th: tuple[float, float, float], mode: str = "report") -> dict[str, Any]:
     """report.json의 ``severity``를 만든다.
     위험도 경계값과, 조치 전 검사와 완료된 조치 후 검사의 위험도별 개수를 담는다."""
     return {"thresholds": {"red": th[0], "orange": th[1], "yellow": th[2]},
-            "baseline": _sev_counts(_split(base, ignore)[0], th) if base is not None else None,
-            "final": _sev_counts(_split(final, ignore)[0], th) if final is not None and final.complete else None}
+            "baseline": _sev_counts(_split(base, ignore, mode)[0], th) if base is not None else None,
+            "final": (_sev_counts(_split(final, ignore, mode)[0], th) if final is not None and final.complete
+                      else None)}
 
 
 def _md_cell(text: Any) -> str:
@@ -579,12 +633,16 @@ class _Facts:
     """report.md의 여러 절이 함께 쓰는 값을 한 번만 계산해 두는 클래스."""
 
     def __init__(self, state: RemediationState, paths: RunPaths, ignore: frozenset[str],
-                 th: tuple[float, float, float] | None = None):
+                 th: tuple[float, float, float] | None = None, mode: str = "report"):
         self.th = severity_thresholds(th)
-        self.base = _load_scan(paths, state.baseline_scan)
-        self.final = _load_scan(paths, state.final_scan)
-        self.b_act, self.b_ign = _split(self.base, ignore)
-        self.f_act, self.f_ign = _split(self.final, ignore)
+        self.mode = mode
+        self.base = _load_scan(paths, state.baseline_scan, mode)
+        self.final = _load_scan(paths, state.final_scan, mode)
+        self.b_act, self.b_ign = _split(self.base, ignore, mode)
+        self.f_act, self.f_ign = _split(self.final, ignore, mode)
+        # report 모드에서 따로 싣는 파일 컴포넌트다. 조치가 파일을 바꾸지 않으므로 끝난 검사 하나에서 가져온다
+        self.files_scan, self.files_from_base = _files_scan(self.base, self.final) if mode == "report" else (None, False)
+        self.files = _files(self.files_scan, mode)
         self.plans = {rs.round: _load_plan(paths, rs.round) for rs in state.rounds}
         self.committed = []
         for rs in sorted(state.rounds, key=lambda x: x.round):
@@ -735,7 +793,9 @@ def _numbers(state: RemediationState, fx: _Facts) -> list[str]:
         return []
     total = len(fx.b_act)
     if total == 0:
-        return ["조치 전 검사에서 조치할 취약점이 없었습니다."]
+        # 파일에서 찾은 취약점은 아래 절에 따로 있으므로 라이브러리에 대한 말임을 밝힌다
+        return ["조치 전 검사에서 조치할 라이브러리 취약점이 없었습니다." if fx.files
+                else "조치 전 검사에서 조치할 취약점이 없었습니다."]
     fixed = fx.fixed()
     left = len(fx.f_act) if fx.final_ok else None
     if fixed is None:
@@ -1298,7 +1358,7 @@ def _ident_cell(identifier: str, kind: str) -> str:
 
 def _excluded_section(L: list[str], state: RemediationState, fx: _Facts, ignore: frozenset[str]) -> None:
     shown = fx.final if fx.final is not None else fx.base
-    rows = _ignored_rows(shown, ignore)
+    rows = _ignored_rows(shown, ignore, fx.mode)
     if not rows:
         return
     from .ivas import action_meaning
@@ -1309,7 +1369,7 @@ def _excluded_section(L: list[str], state: RemediationState, fx: _Facts, ignore:
              "않습니다.")
     table = ["| 위험도 | 취약점 | 라이브러리 | 버전 | IVAS 조치 상태 |", "|---|---|---|---|---|"]
     ign_scores: dict[tuple[str, str, str, str], float] = {}
-    for f in _split(shown, ignore)[1]:
+    for f in _split(shown, ignore, fx.mode)[1]:
         if f.score is not None:
             k = (f.id, f.kind, f.identifier, f.version)
             ign_scores[k] = max(ign_scores.get(k, f.score), f.score)
@@ -1319,6 +1379,65 @@ def _excluded_section(L: list[str], state: RemediationState, fx: _Facts, ignore:
         table.append(f"| {fx.sev_cell(sc)} | {_md_cell(r['id'])} | {_ident_cell(r['identifier'], r['kind'])} "
                      f"| {_md_cell(r['version'])} | {_md_cell(_ivas_action(r['action']))} |")
     _folded(L, table, f"제외한 항목 전체 — {_num(len(rows))}건" if len(rows) > 10 else "")
+    L.append("")
+
+
+FILES_TITLE = "프로젝트 파일에서 찾은 취약점"
+FILES_LEAD = ("IVAS가 프로젝트 안에 들어 있는 파일(정적 파일 등)에서 찾은 취약점입니다. 이번 조치는 pom.xml의 라이브러리 "
+              "버전만 바꾸므로 이 항목은 바꾸지 않았고, 위의 조치 결과에도 넣지 않았습니다.")
+FILES_UNREAD = "파일 위치를 읽지 못했습니다"
+
+
+def _files_section(L: list[str], fx: _Facts) -> None:
+    """report 모드에서 파일 컴포넌트 발견 항목을 컴포넌트별 표로 쓴다. 쓸 것이 없으면 아무것도 쓰지 않는다.
+
+    The file components of `remediation.file_components: report`: one row per (component, version) with the patched
+    version IVAS names, the findings and the files (cut with 외 N개; 「파일 위치를 읽지 못했습니다」 when the matched
+    files could not be read). A file part that could not be read at all is one sentence instead of a table."""
+    scan = fx.files_scan
+    if scan is None or (not fx.files and scan.file_complete):
+        return
+    if not fx.files:
+        L.append(f"## {FILES_TITLE}")
+        L.append("")
+        L.append("파일에서 찾은 취약점 목록을 IVAS에서 읽지 못했습니다. 이번 조치는 pom.xml의 라이브러리 버전만 바꾸므로 "
+                 "위의 조치 결과와는 관계가 없습니다.")
+        L.append("")
+        return
+    L.append(f"## {FILES_TITLE} — {_num(len(fx.files))}건")
+    L.append("")
+    L.append(FILES_LEAD)
+    extra = []
+    if fx.files_from_base:
+        extra.append("조치 후 검사에서는 이 목록을 읽지 못해 조치 전 검사 결과를 적었습니다.")
+    if not scan.file_complete:
+        extra.append("IVAS에서 목록을 끝까지 읽지 못해 빠진 항목이 있을 수 있습니다.")
+    groups: dict[tuple[str, str], list[Any]] = {}
+    for f in fx.files:
+        groups.setdefault(_fold(f.identifier, f.version), []).append(f)
+    if any(all(f.kind != "file_component" for f in fs) for fs in groups.values()):
+        extra.append("「(추정)」은 IVAS가 파일 내용을 보고 그 컴포넌트로 추정한 항목입니다.")
+    if extra:
+        L.append("")
+        L.append(" ".join(extra))
+    L.append("")
+    rows = []
+    for fs in groups.values():
+        f0 = fs[0]
+        score = max((f.score for f in fs if f.score is not None), default=None)
+        patched = sorted({f.patched_version for f in fs if f.patched_version})
+        if any(f.files_unread for f in fs):
+            where = FILES_UNREAD
+        else:
+            where = _cut([f"`{x}`" for x in sorted({loc for f in fs for loc in f.locations})])
+        name = f"`{_md_cell(f0.identifier)}`" + (" (추정)" if all(f.kind != "file_component" for f in fs) else "")
+        cves = fx.cve_cell(f0.identifier, f0.version, [f.id for f in fs])
+        rows.append((fx.order(score, f0.identifier, f0.version),
+                     f"| {fx.sev_cell(score)} | {name} | {_md_cell(f0.version)} | {_md_cell(', '.join(patched))} "
+                     f"| {_md_cell(cves)} | {_md_cell(where)} |"))
+    table = ["| 위험도 | 컴포넌트 | 버전 | 패치된 버전 | 취약점 | 파일 위치 |", "|---|---|---|---|---|---|"]
+    table += [r for _k, r in sorted(rows, key=lambda x: x[0])]
+    _folded(L, table, f"{FILES_TITLE} 전체 — {_num(len(fx.files))}건" if len(rows) > 10 else "")
     L.append("")
 
 
@@ -1364,6 +1483,10 @@ def _summary_section(L: list[str], state: RemediationState, fx: _Facts, paths: R
             L.append(f"| {mark} {name} | {bound:.1f} 이상 | {_num(bc[key])}건 | {after} |")
         after = f"{_num(fc['none'])}건" if fc is not None else "-"
         L.append(f"| {SEVERITY_NONE_KO} | {yellow:.1f} 미만 | {_num(bc['none'])}건 | {after} |")
+        if fx.files:
+            L.append("")
+            L.append(f"{FILES_TITLE} {_num(len(fx.files))}건은 위 개수에 넣지 않고 아래 「{FILES_TITLE}」에 따로 "
+                     "적었습니다.")
     L.append("")
     L.append("결과 파일: " + _delivery_text(state, final))
     L.append("")
@@ -1463,10 +1586,13 @@ def _record_section(L: list[str], state: RemediationState, fx: _Facts, paths: Ru
     else:
         head = (f"**{step}. 조치 전 검사 (IVAS)** — " + ("검사 완료" if base.complete else "검사 미완료")
                 + f" · 취약점 {_num(len(fx.b_act))}건" + (f" (제외 {_num(len(fx.b_ign))}건 별도)" if fx.b_ign else "")
+                + (f" (프로젝트 파일 {_num(n_files)}건 별도)" if (n_files := len(_files(base, fx.mode))) else "")
                 + f" · 검사한 ZIP sha256 `{base.zip_sha256}`")
         L.append(head)
         if base.incomplete_reasons:
             L.append("- 미완료 사유: " + ", ".join(label(i18n.SCAN_REASON_KO, c) for c in base.incomplete_reasons))
+        if fx.mode == "report" and base.complete and not base.file_complete:
+            L.append("- 프로젝트 파일 쪽 목록은 IVAS에서 끝까지 읽지 못했습니다. 라이브러리 목록은 모두 읽었습니다.")
         kinds = dict(sorted(base.counts.items()))
         if kinds and (len(kinds) > 1 or "library" not in kinds):
             L.append("- 종류별: " + ", ".join(f"{label(FINDING_KIND_KO, k)} {_num(v)}건" for k, v in kinds.items()))
@@ -1613,7 +1739,7 @@ def _unchanged_section(L: list[str], state: RemediationState, fx: _Facts) -> Non
 
 def build_report_md(state: RemediationState, paths: RunPaths, *, ignore_actions: Iterable[str] | None = None,
                     inhouse_message: str | None = None, severity: tuple[float, float, float] | None = None,
-                    inhouse: Mapping[str, str] | None = None) -> str:
+                    inhouse: Mapping[str, str] | None = None, file_components: str | None = None) -> str:
     """한국어 ``report.md`` 본문을 만든다. 절 순서는 모듈 docstring과 같고 빈 절은 쓰지 않는다.
     - 영어 문장은 ``i18n.ko_display``로 바꿔 보여 주고, 같은 설명은 묶음마다 한 번만 쓴다
     - ``severity``가 None이면 설정 기본값으로 🔴 / 🟠 / 🟡를 붙이고 점수가 높은 행부터 놓는다
@@ -1621,11 +1747,12 @@ def build_report_md(state: RemediationState, paths: RunPaths, *, ignore_actions:
     - ``inhouse``(``inhouse.inhouse_keys``)를 주면 사내 프레임워크 묶음 제목에 "사내 프레임워크"를 붙인다
 
     The Korean `report.md` text: the result, a summary and the actions first; codes only in the folded record. With
-    `inhouse` the in-house groups of the `framework` group are labelled 사내 프레임워크."""
+    `inhouse` the in-house groups of the `framework` group are labelled 사내 프레임워크. `file_components` None =
+    `report`: file findings get their own section after the library sections and a line under the summary."""
     ignore = _ignore(ignore_actions)
     roots = _roots(paths)
     message = inhouse_message if inhouse_message else _default_inhouse_message()
-    fx = _Facts(state, paths, ignore, severity)
+    fx = _Facts(state, paths, ignore, severity, _mode(file_components))
     L: list[str] = []
 
     # 1. 제목과 결과 블록
@@ -1673,6 +1800,9 @@ def build_report_md(state: RemediationState, paths: RunPaths, *, ignore_actions:
     # 7. 조치 대상에서 제외한 항목
     _excluded_section(L, state, fx, ignore)
 
+    # 7-1. 프로젝트 파일에서 찾은 취약점(report 모드)
+    _files_section(L, fx)
+
     # 8. 변경하지 않은 것
     _unchanged_section(L, state, fx)
 
@@ -1683,16 +1813,16 @@ def build_report_md(state: RemediationState, paths: RunPaths, *, ignore_actions:
 
 def write_report(state: RemediationState, paths: RunPaths, *, ignore_actions: Iterable[str] | None = None,
                  inhouse_message: str | None = None, severity: tuple[float, float, float] | None = None,
-                 inhouse: Mapping[str, str] | None = None) -> None:
+                 inhouse: Mapping[str, str] | None = None, file_components: str | None = None) -> None:
     """``report.json``과 ``report.md``를 실행 폴더에 원자적으로 쓴다.
     ``ignore_actions``가 None이면 기본값(빈 목록)을 쓴다.
 
     Write `report.json` and `report.md` into the run directory."""
     write_json_atomic(paths.report_json, build_report_json(state, paths, ignore_actions=ignore_actions,
                                                            inhouse_message=inhouse_message, severity=severity,
-                                                           inhouse=inhouse))
+                                                           inhouse=inhouse, file_components=file_components))
     text = build_report_md(state, paths, ignore_actions=ignore_actions, inhouse_message=inhouse_message,
-                           severity=severity, inhouse=inhouse)
+                           severity=severity, inhouse=inhouse, file_components=file_components)
     tmp = paths.report_md.with_name(paths.report_md.name + ".tmp")
     tmp.write_text(text, encoding="utf-8")
     tmp.replace(paths.report_md)

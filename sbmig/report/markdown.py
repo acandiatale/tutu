@@ -1248,6 +1248,9 @@ def remediation_lines(r: RunReport, lang: str = "en") -> list[str]:
     counts = rem.get("counts") or {}
     if counts:
         L.append(tr(lang, "- Counts: {counts}", counts=", ".join(f"{k} {v}" for k, v in sorted(counts.items()))))
+    n_files = _file_findings(counts)
+    if n_files:
+        L.append(tr(lang, "- File findings listed apart in the remediation report, not counted above: {n}", n=n_files))
     # 사내 아티팩트에서 온 취약점은 그 담당자가 고쳐야 하므로 개수 목록에 묻히지 않게 한 줄을 따로 둔다
     n_inhouse = counts.get("residual_inhouse") if isinstance(counts, dict) else 0
     if isinstance(n_inhouse, int) and n_inhouse > 0:
@@ -1259,6 +1262,20 @@ def remediation_lines(r: RunReport, lang: str = "en") -> list[str]:
         L.append(tr(lang, "- Files: {files}", files=", ".join(f"`{_cell(v, 120)}`" for v in files.values())))
     L.append("")
     return L
+
+
+def _file_findings(counts: object) -> int:
+    """조치가 따로 적은 프로젝트 파일 취약점 수를 반환한다. 조치 후 개수를 먼저 쓰고, 없으면 조치 전 개수를 쓴다.
+
+    The file findings the remediation listed apart (`remediation.file_components: report`): the final count, else
+    the baseline one; 0 when neither is there (count mode, an older state)."""
+    if not isinstance(counts, dict):
+        return 0
+    for key in ("final_file_findings", "baseline_file_findings"):
+        n = counts.get(key)
+        if isinstance(n, int) and not isinstance(n, bool):
+            return n
+    return 0
 
 
 def _remediation_lines_ko(rem: dict, *, chained: bool = True, after_failure: bool = False) -> list[str]:
@@ -1303,6 +1320,10 @@ def _remediation_lines_ko(rem: dict, *, chained: bool = True, after_failure: boo
              if isinstance(counts.get(key), int)]
     if parts:
         L.append("- 취약점: " + ", ".join(parts))
+    n_files = _file_findings(counts)
+    if n_files:
+        # 파일에서 찾은 취약점은 조치 대상이 아니므로 위 개수와 섞지 않고 한 줄로만 알린다
+        L.append(f"- 프로젝트 파일에서 찾은 취약점 {n_files:,}건은 위 개수에 넣지 않고 자세한 결과에 따로 적었습니다.")
     n_inhouse = counts.get("residual_inhouse")
     if isinstance(n_inhouse, int) and n_inhouse > 0:
         L.append(tr("ko", "- In-house artifacts (exception possible, contact their owners): {n}", n=n_inhouse))
