@@ -5177,6 +5177,10 @@ The user (2026-11-19): "우리 어드민에 원본 소스 받을 수 있는 기�
 - The admin page: 「원본 받기」 beside the run's log download, with the size; disabled with the reason when the file is
   gone. The public page gets nothing: the original is company source and stays behind the admin password.
 - One INFO log line per download (run id and size, no client data). The logs bundle still leaves `source.zip` out.
+- The 「프로젝트별」 table opens in the order the uploads were received, newest first (the user: "접수받은 순서대로 …
+  최신이 제일 위로 오게!"): the page sorts by `last_run_at` (the latest of a project's runs' receive times), ties by
+  name, a project without a time last; the marker sits on 「마지막 실행」. The columns stay clickable (합계 토큰 sorts by
+  tokens). The API's own order (by tokens) is unchanged and never reaches the screen.
 
 ## v2.1z-bc — IVAS file components: the right address, and report only
 

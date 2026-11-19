@@ -115,7 +115,8 @@ def test_cost_only_when_given_and_currency_only_from_the_api() -> None:
 
 
 def test_project_table_sorts_filters_and_opens() -> None:
-    assert "let sort = { key: 'total_tokens', dir: 'desc' };" in SCRIPT
+    # the owner (2026-11-19): projects in the order they were received, newest on top (see test_default_order_*)
+    assert "let sort = { key: 'last_run_at', dir: 'desc' };" in SCRIPT
     head = _function("headCell")
     assert '<button class="sort" type="button" data-key="${col.key}"' in head
     assert "aria-sort" in head
@@ -160,3 +161,56 @@ def test_text_rules() -> None:
         assert not re.search("—|–|→|⇒|←", text), text
         assert not re.search(r"\bv2\.\d|20\d\d-\d\d-\d\d", text), text
     assert "app-" not in PAGE                                  # sample names stay in the fake server
+
+
+
+# ---- default order: newest received first (the owner, 2026-11-19: "접수받은 순서대로 … 최신이 제일 위로")
+
+import json as _json  # noqa: E402
+import shutil as _shutil  # noqa: E402
+import subprocess as _subprocess  # noqa: E402
+
+import pytest as _pytest  # noqa: E402
+
+
+def test_default_order_is_the_latest_run_newest_first_with_the_marker_on_that_column() -> None:
+    assert "let sort = { key: 'last_run_at', dir: 'desc' };" in SCRIPT
+    value = _function("sortValue")
+    assert "if (key === 'last_run_at') { const t = Date.parse(p.last_run_at || ''); return isNaN(t) ? null : t; }" in value
+    srt = _function("sorted")
+    assert "if (x == null && y != null) return 1;" in srt                       # no time: last, in either direction
+    assert "String(a.project || '').localeCompare(String(b.project || ''), 'ko')" in srt   # equal times: by name
+    # the marker follows the sort key; columns stay clickable
+    assert "const on = sort.key === col.key;" in _function("headCell")
+    assert "if (sort.key === key) sort.dir = sort.dir === 'asc' ? 'desc' : 'asc';" in SCRIPT
+
+
+@_pytest.mark.skipif(_shutil.which("node") is None, reason="node is not installed")
+def test_default_order_runs_in_node() -> None:
+    """Run the page's own sortValue / sorted on three projects whose latest runs are in another order than their
+    token totals, plus a tie and a project without a time."""
+    code = "\n".join([
+        "const int = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };",
+        "let sort = { key: 'last_run_at', dir: 'desc' };",
+        _function("sortValue"), _function("sorted"),
+        "const rows = " + _json.dumps([
+            {"project": "big-old", "total_tokens": 9000, "last_run_at": "2026-11-17T09:00:00+00:00"},
+            {"project": "small-new", "total_tokens": 10, "last_run_at": "2026-11-19T09:00:00+00:00"},
+            {"project": "mid", "total_tokens": 500, "last_run_at": "2026-11-18T09:00:00+00:00"},
+            {"project": "b-tie", "total_tokens": 1, "last_run_at": "2026-11-18T09:00:00+00:00"},
+            {"project": "no-time", "total_tokens": 99999, "last_run_at": None},
+        ]) + ";",
+        "console.log(JSON.stringify(sorted(rows).map((p) => p.project)));",
+        "sort = { key: 'total_tokens', dir: 'desc' };",
+        "console.log(JSON.stringify(sorted(rows).map((p) => p.project)));",
+    ])
+    out = _subprocess.run(["node", "-e", code], capture_output=True, text=True, timeout=30, check=True).stdout.splitlines()
+    assert _json.loads(out[0]) == ["small-new", "b-tie", "mid", "big-old", "no-time"]
+    # a click on 합계 토큰 still sorts by tokens
+    assert _json.loads(out[1]) == ["no-time", "big-old", "mid", "small-new", "b-tie"]
+
+
+def test_runs_inside_a_project_stay_newest_first() -> None:
+    runs = _function("runsTable")
+    assert "(Date.parse(b.accepted_at || '') || 0) - (Date.parse(a.accepted_at || '') || 0)" in runs
+    assert "최근 실행부터" in runs
