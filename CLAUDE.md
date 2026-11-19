@@ -792,14 +792,14 @@ review", fix attempts as `script:<case>:v<N>`; `ko`, the company setting: the re
   the pom is a file component too: told to the user. Also from that evening: a stopped background agent cannot be
   resumed, and an agent reused for a second task still shows the FIRST task's name to the user — the user stopped the
   IVAS work thinking it was a leftover; give a reused agent's new task a new agent when the name would mislead.
-- **An upload names its project (2026-11-20, v2.1z-be)**: `POST /api/runs?…&project=<name>` is required, checked on the
+- **An upload names its project (2026-11-19, v2.1z-be)**: `POST /api/runs?…&project=<name>` is required, checked on the
   page and on the server before the body is read (`runs.PROJECT_RE` = `^[A-Za-z0-9][A-Za-z0-9_-]{0,29}$`; the user:
   "영어랑 _, - 로만 … 리눅스에서 쉘 접속 했을때 치기 귀찮아서! 공백도 비허용!"). A web run's id, and so its folder under the
   output root, is `<project>-YYYYmmdd-HHMMSS-<hex6>`; older notes in this file that say `run-…` or "a slug of the file
   name" describe older folders, which keep working. Two things the new prefix exposed: the Job name cut the TAIL of a
   long id (the unique part) and `sbmig clean`'s upload pattern knew lower-case letters only. When an identifier gets a
   new alphabet or length, grep every pattern and every truncation that reads it, in every package, before shipping.
-- **A single-module Spring Boot app is split (2026-11-20, v2.1z-bf)** — the user: "parent가 spring boot로 시작하는
+- **A single-module Spring Boot app is split (2026-11-19, v2.1z-bf)** — the user: "parent가 spring boot로 시작하는
   프로젝트가 xxx-boot만 생성되었는데 여기 정적자원이랑 다 있거든!? … 이 케이스를 생각을 못했네!" The sentence in "Company
   constraints" above ("a single-module Boot app is wrapped into `{name}-boot`") now holds only for
   `layout.boot_single_module: wrap`; the default `split` sends such a project through the layout split of non-Boot

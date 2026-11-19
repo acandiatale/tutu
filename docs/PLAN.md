@@ -1130,7 +1130,7 @@ after a 200 on the upload. The user found the 404 and its cause ("원래는 file
 | Not checked | a whole scan of sbmig through the corrected call on the cluster; the stuck project needs a new run (an `INCOMPLETE` baseline scan cannot be resumed) | — | open (the user's) |
 | An interruption | the implementer was stopped by accident half-way (the task still carried the name of an earlier job, "Remove approval …"); a stopped agent cannot be resumed, so a new one finished from the partial work in the tree | — | note |
 
-## Status — 2026-11-20, the page: 「완료」, and the code changes in a large dialog (v2.1z-bd)
+## Status — 2026-11-19, the page: 「완료」, and the code changes in a large dialog (v2.1z-bd)
 
 The user: "우리 웹페이지에 성공, 취약점 일부만 조치 이부분 그냥 완료 로만 나오게 해줘!"; "소스 변경사항 보여주는거 크게 모달로
 변경 가능해? 안에 내용 그대로 때서 모달로 만들 수 있지?"; "선택한 파일만 볼 수 있도록 해줘! 정적자원들은 위치 이동 표시만
@@ -1146,7 +1146,7 @@ The user: "우리 웹페이지에 성공, 취약점 일부만 조치 이부분 �
 | Checked | in a browser with records of 50 files (3 and 15 move groups) at 1440, 1024 and 400 px; no patch request for a static file; console clean; the offline suite (figure in the commit) | `tests/web/test_page_code_dialog.py`, `test_page_code_diff.py` | done |
 | Not checked | Edge; a real project of thousands of files in the dialog | — | open (the user's) |
 
-## Status — 2026-11-20, an upload needs a project name, and the run folder starts with it (v2.1z-be)
+## Status — 2026-11-19, an upload needs a project name, and the run folder starts with it (v2.1z-be)
 
 The user: "우리 접수 받을때 파일 올리고 프로젝트명 안적으면 거절당하게 해줄 수 있어!? 프론트, 백엔드 둘 다 체크 하도록!" and
 "영어랑 _, - 로만 허용 가능하도록 해줄래! 리눅스에서 쉘 접속 했을때 치기 귀찮아서! 공백도 비허용!"
@@ -1163,7 +1163,7 @@ The user: "우리 접수 받을때 파일 올리고 프로젝트명 안적으면
 | Checked | 94 new tests; a real start of `order-admin` in a browser: the id and the folder carry the name | `tests/web/test_project_name.py` | done |
 | Not checked | a Job started under a 30-character upper-case name on the cluster | — | open (the user's) |
 
-## Status — 2026-11-20, a single-module Spring Boot app is split into the company's modules (v2.1z-bf)
+## Status — 2026-11-19, a single-module Spring Boot app is split into the company's modules (v2.1z-bf)
 
 The user: "parent가 spring boot로 시작하는 프로젝트가 xxx-boot만 생성되었는데 여기 정적자원이랑 다 있거든!? 이거 xxx-comp-jar,
 xxx-front-jar 로도 변환을 해줘야해! 이 케이스를 생각을 못했네!" Since round 9c such a project was wrapped into
@@ -1178,5 +1178,5 @@ xxx-front-jar 로도 변환을 해줘야해! 이 케이스를 생각을 못했�
 | The review's inputs | describe this case as the boot / back / front layout | `sbmig/review/inputs.py` | done |
 | Fixtures | `company-boot-single` pins the split (controller, template, static file, tests), `company-boot-wrap` pins `wrap`, `boot-asis-parent-unpublished` is split too | `fixtures/projects/` | done |
 | Checked | the offline suite and every fixture with the real Maven (figures in the commit); the split fixture's jars unpacked and the app started with `java -jar`: the template, the CSS and the API answer | — | done |
-| Module names | the user wrote `xxx-comp-jar` / `xxx-front-jar`; the names come from the layout settings (`{name}-back` / `{name}-front` by default), as for every other project: told, not answered | — | open (the user's) |
+| Module names | the user wrote `xxx-comp-jar` / `xxx-front-jar` and corrected it the same day: `xxx-boot` / `xxx-back` / `xxx-front`, what the layout settings give | — | settled |
 | Limits | see INTERFACES "v2.1z-bf" (the plan's front note, test reads of moved files, scans through `@Import`, `front_module: null` with a WAR) | — | open |

@@ -5239,7 +5239,7 @@ the real IVAS. And the user's policy: "우리 백엔드로직만 라이브러리
 
 ## v2.1z-bd — the page: 「완료」, and the code changes in a large dialog
 
-The user (2026-11-19 / 20): "우리 웹페이지에 성공, 취약점 일부만 조치 이부분 그냥 완료 로만 나오게 해줘!"; "소스 변경사항
+The user (2026-11-19): "우리 웹페이지에 성공, 취약점 일부만 조치 이부분 그냥 완료 로만 나오게 해줘!"; "소스 변경사항
 보여주는거 크게 모달로 변경 가능해? 안에 내용 그대로 때서 모달로 만들 수 있지?"; "지금은 내용쪽에 휠로 내리면 계속 파일들
 보이잖아? 선택한 파일만 볼 수 있도록 해줘! 정적자원들은 위치 이동 표시만 하고 컨텐츠 내용은 없어도 돼!"
 
@@ -5273,7 +5273,7 @@ The user (2026-11-19 / 20): "우리 웹페이지에 성공, 취약점 일부만 
 
 ## v2.1z-be — an upload needs a project name
 
-The user (2026-11-20): "우리 접수 받을때 파일 올리고 프로젝트명 안적으면 거절당하게 해줄 수 있어!? 프론트, 백엔드 둘 다 체크
+The user (2026-11-19): "우리 접수 받을때 파일 올리고 프로젝트명 안적으면 거절당하게 해줄 수 있어!? 프론트, 백엔드 둘 다 체크
 하도록!" Until now a run was known by the name of the uploaded file only.
 
 - **HTTP.** `POST /api/runs?name=<file name>&project=<프로젝트명>[&flow=…]`: `project` is required for every flow. The
@@ -5315,7 +5315,7 @@ The user (2026-11-20): "우리 접수 받을때 파일 올리고 프로젝트명
 
 ## v2.1z-bf — a single-module Spring Boot app is split into the company's modules
 
-The user (2026-11-20): "parent가 spring boot로 시작하는 프로젝트가 xxx-boot만 생성되었는데 여기 정적자원이랑 다 있거든!? 이거
+The user (2026-11-19): "parent가 spring boot로 시작하는 프로젝트가 xxx-boot만 생성되었는데 여기 정적자원이랑 다 있거든!? 이거
 xxx-comp-jar, xxx-front-jar 로도 변환을 해줘야해! 이 케이스를 생각을 못했네!" Since round 9c a Spring Boot as-is project
 kept its directories and a root that was the app itself was WRAPPED: everything went into `{name}-boot`.
 
