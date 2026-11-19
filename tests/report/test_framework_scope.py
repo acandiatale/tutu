@@ -22,9 +22,10 @@ TRANSITIVE = FrameworkEvidence(source="transitive", artifact=FW, version="1.2.0"
                                via=["com.example.lib:shared-lib:3.0", f"{FW}:1.2.0"])
 
 
-def _use(*evidence, scope="jdk-jakarta", unchecked=(), reason=""):
+def _use(*evidence, scope="jdk-jakarta", unchecked=(), reason="", name="", fix_loop=False):
     return FrameworkUse(patterns=["example-fw-core"], evidence=list(evidence), unchecked=list(unchecked), scope=scope,
-                        reason=reason or f"framework artifact {FW} found → scope {scope}")
+                        reason=reason or f"framework artifact {FW} found → scope {scope}", name=name,
+                        fix_loop=fix_loop)
 
 
 def _report(use, *, scope="jdk-jakarta", **kw):
@@ -68,11 +69,12 @@ def test_framework_project_is_not_an_attention_flag():
 
 # ---------------------------------------------------------------------------------------------- report.md
 def test_reduced_block_english():
-    r = _report(_use(DIRECT, PARENT, BUNDLED, TRANSITIVE, unchecked=["parent: no as-is effective pom"]),
+    r = _report(_use(DIRECT, PARENT, BUNDLED, TRANSITIVE, unchecked=["parent: no as-is effective pom"], fix_loop=True),
                 remediation={"status": "SUCCEEDED"})
     md = render_markdown(r, "en")
     assert f"## {FRAMEWORK_TITLE}" in md
     assert md.index("| SBMIG-RESULT |") < md.index(f"## {FRAMEWORK_TITLE}") < md.index("## Handover")
+    assert "**In-house framework projects get JDK 21 and Jakarta only.**" in md
     assert "| Scope | JDK 21 and jakarta only (in-house framework project) |" in md
     assert f"- `{FW}` 1.2.0: declared directly in `pom.xml`" in md
     assert (f"- `{FW}` 1.2.0: inherited from the parent pom `com.example.fw:example-fw-parent:1.2.0` "
@@ -80,18 +82,37 @@ def test_reduced_block_english():
     assert "- `example-fw-core-1.2.0.jar`: jar in the tree (`src/main/webapp/WEB-INF/lib/example-fw-core-1.2.0.jar`)" in md
     assert (f"- `{FW}` 1.2.0: brought by another library, path `com.example.lib:shared-lib:3.0 > {FW}:1.2.0` "
             "(module `com.example:shop-web`)") in md
-    assert "Done in this run: JDK 21 and jakarta, build error fixes, vulnerability remediation" in md
-    assert "Not done: restructure, structure review" in md
+    assert "Done in this run: JDK 21 and Jakarta conversion, build error fixes, vulnerability remediation" in md
+    assert ("Not done: restructure, structure review. The parent pom and the framework version stay as they are."
+            in md)
     assert "Not checked: parent: no as-is effective pom" in md
     assert "- `framework-project`: the project uses an in-house framework artifact" in md
     assert "## Structure review" not in md and "| Structure review |" not in md
 
 
+@pytest.mark.parametrize("name", ["Example", ""])
+@pytest.mark.parametrize("passed", [True, False])
+def test_conversion_only_block_english(name, passed):
+    """v2.1z-aw: the name in the heading and the bold sentence; one build, no automatic fixes."""
+    r = _report(_use(DIRECT, name=name), success=passed, phases=[])
+    lines = framework_lines(r)
+    who = name or "In-house"
+    assert lines[:4] == [f"## {who} framework project", "", f"**{who} framework projects get JDK 21 and Jakarta only.**",
+                         ""]
+    assert "Done in this run: JDK 21 and Jakarta conversion, one build" in lines
+    assert ("Not done: restructure, structure review, automatic build error fixes (framework.fix_loop: false). The "
+            "parent pom and the framework version stay as they are.") in lines
+    md = render_markdown(r, "en")
+    assert md.index("| SBMIG-RESULT |") < md.index(f"## {who} framework project") < md.index("## Handover")
+
+
 def test_reduced_block_korean():
-    r = _report(_use(DIRECT, PARENT, BUNDLED, TRANSITIVE, unchecked=["transitive: dependency:tree failed"]))
+    r = _report(_use(DIRECT, PARENT, BUNDLED, TRANSITIVE, unchecked=["transitive: dependency:tree failed"],
+                     fix_loop=True))
     md = render_markdown(r, "ko")
     lines = framework_lines(r, "ko")
     assert lines[0] == "## 사내 프레임워크 프로젝트"
+    assert lines[2] == "**사내 프레임워크 프로젝트는 JDK 21, Jakarta만 적용합니다.**"
     # v2.1z-as: the scope row moved from the head table to 참고 / 실행 정보; the framework block stays on top
     assert "- 범위: JDK 21과 jakarta만 적용(사내 프레임워크 프로젝트)" in md and "| 범위 |" not in md
     assert "\n".join(lines) in md and md.index("## 사내 프레임워크 프로젝트") < md.index("## 참고")
@@ -102,13 +123,81 @@ def test_reduced_block_korean():
     assert any(x.startswith(f"- `{FW}` 1.2.0: 다른 라이브러리의 의존성(경로 `com.example.lib:shared-lib:3.0 > ")
                for x in lines)
     # the remediation did not run: not claimed
-    assert "이번 실행에서 한 일: JDK 21과 jakarta 적용, 빌드 오류 수정" in lines
-    assert ("하지 않은 일: 구조 재구성, 구조 점검. 사내 프레임워크 프로젝트는 이 두 단계를 실행하지 않습니다. 부모 pom과 "
-            "프레임워크 버전은 그대로 두었습니다.") in lines
+    assert "이번 실행에서 한 일: JDK 21과 Jakarta 변환, 빌드 오류 수정" in lines
+    assert "하지 않은 일: 구조 정리, 구조 검토. 부모 pom과 프레임워크 버전은 그대로 둡니다." in lines
     assert "확인하지 못한 곳: transitive: dependency:tree failed" in lines
     text = "\n".join(lines)
     assert "—" not in text and "→" not in text
-    assert not DETACHED.search(text.replace("`", "")), text
+    assert not DETACHED.search(text.replace("`", "").replace("**", "")), text
+
+
+@pytest.mark.parametrize("name", ["Example", ""])
+@pytest.mark.parametrize("passed", [True, False])
+def test_conversion_only_block_korean(name, passed):
+    r = _report(_use(DIRECT, name=name), success=passed, phases=[], remediation={"status": "SUCCEEDED"})
+    md = render_markdown(r, "ko")
+    lines = framework_lines(r, "ko")
+    if name:
+        assert lines[:4] == ["## Example 프레임워크 프로젝트", "", "**Example 프레임워크는 JDK 21, Jakarta만 적용합니다.**", ""]
+    else:
+        assert lines[:4] == ["## 사내 프레임워크 프로젝트", "", "**사내 프레임워크 프로젝트는 JDK 21, Jakarta만 적용합니다.**", ""]
+    assert "이번 실행에서 한 일: JDK 21과 Jakarta 변환, 빌드 1회, 취약점 조치" in lines
+    assert "하지 않은 일: 구조 정리, 구조 검토, 빌드 오류 자동 수정. 부모 pom과 프레임워크 버전은 그대로 둡니다." in lines
+    # directly under the head table, before the guide's purpose sentence
+    head_end = md.index("| 시작 / 종료 |")
+    assert head_end < md.index(lines[0]) < md.index("이 문서는")
+    assert "\n".join(lines) in md
+
+
+def _failed_no_loop(name="Example"):
+    from sbmig.analyze.framework import no_fix_loop_followup
+    from sbmig.core.models import BuildResult
+    from tests.loop.fakes import compile_error
+    err = compile_error("src/main/java/com/x/Foo.java", msg="cannot find symbol")
+    build = BuildResult(ok=False, goal="clean package", command=["mvn"], exit_code=1, duration_s=1.0,
+                        log_path="/run/logs/verify.log", errors=[err])
+    r = _report(_use(DIRECT, name=name), success=False, phases=[], final_build=build, unresolved=[err],
+                manual_followups=[no_fix_loop_followup(1)])
+    return r
+
+
+NO_FIX = ("framework project: build errors are not fixed automatically (framework.fix_loop: false) — 1 error(s) remain "
+          "after the JDK 21 + jakarta conversion; see the error list")
+NO_FIX_KO = ("사내 프레임워크 프로젝트라 빌드 오류를 자동으로 고치지 않았습니다(framework.fix_loop: false). JDK 21과 "
+             "Jakarta 변환 뒤 빌드에 남은 오류 1건을 아래 「변환 뒤 남은 빌드 오류」에 정리했습니다. 프로젝트 담당자와 "
+             "프레임워크 담당자가 고쳐 주셔야 합니다.")
+
+
+def test_hand_over_line_and_its_korean():
+    from sbmig.analyze.framework import no_fix_loop_followup
+    assert no_fix_loop_followup(1) == NO_FIX
+    assert tr_line("ko", NO_FIX) == NO_FIX_KO
+    failed = no_fix_loop_followup(0)
+    assert failed.endswith("— the build failed after the JDK 21 + jakarta conversion; see the build log")
+    assert tr_line("ko", failed) == ("사내 프레임워크 프로젝트라 빌드 오류를 자동으로 고치지 않았습니다(framework.fix_loop: "
+                                     "false). JDK 21과 Jakarta 변환 뒤 빌드가 실패했습니다. 「참고」의 마지막 빌드 로그를 "
+                                     "봐 주세요.")
+
+
+@pytest.mark.parametrize("name", ["Example", ""])
+def test_failed_conversion_only_guide_does_not_claim_fixes(name):
+    md = render_markdown(_failed_no_loop(name), "ko")
+    who = f"{name or '사내'} 프레임워크 프로젝트"
+    lead = md[md.index(f"## {who}"):md.index("## 확인해 주세요")]
+    assert (f"JDK 21과 Jakarta 변환 뒤 빌드가 통과하지 않았습니다. {who}라 빌드 오류는 자동으로 고치지 않았고, 남은 오류를 "
+            "아래 「변환 뒤 남은 빌드 오류」에 정리했습니다. 프로젝트 담당자와 프레임워크 담당자가 고쳐 주셔야 합니다.") in lead
+    assert "## 변환 뒤 남은 빌드 오류 — 1건" in md and "## 해결하지 못한 오류" not in md
+    assert "해결하지 못한" not in md and "수정 시도" not in md
+    # 확인해 주세요: the hand-over line first, no second pointer to the same errors
+    check = md[md.index("## 확인해 주세요"):]
+    first = check.split("\n1. ", 1)[1].split("\n", 1)[0]
+    assert first == "**변환 뒤 남은 빌드 오류 1건** — 자동으로 고치지 않았습니다. 아래 「변환 뒤 남은 빌드 오류」를 봐 주세요."
+    assert check.count("변환 뒤 남은 빌드 오류 1건") == 1
+
+
+def test_failed_conversion_only_english_lists_the_line_first():
+    md = render_markdown(_failed_no_loop(), "en")
+    assert NO_FIX in md and md.index("## Example framework project") < md.index(NO_FIX)
 
 
 def test_parent_without_coordinates():
@@ -358,13 +447,15 @@ def test_build_error_fixes_only_with_attempts():
     from sbmig.core.models import DecisionKind, FixAttempt, TriageDecision
     r = _report(_use(DIRECT))
     r.phases = [PhaseResult(phase=Phase.VERIFY, ok=True, build_ok=True)]
-    assert "Done in this run: JDK 21 and jakarta" in framework_lines(r)
-    assert "이번 실행에서 한 일: JDK 21과 jakarta 적용" in framework_lines(r, "ko")
+    assert "Done in this run: JDK 21 and Jakarta conversion, one build" in framework_lines(r)
+    assert "이번 실행에서 한 일: JDK 21과 Jakarta 변환, 빌드 1회" in framework_lines(r, "ko")
     att = FixAttempt(id="a1", phase=Phase.VERIFY, iteration=1, cluster_id="case:c1", outcome="build_ok",
                      decision=TriageDecision(cluster_id="case:c1", kind=DecisionKind.SCRIPT))
     r.phases = [PhaseResult(phase=Phase.VERIFY, attempts=[att])]
-    assert "Done in this run: JDK 21 and jakarta, build error fixes" in framework_lines(r)
-    assert "이번 실행에서 한 일: JDK 21과 jakarta 적용, 빌드 오류 수정" in framework_lines(r, "ko")
+    assert "Done in this run: JDK 21 and Jakarta conversion, build error fixes" in framework_lines(r)
+    assert "이번 실행에서 한 일: JDK 21과 Jakarta 변환, 빌드 오류 수정" in framework_lines(r, "ko")
+    # attempts in the run: the loop ran, so automatic fixes are not listed as not done (an older report)
+    assert not any("자동 수정" in x for x in framework_lines(r, "ko"))
 
 
 # ---------------------------------------------------------------------------------------------- reduced-run report texts
@@ -488,3 +579,82 @@ def test_error_list_opening_matches_the_header_row():
     assert "sbmig changed these poms itself in the transform step." in handover_lines(r)
     r.plan.scope = "full"
     assert "3 error(s) in this run, one line each" in "\n".join(error_list_lines(r))
+
+
+# ---------------------------------------------------------------------------------------------- remediation after a failed build
+TOLERATED = {"status": "INCOMPLETE", "reason": "baseline_build_failed", "reasons": ["baseline_build_failed"],
+             "baseline_tolerated": True, "baseline_build_ok": False, "dir": "remediation",
+             "counts": {"baseline_findings": 4, "fixed": 3, "final_findings": 1},
+             "files": {"report_md": "remediation/report.md"}}
+
+
+def test_failed_framework_run_with_a_remediation_english():
+    r = _failed_no_loop()
+    r.remediation = dict(TOLERATED)
+    md = render_markdown(r, "en")
+    assert "Done in this run: JDK 21 and Jakarta conversion, one build, vulnerability remediation" in md
+    assert "Chained after the migration's BUILD SUCCESS" not in md
+    assert ("Chained after the migration although its final build failed (a framework project: "
+            "remediation.after_failed_build); it does not change the migration result above.") in md
+    # case B: everything the scan reported was fixed; only the build confirmation is missing
+    assert "- Status: `INCOMPLETE` (`baseline_build_failed`)" in md
+    assert ("- Remediated, but not confirmed by a build: the project did not build before the remediation either, "
+            "and the changed versions were only scanned again.") in md
+    assert "no build confirmed them" not in md
+    assert report_result_line(r, 2).endswith(" scope=jdk-jakarta remediation=INCOMPLETE")
+
+
+def test_failed_framework_run_with_a_remediation_korean():
+    r = _failed_no_loop()
+    r.remediation = dict(TOLERATED)
+    md = render_markdown(r, "ko")
+    assert "이번 실행에서 한 일: JDK 21과 Jakarta 변환, 빌드 1회, 취약점 조치" in md
+    assert "마이그레이션 빌드가 성공한 뒤" not in md
+    sec = md[md.index("## 취약점 조치"):]
+    assert sec.split("\n")[2] == ("마이그레이션 빌드는 통과하지 않았지만, 프레임워크 프로젝트라 취약점 조치를 이어서 "
+                                  "실행했습니다. 오픈소스 라이브러리 검사는 빌드와 따로 할 수 있습니다. 위의 마이그레이션 "
+                                  "결과에는 영향이 없습니다. 자세한 결과는 아래 파일의 report.md에 있습니다.")
+    # case B: the verdict says it was remediated and not confirmed by a build, the next line says why, once
+    assert "- 결과: 조치했지만 빌드로 확인하지 못했습니다. `INCOMPLETE`" in sec and "일부만" not in sec
+    assert "- 조치 전에도 빌드가 되지 않던 프로젝트라, 바꾼 버전은 IVAS 재검사로만 확인했습니다." in sec
+    assert sec.count("빌드로 확인") == 1
+
+
+def _tolerated_sec(rem: dict, lang: str) -> str:
+    r = _failed_no_loop()
+    r.remediation = rem
+    md = render_markdown(r, lang)
+    head = "## 취약점 조치" if lang == "ko" else "## Vulnerability remediation"
+    return md[md.index(head):]
+
+
+def test_tolerated_remediation_with_other_reasons_stays_partly():
+    rem = {**TOLERATED, "reasons": ["baseline_build_failed", "residual_findings"]}
+    ko = _tolerated_sec(rem, "ko")
+    assert "- 결과: 일부만 조치되었습니다. `INCOMPLETE`" in ko
+    assert "- 조치 전에도 빌드가 되지 않아, 바꾼 버전을 다시 검사했지만 빌드로 확인하지는 못했습니다." in ko
+    en = _tolerated_sec(rem, "en")
+    assert ("- The project did not build before the remediation either: the changed versions were scanned again, but "
+            "no build confirmed them.") in en and "Remediated, but not confirmed" not in en
+
+
+def test_tolerated_remediation_that_changed_nothing():
+    """Case A: no version was changed, so a build had nothing to confirm; the run may be SUCCEEDED."""
+    rem = {**TOLERATED, "status": "SUCCEEDED", "reason": "", "reasons": [],
+           "counts": {"baseline_findings": 0, "final_findings": 0, "proposals_applied": 0}}
+    ko = _tolerated_sec(rem, "ko")
+    assert "- 결과: 조치를 마쳤습니다. `SUCCEEDED`" in ko
+    assert "- 조치 전에도 빌드가 되지 않았지만, 바꾼 버전이 없어 빌드로 확인할 것은 없습니다." in ko
+    assert "빌드로 확인하지" not in ko
+    en = _tolerated_sec(rem, "en")
+    assert ("- The project did not build before the remediation either; no version was changed, so there was nothing "
+            "for a build to confirm.") in en and "no build confirmed them" not in en
+
+
+def test_tolerated_remediation_that_failed():
+    rem = {**TOLERATED, "status": "FAILED", "reason": "candidate_build_failed",
+           "reasons": ["candidate_build_failed", "baseline_build_failed"]}
+    ko = _tolerated_sec(rem, "ko")
+    assert "- 조치 전에도 빌드가 되지 않던 프로젝트입니다." in ko and "다시 검사" not in ko
+    en = _tolerated_sec(rem, "en")
+    assert "- The project did not build before the remediation either." in en and "scanned again" not in en

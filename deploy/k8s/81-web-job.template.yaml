@@ -109,6 +109,7 @@ spec:
             - {name: SBMIG_REMEDIATION__REQUIRE_APPROVAL, valueFrom: {configMapKeyRef: {name: sbmig-env, key: SBMIG_REMEDIATION__REQUIRE_APPROVAL, optional: true}}}
             - {name: SBMIG_REMEDIATION__MODULE_OVERRIDES, valueFrom: {configMapKeyRef: {name: sbmig-env, key: SBMIG_REMEDIATION__MODULE_OVERRIDES, optional: true}}}
             - {name: SBMIG_REMEDIATION__FAILED_CANDIDATE, valueFrom: {configMapKeyRef: {name: sbmig-env, key: SBMIG_REMEDIATION__FAILED_CANDIDATE, optional: true}}}
+            - {name: SBMIG_REMEDIATION__AFTER_FAILED_BUILD, valueFrom: {configMapKeyRef: {name: sbmig-env, key: SBMIG_REMEDIATION__AFTER_FAILED_BUILD, optional: true}}}
             - {name: SBMIG_REMEDIATION__IVAS_ANALYSIS_TIMEOUT_MINUTES, valueFrom: {configMapKeyRef: {name: sbmig-env, key: SBMIG_REMEDIATION__IVAS_ANALYSIS_TIMEOUT_MINUTES, optional: true}}}
             - {name: SBMIG_REMEDIATION__CHAIN_BUDGET_MINUTES, valueFrom: {configMapKeyRef: {name: sbmig-env, key: SBMIG_REMEDIATION__CHAIN_BUDGET_MINUTES, optional: true}}}
             - {name: SBMIG_REMEDIATION__IGNORE_ACTIONS, valueFrom: {configMapKeyRef: {name: sbmig-env, key: SBMIG_REMEDIATION__IGNORE_ACTIONS, optional: true}}}

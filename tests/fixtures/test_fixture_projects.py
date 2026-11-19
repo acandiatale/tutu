@@ -49,7 +49,8 @@ SCENARIOS = ["boot2-javax-lib", "boot2-javax-lib-optional", "euckr-legacy", "enf
              "boot-asis-parent-unpublished",            # v2.1z-ag: the as-is version of the company parent is in no repository
              "adf-jdev",                                # v2.1z-d: an Oracle ADF (JDeveloper) workspace — recognised, sized, stopped
              "fw-direct", "fw-parent", "fw-transitive",  # v2.1z-ak: framework projects, reduced scope jdk-jakarta
-             "fw-transitive-note"]                       # v2.1z-ak: framework only transitive + transitive: note → full
+             "fw-transitive-note",                       # v2.1z-ak: framework only transitive + transitive: note → full
+             "fw-build-error"]                           # v2.1z-aw: framework project, the build fails after the conversion
 NAMES = HAPPY + SCENARIOS
 CP949_FIXTURES = {"euckr-legacy"}
 ANT_FIXTURES = {"ant-webapp"}            # v2.1j: build.xml, no pom.xml — the intake synthesizes pom.xml
@@ -111,11 +112,12 @@ BUILD_MATRIX = [
     ("fw-parent", ".", "8", "libs"),
     ("fw-transitive", ".", "8", "libs"),
     ("fw-transitive-note", ".", "8", "libs"),
+    ("fw-build-error", ".", "8", "libs"),              # v2.1z-aw: builds on Java 8; System.runFinalizersOnExit is gone in 21
 ]
 # v2.1z-ak: framework projects in the reduced scope jdk-jakarta — no restructure, no structure review, no LLM answer
 # needed (no replay/ dir); their sbmig.e2e.yml sets `framework` besides llm / kb
-FRAMEWORK_REDUCED = {"fw-direct", "fw-parent", "fw-transitive"}
-FRAMEWORK_OVERRIDES = {"fw-direct": {"artifacts"}, "fw-parent": {"artifacts"},
+FRAMEWORK_REDUCED = {"fw-direct", "fw-parent", "fw-transitive", "fw-build-error"}
+FRAMEWORK_OVERRIDES = {"fw-direct": {"artifacts"}, "fw-parent": {"artifacts"}, "fw-build-error": {"artifacts"},
                        "fw-transitive": {"artifacts", "recipe_sets"},             # + servlet_jakarta_10
                        "fw-transitive-note": {"artifacts", "transitive"}}
 REQUIRED_KEYS = {
@@ -826,7 +828,8 @@ def test_v2_replay_entries_are_valid_answers(name: str):
     from sbmig.script import check_script
 
     entries = _replay(name)
-    if name in FRAMEWORK_REDUCED:            # v2.1z-ak: no review planned, the build passes after the recipes: no answer
+    # v2.1z-ak: no review planned, the build passes after the recipes; v2.1z-aw: no fix loop either: no answer
+    if name in FRAMEWORK_REDUCED:
         assert not entries and Expected.model_validate(_expected(name)).expect.max_llm_calls == 0, name
         return
     assert entries and entries[0]["replay_role"] == "structure_review" and "match" not in entries[0]
@@ -1010,7 +1013,7 @@ def test_framework_fixtures_share_their_trees():
     pom = (FIXTURES / "fw-direct" / "pom.xml").read_text(encoding="utf-8")
     assert "<project.build.sourceEncoding>" not in pom and "<encoding>" not in pom
     assert _effective_cfg("fw-transitive").framework.recipe_sets == ["jdk21", "jakarta", "servlet_jakarta_10"]
-    for name in FRAMEWORK_OVERRIDES:
+    for name in set(FRAMEWORK_OVERRIDES) - {"fw-build-error"}:      # v2.1z-aw: that one is a plain jar without servlet
         jsp = (FIXTURES / name / "src/main/webapp/index.jsp").read_text(encoding="utf-8")
         assert 'import="javax.servlet.http.HttpSession"' in jsp and "javax.servlet.http.Cookie[]" in jsp, name
         declared = _declared_deps(FIXTURES / name / "pom.xml")

@@ -143,10 +143,18 @@
   .rail .step.skipped .dot { border-style: dashed; background: var(--paper); }
   .rail .step.skipped .label { color: var(--faint); }
   .rail .step.skipped .label .en { font-family: inherit; }
-  /* 사내 프레임워크 프로젝트 안내: 진행 중에는 실행 카드에, 끝나면 결과 카드에도 표시한다 */
-  .fwnote { margin: 10px 0 0; font-size: 13px; color: var(--ink); display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; word-break: keep-all; overflow-wrap: anywhere; }
-  .fwnote .chip { background: var(--blue-tint); color: var(--blue-deep); border-color: transparent; font-weight: 600; }
-  .result .fwnote { margin: 0 0 12px; }
+  /* 사내 프레임워크 프로젝트 안내: 적용 범위가 줄어든다는 것을 놓치지 않도록 테두리 있는 파란 상자로 보여 준다.
+     오류가 아니라 안내이므로 빨간색과 주황색은 쓰지 않는다. 업로드 영역, 실행 카드, 결과 카드에 같은 모양으로 쓴다 */
+  .fwnote { display: flex; gap: 12px; align-items: flex-start; margin: 14px 0 0; padding: 14px 16px; border: 1px solid var(--blue-mid);
+            border-left: 4px solid var(--blue); border-radius: var(--radius-s); background: var(--blue-soft); color: var(--ink);
+            word-break: keep-all; overflow-wrap: anywhere; }
+  .fwnote::before { content: ""; flex: none; width: 20px; height: 20px; margin-top: 1px;
+                    background: no-repeat center / contain url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='%231F5BD8' stroke-width='1.8' stroke-linecap='round'%3E%3Ccircle cx='10' cy='10' r='8.2'/%3E%3Cpath d='M10 9v5'/%3E%3Ccircle cx='10' cy='6.2' r='.4' fill='%231F5BD8'/%3E%3C/svg%3E"); }
+  .fwnote .fwtext { min-width: 0; }
+  .fwnote .fwhead { margin: 0; font-size: 15px; font-weight: 700; line-height: 1.45; color: var(--blue-deep); }
+  .fwnote .fwbody { margin: 3px 0 0; font-size: 13px; color: var(--ink); }
+  .intake .fwnote { margin: 0 0 14px; }
+  .result .fwnote { margin: 0 0 16px; }
   /* 빌드 파드가 시작하지 못한 이유 안내. 파드 단계 아래에 두고 파드가 시작하면 숨긴다 */
   .podwait { margin: 10px 0 0; padding: 10px 14px; border: 1px solid var(--warn-tint); border-left: 3px solid var(--warn); border-radius: var(--radius-s);
              background: var(--warn-tint); font-size: 13px; word-break: keep-all; overflow-wrap: anywhere; }
@@ -207,11 +215,16 @@
   .remed.solo { margin-top: 0; border-top: 0; padding-top: 0; }   /* 취약점 해결 실행에서는 이 영역이 곧 결과다 */
   .remed .msg { margin: 8px 0 0; color: var(--muted); font-size: 12.5px; word-break: keep-all; overflow-wrap: anywhere; }
   .remed .msg:empty { display: none; }
+  /* 빌드가 실패한 프로젝트에 이어서 한 조치의 안내. 일반 실패로 읽히지 않도록 오류색 대신 정보색으로 보여 준다 */
+  .remed .remnote { margin: 10px 0 0; padding: 10px 14px; border: 1px solid var(--line); border-left: 3px solid var(--blue);
+                    border-radius: var(--radius-s); background: var(--blue-soft); color: var(--ink); font-size: 13px;
+                    word-break: keep-all; overflow-wrap: anywhere; }
   .remed .reasons { margin-top: 8px; } .remed .reasons:empty { display: none; }
   .remed .reasons .chip { font-family: var(--mono); font-size: 12px; }
   .remed .downloads:empty { display: none; }
   .badge { display: inline-block; margin-left: 4px; padding: 1px 8px; border-radius: 999px; font-size: 11.5px; font-weight: 700; }
   .badge.bad { background: var(--bad); color: #fff; }
+  .badge.warn { background: var(--warn-tint); color: var(--warn); }
   /* 상태에 따라 바뀌는 조치 영역(승인 목록, 업로드 확인, 이어서 진행). 통째로 다시 그린다 */
   .remed .act { margin-top: 16px; }
   .remed .act:empty { display: none; }
@@ -497,6 +510,10 @@
   <section class="card intake" aria-labelledby="intake-title">
     <h2 id="intake-title" class="muted small" style="font-weight:600; margin-bottom:12px;">새 작업</h2>
     <p class="busynote" id="busynote" role="status"></p>
+    <!-- 서버 기본 설정이 사내 프레임워크를 지정하면 올리기 전에 적용 범위를 항상 보여 준다 -->
+    <div class="fwnote" id="fwupload" role="note" hidden>
+      <div class="fwtext"><p class="fwhead" id="fwupload-head"></p><p class="fwbody" id="fwupload-body"></p></div>
+    </div>
     <fieldset class="flowpick" id="flowpick">
       <legend>진행 방식</legend>
       <label class="flowopt on" for="flow-full">
@@ -570,8 +587,10 @@
         <button class="btn ghost" id="stop" disabled>중단</button>
       </div>
     </div>
-    <!-- 사내 프레임워크 프로젝트(분석에서 찾으면 표시) -->
-    <p class="fwnote" id="fwnote" hidden><span class="chip">프레임워크 프로젝트</span><span>JDK 21과 jakarta만 적용합니다. 재구성과 구조 검토는 하지 않습니다.</span></p>
+    <!-- 사내 프레임워크 프로젝트 안내. 분석이나 계획 저널에서 줄인 범위를 알게 되면 표시한다 -->
+    <div class="fwnote" id="fwnote" role="note" hidden>
+      <div class="fwtext"><p class="fwhead" id="fwnote-head"></p><p class="fwbody" id="fwnote-body"></p></div>
+    </div>
     <div class="rail" id="rail" role="list" aria-label="진행 단계"></div>
     <!-- 빌드 파드가 시작하지 못하고 있을 때만 표시한다. 문장은 서버가 이유에 맞게 만든다 -->
     <div class="podwait" id="podwait" role="status" hidden>
@@ -605,7 +624,10 @@
       <p class="h">사유</p>
       <p class="why" id="aborttext"></p>
     </div>
-    <p class="fwnote" id="fwresult" hidden><span class="chip">프레임워크 프로젝트</span><span>JDK 21과 jakarta만 적용합니다. 재구성과 구조 검토는 하지 않습니다.</span></p>
+    <!-- 사내 프레임워크 프로젝트 안내. 상태의 framework 값으로 표시하므로 지난 실행을 열어도 보인다 -->
+    <div class="fwnote" id="fwresult" role="note" hidden>
+      <div class="fwtext"><p class="fwhead" id="fwresult-head"></p><p class="fwbody" id="fwresult-body"></p></div>
+    </div>
     <div class="line" id="mainline">
       <h2>결과 파일</h2>
       <span class="counts" id="counts"></span>
@@ -629,6 +651,7 @@
         <span class="chip" id="remed-status" role="status"></span>
         <span class="counts" id="remed-counts"></span>
       </div>
+      <p class="remnote" id="remed-note" role="note" hidden></p>
       <p class="msg" id="remed-msg"></p>
       <div class="counts reasons" id="remed-reasons"></div>
       <div class="downloads" id="remed-dl"></div>
@@ -752,6 +775,9 @@
     $('cfghelp').textContent = defaultConfigs.length ? `서버 기본값: ${defaultConfigs.join(', ')} (sbmig serve --config / SBMIG_WEB_CONFIGS)`
                                                      : '서버에 기본 설정이 없어 default.yml만으로 돕니다. sbmig serve --config <이름>으로 정하세요.';
     setDropLimit();
+    fwRemAlways = !!(d.framework && d.framework.remediation_always === true);
+    setUploadFramework(d.framework);
+    renderFramework();
     $('envhint').textContent = d.out_dir ? `결과 폴더 ${d.out_dir}` : '';
     describeConfigs();
   }
@@ -889,6 +915,20 @@
                       STOPPED: ['warn', '조치를 멈췄습니다', '멈춤'], INTERRUPTED: ['bad', '조치가 중단되었습니다', '중단'],
                       FAILED: ['bad', '조치하지 못했습니다', '실패'], QUEUED: ['', '취약점 조치 진행 중', '진행 중'], RUNNING: ['', '취약점 조치 진행 중', '진행 중'] };
   function remTitle(status) { const t = REM_TITLE[status]; return t ? { cls: t[0], text: t[1], short: t[2] } : null; }
+  // 전체 진행에 이어서 한 취약점 조치의 결과를 짧게 쓴다. 조치를 시작하지 않았거나 끝나지 않은 실행이면 빈 문자열이다
+  const REM_SHORT = { SUCCEEDED: '조치 완료', INCOMPLETE: '일부만 조치', AWAITING_APPROVAL: '승인 대기', AWAITING_CONFIRMATION: '확인 필요',
+                      STOPPED: '조치 멈춤', INTERRUPTED: '조치 중단', FAILED: '조치 실패' };
+  // 빌드가 실패한 프로젝트에 이어서 한 조치가 고칠 것은 다 고치고 빌드 확인만 남았는지 확인한다(사유가 조치 전 빌드 실패 하나뿐)
+  function remBuildOnly(r, tolerated) {
+    return !!r && tolerated === true && r.status === 'INCOMPLETE' && Array.isArray(r.reasons)
+      && r.reasons.length === 1 && r.reasons[0] === 'baseline_build_failed';
+  }
+  function remShort(st) {
+    const r = st && st.remediation;
+    if (!r || typeof r !== 'object' || st.flow === FLOW_REM || st.state !== 'finished' || r.status === 'skipped') return '';
+    if (remBuildOnly(r, r.baseline_tolerated === true)) return '취약점 조치함(빌드 미확인)';
+    return REM_SHORT[r.status] ? `취약점 ${REM_SHORT[r.status]}` : '';
+  }
   // 진행하지 못한 사유 한 문장. 엔진의 중단 사유(접수 거절 등), 시작하지 못한 조치, 웹에서 알고 있는 오류 순으로 찾는다
   function abortText(st) {
     // 서버가 보고서와 같은 번역표로 옮긴 한국어(abort_reason_ko)를 먼저 쓰고, 없으면 엔진의 문장을 그대로 쓴다
@@ -923,11 +963,15 @@
       runFlow = st.flow;
       if (railFlow !== runFlow && !engineSeen()) resetRail(runFlow);
     }
+    // 줄인 범위로 실행한 실행이면 서버가 보고서나 저널에서 찾은 framework 값으로 안내를 보여 준다
+    if (st.framework && typeof st.framework === 'object' && st.framework.scope === 'jdk-jakarta') setFramework(fwFrom(st.framework, fwInfo));
     const d = describe(st);
     const live = st.state === 'running' || st.state === 'queued';
     setTitle(d.cls, d.text, live);
     const bits = [];
     if (st.llm_calls != null) bits.push(`LLM 호출 ${st.llm_calls}회`);
+    // 이관 결과는 제목에 두고, 이어서 한 취약점 조치의 결과는 그 뒤에 붙인다(빌드가 실패해도 조치가 있을 수 있다)
+    const remS = remShort(st); if (remS) bits.push(remS);
     if (st.resolved) bits.push(`해결한 오류 ${st.resolved}건`);
     setText('summary', bits.join(' · '));
     $('stop').disabled = !live || !!st.stop_requested;
@@ -997,24 +1041,67 @@
     if (el) el.classList.add('current');
   }
   // 사내 프레임워크 프로젝트는 재구성과 구조 검토를 하지 않는다. 계획에 없는 두 단계를 '하지 않음'으로 레일에 표시해
-  // 대기 중인 단계로 남지 않게 한다. 분석(framework_project)이나 계획(plan) 저널에서 범위를 알게 되면 켠다
+  // 대기 중인 단계로 남지 않게 한다. 분석(framework_project)이나 계획(plan) 저널, 상태의 framework 값에서 범위를 알게 되면 켠다
   let fwReduced = false;
+  let fwInfo = null;            // { name, fixLoop }. 줄인 범위가 아니면 null이다
   const SKIP_STEPS = ['restructure', 'review'];
-  function setFramework(on) {
-    fwReduced = !!on;
-    $('fwnote').hidden = !fwReduced; $('fwresult').hidden = !fwReduced;
+  // 저널 이벤트나 상태의 framework 값을 { name, fixLoop }로 바꾼다. 없는 값은 앞서 받은 값을 쓴다.
+  // 이름과 fix_loop가 없는 이전 실행은 이름 없이, 빌드 오류를 자동으로 수정한 실행으로 본다(그때는 항상 수정했다)
+  function fwFrom(src, prev) {
+    const p = prev || {};
+    const name = typeof src.name === 'string' ? src.name.trim() : (p.name || '');
+    const fixLoop = typeof src.fix_loop === 'boolean' ? src.fix_loop : (typeof p.fixLoop === 'boolean' ? p.fixLoop : true);
+    return { name, fixLoop };
+  }
+  // 안내 문장. 이름이 있으면 이름을, 없으면 사내 프레임워크라고 쓴다
+  function fwHead(fw) { return fw.name ? `${fw.name} 프레임워크는 JDK 21, Jakarta만 적용합니다.` : '사내 프레임워크 프로젝트는 JDK 21, Jakarta만 적용합니다.'; }
+  // 서버 설정상 변환만 하는 프레임워크 프로젝트도 빌드 결과와 관계없이 취약점 조치를 이어서 하는지 여부다(/api/configs)
+  let fwRemAlways = false;
+  const FW_REM_ALWAYS = '취약점 조치는 빌드 결과와 관계없이 이어서 합니다.';
+  function fwBody(fw) {
+    const base = fw.fixLoop ? '구조 정리와 구조 검토는 하지 않습니다. 변환한 뒤 빌드하고, 빌드 오류는 자동으로 수정합니다.'
+                            : '구조 정리, 구조 검토, 빌드 오류 자동 수정은 하지 않습니다. 변환한 뒤 빌드를 한 번 하고, 남은 오류는 보고서로 알려 드립니다.';
+    return !fw.fixLoop && fwRemAlways ? `${base} ${FW_REM_ALWAYS}` : base;
+  }
+  function fwWho(fw) { return fw && fw.name ? `${fw.name} 프레임워크 프로젝트` : '사내 프레임워크 프로젝트'; }
+  function setFramework(fw) {
+    // 같은 내용이 여러 번 와도(저널, status) 레일을 다시 그리지 않는다
+    if (fw && fwInfo && fw.name === fwInfo.name && fw.fixLoop === fwInfo.fixLoop) return;
+    fwInfo = fw || null; fwReduced = !!fwInfo;
+    renderFramework();
     placeSkipped();
+  }
+  // 실행 카드와 결과 카드의 안내 문장을 쓴다. 설정 정보가 늦게 오면 다시 호출한다
+  function renderFramework() {
+    for (const id of ['fwnote', 'fwresult']) {
+      $(id).hidden = !fwReduced;
+      setText(id + '-head', fwReduced ? fwHead(fwInfo) : '');
+      setText(id + '-body', fwReduced ? fwBody(fwInfo) : '');
+    }
+  }
+  // 올리기 전 안내. /api/configs의 framework가 configured일 때만 보여 준다
+  function setUploadFramework(f) {
+    const on = !!(f && typeof f === 'object' && f.configured === true);
+    $('fwupload').hidden = !on;
+    if (!on) return;
+    const name = typeof f.name === 'string' ? f.name.trim() : '';
+    setText('fwupload-head', name ? `${name} 프레임워크를 쓰는 프로젝트는 JDK 21, Jakarta만 적용합니다.` : '사내 프레임워크를 쓰는 프로젝트는 JDK 21, Jakarta만 적용합니다.');
+    setText('fwupload-body', f.fix_loop === true ? '구조 정리와 구조 검토는 하지 않고, 변환한 뒤 빌드 오류까지 자동으로 수정합니다.'
+                                                 : '구조 정리와 빌드 오류 자동 수정은 하지 않고, 변환한 프로젝트와 빌드 결과를 보고서와 함께 드립니다.'
+                                                   + (fwRemAlways ? ` ${FW_REM_ALWAYS}` : ''));
   }
   function placeSkipped() {
     const rail = $('rail');
     for (const n of rail.querySelectorAll('.step[data-skip]')) n.remove();
     if (!fwReduced || railFlow === FLOW_REM) return;
-    const html = SKIP_STEPS.map((n) => `<div class="step skipped" role="listitem" data-node="skip-${n}" data-skip="1" title="사내 프레임워크 프로젝트라 이 단계는 하지 않습니다"><div class="dot"></div><div class="label">${esc(KO[n])}<span class="en">하지 않음</span></div></div>`).join('');
+    const html = SKIP_STEPS.map((n) => `<div class="step skipped" role="listitem" data-node="skip-${n}" data-skip="1"><div class="dot"></div><div class="label">${esc(KO[n])}<span class="en">하지 않음</span></div></div>`).join('');
     // 레시피 적용 바로 뒤, 레시피 단계가 없으면 빌드 검증 앞, 계획 전이면 마무리 앞에 둔다
     const tf = [...rail.querySelectorAll('.step[data-phase="transform"]')].pop();
     const anchor = rail.querySelector('.step[data-phase="verify"]') || rail.querySelector('.step[data-placeholder]') || rail.querySelector('.step[data-node="finalize"]');
     if (tf) tf.insertAdjacentHTML('afterend', html);
     else if (anchor) anchor.insertAdjacentHTML('beforebegin', html);
+    // 마우스를 올리면 보이는 설명에도 안내와 같은 이름을 쓴다
+    for (const n of rail.querySelectorAll('.step[data-skip]')) n.title = `${fwWho(fwInfo)}라 이 단계는 하지 않습니다`;
   }
   function phaseStep(phase, pending) {
     const fin = $('rail').querySelector('.step[data-node="finalize"]');
@@ -1104,12 +1191,12 @@
       bits.push(`${k}=${s}`);
     }
     // 범위는 분석의 framework_project와 계획의 plan 저널에 있다. 전체 이관(full)이면 따로 표시하지 않는다
-    if ((name === 'framework_project' || name === 'plan') && ev.scope === 'jdk-jakarta' && !fwReduced) setFramework(true);
+    if ((name === 'framework_project' || name === 'plan') && ev.scope === 'jdk-jakarta') setFramework(fwFrom(ev, fwInfo));
     if (name === 'phase_start' && ev.phase) $('railnote').textContent = `지금 단계: ${KO[ev.phase] || ev.phase}`;
-    // 이관 성공 후 빌드 파드가 취약점 조치 노드를 시작하면(graph_node … node=remediation) 레일 끝에 단계를 추가하고 현재 단계로 표시한다
+    // 이관 뒤 빌드 파드가 취약점 조치 노드를 시작하면(graph_node … node=remediation) 레일 끝에 단계를 추가하고 현재 단계로 표시한다
     if (name === 'graph_node' && ev.node === 'remediation') {
       const step = remStep();
-      if (!step.classList.contains('done')) { setCurrent(step); $('railnote').textContent = '취약점 조치 중 — IVAS 검사와 버전 수정을 진행합니다.'; }
+      if (!step.classList.contains('done')) { setCurrent(step); $('railnote').textContent = REM_RUNNING_NOTE; }
     }
     if (name === 'phase_end' && ev.phase) {
       $('railnote').textContent = `${KO[ev.phase] || ev.phase} ${ev.ok === false ? '단계가 실패로 끝났습니다' : '단계 끝'}`;
@@ -1202,15 +1289,18 @@
     $('otherfiles').innerHTML = others.length ? '<span>그 밖의 파일</span>' + others.map((f) => `<a href="${fileUrl(f)}" target="_blank" rel="noopener">${esc(f)}</a>`).join('') : '';
     if (!remOnly && !why && !files.includes('result.zip')) $('otherfiles').insertAdjacentHTML('afterbegin', '<span class="muted">변환된 프로젝트 ZIP이 없습니다(중단되었거나 report.zip_result 설정이 꺼져 있습니다).</span>');
     if (files.includes('sbmig.log')) { $('logfull').href = fileUrl('sbmig.log'); $('logfull').hidden = false; }
+    runRem = st.remediation && typeof st.remediation === 'object' ? st.remediation : null;
     if (current) loadRemediation(current);
     showCodeDiff(st, remOnly);                       // 코드 변경: 상태에 code_diff가 있을 때만 머리 줄을 보인다
   }
 
   // ---------------------------------------------------------------- 3b. 취약점 조치
-  // 이관 성공 후 빌드 파드가 이어서 실행한 조치(상태 id는 이관 실행 id). 서버 문자열(이유 코드, diff, 메시지, 라이브러리 이름)은 모두
+  // 이관 뒤 빌드 파드가 이어서 실행한 조치(상태 id는 이관 실행 id). 변환만 한 프레임워크 프로젝트는 빌드가 실패해도 이어서 한다. 서버 문자열(이유 코드, diff, 메시지, 라이브러리 이름)은 모두
   // textContent로만 넣는다. diff에는 '<dependency>' 같은 태그 문자가 그대로 들어 있기 때문이다
   const REM_KO = { QUEUED: '대기', RUNNING: '진행 중', AWAITING_APPROVAL: '승인 대기', AWAITING_CONFIRMATION: '업로드 확인 대기',
                    STOPPED: '중지됨', INTERRUPTED: '중단됨', SUCCEEDED: '조치 완료', INCOMPLETE: '일부만 조치됨', FAILED: '실패' };
+  // 고칠 것은 다 고쳤고 빌드로 확인만 하지 못한 조치의 상태 이름이다(remBuildOnly)
+  const REM_UNCONFIRMED_KO = '조치함 · 빌드 미확인';
   const REM_CLS = { SUCCEEDED: 'ok', INCOMPLETE: 'warn', AWAITING_APPROVAL: 'warn', AWAITING_CONFIRMATION: 'warn', STOPPED: 'warn',
                     INTERRUPTED: 'bad', FAILED: 'bad' };
   // 이유 코드(sbmig/remediations/models.py R_*)를 사용자가 읽을 문장으로 바꾼다. 모르는 코드는 그대로 보여 준다(칩의 title에는 항상 코드)
@@ -1229,10 +1319,21 @@
   const RISK_KO = { major: '메이저 버전 변경', parent: '부모 pom 변경', bom: 'BOM 변경', managed_override: 'dependencyManagement 항목 추가' };
   const ACTIVE_JOB_DONE = ['succeeded', 'failed', 'completed', 'finished', 'done', 'missing', 'ended'];
   const REM_POLL_MS = 4000;
+  const REM_RUNNING_NOTE = '취약점 조치 중 — IVAS 검사와 버전 수정을 진행합니다.';
   // 화면 상태: 제안 id별 체크 여부, 현재 그린 조치 영역의 키(같으면 다시 그리지 않아 체크와 입력 내용이 유지된다),
   // 요청 중 여부(중복 전송 방지), 마지막 오류 한 줄
   const rem = { run: null, sel: new Map(), propKey: '', viewKey: '', busy: false, err: '', resumeErr: '', poll: null, last: null };
   let remSeq = 0;
+  // 실행 상태의 조치 요약(report.remediation). 조치 상태에 표시가 없을 때 빌드 실패 프로젝트 여부를 여기서 읽는다
+  let runRem = null;
+  // 빌드가 실패한 프로젝트에 이어서 한 조치인지 확인한다. 표시가 없는 이전 상태는 지금처럼 보여 준다
+  function remTolerated(st) {
+    return st.baseline_tolerated === true || (!!runRem && runRem.baseline_tolerated === true);
+  }
+  // 결과 ZIP이 조치 전과 같은 빌드 오류에서 멈춘 것인지 확인한다(delivery.build_tolerated). 새 오류가 생긴 수정본은 아니다
+  function remUnconfirmed(st) {
+    return remTolerated(st) && !!(st.delivery && st.delivery.build_tolerated === true);
+  }
   function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = String(text); return e; }
   function remUrl(id, tail) { return `/api/remediations/${encodeURIComponent(id)}` + (tail || ''); }
   function stopRemPoll() { clearTimeout(rem.poll); rem.poll = null; }
@@ -1262,7 +1363,11 @@
     if (rem.run !== runId) { rem.run = runId; rem.sel = new Map(); rem.propKey = ''; rem.viewKey = ''; rem.err = ''; rem.resumeErr = ''; }
     const step = remStep();
     if (remActive(st)) setCurrent(step);
-    else { step.classList.add('done'); step.classList.remove('current'); }
+    else {
+      step.classList.add('done'); step.classList.remove('current');
+      // 끝난 조치에는 진행 중 안내를 남기지 않는다(저널을 다시 읽을 때 그 문장이 다시 쓰인다)
+      if ($('railnote').textContent === REM_RUNNING_NOTE) $('railnote').textContent = '';
+    }
     let props = null;
     if (st.status === 'AWAITING_APPROVAL') {
       try { const pr = await fetch(remUrl(runId, '/proposals')); if (pr.ok) props = await pr.json(); } catch (e) {}
@@ -1278,7 +1383,8 @@
     rem.last = st;
     const chip = $('remed-status');
     chip.className = 'chip ' + (REM_CLS[st.status] || '');
-    setText('remed-status', (REM_KO[st.status] || st.status) + (st.stale ? ' (작업 종료)' : ''));
+    setText('remed-status', (remBuildOnly(st, remTolerated(st)) ? REM_UNCONFIRMED_KO : (REM_KO[st.status] || st.status))
+      + (st.stale ? ' (작업 종료)' : ''));
     // 취약점 해결 실행은 이 영역이 결과이므로 제목도 현재 조치 상태를 따른다(승인 후 이어서 진행하면 바뀐다)
     const solo = runFlow === FLOW_REM;
     if (solo && lastState === 'finished') { const t = remTitle(st.status); if (t) setTitle(t.cls, t.text, t.text === REM_TITLE.RUNNING[1]); }
@@ -1288,25 +1394,41 @@
     if (c.proposals_applied) counts.appendChild(el('span', 'chip ok', `적용 ${c.proposals_applied}건`));
     const pend = Number(st.pending_approvals || 0);
     if (pend) counts.appendChild(el('span', 'chip warn', `승인 대기 ${pend}건`));
+    // 빌드가 실패한 프로젝트라면 버전은 바꾸고 다시 검사했지만 빌드로 확인하지 못했다는 것을 한 문장으로 알린다
+    const tolerated = remTolerated(st);
+    // 버전을 바꾼 결과물이 조치 전과 같은 오류에서만 멈췄을 때만 이 안내를 보인다. 새 오류가 생긴 수정본은 빌드 실패본이다
+    const unconfirmed = remUnconfirmed(st) && Number(c.proposals_applied || 0) > 0;
+    $('remed-note').hidden = !unconfirmed;
+    setText('remed-note', unconfirmed ? '빌드가 실패한 프로젝트라 바꾼 라이브러리 버전을 빌드로 확인하지 못했습니다. 빌드 오류를 고친 뒤 한 번 빌드해서 확인해 주세요.' : '');
     $('remed-msg').textContent = st.message_ko || st.message || '';   // 서버가 추가한 한국어 문장(message_ko)을 먼저 쓴다
     const reasons = $('remed-reasons');
     reasons.replaceChildren();
     const codes = Array.isArray(st.reasons) && st.reasons.length ? st.reasons : (st.reason ? [st.reason] : []);
-    for (const code of codes) { const ch = el('span', 'chip', REM_REASON_KO[code] || code); ch.title = String(code); reasons.appendChild(ch); }
+    for (const code of codes) {
+      // 조치 전부터 빌드가 실패한 실행이면 그 사유를 조치의 실패처럼 읽히지 않게 적는다
+      const label = tolerated && code === 'baseline_build_failed' ? (unconfirmed ? '빌드로 확인하지 못함' : '조치 전에도 빌드 실패')
+        : (REM_REASON_KO[code] || code);
+      const ch = el('span', 'chip', label); ch.title = String(code); reasons.appendChild(ch);
+    }
     // 다운로드: 조치 보고서, 조치 결과 zip(빌드가 실패한 수정본이면 '빌드 실패본' 표시), 이전 라운드의 검증된 zip
     const files = Array.isArray(st.files) ? st.files : [], dl = $('remed-dl');
     dl.replaceChildren();
-    const link = (name, text, cls, badge) => {
+    const link = (name, text, cls, badge, badgeCls) => {
       if (!files.includes(name)) return;
       const a = el('a', 'btn ' + cls);
       a.href = remUrl(runId, '/files/' + name); a.setAttribute('download', name);
       const lab = el('span', null, text + ' '); lab.appendChild(el('span', 'sub', name)); a.appendChild(lab);
-      if (badge) a.appendChild(el('span', 'badge bad', badge));
+      if (badge) a.appendChild(el('span', 'badge ' + (badgeCls || 'bad'), badge));
       dl.appendChild(a);
     };
     const failed = !!(st.delivery && st.delivery.build_ok === false);
     link('report.md', '조치 결과 보고서', solo ? 'big' : 'quiet');
-    link('result.zip', '결과 ZIP 받기', (failed ? 'ghost' : 'quiet') + (solo ? ' big' : ''), failed ? '빌드 실패본' : '');
+    const sameFailure = remUnconfirmed(st);
+    // 바꾼 버전이 없는 원본 ZIP은 빌드로 확인할 변경이 없으므로 표시를 붙이지 않는다
+    const applied = Number(c.proposals_applied || 0) > 0;
+    const badBuild = failed && !(sameFailure && !applied);
+    link('result.zip', '결과 ZIP 받기', (badBuild ? 'ghost' : 'quiet') + (solo ? ' big' : ''),
+         badBuild ? (sameFailure ? '빌드 미확인' : '빌드 실패본') : '', sameFailure ? 'warn' : 'bad');
     link('result-verified.zip', '검증된 이전 라운드 결과 받기', 'quiet');
     if (st.withheld) dl.appendChild(el('span', 'note', solo ? '실행이 끝나면 받을 수 있습니다.' : '이관 실행이 끝나면(마지막 정제 뒤) 받을 수 있습니다.'));
     // 상태별 동작. 같은 상태가 여러 번 와도 선택한 항목과 열린 확인 영역이 사라지지 않도록 내용이 같으면 다시 그리지 않는다
@@ -2470,7 +2592,7 @@
     $('timeline').innerHTML = ''; $('log').replaceChildren(); $('report').textContent = ''; $('logfull').hidden = true;
     setTitle('', resume ? '다시 연결하는 중…' : '연결하는 중…', false); statusKey = '';
     $('stop').disabled = true;                         // 이전 실행의 상태가 남지 않도록 이 실행의 status가 오기 전에는 비활성화한다
-    resetRail(runFlow); setFramework(false);
+    resetRail(runFlow); setFramework(null); runRem = null;
     try { history.replaceState(null, '', '#' + encodeURIComponent(runId)); } catch (e) {}
     const src = new EventSource(`/api/runs/${encodeURIComponent(runId)}/events`);
     es = src;
@@ -2602,13 +2724,14 @@
       const li = document.createElement('li');
       li.className = (run.run_id === current) ? 'active' : '';
       const s = describe(run);
+      const short = s.short + (remShort(run) ? ` · ${remShort(run)}` : '');
       const cls = run.state === 'running' || run.state === 'queued' ? 'running' : s.cls;
       const tag = run.flow === FLOW_REM ? '<span class="flowtag rem">취약점 해결</span>' : '<span class="flowtag">전체 진행</span>';
       // 각 행에 업로드한 파일 이름을 표시한다(이스케이프, 길면 말줄임하고 title에 전체 이름). 이름이 없는 이전 실행이면 실행 id를 쓴다
       const fname = run.upload ? String(run.upload) : run.run_id;
       li.innerHTML = `<span class="who"><span class="fname" title="${esc(fname)}">${esc(fname)}</span>` +
                      `<span class="meta2"><span class="id">${esc(run.run_id)}</span>${tag}<span class="when">${esc(fmtWhen(run.started || 0))}</span></span></span>` +
-                     `<span class="state ${cls}">${esc(s.short)}</span>`;
+                     `<span class="state ${cls}">${esc(short)}</span>`;
       li.onclick = () => { attach(run.run_id, false, run.flow, run.upload); $('runcard').scrollIntoView({ behavior: 'smooth', block: 'start' }); };
       ul.appendChild(li);
     }

@@ -196,7 +196,7 @@ Secret 의 `SBMIG_WEB_TOKEN` 을 채운다 — 그때는 `http://<host>:8765/?to
   | `SBMIG_LLM__RECORD_DIR` | `${LLM_RECORD_DIR:-}` (= 그 변수가 있을 때만 기록) | 40 |
 * **화면**(회사 블루, 머리 이름 `panacea-remediating-oss` — 임시): 먼저 진행 방식을 고른다.
   * **전체 진행**(기본): 이관 후 취약점 조치까지. `마이그레이션 시작` → 단계 레일(접수 → 분석 → 계획 → 단계들 → 마무리).
-    이관이 BUILD SUCCESS 로 끝나야 조치가 이어 돌고, 그때 레일 끝에 '취약점 조치' 칸이 붙는다(§6).
+    이관이 BUILD SUCCESS 로 끝나야(사내 프레임워크 프로젝트는 빌드가 실패해도) 조치가 이어 돌고, 그때 레일 끝에 '취약점 조치' 칸이 붙는다(§6).
   * **취약점 해결**: 이미 이관된 프로젝트의 취약점만 조치한다. 이관 단계·LLM·KB 를 쓰지 않고 올린 프로젝트를 그대로 빌드·검사·조치·재검사한다.
     `취약점 조치 시작` → 단계 레일(접수 → 취약점 조치 → 마무리), 결과는 조치 결과 칸과 조치 보고서 / 조치 결과 ZIP 버튼(§6 "취약점 해결만").
 
@@ -298,7 +298,7 @@ Secret 의 `SBMIG_WEB_TOKEN` 을 채운다 — 그때는 `http://<host>:8765/?to
 | `SBMIG_LIBRARIES__NEXUS_SEARCH` / `INCLUDE_PRERELEASE` | ConfigMap(선택) | `true` / `false` | jakarta 빌드 탐색 범위 |
 | `SBMIG_REVIEW__FIX_CRITICAL` | ConfigMap(선택) | `true` | 구조 리뷰의 critical 자동 수정을 끌 때 |
 | `SBMIG_FLEET__MIN_FREE_GB` | ConfigMap(선택) | `5` | 데이터 볼륨 여유 공간 하한(GB). 웹 파드가 업로드를 받기 전에 확인하고 모자라면 HTTP 507 로 거절한다(화면: "서버의 저장 공간이 부족해 시작하지 못했습니다"). `0` = 확인 안 함. 실행 폴더(`/data/out/<실행 id>`)는 저절로 지워지지 않는다 — 공간이 모자라면 운영자가 지운다 |
-| `SBMIG_REMEDIATION__AFTER_MIGRATION` | ConfigMap | `true` (켜서 내보냄; 코드 기본 false) | BUILD SUCCESS 뒤 빌드 파드에서 취약점 조치를 이어 돌릴지(§6). 끄면 `"false"` + 웹 파드 재시작 |
+| `SBMIG_REMEDIATION__AFTER_MIGRATION` | ConfigMap | `true` (켜서 내보냄; 코드 기본 false) | BUILD SUCCESS 뒤(사내 프레임워크 프로젝트는 빌드가 실패해도, §7) 빌드 파드에서 취약점 조치를 이어 돌릴지(§6). 끄면 `"false"` + 웹 파드 재시작 |
 | `SBMIG_REMEDIATION__REQUIRE_APPROVAL` / `FAILED_CANDIDATE` / `IVAS_ANALYSIS_TIMEOUT_MINUTES` | ConfigMap(선택) | `false` / `include` / `30` | 조치의 승인(`false` = 모든 제안을 승인 없이 적용)·실패한 수정본·IVAS 분석 대기(§6). 40 에만 literal 로 넣지 않는다(Job 이 멈춘다) |
 | `SBMIG_REMEDIATION__CHAIN_BUDGET_MINUTES` / `IGNORE_ACTIONS` | ConfigMap(선택) | `90` / 비어 있음(예 `'["PC","IG"]'`) | 빌드 파드 안 조치의 시간 한도(0 = 없음)·계획에서 뺄 IVAS 조치 코드(기본 없음 = 모두 고칠 대상, §6) |
 | `SBMIG_REMEDIATION__IVAS_SUMMARY_CHECK` | ConfigMap(선택) | `exact` | IVAS 요약 `components` 건수와 라이브러리 취약점 행 수를 같은지 대조 / `nonzero` = 0 인지만(§6) |
@@ -690,7 +690,9 @@ preflight / ADF / 내부 오류)이면 3. `SBMIG_FAIL_JOB_ON_BUILD_FAIL=1` 이�
   in-process 모드의 단독 업로드에만 붙는다). 테스트는 늘 건너뛴다(`-Dmaven.test.skip=true`), TLS 검증은 끄지 않는다.
 * **이관 판정은 그대로**: 조치의 성패는 이관의 성공 판정·종료 코드·보고서 판정을 바꾸지 않는다. 운영자가 옮겨 적는 줄 끝에
   `SBMIG-RESULT … remediation=<상태|skipped>` 가 붙는다. IVAS 세 값(또는 Maven 준비)이 없으면 조치를 건너뛰고 저널에 `remediation_skipped`
-  (빠진 것의 **이름**만)를 남긴다. 이관이 BUILD SUCCESS 가 아니면 조치는 돌지 않는다. `remediation.trusted_projects` 는 이 경로에서 묻지 않는다
+  (빠진 것의 **이름**만)를 남긴다. 이관이 BUILD SUCCESS 가 아니면 조치는 돌지 않는다. 예외는 빌드 오류를 고치지 않는 사내 프레임워크
+  프로젝트다(§7): `remediation.after_failed_build: framework`(기본)면 빌드가 실패해도 조치한다. 버전을 바꿨으면
+  그 조치는 `INCOMPLETE`(`baseline_build_failed`, 화면 「조치함 · 빌드 미확인」)로 끝나고, 바꾼 것이 없거나 수정본이 빌드되면 보통 조치처럼 끝난다. `never`면 이 예외도 없다. `remediation.trusted_projects` 는 이 경로에서 묻지 않는다
   (이관이 이미 그 프로젝트를 빌드했다) — 단독 업로드만 막는 스위치다.
 * **승인 — 기본은 없음**: `remediation.require_approval` 은 false, `remediation.always_approve` 는 비어 있다. 모든 제안을 승인 없이 적용하고
   어떤 실행도 승인 대기로 멈추지 않으므로, 이관에 이어 돈 조치는 **같은 빌드 파드에서 끝난다**(프로젝트 팀은 결과만 원하고, 빌드 파드 3개로는
@@ -786,8 +788,10 @@ preflight / ADF / 내부 오류)이면 3. `SBMIG_FAIL_JOB_ON_BUILD_FAIL=1` 이�
 
 ## 7. 사내 프레임워크 프로젝트 — 켜는 법
 
-사내 프레임워크 아티팩트를 쓰는 프로젝트는 회사 레이아웃과 Boot 4로 옮기지 않고 JDK 21과 jakarta만 올린 뒤 빌드하고 취약점 조치로 넘어간다
-(범위 `jdk-jakarta`, 재구성·구조 검토 없음, 부모 pom과 프레임워크 버전은 그대로). 자세한 동작과 진단은 `agent-doc/13-framework-projects.md`.
+사내 프레임워크 아티팩트를 쓰는 프로젝트는 회사 레이아웃과 Boot 4로 옮기지 않고 JDK 21과 jakarta만 올린 뒤 빌드를 한 번 하고 결과를 알린다.
+빌드 오류는 고치지 않는다(LLM 호출 없음). 빌드가 실패하면 exit 2이고 변환한 트리와 남은 오류 목록을 내려준다. 취약점 조치는 빌드가 통과해도 실패해도 이어 돈다
+(범위 `jdk-jakarta`, 재구성·구조 검토·빌드 오류 수정 없음, 부모 pom과 프레임워크 버전은 그대로). 화면과 보고서에는
+`<이름> 프레임워크는 JDK 21, Jakarta만 적용합니다.`가 눈에 띄게 나온다. 자세한 동작과 진단은 `agent-doc/13-framework-projects.md`.
 
 * **켜는 자리는 회사 `config/artifacts.yml` 하나다.** 아래 두 줄을 넣는다. 값은 실제 프레임워크 아티팩트의 `groupId:artifactId`(또는 artifactId만,
   `*` 사용 가능)이고, 저장소에는 자리표시자만 있다.
@@ -800,12 +804,21 @@ preflight / ADF / 내부 오류)이면 3. `SBMIG_FAIL_JOB_ON_BUILD_FAIL=1` 이�
 * 이 파일은 이미지에 굽는다(§1). 그래서 **이미지를 다시 만들고** 새 태그를 `40-deployment.yaml`과 `81-web-job.template.yaml`의 `image:`에 같이 넣는다.
   ConfigMap `sbmig-env`, `sbmig-config`, Secret은 바뀌지 않는다. 새 이미지에는 체크아웃의 81도 같이 들어가므로 이미지를 올린 뒤 웹 파드를 재시작한다(§1).
 * 함께 정할 수 있는 스위치(같은 파일의 `framework:` 아래, 기본값으로 두면 적지 않아도 된다):
+  * `framework.name`: 화면과 보고서에 보일 프레임워크 이름(기본 비움). 비워 두면 아티팩트 이름에서 만든다. 끝의 `core`, `framework`, `fw`,
+    `starter`, `parent`, `bom`, `boot`, `common`, `base`, `api` 같은 낱말을 떼고 첫 글자를 대문자로 바꾼다(`example-fw-core` → `Example`).
+    만든 이름이 맞으면 할 것이 없다. 틀리면 `name: "<이름>"` 한 줄을 넣고 이미지를 다시 만든다. 실제 이름은 회사 이름이라 저장소에 적지 않는다.
+  * `framework.fix_loop`: `false`(기본)는 빌드 한 번, 오류는 보고만 한다. `true`는 다른 프로젝트처럼 수정 루프로 빌드 오류를 고친다
+    (프레임워크 버전과 부모 pom은 건드리지 않는다). 회사가 프레임워크 프로젝트도 자동 수정하기로 정했을 때만 바꾼다.
   * `framework.scope`: `jdk-jakarta`(기본) 또는 `full`(찾은 사실만 보고서에 적고 전체 이관).
   * `framework.transitive`: 다른 라이브러리가 끌고 오기만 하는 경우. `apply`(기본, 직접 선언과 같게), `note`(보고서에만 적고 전체 이관), `off`(찾지 않음).
     `off`가 아니면 다른 곳에서 못 찾은 프로젝트마다 분석 단계에서 `mvn dependency:tree`가 한 번 더 돈다.
   * `framework.recipe_sets`: 돌릴 레시피 세트(기본 `[jdk21, jakarta]`). 기본 jakarta 세트는 서블릿 API를 서블릿 5.0 기준으로 올린다.
     Tomcat 10.1 이상에 올릴 프로젝트면 `servlet_jakarta_10`을 더한다. 회사가 정할 값이다.
-* 확인: 프레임워크를 쓰는 작은 프로젝트를 올리면 Job 파드 로그의 결과 줄에 `scope=jdk-jakarta`가 붙고, 화면에 `프레임워크 프로젝트` 표시가 나오며
-  재구성·구조 검토 단계가 `하지 않음`으로 보인다. 붙지 않으면 저널의 `framework_check` 줄이 확인하지 못한 곳(`unchecked`)을 알려 준다.
+* 확인: 프레임워크를 쓰는 작은 프로젝트를 올리면 Job 파드 로그의 결과 줄에 `scope=jdk-jakarta`와 `llm=0`이 붙고, 화면의 실행 카드와 결과 카드에
+  프레임워크 이름이 든 안내 상자가 나오며 재구성·구조 검토 단계가 `하지 않음`으로 보인다. 올리기 카드에도 같은 문장이 늘 보인다
+  (`framework.scope: jdk-jakarta`일 때). 수정 루프가 꺼져 있고 `remediation.after_migration`이 켜져 있고 `remediation.after_failed_build`가
+  `framework`면 안내에 「취약점 조치는 빌드 결과와 관계없이 이어서 합니다.」가 붙는다. 빌드가 실패한 뒤 버전을 바꾼 조치는 「조치함 · 빌드 미확인」,
+  결과 ZIP에 「빌드 미확인」 표시(새 빌드 오류를 만든 수정본이면 「빌드 실패본」)로 보인다.
+  이름이 틀리면 위 `framework.name`을 적는다. 붙지 않으면 저널의 `framework_check` 줄이 확인하지 못한 곳(`unchecked`)을 알려 준다.
 * 취약점 조치에서는 프레임워크와 그것이 가져오는 라이브러리가 사내 그룹 `framework`(`remediation.inhouse_groups` 기본값에 들어 있음) 몫이 되어
   제안하지 않고 보고서에 '사내 프레임워크'로 묶인다.

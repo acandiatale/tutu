@@ -4,7 +4,8 @@ evaluate -> report. evaluate에서 취약점이 남았고 라운드 한도 안�
 진입점은 ``run_remediation``이며, 대기나 중지 뒤 재개하면 ``state.next_node``부터 다시 실행한다. 그래프 상태에는 작은
 JSON 값만 두고 ``RemediationState``, 경로, ``Components``는 노드 함수들이 공유하는 holder 객체에 둔다.
 - 노드 경계마다 state를 저장한다
-- 조치 전 빌드가 실패하면 검사와 계획으로 넘어가지 않는다
+- 조치 전 빌드가 실패하면 검사와 계획으로 넘어가지 않는다. ``state.baseline_tolerated``인 실행만 이어 가고,
+  수정본 빌드가 조치 전 빌드에 없던 오류를 내지 않았을 때만 라운드를 확정하며 SUCCEEDED로 끝내지 않는다
 - 결과를 모르는 업로드는 다시 올리지 않고, 원격 IVAS 분석을 취소된 것으로 기록하지 않는다
 - 수정본은 따로 복사한 트리에서 빌드하고 검증한 뒤에만 accepted/로 확정한다
 - 결과 ZIP과 같은 바이트(sha256)를 재검사하며, SUCCEEDED는 evaluate의 모든 조건을 만족할 때만 정한다
@@ -260,11 +261,51 @@ class _Holder:
         st.status, st.reason, st.next_node, st.message = status, reason, next_node, message
         st.reasons = [reason]
 
-    def finish(self, status: str, reason: str, message: str = "", reasons: list[str] | None = None) -> str:
-        """최종 상태(FAILED / INCOMPLETE / SUCCEEDED)를 정하고, 다음 노드로 보고서 노드를 반환한다."""
+    @property
+    def baseline_failed_tolerated(self) -> bool:
+        """조치 전 빌드가 실패했지만 그 실패를 받아들이고 이어 가는 실행인지 확인한다."""
         st = self.state
+        return bool(st.baseline_tolerated and st.baseline_build is not None and not st.baseline_build.ok)
+
+    @property
+    def nothing_changed(self) -> bool:
+        """확정한 라운드에 적용한 제안이 하나도 없는지 확인한다. 이때 결과 ZIP은 원본이다."""
+        return not any(rs.committed and rs.applied for rs in self.state.rounds)
+
+    @property
+    def nothing_unconfirmed(self) -> bool:
+        """확정한 라운드 가운데 빌드로 확인하지 못한 변경이 하나도 없는지 확인한다.
+        바꾼 버전이 없거나, 버전을 바꾼 수정본의 빌드가 모두 통과했을 때 True다."""
+        return not any(rs.committed and rs.applied and rs.build_tolerated for rs in self.state.rounds)
+
+    def finish(self, status: str, reason: str, message: str = "", reasons: list[str] | None = None) -> str:
+        """최종 상태(FAILED / INCOMPLETE / SUCCEEDED)를 정하고, 다음 노드로 보고서 노드를 반환한다.
+        조치 전 빌드 실패를 받아들인 실행이 버전을 바꿨으면 SUCCEEDED가 되지 않고 사유에 ``baseline_build_failed``가 들어간다.
+        바꾼 버전이 없으면 빌드로 확인할 것이 없으므로 그 사유를 빼고 원래 상태로 끝낸다.
+
+        Tolerated baseline failure: FAILED keeps its reasons and gets `baseline_build_failed` appended. Otherwise, when
+        a committed round applied a proposal whose candidate build failed with the baseline's errors (changes no build
+        confirmed), the status is INCOMPLETE with `baseline_build_failed` first; when none did (the delivery is the
+        original, or every candidate build passed), `baseline_build_failed` is dropped and the run ends as it would
+        without the tolerance: SUCCEEDED when nothing else is left (the reason list empty), INCOMPLETE with its own
+        reasons otherwise."""
+        st = self.state
+        reasons = list(reasons) if reasons is not None else ([reason] if reason else [])
+        if self.baseline_failed_tolerated and status != FAILED and self.nothing_unconfirmed:
+            # 바꾼 버전이 없거나 수정본 빌드가 통과했으면 확인하지 못한 변경이 없으므로 조치 전 빌드 실패를 사유로 두지 않는다
+            reasons = [x for x in reasons if x != R_BASELINE_BUILD_FAILED]
+            status = status if reasons else SUCCEEDED
+            reason = reasons[0] if reasons else ""
+        elif self.baseline_failed_tolerated:
+            # 빌드로 확인한 변경이 아니므로 성공으로 끝내지 않는다. 실패가 아니면 조치 전 빌드 실패를 첫 사유로 둔다
+            reasons = [x for x in reasons if x != R_BASELINE_BUILD_FAILED]
+            if status == FAILED:
+                reasons.append(R_BASELINE_BUILD_FAILED)
+            else:
+                status, reasons = INCOMPLETE, [R_BASELINE_BUILD_FAILED, *reasons]
+            reason = reasons[0]
         st.status, st.reason = status, reason
-        st.reasons = list(reasons) if reasons is not None else ([reason] if reason else [])
+        st.reasons = reasons
         if message:
             st.message = message
         self.fill_counts()
@@ -284,7 +325,7 @@ class _Holder:
         d = st.delivery
         committed = [rs.round for rs in st.rounds if rs.committed and rs.round < r]
         final = self.load_scan(st.final_scan)
-        return bool(d is not None and d.build_ok and committed and d.round == max(committed) and final is not None
+        return bool(d is not None and (d.build_ok or d.build_tolerated) and committed and d.round == max(committed) and final is not None
                     and final.complete and final.zip_sha256 == d.sha256 and self.paths.delivery_zip.is_file()
                     and sha256_file(self.paths.delivery_zip) == d.sha256)
 
@@ -363,7 +404,8 @@ class _Holder:
         if d is None:
             return
         final = self.load_scan(self.state.final_scan)
-        d.scanned = bool(d.build_ok and final is not None and final.complete and final.zip_sha256 == d.sha256)
+        d.scanned = bool((d.build_ok or d.build_tolerated) and final is not None and final.complete
+                         and final.zip_sha256 == d.sha256)
 
     # -- data helpers
     def load_scan(self, rel: str) -> ScanResult | None:
@@ -478,6 +520,9 @@ class _Holder:
         st.delivery = DeliveryInfo(path=self.rel(p.delivery_zip), sha256=sha, size=p.delivery_zip.stat().st_size,
                                    files=st.intake.files if st.intake else 0,
                                    tree_hash=st.intake.tree_hash if st.intake else "", round=0)
+        if self.baseline_failed_tolerated:
+            # 원본도 빌드되지 않았으므로 빌드로 확인한 결과 ZIP이 아니다
+            st.delivery.build_ok, st.delivery.build_tolerated = False, True
         st.final_scan = st.baseline_scan
         # 결과 ZIP이 원본과 같은 바이트이므로 같은 sha256을 빠짐없이 검사했다면 scanned로 본다
         self.mark_scanned()
@@ -565,8 +610,26 @@ def _baseline_build(h: _Holder) -> str | None:
         if h.stop():
             h.halt(STOPPED, R_STOP_REQUESTED, "baseline_build", "stop requested during the baseline build")
             return None
+        if st.baseline_tolerated and outcome.exit_code is not None and not outcome.timed_out:
+            # 취약점 검사는 오픈소스 라이브러리를 보므로 빌드 오류와 상관없이 이어 간다. 시간 초과나 실행 실패는 비교할 로그가 없다
+            from . import maven as maven_mod
+            errors = maven_mod.build_errors(_read_log(h, outcome), h.project(tree))
+            h.journal({"event": "remediation_baseline_failed", "tolerated": True, "errors": errors,
+                       "log": outcome.log, "exit_code": outcome.exit_code})
+            log.warning("remediation %s: the baseline build failed (%d error(s), %s); going on with the scan because "
+                        "the failure is tolerated for this run", st.id, errors, outcome.log)
+            return "baseline_scan"
         return h.finish(FAILED, R_BASELINE_BUILD_FAILED, outcome.summary)
     return "baseline_scan"
+
+
+def _read_log(h: _Holder, outcome: Any) -> str:
+    """빌드 결과의 로그 파일(실행 폴더 기준 경로)을 읽는다. 없으면 빈 문자열을 반환한다."""
+    try:
+        p = h.paths.root / str(outcome.log or "")
+        return p.read_text(encoding="utf-8", errors="replace") if outcome.log and p.is_file() else ""
+    except OSError:
+        return ""
 
 
 def _baseline_scan(h: _Holder) -> str | None:
@@ -873,6 +936,51 @@ def _build_failed(h: _Holder, r: int, outcome: Any) -> str | None:
     return h.finish(FAILED, R_CANDIDATE_BUILD_FAILED, msg)
 
 
+def _baseline_errors_only(h: _Holder, r: int, outcome: Any, cand: Path) -> bool:
+    """조치 전 빌드가 실패한 실행에서 실패한 수정본 빌드를 조치 전 빌드와 비교하고, 새 오류가 없으면 True를 반환한다.
+
+    Only when the baseline build failed and that was tolerated (`state.baseline_tolerated`) and no stop is pending:
+    `maven.compare_with_baseline` over the two logs (its docstring says what is compared and what it cannot show).
+    The result goes to `RoundState.build_compare` / `build_tolerated` and the journal (`remediation_candidate_compared`).
+    True = the round goes on (resolution check, commit, frozen delivery, rescan) although the build failed."""
+    rs = h.round_state(r)
+    rs.build_compare, rs.build_tolerated = {}, False
+    if not h.baseline_failed_tolerated or h.stop():
+        return False
+    from . import maven as maven_mod
+    bb = h.state.baseline_build
+    cmp = maven_mod.compare_with_baseline(bb, _read_log(h, bb), h.project(h.baseline_tree),
+                                          outcome, _read_log(h, outcome), h.project(cand))
+    rs.build_compare, rs.build_tolerated = cmp, bool(cmp.get("same"))
+    h.journal({"event": "remediation_candidate_compared", "round": r, "same": rs.build_tolerated,
+               "baseline_errors": cmp.get("baseline_errors"), "candidate_errors": cmp.get("candidate_errors"),
+               "new": list(cmp.get("new") or [])[:5], "why": cmp.get("why", "")})
+    if rs.build_tolerated:
+        log.info("remediation round %s: the candidate build failed with the baseline build's errors only (%s of %s); "
+                 "going on without a build confirmation", r, cmp.get("candidate_errors"), cmp.get("baseline_errors"))
+    return rs.build_tolerated
+
+
+def _new_errors_text(cmp: dict[str, Any]) -> str:
+    """수정본 빌드에 새로 생긴 오류를 알리는 영어 문장을 만든다. 비교하지 않았으면 빈 문자열을 반환한다."""
+    if not cmp:
+        return ""
+    new = list(cmp.get("new") or [])
+    if new:
+        return (f"the candidate build failed with {len(new)} error(s) the baseline build did not have: "
+                + "; ".join(new[:3]))
+    return f"the candidate build failed differently from the baseline build: {cmp.get('why') or 'not comparable'}"
+
+
+def _candidate_failed(h: _Holder, r: int, outcome: Any) -> str | None:
+    """수정본 빌드 실패를 정책대로 끝내고, 조치 전 빌드와 비교한 결과가 있으면 그 문장을 메시지 앞에 붙인다."""
+    nxt = _build_failed(h, r, outcome)
+    extra = _new_errors_text(h.round_state(r).build_compare)
+    if extra and nxt == "report":
+        h.state.message = f"{extra} | {h.state.message}" if h.state.message else extra
+    return nxt
+
+
 def _verify(h: _Holder, r: int, cand: Path, proposals: list[Proposal]) -> list[str]:
     """수정본의 의존성을 다시 해석하고 제안과 비교한 검증 줄을 반환한다."""
     c, p = h.c, h.paths
@@ -895,9 +1003,9 @@ def _build(h: _Holder) -> str | None:
         log.warning("remediation round %s: the candidate has no completeness marker; it is made again from accepted/", r)
         return "apply"
     outcome = h.build_outcome(c.maven.package(h.project(cand), p.build_log(r), h.stop, **h.target_kw), p.build_log(r))
-    rs.build = outcome
-    if not outcome.ok:
-        return _build_failed(h, r, outcome)
+    rs.build, rs.build_compare, rs.build_tolerated = outcome, {}, False
+    if not outcome.ok and not _baseline_errors_only(h, r, outcome, cand):
+        return _candidate_failed(h, r, outcome)
     applied = _applied_proposals(h, r)
     lines = _verify(h, r, cand, applied)
     rs.verify_problems = lines
@@ -1017,9 +1125,9 @@ def _drop_ineffective(h: _Holder, r: int, applied: list[Proposal], drop: list[Pr
         return h.finish(FAILED, R_TEXT_ONLY_VIOLATION, "; ".join(violations[:5]))
     h.mark_candidate(r)
     outcome = h.build_outcome(c.maven.package(h.project(cand), p.build_log(r), h.stop, **h.target_kw), p.build_log(r))
-    rs.build = outcome
-    if not outcome.ok:
-        return _build_failed(h, r, outcome)
+    rs.build, rs.build_compare, rs.build_tolerated = outcome, {}, False
+    if not outcome.ok and not _baseline_errors_only(h, r, outcome, cand):
+        return _candidate_failed(h, r, outcome)
     lines = _verify(h, r, cand, keep)
     rs.verify_problems = lines
     again = [ln for ln in lines if not ln.startswith("info:")]
@@ -1035,6 +1143,9 @@ def _freeze_delivery(h: _Holder) -> str | None:
     if p.delivery_zip.exists():
         p.delivery_zip.unlink()
     st.delivery = h.c.intake.freeze_delivery(p.accepted, p.delivery_zip, st.round, h.paths_list)
+    if h.baseline_failed_tolerated and any(rs.committed and rs.build_tolerated for rs in st.rounds):
+        # 조치 전과 같은 오류로 빌드가 실패한 변경이 들어 있으므로 빌드로 확인한 결과 ZIP이 아니다
+        st.delivery.build_ok, st.delivery.build_tolerated = False, True
     write_json_atomic(p.delivery_json, st.delivery.to_dict())
     return "rescan"
 
@@ -1079,10 +1190,11 @@ def _evaluate(h: _Holder) -> str | None:
         return "inventory"
 
     reasons: set[str] = set()
-    if st.baseline_build is None or not st.baseline_build.ok:
+    if (st.baseline_build is None or not st.baseline_build.ok) and not (h.baseline_failed_tolerated and h.nothing_unconfirmed):
+        # 조치 전 빌드 실패를 받아들인 실행은 바꾼 버전이 있을 때만 이 사유를 둔다
         reasons.add(R_BASELINE_BUILD_FAILED)
     for rs in st.rounds:
-        if rs.applied and not (rs.build is not None and rs.build.ok and rs.committed):
+        if rs.applied and not (rs.build is not None and (rs.build.ok or rs.build_tolerated) and rs.committed):
             reasons.add(R_CANDIDATE_BUILD_FAILED)
     if not complete:
         reasons.add(R_SCAN_INCOMPLETE)
@@ -1091,7 +1203,7 @@ def _evaluate(h: _Holder) -> str | None:
     if st.delivery is not None:
         # scanned 필드가 없는 이전 state를 재개해도 같은 규칙으로 다시 계산한다
         h.mark_scanned()
-        if not st.delivery.build_ok:
+        if not st.delivery.build_ok and not st.delivery.build_tolerated:
             reasons.add(R_CANDIDATE_BUILD_FAILED)
         elif not st.delivery.scanned:
             reasons.add(R_ZIP_HASH_MISMATCH if complete else R_SCAN_INCOMPLETE)
@@ -1110,10 +1222,34 @@ def _evaluate(h: _Holder) -> str | None:
     ordered += sorted(x for x in reasons if x not in ordered and x != R_ROUNDS_EXHAUSTED)
     if R_ROUNDS_EXHAUSTED in reasons:
         ordered.append(R_ROUNDS_EXHAUSTED)
+    if h.baseline_failed_tolerated:
+        st.message = tolerated_message(st)
     if not ordered:
-        st.message = ""
+        if not h.baseline_failed_tolerated:
+            st.message = ""
         return h.finish(SUCCEEDED, "", reasons=[])
     return h.finish(INCOMPLETE, ordered[0], reasons=ordered)
+
+
+# 조치 전 빌드 실패를 받아들인 실행이 끝날 때 state.message의 앞부분. i18n의 한국어 규칙과 보고서가 이 문장을 알아본다
+TOLERATED_HEAD = "the project did not build before the remediation either"
+
+
+def tolerated_message(st: RemediationState) -> str:
+    """조치 전 빌드 실패를 받아들인 실행의 결과를 설명하는 영어 문장을 만든다.
+
+    The English sentence of a run whose failed baseline build was tolerated: the baseline's error count, whether
+    versions were changed and scanned again, that no build confirmed them, and what the comparison showed."""
+    cmps = [rs.build_compare for rs in st.rounds if rs.committed and rs.build_tolerated and rs.build_compare]
+    base_n = cmps[-1].get("baseline_errors") if cmps else None
+    head = TOLERATED_HEAD + (f" ({base_n} error(s) in baseline/build.log)" if isinstance(base_n, int) else "")
+    if not cmps:
+        if any(rs.committed for rs in st.rounds):
+            return f"{head}; the changed versions were built and scanned again"
+        return f"{head}; no version was changed, so there was nothing for a build to confirm"
+    last = cmps[-1]
+    return (f"{head}; the changed versions were scanned again, but no build confirmed them: the candidate build "
+            f"stopped at the same errors as the baseline build ({last.get('candidate_errors')} error(s), none new)")
 
 
 def _report(h: _Holder) -> str | None:

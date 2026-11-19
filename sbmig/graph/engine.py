@@ -223,7 +223,8 @@ def _chain_remediation(orch: Orchestrator, report: RunReport, state: MigrationSt
     """취약점 조치를 이어서 실행할 조건이 맞으면 ``chain.run_after_migration``을 호출하고 요약을
     ``report.remediation``에 둔다. 조건이 하나라도 맞지 않으면 아무것도 기록하지 않고 None을 반환한다.
     조건: 설정 켜짐, dry-run 아님, ``stop_after`` 없음, 계획 단계까지 진행, 사용자 중지와 중단 없음, 이관
-    성공(``Orchestrator.build_succeeded``).
+    성공(``Orchestrator.build_succeeded``). 변환만 한 프레임워크 프로젝트는 최종 빌드가 실패해도 이어 간다
+    (``Orchestrator.remediation_after_failed_build``, ``baseline_may_fail=True``).
     이 노드 직전에 ``stop.request``가 생겼으면 조치를 시작하지 않는다.
 
     Chain the remediation when every condition holds; the summary goes to `report.remediation`. None = not chained."""
@@ -233,8 +234,12 @@ def _chain_remediation(orch: Orchestrator, report: RunReport, state: MigrationSt
         return None
     if not planned or user_stopped or state.get("aborted") or state.get("stopped") or "aborted" in report.flags:
         return None
+    # 변환만 한 프레임워크 프로젝트는 빌드가 실패해도 조치를 이어서 실행한다(오픈소스 라이브러리 검사이기 때문이다)
+    after_failure = False
     if not orch.build_succeeded(report):
-        return None
+        after_failure = orch.remediation_after_failed_build(report)
+        if not after_failure:
+            return None
     from sbmig.remediations import chain
 
     skipped: dict[str, Any] = {}
@@ -254,7 +259,8 @@ def _chain_remediation(orch: Orchestrator, report: RunReport, state: MigrationSt
         rs = chain.run_after_migration(orch.ws.run_dir, orch.ws.root, orch.cfg, run_id=orch.ws.run_id, journal=journal,
                                        stop=lambda: stop_requested(orch),
                                        exclude_dirs=list(getattr(orch.ws, "ignored_dirs", None) or []),
-                                       build_targets=migration_build_targets(orch))
+                                       build_targets=migration_build_targets(orch),
+                                       baseline_may_fail=after_failure)
         report.timings_s["remediation"] = round(orch.clock() - t0, 3)
         if rs is None and not skipped:            # disabled after all (cannot happen with the switch on) — no token
             return None
@@ -420,8 +426,8 @@ def build_graph(orch: Orchestrator, flow: str | None = None) -> Any:
         return {"phase": None, "summary": _summary(orch, report)}
 
     def remediation(state: MigrationState) -> dict:
-        """설정이 켜져 있고 이관이 최종 빌드에 성공했을 때만 취약점 조치 그래프를 호출한다.
-        그 밖에는 바로 반환한다.
+        """설정이 켜져 있고 이관이 최종 빌드에 성공했을 때(변환만 한 프레임워크 프로젝트는 실패했을 때도) 취약점 조치
+        그래프를 호출한다. 그 밖에는 바로 반환한다.
         조치의 결과나 예외는 이관 결과를 바꾸지 않는다."""
         report = _report(orch)
         try:

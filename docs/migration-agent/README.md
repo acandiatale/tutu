@@ -106,13 +106,15 @@ flowchart TD
   PLAN --> SC{"범위 (MigrationPlan.scope)"}
   SC -->|"full"| T["transform: OpenRewrite 한 번 (빌드 없음)"]
   SC -->|"jdk-jakarta (사내 프레임워크)"| TF["transform: 소스 인코딩 · framework.recipe_sets 레시피 · provided scope 되돌리기 · JSP jakarta"]
-  TF --> V
+  TF --> VO["verify: mvn clean package 한 번 (빌드 오류 수정 없음)"]
+  VO -->|"성공"| REM
+  VO -->|"실패: 남은 오류를 보고서에"| REM
   T --> R["restructure: 회사 레이아웃 · 버전 정리 · 동봉 jar · JSP jakarta"]
   R --> RV["structure review: LLM 이 pom·의존성·모듈 점검, critical 은 edits"]
   RV --> V["verify: mvn clean package"]
   V -->|"실패"| LOOP["수정 루프 (≤ 50 라운드)"]
   LOOP --> VF["최종 mvn clean package"]
-  V -->|"성공"| REM{"BUILD SUCCESS 이고 remediation.after_migration?"}
+  V -->|"성공"| REM{"remediation.after_migration 이고 BUILD SUCCESS (사내 프레임워크는 실패도)?"}
   VF --> REM
   REM -->|"예"| RM["remediation: IVAS 검사 · 버전 수정 · 재검사 (승인 없이 끝까지)"]
   REM -->|"아니오"| FIN["finalize: 보고서 · errors.md · KB · result.zip"]
@@ -125,7 +127,7 @@ LangGraph 노드는 `intake` → `analyze` → `plan` → `phase`(단계 묶음�
 멈춤(`--stop-after`, 웹의 Stop)이나 중단은 곧바로 `finalize` 로 갑니다. Stop 은 노드 사이에서만 반영되고, 진행 중인 Maven·LLM 호출은 끊지 않습니다.
 마지막 단계 묶음 뒤의 멈춤 요청은 이렇게 처리합니다(`Orchestrator.late_stop`, 두 엔진 같음): 계획한 최종 빌드에 결과가 없으면 중단, 수정 루프가 요청으로 나왔으면 중단(트리가 루프의 마지막 빌드 뒤 그대로면 최종 빌드를 다시 하지 않고 그 빌드가 최종 빌드), 최종 빌드가 모두 끝난 뒤에 온 요청은 무시하고 실행을 그대로 끝냅니다(저널 `stop_request`).
 
-사내 프레임워크 프로젝트는 계획의 범위가 `jdk-jakarta` 라서 재구성과 구조 검토를 건너뛰고 변환에서 곧바로 검증으로 갑니다(4.9절).
+사내 프레임워크 프로젝트는 계획의 범위가 `jdk-jakarta` 라서 재구성과 구조 검토를 건너뛰고 변환에서 곧바로 검증으로 갑니다. 빌드는 한 번만 하고 수정 루프는 돌지 않습니다(`framework.fix_loop: true` 일 때만 위 그림의 수정 루프로 갑니다, 4.9절).
 
 MSA 는 공유 라이브러리 루트 먼저, 그다음 서비스마다 `transform.rewrite@<x>` → `restructure.msa_pom` → `restructure.review` → `verify.build` 입니다(루트 aggregator 가 없으면 서비스마다 verify).
 
@@ -187,7 +189,7 @@ LLM 이 재구성된 pom 전부와 재구성 메모, 부모 체인 사실, 인�
 
 ### 4.7 verify
 
-`mvn clean package -Dmaven.test.skip=true`. 실패하면 수정 루프(§5), 루프가 돌았으면 최종 빌드를 **반드시** 한 번 더 합니다(루프가 멈춤 요청으로 나왔고 트리가 그대로면 루프의 마지막 빌드가 최종 빌드). MSA 의 `report.final_build` 는 실패한 첫 최종 빌드입니다.
+`mvn clean package -Dmaven.test.skip=true`. 실패하면 수정 루프(§5), 루프가 돌았으면 최종 빌드를 **반드시** 한 번 더 합니다(루프가 멈춤 요청으로 나왔고 트리가 그대로면 루프의 마지막 빌드가 최종 빌드). MSA 의 `report.final_build` 는 실패한 첫 최종 빌드입니다. 사내 프레임워크 프로젝트는 기본으로 수정 루프 없이 이 빌드 한 번이 결과입니다(4.9절).
 Windows `target/` 잠금은 기다렸다 다시(`build.file_lock_retries`), 로컬 저장소 부정 캐시는 `-U` 로 한 번 더.
 
 ### 4.8 finalize
@@ -198,7 +200,8 @@ LLM 사용량·비용, 성공 판정(계획한 최종 빌드 전부 성공 + `re
 ### 4.9 사내 프레임워크 프로젝트 (범위 `jdk-jakarta`)
 
 사내 프레임워크 아티팩트(`framework.artifacts`, 회사 yml 에만 적는 좌표, 예 `com.example.fw:example-fw-core`)를 쓰는 프로젝트는 회사 레이아웃과
-Spring Boot 4 로 옮기지 않습니다. JDK 21 과 jakarta 만 올리고, 빌드 오류는 수정 루프로 고치고, 성공하면 취약점 조치로 넘어갑니다.
+Spring Boot 4 로 옮기지 않습니다. JDK 21 과 jakarta 만 올리고 빌드를 한 번 해서 결과를 알린 뒤 변환한 트리를 내려줍니다. 빌드 오류는 고치지 않습니다(사전 시도, 저장된 스크립트, LLM 호출 모두 없음).
+사내 프레임워크와 사내 라이브러리가 얽힌 오류는 LLM 이 풀기 어렵고 담당자가 손대야 하는 경우가 많기 때문입니다. 취약점 조치는 빌드가 통과해도 실패해도 이어집니다(오픈소스 라이브러리 검사이므로).
 부모 pom, 모듈 구조, Spring 라인, 프레임워크 버전은 그대로입니다. 패턴이 비어 있으면 검사하지 않습니다.
 
 ```mermaid
@@ -215,7 +218,7 @@ flowchart TD
   TR -->|"없음 · 읽지 못함 (unchecked)"| FULL2["full: 저널 framework_check"]
   S -->|"jdk-jakarta"| R["jdk-jakarta: 저널 framework_project, 인수인계 한 줄"]
   S -->|"full"| FULL
-  R --> PL["plan: transform.rewrite (framework.recipe_sets) · transform.jsp_jakarta · verify.build"]
+  R --> PL["plan: transform.rewrite (framework.recipe_sets) · transform.jsp_jakarta · verify.build (빌드 1회)"]
 ```
 
 - 레시피: `framework.recipe_sets`(기본 `jdk21`, `jakarta`). 기본 jakarta 세트는 서블릿 API 를 서블릿 5.0 기준으로 올리므로, Tomcat 10.1 이상에 올릴 프로젝트는 `servlet_jakarta_10` 을 더합니다(회사가 정할 스위치).
@@ -223,9 +226,12 @@ flowchart TD
 - 레시피가 compile 로 바꾼 as-is `provided` scope 는 변환 직후 되돌립니다(커밋 `transform: as-is provided scopes restored`, 저널 `scopes_restored`).
 - 커밋 순서: `transform: source encodings written` → `rewrite: transform.rewrite` → `transform: as-is provided scopes restored` → `transform: JSP javax → jakarta`. 두 정정은 보고서 「코드 수정 내역」의 자동 변환 줄과 `errors.md` 에 `transform` 단계의 pom 정정으로 나옵니다.
 - 부모 pom 을 회사 부모로 맞추지 않습니다. 저장소가 부모 pom 을 주지 않으면 LLM 없이 `aborted:parent-not-found` 로 멈춥니다.
-- 수정 루프: 버전 사실은 프로젝트 자기 부모 체인에서 오고 Boot BOM 은 쓰지 않습니다. 프레임워크 선언·버전이나 `<parent>` 를 바꾼 시도는 되돌립니다(저널 `framework_guard`; 버전의 `${…}` 는 프로젝트 안 부모 체인으로 풀어 비교하므로 루트 pom 의 속성을 바꾼 것도 잡습니다). 프레임워크 자신이 javax 기준이면 LLM 없이 `external_javax_api` 로 차단하고 담당자에게 jakarta 빌드를 요청하라고 적습니다.
-- 결과: `SBMIG-RESULT … scope=jdk-jakarta`, 보고서의 `## 사내 프레임워크 프로젝트` 절, 화면의 `프레임워크 프로젝트` 표시와 `하지 않음` 단계(재구성, 구조 검토).
-- 취약점 조치: 프레임워크와 그것이 가져오는 라이브러리는 사내 그룹 `framework` 몫이라 제안하지 않습니다.
+- 빌드: `verify.build` 마다 한 번 빌드합니다. 남은 오류는 보고서에서 「해결하지 못한 오류」가 아니라 「변환 뒤 남은 빌드 오류」로 나오고(자동으로 고치지 않았다는 앞 문장, 「확인해 주세요」 첫 줄이 이 절을 가리킴), 인수인계에 고치지 않았다는 한 줄이 붙습니다. 통과하면 exit 0, 실패하면 exit 2 이고 `result.zip` 은 변환한 트리입니다. 남은 오류는 프로젝트 담당자와 프레임워크 담당자가 봅니다.
+- 취약점 조치: 빌드가 통과하면 보통 조치이고, 실패해도 이어서 돕니다(`remediation.after_failed_build: framework`, 기본. `never` 면 통과한 실행만). 실패한 빌드 뒤의 조치는 기준 빌드의 실패를 견디며(`RemediationState.baseline_tolerated`, 저널 `remediation_baseline_failed` `tolerated: true`), 후보 빌드는 기준 빌드에 있던 오류로만 실패해야 하고(같은 빌드 대상, 같은 실패 모듈, 모든 오류가 기준 빌드의 것, `maven.compare_with_baseline`), 새 오류가 생기면 `FAILED`(`candidate_build_failed`, `baseline_build_failed`)입니다. 버전을 바꿨으면 빌드로 확인한 변경이 없으므로 `SUCCEEDED` 가 아니라 `INCOMPLETE`(첫 사유 `baseline_build_failed`, 요약 `baseline_tolerated: true`, 결과 줄 `exit=2 … remediation=INCOMPLETE`)로 끝나고, 다른 사유가 없으면 화면은 「조치함 · 빌드 미확인」, 이관 보고서는 「조치했지만 빌드로 확인하지 못했습니다」라고 씁니다. 빌드 오류를 고친 뒤 바뀐 버전으로 한 번 빌드해야 합니다. 바꾼 버전이 없거나 수정본이 빌드되면 보통 조치처럼 끝납니다. 기준 빌드가 시간 초과였으면 견디지 않습니다. 이관은 실패 그대로입니다.
+- 설정 두 가지: `framework.fix_loop`(기본 `false`, `true` 면 아래 수정 루프가 돕니다)와 `framework.name`(화면과 보고서에 보일 이름, 기본 `""`). 이름이 비어 있으면 프로젝트에서 찾은 아티팩트, 그다음 설정한 패턴의 artifactId 에서 끝의 역할 낱말(`core`, `framework`, `fw`, `starter`, `parent`, `bom`, `boot`, `common`, `base`, `api`)을 떼고 첫 글자를 대문자로 바꿔 만듭니다(`example-fw-core` → `Example`). 만든 이름이 틀리면 회사 `config/artifacts.yml` 에 `framework.name` 한 줄을 넣고 이미지를 다시 빌드합니다. 실제 이름은 회사 이름이라 이 저장소에는 적지 않습니다.
+- 수정 루프(`framework.fix_loop: true` 일 때만): 버전 사실은 프로젝트 자기 부모 체인에서 오고 Boot BOM 은 쓰지 않습니다. 프레임워크 선언·버전이나 `<parent>` 를 바꾼 시도는 되돌립니다(저널 `framework_guard`; 버전의 `${…}` 는 프로젝트 안 부모 체인으로 풀어 비교하므로 루트 pom 의 속성을 바꾼 것도 잡습니다). 프레임워크 자신이 javax 기준이면 LLM 없이 `external_javax_api` 로 차단하고 담당자에게 jakarta 빌드를 요청하라고 적습니다.
+- 결과: `SBMIG-RESULT … scope=jdk-jakarta`(수정 루프가 꺼져 있으면 `llm=0`). 사람이 이 실행을 만나는 곳마다 이름을 넣은 문장 `<이름> 프레임워크는 JDK 21, Jakarta만 적용합니다.`(이름이 없으면 `사내 프레임워크 프로젝트는 JDK 21, Jakarta만 적용합니다.`)를 강조해서 보여 줍니다. 이런 프로젝트가 덜 받는다는 것을 모르기 쉽기 때문입니다. 보고서는 머리 표 바로 아래 `## <이름> 프레임워크 프로젝트` 절이 이 문장(굵게)으로 시작하고 한 일과 하지 않은 일을 적습니다. 화면은 실행 카드와 결과 카드에 강조한 안내 상자를 띄우고, 서버 설정에 프레임워크 아티팩트가 있으면 올리기 카드에도 늘 보여 줍니다. 단계 줄의 재구성과 구조 검토는 `하지 않음` 입니다. 저널 `framework_project` 와 `plan` 에는 `name`, `fix_loop` 가 붙습니다.
+- 사내 그룹: 프레임워크와 그것이 가져오는 라이브러리는 사내 그룹 `framework` 몫이라 제안하지 않습니다.
 
 진단과 고칠 자리: `agent-doc/13-framework-projects.md`.
 
@@ -330,7 +336,7 @@ flowchart LR
 | 전환 내용 | Java · Spring Boot · 부모 pom 의 변경 전과 후, 의존성 버전 표(⚠ = 새 부모 pom 에 버전이 없어 기존 버전을 유지한 의존성), 추가 · 제거한 의존성 |
 | 확인해 주세요 | 담당 팀이 확인할 일을 번호 목록 하나로. 지원이 끝난 라이브러리 안내(대체할 라이브러리, 설명, 할 일, 문서)가 먼저 나옵니다 |
 | 코드 수정 내역 | 자동 변환(OpenRewrite, 재구성)은 요약만, 그 뒤 빌드 오류를 해결하려고 고친 파일은 파일마다 설명 · 수정 이유 · 최종 diff 하나 |
-| 해결하지 못한 오류 | 최종 빌드에 남은 오류만(파일 · 줄 · 오류). 해결된 오류는 보고서에 싣지 않습니다 |
+| 해결하지 못한 오류 | 최종 빌드에 남은 오류만(파일 · 줄 · 오류). 해결된 오류는 보고서에 싣지 않습니다. 수정 루프 없는 사내 프레임워크 실행은 「변환 뒤 남은 빌드 오류」 |
 | 진행하지 않은 항목 | 프로젝트 안에서 해결할 수 없어 손대지 않은 것 |
 | 그 밖의 절 | 해당할 때만: 운영자 확인(메이저 업그레이드), Ant pom 합성, ADF, 포함된 jar, javax API jar, 외부 설정 값, 취약점 조치 |
 | 참고 | 접어 둔 블록: 실행 정보, LLM 사용량과 비용, 산출물, 진단용 기록 |
@@ -387,7 +393,7 @@ Main ↔ Worker 의 파일·종료 코드·멈춤·복구 약속: `docs/v2/JOB-R
 
 ## 10. 취약점 조치
 
-이관이 BUILD SUCCESS 로 끝나고 `remediation.after_migration` 이 켜져 있으면, 마지막 노드 `remediation` 이 같은 빌드 파드 안에서 별도 그래프를 부릅니다:
+이관이 BUILD SUCCESS 로 끝나고(수정 루프 없는 사내 프레임워크 프로젝트는 빌드가 실패해도, 4.9절) `remediation.after_migration` 이 켜져 있으면, 마지막 노드 `remediation` 이 같은 빌드 파드 안에서 별도 그래프를 부릅니다:
 IVAS 로 이관된 프로젝트를 검사하고, 취약 라이브러리의 **버전 글자만** 고쳐(간접 의존성은 `dependencyManagement` 항목 하나를 추가) 다시 빌드·재검사합니다. 결과는 `<실행 폴더>/remediation/` 에 남고 이관의 판정·종료 코드는 바꾸지 않습니다(`SBMIG-RESULT … remediation=<상태>`).
 기본 설정에서는 사람의 승인을 기다리지 않고 같은 파드에서 끝까지 진행합니다. 검토 없이 적용한 메이저 버전 변경과 추가한 항목은 조치 보고서의 「주의」 열과 「해야 할 일」에 표시합니다. 승인을 켠 설치에서만 승인 대기로 파드가 끝나고, 재개는 새 빌드 파드로 이어 갑니다. 「조치 완료」와 「해결된 취약점」은 완전한 최종 검사에서 사라진 취약점만 셉니다. 잘못된 버전이 들어가지 않도록, 여러 라이브러리가 함께 쓰는 버전 property, 패치 힌트가 없는 다른 메이저, 날짜로 번호를 매긴 옛 버전, 이미 패치 힌트를 만족하는 버전, 꺼진 프로필에만 있는 선언, 두 번 선언된 의존성은 바꾸지 않고 담당 팀 몫으로 남깁니다. 모든 조치는 `remediation/remediation.log` 를 남깁니다. 노드·상태·API·설정: `agent-doc/11-remediations.md`.
 

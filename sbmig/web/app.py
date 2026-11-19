@@ -17,7 +17,8 @@ Routes:
                                          `sbmig serve --config` / $SBMIG_WEB_CONFIGS, else artifacts.yml /
                                          artifacts.local-e2e.yml when present) — the page runs with the default and
                                          shows the full list only under "고급 설정"; "max_parallel" = how many
-                                         migrations run at a time (v2.1z-ae: Job modes, else 1)
+                                         migrations run at a time (v2.1z-ae: Job modes, else 1); "framework" =
+                                         {configured, name, fix_loop} of those configs (v2.1z-aw)
     GET  /api/runs                       known runs (newest first) with status ("runs"; a waiting run carries "queue",
                                          a Job run its "slot") and "parallel": {slots, running, waiting}
     POST /api/runs?name=<file.zip>[&configs=a.yml,b.yml][&stop_after=…][&llm_provider=…][&flow=full|remediation]
@@ -25,7 +26,8 @@ Routes:
          `configs` omitted = the server default; `configs=` (empty) = default.yml only; `flow` (v2.1z-aj) omitted =
          `full` (migration, then the chained remediation), `remediation` = remediation only (no migration), another
          value → 400; `stop_after` with `flow=remediation` → 400
-    GET  /api/runs/{id}                  status
+    GET  /api/runs/{id}                  status ("framework": {name, scope, fix_loop} for a run in the reduced
+                                         scope jdk-jakarta, from report.json or the journal; v2.1z-aw)
     GET  /api/runs/{id}/events           SSE: status | node | error | journal | log | report | ping | end
     POST /api/runs/{id}/stop             stop after the current graph node
     GET  /api/runs/{id}/files/{name}     report.md | report.json | result.zip | sbmig.log | journal.jsonl |
@@ -40,7 +42,8 @@ Routes:
                                          at most 5,000 per call)
     /api/remediations…                   vulnerability remediation (separate LangGraph flow; in-process: worker threads
                                          of this process, one at a time; Job modes: runs in the build pod after a
-                                         successful migration, chained ones read here by run id):
+                                         successful migration, or after a framework project's failed build when its
+                                         fix loop is off (v2.1z-aw), chained ones read here by run id):
                                          POST (zip body) / GET list / GET readiness /
                                          GET {id} / result / proposals / POST approvals / resume / stop /
                                          GET files/{name} / DELETE {id} — `sbmig.remediations.api` (contract API.md)
@@ -544,7 +547,9 @@ def create_app(out_dir: Path, repo_root: Path = PACKAGE_ROOT, max_upload_mb: int
     def configs() -> dict:
         return {"configs": mgr.configs(), "default": mgr.default_configs(), "repo_root": str(mgr.repo_root),
                 "out_dir": str(mgr.out_dir), "max_upload_mb": max_upload // (1024 * 1024),      # 0 = no limit
-                "max_parallel": mgr.max_parallel}
+                "max_parallel": mgr.max_parallel,
+                # 기본 설정이 사내 프레임워크를 지정하면 화면이 업로드 전에 줄인 범위를 알린다
+                "framework": mgr.framework_info()}
 
     # 화면이 슬롯 부족 알림과 대기 순번을 표시할 수 있도록 실행 목록과 함께 동시 실행 현황을 반환한다
     @app.get("/api/runs")

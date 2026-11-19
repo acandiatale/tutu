@@ -39,7 +39,9 @@
         "evidence.0.source": "direct",
         "evidence.0.artifact": "com.example.fw:example-fw-core",
         "evidence.0.version": "1.0.0",
-        "evidence.0.where": "regex:(.*/)?pom\\.xml"
+        "evidence.0.where": "regex:(.*/)?pom\\.xml",
+        "name": "Example",
+        "fix_loop": false
       },
       {
         "event": "plan",
@@ -48,7 +50,9 @@
           "transform.rewrite",
           "transform.jsp_jakarta",
           "verify.build"
-        ]
+        ],
+        "name": "Example",
+        "fix_loop": false
       },
       {
         "event": "rewrite",
@@ -86,6 +90,18 @@
       },
       {
         "event": "rewrite_parse_problems"
+      },
+      {
+        "event": "verify_loop_start"
+      },
+      {
+        "event": "verify_loop_skipped"
+      },
+      {
+        "event": "plan_advice"
+      },
+      {
+        "event": "fixer"
       }
     ],
     "journal_sequence": [
@@ -294,6 +310,30 @@
           "absent": [
             "WEB-INF/lib/(jakarta|javax)\\.servlet-api-.*\\.jar"
           ]
+        }
+      },
+      {
+        "file_contains": {
+          "path": "../report.md",
+          "contains": "## Example framework project"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "../report.md",
+          "contains": "**Example framework projects get JDK 21 and Jakarta only.**"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "../report.md",
+          "contains": "Done in this run: JDK 21 and Jakarta conversion, one build"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "../report.md",
+          "contains": "automatic build error fixes (framework.fix_loop: false)"
         }
       }
     ]

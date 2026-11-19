@@ -22,7 +22,8 @@ items are `blocked=`). Present whenever the line is made from a report or a flee
 2026-11-11: ` remediation=<STATUS|skipped>` is appended when a vulnerability remediation was chained after the
 migration's BUILD SUCCESS (`report.remediation`: SUCCEEDED / INCOMPLETE / FAILED / AWAITING_APPROVAL / …) or the switch
 `remediation.after_migration` was on and the chain was skipped (not ready, stop request, inline engine). It never changes
-`exit=` / `build=` / `attn=`.
+`exit=` / `build=` / `attn=`. v2.1z-aw: a conversion-only framework run whose build failed is chained too, so the token
+also stands beside `exit=2 build=FAIL`.
 v2.1z-aj: ` flow=remediation` (just before `remediation=`) marks a run of the `remediation` flow (no migration; `exit=` 0 =
 SUCCEEDED, 2 = any other saved status, 3 = not started). Its `build=` says what was built, not whether the remediation
 succeeded (`remediation_build_ok`): `ok` when the baseline build of the project as uploaded ran and passed

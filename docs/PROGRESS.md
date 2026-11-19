@@ -34,9 +34,12 @@
 - [x] 구조 정리를 마치기 전에는 빌드를 돌리지 않는다(반쯤 바뀐 트리에서 빌드하지 않음) (v2.1o)
 
 **사내 프레임워크 프로젝트**
-- [x] 사내 프레임워크 아티팩트(`framework.artifacts`, 회사 yml)를 쓰는 프로젝트는 회사 레이아웃 · Boot 4 로 옮기지 않고 범위 `jdk-jakarta` 로 돈다: `framework.recipe_sets` 의 레시피(기본 Java 21 + jakarta), 레시피 전 MS949 · EUC-KR 소스 모듈의 `project.build.sourceEncoding` 쓰기(JDK 18부터 javac 기본이 UTF-8이고 OpenRewrite 도 못 읽는 파일은 건너뜀, 부모가 다른 값을 정하면 부모 값을 두고 인수인계), 레시피 뒤 as-is `provided` scope 되돌리기, JSP javax → jakarta, 빌드와 수정 루프, 이어지는 취약점 조치. 재구성 · 구조 검토 없음, 부모 pom · 프레임워크 버전 유지, 결과 줄 `scope=jdk-jakarta` (v2.1z-ak)
+- [x] 사내 프레임워크 아티팩트(`framework.artifacts`, 회사 yml)를 쓰는 프로젝트는 회사 레이아웃 · Boot 4 로 옮기지 않고 범위 `jdk-jakarta` 로 돈다: `framework.recipe_sets` 의 레시피(기본 Java 21 + jakarta), 레시피 전 MS949 · EUC-KR 소스 모듈의 `project.build.sourceEncoding` 쓰기(JDK 18부터 javac 기본이 UTF-8이고 OpenRewrite 도 못 읽는 파일은 건너뜀, 부모가 다른 값을 정하면 부모 값을 두고 인수인계), 레시피 뒤 as-is `provided` scope 되돌리기, JSP javax → jakarta, 빌드 1회, 빌드가 통과하든 실패하든 이어지는 취약점 조치. 재구성 · 구조 검토 · 빌드 오류 자동 수정 없음(LLM 0회), 부모 pom · 프레임워크 버전 유지, 결과 줄 `scope=jdk-jakarta` (v2.1z-ak, v2.1z-aw)
 - [x] 찾는 곳: pom 의 직접 선언 → 부모 pom 에서 상속(as-is effective pom) → 트리 안 jar → 간접 의존성(`dependency:tree` 1회). 확인하지 못한 곳은 보고서와 저널에 남긴다
-- [x] 수정 루프는 프레임워크 선언 · 버전과 `<parent>` 를 바꾼 시도를 되돌리고, javax 기준 프레임워크는 LLM 없이 담당자 몫으로 차단한다. 받지 못하는 부모 pom 은 중단
+- [x] 빌드 오류는 고치지 않는다(`framework.fix_loop: false` 가 기본): 사전 시도 · 저장된 스크립트 · LLM 호출 없이 변환 뒤 남은 오류를 보고서에 적고 변환한 트리를 전달한다. 빌드 실패는 종료 코드 2 (v2.1z-aw)
+- [x] 빌드가 실패한 프레임워크 프로젝트도 취약점 조치를 이어서 한다(`remediation.after_failed_build: framework`): 조치 전 빌드 실패를 받아들이고, 수정본 빌드가 조치 전과 같은 오류로만 실패하면 버전을 바꿔 다시 검사한다. 버전을 바꿨으면 빌드로 확인하지 못한 것이므로 완료가 아니라 `INCOMPLETE`(`baseline_build_failed`)로 끝나고, 바꾼 버전이 없으면 여느 조치처럼 끝난다. 일반 프로젝트와 조치만 하는 실행은 그대로 (v2.1z-aw)
+- [x] 프레임워크 이름을 화면과 보고서에 쓴다: `framework.name`(회사 yml) 또는 아티팩트 이름에서 만든 이름(`example-fw-core` → `Example`). 올리기 카드 · 실행 카드 · 결과 카드와 보고서 첫 줄이 「<이름> 프레임워크는 JDK 21, Jakarta만 적용합니다.」 (v2.1z-aw)
+- [x] `framework.fix_loop: true` 이면 수정 루프를 돌린다: 프레임워크 선언 · 버전과 `<parent>` 를 바꾼 시도를 되돌리고, javax 기준 프레임워크는 LLM 없이 담당자 몫으로 차단한다. 받지 못하는 부모 pom 은 어느 쪽이든 중단
 - [ ] 실제 회사 프레임워크 프로젝트로 돌려 보기, 그 프로젝트의 이어지는 취약점 조치(실제 IVAS), Job 모드 화면
 
 **구조 정리 (회사 레이아웃, 3절의 규칙)**

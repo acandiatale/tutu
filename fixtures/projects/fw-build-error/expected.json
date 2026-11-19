@@ -1,0 +1,149 @@
+{
+  "case_type": "pure_java",
+  "java_version": "1.8",
+  "spring_boot_version": null,
+  "spring_version": null,
+  "packaging": "jar",
+  "libraries": [],
+  "optional_artifacts_in_use": [],
+  "main_classes": [
+    "com.example.fwapp.App"
+  ],
+  "catalog": [],
+  "requires_libs": [
+    "com.example.fw:example-fw-core:1.0.0"
+  ],
+  "expect": {
+    "success": false,
+    "exit_code": 2,
+    "max_llm_calls": 0,
+    "blocked": [],
+    "flags": [
+      "framework-project"
+    ],
+    "forbidden_flags": [
+      "regex:aborted.*",
+      "restructure-failed",
+      "hollow-reactor"
+    ],
+    "journal_events": [
+      {
+        "event": "framework_project",
+        "scope": "jdk-jakarta",
+        "name": "Example",
+        "fix_loop": false,
+        "artifacts": [
+          "com.example.fw:example-fw-core"
+        ],
+        "evidence.0.source": "direct"
+      },
+      {
+        "event": "plan",
+        "scope": "jdk-jakarta",
+        "name": "Example",
+        "fix_loop": false
+      },
+      {
+        "event": "verify_loop_skipped",
+        "step": "verify.build",
+        "reason": "framework.fix_loop: false",
+        "entries": 1
+      },
+      {
+        "event": "verify",
+        "step": "verify.build",
+        "ok": false
+      }
+    ],
+    "journal_events_absent": [
+      {
+        "event": "verify_loop_start"
+      },
+      {
+        "event": "restructure"
+      },
+      {
+        "event": "structure_review"
+      },
+      {
+        "event": "plan_advice"
+      },
+      {
+        "event": "fixer"
+      }
+    ],
+    "phases": {
+      "restructure": "absent"
+    },
+    "followups_contains": [
+      "regex:^framework project: build errors are not fixed automatically \\(framework\\.fix_loop: false\\) — \\d+ error\\(s\\) remain after the JDK 21 \\+ jakarta conversion; see the error list$"
+    ],
+    "error_entries": {
+      "min": 1,
+      "status_min": {
+        "unresolved": 1
+      },
+      "status_max": {
+        "resolved": 0
+      }
+    },
+    "scripts": {
+      "attempts": {
+        "new": 0,
+        "augment": 0,
+        "reuse": 0
+      }
+    },
+    "kb": {
+      "dir": "out/e2e/kb-fw-build-error",
+      "may_be_empty": true
+    },
+    "post_checks": [
+      {
+        "file_contains": {
+          "path": "src/main/java/com/example/fwapp/App.java",
+          "contains": "System.runFinalizersOnExit(true);"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "pom.xml",
+          "not_contains": "<parent>"
+        }
+      },
+      {
+        "pom_dependency_versioned": {
+          "path": "pom.xml",
+          "artifacts": [
+            "com.example.fw:example-fw-core"
+          ],
+          "version": "1.0.0"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "../report.md",
+          "contains": "## Example framework project"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "../report.md",
+          "contains": "**Example framework projects get JDK 21 and Jakarta only.**"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "../report.md",
+          "contains": "Done in this run: JDK 21 and Jakarta conversion, one build"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "../report.md",
+          "contains": "automatic build error fixes (framework.fix_loop: false)"
+        }
+      }
+    ]
+  }
+}

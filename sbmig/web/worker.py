@@ -15,7 +15,7 @@
 - SIGTERM / SIGINT를 받으면 자식 프로세스 트리 전체를 종료하고 ``job-status.json``에 exit 3과 종료 사유를 기록한다
 - 종료 코드: 3은 중단(거절, 종료 신호, sbmig exit 3, 자식 실행 실패), 2는 빌드 실패이면서
   ``SBMIG_FAIL_JOB_ON_BUILD_FAIL=1``일 때, 그 밖에는 0
-- 이관이 BUILD SUCCESS면 자식이 취약점 조치까지 이어서 실행한다.
+- 이관이 BUILD SUCCESS면 자식이 취약점 조치까지 이어서 실행한다. 변환만 한 프레임워크 프로젝트는 빌드가 실패해도 이어서 실행한다.
   마지막 마스킹은 ``remediation/``의 텍스트 파일도 대상으로 하고 ``IVAS_USER_ID``도 비밀 값으로 본다
 - ``SBMIG_WORKER_ACTION=remediation-resume``이면 ``control/remediation-resume.json``을 확인한 뒤 자식으로
   ``remediation-resume``을 같은 규칙으로 실행하고 결과를 ``remediation-job-status.json``에 기록한다. 이관의
@@ -35,7 +35,8 @@ and only when that fails too the shared repository, said so either way (journal 
 2026-11-10): as the pod's PID 1 the Worker would ignore SIGTERM without a handler; on SIGTERM / SIGINT it forwards the
 signal to the child's whole tree (Maven in its own session included), SIGKILLs what is left after `TERM_GRACE_S`, writes
 exit 3 + a "terminated" error to `job-status.json` and exits 3. Remediation (2026-11-11): a migration that ended BUILD
-SUCCESS with `remediation.after_migration` on continues into the remediation inside the same child (`<run dir>/remediation/`);
+SUCCESS with `remediation.after_migration` on continues into the remediation inside the same child (`<run dir>/remediation/`;
+since v2.1z-aw also a framework project's failed build when its fix loop is off — the exit code stays the migration's);
 the child inherits the IVAS variables from the Worker's environment, the final redaction pass covers `remediation/`'s text files
 (never its ZIPs, project trees or `original/`), and a stop signal during the remediation keeps the migration's result line in
 the error text. Remediation resume (2026-11-11, wave 4): with `SBMIG_WORKER_ACTION=remediation-resume` the Worker runs a NEW

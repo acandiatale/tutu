@@ -12,7 +12,7 @@ type: `sbmig/core/models.py`, `sbmig/core/interfaces.py`, `sbmig/core/config.py`
 | topic | sections |
 |---|---|
 | run directory & workspace | Base "Run directory and workspace"; v2.1z-h (`ignored_dirs`) |
-| intake / analyze | Base "Intake and analyze", "Externalized configuration"; v2.1j (Ant), v2.1k + v2.1z "Review follow-ups" (rootless trees), v2.1z-c (hollow reactor), v2.1z-d (ADF), v2.1z-h (stray poms), v2.1z-i (bundled jars), v2.1z-z (build extensions); v2.1z-aj (Ant refused by default); v2.1z-ak (framework projects: detection, scope) |
+| intake / analyze | Base "Intake and analyze", "Externalized configuration"; v2.1j (Ant), v2.1k + v2.1z "Review follow-ups" (rootless trees), v2.1z-c (hollow reactor), v2.1z-d (ADF), v2.1z-h (stray poms), v2.1z-i (bundled jars), v2.1z-z (build extensions); v2.1z-aj (Ant refused by default); v2.1z-ak (framework projects: detection, scope); v2.1z-aw (framework projects: conversion only, the framework's name) |
 | plan | v2 "Plan (L)"; v2.1o (1) (`plan.compile_after_rewrite`); v2.1u … v2.1y / v2.1w (recipe sets); v2.1z-ak (the reduced plan `jdk-jakarta`) |
 | transform (OpenRewrite) | Base "Plan, transform"; v2.1l "Recipes"; v2.1o (Framework 7); v2.1w |
 | restructure & layout | Base "Restructure and the company layout"; v2.1g, v2.1h (JSP jakarta), v2.1l / v2.1s (version pins), v2.1m (resource filtering), v2.1n (optional triggers), v2.1o / v2.1p / v2.1t (parent-chain facts, BOM imports), v2.1q (embedded Tomcat), v2.1x (legacy Spring context), v2.1z-j (bundled jars), v2.1z-k, v2.1z-l |
@@ -4827,6 +4827,111 @@ says otherwise, this one counts.
 of the final build outside `target/` (`node/`, `node_modules/`, a shade plugin's `dependency-reduced-pom.xml`) are in
 `result.zip` and in the remediation's source ZIP (not in the code-change view); the admin password in open mode guards the
 aggregated views only.
+
+## v2.1z-aw — framework projects: conversion only, and the framework is named
+
+The user (2026-11-19): "사내 프레임워크는 llm도 돌리지 말고 그냥 jdk - jakarta까지만 하고 파일을 내려주도록 하자. llm이
+이걸 해결해주기 쉽지 않을거 같아. 사내 라이브러리쪽도 개입이 많으니까! 그리고 프레임워크 프로젝트로 나오는데 <이름>
+프레임워크라도 명시 할 수 있어? 사람들이 모를거 같아서. 이거 좀 강조를 해야 할 것 같아서." This refines "v2.1z-ak".
+
+**No fix loop** (`framework.fix_loop`, default `false`). A run in the reduced scope `jdk-jakarta` does the conversion
+(`transform.rewrite` with `framework.recipe_sets`, the source-encoding and provided-scope corrections, the JSP rename)
+and then ONE build (`verify.build`): no zero-LLM pre-try, no stored script, no LLM call, nothing written to a pom or a
+source file after the conversion. The build's errors are the run's unresolved errors (error list entries stay open with
+the note that a framework project's errors are not fixed here); the hand-over says so in one line. The build gate holds
+(the final build is attempted and reported). Build passes → the run is a success; build fails → exit 2, `result.zip` is
+the converted tree. The chained remediation runs in both cases (below). `SBMIG-RESULT … scope=jdk-jakarta … llm=0`. With
+`framework.fix_loop: true` the run behaves as "v2.1z-ak" describes (fix loop with the project's own chain facts and the
+framework guard). `FrameworkUse.fix_loop` records which of the two a run did.
+
+**The framework has a name.** `framework.name` (company yml; a company name never goes into this repository) or, when
+empty, a name derived from the artifact (`FrameworkConfig.display_name(found)`: the artifact found in the project first,
+then the configured patterns; a pattern with a glob is skipped; trailing role words `core` / `framework` / `fw` /
+`starter` / `parent` / `bom` / `boot` / `common` / `base` / `api` are cut, first letter upper-cased: `example-fw-core`
+→ `Example`). `FrameworkUse.name` carries it (profile.json, report.json); the journal events `framework_project` and
+`plan` carry `name` and `fix_loop` beside `scope`. `""` = no name: texts say 사내 프레임워크 / "in-house framework".
+
+**The sentence** shown wherever a person meets such a run, with the name in it:
+`<이름> 프레임워크는 JDK 21, Jakarta만 적용합니다.` (no name: `사내 프레임워크 프로젝트는 JDK 21, Jakarta만 적용합니다.`)
+- `report.md` (`ko`): the block `## <이름> 프레임워크 프로젝트` directly under the head table starts with that sentence in
+  bold, then what the run did (JDK 21, Jakarta 변환, 빌드 1회 / 빌드 오류 수정 when `fix_loop`, 취약점 조치 when it ran) and
+  what it did not (구조 정리, 구조 검토, 빌드 오류 자동 수정 unless `fix_loop`; 부모 pom과 프레임워크 버전은 그대로). `en`:
+  `## <Name> framework project` with "**<Name> framework projects get JDK 21 and Jakarta only.**".
+- The page: a highlighted notice (not the small chip line) in the run card as soon as the journal says so and in the
+  result card, with the sentence in bold and, below it, what is not done; the upload card shows the sentence as a standing
+  notice when the server's configuration names framework artifacts.
+- HTTP: `GET /api/configs` gains `framework: {"configured": bool, "name": str, "fix_loop": bool}` (from the server's
+  default configs); `GET /api/runs/{id}` gains `framework: {"name": str, "scope": "jdk-jakarta", "fix_loop": bool}` for a
+  run whose report or journal says it ran in the reduced scope.
+
+**The remediation runs after a failed build too.** The user (2026-11-19, after reading that a passing build is needed):
+"취약점은 빌드가 실패해도 이어가도록! 어차피 오픈소스 라이브러리 검사라!" Switch `remediation.after_failed_build`:
+`framework` (default) | `never`.
+- *Chain condition* (`sbmig/graph/engine.py::_chain_remediation`): besides a successful migration, the remediation is
+  chained when the run is in the reduced scope with `FrameworkUse.fix_loop` false and its final build was ATTEMPTED and
+  FAILED. Every other condition stays (switch `remediation.after_migration` on, no dry run, no `stop_after`, the plan was
+  reached, not aborted, not stopped by the user, no leftover `stop.request`). It then calls
+  `chain.run_after_migration(..., baseline_may_fail=True)`. An ordinary run (or a framework run with the fix loop on)
+  whose build failed is not chained, as before. The migration's verdict and exit code never depend on the remediation.
+- *The remediation with `baseline_may_fail`* (`RemediationState.baseline_tolerated`, persisted, so a resume keeps the
+  mode): a failing `baseline_build` is recorded (`baseline_build.ok` false, journal `remediation_baseline_failed` with
+  `tolerated: true`) and the flow goes on to `baseline_scan` instead of ending `FAILED`. The scan, the inventory, the plan
+  and the apply step are the ordinary ones. The candidate build of a round is compared with the baseline build: it may
+  fail only with errors the baseline build already had; then the round goes on (resolution check as far as it can be
+  made without packaged artifacts, commit, frozen delivery, rescan). An error the baseline did not have (a version that
+  does not resolve, a new compile error) is a `candidate_build_failed` round as today. A baseline that passes although
+  the migration's build failed is an ordinary remediation.
+- *How it ends*. Versions that no build confirmed never end `SUCCEEDED`: when a committed round applied a proposal, the
+  run ends `INCOMPLETE` with first reason `baseline_build_failed` (`candidate_build_failed` is not among the reasons when
+  the candidate added no error). When that is the only reason, people read "remediated, not confirmed by a build"
+  instead of "partly remediated" (`report.build_unconfirmed(summary)`: `baseline_tolerated`, `INCOMPLETE`, reasons exactly
+  `[baseline_build_failed]`): 「조치함 · 빌드 미확인」 on the page's chip, 「취약점 조치함(빌드 미확인)」 in the run card's sub line
+  and 「지난 실행」, 「조치했지만 빌드로 확인하지 못했습니다」 in the migration report. When NOTHING is unconfirmed — nothing
+  was changed (no finding to fix, or none that can be changed; the delivery is the original), or every candidate build
+  PASSED (a bumped version removed the error) — there is nothing a build would still have to confirm
+  (`_Holder.nothing_unconfirmed`):
+  the run ends as an ordinary one, `SUCCEEDED` when the scan is complete and nothing remains, else `INCOMPLETE` with its
+  own reasons, without `baseline_build_failed`; the report says in one sentence that the project did not build and that
+  no version was changed. The summary in `report.remediation` (and what the page reads) carries `baseline_tolerated:
+  true` in every case. The remediation report (`ko`) of a run with changed versions says at its head, in plain words,
+  that the project did not build before the remediation either, that the versions were changed and scanned again, and
+  that the build could not confirm them (with what the comparison showed); 해야 할 일 = fix the build errors, then build
+  once with the changed versions; the list of what was fixed / what remains comes from the rescan as always.
+- The remediation-only flow (`--flow remediation`, `POST /api/remediations`) is unchanged: a project that does not build
+  is refused there.
+
+**Names of this section, as coded.**
+- *Run*: `Orchestrator.no_fix_loop` (reduced scope and `FrameworkUse.fix_loop` false) gates `_verify_fix_loop` and the
+  plan advisor; `Orchestrator.remediation_after_failed_build(report)` is the extra chain condition. Journal
+  `verify_loop_skipped {step, target, reason: "framework.fix_loop: false", errors, entries}`. Entry note
+  (`framework.NO_FIX_LOOP_NOTE`): `not tried: framework project — build errors are not fixed automatically
+  (framework.fix_loop: false)` (in `errors.jsonl` and `report.json`). Hand-over line, first among the follow-ups:
+  `framework project: build errors are not fixed automatically (framework.fix_loop: false) — <N> error(s) remain after
+  the JDK 21 + jakarta conversion; see the error list` (no parsed error: `… — the build failed after the JDK 21 + jakarta
+  conversion; see the build log`). KB: `record_run` stores the entries as observations; nothing is matched, stored as a
+  script or credited. Korean guide: the error section of such a run is `## 변환 뒤 남은 빌드 오류 — N건`
+  (`guide_ko.NO_FIX_TITLE`; the remediation report's 해야 할 일 names that heading, a test keeps the two together).
+  Result line of a failed run that was remediated: `… exit=2 build=FAIL … llm=0 … scope=jdk-jakarta
+  remediation=INCOMPLETE`.
+- *Remediation*: `RemediationState.baseline_tolerated`, `RoundState.build_compare` / `build_tolerated`,
+  `DeliveryInfo.build_tolerated` (older files read as false / empty). Journal: `remediation_start` gains
+  `baseline_may_fail: true`; `remediation_baseline_failed {tolerated, errors, log, exit_code}`;
+  `remediation_candidate_compared {round, same, baseline_errors, candidate_errors, new, why}`. The comparison
+  (`maven.compare_with_baseline`): both build logs through `build.log_parser.parse_maven_log`, paths relative to each
+  tree, one key per error (kind, module, goal, file, line, L1 signature); "same" = same build target, same failing
+  reactor module, every candidate key among the baseline's. Its limit is said in the report: Maven stops at the failing
+  module and javac caps its list, so "no new error seen" is not "the changes compile". A baseline build that timed out
+  or could not run is not tolerated (`FAILED baseline_build_failed` as before). Ends: changed versions → `INCOMPLETE
+  [baseline_build_failed, …]`; a new error → `FAILED [candidate_build_failed, baseline_build_failed]` with the new
+  errors in the message; nothing changed → the original delivered with `build_tolerated`, the status of an ordinary run. `chain.summary` carries
+  `baseline_tolerated: true` and `delivery.build_tolerated: true` only when true; `GET /api/remediations/{id}` carries
+  `baseline_tolerated` always and `delivery.build_tolerated`.
+- *Page*: `GET /api/configs` → `framework.remediation_always` (framework configured, `fix_loop` false,
+  `remediation.after_migration` on, `after_failed_build: framework`): the notices add 「취약점 조치는 빌드 결과와 관계없이
+  이어서 합니다.」 `GET /api/runs/{id}` → `remediation.baseline_tolerated` and `remediation.reasons` when the summary has them. In the 「취약점 조치」
+  block the note 「…바꾼 라이브러리 버전을 빌드로 확인하지 못했습니다…」 and the ZIP badge 빌드 미확인 appear only for a
+  delivery with `build_tolerated` (and applied changes); a change set that added a build error keeps 빌드 실패본. The run
+  card's sub line and 「지난 실행」 name the remediation's outcome after the migration's.
 
 ## remediations (취약점 조치) — `/api/remediations`, IVAS, version-text fixes + managed overrides (2026-11-11)
 

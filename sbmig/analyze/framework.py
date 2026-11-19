@@ -268,7 +268,10 @@ def decide_scope(use: Optional[FrameworkUse], cfg: Any) -> Optional[FrameworkUse
         scope = "full"
         reason = (f"framework artifact {_summary(use.evidence)} found only as a transitive dependency and "
                   f"framework.transitive={getattr(fw, 'transitive', 'note')} → full migration")
-    return use.model_copy(update={"scope": scope, "reason": reason})
+    # 화면과 보고서가 읽는 이름과 수정 루프 여부를 여기서 함께 정한다
+    name = fw.display_name(use.keys()) if use.evidence and hasattr(fw, "display_name") else ""
+    return use.model_copy(update={"scope": scope, "reason": reason, "name": name,
+                                  "fix_loop": bool(getattr(fw, "fix_loop", False))})
 
 
 def summary_text(use: FrameworkUse) -> str:
@@ -302,6 +305,20 @@ def _ko_desc(evidence: list[FrameworkEvidence]) -> str:
     return _ko_one(evidence[0]) + (f" 외 {more}곳" if more > 0 else "")
 
 
+NO_FIX_LOOP_PREFIX = "framework project: build errors are not fixed automatically (framework.fix_loop: false)"
+NO_FIX_LOOP_NOTE = "not tried: framework project — build errors are not fixed automatically (framework.fix_loop: false)"
+
+
+def no_fix_loop_followup(errors: int) -> str:
+    """수정 루프 없이 빌드가 실패한 프레임워크 프로젝트의 인수인계 첫 줄(영어)을 만든다.
+
+    v2.1z-aw: the hand-over line of a framework project whose single build failed (`framework.fix_loop: false`);
+    `errors` = the errors that build left (0 = the build failed without a parsed error)."""
+    if errors > 0:
+        return f"{NO_FIX_LOOP_PREFIX} — {errors} error(s) remain after the JDK 21 + jakarta conversion; see the error list"
+    return f"{NO_FIX_LOOP_PREFIX} — the build failed after the JDK 21 + jakarta conversion; see the build log"
+
+
 def framework_followup(use: FrameworkUse) -> str:
     """보고서 인수인계 섹션에 넣을 한국어 한 줄을 만든다. 찾은 근거가 없으면 빈 문자열을 반환한다.
 
@@ -310,7 +327,8 @@ def framework_followup(use: FrameworkUse) -> str:
     if not use.evidence:
         return ""
     if use.reduced:
-        return (f"사내 프레임워크 프로젝트입니다({_ko_desc(list(use.evidence))}). JDK 21과 jakarta만 올렸고 재구성과 구조 검토는 "
+        who = f"{use.name} 프레임워크 프로젝트" if use.name else "사내 프레임워크 프로젝트"
+        return (f"{who}입니다({_ko_desc(list(use.evidence))}). JDK 21과 Jakarta만 적용했고 구조 정리와 구조 검토는 "
                 "하지 않았습니다. 부모 pom과 프레임워크 버전은 그대로입니다.")
     if "framework.scope=full" in (use.reason or ""):
         return (f"사내 프레임워크 아티팩트를 사용합니다({_ko_desc(list(use.evidence))}). "

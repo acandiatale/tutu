@@ -21,3 +21,7 @@ JAVA_HOME=/Users/acandiatale/Library/Java/JavaVirtualMachines/corretto-1.8.0_362
 Flag `framework-project` (journal `framework_project`, evidence `transitive`, scope **`full`**) and the ordinary
 v2 migration: restructure into `module/comp-jar` + `module/boot-jar` under the configured parent, structure review
 (replayed, `ok`), success, exit 0, 1 LLM call (the review).
+
+Since v2.1z-aw the `framework_project` and `plan` events carry `name: Example` and `fix_loop: false` here too (the
+values the configuration gives); the run is a full migration, so `report.md` titles the block `## Example framework`
+and the fix loop is available as for any project.

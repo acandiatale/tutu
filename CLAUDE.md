@@ -711,6 +711,34 @@ review", fix attempts as `script:<case>:v<N>`; `ko`, the company setting: the re
   `fw-transitive-note` + stand-in libs `fixtures/libs/example-fw`.
   Open risk told to the user: with the framework version fixed, a framework still compiled against javax cannot work
   with jakarta project code — such runs end BLOCKED naming the framework. Contract: `docs/INTERFACES.md` "v2.1z-ak".
+- **Framework projects, changed 2026-11-19 (v2.1z-aw)** — the user: "사내 프레임워크는 llm도 돌리지 말고 그냥 jdk - jakarta까지만
+  하고 파일을 내려주도록 하자. llm이 이걸 해결해주기 쉽지 않을거 같아. 사내 라이브러리쪽도 개입이 많으니까!", "<이름> 프레임워크라도
+  명시 할 수 있어? 사람들이 모를거 같아서. 이거 좀 강조를 해야 할 것 같아서", and "취약점은 빌드가 실패해도 이어가도록! 어차피
+  오픈소스 라이브러리 검사라!". This replaces the fix-loop decision of the bullet above (everything there about the fix
+  loop now applies only with `framework.fix_loop: true`). A reduced run = conversion + ONE build: `Orchestrator.no_fix_loop`
+  gates `_verify_fix_loop` and the plan advisor (no pre-try, stored script, LLM; `llm=0` is literal), the entries stay
+  open with a note, journal `verify_loop_skipped`, one hand-over line, exit 2 on a failed build, the converted tree is
+  delivered. The framework is named everywhere a person meets the run: `framework.name` or
+  `FrameworkConfig.display_name` (artifact found → patterns; role words like `core` cut; `example-fw-core` → `Example`;
+  the real name is a company name: never in the repo) → `FrameworkUse.name`; the sentence
+  「<이름> 프레임워크는 JDK 21, Jakarta만 적용합니다.」 heads the report block (now directly under the head table) and is
+  a highlighted notice on the upload card (`GET /api/configs` → `framework`), the run card and the result card
+  (`GET /api/runs/{id}` → `framework`). The Korean guide of a failed conversion-only run has 「변환 뒤 남은 빌드 오류」
+  instead of 「해결하지 못한 오류」 and never implies a fix was tried. **Remediation after a failed build**
+  (`remediation.after_failed_build: framework | never`): `_chain_remediation` chains a conversion-only framework run
+  whose final build was attempted and failed with `baseline_may_fail=True`; ordinary failed runs, framework runs with
+  the loop on, and the remediation-only flow are unchanged (my scoping; the user was told). In the remediation
+  (`RemediationState.baseline_tolerated`) the failing baseline build is recorded and the flow goes on; a candidate build
+  may fail only with the baseline's errors (`maven.compare_with_baseline`: same target, same failing module, every
+  error key among the baseline's) → the round is committed, delivered (`DeliveryInfo.build_tolerated`) and rescanned;
+  a new error = `candidate_build_failed`. Changed versions that no build confirmed never end `SUCCEEDED`
+  (`INCOMPLETE baseline_build_failed`). Measured with Maven 3.9.10: `dependency:tree` resolves a sibling module from the
+  reactor without packaging it, so the inventory works on an unbuilt two-module tree. Lessons: (1) a mode that
+  "tolerates a failure" needs its own words at every place that words the failure (status chip, list line, ZIP badge,
+  report head): the first cut said 일부만 조치됨 for a project with nothing left to fix; (2) the page's flag for a
+  ZIP must come from the delivery (`build_tolerated`), not from the run's mode — a change set that ADDED an error is
+  still a failed build. Fixture `fw-build-error` (a call removed after Java 8: builds on 8, fails on 21). Contract:
+  `docs/INTERFACES.md` "v2.1z-aw".
 - **Company convention (2026-10-20): agents run on LangGraph under uvicorn.** `loop.engine: graph` (default) drives
   the phases from a LangGraph `StateGraph` (`sbmig/graph/`, nodes intake → analyze → plan → phase×N → finalize;
   `inline` is the old loop, reports are identical by test); the web UI is FastAPI (`uvicorn sbmig.web.app:app` or

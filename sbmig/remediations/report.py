@@ -153,6 +153,14 @@ _FAILED_INCLUDED_KO = ("버전을 바꾼 수정본이 빌드에 실패했습니�
                        "**빌드 오류 확인하기** — 빌드에 실패한 결과 ZIP은 배포하지 말고, `rounds/<n>/build.log` 파일과 "
                        "`rounds/<n>/candidate.patch` 파일을 확인해 빌드 오류를 고치거나 올릴 버전을 다시 정해 주세요.")
 _SUCCEEDED_STEP = "**결과 ZIP 받기** — 재검사를 마친 `delivery/result.zip` 파일을 받아 사용해 주세요."
+# 조치 전 빌드 실패를 받아들인 실행(state.baseline_tolerated)의 baseline_build_failed 문장과 할 일
+_TOLERATED_KO = (("이 프로젝트는 조치 전에도 빌드되지 않았습니다. 사내 프레임워크 프로젝트는 빌드 오류를 자동으로 고치지 않으므로 "
+                  "예상된 결과이며, 이 오류는 프로젝트 담당자와 프레임워크 담당자가 고쳐야 합니다. 취약점 검사는 오픈소스 "
+                  "라이브러리를 보는 것이므로 빌드와 상관없이 진행했습니다."),
+                 ("**빌드 오류 고치기** — 이관 보고서(`report.md`)의 「변환 뒤 남은 빌드 오류」에 정리된 오류를 프로젝트 담당자와 "
+                  "프레임워크 담당자가 고쳐 주세요."))
+_TOLERATED_BUILD_STEP = ("**바꾼 버전으로 한 번 빌드하기** — 빌드 오류를 고친 뒤 결과 ZIP(`delivery/result.zip`)의 pom.xml 버전을 "
+                         "그대로 두고 한 번 빌드해 주세요. 빌드가 통과해야 바꾼 버전을 그대로 쓸 수 있습니다.")
 _DECISION_KO = DECISION_KO          # 다른 곳에서 이전 이름으로 import해도 깨지지 않게 남겨 둔다
 
 
@@ -247,7 +255,46 @@ def _delivery_matches(state: RemediationState, final: ScanResult | None) -> bool
 
 def _failed_delivery(state: RemediationState) -> bool:
     """결과 ZIP이 빌드에 실패한 수정본인지(include 정책) 확인한다."""
-    return bool(state.delivery is not None and not state.delivery.build_ok)
+    return bool(state.delivery is not None and not state.delivery.build_ok and not state.delivery.build_tolerated)
+
+
+def _tolerated(state: RemediationState) -> bool:
+    """조치 전 빌드가 실패했지만 그 실패를 받아들이고 검사와 조치를 이어 간 실행인지 확인한다."""
+    b = state.baseline_build
+    return bool(state.baseline_tolerated and b is not None and not b.ok)
+
+
+def _nothing_changed(state: RemediationState) -> bool:
+    """확정한 라운드에 적용한 제안이 하나도 없는지 확인한다. 이때 결과 ZIP은 원본이고 빌드로 확인할 변경이 없다."""
+    return not any(rs.committed and rs.applied for rs in state.rounds)
+
+
+def build_unconfirmed(summary: Mapping[str, Any] | None) -> bool:
+    """조치 요약(``chain.summary``)이 고칠 것은 다 고쳤고 빌드 확인만 남은 실행인지 확인한다.
+    조치 전 빌드 실패를 받아들인 실행이면서 INCOMPLETE이고 사유가 ``baseline_build_failed`` 하나뿐일 때만 True다.
+
+    True only for a tolerated run (`baseline_tolerated: true`) whose status is INCOMPLETE and whose `reasons` list is
+    exactly `[baseline_build_failed]`: changes were applied and rescanned, nothing else is left, only no build
+    confirmed them. Another reason present, or no `reasons` list, is the ordinary "partly" case."""
+    if not isinstance(summary, Mapping):
+        return False
+    reasons = summary.get("reasons")
+    return bool(summary.get("baseline_tolerated") is True and summary.get("status") == INCOMPLETE
+                and isinstance(reasons, list) and reasons == ["baseline_build_failed"])
+
+
+# 조치하지 못한 것은 없고 빌드로 확인만 하지 못한 실행의 결과 문장과 상태 이름이다(build_unconfirmed)
+UNCONFIRMED_VERDICT_KO = "조치했지만 빌드로 확인하지 못했습니다"
+UNCONFIRMED_STATUS_KO = "조치함 · 빌드 미확인"
+# 바꾼 버전이 없어 빌드로 확인할 것이 없는 실행(조치 전 빌드 실패를 받아들인 실행)의 한 문장이다
+NOTHING_TO_CONFIRM_KO = "이 프로젝트는 조치 전에도 빌드되지 않았지만, 바꾼 라이브러리 버전이 없어 빌드로 확인할 것은 없습니다."
+
+
+def _tolerated_compare(state: RemediationState) -> dict[str, Any]:
+    """조치 전 빌드와 같은 오류로만 실패해 확정한 마지막 라운드의 비교 결과를 반환한다. 없으면 빈 dict다."""
+    cmps = [rs.build_compare for rs in sorted(state.rounds, key=lambda x: x.round)
+            if rs.committed and rs.build_tolerated and rs.build_compare]
+    return cmps[-1] if cmps else {}
 
 
 def _verified_kept(paths: RunPaths) -> dict[str, Any] | None:
@@ -270,7 +317,7 @@ def _delivery_dict(state: RemediationState) -> dict[str, Any] | None:
     if d is None:
         return None
     return {"path": d.path, "sha256": d.sha256, "size": d.size, "round": d.round, "build_ok": d.build_ok,
-            "scanned": d.scanned}
+            "scanned": d.scanned, "build_tolerated": d.build_tolerated}
 
 
 def build_report_json(state: RemediationState, paths: RunPaths, *,
@@ -341,6 +388,8 @@ def _reason_text(state: RemediationState, code: str) -> tuple[str, str]:
     """사유 코드에 맞는 (결과 줄 설명, 해야 할 일)을 반환한다.
     실패한 수정본을 냈거나 앞 라운드의 결과 ZIP이 남아 있으면 문장을 바꾼다."""
     what, step = _REASON_KO[code]
+    if code == "baseline_build_failed" and _tolerated(state):
+        what, step = _TOLERATED_KO
     if code == "candidate_build_failed" and _failed_delivery(state):
         what, step = _FAILED_INCLUDED_KO
     elif _earlier_delivery(state) and code in ("candidate_build_failed", "text_only_violation", "resolution_mismatch"):
@@ -377,6 +426,12 @@ def _next_steps(state: RemediationState, fx: "_Facts | None" = None) -> list[str
     out: list[str] = []
     if state.status == SUCCEEDED:
         out.append(_SUCCEEDED_STEP)
+    if _tolerated(state) and state.status != FAILED and not _nothing_changed(state):
+        # 빌드 오류를 고치고 바꾼 버전으로 빌드해야 결과를 쓸 수 있으므로 맨 앞에 둔다
+        out.append(_TOLERATED_KO[1])
+        if state.delivery is not None and state.delivery.build_tolerated and state.delivery.round > 0:
+            out.append(_TOLERATED_BUILD_STEP)
+        codes = [c for c in codes if c != "baseline_build_failed"]
     others = [_with_count(_reason_text(state, c)[1], fx.matching(fx.skipped))
               if c == "rejected_proposals" and fx is not None else _reason_text(state, c)[1] for c in codes
               if c not in ("pending_approval", R_INHOUSE_ARTIFACT, "manual_review", "residual_findings")]
@@ -404,6 +459,9 @@ def _next_steps(state: RemediationState, fx: "_Facts | None" = None) -> list[str
     out += others
     if state.status == INTERRUPTED and not out:
         out.append("**이어서 진행하기** — 상태를 확인한 뒤 조치 화면에서 「이어서 진행」을 눌러 주세요.")
+    if _tolerated(state) and state.status != FAILED and _nothing_changed(state):
+        # 바꾼 버전이 없으면 결과와 상관없는 안내이므로 맨 뒤에 둔다
+        out.append(_TOLERATED_KO[1])
     return list(dict.fromkeys(out)) or ["**처리 기록 확인하기** — 「처리 기록」과 `remediation.log` 파일을 확인해 주세요."]
 
 
@@ -716,6 +774,8 @@ def _result_lines(state: RemediationState, fx: _Facts) -> list[str]:
     codes = [c for c in _codes(state) if c in _REASON_KO]
     out = [_VERDICT.get(state.status, f"**{_STATUS_KO.get(state.status, state.status)}**")]
     body: list[str] = []
+    if _tolerated(state) and state.status in (SUCCEEDED, INCOMPLETE) and not _nothing_changed(state):
+        return _tolerated_lines(state, fx, codes)
     if state.status == AWAITING_APPROVAL:
         n = len(fx.pending)
         body += _numbers(state, fx)[:1]
@@ -728,6 +788,9 @@ def _result_lines(state: RemediationState, fx: _Facts) -> list[str]:
         return out + [" ".join(body)]
     elif state.status in (SUCCEEDED, INCOMPLETE):
         body += _numbers(state, fx)
+        if _tolerated(state):
+            # 바꾼 버전이 없으면 결과 문장 뒤에 빌드로 확인할 것이 없다는 한 문장만 둔다
+            body.append(NOTHING_TO_CONFIRM_KO)
         body += [_reason_text(state, c)[0] for c in codes if c not in _NUMBERS_EXPLAIN]
         if state.status == INCOMPLETE and not body:
             body += [_reason_text(state, c)[0] for c in codes]
@@ -737,13 +800,63 @@ def _result_lines(state: RemediationState, fx: _Facts) -> list[str]:
             # 메시지가 검사 이름이나 시간 한도까지 알려 주므로 일반 문장 대신 쓴다
             return out + [" ".join(ko)]
         body += [_reason_text(state, c)[0] for c in codes[:1]]
-    if state.message and not (set(codes) & set(_MESSAGE_ELSEWHERE)):
+        if _tolerated(state):
+            body += _new_error_lines(state)
+    from .graph import TOLERATED_HEAD  # 순환 import를 피하려고 함수 안에서 import한다
+    # 조치 전 빌드 실패를 받아들인 실행의 문장은 위에서 이미 말했으므로 상세로 다시 쓰지 않는다
+    if (state.message and not (set(codes) & set(_MESSAGE_ELSEWHERE))
+            and not str(state.message).startswith(TOLERATED_HEAD)):
         ko, _raw = _known_and_raw(state.message)
         if ko:
             body.append("상세: " + " ".join(ko))
     if fx.pending and state.status not in (AWAITING_APPROVAL,):
         body.append(f"승인을 기다리는 제안이 {len(fx.pending)}건 있습니다.")
     return out + ([" ".join(dict.fromkeys(body))] if body else [])
+
+
+def _tolerated_lines(state: RemediationState, fx: _Facts, codes: list[str]) -> list[str]:
+    """조치 전 빌드 실패를 받아들인 실행의 결과 블록 줄들을 만든다. 굵은 문장, 빌드 사정, 비교 결과, 숫자 순이다."""
+    d = state.delivery
+    changed = d is not None and d.round > 0
+    cmp = _tolerated_compare(state)
+    if changed and d.build_tolerated:
+        verdict = "⚠️ **라이브러리 버전을 바꾸고 다시 검사했습니다. 바꾼 버전은 빌드로 확인하지 못했습니다.**"
+    elif changed:
+        verdict = "⚠️ **라이브러리 버전을 바꾸고 빌드한 뒤 다시 검사했습니다.**"
+    else:
+        verdict = "⚠️ **빌드되지 않는 상태로 취약점을 검사했습니다. 바꾼 라이브러리 버전은 없습니다.**"
+    body = [_TOLERATED_KO[0]]
+    if cmp:
+        n = cmp.get("candidate_errors")
+        body.append("버전을 바꾼 뒤에도 빌드는 조치 전과 같은 오류에서 멈췄습니다"
+                    + (f"(오류 {_num(n)}건). " if isinstance(n, int) and n else ". ")
+                    + "새로 생긴 오류는 없습니다. 다만 빌드가 오류가 난 곳에서 멈추므로, 그 뒤의 모듈과 코드가 바꾼 버전으로 "
+                      "컴파일되는지는 알 수 없습니다.")
+    body += _numbers(state, fx)
+    body += [_reason_text(state, c)[0] for c in codes
+             if c not in _NUMBERS_EXPLAIN and c != "baseline_build_failed"]
+    from .graph import TOLERATED_HEAD  # 순환 import를 피하려고 함수 안에서 import한다
+    if state.message and not str(state.message).startswith(TOLERATED_HEAD):
+        ko, _raw = _known_and_raw(state.message)
+        if ko:
+            body.append("상세: " + " ".join(ko))
+    if fx.pending:
+        body.append(f"승인을 기다리는 제안이 {len(fx.pending)}건 있습니다.")
+    return [verdict, " ".join(dict.fromkeys(body))]
+
+
+def _new_error_lines(state: RemediationState) -> list[str]:
+    """실패한 라운드의 수정본 빌드가 조치 전 빌드에 없던 오류로 실패했을 때 그 사실을 알리는 문장을 만든다."""
+    last = max(state.rounds, key=lambda x: x.round, default=None)
+    cmp = last.build_compare if last is not None else {}
+    if not cmp or cmp.get("same"):
+        return []
+    new = list(cmp.get("new") or [])
+    if new:
+        return [(f"조치 전에도 빌드 오류가 있었지만, 버전을 바꾼 뒤 조치 전에는 없던 오류가 {_num(len(new))}건 생겼습니다. "
+                 f"새 오류: {', '.join(f'`{x}`' for x in new[:3])}")]
+    why = i18n.ko_text(f"the candidate build failed differently from the baseline build: {cmp.get('why') or '-'}")
+    return [f"조치 전에도 빌드 오류가 있었지만, {why}"]
 
 
 def _place(p: Proposal) -> str:
@@ -1278,6 +1391,9 @@ def _delivery_text(state: RemediationState, final: ScanResult | None) -> str:
     if d is None:
         return "없음 — 원본은 `original/source.zip`에 그대로 있습니다."
     head = f"`{_md_cell(d.path)}` — "
+    if d.build_tolerated:
+        what = "원본 그대로, 빌드되지 않음" if d.round == 0 else "빌드로 확인하지 못함(조치 전과 같은 빌드 오류)"
+        return head + what + ", " + ("재검사 완료" if d.scanned and _delivery_matches(state, final) else "재검사하지 않음")
     if not d.build_ok:
         return head + "⚠️ 빌드에 실패한 수정본, 재검사하지 않음"
     if not d.scanned:
@@ -1353,7 +1469,8 @@ def _record_section(L: list[str], state: RemediationState, fx: _Facts, paths: Ru
     if bb is None:
         L.append(f"**{step}. 조치 전 빌드** — 실행하지 않음")
     else:
-        L.append(f"**{step}. 조치 전 빌드** — {_build_line(bb)}" + (f" · 로그 `{bb.log}`" if bb.log else ""))
+        L.append(f"**{step}. 조치 전 빌드** — {_build_line(bb)}" + (f" · 로그 `{bb.log}`" if bb.log else "")
+                 + (" · 빌드 오류가 있어도 검사를 이어서 진행함" if _tolerated(state) else ""))
         if bb.summary and not bb.ok:
             _code_block(L, bb.summary)
     L.append("")
@@ -1441,6 +1558,15 @@ def _round_block(L: list[str], state: RemediationState, fx: _Facts, rs: RoundSta
         L.append(f"- 적용한 제안: {', '.join(rs.applied) if rs.applied else '없음'}")
     if rs.build is not None:
         L.append(f"- 수정본 빌드: {_build_line(rs.build)}" + (f" · 로그 `{rs.build.log}`" if rs.build.log else ""))
+        if rs.build_compare:
+            c = rs.build_compare
+            if c.get("same"):
+                L.append(f"- 조치 전 빌드와 비교: 같은 오류에서 멈춤 (오류 {c.get('candidate_errors')}건, 새 오류 없음)")
+            elif c.get("new"):
+                L.append(f"- 조치 전 빌드와 비교: 새 오류 {len(c['new'])}건 — "
+                         + ", ".join(f"`{_md_cell(x)}`" for x in c["new"][:5]))
+            else:
+                L.append(f"- 조치 전 빌드와 비교: {_md_cell(i18n.ko_text('the candidate build failed differently from the baseline build: ' + str(c.get('why') or '-')))}")
         if rs.build.summary and not rs.build.ok:
             _code_block(L, rs.build.summary)
     if rs.build is not None or rs.committed:
@@ -1464,7 +1590,8 @@ def _delivery_block(L: list[str], state: RemediationState, fx: _Facts, paths: Ru
         L.append(f"**{step}. 결과 파일** — 없음{why}")
     else:
         facts = [f"{_mb(d.size)}", f"파일 {_num(d.files)}개"] + ([f"라운드 {d.round}"] if len(state.rounds) > 1 else [])
-        status = ["빌드 성공" if d.build_ok else "빌드 실패", "재검사 완료" if d.scanned else "재검사하지 않음"]
+        built = "빌드 성공" if d.build_ok else "빌드로 확인하지 못함" if d.build_tolerated else "빌드 실패"
+        status = [built, "재검사 완료" if d.scanned else "재검사하지 않음"]
         if d.scanned:
             status.append("재검사한 파일과 일치" if _delivery_matches(state, final) else "재검사한 파일과 다름")
         L.append(f"**{step}. 결과 파일** — `{d.path}` ({', '.join(facts)}) · " + " · ".join(status))
@@ -1490,7 +1617,10 @@ def _unchanged_section(L: list[str], state: RemediationState, fx: _Facts) -> Non
     L.append("## 변경하지 않은 것")
     L.append("")
     L.append("- 애플리케이션 소스와 프로젝트 구조(파일·폴더)는 변경하지 않았습니다.")
-    if state.delivery is not None:
+    if state.delivery is not None and state.delivery.round == 0:
+        # 바꾼 것이 없어 원본을 그대로 결과 ZIP으로 냈으므로 달라진 버전 표기도 없다
+        L.append("- 결과 ZIP은 원본 ZIP과 같은 파일입니다.")
+    elif state.delivery is not None:
         extra = ("와 dependencyManagement에 추가한 버전 지정" if any(p.kind == K_MANAGED_OVERRIDE for p in fx.committed)
                  else "")
         L.append(f"- 결과 ZIP의 파일 목록은 원본과 같습니다. 달라진 것은 적용된 pom.xml의 버전 표기{extra}뿐입니다.")
@@ -1613,9 +1743,9 @@ def summary(state: RemediationState) -> dict[str, Any]:
     return {"id": state.id, "name": state.name, "status": state.status, "reason": state.reason,
             "reasons": list(state.reasons), "node": state.node, "next_node": state.next_node, "round": state.round,
             "created": state.created, "updated": state.updated, "counts": dict(sorted(state.counts.items())),
-            "require_approval": state.require_approval,
+            "require_approval": state.require_approval, "baseline_tolerated": bool(state.baseline_tolerated),
             "delivery": {"sha256": d.sha256, "size": d.size, "round": d.round, "build_ok": d.build_ok,
-                         "scanned": d.scanned} if d else None}
+                         "scanned": d.scanned, "build_tolerated": d.build_tolerated} if d else None}
 
 
-__all__ = ["build_report_json", "build_report_md", "summary", "write_report"]
+__all__ = ["build_report_json", "build_report_md", "build_unconfirmed", "summary", "write_report"]

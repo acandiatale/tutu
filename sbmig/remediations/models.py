@@ -249,6 +249,9 @@ class DeliveryInfo(Record):
     # 재검사하지 않았으므로 성공 여부를 판단할 때 쓰지 않는다
     build_ok: bool = True
     scanned: bool = False             # sha256이 같은 ZIP을 IVAS가 끝까지 검사했는지 여부
+    # True면 빌드가 조치 전 빌드에 있던 오류로만 실패한 트리다(build_ok는 False).
+    # 확정하고 재검사했지만 빌드로 확인한 변경은 아니다
+    build_tolerated: bool = False
 
 
 # ---------------------------------------------------------------------------- IVAS 검사 / scan
@@ -627,6 +630,10 @@ class RoundState(Record):
     verify_problems: list[str] = field(default_factory=list)
     scan_label: str = ""
     committed: bool = False           # 수정본이 accepted로 확정되었는지 여부
+    # 조치 전 빌드가 실패한 실행에서 수정본 빌드를 조치 전 빌드와 비교한 결과다(maven.compare_with_baseline)
+    build_compare: dict[str, Any] = field(default_factory=dict)
+    # True면 수정본 빌드가 조치 전 빌드에 있던 오류로만 실패해서 라운드를 이어 갔다
+    build_tolerated: bool = False
     _nested = {"build": BuildOutcome}
 
 
@@ -669,6 +676,8 @@ class RemediationState(Record):
     # 이관의 최종 빌드 대상 폴더다. 빈 목록이면 루트에서 한 번 빌드한다
     # 루트 aggregator가 없는 MSA는 이관처럼 서비스마다 빌드한다(``maven.ServerMaven``의 ``targets``)
     build_targets: list[str] = field(default_factory=list)
+    # True면 조치 전 빌드가 실패해도 검사와 조치를 이어 간다. 빌드 오류를 고치지 않는 사내 프레임워크 프로젝트의 실행이다
+    baseline_tolerated: bool = False
     schema: int = SCHEMA
     _nested = {"intake": IntakeResult, "boundary": BoundaryFinding, "baseline_build": BuildOutcome,
                "rounds": RoundState, "delivery": DeliveryInfo, "residuals": Residual}

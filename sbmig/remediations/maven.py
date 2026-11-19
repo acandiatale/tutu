@@ -563,6 +563,93 @@ class ServerMaven:
         return out
 
 
+# ---------------------------------------------------------------------------- 실패한 빌드 비교
+MAX_NEW_LISTED = 10                                 # 비교 결과에 적는 새 오류의 최대 개수
+
+
+def _failure_point(text: str, root: Path) -> tuple[list[tuple[str, ...]], dict[tuple[str, ...], str], str | None]:
+    """빌드 로그에서 (오류 키 목록, 키별 짧은 설명, 실패한 모듈)을 읽는다."""
+    from sbmig.build.log_parser import parse_maven_log, parse_reactor_summary
+    keys: list[tuple[str, ...]] = []
+    words: dict[tuple[str, ...], str] = {}
+    for e in parse_maven_log(text, root):
+        key = (e.kind.value, e.module or "", e.goal or "", e.file or "", str(e.line or 0), e.signature)
+        if key not in words:
+            keys.append(key)
+            where = f"{e.file}:{e.line}" if e.file else (e.module or "-")
+            what = " ".join(str(e.message or e.signature).split())
+            if e.symbol:
+                what += f" ({e.symbol})"
+            words[key] = _scrub(f"{where}: {what}")[:200]
+    return keys, words, parse_reactor_summary(text)[1]
+
+
+def build_errors(text: str, root: Path | str) -> int:
+    """실패한 빌드 로그에서 Maven 로그 파서가 읽은 오류 수를 반환한다.
+
+    The number of distinct errors `sbmig.build.log_parser` reads in a failed build's log (an unparsed failure counts
+    as the one UNKNOWN error the parser makes)."""
+    return len(_failure_point(text or "", Path(root))[0])
+
+
+def compare_with_baseline(baseline: BuildOutcome, baseline_text: str, baseline_root: Path | str,
+                          candidate: BuildOutcome, candidate_text: str, candidate_root: Path | str) -> dict[str, Any]:
+    """실패한 수정본 빌드가 조치 전 빌드에 있던 오류로만 실패했는지 비교한 결과를 반환한다. 예외를 던지지 않는다.
+    ``same``이 True면 새 오류가 보이지 않은 것이며, 바꾼 버전으로 컴파일된다는 뜻은 아니다.
+
+    Whether a failed candidate build failed only with errors the failed baseline build already had.
+
+    What is compared: both logs are parsed by the migration's Maven log parser (`parse_maven_log`, paths made
+    relative to each tree's project root, so the two tree locations do not matter) and every error becomes the key
+    (kind, module, goal, file, line, L1 signature). The remediation edits pom text only, so a source line keeps its
+    number and a javac error keeps its key. `same` is true only when
+    - both builds produced a log and a result (no time-out, no "could not run", exit code known),
+    - the candidate failed in the same build target (same log file name: a multi-target build stops at the first
+      failing target) and in the same reactor module (`parse_reactor_summary`: Maven stops at the first failing
+      module, so failing in an earlier module, or in another phase of it, is new),
+    - every error key of the candidate is one of the baseline's (fewer is fine).
+    A version that does not resolve is a dependency-resolution error whose key names the coordinates, so it is new;
+    a new javac error in the failing module is new.
+
+    What it cannot show: modules after the failing one were never compiled in either build, javac stops listing
+    after its cap (100 by default) and hides type errors behind syntax errors, and a failing module's later phases
+    never ran. So "no new error seen" is not "the changes compile"; it only says that the build stopped at the same
+    errors as before the change.
+
+    Returns {same, why, baseline_errors, candidate_errors, new (≤ `MAX_NEW_LISTED` short lines), module,
+    baseline_module}; `why` is an English sentence when `same` is false and the cause is not a new error."""
+    out: dict[str, Any] = {"same": False, "why": "", "baseline_errors": 0, "candidate_errors": 0, "new": [],
+                           "module": "", "baseline_module": ""}
+    try:
+        for name, b, text in (("baseline", baseline, baseline_text), ("candidate", candidate, candidate_text)):
+            if b.timed_out:
+                out["why"] = f"the {name} build timed out"
+                return out
+            if b.exit_code is None or not (text or "").strip():
+                out["why"] = f"the {name} build left no log to compare"
+                return out
+        if Path(baseline.log or "").name != Path(candidate.log or "").name:
+            out["why"] = (f"the candidate build failed in another build target ({Path(candidate.log).name}) than the "
+                          f"baseline build ({Path(baseline.log).name})")
+            return out
+        bkeys, _bw, bmod = _failure_point(baseline_text, Path(baseline_root))
+        ckeys, cwords, cmod = _failure_point(candidate_text, Path(candidate_root))
+        out.update(baseline_errors=len(bkeys), candidate_errors=len(ckeys), module=cmod or "", baseline_module=bmod or "")
+        known = set(bkeys)
+        new = [k for k in ckeys if k not in known]
+        out["new"] = [cwords[k] for k in new[:MAX_NEW_LISTED]]
+        if (cmod or "") != (bmod or ""):
+            out["why"] = (f"the candidate build stopped in module {cmod or '-'}, the baseline build in "
+                          f"{bmod or '-'}")
+            return out
+        out["same"] = not new
+        return out
+    except Exception as exc:  # noqa: BLE001 - 비교하지 못하면 새 오류가 있는 것으로 본다
+        log.warning("remediation build comparison failed: %s", type(exc).__name__)
+        out["why"] = f"the two build logs could not be compared ({type(exc).__name__})"
+        return out
+
+
 # ---------------------------------------------------------------------------- 도우미
 def _gav(node: TreeNode) -> str:
     return f"{node.gav.group_id}:{node.gav.artifact_id}:{node.gav.version or ''}"

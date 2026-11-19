@@ -40,3 +40,9 @@ modules, `example-fw-core` at 1.0.0; the servlet API and the sources / JSP are o
 (journal `source_encodings`); the encoding is written BEFORE OpenRewrite (journal order `source_encodings` → `rewrite` → `scopes_restored` →
 `jsp_jakarta`), so the recipes parse `NoticeText.java` (no `rewrite_parse_problems`) and its import moves to jakarta
 with the Korean bytes intact. `report.md` mentions no Spring Boot version.
+
+Since v2.1z-aw (`framework.fix_loop: false`, the default) the journal events `framework_project` and `plan` carry the
+framework's name `Example` (derived from `example-fw-core`) and `fix_loop: false`; the run builds once and would hand
+any build error over without a fix loop (no `verify_loop_start`, no `plan_advice`, no `fixer` event). `report.md` opens
+the block `## Example framework project` with "**Example framework projects get JDK 21 and Jakarta only.**" and lists
+"one build" as done, "automatic build error fixes" as not done. The failing counterpart is `fw-build-error`.

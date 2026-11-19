@@ -7,6 +7,7 @@ import re
 import string
 from pathlib import Path
 
+from sbmig.analyze.framework import no_fix_loop_followup
 from sbmig.core.models import BlockedItem, BlockReason, BuildError, ErrorKind, Phase
 from sbmig.core.workspace import Workspace
 from sbmig.report import build_handover, render_markdown, write_report
@@ -501,6 +502,8 @@ def _loop_followup_lines() -> list[str]:
         "stopped by user (stop.request) — the fix loop was left early; the last build shows the tree as it was left",
         ("framework check could not run (the parent pom and the dependency tree could not be read): if this project uses "
          "the in-house framework it must not be migrated in full — confirm before using the result"),
+        # v2.1z-aw: a framework project built once without the fix loop (sbmig.analyze.framework.no_fix_loop_followup)
+        no_fix_loop_followup(3), no_fix_loop_followup(0),
         ("`com.example:lib:1.0` could not be downloaded: the repository did not answer (https://nexus.invalid/repo) "
          "(timeout, refused connection or server error) — not a project problem: check the repository and the network, "
          "then rerun"),
@@ -552,7 +555,7 @@ ALLOWED = ("차단 미러",)                  # Maven's own term (maven-default-
 GUIDE_SECTIONS = ("전환 내용", "확인해 주세요", "코드 수정 내역", "해결하지 못한 오류", "진행하지 않은 항목", "참고",
                   "운영자 확인 필요", "Ant 프로젝트의 pom.xml 생성", "ADF 규모", "프로젝트에 포함된 jar",
                   "클래스패스에 남은 javax API jar", "실행 전에 설정할 프로퍼티", "사내 프레임워크 프로젝트",
-                  "LLM 사용량과 비용")
+                  "LLM 사용량과 비용", "변환 뒤 남은 빌드 오류")
 # named groups whose value a rule rewrites on purpose (a location phrase, a fixed English list, a path joined with ">")
 REWRITTEN_GROUPS = {"w", "pom", "r", "why", "abort", "jk", "tail", "path"}
 # the pom path of a source-encoding correction: the line is printed after "`<pom>`:" already

@@ -120,6 +120,7 @@
 | `SBMIG_REMEDIATION__REQUIRE_APPROVAL` | `false` | `false`(기본) = 모든 제안을 승인 없이 적용하고 어떤 실행도 승인 대기로 멈추지 않는다. `true` = 모든 제안이 사람 승인을 기다린다(바꾸면 웹 파드 재시작). 부류만 기다리게 하는 `remediation.always_approve` 는 env 키가 없고 이미지에 굽는 회사 yml 에만 적는다(README §6) |
 | `SBMIG_REMEDIATION__MODULE_OVERRIDES` | `true` | `false` = 모듈 pom에 버전 지정을 넣는 제안을 만들지 않는다(직접 확인 항목으로 남긴다). 81 틀에도 줄이 있어야 빌드 파드에 닿는다 |
 | `SBMIG_REMEDIATION__FAILED_CANDIDATE` | `include` | 빌드가 실패한 수정본도 `result.zip` 으로 낸다 / `discard` |
+| `SBMIG_REMEDIATION__AFTER_FAILED_BUILD` | `framework` | 사내 프레임워크 프로젝트(빌드 오류를 고치지 않는 실행)는 빌드가 실패해도 취약점 조치를 이어 돈다. `never` = 빌드가 통과한 실행만 조치한다. 81 틀에도 줄이 있어야 빌드 파드에 닿는다 |
 | `SBMIG_REMEDIATION__IVAS_ANALYSIS_TIMEOUT_MINUTES` | `30` | IVAS 분석 한 번의 대기 한도(넘으면 검사 미완료 — 0건이 아니다) |
 | `SBMIG_REMEDIATION__CHAIN_BUDGET_MINUTES` | `90` | 빌드 파드에서 이관에 이어 돈 조치의 시간 한도(분, 0 = 없음). 넘으면 다음 경계에서 `STOPPED` `chain_budget` — 재개하면 새 빌드 파드가 이어 간다 |
 | `SBMIG_REMEDIATION__IGNORE_ACTIONS` | 비어 있음(예 `'["PC","IG"]'`) | 계획에서 뺄 IVAS 조치 구분 코드. 기본은 비어 있음 = 모든 조치 구분을 고칠 대상(기존 사내 구현과 같다). 보안팀 예외(PC 패치 완료, IG 조치 예외)를 빼려면 적는다. 뺀 항목은 보고서 표에 남는다. 바꾸면 열린 제안은 다시 만들어진다 |

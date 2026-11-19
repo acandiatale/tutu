@@ -125,7 +125,7 @@ repeat them)` → `Other error cases in this build` → `Plan notes`(transform /
 "Context was shortened" 를 붙인다. LLM 이 `<need_files>` / `<need_grep>` 로 더 달라면 `llm.max_context_rounds`(2)번까지 내준다(요청 파일은 줄 수와 글자 수로 자르고 `llm.max_context_chars` 를 지킨다;
 머리 `// <path> lines 1-N (whole file, C characters: cut to fit the context budget)`, 자국 `// … N characters omitted (use <need_grep> to locate code there) …`).
 
-사내 프레임워크 프로젝트(범위 `jdk-jakarta`)에서는 `Project after the restructure` 대신 `Scope of this run`(`FixContext.scope_facts`)이 들어간다:
+사내 프레임워크 프로젝트(범위 `jdk-jakarta`)는 기본으로 LLM을 부르지 않는다(`framework.fix_loop: false`). `true`로 켰을 때는 `Project after the restructure` 대신 `Scope of this run`(`FixContext.scope_facts`)이 들어간다:
 이번 실행이 Java 21과 jakarta만 한다는 것, 프레임워크 아티팩트마다 버전을 바꾸거나 지우지 말라는 줄, 해도 되는 것과 안 되는 것(Spring Boot·
 회사 부모 추가, `<parent>` 변경, 모듈 이동 금지). 시스템 프롬프트도 같은 파일 안의 줄인 범위용 소개와 규칙을 쓰고, 버전 사실은
 `parent chain: manages g:a at v`(프로젝트 자기 부모)로 온다. `full` 범위의 프롬프트는 바뀌지 않는다.

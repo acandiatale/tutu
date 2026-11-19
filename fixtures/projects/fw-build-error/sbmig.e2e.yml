@@ -1,0 +1,12 @@
+# Per-fixture config override (fw-build-error), appended after config/artifacts.local-e2e.yml.
+# v2.1z-aw framework project whose build fails after the conversion: framework.fix_loop is false (the default), so
+# the run converts, builds once and hands the error over; no LLM call, no stored script.
+framework:
+  artifacts: ["example-fw-core"]
+# The fake provider would answer "no fix"; no request is expected at all.
+llm:
+  provider: fake
+  base_url: "replay:fixtures/projects/fw-build-error/replay"
+# Own KB; scripts/e2e.py clears it before the run.
+kb:
+  dir: out/e2e/kb-fw-build-error

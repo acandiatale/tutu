@@ -107,7 +107,8 @@
 
 LLM 이 적용한 시도도 커밋 전에 `_fill_versions` 가 버전 없는 의존성을 같은 순서로 채운다(LLM 은 버전을 모르면 `null` 로 둔다).
 
-사내 프레임워크 프로젝트(범위 `jdk-jakarta`)에서는 "새 부모 체인" 자리에 프로젝트 자기 부모 체인(as-is 캡처)이 들어가고 목표 Boot BOM은 쓰지 않는다.
+사내 프레임워크 프로젝트(범위 `jdk-jakarta`)는 기본(`framework.fix_loop: false`)으로 수정 루프를 돌지 않는다: 빌드 1회, 사전 시도·재사용·LLM
+없음, KB에 쓰는 스크립트도 없다. 아래는 `framework.fix_loop: true`일 때다. "새 부모 체인" 자리에 프로젝트 자기 부모 체인(as-is 캡처)이 들어가고 목표 Boot BOM은 쓰지 않는다.
 프레임워크 아티팩트는 보호 키라서 사전 시도가 버전을 박거나 바꾸지 않고, `sbmig-parent`는 돌지 않는다. LLM 시도가 프레임워크 선언이나
 `<parent>`를 바꾸면 커밋 전에 되돌린다(저널 `framework_guard`). 프레임워크 자신이 javax 기준이면 LLM 없이 `external_javax_api`로 차단한다.
 자세한 것은 [13-framework-projects.md](13-framework-projects.md) 5절.

@@ -50,6 +50,7 @@ from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Iterator, Optional
 
+from sbmig.analyze.framework import NO_FIX_LOOP_NOTE, no_fix_loop_followup
 from sbmig.build.log_parser import BUILD_EXTENSION_RE
 from sbmig.core.config import Config
 from sbmig.core.models import (FLOW_FULL, FLOW_REMEDIATION, GAV, RUN_FLOWS, BlockedItem, BuildError, BuildResult,
@@ -759,7 +760,9 @@ class Orchestrator:
         rem = getattr(self.cfg, "remediation", None)
         if rem is None or not bool(getattr(rem, "after_migration", False)):
             return
-        if dry_run or stop_after is not None or not self.build_succeeded(report):
+        if dry_run or stop_after is not None or "aborted" in report.flags:
+            return
+        if not self.build_succeeded(report) and not self.remediation_after_failed_build(report):
             return
         try:
             self.ws.journal({"event": "remediation_skipped", "reason": "inline_engine", "scope": "remediation"})
@@ -1488,7 +1491,7 @@ class Orchestrator:
             self._flag(fw.FLAG)
             self.ws.journal({"event": "framework_project", "scope": use.scope, "artifacts": use.keys(),
                              "evidence": [e.model_dump() for e in use.evidence], "unchecked": list(use.unchecked),
-                             "reason": use.reason})
+                             "reason": use.reason, "name": use.name, "fix_loop": bool(use.fix_loop)})
             what = "JDK와 jakarta만 적용" if use.reduced else "설정에 따라 전체 이관"
             log.info("분석: 사내 프레임워크 프로젝트 (%s) - %s", fw.summary_text(use), what)
             line = fw.framework_followup(use)
@@ -1520,6 +1523,31 @@ class Orchestrator:
             return getattr(self.plan, "scope", "full") == REDUCED_SCOPE
         return bool(getattr(self.profile, "reduced_scope", False)) if self.profile is not None else False
 
+    @property
+    def no_fix_loop(self) -> bool:
+        """프레임워크 프로젝트를 변환과 빌드 1회로 끝내는지(``framework.fix_loop: false``) 반환한다.
+
+        v2.1z-aw: True for a reduced run whose analysis recorded `FrameworkUse.fix_loop = False` (the default): the run
+        converts and builds once; no fix loop, no plan advisor, no LLM."""
+        if not self.reduced_scope:
+            return False
+        use = getattr(self.profile, "framework", None) if self.profile is not None else None
+        return not bool(getattr(use, "fix_loop", False))
+
+    def remediation_after_failed_build(self, report: RunReport) -> bool:
+        """빌드가 실패해도 취약점 조치를 이어서 실행할 실행인지 반환한다.
+        수정 루프 없이 변환만 한 프레임워크 프로젝트의 최종 빌드를 실행했고 실패했으며, ``remediation.after_failed_build``가
+        ``framework``일 때만 True다. 나머지 조건(스위치, 중단, 멈춤)은 호출한 쪽이 본다.
+
+        v2.1z-aw: True when this is a conversion-only framework run (`no_fix_loop`) whose final build was attempted and
+        failed and `remediation.after_failed_build` is `framework`. The other chain conditions are the caller's."""
+        rem = getattr(self.cfg, "remediation", None)
+        if str(getattr(rem, "after_failed_build", "never") or "never") != "framework" or not self.no_fix_loop:
+            return False
+        if not self._verify_results or report.final_build is None:
+            return False
+        return any(not r.ok for r in self._verify_results)
+
     def step_plan(self, report: RunReport, stop_after: Phase | None,
                   dry_run: bool) -> list[tuple[Phase, list[tuple[int, PlanStep]]]] | None:
         """계획 단계를 실행한다. 정해진 규칙으로 계획(레시피, 재구성 모드)을 세우고, 오류 목록과
@@ -1550,8 +1578,10 @@ class Orchestrator:
         self.plan = plan
         report.plan = plan
         self.ws.save_model("plan.json", plan)
+        fw_use = getattr(profile, "framework", None)
         self.ws.journal({"event": "plan", "steps": [s.id for s in plan.steps], "notes": plan.notes,
-                         "scope": getattr(plan, "scope", "full")})
+                         "scope": getattr(plan, "scope", "full"), "name": getattr(fw_use, "name", "") or "",
+                         "fix_loop": bool(getattr(fw_use, "fix_loop", False))})
         for n in plan.notes:
             if n.startswith("followup:"):
                 report.manual_followups.append(n[len("followup:"):].strip())
@@ -3410,6 +3440,16 @@ class Orchestrator:
         if self.budget.time_exceeded():
             pr.notes.append(f"{step.id}: failed; no final fix loop (run time budget exhausted)")
             return False
+        if self.no_fix_loop:
+            # 프레임워크 프로젝트는 변환 뒤 빌드를 한 번만 하고 남은 오류를 그대로 넘긴다
+            n = self.errors.note_open(NO_FIX_LOOP_NOTE)
+            pr.notes.append(f"{step.id}: failed; no fix loop (framework project, framework.fix_loop: false) — "
+                            f"{first.error_count} error(s) stay for the owners")
+            self.ws.journal({"event": "verify_loop_skipped", "step": step.id, "target": step.target,
+                             "reason": "framework.fix_loop: false", "errors": first.error_count, "entries": n})
+            log.info("final build failed with %d error(s); framework project (framework.fix_loop: false) → no fix "
+                     "loop, the converted tree is delivered as it is", first.error_count)
+            return False
         clusters = self.loop._cluster(list(first.errors), step.target)          # noqa: SLF001 - same package
         covering = [self.blocked.covering(c) for c in clusters]
         if clusters and all(it is not None for it in covering):
@@ -3448,6 +3488,10 @@ class Orchestrator:
 
         cfg.plan.advisor == "llm": let the (cheap) recipe model review the rule-based plan (additive only)."""
         if self.cfg.plan.advisor != "llm" or self._dry_run or self.profile is None:
+            return plan
+        # 변환만 하는 프레임워크 프로젝트는 LLM을 호출하지 않는다
+        if bool(getattr(self.profile, "reduced_scope", False)) and \
+                not bool(getattr(getattr(self.profile, "framework", None), "fix_loop", False)):
             return plan
         try:
             advise = lazy_attr("sbmig.plan", "advise_plan", "A (plan)")
@@ -3498,6 +3542,17 @@ class Orchestrator:
         if poms:
             line += f", pom-verify {poms}건 resolved"
         log.info("%s", line)
+
+    def _no_fix_loop_followup(self, report: RunReport) -> None:
+        """변환 뒤 빌드가 실패한 프레임워크 프로젝트(수정 루프 없음)의 인수인계 줄을 맨 앞에 넣는다.
+
+        v2.1z-aw: a framework project that ran without the fix loop and whose final build failed gets one hand-over
+        line first among the follow-ups (after the ADF / hollow-reactor lines): the errors stay for the owners."""
+        if not self.no_fix_loop or not any(not r.ok for r in self._verify_results):
+            return
+        line = no_fix_loop_followup(len(report.unresolved))
+        if line not in report.manual_followups:
+            report.manual_followups.insert(self._first_lines_end(report), line)
 
     def _finalize_errors(self, report: RunReport) -> None:
         """오류 목록을 마무리한다. 열린 항목을 unresolved로 닫고, 실행 디렉토리에 errors.jsonl과 errors.md를
@@ -3988,6 +4043,7 @@ class Orchestrator:
             log.exception("finalizing the blocked items failed")
             report.flags.append(f"blocked-finalize-failed: {e}")
         report.unresolved = [e for e in unresolved if not self.blocked.is_blocked_error(e)]
+        self._no_fix_loop_followup(report)
         self._infra_flags(report)
         out = report.outputs
         out["run_dir"] = str(self.ws.run_dir)

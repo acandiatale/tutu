@@ -22,6 +22,7 @@ from sbmig.remediations.models import (
     AWAITING_CONFIRMATION,
     D_APPROVED,
     D_PENDING,
+    INCOMPLETE,
     INTERRUPTED,
     QUEUED,
     REMEDIATIONS_DIR,
@@ -1102,3 +1103,16 @@ def test_a_resumed_chained_run_and_an_upload_both_use_the_remediation_repository
     assert f.cfgs[-1].build.local_repo == "/m2/repository-remediation"
     submit_and_wait(mgr, tmp_path)
     assert f.cfgs[-1].build.local_repo == "/m2/repository-remediation"
+
+
+def test_status_carries_baseline_tolerated(tmp_path, base_cfg):
+    """The page reads `baseline_tolerated` from GET /api/remediations/{id} (always present, a bool)."""
+    rid = _foreign_run(tmp_path, base_cfg, "r20261119-100000-aaaaaa", INCOMPLETE)
+    path = RunPaths(tmp_path / "out" / REMEDIATIONS_DIR / rid).state
+    st = RemediationState.from_dict(read_json(path))
+    st.baseline_tolerated = True
+    write_json_atomic(path, st.to_dict())
+    plain = _foreign_run(tmp_path, base_cfg, "r20261119-100001-bbbbbb", INCOMPLETE)
+    mgr = manager(tmp_path, base_cfg)
+    assert mgr.status(rid)["baseline_tolerated"] is True
+    assert mgr.status(plain)["baseline_tolerated"] is False

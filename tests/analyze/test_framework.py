@@ -196,6 +196,22 @@ def test_decide_scope_matrix(cfg, scope, transitive, sources):
         assert f"only as a transitive dependency and framework.transitive={transitive}" in out.reason
 
 
+def test_decide_scope_names_the_framework_and_records_the_mode(cfg):
+    """v2.1z-aw: `name` = display_name of the evidence found, `fix_loop` = framework.fix_loop."""
+    _fw(cfg, "example-*")                                          # a glob pattern names nothing: the evidence does
+    out = decide_scope(_use("direct"), cfg)
+    assert out.name == "Example" and out.fix_loop is False
+    cfg.framework.name, cfg.framework.fix_loop = "Acme", True
+    out = decide_scope(_use("direct"), cfg)
+    assert out.name == "Acme" and out.fix_loop is True
+    assert decide_scope(out, cfg) == out
+    cfg.framework.name = ""
+    assert decide_scope(_use(), cfg).name == ""                    # nothing found: no name
+    bundled = FrameworkUse(patterns=["example-*"], evidence=[FrameworkEvidence(
+        source="bundled", artifact="example-fw-core-1.2.0.jar", where="WEB-INF/lib/example-fw-core-1.2.0.jar")])
+    assert decide_scope(bundled, cfg).name == ""                   # a jar name is not an artifact id
+
+
 def test_summary_text():
     assert summary_text(_use("direct")) == f"{FW} 1.2.0 (direct: pom.xml)"
     assert summary_text(_use("direct", "bundled")) == f"{FW} 1.2.0 (direct: pom.xml) and 1 more"
@@ -280,24 +296,26 @@ def _decided(cfg, *ev):
 
 def test_followup_samples(cfg):
     _fw(cfg)
-    tail = "JDK 21과 jakarta만 올렸고 재구성과 구조 검토는 하지 않았습니다. 부모 pom과 프레임워크 버전은 그대로입니다."
+    tail = "JDK 21과 Jakarta만 적용했고 구조 정리와 구조 검토는 하지 않았습니다. 부모 pom과 프레임워크 버전은 그대로입니다."
     direct = FrameworkEvidence(source="direct", artifact=FW, version="1.2.0", where="pom.xml")
     assert framework_followup(_decided(cfg, direct)) == (
-        f"사내 프레임워크 프로젝트입니다({FW} 1.2.0, pom.xml에 직접 선언). " + tail)
+        f"Example 프레임워크 프로젝트입니다({FW} 1.2.0, pom.xml에 직접 선언). " + tail)
     parent = FrameworkEvidence(source="parent", artifact=FW, version="1.2.0", where="pom.xml",
                                parent="com.example.fw:example-fw-parent:1.0.0")
     assert framework_followup(_decided(cfg, parent)) == (
-        f"사내 프레임워크 프로젝트입니다({FW} 1.2.0, 부모 pom com.example.fw:example-fw-parent:1.0.0에서 상속). " + tail)
+        f"Example 프레임워크 프로젝트입니다({FW} 1.2.0, 부모 pom com.example.fw:example-fw-parent:1.0.0에서 상속). " + tail)
     bundled = FrameworkEvidence(source="bundled", artifact="example-fw-core-1.2.0.jar",
                                 where="WEB-INF/lib/example-fw-core-1.2.0.jar")
+    _fw(cfg, "example-fw-*")                     # no artifact id to derive a name from
     assert framework_followup(_decided(cfg, bundled)) == (
         "사내 프레임워크 프로젝트입니다(example-fw-core-1.2.0.jar, WEB-INF/lib에 jar로 포함). " + tail)
+    _fw(cfg)
     trans = FrameworkEvidence(source="transitive", artifact=FW, version="1.2.0", where="pom.xml",
                               via=["com.example:lib-a:1.0", f"{FW}:1.2.0"])
     assert framework_followup(_decided(cfg, trans)) == (
-        f"사내 프레임워크 프로젝트입니다({FW} 1.2.0, com.example:lib-a:1.0의 의존성). " + tail)
+        f"Example 프레임워크 프로젝트입니다({FW} 1.2.0, com.example:lib-a:1.0의 의존성). " + tail)
     assert framework_followup(_decided(cfg, direct, parent, bundled)) == (
-        f"사내 프레임워크 프로젝트입니다({FW} 1.2.0, pom.xml에 직접 선언 외 2곳). " + tail)
+        f"Example 프레임워크 프로젝트입니다({FW} 1.2.0, pom.xml에 직접 선언 외 2곳). " + tail)
 
     _fw(cfg, scope="full")
     assert framework_followup(_decided(cfg, direct)) == (

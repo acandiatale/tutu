@@ -54,7 +54,7 @@
 | `artifacts` | 회사 부모 pom 과 사내 아티팩트. 루트 pom 의 부모, boot 모듈·그 외 모듈의 부모, 필수 2개, 선택 8개 | `artifacts.parent`, `artifacts.boot_parent`, `artifacts.comp_parent`, `artifacts.mandatory`, `artifacts.optional`, `artifacts.parent_manages_spring_boot` |
 | `layout` | 재구성 모양: 모듈 이름(`{name}-boot` / `-back` / `-front`), Boot as-is 를 제자리로 둘지, JSP 패키징, 다중 모듈 정책, 버전 정리 규칙, 레거시 Spring 컨텍스트 스위치(`layout.legacy_context.*`) | `layout.boot_module`, `layout.comp_module`, `layout.front_module`, `layout.boot_as_is`, `layout.multi_module_policy`, `layout.wire_bundled_jars` |
 | `intake` | 접수 규칙: 올린 ZIP 의 풀기 한도, Ant 거절과 안내 문구(스위치를 켜면 pom 합성), 동봉 jar 스캔, jar 이름 표, ADF 정책 | `intake.max_unpacked_mb`(4096), `intake.max_entry_mb`(1024), `intake.max_compression_ratio`(200; 셋 다 0 = 없음), `intake.ant_to_maven`(기본 false = 거절), `intake.ant_message`, `intake.synth_group_id`, `intake.unknown_jar`, `intake.bundled_jars`, `intake.adf_policy` |
-| `framework` | 사내 프레임워크 프로젝트 판정과 줄인 실행(범위 `jdk-jakarta`). 비우면 검사하지 않는다([13](13-framework-projects.md)) | `framework.artifacts`(회사 좌표, 회사 yml에만), `framework.scope`, `framework.transitive`, `framework.recipe_sets` |
+| `framework` | 사내 프레임워크 프로젝트 판정과 줄인 실행(범위 `jdk-jakarta`). 비우면 검사하지 않는다([13](13-framework-projects.md)) | `framework.artifacts`(회사 좌표, 회사 yml에만), `framework.name`(화면·보고서의 이름, 비우면 아티팩트 이름에서), `framework.fix_loop`(기본 false = 빌드 1회, 오류 수정 없음), `framework.scope`, `framework.transitive`, `framework.recipe_sets` |
 | `openrewrite` | OpenRewrite 1회 실행: 플러그인·레시피 BOM 버전, 레시피 세트, JVM 옵션, 제외 파일 | `openrewrite.recipes.jakarta`, `openrewrite.recipes.extra`, `openrewrite.jvm_args`, `openrewrite.timeout_minutes`, `openrewrite.recipe_bom_version` |
 | `build` | Maven 호출: `mvn` 경로, settings.xml, JDK, 테스트 건너뛰기, 타임아웃, 저장소 조회 주소, 파일 잠금 재시도, 실행 전후 훅 | `build.mvn`, `build.settings_file`, `build.ignore_project_settings`(기본 true: `-s` 와 함께 설치본 전역 settings 를 `-gs` 로 넘겨 프로젝트 `.mvn/maven.config` 의 settings 를 무시), `build.ignore_project_mvn`(기본 true: 환경 변수 `MAVEN_BASEDIR` 에 빈 폴더를 줘 Maven 이 프로젝트 `.mvn/` 의 jvm.config·maven.config·extensions.xml 을 읽지 않고, maven.config 의 `-D`·`-P` 와 `-Dmaven.multiModuleProjectDirectory=<루트>` 를 명령줄로 넘김. 폴더는 그대로 결과물에), `build.java_home`, `build.repository_url`, `build.local_repo`, `build.non_filtered_extensions` |
 | `loop` | 수정 루프: 단계별 라운드 수(`loop.phases.verify`), LLM 총 호출 상한, 시간 상한, 차단 정책, 진동 감지 | `loop.phases.verify.max_iterations`, `loop.max_llm_calls`, `loop.max_total_minutes`, `loop.blocked_policy`, `loop.oscillation_limit` |
@@ -69,6 +69,7 @@
 | `fleet` | 일괄 실행: 순서, 재시도, 사전 점검, 인프라 차단기, 정리, 요약 형식. `fleet.min_free_gb` 는 웹 업로드의 여유 공간 하한이기도 하다(모자라면 HTTP 507, 0 = 안 봄) | `fleet.order`, `fleet.preflight`, `fleet.cleanup`, `fleet.min_free_gb`, `fleet.max_llm_calls_total` |
 | `report` | 보고서: 형식, 결과 zip, diff 포함, 언어(report.md 만: `ko` = 요청자용 한국어 안내서 `sbmig/report/guide_ko.py`, `en` = 진단용 배치 `sbmig/report/markdown.py`) | `report.language`, `report.formats`, `report.zip_result` |
 | `advisories` | EOL 라이브러리 권고(안내만, 차단 없음): 기본 파일, 회사 추가 파일, 항목 끄기 | `advisories.extra_files`, `advisories.policy_overrides`, `advisories.enabled` |
+| `remediation` | 취약점 조치(IVAS): 이관 뒤에 이어 돌지, 실패한 빌드 뒤에도 이어 돌지, 승인, 정책, 사내 그룹([11](11-remediations.md)) | `remediation.after_migration`, `remediation.after_failed_build`(기본 `framework` = 빌드 오류를 고치지 않는 사내 프레임워크 실행은 빌드가 실패해도 조치, `never` = 통과한 실행만), `remediation.require_approval`, `remediation.inhouse_groups` |
 | `externalized` | 코드가 읽지만 어떤 리소스도 정의하지 않는 설정 키 → 자리표시자 블록과 인수인계 목록 | `externalized.enabled`, `externalized.sentinel`, `externalized.rules_file` |
 
 몇 가지 주의할 기본값(지금 코드 기준):
@@ -99,6 +100,7 @@
 2개, `artifacts.optional` 8개(별칭 `aliases`, 트리거 `when_present` 가 있으면 함께), `intake.synth_group_id`(Ant 합성 pom 의 groupId, `intake.ant_to_maven` 을 켤 때만),
 settings.xml 의 Nexus 그룹 URL 과 `build.repository_url`(같은 Nexus — 하나는 Maven 용, 하나는 sbmig 가 직접 메타데이터를 읽는 용).
 사내 프레임워크 프로젝트를 가려낼 때만 `framework.artifacts`(예 `["com.example.fw:example-fw-core"]`)를 채운다. 비워 두면 검사하지 않는다.
+아티팩트 이름에서 만든 프레임워크 이름(`example-fw-core` → `Example`)이 틀릴 때만 `framework.name`을 함께 적는다.
 실행은 `sbmig run <프로젝트> --config config/artifacts.yml` 이고, 여러 yml 을 겹칠 때는 `--config` 를 여러 번 준다(뒤가 이김).
 
 ## 4. `knowledge/` — 배포되는 지식 데이터

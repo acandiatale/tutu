@@ -213,9 +213,11 @@ class FakeMaven:
 
     def __init__(self, readiness: list[str] | None = None, outcomes: list[bool | BuildOutcome] | None = None,
                  models: list[ResolvedModel] | None = None, packaged: list[PackagedLib] | None = None,
-                 on_package: Callable[[Path], None] | None = None):
+                 on_package: Callable[[Path], None] | None = None,
+                 logs: list[Callable[[Path], str]] | None = None):
         self._readiness = list(readiness or [])
         self.outcomes = list(outcomes or [])
+        self.logs = list(logs or [])          # per package call: project dir -> the build log text
         self.models = list(models or [])
         self._packaged = list(packaged or [])
         self.on_package = on_package
@@ -238,7 +240,7 @@ class FakeMaven:
         (project / "target").mkdir(parents=True, exist_ok=True)
         (project / "target" / "built.txt").write_text("built", encoding="utf-8")
         log_path.parent.mkdir(parents=True, exist_ok=True)
-        log_path.write_text("[INFO] BUILD\n", encoding="utf-8")
+        log_path.write_text(self.logs.pop(0)(project) if self.logs else "[INFO] BUILD\n", encoding="utf-8")
         item = self.outcomes.pop(0) if self.outcomes else True
         if isinstance(item, BuildOutcome):
             return item

@@ -742,7 +742,9 @@ def test_framework_scope_run():
     from .test_framework_scope import DIRECT, _report, _use
     r = _report(_use(DIRECT))
     md = ko(r)
-    assert md.index("이 문서는") < md.index("## 사내 프레임워크 프로젝트") < md.index("## 확인해 주세요")
+    # v2.1z-aw: the framework block comes right under the head table, before the purpose sentence
+    assert md.index("| 시작 / 종료 |") < md.index("## 사내 프레임워크 프로젝트") < md.index("이 문서는") \
+        < md.index("## 확인해 주세요")
     assert "| 범위 |" not in md and "- 범위: JDK 21과 jakarta만 적용(사내 프레임워크 프로젝트)" in sec(md, "## 참고")
 
 

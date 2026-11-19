@@ -19,6 +19,7 @@ import logging
 import os
 import re
 from pathlib import Path
+from collections.abc import Iterable
 from typing import Any, Literal, Optional, get_args, get_origin
 
 import yaml
@@ -953,6 +954,10 @@ class IntakeConfig(BaseModel):
     adf_policy: Literal["stop", "continue"] = "stop"
 
 
+# 프레임워크 아티팩트 이름 끝에 붙는 역할 낱말이다. 화면에 보일 이름을 만들 때 잘라 낸다
+_FRAMEWORK_ROLE_WORDS = frozenset({"core", "framework", "fw", "starter", "parent", "bom", "boot", "common", "base", "api"})
+
+
 class FrameworkConfig(BaseModel):
     """사내 프레임워크를 쓰는 프로젝트를 찾아 이관 범위를 줄이는 설정을 담는 클래스.
     ``artifacts``의 아티팩트가 의존성에 있으면 JDK와 jakarta만 올리고 빌드한다.
@@ -970,6 +975,10 @@ class FrameworkConfig(BaseModel):
     transitive: Literal["apply", "note", "off"] = "apply"
     # jdk-jakarta 범위에서 실행할 레시피 세트 이름이다. openrewrite.recipes 아래의 세트 이름을 쓴다
     recipe_sets: list[str] = Field(default_factory=lambda: ["jdk21", "jakarta"])
+    # 화면과 보고서에 보여 줄 프레임워크 이름이다. 비우면 프레임워크 아티팩트 이름에서 만든다
+    name: str = ""
+    # false면 JDK와 jakarta 변환 뒤 빌드를 한 번만 하고 남은 오류를 알린다. 수정 루프(사전 시도, 저장된 스크립트, LLM)는 실행하지 않는다
+    fix_loop: bool = False
 
     @field_validator("recipe_sets")
     @classmethod
@@ -988,6 +997,30 @@ class FrameworkConfig(BaseModel):
     def patterns(self) -> list[str]:
         """빈 값을 뺀 패턴 목록을 반환한다."""
         return [p.strip() for p in self.artifacts if isinstance(p, str) and p.strip()]
+
+    def display_name(self, found: Iterable[str] = ()) -> str:
+        """화면과 보고서에 쓸 프레임워크 이름을 반환한다. ``name``이 있으면 그 값이고, 없으면 아티팩트 이름에서 만든다.
+        찾은 아티팩트(``found``)를 먼저 보고 설정한 패턴을 그다음에 본다. 만들 수 없으면 빈 문자열이다.
+
+        The framework's display name: `name` when set; else derived from an artifact id — the artifacts found in the
+        project first (`g:a[:v]` or a bare artifactId), then the configured patterns: a pattern with a glob names no
+        single artifact and is skipped; trailing role words (`core`, `framework`, `fw`, `starter`, `parent`, `bom`,
+        `boot`, `common`, `base`, `api`) are cut and the first letter is upper-cased (`example-fw-core` → `Example`).
+        `""` when nothing can be derived: callers then say "the in-house framework"."""
+        if self.name.strip():
+            return self.name.strip()
+        for raw in [*found, *self.patterns()]:
+            parts = str(raw or "").strip().split(":")
+            art = parts[1] if len(parts) >= 2 else parts[0]
+            if not art or any(ch in art for ch in "*?[]"):
+                continue
+            tokens = [t for t in re.split(r"[-_.]", art) if t]
+            while len(tokens) > 1 and tokens[-1].lower() in _FRAMEWORK_ROLE_WORDS:
+                tokens.pop()
+            if tokens:
+                s = "-".join(tokens)
+                return s[:1].upper() + s[1:]
+        return ""
 
     @property
     def enabled(self) -> bool:
@@ -1078,6 +1111,9 @@ class RemediationConfig(BaseModel):
     # 결과는 <실행 폴더>/remediation/에 남고 이관의 성공 여부와 종료 코드는 바뀌지 않는다.
     # IVAS 값이 없으면 건너뛰며, trusted_projects는 확인하지 않는다
     after_migration: bool = False
+    # 이관의 최종 빌드가 실패했을 때도 조치를 이어서 실행할 대상이다.
+    # framework는 빌드 오류를 고치지 않는 사내 프레임워크 프로젝트만, never는 빌드가 통과한 실행만 조치한다
+    after_failed_build: Literal["framework", "never"] = "framework"
     # 이관 뒤 이어서 실행하는 조치가 빌드 파드에서 쓸 수 있는 시간(분)이다.
     # 넘으면 다음 노드로 넘어갈 때 STOPPED로 멈추고, 재개하면 새 파드가 이어서 실행한다
     # 파드 수명 한도에 걸려 이미 끝난 이관까지 중단된 것처럼 보이지 않게 하기 위해서다. 0이면 한도가 없다

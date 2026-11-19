@@ -35,11 +35,15 @@
           "com.example.fw:example-fw-core"
         ],
         "evidence.0.source": "transitive",
-        "evidence.0.via.0": "regex:com\\.example\\.fw:example-fw-web:.*1\\.0\\.0"
+        "evidence.0.via.0": "regex:com\\.example\\.fw:example-fw-web:.*1\\.0\\.0",
+        "name": "Example",
+        "fix_loop": false
       },
       {
         "event": "plan",
-        "scope": "full"
+        "scope": "full",
+        "name": "Example",
+        "fix_loop": false
       },
       {
         "event": "rewrite",
@@ -95,6 +99,12 @@
       {
         "file_exists": {
           "path": "**/GreetingServlet.java"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "../report.md",
+          "contains": "## Example framework\n"
         }
       }
     ]

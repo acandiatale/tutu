@@ -310,34 +310,57 @@ def _remediation_ran(r: RunReport) -> bool:
     return isinstance(rem, dict) and str(rem.get("status") or "") not in ("", "skipped")
 
 
+def no_fix_loop(r: RunReport) -> bool:
+    """프레임워크 프로젝트를 변환과 빌드 1회로 끝낸 실행(수정 루프 없음)인지 확인한다.
+
+    v2.1z-aw: a reduced run whose analysis recorded `framework.fix_loop: false` and in which no fix was attempted."""
+    use = getattr(getattr(r, "profile", None), "framework", None)
+    if run_scope(r) is None or use is None or bool(getattr(use, "fix_loop", False)):
+        return False
+    return not any(pr.attempts for pr in r.phases or [])
+
+
 def framework_lines(r: RunReport, lang: str = "en") -> list[str]:
     """사내 프레임워크 아티팩트를 찾은 실행의 절을 만든다. 찾지 못했으면 빈 목록을 반환한다.
-    어디에서 찾았는지, 이번 실행에서 한 일과 하지 않은 일, 확인하지 못한 곳을 담는다.
+    프레임워크 이름과 적용 범위 문장, 어디에서 찾았는지, 이번 실행에서 한 일과 하지 않은 일, 확인하지 못한 곳을 담는다.
 
-    v2.1z-ak: the framework block right under the header table (`profile.framework` with evidence): one line per
-    evidence entry, what the run did / did not do (reduced run: JDK 21 + jakarta, build fixes, the remediation when it
-    ran; no restructure, no structure review, parent pom and framework version kept) or why the full migration ran,
-    and the sources that could not be checked. [] when nothing was found (or no check was configured)."""
+    v2.1z-ak / v2.1z-aw: the framework block right under the header table (`profile.framework` with evidence): the
+    framework's name in the heading and, for a reduced run, the bold sentence "<Name> framework projects get JDK 21 and
+    Jakarta only."; one line per evidence entry; what the run did (the conversion, one build or the build error fixes,
+    the remediation when it ran) and did not do (restructure, structure review, automatic build error fixes unless
+    `framework.fix_loop`; parent pom and framework version kept) or why the full migration ran; the sources that could
+    not be checked. [] when nothing was found (or no check was configured)."""
     use = getattr(getattr(r, "profile", None), "framework", None)
     if use is None or not list(getattr(use, "evidence", None) or []):
         return []
     reduced = run_scope(r) is not None
+    name = str(getattr(use, "name", "") or "").strip()
     # tests/report/test_report_i18n.py가 번역 표와 대조하므로 tr의 원문은 리터럴로 쓴다
-    title = tr(lang, "In-house framework project") if reduced else tr(lang, "In-house framework")
+    if reduced:
+        title = tr(lang, "{name} framework project", name=name) if name else tr(lang, "In-house framework project")
+    else:
+        title = tr(lang, "{name} framework", name=name) if name else tr(lang, "In-house framework")
     L = [f"## {title}", ""]
+    if reduced:
+        L += [tr(lang, "**{name} framework projects get JDK 21 and Jakarta only.**", name=name) if name else
+              tr(lang, "**In-house framework projects get JDK 21 and Jakarta only.**"), ""]
     L += [f"- {_evidence_line(e, lang)}" for e in use.evidence]
     L.append("")
     if reduced:
-        did = [tr(lang, "JDK 21 and jakarta")]
-        # 첫 빌드가 통과해 수정 루프가 시도하지 않았으면 빌드 오류 수정은 한 일이 아니다
-        if any(pr.attempts for pr in r.phases or []):
-            did.append(tr(lang, "build error fixes"))
+        looped = any(pr.attempts for pr in r.phases or [])
+        did = [tr(lang, "JDK 21 and Jakarta conversion")]
+        # 수정 루프가 시도한 것이 있을 때만 빌드 오류 수정을 한 일로 쓴다
+        did.append(tr(lang, "build error fixes") if looped else tr(lang, "one build"))
         if _remediation_ran(r):
             did.append(tr(lang, "vulnerability remediation"))
         L.append(tr(lang, "Done in this run: {what}", what=", ".join(did)))
         L.append("")
-        L.append(tr(lang, "Not done: restructure, structure review (a framework project's run has neither step). The "
-                          "parent pom and the framework version stay as they are."))
+        if no_fix_loop(r):
+            L.append(tr(lang, "Not done: restructure, structure review, automatic build error fixes "
+                              "(framework.fix_loop: false). The parent pom and the framework version stay as they are."))
+        else:
+            L.append(tr(lang, "Not done: restructure, structure review. The parent pom and the framework version stay "
+                              "as they are."))
     else:
         reason = str(getattr(use, "reason", "") or "")
         if "framework.scope=full" in reason:
@@ -1124,6 +1147,37 @@ def bundled_jars_lines(r: RunReport, lang: str = "en") -> list[str]:
     return L
 
 
+def _tolerated_line(rem: dict, lang: str) -> str:
+    """빌드가 실패한 프로젝트에 이어서 한 조치(``baseline_tolerated``)를 설명하는 줄을 ``lang``으로 만든다. 아니면 빈 문자열이다.
+
+    One line (English, `tr` for `ko`) for a remediation chained after a failed build: remediated but not
+    confirmed by a build (`build_unconfirmed`), changed and rescanned with other reasons left (INCOMPLETE with
+    `baseline_build_failed`), nothing changed so nothing to confirm (SUCCEEDED / INCOMPLETE without that reason), or
+    only that the project did not build before (FAILED and the waiting states)."""
+    from sbmig.remediations.report import build_unconfirmed
+    if not rem.get("baseline_tolerated"):
+        return ""
+    status = str(rem.get("status"))
+    reasons = [str(x) for x in (rem.get("reasons") or ([rem["reason"]] if rem.get("reason") else []))]
+    if build_unconfirmed(rem):
+        return tr(lang, "- Remediated, but not confirmed by a build: the project did not build before the remediation "
+                        "either, and the changed versions were only scanned again.")
+    if status == "INCOMPLETE" and "baseline_build_failed" in reasons:
+        return tr(lang, "- The project did not build before the remediation either: the changed versions were scanned "
+                        "again, but no build confirmed them.")
+    if status in ("SUCCEEDED", "INCOMPLETE"):
+        return tr(lang, "- The project did not build before the remediation either; no version was changed, so there "
+                        "was nothing for a build to confirm.")
+    return tr(lang, "- The project did not build before the remediation either.")
+
+
+def _shown_message(rem: dict) -> str:
+    """조치 요약의 메시지를 반환한다. 위의 줄이 이미 말한, 빌드 실패를 받아들인 실행의 문장이면 빈 문자열이다."""
+    from sbmig.remediations.graph import TOLERATED_HEAD
+    msg = str(rem.get("message") or "")
+    return "" if rem.get("baseline_tolerated") and msg.startswith(TOLERATED_HEAD) else msg
+
+
 def remediation_lines(r: RunReport, lang: str = "en") -> list[str]:
     """``## Vulnerability remediation`` 섹션을 만든다.
     조치의 상태, 이유, 개수, 결과 파일 또는 건너뛴 이유를 담는다.
@@ -1135,10 +1189,15 @@ def remediation_lines(r: RunReport, lang: str = "en") -> list[str]:
     if not isinstance(rem, dict) or not rem.get("status"):
         return []
     chained = getattr(r, "flow", "full") != "remediation"     # 조치만 한 실행에는 "이관 뒤에 이어서" 문장을 쓰지 않는다
+    # 빌드가 실패한 프레임워크 프로젝트도 조치를 이어서 실행하므로 빌드 성공 뒤라고 쓰지 않는다
+    after_failure = chained and not getattr(r, "success", True) and str(rem.get("status")) != "skipped"
     if normalize(lang) == "ko":
-        return _remediation_lines_ko(rem, chained=chained)
+        return _remediation_lines_ko(rem, chained=chained, after_failure=after_failure)
     L = [f"## {tr(lang, 'Vulnerability remediation')}", ""]
-    if chained:
+    if after_failure:
+        L += [tr(lang, "Chained after the migration although its final build failed (a framework project: "
+                       "remediation.after_failed_build); it does not change the migration result above."), ""]
+    elif chained:
         L += [tr(lang, "Chained after the migration's BUILD SUCCESS (remediation.after_migration); it does not change the "
                        "migration result above."), ""]
     status = str(rem.get("status"))
@@ -1151,6 +1210,9 @@ def remediation_lines(r: RunReport, lang: str = "en") -> list[str]:
     reason = rem.get("reason") or ""
     L.append(tr(lang, "- Status: `{status}`{reason}", status=_cell(status, 40),
                 reason=f" (`{_cell(reason, 80)}`)" if reason else ""))
+    tolerated = _tolerated_line(rem, lang)
+    if tolerated:
+        L.append(tolerated)
     counts = rem.get("counts") or {}
     if counts:
         L.append(tr(lang, "- Counts: {counts}", counts=", ".join(f"{k} {v}" for k, v in sorted(counts.items()))))
@@ -1158,8 +1220,8 @@ def remediation_lines(r: RunReport, lang: str = "en") -> list[str]:
     n_inhouse = counts.get("residual_inhouse") if isinstance(counts, dict) else 0
     if isinstance(n_inhouse, int) and n_inhouse > 0:
         L.append(tr(lang, "- In-house artifacts (exception possible, contact their owners): {n}", n=n_inhouse))
-    if rem.get("message"):
-        L.append(f"- {_cell(rem.get('message'), 300)}")
+    if _shown_message(rem):
+        L.append(f"- {_cell(_shown_message(rem), 300)}")
     files = rem.get("files") or {}
     if files:
         L.append(tr(lang, "- Files: {files}", files=", ".join(f"`{_cell(v, 120)}`" for v in files.values())))
@@ -1167,7 +1229,7 @@ def remediation_lines(r: RunReport, lang: str = "en") -> list[str]:
     return L
 
 
-def _remediation_lines_ko(rem: dict, *, chained: bool = True) -> list[str]:
+def _remediation_lines_ko(rem: dict, *, chained: bool = True, after_failure: bool = False) -> list[str]:
     """한국어 이관 보고서의 ``## 취약점 조치`` 절을 만든다.
     결과 문장, 취약점 개수, 승인 대기, 사내 라이브러리, 상태 메시지, 결과 파일을 담는다.
     집계 키 이름은 보고서에 쓰지 않는다.
@@ -1175,9 +1237,12 @@ def _remediation_lines_ko(rem: dict, *, chained: bool = True) -> list[str]:
     The Korean remediation section: verdict + code, counts in words, the message in Korean, the files."""
     # 순환 import를 막기 위해 sbmig.remediations는 필요할 때 import한다
     from sbmig.remediations.i18n import REASON_KO, ko_display, label
-    from sbmig.remediations.report import _VERDICT
+    from sbmig.remediations.report import _VERDICT, UNCONFIRMED_VERDICT_KO, build_unconfirmed
     L = [f"## {tr('ko', 'Vulnerability remediation')}", ""]
-    if chained:
+    if after_failure:
+        L += [tr("ko", "Chained after the migration although its final build failed (a framework project: "
+                       "remediation.after_failed_build); it does not change the migration result above."), ""]
+    elif chained:
         L += [tr("ko", "Chained after the migration's BUILD SUCCESS (remediation.after_migration); it does not change the "
                        "migration result above."), ""]
     status = str(rem.get("status"))
@@ -1190,9 +1255,15 @@ def _remediation_lines_ko(rem: dict, *, chained: bool = True) -> list[str]:
         return L
     verdict = _VERDICT.get(status, "")
     verdict = verdict.split(" ", 1)[1].replace("**", "") if verdict else status
+    if build_unconfirmed(rem):
+        # 남은 일이 빌드 확인뿐이면 일부만 조치됐다고 하지 않는다
+        verdict = UNCONFIRMED_VERDICT_KO + "."
     reasons = [str(x) for x in (rem.get("reasons") or ([rem["reason"]] if rem.get("reason") else []))]
     why = f" (사유: {', '.join(label(REASON_KO, x) for x in reasons)})" if reasons else ""
     L.append(f"- 결과: {verdict} `{_cell(status, 40)}`{why}")
+    tolerated = _tolerated_line(rem, "ko")
+    if tolerated:
+        L.append(tolerated)
     counts = rem.get("counts") or {}
     counts = counts if isinstance(counts, dict) else {}
     parts = [f"{name} {counts[key]:,}건" for key, name in (("baseline_findings", "조치 전"), ("fixed", "조치 완료"),
@@ -1206,8 +1277,8 @@ def _remediation_lines_ko(rem: dict, *, chained: bool = True) -> list[str]:
     n_inhouse = counts.get("residual_inhouse")
     if isinstance(n_inhouse, int) and n_inhouse > 0:
         L.append(tr("ko", "- In-house artifacts (exception possible, contact their owners): {n}", n=n_inhouse))
-    if rem.get("message"):
-        L.append(f"- 상세: {_cell(ko_display(str(rem.get('message'))), 400)}")
+    if _shown_message(rem):
+        L.append(f"- 상세: {_cell(ko_display(_shown_message(rem)), 400)}")
     files = rem.get("files") or {}
     if isinstance(files, dict) and files:
         report_md = files.get("report_md")

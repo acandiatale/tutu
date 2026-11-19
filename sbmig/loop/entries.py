@@ -285,6 +285,24 @@ class RunErrors(_Guarded):
         Entries still open (None = no list)."""
         return self.counts().get("open", 0) if self.active else None
 
+    def note_open(self, text: str) -> int:
+        """열린 빌드 오류 항목마다 ``note``에 ``text``를 덧붙이고 그 항목 수를 반환한다. 같은 문장은 한 번만 붙인다.
+
+        v2.1z-aw: append `text` to the note of every open entry (once); returns how many entries carry it now. The
+        list writes them at finalize."""
+        n = 0
+        for e in self.entries():
+            if str(getattr(e, "status", "") or "") != "open":
+                continue
+            try:
+                note = str(getattr(e, "note", "") or "")
+                if text not in note:
+                    e.note = f"{note}; {text}" if note else text
+                n += 1
+            except Exception as ex:  # noqa: BLE001 - a record of facts never stops the run
+                log.warning("errors.note_open failed: %s: %s", type(ex).__name__, ex)
+        return n
+
     def open_cases(self) -> dict:
         """열린 항목이 있는 케이스를 케이스 ID별 항목 목록으로 반환한다."""
         got = self._call("open_cases", default={})

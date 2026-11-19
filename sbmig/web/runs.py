@@ -630,6 +630,40 @@ def _recorded_flow(rd: Path) -> str:
     return FLOW_FULL
 
 
+FRAMEWORK_SCOPE = "jdk-jakarta"
+# 저널에서 프레임워크 범위를 찾을 때 한 번에 읽는 최대 바이트 수다
+_FW_READ_CHUNK = 1 << 20
+
+
+def _framework_entry(src: Any) -> dict[str, Any] | None:
+    """줄인 범위로 실행한 기록이면 화면에 보낼 ``{name, scope, fix_loop}``를, 아니면 None을 반환한다.
+    name과 fix_loop가 없는 이전 실행은 수정 루프를 실행했으므로 fix_loop를 true로 본다.
+
+    The page's framework object for a run in the reduced scope (v2.1z-aw), else None. A record written before
+    v2.1z-aw has neither `name` nor `fix_loop`: those runs ran the fix loop (v2.1z-ak), so a missing `fix_loop` is
+    true and a missing name is "" (the texts then say 사내 프레임워크)."""
+    if not isinstance(src, dict) or src.get("scope") != FRAMEWORK_SCOPE:
+        return None
+    name = src.get("name")
+    fix = src.get("fix_loop")
+    return {"name": name.strip() if isinstance(name, str) else "", "scope": FRAMEWORK_SCOPE,
+            "fix_loop": fix if isinstance(fix, bool) else True}
+
+
+def _framework_from_report(data: Any) -> dict[str, Any] | None:
+    """report.json의 ``profile.framework``에서 화면용 프레임워크 정보를 만든다."""
+    prof = data.get("profile") if isinstance(data, dict) else None
+    return _framework_entry(prof.get("framework") if isinstance(prof, dict) else None)
+
+
+@dataclass
+class _JournalScan:
+    # 실행 하나의 저널을 어디까지 읽었는지와 찾은 프레임워크 이벤트를 담는다
+    offset: int = 0
+    raw: dict[str, Any] | None = None
+    done: bool = False                 # plan 이벤트를 지나면 범위가 정해졌으므로 더 읽지 않는다
+
+
 class RunManager:
     """이관을 작업 스레드로 시작하고, 상태와 이벤트 요청에 메모리와 실행 폴더의 정보로 응답하는 클래스.
     ``_lock``은 ``runs`` dict를 보호하고, ``_turns``는 업로드 순서대로 ``max_parallel``개(in-process는
@@ -700,6 +734,10 @@ class RunManager:
         # 상태가 섞이지 않도록 이관의 runs와 따로 둔다
         self.resumes: dict[str, Run] = {}
         self._lock = threading.Lock()
+        # 실행별 저널에서 찾은 프레임워크 범위와 기본 설정의 프레임워크 정보다. 목록과 화면이 자주 묻기 때문에 캐시한다
+        self._fw_lock = threading.Lock()
+        self._fw_scans: dict[str, _JournalScan] = {}
+        self._fw_config: tuple[Any, dict[str, Any]] | None = None
         # 동시 Job 수는 인자, SBMIG_JOB_MAX_PARALLEL, 1 순으로 정한다.
         # in-process는 LLM 호출 수와 로그 필터가 프로세스에 하나뿐이므로 항상 1이다
         # 실행 모드가 정해진 뒤, recover()가 슬롯을 잡기 전에 정해야 한다
@@ -964,6 +1002,94 @@ class RunManager:
                     log.warning("web: default config %s is not under %s — runs start without it until it exists", c, d)
             return out
         return next(([c] for c in self.FALLBACK_CONFIGS if (d / c).is_file()), [])
+
+    def framework_info(self) -> dict[str, Any]:
+        """기본 설정으로 실행할 때의 사내 프레임워크 정보 ``{configured, name, fix_loop, remediation_always}``를 반환한다.
+        설정 파일이 바뀌지 않았으면 캐시한 값을 쓰고, 설정을 읽지 못하면 configured가 false인 값을 반환한다.
+
+        The framework the server's default configs name (v2.1z-aw, `GET /api/configs`). `configured` = framework
+        artifacts are listed AND `framework.scope` is `jdk-jakarta` (with `full` such a project gets the whole
+        migration, so the page has nothing to announce). `remediation_always` = such a run chains the vulnerability
+        remediation whatever its build result (fix loop off, `remediation.after_migration` on,
+        `remediation.after_failed_build: framework`; v2.1z-aw "The remediation runs after a failed build too"). Cached per (file, mtime) of the package default.yml + the default configs;
+        a config that cannot be loaded gives the switched-off answer, never an exception."""
+        off: dict[str, Any] = {"configured": False, "name": "", "fix_loop": False, "remediation_always": False}
+        try:
+            from sbmig.core.config import DEFAULT_CONFIG_PATH
+            d = self.repo_root / "config"
+            names = self.default_configs()
+            files = [Path(DEFAULT_CONFIG_PATH), *[d / c for c in names]]
+            key = tuple((str(p), p.stat().st_mtime_ns if p.is_file() else None) for p in files)
+        except Exception:  # noqa: BLE001 - 설정 정보 때문에 /api/configs가 실패하면 안 된다
+            log.debug("framework info: config files not readable", exc_info=True)
+            return dict(off)
+        with self._fw_lock:
+            hit = self._fw_config
+        if hit is not None and hit[0] == key:
+            return dict(hit[1])
+        out = dict(off)
+        try:
+            from sbmig.core.config import load_config
+            cfg = load_config(*files[1:], repo_root=self.repo_root)
+            fw = cfg.framework
+            if fw.patterns() and fw.scope == FRAMEWORK_SCOPE:
+                rem = getattr(cfg, "remediation", None)
+                # 수정 루프 없이 변환만 하는 실행은 빌드가 실패해도 취약점 조치를 이어서 한다
+                always = (not fw.fix_loop and bool(getattr(rem, "after_migration", False))
+                          and str(getattr(rem, "after_failed_build", "never") or "never") == "framework")
+                out = {"configured": True, "name": fw.display_name(), "fix_loop": bool(fw.fix_loop),
+                       "remediation_always": always}
+        except Exception:  # noqa: BLE001 - 읽지 못한 설정은 프레임워크 없음으로 알린다
+            log.debug("framework info: default configs cannot be loaded", exc_info=True)
+        with self._fw_lock:
+            self._fw_config = (key, out)
+        return dict(out)
+
+    def _journal_framework(self, run_id: str, rd: Path) -> dict[str, Any] | None:
+        """실행 폴더의 저널에서 ``framework_project`` / ``plan`` 이벤트의 범위를 찾아 화면용 정보를 반환한다.
+        지난번에 읽은 곳부터 이어서 읽고, plan 이벤트를 지나면 더 읽지 않는다.
+
+        The framework object from the run's journal (`framework_project` at analyze, `plan`), for a run without
+        report.json yet. Read incrementally (offset kept per run, whole lines only) and no more after the `plan` event:
+        `list_runs` asks for every run every 15 s. A later event's `name` / `fix_loop` fill in an earlier one's."""
+        path = rd / "journal.jsonl"
+        with self._fw_lock:
+            scan = self._fw_scans.setdefault(run_id, _JournalScan())
+            if not scan.done:
+                try:
+                    size = path.stat().st_size
+                except OSError:
+                    size = -1
+                if 0 <= size < scan.offset:        # 다시 만든 파일이면 처음부터 읽는다
+                    scan.offset, scan.raw = 0, None
+                while 0 <= scan.offset < size and not scan.done:
+                    with open(path, "rb") as fh:
+                        fh.seek(scan.offset)
+                        chunk = fh.read(_FW_READ_CHUNK)
+                    end = chunk.rfind(b"\n")
+                    if end < 0:
+                        if len(chunk) < _FW_READ_CHUNK:
+                            break                  # 아직 쓰는 중인 줄이다
+                        scan.offset += len(chunk)  # 한 줄이 읽기 단위보다 길면 그 부분은 건너뛴다
+                        continue
+                    scan.offset += end + 1
+                    for line in chunk[:end].split(b"\n"):
+                        if b'"framework_project"' not in line and b'"plan"' not in line:
+                            continue
+                        try:
+                            ev = json.loads(line)
+                        except ValueError:
+                            continue
+                        if not isinstance(ev, dict) or ev.get("event") not in ("framework_project", "plan"):
+                            continue
+                        if ev.get("scope") == FRAMEWORK_SCOPE:
+                            merged = dict(scan.raw or {})
+                            merged.update({k: ev[k] for k in ("scope", "name", "fix_loop") if k in ev})
+                            scan.raw = merged
+                        if ev.get("event") == "plan":
+                            scan.done = True
+                            break
+            return _framework_entry(scan.raw)
 
     # ---- lifecycle
     def incoming_path(self) -> Path:
@@ -2341,9 +2467,14 @@ class RunManager:
         if rjob is not None:
             info["remediation_job"] = rjob
         rep = rd / "report.json"
+        framework: dict[str, Any] | None = None
+        from_report = False
         if rep.is_file():
             try:
                 data = json.loads(rep.read_text(encoding="utf-8"))
+                # 사내 프레임워크 프로젝트의 줄인 범위는 보고서의 profile.framework가 먼저다
+                framework = _framework_from_report(data)
+                from_report = isinstance(data, dict)
                 info["success"] = data.get("success")
                 info["blocked"] = len(data.get("blocked") or [])
                 info["unresolved"] = len(data.get("unresolved") or [])
@@ -2359,10 +2490,25 @@ class RunManager:
                 rsum = data.get("remediation")
                 if isinstance(rsum, dict) and rsum.get("status"):
                     info["remediation"] = {k: rsum[k] for k in ("status", "reason", "missing") if rsum.get(k) is not None}
+                    # 빌드가 실패한 프로젝트에 이어서 한 조치면 화면이 일반 실패와 다르게 안내한다
+                    if isinstance(rsum.get("baseline_tolerated"), bool):
+                        info["remediation"]["baseline_tolerated"] = rsum["baseline_tolerated"]
+                    # 사유 목록이 있으면 넘겨서 목록 화면이 빌드 확인만 남은 조치와 일부만 한 조치를 구분하게 한다
+                    if isinstance(rsum.get("reasons"), list):
+                        info["remediation"]["reasons"] = [str(x) for x in rsum["reasons"]][:10]
                 from sbmig.report.result_line import entry_counts
                 info["open"], info["resolved"] = entry_counts(data.get("error_entries") or [])   # v2.1 error list
             except (OSError, ValueError):
                 pass
+        # 보고서가 아직 없으면 저널의 framework_project / plan 이벤트에서 찾는다. 다른 실행에는 이 키가 없다
+        if not from_report and info.get("flow") != FLOW_REMEDIATION:
+            try:
+                framework = self._journal_framework(run_id, rd)
+            except Exception:  # noqa: BLE001 - 상태 응답은 프레임워크 정보 때문에 실패하면 안 된다
+                log.debug("framework scope of %s not readable from the journal", run_id, exc_info=True)
+                framework = None
+        if framework is not None:
+            info["framework"] = framework
         pending = self._final_pass_pending(run, control)       # 마지막 마스킹 전에는 기록할 때 마스킹되는 파일만 목록에 넣는다
         for name in SERVED_FILES:
             if (rd / name).is_file() and (not pending or name in LIVE_FILES):

@@ -939,7 +939,10 @@ class RemediationManager:
             "counts": dict(sorted(st.counts.items())), "created": st.created, "updated": st.updated,
             "stop_requested": stop_requested, "pending_approvals": pending,
             "delivery": {"sha256": st.delivery.sha256, "size": st.delivery.size, "round": st.delivery.round,
-                         "build_ok": st.delivery.build_ok, "scanned": st.delivery.scanned} if st.delivery else None,
+                         "build_ok": st.delivery.build_ok, "scanned": st.delivery.scanned,
+                         "build_tolerated": st.delivery.build_tolerated} if st.delivery else None,
+            # 조치 전 빌드 실패를 받아들이는 실행인지 화면이 진행 중에도 알 수 있게 항상 넣는다
+            "baseline_tolerated": bool(st.baseline_tolerated),
             "files": files,
             "links": {"self": base, "proposals": f"{base}/proposals", "approvals": f"{base}/approvals",
                       "resume": f"{base}/resume", "stop": f"{base}/stop", "result": f"{base}/result",

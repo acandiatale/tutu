@@ -22,8 +22,8 @@ step_intake --> step_analyze --> step_plan --> step_phase(transform)
 `_abort` 가 플래그 `aborted`, 후속 조치 `run aborted: <이유>`, ERROR 로그 한 줄 `run aborted: …`, 저널 `abort` 로 남긴다.
 
 실행 디렉토리에 남는 것: `project/`, `logs/`(Maven·OpenRewrite 로그 `NNN-<label>.log`, `logs/effective-depmgmt.json` 등), `journal.jsonl`,
-`sbmig.log`(DEBUG, `[단계]` 태그), 오류 목록(`out/<run id>/errors.jsonl` + md), `out/<run id>/profile.json`, `out/<run id>/plan.json`,
-`out/<run id>/report.md`, `out/<run id>/report.json`, `changes.patch`, `result.zip`.
+`sbmig.log`(DEBUG, `[단계]` 태그), 오류 목록(`errors.jsonl` + md), `profile.json`, `plan.json`, `report.md`, `report.json`,
+`changes.patch`, `result.zip`(모두 `out/<run id>/` 바로 아래).
 
 ## 1. 접수 (intake) — `step_intake`
 
@@ -83,8 +83,8 @@ MSA: 공유 라이브러리 루트 먼저, 그다음 서비스마다 `transform.
 **범위.** 계획에는 범위(`MigrationPlan.scope`, 저널 `plan`의 `scope`)가 있다. 보통은 `full`이고 위 표대로다. 사내 프레임워크 프로젝트는
 `jdk-jakarta`: 단계는 `transform.rewrite`(`framework.recipe_sets`의 세트만, 기본 `jdk21`과 `jakarta`. 앞에 MS949·EUC-KR 모듈의 `project.build.sourceEncoding` 쓰기, 뒤에 as-is `provided` scope 되돌리기), JSP가 있으면 `transform.jsp_jakarta`
 (재구성기 없이 JSP 이름만 바꿈, 커밋 `transform: JSP javax → jakarta`), `verify.build`뿐이다. `restructure.*`, `restructure.review`,
-`transform.compile`은 없다. as-is 부모는 회사 부모로 맞추지 않고, 받지 못하면 LLM 없이 `aborted:parent-not-found`로 멈춘다. 결과 줄에
-`scope=jdk-jakarta`가 붙는다. 자세한 것은 [13-framework-projects.md](13-framework-projects.md).
+`transform.compile`은 없다. 빌드 1회, 오류 수정 없음(사전 시도·KB·LLM 없음, `framework.fix_loop: true`면 수정 루프).
+as-is 부모는 회사 부모로 맞추지 않고, 받지 못하면 LLM 없이 `aborted:parent-not-found`로 멈춘다. 결과 줄에 `scope=jdk-jakarta`. 자세한 것은 [13](13-framework-projects.md).
 
 레시피 세트(`openrewrite.recipes`, id 는 `knowledge/recipes/catalog.yml` 에 있어야 한다):
 
@@ -146,7 +146,7 @@ MSA: 공유 라이브러리 루트 먼저, 그다음 서비스마다 `transform.
 | 명령 | `mvn clean package -Dmaven.test.skip=true`(`build.skip_test_compile: true`), `build.extra_args`, `build.settings_file`, `build.java_home` |
 | 쓰는 것 | 빌드 로그 `logs/NNN-verify.log`, 오류 목록, 저널 `build`, `verify` |
 | 특이 | Windows 의 `target/` 파일 잠금이면 기다렸다 다시(`build.file_lock_retries`), 로컬 저장소 부정 캐시면 `-U` 로 한 번 더(`build.retry_negative_cache`) |
-| 수정 루프로 | 남은 클러스터가 모두 이미 차단됐거나 시간 예산(`loop.max_total_minutes`)이 끝났으면 돌리지 않는다 |
+| 수정 루프로 | 남은 클러스터가 모두 이미 차단됐거나 시간 예산(`loop.max_total_minutes`)이 끝났거나, 범위 `jdk-jakarta`에 `framework.fix_loop: false`(기본)면 돌리지 않는다 |
 
 ## 8. 수정 루프 (개요만 — 자세히는 [04-cases-scripts-kb.md](04-cases-scripts-kb.md))
 
@@ -215,7 +215,7 @@ KB 쪽: 실행의 오류 목록이 `kb-v2/errors.jsonl` 에 덧붙고, 케이스
 ## 11. LangGraph 엔진, inline 엔진, 웹 UI
 
 - 기본 엔진은 `loop.engine: graph`: `build_graph`(`sbmig/graph/engine.py`)가 `StateGraph` 노드 `intake` → `analyze` → `plan` →
-  `phase`(phase 묶음마다 반복) → `finalize` (→ `remediation`: `remediation.after_migration` 이고 BUILD SUCCESS 일 때 취약점 조치, 11 문서) → END 를 만든다(실행 방식 `remediation` 은 `intake` → `remediation` → `finalize`). 노드마다 오케스트레이터의 같은 `step_*` 메서드를 하나씩 부르고,
+  `phase`(phase 묶음마다 반복) → `finalize` (→ `remediation`: `remediation.after_migration` 이고 BUILD SUCCESS 일 때, 수정 루프 없는 프레임워크 실행은 실패해도(`remediation.after_failed_build`) 취약점 조치, 11) → END 를 만든다(실행 방식 `remediation` 은 1절). 노드마다 오케스트레이터의 같은 `step_*` 메서드를 하나씩 부르고,
   그래프 상태에는 작은 JSON 값만 둔다(무거운 객체는 오케스트레이터에). 노드는 오류를 처리하지 않는다 — 예외는 run guard 로 올라간다.
   노드 `finalize` 는 멈춤 표시만 정리한다. 보고서·KB 기록·`changes.patch`·`result.zip` 은 그래프가 끝난 뒤 run guard 의 `_finalize` 가 쓰므로, 취약점 조치가 먼저 끝나고 그 요약이 이관 보고서에 들어간다.
 - `loop.engine: inline` 은 같은 순서를 `Orchestrator._run` 이 그래프 없이 돈다. 보고서·저널·종료 코드가 같다(테스트로 보장).
@@ -232,14 +232,14 @@ KB 쪽: 실행의 오류 목록이 `kb-v2/errors.jsonl` 에 덧붙고, 케이스
 ## 확인하는 법
 
 ```
-grep -n "    def step_\|    def _step_\|    def _finalize" sbmig/loop/orchestrator.py   # 단계 함수
+grep -n "    def step_\|    def _step_\|    def _finalize" sbmig/loop/orchestrator.py  # 단계 함수
 grep -n "self.ws.commit(" sbmig/loop/orchestrator.py sbmig/loop/fixloop.py | head -30  # 커밋 메시지
-grep -rhno '"event": "[a-z_]*"' sbmig | sort -u | head -150                          # 저널 이벤트 이름
-grep -n "id=\"" sbmig/plan/planner.py                                                # 단계 id
-grep -n "recipes:" -A40 config/default.yml                                           # 레시피 세트
-grep -n "self._non_filtered_extensions(c)" -A6 sbmig/restructure/restructurer.py     # pom 정리 순서
-grep -n "report.success =" -A3 sbmig/loop/orchestrator.py                            # 성공 판정
-grep -n "NODES = " sbmig/graph/engine.py; sed -n 15,32p sbmig/web/runs.py           # 그래프 노드, SSE 이벤트
-grep -n "L += " sbmig/report/guide_ko.py | tail -12                                  # ko 안내서 절 순서
+grep -rhno '"event": "[a-z_]*"' sbmig | sort -u | head -150  # 저널 이벤트 이름
+grep -n "id=\"" sbmig/plan/planner.py  # 단계 id
+grep -n "recipes:" -A40 config/default.yml  # 레시피 세트
+grep -n "self._non_filtered_extensions(c)" -A6 sbmig/restructure/restructurer.py  # pom 정리 순서
+grep -n "report.success =" -A3 sbmig/loop/orchestrator.py  # 성공 판정
+grep -n "NODES = " sbmig/graph/engine.py; sed -n 15,32p sbmig/web/runs.py  # 그래프 노드, SSE 이벤트
+grep -n "L += " sbmig/report/guide_ko.py | tail -12  # ko 안내서 절 순서
 .venv/bin/python -m pytest tests/docs/test_agent_doc.py -p no:cacheprovider -q
 ```

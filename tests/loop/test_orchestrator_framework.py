@@ -141,6 +141,14 @@ def test_found_direct_reduced(cfg, ws, fake_fw, caplog):
     assert "—" not in line
 
 
+def test_framework_project_event_carries_name_and_mode(cfg, ws, fake_fw):
+    """v2.1z-aw: the page reads the framework's name and whether the fix loop runs from this event."""
+    orch = bare_orch(cfg, ws)
+    orch._check_framework(orch.report, fw_profile(direct_use().model_copy(update={"name": "Example"})))
+    [ev] = events(ws, "framework_project")
+    assert ev["name"] == "Example" and ev["fix_loop"] is False and ev["scope"] == "jdk-jakarta"
+
+
 def test_found_with_scope_full_says_full_migration(cfg, ws, fake_fw, caplog):
     orch = bare_orch(fw_cfg(cfg, scope="full"), ws)
     with caplog.at_level(logging.INFO, logger="sbmig.loop"):

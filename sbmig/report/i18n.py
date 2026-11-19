@@ -124,6 +124,21 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
     "Chained after the migration's BUILD SUCCESS (remediation.after_migration); it does not change the migration result "
     "above.": "마이그레이션 빌드가 성공한 뒤 이어서 실행했습니다. 위의 마이그레이션 결과에는 영향이 없습니다. 자세한 "
               "결과는 아래 파일의 report.md에 있습니다.",
+    "Chained after the migration although its final build failed (a framework project: remediation.after_failed_build); "
+    "it does not change the migration result above.":
+        "마이그레이션 빌드는 통과하지 않았지만, 프레임워크 프로젝트라 취약점 조치를 이어서 실행했습니다. 오픈소스 라이브러리 "
+        "검사는 빌드와 따로 할 수 있습니다. 위의 마이그레이션 결과에는 영향이 없습니다. 자세한 결과는 아래 파일의 "
+        "report.md에 있습니다.",
+    "- The project did not build before the remediation either: the changed versions were scanned again, but no build "
+    "confirmed them.":
+        "- 조치 전에도 빌드가 되지 않아, 바꾼 버전을 다시 검사했지만 빌드로 확인하지는 못했습니다.",
+    "- Remediated, but not confirmed by a build: the project did not build before the remediation either, and the "
+    "changed versions were only scanned again.":
+        "- 조치 전에도 빌드가 되지 않던 프로젝트라, 바꾼 버전은 IVAS 재검사로만 확인했습니다.",
+    "- The project did not build before the remediation either; no version was changed, so there was nothing for a "
+    "build to confirm.":
+        "- 조치 전에도 빌드가 되지 않았지만, 바꾼 버전이 없어 빌드로 확인할 것은 없습니다.",
+    "- The project did not build before the remediation either.": "- 조치 전에도 빌드가 되지 않던 프로젝트입니다.",
     "- Not run: `{reason}`": "- 실행하지 않았습니다: `{reason}`",
     "# Vulnerability remediation report — {name}": "# 취약점 조치 보고서 — {name}",
     "The migration was not run: only the vulnerability remediation was requested.":
@@ -457,6 +472,11 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
     # 사내 프레임워크 프로젝트 절(markdown.framework_lines)과 머리 표의 범위 줄
     "In-house framework project": "사내 프레임워크 프로젝트",
     "In-house framework": "사내 프레임워크",
+    "{name} framework project": "{name} 프레임워크 프로젝트",
+    "{name} framework": "{name} 프레임워크",
+    "**{name} framework projects get JDK 21 and Jakarta only.**": "**{name} 프레임워크는 JDK 21, Jakarta만 적용합니다.**",
+    "**In-house framework projects get JDK 21 and Jakarta only.**":
+        "**사내 프레임워크 프로젝트는 JDK 21, Jakarta만 적용합니다.**",
     "| Scope | JDK 21 and jakarta only (in-house framework project) |":
         "| 범위 | JDK 21과 jakarta만 적용 (사내 프레임워크 프로젝트) |",
     "{artifact}: declared directly in `{where}`": "{artifact}: `{where}`에 직접 선언",
@@ -467,14 +487,16 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
     "{artifact}: brought by another library, path `{via}` (module `{where}`)":
         "{artifact}: 다른 라이브러리의 의존성(경로 `{via}`, 모듈 `{where}`)",
     "{artifact}: brought by another library (module `{where}`)": "{artifact}: 다른 라이브러리의 의존성(모듈 `{where}`)",
-    "JDK 21 and jakarta": "JDK 21과 jakarta 적용",
+    "JDK 21 and Jakarta conversion": "JDK 21과 Jakarta 변환",
+    "one build": "빌드 1회",
     "build error fixes": "빌드 오류 수정",
     "vulnerability remediation": "취약점 조치",
     "Done in this run: {what}": "이번 실행에서 한 일: {what}",
-    "Not done: restructure, structure review (a framework project's run has neither step). The parent pom and the "
-    "framework version stay as they are.":
-        "하지 않은 일: 구조 재구성, 구조 점검. 사내 프레임워크 프로젝트는 이 두 단계를 실행하지 않습니다. 부모 pom과 "
-        "프레임워크 버전은 그대로 두었습니다.",
+    "Not done: restructure, structure review. The parent pom and the framework version stay as they are.":
+        "하지 않은 일: 구조 정리, 구조 검토. 부모 pom과 프레임워크 버전은 그대로 둡니다.",
+    "Not done: restructure, structure review, automatic build error fixes (framework.fix_loop: false). The parent pom "
+    "and the framework version stay as they are.":
+        "하지 않은 일: 구조 정리, 구조 검토, 빌드 오류 자동 수정. 부모 pom과 프레임워크 버전은 그대로 둡니다.",
     "The full migration ran because the configuration says so (framework.scope: full).":
         "설정(framework.scope: full)에 따라 전체 마이그레이션을 진행했습니다.",
     "The artifact arrives only through another library: the full migration ran because the configuration says so "
@@ -485,7 +507,7 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
     "the project uses an in-house framework artifact (framework.artifacts) — see the framework block at the top of "
     "the report for where it was found and what this run did":
         "사내 프레임워크 아티팩트(framework.artifacts)를 쓰는 프로젝트입니다. 어디에서 찾았는지와 이번 실행에서 한 일은 "
-        "보고서 위쪽의 「사내 프레임워크 프로젝트」에 있습니다.",
+        "보고서 맨 위의 프레임워크 프로젝트 안내에 있습니다.",
     " — renamed by sbmig in JSP / tag files (page imports, useBean, scriptlets); OpenRewrite does not parse JSPs":
         " — sbmig가 JSP / 태그 파일(page import, useBean, 스크립틀릿)의 이름을 바꿨습니다. OpenRewrite는 JSP를 읽지 "
         "않습니다.",
@@ -1295,6 +1317,16 @@ PATTERNS: dict[str, list[tuple[re.Pattern[str], Union[str, Callable[[re.Match[st
      r"artifacts.parent가 설정되어 있지 않습니다. 회사 artifacts yml을 --config로 지정해 주세요."),
     (r"^optional artifact bump step (?P<s>\S+) failed: (?P<w>.+) — bump the in-house optional artifacts by hand$",
      r"사내 선택 아티팩트 버전 맞춤 단계(\g<s>)가 실패했습니다: \g<w>. 사내 선택 아티팩트의 버전을 직접 올려 주세요."),
+    # 수정 루프 없이 빌드가 실패한 프레임워크 프로젝트의 인수인계 첫 줄(sbmig.analyze.framework.no_fix_loop_followup)
+    (r"^framework project: build errors are not fixed automatically \(framework\.fix_loop: false\) — (?P<n>\d+) "
+     r"error\(s\) remain after the JDK 21 \+ jakarta conversion; see the error list$",
+     r"사내 프레임워크 프로젝트라 빌드 오류를 자동으로 고치지 않았습니다(framework.fix_loop: false). JDK 21과 Jakarta 변환 "
+     r"뒤 빌드에 남은 오류 \g<n>건을 아래 「변환 뒤 남은 빌드 오류」에 정리했습니다. 프로젝트 담당자와 프레임워크 담당자가 "
+     r"고쳐 주셔야 합니다."),
+    (r"^framework project: build errors are not fixed automatically \(framework\.fix_loop: false\) — the build failed "
+     r"after the JDK 21 \+ jakarta conversion; see the build log$",
+     r"사내 프레임워크 프로젝트라 빌드 오류를 자동으로 고치지 않았습니다(framework.fix_loop: false). JDK 21과 Jakarta 변환 "
+     r"뒤 빌드가 실패했습니다. 「참고」의 마지막 빌드 로그를 봐 주세요."),
     (r"^framework check could not run \(the parent pom and the dependency tree could not be read\): if this project uses "
      r"the in-house framework it must not be migrated in full — confirm before using the result$",
      r"사내 프레임워크를 쓰는 프로젝트인지 확인하지 못했습니다(부모 pom과 의존성 트리를 읽지 못했습니다). 사내 프레임워크를 "

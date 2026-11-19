@@ -246,6 +246,13 @@ SAMPLES: list[tuple[str, str, list[str]]] = [
      "LLM_* variables are removed from its environment) — compare remediation/baseline/build.log with the migration's "
      "final build log (logs/*-build-verify*.log); the remediation builds a copy (remediation/baseline/tree) without .git/, "
      ".sbmig/, target/ build output"), ["svc-a", "svc-b", "remediation/baseline/build.log"]),
+    ("baseline_tolerated", ("the project did not build before the remediation either (3 error(s) in baseline/build.log); "
+     "the changed versions were scanned again, but no build confirmed them: the candidate build stopped at the same "
+     "errors as the baseline build (3 error(s), none new)"), ["3건"]),
+    ("candidate_new_errors", ("the candidate build failed with 1 error(s) the baseline build did not have: "
+     "pom.xml dependency_resolution: dependency_resolution|example:lib"), ["1건", "example:lib"]),
+    ("candidate_differs", ("the candidate build failed differently from the baseline build: the candidate build stopped in "
+     "module core, the baseline build in web"), ["core", "web"]),
     ("restarted", ("the server restarted while this remediation was RUNNING; nothing is re-sent automatically — check the "
      "state and resume it explicitly"), ["진행 중"]),
     ("shutdown", ("the server shut down while this remediation was running; nothing is re-sent automatically — resume it "

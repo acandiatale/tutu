@@ -68,6 +68,7 @@ previous version, `reuse` = a stored version runs again without an LLM call). Me
 | `fw-parent` | `servlet_tomcat` | v2.1z-ak the same sources; `<parent>` = `example-fw-parent:1.0.0`, which declares the core in its `<dependencies>`; the pom never declares it | 8 (+ `install.sh`) | — (not planned) | — | as `fw-direct` with evidence `parent` (as-is effective pom); the `<parent>` unchanged |
 | `fw-transitive` | `servlet_tomcat` | v2.1z-ak declares only `example-fw-web:1.0.0`, which depends on the core | 8 (+ `install.sh`) | — (not planned) | — | as `fw-direct` with evidence `transitive` (`dependency:tree` at analyze, `via` web → core; `framework.transitive: apply` default); `framework.recipe_sets` adds `servlet_jakarta_10` (`RemovalsServletJakarta10`) |
 | `fw-transitive-note` | `servlet_tomcat` | v2.1z-ak the `fw-transitive` tree with `framework.transitive: note` | 8 (+ `install.sh`) | ok | — | flag `framework-project`, scope **`full`**: the ordinary migration (restructure `module/comp-jar` + `module/boot-jar`, review), success, 1 LLM |
+| `fw-build-error` | `pure_java` | v2.1z-aw framework project (direct core stand-in) whose `App.java` calls `System.runFinalizersOnExit`, removed in Java 11 | 8 (+ `install.sh`) | — (not planned) | — | reduced scope, `framework.fix_loop: false` (default): converted, built ONCE, the build fails; no fix loop (`verify_loop_skipped`), **0 LLM**, exit 2, the error unresolved with the note, the hand-over line first |
 
 ### Reuse and augment scenarios
 

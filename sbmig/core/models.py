@@ -641,6 +641,10 @@ class FrameworkUse(BaseModel):
     unchecked: list[str] = Field(default_factory=list)
     scope: Literal["full", "jdk-jakarta"] = "full"
     reason: str = ""                               # one English sentence: why this scope (plan note, journal)
+    # 화면과 보고서에 보여 줄 프레임워크 이름이다(FrameworkConfig.display_name). 정하지 못하면 빈 문자열이다
+    name: str = ""
+    # 이 실행에서 빌드 오류 수정 루프를 실행하는지 여부다(framework.fix_loop). 줄인 범위가 아니면 뜻이 없다
+    fix_loop: bool = False
 
     @property
     def found(self) -> bool:

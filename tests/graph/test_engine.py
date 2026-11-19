@@ -431,11 +431,11 @@ class ChainSpy:
         self.status, self.raises, self.ret_none = status, raises, ret_none
 
     def __call__(self, run_dir, project_dir, cfg, *, run_id, journal, stop, components=None, exclude_dirs=(),
-                 build_targets=()):
+                 build_targets=(), baseline_may_fail=False):
         from sbmig.remediations.models import RemediationState
         self.calls.append({"run_dir": run_dir, "project_dir": project_dir, "run_id": run_id, "stop": stop(),
                            "project_files": sorted(p.name for p in project_dir.iterdir()),
-                           "build_targets": list(build_targets)})
+                           "build_targets": list(build_targets), "baseline_may_fail": baseline_may_fail})
         if self.raises:
             raise self.raises
         if self.ret_none:

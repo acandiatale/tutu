@@ -250,6 +250,22 @@ def _raw(x: str | None) -> str:
     return f"원문: `{s}`"
 
 
+def _build_why(x: str | None) -> str:
+    """두 빌드를 비교하지 못한 이유(``maven.compare_with_baseline``의 why)를 한국어로 바꾼다. 모르는 문장은 원문으로 둔다."""
+    s = str(x or "")
+    m = re.fullmatch(r"the candidate build stopped in module (\S+), the baseline build in (\S+)", s)
+    if m:
+        return f"버전을 바꾼 뒤에는 {m.group(1)} 모듈에서, 조치 전에는 {m.group(2)} 모듈에서 빌드가 멈췄습니다."
+    m = re.fullmatch(r"the candidate build failed in another build target \((\S+)\) than the baseline build \((\S+)\)", s)
+    if m:
+        return f"빌드가 멈춘 대상이 다릅니다(조치 전 {m.group(2)}, 버전을 바꾼 뒤 {m.group(1)})."
+    m = re.fullmatch(r"the (baseline|candidate) build (timed out|left no log to compare)", s)
+    if m:
+        who = "조치 전 빌드" if m.group(1) == "baseline" else "버전을 바꾼 뒤의 빌드"
+        return f"{who}가 " + ("시간 안에 끝나지 않았습니다." if m.group(2) == "timed out" else "비교할 로그를 남기지 않았습니다.")
+    return _raw(s)
+
+
 _STATE_KO = {"QUEUED": "대기 중", "RUNNING": "진행 중", "AWAITING_APPROVAL": "승인 대기",
              "AWAITING_CONFIRMATION": "업로드 확인 필요", "STOPPED": "중지됨", "INTERRUPTED": "중단됨"}
 
@@ -1002,6 +1018,25 @@ RULES: list[_Rule] = [
                   "settings.xml, 로컬 저장소는 같고, 환경 변수에서 IVAS_*, LLM_* 만 제외했습니다. "
                   "remediation/baseline/build.log 파일과 이관의 최종 빌드 로그(logs/*-build-verify*.log)를 비교해 주세요. "
                   f"조치는 다음을 제외한 사본(remediation/baseline/tree)에서 빌드합니다: {_left(g['left'])}.")),
+    _r("baseline_tolerated",
+       r"the project did not build before the remediation either(?: \((?P<n>\d+) error\(s\) in baseline/build\.log\))?; "
+       r"(?:(?P<none>no version was changed(?:, so there was nothing for a build to confirm)?)"
+       r"|(?P<built>the changed versions were built and scanned again)|the changed "
+       r"versions were scanned again, but no build confirmed them: the candidate build stopped at the same errors as "
+       r"the baseline build \((?P<c>\d+) error\(s\), none new\))",
+       lambda g: ("이 프로젝트는 조치 전에도 빌드되지 않았지만, 바꾼 라이브러리 버전이 없어 빌드로 확인할 것은 없습니다."
+                  if g.get("none") else
+                  "이 프로젝트는 조치 전에도 빌드되지 않았습니다"
+                  + (f"(빌드 오류 {g['n']}건)." if g.get("n") else ".")
+                  + (" 라이브러리 버전을 바꾸고 빌드한 뒤 다시 검사했습니다." if g.get("built") else
+                     " 라이브러리 버전을 바꾸고 다시 검사했지만, 바꾼 버전은 빌드로 확인하지 못했습니다. 버전을 바꾼 뒤에도 "
+                     f"빌드는 조치 전과 같은 오류에서 멈췄습니다(오류 {g['c']}건, 새로 생긴 오류 없음)."))),
+    _r("candidate_new_errors",
+       r"the candidate build failed with (?P<n>\d+) error\(s\) the baseline build did not have: (?P<list>.+)",
+       lambda g: (f"버전을 바꾼 뒤 조치 전 빌드에는 없던 오류가 {g['n']}건 생겼습니다. {_raw(g['list'])}")),
+    _r("candidate_differs",
+       r"the candidate build failed differently from the baseline build: (?P<why>.+)",
+       lambda g: f"버전을 바꾼 뒤의 빌드가 조치 전 빌드와 다르게 실패했습니다. {_build_why(g['why'])}"),
     _r("restarted",
        r"the server restarted while this remediation was (?P<s>\S+); nothing is re-sent automatically — check the state "
        r"and resume it explicitly",

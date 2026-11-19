@@ -665,7 +665,9 @@ def _baseline_outcome(paths: RunPaths, state: RemediationState, jr: Journal, exc
     같은 Maven 설정이라는 것, 비교할 두 로그, 조치가 빌드한 트리에서 빠진 것(.git / .sbmig / target 산출물 /
     접수에서 제외한 폴더)을 담고 저널 ``remediation_baseline_differs``를 남긴다. 이관 결과는 바꾸지 않는다."""
     from .models import R_BASELINE_BUILD_FAILED
-    if state.status != FAILED or state.reason != R_BASELINE_BUILD_FAILED or "migration's final build passed" in (state.message or ""):
+    # 이관의 최종 빌드가 실패한 트리(baseline_tolerated)에는 이 안내가 맞지 않는다
+    if (state.status != FAILED or state.reason != R_BASELINE_BUILD_FAILED or state.baseline_tolerated
+            or "migration's final build passed" in (state.message or "")):
         return state
     left_out = ".git/, .sbmig/, target/ build output" + (f", ignored folders {', '.join(excluded)}" if excluded else "")
     where = (f" (build targets: {', '.join(state.build_targets)})" if state.build_targets else " (at the project root)")
@@ -700,8 +702,10 @@ def _ended(jr: Journal, st: RemediationState, paths: RunPaths | None = None) -> 
 
 def run_after_migration(run_dir: Path | str, project_dir: Path | str, cfg: Any, *, run_id: str, journal: Journal | None,
                         stop: StopCheck | None, components: Components | None = None,
-                        exclude_dirs: Iterable[str] = (), build_targets: Iterable[str] = ()) -> RemediationState | None:
+                        exclude_dirs: Iterable[str] = (), build_targets: Iterable[str] = (),
+                        baseline_may_fail: bool = False) -> RemediationState | None:
     """빌드에 성공한 이관 뒤에 취약점 조치를 한 번 실행하고 마지막 상태를 반환한다. 예외를 던지지 않는다.
+    ``baseline_may_fail``이 True면 이관의 최종 빌드가 실패한 트리이며, 조치 전 빌드가 실패해도 조치를 이어 간다.
     - None을 반환하면 건너뛴 것이다. 기능이 꺼져 있으면 조용히 건너뛰고, 준비가 안 됐으면 저널
       ``remediation_skipped``와 WARNING 한 줄을 남긴다. 조치 상태가 이미 있으면 새로 시작하지 않고 저널
       ``remediation_exists``를 남긴 뒤 그 상태를 반환한다
@@ -746,7 +750,8 @@ def run_after_migration(run_dir: Path | str, project_dir: Path | str, cfg: Any, 
                     jr({"event": "remediation_exists", "remediation": existing.id, "status": existing.status})
                     return existing
                 return _start(paths, Path(project_dir), cfg, comps, run_id=run_id, jr=jr, stop=budget.wrap(real_stop),
-                              exclude_dirs=exclude_dirs, budget=budget, real_stop=real_stop, build_targets=build_targets)
+                              exclude_dirs=exclude_dirs, budget=budget, real_stop=real_stop, build_targets=build_targets,
+                              baseline_may_fail=baseline_may_fail)
             except Exception as e:  # noqa: BLE001 — the migration's verdict must never depend on the remediation
                 return _error(paths, jr, e, run_id, state)
     except Exception as e:  # noqa: BLE001 — the migration's verdict must never depend on the remediation
@@ -755,7 +760,8 @@ def run_after_migration(run_dir: Path | str, project_dir: Path | str, cfg: Any, 
 
 def _start(paths: RunPaths, project_dir: Path, cfg: Any, comps: Components, *, run_id: str, jr: Journal,
            stop: StopCheck, exclude_dirs: Iterable[str], budget: _Budget | None = None,
-           real_stop: StopCheck | None = None, build_targets: Iterable[str] = ()) -> RemediationState:
+           real_stop: StopCheck | None = None, build_targets: Iterable[str] = (),
+           baseline_may_fail: bool = False) -> RemediationState:
     from . import intake as intake_mod
     from . import planner as planner_mod
     from .models import IntakeRejected
@@ -763,8 +769,12 @@ def _start(paths: RunPaths, project_dir: Path, cfg: Any, comps: Components, *, r
     # IVAS에 보낸 기록은 상태가 생긴 뒤에만 있으므로 지우고 다시 시작한다. 점유 파일은 남긴다
     _clear_root(paths.root)
     policy = planner_mod.policy_hash(cfg)
-    jr({"event": "remediation_start", "remediation": run_id})
-    log.info("vulnerability remediation %s: start (after the migration's BUILD SUCCESS)", run_id)
+    jr({"event": "remediation_start", "remediation": run_id, **({"baseline_may_fail": True} if baseline_may_fail else {})})
+    if baseline_may_fail:
+        log.info("vulnerability remediation %s: start (after the migration's failed build; a failing baseline build "
+                 "is tolerated)", run_id)
+    else:
+        log.info("vulnerability remediation %s: start (after the migration's BUILD SUCCESS)", run_id)
     targets = clean_targets(build_targets)
     excluded = sorted({str(d).replace("\\", "/").strip("/") for d in exclude_dirs if str(d).strip("/")})
     if targets:
@@ -783,6 +793,7 @@ def _start(paths: RunPaths, project_dir: Path, cfg: Any, comps: Components, *, r
         return st
     state = graph_mod.new_state(run_id, SOURCE_NAME, cfg, result, [], policy_hash=policy)
     state.build_targets = targets
+    state.baseline_tolerated = bool(baseline_may_fail)
     save = _saver(paths)
     save(state)
     return _drive(paths, state, cfg, comps, jr=jr, stop=stop, budget=budget, real_stop=real_stop, excluded=excluded)
@@ -988,6 +999,7 @@ def summary(state: RemediationState | None, run_dir: Path | str, *, skipped: dic
     """이관 보고서(``RunReport.remediation``)에 넣을 짧은 JSON 요약을 만든다.
     status(건너뛰었으면 "skipped"), reason, reasons, counts, 짧은 message, 결과 파일 경로, 결과 ZIP의
     build_ok / scanned를 담고, 조치 전 빌드를 실행했으면 ``baseline_build_ok``도 담는다.
+    조치 전 빌드 실패를 받아들인 실행이면 ``baseline_tolerated: true``와 ``delivery.build_tolerated: true``를 담는다.
 
     A small JSON-able digest for the migration report."""
     if state is None:
@@ -1009,6 +1021,11 @@ def summary(state: RemediationState | None, run_dir: Path | str, *, skipped: dic
     if state.delivery is not None:
         out["delivery"] = {"build_ok": bool(state.delivery.build_ok), "scanned": bool(state.delivery.scanned),
                            "sha256": state.delivery.sha256}
+        if state.delivery.build_tolerated:
+            out["delivery"]["build_tolerated"] = True
+    if state.baseline_tolerated:
+        # 조치 전 빌드 실패를 받아들인 실행이다. 이관 보고서와 화면이 빌드로 확인하지 못했다고 알린다
+        out["baseline_tolerated"] = True
     if state.baseline_build is not None:
         # 실행 방식이 remediation일 때 결과 줄의 build= 값.
         # 업로드한 그대로의 빌드가 실행되고 통과했는지를 나타낸다

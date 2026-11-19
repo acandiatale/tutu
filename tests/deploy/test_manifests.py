@@ -501,7 +501,7 @@ def test_the_remediation_runs_in_the_build_pod_switched_on():
     # the knobs an operator may want for the build pod are documented next to it and forwarded by 81
     commented = _commented_keys()
     for key in ("SBMIG_REMEDIATION__REQUIRE_APPROVAL", "SBMIG_REMEDIATION__FAILED_CANDIDATE",
-                "SBMIG_REMEDIATION__IVAS_ANALYSIS_TIMEOUT_MINUTES"):
+                "SBMIG_REMEDIATION__AFTER_FAILED_BUILD", "SBMIG_REMEDIATION__IVAS_ANALYSIS_TIMEOUT_MINUTES"):
         assert commented[key][0] == "3", key
     for name in (WEB, BUILD_JOB):
         refs = next(d for d in _docs(name) if d["kind"] in ("Deployment", "Job"))["spec"]["template"]["spec"]

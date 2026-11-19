@@ -1,7 +1,7 @@
 """한국어 report.md를 만드는 모듈. 마이그레이션을 요청한 담당자에게 무엇을 바꿨고 무엇을 확인해야 하는지 알려 주는 안내서다.
 영어 보고서를 줄마다 번역하지 않고 이 모듈에서 한국어 문장을 직접 쓴다.
 보고서에 영어로 저장된 줄(인수인계 할 일, 후속 조치, 플래그 설명)과 특수 절의 문장은 ``i18n``의 번역을 그대로 쓴다.
-절 순서: 제목, Ant 안내, 머리 표, 안내 문장, 사내 프레임워크, 전환 내용, 확인해 주세요, 코드 수정 내역,
+절 순서: 제목, Ant 안내, 머리 표, 사내 프레임워크, 안내 문장, 전환 내용, 확인해 주세요, 코드 수정 내역,
 해결하지 못한 오류, 진행하지 않은 항목, 특수 절, 참고. 내용이 없는 절은 넣지 않는다.
 
 The Korean report.md (`report.language: ko`): a guide for the person who asked for the migration, written in Korean
@@ -49,6 +49,7 @@ from .markdown import (
     flag_help,
     framework_lines,
     intake_notice_lines,
+    no_fix_loop,
     javax_api_lines,
     operator_check_lines,
     pom_correction_lines,
@@ -106,6 +107,10 @@ _RESTRUCTURE_INTO_RE = re.compile(r"^restructure into (?P<mods>.+?) with ")
 # 인수인계 할 일 목록의 영어 줄 가운데 안내서가 다른 곳에서 이미 보여 주거나 한국어로 새로 쓰는 줄
 _BLOCKED_PTR = re.compile(r"^(\d+) cluster\(s\) blocked — see Blocked$")
 _UNRESOLVED_PTR = re.compile(r"^(\d+) unresolved error\(s\) — see Error list$")
+# 수정 루프 없이 빌드가 실패한 프레임워크 프로젝트의 인수인계 줄(sbmig.analyze.framework.no_fix_loop_followup)
+_NO_FIX_PTR = re.compile(r"^framework project: build errors are not fixed automatically \(framework\.fix_loop: false\) "
+                         r"— (\d+) error\(s\) remain after ")
+NO_FIX_TITLE = "변환 뒤 남은 빌드 오류"
 _JAVAX_PTR = re.compile(r"^(\d+) javax API jar\(s\) still on the classpath — see that section$")
 _OPERATOR_PTR = re.compile(r"^operator checks: (\d+) major upgrade\(s\) — see \"Operator checks\" above$")
 _CAP_LINE = re.compile(r"^… and \d+ more — see Manual follow-ups / Blocked / Error list$")
@@ -146,6 +151,12 @@ def _build_failed(r: RunReport) -> bool:
 
 def _ant_refused(r: RunReport) -> bool:
     return bool(intake_notice_lines(r, LANG))
+
+
+def _fw_who(r: RunReport) -> str:
+    """프레임워크 프로젝트를 이름과 함께 부른다. 이름이 없으면 사내 프레임워크 프로젝트다."""
+    name = str(getattr(getattr(getattr(r, "profile", None), "framework", None), "name", "") or "").strip()
+    return f"{name} 프레임워크 프로젝트" if name else "사내 프레임워크 프로젝트"
 
 
 def _rel(path: str, r: RunReport) -> str:
@@ -236,6 +247,14 @@ def purpose_lines(r: RunReport) -> list[str]:
         return ["이번 실행은 끝까지 진행하지 못했습니다. 멈춘 이유와 다시 실행하기 전에 확인하실 사항을 아래에 적었습니다."
                 + last, ""]
     L: list[str] = []
+    if _build_failed(r) and no_fix_loop(r):
+        # 고치려고 한 것이 없으므로 남은 오류를 정리했다는 것과 고칠 사람만 쓴다
+        rest = (f"남은 오류를 아래 「{NO_FIX_TITLE}」에 정리했습니다." if open_errors(r)
+                else "「참고」의 마지막 빌드 로그를 봐 주세요.")
+        L += [f"JDK 21과 Jakarta 변환 뒤 빌드가 통과하지 않았습니다. {_fw_who(r)}라 빌드 오류는 자동으로 고치지 않았고, "
+              f"{rest} 프로젝트 담당자와 프레임워크 담당자가 고쳐 주셔야 합니다.", ""]
+        return L + ["이 문서는 마이그레이션을 요청하신 담당자께 드리는 안내입니다. 무엇을 바꿨는지, 전환 후 무엇을 확인하셔야 "
+                    "하는지 순서대로 적었습니다.", ""]
     if _build_failed(r):
         where = [x for x, has in (("「해결하지 못한 오류」", bool(open_errors(r))), ("「진행하지 않은 항목」", bool(r.blocked)))
                  if has]
@@ -488,8 +507,10 @@ def _pointer(line: str, r: RunReport) -> Optional[str]:
     if m:
         return (f"**진행하지 않은 항목 {m.group(1)}건** — 프로젝트 안에서 해결할 수 없어 손대지 않았습니다. "
                 "아래 「진행하지 않은 항목」을 봐 주세요.")
-    m = _UNRESOLVED_PTR.match(line)
-    if m:
+    m = _UNRESOLVED_PTR.match(line) or _NO_FIX_PTR.match(line)
+    if m and no_fix_loop(r):
+        return f"**{NO_FIX_TITLE} {m.group(1)}건** — 자동으로 고치지 않았습니다. 아래 「{NO_FIX_TITLE}」를 봐 주세요."
+    if m and _UNRESOLVED_PTR.match(line):
         return f"**해결하지 못한 오류 {m.group(1)}건** — 최종 빌드에 남아 있습니다. 아래 「해결하지 못한 오류」를 봐 주세요."
     m = _JAVAX_PTR.match(line)
     if m:
@@ -583,7 +604,7 @@ def check_items(r: RunReport) -> list[str]:
         ptr = _pointer(line, r)
         if not ptr:
             return
-        if _UNRESOLVED_PTR.match(line):
+        if _UNRESOLVED_PTR.match(line) or _NO_FIX_PTR.match(line):
             first.setdefault("unresolved", ptr)
         elif _BLOCKED_PTR.match(line):
             first.setdefault("blocked", ptr)
@@ -813,9 +834,15 @@ def open_error_lines(r: RunReport) -> list[str]:
     log = ""
     if r.final_build is not None and r.final_build.log_path:
         log = f" 마지막 빌드 로그는 {_code(_rel(r.final_build.log_path, r))}입니다."
-    L = [f"## 해결하지 못한 오류 — {len(rows)}건", "",
-         f"최종 빌드에 남아 있는 오류입니다. 파일별로 정리했습니다. 오류별 상세 기록은 `errors.md`에 있습니다.{log}", "",
-         "| 파일 | 줄 | 오류 |", "|---|---|---|"]
+    if no_fix_loop(r):
+        L = [f"## {NO_FIX_TITLE} — {len(rows)}건", "",
+             f"JDK 21과 Jakarta 변환 뒤 최종 빌드에 남아 있는 오류입니다. {_fw_who(r)}라 자동으로 고치지 않았으므로 프로젝트 "
+             f"담당자와 프레임워크 담당자가 고쳐 주셔야 합니다. 파일별로 정리했습니다. 오류별 상세 기록은 `errors.md`에 "
+             f"있습니다.{log}", ""]
+    else:
+        L = [f"## 해결하지 못한 오류 — {len(rows)}건", "",
+             f"최종 빌드에 남아 있는 오류입니다. 파일별로 정리했습니다. 오류별 상세 기록은 `errors.md`에 있습니다.{log}", ""]
+    L += ["| 파일 | 줄 | 오류 |", "|---|---|---|"]
     for f, line, msg in rows[:OPEN_ERRORS_MAX]:
         L.append(f"| {_code(_cell(f, 200)) if f != '-' else '-'} | {line} | {_cell(msg, 300)} |")
     if len(rows) > OPEN_ERRORS_MAX:
@@ -956,8 +983,8 @@ def render_guide_ko(report: RunReport, cfg: Any = None) -> str:
     L = [f"# 마이그레이션 보고서 — {r.project_name}", ""]
     L += intake_notice_lines(r, LANG)
     L += head_lines(r)
-    L += purpose_lines(r)
     L += framework_lines(r, LANG)
+    L += purpose_lines(r)
     L += conversion_lines(r)
     L += check_lines(r)
     L += code_change_lines(r)

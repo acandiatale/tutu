@@ -21,7 +21,7 @@ intake       Maven only (Ant: refused with `intake.ant_message`, exit 3 — pom 
              `max_entry_mb` / `max_compression_ratio`: refused before anything is unpacked, exit 3);
              root aggregator generated for sibling poms, stray pom copies ignored, preflight (Maven, JDK 21)
 analyze      case (pure_java | servlet_tomcat | spring_legacy | spring_boot | msa), libraries, advisories, bundled jars,
-             ADF stop (exit 3), hollow reactor (exit 2), framework project (scope jdk-jakarta: no restructure / review)
+             ADF stop (exit 3), hollow reactor (exit 2), framework project (scope jdk-jakarta: no restructure / review / fix loop)
 plan         the recipes of the one OpenRewrite run (Java 21, javax → jakarta, Spring Framework 7 / Security 7, Boot 4.0 + 4.1)
 transform    one OpenRewrite run — no build in between
 restructure  company layout (parent / mandatory / optional, module split, or poms only for Boot / MSA), versions carried
@@ -29,7 +29,7 @@ restructure  company layout (parent / mandatory / optional, module split, or pom
 review       the LLM checks poms, dependencies and modules; critical issues are fixed by its edits and committed
 verify       mvn clean package -Dmaven.test.skip=true; on failure the script fix loop, then the final build again
 finalize     report.md (ko: guide for the requester) / report.json, errors.md / errors.jsonl, KB records (kb-v2/)
-remediation  only after BUILD SUCCESS and when switched on: IVAS vulnerability scan, version-text fixes, rescan
+remediation  when switched on, after BUILD SUCCESS (a framework run without the fix loop: after a failed build too): IVAS vulnerability scan, version-text fixes, rescan
 ```
 
 Script fix loop, per error case (case = L2 signature, one script for every file that has it): zero-LLM **pre-tries**
@@ -55,9 +55,16 @@ built as it is, scanned by IVAS, remediated and rescanned under `<run dir>/remed
 yml; empty = no check) runs in the reduced scope `jdk-jakarta`: the analyzer looks for the artifact in the poms'
 dependencies, in what a parent pom outside the project brings, in bundled jars and, when none of these has it, with one
 `dependency:tree`; the plan then holds only the recipe sets of `framework.recipe_sets` (default Java 21 + jakarta), the
-JSP javax → jakarta rename and the verify build with the fix loop, followed by the chained remediation. No restructure,
-no structure review; the project keeps its parent pom, its layout and the framework version (the fix loop rolls back an
-attempt that touches them). `SBMIG-RESULT … scope=jdk-jakarta`. Details: `agent-doc/13-framework-projects.md`.
+JSP javax → jakarta rename and ONE build: build errors are not fixed (no pre-try, no stored script, no LLM call) but
+reported, and the converted tree is delivered (a failed build ends with exit 2). The chained remediation follows whether the
+build passed or failed (`remediation.after_failed_build: framework`, default; `never` = only after a passing build). After a
+failed build the candidate build may fail only with the errors the project's build already had; when it changed versions,
+no build confirmed them, so it ends `INCOMPLETE` (`baseline_build_failed`; the page says 조치함 · 빌드 미확인); with nothing
+changed, or a candidate that builds, it ends as an ordinary remediation. The Korean report lists the remaining errors under 「변환 뒤 남은 빌드 오류」. No restructure, no structure review; the project keeps its parent pom, its layout and the framework version.
+`framework.fix_loop: true` brings the fix loop back (it rolls back an attempt that touches the framework or a parent).
+The framework's display name (`framework.name`, else derived from the artifact name: `example-fw-core` → `Example`)
+goes into the sentence the page and the report show: `<name> 프레임워크는 JDK 21, Jakarta만 적용합니다.`
+`SBMIG-RESULT … scope=jdk-jakarta`. Details: `agent-doc/13-framework-projects.md`.
 
 ## Business decisions (kept in config / knowledge, not in code)
 
