@@ -1097,3 +1097,16 @@ that day had started to label in 「지난 실행」 and to keep listed whatever
 | Stays | `AWAITING_CONFIRMATION` (an IVAS upload whose outcome is unknown) and the resume of a stopped remediation: the user, asked the same evening: "그건 일단 내버려 두자" | — | decided |
 | Documents and the deck | every description of approval removed; one place per audience says the step is gone and how to clean a cluster | `agent-doc/`, `docs/`, `deploy/README.md`, `scripts/handbook/` | done |
 | The cluster | delete the key from ConfigMap `sbmig-env` if present, delete the forward line from the cluster's own 81, rebuild the image; the order does not matter | — | open (the user's) |
+
+## Status — 2026-11-19, the admin page hands out the uploaded original (v2.1z-bb)
+
+The user: "우리 어드민에 원본 소스 받을 수 있는 기능 하나만 만들어주라. 이거 scp를 2번을 땡겨와야해서 너무 불편해서 웹 기능으로
+만들게!"
+
+| Item | Deliverable | Where | Status |
+|---|---|---|---|
+| The download | `GET /admin/api/runs/{id}/source` (+ `/source/check`): the uploaded bytes as a stream, named `<run id>-<upload name>` (Korean names intact), admin session required, confined to the output root, no symbolic link | `sbmig/web/admin.py` | done |
+| The page | a column 「원본」 with 「원본 받기」 and the size; faded with 「원본 파일이 서버에 없습니다」 when the file is gone; nothing on the public page | `sbmig/web/static/admin.html` | done |
+| Where uploads live | Job modes: the run folder's `source.zip`; in-process: the upload folder; the remediation-only flow's own copy only for that flow | `admin.find_source` | done |
+| Checked | 14 tests; in a browser the downloaded files' sha256 equals the uploads' (a 3 MB Job upload, an upload with a Korean name) | `tests/web/test_admin_source.py` | done |
+| Not checked | a real upload of several hundred MiB through the cluster's ingress (its timeout and body limits apply to downloads too) | — | open (the user's) |

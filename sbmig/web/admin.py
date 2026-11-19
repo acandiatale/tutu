@@ -1,4 +1,4 @@
-"""관리자 페이지의 서버 쪽 모듈. 비밀번호 로그인, 프로젝트별 LLM 토큰 사용량 집계, 로그 ZIP 내려받기를 맡는다.
+"""관리자 페이지의 서버 쪽 모듈. 비밀번호 로그인, 프로젝트별 LLM 토큰 사용량 집계, 로그 ZIP과 올린 원본 내려받기를 맡는다.
 사용량과 로그는 요청할 때마다 출력 폴더의 실행 폴더를 디스크에서 다시 읽는다.
 비밀번호는 솔트를 넣은 PBKDF2 해시로만 코드에 두고, ``SBMIG_ADMIN_PASSWORD``가 있으면 그 값을 쓴다.
 세션은 이 프로세스의 메모리에만 있으므로 웹 파드를 다시 띄우면 모두 로그아웃된다.
@@ -16,6 +16,8 @@ and a download of all logs). Routes (all under /admin; `GET /admin` itself, the 
                                        | 409 busy | 413 too_large | 507 no_space
     GET  /admin/api/logs/check         the same checks without building: {"ok": true, "bytes", "runs", "skipped"}
     GET  /admin/api/runs/{id}/logs.zip the same for one run (+ /runs/{id}/logs/check)
+    GET  /admin/api/runs/{id}/source   the ZIP the person uploaded for that run, streamed unchanged (v2.1z-bb) | 400 bad
+                                       run id | 404 unknown run | 404 source not available (+ /runs/{id}/source/check)
 
 Log ZIP limits (v2.1z-ap, the three-pods review): one archive at a time per process (`ZIP_GATE`, held until the temp file
 is deleted), the temp file in the pod's local temp dir (never the shared volume), a free-space floor there, a total cap,
@@ -54,7 +56,7 @@ from starlette.concurrency import run_in_threadpool
 from starlette.responses import StreamingResponse
 from starlette.types import Receive, Scope, Send
 
-from .runs import RUN_ID_RE
+from .runs import FLOW_REMEDIATION, RUN_ID_RE, SOURCE_ZIP
 
 log = logging.getLogger("sbmig.web.admin")
 
@@ -86,6 +88,9 @@ ZIP_TOTAL_LIMIT = 2 * 1024 ** 3      # 압축 전 합계가 이보다 크면 413
 ZIP_FILE_LIMIT = 512 * 1024 ** 2     # 이보다 큰 파일 하나는 넣지 않고 SKIPPED.txt에 적는다
 ZIP_FREE_FLOOR = 1024 ** 3           # 임시 폴더에 최악의 경우를 쓰고도 이만큼은 남아야 한다
 ZIP_CHUNK = 64 * 1024
+UPLOADS_DIR = "_uploads"             # in-process 모드가 올린 ZIP을 두는 출력 폴더 아래 폴더다(RunManager.start_file)
+REMEDIATION_ORIGINAL = "remediation/original/source.zip"   # 조치만 하는 실행이 올린 ZIP을 그대로 복사해 둔 곳이다
+SOURCE_ERROR = "source not available"
 EMPTY_README = "No run under this output root has a log file yet.\n"
 SKIPPED_NAME = "SKIPPED.txt"
 # 한 프로세스에서 ZIP은 한 번에 하나만 만든다. 내려받기가 끝나 임시 파일을 지울 때까지 잡고 있다
@@ -417,6 +422,101 @@ def _scope_of(rep: dict[str, Any] | None) -> str | None:
     return None
 
 
+def recorded_upload_name(run_dir: Path) -> str | None:
+    """실행 기록(request.json, web-status.json)에서 사람이 올린 파일 이름을 찾는다. 없으면 None이다."""
+    req, _ = _read_json(run_dir, "control/request.json")
+    web, _ = _read_json(run_dir, "web-status.json")
+    return _str((req or {}).get("upload_name")) or _str((req or {}).get("upload")) or _str((web or {}).get("upload"))
+
+
+def _recorded_flow(run_dir: Path) -> str | None:
+    # 실행 방식을 request.json, web-status.json, report.json 순으로 찾는다
+    for rel in ("control/request.json", "web-status.json", "report.json"):
+        data, _ = _read_json(run_dir, rel)
+        flow = _str((data or {}).get("flow"))
+        if flow:
+            return flow
+    return None
+
+
+def _upload_file_name(run_id: str, upload: str | None) -> str | None:
+    # in-process 모드가 _uploads 아래에 저장한 이름(<실행 id>-<정리한 원래 이름>)을 RunManager.start_file과 같은 규칙으로 만든다
+    if not upload:
+        return None
+    base = re.split(r"[\\/]", upload)[-1]
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", base) or "project.zip"
+    return f"{run_id}-{safe}"
+
+
+def find_source(run_dir: Path, upload: str | None = None, live_zip: Path | None = None) -> Path | None:
+    """실행에 사람이 올린 원본 ZIP의 경로를 찾는다. 출력 폴더 밖이나 심볼릭 링크를 거치는 경로는 고르지 않는다.
+    Job 모드의 실행 폴더 source.zip, in-process 모드의 _uploads 파일, 조치만 하는 실행의 원본 복사본 순으로 찾는다.
+
+    The uploaded ZIP of a run, or None. Order: (1) `<run dir>/source.zip` (the Job modes keep the upload there and pin its
+    sha256 in request.json); (2) the in-process upload `<out root>/_uploads/<run id>-<cleaned name>` (`live_zip` = the
+    manager's own `Run.zip_path` when the run is in memory, else the name rebuilt from the recorded upload name, else the
+    only `<run id>-*` file there); (3) for a remediation-only run, the copy its intake made of the uploaded bytes
+    (`remediation/original/source.zip`). A full run's `remediation/original/` holds the migrated tree, not the upload,
+    so it is never used. Every path is checked component by component (`safe_file`): no symlink, regular file."""
+    run_dir = Path(run_dir)
+    hit = safe_file(run_dir, SOURCE_ZIP)
+    if hit is not None:
+        return hit
+    out_root = run_dir.parent
+    rid = run_dir.name
+    names: list[str] = []
+    if live_zip is not None and Path(live_zip).parent == out_root / UPLOADS_DIR:
+        names.append(Path(live_zip).name)
+    built = _upload_file_name(rid, upload if upload is not None else recorded_upload_name(run_dir))
+    if built:
+        names.append(built)
+    for name in names:
+        hit = safe_file(out_root, f"{UPLOADS_DIR}/{name}")
+        if hit is not None:
+            return hit
+    # 기록된 이름으로 찾지 못하면 이 실행 id로 시작하는 업로드가 하나뿐일 때만 그것을 쓴다
+    try:
+        found = [e.name for e in os.scandir(out_root / UPLOADS_DIR)
+                 if e.name.startswith(rid + "-") and not e.name.startswith(".")]
+    except OSError:
+        found = []
+    if len(found) == 1:
+        hit = safe_file(out_root, f"{UPLOADS_DIR}/{found[0]}")
+        if hit is not None:
+            return hit
+    if _recorded_flow(run_dir) == FLOW_REMEDIATION:
+        return safe_file(run_dir, REMEDIATION_ORIGINAL)
+    return None
+
+
+def source_info(run_dir: Path, upload: str | None = None) -> tuple[bool, int | None]:
+    """사용량 행에 넣을 원본 유무와 크기를 반환한다. 예외를 던지지 않는다."""
+    try:
+        p = find_source(run_dir, upload)
+        return (True, p.stat().st_size) if p is not None else (False, None)
+    except Exception:  # 행 하나 때문에 목록이 실패하지 않게 한다
+        log.debug("admin usage: source of %s not readable", run_dir, exc_info=True)
+        return False, None
+
+
+def source_download_name(run_id: str, upload: str | None) -> str:
+    """내려받을 원본의 파일 이름을 만든다. 원래 이름을 알면 ``<실행 id>-<원래 이름>``, 모르면 ``<실행 id>-source.zip``이다.
+
+    `<run id>-<upload name>` (path parts and control characters removed) or `<run id>-source.zip`."""
+    base = re.split(r"[\\/]", str(upload or ""))[-1]
+    base = "".join(ch for ch in base if ch >= " " and ch != "\x7f").strip()
+    return f"{run_id}-{base}" if base else f"{run_id}-source.zip"
+
+
+def content_disposition(filename: str) -> str:
+    """첨부 파일 헤더를 만든다. ASCII가 아닌 이름은 RFC 5987의 ``filename*``로 보내고 ASCII 대체 이름을 함께 둔다."""
+    from urllib.parse import quote
+    fallback = "".join(ch if " " <= ch < "\x7f" and ch not in '"\\' else "_" for ch in filename)
+    if fallback == filename:
+        return f'attachment; filename="{filename}"'
+    return f"attachment; filename=\"{fallback}\"; filename*=UTF-8''{quote(filename, safe='')}"
+
+
 def has_logs(run_dir: Path) -> bool:
     """실행 폴더에 ZIP에 넣을 로그 파일(sbmig.log, journal.jsonl, remediation.log)이 하나라도 있는지 확인한다."""
     return any(safe_file(run_dir, m) is not None for m in LOG_MEMBERS if m != "control/request.json")
@@ -469,7 +569,8 @@ def run_usage(run_dir: Path, status: dict[str, Any] | None = None, live: bool = 
             "flow": flow, "scope": _scope_of(rep), "status": state, "result": _result_word(exit_code, rep),
             **usage, "total_tokens": usage["input_tokens"] + usage["output_tokens"], "cost": cost,
             "by_model": sorted(by_model, key=lambda r: (-r["total_tokens"], r["model"])),
-            "usage_known": known, "partial": bool(req_bad or rep_bad), "has_logs": has_logs(run_dir)}
+            "usage_known": known, "partial": bool(req_bad or rep_bad), "has_logs": has_logs(run_dir),
+            **dict(zip(("has_source", "source_bytes"), source_info(run_dir, upload)))}
 
 
 def _sum_cost(costs: Iterable[float | None]) -> float | None:
@@ -512,7 +613,7 @@ def collect_usage(out_root: Path, status_of: Callable[[str], dict[str, Any]] | N
                    "_t": datetime.fromtimestamp(0, timezone.utc), "_currency": None, "flow": "full", "scope": None,
                    "status": "unknown", "result": None, "calls": 0, "input_tokens": 0, "output_tokens": 0,
                    "total_tokens": 0, "cost": None, "by_model": [], "usage_known": False, "partial": True,
-                   "has_logs": False}
+                   "has_logs": False, "has_source": False, "source_bytes": None}
         if row is not None:
             runs.append(row)
 
@@ -803,6 +904,30 @@ class TempFileResponse(StreamingResponse):
             cb()
 
 
+class SourceFileResponse(StreamingResponse):
+    """올린 원본 ZIP을 조각으로 내보내는 응답 클래스. 파일을 통째로 읽지 않고, 연 시점의 크기까지만 보낸다.
+
+    Streams a file chunk by chunk (`ZIP_CHUNK`), never more than the size it had when the response was made (the
+    `Content-Length` it announced); the file is left in place."""
+
+    def __init__(self, path: Path, filename: str, size: int, media_type: str = "application/zip"):
+        self.path = Path(path)
+        self.size = int(size)
+        headers = {"Content-Disposition": content_disposition(filename), "Cache-Control": "no-store",
+                   "Content-Length": str(self.size)}
+        super().__init__(self._chunks(), media_type=media_type, headers=headers)
+
+    async def _chunks(self):
+        left = self.size
+        async with await anyio.open_file(self.path, "rb") as fh:
+            while left > 0:
+                chunk = await fh.read(min(ZIP_CHUNK, left))
+                if not chunk:
+                    return
+                left -= len(chunk)
+                yield chunk
+
+
 # ---------------------------------------------------------------------------
 # 라우트
 # ---------------------------------------------------------------------------
@@ -951,5 +1076,46 @@ def create_admin_router(manager: Any, auth: AdminAuth, remediations: Any = None)
     @router.get("/runs/{run_id}/logs/check")
     async def run_logs_check(request: Request, run_id: str):
         return await one_run(request, run_id, True)
+
+    def locate_source(run_id: str) -> tuple[int, dict[str, Any]] | tuple[Path, str, int]:
+        # 원본의 (경로, 내려받을 이름, 크기) 또는 (상태 코드, 오류 본문)을 반환한다
+        if not RUN_ID_RE.match(run_id):
+            return 400, {"error": "bad run id"}
+        rd = find_run(run_id)
+        if rd is None:
+            return 404, {"error": "unknown run"}
+        run = (getattr(manager, "runs", None) or {}).get(run_id)
+        live = getattr(run, "zip_path", None) if run is not None else None
+        upload = _str(getattr(run, "upload", None)) if run is not None else None
+        upload = upload or recorded_upload_name(rd)
+        path = find_source(rd, upload, Path(live) if live else None)
+        if path is None:
+            return 404, {"error": SOURCE_ERROR}
+        try:
+            size = path.stat().st_size
+        except OSError:
+            return 404, {"error": SOURCE_ERROR}
+        return path, source_download_name(run_id, upload), size
+
+    async def source(request: Request, run_id: str, check_only: bool):
+        if not logged_in(request):
+            return denied()
+        nostore = {"Cache-Control": "no-store"}
+        found = await run_in_threadpool(locate_source, run_id)
+        if isinstance(found[0], int):
+            return JSONResponse(found[1], status_code=found[0], headers=nostore)
+        path, filename, size = found
+        if check_only:
+            return JSONResponse({"ok": True, "bytes": size, "filename": filename}, headers=nostore)
+        log.info("admin source download: run %s, %d bytes", run_id, size)
+        return SourceFileResponse(path, filename, size)
+
+    @router.get("/runs/{run_id}/source")
+    async def run_source(request: Request, run_id: str):
+        return await source(request, run_id, False)
+
+    @router.get("/runs/{run_id}/source/check")
+    async def run_source_check(request: Request, run_id: str):
+        return await source(request, run_id, True)
 
     return router

@@ -5153,6 +5153,29 @@ approval list of the page), this section wins: it no longer exists.
 - The policy hash no longer contains the two settings: a remediation that was stopped before the upgrade and is resumed
   after it plans again from its last scan (say what happens in the report of the implementation).
 
+## v2.1z-bb — the admin page hands out the uploaded original
+
+The user (2026-11-19): "우리 어드민에 원본 소스 받을 수 있는 기능 하나만 만들어주라. 이거 scp를 2번을 땡겨와야해서 너무
+불편해서 웹 기능으로 만들게!" Until now the uploaded ZIP could only be taken off the data volume by hand.
+
+- `GET /admin/api/runs/{run id}/source` — the bytes a person uploaded for that run, unchanged. Admin session required
+  (the same answer as the other admin routes without one); an invalid run id → 400; an unknown run → 404; the upload is
+  not on disk any more → 404 `{"error": "source not available"}`. Sent as a stream (never read into memory as a whole)
+  with `Content-Length`, `application/zip`, and `Content-Disposition: attachment` naming `<run id>-<the upload's own
+  file name>` (`<run id>-source.zip` when the name is not known; non-ASCII names per RFC 5987, the name cleaned of
+  path parts). Where the upload lives depends on the run mode (the run folder's `source.zip` in the Job modes, the
+  upload folder in-process, the remediation-only flow's own copy): the route finds it by the run's record, confined to
+  the output root, never following a link.
+- `GET /admin/api/runs/{run id}/source/check` — the same rules without the bytes: `{ok, bytes, filename}`; the page asks
+  it first, so a file that is gone gives a sentence instead of a broken download.
+- Lookup order (`admin.find_source`): the run folder's `source.zip` (the pinned upload of a Job run) → the upload
+  folder's file by the run's recorded name (else the single file starting with the run id) → the remediation-only
+  flow's `remediation/original/source.zip` (never for a full run: there that folder holds the migrated tree).
+- `GET /admin/api/usage`: every run row gains `has_source` and `source_bytes`.
+- The admin page: 「원본 받기」 beside the run's log download, with the size; disabled with the reason when the file is
+  gone. The public page gets nothing: the original is company source and stays behind the admin password.
+- One INFO log line per download (run id and size, no client data). The logs bundle still leaves `source.zip` out.
+
 ## remediations (취약점 조치) — `/api/remediations`, IVAS, version-text fixes + managed overrides (2026-11-11)
 
 A second, independent flow beside the migration: an uploaded Maven project ZIP is built as it is (baseline), scanned by

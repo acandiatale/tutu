@@ -65,7 +65,7 @@
 | `sbmig/report/` | 보고서 | `writer.py` `write_report` · `markdown.py` `render_markdown`(진입점, en 진단 보고서의 절 순서) · `guide_ko.py` `render_guide_ko`(`report.language: ko` 의 요청자용 안내서) · `changes.py` `collect_code_changes`(파일별 순변경 diff) · `handover.py` 인수인계 데이터 · `result_line.py` `SBMIG-RESULT` 줄·종료 코드 · `i18n.py` 한국어 문구 · `errors.py` 오류 목록 가공 · `cost.py` LLM 비용 · `inventory.py` `sbmig inventory` 산출물 |
 | `sbmig/fleet/` | 순차 일괄 실행 | `runner.py` `FleetRunner` · `manifest.py` 매니페스트 · `preflight.py` 인프라 점검 · `summary.py` 요약 파일 · `cleanup.py` 디스크 정리 · `cli.py` `sbmig fleet …` |
 | `sbmig/graph/` | LangGraph 엔진 | `engine.py` 노드 intake → analyze → plan → phase → finalize (→ remediation, 켜졌을 때) |
-| `sbmig/web/` | 웹 UI | `app.py` 라우트(`/api/runs`, `/api/runs/{run_id}/events` …)와 토큰 가드(다른 사이트의 요청 거절 포함) · `contract.py` Main ↔ Worker 파일 계약(빌드 식별값 `sbmig_version`, 고정값 대조) · `runs.py` 실행 관리자·SSE 이벤트 · `static/index.html` 화면(바닐라 JS) · `admin.py`와 `static/admin.html` 관리자 페이지(`/admin`: 프로젝트별 토큰 사용량, 로그 ZIP) · `codediff.py` 코드 변경 화면의 API(`/api/runs/{run_id}/codediff`: 실행 폴더의 `codediff/`와 `result.zip`만 읽는다. 기록은 빌드 쪽 `sbmig/report/codediff.py`가 마무리에서 쓴다) |
+| `sbmig/web/` | 웹 UI | `app.py` 라우트(`/api/runs`, `/api/runs/{run_id}/events` …)와 토큰 가드(다른 사이트의 요청 거절 포함) · `contract.py` Main ↔ Worker 파일 계약(빌드 식별값 `sbmig_version`, 고정값 대조) · `runs.py` 실행 관리자·SSE 이벤트 · `static/index.html` 화면(바닐라 JS) · `admin.py`와 `static/admin.html` 관리자 페이지(`/admin`: 프로젝트별 토큰 사용량, 로그 ZIP, 올린 원본 받기) · `codediff.py` 코드 변경 화면의 API(`/api/runs/{run_id}/codediff`: 실행 폴더의 `codediff/`와 `result.zip`만 읽는다. 기록은 빌드 쪽 `sbmig/report/codediff.py`가 마무리에서 쓴다) |
 
 모듈마다 docstring 맨 앞에 짧은 한국어 블록(역할, 호출 위치, 진입점, 지켜야 할 규칙)이 있고 그 뒤에 영어 상세 기록이 있다. 규약: `docs/v2/CODE-COMMENTS-KO.md`.
 

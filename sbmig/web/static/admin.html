@@ -162,6 +162,9 @@
   a.rid:hover { color: var(--blue); }
   .partial { display: block; margin-top: 2px; font-size: 11.5px; color: var(--warn); cursor: help; }
   .unknown { color: var(--muted); text-align: center !important; font-style: normal; }
+  /* 원본 받기 링크 옆의 크기와, 파일이 없을 때 흐리게 보이는 같은 자리의 글자 */
+  .srcsize { margin-left: 6px; color: var(--muted); font-size: 12px; }
+  .nosrc { color: var(--faint); cursor: help; }
 
   @media (max-width: 640px) {
     .top .in { padding: 12px 16px; }
@@ -265,6 +268,14 @@
   const nf = new Intl.NumberFormat('ko-KR');
   const int = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
   const fmtInt = (v) => nf.format(Math.round(int(v)));
+  // 파일 크기를 읽기 쉬운 단위로 쓴다(1024 단위)
+  function fmtSize(v) {
+    let n = int(v);
+    const units = ['B', 'KB', 'MB', 'GB'];
+    let i = 0;
+    while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+    return (i === 0 ? String(Math.round(n)) : n.toFixed(n >= 100 ? 0 : 1)) + ' ' + units[i];
+  }
   // 좁은 칸 옆에 붙이는 짧은 표기(1.2M). 정확한 값은 항상 함께 보여 준다
   function compact(v) {
     const n = int(v), a = Math.abs(n);
@@ -564,7 +575,7 @@
       .sort((a, b) => (Date.parse(b.accepted_at || '') || 0) - (Date.parse(a.accepted_at || '') || 0));
     const head = '<thead><tr><th class="stick" scope="col">날짜</th><th scope="col">진행 방식</th><th scope="col">범위</th><th scope="col">결과</th>' +
       '<th class="num" scope="col">호출</th><th class="num" scope="col">입력 토큰</th><th class="num" scope="col">출력 토큰</th><th class="num" scope="col">합계 토큰</th>' +
-      (withCost ? '<th class="num" scope="col">비용</th>' : '') + '<th scope="col">로그</th></tr></thead>';
+      (withCost ? '<th class="num" scope="col">비용</th>' : '') + '<th scope="col">로그</th><th scope="col">원본</th></tr></thead>';
     let body = '';
     for (const r of runs) {
       const id = String(r.run_id || '');
@@ -573,14 +584,19 @@
         : numCell(r.calls) + numCell(r.input_tokens) + numCell(r.output_tokens) + numCell(r.total_tokens, 'total');
       const log = r.has_logs === false ? '<span class="dash" title="이 실행에는 로그 파일이 없습니다">없음</span>'
         : `<a href="${API}/runs/${encodeURIComponent(id)}/logs.zip" data-zip="run" title="${esc(id)} 로그 ZIP">로그</a>`;
+      // 사람이 올린 원본 ZIP. 서버에 파일이 없으면 같은 자리에 흐린 글자와 이유를 둔다
+      const src = r.has_source === true
+        ? `<a href="${API}/runs/${encodeURIComponent(id)}/source" data-src="1" title="${esc(id)}에 올린 원본 ZIP">원본 받기</a>` +
+          `<span class="srcsize">${esc(fmtSize(r.source_bytes))}</span>`
+        : '<span class="nosrc" aria-disabled="true" title="원본 파일이 서버에 없습니다">원본 받기<span class="sr"> (원본 파일이 서버에 없습니다)</span></span>';
       body += '<tr>' +
         `<td class="stick when">${esc(fmtDate(r.accepted_at)) || '<span class="dash">-</span>'}` +
         `<a class="rid" href="/#${encodeURIComponent(id)}" title="${esc(id)} 실행을 메인 화면에서 엽니다">${esc(id)}</a></td>` +
         `<td>${flowTag(r.flow)}</td><td>${scopeText(r.scope)}</td>` +
         `<td>${resultChip(r)}${r.partial ? '<span class="partial" title="기록 파일 일부를 읽지 못했습니다. 값이 실제보다 적을 수 있습니다.">일부만 읽음</span>' : ''}</td>` +
-        tokens + (withCost ? costCell(r.cost) : '') + `<td>${log}</td></tr>`;
+        tokens + (withCost ? costCell(r.cost) : '') + `<td>${log}</td><td>${src}</td></tr>`;
     }
-    if (!runs.length) body = `<tr class="nomatch"><td colspan="${withCost ? 10 : 9}">실행 기록이 없습니다.</td></tr>`;
+    if (!runs.length) body = `<tr class="nomatch"><td colspan="${withCost ? 11 : 10}">실행 기록이 없습니다.</td></tr>`;
     const part = runs.some((r) => r.partial) ? ' 일부만 읽음은 기록 파일 일부를 읽지 못해 값이 실제보다 적을 수 있다는 뜻입니다.' : '';
     return `<div class="runsbox"><p class="cap">실행 ${runs.length}건, 최근 실행부터.${part}</p>` +
       `<div class="tablebox"><table class="grid runs" aria-label="${esc(p.project)} 실행 목록">${head}<tbody>${body}</tbody></table></div></div>`;
@@ -683,6 +699,27 @@
     } else {
       zipNote(skip.trim());
     }
+    window.location.assign(href);
+  });
+
+  // ---------------------------------------------------------------- 원본 받기
+  // 로그 ZIP과 같이 세션을 확인하고, /source/check로 파일이 아직 있는지 물어본 뒤에 받는다. 없으면 이 화면에 이유를 보인다
+  const SRC_GONE = '원본 파일이 서버에 없습니다. 실행 폴더가 정리되었을 수 있습니다.';
+  document.addEventListener('click', async (e) => {
+    const a = e.target.closest('a[data-src]');
+    if (!a || e.ctrlKey || e.metaKey || e.shiftKey || e.button !== 0) return;
+    e.preventDefault();
+    const href = a.getAttribute('href');
+    let r = null, d = null;
+    try {
+      r = await fetch(href + '/check', { credentials: 'same-origin', cache: 'no-store' });
+      try { d = await r.json(); } catch (x) { d = null; }
+    } catch (x) { r = null; }
+    if (r && r.status === 401) { expired(); return; }
+    if (!r) { zipNote('서버에 연결하지 못했습니다. 잠시 뒤에 다시 해 주세요.', true); return; }
+    if (r.status === 404 && d && d.error === 'source not available') { zipNote(SRC_GONE, true); return; }
+    if (!r.ok || !d || d.ok !== true) { zipNote(`원본을 준비하지 못했습니다(응답 ${r.status}). 새로 고침한 뒤 다시 해 주세요.`, true); return; }
+    zipNote('');
     window.location.assign(href);
   });
 

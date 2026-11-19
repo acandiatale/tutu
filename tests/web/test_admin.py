@@ -166,19 +166,21 @@ def _all_runs(out: Path, outside: Path) -> None:
 
 
 def _run(rid, accepted, flow, scope, status, result, calls, inp, outp, cost, by_model, known=True, partial=False,
-         logs=True):
+         logs=True, source=(False, None)):
     return {"run_id": rid, "accepted_at": accepted, "flow": flow, "scope": scope, "status": status, "result": result,
             "calls": calls, "input_tokens": inp, "output_tokens": outp, "total_tokens": inp + outp, "cost": cost,
             "by_model": [{"model": m, "calls": c, "input_tokens": i, "output_tokens": o, "total_tokens": i + o,
                           "cost": mc} for m, c, i, o, mc in by_model],
-            "usage_known": known, "partial": partial, "has_logs": logs}
+            "usage_known": known, "partial": partial, "has_logs": logs,
+            "has_source": source[0], "source_bytes": source[1]}  # the upload of the run (v2.1z-bb)
 
 
 SHOP_ROWS = [
     _run(SHOP2, "2026-11-02T10:00:00+00:00", "full", "jdk-jakarta", "finished", "incomplete", 1, 100, 10, 0.05,
          [("gpt-a", 1, 100, 10, 0.05)]),
     _run(SHOP1, "2026-11-01T10:00:00+00:00", "full", "full", "finished", "ok", 3, 1000, 200, 0.5,
-         [("gpt-a", 2, 800, 150, 0.4), ("gpt-b", 1, 200, 50, 0.1)]),
+         [("gpt-a", 2, 800, 150, 0.4), ("gpt-b", 1, 200, 50, 0.1)],
+         source=(True, len("must not be in the zip\n"))),          # the fixture's source.zip
 ]
 
 

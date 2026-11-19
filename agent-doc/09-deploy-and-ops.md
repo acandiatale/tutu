@@ -30,7 +30,7 @@ node / journal / log / report 이벤트 → report.md, result.zip, errors.md, sb
   지워지지 않는다(§8). ZIP 풀기 한도 `intake.max_unpacked_mb`(4096), `intake.max_entry_mb`(1024), `intake.max_compression_ratio`(200, 1 MiB 이상
   풀리는 파일마다; 0 = 없음)를 목차로, 풀면서 다시 본다. 넘으면 아무것도 풀지 않고 `run aborted: ZIP refused: …`(exit 3, 저널 `intake_refused`,
   Maven·LLM 없음; 웹 파드가 직접 돌리면 HTTP 400).
-- **관리자 페이지 `/admin`**(링크 없음): 내장 비밀번호(`SBMIG_ADMIN_PASSWORD`로 교체)로 프로젝트별 LLM 토큰 사용량과 로그 ZIP. 열린 모드에서는 이 모아 보기만 막는다(실행마다의 파일은 열린 API로 누구나 받는다). `sbmig/web/admin.py`, `deploy/README.md` §2.
+- **관리자 페이지 `/admin`**(링크 없음): 내장 비밀번호(`SBMIG_ADMIN_PASSWORD`로 교체)로 프로젝트별 LLM 토큰 사용량·로그 ZIP·올린 원본. 열린 모드에서도 이것만 막힌다(실행별 결과 파일은 열린 API로 받는다). `sbmig/web/admin.py`, `deploy/README.md` §2.
 - `sbmig serve`가 곧 uvicorn이다. 종료 시 `--graceful-timeout`(5초) 뒤 SSE를 닫고 Maven /
   OpenRewrite 프로세스를 정리한다(중단된 실행은 `aborted`). 플레인 uvicorn: `SBMIG_WEB_OUT=out/web uvicorn sbmig.web.app:app --port 8765 --timeout-graceful-shutdown 5`.
 
