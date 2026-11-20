@@ -643,7 +643,8 @@
         </button>
       </span>
     </div>
-    <details class="adv" id="adv">
+    <!-- 고급 설정(설정 파일, LLM, 여기까지만 실행)은 화면에 보이지 않는다. 값은 기본 그대로 보낸다 -->
+    <details class="adv" id="adv" hidden>
       <summary>고급 설정</summary>
       <div class="advgrid">
         <div>
@@ -926,7 +927,6 @@
     const c = chosenConfigs();
     const same = c.length === defaultConfigs.length && c.every((x, i) => x === defaultConfigs[i]);
     let s = c.length ? `설정 ${c.join(', ')}` : '설정 default.yml만';
-    if (!same) s += ' (고급 설정에서 바꿈)';
     if ($('llm').value) s += ` · LLM ${$('llm').value}`;
     if ($('stop_after').value && chosenFlow() === FLOW_FULL) s += ` · ${$('stop_after').value}까지만`;
     $('cfgnote').textContent = s;
@@ -1523,7 +1523,7 @@
     const remOnly = (st.flow || runFlow) === FLOW_REM;
     $('mainline').hidden = remOnly; $('maindl').hidden = remOnly;
     $('remed').classList.toggle('solo', remOnly);
-    // 그 밖의 파일은 결과 버튼 아래에 둔다. 취약점 해결 실행이면 조치 영역 뒤, 전체 진행이면 이관 버튼 바로 뒤(조치 영역 앞)
+    // 결과 ZIP이 없다는 안내는 결과 버튼 아래에 둔다. 취약점 해결 실행이면 조치 영역 뒤, 전체 진행이면 이관 버튼 바로 뒤(조치 영역 앞)
     if (remOnly) $('remed').after($('otherfiles')); else $('remed').before($('otherfiles'));
     const chips = [];
     if (st.resolved) chips.push(`<span class="chip ok">해결 ${st.resolved}건</span>`);
@@ -1540,10 +1540,8 @@
     };
     set('dl-report', 'report.md'); set('dl-zip', 'result.zip');
     rv.files = files.slice();
-    const others = files.filter((f) => remOnly ? f !== 'result.zip' : f !== 'report.md' && f !== 'result.zip');
-    $('otherfiles').innerHTML = others.length ? '<span>그 밖의 파일</span>' + others.map((f) => MIG_DL[f]
-      ? `<a href="${fileUrl(f, true)}" download="${esc(MIG_DL[f])}">${esc(MIG_DL[f])}</a>`
-      : `<a href="${fileUrl(f)}" target="_blank" rel="noopener">${esc(f)}</a>`).join('') : '';
+    // 로그와 저널 같은 그 밖의 파일은 관리자 페이지에서 받는다. 여기에는 결과 ZIP이 없을 때의 안내만 둔다
+    $('otherfiles').textContent = '';
     if (!remOnly && !why && !files.includes('result.zip')) $('otherfiles').insertAdjacentHTML('afterbegin', '<span class="muted">변환된 프로젝트 ZIP이 없습니다(중단되었거나 report.zip_result 설정이 꺼져 있습니다).</span>');
     if (files.includes('sbmig.log')) { $('logfull').href = fileUrl('sbmig.log'); $('logfull').hidden = false; }
     runRem = st.remediation && typeof st.remediation === 'object' ? st.remediation : null;
