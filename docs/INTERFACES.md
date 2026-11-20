@@ -7007,7 +7007,7 @@ run cost unknown, and smaller wording / save points listed below. Contract and a
 | nothing known (only `tokens_unknown` rows, or an unread loop with no migration calls) | `usage_unknown` | the unknown row, `cost: null` | `cost: null`, `usage_partly_unknown: true` (page 「알 수 없음」) | as above |
 | unread loop beside a priced migration | `usage_unknown`, 0 calls | — | `cost` = the migration's, `usage_partly_unknown: true` | as above |
 | damaged journal of a killed loop (a cut-off or garbage line) | `usage_unknown`, the calls / tokens read (test: 1 call, 40 input tokens), reason `interrupted: the run ended during the loop (usage unknown)` | the rows read, priced | the known sum, flagged | 「LLM 호출 수는 알 수 없음」 on the record line; round total 「알려진 것만」 |
-| `journal.jsonl` missing beside `loop.json` | `usage_unknown`, 0 calls, same reason | — | flagged; cost as the rest allows | as above |
+| `journal.jsonl` missing beside `loop.json` | known zero (superseded by v2.1z-bq: no journal means no LLM request was made) | — | unchanged | no unknown sentence |
 | neither file (the loop never started) | known zero, reason `interrupted: the run ended during the loop` | — | unchanged | no unknown sentence |
 
 `chain.summary.fix_usage_unknown`, `GET /api/runs/{id}` `remediation_llm_usage_unknown` and `GET /api/remediations/{id}`
@@ -7069,8 +7069,48 @@ bounded at 2000), adjusted `test_fix_loop_review5.py`, `test_fixer.py`. 7,203 pa
 - Not exercised by any pass: the company cluster, a real LLM, real IVAS, large projects and real build times, Windows,
   the web service's repair and Job mode, the admin page, the migration loop's time-budget check before an LLM request.
 
-**Still open.** The admin page's project and overall cost carry no "partly unknown" note (only the run row does); a
-loop killed between writing `loop.json` and its first journal line is reported as unknown although it made no call;
-rows that are known but have no configured price still make a run's cost `null`; the loop's own journal labels a
-time-out as a stop request (the state and the report are right). The items still open after "v2.1z-bo" stay open. A
-verification review of `d85f7a4` was running when this was written.
+**Still open.** (The first two items of this list at the time of writing — no "partly unknown" note on the admin
+page's project and overall cost; a loop killed before its first journal line read as unknown — are closed by
+"v2.1z-bq".) Rows that are known but have no configured price still make a run's cost `null`; the loop's own journal labels a
+time-out as a stop request (the state and the report are right). The items still open after "v2.1z-bo" stay open. The
+verification review of `d85f7a4` ended "safe to push for a non-production deploy: yes" (see "v2.1z-bq").
+
+## v2.1z-bq — verification of v2.1z-bp: a loop killed during its setup is a known zero; the note reaches the admin totals
+
+**Why.** The verification review of `d85f7a4` found no defect that blocks a push ("safe to push for a non-production
+deploy: yes") and nothing a healthy run does differently from its parent. It named two small regressions of that
+commit, visible only when a pod was killed or usage could not be read, and they are fixed here (commit `020b11f`):
+(1) the graph writes `fixloop/loop.json` before it calls the fixer, and the fixer copies the tree and runs `git init`
+(seconds on a large project) before its first journal line, so a pod killed in that window left `loop.json` without
+a journal and was reported as "usage unknown" although no LLM request can have been made; (2) a run with partly
+unknown usage had a numeric cost (the priced part) that was summed into the admin page's project cost, overall
+total and model cost without any note.
+
+**Rules, as coded.**
+- `fixer.journal_usage`: a folder without `journal.jsonl` is `([], "", True)` — known, zero — with or without
+  `loop.json`. This rests on an order that must hold: `run_fix_loop` writes its first journal line
+  (`remediation_fix_loop_start`) before `BuildFixLoop.run`, the only place an LLM request is made. A journal that
+  exists but cannot be opened, cannot be read to the end, or has a line that cannot be parsed is still unknown, with
+  what was read kept.
+- `admin.add_remediation_usage`: a model row that receives calls without token counts gets
+  `usage_partly_unknown: true`. `admin.collect_usage`: a project row, `totals` and a `by_model` row that sum a run
+  with partly unknown usage carry `usage_partly_unknown: true` (left out when false; for a model row only when that
+  run's row of the model received such calls); their numbers, the cost included, are the known part.
+  `admin.html`: `sumCallsCell`, `costCell` and the two tiles show the existing 「일부 알 수 없음」 note; when the
+  overall cost is null because of unknown usage the note line reads 「사용량 일부를 알 수 없는 실행이 있어 전체
+  비용은 표시하지 않습니다.」. A healthy page renders byte for byte as before (checked by rendering both versions).
+- The third finding of that review is left as it is: a `state.json` written by an undeployed commit of 2026-11-20
+  (a discard with `R_FIX_UNUSABLE` and no `ended_round`) can run the loop once more on resume.
+
+**Tests.** `tests/remediations/test_fix_loop_review6.py` (`test_a_missing_journal_beside_loop_json_is_known_zero`,
+`test_a_kill_during_the_loop_setup_is_a_known_zero_at_graph_level`), `tests/web/test_admin_partly_unknown.py`
+(the JSON in four cases, the page wiring, two node renders). Full suite: 7,211 passed. The coordinator read the
+diff of this commit instead of running another review round.
+
+**Real Maven, fourth pass (on `d85f7a4`).** 17 scenarios with Maven 3.9.10 and JDK 21, fake scanner and scripted LLM:
+all ended in the expected state and passed their file checklists, apart from two false alarms of the checklist
+itself (a build duration that differs by seconds between two reports; the loop's own journal labelling a time-out as
+a stop request). With `fix_loop_max_minutes: 1` the loop starts; a garbage journal of a killed loop is recorded as
+usage unknown and the report says 「알려진 것만」. (The "deleted journal" scenario of that pass showed "unknown";
+after this section's first rule it is a known zero.)
+

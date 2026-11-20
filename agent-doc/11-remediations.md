@@ -121,7 +121,7 @@ SUCCEEDED 조건(전부): 기준 빌드 통과(예외 1.1), 적용한 라운드�
 버림만 `ended_round`(다음 진입에 루프 안 돎; 재개 때 못 쓴 저장 고침은 다시 돎). `stop requested`로 끝난 루프는 재개 때 그리로 옮기고 다시 돈다(`time budget used up`은 최종).
 LLM 요청 앞마다 중지·시간 확인(`llm_ask_skipped`), 도중 중지는 STOPPED `stop requested during the round <r> build fix`. 도중에 끝난 루프는
 빌드·보고서 노드 시작에서 사용량을 한 번 저장, `fixloop-interrupted-<n>/`로(`tree/` 지움). 그 루프·예외 뒤 사용량은 저널을 엄격히 읽음(`fixer.journal_usage`→`(rows, currency, known)`,
-`admin.journal_usage_checked(strict=True)`): 깨진 줄·못 읽음·`loop.json` 옆 저널 없음→읽은 만큼 `usage_unknown`, 둘 다 없음→0.
+`admin.journal_usage_checked(strict=True)`): 깨진 줄·못 읽음→읽은 만큼 `usage_unknown`, 저널 없음→0(호출 전).
 예산만 센 호출(실패한 호출)은 따로 한 행 `tokens_unknown`(비용 없음, 아는 행은 그대로). `fixer.fix_usage`로 `llm=`(아는 호출만)·실행 상태·관리자 페이지에.
 
 **완성 증명.** `apply`는 `applied/`(고친 pom)→`expected.json`(schema 2, `files` = 경로마다 [크기, sha256, 실행 비트])→

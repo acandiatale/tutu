@@ -430,8 +430,9 @@ loop does). The loop's LLM
 calls count in `SBMIG-RESULT … llm=` (after an exception inside the loop they are read from the loop's journal; calls
 the loop counted without token counts, a failed LLM call for instance, get a row of their own marked `tokens_unknown`,
 never priced, beside the known row of the same model, which keeps its price; a killed loop's journal with a line that
-cannot be parsed, one that cannot be read to the end, or a missing `journal.jsonl` beside `fixloop/loop.json` makes the
-loop `usage_unknown` with what was read kept (a folder with neither file is a known zero); `llm=` then holds the known
+cannot be parsed, or one that cannot be read to the end, makes the loop `usage_unknown` with what was read kept (a
+missing journal means no LLM request was made: a known zero); a project row, the totals and a model row that sum such
+a run carry the same 「일부 알 수 없음」 note; `llm=` then holds the known
 calls only), in `GET /api/runs/{id}` (`llm_calls`, of which
 `remediation_llm_calls`; `remediation_llm_usage_unknown: true` when part is unknown) and on the admin page (「조치 N회
 포함」; when part is unknown 「일부 알 수 없음」 under the calls and the cost is the sum of the priced rows with the same

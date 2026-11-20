@@ -390,7 +390,7 @@ unreported (`RoundState.build_changed`); a path it cannot put back (`intake.Sync
 again on resume; a killed loop is kept as `fixloop-interrupted-<n>/` with its LLM usage counted once, at the next
 build or report node, after which its work copy `tree/` is removed (`fixer.fix_usage`, read by the result line, the
 run status and the admin page; after an exception inside the loop the usage comes from the loop's journal; a killed
-loop's journal with a line that cannot be parsed, or missing beside `loop.json`, makes its usage unknown —
+loop's journal with a line that cannot be parsed makes its usage unknown (a missing journal means no call: zero) —
 `usage_unknown`, what was read kept — and calls without token counts get a row of their own, `tokens_unknown`, never
 priced, beside the known row of the same model; no reader shows an unknown count as exact, and the admin page's run
 cost is the sum of the priced rows with 「일부 알 수 없음」, 「알 수 없음」 only when nothing is priced).

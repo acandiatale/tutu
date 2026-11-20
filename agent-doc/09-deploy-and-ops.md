@@ -31,7 +31,7 @@ node / journal / log / report 이벤트 → 보고서, result.zip, errors.md, sb
   안 지워진다(§8). ZIP 풀기 한도 `intake.max_unpacked_mb`(4096), `intake.max_entry_mb`(1024), `intake.max_compression_ratio`(200, 1 MiB 이상
   풀리는 파일마다; 0 = 없음)를 목차로, 풀면서 다시 본다. 넘으면 아무것도 풀지 않고 `run aborted: ZIP refused: …`(exit 3, 저널 `intake_refused`,
   Maven·LLM 없음; 웹 파드가 직접 돌리면 HTTP 400).
-- 관리자 페이지 `/admin`(링크 없음): 내장 비밀번호(`SBMIG_ADMIN_PASSWORD`로 교체)로 프로젝트명별(예전 실행은 파일 이름별) LLM 토큰 사용량(조치 수정 루프 몫 포함, 실행마다 「조치 N회 포함」; 일부를 모르면 `usage_partly_unknown`, 호출·비용 칸 「일부 알 수 없음」, 비용 = 가격 아는 행의 합(없으면 「알 수 없음」); 모델 이름: [05](05-llm-gateway-and-prompts.md) 9.1)·로그 ZIP·올린 원본. 열린 모드에서도 이것만 막힌다(실행별 결과 파일은 열린 API). `sbmig/web/admin.py`, `deploy/README.md` §2.
+- 관리자 페이지 `/admin`(링크 없음): 내장 비밀번호(`SBMIG_ADMIN_PASSWORD`로 교체)로 프로젝트명별(예전 실행은 파일 이름별) LLM 토큰 사용량(조치 수정 루프 몫 포함, 실행마다 「조치 N회 포함」; 일부를 모르면 `usage_partly_unknown`, 각 행에 「일부 알 수 없음」, 비용 = 가격 아는 행의 합(없으면 「알 수 없음」); 모델 이름: [05](05-llm-gateway-and-prompts.md) 9.1)·로그 ZIP·올린 원본. 열린 모드에서도 이것만 막힌다(실행별 결과 파일은 열린 API). `sbmig/web/admin.py`, `deploy/README.md` §2.
 - `sbmig serve`가 곧 uvicorn이다. 종료 시 `--graceful-timeout`(5초) 뒤 SSE를 닫고 Maven /
   OpenRewrite를 정리한다(`aborted`). 플레인 uvicorn: `SBMIG_WEB_OUT=out/web uvicorn sbmig.web.app:app --port 8765 --timeout-graceful-shutdown 5`.
 

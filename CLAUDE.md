@@ -907,9 +907,10 @@ review", fix attempts as `script:<case>:v<N>`; `ko`, the company setting: the re
   open after v2.1z-bp: a stored fix whose files vanish between the save and a kill runs the loop once more; `fixed/` and
   `fix.patch` can stay unreferenced after a kill between the confirm-failed save and the removal; the upload page's chip
   lacks the unknown-usage marker; a killed pod's fresh claim delays the web repair up to 600 s; a call in flight when a
-  pod is killed is never counted; the admin page's project / overall cost has no "partly unknown" note; a loop killed
-  before its first journal line reads as unknown usage. Contract and as-coded notes: `docs/INTERFACES.md` "v2.1z-bj",
-  "v2.1z-bk", "v2.1z-bl", "v2.1z-bm", "v2.1z-bn", "v2.1z-bo", "v2.1z-bp".
+  pod is killed is never counted; (closed by v2.1z-bq: the "partly unknown"
+  note now reaches the admin page's project / overall / model sums, and a loop killed before its first journal line is
+  a known zero). Contract and as-coded notes: `docs/INTERFACES.md` "v2.1z-bj",
+  "v2.1z-bk", "v2.1z-bl", "v2.1z-bm", "v2.1z-bn", "v2.1z-bo", "v2.1z-bp", "v2.1z-bq".
 - **Company convention (2026-10-20): agents run on LangGraph under uvicorn.** `loop.engine: graph` (default) drives
   the phases from a LangGraph `StateGraph` (`sbmig/graph/`, nodes intake → analyze → plan → phase×N → finalize;
   `inline` is the old loop, reports are identical by test); the web UI is FastAPI (`uvicorn sbmig.web.app:app` or
