@@ -6201,3 +6201,79 @@ says where they differ. `framework.fix_loop` is `false` by default again (the us
 now assert the right outcome: tree integrity with a failing reset / cleanup, a nested `.git`, a root `.git`, a
 fixed round with a dropped override, the budget case (FAILED with a delivery, not STOPPED), the kill-and-resume
 case (fix kept and reported), `src/**/target`, the `fix.patch` route per state, the not-started wording per reason.
+
+## v2.1z-bk — second review of the remediation's fix loop: stop, kill windows, build-side changes, patch
+
+**Why.** A second review reproduced: (1) a stop during the confirming build threw the fix away as "confirming
+build failed" and the resumed run ended FAILED without trying again; (2) in the failed-confirm path the fixed files
+were deleted before the state was saved, so a kill in between ran the loop a second time under a false reason;
+(3) a fixer that raises still took the candidate's completeness marker off, so the run delivered nothing although
+the candidate was untouched; (4) older than the loop: files a build writes into manifest paths (a formatter bound to
+the lifecycle, sortpom) were committed and delivered unreported, and inside the loop such edits were credited to the
+LLM or made every attempt fail the guard; (5) the LLM calls of a loop killed mid-way were never counted and its
+folder was deleted; (6) a source that is not UTF-8 showed as `Binary files differ` in `fix.patch`; (7) with two
+fixed rounds the report named each round's patch while the route served only the last.
+
+### Graph and fixer
+
+- **Stop and the confirming build.** After the confirming build, `h.stop()` true → nothing is discarded: the overlay
+  and `rs.fix` stay, the node halts STOPPED with `next_node = build`; a resume overlays again (idempotent) and
+  confirms again. Only a confirming build that failed while no stop is pending discards the fix.
+- **Save, then delete.** Wherever a fix is dropped (failed confirm, discarded, unusable on re-entry) the state is
+  saved before `fixed/` and the patch are removed.
+- **A raising fixer** leaves the candidate's completeness marker alone; the round ends as "not fixed" with
+  `reason: error: <Type>: <msg>` and the failed candidate is delivered as for any other reason.
+- **Build-side changes never reach a delivery.** At the end of `apply` the poms the proposals edited are stored as
+  `rounds/<r>/applied/<path>` (bytes of the candidate after apply). The *expected* bytes of a manifest path in
+  round `r` are: `fixloop/fixed/<path>` when the path is in `rs.fix.changed` of a fixed fix; else
+  `applied/<path>` when stored; else `accepted/<path>`. After EVERY build of the candidate (first, confirming,
+  after a dropped override) the candidate is synchronised with the expected state: a missing manifest path is
+  restored (as `restore_missing` did) and a manifest path whose bytes differ is overwritten with the expected
+  bytes. `intake.sync_tree(tree, expected: Callable[[str], Path], paths) -> tuple[list[str], list[str]]` (missing,
+  changed; refuses symlinks; exec bit from the expected file) replaces the direct `restore_missing` call
+  (`restore_missing` stays as a function). `RoundState.build_changed: list[str]` (sorted union over the round's
+  builds, left out when empty); journal `build_side_changes` (`round`, `missing`, `changed`, first 5 changed
+  paths) when any. `verify`, commit and freezing therefore always see: accepted + applied edits (+ the reported fix).
+- **Inside the loop's work copy** the build runner wrapper puts back, after each build, every tracked file the
+  build modified or deleted that was clean before it, so an attempt is never blamed for (or credited with) the
+  build's own edits. `FixResult.changed` = editable paths whose bytes differ from the candidate AND that the work
+  copy's history records as changed by an attempt since the base commit; a byte difference outside that set is a
+  build leftover and is ignored. A file that exists in the work copy but is neither a loop path nor build output
+  (`target/` beside a pom, the work copy's `.git`) and was created by an attempt is a violation
+  (`<p> must not be created`), found by walking the work copy at the end.
+- **A loop that was killed.** When `_run_fix` finds an older `fixloop/` folder of the same round, it does not delete
+  it: the folder is renamed `fixloop-interrupted-<n>/`, its LLM usage is recovered from the loop's own journal
+  (the same reader the admin page uses for `llm call` lines, or the journal's usage events; whichever the code
+  already has), and one `FixResult(attempted=True, fixed=False, reason="interrupted: the run ended during the
+  loop", usage=…)` is appended to `rs.fix_discarded` and saved before the new loop starts. Usage that cannot be
+  recovered is recorded as zero with `reason` ending ` (usage unknown)`.
+- **`_drop_ineffective`** moves `rs.fix` into `fix_discarded` only when it was a fixed fix; a recorded not-fixed
+  result stays where it is.
+- **`_overlay_fix`** re-checks every path it copies with the fixer's `is_editable` rule and the manifest; a path
+  that fails is treated as an unusable fix (discarded, reason `discarded: the stored fix is not usable`).
+- `rs.fix.tree_hash` is computed and saved in the same save as `rs.fix` (the hash of the candidate's manifest
+  paths with the fix's bytes substituted), not at the first overlay.
+- **`fix.patch` of a source that is not UTF-8**: decoded with the detection the pom-charset code uses (UTF-8, then
+  cp949); the patch is written as UTF-8 with a first line `# <path>: shown as UTF-8, the file is <encoding>` for
+  such a file. Only bytes that decode under neither are `Binary files differ`.
+
+### Report, route, i18n
+
+- **One patch for the reader.** `write_report` also writes `remediation/fix.patch`: the patches of every committed
+  fixed round, in round order, each under a line `# round <r>`; removed when there is none. The files route serves
+  THAT file under the name `fix.patch` (state says such a round exists and the file exists; else 404, not listed).
+  The report names the download once (`fix.patch`) and no longer points at per-round paths in the to-do line; the
+  record keeps `rounds/<r>/fix.patch` per round.
+- Record lines: 「빌드가 바꾼 파일 <n>개는 결과에 넣지 않고 원래대로 두었습니다.」 for a round with `build_changed`
+  (with the first paths); the interrupted loop: 「버린 수정(실행이 수정 도중에 끝남) · LLM 호출 K회」.
+- i18n reasons: `interrupted: the run ended during the loop` (with and without ` (usage unknown)`),
+  `discarded: the stored fix is not usable`, guard reason `<p> must not be created`.
+
+**Known limits, stated in the report's code comments and the runbook, not fixed:** a project whose build needs its
+own `.git` (git-commit-id) cannot be built in the work copy, so its loop ends "not fixed"; Maven calls of the loop
+that do not go through the build runner (effective pom, dependency tree) keep their own timeouts; the per-attempt
+guard does not see a new file under a path the project's `.gitignore` ignores (the end check does).
+
+**Tests.** The review's reproductions (`out/scratch/review-bj/test_repro_bj.py`, untracked) become regression tests
+asserting the right outcome, plus: a build that rewrites a source and a pom (first build, confirming build, inside
+the loop), the interrupted loop's usage, the cp949 patch, two fixed rounds and the one served patch.
