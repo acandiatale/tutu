@@ -196,12 +196,12 @@ def test_decide_scope_matrix(cfg, scope, transitive, sources):
         assert f"only as a transitive dependency and framework.transitive={transitive}" in out.reason
 
 
-def test_framework_fix_loop_defaults_to_true(cfg):
-    """v2.1z-bi: framework projects keep the fix loop unless the yml says `framework.fix_loop: false`."""
+def test_framework_fix_loop_defaults_to_false(cfg):
+    """Framework projects get no fix loop unless the yml says `framework.fix_loop: true`."""
     from sbmig.core.config import FrameworkConfig
-    assert FrameworkConfig().fix_loop is True
-    assert cfg.framework.fix_loop is True                          # config/default.yml + the test config
-    assert decide_scope(_use("direct"), _fw(cfg)).fix_loop is True
+    assert FrameworkConfig().fix_loop is False
+    assert cfg.framework.fix_loop is False                         # config/default.yml + the test config
+    assert decide_scope(_use("direct"), _fw(cfg)).fix_loop is False
 
 
 def test_decide_scope_names_the_framework_and_records_the_mode(cfg):

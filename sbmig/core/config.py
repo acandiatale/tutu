@@ -986,9 +986,9 @@ class FrameworkConfig(BaseModel):
     recipe_sets: list[str] = Field(default_factory=lambda: ["jdk21", "jakarta"])
     # 화면과 보고서에 보여 줄 프레임워크 이름이다. 비우면 프레임워크 아티팩트 이름에서 만든다
     name: str = ""
-    # true면 다른 프로젝트처럼 빌드 오류를 고친다(부모 pom과 프레임워크 버전은 건드리지 않는다).
     # false면 JDK와 jakarta 변환 뒤 빌드를 한 번만 하고 남은 오류를 알린다. 수정 루프(사전 시도, 저장된 스크립트, LLM)는 실행하지 않는다
-    fix_loop: bool = True
+    # true면 다른 프로젝트처럼 빌드 오류를 고친다(부모 pom과 프레임워크 버전은 건드리지 않는다)
+    fix_loop: bool = False
 
     @field_validator("recipe_sets")
     @classmethod

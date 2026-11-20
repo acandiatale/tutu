@@ -146,10 +146,10 @@ def test_configs_names_the_configured_framework(tmp_path) -> None:
     assert d["framework"] == {"configured": True, "name": "Example", "fix_loop": False, "remediation_always": False}
 
 
-def test_configs_framework_fix_loop_defaults_to_true(tmp_path) -> None:
-    """v2.1z-bi: without `framework.fix_loop` in the yml the framework run keeps the fix loop."""
+def test_configs_framework_fix_loop_defaults_to_false(tmp_path) -> None:
+    """Without `framework.fix_loop` in the yml the framework run is conversion-only (the switch is off by default)."""
     d = _client(tmp_path, FW_YML).get("/api/configs").json()
-    assert d["framework"] == {"configured": True, "name": "Example", "fix_loop": True, "remediation_always": False}
+    assert d["framework"] == {"configured": True, "name": "Example", "fix_loop": False, "remediation_always": False}
 
 
 def test_configs_framework_name_and_fix_loop_from_the_yml(tmp_path) -> None:
