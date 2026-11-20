@@ -64,7 +64,7 @@
 - "계획한 것만 바뀌었나"(`verify_text_only`): 나머지 파일은 바이트가 같고, 받은 pom은 원본에 계획한 replace·insert를(같은 줄 앞은 제안 ID 순)
   적용한 바이트와 같고, XML 구조는 계획한 override 요소만큼만 는다.
 - 원본 ZIP·파일 목록(manifest)·작업 트리 `accepted/`는 따로. 변경은 후보 사본에 먼저 하고, 빌드되고 해석이 계획과 같을 때만 `accepted/`로
-  확정한다. `target/`은 해시·복사·전달 어디에도 없다(manifest 경로만).
+  확정한다. 올린 ZIP의 `target/`(pom 옆)은 manifest에서 뺀다(v2.1z-bh).
 - pom은 Maven이 읽는 것은 모두 읽는다: 경계 검사·인벤토리·계획의 위치·적용·구조 검사가 `apply.read_pom_xml`/`apply.pom_xml_bytes`로 이관과 같이
   디코드한다(`analyze.pom_parser.pom_encoding`: BOM→엄격한 UTF-8→선언한 인코딩, 한국어 계열은 cp949→파일 전체를 읽는 첫 후보). 변경은 읽은
   인코딩으로 다시 써서 바뀐 글자의 바이트만 다르다. 정말 못 읽는 pom만 FAILED `execution_boundary_refused`, `unparsable_pom: <경로>: <이유>`:

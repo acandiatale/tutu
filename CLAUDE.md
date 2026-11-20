@@ -820,6 +820,12 @@ review", fix attempts as `script:<case>:v<N>`; `ko`, the company setting: the re
   `LLMResponse.model` / `LLMUsage.model` = the name ASKED with (the role on the agent gateway); the gateway's real model
   names go to `served` (log line ` served=…` after `finish=`). `llm.pricing` is looked up by the asked name first, then
   the served names. Old rows named `unknown` / `?` / empty show as 「이름 없음」. Contract: `docs/INTERFACES.md` "v2.1z-bg".
+- **Uploaded build output stays out of the remediation's file list (2026-11-20, v2.1z-bh)** — a remediation-only ZIP
+  carried `<module>/target/`; the files were in `original/manifest.json`, the candidate's `mvn clean package` failed,
+  and freezing the failed candidate ended the run `internal_error` (`file listed in the manifest is missing`) instead
+  of `candidate_build_failed`. `intake.build_output_paths`: `target/` beside a `pom.xml` is validated but left out of
+  `accepted/` and the manifest (`IntakeResult.build_output_files`, one note, one report line); `source.zip` keeps it.
+  Anything `mvn clean` removes must never be a manifest path. Contract: `docs/INTERFACES.md` "v2.1z-bh".
 - **Company convention (2026-10-20): agents run on LangGraph under uvicorn.** `loop.engine: graph` (default) drives
   the phases from a LangGraph `StateGraph` (`sbmig/graph/`, nodes intake → analyze → plan → phase×N → finalize;
   `inline` is the old loop, reports are identical by test); the web UI is FastAPI (`uvicorn sbmig.web.app:app` or

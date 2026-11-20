@@ -1726,14 +1726,21 @@ def _unchanged_section(L: list[str], state: RemediationState, fx: _Facts) -> Non
     L.append("## 변경하지 않은 것")
     L.append("")
     L.append("- 애플리케이션 소스와 프로젝트 구조(파일·폴더)는 변경하지 않았습니다.")
+    left_out = bool(state.intake is not None and state.intake.build_output_files)
     if state.delivery is not None and state.delivery.round == 0:
         # 바꾼 것이 없어 원본을 그대로 결과 ZIP으로 냈으므로 달라진 버전 표기도 없다
-        L.append("- 결과 ZIP은 원본 ZIP과 같은 파일입니다.")
+        L.append("- 결과 ZIP은 원본 ZIP에서 빌드 산출물만 뺀 것입니다." if left_out
+                 else "- 결과 ZIP은 원본 ZIP과 같은 파일입니다.")
     elif state.delivery is not None:
         extra = ("와 dependencyManagement에 추가한 버전 지정" if any(p.kind == K_MANAGED_OVERRIDE for p in fx.committed)
                  else "")
-        L.append(f"- 결과 ZIP의 파일 목록은 원본과 같습니다. 달라진 것은 적용된 pom.xml의 버전 표기{extra}뿐입니다.")
+        same = "원본에서 빌드 산출물을 뺀 목록과 같습니다" if left_out else "원본과 같습니다"
+        L.append(f"- 결과 ZIP의 파일 목록은 {same}. 달라진 것은 적용된 pom.xml의 버전 표기{extra}뿐입니다.")
     L.append("- 원본 ZIP은 `original/source.zip`에 그대로 보관합니다.")
+    # 접수 단계에서 빌드 산출물을 뺐으면 한 번만 알린다
+    for n in (state.intake.notes if state.intake is not None else []):
+        if "build_output_left_out" in i18n.rule_keys(n):
+            L.append(f"- {_md_cell(ko_display(n))}")
     L.append("")
 
 

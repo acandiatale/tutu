@@ -5,7 +5,8 @@
   동안에도 실제 바이트로 다시 확인하고, 어기면 푼 트리를 지우고 거부한다
 - 원본 ZIP은 ``original/source.zip``에 읽기 전용으로 두고 다시 쓰지 않는다
 - 이후의 모든 해시, 복사, 결과 ZIP은 manifest의 ``paths``를 기준으로 한다.
-  빌드가 만든 ``target/`` 같은 파일은 여기에 들어가지 않는다
+  업로드한 ZIP에 들어 있던 빌드 산출물(pom.xml 옆의 ``target/``)은 manifest와 accepted/에서 뺀다.
+  원본 ZIP에는 그대로 남는다
 - 프로젝트 안의 어떤 것도 실행하지 않는다
 - ``__MACOSX/``와 ``.DS_Store``는 일반 항목으로 다루고, 최상위 폴더 하나로 감싸였는지 판단할 때만 세지 않는다
 - 압축률 검사는 풀린 크기가 ``RATIO_MIN_BYTES``(1 MiB) 이상인 항목에만 한다.
@@ -14,7 +15,9 @@
 Intake of the remediation feature: validates an uploaded ZIP before extracting anything, preserves the original read-only,
 writes the manifest and the working tree, checks the server's Maven boundary and freezes the deterministic delivery ZIP.
 `__MACOSX/` and `.DS_Store` are ordinary entries (kept everywhere) and only ignored when deciding "single top-level
-directory". The compression-ratio check applies to entries of at least 1 MiB unpacked.
+directory". The compression-ratio check applies to entries of at least 1 MiB unpacked. Build output carried by the
+upload (`target/` beside a `pom.xml`) is validated like every entry but left out of `accepted/` and the manifest
+(v2.1z-bh); `original/source.zip` keeps it.
 """
 from __future__ import annotations
 
@@ -213,6 +216,41 @@ def _project_root(files: list[str], dirs: list[str], build_targets: list[str] | 
     raise _reject("no Maven pom.xml at the ZIP root or in its single top-level directory", "no_pom")
 
 
+BUILD_OUTPUT_DIR = "target"
+_MAX_NOTE_FOLDERS = 5
+
+
+def build_output_paths(files: list[str]) -> list[str]:
+    """``files`` 중 Maven 빌드 산출물 폴더 아래에 있는 경로를 정렬해서 반환한다.
+    경로의 한 단계가 ``target``이고 그 폴더를 담은 폴더에 ``pom.xml``이 있으면 산출물이며, 가장 바깥 단계로 판단한다.
+
+    The paths under a Maven build-output folder: a segment exactly `target` whose holding folder has a `pom.xml` in
+    `files` (the outermost such segment decides). A `pom.xml` inside build output never makes another folder a module."""
+    fileset = set(files)
+    return sorted(p for p in fileset if _build_output_dir(p, fileset) is not None)
+
+
+def _build_output_dir(path: str, fileset: set[str]) -> str | None:
+    # 바깥 단계부터 보므로 target 안의 pom.xml은 판단에 쓰이지 않는다
+    segs = path.split("/")
+    for i, seg in enumerate(segs[:-1]):
+        if seg == BUILD_OUTPUT_DIR:
+            holder = "/".join(segs[:i])
+            if (f"{holder}/pom.xml" if holder else "pom.xml") in fileset:
+                return "/".join(segs[:i + 1])
+    return None
+
+
+def _build_output_note(left_out: list[str], files: list[str]) -> str:
+    """뺀 빌드 산출물의 개수와 폴더를 한 줄로 만든다. 폴더는 5개까지 쓰고 나머지는 개수만 쓴다."""
+    fileset = set(files)
+    folders = sorted({d for p in left_out if (d := _build_output_dir(p, fileset)) is not None})
+    shown = ", ".join(folders[:_MAX_NOTE_FOLDERS])
+    if len(folders) > _MAX_NOTE_FOLDERS:
+        shown += f" +{len(folders) - _MAX_NOTE_FOLDERS} more"
+    return f"build output left out: {len(left_out)} file(s) under {shown}"
+
+
 def _extract(zf: zipfile.ZipFile, files: list[tuple[zipfile.ZipInfo, str]], dirs: list[str], dest: Path,
              limits: IntakeLimits) -> list[ManifestEntry]:
     """검사를 통과한 항목을 ``dest``에 일반 파일로만 푼다.
@@ -319,6 +357,16 @@ def accept_zip(zip_path: Path, run_dir: Path, limits: IntakeLimits, *,
             raise _reject("not a ZIP file or unreadable central directory", "not_zip") from None
         with zf:
             files, dirs, project_root = _validate(zf, limits, build_targets)
+            all_paths = [p for _, p in files]
+            left_out = build_output_paths(all_paths)
+            if left_out:
+                # 업로드에 들어 있던 빌드 산출물은 mvn clean이 지우므로 manifest와 accepted/에 넣지 않는다
+                skip = set(left_out)
+                fileset = set(all_paths)
+                files = [(i, p) for i, p in files if p not in skip]
+                dirs = [d for d in dirs if _build_output_dir(f"{d}/-", fileset) is None]
+                if not files:
+                    raise _reject("the ZIP has only build output (target/ beside a pom.xml)", "empty")
             if partial.exists():
                 shutil.rmtree(partial)
             created.append(partial)
@@ -337,11 +385,16 @@ def accept_zip(zip_path: Path, run_dir: Path, limits: IntakeLimits, *,
     noise = sorted({e.path.split("/")[0] for e in entries if e.path.split("/")[0] in NOISE_TOP})
     if noise and project_root != ".":
         notes.append(f"macOS metadata kept beside the project folder: {', '.join(noise)}")
+    if left_out:
+        note = _build_output_note(left_out, all_paths)
+        notes.append(note)
+        log.info("intake: %s", note)
     file_paths = [e.path for e in entries]
     result = IntakeResult(original_zip=paths.rel(paths.original_zip), zip_sha256=zip_sha, manifest=paths.rel(paths.manifest),
                           accepted_dir=paths.rel(paths.accepted), project_root=project_root,
                           tree_hash=tree_hash(paths.accepted, file_paths), files=len(entries),
-                          unpacked_bytes=sum(e.size for e in entries), notes=notes)
+                          unpacked_bytes=sum(e.size for e in entries), notes=notes,
+                          build_output_files=len(left_out))
     log.info("intake accepted: %d files, %d bytes, project_root=%s, zip_sha256=%s", result.files, result.unpacked_bytes,
              project_root, zip_sha)
     return result

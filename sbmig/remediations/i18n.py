@@ -435,6 +435,12 @@ GROUPS: dict[str, _Group] = {
 }
 
 
+def _folders(x: str, more: str | None) -> str:
+    # "a/target, b/target"를 코드 표기로 감싸고, 쓰지 않은 폴더 수는 "외 N곳"으로 붙인다
+    out = ", ".join(f"`{f.strip()}`" for f in x.split(", ") if f.strip())
+    return out + (f" 외 {more}곳" if more else "")
+
+
 def _r(key: str, pattern: str, ko: Callable[[dict[str, str]], str], group: str = "") -> _Rule:
     return _Rule(key, re.compile(pattern.replace("{A}", _A)), ko, group)
 
@@ -1075,6 +1081,11 @@ RULES: list[_Rule] = [
        r"the migration run has ended while this remediation was (?P<s>\S+) \(its build pod is gone\); nothing is re-sent "
        r"automatically",
        lambda g: f"이관 실행이 끝나면서 조치가 {_state(g['s'])} 상태로 남았습니다. 자동으로 다시 실행하지 않습니다."),
+    # ---- intake: 업로드한 ZIP에서 뺀 빌드 산출물
+    _r("build_output_left_out",
+       r"build output left out: (?P<n>\d+) file\(s\) under (?P<f>{A})(?: \+(?P<k>\d+) more)?",
+       lambda g: (f"업로드한 ZIP의 빌드 산출물 {g['n']}개({_folders(g['f'], g['k'])})는 검사와 결과 ZIP에서 "
+                  "제외했습니다. 원본 ZIP에는 그대로 있습니다.")),
     _r("cannot_start", r"cannot start: (?P<e>.+)", lambda g: f"조치를 시작하지 못했습니다. {_raw(g['e'])}"),
     _r("report_not_written", r"report not written: (?P<e>.+)",
        lambda g: f"조치 결과 보고서를 쓰지 못했습니다. {_raw(g['e'])}"),

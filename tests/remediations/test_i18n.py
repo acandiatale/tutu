@@ -249,6 +249,7 @@ SAMPLES: list[tuple[str, str, list[str]]] = [
      "state and resume it explicitly"), ["진행 중"]),
     ("shutdown", ("the server shut down while this remediation was running; nothing is re-sent automatically — resume it "
      "explicitly"), []),
+    ("build_output_left_out", "build output left out: 3 file(s) under core/target, target", ["core/target"]),
     ("cannot_start", "cannot start: RuntimeError: boom", ["RuntimeError"]),
     ("no_root_pom", "no readable root pom.xml", []),
     ("no_target_pom", "no readable pom.xml in the build targets", []),

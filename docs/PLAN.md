@@ -1197,3 +1197,16 @@ escalation_fixer나 build_error_fixer 이름이 나왔으면 좋겠는데..."
 | Project-name hint | 「6자리 체인코드가 포함된 레포지토리 이름으로 작성해 주세요.」 + the character rule, placeholder 「레포지토리 이름」 | `tests/web/test_project_name.py` | done |
 | Checked | the offline suite (figure in the commit) | — | done |
 | Not checked | Edge; a dark theme (the page has no dark token set); the agent gateway's `model: unknown` answer (inferred, no recorded answer in the repo); tokens of one row are not split per served model | — | open |
+
+## Status — 2026-11-20, build output in an uploaded ZIP is left out of the remediation's file list (v2.1z-bh)
+
+The user, from the company cluster: a remediation-only run ended 「내부 오류」 right after the IVAS upload
+(`RemediationError: file listed in the manifest is missing: …/target/classes/….class`).
+
+| Item | What | Verification | State |
+|---|---|---|---|
+| Cause | the upload carried `<module>/target/`; the files were manifest paths; the candidate's `mvn clean package` failed, so freezing the failed candidate met a listed file that no longer existed | the user's screenshot of the traceback | found |
+| Intake | `intake.build_output_paths`: `target/` beside a `pom.xml` is validated, then left out of `accepted/` and `original/manifest.json`; `original/source.zip` keeps it; `IntakeResult.build_output_files`, one note, one INFO line | `tests/remediations/test_intake_build_output.py` | done |
+| Report | one line under 「변경하지 않은 것」; the two sentences that said the result ZIP's file list equals the original's are worded for the case | same file, `tests/remediations/test_i18n.py` | done |
+| Outcome of the failing case | a failing candidate build ends `FAILED candidate_build_failed` with the frozen delivery | graph-level test with an emulator that removes `target/` on `clean`; a companion test shows the old error with the rule off | done |
+| Not checked | the company cluster (new image needed); why that run's candidate build failed (a separate matter, visible once the run ends with its report); a custom `<directory>` build folder is not recognised | — | open |

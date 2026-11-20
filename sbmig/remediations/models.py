@@ -220,6 +220,13 @@ class IntakeResult(Record):
     files: int = 0
     unpacked_bytes: int = 0
     notes: list[str] = field(default_factory=list)
+    build_output_files: int = 0       # 업로드에 있었지만 manifest에서 뺀 빌드 산출물 파일 수
+
+    def to_dict(self) -> dict[str, Any]:
+        out = _plain(self)
+        if not out.get("build_output_files"):
+            out.pop("build_output_files", None)     # 0이면 이전 버전이 쓴 JSON과 같게 둔다
+        return out
 
 
 @dataclass
