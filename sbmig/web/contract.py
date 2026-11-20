@@ -28,6 +28,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import secrets
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
@@ -395,8 +396,8 @@ class RequestRecord:
     # 사용자가 올린 파일 이름 그대로다.
     # ``upload``는 파일 시스템에 맞게 다듬은 이름이고, 이전 기록에는 이 값이 없다
     upload_name: str | None = None
-    # 업로드할 때 입력한 프로젝트명이며 실행 id 앞부분과 같다. 화면과 관리 페이지가 보여 주기만 하고
-    # Worker는 읽지 않는다. 이전 기록에는 이 값이 없다
+    # 업로드할 때 입력한 프로젝트명이며 실행 id 앞부분과 같다. 화면, 관리 페이지, 실행의 보고서 제목이
+    # 보여 주기만 하고(entered_project) Worker의 검사는 비교하지 않는다. 이전 기록에는 이 값이 없다
     project: str | None = None
 
     def to_json(self) -> dict[str, Any]:
@@ -424,6 +425,65 @@ class RequestRecord:
             return cls.from_json(data)
         except TypeError:
             return None
+
+
+# 웹 실행 id의 모양(<프로젝트명>-YYYYMMDD-HHMMSS-<hex>)이다. sbmig.web.admin._RUN_SLUG와 같은 식이다
+RUN_SLUG = re.compile(r"^(.+)-\d{8}-\d{6}-[0-9a-f]+$")
+_JOURNAL_HEAD_LINES = 50                    # web_run 줄을 찾을 때 읽는 journal 앞부분 줄 수
+
+
+def _web_run_event(run_dir: Path) -> dict[str, Any] | None:
+    # 웹 화면이 journal 앞부분에 기록한 web_run 줄을 찾는다. 없거나 읽을 수 없으면 None이다
+    try:
+        with open(Path(run_dir) / "journal.jsonl", encoding="utf-8", errors="replace") as fh:
+            for _ in range(_JOURNAL_HEAD_LINES):
+                line = fh.readline()
+                if not line:
+                    break
+                try:
+                    ev = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(ev, dict) and ev.get("event") == "web_run":
+                    return ev
+    except OSError:
+        pass
+    return None
+
+
+def _clean_name(value: Any) -> str | None:
+    return value.strip() if isinstance(value, str) and value.strip() and "\n" not in value else None
+
+
+def entered_project(run_dir: Path) -> str | None:
+    """업로드할 때 입력한 프로젝트명을 실행 폴더에서 찾는다. ``request.json``(Job 모드), journal의 ``web_run`` 줄
+    (in-process) 순이며 없으면 None을 반환한다. 보여 주는 데만 쓴다.
+
+    The project name entered at upload (v2.1z-be), read from the run folder for DISPLAY only: `control/request.json`'s
+    `project` (Job modes), else the `project` of the journal's `web_run` line (in-process: Main writes no request.json,
+    but journals that line before the run starts). None when neither carries one (a direct CLI run, an older run)."""
+    rec = RequestRecord.read(run_dir)
+    name = _clean_name(rec.project) if rec is not None else None
+    if name:
+        return name
+    ev = _web_run_event(run_dir)
+    return _clean_name(ev.get("project")) if ev is not None else None
+
+
+def display_project(run_dir: Path, run_id: str) -> str | None:
+    """웹에서 올린 실행의 보고서 제목에 쓸 프로젝트명을 정한다. 입력한 프로젝트명, 실행 id 앞부분 순이다.
+    웹 요청의 흔적(``request.json``이나 ``web_run`` 줄)이 없는 실행(CLI로 직접 실행)이면 None을 반환한다.
+
+    The display project name of a run uploaded through the web: the entered name (`entered_project`), else the project
+    part of the run id when the id has the web shape (`RUN_SLUG`). None for a run without a web request (a direct CLI
+    run keeps its own name: its `run-…` id would otherwise read as a project called `run`)."""
+    name = entered_project(run_dir)
+    if name:
+        return name
+    if not (Path(run_dir) / CONTROL_DIR / REQUEST_FILE).is_file() and _web_run_event(run_dir) is None:
+        return None
+    m = RUN_SLUG.match(str(run_id or ""))
+    return m.group(1) if m else None
 
 
 @dataclass

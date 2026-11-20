@@ -565,6 +565,9 @@ class Orchestrator:
             # 취약점 조치만 하는 실행은 첫 저널 줄에 실행 방식을 남겨, 웹 화면이 그에 맞는 단계 표시를 고르게 한다
             report.flow = self._flow
             self.ws.journal({"event": "flow", "flow": self._flow})
+            # 분석 단계가 없어 프로젝트 이름이 작업 폴더 이름(project)으로 남으므로, 웹에서 올린 실행이면
+            # 입력한 프로젝트명(없으면 실행 id 앞부분)을 보고서 제목에 쓴다
+            report.project_name = self._web_project_name() or report.project_name
         try:
             yield report
         except _RunAborted:
@@ -1549,8 +1552,8 @@ class Orchestrator:
     def no_fix_loop(self) -> bool:
         """프레임워크 프로젝트를 변환과 빌드 1회로 끝내는지(``framework.fix_loop: false``) 반환한다.
 
-        v2.1z-aw: True for a reduced run whose analysis recorded `FrameworkUse.fix_loop = False` (the default until v2.1z-bi): the run
-        converts and builds once; no fix loop, no plan advisor, no LLM."""
+        v2.1z-aw: True for a reduced run whose analysis recorded `FrameworkUse.fix_loop = False` (`framework.fix_loop`
+        defaults to false): the run converts and builds once; no fix loop, no plan advisor, no LLM."""
         if not self.reduced_scope:
             return False
         use = getattr(self.profile, "framework", None) if self.profile is not None else None
@@ -1566,7 +1569,8 @@ class Orchestrator:
         v2.1z-ay: also a reduced run (fix loop on or off) whose build passed but whose conversion failed (not a
         success by `build_succeeded`); the caller passes `baseline_may_fail` only when the build failed
         (`final_build_failed`).
-        v2.1z-bi: a failed final build chains whether or not the fix loop ran (`framework.fix_loop` defaults to true)."""
+        v2.1z-bi: a failed final build chains whether or not the fix loop ran (`framework.fix_loop: true` turns it on;
+        the default is false)."""
         rem = getattr(self.cfg, "remediation", None)
         if str(getattr(rem, "after_failed_build", "never") or "never") != "framework" or not self.reduced_scope:
             return False
@@ -1722,6 +1726,21 @@ class Orchestrator:
             report.remediation = chain.summary(rs, self.ws.run_dir)
             report.success = rs.status == "SUCCEEDED"
             return dict(report.remediation)
+
+    def _web_project_name(self) -> Optional[str]:
+        """웹에서 올린 실행의 프로젝트명(``sbmig.web.contract.display_project``)을 반환한다. CLI로 직접 실행했거나
+        읽지 못하면 None을 반환한다. 보고서 제목에만 쓴다.
+
+        Flow `remediation`'s display name (v2.1z-be): the name entered at upload, read from the run folder
+        (`control/request.json` in Job modes, the journal's `web_run` line in-process), else the project part of a web
+        run id; None for a direct CLI run or on any failure (the title then keeps the working folder's name)."""
+        try:
+            from sbmig.web.contract import display_project
+            run_dir = getattr(self.ws, "run_dir", None)
+            return display_project(run_dir, self.ws.run_id) if run_dir is not None else None
+        except Exception:  # noqa: BLE001 — a display name never fails a run
+            log.debug("entered project name not read", exc_info=True)
+            return None
 
     def _remediation_stop(self) -> bool:
         """조치 중에 멈춤 요청(실행 폴더의 ``stop.request``)이 있는지 반환한다.

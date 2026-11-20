@@ -77,6 +77,19 @@ def chain_paths(run_dir: Path | str) -> RunPaths:
     return RunPaths(Path(run_dir) / CHAIN_DIR)
 
 
+def _web_project(run_dir: Path, run_id: str, *, from_run_id: bool) -> str | None:
+    # 보고서 제목에 쓸, 웹에서 올릴 때 입력한 프로젝트명을 실행 폴더에서 찾는다. 보여 주는 데만 쓰므로 실패하면 None이다
+    # from_run_id가 True면 입력한 이름이 없을 때 웹 실행 id의 앞부분을 쓴다
+    try:
+        from sbmig.web import contract
+        if from_run_id:
+            return contract.display_project(run_dir, run_id)
+        return contract.entered_project(run_dir)
+    except Exception:  # noqa: BLE001 — a display name never fails a remediation
+        log.debug("entered project name not read", exc_info=True)
+        return None
+
+
 def load_state(run_dir: Path | str) -> RemediationState | None:
     """이관에 이어 실행한 조치의 ``state.json``을 읽어 반환한다.
     파일이 없거나 읽을 수 없으면 None을 반환하고 예외를 던지지 않는다.
@@ -800,7 +813,9 @@ def _start(paths: RunPaths, project_dir: Path, cfg: Any, comps: Components, *, r
         log.warning("vulnerability remediation %s: intake rejected the migrated tree (%s)", run_id, e.code)
         _ended(jr, st, paths)
         return st
-    state = graph_mod.new_state(run_id, SOURCE_NAME, cfg, result, [], policy_hash=policy)
+    # 웹에서 올릴 때 입력한 프로젝트명이 있으면 보고서 제목에 그 이름을 쓴다
+    name = _web_project(paths.root.parent, run_id, from_run_id=False) or SOURCE_NAME
+    state = graph_mod.new_state(run_id, name, cfg, result, [], policy_hash=policy)
     state.build_targets = targets
     state.baseline_tolerated = bool(baseline_may_fail)
     save = _saver(paths)
@@ -917,6 +932,8 @@ def _start_only(paths: RunPaths, source: Path, cfg: Any, comps: Components, *, r
         name = source.name or SOURCE_NAME
         targets = zip_targets(source, targets)
         zip_in = source
+    # 웹에서 올린 실행이면 입력한 프로젝트명(없으면 실행 id 앞부분)을 보고서 제목에 쓴다
+    name = _web_project(paths.root.parent, run_id, from_run_id=True) or name
     if targets:
         jr({"event": "remediation_build_targets", "targets": targets})
         log.info("vulnerability remediation %s: building the targets %s (no root pom)", run_id, ", ".join(targets))
