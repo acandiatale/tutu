@@ -5841,3 +5841,33 @@ of the action codes (`actionDivCd`, table above); several logins / tokens at onc
 6. Retention: how long original ZIPs, delivery ZIPs and scans stay on the volume; `DELETE` removes everything.
 
 Not built yet: plugin / vendored fixes; a run against the real IVAS and Nexus.
+
+## v2.1z-bg — a rendered report view, report names a person can tell apart, model names in the admin page
+
+The user (2026-11-20): "우리 보고서 미리보기 md파일 viewer로 만들 수 있어? 추가로 report 이름이 동일한데,
+migration-report와 remediation-report로 만들 수 있도록 해줄래! 아 그리고 관리자에 모델 이름이 unknown이랑 ? 2개로
+나오는데 … 우리 role에 들어가는 escalation_fixer나 build_error_fixer 이름이 나왔으면 좋겠는데... 챗 응답에
+usage.by_model.model에 모델 이름이 나오는데 그걸로 적는게 좋을까 그냥 role 모델 이름으로 적는게 좋을까".
+
+**1. Report view.** The page shows a report as rendered Markdown, not as raw text: the migration report in the
+result card and the remediation report wherever the page offers it. Rendering happens in the page with its own small
+renderer (no library, no network: the page ships as one HTML file to an air-gapped cluster). It covers what our two
+reports actually use (headings, paragraphs, emphasis, inline code, fenced code, lists incl. nested and task lists,
+tables, block quotes, rules, links, `<details>` if the reports use it) and escapes everything else: report text comes
+from project files and build output, so no HTML from the report may reach the DOM as markup; links open only
+`http(s)` and relative run files. The raw text stays one click away, and the download gives the file as written.
+
+**2. Names.** What a person receives is named `migration-report.md` / `remediation-report.md` (and `.json` where a
+JSON report is handed out): download names, the labels on the page, entries of a ZIP or bundle that carries a report.
+The files inside a run directory keep their names (`report.md`, `report.json`, `remediation/report.md`): they are
+markers that the web layer, the admin page, the cleanup and runs already on the volume depend on. Addresses keep
+working; a new address may be added but the old one answers as before.
+
+**3. Model names.** The name of a usage row is the name we ASKED with (the configured model of that call: on the
+company's agent gateway that is the role, e.g. `build_error_fixer` / `escalation_fixer`), never `unknown` or `?`.
+What the gateway says it used (`model` of the answer when it is a real name, `usage.by_model[].model`) is recorded
+beside it as the served model(s) and shown next to the name in the admin page. Reason: the role is what the company
+configures, prices and recognises, and it stays the same when the gateway changes the model behind it; the served name
+is the fact needed to explain a cost. Usage sums, the cost calculation (price looked up by the asked name, then by a
+served name) and the admin's per-model tables follow this. Runs already on the volume that carry `unknown` / `?` / an
+empty name are shown under one neutral label, not two.
