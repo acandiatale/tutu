@@ -329,6 +329,13 @@ before the body is read (400 otherwise; rule and sentences in `deploy/README.md`
 `web-status.json` and the journal's `web_run`. A run directory is named `<project>-YYYYmmdd-HHMMSS-<6 hex>`; `job_name` cuts the
 front of a long id and keeps the timestamp tail (also for `…-rem<attempt>`). Older folders (`run-…`, `web-…`, file-name slugs) keep working.
 
+The page renders the reports itself (`MdView` in `index.html`: DOM nodes only, links only `http(s)` and files of the run,
+images never loaded) in the result card and a large dialog, with the raw text one click away. A person receives
+`migration-report.md` / `.json` and `remediation-report.md` / `.json` (`runs.DOWNLOAD_NAMES`, the remediation files
+route's `?download=1`); inside the run directory the files keep their names (`report.md`, `report.json`,
+`remediation/report.md`). LLM usage rows are named by the name a call asked with (the agent gateway's role), the
+gateway's real model names kept beside it as `served` (`LLMUsage.served`); prices are looked up by the asked name first.
+
 The Main / Worker file contract (`sbmig/web/contract.py`): only Main writes `<run dir>/control/` — `request.json` pins the zip
 sha256, config digests and sbmig version at intake; `state.json` is the control state (queued → creating → created → running →
 finished | stopped | lost | failed), written atomically with the intent recorded before the Job is created, plus — recorded with

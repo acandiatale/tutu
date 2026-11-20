@@ -1180,3 +1180,20 @@ xxx-front-jar 로도 변환을 해줘야해! 이 케이스를 생각을 못했�
 | Checked | the offline suite and every fixture with the real Maven (figures in the commit); the split fixture's jars unpacked and the app started with `java -jar`: the template, the CSS and the API answer | — | done |
 | Module names | the user wrote `xxx-comp-jar` / `xxx-front-jar` and corrected it the same day: `xxx-boot` / `xxx-back` / `xxx-front`, what the layout settings give | — | settled |
 | Limits | see INTERFACES "v2.1z-bf" (the plan's front note, test reads of moved files, scans through `@Import`, `front_module: null` with a WAR) | — | open |
+
+## Status — 2026-11-20, a rendered report view, report names a person can tell apart, model names by role (v2.1z-bg)
+
+The user: "우리 보고서 미리보기 md파일 viewer로 만들 수 있어? 추가로 report 이름이 동일한데, migration-report와
+remediation-report로 만들 수 있도록 해줄래! 아 그리고 관리자에 모델 이름이 unknown이랑 ? 2개로 나오는데 … 우리 role에 들어가는
+escalation_fixer나 build_error_fixer 이름이 나왔으면 좋겠는데..."
+
+| Item | What | Verification | State |
+|---|---|---|---|
+| Report view | the migration report drawn as Markdown in the result card, 「보기」 / 「원문」, 「크게 보기」 dialog; 「보고서 보기」 opens the remediation report in the same dialog; own renderer `MdView` (DOM nodes only, links only `http(s)` and files of the run, images never loaded, HTML as text except `<details>` / `<summary>`) | `tests/web/test_page_report_view.py` (real reports, hostile text, a long report, toggle and dialog) | done |
+| Download names | `migration-report.md` / `.json`, `remediation-report.md` / `.json` (`runs.DOWNLOAD_NAMES`, the remediation files route's `?download=1`); run-directory files, addresses and ZIPs unchanged; `run-job.sh`'s result branch keeps `report.md` | `tests/web/test_error_list_files.py`, `tests/remediations/test_api.py` | done |
+| Names in the Korean report | sentences that point the reader at a report name `remediation-report.md` / `migration-report.json`; the English layout keeps run-directory paths | `tests/report/test_guide_ko.py`, `test_remediation_section_ko.py`; the English golden files unchanged | done |
+| Model names | a usage row is named by the asked name (the agent gateway's role); the gateway's real names kept as `served` (report JSON, journal `llm_script` / `llm_verify_guide`, the `llm call` log line, `sbmig llm-probe`); price by asked name, then served names | `tests/fix/test_model_names.py`, `tests/loop/test_model_names_report.py` | done |
+| Admin page | asked name with served beside it, a 모델 column per run, old nameless rows under one label 「이름 없음」; old runs' names recovered from `params.role=` log lines only on an exact match | `tests/web/test_admin_model_names.py` | done |
+| Project-name hint | 「6자리 체인코드가 포함된 레포지토리 이름으로 작성해 주세요.」 + the character rule, placeholder 「레포지토리 이름」 | `tests/web/test_project_name.py` | done |
+| Checked | the offline suite (figure in the commit) | — | done |
+| Not checked | Edge; a dark theme (the page has no dark token set); the agent gateway's `model: unknown` answer (inferred, no recorded answer in the repo); tokens of one row are not split per served model | — | open |

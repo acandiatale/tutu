@@ -237,7 +237,8 @@ service root, also pom-only projects), `optional_bump`. Optional bumps and `remo
 ### LLM client tier and adapter seams
 * Tier 1 (`sbmig/core/interfaces.py`): `LLMRequest` (messages, model, max_tokens, temperature, stop, `role: LLMRole`,
   `metadata`), `LLMAdapterLike.complete(request) -> LLMResponse`; `LLMClientLike.complete` accepts `role=` /
-  `metadata=` (clients may ignore them). Roles: `fix`, `fix_escalation`, `plan_advisor`, `structure_review`,
+  `metadata=` (clients may ignore them). `LLMResponse.model` = the name the call asked with (on the agent gateway the
+  role), `LLMResponse.served_models` = the real model names the answer reported (v2.1z-bg). Roles: `fix`, `fix_escalation`, `plan_advisor`, `structure_review`,
   `verify_guide`, `other`. `LLMRequest.metadata` = `run_id`, `project`, `phase`, `iteration`, `cluster_id`
   (`LLMFixer.call_tags`) — never secrets.
 * `llm.provider`: builtin (`company` default, `anthropic`, `openai_compatible`, `fake`), `plugin` (+ `llm.plugin:
@@ -2806,8 +2807,8 @@ comment in `deploy/` is Korean (the company's reviewers do not want English comm
   finalize, lit by `node` events; Korean labels, the node name underneath) and two tabs: 진행 기록 (journal rows, last 400 kept in the
   DOM) and 로그 (the `log` / `console` events go into a ring buffer of 20,000 lines; at most the last 1,500 are rendered, once per
   animation frame, only while the tab is visible; DEBUG hidden by default; the full file through the `sbmig.log` link) → the result card
-  once `status.state == finished`: `보고서 받기` (report.md) and `변환된 프로젝트 받기` (result.zip) as download buttons (disabled when the
-  file is absent), the other served files as small links, the report text under 보고서 미리보기 → 지난 실행 (collapsed list; `#<run id>`
+  once `status.state == finished`: `보고서 받기` (report.md, received as `migration-report.md` since v2.1z-bg) and `변환된 프로젝트 받기` (result.zip) as download buttons (disabled when the
+  file is absent), the other served files as small links, the report under 보고서 미리보기 (rendered as Markdown since v2.1z-bg) → 지난 실행 (collapsed list; `#<run id>`
   still re-attaches). 고급 설정 (collapsed) holds the config checkboxes, the LLM provider (`fake`) and stop_after — developer options.
   Element ids the tests look for: `drop`, `zip`, `start`, `stop`, `rail`, `timeline`, `log`, `dl-report`, `dl-zip`, `adv`.
 - The config files a run uses are the **server's** choice: `sbmig serve --config <name>` (repeatable) → `$SBMIG_WEB_CONFIGS`
@@ -4157,7 +4158,8 @@ URL on the existing app, behind a fixed password, no manifest change. Code: `sbm
   {"generated_at": "ISO", "out_root": "/data/out",
    "totals": {"projects": 0, "runs": 0, "calls": 0, "input_tokens": 0, "output_tokens": 0, "total_tokens": 0,
               "cost": null, "currency": null, "unpriced_runs": 0},
-   "by_model": [{"model": "…", "calls": 0, "input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "cost": null}],
+   "by_model": [{"model": "…", "calls": 0, "input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "cost": null,
+                 "served": ["…"], "unnamed": true}],
    "projects": [{"project": "…", "runs": 0, "calls": 0, "input_tokens": 0, "output_tokens": 0, "total_tokens": 0,
                  "cost": null, "unpriced_runs": 0, "first_run_at": "ISO", "last_run_at": "ISO",
                  "run_list": [{"run_id": "…", "accepted_at": "ISO", "flow": "full|remediation",
@@ -4166,7 +4168,7 @@ URL on the existing app, behind a fixed password, no manifest change. Code: `sbm
                                "total_tokens": 0, "cost": null, "by_model": [], "usage_known": true,
                                "partial": false, "has_logs": true}]}]}
   ```
-  Project = the uploaded file name without its last extension (`upload_name`, else `upload`, else the manager's / web-status
+  Project = the entered project name when the run has one (`admin.project_of`), else the uploaded file name without its last extension (`upload_name`, else `upload`, else the manager's / web-status
   upload), else `report.project_name`, else the run id's slug (`<slug>-YYYYMMDD-HHMMSS-<hex>`), else the run id. `accepted_at`
   = request.json, else `report.started_at`, else the folder's mtime. `status` = `RunManager.status()["state"]`; `result` = the
   result line's words for the exit code (0 `ok`, 2 `incomplete`, 3 `aborted`, another code `exit <n>`; from the manager /
@@ -4174,7 +4176,7 @@ URL on the existing app, behind a fixed password, no manifest change. Code: `sbm
   `report.plan.scope`, else `jdk-jakarta` when `report.profile.reduced_scope`, else null. A run's numbers come from
   `report.llm_usage` (the report's own total, so `calls` also counts calls that returned no usage), its `by_model` from
   `report.llm_usage_by_model`. **A run without a readable report** (running, or stopped before the report) counts the
-  `llm call provider=… model=… in=… out=…` lines of its `sbmig.log` (one per answered call of the built-in LLM clients:
+  `llm call provider=… model=… in=… out=… latency=… finish=…[ served=…]` lines of its `sbmig.log` (one per answered call of the built-in LLM clients:
   fix, structure review, plan advisor, verify guide; read line by line), else the `llm_script` / `llm_verify_guide` events of
   `journal.jsonl` (fix loop only); nothing found → zeros and `"usage_known": false`. **Cost**: a run's `cost` = `llm_cost.total`
   when the report priced every model it used (no `unpriced_models`, no `usage_missing`); a run with known zero usage costs
@@ -4183,6 +4185,11 @@ URL on the existing app, behind a fixed password, no manifest change. Code: `sbm
   `totals.cost` is null (the page labels each priced row with it); null when nothing is priced or the currencies differ.
   `unpriced_runs` (totals and each project, an integer) = how many runs in that sum have `cost: null`. Order:
   projects by `total_tokens` descending (then name), `run_list` newest first, `by_model` by `total_tokens` descending.
+  **Model names (v2.1z-bg).** `model` is the asked name (the agent gateway's role); `served` (only when known) the models
+  the gateway reported; `unnamed: true` (only on that row) marks the one row that collects old runs' `unknown` / `?` /
+  empty names, shown as 「이름 없음」. A run's `by_model` (in `run_list`) has the same entry shape; the page shows it in a
+  모델 column. Old names are recovered from `sbmig.log`'s `params.role=` request lines only on an exact match (see
+  "v2.1z-bg" As coded).
 - **Log ZIPs.** Members per run, as `<run id>/<file>`: `sbmig.log`, `journal.jsonl`, `control/request.json`,
   `remediation/remediation.log`; never raw LLM records, `result.zip` / `source.zip`, `logs/`, `report.md`. Why each is safe:
   `sbmig.log` / `journal.jsonl` are redacted line by line as written when `SBMIG_REDACT_OUTPUT=1` (`LIVE_FILES`, the run file
@@ -5871,3 +5878,59 @@ configures, prices and recognises, and it stays the same when the gateway change
 is the fact needed to explain a cost. Usage sums, the cost calculation (price looked up by the asked name, then by a
 served name) and the admin's per-model tables follow this. Runs already on the volume that carry `unknown` / `?` / an
 empty name are shown under one neutral label, not two.
+
+**As coded (2026-11-20).** *Report view* — `sbmig/web/static/index.html`, block "3d": `MdView` (`parse(text)` → a block
+tree, `render(tree, document, {resolve})` → a DocumentFragment, `safeHref`, `inline`; no other page code is used, the
+test cuts the block out and runs it in node) builds elements and text nodes only, never `innerHTML`. Covered: ATX
+headings, paragraphs, emphasis, inline and fenced code, nested and task lists, tables (a header row of empty cells, the
+two-column head table of our reports, is not drawn), block quotes, rules, links, `<details>` with one `<summary>` line
+(`<code>` accepted inside the summary only); any other HTML is shown as text. A link becomes an anchor only for
+`http(s)` (checked again through `URL`) or a relative path that the `resolve` function maps to a file of this run
+(`runFileLink`: in the run's served list; the remediation report: in its file list → `…/files/<name>`); everything
+else stays text. An image (`![…](…)`) is never loaded: its alt text is shown. The result card keeps the preview
+(`#preview`, hidden until a report arrived) with the 「보기」 / 「원문」 toggle (`.rvseg`; both toggles share one mode)
+and 「크게 보기」 (`#report-big`); the dialog `#rv-dialog` (title 「마이그레이션 보고서」, 「실행 보고서」 for a
+remediation-only run, 「취약점 조치 보고서」) is shared by both reports, has its own download link with the received
+name, closes by button, Esc or the backdrop and returns focus. The remediation block gains 「보고서 보기」
+(`#remed-view`), which fetches `…/remediations/{id}/files/report.md` when it is opened (a failure is a toast).
+*Names* — `runs.DOWNLOAD_NAMES` (`report.md` → `migration-report.md`, `report.json` → `migration-report.json`) is used by
+`GET /api/runs/{id}/files/{name}` when it attaches (`?download=1` or an attach-type file); the remediation router has
+its own `DOWNLOAD_NAMES` (`remediation-report.md` / `.json`) and its files route gains `?download=1`, which attaches any
+file (inline stays the default, so the page can fetch the text). The page sets the same names on its `download`
+attributes (`MIG_DL`, `REM_DL`) and labels 「보고서 받기」 with `migration-report.md`. Run-directory files, addresses
+and every ZIP stay as they were (no ZIP carries a report). In the Korean report the sentences that name a report for
+the reader use the received names (`markdown.received_name`, `RECEIVED_NAMES`: the chained remediation's 자세한 결과 /
+다른 파일 lines, the remediation-only run's pointer; "… 외 n건 (migration-report.json 참고)", the structure-review
+pointers; `_TOLERATED_KO` in `sbmig/remediations/report.py` names `migration-report.md`); the English layout keeps the
+run-directory paths (`remediation/report.md`). `deploy/docker/run-job.sh` (git mode, the result branch) keeps
+`report.md`. *Model names* — `LLMResponse.model` is the asked name (built-in clients, `AdapterClient`,
+`KwargFilterClient` all pass through `client.named_response`); `LLMResponse.served_models` = the real names the answer
+reported (`client.served_models_of`: a top-level `model` that is not a placeholder, every `usage.by_model[].model`),
+the asked name left out. On the agent gateway the asked name is `params.role` (`CompanyClient.asked_name`; the
+top-level `model` is the asset id). `core.models`: `PLACEHOLDER_MODEL_NAMES` (`""`, `?`, `-`, `unknown`, `none`,
+`null`, `n/a`, `default`), `real_model_name`, `merge_model_names`, `asked_model_name` (first real candidate, else
+`DEFAULT_MODEL_LABEL` = `gateway-default`), `served_beside`. `LLMUsage.served` / `ModelCost.served` (merged in
+first-seen order by `add`, left out of the JSON when empty, so a report without served names keeps its JSON shape);
+`RunReport.llm_usage` carries an asked name too (its own, else the first row's) and the union of the rows' `served`. Every place that named a row (`_BudgetedLLM`, the
+structure reviewer, the plan advisor, `LLMFixer`, `Orchestrator._usage_by_model`) uses `asked_model_name` with the
+configured model as fallback, never `?`. Journal `llm_script` and `llm_verify_guide` gain `served`. The log line is
+`llm call provider=<p> model=<asked> in=<n> out=<n> latency=<s>s finish=<r>[ served=<a,b>]` (`client.served_log_suffix`,
+after `finish=` so the admin page's older expression still reads it); `sbmig llm-probe`'s `LLM-PROBE ok …` line ends
+with ` served=…` when known (`ProbeResult.served`). The report's model cell is `` `<asked>` (<served>) ``
+(`markdown.model_cell`, both renderers). *Price* — `cost.price_for_usage`: the asked name first, then each served name
+in order; the first key `price_for` matches wins, so a role key in `llm.pricing` wins over a served-model key, and a
+table keyed by real model names keeps working while the gateway reports them. *Admin* — `admin.model_row`: `model`,
+counts, `served` (when known), `unnamed: true` for the row of old runs whose name was `unknown` / `?` / empty (all such
+rows merged into one, costs summed or null); the page shows the asked name with the served names beside it in grey,
+the unnamed row as 「이름 없음」 (hint 「이전 실행」), and the per-project run table gains a 모델 column (one line per
+model). Names of old runs are recovered (`_names_from_old_log`, `usage_from_log`) only when every unnamed `llm call …
+in=… out=…` line of `sbmig.log` follows a request line with `params.role=` and the recovered calls and tokens equal
+the report's unnamed row exactly; otherwise the row stays 「이름 없음」. *Project field* — placeholder 「레포지토리 이름」,
+hint 「6자리 체인코드가 포함된 레포지토리 이름으로 작성해 주세요.」 above the character rule; the rule itself is
+unchanged. Tests: `tests/web/test_page_report_view.py`, `tests/web/test_admin_model_names.py`,
+`tests/fix/test_model_names.py`, `tests/loop/test_model_names_report.py`, additions in `tests/web/test_project_name.py`,
+`tests/web/test_error_list_files.py`, `tests/remediations/test_api.py`, `tests/report/test_guide_ko.py`. *Known limits*:
+the tokens of one row are not split per served model (a row with two served names carries one sum; `by_model[].model`
+of the answer is kept as a name only); the page has no dark token set, so the rendered report is light only; Edge is
+not checked; that the agent gateway answers `model: unknown` is inferred from the admin page's rows, no recorded real
+answer is in the repository.

@@ -1,6 +1,6 @@
 # LLM 게이트웨이, 프롬프트, 답 형식
 
-> 다루는 것: LLM provider(회사 게이트웨이 `company` 의 legacy / agent 모드, `anthropic`, `fake` 재생, 플러그인), `.env` 변수, 토큰 교환, 세션과 케이스 스레드, `sbmig llm-probe` 출력, 플러그인 접점, 프롬프트 파일과 사실 절, 답 프로토콜, 프롬프트 규칙, 마이그레이션 노트·권고·라이브러리 힌트, LLM 기록 파일, 더 센 모델, 거절 처리.
+> 다루는 것: LLM provider(회사 게이트웨이 `company` 의 legacy / agent 모드, `anthropic`, `fake` 재생, 플러그인), `.env` 변수, 토큰 교환, 세션과 케이스 스레드, `sbmig llm-probe` 출력, 플러그인 접점, 프롬프트 파일과 사실 절, 답 프로토콜, 프롬프트 규칙, 마이그레이션 노트·권고·라이브러리 힌트, LLM 기록 파일, 사용량의 모델 이름(요청한 이름과 실제 모델), 더 센 모델, 거절 처리.
 > 언제 읽나: 게이트웨이를 붙이거나 바꿀 때, LLM 이 이상하게 답한 이유를 볼 때, 프롬프트·노트를 고칠 때.
 > 함께 읽을 파일: [03-run-debug-and-logs.md](03-run-debug-and-logs.md), [04-cases-scripts-kb.md](04-cases-scripts-kb.md), [07-config-and-knowledge.md](07-config-and-knowledge.md), [../docs/ADAPTERS.md](../docs/ADAPTERS.md)
 
@@ -61,7 +61,7 @@
   `finish_reason=length` 는 요청 거절. 전송·설정 실패 연속 2번이면 실행에서 처음 한 번 `llm.cooldown_seconds`(60) 쉬고, 다시 그러면 `llm_unavailable`.
   서로 다른 프롬프트 둘이 같은 HTTP 400 본문을 받으면 설정 오류로 보고 그 실행의 LLM 호출을 멈춘다(`llm_config_error`).
 - 로그 줄: `llm call provider=company role=… model=… [params.role=…] attempt n/m → POST <url> (prompt N chars, timeout Ts)`, 성공 시
-  `llm call provider=company model=… in=… out=… latency=… finish=…`, 실패 시 `llm company transport error (attempt n/m): … cause=…`.
+  `llm call provider=company model=<요청한 이름> in=… out=… latency=… finish=…[ served=<실제 모델,…>]`(§9.1), 실패 시 `llm company transport error (attempt n/m): … cause=…`.
 
 ## 3. `.env` 변수 (이름만, `.env.example` 기준)
 
@@ -77,7 +77,7 @@
 token_url=… app_token_env=… escalation_model=…` ③ `request payload: …` ④ `token exchange: …` ⑤ `sent: POST …`, `sent headers: …`(토큰 가림),
 `sent body: …`, `proxies in effect for this url: … (NO_PROXY=…)`, `response headers: …`, `timeout: …` ⑥ `HTTP <status>` + 응답 JSON ⑦
 `extracted reply: '…'` 또는 `CONFIG ERROR` / `TRANSPORT ERROR` / `TOKEN ERROR` / `PROBLEM: …` + `hint: …` ⑧ 마지막 줄 `LLM-PROBE ok …` /
-`LLM-PROBE FAIL <kind> …`. 옵션: `--prompt`, `--model`, `--llm-provider`, `--payload-extra '<json>'`(payload_extra 를 **대체**, 예 `'{}'`),
+`LLM-PROBE FAIL <kind> …`(ok 줄 끝에 응답이 알려 준 실제 모델 ` served=…`, 알 때만). 옵션: `--prompt`, `--model`, `--llm-provider`, `--payload-extra '<json>'`(payload_extra 를 **대체**, 예 `'{}'`),
 `--no-system`, `--bare`(sbmig 클라이언트 없이 같은 payload 를 `requests.post`). 플릿 preflight 도 같은 호출 하나를 쓴다.
 
 ## 5. 케이스 스레드 (`llm.case_thread`, 기본 false)
@@ -96,7 +96,7 @@ token_url=… app_token_env=… escalation_model=…` ③ `request payload: …`
 
 | 단계 | 설정 | 계약 |
 |---|---|---|
-| 1단계 LLM 어댑터 | `llm.provider: plugin` + `llm.plugin: "pkg.module:attr"`(또는 entry point 그룹 `sbmig.llm_adapters` 의 이름), `llm.plugin_options` | `LLMAdapterLike.complete(request: LLMRequest) -> LLMResponse`. `LLMRequest`: `messages`(`ChatMessage` role/content), `model`, `max_tokens`, `temperature`, `stop`, `role`, `metadata`(비밀 없음). `LLMResponse`: `content`, `model`, `input_tokens`, `output_tokens`, `finish_reason`, `session_id`. 저수준 `LLMClientLike.complete(messages, *, model, max_tokens, temperature, stop, role, metadata)` 도 받는다 |
+| 1단계 LLM 어댑터 | `llm.provider: plugin` + `llm.plugin: "pkg.module:attr"`(또는 entry point 그룹 `sbmig.llm_adapters` 의 이름), `llm.plugin_options` | `LLMAdapterLike.complete(request: LLMRequest) -> LLMResponse`. `LLMRequest`: `messages`(`ChatMessage` role/content), `model`, `max_tokens`, `temperature`, `stop`, `role`, `metadata`(비밀 없음). `LLMResponse`: `content`, `model`(요청한 이름), `served_models`(응답이 알려 준 실제 모델), `input_tokens`, `output_tokens`, `finish_reason`, `session_id`. 저수준 `LLMClientLike.complete(messages, *, model, max_tokens, temperature, stop, role, metadata)` 도 받는다 |
 | 2단계 수정기 | `fix.plugin: "pkg.module:attr"`(또는 그룹 `sbmig.fixers`), `fix.plugin_options`, CLI `--fix-plugin` | `FixerLike.propose_script(ws, cluster, ctx: FixContext) -> ScriptProposal`. 예외 대신 `ScriptProposal(error=…)`. 적용·커밋·채점·되돌리기는 언제나 루프 몫 |
 
 로딩은 `sbmig/llm/registry.py`. 자세한 것은 [../docs/ADAPTERS.md](../docs/ADAPTERS.md).
@@ -186,6 +186,20 @@ Jackson 3 규칙) · 9 런타임 걱정은 `MIGRATION-TODO` 주석 · 10 "Librar
 `prompt_hash`, `error`, `role`, `metadata`. 키·헤더는 없다. 실패한 호출도 `error` 와 함께 남는다. 저널 `llm_call` 이 기록 경로를, `llm_script` 가 모드·호출 수·토큰을 남긴다.
 지우기는 `sbmig clean --records <dir>`. `LLM_RESPONSE_PATH` 는 자동 탐지가 실패할 때만 쓴다(`sbmig llm-probe` 가 응답 JSON 을 그대로 보여 준다).
 
+### 9.1 사용량의 모델 이름 (요청한 이름과 실제 모델)
+
+- 사용량 행(`LLMUsage.model`, 보고서 `llm_usage_by_model`, 비용 표 `ModelCost.model`)의 이름은 **호출할 때 요청한 이름**이다. agent 게이트웨이는
+  `params.role`(예 `build_error_fixer` / `escalation_fixer`, `CompanyClient.asked_name`; 맨 위 `model` 은 asset id), legacy 는 본문의 `model`.
+  `LLMResponse.model` 도 같은 뜻이다(내장 클라이언트와 어댑터 감싸개가 `named_response` 로 맞춘다).
+- 게이트웨이가 알려 준 실제 모델(자리 표시 값이 아닌 맨 위 `model`, `usage.by_model[].model`)은 `served` 로 옆에 둔다(`LLMResponse.served_models`,
+  `LLMUsage.served`, `ModelCost.served`; 비면 JSON 에 쓰지 않음). 저널 `llm_script` / `llm_verify_guide` 의 `served`, `llm call` 로그 줄 끝 ` served=a,b`,
+  보고서 모델 칸 `` `build_error_fixer` (실제 모델) `` 가 같은 값이다. 행 하나의 토큰은 실제 모델별로 나누지 않는다.
+- `unknown`, `?`, `-`, 빈 값 같은 자리 표시는 이름으로 쓰지 않는다(`PLACEHOLDER_MODEL_NAMES`). 요청한 이름을 하나도 모르면 `gateway-default`.
+- 가격(`llm.pricing`, `sbmig/report/cost.py` `price_for_usage`): 요청한 이름으로 먼저, 없으면 실제 모델 이름을 차례로 찾는다. role 이름 키가 있으면 그것이 이긴다.
+- 관리자 페이지: 요청한 이름 옆에 실제 모델을 흐리게, 실행마다 「모델」 칸. 모델 이름을 기록하기 전의 예전 실행에서 이름이 `unknown` / `?` / 빈 행은
+  한 줄 「이름 없음」(이전 실행)으로 묶는다. 그 실행의 `sbmig.log` 에서 이름 없는 응답 줄마다 앞에 `params.role=` 요청 줄이 있고 호출 수와 토큰이 보고서와
+  꼭 같을 때만 role 이름으로 나눈다(`sbmig/web/admin.py`). 운영 화면은 [09](09-deploy-and-ops.md) 1절.
+
 ## 10. 더 센 모델과 거절
 
 - **더 센 모델**: 루프가 `use_escalation_model` 을 켜는 때 = 정체 단계 ≥ `loop.stall_limit`(2), 또는 케이스의 세 번째 LLM 요청부터. 그때 `llm.escalation_model`
@@ -207,6 +221,7 @@ grep -n "_Section(\"" sbmig/fix/context.py; grep -n "DEFAULT_MAX_NOTES\|PROMPT_P
 grep -n "^[0-9]*\. \|^1[0-4]\. " sbmig/fix/prompts/script_system_v1.md   # 규칙 번호
 grep -n "<[a-z_]*>" sbmig/fix/script_protocol.py | head -40
 grep -n "rec = {" -A14 sbmig/fix/client.py; grep -n "escalate = " sbmig/loop/fixloop.py
+grep -n "def named_response\|def served_models_of\|def served_log_suffix" sbmig/fix/client.py; grep -n "def price_for_usage" sbmig/report/cost.py
 grep -n "def _decline_contradiction" -A20 sbmig/loop/fixloop.py
 .venv/bin/sbmig llm-probe --help
 .venv/bin/python -m pytest tests/docs/test_agent_doc.py -p no:cacheprovider -q

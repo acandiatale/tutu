@@ -303,7 +303,9 @@ sbmig clean --fleet out\fleet --older-than 7 --keep-failed --dry-run
 
 - **Local web UI**: `sbmig serve --port 8765 --out out/web` (FastAPI on uvicorn, bound to 127.0.0.1): upload a zip,
   choose 전체 진행 (migration, then the remediation) or 취약점 해결 (remediation only, §6), follow the stage rail /
-  journal / log, download `report.md` and `result.zip`. Every upload needs a project name (letters, digits, `_`, `-`, at most 30 characters; rule and refusals in
+  journal / log, read the report rendered in the result card (「보기」 / 「원문」, 「크게 보기」; the remediation report
+  through 「보고서 보기」), download it (received as `migration-report.md`; the remediation report as
+  `remediation-report.md`; the files in the run folder keep their names) and `result.zip`. Every upload needs a project name (letters, digits, `_`, `-`, at most 30 characters; rule and refusals in
   `deploy/README.md` §2), and a run's folder name starts with it (`<project>-YYYYmmdd-HHMMSS-<hex 6>`; `ls /data/out | grep <project>`); a run refused at intake, or aborted by Maven's HTTP repository blocker, shows its reason as a sentence. Sharing on the LAN needs a token
   (`SBMIG_WEB_TOKEN` or `--token`; `--open` only on a trusted intranet). The configs every upload runs with are the
   server's choice (`--config` / `SBMIG_WEB_CONFIGS`). In-process mode runs one migration at a time (the others are
@@ -391,7 +393,7 @@ on a PC — are missing; the report names what is missing). `--stop-after` is re
 | `intake.max_unpacked_mb` / `intake.max_entry_mb` / `intake.max_compression_ratio` | 4096 / 1024 / 200 | unpacking limits of an uploaded ZIP (0 = no limit) |
 | `llm.escalation_model` (`LLM_ESCALATION_MODEL`) | empty = `llm.model` | stronger model from a case's third ask or after a stall |
 | `llm.case_thread` | false | agent gateway: augments continue the case's session with the delta only |
-| `llm.pricing.<model>` | list prices | per-run cost in the report and the fleet summary |
+| `llm.pricing.<model>` | list prices | per-run cost in the report and the fleet summary; a row is priced by its asked name (the agent gateway's role, e.g. `build_error_fixer`) first, then by the model names the gateway reported, so a role key wins |
 | `build.skip_test_compile` | true | `-Dmaven.test.skip=true` on every build |
 | `build.require_java_major` | 21 | preflight: abort when Maven runs on another Java |
 | `build.retry_negative_cache` | true | a build that failed on Maven's negative cache runs once more with `-U` |

@@ -8,10 +8,10 @@
 
 1. Python 3.10+, 저장소 루트에서 `uv venv && source .venv/bin/activate && uv pip install -e ".[dev]"`(Windows `.venv\Scripts\activate`).
    수정 스크립트 인터프리터(`script.python`, 비우면 sbmig의 것)에 pydantic과 lxml이 있어야 한다.
-2. **JDK 21 + Maven**. 실행 시작의 preflight가 `mvn -v`의 Java 주 버전을 본다(`build.require_java_major` 21, 다르면 중단).
+2. JDK 21 + Maven. 실행 시작의 preflight가 `mvn -v`의 Java 주 버전을 본다(`build.require_java_major` 21, 다르면 중단).
    JDK는 `build.java_home` 또는 `sbmig run --java-home`, 사내 Nexus는 `build.settings_file` 또는 `--settings`.
-3. **`.env`** 를 저장소 루트에 만든다(git 무시). 예시는 `.env.example`. 읽는 순서: `SBMIG_ENV_FILE`, 패키지 폴더에서
-   git 루트까지, 현재 폴더에서 git 루트까지 — 가까운 파일이 이기고 셸 변수가 모두를 이긴다. 명령줄 옵션(`--settings`, `--java-home` …)은
+3. `.env`를 저장소 루트에 만든다(git 무시). 예시는 `.env.example`. 읽는 순서: `SBMIG_ENV_FILE`, 패키지 폴더에서
+   git 루트까지, 현재 폴더에서 git 루트까지. 가까운 파일이 이기고 셸 변수가 모두를 이긴다. 명령줄 옵션(`--settings`, `--java-home` …)은
    `SBMIG_<SECTION>__<KEY>` 환경 값보다 이긴다(INFO `config: <키> given explicitly replaces <변수> from the environment`). 변수 이름(값은 문서·로그에 쓰지 않는다):
 
 | 변수 | 쓰임 |
@@ -25,12 +25,12 @@
 | `JAVA21_HOME` | e2e용 JDK 21 경로 |
 | `SBMIG_WEB_OUT`, `SBMIG_MAX_UPLOAD_MB`, `SBMIG_WEB_CONFIGS` | 웹 UI(plain uvicorn의 출력 폴더 / 업로드 상한 / 업로드가 돌 config 이름) |
 
-4. **첫 점검 두 개**:
-   - `sbmig llm-probe` — 게이트웨이에 작은 요청 하나: 설정 줄(provider / model / url / key_env / payload_extra), agent 모드면
+4. 첫 점검 두 개:
+   - `sbmig llm-probe`: 게이트웨이에 작은 요청 하나: 설정 줄(provider / model / url / key_env / payload_extra), agent 모드면
      `gateway=… url=… asset_id=… token_url=…`, `request payload: …`, 보낸 헤더(토큰 가림)·프록시·응답, `extracted reply: …`, 끝에
      `LLM-PROBE ok …` 또는 `LLM-PROBE FAIL <kind> …`(config / transport / token / http / reply / rejected; 토큰 교환이면 `token exchange: …` 줄).
      `--bare`는 sbmig 클라이언트 없이 `requests.post`로 같은 payload. 종료 코드 0 / 1.
-   - `sbmig repo-probe <groupId:artifactId[:version]>` — 묻는 저장소 URL과 순서(`build.repository_url`, settings 미러, pom repositories,
+   - `sbmig repo-probe <groupId:artifactId[:version]>`: 묻는 저장소 URL과 순서(`build.repository_url`, settings 미러, pom repositories,
      Central), URL마다 답(ok / 404 / 401 / timeout), jakarta 판정, 끝 줄 `REPO-PROBE ok|none …`. `--project <dir>`면 그 pom들의 `<repositories>`도.
 
 ## 2. 명령
@@ -61,11 +61,11 @@
 
 | 경로 | 무엇 | 언제 본다 |
 |---|---|---|
-| `out/<run id>/report.md`, `report.json` | 보고서(§3.1, ko면 한국어 안내서) | 항상 먼저 |
+| `out/<run id>/report.md`, `report.json` | 보고서(§3.1, ko면 한국어 안내서; 화면에서 받는 이름 `migration-report.md` / `.json`) | 항상 먼저 |
 | `out/<run id>/errors.md`, `errors.jsonl` | 오류 목록: 오류 한 건 = 한 항목, 시도(`tries`) 전부 | 오류마다의 시도 |
 | `out/<run id>/journal.jsonl` | 이벤트 한 줄씩 `{"ts", "run_id", "event", …}`(§4) | 결정·채점·차단 근거 |
 | `out/<run id>/sbmig.log` | DEBUG 로그, 줄마다 단계 태그 `[fix r3 7a52b1cea8]`(§3.3) | 시간 순서로 |
-| `out/<run id>/logs/NNN-<label>.log` | Maven / OpenRewrite / deptree / classpath / effective-pom 호출마다, 번호 순 | **실제 오류 메시지** |
+| `out/<run id>/logs/NNN-<label>.log` | Maven / OpenRewrite / deptree / classpath / effective-pom 호출마다, 번호 순 | 실제 오류 메시지 |
 | `out/<run id>/logs/effective-depmgmt.json`, `…/logs/effective-depmgmt-after-restructure.json` | as-is / 재구성 뒤 관리 버전 | 버전 케이스 |
 | `out/<run id>/logs/bundled-jars.json` | pom이 선언하지 않은 트리 안 jar: 경로, pom.properties 좌표(없으면 null), 제공 패키지 | `package … does not exist` 일 때 |
 | `out/<run id>/logs/review-input.md` | 구조 검토에 보낸 user 프롬프트(`review.save_input`) | 검토가 이상할 때 |
@@ -81,10 +81,10 @@
 
 `report.language: ko`(회사 설정) = 요청자용 안내서(`sbmig/report/guide_ko.py`; 중단된 실행의 결과는 빌드가 하나도 없으면 "빌드까지 진행하지
 못했습니다", 빌드가 있었으면 "실행 중단 (마지막 빌드는 통과했습니다 / 통과하지 않았습니다)"): 머리 표(결과, `SBMIG-RESULT`, 전환 후, 실행 ID,
-시작 / 종료, 플래그) → <이름> 프레임워크 프로젝트 → 전환 내용 → **확인해 주세요**(권고 + 인수인계 할 일) → 코드 수정 내역(자동 변환,
+시작 / 종료, 플래그) → <이름> 프레임워크 프로젝트 → 전환 내용 → 확인해 주세요(권고 + 인수인계 할 일) → 코드 수정 내역(자동 변환,
 직접 수정한 파일마다 순변경 diff) → 해결하지 못한 오류(남은 것만; 변환만 한 프레임워크 실행은 「변환 뒤 남은 빌드 오류」) → 진행하지 않은 항목(차단) → 특수 절(운영자 확인, pom 합성 (Ant),
 ADF, 포함된 jar, javax API jar, 외부 설정 값, 취약점 조치) → 참고(접힘: 실행 정보·구조 점검 판정·플래그 설명, LLM 비용, 산출물,
-**진단용 기록** = 단계 메모와 루프가 **왜 끝났는지**). 해결된 오류는 `errors.md` 에만 있다.
+진단용 기록 = 단계 메모와 루프가 왜 끝났는지). 해결된 오류는 `errors.md`에만 있다.
 `en`(`sbmig/report/markdown.py`): 머리 표 → Handover → ADF sizing → Error list → Fixes by case → Structure review → Bundled jars →
 Blocked → javax API jars → Manual follow-ups → Flags → What we changed → LLM usage and cost → Notes → Outputs.
 
@@ -119,7 +119,7 @@ errors.md 표의 열: `# | seen | status | case | file:line | message | tries | 
 | `KB 탐색: …` | 케이스마다 사다리 결정(예 `KB 탐색: 저장된 스크립트 없음 (처음 보는 케이스) → LLM 에 새 수정 요청`, `… → 한도 도달 … → blocked`) |
 | `의존성 버전 조회: …` | LLM에 보내는 저장소 버전 사실 |
 | `script prompt for case:… packed: N chars, … sections [...]` | 프롬프트 크기와 절 |
-| `llm call provider=company … attempt n/m → POST <url> (prompt N chars, timeout Ts)` | LLM 요청. 끝나면 `llm call provider=company model=… in=… out=… latency=… finish=…` |
+| `llm call provider=company … attempt n/m → POST <url> (prompt N chars, timeout Ts)` | LLM 요청. 끝나면 `llm call provider=company model=… in=… out=… latency=… finish=…[ served=…]`([05](05-llm-gateway-and-prompts.md) 9.1) |
 | `llm company transport error (attempt n/m): … cause=<예외>` | 전송 실패. `cause=` 뒤가 원인 클래스 |
 | `thread turn (session <id>): sent N chars in K message(s) → prompt_tokens=T` | 케이스 스레드 턴 측정(`llm.case_thread`) |
 | `repository lookup: <id> (<url>) is blocked by Maven's HTTP blocker (mirror 'maven-default-http-blocker', …)` | http 차단 미러가 사내 Nexus(http)를 덮었다. §5 `infra:http-blocked` |
@@ -149,7 +149,7 @@ as-is 조회 `git rev-list --max-parents=0 HEAD` → `git grep -l <패턴> <sha>
 
 `llm.record_dir`(= `LLM_RECORD_DIR`) 아래 호출마다 하나(번호는 기존 파일 다음). 키: `messages`(system / user 전문 — 오류,
 소스 발췌, pom, `Dependency versions` 사실, `Previous attempts`, `Project after the restructure`), `response`(답 전문), `session_id`,
-`model`, `usage`, `finish_reason`, `latency`, `prompt_hash`, `error`(실패한 호출), `role`(fix / fix_escalation / structure_review /
+`model`(요청한 이름), `usage`, `finish_reason`, `latency`, `prompt_hash`, `error`(실패한 호출), `role`(fix / fix_escalation / structure_review /
 verify_guide …), `metadata`(run_id, 케이스 등). 키·헤더는 없다. 재생 입력이 된다([04](04-cases-scripts-kb.md) §9).
 
 ## 4. 저널 이벤트 (`out/<run id>/journal.jsonl`)
@@ -170,7 +170,7 @@ verify_guide …), `metadata`(run_id, 케이스 등). 키·헤더는 없다. 재
 | `library_hints` (`lines` = LLM이 받은 사실), `library_lookup`, `library_mapped`, `library_unmapped` | 라이브러리 → 저장소 조회 |
 | `version_try`, `resources_try`, `jakarta_try`, `bundled_jar_wired` (`stage: loop`), `asis_parent_aligned` (`where: fix loop`) | LLM 없는 사전 시도 |
 | `scopes_restored`, `source_encodings` | [13](13-framework-projects.md) 4절 |
-| `llm_call`, `llm_script`, `llm_verify_guide`, `llm_cooldown`, `llm_unavailable`, `llm_config_error` | LLM 호출과 장애 |
+| `llm_call`, `llm_script`, `llm_verify_guide`, `llm_cooldown`, `llm_unavailable`, `llm_config_error` | LLM 호출과 장애(`model` = 요청한 이름, `served` = 실제 모델) |
 | `attempt`, `attempt_scored`, `script_stored`, `script_credit`, `script_non_idempotent`, `framework_guard` | 시도, 재빌드 채점, KB 저장·실적 |
 | `revert`, `script_rollback`(`where: "loop end"` = 루프 끝에 도움 안 된 시도), `script_rollback_undone`, `reround` | 되돌림, 같은 빌드로 다음 단계 묻기 |
 | `stall`, `oscillation` (`count`, `stall_level`) | 같은 오류 집합 반복 / 예전 집합으로 되돌아감 |
@@ -179,13 +179,11 @@ verify_guide …), `metadata`(run_id, 케이스 등). 키·헤더는 없다. 재
 | `error_list`, `handover`, `operator_checks`, `javax_api_inventory`, `report`, `code_diff_skipped` | 마무리 |
 | `job_pod_pending`, `job_deleted_before_start`, `worker_refused` | Job 모드: 빌드 파드가 못 뜨는 이유, 시작 전 멈춤의 Job 삭제, Worker 거절([09](09-deploy-and-ops.md)) |
 
-전체 목록: `grep -rhoE '"event": *"[a-z_]+"' sbmig | sort -u`.
-
 ## 5. 종료 코드, `attn=` 코드, 차단 사유
 
-종료 코드(`sbmig/report/result_line.py` `report_exit_code`): **0** = 최종 `mvn clean package` 성공이고 차단 없음, **2** = 끝났지만 차단·미해결
-오류가 남음(변환만 하는 실행의 변환 실패도), **3** = 중단(`aborted[:…]` 또는 `mvn-not-found`: Maven 없음, Maven 프로젝트 아님(Ant는 `intake.ant_message`), ZIP 풀기 한도 초과, 설정된 사내 parent 해석 불가, ADF, 멈춤 요청),
-**1** = 예외(`SBMIG-RESULT … exit=1 … attn=crash`) 또는 명령 인자 오류. `--flow remediation`: 0 = 조치 SUCCEEDED, 2 = 그 밖, 3 = 시작 못 함.
+종료 코드(`sbmig/report/result_line.py` `report_exit_code`): 0 = 최종 `mvn clean package` 성공이고 차단 없음, 2 = 끝났지만 차단·미해결
+오류가 남음(변환만 하는 실행의 변환 실패도), 3 = 중단(`aborted[:…]` 또는 `mvn-not-found`: Maven 없음, Maven 프로젝트 아님(Ant는 `intake.ant_message`), ZIP 풀기 한도 초과, 설정된 사내 parent 해석 불가, ADF, 멈춤 요청),
+1 = 예외(`SBMIG-RESULT … exit=1 … attn=crash`) 또는 명령 인자 오류. `--flow remediation`: 0 = 조치 SUCCEEDED, 2 = 그 밖, 3 = 시작 못 함.
 
 `attn=` 코드는 중요한 것부터 쉼표로(`-` = 볼 것 없음): `rewrite-failed`(맨 앞), `infra:<kind>`(llm / maven / jdk / repository / file-lock / http-blocked …; 초록 실행에는 안 붙음),
 `crash`, `aborted[:<reason>]`, `owner-decision`(needs_owner 차단이 있음 = 소유팀 결정 필요), `blocked:<reason>`(사유마다), `unresolved:<n>`,
@@ -218,18 +216,18 @@ verify_guide …), `metadata`(run_id, 케이스 등). 키·헤더는 없다. 재
 
 1. `SBMIG-RESULT` 한 줄: `exit`, `build`, `unresolved`, `blocked`, `attn=`. `infra:` 나 `blocked:repository_unreachable`이면 코드가 아니라 환경(LLM / Maven /
    저장소 / 잠금)부터. 플래그 `framework-unchecked` = 사내 프레임워크 검사를 못 함([13](13-framework-projects.md)), 결과를 쓰기 전에 확인. 웹 증상(이미지 불일치, ZIP 거절, 507, 403)은 [09](09-deploy-and-ops.md) 10절.
-2. `out/<run id>/report.md`의 「확인해 주세요」, 「해결하지 못한 오류」, 「진행하지 않은 항목」(사유·제안), 참고 → **진단용 기록**(루프 종료 문장).
+2. `out/<run id>/report.md`의 「확인해 주세요」, 「해결하지 못한 오류」, 「진행하지 않은 항목」(사유·제안), 참고 → 진단용 기록(루프 종료 문장).
 3. `out/<run id>/errors.md`의 그 항목 `tries`와 Tries 절(원인 / 해결 / 수정 / diff; 되돌린 시도 포함).
 4. `out/<run id>/journal.jsonl`: 그 케이스의 `decision`(rationale), `attempt_scored`, `revert`, `stall` / `oscillation`, `library_hints.lines`, `declined` / `decline_rejected`.
 5. 마지막 빌드 로그: `out/<run id>/logs/`의 `NNN-build-verify*.log` 중 번호가 가장 큰 것(첫 빌드 `build-verify`, 라운드 `build-verify-2` …): `[ERROR]` 줄, `symbol:` / `location:`.
 6. `project/`의 `git log --oneline`으로 시도 커밋과 되돌림을 짝짓고 `git show`로 확인. 사라진 클래스는 as-is 스냅샷에서
-   (루트 pom이 없던 트리는 집계에 안 걸린 pom이 빠졌을 수 있다 — 「확인해 주세요」).
-7. LLM 기록 `llm-NNNN.json`: 프롬프트에 **사실이 빠졌나**, LLM이 사실을 **무시했나**, **거절**인가.
+   (루트 pom이 없던 트리는 집계에 안 걸린 pom이 빠졌을 수 있다; 「확인해 주세요」).
+7. LLM 기록 `llm-NNNN.json`: 프롬프트에 사실이 빠졌나, LLM이 사실을 무시했나, 거절인가.
 8. 원인 분류(카드의 "진짜 원인" 칸):
-   - **a 사실 부족** — 저장소·부모 체인·레이아웃·라이브러리 사실이 프롬프트에 없거나 틀림(예: 조회 저장소가 로컬뿐) → sbmig 개선.
-   - **b LLM 반복/능력** — 같은 변경을 되풀이, 사실을 받고도 다른 접근을 못 함 → 한도·노트·프롬프트 규칙.
-   - **c 프로젝트 밖** — jakarta 빌드가 정말 없음, 컨테이너 전용 API, 공급업체 결정 → 인수인계가 맞는 결말.
-   - **d sbmig 버그** — 잘못된 분류·차단, 이관 누락(`hollow-reactor`), 서명 분리 등. 트리 안 jar가 주는 패키지인데 `needs_owner`면
+   - a 사실 부족: 저장소·부모 체인·레이아웃·라이브러리 사실이 프롬프트에 없거나 틀림(예: 조회 저장소가 로컬뿐) → sbmig 개선.
+   - b LLM 반복/능력: 같은 변경을 되풀이, 사실을 받고도 다른 접근을 못 함 → 한도·노트·프롬프트 규칙.
+   - c 프로젝트 밖: jakarta 빌드가 정말 없음, 컨테이너 전용 API, 공급업체 결정 → 인수인계가 맞는 결말.
+   - d sbmig 버그: 잘못된 분류·차단, 이관 누락(`hollow-reactor`), 서명 분리 등. 트리 안 jar가 주는 패키지인데 `needs_owner`면
      버그 — `out/<run id>/logs/bundled-jars.json`의 `provides`부터.
 9. 로컬 검증: `project/`의 그 모듈에 가설 수정을 넣고 `mvn -q -Dmaven.test.skip=true package`. 통하면 그 diff가 "검증된 수정".
 
@@ -256,8 +254,8 @@ sbmig 에 바라는 것: <사실 추가 / 규칙 / 한도 / 버그 수정> 한 �
 
 ## 7. 회사 PC 제약 (Windows, 복사·붙여넣기 불가)
 
-- 파일 통째가 아니라 **특정 줄**을 묻는다: `SBMIG-RESULT`, `preflight:`, `cause=`, `KB 탐색`, `LLM-PROBE`, `REPO-PROBE`, 특정 `build N:`.
-- 콘솔은 cp949 — `SBMIG-RESULT` / `LLM-PROBE` 줄은 ASCII 만이라 손으로 옮겨 적을 수 있다.
+- 파일 통째가 아니라 특정 줄을 묻는다: `SBMIG-RESULT`, `preflight:`, `cause=`, `KB 탐색`, `LLM-PROBE`, `REPO-PROBE`, 특정 `build N:`.
+- 콘솔은 cp949: `SBMIG-RESULT` / `LLM-PROBE` 줄은 ASCII뿐이라 손으로 옮겨 적는다.
 - PowerShell: `Select-String -Path out\<run id>\sbmig.log -Pattern 'SBMIG-RESULT|cause=|KB 탐색' | Select-Object -Last 20`,
   `Get-Content out\<run id>\sbmig.log -Tail 40`, `Get-ChildItem out\<run id>\logs | Sort-Object Name | Select-Object -Last 3`(`-Encoding utf8`).
 - 멈춘 것 같으면: 수정 루프 감시견이 60초 조용하면 경고, 300초면 실행 폴더에 스레드 덤프(`dump-threads` 파일을 만들어도 덤프).

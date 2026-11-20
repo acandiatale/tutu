@@ -811,6 +811,15 @@ review", fix attempts as `script:<case>:v<N>`; `ko`, the company setting: the re
   `xxx-back` / `xxx-front`, which is what the settings give). Fixtures:
   `company-boot-single` (split; its built jar is started in the check), `company-boot-wrap`. Contract and limits:
   `docs/INTERFACES.md` "v2.1z-bf".
+- **Report view, report names, model names (2026-11-20, v2.1z-bg)** — the user: "보고서 미리보기 md파일 viewer로 …
+  migration-report와 remediation-report로 … role에 들어가는 escalation_fixer나 build_error_fixer 이름이 나왔으면". The page
+  draws reports with its own `MdView` (DOM nodes only, links only `http(s)` and files of the run, images never loaded):
+  never pass report text to `innerHTML`, it comes from project files and build output. Downloads are named
+  `migration-report.*` / `remediation-report.*` (`runs.DOWNLOAD_NAMES`, the remediation files route's `?download=1`);
+  files in the run directory keep `report.md` / `report.json` (the web, admin, cleanup and old runs depend on them).
+  `LLMResponse.model` / `LLMUsage.model` = the name ASKED with (the role on the agent gateway); the gateway's real model
+  names go to `served` (log line ` served=…` after `finish=`). `llm.pricing` is looked up by the asked name first, then
+  the served names. Old rows named `unknown` / `?` / empty show as 「이름 없음」. Contract: `docs/INTERFACES.md` "v2.1z-bg".
 - **Company convention (2026-10-20): agents run on LangGraph under uvicorn.** `loop.engine: graph` (default) drives
   the phases from a LangGraph `StateGraph` (`sbmig/graph/`, nodes intake → analyze → plan → phase×N → finalize;
   `inline` is the old loop, reports are identical by test); the web UI is FastAPI (`uvicorn sbmig.web.app:app` or
@@ -831,7 +840,7 @@ review", fix attempts as `script:<case>:v<N>`; `ko`, the company setting: the re
   from a `local-job` child) replaces it. Session = random token in process memory, cookie `sbmig_admin` (HttpOnly, SameSite=Strict,
   Path=/admin, 12 h; a restart logs out); 5 failures per client address in 10 min → 429. Usage is read from the run folders on
   disk at every request (report.json's `llm_usage` / `llm_usage_by_model` / `llm_cost`; a run without a report counts the
-  `llm call … in=… out=…` lines of its sbmig.log), grouped by the uploaded file name; a cost sum is null when any run in it is
+  `llm call … in=… out=…` lines of its sbmig.log), grouped by the entered project name (the uploaded file name for runs without one); a cost sum is null when any run in it is
   unpriced. Log ZIPs (`sbmig.log`, `journal.jsonl`, `control/request.json`; `remediation/remediation.log` only when nothing
   can still write it — the remediation API's own withholding rule, an active resume pod included) are built in the web pod's
   LOCAL temp dir, never on `/data`: one build at a time (409 `busy`), 2 GiB total cap (413), 1 GiB free-space floor (507), a

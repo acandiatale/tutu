@@ -7,6 +7,9 @@
 ## 1. 보고서가 어디에 있고 누가 쓰나
 
 - 사람용 `report.md`(한국어 결과 보고서)와 도구용 `report.json`(코드와 영어 문장 그대로). 이관에 이어 돈 조치면 `<이관 실행 폴더>/remediation/` 아래.
+- 사람이 받는 이름은 `remediation-report.md` / `remediation-report.json`이다(`sbmig/remediations/api.py`의 `DOWNLOAD_NAMES`, 파일 주소에 `?download=1`).
+  폴더 안 이름은 그대로다. 화면은 조치 칸의 「보고서 보기」로 이 보고서를 Markdown으로 그린 대화상자에 연다(「보기」 / 「원문」).
+  한국어 이관 보고서가 이 보고서를 가리킬 때도 받는 이름으로 적고(`markdown.received_name`), 영어판은 `remediation/report.md` 경로를 쓴다.
 - 읽는 사람: 이관된 프로젝트의 개발자·관리자. 첫 화면에서 무슨 일이 있었고 무엇을 할지 알 수 있어야 한다.
 - 조치 그래프의 마지막 노드 `report`가 쓴다(`sbmig/remediations/report.py`의 `write_report`). 확인 대기로 멈춘 실행은
   보고서 없이 `state.json`만 남는다(11의 6절).

@@ -23,7 +23,7 @@ sbmig 는 사내 Maven 프로젝트를 **JDK 21 + Spring Boot 4.1** 로 옮기�
 | [02-flow-and-nodes.md](02-flow-and-nodes.md) | 실행 단계마다 코드 위치, 읽는 것·결정·남기는 것, 실패하는 방식 | 흐름을 따라갈 때 |
 | [03-run-debug-and-logs.md](03-run-debug-and-logs.md) | 실행 명령, 실행 디렉터리 지도, 로그 줄, 저널 이벤트, 종료 코드, 진단 절차와 요약 카드 | 실행 결과를 볼 때 |
 | [04-cases-scripts-kb.md](04-cases-scripts-kb.md) | 케이스(오류 서명)와 사다리, 채점, 스크립트 실행기, KB 파일, `sbmig kb` 명령 | 수정 루프·KB 를 볼 때 |
-| [05-llm-gateway-and-prompts.md](05-llm-gateway-and-prompts.md) | LLM 공급자와 게이트웨이, `.env` 변수, 프롬프트와 답 형식, 노트·권고 | LLM 호출을 볼 때 |
+| [05-llm-gateway-and-prompts.md](05-llm-gateway-and-prompts.md) | LLM 공급자와 게이트웨이, `.env` 변수, 프롬프트와 답 형식, 노트·권고, 사용량의 모델 이름(요청한 role과 실제 모델) | LLM 호출이나 사용량·비용을 볼 때 |
 | [06-company-rules-restructure.md](06-company-rules-restructure.md) | 회사 레이아웃·버전·동봉 jar·접수 규칙이 코드에 어떻게 들어 있는지 | 회사 규칙을 바꿀 때 |
 | [07-config-and-knowledge.md](07-config-and-knowledge.md) | 설정 파일의 층과 절, 회사 파일 만드는 법, `knowledge/` 데이터 | 설정을 바꿀 때 |
 | [08-dev-conventions-and-tests.md](08-dev-conventions-and-tests.md) | 코드를 고칠 때의 규약(한국어 주석, 불변식, YAML 우선), 테스트, 체크리스트 | 코드를 고칠 때 |

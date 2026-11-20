@@ -71,7 +71,7 @@
 | `LLM_BASE_URL` | `https://<게이트웨이 호스트>/api/serv/v1/agents/{asset_id}/chat/completions` | 호출 URL. `{asset_id}` 자리는 아래 값으로 채워진다 |
 | `LLM_ASSET_ID` | `<에셋 id>` | 게이트웨이 에셋 |
 | `LLM_TOKEN_URL` | `https://<게이트웨이 호스트>/<토큰 발급 경로>` | 앱 토큰 → 접근 토큰 교환 주소 |
-| `LLM_MODEL` | `build_error_fixer` | `params.role` — 수정 1~2회차와 구조 리뷰. 게이트웨이가 모델에 매핑 |
+| `LLM_MODEL` | `build_error_fixer` | `params.role` — 수정 1~2회차와 구조 리뷰. 게이트웨이가 모델에 매핑. 보고서와 관리자 페이지의 사용량도 이 이름(아래 줄도 같음)으로 적고, 게이트웨이가 알려 준 실제 모델은 옆에 붙인다 |
 | `LLM_ESCALATION_MODEL` | `escalation_fixer` | `params.role` — 케이스 3회차부터 / 정체 뒤. 비우면 상위 모델 없음 |
 | `LLM_RECIPE_MODEL` | (주석) | 계획 검토(`plan.advisor: llm`)의 값싼 모델. 비우면 `LLM_MODEL`; 기본 흐름은 쓰지 않는다. 81 틀에 키 줄이 있다(두 파드의 값을 대조하므로) |
 | `LLM_RECORD_DIR` | (비움) | 요청·응답 기록(비밀 없음, 프로젝트 소스가 들어간다). 웹 파드 안에서 돌리는 in-process 진단 때만 `/data/llm-records`. Job 틀에는 넣을 수 없다(위 `SBMIG_WORKER_LLM_RECORDS` 줄) |

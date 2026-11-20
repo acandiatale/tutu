@@ -348,6 +348,8 @@ flowchart LR
 - 오류 하나하나의 기록(시도, diff, 로그)은 `errors.md` / `errors.jsonl` 에, 전체 변경은 `changes.patch` 에 있습니다.
 - 코드 수정 내역의 diff 는 자동 변환 직후 커밋과 최종 결과를 비교한 것입니다. 같은 파일을 여러 번 고쳐도 한 건으로 나옵니다.
 - `report.language: en` 은 개발 · 진단용 구성입니다(Handover → Error list → Fixes by case → Structure review → … → Notes → Outputs).
+- 웹 화면은 보고서를 Markdown 으로 그려 보여 줍니다(결과 카드의 미리보기, 「보기」 / 「원문」, 「크게 보기」). 내려받을 때 이름은 `migration-report.md` / `migration-report.json` 이고 취약점 조치 보고서는 `remediation-report.md` / `remediation-report.json` 입니다. 실행 폴더 안의 파일 이름은 `report.md` / `report.json` 그대로이며, 한국어 보고서가 다른 보고서를 가리킬 때는 내려받는 이름으로 적습니다.
+- 「LLM 사용량과 비용」의 모델 칸은 요청한 이름(agent 게이트웨이의 role)이고, 게이트웨이가 알려 준 실제 모델은 괄호 안에 붙습니다. 가격(`llm.pricing`)도 요청한 이름으로 먼저 찾습니다.
 
 ## 8. 재구성 — 회사 레이아웃
 
