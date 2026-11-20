@@ -5968,3 +5968,92 @@ also reached IVAS and the result ZIP although it no longer matches the changed p
 without a pom, a pom inside `target`), `accept_zip` (manifest and `accepted/` without the files, counts, note, all
 build output → `empty`, single-top-level-folder ZIP), and one graph-level test: a ZIP with `target/classes/A.class`
 whose candidate build fails ends `FAILED candidate_build_failed` with a frozen delivery, not `internal_error`.
+
+## v2.1z-bi — build errors are fixed by the loop in two more places: framework projects, and a remediation's candidate
+
+**Why.** The company asked for both: a framework project gets only JDK 21 + jakarta, "so at least fix the build";
+and a remediation that raises library versions can break the build, so the fix loop should try.
+
+### A. Framework projects: `framework.fix_loop` defaults to `true`
+
+- Default `true` (code and `config/default.yml`; done in the contract commit). Everything the `true` branch already
+  does stays: full loop (pre-tries without the company parent, stored scripts, LLM), `_framework_guard` (no
+  `<parent>` change, no change of the framework's declarations / version), the reduced-scope prompt.
+- **A failed final build no longer stops the chain for a framework run with the loop on.**
+  `Orchestrator.remediation_after_failed_build`: with `remediation.after_failed_build: framework`, a reduced run whose
+  final build was attempted and failed chains whether or not the loop ran. `web/runs.py` `remediation_always` no
+  longer depends on `fix_loop`. The report's "chained after a failed build" sentence must not say the loop was off
+  when it ran (two variants).
+- The notice 「<이름> 프레임워크는 JDK 21, Jakarta만 적용합니다.」 stays as is (it states the scope). Texts that say
+  build errors are not fixed appear only when `fix_loop` is false, as today.
+- Tests that assumed the old default set `framework.fix_loop: false` explicitly; the default itself gets one test.
+
+### B. Remediation: the fix loop on a failed candidate build
+
+**Switches.** `remediation.fix_loop: bool = True`, `remediation.fix_loop_max_iterations: int = 10` (1–50).
+
+**When.** In `graph._build`, after the candidate build of round `r` failed and `_baseline_errors_only` is false, and
+ALL of: the switch is on; the baseline build passed (`not h.baseline_failed_tolerated` and the baseline outcome is
+ok); no stop is pending; the round applied at least one proposal. Otherwise today's path, unchanged.
+
+**Generic hook in the loop (`sbmig/loop/fixloop.py`).** `BuildFixLoop(..., edit_guard: Callable[[Workspace, str,
+list[str]], str | None] | None = None)`. Called with `(ws, pre_head, touched_paths)` after ANY change was applied to
+the working tree and before it is committed: at the two sites where `_framework_guard` is called, and for sbmig's own
+pre-tries too (`_framework_guard` skips those; this hook does not). `touched_paths` = repo-relative paths added,
+modified or deleted since `pre_head`. A non-empty string rejects the attempt exactly like a `_framework_guard`
+rejection (change discarded, the reason recorded on the attempt and given to the next LLM try as feedback). `None`
+default = today's behaviour, byte for byte.
+
+**`sbmig/remediations/fixer.py` (new).** `run_fix_loop(cfg, tree, work_dir, *, run_id, targets, applied, manifest_paths,
+first_outcome, stop, deadline, journal) -> FixResult`; reachable from the graph through the components object
+(`h.c.fixer.run(...)`, protocol `Fixer` in `interfaces.py`) so graph tests use a fake.
+1. `Workspace(tree, work_dir, run_id)` with `work_dir = rounds/<r>/fixloop/` (its own `journal.jsonl` and `logs/`,
+   never the run's). The root `.gitignore` is saved (bytes, or "absent") before `git_init()` and restored after the
+   loop; `tree/.git` is removed at the end, success or not. `ws.stop_requested` observes `stop`.
+2. `analyze_project(ws, cfg)` for the profile. Parts built like the orchestrator's: `MavenRunner`, `Triager`,
+   `LazyFixer(LLMFixer(cfg, make_llm_client(cfg)))`, `LazyScriptRunner`, `NullKnowledgeBase` (no stored scripts used,
+   nothing learned), `LoopBudget` limited to `deadline`.
+3. `plan_notes`: one English paragraph: the build broke after a vulnerability remediation raised these library
+   versions (`g:a old -> new` per applied proposal); fix the project's source so it compiles against the new
+   versions; `pom.xml` must not be edited; no file may be created or deleted.
+4. `edit_guard` rejects, with a reason naming the path: any touched path whose file name is `pom.xml`; any touched
+   path not in `manifest_paths`; any deleted path.
+5. `loop.run(Phase.VERIFY, "clean package", cfg.remediation.fix_loop_max_iterations, target=t)` per build target that
+   failed, in order; stop at the first target the loop cannot fix.
+6. After the loop: fixed = every target's result is ok. Changed files = `ws.changed_files_since(base)` minus the
+   restored `.gitignore`. A final check repeats rule 4 over the whole diff; a violation counts as not fixed.
+   Fixed → `rounds/<r>/fix.patch` (unified diff base..head) is written. Not fixed (or stop, deadline, LLM
+   unavailable, any exception inside the fixer) → the tree is reset to `base` byte for byte, no patch.
+7. `FixResult` (Record in `models.py`): `attempted: bool`, `fixed: bool`, `iterations: int`, `attempts: int`,
+   `llm_calls: int`, `input_tokens: int`, `output_tokens: int`, `models: list[str]` (asked names),
+   `changed: list[str]` (sorted repo-relative paths, empty unless fixed), `patch: str` (run-relative path or ""),
+   `reason: str` (English, empty when fixed: `not fixed: <n> error(s) left`, `llm unavailable: …`,
+   `stop requested`, `time budget used up`, `rejected: <guard reason>`, `error: <Type>: <msg>`), `remaining: int`.
+   `RoundState.fix: FixResult | None = None` (left out of the JSON when None).
+
+**Graph.** Journal `remediation_fix_loop` (`round`, `phase: start|end`, at end `fixed`, `iterations`, `llm_calls`,
+`changed` count, `reason`). Fixed → one more `c.maven.package` of the candidate into `rounds/<r>/build-fixed.log`
+through the remediation's own runner (the outcome that counts; `rs.build` becomes it, the first failed outcome is
+kept as `rs.fix_first_build`), then `_verify` and commit as today. That build failing → not fixed (tree reset,
+`reason: error: confirming build failed`). Not fixed → `_candidate_failed` exactly as today, with
+` | automatic build fix: <reason>` appended to the state message. The delivery of a fixed round has
+`build_ok = True` and carries the source changes (they are manifest paths). The time left for the loop is the
+run's remaining budget; a loop that cannot start for lack of time is `attempted: false`.
+
+**Report and page (`remediations/report.py`, `i18n.py`, `web/static/index.html`).**
+- Fixed round: a section 「빌드 오류 수정」 after the applied changes: 「버전을 올린 뒤 빌드가 실패해 소스를 고쳤습니다.」,
+  the changed files (table: 파일), iterations / LLM calls, the patch file name; leads the review list:
+  「자동으로 고친 소스 <n>개를 확인해 주세요.」.
+- 「변경하지 않은 것」: when any round has `fix.fixed`, the sentence 「애플리케이션 소스와 프로젝트 구조(파일·폴더)는
+  변경하지 않았습니다.」 becomes 「프로젝트 구조(파일·폴더)는 변경하지 않았습니다. 소스는 빌드 오류를 고치느라
+  <n>개 파일을 바꿨습니다.」 and "달라진 것은 … 버전 표기뿐입니다" gains 「와 고친 소스 <n>개」.
+- Not fixed: one line under the failed-build warning: 「빌드 오류 자동 수정을 시도했지만 고치지 못했습니다(<사유>). 소스
+  수정은 되돌렸습니다.」 with the reason through the i18n table.
+- `report.json` carries `rounds[].fix`. Files route: `fix.patch` of the last fixed round is servable as
+  `fix.patch` (allow-list addition in `remediations/api.py`).
+- Page: the remediation card shows 「소스 <n>개 수정」 chip when fixed; the run header's LLM call count includes the
+  remediation's calls (`SBMIG-RESULT … llm=` and wherever the page reads it for a remediation-only run).
+
+**Not in this round.** Pom edits by the loop (an upgrade that needs an exclusion or a new artifact stays a failed
+candidate); a loop when the baseline build already failed; learning into the KB; prompts written for this case
+beyond `plan_notes`.

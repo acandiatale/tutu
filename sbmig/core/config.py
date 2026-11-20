@@ -986,8 +986,9 @@ class FrameworkConfig(BaseModel):
     recipe_sets: list[str] = Field(default_factory=lambda: ["jdk21", "jakarta"])
     # 화면과 보고서에 보여 줄 프레임워크 이름이다. 비우면 프레임워크 아티팩트 이름에서 만든다
     name: str = ""
+    # true면 다른 프로젝트처럼 빌드 오류를 고친다(부모 pom과 프레임워크 버전은 건드리지 않는다).
     # false면 JDK와 jakarta 변환 뒤 빌드를 한 번만 하고 남은 오류를 알린다. 수정 루프(사전 시도, 저장된 스크립트, LLM)는 실행하지 않는다
-    fix_loop: bool = False
+    fix_loop: bool = True
 
     @field_validator("recipe_sets")
     @classmethod
@@ -1157,6 +1158,10 @@ class RemediationConfig(BaseModel):
     # delivery.build_ok=false, 재검사 안 함) accepted/와 원본 ZIP은 그대로 둔다
     # discard는 실패한 수정본을 결과 ZIP에 넣지 않고 candidate.patch로만 남기며, 앞 라운드에서 검증된 결과 ZIP은 남는다
     failed_candidate: Literal["include", "discard"] = "include"
+    # 버전을 올린 수정본의 빌드가 실패하면 빌드 오류 수정 루프(LLM)로 소스를 고쳐 본다. pom.xml은 고치지 않는다
+    fix_loop: bool = True
+    # 수정 루프가 한 라운드에서 빌드와 수정을 반복하는 횟수 한도
+    fix_loop_max_iterations: int = Field(default=10, ge=1, le=50)
     # IVAS가 프로젝트 안의 파일에서 찾은 취약점(파일 컴포넌트)의 처리다.
     # report는 보고서에만 싣고 결과 판정에 넣지 않으며, count는 직접 확인 항목으로 남겨 판정에 넣는다
     file_components: Literal["report", "count"] = "report"
