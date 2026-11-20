@@ -325,6 +325,18 @@ SAMPLES: list[tuple[str, str, list[str]]] = [
     ("auto_fix_not_started_time", "automatic build fix not started: time budget used up",
      ["빌드 오류 자동 수정은 시작하지 않았습니다(남은 시간 부족)."]),
     ("auto_fix_not_started", "automatic build fix not started: something new", ["something new"]),
+    # the suffix when the loop ran but made no attempt (FixResult.attempts == 0): no tried change is spoken of
+    ("auto_fix_no_attempt", "automatic build fix made no attempt: llm unavailable",
+     ["빌드 오류 자동 수정을 하지 못했습니다(LLM을 사용할 수 없음)."]),
+    # the scan source ZIP (original/scan-source.zip) of an upload whose build output was left out
+    ("ivas_bytes_differ_source", "IVAS analysed bytes whose sha256 differs from the scan source ZIP", ["검사용 ZIP"]),
+    ("ivas_scanned_source", "IVAS scanned a ZIP whose sha256 differs from the scan source ZIP", ["검사용 ZIP"]),
+    ("scan_source_changed", ("the scan source ZIP (original/scan-source.zip) could not be made again with the sha256 "
+                             "recorded in the state"), ["original/scan-source.zip"]),
+    # a result ZIP that could not be written: the previous delivery is what is left
+    ("delivery_not_written", ("the result ZIP of round 2 could not be written (OSError: [Errno 28] No space left on "
+                              "device); delivery/result.zip is still the result ZIP of round 1"),
+     ["라운드 2의 결과 ZIP을 쓰지 못했습니다(OSError).", "라운드 1의 결과 그대로", "No space left on device"]),
 ]
 
 

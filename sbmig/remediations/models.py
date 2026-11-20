@@ -627,15 +627,20 @@ class FixUsage(Record):
 
     One model's share of the fix loop's LLM calls: `model` = the asked name (`asked_model_name`), `served` = the names
     the answers reported (the asked name left out), `cost` = the price under the run's `llm.pricing` (None when the
-    model has no price, left out of the JSON then). Same rules as the migration's `llm_usage_by_model` / `llm_cost`."""
+    model has no price, left out of the JSON then). Same rules as the migration's `llm_usage_by_model` / `llm_cost`.
+    `tokens_unknown` (left out when False): the row's calls have no token counts (an exception escaped the loop and
+    its journal did not account for them); such a row never has a cost."""
     model: str = ""
     served: list[str] = field(default_factory=list)
     calls: int = 0
     input_tokens: int = 0
     output_tokens: int = 0
     cost: float | None = None
+    # 토큰 수를 모르는 호출이다(루프 밖으로 예외가 나와 저널에서 읽지 못한 호출). 이때 비용은 None이다
+    tokens_unknown: bool = False
     _omit_none = ("cost",)
     _omit_empty = ("served",)
+    _omit_false = ("tokens_unknown",)
 
 
 @dataclass
@@ -758,9 +763,13 @@ class RemediationState(Record):
     build_targets: list[str] = field(default_factory=list)
     # True면 조치 전 빌드가 실패해도 검사와 조치를 이어 간다. 빌드 오류를 고치지 않는 사내 프레임워크 프로젝트의 실행이다
     baseline_tolerated: bool = False
+    # 업로드에서 빌드 산출물을 뺐을 때 조치 전 검사에 올린 original/scan-source.zip의 sha256이다. 처음 만들 때 기록한다
+    # 비어 있으면 JSON에 넣지 않으므로, 이전 버전이 쓴 state도 그대로 읽는다
+    scan_source_sha256: str = ""
     schema: int = SCHEMA
     _nested = {"intake": IntakeResult, "boundary": BoundaryFinding, "baseline_build": BuildOutcome,
                "rounds": RoundState, "delivery": DeliveryInfo, "residuals": Residual}
+    _omit_empty = ("scan_source_sha256",)
 
 
 class RunPaths:
@@ -775,6 +784,9 @@ class RunPaths:
     def original_zip(self) -> Path: return self.root / "original" / "source.zip"
     @property
     def manifest(self) -> Path: return self.root / "original" / "manifest.json"
+    # 업로드에서 빌드 산출물을 뺐을 때만 만드는 검사용 ZIP(accepted/를 manifest 경로로 묶은 것)
+    @property
+    def scan_source(self) -> Path: return self.root / "original" / "scan-source.zip"
     @property
     def accepted(self) -> Path: return self.root / "accepted"
     @property

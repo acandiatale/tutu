@@ -368,17 +368,21 @@ def fix_usage_rows(fixes: Iterable[Any]) -> list[dict[str, Any]]:
     모델별 행이 없는 예전 결과는 합계를 첫 모델 이름의 행 하나로 만들고 비용은 모르는 것으로 둔다.
 
     Per-model rows `{model, served, calls, input_tokens, output_tokens, cost, currency}` of several rounds' fix loops
-    (rounds that were not fixed count too). `cost` is None when any part of the row has calls or tokens and no price;
+    (rounds that were not fixed count too), plus `tokens_unknown: true` only when a part of the row has calls whose
+    tokens are unknown (an exception escaped the loop). `cost` is None when any part of the row has calls or tokens and no price;
     `currency` is "" when no part was priced. A FixResult written before `usage` existed becomes one row of its totals
     named `asked_model_name(*models)`, unpriced."""
     from sbmig.core.models import asked_model_name, merge_model_names
     rows: dict[str, dict[str, Any]] = {}
 
-    def add(model: str, served: list[str], calls: int, inp: int, out: int, cost: float | None, currency: str) -> None:
+    def add(model: str, served: list[str], calls: int, inp: int, out: int, cost: float | None, currency: str,
+            unknown: bool = False) -> None:
         if not (calls or inp or out):
             return
         r = rows.setdefault(model.lower(), {"model": model, "served": [], "calls": 0, "input_tokens": 0,
                                             "output_tokens": 0, "cost": 0.0, "currency": ""})
+        if unknown:
+            r["tokens_unknown"] = True          # 토큰 수를 모르는 호출이 들어 있다. 이 키는 그때만 둔다
         r["served"] = [n for n in merge_model_names(r["served"], served) if n.lower() != model.lower()]
         r["calls"] += calls
         r["input_tokens"] += inp
@@ -400,7 +404,8 @@ def fix_usage_rows(fixes: Iterable[Any]) -> list[dict[str, Any]]:
                 if not isinstance(u, FixUsage):
                     continue
                 add(asked_model_name(u.model), list(u.served or []), int(u.calls or 0), int(u.input_tokens or 0),
-                    int(u.output_tokens or 0), u.cost if isinstance(u.cost, (int, float)) else None, fx.currency or "")
+                    int(u.output_tokens or 0), u.cost if isinstance(u.cost, (int, float)) else None, fx.currency or "",
+                    bool(getattr(u, "tokens_unknown", False)))
         else:
             add(asked_model_name(*(fx.models or [])), [], int(fx.llm_calls or 0), int(fx.input_tokens or 0),
                 int(fx.output_tokens or 0), None, "")
@@ -446,10 +451,33 @@ def interrupted_result(folder: Path, cfg: Any = None) -> FixResult:
     journal = the loop never reached its first LLM call (the start event precedes every call): zero, known. A journal
     that cannot be read → zero and `reason` ending ` (usage unknown)`. Never raises."""
     res = FixResult(attempted=True, fixed=False, reason=R_INTERRUPTED)
+    got = journal_usage(folder, cfg)
+    if got is None:
+        log.warning("remediation: the usage of an interrupted fix loop could not be read")
+        return FixResult(attempted=True, fixed=False, reason=R_INTERRUPTED + R_USAGE_UNKNOWN)
+    res.usage, res.currency = got
+    _set_totals(res)
+    return res
+
+
+def _set_totals(res: FixResult) -> None:
+    """모델별 행(``res.usage``)에서 호출 수, 토큰 수, 모델 이름 합계를 채운다."""
+    res.llm_calls = sum(u.calls for u in res.usage)
+    res.input_tokens = sum(u.input_tokens for u in res.usage)
+    res.output_tokens = sum(u.output_tokens for u in res.usage)
+    res.models = list(dict.fromkeys(u.model for u in res.usage))
+
+
+def journal_usage(folder: Path, cfg: Any = None) -> tuple[list[FixUsage], str] | None:
+    """수정 루프 폴더의 ``journal.jsonl``에서 모델별 LLM 사용량 행과 통화를 읽는다. 저널이 없으면 빈 목록, 읽지 못하면 None이다.
+
+    The usage the loop journaled (`llm_script` / `llm_verify_guide` events, read with the admin page's
+    `sbmig.web.admin.usage_from_journal`), priced like `_usage`: `(rows, currency)`; `([], "")` when there is no
+    journal (the loop never reached an LLM call); None when the journal exists but cannot be read. Never raises."""
     try:
         jf = Path(folder) / "journal.jsonl"
         if not jf.exists() and not jf.is_symlink():
-            return res
+            return [], ""
         if jf.is_symlink() or not jf.is_file():
             raise OSError("journal is not a regular file")
         with open(jf, "rb") as fh:                      # 읽을 수 없는 파일을 여기서 알아낸다
@@ -462,26 +490,40 @@ def interrupted_result(folder: Path, cfg: Any = None) -> FixResult:
                              input_tokens=int(r["input_tokens"]), output_tokens=int(r["output_tokens"]))
                     for m, r in rows.items()]
         costs: dict[str, float | None] = {}
+        currency = ""
         if cfg is not None and llm_rows:
             try:
                 from sbmig.report.cost import compute_llm_cost
                 priced = compute_llm_cost(llm_rows, cfg)
                 costs = {c.model: c.cost for c in priced.by_model}
                 if any(c is not None for c in costs.values()):
-                    res.currency = priced.currency
+                    currency = priced.currency
             except Exception:  # noqa: BLE001 - 단가를 계산하지 못해도 사용량은 남긴다
-                log.debug("interrupted loop usage not priced", exc_info=True)
-        res.usage = [FixUsage(model=u.model, served=list(u.served), calls=int(u.calls or 0),
-                              input_tokens=int(u.input_tokens or 0), output_tokens=int(u.output_tokens or 0),
-                              cost=costs.get(u.model)) for u in llm_rows if u.calls or u.input_tokens or u.output_tokens]
-        res.llm_calls = sum(u.calls for u in res.usage)
-        res.input_tokens = sum(u.input_tokens for u in res.usage)
-        res.output_tokens = sum(u.output_tokens for u in res.usage)
-        res.models = [u.model for u in res.usage]
-    except Exception:  # noqa: BLE001 - 사용량을 되살리지 못해도 기록은 남긴다
-        log.warning("remediation: the usage of an interrupted fix loop could not be read", exc_info=True)
-        res = FixResult(attempted=True, fixed=False, reason=R_INTERRUPTED + R_USAGE_UNKNOWN)
-    return res
+                log.debug("fix loop journal usage not priced", exc_info=True)
+        usage = [FixUsage(model=u.model, served=list(u.served), calls=int(u.calls or 0),
+                          input_tokens=int(u.input_tokens or 0), output_tokens=int(u.output_tokens or 0),
+                          cost=costs.get(u.model)) for u in llm_rows if u.calls or u.input_tokens or u.output_tokens]
+        return usage, currency
+    except Exception:  # noqa: BLE001 - 읽지 못하면 None으로 알린다
+        log.debug("fix loop journal usage unreadable", exc_info=True)
+        return None
+
+
+def _usage_after_error(work_dir: Path, budget_calls: int, cfg: Any) -> tuple[list[FixUsage], str]:
+    """루프 밖으로 예외가 나왔을 때의 LLM 사용량을 루프의 저널에서 읽는다. 저널이 센 것보다 많은 호출과 저널을 읽지 못한 경우의
+    호출은 토큰을 모르는 것으로 두고 비용을 매기지 않는다.
+
+    Usage of a loop an exception escaped from: the loop's own journal (`journal_usage`, the reader of
+    `interrupted_result`); calls the budget counted beyond the journal's (or all of them when the journal cannot be
+    read) go to one row of the configured model with `tokens_unknown: true` and no cost (unknown, never 0)."""
+    default = getattr(getattr(cfg, "llm", None), "model", "") if cfg is not None else ""
+    got = journal_usage(work_dir, cfg)
+    rows, currency = got if got is not None else ([], "")
+    extra = int(budget_calls or 0) - sum(u.calls for u in rows)
+    if extra > 0:
+        from sbmig.core.models import asked_model_name
+        rows = [*rows, FixUsage(model=asked_model_name(default), calls=extra, cost=None, tokens_unknown=True)]
+    return rows, currency
 
 
 def run_fix_usage(run_dir: Path | str) -> dict[str, Any]:
@@ -670,9 +712,10 @@ def run_fix_loop(cfg: Any, tree: Path, work_dir: Path, *, run_id: str, targets: 
         res.reason = scrub(f"error: {type(e).__name__}: {e}")
         res.fixed, res.changed, res.patch, res.fixed_dir, res.retry_passed = False, [], "", "", False
         if loop is not None and not res.llm_calls:
+            # 시도 결과를 받지 못했으므로 루프가 저널에 남긴 사용량을 읽는다. 모르는 토큰에는 비용을 매기지 않는다
             try:
-                (res.llm_calls, res.input_tokens, res.output_tokens, res.models, res.usage,
-                 res.currency) = _usage([], loop.budget.llm_calls, cfg)
+                res.usage, res.currency = _usage_after_error(work_dir, loop.budget.llm_calls, cfg)
+                _set_totals(res)
             except Exception:  # noqa: BLE001 - 사용량을 셀 수 없어도 결과는 돌려준다
                 log.debug("fix loop usage not counted", exc_info=True)
     if not res.fixed or not res.changed:
@@ -700,5 +743,6 @@ class RemediationFixer:
 
 
 __all__ = ["MIN_LOOP_SECONDS", "R_INTERRUPTED", "R_USAGE_UNKNOWN", "RemediationFixer", "check_paths", "compare_trees",
-           "fix_usage", "fix_usage_rows", "interrupted_result", "is_editable", "loop_paths", "make_edit_guard",
+           "fix_usage", "fix_usage_rows", "interrupted_result", "is_editable", "journal_usage", "loop_paths",
+           "make_edit_guard",
            "maven_pom_paths", "plan_notes", "run_fix_loop", "run_fix_usage", "unified_patch"]

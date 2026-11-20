@@ -179,7 +179,8 @@ def test_review3_a_raising_fixer_delivers_the_untouched_failed_candidate(tmp_pat
     assert out.status == FAILED and out.reason == "candidate_build_failed"
     assert out.delivery is not None and not out.delivery.build_ok
     assert "delivery/result.zip contains the round 1 change set" in out.message
-    assert out.message.endswith(" | automatic build fix: error: RuntimeError: bug")
+    # the fixer raised before any attempt: the wording never speaks of tried source changes (fourth review, item 6)
+    assert out.message.endswith(" | automatic build fix made no attempt: error: RuntimeError: bug")
     files = zip_files(paths.delivery_zip)
     assert files[APP] == ORIGINAL_APP and b"<version>1.1</version>" in files["pom.xml"]
 

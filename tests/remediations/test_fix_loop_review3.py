@@ -371,7 +371,7 @@ def test_a_loop_out_of_time_stays_final_on_resume(tmp_path):
     fx = FakeFixer()
     out2, _ = run(_saved(rec), paths, one_fix_components(maven=FakeMaven(outcomes=[False]), fixer=fx), rec=Recorder())
     assert fx.calls == []
-    assert out2.status == FAILED and out2.message.endswith("automatic build fix: time budget used up")
+    assert out2.status == FAILED and out2.message.endswith("automatic build fix made no attempt: time budget used up")
     assert out2.rounds[0].fix_discarded == []
 
 

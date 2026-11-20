@@ -553,6 +553,16 @@ def fix_failed_ko(reason: str | None) -> str:
     return head + " 시도한 소스 수정은 결과에 넣지 않았습니다." + (f" {raw}" if raw else "")
 
 
+def fix_no_attempt_ko(reason: str | None) -> str:
+    """빌드 오류 자동 수정 루프가 시작했지만 소스 수정을 한 번도 시도하지 못했을 때 보여 줄 문장을 만든다.
+
+    The Korean line for a loop that ran but made no attempt (`FixResult.attempts == 0`: LLM unavailable, an error
+    while copying, out of time before the first attempt); it never speaks of tried source changes."""
+    ko, raw = fix_reason_ko(reason)
+    why = ko or raw or "이유 모름"
+    return f"빌드 오류 자동 수정을 하지 못했습니다({why})." + (f" {raw}" if ko and raw else "")
+
+
 # 빌드 오류 자동 수정을 시작하지 않은 이유(fixer.FixResult.reason, attempted가 false일 때)
 _NOT_STARTED_REASONS: dict[str, str] = {"stop requested": "중지 요청", "time budget used up": "남은 시간 부족"}
 
@@ -1074,6 +1084,23 @@ RULES: list[_Rule] = [
        lambda g: "IVAS가 검사한 ZIP의 sha256이 원본 ZIP과 다릅니다."),
     _r("ivas_scanned_delivery", r"IVAS scanned a ZIP whose sha256 differs from the delivery ZIP",
        lambda g: "IVAS가 검사한 ZIP의 sha256이 결과 ZIP과 다릅니다."),
+    # 업로드에서 빌드 산출물을 빼고 만든 검사용 ZIP(original/scan-source.zip)을 올린 경우
+    _r("ivas_bytes_differ_source", r"IVAS analysed bytes whose sha256 differs from the scan source ZIP",
+       lambda g: "IVAS가 분석한 파일의 sha256이 검사용 ZIP과 다릅니다."),
+    _r("ivas_scanned_source", r"IVAS scanned a ZIP whose sha256 differs from the scan source ZIP",
+       lambda g: "IVAS가 검사한 ZIP의 sha256이 검사용 ZIP과 다릅니다."),
+    _r("scan_source_changed",
+       r"the scan source ZIP \(original/scan-source\.zip\) could not be made again with the sha256 recorded in the state",
+       lambda g: "검사용 ZIP(original/scan-source.zip)을 처음 검사한 것과 같은 바이트로 다시 만들 수 없습니다."),
+    _r("delivery_not_written",
+       r"the result ZIP of round (?P<r>\d+) could not be written \((?P<t>[A-Za-z_][\w.]*): (?P<e>.*)\); "
+       r"(?:delivery/result\.zip is still the result ZIP of round (?P<k>\d+)"
+       r"|(?P<none>no result ZIP exists; the original is preserved as original/source\.zip))",
+       lambda g: (f"라운드 {g['r']}의 결과 ZIP을 쓰지 못했습니다({g['t']})."
+                  + (" 결과 ZIP은 없고, 원본은 original/source.zip에 그대로 보관합니다." if g.get("none") else
+                     " 결과 ZIP(delivery/result.zip)은 바꾼 것이 없는 이전 결과 그대로입니다." if g.get("k") == "0" else
+                     f" 결과 ZIP(delivery/result.zip)은 라운드 {g.get('k')}의 결과 그대로입니다.")
+                  + (f" {_raw(g['e'])}" if g.get("e") else ""))),
     _r("scan_incomplete", r"(?P<w>baseline|final) scan incomplete: (?P<r>.+)",
        lambda g: f"{'조치 전' if g['w'] == 'baseline' else '조치 후'} 검사가 끝나지 않았습니다(사유: {_scan_reasons(g['r'])})."),
     _r("maven_incomplete", r"Maven resolution incomplete: (?P<n>.*)",
@@ -1173,6 +1200,8 @@ RULES: list[_Rule] = [
        lambda g: fix_failed_ko(g["r"])),
     _r("auto_fix_error", r"automatic build fix: (?P<r>error: .+)", lambda g: fix_failed_ko(g["r"])),
     _r("auto_fix_other", r"automatic build fix: (?P<r>.+)", lambda g: fix_failed_ko(g["r"])),
+    # 루프는 시작했지만 시도가 하나도 없었을 때(attempts가 0) 붙는 꼬리다. 시도한 수정이 있었다고 쓰지 않는다
+    _r("auto_fix_no_attempt", r"automatic build fix made no attempt: (?P<r>.+)", lambda g: fix_no_attempt_ko(g["r"])),
     # 수정 루프를 시작하지 않았을 때(attempted가 false) 붙는 꼬리다. 시도했다고 쓰지 않는다
     _r("auto_fix_not_started_stop", r"automatic build fix not started: (?P<r>stop requested)",
        lambda g: fix_not_started_ko(g["r"])),
@@ -1403,6 +1432,6 @@ def inhouse_gas(detail: str) -> list[str]:
 
 __all__ = ["SEVERITY_LEVELS", "SEVERITY_NONE_KO", "severity_of", "severity_thresholds", "BOUNDARY_KO", "COUNT_KO",
            "DECISION_KO", "FINDING_KIND_KO", "GROUPS", "INHOUSE_GROUP_KO", "KEY_PHRASES", "KIND_KO", "ORIGIN_ALL_KO", "ORIGIN_KO", "REASON_KO",
-           "RISK_KO", "RULES", "SCAN_REASON_KO", "detail_group", "evidence_ko", "fix_failed_ko", "fix_not_started_ko",
+           "RISK_KO", "RULES", "SCAN_REASON_KO", "detail_group", "evidence_ko", "fix_failed_ko", "fix_no_attempt_ko", "fix_not_started_ko",
            "fix_not_started_reason_ko", "fix_reason_ko", "group_meta", "inhouse_gas", "ko_display",
            "ko_text", "label", "loc_ko", "row_memo", "rule_keys", "split_known", "variant_label"]

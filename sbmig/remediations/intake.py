@@ -540,10 +540,11 @@ class SyncFailed(RemediationError):
 
 
 def _make_writable_on_path(tree: Path, rel: str) -> None:
-    """``tree``에서 ``rel``까지 있는 폴더와 그 파일에 소유자 쓰기 권한을 한 번 더한다. 링크는 건드리지 않는다.
+    """``tree``에서 ``rel``까지 있는 폴더와 그 파일에 소유자 읽기, 쓰기 권한을 한 번 더한다. 링크는 건드리지 않는다.
 
-    A build can leave read-only folders or files (a plugin's output, `chmod -w`): before giving up on a path the
-    existing folders from `tree` down to its parent and the file itself get the owner's write (and search) bit."""
+    A build can leave read-only or unreadable folders or files (a plugin's output, `chmod -w`, `chmod 000`): before
+    giving up on a path the existing folders from `tree` down to its parent get the owner's read, write and search bits
+    and the file itself the owner's read and write bits."""
     cur = Path(tree)
     parts = rel.split("/")
     for i, seg in enumerate(parts):
@@ -554,7 +555,7 @@ def _make_writable_on_path(tree: Path, rel: str) -> None:
             return
         if stat.S_ISLNK(st.st_mode):
             return
-        add = stat.S_IWUSR | (stat.S_IXUSR | stat.S_IRUSR if stat.S_ISDIR(st.st_mode) else 0)
+        add = stat.S_IWUSR | stat.S_IRUSR | (stat.S_IXUSR if stat.S_ISDIR(st.st_mode) else 0)
         if i == len(parts) - 1 and not stat.S_ISREG(st.st_mode):
             return
         try:
@@ -640,6 +641,42 @@ def _failure(rel: str, e: BaseException) -> tuple[str, str, str]:
     return (_safe_display(rel), type(e).__name__, e.code if isinstance(e, RemediationError) else "")
 
 
+def _is_exec(mode: int) -> bool:
+    return bool(mode & 0o111)
+
+
+def _canonical_mode(exec_bit: bool) -> int:
+    return 0o755 if exec_bit else 0o644
+
+
+def _readable(tree: Path, rel: str, read: Any) -> tuple[Any, bool]:
+    """``read()``를 실행하고 (결과, 권한을 바꿨는지)를 반환한다. 읽기 권한이 없으면 폴더와 파일을 읽을 수 있게 한 뒤 한 번 더 읽는다.
+
+    A file a build left unreadable (`chmod 000`) is made readable once (`_make_writable_on_path`) before giving up."""
+    try:
+        return read(), False
+    except PermissionError:
+        _make_writable_on_path(tree, rel)
+        return read(), True
+
+
+def _put_mode_back(tree: Path, rel: str, exec_bit: bool) -> None:
+    """같은 바이트의 파일에 기대하는 권한(실행 비트)을 되돌린다. 권한 오류면 쓸 수 있게 한 뒤 한 번 더 시도한다."""
+    for attempt in (0, 1):
+        try:
+            os.chmod(tree / rel, _canonical_mode(exec_bit))
+            return
+        except PermissionError:
+            if attempt:
+                raise
+            _make_writable_on_path(tree, rel)
+
+
+def _mode_differs(tree: Path, rel: str, exec_bit: bool, perm_fixed: bool) -> bool:
+    """바이트가 같은 파일의 권한을 되돌려야 하는지 확인한다. 실행 비트가 다르거나 읽을 수 있게 고쳤으면 True다."""
+    return perm_fixed or _is_exec(os.lstat(tree / rel).st_mode) != exec_bit
+
+
 def sync_tree(tree: Path, expected: Any, paths: list[str]) -> tuple[list[str], list[str]]:
     """``tree``의 manifest 파일을 기대하는 바이트(``expected(path)``가 가리키는 파일)와 맞춘다.
     없는 파일은 되살리고 바이트가 다른 파일은 덮어쓰며, (되살린 경로, 덮어쓴 경로)를 정렬해서 반환한다.
@@ -651,9 +688,11 @@ def sync_tree(tree: Path, expected: Any, paths: list[str]) -> tuple[list[str], l
     comes from the expected file. A path whose expected file does not exist is left alone. Symlinks on either side are
     refused (code `symlink`), never followed or created; a directory where a file belongs is `special_file`. Every
     path is tried; a write refused for permissions is tried once more after the folders on its path and the file got
-    the owner's write bit. Any path that could not be put back → `SyncFailed` (with what was put back) after the last
-    path. Returns `(missing, changed)`, both sorted. `sync_tree_table` is the same with a recorded size + sha256 table
-    instead of reading the expected files."""
+    the owner's write bit. A candidate file with the right bytes whose executable bit differs from the expected file,
+    or that had to be made readable first (a build left it `chmod 000`), gets the canonical mode back (0755 / 0644) and
+    counts as changed. Any path that could not be put back → `SyncFailed` (with what was put back) after the last
+    path. Returns `(missing, changed)`, both sorted. `sync_tree_table` is the same with a recorded size + sha256 +
+    exec-bit table instead of reading the expected files."""
     tree = Path(tree)
     missing: list[str] = []
     changed: list[str] = []
@@ -667,9 +706,16 @@ def sync_tree(tree: Path, expected: Any, paths: list[str]) -> tuple[list[str], l
             if st_src is None:
                 continue                          # 기대하는 파일이 없으면 판단할 수 없으므로 손대지 않는다
             st_dst = _target_stat(tree, rel)
-            if st_dst is not None and _same_bytes(tree / rel, src, st_dst.st_size):
-                continue
-            _write_back(tree, rel, src, 0o755 if st_src.st_mode & 0o111 else 0o644)
+            want_exec = _is_exec(st_src.st_mode)
+            if st_dst is not None:
+                same, fixed = _readable(tree, rel, lambda: _same_bytes(tree / rel, src, st_dst.st_size))
+                if same:
+                    # 바이트는 같아도 빌드가 실행 비트나 읽기 권한을 바꿨으면 되돌린다
+                    if _mode_differs(tree, rel, want_exec, fixed):
+                        _put_mode_back(tree, rel, want_exec)
+                        changed.append(rel)
+                    continue
+            _write_back(tree, rel, src, _canonical_mode(want_exec))
             (changed if st_dst is not None else missing).append(rel)
         except Exception as e:  # noqa: BLE001 - 모든 경로를 시도한 뒤 한꺼번에 알린다
             failed.append(_failure(rel, e))
@@ -678,32 +724,39 @@ def sync_tree(tree: Path, expected: Any, paths: list[str]) -> tuple[list[str], l
     return missing, changed
 
 
-def file_table(tree: Path, paths: list[str]) -> dict[str, tuple[int, str]]:
-    """``paths``의 파일마다 (크기, sha256)을 담은 표를 반환한다. 트리를 한 번 읽는다. 없는 파일은 넣지 않는다.
+NOT_REGULAR = "NOT_REGULAR"
 
-    `{path: (size, sha256)}` of the regular files of `paths` in `tree` (one full read); a missing path or one that is
-    not a regular file is left out."""
+
+def file_table(tree: Path, paths: list[str]) -> dict[str, tuple[int, str, bool]]:
+    """``paths``의 파일마다 (크기, sha256, 실행 비트)를 담은 표를 반환한다. 트리를 한 번 읽는다. 없는 파일은 넣지 않는다.
+    일반 파일이 아닌 것은 ``tree_hash``와 같게 sha256 자리에 ``"NOT_REGULAR"``를 넣는다.
+
+    `{path: (size, sha256, exec)}` of `paths` in `tree` (one full read); a missing path is left out; a path that is
+    not a regular file (a folder, a link) is `(0, "NOT_REGULAR", False)`, so `table_hash` of the table equals
+    `tree_hash` of the tree in that case too."""
     tree = Path(tree)
-    out: dict[str, tuple[int, str]] = {}
+    out: dict[str, tuple[int, str, bool]] = {}
     for rel in sorted(set(paths)):
         try:
             st = os.lstat(tree / rel)
         except OSError:
             continue
         if stat.S_ISREG(st.st_mode):
-            out[rel] = (st.st_size, sha256_file(tree / rel))
+            out[rel] = (st.st_size, sha256_file(tree / rel), _is_exec(st.st_mode))
+        else:
+            out[rel] = (0, NOT_REGULAR, False)
     return out
 
 
-def table_hash(table: dict[str, tuple[int, str]], paths: list[str]) -> str:
+def table_hash(table: dict[str, tuple], paths: list[str]) -> str:
     """표에서 ``tree_hash``와 같은 규칙의 트리 해시를 계산한다. 표에 없는 경로는 ``"MISSING"``이다.
 
-    The `tree_hash` of the tree the table describes, without reading any file."""
+    The `tree_hash` of the tree the table describes, without reading any file (only the sha256 column counts)."""
     pairs = [[p, table[p][1] if p in table else "MISSING"] for p in sorted(set(paths))]
     return sha256_text(canonical_json(pairs))
 
 
-def sync_tree_table(tree: Path, expected: Any, table: dict[str, tuple[int, str]],
+def sync_tree_table(tree: Path, expected: Any, table: dict[str, tuple],
                     paths: list[str]) -> tuple[list[str], list[str]]:
     """``tree``의 manifest 파일을 기록된 (크기, sha256) 표와 비교해 다른 파일만 기대하는 파일에서 되돌린다.
     트리의 각 파일은 많아야 한 번 읽고, 같은 파일의 기대하는 파일은 열지 않는다.
@@ -711,8 +764,11 @@ def sync_tree_table(tree: Path, expected: Any, table: dict[str, tuple[int, str]]
     `sync_tree` against a recorded table (`rounds/<r>/expected.json`, plus the fix's files): each path of `tree` is
     compared by size, then by its sha256 (so each candidate file is read at most once), and only a missing or
     differing path opens `expected(path)` and is overwritten; the copied bytes must hash to the recorded sha256 (else
-    code `expected_changed`). A path the table does not list falls back to `sync_tree`'s byte comparison. Same
-    refusals, permission retry, `SyncFailed` after every path, and return value as `sync_tree`."""
+    code `expected_changed`). A row `(size, sha256, exec)` also names the executable bit: a file with the right bytes
+    and another bit (or one a build left unreadable, made readable once to hash it) gets the canonical mode back and
+    counts as changed; a row without the bit takes it from the expected file. A path the table does not list falls
+    back to `sync_tree`'s byte comparison. Same refusals, permission retry, `SyncFailed` after every path, and return
+    value as `sync_tree`."""
     tree = Path(tree)
     missing: list[str] = []
     changed: list[str] = []
@@ -726,17 +782,37 @@ def sync_tree_table(tree: Path, expected: Any, table: dict[str, tuple[int, str]]
             st_dst = _target_stat(tree, rel)
             if row is None:
                 st_src = _source_stat(src, rel)
-                if st_src is None or (st_dst is not None and _same_bytes(tree / rel, src, st_dst.st_size)):
+                if st_src is None:
                     continue
-                _write_back(tree, rel, src, 0o755 if st_src.st_mode & 0o111 else 0o644)
+                want_exec = _is_exec(st_src.st_mode)
+                if st_dst is not None:
+                    same, fixed = _readable(tree, rel, lambda: _same_bytes(tree / rel, src, st_dst.st_size))
+                    if same:
+                        if _mode_differs(tree, rel, want_exec, fixed):
+                            _put_mode_back(tree, rel, want_exec)
+                            changed.append(rel)
+                        continue
+                _write_back(tree, rel, src, _canonical_mode(want_exec))
             else:
                 size, sha = int(row[0]), str(row[1])
-                if st_dst is not None and st_dst.st_size == size and sha256_file(tree / rel) == sha:
-                    continue
+                exec_bit = row[2] if len(row) > 2 and isinstance(row[2], bool) else None
+                if st_dst is not None and st_dst.st_size == size:
+                    got, fixed = _readable(tree, rel, lambda: sha256_file(tree / rel))
+                    if got == sha:
+                        if exec_bit is None:
+                            st_src = _source_stat(src, rel)
+                            exec_bit = _is_exec(st_src.st_mode) if st_src is not None else _is_exec(st_dst.st_mode)
+                        # 바이트는 같아도 빌드가 실행 비트나 읽기 권한을 바꿨으면 되돌린다
+                        if _mode_differs(tree, rel, exec_bit, fixed):
+                            _put_mode_back(tree, rel, exec_bit)
+                            changed.append(rel)
+                        continue
                 st_src = _source_stat(src, rel)
                 if st_src is None:
                     raise FileNotFoundError(f"the expected file of {_safe_display(rel)} is missing")
-                _write_back(tree, rel, src, 0o755 if st_src.st_mode & 0o111 else 0o644, want_sha=sha)
+                if exec_bit is None:
+                    exec_bit = _is_exec(st_src.st_mode)
+                _write_back(tree, rel, src, _canonical_mode(exec_bit), want_sha=sha)
             (changed if st_dst is not None else missing).append(rel)
         except Exception as e:  # noqa: BLE001 - 모든 경로를 시도한 뒤 한꺼번에 알린다
             failed.append(_failure(rel, e))

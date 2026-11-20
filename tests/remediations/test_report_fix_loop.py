@@ -62,7 +62,8 @@ def _unfixed(tmp_path, reason="not fixed: 2 error(s) left", *, attempted=True, *
     out, paths = _run(tmp_path, cfg=make_cfg(**cfg), **_fixing(maven=FakeMaven(outcomes=[True, False])))
     assert out.status == FAILED
     out.rounds[-1].fix = FixResult(attempted=attempted, fixed=False, iterations=3 if attempted else 0,
-                                   llm_calls=5 if attempted else 0, reason=reason, remaining=2)
+                                   attempts=4 if attempted else 0, llm_calls=5 if attempted else 0, reason=reason,
+                                   remaining=2)
     out.message = (out.message or "the candidate build failed") + f" | automatic build fix: {reason}"
     return out, paths
 

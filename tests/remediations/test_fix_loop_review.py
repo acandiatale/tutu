@@ -253,7 +253,8 @@ def test_review4_a_loop_that_used_its_time_ends_failed_with_a_delivery_not_stopp
     assert 690 < TimeFixer.deadline <= 700                    # 1000 s left - the 300 s reserve
     assert out.status == FAILED and out.reason == "candidate_build_failed", out.message
     assert out.delivery is not None and not out.delivery.build_ok
-    assert out.message.endswith(" | automatic build fix: time budget used up")
+    # the loop ran out of time before its first attempt (fourth review, item 6)
+    assert out.message.endswith(" | automatic build fix made no attempt: time budget used up")
 
 
 # ------------------------------------------------------------------------------------------------ 5. kill and resume

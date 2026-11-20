@@ -748,7 +748,8 @@ def run_after_migration(run_dir: Path | str, project_dir: Path | str, cfg: Any, 
         if existing is not None:
             jr({"event": "remediation_exists", "remediation": existing.id, "status": existing.status})
             log.info("chained remediation %s already exists (%s) — not started again", existing.id, existing.status)
-            return existing
+            # 보고서 노드 도중에 끝난 조치면 보고서만 쓴다
+            return _repair_report(paths, run_dir, existing, cfg, jr, "chained")
         comps = components
         if comps is None:
             try:
@@ -770,6 +771,7 @@ def run_after_migration(run_dir: Path | str, project_dir: Path | str, cfg: Any, 
                 existing = load_state(run_dir)
                 if existing is not None:
                     jr({"event": "remediation_exists", "remediation": existing.id, "status": existing.status})
+                    graph_mod.write_pending_report(existing, paths, cfg, save=_saver(paths), journal=jr)
                     return existing
                 return _start(paths, Path(project_dir), cfg, comps, run_id=run_id, jr=jr, stop=budget.wrap(real_stop),
                               exclude_dirs=exclude_dirs, budget=budget, real_stop=real_stop, build_targets=build_targets,
@@ -878,7 +880,8 @@ def run_only(run_dir: Path | str, source: Path | str, cfg: Any, *, run_id: str, 
         if existing is not None:
             jr({"event": "remediation_exists", "remediation": existing.id, "status": existing.status})
             log.info("vulnerability remediation %s already exists (%s) — not started again", existing.id, existing.status)
-            return existing
+            # 보고서 노드 도중에 끝난 조치면 보고서만 쓴다
+            return _repair_report(paths, run_dir, existing, cfg, jr, "remediation-only")
         comps = components
         if comps is None:
             try:
@@ -900,6 +903,7 @@ def run_only(run_dir: Path | str, source: Path | str, cfg: Any, *, run_id: str, 
                 existing = load_state(run_dir)
                 if existing is not None:
                     jr({"event": "remediation_exists", "remediation": existing.id, "status": existing.status})
+                    graph_mod.write_pending_report(existing, paths, cfg, save=_saver(paths), journal=jr)
                     return existing
                 return _start_only(paths, Path(source), cfg, comps, run_id=run_id, jr=jr, stop=budget.wrap(real_stop),
                                    budget=budget, real_stop=real_stop, build_targets=build_targets)
@@ -964,6 +968,28 @@ def _run_flow(run_dir: Path) -> str:
         return "full"
 
 
+def _repair_report(paths: RunPaths, run_dir: Path | str, state: RemediationState, cfg: Any, jr: Journal,
+                   purpose: str) -> RemediationState:
+    """보고서 노드 도중에 끝난 조치면 폴더를 점유한 뒤 보고서만 쓰고 상태를 반환한다. 쓸 것이 없으면 그대로 반환한다.
+
+    A state whose report node was killed (`graph.report_pending`) gets its report (and the combined `fix.patch`)
+    written under the run claim; another process holding the claim → the state as it is."""
+    if not graph_mod.report_pending(paths, state):
+        return state
+    claim = _try_claim(paths, jr, purpose)
+    if claim is None:
+        return load_state(run_dir) or state
+    with claim, remediation_log(paths):
+        try:
+            st = load_state(run_dir) or state
+            graph_mod.write_pending_report(st, paths, cfg, save=_saver(paths), journal=jr)
+            return st
+        except Exception as e:  # noqa: BLE001 — a report that cannot be written leaves the state as it is
+            log.warning("chained remediation %s: the report was not written: %s", state.id,
+                        graph_mod.scrub_message(f"{type(e).__name__}: {e}", paths.root))
+            return load_state(run_dir) or state
+
+
 def _drive(paths: RunPaths, state: RemediationState, cfg: Any, comps: Components, *, jr: Journal,
            stop: StopCheck, budget: _Budget | None = None, real_stop: StopCheck | None = None,
            excluded: Iterable[str] = (), chained: bool = True) -> RemediationState:
@@ -991,7 +1017,8 @@ def resume(run_dir: Path | str, cfg: Any, *, journal: Journal | None, stop: Stop
     `AWAITING_APPROVAL` the conflict says that the approval step was removed, `graph.approval_removed`). The run claim
     (`RunClaim`) is taken first:
     a fresh claim of another process → `StateConflict` ("another process is already working on this run: …") with
-    nothing touched; the state is read again under the claim."""
+    nothing touched; the state is read again under the claim. A final state whose report node was killed
+    (`graph.report_pending`) is not refused: its report is written under the claim and the state returned."""
     paths = chain_paths(run_dir)
     jr = _scoped(journal)
     state = load_state(run_dir)
@@ -1000,6 +1027,10 @@ def resume(run_dir: Path | str, cfg: Any, *, journal: Journal | None, stop: Stop
     if (removed := graph_mod.approval_removed(state)) is not None:
         log.error("chained remediation %s: resume refused: %s", state.id, removed)
         raise removed
+    if graph_mod.report_pending(paths, state):
+        # 보고서 노드 도중에 끝난 조치는 재개할 것이 없으므로 보고서만 쓴다
+        jr({"event": "remediation_report_repair", "remediation": state.id, "status": state.status})
+        return _repair_report(paths, run_dir, state, cfg, jr, "resume")
     if not graph_mod.can_resume(state):
         raise StateConflict(f"chained remediation {state.id} cannot be resumed from {state.status}")
     try:

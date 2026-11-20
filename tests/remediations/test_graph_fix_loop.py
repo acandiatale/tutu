@@ -221,7 +221,8 @@ def test_a_fixer_that_raises_is_not_fixed_and_the_failed_candidate_is_delivered(
     out, _ = run(state, paths, one_fix_components(maven=FakeMaven(outcomes=[True, False]), fixer=fx))
     assert out.status == FAILED and out.reason == "candidate_build_failed"
     assert out.rounds[0].fix.reason == "error: RuntimeError: boom" and out.rounds[0].fix.attempted
-    assert out.message.endswith(" | automatic build fix: error: RuntimeError: boom")
+    # no attempt was made before the fixer raised (fourth review, item 6)
+    assert out.message.endswith(" | automatic build fix made no attempt: error: RuntimeError: boom")
     assert out.delivery is not None and not out.delivery.build_ok
     assert (paths.round_dir(1) / graph.CANDIDATE_READY).is_file()
     assert zip_files(paths.delivery_zip)[APP] == b"class App {}\n"

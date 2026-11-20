@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any
@@ -602,6 +603,10 @@ def _unfixed_line(state: RemediationState) -> str:
     if not getattr(fix, "attempted", False):
         # 시작하지 않은 경우다. 시도했다고도, 소스 수정을 결과에서 뺐다고도 쓰지 않는다
         return i18n.fix_not_started_ko(getattr(fix, "reason", ""))
+    from .graph import fix_made_no_attempt  # 순환 import를 피하려고 함수 안에서 import한다
+    if fix_made_no_attempt(fix):
+        # 루프는 시작했지만 시도가 하나도 없었다. 시도한 소스 수정이 있었다고 쓰지 않는다
+        return i18n.fix_no_attempt_ko(getattr(fix, "reason", ""))
     return i18n.fix_failed_ko(getattr(fix, "reason", ""))
 
 
@@ -1873,6 +1878,12 @@ def _fix_record_line(L: list[str], rs: RoundState) -> None:
         _discarded_line(L, fix)
         return
     ko, raw = i18n.fix_reason_ko(getattr(fix, "reason", ""))
+    from .graph import fix_made_no_attempt  # 순환 import를 피하려고 함수 안에서 import한다
+    if fix_made_no_attempt(fix):
+        # 시도가 하나도 없던 루프다. 반복 횟수와 시도한 수정은 쓰지 않는다
+        L.append("- 빌드 오류 자동 수정: 하지 못함" + f"({ko or '이유 모름'})" + f" · LLM 호출 {n('llm_calls')}회"
+                 + (f" · {_md_cell(raw)}" if raw else ""))
+        return
     L.append("- 빌드 오류 자동 수정: 고치지 못함" + (f"({ko})" if ko else "") + f" · {n('iterations')}회 반복 · "
              f"LLM 호출 {n('llm_calls')}회 · 시도한 소스 수정은 결과에 넣지 않음" + (f" · {_md_cell(raw)}" if raw else ""))
 
@@ -1893,12 +1904,43 @@ def _discarded_line(L: list[str], fix: Any) -> None:
              f"LLM 호출 {_num(int(getattr(fix, 'llm_calls', 0) or 0))}회" + (f" · {_md_cell(raw)}" if raw else ""))
 
 
+# 결과 ZIP 없이 FAILED로 끝난 실행의 「결과 파일」 문장(사유 코드별). 상태 메시지로 정하는 두 경우는 _no_delivery_why가 먼저 본다
+_NO_DELIVERY_KO = {
+    "candidate_build_failed": "빌드에 실패한 수정본은 결과 ZIP으로 만들지 않았습니다.",
+    "baseline_build_failed": "조치 전 빌드가 실패해 검사와 조치를 진행하지 않았습니다.",
+    "text_only_violation": "버전 표기 외의 변경이 발견된 수정본은 결과 ZIP으로 만들지 않았습니다.",
+    "resolution_mismatch": "의존성 버전이 계획과 다르게 적용된 수정본은 결과 ZIP으로 만들지 않았습니다.",
+    "zip_hash_mismatch": "검사한 파일과 가진 파일이 같은지 확인하지 못해 결과 ZIP을 만들지 않았습니다.",
+    "execution_boundary_refused": "조치를 시작하기 전에 멈춰 결과 ZIP을 만들지 않았습니다.",
+    "not_ready": "조치를 시작하기 전에 멈춰 결과 ZIP을 만들지 않았습니다.",
+    "internal_error": "도구 내부 오류로 결과 ZIP을 만들지 못했습니다.",
+}
+_NOT_WRITTEN_ROUND = re.compile(r"the result ZIP of round (\d+) could not be written")
+
+
+def _no_delivery_why(state: RemediationState) -> str:
+    """결과 ZIP 없이 FAILED로 끝난 실행에서 「결과 파일」의 「없음」 뒤에 붙일 이유 문장을 만든다. 끝 상태가 아니면 빈 문자열이다.
+
+    The reason sentence after 「결과 파일 — 없음」 of a FAILED run without a delivery, true for its state: a candidate
+    that could not be put back after a (possibly passing) build, a result ZIP that could not be written, then by
+    reason code (`_NO_DELIVERY_KO`); a code without its own sentence says only that no result ZIP was made."""
+    if state.status != FAILED:
+        return ""
+    keys = i18n.rule_keys(state.message)
+    if "candidate_not_restored" in keys:
+        text = "수정본을 빌드 뒤 원래 상태로 되돌리지 못해 결과 ZIP을 만들지 않았습니다."
+    elif "delivery_not_written" in keys:
+        m = _NOT_WRITTEN_ROUND.search(str(state.message or ""))
+        text = (f"라운드 {m.group(1)}의 " if m else "") + "결과 ZIP을 쓰지 못했습니다."
+    else:
+        text = _NO_DELIVERY_KO.get(state.reason, "결과 ZIP을 만들지 않았습니다.")
+    return f" — {text} 원본은 그대로입니다."
+
+
 def _delivery_block(L: list[str], state: RemediationState, fx: _Facts, paths: RunPaths, step: int) -> None:
     d, final = state.delivery, fx.final
     if d is None:
-        why = (" — 빌드에 실패한 수정본은 결과 ZIP으로 만들지 않았습니다. 원본은 그대로입니다."
-               if state.status == FAILED else "")
-        L.append(f"**{step}. 결과 파일** — 없음{why}")
+        L.append(f"**{step}. 결과 파일** — 없음{_no_delivery_why(state)}")
     else:
         facts = [f"{_mb(d.size)}", f"파일 {_num(d.files)}개"] + ([f"라운드 {d.round}"] if len(state.rounds) > 1 else [])
         built = "빌드 성공" if d.build_ok else "빌드로 확인하지 못함" if d.build_tolerated else "빌드 실패"
@@ -1967,9 +2009,13 @@ def _unchanged_section(L: list[str], state: RemediationState, fx: _Facts) -> Non
     else:
         L.append("- 애플리케이션 소스와 프로젝트 구조(파일·폴더)는 변경하지 않았습니다.")
     left_out = bool(state.intake is not None and state.intake.build_output_files)
+    # 이전 버전이 시작한 실행은 빌드 산출물이 든 원본 ZIP을 그대로 검사했다(검사한 ZIP의 sha256이 원본과 같다)
+    original_scanned = bool(left_out and fx.base is not None and state.intake is not None
+                            and fx.base.zip_sha256 == state.intake.zip_sha256)
     if state.delivery is not None and state.delivery.round == 0:
-        # 바꾼 것이 없어 원본을 그대로 결과 ZIP으로 냈으므로 달라진 버전 표기도 없다
-        L.append("- 결과 ZIP은 원본 ZIP에서 빌드 산출물만 뺀 것입니다." if left_out
+        # 바꾼 것이 없어 조치 전에 검사한 ZIP을 그대로 결과 ZIP으로 냈으므로 달라진 버전 표기도 없다
+        same_as_upload = state.intake is not None and state.delivery.sha256 == state.intake.zip_sha256
+        L.append("- 결과 ZIP은 원본 ZIP에서 빌드 산출물만 뺀 것입니다." if left_out and not same_as_upload
                  else "- 결과 ZIP은 원본 ZIP과 같은 파일입니다.")
     elif state.delivery is not None:
         override = any(p.kind == K_MANAGED_OVERRIDE for p in fx.committed)
@@ -1981,8 +2027,8 @@ def _unchanged_section(L: list[str], state: RemediationState, fx: _Facts) -> Non
         same = "원본에서 빌드 산출물을 뺀 목록과 같습니다" if left_out else "원본과 같습니다"
         L.append(f"- 결과 ZIP의 파일 목록은 {same}. 달라진 것은 적용된 pom.xml의 버전 표기{extra}뿐입니다.")
     L.append("- 원본 ZIP은 `original/source.zip`에 그대로 보관합니다.")
-    # 접수 단계에서 빌드 산출물을 뺐으면 한 번만 알린다
-    for n in (state.intake.notes if state.intake is not None else []):
+    # 접수 단계에서 빌드 산출물을 뺐으면 한 번만 알린다. 원본 ZIP을 그대로 검사한 이전 버전의 실행에는 맞지 않는 문장이다
+    for n in (state.intake.notes if state.intake is not None and not original_scanned else []):
         if "build_output_left_out" in i18n.rule_keys(n):
             L.append(f"- {_md_cell(ko_display(n))}")
     L.append("")

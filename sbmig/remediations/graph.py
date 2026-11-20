@@ -15,6 +15,15 @@ JSON 값만 두고 ``RemediationState``, 경로, ``Components``는 노드 함수
 - 버전 문자열 밖의 변경이 있거나 의존성 결과가 계획과 다른 수정본은 설정과 상관없이 내보내지 않는다
 - 계획의 제안은 모두 적용하며 사람의 승인을 기다리지 않는다
 - 수정본을 빌드할 때마다 빌드가 지우거나 바꾼 manifest 파일을 accepted/, 적용한 제안, 보고한 고침의 바이트로 되돌린다
+- 결과 ZIP은 delivery/ 안의 임시 이름으로 먼저 만들고, 성공한 뒤에만 result.zip을 바꾸고 state에 기록한다
+- 업로드한 ZIP에서 빌드 산출물을 뺐으면 조치 전 검사와 바꾼 것이 없는 결과 ZIP에는 original/scan-source.zip을 쓴다
+
+Run folder (`RunPaths`): `original/source.zip` (the upload, never changed), `original/manifest.json`,
+`original/scan-source.zip` (only when the intake left build output out: a deterministic ZIP of accepted/ over the
+manifest paths, scanned at baseline and delivered as the no-change result; its sha256 is `state.scan_source_sha256`),
+`accepted/`, `baseline/`, `rounds/<n>/`, `scans/`, `delivery/` (`result.zip`, `delivery.json`, a kept
+`result-r<k>-verified.zip`, and only during a swap `.result.next.zip` + `.result.next.json`), `state.json`,
+`journal.jsonl`, `remediation.log`, `report.md`, `report.json`, `fix.patch`.
 
 Independent LangGraph of the remediation feature (not the migration graph). Only small JSON values live in the graph
 state; the `RemediationState`, the run paths and the `Components` live in a holder closed over by the node functions.
@@ -110,6 +119,12 @@ CANDIDATE_NOT_VOUCHED = ("the round {r} candidate was not delivered: the files o
 # 노드 하나가 그래프 한 단계이고 라운드마다 7단계가 필요하므로, LangGraph 기본값 25로는 모자라 넉넉히 둔다
 CANDIDATE_NOT_RESTORED = ("the round {r} candidate could not be put back to its expected state after the build ({n} "
                           "path(s), first: {p}: {t}); nothing of this round was delivered")
+# 결과 ZIP을 쓰지 못했을 때의 문장. 앞의 결과 ZIP이 있으면 그것이 그대로 남았다고 쓴다
+DELIVERY_NOT_WRITTEN = "the result ZIP of round {r} could not be written ({t}: {e}); {left}"
+DELIVERY_LEFT_KEPT = "delivery/result.zip is still the result ZIP of round {k}"
+DELIVERY_LEFT_NONE = "no result ZIP exists; the original is preserved as original/source.zip"
+NEXT_ZIP = ".result.next.zip"           # 새 결과 ZIP을 먼저 쓰는 임시 이름(delivery/ 아래)
+NEXT_JSON = ".result.next.json"         # 결과 ZIP을 바꾸는 중이라는 기록(delivery/ 아래)
 WHY_NO_MARKER = "no completeness marker"
 WHY_OTHER_APPLIED = "the completeness marker names other proposals than the state"
 WHY_NO_CANDIDATE = "the candidate folder is missing"
@@ -170,6 +185,95 @@ def _safe_rmtree(p: Path) -> None:
         p.unlink()
     elif p.exists():
         shutil.rmtree(p)
+
+
+def _unlink_quiet(p: Path) -> None:
+    try:
+        p.unlink()
+    except FileNotFoundError:
+        pass
+
+
+def _copy_atomic(src: Path, dst: Path) -> None:
+    """``src``를 같은 폴더의 임시 파일에 복사하고 fsync한 뒤 ``dst``로 바꾼다."""
+    tmp = dst.with_name(f".{dst.name}.copy-tmp")
+    try:
+        shutil.copyfile(src, tmp)
+        # Windows의 fsync는 읽기 전용 핸들을 거부하므로 쓰기 가능한 핸들로 연다
+        with open(tmp, "r+b") as f:
+            os.fsync(f.fileno())
+        os.replace(tmp, dst)
+    except BaseException:
+        _unlink_quiet(tmp)
+        raise
+
+
+class DeliveryNotWritten(Exception):
+    """새 결과 ZIP을 쓰지 못했을 때 던지는 예외. 이전 결과는 그대로 남았고, 메시지에 무엇이 남았는지 쓴다.
+
+    Raised by `_Holder.install_delivery` when the new result ZIP could not be written (full disk, read-only folder);
+    the previous delivery is untouched. The message is `DELIVERY_NOT_WRITTEN`."""
+
+    def __init__(self, round: int, error: BaseException, left: str, root: Path | None = None):
+        self.round, self.left = round, left
+        text = scrub_message(str(error), root, 300)
+        super().__init__(DELIVERY_NOT_WRITTEN.format(r=round, t=type(error).__name__, e=text, left=left))
+
+
+class ScanSourceChanged(Exception):
+    """검사용 ZIP(``original/scan-source.zip``)을 기록한 sha256으로 다시 만들 수 없을 때 던지는 예외.
+
+    The scan source ZIP cannot be made again with the sha256 the state recorded; the run ends FAILED
+    `zip_hash_mismatch` with `SCAN_SOURCE_CHANGED`."""
+
+
+SCAN_SOURCE_CHANGED = ("the scan source ZIP (original/scan-source.zip) could not be made again with the sha256 recorded "
+                       "in the state")
+
+
+def recover_delivery(paths: RunPaths, state: RemediationState) -> bool:
+    """결과 ZIP을 바꾸던 중에 끝난 실행을 맞춘다. result.zip이 새 ZIP이면 state와 ``delivery.json``을 새 ZIP으로 맞추고,
+    아니면 임시 파일을 지워 이전 결과를 그대로 둔다. state를 바꿨으면 True를 반환한다.
+
+    Repair a swap `_Holder.install_delivery` left half done (`delivery/.result.next.json` present): result.zip already
+    has the new sha256 → `state.delivery` and `delivery.json` become the recorded new info (the old bytes, when they
+    were a verified delivery, are in the kept copy); otherwise the swap is rolled back (the temporary ZIP removed, a
+    verified copy this swap made removed when it is a byte copy of the result.zip that is still there). Leftover
+    temporary files of a frozen ZIP (`.result.next.zip*`) are removed. Never raises for an unreadable marker."""
+    folder = paths.delivery_zip.parent
+    nz, nj = folder / NEXT_ZIP, folder / NEXT_JSON
+    if not folder.is_dir():
+        return False
+    changed = False
+    data = read_json(nj) if nj.exists() else None
+    info = None
+    if isinstance(data, dict) and isinstance(data.get("delivery"), dict):
+        try:
+            info = DeliveryInfo.from_dict(data["delivery"])
+        except TypeError:
+            info = None
+    if info is not None:
+        cur = sha256_file(paths.delivery_zip) if paths.delivery_zip.is_file() else ""
+        if cur and cur == info.sha256:
+            if state.delivery is None or state.delivery.sha256 != info.sha256:
+                state.delivery = info
+                changed = True
+            if read_json(paths.delivery_json) != state.delivery.to_dict():
+                write_json_atomic(paths.delivery_json, state.delivery.to_dict())
+            log.warning("remediation %s: a result ZIP swap that the run did not finish was completed (round %s)",
+                        state.id, info.round)
+        else:
+            vrel = str(data.get("verified") or "")
+            vz = paths.root / vrel if vrel else None
+            if vz is not None and vz.is_file() and cur and sha256_file(vz) == cur:
+                _unlink_quiet(vz)
+                _unlink_quiet(vz.with_suffix(".json"))
+            log.warning("remediation %s: a result ZIP swap that the run did not finish was rolled back (round %s)",
+                        state.id, info.round)
+    for f in [nz, *folder.glob(f"{NEXT_ZIP}.*"), *folder.glob(f".{NEXT_ZIP}.*")]:
+        _unlink_quiet(f)
+    _unlink_quiet(nj)
+    return changed
 
 
 class _Holder:
@@ -404,7 +508,8 @@ class _Holder:
             return WHY_NO_PROOF
         rec = read_json(exp)
         if (not isinstance(rec, dict) or rec.get("round") != r or rec.get("applied") != applied
-                or not isinstance(rec.get("files"), dict)):
+                or _rows(rec) is None):
+            # 실행 비트가 없는 표(배포되지 않은 이전 코드가 쓴 것)도 증명으로 보지 않고 다시 적용한다
             return WHY_NO_PROOF
         ad = _applied_dir(self, r)
         if any(not (ad / str(x)).is_file() for x in rec.get("applied_files") or []):
@@ -421,13 +526,15 @@ class _Holder:
         """정책이 include일 때 빌드에 실패한 라운드 ``r``의 수정본 트리를 결과 ZIP으로
         확정한다(build_ok=False, scanned=False). accepted/는 바꾸지 않는다.
         이전 라운드의 검증된 결과 ZIP이 있으면 사람이 고를 수 있도록 ``delivery/result-r<k>-verified.zip``(+
-        ``.json``)으로 옮기고 그 경로(실행 폴더 기준)를 반환한다. 없으면 빈 문자열을 반환한다.
+        ``.json``)으로 복사해 두고 그 경로(실행 폴더 기준)를 반환한다. 없으면 빈 문자열을 반환한다.
         수정본이 완성됐다는 표시가 없으면 아무것도 확정하지 않고 None을 반환한다.
 
         Policy include: freeze the failed candidate tree as the delivery; keep an earlier verified ZIP beside it.
         None (nothing frozen, nothing moved) when the state does not vouch for the candidate (`candidate_vouched`).
         The candidate is synchronised with its expected bytes right before it is frozen (`_sync_candidate`, recorded
-        in `build_changed`); a path that cannot be put back raises `CandidateNotRestored` before anything is moved."""
+        in `build_changed`); a path that cannot be put back raises `CandidateNotRestored` before anything is moved.
+        The ZIP is written through `install_delivery` (frozen under a temporary name first, the verified ZIP COPIED
+        aside only after that); a freeze that fails raises `DeliveryNotWritten` with the previous delivery intact."""
         st, p = self.state, self.paths
         if not self.candidate_vouched(r):
             self.journal({"event": "candidate_not_vouched", "round": r})
@@ -435,24 +542,79 @@ class _Holder:
         # 마지막 빌드 뒤에 Maven 호출이 있었을 수 있으므로 내보내기 직전에 기대하는 바이트로 다시 맞춘다.
         # 맞추지 못하면 CandidateNotRestored가 나가고, 이전 라운드의 결과 ZIP은 옮기지 않은 채 그대로 남는다
         _sync_candidate(self, r, p.candidate(r))
+        earlier = st.delivery if self.verified_earlier(r) else None
+        # 새 ZIP을 임시 이름으로 다 쓴 뒤에만 검증한 ZIP을 복사해 두고 result.zip을 바꾼다. 쓰지 못하면 이전 결과가 그대로 남는다
+        kept = self.install_delivery(
+            lambda out: self.c.intake.freeze_delivery(p.candidate(r), out, r, self.paths_list), r,
+            build_ok=False, keep_verified=earlier is not None)
+        if earlier is not None:
+            self.journal({"event": "verified_delivery_kept", "round": r, "delivery_round": earlier.round, "file": kept,
+                          "sha256": earlier.sha256})
+        self.journal({"event": "failed_candidate_delivered", "round": r, "sha256": st.delivery.sha256})
+        return kept
+
+    # -- writing result.zip (one durable order for every delivery)
+    def delivery_left(self) -> str:
+        """결과 ZIP을 쓰지 못했을 때 지금 남아 있는 결과를 알리는 영어 문장을 만든다."""
+        d = self.state.delivery
+        if d is not None and self.paths.delivery_zip.is_file():
+            return DELIVERY_LEFT_KEPT.format(k=d.round)
+        return DELIVERY_LEFT_NONE
+
+    def install_delivery(self, make: Callable[[Path], DeliveryInfo], r: int, *, build_ok: bool = True,
+                         build_tolerated: bool = False, keep_verified: bool = False) -> str:
+        """새 결과 ZIP을 ``delivery/.result.next.zip``에 만든 뒤에만 result.zip으로 바꾸고 ``delivery.json``과 state에 기록한다.
+        만들지 못하면 이전 결과는 그대로 두고 ``DeliveryNotWritten``을 던진다. ``keep_verified``면 이전에 검증한 ZIP을
+        ``result-r<k>-verified.zip``으로 복사해 두고 그 경로(실행 폴더 기준)를 반환한다.
+
+        The durable order (each step atomic; `recover_delivery` repairs a kill between them on the next entry):
+        1. `make(delivery/.result.next.zip)` freezes the new ZIP under a temporary name;
+        2. `delivery/.result.next.json` = `{delivery: <new info>, verified: <kept path or "">}` (the swap is pending);
+        3. with `keep_verified`, the current result.zip is COPIED to `result-r<k>-verified.zip` (+ `.json`);
+        4. `os.replace(.result.next.zip, result.zip)`;
+        5. `delivery.json` = the new info; 6. `state.delivery` = the new info, state saved;
+        7. `.result.next.json` removed.
+        An exception in steps 1–4 removes what this call made and raises `DeliveryNotWritten` (the previous delivery,
+        its `delivery.json` and `state.delivery` untouched). Returns the kept verified ZIP's path or ""."""
+        st, p = self.state, self.paths
+        folder = p.delivery_zip.parent
+        nz, nj = folder / NEXT_ZIP, folder / NEXT_JSON
+        made: list[Path] = []
         kept = ""
-        if self.verified_earlier(r):
-            d = st.delivery
-            vz = verified_zip_path(p, d.round)
-            os.replace(p.delivery_zip, vz)
-            info = DeliveryInfo.from_dict(d.to_dict())
-            info.path, info.scanned = self.rel(vz), True
-            write_json_atomic(vz.with_suffix(".json"), info.to_dict())
-            kept = self.rel(vz)
-            self.journal({"event": "verified_delivery_kept", "round": r, "delivery_round": d.round, "file": kept,
-                          "sha256": d.sha256})
-        else:
-            self.discard_delivery()
-        info = self.c.intake.freeze_delivery(p.candidate(r), p.delivery_zip, r, self.paths_list)
-        info.build_ok, info.scanned = False, False
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+            for f in (nz, nj):
+                _unlink_quiet(f)
+            made.append(nz)
+            info = make(nz)
+            info.path = self.rel(p.delivery_zip)
+            info.build_ok, info.build_tolerated, info.scanned = bool(build_ok), bool(build_tolerated), False
+            d = st.delivery if keep_verified else None
+            vz = verified_zip_path(p, d.round) if d is not None else None
+            kept = self.rel(vz) if vz is not None else ""
+            # 바꾸는 중이라는 기록을 검증한 ZIP을 복사하기 전에 남겨, 여기서 끝나도 다음 진입 때 복사본까지 정리한다
+            made.append(nj)
+            write_json_atomic(nj, {"delivery": info.to_dict(), "verified": kept})
+            if d is not None and vz is not None:
+                made += [vz, vz.with_suffix(".json")]
+                _copy_atomic(p.delivery_zip, vz)
+                vinfo = DeliveryInfo.from_dict(d.to_dict())
+                vinfo.path, vinfo.scanned = kept, True
+                write_json_atomic(vz.with_suffix(".json"), vinfo.to_dict())
+            os.replace(nz, p.delivery_zip)
+        except Exception as e:  # noqa: BLE001 - 어떤 이유로든 새 ZIP을 쓰지 못하면 이전 결과를 그대로 둔다
+            for f in reversed(made):
+                _unlink_quiet(f)
+            err = DeliveryNotWritten(r, e, self.delivery_left(), self.paths.root)
+            log.error("remediation round %s: %s", r, err)
+            self.journal({"event": "delivery_not_written", "round": r, "error": type(e).__name__,
+                          "kept_round": st.delivery.round if st.delivery is not None else None})
+            raise err from e
+        # result.zip이 바뀐 뒤부터는 state가 새 ZIP을 가리키게 한다. 여기서 끝나면 다음 진입 때 recover_delivery가 맞춘다
         st.delivery = info
         write_json_atomic(p.delivery_json, info.to_dict())
-        self.journal({"event": "failed_candidate_delivered", "round": r, "sha256": info.sha256})
+        self.save()
+        _unlink_quiet(nj)
         return kept
 
     def mark_scanned(self) -> None:
@@ -604,21 +766,79 @@ class _Holder:
 
     # -- the original ZIP as the delivery (nothing changed)
     def deliver_original(self) -> None:
-        """바꾼 것이 없을 때 원본 ZIP의 바이트를 그대로 결과 ZIP으로 두고, 재검사 결과는 조치 전 검사 결과로 둔다."""
+        """바꾼 것이 없을 때 조치 전에 검사한 ZIP(``scan_source``)의 바이트를 그대로 결과 ZIP으로 두고, 재검사 결과는 조치 전
+        검사 결과로 둔다. 빌드 산출물을 뺀 업로드면 ``original/scan-source.zip``, 아니면 원본 ZIP이다.
+
+        The no-change delivery (round 0) is the bytes the baseline scan uploaded (`scan_source`): the upload itself when
+        the intake left nothing out (byte for byte as before), else `original/scan-source.zip`. Written through
+        `install_delivery`."""
         st, p = self.state, self.paths
-        p.delivery_zip.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(p.original_zip, p.delivery_zip)
-        sha = sha256_file(p.delivery_zip)
-        st.delivery = DeliveryInfo(path=self.rel(p.delivery_zip), sha256=sha, size=p.delivery_zip.stat().st_size,
-                                   files=st.intake.files if st.intake else 0,
-                                   tree_hash=st.intake.tree_hash if st.intake else "", round=0)
-        if self.baseline_failed_tolerated:
-            # 원본도 빌드되지 않았으므로 빌드로 확인한 결과 ZIP이 아니다
-            st.delivery.build_ok, st.delivery.build_tolerated = False, True
+        src, sha = self.scan_source()
+
+        def copy(out: Path) -> DeliveryInfo:
+            _copy_atomic(src, out)
+            got = sha256_file(out)
+            if got != sha:
+                raise ScanSourceChanged(SCAN_SOURCE_CHANGED)
+            return DeliveryInfo(path=self.rel(p.delivery_zip), sha256=got, size=out.stat().st_size,
+                                files=st.intake.files if st.intake else 0,
+                                tree_hash=st.intake.tree_hash if st.intake else "", round=0)
+        # 원본도 빌드되지 않았으면 빌드로 확인한 결과 ZIP이 아니다
+        tolerated = self.baseline_failed_tolerated
+        self.install_delivery(copy, 0, build_ok=not tolerated, build_tolerated=tolerated)
         st.final_scan = st.baseline_scan
-        # 결과 ZIP이 원본과 같은 바이트이므로 같은 sha256을 빠짐없이 검사했다면 scanned로 본다
+        # 결과 ZIP이 조치 전에 검사한 ZIP과 같은 바이트이므로 같은 sha256을 빠짐없이 검사했다면 scanned로 본다
         self.mark_scanned()
         write_json_atomic(p.delivery_json, st.delivery.to_dict())
+
+    # -- what the baseline scan uploads (and a no-change delivery is)
+    def _scanned_original_before(self) -> bool:
+        """이전 버전이 시작한 실행이 조치 전 검사에 원본 ZIP을 이미 올렸는지(또는 올리는 중인지) 확인한다."""
+        st = self.state
+        sha = st.intake.zip_sha256 if st.intake else ""
+        if not sha:
+            return False
+        if st.pending_upload.get(BASELINE_LABEL) == sha:
+            return True
+        rec = st.pending_receipt.get(BASELINE_LABEL)
+        if isinstance(rec, dict) and rec.get("zip_sha256") == sha:
+            return True
+        data = read_json(self.paths.root / st.baseline_scan) if st.baseline_scan else None
+        return isinstance(data, dict) and data.get("zip_sha256") == sha
+
+    def scan_source(self) -> tuple[Path, str]:
+        """조치 전 검사에 올리고, 바꾼 것이 없을 때 결과 ZIP으로 쓰는 ZIP의 경로와 sha256을 반환한다.
+        업로드한 ZIP에서 빌드 산출물을 뺐으면 accepted/를 manifest 경로로 묶은 ``original/scan-source.zip``을 필요할 때 만들고,
+        처음 만든 sha256을 state에 기록해 두었다가 쓸 때마다 확인한다.
+
+        `(original/source.zip, intake.zip_sha256)` when `intake.build_output_files == 0` (today's bytes) or when a run
+        started by an earlier version already sent the original to the baseline scan (`_scanned_original_before`: its
+        recorded upload / receipt / scan names the original's sha256 and no scan-source sha was recorded). Otherwise
+        `original/scan-source.zip` = `intake.freeze_delivery(accepted/, …, 0, manifest paths)`, deterministic: without a
+        recorded `state.scan_source_sha256` it is (re)made and its sha256 recorded and saved; with one, the file is used
+        when it has that sha256, else made again, and a different sha256 raises `ScanSourceChanged`."""
+        st, p = self.state, self.paths
+        orig = (p.original_zip, st.intake.zip_sha256 if st.intake else "")
+        if st.intake is None or not st.intake.build_output_files:
+            return orig
+        if not st.scan_source_sha256 and self._scanned_original_before():
+            return orig
+        out = p.scan_source
+        want = st.scan_source_sha256
+        if want and out.is_file() and sha256_file(out) == want:
+            return out, want
+        info = self.c.intake.freeze_delivery(p.accepted, out, 0, self.paths_list)
+        if want and info.sha256 != want:
+            log.error("remediation %s: %s", st.id, SCAN_SOURCE_CHANGED)
+            raise ScanSourceChanged(SCAN_SOURCE_CHANGED)
+        if not want:
+            st.scan_source_sha256 = info.sha256
+            self.save()
+            self.journal({"event": "scan_source_made", "sha256": info.sha256, "files": info.files,
+                          "left_out": st.intake.build_output_files})
+            log.info("remediation %s: the scan source ZIP leaves the upload's %d build output file(s) out (%s)", st.id,
+                     st.intake.build_output_files, info.sha256)
+        return out, info.sha256
 
     # -- one IVAS scan with the upload-safety rules
     def scan(self, node: str, label: str, zip_path: Path, sha: str, project_name: str) -> ScanResult | None:
@@ -735,23 +955,27 @@ def _read_log(h: _Holder, outcome: Any) -> str:
 
 def _baseline_scan(h: _Holder) -> str | None:
     st, p = h.state, h.paths
-    sha = st.intake.zip_sha256 if st.intake else ""
-    # 올리기 전에 원본이 접수 때와 같은 바이트인지 확인한다.
+    # 업로드에서 빌드 산출물을 뺐으면 accepted/를 묶은 검사용 ZIP을, 아니면 원본 ZIP을 올린다
+    zip_path, sha = h.scan_source()
+    is_original = zip_path == p.original_zip
+    # 올리기 전에 원본이 접수 때와 같은 바이트인지 확인한다(검사용 ZIP은 scan_source가 기록한 sha256으로 확인했다).
     # 접수 정보로 이어서 조회할 때는 이미 올린 뒤이므로 확인하지 않는다
-    if BASELINE_LABEL not in st.pending_receipt and sha256_file(p.original_zip) != sha:
+    if is_original and BASELINE_LABEL not in st.pending_receipt and sha256_file(p.original_zip) != sha:
         return h.finish(FAILED, R_ZIP_HASH_MISMATCH, "the original ZIP no longer has the sha256 recorded at intake")
+    what = "the original ZIP" if is_original else "the scan source ZIP"
     name = f"{h.rcfg.ivas_project_prefix}-{st.id}-{BASELINE_LABEL}"
-    res = h.scan("baseline_scan", BASELINE_LABEL, p.original_zip, sha, name)
+    res = h.scan("baseline_scan", BASELINE_LABEL, zip_path, sha, name)
     if res is None:
         return None
     st.baseline_scan = h.rel(p.scan(BASELINE_LABEL))
     if R_ZIP_HASH_MISMATCH in res.incomplete_reasons:
-        return h.finish(FAILED, R_ZIP_HASH_MISMATCH, "IVAS analysed bytes whose sha256 differs from the original ZIP")
+        return h.finish(FAILED, R_ZIP_HASH_MISMATCH, f"IVAS analysed bytes whose sha256 differs from {what}")
     if not res.complete:
         # 끝나지 않은 검사를 0건으로 보지 않으며 계획도 만들지 않는다
         return h.finish(INCOMPLETE, R_SCAN_INCOMPLETE, "baseline scan incomplete: " + ", ".join(res.incomplete_reasons))
     if res.zip_sha256 != sha:
-        return h.finish(FAILED, R_ZIP_HASH_MISMATCH, "IVAS scanned a ZIP whose sha256 differs from the original")
+        return h.finish(FAILED, R_ZIP_HASH_MISMATCH, "IVAS scanned a ZIP whose sha256 differs from "
+                        + ("the original" if is_original else "the scan source ZIP"))
     actionable, _ignored = h.split(res)
     if not actionable:
         # 조치 대상이 없으면(0건이거나 모두 ignore_actions 코드) 바꿀 것이 없으므로 원본을 그대로 전달한다
@@ -998,7 +1222,11 @@ def _build_failed(h: _Holder, r: int, outcome: Any) -> str | None:
     if getattr(h.rcfg, "failed_candidate", "include") == "include":
         # 정책이 include면 실패한 수정본도 결과 ZIP으로 내보내지만, 성공일 수 없으므로 재검사는 하지 않는다
         # accepted/, 원본 ZIP, candidate.patch, build.log는 그대로 남는다
-        kept = h.deliver_failed_candidate(r)
+        try:
+            kept = h.deliver_failed_candidate(r)
+        except DeliveryNotWritten as e:
+            # 실패한 수정본의 ZIP을 쓰지 못했다. 이전 결과 ZIP은 그대로 남았다
+            return h.finish(FAILED, R_INTERNAL_ERROR, f"{e} | {outcome.summary}" if outcome.summary else str(e))
         if kept is None:
             # 완성됐다는 표시가 없는 수정본은 잘린 트리일 수 있으므로 결과 ZIP으로 내보내지 않는다
             h.discard_candidate(r)
@@ -1147,13 +1375,22 @@ def _build_round(h: _Holder) -> str | None:
     return _commit_round(h, r, cand)
 
 
-def _package(h: _Holder, r: int, cand: Path, log_path: Path) -> Any:
+def _package(h: _Holder, r: int, cand: Path, log_path: Path, *, confirming: bool = False) -> Any:
     """수정본을 빌드하고, 빌드가 지우거나 바꾼 manifest 파일을 기대하는 바이트로 되돌린 뒤 빌드 결과를 반환한다.
+    되돌리기에 실패해도 빌드 결과가 남도록 되돌리기 전에 라운드에 기록한다.
 
     The one place a candidate is built (first build, confirming build, the build after a dropped override): the
     build, then `_sync_candidate` (v2.1z-bk), so verify, commit and freezing always see accepted + the applied edits
-    (+ the reported fix)."""
+    (+ the reported fix). The outcome is recorded in the round BEFORE the sync, which may raise
+    `CandidateNotRestored`: a first build sets `rs.build` (and clears `build_compare`, `build_tolerated`,
+    `fix_first_build`); a confirming build that passed sets `rs.build` (a failed one leaves the first build there)."""
     outcome = h.build_outcome(h.c.maven.package(h.project(cand), log_path, h.stop, **h.target_kw), log_path)
+    rs = h.round_state(r)
+    if not confirming:
+        rs.build, rs.build_compare, rs.build_tolerated = outcome, {}, False
+        rs.fix_first_build = None
+    elif outcome.ok:
+        rs.build = outcome
     _sync_candidate(h, r, cand)
     return outcome
 
@@ -1166,14 +1403,14 @@ def _applied_dir(h: _Holder, r: int) -> Path:
 
 
 def _store_applied(h: _Holder, r: int, cand: Path, result: Any,
-                   proposals: list[Proposal]) -> dict[str, tuple[int, str]]:
+                   proposals: list[Proposal]) -> dict[str, tuple[int, str, bool]]:
     """제안이 고친 파일의 적용 직후 바이트를 ``rounds/<r>/applied/<경로>``에 둔다. 이름이 pom.xml이 아닌 pom도 들어간다.
 
     v2.1z-bk: at the end of `apply` (and of the re-apply after a dropped override) the files the proposals edited —
     `ApplyResult.changed_files` and every edit's `pom`, whatever its name — are stored with the candidate's bytes after
     apply, at their manifest path (relative to the ZIP top). The folder is made anew each time, so a remade candidate
-    keeps no file of a dropped proposal. Returns `{path: (size, sha256)}` of the stored files (hashed from the bytes
-    already in memory, no extra read)."""
+    keeps no file of a dropped proposal. Returns `{path: (size, sha256, exec)}` of the stored files (hashed from the
+    bytes already in memory, no extra read)."""
     d = _applied_dir(h, r)
     _safe_rmtree(d)
     pr = h.project_root
@@ -1181,7 +1418,7 @@ def _store_applied(h: _Holder, r: int, cand: Path, result: Any,
     edited = set(getattr(result, "changed_files", None) or [])
     edited |= {e.pom for x in proposals for e in (x.edits or []) if getattr(e, "pom", "")}
     listed = set(h.paths_list)
-    stored: dict[str, tuple[int, str]] = {}
+    stored: dict[str, tuple[int, str, bool]] = {}
     d.mkdir(parents=True, exist_ok=True)
     for prel in sorted(edited):
         rel = prefix + str(prel).replace("\\", "/").strip("/")
@@ -1192,8 +1429,9 @@ def _store_applied(h: _Holder, r: int, cand: Path, result: Any,
         dst.parent.mkdir(parents=True, exist_ok=True)
         data = src.read_bytes()
         dst.write_bytes(data)
-        os.chmod(dst, 0o755 if os.lstat(src).st_mode & 0o111 else 0o644)
-        stored[rel] = (len(data), hashlib.sha256(data).hexdigest())
+        exec_bit = bool(os.lstat(src).st_mode & 0o111)
+        os.chmod(dst, 0o755 if exec_bit else 0o644)
+        stored[rel] = (len(data), hashlib.sha256(data).hexdigest(), exec_bit)
     return stored
 
 
@@ -1206,91 +1444,119 @@ def _prefix(h: _Holder) -> str:
     return "" if pr in ("", ".") else pr.rstrip("/") + "/"
 
 
-def _rows(data: Any) -> dict[str, tuple[int, str]] | None:
-    """``expected.json``의 ``files``를 {경로: (크기, sha256)}로 바꾼다. 형식이 맞지 않으면 None이다."""
+Row = tuple  # (크기, sha256, 실행 비트) / (size, sha256, exec)
+
+
+def _rows(data: Any) -> dict[str, Row] | None:
+    """``expected.json``의 ``files``를 {경로: (크기, sha256, 실행 비트)}로 바꾼다. 형식이 맞지 않거나 실행 비트가 없으면 None이다.
+
+    Rows are `[size, sha256, exec]`; a table without the exec bit (written by the code of commit 51d3809, never
+    deployed) is not used: the candidate is applied again and the table rebuilt."""
     if not isinstance(data, dict) or not isinstance(data.get("files"), dict):
         return None
-    out: dict[str, tuple[int, str]] = {}
+    out: dict[str, Row] = {}
     try:
         for k, v in data["files"].items():
-            if not (isinstance(v, (list, tuple)) and len(v) == 2):
+            if not (isinstance(v, (list, tuple)) and len(v) == 3 and isinstance(v[2], bool)):
                 return None
-            out[str(k)] = (int(v[0]), str(v[1]))
+            out[str(k)] = (int(v[0]), str(v[1]), bool(v[2]))
     except (TypeError, ValueError):
         return None
     return out
 
 
-def _fix_rows(h: _Holder, fix: FixResult | None) -> dict[str, tuple[int, str]]:
-    """고친 파일(``fixloop/fixed/``)의 (크기, sha256)을 manifest 경로로 반환한다. 고친 소스는 작으므로 그 파일만 읽는다."""
-    if fix is None or not fix.fixed or not fix.changed or not fix.fixed_dir:
-        return {}
-    root = h.paths.root / fix.fixed_dir
-    out: dict[str, tuple[int, str]] = {}
-    for x in fix.changed:
-        f = root / str(x).strip("/")
-        if f.is_file() and not f.is_symlink():
-            out[_prefix(h) + str(x).strip("/")] = (f.stat().st_size, sha256_file(f))
+def _with_rows(base: dict[str, Row], extra: dict[str, Row]) -> dict[str, Row]:
+    """``base``에 ``extra``의 행을 넣는다. 실행 비트가 None인 행은 ``base``의 실행 비트를 이어받는다."""
+    out = dict(base)
+    for k, v in extra.items():
+        exec_bit = v[2] if len(v) > 2 and v[2] is not None else (base[k][2] if k in base and len(base[k]) > 2 else False)
+        out[k] = (v[0], v[1], exec_bit)
     return out
 
 
-def _accepted_table(h: _Holder, r: int) -> dict[str, tuple[int, str]]:
+def _fix_rows(h: _Holder, fix: FixResult | None) -> dict[str, Row]:
+    """고친 파일(``fixloop/fixed/``)의 (크기, sha256, None)을 manifest 경로로 반환한다. 고친 소스는 작으므로 그 파일만 읽는다.
+    덮어쓰기는 수정본 파일의 권한을 그대로 두므로 실행 비트는 원래 행의 것을 쓴다(``_with_rows``)."""
+    if fix is None or not fix.fixed or not fix.changed or not fix.fixed_dir:
+        return {}
+    root = h.paths.root / fix.fixed_dir
+    out: dict[str, Row] = {}
+    for x in fix.changed:
+        f = root / str(x).strip("/")
+        if f.is_file() and not f.is_symlink():
+            out[_prefix(h) + str(x).strip("/")] = (f.stat().st_size, sha256_file(f), None)
+    return out
+
+
+def _accepted_table(h: _Holder, r: int) -> dict[str, Row]:
     """accepted/의 manifest 경로마다 (크기, sha256)을 가능하면 트리를 읽지 않고 만든다.
 
     Candidates, each accepted only when its `intake.table_hash` equals the round plan's `source_tree_hash` (the tree
     hash `_plan` computed from accepted/ with its one walk of the round): the expected table of the last committed
     round (`rounds/<k>/expected.json` with that round's fixed files substituted, since a round commits its synced
-    candidate), then `original/manifest.json` (size + sha256 of the upload). When neither matches (a round committed by
-    an earlier version), accepted/ is hashed once (`intake.file_table`)."""
+    candidate), then `original/manifest.json` (size + sha256 of the upload; the exec bit then comes from an lstat of
+    each accepted/ file, no read). When neither matches (a round committed by an earlier version, or a table without
+    the exec bit), accepted/ is hashed once (`intake.file_table`)."""
     from .intake import file_table, table_hash
     paths = h.paths_list
     plan = h.load_plan(r)
     want = plan.source_tree_hash if plan is not None else ""
-    tries: list[tuple[str, dict[str, tuple[int, str]]]] = []
+    tries: list[tuple[str, dict[str, Row]]] = []
     committed = [x for x in h.state.rounds if x.committed and x.round < r]
     if committed:
         last = max(committed, key=lambda x: x.round)
         rows = _rows(read_json(_expected_path(h, last.round)))
         if rows is not None:
-            rows.update(_fix_rows(h, last.fix))
-            tries.append((f"round {last.round}", rows))
+            tries.append((f"round {last.round}", _with_rows(rows, _fix_rows(h, last.fix))))
     man = read_json(h.paths.manifest)
     if isinstance(man, dict) and isinstance(man.get("entries"), list):
         rows = {}
         for e in man["entries"]:
             if isinstance(e, dict) and "path" in e and "size" in e and "sha256" in e:
-                rows[str(e["path"])] = (int(e["size"]), str(e["sha256"]))
+                rows[str(e["path"])] = (int(e["size"]), str(e["sha256"]), None)
         tries.append(("manifest", rows))
+    listed = set(paths)
     for name, rows in tries:
         if want and table_hash(rows, paths) == want:
             log.debug("remediation round %s: the expected table starts from the %s table", r, name)
-            return {k: v for k, v in rows.items() if k in set(paths)}
+            out: dict[str, Row] = {}
+            for k, v in rows.items():
+                if k not in listed:
+                    continue
+                exec_bit = v[2]
+                if exec_bit is None:
+                    # manifest에는 실행 비트가 없으므로 accepted/의 권한만 읽는다(내용은 읽지 않는다)
+                    try:
+                        exec_bit = bool(os.lstat(h.paths.accepted / k).st_mode & 0o111)
+                    except OSError:
+                        exec_bit = False
+                out[k] = (v[0], v[1], exec_bit)
+            return out
     log.info("remediation round %s: no recorded table matches accepted/; hashing it once", r)
     return file_table(h.paths.accepted, paths)
 
 
-def _write_expected(h: _Holder, r: int, stored: dict[str, tuple[int, str]]) -> None:
+def _write_expected(h: _Holder, r: int, stored: dict[str, Row]) -> None:
     """라운드 ``r``의 manifest 경로마다 기대하는 (크기, sha256)과 적용한 파일 목록을 ``expected.json``에 원자적으로 쓴다.
 
-    `rounds/<r>/expected.json` = `{schema: 1, round, applied, applied_files, files: {path: [size, sha256]}}`: accepted/
+    `rounds/<r>/expected.json` = `{schema: 2, round, applied, applied_files, files: {path: [size, sha256, exec]}}`: accepted/
     (`_accepted_table`) with the files stored under `applied/` substituted. Written after `applied/` and before
     `mark_candidate`, whose marker carries this file's sha256: together they are the proof that the candidate's
     applied files are stored completely."""
     rs = h.round_state(r)
-    files = _accepted_table(h, r)
-    files.update(stored)
+    files = _with_rows(_accepted_table(h, r), stored)
     write_json_atomic(_expected_path(h, r), {
-        "schema": 1, "round": r, "applied": list(rs.applied), "applied_files": sorted(stored),
-        "files": {k: [v[0], v[1]] for k, v in sorted(files.items())}})
+        "schema": 2, "round": r, "applied": list(rs.applied), "applied_files": sorted(stored),
+        "files": {k: [v[0], v[1], bool(v[2])] for k, v in sorted(files.items())}})
 
 
-def _expected_table(h: _Holder, r: int, *, with_fix: bool = True) -> dict[str, tuple[int, str]] | None:
-    """라운드 ``r``의 기대하는 (크기, sha256) 표를 반환한다. 고친 파일이 있으면 그 값으로 바꾼다. 표가 없으면 None이다."""
+def _expected_table(h: _Holder, r: int, *, with_fix: bool = True) -> dict[str, Row] | None:
+    """라운드 ``r``의 기대하는 (크기, sha256, 실행 비트) 표를 반환한다. 고친 파일이 있으면 그 값으로 바꾼다. 표가 없으면 None이다."""
     rows = _rows(read_json(_expected_path(h, r)))
     if rows is None:
         return None
     if with_fix:
-        rows.update(_fix_rows(h, h.round_state(r).fix))
+        rows = _with_rows(rows, _fix_rows(h, h.round_state(r).fix))
     return rows
 
 
@@ -1398,8 +1664,6 @@ def _run_build(h: _Holder, r: int, cand: Path) -> tuple[Any | None, str | None]:
     if fix is not None and fix.fixed:
         return _confirm_fix(h, r, cand, fresh=False)
     outcome = _package(h, r, cand, h.paths.build_log(r))
-    rs.build, rs.build_compare, rs.build_tolerated = outcome, {}, False
-    rs.fix_first_build = None
     if outcome.ok or _baseline_errors_only(h, r, outcome, cand):
         return outcome, None
     if fix is None and _fix_wanted(h, r):
@@ -1419,8 +1683,22 @@ R_FIX_UNUSABLE = "discarded: the stored fix is not usable"
 LOOP_FILE = "loop.json"                 # 루프를 시작하기 전에 fixloop/에 쓰는 표식 파일
 INTERRUPTED_DIR = "fixloop-interrupted-{n}"
 R_FIX_STOP = "stop requested"
+FIX_NO_ATTEMPT = "automatic build fix made no attempt"   # 루프는 시작했지만 소스 수정을 한 번도 시도하지 않았다
 R_FIX_TIME = "time budget used up"
 FIX_RESERVE_MIN_SECONDS = 300.0         # 수정 루프 뒤 실패한 수정본을 내보낼 시간으로 남겨 두는 최소 초
+
+
+def fix_made_no_attempt(fix: Any) -> bool:
+    """수정 루프가 시작했지만 소스 수정을 한 번도 시도하지 않고 고치지 못한 결과인지 확인한다.
+
+    `attempted` and not `fixed` with `attempts == 0`, except a result that had been a fix (a failed confirming build,
+    a discarded fix: their reason says what happened to the fix)."""
+    if fix is None or not getattr(fix, "attempted", False) or getattr(fix, "fixed", False):
+        return False
+    reason = str(getattr(fix, "reason", "") or "")
+    if reason == R_FIX_CONFIRM_FAILED or reason.startswith("discarded:") or getattr(fix, "discarded_changed", None):
+        return False
+    return not int(getattr(fix, "attempts", 0) or 0)
 
 
 def _fix_wanted(h: _Holder, r: int) -> bool:
@@ -1551,12 +1829,22 @@ def _run_fix(h: _Holder, r: int, outcome: Any, cand: Path) -> None:
         h.journal({"event": "remediation_fix_loop", "round": r, "phase": "not_started", "reason": rs.fix.reason})
         h.save()
         return
-    if work.exists() or work.is_symlink():
-        _settle_old_loop(h, r, work)
-    _safe_rmtree(work)
     token = f"{st.id}-fix-r{r}-{os.urandom(4).hex()}"
-    work.mkdir(parents=True, exist_ok=True)
-    write_json_atomic(work / LOOP_FILE, {"loop": token, "round": r})
+    try:
+        if work.exists() or work.is_symlink():
+            _settle_old_loop(h, r, work)
+        _safe_rmtree(work)
+        work.mkdir(parents=True, exist_ok=True)
+        write_json_atomic(work / LOOP_FILE, {"loop": token, "round": r})
+    except Exception as e:  # noqa: BLE001 - 폴더를 준비하지 못하면 루프를 시작하지 않고 고치지 못한 것으로 이어 간다
+        # 수정본은 건드리지 않았으므로 실패한 수정본을 그대로 내보낸다
+        log.warning("remediation round %s: the fix loop folder could not be prepared: %s", r, type(e).__name__,
+                    exc_info=True)
+        rs.fix = FixResult(attempted=False, fixed=False,
+                           reason=scrub_message(f"error: {type(e).__name__}: {e}", p.root, 500))
+        h.save()
+        h.journal({"event": "remediation_fix_loop", "round": r, "phase": "not_started", "reason": rs.fix.reason})
+        return
     deadline = time.monotonic() + seconds
     h.journal({"event": "remediation_fix_loop", "round": r, "phase": "start"})
     log.info("remediation round %s: the candidate build failed; running the build fix loop (%.0f s at most)", r,
@@ -1604,9 +1892,7 @@ def _fix_tree_hash(h: _Holder, r: int, fix: FixResult) -> str:
         table = _expected_table(h, r, with_fix=False)
         if table is not None:
             # 기대하는 표에 고친 파일의 값을 넣어 계산하므로 트리를 읽지 않는다
-            rows = dict(table)
-            rows.update(_fix_rows(h, fix))
-            return table_hash(rows, h.paths_list)
+            return table_hash(_with_rows(table, _fix_rows(h, fix)), h.paths_list)
         cand = h.paths.candidate(r)
         prefix = _prefix(h)
         root = h.paths.root / fix.fixed_dir
@@ -1757,9 +2043,8 @@ def _confirm_fix(h: _Holder, r: int, cand: Path, *, fresh: bool) -> tuple[Any | 
                f"stop requested before the round {r} confirming build; the build fix is kept and confirmed on resume")
         return None, None
     fixed_log = h.paths.round_dir(r) / FIX_LOG
-    confirm = _package(h, r, cand, fixed_log)
+    confirm = _package(h, r, cand, fixed_log, confirming=True)
     if confirm.ok:
-        rs.build = confirm
         log.info("remediation round %s: the build fix passed the confirming build (%d file(s) changed%s)", r,
                  len(paths), ", the first build failure was transient" if fix.retry_passed else "")
         return confirm, None
@@ -1786,11 +2071,17 @@ def _confirm_fix(h: _Holder, r: int, cand: Path, *, fresh: bool) -> tuple[Any | 
 
 def _fix_not_applied(h: _Holder, r: int, outcome: Any) -> str | None:
     """고치지 못한 수정본 빌드 실패를 지금과 같이 끝내고, 수정 루프의 사유를 메시지 끝에 붙인다.
-    루프를 실행했으면 ``automatic build fix``, 시작하지 않았으면 ``automatic build fix not started``로 적는다."""
+    루프가 시도했으면 ``automatic build fix``, 시작했지만 시도가 하나도 없으면 ``automatic build fix made no attempt``,
+    시작하지 않았으면 ``automatic build fix not started``로 적는다."""
     nxt = _candidate_failed(h, r, outcome)
     fix = h.round_state(r).fix
     if fix is not None and not fix.fixed and fix.reason:
-        label = "automatic build fix" if fix.attempted else "automatic build fix not started"
+        if not fix.attempted:
+            label = "automatic build fix not started"
+        elif fix_made_no_attempt(fix):
+            label = FIX_NO_ATTEMPT
+        else:
+            label = "automatic build fix"
         suffix = f"{label}: {fix.reason}"
         h.state.message = f"{h.state.message} | {suffix}" if h.state.message else suffix
     return nxt
@@ -1920,14 +2211,13 @@ def _drop_ineffective(h: _Holder, r: int, applied: list[Proposal], drop: list[Pr
 
 
 def _freeze_delivery(h: _Holder) -> str | None:
+    """확정한 accepted/를 결과 ZIP으로 만든다. 새 ZIP을 다 쓴 뒤에만 result.zip을 바꾸므로, 쓰지 못하면 이전 결과가 그대로 남고
+    실행은 FAILED로 끝난다(``DeliveryNotWritten``, ``_wrap``이 처리한다)."""
     st, p = h.state, h.paths
-    if p.delivery_zip.exists():
-        p.delivery_zip.unlink()
-    st.delivery = h.c.intake.freeze_delivery(p.accepted, p.delivery_zip, st.round, h.paths_list)
-    if h.baseline_failed_tolerated and any(rs.committed and rs.build_tolerated for rs in st.rounds):
-        # 조치 전과 같은 오류로 빌드가 실패한 변경이 들어 있으므로 빌드로 확인한 결과 ZIP이 아니다
-        st.delivery.build_ok, st.delivery.build_tolerated = False, True
-    write_json_atomic(p.delivery_json, st.delivery.to_dict())
+    # 조치 전과 같은 오류로 빌드가 실패한 변경이 들어 있으면 빌드로 확인한 결과 ZIP이 아니다
+    tolerated = h.baseline_failed_tolerated and any(rs.committed and rs.build_tolerated for rs in st.rounds)
+    h.install_delivery(lambda out: h.c.intake.freeze_delivery(p.accepted, out, st.round, h.paths_list), st.round,
+                       build_ok=not tolerated, build_tolerated=tolerated)
     return "rescan"
 
 
@@ -2096,8 +2386,14 @@ def _wrap(name: str, h: _Holder) -> Callable[[RemediationGraphState], dict]:
         except Exception as e:  # noqa: BLE001 - 노드의 예상 못 한 오류도 보고서까지 간다
             # 예외 메시지에 URL 자격 증명 같은 비밀 값이 있을 수 있으므로 traceback도 마스킹한 뒤에 로그에 기록한다
             log.error("remediation node %s failed: %s", name, scrub_message(traceback.format_exc(), h.paths.root, 20000))
-            reason = e.code if isinstance(e, NotReady) else R_INTERNAL_ERROR
-            nxt = h.finish(FAILED, reason, scrub_message(f"{type(e).__name__}: {e}", h.paths.root))
+            if isinstance(e, DeliveryNotWritten):
+                # 결과 ZIP을 쓰지 못했다는 문장에 남은 결과가 이미 들어 있다
+                nxt = h.finish(FAILED, R_INTERNAL_ERROR, scrub_message(str(e), h.paths.root))
+            elif isinstance(e, ScanSourceChanged):
+                nxt = h.finish(FAILED, R_ZIP_HASH_MISMATCH, scrub_message(str(e), h.paths.root))
+            else:
+                reason = e.code if isinstance(e, NotReady) else R_INTERNAL_ERROR
+                nxt = h.finish(FAILED, reason, scrub_message(f"{type(e).__name__}: {e}", h.paths.root))
         h.journal({"event": "node_end", "node": name, "status": st.status, "next": nxt, "round": st.round})
         if nxt is None:                       # waiting status set by the node
             h.save()
@@ -2147,8 +2443,15 @@ def run_remediation(state: RemediationState, paths: RunPaths, cfg: Any, componen
 
     Drive one remediation from `state.next_node` to a terminal or waiting status, saving at every node boundary. A
     state an earlier version saved in `AWAITING_APPROVAL` is returned untouched like a terminal one."""
+    # 결과 ZIP을 바꾸던 중에 끝났으면 state를 디스크의 결과 ZIP과 먼저 맞춘다
+    if recover_delivery(paths, state):
+        save(state)
     # 승인을 기다리던 이전 버전의 작업은 끝난 작업처럼 다루고 아무것도 실행하지 않는다
-    if state.status in TERMINAL or state.status == LEGACY_AWAITING_APPROVAL:
+    if state.status == LEGACY_AWAITING_APPROVAL:
+        return state
+    if state.status in TERMINAL:
+        # 보고서 노드 도중에 끝난 작업이면 보고서만 쓴다
+        write_pending_report(state, paths, cfg, save=save, journal=journal)
         return state
     _recover_accepted(paths)
     holder = _Holder(state, paths, cfg, components, save, journal, stop)
@@ -2160,6 +2463,44 @@ def run_remediation(state: RemediationState, paths: RunPaths, cfg: Any, componen
     graph.invoke(RemediationGraphState(id=state.id, node="", round=state.round, halt=False, next=""),
                  config={"recursion_limit": limit})
     return holder.state
+
+
+def report_written(paths: RunPaths, state: RemediationState) -> bool:
+    """이 state로 보고서를 썼는지 확인한다. report.md가 있고 report.json에 담긴 state의 ``updated``가 같아야 한다.
+
+    The report node stamps `state.updated`, writes `fix.patch`, `report.json` (which embeds the state) and
+    `report.md`, then saves the state without stamping again; so a report belongs to this state exactly when
+    `report.md` exists and `report.json["state"]["updated"]` equals `state.updated`."""
+    if not paths.report_md.is_file():
+        return False
+    data = read_json(paths.report_json)
+    rec = data.get("state") if isinstance(data, dict) else None
+    return isinstance(rec, dict) and rec.get("updated") == state.updated
+
+
+def report_pending(paths: RunPaths, state: RemediationState) -> bool:
+    """끝 상태로 보고서 노드에 들어갔지만 보고서를 다 쓰지 못한 작업인지 확인한다.
+
+    A final status (`TERMINAL`) whose next node is `report` (every final status the graph saves) and whose report was
+    not written for it (`report_written`): a kill during the report node. States that ended outside the graph (an
+    intake rejection, a start that failed) never had a report node and are not pending."""
+    return state.status in TERMINAL and state.next_node == "report" and not report_written(paths, state)
+
+
+def write_pending_report(state: RemediationState, paths: RunPaths, cfg: Any, *,
+                         save: Callable[[RemediationState], None], journal: Journal) -> bool:
+    """보고서 노드 도중에 끝난 작업의 보고서(합친 ``fix.patch`` 포함)를 쓴다. 쓸 것이 없으면 False를 반환한다.
+
+    Runs the report node once (`_report` through `_wrap`, so the same stamps and saves) for a `report_pending` state;
+    nothing else of the graph runs. Called on the next entry of a run folder: `run_remediation` (in-process service,
+    `chain._drive`) and `chain`'s entries for an existing state (`run_after_migration`, `run_only`, `resume`)."""
+    if not report_pending(paths, state):
+        return False
+    log.warning("remediation %s: the report of the %s run was not written; writing it now", state.id, state.status)
+    holder = _Holder(state, paths, cfg, None, save, journal, lambda: False)    # type: ignore[arg-type]
+    holder.journal({"event": "report_rewritten", "status": state.status})
+    _wrap("report", holder)(RemediationGraphState(id=state.id, node="", round=state.round, halt=False, next=""))
+    return True
 
 
 # ---------------------------------------------------------------------------- service helpers

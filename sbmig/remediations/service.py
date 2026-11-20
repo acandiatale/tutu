@@ -596,8 +596,28 @@ class RemediationManager:
                     self.interrupted.append(d.name)
                 except OSError as e:
                     log.warning("remediation %s: could not mark INTERRUPTED: %s", d.name, type(e).__name__)
+            elif not self.job_mode and graph_mod.report_pending(paths, st):
+                self._write_pending_report(d.name, paths, st)
         if self.interrupted:
             log.warning("remediations interrupted by a server restart (resume explicitly): %s", ", ".join(self.interrupted))
+
+    def _write_pending_report(self, rid: str, paths: RunPaths, st: RemediationState) -> None:
+        """보고서 노드 도중에 서버가 내려간 단독 조치의 보고서를 시작할 때 쓴다. 실패해도 시작을 막지 않는다.
+
+        In-process only (the process that drives standalone runs): a final state whose report node was killed
+        (`graph.report_pending`) gets its report written once at startup, under the run claim."""
+        try:
+            claim = RunClaim(paths.root, purpose="service").acquire()
+        except StateConflict:
+            return
+        try:
+            cfg = remediation_config(self._config(list(st.configs)))
+            graph_mod.write_pending_report(st, paths, cfg, save=lambda s: self._save(paths, s),
+                                           journal=lambda e: self._journal_safe(paths, e))
+        except Exception as e:  # noqa: BLE001 — a report that cannot be written never stops the server
+            log.warning("remediation %s: the report was not written at startup: %s", rid, type(e).__name__)
+        finally:
+            claim.release()
 
     # ------------------------------------------------------------------ readiness
     def readiness(self, cfg: Any = None) -> list[str]:

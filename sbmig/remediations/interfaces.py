@@ -146,9 +146,10 @@ class IntakeFns(Protocol):
     # ``tree``의 manifest 경로를 ``expected(path)``의 바이트와 맞추고 (되살린 경로, 덮어쓴 경로)를 반환한다
     # 수정본을 빌드할 때마다 호출해 빌드가 바꾼 파일이 결과에 들어가지 않게 한다
     def sync_tree(self, tree: Path, expected: Callable[[str], Path], paths: list[str]) -> tuple[list[str], list[str]]: ...
-    # 기록된 (크기, sha256) 표와 비교해 다른 경로만 ``expected(path)``에서 되돌린다. 트리의 파일은 많아야 한 번 읽는다
+    # 기록된 (크기, sha256, 실행 비트) 표와 비교해 다른 경로만 ``expected(path)``에서 되돌린다. 트리의 파일은 많아야 한 번 읽는다
+    # 바이트가 같아도 실행 비트가 다르거나 읽을 수 없던 파일은 권한을 되돌리고 바꾼 경로로 센다
     # 되돌리지 못한 경로가 있으면 두 함수 모두 모든 경로를 시도한 뒤 ``intake.SyncFailed``를 던진다
-    def sync_tree_table(self, tree: Path, expected: Callable[[str], Path], table: dict[str, tuple[int, str]],
+    def sync_tree_table(self, tree: Path, expected: Callable[[str], Path], table: dict[str, tuple],
                         paths: list[str]) -> tuple[list[str], list[str]]: ...
 
 
