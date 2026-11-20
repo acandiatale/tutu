@@ -166,9 +166,9 @@ as-is 부모는 회사 부모로 맞추지 않고, 받지 못하면 LLM 없이 `
      -> 시도마다 커밋 fix(script:<case>:v<N> <mode>) 또는 fix(edits:<case> <source>)
 ```
 
-끝나는 조건은 언제나 빌드 뒤: 성공, 라운드 소진, 손댈 케이스 없음, 차단만 남음, 시간 초과, 멈춤 요청. 끝날 때 케이스마다 마지막으로 적용한 시도가
-`no_change` / `inconclusive`면 최종 빌드 전에 되돌린다(저널 `script_rollback` `where: "loop end"`, 시도 메모 "rolled back before the final build
-(it did not help)"; `partial`은 남긴다). 저널 이벤트는 [03](03-run-debug-and-logs.md) 4절. 루프가 돌았으면
+끝나는 조건은 언제나 빌드 뒤: 성공, 라운드 소진, 손댈 케이스 없음, 차단만 남음, 시간 초과, 멈춤 요청(뒤 둘은 빌드 사이와 LLM 요청 앞마다
+확인, 저널 `llm_ask_skipped`). 끝날 때 케이스마다 마지막으로 적용한 시도가 `no_change` / `inconclusive`면 최종 빌드 전에 되돌린다(저널
+`script_rollback` `where: "loop end"`; `partial`은 남긴다). 저널은 [03](03-run-debug-and-logs.md) 4절. 루프가 돌았으면
 `_step_verify`가 최종 `mvn clean package`를 **반드시** 다시 한다(불변조건 1).
 
 ## 9. 마무리 (finalize) — `_finalize`

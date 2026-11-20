@@ -186,6 +186,7 @@ Symptoms an operator meets and where to look:
 | upload answers HTTP 507 / HTTP 403 `cross-site request refused: …` | §5 |
 | `remediation=FAILED`, `the round <r> candidate could not be put back to its expected state after the build (<n> path(s), first: <p>: <ErrorType>); nothing of this round was delivered` (report: 「라운드 <r>의 수정본을 빌드 뒤 원래 상태로 되돌리지 못해 …」) | The build (or a later Maven call) changed a manifest path of the candidate and sbmig could not write it back, even after making its folders writable once. Journal `candidate_sync_failed` / `candidate_not_restored` name the first 5 paths and error types; look at the permissions / owner of `remediation/rounds/<r>/candidate/<p>` (a plugin that leaves read-only files, a file owned by another user on the volume). Nothing of that round was committed or delivered; an earlier round's verified `result.zip` stays. Fix the cause, then upload the project again |
 | `remediation=FAILED`, `the result ZIP of round <r> could not be written (<ErrorType>: …); delivery/result.zip is still the result ZIP of round <k>` (or `no result ZIP exists; the original is preserved as original/source.zip`; report: 「라운드 <r>의 결과 ZIP을 쓰지 못했습니다(…).」) | Writing the new result ZIP failed (full disk, a read-only or foreign-owned `remediation/delivery/`). Nothing was replaced: `delivery/result.zip`, `delivery.json` and the state still describe the ZIP the sentence names (round 0 = the unchanged project). Journal `delivery_not_written` (`round`, `error`, `kept_round`). Free space or fix the folder's owner, then upload the project again. Leftover `delivery/.result.next.zip` / `.result.next.json` after a pod was killed are cleaned up (or the swap completed) by the next entry of that run folder; never remove or rename them by hand while a run holds the folder |
+| `remediation=FAILED`, `delivery/result.zip is now the result ZIP of round <r>, but delivery/delivery.json (and / or state.json) could not be written (<ErrorType>: …); the record is completed the next time this run is opened` (report: 「결과 ZIP(delivery/result.zip)은 이제 라운드 <r>의 결과입니다. 다만 기록 파일(…)을 쓰지 못했습니다(…). 이 실행을 다음에 열 때 기록을 마저 맞춥니다.」) | The new result ZIP was already in place when writing its records failed (full disk). The swap is rolled forward: `result.zip` is round <r>'s ZIP, the marker `delivery/.result.next.json` stays. Journal `delivery_record_not_written` (`round`, `records`, `error`). Free space; the next time anything opens the run (opening its status on the page, a download, a resume, a web-pod restart) the records are completed (journal `delivery_recovered`); never edit `delivery.json` or remove the marker by hand |
 | `remediation=FAILED zip_hash_mismatch`, `the scan source ZIP (original/scan-source.zip) could not be made again with the sha256 recorded in the state` (report: 「검사용 ZIP(original/scan-source.zip)을 처음 검사한 것과 같은 바이트로 다시 만들 수 없습니다.」) | The upload carried build output, so the baseline scan was of `original/scan-source.zip` (a ZIP of `accepted/`); on a later entry that ZIP was missing or changed and could not be made again with the same bytes, so the scanned bytes cannot be vouched for. Something changed `accepted/` or `original/` outside the run. Upload the project again. `IVAS … differs from the scan source ZIP` is the same check failing on IVAS's side |
 | journal `candidate_rebuilt` with `why` (`no record that the applied files were stored completely`, `no completeness marker`, …) after an image was deployed | A remediation run stopped or waiting at `build` by the previous version resumed in the new one: its run folder lacks the proof, so the candidate is made again from `accepted/` and the plan's edits are applied again. Expected once per such run, not an error; the same `why` on a run the current version started means a kill during `apply` |
 
@@ -319,7 +320,8 @@ sbmig clean --fleet out\fleet --older-than 7 --keep-failed --dry-run
   (`SBMIG_WEB_TOKEN` or `--token`; `--open` only on a trusted intranet). The configs every upload runs with are the
   server's choice (`--config` / `SBMIG_WEB_CONFIGS`). In-process mode runs one migration at a time (the others are
   `queued`); "중단" takes effect between graph nodes, and a stop that arrives after every planned final build has a
-  result is ignored (journal `stop_request` with `ignored`; a fix loop left on the request ends the run as aborted with
+  result is ignored (journal `stop_request` with `ignored`); inside the build fix loop the request (and the run time budget)
+  is checked between builds and before each LLM request (journal `llm_ask_skipped`); a fix loop left on the request ends the run as aborted with
   "… the fix loop was left early; the last build shows the tree as it was left").
 - **Requests from another web site are refused**: any request other than GET / HEAD / OPTIONS carrying
   `Sec-Fetch-Site: cross-site`, or an `Origin` whose host is not the request's own (`Host` / `X-Forwarded-Host`;
@@ -394,14 +396,20 @@ round ends `candidate_build_failed` as before, the status message ending in ` | 
 ` | automatic build fix not started: <reason>`) and the report saying 「빌드 오류 자동 수정을 시도했지만 고치지
 못했습니다(<사유>). 시도한 소스 수정은 결과에 넣지 않았습니다.」 (not started: 「빌드 오류 자동 수정은 시작하지 않았습니다(<사유>).」). A
 stop during the confirming build keeps the fix: the run halts `STOPPED` and a resume confirms it again. A loop that
-ended because of a stop request is not a result: a resume may run it again (`time budget used up` stays final). A
+ended because of a stop request is not a result: a resume may run it again (`time budget used up` stays final); the
+loop checks the stop request and its time before each LLM request too, and a stop during the loop halts `STOPPED` with
+`stop requested during the round <r> build fix` (「라운드 <r>의 빌드 오류 자동 수정 중에 중지 요청을 받았습니다.」). A
+loop that never started because of a stop or the time budget may start on resume; one whose folder could not be prepared
+stays not started. A
 loop that started but made no attempt (the LLM unavailable at once, out of time before the first attempt) ends the
 message with ` | automatic build fix made no attempt: <reason>` and the report says 「빌드 오류 자동 수정을 하지
 못했습니다(<사유>).」; a loop whose folder could not be prepared counts as not started. A fix is
 discarded (record line, LLM calls still counted) when its confirming build fails, when the round's candidate is remade
 after an ineffective override entry was dropped, or when it no longer fits the candidate on resume; a loop the pod was
 killed in is kept as `rounds/<r>/fixloop-interrupted-<n>/` and its LLM calls are counted once, at the next entry of the
-build node (or the report node) whatever happens next. A candidate is built only with the proof that its applied files
+build node (or the report node) whatever happens next; its work copy `tree/` is then removed (journal and logs stay). A
+re-entry after a kill never redoes what the uninterrupted run would not: a fix found not usable is not run again, and a
+stored complete baseline scan of the same bytes is reused (journal `baseline_scan_reused`), never uploaded again. A candidate is built only with the proof that its applied files
 were stored completely: `rounds/<r>/applied/` (the edited poms), `rounds/<r>/expected.json` (size, sha256 and exec bit
 of every manifest path) and `rounds/<r>/candidate.ready.json` naming that file's sha256; without it (a kill during `apply`, or a
 run folder an older version left) the candidate is made again from `accepted/` (journal `candidate_rebuilt` with
@@ -417,8 +425,11 @@ calls that do not go through the build runner (effective pom, dependency tree) k
 per-attempt guard does not see a new file under a path the project's `.gitignore` ignores (the check at the end of the
 loop does). The loop's LLM
 calls count in `SBMIG-RESULT … llm=` (after an exception inside the loop they are read from the loop's journal; calls
-without token counts are marked `tokens_unknown` and never priced), in `GET /api/runs/{id}` (`llm_calls`, of which `remediation_llm_calls`) and on
-the admin page (「조치 N회 포함」); the migration's `report.json` usage does not hold them. Operator text:
+without token counts are marked `tokens_unknown` and never priced; a loop whose journal cannot be read is
+`usage_unknown`, and `llm=` then holds the known calls only), in `GET /api/runs/{id}` (`llm_calls`, of which
+`remediation_llm_calls`; `remediation_llm_usage_unknown: true` when part is unknown) and on the admin page (「조치 N회
+포함」; 「일부 알 수 없음」 under the calls and 「알 수 없음」 as the cost when part is unknown; the report says 「LLM 사용량
+일부는 알 수 없음」); the migration's `report.json` usage does not hold them. Operator text:
 `deploy/README.md` §6; flow, states, API and diagnosis: `agent-doc/11-remediations.md`; `sbmig remediation-resume
 --run-dir <dir>` resumes outside Kubernetes.
 
@@ -431,9 +442,13 @@ baseline scan uploads `original/scan-source.zip`, a deterministic ZIP of `accept
 bytes; without build output the upload itself is scanned and delivered. A run started by an earlier version that had
 already scanned the original keeps the original. Every result ZIP is written under `delivery/.result.next.zip` first,
 with the marker `delivery/.result.next.json`, and only then replaces `result.zip`; both temporary files exist only during
-that swap, and the next entry of the run folder completes or rolls back a swap a killed pod left. A final state whose
-report node was killed gets its report on the next entry (journal `report_rewritten`; `chain.resume` journals
-`remediation_report_repair` instead of refusing it; the in-process server writes it at startup).
+that swap (or after a failure to write the records once the ZIP was replaced), and every entry that sees the run folder
+again completes or rolls back the swap (journal `delivery_recovered`; a leftover `.result-r*-verified.zip.copy-tmp` is
+removed too). A final state whose report node was killed, or whose swap record is pending, is repaired on the next entry
+(journal `report_rewritten`; `chain.resume` journals `remediation_report_repair` instead of refusing it) and, once nothing
+drives the run any more, by the web service in every mode: when the page asks for the remediation's status, report,
+`result.zip` or `fix.patch`, and at startup for standalone runs (journal `remediation_final_repair`; status, reasons and
+message unchanged; a fresh claim of a killed pod delays it up to 600 s).
 
 **Remediation only** (a project migrated earlier, checked again): `sbmig run <zip|dir> --config config/artifacts.yml
 --flow remediation` on a PC, or the page's 취약점 해결 choice (in the cluster an ordinary build Job in the same queue; nothing

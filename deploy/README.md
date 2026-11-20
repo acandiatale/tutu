@@ -818,9 +818,13 @@ preflight / ADF / 내부 오류)이면 3. `SBMIG_FAIL_JOB_ON_BUILD_FAIL=1` 이�
   후보는 그대로이고 아래처럼 `candidate_build_failed` 로 끝나며, 보고서에 「빌드 오류 자동 수정을 시도했지만 고치지 못했습니다(<사유>). 시도한 소스
   수정은 결과에 넣지 않았습니다.」(시작하지 않았으면 「빌드 오류 자동 수정은 시작하지 않았습니다(<사유>).」, 시작했지만 시도가 하나도 없었으면
   「빌드 오류 자동 수정을 하지 못했습니다(<사유>).」)가 붙는다. 루프 폴더를 준비하지 못하면 시작하지 않은 것으로 보고 실패한 후보를 낸다. 확인 빌드 중에 멈춰도 고친 것은
-  버리지 않고 재개하면 다시 확인한다. 중지 요청으로 멈춘 루프는 재개하면 다시 돈다(시간이 모자라 멈춘 루프는 그대로 끝).
-  파드가 루프 도중에 끝나면 그 폴더를 `fixloop-interrupted-<n>/` 로 남기고, 다음에 빌드(또는 보고서) 단계에 들어갈 때 그 LLM 호출을 한 번 센다.
-  루프 밖으로 예외가 나오면 사용량은 루프의 저널에서 읽고, 토큰 수를 모르는 호출에는 비용을 매기지 않는다.
+  버리지 않고 재개하면 다시 확인한다. 루프는 빌드 사이와 LLM 에 묻기 전마다 중지 요청과 시간 한도를 본다(저널 `llm_ask_skipped`). 루프 도중의
+  중지는 `STOPPED`(「라운드 <r>의 빌드 오류 자동 수정 중에 중지 요청을 받았습니다.」)이고, 중지 요청으로 멈춘 루프나 중지·시간 때문에 시작하지 못한
+  루프는 재개하면 다시 돈다(시간이 모자라 멈춘 루프는 그대로 끝).
+  파드가 루프 도중에 끝나면 그 폴더를 `fixloop-interrupted-<n>/` 로 남기고, 다음에 빌드(또는 보고서) 단계에 들어갈 때 그 LLM 호출을 한 번 센 뒤
+  작업 복사본 `tree/` 를 지운다(저널·로그는 남는다). 루프 밖으로 예외가 나오면 사용량은 루프의 저널에서 읽고, 토큰 수를 모르는 호출에는 비용을
+  매기지 않는다. 저널을 읽지 못한 루프의 사용량은 "알 수 없음"으로 남긴다: 관리자 페이지는 호출 칸에 「일부 알 수 없음」, 비용 칸에 「알 수 없음」,
+  보고서는 「LLM 사용량 일부는 알 수 없음」이라고 쓰고, 결과 줄 `llm=` 은 아는 호출 수만 센다.
   후보는 적용한 파일을 모두 저장했다는 증명이 있을 때만 빌드한다: `rounds/<r>/applied/`(적용한 pom), `rounds/<r>/expected.json`(경로마다 크기,
   sha256, 실행 비트), 그 해시를 담은 `rounds/<r>/candidate.ready.json`. 없으면(적용 도중 파드가 끝남, 이전 이미지가 남긴 실행 폴더) `accepted/` 에서 다시
   적용하고 저널 `candidate_rebuilt` 에 `why` 를 남긴다. 이미지를 바꾼 뒤 재개한 실행에서 한 번 보이는 것은 정상이다.
@@ -839,12 +843,19 @@ preflight / ADF / 내부 오류)이면 3. `SBMIG_FAIL_JOB_ON_BUILD_FAIL=1` 이�
   마친 ZIP 이 있으면 `result-verified.zip`. `discard` 면 내지 않는다. "계획한 것만 바뀌었나"·해석 검증에 걸린 후보는 어느 값이든 내지 않는다.
 * **결과 ZIP 쓰기와 검사하는 바이트**: 결과 ZIP 은 모두 `remediation/delivery/.result.next.zip` 에 먼저 만들고 표식 `.result.next.json` 을 남긴 뒤
   `result.zip` 을 바꾼다(앞 라운드의 검증된 ZIP 은 그 전에 `result-r<k>-verified.zip` 으로 복사). 두 임시 파일은 바꾸는 동안에만 있고, 파드가 그 사이에
-  끝나면 다음 진입(재개, 이어 돌기)이 마무리하거나 되돌린다 — 손으로 지우지 않는다. 디스크가 차거나 폴더를 쓸 수 없어 새 ZIP 을 못 쓰면 앞 결과가 그대로
+  끝나면 다음 진입(재개, 이어 돌기, 아래의 웹 파드 복구)이 마무리하거나 되돌린다 — 손으로 지우지 않는다. `result.zip` 을 바꾼 뒤 기록
+  (`delivery.json`, `state.json`)을 쓰지 못하면 결과 ZIP 은 새 라운드의 것으로 두고 표식을 남긴 채 `FAILED internal_error`(`delivery/result.zip is now
+  the result ZIP of round <r>, but … could not be written (…); the record is completed the next time this run is opened`, 저널
+  `delivery_record_not_written`)로 끝나며, 다음에 이 실행을 열 때 기록을 마저 맞춘다(저널 `delivery_recovered`). 디스크가 차거나 폴더를 쓸 수 없어 새 ZIP 을 못 쓰면 앞 결과가 그대로
   남고 `FAILED internal_error`(`the result ZIP of round <r> could not be written (…); delivery/result.zip is still the result ZIP of round <k>`, 저널
   `delivery_not_written`)로 끝난다: 공간·소유자를 고친 뒤 다시 올린다. 올린 ZIP 에 빌드 산출물(`pom.xml` 옆 `target/`)이 있으면 조치 전 검사에는
   `accepted/` 를 묶은 `original/scan-source.zip` 을 올리고 바꾼 것이 없으면 그 ZIP 이 결과 ZIP 이다(원본 `original/source.zip` 은 그대로, 내려받는
-  `source.zip` 도 원본). 이 ZIP 을 같은 바이트로 다시 만들 수 없으면 `FAILED zip_hash_mismatch` 로 끝나고 다시 올리면 된다. 보고서 단계 도중 파드가 끝난
-  조치는 다음 진입(재개 · 이어 돌기, in-process 서버 시작)에서 보고서만 쓴다. Job 모드에서는 누군가 재개하거나 다시 이어 돌려야 쓰인다.
+  `source.zip` 도 원본). 이 ZIP 을 같은 바이트로 다시 만들 수 없으면 `FAILED zip_hash_mismatch` 로 끝나고 다시 올리면 된다. 노드 도중에 상태를
+  저장한 뒤 파드가 끝나도 다시 들어간 노드는 끝까지 갔을 때 하지 않았을 일을 하지 않는다: 같은 바이트를 끝까지 검사해 저장한 조치 전 검사는 다시
+  올리지 않고 그대로 쓴다(저널 `baseline_scan_reused`). 보고서 단계 도중 파드가 끝났거나 결과 ZIP 기록이 남은 끝 상태는 다음 진입(재개 · 이어 돌기)이
+  맞추고, 그 실행을 진행하던 쪽(빌드 파드, 재개 Job, 이 프로세스)이 모두 끝났으면 모든 모드에서 웹 파드가 맞춘다: 화면이 조치 상태·보고서·`result.zip`·
+  `fix.patch` 를 물을 때, 단독 조치는 웹 파드 시작 때(저널 `remediation_final_repair`, 상태·사유·메시지는 그대로, 한 번만; 남은 일이 있으면 60초마다
+  다시 시도). 죽은 파드의 점유(`claim.json`)가 아직 새로우면 600초까지 기다린다.
 * **업로드 결과를 모를 때**(`AWAITING_CONFIRMATION`): 자동 재업로드는 없다. IVAS 화면에서 그 분석이 있는지 보고 재개한다(`{"confirm": "reupload"}` /
   `{"confirm": "receipt", …}`) — Job 모드면 위의 새 빌드 파드로.
 * **채울 자리**: `k8s/30-secret.example.yaml` 의 `IVAS_BASE_URL`(`https://CHANGE_ME_IVAS_HOST[:port]/<base path>`), `IVAS_USER_ID`(`<IVAS 계정>`),

@@ -1,7 +1,7 @@
 # 케이스, 수정 스크립트, 지식베이스(KB)
 
 > 다루는 것: 오류 서명(L1 / L2)과 케이스 ID, 라운드마다 케이스로 묶고 순서를 정하는 법, 케이스당 사다리(재사용 → 보강 → 신규 → 차단)와 한도, LLM 없는 사전 시도 네 가지, 재빌드 채점, 스크립트 실행 환경과 도우미 API `p`, KB 파일과 `sbmig kb` 명령, 매칭의 알려진 함정, 재생(replay) 픽스처.
-> 언제 읽나: "이 오류가 왜 이 케이스로 묶였나 / 왜 이 스크립트가 돌았나 / 왜 차단됐나" 를 볼 때, 스크립트나 KB 를 손볼 때.
+> 언제 읽나: "왜 이 케이스로 묶였나 / 왜 이 스크립트가 돌았나 / 왜 차단됐나" 를 볼 때, 스크립트나 KB 를 손볼 때.
 > 함께 읽을 파일: [03-run-debug-and-logs.md](03-run-debug-and-logs.md), [05-llm-gateway-and-prompts.md](05-llm-gateway-and-prompts.md), [02-flow-and-nodes.md](02-flow-and-nodes.md), [../docs/ERROR-HANDLING.md](../docs/ERROR-HANDLING.md)
 
 ## 1. 한눈에
@@ -9,7 +9,7 @@
 검증 빌드(`mvn clean package -Dmaven.test.skip=true`)가 실패하면 수정 루프(`sbmig/loop/fixloop.py` 의 `BuildFixLoop`)가 돈다.
 라운드 하나 = 빌드 → 직전 시도 채점(나빠졌으면 되돌림, 저장 스크립트에 실적 기록) → 새 오류를 오류 목록에 추가 → 오류를 **케이스**로 묶기 →
 케이스마다 사다리 한 단계 → 커밋. 라운드 수는 `loop.phases.verify` 의 `max_iterations`(기본 50). 루프는 언제나 빌드 **뒤에서** 끝난다
-(BUILD SUCCESS / 라운드 소진 / 손댈 케이스 없음 / 차단만 남음 / 시간 초과 `loop.max_total_minutes`).
+(BUILD SUCCESS / 라운드 소진 / 손댈 케이스 없음 / 차단만 남음 / 시간 초과 `loop.max_total_minutes` / 멈춤; 뒤 둘은 LLM 요청 앞에서도 확인).
 
 ## 2. 서명과 케이스 ID (`sbmig/build/signatures.py`, `sbmig/triage/cluster.py`, `sbmig/errors/common.py`)
 
@@ -102,8 +102,8 @@
 |---|---|---|
 | `sbmig-version` | L2 `pom_invalid|missing_version` | 빠진 버전을 `VersionResolver` 순서로 채움: 새 부모 체인이 관리 → 버전 없음; as-is 빌드의 버전; 방금 추가된 것만 저장소의 최신 릴리스 |
 | `sbmig-resources` | 리소스 / war 플러그인이 필터링되는 바이너리에서 실패(`MalformedInputException`, `Input length = 1`) | 그 pom 의 maven-resources-plugin `nonFilteredFileExtensions` 에 확장자 추가(`sbmig/restructure/resources_filtering.py`) |
-| `sbmig-bundled` | 케이스가 잃은 패키지를 트리 안 동봉 jar 가 제공(`out/<run id>/logs/bundled-jars.json` 의 `provides`) | 저장소에 그 jar 자신의 좌표가 있으면 보통 의존성, 없으면 `<module>/lib/<이름>` 으로 복사 + `system` 스코프 + boot 모듈 `includeSystemScope`(`sbmig/restructure/system_jars.py`); 목표 체인이 관리하는 g:a 의 jar(superseded)는 절대 안 붙임 |
-| `sbmig-jakarta` | javax 를 말하는 케이스이고 저장소에서 jakarta 빌드를 **확인**했을 때(`libraries.discover_jakarta_builds`) | 의존성 선언 교체(다른 좌표면 replace, 같은 좌표면 버전·classifier). 같은 좌표의 상위 메이저면 메이저 변경으로 보고서 「운영자 확인」 ⚠ |
+| `sbmig-bundled` | 케이스가 잃은 패키지를 트리 안 동봉 jar 가 제공(`out/<run id>/logs/bundled-jars.json` 의 `provides`) | 저장소에 그 jar 자신의 좌표가 있으면 보통 의존성, 없으면 `<module>/lib/<이름>` 으로 복사 + `system` 스코프 + boot 모듈 `includeSystemScope`(`sbmig/restructure/system_jars.py`); 목표 체인이 관리하는 g:a 의 jar(superseded)는 안 붙임 |
+| `sbmig-jakarta` | javax 를 말하는 케이스이고 저장소에서 jakarta 빌드를 **확인**했을 때(`libraries.discover_jakarta_builds`) | 의존성 선언 교체(다른 좌표면 replace, 같은 좌표면 버전·classifier). 같은 좌표의 상위 메이저면 보고서 「운영자 확인」 ⚠ |
 
 LLM 이 적용한 시도도 커밋 전에 `_fill_versions` 가 버전 없는 의존성을 같은 순서로 채운다(LLM 은 버전을 모르면 `null` 로 둔다).
 
@@ -174,7 +174,7 @@ KB 는 파일뿐이다(DB 금지). 위치 `kb.dir`(기본 `kb-v2`). 원본은 `e
 |---|---|
 | `kb-v2/errors.jsonl` | 모든 실행의 오류 항목(실행 끝에 그 실행의 errors.jsonl 을 덧붙임, 이미 있는 id 는 건너뜀). 항목마다 서명 사실 `sig`, `l1`, `symbol`, `location`, `artifact`, `goal` 과 옛 케이스 ID `was` |
 | `kb-v2/cases.md` | 사람용 케이스 표: case, name, projects, seen / resolved, scripts(`v1 proven 3/0; v2 unverified 0/1 — 마지막 실패`), pin, last result |
-| `kb-v2/cases/<case_id>/case.json` | `CaseInfo`: `case_id`, `l2`, `name`, `kind`, `projects`, `seen`, `resolved`, `scripts[]`, `last_analysis`, `last_solution`, `updated_at`, `sig`, `aliases`(재서명으로 이 케이스에 합쳐진 옛 ID) + 모델 밖 키 `pin`(`block[:<reason>]`), `last_result`. 모르는 필드는 최상위든 `scripts[]` · `runs[]` 안이든 다시 저장해도 남는다(옛 이미지가 새 필드를 지우지 않게) |
+| `kb-v2/cases/<case_id>/case.json` | `CaseInfo`: `case_id`, `l2`, `name`, `kind`, `projects`, `seen`, `resolved`, `scripts[]`, `last_analysis`, `last_solution`, `updated_at`, `sig`, `aliases`(재서명으로 이 케이스에 합쳐진 옛 ID) + 모델 밖 키 `pin`(`block[:<reason>]`), `last_result`. 모르는 필드는 최상위든 `scripts[]` · `runs[]` 안이든 다시 저장해도 남는다(옛 이미지가 지우지 않게) |
 | `kb-v2/cases/<case_id>/fix_v<N>.py` | 저장 스크립트(같은 코드는 한 번만) |
 | `kb-v2/cases/<case_id>/errors/<run id>-<entry id>.json` | 오류 한 건씩 읽기 쉬운 JSON(`errors.json_files`); 케이스 없는 항목은 `cases/_other/` |
 | `kb-v2/.lock` | 프로세스 간 쓰기 잠금(웹·플릿·`sbmig kb`·빌드 파드가 공유, `kb.lock_timeout_seconds`). 옆에 잠깐 생기는 `.lock.probe.*`(파일 시스템 시계 재기), `.lock.breaker`(낡은 잠금을 깨는 차례)와 케이스 폴더의 `.fix.*.tmp` 는 임시 파일이다. 0 이하의 `kb.lock_timeout_seconds` 는 300 으로 읽는다 |

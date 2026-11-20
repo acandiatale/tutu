@@ -11,7 +11,7 @@
 흐름: 브라우저가 zip을 올림 → `sbmig serve`(FastAPI + uvicorn, 워커 1: 실행 큐가 프로세스 안; 실행마다 작업 스레드 하나와 LangGraph 그래프 intake → … → finalize) → SSE로
 node / journal / log / report 이벤트 → 보고서, result.zip, errors.md, sbmig.log … 내려받기.
 
-- 화면(머리 `panacea-remediating-oss`, 임시): 진행 방식 전체 진행(기본, 이관 후 조치) / 취약점 해결(조치만, [11](11-remediations.md)) → 프로젝트명(필수, 안내 「6자리 체인코드가 포함된 레포지토리 이름으로 작성해 주세요.」, `runs.PROJECT_RE`: 영문·숫자·`_`·`-` 30자까지; 어기면 본문 읽기 전 400) + zip →
+- 화면(머리 `panacea-remediating-oss`, 임시): 진행 방식 전체 진행(기본, 이관 후 조치) / 취약점 해결(조치만, [11](11-remediations.md)) → 프로젝트명(필수, 안내 「6자리 체인코드가 포함된 레포지토리 이름으로 작성해 주세요.」, `runs.PROJECT_RE`: 영문·숫자·`_`·`-` 30자; 어기면 400) + zip →
   `마이그레이션 시작`(또는 `취약점 조치 시작`) → 단계 레일과 진행 기록 / 로그 탭(마지막 1,500줄) → `보고서 받기(migration-report.md)` / `변환된 프로젝트 받기(result.zip)`. 미리보기는 따로 둘: 결과 카드 끝 「마이그레이션 보고서 미리보기」, 조치 칸 안 「조치 결과 보고서 미리보기」(`remediation/report.md` 그대로, [01](01-repo-map.md)).
   설정 파일은 서버가 정한다: `sbmig serve --config <이름>`(여러 번) 또는 `SBMIG_WEB_CONFIGS=a.yml,b.yml`, 없으면 `config/artifacts.yml` →
   `artifacts.local-e2e.yml` 중 있는 것(`GET /api/configs`의 `default`). 고급 설정(숨김, 그 값은 안 보냄)과 그 밖의 파일 목록은 화면에 없다(파일은 관리자 페이지).
@@ -31,7 +31,7 @@ node / journal / log / report 이벤트 → 보고서, result.zip, errors.md, sb
   안 지워진다(§8). ZIP 풀기 한도 `intake.max_unpacked_mb`(4096), `intake.max_entry_mb`(1024), `intake.max_compression_ratio`(200, 1 MiB 이상
   풀리는 파일마다; 0 = 없음)를 목차로, 풀면서 다시 본다. 넘으면 아무것도 풀지 않고 `run aborted: ZIP refused: …`(exit 3, 저널 `intake_refused`,
   Maven·LLM 없음; 웹 파드가 직접 돌리면 HTTP 400).
-- 관리자 페이지 `/admin`(링크 없음): 내장 비밀번호(`SBMIG_ADMIN_PASSWORD`로 교체)로 프로젝트명별(예전 실행은 파일 이름별) LLM 토큰 사용량(조치의 수정 루프 몫 포함, 실행마다 「조치 N회 포함」; 모델 이름: [05](05-llm-gateway-and-prompts.md) 9.1)·로그 ZIP·올린 원본. 열린 모드에서도 이것만 막힌다(실행별 결과 파일은 열린 API로 받는다). `sbmig/web/admin.py`, `deploy/README.md` §2.
+- 관리자 페이지 `/admin`(링크 없음): 내장 비밀번호(`SBMIG_ADMIN_PASSWORD`로 교체)로 프로젝트명별(예전 실행은 파일 이름별) LLM 토큰 사용량(조치의 수정 루프 몫 포함, 실행마다 「조치 N회 포함」; 일부를 모르면 `usage_partly_unknown`, 호출 칸 「일부 알 수 없음」, 비용 「알 수 없음」; 모델 이름: [05](05-llm-gateway-and-prompts.md) 9.1)·로그 ZIP·올린 원본. 열린 모드에서도 이것만 막힌다(실행별 결과 파일은 열린 API로 받는다). `sbmig/web/admin.py`, `deploy/README.md` §2.
 - `sbmig serve`가 곧 uvicorn이다. 종료 시 `--graceful-timeout`(5초) 뒤 SSE를 닫고 Maven /
   OpenRewrite를 정리한다(`aborted`). 플레인 uvicorn: `SBMIG_WEB_OUT=out/web uvicorn sbmig.web.app:app --port 8765 --timeout-graceful-shutdown 5`.
 
@@ -83,7 +83,7 @@ docker run --rm <registry>/sbmig:<tag> python -m sbmig.cli --help
 레지스트리. PC에서 `deploy/docker/save-image.sh <tag>`가 `linux/amd64`로 빌드해 `out/images/sbmig-<tag>.tar`로 저장하고, 인프라팀이
 `docker load` → `docker tag` → `docker push` 한 전체 이름을 `40-deployment.yaml`과 `81-web-job.template.yaml`의 `image:`에 같은 값으로 넣는다
 (`imagePullPolicy: Always`라 같은 태그도 반영된다; pull 인증은 `imagePullSecrets`). 바꾼 뒤 할 일: 이미지만 → 빌드·push, 웹 파드 재시작(빌드 파드는
-뜰 때 받는다); 20 → apply, 재시작; 40 → apply; 81(이미지에 들어가니 빌드하는 체크아웃에서 채운다) → 이미지 빌드·push, 재시작. push와 재시작 사이에 올린 실행은 거절되므로(§5 ②) 재시작 뒤 다시 올린다. 빌드 식별값 `sbmig version` = `0.1.0+<12자>`(`sbmig/**/*.py`,
+뜰 때 받는다); 20 → apply, 재시작; 40 → apply; 81(이미지에 들어가니 빌드하는 체크아웃에서 채운다) → 이미지 빌드·push, 재시작. push와 재시작 사이에 올린 실행은 거절된다(§5 ②). 빌드 식별값 `sbmig version` = `0.1.0+<12자>`(`sbmig/**/*.py`,
 `config/*.yml`, `knowledge/**`의 지문, 빌드 인자 없음); 빌드 파드 쪽은 저널 `worker_started`의 `sbmig_version`. 레지스트리를 못 쓰면 tar를 노드마다 적재하고(containerd는
 `ctr -n k8s.io images import`, k3s는 `k3s ctr images import`, docker는 `docker load`) 이미지를 `sbmig:<tag>` + `imagePullPolicy: Never`로 바꾼다;
 노드 하나에만 적재했으면 Deployment와 Job 틀의 `nodeSelector: {kubernetes.io/hostname: <node>}`를 푼다(이미지가 없는 노드에서는 `ErrImageNeverPull`).
@@ -230,7 +230,7 @@ KB는 `kb.dir` 아래 파일뿐이다: `errors.jsonl`, `cases.md`, `cases/<case_
 ## 8. 디스크 정리 `sbmig clean`
 
 끝난 실행의 프로젝트 복사본, 웹 UI 업로드 zip, 남은 `.part` 업로드, LLM 기록(`llm-*.json`)을 지운다. 실행·대기 중인 실행과 그 업로드는 건드리지 않는다
-(업로드 이름의 실행 id `<프로젝트명>-YYYYMMDD-HHMMSS-<hex>`로 짝짓는다, 대문자·`_`도; `--keep-failed`면 실패한 실행의 업로드도 남김). 손으로만 돈다. 실행 폴더 통째, `source.zip`, `result.zip`은 지우지 않는다.
+(업로드 이름의 실행 id `<프로젝트명>-YYYYMMDD-HHMMSS-<hex>`로 짝짓는다; `--keep-failed`면 실패한 실행의 업로드도 남김). 손으로만 돈다. 실행 폴더, `source.zip`, `result.zip`은 지우지 않는다.
 옵션: `--out`(웹이면 `out/web`), `--fleet`, `--older-than <일>`, `--keep-failed`, `--dry-run`(먼저 이것으로), `--records`.
 
 ## 9. 로그 파일

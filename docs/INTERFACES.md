@@ -17,15 +17,15 @@ type: `sbmig/core/models.py`, `sbmig/core/interfaces.py`, `sbmig/core/config.py`
 | transform (OpenRewrite) | Base "Plan, transform"; v2.1l "Recipes"; v2.1o (Framework 7); v2.1w |
 | restructure & layout | Base "Restructure and the company layout"; v2.1g, v2.1h (JSP jakarta), v2.1l / v2.1s (version pins), v2.1m (resource filtering), v2.1n (optional triggers), v2.1o / v2.1p / v2.1t (parent-chain facts, BOM imports), v2.1q (embedded Tomcat), v2.1x (legacy Spring context), v2.1z-j (bundled jars), v2.1z-k, v2.1z-l |
 | structure review | v2 "Structure review (R)"; v2.1u … v2.1y (review prompt, invariant check, unsupported issues); v2.1z-h (review guard) |
-| verify & script fix loop | Base "Fix-loop invariants"; v2 "Script fix loop (L)", "Script contract (S)", "As built (step 1)"; v2.1d (versions, operator checks), v2.1l / v2.1m pre-tries, v2.1r (file locks), v2.1y (declines, idempotency), v2.1z (ladder caps, case keys), v2.1z-e (jakarta discovery), v2.1z-i, v2.1z-n, v2.1z-y, v2.1z-z, v2.1z-aa; v2.1z-ak (reduced run: as-is chain facts, framework guard); v2.1z-av (stop around the final build, the last unhelpful try rolled back, `repository_unreachable`, cut answers, managed versions per parent) |
+| verify & script fix loop | Base "Fix-loop invariants"; v2 "Script fix loop (L)", "Script contract (S)", "As built (step 1)"; v2.1d (versions, operator checks), v2.1l / v2.1m pre-tries, v2.1r (file locks), v2.1y (declines, idempotency), v2.1z (ladder caps, case keys), v2.1z-e (jakarta discovery), v2.1z-i, v2.1z-n, v2.1z-y, v2.1z-z, v2.1z-aa; v2.1z-ak (reduced run: as-is chain facts, framework guard); v2.1z-av (stop around the final build, the last unhelpful try rolled back, `repository_unreachable`, cut answers, managed versions per parent); v2.1z-bo (stop request and time budget checked before every LLM request, `llm_ask_skipped`) |
 | cases & KB | v2 intro + "Script KB (K)"; Base "KB plumbing"; v2.1e (learning records), v2.1f (probable fixers), v2.1z (masked case keys), v2.1z-ae / v2.1z-af (several pods on one KB), v2.1z-ai (rule versions, member-symbol keys, re-sign, exact-key guard) |
 | LLM gateway | Base "LLM client tier and adapter seams"; v2.1z-m (agent gateway, token exchange), v2.1z-n, v2.1z-o, v2.1z-p (case thread), v2.1z-q, v2.1z-x, v2.1z-af (busy wait, auth retries) |
 | report & result line | Base "Report and the result line", "Advisories and the Handover"; v2 "As built (step 1)" (`review=`); v2.1d (`major=`); remediations (`remediation=`); v2.1z-ak (`scope=`, the framework block); v2.1z-bl (`llm=` includes the remediation's fix-loop calls) |
 | fleet | Base "Fleet" |
-| web app | Base "Graph engine", "Web app"; v2.1z-w (page, server-chosen configs), v2.1z-ae (queue / slots on the page), v2.1z-af (page re-attach), v2.1z-aj (run flows, page header); v2.1z-ak (framework label, skipped stages); v2.1z-ao (admin page `/admin`: token usage per project, log ZIPs); v2.1z-au (the code-change view: artifact `codediff/`, `/api/runs/{id}/codediff`, the page block); v2.1z-av (cross-site requests refused, the free-space floor for uploads, unpacking limits); v2.1z-bg (report view); v2.1z-bl (two report previews, 고급 설정 and the other-files list gone, LLM counts); v2.1z-bm (the hidden controls are not sent) |
+| web app | Base "Graph engine", "Web app"; v2.1z-w (page, server-chosen configs), v2.1z-ae (queue / slots on the page), v2.1z-af (page re-attach), v2.1z-aj (run flows, page header); v2.1z-ak (framework label, skipped stages); v2.1z-ao (admin page `/admin`: token usage per project, log ZIPs); v2.1z-au (the code-change view: artifact `codediff/`, `/api/runs/{id}/codediff`, the page block); v2.1z-av (cross-site requests refused, the free-space floor for uploads, unpacking limits); v2.1z-bg (report view); v2.1z-bl (two report previews, 고급 설정 and the other-files list gone, LLM counts); v2.1z-bm (the hidden controls are not sent); v2.1z-bo (admin page: 「일부 알 수 없음」 / cost 「알 수 없음」 for unknown remediation usage, `remediation_llm_usage_unknown`) |
 | Job mode (Main / Worker, slots, env pins) | v2.1z-z "k8s Job dispatch mode", v2.1z-ab (kubeconfig, template ConfigMap), v2.1z-ac (Main ↔ Worker contract), v2.1z-ad (end confirmation, ownership, env pins, write-time redaction), v2.1z-ae (parallel slots), v2.1z-af, v2.1z-aq (a build pod that does not start: stop, the reason notice); v2.1z-av (the build identity, pins taken at Job creation, the resume attempt) |
 | deploy | v2.1z-s (build hooks), v2.1z-t (one Job per request), v2.1z-u, deploy (baked config, container paths), v2.1z-ad "Shipped mode" |
-| remediations | remediations; v2.1z-ak (in-house group `framework`); v2.1z-am (case-insensitive matching, per-module in-house split, module sources, variant overrides, 들어온 경로); v2.1z-an (override proposals in module poms, the owners' choice); v2.1z-ar (no approval unless switched on); v2.1z-av (fixed = gone from the rescan, the planner's new residual groups, `remediation.log` for every run); v2.1z-bi part B, v2.1z-bj, v2.1z-bk (the fix loop on a failed candidate: work copy, overlay, build-side sync, one `fix.patch`); v2.1z-bl (fix-loop LLM usage, titles with the entered project); v2.1z-bm (the complete-apply proof `expected.json`, the sync by table before commit / freeze, a candidate that cannot be put back, `stop requested` runs again, leftover loops settled); v2.1z-bn (one delivery swap + `recover_delivery`, the no-delivery sentences, usage after an exception, the exec bit in `expected.json` schema 2, the pending report, the scan source `original/scan-source.zip`) |
+| remediations | remediations; v2.1z-ak (in-house group `framework`); v2.1z-am (case-insensitive matching, per-module in-house split, module sources, variant overrides, 들어온 경로); v2.1z-an (override proposals in module poms, the owners' choice); v2.1z-ar (no approval unless switched on); v2.1z-av (fixed = gone from the rescan, the planner's new residual groups, `remediation.log` for every run); v2.1z-bi part B, v2.1z-bj, v2.1z-bk (the fix loop on a failed candidate: work copy, overlay, build-side sync, one `fix.patch`); v2.1z-bl (fix-loop LLM usage, titles with the entered project); v2.1z-bm (the complete-apply proof `expected.json`, the sync by table before commit / freeze, a candidate that cannot be put back, `stop requested` runs again, leftover loops settled); v2.1z-bn (one delivery swap + `recover_delivery`, the no-delivery sentences, usage after an exception, the exec bit in `expected.json` schema 2, the pending report, the scan source `original/scan-source.zip`); v2.1z-bo (the swap rolled forward + `DeliveryRecordNotWritten`, no re-upload after a kill and the table of mid-node saves, `repair_final` by every entry and by the web service in every mode, unknown usage, report = state message, the round's call total, a stop during the build fix) |
 
 ## Base contracts (in force; written before v2)
 
@@ -6022,7 +6022,8 @@ first_outcome, stop, deadline, journal) -> FixResult`; reachable from the graph 
 (`h.c.fixer.run(...)`, protocol `Fixer` in `interfaces.py`) so graph tests use a fake.
 1. `Workspace(tree, work_dir, run_id)` with `work_dir = rounds/<r>/fixloop/` (its own `journal.jsonl` and `logs/`,
    never the run's). The root `.gitignore` is saved (bytes, or "absent") before `git_init()` and restored after the
-   loop; `tree/.git` is removed at the end, success or not. `ws.stop_requested` observes `stop`.
+   loop; `tree/.git` is removed at the end, success or not. `ws.stop_requested` observes `stop` (superseded by v2.1z-bo:
+   the loop checks it, and the time budget, between builds and before each LLM request).
 2. `analyze_project(ws, cfg)` for the profile. Parts built like the orchestrator's: `MavenRunner`, `Triager`,
    `LazyFixer(LLMFixer(cfg, make_llm_client(cfg)))`, `LazyScriptRunner`, `NullKnowledgeBase` (no stored scripts used,
    nothing learned), `LoopBudget` limited to `deadline`.
@@ -6055,7 +6056,8 @@ run's remaining budget; a loop that cannot start for lack of time is `attempted:
 
 **Report and page (`remediations/report.py`, `i18n.py`, `web/static/index.html`).**
 - Fixed round: a section 「빌드 오류 수정」 after the applied changes: 「버전을 올린 뒤 빌드가 실패해 소스를 고쳤습니다.」,
-  the changed files (table: 파일), iterations / LLM calls, the patch file name; leads the review list:
+  the changed files (table: 파일), iterations / LLM calls (superseded by v2.1z-bo: the round's total when other loops
+  ran, 「…(버린 시도까지 모두 T회).」), the patch file name; leads the review list:
   「자동으로 고친 소스 <n>개를 확인해 주세요.」.
 - 「변경하지 않은 것」: when any round has `fix.fixed`, the sentence 「애플리케이션 소스와 프로젝트 구조(파일·폴더)는
   변경하지 않았습니다.」 becomes 「프로젝트 구조(파일·폴더)는 변경하지 않았습니다. 소스는 빌드 오류를 고치느라
@@ -6166,7 +6168,8 @@ says where they differ. `framework.fix_loop` is `false` by default again (the us
 - **Time for the loop** = `min(fix_loop_max_minutes × 60, time_left − reserve)` where `reserve = max(300, 2 ×
   seconds of the round's first candidate build, 2 × seconds of the baseline build)`; `time_left` None → only the
   cap. Less than `MIN_LOOP_SECONDS` → not started: `attempted: false`, `reason: time budget used up`.
-  A pending stop → not started, `reason: stop requested`.
+  A pending stop → not started, `reason: stop requested`. (v2.1z-bo: only these two not-started results are forgotten on
+  re-entry; a failed folder setup stays the verdict.)
 - **State is saved right after the loop returns** (`rs.fix`, then `h.save()`), before anything touches the candidate.
 - **Overlay** (`_overlay_fix(h, r)`): copies every file of `fixed/` over the candidate's file of the same path
   (only paths in `rs.fix.changed`; each must be an existing manifest file), idempotent. `_remove_overlay(h, r)`
@@ -6577,6 +6580,9 @@ and as coded in one.
      `.json` (`scanned: true`) is written;
   4. `os.replace(.result.next.zip, result.zip)`;
   5. `delivery.json` = the new info; 6. `st.delivery` = the new info and the state saved; 7. the marker removed.
+  (Superseded by v2.1z-bo: 5. `st.delivery` + the caller's `after`, 6. `delivery.json`, 7. the state saved, 8. the
+  marker removed; after the replace the swap is rolled forward and a record that cannot be written raises
+  `DeliveryRecordNotWritten` with the marker kept.)
   Returns the kept verified ZIP's run-relative path or "".
 - **A freeze that raises** (steps 1–4) removes what the call made and raises `graph.DeliveryNotWritten`; the previous
   `result.zip`, `delivery.json` and `state.delivery` are untouched. Journal `delivery_not_written` (`round`, `error` = the
@@ -6587,7 +6593,8 @@ and as coded in one.
   ` | `. Korean (i18n rule `delivery_not_written`): 「라운드 {r}의 결과 ZIP을 쓰지 못했습니다({ErrorType}).」 + 「결과
   ZIP(delivery/result.zip)은 라운드 {k}의 결과 그대로입니다.」, for k = 0 「결과 ZIP(delivery/result.zip)은 바꾼 것이 없는
   이전 결과 그대로입니다.」, without a delivery 「결과 ZIP은 없고, 원본은 original/source.zip에 그대로 보관합니다.」.
-- **`recover_delivery(paths, state) -> bool`** runs first in `run_remediation` (the state is saved when it changed). With
+- **`recover_delivery(paths, state) -> bool`** runs first in `run_remediation` (the state is saved when it changed;
+  superseded by v2.1z-bo: also from `graph.repair_final`, i.e. every entry that sees the run folder again). With
   a readable marker: `result.zip` already has the marker's sha256 → rolled forward (`state.delivery` and `delivery.json`
   become the marker's info; WARNING `… a result ZIP swap that the run did not finish was completed (round <r>)`);
   otherwise rolled back (a verified copy this swap made is removed when it is a byte copy of the `result.zip` still
@@ -6627,7 +6634,10 @@ and as coded in one.
   a journal, None when it cannot be read). Calls the budget counted beyond the journal's (all of them when the journal
   is unreadable) go to one row of the configured model with `FixUsage.tokens_unknown = True` and `cost: None`.
 - `FixUsage.tokens_unknown: bool = False` (left out of the JSON when false). `fixer.fix_usage_rows` carries
-  `tokens_unknown: true` on a row with such calls; that row's `cost` is None (unknown, never 0).
+  `tokens_unknown: true` on a row with such calls; that row's `cost` is None (unknown, never 0). (Superseded by
+  v2.1z-bo: an unreadable journal marks the result `usage_unknown` instead of a zero-token row when the fixer itself
+  raised; extra calls join a same-name row, which is then unpriced; budget-only calls of a normal result are
+  `tokens_unknown` too.)
 
 ### The exec bit and unreadable files (`intake.py`, `graph.py`)
 
@@ -6656,7 +6666,9 @@ and as coded in one.
   holder → the state as it is; a failure is a WARNING `… the report was not written: …`); `chain.resume` — a pending
   final state is no longer refused: journal `remediation_report_repair` (`remediation`, `status`), the report written,
   the state returned; `service._recover` at startup in in-process mode (`_write_pending_report`, under a `RunClaim`
-  `purpose="service"`; a failure never stops the server).
+  `purpose="service"`; a failure never stops the server). (Superseded by v2.1z-bo: startup recovery in every mode,
+  and the web service repairs a final state whose owner is gone at `status` / `result` / `file_path`; all through
+  `graph.repair_final`.)
 
 ### The scan source (`graph.py`, `models.py`, `report.py`)
 
@@ -6705,8 +6717,211 @@ like; nothing left out = byte for byte; deployed-version runs waiting on a recei
 original; an uncertain upload then a receipt keeps the sha; made again = same bytes; cannot be made again → FAILED; the
 chained source ZIP; the files route; old `state.json`), `test_i18n.py`; earlier review tests adjusted for schema 2.
 
-**Still open** (as the code's author reported): in Job mode a chained remediation whose report node was killed gets its
+**Still open** (as the code's author reported; the first two are covered by v2.1z-bo's web-service repair, which runs when the page reads the run): in Job mode a chained remediation whose report node was killed gets its
 report only when something calls `chain.resume` / `run_after_migration` again, and the page offers resume only for
 resumable states; in-process chained runs are not repaired at startup (`service._recover` reads the standalone folder);
 the permission and read retry is not tested on Windows; a fifth review and a second real-Maven smoke run were running
 when this was written.
+
+## v2.1z-bo — fifth review of the remediation and the second real-Maven run: swap records, no re-upload, report repair in every mode, unknown usage, stop before an LLM request
+
+**Why.** A fifth review of the remediation (2026-11-20) reproduced its findings first (`out/scratch/review-bn/test_bn_a.py`,
+untracked, asserted the faulty behaviour): (1) a failure **after the result ZIP was replaced** (`delivery.json` or the
+state could not be written, full disk) escaped as a plain `internal_error` whose message said nothing about the new
+ZIP, and the swap marker was removed only on success; (2) **mid-node saves** left a state that a re-entry read
+differently from the uninterrupted run: a kill right after the no-change delivery's save re-entered `baseline_scan` and
+**uploaded the baseline to IVAS a second time**; a kill after an unusable stored fix was discarded ran the loop again;
+a failed loop-folder setup was forgotten and the loop ran on re-entry; (3) a chained (Job-mode) final state whose report
+node was killed got its report only when something called `chain.resume` / `run_after_migration` again; (4) **usage that
+could not be read** was shown as 0 calls and priced as 0; (5) after `chain._baseline_outcome` changed the message the
+report still carried the old one. The **second real-Maven smoke run** (on `9dc249f`) noticed the rest: a stop or the time
+budget was checked between builds only, so a loop kept asking the LLM after a stop; the fix section counted only the
+fixing loop's calls; a stop during the build fix was worded like a stop during the candidate build; the round-0 to-do
+step said 「재검사를 마친」 for a ZIP that was scanned once; an interrupted loop's work copy (with its own `.git` and
+`target/`) stayed on disk. Contract and as coded in one.
+
+### The delivery swap after the replace (`graph.py`)
+
+- **`_Holder.install_delivery(make, r, *, build_ok, build_tolerated, keep_verified, after=None) -> str`.** Steps 1–4
+  as in "v2.1z-bn" (temporary ZIP, marker, verified copy, `os.replace`). Then, rolled FORWARD (never back):
+  5. `st.delivery` = the new info and `after(info)` — the caller's other fields that describe the new ZIP (the
+     no-change delivery sets `final_scan` = the baseline scan and `delivery.scanned`), so the state saved next is
+     complete for the node's re-entry; 6. `delivery.json` written; 7. the state saved; 8. the marker removed (a failure
+     to remove it is a WARNING; the next entry removes it).
+  Steps 6 and 7 are both tried; when either fails the marker stays and **`graph.DeliveryRecordNotWritten(round,
+  failed, root)`** is raised (`failed` = [(run-relative record path, exception)]), with `st.delivery` already the new
+  ZIP. Message `DELIVERY_RECORD_NOT_WRITTEN` = `delivery/result.zip is now the result ZIP of round {r}, but {what} could
+  not be written ({ErrorType}: {error}); the record is completed the next time this run is opened`, `what` =
+  `delivery/delivery.json`, `state.json` or both joined by ` and `. `_wrap` (and `_build_failed`, with the build summary
+  after ` | `) ends the run FAILED `internal_error` with it. Journal `delivery_record_not_written` (`round`, `records`,
+  `error` = the first type), log ERROR `remediation round <r>: <message>`. Korean (i18n rule
+  `delivery_record_not_written`): 「결과 ZIP(delivery/result.zip)은 이제 라운드 {r}의 결과입니다.」 (round 0: 「…이제 바꾼
+  것이 없는 결과입니다.」) + 「다만 기록 파일({what, ", "})을 쓰지 못했습니다({ErrorType}). 이 실행을 다음에 열 때 기록을 마저
+  맞춥니다.」.
+- A **`ScanSourceChanged`** raised by `make` (the no-change copy) is cleaned up like a write failure but raised as it is,
+  so the run ends `zip_hash_mismatch`, not `internal_error`.
+- **`recover_delivery(paths, state) -> bool`** also removes a leftover `delivery/.result-r*-verified.zip.copy-tmp` (a
+  kill during the verified copy). **`graph.delivery_swap_pending(paths) -> bool`**: the marker, `.result.next.zip`, a
+  `.copy-tmp` or a `..result.next.zip.*` temporary is left.
+- **Who calls it** (every entry that can see a run folder again): `run_remediation` (first, state saved when changed),
+  and **`graph.repair_final(state, paths, cfg, *, save, journal) -> bool`** = `recover_delivery` (state saved, journal
+  `delivery_recovered` with `round`) then `write_pending_report`; the caller holds the run claim; status, reasons and
+  message are left as they are. `repair_final` runs from `run_remediation` for a terminal state, `chain._repair_report`,
+  `chain.resume` (a final state with a pending swap or report: journal `remediation_report_repair`, not refused), the
+  existing-state paths of `chain.run_after_migration` / `chain.run_only` (terminal states only), the service's startup
+  recovery and `RemediationManager.repair_final`. **`graph.final_repair_needed(paths, state)`** = status in `TERMINAL`
+  and (`delivery_swap_pending` or `report_pending`).
+
+### No re-entry does what the uninterrupted run would not (`graph.py`)
+
+Rule: everything a node sets is in place before any save inside the node, so a kill right after that save re-enters the
+node (`next_node` is the node while it runs) with a state that already says what the uninterrupted node would have
+left. In particular **never a second IVAS upload**.
+
+- **`_baseline_scan`** reuses a stored baseline scan (`_stored_baseline(h, sha)`): the state names
+  `scans/baseline.json`, no `pending_upload` / `pending_receipt` for `baseline`, and the stored result is complete with
+  the sha256 about to be uploaded → no upload, journal `baseline_scan_reused` (`sha256`), INFO `remediation <id>: the
+  stored baseline scan of the same bytes is used; nothing is uploaded again`.
+- **Forgetting a loop result** on entry to `_run_build`: only a result that did not start (`attempted: false`) because
+  of `stop requested` or `time budget used up` is cleared so the loop may start; a folder setup that failed
+  (`error: …`, not started) stays the round's verdict. A result that ran and ended `stop requested` moves to
+  `fix_discarded` as in "v2.1z-bm".
+- **`_run_build(h, r, cand, *, rerun_ok=False)`**: when the round's last discarded fix is `discarded: the stored fix is
+  not usable` and no fix is recorded, the loop is not run again at the node's entry and the round ends as the
+  uninterrupted run did, the message ending ` | automatic build fix: discarded: the stored fix is not usable`;
+  `rerun_ok=True` (the call right after a stored fix of an earlier entry was found not usable on this one) allows it.
+- **`deliver_failed_candidate`** re-entered after its own swap (`st.delivery` is round r, `build_ok` and
+  `build_tolerated` false) names the verified copy the earlier entry made (`find_verified_zip`, round < r) in its
+  message.
+
+| Save inside a node | What is in the state | A kill right after it, then the re-entry |
+|---|---|---|
+| `install_delivery` step 7 from `deliver_original` in `baseline_scan` (no actionable finding) | delivery round 0, `final_scan` = baseline, `delivery.scanned`, `baseline_scan`, no pending upload | `baseline_scan` again: the stored scan is reused (`baseline_scan_reused`), the same bytes delivered, `evaluate` → the uninterrupted verdict; IVAS saw one upload |
+| the same from `plan` / `apply` / the ineffective-override remake (nothing left to apply) | as above | the node again; `deliver_original` is skipped because a delivery exists → `evaluate`, same verdict |
+| `install_delivery` step 7 in `freeze_delivery` | the new delivery (round r) | the node again: the same deterministic ZIP of `accepted/` (same sha256) is installed once more → `rescan` |
+| `install_delivery` step 7 in `deliver_failed_candidate` (`build` node) | the failed candidate as delivery, a verified copy made | `build` again (a build, no upload; the recorded loop result is not re-run); the failed candidate is delivered again and the message names the earlier copy (`again`) |
+| right after the fix loop returns (`_run_fix`, v2.1z-bk) | `rs.fix` with usage and `tree_hash` | the recorded result is used (overlay + confirming build, or not fixed); the loop does not run again |
+| `_discard_fix` before `_drop_fix_files` | the fix in `fix_discarded`, `rs.fix` None | an unusable stored fix: no second loop (`rerun_ok`), FAILED `candidate_build_failed` with the uninterrupted suffix; a fix discarded for a remade candidate (the candidate was unmarked first) sends the round back through `apply`, as the uninterrupted run remakes it |
+| confirming build failed, before `_drop_fix_files` | `rs.fix` not fixed, `confirming build failed` | the loop is not run again; `fixed/` and `fix.patch` may stay on disk unreferenced (still open) |
+| a loop folder that could not be prepared | `rs.fix` `attempted: false`, `error: …` | the verdict stays; no loop (`automatic build fix not started: error: …`) |
+| a loop not started because of a stop or the time budget | `rs.fix` `attempted: false`, `stop requested` / `time budget used up` | the result is forgotten and the loop may start |
+| `_settle_old_loop` before the rename (v2.1z-bm) | the interrupted result with its usage | only the rename (and the `tree/` removal) is redone; usage counted once |
+| the ineffective-override decision (`next_node = apply`, v2.1z-ap/bm) | the kept proposals | `apply` remakes the candidate from `accepted/` |
+| `chain._baseline_outcome` (new message, new `updated`) | the message the report must carry | the report is pending → written on the next entry or by the web service |
+
+### A final state is repaired in every mode (`service.py`, `chain.py`)
+
+- **`RemediationManager.repair_final(rid, paths, st, chained) -> RemediationState`**, called at the top of `status()`,
+  `result()` and `file_path()` (for `report.md`, `report.json`, `result.zip`, `fix.patch`; a repair failure never fails
+  the file). For a `TERMINAL` state with `graph.final_repair_needed` whose owner is gone (`_owner_gone`: not in this
+  process's `_active`; for a chained run no resume Job queued or running and the migration run ended — the same
+  detection as the page's "its build pod is gone"), under `_run_lock(rid)` and `RunClaim(paths.root,
+  purpose="service")` (a fresh claim of another process → nothing now), the state is read again and `graph.repair_final`
+  runs with the run's configs; journal `remediation_final_repair` (`remediation`, `status`, `by: "service"`), WARNING
+  `remediation <id>: its run has ended with the <STATUS> state not fully recorded; the web server completes it`. Status,
+  reasons and message are not changed. Remembered in `_repair_seen[folder] = (updated, checked at, nothing left)`: a
+  folder found in order is not read again until `updated` changes; one that still has something to do is tried again at
+  most every `REPAIR_RETRY_S` = 60 s.
+- **At startup** (`_recover` → `_write_pending_report`), in every mode now: a standalone final folder with
+  `final_repair_needed` gets `graph.repair_final` once under a `RunClaim(purpose="service")`.
+
+### Unknown usage (`models.py`, `fixer.py`, `chain.py`, `report.py`, `runs.py`, `admin.py`, `admin.html`)
+
+- **`FixResult.usage_unknown: bool = False`** (left out of the JSON when false): the loop's usage could not be read at
+  all, so its zero calls / tokens are not exact. Set by `fixer.usage_from_folder(res, folder, cfg) -> bool` (an
+  unreadable loop journal: no usage rows, `usage_unknown`, returns False), used by `interrupted_result` (reason still
+  ends ` (usage unknown)`) and by the graph when the fixer raises; and by `run_fix_loop` when counting the usage after an
+  exception raised itself.
+- Rows with `tokens_unknown` are never priced: `_usage` gives the calls the budget counted beyond the attempts' usage to
+  the configured model's row with `tokens_unknown: true` and no cost; `_usage_after_error` adds such calls to a row of
+  the same name (then unpriced) or a new row; `fix_usage_rows` sets `cost` None on such a row; the currency is dropped
+  when no row is priced.
+- **`fixer.fix_usage(state)`** adds `calls_unknown` (a result with `usage_unknown`; `calls` is a lower bound),
+  `tokens_unknown` (a row with calls without token counts) and `usage_unknown` (either).
+- Readers: `chain.summary` → `fix_usage_unknown: true` (only then; `fix_llm_calls` = the known calls, so the
+  `SBMIG-RESULT … llm=` token still prints an integer of KNOWN calls); `GET /api/runs/{id}` →
+  `remediation_llm_usage_unknown` (bool, always present); `GET /api/remediations/{id}` → `fix.llm_usage_unknown: true`
+  (`report.fix_summary`, only then); admin run row → `usage_partly_unknown: true` (only then) and `cost: null` (a
+  remediation whose usage is partly unknown makes the run's cost unknown; a run without calls is 0 only when nothing is
+  unknown); the admin page writes 「일부 알 수 없음」 under the calls cell and 「알 수 없음」 in the cost cell (title
+  「사용량 일부를 알 수 없어 비용을 계산하지 않았습니다」).
+- Report: a record line of a result with `usage_unknown` → 「- 빌드 오류 자동 수정: <결과> · LLM 사용량 일부는 알 수 없음」;
+  a call count with `tokens_unknown` rows gets 「 · LLM 사용량 일부는 알 수 없음」; an interrupted loop → 「LLM 호출 수는
+  알 수 없음」; the fix section's call sentence ends 「 LLM 사용량 일부는 알 수 없습니다.」.
+
+### The report and the state agree (`chain.py`, `graph.py`, `report.py`)
+
+- **`chain._baseline_outcome(paths, state, jr, excluded, cfg=None)`**: after it rewrites the message it stamps a new
+  `updated` (the report becomes pending), saves, and writes the report once more (`write_pending_report`, with `cfg`); a
+  failure is a WARNING `chained remediation <id>: the report was not written again: …` and the next entry repairs it.
+- A report node that fails appends ` | report not written: <Type>: <msg>` (`graph.REPORT_NOT_WRITTEN`) **once**; a
+  later failing entry keeps the message and the earlier `updated`.
+- The kept copy of a tolerated-baseline run (`build_tolerated` and not `build_ok` in its `.json`) is never called
+  verified: message `…; the scanned delivery of an earlier round (its build was not confirmed) is kept as <path>`
+  (`_Holder.kept_unconfirmed`), Korean 「이전 라운드에서 재검사한 결과 ZIP(빌드로는 확인하지 못함)은 <path>에 있습니다.」;
+  report 「라운드 <k>에서 재검사를 마친 결과 ZIP(빌드로는 확인하지 못함)은 …」 / 「- 라운드 <k>에서 재검사한 결과 ZIP(빌드로는
+  확인하지 못함): …」 (`_verified_kept` → `unconfirmed`).
+- **The fix section's call sentence** (`report._fix_calls_sentence`): 「- 빌드와 수정을 N회 반복했고, LLM을 M회
+  호출했습니다.」, and when the round had other loops (`fix_discarded`: discarded, interrupted, stopped) 「…LLM을 M회
+  호출했습니다(버린 시도까지 모두 T회).」.
+- **A stop during the build fix**: a loop that ran and ended `stop requested` while the stop is still pending halts
+  STOPPED `stop_requested` at node `build` with `FIX_STOPPED` = `stop requested during the round {r} build fix` (no
+  suffix); Korean (rule `stop_round_fix`) 「라운드 {r}의 빌드 오류 자동 수정 중에 중지 요청을 받았습니다.」. A stop
+  during a candidate build keeps `stop requested during the round {r} candidate build`.
+- **Round-0 to-do step**: a SUCCEEDED run whose delivery is round 0 says 「**결과 ZIP 받기** — 검사를 마친
+  `delivery/result.zip` 파일을 받아 사용해 주세요.」 (other rounds: 「재검사를 마친」).
+
+### The fix loop checks stop and time before every LLM request (`sbmig/loop/fixloop.py`)
+
+The migration's `BuildFixLoop`, so the migration and the remediation alike. **`BuildFixLoop._halt_before_ask() -> str`**
+runs before every LLM request (`propose_script` for a step that needs the LLM, `verify_guide`): the workspace's stop
+check first (`ws.stop_requested`: the web's `stop.request`, the remediation's stop and deadline; an exception reading it
+is no stop), then `budget.time_exceeded()`. A hit returns `"stop"` / `"time"`, sticks for the rest of that loop run
+(`_ask_halt`, reset at each `_run`), journals `llm_ask_skipped` (`phase`, `why`) and logs INFO. The case is not tried
+(`_handle_cluster` → `"halted"`), the remaining cases of the round are not asked, the inner re-ask loop ends, and when
+nothing was applied in that round the loop ends through the same path as a check between builds
+(`_leave_on_stop`: note, journal `stop_request` `where: "fix loop"`, `left_on_stop` / `stopped_by_request`;
+`_leave_on_time`: note, flag `time-budget-exhausted`, journal `budget_exhausted`, the remaining clusters blocked
+`BUDGET_EXHAUSTED`); the tree is the last build's, so the existing "the loop was left on a stop request and the tree is
+unchanged → that build is the final build" rule holds. When something was applied, the check after the next build ends
+it the same way. A `verify_guide` that would be asked is skipped.
+
+### Interrupted loops (`graph.py`)
+
+After `_settle_old_loop` renamed a killed loop's folder to `fixloop-interrupted-<n>/` (its usage recorded and saved),
+`_drop_work_copy` removes its `tree/` (the work copy with its own `.git` and `target/`); the journal and the logs stay.
+Best effort: WARNING `remediation round <r>: the work copy of the interrupted fix loop was not removed (<path>):
+<Type>`.
+
+### Names
+
+Journal (remediation): `delivery_record_not_written`, `delivery_recovered`, `baseline_scan_reused`,
+`remediation_final_repair`. Journal (the loop's own, also the migration's): `llm_ask_skipped`. API / JSON:
+`FixResult.usage_unknown`; `fix_usage()` `calls_unknown` / `tokens_unknown` / `usage_unknown`;
+`chain.summary.fix_usage_unknown`; `GET /api/runs/{id}` `remediation_llm_usage_unknown`; `GET /api/remediations/{id}`
+`fix.llm_usage_unknown`; admin run row `usage_partly_unknown`. Code: `graph.DeliveryRecordNotWritten`,
+`DELIVERY_RECORD_NOT_WRITTEN`, `REPORT_NOT_WRITTEN`, `FIX_STOPPED`, `delivery_swap_pending`, `repair_final`,
+`final_repair_needed`, `_stored_baseline`, `_drop_work_copy`; `fixer.usage_from_folder`;
+`RemediationManager.repair_final`, `_owner_gone`, `REPAIR_RETRY_S`; `BuildFixLoop._halt_before_ask`, `_leave_on_stop`,
+`_leave_on_time`. Files: `delivery/.result-r<k>-verified.zip.copy-tmp` (only during a verified copy).
+
+**Tests.** `tests/remediations/test_fix_loop_review5.py` (the reproductions turned around: a full disk writing
+`delivery.json` after the swap rolls forward and says so, a failing state save names `state.json` and keeps the marker,
+`chain.resume` of a final state repairs `delivery.json`; a kill after a no-finding delivery uploads once; a kill after the
+no-change swap in `plan` resumes like the uninterrupted run; a kill after an unusable fix was discarded does not run the
+loop again; a failed folder setup stays the verdict; a loop not started because of a stop may start on resume; the web
+service repairs a chained final state whose build pod is gone, keeps away from a live owner and from a fresh claim,
+repairs a standalone final state at startup in Job mode, completes a half-done swap; unknown usage from an unreadable
+journal and from a fixer exception, budget-only calls never priced, the readers and the report say unknown; the
+baseline-outcome message reaches the report; a failing report noted once; `ScanSourceChanged` in the no-change copy; a
+leftover copy temp file; the tolerated run's kept copy wording; the round total in the fix section; the stop wording;
+the round-0 step; the interrupted work copy removed, and a removal failure a WARNING only),
+`tests/loop/test_fixloop_ask_halt.py` (a stop before the first ask asks nothing; a stop between two no-op asks ends the
+loop; the time budget passing between two asks ends it like between builds; the remediation's loop stops asking after a
+stop during an ask), `test_fix_usage.py`, `test_i18n.py`. 7,176 passed.
+
+**Still open** (as the code's author reported): a stored fix whose files vanish between the save and a kill runs the
+loop once more; after a kill between the confirm-failed save and the file removal, `fixed/` and `fix.patch` stay on disk
+unreferenced; the upload page's chip does not show the unknown-usage marker; a killed pod's fresh claim keeps the web
+repair waiting up to 600 s (the claim's takeover time); a call in flight when a pod is killed is never counted. A third
+smoke pass on `4600c02` and a narrow verification review of this commit were running when this was written.

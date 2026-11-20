@@ -212,6 +212,8 @@ Jackson 3 규칙) · 9 런타임 걱정은 `MIGRATION-TODO` 주석 · 10 "Librar
   거절이 sbmig 의 사실과 모순이면 받지 않는다 — 저장소에서 **확인된** jakarta 빌드가 있거나, 트리 안 동봉 jar 가 그 패키지를 제공할 때. 그때는 거절로 세지 않고
   보통 실패로 기록해 그 사실과 함께 다시 묻는다(저널 `decline_rejected`, 로그 `LLM 의 거절을 받지 않음: …`).
 - LLM 불가(`llm_unavailable`)나 예산 소진(`budget_exhausted`)으로 막힌 케이스에도 LLM 없는 사전 시도는 돈다([04](04-cases-scripts-kb.md) §5).
+- 요청마다(`propose_script`, `verify_guide`) 직전에 루프가 멈춤 요청과 실행 시간 한도를 본다(`BuildFixLoop._halt_before_ask`). 걸리면 묻지 않고
+  (저널 `llm_ask_skipped`, `why` = `stop` / `time`) 그 루프 실행에서 더 묻지 않으며, 빌드 사이에서 걸렸을 때와 같은 길로 끝난다.
 
 ## 확인하는 법
 

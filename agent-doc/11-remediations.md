@@ -6,15 +6,15 @@
 
 ## 1. 무엇을 하나
 
-입력은 Maven 프로젝트 ZIP, 출력은 결과 ZIP(`result.zip`)과 보고서, 순서는 2절의 노드 표(재검사는 전달 ZIP과 같은 바이트).
-코드는 `sbmig/remediations/`, 이관 KB와 섞이지 않는다. LLM은 실패한 후보의 빌드 오류 수정(2절)만. 이관 그래프와는 노드 하나로 잇는다(1.1, 따로는 1.2).
+입력은 Maven 프로젝트 ZIP, 출력은 결과 ZIP(`result.zip`)과 보고서, 순서는 2절의 노드 표.
+코드는 `sbmig/remediations/`, 이관 KB와 섞이지 않는다. LLM은 실패한 후보의 빌드 오류 수정(2절)만.
 
 ### 1.1 어디서 도나 — 빌드 파드, 이관에 이어서
 
 - `remediation.after_migration`이 true이고 이관이 BUILD SUCCESS이거나, 사내 프레임워크 실행([13](13-framework-projects.md))의
   최종 빌드가 실패했고(수정 루프를 돌았든 아니든) `remediation.after_failed_build: framework`(기본)면, `finalize` 뒤의 `remediation` 노드가 같은 `sbmig run` 프로세스에서 조치 그래프를 부른다(chain.py의 `run_after_migration`,
   둘째 경우 `baseline_may_fail=True`). 다른 실행의 빌드가 실패하면 잇지 않는다. 코드 기본 false,
-  매니페스트는 ConfigMap `sbmig-env`의 `SBMIG_REMEDIATION__AFTER_MIGRATION: "true"`(두 파드가 같아야 환경 대조 통과, 09).
+  매니페스트는 ConfigMap `sbmig-env`의 `SBMIG_REMEDIATION__AFTER_MIGRATION: "true"`(09).
 - 파일은 `<이관 실행 폴더>/remediation/`, 조치 id = 이관 run id. 체인이 이관된 프로젝트 트리로 ZIP을 만들어 접수(`intake.accept_zip`)에 넣는다.
 - 이관과 같은 빌드: 최종 빌드 대상(`verify.build`의 target; 루트 한 번이면 빈 목록) = `state.build_targets`
   (루트 aggregator 없는 MSA는 서비스마다, 루트 pom 없이 접수). 명령 앞부분·settings·로컬 저장소·환경(IVAS_/LLM_ 만 뺌)이 같고, 캐시된 해결 실패는 `-U`로 한 번 더
@@ -62,9 +62,9 @@
 - 원본 ZIP·파일 목록(manifest)·작업 트리 `accepted/`는 따로. 변경은 후보 사본에 먼저 하고, 빌드되고 해석이 계획과 같을 때만 `accepted/`로
   확정한다. 올린 ZIP의 `target/`(pom 옆, `src` 아래는 아님)은 manifest에서 빼고, 그때는 조치 전 검사와 바꾼 것 없는 결과 ZIP이
   `accepted/`를 묶은 `original/scan-source.zip`(`state.scan_source_sha256`, 내려받기 없음)이다.
-- pom은 Maven이 읽는 것은 모두 읽는다: 경계 검사·인벤토리·계획의 위치·적용·구조 검사가 `apply.read_pom_xml`/`apply.pom_xml_bytes`로 이관과 같이
-  디코드한다(`analyze.pom_parser.pom_encoding`: BOM→엄격한 UTF-8→선언한 인코딩, 한국어 계열은 cp949→파일 전체를 읽는 첫 후보). 변경은 읽은
-  인코딩으로 다시 써서 바뀐 글자의 바이트만 다르다. 정말 못 읽는 pom만 FAILED `execution_boundary_refused`, `unparsable_pom: <경로>: <이유>`. 화면·보고서 「pom 파일을 읽을 수 없습니다. <경로>: <이유>」, 할 일 「pom 파일 고치기」(`i18n.pom_why_ko`).
+- pom은 Maven이 읽는 것은 모두 읽는다: 모든 단계가 `apply.read_pom_xml`/`apply.pom_xml_bytes`로 이관과 같이 디코드하고
+  (`analyze.pom_parser.pom_encoding`: BOM→엄격한 UTF-8→선언한 인코딩, 한국어 계열은 cp949), 읽은 인코딩으로 다시 쓴다. 정말 못 읽는 pom만
+  FAILED `execution_boundary_refused` `unparsable_pom: <경로>: <이유>`(「pom 파일을 읽을 수 없습니다. …」, 할 일 「pom 파일 고치기」, `i18n.pom_why_ko`).
 - 불확실한 IVAS 업로드는 다시 올리지 않는다. 미완료 검사·빠진 쪽·중복·ZIP 해시 불일치는 "0건"이 아니다.
 - 새 버전의 근거는 서버 정책(`remediation.policy.pins`)이나 승인된 저장소에 실제로 있는 버전뿐. IVAS의 patched 버전은 하한 힌트이고,
   pin이 없으면 힌트가 있어야 제안한다(없으면 `no_candidate_version`).
@@ -118,23 +118,27 @@ SUCCEEDED 조건(전부): 기준 빌드 통과(예외 1.1), 적용한 라운드�
 `_overlay_fix`(후보를 바꾸는 유일한 길)→확인 빌드 `build-fixed.log`, 확정, `fix.patch`(12). 못 고침→후보 그대로 실패한 후보, 메시지 끝
 ` | automatic build fix[ not started| made no attempt]: <reason>`(폴더 준비 실패는 시작 안 함). 확인 빌드 중 멈춤→고침 유지.
 버린 고침은 `rs.fix_discarded`(상태 먼저 저장). `stop requested`로 끝난 루프는 재개 때 그리로 옮기고 다시 돈다(`time budget used up`은 최종).
-도중에 끝난 루프는 빌드·보고서 노드 시작에서 사용량을 한 번 저장한 뒤 `fixloop-interrupted-<n>/`로. 예외 뒤 사용량은 루프 저널에서(`fixer.journal_usage`,
-모르는 토큰은 `tokens_unknown`, 비용 없음). LLM 호출은 `fixer.fix_usage`로 `llm=`·실행 상태·관리자 페이지에.
+LLM 요청 앞마다 중지·시간 확인(`llm_ask_skipped`), 도중 중지는 STOPPED `stop requested during the round <r> build fix`. 도중에 끝난 루프는
+빌드·보고서 노드 시작에서 사용량을 한 번 저장하고 `fixloop-interrupted-<n>/`로(`tree/`는 지움). 예외 뒤 사용량은 루프 저널에서
+(`fixer.usage_from_folder`; 못 읽음 `usage_unknown`, 모르는 토큰 `tokens_unknown`: 비용 없음, 숫자 아님). `fixer.fix_usage`로 `llm=`(아는 호출만)·실행 상태·관리자 페이지에.
 
-**완성 증명.** `apply`는 `applied/`(고친 pom)→`expected.json`(`{schema: 2, round, applied, applied_files, files: {경로: [크기, sha256, 실행 비트]}}`, schema 1은 증명 아님)→
-`candidate.ready.json`(`expected` = 그 sha256) 순으로 쓴다. `_Holder.vouch_problem`이 비지 않으면 `candidate_rebuilt`(`why`)와 `apply`로(옛 버전의
-실행 폴더도). 빌드마다·확정 직전·실패본 얼리기 직전 `intake.sync_tree_table`이 그 표로 후보를 맞춘다(`build_changed`, 후보 파일은 한 번 이하로 읽음,
-권한 오류면 권한을 주고 한 번 더, 실행 비트도 되돌림). 못 맞추면 `candidate_sync_failed`, FAILED `internal_error`, 그 라운드는 확정·전달 없음.
+**완성 증명.** `apply`는 `applied/`(고친 pom)→`expected.json`(schema 2, `files` = 경로마다 [크기, sha256, 실행 비트])→
+`candidate.ready.json`(그 sha256) 순으로 쓴다. `_Holder.vouch_problem`이 비지 않으면 `candidate_rebuilt`(`why`)와 `apply`로.
+빌드마다·확정 직전·실패본 얼리기 직전 `intake.sync_tree_table`이 그 표로 후보를 맞춘다(`build_changed`,
+권한 오류면 한 번 더, 실행 비트도). 못 맞추면 `candidate_sync_failed`, FAILED `internal_error`, 그 라운드는 확정·전달 없음.
 
 **결과 ZIP 교체**(`_Holder.install_delivery`, 모든 결과 ZIP): `delivery/.result.next.zip`에 얼림→표식 `.result.next.json`→(실패본이면)
-`result.zip`을 `result-r<k>-verified.zip`으로 복사→`os.replace`→`delivery.json`→state 저장→표식 삭제. 얼리기 실패→이전 결과 그대로
-FAILED `internal_error`(`delivery_not_written`). 도중 종료는 다음 진입의 `recover_delivery`가 맞춘다(교체 전→되돌림, 뒤→새 ZIP).
-보고서 노드 도중 끝난 끝 상태(`graph.report_pending`)는 다음 진입(`run_remediation`, chain의 세 입구, in-process 서버 시작)이 보고서만 쓴다.
+`result.zip`을 `result-r<k>-verified.zip`으로 복사→`os.replace`→`st.delivery`와 노드가 정할 것(`after`)→`delivery.json`→state 저장→표식 삭제.
+얼리기 실패→이전 결과 그대로 FAILED `internal_error`(`delivery_not_written`). 교체 뒤 기록 실패→새 ZIP 유지, 표식 남김, FAILED `internal_error`
+(`delivery_record_not_written`). `recover_delivery`(교체 전→되돌림, 뒤→새 ZIP, 남은 `.copy-tmp` 삭제, `delivery_recovered`)는
+`run_remediation`·`graph.repair_final`에서. 노드 도중 저장 뒤 끝나도 재진입은 끊기지 않은 실행이 안 할 일을 안 한다(같은 sha256의 완전한
+조치 전 검사는 다시 안 올림, `baseline_scan_reused`). 보고서·교체 기록이 남은 끝 상태(`graph.final_repair_needed`)는 다음 진입이, 주인이 없으면
+웹 서버가 모든 모드에서 한 번 맞춘다(`RemediationManager.repair_final`, `remediation_final_repair`, 상태·메시지 그대로).
 
 **실패한 후보**(`remediation.failed_candidate`, 값 `include`(기본) 또는 `discard`):
 
 - `include`: 후보 빌드가 실패하면 그 수정본이 `delivery/result.zip`(`build_ok=false`, `scanned=false`, 재검사 없음), FAILED
-  `candidate_build_failed`. `accepted/`·원본 ZIP·`candidate.patch`·`build.log`는 남고, `report.md`는 "빌드가 실패한 수정본" 경고로 시작.
+  `candidate_build_failed`, `report.md`는 "빌드가 실패한 수정본" 경고로 시작.
   앞 라운드의 검증된 전달 ZIP은 `delivery/result-r<k>-verified.zip`(+ `.json`)으로 복사해 두고 내려받기 이름은 `result-verified.zip`.
 - `discard`: 실패한 후보는 결과 ZIP에 넣지 않는다(변경은 `candidate.patch` 로만). 앞 라운드의 검증된 전달 ZIP이 있으면 그것이
   `result.zip`, 없으면 전달 ZIP 없음.
@@ -143,8 +147,8 @@ FAILED `internal_error`(`delivery_not_written`). 도중 종료는 다음 진입�
 ## 3. 제안 규칙
 
 계획의 제안은 모두 묻지 않고 적용한다(`decision` `auto`; 효과가 없어 다시 뺀 override는 `ineffective`). 위험 부류(`risks`): `major`,
-`parent`(`<parent><version>`), `bom`(가져온 BOM), `managed_override`(넣는 관리 항목): 보고서 「주의」 칸과 할 일에(12). 안전장치: 격리된
-후보, 후보 빌드(못 고치면 묶음 통째로 FAILED `candidate_build_failed`), 효과 없는 override 제거, 전달 ZIP 재검사.
+`parent`(`<parent><version>`), `bom`(가져온 BOM), `managed_override`(넣는 관리 항목): 보고서 「주의」 칸과 할 일에(12). 못 고친 빌드
+실패는 묶음 통째로 FAILED `candidate_build_failed`.
 부모·BOM 버전 변경은 그 부모·BOM 자체가 `remediation.policy.pins`에 있을 때만 제안된다(`parent_version`/`bom_version`, override 아님).
 
 관리 버전 override: `transitive`·`parent_managed`·`bom_managed` 항목은 (pin이 없으면) 직접 의존성과 같은 규칙(1절의 근거, 같은 메이저
@@ -159,7 +163,7 @@ false면 모듈은 잔여). 그 pom에 관리 항목이 이미 있으면: 최상
 정책 해시 = `remediation.policy` 전부 + `failed_candidate` + `ignore_actions` + 사내 g:a(+ 프레임워크 패턴, 12) + false 일 때의
 `module_overrides`(`ivas_summary_check` 제외). 바뀌면 열린 계획을 마지막 검사로 다시 만든다. 제안 해시는 edit 전부를 덮는다.
 
-승인 단계는 없다. 옛 키는 WARNING으로 무시(`config._warn_removed_keys`), 옛 승인 대기 조치는 「조치 미완료」(resume 409, 다시 올림). `docs/RUNBOOK.md` §6.
+승인 단계는 없다(옛 키는 WARNING, `config._warn_removed_keys`; 옛 승인 대기는 「조치 미완료」, resume 409).
 
 ## 4. 상태와 운영자가 할 일
 
@@ -185,7 +189,7 @@ false면 모듈은 잔여). 그 pom에 관리 항목이 이미 있으면: 최상
 | `POST /api/remediations?name=<file.zip>` (본문 = ZIP) | `in-process` 모드만: 202 `{id, status, url}` / 400 접수 거부(코드) / 413 크기 초과 / 503 `not_ready` + `missing`. Job 모드는 409 `not_available` |
 | `GET /api/remediations?page=&size=` | 목록(최신 먼저) |
 | `GET /api/remediations/readiness` | `{ready, missing}`(이름만) |
-| `GET /api/remediations/<id>` | 상태 dict(status, reason(s), node, next_node, round, counts, delivery, files, `fix` …) |
+| `GET /api/remediations/<id>` | 상태 dict(status, reason(s), node, next_node, round, counts, delivery, files, `fix`(`llm_usage_unknown`) …) |
 | `GET /api/remediations/<id>/result` | 끝 상태면 report.json(`delivery`, `verified_delivery` 포함), 아니면 409 `not_finished` |
 | `POST /api/remediations/<id>/resume` | 재개(확인 대기면 `confirm` 필수). Job 모드의 이어 돈 조치는 새 빌드 파드 |
 | `POST /api/remediations/<id>/stop` | 다음 경계에서 멈춤 |
@@ -198,9 +202,9 @@ false면 모듈은 잔여). 그 pom에 관리 항목이 이미 있으면: 최상
 
 1. `state.json`: `status`, `reason`, `reasons`, `message`, `node`(마지막), `next_node`(재개 지점), `round`, `pending_upload` /
    `pending_receipt`(검사 중 멈춘 자리), `boundary`(경계 검사), `residuals`, `scan_source_sha256`.
-2. `journal.jsonl`: `node_start`/`node_end`, `scan_receipt`, `scan_resume`, `upload_uncertain`, `scan_stopped`, `scan_done`,
+2. `journal.jsonl`: `scan_receipt`, `scan_resume`, `upload_uncertain`, `scan_stopped`, `scan_done`,
    `ivas_upload`, `ivas_status`, `ivas_pages`, `ivas_scan_done`, `plan_written`, `plan_reused`, `plan_stale`, `policy_hash_differs`,
-   `round_committed`, `next_round`, `maven_project_config`, `ivas_action_unknown`, `remediation_budget`, `remediation_fix_loop`, `remediation_fix_discarded`, `remediation_fix_interrupted`, `build_side_changes`, `candidate_rebuilt`, `candidate_sync_failed`, `candidate_not_restored`, `failed_candidate_delivered`, `verified_delivery_kept`, `earlier_delivery_kept`, `delivery_not_written`, `scan_source_made`, `report_rewritten`, `remediation_report_repair`.
+   `round_committed`, `next_round`, `maven_project_config`, `ivas_action_unknown`, `remediation_budget`, `remediation_fix_loop`, `remediation_fix_discarded`, `remediation_fix_interrupted`, `build_side_changes`, `candidate_rebuilt`, `candidate_sync_failed`, `candidate_not_restored`, `failed_candidate_delivered`, `verified_delivery_kept`, `earlier_delivery_kept`, `delivery_not_written`, `delivery_record_not_written`, `delivery_recovered`, `baseline_scan_reused`, `scan_source_made`, `report_rewritten`, `remediation_report_repair`, `remediation_final_repair`.
    결과 ZIP의 정체는 `delivery/delivery.json`의 `build_ok`·`build_tolerated`·`scanned`.
 3. remediation.log: 로그(비밀 없음, 모든 조치). Maven 원문은 `baseline/build.log`, `rounds/<n>/build.log`(대상이 여럿이면 `build-<대상>.log`).
 4. `scans/<label>.json`: 검사 하나: `complete`, `incomplete_reasons`(`analysis_failed`, `analysis_timeout`, `page_missing`, `total_mismatch`,
@@ -208,7 +212,7 @@ false면 모듈은 잔여). 그 pom에 관리 항목이 이미 있으면: 최상
 5. `rounds/<n>/`: `before.json`(해석 결과), `inventory.json`(항목별 `origin`, `location`, `reason`), `plan.json`(제안·잔여), `apply.json`
    (적용·건너뜀), `candidate.patch`, `resolved.json`(후보 해석 결과), `applied/`, `expected.json`, `candidate.ready.json`, 수정 루프면 `fixloop/`(`journal.jsonl`, `logs/`, `fixed/`), `build-fixed.log`, `fix.patch`.
 
-자주 보는 경우: matchedfiles의 `scan_incomplete … http_error, page_missing`→옛 주소의 404, 새로 돌린다. 후보 빌드 실패인데 메시지에 `automatic build fix:`→수정 루프가 못 고쳤다(`rounds/<r>/fixloop/journal.jsonl`). `internal_error` `… could not be put back …`→`candidate_sync_failed`의 경로·오류, `rounds/<r>/candidate/` 권한 확인 후 다시 올림. 이미지 교체 뒤 재개한 실행의 `candidate_rebuilt`→정상. `… could not be written`→디스크·권한, `result.zip`은 문장이 말하는 라운드 것. `zip_hash_mismatch` `the scan source ZIP …`→다시 올림. 이관 빌드가 실패했는데 조치가 돌았다→사내 프레임워크 실행이면 정상(1.1, 끄려면 `never`). `not_ready`→readiness의 `missing`(`remediation.trusted_projects`, IVAS 세 값, JDK 21, Maven, settings.xml, 승인된 저장소 호스트). `execution_boundary_refused` →
+자주 보는 경우: matchedfiles의 `scan_incomplete … http_error, page_missing`→옛 주소의 404, 새로 돌린다. 후보 빌드 실패인데 메시지에 `automatic build fix:`→수정 루프가 못 고쳤다(`rounds/<r>/fixloop/journal.jsonl`). `internal_error` `… could not be put back …`→`candidate_sync_failed`의 경로·오류, `rounds/<r>/candidate/` 권한 확인 후 다시 올림. `… could not be written`→디스크·권한, `result.zip`은 문장이 말하는 라운드 것(`is now …`면 다음에 열 때 맞춤). `zip_hash_mismatch` `the scan source ZIP …`→다시 올림. 이관 빌드가 실패했는데 조치가 돌았다→사내 프레임워크 실행이면 정상(1.1, 끄려면 `never`). `not_ready`→readiness의 `missing`(`remediation.trusted_projects`, IVAS 세 값, JDK 21, Maven, settings.xml, 승인된 저장소 호스트). `execution_boundary_refused` →
 `state.boundary`의 `code`(`project_maven_config`, `maven_extensions`, `maven_wrapper`, `symlink`, `foreign_repository`,
 `foreign_plugin_repository`, `unparsable_pom`). `manual_review`만 남음→`inventory.json`의 `origin`이 `plugin`/`vendored`/`unmapped` 이거나,
 `transitive` / 부모·BOM 관리인데 override를 막은 사실이 잔여의 `detail`에(남은 classifier, 루트 pom 비상속·없음, 직접 선언 버전, 넣을 줄
@@ -221,7 +225,7 @@ false면 모듈은 잔여). 그 pom에 관리 항목이 이미 있으면: 최상
 
 | 키(`remediation.` 아래) | 뜻 |
 |---|---|
-| `max_upload_mb`/`max_entries`/`max_unpacked_mb`/`max_entry_mb`/`max_compression_ratio` | ZIP 한도(압축률은 1 MiB 이상 풀리는 항목만) |
+| `max_upload_mb`/`max_entries`/`max_unpacked_mb`/`max_entry_mb`/`max_compression_ratio` | ZIP 한도 |
 | `after_migration` | 이관에 이어 같은 빌드 파드에서 조치를 돌릴지(기본값과 매니페스트 값은 1.1) |
 | `after_failed_build` | `framework`(기본, 1.1) / `never` = 빌드가 실패한 실행은 잇지 않음 |
 | `trusted_projects` | (in-process 단독 업로드만) true여야 접수(기본 false, Maven이 프로젝트 플러그인을 돌림) |

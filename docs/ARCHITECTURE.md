@@ -101,6 +101,7 @@ for round in 1..max_iterations:
     per case: pre-try (zero LLM) → reuse stored script → augment (LLM) → new (LLM) → BLOCKED
     commit each attempt
 stop also when no case is left to try, only blocked cases remain, the time budget is spent, or a stop is requested
+  (stop request and time budget: checked between builds and before each LLM request)
 at loop end: each case's last applied attempt scored no_change / inconclusive is rolled back
 ```
 
@@ -387,13 +388,19 @@ every candidate build, and again right before commit and before a failed candida
 unreported (`RoundState.build_changed`); a path it cannot put back (`intake.SyncFailed`) ends the run FAILED
 `internal_error` without committing or delivering that round. A stop keeps a fix and a loop stopped on request may run
 again on resume; a killed loop is kept as `fixloop-interrupted-<n>/` with its LLM usage counted once, at the next
-build or report node (`fixer.fix_usage`, read by the result line, the run status and the admin page; after an exception
-inside the loop the usage comes from the loop's journal, calls without token counts are never priced).
+build or report node, after which its work copy `tree/` is removed (`fixer.fix_usage`, read by the result line, the
+run status and the admin page; after an exception inside the loop the usage comes from the loop's journal; usage that
+cannot be read is marked unknown — `usage_unknown` — and calls without token counts are never priced; every reader says
+「알 수 없음」 instead of showing a number as exact).
 Every result ZIP goes through one swap (`_Holder.install_delivery`): frozen to `delivery/.result.next.zip`, a marker
-`.result.next.json`, an earlier verified ZIP copied aside, `os.replace` onto `result.zip`, `delivery.json`, the state; a
-freeze that fails leaves the previous delivery and ends FAILED `internal_error`, and `recover_delivery` completes or rolls
-back a swap a kill interrupted on the next entry. A final state whose report node was killed gets its report on the next
-entry (`graph.write_pending_report`). When the intake left uploaded build output out, the baseline scan uploads and a
+`.result.next.json`, an earlier verified ZIP copied aside, `os.replace` onto `result.zip`, then `state.delivery` and
+everything else the node sets, `delivery.json`, the state saved, the marker removed. A freeze that fails leaves the
+previous delivery and ends FAILED `internal_error`; once the replace happened the swap is rolled forward, and records that
+cannot be written leave the marker (`DeliveryRecordNotWritten`, FAILED `internal_error`). `recover_delivery` completes or
+rolls back a swap on every entry that sees the run folder again (`run_remediation`, `graph.repair_final`). No mid-node save
+lets a re-entry do what the uninterrupted run would not: a stored complete baseline scan of the same bytes is reused, never
+uploaded again. A final state whose report or swap record is pending is repaired on the next entry, and by the web service
+in every mode once its owner is gone (`RemediationManager.repair_final`). When the intake left uploaded build output out, the baseline scan uploads and a
 no-change run delivers `original/scan-source.zip` (a deterministic ZIP of `accepted/`, sha256 recorded in the state), so
 both scans compare like with like; otherwise the upload itself is scanned and delivered.
 The planner keeps a wrong version out and leaves a residual for a person instead: a version property several artifacts share
