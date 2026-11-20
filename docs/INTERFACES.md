@@ -5934,3 +5934,37 @@ the tokens of one row are not split per served model (a row with two served name
 of the answer is kept as a name only); the page has no dark token set, so the rendered report is light only; Edge is
 not checked; that the agent gateway answers `model: unknown` is inferred from the admin page's rows, no recorded real
 answer is in the repository.
+
+## v2.1z-bh — build output in an uploaded ZIP is left out of the remediation's file list
+
+**Why.** A remediation-only upload that carried `<module>/target/` (classes, a packaged jar) put those files into
+`original/manifest.json`. Every build of the remediation is `mvn clean package`, so a build that fails before a module
+compiles leaves manifest files missing; freezing the failed candidate then ended the run as `internal_error`
+(`file listed in the manifest is missing: …/target/classes/….class`) instead of 「수정본 빌드 실패」. Stale build output
+also reached IVAS and the result ZIP although it no longer matches the changed poms.
+
+**Contract.**
+- `intake.build_output_paths(files: list[str]) -> list[str]` (pure, sorted): the file paths that lie under a Maven
+  build-output folder. A path is build output when one of its segments is exactly `target` and the folder holding
+  that segment has a `pom.xml` among `files` (`a/b/target/x` with `a/b/pom.xml`; `target/x` with `pom.xml`). The
+  outermost such segment decides. A `target` folder without a sibling `pom.xml` is ordinary content; a `pom.xml`
+  inside a build-output folder never makes another folder a module.
+- `accept_zip` validates the whole ZIP as before (limits, names, collisions count every entry), decides
+  `project_root` on all entries, then leaves the build-output files out of BOTH `accepted/` and
+  `original/manifest.json`. `original/source.zip` keeps them. A ZIP whose files are all build output is rejected as
+  `empty`.
+- `IntakeResult.files` / `unpacked_bytes` / `tree_hash` count the kept files only. `IntakeResult.build_output_files:
+  int = 0` (left out of the JSON when 0, read with default 0) and one entry in `notes`:
+  `build output left out: <n> file(s) under <folder>[, <folder> …]` (at most 5 folders, then `+<k> more`; folders
+  are the `…/target` paths, sorted). Log line at INFO with the same text. Journal: no new event.
+- No switch. Applies to every caller of `accept_zip` (remediation-only upload, chained remediation, restart).
+- Report (`remediations/report.py`, Korean) and the page keep working unchanged; the Korean report shows the note
+  once, where the intake facts are listed, as 「업로드한 ZIP의 빌드 산출물 <n>개(`<folder>` …)는 검사와 결과 ZIP에서
+  제외했습니다. 원본 ZIP에는 그대로 있습니다.」 through the existing i18n pattern table.
+- The failed-candidate path itself is not changed; with build output out of the list, `mvn clean` cannot remove a
+  listed file.
+
+**Tests.** `tests/remediations/test_intake_build_output.py`: the pure function (nested modules, root pom, `target`
+without a pom, a pom inside `target`), `accept_zip` (manifest and `accepted/` without the files, counts, note, all
+build output → `empty`, single-top-level-folder ZIP), and one graph-level test: a ZIP with `target/classes/A.class`
+whose candidate build fails ends `FAILED candidate_build_failed` with a frozen delivery, not `internal_error`.
