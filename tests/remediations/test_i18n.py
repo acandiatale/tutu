@@ -310,6 +310,14 @@ SAMPLES: list[tuple[str, str, list[str]]] = [
     ("auto_fix_confirm", "automatic build fix: error: confirming build failed", ["고친 뒤 다시 한 빌드가 실패함"]),
     ("auto_fix_error", "automatic build fix: error: RuntimeError: boom", ["내부 오류", "RuntimeError: boom"]),
     ("auto_fix_other", "automatic build fix: something new", ["something new"]),
+    ("auto_fix_discarded", "automatic build fix: discarded: the candidate was remade",
+     ["수정본을 다시 만들어 이전 수정은 버림"]),
+    # the suffix when the loop was not started (attempted: false); it never says the sources were reverted
+    ("auto_fix_not_started_stop", "automatic build fix not started: stop requested",
+     ["빌드 오류 자동 수정은 시작하지 않았습니다(중지 요청)."]),
+    ("auto_fix_not_started_time", "automatic build fix not started: time budget used up",
+     ["빌드 오류 자동 수정은 시작하지 않았습니다(남은 시간 부족)."]),
+    ("auto_fix_not_started", "automatic build fix not started: something new", ["something new"]),
 ]
 
 
@@ -560,3 +568,21 @@ def test_unreadable_pom_reasons_read_as_words():
         "app/pom.xml 파일을 읽을 수 없습니다. 파일을 열 수 없습니다(권한).")
     assert i18n.ko_text("module app: pom not readable (cannot read app/pom.xml: not well-formed XML (line 7): x)") == (
         "app 모듈의 pom을 읽을 수 없습니다. app/pom.xml: XML 문법 오류(줄 7).")
+
+
+def test_fix_reasons_of_the_work_copy_fixer():
+    """Reasons the fixer writes since INTERFACES "v2.1z-bj": bare `llm unavailable` (the old form still reads), the
+    guard reason `<p> must not be edited`, a discarded fix; a loop that never started is never said to be reverted."""
+    assert i18n.fix_reason_ko("llm unavailable") == ("LLM을 사용할 수 없음", "")
+    assert i18n.fix_reason_ko("llm unavailable: gateway 503") == ("LLM을 사용할 수 없음", "원문: `gateway 503`")
+    assert i18n.fix_reason_ko("rejected: app/mvnw must not be edited") == ("고칠 수 없는 파일: app/mvnw", "")
+    assert i18n.fix_reason_ko("rejected: pom.xml must not be edited: app/pom.xml") == ("고칠 수 없는 파일: app/pom.xml", "")
+    assert i18n.fix_reason_ko("discarded: the candidate was remade") == ("수정본을 다시 만들어 이전 수정은 버림", "")
+    assert i18n.ko_text("automatic build fix: llm unavailable") == (
+        "빌드 오류 자동 수정을 시도했지만 고치지 못했습니다(LLM을 사용할 수 없음). 소스 수정은 되돌렸습니다.")
+    assert i18n.rule_keys("automatic build fix: llm unavailable") == ["auto_fix_llm"]
+    for reason, why in (("stop requested", "중지 요청"), ("time budget used up", "남은 시간 부족")):
+        line = i18n.fix_not_started_ko(reason)
+        assert line == f"빌드 오류 자동 수정은 시작하지 않았습니다({why})."
+        out = i18n.ko_text(f"the candidate build failed | automatic build fix not started: {reason}")
+        assert line in out and "되돌렸" not in out

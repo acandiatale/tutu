@@ -228,3 +228,27 @@ def test_admin_without_remediation_calls_keeps_the_old_row(tmp_path):
                   total={"calls": 1, "input_tokens": 1, "output_tokens": 1}, fixes=[FixResult(attempted=True)])
     row = run_usage(rd)
     assert row["calls"] == 1 and "remediation_calls" not in row
+
+
+# ------------------------------------------------------------------------------------------------ v2.1z-bj
+def test_discarded_fixes_and_a_failed_confirming_build_still_count(tmp_path):
+    """A fix thrown away (remade candidate → `fix_discarded`; failed confirming build → `fixed: false`) spent its
+    calls all the same: `fix_usage` and `run_fix_usage` count them."""
+    gone = FixResult(attempted=True, reason="discarded: the candidate was remade", llm_calls=3, discarded_changed=["A"],
+                     usage=[FixUsage(model="a", calls=3, input_tokens=30, output_tokens=3)])
+    confirm_failed = FixResult(attempted=True, reason="error: confirming build failed", llm_calls=2,
+                               discarded_changed=["B"], usage=[FixUsage(model="a", calls=2, input_tokens=20,
+                                                                        output_tokens=2)])
+    st = RemediationState(id="run-1", rounds=[
+        RoundState(round=1, fix=FixResult(attempted=True, fixed=True, changed=["A"], llm_calls=1,
+                                          usage=[FixUsage(model="b", calls=1, input_tokens=1, output_tokens=1)]),
+                   fix_discarded=[gone]),
+        RoundState(round=2, fix=confirm_failed)])
+    got = fix_usage(st)
+    assert (got["calls"], got["input_tokens"], got["output_tokens"]) == (6, 51, 6)
+    assert {r["model"]: r["calls"] for r in got["by_model"]} == {"a": 5, "b": 1}
+    assert fix_usage(st.to_dict()) == got
+    rd = tmp_path / "run-1"
+    (rd / "remediation").mkdir(parents=True)
+    (rd / "remediation" / "state.json").write_text(json.dumps(st.to_dict()), encoding="utf-8")
+    assert run_fix_usage(rd) == got

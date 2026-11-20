@@ -1,10 +1,12 @@
-"""v2.1z-bi part B in the remediation graph (docs/INTERFACES.md "v2.1z-bi", "When" and "Graph").
+"""v2.1z-bi part B in the remediation graph (docs/INTERFACES.md "v2.1z-bi", "When" and "Graph", amended by "v2.1z-bj").
 
 A fake `Fixer` goes in through `Components.fixer` (no Maven, no LLM). Checked: the conditions under which the loop
 is not called (switch off, no fixer, baseline failed, nothing applied, a stop pending), the fixed path (confirming
 build → verify → commit → delivery `build_ok` with the changed source), a failing confirming build (reset +
-`candidate_build_failed`), the not-fixed path (today's outcome + the message suffix), the journal events, the time
-left passed as the deadline, a ZIP with one top-level folder (paths relative to the project root).
+`candidate_build_failed`), the not-fixed path (today's outcome + the message suffix), the journal events, the loop's
+time (time left minus the reserve, the `fix_loop_max_minutes` cap, not started), a ZIP with one top-level folder
+(paths relative to the project root). The fake never writes the candidate: fixed bytes go to `work_dir/fixed/` and the
+graph overlays them. The review's scenarios are in `test_fix_loop_review.py`.
 """
 from __future__ import annotations
 
@@ -23,26 +25,34 @@ FIXED = "class App { fixed }\n"
 
 
 class FakeFixer:
-    """A `Fixer`: records each call; `fixed=True` rewrites App.java in the tree and writes the patch file."""
+    """A `Fixer` under the v2.1z-bj contract: records each call; never writes the candidate; `fixed=True` stores the
+    fixed App.java under `work_dir/fixed/` and writes the patch file; `retry=True` is fixed with nothing changed."""
 
-    def __init__(self, fixed: bool = True, reason: str = "", raises: Exception | None = None):
-        self.fixed, self.reason, self.raises = fixed, reason, raises
+    def __init__(self, fixed: bool = True, reason: str = "", raises: Exception | None = None, retry: bool = False,
+                 llm_calls: int = 1):
+        self.fixed, self.reason, self.raises, self.retry, self.llm_calls = fixed, reason, raises, retry, llm_calls
         self.calls: list[dict] = []
 
     def run(self, cfg, tree, work_dir, *, run_id, targets, applied, manifest_paths, first_outcome, stop, deadline,
             journal):
         self.calls.append({"tree": Path(tree), "work_dir": Path(work_dir), "run_id": run_id, "targets": list(targets),
                            "applied": [p.id for p in applied], "manifest_paths": list(manifest_paths),
-                           "first_ok": first_outcome.ok, "deadline": deadline, "stop": stop()})
+                           "first_ok": first_outcome.ok, "deadline": deadline, "stop": stop(),
+                           "app": (Path(tree) / APP).read_bytes() if (Path(tree) / APP).exists() else None})
         if self.raises is not None:
             raise self.raises
         if not self.fixed:
             return FixResult(attempted=True, iterations=3, attempts=2, llm_calls=2, reason=self.reason)
-        (Path(tree) / APP).write_text(FIXED, encoding="utf-8")
+        if self.retry:
+            return FixResult(attempted=True, fixed=True, retry_passed=True, iterations=1)
+        fixed = Path(work_dir) / "fixed"
+        (fixed / APP).parent.mkdir(parents=True, exist_ok=True)
+        (fixed / APP).write_text(FIXED, encoding="utf-8")
         patch = Path(work_dir).parent / "fix.patch"
         patch.write_text(f"--- a/{APP}\n+++ b/{APP}\n", encoding="utf-8")
-        return FixResult(attempted=True, fixed=True, iterations=2, attempts=1, llm_calls=1, input_tokens=10,
-                         output_tokens=5, models=["build_error_fixer"], changed=[APP], patch=str(patch))
+        return FixResult(attempted=True, fixed=True, iterations=2, attempts=1, llm_calls=self.llm_calls,
+                         input_tokens=10, output_tokens=5, models=["build_error_fixer"], changed=[APP],
+                         patch=str(patch), fixed_dir=str(fixed))
 
 
 def zip_files(p: Path) -> dict[str, bytes]:
@@ -128,9 +138,13 @@ def test_fixed_round_is_confirmed_verified_committed_and_delivered(tmp_path):
     [call] = fx.calls
     assert call["tree"] == paths.candidate(1) and call["work_dir"] == paths.round_dir(1) / "fixloop"
     assert call["manifest_paths"] == ["pom.xml", APP] and call["targets"] == [] and call["applied"] == ["p-1-1"]
-    assert call["run_id"] == "rem-1-fix-r1" and call["first_ok"] is False and call["deadline"] is None
+    assert call["run_id"] == "rem-1-fix-r1" and call["first_ok"] is False
+    # no time budget: the cap fix_loop_max_minutes (30) alone
+    assert call["deadline"] is not None and call["deadline"] - time.monotonic() < 30 * 60
+    assert call["app"] != FIXED.encode()                       # the candidate was not touched by the loop
     rs = out.rounds[0]
     assert rs.committed and rs.fix.fixed and rs.fix.changed == [APP] and rs.fix.patch == "rounds/1/fix.patch"
+    assert rs.fix.fixed_dir == "rounds/1/fixloop/fixed" and rs.fix.tree_hash and not rs.fix.retry_passed
     assert rs.fix_first_build is not None and not rs.fix_first_build.ok and rs.fix_first_build.log == "rounds/1/build.log"
     assert rs.build.ok and rs.build.log == "rounds/1/build-fixed.log"
     assert (paths.round_dir(1) / "build-fixed.log").is_file()
@@ -163,6 +177,8 @@ def test_a_failing_confirming_build_resets_the_change_and_fails_as_today(tmp_pat
     rs = out.rounds[0]
     assert not rs.fix.fixed and rs.fix.reason == "error: confirming build failed"
     assert rs.fix.changed == [] and rs.fix.patch == "" and not (paths.round_dir(1) / "fix.patch").exists()
+    assert rs.fix.discarded_changed == [APP] and rs.fix.fixed_dir == ""
+    assert not (paths.round_dir(1) / "fixloop" / "fixed").exists()
     assert rs.fix_first_build is None and rs.build.log == "rounds/1/build.log"
     assert (paths.candidate(1) / APP).read_bytes() == original
     # the failed candidate is delivered as today, without the reset source change
@@ -190,11 +206,11 @@ def test_not_fixed_ends_as_today_with_the_reason_appended(tmp_path):
 
 def test_not_fixed_under_discard_keeps_the_message_suffix(tmp_path):
     state, paths = make_run(tmp_path)
-    fx = FakeFixer(fixed=False, reason="llm unavailable: no key")
+    fx = FakeFixer(fixed=False, reason="llm unavailable")
     out, _ = run(state, paths, one_fix_components(maven=FakeMaven(outcomes=[True, False]), fixer=fx),
                  cfg=make_cfg(failed_candidate="discard"))
     assert out.status == FAILED and out.delivery is None
-    assert out.message.endswith(" | automatic build fix: llm unavailable: no key")
+    assert out.message.endswith(" | automatic build fix: llm unavailable")
 
 
 def test_a_fixer_that_raises_is_not_fixed_and_the_candidate_not_delivered(tmp_path):
@@ -208,19 +224,56 @@ def test_a_fixer_that_raises_is_not_fixed_and_the_candidate_not_delivered(tmp_pa
 
 
 # ------------------------------------------------------------------------------------------------ deadline / layout
-def test_the_time_left_becomes_the_deadline(tmp_path):
-    state, paths = make_run(tmp_path)
-    fx = FakeFixer()
-
+def _timed_stop(left: float):
     def stop():
         return False
-    stop.time_left = lambda: 600.0
+    stop.time_left = lambda: left
+    return stop
+
+
+def test_the_time_left_minus_the_reserve_becomes_the_deadline(tmp_path):
+    state, paths = make_run(tmp_path)
+    fx = FakeFixer()
     before = time.monotonic()
     out = graph.run_remediation(state, paths, make_cfg(), one_fix_components(maven=FakeMaven(outcomes=[True, False, True]),
                                                                              fixer=fx),
-                                save=lambda s: None, journal=lambda e: None, stop=stop)
+                                save=lambda s: None, journal=lambda e: None, stop=_timed_stop(900.0))
     assert out.status == SUCCEEDED
+    # reserve = max(300, 2 x builds of 0 s) = 300 → 600 s for the loop
     assert before + 590 < fx.calls[0]["deadline"] < time.monotonic() + 610
+
+
+def test_the_reserve_grows_with_the_build_seconds_and_the_cap_bounds_the_loop(tmp_path):
+    from sbmig.remediations.models import BuildOutcome
+    state, paths = make_run(tmp_path)
+    fx = FakeFixer()
+    slow = BuildOutcome(ok=False, exit_code=1, summary="[ERROR] x", seconds=200.0)
+    before = time.monotonic()
+    graph.run_remediation(state, paths, make_cfg(), one_fix_components(maven=FakeMaven(outcomes=[True, slow, True]),
+                                                                       fixer=fx),
+                          save=lambda s: None, journal=lambda e: None, stop=_timed_stop(1000.0))
+    assert before + 590 < fx.calls[0]["deadline"] < time.monotonic() + 610          # 1000 - 2 x 200
+    state, paths = make_run(tmp_path / "b")
+    fx2 = FakeFixer()
+    before = time.monotonic()
+    graph.run_remediation(state, paths, make_cfg(fix_loop_max_minutes=5),
+                          one_fix_components(maven=FakeMaven(outcomes=[True, False, True]), fixer=fx2),
+                          save=lambda s: None, journal=lambda e: None, stop=_timed_stop(100000.0))
+    assert before + 290 < fx2.calls[0]["deadline"] < time.monotonic() + 310         # the cap: 5 minutes
+
+
+def test_too_little_time_after_the_reserve_does_not_start_the_loop(tmp_path):
+    state, paths = make_run(tmp_path)
+    fx = FakeFixer()
+    rec = Recorder()
+    out = graph.run_remediation(state, paths, make_cfg(), one_fix_components(maven=FakeMaven(outcomes=[True, False]),
+                                                                             fixer=fx),
+                                save=rec.save, journal=rec.journal, stop=_timed_stop(330.0))
+    assert fx.calls == []
+    assert out.status == FAILED and out.reason == "candidate_build_failed" and out.delivery is not None
+    assert not out.rounds[0].fix.attempted and out.rounds[0].fix.reason == "time budget used up"
+    assert out.message.endswith(" | automatic build fix not started: time budget used up")
+    assert fix_events(rec)[-1]["phase"] == "not_started"
 
 
 def test_a_zip_with_one_top_level_folder_passes_project_relative_paths(tmp_path):
@@ -257,16 +310,3 @@ def test_default_components_carry_the_real_fixer(monkeypatch):
     monkeypatch.setattr(planner_mod, "RepositoryVersionSource", lambda cfg, allowed_hosts=None: object())
     comps = graph.default_components(make_cfg())
     assert isinstance(comps.fixer, RemediationFixer)
-
-
-
-def test_the_last_fixed_rounds_patch_is_servable(tmp_path):
-    from sbmig.remediations import service
-    from sbmig.remediations.models import RunPaths
-    paths = RunPaths(tmp_path / "run")
-    assert not service._FIXED_FILES["fix.patch"](paths).is_file()
-    for n in (1, 3):
-        paths.round_dir(n).mkdir(parents=True)
-        (paths.round_dir(n) / "fix.patch").write_text(f"r{n}\n", encoding="utf-8")
-    paths.round_dir(10).mkdir(parents=True)                 # a later round without a fix
-    assert service._FIXED_FILES["fix.patch"](paths) == paths.round_dir(3) / "fix.patch"

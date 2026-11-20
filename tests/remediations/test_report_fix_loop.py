@@ -110,14 +110,14 @@ def test_an_override_entry_and_a_fix_join_with_the_right_particle(tmp_path):
     assert "버전 표기, dependencyManagement에 추가한 버전 지정과 고친 소스 2개뿐입니다." in body
 
 
-def test_record_shows_the_first_build_and_the_fix(tmp_path):
+def test_record_shows_the_first_build_and_theFixResult(tmp_path):
     state, paths = _fixed(tmp_path)
     record = _section(report.build_report_md(state, paths), "처리 기록")
     assert "- 처음 수정본 빌드: 실패 (종료 코드 1)" in record
     assert "- 빌드 오류 자동 수정: 고침 · 파일 2개 · 2회 반복 · LLM 호출 4회" in record
 
 
-def test_report_json_carries_rounds_fix(tmp_path):
+def test_report_json_carries_roundsFixResult(tmp_path):
     state, paths = _fixed(tmp_path)
     data = report.build_report_json(state, paths)
     fix = data["rounds"][0]["fix"]
@@ -161,17 +161,22 @@ def test_unfixed_round_without_a_delivery_still_says_it(tmp_path):
 
 
 def test_a_loop_that_never_started_does_not_claim_a_try(tmp_path):
-    state, paths = _unfixed(tmp_path, "time budget used up", attempted=False)
-    md = report.build_report_md(state, paths)
-    assert "남은 시간이 없어 빌드 오류 자동 수정은 시작하지 않았습니다." in md
-    assert "시도했지만" not in md.split("## 처리 기록", 1)[0]
-    assert "- 빌드 오류 자동 수정: 남은 시간이 없어 시작하지 않음" in md
+    for i, (reason, why) in enumerate((("time budget used up", "남은 시간 부족"), ("stop requested", "중지 요청"))):
+        state, paths = _unfixed(tmp_path / str(i), reason, attempted=False)
+        md = report.build_report_md(state, paths)
+        head = md.split("\n## ", 1)[0]
+        assert f"> 빌드 오류 자동 수정은 시작하지 않았습니다({why})." in head.splitlines()
+        assert "시도했지만" not in md.split("## 처리 기록", 1)[0]
+        assert "되돌렸" not in head and "되돌림" not in md
+        assert f"- 빌드 오류 자동 수정: 시작하지 않음({why})" in md
+        assert DETACHED.search(head) is None, head
 
 
 def test_every_reason_reads_in_korean_in_the_report(tmp_path):
-    reasons = ["not fixed: 1 error(s) left", "llm unavailable: gateway 503", "stop requested", "time budget used up",
-               "rejected: pom.xml must not be edited: app/pom.xml", "rejected: something else",
-               "error: confirming build failed",
+    reasons = ["not fixed: 1 error(s) left", "llm unavailable: gateway 503", "llm unavailable", "stop requested",
+               "time budget used up", "rejected: pom.xml must not be edited: app/pom.xml",
+               "rejected: app/mvnw must not be edited", "rejected: something else",
+               "error: confirming build failed", "discarded: the candidate was remade",
                "error: RuntimeError: boom"]
     for i, reason in enumerate(reasons):
         state, paths = _unfixed(tmp_path / str(i), reason)
@@ -249,18 +254,126 @@ def test_status_api_carries_the_fix_digest(tmp_path, monkeypatch):
 
 
 def test_guard_sentences_of_the_fixer_read_as_words(tmp_path):
-    """The three sentences `fixer.check_paths` writes keep only the path; nothing English is left."""
+    """The sentences `fixer.check_paths` writes keep only the path; nothing English is left."""
+    import inspect
+
     from sbmig.remediations.fixer import check_paths
     root = tmp_path / "tree"
     (root / "app/src").mkdir(parents=True)
     (root / "app/pom.xml").write_text("<project/>", encoding="utf-8")
+    (root / "app/mvnw").write_text("#!/bin/sh\n", encoding="utf-8")
     (root / "app/src/New.java").write_text("class New {}", encoding="utf-8")
+    loops = {"app/pom.xml", "app/mvnw", "app/src/Gone.java"}
     cases = {"app/pom.xml": "고칠 수 없는 파일: app/pom.xml", "app/src/Gone.java": "지울 수 없는 파일: app/src/Gone.java",
              "app/src/New.java": "올린 프로젝트에 없는 파일: app/src/New.java"}
+    four = len(inspect.signature(check_paths).parameters) >= 4
+    if four:                                          # the work-copy fixer's guard: a loop path that is not editable
+        cases["app/mvnw"] = "고칠 수 없는 파일: app/mvnw"
     for path, want in cases.items():
-        why = check_paths(root, [path], {"app/pom.xml"})
+        why = check_paths(root, [path], loops, {"app/src/Gone.java"}) if four else check_paths(root, [path], loops)
         assert why, path
         ko, raw = i18n.fix_reason_ko(f"rejected: {why}")
         assert (ko, raw) == (want, ""), (path, why, ko, raw)
         assert i18n.ko_display(f"automatic build fix: rejected: {why}") == (
             f"빌드 오류 자동 수정을 시도했지만 고치지 못했습니다({want}). 소스 수정은 되돌렸습니다.")
+
+
+# ---------------------------------------------------------------------------- v2.1z-bj: a fix is shown only when it
+# is in the result (committed, fixed, files changed); retries, discarded fixes, not-started loops
+
+
+def _retry(tmp_path):
+    out, paths = _run(tmp_path, **_fixing())
+    rs = out.rounds[0]
+    rs.fix = FixResult(attempted=True, fixed=True, iterations=1, llm_calls=0, changed=[], retry_passed=True)
+    rs.fix_first_build = BuildOutcome(ok=False, exit_code=1, log="rounds/1/build.log", summary="[ERROR] flaky")
+    return out, paths
+
+
+def test_a_retry_that_passed_gets_one_record_line_and_no_fix_section(tmp_path):
+    state, paths = _retry(tmp_path)
+    md = report.build_report_md(state, paths)
+    assert "## 빌드 오류 수정" not in md and "자동으로 고친 소스" not in md
+    assert "애플리케이션 소스와 프로젝트 구조(파일·폴더)는 변경하지 않았습니다." in md
+    assert "고친 소스" not in _section(md, "변경하지 않은 것")
+    record = _section(md, "처리 기록")
+    assert record.count("- 빌드 오류 자동 수정:") == 1
+    assert "- 빌드 오류 자동 수정: 처음 빌드는 실패했지만 다시 빌드하니 통과해 소스는 고치지 않았습니다." in record
+    assert report.fix_summary(state) == {"fixed": False, "changed": 0, "llm_calls": 0, "round": None}
+    assert report.served_fix_round(state) is None
+
+
+def test_a_fixed_result_without_changed_files_is_read_as_a_retry(tmp_path):
+    """A FixResult written without `retry_passed` (fixed, no files) is not shown as a fix either."""
+    state, paths = _retry(tmp_path)
+    state.rounds[0].fix.retry_passed = False
+    md = report.build_report_md(state, paths)
+    assert "## 빌드 오류 수정" not in md
+    assert "다시 빌드하니 통과해 소스는 고치지 않았습니다." in md
+
+
+def test_a_discarded_fix_gets_a_record_line_and_its_calls_count(tmp_path):
+    """Round 1: a fix discarded when the candidate was remade, then a second loop fixed the remade candidate."""
+    state, paths = _fixed(tmp_path)
+    rs = state.rounds[0]
+    rs.fix_discarded = [FixResult(attempted=True, fixed=False, iterations=2, llm_calls=3, changed=[],
+                                  discarded_changed=FILES[:1], reason="discarded: the candidate was remade")]
+    md = report.build_report_md(state, paths)
+    record = _section(md, "처리 기록")
+    assert ("- 빌드 오류 자동 수정: 버린 수정(수정본을 다시 만들어 이전 수정은 버림) · 파일 1개 · 2회 반복 · "
+            "LLM 호출 3회") in record
+    assert "- 빌드 오류 자동 수정: 고침 · 파일 2개 · 2회 반복 · LLM 호출 4회" in record
+    assert DETACHED.search(record.split("버린 수정", 1)[1].splitlines()[0]) is None
+    assert "## 빌드 오류 수정" in md                    # the second fix is in the result
+    assert report.fix_summary(state) == {"fixed": True, "changed": 2, "llm_calls": 7, "round": 1}
+    data = report.build_report_json(state, paths)
+    assert data["rounds"][0]["fix_discarded"][0]["llm_calls"] == 3
+
+
+def test_a_fix_whose_confirming_build_failed_is_a_discardedFixResult(tmp_path):
+    state, paths = _unfixed(tmp_path, "error: confirming build failed")
+    rs = state.rounds[-1]
+    rs.fix = FixResult(attempted=True, fixed=False, iterations=3, llm_calls=5, changed=[], discarded_changed=FILES,
+                  reason="error: confirming build failed")
+    md = report.build_report_md(state, paths)
+    record = _section(md, "처리 기록")
+    assert ("- 빌드 오류 자동 수정: 버린 수정(고친 뒤 다시 한 빌드가 실패함) · 파일 2개 · 3회 반복 · LLM 호출 5회"
+            in record)
+    assert record.count("- 빌드 오류 자동 수정:") == 1
+    head = md.split("\n## ", 1)[0]
+    assert "> " + i18n.fix_failed_ko("error: confirming build failed") in head.splitlines()
+    assert "## 빌드 오류 수정" not in md
+    assert report.fix_summary(state) == {"fixed": False, "changed": 0, "llm_calls": 5, "round": None}
+
+
+def test_only_discarded_fixes_still_give_a_digest(tmp_path):
+    """The fix was discarded with the candidate, the remade candidate built without the loop."""
+    out, paths = _run(tmp_path, **_fixing())
+    out.rounds[0].fix_discarded = [FixResult(attempted=True, fixed=False, llm_calls=2, discarded_changed=FILES,
+                                             reason="discarded: the candidate was remade")]
+    assert report.fix_summary(out) == {"fixed": False, "changed": 0, "llm_calls": 2, "round": None}
+    md = report.build_report_md(out, paths)
+    assert "## 빌드 오류 수정" not in md and "버린 수정(수정본을 다시 만들어 이전 수정은 버림)" in md
+
+
+def test_fix_summary_per_state(tmp_path):
+    """The digest the page reads, one state each (INTERFACES "v2.1z-bj", Files route, report, page)."""
+    fixed, _ = _fixed(tmp_path / "a")
+    assert report.fix_summary(fixed) == {"fixed": True, "changed": 2, "llm_calls": 4, "round": 1}
+    fixed.rounds[0].committed = False
+    assert report.fix_summary(fixed) == {"fixed": False, "changed": 0, "llm_calls": 4, "round": None}
+    retry, _ = _retry(tmp_path / "b")
+    assert report.fix_summary(retry) == {"fixed": False, "changed": 0, "llm_calls": 0, "round": None}
+    not_started, _ = _unfixed(tmp_path / "c", "time budget used up", attempted=False)
+    assert report.fix_summary(not_started) == {"fixed": False, "changed": 0, "llm_calls": 0, "round": None}
+    failed, _ = _unfixed(tmp_path / "d")
+    assert report.fix_summary(failed) == {"fixed": False, "changed": 0, "llm_calls": 5, "round": None}
+
+
+def test_not_started_suffix_of_the_state_message_reads_for_the_page(tmp_path):
+    state, _paths = _unfixed(tmp_path, "time budget used up", attempted=False)
+    state.message = state.message.replace("automatic build fix:", "automatic build fix not started:")
+    ko, raw = i18n.split_known(state.message)
+    assert "빌드 오류 자동 수정은 시작하지 않았습니다(남은 시간 부족)." in ko
+    assert not any("automatic build fix" in r for r in raw)
+    assert not any("되돌렸" in k for k in ko)

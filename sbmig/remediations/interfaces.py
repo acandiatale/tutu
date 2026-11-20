@@ -141,6 +141,8 @@ class IntakeFns(Protocol):
     def check_boundary(self, project: Path, cfg: Any, allowed_hosts: list[str]) -> list[BoundaryFinding]: ...
     def copy_tree(self, src: Path, dst: Path, paths: list[str]) -> None: ...
     def freeze_delivery(self, tree: Path, out_zip: Path, round: int, paths: list[str]) -> DeliveryInfo: ...
+    # ``tree``에 없는 manifest 경로를 ``source``에서 다시 복사하고 복사한 경로 목록을 반환한다(있는 파일은 건드리지 않는다)
+    def restore_missing(self, tree: Path, source: Path, paths: list[str]) -> list[str]: ...
 
 
 class InventoryFn(Protocol):
@@ -175,11 +177,13 @@ class Fixer(Protocol):
     """수정본 빌드가 실패했을 때 빌드 오류 수정 루프로 소스를 고치는 인터페이스. 실제 구현은 ``fixer.RemediationFixer``다.
     ``tree``는 수정본 안의 프로젝트 루트이고, ``manifest_paths``와 결과의 ``changed``는 그 루트 기준 경로다.
     ``deadline``은 ``time.monotonic()`` 기준 마감 시각이며 None이면 실행 시간 한도가 없다.
-    고치지 못하면 트리를 루프 전과 같은 바이트로 되돌린다. 예외를 던지지 않는다.
+    ``tree``는 읽기만 하고 고친 바이트는 ``work_dir/fixed/``에 둔다. 덮어쓰기는 그래프가 한다. 예외를 던지지 않는다.
 
-    The build fix loop on a failed candidate (v2.1z-bi). `tree` = the project root inside the candidate; paths are
-    relative to it; `applied` = the round's applied `Proposal`s; `first_outcome` = the failed candidate build;
-    `deadline` = a `time.monotonic()` instant or None. Never raises; a tree it could not fix is reset byte for byte."""
+    The build fix loop on a failed candidate (v2.1z-bi, v2.1z-bj). `tree` = the project root inside the candidate,
+    only read (the loop runs in `work_dir/tree/`); paths are relative to it; `applied` = the round's applied
+    `Proposal`s; `first_outcome` = the failed candidate build; `deadline` = a `time.monotonic()` instant or None.
+    Fixed bytes go to `work_dir/fixed/<path>` (`FixResult.fixed_dir`, absolute; the graph makes it run-relative and
+    overlays them). Never raises for an operational failure."""
 
     def run(self, cfg: Any, tree: Path, work_dir: Path, *, run_id: str, targets: list[str], applied: list[Proposal],
             manifest_paths: list[str], first_outcome: BuildOutcome, stop: Callable[[], bool], deadline: float | None,

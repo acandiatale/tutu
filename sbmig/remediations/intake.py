@@ -223,17 +223,22 @@ _MAX_NOTE_FOLDERS = 5
 def build_output_paths(files: list[str]) -> list[str]:
     """``files`` 중 Maven 빌드 산출물 폴더 아래에 있는 경로를 정렬해서 반환한다.
     경로의 한 단계가 ``target``이고 그 폴더를 담은 폴더에 ``pom.xml``이 있으면 산출물이며, 가장 바깥 단계로 판단한다.
+    그 앞 단계에 ``src``가 있으면 산출물로 보지 않는다(``core.workspace.is_build_output_path``와 같은 규칙).
 
     The paths under a Maven build-output folder: a segment exactly `target` whose holding folder has a `pom.xml` in
-    `files` (the outermost such segment decides). A `pom.xml` inside build output never makes another folder a module."""
+    `files` and no `src` segment before it (the outermost such segment decides; the rule of
+    `core.workspace.is_build_output_path`, so `src/test/resources/proj/target/…` stays content). A `pom.xml` inside
+    build output never makes another folder a module."""
     fileset = set(files)
     return sorted(p for p in fileset if _build_output_dir(p, fileset) is not None)
 
 
 def _build_output_dir(path: str, fileset: set[str]) -> str | None:
-    # 바깥 단계부터 보므로 target 안의 pom.xml은 판단에 쓰이지 않는다
+    # 바깥 단계부터 보므로 target 안의 pom.xml은 판단에 쓰이지 않는다. src 아래의 target은 소스나 테스트 자료다
     segs = path.split("/")
     for i, seg in enumerate(segs[:-1]):
+        if seg == "src":
+            return None
         if seg == BUILD_OUTPUT_DIR:
             holder = "/".join(segs[:i])
             if (f"{holder}/pom.xml" if holder else "pom.xml") in fileset:
@@ -449,6 +454,62 @@ def _no_symlink_on_path(base: Path, rel: str) -> Path:
     if not stat.S_ISREG(os.lstat(cur).st_mode):
         raise RemediationError(f"not a regular file: {_safe_display(rel)}", code="special_file")
     return cur
+
+
+def _real_dirs_to(base: Path, rel: str) -> Path:
+    """``base`` 아래 ``rel``의 부모 폴더를 링크를 따라가지 않고 만들고 그 경로를 반환한다.
+    중간 단계가 링크이거나 폴더가 아니면 예외를 던진다."""
+    cur = base
+    for seg in rel.split("/")[:-1]:
+        cur = cur / seg
+        try:
+            st = os.lstat(cur)
+        except FileNotFoundError:
+            os.mkdir(cur)
+            continue
+        if stat.S_ISLNK(st.st_mode):
+            raise RemediationError(f"symbolic link in the tree: {_safe_display(rel)}", code="symlink")
+        if not stat.S_ISDIR(st.st_mode):
+            raise RemediationError(f"not a directory on the path of {_safe_display(rel)}", code="special_file")
+    return cur
+
+
+def restore_missing(tree: Path, source: Path, paths: list[str]) -> list[str]:
+    """``paths`` 가운데 ``tree``에 없는 파일을 ``source``에서 복사해 되살리고, 되살린 경로를 정렬해서 반환한다.
+    이미 있는 경로는 덮어쓰지 않고, 양쪽 모두 없는 경로는 건너뛴다. 권한은 실행 비트만 옮기고 링크는 따라가지 않는다.
+
+    Copy back from `source` (normally `accepted/`) every path of `paths` that no longer exists in `tree` (lstat),
+    bytes and exec bit only; returns the restored paths, sorted. A path that exists in `tree` in any form is never
+    touched; a path missing in both is skipped and not returned. Symlinks on either side are refused like
+    `copy_tree` (`RemediationError(code="symlink")`), never followed or created."""
+    tree, source = Path(tree), Path(source)
+    restored: list[str] = []
+    for rel in sorted(set(paths)):
+        rel = _safe_rel(rel)
+        target = tree / rel
+        try:
+            os.lstat(target)
+            continue                          # 링크든 폴더든 무엇이 있으면 손대지 않는다
+        except FileNotFoundError:
+            pass
+        except NotADirectoryError:
+            raise RemediationError(f"not a directory on the path of {_safe_display(rel)}", code="special_file") from None
+        try:
+            src_file = _no_symlink_on_path(source, rel)
+        except RemediationError as e:
+            if e.code == "missing_file":
+                continue
+            raise
+        parent = _real_dirs_to(tree, rel)
+        out = parent / rel.split("/")[-1]
+        mode = 0o755 if os.lstat(src_file).st_mode & 0o111 else 0o644
+        nofollow = getattr(os, "O_NOFOLLOW", 0)
+        fd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_EXCL | nofollow | getattr(os, "O_BINARY", 0), 0o600)
+        with os.fdopen(fd, "wb") as dst, open(src_file, "rb") as fh:
+            shutil.copyfileobj(fh, dst, _CHUNK)
+        os.chmod(out, mode)
+        restored.append(rel)
+    return restored
 
 
 def copy_tree(src: Path, dst: Path, paths: list[str]) -> None:

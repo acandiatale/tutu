@@ -197,12 +197,24 @@ def test_candidate_build_failure_with_build_output_ends_candidate_build_failed(t
 
 
 def test_the_cleaning_runner_reproduces_the_company_failure(tmp_path, monkeypatch):
-    """Without the intake rule the same run ends `internal_error` (proves the graph test above can fail)."""
+    """Without the intake rule AND without `restore_missing` the same run ends `internal_error` (proves the graph test
+    above can fail)."""
     monkeypatch.setattr(intake, "build_output_paths", lambda files: [])
+    monkeypatch.setattr(intake, "restore_missing", lambda tree, source, paths: [])
     env = _start_with_build_output(tmp_path)
     out = env.run()
     assert out.status == FAILED and out.reason != "candidate_build_failed"
     assert "missing" in (out.message or "")
+
+
+def test_restore_missing_is_the_second_net_when_build_output_was_listed(tmp_path, monkeypatch):
+    """v2.1z-bj: with build output in the manifest (the intake rule off), the files `mvn clean` removed are copied back
+    from accepted/ after the build, so the run still ends `candidate_build_failed` with a frozen delivery."""
+    monkeypatch.setattr(intake, "build_output_paths", lambda files: [])
+    env = _start_with_build_output(tmp_path)
+    out = env.run()
+    assert out.status == FAILED and out.reason == "candidate_build_failed", (out.reason, out.message)
+    assert out.delivery is not None and not out.delivery.build_ok
 
 
 def test_report_without_build_output_has_no_note(tmp_path):
@@ -211,3 +223,103 @@ def test_report_without_build_output_has_no_note(tmp_path):
     out = env.run()
     md = build_report_md(out, env.paths)
     assert "빌드 산출물" not in md
+
+
+# ---------------------------------------------------------------------------- v2.1z-bj: `src/**/target` is content
+def test_a_target_under_src_is_content_even_beside_a_pom():
+    """The rule of `core.workspace.is_build_output_path`: a `target` segment after a `src` segment never counts, even
+    when a test resource carries a whole project (its own pom.xml) with a `target/` folder."""
+    files = ["pom.xml", "src/main/java/com/example/A.java",
+             "src/test/resources/proj/pom.xml", "src/test/resources/proj/target/classes/X.class",
+             "src/it/demo/pom.xml", "src/it/demo/target/demo.jar",
+             "core/pom.xml", "core/src/test/resources/p/pom.xml", "core/src/test/resources/p/target/y.txt",
+             "core/target/classes/B.class"]
+    assert intake.build_output_paths(files) == ["core/target/classes/B.class"]
+
+
+def test_the_rule_agrees_with_the_workspace_rule(tmp_path):
+    from sbmig.core.workspace import is_build_output_path
+    files = ["pom.xml", "target/a.jar", "src/test/resources/proj/pom.xml", "src/test/resources/proj/target/x",
+             "m/pom.xml", "m/target/classes/B.class", "m/src/target/C.java", "docs/target/readme.txt"]
+    root = tmp_path / "tree"
+    for f in files:
+        (root / f).parent.mkdir(parents=True, exist_ok=True)
+        (root / f).write_bytes(b"x")
+    assert intake.build_output_paths(files) == sorted(f for f in files if is_build_output_path(f, root))
+
+
+def test_accept_keeps_src_target_files_and_the_note_names_only_real_output(tmp_path):
+    files = {"pom.xml": POM, "src/main/java/com/example/A.java": b"class A {}",
+             "src/test/resources/proj/pom.xml": POM, "src/test/resources/proj/target/classes/X.class": CLS,
+             "target/classes/com/example/A.class": CLS}
+    res, paths = accept(tmp_path, files)
+    listed = intake.manifest_paths(paths.manifest)
+    assert "src/test/resources/proj/target/classes/X.class" in listed
+    assert (paths.accepted / "src/test/resources/proj/target/classes/X.class").read_bytes() == CLS
+    assert "target/classes/com/example/A.class" not in listed
+    assert res.build_output_files == 1
+    assert res.notes == ["build output left out: 1 file(s) under target"]
+
+
+# ---------------------------------------------------------------------------- restore_missing
+def _tree(root: Path, files: dict[str, bytes]) -> Path:
+    for rel, data in files.items():
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_bytes(data)
+    return root
+
+
+def test_restore_missing_copies_back_only_what_is_gone(tmp_path):
+    src = _tree(tmp_path / "accepted", {"pom.xml": POM, "app/src/A.java": b"class A {}", "mvnw": b"#!/bin/sh\n",
+                                         "app/res/data.bin": b"\x00\x01"})
+    (src / "mvnw").chmod(0o755)
+    cand = _tree(tmp_path / "cand", {"pom.xml": b"<project>changed</project>"})
+    paths = ["pom.xml", "app/src/A.java", "mvnw", "app/res/data.bin", "gone/everywhere.txt"]
+    assert intake.restore_missing(cand, src, paths) == ["app/res/data.bin", "app/src/A.java", "mvnw"]
+    assert (cand / "pom.xml").read_bytes() == b"<project>changed</project>"      # an existing path is never touched
+    assert (cand / "app/src/A.java").read_bytes() == b"class A {}"
+    assert (cand / "app/res/data.bin").read_bytes() == b"\x00\x01"
+    assert (cand / "mvnw").stat().st_mode & 0o111
+    assert not (cand / "app/src/A.java").stat().st_mode & 0o111
+    assert not (cand / "gone").exists()                                           # missing in both: skipped
+    assert intake.restore_missing(cand, src, paths) == []                         # idempotent
+
+
+def test_restore_missing_never_follows_or_creates_symlinks(tmp_path):
+    from sbmig.remediations.models import RemediationError
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    src = _tree(tmp_path / "accepted", {"a/B.java": b"class B {}", "c/D.java": b"class D {}"})
+    cand = tmp_path / "cand"
+    cand.mkdir()
+    (cand / "a").symlink_to(outside, target_is_directory=True)        # a link on the candidate side
+    with pytest.raises(RemediationError) as e:
+        intake.restore_missing(cand, src, ["a/B.java"])
+    assert e.value.code == "symlink" and not any(outside.iterdir())
+    (src / "c/D.java").unlink()
+    (src / "c/D.java").symlink_to(outside / "x")                      # a link on the source side
+    (outside / "x").write_bytes(b"secret")
+    cand2 = tmp_path / "cand2"
+    cand2.mkdir()
+    with pytest.raises(RemediationError) as e:
+        intake.restore_missing(cand2, src, ["c/D.java"])
+    assert e.value.code == "symlink" and not (cand2 / "c/D.java").exists()
+
+
+def test_restore_missing_leaves_an_existing_link_alone(tmp_path):
+    src = _tree(tmp_path / "accepted", {"a.txt": b"orig"})
+    cand = tmp_path / "cand"
+    cand.mkdir()
+    (cand / "a.txt").symlink_to(tmp_path / "nowhere")                 # dangling: lstat sees it, so it exists
+    assert intake.restore_missing(cand, src, ["a.txt"]) == []
+    assert (cand / "a.txt").is_symlink()
+
+
+def test_restore_missing_refuses_unsafe_paths(tmp_path):
+    from sbmig.remediations.models import RemediationError
+    src = _tree(tmp_path / "accepted", {"a.txt": b"x"})
+    cand = tmp_path / "cand"
+    cand.mkdir()
+    for bad in ("../a.txt", "/etc/passwd", "a/"):
+        with pytest.raises(RemediationError):
+            intake.restore_missing(cand, src, [bad])

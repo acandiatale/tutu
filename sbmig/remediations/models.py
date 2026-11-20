@@ -110,9 +110,12 @@ def _plain(v: Any) -> Any:
         omit = getattr(v, "_omit_none", ())
         # ``_omit_empty``에 적은 필드는 빈 목록이나 빈 문자열이면 넣지 않는다
         empty = getattr(v, "_omit_empty", ())
+        # ``_omit_false``에 적은 필드는 값이 False이면 넣지 않는다
+        false = getattr(v, "_omit_false", ())
         return {f.name: _plain(getattr(v, f.name)) for f in dataclasses.fields(v)
                 if not (f.name in omit and getattr(v, f.name) is None)
-                and not (f.name in empty and getattr(v, f.name) in ([], ""))}
+                and not (f.name in empty and getattr(v, f.name) in ([], ""))
+                and not (f.name in false and getattr(v, f.name) is False)}
     if isinstance(v, (list, tuple)):
         return [_plain(x) for x in v]
     if isinstance(v, dict):
@@ -643,11 +646,16 @@ class FixResult(Record):
     Result of the build fix loop on a failed candidate (`sbmig/remediations/fixer.py`). `changed`: sorted paths
     relative to the project root (the loop's repository root), empty unless fixed; `patch`: run-relative path of
     `rounds/<r>/fix.patch` or ""; `reason` (English, "" when fixed): `not fixed: <n> error(s) left`,
-    `llm unavailable: …`, `stop requested`, `time budget used up`, `rejected: <guard reason>`,
-    `error: <Type>: <msg>`; `models`: the model names the calls asked with. `usage`: one `FixUsage` per asked model
+    `llm unavailable`, `stop requested`, `time budget used up`, `rejected: <guard reason>`,
+    `error: <Type>: <msg>`, `error: confirming build failed`, `discarded: the candidate was remade`; `models`: the
+    model names the calls asked with. `usage`: one `FixUsage` per asked model
     (their calls / tokens add up to `llm_calls` / `input_tokens` / `output_tokens`, their names are `models`);
     `currency` = `llm.pricing_currency` when a row has a cost. Both are left out of the JSON when empty, and a FixResult
-    written before them reads back with `usage == []` (`fixer.fix_usage_rows` then makes one row of the totals)."""
+    written before them reads back with `usage == []` (`fixer.fix_usage_rows` then makes one row of the totals).
+    v2.1z-bj: `fixed_dir` (run-relative `rounds/<r>/fixloop/fixed`, the fixed bytes the graph overlays), `tree_hash`
+    (the candidate's `intake.tree_hash` after the overlay), `retry_passed` (fixed with no file changed: the loop's own
+    first build passed), `discarded_changed` (the files of a fix that a failed confirming build or a remade candidate
+    threw away). All four are left out of the JSON when empty / False."""
     attempted: bool = False
     fixed: bool = False
     iterations: int = 0
@@ -663,8 +671,17 @@ class FixResult(Record):
     # 모델별 사용량이다. 호출이 없으면 비어 있고 JSON에 넣지 않는다
     usage: list[FixUsage] = field(default_factory=list)
     currency: str = ""
+    # 고친 파일의 새 바이트를 둔 폴더(실행 폴더 기준, ``rounds/<r>/fixloop/fixed``)다. 고친 파일이 없으면 빈 문자열이다
+    fixed_dir: str = ""
+    # 고친 파일을 덮어쓴 뒤 수정본의 트리 해시다. 재개할 때 같은 수정본에 덮어썼는지 확인한다
+    tree_hash: str = ""
+    # 루프가 소스를 바꾸지 않았는데 루프의 첫 빌드가 통과했다(처음 빌드 실패가 일시적이었다)
+    retry_passed: bool = False
+    # 확인 빌드가 실패했거나 수정본을 다시 만들어 버린 고친 파일 목록이다. 결과에는 들어가지 않았다
+    discarded_changed: list[str] = field(default_factory=list)
     _nested = {"usage": FixUsage}
-    _omit_empty = ("usage", "currency")
+    _omit_empty = ("usage", "currency", "fixed_dir", "tree_hash", "discarded_changed")
+    _omit_false = ("retry_passed",)
 
 
 # ---------------------------------------------------------------------------- 작업 상태 / state
@@ -686,8 +703,11 @@ class RoundState(Record):
     fix: FixResult | None = None
     # 수정 루프가 고친 라운드에서 처음 실패한 수정본 빌드다. 그때 ``build``는 고친 뒤 다시 한 빌드가 된다
     fix_first_build: BuildOutcome | None = None
-    _nested = {"build": BuildOutcome, "fix": FixResult, "fix_first_build": BuildOutcome}
+    # 버린 수정 루프 결과다(수정본을 다시 만들기 전에 버린 고침). LLM 사용량은 계속 센다. 비어 있으면 JSON에 넣지 않는다
+    fix_discarded: list[FixResult] = field(default_factory=list)
+    _nested = {"build": BuildOutcome, "fix": FixResult, "fix_first_build": BuildOutcome, "fix_discarded": FixResult}
     _omit_none = ("fix", "fix_first_build")
+    _omit_empty = ("fix_discarded",)
 
 
 @dataclass
