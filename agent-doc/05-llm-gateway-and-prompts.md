@@ -125,14 +125,14 @@ repeat them)` → `Other error cases in this build` → `Plan notes`(transform /
 "Context was shortened" 를 붙인다. LLM 이 `<need_files>` / `<need_grep>` 로 더 달라면 `llm.max_context_rounds`(2)번까지 내준다(요청 파일은 줄 수와 글자 수로 자르고 `llm.max_context_chars` 를 지킨다;
 머리 `// <path> lines 1-N (whole file, C characters: cut to fit the context budget)`, 자국 `// … N characters omitted (use <need_grep> to locate code there) …`).
 
-사내 프레임워크 프로젝트(범위 `jdk-jakarta`, `framework.fix_loop: true` 기본; `false`면 LLM을 부르지 않는다)는 `Project after the restructure` 대신 `Scope of this run`(`FixContext.scope_facts`)이 들어간다:
+사내 프레임워크 프로젝트(범위 `jdk-jakarta`)는 기본으로 LLM을 부르지 않는다(`framework.fix_loop: false`). `true`로 켰을 때는 `Project after the restructure` 대신 `Scope of this run`(`FixContext.scope_facts`)이 들어간다:
 이번 실행이 Java 21과 jakarta만 한다는 것, 프레임워크 아티팩트마다 버전을 바꾸거나 지우지 말라는 줄, 해도 되는 것과 안 되는 것(Spring Boot·
 회사 부모 추가, `<parent>` 변경, 모듈 이동 금지). 시스템 프롬프트도 같은 파일 안의 줄인 범위용 소개와 규칙을 쓰고, 버전 사실은
 `parent chain: manages g:a at v`(프로젝트 자기 부모)로 온다. `full` 범위의 프롬프트는 바뀌지 않는다.
 
 취약점 조치가 실패한 후보에 돌리는 수정 루프([11](11-remediations.md) 2절)는 같은 프롬프트에 `plan_notes` 한 문단을 더한다: 올린 버전
-(`g:a old -> new`), 새 버전에 맞게 소스를 고칠 것, `pom.xml`을 고치지 말고 파일을 만들거나 지우지 말 것(`sbmig/remediations/fixer.py`). 이 호출은
-조치 상태의 `fix.llm_calls`에 남고 결과 줄 `llm=`에는 들어가지 않는다.
+(`g:a old -> new`), 새 버전에 맞게 소스를 고칠 것, `pom.xml`을 고치지 말고 파일을 만들거나 지우지 말 것(`sbmig/remediations/fixer.py`). 이 호출의
+모델별 사용량은 `FixResult.usage`(가격 포함)에 남고, 결과 줄 `llm=`, `GET /api/runs/{id}`, 관리자 페이지가 `fixer.fix_usage`로 더한다(이관 `report.json`에는 없다).
 
 "Dependency versions" 절의 사실 줄 모양: `new parent chain: manages g:a at v`, `target Boot BOM: manages g:a at v`, `as-is build: g:a v`,
 `parent chain property: name=value`, `managed artifacts under <group> …`, jakarta 판정 `verdict: …` / `approved`, 그리고 동봉 jar 사실

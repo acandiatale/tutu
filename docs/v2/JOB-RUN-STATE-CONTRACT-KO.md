@@ -44,7 +44,7 @@ Worker 는 Main 의 존재를 모른다. Main 이 죽어도 Job 은 끝까지 �
 ```
 
 Job 템플릿이 받는 실행별 env(Main 이 첫 컨테이너의 env 에 덧붙인다, 같은 이름은 바꾼다): `SBMIG_SOURCE_ZIP`, `SBMIG_OUT`, `SBMIG_RUN_ID`,
-`SBMIG_CONFIG`(공백으로 나눈 yml 경로들), 고급 설정일 때만 `SBMIG_STOP_AFTER`, `SBMIG_LLM_PROVIDER`. 나머지(이미지, 마운트, 자원,
+`SBMIG_CONFIG`(공백으로 나눈 yml 경로들), 요청에 값이 있을 때만(화면은 고급 설정을 보이지 않고 기본값을 보낸다) `SBMIG_STOP_AFTER`, `SBMIG_LLM_PROVIDER`. 나머지(이미지, 마운트, 자원,
 `SBMIG_KB_DIR`, 컨테이너 경로 덮어쓰기 `SBMIG_BUILD__*` / `SBMIG_SCRIPT__PYTHON`, 변수마다 `configMapKeyRef` / `secretKeyRef` — `envFrom` 은 검증이 거절한다)는 템플릿 그대로다. 템플릿 자체는 `render_job` 이 바꾸지 않는다.
 개발 PC 의 local-job 에서는 틀의 env 가운데 이 실행별 값(`contract.RUN_ENV`, 리터럴만)만 로컬 Worker 에 넘어가고, 나머지는 PC 의 환경이 정한다 — 컨테이너 경로·ConfigMap 참조는 파드의 것이다(2026-11-10 회귀 수정).
 

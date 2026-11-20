@@ -24,17 +24,16 @@
   실패한 후보 빌드는 `maven.compare_with_baseline`으로 비교(`RoundState.build_compare`/`build_tolerated`, 저널 `remediation_candidate_compared`):
   같은 빌드 대상(로그 이름)·같은 실패 모듈이고 후보의 오류 키(종류·모듈·goal·파일·줄·L1)가 모두 기준 빌드에 있으면 확정·전달 ZIP
   (`DeliveryInfo.build_tolerated`)·재검사, 새 오류(풀리지 않는 버전 포함)면 FAILED `candidate_build_failed`, `baseline_build_failed`.
-  한계(보고서도 적음): 실패한 모듈 뒤는 컴파일된 적이 없어 "새 오류 없음"은 "컴파일됨"이 아니다. 버전을 바꿨으면(확정 라운드의
+  한계(보고서도 적음): 실패한 모듈 뒤는 컴파일되지 않아 "새 오류 없음" ≠ "컴파일됨". 버전을 바꿨으면(확정 라운드의
   적용 제안) INCOMPLETE, 첫 이유 `baseline_build_failed`(요약 `baseline_tolerated: true`, 결과 줄 `exit=2 … remediation=INCOMPLETE`), SUCCEEDED
-  없음: 빌드 오류를 고친 뒤 바뀐 버전으로 한 번 빌드한다. 바꾼 것이 없거나 후보가 빌드되면 보통처럼 끝난다(`baseline_build_failed` 없음). 말은 12.
+  없음: 오류를 고친 뒤 바뀐 버전으로 한 번 빌드한다. 바꾼 것이 없거나 후보가 빌드되면 보통처럼 끝난다(`baseline_build_failed` 없음). 말은 12.
 - 조치의 결과는 이관의 성공 판정·종료 코드·보고서 판정을 바꾸지 않는다. `SBMIG-RESULT … remediation=<상태|skipped>`.
   IVAS 세 값이나 Maven 준비가 없으면 건너뛰고 저널에 `remediation_skipped`(이름만).
 - 조치는 누구에게도 묻지 않고 변경을 적용해 이관과 같은 파드에서 끝까지 간다. 빌드 파드는 사람을 기다리지 못해
   `AWAITING_CONFIRMATION`이면 상태를 저장하고 끝난다. Job 모드의 resume =
   새 빌드 파드(같은 Job 틀·실행 폴더, Worker 동작 `remediation-resume`→`chain.resume`), 업로드와 같은 FIFO 줄·자리.
-  줄에 서기 전에 앞 시도의 `remediation-job-status.json`을 지우고 시도 번호를 Job env `SBMIG_JOB_ATTEMPT`로(Worker가 모든 상태 파일에 적음).
-  확인 대기면 웹 파드가 `confirm` 등을 Job 생성 전에 `state.json`에 쓴다.
-- 웹 파드는 상태·파일·재개만. 단독 업로드는 `in-process` 모드만(5절, `<웹 out>/_remediations/<id>/`).
+  줄에 서기 전에 앞 `remediation-job-status.json`을 지우고 시도 번호는 Job env `SBMIG_JOB_ATTEMPT`. 확인 대기면 웹 파드가 `confirm`을 Job 생성 전에 `state.json`에.
+- 웹 파드는 상태·파일·재개만, 단독 업로드는 `in-process`만(5절, `<웹 out>/_remediations/<id>/`).
 - Job 파드의 IVAS 세 값은 Secret `sbmig-llm`에서(81 틀 `secretKeyRef`), 환경 대조 밖, 로그에서 지운다(`SECRET_NAMES`).
 - Maven 로컬 저장소는 그 파드의 자리 저장소(`repository-slot<k>`). `<local repo>-remediation`은 in-process의 단독 업로드와 이어 돈 조치의 재개에.
 - 시간: Job 기한(4시간)은 이관과 조치가 나눠 쓴다. `remediation.chain_budget_minutes`(90, 0 = 없음)만큼 돌면 다음 경계에서 STOPPED
@@ -62,12 +61,12 @@
 - "계획한 것만 바뀌었나"(`verify_text_only`): 나머지 파일은 바이트가 같고, 받은 pom은 원본에 계획한 replace·insert를(같은 줄 앞은 제안 ID 순)
   적용한 바이트와 같고, XML 구조는 계획한 override 요소만큼만 는다.
 - 원본 ZIP·파일 목록(manifest)·작업 트리 `accepted/`는 따로. 변경은 후보 사본에 먼저 하고, 빌드되고 해석이 계획과 같을 때만 `accepted/`로
-  확정한다. 올린 ZIP의 `target/`(pom 옆)은 manifest에서 뺀다(v2.1z-bh).
+  확정한다. 올린 ZIP의 `target/`(pom 옆, `src` 아래는 아님)은 manifest에서 뺀다.
 - pom은 Maven이 읽는 것은 모두 읽는다: 경계 검사·인벤토리·계획의 위치·적용·구조 검사가 `apply.read_pom_xml`/`apply.pom_xml_bytes`로 이관과 같이
   디코드한다(`analyze.pom_parser.pom_encoding`: BOM→엄격한 UTF-8→선언한 인코딩, 한국어 계열은 cp949→파일 전체를 읽는 첫 후보). 변경은 읽은
   인코딩으로 다시 써서 바뀐 글자의 바이트만 다르다. 정말 못 읽는 pom만 FAILED `execution_boundary_refused`, `unparsable_pom: <경로>: <이유>`
   (XML 문법 오류, 권한, 없음, 폴더, 인코딩 모름). 화면·보고서 「pom 파일을 읽을 수 없습니다. <경로>: <이유>」, 할 일 「pom 파일 고치기」(`i18n.pom_why_ko`).
-- IVAS 업로드 결과가 불확실하면 다시 올리지 않는다. 미완료 검사·빠진 쪽·중복·ZIP 해시 불일치는 "0건"이 아니다.
+- 불확실한 IVAS 업로드는 다시 올리지 않는다. 미완료 검사·빠진 쪽·중복·ZIP 해시 불일치는 "0건"이 아니다.
 - 새 버전의 근거는 서버 정책(`remediation.policy.pins`)이나 승인된 저장소에 실제로 있는 버전뿐. IVAS의 patched 버전은 하한 힌트이고,
   pin이 없으면 힌트가 있어야 제안한다(없으면 `no_candidate_version`).
 - 서버가 다시 떠도 자동 재개·재전송은 없다(`INTERRUPTED` + 명시적 resume). 상태를 진행시키는 것은 `remediation/claim.json`을 가진 프로세스
@@ -104,9 +103,8 @@
 - `report`: 정보다. `ivas.split_files`/`_Holder.split()`가 먼저 떼어 내고 판정·다음 라운드 어디에도 넣지 않고 보고서의 절 하나에 적는다(12).
   파일 목록이나 matchedfiles를 못 읽어도 미완료가 아니라 메모, `ScanResult.file_complete` false 또는 `Finding.files_unread`.
   완전성(`scan_incomplete`)은 요약과 라이브러리·`sw` 목록이 정한다. 개수(`state.counts`, 요약, `report`일 때만): `baseline_file_findings`,
-  `final_file_findings`, `file_lists_unread`(파일 목록을 못 읽은 검사 수; 그 검사의 `*_file_findings`는 없음). 저널
-  `file_findings_reported {label, findings, unread, file_complete}`(검사마다), `file_residuals_dropped`(옛 상태의 파일 잔여를 버림).
-  pom 밖의 jar도 파일 컴포넌트라 빠진다(경로로 구별).
+  `final_file_findings`, `file_lists_unread`(파일 목록을 못 읽은 검사 수). 저널
+  `file_findings_reported {label, findings, unread, file_complete}`(검사마다), `file_residuals_dropped`(옛 파일 잔여 버림).
 - `count`: 파일 발견은 `vendored` 잔여(`INCOMPLETE`), 못 읽은 쪽은 검사 미완료(`ivas.count_view`, `file_components_unread`). 정책 해시 밖.
 
 **조치 구분 코드**(`action.actionDivCd`, 뜻은 ivas.py의 `ACTION_MEANINGS`): NE 조치 필요, NP 조치계획 미등록, PL 조치예정,
@@ -119,13 +117,14 @@ SUCCEEDED 조건(전부): 기준 빌드 통과(견디는 방식의 예외는 1.1
 deny·후보 없음·적용 안 된 제안) 없음, 최종 검사에 조치 대상 없음. 아니면 INCOMPLETE / FAILED(이유는 `state.reasons`; `build_ok`·`build_tolerated` 거짓 →
 `candidate_build_failed`, `scanned` 거짓→`zip_hash_mismatch` 또는 `scan_incomplete`).
 
-**빌드 오류 자동 수정**(`remediation.fix_loop`, 기본 true; `fix_loop_max_iterations` 10): 후보 빌드가 실패했고(1.1 비교로 견딘 경우 제외)
-기준 빌드가 통과했고 적용한 제안이 있으면(`graph._fix_wanted`) `Components.fixer`(`fixer.run_fix_loop`, None이면 안 부름)가 후보에서 이관의
-`BuildFixLoop`를 돌린다. 저널·로그 `rounds/<r>/fixloop/`, `NullKnowledgeBase`(저장된 스크립트·KB 기록 없음). `edit_guard`가 시도마다 `pom.xml`,
-manifest 밖 경로, 삭제를 거절(`fixer.check_paths`). 남은 시간 60초 미만이면 시작 안 함(`attempted` false). 고침→확인 빌드
-`rounds/<r>/build-fixed.log`, 검증·확정, `fix.patch`, 보고서 「빌드 오류 수정」(12). 못 고침→소스 되돌림, 아래 실패한 후보, 메시지 끝
-` | automatic build fix: <reason>`. 결과 `RoundState.fix`(`FixResult`), 상태 dict `fix`, 저널 `remediation_fix_loop`. 기준 빌드가 실패한
-프로젝트에는 없고, LLM 호출은 결과 줄 `llm=`에 없다.
+**빌드 오류 자동 수정**(`remediation.fix_loop` 기본 true, `fix_loop_max_iterations` 10, `fix_loop_max_minutes` 30): 후보 빌드가 실패했고(1.1
+비교로 견딘 경우 제외) 기준 빌드가 통과했고 적용한 제안이 있으면(`graph._fix_wanted`) `Components.fixer`(`fixer.run_fix_loop`)가 이관의
+`BuildFixLoop`를 작업 복사본 `rounds/<r>/fixloop/tree/`(`.git` 없음)에서 돌린다(후보는 읽기만, `NullKnowledgeBase`). `edit_guard`는 pom·`.` 경로·
+스크립트·묶음 파일·목록 밖·삭제·생성을 거절. 시간 `graph.fix_loop_seconds`(한도와 남은 시간−예약 중 짧은 쪽, 60초 미만이면
+시작 안 함). 고침→바뀐 바이트를 `fixloop/fixed/`에, 상태 저장, `_overlay_fix`로 후보에 덮어씀(유일한 길)→확인 빌드 `build-fixed.log`, 확정,
+`fix.patch`(12). 못 고침→후보 그대로, 실패한 후보, 메시지 끝 ` | automatic build fix[ not started]: <reason>`. 확인 빌드 중 멈춤→고침 유지.
+버린 고침은 `rs.fix_discarded`(상태 먼저 저장), 도중에 끝난 루프는 `fixloop-interrupted-<n>/`(사용량 회수). 후보 빌드마다 `intake.sync_tree`가
+`accepted/` + `applied/` + 보고한 수정으로 맞춘다(`RoundState.build_changed`). LLM 호출은 `fixer.fix_usage`로 `llm=`·실행 상태·관리자 페이지에.
 
 **실패한 후보**(`remediation.failed_candidate`, 값 `include`(기본) 또는 `discard`):
 
@@ -148,7 +147,7 @@ manifest 밖 경로, 삭제를 거절(`fixer.check_paths`). 남은 시간 60초 
 같은 메이저 우선, deny·`remediation.policy.allow_major`)으로 버전을 고르고, 대상 pom에 항목 하나를 넣는 `managed_override` 제안을
 (pom, g:a·변종)마다 하나씩 낸다(`remediation.module_overrides` false면 모듈은 잔여). 그 관리 항목이 그 pom에 이미 있으면 넣지 않는다: 최상위
 하나이고 버전 글자(또는 프로젝트 속성)가 해석된 버전과 같으면 그 글자를 바꾸고(`own_management_version`/`property_version`), 아니면 잔여.
-제안의 `note`는 `report.md` 제안 아래.
+`note`는 `report.md`의 제안 아래.
 
 제안하지 않는 것(잔여·수동 검토): `plugin`, `vendored`, `unmapped`(꺼진 프로필에만 있는 선언, 한 `<dependencies>`에 두 번 선언된 g:a 포함),
 `remediation.policy.deny`에 걸린 것, `remediation.policy.allow_major`가 false 일 때의 메이저. 잘못된 버전을 막는 규칙(공유 property는
@@ -158,18 +157,17 @@ manifest 밖 경로, 삭제를 거절(`fixer.check_paths`). 남은 시간 60초 
 `module_overrides`(`ivas_summary_check`는 안 들어감). 바뀌면 열린 계획을 마지막 검사로 다시 만든다. 제안 해시는 edit 전부(`op`·`anchor`·`override`
 포함)를 덮는다.
 
-승인 단계는 없다. yml의 `require_approval`·`always_approve`, 환경 변수 `SBMIG_REMEDIATION__REQUIRE_APPROVAL`은 WARNING 한 줄로 무시된다
-(`config._warn_removed_keys`; 환경 대조에서도 빠짐). 옛 버전이 승인 대기로 저장한 조치는 끝난 것으로 보인다(열면 「조치 미완료」, resume은 409):
-프로젝트를 다시 올린다. 클러스터 정리는 `docs/RUNBOOK.md` §6.
+승인 단계는 없다. 옛 키 `require_approval`·`always_approve`·`SBMIG_REMEDIATION__REQUIRE_APPROVAL`은 WARNING으로 무시(`config._warn_removed_keys`,
+환경 대조 밖). 옛 승인 대기 조치는 「조치 미완료」로 끝난 것으로 보이고(resume 409) 다시 올린다. 정리는 `docs/RUNBOOK.md` §6.
 
 ## 4. 상태와 운영자가 할 일
 
 | 상태 | 뜻 | 할 일 |
 |---|---|---|
-| `QUEUED`/`RUNNING` | 대기 / 실행 중 | 기다린다. 멈추려면 stop |
+| `QUEUED`/`RUNNING` | 대기 / 실행 중 | 기다리거나 stop |
 | `AWAITING_CONFIRMATION` | 업로드를 보냈는데 결과를 모른다 | IVAS 화면에 그 프로젝트(`<앞머리>-<작업 ID>-<라벨>`)의 분석이 있나 본다. 없으면 resume `{"confirm": "reupload"}`, 있으면 `{"confirm": "receipt", "label", "project_id", "analysis_id"}` |
 | `STOPPED` | 중지 요청을 경계에서 처리(원격 IVAS 분석은 취소 안 됨) | resume |
-| `INTERRUPTED` | 서버가 실행 중에 내려갔다 | 상태를 보고 resume |
+| `INTERRUPTED` | 실행 중에 서버가 내려갔다 | 상태를 보고 resume |
 | `SUCCEEDED` | 성공 조건 전부 | `result.zip` 전달 |
 | `INCOMPLETE` | 끝났지만 성공 아님 | 보고서의 잔여 표를 담당 팀에 |
 | `FAILED` | 빌드·검증 실패, 경계 거부, 준비 안 됨, 내부 오류 | 이유 코드대로(6절). `delivery.build_ok` false면 `result.zip`은 실패한 수정본(배포 금지) |
@@ -186,11 +184,11 @@ manifest 밖 경로, 삭제를 거절(`fixer.check_paths`). 남은 시간 60초 
 | `POST /api/remediations?name=<file.zip>` (본문 = ZIP) | `in-process` 모드만: 202 `{id, status, url}` / 400 접수 거부(코드) / 413 크기 초과 / 503 `not_ready` + `missing`. Job 모드는 409 `not_available` |
 | `GET /api/remediations?page=&size=` | 목록(최신 먼저) |
 | `GET /api/remediations/readiness` | `{ready, missing}`(이름만) |
-| `GET /api/remediations/<id>` | 상태 dict(status, reason, reasons, node, next_node, round, counts, delivery `{sha256, size, round, build_ok, scanned}`, files, links …) |
+| `GET /api/remediations/<id>` | 상태 dict(status, reason, reasons, node, next_node, round, counts, delivery `{sha256, size, round, build_ok, scanned}`, files, `fix` …) |
 | `GET /api/remediations/<id>/result` | 끝 상태면 report.json(`delivery`, `verified_delivery` 포함), 아니면 409 `not_finished` |
 | `POST /api/remediations/<id>/resume` | 재개(확인 대기면 `confirm` 필수). Job 모드의 이어 돈 조치는 새 빌드 파드 |
 | `POST /api/remediations/<id>/stop` | 다음 경계에서 멈춤 |
-| `GET /api/remediations/<id>/files/<name>` | 정해진 파일만: 보고서 두 개, result.zip, source.zip, manifest.json, journal.jsonl, remediation.log, delivery.json, `result-verified.zip`(앞 라운드의 검증된 ZIP, 없으면 404), `plan-r<n>.json`, `candidate-r<n>.patch`, `build-r<n>.log`, baseline-build.log, `fix.patch`(마지막으로 고친 라운드), `scan-<label>.json`. `?download=1`이면 첨부(이름: [12](12-remediation-report.md) 1절) |
+| `GET /api/remediations/<id>/files/<name>` | 정해진 파일만: 보고서 두 개, result.zip, source.zip, manifest.json, journal.jsonl, remediation.log, delivery.json, `result-verified.zip`(앞 라운드의 검증된 ZIP, 없으면 404), `plan-r<n>.json`, `candidate-r<n>.patch`, `build-r<n>.log`, baseline-build.log, `fix.patch`(결과에 든 고침을 모은 것), `scan-<label>.json`. `?download=1`이면 첨부(이름: [12](12-remediation-report.md) 1절) |
 | `DELETE /api/remediations/<id>` | 폴더 삭제(실행 중이면 409) |
 
 ## 6. 진단 순서
@@ -202,15 +200,15 @@ manifest 밖 경로, 삭제를 거절(`fixer.check_paths`). 남은 시간 60초 
    `pending_receipt`(검사 중 멈춘 자리), `boundary`(경계 검사), `residuals`.
 2. `journal.jsonl`: `node_start`/`node_end`, `scan_receipt`, `scan_resume`, `upload_uncertain`, `scan_stopped`, `scan_done`,
    `ivas_upload`, `ivas_status`, `ivas_pages`, `ivas_scan_done`, `plan_written`, `plan_reused`, `plan_stale`, `policy_hash_differs`,
-   `round_committed`, `next_round`, `maven_project_config`, `ivas_action_unknown`, `remediation_budget`, `remediation_fix_loop`, `failed_candidate_delivered`, `verified_delivery_kept`, `earlier_delivery_kept`.
+   `round_committed`, `next_round`, `maven_project_config`, `ivas_action_unknown`, `remediation_budget`, `remediation_fix_loop`, `build_side_changes`, `failed_candidate_delivered`, `verified_delivery_kept`, `earlier_delivery_kept`.
    결과 ZIP의 정체는 `delivery/delivery.json`의 `build_ok`·`build_tolerated`·`scanned`.
 3. remediation.log: 로그(비밀 없음, 모든 조치). Maven 원문은 `baseline/build.log`, `rounds/<n>/build.log`(대상이 여럿이면 `build-<대상>.log`).
 4. `scans/<label>.json`: 검사 하나: `complete`, `incomplete_reasons`(`analysis_failed`, `analysis_timeout`, `page_missing`, `total_mismatch`,
    `duplicate_result`, `summary_mismatch`, `unsupported_sw`, `zip_hash_mismatch`, `id_mismatch`, `http_error`, `stop_requested`, `count`일 때 `file_components_unread`), `file_complete`, `findings`, `counts`, `notes`.
 5. `rounds/<n>/`: `before.json`(해석 결과), `inventory.json`(항목별 `origin`, `location`, `reason`), `plan.json`(제안·잔여), `apply.json`
-   (적용·건너뜀), `candidate.patch`, `resolved.json`(후보 해석 결과), 수정 루프면 `fixloop/`(`journal.jsonl`, `logs/`), `build-fixed.log`, `fix.patch`.
+   (적용·건너뜀), `candidate.patch`, `resolved.json`(후보 해석 결과), `applied/`, 수정 루프면 `fixloop/`(`journal.jsonl`, `logs/`, `fixed/`), `build-fixed.log`, `fix.patch`.
 
-자주 보는 경우: matchedfiles의 `scan_incomplete … http_error, page_missing`→옛 단수 주소의 404, 새로 돌린다. 파일 발견이 있는데 조치 완료→`report`에서 정상. 후보 빌드 실패인데 메시지에 `automatic build fix:`→수정 루프가 못 고쳤다(`rounds/<r>/fixloop/journal.jsonl`). 이관 빌드가 실패했는데 조치가 돌았다→사내 프레임워크 실행이면 정상(1.1, 끄려면 `never`). `not_ready`→readiness의 `missing`(`remediation.trusted_projects`, IVAS 세 값, JDK 21, Maven, settings.xml, 승인된 저장소 호스트). `execution_boundary_refused` →
+자주 보는 경우: matchedfiles의 `scan_incomplete … http_error, page_missing`→옛 주소의 404, 새로 돌린다. 파일 발견이 있는데 조치 완료→`report`면 정상. 후보 빌드 실패인데 메시지에 `automatic build fix:`→수정 루프가 못 고쳤다(`rounds/<r>/fixloop/journal.jsonl`). 이관 빌드가 실패했는데 조치가 돌았다→사내 프레임워크 실행이면 정상(1.1, 끄려면 `never`). `not_ready`→readiness의 `missing`(`remediation.trusted_projects`, IVAS 세 값, JDK 21, Maven, settings.xml, 승인된 저장소 호스트). `execution_boundary_refused` →
 `state.boundary`의 `code`(`project_maven_config`, `maven_extensions`, `maven_wrapper`, `symlink`, `foreign_repository`,
 `foreign_plugin_repository`, `unparsable_pom`). `manual_review`만 남음→`inventory.json`의 `origin`이 `plugin`/`vendored`/`unmapped` 이거나,
 `transitive` / 부모·BOM 관리인데 override를 막은 사실이 잔여의 `detail`에(남은 classifier, 루트 pom 비상속·없음, 직접 선언 버전, 넣을 줄
@@ -227,19 +225,19 @@ manifest 밖 경로, 삭제를 거절(`fixer.check_paths`). 남은 시간 60초 
 | `after_migration` | 이관에 이어 같은 빌드 파드에서 조치를 돌릴지(기본값과 매니페스트 값은 1.1) |
 | `after_failed_build` | `framework`(기본, 1.1) / `never` = 빌드가 실패한 실행은 잇지 않음 |
 | `trusted_projects` | (in-process 단독 업로드만) Maven이 올라온 프로젝트의 플러그인을 돌리므로 운영자가 true로 바꿔야 접수(기본 false) |
-| `max_rounds` | 계획→적용→빌드→재검사 반복(기본 3) |
+| `max_rounds` | 계획→적용→빌드→재검사 반복(3) |
 | `failed_candidate` | 후보 빌드 실패: `include`(기본, 실패한 수정본도 결과 ZIP) / `discard`. 2절 |
-| `fix_loop`/`fix_loop_max_iterations` | 실패한 후보의 빌드 오류 수정(기본 true) / 반복 한도(10, 1~50). 2절 |
+| `fix_loop`/`…_max_iterations`/`…_max_minutes` | 실패한 후보의 빌드 오류 수정(기본 true) / 반복(10, 1~50) / 분(30, 1~240). 2절 |
 | `ignore_actions` | 계획에서 뺄 IVAS 조치 코드(2절, 정책 해시에 들어감) |
-| `chain_budget_minutes` | 이어 돈 조치의 파드당 시간 한도(1.1) |
+| `chain_budget_minutes` | 이어 돈 조치의 파드당 한도(1.1) |
 | `project_maven_config` | `.mvn/maven.config`·`jvm.config`·`extensions.xml`이 있을 때 ignore(기본, 기록만) / refuse. 빌드는 그 폴더를 읽지 않는다(`build.ignore_project_mvn`) |
 | `maven_wrapper` | `mvnw`가 있을 때(서버 Maven만 쓰므로 기본 ignore) |
 | `allowed_repository_hosts` | 승인된 저장소 호스트. 비우면 서버 settings.xml의 미러·저장소 호스트 |
 | `foreign_repository` | pom이 승인 안 된 호스트 저장소를 선언할 때 |
-| `build_timeout_minutes` | package 빌드 한 번 한도 |
+| `build_timeout_minutes` | 빌드 한 번 한도 |
 | `ivas_timeout_seconds`/`ivas_upload_timeout_seconds` | IVAS 요청 / 업로드 한도 |
 | `ivas_poll_seconds`/`ivas_analysis_timeout_minutes` | 상태 조회 간격 / 분석 대기 한도(기본 30분, 넘으면 미완료) |
-| `ivas_page_size`/`ivas_project_prefix` | 결과 한 쪽 크기 / IVAS 프로젝트 이름 앞머리 |
+| `ivas_page_size`/`ivas_project_prefix` | 결과 한 쪽 크기 / IVAS 프로젝트 이름 앞 |
 | `ivas_summary_check` | `exact`(기본) / `nonzero`. 2절 요약 대조 |
 | `file_components` | `report`(기본: 파일 발견은 보고서에만) / `count`(잔여로 판정에 넣음). 2절 |
 | `policy.pins` | "g:a"→이 버전으로만(부모·BOM은 3절) |

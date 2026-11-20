@@ -20,12 +20,12 @@ type: `sbmig/core/models.py`, `sbmig/core/interfaces.py`, `sbmig/core/config.py`
 | verify & script fix loop | Base "Fix-loop invariants"; v2 "Script fix loop (L)", "Script contract (S)", "As built (step 1)"; v2.1d (versions, operator checks), v2.1l / v2.1m pre-tries, v2.1r (file locks), v2.1y (declines, idempotency), v2.1z (ladder caps, case keys), v2.1z-e (jakarta discovery), v2.1z-i, v2.1z-n, v2.1z-y, v2.1z-z, v2.1z-aa; v2.1z-ak (reduced run: as-is chain facts, framework guard); v2.1z-av (stop around the final build, the last unhelpful try rolled back, `repository_unreachable`, cut answers, managed versions per parent) |
 | cases & KB | v2 intro + "Script KB (K)"; Base "KB plumbing"; v2.1e (learning records), v2.1f (probable fixers), v2.1z (masked case keys), v2.1z-ae / v2.1z-af (several pods on one KB), v2.1z-ai (rule versions, member-symbol keys, re-sign, exact-key guard) |
 | LLM gateway | Base "LLM client tier and adapter seams"; v2.1z-m (agent gateway, token exchange), v2.1z-n, v2.1z-o, v2.1z-p (case thread), v2.1z-q, v2.1z-x, v2.1z-af (busy wait, auth retries) |
-| report & result line | Base "Report and the result line", "Advisories and the Handover"; v2 "As built (step 1)" (`review=`); v2.1d (`major=`); remediations (`remediation=`); v2.1z-ak (`scope=`, the framework block) |
+| report & result line | Base "Report and the result line", "Advisories and the Handover"; v2 "As built (step 1)" (`review=`); v2.1d (`major=`); remediations (`remediation=`); v2.1z-ak (`scope=`, the framework block); v2.1z-bl (`llm=` includes the remediation's fix-loop calls) |
 | fleet | Base "Fleet" |
-| web app | Base "Graph engine", "Web app"; v2.1z-w (page, server-chosen configs), v2.1z-ae (queue / slots on the page), v2.1z-af (page re-attach), v2.1z-aj (run flows, page header); v2.1z-ak (framework label, skipped stages); v2.1z-ao (admin page `/admin`: token usage per project, log ZIPs); v2.1z-au (the code-change view: artifact `codediff/`, `/api/runs/{id}/codediff`, the page block); v2.1z-av (cross-site requests refused, the free-space floor for uploads, unpacking limits) |
+| web app | Base "Graph engine", "Web app"; v2.1z-w (page, server-chosen configs), v2.1z-ae (queue / slots on the page), v2.1z-af (page re-attach), v2.1z-aj (run flows, page header); v2.1z-ak (framework label, skipped stages); v2.1z-ao (admin page `/admin`: token usage per project, log ZIPs); v2.1z-au (the code-change view: artifact `codediff/`, `/api/runs/{id}/codediff`, the page block); v2.1z-av (cross-site requests refused, the free-space floor for uploads, unpacking limits); v2.1z-bg (report view); v2.1z-bl (two report previews, 고급 설정 and the other-files list gone, LLM counts) |
 | Job mode (Main / Worker, slots, env pins) | v2.1z-z "k8s Job dispatch mode", v2.1z-ab (kubeconfig, template ConfigMap), v2.1z-ac (Main ↔ Worker contract), v2.1z-ad (end confirmation, ownership, env pins, write-time redaction), v2.1z-ae (parallel slots), v2.1z-af, v2.1z-aq (a build pod that does not start: stop, the reason notice); v2.1z-av (the build identity, pins taken at Job creation, the resume attempt) |
 | deploy | v2.1z-s (build hooks), v2.1z-t (one Job per request), v2.1z-u, deploy (baked config, container paths), v2.1z-ad "Shipped mode" |
-| remediations | remediations; v2.1z-ak (in-house group `framework`); v2.1z-am (case-insensitive matching, per-module in-house split, module sources, variant overrides, 들어온 경로); v2.1z-an (override proposals in module poms, the owners' choice); v2.1z-ar (no approval unless switched on); v2.1z-av (fixed = gone from the rescan, the planner's new residual groups, `remediation.log` for every run) |
+| remediations | remediations; v2.1z-ak (in-house group `framework`); v2.1z-am (case-insensitive matching, per-module in-house split, module sources, variant overrides, 들어온 경로); v2.1z-an (override proposals in module poms, the owners' choice); v2.1z-ar (no approval unless switched on); v2.1z-av (fixed = gone from the rescan, the planner's new residual groups, `remediation.log` for every run); v2.1z-bi part B, v2.1z-bj, v2.1z-bk (the fix loop on a failed candidate: work copy, overlay, build-side sync, one `fix.patch`); v2.1z-bl (fix-loop LLM usage, titles with the entered project) |
 
 ## Base contracts (in force; written before v2)
 
@@ -5976,6 +5976,10 @@ and a remediation that raises library versions can break the build, so the fix l
 
 ### A. Framework projects: `framework.fix_loop` defaults to `true`
 
+> **Turned back the same day:** `framework.fix_loop` is `false` by default again (the user keeps framework projects
+> conversion-only for now; code and `config/default.yml`). The switch stays; with it on, the loop below runs. The chain
+> rule (a failed final build chains whether or not the loop ran) and the report's two variants stay as coded.
+
 - Default `true` (code and `config/default.yml`; done in the contract commit). Everything the `true` branch already
   does stays: full loop (pre-tries without the company parent, stored scripts, LLM), `_framework_guard` (no
   `<parent>` change, no change of the framework's declarations / version), the reduced-scope prompt.
@@ -5989,6 +5993,12 @@ and a remediation that raises library versions can break the build, so the fix l
 - Tests that assumed the old default set `framework.fix_loop: false` explicitly; the default itself gets one test.
 
 ### B. Remediation: the fix loop on a failed candidate build
+
+> **Superseded in part by "v2.1z-bj" and "v2.1z-bk".** The loop no longer runs on the candidate: it runs on a work copy,
+> the candidate is changed only by the graph's overlay of the fixed bytes, and after every candidate build the tree is
+> synchronised with accepted + applied + reported fix. Steps 1 and 6 below (`.gitignore` saved and restored, `tree/.git`
+> removed, the tree reset to `base`) describe the first cut and no longer hold; where this part and those two sections
+> disagree, they count.
 
 **Switches.** `remediation.fix_loop: bool = True`, `remediation.fix_loop_max_iterations: int = 10` (1–50).
 
@@ -6061,34 +6071,37 @@ beyond `plan_notes`.
 **As coded (2026-11-20).** Deviations from the text above, all in the code as committed:
 - `first_outcome` is only logged: `run_fix_loop` writes its log path into the loop's own journal
   (`remediation_fix_loop_start`, beside `targets` and `max_iterations`); the loop builds once itself before it fixes.
-- The `fix.patch` route is an entry of `_FIXED_FILES` in `sbmig/remediations/service.py` (`_last_fix_patch`: the
-  highest `rounds/<n>/fix.patch` that exists), not in `remediations/api.py`.
-- The loop does not start with less than `fixer.MIN_LOOP_SECONDS` (60) left of the deadline (`attempted: false`,
-  reason `time budget used up`), nor when a stop is already pending (`attempted: false`, `stop requested`). A tree that
-  already holds a `.git` is left alone (`error: RuntimeError: …`). The workspace's commit of the uploaded files names the
-  manifest paths explicitly, so a file the project's `.gitignore` hides is still tracked and reset.
+- The `fix.patch` route is an entry of `_FIXED_FILES` in `sbmig/remediations/service.py`, not in
+  `remediations/api.py`. It serves the combined `remediation/fix.patch` that `report.write_fix_patch` writes, and only
+  while the saved state has a committed round with a fixed, non-empty fix ("v2.1z-bk").
+- The loop does not start with less than `fixer.MIN_LOOP_SECONDS` (60) left (`attempted: false`, reason
+  `time budget used up`), nor when a stop is already pending (`attempted: false`, `stop requested`). The work copy
+  holds no `.git` path of the upload ("v2.1z-bj"), so a root or nested `.git` no longer stops the loop. The work copy's
+  commit of the uploaded files names the loop paths explicitly, so a file the project's `.gitignore` hides is still
+  tracked.
 - `Components.fixer` defaults to `None`; `None` means the loop is never called (`_fix_wanted` is false), which is what
   every graph test that does not set a fixer gets. `default_components` sets `fixer.RemediationFixer()`.
-- While the loop runs the candidate's completeness marker is taken off and put back afterwards; a fixer that raises
-  leaves it off, so such a candidate is never exported as a result ZIP. A failing confirming build resets the changed
-  files from `accepted/` (they are existing non-pom manifest files) and deletes the patch.
-- Time: the deadline is the run's remaining budget only in a chained run, through `chain._Budget.time_left`, which
-  `_Budget.wrap` attaches to the stop check (`remediation.chain_budget_minutes`); `_Holder.time_left` reads it. A run
-  without that attribute has no deadline, and the loop is then limited by `loop.max_total_minutes` (`LoopBudget`) and
-  `remediation.fix_loop_max_iterations` alone.
+- The candidate's completeness marker is not touched by the loop (it only reads the candidate); a fixer that raises
+  ends the round as not fixed and the failed candidate is delivered ("v2.1z-bk"). A failing confirming build brings
+  the candidate back to the expected files (`intake.sync_tree`: applied edits, else `accepted/`), saves the state and
+  only then deletes the patch and `fixed/`.
+- Time: the loop gets `min(remediation.fix_loop_max_minutes × 60, time_left − reserve)` (`graph.fix_loop_seconds`,
+  "v2.1z-bj"); `time_left` exists only in a chained run (`chain._Budget.time_left`, `remediation.chain_budget_minutes`),
+  elsewhere the cap alone counts, together with `loop.max_total_minutes` and `remediation.fix_loop_max_iterations`.
 - `report.fix_summary(state)` is the digest the service's status carries as `fix` (None when no round ran the loop):
-  `fixed`, `changed` (files of committed fixed rounds), `llm_calls` (every round's loop), `round` (last fixed round).
-  The page draws the chip and adds `llm_calls` to the run header's LLM count from it; `SBMIG-RESULT … llm=` and the
-  migration report's count do not include the remediation's calls.
+  `fixed`, `changed` (files of committed fixed rounds), `llm_calls` (every round's loop, discarded fixes included),
+  `round` (last fixed round). The page draws the chip from it. The remediation's calls are counted in
+  `SBMIG-RESULT … llm=`, `GET /api/runs/{id}` and the admin page ("v2.1z-bl"); the migration report's own
+  `llm_usage` never holds them.
 - "Fixed" in the report, the chip and `fix_summary.changed` counts only committed rounds (`_fixed_rounds`); a fixed
   round that did not commit (for example a later verify problem) contributes nothing to the result.
-- The report's line for a loop that never started (`attempted: false`) is 「남은 시간이 없어 빌드 오류 자동 수정은
-  시작하지 않았습니다.」 under the failed-build warning and 「빌드 오류 자동 수정: 남은 시간이 없어 시작하지 않음」 in the
-  processing record, also when the reason was a pending stop. The status message's ` | automatic build fix: <reason>`
-  is translated by the `auto_fix_*` rules of `i18n.py` (`fix_failed_ko`).
+- A loop that never started (`attempted: false`) is 「빌드 오류 자동 수정은 시작하지 않았습니다(<사유>).」 under the
+  failed-build warning and 「빌드 오류 자동 수정: 시작하지 않음(<사유>)」 in the processing record, 사유 = 중지 요청 /
+  남은 시간 부족 (`i18n.fix_not_started_ko`). The status message's ` | automatic build fix: <reason>` and
+  ` | automatic build fix not started: <reason>` are translated by the `auto_fix_*` rules of `i18n.py`.
 - The processing record of a fixed round shows the first failed build (「처음 수정본 빌드」) above the confirming build.
-- Not covered: the second candidate build after an ineffective override entry is dropped gets no loop; the fix loop's
-  calls are not part of the migration report's LLM usage.
+- Not covered: the fix loop's calls are not part of the migration report's `llm_usage` (they are added where the
+  result line, the run status and the admin page count; "v2.1z-bl").
 
 **Tests.** `tests/loop/test_fixloop_edit_guard.py` (the hook: LLM edits, stored script, pre-tries, a raising guard,
 `None` unchanged), `tests/remediations/test_fixer.py` (guard rules, fixed / not fixed / exception / time / stop,
@@ -6202,6 +6215,41 @@ now assert the right outcome: tree integrity with a failing reset / cleanup, a n
 fixed round with a dropped override, the budget case (FAILED with a delivery, not STOPPED), the kill-and-resume
 case (fix kept and reported), `src/**/target`, the `fix.patch` route per state, the not-started wording per reason.
 
+**As coded (2026-11-20).** Deviations from the text above and names it did not give (later amended by "v2.1z-bk"
+where noted):
+- Fixer: the per-round patch is `rounds/<r>/fix.patch` (`run_fix_loop(…, patch_file=None)` → `work_dir.parent /
+  "fix.patch"`), the fixed bytes `rounds/<r>/fixloop/fixed/<path>`; the work copy is `fixloop/tree/` and is removed at
+  the end even when the loop fixed (`_rmtree_quiet`, a failure is a WARNING). `loop_paths`, `is_editable`,
+  `maven_pom_paths` (the inventory's `ProjectPoms`: a `<relativePath>` or a `<module>` of the root or a profile naming an
+  `.xml` file other than `pom.xml`, and an `.xml` build target), `check_paths`, `make_edit_guard`, `compare_trees` and
+  `unified_patch` are module functions. A symlink in the work copy is a violation like a non-editable path. A missing
+  manifest file in the candidate makes the copy fail: `error: …`, not fixed.
+- Journal of the loop (`fixloop/journal.jsonl`): `remediation_fix_loop_start` carries `loop_paths` and `editable`
+  counts besides `targets`, `first_build_log`, `max_iterations`; `remediation_fix_llm_unavailable` (`detail`, 300
+  characters) holds what the bare `llm unavailable` reason leaves out. Remediation journal: `remediation_fix_rejected`
+  (`reason`) for an end-check violation; `remediation_fix_loop` also has `phase: not_started` (`reason`);
+  `remediation_fix_discarded` (`round`, `reason`, `changed` count) whenever a fix is dropped.
+- Graph: `graph.fix_loop_seconds(h, first)`, `FIX_RESERVE_MIN_SECONDS = 300`. A recorded loop that never started
+  (`attempted: false`) is forgotten when `_build` runs again, so a resume after a stop may start the loop (the text
+  only covered a loop that ran). `_overlay_fix` writes each file through a temporary file and `os.replace`, keeps the
+  candidate file's permissions, and changes nothing (returns False) when any path is not an existing candidate file;
+  the round then treats the fix as unusable ("v2.1z-bk"). Before a fixed fix is discarded for a remade candidate the
+  candidate's completeness marker is taken off (`unmark_candidate`), so a kill in between never builds a candidate
+  that still holds the dropped fix.
+- `restore_missing(tree, source, paths)` is in `intake.py` and the intake protocol, journal `manifest_files_restored`
+  (`round`, `count`, `paths` = the first 5); "v2.1z-bk" replaced its call by `sync_tree`.
+- Models: `FixResult.fixed_dir`, `tree_hash`, `retry_passed`, `discarded_changed` and `RoundState.fix_discarded` are
+  left out of the JSON when empty / False; older JSON reads back. `remediation.fix_loop_max_minutes` is
+  `Field(default=30, ge=1, le=240)` (`config/default.yml` the same).
+- i18n: `fix_not_started_ko` / `fix_not_started_reason_ko` (중지 요청, 남은 시간 부족) and the `auto_fix_*` /
+  `auto_fix_not_started*` rules; the reasons of a loop that ran and did not fix still end in 「소스 수정은
+  되돌렸습니다.」 (`fix_failed_ko`), meaning the loop's edits were dropped.
+- Tests: `tests/remediations/test_fix_loop_review.py` (the review's reproductions: failing cleanup / reset, nested and
+  root `.git`, dropped override, the time reserve, kill-and-resume, retry passed, a pending stop, files a build
+  removed), `test_fixer.py` (work copy, editable paths, byte comparison, deadline per build, `llm unavailable`),
+  `test_graph_fix_loop.py` (reserve and cap, a raising fixer), `test_fix_patch_route.py`, `test_intake_build_output.py`
+  (`src/**/target`, `restore_missing`), `test_report_fix_loop.py`, `test_i18n.py`.
+
 ## v2.1z-bk — second review of the remediation's fix loop: stop, kill windows, build-side changes, patch
 
 **Why.** A second review reproduced: (1) a stop during the confirming build threw the fix away as "confirming
@@ -6277,3 +6325,87 @@ guard does not see a new file under a path the project's `.gitignore` ignores (t
 **Tests.** The review's reproductions (`out/scratch/review-bj/test_repro_bj.py`, untracked) become regression tests
 asserting the right outcome, plus: a build that rewrites a source and a pom (first build, confirming build, inside
 the loop), the interrupted loop's usage, the cp949 patch, two fixed rounds and the one served patch.
+
+**As coded (2026-11-20).** Deviations from the text above and names it did not give:
+- **Telling a killed loop from a recorded one.** Before a loop starts the graph writes `fixloop/loop.json`
+  (`{"loop": <token>, "round": r}`) and every result of that loop carries the token as `FixResult.loop_id` (left out
+  of the JSON when empty). `_settle_old_loop`: an old folder whose token is on no recorded result of the round
+  (`rs.fix`, `rs.fix_discarded`) was killed; a folder without the file counts as killed when the round records no
+  attempted loop without a token. Killed → renamed `fixloop-interrupted-<n>/` (a failed rename: the folder is read in
+  place, then removed), journal `remediation_fix_interrupted` (`round`, `folder`, `llm_calls`, `reason`).
+- `fixer.interrupted_result(folder, cfg)` reads the loop's own `journal.jsonl` with the admin page's
+  `sbmig.web.admin.usage_from_journal` (its `llm_script` / `llm_verify_guide` events; the loop writes no
+  `sbmig.log`) and prices the rows like a finished loop. No journal = the loop never reached an LLM call: zero,
+  without ` (usage unknown)`; a journal that cannot be read → zero and ` (usage unknown)`.
+- `intake.sync_tree` leaves a path alone when its expected file does not exist, compares sizes before bytes, writes
+  through a temporary file. `graph._package` is the one place a candidate is built: the build, then
+  `_sync_candidate`. Journal `build_side_changes` = `round`, `missing` (count), `changed` (count), `paths` (first 5
+  changed), `missing_paths` (first 5); restored files also still give `manifest_files_restored`. The state message is
+  not changed by build-side changes; `sbmig.log` has one WARNING per build that changed files.
+- `rounds/<r>/applied/` (`graph.APPLIED_DIR`, `_store_applied`) holds `ApplyResult.changed_files` plus every edit's
+  `pom` whatever its name, made anew at each apply and removed with the candidate when an override is dropped.
+- Inside the work copy the build wrapper (`fixer._DeadlineRunner`) restores build-side edits with the existing
+  `Workspace.restore_build_byproducts` and records the untracked entries each build created (ignored ones included),
+  which the end check does not count as created by an attempt; journal `remediation_fix_build_side` (`restored`, the
+  first 20) in the loop's journal. "Changed by an attempt" = `ws.changed_between(base, head)`.
+- On re-entry `_confirm_fix(fresh=False)` synchronises the candidate with the fix included and compares
+  `intake.tree_hash` with `rs.fix.tree_hash`: a different hash or a path that fails `_fix_paths` → discarded
+  (`discarded: the stored fix is not usable`), the candidate synchronised without it, and the round builds as if no
+  loop had run. A fix the loop has just returned that fails the check ends the round not fixed with that reason (no
+  second loop on the same candidate). A stop right before the confirming build also halts STOPPED with
+  `next_node = build` without building.
+- `fix.patch` encoding line: `# <path>: shown as UTF-8, the file is MS949`. The combined `remediation/fix.patch`
+  (`report.write_fix_patch`, `report.fix_patch_path`, `FIX_PATCH_NAME`) names a missing per-round file with a line
+  `# round <r>: patch file missing` and a WARNING; the files route asks `report.served_fix_round` and that the file
+  exists, so a combined file left by an earlier report is not served.
+- Report: a fixed round that did not commit gets the record line 「빌드 오류 자동 수정: 수정본을 채택하지 않아 결과에
+  넣지 않음 …」; the build-side line names the first paths; the to-do line points at 「빌드 오류 수정」 and `fix.patch`.
+- Tests: `tests/remediations/test_fix_loop_review2.py` (stop around the confirming build, kill windows, a raising
+  fixer, build-side changes in the first build / confirming build / loop, a pom under another name in `applied/`,
+  the interrupted loop and its usage, cp949, the overlay re-check, the tree hash), `test_fix_patch_route.py` (one
+  combined patch), `test_intake_build_output.py` (`sync_tree`), `test_report_fix_loop.py` (two fixed rounds,
+  build-side line, interrupted line), `test_graph_fix_loop.py`, `test_i18n.py`; `tests/remediations/fakes.py` gives
+  the fake intake the real `restore_missing` / `sync_tree`.
+
+## v2.1z-bl — page: two report previews, trimmed areas, project name in the remediation titles; LLM usage totals
+
+**Why.** The user, 2026-11-20: "보고서는 migration, remediation 각각 따로 보여질 수 있도록!" (a remediation-only run had
+shown its short run report in the preview), "관리자에서 로그 파일들 받을 수 있으니까 그 밖의 파일 영역은 빼달래! 고급설정
+영역이 빼줘!", and the remediation's fix-loop LLM calls were missing from the counts. Contract and as coded in one.
+
+- **LLM usage totals** (`4054960`). `FixResult.usage: list[FixUsage]` (`model` = asked name, `served`, `calls`,
+  `input_tokens`, `output_tokens`, `cost`) and `currency`, priced with `llm.pricing` like the migration's
+  (`fixer._usage`; calls the loop's budget counted beyond the attempts go to the configured model's row). One reader:
+  `fixer.fix_usage(state)` / `run_fix_usage(run_dir)` over `rounds[].fix` and `rounds[].fix_discarded` of
+  `remediation/state.json` → `{calls, input_tokens, output_tokens, by_model}`. `chain.summary` adds `fix_llm_calls`
+  (only when > 0); `result_line.report_llm_calls` makes `SBMIG-RESULT … llm=` the migration's calls plus those (chained
+  and remediation-only runs). `GET /api/runs/{id}`: `llm_calls` = report calls + remediation calls
+  (`runs.run_llm_calls`), `remediation_llm_calls` = the remediation part; the page replaces that part with the live
+  `fix.llm_calls` of `GET /api/remediations/{id}` so a call is counted once. Admin page (`admin.add_remediation_usage`):
+  per run the calls / tokens / cost include the remediation's rows (same asked name merged, cost unknown when a
+  remediation row is unpriced or in another currency), the row field `remediation_calls` (only when > 0) and the cell
+  note 「조치 N회 포함」; per model and per project totals include them. The migration's `report.json` is never
+  rewritten. Tests: `tests/remediations/test_fix_usage.py`, `tests/web/test_admin_model_names.py`,
+  `tests/web/test_page_remediation_fix.py`.
+- **Two report previews** (`796eec2`). 「마이그레이션 보고서 미리보기」 (`#preview`, label `#preview-label`) stays at the
+  end of the result card and exists only when a migration ran. 「조치 결과 보고서 미리보기」 (`#rem-preview`) sits inside
+  the remediation card whenever the remediation's file list has `report.md`, and shows exactly `GET
+  /api/remediations/{id}/files/report.md` (the bytes of the 「조치 결과 보고서」 download), fetched again only when the
+  status's `updated` changes, not while a resume runs; a late answer for a run the user left is dropped. A
+  remediation-only run shows its short run report under 「보고서 미리보기」 until the remediation report exists, then
+  only the remediation preview. Each preview has 「보기」 / 「원문」 and 「크게 보기」 (the dialog shows the document of the
+  preview that opened it). The remediation card's 「보고서 보기」 button is gone. Report text goes in only as text or
+  DOM nodes. Tests: `tests/web/test_page_remediation_preview.py` (node against a small fake DOM),
+  `tests/web/test_page_report_view.py`.
+- **Trimmed areas** (`63cece1`). 고급 설정 (`<details id="adv" hidden>`) is not shown; its fields stay and their
+  defaults are sent. The list of other run files (`#otherfiles`) is empty; only the notice about a missing result ZIP
+  is left there. Logs and other files come from the admin page. Tests: `tests/web/test_page_trimmed_areas.py`.
+- **Project name in the remediation titles** (`f107cd1`). `sbmig/web/contract.py`: `entered_project(run_dir)` = the
+  name entered at upload from `control/request.json` (Job modes), else the `project` of the journal's `web_run` line
+  (in-process; first 50 lines); `display_project(run_dir, run_id)` = that, else the project part of a web run id
+  (`RUN_SLUG`, the admin page's pattern), None without any web trace (a direct CLI run). Display only, never a check.
+  Remediation-only run: the short run report's title (`Orchestrator._web_project_name`) and the remediation report's
+  title (`RemediationState.name`, 「취약점 조치 결과 — {name}」) use `display_project`; a chained remediation uses
+  `entered_project` and keeps `source.zip` without one. A direct CLI run is unchanged. Tests:
+  `tests/web/test_display_project.py`, `tests/remediations/test_chain_project_name.py`,
+  `tests/loop/test_remediation_flow_project_name.py`.

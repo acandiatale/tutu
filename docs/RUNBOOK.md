@@ -78,10 +78,10 @@ Get-Content out\<run id>\sbmig.log -Encoding UTF8 -Tail 30   # Windows PowerShel
 ### 0.3 Framework projects (`framework.*`)
 
 Projects built on the in-house framework run in the reduced scope `jdk-jakarta`: the Java 21 + jakarta recipes, then ONE
-build and the fix loop (`framework.fix_loop: true`, default: pre-tries without the company parent, stored scripts, LLM;
-an attempt that changes a `<parent>` or the framework's declarations / version is rolled back); what is left is reported
-and the converted tree is delivered. `framework.fix_loop: false` = conversion only: one build, errors reported, no
-pre-try, no stored script, no LLM call. The chained remediation follows whether the build passed or failed (below). No restructure, no structure review, parent pom and
+build; build errors are not fixed (no pre-try, no stored script, no LLM call) but reported, and the converted tree is
+delivered (`framework.fix_loop: false`, default). `framework.fix_loop: true` brings the fix loop back (pre-tries without
+the company parent, stored scripts, LLM; an attempt that changes a `<parent>` or the framework's declarations / version
+is rolled back). The chained remediation follows whether the build passed or failed (below). No restructure, no structure review, parent pom and
 framework version kept. The page and the report name the framework: `<name> 프레임워크는 JDK 21, Jakarta만 적용합니다.`
 (contract: `docs/INTERFACES.md` "v2.1z-aw — framework projects: conversion only, and the framework is named").
 Details: `agent-doc/13-framework-projects.md`. To validate in the company environment:
@@ -90,13 +90,13 @@ Details: `agent-doc/13-framework-projects.md`. To validate in the company enviro
 |---|---|
 | Switch it on | `framework.artifacts` in the company `config/artifacts.yml` with the real coordinates (placeholder: `["com.example.fw:example-fw-core"]`; a bare artifactId matches any groupId, matching is case-sensitive). In the cluster the file is baked into the image: rebuild and push the image (`deploy/README.md` §7) |
 | Framework name | `framework.name` (default `""`): empty = derived from the artifact name — the artifact found in the project, else the configured pattern (a pattern with `*` is skipped); trailing role words (`core`, `framework`, `fw`, `starter`, `parent`, `bom`, `boot`, `common`, `base`, `api`) are cut and the first letter upper-cased: `example-fw-core` → `Example`. Derived name right → nothing to do; wrong → one line `name: "<name>"` under `framework:` in the company `config/artifacts.yml`, then rebuild and push the image. The real name is a company name: never in this repository |
-| Fix loop | `framework.fix_loop` (default `true`): the fix loop runs as in any project, with the version facts from the project's own chain and the framework guard (journal `framework_guard`). `false` = one build, errors reported, no LLM call (`llm=0`) |
+| Fix loop | `framework.fix_loop` (default `false`): one build, errors reported, no LLM call by the migration (`llm=0` unless the chained remediation's fix loop called the LLM). Set `true` only when the company decides that framework projects get the fix loop too (version facts from the project's own chain, the framework guard, journal `framework_guard`) |
 | Recipe sets | `framework.recipe_sets` (default `[jdk21, jakarta]`). The jakarta set moves the servlet API to the Jakarta EE 9 line (servlet 5.0); for projects that will run on Tomcat 10.1+ add `servlet_jakarta_10` — the company decides |
 | First run on a real framework project | `SBMIG-RESULT … scope=jdk-jakarta`; `sbmig.log` INFO `분석: 사내 프레임워크 프로젝트 (…) - JDK와 jakarta만 적용`; journal `framework_project` (`name`, `fix_loop`, `evidence`, `unchecked`), `plan` with `"scope": "jdk-jakarta"` and `name` / `fix_loop`, (MS949 / EUC-KR sources) `source_encodings` before the rewrite and `scopes_restored` after it, commits in the order (`transform: pom encodings corrected` when a pom's bytes did not match its declaration) → `transform: source encodings written` → `rewrite: transform.rewrite` → `transform: as-is provided scopes restored` → `transform: JSP javax → jakarta`, notes `source encoding written: <pom>: project.build.sourceEncoding=MS949 (…)` — an encoding the kept parent sets differently stays and becomes a hand-over item (「확인해 주세요」); `report.md` block `## <name> 프레임워크 프로젝트` right under the head table, starting with the sentence above in bold, the two corrections listed under 「코드 수정 내역」 → 자동 변환 ("sbmig가 변환 단계에서 직접 고친 pom") and in `errors.md` as `seen: transform` entries; the page shows a highlighted notice with the sentence (run card and result card; the upload card shows it whenever the server's default configuration names framework artifacts with `framework.scope: jdk-jakarta`; `GET /api/configs` → `framework {configured, name, fix_loop, remediation_always}`), followed by 「취약점 조치는 빌드 결과와 관계없이 이어서 합니다.」 when `remediation_always` is true (`remediation.after_migration` on, `remediation.after_failed_build: framework`; the fix loop setting does not matter); `GET /api/runs/{id}` → `remediation` carries `baseline_tolerated` and `reasons`. The 「취약점 조치」 block shows the ZIP badge 빌드 미확인 and its note only for a delivery with `build_tolerated` and applied changes; a change set that added a build error keeps 빌드 실패본. The stage rail shows 재구성 / 구조 검토 as 하지 않음 |
-| Build failed | `scope=jdk-jakarta`, exit 2, `build=FAIL`. With the fix loop on (default) the loop could not fix every error: the Korean report lists what is left under 「해결하지 못한 오류」 like any run, and the migration report's remediation section says the remediation was chained although the build still failed after the automatic build fix. With `framework.fix_loop: false` (`llm=0`) nothing was tried: the Korean report lists the errors under 「변환 뒤 남은 빌드 오류」 (「확인해 주세요」 starts with a pointer to it; the en report has them as open entries of the "Error list"). Either way the errors are for the project's and the framework's owners; `result.zip` is the converted tree. The chained remediation still runs (`remediation.after_failed_build: framework`, default). When it changed versions it ends `remediation=INCOMPLETE` with first reason `baseline_build_failed` (no build confirmed them; with no other reason the page shows 조치함 · 빌드 미확인, the run list adds nothing after the migration's outcome): the owners fix the build errors, then build once with the changed versions. With nothing changed, or when the candidate build passed, it ends as an ordinary remediation (SUCCEEDED or its own reasons). A candidate build that adds an error is `FAILED` (`candidate_build_failed`, `baseline_build_failed`); a baseline build that timed out is not tolerated. `never` = no remediation after a failed build |
+| Build failed | `scope=jdk-jakarta`, exit 2, `build=FAIL`. With the default `framework.fix_loop: false` (`llm=0`) nothing was tried: the Korean report lists the errors under 「변환 뒤 남은 빌드 오류」 (「확인해 주세요」 starts with a pointer to it; the en report has them as open entries of the "Error list"). With the fix loop switched on the loop could not fix every error: the Korean report lists what is left under 「해결하지 못한 오류」 like any run, and the migration report's remediation section says the remediation was chained although the build still failed after the automatic build fix. Either way the errors are for the project's and the framework's owners; `result.zip` is the converted tree. The chained remediation still runs (`remediation.after_failed_build: framework`, default). When it changed versions it ends `remediation=INCOMPLETE` with first reason `baseline_build_failed` (no build confirmed them; with no other reason the page shows 조치함 · 빌드 미확인, the run list adds nothing after the migration's outcome): the owners fix the build errors, then build once with the changed versions. With nothing changed, or when the candidate build passed, it ends as an ordinary remediation (SUCCEEDED or its own reasons). A candidate build that adds an error is `FAILED` (`candidate_build_failed`, `baseline_build_failed`); a baseline build that timed out is not tolerated. `never` = no remediation after a failed build |
 | Not recognised | journal `framework_check` with `unchecked`: `parent: no as-is effective pom` (the intake capture failed, so inheritance from a parent pom was not checked), `transitive: <why>` (`dependency:tree` failed), nothing = the pattern does not match the real groupId / artifactId. Both `parent:` and `transitive:` present = the check could not look: flag `framework-unchecked`, WARNING `분석: 사내 프레임워크 여부를 확인하지 못함 (…)`, Handover line "framework check could not run (the parent pom and the dependency tree could not be read): if this project uses the in-house framework it must not be migrated in full — confirm before using the result"; the run goes on in full scope, the exit code is unchanged |
 | Cost of the transitive check | when the poms, the parent capture and the bundled jars show nothing, every project pays one `mvn dependency:tree -Dincludes=…` on the as-is tree at analyze (one per service root for an MSA without a covering aggregator); `framework.transitive: off` saves it |
-| A framework still on javax (fix loop on) | BLOCKED `external_javax_api` without an LLM call, the suggestion names the framework artifact and says its owner must provide a jakarta build — expected, not an sbmig failure |
+| A framework still on javax (`framework.fix_loop: true` only) | BLOCKED `external_javax_api` without an LLM call, the suggestion names the framework artifact and says its owner must provide a jakarta build — expected, not an sbmig failure |
 | An unresolvable parent | exit 3, `aborted:parent-not-found`: a framework project keeps its own parent, so Nexus must serve it (or fix the settings / mirror) |
 
 ## 1. Running a migration
@@ -137,6 +137,7 @@ every planned final build has a result is ignored); `1` crash. Library advisorie
 SBMIG-RESULT run=<id> exit=<n> build=<ok|FAIL> unresolved=<n> blocked=<n> open=<n> resolved=<n> llm=<calls> attn=<codes|-> [review=<v>] [major=<n>] [remediation=<STATUS|skipped>]
 ```
 
+`llm` = the migration's LLM calls plus the chained (or remediation-only) remediation's fix-loop calls.
 `attn` lists why a human has to look, most important first (`infra:<kind>`, `crash`, `aborted[:<reason>]`,
 `owner-decision`, `blocked:<reason>`, `unresolved:<n>`, `major-upgrade`, `hollow-reactor`, …; full list in
 [FLEET.md](FLEET.md)). `-` = nothing to look at.
@@ -305,8 +306,10 @@ sbmig clean --fleet out\fleet --older-than 7 --keep-failed --dry-run
 
 - **Local web UI**: `sbmig serve --port 8765 --out out/web` (FastAPI on uvicorn, bound to 127.0.0.1): upload a zip,
   choose 전체 진행 (migration, then the remediation) or 취약점 해결 (remediation only, §6), follow the stage rail /
-  journal / log, read the report rendered in the result card (「보기」 / 「원문」, 「크게 보기」; the remediation report
-  through 「보고서 보기」), download it (received as `migration-report.md`; the remediation report as
+  journal / log, read the reports rendered in the result card (「마이그레이션 보고서 미리보기」 at the end of the card, 「조치 결과
+  보고서 미리보기」 inside the remediation block showing exactly `remediation/report.md`; each with 「보기」 / 「원문」 and
+  「크게 보기」; a remediation-only run shows its short run report as 「보고서 미리보기」 until the remediation report
+  exists), download them (received as `migration-report.md`; the remediation report as
   `remediation-report.md`; the files in the run folder keep their names) and `result.zip`. Every upload needs a project name (letters, digits, `_`, `-`, at most 30 characters; rule and refusals in
   `deploy/README.md` §2), and a run's folder name starts with it (`<project>-YYYYmmdd-HHMMSS-<hex 6>`; `ls /data/out | grep <project>`); a run refused at intake, or aborted by Maven's HTTP repository blocker, shows its reason as a sentence. Sharing on the LAN needs a token
   (`SBMIG_WEB_TOKEN` or `--token`; `--open` only on a trusted intranet). The configs every upload runs with are the
@@ -369,17 +372,34 @@ default; `count` = they count as remaining, as residuals); a failure while readi
 is a note, not an incomplete scan. A run that ended `INCOMPLETE scan_incomplete … http_error, page_missing` on a
 matched-files call cannot be resumed: run it again. In the Korean remediation report 조치 완료 and 「해결된 취약점」 count only findings a complete
 final scan no longer reports (a change whose finding is still reported shows 「-」).
-When the candidate build fails after versions were raised and the baseline build passed, the build fix loop runs on the
-candidate (`remediation.fix_loop`, default true; `remediation.fix_loop_max_iterations`, 10, 1–50): it may change
-existing source files only, never a `pom.xml`, and creates or deletes no file; it uses no stored script and records
-nothing in the KB (its journal and logs: `remediation/rounds/<r>/fixloop/`). Fixed → a confirming build
-(`rounds/<r>/build-fixed.log`), the round is committed, the diff is `rounds/<r>/fix.patch` (downloadable as `fix.patch`),
-the report has 「빌드 오류 수정」 and the page the chip 「소스 <n>개 수정」; journal `remediation_fix_loop`
-(`phase: start|end`), status field `fix`, `rounds[].fix` in `report.json`. Not fixed → the sources are reset and the
-round ends `candidate_build_failed` as before, the status message ending in ` | automatic build fix: <reason>` and
-the report saying 「빌드 오류 자동 수정을 시도했지만 고치지 못했습니다(<사유>). 소스 수정은 되돌렸습니다.」. No loop when the
-baseline build already failed; an error that needs a pom change (an exclusion, a new artifact) stays unfixed. The loop's
-LLM calls are not in `SBMIG-RESULT … llm=`; the page adds them to the run header. Operator text:
+When the candidate build fails after versions were raised and the baseline build passed, the build fix loop tries to
+fix the source (`remediation.fix_loop`, default true; `remediation.fix_loop_max_iterations`, 10, 1–50;
+`remediation.fix_loop_max_minutes`, 30, 1–240). It runs on a work copy (`remediation/rounds/<r>/fixloop/tree/`, without
+any `.git` path of the upload), never on the candidate: it may change existing source files only — never a pom (also
+one Maven reads under another name), a path with a segment starting with `.`, `mvnw` / shell / batch scripts or a
+jar / war / ear / class / zip file — and creates or deletes no file; it uses no stored script and records nothing in
+the KB (its journal and logs stay in `fixloop/`). Its time is `min(fix_loop_max_minutes, time left − a reserve for the
+confirming build and the delivery)`; with less than a minute it does not start. Fixed → the fixed bytes are kept in
+`fixloop/fixed/`, the state is saved, the graph copies them over the candidate (the only way the loop changes the
+candidate), a confirming build (`rounds/<r>/build-fixed.log`) runs and the round is committed; each fixed round's diff
+is `rounds/<r>/fix.patch`, and `remediation/fix.patch` (downloadable as `fix.patch`) combines every committed fixed
+round; the report has 「빌드 오류 수정」 and the page the chip 「소스 <n>개 수정」; journal `remediation_fix_loop`
+(`phase: start|end|not_started`), status field `fix`, `rounds[].fix` in `report.json`. A first build failure that a
+second build passes without a change is recorded as such (no fix). Not fixed → the candidate was never touched and the
+round ends `candidate_build_failed` as before, the status message ending in ` | automatic build fix: <reason>` (or
+` | automatic build fix not started: <reason>`) and the report saying 「빌드 오류 자동 수정을 시도했지만 고치지
+못했습니다(<사유>). 소스 수정은 되돌렸습니다.」 (not started: 「빌드 오류 자동 수정은 시작하지 않았습니다(<사유>).」). A
+stop during the confirming build keeps the fix: the run halts `STOPPED` and a resume confirms it again. A fix is
+discarded (record line, LLM calls still counted) when its confirming build fails, when the round's candidate is remade
+after an ineffective override entry was dropped, or when it no longer fits the candidate on resume; a loop the pod was
+killed in is kept as `rounds/<r>/fixloop-interrupted-<n>/` and its LLM calls are counted. After every candidate build
+the candidate is brought back to the files the remediation left (`accepted/` + the applied poms in `rounds/<r>/applied/`
++ a reported fix): files a build removed or rewrote (a formatter, sortpom) never reach a delivery; the record says
+「빌드가 바꾼 파일 <n>개는 결과에 넣지 않고 원래대로 두었습니다.」, journal `build_side_changes`. No loop when the baseline
+build already failed; an error that needs a pom change (an exclusion, a new artifact) stays unfixed; a project whose
+build needs its own `.git` (git-commit-id) cannot build in the work copy, so its loop ends not fixed. The loop's LLM
+calls count in `SBMIG-RESULT … llm=`, in `GET /api/runs/{id}` (`llm_calls`, of which `remediation_llm_calls`) and on
+the admin page (「조치 N회 포함」); the migration's `report.json` usage does not hold them. Operator text:
 `deploy/README.md` §6; flow, states, API and diagnosis: `agent-doc/11-remediations.md`; `sbmig remediation-resume
 --run-dir <dir>` resumes outside Kubernetes.
 

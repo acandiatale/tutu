@@ -1,26 +1,26 @@
 # 사내 프레임워크 프로젝트 (범위 `jdk-jakarta`)
 
-> 다루는 것: 사내 프레임워크 프로젝트를 찾는 법, 그 실행이 하는 일과 하지 않는 일, 켜는 법, 이름, 결과 줄·보고서·화면, 진단, 수정 루프, 취약점 조치, 고칠 자리.
+> 다루는 것: 사내 프레임워크 프로젝트를 찾는 법, 그 실행이 하는 일과 하지 않는 일, 켜는 법, 이름, 결과 줄·보고서·화면, 진단, 수정 루프를 켰을 때, 취약점 조치, 고칠 자리.
 > 언제 읽나: 결과 줄에 `scope=jdk-jakarta`가 있을 때, 프레임워크 프로젝트의 빌드·변환이 실패했을 때, 이름이 틀릴 때, 범위 판정이 틀렸을 때, 이 규칙을 바꾸기 전에.
 > 함께 읽을 파일: [00](00-what-sbmig-is.md), [02](02-flow-and-nodes.md), [03](03-run-debug-and-logs.md), [04](04-cases-scripts-kb.md), [07](07-config-and-knowledge.md), [12](12-remediation-report.md)
 
 ## 1. 규칙
 
 사내 프레임워크 아티팩트(`framework.artifacts`)를 의존성으로 가진 프로젝트는 회사 레이아웃과 Spring Boot 4로 옮기지 않는다.
-JDK 21과 javax에서 jakarta로의 변환만 하고 빌드한 뒤 변환한 트리를 내려준다. 빌드 오류는 수정 루프가 고친다(`framework.fix_loop: true`,
-기본, 5절). 부모 pom과 프레임워크 선언·버전은 건드리지 않는다. 취약점 조치는 빌드가
+JDK 21과 javax에서 jakarta로의 변환만 하고, 빌드를 한 번 해서 결과를 알리고, 변환한 트리를 내려준다. 빌드 오류는 고치지 않는다.
+사내 프레임워크와 사내 라이브러리가 얽힌 오류는 LLM이 풀기 어렵고 담당자가 손대야 하는 경우가 많기 때문이다. 취약점 조치는 빌드가
 통과해도 실패해도 이어서 돈다(오픈소스 라이브러리 검사라서. `remediation.after_failed_build`, 8절). 이 범위를 `jdk-jakarta`라고 부른다.
 
 | 하는 일 | 하지 않는 일 |
 |---|---|
 | OpenRewrite 1회: `framework.recipe_sets`의 세트(기본 `jdk21`, Java EE javax를 쓰면 `jakarta`) | 재구성(회사 부모, 모듈 분할, 필수·선택 아티팩트, 버전 정리) |
 | JSP·태그 파일의 javax 이름을 jakarta로(`transform.jsp_jakarta`) | 구조 검토(LLM 검토) |
-| 빌드(`verify.build`)와 수정 루프(사전 시도, 저장된 스크립트, LLM), 남은 오류를 보고서에 알림 | 회사 부모 맞추기 사전 시도(`sbmig-parent`), 프레임워크·`<parent>`를 바꾸는 시도(되돌림) |
+| 빌드 1회(`verify.build`), 남은 오류를 보고서에 알림 | 빌드 오류 수정: 사전 시도, 저장된 스크립트, LLM 호출 모두 없음(`framework.fix_loop: false`, 기본) |
 | 레시피 전 MS949·EUC-KR 소스의 인코딩 선언, 레시피 뒤 as-is `provided` scope 되돌리기 | `framework.recipe_sets`에 없는 레시피 세트(Spring Framework 7, Security, Boot 4 등) |
 | 이어지는 취약점 조치, 빌드가 실패해도([11](11-remediations.md)) | 회사 부모·필수·선택 아티팩트 추가, 부모 pom 변경, 프레임워크 버전 변경 |
 
-`framework.fix_loop: false`면 변환만 한다: 빌드 1회, 사전 시도·저장된 스크립트·LLM 호출 없음, 변환 뒤에는 pom과 소스에 아무것도 쓰지 않는다.
-빌드 게이트는 어느 쪽이든 그대로다. 이 실행이 어느 쪽이었는지는 `FrameworkUse.fix_loop`에 남는다.
+변환이 끝난 뒤에는 pom과 소스 파일에 아무것도 쓰지 않는다. 빌드 게이트는 그대로다: 빌드는 반드시 하고 결과와 남은 오류를 보고한다.
+`framework.fix_loop: true`이면 빌드 오류를 수정 루프로 고친다(5절). 이 실행이 어느 쪽이었는지는 `FrameworkUse.fix_loop`에 남는다.
 
 프로젝트는 자기 부모 pom, 모듈 구조, Spring·Spring Boot 라인, 프레임워크 아티팩트의 버전을 그대로 가진다. 한 실행의 범위는
 하나다. MSA에서 서비스 하나만 프레임워크를 써도 실행 전체가 `jdk-jakarta`로 돈다.
@@ -41,7 +41,7 @@ framework:
 | `framework.scope` | `jdk-jakarta` | `jdk-jakarta`는 위의 줄인 실행, `full`은 찾은 사실만 보고서에 적고 전체 이관을 한다 |
 | `framework.transitive` | `apply` | 다른 라이브러리가 가져올 때만 있는 경우. `apply`는 직접 선언과 같게, `note`는 보고서에만 적고 전체 이관, `off`는 찾지 않는다(Maven 1회 절약) |
 | `framework.name` | `""` | 화면과 보고서에 보일 프레임워크 이름. 비우면 아티팩트 이름에서 만든다(아래) |
-| `framework.fix_loop` | `true` | `true`는 수정 루프로 빌드 오류를 고친다(5절). `false`는 변환 뒤 빌드 1회, 오류는 보고만 한다 |
+| `framework.fix_loop` | `false` | `false`는 변환 뒤 빌드 1회, 오류는 보고만 한다. `true`는 수정 루프로 빌드 오류를 고친다(5절) |
 | `framework.recipe_sets` | `[jdk21, jakarta]` | 줄인 실행이 돌릴 `openrewrite.recipes`의 세트 이름. 모르는 이름은 설정 오류다. `jakarta`는 유형 규칙을 그대로 따르고(`pure_java`·`unknown`은 Java EE javax import가 있을 때만), `servlet_jakarta_10`은 `jakarta` 세트와 함께일 때만 돈다 |
 | `remediation.inhouse_groups` | `[mandatory, optional, parents, framework]` | 취약점 조치에서 사내 몫으로 볼 그룹. `framework`가 위 패턴이다(8절) |
 
@@ -54,7 +54,7 @@ framework:
 `starter`, `parent`, `bom`, `boot`, `common`, `base`, `api`를 떼고 첫 글자를 대문자로 바꾼다. 예: `example-fw-core` → `Example`.
 만들 수 없으면 이름 없이 "사내 프레임워크"로 적는다. 회사 할 일: 만든 이름이 맞으면 할 것이 없다. 틀리면 회사 `config/artifacts.yml`의
 `framework:` 아래에 `name` 한 줄을 넣고 이미지를 다시 빌드한다(파일이 이미지에 들어 있다). 실제 이름은 회사 이름이라 이 저장소에 적지 않는다.
-`framework.fix_loop: false`는 변환만 하고 오류는 담당자에게 넘기기로 정했을 때 쓴다.
+`framework.fix_loop`는 회사가 프레임워크 프로젝트의 빌드 오류도 자동으로 고치기로 정했을 때만 `true`로 바꾼다.
 
 서블릿 API의 높이는 회사가 정할 스위치다. 기본 `jakarta` 세트는 서블릿 API를 Jakarta EE 9 기준(서블릿 5.0)으로 올린다. Tomcat 10.1 이상에서
 돌릴 프로젝트면 `framework.recipe_sets`에 `servlet_jakarta_10`을 더한다(Servlet 6에서 없어진 API 정리).
@@ -91,9 +91,8 @@ profile·속성 선언)는 `direct`로 적고, 더 깊은 노드는 `transitive`
 - 분석: 찾으면 플래그 `framework-project`(attn 코드 아님), 저널 `framework_project`(`name`, `fix_loop` 포함), INFO 줄 하나, 인수인계 줄 하나(ADF·속 빈 reactor 줄 다음).
   못 찾으면 저널 `framework_check`만 남긴다. `profile.json`의 `framework`에 근거가 저장된다.
   못 찾았는데 `unchecked`에 `parent: …`와 `transitive: …`가 둘 다 있으면(부모 pom도 의존성 트리도 읽지 못함) 판단을 못 한 것이다: 플래그
-  `framework-unchecked`(attn 코드 아님, 종료 코드 그대로), WARNING `분석: 사내 프레임워크 여부를 확인하지 못함 (…)`, 인수인계 줄 "framework check could not run
-  (the parent pom and the dependency tree could not be read): if this project uses the in-house framework it must not be migrated in full — confirm
-  before using the result"(ko 보고서는 「사내 프레임워크를 쓰는 프로젝트인지 확인하지 못했습니다 …」). 실행은 전체 범위로 계속한다.
+  `framework-unchecked`(attn 코드 아님, 종료 코드 그대로), WARNING `분석: 사내 프레임워크 여부를 확인하지 못함 (…)`, 인수인계 줄 "framework check could not run …"
+  (ko 「사내 프레임워크를 쓰는 프로젝트인지 확인하지 못했습니다 …」). 실행은 전체 범위로 계속한다.
 - 계획(`sbmig/plan/planner.py`): `MigrationPlan.scope`가 `jdk-jakarta`이고 레시피는 `framework.recipe_sets`의 세트만이다. 단계는 `transform.rewrite[@서비스]`, (JSP가 있고 jakarta 세트를
   계획했고 `layout.jsp_jakarta_rename`이 켜져 있으면) `transform.jsp_jakarta`, `verify.build[@서비스]`뿐이다. `restructure.*`,
   `restructure.review`, `transform.compile`은 만들지 않는다. 저널 `plan`에 `scope`, `name`, `fix_loop`가 붙는다. 첫 계획 노트는 `scope: jdk-jakarta — framework project (…)`로 시작한다.
@@ -111,21 +110,21 @@ profile·속성 선언)는 `direct`로 적고, 더 깊은 노드는 `transitive`
 - 커밋 순서: (고친 pom이 있으면) `transform: pom encodings corrected`([07](07-config-and-knowledge.md)), `transform: source encodings written`, `rewrite: transform.rewrite`, `transform: as-is provided scopes restored`,
   `transform: JSP javax → jakarta`. 전체 이관의 순서는 다르다(재구성이 레시피 뒤에 인코딩을 적는다).
 - `transform.jsp_jakarta`: 재구성기를 거치지 않고 JSP 이름 바꾸기만 한다. 커밋 `transform: JSP javax → jakarta`, 저널 `jsp_jakarta`.
-- 빌드(`verify.build`): 실패하면 수정 루프(5절), 그 뒤 최종 빌드. `framework.fix_loop: false`면 단계마다 한 번 빌드하고 사전 시도, 저장된 스크립트, LLM 호출이
+- 빌드(`verify.build`): 단계마다 한 번 빌드한다. 수정 루프가 꺼져 있으면(기본) 사전 시도, 저장된 스크립트, LLM 호출이
   없고 KB에서 가져다 쓰는 것도 없다. 빌드 오류는 그대로 이 실행의 남은 오류가 된다(한국어 안내서의 절 「변환 뒤 남은 빌드 오류」, 6절). 오류 목록 항목은 열린 채로 남고,
   프레임워크 프로젝트의 오류는 여기서 고치지 않는다는 메모가 붙는다. 저널 `verify_loop_skipped {step, target, reason, errors, entries}`.
   빌드가 실패했으면 인수인계 맨 앞쪽(ADF·속 빈 리액터 줄 다음)에 같은 뜻의 한 줄이 들어간다. 계획 단계의 LLM 레시피 조언(`plan.advisor`)도 돌지 않는다.
 - 부모 pom: as-is 부모를 회사 부모로 맞추지 않는다(`openrewrite.unresolvable_asis_parent`를 보지 않음). Maven이 부모 pom을 받지 못하면
-  변환 단계나 수정 루프에서 LLM 없이 중단한다: 플래그 `aborted:parent-not-found`, 차단 사유 `parent_not_found`, 저널 `abort`, 중단 사유
+  변환 단계에서(수정 루프를 켰으면 수정 루프에서도) LLM 없이 중단한다: 플래그 `aborted:parent-not-found`, 차단 사유 `parent_not_found`, 저널 `abort`, 중단 사유
   `Maven cannot resolve the parent pom <g:a:v>; a framework project keeps its own parent pom, so the repository must serve it (settings: …)`.
   부모가 프로젝트 자신의 모듈이면 수정 루프가 다룬다.
 - 성공: 빌드가 성공이면 exit 0이고 취약점 조치가 이어 돈다. 재구성이 없으니 `restructure-failed`도 없다.
 - 실패: 최종 빌드가 실패하면 exit 2이고 `result.zip`은 변환한 트리다. 남은 오류는 프로젝트 담당자와 프레임워크 담당자의 몫이다.
   취약점 조치는 수정 루프를 돌았든 아니든 이어서 돈다(8절). 이관은 실패(exit 2) 그대로다.
 
-## 5. 수정 루프 (`framework.fix_loop: true`, 기본)
+## 5. 수정 루프를 켰을 때 (`framework.fix_loop: true`)
 
-`false`면 이 절의 어느 것도 돌지 않는다. 켜져 있으면 `BuildFixLoop`(`sbmig/loop/fixloop.py`)가 `profile.reduced_scope`를 보고 아래처럼 돈다. 사다리 자체는 [04](04-cases-scripts-kb.md) 그대로다.
+기본값(`false`)에서는 이 절의 어느 것도 돌지 않는다. 켜면 `BuildFixLoop`(`sbmig/loop/fixloop.py`)가 `profile.reduced_scope`를 보고 아래처럼 돈다. 사다리 자체는 [04](04-cases-scripts-kb.md) 그대로다.
 
 - 버전 사실: 프로젝트 자기 부모 체인이 기준이다. as-is 캡처가 "부모 체인" 자리에 들어가고, 회사 부모 체인의 사실과 목표 Boot BOM은
   쓰지 않는다. 순서는 부모가 관리하면 버전 없음, 아니면 as-is 버전, 아니면 허용될 때 저장소의 최신 릴리스.
@@ -145,16 +144,16 @@ profile·속성 선언)는 `direct`로 적고, 더 깊은 노드는 `transitive`
 ## 6. 결과 읽기
 
 사람이 이 실행을 만나는 자리마다 이름을 넣은 문장 `<이름> 프레임워크는 JDK 21, Jakarta만 적용합니다.`가 나온다(이름이 없으면
-`사내 프레임워크 프로젝트는 JDK 21, Jakarta만 적용합니다.`). 덜 받는 줄 모르기 쉬워 눈에 띄게 둔다.
+`사내 프레임워크 프로젝트는 JDK 21, Jakarta만 적용합니다.`), 눈에 띄게.
 
 | 자리 | 줄인 실행에서 보이는 것 |
 |---|---|
-| `SBMIG-RESULT` 줄 | `major=` 뒤, `flow=`·`remediation=` 앞에 ` scope=jdk-jakarta`. 전체 이관에는 이 토큰이 없다. `framework.fix_loop: false`면 `llm=0`, 빌드가 실패하면 `exit=2 build=FAIL`과 함께 `remediation=INCOMPLETE`(이어 돈 조치가 버전을 바꿨을 때) |
+| `SBMIG-RESULT` 줄 | `major=` 뒤, `flow=`·`remediation=` 앞에 ` scope=jdk-jakarta`. 전체 이관에는 이 토큰이 없다. 수정 루프가 꺼져 있으면 이관 몫의 LLM 호출 0(`llm=`에는 조치의 수정 루프 호출만), 빌드가 실패하면 `exit=2 build=FAIL`과 함께 `remediation=INCOMPLETE`(이어 돈 조치가 버전을 바꿨을 때) |
 | 변환 실패(`rewrite-failed`) | 빌드가 통과해도 성공이 아니다: `exit=2 build=ok … attn=rewrite-failed`, 머리 표 「❌ 변환 실패 (빌드는 통과)」, 프레임워크 절은 변환을 한 일에서 뺀다. 조치는 그래도 이어진다([00](00-what-sbmig-is.md)) |
 | `report.md` 머리 표 | 한국어 안내서는 `SBMIG-RESULT` 줄의 `scope=jdk-jakarta`. en 보고서는 `Scope` 줄 "JDK 21 and jakarta only (in-house framework project)" |
 | `report.md` 머리 표 바로 아래 | 절 `## <이름> 프레임워크 프로젝트`(이름이 없으면 `## 사내 프레임워크 프로젝트`). 첫 줄이 위 문장(굵게), 이어서 근거마다 한 줄(직접 선언, 부모 pom에서 상속, jar 파일로 포함, 다른 라이브러리를 통해 들어옴), 한 일(JDK 21, Jakarta 변환, 빌드, 수정 루프가 켜져 있으면 빌드 오류 수정, 조치가 돌았으면 취약점 조치), 하지 않은 일(구조 정리, 구조 검토, 꺼져 있으면 빌드 오류 자동 수정. 부모 pom과 프레임워크 버전은 그대로), "확인하지 못한 곳". en 보고서는 `## <Name> framework project`, 첫 줄 "**<Name> framework projects get JDK 21 and Jakarta only.**" |
 | 「변환 뒤 남은 빌드 오류」 | 수정 루프가 꺼진 실행의 빌드가 실패하면 ko 안내서는 「해결하지 못한 오류」 대신 `## 변환 뒤 남은 빌드 오류 — N건`(`NO_FIX_TITLE`): 자동으로 고치지 않았고 프로젝트·프레임워크 담당자가 고칠 오류라는 앞 문장, 「확인해 주세요」 첫 줄이 이 절을 가리킨다. en 보고서는 "Error list"의 열린 항목(메모 `not tried: framework project — …`) |
-| 변환 단계의 pom 정정 | pom 인코딩, 소스 인코딩, scope 정정은 빌드 오류가 아니다. 한국어 안내서는 「코드 수정 내역」의 자동 변환에 "sbmig가 변환 단계에서 직접 고친 pom" 으로 적는다. `errors.md` 에서는 `seen` `transform` 항목이다(en 보고서: Error list의 "transform — pom corrections by sbmig, verified by the next build", Handover의 `pom corrections by sbmig`). 고친 시도가 없었던 버전 행의 비고는 "OpenRewrite 레시피"(en: `recipe`)다 |
+| 변환 단계의 pom 정정 | pom 인코딩, 소스 인코딩, scope 정정은 빌드 오류가 아니다. 한국어 안내서는 「코드 수정 내역」의 자동 변환에 "sbmig가 변환 단계에서 직접 고친 pom" 으로 적는다. `errors.md` 에서는 `seen` `transform` 항목이다(en: Error list의 "transform — pom corrections by sbmig, …", Handover의 `pom corrections by sbmig`). 고친 시도가 없었던 버전 행의 비고는 "OpenRewrite 레시피"(en: `recipe`)다 |
 | 찾았지만 전체 이관 | 절 제목이 `## 사내 프레임워크`, 설정(`framework.scope: full` 또는 `framework.transitive: note`)에 따라 전체 이관했다는 한 줄 |
 | 「확인해 주세요」(인수인계) | 사내 프레임워크 프로젝트라는 줄(근거, JDK 21과 jakarta만, 재구성·구조 검토 없음, 부모 pom·프레임워크 버전 유지). 수정 루프가 꺼져 있으면 빌드 오류를 고치지 않았다는 한 줄이 더 붙는다 |
 | 웹 화면 | 실행 카드(저널이 알리는 즉시)와 결과 카드에 강조한 안내 상자: 위 문장을 굵게, 그 아래 하지 않는 일. 단계 줄의 재구성·구조 검토는 점선 원과 `하지 않음`으로 보인다(저널 `framework_project`나 `plan`의 `scope`를 받으면 켜짐). 서버 기본 설정에 `framework.artifacts`가 있고 `framework.scope`가 `jdk-jakarta`면 올리기 카드에도 늘 보인다. `remediation.after_migration`이 켜져 있고 `remediation.after_failed_build`가 `framework`면(수정 루프 설정과 무관) 안내에 「취약점 조치는 빌드 결과와 관계없이 이어서 합니다.」가 붙는다. 조치 표시는 8절 |
@@ -172,17 +171,17 @@ profile·속성 선언)는 `direct`로 적고, 더 깊은 노드는 `transitive`
 
 | 증상 | 볼 곳과 원인 |
 |---|---|
-| `scope=jdk-jakarta`이고 exit 2, `build=FAIL` | 수정 루프가 다 고치지 못했다: 「해결하지 못한 오류」와 `errors.md`의 시도를 본다(차단 사유, `framework_guard`). 루프가 꺼진 실행이면(`llm=0`, 저널 `verify_loop_skipped`) 고치지 않고 보고한 것이고 「변환 뒤 남은 빌드 오류」가 담당자에게 넘길 목록이다. 어느 쪽이든 `result.zip`은 변환한 트리, 이어 돈 조치의 `INCOMPLETE`(`baseline_build_failed`, 8절)는 정상이다 |
+| `scope=jdk-jakarta`이고 exit 2, `build=FAIL` | 기본(루프 꺼짐, 저널 `verify_loop_skipped`)이면 정상이다: 고치지 않고 보고했고 「변환 뒤 남은 빌드 오류」가 담당자에게 넘길 목록이다. 루프를 켠 실행이면 「해결하지 못한 오류」와 `errors.md`의 시도를 본다(차단 사유, `framework_guard`). 어느 쪽이든 `result.zip`은 변환한 트리, 이어 돈 조치의 `INCOMPLETE`(`baseline_build_failed`, 8절)는 정상이다 |
 | 화면·보고서의 프레임워크 이름이 틀리거나 "사내 프레임워크"로만 나온다 | 저널 `framework_project`의 `name`. 만든 이름이 틀리면 회사 yml에 `framework.name`을 적는다. 비어 있으면 아티팩트 이름에서 만들 수 없었다(패턴이 모두 `*`를 쓰는 등) |
-| 프레임워크 프로젝트인데 LLM이 불리지 않아야 한다 | 회사 yml에 `framework.fix_loop: false`. 저널 `framework_project`·`plan`의 `fix_loop`가 그 실행의 값이다 |
+| 프레임워크 프로젝트인데 LLM이 불렸다 | 저널 `framework_project`·`plan`의 `fix_loop`가 `true`면 설정(`framework.fix_loop`)이 켜져 있다. 아니면 이어 돈 조치의 수정 루프다([11](11-remediations.md) 2절) |
 | 플래그 `framework-unchecked` | 부모 pom과 `dependency:tree`를 둘 다 읽지 못해 판단하지 못했다. 저널 `framework_check`의 `unchecked`와 `effective_depmgmt`, `deptree-*.txt`를 본다. 사내 프레임워크를 쓰는 프로젝트면 결과를 쓰지 말고, 저장소·settings를 고쳐 다시 돌린다 |
 | 프레임워크 프로젝트인데 전체 이관이 돌았다 | `framework_check`가 있으면 못 찾은 것이다. `unchecked`에 `parent: no as-is effective pom`이면 부모 pom 상속을 확인하지 못했다(접수의 캡처 실패, 저널 `effective_depmgmt`). `transitive: …`면 `dependency:tree` 실패. 아무것도 없으면 패턴이 실제 groupId·artifactId와 다르다(대소문자, `groupId:` 부분). `framework_project`인데 `scope: full`이면 `reason`이 설정 때문이라고 말한다 |
-| 프레임워크가 아닌데 줄인 실행이 돌았다 | `framework_project.evidence`의 `source`와 `where`. artifactId만 쓴 패턴은 다른 groupId의 같은 이름에도 맞는다 |
-| BLOCKED `external_javax_api`, 제안에 프레임워크 이름 | 프레임워크 아티팩트(또는 그것이 가져오는 라이브러리)가 아직 javax 기준이다. 프로젝트에서 고칠 수 없고 프레임워크 담당자가 jakarta 빌드를 내야 한다. LLM 호출 없음이 정상이다 |
+| 프레임워크가 아닌데 줄인 실행이 돌았다 | `framework_project.evidence`의 `source`와 `where`. artifactId만 쓴 패턴은 groupId를 가리지 않는다 |
+| (루프를 켰을 때) BLOCKED `external_javax_api`, 제안에 프레임워크 이름 | 프레임워크 아티팩트(또는 그것이 가져오는 라이브러리)가 아직 javax 기준이다. 프로젝트에서 고칠 수 없고 프레임워크 담당자가 jakarta 빌드를 내야 한다. LLM 호출 없음이 정상이다 |
 | exit 3, `aborted:parent-not-found` | 저장소가 프로젝트의 부모 pom을 주지 않는다. settings·미러를 고치거나 부모 pom을 Nexus에 올린 뒤 다시 돌린다 |
 | `unmappable character for encoding UTF8` | 저널 `source_encodings`와 인수인계의 인코딩 줄. 부모가 다른 값을 정했거나 소스가 섞였거나 스위치가 꺼져 있다 |
 | 서블릿 API가 WAR에 들어갔다 | 저널 `scopes_restored`가 없으면 `layout.legacy_context.restore_asis_scopes`가 꺼져 있거나 as-is가 `provided`가 아니었다 |
-| 시도가 계속 되돌려진다 | 저널 `framework_guard`의 `reason`. LLM이 프레임워크 선언, 그 버전을 정하는 속성(루트 pom의 것 포함), `<parent>`를 건드렸다 |
+| (루프를 켰을 때) 시도가 계속 되돌려진다 | 저널 `framework_guard`의 `reason`. LLM이 프레임워크 선언, 그 버전을 정하는 속성(루트 pom의 것 포함), `<parent>`를 건드렸다 |
 
 간접 검사 비용: 앞의 세 곳에서 못 찾은 모든 프로젝트가 분석 단계에서 `dependency:tree`를 한 번 더 돈다. 문제면 `framework.transitive: off`.
 

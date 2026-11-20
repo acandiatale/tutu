@@ -107,14 +107,14 @@
 
 LLM 이 적용한 시도도 커밋 전에 `_fill_versions` 가 버전 없는 의존성을 같은 순서로 채운다(LLM 은 버전을 모르면 `null` 로 둔다).
 
-사내 프레임워크 프로젝트(범위 `jdk-jakarta`, `framework.fix_loop: true` 기본)도 수정 루프를 돈다(`false`면 빌드 1회, 사전 시도·재사용·LLM·KB 기록
-없음). "새 부모 체인" 자리에 프로젝트 자기 부모 체인(as-is 캡처)이 들어가고 목표 Boot BOM은 쓰지 않는다.
+사내 프레임워크 프로젝트(범위 `jdk-jakarta`)는 기본(`framework.fix_loop: false`)으로 수정 루프를 돌지 않는다(빌드 1회, 사전 시도·재사용·LLM
+없음). 아래는 `true`일 때다. "새 부모 체인" 자리에 프로젝트 자기 부모 체인(as-is 캡처)이 들어가고 목표 Boot BOM은 쓰지 않는다.
 프레임워크 아티팩트는 보호 키라서 사전 시도가 버전을 박거나 바꾸지 않고, `sbmig-parent`는 돌지 않는다. LLM 시도가 프레임워크 선언이나
 `<parent>`를 바꾸면 커밋 전에 되돌린다(저널 `framework_guard`). 프레임워크 자신이 javax 기준이면 LLM 없이 `external_javax_api`로 차단한다.
-자세한 것은 [13-framework-projects.md](13-framework-projects.md) 5절.
+자세히는 [13](13-framework-projects.md) 5절.
 
-취약점 조치도 깨진 후보 빌드에 이 루프를 쓴다([11](11-remediations.md) 2절): `NullKnowledgeBase`(재사용·기록 없음), `edit_guard`가
-시도마다(사전 시도 포함) `pom.xml`·목록 밖 경로·삭제를 거절한다(`_edit_guard_rejected`, 저널 `edit_guard`).
+취약점 조치도 깨진 후보 빌드에 이 루프를 쓴다([11](11-remediations.md) 2절): 작업 복사본에서, `NullKnowledgeBase`(재사용·기록 없음), `edit_guard`가
+시도마다(사전 시도 포함) 금지 경로·목록 밖 경로·삭제를 거절한다(`_edit_guard_rejected`, 저널 `edit_guard`).
 
 **범위와 KB 실적**: 저장 버전은 만든 실행의 범위(`CaseScript.scope`), 실행 기록은 그 실행의 범위(`ScriptRun.scope`)를 남긴다(빈 값 = 범위를
 기록하기 전 = `full`). 성공·실패 수, `last_failure`, proven 판정은 버전 자기 범위의 실행만 센다. 범위를 줄인 실행이 재사용한 `full` 버전을
@@ -177,7 +177,7 @@ KB 는 파일뿐이다(DB 금지). 위치 `kb.dir`(기본 `kb-v2`). 원본은 `e
 | `kb-v2/cases/<case_id>/case.json` | `CaseInfo`: `case_id`, `l2`, `name`, `kind`, `projects`, `seen`, `resolved`, `scripts[]`, `last_analysis`, `last_solution`, `updated_at`, `sig`, `aliases`(재서명으로 이 케이스에 합쳐진 옛 ID) + 모델 밖 키 `pin`(`block[:<reason>]`), `last_result`. 모르는 필드는 최상위든 `scripts[]` · `runs[]` 안이든 다시 저장해도 남는다(옛 이미지가 새 필드를 지우지 않게) |
 | `kb-v2/cases/<case_id>/fix_v<N>.py` | 저장 스크립트(같은 코드는 한 번만) |
 | `kb-v2/cases/<case_id>/errors/<run id>-<entry id>.json` | 오류 한 건씩 읽기 쉬운 JSON(`errors.json_files`); 케이스 없는 항목은 `cases/_other/` |
-| `kb-v2/.lock` | 프로세스 간 쓰기 잠금(웹·플릿·`sbmig kb`·동시에 도는 빌드 파드가 공유, `kb.lock_timeout_seconds`). 옆에 잠깐 생기는 `.lock.probe.*`(파일 시스템 시계 재기), `.lock.breaker`(낡은 잠금을 깨는 차례)와 케이스 폴더의 `.fix.*.tmp` 는 임시 파일이다. 0 이하의 `kb.lock_timeout_seconds` 는 300 으로 읽는다 |
+| `kb-v2/.lock` | 프로세스 간 쓰기 잠금(웹·플릿·`sbmig kb`·빌드 파드가 공유, `kb.lock_timeout_seconds`). 옆에 잠깐 생기는 `.lock.probe.*`(파일 시스템 시계 재기), `.lock.breaker`(낡은 잠금을 깨는 차례)와 케이스 폴더의 `.fix.*.tmp` 는 임시 파일이다. 0 이하의 `kb.lock_timeout_seconds` 는 300 으로 읽는다 |
 | `kb-v2/kb.json` | `{"sig": <규칙 버전>, "skipped": {…}}` — 이 KB 가 어느 규칙까지 재서명됐는지, 건너뛴 케이스와 이유. 재서명 도중에만 `resign-pending.json` 이 옆에 생긴다 |
 | `kb-v2/libraries.yml`, `kb-v2/jar_names.yml` | 사람이 더하는 라이브러리 표 / jar 이름 표(`libraries.company_file`, `intake.company_jar_names_file`) |
 

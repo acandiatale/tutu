@@ -23,7 +23,7 @@ intake ─► analyze ─► plan ─► transform ─► restructure ─► str
 | transform | first the poms whose bytes do not match their XML declaration are made consistent (`layout.legacy_context.correct_pom_encoding`, `sbmig/restructure/pom_charset.py`: strict EUC-KR bytes → declaration `EUC-KR`, else saved as UTF-8; commit `transform: pom encodings corrected`, journal `pom_encodings`, flag `pom-encoding-corrected`; OpenRewrite cannot parse such a pom), then one OpenRewrite run of every planned recipe on the as-is classpath, no build (`sbmig/rewrite/runner.py`) | never (the build shows what is left); a failed recipe run is said: flag `rewrite-failed` (first attention code), journal `rewrite_failed`, the first hand-over line (`sbmig/rewrite/failure.py`) |
 | restructure | the company layout and every pom cleanup, no LLM (§8) | never; a failed step resets the tree to the commit before it (journal `restructure_reset`), flags `restructure-failed` and the run is not a success |
 | structure review | one LLM call checks the restructured poms against the company rules; critical findings are fixed by edits, warnings go to the report (`sbmig/review/reviewer.py`). An unreadable answer (only a fragment of the JSON decodes, or cut at the token limit) gets the one retry with a request for a shorter answer; two unreadable answers = verdict `failed` | never |
-| verify | `mvn clean package -Dmaven.test.skip=true`; on failure the script fix loop (§3), then the final build again (MSA: `report.final_build` is the first failing final build). A framework project gets the same loop with its version facts from its own parent chain and the framework guard (`framework.fix_loop: true`, default); with `false` it builds once and fixes nothing (no pre-try, stored script or LLM call; its errors are reported) | a stop request (§7.7) |
+| verify | `mvn clean package -Dmaven.test.skip=true`; on failure the script fix loop (§3), then the final build again (MSA: `report.final_build` is the first failing final build). A framework project builds once and fixes nothing (no pre-try, stored script or LLM call; its errors are reported) with the default `framework.fix_loop: false`; with `true` it gets the same loop with its version facts from its own parent chain and the framework guard | a stop request (§7.7) |
 | finalize | success verdict, advisories verified on the final tree, Handover, error list, KB records, code changes (`sbmig/report/changes.py`), `report.md` / `report.json`, then `changes.patch` / `result.zip` and the code-change record `codediff/` (`sbmig/report/codediff.py`: only paths the last commit has; none for a run that changed no file, journal `code_diff_skipped`) | – |
 | remediation | only when `remediation.after_migration` is on and the final build succeeded — or, with `remediation.after_failed_build: framework` (default), a framework project whose final build was attempted and failed (with or without the fix loop): the vulnerability-remediation graph (§11) | – |
 
@@ -302,8 +302,9 @@ also written here.
 * `report.json` — the serialized `RunReport` (`sbmig/core/models.py`), always English.
 * `errors.jsonl` / `errors.md` — every error of the run with every try (cause, solution, diff); `errors.jsonl` is appended to
   `<kb>/errors.jsonl` at the end.
-* One ASCII line `SBMIG-RESULT run=… exit=… build=… unresolved=… blocked=… llm=… attn=… review=…` (`sbmig/report/result_line.py`);
-  exit 0 success, 2 finished with blocked / unresolved / attention, 3 aborted.
+* One ASCII line `SBMIG-RESULT run=… exit=… build=… unresolved=… blocked=… llm=… attn=… review=…` (`sbmig/report/result_line.py`;
+  `llm=` adds the remediation's fix-loop calls to the migration's); exit 0 success, 2 finished with blocked / unresolved /
+  attention, 3 aborted.
 
 ## 10. Web app and Job mode
 
@@ -324,7 +325,10 @@ before the body is read. `RunManager` (`sbmig/web/runs.py`) has three modes (`SB
 
 Every upload carries a project name and its run flow (`POST /api/runs?name=<file>&project=<project>&flow=full|remediation`,
 the page's 프로젝트명 field and 전체 진행 / 취약점 해결 choice): the flow is pinned in `request.json`, passed to the Job as
-`SBMIG_FLOW`, same queue and slots. The project name must match `runs.PROJECT_RE` (`^[A-Za-z0-9][A-Za-z0-9_-]{0,29}$`), checked
+`SBMIG_FLOW`, same queue and slots. The page previews the two reports separately (「마이그레이션 보고서 미리보기」, and
+「조치 결과 보고서 미리보기」 = `remediation/report.md` inside the remediation block) and shows neither 고급 설정 nor a list of
+other run files (the admin page serves logs). A remediation-only run's report titles carry the entered project name
+(`contract.display_project`, display only). The project name must match `runs.PROJECT_RE` (`^[A-Za-z0-9][A-Za-z0-9_-]{0,29}$`), checked
 before the body is read (400 otherwise; rule and sentences in `deploy/README.md` §2), and is kept in `control/request.json`,
 `web-status.json` and the journal's `web_run`. A run directory is named `<project>-YYYYmmdd-HHMMSS-<6 hex>`; `job_name` cuts the
 front of a long id and keeps the timestamp tail (also for `…-rem<attempt>`). Older folders (`run-…`, `web-…`, file-name slugs) keep working.
@@ -367,10 +371,17 @@ ordinary remediation when it changed nothing or the candidate build passed), or 
 pod serves status and files under `/api/remediations/…`, and resumes a stopped remediation in a new build pod. Every
 proposal of a plan is applied without asking anybody, so a chained remediation normally ends in the build pod that ran the migration.
 When a round's candidate build fails after versions were raised and the baseline build passed, the migration's
-`BuildFixLoop` runs on the candidate (`sbmig/remediations/fixer.py`, `remediation.fix_loop`, default true) under an
-`edit_guard`: existing source files only, no `pom.xml`, no file created or deleted, no stored script, nothing learned
-into the KB. Fixed → confirming build, verify, commit, `rounds/<r>/fix.patch`; not fixed → the sources are reset and
-the round fails `candidate_build_failed` as before.
+`BuildFixLoop` runs on a work copy of the candidate (`sbmig/remediations/fixer.py`, `remediation.fix_loop`, default true;
+time `min(fix_loop_max_minutes, time left − reserve)`) under an `edit_guard`: existing editable source files only (no
+pom, no dot path, no script or archive), no file created or deleted, no stored script, nothing learned into the KB.
+Changed files are found by comparing bytes; the fixed bytes go to `rounds/<r>/fixloop/fixed/`, the state is saved, and
+the graph overlays them on the candidate (the only way the loop changes it), then confirming build, verify, commit,
+`rounds/<r>/fix.patch` (all committed fixed rounds combined in `remediation/fix.patch`); not fixed → the candidate is
+untouched and the round fails `candidate_build_failed` as before. After every candidate build `intake.sync_tree`
+brings the candidate back to `accepted/` + the applied poms (`rounds/<r>/applied/`) + the reported fix, so nothing a
+build changed reaches a delivery unreported (`RoundState.build_changed`). A stop keeps a fix; a killed loop is kept as
+`fixloop-interrupted-<n>/` with its LLM usage counted (`fixer.fix_usage`, read by the result line, the run status and
+the admin page).
 The planner keeps a wrong version out and leaves a residual for a person instead: a version property several artifacts share
 (target missing for one of them), a jump to another major no scanner hint names, a date-stamped current version (first number
 over 9999), a current version that already meets every hint, a declaration only inside a profile not active by default, a g:a

@@ -715,8 +715,8 @@ review", fix attempts as `script:<case>:v<N>`; `ko`, the company setting: the re
   하고 파일을 내려주도록 하자. llm이 이걸 해결해주기 쉽지 않을거 같아. 사내 라이브러리쪽도 개입이 많으니까!", "<이름> 프레임워크라도
   명시 할 수 있어? 사람들이 모를거 같아서. 이거 좀 강조를 해야 할 것 같아서", and "취약점은 빌드가 실패해도 이어가도록! 어차피
   오픈소스 라이브러리 검사라!". This replaced the fix-loop decision of the bullet above (everything there about the fix
-  loop applies only with `framework.fix_loop: true`); **the default went back to `true` on 2026-11-20 (v2.1z-bi, below)**,
-  so conversion-only is now the `false` setting. A reduced run = conversion + ONE build: `Orchestrator.no_fix_loop`
+  loop applies only with `framework.fix_loop: true`); the default was `true` for a few hours on 2026-11-20 (v2.1z-bi) and
+  is **`false` again** (same day, below), so conversion-only is the default. A reduced run = conversion + ONE build: `Orchestrator.no_fix_loop`
   gates `_verify_fix_loop` and the plan advisor (no pre-try, stored script, LLM; `llm=0` is literal), the entries stay
   open with a note, journal `verify_loop_skipped`, one hand-over line, exit 2 on a failed build, the converted tree is
   delivered. The framework is named everywhere a person meets the run: `framework.name` or
@@ -829,18 +829,39 @@ review", fix attempts as `script:<case>:v<N>`; `ko`, the company setting: the re
   Anything `mvn clean` removes must never be a manifest path. Contract: `docs/INTERFACES.md` "v2.1z-bh".
 - **Build errors are fixed in two more places (2026-11-20, v2.1z-bi)** — the user: "remediation 쪽도 버전 올라갔을때 에러가 나올 수
   있으니 llm 수정기능 붙여달라고 한다. 사내 프레임워크 … 도 llm로 빌드 수정 기능 넣어달래. javax -> jakarta만 변경하는거니까 그정도는
-  해주라는데..". (A) `framework.fix_loop` defaults to `true` (pre-tries without the company parent, stored scripts, LLM;
-  `_framework_guard` as before); `false` is the conversion-only run of v2.1z-aw. A framework run whose final build still
+  해주라는데..". (A) `framework.fix_loop: true` runs the loop on framework projects (pre-tries without the company parent, stored scripts,
+  LLM; `_framework_guard` as before). It was the default for a few hours; the same day the user turned it off again ("사내
+  프레임워크는 … 일단 다시 disable 시키고 진행하자"), so the default is `false` = the conversion-only run of v2.1z-aw. A framework run whose final build still
   fails chains the remediation whether or not the loop ran (`remediation_after_failed_build`, `remediation_always`), and
   the migration report says the remediation followed a build that failed after the automatic fix. (B) The remediation's
-  candidate build failing after versions were raised (baseline passed) runs `BuildFixLoop` on the candidate
+  candidate build failing after versions were raised (baseline passed) runs `BuildFixLoop` on a WORK COPY of the candidate
   (`sbmig/remediations/fixer.py`, `remediation.fix_loop` default true, `fix_loop_max_iterations` 10) through the new
   `edit_guard` hook: existing manifest source files only, no `pom.xml`, nothing created or deleted, `NullKnowledgeBase`.
-  Fixed → confirming build, verify, commit, `rounds/<r>/fix.patch`, report section 「빌드 오류 수정」, page chip; not fixed →
-  sources reset, `candidate_build_failed` with ` | automatic build fix: <reason>`. So the older notes' "no source change"
-  and "the remediation-only flow calls no LLM" no longer hold: the fix loop is the one exception for both. Limits: no pom
-  edits, no loop after a failed baseline, its LLM calls are not in `SBMIG-RESULT llm=` (the page adds them), not run on the
-  company cluster. Contract and as-coded deviations: `docs/INTERFACES.md` "v2.1z-bi".
+  Fixed → the fixed bytes are copied over the candidate, confirming build, verify, commit, `fix.patch`, report section
+  「빌드 오류 수정」, page chip; not fixed → the candidate was never touched, `candidate_build_failed` with
+  ` | automatic build fix: <reason>`. So the older notes' "no source change" and "the remediation-only flow calls no LLM"
+  no longer hold: the fix loop is the one exception for both. Its LLM calls count in `SBMIG-RESULT llm=`, the run status
+  and the admin page (v2.1z-bl). Limits: no pom edits, no loop after a failed baseline, not run on the company cluster.
+  Contract: `docs/INTERFACES.md` "v2.1z-bi", amended by "v2.1z-bj" / "v2.1z-bk" (next note).
+- **Rules of the remediation's fix loop (2026-11-20, v2.1z-bj/bk)** — two review rounds the same day (the user: "아 이거
+  오늘 금요일이라 안급해~ 고칠 수 있는거 꼼꼼히 고치고 가자!"), every finding reproduced first, then a page round ("보고서는
+  migration, remediation 각각 따로 보여질 수 있도록!"). Rules a contributor must not break:
+  - The candidate is changed by the fix loop ONLY through the graph's overlay (`graph._overlay_fix`) of the bytes kept in
+    `rounds/<r>/fixloop/fixed/`. The loop itself (git, scripts, builds, a crash, a kill) runs in the work copy
+    `fixloop/tree/` without any `.git` path of the upload, and changed files are found by comparing bytes, not by git.
+  - After EVERY build of the candidate (`graph._package`) the tree is synchronised (`intake.sync_tree`) with what the
+    remediation decided: `accepted/` + the applied poms in `rounds/<r>/applied/` + the reported fix.
+  - State is saved BEFORE any file is deleted (fixed bytes, patches, folders), and right after the loop returns,
+    before the candidate is touched.
+  - A stop never discards a fix: a stop before or during the confirming build halts STOPPED with the fix kept and a
+    resume confirms again; a killed loop's folder is kept as `fixloop-interrupted-<n>/` and its LLM usage is counted.
+  - Anything `mvn clean` or a build plugin can change (`target/`, a formatter, sortpom) must never reach a delivery
+    unreported: never a manifest path (`intake.build_output_paths`), put back after each build, named in the report.
+  - The two reports are previewed separately on the page (the remediation preview shows exactly
+    `remediation/report.md`); never fold one into the other. The page also no longer shows 고급 설정 or the other run
+    files ("관리자에서 로그 파일들 받을 수 있으니까 그 밖의 파일 영역은 빼달래! 고급설정 영역이 빼줘!").
+  Not checked: the company cluster; a project whose build needs its own `.git` (git-commit-id: the work copy has none, so
+  its loop ends not fixed). Contract and as-coded notes: `docs/INTERFACES.md` "v2.1z-bj", "v2.1z-bk", "v2.1z-bl".
 - **Company convention (2026-10-20): agents run on LangGraph under uvicorn.** `loop.engine: graph` (default) drives
   the phases from a LangGraph `StateGraph` (`sbmig/graph/`, nodes intake → analyze → plan → phase×N → finalize;
   `inline` is the old loop, reports are identical by test); the web UI is FastAPI (`uvicorn sbmig.web.app:app` or

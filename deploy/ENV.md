@@ -120,9 +120,9 @@
 | `SBMIG_REMEDIATION__MODULE_OVERRIDES` | `true` | `false` = 모듈 pom에 버전 지정을 넣는 제안을 만들지 않는다(직접 확인 항목으로 남긴다). 81 틀에도 줄이 있어야 빌드 파드에 닿는다 |
 | `SBMIG_REMEDIATION__FAILED_CANDIDATE` | `include` | 빌드가 실패한 수정본도 `result.zip` 으로 낸다 / `discard` |
 | `SBMIG_REMEDIATION__FILE_COMPONENTS` | `report` | IVAS가 프로젝트 안의 파일(정적 파일 등)에서 찾은 취약점은 보고서에만 싣고 결과 판정에 넣지 않는다. `count` = 직접 확인 항목으로 남기고 판정에 넣는다. 81 틀에도 줄이 있어야 빌드 파드에 닿는다 |
-| `SBMIG_REMEDIATION__AFTER_FAILED_BUILD` | `framework` | 사내 프레임워크 프로젝트는 수정 루프를 돌았든 아니든 빌드가 실패해도 취약점 조치를 이어 돈다. `never` = 빌드가 통과한 실행만 조치한다. 81 틀에도 줄이 있어야 빌드 파드에 닿는다 |
+| `SBMIG_REMEDIATION__AFTER_FAILED_BUILD` | `framework` | 사내 프레임워크 프로젝트(기본은 빌드 오류를 고치지 않는 실행, `framework.fix_loop: true`면 수정 루프를 돈 실행도)는 빌드가 실패해도 취약점 조치를 이어 돈다. `never` = 빌드가 통과한 실행만 조치한다. 81 틀에도 줄이 있어야 빌드 파드에 닿는다 |
 | `SBMIG_REMEDIATION__IVAS_ANALYSIS_TIMEOUT_MINUTES` | `30` | IVAS 분석 한 번의 대기 한도(넘으면 검사 미완료 — 0건이 아니다) |
-| `SBMIG_REMEDIATION__CHAIN_BUDGET_MINUTES` | `90` | 빌드 파드에서 이관에 이어 돈 조치의 시간 한도(분, 0 = 없음). 넘으면 다음 경계에서 `STOPPED` `chain_budget` — 재개하면 새 빌드 파드가 이어 간다. 수정본 빌드 오류의 자동 수정도 남은 시간 안에서만 돈다(1분이 안 남으면 시작하지 않는다) |
+| `SBMIG_REMEDIATION__CHAIN_BUDGET_MINUTES` | `90` | 빌드 파드에서 이관에 이어 돈 조치의 시간 한도(분, 0 = 없음). 넘으면 다음 경계에서 `STOPPED` `chain_budget` — 재개하면 새 빌드 파드가 이어 간다. 수정본 빌드 오류의 자동 수정도 남은 시간에서 확인 빌드 몫을 뺀 시간과 `remediation.fix_loop_max_minutes`(30분) 가운데 짧은 쪽만 돈다(1분이 안 되면 시작하지 않는다) |
 | `SBMIG_REMEDIATION__IGNORE_ACTIONS` | 비어 있음(예 `'["PC","IG"]'`) | 계획에서 뺄 IVAS 조치 구분 코드. 기본은 비어 있음 = 모든 조치 구분을 고칠 대상(기존 사내 구현과 같다). 보안팀 예외(PC 패치 완료, IG 조치 예외)를 빼려면 적는다. 뺀 항목은 보고서 표에 남는다. 바꾸면 열린 제안은 다시 만들어진다 |
 | `SBMIG_REMEDIATION__IVAS_SUMMARY_CHECK` | `exact` | `exact` = IVAS 요약의 components 건수와 라이브러리 취약점 상세 행 수가 같아야 검사 완료(기존 사내 구현의 대조) / `nonzero` = 0 인지 아닌지만 — 실제 건수 뜻이 다르면 바꾼다 |
 
