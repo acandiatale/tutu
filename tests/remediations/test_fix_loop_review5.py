@@ -455,10 +455,12 @@ def test_calls_the_budget_counted_beyond_the_attempts_are_never_priced():
                                               pricing={"build_error_fixer": ModelPrice(input_per_mtok=1.0,
                                                                                        output_per_mtok=10.0)}))
     calls, _i, _o, _m, usage, _cur = _usage([SimpleNamespace(attempts=[att])], 3, cfg)
-    [row] = usage
-    assert calls == 3 and row.tokens_unknown and row.cost is None
+    # v2.1z-bo verification review: the unknown calls are a row of their own; the known row keeps its price
+    known, row = usage
+    assert calls == 3 and row.tokens_unknown and row.cost is None and row.calls == 2
+    assert not known.tokens_unknown and known.cost is not None
     agg = fix_usage({"rounds": [{"round": 1, "fix": FixResult(attempted=True, llm_calls=3, usage=usage).to_dict()}]})
-    assert agg["tokens_unknown"] and agg["by_model"][0]["cost"] is None
+    assert agg["tokens_unknown"] and agg["by_model"][1]["cost"] is None
     # a row with unknown tokens is never priced, whatever cost it carries
     rows = fixer_mod.fix_usage_rows([FixResult(usage=[FixUsage(model="m", calls=2, cost=0.5, tokens_unknown=True)],
                                                currency="USD")])
@@ -487,7 +489,8 @@ def test_the_readers_show_unknown_usage(tmp_path):
     calls = run_llm_calls(rd, report_json)
     assert calls == {"llm_calls": 7, "remediation_llm_calls": 2, "remediation_llm_usage_unknown": True}
     row = run_usage(rd)
-    assert row["cost"] is None and row["usage_partly_unknown"] is True and row["remediation_calls"] == 2
+    # v2.1z-bo verification review: the priced part is still shown as a number, marked partly unknown
+    assert row["cost"] == 0.01 and row["usage_partly_unknown"] is True and row["remediation_calls"] == 2
     page = (Path(__file__).resolve().parents[2] / "sbmig" / "web" / "static" / "admin.html").read_text(encoding="utf-8")
     assert "usage_partly_unknown" in page and "일부 알 수 없음" in page
 
@@ -500,7 +503,7 @@ def test_the_report_and_the_page_digest_say_unknown(tmp_path):
     L: list[str] = []
     report._fix_section(L, st)
     text = "\n".join(L)
-    assert "LLM을 1회 호출했습니다(버린 시도까지 모두 1회). LLM 사용량 일부는 알 수 없습니다." in text
+    assert "LLM을 1회 호출했습니다(버린 시도까지 알려진 것만 1회). LLM 사용량 일부는 알 수 없습니다." in text
     rec: list[str] = []
     report._fix_record_line(rec, st.rounds[0])
     assert any("LLM 호출 수는 알 수 없음" in ln for ln in rec)

@@ -666,7 +666,9 @@ class FixResult(Record):
     into `fixloop/loop.json` before the loop started (tells a recorded loop's folder from a killed one; left out when
     empty). `usage_unknown` (left out when False): the loop's LLM usage could not be read (a killed loop whose journal
     is unreadable, an exception out of the fixer with an unreadable journal), so its zero calls / tokens are not exact;
-    `fixer.fix_usage` reports it as `calls_unknown`."""
+    `fixer.fix_usage` reports it as `calls_unknown`. `ended_round` (left out when False; older JSON reads False): this
+    discarded result ended its round as not fixed (a stored fix the loop had just returned that could not be
+    applied), so the node's next entry does not run the loop again; set only on that path by `graph._discard_fix`."""
     attempted: bool = False
     fixed: bool = False
     iterations: int = 0
@@ -694,9 +696,11 @@ class FixResult(Record):
     loop_id: str = ""
     # 루프의 LLM 사용량을 읽지 못했다. 이때 호출 수와 토큰 수의 0은 정확한 값이 아니다
     usage_unknown: bool = False
+    # 버린 이 결과로 라운드를 고치지 못한 것으로 끝냈다. 다음 진입에서 루프를 다시 실행하지 않는다
+    ended_round: bool = False
     _nested = {"usage": FixUsage}
     _omit_empty = ("usage", "currency", "fixed_dir", "tree_hash", "discarded_changed", "loop_id")
-    _omit_false = ("retry_passed", "usage_unknown")
+    _omit_false = ("retry_passed", "usage_unknown", "ended_round")
 
 
 # ---------------------------------------------------------------------------- 작업 상태 / state

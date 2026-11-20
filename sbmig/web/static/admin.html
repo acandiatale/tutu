@@ -336,7 +336,7 @@
   }
   const numCell = (v, cls) => `<td class="num${cls ? ' ' + cls : ''}">${fmtInt(v)}</td>`;
   // 실행의 호출 수 칸이다. 취약점 조치의 빌드 오류 자동 수정이 호출한 수가 있으면 그중 몇 회인지 아래에 적는다
-  // 조치의 사용량 일부를 알 수 없으면(usage_partly_unknown) 숫자 아래에 그렇게 적는다. 숫자는 fmtInt로만 넣는다
+  // 조치의 사용량 일부를 알 수 없으면(usage_partly_unknown) 호출 수와 비용 아래에 그렇게 적는다. 숫자는 fmtInt, fmtCost로만 넣는다
   const UNKNOWN_NOTE = '<span class="remcalls" title="취약점 조치의 빌드 오류 자동 수정 가운데 사용량을 읽지 못한 호출이 있습니다. 위 숫자는 아는 만큼의 수입니다.">일부 알 수 없음</span>';
   const callsCell = (r) => {
     const unknown = r.usage_partly_unknown === true ? UNKNOWN_NOTE : '';
@@ -348,7 +348,7 @@
   const costCell = (c, unknown) => c == null
     ? (unknown ? '<td class="num dash" title="사용량 일부를 알 수 없어 비용을 계산하지 않았습니다">알 수 없음</td>'
       : '<td class="num dash" title="가격 정보가 없습니다">-</td>')
-    : `<td class="num">${esc(fmtCost(c))}</td>`;
+    : `<td class="num">${esc(fmtCost(c))}${unknown ? UNKNOWN_NOTE : ''}</td>`;
 
   // ---------------------------------------------------------------- 실행 결과 표시
   // status / result는 서버(RunManager, 결과 줄)의 단어 그대로 온다. 아는 단어만 한국어로 바꾸고 모르는 단어는 그대로 보인다

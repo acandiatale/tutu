@@ -1766,8 +1766,9 @@ def _run_build(h: _Holder, r: int, cand: Path, *, rerun_ok: bool = False) -> tup
     (`_settle_leftover_loop`), whatever happens next.
 
     v2.1z-bo: only a loop that did not start because of a stop or the time budget is forgotten (a folder setup that
-    failed stays the round's verdict, as in the uninterrupted run). A round whose last discarded fix is a stored fix
-    found not usable does not run the loop again at the node's entry (a kill right after the discard's state save
+    failed stays the round's verdict, as in the uninterrupted run). A round whose last discarded fix ended the round
+    (`FixResult.ended_round`: a fix the loop had just returned that could not be applied) does not run the loop again
+    at the node's entry (a kill right after the discard's state save
     re-enters here; the uninterrupted run ended the round as not fixed) — `rerun_ok` (the call right after a stored
     fix of an earlier entry was found not usable on this one) allows it."""
     rs = h.round_state(r)
@@ -1788,7 +1789,7 @@ def _run_build(h: _Holder, r: int, cand: Path, *, rerun_ok: bool = False) -> tup
     if outcome.ok or _baseline_errors_only(h, r, outcome, cand):
         return outcome, None
     unusable = (not rerun_ok and fix is None and bool(rs.fix_discarded)
-                and rs.fix_discarded[-1].reason == R_FIX_UNUSABLE)
+                and rs.fix_discarded[-1].ended_round)
     if fix is None and not unusable and _fix_wanted(h, r):
         _run_fix(h, r, outcome, cand)
     if rs.fix is None or not rs.fix.fixed:
@@ -2123,9 +2124,12 @@ def _drop_fix_files(h: _Holder, fix: FixResult) -> None:
                 log.warning("remediation: %s not removed: %s", rel, e)
 
 
-def _discard_fix(h: _Holder, r: int, reason: str) -> None:
+def _discard_fix(h: _Holder, r: int, reason: str, *, ends_round: bool = False) -> None:
     """이 수정본의 고침을 버린다. 결과를 ``rs.fix_discarded``에 옮기고(사용량은 계속 센다) ``rs.fix``를 비운다.
-    상태를 저장한 뒤에 고친 파일을 지운다. 덮어쓴 파일은 되돌리지 않으므로 호출한 쪽이 수정본을 맞추거나 다시 만든다."""
+    상태를 저장한 뒤에 고친 파일을 지운다. 덮어쓴 파일은 되돌리지 않으므로 호출한 쪽이 수정본을 맞추거나 다시 만든다.
+
+    `ends_round`: this discard ends the round as not fixed (the fresh path of `_confirm_fix`); recorded as
+    `FixResult.ended_round` in the same save, so a kill right after it re-enters without a second loop."""
     rs = h.round_state(r)
     fix = rs.fix
     if fix is None:
@@ -2134,6 +2138,7 @@ def _discard_fix(h: _Holder, r: int, reason: str) -> None:
     gone.fixed, gone.reason, gone.retry_passed = False, reason, False
     gone.discarded_changed = sorted(set(gone.discarded_changed) | set(gone.changed))
     gone.changed, gone.patch, gone.fixed_dir, gone.tree_hash = [], "", "", ""
+    gone.ended_round = ends_round
     rs.fix_discarded = [*rs.fix_discarded, gone]
     rs.fix, rs.fix_first_build = None, None
     h.save()
@@ -2166,7 +2171,7 @@ def _confirm_fix(h: _Holder, r: int, cand: Path, *, fresh: bool) -> tuple[Any | 
         if not _overlay_fix(h, r):
             log.warning("remediation round %s: the recorded build fix cannot be applied to the candidate", r)
             first = rs.fix_first_build or rs.build
-            _discard_fix(h, r, R_FIX_UNUSABLE)
+            _discard_fix(h, r, R_FIX_UNUSABLE, ends_round=fresh and first is not None)
             _sync_candidate(h, r, cand, record=False)
             if fresh and first is not None:
                 # 방금 실행한 루프의 결과이므로 다시 실행하지 않고 고치지 못한 것으로 끝낸다
@@ -2507,6 +2512,18 @@ _NODE_FNS: dict[str, Callable[[_Holder], str | None]] = {
 }
 
 
+def _without_report_note(message: str) -> str:
+    """상태 메시지 끝에 붙은 보고서 실패 문장(`` | report not written: …``)을 뗀 메시지를 반환한다.
+
+    The note the report node appends once when it fails is always the message's tail (later changes prepend); it is
+    removed when the report is written on a later entry, so neither the state nor the new report keeps it."""
+    text = message or ""
+    cut = text.find(f" | {REPORT_NOT_WRITTEN}")
+    if cut >= 0:
+        return text[:cut]
+    return "" if text.startswith(REPORT_NOT_WRITTEN) else text
+
+
 # ---------------------------------------------------------------------------- graph
 def _wrap(name: str, h: _Holder) -> Callable[[RemediationGraphState], dict]:
     """노드 함수에 경계 처리를 덧붙인 함수를 반환한다.
@@ -2521,15 +2538,17 @@ def _wrap(name: str, h: _Holder) -> Callable[[RemediationGraphState], dict]:
             h.journal({"event": "node_start", "node": name, "round": st.round})
             # report.json이 저장되는 state.json과 같은 내용이 되도록 시각과
             # 노드를 먼저 정하고, 저장할 때 시각을 다시 찍지 않는다
-            before = st.updated
+            before, before_msg = st.updated, st.message
+            # 앞선 진입에서 붙인 보고서 실패 문장은 이번에 보고서를 쓰면 맞지 않으므로 떼고 쓴다
+            st.message = _without_report_note(st.message)
             st.node, st.next_node, st.updated = name, "report", _now()
             try:
                 fn(h)
             except Exception as e:  # noqa: BLE001 - 보고서 실패가 끝 상태를 덮어쓰지 않게 한다
                 log.error("report node failed: %s", scrub_message(traceback.format_exc(), h.paths.root, 20000))
-                if REPORT_NOT_WRITTEN in (st.message or ""):
+                if REPORT_NOT_WRITTEN in (before_msg or ""):
                     # 앞선 진입에서 이미 실패를 적었다. 문장을 다시 붙이지 않고 시각도 그대로 둔다
-                    st.updated = before
+                    st.message, st.updated = before_msg, before
                 else:
                     st.message = (st.message + " | " if st.message else "") + \
                         scrub_message(f"{REPORT_NOT_WRITTEN}: {type(e).__name__}: {e}", h.paths.root)

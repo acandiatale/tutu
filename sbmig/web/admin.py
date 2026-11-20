@@ -470,19 +470,34 @@ def usage_from_journal(run_dir: Path) -> dict[str, dict[str, Any]]:
     """sbmig.log에 호출 줄이 없을 때 journal.jsonl의 수정 루프 LLM 이벤트에서 모델별 사용량을 모은다.
 
     Fallback: the fix loop's `llm_script` / `llm_verify_guide` journal events (calls + tokens per event; `served`
-    when the event carries it)."""
+    when the event carries it). Lines that cannot be parsed are skipped."""
+    return journal_usage_checked(run_dir)[0]
+
+
+def journal_usage_checked(run_dir: Path, strict: bool = False) -> tuple[dict[str, dict[str, Any]], bool]:
+    """journal.jsonl의 수정 루프 LLM 사용량과 저널을 끝까지 읽었는지를 함께 반환한다.
+
+    `(rows, complete)`: the rows of `usage_from_journal`; `complete` is False when the file could not be read to the
+    end or a line it parsed is not a JSON object (a line cut off by a kill, garbage). Without `strict` only the lines
+    that mention an LLM event are parsed; `strict` parses every non-blank line. The rows that were read are returned
+    either way. A missing journal is `({}, True)`."""
     rows: dict[str, dict[str, Any]] = {}
+    complete = True
     p = safe_file(run_dir, "journal.jsonl")
     if p is None:
-        return {}
+        return {}, True
     try:
         with open(p, "rb") as fh:
             for line in fh:
-                if b'"llm_' not in line:
+                if b'"llm_' not in line and not (strict and line.strip()):
                     continue
                 try:
                     ev = json.loads(line)
                 except ValueError:
+                    complete = False                 # 읽지 못한 줄이 있다
+                    continue
+                if strict and not isinstance(ev, dict):
+                    complete = False
                     continue
                 if not isinstance(ev, dict) or ev.get("event") not in LLM_JOURNAL_EVENTS:
                     continue
@@ -492,8 +507,8 @@ def usage_from_journal(run_dir: Path) -> dict[str, dict[str, Any]]:
                     continue
                 _add_usage(rows, ev.get("model"), calls, tok.get("input"), tok.get("output"), ev.get("served"))
     except OSError:
-        pass
-    return {k: _plain(r) for k, r in rows.items()}
+        complete = False
+    return {k: _plain(r) for k, r in rows.items()}, complete
 
 
 def _result_word(exit_code: Any, rep: dict[str, Any] | None) -> str | None:
@@ -630,7 +645,8 @@ def run_usage(run_dir: Path, status: dict[str, Any] | None = None, live: bool = 
     (state word, exit code, upload); `live` = the manager holds this run in memory (an in-process run has no
     request.json). Usage and cost include the remediation's build-fix-loop calls (`add_remediation_usage`);
     `remediation_calls` (only when > 0) says how many of `calls` they are; `usage_partly_unknown: true` (only then)
-    = a part of the remediation's usage is unknown, and `cost` is None."""
+    = a part of the remediation's usage is unknown; `cost` is then the sum of the priced rows, or None when no row
+    with calls is priced."""
     rid = run_dir.name
     req, req_bad = _read_json(run_dir, "control/request.json")
     rep, rep_bad = _read_json(run_dir, "report.json")
@@ -676,7 +692,7 @@ def run_usage(run_dir: Path, status: dict[str, Any] | None = None, live: bool = 
             "flow": flow, "scope": _scope_of(rep), "status": state, "result": _result_word(exit_code, rep),
             **usage, "total_tokens": usage["input_tokens"] + usage["output_tokens"], "cost": cost,
             **({"remediation_calls": rem_calls} if rem_calls else {}),
-            # 취약점 조치의 빌드 오류 수정 루프 사용량 일부를 알 수 없다. 화면은 호출 칸에 그렇게 쓰고 비용은 비운다
+            # 취약점 조치의 빌드 오류 수정 루프 사용량 일부를 알 수 없다. 화면은 호출 칸과 비용 칸에 그렇게 쓴다
             **({"usage_partly_unknown": True} if rem_unknown else {}),
             "by_model": sorted(by_model, key=lambda r: (-r["total_tokens"], r["model"])),
             "usage_known": known, "partial": bool(req_bad or rep_bad), "has_logs": has_logs(run_dir),
@@ -693,27 +709,37 @@ def add_remediation_usage(run_dir: Path, usage: dict[str, int], by_model: list[d
     `safe_file`) to the migration report's usage: rows of the same asked name are merged (calls / tokens added, `served`
     merged, cost = the sum or None when either side is unknown), other models get rows of their own. The run's cost
     stays known only when every remediation row is priced in the report's currency (a migration without calls counts
-    0). A remediation whose usage is partly unknown (`fix_usage()["usage_unknown"]`, v2.1z-bo) makes the run's cost
-    None (unknown, never a number). Returns (usage, by_model, cost, currency, remediation calls); unchanged when the
-    remediation made no call. The
-    report itself is never rewritten. The log fallback for runs without a report already holds these calls (the fix
+    0). A remediation whose usage is partly unknown (`fix_usage()["usage_unknown"]`, v2.1z-bo): the calls whose
+    tokens are unknown (`by_model[].tokens_unknown`) add their calls to the row of their name and nothing to any cost;
+    the run's cost is the sum of the priced rows when at least one row with calls is priced (the reader marks it
+    `usage_partly_unknown`), else None (nothing known: unknown, never a number). Returns (usage, by_model, cost,
+    currency, remediation calls); unchanged when the remediation made no call. The report itself is never rewritten. The log fallback for runs without a report already holds these calls (the fix
     loop's `llm call` lines are in sbmig.log), so it is not combined with this."""
     data, _ = _read_json(run_dir, CHAIN_STATE)
     if data is None:
         return usage, by_model, cost, currency, 0
     from sbmig.remediations.fixer import fix_usage
     fx = fix_usage(data)
+    priced = cost is not None and any(_int(r.get("calls")) for r in by_model)   # 비용을 아는 이관 행이 있다
     if fx.get("usage_unknown") and not (fx["calls"] or fx["input_tokens"] or fx["output_tokens"]):
-        # 사용량을 하나도 읽지 못한 루프만 있다. 숫자는 그대로 두고 비용은 모르는 것으로 둔다
-        return usage, by_model, None, currency, 0
+        # 사용량을 하나도 읽지 못한 루프만 있다. 숫자는 그대로 두고 비용은 아는 행이 있을 때만 그 합계로 둔다
+        return usage, by_model, cost if priced else None, currency, 0
     if not (fx["calls"] or fx["input_tokens"] or fx["output_tokens"]):
         return usage, by_model, cost, currency, 0
     usage = {k: usage[k] + _int(fx[k]) for k in ("calls", "input_tokens", "output_tokens")}
     rows = {r["model"]: dict(r) for r in by_model}
     base = cost if cost is not None else (0.0 if not by_model else None)
     run_cost = base
-    for f in fx["by_model"]:
+    # 토큰을 아는 행을 먼저 더하고, 토큰 수를 모르는 호출은 같은 이름의 행에 호출 수만 더한다
+    for f in sorted(fx["by_model"], key=lambda f: bool(f.get("tokens_unknown"))):
         key = _model_key(f.get("model"))
+        if f.get("tokens_unknown"):
+            r = rows.get(key)
+            if r is None:
+                r = rows[key] = model_row({"model": key, "calls": 0, "input_tokens": 0, "output_tokens": 0,
+                                           "served": []}, total_tokens=0, cost=None)
+            r["calls"] += _int(f.get("calls"))
+            continue
         c = f.get("cost") if isinstance(f.get("cost"), (int, float)) else None
         fcur = _str(f.get("currency"))
         if c is not None and fcur and currency and fcur != currency:
@@ -721,6 +747,7 @@ def add_remediation_usage(run_dir: Path, usage: dict[str, int], by_model: list[d
         if c is not None and fcur and not currency:
             currency = fcur
         run_cost = None if run_cost is None or c is None else run_cost + c
+        priced = priced or (c is not None and _int(f.get("calls")) > 0)
         r = rows.get(key)
         if r is None:
             r = model_row({"model": key, "calls": 0, "input_tokens": 0, "output_tokens": 0, "served": []},
@@ -735,8 +762,8 @@ def add_remediation_usage(run_dir: Path, usage: dict[str, int], by_model: list[d
         served = [n for n in served if n.lower() != key.lower()]
         if served:
             r["served"] = served
-    if fx.get("usage_unknown"):
-        run_cost = None                              # 사용량 일부를 모르면 비용도 모른다
+    if fx.get("usage_unknown") and not priced:
+        run_cost = None                              # 비용을 아는 행이 하나도 없으면 비용도 모른다
     return (usage, list(rows.values()), None if run_cost is None else round(run_cost, 6), currency,
             _int(fx["calls"]))
 

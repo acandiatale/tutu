@@ -618,10 +618,15 @@ class _Budget:
         return check
 
 
-def _budget_outcome(paths: RunPaths, state: RemediationState, budget: _Budget, real_stop: StopCheck) -> RemediationState:
+def _budget_outcome(paths: RunPaths, state: RemediationState, budget: _Budget, real_stop: StopCheck,
+                    jr: Journal | None = None, cfg: Any = None) -> RemediationState:
     """시간 한도 때문에 STOPPED가 된 상태의 사유를 ``chain_budget``으로 바꿔 저장한다.
     실제 중지 요청이 있었으면 사유를 그대로 둔다.
-    화면에서 시간 한도로 멈췄으며 재개하면 이어서 진행한다고 안내하기 위해서다."""
+    화면에서 시간 한도로 멈췄으며 재개하면 이어서 진행한다고 안내하기 위해서다.
+
+    Like `_baseline_outcome` (v2.1z-bo): the new reason and message get a new `updated` stamp, the state is saved and
+    the report is written again once (`_report_again`); a kill in between leaves a pending report, repaired on the
+    next entry or by the web service."""
     from .models import R_STOP_REQUESTED, STOPPED
     if state.status != STOPPED or state.reason != R_STOP_REQUESTED or real_stop() or not budget.over():
         return state
@@ -633,8 +638,23 @@ def _budget_outcome(paths: RunPaths, state: RemediationState, budget: _Budget, r
                      + (" (the remote IVAS analysis keeps running and is polled again without a new upload)"
                         if state.pending_receipt else "")
                      + (f" | {detail}" if detail else ""))
-    _try_save(paths, state)
+    _report_again(paths, state, jr or (lambda e: None), cfg)
     return state
+
+
+def _report_again(paths: RunPaths, state: RemediationState, jr: Journal, cfg: Any) -> None:
+    """바뀐 메시지에 시각을 새로 찍어 저장하고 보고서를 한 번 다시 쓴다. 쓰지 못하면 다음 진입 때 다시 쓴다.
+
+    New `updated` (the report becomes pending, `graph.report_pending`), save, then `graph.write_pending_report` once
+    when `cfg` is given; a failure is a warning (the pending report is repaired later)."""
+    state.updated = time.time()
+    _try_save(paths, state)
+    if cfg is not None:
+        try:
+            graph_mod.write_pending_report(state, paths, cfg, save=_saver(paths), journal=jr)
+        except Exception as e:  # noqa: BLE001 - 보고서를 쓰지 못해도 다음 진입 때 다시 쓴다
+            log.warning("chained remediation %s: the report was not written again: %s", state.id,
+                        graph_mod.scrub_message(f"{type(e).__name__}: {e}", paths.root))
 
 
 def _saver(paths: RunPaths) -> Callable[[RemediationState], None]:
@@ -710,14 +730,7 @@ def _baseline_outcome(paths: RunPaths, state: RemediationState, jr: Journal, exc
     log.warning("vulnerability remediation %s: the baseline build failed although the migration's final build passed on the "
                 "same tree — see remediation/baseline/build.log", state.id)
     # 메시지가 바뀌었으므로 시각을 새로 찍어 보고서를 다시 써야 하는 상태로 만들고, 바로 한 번 다시 쓴다
-    state.updated = time.time()
-    _try_save(paths, state)
-    if cfg is not None:
-        try:
-            graph_mod.write_pending_report(state, paths, cfg, save=_saver(paths), journal=jr)
-        except Exception as e:  # noqa: BLE001 - 보고서를 쓰지 못해도 다음 진입 때 다시 쓴다
-            log.warning("chained remediation %s: the report was not written again: %s", state.id,
-                        graph_mod.scrub_message(f"{type(e).__name__}: {e}", paths.root))
+    _report_again(paths, state, jr, cfg)
     return state
 
 
@@ -1019,7 +1032,7 @@ def _drive(paths: RunPaths, state: RemediationState, cfg: Any, comps: Components
     if chained:                              # 이관 없이 실행한 조치에는 이관의 최종 빌드가 통과했다는 정보가 없다
         state = _baseline_outcome(paths, state, jr, excluded, cfg)
     if budget is not None:
-        state = _budget_outcome(paths, state, budget, real_stop or (lambda: False))
+        state = _budget_outcome(paths, state, budget, real_stop or (lambda: False), jr, cfg)
     _ended(jr, state, paths)
     return state
 

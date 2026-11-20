@@ -319,7 +319,8 @@ class RemediationManager:
         self._closing = threading.Event()
         self.interrupted: list[str] = []
         # 끝 상태 폴더를 맞춘 기록이다. {폴더: (state.updated, 확인한 시각, 더 할 일이 없는지)}
-        self._repair_seen: dict[str, tuple[float, float, bool]] = {}
+        # 가장 최근의 REPAIR_SEEN_MAX개만 둔다. 밀려난 폴더는 다음에 한 번 더 확인한다
+        self._repair_seen: collections.OrderedDict[str, tuple[float, float, bool]] = collections.OrderedDict()
         self.root.mkdir(parents=True, exist_ok=True)
         self._recover()
 
@@ -624,6 +625,7 @@ class RemediationManager:
 
     # ------------------------------------------------------------------ a final state whose owner is gone
     REPAIR_RETRY_S = 60.0
+    REPAIR_SEEN_MAX = 2000                  # 끝 상태 폴더를 확인한 기록을 이만큼만 둔다
 
     def _owner_gone(self, rid: str, chained: bool) -> bool:
         """이 조치를 진행하던 쪽(이 프로세스의 작업 스레드, 이관 실행, 재개 Job)이 모두 끝났는지 확인한다."""
@@ -655,7 +657,7 @@ class RemediationManager:
         if seen is not None and seen[0] == st.updated and (seen[2] or now - seen[1] < self.REPAIR_RETRY_S):
             return st
         if not graph_mod.final_repair_needed(paths, st):
-            self._repair_seen[key] = (st.updated, now, True)
+            self._remember_repair(key, (st.updated, now, True))
             return st
         if not self._owner_gone(rid, chained):
             return st
@@ -681,8 +683,19 @@ class RemediationManager:
                             graph_mod.scrub_message(f"{type(e).__name__}: {e}", paths.root))
             finally:
                 claim.release()
-        self._repair_seen[key] = (st.updated, time.monotonic(), not graph_mod.final_repair_needed(paths, st))
+        self._remember_repair(key, (st.updated, time.monotonic(), not graph_mod.final_repair_needed(paths, st)))
         return st
+
+    def _remember_repair(self, key: str, value: tuple[float, float, bool]) -> None:
+        """끝 상태 폴더를 확인한 기록을 남긴다. 가장 최근의 ``REPAIR_SEEN_MAX``개만 둔다.
+
+        Bounded for the life of the web process: the oldest entries are dropped beyond `REPAIR_SEEN_MAX`; an evicted
+        folder is simply checked once more when it is viewed again."""
+        with self._lock:
+            self._repair_seen[key] = value
+            self._repair_seen.move_to_end(key)
+            while len(self._repair_seen) > self.REPAIR_SEEN_MAX:
+                self._repair_seen.popitem(last=False)
 
     # ------------------------------------------------------------------ readiness
     def readiness(self, cfg: Any = None) -> list[str]:

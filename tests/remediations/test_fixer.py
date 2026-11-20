@@ -312,9 +312,10 @@ def test_a_stop_during_the_loop_leaves_the_tree_alone(rcfg, tmp_path):
     assert snapshot(tree) == before
 
 
-def test_too_little_time_left_does_not_start_the_loop(rcfg, tmp_path):
+def test_a_deadline_already_passed_does_not_start_the_loop(rcfg, tmp_path):
+    # the minimum loop time is the graph's check (v2.1z-bo verification review); the fixer refuses only a past deadline
     tree = make_tree(tmp_path)
-    res = run(rcfg, tree, deadline=time.monotonic() + 5)
+    res = run(rcfg, tree, deadline=time.monotonic() - 1)
     assert not res.attempted and res.reason == "time budget used up"
 
 

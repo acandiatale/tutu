@@ -2045,7 +2045,8 @@ def _fix_calls_sentence(rs: RoundState, fix: Any) -> str:
 
     The fixing loop's own count, and when the round has other loops (`fix_discarded`: discarded, interrupted,
     stopped) the round's total: 「빌드와 수정을 N회 반복했고, LLM을 M회 호출했습니다(버린 시도까지 모두 T회).」.
-    A count that is not exact (a loop whose usage could not be read, calls without token counts) says so."""
+    A count that is not exact (a loop whose usage could not be read, calls without token counts) says so, and the
+    total then reads 「(버린 시도까지 알려진 것만 T회)」."""
     iters = _num(int(getattr(fix, "iterations", 0) or 0))
     own = int(getattr(fix, "llm_calls", 0) or 0)
     others = _discarded_of(rs)
@@ -2053,7 +2054,8 @@ def _fix_calls_sentence(rs: RoundState, fix: Any) -> str:
     head = f"- 빌드와 수정을 {iters}회 반복했고, LLM을 {_num(own)}회 호출했습니다"
     if others:
         total = own + sum(int(getattr(f, "llm_calls", 0) or 0) for f in others)
-        head += f"(버린 시도까지 모두 {_num(total)}회)"
+        # 사용량 일부를 모르면 합계가 정확한 값처럼 보이지 않게 아는 만큼의 수라고 쓴다
+        head += f"(버린 시도까지 {'알려진 것만' if unknown else '모두'} {_num(total)}회)"
     return head + "." + (" LLM 사용량 일부는 알 수 없습니다." if unknown else "")
 
 
