@@ -6098,3 +6098,106 @@ build, `candidate_build_failed` with the suffix, state JSON without `fix`), `tes
 `tests/remediations/test_i18n.py` (the reasons), `tests/web/test_page_remediation_fix.py` (chip, LLM count,
 `fix.patch` link); part A: `tests/loop/test_framework_no_loop.py`, `tests/web/test_framework_scope.py`,
 `tests/analyze/test_framework.py` (`test_framework_fix_loop_defaults_to_true`), `tests/fixtures/test_fixture_projects.py`.
+
+## v2.1z-bj — the remediation's fix loop works on a copy; findings of the review of v2.1z-bh / v2.1z-bi
+
+**Why.** A review of the two rounds reproduced these: (1) a failed git reset / cleanup left the loop's partial edits
+(or sbmig's `.gitignore` lines, or `.git`) in the candidate, which was then delivered as the failed candidate; (2) a
+git checkout nested in the upload hid edits from the guard and the reset; (3) a fixed round that then dropped an
+ineffective override lost the fix while the report claimed it; (4) the loop used up the run's whole time budget, so
+"not fixed" became STOPPED without a delivery; (5) a pod killed after the fix and before the commit delivered
+LLM-changed sources with no word of it; (6) `build_output_paths` dropped real files under `src/**/target/`;
+(7) `fix.patch` was served for rounds whose fix is not in the result. This section replaces what "v2.1z-bi" part B
+says where they differ. `framework.fix_loop` is `false` by default again (the user, same day); the switch stays.
+
+**Invariant.** The candidate tree is changed by the fix loop only through `overlay` below. Whatever the loop does
+(git, scripts, a crash, a kill) happens in a work copy that is never delivered.
+
+### Fixer (`sbmig/remediations/fixer.py`)
+
+`run_fix_loop(cfg, tree, work_dir, *, …)` no longer touches `tree`:
+1. **Work copy.** `work_dir/tree/` is made fresh (an older one is removed first) from `tree`, with exactly the
+   *loop paths*: the manifest paths (project-relative) that have no `.git` path segment. The loop (Workspace,
+   `git_init`, analysis, builds) runs there. Nothing is restored afterwards; the work copy is removed at the end
+   (a failed removal is logged at WARNING and is not an error).
+2. **Editable paths** = loop paths that are none of: a file named `pom.xml`; a pom Maven reads for this build under
+   another name (the inventory's pom list — reuse the existing reader); a path with a segment starting with `.`;
+   `mvnw`, `mvnw.cmd`, `*.sh`, `*.bat`, `*.cmd`, `*.ps1`; a jar / war / ear / class / zip file. The edit guard rejects
+   a touched path that is not editable (reasons: `pom.xml must not be edited: <p>`, `<p> must not be edited`,
+   `<p> must not be deleted`, `<p> is not a file of the uploaded project`).
+3. **Changed files** are found by comparing bytes of every editable path between `tree` and the work copy, not by
+   git. A missing editable path in the work copy, or a difference in a non-editable loop path other than the root
+   `.gitignore`, is a violation → not fixed, `reason: rejected: …`.
+4. **Fixed** → the changed files' new bytes are stored under `work_dir/fixed/<path>` (durable; the only thing the
+   graph reads), `fix.patch` is written (unified diff, `a/<path>` → `b/<path>`, project-relative, made from the two
+   byte versions with `difflib`; a file that is not UTF-8 is listed as `Binary files differ`), `FixResult.changed`
+   lists them, `FixResult.fixed_dir` is the run-relative path of `fixed/`, `FixResult.tree_hash` =
+   `intake.tree_hash` of the candidate as it will be after the overlay (computed by the graph, see below).
+   **Fixed with no changed file** (the loop's own build passed without a change): `fixed: true`, `changed: []`,
+   `retry_passed: true`, no patch, no `fixed/`.
+5. **Time.** `deadline` is honoured before the stop check: the reason of a loop that ran out of its own time is
+   `time budget used up`, never `stop requested`. Each build inside the loop gets a timeout no longer than the time
+   left to the deadline (and no longer than `remediation.build_timeout_minutes`). `stop requested` only for a real
+   stop (`stop()` true while the deadline has not passed).
+6. `reason` for an unavailable LLM is exactly `llm unavailable` (the detail stays in the loop's own log under
+   `work_dir`); every other reason passes `scrub_message`.
+7. The fixer may raise only for a programming error; every operational failure is a `FixResult`. Because it never
+   touches `tree`, any `FixResult` with `fixed: false` leaves the candidate exactly as it was.
+
+### Graph (`sbmig/remediations/graph.py`)
+
+- **Time for the loop** = `min(fix_loop_max_minutes × 60, time_left − reserve)` where `reserve = max(300, 2 ×
+  seconds of the round's first candidate build, 2 × seconds of the baseline build)`; `time_left` None → only the
+  cap. Less than `MIN_LOOP_SECONDS` → not started: `attempted: false`, `reason: time budget used up`.
+  A pending stop → not started, `reason: stop requested`.
+- **State is saved right after the loop returns** (`rs.fix`, then `h.save()`), before anything touches the candidate.
+- **Overlay** (`_overlay_fix(h, r)`): copies every file of `fixed/` over the candidate's file of the same path
+  (only paths in `rs.fix.changed`; each must be an existing manifest file), idempotent. `_remove_overlay(h, r)`
+  copies the same paths back from `accepted/`.
+- **`_build` re-entry** (resume, or after `apply` remade the candidate): `rs.fix` is NOT cleared.
+  `rs.fix.fixed` with changed files → overlay first, then the build is the confirming build (log
+  `build-fixed.log`); it passes → verify, commit. `rs.fix.attempted` and not fixed → the build runs, and when it
+  fails the loop is not run again (`_candidate_failed` with the recorded reason). `rs.fix` None → as specified in
+  "v2.1z-bi". The loop therefore runs at most once per round and candidate, except after a kill during the loop
+  itself (nothing was saved) and in the next bullet.
+- **Confirming build fails** → `_remove_overlay`, `rs.fix.fixed = False`, `reason: error: confirming build failed`,
+  `changed` moved to `rs.fix.discarded_changed`, `fix.patch` and `fixed/` removed; then `_candidate_failed`.
+- **Dropping an ineffective override in a fixed round**: the fix of this candidate is discarded before the candidate
+  is remade: `rs.fix` is appended to `rs.fix_discarded: list[FixResult]` (left out of the JSON when empty; its LLM
+  usage still counts in `fixer.fix_usage`) with `fixed = False`, `reason: discarded: the candidate was remade`, its
+  patch and `fixed/` removed, and `rs.fix = None`. The remade candidate's build that fails may run the loop once
+  more (same conditions).
+- **Missing manifest files after any build of the candidate** (first build, confirming build, the build after a
+  dropped override): `intake.restore_missing(cand, accepted, paths) -> list[str]` copies each manifest path that
+  no longer exists in the candidate back from `accepted/` (bytes and exec bit; never a path that exists; refuses
+  symlinks like `copy_tree`). Journal `manifest_files_restored` (`round`, `count`, first 5 paths) when any. A build
+  can therefore never make freezing or committing fail with `missing_file`.
+- **Not fixed** → `mark`/deliver as before (the candidate was never touched). The message suffix is
+  ` | automatic build fix: <reason>` when the loop ran and ` | automatic build fix not started: <reason>` when
+  `attempted` is false. Because of the reserve, a loop that used its time does not make `h.stop()` true by itself;
+  the outcome is `FAILED candidate_build_failed` with the failed candidate delivered, as before v2.1z-bi.
+- `fix_first_build`, the journal events and `Components.fixer None` stay as coded.
+
+### Intake (`sbmig/remediations/intake.py`)
+
+- `build_output_paths`: a `target` segment counts only when its holding folder has a `pom.xml` AND no segment
+  before it is `src` (the rule of `core.workspace.is_build_output_path`). `src/test/resources/proj/target/…` and
+  `src/it/demo/target/…` stay ordinary content. The note's folder list follows the same rule.
+- `restore_missing` (above), listed in the intake protocol.
+
+### Files route, report, page
+
+- `fix.patch` is served only for the last round that is `committed` with `fix.fixed` and a non-empty `changed`
+  (decided from the state, not from the files on disk); otherwise 404 and not in the status' file list.
+- Report / `fix_summary` / chip: a fix is shown only for such rounds. `retry_passed` rounds get one line in the
+  record: 「처음 빌드는 실패했지만 다시 빌드하니 통과해 소스는 고치지 않았습니다.」 and no fix section.
+  Not started: 「빌드 오류 자동 수정은 시작하지 않았습니다(<사유>).」 with 사유 = 중지 요청 / 남은 시간 부족 by `reason`;
+  it never says the sources were reverted. Discarded fixes (`fix_discarded`, a failed confirming build) get a record
+  line each, and their LLM calls are in the counts.
+- i18n: rules for ` | automatic build fix not started: <reason>`, `llm unavailable` (bare and the old form),
+  `discarded: the candidate was remade`, the new guard reason `<p> must not be edited`.
+
+**Tests.** The review's reproductions (`out/scratch/review-bi/`, not tracked) are turned into regression tests that
+now assert the right outcome: tree integrity with a failing reset / cleanup, a nested `.git`, a root `.git`, a
+fixed round with a dropped override, the budget case (FAILED with a delivery, not STOPPED), the kill-and-resume
+case (fix kept and reported), `src/**/target`, the `fix.patch` route per state, the not-started wording per reason.

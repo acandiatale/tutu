@@ -1162,6 +1162,8 @@ class RemediationConfig(BaseModel):
     fix_loop: bool = True
     # 수정 루프가 한 라운드에서 빌드와 수정을 반복하는 횟수 한도
     fix_loop_max_iterations: int = Field(default=10, ge=1, le=50)
+    # 수정 루프가 한 라운드에서 쓸 수 있는 시간 한도(분). 실행의 남은 시간이 더 짧으면 그 시간까지만 쓴다
+    fix_loop_max_minutes: int = Field(default=30, ge=1, le=240)
     # IVAS가 프로젝트 안의 파일에서 찾은 취약점(파일 컴포넌트)의 처리다.
     # report는 보고서에만 싣고 결과 판정에 넣지 않으며, count는 직접 확인 항목으로 남겨 판정에 넣는다
     file_components: Literal["report", "count"] = "report"
