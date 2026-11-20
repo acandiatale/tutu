@@ -843,7 +843,7 @@ review", fix attempts as `script:<case>:v<N>`; `ko`, the company setting: the re
   no longer hold: the fix loop is the one exception for both. Its LLM calls count in `SBMIG-RESULT llm=`, the run status
   and the admin page (v2.1z-bl). Limits: no pom edits, no loop after a failed baseline, not run on the company cluster.
   Contract: `docs/INTERFACES.md` "v2.1z-bi", amended by "v2.1z-bj" / "v2.1z-bk" (next note).
-- **Rules of the remediation's fix loop (2026-11-20, v2.1z-bj/bk/bm)** — three review rounds the same day (the user: "아 이거
+- **Rules of the remediation's fix loop (2026-11-20, v2.1z-bj/bk/bm/bn)** — four review rounds the same day (the user: "아 이거
   오늘 금요일이라 안급해~ 고칠 수 있는거 꼼꼼히 고치고 가자!"), every finding reproduced first, then a page round ("보고서는
   migration, remediation 각각 따로 보여질 수 있도록!"). Rules a contributor must not break:
   - The candidate is changed by the fix loop ONLY through the graph's overlay (`graph._overlay_fix`) of the bytes kept in
@@ -873,11 +873,22 @@ review", fix attempts as `script:<case>:v<N>`; `ko`, the company setting: the re
     files ("관리자에서 로그 파일들 받을 수 있으니까 그 밖의 파일 영역은 빼달래! 고급설정 영역이 빼줘!"); the start request
     sends none of the hidden 고급 설정 values (a browser restores form values).
   - A loop that ran and did not fix is worded 「시도한 소스 수정은 결과에 넣지 않았습니다.」, never "reverted": the
-    candidate was never touched.
+    candidate was never touched; a loop that made no attempt is 「빌드 오류 자동 수정을 하지 못했습니다(<사유>).」.
+  - (v2.1z-bn) Every result ZIP goes through the one delivery swap (`graph._Holder.install_delivery`: frozen to
+    `delivery/.result.next.zip`, marker, verified ZIP COPIED, `os.replace`, `delivery.json`, state; `recover_delivery` on
+    the next entry). Never write or delete `result.zip` anywhere else; a freeze that fails leaves the previous delivery.
+  - (v2.1z-bn) A final state always gets its report: a kill during the report node is repaired on the next entry
+    (`graph.write_pending_report`).
+  - (v2.1z-bn) When the intake left build output out, the baseline scan and a no-change delivery use the scan source
+    `original/scan-source.zip` (a deterministic ZIP of `accepted/`), never the upload; every check that the scanned
+    bytes are the bytes held compares against it. `expected.json` rows carry the exec bit (schema 2).
+  Open, the user's question to the business side on Monday 2026-11-23: should an upload that carries `target/` keep
+  being accepted with the folder left out, or be refused? Until then the behaviour stays.
   Not checked: the company cluster; a project whose build needs its own `.git` (git-commit-id: the work copy has none, so
-  its loop ends not fixed); the permission retry on Windows. A fourth review and a real-Maven smoke run were running
-  when v2.1z-bm was committed. Contract and as-coded notes: `docs/INTERFACES.md` "v2.1z-bj", "v2.1z-bk", "v2.1z-bl",
-  "v2.1z-bm".
+  its loop ends not fixed); the permission and read retry on Windows; a Job-mode chained run whose report node was
+  killed is repaired only when `chain.resume` / `run_after_migration` is called again. The first real-Maven smoke run
+  (seven runs) passed; a fifth review and a second smoke run were running when v2.1z-bn was committed. Contract and
+  as-coded notes: `docs/INTERFACES.md` "v2.1z-bj", "v2.1z-bk", "v2.1z-bl", "v2.1z-bm", "v2.1z-bn".
 - **Company convention (2026-10-20): agents run on LangGraph under uvicorn.** `loop.engine: graph` (default) drives
   the phases from a LangGraph `StateGraph` (`sbmig/graph/`, nodes intake → analyze → plan → phase×N → finalize;
   `inline` is the old loop, reports are identical by test); the web UI is FastAPI (`uvicorn sbmig.web.app:app` or

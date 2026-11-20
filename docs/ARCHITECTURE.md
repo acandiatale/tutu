@@ -378,7 +378,7 @@ Changed files are found by comparing bytes; the fixed bytes go to `rounds/<r>/fi
 the graph overlays them on the candidate (the only way the loop changes it), then confirming build, verify, commit,
 `rounds/<r>/fix.patch` (all committed fixed rounds combined in `remediation/fix.patch`); not fixed → the candidate is
 untouched and the round fails `candidate_build_failed` as before. A candidate is built only with the proof that its
-applied files were stored completely (`rounds/<r>/applied/`, then `rounds/<r>/expected.json` = size + sha256 per
+applied files were stored completely (`rounds/<r>/applied/`, then `rounds/<r>/expected.json` = size, sha256 and exec bit per
 manifest path, then the marker `candidate.ready.json` carrying that file's sha256; `_Holder.vouch_problem`); without it
 (a kill during apply, a run folder of an older version) the build node sends the round back through `apply`. After
 every candidate build, and again right before commit and before a failed candidate is frozen,
@@ -387,7 +387,15 @@ every candidate build, and again right before commit and before a failed candida
 unreported (`RoundState.build_changed`); a path it cannot put back (`intake.SyncFailed`) ends the run FAILED
 `internal_error` without committing or delivering that round. A stop keeps a fix and a loop stopped on request may run
 again on resume; a killed loop is kept as `fixloop-interrupted-<n>/` with its LLM usage counted once, at the next
-build or report node (`fixer.fix_usage`, read by the result line, the run status and the admin page).
+build or report node (`fixer.fix_usage`, read by the result line, the run status and the admin page; after an exception
+inside the loop the usage comes from the loop's journal, calls without token counts are never priced).
+Every result ZIP goes through one swap (`_Holder.install_delivery`): frozen to `delivery/.result.next.zip`, a marker
+`.result.next.json`, an earlier verified ZIP copied aside, `os.replace` onto `result.zip`, `delivery.json`, the state; a
+freeze that fails leaves the previous delivery and ends FAILED `internal_error`, and `recover_delivery` completes or rolls
+back a swap a kill interrupted on the next entry. A final state whose report node was killed gets its report on the next
+entry (`graph.write_pending_report`). When the intake left uploaded build output out, the baseline scan uploads and a
+no-change run delivers `original/scan-source.zip` (a deterministic ZIP of `accepted/`, sha256 recorded in the state), so
+both scans compare like with like; otherwise the upload itself is scanned and delivered.
 The planner keeps a wrong version out and leaves a residual for a person instead: a version property several artifacts share
 (target missing for one of them), a jump to another major no scanner hint names, a date-stamped current version (first number
 over 9999), a current version that already meets every hint, a declaration only inside a profile not active by default, a g:a

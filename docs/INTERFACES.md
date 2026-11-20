@@ -25,7 +25,7 @@ type: `sbmig/core/models.py`, `sbmig/core/interfaces.py`, `sbmig/core/config.py`
 | web app | Base "Graph engine", "Web app"; v2.1z-w (page, server-chosen configs), v2.1z-ae (queue / slots on the page), v2.1z-af (page re-attach), v2.1z-aj (run flows, page header); v2.1z-ak (framework label, skipped stages); v2.1z-ao (admin page `/admin`: token usage per project, log ZIPs); v2.1z-au (the code-change view: artifact `codediff/`, `/api/runs/{id}/codediff`, the page block); v2.1z-av (cross-site requests refused, the free-space floor for uploads, unpacking limits); v2.1z-bg (report view); v2.1z-bl (two report previews, 고급 설정 and the other-files list gone, LLM counts); v2.1z-bm (the hidden controls are not sent) |
 | Job mode (Main / Worker, slots, env pins) | v2.1z-z "k8s Job dispatch mode", v2.1z-ab (kubeconfig, template ConfigMap), v2.1z-ac (Main ↔ Worker contract), v2.1z-ad (end confirmation, ownership, env pins, write-time redaction), v2.1z-ae (parallel slots), v2.1z-af, v2.1z-aq (a build pod that does not start: stop, the reason notice); v2.1z-av (the build identity, pins taken at Job creation, the resume attempt) |
 | deploy | v2.1z-s (build hooks), v2.1z-t (one Job per request), v2.1z-u, deploy (baked config, container paths), v2.1z-ad "Shipped mode" |
-| remediations | remediations; v2.1z-ak (in-house group `framework`); v2.1z-am (case-insensitive matching, per-module in-house split, module sources, variant overrides, 들어온 경로); v2.1z-an (override proposals in module poms, the owners' choice); v2.1z-ar (no approval unless switched on); v2.1z-av (fixed = gone from the rescan, the planner's new residual groups, `remediation.log` for every run); v2.1z-bi part B, v2.1z-bj, v2.1z-bk (the fix loop on a failed candidate: work copy, overlay, build-side sync, one `fix.patch`); v2.1z-bl (fix-loop LLM usage, titles with the entered project); v2.1z-bm (the complete-apply proof `expected.json`, the sync by table before commit / freeze, a candidate that cannot be put back, `stop requested` runs again, leftover loops settled) |
+| remediations | remediations; v2.1z-ak (in-house group `framework`); v2.1z-am (case-insensitive matching, per-module in-house split, module sources, variant overrides, 들어온 경로); v2.1z-an (override proposals in module poms, the owners' choice); v2.1z-ar (no approval unless switched on); v2.1z-av (fixed = gone from the rescan, the planner's new residual groups, `remediation.log` for every run); v2.1z-bi part B, v2.1z-bj, v2.1z-bk (the fix loop on a failed candidate: work copy, overlay, build-side sync, one `fix.patch`); v2.1z-bl (fix-loop LLM usage, titles with the entered project); v2.1z-bm (the complete-apply proof `expected.json`, the sync by table before commit / freeze, a candidate that cannot be put back, `stop requested` runs again, leftover loops settled); v2.1z-bn (one delivery swap + `recover_delivery`, the no-delivery sentences, usage after an exception, the exec bit in `expected.json` schema 2, the pending report, the scan source `original/scan-source.zip`) |
 
 ## Base contracts (in force; written before v2)
 
@@ -5503,7 +5503,7 @@ Chained (build pod): `<migration run dir>/remediation/`. Standalone (in-process 
 | `rounds/<n>/` | `candidate/` (isolated copy), `before.json` / `inventory.json`, `plan.json` (+ `plan.stale.json` when a plan was invalidated), `apply.json`, `candidate.patch` (accepted → candidate), `build.log`, `resolved.json` |
 | `scans/<label>.json` | one `ScanResult` per scan; labels `baseline`, `final-r<n>` |
 | `delivery/result.zip`, `delivery/delivery.json` | the frozen delivery (`DeliveryInfo`: sha256, size, files, tree hash, round, `build_ok` — false for a failed candidate, `scanned` — the final scan was complete and of these same bytes) |
-| `delivery/result-r<k>-verified.zip` (+ `.json`) | only with `failed_candidate: include`: round k's built + rescanned delivery, moved aside when a later failed candidate took `result.zip` |
+| `delivery/result-r<k>-verified.zip` (+ `.json`) | only with `failed_candidate: include`: round k's built + rescanned delivery, moved aside when a later failed candidate took `result.zip` (superseded by v2.1z-bn: copied, inside the one delivery swap; `original/scan-source.zip` and `delivery/.result.next.*` are listed there) |
 | `state.json` | `RemediationState`, replaced atomically at every node boundary |
 | `approvals.jsonl` | append-only decision log |
 | `journal.jsonl`, `remediation.log`, `report.md`, `report.json` | events, log, Korean operator report, machine report (terminal states only) |
@@ -5638,7 +5638,8 @@ User decision 2026-11-11 (after comparing with the company's older implementatio
   were; `rounds/<n>/candidate.patch` and `rounds/<n>/build.log` stay. `report.md` starts, right under the title, with a Korean
   warning that `result.zip` is the 빌드가 실패한 수정본 (round, applied proposals, build log, not rescanned, original kept); the
   report's delivery section says `build_ok` / `scanned`. If an earlier round's delivery was built, committed and rescanned
-  (complete, same sha256), it is not deleted but moved to `delivery/result-r<k>-verified.zip` (+ `.json`, `scanned=true`) and is
+  (complete, same sha256), it is not deleted but moved to `delivery/result-r<k>-verified.zip` (+ `.json`, `scanned=true`; superseded by
+  v2.1z-bn: COPIED after the new ZIP was frozen under a temporary name, `install_delivery`) and is
   downloadable as `result-verified.zip`; the report names it. Journal: `failed_candidate_delivered` (round, sha256),
   `verified_delivery_kept` (round, delivery round, file, sha256).
 - **`discard`**: the failing candidate is never in `result.zip`; the failing change is kept only as `candidate.patch`
@@ -5960,7 +5961,9 @@ also reached IVAS and the result ZIP although it no longer matches the changed p
 - No switch. Applies to every caller of `accept_zip` (remediation-only upload, chained remediation, restart).
 - Report (`remediations/report.py`, Korean) and the page keep working unchanged; the Korean report shows the note
   once, where the intake facts are listed, as 「업로드한 ZIP의 빌드 산출물 <n>개(`<folder>` …)는 검사와 결과 ZIP에서
-  제외했습니다. 원본 ZIP에는 그대로 있습니다.」 through the existing i18n pattern table.
+  제외했습니다. 원본 ZIP에는 그대로 있습니다.」 through the existing i18n pattern table. (Superseded by v2.1z-bn: until then
+  the baseline scan still uploaded `original/source.zip`; now it uploads `original/scan-source.zip`, and the note is left
+  out of a run whose baseline scan was of the original.)
 - The failed-candidate path itself is not changed; with build output out of the list, `mvn clean` cannot remove a
   listed file.
 
@@ -6189,7 +6192,7 @@ says where they differ. `framework.fix_loop` is `false` by default again (the us
   can therefore never make freezing or committing fail with `missing_file`.
 - **Not fixed** → `mark`/deliver as before (the candidate was never touched). The message suffix is
   ` | automatic build fix: <reason>` when the loop ran and ` | automatic build fix not started: <reason>` when
-  `attempted` is false. Because of the reserve, a loop that used its time does not make `h.stop()` true by itself;
+  `attempted` is false (v2.1z-bn adds ` | automatic build fix made no attempt: <reason>` for a loop with no attempt). Because of the reserve, a loop that used its time does not make `h.stop()` true by itself;
   the outcome is `FAILED candidate_build_failed` with the failed candidate delivered, as before v2.1z-bi.
 - `fix_first_build`, the journal events and `Components.fixer None` stay as coded.
 
@@ -6451,7 +6454,8 @@ Contract and as coded in one.
   check → `_store_applied` (the edited files, hashed from the bytes already in memory) → `_write_expected` →
   `mark_candidate`. A kill anywhere before the marker leaves no marker.
 - **`rounds/<r>/expected.json`** (`graph.EXPECTED_FILE`, written atomically) = `{schema: 1, round, applied,
-  applied_files, files: {path: [size, sha256]}}`: the table of `accepted/` (`_accepted_table`) with the files stored
+  applied_files, files: {path: [size, sha256]}}` (superseded by v2.1z-bn: schema 2, rows `[size, sha256, exec]`; a
+  schema-1 table is no proof): the table of `accepted/` (`_accepted_table`) with the files stored
   under `applied/` substituted; `applied_files` = the stored paths.
 - **`rounds/<r>/candidate.ready.json`** (`CANDIDATE_READY`) = `{round, applied, expected}`, `expected` = the sha256 of
   `expected.json`. The key is the proof; a marker without it was written by an earlier version.
@@ -6524,6 +6528,7 @@ per confirming build (and one on re-entry); a failed round syncs after the build
   beside it. The three controls and the config checkboxes carry `autocomplete="off"`.
 - **Wording.** `i18n.fix_failed_ko` ends 「시도한 소스 수정은 결과에 넣지 않았습니다.」 (was 「소스 수정은
   되돌렸습니다.」: the loop never touched the candidate); the record line says 「… · 시도한 소스 수정은 결과에 넣지 않음」.
+  (A loop that made no attempt has its own wording since v2.1z-bn: 「빌드 오류 자동 수정을 하지 못했습니다(<사유>).」.)
 
 **Tests.** `tests/remediations/test_fix_loop_review3.py` (the reproductions turned around: an old-version run folder
 resumed at `build` with a failing and a passing build; every kill point of `apply` with its `why`; the write order
@@ -6540,3 +6545,168 @@ fake intake the real `sync_tree_table`.
 **Known limits.** The permission retry is not tested on Windows (`os.chmod` there toggles only the read-only flag);
 `expected.json` grows with the number of files of the upload (one row per manifest path, written once per apply); a
 fourth review and a real-Maven smoke run were still running when this was written.
+
+## v2.1z-bn — fourth review of the remediation: one delivery swap, truthful end states, exec bit, pending report; the scan source
+
+**Why.** A fourth review of the remediation (2026-11-20) reproduced its findings first
+(`out/scratch/review-bm/test_repro_bm.py`, untracked, asserted the faulty behaviour): (1) **result ZIPs were written in
+place**: the freeze node deleted `result.zip` before freezing, `deliver_failed_candidate` MOVED a verified ZIP aside
+before freezing, and a freeze that raised (full disk, read-only folder) or a kill between the steps left a state naming
+a ZIP that did not exist or had other bytes; (2) **a candidate that could not be put back after a PASSING build** was
+reported as a failed build (the build outcome was recorded only after the sync, which raised first), and the report's
+「결과 파일 — 없음」 sentence always blamed a failed build; (3) a failure while **preparing the fix loop's folder** escaped
+as `internal_error` although the candidate was untouched; (4) **usage after an exception inside the loop** was priced
+from the budget's call count with zero tokens (cost 0, not unknown); (5) the **exec bit** was not in the expected table,
+so a build that only flipped it (or left a file `chmod 000`) went unnoticed; (6) a loop that **made no attempt** (LLM
+unavailable at once) was worded as if source changes had been tried; (7) a **kill during the report node** left a final
+state without `report.md` for good; (8) `intake.file_table` left out a non-regular path, so its `table_hash` differed
+from `tree_hash`. The **real-Maven smoke run** (same day) found one more: with uploaded build output left out
+(v2.1z-bh), the baseline scan still uploaded `original/source.zip` (which holds `<module>/target/…`) and a no-change
+run delivered those bytes, while the report said the build output was left out of the scan and the result ZIP. Contract
+and as coded in one.
+
+### One delivery swap (`graph.py`)
+
+- **`_Holder.install_delivery(make, r, *, build_ok, build_tolerated, keep_verified) -> str`** is the only writer of
+  `delivery/result.zip`. Callers: the freeze node (`_freeze_delivery`), `deliver_failed_candidate`, `deliver_original`.
+  Durable order, each step atomic:
+  1. `make(delivery/.result.next.zip)` freezes the new ZIP under a temporary name (`graph.NEXT_ZIP`);
+  2. the marker `delivery/.result.next.json` (`NEXT_JSON`) = `{delivery: <new DeliveryInfo>, verified: <kept path or "">}`;
+  3. failed-candidate path with an earlier verified delivery (`keep_verified`): the current `result.zip` is COPIED
+     (`_copy_atomic`: temporary file, fsync on a writable handle, `os.replace`) to `result-r<k>-verified.zip`, then its
+     `.json` (`scanned: true`) is written;
+  4. `os.replace(.result.next.zip, result.zip)`;
+  5. `delivery.json` = the new info; 6. `st.delivery` = the new info and the state saved; 7. the marker removed.
+  Returns the kept verified ZIP's run-relative path or "".
+- **A freeze that raises** (steps 1–4) removes what the call made and raises `graph.DeliveryNotWritten`; the previous
+  `result.zip`, `delivery.json` and `state.delivery` are untouched. Journal `delivery_not_written` (`round`, `error` = the
+  type, `kept_round` = the delivery's round or null), log ERROR `remediation round <r>: <message>`. The run ends FAILED
+  `internal_error` with `DELIVERY_NOT_WRITTEN` = `the result ZIP of round {r} could not be written ({ErrorType}:
+  {error}); {left}`, `left` = `delivery/result.zip is still the result ZIP of round {k}` (a delivery exists) or `no result
+  ZIP exists; the original is preserved as original/source.zip`. In `_build_failed` the build's summary follows after
+  ` | `. Korean (i18n rule `delivery_not_written`): 「라운드 {r}의 결과 ZIP을 쓰지 못했습니다({ErrorType}).」 + 「결과
+  ZIP(delivery/result.zip)은 라운드 {k}의 결과 그대로입니다.」, for k = 0 「결과 ZIP(delivery/result.zip)은 바꾼 것이 없는
+  이전 결과 그대로입니다.」, without a delivery 「결과 ZIP은 없고, 원본은 original/source.zip에 그대로 보관합니다.」.
+- **`recover_delivery(paths, state) -> bool`** runs first in `run_remediation` (the state is saved when it changed). With
+  a readable marker: `result.zip` already has the marker's sha256 → rolled forward (`state.delivery` and `delivery.json`
+  become the marker's info; WARNING `… a result ZIP swap that the run did not finish was completed (round <r>)`);
+  otherwise rolled back (a verified copy this swap made is removed when it is a byte copy of the `result.zip` still
+  there; WARNING `… was rolled back …`). Leftover `.result.next.zip*` files and the marker are always removed; an
+  unreadable marker never raises. So a kill before the replace leaves the previous delivery, a kill after it ends with
+  the new one, and the state always names a ZIP that exists with that sha256.
+
+### Truthful end states (`graph.py`, `report.py`)
+
+- **The build outcome is recorded before the sync can raise** (`_package`): a first build sets `rs.build` (and clears
+  `build_compare`, `build_tolerated`, `fix_first_build`); a confirming build sets `rs.build` only when it passed. A
+  `CandidateNotRestored` after a passing build therefore leaves the passing build on record.
+- **「결과 파일 — 없음」** of a FAILED run without a delivery (`report._no_delivery_why`), followed by 「원본은 그대로입니다.」:
+  message rule `candidate_not_restored` → 「수정본을 빌드 뒤 원래 상태로 되돌리지 못해 결과 ZIP을 만들지 않았습니다.」;
+  rule `delivery_not_written` → 「라운드 <r>의 결과 ZIP을 쓰지 못했습니다.」; else by reason: `candidate_build_failed`
+  「빌드에 실패한 수정본은 결과 ZIP으로 만들지 않았습니다.」, `baseline_build_failed` 「조치 전 빌드가 실패해 검사와 조치를
+  진행하지 않았습니다.」, `text_only_violation` 「버전 표기 외의 변경이 발견된 수정본은 결과 ZIP으로 만들지 않았습니다.」,
+  `resolution_mismatch` 「의존성 버전이 계획과 다르게 적용된 수정본은 결과 ZIP으로 만들지 않았습니다.」, `zip_hash_mismatch`
+  「검사한 파일과 가진 파일이 같은지 확인하지 못해 결과 ZIP을 만들지 않았습니다.」, `execution_boundary_refused` / `not_ready`
+  「조치를 시작하기 전에 멈춰 결과 ZIP을 만들지 않았습니다.」, `internal_error` 「도구 내부 오류로 결과 ZIP을 만들지
+  못했습니다.」, any other code 「결과 ZIP을 만들지 않았습니다.」. Other statuses: 「없음」 alone.
+- **A failing fix-loop folder setup** (settling an old `fixloop/`, removing it, `mkdir`, writing `loop.json`) is a loop
+  that did not start: `FixResult(attempted=False, fixed=False, reason="error: <Type>: <message>")` (scrubbed), state saved,
+  journal `remediation_fix_loop` `phase: not_started`, WARNING `remediation round <r>: the fix loop folder could not be
+  prepared: <Type>`; the untouched failed candidate is delivered as for any not-fixed round.
+- **A loop that made no attempt** (`graph.fix_made_no_attempt`: `attempted`, not `fixed`, `attempts == 0`, and not a
+  result that had been a fix — a failed confirming build or a `discarded:` reason): message suffix
+  ` | automatic build fix made no attempt: <reason>` (`FIX_NO_ATTEMPT`); Korean 「빌드 오류 자동 수정을 하지
+  못했습니다(<사유>).」 (`i18n.fix_no_attempt_ko`, rule `auto_fix_no_attempt`; never 「시도한 소스 수정」); record line
+  「- 빌드 오류 자동 수정: 하지 못함(<사유>) · LLM 호출 <n>회」 (+ the raw reason). `not started` (attempted false) and
+  `automatic build fix:` (attempts made) keep their wording.
+
+### Usage after an exception (`fixer.py`, `models.py`)
+
+- When an exception escapes `run_fix_loop` before a result carried usage, the usage is read from the loop's own journal
+  (`fixer.journal_usage(folder, cfg) -> (rows, currency) | None`, the reader `interrupted_result` uses too: `([], "")` without
+  a journal, None when it cannot be read). Calls the budget counted beyond the journal's (all of them when the journal
+  is unreadable) go to one row of the configured model with `FixUsage.tokens_unknown = True` and `cost: None`.
+- `FixUsage.tokens_unknown: bool = False` (left out of the JSON when false). `fixer.fix_usage_rows` carries
+  `tokens_unknown: true` on a row with such calls; that row's `cost` is None (unknown, never 0).
+
+### The exec bit and unreadable files (`intake.py`, `graph.py`)
+
+- **`rounds/<r>/expected.json`** = `{schema: 2, round, applied, applied_files, files: {path: [size, sha256, exec]}}`.
+  `graph._rows` accepts only three-element rows with a boolean exec bit; a schema-1 table (two elements, written by the
+  never-deployed code of v2.1z-bm) is no proof (`WHY_NO_PROOF`), so the round goes back through `apply`. Fixed files
+  take the exec bit of their row (an overwrite keeps the candidate file's mode); rows built from `original/manifest.json`
+  take it from an lstat of the `accepted/` file (no read).
+- **The sync** (`sync_tree`, `sync_tree_table`): a file with the right bytes whose exec bit differs from the expected
+  one gets the canonical mode back (0755 / 0644) and counts as changed (`build_changed`, journal `build_side_changes`).
+  A file a build left unreadable (`PermissionError` while comparing) is made readable once (`_make_writable_on_path` now
+  adds the owner's read bit too), compared again, and its mode put back (also counted as changed).
+- **`intake.file_table`** records a path that is not a regular file (folder, link) as `(0, "NOT_REGULAR", False)`, like
+  `tree_hash`, so `table_hash(file_table(t)) == tree_hash(t)` in that case too.
+
+### A final state always gets its report (`graph.py`, `chain.py`, `service.py`)
+
+- `graph.report_written(paths, state)`: `report.md` exists and `report.json["state"]["updated"] == state.updated`.
+  `graph.report_pending(paths, state)`: status in `TERMINAL`, `next_node == "report"`, not written (a state that ended
+  outside the graph — an intake refusal, a failed start — is never pending). `graph.write_pending_report(state, paths,
+  cfg, *, save, journal) -> bool` runs only the report node (through `_wrap`, same stamps and saves, the combined
+  `fix.patch` included) with journal `report_rewritten` (`status`) and WARNING `remediation <id>: the report of the
+  <STATUS> run was not written; writing it now`.
+- Called on the next entry of the run folder: `run_remediation` (a terminal state: report only, nothing else runs);
+  `chain.run_after_migration` / `chain.run_only` for an existing state (`_repair_report`, under the run claim; another
+  holder → the state as it is; a failure is a WARNING `… the report was not written: …`); `chain.resume` — a pending
+  final state is no longer refused: journal `remediation_report_repair` (`remediation`, `status`), the report written,
+  the state returned; `service._recover` at startup in in-process mode (`_write_pending_report`, under a `RunClaim`
+  `purpose="service"`; a failure never stops the server).
+
+### The scan source (`graph.py`, `models.py`, `report.py`)
+
+- **When `intake.build_output_files > 0`** the baseline scan uploads `original/scan-source.zip` (`RunPaths.scan_source`):
+  `intake.freeze_delivery(accepted/, …, round 0, manifest paths)`, deterministic. `_Holder.scan_source() -> (path,
+  sha256)`: made on first use, its sha256 recorded in `RemediationState.scan_source_sha256` (left out of the JSON when
+  empty; older states read back), saved, journal `scan_source_made` (`sha256`, `files`, `left_out`), INFO `remediation
+  <id>: the scan source ZIP leaves the upload's <n> build output file(s) out (<sha>)`. Later uses take the file when it
+  has the recorded sha256, else make it again; another sha256 raises `graph.ScanSourceChanged` → FAILED
+  `zip_hash_mismatch` `the scan source ZIP (original/scan-source.zip) could not be made again with the sha256 recorded
+  in the state` (Korean 「검사용 ZIP(original/scan-source.zip)을 처음 검사한 것과 같은 바이트로 다시 만들 수 없습니다.」).
+- **A no-change delivery** (round 0, `deliver_original`) is a copy of the scan source through `install_delivery`; the
+  copy must hash to the scan source's sha256 (else `ScanSourceChanged`). Every "the scanned bytes are the bytes we hold"
+  check compares against it: IVAS answers `IVAS analysed bytes whose sha256 differs from the scan source ZIP` /
+  `IVAS scanned a ZIP whose sha256 differs from the scan source ZIP` (Korean 「IVAS가 분석한 파일의 sha256이 검사용 ZIP과
+  다릅니다.」 / 「IVAS가 검사한 ZIP의 sha256이 검사용 ZIP과 다릅니다.」); the original's sha check before the upload is
+  made only when the original is what is uploaded.
+- **Without left-out build output nothing changes**: the upload is scanned and delivered byte for byte, no
+  `scan-source.zip`. **A run the deployed version started** (no recorded scan-source sha, and its pending upload, receipt
+  or baseline scan names the original's sha256: `_scanned_original_before`) keeps the original.
+- `original/source.zip` stays the upload; the files route still serves it as `source.zip`; `scan-source.zip` is not
+  served. A chained source ZIP (`chain.source_zip`) never carries build output, so a chained run scans the original.
+- **Report.** The note 「업로드한 ZIP의 빌드 산출물 <n>개(…)는 검사와 결과 ZIP에서 제외했습니다. …」 is left out when the
+  baseline scan was of the original (its `zip_sha256` equals the upload's). The round-0 line says 「결과 ZIP은 원본 ZIP에서
+  빌드 산출물만 뺀 것입니다.」 only when build output was left out AND the delivery is not the upload's bytes, else
+  「결과 ZIP은 원본 ZIP과 같은 파일입니다.」.
+
+### Run folder (as now)
+
+`original/source.zip` (the upload, never changed), `original/manifest.json`, `original/scan-source.zip` (only with
+left-out build output), `accepted/`, `baseline/`, `rounds/<n>/` (`expected.json` schema 2), `scans/`, `delivery/`
+(`result.zip`, `delivery.json`, a kept `result-r<k>-verified.zip` + `.json`, and only during a swap `.result.next.zip` +
+`.result.next.json`), `state.json`, `journal.jsonl`, `remediation.log`, `report.md`, `report.json`, `fix.patch`.
+New journal events: `delivery_not_written`, `scan_source_made`, `report_rewritten`, `remediation_report_repair`.
+
+**Tests.** `tests/remediations/test_fix_loop_review4.py` (the reproductions turned around: a failed freeze of the failed
+candidate keeps the verified delivery, a failed freeze in the freeze node keeps round 1, a failed first freeze says
+there is none; every kill point of the swap leaves or repairs a truthful delivery; recovery without a marker; not
+restored after a passing build; every no-delivery sentence; a failing folder setup for `loop.json` and an old folder;
+usage from the loop's journal, an unreadable journal, calls beyond the journal; the exec bit in both syncs, an
+unreadable file, a build that only flips a bit, a schema-1 table; the no-attempt wording per reason and the results it
+spares; a kill during the report node with and without `fix.patch`, a state ended outside the graph, `chain.resume`, the
+in-process service at startup; `table_hash` of `file_table` for a folder at a manifest path),
+`tests/remediations/test_scan_source.py` (left-out output neither scanned nor delivered; a finding compares like with
+like; nothing left out = byte for byte; deployed-version runs waiting on a receipt or past the baseline keep the
+original; an uncertain upload then a receipt keeps the sha; made again = same bytes; cannot be made again → FAILED; the
+chained source ZIP; the files route; old `state.json`), `test_i18n.py`; earlier review tests adjusted for schema 2.
+
+**Still open** (as the code's author reported): in Job mode a chained remediation whose report node was killed gets its
+report only when something calls `chain.resume` / `run_after_migration` again, and the page offers resume only for
+resumable states; in-process chained runs are not repaired at startup (`service._recover` reads the standalone folder);
+the permission and read retry is not tested on Windows; a fifth review and a second real-Maven smoke run were running
+when this was written.
