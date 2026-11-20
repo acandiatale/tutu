@@ -67,7 +67,8 @@ def file_sha(p: Path) -> str:
 
 # ---------------------------------------------------------------------------- intake (real, tiny)
 class FakeIntakeFns:
-    """Real tiny `manifest_paths` / `tree_hash` / `copy_tree` / `freeze_delivery`; scripted `check_boundary`."""
+    """Real tiny `manifest_paths` / `tree_hash` / `copy_tree` / `freeze_delivery`; the real `restore_missing` /
+    `sync_tree`; scripted `check_boundary`."""
 
     def __init__(self, boundary: list[BoundaryFinding] | None = None,
                  after_freeze: Callable[[Path], None] | None = None):
@@ -97,6 +98,16 @@ class FakeIntakeFns:
                 d = dst / p
                 d.parent.mkdir(parents=True, exist_ok=True)
                 d.write_bytes(s.read_bytes())
+
+    def restore_missing(self, tree: Path, source: Path, paths: list[str]) -> list[str]:
+        from sbmig.remediations import intake as intake_mod
+        return intake_mod.restore_missing(tree, source, paths)
+
+    def sync_tree(self, tree: Path, expected: Callable[[str], Path], paths: list[str]) -> tuple[list[str], list[str]]:
+        # the real function, looked up at call time so a test can monkeypatch `intake.sync_tree`
+        from sbmig.remediations import intake as intake_mod
+        self.calls.append("sync_tree")
+        return intake_mod.sync_tree(tree, expected, paths)
 
     def freeze_delivery(self, tree: Path, out_zip: Path, round: int, paths: list[str]) -> DeliveryInfo:
         self.calls.append("freeze_delivery")

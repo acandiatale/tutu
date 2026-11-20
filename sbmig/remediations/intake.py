@@ -512,6 +512,75 @@ def restore_missing(tree: Path, source: Path, paths: list[str]) -> list[str]:
     return restored
 
 
+def _same_bytes(a: Path, b: Path, size_a: int) -> bool:
+    """두 파일의 크기를 먼저 비교하고, 같을 때만 바이트를 조금씩 읽어 비교한다."""
+    if os.lstat(b).st_size != size_a:
+        return False
+    with open(a, "rb") as fa, open(b, "rb") as fb:
+        while True:
+            x, y = fa.read(_CHUNK), fb.read(_CHUNK)
+            if x != y:
+                return False
+            if not x:
+                return True
+
+
+def sync_tree(tree: Path, expected: Any, paths: list[str]) -> tuple[list[str], list[str]]:
+    """``tree``의 manifest 파일을 기대하는 바이트(``expected(path)``가 가리키는 파일)와 맞춘다.
+    없는 파일은 되살리고 바이트가 다른 파일은 덮어쓰며, (되살린 경로, 덮어쓴 경로)를 정렬해서 반환한다.
+
+    Bring every path of `paths` in `tree` to the bytes of the file `expected(path)` names (normally `accepted/<p>`,
+    `rounds/<r>/applied/<p>` or the fix loop's `fixed/<p>`): a path missing in `tree` is copied back (as
+    `restore_missing` did), a path whose bytes differ is overwritten (size first, then bytes; no hashing). The exec bit
+    comes from the expected file. A path whose expected file does not exist is left alone. Symlinks on either side are
+    refused (`RemediationError(code="symlink")`), never followed or created; a directory where a file belongs is
+    `special_file`. Returns `(missing, changed)`, both sorted."""
+    tree = Path(tree)
+    missing: list[str] = []
+    changed: list[str] = []
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    for rel in sorted(set(paths)):
+        rel = _safe_rel(rel)
+        src = Path(expected(rel))
+        try:
+            st_src = os.lstat(src)
+        except FileNotFoundError:
+            continue                          # 기대하는 파일이 없으면 판단할 수 없으므로 손대지 않는다
+        if stat.S_ISLNK(st_src.st_mode):
+            raise RemediationError(f"symbolic link in the tree: {_safe_display(rel)}", code="symlink")
+        if not stat.S_ISREG(st_src.st_mode):
+            raise RemediationError(f"not a regular file: {_safe_display(rel)}", code="special_file")
+        target = tree / rel
+        try:
+            st_dst = os.lstat(target)
+        except FileNotFoundError:
+            st_dst = None
+        except NotADirectoryError:
+            raise RemediationError(f"not a directory on the path of {_safe_display(rel)}", code="special_file") from None
+        if st_dst is not None:
+            if stat.S_ISLNK(st_dst.st_mode):
+                raise RemediationError(f"symbolic link in the tree: {_safe_display(rel)}", code="symlink")
+            if not stat.S_ISREG(st_dst.st_mode):
+                raise RemediationError(f"not a regular file: {_safe_display(rel)}", code="special_file")
+            if _same_bytes(target, src, st_dst.st_size):
+                continue
+        parent = _real_dirs_to(tree, rel)
+        out = parent / rel.split("/")[-1]
+        mode = 0o755 if st_src.st_mode & 0o111 else 0o644
+        tmp = parent / f".{out.name}.sync-tmp"
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | nofollow | getattr(os, "O_BINARY", 0), 0o600)
+        with os.fdopen(fd, "wb") as dst, open(src, "rb") as fh:
+            shutil.copyfileobj(fh, dst, _CHUNK)
+        os.chmod(tmp, mode)
+        os.replace(tmp, out)
+        (changed if st_dst is not None else missing).append(rel)
+    return missing, changed
+
+
 def copy_tree(src: Path, dst: Path, paths: list[str]) -> None:
     """``src``에서 ``paths``의 파일만 새 폴더 ``dst``로 복사하고, 권한은 실행 비트만 옮긴다.
     ``dst``는 없거나 비어 있어야 한다.

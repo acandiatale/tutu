@@ -312,6 +312,10 @@ SAMPLES: list[tuple[str, str, list[str]]] = [
     ("auto_fix_other", "automatic build fix: something new", ["something new"]),
     ("auto_fix_discarded", "automatic build fix: discarded: the candidate was remade",
      ["수정본을 다시 만들어 이전 수정은 버림"]),
+    ("auto_fix_unusable", "automatic build fix: discarded: the stored fix is not usable",
+     ["저장해 둔 수정을 쓸 수 없어 버림"]),
+    ("auto_fix_interrupted", "automatic build fix: interrupted: the run ended during the loop",
+     ["실행이 수정 도중에 끝남"]),
     # the suffix when the loop was not started (attempted: false); it never says the sources were reverted
     ("auto_fix_not_started_stop", "automatic build fix not started: stop requested",
      ["빌드 오류 자동 수정은 시작하지 않았습니다(중지 요청)."]),
@@ -586,3 +590,21 @@ def test_fix_reasons_of_the_work_copy_fixer():
         assert line == f"빌드 오류 자동 수정은 시작하지 않았습니다({why})."
         out = i18n.ko_text(f"the candidate build failed | automatic build fix not started: {reason}")
         assert line in out and "되돌렸" not in out
+
+
+def test_fix_reasons_of_the_second_review():
+    """Reasons the graph and the fixer write since INTERFACES "v2.1z-bk": a loop the run ended (with and without
+    ` (usage unknown)`), a stored fix that is not usable, the guard reason `<p> must not be created`."""
+    for reason in ("interrupted: the run ended during the loop", "interrupted: the run ended during the loop (usage unknown)"):
+        assert i18n.fix_reason_ko(reason) == ("실행이 수정 도중에 끝남", "")
+        out = i18n.ko_text(f"automatic build fix: {reason}")
+        assert "실행이 수정 도중에 끝남" in out and "usage unknown" not in out and "interrupted" not in out
+        assert i18n.rule_keys(f"automatic build fix: {reason}") == ["auto_fix_interrupted"]
+    assert i18n.fix_reason_ko("discarded: the stored fix is not usable") == ("저장해 둔 수정을 쓸 수 없어 버림", "")
+    assert i18n.rule_keys("automatic build fix: discarded: the stored fix is not usable") == ["auto_fix_unusable"]
+    assert i18n.fix_reason_ko("rejected: app/src/main/java/com/example/New.java must not be created") == (
+        "새로 만들 수 없는 파일: app/src/main/java/com/example/New.java", "")
+    out = i18n.ko_text("the candidate build failed | automatic build fix: rejected: app/Extra.java must not be created")
+    assert "새로 만들 수 없는 파일: app/Extra.java" in out and "must not be created" not in out
+    # a loop that never started never reads as reverted, whatever the reason
+    assert "되돌렸" not in i18n.ko_text("automatic build fix not started: discarded: the stored fix is not usable")

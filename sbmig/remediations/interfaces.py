@@ -143,6 +143,9 @@ class IntakeFns(Protocol):
     def freeze_delivery(self, tree: Path, out_zip: Path, round: int, paths: list[str]) -> DeliveryInfo: ...
     # ``tree``에 없는 manifest 경로를 ``source``에서 다시 복사하고 복사한 경로 목록을 반환한다(있는 파일은 건드리지 않는다)
     def restore_missing(self, tree: Path, source: Path, paths: list[str]) -> list[str]: ...
+    # ``tree``의 manifest 경로를 ``expected(path)``의 바이트와 맞추고 (되살린 경로, 덮어쓴 경로)를 반환한다
+    # 수정본을 빌드할 때마다 호출해 빌드가 바꾼 파일이 결과에 들어가지 않게 한다
+    def sync_tree(self, tree: Path, expected: Callable[[str], Path], paths: list[str]) -> tuple[list[str], list[str]]: ...
 
 
 class InventoryFn(Protocol):

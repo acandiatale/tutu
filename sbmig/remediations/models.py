@@ -647,7 +647,9 @@ class FixResult(Record):
     relative to the project root (the loop's repository root), empty unless fixed; `patch`: run-relative path of
     `rounds/<r>/fix.patch` or ""; `reason` (English, "" when fixed): `not fixed: <n> error(s) left`,
     `llm unavailable`, `stop requested`, `time budget used up`, `rejected: <guard reason>`,
-    `error: <Type>: <msg>`, `error: confirming build failed`, `discarded: the candidate was remade`; `models`: the
+    `error: <Type>: <msg>`, `error: confirming build failed`, `discarded: the candidate was remade`,
+    `discarded: the stored fix is not usable`, `interrupted: the run ended during the loop` (with ` (usage unknown)`
+    when the killed loop's usage could not be read); `models`: the
     model names the calls asked with. `usage`: one `FixUsage` per asked model
     (their calls / tokens add up to `llm_calls` / `input_tokens` / `output_tokens`, their names are `models`);
     `currency` = `llm.pricing_currency` when a row has a cost. Both are left out of the JSON when empty, and a FixResult
@@ -655,7 +657,9 @@ class FixResult(Record):
     v2.1z-bj: `fixed_dir` (run-relative `rounds/<r>/fixloop/fixed`, the fixed bytes the graph overlays), `tree_hash`
     (the candidate's `intake.tree_hash` after the overlay), `retry_passed` (fixed with no file changed: the loop's own
     first build passed), `discarded_changed` (the files of a fix that a failed confirming build or a remade candidate
-    threw away). All four are left out of the JSON when empty / False."""
+    threw away). All four are left out of the JSON when empty / False. v2.1z-bk: `loop_id` = the token the graph wrote
+    into `fixloop/loop.json` before the loop started (tells a recorded loop's folder from a killed one; left out when
+    empty)."""
     attempted: bool = False
     fixed: bool = False
     iterations: int = 0
@@ -679,8 +683,10 @@ class FixResult(Record):
     retry_passed: bool = False
     # 확인 빌드가 실패했거나 수정본을 다시 만들어 버린 고친 파일 목록이다. 결과에는 들어가지 않았다
     discarded_changed: list[str] = field(default_factory=list)
+    # 이 결과를 낸 루프의 표식이다(``fixloop/loop.json``). 기록된 루프의 폴더와 중간에 끝난 루프의 폴더를 구별한다
+    loop_id: str = ""
     _nested = {"usage": FixUsage}
-    _omit_empty = ("usage", "currency", "fixed_dir", "tree_hash", "discarded_changed")
+    _omit_empty = ("usage", "currency", "fixed_dir", "tree_hash", "discarded_changed", "loop_id")
     _omit_false = ("retry_passed",)
 
 
@@ -705,9 +711,11 @@ class RoundState(Record):
     fix_first_build: BuildOutcome | None = None
     # 버린 수정 루프 결과다(수정본을 다시 만들기 전에 버린 고침). LLM 사용량은 계속 센다. 비어 있으면 JSON에 넣지 않는다
     fix_discarded: list[FixResult] = field(default_factory=list)
+    # 빌드가 지우거나 바꿔서 기대하는 바이트로 되돌린 manifest 경로다(라운드의 모든 빌드, 정렬). 비어 있으면 JSON에 넣지 않는다
+    build_changed: list[str] = field(default_factory=list)
     _nested = {"build": BuildOutcome, "fix": FixResult, "fix_first_build": BuildOutcome, "fix_discarded": FixResult}
     _omit_none = ("fix", "fix_first_build")
-    _omit_empty = ("fix_discarded",)
+    _omit_empty = ("fix_discarded", "build_changed")
 
 
 @dataclass

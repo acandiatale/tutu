@@ -1,13 +1,15 @@
-"""The `fix.patch` entry of the remediation files route (INTERFACES "v2.1z-bj", Files route, report, page): served only
-for the last round that is committed with `fix.fixed` and a non-empty `fix.changed`, decided from the saved state and
-never from the files on disk; otherwise 404 and absent from the status' file list. The review had reproduced a patch
-served for a round whose fix was not in the result (a fixed round that did not commit, a discarded fix)."""
+"""The `fix.patch` entry of the remediation files route (INTERFACES "v2.1z-bj" / "v2.1z-bk", Report, route, i18n): the
+combined `fix.patch` that `report.write_fix_patch` writes next to `report.md` (every committed fixed round, in round
+order) is served only when the saved state has a round committed with `fix.fixed` and a non-empty `fix.changed` AND
+the file exists; otherwise 404 and absent from the status' file list. Per-round patches on disk never decide. The
+reviews had reproduced a patch served for a round whose fix was not in the result, and with two fixed rounds a
+report naming each round's patch while the route served only the last."""
 from __future__ import annotations
 
 import pytest
 
 from sbmig.core.config import PACKAGE_ROOT, load_config
-from sbmig.remediations import service
+from sbmig.remediations import report, service
 from sbmig.remediations.models import (
     INCOMPLETE,
     FixResult,
@@ -41,8 +43,9 @@ def fixed(n, **kw):
     return FixResult(attempted=True, fixed=True, iterations=1, llm_calls=1, changed=[APP], patch=f"rounds/{n}/fix.patch", **kw)
 
 
-def _run(tmp_path, cfg, rounds, patches=(1, 2, 3)):
-    """A finished run whose state holds `rounds`, with a `fix.patch` file on disk in every round of `patches`."""
+def _run(tmp_path, cfg, rounds, patches=(1, 2, 3), combine=True):
+    """A finished run whose state holds `rounds`, with a `fix.patch` file on disk in every round of `patches`, and
+    the combined file written as the report node writes it (`combine`)."""
     rid = _foreign_run(tmp_path, cfg, "r20261120-110000-aaaaaa", INCOMPLETE)
     paths = RunPaths(tmp_path / "out" / REMEDIATIONS_DIR / rid)
     st = RemediationState.from_dict(read_json(paths.state))
@@ -51,6 +54,8 @@ def _run(tmp_path, cfg, rounds, patches=(1, 2, 3)):
     for n in patches:
         paths.round_dir(n).mkdir(parents=True, exist_ok=True)
         (paths.round_dir(n) / "fix.patch").write_text(f"patch of round {n}\n", encoding="utf-8")
+    if combine:
+        report.write_fix_patch(st, paths)
     return rid, paths, manager(tmp_path, cfg)
 
 
@@ -61,20 +66,21 @@ def _served(mgr, rid):
     return (r.status_code, r.text if r.status_code == 200 else None, listed)
 
 
-def test_the_last_committed_fixed_round_is_served(tmp_path, cfg):
+def test_two_fixed_rounds_are_served_as_one_patch(tmp_path, cfg):
     rounds = [RoundState(round=1, committed=True, fix=fixed(1)),
               RoundState(round=2, committed=True, fix=fixed(2)),
               RoundState(round=3, committed=True)]                       # a later round without the loop
     rid, paths, mgr = _run(tmp_path, cfg, rounds)
-    assert service._FIXED_FILES["fix.patch"](paths) == paths.round_dir(2) / "fix.patch"
-    assert _served(mgr, rid) == (200, "patch of round 2\n", True)
+    assert service._FIXED_FILES["fix.patch"](paths) == paths.root / "fix.patch"
+    assert _served(mgr, rid) == (200, "# round 1\npatch of round 1\n# round 2\npatch of round 2\n", True)
 
 
 def test_a_fixed_round_that_did_not_commit_is_not_served(tmp_path, cfg):
     rounds = [RoundState(round=1, committed=True, fix=fixed(1)),
               RoundState(round=2, committed=False, fix=fixed(2))]
     rid, _paths, mgr = _run(tmp_path, cfg, rounds)
-    assert _served(mgr, rid) == (200, "patch of round 1\n", True)          # the earlier committed fix is in the result
+    # the earlier committed fix is in the result; round 2's fix is not, so its patch is not in the file
+    assert _served(mgr, rid) == (200, "# round 1\npatch of round 1\n", True)
 
 
 @pytest.mark.parametrize("why,fix,committed", [
@@ -108,6 +114,36 @@ def test_without_a_state_nothing_is_served(tmp_path):
     assert not service._FIXED_FILES["fix.patch"](paths).is_file()
 
 
-def test_the_patch_of_the_served_round_must_exist(tmp_path, cfg):
-    rid, _paths, mgr = _run(tmp_path, cfg, [RoundState(round=1, committed=True, fix=fixed(1))], patches=())
+def test_the_combined_file_must_exist(tmp_path, cfg):
+    """The state says a fix is in the result but no report wrote the combined file yet: nothing to serve, even with
+    the per-round patch on disk."""
+    rid, _paths, mgr = _run(tmp_path, cfg, [RoundState(round=1, committed=True, fix=fixed(1))], combine=False)
+    assert _served(mgr, rid) == (404, None, False)
+
+
+def test_a_missing_round_patch_is_named_in_the_combined_file(tmp_path, cfg, caplog):
+    rounds = [RoundState(round=1, committed=True, fix=fixed(1)), RoundState(round=2, committed=True, fix=fixed(2))]
+    with caplog.at_level("WARNING", logger="sbmig.remediations.report"):
+        rid, _paths, mgr = _run(tmp_path, cfg, rounds, patches=(2,))
+    assert _served(mgr, rid) == (200, "# round 1: patch file missing\n# round 2\npatch of round 2\n", True)
+    assert any("round 1" in r.getMessage() and r.levelname == "WARNING" for r in caplog.records)
+
+
+def test_a_combined_file_left_from_an_earlier_report_is_not_served(tmp_path, cfg):
+    """A stale combined file while the saved state has no committed fixed round (written by hand here: the report
+    itself removes it, see below) is neither served nor listed."""
+    rid, paths, mgr = _run(tmp_path, cfg, [RoundState(round=1, committed=False, fix=fixed(1))], combine=False)
+    (paths.root / "fix.patch").write_text("# round 1\nstale\n", encoding="utf-8")
+    assert _served(mgr, rid) == (404, None, False)
+
+
+def test_the_report_removes_the_combined_file_when_no_fix_is_in_the_result(tmp_path, cfg):
+    rid, paths, mgr = _run(tmp_path, cfg, [RoundState(round=1, committed=True, fix=fixed(1))])
+    assert (paths.root / "fix.patch").is_file()
+    st = RemediationState.from_dict(read_json(paths.state))
+    st.rounds = [RoundState(round=1, committed=False, fix=fixed(1))]
+    write_json_atomic(paths.state, st.to_dict())
+    assert report.write_fix_patch(st, paths) is None
+    assert not (paths.root / "fix.patch").exists()
+    assert not list(paths.root.glob("fix.patch.tmp"))
     assert _served(mgr, rid) == (404, None, False)

@@ -197,10 +197,10 @@ def test_candidate_build_failure_with_build_output_ends_candidate_build_failed(t
 
 
 def test_the_cleaning_runner_reproduces_the_company_failure(tmp_path, monkeypatch):
-    """Without the intake rule AND without `restore_missing` the same run ends `internal_error` (proves the graph test
-    above can fail)."""
+    """Without the intake rule AND without the after-build synchronisation (`sync_tree`, which replaced the direct
+    `restore_missing` call in v2.1z-bk) the same run ends `internal_error` (proves the graph test above can fail)."""
     monkeypatch.setattr(intake, "build_output_paths", lambda files: [])
-    monkeypatch.setattr(intake, "restore_missing", lambda tree, source, paths: [])
+    monkeypatch.setattr(intake, "sync_tree", lambda tree, expected, paths: ([], []))
     env = _start_with_build_output(tmp_path)
     out = env.run()
     assert out.status == FAILED and out.reason != "candidate_build_failed"
@@ -209,7 +209,7 @@ def test_the_cleaning_runner_reproduces_the_company_failure(tmp_path, monkeypatc
 
 def test_restore_missing_is_the_second_net_when_build_output_was_listed(tmp_path, monkeypatch):
     """v2.1z-bj: with build output in the manifest (the intake rule off), the files `mvn clean` removed are copied back
-    from accepted/ after the build, so the run still ends `candidate_build_failed` with a frozen delivery."""
+    from accepted/ after the build (`sync_tree` since v2.1z-bk), so the run still ends `candidate_build_failed` with a frozen delivery."""
     monkeypatch.setattr(intake, "build_output_paths", lambda files: [])
     env = _start_with_build_output(tmp_path)
     out = env.run()
@@ -323,3 +323,74 @@ def test_restore_missing_refuses_unsafe_paths(tmp_path):
     for bad in ("../a.txt", "/etc/passwd", "a/"):
         with pytest.raises(RemediationError):
             intake.restore_missing(cand, src, [bad])
+
+
+# ---------------------------------------------------------------------------- v2.1z-bk: sync_tree
+def test_sync_tree_restores_missing_and_overwrites_changed_files_from_the_expected_ones(tmp_path):
+    acc = _tree(tmp_path / "accepted", {"pom.xml": b"<project>old</project>", "src/A.java": b"class A {}",
+                                         "src/B.java": b"class B {}", "mvnw": b"#!/bin/sh\n", "README": b"same"})
+    (acc / "mvnw").chmod(0o755)
+    applied = _tree(tmp_path / "applied", {"pom.xml": b"<project>new</project>"})
+    cand = _tree(tmp_path / "cand", {"pom.xml": b"<project>sorted by the build</project>",
+                                     "src/A.java": b"class A {} // reformatted", "src/B.java": b"class X {}",
+                                     "README": b"same"})
+    calls = []
+
+    def expected(rel):
+        calls.append(rel)
+        return applied / rel if (applied / rel).is_file() else acc / rel
+    paths = ["pom.xml", "src/A.java", "src/B.java", "mvnw", "README", "gone/everywhere.txt"]
+    missing, changed = intake.sync_tree(cand, expected, paths)
+    assert missing == ["mvnw"] and changed == ["pom.xml", "src/A.java", "src/B.java"]
+    assert (cand / "pom.xml").read_bytes() == b"<project>new</project>"         # the applied bytes, not accepted
+    assert (cand / "src/A.java").read_bytes() == b"class A {}"
+    assert (cand / "src/B.java").read_bytes() == b"class B {}"                   # same size, other bytes
+    assert (cand / "mvnw").stat().st_mode & 0o111 and not (cand / "src/A.java").stat().st_mode & 0o111
+    assert not (cand / "gone").exists()                                           # no expected file: left alone
+    assert sorted(calls) == sorted(paths)
+    assert not [p for p in cand.rglob(".*sync-tmp")]
+    assert intake.sync_tree(cand, expected, paths) == ([], [])                   # idempotent
+
+
+def test_sync_tree_compares_sizes_before_reading_bytes(tmp_path, monkeypatch):
+    acc = _tree(tmp_path / "accepted", {"a.txt": b"x" * 10, "b.txt": b"y" * 10})
+    cand = _tree(tmp_path / "cand", {"a.txt": b"x" * 11, "b.txt": b"y" * 10})
+    opened = []
+    real_open = open
+
+    def spy(path, *a, **k):
+        opened.append(Path(path).name)
+        return real_open(path, *a, **k)
+    monkeypatch.setattr("builtins.open", spy)
+    missing, changed = intake.sync_tree(cand, lambda rel: acc / rel, ["a.txt", "b.txt"])
+    assert (missing, changed) == ([], ["a.txt"])
+    # a.txt differs in size: read once to copy it; b.txt has the same size: read on both sides to compare
+    assert opened.count("b.txt") == 2
+
+
+def test_sync_tree_refuses_symlinks_on_either_side(tmp_path):
+    from sbmig.remediations.models import RemediationError
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    acc = _tree(tmp_path / "accepted", {"a.txt": b"orig", "b.txt": b"orig"})
+    cand = _tree(tmp_path / "cand", {"b.txt": b"orig"})
+    (cand / "a.txt").symlink_to(outside / "x")
+    with pytest.raises(RemediationError) as e:
+        intake.sync_tree(cand, lambda rel: acc / rel, ["a.txt"])
+    assert e.value.code == "symlink" and not (outside / "x").exists()
+    (acc / "b.txt").unlink()
+    (acc / "b.txt").symlink_to(outside / "secret")
+    (outside / "secret").write_bytes(b"secret")
+    with pytest.raises(RemediationError) as e:
+        intake.sync_tree(cand, lambda rel: acc / rel, ["b.txt"])
+    assert e.value.code == "symlink" and (cand / "b.txt").read_bytes() == b"orig"
+
+
+def test_sync_tree_refuses_unsafe_paths(tmp_path):
+    from sbmig.remediations.models import RemediationError
+    acc = _tree(tmp_path / "accepted", {"a.txt": b"x"})
+    cand = tmp_path / "cand"
+    cand.mkdir()
+    for bad in ("../a.txt", "/etc/passwd", "a/"):
+        with pytest.raises(RemediationError):
+            intake.sync_tree(cand, lambda rel: acc / rel, [bad])

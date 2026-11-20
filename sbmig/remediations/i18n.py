@@ -516,11 +516,16 @@ _FIX_REASONS: tuple[tuple[re.Pattern[str], Callable[[dict[str, str]], str], str]
     (re.compile(r"rejected: pom\.xml must not be edited: (?P<p>.+)"), lambda g: f"고칠 수 없는 파일: {g['p']}", ""),
     (re.compile(r"rejected: (?P<p>.+) must not be edited"), lambda g: f"고칠 수 없는 파일: {g['p']}", ""),
     (re.compile(r"rejected: (?P<p>.+) must not be deleted"), lambda g: f"지울 수 없는 파일: {g['p']}", ""),
+    (re.compile(r"rejected: (?P<p>.+) must not be created"), lambda g: f"새로 만들 수 없는 파일: {g['p']}", ""),
     (re.compile(r"rejected: (?P<p>.+) is not a file of the uploaded project"),
      lambda g: f"올린 프로젝트에 없는 파일: {g['p']}", ""),
     (re.compile(r"rejected: (?P<e>.+)"), lambda g: "허용하지 않는 파일 변경이 들어 있음", "e"),
     (re.compile(r"error: confirming build failed"), lambda g: "고친 뒤 다시 한 빌드가 실패함", ""),
     (re.compile(r"discarded: the candidate was remade"), lambda g: "수정본을 다시 만들어 이전 수정은 버림", ""),
+    (re.compile(r"discarded: the stored fix is not usable"), lambda g: "저장해 둔 수정을 쓸 수 없어 버림", ""),
+    # 수정 루프 도중에 실행이 끝난 경우다. LLM 호출 수를 알 수 없는 형태는 보고서가 따로 적는다
+    (re.compile(r"interrupted: the run ended during the loop(?: \(usage unknown\))?"),
+     lambda g: "실행이 수정 도중에 끝남", ""),
     (re.compile(r"error: (?P<e>.+)"), lambda g: "내부 오류", "e"),
 )
 
@@ -1155,6 +1160,11 @@ RULES: list[_Rule] = [
     _r("auto_fix_rejected", r"automatic build fix: (?P<r>rejected: .+)", lambda g: fix_failed_ko(g["r"])),
     _r("auto_fix_confirm", r"automatic build fix: (?P<r>error: confirming build failed)", lambda g: fix_failed_ko(g["r"])),
     _r("auto_fix_discarded", r"automatic build fix: (?P<r>discarded: the candidate was remade)",
+       lambda g: fix_failed_ko(g["r"])),
+    _r("auto_fix_unusable", r"automatic build fix: (?P<r>discarded: the stored fix is not usable)",
+       lambda g: fix_failed_ko(g["r"])),
+    _r("auto_fix_interrupted",
+       r"automatic build fix: (?P<r>interrupted: the run ended during the loop(?: \(usage unknown\))?)",
        lambda g: fix_failed_ko(g["r"])),
     _r("auto_fix_error", r"automatic build fix: (?P<r>error: .+)", lambda g: fix_failed_ko(g["r"])),
     _r("auto_fix_other", r"automatic build fix: (?P<r>.+)", lambda g: fix_failed_ko(g["r"])),

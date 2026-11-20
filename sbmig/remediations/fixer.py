@@ -4,8 +4,10 @@
 - pom, 숨김 경로, 실행 스크립트, 바이너리 묶음의 수정과 파일 추가, 삭제는 ``edit_guard``가 시도마다 거절하고 끝에서 한 번 더 확인한다
 - KB의 저장된 스크립트는 쓰지 않고 이 루프에서 배운 것도 KB에 기록하지 않는다(``NullKnowledgeBase``)
 - 루프의 저널과 로그는 ``rounds/<r>/fixloop/``에 남고 실행 전체의 저널에는 쓰지 않는다
+- 빌드가 바꾼 추적 파일은 빌드마다 되돌리고, 시도가 커밋한 경로만 고친 파일로 본다
 
-The build fix loop on a failed remediation candidate (docs/INTERFACES.md "v2.1z-bi" part B, amended by "v2.1z-bj"):
+The build fix loop on a failed remediation candidate (docs/INTERFACES.md "v2.1z-bi" part B, amended by "v2.1z-bj"
+and "v2.1z-bk"):
 `run_fix_loop` and the `Fixer` the graph reaches through `Components.fixer` (`RemediationFixer`). The candidate tree is
 never written: the loop runs in a work copy of the loop paths, changed files are found by byte comparison, the fixed
 bytes are stored durably in `fixloop/fixed/` and the graph overlays them. Paths are relative to the project root.
@@ -155,42 +157,73 @@ def make_edit_guard(loops: Iterable[str], editable: Iterable[str]) -> Callable[[
     return guard
 
 
-def compare_trees(tree: Path, work: Path, loops: list[str], editable: set[str]) -> tuple[list[str], str | None]:
+def compare_trees(tree: Path, work: Path, loops: list[str], editable: set[str],
+                  attempted: set[str] | None = None) -> tuple[list[str], str | None]:
     """원래 트리와 작업 복사본의 바이트를 비교해 바뀐 편집 가능 경로와 첫 위반 사유를 반환한다.
+    ``attempted``를 주면 시도가 바꾼 것으로 기록된 경로만 보고, 나머지 차이는 빌드가 남긴 것으로 보고 넘어간다.
 
     Rule 3: bytes of every loop path in `tree` against the work copy. An editable path that differs is changed; a
     missing loop path, a symlink, or a difference in a non-editable path other than the root `.gitignore` (git_init
-    writes sbmig's lines into it) is a violation."""
+    writes sbmig's lines into it) is a violation. v2.1z-bk: with `attempted` (the paths the work copy's history
+    records as changed by an attempt since the base commit) a difference or a missing file outside that set is a build
+    leftover and ignored; only a symlink is a violation wherever it is."""
     changed: list[str] = []
     for p in loops:
         a, b = Path(tree) / p, Path(work) / p
         if b.is_symlink():
             return changed, _not_editable_reason(p)
+        by_attempt = attempted is None or p in attempted
         if not b.is_file():
-            return changed, f"{p} must not be deleted"
+            if by_attempt:
+                return changed, f"{p} must not be deleted"
+            continue
         if p == GITIGNORE:
             continue
-        if a.read_bytes() == b.read_bytes():
+        if a.stat().st_size == b.stat().st_size and a.read_bytes() == b.read_bytes():
             continue
+        if not by_attempt:
+            continue                                  # 빌드가 남긴 차이다. 시도의 수정으로 보지 않는다
         if p not in editable:
             return changed, _not_editable_reason(p)
         changed.append(p)
     return sorted(changed), None
 
 
-def unified_patch(tree: Path, work: Path, changed: list[str]) -> str:
-    """바뀐 파일의 두 바이트 판으로 통합 diff를 만든다. UTF-8이 아닌 파일은 ``Binary files differ``로만 적는다.
+# 패치에 보여 줄 때 시도하는 인코딩이다. pom 인코딩 보정(``restructure.pom_charset``)과 같은 순서다
+_PATCH_CODECS = (("utf-8", "UTF-8"), ("cp949", "MS949"))
 
-    `a/<path>` → `b/<path>`, project-relative, made with `difflib` from the two byte versions."""
+
+def _decode_pair(a: bytes, b: bytes) -> tuple[str, str, str] | None:
+    """두 바이트 판을 같은 인코딩(UTF-8, 그다음 cp949)으로 풀고 (옛 글, 새 글, 인코딩 이름)을 반환한다. 둘 다 안 되면 None이다."""
+    for codec, name in _PATCH_CODECS:
+        try:
+            return a.decode(codec), b.decode(codec), name
+        except UnicodeDecodeError:
+            continue
+    return None
+
+
+def unified_patch(tree: Path, work: Path, changed: list[str],
+                  new_bytes: Callable[[str], bytes] | None = None) -> str:
+    """바뀐 파일의 두 바이트 판으로 통합 diff를 만든다. UTF-8이 아니면 cp949로 풀어 UTF-8로 적고 맨 앞에 그 사실을 한 줄 남긴다.
+    두 인코딩 모두로 풀리지 않는 파일만 ``Binary files differ``로 적는다.
+
+    `a/<path>` → `b/<path>`, project-relative, made with `difflib` from the two byte versions. v2.1z-bk: decoded with
+    the pom-charset order (UTF-8, then cp949); a file shown through cp949 gets a first line
+    `# <path>: shown as UTF-8, the file is MS949`; only bytes that decode under neither are `Binary files differ`.
+    `new_bytes(path)` gives the new version (default: the file under `work`)."""
     import difflib
     out: list[str] = []
     for p in changed:
-        a, b = (Path(tree) / p).read_bytes(), (Path(work) / p).read_bytes()
-        try:
-            at, bt = a.decode("utf-8"), b.decode("utf-8")
-        except UnicodeDecodeError:
+        a = (Path(tree) / p).read_bytes()
+        b = new_bytes(p) if new_bytes is not None else (Path(work) / p).read_bytes()
+        pair = _decode_pair(a, b)
+        if pair is None:
             out.append(f"--- a/{p}\n+++ b/{p}\nBinary files differ\n")
             continue
+        at, bt, name = pair
+        if name != "UTF-8":
+            out.append(f"# {p}: shown as UTF-8, the file is {name}\n")
         for line in difflib.unified_diff(at.splitlines(keepends=True), bt.splitlines(keepends=True),
                                          fromfile=f"a/{p}", tofile=f"b/{p}"):
             out.append(line if line.endswith("\n") else line + "\n\\ No newline at end of file\n")
@@ -208,12 +241,29 @@ def _rmtree_quiet(p: Path, what: str) -> None:
         log.warning("remediation fix loop: %s not removed: %s", what, e)
 
 
-class _DeadlineRunner:
-    """빌드마다 시간 한도를 마감까지 남은 시간과 ``remediation.build_timeout_minutes`` 가운데 짧은 쪽으로 맞추는 래퍼."""
+def _untracked_entries(ws: Any) -> set[str]:
+    """작업 복사본에서 git이 추적하지 않는 항목(무시된 것 포함, 폴더는 한 줄로)을 반환한다. 읽지 못하면 빈 집합이다."""
+    try:
+        cp = ws._git("ls-files", "--others", "--directory", "-z", check=False)
+        return {x.replace("\\", "/") for x in (cp.stdout or "").split("\0") if x}
+    except Exception:  # noqa: BLE001 - git을 쓸 수 없으면 빌드가 만든 파일을 모르는 것으로 둔다
+        return set()
 
-    def __init__(self, inner: Any, cap_s: float, time_left: Callable[[], float | None]):
-        self.inner, self.cap_s, self.time_left = inner, cap_s, time_left
+
+class _DeadlineRunner:
+    """빌드마다 시간 한도를 마감까지 남은 시간과 ``remediation.build_timeout_minutes`` 가운데 짧은 쪽으로 맞추는 래퍼.
+    빌드가 끝나면 빌드 전에 깨끗했던 추적 파일 가운데 빌드가 바꾸거나 지운 것을 되돌리고, 빌드가 새로 만든 항목을 기록한다.
+
+    v2.1z-bk: after each build every tracked file the build modified or deleted that was clean before it is checked
+    out again (`Workspace.restore_build_byproducts`, the rule `BuildFixLoop._build` applies too), so an attempt is
+    never blamed for or credited with the build's own edits; the untracked entries the build created (ignored ones
+    included, `git ls-files --others --directory`) are collected in `created` for the end check."""
+
+    def __init__(self, inner: Any, cap_s: float, time_left: Callable[[], float | None], ws: Any = None):
+        self.inner, self.cap_s, self.time_left, self.ws = inner, cap_s, time_left, ws
         self.timeouts: list[float] = []
+        self.created: set[str] = set()
+        self.restored: set[str] = set()
 
     def run(self, goal: str, **kw: Any) -> Any:
         t = self.time_left()
@@ -221,10 +271,53 @@ class _DeadlineRunner:
         self.timeouts.append(limit)
         if hasattr(self.inner, "timeout_s"):
             self.inner.timeout_s = limit
-        return self.inner.run(goal, **kw)
+        ws = self.ws
+        before: set[str] = set()
+        others: set[str] = set()
+        if ws is not None:
+            try:
+                before = set(ws.status_paths())
+            except Exception:  # noqa: BLE001 - git을 쓸 수 없으면 되돌리지 않는다
+                before = set()
+            others = _untracked_entries(ws)
+        try:
+            return self.inner.run(goal, **kw)
+        finally:
+            if ws is not None:
+                self.created |= _untracked_entries(ws) - others
+                try:
+                    self.restored |= set(ws.restore_build_byproducts(before) or [])
+                except Exception:  # noqa: BLE001 - 정리하지 못해도 빌드 결과는 돌려준다
+                    log.debug("build-side changes not restored", exc_info=True)
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self.inner, name)
+
+
+def _walk_files(root: Path) -> set[str]:
+    """``root`` 아래 파일 경로를 모은다. ``.git`` 폴더와 빌드 산출물(pom 옆의 ``target/``)은 들어가지 않는다."""
+    import os
+
+    from sbmig.core.workspace import is_build_output_path
+    out: set[str] = set()
+    root = Path(root)
+    for dirpath, dirnames, filenames in os.walk(root):
+        rel_dir = Path(dirpath).relative_to(root).as_posix()
+        rel_dir = "" if rel_dir == "." else rel_dir
+        keep = []
+        for d in dirnames:
+            rd = f"{rel_dir}/{d}" if rel_dir else d
+            if d == ".git" or is_build_output_path(rd, root):
+                continue
+            keep.append(d)
+        dirnames[:] = keep
+        for f in filenames:
+            out.add(f"{rel_dir}/{f}" if rel_dir else f)
+    return out
+
+
+def _created_by_build(p: str, created: set[str]) -> bool:
+    return any(p == e or (e.endswith("/") and p.startswith(e)) for e in created)
 
 
 def _usage(results: list[Any], budget_calls: int, cfg: Any = None) -> tuple[int, int, int, list[str], list[FixUsage], str]:
@@ -340,6 +433,57 @@ def fix_usage(state: Any) -> dict[str, Any]:
             "output_tokens": sum(r["output_tokens"] for r in rows), "by_model": rows}
 
 
+R_INTERRUPTED = "interrupted: the run ended during the loop"
+R_USAGE_UNKNOWN = " (usage unknown)"
+
+
+def interrupted_result(folder: Path, cfg: Any = None) -> FixResult:
+    """중간에 끝난 수정 루프의 폴더에서 LLM 사용량을 되살려 버린 결과 하나를 만든다. 읽지 못하면 사용량 0으로 두고 사유 끝에 표시한다.
+
+    v2.1z-bk: a loop killed mid-way left `fixloop/` (renamed by the graph). Its usage is read from the loop's own
+    `journal.jsonl` (the `llm_script` / `llm_verify_guide` events, with the admin page's reader
+    `sbmig.web.admin.usage_from_journal`; the loop writes no `sbmig.log` of its own) and priced like `_usage`. No
+    journal = the loop never reached its first LLM call (the start event precedes every call): zero, known. A journal
+    that cannot be read → zero and `reason` ending ` (usage unknown)`. Never raises."""
+    res = FixResult(attempted=True, fixed=False, reason=R_INTERRUPTED)
+    try:
+        jf = Path(folder) / "journal.jsonl"
+        if not jf.exists() and not jf.is_symlink():
+            return res
+        if jf.is_symlink() or not jf.is_file():
+            raise OSError("journal is not a regular file")
+        with open(jf, "rb") as fh:                      # 읽을 수 없는 파일을 여기서 알아낸다
+            fh.read(1)
+        from sbmig.core.models import LLMUsage, asked_model_name
+        from sbmig.web.admin import usage_from_journal
+        rows = usage_from_journal(Path(folder))
+        default = getattr(getattr(cfg, "llm", None), "model", "") if cfg is not None else ""
+        llm_rows = [LLMUsage(model=asked_model_name(m, default), served=list(r.get("served") or []), calls=int(r["calls"]),
+                             input_tokens=int(r["input_tokens"]), output_tokens=int(r["output_tokens"]))
+                    for m, r in rows.items()]
+        costs: dict[str, float | None] = {}
+        if cfg is not None and llm_rows:
+            try:
+                from sbmig.report.cost import compute_llm_cost
+                priced = compute_llm_cost(llm_rows, cfg)
+                costs = {c.model: c.cost for c in priced.by_model}
+                if any(c is not None for c in costs.values()):
+                    res.currency = priced.currency
+            except Exception:  # noqa: BLE001 - 단가를 계산하지 못해도 사용량은 남긴다
+                log.debug("interrupted loop usage not priced", exc_info=True)
+        res.usage = [FixUsage(model=u.model, served=list(u.served), calls=int(u.calls or 0),
+                              input_tokens=int(u.input_tokens or 0), output_tokens=int(u.output_tokens or 0),
+                              cost=costs.get(u.model)) for u in llm_rows if u.calls or u.input_tokens or u.output_tokens]
+        res.llm_calls = sum(u.calls for u in res.usage)
+        res.input_tokens = sum(u.input_tokens for u in res.usage)
+        res.output_tokens = sum(u.output_tokens for u in res.usage)
+        res.models = [u.model for u in res.usage]
+    except Exception:  # noqa: BLE001 - 사용량을 되살리지 못해도 기록은 남긴다
+        log.warning("remediation: the usage of an interrupted fix loop could not be read", exc_info=True)
+        res = FixResult(attempted=True, fixed=False, reason=R_INTERRUPTED + R_USAGE_UNKNOWN)
+    return res
+
+
 def run_fix_usage(run_dir: Path | str) -> dict[str, Any]:
     """실행 폴더의 ``remediation/state.json``을 읽어 ``fix_usage``를 반환한다. 파일이 없거나 읽을 수 없으면 0이다.
 
@@ -436,6 +580,7 @@ def run_fix_loop(cfg: Any, tree: Path, work_dir: Path, *, run_id: str, targets: 
         ws.git_init()
         # 프로젝트의 .gitignore가 무시하는 업로드 파일도 추적해야 경로 확인이 그 파일을 본다
         ws.commit("sbmig: uploaded files", paths=[p for p in loops if (work / p).is_file()])
+        base = ws.head()
 
         if profile is None:
             from sbmig.analyze.analyzer import analyze_project
@@ -443,7 +588,7 @@ def run_fix_loop(cfg: Any, tree: Path, work_dir: Path, *, run_id: str, targets: 
         inner = build_runner(ws) if build_runner is not None else \
             lazy_attr("sbmig.build", "MavenRunner", "C (build)")(ws, cfg)
         cap_s = float(getattr(cfg.remediation, "build_timeout_minutes", 60) or 60) * 60.0
-        runner = _DeadlineRunner(inner, cap_s, time_left)
+        runner = _DeadlineRunner(inner, cap_s, time_left, ws)
         from sbmig.triage import Triager
         fixer = llm_fixer if llm_fixer is not None else LazyFixer(
             lambda: lazy_attr("sbmig.fix", "LLMFixer", "D (fix)")(
@@ -461,6 +606,8 @@ def run_fix_loop(cfg: Any, tree: Path, work_dir: Path, *, run_id: str, targets: 
         loop = BuildFixLoop(cfg, ws, runner, Triager(cfg), fixer, NullKnowledgeBase(), profile,
                             plan_notes=plan_notes(applied), budget=budget, script_runner=scripts,
                             edit_guard=make_edit_guard(loops, editable), **kw)
+        # 루프 전에 있던 파일이다. 끝에서 시도가 만든 파일을 찾을 때 뺀다(sbmig의 .gitignore, 분석이 남긴 파일)
+        initial = _walk_files(work)
         ws.journal({"event": "remediation_fix_loop_start", "targets": list(targets) or [""],
                     "first_build_log": getattr(first_outcome, "log", "") if first_outcome is not None else "",
                     "max_iterations": int(cfg.remediation.fix_loop_max_iterations),
@@ -480,7 +627,17 @@ def run_fix_loop(cfg: Any, tree: Path, work_dir: Path, *, run_id: str, targets: 
         res.remaining = len(results[-1].remaining_errors) if results and not all_ok else 0
 
         if all_ok:
-            changed, violation = compare_trees(tree, work, loops, editable)
+            # 시도가 커밋한 경로만 시도의 수정으로 본다. 그 밖의 바이트 차이는 빌드가 남긴 것이다
+            attempted = {_norm(x) for x in ws.changed_between(base, ws.head())}
+            changed, violation = compare_trees(tree, work, loops, editable, attempted)
+            if violation is None:
+                lp = set(loops)
+                made = sorted(x for x in _walk_files(work) - initial
+                              if x not in lp and x != GITIGNORE and not _created_by_build(x, runner.created))
+                if made:
+                    violation = f"{made[0]} must not be created"
+            if runner.restored:
+                ws.journal({"event": "remediation_fix_build_side", "restored": sorted(runner.restored)[:20]})
             if violation is not None:
                 res.reason = scrub(f"rejected: {violation}")
                 if journal is not None:
@@ -542,6 +699,6 @@ class RemediationFixer:
                             journal=journal)
 
 
-__all__ = ["MIN_LOOP_SECONDS", "RemediationFixer", "check_paths", "compare_trees", "fix_usage", "fix_usage_rows",
-           "is_editable", "loop_paths", "make_edit_guard", "maven_pom_paths", "plan_notes", "run_fix_loop",
-           "run_fix_usage", "unified_patch"]
+__all__ = ["MIN_LOOP_SECONDS", "R_INTERRUPTED", "R_USAGE_UNKNOWN", "RemediationFixer", "check_paths", "compare_trees",
+           "fix_usage", "fix_usage_rows", "interrupted_result", "is_editable", "loop_paths", "make_edit_guard",
+           "maven_pom_paths", "plan_notes", "run_fix_loop", "run_fix_usage", "unified_patch"]

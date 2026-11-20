@@ -79,7 +79,9 @@ def test_fixed_round_has_its_own_section_after_the_applied_changes(tmp_path):
     for f in FILES:
         assert f"| `{f}` |" in body
     assert "2회 반복" in body and "LLM을 4회 호출했습니다" in body
-    assert "`rounds/1/fix.patch`" in body and "fix.patch" in body
+    # one download for the reader; the per-round path stays in the record
+    assert "바꾼 내용 전체는 `fix.patch` 파일에 모아 두었습니다." in body
+    assert "rounds/1/fix.patch" not in body
     assert DETACHED.search(body) is None, body
 
 
@@ -89,7 +91,8 @@ def test_fixed_round_leads_the_action_list(tmp_path):
     steps = _section(md, "해야 할 일").strip().splitlines()
     assert steps[0].startswith("1. **자동으로 고친 소스 확인하기**")
     assert "자동으로 고친 소스 2개를 확인해 주세요." in steps[0]
-    assert "`rounds/1/fix.patch`" in steps[0]
+    assert "바꾼 내용은 「빌드 오류 수정」과 `fix.patch` 파일에 있습니다." in steps[0]
+    assert "rounds/" not in steps[0]
 
 
 def test_fixed_round_changes_the_nothing_changed_sentences(tmp_path):
@@ -114,7 +117,7 @@ def test_record_shows_the_first_build_and_theFixResult(tmp_path):
     state, paths = _fixed(tmp_path)
     record = _section(report.build_report_md(state, paths), "처리 기록")
     assert "- 처음 수정본 빌드: 실패 (종료 코드 1)" in record
-    assert "- 빌드 오류 자동 수정: 고침 · 파일 2개 · 2회 반복 · LLM 호출 4회" in record
+    assert "- 빌드 오류 자동 수정: 고침 · 파일 2개 · 2회 반복 · LLM 호출 4회 · 바꾼 내용 `rounds/1/fix.patch`" in record
 
 
 def test_report_json_carries_roundsFixResult(tmp_path):
@@ -377,3 +380,135 @@ def test_not_started_suffix_of_the_state_message_reads_for_the_page(tmp_path):
     assert "빌드 오류 자동 수정은 시작하지 않았습니다(남은 시간 부족)." in ko
     assert not any("automatic build fix" in r for r in raw)
     assert not any("되돌렸" in k for k in ko)
+
+
+# ---------------------------------------------------------------------------- v2.1z-bk: one patch for the reader,
+# build-side changes and an interrupted loop in the record
+
+
+def _round(n, *, committed=True, fix=None, **kw):
+    from sbmig.remediations.models import RoundState
+    return RoundState(round=n, committed=committed, fix=fix, **kw)
+
+
+def _fixed_fix(n, files):
+    return FixResult(attempted=True, fixed=True, iterations=1, llm_calls=2, changed=list(files),
+                     patch=f"rounds/{n}/fix.patch")
+
+
+def _two_fixed(tmp_path):
+    """Rounds 1 and 2 committed, each with a fix; `FILES[0]` is fixed in both rounds."""
+    state, paths = _fixed(tmp_path)
+    state.rounds.append(_round(2, fix=_fixed_fix(2, [FILES[0], "app-back/src/main/java/com/example/Third.java"])))
+    for n in (1, 2):
+        paths.round_dir(n).mkdir(parents=True, exist_ok=True)
+        (paths.round_dir(n) / "fix.patch").write_text(f"--- a/x{n}\n+++ b/x{n}\n", encoding="utf-8")
+    return state, paths
+
+
+def _before_record(md):
+    return md.split("## 처리 기록", 1)[0]
+
+
+def test_two_fixed_rounds_give_one_combined_patch_and_one_download_name(tmp_path):
+    state, paths = _two_fixed(tmp_path)
+    report.write_report(state, paths)
+    combined = (paths.root / "fix.patch").read_text(encoding="utf-8")
+    assert combined == "# round 1\n--- a/x1\n+++ b/x1\n# round 2\n--- a/x2\n+++ b/x2\n"
+    assert not list(paths.root.glob("fix.patch.tmp"))
+    md = paths.report_md.read_text(encoding="utf-8")
+    top = _before_record(md)
+    assert "rounds/1/fix.patch" not in top and "rounds/2/fix.patch" not in top
+    body = _section(md, "빌드 오류 수정")
+    assert body.count("`fix.patch`") == 1 and "### 라운드 1" in body and "### 라운드 2" in body
+    assert "바꾼 내용 전체는 `fix.patch` 파일에 라운드마다 나누어 모아 두었습니다." in body
+    steps = _section(md, "해야 할 일")
+    assert steps.count("`fix.patch`") == 1 and "자동으로 고친 소스 3개를 확인해 주세요." in steps
+    record = _section(md, "처리 기록")
+    assert "바꾼 내용 `rounds/1/fix.patch`" in record and "바꾼 내용 `rounds/2/fix.patch`" in record
+
+
+def test_two_fixed_rounds_never_say_only_version_text(tmp_path):
+    state, paths = _two_fixed(tmp_path)
+    md = report.build_report_md(state, paths)
+    body = _section(md, "변경하지 않은 것")
+    assert "버전 표기뿐입니다" not in md
+    assert "달라진 것은 적용된 pom.xml의 버전 표기와 고친 소스 3개뿐입니다." in body
+    assert "소스는 빌드 오류를 고치느라 3개 파일을 바꿨습니다." in body
+    assert "애플리케이션 소스" not in body
+
+
+def test_a_file_fixed_in_two_rounds_counts_once(tmp_path):
+    state, _paths = _two_fixed(tmp_path)
+    assert report.fix_summary(state) == {"fixed": True, "changed": 3, "llm_calls": 6, "round": 2}
+
+
+def test_a_fix_not_in_the_result_is_not_mentioned_outside_the_record(tmp_path):
+    """Round 2 fixed but did not commit, and holds a discarded fix too: only round 1 is in the result."""
+    state, paths = _fixed(tmp_path)
+    other = "app-back/src/main/java/com/example/Other.java"
+    gone = "app-back/src/main/java/com/example/Gone.java"
+    rs2 = _round(2, committed=False, fix=_fixed_fix(2, [other]))
+    rs2.fix_discarded = [FixResult(attempted=True, fixed=False, iterations=1, llm_calls=1, discarded_changed=[gone],
+                                   reason="discarded: the stored fix is not usable")]
+    state.rounds.append(rs2)
+    for n in (1, 2):
+        paths.round_dir(n).mkdir(parents=True, exist_ok=True)
+        (paths.round_dir(n) / "fix.patch").write_text(f"patch {n}\n", encoding="utf-8")
+    report.write_report(state, paths)
+    assert (paths.root / "fix.patch").read_text(encoding="utf-8") == "# round 1\npatch 1\n"
+    md = paths.report_md.read_text(encoding="utf-8")
+    top = _before_record(md)
+    assert other not in top and gone not in top and "라운드 2" not in _section(md, "빌드 오류 수정")
+    assert "자동으로 고친 소스 2개" in top and "고친 소스 2개뿐입니다" in top
+    record = _section(md, "처리 기록")
+    assert "- 빌드 오류 자동 수정: 수정본을 채택하지 않아 결과에 넣지 않음 · 파일 1개" in record
+    assert "rounds/2/fix.patch" not in md
+    assert "버린 수정(저장해 둔 수정을 쓸 수 없어 버림) · 파일 1개" in record
+
+
+def test_no_fix_in_the_result_removes_the_combined_patch(tmp_path):
+    state, paths = _fixed(tmp_path)
+    paths.round_dir(1).mkdir(parents=True, exist_ok=True)
+    (paths.round_dir(1) / "fix.patch").write_text("patch 1\n", encoding="utf-8")
+    report.write_report(state, paths)
+    assert (paths.root / "fix.patch").is_file()
+    state.rounds[0].committed = False
+    report.write_report(state, paths)
+    assert not (paths.root / "fix.patch").exists()
+    assert "fix.patch" not in _before_record(paths.report_md.read_text(encoding="utf-8"))
+
+
+def test_build_side_changes_get_one_record_line(tmp_path):
+    out, paths = _run(tmp_path, **_fixing())
+    poms = ["app/pom.xml", "app/src/main/java/com/example/A.java"]
+    out.rounds[0] = _round(1, committed=True, build=out.rounds[0].build, applied=out.rounds[0].applied,
+                           build_changed=poms)
+    record = _section(report.build_report_md(out, paths), "처리 기록")
+    assert ("- 빌드가 바꾼 파일 2개는 결과에 넣지 않고 원래대로 두었습니다. `app/pom.xml`, "
+            "`app/src/main/java/com/example/A.java`") in record
+    many = [f"app/src/main/java/com/example/F{i}.java" for i in range(8)]
+    out.rounds[0].build_changed = many
+    md = report.build_report_md(out, paths)
+    line = next(ln for ln in md.splitlines() if ln.startswith("- 빌드가 바꾼 파일"))
+    assert line.startswith("- 빌드가 바꾼 파일 8개는 결과에 넣지 않고 원래대로 두었습니다. ")
+    assert line.count("`") == 10 and line.endswith(" 외 3개") and "F5.java" not in line
+    assert DETACHED.search(line) is None, line
+    out.rounds[0].build_changed = []
+    assert "빌드가 바꾼 파일" not in report.build_report_md(out, paths)
+    assert "build_changed" not in out.rounds[0].to_dict()          # left out of the JSON when empty
+
+
+def test_an_interrupted_loop_is_a_discarded_line_with_its_calls(tmp_path):
+    out, paths = _run(tmp_path, **_fixing())
+    out.rounds[0].fix_discarded = [
+        FixResult(attempted=True, fixed=False, llm_calls=7, reason="interrupted: the run ended during the loop"),
+        FixResult(attempted=True, fixed=False, llm_calls=0,
+                  reason="interrupted: the run ended during the loop (usage unknown)")]
+    md = report.build_report_md(out, paths)
+    record = _section(md, "처리 기록")
+    assert "- 빌드 오류 자동 수정: 버린 수정(실행이 수정 도중에 끝남) · LLM 호출 7회" in record.splitlines()
+    assert "- 빌드 오류 자동 수정: 버린 수정(실행이 수정 도중에 끝남) · LLM 호출 수는 알 수 없음" in record.splitlines()
+    assert "interrupted" not in md and "usage unknown" not in md
+    assert "## 빌드 오류 수정" not in md
+    assert report.fix_summary(out) == {"fixed": False, "changed": 0, "llm_calls": 7, "round": None}

@@ -128,18 +128,19 @@ _FIXED_FILES: dict[str, Callable[[RunPaths], Path]] = {
     # include 정책으로 실패한 수정본이 result.zip이 되었을 때 따로 보관한 앞 라운드의 검증된 ZIP
     "result-verified.zip": lambda p: graph_mod.find_verified_zip(p) or p.delivery_zip.with_name("result-verified.zip"),
     "baseline-build.log": lambda p: p.baseline_log,
-    # 빌드 오류 수정 루프가 고친 마지막 라운드의 소스 diff
+    # 결과에 들어간 모든 자동 수정 라운드의 소스 diff를 모은 파일(report.write_fix_patch)
     "fix.patch": lambda p: _last_fix_patch(p),
 }
 
 
 def _last_fix_patch(paths: RunPaths) -> Path:
-    """결과에 들어간 마지막 자동 수정 라운드의 ``rounds/<n>/fix.patch`` 경로를 반환한다.
-    저장된 상태로 정하며, 그런 라운드가 없거나 상태를 읽지 못하면 있을 수 없는 경로(``rounds/fix.patch``)를 반환한다.
+    """보고서가 모아 쓴 ``fix.patch``(``report.md`` 옆)의 경로를 반환한다.
+    저장된 상태에 결과에 들어간 자동 수정 라운드가 없거나 상태를 읽지 못하면 있을 수 없는 경로(``rounds/fix.patch``)를 반환한다.
 
-    `rounds/<n>/fix.patch` of the last round that is committed with `fix.fixed` and a non-empty `fix.changed`
-    (`report.served_fix_round`), decided from the saved state, never from the files on disk: a patch left by a fix
-    that was discarded, never committed or changed nothing is not served."""
+    The combined `fix.patch` that `report.write_fix_patch` writes next to `report.md`, served only when the saved state
+    has a round committed with `fix.fixed` and a non-empty `fix.changed` (`report.served_fix_round`) AND the file
+    exists (the caller checks `is_file`). A combined file left from an earlier report while the state no longer has
+    such a round is not served; per-round patches are never served under this name."""
     none = paths.root / "rounds" / "fix.patch"
     try:
         data = read_json(paths.state)
@@ -149,7 +150,7 @@ def _last_fix_patch(paths: RunPaths) -> Path:
     except Exception:  # noqa: BLE001. 상태를 읽지 못하면 내려 주지 않는다
         log.debug("fix.patch: state unreadable", exc_info=True)
         return none
-    return paths.round_dir(rs.round) / "fix.patch" if rs is not None else none
+    return report_mod.fix_patch_path(paths) if rs is not None else none
 
 
 _ROUND_FILES: dict[str, Callable[[RunPaths, int], Path]] = {

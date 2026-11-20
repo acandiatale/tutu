@@ -213,14 +213,18 @@ def test_not_fixed_under_discard_keeps_the_message_suffix(tmp_path):
     assert out.message.endswith(" | automatic build fix: llm unavailable")
 
 
-def test_a_fixer_that_raises_is_not_fixed_and_the_candidate_not_delivered(tmp_path):
+def test_a_fixer_that_raises_is_not_fixed_and_the_failed_candidate_is_delivered(tmp_path):
+    """v2.1z-bk: the fixer only reads the candidate, so a raising fixer leaves the completeness marker alone and the
+    round ends like any other not-fixed reason (the failed candidate delivered under `include`)."""
     state, paths = make_run(tmp_path)
     fx = FakeFixer(raises=RuntimeError("boom"))
     out, _ = run(state, paths, one_fix_components(maven=FakeMaven(outcomes=[True, False]), fixer=fx))
     assert out.status == FAILED and out.reason == "candidate_build_failed"
-    assert out.rounds[0].fix.reason == "error: RuntimeError: boom"
-    assert "automatic build fix: error: RuntimeError: boom" in out.message
-    assert out.delivery is None                       # the tree is in an unknown state: never delivered
+    assert out.rounds[0].fix.reason == "error: RuntimeError: boom" and out.rounds[0].fix.attempted
+    assert out.message.endswith(" | automatic build fix: error: RuntimeError: boom")
+    assert out.delivery is not None and not out.delivery.build_ok
+    assert (paths.round_dir(1) / graph.CANDIDATE_READY).is_file()
+    assert zip_files(paths.delivery_zip)[APP] == b"class App {}\n"
 
 
 # ------------------------------------------------------------------------------------------------ deadline / layout
