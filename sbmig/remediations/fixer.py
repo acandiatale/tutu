@@ -15,11 +15,11 @@ import logging
 import os
 import shutil
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Any
 
-from .models import BuildOutcome, FixResult, Proposal
+from .models import BuildOutcome, FixResult, FixUsage, Proposal
 
 log = logging.getLogger("sbmig.remediations.fixer")
 
@@ -118,20 +118,127 @@ def _restore(root: Path, gitignore: bytes | None, before: set[str]) -> None:
     _drop_new_files(root, before)
 
 
-def _usage(results: list[Any], budget_calls: int) -> tuple[int, int, int, list[str]]:
-    """루프 결과의 시도들에서 LLM 호출 수, 입력 / 출력 토큰, 요청한 모델 이름을 모은다."""
-    calls = inp = out = 0
-    models: list[str] = []
+def _usage(results: list[Any], budget_calls: int, cfg: Any = None) -> tuple[int, int, int, list[str], list[FixUsage], str]:
+    """루프 결과의 시도들에서 LLM 사용량을 모델별로 모으고 합계, 요청한 모델 이름, 모델별 행, 통화를 반환한다.
+
+    Per-model usage of the loop's attempts, summed the way the orchestrator sums the migration's
+    (`Orchestrator._usage_by_model`): the row name is `asked_model_name(usage.model, attempt.model, llm.model)`,
+    `served` merged without the asked name. Calls the loop's budget counted beyond the attempts' usage go to the
+    configured model's row (no tokens), so the rows always add up to `llm_calls`. Each row is priced with
+    `cost.compute_llm_cost` under the run's `llm.pricing` (None = no price)."""
+    from sbmig.core.models import LLMUsage, asked_model_name, served_beside
+    default = getattr(getattr(cfg, "llm", None), "model", "") if cfg is not None else ""
+    by: dict[str, LLMUsage] = {}
     for pr in results:
         for a in pr.attempts:
             u = a.llm_usage
-            calls += int(u.calls or 0)
-            inp += int(u.input_tokens or 0)
-            out += int(u.output_tokens or 0)
-            name = u.model or a.model
-            if (u.calls or u.input_tokens or u.output_tokens) and name and name not in models:
-                models.append(name)
-    return max(calls, int(budget_calls or 0)), inp, out, models
+            if not (u.calls or u.input_tokens or u.output_tokens):
+                continue
+            key = asked_model_name(u.model, a.model, default)
+            by[key] = by.get(key, LLMUsage(model=key)).add(
+                u.model_copy(update={"model": key, "served": served_beside(key, u.served)}))
+    counted = sum(int(u.calls or 0) for u in by.values())
+    extra = int(budget_calls or 0) - counted
+    if extra > 0:
+        key = asked_model_name(default)
+        by[key] = by.get(key, LLMUsage(model=key)).add(LLMUsage(model=key, calls=extra))
+    rows = list(by.values())
+    costs: dict[str, float | None] = {}
+    currency = ""
+    if cfg is not None and rows:
+        try:
+            from sbmig.report.cost import compute_llm_cost
+            priced = compute_llm_cost(rows, cfg)
+            costs = {c.model: c.cost for c in priced.by_model}
+            if any(c is not None for c in costs.values()):
+                currency = priced.currency
+        except Exception:  # 단가를 계산하지 못해도 사용량은 남긴다
+            log.debug("fix loop usage not priced", exc_info=True)
+    usage = [FixUsage(model=u.model, served=list(u.served), calls=int(u.calls or 0),
+                      input_tokens=int(u.input_tokens or 0), output_tokens=int(u.output_tokens or 0),
+                      cost=costs.get(u.model)) for u in rows]
+    return (sum(r.calls for r in usage), sum(r.input_tokens for r in usage), sum(r.output_tokens for r in usage),
+            [r.model for r in usage], usage, currency)
+
+
+def fix_usage_rows(fixes: Iterable[Any]) -> list[dict[str, Any]]:
+    """여러 라운드의 수정 루프 결과(``FixResult`` 또는 그 dict)를 모델별 사용량 행으로 합친다.
+    모델별 행이 없는 예전 결과는 합계를 첫 모델 이름의 행 하나로 만들고 비용은 모르는 것으로 둔다.
+
+    Per-model rows `{model, served, calls, input_tokens, output_tokens, cost, currency}` of several rounds' fix loops
+    (rounds that were not fixed count too). `cost` is None when any part of the row has calls or tokens and no price;
+    `currency` is "" when no part was priced. A FixResult written before `usage` existed becomes one row of its totals
+    named `asked_model_name(*models)`, unpriced."""
+    from sbmig.core.models import asked_model_name, merge_model_names
+    rows: dict[str, dict[str, Any]] = {}
+
+    def add(model: str, served: list[str], calls: int, inp: int, out: int, cost: float | None, currency: str) -> None:
+        if not (calls or inp or out):
+            return
+        r = rows.setdefault(model.lower(), {"model": model, "served": [], "calls": 0, "input_tokens": 0,
+                                            "output_tokens": 0, "cost": 0.0, "currency": ""})
+        r["served"] = [n for n in merge_model_names(r["served"], served) if n.lower() != model.lower()]
+        r["calls"] += calls
+        r["input_tokens"] += inp
+        r["output_tokens"] += out
+        if cost is None or r["cost"] is None or (currency and r["currency"] and currency != r["currency"]):
+            r["cost"] = None
+        else:
+            r["cost"] = round(r["cost"] + cost, 6)
+            r["currency"] = r["currency"] or currency
+
+    for f in fixes:
+        if f is None:
+            continue
+        fx = f if isinstance(f, FixResult) else FixResult.from_dict(f) if isinstance(f, dict) else None
+        if fx is None:
+            continue
+        if fx.usage:
+            for u in fx.usage:
+                if not isinstance(u, FixUsage):
+                    continue
+                add(asked_model_name(u.model), list(u.served or []), int(u.calls or 0), int(u.input_tokens or 0),
+                    int(u.output_tokens or 0), u.cost if isinstance(u.cost, (int, float)) else None, fx.currency or "")
+        else:
+            add(asked_model_name(*(fx.models or [])), [], int(fx.llm_calls or 0), int(fx.input_tokens or 0),
+                int(fx.output_tokens or 0), None, "")
+    return list(rows.values())
+
+
+def fix_usage(state: Any) -> dict[str, Any]:
+    """조치 상태(``RemediationState`` 또는 state.json의 dict)에서 모든 라운드의 수정 루프 LLM 사용량을 모은다.
+    결과 줄, 실행 상태, 관리자 페이지가 이 함수 하나로 조치의 호출 수를 센다.
+
+    The remediation's fix-loop usage over every round of a state: `{calls, input_tokens, output_tokens, by_model}`
+    (`by_model` = `fix_usage_rows`). The one place the result line, `GET /api/runs/{id}` and the admin page read the
+    remediation's LLM calls from (beside the migration's `report.json`, never written into it). Never raises; an
+    unreadable state counts nothing."""
+    try:
+        if isinstance(state, dict):
+            fixes = [r.get("fix") for r in (state.get("rounds") or []) if isinstance(r, dict)]
+        else:
+            fixes = [getattr(r, "fix", None) for r in (getattr(state, "rounds", None) or [])]
+        rows = fix_usage_rows(fixes)
+    except Exception:  # 사용량을 읽지 못해도 호출한 쪽은 계속한다
+        log.debug("remediation fix usage unreadable", exc_info=True)
+        rows = []
+    return {"calls": sum(r["calls"] for r in rows), "input_tokens": sum(r["input_tokens"] for r in rows),
+            "output_tokens": sum(r["output_tokens"] for r in rows), "by_model": rows}
+
+
+def run_fix_usage(run_dir: Path | str) -> dict[str, Any]:
+    """실행 폴더의 ``remediation/state.json``을 읽어 ``fix_usage``를 반환한다. 파일이 없거나 읽을 수 없으면 0이다.
+
+    `fix_usage` of `<run dir>/remediation/state.json` (zero when missing or unreadable)."""
+    import json
+
+    from .models import RunPaths
+    try:
+        with open(RunPaths(Path(run_dir) / "remediation").state, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        data = None
+    return fix_usage(data if isinstance(data, dict) else {})
 
 
 def run_fix_loop(cfg: Any, tree: Path, work_dir: Path, *, run_id: str, targets: list[str], applied: list[Proposal],
@@ -234,7 +341,8 @@ def run_fix_loop(cfg: Any, tree: Path, work_dir: Path, *, run_id: str, targets: 
                 break
         res.iterations = sum(int(pr.iterations or 0) for pr in results)
         res.attempts = sum(len(pr.attempts) for pr in results)
-        res.llm_calls, res.input_tokens, res.output_tokens, res.models = _usage(results, loop.budget.llm_calls)
+        (res.llm_calls, res.input_tokens, res.output_tokens, res.models, res.usage,
+         res.currency) = _usage(results, loop.budget.llm_calls, cfg)
         res.remaining = len(results[-1].remaining_errors) if results and not all_ok else 0
 
         head = ws.head()
@@ -300,4 +408,5 @@ class RemediationFixer:
                             journal=journal)
 
 
-__all__ = ["MIN_LOOP_SECONDS", "RemediationFixer", "check_paths", "make_edit_guard", "plan_notes", "run_fix_loop"]
+__all__ = ["MIN_LOOP_SECONDS", "RemediationFixer", "check_paths", "fix_usage", "fix_usage_rows", "make_edit_guard",
+           "plan_notes", "run_fix_loop", "run_fix_usage"]

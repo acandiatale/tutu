@@ -108,8 +108,11 @@ def _plain(v: Any) -> Any:
     if dataclasses.is_dataclass(v) and not isinstance(v, type):
         # ``_omit_none``에 적은 필드는 값이 None이면 JSON에 넣지 않는다. 이전 버전이 쓴 JSON과 같게 두기 위해서다
         omit = getattr(v, "_omit_none", ())
+        # ``_omit_empty``에 적은 필드는 빈 목록이나 빈 문자열이면 넣지 않는다
+        empty = getattr(v, "_omit_empty", ())
         return {f.name: _plain(getattr(v, f.name)) for f in dataclasses.fields(v)
-                if not (f.name in omit and getattr(v, f.name) is None)}
+                if not (f.name in omit and getattr(v, f.name) is None)
+                and not (f.name in empty and getattr(v, f.name) in ([], ""))}
     if isinstance(v, (list, tuple)):
         return [_plain(x) for x in v]
     if isinstance(v, dict):
@@ -616,6 +619,23 @@ class ApplyResult(Record):
 
 
 @dataclass
+class FixUsage(Record):
+    """빌드 오류 수정 루프가 모델 하나로 호출한 LLM 사용량을 담는 데이터 클래스. ``cost``는 단가를 모르면 None이다.
+
+    One model's share of the fix loop's LLM calls: `model` = the asked name (`asked_model_name`), `served` = the names
+    the answers reported (the asked name left out), `cost` = the price under the run's `llm.pricing` (None when the
+    model has no price, left out of the JSON then). Same rules as the migration's `llm_usage_by_model` / `llm_cost`."""
+    model: str = ""
+    served: list[str] = field(default_factory=list)
+    calls: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cost: float | None = None
+    _omit_none = ("cost",)
+    _omit_empty = ("served",)
+
+
+@dataclass
 class FixResult(Record):
     """수정본 빌드가 실패했을 때 실행한 빌드 오류 수정 루프의 결과를 담는 데이터 클래스.
     ``changed``는 프로젝트 루트 기준 경로이고 고쳤을 때만 채운다. ``reason``은 영어 문장이며 고쳤으면 빈 문자열이다.
@@ -624,7 +644,10 @@ class FixResult(Record):
     relative to the project root (the loop's repository root), empty unless fixed; `patch`: run-relative path of
     `rounds/<r>/fix.patch` or ""; `reason` (English, "" when fixed): `not fixed: <n> error(s) left`,
     `llm unavailable: …`, `stop requested`, `time budget used up`, `rejected: <guard reason>`,
-    `error: <Type>: <msg>`; `models`: the model names the calls asked with."""
+    `error: <Type>: <msg>`; `models`: the model names the calls asked with. `usage`: one `FixUsage` per asked model
+    (their calls / tokens add up to `llm_calls` / `input_tokens` / `output_tokens`, their names are `models`);
+    `currency` = `llm.pricing_currency` when a row has a cost. Both are left out of the JSON when empty, and a FixResult
+    written before them reads back with `usage == []` (`fixer.fix_usage_rows` then makes one row of the totals)."""
     attempted: bool = False
     fixed: bool = False
     iterations: int = 0
@@ -637,6 +660,11 @@ class FixResult(Record):
     patch: str = ""
     reason: str = ""
     remaining: int = 0
+    # 모델별 사용량이다. 호출이 없으면 비어 있고 JSON에 넣지 않는다
+    usage: list[FixUsage] = field(default_factory=list)
+    currency: str = ""
+    _nested = {"usage": FixUsage}
+    _omit_empty = ("usage", "currency")
 
 
 # ---------------------------------------------------------------------------- 작업 상태 / state

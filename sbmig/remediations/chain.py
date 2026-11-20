@@ -1015,7 +1015,9 @@ def summary(state: RemediationState | None, run_dir: Path | str, *, skipped: dic
     build_ok / scanned를 담고, 조치 전 빌드를 실행했으면 ``baseline_build_ok``도 담는다.
     조치 전 빌드 실패를 받아들인 실행이면 ``baseline_tolerated: true``와 ``delivery.build_tolerated: true``를 담는다.
 
-    A small JSON-able digest for the migration report."""
+    A small JSON-able digest for the migration report. `fix_llm_calls` (only when > 0) = the LLM calls of the build fix
+    loop over every round (`fixer.fix_usage`), read by the `SBMIG-RESULT … llm=` line; readers of the run folder count
+    the remediation from `remediation/state.json` instead (`fixer.run_fix_usage`), never from this digest."""
     if state is None:
         out: dict[str, Any] = {"status": "skipped", "dir": CHAIN_DIR}
         out.update({k: v for k, v in (skipped or {}).items() if k in ("reason", "missing")})
@@ -1040,6 +1042,11 @@ def summary(state: RemediationState | None, run_dir: Path | str, *, skipped: dic
     if state.baseline_tolerated:
         # 조치 전 빌드 실패를 받아들인 실행이다. 이관 보고서와 화면이 빌드로 확인하지 못했다고 알린다
         out["baseline_tolerated"] = True
+    from .fixer import fix_usage
+    fix_calls = fix_usage(state)["calls"]
+    if fix_calls:
+        # 빌드 오류 수정 루프가 호출한 LLM 횟수다. 결과 줄의 llm= 값에 더한다
+        out["fix_llm_calls"] = fix_calls
     if state.baseline_build is not None:
         # 실행 방식이 remediation일 때 결과 줄의 build= 값.
         # 업로드한 그대로의 빌드가 실행되고 통과했는지를 나타낸다

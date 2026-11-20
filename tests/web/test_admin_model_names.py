@@ -121,3 +121,13 @@ def test_the_page_shows_the_asked_name_the_served_models_and_one_neutral_unnamed
     assert '<th scope="col">모델</th>' in page and "<td class=\"stick\">${modelName(m)}</td>" in page
     for word in ("오류", "실패", "알 수 없음", "unknown"):
         assert word not in page.split("const UNNAMED_HINT")[1].split("function modelName")[0]
+
+
+def test_the_runs_table_says_how_many_calls_were_the_remediations():
+    page = (Path(__file__).resolve().parents[2] / "sbmig" / "web" / "static" / "admin.html").read_text(encoding="utf-8")
+    cell = page.split("const callsCell = ")[1].split("const costCell")[0]
+    # numbers only, formatted by fmtInt: no server text reaches the markup
+    assert "int(r.remediation_calls) > 0" in cell and "조치 ${fmtInt(r.remediation_calls)}회 포함" in cell
+    assert "${fmtInt(r.calls)}" in cell and "numCell(r.calls)" in cell
+    assert "callsCell(r) + numCell(r.input_tokens)" in page.split("function runsTable")[1]
+    assert ".remcalls {" in page

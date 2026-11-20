@@ -1,6 +1,7 @@
 """The remediation card after the build fix loop (INTERFACES "v2.1z-bi" B, "Report and page"): a chip 「소스 <n>개
 수정」 when a round was fixed, a `fix.patch` download when the server lists it, and the page's 「LLM 호출 N회」
-including the calls of the remediation's fix loop (`fix.llm_calls` of `GET /api/remediations/<id>`). The small
+including the calls of the remediation's fix loop exactly once: `GET /api/runs/<id>` reports them inside `llm_calls`
+(`remediation_llm_calls` of them), and the live `fix.llm_calls` of `GET /api/remediations/<id>` replaces that part. The small
 helpers are cut out of the page and run under node; the wiring is checked on the source."""
 from __future__ import annotations
 
@@ -48,16 +49,23 @@ def test_fix_chip_text(tmp_path):
 
 
 @needs_node
-def test_llm_total_adds_the_remediation_calls(tmp_path):
-    out = _run([["llmTotal", 7, 3],
-                ["llmTotal", 0, 4],             # a remediation-only run: the run report counts no call
-                ["llmTotal", None, 4],
-                ["llmTotal", 5, 0],
-                ["llmTotal", None, 0],          # nothing known: the page shows no count
+def test_llm_total_counts_the_remediation_calls_once(tmp_path):
+    # the server's llm_calls already holds the remediation's fix-loop calls (remediation_llm_calls of them);
+    # the live count of GET /api/remediations replaces that part, it is never added on top
+    out = _run([["llmTotal", {"llm_calls": 10, "remediation_llm_calls": 3}, 3],
+                ["llmTotal", {"llm_calls": 10, "remediation_llm_calls": 3}, None],   # remediation status not read yet
+                ["llmTotal", {"llm_calls": 10, "remediation_llm_calls": 3}, 5],      # a resume pod made two more calls
+                ["llmTotal", {"llm_calls": 7, "remediation_llm_calls": 0}, 0],
+                ["llmTotal", {"llm_calls": 7}, None],                                # an older server: no breakdown
+                ["llmTotal", {"llm_calls": 4, "remediation_llm_calls": 4}, 4],       # a remediation-only run
+                ["llmTotal", {"llm_calls": None}, 4],                                # report not written yet
+                ["llmTotal", {}, None],                                              # nothing known: no count
+                ["llmTotal", {}, 0],
+                ["llmTotal", None, 2],
                 ["remFixLlm", {"llm_calls": 6}],
                 ["remFixLlm", {"llm_calls": "6"}],
                 ["remFixLlm", None]], tmp_path)
-    assert out == [10, 4, 4, 5, None, 6, 6, 0]
+    assert out == [10, 10, 12, 7, 7, 4, 4, None, None, 2, 6, 6, 0]
 
 
 REFRESH = r"""
@@ -88,11 +96,12 @@ def test_card_wiring():
     assert "remFixChip(st.fix)" in render and "el('span', 'chip warn', fixChip)" in render
     assert "link('fix.patch', '자동 수정 내용 받기', 'quiet')" in render
     # the remediation's calls reach the summary line and the result card's chip, as text only
-    assert "remLlm = fixLlm" in render and "refreshLlm(llmTotal(lastRunSt.llm_calls, remLlm))" in render
+    assert "remLlm = fixLlm" in render and "refreshLlm(llmTotal(lastRunSt, remLlm))" in render
     assert "innerHTML" not in render and "innerHTML" not in _function("refreshLlm")
-    assert "llmTotal(st.llm_calls, remLlm)" in _function("setStatus")
-    assert "llmTotal(st.llm_calls, remLlm)" in _function("showResult")
+    assert "llmTotal(st, remLlm)" in _function("setStatus")
+    assert "llmTotal(st, remLlm)" in _function("showResult")
+    assert "llmTotal(st.llm_calls" not in SCRIPT and "lastRunSt.llm_calls" not in SCRIPT
     assert "st.llm_calls != null" not in SCRIPT
-    # a new run starts from zero, and so does a hidden card
-    assert "remLlm = 0" in _function("hideRemediation")
-    assert "lastRunSt = null; remLlm = 0;" in _function("attach")
+    # a new run starts from "not read yet", and so does a hidden card
+    assert "remLlm = null" in _function("hideRemediation")
+    assert "lastRunSt = null; remLlm = null;" in _function("attach")

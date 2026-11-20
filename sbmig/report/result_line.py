@@ -4,6 +4,7 @@
 - 진입점: ``report_result_line``, ``result_line``, ``attention_codes``,
   ``report_exit_code``(0 성공, 2 빌드 실패, 3 거부 / 중단)
 - 사내 프레임워크 프로젝트(JDK와 jakarta만 적용)는 ``major=`` 뒤에 ``scope=jdk-jakarta``를 붙인다
+- ``llm=``은 이관의 LLM 호출 수와 취약점 조치의 빌드 오류 수정 루프가 호출한 수의 합이다
 - 반드시 한 줄이고 ASCII만 쓴다. ASCII가 아닌 문자는 ``?``로 바꾼다
 - 운영자 보고 양식과 플릿 집계가 이 형식을 그대로 읽으므로 필드 순서와 이름을 바꾸지 않는다.
   새 필드는 끝에, 값이 있을 때만 붙인다
@@ -14,6 +15,8 @@ One-line results and attention codes (round 10, operators retype them from a cp9
                  attn=<codes>[ review=<v>][ major=<n>][ scope=jdk-jakarta][ flow=remediation]
                  [ remediation=<STATUS|skipped>]
 
+`llm=` (v2.1z-bi follow-up) = the migration's calls + the remediation's build-fix-loop calls of every round
+(`report_llm_calls`), in the chained run and in the remediation-only flow.
 v2: ` review=<ok|issues|skipped|failed>` is appended when the run has a structure review (`report.structure_review`;
 fleet lines and runs without a review keep the round-10 format).
 v2.1: `open=` / `resolved=` count the run's error list (`report.error_entries`): open = status open or unresolved
@@ -259,11 +262,26 @@ def report_result_line(report: Any, exit_code: Optional[int] = None, run_id: Opt
     return result_line(run_id or getattr(report, "run_id", "-"), code, build_ok,
                        unresolved=len(getattr(report, "unresolved", []) or []),
                        blocked=len(getattr(report, "blocked", []) or []),
-                       llm_calls=getattr(getattr(report, "llm_usage", None), "calls", 0) or 0,
+                       llm_calls=report_llm_calls(report),
                        attention=report_attention(report, code),
                        review=getattr(getattr(report, "structure_review", None), "verdict", None),
                        open_errors=o, resolved_errors=r, major=len(getattr(report, "operator_checks", None) or []),
                        remediation=remediation_token(report), flow=flow, scope=run_scope(report))
+
+
+def report_llm_calls(report: Any) -> int:
+    """``llm=`` 값을 반환한다. 이관의 LLM 호출 수에 이어서 실행한 조치의 빌드 오류 수정 루프가 호출한 수를 더한다.
+
+    `llm=`: the migration's calls (`report.llm_usage.calls`) plus the remediation's fix-loop calls over every round
+    (`report.remediation["fix_llm_calls"]`, filled by `chain.summary`), for the chained run and the remediation-only
+    flow alike. Each call is counted once: the migration's `llm_usage` never holds the remediation's calls."""
+    own = _count(getattr(getattr(report, "llm_usage", None), "calls", 0))
+    rem = getattr(report, "remediation", None)
+    return own + (_count(rem.get("fix_llm_calls")) if isinstance(rem, dict) else 0)
+
+
+def _count(v: Any) -> int:
+    return v if isinstance(v, int) and not isinstance(v, bool) and v > 0 else 0
 
 
 REDUCED_SCOPE = "jdk-jakarta"

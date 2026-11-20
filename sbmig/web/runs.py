@@ -664,6 +664,27 @@ def check_flow(flow: str | None) -> str:
     return flow
 
 
+def run_llm_calls(run_dir: Path, report: dict[str, Any]) -> dict[str, Any]:
+    """실행 상태의 LLM 호출 수를 반환한다. 이관 보고서의 수에 취약점 조치의 빌드 오류 수정 루프가 호출한 수를 더한다.
+
+    `llm_calls` of `GET /api/runs/{id}` = the migration report's `llm_usage.calls` + the remediation's fix-loop calls of
+    every round (`fixer.run_fix_usage`, read from `remediation/state.json` next to the report, so a resume pod's calls
+    count too); `remediation_llm_calls` = the second part, so that the page can swap it for the live number of
+    `GET /api/remediations/{id}` without counting a call twice. None when the report has no `llm_usage` and no
+    remediation call was made."""
+    usage = report.get("llm_usage") if isinstance(report.get("llm_usage"), dict) else {}
+    own = usage.get("calls")
+    own = own if isinstance(own, int) and not isinstance(own, bool) else None
+    try:
+        from sbmig.remediations.fixer import run_fix_usage
+        rem = int(run_fix_usage(run_dir)["calls"])
+    except Exception:  # noqa: BLE001 - 상태 응답은 조치 사용량 때문에 실패하면 안 된다
+        log.debug("remediation fix usage of %s not readable", run_dir, exc_info=True)
+        rem = 0
+    total = None if own is None and not rem else (own or 0) + rem
+    return {"llm_calls": total, "remediation_llm_calls": rem}
+
+
 def _abort_reason(report: dict[str, Any]) -> str | None:
     # 엔진이 실행을 중단한 사유를 찾는다.
     # Orchestrator._abort가 manual_followups에 "run aborted: <사유>"로 남기며, 첫 줄이 첫 사유다
@@ -2559,7 +2580,7 @@ class RunManager:
                 info["success"] = data.get("success")
                 info["blocked"] = len(data.get("blocked") or [])
                 info["unresolved"] = len(data.get("unresolved") or [])
-                info["llm_calls"] = (data.get("llm_usage") or {}).get("calls")
+                info.update(run_llm_calls(rd, data))
                 # 실행 중단 사유(접수 거절 등)와 조치의 짧은 요약이 로그 탭에
                 # 묻히지 않도록 화면 결과 칸에 문장으로 보여 준다
                 why = _abort_reason(data)

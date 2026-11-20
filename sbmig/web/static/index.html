@@ -831,8 +831,8 @@
   let maxUploadMb = 0;          // 0이면 한도 없음
   let defaultConfigs = [];      // 서버가 정한 설정 파일 목록. 사용자가 고르지 않는다
   let es = null, current = null, file = null;
-  // 조치의 빌드 오류 자동 수정이 호출한 LLM 횟수와, 요약 줄을 다시 그릴 때 쓰는 마지막 실행 상태다
-  let remLlm = 0, lastRunSt = null;
+  // 조치의 빌드 오류 자동 수정이 호출한 LLM 횟수(조치 상태를 아직 읽지 않았으면 null)와, 요약 줄을 다시 그릴 때 쓰는 마지막 실행 상태다
+  let remLlm = null, lastRunSt = null;
   let lastState = '';           // 현재 실행의 마지막 status.state. 연결이 끊겼을 때 다시 연결할지 판단한다(끝난 실행이면 연결하지 않음)
   // 진행 방식: full은 이관 후 취약점 조치까지(전체 진행), remediation은 이관 없이 취약점 조치만(취약점 해결)
   const FLOW_FULL = 'full', FLOW_REM = 'remediation';
@@ -1194,8 +1194,8 @@
     setTitle(d.cls, d.text, live);
     lastRunSt = st;
     const bits = [];
-    // 이어서 한 취약점 조치가 빌드 오류를 고치느라 호출한 LLM 횟수(remLlm)도 더한다
-    const llm = llmTotal(st.llm_calls, remLlm);
+    // 서버의 수에는 조치의 빌드 오류 자동 수정 호출도 들어 있다. 조치 상태를 읽었으면 그 최신 수로 바꿔 한 번만 센다
+    const llm = llmTotal(st, remLlm);
     if (llm != null) bits.push(`LLM 호출 ${llm}회`);
     // 이관 결과는 제목에 두고, 이어서 한 취약점 조치의 결과는 그 뒤에 붙인다(빌드가 실패해도 조치가 있을 수 있다)
     const remS = remShort(st); if (remS) bits.push(remS);
@@ -1529,7 +1529,7 @@
     if (st.resolved) chips.push(`<span class="chip ok">해결 ${st.resolved}건</span>`);
     const open = st.open ?? st.unresolved; if (open) chips.push(`<span class="chip warn">남은 오류 ${open}건</span>`);
     if (st.blocked) chips.push(`<span class="chip bad">막힌 항목 ${st.blocked}건</span>`);
-    const llm = llmTotal(st.llm_calls, remLlm);
+    const llm = llmTotal(st, remLlm);
     if (llm != null) chips.push(`<span class="chip" id="llmchip">LLM 호출 ${llm}회</span>`);
     $('counts').innerHTML = chips.join('');
     // 보고서는 사람이 받는 이름(migration-report.md)으로 내려받게 한다. 서버도 같은 이름을 보낸다
@@ -1594,10 +1594,14 @@
     const n = fix && typeof fix === 'object' ? Number(fix.llm_calls) : 0;
     return Number.isInteger(n) && n > 0 ? n : 0;
   }
-  // 화면에 보여 줄 LLM 호출 수: 실행 보고서의 수에 조치의 자동 수정이 호출한 수를 더한다. 둘 다 없으면 null이다
-  function llmTotal(runCalls, remCalls) {
-    const a = Number.isInteger(runCalls) ? runCalls : null, b = Number.isInteger(remCalls) && remCalls > 0 ? remCalls : 0;
-    return a == null && !b ? null : (a || 0) + b;
+  // 화면에 보여 줄 LLM 호출 수다. 서버의 llm_calls는 이관과 조치의 자동 수정을 합친 수이고 remediation_llm_calls가 그중 조치 몫이다.
+  // 조치 상태를 읽었으면(remCalls가 null이 아님) 조치 몫을 그 최신 수로 바꾼다. 아무것도 모르면 null이다
+  function llmTotal(st, remCalls) {
+    const total = st && Number.isInteger(st.llm_calls) ? st.llm_calls : null;
+    const srvRem = st && Number.isInteger(st.remediation_llm_calls) && st.remediation_llm_calls > 0 ? st.remediation_llm_calls : 0;
+    const mig = total == null ? null : Math.max(0, total - srvRem);
+    const rem = Number.isInteger(remCalls) && remCalls >= 0 ? remCalls : srvRem;
+    return mig == null && !rem ? null : (mig || 0) + rem;
   }
   // 요약 줄 맨 앞과 결과 카드 칩의 LLM 호출 수만 바꾼다. 요약 줄의 나머지는 setStatus가 쓴 그대로 둔다
   function refreshLlm(llm) {
@@ -1612,7 +1616,7 @@
   function hideRemediation() {
     remSeq++; stopRemPoll(); $('remed').hidden = true; $('remed-act').replaceChildren();
     rem.run = null; rem.viewKey = ''; rem.busy = false; rem.err = ''; rem.resumeErr = ''; rem.last = null;
-    remLlm = 0;
+    remLlm = null;
   }
   function remStep() {
     const rail = $('rail');
@@ -1669,7 +1673,7 @@
     const fixLlm = remFixLlm(st.fix);
     if (fixLlm !== remLlm) {
       remLlm = fixLlm;
-      if (lastRunSt) refreshLlm(llmTotal(lastRunSt.llm_calls, remLlm));
+      if (lastRunSt) refreshLlm(llmTotal(lastRunSt, remLlm));
     }
     // 빌드가 실패한 프로젝트라면 버전은 바꾸고 다시 검사했지만 빌드로 확인하지 못했다는 것을 한 문장으로 알린다
     const tolerated = remTolerated(st);
@@ -3154,7 +3158,7 @@
     $('timeline').innerHTML = ''; $('log').replaceChildren(); closeReport(); rv.files = []; setReportText(''); $('logfull').hidden = true;
     setTitle('', resume ? '다시 연결하는 중…' : '연결하는 중…', false); statusKey = '';
     $('stop').disabled = true;                         // 이전 실행의 상태가 남지 않도록 이 실행의 status가 오기 전에는 비활성화한다
-    resetRail(runFlow); setFramework(null); runRem = null; lastRunSt = null; remLlm = 0;
+    resetRail(runFlow); setFramework(null); runRem = null; lastRunSt = null; remLlm = null;
     stopAsked = false; stopNoteKo = ''; $('stop').classList.remove('asked');
     try { history.replaceState(null, '', '#' + encodeURIComponent(runId)); } catch (e) {}
     const src = new EventSource(`/api/runs/${encodeURIComponent(runId)}/events`);

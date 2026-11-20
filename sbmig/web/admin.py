@@ -92,6 +92,7 @@ ZIP_FREE_FLOOR = 1024 ** 3           # 임시 폴더에 최악의 경우를 쓰�
 ZIP_CHUNK = 64 * 1024
 UPLOADS_DIR = "_uploads"             # in-process 모드가 올린 ZIP을 두는 출력 폴더 아래 폴더다(RunManager.start_file)
 REMEDIATION_ORIGINAL = "remediation/original/source.zip"   # 조치만 하는 실행이 올린 ZIP을 그대로 복사해 둔 곳이다
+CHAIN_STATE = "remediation/state.json"                    # 조치의 상태 파일이다. 빌드 오류 수정 루프의 사용량을 여기서 읽는다
 SOURCE_ERROR = "source not available"
 EMPTY_README = "No run under this output root has a log file yet.\n"
 SKIPPED_NAME = "SKIPPED.txt"
@@ -627,7 +628,8 @@ def run_usage(run_dir: Path, status: dict[str, Any] | None = None, live: bool = 
 
     One run's row of the usage answer, None for a folder that is not a run. `status` = `RunManager.status(run_id)`
     (state word, exit code, upload); `live` = the manager holds this run in memory (an in-process run has no
-    request.json)."""
+    request.json). Usage and cost include the remediation's build-fix-loop calls (`add_remediation_usage`);
+    `remediation_calls` (only when > 0) says how many of `calls` they are."""
     rid = run_dir.name
     req, req_bad = _read_json(run_dir, "control/request.json")
     rep, rep_bad = _read_json(run_dir, "report.json")
@@ -652,8 +654,10 @@ def run_usage(run_dir: Path, status: dict[str, Any] | None = None, live: bool = 
         exit_code = (job or {}).get("exit_code", (web or {}).get("exit_code"))
     cost: float | None = None
     currency: str | None = None
+    rem_calls = 0
     if rep is not None:
         usage, by_model, cost, currency = _usage_from_report(rep, run_dir)
+        usage, by_model, cost, currency, rem_calls = add_remediation_usage(run_dir, usage, by_model, cost, currency)
         known = True
     else:
         found = usage_from_log(run_dir) or usage_from_journal(run_dir)
@@ -668,9 +672,61 @@ def run_usage(run_dir: Path, status: dict[str, Any] | None = None, live: bool = 
             "_t": accepted, "_currency": currency,
             "flow": flow, "scope": _scope_of(rep), "status": state, "result": _result_word(exit_code, rep),
             **usage, "total_tokens": usage["input_tokens"] + usage["output_tokens"], "cost": cost,
+            **({"remediation_calls": rem_calls} if rem_calls else {}),
             "by_model": sorted(by_model, key=lambda r: (-r["total_tokens"], r["model"])),
             "usage_known": known, "partial": bool(req_bad or rep_bad), "has_logs": has_logs(run_dir),
             **dict(zip(("has_source", "source_bytes"), source_info(run_dir, upload)))}
+
+
+def add_remediation_usage(run_dir: Path, usage: dict[str, int], by_model: list[dict[str, Any]], cost: float | None,
+                          currency: str | None) \
+        -> tuple[dict[str, int], list[dict[str, Any]], float | None, str | None, int]:
+    """이관 보고서의 사용량에 취약점 조치의 빌드 오류 수정 루프가 쓴 사용량을 모델별로 더한다.
+    조치 몫은 ``remediation/state.json``에서 읽으며, 단가를 모르는 조치 행이 있으면 실행 비용은 모르는 것으로 둔다.
+
+    Add the remediation's fix-loop usage of every round (`fixer.fix_usage` over `remediation/state.json`, read through
+    `safe_file`) to the migration report's usage: rows of the same asked name are merged (calls / tokens added, `served`
+    merged, cost = the sum or None when either side is unknown), other models get rows of their own. The run's cost
+    stays known only when every remediation row is priced in the report's currency (a migration without calls counts
+    0). Returns (usage, by_model, cost, currency, remediation calls); unchanged when the remediation made no call. The
+    report itself is never rewritten. The log fallback for runs without a report already holds these calls (the fix
+    loop's `llm call` lines are in sbmig.log), so it is not combined with this."""
+    data, _ = _read_json(run_dir, CHAIN_STATE)
+    if data is None:
+        return usage, by_model, cost, currency, 0
+    from sbmig.remediations.fixer import fix_usage
+    fx = fix_usage(data)
+    if not (fx["calls"] or fx["input_tokens"] or fx["output_tokens"]):
+        return usage, by_model, cost, currency, 0
+    usage = {k: usage[k] + _int(fx[k]) for k in ("calls", "input_tokens", "output_tokens")}
+    rows = {r["model"]: dict(r) for r in by_model}
+    base = cost if cost is not None else (0.0 if not by_model else None)
+    run_cost = base
+    for f in fx["by_model"]:
+        key = _model_key(f.get("model"))
+        c = f.get("cost") if isinstance(f.get("cost"), (int, float)) else None
+        fcur = _str(f.get("currency"))
+        if c is not None and fcur and currency and fcur != currency:
+            c = None                                 # 통화가 다르면 더하지 않는다
+        if c is not None and fcur and not currency:
+            currency = fcur
+        run_cost = None if run_cost is None or c is None else run_cost + c
+        r = rows.get(key)
+        if r is None:
+            r = model_row({"model": key, "calls": 0, "input_tokens": 0, "output_tokens": 0, "served": []},
+                          total_tokens=0, cost=0.0)
+            rows[key] = r
+        r["calls"] += _int(f.get("calls"))
+        r["input_tokens"] += _int(f.get("input_tokens"))
+        r["output_tokens"] += _int(f.get("output_tokens"))
+        r["total_tokens"] = r["input_tokens"] + r["output_tokens"]
+        r["cost"] = None if r.get("cost") is None or c is None else round(r["cost"] + c, 6)
+        served = merge_model_names(r.get("served") or [], f.get("served") or [])
+        served = [n for n in served if n.lower() != key.lower()]
+        if served:
+            r["served"] = served
+    return (usage, list(rows.values()), None if run_cost is None else round(run_cost, 6), currency,
+            _int(fx["calls"]))
 
 
 def _sum_cost(costs: Iterable[float | None]) -> float | None:
