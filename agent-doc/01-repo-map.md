@@ -118,7 +118,7 @@
 | 취약점 조치: 실패한 후보(include / discard), 검증된 ZIP 보존; 노드 순서, 멈춤·재개, 성공 판정 | `sbmig/remediations/graph.py` (`_build`, `deliver_failed_candidate`, `discard_candidate`; `_evaluate`, `_Holder.scan`) | [11](11-remediations.md) |
 | 취약점 조치: Maven 명령·준비 조건·해석 읽기 | `sbmig/remediations/maven.py` | [11](11-remediations.md) |
 | 취약점 조치: 깨진 후보의 빌드 오류 수정(작업 복사본, 고칠 수 있는 경로, 패치, LLM 사용량) | `sbmig/remediations/fixer.py` (`run_fix_loop`, `is_editable`, `compare_trees`, `unified_patch`, `fix_usage`, `interrupted_result`) | [11](11-remediations.md) |
-| 취약점 조치: 고침 덮어쓰기·확인 빌드·버림, 빌드 뒤 후보 맞추기 | `sbmig/remediations/graph.py` (`_run_fix`, `_overlay_fix`, `_confirm_fix`, `_discard_fix`, `_package`, `_sync_candidate`), `intake.py` (`sync_tree`) | [11](11-remediations.md) |
+| 취약점 조치: 고침 덮어쓰기·확인 빌드·버림, 빌드 뒤·확정 전·실패본 얼리기 전 후보 맞추기, 완성 증명, 끊긴 루프 정리 | `sbmig/remediations/graph.py` (`_run_fix`, `_overlay_fix`, `_confirm_fix`, `_discard_fix`, `_package`, `_sync_candidate`, `_commit_round`, `_store_applied`, `_write_expected`, `_accepted_table`, `_Holder.vouch_problem`, `_settle_leftover_loop`), `intake.py` (`sync_tree`, `sync_tree_table`, `file_table`, `table_hash`, `SyncFailed`) | [11](11-remediations.md) |
 | 취약점 조치: 보고서·한국어 문장·사내 라이브러리 안내·`framework` 그룹 | [12](12-remediation-report.md) | [11](11-remediations.md) |
 | 취약점 조치: 상태·이유 코드·자료형(계약) | `sbmig/remediations/models.py` — 바꾸면 `docs/INTERFACES.md`의 remediations 절도 | [11](11-remediations.md) |
 | 취약점 조치: 새 설정 키 | `sbmig/core/config.py`의 `RemediationConfig` + `config/default.yml` (한국어 설명) | [11](11-remediations.md) |

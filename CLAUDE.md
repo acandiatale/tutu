@@ -843,25 +843,41 @@ review", fix attempts as `script:<case>:v<N>`; `ko`, the company setting: the re
   no longer hold: the fix loop is the one exception for both. Its LLM calls count in `SBMIG-RESULT llm=`, the run status
   and the admin page (v2.1z-bl). Limits: no pom edits, no loop after a failed baseline, not run on the company cluster.
   Contract: `docs/INTERFACES.md` "v2.1z-bi", amended by "v2.1z-bj" / "v2.1z-bk" (next note).
-- **Rules of the remediation's fix loop (2026-11-20, v2.1z-bj/bk)** — two review rounds the same day (the user: "아 이거
+- **Rules of the remediation's fix loop (2026-11-20, v2.1z-bj/bk/bm)** — three review rounds the same day (the user: "아 이거
   오늘 금요일이라 안급해~ 고칠 수 있는거 꼼꼼히 고치고 가자!"), every finding reproduced first, then a page round ("보고서는
   migration, remediation 각각 따로 보여질 수 있도록!"). Rules a contributor must not break:
   - The candidate is changed by the fix loop ONLY through the graph's overlay (`graph._overlay_fix`) of the bytes kept in
     `rounds/<r>/fixloop/fixed/`. The loop itself (git, scripts, builds, a crash, a kill) runs in the work copy
     `fixloop/tree/` without any `.git` path of the upload, and changed files are found by comparing bytes, not by git.
-  - After EVERY build of the candidate (`graph._package`) the tree is synchronised (`intake.sync_tree`) with what the
-    remediation decided: `accepted/` + the applied poms in `rounds/<r>/applied/` + the reported fix.
+  - After EVERY build of the candidate (`graph._package`), and again right before commit and before a failed candidate
+    is frozen, the tree is synchronised with what the remediation decided: `accepted/` + the applied poms in
+    `rounds/<r>/applied/` + the reported fix, compared against the stored table `rounds/<r>/expected.json`
+    (`intake.sync_tree_table`: each candidate file read at most once, `accepted/` never re-read).
+  - A candidate is built only with the complete-apply proof: `applied/`, then `expected.json`, then the marker
+    `candidate.ready.json` carrying that file's sha256 (`_Holder.vouch_problem`). Without it the round goes back
+    through `apply` (journal `candidate_rebuilt` with `why`), so a run folder an older version left is re-applied,
+    never "synchronised" back to `accepted/` (which had reverted its pom edits as build changes).
+  - A candidate that cannot be put back to its expected state is never committed or delivered: the sync tries every
+    path (read-only folders made writable once), then `intake.SyncFailed` → `CandidateNotRestored` → FAILED
+    `internal_error`, nothing of that round delivered, an earlier verified delivery kept. Never swallow a sync failure.
   - State is saved BEFORE any file is deleted (fixed bytes, patches, folders), and right after the loop returns,
     before the candidate is touched.
   - A stop never discards a fix: a stop before or during the confirming build halts STOPPED with the fix kept and a
-    resume confirms again; a killed loop's folder is kept as `fixloop-interrupted-<n>/` and its LLM usage is counted.
+    resume confirms again; a loop that ended `stop requested` is not a verdict (a resume may run it again); a killed
+    loop's folder is kept as `fixloop-interrupted-<n>/` and its LLM usage is recorded and saved before the rename, at
+    the next build or report node, exactly once.
   - Anything `mvn clean` or a build plugin can change (`target/`, a formatter, sortpom) must never reach a delivery
     unreported: never a manifest path (`intake.build_output_paths`), put back after each build, named in the report.
   - The two reports are previewed separately on the page (the remediation preview shows exactly
     `remediation/report.md`); never fold one into the other. The page also no longer shows 고급 설정 or the other run
-    files ("관리자에서 로그 파일들 받을 수 있으니까 그 밖의 파일 영역은 빼달래! 고급설정 영역이 빼줘!").
+    files ("관리자에서 로그 파일들 받을 수 있으니까 그 밖의 파일 영역은 빼달래! 고급설정 영역이 빼줘!"); the start request
+    sends none of the hidden 고급 설정 values (a browser restores form values).
+  - A loop that ran and did not fix is worded 「시도한 소스 수정은 결과에 넣지 않았습니다.」, never "reverted": the
+    candidate was never touched.
   Not checked: the company cluster; a project whose build needs its own `.git` (git-commit-id: the work copy has none, so
-  its loop ends not fixed). Contract and as-coded notes: `docs/INTERFACES.md` "v2.1z-bj", "v2.1z-bk", "v2.1z-bl".
+  its loop ends not fixed); the permission retry on Windows. A fourth review and a real-Maven smoke run were running
+  when v2.1z-bm was committed. Contract and as-coded notes: `docs/INTERFACES.md` "v2.1z-bj", "v2.1z-bk", "v2.1z-bl",
+  "v2.1z-bm".
 - **Company convention (2026-10-20): agents run on LangGraph under uvicorn.** `loop.engine: graph` (default) drives
   the phases from a LangGraph `StateGraph` (`sbmig/graph/`, nodes intake → analyze → plan → phase×N → finalize;
   `inline` is the old loop, reports are identical by test); the web UI is FastAPI (`uvicorn sbmig.web.app:app` or

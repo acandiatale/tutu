@@ -6,7 +6,7 @@
 
 ## 1. 회사가 sbmig를 쓰는 방식
 
-운영 모델은 웹 UI다: 담당자가 자기 프로젝트를 zip으로 올리면 떠 있는 웹 앱(`sbmig serve`)이 이관을 돌린다(담당자는 sbmig를 직접 실행하지 않음).
+운영 모델은 웹 UI다: 담당자가 자기 프로젝트를 zip으로 올리면 떠 있는 웹 앱(`sbmig serve`)이 이관을 돌린다.
 
 흐름: 브라우저가 zip을 올림 → `sbmig serve`(FastAPI + uvicorn, 워커 1: 실행 큐가 프로세스 안; 실행마다 작업 스레드 하나와 LangGraph 그래프 intake → … → finalize) → SSE로
 node / journal / log / report 이벤트 → 보고서, result.zip, errors.md, sbmig.log … 내려받기.
@@ -14,18 +14,18 @@ node / journal / log / report 이벤트 → 보고서, result.zip, errors.md, sb
 - 화면(머리 `panacea-remediating-oss`, 임시): 진행 방식 전체 진행(기본, 이관 후 조치) / 취약점 해결(조치만, [11](11-remediations.md)) → 프로젝트명(필수, 안내 「6자리 체인코드가 포함된 레포지토리 이름으로 작성해 주세요.」, `runs.PROJECT_RE`: 영문·숫자·`_`·`-` 30자까지; 어기면 본문 읽기 전 400) + zip →
   `마이그레이션 시작`(또는 `취약점 조치 시작`) → 단계 레일과 진행 기록 / 로그 탭(마지막 1,500줄) → `보고서 받기(migration-report.md)` / `변환된 프로젝트 받기(result.zip)`. 미리보기는 따로 둘: 결과 카드 끝 「마이그레이션 보고서 미리보기」, 조치 칸 안 「조치 결과 보고서 미리보기」(`remediation/report.md` 그대로, [01](01-repo-map.md)).
   설정 파일은 서버가 정한다: `sbmig serve --config <이름>`(여러 번) 또는 `SBMIG_WEB_CONFIGS=a.yml,b.yml`, 없으면 `config/artifacts.yml` →
-  `artifacts.local-e2e.yml` 중 있는 것(`GET /api/configs`의 `default`). 화면에 고급 설정과 그 밖의 파일 목록은 없다(파일은 관리자 페이지).
+  `artifacts.local-e2e.yml` 중 있는 것(`GET /api/configs`의 `default`). 고급 설정(숨김, 그 값은 안 보냄)과 그 밖의 파일 목록은 화면에 없다(파일은 관리자 페이지).
   시작은 파일과 맞는 이름이 있어야 눌린다. 실행 폴더 `<프로젝트명>-YYYYmmdd-HHMMSS-<hex 6>`(`ls /data/out | grep <프로젝트명>`; 예전 이름도 그대로),
   실행 카드·「지난 실행」은 프로젝트명 먼저. 접수 거절(Ant, 풀기 한도를 넘은 ZIP 등)은 사유를 문장으로
   보임. 「지난 실행」은 최근 3일(`GET /api/runs?days=`; 대기·실행 중, 조치 대기, 열어 둔 실행 `keep`은 늘 보임; 「이전 실행 보기」로 전체,
-  지우지 않음). 멈춘 실행(`user_stop`)·처리 불가는 주황, 실행 오류만 빨강. 화면은 `sbmig/web/static/index.html` 한 파일(웹 폰트·CDN 없음).
+  지우지 않음). 멈춘 실행(`user_stop`)·처리 불가는 주황, 실행 오류만 빨강. 화면은 `sbmig/web/static/index.html` 한 파일(폰트·CDN 없음).
 - 웹 파드가 직접 돌리면 한 번에 하나, Job 모드는 동시에 `SBMIG_JOB_MAX_PARALLEL` 건(기본 1, 매니페스트 3). 넘는 zip은 `queued`로 기다리고 화면에 순번이 보인다.
 - 중지는 그래프 노드 사이에서만 먹힌다. 계획한 최종 빌드가 모두 끝난 뒤 닿은 요청은 무시한다([02](02-flow-and-nodes.md) 11절).
 - 접근 제어: 기본 배포는 `SBMIG_WEB_OPEN=1`(`--open`)로 토큰 없이 받는다(시작 때 경고).
   `SBMIG_WEB_TOKEN`(`--token`)이 있으면 모든 요청에 요구하고(open보다 우선), `http://<host>:8765/?token=<토큰>`로 한 번 열면 HttpOnly 쿠키가 남는다.
   둘 다 없으면 루프백만 받고 `--host 0.0.0.0`이면 뜨지 않는다. 다른 사이트의 요청은 거절: GET / HEAD / OPTIONS가 아닌 요청에
   `Sec-Fetch-Site: cross-site`가 있거나 `Origin` 호스트가 `Host` / `X-Forwarded-Host`와 다르면(`Origin: null` 포함) 토큰 검사보다 먼저 403
-  `cross-site request refused: …`(모든 경로). 두 헤더 없는 curl과 이 화면은 그대로.
+  `cross-site request refused: …`(모든 경로). 두 헤더 없는 curl과 이 화면은 통과.
 - 업로드 상한: `--max-upload-mb`, 기본 `$SBMIG_MAX_UPLOAD_MB` 또는 512 MB(이미지 1024, 명령줄에 없어 ConfigMap 값이 먹음), 0 = 없음. 본문을
   받기 전 출력 볼륨 여유가 `fleet.min_free_gb`(5 GB)보다 적으면 HTTP 507(화면 「서버의 저장 공간이 부족해 …」, 0 = 안 봄). 실행 폴더는 저절로
   안 지워진다(§8). ZIP 풀기 한도 `intake.max_unpacked_mb`(4096), `intake.max_entry_mb`(1024), `intake.max_compression_ratio`(200, 1 MiB 이상
@@ -35,7 +35,7 @@ node / journal / log / report 이벤트 → 보고서, result.zip, errors.md, sb
 - `sbmig serve`가 곧 uvicorn이다. 종료 시 `--graceful-timeout`(5초) 뒤 SSE를 닫고 Maven /
   OpenRewrite를 정리한다(`aborted`). 플레인 uvicorn: `SBMIG_WEB_OUT=out/web uvicorn sbmig.web.app:app --port 8765 --timeout-graceful-shutdown 5`.
 
-CLI 명령(`sbmig run`, `sbmig fleet`, `sbmig kb …`)은 개발자·테스트·진단용이다.
+CLI 명령(`sbmig run`, `sbmig fleet`, `sbmig kb …`)은 개발·시험·진단용.
 
 ## 2. PC에 설치 (Windows / macOS / Linux)
 

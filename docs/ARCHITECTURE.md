@@ -327,7 +327,7 @@ Every upload carries a project name and its run flow (`POST /api/runs?name=<file
 the page's 프로젝트명 field and 전체 진행 / 취약점 해결 choice): the flow is pinned in `request.json`, passed to the Job as
 `SBMIG_FLOW`, same queue and slots. The page previews the two reports separately (「마이그레이션 보고서 미리보기」, and
 「조치 결과 보고서 미리보기」 = `remediation/report.md` inside the remediation block) and shows neither 고급 설정 nor a list of
-other run files (the admin page serves logs). A remediation-only run's report titles carry the entered project name
+other run files (the admin page serves logs); the start request sends none of the hidden 고급 설정 values. A remediation-only run's report titles carry the entered project name
 (`contract.display_project`, display only). The project name must match `runs.PROJECT_RE` (`^[A-Za-z0-9][A-Za-z0-9_-]{0,29}$`), checked
 before the body is read (400 otherwise; rule and sentences in `deploy/README.md` §2), and is kept in `control/request.json`,
 `web-status.json` and the journal's `web_run`. A run directory is named `<project>-YYYYmmdd-HHMMSS-<6 hex>`; `job_name` cuts the
@@ -377,11 +377,17 @@ pom, no dot path, no script or archive), no file created or deleted, no stored s
 Changed files are found by comparing bytes; the fixed bytes go to `rounds/<r>/fixloop/fixed/`, the state is saved, and
 the graph overlays them on the candidate (the only way the loop changes it), then confirming build, verify, commit,
 `rounds/<r>/fix.patch` (all committed fixed rounds combined in `remediation/fix.patch`); not fixed → the candidate is
-untouched and the round fails `candidate_build_failed` as before. After every candidate build `intake.sync_tree`
-brings the candidate back to `accepted/` + the applied poms (`rounds/<r>/applied/`) + the reported fix, so nothing a
-build changed reaches a delivery unreported (`RoundState.build_changed`). A stop keeps a fix; a killed loop is kept as
-`fixloop-interrupted-<n>/` with its LLM usage counted (`fixer.fix_usage`, read by the result line, the run status and
-the admin page).
+untouched and the round fails `candidate_build_failed` as before. A candidate is built only with the proof that its
+applied files were stored completely (`rounds/<r>/applied/`, then `rounds/<r>/expected.json` = size + sha256 per
+manifest path, then the marker `candidate.ready.json` carrying that file's sha256; `_Holder.vouch_problem`); without it
+(a kill during apply, a run folder of an older version) the build node sends the round back through `apply`. After
+every candidate build, and again right before commit and before a failed candidate is frozen,
+`intake.sync_tree_table` brings the candidate back to `accepted/` + the applied poms + the reported fix by that table
+(each candidate file read at most once, `accepted/` not re-read), so nothing a build changed reaches a delivery
+unreported (`RoundState.build_changed`); a path it cannot put back (`intake.SyncFailed`) ends the run FAILED
+`internal_error` without committing or delivering that round. A stop keeps a fix and a loop stopped on request may run
+again on resume; a killed loop is kept as `fixloop-interrupted-<n>/` with its LLM usage counted once, at the next
+build or report node (`fixer.fix_usage`, read by the result line, the run status and the admin page).
 The planner keeps a wrong version out and leaves a residual for a person instead: a version property several artifacts share
 (target missing for one of them), a jump to another major no scanner hint names, a date-stamped current version (first number
 over 9999), a current version that already meets every hint, a declaration only inside a profile not active by default, a g:a

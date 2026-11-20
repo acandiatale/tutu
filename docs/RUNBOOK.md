@@ -184,6 +184,8 @@ Symptoms an operator meets and where to look:
 | `run aborted: ZIP refused: …` (exit 3) | journal `intake_refused`; the sentence names the `intake.*` limit that was exceeded |
 | a web run refused at once, 「웹 파드와 빌드 파드가 서로 다른 이미지로 실행되고 있어 …」 | the image was pushed and the web pod not restarted: §5 |
 | upload answers HTTP 507 / HTTP 403 `cross-site request refused: …` | §5 |
+| `remediation=FAILED`, `the round <r> candidate could not be put back to its expected state after the build (<n> path(s), first: <p>: <ErrorType>); nothing of this round was delivered` (report: 「라운드 <r>의 수정본을 빌드 뒤 원래 상태로 되돌리지 못해 …」) | The build (or a later Maven call) changed a manifest path of the candidate and sbmig could not write it back, even after making its folders writable once. Journal `candidate_sync_failed` / `candidate_not_restored` name the first 5 paths and error types; look at the permissions / owner of `remediation/rounds/<r>/candidate/<p>` (a plugin that leaves read-only files, a file owned by another user on the volume). Nothing of that round was committed or delivered; an earlier round's verified `result.zip` stays. Fix the cause, then upload the project again |
+| journal `candidate_rebuilt` with `why` (`no record that the applied files were stored completely`, `no completeness marker`, …) after an image was deployed | A remediation run stopped or waiting at `build` by the previous version resumed in the new one: its run folder lacks the proof, so the candidate is made again from `accepted/` and the plan's edits are applied again. Expected once per such run, not an error; the same `why` on a run the current version started means a kill during `apply` |
 
 **A minimal pom by hand** (a library whose repository has the jar but no pom, when sbmig declined or the switch is off). Write a
 file with the library's coordinates (placeholders here):
@@ -388,16 +390,27 @@ round; the report has 「빌드 오류 수정」 and the page the chip 「소스
 second build passes without a change is recorded as such (no fix). Not fixed → the candidate was never touched and the
 round ends `candidate_build_failed` as before, the status message ending in ` | automatic build fix: <reason>` (or
 ` | automatic build fix not started: <reason>`) and the report saying 「빌드 오류 자동 수정을 시도했지만 고치지
-못했습니다(<사유>). 소스 수정은 되돌렸습니다.」 (not started: 「빌드 오류 자동 수정은 시작하지 않았습니다(<사유>).」). A
-stop during the confirming build keeps the fix: the run halts `STOPPED` and a resume confirms it again. A fix is
+못했습니다(<사유>). 시도한 소스 수정은 결과에 넣지 않았습니다.」 (not started: 「빌드 오류 자동 수정은 시작하지 않았습니다(<사유>).」). A
+stop during the confirming build keeps the fix: the run halts `STOPPED` and a resume confirms it again. A loop that
+ended because of a stop request is not a result: a resume may run it again (`time budget used up` stays final). A fix is
 discarded (record line, LLM calls still counted) when its confirming build fails, when the round's candidate is remade
 after an ineffective override entry was dropped, or when it no longer fits the candidate on resume; a loop the pod was
-killed in is kept as `rounds/<r>/fixloop-interrupted-<n>/` and its LLM calls are counted. After every candidate build
-the candidate is brought back to the files the remediation left (`accepted/` + the applied poms in `rounds/<r>/applied/`
-+ a reported fix): files a build removed or rewrote (a formatter, sortpom) never reach a delivery; the record says
-「빌드가 바꾼 파일 <n>개는 결과에 넣지 않고 원래대로 두었습니다.」, journal `build_side_changes`. No loop when the baseline
+killed in is kept as `rounds/<r>/fixloop-interrupted-<n>/` and its LLM calls are counted once, at the next entry of the
+build node (or the report node) whatever happens next. A candidate is built only with the proof that its applied files
+were stored completely: `rounds/<r>/applied/` (the edited poms), `rounds/<r>/expected.json` (size + sha256 of every
+manifest path) and `rounds/<r>/candidate.ready.json` naming that file's sha256; without it (a kill during `apply`, or a
+run folder an older version left) the candidate is made again from `accepted/` (journal `candidate_rebuilt` with
+`why`). After every candidate build, and again right before the round is committed or a failed candidate is frozen,
+the candidate is brought back to the files the remediation left (`accepted/` + the applied poms + a reported fix),
+compared against `expected.json` so each file is read at most once: files a build or a later Maven call removed or
+rewrote (a formatter, sortpom) never reach a delivery; the record says 「빌드가 바꾼 파일 <n>개는 결과에 넣지 않고 원래대로
+두었습니다.」, journal `build_side_changes`. A path that cannot be put back even after its folders were made writable
+ends the run `FAILED internal_error` with nothing of that round delivered (§2, symptoms table). No loop when the baseline
 build already failed; an error that needs a pom change (an exclusion, a new artifact) stays unfixed; a project whose
-build needs its own `.git` (git-commit-id) cannot build in the work copy, so its loop ends not fixed. The loop's LLM
+build needs its own `.git` (git-commit-id) cannot build in the work copy, so its loop ends not fixed; the loop's Maven
+calls that do not go through the build runner (effective pom, dependency tree) keep their own timeouts; the
+per-attempt guard does not see a new file under a path the project's `.gitignore` ignores (the check at the end of the
+loop does). The loop's LLM
 calls count in `SBMIG-RESULT … llm=`, in `GET /api/runs/{id}` (`llm_calls`, of which `remediation_llm_calls`) and on
 the admin page (「조치 N회 포함」); the migration's `report.json` usage does not hold them. Operator text:
 `deploy/README.md` §6; flow, states, API and diagnosis: `agent-doc/11-remediations.md`; `sbmig remediation-resume

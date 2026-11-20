@@ -22,10 +22,10 @@ type: `sbmig/core/models.py`, `sbmig/core/interfaces.py`, `sbmig/core/config.py`
 | LLM gateway | Base "LLM client tier and adapter seams"; v2.1z-m (agent gateway, token exchange), v2.1z-n, v2.1z-o, v2.1z-p (case thread), v2.1z-q, v2.1z-x, v2.1z-af (busy wait, auth retries) |
 | report & result line | Base "Report and the result line", "Advisories and the Handover"; v2 "As built (step 1)" (`review=`); v2.1d (`major=`); remediations (`remediation=`); v2.1z-ak (`scope=`, the framework block); v2.1z-bl (`llm=` includes the remediation's fix-loop calls) |
 | fleet | Base "Fleet" |
-| web app | Base "Graph engine", "Web app"; v2.1z-w (page, server-chosen configs), v2.1z-ae (queue / slots on the page), v2.1z-af (page re-attach), v2.1z-aj (run flows, page header); v2.1z-ak (framework label, skipped stages); v2.1z-ao (admin page `/admin`: token usage per project, log ZIPs); v2.1z-au (the code-change view: artifact `codediff/`, `/api/runs/{id}/codediff`, the page block); v2.1z-av (cross-site requests refused, the free-space floor for uploads, unpacking limits); v2.1z-bg (report view); v2.1z-bl (two report previews, 고급 설정 and the other-files list gone, LLM counts) |
+| web app | Base "Graph engine", "Web app"; v2.1z-w (page, server-chosen configs), v2.1z-ae (queue / slots on the page), v2.1z-af (page re-attach), v2.1z-aj (run flows, page header); v2.1z-ak (framework label, skipped stages); v2.1z-ao (admin page `/admin`: token usage per project, log ZIPs); v2.1z-au (the code-change view: artifact `codediff/`, `/api/runs/{id}/codediff`, the page block); v2.1z-av (cross-site requests refused, the free-space floor for uploads, unpacking limits); v2.1z-bg (report view); v2.1z-bl (two report previews, 고급 설정 and the other-files list gone, LLM counts); v2.1z-bm (the hidden controls are not sent) |
 | Job mode (Main / Worker, slots, env pins) | v2.1z-z "k8s Job dispatch mode", v2.1z-ab (kubeconfig, template ConfigMap), v2.1z-ac (Main ↔ Worker contract), v2.1z-ad (end confirmation, ownership, env pins, write-time redaction), v2.1z-ae (parallel slots), v2.1z-af, v2.1z-aq (a build pod that does not start: stop, the reason notice); v2.1z-av (the build identity, pins taken at Job creation, the resume attempt) |
 | deploy | v2.1z-s (build hooks), v2.1z-t (one Job per request), v2.1z-u, deploy (baked config, container paths), v2.1z-ad "Shipped mode" |
-| remediations | remediations; v2.1z-ak (in-house group `framework`); v2.1z-am (case-insensitive matching, per-module in-house split, module sources, variant overrides, 들어온 경로); v2.1z-an (override proposals in module poms, the owners' choice); v2.1z-ar (no approval unless switched on); v2.1z-av (fixed = gone from the rescan, the planner's new residual groups, `remediation.log` for every run); v2.1z-bi part B, v2.1z-bj, v2.1z-bk (the fix loop on a failed candidate: work copy, overlay, build-side sync, one `fix.patch`); v2.1z-bl (fix-loop LLM usage, titles with the entered project) |
+| remediations | remediations; v2.1z-ak (in-house group `framework`); v2.1z-am (case-insensitive matching, per-module in-house split, module sources, variant overrides, 들어온 경로); v2.1z-an (override proposals in module poms, the owners' choice); v2.1z-ar (no approval unless switched on); v2.1z-av (fixed = gone from the rescan, the planner's new residual groups, `remediation.log` for every run); v2.1z-bi part B, v2.1z-bj, v2.1z-bk (the fix loop on a failed candidate: work copy, overlay, build-side sync, one `fix.patch`); v2.1z-bl (fix-loop LLM usage, titles with the entered project); v2.1z-bm (the complete-apply proof `expected.json`, the sync by table before commit / freeze, a candidate that cannot be put back, `stop requested` runs again, leftover loops settled) |
 
 ## Base contracts (in force; written before v2)
 
@@ -6058,7 +6058,8 @@ run's remaining budget; a loop that cannot start for lack of time is `attempted:
   변경하지 않았습니다.」 becomes 「프로젝트 구조(파일·폴더)는 변경하지 않았습니다. 소스는 빌드 오류를 고치느라
   <n>개 파일을 바꿨습니다.」 and "달라진 것은 … 버전 표기뿐입니다" gains 「와 고친 소스 <n>개」.
 - Not fixed: one line under the failed-build warning: 「빌드 오류 자동 수정을 시도했지만 고치지 못했습니다(<사유>). 소스
-  수정은 되돌렸습니다.」 with the reason through the i18n table.
+  수정은 되돌렸습니다.」 with the reason through the i18n table (superseded by "v2.1z-bm": the second sentence is
+  「시도한 소스 수정은 결과에 넣지 않았습니다.」).
 - `report.json` carries `rounds[].fix`. Files route: `fix.patch` of the last fixed round is servable as
   `fix.patch` (allow-list addition in `remediations/api.py`).
 - Page: the remediation card shows 「소스 <n>개 수정」 chip when fixed; the run header's LLM call count includes the
@@ -6170,7 +6171,8 @@ says where they differ. `framework.fix_loop` is `false` by default again (the us
 - **`_build` re-entry** (resume, or after `apply` remade the candidate): `rs.fix` is NOT cleared.
   `rs.fix.fixed` with changed files → overlay first, then the build is the confirming build (log
   `build-fixed.log`); it passes → verify, commit. `rs.fix.attempted` and not fixed → the build runs, and when it
-  fails the loop is not run again (`_candidate_failed` with the recorded reason). `rs.fix` None → as specified in
+  fails the loop is not run again (`_candidate_failed` with the recorded reason; superseded by "v2.1z-bm" for the
+  reason `stop requested`, which is moved to `fix_discarded` so the loop may run again). `rs.fix` None → as specified in
   "v2.1z-bi". The loop therefore runs at most once per round and candidate, except after a kill during the loop
   itself (nothing was saved) and in the next bullet.
 - **Confirming build fails** → `_remove_overlay`, `rs.fix.fixed = False`, `reason: error: confirming build failed`,
@@ -6243,7 +6245,8 @@ where noted):
   `Field(default=30, ge=1, le=240)` (`config/default.yml` the same).
 - i18n: `fix_not_started_ko` / `fix_not_started_reason_ko` (중지 요청, 남은 시간 부족) and the `auto_fix_*` /
   `auto_fix_not_started*` rules; the reasons of a loop that ran and did not fix still end in 「소스 수정은
-  되돌렸습니다.」 (`fix_failed_ko`), meaning the loop's edits were dropped.
+  되돌렸습니다.」 (`fix_failed_ko`), meaning the loop's edits were dropped (superseded by "v2.1z-bm": 「시도한 소스 수정은
+  결과에 넣지 않았습니다.」, since the candidate was never touched).
 - Tests: `tests/remediations/test_fix_loop_review.py` (the review's reproductions: failing cleanup / reset, nested and
   root `.git`, dropped override, the time reserve, kill-and-resume, retry passed, a pending stop, files a build
   removed), `test_fixer.py` (work copy, editable paths, byte comparison, deadline per build, `llm unavailable`),
@@ -6282,6 +6285,10 @@ fixed rounds the report named each round's patch while the route served only the
   (`restore_missing` stays as a function). `RoundState.build_changed: list[str]` (sorted union over the round's
   builds, left out when empty); journal `build_side_changes` (`round`, `missing`, `changed`, first 5 changed
   paths) when any. `verify`, commit and freezing therefore always see: accepted + applied edits (+ the reported fix).
+  (Superseded by "v2.1z-bm": the sync also runs right before commit and before a failed candidate is frozen, so
+  `build_changed` also holds what a later Maven call changed; it compares against the stored table
+  `rounds/<r>/expected.json` (`intake.sync_tree_table`) instead of re-reading `accepted/`; a path it cannot put back
+  is no longer only logged: the round fails `internal_error` and nothing of it is delivered.)
 - **Inside the loop's work copy** the build runner wrapper puts back, after each build, every tracked file the
   build modified or deleted that was clean before it, so an attempt is never blamed for (or credited with) the
   build's own edits. `FixResult.changed` = editable paths whose bytes differ from the candidate AND that the work
@@ -6294,13 +6301,16 @@ fixed rounds the report named each round's patch while the route served only the
   (the same reader the admin page uses for `llm call` lines, or the journal's usage events; whichever the code
   already has), and one `FixResult(attempted=True, fixed=False, reason="interrupted: the run ended during the
   loop", usage=…)` is appended to `rs.fix_discarded` and saved before the new loop starts. Usage that cannot be
-  recovered is recorded as zero with `reason` ending ` (usage unknown)`.
+  recovered is recorded as zero with `reason` ending ` (usage unknown)`. (Superseded by "v2.1z-bm": a leftover
+  folder is settled at the start of the build node, of `_run_build` and of the report node too, whatever happens
+  next, and the result is saved before the rename.)
 - **`_drop_ineffective`** moves `rs.fix` into `fix_discarded` only when it was a fixed fix; a recorded not-fixed
   result stays where it is.
 - **`_overlay_fix`** re-checks every path it copies with the fixer's `is_editable` rule and the manifest; a path
   that fails is treated as an unusable fix (discarded, reason `discarded: the stored fix is not usable`).
 - `rs.fix.tree_hash` is computed and saved in the same save as `rs.fix` (the hash of the candidate's manifest
-  paths with the fix's bytes substituted), not at the first overlay.
+  paths with the fix's bytes substituted), not at the first overlay. (Superseded by "v2.1z-bm": computed from
+  `rounds/<r>/expected.json` plus the fix's files, without reading the candidate.)
 - **`fix.patch` of a source that is not UTF-8**: decoded with the detection the pom-charset code uses (UTF-8, then
   cp949); the patch is written as UTF-8 with a first line `# <path>: shown as UTF-8, the file is <encoding>` for
   such a file. Only bytes that decode under neither are `Binary files differ`.
@@ -6333,6 +6343,8 @@ the loop), the interrupted loop's usage, the cp949 patch, two fixed rounds and t
   (`rs.fix`, `rs.fix_discarded`) was killed; a folder without the file counts as killed when the round records no
   attempted loop without a token. Killed → renamed `fixloop-interrupted-<n>/` (a failed rename: the folder is read in
   place, then removed), journal `remediation_fix_interrupted` (`round`, `folder`, `llm_calls`, `reason`).
+  (Superseded by "v2.1z-bm": the usage is read, recorded and saved BEFORE the rename, a folder without `loop.json`
+  gets a fresh token first, and a folder whose token is already on an interrupted result is only renamed.)
 - `fixer.interrupted_result(folder, cfg)` reads the loop's own `journal.jsonl` with the admin page's
   `sbmig.web.admin.usage_from_journal` (its `llm_script` / `llm_verify_guide` events; the loop writes no
   `sbmig.log`) and prices the rows like a finished loop. No journal = the loop never reached an LLM call: zero,
@@ -6341,15 +6353,19 @@ the loop), the interrupted loop's usage, the cp949 patch, two fixed rounds and t
   through a temporary file. `graph._package` is the one place a candidate is built: the build, then
   `_sync_candidate`. Journal `build_side_changes` = `round`, `missing` (count), `changed` (count), `paths` (first 5
   changed), `missing_paths` (first 5); restored files also still give `manifest_files_restored`. The state message is
-  not changed by build-side changes; `sbmig.log` has one WARNING per build that changed files.
+  not changed by build-side changes; `sbmig.log` has one WARNING per build that changed files. (Superseded by
+  "v2.1z-bm": `_package` is still the one place a candidate is built, but not the only sync: `_commit_round` and
+  `deliver_failed_candidate` sync too; `sync_tree` tries every path and raises `SyncFailed`, which the graph no
+  longer swallows.)
 - `rounds/<r>/applied/` (`graph.APPLIED_DIR`, `_store_applied`) holds `ApplyResult.changed_files` plus every edit's
-  `pom` whatever its name, made anew at each apply and removed with the candidate when an override is dropped.
+  `pom` whatever its name, made anew at each apply and removed with the candidate when an override is dropped
+  (with `rounds/<r>/expected.json` since "v2.1z-bm").
 - Inside the work copy the build wrapper (`fixer._DeadlineRunner`) restores build-side edits with the existing
   `Workspace.restore_build_byproducts` and records the untracked entries each build created (ignored ones included),
   which the end check does not count as created by an attempt; journal `remediation_fix_build_side` (`restored`, the
   first 20) in the loop's journal. "Changed by an attempt" = `ws.changed_between(base, head)`.
 - On re-entry `_confirm_fix(fresh=False)` synchronises the candidate with the fix included and compares
-  `intake.tree_hash` with `rs.fix.tree_hash`: a different hash or a path that fails `_fix_paths` → discarded
+  `intake.tree_hash` with `rs.fix.tree_hash` (since "v2.1z-bm" the hash comes from the stored table, see there): a different hash or a path that fails `_fix_paths` → discarded
   (`discarded: the stored fix is not usable`), the candidate synchronised without it, and the round builds as if no
   loop had run. A fix the loop has just returned that fails the check ends the round not fixed with that reason (no
   second loop on the same candidate). A stop right before the confirming build also halts STOPPED with
@@ -6398,7 +6414,7 @@ shown its short run report in the preview), "관리자에서 로그 파일들 �
   DOM nodes. Tests: `tests/web/test_page_remediation_preview.py` (node against a small fake DOM),
   `tests/web/test_page_report_view.py`.
 - **Trimmed areas** (`63cece1`). 고급 설정 (`<details id="adv" hidden>`) is not shown; its fields stay and their
-  defaults are sent. The list of other run files (`#otherfiles`) is empty; only the notice about a missing result ZIP
+  defaults are sent (superseded by "v2.1z-bm": while the block is hidden the start request carries none of them). The list of other run files (`#otherfiles`) is empty; only the notice about a missing result ZIP
   is left there. Logs and other files come from the admin page. Tests: `tests/web/test_page_trimmed_areas.py`.
 - **Project name in the remediation titles** (`f107cd1`). `sbmig/web/contract.py`: `entered_project(run_dir)` = the
   name entered at upload from `control/request.json` (Job modes), else the `project` of the journal's `web_run` line
@@ -6409,3 +6425,118 @@ shown its short run report in the preview), "관리자에서 로그 파일들 �
   `entered_project` and keeps `source.zip` without one. A direct CLI run is unchanged. Tests:
   `tests/web/test_display_project.py`, `tests/remediations/test_chain_project_name.py`,
   `tests/loop/test_remediation_flow_project_name.py`.
+
+## v2.1z-bm — third review of the remediation's fix loop: runs that span a deploy, sync failures, stop, usage, cost
+
+**Why.** A third review of the fix loop (2026-11-20) reproduced five faults (`out/scratch/review-bk/test_repro_bk.py`,
+untracked, asserted the faulty behaviour): (1) **a run that spans a deploy**: a run folder stopped at `build` by the
+previous version has no `rounds/<r>/applied/`; after the resumed build the sync took `accepted/` as the expected bytes,
+put the applied pom edits back to the old versions and filed them as build-side changes, so the round delivered (or
+committed) a tree without the version change; (2) **a sync failure was swallowed**: `sync_tree` stopped at the first
+path it could not write (a read-only folder a plugin left, a permission error), the graph only logged it, and the
+candidate holding the build's edits was committed or frozen as the failed delivery; (3) **a stop during the loop was a
+verdict**: a loop that ended `stop requested` was kept as the round's result, so the resumed run ended FAILED
+`… automatic build fix: stop requested` without running the loop; (4) **a killed loop's LLM usage was lost** unless a
+new loop started on resume (a resumed build that passed, the loop switched off or a stop during the build counted
+nothing), and a kill between the folder's rename and the save lost it for good; (5) **cost**: every sync compared each
+manifest path with `accepted/` byte for byte (two reads per same-size file per build), and `_fix_tree_hash` read the
+whole candidate. Two more things came with them: Maven calls after the build's sync (`verify`'s resolve) could change
+files that were then committed, and the page sent values a browser had restored into the hidden 고급 설정 controls.
+Contract and as coded in one.
+
+### The proof that a candidate is complete (`graph.py`)
+
+- **Order in `_apply`** (and in `_drop_ineffective`, which remakes the candidate): `unmark_candidate` → remove the
+  candidate, `rounds/<r>/applied/` and `rounds/<r>/expected.json` → copy from `accepted/`, apply, patch, text-only
+  check → `_store_applied` (the edited files, hashed from the bytes already in memory) → `_write_expected` →
+  `mark_candidate`. A kill anywhere before the marker leaves no marker.
+- **`rounds/<r>/expected.json`** (`graph.EXPECTED_FILE`, written atomically) = `{schema: 1, round, applied,
+  applied_files, files: {path: [size, sha256]}}`: the table of `accepted/` (`_accepted_table`) with the files stored
+  under `applied/` substituted; `applied_files` = the stored paths.
+- **`rounds/<r>/candidate.ready.json`** (`CANDIDATE_READY`) = `{round, applied, expected}`, `expected` = the sha256 of
+  `expected.json`. The key is the proof; a marker without it was written by an earlier version.
+- **`_Holder.vouch_problem(r)`** returns "" or the reason, in this order: `WHY_NO_MARKER` 「no completeness marker」,
+  `WHY_OTHER_APPLIED` 「the completeness marker names other proposals than the state」, `WHY_NO_CANDIDATE` 「the
+  candidate folder is missing」, `WHY_NO_PROOF` 「no record that the applied files were stored completely」 (no or
+  wrong `expected` sha, `expected.json` missing, naming another round or `applied`, without `files`, or an
+  `applied_files` entry missing under `applied/`). `candidate_vouched(r)` = no problem.
+- **The build node** first settles a leftover loop (below), then: a problem → journal `candidate_rebuilt` (`round`,
+  `why` = the text above), WARNING `remediation round <r>: the candidate is made again from accepted/ (<why>)`, back
+  to `apply`. A run folder of an older version is therefore re-applied (the applied edits come back from the plan, not
+  from the old candidate). `deliver_failed_candidate` refuses an unvouched candidate as before (`candidate_not_vouched`).
+
+### The sync (`intake.py`, `graph._sync_candidate`)
+
+- **Against a stored table.** `intake.sync_tree_table(tree, expected, table, paths)`: per path, a candidate file whose
+  size equals the table's is hashed once and left alone when the sha256 matches; only a missing or differing path opens
+  `expected(path)`, and the copied bytes must hash to the recorded sha256 (else code `expected_changed`, the path
+  fails). A path the table does not list falls back to `sync_tree`'s byte comparison. The graph uses it whenever
+  `expected.json` exists (always for a vouched candidate), with the fix's files substituted (`_expected_table`,
+  `_fix_rows`); without the table, `sync_tree`. `accepted/` is no longer re-read by the sync.
+- **Where it runs.** After every build (`_package`: first build, confirming build, the build after a dropped
+  override), right before commit (`_commit_round`) and right before a failed candidate is frozen
+  (`deliver_failed_candidate`), each recording into `RoundState.build_changed` / journal `build_side_changes` as before.
+  So a later Maven call's edit is put back and named too.
+- **Every path is tried.** `sync_tree` and `sync_tree_table` go through all paths; a write refused with
+  `PermissionError` is tried once more after the existing folders from the tree root down to the file and the file
+  itself got the owner's write bit (folders also read + search; links never touched; `_make_writable_on_path`). Any
+  path still not put back → `intake.SyncFailed` (a `RemediationError`: `missing`, `changed` = what was put back,
+  `failed` = `[(path, error type, code)]` in path order; `code` = the first failure's code or `sync_failed`).
+- **A candidate that cannot be put back is never committed or delivered.** `_sync_candidate` records what was put
+  back, logs ERROR, journals `candidate_sync_failed` (`round`, `count`, `paths` = first 5, `errors` = their types) and
+  raises `graph.CandidateNotRestored` (any other exception from the sync counts as one failed path `-`). The build node
+  catches it: journal `candidate_not_restored` (same fields), `discard_candidate`, run FAILED `internal_error` with
+  `the round <r> candidate could not be put back to its expected state after the build (<n> path(s), first: <p>:
+  <ErrorType>); nothing of this round was delivered` (`CANDIDATE_NOT_RESTORED`; Korean 「라운드 <r>의 수정본을 빌드 뒤
+  원래 상태로 되돌리지 못해 이 라운드의 결과는 전달하지 않았습니다(<n>개 경로, 첫 번째: <p>).」, i18n rule
+  `candidate_not_restored`). Before a freeze the sync raises before anything is moved, so `failed_candidate: include`
+  freezes nothing; an earlier verified delivery stays (`earlier_delivery_kept`).
+- **Building the table without reading `accepted/`.** `_accepted_table` takes, in this order, the expected table of the
+  last committed round (with that round's fixed files substituted, since a round commits its synced candidate), then
+  `original/manifest.json`; each only when its `intake.table_hash` equals the round plan's `source_tree_hash`. When
+  neither matches (a round committed by an older version), `intake.file_table(accepted/)` hashes it once.
+- **`_fix_tree_hash`** = `table_hash` of `expected.json` with the fix's rows; it reads only the fix's files (the
+  candidate only without a table). New intake functions: `file_table`, `table_hash`, `sync_tree_table`, `SyncFailed`
+  (in the intake protocol beside `sync_tree`).
+
+**Reads per round** (a passing round without the loop): `accepted/` once by the plan's tree hash and once by the copy
+into the candidate, as before; `_write_expected` reads no tree when a recorded table matches (else `accepted/` once
+more); each sync (two in such a round: after the build, before commit) reads each candidate file at most once (not at
+all when the size differs) and opens an expected file only for a path that differs. A round with a fix adds one sync
+per confirming build (and one on re-entry); a failed round syncs after the build and before the freeze.
+
+### Stop, a killed loop, the page, wording
+
+- **`stop requested` is not a verdict.** On re-entry `_run_build` moves a recorded result that ran and ended
+  `stop requested` to `rs.fix_discarded` (usage still counted), saves, journals `remediation_fix_discarded`
+  (`reason: stop requested`, `changed: 0`) and may run the loop again. `time budget used up` and every other
+  not-fixed reason stay final.
+- **A leftover `fixloop/` is settled** at the start of the build node, of `_run_build` and of the report node
+  (`_settle_leftover_loop` → `_settle_old_loop(remove_recorded=False)`; the report node's failure is a WARNING only),
+  whatever happens next. A folder without `loop.json` (killed before it was written) gets a fresh token written into
+  it first. A killed loop's result (token as `loop_id`) is appended to `fix_discarded` and SAVED, journal
+  `remediation_fix_interrupted`, and only then is the folder renamed `fixloop-interrupted-<n>/` (a failed rename removes
+  it). A folder whose token is already on an interrupted result is only renamed, so the usage is counted once whatever
+  the kill point. The folder of a normally recorded loop is removed only before a new loop starts.
+- **The page's start request** ignores the hidden advanced controls: `advShown()` (= `#adv` not hidden);
+  `chosenConfigs()` returns the server's default list while hidden; `startQuery(o)` adds `configs` (when not the
+  default), `stop_after` (full flow) and `llm_provider` only when `o.adv`; the click handler sets `project` and `flow`
+  beside it. The three controls and the config checkboxes carry `autocomplete="off"`.
+- **Wording.** `i18n.fix_failed_ko` ends 「시도한 소스 수정은 결과에 넣지 않았습니다.」 (was 「소스 수정은
+  되돌렸습니다.」: the loop never touched the candidate); the record line says 「… · 시도한 소스 수정은 결과에 넣지 않음」.
+
+**Tests.** `tests/remediations/test_fix_loop_review3.py` (the reproductions turned around: an old-version run folder
+resumed at `build` with a failing and a passing build; every kill point of `apply` with its `why`; the write order
+applied → expected → marker; a read-only folder left by the build; a path that cannot be put back after a passing
+build, after a failed build, in round 2 with round 1's verified delivery kept; `sync_tree` trying every path; a
+read-only file in a read-only folder for both syncs; stop during the loop and resume, with the loop off, out of time;
+a killed loop's usage when the resumed build passes, the loop is off, a stop comes during the build; a kill between
+save and rename; a folder without `loop.json`; the report node; the open counts of `sync_tree_table`; a changed
+expected file; a two-round run that never calls `file_table`; the fallback read; `_fix_tree_hash` reading no tree; the
+sync before commit and before freeze), `tests/web/test_page_trimmed_areas.py` (`autocomplete`, `startQuery` run in
+node), `test_i18n.py`, `test_report_fix_loop.py`, `test_intake_build_output.py`; `tests/remediations/fakes.py` gives the
+fake intake the real `sync_tree_table`.
+
+**Known limits.** The permission retry is not tested on Windows (`os.chmod` there toggles only the read-only flag);
+`expected.json` grows with the number of files of the upload (one row per manifest path, written once per apply); a
+fourth review and a real-Maven smoke run were still running when this was written.
