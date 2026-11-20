@@ -710,8 +710,8 @@ def add_remediation_usage(run_dir: Path, usage: dict[str, int], by_model: list[d
     merged, cost = the sum or None when either side is unknown), other models get rows of their own. The run's cost
     stays known only when every remediation row is priced in the report's currency (a migration without calls counts
     0). A remediation whose usage is partly unknown (`fix_usage()["usage_unknown"]`, v2.1z-bo): the calls whose
-    tokens are unknown (`by_model[].tokens_unknown`) add their calls to the row of their name and nothing to any cost;
-    the run's cost is the sum of the priced rows when at least one row with calls is priced (the reader marks it
+    tokens are unknown (`by_model[].tokens_unknown`) add their calls to the row of their name and nothing to any cost,
+    and that row gets `usage_partly_unknown: true` (its cost, when a number, is the priced part only); the run's cost is the sum of the priced rows when at least one row with calls is priced (the reader marks it
     `usage_partly_unknown`), else None (nothing known: unknown, never a number). Returns (usage, by_model, cost,
     currency, remediation calls); unchanged when the remediation made no call. The report itself is never rewritten. The log fallback for runs without a report already holds these calls (the fix
     loop's `llm call` lines are in sbmig.log), so it is not combined with this."""
@@ -739,6 +739,7 @@ def add_remediation_usage(run_dir: Path, usage: dict[str, int], by_model: list[d
                 r = rows[key] = model_row({"model": key, "calls": 0, "input_tokens": 0, "output_tokens": 0,
                                            "served": []}, total_tokens=0, cost=None)
             r["calls"] += _int(f.get("calls"))
+            r["usage_partly_unknown"] = True         # 이 행의 호출 일부는 토큰과 비용을 모른다
             continue
         c = f.get("cost") if isinstance(f.get("cost"), (int, float)) else None
         fcur = _str(f.get("currency"))
@@ -801,7 +802,9 @@ def collect_usage(out_root: Path, status_of: Callable[[str], dict[str, Any]] | N
     읽지 못한 파일은 요청을 실패시키지 않고 그 실행에 ``partial``을 표시한다.
 
     The `GET /admin/api/usage` answer, read from disk now. `status_of(run_id)` = `RunManager.status` (optional);
-    `live_ids` = runs the manager holds in memory."""
+    `live_ids` = runs the manager holds in memory. A project row, the `totals` and a `by_model` row that sum a run
+    with `usage_partly_unknown` (for a model row: a run row of that model that received calls without token counts)
+    carry `usage_partly_unknown: true` (left out when false): their numbers, the cost included, are the known part."""
     out_root = Path(out_root)
     live = set(live_ids)
     runs: list[dict[str, Any]] = []
@@ -828,19 +831,23 @@ def collect_usage(out_root: Path, status_of: Callable[[str], dict[str, Any]] | N
     projects: dict[str, dict[str, Any]] = {}
     models: dict[str, dict[str, Any]] = {}
     model_costs: dict[str, list[float | None]] = {}
-    totals = {"projects": 0, "runs": len(runs), **zero}
+    totals = {"projects": 0, "runs": len(runs), **zero, "_unknown": False}
     for r in runs:
         p = projects.setdefault(r["project"], {"project": r["project"], "runs": 0, **zero, "_costs": [],
-                                               "_times": [], "run_list": []})
+                                               "_times": [], "run_list": [], "_unknown": False})
         p["runs"] += 1
         _add(p, r)
         _add(totals, r)
+        if r.get("usage_partly_unknown"):
+            p["_unknown"] = totals["_unknown"] = True
         p["_costs"].append(r["cost"])
         p["_times"].append(r["_t"])
         p["run_list"].append(r)
         for m in r["by_model"]:
-            agg = models.setdefault(m["model"], {"model": m["model"], **zero, "served": []})
+            agg = models.setdefault(m["model"], {"model": m["model"], **zero, "served": [], "_unknown": False})
             _add(agg, m)
+            if m.get("usage_partly_unknown"):
+                agg["_unknown"] = True
             agg["served"] = sorted(merge_model_names(agg["served"], m.get("served") or []), key=str.lower)
             model_costs.setdefault(m["model"], []).append(m["cost"])
     currencies = {r["_currency"] for r in runs if r["_currency"]}
@@ -861,20 +868,25 @@ def collect_usage(out_root: Path, status_of: Callable[[str], dict[str, Any]] | N
         p["last_run_at"] = times[-1].isoformat(timespec="seconds")
         p["run_list"] = [{k: v for k, v in r.items() if not k.startswith("_") and k != "project"}
                          for r in p["run_list"]]
-        project_rows.append({k: p[k] for k in ("project", "runs", "calls", "input_tokens", "output_tokens",
-                                                "total_tokens", "cost", "unpriced_runs", "first_run_at",
-                                                "last_run_at", "run_list")})
+        project_rows.append({**{k: p[k] for k in ("project", "runs", "calls", "input_tokens", "output_tokens",
+                                                   "total_tokens", "cost", "unpriced_runs", "first_run_at",
+                                                   "last_run_at", "run_list")},
+                             # 사용량 일부를 알 수 없는 실행이 들어 있다. 비용은 아는 만큼의 합계다
+                             **({"usage_partly_unknown": True} if p["_unknown"] else {})})
     project_rows.sort(key=lambda p: (-p["total_tokens"], p["project"]))
     totals["projects"] = len(project_rows)
+    unknown = totals.pop("_unknown")
     by_model = []
     for name, m in models.items():
         by_model.append(model_row(m, total_tokens=m["total_tokens"],
-                                  cost=_sum_cost(model_costs[name]) if len(currencies) <= 1 else None))
+                                  cost=_sum_cost(model_costs[name]) if len(currencies) <= 1 else None,
+                                  **({"usage_partly_unknown": True} if m["_unknown"] else {})))
     by_model.sort(key=lambda m: (-m["total_tokens"], m["model"]))
     return {"generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "out_root": str(out_root),
             "totals": {**totals, "cost": total_cost, "currency": currency,
-                       "unpriced_runs": sum(1 for r in runs if r["cost"] is None)},
+                       "unpriced_runs": sum(1 for r in runs if r["cost"] is None),
+                       **({"usage_partly_unknown": True} if unknown else {})},
             "by_model": by_model,
             "projects": project_rows}
 

@@ -460,8 +460,8 @@ def interrupted_result(folder: Path, cfg: Any = None) -> FixResult:
     v2.1z-bk: a loop killed mid-way left `fixloop/` (renamed by the graph). Its usage is read from the loop's own
     `journal.jsonl` (the `llm_script` / `llm_verify_guide` events, with the admin page's reader in its strict mode
     `sbmig.web.admin.journal_usage_checked`; the loop writes no `sbmig.log` of its own) and priced like `_usage`. A
-    folder with neither `journal.jsonl` nor `loop.json`: zero, known. A journal that cannot be read to the end, a line
-    that cannot be parsed (a line a kill cut off), or a missing journal beside `loop.json` → the usage that was read is
+    folder without `journal.jsonl` (with or without `loop.json`: no LLM call was made): zero, known. A journal that
+    cannot be read to the end or a line that cannot be parsed (a line a kill cut off) → the usage that was read is
     kept, `usage_unknown: true` and `reason` ending ` (usage unknown)`. Never raises."""
     res = FixResult(attempted=True, fixed=False, reason=R_INTERRUPTED)
     if not usage_from_folder(res, folder, cfg):
@@ -493,24 +493,22 @@ def _set_totals(res: FixResult) -> None:
     res.models = list(dict.fromkeys(u.model for u in res.usage))
 
 
-_LOOP_FILE = "loop.json"                # graph.LOOP_FILE: 루프를 시작하기 전에 graph가 쓰는 표식 파일
-
-
 def journal_usage(folder: Path, cfg: Any = None) -> tuple[list[FixUsage], str, bool] | None:
     """수정 루프 폴더의 ``journal.jsonl``에서 모델별 LLM 사용량 행, 통화, 끝까지 읽었는지를 반환한다. 읽지 못하면 None이다.
 
     The usage the loop journaled (`llm_script` / `llm_verify_guide` events, read with the admin page's reader in its
     strict mode, `sbmig.web.admin.journal_usage_checked`), priced like `_usage`: `(rows, currency, known)`.
-    `([], "", True)` for a folder with neither `journal.jsonl` nor `loop.json` (no loop started there);
-    `known = False` when a line cannot be parsed (a line a kill cut off, garbage), the file cannot be read to the end,
-    or the journal is missing beside `loop.json` (the loop had started), the rows that were read kept; None when the
-    journal exists but cannot be opened at all. Never raises."""
+    `([], "", True)` for a folder without `journal.jsonl`, with or without `loop.json`: the graph writes `loop.json`
+    before calling the fixer, and `run_fix_loop` writes its first journal line (`remediation_fix_loop_start`) before
+    `BuildFixLoop.run`, the only place an LLM request can be made, so a kill during the setup (`copy_tree`,
+    `git_init`, analysis) leaves no journal and made no call: known, zero. `known = False` when a line cannot be
+    parsed (a line a kill cut off, garbage) or the file cannot be read to the end, the rows that were read kept; None
+    when the journal exists but cannot be opened at all. Never raises."""
     try:
         jf = Path(folder) / "journal.jsonl"
         if not jf.exists() and not jf.is_symlink():
-            # 루프를 시작한 폴더(loop.json)에 저널이 없으면 사용량을 알 수 없다
-            started = (Path(folder) / _LOOP_FILE).exists() or (Path(folder) / _LOOP_FILE).is_symlink()
-            return [], "", not started
+            # 저널이 없으면 LLM 호출도 없었다. run_fix_loop는 첫 LLM 요청 전에 저널 첫 줄을 쓴다
+            return [], "", True
         if jf.is_symlink() or not jf.is_file():
             raise OSError("journal is not a regular file")
         with open(jf, "rb") as fh:                      # 읽을 수 없는 파일을 여기서 알아낸다
@@ -689,6 +687,7 @@ def run_fix_loop(cfg: Any, tree: Path, work_dir: Path, *, run_id: str, targets: 
                             edit_guard=make_edit_guard(loops, editable), **kw)
         # 루프 전에 있던 파일이다. 끝에서 시도가 만든 파일을 찾을 때 뺀다(sbmig의 .gitignore, 분석이 남긴 파일)
         initial = _walk_files(work)
+        # 첫 LLM 요청(loop.run) 전에 저널 첫 줄을 쓴다. 저널이 없으면 호출도 없었다는 journal_usage의 전제다
         ws.journal({"event": "remediation_fix_loop_start", "targets": list(targets) or [""],
                     "first_build_log": getattr(first_outcome, "log", "") if first_outcome is not None else "",
                     "max_iterations": int(cfg.remediation.fix_loop_max_iterations),

@@ -345,6 +345,8 @@
     }
     return unknown ? `<td class="num">${fmtInt(r.calls)}${unknown}</td>` : numCell(r.calls);
   };
+  // 합계 행(프로젝트, 모델)의 호출 수 칸이다. 사용량 일부를 알 수 없는 실행이 들어 있으면 그렇게 적는다
+  const sumCallsCell = (v, unknown) => unknown ? `<td class="num">${fmtInt(v)}${UNKNOWN_NOTE}</td>` : numCell(v);
   const costCell = (c, unknown) => c == null
     ? (unknown ? '<td class="num dash" title="사용량 일부를 알 수 없어 비용을 계산하지 않았습니다">알 수 없음</td>'
       : '<td class="num dash" title="가격 정보가 없습니다">-</td>')
@@ -499,15 +501,16 @@
     let html = tile('합계 토큰', fmtInt(t.total_tokens), tok(t.total_tokens), true) +
       tile('입력 토큰', fmtInt(t.input_tokens), tok(t.input_tokens)) +
       tile('출력 토큰', fmtInt(t.output_tokens), tok(t.output_tokens)) +
-      tile('호출 수', fmtInt(t.calls), '') +
+      tile('호출 수', fmtInt(t.calls), t.usage_partly_unknown === true ? UNKNOWN_NOTE : '') +
       tile('실행 수', fmtInt(t.runs), '') +
       tile('프로젝트 수', fmtInt(t.projects), '');
-    if (t.cost != null) html += tile('비용', esc(fmtCost(t.cost)), '');
+    if (t.cost != null) html += tile('비용', esc(fmtCost(t.cost)), t.usage_partly_unknown === true ? UNKNOWN_NOTE : '');
     $('tiles').innerHTML = html;
     // 가격이 없는 실행이 섞이면 서버는 합계 비용을 비우거나(null) 가격 있는 합과 unpriced_runs를 함께 준다. 둘 다 안내한다
     const unpriced = int(t.unpriced_runs);
     let note = '';
     if (t.cost != null && unpriced > 0) note = `가격 정보가 없는 실행 ${fmtInt(unpriced)}건은 비용 합계에서 뺐습니다.`;
+    else if (t.cost == null && t.usage_partly_unknown === true) note = '사용량 일부를 알 수 없는 실행이 있어 전체 비용은 표시하지 않습니다.';
     else if (t.cost == null && anyCost()) note = '가격 정보가 없는 실행이 있어 전체 비용은 표시하지 않습니다.';
     $('costnote').textContent = note;
   }
@@ -524,9 +527,10 @@
       (withCost ? '<th class="num" scope="col">비용</th>' : '') + '</tr></thead><tbody>';
     if (!rows.length) html += `<tr class="nomatch"><td colspan="${withCost ? 7 : 6}">모델별 기록이 없습니다.</td></tr>`;
     for (const m of rows) {
-      html += `<tr><td class="stick">${modelName(m)}</td>` + numCell(m.calls) + numCell(m.input_tokens) +
+      const mu = m.usage_partly_unknown === true;
+      html += `<tr><td class="stick">${modelName(m)}</td>` + sumCallsCell(m.calls, mu) + numCell(m.input_tokens) +
         numCell(m.output_tokens) + numCell(m.total_tokens, 'total') + `<td class="num share">${share(m.total_tokens, whole)}</td>` +
-        (withCost ? costCell(m.cost) : '') + '</tr>';
+        (withCost ? costCell(m.cost, mu) : '') + '</tr>';
     }
     $('models').innerHTML = html + '</tbody>';
   }
@@ -593,10 +597,10 @@
         '<svg class="chev" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M6 3.5 10.5 8 6 12.5"/></svg>' +
         `<span class="pname">${esc(name)}</span></button>` +
         (unknown ? `<span class="pmeta">집계 전 실행 ${unknown}건</span>` : '') + '</td>' +
-        numCell(p.runs) + numCell(p.calls) + numCell(p.input_tokens) + numCell(p.output_tokens) +
+        numCell(p.runs) + sumCallsCell(p.calls, p.usage_partly_unknown === true) + numCell(p.input_tokens) + numCell(p.output_tokens) +
         `<td class="num total">${fmtInt(p.total_tokens)}<span class="cmp">${int(p.total_tokens) >= 10000 ? compact(p.total_tokens) : ''}</span></td>` +
         `<td class="num share">${share(p.total_tokens, whole)}</td>` +
-        (withCost ? costCell(p.cost) : '') +
+        (withCost ? costCell(p.cost, p.usage_partly_unknown === true) : '') +
         `<td class="num">${esc(fmtDate(p.last_run_at))}</td></tr>`;
       html += `<tr class="detail" id="${did}"${isOpen ? '' : ' hidden'}><td colspan="${cols.length}">` +
         (isOpen ? runsTable(p, withCost) : '') + '</td></tr>';

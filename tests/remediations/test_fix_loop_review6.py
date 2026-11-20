@@ -5,7 +5,8 @@
 2. calls the budget counted beyond what the attempts recorded get their own unpriced row; known rows keep their price;
 3. `chain._budget_outcome` stamps a new `updated`, saves, and asks for the report once (a STOPPED state has no
    report node, so no report keeps the older text);
-4. a damaged or missing loop journal is unknown usage, not an exact zero;
+4. a damaged loop journal is unknown usage, not an exact zero; a missing one (a kill during the loop's setup,
+   before its first journal line and so before any LLM request) is a known zero;
 5. the loop's minimum time is checked once, in the graph;
 6. wording: a partly unknown total is not presented as exact; a repaired report drops the "report not written" note;
 7. `RemediationManager._repair_seen` is bounded.
@@ -322,12 +323,41 @@ def test_a_journal_of_garbage_is_unknown_not_zero(tmp_path):
     assert res.usage_unknown and res.llm_calls == 0 and res.reason.endswith(" (usage unknown)")
 
 
-def test_a_missing_journal_beside_loop_json_is_unknown(tmp_path):
+def test_a_missing_journal_beside_loop_json_is_known_zero(tmp_path):
+    """The graph writes loop.json before calling the fixer; the fixer journals before any LLM request can be made."""
     from sbmig.remediations.fixer import interrupted_result, journal_usage
     (tmp_path / "loop.json").write_text('{"loop": "t", "round": 1}', encoding="utf-8")
-    assert journal_usage(tmp_path) == ([], "", False)
+    assert journal_usage(tmp_path) == ([], "", True)
     res = interrupted_result(tmp_path)
-    assert res.usage_unknown and res.llm_calls == 0
+    assert not res.usage_unknown and res.llm_calls == 0 and res.reason == "interrupted: the run ended during the loop"
+    assert "usage_unknown" not in res.to_dict()
+
+
+class _KilledInSetup:
+    """The pod dies in the fixer's setup (copy_tree / git_init): loop.json exists, no journal line was written."""
+
+    def run(self, cfg, tree, work_dir, **kw):
+        raise Killed()
+
+
+def test_a_kill_during_the_loop_setup_is_a_known_zero_at_graph_level(tmp_path):
+    from sbmig.remediations import fixer as fixer_mod
+    from sbmig.remediations.fixer import fix_usage
+    state, paths = make_run(tmp_path)
+    rec = Recorder()
+    with pytest.raises(Killed):
+        run(state, paths, one_fix_components(maven=FakeMaven(outcomes=[True, False]), fixer=_KilledInSetup()), rec=rec)
+    left = paths.round_dir(1) / graph.FIX_DIR
+    assert (left / graph.LOOP_FILE).is_file() and not (left / "journal.jsonl").exists()
+    out, _ = run(RemediationState.from_dict(rec.saves[-1]), paths,
+                 one_fix_components(maven=FakeMaven(outcomes=[True]), fixer=FakeFixer()), rec=Recorder())
+    assert out.status == SUCCEEDED, out.message
+    [gone] = out.rounds[0].fix_discarded
+    assert gone.reason == fixer_mod.R_INTERRUPTED and not gone.usage_unknown and gone.llm_calls == 0
+    assert "usage_unknown" not in gone.to_dict()
+    usage = fix_usage(out)
+    assert usage["calls"] == 0 and not usage.get("usage_unknown")
+    assert "알 수 없" not in paths.report_md.read_text(encoding="utf-8")
 
 
 def test_a_folder_with_neither_file_is_known_zero(tmp_path):
