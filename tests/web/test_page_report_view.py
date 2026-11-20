@@ -102,7 +102,10 @@ def test_real_reports_render_every_construct(tmp_path):
         assert html.count("<h2>") == sum(1 for ln in lines if ln.startswith("## ")), name
         assert html.count("<table>") == sum(1 for ln in lines if re.match(r"^\|(-+\|)+$", ln)), name
         assert html.count("<details>") == sum(1 for ln in lines if ln.startswith("<details>")), name
-        assert html.count('<pre class="mdv-pre">') == sum(1 for ln in lines if re.match(r"^`{3,}\S", ln)), name
+        # a diff block carries a second class so that its lines can fill the box with a background colour
+        assert len(re.findall(r'<pre class="mdv-pre(?: mdv-diff)?">', html)) \
+            == sum(1 for ln in lines if re.match(r"^`{3,}\S", ln)), name
+        assert html.count('<pre class="mdv-pre mdv-diff">') == sum(1 for ln in lines if re.match(r"^`{3,}diff\b", ln)), name
         assert html.count('<div class="mdv-tw">') == html.count("<table>")          # every table scrolls in its box
         rest = outside_code(html)
         for marker in ("**", "|---", "&lt;details", "&lt;summary", "```"):
