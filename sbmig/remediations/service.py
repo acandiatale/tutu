@@ -318,6 +318,8 @@ class RemediationManager:
         self._worker: threading.Thread | None = None
         self._closing = threading.Event()
         self.interrupted: list[str] = []
+        # 끝 상태 폴더를 맞춘 기록이다. {폴더: (state.updated, 확인한 시각, 더 할 일이 없는지)}
+        self._repair_seen: dict[str, tuple[float, float, bool]] = {}
         self.root.mkdir(parents=True, exist_ok=True)
         self._recover()
 
@@ -596,28 +598,91 @@ class RemediationManager:
                     self.interrupted.append(d.name)
                 except OSError as e:
                     log.warning("remediation %s: could not mark INTERRUPTED: %s", d.name, type(e).__name__)
-            elif not self.job_mode and graph_mod.report_pending(paths, st):
+            elif graph_mod.final_repair_needed(paths, st):
                 self._write_pending_report(d.name, paths, st)
         if self.interrupted:
             log.warning("remediations interrupted by a server restart (resume explicitly): %s", ", ".join(self.interrupted))
 
     def _write_pending_report(self, rid: str, paths: RunPaths, st: RemediationState) -> None:
-        """보고서 노드 도중에 서버가 내려간 단독 조치의 보고서를 시작할 때 쓴다. 실패해도 시작을 막지 않는다.
+        """끝 상태로 남은 단독 조치의 결과 ZIP 기록과 보고서를 시작할 때 맞춘다. 실패해도 시작을 막지 않는다.
 
-        In-process only (the process that drives standalone runs): a final state whose report node was killed
-        (`graph.report_pending`) gets its report written once at startup, under the run claim."""
+        At startup, in every mode (v2.1z-bo; in-process only before): a standalone final state whose report node was
+        killed (`graph.report_pending`) or whose result ZIP swap was left half done gets `graph.repair_final` once,
+        under the run claim."""
         try:
             claim = RunClaim(paths.root, purpose="service").acquire()
         except StateConflict:
             return
         try:
             cfg = remediation_config(self._config(list(st.configs)))
-            graph_mod.write_pending_report(st, paths, cfg, save=lambda s: self._save(paths, s),
-                                           journal=lambda e: self._journal_safe(paths, e))
+            graph_mod.repair_final(st, paths, cfg, save=lambda s: self._save(paths, s),
+                                   journal=lambda e: self._journal_safe(paths, e))
         except Exception as e:  # noqa: BLE001 — a report that cannot be written never stops the server
             log.warning("remediation %s: the report was not written at startup: %s", rid, type(e).__name__)
         finally:
             claim.release()
+
+    # ------------------------------------------------------------------ a final state whose owner is gone
+    REPAIR_RETRY_S = 60.0
+
+    def _owner_gone(self, rid: str, chained: bool) -> bool:
+        """이 조치를 진행하던 쪽(이 프로세스의 작업 스레드, 이관 실행, 재개 Job)이 모두 끝났는지 확인한다."""
+        with self._lock:
+            if rid in self._active:
+                return False
+        if not chained:
+            return True
+        if self._resume_active(rid):
+            return False
+        return self._migration_ended(rid)
+
+    def repair_final(self, rid: str, paths: RunPaths, st: RemediationState, chained: bool) -> RemediationState:
+        """진행하던 쪽이 끝났는데 결과 ZIP 기록이나 보고서가 남은 끝 상태를 웹 서버가 맞추고 그 상태를 반환한다.
+
+        v2.1z-bo, every mode: a final state (`TERMINAL`) with a pending report or a half-done result ZIP swap
+        (`graph.final_repair_needed`) whose owner is gone (`_owner_gone`: not run by this process; for a chained one
+        the migration run has ended — the detection behind the page's "its build pod is gone" — and no resume Job is
+        queued or running) gets `graph.repair_final` under the run claim (`RunClaim`, purpose `service`; a fresh claim
+        of another process → nothing now) and this process's lock of the id. The status, reasons and message are
+        not changed. Called by `status`, `result` and `file_path`; a folder found in order is remembered by its
+        `updated` stamp (no file is read again until the state changes), a repair that left something to do is tried
+        again at most every `REPAIR_RETRY_S` seconds."""
+        if st.status not in TERMINAL:
+            return st
+        key = str(paths.root)
+        seen = self._repair_seen.get(key)
+        now = time.monotonic()
+        if seen is not None and seen[0] == st.updated and (seen[2] or now - seen[1] < self.REPAIR_RETRY_S):
+            return st
+        if not graph_mod.final_repair_needed(paths, st):
+            self._repair_seen[key] = (st.updated, now, True)
+            return st
+        if not self._owner_gone(rid, chained):
+            return st
+        with self._run_lock(rid):
+            try:
+                claim = RunClaim(paths.root, purpose="service").acquire()
+            except StateConflict:
+                return st
+            try:
+                data = read_json(paths.state)
+                cur = RemediationState.from_dict(data) if isinstance(data, dict) else st
+                if cur.status in TERMINAL and graph_mod.final_repair_needed(paths, cur):
+                    log.warning("remediation %s: its run has ended with the %s state not fully recorded; the web "
+                                "server completes it", rid, cur.status)
+                    self._journal_safe(paths, {"event": "remediation_final_repair", "remediation": cur.id,
+                                               "status": cur.status, "by": "service"})
+                    cfg = remediation_config(self._config(self._configs_for(rid, cur, chained)))
+                    graph_mod.repair_final(cur, paths, cfg, save=lambda s: self._save(paths, s),
+                                           journal=lambda e: self._journal_safe(paths, e))
+                st = cur
+            except Exception as e:  # noqa: BLE001 — a status read never fails because of the repair
+                log.warning("remediation %s: the final state was not completed: %s", rid,
+                            graph_mod.scrub_message(f"{type(e).__name__}: {e}", paths.root))
+            finally:
+                claim.release()
+        self._repair_seen[key] = (st.updated, time.monotonic(), not graph_mod.final_repair_needed(paths, st))
+        return st
 
     # ------------------------------------------------------------------ readiness
     def readiness(self, cfg: Any = None) -> list[str]:
@@ -962,7 +1027,7 @@ class RemediationManager:
 
         The status dict of the API contract plus `kind`, `run_id` (chained), `stale`, `resume` {available, note}."""
         paths, chained = self._locate(rid)
-        st = self._load(rid)
+        st = self.repair_final(rid, paths, self._load(rid), chained)
         shown, stale = self._shown(rid, st, chained)
         base = f"/api/remediations/{rid}"
         withheld = chained and self._withheld(rid)
@@ -1078,7 +1143,7 @@ class RemediationManager:
 
         report.json once terminal, else `NotFinished` (`Withheld` for a chained one before the final redaction pass)."""
         paths, chained = self._locate(rid)
-        st = self._load(rid)
+        st = self.repair_final(rid, paths, self._load(rid), chained)
         if st.status not in TERMINAL:
             raise NotFinished(f"remediation {rid} is {st.status}", status=st.status)
         if chained and self._withheld(rid):
@@ -1105,6 +1170,13 @@ class RemediationManager:
         paths, chained = self._locate(rid)
         if not paths.state.is_file():
             raise UnknownRemediation(f"unknown remediation {rid}")
+        if name in ("report.md", "report.json", "result.zip", "fix.patch"):
+            try:
+                self.repair_final(rid, paths, self._load(rid), chained)
+            except UnknownRemediation:
+                raise
+            except Exception:  # noqa: BLE001 — serving a file never fails because of the repair
+                log.debug("remediation %s: final repair before serving %s failed", rid, name, exc_info=True)
         target: Path | None = None
         if name in _FIXED_FILES:
             target = _FIXED_FILES[name](paths)

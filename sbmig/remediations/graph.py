@@ -123,6 +123,10 @@ CANDIDATE_NOT_RESTORED = ("the round {r} candidate could not be put back to its 
 DELIVERY_NOT_WRITTEN = "the result ZIP of round {r} could not be written ({t}: {e}); {left}"
 DELIVERY_LEFT_KEPT = "delivery/result.zip is still the result ZIP of round {k}"
 DELIVERY_LEFT_NONE = "no result ZIP exists; the original is preserved as original/source.zip"
+# result.zip을 바꾼 뒤 기록 파일을 쓰지 못했을 때의 문장. 결과 ZIP은 이미 새 라운드의 것이다
+DELIVERY_RECORD_NOT_WRITTEN = ("delivery/result.zip is now the result ZIP of round {r}, but {what} could not be written "
+                               "({t}: {e}); the record is completed the next time this run is opened")
+REPORT_NOT_WRITTEN = "report not written"   # 보고서 노드가 실패했을 때 상태 메시지에 한 번만 붙이는 말
 NEXT_ZIP = ".result.next.zip"           # 새 결과 ZIP을 먼저 쓰는 임시 이름(delivery/ 아래)
 NEXT_JSON = ".result.next.json"         # 결과 ZIP을 바꾸는 중이라는 기록(delivery/ 아래)
 WHY_NO_MARKER = "no completeness marker"
@@ -220,6 +224,22 @@ class DeliveryNotWritten(Exception):
         super().__init__(DELIVERY_NOT_WRITTEN.format(r=round, t=type(error).__name__, e=text, left=left))
 
 
+class DeliveryRecordNotWritten(Exception):
+    """result.zip을 새 ZIP으로 바꾼 뒤 ``delivery.json``이나 state를 쓰지 못했을 때 던지는 예외. 결과 ZIP은 새 라운드의 것이다.
+
+    Raised by `_Holder.install_delivery` after `os.replace` succeeded when `delivery/delivery.json` and / or the
+    state file could not be written. The swap is rolled forward: `state.delivery` (in memory) is the new ZIP, the
+    marker `delivery/.result.next.json` stays so that `recover_delivery` completes the records on the next entry.
+    `failed` = [(run-relative record path, exception)]; the message is `DELIVERY_RECORD_NOT_WRITTEN`."""
+
+    def __init__(self, round: int, failed: list[tuple[str, BaseException]], root: Path | None = None):
+        self.round, self.failed = round, list(failed)
+        first = self.failed[0][1]
+        what = " and ".join(f[0] for f in self.failed)
+        text = scrub_message(str(first), root, 300)
+        super().__init__(DELIVERY_RECORD_NOT_WRITTEN.format(r=round, what=what, t=type(first).__name__, e=text))
+
+
 class ScanSourceChanged(Exception):
     """검사용 ZIP(``original/scan-source.zip``)을 기록한 sha256으로 다시 만들 수 없을 때 던지는 예외.
 
@@ -239,7 +259,10 @@ def recover_delivery(paths: RunPaths, state: RemediationState) -> bool:
     has the new sha256 → `state.delivery` and `delivery.json` become the recorded new info (the old bytes, when they
     were a verified delivery, are in the kept copy); otherwise the swap is rolled back (the temporary ZIP removed, a
     verified copy this swap made removed when it is a byte copy of the result.zip that is still there). Leftover
-    temporary files of a frozen ZIP (`.result.next.zip*`) are removed. Never raises for an unreadable marker."""
+    temporary files of a frozen ZIP (`.result.next.zip*`) and of a verified copy a kill interrupted
+    (`.result-r<k>-verified.zip.copy-tmp`) are removed. Never raises for an unreadable marker. Called at every entry
+    that can see a run folder again: `run_remediation`, `repair_final` (`chain.resume`, `chain._repair_report`, the
+    service's startup recovery and its repair of a final state whose owner is gone)."""
     folder = paths.delivery_zip.parent
     nz, nj = folder / NEXT_ZIP, folder / NEXT_JSON
     if not folder.is_dir():
@@ -270,10 +293,23 @@ def recover_delivery(paths: RunPaths, state: RemediationState) -> bool:
                 _unlink_quiet(vz.with_suffix(".json"))
             log.warning("remediation %s: a result ZIP swap that the run did not finish was rolled back (round %s)",
                         state.id, info.round)
-    for f in [nz, *folder.glob(f"{NEXT_ZIP}.*"), *folder.glob(f".{NEXT_ZIP}.*")]:
+    # 결과 ZIP 임시 파일과, 검증한 ZIP을 복사하던 중에 끝나 남은 임시 파일을 지운다
+    for f in [nz, *folder.glob(f"{NEXT_ZIP}.*"), *folder.glob(f".{NEXT_ZIP}.*"),
+              *folder.glob(".result-r*-verified.zip.copy-tmp")]:
         _unlink_quiet(f)
     _unlink_quiet(nj)
     return changed
+
+
+def delivery_swap_pending(paths: RunPaths) -> bool:
+    """결과 ZIP을 바꾸던 기록(``delivery/.result.next.json``)이나 그 임시 파일이 남아 있는지 확인한다.
+
+    Whether `recover_delivery` has something to do: the swap marker or a temporary file of a swap is left."""
+    folder = paths.delivery_zip.parent
+    if not folder.is_dir():
+        return False
+    return ((folder / NEXT_JSON).exists() or (folder / NEXT_ZIP).exists()
+            or any(folder.glob(".result-r*-verified.zip.copy-tmp")) or any(folder.glob(f".{NEXT_ZIP}.*")))
 
 
 class _Holder:
@@ -285,6 +321,8 @@ class _Holder:
         self._save, self._journal, self._stop = save, journal, stop
         self._paths_list: list[str] | None = None
         self._unknown_noted: set[str] = set()
+        # deliver_failed_candidate가 남긴 이전 결과 ZIP이 빌드로 확인하지 못한(조치 전 빌드 실패를 받아들인) 것인지
+        self.kept_unconfirmed = False
 
     # -- plumbing
     def save(self) -> None:
@@ -543,6 +581,10 @@ class _Holder:
         # 맞추지 못하면 CandidateNotRestored가 나가고, 이전 라운드의 결과 ZIP은 옮기지 않은 채 그대로 남는다
         _sync_candidate(self, r, p.candidate(r))
         earlier = st.delivery if self.verified_earlier(r) else None
+        # 이 라운드의 실패한 수정본을 이미 결과 ZIP으로 두고 상태를 저장한 뒤 끝났던 노드에 다시 들어온 경우다
+        again = (earlier is None and st.delivery is not None and st.delivery.round == r and not st.delivery.build_ok
+                 and not st.delivery.build_tolerated)
+        self.kept_unconfirmed = bool(earlier is not None and earlier.build_tolerated and not earlier.build_ok)
         # 새 ZIP을 임시 이름으로 다 쓴 뒤에만 검증한 ZIP을 복사해 두고 result.zip을 바꾼다. 쓰지 못하면 이전 결과가 그대로 남는다
         kept = self.install_delivery(
             lambda out: self.c.intake.freeze_delivery(p.candidate(r), out, r, self.paths_list), r,
@@ -550,6 +592,15 @@ class _Holder:
         if earlier is not None:
             self.journal({"event": "verified_delivery_kept", "round": r, "delivery_round": earlier.round, "file": kept,
                           "sha256": earlier.sha256})
+        elif again:
+            # 앞선 진입이 복사해 둔 검증한 ZIP을 그대로 알린다
+            vz = find_verified_zip(p)
+            m = re.fullmatch(r"result-r([0-9]{1,4})-verified\.zip", vz.name) if vz is not None else None
+            if m is not None and int(m.group(1)) < r:
+                kept = self.rel(vz)
+                info = read_json(vz.with_suffix(".json"))
+                self.kept_unconfirmed = bool(isinstance(info, dict) and info.get("build_tolerated")
+                                             and not info.get("build_ok"))
         self.journal({"event": "failed_candidate_delivered", "round": r, "sha256": st.delivery.sha256})
         return kept
 
@@ -562,7 +613,8 @@ class _Holder:
         return DELIVERY_LEFT_NONE
 
     def install_delivery(self, make: Callable[[Path], DeliveryInfo], r: int, *, build_ok: bool = True,
-                         build_tolerated: bool = False, keep_verified: bool = False) -> str:
+                         build_tolerated: bool = False, keep_verified: bool = False,
+                         after: Callable[[DeliveryInfo], None] | None = None) -> str:
         """새 결과 ZIP을 ``delivery/.result.next.zip``에 만든 뒤에만 result.zip으로 바꾸고 ``delivery.json``과 state에 기록한다.
         만들지 못하면 이전 결과는 그대로 두고 ``DeliveryNotWritten``을 던진다. ``keep_verified``면 이전에 검증한 ZIP을
         ``result-r<k>-verified.zip``으로 복사해 두고 그 경로(실행 폴더 기준)를 반환한다.
@@ -572,10 +624,19 @@ class _Holder:
         2. `delivery/.result.next.json` = `{delivery: <new info>, verified: <kept path or "">}` (the swap is pending);
         3. with `keep_verified`, the current result.zip is COPIED to `result-r<k>-verified.zip` (+ `.json`);
         4. `os.replace(.result.next.zip, result.zip)`;
-        5. `delivery.json` = the new info; 6. `state.delivery` = the new info, state saved;
-        7. `.result.next.json` removed.
+        5. `state.delivery` = the new info and `after(info)` (the caller's other fields that describe the new ZIP,
+        e.g. the no-change delivery's `final_scan`), so the state saved next is complete for the node's re-entry;
+        6. `delivery.json` = the new info; 7. the state saved; 8. `.result.next.json` removed.
         An exception in steps 1–4 removes what this call made and raises `DeliveryNotWritten` (the previous delivery,
-        its `delivery.json` and `state.delivery` untouched). Returns the kept verified ZIP's path or ""."""
+        its `delivery.json` and `state.delivery` untouched); a `ScanSourceChanged` from `make` is cleaned up the same
+        way and raised as it is (`zip_hash_mismatch`). Once the replace happened the swap is rolled FORWARD: every
+        later step is tried; when `delivery.json` or the state cannot be written the marker stays (so
+        `recover_delivery` completes the records on the next entry) and `DeliveryRecordNotWritten` is raised, with
+        `state.delivery` already the new ZIP. Returns the kept verified ZIP's path or "".
+
+        Re-entry (v2.1z-bo): the state saved in step 7 is a mid-node save; every caller sets what its node's re-entry
+        needs before it (the node functions' docstrings and INTERFACES "v2.1z-bo" list what a kill right after it
+        does)."""
         st, p = self.state, self.paths
         folder = p.delivery_zip.parent
         nz, nj = folder / NEXT_ZIP, folder / NEXT_JSON
@@ -602,6 +663,11 @@ class _Holder:
                 vinfo.path, vinfo.scanned = kept, True
                 write_json_atomic(vz.with_suffix(".json"), vinfo.to_dict())
             os.replace(nz, p.delivery_zip)
+        except ScanSourceChanged:
+            # 검사용 ZIP과 다른 바이트를 결과 ZIP으로 두지 않는다. 쓰기 실패가 아니므로 그대로 던진다(zip_hash_mismatch)
+            for f in reversed(made):
+                _unlink_quiet(f)
+            raise
         except Exception as e:  # noqa: BLE001 - 어떤 이유로든 새 ZIP을 쓰지 못하면 이전 결과를 그대로 둔다
             for f in reversed(made):
                 _unlink_quiet(f)
@@ -610,11 +676,30 @@ class _Holder:
             self.journal({"event": "delivery_not_written", "round": r, "error": type(e).__name__,
                           "kept_round": st.delivery.round if st.delivery is not None else None})
             raise err from e
-        # result.zip이 바뀐 뒤부터는 state가 새 ZIP을 가리키게 한다. 여기서 끝나면 다음 진입 때 recover_delivery가 맞춘다
+        # result.zip이 바뀐 뒤부터는 되돌리지 않고 할 수 있는 것을 모두 해서 state가 새 ZIP을 가리키게 한다.
+        # 기록을 쓰지 못하면 표시 파일을 남겨 다음 진입 때 recover_delivery가 마저 맞춘다
         st.delivery = info
-        write_json_atomic(p.delivery_json, info.to_dict())
-        self.save()
-        _unlink_quiet(nj)
+        if after is not None:
+            after(info)
+        failed: list[tuple[str, BaseException]] = []
+        try:
+            write_json_atomic(p.delivery_json, st.delivery.to_dict())
+        except Exception as e:  # noqa: BLE001 - 디스크가 가득 차도 state는 저장해 본다
+            failed.append((self.rel(p.delivery_json), e))
+        try:
+            self.save()
+        except Exception as e:  # noqa: BLE001 - 저장하지 못하면 다음 진입 때 표시 파일로 맞춘다
+            failed.append((self.rel(p.state), e))
+        if failed:
+            err = DeliveryRecordNotWritten(r, failed, self.paths.root)
+            log.error("remediation round %s: %s", r, err)
+            self.journal({"event": "delivery_record_not_written", "round": r, "records": [f[0] for f in failed],
+                          "error": type(failed[0][1]).__name__})
+            raise err
+        try:
+            _unlink_quiet(nj)
+        except OSError:
+            log.warning("remediation round %s: the result ZIP swap marker was not removed; the next entry removes it", r)
         return kept
 
     def mark_scanned(self) -> None:
@@ -771,7 +856,10 @@ class _Holder:
 
         The no-change delivery (round 0) is the bytes the baseline scan uploaded (`scan_source`): the upload itself when
         the intake left nothing out (byte for byte as before), else `original/scan-source.zip`. Written through
-        `install_delivery`."""
+        `install_delivery`, which sets `final_scan` (= the baseline scan) and `delivery.scanned` before its mid-node
+        state save (v2.1z-bo): a kill right after that save re-enters the node with a state that already says what the
+        uninterrupted node would have left (the callers skip `deliver_original` when a delivery exists). A
+        `ScanSourceChanged` raised by the copy reaches the node as it is (`zip_hash_mismatch`)."""
         st, p = self.state, self.paths
         src, sha = self.scan_source()
 
@@ -783,13 +871,14 @@ class _Holder:
             return DeliveryInfo(path=self.rel(p.delivery_zip), sha256=got, size=out.stat().st_size,
                                 files=st.intake.files if st.intake else 0,
                                 tree_hash=st.intake.tree_hash if st.intake else "", round=0)
+        def scanned(_info: DeliveryInfo) -> None:
+            # 결과 ZIP이 조치 전에 검사한 ZIP과 같은 바이트이므로 같은 sha256을 빠짐없이 검사했다면 scanned로 본다.
+            # install_delivery가 state를 저장하기 전에 채워, 노드 도중에 끝나도 다시 들어온 노드가 이어서 판단한다
+            st.final_scan = st.baseline_scan
+            self.mark_scanned()
         # 원본도 빌드되지 않았으면 빌드로 확인한 결과 ZIP이 아니다
         tolerated = self.baseline_failed_tolerated
-        self.install_delivery(copy, 0, build_ok=not tolerated, build_tolerated=tolerated)
-        st.final_scan = st.baseline_scan
-        # 결과 ZIP이 조치 전에 검사한 ZIP과 같은 바이트이므로 같은 sha256을 빠짐없이 검사했다면 scanned로 본다
-        self.mark_scanned()
-        write_json_atomic(p.delivery_json, st.delivery.to_dict())
+        self.install_delivery(copy, 0, build_ok=not tolerated, build_tolerated=tolerated, after=scanned)
 
     # -- what the baseline scan uploads (and a no-change delivery is)
     def _scanned_original_before(self) -> bool:
@@ -964,7 +1053,14 @@ def _baseline_scan(h: _Holder) -> str | None:
         return h.finish(FAILED, R_ZIP_HASH_MISMATCH, "the original ZIP no longer has the sha256 recorded at intake")
     what = "the original ZIP" if is_original else "the scan source ZIP"
     name = f"{h.rcfg.ivas_project_prefix}-{st.id}-{BASELINE_LABEL}"
-    res = h.scan("baseline_scan", BASELINE_LABEL, zip_path, sha, name)
+    stored = _stored_baseline(h, sha)
+    if stored is not None:
+        # 이 노드가 같은 바이트를 이미 끝까지 검사하고 저장했다(노드 도중에 상태를 저장한 뒤 끝난 경우). 다시 올리지 않는다
+        h.journal({"event": "baseline_scan_reused", "sha256": sha})
+        log.info("remediation %s: the stored baseline scan of the same bytes is used; nothing is uploaded again", st.id)
+        res = stored
+    else:
+        res = h.scan("baseline_scan", BASELINE_LABEL, zip_path, sha, name)
     if res is None:
         return None
     st.baseline_scan = h.rel(p.scan(BASELINE_LABEL))
@@ -983,6 +1079,22 @@ def _baseline_scan(h: _Holder) -> str | None:
         return "evaluate"
     st.round = max(st.round, 1)
     return "inventory"
+
+
+def _stored_baseline(h: _Holder, sha: str) -> ScanResult | None:
+    """같은 sha256을 끝까지 검사해 저장한 조치 전 검사 결과가 있으면 반환한다. 업로드나 접수가 남아 있으면 None이다.
+
+    v2.1z-bo: `baseline_scan` never uploads again when the state names the stored baseline scan, no upload or
+    receipt is pending for it, and that scan is complete with the sha256 about to be uploaded. That is the state a
+    mid-node save leaves when the node delivered the original (nothing to fix) and the pod died before the node end."""
+    st = h.state
+    if (not st.baseline_scan or st.baseline_scan != h.rel(h.paths.scan(BASELINE_LABEL))
+            or BASELINE_LABEL in st.pending_upload or BASELINE_LABEL in st.pending_receipt):
+        return None
+    res = h.load_scan(st.baseline_scan)
+    if res is None or not res.complete or res.zip_sha256 != sha:
+        return None
+    return res
 
 
 def _inventory(h: _Holder) -> str | None:
@@ -1224,8 +1336,8 @@ def _build_failed(h: _Holder, r: int, outcome: Any) -> str | None:
         # accepted/, 원본 ZIP, candidate.patch, build.log는 그대로 남는다
         try:
             kept = h.deliver_failed_candidate(r)
-        except DeliveryNotWritten as e:
-            # 실패한 수정본의 ZIP을 쓰지 못했다. 이전 결과 ZIP은 그대로 남았다
+        except (DeliveryNotWritten, DeliveryRecordNotWritten) as e:
+            # 실패한 수정본의 ZIP을 쓰지 못했거나(이전 결과 ZIP이 그대로 남았다), 바꾼 뒤 기록을 쓰지 못했다
             return h.finish(FAILED, R_INTERNAL_ERROR, f"{e} | {outcome.summary}" if outcome.summary else str(e))
         if kept is None:
             # 완성됐다는 표시가 없는 수정본은 잘린 트리일 수 있으므로 결과 ZIP으로 내보내지 않는다
@@ -1236,7 +1348,10 @@ def _build_failed(h: _Holder, r: int, outcome: Any) -> str | None:
         msg = (f"delivery/result.zip contains the round {r} change set whose candidate build FAILED "
                f"(proposals: {ids}; build log {h.rel(p.build_log(r))}); it was not rescanned; "
                "the original is preserved as original/source.zip")
-        if kept:
+        if kept and h.kept_unconfirmed:
+            # 조치 전 빌드 실패를 받아들인 실행의 이전 결과 ZIP은 재검사만 했고 빌드로 확인하지 못했다
+            msg += f"; the scanned delivery of an earlier round (its build was not confirmed) is kept as {kept}"
+        elif kept:
             msg += f"; the verified delivery of an earlier round is kept as {kept}"
         return h.finish(FAILED, R_CANDIDATE_BUILD_FAILED, f"{msg} | {outcome.summary}")
     # 정책이 discard면 실패한 수정본은 결과 ZIP에 넣지 않는다.
@@ -1637,7 +1752,7 @@ def _sync_candidate(h: _Holder, r: int, cand: Path, *, with_fix: bool = True,
     return missing, changed
 
 
-def _run_build(h: _Holder, r: int, cand: Path) -> tuple[Any | None, str | None]:
+def _run_build(h: _Holder, r: int, cand: Path, *, rerun_ok: bool = False) -> tuple[Any | None, str | None]:
     """수정본을 빌드하고, 실패하면 빌드 오류 수정 루프와 확인 빌드까지 실행한다.
     라운드를 이어 갈 빌드 결과와 None, 또는 끝낼 때 None과 다음 노드를 반환한다.
 
@@ -1648,11 +1763,17 @@ def _run_build(h: _Holder, r: int, cand: Path) -> tuple[Any | None, str | None]:
     kept, usage still counted; journal `remediation_fix_discarded`) and the loop may run again (`time budget used up`
     and every other not-fixed reason stay final); no record → the v2.1z-bi path (first build, the loop when
     `_fix_wanted`, confirming build). A leftover `fixloop/` of a killed loop is settled first
-    (`_settle_leftover_loop`), whatever happens next."""
+    (`_settle_leftover_loop`), whatever happens next.
+
+    v2.1z-bo: only a loop that did not start because of a stop or the time budget is forgotten (a folder setup that
+    failed stays the round's verdict, as in the uninterrupted run). A round whose last discarded fix is a stored fix
+    found not usable does not run the loop again at the node's entry (a kill right after the discard's state save
+    re-enters here; the uninterrupted run ended the round as not fixed) — `rerun_ok` (the call right after a stored
+    fix of an earlier entry was found not usable on this one) allows it."""
     rs = h.round_state(r)
     _settle_leftover_loop(h, r)
     fix = rs.fix
-    if fix is not None and not fix.fixed and not fix.attempted:
+    if fix is not None and not fix.fixed and not fix.attempted and fix.reason in (R_FIX_STOP, R_FIX_TIME):
         rs.fix = fix = None
     if fix is not None and fix.attempted and not fix.fixed and fix.reason == R_FIX_STOP:
         # 중지 요청으로 멈춘 루프는 판정이 아니므로 버린 결과로 옮기고(사용량은 계속 센다) 루프를 다시 실행할 수 있게 한다
@@ -1666,10 +1787,17 @@ def _run_build(h: _Holder, r: int, cand: Path) -> tuple[Any | None, str | None]:
     outcome = _package(h, r, cand, h.paths.build_log(r))
     if outcome.ok or _baseline_errors_only(h, r, outcome, cand):
         return outcome, None
-    if fix is None and _fix_wanted(h, r):
+    unusable = (not rerun_ok and fix is None and bool(rs.fix_discarded)
+                and rs.fix_discarded[-1].reason == R_FIX_UNUSABLE)
+    if fix is None and not unusable and _fix_wanted(h, r):
         _run_fix(h, r, outcome, cand)
     if rs.fix is None or not rs.fix.fixed:
-        return None, _fix_not_applied(h, r, outcome)
+        nxt = _fix_not_applied(h, r, outcome)
+        if unusable and rs.fix is None and nxt == "report":
+            # 앞선 진입에서 고침을 쓸 수 없어 버린 라운드다. 끝나지 않았을 때와 같은 문장으로 끝낸다
+            suffix = f"automatic build fix: {R_FIX_UNUSABLE}"
+            h.state.message = f"{h.state.message} | {suffix}" if h.state.message else suffix
+        return None, nxt
     return _confirm_fix(h, r, cand, fresh=True)
 
 
@@ -1685,6 +1813,7 @@ INTERRUPTED_DIR = "fixloop-interrupted-{n}"
 R_FIX_STOP = "stop requested"
 FIX_NO_ATTEMPT = "automatic build fix made no attempt"   # 루프는 시작했지만 소스 수정을 한 번도 시도하지 않았다
 R_FIX_TIME = "time budget used up"
+FIX_STOPPED = "stop requested during the round {r} build fix"   # 수정 루프 도중에 중지 요청을 받았을 때의 STOPPED 문장
 FIX_RESERVE_MIN_SECONDS = 300.0         # 수정 루프 뒤 실패한 수정본을 내보낼 시간으로 남겨 두는 최소 초
 
 
@@ -1747,7 +1876,8 @@ def _settle_old_loop(h: _Holder, r: int, work: Path, *, remove_recorded: bool = 
     and only then is the folder renamed `fixloop-interrupted-<n>/` (a failed rename removes it). A folder whose token
     is already recorded on an interrupted result (a kill between that save and the rename) is only renamed, so the
     usage is counted once whatever the kill point. A folder of a loop recorded normally is removed only with
-    `remove_recorded` (before a new loop starts)."""
+    `remove_recorded` (before a new loop starts). After the rename the work copy `tree/` is removed
+    (`_drop_work_copy`); the journal and the logs stay."""
     from .fixer import R_INTERRUPTED, interrupted_result
     if not (work.exists() or work.is_symlink()):
         return
@@ -1796,6 +1926,23 @@ def _settle_old_loop(h: _Holder, r: int, work: Path, *, remove_recorded: bool = 
             _safe_rmtree(work)
         except OSError:
             log.warning("remediation round %s: the interrupted fix loop folder was not removed", r, exc_info=True)
+        return
+    _drop_work_copy(h, r, dst)
+
+
+def _drop_work_copy(h: _Holder, r: int, folder: Path) -> None:
+    """사용량을 기록하고 저장한 중단된 루프 폴더에서 작업 복사본(``tree/``)을 지운다. 저널과 로그는 남긴다.
+
+    v2.1z-bo: the work copy of an interrupted loop (`fixloop-interrupted-<n>/tree`, with its own `.git` and `target/`)
+    is removed once the loop's usage is recorded and saved; best effort, WARNING on failure."""
+    tree = folder / "tree"
+    if not (tree.exists() or tree.is_symlink()):
+        return
+    try:
+        _safe_rmtree(tree)
+    except OSError as e:
+        log.warning("remediation round %s: the work copy of the interrupted fix loop was not removed (%s): %s", r,
+                    h.rel(tree), type(e).__name__)
 
 
 def _settle_leftover_loop(h: _Holder, r: int) -> None:
@@ -1816,7 +1963,8 @@ def _run_fix(h: _Holder, r: int, outcome: Any, cand: Path) -> None:
     (`time budget used up`) or a stop is pending (`stop requested`). An older `fixloop/` of the round is settled
     first (`_settle_old_loop`). The state is saved right after the loop returns, before anything touches the
     candidate, together with `rs.fix.tree_hash` (v2.1z-bk). A fixer that raises (a programming error) is a not-fixed
-    result `error: <Type>: <msg>`; the candidate was not touched, so it is delivered like any other failed one."""
+    result `error: <Type>: <msg>`; the candidate was not touched, so it is delivered like any other failed one. Its
+    usage is read from the loop's own journal (`fixer.usage_from_folder`; unreadable → `usage_unknown`)."""
     from .fixer import MIN_LOOP_SECONDS
     st, c, p = h.state, h.c, h.paths
     rs = h.round_state(r)
@@ -1859,6 +2007,9 @@ def _run_fix(h: _Holder, r: int, outcome: Any, cand: Path) -> None:
         log.warning("remediation round %s: the fix loop raised %s", r, type(e).__name__, exc_info=True)
         rs.fix = FixResult(attempted=True, reason=scrub_message(f"error: {type(e).__name__}: {e}", p.root, 500),
                            loop_id=token)
+        # 루프가 저널에 남긴 사용량을 읽는다. 읽지 못하면 모르는 것으로 표시한다(0회로 세지 않는다)
+        from .fixer import usage_from_folder
+        usage_from_folder(rs.fix, work, h.cfg)
         h.save()
         _fix_journal_end(h, r, rs.fix)
         return
@@ -2024,7 +2175,7 @@ def _confirm_fix(h: _Holder, r: int, cand: Path, *, fresh: bool) -> tuple[Any | 
                 suffix = f"automatic build fix: {R_FIX_UNUSABLE}"
                 h.state.message = f"{h.state.message} | {suffix}" if h.state.message else suffix
                 return None, nxt
-            return _run_build(h, r, cand)
+            return _run_build(h, r, cand, rerun_ok=True)
         if not fresh:
             # 중간에 끝난 빌드가 남긴 변경을 되돌린 뒤 같은 수정본에 만든 고침인지 해시로 확인한다
             _sync_candidate(h, r, cand)
@@ -2034,7 +2185,7 @@ def _confirm_fix(h: _Holder, r: int, cand: Path, *, fresh: bool) -> tuple[Any | 
                             "was made for", r)
                 _discard_fix(h, r, R_FIX_UNUSABLE)
                 _sync_candidate(h, r, cand, record=False)
-                return _run_build(h, r, cand)
+                return _run_build(h, r, cand, rerun_ok=True)
             if not fix.tree_hash and th:
                 fix.tree_hash = th
                 h.save()
@@ -2072,9 +2223,17 @@ def _confirm_fix(h: _Holder, r: int, cand: Path, *, fresh: bool) -> tuple[Any | 
 def _fix_not_applied(h: _Holder, r: int, outcome: Any) -> str | None:
     """고치지 못한 수정본 빌드 실패를 지금과 같이 끝내고, 수정 루프의 사유를 메시지 끝에 붙인다.
     루프가 시도했으면 ``automatic build fix``, 시작했지만 시도가 하나도 없으면 ``automatic build fix made no attempt``,
-    시작하지 않았으면 ``automatic build fix not started``로 적는다."""
-    nxt = _candidate_failed(h, r, outcome)
+    시작하지 않았으면 ``automatic build fix not started``로 적는다.
+
+    v2.1z-bo: a loop that ran and ended `stop requested` while the stop is still pending halts STOPPED with
+    `FIX_STOPPED` ("stop requested during the round <r> build fix", no suffix); a stop during a candidate build keeps
+    "stop requested during the round <r> candidate build"."""
     fix = h.round_state(r).fix
+    if fix is not None and fix.attempted and not fix.fixed and fix.reason == R_FIX_STOP and h.stop():
+        # 수정 루프 도중에 중지 요청을 받았다. 수정본 빌드 중의 중지와 구별하고 루프 사유는 덧붙이지 않는다
+        h.halt(STOPPED, R_STOP_REQUESTED, "build", FIX_STOPPED.format(r=r))
+        return None
+    nxt = _candidate_failed(h, r, outcome)
     if fix is not None and not fix.fixed and fix.reason:
         if not fix.attempted:
             label = "automatic build fix not started"
@@ -2362,14 +2521,19 @@ def _wrap(name: str, h: _Holder) -> Callable[[RemediationGraphState], dict]:
             h.journal({"event": "node_start", "node": name, "round": st.round})
             # report.json이 저장되는 state.json과 같은 내용이 되도록 시각과
             # 노드를 먼저 정하고, 저장할 때 시각을 다시 찍지 않는다
+            before = st.updated
             st.node, st.next_node, st.updated = name, "report", _now()
             try:
                 fn(h)
             except Exception as e:  # noqa: BLE001 - 보고서 실패가 끝 상태를 덮어쓰지 않게 한다
                 log.error("report node failed: %s", scrub_message(traceback.format_exc(), h.paths.root, 20000))
-                st.message = (st.message + " | " if st.message else "") + \
-                    scrub_message(f"report not written: {type(e).__name__}: {e}", h.paths.root)
-                st.updated = _now()
+                if REPORT_NOT_WRITTEN in (st.message or ""):
+                    # 앞선 진입에서 이미 실패를 적었다. 문장을 다시 붙이지 않고 시각도 그대로 둔다
+                    st.updated = before
+                else:
+                    st.message = (st.message + " | " if st.message else "") + \
+                        scrub_message(f"{REPORT_NOT_WRITTEN}: {type(e).__name__}: {e}", h.paths.root)
+                    st.updated = _now()
             h._save(st)
             h.journal({"event": "node_end", "node": name, "status": st.status})
             return {"node": name, "halt": True, "next": END, "round": st.round}
@@ -2386,8 +2550,8 @@ def _wrap(name: str, h: _Holder) -> Callable[[RemediationGraphState], dict]:
         except Exception as e:  # noqa: BLE001 - 노드의 예상 못 한 오류도 보고서까지 간다
             # 예외 메시지에 URL 자격 증명 같은 비밀 값이 있을 수 있으므로 traceback도 마스킹한 뒤에 로그에 기록한다
             log.error("remediation node %s failed: %s", name, scrub_message(traceback.format_exc(), h.paths.root, 20000))
-            if isinstance(e, DeliveryNotWritten):
-                # 결과 ZIP을 쓰지 못했다는 문장에 남은 결과가 이미 들어 있다
+            if isinstance(e, (DeliveryNotWritten, DeliveryRecordNotWritten)):
+                # 결과 ZIP을 쓰지 못했다는 문장에 남은 결과가, 기록을 쓰지 못했다는 문장에 새 결과 ZIP이 이미 들어 있다
                 nxt = h.finish(FAILED, R_INTERNAL_ERROR, scrub_message(str(e), h.paths.root))
             elif isinstance(e, ScanSourceChanged):
                 nxt = h.finish(FAILED, R_ZIP_HASH_MISMATCH, scrub_message(str(e), h.paths.root))
@@ -2451,7 +2615,7 @@ def run_remediation(state: RemediationState, paths: RunPaths, cfg: Any, componen
         return state
     if state.status in TERMINAL:
         # 보고서 노드 도중에 끝난 작업이면 보고서만 쓴다
-        write_pending_report(state, paths, cfg, save=save, journal=journal)
+        repair_final(state, paths, cfg, save=save, journal=journal)
         return state
     _recover_accepted(paths)
     holder = _Holder(state, paths, cfg, components, save, journal, stop)
@@ -2501,6 +2665,33 @@ def write_pending_report(state: RemediationState, paths: RunPaths, cfg: Any, *,
     holder.journal({"event": "report_rewritten", "status": state.status})
     _wrap("report", holder)(RemediationGraphState(id=state.id, node="", round=state.round, halt=False, next=""))
     return True
+
+
+def repair_final(state: RemediationState, paths: RunPaths, cfg: Any, *, save: Callable[[RemediationState], None],
+                 journal: Journal) -> bool:
+    """끝 상태의 실행 폴더를 맞춘다. 결과 ZIP을 바꾸던 기록이 남았으면 마저 맞추고, 보고서가 남았으면 쓴다. 고친 것이 있으면 True다.
+
+    v2.1z-bo: `recover_delivery` (the state saved when it changed; journal `delivery_recovered`) then
+    `write_pending_report`. The caller holds the run claim. The status, the reasons and the message are left as they
+    are (the report node stamps `updated` and writes the report for this state)."""
+    changed = recover_delivery(paths, state)
+    if changed:
+        save(state)
+        try:
+            journal({"remediation": state.id, "event": "delivery_recovered",
+                     "round": state.delivery.round if state.delivery is not None else None})
+        except Exception:  # noqa: BLE001 - 저널 한 줄 때문에 복구를 멈추지 않는다
+            log.debug("journal line not written: delivery_recovered", exc_info=True)
+    wrote = write_pending_report(state, paths, cfg, save=save, journal=journal)
+    return changed or wrote
+
+
+def final_repair_needed(paths: RunPaths, state: RemediationState) -> bool:
+    """끝 상태인데 결과 ZIP 기록이나 보고서를 맞춰야 하는지 확인한다.
+
+    A final state (`TERMINAL`) with a swap left half done (`delivery_swap_pending`) or a pending report
+    (`report_pending`)."""
+    return state.status in TERMINAL and (delivery_swap_pending(paths) or report_pending(paths, state))
 
 
 # ---------------------------------------------------------------------------- service helpers

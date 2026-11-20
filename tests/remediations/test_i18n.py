@@ -211,6 +211,7 @@ SAMPLES: list[tuple[str, str, list[str]]] = [
     ("stop_before_scan", "stop requested before scan 'baseline' uploaded anything", ["baseline"]),
     ("stop_baseline", "stop requested during the baseline build", []),
     ("stop_round", "stop requested during the round 2 candidate build", ["2"]),
+    ("stop_round_fix", "stop requested during the round 2 build fix", ["라운드 2", "자동 수정"]),
     ("stop_node", "stop requested before node rescan", ["rescan"]),
     ("zip_changed_intake", "the original ZIP no longer has the sha256 recorded at intake", []),
     ("ivas_bytes_differ", "IVAS analysed bytes whose sha256 differs from the original ZIP", []),
@@ -337,6 +338,11 @@ SAMPLES: list[tuple[str, str, list[str]]] = [
     ("delivery_not_written", ("the result ZIP of round 2 could not be written (OSError: [Errno 28] No space left on "
                               "device); delivery/result.zip is still the result ZIP of round 1"),
      ["라운드 2의 결과 ZIP을 쓰지 못했습니다(OSError).", "라운드 1의 결과 그대로", "No space left on device"]),
+    # the result ZIP was swapped, a record after it was not written
+    ("delivery_record_not_written", ("delivery/result.zip is now the result ZIP of round 2, but delivery/delivery.json "
+                                     "could not be written (OSError: [Errno 28] No space left on device); the record is "
+                                     "completed the next time this run is opened"),
+     ["라운드 2의 결과입니다", "delivery/delivery.json", "(OSError)", "No space left on device"]),
 ]
 
 

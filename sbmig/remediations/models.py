@@ -664,7 +664,9 @@ class FixResult(Record):
     first build passed), `discarded_changed` (the files of a fix that a failed confirming build or a remade candidate
     threw away). All four are left out of the JSON when empty / False. v2.1z-bk: `loop_id` = the token the graph wrote
     into `fixloop/loop.json` before the loop started (tells a recorded loop's folder from a killed one; left out when
-    empty)."""
+    empty). `usage_unknown` (left out when False): the loop's LLM usage could not be read (a killed loop whose journal
+    is unreadable, an exception out of the fixer with an unreadable journal), so its zero calls / tokens are not exact;
+    `fixer.fix_usage` reports it as `calls_unknown`."""
     attempted: bool = False
     fixed: bool = False
     iterations: int = 0
@@ -690,9 +692,11 @@ class FixResult(Record):
     discarded_changed: list[str] = field(default_factory=list)
     # 이 결과를 낸 루프의 표식이다(``fixloop/loop.json``). 기록된 루프의 폴더와 중간에 끝난 루프의 폴더를 구별한다
     loop_id: str = ""
+    # 루프의 LLM 사용량을 읽지 못했다. 이때 호출 수와 토큰 수의 0은 정확한 값이 아니다
+    usage_unknown: bool = False
     _nested = {"usage": FixUsage}
     _omit_empty = ("usage", "currency", "fixed_dir", "tree_hash", "discarded_changed", "loop_id")
-    _omit_false = ("retry_passed",)
+    _omit_false = ("retry_passed", "usage_unknown")
 
 
 # ---------------------------------------------------------------------------- 작업 상태 / state

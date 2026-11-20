@@ -336,10 +336,19 @@
   }
   const numCell = (v, cls) => `<td class="num${cls ? ' ' + cls : ''}">${fmtInt(v)}</td>`;
   // 실행의 호출 수 칸이다. 취약점 조치의 빌드 오류 자동 수정이 호출한 수가 있으면 그중 몇 회인지 아래에 적는다
-  const callsCell = (r) => int(r.remediation_calls) > 0
-    ? `<td class="num">${fmtInt(r.calls)}<span class="remcalls" title="취약점 조치가 버전을 올린 뒤 빌드 오류를 고치느라 호출한 수입니다. 토큰과 비용에도 들어 있습니다.">조치 ${fmtInt(r.remediation_calls)}회 포함</span></td>`
-    : numCell(r.calls);
-  const costCell = (c) => c == null ? '<td class="num dash" title="가격 정보가 없습니다">-</td>' : `<td class="num">${esc(fmtCost(c))}</td>`;
+  // 조치의 사용량 일부를 알 수 없으면(usage_partly_unknown) 숫자 아래에 그렇게 적는다. 숫자는 fmtInt로만 넣는다
+  const UNKNOWN_NOTE = '<span class="remcalls" title="취약점 조치의 빌드 오류 자동 수정 가운데 사용량을 읽지 못한 호출이 있습니다. 위 숫자는 아는 만큼의 수입니다.">일부 알 수 없음</span>';
+  const callsCell = (r) => {
+    const unknown = r.usage_partly_unknown === true ? UNKNOWN_NOTE : '';
+    if (int(r.remediation_calls) > 0) {
+      return `<td class="num">${fmtInt(r.calls)}<span class="remcalls" title="취약점 조치가 버전을 올린 뒤 빌드 오류를 고치느라 호출한 수입니다. 토큰과 비용에도 들어 있습니다.">조치 ${fmtInt(r.remediation_calls)}회 포함</span>${unknown}</td>`;
+    }
+    return unknown ? `<td class="num">${fmtInt(r.calls)}${unknown}</td>` : numCell(r.calls);
+  };
+  const costCell = (c, unknown) => c == null
+    ? (unknown ? '<td class="num dash" title="사용량 일부를 알 수 없어 비용을 계산하지 않았습니다">알 수 없음</td>'
+      : '<td class="num dash" title="가격 정보가 없습니다">-</td>')
+    : `<td class="num">${esc(fmtCost(c))}</td>`;
 
   // ---------------------------------------------------------------- 실행 결과 표시
   // status / result는 서버(RunManager, 결과 줄)의 단어 그대로 온다. 아는 단어만 한국어로 바꾸고 모르는 단어는 그대로 보인다
@@ -621,7 +630,7 @@
         `<a class="rid" href="/#${encodeURIComponent(id)}" title="${esc(id)} 실행을 메인 화면에서 엽니다">${esc(id)}</a></td>` +
         `<td>${flowTag(r.flow)}</td><td>${scopeText(r.scope)}</td>` +
         `<td>${resultChip(r)}${r.partial ? '<span class="partial" title="기록 파일 일부를 읽지 못했습니다. 값이 실제보다 적을 수 있습니다.">일부만 읽음</span>' : ''}</td>` +
-        `<td class="models">${models}</td>` + tokens + (withCost ? costCell(r.cost) : '') + `<td>${log}</td><td>${src}</td></tr>`;
+        `<td class="models">${models}</td>` + tokens + (withCost ? costCell(r.cost, r.usage_partly_unknown === true) : '') + `<td>${log}</td><td>${src}</td></tr>`;
     }
     if (!runs.length) body = `<tr class="nomatch"><td colspan="${withCost ? 12 : 11}">실행 기록이 없습니다.</td></tr>`;
     const part = runs.some((r) => r.partial) ? ' 일부만 읽음은 기록 파일 일부를 읽지 못해 값이 실제보다 적을 수 있다는 뜻입니다.' : '';

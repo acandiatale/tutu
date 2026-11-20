@@ -671,18 +671,24 @@ def run_llm_calls(run_dir: Path, report: dict[str, Any]) -> dict[str, Any]:
     every round (`fixer.run_fix_usage`, read from `remediation/state.json` next to the report, so a resume pod's calls
     count too); `remediation_llm_calls` = the second part, so that the page can swap it for the live number of
     `GET /api/remediations/{id}` without counting a call twice. None when the report has no `llm_usage` and no
-    remediation call was made."""
+    remediation call was made. `remediation_llm_usage_unknown` (bool): a part of the remediation's usage is unknown
+    (`fix_usage()["usage_unknown"]`: a loop whose usage could not be read, or calls without token counts), so
+    `remediation_llm_calls` counts only the known calls."""
     usage = report.get("llm_usage") if isinstance(report.get("llm_usage"), dict) else {}
     own = usage.get("calls")
     own = own if isinstance(own, int) and not isinstance(own, bool) else None
+    unknown = False
     try:
         from sbmig.remediations.fixer import run_fix_usage
-        rem = int(run_fix_usage(run_dir)["calls"])
+        fu = run_fix_usage(run_dir)
+        rem = int(fu["calls"])
+        unknown = bool(fu.get("usage_unknown"))
     except Exception:  # noqa: BLE001 - 상태 응답은 조치 사용량 때문에 실패하면 안 된다
         log.debug("remediation fix usage of %s not readable", run_dir, exc_info=True)
         rem = 0
     total = None if own is None and not rem else (own or 0) + rem
-    return {"llm_calls": total, "remediation_llm_calls": rem}
+    # 조치 사용량 일부를 알 수 없으면 화면이 호출 수를 정확한 값처럼 보이지 않게 알린다
+    return {"llm_calls": total, "remediation_llm_calls": rem, "remediation_llm_usage_unknown": unknown}
 
 
 def _abort_reason(report: dict[str, Any]) -> str | None:

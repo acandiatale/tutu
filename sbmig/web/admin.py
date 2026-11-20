@@ -629,7 +629,8 @@ def run_usage(run_dir: Path, status: dict[str, Any] | None = None, live: bool = 
     One run's row of the usage answer, None for a folder that is not a run. `status` = `RunManager.status(run_id)`
     (state word, exit code, upload); `live` = the manager holds this run in memory (an in-process run has no
     request.json). Usage and cost include the remediation's build-fix-loop calls (`add_remediation_usage`);
-    `remediation_calls` (only when > 0) says how many of `calls` they are."""
+    `remediation_calls` (only when > 0) says how many of `calls` they are; `usage_partly_unknown: true` (only then)
+    = a part of the remediation's usage is unknown, and `cost` is None."""
     rid = run_dir.name
     req, req_bad = _read_json(run_dir, "control/request.json")
     rep, rep_bad = _read_json(run_dir, "report.json")
@@ -655,17 +656,19 @@ def run_usage(run_dir: Path, status: dict[str, Any] | None = None, live: bool = 
     cost: float | None = None
     currency: str | None = None
     rem_calls = 0
+    rem_unknown = False
     if rep is not None:
         usage, by_model, cost, currency = _usage_from_report(rep, run_dir)
         usage, by_model, cost, currency, rem_calls = add_remediation_usage(run_dir, usage, by_model, cost, currency)
         known = True
+        rem_unknown = remediation_usage_unknown(run_dir)
     else:
         found = usage_from_log(run_dir) or usage_from_journal(run_dir)
         by_model = [model_row({"model": m, **u}, total_tokens=u["input_tokens"] + u["output_tokens"], cost=None)
                     for m, u in sorted(found.items())]
         usage = {k: sum(r[k] for r in by_model) for k in ("calls", "input_tokens", "output_tokens")}
         known = bool(found)
-    if known and cost is None and not any(usage.values()):
+    if known and cost is None and not any(usage.values()) and not rem_unknown:
         cost = 0.0                                   # 호출이 없었으면 가격이 없어도 비용은 0이다
     state = _str(st.get("state")) or ("finished" if rep is not None or exit_code is not None else "unknown")
     return {"run_id": rid, "project": project, "accepted_at": accepted.isoformat(timespec="seconds"),
@@ -673,6 +676,8 @@ def run_usage(run_dir: Path, status: dict[str, Any] | None = None, live: bool = 
             "flow": flow, "scope": _scope_of(rep), "status": state, "result": _result_word(exit_code, rep),
             **usage, "total_tokens": usage["input_tokens"] + usage["output_tokens"], "cost": cost,
             **({"remediation_calls": rem_calls} if rem_calls else {}),
+            # 취약점 조치의 빌드 오류 수정 루프 사용량 일부를 알 수 없다. 화면은 호출 칸에 그렇게 쓰고 비용은 비운다
+            **({"usage_partly_unknown": True} if rem_unknown else {}),
             "by_model": sorted(by_model, key=lambda r: (-r["total_tokens"], r["model"])),
             "usage_known": known, "partial": bool(req_bad or rep_bad), "has_logs": has_logs(run_dir),
             **dict(zip(("has_source", "source_bytes"), source_info(run_dir, upload)))}
@@ -688,7 +693,9 @@ def add_remediation_usage(run_dir: Path, usage: dict[str, int], by_model: list[d
     `safe_file`) to the migration report's usage: rows of the same asked name are merged (calls / tokens added, `served`
     merged, cost = the sum or None when either side is unknown), other models get rows of their own. The run's cost
     stays known only when every remediation row is priced in the report's currency (a migration without calls counts
-    0). Returns (usage, by_model, cost, currency, remediation calls); unchanged when the remediation made no call. The
+    0). A remediation whose usage is partly unknown (`fix_usage()["usage_unknown"]`, v2.1z-bo) makes the run's cost
+    None (unknown, never a number). Returns (usage, by_model, cost, currency, remediation calls); unchanged when the
+    remediation made no call. The
     report itself is never rewritten. The log fallback for runs without a report already holds these calls (the fix
     loop's `llm call` lines are in sbmig.log), so it is not combined with this."""
     data, _ = _read_json(run_dir, CHAIN_STATE)
@@ -696,6 +703,9 @@ def add_remediation_usage(run_dir: Path, usage: dict[str, int], by_model: list[d
         return usage, by_model, cost, currency, 0
     from sbmig.remediations.fixer import fix_usage
     fx = fix_usage(data)
+    if fx.get("usage_unknown") and not (fx["calls"] or fx["input_tokens"] or fx["output_tokens"]):
+        # 사용량을 하나도 읽지 못한 루프만 있다. 숫자는 그대로 두고 비용은 모르는 것으로 둔다
+        return usage, by_model, None, currency, 0
     if not (fx["calls"] or fx["input_tokens"] or fx["output_tokens"]):
         return usage, by_model, cost, currency, 0
     usage = {k: usage[k] + _int(fx[k]) for k in ("calls", "input_tokens", "output_tokens")}
@@ -725,8 +735,22 @@ def add_remediation_usage(run_dir: Path, usage: dict[str, int], by_model: list[d
         served = [n for n in served if n.lower() != key.lower()]
         if served:
             r["served"] = served
+    if fx.get("usage_unknown"):
+        run_cost = None                              # 사용량 일부를 모르면 비용도 모른다
     return (usage, list(rows.values()), None if run_cost is None else round(run_cost, 6), currency,
             _int(fx["calls"]))
+
+
+def remediation_usage_unknown(run_dir: Path) -> bool:
+    """실행 폴더의 취약점 조치 사용량 일부를 알 수 없는지 확인한다(``fixer.fix_usage``의 ``usage_unknown``).
+
+    True when `remediation/state.json` records a fix loop whose usage could not be read or calls without token
+    counts; False when there is no such state or it cannot be read."""
+    data, _ = _read_json(run_dir, CHAIN_STATE)
+    if data is None:
+        return False
+    from sbmig.remediations.fixer import fix_usage
+    return bool(fix_usage(data).get("usage_unknown"))
 
 
 def _sum_cost(costs: Iterable[float | None]) -> float | None:

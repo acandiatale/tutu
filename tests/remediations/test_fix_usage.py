@@ -155,12 +155,13 @@ def _write(p: Path, data) -> None:
 def test_run_status_counts_the_remediation_calls_once(tmp_path):
     rd = tmp_path / "run-1"
     report = {"llm_usage": {"calls": 7}, "remediation": {"status": "SUCCEEDED", "fix_llm_calls": 99}}
-    assert run_llm_calls(rd, report) == {"llm_calls": 7, "remediation_llm_calls": 0}
+    assert run_llm_calls(rd, report) == {"llm_calls": 7, "remediation_llm_calls": 0, "remediation_llm_usage_unknown": False}
     _write(rd / "remediation" / "state.json", _state(FixResult(llm_calls=2), FixResult(llm_calls=1)).to_dict())
     # the state is the source (a resume pod's calls are there); the summary's digest is never added
-    assert run_llm_calls(rd, report) == {"llm_calls": 10, "remediation_llm_calls": 3}
-    assert run_llm_calls(rd, {}) == {"llm_calls": 3, "remediation_llm_calls": 3}
-    assert run_llm_calls(tmp_path / "none", {}) == {"llm_calls": None, "remediation_llm_calls": 0}
+    assert run_llm_calls(rd, report) == {"llm_calls": 10, "remediation_llm_calls": 3, "remediation_llm_usage_unknown": False}
+    assert run_llm_calls(rd, {}) == {"llm_calls": 3, "remediation_llm_calls": 3, "remediation_llm_usage_unknown": False}
+    assert run_llm_calls(tmp_path / "none", {}) == {"llm_calls": None, "remediation_llm_calls": 0,
+                                                    "remediation_llm_usage_unknown": False}
 
 
 # ------------------------------------------------------------------------------------------------ web: admin

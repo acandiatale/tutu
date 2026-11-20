@@ -44,6 +44,7 @@ from .interfaces import Components, Journal, StopCheck
 from .models import (
     FAILED,
     R_INTERNAL_ERROR,
+    TERMINAL,
     RemediationState,
     RunPaths,
     StateConflict,
@@ -682,10 +683,15 @@ def clean_targets(targets: Iterable[str] | None) -> list[str]:
     return [] if roots == ["."] else roots
 
 
-def _baseline_outcome(paths: RunPaths, state: RemediationState, jr: Journal, excluded: Iterable[str]) -> RemediationState:
+def _baseline_outcome(paths: RunPaths, state: RemediationState, jr: Journal, excluded: Iterable[str],
+                      cfg: Any = None) -> RemediationState:
     """같은 트리로 이관의 최종 빌드는 통과했는데 조치 전 빌드가 실패했으면 그 사실을 메시지 앞에 분명히 쓴다.
     같은 Maven 설정이라는 것, 비교할 두 로그, 조치가 빌드한 트리에서 빠진 것(.git / .sbmig / target 산출물 /
-    접수에서 제외한 폴더)을 담고 저널 ``remediation_baseline_differs``를 남긴다. 이관 결과는 바꾸지 않는다."""
+    접수에서 제외한 폴더)을 담고 저널 ``remediation_baseline_differs``를 남긴다. 이관 결과는 바꾸지 않는다.
+
+    v2.1z-bo: the report and the state carry the same message. The new message gets a new `updated` stamp, which
+    makes the report pending (`graph.report_pending`), and the report is written again once (`write_pending_report`,
+    with `cfg`); a kill in between is repaired on the next entry like any pending report."""
     from .models import R_BASELINE_BUILD_FAILED
     # 이관의 최종 빌드가 실패한 트리(baseline_tolerated)에는 이 안내가 맞지 않는다
     if (state.status != FAILED or state.reason != R_BASELINE_BUILD_FAILED or state.baseline_tolerated
@@ -703,7 +709,15 @@ def _baseline_outcome(paths: RunPaths, state: RemediationState, jr: Journal, exc
     jr({"event": "remediation_baseline_differs", "remediation": state.id, "targets": list(state.build_targets or [])})
     log.warning("vulnerability remediation %s: the baseline build failed although the migration's final build passed on the "
                 "same tree — see remediation/baseline/build.log", state.id)
+    # 메시지가 바뀌었으므로 시각을 새로 찍어 보고서를 다시 써야 하는 상태로 만들고, 바로 한 번 다시 쓴다
+    state.updated = time.time()
     _try_save(paths, state)
+    if cfg is not None:
+        try:
+            graph_mod.write_pending_report(state, paths, cfg, save=_saver(paths), journal=jr)
+        except Exception as e:  # noqa: BLE001 - 보고서를 쓰지 못해도 다음 진입 때 다시 쓴다
+            log.warning("chained remediation %s: the report was not written again: %s", state.id,
+                        graph_mod.scrub_message(f"{type(e).__name__}: {e}", paths.root))
     return state
 
 
@@ -771,7 +785,8 @@ def run_after_migration(run_dir: Path | str, project_dir: Path | str, cfg: Any, 
                 existing = load_state(run_dir)
                 if existing is not None:
                     jr({"event": "remediation_exists", "remediation": existing.id, "status": existing.status})
-                    graph_mod.write_pending_report(existing, paths, cfg, save=_saver(paths), journal=jr)
+                    if existing.status in TERMINAL:
+                        graph_mod.repair_final(existing, paths, cfg, save=_saver(paths), journal=jr)
                     return existing
                 return _start(paths, Path(project_dir), cfg, comps, run_id=run_id, jr=jr, stop=budget.wrap(real_stop),
                               exclude_dirs=exclude_dirs, budget=budget, real_stop=real_stop, build_targets=build_targets,
@@ -903,7 +918,8 @@ def run_only(run_dir: Path | str, source: Path | str, cfg: Any, *, run_id: str, 
                 existing = load_state(run_dir)
                 if existing is not None:
                     jr({"event": "remediation_exists", "remediation": existing.id, "status": existing.status})
-                    graph_mod.write_pending_report(existing, paths, cfg, save=_saver(paths), journal=jr)
+                    if existing.status in TERMINAL:
+                        graph_mod.repair_final(existing, paths, cfg, save=_saver(paths), journal=jr)
                     return existing
                 return _start_only(paths, Path(source), cfg, comps, run_id=run_id, jr=jr, stop=budget.wrap(real_stop),
                                    budget=budget, real_stop=real_stop, build_targets=build_targets)
@@ -973,8 +989,10 @@ def _repair_report(paths: RunPaths, run_dir: Path | str, state: RemediationState
     """보고서 노드 도중에 끝난 조치면 폴더를 점유한 뒤 보고서만 쓰고 상태를 반환한다. 쓸 것이 없으면 그대로 반환한다.
 
     A state whose report node was killed (`graph.report_pending`) gets its report (and the combined `fix.patch`)
-    written under the run claim; another process holding the claim → the state as it is."""
-    if not graph_mod.report_pending(paths, state):
+    written under the run claim; another process holding the claim → the state as it is. v2.1z-bo: a final state
+    whose result ZIP swap was left half done (`graph.delivery_swap_pending`) is repaired first
+    (`graph.repair_final`: `recover_delivery`, then the pending report)."""
+    if not graph_mod.final_repair_needed(paths, state):
         return state
     claim = _try_claim(paths, jr, purpose)
     if claim is None:
@@ -982,7 +1000,7 @@ def _repair_report(paths: RunPaths, run_dir: Path | str, state: RemediationState
     with claim, remediation_log(paths):
         try:
             st = load_state(run_dir) or state
-            graph_mod.write_pending_report(st, paths, cfg, save=_saver(paths), journal=jr)
+            graph_mod.repair_final(st, paths, cfg, save=_saver(paths), journal=jr)
             return st
         except Exception as e:  # noqa: BLE001 — a report that cannot be written leaves the state as it is
             log.warning("chained remediation %s: the report was not written: %s", state.id,
@@ -999,7 +1017,7 @@ def _drive(paths: RunPaths, state: RemediationState, cfg: Any, comps: Components
     except Exception as e:  # noqa: BLE001 — run_remediation turns node errors into FAILED; this guards the rest
         return _error(paths, jr, e, state.id, state)
     if chained:                              # 이관 없이 실행한 조치에는 이관의 최종 빌드가 통과했다는 정보가 없다
-        state = _baseline_outcome(paths, state, jr, excluded)
+        state = _baseline_outcome(paths, state, jr, excluded, cfg)
     if budget is not None:
         state = _budget_outcome(paths, state, budget, real_stop or (lambda: False))
     _ended(jr, state, paths)
@@ -1018,7 +1036,8 @@ def resume(run_dir: Path | str, cfg: Any, *, journal: Journal | None, stop: Stop
     (`RunClaim`) is taken first:
     a fresh claim of another process → `StateConflict` ("another process is already working on this run: …") with
     nothing touched; the state is read again under the claim. A final state whose report node was killed
-    (`graph.report_pending`) is not refused: its report is written under the claim and the state returned."""
+    (`graph.report_pending`) or whose result ZIP swap was left half done (`graph.delivery_swap_pending`) is not
+    refused: it is repaired under the claim (`graph.repair_final`) and the state returned."""
     paths = chain_paths(run_dir)
     jr = _scoped(journal)
     state = load_state(run_dir)
@@ -1027,8 +1046,8 @@ def resume(run_dir: Path | str, cfg: Any, *, journal: Journal | None, stop: Stop
     if (removed := graph_mod.approval_removed(state)) is not None:
         log.error("chained remediation %s: resume refused: %s", state.id, removed)
         raise removed
-    if graph_mod.report_pending(paths, state):
-        # 보고서 노드 도중에 끝난 조치는 재개할 것이 없으므로 보고서만 쓴다
+    if graph_mod.final_repair_needed(paths, state):
+        # 끝난 조치는 재개할 것이 없으므로 결과 ZIP 기록과 보고서만 맞춘다
         jr({"event": "remediation_report_repair", "remediation": state.id, "status": state.status})
         return _repair_report(paths, run_dir, state, cfg, jr, "resume")
     if not graph_mod.can_resume(state):
@@ -1065,7 +1084,9 @@ def summary(state: RemediationState | None, run_dir: Path | str, *, skipped: dic
 
     A small JSON-able digest for the migration report. `fix_llm_calls` (only when > 0) = the LLM calls of the build fix
     loop over every round (`fixer.fix_usage`), read by the `SBMIG-RESULT … llm=` line; readers of the run folder count
-    the remediation from `remediation/state.json` instead (`fixer.run_fix_usage`), never from this digest."""
+    the remediation from `remediation/state.json` instead (`fixer.run_fix_usage`), never from this digest.
+    `fix_usage_unknown: true` (only then) = a part of that usage is unknown (`fix_usage()["usage_unknown"]`), so
+    `fix_llm_calls` counts only the known calls."""
     if state is None:
         out: dict[str, Any] = {"status": "skipped", "dir": CHAIN_DIR}
         out.update({k: v for k, v in (skipped or {}).items() if k in ("reason", "missing")})
@@ -1091,10 +1112,14 @@ def summary(state: RemediationState | None, run_dir: Path | str, *, skipped: dic
         # 조치 전 빌드 실패를 받아들인 실행이다. 이관 보고서와 화면이 빌드로 확인하지 못했다고 알린다
         out["baseline_tolerated"] = True
     from .fixer import fix_usage
-    fix_calls = fix_usage(state)["calls"]
+    fu = fix_usage(state)
+    fix_calls = fu["calls"]
     if fix_calls:
         # 빌드 오류 수정 루프가 호출한 LLM 횟수다. 결과 줄의 llm= 값에 더한다
         out["fix_llm_calls"] = fix_calls
+    if fu["usage_unknown"]:
+        # 수정 루프의 사용량 일부를 알 수 없다. fix_llm_calls는 아는 만큼의 수다
+        out["fix_usage_unknown"] = True
     if state.baseline_build is not None:
         # 실행 방식이 remediation일 때 결과 줄의 build= 값.
         # 업로드한 그대로의 빌드가 실행되고 통과했는지를 나타낸다

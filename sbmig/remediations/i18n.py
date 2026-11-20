@@ -1074,6 +1074,8 @@ RULES: list[_Rule] = [
     _r("stop_baseline", r"stop requested during the baseline build", lambda g: "조치 전 빌드 중에 중지 요청을 받았습니다."),
     _r("stop_round", r"stop requested during the round (?P<r>\d+) candidate build",
        lambda g: f"라운드 {g['r']} 수정본 빌드 중에 중지 요청을 받았습니다."),
+    _r("stop_round_fix", r"stop requested during the round (?P<r>\d+) build fix",
+       lambda g: f"라운드 {g['r']}의 빌드 오류 자동 수정 중에 중지 요청을 받았습니다."),
     _r("stop_node", r"stop requested before node (?P<n>\S+)",
        lambda g: f"'{g['n']}' 단계를 시작하기 전에 중지 요청을 받았습니다."),
     _r("zip_changed_intake", r"the original ZIP no longer has the sha256 recorded at intake",
@@ -1101,6 +1103,13 @@ RULES: list[_Rule] = [
                      " 결과 ZIP(delivery/result.zip)은 바꾼 것이 없는 이전 결과 그대로입니다." if g.get("k") == "0" else
                      f" 결과 ZIP(delivery/result.zip)은 라운드 {g.get('k')}의 결과 그대로입니다.")
                   + (f" {_raw(g['e'])}" if g.get("e") else ""))),
+    _r("delivery_record_not_written",
+       r"delivery/result\.zip is now the result ZIP of round (?P<r>\d+), but (?P<what>.+?) could not be written "
+       r"\((?P<t>[A-Za-z_][\w.]*): (?P<e>.*)\); the record is completed the next time this run is opened",
+       lambda g: (("결과 ZIP(delivery/result.zip)은 이제 바꾼 것이 없는 결과입니다." if g["r"] == "0" else
+                   f"결과 ZIP(delivery/result.zip)은 이제 라운드 {g['r']}의 결과입니다.")
+                  + f" 다만 기록 파일({g['what'].replace(' and ', ', ')})을 쓰지 못했습니다({g['t']}). 이 실행을 다음에 열 때 "
+                  "기록을 마저 맞춥니다." + (f" {_raw(g['e'])}" if g.get("e") else ""))),
     _r("scan_incomplete", r"(?P<w>baseline|final) scan incomplete: (?P<r>.+)",
        lambda g: f"{'조치 전' if g['w'] == 'baseline' else '조치 후'} 검사가 끝나지 않았습니다(사유: {_scan_reasons(g['r'])})."),
     _r("maven_incomplete", r"Maven resolution incomplete: (?P<n>.*)",
@@ -1124,11 +1133,14 @@ RULES: list[_Rule] = [
     _r("failed_included",
        r"delivery/result\.zip contains the round (?P<r>\d+) change set whose candidate build FAILED "
        r"\(proposals: (?P<ids>.*?); build log (?P<log>\S+)\); it was not rescanned; the original is preserved as "
-       r"original/source\.zip(?:; the verified delivery of an earlier round is kept as (?P<kept>\S+))?",
+       r"original/source\.zip(?:; the verified delivery of an earlier round is kept as (?P<kept>\S+)"
+       r"|; the scanned delivery of an earlier round \(its build was not confirmed\) is kept as (?P<scanned>\S+))?",
        lambda g: (f"결과 ZIP(delivery/result.zip)에는 수정본 빌드에 실패한 라운드 {g['r']}의 변경이 들어 있습니다(제안 "
                   f"{g['ids']}, 빌드 로그 {g['log']}). 이 ZIP은 재검사하지 않았습니다. 원본은 original/source.zip에 "
                   "그대로 보관합니다."
-                  + (f" 이전 라운드에서 검증한 결과 ZIP은 {g['kept']}에 있습니다." if g.get("kept") else ""))),
+                  + (f" 이전 라운드에서 검증한 결과 ZIP은 {g['kept']}에 있습니다." if g.get("kept") else "")
+                  + (f" 이전 라운드에서 재검사한 결과 ZIP(빌드로는 확인하지 못함)은 {g['scanned']}에 있습니다."
+                     if g.get("scanned") else ""))),
     _r("discarded",
        r"round (?P<r>\d+) candidate discarded; delivery/result\.zip is the verified state of round (?P<k>\d+), "
        r"without the failed change",

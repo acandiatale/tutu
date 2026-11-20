@@ -1054,6 +1054,8 @@ class BuildFixLoop:
         # repeats the final build only when the tree differs from that last build)
         self.stopped_by_request = False
         self.left_on_stop = False
+        # LLM에 묻기 전에 확인한 중지 요청("stop")이나 실행 시간 한도("time"). 이 라운드에서 더 묻지 않는다
+        self._ask_halt = ""
         self.last_build: Optional[BuildResult] = None
         self.end_rollbacks = 0
         self._llm_streak: list[tuple[ErrorCluster, str]] = []
@@ -1256,6 +1258,7 @@ class BuildFixLoop:
         pr = PhaseResult(phase=phase)
         self._phase_items = []
         self.left_on_stop, self.last_build, self.end_rollbacks = False, None, 0
+        self._ask_halt = ""
         self._cur_phase = phase
         self._target = target
         self._mark(f"loop start ({goal})")
@@ -1334,10 +1337,7 @@ class BuildFixLoop:
                 # 멈춤 요청(stop.request)은 빌드 사이에 확인한다
                 # 여기서 빠져나가면 다음 노드나 finalize가 aborted로 마무리한다
                 if getattr(self.ws, "stop_requested", lambda: False)():
-                    pr.notes.append(f"build {build_no}: stop requested (stop.request) — leaving the fix loop before the next build")
-                    log.warning("stop requested (stop.request) — leaving the fix loop after build %d (no further fix)", build_no)
-                    self.ws.journal({"event": "stop_request", "phase": phase.value, "iteration": build_no, "where": "fix loop"})
-                    self.left_on_stop = self.stopped_by_request = True
+                    self._leave_on_stop(pr, phase, build_no)
                     break
                 # Maven의 HTTP 차단 미러에 막혔으면 부모 버전 맞추기, 사전 시도, LLM
                 # 어느 것으로도 해결할 수 없으므로 바로 중단한다
@@ -1378,12 +1378,7 @@ class BuildFixLoop:
                                     "left")
                     break
                 if self.budget.time_exceeded():
-                    pr.notes.append("run time budget exhausted: stopping the build-fix loop")
-                    self._flag("time-budget-exhausted")
-                    self.ws.journal({"event": "budget_exhausted", "phase": phase.value, "kind": "time"})
-                    self._block_remaining(pr, phase, build_no, clusters, BlockReason.BUDGET_EXHAUSTED,
-                                          f"run time budget ({self.cfg.loop.max_total_minutes} min) exhausted before "
-                                          "this cluster was fixed")
+                    self._leave_on_time(pr, phase, build_no, clusters)
                     break
             applied_any = False
             new_pending: list[_Pending] = []
@@ -1395,12 +1390,15 @@ class BuildFixLoop:
                         pr, phase, build_no, build, target, stall_level, clusters, round_no=fix_rounds,
                         max_rounds=max_iterations)
                 restored += back
+                if not applied_any and tried and fix_rounds < max_iterations and not self.dry_run:
+                    # 같은 빌드로 다시 묻기 전에 중지 요청과 시간 한도를 본다. 걸리면 빌드 사이와 같은 길로 끝낸다
+                    self._halt_before_ask()
                 rec.decisions += decisions
                 rec.cluster_count = len(rec.decisions)
                 rec.attempt_ids = [a.id for a in pr.attempts if a.iteration == build_no]
                 # 무엇이든 적용됐거나(재빌드 필요), 시도가 없거나, 라운드를 다 썼거나, 시간이 초과됐거나,
                 # 모두 차단됐으면 안쪽 반복을 끝낸다
-                if self.dry_run or applied_any or not tried or fix_rounds >= max_iterations \
+                if self.dry_run or applied_any or not tried or fix_rounds >= max_iterations or self._ask_halt \
                         or self.budget.time_exceeded() or all(self.blocked.covering(c) for c in clusters):
                     break
                 # 트리가 그대로라 재빌드해도 오류가 같으므로 같은 빌드 결과로 다음 시도를 실행한다.
@@ -1410,6 +1408,14 @@ class BuildFixLoop:
                 self.ws.journal({"event": "reround", "phase": phase.value, "iteration": build_no,
                                  "fix_round": fix_rounds + 1})
             pending = new_pending
+            if self._ask_halt and not applied_any:
+                # LLM에 묻기 전에 중지 요청이나 시간 한도를 확인했고 이번 라운드에 바뀐 것이 없다. 트리는 마지막 빌드 그대로이므로
+                # 빌드 사이에서 확인했을 때와 같은 길로 끝낸다. 무엇이 적용됐으면 다음 빌드 뒤의 확인이 같은 길로 끝낸다
+                if self._ask_halt == "stop":
+                    self._leave_on_stop(pr, phase, build_no)
+                else:
+                    self._leave_on_time(pr, phase, build_no, clusters)
+                break
             if self.dry_run:
                 pr.notes.append("dry-run: decisions computed and journaled, nothing applied")
                 break
@@ -1446,6 +1452,45 @@ class BuildFixLoop:
         return pr
 
     # ------------------------------------------------------------------ v2.1: scoring → error list + log
+    def _leave_on_stop(self, pr: PhaseResult, phase: Phase, build_no: int) -> None:
+        """중지 요청으로 수정 루프를 끝낼 때의 기록을 남긴다. 빌드 사이와 LLM 요청 앞의 확인이 함께 쓴다."""
+        pr.notes.append(f"build {build_no}: stop requested (stop.request) — leaving the fix loop before the next build")
+        log.warning("stop requested (stop.request) — leaving the fix loop after build %d (no further fix)", build_no)
+        self.ws.journal({"event": "stop_request", "phase": phase.value, "iteration": build_no, "where": "fix loop"})
+        self.left_on_stop = self.stopped_by_request = True
+
+    def _leave_on_time(self, pr: PhaseResult, phase: Phase, build_no: int, clusters: list[ErrorCluster]) -> None:
+        """실행 시간 한도로 수정 루프를 끝낼 때의 기록을 남기고 남은 케이스를 차단한다. 빌드 사이와 LLM 요청 앞의 확인이 함께 쓴다."""
+        pr.notes.append("run time budget exhausted: stopping the build-fix loop")
+        self._flag("time-budget-exhausted")
+        self.ws.journal({"event": "budget_exhausted", "phase": phase.value, "kind": "time"})
+        self._block_remaining(pr, phase, build_no, clusters, BlockReason.BUDGET_EXHAUSTED,
+                              f"run time budget ({self.cfg.loop.max_total_minutes} min) exhausted before "
+                              "this cluster was fixed")
+
+    def _halt_before_ask(self) -> str:
+        """LLM에 묻기 전에 중지 요청과 실행 시간 한도를 확인한다. 걸리면 "stop" 또는 "time"을 반환하고 이번 실행에서 더 묻지 않는다.
+
+        Checked before every LLM request (`propose_script`, `verify_guide`): the workspace's stop check (the web's
+        `stop.request`; the remediation's stop and deadline) first, then the run time budget. The answer sticks for
+        the rest of the loop run (`_ask_halt`, reset by `_run`); `_run` then ends the loop the way a stop or the time
+        budget found between builds does."""
+        if not self._ask_halt:
+            try:
+                stop = bool(getattr(self.ws, "stop_requested", lambda: False)())
+            except Exception:  # noqa: BLE001 - 읽을 수 없는 중지 표시는 중지 요청으로 보지 않는다
+                stop = False
+            if stop:
+                self._ask_halt = "stop"
+            elif self.budget.time_exceeded():
+                self._ask_halt = "time"
+            if self._ask_halt:
+                self.ws.journal({"event": "llm_ask_skipped", "phase": self._cur_phase.value if self._cur_phase else "",
+                                 "why": self._ask_halt})
+                log.info("LLM 요청 전에 %s 확인 — 이 라운드에서 더 묻지 않는다",
+                         "중지 요청" if self._ask_halt == "stop" else "실행 시간 한도")
+        return self._ask_halt
+
     def _after_scoring(self, scored: list[FixAttempt], build_no: int) -> None:
         """직전 라운드에서 평가된 시도의 후속 처리를 한다.
         - 오류 목록의 FixTry 결과와 메모를 맞추고, 해결된 케이스 항목(개선, 빌드 성공, 부분 해결)을 해결 처리한다
@@ -2245,6 +2290,8 @@ class BuildFixLoop:
         handled = 0
         before = sum(1 for a in pr.attempts if a.decision.kind == DecisionKind.SCRIPT)
         for c, skip, by in planned:
+            if self._ask_halt:
+                break                                   # 중지 요청이나 시간 한도: 이 라운드의 나머지 케이스는 묻지 않는다
             c2 = self._unblocked_part(st, c)
             if c2 is None:
                 continue
@@ -2259,6 +2306,8 @@ class BuildFixLoop:
         # 없으면 고칠 수 있는 컴파일 오류를 더 숨기지 않는다
         # unmask: a masker that cannot be acted upon must not hide compile errors we could fix
         for c, skip, by in masked:
+            if self._ask_halt:
+                break
             if by and all(b in st.hopeless for b in by) and handled < limit:
                 if self._handle_cluster(pr, st, c, prefix="(unmasked: its pom problem was escalated/blocked) ") \
                         not in ("blocked", "deferred"):
@@ -2395,6 +2444,9 @@ class BuildFixLoop:
                 d.rationale = prefix + d.rationale
             step = self._script_step(c) if d.kind == DecisionKind.SCRIPT else None
             seen_step = step
+            # LLM에 묻는 시도는 묻기 전에 중지 요청과 시간 한도를 본다. 걸리면 이 케이스를 시도하지 않는다
+            if step is not None and step.needs_llm and self._halt_before_ask():
+                return "halted"
             # 소유팀의 결정이 필요해 차단된 케이스와 같은 파일이나 같은 아티팩트의
             # 케이스는 LLM을 호출하지 않고 같은 사유로 차단한다
             if step is not None and step.needs_llm:
@@ -3583,7 +3635,8 @@ class BuildFixLoop:
         fx = self._verify_fixer()
         if fx is not None and att.source != "kb-script" and att.source not in PRE_TRY_SOURCES \
                 and getattr(getattr(self.cfg, "libraries", None), "verify_guide_llm", True) \
-                and not self.dry_run and not self.llm_unavailable and self.budget.llm_allowed():
+                and not self.dry_run and not self.llm_unavailable and self.budget.llm_allowed() \
+                and not self._halt_before_ask():
             ctx = FixContext(phase=st.phase, iteration=st.iteration, profile_summary=self._summary(),
                              case_id=att.script_case_id, scope="jdk-jakarta" if self._reduced_scope() else "full")
             self._mark(f"fixer.verify_guide for {c.id}")

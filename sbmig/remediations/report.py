@@ -148,6 +148,8 @@ _FAILED_INCLUDED_KO = ("버전을 바꾼 수정본이 빌드에 실패했습니�
                        "**빌드 오류 확인하기** — 빌드에 실패한 결과 ZIP은 배포하지 말고, `rounds/<n>/build.log` 파일과 "
                        "`rounds/<n>/candidate.patch` 파일을 확인해 빌드 오류를 고치거나 올릴 버전을 다시 정해 주세요.")
 _SUCCEEDED_STEP = "**결과 ZIP 받기** — 재검사를 마친 `delivery/result.zip` 파일을 받아 사용해 주세요."
+# 바꾼 것이 없어 원본을 그대로 낸 결과 ZIP(라운드 0)은 조치 전 검사만 거쳤다
+_SUCCEEDED_STEP_ROUND0 = "**결과 ZIP 받기** — 검사를 마친 `delivery/result.zip` 파일을 받아 사용해 주세요."
 # 조치 전 빌드 실패를 받아들인 실행(state.baseline_tolerated)의 baseline_build_failed 문장과 할 일
 _TOLERATED_KO = (("이 프로젝트는 조치 전에도 빌드되지 않았습니다. 남은 빌드 오류는 프로젝트 담당자와 "
                   "프레임워크 담당자가 고쳐야 합니다. 취약점 검사는 오픈소스 "
@@ -333,7 +335,9 @@ def _verified_kept(paths: RunPaths) -> dict[str, Any] | None:
         rel = paths.rel(z)
     except ValueError:
         rel = z.name
-    return {"path": rel, "sha256": data.get("sha256", ""), "round": data.get("round", 0), "size": data.get("size", 0)}
+    return {"path": rel, "sha256": data.get("sha256", ""), "round": data.get("round", 0), "size": data.get("size", 0),
+            # 조치 전 빌드 실패를 받아들인 실행에서 재검사만 하고 빌드로 확인하지 못한 결과 ZIP이다
+            "unconfirmed": bool(data.get("build_tolerated") and not data.get("build_ok"))}
 
 
 def _delivery_dict(state: RemediationState) -> dict[str, Any] | None:
@@ -634,7 +638,8 @@ def _next_steps(state: RemediationState, fx: "_Facts | None" = None) -> list[str
         out.append(f"**자동으로 고친 소스 확인하기** — 자동으로 고친 소스 {_num(len(fixed_files))}개를 확인해 주세요. "
                    f"바꾼 내용은 「빌드 오류 수정」과 `{FIX_PATCH_NAME}` 파일에 있습니다.")
     if state.status == SUCCEEDED:
-        out.append(_SUCCEEDED_STEP)
+        out.append(_SUCCEEDED_STEP_ROUND0 if state.delivery is not None and state.delivery.round == 0
+                   else _SUCCEEDED_STEP)
     if _tolerated(state) and state.status != FAILED and not _nothing_changed(state):
         # 빌드 오류를 고치고 바꾼 버전으로 빌드해야 결과를 쓸 수 있으므로 맨 앞에 둔다
         out.append(_TOLERATED_KO[1])
@@ -1670,7 +1675,10 @@ def _failed_delivery_block(L: list[str], state: RemediationState, paths: RunPath
              f"재검사는 하지 않았습니다. 빌드 로그는 `{blog}`에 있습니다. 이 ZIP을 그대로 배포하지 마세요.")
     L.append("> 원본은 `original/source.zip`에 그대로 보관합니다(내려받기 이름 source.zip).")
     kept = _verified_kept(paths)
-    if kept:
+    if kept and kept.get("unconfirmed"):
+        L.append(f"> 라운드 {kept['round']}에서 재검사를 마친 결과 ZIP(빌드로는 확인하지 못함)은 `{kept['path']}`에 있습니다"
+                 "(내려받기 이름 result-verified.zip).")
+    elif kept:
         L.append(f"> 라운드 {kept['round']}에서 빌드와 재검사를 마친 결과 ZIP은 `{kept['path']}`에 있습니다(내려받기 이름 "
                  "result-verified.zip).")
 
@@ -1856,6 +1864,10 @@ def _fix_record_line(L: list[str], rs: RoundState) -> None:
 
     def n(key: str) -> str:
         return _num(int(getattr(fix, key, 0) or 0))
+    if _usage_unknown(fix):
+        # 사용량을 읽지 못한 결과다. 호출 수를 정확한 값처럼 쓰지 않는다
+        L.append(f"- 빌드 오류 자동 수정: {_fix_outcome_ko(fix)} · {USAGE_UNKNOWN_KO}")
+        return
     if _retry_passed(fix):
         L.append(f"- 빌드 오류 자동 수정: {RETRY_PASSED_KO}")
         return
@@ -1867,7 +1879,7 @@ def _fix_record_line(L: list[str], rs: RoundState) -> None:
                      f"{n('iterations')}회 반복 · LLM 호출 {n('llm_calls')}회")
             return
         patch = getattr(fix, "patch", "") or ""
-        L.append(f"- 빌드 오류 자동 수정: 고침 · 파일 {files}개 · {n('iterations')}회 반복 · LLM 호출 {n('llm_calls')}회"
+        L.append(f"- 빌드 오류 자동 수정: 고침 · 파일 {files}개 · {n('iterations')}회 반복 · {_calls_ko(fix)}"
                  + (f" · 바꾼 내용 `{_md_cell(patch)}`" if patch else ""))
         return
     if not getattr(fix, "attempted", False):
@@ -1881,11 +1893,11 @@ def _fix_record_line(L: list[str], rs: RoundState) -> None:
     from .graph import fix_made_no_attempt  # 순환 import를 피하려고 함수 안에서 import한다
     if fix_made_no_attempt(fix):
         # 시도가 하나도 없던 루프다. 반복 횟수와 시도한 수정은 쓰지 않는다
-        L.append("- 빌드 오류 자동 수정: 하지 못함" + f"({ko or '이유 모름'})" + f" · LLM 호출 {n('llm_calls')}회"
+        L.append("- 빌드 오류 자동 수정: 하지 못함" + f"({ko or '이유 모름'})" + f" · {_calls_ko(fix)}"
                  + (f" · {_md_cell(raw)}" if raw else ""))
         return
     L.append("- 빌드 오류 자동 수정: 고치지 못함" + (f"({ko})" if ko else "") + f" · {n('iterations')}회 반복 · "
-             f"LLM 호출 {n('llm_calls')}회 · 시도한 소스 수정은 결과에 넣지 않음" + (f" · {_md_cell(raw)}" if raw else ""))
+             f"{_calls_ko(fix)} · 시도한 소스 수정은 결과에 넣지 않음" + (f" · {_md_cell(raw)}" if raw else ""))
 
 
 def _discarded_line(L: list[str], fix: Any) -> None:
@@ -1894,14 +1906,43 @@ def _discarded_line(L: list[str], fix: Any) -> None:
     ko, raw = i18n.fix_reason_ko(reason)
     if reason.startswith(INTERRUPTED_FIX_REASON):
         # 실행이 끝나 중간에 멈춘 수정 루프다. 바꾼 파일은 없고 LLM 호출 수만 의미가 있다
-        calls = ("LLM 호출 수는 알 수 없음" if reason.endswith(USAGE_UNKNOWN_SUFFIX)
-                 else f"LLM 호출 {_num(int(getattr(fix, 'llm_calls', 0) or 0))}회")
+        calls = ("LLM 호출 수는 알 수 없음" if reason.endswith(USAGE_UNKNOWN_SUFFIX) or _usage_unknown(fix)
+                 else _calls_ko(fix))
         L.append(f"- 빌드 오류 자동 수정: 버린 수정({ko or '실행이 수정 도중에 끝남'}) · {calls}")
         return
     files = getattr(fix, "discarded_changed", None) or getattr(fix, "changed", None) or []
     L.append("- 빌드 오류 자동 수정: 버린 수정" + (f"({ko})" if ko else "") + f" · 파일 {_num(len(files))}개 · "
              f"{_num(int(getattr(fix, 'iterations', 0) or 0))}회 반복 · "
-             f"LLM 호출 {_num(int(getattr(fix, 'llm_calls', 0) or 0))}회" + (f" · {_md_cell(raw)}" if raw else ""))
+             f"{_calls_ko(fix)}" + (f" · {_md_cell(raw)}" if raw else ""))
+
+
+USAGE_UNKNOWN_KO = "LLM 사용량 일부는 알 수 없음"
+
+
+def _usage_unknown(fix: Any) -> bool:
+    """수정 루프 결과의 LLM 사용량을 읽지 못했는지 확인한다(``FixResult.usage_unknown``)."""
+    return bool(getattr(fix, "usage_unknown", False))
+
+
+def _tokens_unknown(fix: Any) -> bool:
+    """토큰 수를 모르는 호출이 든 결과인지 확인한다(``FixUsage.tokens_unknown``)."""
+    return any(bool(getattr(u, "tokens_unknown", False)) for u in (getattr(fix, "usage", None) or []))
+
+
+def _calls_ko(fix: Any) -> str:
+    """처리 기록에 쓸 LLM 호출 수 문구를 만든다. 토큰 수를 모르는 호출이 있으면 그렇게 덧붙인다."""
+    text = f"LLM 호출 {_num(int(getattr(fix, 'llm_calls', 0) or 0))}회"
+    return f"{text} · {USAGE_UNKNOWN_KO}" if _tokens_unknown(fix) else text
+
+
+def _fix_outcome_ko(fix: Any) -> str:
+    """사용량을 모르는 수정 루프 결과의 처리 결과를 짧게 쓴다."""
+    if getattr(fix, "fixed", False):
+        return "고침"
+    if not getattr(fix, "attempted", False):
+        return "시작하지 않음"
+    ko, _raw = i18n.fix_reason_ko(getattr(fix, "reason", ""))
+    return "고치지 못함" + (f"({ko})" if ko else "")
 
 
 # 결과 ZIP 없이 FAILED로 끝난 실행의 「결과 파일」 문장(사유 코드별). 상태 메시지로 정하는 두 경우는 _no_delivery_why가 먼저 본다
@@ -1951,7 +1992,8 @@ def _delivery_block(L: list[str], state: RemediationState, fx: _Facts, paths: Ru
         L.append(f"- sha256 `{d.sha256}`")
         kept = _verified_kept(paths)
         if kept:
-            L.append(f"- 라운드 {kept['round']}에서 검증한 결과 ZIP: `{kept['path']}` (sha256 `{kept['sha256']}`)")
+            what = "재검사한 결과 ZIP(빌드로는 확인하지 못함)" if kept.get("unconfirmed") else "검증한 결과 ZIP"
+            L.append(f"- 라운드 {kept['round']}에서 {what}: `{kept['path']}` (sha256 `{kept['sha256']}`)")
         if _earlier_delivery(state):
             L.append(f"- 이 ZIP은 라운드 {d.round}에서 빌드와 재검사를 마친 상태입니다. 라운드 {_last_round(state)}의 실패한 "
                      "변경은 들어 있지 않습니다(그 변경은 rounds/<n>/candidate.patch 에만 있습니다).")
@@ -1990,13 +2032,29 @@ def _fix_section(L: list[str], state: RemediationState) -> None:
         for p in getattr(fix, "changed", None) or []:
             L.append(f"| `{_md_cell(p)}` |")
         L.append("")
-        L.append(f"- 빌드와 수정을 {_num(int(getattr(fix, 'iterations', 0) or 0))}회 반복했고, LLM을 "
-                 f"{_num(int(getattr(fix, 'llm_calls', 0) or 0))}회 호출했습니다.")
+        L.append(_fix_calls_sentence(rs, fix))
         L.append("")
     # write_fix_patch가 모든 라운드의 diff를 report.md 옆의 fix.patch 하나에 모은다
     many = " 라운드마다 나누어" if len(rounds) > 1 else ""
     L.append(f"바꾼 내용 전체는 `{FIX_PATCH_NAME}` 파일에{many} 모아 두었습니다.")
     L.append("")
+
+
+def _fix_calls_sentence(rs: RoundState, fix: Any) -> str:
+    """「빌드 오류 수정」의 반복 횟수와 LLM 호출 수 문장을 만든다. 라운드에 버린 루프가 있으면 라운드 전체 호출 수도 쓴다.
+
+    The fixing loop's own count, and when the round has other loops (`fix_discarded`: discarded, interrupted,
+    stopped) the round's total: 「빌드와 수정을 N회 반복했고, LLM을 M회 호출했습니다(버린 시도까지 모두 T회).」.
+    A count that is not exact (a loop whose usage could not be read, calls without token counts) says so."""
+    iters = _num(int(getattr(fix, "iterations", 0) or 0))
+    own = int(getattr(fix, "llm_calls", 0) or 0)
+    others = _discarded_of(rs)
+    unknown = any(_usage_unknown(f) or _tokens_unknown(f) for f in [fix, *others])
+    head = f"- 빌드와 수정을 {iters}회 반복했고, LLM을 {_num(own)}회 호출했습니다"
+    if others:
+        total = own + sum(int(getattr(f, "llm_calls", 0) or 0) for f in others)
+        head += f"(버린 시도까지 모두 {_num(total)}회)"
+    return head + "." + (" LLM 사용량 일부는 알 수 없습니다." if unknown else "")
 
 
 def _unchanged_section(L: list[str], state: RemediationState, fx: _Facts) -> None:
@@ -2154,16 +2212,21 @@ def fix_summary(state: RemediationState) -> dict[str, Any] | None:
     The page's digest of the build fix loop: None when no round ran it; `fixed` / `changed` count only rounds committed
     with a fix that changed files (`_fixed_rounds`; a retry that passed changes nothing), `llm_calls` sums every
     loop of every round, the discarded ones (`fix_discarded`) included, `round` = the last such round. `changed` is
-    the number of distinct files: a file fixed in two rounds counts once."""
+    the number of distinct files: a file fixed in two rounds counts once. `llm_usage_unknown: true` (only then): a
+    part of that usage is unknown, `llm_calls` counts the known calls."""
     fixes = [f for rs in sorted(state.rounds, key=lambda x: x.round)
              for f in [*_discarded_of(rs), _fix_of(rs)] if f is not None]
     if not fixes:
         return None
     done = _fixed_rounds(state)
     # 버린 수정도 LLM을 호출했으므로 센다. 같은 결과를 두 번 세지 않도록 라운드의 fix와 fix_discarded만 더한다
-    return {"fixed": bool(done), "changed": len(_fixed_files(state)),
-            "llm_calls": sum(int(getattr(f, "llm_calls", 0) or 0) for f in fixes),
-            "round": done[-1].round if done else None}
+    out = {"fixed": bool(done), "changed": len(_fixed_files(state)),
+           "llm_calls": sum(int(getattr(f, "llm_calls", 0) or 0) for f in fixes),
+           "round": done[-1].round if done else None}
+    if any(_usage_unknown(f) or _tokens_unknown(f) for f in fixes):
+        # 사용량 일부를 알 수 없다. llm_calls는 아는 만큼의 수다
+        out["llm_usage_unknown"] = True
+    return out
 
 
 __all__ = ["FIX_PATCH_NAME", "build_report_json", "build_report_md", "build_unconfirmed", "fix_patch_path", "fix_summary",
