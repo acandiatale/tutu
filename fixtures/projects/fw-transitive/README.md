@@ -24,7 +24,7 @@ starts at `example-fw-web` and ends at `example-fw-core` (found by `dependency:t
 otherwise as `fw-direct`: 3 plan steps, no restructure / review, success, exit 0, 0 LLM calls, `example-fw-web` still at
 1.0.0, no `<parent>` added. The transform runs `UpgradeToJava21`, `JavaxMigrationToJakarta` and `RemovalsServletJakarta10`.
 
-Since v2.1z-aw (`framework.fix_loop: false`, the default) the journal events `framework_project` and `plan` carry the
+Since v2.1z-aw (`framework.fix_loop: false`, set explicitly in `sbmig.e2e.yml` since v2.1z-bi made `true` the default) the journal events `framework_project` and `plan` carry the
 framework's name `Example` (derived from `example-fw-core`) and `fix_loop: false`; the run builds once and would hand
 any build error over without a fix loop (no `verify_loop_start`, no `plan_advice`, no `fixer` event). `report.md` opens
 the block `## Example framework project` with "**Example framework projects get JDK 21 and Jakarta only.**" and lists

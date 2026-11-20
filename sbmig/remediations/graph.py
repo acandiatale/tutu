@@ -73,6 +73,7 @@ from .models import (
     SUCCEEDED,
     TERMINAL,
     DeliveryInfo,
+    FixResult,
     IntakeResult,
     Inventory,
     IvasUploadUncertain,
@@ -188,6 +189,19 @@ class _Holder:
             return bool(self._stop())
         except Exception:  # noqa: BLE001 — an unreadable stop flag is not a stop request
             return False
+
+    def time_left(self) -> float | None:
+        """실행 시간 한도에서 남은 초를 반환한다. 중지 확인 함수에 ``time_left``가 없으면(한도 없음) None이다.
+
+        Seconds left of the run's time budget (`chain._Budget.wrap` attaches `time_left` to the stop check)."""
+        fn = getattr(self._stop, "time_left", None)
+        if not callable(fn):
+            return None
+        try:
+            left = fn()
+        except Exception:  # noqa: BLE001 - 남은 시간을 알 수 없으면 한도가 없는 것으로 본다
+            return None
+        return float(left) if left is not None else None
 
     @property
     def rcfg(self) -> Any:
@@ -1027,8 +1041,12 @@ def _build(h: _Holder) -> str | None:
         return "apply"
     outcome = h.build_outcome(c.maven.package(h.project(cand), p.build_log(r), h.stop, **h.target_kw), p.build_log(r))
     rs.build, rs.build_compare, rs.build_tolerated = outcome, {}, False
+    rs.fix, rs.fix_first_build = None, None
     if not outcome.ok and not _baseline_errors_only(h, r, outcome, cand):
-        return _candidate_failed(h, r, outcome)
+        fixed = _fix_candidate(h, r, outcome, cand)
+        if fixed is None:
+            return _fix_not_applied(h, r, outcome)
+        outcome = fixed
     applied = _applied_proposals(h, r)
     lines = _verify(h, r, cand, applied)
     rs.verify_problems = lines
@@ -1050,6 +1068,103 @@ def _build(h: _Holder) -> str | None:
         h.discard_candidate(r)
         return h.finish(FAILED, R_RESOLUTION_MISMATCH, "; ".join(problems[:5]))
     return _commit_round(h, r, cand)
+
+
+FIX_LOG = "build-fixed.log"             # 수정 루프가 고친 수정본을 다시 빌드한 로그(rounds/<r>/ 아래)
+FIX_DIR = "fixloop"                     # 수정 루프의 저널과 로그를 두는 폴더(rounds/<r>/ 아래)
+R_FIX_CONFIRM_FAILED = "error: confirming build failed"
+
+
+def _fix_wanted(h: _Holder, r: int) -> bool:
+    """실패한 수정본 빌드에 빌드 오류 수정 루프를 실행할 조건을 확인한다.
+    스위치가 켜져 있고, 수정 루프 구현이 있고, 조치 전 빌드가 통과했고, 중지 요청이 없고, 적용한 제안이 있어야 한다."""
+    st = h.state
+    if getattr(h.c, "fixer", None) is None or not getattr(h.rcfg, "fix_loop", False):
+        return False
+    bb = st.baseline_build
+    if h.baseline_failed_tolerated or bb is None or not bb.ok:
+        return False
+    return bool(h.round_state(r).applied) and not h.stop()
+
+
+def _fix_journal_end(h: _Holder, r: int, res: FixResult) -> None:
+    h.journal({"event": "remediation_fix_loop", "round": r, "phase": "end", "attempted": res.attempted,
+               "fixed": res.fixed, "iterations": res.iterations, "llm_calls": res.llm_calls,
+               "changed": len(res.changed), "reason": res.reason})
+
+
+def _fix_candidate(h: _Holder, r: int, outcome: Any, cand: Path) -> Any | None:
+    """실패한 수정본 빌드를 빌드 오류 수정 루프로 고쳐 본다. 고치고 다시 한 빌드가 통과하면 그 빌드 결과를,
+    아니면 None을 반환한다. None일 때 수정본은 루프 전 바이트 그대로이고 완성 표시도 다시 붙어 있다.
+
+    v2.1z-bi part B. Only when `_fix_wanted`. The candidate's completeness marker is taken off while the loop runs (a
+    pod that dies inside it resumes with a fresh candidate from accepted/) and put back afterwards. Fixed → one more
+    `c.maven.package` into `rounds/<r>/build-fixed.log`; that outcome becomes `rs.build`, the first failed one is kept
+    as `rs.fix_first_build`. A failing confirming build resets the changed files from accepted/ (the loop may change
+    existing non-pom manifest files only, and the candidate's copies of those are accepted/'s bytes) and ends not
+    fixed (`error: confirming build failed`)."""
+    if not _fix_wanted(h, r):
+        return None
+    st, c, p = h.state, h.c, h.paths
+    rs = h.round_state(r)
+    rd = p.round_dir(r)
+    work = rd / FIX_DIR
+    _safe_rmtree(work)
+    left = h.time_left()
+    deadline = time.monotonic() + left if left is not None else None
+    h.journal({"event": "remediation_fix_loop", "round": r, "phase": "start"})
+    log.info("remediation round %s: the candidate build failed; running the build fix loop", r)
+    h.unmark_candidate(r)
+    try:
+        res = c.fixer.run(h.cfg, h.project(cand), work, run_id=f"{st.id}-fix-r{r}",
+                          targets=list(getattr(st, "build_targets", None) or []),
+                          applied=_applied_proposals(h, r), manifest_paths=h.project_paths, first_outcome=outcome,
+                          stop=h.stop, deadline=deadline, journal=h.journal)
+    except Exception as e:  # noqa: BLE001 - 수정 루프는 예외를 던지지 않는 계약이지만, 던져도 조치 실행은 계속한다
+        log.warning("remediation round %s: the fix loop raised %s", r, type(e).__name__, exc_info=True)
+        res = FixResult(attempted=True, reason=scrub_message(f"error: {type(e).__name__}: {e}", p.root, 500))
+        rs.fix = res
+        _fix_journal_end(h, r, res)
+        # 트리가 어떻게 남았는지 모르므로 완성 표시를 다시 붙이지 않는다. 그런 수정본은 결과 ZIP으로 내보내지 않는다
+        return None
+    if res.patch:
+        res.patch = h.rel(Path(res.patch))
+    rs.fix = res
+    if not res.fixed:
+        h.mark_candidate(r)
+        _fix_journal_end(h, r, res)
+        return None
+    fixed_log = rd / FIX_LOG
+    confirm = h.build_outcome(c.maven.package(h.project(cand), fixed_log, h.stop, **h.target_kw), fixed_log)
+    if not confirm.ok:
+        # 고친 파일은 pom이 아닌 기존 manifest 파일이므로 수정본의 원래 바이트는 accepted/의 바이트와 같다
+        for rel in res.changed:
+            src, dst = h.project(p.accepted) / rel, h.project(cand) / rel
+            dst.write_bytes(src.read_bytes())
+        if res.patch and (p.root / res.patch).is_file():
+            (p.root / res.patch).unlink()
+        res.fixed, res.changed, res.patch, res.reason = False, [], "", R_FIX_CONFIRM_FAILED
+        log.warning("remediation round %s: the build fix loop's change did not pass the confirming build (%s); "
+                    "the change was reset", r, confirm.log)
+        h.mark_candidate(r)
+        _fix_journal_end(h, r, res)
+        return None
+    rs.fix_first_build, rs.build = outcome, confirm
+    h.mark_candidate(r)
+    _fix_journal_end(h, r, res)
+    log.info("remediation round %s: the build fix loop fixed the candidate build (%d file(s) changed)", r,
+             len(res.changed))
+    return confirm
+
+
+def _fix_not_applied(h: _Holder, r: int, outcome: Any) -> str | None:
+    """고치지 못한 수정본 빌드 실패를 지금과 같이 끝내고, 수정 루프를 실행했으면 그 사유를 메시지 끝에 붙인다."""
+    nxt = _candidate_failed(h, r, outcome)
+    fix = h.round_state(r).fix
+    if fix is not None and not fix.fixed and fix.reason:
+        suffix = f"automatic build fix: {fix.reason}"
+        h.state.message = f"{h.state.message} | {suffix}" if h.state.message else suffix
+    return nxt
 
 
 def _commit_round(h: _Holder, r: int, cand: Path) -> str:
@@ -1462,6 +1577,7 @@ def default_components(cfg: Any, journal: Journal | None = None) -> Components:
 
     The real components (imported lazily so the graph module never depends on them at import time)."""
     from . import apply as apply_mod
+    from . import fixer as fixer_mod
     from . import intake as intake_mod
     from . import inventory as inventory_mod
     from . import ivas as ivas_mod
@@ -1478,4 +1594,5 @@ def default_components(cfg: Any, journal: Journal | None = None) -> Components:
         inventory=inventory_mod.build_inventory,
         plan=planner_mod.plan_round,
         apply=apply_mod,
+        fixer=fixer_mod.RemediationFixer(),
     )

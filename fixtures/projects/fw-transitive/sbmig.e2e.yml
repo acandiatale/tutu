@@ -4,6 +4,8 @@
 # recipe_sets adds the Servlet 6 removals (servlet_jakarta_10) to the reduced run's Java 21 + jakarta sets.
 framework:
   artifacts: ["example-fw-core"]
+  # The fix loop is on by default since v2.1z-bi; this fixture checks the conversion-only run.
+  fix_loop: false
   recipe_sets: [jdk21, jakarta, servlet_jakarta_10]
 # No LLM answer is expected; the fake provider answers "no fix" to any request.
 llm:

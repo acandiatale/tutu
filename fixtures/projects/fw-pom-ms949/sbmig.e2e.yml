@@ -3,6 +3,8 @@
 # OpenRewrite cannot parse such a pom; sbmig corrects the declaration before the conversion.
 framework:
   artifacts: ["example-fw-core"]
+  # The fix loop is on by default since v2.1z-bi; this fixture checks the conversion-only run.
+  fix_loop: false
 # The Korean guide: the hand-over line and the flag are checked in Korean.
 report:
   language: ko

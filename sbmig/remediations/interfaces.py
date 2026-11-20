@@ -14,8 +14,21 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
-from .models import (ApplyResult, BoundaryFinding, BuildOutcome, DeliveryInfo, Finding, Inventory, PackagedLib,
-                     Proposal, ResolvedModel, RoundPlan, ScanResult, UploadReceipt)
+from .models import (
+    ApplyResult,
+    BoundaryFinding,
+    BuildOutcome,
+    DeliveryInfo,
+    Finding,
+    FixResult,
+    Inventory,
+    PackagedLib,
+    Proposal,
+    ResolvedModel,
+    RoundPlan,
+    ScanResult,
+    UploadReceipt,
+)
 
 Journal = Callable[[dict[str, Any]], None]      # journal.jsonl에 event가 포함된 한 줄을 기록하는 함수
 StopCheck = Callable[[], bool]                  # 중지 요청이 들어왔으면 True를 반환하는 함수
@@ -158,10 +171,26 @@ class ApplyFns(Protocol):
                           packaged: list[PackagedLib]) -> list[str]: ...
 
 
+class Fixer(Protocol):
+    """수정본 빌드가 실패했을 때 빌드 오류 수정 루프로 소스를 고치는 인터페이스. 실제 구현은 ``fixer.RemediationFixer``다.
+    ``tree``는 수정본 안의 프로젝트 루트이고, ``manifest_paths``와 결과의 ``changed``는 그 루트 기준 경로다.
+    ``deadline``은 ``time.monotonic()`` 기준 마감 시각이며 None이면 실행 시간 한도가 없다.
+    고치지 못하면 트리를 루프 전과 같은 바이트로 되돌린다. 예외를 던지지 않는다.
+
+    The build fix loop on a failed candidate (v2.1z-bi). `tree` = the project root inside the candidate; paths are
+    relative to it; `applied` = the round's applied `Proposal`s; `first_outcome` = the failed candidate build;
+    `deadline` = a `time.monotonic()` instant or None. Never raises; a tree it could not fix is reset byte for byte."""
+
+    def run(self, cfg: Any, tree: Path, work_dir: Path, *, run_id: str, targets: list[str], applied: list[Proposal],
+            manifest_paths: list[str], first_outcome: BuildOutcome, stop: Callable[[], bool], deadline: float | None,
+            journal: Journal | None) -> FixResult: ...
+
+
 @dataclass
 class Components:
     """그래프가 쓰는 구성 요소를 모두 담는 데이터 클래스.
-    테스트는 가짜 구현을, 운영에서는 ``graph.default_components(cfg)``가 실제 구현을 넣는다."""
+    테스트는 가짜 구현을, 운영에서는 ``graph.default_components(cfg)``가 실제 구현을 넣는다.
+    ``fixer``가 None이면 수정본 빌드가 실패해도 빌드 오류 수정 루프를 실행하지 않는다."""
     ivas: IvasClient
     scan: Scanner
     maven: MavenGateway
@@ -170,3 +199,4 @@ class Components:
     inventory: InventoryFn
     plan: PlanFn
     apply: ApplyFns
+    fixer: Fixer | None = None

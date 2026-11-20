@@ -5,7 +5,7 @@
 * `src/main/java/com/example/fwapp/App.java` calls `System.runFinalizersOnExit(true)`: in the JDK up to Java 10,
   removed in Java 11. No OpenRewrite recipe of the reduced run replaces it, so the JDK 21 build fails with
   `cannot find symbol`.
-* `sbmig.e2e.yml`: `framework.artifacts: ["example-fw-core"]`; `framework.fix_loop` stays at its default `false`
+* `sbmig.e2e.yml`: `framework.artifacts: ["example-fw-core"]`; `framework.fix_loop: false` set explicitly (the default is `true` since v2.1z-bi)
 
 ## Expected sbmig outcome (asserted by `scripts/e2e.py`, see `expected.json` → `expect`)
 

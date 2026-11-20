@@ -116,6 +116,7 @@ def test_page_comments_are_plain() -> None:
 # ---- HTTP (v2.1z-aw): GET /api/configs "framework", GET /api/runs/{id} "framework"
 
 FW_YML = 'framework:\n  artifacts: ["example-fw-core"]\n'
+FW_YML_NO_LOOP = FW_YML + "  fix_loop: false\n"
 
 
 def _repo(tmp_path, extra: str | None) -> Path:
@@ -141,8 +142,14 @@ def _no_framework_env(monkeypatch):
 
 
 def test_configs_names_the_configured_framework(tmp_path) -> None:
-    d = _client(tmp_path, FW_YML).get("/api/configs").json()
+    d = _client(tmp_path, FW_YML_NO_LOOP).get("/api/configs").json()
     assert d["framework"] == {"configured": True, "name": "Example", "fix_loop": False, "remediation_always": False}
+
+
+def test_configs_framework_fix_loop_defaults_to_true(tmp_path) -> None:
+    """v2.1z-bi: without `framework.fix_loop` in the yml the framework run keeps the fix loop."""
+    d = _client(tmp_path, FW_YML).get("/api/configs").json()
+    assert d["framework"] == {"configured": True, "name": "Example", "fix_loop": True, "remediation_always": False}
 
 
 def test_configs_framework_name_and_fix_loop_from_the_yml(tmp_path) -> None:
@@ -158,7 +165,7 @@ def test_configs_without_framework_or_with_full_scope(tmp_path) -> None:
     full = FW_YML + "  scope: full\n"
     assert _client(tmp_path / "b", full).get("/api/configs").json()["framework"]["configured"] is False
     # a glob names no single artifact: configured, without a name (the page says 사내 프레임워크)
-    glob = 'framework:\n  artifacts: ["example-fw-*"]\n'
+    glob = 'framework:\n  artifacts: ["example-fw-*"]\n  fix_loop: false\n'
     assert _client(tmp_path / "c", glob).get("/api/configs").json()["framework"] == \
         {"configured": True, "name": "", "fix_loop": False, "remediation_always": False}
 
@@ -295,7 +302,7 @@ def test_sse_status_carries_framework(tmp_path) -> None:
 
 # ---- v2.1z-aw "The remediation runs after a failed build too": the page side
 
-REM_FW_YML = FW_YML + "remediation:\n  after_migration: true\n"
+REM_FW_YML = FW_YML_NO_LOOP + "remediation:\n  after_migration: true\n"
 
 
 def test_configs_says_whether_the_remediation_follows_a_failed_build(tmp_path) -> None:
@@ -306,9 +313,12 @@ def test_configs_says_whether_the_remediation_follows_a_failed_build(tmp_path) -
     assert off["framework"]["remediation_always"] is False
     never = REM_FW_YML + "  after_failed_build: never\n"
     assert _client(tmp_path / "c", never).get("/api/configs").json()["framework"]["remediation_always"] is False
-    # with the fix loop on the remediation follows only a passing build, as before
-    loop = REM_FW_YML.replace('framework:\n', 'framework:\n  fix_loop: true\n', 1)
-    assert _client(tmp_path / "d", loop).get("/api/configs").json()["framework"]["remediation_always"] is False
+    # v2.1z-bi: with the fix loop on (the default) the remediation follows a failed build too
+    loop = REM_FW_YML.replace("  fix_loop: false\n", "  fix_loop: true\n", 1)
+    assert _client(tmp_path / "d", loop).get("/api/configs").json()["framework"] == \
+        {"configured": True, "name": "Example", "fix_loop": True, "remediation_always": True}
+    default = FW_YML + "remediation:\n  after_migration: true\n"
+    assert _client(tmp_path / "g", default).get("/api/configs").json()["framework"]["remediation_always"] is True
     # nothing configured, or a config that cannot be loaded
     assert _client(tmp_path / "e", None).get("/api/configs").json()["framework"]["remediation_always"] is False
     assert _client(tmp_path / "f", "framework: [\n").get("/api/configs").json()["framework"]["remediation_always"] is False
@@ -394,7 +404,12 @@ def test_page_failed_build_and_remediation_both_readable() -> None:
 def test_page_notice_says_the_remediation_follows_any_build() -> None:
     assert "'취약점 조치는 빌드 결과와 관계없이 이어서 합니다.'" in SCRIPT
     body = SCRIPT.split("function fwBody(fw) {", 1)[1].split("\n  }\n", 1)[0]
-    assert "!fw.fixLoop && fwRemAlways" in body
+    # v2.1z-bi: the sentence is added whether or not the loop runs (both upload and run notices)
+    assert "return fwRemAlways ? `${base} ${FW_REM_ALWAYS}` : base;" in body and "!fw.fixLoop && fwRemAlways" not in body
+    upload = SCRIPT.split("function setUploadFramework(f) {", 1)[1].split("\n  }\n", 1)[0]
+    assert "+ (fwRemAlways ? ` ${FW_REM_ALWAYS}` : ''));" in upload
+    # the "not fixed" wording stays bound to the loop being off
+    assert upload.index("f.fix_loop === true ?") < upload.index("빌드 오류 자동 수정은 하지 않고")
     assert "fwRemAlways = !!(d.framework && d.framework.remediation_always === true);" in SCRIPT
     # configs may arrive after the run's notice: the notice is written again
     assert "renderFramework();" in SCRIPT.split("async function loadConfigs() {", 1)[1].split("\n  }\n", 1)[0]

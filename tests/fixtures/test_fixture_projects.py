@@ -122,10 +122,11 @@ BUILD_MATRIX = [
 # v2.1z-ak: framework projects in the reduced scope jdk-jakarta — no restructure, no structure review, no LLM answer
 # needed (no replay/ dir); their sbmig.e2e.yml sets `framework` besides llm / kb
 FRAMEWORK_REDUCED = {"fw-direct", "fw-parent", "fw-transitive", "fw-build-error", "fw-pom-ms949"}
-FRAMEWORK_OVERRIDES = {"fw-direct": {"artifacts"}, "fw-parent": {"artifacts"}, "fw-build-error": {"artifacts"},
-                       "fw-pom-ms949": {"artifacts"},
-                       "fw-transitive": {"artifacts", "recipe_sets"},             # + servlet_jakarta_10
-                       "fw-transitive-note": {"artifacts", "transitive"}}
+# v2.1z-bi: framework.fix_loop defaults to true; these fixtures pin the conversion-only run with fix_loop: false
+FRAMEWORK_OVERRIDES = {"fw-direct": {"artifacts", "fix_loop"}, "fw-parent": {"artifacts", "fix_loop"},
+                       "fw-build-error": {"artifacts", "fix_loop"}, "fw-pom-ms949": {"artifacts", "fix_loop"},
+                       "fw-transitive": {"artifacts", "recipe_sets", "fix_loop"},             # + servlet_jakarta_10
+                       "fw-transitive-note": {"artifacts", "transitive", "fix_loop"}}
 REQUIRED_KEYS = {
     "case_type": str, "java_version": (str, type(None)), "spring_boot_version": (str, type(None)),
     "spring_version": (str, type(None)), "packaging": str, "libraries": list,
@@ -814,6 +815,7 @@ def test_fixture_config_override_keeps_8_optionals():
     assert {("example-fw-core",), ("com.example.fw:example-fw-core",)} <= forms     # both pattern forms are exercised
     assert _effective_cfg("fw-transitive-note").framework.transitive == "note"
     assert all(_effective_cfg(n).framework.transitive == "apply" for n in FRAMEWORK_REDUCED)
+    assert all(_effective_cfg(n).framework.fix_loop is False for n in FRAMEWORK_OVERRIDES)
     plain = set(NAMES) - set(OVERRIDES) - set(COMPANY_OVERRIDES) - set(REWRITE_ONLY_OVERRIDES) - DISCOVERY_OFF_OVERRIDES \
         - set(FRAMEWORK_OVERRIDES)
     for name in plain:                                              # nothing but the replayed LLM and the own KB

@@ -3,6 +3,8 @@
 # pattern form "groupId:artifactId". Scope jdk-jakarta; the parent stays as it is.
 framework:
   artifacts: ["com.example.fw:example-fw-core"]
+  # The fix loop is on by default since v2.1z-bi; this fixture checks the conversion-only run.
+  fix_loop: false
 # No LLM answer is expected; the fake provider answers "no fix" to any request.
 llm:
   provider: fake

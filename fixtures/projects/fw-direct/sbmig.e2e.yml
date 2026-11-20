@@ -3,6 +3,8 @@
 # The pom declares it directly -> scope jdk-jakarta: Java 21 + jakarta recipes, the JSP rename, the build; nothing else.
 framework:
   artifacts: ["example-fw-core"]
+  # The fix loop is on by default since v2.1z-bi; this fixture checks the conversion-only run.
+  fix_loop: false
 # No LLM answer is expected (the build passes after the recipes); the fake provider answers "no fix" to any request.
 llm:
   provider: fake

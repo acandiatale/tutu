@@ -3,6 +3,8 @@
 # (flag framework-project) and the ordinary full migration runs (restructure, structure review).
 framework:
   artifacts: ["com.example.fw:example-fw-core"]
+  # The fix loop is on by default since v2.1z-bi; this fixture checks the conversion-only run.
+  fix_loop: false
   transitive: note
 # v2 replayed LLM (llm.provider fake): replay/llm-001.json answers the structure review (replay_role structure_review).
 llm:

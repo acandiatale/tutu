@@ -1,7 +1,7 @@
-"""v2.1z-aw: a framework project's reduced run converts and builds ONCE (`framework.fix_loop: false`, the default): no
+"""v2.1z-aw: a framework project's reduced run converts and builds ONCE with `framework.fix_loop: false` (the default until v2.1z-bi): no
 pre-try, no stored script, no LLM, no KB lookup for a fix, no edit after the conversion; the build's errors are the run's
 unresolved errors, each entry carries the note, and one hand-over line comes first. `framework.fix_loop: true` keeps
-the fix loop of v2.1z-ak."""
+the fix loop of v2.1z-ak (the default since v2.1z-bi)."""
 from __future__ import annotations
 
 import pytest
@@ -121,6 +121,7 @@ def test_journal_events_carry_name_and_mode(cfg, ws, fix_loop):
 # ------------------------------------------------------------------------------------------------ the chained remediation
 # v2.1z-aw: "취약점은 빌드가 실패해도 이어가도록!" — a conversion-only framework run whose single build failed is chained
 # with baseline_may_fail=True (remediation.after_failed_build: framework); nothing else that failed is.
+# v2.1z-bi: a framework run with the fix loop on whose final build still failed is chained the same way.
 @pytest.fixture()
 def spy(monkeypatch):
     from sbmig.remediations import chain
@@ -173,7 +174,7 @@ def test_successful_framework_run_is_chained_as_before(cfg, ws, spy):
     assert report.success and [c["baseline_may_fail"] for c in spy.calls] == [False]
 
 
-@pytest.mark.parametrize("case", ["ordinary", "fix-loop-on", "never", "not-attempted"])
+@pytest.mark.parametrize("case", ["ordinary", "never", "never-loop-on", "not-attempted"])
 def test_other_failed_runs_are_not_chained(cfg, ws, spy, case):
     broken_ws(ws)
     if case == "not-attempted":
@@ -184,9 +185,41 @@ def test_other_failed_runs_are_not_chained(cfg, ws, spy, case):
         report = chained_run(cfg, ws, rewrite=ParentRewrite(ws, "com.acme:acme-parent:9.9"))
         assert "aborted:parent-not-found" in report.flags and report.final_build is None
     else:
-        report = chained_run(cfg, ws, framework=case != "ordinary", fix_loop=case == "fix-loop-on",
-                             after="never" if case == "never" else "framework")
+        report = chained_run(cfg, ws, framework=case != "ordinary", fix_loop=case == "never-loop-on",
+                             after="framework" if case == "ordinary" else "never")
     assert not report.success and spy.calls == [] and report.remediation is None
+
+
+@pytest.mark.parametrize("engine", ["graph", "inline"])
+def test_failed_build_with_the_loop_on_is_chained(cfg, ws, spy, engine):
+    """v2.1z-bi: the fix loop ran (framework.fix_loop: true) and the final build still failed → chained with
+    baseline_may_fail=True, like a conversion-only run; the report says the loop ran."""
+    from sbmig.report import render_markdown
+    from sbmig.report.result_line import report_result_line
+    broken_ws(ws)
+    fixer = FakeFixer(scripts=[])                              # the loop runs but never fixes the error
+    report = chained_run(cfg, ws, fix_loop=True, fixer=fixer, engine=engine)
+    assert not report.success and run_exit_code(report) == 2
+    assert report.final_build is not None and not report.final_build.ok
+    assert fixer.script_calls                                  # the loop did run
+    if engine == "inline":
+        assert spy.calls == [] and report.remediation["reason"] == "inline_engine"
+        return
+    assert [c["baseline_may_fail"] for c in spy.calls] == [True]
+    assert report.remediation["status"] == "INCOMPLETE"
+    assert report_result_line(report).endswith(" scope=jdk-jakarta remediation=INCOMPLETE")
+    en = render_markdown(report, "en")
+    assert ("Chained after the migration although its final build still failed after the automatic build fix (a "
+            "framework project: remediation.after_failed_build); it does not change the migration result above.") in en
+    ko = render_markdown(report, "ko")
+    assert "빌드 오류 자동 수정을 거쳤지만 마이그레이션 빌드는 통과하지 않았습니다." in ko
+    for md in (en, ko):                                        # nothing says the errors were left unfixed by design
+        assert "framework.fix_loop: false" not in md and "자동 수정은 하지 않" not in md
+
+
+def test_loop_on_build_passed_is_chained_as_a_success(cfg, ws, spy):
+    report = chained_run(cfg, ws, fix_loop=True, build_fn=lambda w, call: ok_build())
+    assert report.success and [c["baseline_may_fail"] for c in spy.calls] == [False]
 
 
 # v2.1z-ay: a reduced run whose conversion failed is not a success; the chained remediation still follows it with
@@ -206,6 +239,6 @@ def test_failed_conversion_and_the_chained_remediation(cfg, ws, spy, build_ok, f
                          build_fn=(lambda w, call: ok_build()) if build_ok else broken_build)
     assert "rewrite-failed" in report.flags and not report.success and run_exit_code(report) == 2
     assert report.final_build is not None and report.final_build.ok is build_ok
-    # chained: never with `never`; a failed build with the loop on stays unchained (v2.1z-aw scope)
-    chained = after == "framework" and (build_ok or not fix_loop)
+    # chained: never with `never`; with `framework` whether or not the loop ran (v2.1z-bi)
+    chained = after == "framework"
     assert [c["baseline_may_fail"] for c in spy.calls] == ([not build_ok] if chained else [])

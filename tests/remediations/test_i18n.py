@@ -299,6 +299,17 @@ SAMPLES: list[tuple[str, str, list[str]]] = [
     ("report_not_written", "report not written: OSError: disk full", ["OSError: disk full"]),
     ("stale_run", ("the migration run has ended while this remediation was RUNNING (its build pod is gone); "
      "nothing is re-sent automatically"), ["진행 중"]),
+    # the suffix the graph appends to the state message when the build fix loop did not fix the candidate build
+    ("auto_fix_left", "automatic build fix: not fixed: 3 error(s) left", ["남은 오류 3건", "되돌렸습니다"]),
+    ("auto_fix_llm", "automatic build fix: llm unavailable: LLM_API_KEY is not set",
+     ["LLM을 사용할 수 없음", "LLM_API_KEY is not set"]),
+    ("auto_fix_stop", "automatic build fix: stop requested", ["중지 요청"]),
+    ("auto_fix_time", "automatic build fix: time budget used up", ["제한 시간 초과"]),
+    ("auto_fix_rejected", "automatic build fix: rejected: pom.xml must not be edited: app/pom.xml",
+     ["고칠 수 없는 파일: app/pom.xml"]),
+    ("auto_fix_confirm", "automatic build fix: error: confirming build failed", ["고친 뒤 다시 한 빌드가 실패함"]),
+    ("auto_fix_error", "automatic build fix: error: RuntimeError: boom", ["내부 오류", "RuntimeError: boom"]),
+    ("auto_fix_other", "automatic build fix: something new", ["something new"]),
 ]
 
 

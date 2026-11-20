@@ -106,7 +106,10 @@ def sha256_file(path: Path, chunk: int = 1 << 20) -> str:
 
 def _plain(v: Any) -> Any:
     if dataclasses.is_dataclass(v) and not isinstance(v, type):
-        return {f.name: _plain(getattr(v, f.name)) for f in dataclasses.fields(v)}
+        # ``_omit_none``에 적은 필드는 값이 None이면 JSON에 넣지 않는다. 이전 버전이 쓴 JSON과 같게 두기 위해서다
+        omit = getattr(v, "_omit_none", ())
+        return {f.name: _plain(getattr(v, f.name)) for f in dataclasses.fields(v)
+                if not (f.name in omit and getattr(v, f.name) is None)}
     if isinstance(v, (list, tuple)):
         return [_plain(x) for x in v]
     if isinstance(v, dict):
@@ -612,6 +615,30 @@ class ApplyResult(Record):
     candidate_tree_hash: str = ""
 
 
+@dataclass
+class FixResult(Record):
+    """수정본 빌드가 실패했을 때 실행한 빌드 오류 수정 루프의 결과를 담는 데이터 클래스.
+    ``changed``는 프로젝트 루트 기준 경로이고 고쳤을 때만 채운다. ``reason``은 영어 문장이며 고쳤으면 빈 문자열이다.
+
+    Result of the build fix loop on a failed candidate (`sbmig/remediations/fixer.py`). `changed`: sorted paths
+    relative to the project root (the loop's repository root), empty unless fixed; `patch`: run-relative path of
+    `rounds/<r>/fix.patch` or ""; `reason` (English, "" when fixed): `not fixed: <n> error(s) left`,
+    `llm unavailable: …`, `stop requested`, `time budget used up`, `rejected: <guard reason>`,
+    `error: <Type>: <msg>`; `models`: the model names the calls asked with."""
+    attempted: bool = False
+    fixed: bool = False
+    iterations: int = 0
+    attempts: int = 0
+    llm_calls: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    models: list[str] = field(default_factory=list)
+    changed: list[str] = field(default_factory=list)
+    patch: str = ""
+    reason: str = ""
+    remaining: int = 0
+
+
 # ---------------------------------------------------------------------------- 작업 상태 / state
 @dataclass
 class RoundState(Record):
@@ -627,7 +654,12 @@ class RoundState(Record):
     build_compare: dict[str, Any] = field(default_factory=dict)
     # True면 수정본 빌드가 조치 전 빌드에 있던 오류로만 실패해서 라운드를 이어 갔다
     build_tolerated: bool = False
-    _nested = {"build": BuildOutcome}
+    # 수정본 빌드가 실패해 빌드 오류 수정 루프를 실행했을 때의 결과다. 실행하지 않았으면 None이고 JSON에 넣지 않는다
+    fix: FixResult | None = None
+    # 수정 루프가 고친 라운드에서 처음 실패한 수정본 빌드다. 그때 ``build``는 고친 뒤 다시 한 빌드가 된다
+    fix_first_build: BuildOutcome | None = None
+    _nested = {"build": BuildOutcome, "fix": FixResult, "fix_first_build": BuildOutcome}
+    _omit_none = ("fix", "fix_first_build")
 
 
 @dataclass

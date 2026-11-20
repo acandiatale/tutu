@@ -1549,7 +1549,7 @@ class Orchestrator:
     def no_fix_loop(self) -> bool:
         """프레임워크 프로젝트를 변환과 빌드 1회로 끝내는지(``framework.fix_loop: false``) 반환한다.
 
-        v2.1z-aw: True for a reduced run whose analysis recorded `FrameworkUse.fix_loop = False` (the default): the run
+        v2.1z-aw: True for a reduced run whose analysis recorded `FrameworkUse.fix_loop = False` (the default until v2.1z-bi): the run
         converts and builds once; no fix loop, no plan advisor, no LLM."""
         if not self.reduced_scope:
             return False
@@ -1558,21 +1558,22 @@ class Orchestrator:
 
     def remediation_after_failed_build(self, report: RunReport) -> bool:
         """빌드가 실패해도 취약점 조치를 이어서 실행할 실행인지 반환한다.
-        수정 루프 없이 변환만 한 프레임워크 프로젝트의 최종 빌드를 실행했고 실패했으며, ``remediation.after_failed_build``가
+        프레임워크 프로젝트의 최종 빌드를 실행했고 실패했으며(수정 루프 실행 여부와 무관), ``remediation.after_failed_build``가
         ``framework``일 때만 True다. 나머지 조건(스위치, 중단, 멈춤)은 호출한 쪽이 본다.
 
         v2.1z-aw: True when this is a conversion-only framework run (`no_fix_loop`) whose final build was attempted and
         failed and `remediation.after_failed_build` is `framework`. The other chain conditions are the caller's.
         v2.1z-ay: also a reduced run (fix loop on or off) whose build passed but whose conversion failed (not a
         success by `build_succeeded`); the caller passes `baseline_may_fail` only when the build failed
-        (`final_build_failed`)."""
+        (`final_build_failed`).
+        v2.1z-bi: a failed final build chains whether or not the fix loop ran (`framework.fix_loop` defaults to true)."""
         rem = getattr(self.cfg, "remediation", None)
         if str(getattr(rem, "after_failed_build", "never") or "never") != "framework" or not self.reduced_scope:
             return False
         if not self._verify_results or report.final_build is None:
             return False
         if self.final_build_failed:
-            return self.no_fix_loop
+            return True
         # 빌드는 통과했지만 변환이 실패해 성공이 아닌 실행도 조치를 이어 간다
         return self.conversion_failed
 

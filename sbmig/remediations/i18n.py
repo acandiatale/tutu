@@ -504,6 +504,47 @@ def _why(x: str | None) -> str:
     return out
 
 
+# 빌드 오류 자동 수정(fixer.FixResult.reason)이 실패한 이유. (정규식, 괄호 안에 넣을 짧은 한국어, 원문을 붙일 그룹 이름) 순이다
+# 앞의 것부터 맞춰 보므로 "error: confirming build failed"가 "error: …"보다 앞에 있어야 한다
+_FIX_REASONS: tuple[tuple[re.Pattern[str], Callable[[dict[str, str]], str], str], ...] = (
+    (re.compile(r"not fixed: (?P<n>\d+) error\(s\) left"), lambda g: f"남은 오류 {g['n']}건", ""),
+    (re.compile(r"llm unavailable: (?P<e>.+)"), lambda g: "LLM을 사용할 수 없음", "e"),
+    (re.compile(r"stop requested"), lambda g: "중지 요청", ""),
+    (re.compile(r"time budget used up"), lambda g: "제한 시간 초과", ""),
+    # fixer.check_paths가 쓰는 세 문장은 경로만 남기고 한국어로 쓴다. 그 밖의 거절 사유는 원문을 붙인다
+    (re.compile(r"rejected: pom\.xml must not be edited: (?P<p>.+)"), lambda g: f"고칠 수 없는 파일: {g['p']}", ""),
+    (re.compile(r"rejected: (?P<p>.+) must not be deleted"), lambda g: f"지울 수 없는 파일: {g['p']}", ""),
+    (re.compile(r"rejected: (?P<p>.+) is not a file of the uploaded project"),
+     lambda g: f"올린 프로젝트에 없는 파일: {g['p']}", ""),
+    (re.compile(r"rejected: (?P<e>.+)"), lambda g: "허용하지 않는 파일 변경이 들어 있음", "e"),
+    (re.compile(r"error: confirming build failed"), lambda g: "고친 뒤 다시 한 빌드가 실패함", ""),
+    (re.compile(r"error: (?P<e>.+)"), lambda g: "내부 오류", "e"),
+)
+
+
+def fix_reason_ko(reason: str | None) -> tuple[str, str]:
+    """빌드 오류 자동 수정이 실패한 이유를 (괄호 안에 넣을 짧은 한국어, 원문 표시)로 바꾼다.
+    원문 표시는 오류 내용처럼 번역하지 않는 부분이 있을 때만 "원문: `…`"이고, 모르는 이유는 짧은 한국어 없이 원문만 반환한다.
+
+    (short Korean phrase, "원문: `…`" or "") for a `FixResult.reason`; an unknown reason gives ("", its raw text)."""
+    s = str(reason or "").strip()
+    for rx, ko, raw in _FIX_REASONS:
+        m = rx.fullmatch(s)
+        if m:
+            g = {k: (v if v is not None else "") for k, v in m.groupdict().items()}
+            return ko(g), (_raw(g[raw]) if raw and g.get(raw) else "")
+    return "", (_raw(s) if s else "")
+
+
+def fix_failed_ko(reason: str | None) -> str:
+    """빌드 오류 자동 수정을 시도했지만 고치지 못했을 때 보여 줄 문장을 만든다. 보고서와 상태 메시지가 같은 문장을 쓴다.
+
+    The Korean line for a fix loop that did not fix the build, with the reason through `fix_reason_ko`."""
+    ko, raw = fix_reason_ko(reason)
+    head = f"빌드 오류 자동 수정을 시도했지만 고치지 못했습니다({ko})." if ko else "빌드 오류 자동 수정을 시도했지만 고치지 못했습니다."
+    return head + " 소스 수정은 되돌렸습니다." + (f" {raw}" if raw else "")
+
+
 # 같은 문장에 규칙 두 개가 맞으면 앞의 것을 쓰므로 순서가 중요하다.
 # 예: root_unreadable이 cannot_place보다 앞
 RULES: list[_Rule] = [
@@ -1081,6 +1122,15 @@ RULES: list[_Rule] = [
        r"the migration run has ended while this remediation was (?P<s>\S+) \(its build pod is gone\); nothing is re-sent "
        r"automatically",
        lambda g: f"이관 실행이 끝나면서 조치가 {_state(g['s'])} 상태로 남았습니다. 자동으로 다시 실행하지 않습니다."),
+    # ---- graph: 수정본 빌드가 실패한 뒤 빌드 오류 자동 수정이 고치지 못한 이유(상태 메시지 뒤에 " | "로 붙는다)
+    _r("auto_fix_left", r"automatic build fix: (?P<r>not fixed: \d+ error\(s\) left)", lambda g: fix_failed_ko(g["r"])),
+    _r("auto_fix_llm", r"automatic build fix: (?P<r>llm unavailable: .+)", lambda g: fix_failed_ko(g["r"])),
+    _r("auto_fix_stop", r"automatic build fix: (?P<r>stop requested)", lambda g: fix_failed_ko(g["r"])),
+    _r("auto_fix_time", r"automatic build fix: (?P<r>time budget used up)", lambda g: fix_failed_ko(g["r"])),
+    _r("auto_fix_rejected", r"automatic build fix: (?P<r>rejected: .+)", lambda g: fix_failed_ko(g["r"])),
+    _r("auto_fix_confirm", r"automatic build fix: (?P<r>error: confirming build failed)", lambda g: fix_failed_ko(g["r"])),
+    _r("auto_fix_error", r"automatic build fix: (?P<r>error: .+)", lambda g: fix_failed_ko(g["r"])),
+    _r("auto_fix_other", r"automatic build fix: (?P<r>.+)", lambda g: fix_failed_ko(g["r"])),
     # ---- intake: 업로드한 ZIP에서 뺀 빌드 산출물
     _r("build_output_left_out",
        r"build output left out: (?P<n>\d+) file\(s\) under (?P<f>{A})(?: \+(?P<k>\d+) more)?",
@@ -1305,5 +1355,5 @@ def inhouse_gas(detail: str) -> list[str]:
 
 __all__ = ["SEVERITY_LEVELS", "SEVERITY_NONE_KO", "severity_of", "severity_thresholds", "BOUNDARY_KO", "COUNT_KO",
            "DECISION_KO", "FINDING_KIND_KO", "GROUPS", "INHOUSE_GROUP_KO", "KEY_PHRASES", "KIND_KO", "ORIGIN_ALL_KO", "ORIGIN_KO", "REASON_KO",
-           "RISK_KO", "RULES", "SCAN_REASON_KO", "detail_group", "evidence_ko", "group_meta", "inhouse_gas", "ko_display",
+           "RISK_KO", "RULES", "SCAN_REASON_KO", "detail_group", "evidence_ko", "fix_failed_ko", "fix_reason_ko", "group_meta", "inhouse_gas", "ko_display",
            "ko_text", "label", "loc_ko", "row_memo", "rule_keys", "split_known", "variant_label"]

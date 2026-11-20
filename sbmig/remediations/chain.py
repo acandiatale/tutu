@@ -590,9 +590,17 @@ class _Budget:
             return True
         return False
 
+    def time_left(self) -> float | None:
+        """남은 시간(초)을 반환한다. 한도가 없으면 None이다."""
+        if self.minutes <= 0:
+            return None
+        return self.minutes * 60.0 - (_monotonic() - self.started)
+
     def wrap(self, stop: StopCheck) -> StopCheck:
+        # 그래프의 빌드 오류 수정 루프가 남은 시간을 알 수 있도록 중지 확인 함수에 time_left를 붙인다
         def check() -> bool:
             return bool(stop()) or self.over()
+        check.time_left = self.time_left        # type: ignore[attr-defined]
         return check
 
 

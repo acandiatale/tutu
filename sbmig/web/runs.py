@@ -1080,8 +1080,9 @@ class RunManager:
         The framework the server's default configs name (v2.1z-aw, `GET /api/configs`). `configured` = framework
         artifacts are listed AND `framework.scope` is `jdk-jakarta` (with `full` such a project gets the whole
         migration, so the page has nothing to announce). `remediation_always` = such a run chains the vulnerability
-        remediation whatever its build result (fix loop off, `remediation.after_migration` on,
-        `remediation.after_failed_build: framework`; v2.1z-aw "The remediation runs after a failed build too"). Cached per (file, mtime) of the package default.yml + the default configs;
+        remediation whatever its build result (`remediation.after_migration` on, `remediation.after_failed_build:
+        framework`; v2.1z-aw "The remediation runs after a failed build too"; since v2.1z-bi whether or not the fix
+        loop runs). Cached per (file, mtime) of the package default.yml + the default configs;
         a config that cannot be loaded gives the switched-off answer, never an exception."""
         off: dict[str, Any] = {"configured": False, "name": "", "fix_loop": False, "remediation_always": False}
         try:
@@ -1104,8 +1105,8 @@ class RunManager:
             fw = cfg.framework
             if fw.patterns() and fw.scope == FRAMEWORK_SCOPE:
                 rem = getattr(cfg, "remediation", None)
-                # 수정 루프 없이 변환만 하는 실행은 빌드가 실패해도 취약점 조치를 이어서 한다
-                always = (not fw.fix_loop and bool(getattr(rem, "after_migration", False))
+                # 프레임워크 프로젝트는 수정 루프 실행 여부와 무관하게 빌드가 실패해도 취약점 조치를 이어서 한다
+                always = (bool(getattr(rem, "after_migration", False))
                           and str(getattr(rem, "after_failed_build", "never") or "never") == "framework")
                 out = {"configured": True, "name": fw.display_name(), "fix_loop": bool(fw.fix_loop),
                        "remediation_always": always}

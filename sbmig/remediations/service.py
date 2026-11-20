@@ -128,7 +128,23 @@ _FIXED_FILES: dict[str, Callable[[RunPaths], Path]] = {
     # include 정책으로 실패한 수정본이 result.zip이 되었을 때 따로 보관한 앞 라운드의 검증된 ZIP
     "result-verified.zip": lambda p: graph_mod.find_verified_zip(p) or p.delivery_zip.with_name("result-verified.zip"),
     "baseline-build.log": lambda p: p.baseline_log,
+    # 빌드 오류 수정 루프가 고친 마지막 라운드의 소스 diff
+    "fix.patch": lambda p: _last_fix_patch(p),
 }
+
+
+def _last_fix_patch(paths: RunPaths) -> Path:
+    """수정 루프가 고친 라운드 가운데 마지막 라운드의 ``rounds/<n>/fix.patch`` 경로를 반환한다.
+    없으면 있을 수 없는 경로(``rounds/fix.patch``)를 반환한다.
+
+    `rounds/<n>/fix.patch` of the highest round that has one (written only when the loop fixed that round)."""
+    rounds = paths.root / "rounds"
+    found = []
+    if rounds.is_dir():
+        for d in rounds.iterdir():
+            if d.is_dir() and d.name.isdigit() and len(d.name) <= 4 and (d / "fix.patch").is_file():
+                found.append((int(d.name), d / "fix.patch"))
+    return max(found)[1] if found else rounds / "fix.patch"
 _ROUND_FILES: dict[str, Callable[[RunPaths, int], Path]] = {
     "plan": lambda p, n: p.plan(n),
     "candidate": lambda p, n: p.patch(n),
@@ -938,6 +954,8 @@ class RemediationManager:
                          "build_tolerated": st.delivery.build_tolerated} if st.delivery else None,
             # 조치 전 빌드 실패를 받아들이는 실행인지 화면이 진행 중에도 알 수 있게 항상 넣는다
             "baseline_tolerated": bool(st.baseline_tolerated),
+            # 수정본 빌드 오류를 자동으로 고친 결과다. 화면이 「소스 N개 수정」과 LLM 호출 수에 쓴다. 실행하지 않았으면 None이다
+            "fix": report_mod.fix_summary(st),
             "files": files,
             "links": {"self": base, "resume": f"{base}/resume", "stop": f"{base}/stop", "result": f"{base}/result",
                       "files": f"{base}/files/"},

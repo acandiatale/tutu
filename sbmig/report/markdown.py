@@ -1223,10 +1223,18 @@ def remediation_lines(r: RunReport, lang: str = "en") -> list[str]:
     chained = getattr(r, "flow", "full") != "remediation"     # 조치만 한 실행에는 "이관 뒤에 이어서" 문장을 쓰지 않는다
     # 빌드가 실패한 프레임워크 프로젝트도 조치를 이어서 실행하므로 빌드 성공 뒤라고 쓰지 않는다
     after_failure = chained and not getattr(r, "success", True) and str(rem.get("status")) != "skipped"
+    # 수정 루프를 실행했는데도 빌드가 실패한 경우는 루프를 끈 경우와 문장을 달리한다
+    fb = getattr(r, "final_build", None)
+    after_loop = (after_failure and fb is not None and not fb.ok and run_scope(r) is not None
+                  and not no_fix_loop(r))
     if normalize(lang) == "ko":
-        return _remediation_lines_ko(rem, chained=chained, after_failure=after_failure)
+        return _remediation_lines_ko(rem, chained=chained, after_failure=after_failure, after_loop=after_loop)
     L = [f"## {tr(lang, 'Vulnerability remediation')}", ""]
-    if after_failure:
+    if after_loop:
+        L += [tr(lang, "Chained after the migration although its final build still failed after the automatic build "
+                       "fix (a framework project: remediation.after_failed_build); it does not change the migration "
+                       "result above."), ""]
+    elif after_failure:
         L += [tr(lang, "Chained after the migration although its final build failed (a framework project: "
                        "remediation.after_failed_build); it does not change the migration result above."), ""]
     elif chained:
@@ -1278,7 +1286,8 @@ def _file_findings(counts: object) -> int:
     return 0
 
 
-def _remediation_lines_ko(rem: dict, *, chained: bool = True, after_failure: bool = False) -> list[str]:
+def _remediation_lines_ko(rem: dict, *, chained: bool = True, after_failure: bool = False,
+                          after_loop: bool = False) -> list[str]:
     """한국어 이관 보고서의 ``## 취약점 조치`` 절을 만든다.
     결과 문장, 취약점 개수, 사내 라이브러리, 상태 메시지, 결과 파일을 담는다.
     집계 키 이름은 보고서에 쓰지 않는다.
@@ -1288,7 +1297,11 @@ def _remediation_lines_ko(rem: dict, *, chained: bool = True, after_failure: boo
     from sbmig.remediations.i18n import REASON_KO, ko_display, label
     from sbmig.remediations.report import _VERDICT, UNCONFIRMED_VERDICT_KO, build_unconfirmed
     L = [f"## {tr('ko', 'Vulnerability remediation')}", ""]
-    if after_failure:
+    if after_loop:
+        L += [tr("ko", "Chained after the migration although its final build still failed after the automatic build "
+                       "fix (a framework project: remediation.after_failed_build); it does not change the migration "
+                       "result above."), ""]
+    elif after_failure:
         L += [tr("ko", "Chained after the migration although its final build failed (a framework project: "
                        "remediation.after_failed_build); it does not change the migration result above."), ""]
     elif chained:

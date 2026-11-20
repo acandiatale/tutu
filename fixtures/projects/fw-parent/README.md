@@ -19,7 +19,7 @@ JAVA_HOME=/Users/acandiatale/Library/Java/JavaVirtualMachines/corretto-1.8.0_362
 As `fw-direct`, with evidence `parent` (from the as-is effective pom; `parent` = `com.example.fw:example-fw-parent:1.0.0`).
 The `<parent>` is unchanged (never aligned to the configured company parent), `example-fw-core` is still not declared.
 
-Since v2.1z-aw (`framework.fix_loop: false`, the default) the journal events `framework_project` and `plan` carry the
+Since v2.1z-aw (`framework.fix_loop: false`, set explicitly in `sbmig.e2e.yml` since v2.1z-bi made `true` the default) the journal events `framework_project` and `plan` carry the
 framework's name `Example` (derived from `example-fw-core`) and `fix_loop: false`; the run builds once and would hand
 any build error over without a fix loop (no `verify_loop_start`, no `plan_advice`, no `fixer` event). `report.md` opens
 the block `## Example framework project` with "**Example framework projects get JDK 21 and Jakarta only.**" and lists

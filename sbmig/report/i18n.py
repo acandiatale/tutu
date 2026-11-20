@@ -129,6 +129,11 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
         "마이그레이션 빌드는 통과하지 않았지만, 프레임워크 프로젝트라 취약점 조치를 이어서 실행했습니다. 오픈소스 라이브러리 "
         "검사는 빌드와 따로 할 수 있습니다. 위의 마이그레이션 결과에는 영향이 없습니다. 자세한 결과는 아래 "
         "remediation-report.md 파일에 있습니다.",
+    "Chained after the migration although its final build still failed after the automatic build fix (a framework "
+    "project: remediation.after_failed_build); it does not change the migration result above.":
+        "빌드 오류 자동 수정을 거쳤지만 마이그레이션 빌드는 통과하지 않았습니다. 프레임워크 프로젝트라 취약점 조치를 이어서 "
+        "실행했습니다. 오픈소스 라이브러리 검사는 빌드와 따로 할 수 있습니다. 위의 마이그레이션 결과에는 영향이 없습니다. "
+        "자세한 결과는 아래 remediation-report.md 파일에 있습니다.",
     "- The project did not build before the remediation either: the changed versions were scanned again, but no build "
     "confirmed them.":
         "- 조치 전에도 빌드가 되지 않아, 바꾼 버전을 다시 검사했지만 빌드로 확인하지는 못했습니다.",

@@ -223,8 +223,8 @@ def _chain_remediation(orch: Orchestrator, report: RunReport, state: MigrationSt
     """취약점 조치를 이어서 실행할 조건이 맞으면 ``chain.run_after_migration``을 호출하고 요약을
     ``report.remediation``에 둔다. 조건이 하나라도 맞지 않으면 아무것도 기록하지 않고 None을 반환한다.
     조건: 설정 켜짐, dry-run 아님, ``stop_after`` 없음, 계획 단계까지 진행, 사용자 중지와 중단 없음, 이관
-    성공(``Orchestrator.build_succeeded``). 변환만 한 프레임워크 프로젝트는 최종 빌드가 실패해도 이어 간다
-    (``Orchestrator.remediation_after_failed_build``, ``baseline_may_fail=True``).
+    성공(``Orchestrator.build_succeeded``). 프레임워크 프로젝트는 수정 루프 실행 여부와 무관하게 최종 빌드가 실패해도
+    이어 간다(``Orchestrator.remediation_after_failed_build``, ``baseline_may_fail=True``).
     변환이 실패해 성공이 아닌 프레임워크 실행은 빌드가 실패했을 때만 ``baseline_may_fail``이 True다.
     이 노드 직전에 ``stop.request``가 생겼으면 조치를 시작하지 않는다.
 
@@ -235,7 +235,7 @@ def _chain_remediation(orch: Orchestrator, report: RunReport, state: MigrationSt
         return None
     if not planned or user_stopped or state.get("aborted") or state.get("stopped") or "aborted" in report.flags:
         return None
-    # 변환만 한 프레임워크 프로젝트는 빌드가 실패해도 조치를 이어서 실행한다(오픈소스 라이브러리 검사이기 때문이다)
+    # 프레임워크 프로젝트는 빌드가 실패해도 조치를 이어서 실행한다(오픈소스 라이브러리 검사이기 때문이다)
     after_failure = False
     if not orch.build_succeeded(report):
         after_failure = orch.remediation_after_failed_build(report)

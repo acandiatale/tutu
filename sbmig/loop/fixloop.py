@@ -998,7 +998,9 @@ class BuildFixLoop:
     (cfg)`); `edit_applier` = `fn(ws, edits, *, cfg, errors=None) -> ScriptRunResult` (None = `sbmig.script.apply_edits`;
     `errors` = the case's errors, passed only when the signature takes it — A4, 2026-10-28); the KB's
     case store is `kb.cases` (None = no KB: LLM scripts run unstored as v0, nothing is reused); `errors` = the run's
-    error list (`RunErrors`, set by the orchestrator; inactive by default)."""
+    error list (`RunErrors`, set by the orchestrator; inactive by default). `edit_guard` (v2.1z-bi) =
+    `fn(ws, pre_head, touched_paths) -> str | None`, asked before every commit of an attempt (sbmig's pre-tries
+    included); a non-empty answer rejects the attempt like the framework guard (None = no check)."""
 
     def __init__(self, cfg: Config, ws: Workspace, build_runner: Any, triager: Any, fixer: Any, kb: Any,
                  profile: ProjectProfile, plan_notes: Optional[list[str]] = None,
@@ -1006,7 +1008,8 @@ class BuildFixLoop:
                  history: Optional[list[FixAttempt]] = None, blocked: Optional[BlockedRegistry] = None,
                  locator: Any = None, advisories: Optional[list[AdvisoryFinding]] = None,
                  script_runner: Any = None, edit_applier: Optional[Callable[..., ScriptRunResult]] = None,
-                 errors: Optional[RunErrors] = None):
+                 errors: Optional[RunErrors] = None,
+                 edit_guard: Optional[Callable[[Workspace, str, list[str]], Optional[str]]] = None):
         """협력 객체와 실행 중 상태(시도 이력, 차단 목록, 플래그, 후속 조치, LLM 장애 상태, 시도별 기록)를 준비한다.
         ``history``는 같은 실행의 여러 루프가 공유할 수 있으며, 시도 순서와 횟수 한도는 이 이력을 기준으로 한다."""
         self.cfg = cfg
@@ -1017,6 +1020,7 @@ class BuildFixLoop:
         self.kb = kb
         self.script_runner = script_runner
         self.edit_applier = edit_applier
+        self.edit_guard = edit_guard
         self.errors: RunErrors = errors if errors is not None else RunErrors(None)
         self.profile = profile
         self.plan_notes = list(plan_notes or [])
@@ -3342,6 +3346,8 @@ class BuildFixLoop:
         self._fill_versions(att, c, res, pre, st)      # v2.1l: version-less dependencies get theirs (same commit)
         if self._framework_rejected(att, pre, list(res.changed_files or []), name):
             return
+        if self._edit_guard_rejected(att, pre, list(res.changed_files or []), name):
+            return
         self._mark(f"git commit for {c.id}")
         sha = self._commit(f"fix(script:{case_id}:v{v} {att.script_mode}): {c.id}", pre, paths=res.changed_files)
         if sha is None:
@@ -3468,6 +3474,8 @@ class BuildFixLoop:
         self._drop_reference_writes(att, pre)
         self._fill_versions(att, c, res, pre, st)      # v2.1l: version-less dependencies get theirs (same commit)
         if self._framework_rejected(att, pre, list(res.changed_files or []), "edits"):
+            return
+        if self._edit_guard_rejected(att, pre, list(res.changed_files or []), att.source or "edits"):
             return
         self._mark(f"git commit for {c.id}")
         if subject is None:
@@ -4927,6 +4935,36 @@ class BuildFixLoop:
         self._out_of_scope.add(id(att))
         log.warning("적용 취소 (%s): 프레임워크 프로젝트에서 바꾸면 안 되는 것을 바꿈 — %s", name, _first_sentence(why, 300))
         self.ws.journal({"event": "framework_guard", "attempt": att.id, "case": att.script_case_id, "reason": why})
+        return True
+
+    def _edit_guard_rejected(self, att: FixAttempt, pre: str, reported: list[str], name: str) -> bool:
+        """호출자가 준 ``edit_guard``가 거부한 시도를 커밋하지 않고 되돌린다. 되돌렸으면 True를 반환한다.
+        sbmig 사전 시도도 검사하고, 검사 함수가 예외를 던지면 거부로 본다.
+
+        v2.1z-bi: the caller's `edit_guard(ws, pre, touched)` before the commit of ANY attempt (LLM script / edits,
+        a stored script, sbmig's pre-tries alike). `touched` = repo-relative POSIX paths added, modified or deleted
+        since `pre` (untracked new files included; the attempt's own report when git cannot say). A non-empty answer
+        fails the attempt like `_framework_rejected` (`_fail`: working tree restored, the sentence in
+        `apply_errors`, shown to the next ask), a log line and journal `edit_guard`; a guard that raises is a
+        rejection `edit guard failed: <Type>: <msg>`. No guard → nothing is computed."""
+        guard = self.edit_guard
+        if guard is None:
+            return False
+        try:
+            touched = list(self.ws.changed_files_since(pre)) if pre else []
+        except Exception:  # noqa: BLE001 - a stand-in workspace without git: the attempt's own account
+            touched = []
+        touched = sorted(dict.fromkeys(_norm_path(f) for f in (touched or reported or []) if f))
+        try:
+            why = str(guard(self.ws, pre, touched) or "")
+        except Exception as e:  # noqa: BLE001 - a broken guard must not let the change through
+            why = f"edit guard failed: {type(e).__name__}: {e}"
+        if not why.strip():
+            return False
+        self._fail(att, why)
+        log.warning("적용 취소 (%s): 호출자 검사가 변경을 거부함 — %s", name, _first_sentence(why, 300))
+        self.ws.journal({"event": "edit_guard", "attempt": att.id, "case": att.script_case_id, "source": att.source,
+                         "reason": why, "paths": touched[:20]})
         return True
 
     def _framework_guard_unsafe(self, pre: str, reported: list[str]) -> str:

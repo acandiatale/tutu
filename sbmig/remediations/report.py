@@ -146,8 +146,8 @@ _FAILED_INCLUDED_KO = ("버전을 바꾼 수정본이 빌드에 실패했습니�
                        "`rounds/<n>/candidate.patch` 파일을 확인해 빌드 오류를 고치거나 올릴 버전을 다시 정해 주세요.")
 _SUCCEEDED_STEP = "**결과 ZIP 받기** — 재검사를 마친 `delivery/result.zip` 파일을 받아 사용해 주세요."
 # 조치 전 빌드 실패를 받아들인 실행(state.baseline_tolerated)의 baseline_build_failed 문장과 할 일
-_TOLERATED_KO = (("이 프로젝트는 조치 전에도 빌드되지 않았습니다. 사내 프레임워크 프로젝트는 빌드 오류를 자동으로 고치지 않으므로 "
-                  "예상된 결과이며, 이 오류는 프로젝트 담당자와 프레임워크 담당자가 고쳐야 합니다. 취약점 검사는 오픈소스 "
+_TOLERATED_KO = (("이 프로젝트는 조치 전에도 빌드되지 않았습니다. 남은 빌드 오류는 프로젝트 담당자와 "
+                  "프레임워크 담당자가 고쳐야 합니다. 취약점 검사는 오픈소스 "
                   "라이브러리를 보는 것이므로 빌드와 상관없이 진행했습니다."),
                  ("**빌드 오류 고치기** — 이관 보고서(`migration-report.md`)의 「변환 뒤 남은 빌드 오류」에 정리된 오류를 "
                   "프로젝트 담당자와 프레임워크 담당자가 고쳐 주세요."))
@@ -363,9 +363,14 @@ def build_report_json(state: RemediationState, paths: RunPaths, *,
     final = _load_scan(paths, state.final_scan, mode)
     rounds = []
     for rs in state.rounds:
-        rounds.append({"round": rs.round, "plan": _plan_summary(_load_plan(paths, rs.round)),
-                       "applied": list(rs.applied), "build": rs.build.to_dict() if rs.build else None,
-                       "verify": list(rs.verify_problems), "committed": rs.committed, "scan_label": rs.scan_label})
+        row = {"round": rs.round, "plan": _plan_summary(_load_plan(paths, rs.round)),
+               "applied": list(rs.applied), "build": rs.build.to_dict() if rs.build else None,
+               "verify": list(rs.verify_problems), "committed": rs.committed, "scan_label": rs.scan_label}
+        fix = _fix_of(rs)
+        if fix is not None:
+            # 빌드 오류 수정 루프를 실행한 라운드에만 넣는다. 이전 보고서와 같은 모양을 유지한다
+            row["fix"] = fix.to_dict() if hasattr(fix, "to_dict") else dict(fix)
+        rounds.append(row)
     data = {"schema": REPORT_SCHEMA, "state_schema": SCHEMA, "state": state.to_dict(),
             "baseline_scan": _scan_summary(base, state.baseline_scan, ignore, mode),
             "final_scan": _scan_summary(final, state.final_scan, ignore, mode),
@@ -469,6 +474,38 @@ def _codes(state: RemediationState) -> list[str]:
     return list(state.reasons or ([state.reason] if state.reason else []))
 
 
+def _fix_of(rs: RoundState) -> Any:
+    """라운드의 빌드 오류 수정 결과(``RoundState.fix``)를 반환한다. 없거나 이 필드가 없는 이전 상태면 None이다."""
+    return getattr(rs, "fix", None)
+
+
+def _fixed_rounds(state: RemediationState) -> list[RoundState]:
+    """빌드 오류를 고쳐서 확정한 라운드를 번호순으로 반환한다. 확정하지 않은 라운드의 소스 수정은 결과에 들어가지 않는다."""
+    return [rs for rs in sorted(state.rounds, key=lambda x: x.round)
+            if rs.committed and _fix_of(rs) is not None and getattr(_fix_of(rs), "fixed", False)]
+
+
+def _fixed_files(state: RemediationState) -> list[str]:
+    """확정한 라운드에서 빌드 오류를 고치느라 바꾼 소스 파일을 겹치지 않게 반환한다."""
+    out: dict[str, None] = {}
+    for rs in _fixed_rounds(state):
+        for p in getattr(_fix_of(rs), "changed", None) or []:
+            out[str(p)] = None
+    return sorted(out)
+
+
+def _unfixed_line(state: RemediationState) -> str:
+    """마지막 라운드의 수정본 빌드 실패를 자동 수정이 고치지 못했으면 그 사실과 이유를 한 문장으로 만든다. 아니면 빈 문자열이다."""
+    last = max(state.rounds, key=lambda x: x.round, default=None)
+    fix = _fix_of(last) if last is not None else None
+    if fix is None or getattr(fix, "fixed", False) or last.committed:
+        return ""
+    if not getattr(fix, "attempted", False):
+        # 남은 시간이 없어 시작하지 않은 경우다. 시도했다고 쓰지 않는다
+        return "남은 시간이 없어 빌드 오류 자동 수정은 시작하지 않았습니다."
+    return i18n.fix_failed_ko(getattr(fix, "reason", ""))
+
+
 def _with_count(step: str, count: int | None, unit: str = "건") -> str:
     """할 일 제목 뒤에 "(N건)"을 붙인다. 개수를 모르거나 0이면 제목을 그대로 반환한다."""
     if not count:
@@ -486,6 +523,13 @@ def _next_steps(state: RemediationState, fx: "_Facts | None" = None) -> list[str
     manual = [r for r in state.residuals if r.reason != R_INHOUSE_ARTIFACT]
     codes = [c for c in _codes(state) if c in _REASON_KO]
     out: list[str] = []
+    fixed_files = _fixed_files(state)
+    if fixed_files:
+        # 도구가 소스를 고친 것이므로 다른 할 일보다 먼저 확인을 요청한다
+        rels = [getattr(_fix_of(rs), "patch", "") for rs in _fixed_rounds(state)]
+        where = ", ".join(f"`{r}`" for r in rels if r)
+        out.append(f"**자동으로 고친 소스 확인하기** — 자동으로 고친 소스 {_num(len(fixed_files))}개를 확인해 주세요. "
+                   "바꾼 내용은 「빌드 오류 수정」" + (f"과 {where} 파일" if where else "") + "에 있습니다.")
     if state.status == SUCCEEDED:
         out.append(_SUCCEEDED_STEP)
     if _tolerated(state) and state.status != FAILED and not _nothing_changed(state):
@@ -1665,6 +1709,11 @@ def _round_block(L: list[str], state: RemediationState, fx: _Facts, rs: RoundSta
     planned = {p.id for p in plan.proposals} if plan is not None else set()
     if set(rs.applied) != planned or not planned:
         L.append(f"- 적용한 제안: {', '.join(rs.applied) if rs.applied else '없음'}")
+    first = getattr(rs, "fix_first_build", None)
+    if first is not None:
+        # 자동 수정이 고친 라운드다. 아래의 수정본 빌드는 고친 뒤 다시 한 빌드다
+        L.append(f"- 처음 수정본 빌드: {_build_line(first)}" + (f" · 로그 `{first.log}`" if first.log else ""))
+    _fix_record_line(L, rs)
     if rs.build is not None:
         L.append(f"- 수정본 빌드: {_build_line(rs.build)}" + (f" · 로그 `{rs.build.log}`" if rs.build.log else ""))
         if rs.build_compare:
@@ -1689,6 +1738,25 @@ def _round_block(L: list[str], state: RemediationState, fx: _Facts, rs: RoundSta
     if rs.scan_label:
         L.append(f"- 재검사: `{rs.scan_label}`")
     L.append("")
+
+
+def _fix_record_line(L: list[str], rs: RoundState) -> None:
+    """처리 기록의 라운드에 빌드 오류 자동 수정의 결과를 한 줄로 쓴다. 실행하지 않은 라운드는 쓰지 않는다."""
+    fix = _fix_of(rs)
+    if fix is None:
+        return
+    def n(key: str) -> str:
+        return _num(int(getattr(fix, key, 0) or 0))
+    if getattr(fix, "fixed", False):
+        L.append(f"- 빌드 오류 자동 수정: 고침 · 파일 {_num(len(getattr(fix, 'changed', None) or []))}개 · "
+                 f"{n('iterations')}회 반복 · LLM 호출 {n('llm_calls')}회")
+        return
+    if not getattr(fix, "attempted", False):
+        L.append("- 빌드 오류 자동 수정: 남은 시간이 없어 시작하지 않음")
+        return
+    ko, raw = i18n.fix_reason_ko(getattr(fix, "reason", ""))
+    L.append("- 빌드 오류 자동 수정: 고치지 못함" + (f"({ko})" if ko else "") + f" · {n('iterations')}회 반복 · "
+             f"LLM 호출 {n('llm_calls')}회 · 소스 수정은 되돌림" + (f" · {_md_cell(raw)}" if raw else ""))
 
 
 def _delivery_block(L: list[str], state: RemediationState, fx: _Facts, paths: RunPaths, step: int) -> None:
@@ -1722,18 +1790,56 @@ def _delivery_block(L: list[str], state: RemediationState, fx: _Facts, paths: Ru
     L.append("")
 
 
+def _fix_section(L: list[str], state: RemediationState) -> None:
+    """빌드 오류를 자동으로 고쳐 확정한 라운드가 있으면 「빌드 오류 수정」 절을 쓴다. 라운드가 여럿이면 라운드마다 소제목을 둔다."""
+    rounds = _fixed_rounds(state)
+    if not rounds:
+        return
+    L.append("## 빌드 오류 수정")
+    L.append("")
+    L.append("버전을 올린 뒤 빌드가 실패해 소스를 고쳤습니다.")
+    L.append("")
+    for rs in rounds:
+        fix = _fix_of(rs)
+        if len(rounds) > 1:
+            L.append(f"### 라운드 {rs.round}")
+            L.append("")
+        L.append("| 파일 |")
+        L.append("|---|")
+        for p in getattr(fix, "changed", None) or []:
+            L.append(f"| `{_md_cell(p)}` |")
+        L.append("")
+        L.append(f"- 빌드와 수정을 {_num(int(getattr(fix, 'iterations', 0) or 0))}회 반복했고, LLM을 "
+                 f"{_num(int(getattr(fix, 'llm_calls', 0) or 0))}회 호출했습니다.")
+        patch = getattr(fix, "patch", "")
+        if patch:
+            # 화면의 파일 목록은 마지막으로 고친 라운드의 patch만 fix.patch라는 이름으로 내려 준다
+            dl = "(내려받기 이름 fix.patch)" if rs is rounds[-1] else ""
+            L.append(f"- 바꾼 내용 전체는 `{_md_cell(patch)}` 파일에 있습니다{dl}.")
+        L.append("")
+
+
 def _unchanged_section(L: list[str], state: RemediationState, fx: _Facts) -> None:
     L.append("## 변경하지 않은 것")
     L.append("")
-    L.append("- 애플리케이션 소스와 프로젝트 구조(파일·폴더)는 변경하지 않았습니다.")
+    n_fixed = len(_fixed_files(state))
+    if n_fixed:
+        L.append(f"- 프로젝트 구조(파일·폴더)는 변경하지 않았습니다. 소스는 빌드 오류를 고치느라 {_num(n_fixed)}개 파일을 "
+                 "바꿨습니다.")
+    else:
+        L.append("- 애플리케이션 소스와 프로젝트 구조(파일·폴더)는 변경하지 않았습니다.")
     left_out = bool(state.intake is not None and state.intake.build_output_files)
     if state.delivery is not None and state.delivery.round == 0:
         # 바꾼 것이 없어 원본을 그대로 결과 ZIP으로 냈으므로 달라진 버전 표기도 없다
         L.append("- 결과 ZIP은 원본 ZIP에서 빌드 산출물만 뺀 것입니다." if left_out
                  else "- 결과 ZIP은 원본 ZIP과 같은 파일입니다.")
     elif state.delivery is not None:
-        extra = ("와 dependencyManagement에 추가한 버전 지정" if any(p.kind == K_MANAGED_OVERRIDE for p in fx.committed)
-                 else "")
+        override = any(p.kind == K_MANAGED_OVERRIDE for p in fx.committed)
+        if n_fixed:
+            # 조사가 앞 낱말의 받침을 따르므로 덧붙일 것이 있을 때는 쉼표로 잇는다
+            extra = (", dependencyManagement에 추가한 버전 지정과" if override else "와") + f" 고친 소스 {_num(n_fixed)}개"
+        else:
+            extra = "와 dependencyManagement에 추가한 버전 지정" if override else ""
         same = "원본에서 빌드 산출물을 뺀 목록과 같습니다" if left_out else "원본과 같습니다"
         L.append(f"- 결과 ZIP의 파일 목록은 {same}. 달라진 것은 적용된 pom.xml의 버전 표기{extra}뿐입니다.")
     L.append("- 원본 ZIP은 `original/source.zip`에 그대로 보관합니다.")
@@ -1769,6 +1875,11 @@ def build_report_md(state: RemediationState, paths: RunPaths, *, ignore_actions:
         L.append(f"> {_md_cell(line)}")
     if _failed_delivery(state):
         _failed_delivery_block(L, state, paths)
+    unfixed = _unfixed_line(state)
+    if unfixed:
+        # 빌드 실패 안내 바로 아래에 자동 수정의 결과를 한 줄로 둔다
+        L.append(">")
+        L.append(f"> {_md_cell(unfixed)}")
     L.append("")
 
     # 2. 요약
@@ -1793,6 +1904,9 @@ def build_report_md(state: RemediationState, paths: RunPaths, *, ignore_actions:
             L.append("")
         _proposal_section(L, fx, fx.committed)
         L.append("")
+
+    # 4-1. 빌드 오류 수정(버전을 올린 뒤 실패한 빌드를 자동으로 고친 라운드)
+    _fix_section(L, state)
 
     # 5. 사내 라이브러리에서 발생한 취약점
     if fx.inhouse:
@@ -1848,4 +1962,20 @@ def summary(state: RemediationState) -> dict[str, Any]:
                          "scanned": d.scanned, "build_tolerated": d.build_tolerated} if d else None}
 
 
-__all__ = ["build_report_json", "build_report_md", "build_unconfirmed", "summary", "write_report"]
+def fix_summary(state: RemediationState) -> dict[str, Any] | None:
+    """화면에 보여 줄 빌드 오류 자동 수정의 요약을 만든다. 수정 루프를 실행한 라운드가 없으면 None이다.
+    ``changed``는 확정한 라운드에서 고친 소스 파일 수, ``llm_calls``는 모든 라운드의 수정 루프가 호출한 LLM 횟수다.
+
+    The page's digest of the build fix loop: None when no round ran it; `fixed` / `changed` count only committed fixed
+    rounds (their files are in the result), `llm_calls` sums every round's loop, `round` = the last fixed round (the
+    one whose `fix.patch` the files route serves)."""
+    fixes = [(rs, _fix_of(rs)) for rs in sorted(state.rounds, key=lambda x: x.round) if _fix_of(rs) is not None]
+    if not fixes:
+        return None
+    done = _fixed_rounds(state)
+    return {"fixed": bool(done), "changed": len(_fixed_files(state)),
+            "llm_calls": sum(int(getattr(f, "llm_calls", 0) or 0) for _rs, f in fixes),
+            "round": done[-1].round if done else None}
+
+
+__all__ = ["build_report_json", "build_report_md", "build_unconfirmed", "fix_summary", "summary", "write_report"]
