@@ -385,7 +385,8 @@ any `.git` path of the upload), never on the candidate: it may change existing s
 one Maven reads under another name), a path with a segment starting with `.`, `mvnw` / shell / batch scripts or a
 jar / war / ear / class / zip file — and creates or deletes no file; it uses no stored script and records nothing in
 the KB (its journal and logs stay in `fixloop/`). Its time is `min(fix_loop_max_minutes, time left − a reserve for the
-confirming build and the delivery)`; with less than a minute it does not start. Fixed → the fixed bytes are kept in
+confirming build and the delivery)`; with less than a minute it does not start (checked once, by the graph:
+`fix_loop_max_minutes: 1` with enough time left starts it). Fixed → the fixed bytes are kept in
 `fixloop/fixed/`, the state is saved, the graph copies them over the candidate (the only way the loop changes the
 candidate), a confirming build (`rounds/<r>/build-fixed.log`) runs and the round is committed; each fixed round's diff
 is `rounds/<r>/fix.patch`, and `remediation/fix.patch` (downloadable as `fix.patch`) combines every committed fixed
@@ -408,8 +409,10 @@ discarded (record line, LLM calls still counted) when its confirming build fails
 after an ineffective override entry was dropped, or when it no longer fits the candidate on resume; a loop the pod was
 killed in is kept as `rounds/<r>/fixloop-interrupted-<n>/` and its LLM calls are counted once, at the next entry of the
 build node (or the report node) whatever happens next; its work copy `tree/` is then removed (journal and logs stay). A
-re-entry after a kill never redoes what the uninterrupted run would not: a fix found not usable is not run again, and a
-stored complete baseline scan of the same bytes is reused (journal `baseline_scan_reused`), never uploaded again. A candidate is built only with the proof that its applied files
+re-entry after a kill never redoes what the uninterrupted run would not: a fix the loop had just returned that could not
+be applied ended the round and is marked so (`ended_round` on the discarded result), so the loop is not run again; a
+stored fix found not usable on a resume runs the loop again, also when a stop or a kill cut that resume short before the
+loop started; and a stored complete baseline scan of the same bytes is reused (journal `baseline_scan_reused`), never uploaded again. A candidate is built only with the proof that its applied files
 were stored completely: `rounds/<r>/applied/` (the edited poms), `rounds/<r>/expected.json` (size, sha256 and exec bit
 of every manifest path) and `rounds/<r>/candidate.ready.json` naming that file's sha256; without it (a kill during `apply`, or a
 run folder an older version left) the candidate is made again from `accepted/` (journal `candidate_rebuilt` with
@@ -425,11 +428,16 @@ calls that do not go through the build runner (effective pom, dependency tree) k
 per-attempt guard does not see a new file under a path the project's `.gitignore` ignores (the check at the end of the
 loop does). The loop's LLM
 calls count in `SBMIG-RESULT … llm=` (after an exception inside the loop they are read from the loop's journal; calls
-without token counts are marked `tokens_unknown` and never priced; a loop whose journal cannot be read is
-`usage_unknown`, and `llm=` then holds the known calls only), in `GET /api/runs/{id}` (`llm_calls`, of which
+the loop counted without token counts, a failed LLM call for instance, get a row of their own marked `tokens_unknown`,
+never priced, beside the known row of the same model, which keeps its price; a killed loop's journal with a line that
+cannot be parsed, one that cannot be read to the end, or a missing `journal.jsonl` beside `fixloop/loop.json` makes the
+loop `usage_unknown` with what was read kept (a folder with neither file is a known zero); `llm=` then holds the known
+calls only), in `GET /api/runs/{id}` (`llm_calls`, of which
 `remediation_llm_calls`; `remediation_llm_usage_unknown: true` when part is unknown) and on the admin page (「조치 N회
-포함」; 「일부 알 수 없음」 under the calls and 「알 수 없음」 as the cost when part is unknown; the report says 「LLM 사용량
-일부는 알 수 없음」); the migration's `report.json` usage does not hold them. Operator text:
+포함」; when part is unknown 「일부 알 수 없음」 under the calls and the cost is the sum of the priced rows with the same
+note under it, or 「알 수 없음」 when no row is priced; a known row without a configured price still leaves the cost
+empty; the project and overall totals carry no such note; the report says 「LLM 사용량 일부는 알 수 없음」 and a round
+total 「(버린 시도까지 알려진 것만 T회)」); the migration's `report.json` usage does not hold them. Operator text:
 `deploy/README.md` §6; flow, states, API and diagnosis: `agent-doc/11-remediations.md`; `sbmig remediation-resume
 --run-dir <dir>` resumes outside Kubernetes.
 

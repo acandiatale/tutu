@@ -389,9 +389,11 @@ unreported (`RoundState.build_changed`); a path it cannot put back (`intake.Sync
 `internal_error` without committing or delivering that round. A stop keeps a fix and a loop stopped on request may run
 again on resume; a killed loop is kept as `fixloop-interrupted-<n>/` with its LLM usage counted once, at the next
 build or report node, after which its work copy `tree/` is removed (`fixer.fix_usage`, read by the result line, the
-run status and the admin page; after an exception inside the loop the usage comes from the loop's journal; usage that
-cannot be read is marked unknown — `usage_unknown` — and calls without token counts are never priced; every reader says
-「알 수 없음」 instead of showing a number as exact).
+run status and the admin page; after an exception inside the loop the usage comes from the loop's journal; a killed
+loop's journal with a line that cannot be parsed, or missing beside `loop.json`, makes its usage unknown —
+`usage_unknown`, what was read kept — and calls without token counts get a row of their own, `tokens_unknown`, never
+priced, beside the known row of the same model; no reader shows an unknown count as exact, and the admin page's run
+cost is the sum of the priced rows with 「일부 알 수 없음」, 「알 수 없음」 only when nothing is priced).
 Every result ZIP goes through one swap (`_Holder.install_delivery`): frozen to `delivery/.result.next.zip`, a marker
 `.result.next.json`, an earlier verified ZIP copied aside, `os.replace` onto `result.zip`, then `state.delivery` and
 everything else the node sets, `delivery.json`, the state saved, the marker removed. A freeze that fails leaves the
@@ -399,7 +401,8 @@ previous delivery and ends FAILED `internal_error`; once the replace happened th
 cannot be written leave the marker (`DeliveryRecordNotWritten`, FAILED `internal_error`). `recover_delivery` completes or
 rolls back a swap on every entry that sees the run folder again (`run_remediation`, `graph.repair_final`). No mid-node save
 lets a re-entry do what the uninterrupted run would not: a stored complete baseline scan of the same bytes is reused, never
-uploaded again. A final state whose report or swap record is pending is repaired on the next entry, and by the web service
+uploaded again, and the loop is skipped at the build node's entry only when the discarded result is marked as the one
+that ended the round (`FixResult.ended_round`), never by the reason text of the last record. A final state whose report or swap record is pending is repaired on the next entry, and by the web service
 in every mode once its owner is gone (`RemediationManager.repair_final`). When the intake left uploaded build output out, the baseline scan uploads and a
 no-change run delivers `original/scan-source.zip` (a deterministic ZIP of `accepted/`, sha256 recorded in the state), so
 both scans compare like with like; otherwise the upload itself is scanned and delivered.

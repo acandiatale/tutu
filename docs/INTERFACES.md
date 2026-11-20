@@ -17,15 +17,15 @@ type: `sbmig/core/models.py`, `sbmig/core/interfaces.py`, `sbmig/core/config.py`
 | transform (OpenRewrite) | Base "Plan, transform"; v2.1l "Recipes"; v2.1o (Framework 7); v2.1w |
 | restructure & layout | Base "Restructure and the company layout"; v2.1g, v2.1h (JSP jakarta), v2.1l / v2.1s (version pins), v2.1m (resource filtering), v2.1n (optional triggers), v2.1o / v2.1p / v2.1t (parent-chain facts, BOM imports), v2.1q (embedded Tomcat), v2.1x (legacy Spring context), v2.1z-j (bundled jars), v2.1z-k, v2.1z-l |
 | structure review | v2 "Structure review (R)"; v2.1u … v2.1y (review prompt, invariant check, unsupported issues); v2.1z-h (review guard) |
-| verify & script fix loop | Base "Fix-loop invariants"; v2 "Script fix loop (L)", "Script contract (S)", "As built (step 1)"; v2.1d (versions, operator checks), v2.1l / v2.1m pre-tries, v2.1r (file locks), v2.1y (declines, idempotency), v2.1z (ladder caps, case keys), v2.1z-e (jakarta discovery), v2.1z-i, v2.1z-n, v2.1z-y, v2.1z-z, v2.1z-aa; v2.1z-ak (reduced run: as-is chain facts, framework guard); v2.1z-av (stop around the final build, the last unhelpful try rolled back, `repository_unreachable`, cut answers, managed versions per parent); v2.1z-bo (stop request and time budget checked before every LLM request, `llm_ask_skipped`) |
+| verify & script fix loop | Base "Fix-loop invariants"; v2 "Script fix loop (L)", "Script contract (S)", "As built (step 1)"; v2.1d (versions, operator checks), v2.1l / v2.1m pre-tries, v2.1r (file locks), v2.1y (declines, idempotency), v2.1z (ladder caps, case keys), v2.1z-e (jakarta discovery), v2.1z-i, v2.1z-n, v2.1z-y, v2.1z-z, v2.1z-aa; v2.1z-ak (reduced run: as-is chain facts, framework guard); v2.1z-av (stop around the final build, the last unhelpful try rolled back, `repository_unreachable`, cut answers, managed versions per parent); v2.1z-bo (stop request and time budget checked before every LLM request, `llm_ask_skipped`); v2.1z-bp (the remediation's 60 s loop minimum checked by the graph only) |
 | cases & KB | v2 intro + "Script KB (K)"; Base "KB plumbing"; v2.1e (learning records), v2.1f (probable fixers), v2.1z (masked case keys), v2.1z-ae / v2.1z-af (several pods on one KB), v2.1z-ai (rule versions, member-symbol keys, re-sign, exact-key guard) |
 | LLM gateway | Base "LLM client tier and adapter seams"; v2.1z-m (agent gateway, token exchange), v2.1z-n, v2.1z-o, v2.1z-p (case thread), v2.1z-q, v2.1z-x, v2.1z-af (busy wait, auth retries) |
 | report & result line | Base "Report and the result line", "Advisories and the Handover"; v2 "As built (step 1)" (`review=`); v2.1d (`major=`); remediations (`remediation=`); v2.1z-ak (`scope=`, the framework block); v2.1z-bl (`llm=` includes the remediation's fix-loop calls) |
 | fleet | Base "Fleet" |
-| web app | Base "Graph engine", "Web app"; v2.1z-w (page, server-chosen configs), v2.1z-ae (queue / slots on the page), v2.1z-af (page re-attach), v2.1z-aj (run flows, page header); v2.1z-ak (framework label, skipped stages); v2.1z-ao (admin page `/admin`: token usage per project, log ZIPs); v2.1z-au (the code-change view: artifact `codediff/`, `/api/runs/{id}/codediff`, the page block); v2.1z-av (cross-site requests refused, the free-space floor for uploads, unpacking limits); v2.1z-bg (report view); v2.1z-bl (two report previews, 고급 설정 and the other-files list gone, LLM counts); v2.1z-bm (the hidden controls are not sent); v2.1z-bo (admin page: 「일부 알 수 없음」 / cost 「알 수 없음」 for unknown remediation usage, `remediation_llm_usage_unknown`) |
+| web app | Base "Graph engine", "Web app"; v2.1z-w (page, server-chosen configs), v2.1z-ae (queue / slots on the page), v2.1z-af (page re-attach), v2.1z-aj (run flows, page header); v2.1z-ak (framework label, skipped stages); v2.1z-ao (admin page `/admin`: token usage per project, log ZIPs); v2.1z-au (the code-change view: artifact `codediff/`, `/api/runs/{id}/codediff`, the page block); v2.1z-av (cross-site requests refused, the free-space floor for uploads, unpacking limits); v2.1z-bg (report view); v2.1z-bl (two report previews, 고급 설정 and the other-files list gone, LLM counts); v2.1z-bm (the hidden controls are not sent); v2.1z-bo (admin page: 「일부 알 수 없음」 / cost 「알 수 없음」 for unknown remediation usage, `remediation_llm_usage_unknown`); v2.1z-bp (the run cost = the priced rows with 「일부 알 수 없음」, 「알 수 없음」 only when nothing is priced) |
 | Job mode (Main / Worker, slots, env pins) | v2.1z-z "k8s Job dispatch mode", v2.1z-ab (kubeconfig, template ConfigMap), v2.1z-ac (Main ↔ Worker contract), v2.1z-ad (end confirmation, ownership, env pins, write-time redaction), v2.1z-ae (parallel slots), v2.1z-af, v2.1z-aq (a build pod that does not start: stop, the reason notice); v2.1z-av (the build identity, pins taken at Job creation, the resume attempt) |
 | deploy | v2.1z-s (build hooks), v2.1z-t (one Job per request), v2.1z-u, deploy (baked config, container paths), v2.1z-ad "Shipped mode" |
-| remediations | remediations; v2.1z-ak (in-house group `framework`); v2.1z-am (case-insensitive matching, per-module in-house split, module sources, variant overrides, 들어온 경로); v2.1z-an (override proposals in module poms, the owners' choice); v2.1z-ar (no approval unless switched on); v2.1z-av (fixed = gone from the rescan, the planner's new residual groups, `remediation.log` for every run); v2.1z-bi part B, v2.1z-bj, v2.1z-bk (the fix loop on a failed candidate: work copy, overlay, build-side sync, one `fix.patch`); v2.1z-bl (fix-loop LLM usage, titles with the entered project); v2.1z-bm (the complete-apply proof `expected.json`, the sync by table before commit / freeze, a candidate that cannot be put back, `stop requested` runs again, leftover loops settled); v2.1z-bn (one delivery swap + `recover_delivery`, the no-delivery sentences, usage after an exception, the exec bit in `expected.json` schema 2, the pending report, the scan source `original/scan-source.zip`); v2.1z-bo (the swap rolled forward + `DeliveryRecordNotWritten`, no re-upload after a kill and the table of mid-node saves, `repair_final` by every entry and by the web service in every mode, unknown usage, report = state message, the round's call total, a stop during the build fix) |
+| remediations | remediations; v2.1z-ak (in-house group `framework`); v2.1z-am (case-insensitive matching, per-module in-house split, module sources, variant overrides, 들어온 경로); v2.1z-an (override proposals in module poms, the owners' choice); v2.1z-ar (no approval unless switched on); v2.1z-av (fixed = gone from the rescan, the planner's new residual groups, `remediation.log` for every run); v2.1z-bi part B, v2.1z-bj, v2.1z-bk (the fix loop on a failed candidate: work copy, overlay, build-side sync, one `fix.patch`); v2.1z-bl (fix-loop LLM usage, titles with the entered project); v2.1z-bm (the complete-apply proof `expected.json`, the sync by table before commit / freeze, a candidate that cannot be put back, `stop requested` runs again, leftover loops settled); v2.1z-bn (one delivery swap + `recover_delivery`, the no-delivery sentences, usage after an exception, the exec bit in `expected.json` schema 2, the pending report, the scan source `original/scan-source.zip`); v2.1z-bo (the swap rolled forward + `DeliveryRecordNotWritten`, no re-upload after a kill and the table of mid-node saves, `repair_final` by every entry and by the web service in every mode, unknown usage, report = state message, the round's call total, a stop during the build fix); v2.1z-bp (`FixResult.ended_round`: the loop is not skipped on resume, an own row for calls without tokens, strict journal reading, the budget outcome saved and stamped, 「알려진 것만」, the report-not-written note dropped on repair, the bounded repair memory) |
 
 ## Base contracts (in force; written before v2)
 
@@ -6081,7 +6081,8 @@ beyond `plan_notes`.
   `remediations/api.py`. It serves the combined `remediation/fix.patch` that `report.write_fix_patch` writes, and only
   while the saved state has a committed round with a fixed, non-empty fix ("v2.1z-bk").
 - The loop does not start with less than `fixer.MIN_LOOP_SECONDS` (60) left (`attempted: false`, reason
-  `time budget used up`), nor when a stop is already pending (`attempted: false`, `stop requested`). The work copy
+  `time budget used up`; superseded by v2.1z-bp: only the graph checks the 60 s, the fixer refuses only a deadline
+  already passed), nor when a stop is already pending (`attempted: false`, `stop requested`). The work copy
   holds no `.git` path of the upload ("v2.1z-bj"), so a root or nested `.git` no longer stops the loop. The work copy's
   commit of the uploaded files names the loop paths explicitly, so a file the project's `.gitignore` hides is still
   tracked.
@@ -6354,7 +6355,9 @@ the loop), the interrupted loop's usage, the cp949 patch, two fixed rounds and t
 - `fixer.interrupted_result(folder, cfg)` reads the loop's own `journal.jsonl` with the admin page's
   `sbmig.web.admin.usage_from_journal` (its `llm_script` / `llm_verify_guide` events; the loop writes no
   `sbmig.log`) and prices the rows like a finished loop. No journal = the loop never reached an LLM call: zero,
-  without ` (usage unknown)`; a journal that cannot be read → zero and ` (usage unknown)`.
+  without ` (usage unknown)`; a journal that cannot be read → zero and ` (usage unknown)`. (Superseded by v2.1z-bp:
+  the strict reader `admin.journal_usage_checked(strict=True)`; a damaged line or a journal missing beside `loop.json`
+  is unknown with what was read kept; zero and known only for a folder with neither file.)
 - `intake.sync_tree` leaves a path alone when its expected file does not exist, compares sizes before bytes, writes
   through a temporary file. `graph._package` is the one place a candidate is built: the build, then
   `_sync_candidate`. Journal `build_side_changes` = `round`, `missing` (count), `changed` (count), `paths` (first 5
@@ -6637,7 +6640,8 @@ and as coded in one.
   `tokens_unknown: true` on a row with such calls; that row's `cost` is None (unknown, never 0). (Superseded by
   v2.1z-bo: an unreadable journal marks the result `usage_unknown` instead of a zero-token row when the fixer itself
   raised; extra calls join a same-name row, which is then unpriced; budget-only calls of a normal result are
-  `tokens_unknown` too.)
+  `tokens_unknown` too. Superseded again by v2.1z-bp: `journal_usage` returns `(rows, currency, known)` and the
+  extra calls always get a row of their own.)
 
 ### The exec bit and unreadable files (`intake.py`, `graph.py`)
 
@@ -6790,6 +6794,8 @@ left. In particular **never a second IVAS upload**.
   not usable` and no fix is recorded, the loop is not run again at the node's entry and the round ends as the
   uninterrupted run did, the message ending ` | automatic build fix: discarded: the stored fix is not usable`;
   `rerun_ok=True` (the call right after a stored fix of an earlier entry was found not usable on this one) allows it.
+  (Superseded by v2.1z-bp: the skip rests on `FixResult.ended_round`, set only when a fresh loop's fix was unusable,
+  not on the reason text; a stored fix found unusable on resume no longer blocks the loop on the next entry.)
 - **`deliver_failed_candidate`** re-entered after its own swap (`st.delivery` is round r, `build_ok` and
   `build_tolerated` false) names the verified copy the earlier entry made (`find_verified_zip`, round < r) in its
   message.
@@ -6801,7 +6807,7 @@ left. In particular **never a second IVAS upload**.
 | `install_delivery` step 7 in `freeze_delivery` | the new delivery (round r) | the node again: the same deterministic ZIP of `accepted/` (same sha256) is installed once more → `rescan` |
 | `install_delivery` step 7 in `deliver_failed_candidate` (`build` node) | the failed candidate as delivery, a verified copy made | `build` again (a build, no upload; the recorded loop result is not re-run); the failed candidate is delivered again and the message names the earlier copy (`again`) |
 | right after the fix loop returns (`_run_fix`, v2.1z-bk) | `rs.fix` with usage and `tree_hash` | the recorded result is used (overlay + confirming build, or not fixed); the loop does not run again |
-| `_discard_fix` before `_drop_fix_files` | the fix in `fix_discarded`, `rs.fix` None | an unusable stored fix: no second loop (`rerun_ok`), FAILED `candidate_build_failed` with the uninterrupted suffix; a fix discarded for a remade candidate (the candidate was unmarked first) sends the round back through `apply`, as the uninterrupted run remakes it |
+| `_discard_fix` before `_drop_fix_files` | the fix in `fix_discarded`, `rs.fix` None | an unusable stored fix: no second loop (`rerun_ok`), FAILED `candidate_build_failed` with the uninterrupted suffix (superseded by v2.1z-bp: only when the discard carries `ended_round`; see its table); a fix discarded for a remade candidate (the candidate was unmarked first) sends the round back through `apply`, as the uninterrupted run remakes it |
 | confirming build failed, before `_drop_fix_files` | `rs.fix` not fixed, `confirming build failed` | the loop is not run again; `fixed/` and `fix.patch` may stay on disk unreferenced (still open) |
 | a loop folder that could not be prepared | `rs.fix` `attempted: false`, `error: …` | the verdict stays; no loop (`automatic build fix not started: error: …`) |
 | a loop not started because of a stop or the time budget | `rs.fix` `attempted: false`, `stop requested` / `time budget used up` | the result is forgotten and the loop may start |
@@ -6835,7 +6841,9 @@ left. In particular **never a second IVAS upload**.
 - Rows with `tokens_unknown` are never priced: `_usage` gives the calls the budget counted beyond the attempts' usage to
   the configured model's row with `tokens_unknown: true` and no cost; `_usage_after_error` adds such calls to a row of
   the same name (then unpriced) or a new row; `fix_usage_rows` sets `cost` None on such a row; the currency is dropped
-  when no row is priced.
+  when no row is priced. (Superseded by v2.1z-bp: such calls get a row of their OWN, the known row of the same name
+  keeps its tokens and price; `fix_usage_rows` keys rows by name and unknown; an unreadable or damaged journal keeps
+  what was read, `fixer.journal_usage` returns `(rows, currency, known)`.)
 - **`fixer.fix_usage(state)`** adds `calls_unknown` (a result with `usage_unknown`; `calls` is a lower bound),
   `tokens_unknown` (a row with calls without token counts) and `usage_unknown` (either).
 - Readers: `chain.summary` → `fix_usage_unknown: true` (only then; `fix_llm_calls` = the known calls, so the
@@ -6844,7 +6852,8 @@ left. In particular **never a second IVAS upload**.
   (`report.fix_summary`, only then); admin run row → `usage_partly_unknown: true` (only then) and `cost: null` (a
   remediation whose usage is partly unknown makes the run's cost unknown; a run without calls is 0 only when nothing is
   unknown); the admin page writes 「일부 알 수 없음」 under the calls cell and 「알 수 없음」 in the cost cell (title
-  「사용량 일부를 알 수 없어 비용을 계산하지 않았습니다」).
+  「사용량 일부를 알 수 없어 비용을 계산하지 않았습니다」). (Superseded by v2.1z-bp: `cost` is the sum of the priced rows
+  when at least one row is priced, with 「일부 알 수 없음」 under it too; `null` / 「알 수 없음」 only when nothing is priced.)
 - Report: a record line of a result with `usage_unknown` → 「- 빌드 오류 자동 수정: <결과> · LLM 사용량 일부는 알 수 없음」;
   a call count with `tokens_unknown` rows gets 「 · LLM 사용량 일부는 알 수 없음」; an interrupted loop → 「LLM 호출 수는
   알 수 없음」; the fix section's call sentence ends 「 LLM 사용량 일부는 알 수 없습니다.」.
@@ -6863,7 +6872,7 @@ left. In particular **never a second IVAS upload**.
   확인하지 못함): …」 (`_verified_kept` → `unconfirmed`).
 - **The fix section's call sentence** (`report._fix_calls_sentence`): 「- 빌드와 수정을 N회 반복했고, LLM을 M회
   호출했습니다.」, and when the round had other loops (`fix_discarded`: discarded, interrupted, stopped) 「…LLM을 M회
-  호출했습니다(버린 시도까지 모두 T회).」.
+  호출했습니다(버린 시도까지 모두 T회).」. (v2.1z-bp: 「알려진 것만 T회」 when part of the usage is unknown.)
 - **A stop during the build fix**: a loop that ran and ended `stop requested` while the stop is still pending halts
   STOPPED `stop_requested` at node `build` with `FIX_STOPPED` = `stop requested during the round {r} build fix` (no
   suffix); Korean (rule `stop_round_fix`) 「라운드 {r}의 빌드 오류 자동 수정 중에 중지 요청을 받았습니다.」. A stop
@@ -6925,3 +6934,143 @@ loop once more; after a kill between the confirm-failed save and the file remova
 unreferenced; the upload page's chip does not show the unknown-usage marker; a killed pod's fresh claim keeps the web
 repair waiting up to 600 s (the claim's takeover time); a call in flight when a pod is killed is never counted. A third
 smoke pass on `4600c02` and a narrow verification review of this commit were running when this was written.
+
+## v2.1z-bp — verification of v2.1z-bo and the real-Maven passes: the loop is not skipped on resume, usage rows, strict journal reading
+
+**Why.** The verification review of `4600c02` (v2.1z-bo) found one defect: `_run_build` skipped the fix loop whenever
+the round's last discarded fix had the reason `discarded: the stored fix is not usable`. That reason is written in two
+situations — a fix the loop had JUST returned that could not be applied (the uninterrupted run ends the round there), and
+a fix stored by an earlier entry found unusable on resume (the uninterrupted resume runs the loop again). A resume of
+the second kind cut short by a stop or a kill before the loop restarted therefore ended FAILED `candidate_build_failed`
+on its next entry. The same review confirmed that the change in `sbmig/loop/fixloop.py` leaves the migration loop's
+behaviour unchanged when no stop is requested and the time budget has not passed. The third real-Maven pass (on
+`4600c02`) found two more: a killed loop whose journal could not be parsed or was missing was counted as an exact zero
+(the reader skipped bad lines), and `remediation.fix_loop_max_minutes: 1` never started the loop (the fixer checked
+the 60 s minimum again, a few milliseconds after the graph had granted exactly 60 s). The review also noted that one
+failed LLM call (calls the budget counted without token counts) made the whole same-model row unpriced and the admin
+run cost unknown, and smaller wording / save points listed below. Contract and as coded in one.
+
+### Rules
+
+- **A decision at a node's entry rests on a marker written for that purpose, never on the reason text of the last
+  record.** `FixResult.ended_round: bool = False` (left out of the JSON when false; older JSON reads false) is set by
+  `graph._discard_fix(h, r, reason, *, ends_round=False)` in the same save that moves the fix to `rs.fix_discarded`.
+  Only `_confirm_fix` passes `ends_round=True`, and only on the fresh path (`fresh` and a first build recorded): the fix
+  the loop had just returned could not be overlaid. `_run_build` skips the loop at the node's entry when no fix is
+  recorded, `rerun_ok` is false and `rs.fix_discarded[-1].ended_round`. A stored fix found unusable on resume is
+  discarded with `ended_round` false, so the next entry runs the loop — also when a stop or a kill cut that resume short
+  before the loop restarted.
+- **Calls without token counts get their own row.** `fixer._usage`: calls the loop's budget counted beyond the
+  attempts' usage are a separate `FixUsage(model=asked_model_name(llm.model), calls=extra, cost=None,
+  tokens_unknown=True)`; every known row keeps its tokens and its price (`cost.compute_llm_cost`); `models` lists each
+  name once. `_usage_after_error` does the same for the calls beyond the journal's. `fix_usage_rows` keys rows by
+  (lower-case name, unknown), so a known row and an unknown row of the same name stay apart; `tokens_unknown: true` and
+  `cost: null` only on the unknown row.
+- **The admin run cost.** `admin.add_remediation_usage`: rows with `tokens_unknown` add their calls to the row of their
+  name and nothing to any cost; the run's `cost` is the sum of the priced rows when at least one row with calls is
+  priced (migration or remediation), with `usage_partly_unknown: true`; `null` only when nothing is priced. A known row
+  that has no configured price still makes the cost `null` (as before). The page writes 「일부 알 수 없음」 under the call
+  count and, when the cost is a number, under the cost too; 「알 수 없음」 (title 「사용량 일부를 알 수 없어 비용을 계산하지
+  않았습니다」) only for a `null` cost with the flag.
+- **Strict journal reading for a loop's usage.** `admin.journal_usage_checked(run_dir, strict=False) -> (rows,
+  complete)`: the rows of `usage_from_journal` (which now calls it, non-strict, unchanged for its other callers) and
+  whether the file was read to the end with every parsed line a JSON object; `strict` parses every non-blank line, not
+  only the lines mentioning `"llm_`; a missing journal is `({}, True)`. `fixer.journal_usage(folder, cfg) -> (rows,
+  currency, known) | None`: `([], "", True)` for a folder with neither `journal.jsonl` nor `loop.json` (no loop started);
+  `known` false when a line cannot be parsed (a line a kill cut off, garbage), the file cannot be read to the end, or
+  `journal.jsonl` is missing beside `loop.json`; the rows read are kept; None when the journal exists but cannot be
+  opened. `usage_from_folder` keeps what was read and sets `usage_unknown` when not known; `interrupted_result`'s reason
+  then ends ` (usage unknown)`.
+- **One place for the minimum loop time.** `fixer.run_fix_loop` refuses (`attempted: false`, `time budget used up`)
+  only when the deadline has already passed; `MIN_LOOP_SECONDS` (60) is checked only in `graph._run_fix`, which knows
+  the budget. `remediation.fix_loop_max_minutes: 1` with enough time left starts the loop.
+- **The budget outcome is saved like the baseline outcome.** `chain._budget_outcome(paths, state, budget, real_stop,
+  jr=None, cfg=None)` (STOPPED `stop_requested` → `chain_budget` when the chain's time budget, not a person, stopped
+  it) calls the new `chain._report_again(paths, state, jr, cfg)`, shared with `_baseline_outcome`: a new `updated`, the
+  state saved, `graph.write_pending_report` once when `cfg` is given (a failure is a WARNING `chained remediation <id>:
+  the report was not written again: …`). A STOPPED state is not `TERMINAL`, has no report node and no remediation
+  report, so nothing is rewritten there.
+- **A report written on a later entry drops the earlier failure note.** `graph._without_report_note(message)` cuts the
+  tail ` | report not written: …` (or a message that is only that note); `_wrap("report")` applies it before the node
+  runs, so a report node that succeeds on a later repair saves a message (and writes a report) without the note; a node
+  that fails again restores the earlier message and `updated` (the note is still added once).
+- **Bounded repair memory.** `RemediationManager._repair_seen` is an `OrderedDict` kept to the most recent
+  `REPAIR_SEEN_MAX` = 2000 folders (`_remember_repair`, under `_lock`); an evicted folder is checked once more when it
+  is viewed again.
+
+### Values per case
+
+| Case | `FixResult` / `fix_usage()` | `by_model` rows (`fix_usage_rows`) | admin run row | report |
+|---|---|---|---|---|
+| all known | `usage_unknown` absent | one priced row per name | `cost` = the sum, no `usage_partly_unknown` | 「…LLM을 M회 호출했습니다.」 |
+| one failed call beside known ones (`llm_calls` 3, attempts recorded 2) | `fix_usage`: `calls` 3, `tokens_unknown`, `usage_unknown`, not `calls_unknown` | `(m, 2, 2.0)` and `(m, 1, null, tokens_unknown: true)` | `calls` incl. the failed call, `cost` = the known sum (test: 0.25 + 0.5 = 0.75), `usage_partly_unknown: true`, the model row's cost the known sum | 「… LLM 사용량 일부는 알 수 없습니다.」 |
+| nothing known (only `tokens_unknown` rows, or an unread loop with no migration calls) | `usage_unknown` | the unknown row, `cost: null` | `cost: null`, `usage_partly_unknown: true` (page 「알 수 없음」) | as above |
+| unread loop beside a priced migration | `usage_unknown`, 0 calls | — | `cost` = the migration's, `usage_partly_unknown: true` | as above |
+| damaged journal of a killed loop (a cut-off or garbage line) | `usage_unknown`, the calls / tokens read (test: 1 call, 40 input tokens), reason `interrupted: the run ended during the loop (usage unknown)` | the rows read, priced | the known sum, flagged | 「LLM 호출 수는 알 수 없음」 on the record line; round total 「알려진 것만」 |
+| `journal.jsonl` missing beside `loop.json` | `usage_unknown`, 0 calls, same reason | — | flagged; cost as the rest allows | as above |
+| neither file (the loop never started) | known zero, reason `interrupted: the run ended during the loop` | — | unchanged | no unknown sentence |
+
+`chain.summary.fix_usage_unknown`, `GET /api/runs/{id}` `remediation_llm_usage_unknown` and `GET /api/remediations/{id}`
+`fix.llm_usage_unknown` follow `fix_usage()["usage_unknown"]` as in "v2.1z-bo"; `SBMIG-RESULT … llm=` holds the known
+calls.
+
+### Mid-node saves (changed rows of the "v2.1z-bo" table)
+
+| Save inside a node | What is in the state | A kill right after it, then the re-entry |
+|---|---|---|
+| `_discard_fix(…, ends_round=True)` before `_drop_fix_files` (the fix the loop had just returned is unusable) | the fix in `fix_discarded` with `ended_round: true`, `rs.fix` None | no second loop; FAILED `candidate_build_failed` with ` | automatic build fix: discarded: the stored fix is not usable`, as the uninterrupted run |
+| `_discard_fix(…)` of a stored fix found unusable on resume | the fix in `fix_discarded`, `ended_round` absent | the loop runs (as the uninterrupted resume does); the same after a stop during the rerun's candidate build |
+| `chain._budget_outcome` (reason `chain_budget`, new message) | new `updated`, saved | STOPPED: nothing pending; the next entry resumes |
+
+### Messages
+
+- Report (`report._fix_calls_sentence`): with other loops in the round and part of the usage unknown 「- 빌드와 수정을
+  N회 반복했고, LLM을 M회 호출했습니다(버린 시도까지 알려진 것만 T회). LLM 사용량 일부는 알 수 없습니다.」; all known
+  「…(버린 시도까지 모두 T회).」.
+- State message / report after a repair: no ` | report not written: …` tail once the report is written.
+- Admin page: 「일부 알 수 없음」 beside the call count and beside a known cost.
+
+### Names
+
+`FixResult.ended_round`; `graph._discard_fix(…, ends_round=…)`, `graph._without_report_note`;
+`chain._report_again`, `chain._budget_outcome(…, jr, cfg)`; `fixer.journal_usage` → `(rows, currency, known)`,
+`fixer._LOOP_FILE`; `admin.journal_usage_checked(run_dir, strict)`; `RemediationManager.REPAIR_SEEN_MAX`,
+`_remember_repair`.
+
+**Tests.** `tests/remediations/test_fix_loop_review6.py` (a resume with an unusable stored fix runs the loop and the
+discard has no `ended_round`; a kill after that discard and a stop during the rerun's build both run the loop on the
+next entry; the fresh unusable discard is marked in the same save; `ended_round` left out when false, old JSON false;
+the budget outcome stamped, saved, report asked once, no remediation report for STOPPED; one failed call → own unpriced
+row, known row keeps its price; admin rows: all known, one failed call beside known ones, nothing known, an unread loop
+beside a priced migration; the note beside a known cost in `admin.html`; damaged, garbage, missing journal → unknown;
+neither file → known zero; blank lines are fine; the fixer starts with a few ms under 60 s left; `fix_loop_max_minutes:
+1` starts the loop; 「알려진 것만」; the note dropped on repair, also from a message prefixed later; the repair memory
+bounded at 2000), adjusted `test_fix_loop_review5.py`, `test_fixer.py`. 7,203 passed.
+
+**Real-Maven passes** (Maven 3.9.10 + JDK 21 on a developer Mac, fake scanner, scripted LLM; a one-module project on
+`org.yaml:snakeyaml` 1.33 → 2.0 with a stale `target/` and an MS949 source):
+- Third pass, on `4600c02`: the 15 scenarios of the second pass again, delivered ZIPs identical per file, with the
+  differences `4600c02` explains (no LLM ask after a stop: 0 instead of 8; the STOPPED wording; the round total; the
+  interrupted loop's `tree/` removed; 「검사를 마친」). New: a kill right after the no-change delivery was installed →
+  exactly one upload over run and resume (`baseline_scan_reused`); the loop's time budget at 2 minutes with slow answers
+  → no ask after the deadline, FAILED `candidate_build_failed`, sources identical to the upload; a killed loop whose
+  journal was made unreadable → usage unknown. It found the strict-reading and one-minimum defects above. Also a real
+  migration run (fixture `pure-java`, its replay LLM, real Maven): a normal run ended `exit=0 build=ok` with the verify
+  fix loop running one round; a stop between two LLM asks ended `exit=3` (aborted) with `llm_ask_skipped`, no further
+  ask, a clean workspace and nothing half-applied.
+- Fourth pass, on `d85f7a4`: 17 scenarios (happy, wrong, pom, noloop, kill + resume, stop + resume, notarget,
+  nofinding, exec2, buildwrite, killloop, stoploop, reactor, nofinding-kill, killloop with a garbage journal, killloop
+  with a deleted journal, time budget at the 1-minute minimum) ended in the expected state and passed their file
+  checklists, except two false alarms of the checklist itself (a build duration that differs by seconds between two
+  reports; the loop's own journal labels a time-out as a stop request while the state and the report say time budget).
+  With `fix_loop_max_minutes: 1` the loop starts (2 LLM calls, reason `time budget used up`); a garbage or deleted
+  journal of a killed loop is recorded as `interrupted: the run ended during the loop (usage unknown)` and the report
+  says 「알려진 것만」.
+- Not exercised by any pass: the company cluster, a real LLM, real IVAS, large projects and real build times, Windows,
+  the web service's repair and Job mode, the admin page, the migration loop's time-budget check before an LLM request.
+
+**Still open.** The admin page's project and overall cost carry no "partly unknown" note (only the run row does); a
+loop killed between writing `loop.json` and its first journal line is reported as unknown although it made no call;
+rows that are known but have no configured price still make a run's cost `null`; the loop's own journal labels a
+time-out as a stop request (the state and the report are right). The items still open after "v2.1z-bo" stay open. A
+verification review of `d85f7a4` was running when this was written.
