@@ -280,7 +280,12 @@
   .mdv .mdv-pre { margin: 10px 0; padding: 10px 12px; overflow-x: auto; background: var(--paper); border: 1px solid var(--line-soft); border-radius: var(--radius-s);
                   font: 12px/1.5 var(--mono); tab-size: 4; -moz-tab-size: 4; word-break: normal; overflow-wrap: normal; }
   .mdv .mdv-pre code { display: block; width: max-content; min-width: 100%; padding: 0; border: 0; background: none; font-size: inherit; white-space: pre; word-break: normal; }
-  .mdv .mdv-pre .da { color: var(--ok); } .mdv .mdv-pre .dd { color: var(--bad); } .mdv .mdv-pre .dh { color: var(--muted); }
+  /* diff 블록은 「코드 변경」과 같은 색으로 줄 전체에 배경을 칠한다. 줄마다 블록 너비를 채워 가로로 밀어도 색이 끊기지 않는다 */
+  .mdv { --cd-add: #E6F5EC; --cd-add-ink: #1C6B3E; --cd-del: #FCEBE9; --cd-del-ink: #A12C22; }
+  .mdv .mdv-pre.mdv-diff { padding: 8px 0; }
+  .mdv .mdv-pre.mdv-diff code > span { display: inline-block; box-sizing: border-box; min-width: 100%; padding: 0 12px; }
+  .mdv .mdv-pre .da { background: var(--cd-add); color: var(--cd-add-ink); } .mdv .mdv-pre .dd { background: var(--cd-del); color: var(--cd-del-ink); }
+  .mdv .mdv-pre .dh { background: var(--paper); color: var(--muted); }
   .mdv .mdv-tw { margin: 10px 0; overflow-x: auto; border: 1px solid var(--line-soft); border-radius: var(--radius-s); }
   .mdv table { border-collapse: collapse; width: 100%; font-size: 13px; }
   .mdv th, .mdv td { padding: 6px 10px; border-bottom: 1px solid var(--line-soft); text-align: left; vertical-align: top; min-width: 64px; max-width: 520px; }
@@ -2946,7 +2951,8 @@
         const pre = mk('pre', 'mdv-pre'), c = mk('code');
         if (n.lang) c.setAttribute('data-lang', n.lang);
         if (n.lang === 'diff') {
-          // diff는 줄마다 추가, 삭제, 위치 줄을 색으로 구분한다
+          // diff는 줄마다 추가, 삭제, 위치 줄을 배경색으로 구분한다
+          pre.className = 'mdv-pre mdv-diff';
           const rows = n.text.split('\n');
           rows.forEach((ln, k) => {
             const cls = /^@@/.test(ln) ? 'dh' : /^\+/.test(ln) ? 'da' : /^-/.test(ln) ? 'dd' : '';
