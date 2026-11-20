@@ -14,7 +14,7 @@ node / journal / log / report 이벤트 → 보고서, result.zip, errors.md, sb
 - 화면(머리 이름 `panacea-remediating-oss`, 임시): 진행 방식 전체 진행(기본, 이관 후 조치) / 취약점 해결(조치만, [11](11-remediations.md)) → 프로젝트명(필수, 안내 「6자리 체인코드가 포함된 레포지토리 이름으로 작성해 주세요.」, `runs.PROJECT_RE`: 영문·숫자·`_`·`-` 30자까지; 어기면 본문 읽기 전 400) + zip →
   `마이그레이션 시작`(또는 `취약점 조치 시작`) → 단계 레일과 진행 기록 / 로그 탭(마지막 1,500줄) → `보고서 받기(migration-report.md)` / `변환된 프로젝트 받기(result.zip)`. 보고서는 결과 카드에 Markdown으로 그린다(「보기」 / 「원문」, 「크게 보기」, 조치는 「보고서 보기」; [01](01-repo-map.md)).
   설정 파일은 서버가 정한다: `sbmig serve --config <이름>`(여러 번) 또는 `SBMIG_WEB_CONFIGS=a.yml,b.yml`, 없으면 `config/artifacts.yml` →
-  `artifacts.local-e2e.yml` 중 있는 것(`GET /api/configs`의 `default`). 개발자만 "고급 설정"에서 설정 파일 / LLM / 여기까지만 실행을 바꾼다.
+  `artifacts.local-e2e.yml` 중 있는 것(`GET /api/configs`의 `default`). 화면에 고급 설정과 그 밖의 파일 목록은 없다(파일은 관리자 페이지).
   시작은 파일과 맞는 이름이 있어야 눌린다. 실행 폴더 `<프로젝트명>-YYYYmmdd-HHMMSS-<hex 6>`(`ls /data/out | grep <프로젝트명>`; 예전 이름도 그대로),
   실행 카드·「지난 실행」은 프로젝트명 먼저. 접수 거절(Ant, 풀기 한도를 넘은 ZIP 등)은 사유를 문장으로
   보임. 「지난 실행」은 최근 3일(`GET /api/runs?days=`; 대기·실행 중, 조치 대기, 열어 둔 실행 `keep`은 늘 보임; 「이전 실행 보기」로 전체,
@@ -122,7 +122,7 @@ kubectl exec deploy/sbmig -- python -m sbmig.cli llm-probe
 전달·결과·KB는 전부 공유 PVC(`sbmig-data`, RWX, 두 파드가 `/data`에 마운트): 웹(Main)이 `/data/out/<run id>/source.zip`,
 `control/request.json`(접수 때의 zip sha256·설정 digest·sbmig 버전), `control/state.json`(제어 상태; Job을 만드는 Main이 `creating`과 함께 설정
 digest와 sbmig 버전을 다시 적는다)을 쓰고, 틀 `deploy/k8s/81-web-job.template.yaml`에 실행별 env(`SBMIG_SOURCE_ZIP`, `SBMIG_OUT`, `SBMIG_RUN_ID`,
-`SBMIG_CONFIG`, `SBMIG_FLOW`, 고급 설정의 `SBMIG_STOP_AFTER` / `SBMIG_LLM_PROVIDER`)와 라벨(`sbmig-run-id`, `sbmig-owner`)을 채워 Job을 만든다(먼저
+`SBMIG_CONFIG`, `SBMIG_FLOW`, API의 `SBMIG_STOP_AFTER` / `SBMIG_LLM_PROVIDER`)와 라벨(`sbmig-run-id`, `sbmig-owner`)을 채워 Job을 만든다(먼저
 `creating`을 적어 응답이 끊겨도 같은 이름의 Job을 이어받는다) → 파드의 `python -m sbmig.web.worker`가 zip은 request.json
 과, 설정 digest·버전은 state.json의 값(없는 옛 파일이면 request.json)과 대조하고(다르면 exit 3, 저널 `worker_refused`) `sbmig run --out /data/out
 --run-id <run id>`로 같은 실행 폴더에 저널·로그·보고서·`result.zip`을 쓰고, 비밀값을 지우고(`sbmig/web/redact.py`) `job-status.json

@@ -1210,3 +1210,19 @@ The user, from the company cluster: a remediation-only run ended 「내부 오�
 | Report | one line under 「변경하지 않은 것」; the two sentences that said the result ZIP's file list equals the original's are worded for the case | same file, `tests/remediations/test_i18n.py` | done |
 | Outcome of the failing case | a failing candidate build ends `FAILED candidate_build_failed` with the frozen delivery | graph-level test with an emulator that removes `target/` on `clean`; a companion test shows the old error with the rule off | done |
 | Not checked | the company cluster (new image needed); why that run's candidate build failed (a separate matter, visible once the run ends with its report); a custom `<directory>` build folder is not recognised | — | open |
+
+## Status — 2026-11-20, build errors fixed for framework projects and for a remediation's failed candidate (v2.1z-bi)
+
+The user: "remediation 쪽도 버전 올라갔을때 에러가 나올 수 있으니 llm 수정기능 붙여달라고 한다. 사내 프레임워크 … 도 llm로
+빌드 수정 기능 넣어달래. javax -> jakarta만 변경하는거니까 그정도는 해주라는데..".
+
+| Item | What | Verification | State |
+|---|---|---|---|
+| Framework default | `framework.fix_loop` defaults to `true` (code and `config/default.yml`): pre-tries without the company parent, stored scripts, LLM, `_framework_guard`; `false` = the conversion-only run | `tests/analyze/test_framework.py::test_framework_fix_loop_defaults_to_true`, `tests/web/test_framework_scope.py`; tests that assumed the old default set `false` | done |
+| Chain after a failed framework build | `Orchestrator.remediation_after_failed_build` chains whether or not the loop ran; `remediation_always` no longer reads `fix_loop`; the migration report's remediation section has its own sentence when the loop ran | `tests/loop/test_framework_no_loop.py`, `tests/web/test_framework_scope.py` | done |
+| Loop hook | `BuildFixLoop(edit_guard=…)`: asked before every commit of an attempt (pre-tries included) with the touched paths; a rejection is handled like a framework-guard rejection (journal `edit_guard`); `None` = unchanged | `tests/loop/test_fixloop_edit_guard.py` | done |
+| Remediation fix loop | `sbmig/remediations/fixer.py` (`run_fix_loop`, `RemediationFixer`), `graph._fix_wanted` / `_fix_candidate`: source only, no `pom.xml`, no file created or deleted, `NullKnowledgeBase`; `remediation.fix_loop` (true), `remediation.fix_loop_max_iterations` (10, 1–50) | `tests/remediations/test_fixer.py`, `tests/remediations/test_graph_fix_loop.py` | done |
+| Outcome | fixed → `rounds/<r>/build-fixed.log`, verify, commit, `rounds/<r>/fix.patch` (served as `fix.patch`), `rounds[].fix`, status `fix`, journal `remediation_fix_loop`; not fixed → sources reset, `candidate_build_failed` + ` \| automatic build fix: <reason>` | same files | done |
+| Report and page | section 「빌드 오류 수정」, first to-do item, 「변경하지 않은 것」 wording, the not-fixed / not-started lines, reasons in Korean; chip 「소스 <n>개 수정」, LLM count in the run header, `fix.patch` link | `tests/remediations/test_report_fix_loop.py`, `tests/remediations/test_i18n.py`, `tests/web/test_page_remediation_fix.py` | done |
+| Fixtures | the `fw-*` fixtures state their `framework.fix_loop` explicitly | `tests/fixtures/test_fixture_projects.py` | done |
+| Not checked | the company cluster and the real IVAS; real-Maven e2e of a remediation whose candidate the loop fixes; pom edits by the loop (an upgrade needing an exclusion or a new artifact stays a failed candidate); no loop after a failed baseline build or on the second build after an ineffective override is dropped; `SBMIG-RESULT llm=` leaves out the remediation's calls (the page adds them) | — | open |

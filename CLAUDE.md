@@ -714,8 +714,9 @@ review", fix attempts as `script:<case>:v<N>`; `ko`, the company setting: the re
 - **Framework projects, changed 2026-11-19 (v2.1z-aw)** — the user: "사내 프레임워크는 llm도 돌리지 말고 그냥 jdk - jakarta까지만
   하고 파일을 내려주도록 하자. llm이 이걸 해결해주기 쉽지 않을거 같아. 사내 라이브러리쪽도 개입이 많으니까!", "<이름> 프레임워크라도
   명시 할 수 있어? 사람들이 모를거 같아서. 이거 좀 강조를 해야 할 것 같아서", and "취약점은 빌드가 실패해도 이어가도록! 어차피
-  오픈소스 라이브러리 검사라!". This replaces the fix-loop decision of the bullet above (everything there about the fix
-  loop now applies only with `framework.fix_loop: true`). A reduced run = conversion + ONE build: `Orchestrator.no_fix_loop`
+  오픈소스 라이브러리 검사라!". This replaced the fix-loop decision of the bullet above (everything there about the fix
+  loop applies only with `framework.fix_loop: true`); **the default went back to `true` on 2026-11-20 (v2.1z-bi, below)**,
+  so conversion-only is now the `false` setting. A reduced run = conversion + ONE build: `Orchestrator.no_fix_loop`
   gates `_verify_fix_loop` and the plan advisor (no pre-try, stored script, LLM; `llm=0` is literal), the entries stay
   open with a note, journal `verify_loop_skipped`, one hand-over line, exit 2 on a failed build, the converted tree is
   delivered. The framework is named everywhere a person meets the run: `framework.name` or
@@ -726,8 +727,8 @@ review", fix attempts as `script:<case>:v<N>`; `ko`, the company setting: the re
   (`GET /api/runs/{id}` → `framework`). The Korean guide of a failed conversion-only run has 「변환 뒤 남은 빌드 오류」
   instead of 「해결하지 못한 오류」 and never implies a fix was tried. **Remediation after a failed build**
   (`remediation.after_failed_build: framework | never`): `_chain_remediation` chains a conversion-only framework run
-  whose final build was attempted and failed with `baseline_may_fail=True`; ordinary failed runs, framework runs with
-  the loop on, and the remediation-only flow are unchanged (my scoping; the user was told). In the remediation
+  whose final build was attempted and failed with `baseline_may_fail=True`; ordinary failed runs and the
+  remediation-only flow are unchanged (my scoping; the user was told; since v2.1z-bi framework runs with the loop on chain too). In the remediation
   (`RemediationState.baseline_tolerated`) the failing baseline build is recorded and the flow goes on; a candidate build
   may fail only with the baseline's errors (`maven.compare_with_baseline`: same target, same failing module, every
   error key among the baseline's) → the round is committed, delivered (`DeliveryInfo.build_tolerated`) and rescanned;
@@ -826,6 +827,20 @@ review", fix attempts as `script:<case>:v<N>`; `ko`, the company setting: the re
   of `candidate_build_failed`. `intake.build_output_paths`: `target/` beside a `pom.xml` is validated but left out of
   `accepted/` and the manifest (`IntakeResult.build_output_files`, one note, one report line); `source.zip` keeps it.
   Anything `mvn clean` removes must never be a manifest path. Contract: `docs/INTERFACES.md` "v2.1z-bh".
+- **Build errors are fixed in two more places (2026-11-20, v2.1z-bi)** — the user: "remediation 쪽도 버전 올라갔을때 에러가 나올 수
+  있으니 llm 수정기능 붙여달라고 한다. 사내 프레임워크 … 도 llm로 빌드 수정 기능 넣어달래. javax -> jakarta만 변경하는거니까 그정도는
+  해주라는데..". (A) `framework.fix_loop` defaults to `true` (pre-tries without the company parent, stored scripts, LLM;
+  `_framework_guard` as before); `false` is the conversion-only run of v2.1z-aw. A framework run whose final build still
+  fails chains the remediation whether or not the loop ran (`remediation_after_failed_build`, `remediation_always`), and
+  the migration report says the remediation followed a build that failed after the automatic fix. (B) The remediation's
+  candidate build failing after versions were raised (baseline passed) runs `BuildFixLoop` on the candidate
+  (`sbmig/remediations/fixer.py`, `remediation.fix_loop` default true, `fix_loop_max_iterations` 10) through the new
+  `edit_guard` hook: existing manifest source files only, no `pom.xml`, nothing created or deleted, `NullKnowledgeBase`.
+  Fixed → confirming build, verify, commit, `rounds/<r>/fix.patch`, report section 「빌드 오류 수정」, page chip; not fixed →
+  sources reset, `candidate_build_failed` with ` | automatic build fix: <reason>`. So the older notes' "no source change"
+  and "the remediation-only flow calls no LLM" no longer hold: the fix loop is the one exception for both. Limits: no pom
+  edits, no loop after a failed baseline, its LLM calls are not in `SBMIG-RESULT llm=` (the page adds them), not run on the
+  company cluster. Contract and as-coded deviations: `docs/INTERFACES.md` "v2.1z-bi".
 - **Company convention (2026-10-20): agents run on LangGraph under uvicorn.** `loop.engine: graph` (default) drives
   the phases from a LangGraph `StateGraph` (`sbmig/graph/`, nodes intake → analyze → plan → phase×N → finalize;
   `inline` is the old loop, reports are identical by test); the web UI is FastAPI (`uvicorn sbmig.web.app:app` or
@@ -835,7 +850,7 @@ review", fix attempts as `script:<case>:v<N>`; `ko`, the company setting: the re
   company's blue: drop zone → stage rail → 진행 기록 / 로그 tabs → two download buttons report.md / result.zip; the log
   pane keeps a ring buffer and renders ≤ 1,500 lines, the fix for the browser lag). The config files every upload runs with
   are the server's choice (`sbmig serve --config` / `SBMIG_WEB_CONFIGS`, else `artifacts.yml` / `artifacts.local-e2e.yml`;
-  `GET /api/configs` → `default`); the page shows the list only under 고급 설정. Stop takes effect between graph nodes
+  `GET /api/configs` → `default`); the page no longer shows 고급 설정 or the list of other run files (hidden / removed 2026-11-20; logs and other files come from the admin page). Stop takes effect between graph nodes
   only. In-process: one migration at a time, further uploads are `queued`; Job mode: `SBMIG_JOB_MAX_PARALLEL` at a time (v2.1z-ae).
 - **Admin page (v2.1z-ao, 2026-11-17)**, the user: "현재까지 프로젝트 별로 사용된 토큰량 볼 수 있는 페이지가 필요한데, 하드코딩으로
   [a fixed password]으로 접속 할 수 있는 url하나 fastapi에 붙여서 해당 비밀번호로 접속해서 볼 수 있도록 하나 하자. 그리고 총 로그들

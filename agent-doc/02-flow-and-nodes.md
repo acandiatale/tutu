@@ -40,7 +40,7 @@ pom·build.xml 없는 트리(풀어 놓은 Tomcat 웹앱)의 담당팀 설명서
 **실행 방식.** `sbmig run --flow full|remediation`(기본 `full`, 웹 `POST /api/runs?…&project=<프로젝트명>&flow=`). `full`은 이 문서의 흐름 전부다.
 `remediation`(취약점 해결)은 엔진 노드 `intake → remediation → finalize`만 지나간다: 접수는 프로젝트를 고치지 않는 데까지만(작업 사본,
 사전 점검, 빌드 도구 판별과 거절 — aggregator 생성·확장 제거·pom 합성 없음) 돌고, `chain.run_only`가 올린 그대로의 프로젝트를 조치한다.
-분석·계획·변환·재구성·검토·검증·수정 루프·LLM·KB는 없다. 저널 첫 줄 `{"event": "flow", "flow": "remediation"}`, `--stop-after`는
+이관 단계·KB는 없다(LLM은 조치의 후보 빌드 수정만). 저널 첫 줄 `{"event": "flow", "flow": "remediation"}`, `--stop-after`는
 함께 쓸 수 없다. 자세한 것은 [11-remediations.md](11-remediations.md).
 
 ## 2. 분석 (analyze) — `step_analyze`
@@ -83,7 +83,7 @@ MSA: 공유 라이브러리 루트 먼저, 그다음 서비스마다 `transform.
 **범위.** 계획에는 범위(`MigrationPlan.scope`, 저널 `plan`의 `scope`)가 있다. 보통은 `full`이고 위 표대로다. 사내 프레임워크 프로젝트는
 `jdk-jakarta`: 단계는 `transform.rewrite`(`framework.recipe_sets`의 세트만, 기본 `jdk21`과 `jakarta`. 앞에 MS949·EUC-KR 모듈의 `project.build.sourceEncoding` 쓰기, 뒤에 as-is `provided` scope 되돌리기), JSP가 있으면 `transform.jsp_jakarta`
 (재구성기 없이 JSP 이름만 바꿈, 커밋 `transform: JSP javax → jakarta`), `verify.build`뿐이다. `restructure.*`, `restructure.review`,
-`transform.compile`은 없다. 빌드 1회, 오류 수정 없음(사전 시도·KB·LLM 없음, `framework.fix_loop: true`면 수정 루프).
+`transform.compile`은 없다. 빌드 오류는 수정 루프(`framework.fix_loop: true`, 기본; `false`면 빌드 1회, 사전 시도·KB·LLM 없음).
 as-is 부모는 회사 부모로 맞추지 않고, 받지 못하면 LLM 없이 `aborted:parent-not-found`로 멈춘다. 결과 줄에 `scope=jdk-jakarta`. 자세한 것은 [13](13-framework-projects.md).
 
 레시피 세트(`openrewrite.recipes`, id는 `knowledge/recipes/catalog.yml`에 있어야 한다):
@@ -146,7 +146,7 @@ as-is 부모는 회사 부모로 맞추지 않고, 받지 못하면 LLM 없이 `
 | 명령 | `mvn clean package -Dmaven.test.skip=true`(`build.skip_test_compile: true`), `build.extra_args`, `build.settings_file`, `build.java_home` |
 | 쓰는 것 | 빌드 로그 `logs/NNN-verify.log`, 오류 목록, 저널 `build`, `verify` |
 | 특이 | Windows의 `target/` 파일 잠금이면 기다렸다 다시(`build.file_lock_retries`), 로컬 저장소 부정 캐시면 `-U`로 한 번 더(`build.retry_negative_cache`), pom 없이 jar만 있는 라이브러리면 최소 pom을 쓰고 한 번 더(`build.pomless_stub`, [07](07-config-and-knowledge.md)) |
-| 수정 루프로 | 남은 클러스터가 모두 이미 차단됐거나 시간 예산(`loop.max_total_minutes`)이 끝났거나, 범위 `jdk-jakarta`에 `framework.fix_loop: false`(기본)면 돌리지 않는다 |
+| 수정 루프로 | 남은 클러스터가 모두 이미 차단됐거나 시간 예산(`loop.max_total_minutes`)이 끝났거나, 범위 `jdk-jakarta`에 `framework.fix_loop: false`면 돌리지 않는다 |
 
 ## 8. 수정 루프 (개요만 — 자세히는 [04-cases-scripts-kb.md](04-cases-scripts-kb.md))
 

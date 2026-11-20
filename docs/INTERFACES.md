@@ -6057,3 +6057,44 @@ run's remaining budget; a loop that cannot start for lack of time is `attempted:
 **Not in this round.** Pom edits by the loop (an upgrade that needs an exclusion or a new artifact stays a failed
 candidate); a loop when the baseline build already failed; learning into the KB; prompts written for this case
 beyond `plan_notes`.
+
+**As coded (2026-11-20).** Deviations from the text above, all in the code as committed:
+- `first_outcome` is only logged: `run_fix_loop` writes its log path into the loop's own journal
+  (`remediation_fix_loop_start`, beside `targets` and `max_iterations`); the loop builds once itself before it fixes.
+- The `fix.patch` route is an entry of `_FIXED_FILES` in `sbmig/remediations/service.py` (`_last_fix_patch`: the
+  highest `rounds/<n>/fix.patch` that exists), not in `remediations/api.py`.
+- The loop does not start with less than `fixer.MIN_LOOP_SECONDS` (60) left of the deadline (`attempted: false`,
+  reason `time budget used up`), nor when a stop is already pending (`attempted: false`, `stop requested`). A tree that
+  already holds a `.git` is left alone (`error: RuntimeError: …`). The workspace's commit of the uploaded files names the
+  manifest paths explicitly, so a file the project's `.gitignore` hides is still tracked and reset.
+- `Components.fixer` defaults to `None`; `None` means the loop is never called (`_fix_wanted` is false), which is what
+  every graph test that does not set a fixer gets. `default_components` sets `fixer.RemediationFixer()`.
+- While the loop runs the candidate's completeness marker is taken off and put back afterwards; a fixer that raises
+  leaves it off, so such a candidate is never exported as a result ZIP. A failing confirming build resets the changed
+  files from `accepted/` (they are existing non-pom manifest files) and deletes the patch.
+- Time: the deadline is the run's remaining budget only in a chained run, through `chain._Budget.time_left`, which
+  `_Budget.wrap` attaches to the stop check (`remediation.chain_budget_minutes`); `_Holder.time_left` reads it. A run
+  without that attribute has no deadline, and the loop is then limited by `loop.max_total_minutes` (`LoopBudget`) and
+  `remediation.fix_loop_max_iterations` alone.
+- `report.fix_summary(state)` is the digest the service's status carries as `fix` (None when no round ran the loop):
+  `fixed`, `changed` (files of committed fixed rounds), `llm_calls` (every round's loop), `round` (last fixed round).
+  The page draws the chip and adds `llm_calls` to the run header's LLM count from it; `SBMIG-RESULT … llm=` and the
+  migration report's count do not include the remediation's calls.
+- "Fixed" in the report, the chip and `fix_summary.changed` counts only committed rounds (`_fixed_rounds`); a fixed
+  round that did not commit (for example a later verify problem) contributes nothing to the result.
+- The report's line for a loop that never started (`attempted: false`) is 「남은 시간이 없어 빌드 오류 자동 수정은
+  시작하지 않았습니다.」 under the failed-build warning and 「빌드 오류 자동 수정: 남은 시간이 없어 시작하지 않음」 in the
+  processing record, also when the reason was a pending stop. The status message's ` | automatic build fix: <reason>`
+  is translated by the `auto_fix_*` rules of `i18n.py` (`fix_failed_ko`).
+- The processing record of a fixed round shows the first failed build (「처음 수정본 빌드」) above the confirming build.
+- Not covered: the second candidate build after an ineffective override entry is dropped gets no loop; the fix loop's
+  calls are not part of the migration report's LLM usage.
+
+**Tests.** `tests/loop/test_fixloop_edit_guard.py` (the hook: LLM edits, stored script, pre-tries, a raising guard,
+`None` unchanged), `tests/remediations/test_fixer.py` (guard rules, fixed / not fixed / exception / time / stop,
+`.gitignore` and `.git` restored, patch), `tests/remediations/test_graph_fix_loop.py` (when the loop runs, confirming
+build, `candidate_build_failed` with the suffix, state JSON without `fix`), `tests/remediations/test_report_fix_loop.py`
+(section, 「변경하지 않은 것」, the not-fixed and not-started lines, `report.json`, `fix_summary`),
+`tests/remediations/test_i18n.py` (the reasons), `tests/web/test_page_remediation_fix.py` (chip, LLM count,
+`fix.patch` link); part A: `tests/loop/test_framework_no_loop.py`, `tests/web/test_framework_scope.py`,
+`tests/analyze/test_framework.py` (`test_framework_fix_loop_defaults_to_true`), `tests/fixtures/test_fixture_projects.py`.

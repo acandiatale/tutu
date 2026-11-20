@@ -107,11 +107,14 @@
 
 LLM 이 적용한 시도도 커밋 전에 `_fill_versions` 가 버전 없는 의존성을 같은 순서로 채운다(LLM 은 버전을 모르면 `null` 로 둔다).
 
-사내 프레임워크 프로젝트(범위 `jdk-jakarta`)는 기본(`framework.fix_loop: false`)으로 수정 루프를 돌지 않는다: 빌드 1회, 사전 시도·재사용·LLM
-없음, KB에 쓰는 스크립트도 없다. 아래는 `framework.fix_loop: true`일 때다. "새 부모 체인" 자리에 프로젝트 자기 부모 체인(as-is 캡처)이 들어가고 목표 Boot BOM은 쓰지 않는다.
+사내 프레임워크 프로젝트(범위 `jdk-jakarta`, `framework.fix_loop: true` 기본)도 수정 루프를 돈다(`false`면 빌드 1회, 사전 시도·재사용·LLM·KB 기록
+없음). "새 부모 체인" 자리에 프로젝트 자기 부모 체인(as-is 캡처)이 들어가고 목표 Boot BOM은 쓰지 않는다.
 프레임워크 아티팩트는 보호 키라서 사전 시도가 버전을 박거나 바꾸지 않고, `sbmig-parent`는 돌지 않는다. LLM 시도가 프레임워크 선언이나
 `<parent>`를 바꾸면 커밋 전에 되돌린다(저널 `framework_guard`). 프레임워크 자신이 javax 기준이면 LLM 없이 `external_javax_api`로 차단한다.
 자세한 것은 [13-framework-projects.md](13-framework-projects.md) 5절.
+
+취약점 조치도 깨진 후보 빌드에 이 루프를 쓴다([11](11-remediations.md) 2절): `NullKnowledgeBase`(재사용·기록 없음), `edit_guard`가
+시도마다(사전 시도 포함) `pom.xml`·목록 밖 경로·삭제를 거절한다(`_edit_guard_rejected`, 저널 `edit_guard`).
 
 **범위와 KB 실적**: 저장 버전은 만든 실행의 범위(`CaseScript.scope`), 실행 기록은 그 실행의 범위(`ScriptRun.scope`)를 남긴다(빈 값 = 범위를
 기록하기 전 = `full`). 성공·실패 수, `last_failure`, proven 판정은 버전 자기 범위의 실행만 센다. 범위를 줄인 실행이 재사용한 `full` 버전을

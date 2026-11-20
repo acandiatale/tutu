@@ -23,14 +23,14 @@ intake ─► analyze ─► plan ─► transform ─► restructure ─► str
 | transform | first the poms whose bytes do not match their XML declaration are made consistent (`layout.legacy_context.correct_pom_encoding`, `sbmig/restructure/pom_charset.py`: strict EUC-KR bytes → declaration `EUC-KR`, else saved as UTF-8; commit `transform: pom encodings corrected`, journal `pom_encodings`, flag `pom-encoding-corrected`; OpenRewrite cannot parse such a pom), then one OpenRewrite run of every planned recipe on the as-is classpath, no build (`sbmig/rewrite/runner.py`) | never (the build shows what is left); a failed recipe run is said: flag `rewrite-failed` (first attention code), journal `rewrite_failed`, the first hand-over line (`sbmig/rewrite/failure.py`) |
 | restructure | the company layout and every pom cleanup, no LLM (§8) | never; a failed step resets the tree to the commit before it (journal `restructure_reset`), flags `restructure-failed` and the run is not a success |
 | structure review | one LLM call checks the restructured poms against the company rules; critical findings are fixed by edits, warnings go to the report (`sbmig/review/reviewer.py`). An unreadable answer (only a fragment of the JSON decodes, or cut at the token limit) gets the one retry with a request for a shorter answer; two unreadable answers = verdict `failed` | never |
-| verify | `mvn clean package -Dmaven.test.skip=true`; on failure the script fix loop (§3), then the final build again (MSA: `report.final_build` is the first failing final build). A framework project builds once and fixes nothing (no pre-try, stored script or LLM call; its errors are reported) unless `framework.fix_loop: true` | a stop request (§7.7) |
+| verify | `mvn clean package -Dmaven.test.skip=true`; on failure the script fix loop (§3), then the final build again (MSA: `report.final_build` is the first failing final build). A framework project gets the same loop with its version facts from its own parent chain and the framework guard (`framework.fix_loop: true`, default); with `false` it builds once and fixes nothing (no pre-try, stored script or LLM call; its errors are reported) | a stop request (§7.7) |
 | finalize | success verdict, advisories verified on the final tree, Handover, error list, KB records, code changes (`sbmig/report/changes.py`), `report.md` / `report.json`, then `changes.patch` / `result.zip` and the code-change record `codediff/` (`sbmig/report/codediff.py`: only paths the last commit has; none for a run that changed no file, journal `code_diff_skipped`) | – |
-| remediation | only when `remediation.after_migration` is on and the final build succeeded — or, with `remediation.after_failed_build: framework` (default), a framework project without the fix loop whose final build was attempted and failed: the vulnerability-remediation graph (§11) | – |
+| remediation | only when `remediation.after_migration` is on and the final build succeeded — or, with `remediation.after_failed_build: framework` (default), a framework project whose final build was attempted and failed (with or without the fix loop): the vulnerability-remediation graph (§11) | – |
 
 The run flow `remediation` (`sbmig run --flow remediation`, web `?flow=remediation`) uses only `intake → remediation → finalize`:
 intake as far as it changes nothing in the project (workspace, preflight, the build-tool check with its refusals), then the
 remediation of the project as uploaded (`chain.run_only`; its own baseline build is the build gate), then a short report. No
-analyze / plan / transform / restructure / review / verify, no LLM call, no KB access. Exit 0 = remediation `SUCCEEDED`, 2 = any
+analyze / plan / transform / restructure / review / verify, no KB access; the LLM is called only by the build fix loop on a failed candidate (§11). Exit 0 = remediation `SUCCEEDED`, 2 = any
 other saved status, 3 = not started (refusal, or `remediation:not-ready`). The default flow `full` is the table above.
 
 Why the recipes run **before** the restructure: OpenRewrite needs type attribution against the as-is classpath (javax types,
@@ -360,12 +360,17 @@ folder under `<kb>/.lock`. Operator text: `deploy/README.md`; contract detail: `
 `sbmig/remediations/` is a separate LangGraph (`graph.py`) that scans a project with the company's IVAS service, applies
 Maven version-text fixes and managed-version overrides, rebuilds, rescans and delivers a report + `result.zip`. It runs in the
 build pod as the migration graph's last node when `remediation.after_migration` is on and the migration ended BUILD SUCCESS
-or, with `remediation.after_failed_build: framework`, was a framework project without the fix loop whose final build failed
+or, with `remediation.after_failed_build: framework`, was a framework project whose final build failed (with or without its fix loop)
 (`sbmig/remediations/chain.py`; it then tolerates the failing baseline build, accepts a candidate build that fails only with the
 baseline's errors (`maven.compare_with_baseline`) and ends `INCOMPLETE` `baseline_build_failed` when it changed versions, as an
 ordinary remediation when it changed nothing or the candidate build passed), or alone as the run flow `remediation` (§1); its outcome never changes the migration's verdict (`SBMIG-RESULT … remediation=<status>`). The web
 pod serves status and files under `/api/remediations/…`, and resumes a stopped remediation in a new build pod. Every
 proposal of a plan is applied without asking anybody, so a chained remediation normally ends in the build pod that ran the migration.
+When a round's candidate build fails after versions were raised and the baseline build passed, the migration's
+`BuildFixLoop` runs on the candidate (`sbmig/remediations/fixer.py`, `remediation.fix_loop`, default true) under an
+`edit_guard`: existing source files only, no `pom.xml`, no file created or deleted, no stored script, nothing learned
+into the KB. Fixed → confirming build, verify, commit, `rounds/<r>/fix.patch`; not fixed → the sources are reset and
+the round fails `candidate_build_failed` as before.
 The planner keeps a wrong version out and leaves a residual for a person instead: a version property several artifacts share
 (target missing for one of them), a jump to another major no scanner hint names, a date-stamped current version (first number
 over 9999), a current version that already meets every hint, a declaration only inside a profile not active by default, a g:a

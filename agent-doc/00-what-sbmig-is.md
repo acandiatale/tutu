@@ -79,11 +79,11 @@ as-is 담당팀의 몫이다 — sbmig 는 빌드와 패키징까지만 책임�
 ```
 
 위 그림은 실행 방식 `full`(전체 진행)이다. 이관이 BUILD SUCCESS 로 끝나면(사내 프레임워크 실행은 실패해도) 마무리 뒤에 취약점 조치가 이어 돌 수 있다. 실행 방식
-`remediation`(취약점 해결, `sbmig run --flow remediation`)은 접수 → 취약점 조치 → 마무리만 지나간다: 이관 단계·LLM·KB 없이 올린
+`remediation`(취약점 해결, `sbmig run --flow remediation`)은 접수 → 취약점 조치 → 마무리만 지나간다: 이관 단계·KB 없이(LLM은 깨진 후보 빌드의 수정 루프만) 올린
 프로젝트를 그대로 빌드·검사·조치한다([11-remediations.md](11-remediations.md)).
 
 사내 프레임워크 아티팩트(`framework.artifacts`)를 쓰는 프로젝트는 분석에서 범위 `jdk-jakarta`로 정해진다. 위 그림에서 재구성,
-구조 검토, 수정 루프를 빼고 JDK 21과 jakarta 레시피, 빌드 1회만 돈다. 빌드 오류는 고치지 않고(LLM 호출 없음) 보고서에 남기며,
+구조 검토를 빼고 JDK 21과 jakarta 레시피, 빌드와 수정 루프가 돈다(`framework.fix_loop: true`, 기본; `false`면 빌드 1회, 오류는 고치지 않고 보고서에 남김).
 취약점 조치는 빌드가 실패해도 이어진다(버전을 바꿨으면 빌드 미확인 `INCOMPLETE`). 부모 pom과 프레임워크 버전은 그대로 둔다. 결과 줄에 `scope=jdk-jakarta`가 붙고, 화면과
 보고서에 `<이름> 프레임워크는 JDK 21, Jakarta만 적용합니다.`가 나온다([13-framework-projects.md](13-framework-projects.md)).
 

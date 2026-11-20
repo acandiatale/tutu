@@ -30,7 +30,7 @@ restructure  company layout (parent / mandatory / optional, module split, also f
 review       the LLM checks poms, dependencies and modules; critical issues are fixed by its edits and committed
 verify       mvn clean package -Dmaven.test.skip=true; on failure the script fix loop, then the final build again
 finalize     report.md (ko: guide for the requester) / report.json, errors.md / errors.jsonl, KB records (kb-v2/)
-remediation  when switched on, after BUILD SUCCESS (a framework run without the fix loop: after a failed build too): IVAS vulnerability scan, version-text fixes, rescan
+remediation  when switched on, after BUILD SUCCESS (a framework run: after a failed build too): IVAS vulnerability scan, version-text fixes, rescan
 ```
 
 Script fix loop, per error case (case = L2 signature, one script for every file that has it): zero-LLM **pre-tries**
@@ -43,11 +43,14 @@ attempt that did not help is rolled back before the final build; every script ve
 `repository_unreachable` without an LLM call.
 
 The remediation step (vulnerable library versions, IVAS) is a separate graph chained after a successful migration; it
-never changes the migration's verdict. Details: `agent-doc/11-remediations.md`.
+never changes the migration's verdict. When a candidate build fails after versions were raised (and the baseline build
+passed), the build fix loop tries to fix the source (`remediation.fix_loop`, default on: existing source files only, no
+`pom.xml`, no file added or deleted); not fixed → the sources are reset and the round fails as before. Details:
+`agent-doc/11-remediations.md`.
 
 A run has one of two **flows**: `full` (the default: the migration above, then the chained remediation) or
 `remediation` (`sbmig run <zip|dir> --flow remediation`, web `POST /api/runs?name=…&project=<project name>&flow=remediation`, the page's 취약점 해결
-choice) — for a project migrated earlier and checked again: no migration step, no LLM call, no KB access; the upload is
+choice) — for a project migrated earlier and checked again: no migration step, no KB access, an LLM call only when the build fix loop works on a failed candidate; the upload is
 built as it is, scanned by IVAS, remediated and rescanned under `<run dir>/remediation/`. `SBMIG-RESULT … flow=remediation
 … remediation=<STATUS>`; exit 0 = SUCCEEDED, 2 = any other saved status, 3 = not started (refused at intake, or
 `remediation:not-ready` when IVAS values / Maven readiness are missing).
@@ -56,14 +59,16 @@ built as it is, scanned by IVAS, remediated and rescanned under `<run dir>/remed
 yml; empty = no check) runs in the reduced scope `jdk-jakarta`: the analyzer looks for the artifact in the poms'
 dependencies, in what a parent pom outside the project brings, in bundled jars and, when none of these has it, with one
 `dependency:tree`; the plan then holds only the recipe sets of `framework.recipe_sets` (default Java 21 + jakarta), the
-JSP javax → jakarta rename and ONE build: build errors are not fixed (no pre-try, no stored script, no LLM call) but
-reported, and the converted tree is delivered (a failed build ends with exit 2; a failed conversion too, even when the
+JSP javax → jakarta rename, the build and the fix loop (`framework.fix_loop: true`, default; it rolls back an attempt
+that touches the framework or a parent); what the loop cannot fix is reported and the converted tree is delivered (a
+failed build ends with exit 2; a failed conversion too, even when the
 unconverted tree builds: `exit=2 build=ok … attn=rewrite-failed`). The chained remediation follows whether the
 build passed or failed (`remediation.after_failed_build: framework`, default; `never` = only after a passing build). After a
 failed build the candidate build may fail only with the errors the project's build already had; when it changed versions,
 no build confirmed them, so it ends `INCOMPLETE` (`baseline_build_failed`; the page says 조치함 · 빌드 미확인); with nothing
-changed, or a candidate that builds, it ends as an ordinary remediation. The Korean report lists the remaining errors under 「변환 뒤 남은 빌드 오류」. No restructure, no structure review; the project keeps its parent pom, its layout and the framework version.
-`framework.fix_loop: true` brings the fix loop back (it rolls back an attempt that touches the framework or a parent).
+changed, or a candidate that builds, it ends as an ordinary remediation. No restructure, no structure review; the project keeps its parent pom, its layout and the framework version.
+`framework.fix_loop: false` = conversion only: ONE build, no pre-try, no stored script, no LLM call; the Korean report then
+lists the remaining errors under 「변환 뒤 남은 빌드 오류」.
 The framework's display name (`framework.name`, else derived from the artifact name: `example-fw-core` → `Example`)
 goes into the sentence the page and the report show: `<name> 프레임워크는 JDK 21, Jakarta만 적용합니다.`
 `SBMIG-RESULT … scope=jdk-jakarta`. Details: `agent-doc/13-framework-projects.md`.
