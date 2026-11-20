@@ -24,6 +24,7 @@ Entry point: `run_remediation`; helpers for the service: `new_state`, `can_resum
 from __future__ import annotations
 
 import functools
+import hashlib
 import logging
 import os
 import re
@@ -102,10 +103,17 @@ ROUTE = "route"
 BASELINE_LABEL = "baseline"
 # 수정본 복사와 적용이 끝났다는 표시 파일이다. 수정본 폴더 밖(rounds/<n>/)에 두어 결과 ZIP에 들어가지 않게 한다
 CANDIDATE_READY = "candidate.ready.json"
+EXPECTED_FILE = "expected.json"         # 라운드 수정본의 manifest 경로마다 기대하는 크기와 sha256(rounds/<r>/ 아래)
 # 상태가 보증하지 않는 수정본을 결과 ZIP으로 내보내지 않았을 때의 문장
 CANDIDATE_NOT_VOUCHED = ("the round {r} candidate was not delivered: the files on disk are not the complete change set "
                          "this state records")
 # 노드 하나가 그래프 한 단계이고 라운드마다 7단계가 필요하므로, LangGraph 기본값 25로는 모자라 넉넉히 둔다
+CANDIDATE_NOT_RESTORED = ("the round {r} candidate could not be put back to its expected state after the build ({n} "
+                          "path(s), first: {p}: {t}); nothing of this round was delivered")
+WHY_NO_MARKER = "no completeness marker"
+WHY_OTHER_APPLIED = "the completeness marker names other proposals than the state"
+WHY_NO_CANDIDATE = "the candidate folder is missing"
+WHY_NO_PROOF = "no record that the applied files were stored completely"
 RECURSION_BASE = 100
 RECURSION_PER_ROUND = 20
 # 성공이 아닌 사유의 우선순위.
@@ -357,10 +365,17 @@ class _Holder:
         return self.paths.round_dir(r) / CANDIDATE_READY
 
     def mark_candidate(self, r: int) -> None:
-        """라운드 ``r``의 수정본이 복사와 적용을 모두 마쳤다고 기록한다. 내용은 적용한 제안 id 목록이다.
+        """라운드 ``r``의 수정본이 복사와 적용을 모두 마쳤다고 기록한다. 적용한 제안 id 목록과 ``expected.json``의 sha256을 담는다.
 
-        Written after copy + apply (and the text-only check) of round `r`'s candidate: {round, applied}."""
-        write_json_atomic(self._ready_path(r), {"round": r, "applied": list(self.round_state(r).applied)})
+        Written after copy + apply (and the text-only check) of round `r`'s candidate and after `applied/` and
+        `expected.json` were stored (`_write_expected`): `{round, applied, expected}` where `expected` is the sha256 of
+        `rounds/<r>/expected.json`. The `expected` key is the proof that the applied files are stored completely; a
+        marker without it (written by an earlier version) does not vouch for the candidate."""
+        data: dict[str, Any] = {"round": r, "applied": list(self.round_state(r).applied)}
+        exp = self.paths.round_dir(r) / EXPECTED_FILE
+        if exp.is_file():
+            data["expected"] = sha256_file(exp)
+        write_json_atomic(self._ready_path(r), data)
 
     def unmark_candidate(self, r: int) -> None:
         """수정본을 지우거나 다시 만들기 전에 완료 표시를 지운다."""
@@ -369,13 +384,38 @@ class _Holder:
         except FileNotFoundError:
             pass
 
-    def candidate_vouched(self, r: int) -> bool:
-        """라운드 ``r``의 수정본이 상태에 기록된 적용 목록 그대로 완성된 트리인지 확인한다.
+    def vouch_problem(self, r: int) -> str:
+        """라운드 ``r``의 수정본을 빌드나 전달에 쓸 수 없는 이유를 반환한다. 쓸 수 있으면 빈 문자열이다.
 
-        The candidate exists and its completeness marker names exactly the state's `applied` of round `r`."""
+        "" when the candidate exists, its completeness marker names exactly the state's `applied` of round `r`, and the
+        marker carries the sha256 of `rounds/<r>/expected.json`, which names the same round and `applied` and lists
+        `applied_files` that all exist under `rounds/<r>/applied/`. Else the reason (`WHY_*`), journaled as `why`."""
         data = read_json(self._ready_path(r))
-        return (isinstance(data, dict) and data.get("applied") == list(self.round_state(r).applied)
-                and self.paths.candidate(r).is_dir())
+        applied = list(self.round_state(r).applied)
+        if not isinstance(data, dict):
+            return WHY_NO_MARKER
+        if data.get("applied") != applied:
+            return WHY_OTHER_APPLIED
+        if not self.paths.candidate(r).is_dir():
+            return WHY_NO_CANDIDATE
+        exp = self.paths.round_dir(r) / EXPECTED_FILE
+        want = data.get("expected")
+        if not isinstance(want, str) or not want or not exp.is_file() or sha256_file(exp) != want:
+            return WHY_NO_PROOF
+        rec = read_json(exp)
+        if (not isinstance(rec, dict) or rec.get("round") != r or rec.get("applied") != applied
+                or not isinstance(rec.get("files"), dict)):
+            return WHY_NO_PROOF
+        ad = _applied_dir(self, r)
+        if any(not (ad / str(x)).is_file() for x in rec.get("applied_files") or []):
+            return WHY_NO_PROOF
+        return ""
+
+    def candidate_vouched(self, r: int) -> bool:
+        """라운드 ``r``의 수정본이 상태에 기록된 적용 목록 그대로 완성된 트리이고 적용한 파일을 모두 저장했는지 확인한다.
+
+        `vouch_problem(r)` is empty."""
+        return not self.vouch_problem(r)
 
     def deliver_failed_candidate(self, r: int) -> str | None:
         """정책이 include일 때 빌드에 실패한 라운드 ``r``의 수정본 트리를 결과 ZIP으로
@@ -385,11 +425,16 @@ class _Holder:
         수정본이 완성됐다는 표시가 없으면 아무것도 확정하지 않고 None을 반환한다.
 
         Policy include: freeze the failed candidate tree as the delivery; keep an earlier verified ZIP beside it.
-        None (nothing frozen, nothing moved) when the state does not vouch for the candidate (`candidate_vouched`)."""
+        None (nothing frozen, nothing moved) when the state does not vouch for the candidate (`candidate_vouched`).
+        The candidate is synchronised with its expected bytes right before it is frozen (`_sync_candidate`, recorded
+        in `build_changed`); a path that cannot be put back raises `CandidateNotRestored` before anything is moved."""
         st, p = self.state, self.paths
         if not self.candidate_vouched(r):
             self.journal({"event": "candidate_not_vouched", "round": r})
             return None
+        # 마지막 빌드 뒤에 Maven 호출이 있었을 수 있으므로 내보내기 직전에 기대하는 바이트로 다시 맞춘다.
+        # 맞추지 못하면 CandidateNotRestored가 나가고, 이전 라운드의 결과 ZIP은 옮기지 않은 채 그대로 남는다
+        _sync_candidate(self, r, p.candidate(r))
         kept = ""
         if self.verified_earlier(r):
             d = st.delivery
@@ -864,6 +909,7 @@ def _apply(h: _Holder) -> str | None:
     h.unmark_candidate(r)
     _safe_rmtree(cand)
     _safe_rmtree(_applied_dir(h, r))
+    _safe_rmtree(_expected_path(h, r))
     c.intake.copy_tree(p.accepted, cand, h.paths_list)
     to_apply = plan.to_apply()
     result = c.apply.apply_proposals(h.project(cand), to_apply)
@@ -903,7 +949,7 @@ def _apply(h: _Holder) -> str | None:
         rs.verify_problems = violations
         h.discard_candidate(r)
         return h.finish(FAILED, R_TEXT_ONLY_VIOLATION, "; ".join(violations[:5]))
-    _store_applied(h, r, cand, result, applied)
+    _write_expected(h, r, _store_applied(h, r, cand, result, applied))
     h.mark_candidate(r)
     return "build"
 
@@ -1032,15 +1078,48 @@ def _verify(h: _Holder, r: int, cand: Path, proposals: list[Proposal]) -> list[s
     return list(c.apply.verify_resolution(proposals, before, after, packaged))
 
 
+class CandidateNotRestored(Exception):
+    """빌드 뒤 수정본의 manifest 경로 일부를 기대하는 바이트로 되돌리지 못했을 때 그래프 안에서 던지는 예외.
+
+    Raised by `_sync_candidate` when `sync_tree` / `sync_tree_table` could not put every path back; `_build` turns
+    it into FAILED `internal_error` (`CANDIDATE_NOT_RESTORED`) without committing or delivering the candidate."""
+
+    def __init__(self, round: int, failed: list[tuple[str, str, str]]):
+        self.round, self.failed = round, list(failed)
+        first = self.failed[0] if self.failed else ("-", "Error", "")
+        super().__init__(CANDIDATE_NOT_RESTORED.format(r=round, n=len(self.failed), p=first[0], t=first[1]))
+
+
 def _build(h: _Holder) -> str | None:
+    """수정본 빌드 노드. 빌드 뒤 수정본을 기대하는 상태로 되돌리지 못하면 이 라운드를 확정하지도 내보내지도 않고 FAILED로 끝낸다.
+
+    `_build_round`, with `CandidateNotRestored` → `discard_candidate` (an earlier verified delivery stays; a frozen
+    failed candidate is never made because the sync before freezing raised first) and FAILED `internal_error` with
+    `CANDIDATE_NOT_RESTORED`; journal `candidate_not_restored`."""
+    try:
+        return _build_round(h)
+    except CandidateNotRestored as e:
+        r = e.round
+        log.error("remediation round %s: %s", r, e)
+        h.journal({"event": "candidate_not_restored", "round": r, "count": len(e.failed),
+                   "paths": [f[0] for f in e.failed[:5]], "errors": [f[1] for f in e.failed[:5]]})
+        h.discard_candidate(r)
+        return h.finish(FAILED, R_INTERNAL_ERROR, str(e))
+
+
+def _build_round(h: _Holder) -> str | None:
     st, c, p = h.state, h.c, h.paths
     r = st.round
     rs = h.round_state(r)
     cand = p.candidate(r)
-    if not h.candidate_vouched(r):
-        # 복사나 적용 도중에 파드가 끝나 수정본이 덜 만들어졌을 수 있으므로 accepted/에서 다시 만든다
-        h.journal({"event": "candidate_rebuilt", "round": r})
-        log.warning("remediation round %s: the candidate has no completeness marker; it is made again from accepted/", r)
+    # 수정 루프 도중에 파드가 끝났으면 무엇을 하든 먼저 그 LLM 사용량을 기록한다
+    _settle_leftover_loop(h, r)
+    why = h.vouch_problem(r)
+    if why:
+        # 복사나 적용 도중에 파드가 끝났거나 이전 버전이 만든 수정본이어서 적용한 파일이 모두 저장됐는지 알 수 없으므로
+        # accepted/에서 다시 만든다
+        h.journal({"event": "candidate_rebuilt", "round": r, "why": why})
+        log.warning("remediation round %s: the candidate is made again from accepted/ (%s)", r, why)
         return "apply"
     outcome, nxt = _run_build(h, r, cand)
     if outcome is None:
@@ -1086,13 +1165,15 @@ def _applied_dir(h: _Holder, r: int) -> Path:
     return h.paths.round_dir(r) / APPLIED_DIR
 
 
-def _store_applied(h: _Holder, r: int, cand: Path, result: Any, proposals: list[Proposal]) -> list[str]:
+def _store_applied(h: _Holder, r: int, cand: Path, result: Any,
+                   proposals: list[Proposal]) -> dict[str, tuple[int, str]]:
     """제안이 고친 파일의 적용 직후 바이트를 ``rounds/<r>/applied/<경로>``에 둔다. 이름이 pom.xml이 아닌 pom도 들어간다.
 
     v2.1z-bk: at the end of `apply` (and of the re-apply after a dropped override) the files the proposals edited —
     `ApplyResult.changed_files` and every edit's `pom`, whatever its name — are stored with the candidate's bytes after
     apply, at their manifest path (relative to the ZIP top). The folder is made anew each time, so a remade candidate
-    keeps no file of a dropped proposal. Returns the stored paths."""
+    keeps no file of a dropped proposal. Returns `{path: (size, sha256)}` of the stored files (hashed from the bytes
+    already in memory, no extra read)."""
     d = _applied_dir(h, r)
     _safe_rmtree(d)
     pr = h.project_root
@@ -1100,7 +1181,8 @@ def _store_applied(h: _Holder, r: int, cand: Path, result: Any, proposals: list[
     edited = set(getattr(result, "changed_files", None) or [])
     edited |= {e.pom for x in proposals for e in (x.edits or []) if getattr(e, "pom", "")}
     listed = set(h.paths_list)
-    stored: list[str] = []
+    stored: dict[str, tuple[int, str]] = {}
+    d.mkdir(parents=True, exist_ok=True)
     for prel in sorted(edited):
         rel = prefix + str(prel).replace("\\", "/").strip("/")
         src = cand / rel
@@ -1108,28 +1190,129 @@ def _store_applied(h: _Holder, r: int, cand: Path, result: Any, proposals: list[
             continue
         dst = d / rel
         dst.parent.mkdir(parents=True, exist_ok=True)
-        dst.write_bytes(src.read_bytes())
+        data = src.read_bytes()
+        dst.write_bytes(data)
         os.chmod(dst, 0o755 if os.lstat(src).st_mode & 0o111 else 0o644)
-        stored.append(rel)
+        stored[rel] = (len(data), hashlib.sha256(data).hexdigest())
     return stored
+
+
+def _expected_path(h: _Holder, r: int) -> Path:
+    return h.paths.round_dir(r) / EXPECTED_FILE
+
+
+def _prefix(h: _Holder) -> str:
+    pr = h.project_root
+    return "" if pr in ("", ".") else pr.rstrip("/") + "/"
+
+
+def _rows(data: Any) -> dict[str, tuple[int, str]] | None:
+    """``expected.json``의 ``files``를 {경로: (크기, sha256)}로 바꾼다. 형식이 맞지 않으면 None이다."""
+    if not isinstance(data, dict) or not isinstance(data.get("files"), dict):
+        return None
+    out: dict[str, tuple[int, str]] = {}
+    try:
+        for k, v in data["files"].items():
+            if not (isinstance(v, (list, tuple)) and len(v) == 2):
+                return None
+            out[str(k)] = (int(v[0]), str(v[1]))
+    except (TypeError, ValueError):
+        return None
+    return out
+
+
+def _fix_rows(h: _Holder, fix: FixResult | None) -> dict[str, tuple[int, str]]:
+    """고친 파일(``fixloop/fixed/``)의 (크기, sha256)을 manifest 경로로 반환한다. 고친 소스는 작으므로 그 파일만 읽는다."""
+    if fix is None or not fix.fixed or not fix.changed or not fix.fixed_dir:
+        return {}
+    root = h.paths.root / fix.fixed_dir
+    out: dict[str, tuple[int, str]] = {}
+    for x in fix.changed:
+        f = root / str(x).strip("/")
+        if f.is_file() and not f.is_symlink():
+            out[_prefix(h) + str(x).strip("/")] = (f.stat().st_size, sha256_file(f))
+    return out
+
+
+def _accepted_table(h: _Holder, r: int) -> dict[str, tuple[int, str]]:
+    """accepted/의 manifest 경로마다 (크기, sha256)을 가능하면 트리를 읽지 않고 만든다.
+
+    Candidates, each accepted only when its `intake.table_hash` equals the round plan's `source_tree_hash` (the tree
+    hash `_plan` computed from accepted/ with its one walk of the round): the expected table of the last committed
+    round (`rounds/<k>/expected.json` with that round's fixed files substituted, since a round commits its synced
+    candidate), then `original/manifest.json` (size + sha256 of the upload). When neither matches (a round committed by
+    an earlier version), accepted/ is hashed once (`intake.file_table`)."""
+    from .intake import file_table, table_hash
+    paths = h.paths_list
+    plan = h.load_plan(r)
+    want = plan.source_tree_hash if plan is not None else ""
+    tries: list[tuple[str, dict[str, tuple[int, str]]]] = []
+    committed = [x for x in h.state.rounds if x.committed and x.round < r]
+    if committed:
+        last = max(committed, key=lambda x: x.round)
+        rows = _rows(read_json(_expected_path(h, last.round)))
+        if rows is not None:
+            rows.update(_fix_rows(h, last.fix))
+            tries.append((f"round {last.round}", rows))
+    man = read_json(h.paths.manifest)
+    if isinstance(man, dict) and isinstance(man.get("entries"), list):
+        rows = {}
+        for e in man["entries"]:
+            if isinstance(e, dict) and "path" in e and "size" in e and "sha256" in e:
+                rows[str(e["path"])] = (int(e["size"]), str(e["sha256"]))
+        tries.append(("manifest", rows))
+    for name, rows in tries:
+        if want and table_hash(rows, paths) == want:
+            log.debug("remediation round %s: the expected table starts from the %s table", r, name)
+            return {k: v for k, v in rows.items() if k in set(paths)}
+    log.info("remediation round %s: no recorded table matches accepted/; hashing it once", r)
+    return file_table(h.paths.accepted, paths)
+
+
+def _write_expected(h: _Holder, r: int, stored: dict[str, tuple[int, str]]) -> None:
+    """라운드 ``r``의 manifest 경로마다 기대하는 (크기, sha256)과 적용한 파일 목록을 ``expected.json``에 원자적으로 쓴다.
+
+    `rounds/<r>/expected.json` = `{schema: 1, round, applied, applied_files, files: {path: [size, sha256]}}`: accepted/
+    (`_accepted_table`) with the files stored under `applied/` substituted. Written after `applied/` and before
+    `mark_candidate`, whose marker carries this file's sha256: together they are the proof that the candidate's
+    applied files are stored completely."""
+    rs = h.round_state(r)
+    files = _accepted_table(h, r)
+    files.update(stored)
+    write_json_atomic(_expected_path(h, r), {
+        "schema": 1, "round": r, "applied": list(rs.applied), "applied_files": sorted(stored),
+        "files": {k: [v[0], v[1]] for k, v in sorted(files.items())}})
+
+
+def _expected_table(h: _Holder, r: int, *, with_fix: bool = True) -> dict[str, tuple[int, str]] | None:
+    """라운드 ``r``의 기대하는 (크기, sha256) 표를 반환한다. 고친 파일이 있으면 그 값으로 바꾼다. 표가 없으면 None이다."""
+    rows = _rows(read_json(_expected_path(h, r)))
+    if rows is None:
+        return None
+    if with_fix:
+        rows.update(_fix_rows(h, h.round_state(r).fix))
+    return rows
 
 
 def _expected(h: _Holder, r: int, *, with_fix: bool = True) -> Callable[[str], Path]:
     """라운드 ``r``의 manifest 경로마다 수정본이 가져야 할 바이트의 파일을 돌려주는 함수를 만든다.
 
     v2.1z-bk: `fixloop/fixed/<path>` when the path is in `rs.fix.changed` of a fixed fix (and `with_fix`); else
-    `rounds/<r>/applied/<path>` when stored; else `accepted/<path>`."""
+    `rounds/<r>/applied/<path>` when stored (the `applied_files` of `expected.json`, or a walk of `applied/` without
+    it); else `accepted/<path>`."""
     rs = h.round_state(r)
     acc, ad = h.paths.accepted, _applied_dir(h, r)
-    pr = h.project_root
-    prefix = "" if pr in ("", ".") else pr.rstrip("/") + "/"
+    prefix = _prefix(h)
     fixed: dict[str, Path] = {}
     fix = rs.fix
     if with_fix and fix is not None and fix.fixed and fix.changed and fix.fixed_dir:
         root = h.paths.root / fix.fixed_dir
         fixed = {prefix + str(x).strip("/"): root / str(x).strip("/") for x in fix.changed}
     applied: set[str] = set()
-    if ad.is_dir():
+    rec = read_json(_expected_path(h, r))
+    if isinstance(rec, dict) and isinstance(rec.get("applied_files"), list):
+        applied = {str(x) for x in rec["applied_files"]}
+    elif ad.is_dir():
         for dirpath, _dirs, files in os.walk(ad):
             base = Path(dirpath).relative_to(ad).as_posix()
             applied |= {f if base == "." else f"{base}/{f}" for f in files}
@@ -1144,20 +1327,32 @@ def _expected(h: _Holder, r: int, *, with_fix: bool = True) -> Callable[[str], P
 def _sync_candidate(h: _Holder, r: int, cand: Path, *, with_fix: bool = True,
                     record: bool = True) -> tuple[list[str], list[str]]:
     """수정본의 manifest 파일을 기대하는 바이트와 맞춘다. ``record``면 되돌린 경로를 빌드가 바꾼 파일로 기록한다.
+    되돌리지 못한 경로가 있으면 ``CandidateNotRestored``를 던진다.
 
-    `intake.sync_tree(candidate, _expected(...), manifest paths)`: a missing path is restored, a path whose bytes
-    differ is overwritten. With `record` (after a build) the paths go into `RoundState.build_changed` (sorted union)
-    and the journal gets `build_side_changes` (`round`, `missing`, `changed` counts, the first 5 changed `paths`;
-    `missing_paths` too) and, for restored files, `manifest_files_restored` as before. A failure is logged and left to
-    freezing / committing to report."""
+    With `rounds/<r>/expected.json` (always there for a vouched candidate): `intake.sync_tree_table` against that
+    table (+ the fix's files), so each candidate file is read at most once and an expected file is opened only for a
+    path that differs; without it `intake.sync_tree` (byte comparison). A missing path is restored, a differing path
+    overwritten. With `record` (after a build, before committing, before freezing a failed candidate) the paths go
+    into `RoundState.build_changed` (sorted union) and the journal gets `build_side_changes` (`round`, `missing`,
+    `changed` counts, the first 5 changed `paths`; `missing_paths` too) and, for restored files,
+    `manifest_files_restored`. Every path is tried; when any could not be put back the paths that were are still
+    recorded, the journal gets `candidate_sync_failed` (`round`, `count`, `paths` = first 5, `errors` = their error
+    types) and `CandidateNotRestored` is raised: the round must neither commit nor deliver this candidate."""
+    from .intake import SyncFailed
     rs = h.round_state(r)
+    failed: list[tuple[str, str, str]] = []
+    table = _expected_table(h, r, with_fix=with_fix)
+    by_table = getattr(h.c.intake, "sync_tree_table", None)
     try:
-        missing, changed = h.c.intake.sync_tree(cand, _expected(h, r, with_fix=with_fix), h.paths_list)
+        if table is not None and callable(by_table):
+            missing, changed = by_table(cand, _expected(h, r, with_fix=with_fix), table, h.paths_list)
+        else:
+            missing, changed = h.c.intake.sync_tree(cand, _expected(h, r, with_fix=with_fix), h.paths_list)
         missing, changed = list(missing or []), list(changed or [])
-    except Exception as e:  # noqa: BLE001 - 맞추지 못하면 결과 ZIP을 만들거나 확정할 때 그 파일 문제를 알린다
-        log.warning("remediation round %s: the candidate was not brought back to the expected files: %s", r,
-                    scrub_message(f"{type(e).__name__}: {e}", h.paths.root))
-        return [], []
+    except SyncFailed as e:
+        missing, changed, failed = list(e.missing), list(e.changed), list(e.failed)
+    except Exception as e:  # noqa: BLE001 - 어느 경로에서 멈췄는지 모르는 실패도 되돌리지 못한 것으로 본다
+        missing, changed, failed = [], [], [("-", type(e).__name__, "")]
     if record and (missing or changed):
         rs.build_changed = sorted(set(rs.build_changed) | set(missing) | set(changed))
         log.warning("remediation round %s: the build removed %d and changed %d file(s) of the upload; they were put "
@@ -1167,6 +1362,12 @@ def _sync_candidate(h: _Holder, r: int, cand: Path, *, with_fix: bool = True,
                    "paths": changed[:5], "missing_paths": missing[:5]})
         if missing:
             h.journal({"event": "manifest_files_restored", "round": r, "count": len(missing), "paths": missing[:5]})
+    if failed:
+        log.error("remediation round %s: %d path(s) of the candidate could not be put back (%s)", r, len(failed),
+                  ", ".join(f"{f[0]}: {f[1]}" for f in failed[:5]))
+        h.journal({"event": "candidate_sync_failed", "round": r, "count": len(failed),
+                   "paths": [f[0] for f in failed[:5]], "errors": [f[1] for f in failed[:5]]})
+        raise CandidateNotRestored(r, failed)
     return missing, changed
 
 
@@ -1177,11 +1378,23 @@ def _run_build(h: _Holder, r: int, cand: Path) -> tuple[Any | None, str | None]:
     v2.1z-bj `_build` re-entry rules: `rs.fix` is never cleared here. A recorded fixed result → overlay (idempotent)
     and the confirming build (`_confirm_fix`); a recorded loop that ran and did not fix → the build runs and, when it
     fails, the loop is not run again; a recorded loop that never started (stop / time) is forgotten and may start now;
-    no record → the v2.1z-bi path (first build, the loop when `_fix_wanted`, confirming build)."""
+    a recorded loop that ran and ended `stop requested` is not a verdict: it is moved to `rs.fix_discarded` (reason
+    kept, usage still counted; journal `remediation_fix_discarded`) and the loop may run again (`time budget used up`
+    and every other not-fixed reason stay final); no record → the v2.1z-bi path (first build, the loop when
+    `_fix_wanted`, confirming build). A leftover `fixloop/` of a killed loop is settled first
+    (`_settle_leftover_loop`), whatever happens next."""
     rs = h.round_state(r)
+    _settle_leftover_loop(h, r)
     fix = rs.fix
     if fix is not None and not fix.fixed and not fix.attempted:
         rs.fix = fix = None
+    if fix is not None and fix.attempted and not fix.fixed and fix.reason == R_FIX_STOP:
+        # 중지 요청으로 멈춘 루프는 판정이 아니므로 버린 결과로 옮기고(사용량은 계속 센다) 루프를 다시 실행할 수 있게 한다
+        rs.fix_discarded = [*rs.fix_discarded, FixResult.from_dict(fix.to_dict())]
+        rs.fix = fix = None
+        h.save()
+        h.journal({"event": "remediation_fix_discarded", "round": r, "reason": R_FIX_STOP, "changed": 0})
+        log.info("remediation round %s: the build fix loop stopped on request earlier; it may run again", r)
     if fix is not None and fix.fixed:
         return _confirm_fix(h, r, cand, fresh=False)
     outcome = _package(h, r, cand, h.paths.build_log(r))
@@ -1244,47 +1457,77 @@ def fix_loop_seconds(h: _Holder, first: Any) -> float:
     return min(cap, left - reserve)
 
 
-def _settle_old_loop(h: _Holder, r: int, work: Path) -> None:
-    """라운드에 남은 예전 ``fixloop/`` 폴더를 정리한다. 기록된 루프의 폴더는 지우고, 중간에 끝난 루프의 폴더는 이름을 바꿔
-    남기며 그 LLM 사용량을 버린 결과 하나로 ``rs.fix_discarded``에 넣고 상태를 저장한다.
+def _settle_old_loop(h: _Holder, r: int, work: Path, *, remove_recorded: bool = True) -> None:
+    """라운드에 남은 예전 ``fixloop/`` 폴더를 정리한다. 기록된 루프의 폴더는 지우고(``remove_recorded``일 때), 중간에 끝난
+    루프는 그 LLM 사용량을 버린 결과 하나로 ``rs.fix_discarded``에 넣고 상태를 저장한 뒤 폴더 이름을 바꿔 남긴다.
 
     v2.1z-bk: the folder's `loop.json` names the loop; a loop whose token is on no recorded `FixResult` of the round
-    (`rs.fix`, `rs.fix_discarded`) was killed. A folder without the file (written before v2.1z-bk) counts as killed
-    when the round records no attempted loop without a token. A killed loop's folder becomes
-    `fixloop-interrupted-<n>/`, `fixer.interrupted_result` recovers its usage from the loop's own journal, the result
-    is appended to `rs.fix_discarded` and saved before the new loop starts; journal `remediation_fix_interrupted`."""
-    from .fixer import interrupted_result
+    (`rs.fix`, `rs.fix_discarded`) was killed. A folder without the file counts as recorded when the round records an
+    attempted loop without a token (written before v2.1z-bk); otherwise it is given a fresh token in its `loop.json`
+    first. Killed → `fixer.interrupted_result` recovers its usage from the loop's own journal, the result (with the
+    folder's token as `loop_id`) is appended to `rs.fix_discarded` and SAVED, journal `remediation_fix_interrupted`,
+    and only then is the folder renamed `fixloop-interrupted-<n>/` (a failed rename removes it). A folder whose token
+    is already recorded on an interrupted result (a kill between that save and the rename) is only renamed, so the
+    usage is counted once whatever the kill point. A folder of a loop recorded normally is removed only with
+    `remove_recorded` (before a new loop starts)."""
+    from .fixer import R_INTERRUPTED, interrupted_result
+    if not (work.exists() or work.is_symlink()):
+        return
+    if work.is_symlink() or not work.is_dir():
+        if remove_recorded:
+            _safe_rmtree(work)
+        return
     rs = h.round_state(r)
     data = read_json(work / LOOP_FILE)
     token = str(data.get("loop") or "") if isinstance(data, dict) else ""
     recorded = [f for f in [rs.fix, *rs.fix_discarded] if f is not None]
-    if token:
-        killed = token not in {f.loop_id for f in recorded if f.loop_id}
-    else:
-        killed = not any(f.attempted and not f.loop_id for f in recorded)
-    if not killed:
-        _safe_rmtree(work)
+    if not token:
+        if any(f.attempted and not f.loop_id for f in recorded):
+            if remove_recorded:
+                _safe_rmtree(work)
+            return
+        token = f"{h.state.id}-fix-r{r}-interrupted-{os.urandom(4).hex()}"
+        try:
+            write_json_atomic(work / LOOP_FILE, {"loop": token, "round": r})
+        except OSError:
+            token = ""
+    hit = next((f for f in recorded if token and f.loop_id == token), None)
+    if hit is not None and not str(hit.reason or "").startswith(R_INTERRUPTED):
+        if remove_recorded:
+            _safe_rmtree(work)
         return
     rd = h.paths.round_dir(r)
     n = 1
     while (rd / INTERRUPTED_DIR.format(n=n)).exists():
         n += 1
     dst = rd / INTERRUPTED_DIR.format(n=n)
+    if hit is None:
+        res = interrupted_result(work, h.cfg)
+        res.loop_id = token
+        rs.fix_discarded = [*rs.fix_discarded, res]
+        h.save()
+        log.warning("remediation round %s: a fix loop that the run did not finish was found (%d LLM call(s)%s); kept as "
+                    "%s", r, res.llm_calls, ", usage unknown" if res.reason.endswith(")") else "", h.rel(dst))
+        h.journal({"event": "remediation_fix_interrupted", "round": r, "folder": h.rel(dst),
+                   "llm_calls": res.llm_calls, "reason": res.reason})
     try:
         os.replace(work, dst)
     except OSError as e:
         log.warning("remediation round %s: the interrupted fix loop folder was not renamed: %s", r, e)
-        dst = work
-    res = interrupted_result(dst, h.cfg)
-    res.loop_id = token
-    rs.fix_discarded = [*rs.fix_discarded, res]
-    h.save()
-    if dst == work:
-        _safe_rmtree(work)
-    log.warning("remediation round %s: a fix loop that the run did not finish was found (%d LLM call(s)%s); kept as %s",
-                r, res.llm_calls, ", usage unknown" if res.reason.endswith(")") else "", h.rel(dst))
-    h.journal({"event": "remediation_fix_interrupted", "round": r, "folder": h.rel(dst), "llm_calls": res.llm_calls,
-               "reason": res.reason})
+        try:
+            _safe_rmtree(work)
+        except OSError:
+            log.warning("remediation round %s: the interrupted fix loop folder was not removed", r, exc_info=True)
+
+
+def _settle_leftover_loop(h: _Holder, r: int) -> None:
+    """라운드에 중간에 끝난 수정 루프의 폴더가 남아 있으면 그 사용량을 기록한다. 정상으로 기록된 루프의 폴더는 그대로 둔다.
+
+    Called at the start of the build node, of `_run_build` and of the report node, whatever happens next (the build
+    passes, a stop is pending, no time, the loop switched off): `_settle_old_loop(remove_recorded=False)`."""
+    work = h.paths.round_dir(r) / FIX_DIR
+    if work.exists() or work.is_symlink():
+        _settle_old_loop(h, r, work, remove_recorded=False)
 
 
 def _run_fix(h: _Holder, r: int, outcome: Any, cand: Path) -> None:
@@ -1352,13 +1595,20 @@ def _fix_tree_hash(h: _Holder, r: int, fix: FixResult) -> str:
     """고친 파일의 바이트를 넣은 수정본의 트리 해시를 수정본을 바꾸지 않고 계산한다(``intake.tree_hash``와 같은 규칙).
 
     v2.1z-bk: the hash of the candidate's manifest paths with the fix's bytes substituted, computed and saved together
-    with `rs.fix` (the candidate is not touched for it). Same rows as `intake.tree_hash`; "" when it cannot be made."""
-    from .intake import _file_sha
+    with `rs.fix` (the candidate is not touched for it). Same rows as `intake.tree_hash`; "" when it cannot be made.
+    Computed from `rounds/<r>/expected.json` plus the fix's files (no read of the tree); only without that table is
+    the candidate hashed."""
+    from .intake import _file_sha, table_hash
     from .models import canonical_json, sha256_text
     try:
+        table = _expected_table(h, r, with_fix=False)
+        if table is not None:
+            # 기대하는 표에 고친 파일의 값을 넣어 계산하므로 트리를 읽지 않는다
+            rows = dict(table)
+            rows.update(_fix_rows(h, fix))
+            return table_hash(rows, h.paths_list)
         cand = h.paths.candidate(r)
-        pr = h.project_root
-        prefix = "" if pr in ("", ".") else pr.rstrip("/") + "/"
+        prefix = _prefix(h)
         root = h.paths.root / fix.fixed_dir
         subst = {prefix + str(x).strip("/"): root / str(x).strip("/") for x in fix.changed}
         pairs = [[rel, _file_sha(subst.get(rel, cand / rel))] for rel in sorted(set(h.paths_list))]
@@ -1547,7 +1797,9 @@ def _fix_not_applied(h: _Holder, r: int, outcome: Any) -> str | None:
 
 
 def _commit_round(h: _Holder, r: int, cand: Path) -> str:
+    """수정본을 기대하는 바이트로 다시 맞춘 뒤 accepted/로 확정한다. 마지막 빌드 뒤의 Maven 호출이 바꾼 파일도 기록된다."""
     rs = h.round_state(r)
+    _sync_candidate(h, r, cand)
     _commit(h, cand)
     rs.committed = True
     h.journal({"event": "round_committed", "round": r, "applied": list(rs.applied)})
@@ -1631,6 +1883,7 @@ def _drop_ineffective(h: _Holder, r: int, applied: list[Proposal], drop: list[Pr
         write_json_atomic(p.plan(r), plan.to_dict())
     _safe_rmtree(cand)
     _safe_rmtree(_applied_dir(h, r))
+    _safe_rmtree(_expected_path(h, r))
     if not keep:
         # 남은 변경이 없으면 적용할 것이 없던 라운드와 같이 끝낸다
         if st.delivery is None:
@@ -1650,7 +1903,7 @@ def _drop_ineffective(h: _Holder, r: int, applied: list[Proposal], drop: list[Pr
         rs.verify_problems = violations
         h.discard_candidate(r)
         return h.finish(FAILED, R_TEXT_ONLY_VIOLATION, "; ".join(violations[:5]))
-    _store_applied(h, r, cand, result, keep)
+    _write_expected(h, r, _store_applied(h, r, cand, result, keep))
     h.mark_candidate(r)
     # 다시 만든 수정본의 빌드가 실패하면 같은 조건에서 수정 루프를 한 번 더 실행할 수 있다
     outcome, nxt = _run_build(h, r, cand)
@@ -1783,6 +2036,12 @@ def tolerated_message(st: RemediationState) -> str:
 
 def _report(h: _Holder) -> str | None:
     from . import report as report_mod  # report.py는 그래프에서만 쓰므로 여기서 import한다
+    for rs in list(h.state.rounds):
+        # 빌드 노드를 다시 거치지 않고 끝난 실행에도 중간에 끝난 수정 루프의 LLM 사용량이 빠지지 않게 한다
+        try:
+            _settle_leftover_loop(h, rs.round)
+        except Exception:  # noqa: BLE001 - 사용량 정리가 보고서를 막지 않게 한다
+            log.warning("remediation round %s: a leftover fix loop folder was not settled", rs.round, exc_info=True)
     # 위험도 경계값. 화면 표시에만 쓰므로 정책 해시에 넣지 않고, 이전 설정 객체에 없으면 기본값을 쓴다
     severity = (getattr(h.rcfg, "severity_red", 9.0), getattr(h.rcfg, "severity_orange", 7.0),
                 getattr(h.rcfg, "severity_yellow", 4.0))

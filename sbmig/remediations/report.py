@@ -600,7 +600,7 @@ def _unfixed_line(state: RemediationState) -> str:
     if fix is None or getattr(fix, "fixed", False) or last.committed:
         return ""
     if not getattr(fix, "attempted", False):
-        # 시작하지 않은 경우다. 시도했다고도, 소스를 되돌렸다고도 쓰지 않는다
+        # 시작하지 않은 경우다. 시도했다고도, 소스 수정을 결과에서 뺐다고도 쓰지 않는다
         return i18n.fix_not_started_ko(getattr(fix, "reason", ""))
     return i18n.fix_failed_ko(getattr(fix, "reason", ""))
 
@@ -1874,7 +1874,7 @@ def _fix_record_line(L: list[str], rs: RoundState) -> None:
         return
     ko, raw = i18n.fix_reason_ko(getattr(fix, "reason", ""))
     L.append("- 빌드 오류 자동 수정: 고치지 못함" + (f"({ko})" if ko else "") + f" · {n('iterations')}회 반복 · "
-             f"LLM 호출 {n('llm_calls')}회 · 소스 수정은 되돌림" + (f" · {_md_cell(raw)}" if raw else ""))
+             f"LLM 호출 {n('llm_calls')}회 · 시도한 소스 수정은 결과에 넣지 않음" + (f" · {_md_cell(raw)}" if raw else ""))
 
 
 def _discarded_line(L: list[str], fix: Any) -> None:

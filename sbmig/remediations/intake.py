@@ -525,59 +525,223 @@ def _same_bytes(a: Path, b: Path, size_a: int) -> bool:
                 return True
 
 
+class SyncFailed(RemediationError):
+    """manifest 경로 일부를 기대하는 바이트로 되돌리지 못했을 때 던지는 오류. 되돌린 경로와 실패한 경로를 함께 담는다.
+
+    Raised by `sync_tree` / `sync_tree_table` after EVERY path was tried: `missing` / `changed` = what was put back,
+    `failed` = `[(path, error type name, error code)]` in path order. `code` is the first failure's code (a
+    `RemediationError`'s own code, e.g. `symlink`, else `sync_failed`)."""
+
+    def __init__(self, missing: list[str], changed: list[str], failed: list[tuple[str, str, str]]):
+        first = failed[0]
+        super().__init__(f"{len(failed)} path(s) could not be put back, first: {first[0]}: {first[1]}",
+                         code=first[2] or "sync_failed")
+        self.missing, self.changed, self.failed = list(missing), list(changed), list(failed)
+
+
+def _make_writable_on_path(tree: Path, rel: str) -> None:
+    """``tree``에서 ``rel``까지 있는 폴더와 그 파일에 소유자 쓰기 권한을 한 번 더한다. 링크는 건드리지 않는다.
+
+    A build can leave read-only folders or files (a plugin's output, `chmod -w`): before giving up on a path the
+    existing folders from `tree` down to its parent and the file itself get the owner's write (and search) bit."""
+    cur = Path(tree)
+    parts = rel.split("/")
+    for i, seg in enumerate(parts):
+        cur = cur / seg
+        try:
+            st = os.lstat(cur)
+        except OSError:
+            return
+        if stat.S_ISLNK(st.st_mode):
+            return
+        add = stat.S_IWUSR | (stat.S_IXUSR | stat.S_IRUSR if stat.S_ISDIR(st.st_mode) else 0)
+        if i == len(parts) - 1 and not stat.S_ISREG(st.st_mode):
+            return
+        try:
+            os.chmod(cur, stat.S_IMODE(st.st_mode) | add)
+        except OSError:
+            pass
+    try:
+        os.chmod(tree, stat.S_IMODE(os.lstat(tree).st_mode) | stat.S_IWUSR | stat.S_IXUSR | stat.S_IRUSR)
+    except OSError:
+        pass
+
+
+def _write_back(tree: Path, rel: str, src: Path, mode: int, want_sha: str | None = None) -> None:
+    """``src``의 바이트를 ``tree/rel``에 임시 파일과 이름 바꾸기로 쓴다. 권한 오류면 폴더와 파일을 쓸 수 있게 한 뒤 한 번 더
+    시도한다. ``want_sha``가 있으면 복사한 바이트의 sha256이 그 값과 다를 때 예외를 던진다."""
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    for attempt in (0, 1):
+        try:
+            parent = _real_dirs_to(tree, rel)
+            out = parent / rel.split("/")[-1]
+            tmp = parent / f".{out.name}.sync-tmp"
+            try:
+                os.unlink(tmp)
+            except FileNotFoundError:
+                pass
+            h = hashlib.sha256()
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | nofollow | getattr(os, "O_BINARY", 0), 0o600)
+            try:
+                with os.fdopen(fd, "wb") as dst, open(src, "rb") as fh:
+                    while True:
+                        chunk = fh.read(_CHUNK)
+                        if not chunk:
+                            break
+                        h.update(chunk)
+                        dst.write(chunk)
+                if want_sha is not None and h.hexdigest() != want_sha:
+                    raise RemediationError(f"the expected file of {_safe_display(rel)} is not the recorded one",
+                                           code="expected_changed")
+                os.chmod(tmp, mode)
+                os.replace(tmp, out)
+            except BaseException:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+                raise
+            return
+        except PermissionError:
+            if attempt:
+                raise
+            _make_writable_on_path(tree, rel)
+
+
+def _target_stat(tree: Path, rel: str) -> os.stat_result | None:
+    """``tree/rel``의 lstat 결과를 반환한다. 없으면 None이고, 링크나 일반 파일이 아닌 것이면 예외를 던진다."""
+    try:
+        st = os.lstat(tree / rel)
+    except FileNotFoundError:
+        return None
+    except NotADirectoryError:
+        raise RemediationError(f"not a directory on the path of {_safe_display(rel)}", code="special_file") from None
+    if stat.S_ISLNK(st.st_mode):
+        raise RemediationError(f"symbolic link in the tree: {_safe_display(rel)}", code="symlink")
+    if not stat.S_ISREG(st.st_mode):
+        raise RemediationError(f"not a regular file: {_safe_display(rel)}", code="special_file")
+    return st
+
+
+def _source_stat(src: Path, rel: str) -> os.stat_result | None:
+    """기대하는 파일의 lstat 결과를 반환한다. 없으면 None이고, 링크나 일반 파일이 아닌 것이면 예외를 던진다."""
+    try:
+        st = os.lstat(src)
+    except FileNotFoundError:
+        return None
+    if stat.S_ISLNK(st.st_mode):
+        raise RemediationError(f"symbolic link in the tree: {_safe_display(rel)}", code="symlink")
+    if not stat.S_ISREG(st.st_mode):
+        raise RemediationError(f"not a regular file: {_safe_display(rel)}", code="special_file")
+    return st
+
+
+def _failure(rel: str, e: BaseException) -> tuple[str, str, str]:
+    return (_safe_display(rel), type(e).__name__, e.code if isinstance(e, RemediationError) else "")
+
+
 def sync_tree(tree: Path, expected: Any, paths: list[str]) -> tuple[list[str], list[str]]:
     """``tree``의 manifest 파일을 기대하는 바이트(``expected(path)``가 가리키는 파일)와 맞춘다.
     없는 파일은 되살리고 바이트가 다른 파일은 덮어쓰며, (되살린 경로, 덮어쓴 경로)를 정렬해서 반환한다.
+    되돌리지 못한 경로가 있어도 모든 경로를 시도한 뒤 ``SyncFailed``를 던진다.
 
     Bring every path of `paths` in `tree` to the bytes of the file `expected(path)` names (normally `accepted/<p>`,
     `rounds/<r>/applied/<p>` or the fix loop's `fixed/<p>`): a path missing in `tree` is copied back (as
     `restore_missing` did), a path whose bytes differ is overwritten (size first, then bytes; no hashing). The exec bit
     comes from the expected file. A path whose expected file does not exist is left alone. Symlinks on either side are
-    refused (`RemediationError(code="symlink")`), never followed or created; a directory where a file belongs is
-    `special_file`. Returns `(missing, changed)`, both sorted."""
+    refused (code `symlink`), never followed or created; a directory where a file belongs is `special_file`. Every
+    path is tried; a write refused for permissions is tried once more after the folders on its path and the file got
+    the owner's write bit. Any path that could not be put back → `SyncFailed` (with what was put back) after the last
+    path. Returns `(missing, changed)`, both sorted. `sync_tree_table` is the same with a recorded size + sha256 table
+    instead of reading the expected files."""
     tree = Path(tree)
     missing: list[str] = []
     changed: list[str] = []
-    nofollow = getattr(os, "O_NOFOLLOW", 0)
-    for rel in sorted(set(paths)):
-        rel = _safe_rel(rel)
-        src = Path(expected(rel))
+    failed: list[tuple[str, str, str]] = []
+    for raw in sorted(set(paths)):
+        rel = raw
         try:
-            st_src = os.lstat(src)
-        except FileNotFoundError:
-            continue                          # 기대하는 파일이 없으면 판단할 수 없으므로 손대지 않는다
-        if stat.S_ISLNK(st_src.st_mode):
-            raise RemediationError(f"symbolic link in the tree: {_safe_display(rel)}", code="symlink")
-        if not stat.S_ISREG(st_src.st_mode):
-            raise RemediationError(f"not a regular file: {_safe_display(rel)}", code="special_file")
-        target = tree / rel
-        try:
-            st_dst = os.lstat(target)
-        except FileNotFoundError:
-            st_dst = None
-        except NotADirectoryError:
-            raise RemediationError(f"not a directory on the path of {_safe_display(rel)}", code="special_file") from None
-        if st_dst is not None:
-            if stat.S_ISLNK(st_dst.st_mode):
-                raise RemediationError(f"symbolic link in the tree: {_safe_display(rel)}", code="symlink")
-            if not stat.S_ISREG(st_dst.st_mode):
-                raise RemediationError(f"not a regular file: {_safe_display(rel)}", code="special_file")
-            if _same_bytes(target, src, st_dst.st_size):
+            rel = _safe_rel(raw)
+            src = Path(expected(rel))
+            st_src = _source_stat(src, rel)
+            if st_src is None:
+                continue                          # 기대하는 파일이 없으면 판단할 수 없으므로 손대지 않는다
+            st_dst = _target_stat(tree, rel)
+            if st_dst is not None and _same_bytes(tree / rel, src, st_dst.st_size):
                 continue
-        parent = _real_dirs_to(tree, rel)
-        out = parent / rel.split("/")[-1]
-        mode = 0o755 if st_src.st_mode & 0o111 else 0o644
-        tmp = parent / f".{out.name}.sync-tmp"
+            _write_back(tree, rel, src, 0o755 if st_src.st_mode & 0o111 else 0o644)
+            (changed if st_dst is not None else missing).append(rel)
+        except Exception as e:  # noqa: BLE001 - 모든 경로를 시도한 뒤 한꺼번에 알린다
+            failed.append(_failure(rel, e))
+    if failed:
+        raise SyncFailed(missing, changed, failed)
+    return missing, changed
+
+
+def file_table(tree: Path, paths: list[str]) -> dict[str, tuple[int, str]]:
+    """``paths``의 파일마다 (크기, sha256)을 담은 표를 반환한다. 트리를 한 번 읽는다. 없는 파일은 넣지 않는다.
+
+    `{path: (size, sha256)}` of the regular files of `paths` in `tree` (one full read); a missing path or one that is
+    not a regular file is left out."""
+    tree = Path(tree)
+    out: dict[str, tuple[int, str]] = {}
+    for rel in sorted(set(paths)):
         try:
-            os.unlink(tmp)
-        except FileNotFoundError:
-            pass
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | nofollow | getattr(os, "O_BINARY", 0), 0o600)
-        with os.fdopen(fd, "wb") as dst, open(src, "rb") as fh:
-            shutil.copyfileobj(fh, dst, _CHUNK)
-        os.chmod(tmp, mode)
-        os.replace(tmp, out)
-        (changed if st_dst is not None else missing).append(rel)
+            st = os.lstat(tree / rel)
+        except OSError:
+            continue
+        if stat.S_ISREG(st.st_mode):
+            out[rel] = (st.st_size, sha256_file(tree / rel))
+    return out
+
+
+def table_hash(table: dict[str, tuple[int, str]], paths: list[str]) -> str:
+    """표에서 ``tree_hash``와 같은 규칙의 트리 해시를 계산한다. 표에 없는 경로는 ``"MISSING"``이다.
+
+    The `tree_hash` of the tree the table describes, without reading any file."""
+    pairs = [[p, table[p][1] if p in table else "MISSING"] for p in sorted(set(paths))]
+    return sha256_text(canonical_json(pairs))
+
+
+def sync_tree_table(tree: Path, expected: Any, table: dict[str, tuple[int, str]],
+                    paths: list[str]) -> tuple[list[str], list[str]]:
+    """``tree``의 manifest 파일을 기록된 (크기, sha256) 표와 비교해 다른 파일만 기대하는 파일에서 되돌린다.
+    트리의 각 파일은 많아야 한 번 읽고, 같은 파일의 기대하는 파일은 열지 않는다.
+
+    `sync_tree` against a recorded table (`rounds/<r>/expected.json`, plus the fix's files): each path of `tree` is
+    compared by size, then by its sha256 (so each candidate file is read at most once), and only a missing or
+    differing path opens `expected(path)` and is overwritten; the copied bytes must hash to the recorded sha256 (else
+    code `expected_changed`). A path the table does not list falls back to `sync_tree`'s byte comparison. Same
+    refusals, permission retry, `SyncFailed` after every path, and return value as `sync_tree`."""
+    tree = Path(tree)
+    missing: list[str] = []
+    changed: list[str] = []
+    failed: list[tuple[str, str, str]] = []
+    for raw in sorted(set(paths)):
+        rel = raw
+        try:
+            rel = _safe_rel(raw)
+            row = table.get(rel)
+            src = Path(expected(rel))
+            st_dst = _target_stat(tree, rel)
+            if row is None:
+                st_src = _source_stat(src, rel)
+                if st_src is None or (st_dst is not None and _same_bytes(tree / rel, src, st_dst.st_size)):
+                    continue
+                _write_back(tree, rel, src, 0o755 if st_src.st_mode & 0o111 else 0o644)
+            else:
+                size, sha = int(row[0]), str(row[1])
+                if st_dst is not None and st_dst.st_size == size and sha256_file(tree / rel) == sha:
+                    continue
+                st_src = _source_stat(src, rel)
+                if st_src is None:
+                    raise FileNotFoundError(f"the expected file of {_safe_display(rel)} is missing")
+                _write_back(tree, rel, src, 0o755 if st_src.st_mode & 0o111 else 0o644, want_sha=sha)
+            (changed if st_dst is not None else missing).append(rel)
+        except Exception as e:  # noqa: BLE001 - 모든 경로를 시도한 뒤 한꺼번에 알린다
+            failed.append(_failure(rel, e))
+    if failed:
+        raise SyncFailed(missing, changed, failed)
     return missing, changed
 
 

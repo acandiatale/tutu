@@ -654,12 +654,12 @@
         </div>
         <div>
           <label class="head" for="llm">LLM</label>
-          <select id="llm">
+          <select id="llm" autocomplete="off">
             <option value="">설정대로 (기본: 사내 게이트웨이)</option>
             <option value="fake">fake — LLM 없이 (레시피와 재구성만)</option>
           </select>
           <label class="head" for="stop_after" style="margin-top:14px;">여기까지만 실행</label>
-          <select id="stop_after">
+          <select id="stop_after" autocomplete="off">
             <option value="">끝까지 (빌드 검증과 수정 루프 포함)</option>
             <option value="analyze">analyze — 분석까지</option>
             <option value="plan">plan — 계획까지</option>
@@ -920,7 +920,7 @@
     const box = $('cfgs'); box.innerHTML = '';
     for (const c of d.configs) {
       const id = 'cfg-' + c.replace(/\W/g, '_');
-      box.insertAdjacentHTML('beforeend', `<label><input type="checkbox" value="${esc(c)}" id="${id}" ${defaultConfigs.includes(c) ? 'checked' : ''}>${esc(c)}</label>`);
+      box.insertAdjacentHTML('beforeend', `<label><input type="checkbox" autocomplete="off" value="${esc(c)}" id="${id}" ${defaultConfigs.includes(c) ? 'checked' : ''}>${esc(c)}</label>`);
     }
     if (!d.configs.length) box.innerHTML = '<span class="muted small">config/에 default.yml 말고는 yml 파일이 없습니다.</span>';
     $('cfghelp').textContent = defaultConfigs.length ? `서버 기본값: ${defaultConfigs.join(', ')} (sbmig serve --config / SBMIG_WEB_CONFIGS)`
@@ -932,16 +932,28 @@
     $('envhint').textContent = d.out_dir ? `결과 폴더 ${d.out_dir}` : '';
     describeConfigs();
   }
+  // 고급 설정이 화면에 보일 때만 그 값을 쓴다. 숨겨져 있으면 브라우저가 되살린 값이 있어도 서버 기본값으로 실행한다
+  function advShown() { return !$('adv').hidden; }
   function chosenConfigs() {
+    if (!advShown()) return defaultConfigs.slice();
     const ticked = [...document.querySelectorAll('#cfgs input:checked')].map((i) => i.value);
     return ticked;
   }
+  // 시작 요청의 질의 문자열(프로젝트명과 진행 방식 말고)을 만든다. 고급 설정이 숨겨져 있으면 설정 파일 목록, LLM,
+  // 여기까지만 실행 값을 보내지 않는다
+  function startQuery(o) {
+    const q = new URLSearchParams({ name: o.name });
+    const same = o.configs.length === o.defaults.length && o.configs.every((x, i) => x === o.defaults[i]);
+    if (o.adv && !same) q.set('configs', o.configs.join(','));     // 서버 기본값과 같으면 보내지 않는다(서버가 정한다)
+    if (o.adv && o.stopAfter && o.flow === FLOW_FULL) q.set('stop_after', o.stopAfter);
+    if (o.adv && o.llm) q.set('llm_provider', o.llm);
+    return q;
+  }
   function describeConfigs() {
     const c = chosenConfigs();
-    const same = c.length === defaultConfigs.length && c.every((x, i) => x === defaultConfigs[i]);
     let s = c.length ? `설정 ${c.join(', ')}` : '설정 default.yml만';
-    if ($('llm').value) s += ` · LLM ${$('llm').value}`;
-    if ($('stop_after').value && chosenFlow() === FLOW_FULL) s += ` · ${$('stop_after').value}까지만`;
+    if (advShown() && $('llm').value) s += ` · LLM ${$('llm').value}`;
+    if (advShown() && $('stop_after').value && chosenFlow() === FLOW_FULL) s += ` · ${$('stop_after').value}까지만`;
     $('cfgnote').textContent = s;
   }
   $('cfgs').addEventListener('change', describeConfigs);
@@ -1034,16 +1046,12 @@
     if (!file) return;
     if (!projectOk()) { askProject(); return; }
     const upName = file.name;                                // setFile(null) 이후에도 실행 카드에 파일 이름을 바로 표시하기 위해 보관한다
-    const q = new URLSearchParams({ name: upName });
     const proj = projectValue();
-    q.set('project', projectValue());
-    const cfgs = chosenConfigs();
-    const same = cfgs.length === defaultConfigs.length && cfgs.every((x, i) => x === defaultConfigs[i]);
-    if (!same) q.set('configs', cfgs.join(','));            // 서버 기본값과 같으면 보내지 않는다(서버가 정한다)
     const flow = chosenFlow();
+    const q = startQuery({ name: upName, flow, adv: advShown(), configs: chosenConfigs(), defaults: defaultConfigs,
+                           stopAfter: $('stop_after').value, llm: $('llm').value });
+    q.set('project', projectValue());
     q.set('flow', flow);                                     // full | remediation
-    if ($('stop_after').value && flow === FLOW_FULL) q.set('stop_after', $('stop_after').value);
-    if ($('llm').value) q.set('llm_provider', $('llm').value);
     $('start').disabled = true; drop.classList.add('busy');
     uploading = true; $('flowpick').disabled = true; $('flowpick').classList.add('locked');
     $('startlabel').textContent = '올리는 중…';

@@ -223,6 +223,9 @@ SAMPLES: list[tuple[str, str, list[str]]] = [
      "2026-11-17T10:00:00Z (attempt 2)"), ["41", "sbmig-run-rem2", "2026-11-17T10:00:00Z", "시도 2"]),
     ("candidate_not_vouched", ("the round 2 candidate was not delivered: the files on disk are not the complete change set "
      "this state records"), ["라운드 2"]),
+    ("candidate_not_restored", ("the round 2 candidate could not be put back to its expected state after the build "
+     "(3 path(s), first: app/src/main/java/App.java: PermissionError); nothing of this round was delivered"),
+     ["라운드 2", "3개 경로", "app/src/main/java/App.java"]),
     ("failed_included", ("delivery/result.zip contains the round 2 change set whose candidate build FAILED (proposals: "
      "p-2-1, p-2-2; build log rounds/2/build.log); it was not rescanned; the original is preserved as original/source.zip; "
      "the verified delivery of an earlier round is kept as delivery/result-r1-verified.zip"),
@@ -300,7 +303,7 @@ SAMPLES: list[tuple[str, str, list[str]]] = [
     ("stale_run", ("the migration run has ended while this remediation was RUNNING (its build pod is gone); "
      "nothing is re-sent automatically"), ["진행 중"]),
     # the suffix the graph appends to the state message when the build fix loop did not fix the candidate build
-    ("auto_fix_left", "automatic build fix: not fixed: 3 error(s) left", ["남은 오류 3건", "되돌렸습니다"]),
+    ("auto_fix_left", "automatic build fix: not fixed: 3 error(s) left", ["남은 오류 3건", "결과에 넣지 않았습니다"]),
     ("auto_fix_llm", "automatic build fix: llm unavailable: LLM_API_KEY is not set",
      ["LLM을 사용할 수 없음", "LLM_API_KEY is not set"]),
     ("auto_fix_stop", "automatic build fix: stop requested", ["중지 요청"]),
@@ -583,7 +586,7 @@ def test_fix_reasons_of_the_work_copy_fixer():
     assert i18n.fix_reason_ko("rejected: pom.xml must not be edited: app/pom.xml") == ("고칠 수 없는 파일: app/pom.xml", "")
     assert i18n.fix_reason_ko("discarded: the candidate was remade") == ("수정본을 다시 만들어 이전 수정은 버림", "")
     assert i18n.ko_text("automatic build fix: llm unavailable") == (
-        "빌드 오류 자동 수정을 시도했지만 고치지 못했습니다(LLM을 사용할 수 없음). 소스 수정은 되돌렸습니다.")
+        "빌드 오류 자동 수정을 시도했지만 고치지 못했습니다(LLM을 사용할 수 없음). 시도한 소스 수정은 결과에 넣지 않았습니다.")
     assert i18n.rule_keys("automatic build fix: llm unavailable") == ["auto_fix_llm"]
     for reason, why in (("stop requested", "중지 요청"), ("time budget used up", "남은 시간 부족")):
         line = i18n.fix_not_started_ko(reason)

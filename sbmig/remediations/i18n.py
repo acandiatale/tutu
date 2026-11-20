@@ -550,7 +550,7 @@ def fix_failed_ko(reason: str | None) -> str:
     The Korean line for a fix loop that did not fix the build, with the reason through `fix_reason_ko`."""
     ko, raw = fix_reason_ko(reason)
     head = f"빌드 오류 자동 수정을 시도했지만 고치지 못했습니다({ko})." if ko else "빌드 오류 자동 수정을 시도했지만 고치지 못했습니다."
-    return head + " 소스 수정은 되돌렸습니다." + (f" {raw}" if raw else "")
+    return head + " 시도한 소스 수정은 결과에 넣지 않았습니다." + (f" {raw}" if raw else "")
 
 
 # 빌드 오류 자동 수정을 시작하지 않은 이유(fixer.FixResult.reason, attempted가 false일 때)
@@ -1089,6 +1089,11 @@ RULES: list[_Rule] = [
        r"change set this state records",
        lambda g: f"라운드 {g['r']}의 수정본은 상태에 기록된 변경을 모두 담은 트리라는 표시가 없어 결과 ZIP으로 내보내지 "
                  "않았습니다."),
+    _r("candidate_not_restored",
+       r"the round (?P<r>\d+) candidate could not be put back to its expected state after the build \((?P<n>\d+) "
+       r"path\(s\), first: (?P<p>.+?): (?P<t>[A-Za-z_][\w.]*)\); nothing of this round was delivered",
+       lambda g: f"라운드 {g['r']}의 수정본을 빌드 뒤 원래 상태로 되돌리지 못해 이 라운드의 결과는 전달하지 "
+                 f"않았습니다({g['n']}개 경로, 첫 번째: {g['p']})."),
     _r("failed_included",
        r"delivery/result\.zip contains the round (?P<r>\d+) change set whose candidate build FAILED "
        r"\(proposals: (?P<ids>.*?); build log (?P<log>\S+)\); it was not rescanned; the original is preserved as "

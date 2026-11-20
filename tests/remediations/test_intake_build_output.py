@@ -197,10 +197,11 @@ def test_candidate_build_failure_with_build_output_ends_candidate_build_failed(t
 
 
 def test_the_cleaning_runner_reproduces_the_company_failure(tmp_path, monkeypatch):
-    """Without the intake rule AND without the after-build synchronisation (`sync_tree`, which replaced the direct
-    `restore_missing` call in v2.1z-bk) the same run ends `internal_error` (proves the graph test above can fail)."""
+    """Without the intake rule AND without the after-build synchronisation (`sync_tree` / `sync_tree_table`, which
+    replaced the direct `restore_missing` call in v2.1z-bk) the same run ends `internal_error` (proves the graph test above can fail)."""
     monkeypatch.setattr(intake, "build_output_paths", lambda files: [])
     monkeypatch.setattr(intake, "sync_tree", lambda tree, expected, paths: ([], []))
+    monkeypatch.setattr(intake, "sync_tree_table", lambda tree, expected, table, paths: ([], []))
     env = _start_with_build_output(tmp_path)
     out = env.run()
     assert out.status == FAILED and out.reason != "candidate_build_failed"

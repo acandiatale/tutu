@@ -146,20 +146,20 @@ def test_unfixed_round_adds_one_line_under_the_failed_build_warning(tmp_path):
     lines = md.splitlines()
     warn = next(i for i, ln in enumerate(lines) if ln.startswith("> **주의:** 결과 ZIP"))
     block = lines[warn:lines.index("", warn)]
-    want = "> 빌드 오류 자동 수정을 시도했지만 고치지 못했습니다(남은 오류 2건). 소스 수정은 되돌렸습니다."
+    want = "> 빌드 오류 자동 수정을 시도했지만 고치지 못했습니다(남은 오류 2건). 시도한 소스 수정은 결과에 넣지 않았습니다."
     assert block[-1] == want
     assert md.count("빌드 오류 자동 수정을 시도했지만") == 1     # the message suffix is not repeated elsewhere
     assert "빌드 오류 수정\n" not in md and "자동으로 고친 소스" not in md
     assert "애플리케이션 소스와 프로젝트 구조(파일·폴더)는 변경하지 않았습니다." in md
     record = _section(md, "처리 기록")
-    assert "- 빌드 오류 자동 수정: 고치지 못함(남은 오류 2건) · 3회 반복 · LLM 호출 5회 · 소스 수정은 되돌림" in record
+    assert "- 빌드 오류 자동 수정: 고치지 못함(남은 오류 2건) · 3회 반복 · LLM 호출 5회 · 시도한 소스 수정은 결과에 넣지 않음" in record
 
 
 def test_unfixed_round_without_a_delivery_still_says_it(tmp_path):
     state, paths = _unfixed(tmp_path, "llm unavailable: LLM_API_KEY is not set", failed_candidate="discard")
     assert state.delivery is None
     head = report.build_report_md(state, paths).split("\n## ", 1)[0]
-    assert ("> 빌드 오류 자동 수정을 시도했지만 고치지 못했습니다(LLM을 사용할 수 없음). 소스 수정은 되돌렸습니다. "
+    assert ("> 빌드 오류 자동 수정을 시도했지만 고치지 못했습니다(LLM을 사용할 수 없음). 시도한 소스 수정은 결과에 넣지 않았습니다. "
             "원문: `LLM_API_KEY is not set`") in head
 
 
@@ -185,7 +185,7 @@ def test_every_reason_reads_in_korean_in_the_report(tmp_path):
         state, paths = _unfixed(tmp_path / str(i), reason)
         head = report.build_report_md(state, paths).split("\n## ", 1)[0]
         line = next(ln for ln in head.splitlines() if "빌드 오류 자동 수정" in ln)
-        assert re.search(r"고치지 못했습니다\([^()]+\)\. 소스 수정은 되돌렸습니다\.", line), line
+        assert re.search(r"고치지 못했습니다\([^()]+\)\. 시도한 소스 수정은 결과에 넣지 않았습니다\.", line), line
         assert DETACHED.search(line) is None, line
         assert line[2:] == i18n.fix_failed_ko(reason)
 
@@ -193,7 +193,7 @@ def test_every_reason_reads_in_korean_in_the_report(tmp_path):
 def test_state_message_suffix_translates_for_the_page(tmp_path):
     state, _paths = _unfixed(tmp_path, "stop requested")
     ko, raw = i18n.split_known(state.message)
-    assert "빌드 오류 자동 수정을 시도했지만 고치지 못했습니다(중지 요청). 소스 수정은 되돌렸습니다." in ko
+    assert "빌드 오류 자동 수정을 시도했지만 고치지 못했습니다(중지 요청). 시도한 소스 수정은 결과에 넣지 않았습니다." in ko
     assert not any("automatic build fix" in r for r in raw)
 
 
@@ -278,7 +278,7 @@ def test_guard_sentences_of_the_fixer_read_as_words(tmp_path):
         ko, raw = i18n.fix_reason_ko(f"rejected: {why}")
         assert (ko, raw) == (want, ""), (path, why, ko, raw)
         assert i18n.ko_display(f"automatic build fix: rejected: {why}") == (
-            f"빌드 오류 자동 수정을 시도했지만 고치지 못했습니다({want}). 소스 수정은 되돌렸습니다.")
+            f"빌드 오류 자동 수정을 시도했지만 고치지 못했습니다({want}). 시도한 소스 수정은 결과에 넣지 않았습니다.")
 
 
 # ---------------------------------------------------------------------------- v2.1z-bj: a fix is shown only when it
