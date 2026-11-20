@@ -108,8 +108,8 @@ def coerce_response(raw: Any, fallback_model: str, source: str = "adapter") -> L
     elif isinstance(raw, dict):
         if not isinstance(raw.get("content"), str):
             raise _llm_error(f"LLM {source} returned a dict without a string 'content'", repr(raw)[:500])
-        data = {k: raw[k] for k in ("content", "model", "input_tokens", "output_tokens", "finish_reason")
-                if raw.get(k) is not None}
+        data = {k: raw[k] for k in ("content", "model", "input_tokens", "output_tokens", "finish_reason",
+                                    "served_models") if raw.get(k) is not None}
         data.setdefault("model", fallback_model)
         try:
             resp = LLMResponse.model_validate(data)
@@ -193,7 +193,10 @@ class AdapterClient:
             raise LLMError(status, str(exc)[:500],
                            f"LLM adapter {self.name} failed (status={status}, cause={type(exc).__name__}): "
                            f"{exc}") from exc
-        return coerce_response(raw, request.model or self.model or self.name, source=f"adapter {self.name}")
+        from sbmig.fix.client import named_response
+        # 이름은 요청한 모델이고, 플러그인이 알려 준 실제 모델 이름은 served_models로 옮긴다
+        resp = coerce_response(raw, request.model or self.model or self.name, source=f"adapter {self.name}")
+        return named_response(resp, request.model, fallback=self.model or self.name)
 
     def close(self) -> None:
         """어댑터에 `close()`가 있으면 호출한다."""
@@ -236,9 +239,11 @@ class KwargFilterClient:
         """받을 수 있는 키워드만 넘겨 클라이언트를 호출하고, 반환값을 LLMResponse로 맞춘다."""
         if self._accepted is not None:
             kw = {k: v for k, v in kw.items() if k in self._accepted}
+        from sbmig.fix.client import named_response
         raw = self.inner.complete(messages, **kw)
-        return coerce_response(raw, kw.get("model") or self.model or type(self.inner).__name__,
-                               source=f"client {type(self.inner).__name__}")
+        fallback = self.model or type(self.inner).__name__
+        resp = coerce_response(raw, kw.get("model") or fallback, source=f"client {type(self.inner).__name__}")
+        return named_response(resp, kw.get("model") or self.model, fallback=fallback)
 
     def close(self) -> None:
         """안쪽 클라이언트에 `close()`가 있으면 호출한다."""

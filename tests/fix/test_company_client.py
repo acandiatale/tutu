@@ -54,7 +54,9 @@ def test_call_shape_is_exactly_the_company_snippet():
                            "json": {"model": "gpt-6-luna", "messages": [m.model_dump() for m in MSGS],
                                     "need_origin": True},          # no max_tokens / temperature / stop
                            "timeout": 42.0}]
-    assert resp.content == "hi" and resp.model == "m-1" and resp.input_tokens == 11 and resp.output_tokens == 7
+    # v2.1z-bg: the name is the asked model; the answer's own name is kept as served
+    assert resp.content == "hi" and resp.model == "gpt-6-luna" and resp.served_models == ["m-1"]
+    assert resp.input_tokens == 11 and resp.output_tokens == 7
     assert resp.finish_reason == "stop"
     assert "sk-secret" not in repr(c)
 
@@ -432,7 +434,9 @@ def test_agent_gateway_payload_and_bearer_from_the_exchange():
     assert body["max_tokens"] == 8000 and body["temperature"] == 0.0 and body["x"] == 1
     assert "need_origin" not in body and "thread_id" not in body
     assert body["messages"] == [m.model_dump() for m in MSGS]
-    assert resp.content == "hi" and resp.model == "gpt-5.5"                  # the gateway's model name prices the call
+    # v2.1z-bg: the role names the call; the gateway's model name is kept beside it (and prices it when the role has
+    # no price)
+    assert resp.content == "hi" and resp.model == "escalation_fixer" and resp.served_models == ["gpt-5.5"]
     assert resp.session_id is None and c.last_session_id is None
     # the default role is the client's model; a second call reuses the cached token
     c.complete(MSGS, role="fix")

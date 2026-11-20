@@ -67,3 +67,21 @@ def test_log_lines_with_stage_are_timed():
     assert a is not None and b is not None and round(b - a, 3) == 0.33
     assert _event_time("log", "2026-10-27 10:12:03 INFO    [-] sbmig.cli: no millis") is not None
     assert _event_time("log", "    continuation line") is None
+
+
+def test_report_downloads_carry_the_name_a_person_tells_apart(tmp_path):
+    """v2.1z-bg: report.md / report.json keep their names in the run directory and their address; a download
+    (`?download=1`) names them migration-report.md / migration-report.json."""
+    client = _client(tmp_path)
+    rd = tmp_path / "out" / "run-3"
+    rd.mkdir(parents=True)
+    (rd / "report.md").write_text("# report\n", encoding="utf-8")
+    (rd / "report.json").write_text("{}", encoding="utf-8")
+    r = client.get("/api/runs/run-3/files/report.md?download=1")
+    assert r.status_code == 200 and r.headers["content-disposition"] == 'attachment; filename="migration-report.md"'
+    r = client.get("/api/runs/run-3/files/report.json?download=1")
+    assert r.headers["content-disposition"] == 'attachment; filename="migration-report.json"'
+    r = client.get("/api/runs/run-3/files/report.md")                       # the old address answers as before
+    assert r.status_code == 200 and r.text == "# report\n"
+    assert not r.headers.get("content-disposition", "").startswith("attachment")
+    assert client.get("/api/runs/run-3/files/migration-report.md").status_code == 404      # no second name on disk

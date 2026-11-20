@@ -43,7 +43,7 @@ from typing import Any, Iterable, Optional
 
 from sbmig.core.config import Config
 from sbmig.core.interfaces import ChatMessage, LLMResponse
-from sbmig.core.models import (CaseType, LLMUsage, ProjectProfile, ReviewIssue, ScriptProposal, ScriptRunResult,
+from sbmig.core.models import (CaseType, LLMUsage, asked_model_name, served_beside, ProjectProfile, ReviewIssue, ScriptProposal, ScriptRunResult,
                                StructureReview)
 from sbmig.core.stage import stage
 
@@ -374,9 +374,12 @@ class StructureReviewer:
                                          temperature=cfg.llm.temperature, role=ROLE, metadata=meta)
         except Exception as e:  # noqa: BLE001 - LLMError, budget, transport: the review is skipped, not the run
             return _short(f"llm-error: {type(e).__name__}: {e}", 400)
-        u = LLMUsage(model=str(getattr(resp, "model", "") or model or ""), calls=1,
+        # 이름은 요청한 모델이다. 응답이 알려 준 모델은 served로 남긴다
+        name = asked_model_name(getattr(resp, "model", ""), model, getattr(self.llm, "model", ""))
+        u = LLMUsage(model=name, calls=1,
                      input_tokens=int(getattr(resp, "input_tokens", 0) or 0),
-                     output_tokens=int(getattr(resp, "output_tokens", 0) or 0))
+                     output_tokens=int(getattr(resp, "output_tokens", 0) or 0),
+                     served=served_beside(name, list(getattr(resp, "served_models", None) or [])))
         rv.llm_usage = rv.llm_usage.add(u)
         rv.model = rv.model or u.model
         if not isinstance(getattr(resp, "content", None), str):

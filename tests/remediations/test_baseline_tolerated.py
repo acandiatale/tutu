@@ -324,6 +324,8 @@ def test_report_head_and_steps_of_the_tolerated_case(tmp_path):
     assert "조치 전과 같은 오류에서 멈췄습니다" in head and "새로 생긴 오류는 없습니다" in head
     steps = md.split("## 해야 할 일")[1].split("##")[0]
     assert "빌드 오류 고치기" in steps and "변환 뒤 남은 빌드 오류" in steps and "한 번 빌드" in steps
+    # v2.1z-bg: the migration report is named as the person receives it from the page
+    assert "이관 보고서(`migration-report.md`)" in steps and "(`report.md`)" not in steps
     # the step points at a heading of the MIGRATION report: the two texts must not drift apart
     from sbmig.report.guide_ko import NO_FIX_TITLE
     assert f"「{NO_FIX_TITLE}」" in steps

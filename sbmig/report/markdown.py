@@ -1332,11 +1332,12 @@ def _remediation_lines_ko(rem: dict, *, chained: bool = True, after_failure: boo
     files = rem.get("files") or {}
     if isinstance(files, dict) and files:
         report_md = files.get("report_md")
+        # 보고서는 화면에서 받는 이름으로 쓴다. 나머지는 실행 폴더 경로다
         if report_md:
-            L.append(f"- 자세한 결과: `{_cell(report_md, 120)}`")
+            L.append(f"- 자세한 결과: `{_cell(received_name(report_md), 120)}`")
         others = [v for k, v in files.items() if k != "report_md"]
         if others:
-            L.append("- 다른 파일: " + ", ".join(f"`{_cell(v, 120)}`" for v in others))
+            L.append("- 다른 파일: " + ", ".join(f"`{_cell(received_name(v), 120)}`" for v in others))
     L.append("")
     return L
 
@@ -1368,6 +1369,19 @@ def intake_notice_lines(r: RunReport, lang: str = "en") -> list[str]:
     return L
 
 
+# 실행 폴더 안의 조치 보고서를 사람이 받는 이름으로 바꿔 쓴다. 한국어 안내서에서만 쓴다.
+# 영어판은 운영자용이라 폴더 경로를 그대로 둔다
+RECEIVED_NAMES = {"remediation/report.md": "remediation-report.md",
+                  "remediation/report.json": "remediation-report.json"}
+
+
+def received_name(path: object) -> str:
+    """실행 폴더 경로를 화면에서 내려받을 때의 이름으로 바꾼다. 목록에 없는 경로는 그대로 반환한다.
+
+    The name a person receives for a run-directory path (v2.1z-bg); other paths unchanged."""
+    return RECEIVED_NAMES.get(str(path), str(path))
+
+
 def render_remediation_flow(report: RunReport, language: str = "en") -> str:
     """이관 없이 취약점 조치만 한 실행(``remediation``)의 짧은 report.md를 만든다.
     제목, 시작하지 못한 사유, 이관을 실행하지 않았다는 한 줄, ``SBMIG-RESULT`` 줄, 취약점 조치 절,
@@ -1393,9 +1407,9 @@ def render_remediation_flow(report: RunReport, language: str = "en") -> str:
     # 조치 보고서는 조치가 끝나야 만들어지므로 파일이 있을 때만 경로를 쓰고,
     # 조치 절이 이미 그 파일을 가리키면 다시 쓰지 않는다
     has_report = "report_md" in (rem.get("files") or {}) if isinstance(rem, dict) else False
-    if rem and rem.get("status") != "skipped" and has_report \
-            and not any("remediation/report.md" in ln for ln in section):
-        L += [tr(lang, "Full remediation report: `{path}`", path="remediation/report.md"), ""]
+    path = received_name("remediation/report.md") if lang == "ko" else "remediation/report.md"
+    if rem and rem.get("status") != "skipped" and has_report and not any(path in ln for ln in section):
+        L += [tr(lang, "Full remediation report: `{path}`", path=path), ""]
     return "\n".join(L).rstrip() + "\n"
 
 
@@ -1408,6 +1422,20 @@ def _cost_summary(c: Any, lang: str = "en") -> str:
     if c.usage_missing:
         txt += " " + tr(lang, "(token counts missing for some calls)")
     return txt
+
+
+def _served_tail(m: Any) -> str:
+    # 응답이 알려 준 모델 이름을 " (a, b)" 형태로 만든다. 모르면 빈 문자열이다
+    served = [s for s in (getattr(m, "served", None) or []) if s]
+    return f" ({', '.join(served)})" if served else ""
+
+
+def model_cell(m: Any) -> str:
+    """비용 표의 모델 칸을 만든다. 요청한 이름 뒤에 응답이 알려 준 모델을 괄호로 붙인다.
+
+    The model cell: the asked name in code style, the served model(s) in brackets when known
+    (`` `build_error_fixer` (gpt-5.5) ``)."""
+    return f"`{m.model}`{_served_tail(m)}"
 
 
 def cost_lines(r: RunReport, lang: str = "en") -> list[str]:
@@ -1424,7 +1452,7 @@ def cost_lines(r: RunReport, lang: str = "en") -> list[str]:
     for m in c.by_model:
         price = (f"{fmt_money(m.input_per_mtok, c.currency)} / {fmt_money(m.output_per_mtok, c.currency)}"
                  if m.cost is not None else tr(lang, "no price configured"))
-        L.append(f"| `{m.model}` | {m.calls} | {m.input_tokens:,} | {m.output_tokens:,} | {price} | "
+        L.append(f"| {model_cell(m)} | {m.calls} | {m.input_tokens:,} | {m.output_tokens:,} | {price} | "
                  f"{fmt_money(m.cost, c.currency) if m.cost is not None else '-'} |")
     if not c.by_model:
         L.append(tr(lang, "| (no per-model usage recorded) | {calls} | {inp:,} | {out:,} | - | - |",
@@ -1543,7 +1571,8 @@ def render_markdown(report: RunReport, language: str = "en", cfg: Any = None) ->
                 finished=_dt(r.finished_at), duration=_duration(r, lang)))
     u = r.llm_usage
     L.append(tr(lang, "| LLM | {calls} call(s), {inp} in / {out} out tokens{model} |", calls=u.calls,
-                inp=u.input_tokens, out=u.output_tokens, model=f" ({u.model})" if u.model else ""))
+                inp=u.input_tokens, out=u.output_tokens,
+                model=f" ({u.model}{_served_tail(u)})" if u.model else ""))
     c = r.llm_cost
     if c is not None and (c.by_model or u.calls):
         L.append(tr(lang, "| LLM cost | {cost} (see \"LLM usage and cost\") |",

@@ -7,6 +7,7 @@ Per-run LLM cost (2026-10-22, the user: "프로젝트당 API 가격"): usage per
 
     compute_llm_cost(by_model, cfg) -> LLMCost
     price_for(model, pricing) -> (key, ModelPrice | None)
+    price_for_usage(usage, pricing) -> (key, ModelPrice | None)   asked name first, then the served names
 
 Pure functions; prices come from the config (company specifics never live in code). A model without a price is
 listed as unpriced and left out of the total, never guessed."""
@@ -14,7 +15,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from sbmig.core.models import LLMCost, LLMUsage, ModelCost
+from sbmig.core.models import LLMCost, LLMUsage, ModelCost, asked_model_name, real_model_name
 
 
 def price_for(model: str, pricing: dict[str, Any]) -> tuple[str, Optional[Any]]:
@@ -36,6 +37,21 @@ def price_for(model: str, pricing: dict[str, Any]) -> tuple[str, Optional[Any]]:
     return (keys[best], pricing[keys[best]]) if best else ("", None)
 
 
+def price_for_usage(u: LLMUsage, pricing: dict[str, Any]) -> tuple[str, Optional[Any]]:
+    """사용량 행의 단가를 찾는다. 요청한 이름으로 먼저 찾고, 없으면 응답이 알려 준 모델 이름을 순서대로 찾는다.
+
+    The price of a usage row: by the asked name (`u.model`, e.g. an agent-gateway role) first, then by each served
+    name in the order the answers reported them; the first match wins. A price table keyed by real model names keeps
+    working as long as the gateway reports them."""
+    for name in [u.model, *(u.served or [])]:
+        if not real_model_name(name):
+            continue
+        key, price = price_for(name, pricing)
+        if price is not None:
+            return key, price
+    return "", None
+
+
 def _price_fields(p: Any) -> tuple[float, float]:
     # 테스트와 플러그인이 dict를 넘기기도 하므로 dict와 ModelPrice 객체를 모두 받는다
     if isinstance(p, dict):
@@ -54,16 +70,17 @@ def compute_llm_cost(by_model: list[LLMUsage], cfg: Any) -> LLMCost:
     for u in by_model:
         if not (u.calls or u.input_tokens or u.output_tokens):
             continue
-        key, price = price_for(u.model, pricing)
-        row = ModelCost(model=u.model or "?", calls=u.calls, input_tokens=u.input_tokens,
-                        output_tokens=u.output_tokens, price_key=key)
+        name = asked_model_name(u.model)
+        key, price = price_for_usage(u, pricing)
+        row = ModelCost(model=name, calls=u.calls, input_tokens=u.input_tokens,
+                        output_tokens=u.output_tokens, price_key=key, served=list(u.served))
         if price is not None:
             inp, outp = _price_fields(price)
             row.input_per_mtok, row.output_per_mtok = inp, outp
             row.cost = round(u.input_tokens / 1_000_000 * inp + u.output_tokens / 1_000_000 * outp, 6)
             total += row.cost
         else:
-            out.unpriced_models.append(u.model or "?")
+            out.unpriced_models.append(name)
         # 회사 게이트웨이가 usage를 주지 않으면 비용 0이 무료로 보이지 않도록 표시를 남긴다
         if u.calls and not (u.input_tokens or u.output_tokens):
             out.usage_missing = True

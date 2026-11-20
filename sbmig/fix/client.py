@@ -32,7 +32,7 @@ import httpx
 
 from sbmig.core.config import BUILTIN_LLM_PROVIDERS, Config
 from sbmig.core.interfaces import ChatMessage, LLMClientLike, LLMResponse
-from sbmig.core.models import LLMUsage
+from sbmig.core.models import LLMUsage, asked_model_name, merge_model_names, served_beside
 
 log = logging.getLogger("sbmig.fix.client")
 
@@ -95,8 +95,47 @@ def llm_calls_in_flight() -> int:
 
 
 def usage_from(resp: LLMResponse) -> LLMUsage:
-    """응답 하나의 사용량(호출 1회와 입력 / 출력 토큰 수)을 반환한다."""
-    return LLMUsage(model=resp.model, calls=1, input_tokens=resp.input_tokens, output_tokens=resp.output_tokens)
+    """응답 하나의 사용량(호출 1회와 입력 / 출력 토큰 수, 요청한 모델과 응답이 알려 준 모델)을 반환한다."""
+    return LLMUsage(model=resp.model, calls=1, input_tokens=resp.input_tokens, output_tokens=resp.output_tokens,
+                    served=list(getattr(resp, "served_models", None) or []))
+
+
+def served_models_of(data: Any) -> list[str]:
+    """게이트웨이 JSON 응답이 알려 준 실제 모델 이름을 반환한다. 최상위 `model`과 `usage.by_model[].model`을 본다.
+    `unknown` 같은 자리 표시 값은 뺀다.
+
+    The real model names an answer reports: its top-level `model` (when not a placeholder such as `unknown`) and
+    every `usage.by_model[].model` (the company's agent gateway), in that order, without duplicates."""
+    if not isinstance(data, dict):
+        return []
+    names: list[Any] = [data.get("model")]
+    usage = data.get("usage")
+    by_model = usage.get("by_model") if isinstance(usage, dict) else None
+    if isinstance(by_model, list):
+        names += [e.get("model") for e in by_model if isinstance(e, dict)]
+    return merge_model_names(names)
+
+
+def named_response(resp: LLMResponse, asked: Optional[str], *, fallback: Optional[str] = None,
+                   served: Optional[list[str]] = None) -> LLMResponse:
+    """응답의 model을 요청한 이름으로 바꾸고, 응답이 알려 준 모델은 served_models로 옮긴다.
+    요청한 이름이 없으면 응답의 실제 모델 이름, fallback 순으로 쓴다.
+
+    The answer named by the asked model (v2.1z-bg): `model` = `asked`, else the answer's own real name, else
+    `fallback` (never `unknown` / ""); the answer's real names (its `model`, `served_models`, `served`) go to
+    `served_models`, the chosen name left out."""
+    reported = merge_model_names([resp.model], resp.served_models, served or [])
+    name = asked_model_name(asked, *reported, fallback)
+    return resp.model_copy(update={"model": name, "served_models": served_beside(name, reported)})
+
+
+def served_log_suffix(resp: Any) -> str:
+    """`llm call` 로그 줄 끝에 붙일 ` served=a,b`를 만든다. 응답이 모델을 알려 주지 않았으면 빈 문자열이다.
+
+    ` served=<names>` appended to the `llm call provider=… model=… in=… out=…` line (after `finish=`, so the admin
+    page's older expression still reads the line); "" without served models."""
+    names = [" ".join(str(n).split()).replace(" ", "_") for n in (getattr(resp, "served_models", None) or [])]
+    return f" served={','.join(names)}" if names else ""
 
 
 def messages_hash(messages: list[ChatMessage]) -> str:
@@ -229,10 +268,10 @@ class _HTTPClient:
                         data = resp.json()
                     except ValueError as exc:
                         raise LLMError(resp.status_code, resp.text[:500], f"invalid JSON from LLM: {exc}") from exc
-                    out = self._parse(data, model)
-                    log.info("llm call provider=%s model=%s in=%d out=%d latency=%.1fs finish=%s", self.provider,
+                    out = named_response(self._parse(data, model), model, served=served_models_of(data))
+                    log.info("llm call provider=%s model=%s in=%d out=%d latency=%.1fs finish=%s%s", self.provider,
                              out.model, out.input_tokens, out.output_tokens, time.monotonic() - t0,
-                             out.finish_reason)
+                             out.finish_reason, served_log_suffix(out))
                     return out
                 last_status, last_body = resp.status_code, resp.text[:500]
                 if resp.status_code not in RETRY_STATUS:
@@ -482,8 +521,8 @@ class FakeLLMClient:
         if isinstance(text, Exception):
             raise text
         in_tok = sum(len(m.content) for m in messages) // 4
-        resp = LLMResponse(content=text, model=used_model, input_tokens=in_tok, output_tokens=len(text) // 4,
-                           finish_reason="stop")
+        resp = LLMResponse(content=text, model=asked_model_name(used_model), input_tokens=in_tok,
+                           output_tokens=len(text) // 4, finish_reason="stop")
         if self._recorder:
             self._recorder.write(messages, resp, 0.0, role=role, metadata=metadata)
         return resp

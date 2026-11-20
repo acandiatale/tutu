@@ -764,3 +764,10 @@ def test_minimal_report_never_raises():
     md = ko(bare)
     assert md.startswith("# 마이그레이션 보고서 — p") and "따로 확인하실 사항은 없습니다." in md
     assert "| 시작 / 종료 | 2026-11-15 09:37:59 UTC / - (-) |" in md
+
+
+def test_review_overflow_points_at_the_json_report_by_its_received_name():
+    """v2.1z-bg: a person receives report.json from the page as migration-report.json."""
+    from sbmig.report.guide_ko import _pointer
+    line = _pointer("… and 7 more structure review issue(s) — see Structure review", guide_report())
+    assert line == "구조 점검에서 나온 문제가 7건 더 있습니다. `migration-report.json`의 `structure_review`에서 볼 수 있습니다."

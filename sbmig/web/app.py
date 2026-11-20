@@ -38,7 +38,9 @@ Routes:
     GET  /api/runs/{id}/events           SSE: status | node | error | journal | log | report | ping | end
     POST /api/runs/{id}/stop             stop after the current graph node
     GET  /api/runs/{id}/files/{name}     report.md | report.json | result.zip | sbmig.log | journal.jsonl |
-                                         changes.patch | plan.json | profile.json | errors.md | errors.jsonl
+                                         changes.patch | plan.json | profile.json | errors.md | errors.jsonl;
+                                         `?download=1` attaches; report.md / report.json are then named
+                                         migration-report.md / migration-report.json (v2.1z-bg)
     GET  /api/runs/{id}/codediff         the code-change view (v2.1z-au, `sbmig.web.codediff`): the stored
                                          codediff/index.json; 404 {"error": "code diff not available"} without it,
                                          409 while the run's final redaction pass is pending
@@ -106,7 +108,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from sbmig.core.config import PACKAGE_ROOT, load_dotenv_files
 
-from .runs import RUN_ID_RE, SERVED_FILES, ProjectNameError, RunManager, check_flow, check_project
+from .runs import DOWNLOAD_NAMES, RUN_ID_RE, SERVED_FILES, ProjectNameError, RunManager, check_flow, check_project
 
 log = logging.getLogger("sbmig.web")
 
@@ -679,7 +681,7 @@ def create_app(out_dir: Path, repo_root: Path = PACKAGE_ROOT, max_upload_mb: int
             return JSONResponse({"error": f"{name} not found"}, status_code=404)
         attach = download is not None or name.endswith((".zip", ".csv", ".jsonl"))
         return FileResponse(path, media_type=SERVED_FILES[name], headers={"Cache-Control": "no-store"},
-                            filename=name if attach else None,
+                            filename=DOWNLOAD_NAMES.get(name, name) if attach else None,
                             content_disposition_type="attachment" if attach else "inline")
 
     @app.exception_handler(HTTPException)

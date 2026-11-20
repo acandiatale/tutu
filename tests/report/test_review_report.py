@@ -129,7 +129,7 @@ def test_handover_followups():
     assert tr_line("ko", lines[0]) == ("구조 점검에서 심각한 문제 1건을 고치면서 파일 1개를 바꿨습니다: "
                                        "shop-back/pom.xml (커밋 abcdef12). 이 pom 변경을 확인해 주세요.")
     assert tr_line("ko", lines[2]).startswith("구조 점검 경고: m0/pom.xml")
-    assert tr_line("ko", failed[-1]) == ("구조 점검에서 나온 문제가 7건 더 있습니다. report.json의 `structure_review`에서 "
+    assert tr_line("ko", failed[-1]) == ("구조 점검에서 나온 문제가 7건 더 있습니다. migration-report.json의 `structure_review`에서 "
                                          "볼 수 있습니다.")
 
 

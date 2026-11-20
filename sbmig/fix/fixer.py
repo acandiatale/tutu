@@ -51,6 +51,8 @@ from sbmig.core.models import (
     ProjectProfile,
     ScriptBase,
     ScriptProposal,
+    asked_model_name,
+    merge_model_names,
 )
 from sbmig.core.workspace import Workspace
 
@@ -593,7 +595,7 @@ class LLMFixer:
                 changes=list(parsed.changes) if (code or edits) else [],
                 no_script_reason=no_script if not code else "",
                 verify=verify if (code or edits) else "",
-                model=last.model if last else (model or ""),
+                model=asked_model_name(last.model, model, self.cfg.llm.model) if last else (model or ""),
                 prompt_hash=messages_hash(messages),
                 llm_usage=usage,
                 session_id=getattr(last, "session_id", None) if last else None,   # v2.1z-o
@@ -678,7 +680,8 @@ class LLMFixer:
         self.verify_usage = self.verify_usage.add(usage)
         try:
             ws.journal({"event": "llm_verify_guide", "cluster_id": cid, "case_id": case_id or None,
-                        "model": usage.model or model or "", "calls": usage.calls,
+                        "model": asked_model_name(usage.model, model, self.cfg.llm.model),
+                        "served": list(usage.served), "calls": usage.calls,
                         "tokens": {"input": usage.input_tokens, "output": usage.output_tokens},
                         "prompt_hash": messages_hash(messages) if messages else "",
                         "changes": [c.text for c in changes[:VERIFY_MAX_CHANGES]], "chars": len(text),
@@ -964,7 +967,8 @@ class LLMFixer:
         """실패한 요청에 대한 빈 제안을 만든다.
         analysis가 `llm-error: …`로 시작하므로 수정 루프가 전송 장애로 분류한다."""
         log.warning("%s", analysis[:300])
-        return ScriptProposal(code="", analysis=analysis[:1000], model=model or "",
+        # 답을 받지 못한 요청도 요청한 모델 이름으로 남긴다
+        return ScriptProposal(code="", analysis=analysis[:1000], model=asked_model_name(model, self.cfg.llm.model),
                               prompt_hash=messages_hash(messages) if messages else "", llm_usage=usage,
                               requested_files=requested, error=error[:300])
 
@@ -975,7 +979,8 @@ class LLMFixer:
             ws.journal({"event": "llm_script", "cluster_id": cluster.id,
                         "case_id": ctx.case_id or cluster.case_id or None, "mode": mode,
                         "base_version": ctx.script_base.version if mode == "augment" and ctx.script_base else None,
-                        "model": p.model, "rounds": rounds, "calls": p.llm_usage.calls,
+                        "model": p.model, "served": list(p.llm_usage.served), "rounds": rounds,
+                        "calls": p.llm_usage.calls,
                         "tokens": {"input": p.llm_usage.input_tokens, "output": p.llm_usage.output_tokens},
                         "prompt_hash": p.prompt_hash, "code_chars": len(p.code), "edits": len(p.edits),
                         "solution_chars": len(p.solution), "no_script": bool(p.no_script_reason),
@@ -1038,6 +1043,7 @@ class LLMFixer:
                                         metadata=dict(metadata) if metadata else None)
         u = usage_from(resp)
         usage.model = usage.model or u.model
+        usage.served = merge_model_names(usage.served, u.served)
         usage.calls += 1
         usage.input_tokens += u.input_tokens
         usage.output_tokens += u.output_tokens

@@ -66,7 +66,7 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
     "structure review": "구조 점검",
     "commit `{sha}`": "커밋 `{sha}`",
     " — approved ({src})": " — {src}에서 승인한 변경",
-    "… {n} more (report.json)": "… 외 {n}건 (report.json 참고)",
+    "… {n} more (report.json)": "… 외 {n}건 (migration-report.json 참고)",
     "(no guide recorded)": "(남긴 안내 없음)",
     "guide source: LLM": "안내 작성: LLM",
     "guide source: sbmig (synthesized)": "안내 작성: sbmig 자동 생성",
@@ -123,12 +123,12 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
     "Vulnerability remediation": "취약점 조치",
     "Chained after the migration's BUILD SUCCESS (remediation.after_migration); it does not change the migration result "
     "above.": "마이그레이션 빌드가 성공한 뒤 이어서 실행했습니다. 위의 마이그레이션 결과에는 영향이 없습니다. 자세한 "
-              "결과는 아래 파일의 report.md에 있습니다.",
+              "결과는 아래 remediation-report.md 파일에 있습니다.",
     "Chained after the migration although its final build failed (a framework project: remediation.after_failed_build); "
     "it does not change the migration result above.":
         "마이그레이션 빌드는 통과하지 않았지만, 프레임워크 프로젝트라 취약점 조치를 이어서 실행했습니다. 오픈소스 라이브러리 "
-        "검사는 빌드와 따로 할 수 있습니다. 위의 마이그레이션 결과에는 영향이 없습니다. 자세한 결과는 아래 파일의 "
-        "report.md에 있습니다.",
+        "검사는 빌드와 따로 할 수 있습니다. 위의 마이그레이션 결과에는 영향이 없습니다. 자세한 결과는 아래 "
+        "remediation-report.md 파일에 있습니다.",
     "- The project did not build before the remediation either: the changed versions were scanned again, but no build "
     "confirmed them.":
         "- 조치 전에도 빌드가 되지 않아, 바꾼 버전을 다시 검사했지만 빌드로 확인하지는 못했습니다.",
@@ -170,7 +170,7 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
     "warning": "경고",
     "(project)": "(프로젝트 전체)",
     "… {n} more issue(s) — see `structure_review` in report.json":
-        "… 외 {n}건 (report.json의 `structure_review` 참고)",
+        "… 외 {n}건 (migration-report.json의 `structure_review` 참고)",
     "Analysis: {analysis}": "분석: {analysis}",
     "skipped ({note})": "실행하지 않음 ({note})",
     "failed — no usable answer, the build went ahead ({note})":
@@ -1147,7 +1147,8 @@ PATTERNS: dict[str, list[tuple[re.Pattern[str], Union[str, Callable[[re.Match[st
     (r"^structure review: critical issue not fixed — (?P<rest>.+)$", r"구조 점검에서 찾았지만 고치지 못한 심각한 문제: \g<rest>"),
     (r"^structure review warning — (?P<rest>.+)$", r"구조 점검 경고: \g<rest>"),
     (r"^… and (?P<n>\d+) more structure review issue\(s\) — see Structure review$",
-     r"구조 점검에서 나온 문제가 \g<n>건 더 있습니다. report.json의 `structure_review`에서 볼 수 있습니다."),
+     r"구조 점검에서 나온 문제가 \g<n>건 더 있습니다. migration-report.json의 `structure_review`에서 볼 수 "
+     r"있습니다."),
     # 구조 점검을 하지 않은 이유(sbmig/review/reviewer.py). review_summary의 {note}로 들어온다
     (r"^review\.enabled is off$", r"review.enabled 설정이 꺼져 있습니다"),
     (r"^no LLM client for this run \(dry run or LLM off\)$", r"이번 실행에는 LLM이 없습니다(dry run이거나 LLM이 꺼져 있습니다)"),

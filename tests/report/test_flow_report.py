@@ -75,7 +75,7 @@ def test_path_line_when_the_report_exists_and_the_section_does_not_name_it(monke
                                                  "files": {"report_md": "remediation/report.md"}})
     monkeypatch.setattr(md, "remediation_lines", lambda report, lang="en": ["## x", "", "- no file named here", ""])
     assert "Full remediation report: `remediation/report.md`" in render_markdown(r, "en")
-    assert "자세한 조치 결과는 `remediation/report.md`에 있습니다." in render_markdown(r, "ko")
+    assert "자세한 조치 결과는 `remediation-report.md`에 있습니다." in render_markdown(r, "ko")     # v2.1z-bg
 
 
 def _rem(status, reason="", **kw):

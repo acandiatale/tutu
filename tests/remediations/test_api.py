@@ -221,6 +221,13 @@ def test_files_whitelist(tmp_path, base_cfg):
         assert c.get(f"/api/remediations/{rid}/files/{name}").status_code == 404, name
     assert c.get("/api/remediations/r20000101-000000-abcdef/files/report.md").status_code == 404
     assert c.get("/api/remediations/-bad/files/report.md").status_code == 400
+    # v2.1z-bg: inline as before; with ?download=1 attached under the name a person tells apart
+    assert not c.get(f"/api/remediations/{rid}/files/report.md").headers.get("content-disposition", "").startswith("attach")
+    r = c.get(f"/api/remediations/{rid}/files/report.md?download=1")
+    assert r.status_code == 200 and r.headers["content-disposition"] == 'attachment; filename="remediation-report.md"'
+    r = c.get(f"/api/remediations/{rid}/files/report.json?download=1")
+    assert r.headers["content-disposition"] == 'attachment; filename="remediation-report.json"'
+    assert 'filename="result.zip"' in c.get(f"/api/remediations/{rid}/files/result.zip").headers["content-disposition"]
 
 
 # ---------------------------------------------------------------------------- the real web app

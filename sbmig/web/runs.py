@@ -145,6 +145,8 @@ SERVED_FILES = {"report.md": "text/markdown; charset=utf-8", "report.json": "app
                 # v2.1: the run's error list — every error with its tries, the LLM's answer and the applied diff
                 "errors.md": "text/markdown; charset=utf-8",
                 "errors.jsonl": "application/x-ndjson; charset=utf-8"}
+# 사람이 내려받을 때 쓰는 이름이다. 실행 폴더 안의 파일 이름과 주소는 그대로 둔다
+DOWNLOAD_NAMES = {"report.md": "migration-report.md", "report.json": "migration-report.json"}
 # 기록할 때 이미 마스킹되는 파일이므로 실행 중에도 내려받을 수 있다.
 # 나머지 파일은 실행이 끝나고 마지막 마스킹을 거친 뒤에만 내준다(`RunManager.file_withheld`)
 LIVE_FILES = ("sbmig.log", "journal.jsonl")

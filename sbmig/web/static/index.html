@@ -81,7 +81,11 @@
                      color: var(--ink); background: #fff; border: 1px solid var(--line); border-radius: var(--radius-s); }
   .projfield input:focus { border-color: var(--blue); outline: none; box-shadow: 0 0 0 3px var(--blue-tint); }
   .projfield input[aria-invalid=true] { border-color: var(--bad); box-shadow: 0 0 0 3px var(--bad-tint); }
-  .projfield .phint { margin: 6px 0 0; font-size: 12.5px; color: var(--faint); }
+  /* 입력 안내. 오류 문구(.pmsg, 빨강)와 헷갈리지 않게 본문 색과 파란 왼쪽 선으로 보여 준다 */
+  .projfield .phint { margin: 8px 0 0; padding: 6px 0 6px 10px; border-left: 3px solid var(--blue-mid); max-width: 420px; }
+  .projfield .phint p { margin: 0; word-break: keep-all; overflow-wrap: anywhere; }
+  .projfield .phint .pmain { font-size: 13.5px; font-weight: 600; color: var(--ink); }
+  .projfield .phint .prule { margin-top: 2px; font-size: 12.5px; color: var(--muted); }
   .projfield .pmsg { margin: 6px 0 0; font-size: 13px; font-weight: 600; color: var(--bad); }
   .startwrap { display: inline-flex; }
   .upname { font-weight: 400; color: var(--faint); margin-left: 8px; font-size: 12.5px; }
@@ -236,6 +240,57 @@
   details.preview summary { cursor: pointer; color: var(--muted); font-size: 13px; }
   .report { margin-top: 10px; white-space: pre-wrap; font: 12.5px/1.5 var(--mono); max-height: 420px; overflow: auto;
             background: var(--paper); border: 1px solid var(--line-soft); border-radius: var(--radius-s); padding: 12px 14px; }
+  /* ---- 3d. 보고서 보기: 보기 / 원문 전환, 크게 보기 */
+  .rvbar { display: flex; align-items: center; gap: 8px 12px; flex-wrap: wrap; margin-top: 10px; }
+  .rvbar .btn { padding: 5px 12px; font-size: 12.5px; margin-left: auto; }
+  .rvseg { display: inline-flex; border: 1px solid var(--line); border-radius: var(--radius-s); background: var(--card); overflow: hidden; flex: none; }
+  .rvseg button { border: 0; border-right: 1px solid var(--line-soft); background: none; padding: 5px 12px; font-size: 12.5px; color: var(--muted); cursor: pointer; white-space: nowrap; }
+  .rvseg button:last-child { border-right: 0; }
+  .rvseg button:hover { background: var(--paper); }
+  .rvseg button:focus-visible { outline-offset: -2px; }
+  .rvseg button[aria-pressed=true] { background: var(--blue); color: #fff; font-weight: 600; }
+  .rvpane { margin-top: 10px; max-height: 560px; overflow: auto; border: 1px solid var(--line-soft); border-radius: var(--radius-s); padding: 4px 16px 14px; background: var(--card); }
+  /* 대화상자: 글을 읽는 화면이라 코드 변경보다 좁게 둔다 */
+  .rvmodal { width: min(96vw, 1180px); }
+  .rvmodal .cdm-head { align-items: center; }
+  .rvmodal .rv-dl { flex: none; padding: 6px 14px; font-size: 13px; }
+  .rvmodal .rv-dl .sub { font-weight: 400; opacity: .8; font-size: 12px; }
+  .rvmodal .cdm-close { margin-left: 0; }
+  .rvmodal .cdm-title { flex: 1 1 200px; }
+  .rvmodal .rv-raw { max-height: none; margin: 0; }
+  @media (max-width: 640px) { .rvmodal { width: 100vw; } }
+  /* ---- Markdown 화면. 규칙은 모두 .mdv 아래에 둔다. 넓은 표와 긴 코드 줄은 그 상자 안에서만 가로로 스크롤한다 */
+  .mdv { min-width: 0; font-size: 14px; line-height: 1.6; color: var(--ink); word-break: keep-all; overflow-wrap: anywhere; }
+  .mdv > :first-child { margin-top: 10px; }
+  .mdv h1, .mdv h2, .mdv h3, .mdv h4, .mdv h5, .mdv h6 { margin: 22px 0 8px; line-height: 1.35; color: var(--ink); font-weight: 700; }
+  .mdv h1 { font-size: 21px; padding-bottom: 8px; border-bottom: 1px solid var(--line); }
+  .mdv h2 { font-size: 17px; padding-bottom: 6px; border-bottom: 1px solid var(--line-soft); }
+  .mdv h3 { font-size: 15px; } .mdv h4 { font-size: 14px; } .mdv h5, .mdv h6 { font-size: 13px; color: var(--muted); }
+  .mdv h4 code { font-size: 12.5px; }
+  .mdv p { margin: 8px 0; }
+  .mdv ul, .mdv ol { margin: 8px 0; padding-left: 26px; }
+  .mdv li { margin: 3px 0; } .mdv li > ul, .mdv li > ol { margin: 4px 0; }
+  .mdv li.task { list-style: none; margin-left: -20px; } .mdv li.task input { margin: 0 4px 0 0; vertical-align: -1px; }
+  .mdv a { color: var(--blue); text-decoration: underline; text-underline-offset: 2px; }
+  .mdv code { font-family: var(--mono); font-size: 12.5px; padding: 1px 5px; border-radius: 4px; background: var(--paper); border: 1px solid var(--line-soft);
+              word-break: break-all; }
+  .mdv blockquote { margin: 10px 0; padding: 8px 14px; border-left: 3px solid var(--blue-mid); background: var(--blue-soft); border-radius: 0 var(--radius-s) var(--radius-s) 0; }
+  .mdv blockquote > :first-child { margin-top: 0; } .mdv blockquote > :last-child { margin-bottom: 0; }
+  .mdv hr { border: 0; border-top: 1px solid var(--line); margin: 18px 0; }
+  .mdv .mdv-pre { margin: 10px 0; padding: 10px 12px; overflow-x: auto; background: var(--paper); border: 1px solid var(--line-soft); border-radius: var(--radius-s);
+                  font: 12px/1.5 var(--mono); tab-size: 4; -moz-tab-size: 4; word-break: normal; overflow-wrap: normal; }
+  .mdv .mdv-pre code { display: block; width: max-content; min-width: 100%; padding: 0; border: 0; background: none; font-size: inherit; white-space: pre; word-break: normal; }
+  .mdv .mdv-pre .da { color: var(--ok); } .mdv .mdv-pre .dd { color: var(--bad); } .mdv .mdv-pre .dh { color: var(--muted); }
+  .mdv .mdv-tw { margin: 10px 0; overflow-x: auto; border: 1px solid var(--line-soft); border-radius: var(--radius-s); }
+  .mdv table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  .mdv th, .mdv td { padding: 6px 10px; border-bottom: 1px solid var(--line-soft); text-align: left; vertical-align: top; min-width: 64px; max-width: 520px; }
+  .mdv th { background: var(--paper); color: var(--muted); font-weight: 600; white-space: nowrap; }
+  .mdv tbody tr:last-child td { border-bottom: 0; }
+  .mdv th.c, .mdv td.c { text-align: center; } .mdv th.r, .mdv td.r { text-align: right; }
+  .mdv td code { word-break: break-all; }
+  .mdv details { margin: 10px 0; border: 1px solid var(--line-soft); border-radius: var(--radius-s); padding: 0 14px; }
+  .mdv details[open] { padding-bottom: 8px; }
+  .mdv summary { cursor: pointer; padding: 8px 0; font-weight: 600; color: var(--ink); }
 
   /* ---- 3b. 취약점 조치: 이관 성공 후 빌드 파드가 이어서 실행한 조치를 결과 카드 아래에 표시한다 */
   .remed { margin-top: 18px; border-top: 1px solid var(--line-soft); padding-top: 16px; }
@@ -551,10 +606,13 @@
     <div class="projfield">
       <label class="plabel" for="project">프로젝트명<span class="req" aria-hidden="true">*</span></label>
       <input type="text" id="project" name="project" required maxlength="30" pattern="[A-Za-z0-9][A-Za-z0-9_\-]{0,29}"
-             autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="예: order-admin"
+             autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="레포지토리 이름"
              aria-describedby="project-hint">
       <p class="pmsg" id="project-msg" hidden></p>
-      <p class="phint" id="project-hint">영문, 숫자, _, - 만 · 공백 없이 30자까지. 실행 목록과 결과 폴더 이름이 이 이름으로 시작합니다.</p>
+      <div class="phint" id="project-hint">
+        <p class="pmain">6자리 체인코드가 포함된 레포지토리 이름으로 작성해 주세요.</p>
+        <p class="prule">영문, 숫자, _, - 만 쓸 수 있고 공백 없이 30자까지입니다.</p>
+      </div>
     </div>
     <label class="drop" id="drop" for="zip">
       <input type="file" id="zip" accept=".zip,application/zip,application/x-zip-compressed" aria-label="프로젝트 ZIP 파일">
@@ -668,7 +726,7 @@
     <div class="downloads" id="maindl">
       <a class="btn big" id="dl-report" aria-disabled="true">
         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M4 1.5h5.5L13 5v9.5H4z"/><path d="M9.5 1.5V5H13M6 8h4M6 10.5h4"/></svg>
-        <span>보고서 받기 <span class="sub">report.md</span></span>
+        <span>보고서 받기 <span class="sub">migration-report.md</span></span>
       </a>
       <a class="btn big quiet" id="dl-zip" aria-disabled="true">
         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M2 4.5h12v9H2z"/><path d="M2 4.5l1.5-2.5h9L14 4.5M8 7v4m0 0-2-2m2 2 2-2"/></svg>
@@ -700,9 +758,17 @@
       </div>
       <p class="cdlead">변환 전 프로젝트와 비교해 바뀐 파일을 옮긴 뒤의 위치 기준으로 보여 줍니다.</p>
     </div>
-    <details class="preview" id="preview">
+    <!-- 보고서 미리보기: 실행이 끝나 보고서를 받으면 표시한다. Markdown을 그린 화면과 원문을 바꿔 볼 수 있다 -->
+    <details class="preview" id="preview" hidden>
       <summary>보고서 미리보기</summary>
-      <div class="report" id="report"></div>
+      <div class="rvbar">
+        <div class="rvseg" role="group" aria-label="보고서 보기 방식">
+          <button type="button" data-mode="view" aria-pressed="true">보기</button><button type="button" data-mode="raw" aria-pressed="false">원문</button>
+        </div>
+        <button class="btn quiet" id="report-big" type="button" aria-haspopup="dialog" aria-controls="rv-dialog">크게 보기</button>
+      </div>
+      <div class="mdv rvpane" id="report-view"></div>
+      <pre class="report" id="report" hidden></pre>
     </details>
   </section>
 
@@ -724,6 +790,25 @@
     <button class="btn ghost cdm-close" id="cd-close" type="button">닫기</button>
   </div>
   <div class="cdm-body" id="cd-host"></div>
+</dialog>
+
+<!-- 보고서 대화상자. 이관 보고서와 취약점 조치 보고서가 함께 쓴다 -->
+<dialog class="cdmodal rvmodal" id="rv-dialog" aria-labelledby="rv-title">
+  <div class="cdm-head">
+    <div class="cdm-title">
+      <h2 id="rv-title">보고서</h2>
+      <p class="cdm-name" id="rv-name"></p>
+    </div>
+    <div class="rvseg" role="group" aria-label="보고서 보기 방식">
+      <button type="button" data-mode="view" aria-pressed="true">보기</button><button type="button" data-mode="raw" aria-pressed="false">원문</button>
+    </div>
+    <a class="btn quiet rv-dl" id="rv-dl">받기 <span class="sub" id="rv-dlname"></span></a>
+    <button class="btn ghost cdm-close" id="rv-close" type="button">닫기</button>
+  </div>
+  <div class="cdm-body" id="rv-body">
+    <div class="mdv" id="rv-view"></div>
+    <pre class="report rv-raw" id="rv-raw" hidden></pre>
+  </div>
 </dialog>
 
 <script>
@@ -1436,14 +1521,18 @@
     if (st.blocked) chips.push(`<span class="chip bad">막힌 항목 ${st.blocked}건</span>`);
     if (st.llm_calls != null) chips.push(`<span class="chip">LLM 호출 ${st.llm_calls}회</span>`);
     $('counts').innerHTML = chips.join('');
+    // 보고서는 사람이 받는 이름(migration-report.md)으로 내려받게 한다. 서버도 같은 이름을 보낸다
     const set = (id, name) => {
       const a = $(id), has = files.includes(name);
       a.setAttribute('aria-disabled', String(!has));
-      if (has) { a.href = fileUrl(name, true); a.setAttribute('download', name); } else { a.removeAttribute('href'); a.removeAttribute('download'); }
+      if (has) { a.href = fileUrl(name, true); a.setAttribute('download', MIG_DL[name] || name); } else { a.removeAttribute('href'); a.removeAttribute('download'); }
     };
     set('dl-report', 'report.md'); set('dl-zip', 'result.zip');
+    rv.files = files.slice();
     const others = files.filter((f) => remOnly ? f !== 'result.zip' : f !== 'report.md' && f !== 'result.zip');
-    $('otherfiles').innerHTML = others.length ? '<span>그 밖의 파일</span>' + others.map((f) => `<a href="${fileUrl(f)}" target="_blank" rel="noopener">${esc(f)}</a>`).join('') : '';
+    $('otherfiles').innerHTML = others.length ? '<span>그 밖의 파일</span>' + others.map((f) => MIG_DL[f]
+      ? `<a href="${fileUrl(f, true)}" download="${esc(MIG_DL[f])}">${esc(MIG_DL[f])}</a>`
+      : `<a href="${fileUrl(f)}" target="_blank" rel="noopener">${esc(f)}</a>`).join('') : '';
     if (!remOnly && !why && !files.includes('result.zip')) $('otherfiles').insertAdjacentHTML('afterbegin', '<span class="muted">변환된 프로젝트 ZIP이 없습니다(중단되었거나 report.zip_result 설정이 꺼져 있습니다).</span>');
     if (files.includes('sbmig.log')) { $('logfull').href = fileUrl('sbmig.log'); $('logfull').hidden = false; }
     runRem = st.remediation && typeof st.remediation === 'object' ? st.remediation : null;
@@ -1562,16 +1651,24 @@
     // 다운로드: 조치 보고서, 조치 결과 zip(빌드가 실패한 수정본이면 '빌드 실패본' 표시), 이전 라운드의 검증된 zip
     const files = Array.isArray(st.files) ? st.files : [], dl = $('remed-dl');
     dl.replaceChildren();
+    // 보고서는 사람이 받는 이름(remediation-report.md)으로 내려받게 한다(?download=1이면 서버도 같은 이름을 보낸다)
     const link = (name, text, cls, badge, badgeCls) => {
       if (!files.includes(name)) return;
-      const a = el('a', 'btn ' + cls);
-      a.href = remUrl(runId, '/files/' + name); a.setAttribute('download', name);
-      const lab = el('span', null, text + ' '); lab.appendChild(el('span', 'sub', name)); a.appendChild(lab);
+      const a = el('a', 'btn ' + cls), shown = REM_DL[name] || name;
+      a.href = remUrl(runId, '/files/' + name + (REM_DL[name] ? '?download=1' : '')); a.setAttribute('download', shown);
+      const lab = el('span', null, text + ' '); lab.appendChild(el('span', 'sub', shown)); a.appendChild(lab);
       if (badge) a.appendChild(el('span', 'badge ' + (badgeCls || 'bad'), badge));
       dl.appendChild(a);
     };
     const failed = !!(st.delivery && st.delivery.build_ok === false);
     link('report.md', '조치 결과 보고서', solo ? 'big' : 'quiet');
+    if (files.includes('report.md')) {
+      // 내려받지 않고 화면에서 바로 읽는다. 열 때 받아 온다
+      const view = el('button', 'btn quiet' + (solo ? ' big' : ''), '보고서 보기'); view.type = 'button'; view.id = 'remed-view';
+      view.setAttribute('aria-haspopup', 'dialog'); view.setAttribute('aria-controls', 'rv-dialog');
+      view.addEventListener('click', () => openRemReport(runId, files));
+      dl.appendChild(view);
+    }
     const sameFailure = remUnconfirmed(st);
     // 바꾼 버전이 없는 원본 ZIP은 빌드로 확인할 변경이 없으므로 표시를 붙이지 않는다
     const applied = Number(c.proposals_applied || 0) > 0;
@@ -2499,6 +2596,505 @@
     else if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
   });
 
+  // ---------------------------------------------------------------- 3d. 보고서 보기
+  // 보고서(Markdown)를 화면에 그리는 작은 변환기. 우리 보고서가 쓰는 문법만 다룬다.
+  // 보고서에는 업로드한 프로젝트의 경로, 빌드 출력, 라이브러리 이름이 들어 있으므로 innerHTML을 쓰지 않고
+  // 요소와 글자 노드만 만든다. 링크는 http(s)와 실행 파일을 가리키는 상대 경로만 만들고 나머지는 글자로 둔다.
+  // 페이지의 다른 코드에 기대지 않는다(document는 render의 인자로 받는다). 테스트가 이 블록만 떼어 node에서 실행한다
+  const MdView = (() => {
+    const PUNCT = /[!-/:-@[-`{-~]/;
+    const WORD = /[\p{L}\p{N}]/u;
+    const BT_FENCE = /^( {0,3})(`{3,})([^`]*)$/;
+    const TL_FENCE = /^( {0,3})(~{3,})(.*)$/;
+    const HEADING = /^ {0,3}(#{1,6})(?:[ \t]+(.*?))?(?:[ \t]+#+)?[ \t]*$/;
+    const RULE = /^ {0,3}([-*_])(?:[ \t]*\1){2,}[ \t]*$/;
+    const QUOTE = /^ {0,3}>/;
+    const ITEM = /^( {0,3})([-*+]|\d{1,9}[.)])([ \t]+|$)(.*)$/;
+    const DETAILS = /^ {0,3}<details(?:\s+open)?\s*>(.*)$/i;
+    const SUMMARY = /^\s*<summary>(.*?)<\/summary>\s*$/i;
+    const DETAILS_END = /^ {0,3}<\/details>\s*$/i;
+    const DELIM = /^ {0,3}\|?[ \t]*:?-+:?[ \t]*(?:\|[ \t]*:?-+:?[ \t]*)*\|?[ \t]*$/;
+    const TASK = /^\[([ xX])\][ \t]+/;
+    const blank = (s) => !/\S/.test(s);
+    const lead = (s) => { let n = 0; for (const c of s) { if (c === ' ') n++; else if (c === '\t') n += 4 - (n % 4); else break; } return n; };
+    // 앞쪽 공백을 n칸까지 지운다. 탭은 4칸으로 센다
+    function dedent(s, n) {
+      let i = 0, col = 0;
+      while (i < s.length && col < n && (s[i] === ' ' || s[i] === '\t')) { col += s[i] === '\t' ? 4 - (col % 4) : 1; i++; }
+      return (col > n ? ' '.repeat(col - n) : '') + s.slice(i);
+    }
+    function fenceOpen(s) {
+      const m = BT_FENCE.exec(s) || TL_FENCE.exec(s);
+      return m ? { indent: m[1].length, ch: m[2][0], len: m[2].length, lang: m[3].trim().split(/\s+/)[0] || '' } : null;
+    }
+    function isItem(s) { return ITEM.test(s) && !RULE.test(s); }
+    function startsBlock(s) {
+      return blank(s) || !!fenceOpen(s) || HEADING.test(s) || RULE.test(s) || QUOTE.test(s) || isItem(s) || DETAILS.test(s) || DETAILS_END.test(s);
+    }
+    // 표의 한 줄을 칸으로 나눈다. 백슬래시로 막은 |는 나누지 않고 칸 안에서 |로 바꾼다(코드 안에서도 같다)
+    function cells(s) {
+      let t = s.trim();
+      if (t.startsWith('|')) t = t.slice(1);
+      const out = []; let cur = '';
+      for (let i = 0; i < t.length; i++) {
+        const c = t[i];
+        if (c === '\\' && t[i + 1] === '|') { cur += '\\|'; i++; continue; }
+        if (c === '|') { out.push(cur); cur = ''; continue; }
+        cur += c;
+      }
+      if (cur.trim() !== '' || !t.endsWith('|')) out.push(cur);
+      return out.map((x) => x.trim().replace(/\\\|/g, '|'));
+    }
+    function hasPipe(s) { return /(^|[^\\])\|/.test(s); }
+    function tableAt(lines, i) {
+      if (i + 1 >= lines.length || !hasPipe(lines[i]) || !DELIM.test(lines[i + 1])) return null;
+      const head = cells(lines[i]), spec = cells(lines[i + 1]);
+      if (head.length !== spec.length) return null;
+      return { head, align: spec.map((x) => (x.startsWith(':') && x.endsWith(':') ? 'c' : x.endsWith(':') ? 'r' : '')) };
+    }
+
+    // ---- 블록
+    function parse(text) { return blocks(String(text == null ? '' : text).replace(/\r\n?/g, '\n').split('\n')); }
+    function blocks(lines) {
+      const out = [];
+      let i = 0;
+      while (i < lines.length) {
+        const s = lines[i];
+        if (blank(s)) { i++; continue; }
+        const f = fenceOpen(s);
+        if (f) {
+          // 닫는 펜스가 없으면 문서 끝까지 코드로 본다
+          const close = new RegExp('^ {0,3}' + (f.ch === '`' ? '`' : '~') + '{' + f.len + ',}[ \\t]*$');
+          const body = [];
+          i++;
+          while (i < lines.length && !close.test(lines[i])) { body.push(dedent(lines[i], f.indent)); i++; }
+          i++;
+          out.push({ t: 'code', lang: f.lang, text: body.join('\n') });
+          continue;
+        }
+        let m = HEADING.exec(s);
+        if (m) { out.push({ t: 'h', level: m[1].length, text: m[2] || '' }); i++; continue; }
+        if (RULE.test(s)) { out.push({ t: 'hr' }); i++; continue; }
+        if (QUOTE.test(s)) {
+          const body = [];
+          while (i < lines.length && QUOTE.test(lines[i])) { body.push(lines[i].replace(/^ {0,3}> ?/, '')); i++; }
+          out.push({ t: 'quote', children: blocks(body) });
+          continue;
+        }
+        m = DETAILS.exec(s);
+        if (m) {
+          // <details>는 <summary> 한 줄과 함께만 받는다. 짝이 맞는 </details>까지가 본문이다
+          let rest = m[1], sum = '';
+          i++;
+          if (blank(rest) && i < lines.length && SUMMARY.test(lines[i])) { rest = lines[i]; i++; }
+          const sm = SUMMARY.exec(rest);
+          if (sm) sum = sm[1]; else if (!blank(rest)) sum = rest;
+          const body = [];
+          let depth = 1;
+          while (i < lines.length) {
+            if (DETAILS.test(lines[i])) depth++;
+            else if (DETAILS_END.test(lines[i]) && --depth === 0) break;
+            body.push(lines[i]); i++;
+          }
+          i++;
+          out.push({ t: 'details', summary: sum, children: blocks(body) });
+          continue;
+        }
+        if (isItem(s)) { i = list(lines, i, out); continue; }
+        const tb = tableAt(lines, i);
+        if (tb) {
+          const rows = [];
+          i += 2;
+          while (i < lines.length && !blank(lines[i]) && hasPipe(lines[i]) && !fenceOpen(lines[i])) {
+            const r = cells(lines[i]);
+            rows.push(tb.head.map((_, k) => r[k] == null ? '' : r[k]));
+            i++;
+          }
+          out.push({ t: 'table', head: tb.head, align: tb.align, rows });
+          continue;
+        }
+        // 문단: 다른 블록이 시작하거나 빈 줄이 나올 때까지 이어 붙인다
+        const para = [s];
+        i++;
+        while (i < lines.length && !startsBlock(lines[i]) && !tableAt(lines, i)) { para.push(lines[i]); i++; }
+        out.push({ t: 'p', text: para.join('\n') });
+      }
+      return out;
+    }
+    function list(lines, i, out) {
+      const m0 = ITEM.exec(lines[i]);
+      const ordered = /\d/.test(m0[2]);
+      const kind = ordered ? m0[2].slice(-1) : m0[2];
+      const node = { t: 'list', ordered, start: ordered ? parseInt(m0[2], 10) : 1, loose: false, items: [] };
+      const same = (m) => m && /\d/.test(m[2]) === ordered && (ordered ? m[2].slice(-1) : m[2]) === kind;
+      while (i < lines.length) {
+        const m = ITEM.exec(lines[i]);
+        if (!same(m) || RULE.test(lines[i])) break;
+        const wide = m[3].length > 4 && m[4] !== '';
+        const pad = m[4] === '' || wide ? 1 : lead(m[3]);
+        const indent = m[1].length + m[2].length + pad;
+        const body = [(wide ? m[3].slice(1) : '') + m[4]];
+        i++;
+        while (i < lines.length) {
+          const s = lines[i];
+          if (blank(s)) {
+            let j = i;
+            while (j < lines.length && blank(lines[j])) j++;
+            if (j < lines.length && lead(lines[j]) >= indent) { while (i < j) { body.push(''); i++; } node.loose = true; continue; }
+            break;
+          }
+          if (lead(s) >= indent) { body.push(dedent(s, indent)); i++; continue; }
+          // 들여쓰지 않은 다음 줄도 문단을 잇는 글이면 같은 항목이다
+          if (!startsBlock(s) && !blank(body[body.length - 1]) && !body.some((b) => fenceOpen(b))) { body.push(s); i++; continue; }
+          break;
+        }
+        let task = null;
+        const tm = TASK.exec(body[0]);
+        if (tm) { task = tm[1] !== ' '; body[0] = body[0].slice(tm[0].length); }
+        node.items.push({ task, children: blocks(body) });
+        if (i < lines.length && blank(lines[i])) {
+          let j = i;
+          while (j < lines.length && blank(lines[j])) j++;
+          if (j < lines.length && same(ITEM.exec(lines[j])) && !RULE.test(lines[j])) { node.loose = true; i = j; continue; }
+          break;
+        }
+      }
+      out.push(node);
+      return i;
+    }
+
+    // ---- 줄 안의 문법
+    // 같은 길이의 백틱이 닫는 위치를 찾는다. 없으면 -1이다
+    function closeTicks(s, from, n) {
+      let j = from;
+      while (j < s.length) {
+        if (s[j] !== '`') { j++; continue; }
+        let k = j; while (s[k] === '`') k++;
+        if (k - j === n) return j;
+        j = k;
+      }
+      return -1;
+    }
+    // 강조 기호의 닫는 위치를 찾는다. 코드와 백슬래시로 막은 글자는 건너뛴다
+    function closeEmph(s, from, c, n) {
+      let j = from;
+      while (j < s.length) {
+        const ch = s[j];
+        if (ch === '\\') { j += 2; continue; }
+        if (ch === '`') {
+          let k = j; while (s[k] === '`') k++;
+          const e = closeTicks(s, k, k - j);
+          j = e < 0 ? k : e + (k - j);
+          continue;
+        }
+        if (ch === c) {
+          let k = j; while (s[k] === c) k++;
+          const after = s[k] || ' ';
+          if (k - j === n && j > from && !/\s/.test(s[j - 1]) && (c === '*' || !WORD.test(after))) return j;
+          j = k; continue;
+        }
+        j++;
+      }
+      return -1;
+    }
+    // [글자](주소) 를 읽는다. 맞지 않으면 null이다
+    function linkAt(s, i) {
+      let j = i + 1, depth = 1;
+      while (j < s.length) {
+        const ch = s[j];
+        if (ch === '\\') { j += 2; continue; }
+        if (ch === '`') { let k = j; while (s[k] === '`') k++; const e = closeTicks(s, k, k - j); j = e < 0 ? k : e + (k - j); continue; }
+        if (ch === '[') depth++;
+        else if (ch === ']' && --depth === 0) break;
+        j++;
+      }
+      if (j >= s.length || s[j + 1] !== '(') return null;
+      const label = s.slice(i + 1, j);
+      let k = j + 2;
+      while (s[k] === ' ') k++;
+      let href = '';
+      if (s[k] === '<') {
+        const e = s.indexOf('>', k);
+        if (e < 0 || s.slice(k + 1, e).includes('\n')) return null;
+        href = s.slice(k + 1, e); k = e + 1;
+      } else {
+        let p = 0; const st = k;
+        while (k < s.length && !/\s/.test(s[k])) {
+          if (s[k] === '\\') { k += 2; continue; }
+          if (s[k] === '(') p++;
+          else if (s[k] === ')') { if (p === 0) break; p--; }
+          k++;
+        }
+        href = s.slice(st, k);
+      }
+      while (s[k] === ' ') k++;
+      if (s[k] === '"' || s[k] === "'") { const e = s.indexOf(s[k], k + 1); if (e < 0) return null; k = e + 1; while (s[k] === ' ') k++; }
+      if (s[k] !== ')') return null;
+      return { label, href: href.replace(/\\([!-/:-@[-`{-~])/g, '$1'), end: k + 1 };
+    }
+    function inline(s, opt, inLink) {
+      const out = [];
+      let buf = '';
+      const flush = () => { if (buf) { out.push({ t: 'text', v: buf }); buf = ''; } };
+      let i = 0;
+      while (i < s.length) {
+        const c = s[i];
+        if (c === '\\' && i + 1 < s.length) {
+          if (s[i + 1] === '\n') { flush(); out.push({ t: 'br' }); i += 2; continue; }
+          if (PUNCT.test(s[i + 1])) { buf += s[i + 1]; i += 2; continue; }
+        }
+        if (c === '\n') {
+          const hard = / {2,}$/.test(buf);
+          buf = buf.replace(/ +$/, '');
+          if (hard) { flush(); out.push({ t: 'br' }); } else buf += '\n';
+          i++; continue;
+        }
+        if (c === '`') {
+          let n = 1; while (s[i + n] === '`') n++;
+          const e = closeTicks(s, i + n, n);
+          if (e < 0) { buf += s.slice(i, i + n); i += n; continue; }
+          let v = s.slice(i + n, e).replace(/\n/g, ' ');
+          if (v.length > 2 && v[0] === ' ' && v[v.length - 1] === ' ' && /\S/.test(v)) v = v.slice(1, -1);
+          flush(); out.push({ t: 'code', v }); i = e + n; continue;
+        }
+        // <details>의 제목에서만 <code>를 받는다
+        if (opt.summary && s.startsWith('<code>', i)) {
+          const e = s.indexOf('</code>', i + 6);
+          if (e >= 0) { flush(); out.push({ t: 'code', v: s.slice(i + 6, e) }); i = e + 7; continue; }
+        }
+        if (c === '!' && s[i + 1] === '[') {
+          // 그림은 불러오지 않고 설명 글자만 보여 준다
+          const l = linkAt(s, i + 1);
+          if (l) { flush(); out.push(...inline(l.label, opt, true)); i = l.end; continue; }
+        }
+        if (c === '[' && !inLink) {
+          const l = linkAt(s, i);
+          if (l) { flush(); out.push({ t: 'link', href: l.href, c: inline(l.label, opt, true) }); i = l.end; continue; }
+        }
+        if (c === '<' && !inLink) {
+          const m = /^<(https?:\/\/[^\s<>]+)>/i.exec(s.slice(i));
+          if (m) { flush(); out.push({ t: 'link', href: m[1], c: [{ t: 'text', v: m[1] }] }); i += m[0].length; continue; }
+        }
+        if ((c === 'h' || c === 'H') && !inLink && (i === 0 || !/[A-Za-z0-9]/.test(s[i - 1]))) {
+          const m = /^https?:\/\/[^\s<>`]+/i.exec(s.slice(i));
+          if (m) {
+            let u = m[0].replace(/[.,;:!?'"*_~]+$/, '');
+            while (u.endsWith(')') && (u.match(/\(/g) || []).length < (u.match(/\)/g) || []).length) u = u.slice(0, -1);
+            if (/^https?:\/\/[^/]/i.test(u)) { flush(); out.push({ t: 'link', href: u, c: [{ t: 'text', v: u }] }); i += u.length; continue; }
+          }
+        }
+        if (c === '*' || c === '_') {
+          let n = 1; while (s[i + n] === c) n++;
+          const before = i > 0 ? s[i - 1] : ' ', next = s[i + n] || ' ';
+          if (n <= 3 && !/\s/.test(next) && (c === '*' || !WORD.test(before))) {
+            const e = closeEmph(s, i + n, c, n);
+            if (e >= 0) {
+              const kids = inline(s.slice(i + n, e), opt, inLink);
+              flush();
+              out.push(n === 1 ? { t: 'em', c: kids } : n === 2 ? { t: 'strong', c: kids } : { t: 'strong', c: [{ t: 'em', c: kids }] });
+              i = e + n; continue;
+            }
+          }
+          buf += s.slice(i, i + n); i += n; continue;
+        }
+        buf += c; i++;
+      }
+      flush();
+      return out;
+    }
+
+    // ---- 링크 주소 검사. http(s)는 그대로, 상대 경로는 resolve가 실행 파일 주소를 줄 때만 링크가 된다
+    function safeHref(raw, resolve) {
+      const h = String(raw == null ? '' : raw).trim();
+      if (!h || /[\u0000- \u007F-\u009F\\]/.test(h)) return null;
+      const sc = /^([A-Za-z][A-Za-z0-9+.-]*):/.exec(h);
+      if (sc) {
+        if (!/^https?$/i.test(sc[1])) return null;
+        try { const u = new URL(h); return u.protocol === 'http:' || u.protocol === 'https:' ? u.href : null; } catch (e) { return null; }
+      }
+      if (h[0] === '/' || h[0] === '#' || h.includes('?') || h.includes('#')) return null;
+      let p;
+      try { p = decodeURIComponent(h.replace(/^\.\//, '')); } catch (e) { return null; }
+      if (!p || p.includes('\\') || p.split('/').some((x) => x === '' || x === '.' || x === '..')) return null;
+      const r = typeof resolve === 'function' ? resolve(p) : null;
+      return typeof r === 'string' && r ? r : null;
+    }
+
+    // ---- 화면 요소 만들기. 글자는 모두 글자 노드로 넣는다
+    function render(tree, doc, opt) {
+      const o = opt || {};
+      const mk = (tag, cls) => { const e = doc.createElement(tag); if (cls) e.className = cls; return e; };
+      const txt = (v) => doc.createTextNode(String(v));
+      function inl(parent, nodes) {
+        for (const n of nodes) {
+          if (n.t === 'text') parent.appendChild(txt(n.v));
+          else if (n.t === 'br') parent.appendChild(mk('br'));
+          else if (n.t === 'code') { const e = mk('code'); e.appendChild(txt(n.v)); parent.appendChild(e); }
+          else if (n.t === 'em' || n.t === 'strong') { const e = mk(n.t); inl(e, n.c); parent.appendChild(e); }
+          else if (n.t === 'link') {
+            const href = safeHref(n.href, o.resolve);
+            if (!href) { inl(parent, n.c); continue; }
+            const a = mk('a');
+            a.setAttribute('href', href); a.setAttribute('target', '_blank'); a.setAttribute('rel', 'noopener noreferrer');
+            inl(a, n.c);
+            parent.appendChild(a);
+          }
+        }
+      }
+      const text = (parent, s, extra) => inl(parent, inline(s, Object.assign({}, o, extra || {}), false));
+      function code(n) {
+        const pre = mk('pre', 'mdv-pre'), c = mk('code');
+        if (n.lang) c.setAttribute('data-lang', n.lang);
+        if (n.lang === 'diff') {
+          // diff는 줄마다 추가, 삭제, 위치 줄을 색으로 구분한다
+          const rows = n.text.split('\n');
+          rows.forEach((ln, k) => {
+            const cls = /^@@/.test(ln) ? 'dh' : /^\+/.test(ln) ? 'da' : /^-/.test(ln) ? 'dd' : '';
+            const span = mk('span', cls); span.appendChild(txt(ln)); c.appendChild(span);
+            if (k < rows.length - 1) c.appendChild(txt('\n'));
+          });
+        } else c.appendChild(txt(n.text));
+        pre.appendChild(c);
+        return pre;
+      }
+      function block(parent, list, tight) {
+        for (const n of list) {
+          if (n.t === 'p') {
+            if (tight) { text(parent, n.text); continue; }
+            const p = mk('p'); text(p, n.text); parent.appendChild(p);
+          } else if (n.t === 'h') { const h = mk('h' + n.level); text(h, n.text); parent.appendChild(h); }
+          else if (n.t === 'hr') parent.appendChild(mk('hr'));
+          else if (n.t === 'code') parent.appendChild(code(n));
+          else if (n.t === 'quote') { const q = mk('blockquote'); block(q, n.children, false); parent.appendChild(q); }
+          else if (n.t === 'details') {
+            const d = mk('details'), sm = mk('summary');
+            text(sm, n.summary || '자세히', { summary: true });
+            d.appendChild(sm); block(d, n.children, false); parent.appendChild(d);
+          } else if (n.t === 'list') {
+            const l = mk(n.ordered ? 'ol' : 'ul');
+            if (n.ordered && n.start !== 1) l.setAttribute('start', String(n.start));
+            for (const it of n.items) {
+              const li = mk('li');
+              if (it.task !== null) {
+                li.className = 'task';
+                const box = mk('input'); box.setAttribute('type', 'checkbox'); box.setAttribute('disabled', '');
+                if (it.task) box.setAttribute('checked', '');
+                li.appendChild(box); li.appendChild(txt(' '));
+              }
+              block(li, it.children, !n.loose);
+              l.appendChild(li);
+            }
+            parent.appendChild(l);
+          } else if (n.t === 'table') {
+            // 넓은 표는 상자 안에서만 가로로 스크롤한다
+            const wrap = mk('div', 'mdv-tw'), t = mk('table'), th = mk('thead'), tb = mk('tbody'), hr = mk('tr');
+            n.head.forEach((h, k) => { const c = mk('th', n.align[k] || null); text(c, h); hr.appendChild(c); });
+            // 머리 칸이 모두 비어 있으면(보고서 맨 위의 두 칸 표) 머리 줄을 그리지 않는다
+            if (n.head.some((h) => h !== '')) { th.appendChild(hr); t.appendChild(th); }
+            for (const r of n.rows) {
+              const tr = mk('tr');
+              r.forEach((v, k) => { const c = mk('td', n.align[k] || null); text(c, v); tr.appendChild(c); });
+              tb.appendChild(tr);
+            }
+            if (n.rows.length) t.appendChild(tb);
+            wrap.appendChild(t); parent.appendChild(wrap);
+          }
+        }
+      }
+      const frag = doc.createDocumentFragment();
+      block(frag, tree, false);
+      return frag;
+    }
+    return { parse, render, safeHref, inline };
+  })();
+
+  // 보고서 원문을 보기 상자에 그린다. 같은 글이면 다시 그리지 않는다
+  function mdInto(host, text, resolve) {
+    if (host.dataset.src === text) return;
+    host.replaceChildren(MdView.render(MdView.parse(text), document, { resolve }));
+    host.dataset.src = text;
+  }
+  // 보기와 원문 전환 버튼. 두 버튼 묶음(미리보기, 대화상자)이 같은 값을 쓴다
+  let rvMode = 'view';
+  function setRvMode(mode) {
+    rvMode = mode === 'raw' ? 'raw' : 'view';
+    for (const b of document.querySelectorAll('.rvseg button')) b.setAttribute('aria-pressed', String(b.dataset.mode === rvMode));
+    $('report-view').hidden = rvMode === 'raw'; $('report').hidden = rvMode !== 'raw';
+    $('rv-view').hidden = rvMode === 'raw'; $('rv-raw').hidden = rvMode !== 'raw';
+  }
+  for (const b of document.querySelectorAll('.rvseg button')) b.addEventListener('click', () => setRvMode(b.dataset.mode));
+  // 내려받기 이름. 실행 폴더 안의 파일 이름은 그대로 두고 사람이 받는 이름만 바꾼다
+  const MIG_DL = { 'report.md': 'migration-report.md', 'report.json': 'migration-report.json' };
+  const REM_DL = { 'report.md': 'remediation-report.md', 'report.json': 'remediation-report.json' };
+  // 이관 보고서: 실행이 끝나면 report 이벤트로 받은 원문을 결과 카드의 미리보기에 그린다
+  const rv = { text: '', files: [], opener: null };
+  function runFileLink(p) { return rv.files.includes(p) && current ? fileUrl(p) : null; }
+  function setReportText(text) {
+    rv.text = String(text || '');
+    $('report').textContent = rv.text;
+    if (rv.text) mdInto($('report-view'), rv.text, runFileLink);
+    else { $('report-view').replaceChildren(); delete $('report-view').dataset.src; }
+    $('preview').hidden = !rv.text;
+  }
+  // 대화상자 머리에 쓸 이름. 프로젝트명(없으면 올린 파일 이름), 그것도 없으면 실행 id다
+  function reportName() {
+    const n = $('runname'), first = n.firstChild;
+    return (!n.hidden && first && first.nodeType === 3 ? first.textContent : '') || $('runid').textContent || '';
+  }
+  // 큰 대화상자로 연다. src = {title, name, text, resolve, href, dl}
+  function openReport(src) {
+    const dlg = $('rv-dialog');
+    if (!dlg.open) rv.opener = document.activeElement;      // 열려 있으면 닫지 않고 내용만 바꾼다
+    $('rv-title').textContent = src.title;
+    $('rv-name').textContent = src.name || '';
+    $('rv-raw').textContent = src.text;
+    delete $('rv-view').dataset.src;
+    mdInto($('rv-view'), src.text, src.resolve);
+    const a = $('rv-dl');
+    if (src.href) { a.href = src.href; a.setAttribute('download', src.dl); a.hidden = false; } else { a.removeAttribute('href'); a.hidden = true; }
+    $('rv-dlname').textContent = src.dl || '';
+    setRvMode(rvMode);
+    document.documentElement.classList.add('cdm-lock');
+    if (!dlg.open) dlg.showModal();
+    $('rv-body').scrollTop = 0;
+  }
+  function openMigrationReport() {
+    if (!rv.text || !current) return;
+    openReport({ title: runFlow === FLOW_REM ? '실행 보고서' : '마이그레이션 보고서', name: reportName(),
+                 text: rv.text, resolve: runFileLink,
+                 href: rv.files.includes('report.md') ? fileUrl('report.md', true) : '', dl: MIG_DL['report.md'] });
+  }
+  // 취약점 조치 보고서는 열 때 받아 온다
+  async function openRemReport(runId, files) {
+    let text = null;
+    try { const r = await fetch(remUrl(runId, '/files/report.md')); if (r.ok) text = await r.text(); } catch (e) {}
+    if (current !== runId) return;
+    if (text == null) { toast('조치 결과 보고서를 불러오지 못했습니다. 잠시 뒤 다시 시도해 주세요.', true); return; }
+    const resolve = (p) => (files.includes(p) ? remUrl(runId, '/files/' + encodeURIComponent(p)) : null);
+    openReport({ title: '취약점 조치 보고서', name: reportName(), text, resolve,
+                 href: remUrl(runId, '/files/report.md?download=1'), dl: REM_DL['report.md'] });
+  }
+  function closeReport() { const dlg = $('rv-dialog'); if (dlg.open) dlg.close(); }
+  $('report-big').addEventListener('click', openMigrationReport);
+  $('rv-close').addEventListener('click', closeReport);
+  $('rv-dialog').addEventListener('close', () => {
+    if ($('rv-dialog').open) return;                 // 닫고 바로 다시 연 경우 늦게 온 close 이벤트는 무시한다
+    $('rv-view').replaceChildren(); delete $('rv-view').dataset.src; $('rv-raw').textContent = '';
+    document.documentElement.classList.remove('cdm-lock');
+    const back = rv.opener; rv.opener = null;
+    if (back && back.isConnected && typeof back.focus === 'function') back.focus();
+  });
+  $('rv-dialog').addEventListener('click', (e) => { if (e.target === $('rv-dialog')) closeReport(); });
+  $('rv-dialog').addEventListener('keydown', (e) => {
+    if (e.key !== 'Tab') return;
+    const all = [...$('rv-dialog').querySelectorAll('button, a[href], summary, [tabindex]')]
+      .filter((x) => x.tabIndex >= 0 && !x.disabled && x.getClientRects().length);
+    if (!all.length) return;
+    const first = all[0], last = all[all.length - 1];
+    if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    else if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+  });
+
   // ---------------------------------------------------------------- 실행에 연결 (SSE)
   // resume은 끊긴 같은 실행에 다시 연결하는 경우다(아래 '다시 연결'). 사용자가 직접 선택한 실행이면 진행 중인 재연결을 멈춘다.
   // 화면(레일, 기록, 로그, 결과)은 매번 비우고 서버가 처음부터 다시 보내는 내용으로 채우므로 다시 연결해도 줄이 겹치지 않는다
@@ -2511,7 +3107,7 @@
     logBuf = []; logTotal = 0; logDropped = 0; renderLog();
     $('runcard').hidden = false; $('resultcard').hidden = true; hideRemediation(); hideCodeDiff();
     $('runid').textContent = runId; $('summary').textContent = ''; setRunName(projectHint || '', nameHint || '');
-    $('timeline').innerHTML = ''; $('log').replaceChildren(); $('report').textContent = ''; $('logfull').hidden = true;
+    $('timeline').innerHTML = ''; $('log').replaceChildren(); closeReport(); rv.files = []; setReportText(''); $('logfull').hidden = true;
     setTitle('', resume ? '다시 연결하는 중…' : '연결하는 중…', false); statusKey = '';
     $('stop').disabled = true;                         // 이전 실행의 상태가 남지 않도록 이 실행의 status가 오기 전에는 비활성화한다
     resetRail(runFlow); setFramework(null); runRem = null;
@@ -2525,7 +3121,7 @@
     src.addEventListener('journal', (e) => { if (mine()) journalRow(JSON.parse(e.data)); });
     src.addEventListener('log', (e) => { if (mine()) logLine('log', JSON.parse(e.data)); });
     src.addEventListener('console', (e) => { if (mine()) logLine('console', JSON.parse(e.data)); });
-    src.addEventListener('report', (e) => { if (mine()) $('report').textContent = JSON.parse(e.data); });
+    src.addEventListener('report', (e) => { if (mine()) setReportText(JSON.parse(e.data)); });
     // end에 reason이 있으면(웹 파드 재시작 등) 실행이 끝난 것이 아니므로 같은 실행에 다시 연결한다
     src.addEventListener('end', (e) => {
       if (!mine()) return;

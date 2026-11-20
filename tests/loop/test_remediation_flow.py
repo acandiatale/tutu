@@ -262,8 +262,9 @@ def test_short_report_english_and_korean(cfg, tmp_path, ivas_env):
     ko = render_markdown(report, "ko")
     assert ko.splitlines()[0].startswith("# 취약점 조치 보고서 — ")
     assert "마이그레이션은 실행하지 않았습니다. 취약점 조치만 요청하신 실행입니다." in ko
-    assert "## 취약점 조치" in ko and "- 자세한 결과: `remediation/report.md`" in ko
-    assert ko.count("remediation/report.md") == 1
+    assert "## 취약점 조치" in ko and "- 자세한 결과: `remediation-report.md`" in ko      # v2.1z-bg: the received name
+    assert ko.count("remediation-report.md") == 1 and "remediation/report.md" not in ko
+    assert "`remediation-report.json`" in ko
     assert "이관 빌드가 성공한 뒤" not in ko and "인수인계" not in ko
     assert [ln for ln in ko.splitlines() if DETACHED.search(ln)] == []
     for word in ("재개", "에 의해", "되어집니다"):

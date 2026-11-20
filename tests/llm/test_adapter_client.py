@@ -42,15 +42,17 @@ def test_no_default_model_leaves_none_and_falls_back_to_name():
     assert a.requests[0].model is None and resp.model == "Capture"
 
 
-@pytest.mark.parametrize("answer,content,model", [
-    ({"content": "d", "input_tokens": 3}, "d", "m"),
-    ({"content": "d", "model": "gw"}, "d", "gw"),
-    ("plain text", "plain text", "m"),
-    (SimpleNamespace(content="obj", model="o", input_tokens=1, output_tokens=2), "obj", "o"),
+@pytest.mark.parametrize("answer,content,served", [
+    ({"content": "d", "input_tokens": 3}, "d", []),
+    ({"content": "d", "model": "gw"}, "d", ["gw"]),
+    ("plain text", "plain text", []),
+    (SimpleNamespace(content="obj", model="o", input_tokens=1, output_tokens=2), "obj", ["o"]),
 ])
-def test_coerces_responses(answer, content, model):
+def test_coerces_responses(answer, content, served):
+    # v2.1z-bg: the asked model names the answer; a name the plugin reported is kept as served
     resp = AdapterClient(Capture(answer), default_model="m").complete(MSGS)
-    assert isinstance(resp, LLMResponse) and resp.content == content and resp.model == model
+    assert isinstance(resp, LLMResponse) and resp.content == content and resp.model == "m"
+    assert resp.served_models == served
 
 
 @pytest.mark.parametrize("garbage", [42, {"text": "no content key"}, {"content": 5}, SimpleNamespace(x=1)])

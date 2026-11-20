@@ -164,6 +164,13 @@
   .unknown { color: var(--muted); text-align: center !important; font-style: normal; }
   /* 원본 받기 링크 옆의 크기와, 파일이 없을 때 흐리게 보이는 같은 자리의 글자 */
   .srcsize { margin-left: 6px; color: var(--muted); font-size: 12px; }
+  /* 모델 이름: 요청한 이름(role) 옆에 응답이 알려 준 실제 모델을 흐리게 붙인다 */
+  .mname { font-family: var(--mono); font-size: 12.5px; color: var(--ink); }
+  .mserved { margin-left: 6px; font-family: var(--mono); font-size: 11.5px; color: var(--faint); }
+  .mnone { color: var(--muted); cursor: help; }
+  .mnone .mhint { margin-left: 6px; font-size: 11.5px; color: var(--faint); }
+  table.runs td.models { white-space: normal; min-width: 160px; }
+  table.runs td.models .mline { display: block; }
   .nosrc { color: var(--faint); cursor: help; }
 
   @media (max-width: 640px) {
@@ -261,6 +268,17 @@
   'use strict';
   const $ = (id) => document.getElementById(id);
   const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+  // 모델 이름 칸. 요청한 이름을 쓰고 실제로 응답한 모델은 옆에 흐리게 붙인다
+  // 이름이 기록되기 전의 실행(unnamed)은 한 가지 이름으로 묶어 보인다
+  const UNNAMED_HINT = '모델 이름을 기록하기 전에 실행한 기록입니다';
+  function modelName(m) {
+    if (!m || m.unnamed || !m.model) {
+      return `<span class="mnone" title="${UNNAMED_HINT}">이름 없음<span class="mhint">이전 실행</span></span>`;
+    }
+    const served = Array.isArray(m.served) ? m.served.filter(Boolean) : [];
+    return `<span class="mname">${esc(m.model)}</span>` +
+      (served.length ? `<span class="mserved" title="실제로 응답한 모델">${esc(served.join(', '))}</span>` : '');
+  }
   const pad2 = (n) => String(n).padStart(2, '0');
   const API = '/admin/api';
 
@@ -491,7 +509,7 @@
       (withCost ? '<th class="num" scope="col">비용</th>' : '') + '</tr></thead><tbody>';
     if (!rows.length) html += `<tr class="nomatch"><td colspan="${withCost ? 7 : 6}">모델별 기록이 없습니다.</td></tr>`;
     for (const m of rows) {
-      html += `<tr><td class="stick mono" style="font-size:12.5px">${esc(m.model || '(이름 없음)')}</td>` + numCell(m.calls) + numCell(m.input_tokens) +
+      html += `<tr><td class="stick">${modelName(m)}</td>` + numCell(m.calls) + numCell(m.input_tokens) +
         numCell(m.output_tokens) + numCell(m.total_tokens, 'total') + `<td class="num share">${share(m.total_tokens, whole)}</td>` +
         (withCost ? costCell(m.cost) : '') + '</tr>';
     }
@@ -574,7 +592,7 @@
   function runsTable(p, withCost) {
     const runs = (Array.isArray(p.run_list) ? p.run_list : []).slice()
       .sort((a, b) => (Date.parse(b.accepted_at || '') || 0) - (Date.parse(a.accepted_at || '') || 0));
-    const head = '<thead><tr><th class="stick" scope="col">날짜</th><th scope="col">진행 방식</th><th scope="col">범위</th><th scope="col">결과</th>' +
+    const head = '<thead><tr><th class="stick" scope="col">날짜</th><th scope="col">진행 방식</th><th scope="col">범위</th><th scope="col">결과</th><th scope="col">모델</th>' +
       '<th class="num" scope="col">호출</th><th class="num" scope="col">입력 토큰</th><th class="num" scope="col">출력 토큰</th><th class="num" scope="col">합계 토큰</th>' +
       (withCost ? '<th class="num" scope="col">비용</th>' : '') + '<th scope="col">로그</th><th scope="col">원본</th></tr></thead>';
     let body = '';
@@ -590,14 +608,16 @@
         ? `<a href="${API}/runs/${encodeURIComponent(id)}/source" data-src="1" title="${esc(id)}에 올린 원본 ZIP">원본 받기</a>` +
           `<span class="srcsize">${esc(fmtSize(r.source_bytes))}</span>`
         : '<span class="nosrc" aria-disabled="true" title="원본 파일이 서버에 없습니다">원본 받기<span class="sr"> (원본 파일이 서버에 없습니다)</span></span>';
+      const ms = Array.isArray(r.by_model) ? r.by_model : [];
+      const models = ms.length ? ms.map((m) => `<span class="mline">${modelName(m)}</span>`).join('') : '<span class="dash">-</span>';
       body += '<tr>' +
         `<td class="stick when">${esc(fmtDate(r.accepted_at)) || '<span class="dash">-</span>'}` +
         `<a class="rid" href="/#${encodeURIComponent(id)}" title="${esc(id)} 실행을 메인 화면에서 엽니다">${esc(id)}</a></td>` +
         `<td>${flowTag(r.flow)}</td><td>${scopeText(r.scope)}</td>` +
         `<td>${resultChip(r)}${r.partial ? '<span class="partial" title="기록 파일 일부를 읽지 못했습니다. 값이 실제보다 적을 수 있습니다.">일부만 읽음</span>' : ''}</td>` +
-        tokens + (withCost ? costCell(r.cost) : '') + `<td>${log}</td><td>${src}</td></tr>`;
+        `<td class="models">${models}</td>` + tokens + (withCost ? costCell(r.cost) : '') + `<td>${log}</td><td>${src}</td></tr>`;
     }
-    if (!runs.length) body = `<tr class="nomatch"><td colspan="${withCost ? 11 : 10}">실행 기록이 없습니다.</td></tr>`;
+    if (!runs.length) body = `<tr class="nomatch"><td colspan="${withCost ? 12 : 11}">실행 기록이 없습니다.</td></tr>`;
     const part = runs.some((r) => r.partial) ? ' 일부만 읽음은 기록 파일 일부를 읽지 못해 값이 실제보다 적을 수 있다는 뜻입니다.' : '';
     return `<div class="runsbox"><p class="cap">실행 ${runs.length}건, 최근 실행부터.${part}</p>` +
       `<div class="tablebox"><table class="grid runs" aria-label="${esc(p.project)} 실행 목록">${head}<tbody>${body}</tbody></table></div></div>`;

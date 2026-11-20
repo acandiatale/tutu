@@ -613,7 +613,7 @@ def test_failed_framework_run_with_a_remediation_korean():
     sec = md[md.index("## 취약점 조치"):]
     assert sec.split("\n")[2] == ("마이그레이션 빌드는 통과하지 않았지만, 프레임워크 프로젝트라 취약점 조치를 이어서 "
                                   "실행했습니다. 오픈소스 라이브러리 검사는 빌드와 따로 할 수 있습니다. 위의 마이그레이션 "
-                                  "결과에는 영향이 없습니다. 자세한 결과는 아래 파일의 report.md에 있습니다.")
+                                  "결과에는 영향이 없습니다. 자세한 결과는 아래 remediation-report.md 파일에 있습니다.")
     # case B: the verdict says it was remediated and not confirmed by a build, the next line says why, once
     assert "- 결과: 조치했지만 빌드로 확인하지 못했습니다. `INCOMPLETE`" in sec and "일부만" not in sec
     assert "- 조치 전에도 빌드가 되지 않던 프로젝트라, 바꾼 버전은 IVAS 재검사로만 확인했습니다." in sec

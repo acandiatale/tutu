@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_serializer
 
 
 def utcnow() -> datetime:
@@ -881,21 +881,96 @@ class FileChange(BaseModel):
     new_path: Optional[str] = None
 
 
+# 게이트웨이가 모델 이름 대신 돌려주는 값이다. 이런 값은 모델 이름으로 쓰지 않는다
+PLACEHOLDER_MODEL_NAMES = frozenset({"", "?", "-", "unknown", "none", "null", "n/a", "default"})
+
+
+def real_model_name(value: Any) -> str:
+    """값이 실제 모델 이름이면 공백을 뗀 이름을, 비었거나 `unknown` 같은 자리 표시 값이면 빈 문자열을 반환한다.
+
+    The name when `value` is a real model name, else "" (empty, not a string, a `${…}` placeholder, or a placeholder
+    word a gateway answers with, such as `unknown`)."""
+    if not isinstance(value, str):
+        return ""
+    v = value.strip()
+    if v.lower() in PLACEHOLDER_MODEL_NAMES or "${" in v:
+        return ""
+    return v
+
+
+def merge_model_names(*groups: Any) -> list[str]:
+    """여러 모델 이름 목록을 순서를 지키며 합친다. 대소문자만 다른 이름과 실제 이름이 아닌 값은 뺀다.
+
+    Union of name lists in first-seen order; case-insensitive duplicates and placeholder names dropped."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for g in groups:
+        for n in (g or []):
+            name = real_model_name(n)
+            if name and name.lower() not in seen:
+                seen.add(name.lower())
+                out.append(name)
+    return out
+
+
+# 요청한 모델 이름을 하나도 알 수 없을 때 쓰는 이름이다. 게이트웨이가 정한 기본 모델로 호출한 경우다
+DEFAULT_MODEL_LABEL = "gateway-default"
+
+
+def asked_model_name(*candidates: Any) -> str:
+    """후보 중 처음 나오는 실제 모델 이름을 반환한다. 하나도 없으면 DEFAULT_MODEL_LABEL을 반환한다.
+
+    The first real name among `candidates` (the model a call asked with, then the configured defaults), else
+    DEFAULT_MODEL_LABEL: a usage row is never named `unknown`, `?` or "" (v2.1z-bg)."""
+    for c in candidates:
+        name = real_model_name(c)
+        if name:
+            return name
+    return DEFAULT_MODEL_LABEL
+
+
+def served_beside(asked: str, *groups: Any) -> list[str]:
+    """응답이 알려 준 모델 이름을 합치고 요청한 이름과 같은 것은 뺀다.
+
+    The served names of `groups` merged, the asked name itself left out (case-insensitive)."""
+    a = (asked or "").strip().lower()
+    return [n for n in merge_model_names(*groups) if n.lower() != a]
+
+
+def _drop_empty_served(handler: Any, obj: Any) -> dict[str, Any]:
+    # served가 비면 쓰지 않는다. 그래야 응답 모델을 모르는 보고서가 예전과 같은 JSON이 된다
+    data = handler(obj)
+    if isinstance(data, dict) and not data.get("served"):
+        data.pop("served", None)
+    return data
+
+
 class LLMUsage(BaseModel):
     """LLM 사용량(호출 수, 입력 / 출력 토큰)을 담는 데이터 클래스.
-    단계와 시도마다 더해서 RunReport.llm_usage를 만든다."""
+    단계와 시도마다 더해서 RunReport.llm_usage를 만든다.
+    model은 호출할 때 요청한 이름이고, served는 응답이 실제로 썼다고 알려 준 모델 이름이다.
+
+    `model` = the name the call asked with (the configured model; the role on the company's agent gateway); `served`
+    = the model names the answers reported (a real top-level `model`, every `usage.by_model[].model`), merged as a set
+    by `add`. `served` is left out of the JSON when empty."""
     model: str = ""
     calls: int = 0
     input_tokens: int = 0
     output_tokens: int = 0
+    served: list[str] = Field(default_factory=list)
+
+    @model_serializer(mode="wrap")
+    def _ser(self, handler: Any) -> dict[str, Any]:
+        return _drop_empty_served(handler, self)
 
     def add(self, other: "LLMUsage") -> "LLMUsage":
-        """두 사용량을 더한 새 객체를 반환한다. 모델 이름은 먼저 값이 있는 쪽을 쓴다."""
+        """두 사용량을 더한 새 객체를 반환한다. 모델 이름은 먼저 값이 있는 쪽을 쓰고 served는 합친다."""
         return LLMUsage(
             model=self.model or other.model,
             calls=self.calls + other.calls,
             input_tokens=self.input_tokens + other.input_tokens,
             output_tokens=self.output_tokens + other.output_tokens,
+            served=merge_model_names(self.served, other.served),
         )
 
 
@@ -912,6 +987,11 @@ class ModelCost(BaseModel):
     input_per_mtok: Optional[float] = None
     output_per_mtok: Optional[float] = None
     cost: Optional[float] = None                   # None = no price configured for this model
+    served: list[str] = Field(default_factory=list)   # the models the answers reported (LLMUsage.served)
+
+    @model_serializer(mode="wrap")
+    def _ser(self, handler: Any) -> dict[str, Any]:
+        return _drop_empty_served(handler, self)
 
 
 class LLMCost(BaseModel):

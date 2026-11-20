@@ -1040,11 +1040,14 @@ def advise_plan(plan: MigrationPlan, profile: ProjectProfile, llm: Any = None,
     except Exception as e:  # advisor must never break planning
         plan.notes.append(f"advisor: LLM call failed ({type(e).__name__}: {e}); plan unchanged")
         return plan
-    used = getattr(resp, "model", model) or model or "?"
+    from sbmig.core.models import LLMUsage, asked_model_name, served_beside
+    used = asked_model_name(getattr(resp, "model", ""), model, getattr(llm, "model", ""),
+                            cfg.llm.model if cfg is not None else None)
     try:
-        from sbmig.core.models import LLMUsage
         plan.llm_usage = plan.llm_usage.add(LLMUsage(model=used, calls=1, input_tokens=int(resp.input_tokens or 0),
-                                                     output_tokens=int(resp.output_tokens or 0)))
+                                                     output_tokens=int(resp.output_tokens or 0),
+                                                     served=served_beside(used, list(
+                                                         getattr(resp, "served_models", None) or []))))
     except Exception:  # pragma: no cover - bookkeeping only
         pass
     adds, concerns, err = _parse_advice(getattr(resp, "content", "") or "")

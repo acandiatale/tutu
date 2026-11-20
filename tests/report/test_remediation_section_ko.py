@@ -19,7 +19,9 @@ def test_korean_section_has_sentences_not_keys():
     assert "라이브러리 8개" in ko
     assert "승인" not in ko                    # a count an earlier version wrote (proposals_pending) is not shown
     assert "- 상세: 조치 후 검사가 끝나지 않았습니다(사유: 결과 페이지 누락)." in ko
-    assert "- 자세한 결과: `remediation/report.md`" in ko and "`remediation/delivery/result.zip`" in ko
+    # v2.1z-bg: the report under the name a person receives from the page; the other files stay run-directory paths
+    assert "- 자세한 결과: `remediation-report.md`" in ko and "`remediation/delivery/result.zip`" in ko
+    assert "remediation/report.md" not in ko and "아래 remediation-report.md 파일에 있습니다." in ko
     assert "baseline_findings" not in ko and "final scan incomplete" not in ko
 
 

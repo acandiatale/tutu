@@ -53,7 +53,7 @@ def test_shown_from_the_status_hidden_for_remediation_runs_and_reset_on_attach()
 
 def test_nothing_is_fetched_until_the_dialog_is_opened() -> None:
     # the page glue mounts only when the dialog opens; the component fetches the index in mount
-    glue = SCRIPT[SCRIPT.index("const cdv = {"):SCRIPT.index("// ---------------------------------------------------------------- 실행에 연결 (SSE)")]
+    glue = SCRIPT[SCRIPT.index("const cdv = {"):SCRIPT.index("// ---------------------------------------------------------------- 3d. 보고서 보기")]
     assert "fetch(" not in glue
     assert glue.count("CodeDiff.mount(") == 1 and "CodeDiff.mount($('cd-host'), cdv.run);" in _function("openCodeDiff")
     assert "CodeDiff.mount" not in _function("showCodeDiff")

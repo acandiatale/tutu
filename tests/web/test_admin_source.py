@@ -245,6 +245,6 @@ def test_admin_page_offers_the_original() -> None:
     assert 'aria-disabled="true" title="원본 파일이 서버에 없습니다"' in PAGE and "r.has_source === true" in PAGE
     # the pre-check, like the log ZIP: a message instead of a broken download
     assert "fetch(href + '/check'" in PAGE and "d.error === 'source not available'" in PAGE
-    assert "colspan=\"${withCost ? 11 : 10}\"" in PAGE
+    assert "colspan=\"${withCost ? 12 : 11}\"" in PAGE       # v2.1z-bg: + the 모델 column
     # the public page gets nothing
     assert "/source" not in PUBLIC and "원본 받기" not in PUBLIC

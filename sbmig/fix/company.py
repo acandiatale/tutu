@@ -61,7 +61,8 @@ import requests
 from sbmig.core.interfaces import ChatMessage, LLMResponse
 from sbmig.core.scrub import note_secret
 
-from .client import RETRY_STATUS, LLMError, _retry_after_seconds, extract_reply, messages_hash
+from .client import (RETRY_STATUS, LLMError, _retry_after_seconds, extract_reply, messages_hash, named_response,
+                     served_log_suffix, served_models_of)
 
 try:                                            # round 10 (sbmig.fix.client): LLM calls in flight, for the watchdog
     from .client import llm_call_in_flight as _in_flight
@@ -372,6 +373,17 @@ class CompanyClient:
         body.update(self.agent_extra)
         return body
 
+    def asked_name(self, payload: dict[str, Any]) -> str:
+        """요청 본문에서 이번 호출이 요청한 모델 이름을 꺼낸다. agent 게이트웨이는 `params.role`, legacy는 `model`이다.
+
+        The name this call asked with: `params.role` on the agent gateway (its top-level `model` is the asset id),
+        the payload's `model` on the legacy gateway."""
+        if self.gateway == "agent":
+            params = payload.get("params")
+            role = params.get("role") if isinstance(params, dict) else None
+            return str(role or self.model or "")
+        return str(payload.get("model") or self.model or "")
+
     def _label(self, payload: dict[str, Any], role: Optional[str]) -> str:
         """로그에 쓸 라벨을 만든다. / The log label; agent mode adds `params.role`."""
         extra = f" params.role={payload.get('params', {}).get('role')}" if self.gateway == "agent" else ""
@@ -515,12 +527,13 @@ class CompanyClient:
                         data = resp.json()
                     except ValueError as exc:
                         raise LLMError(resp.status_code, resp.text[:500], f"invalid JSON from LLM: {exc}") from exc
-                    out = self._parse(data, payload["model"])
+                    out = self._parse(data, self.asked_name(payload))
                     if busy_tries:
                         log.info("llm gateway answered after waiting %.0fs on busy (%d busy answer(s)) - %s",
                                  busy_waited, busy_tries, label)
-                    log.info("llm call provider=company model=%s in=%d out=%d latency=%.1fs finish=%s", out.model,
-                             out.input_tokens, out.output_tokens, time.monotonic() - t0, out.finish_reason)
+                    log.info("llm call provider=company model=%s in=%d out=%d latency=%.1fs finish=%s%s", out.model,
+                             out.input_tokens, out.output_tokens, time.monotonic() - t0, out.finish_reason,
+                             served_log_suffix(out))
                     return out
                 last_status, last_body = resp.status_code, resp.text[:500]
                 if resp.status_code == 401 and self._tokens is not None and not auth_retried:
@@ -636,9 +649,11 @@ class CompanyClient:
         if str(finish or "").lower() == "length":
             log.warning("llm company: answer cut at the gateway's max_tokens (finish_reason=length, output tokens %d)",
                         out_tokens)
-        out = LLMResponse(content=content, model=(data.get("model") if isinstance(data, dict) else None) or model,
-                           input_tokens=int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0),
-                           output_tokens=out_tokens, finish_reason=finish)
+        # 이름은 요청한 모델(agent 게이트웨이는 role)이고, 응답의 model과 usage.by_model[].model은 served_models에 둔다
+        out = LLMResponse(content=content, model=model or "",
+                          input_tokens=int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0),
+                          output_tokens=out_tokens, finish_reason=finish)
+        out = named_response(out, model, fallback=self.model, served=served_models_of(data))
         out.session_id = self._session_of(data)
         if out.session_id and out.session_id != self.last_session_id:
             self.last_session_id = out.session_id
@@ -714,6 +729,7 @@ class ProbeResult:
     response: Any = None                  # company provider: the requests.Response (verbose CLI output)
     data: Any = None                      # parsed JSON answer, when there was one
     client_name: str = ""
+    served: list[str] = field(default_factory=list)   # v2.1z-bg: the models the answer reported (beside `model`)
 
     @property
     def transient(self) -> bool:
@@ -733,7 +749,8 @@ class ProbeResult:
         head = f"provider={self.provider} model={ascii_safe(self.model, 60)}"
         if self.ok:
             return (f"LLM-PROBE ok {head} status={self.status if self.status is not None else '-'} "
-                    f"latency={self.latency_s:.1f}s reply={ascii_safe(self.reply, 40)!r}")
+                    f"latency={self.latency_s:.1f}s reply={ascii_safe(self.reply, 40)!r}"
+                    + (f" served={ascii_safe(','.join(self.served), 80)}" if self.served else ""))
         return (f"LLM-PROBE FAIL {self.kind} {head} status={self.status if self.status is not None else '-'} "
                 f"{ascii_safe(self.problem, 200)}")
 
@@ -815,7 +832,7 @@ def probe_llm(cfg: Any, prompt: str = PROBE_PROMPT, *, no_system: bool = False,
                 res.hints.append("auto-detect paths tried: " + ", ".join(_REPLY_PATHS)
                                  + "  -> set LLM_RESPONSE_PATH in .env to the dot path of the text in the JSON above")
             return res
-        res.ok, res.reply = True, out.content
+        res.ok, res.reply, res.served = True, out.content, list(out.served_models)
         return res
     try:
         out = client.complete(msgs, role="other")
@@ -832,4 +849,5 @@ def probe_llm(cfg: Any, prompt: str = PROBE_PROMPT, *, no_system: bool = False,
     res.latency_s = time.monotonic() - t0
     res.ok, res.reply = True, getattr(out, "content", "") or ""
     res.model = getattr(out, "model", None) or res.model
+    res.served = list(getattr(out, "served_models", None) or [])
     return res

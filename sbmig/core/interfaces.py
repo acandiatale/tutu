@@ -75,9 +75,15 @@ class ChatMessage(BaseModel):
 
 
 class LLMResponse(BaseModel):
-    """LLM 응답 하나를 담는 데이터 클래스(1단계 연결 규약). 본문, 모델, 토큰 수, 종료 이유를 담는다."""
+    """LLM 응답 하나를 담는 데이터 클래스(1단계 연결 규약). 본문, 모델, 토큰 수, 종료 이유를 담는다.
+    model은 요청한 이름이고, 응답이 알려 준 실제 모델 이름은 served_models에 둔다.
+
+    `model` = the name the call ASKED with (the configured model / the agent gateway's role); the built-in clients and
+    the adapter wrappers set it so. `served_models` = the real model names the answer reported (a top-level `model`
+    that is not a placeholder such as `unknown`, every `usage.by_model[].model`), the asked name itself left out."""
     content: str
     model: str
+    served_models: list[str] = Field(default_factory=list)
     input_tokens: int = 0
     output_tokens: int = 0
     finish_reason: Optional[str] = None

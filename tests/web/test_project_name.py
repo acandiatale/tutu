@@ -409,6 +409,21 @@ def test_page_field_label_and_attributes():
     assert PAGE.index('id="project"') < PAGE.index('id="drop"')
 
 
+def test_page_hint_asks_for_the_repository_name_with_its_chain_code():
+    """The user (2026-11-20): the hint under the field must be easy to see and read
+    "6자리 체인코드가 포함된 레포지토리 이름으로 작성해 주세요."; the character rule stays as a quieter second line."""
+    hint = PAGE[PAGE.index('<div class="phint" id="project-hint">'):]
+    hint = hint[:hint.index("</div>")]
+    assert '<p class="pmain">6자리 체인코드가 포함된 레포지토리 이름으로 작성해 주세요.</p>' in hint
+    assert '<p class="prule">영문, 숫자, _, - 만 쓸 수 있고 공백 없이 30자까지입니다.</p>' in hint
+    tag = _input_tag()
+    assert 'placeholder="레포지토리 이름"' in tag and "order-admin" not in tag      # no example without a chain code
+    style = PAGE.split("<style>", 1)[1].split("</style>", 1)[0]
+    main = style.split(".projfield .phint .pmain {", 1)[1].split("}", 1)[0]
+    assert "color: var(--ink)" in main and "font-weight: 600" in main and "--bad" not in main and "--faint" not in main
+    assert "--bad" not in style.split(".projfield .phint {", 1)[1].split("}", 1)[0]
+
+
 def test_page_rule_is_the_server_one():
     assert "const PROJECT_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,29}$/;" in SCRIPT
     assert PROJECT_RE.pattern == "^[A-Za-z0-9][A-Za-z0-9_-]{0,29}$"

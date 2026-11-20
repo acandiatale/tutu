@@ -55,7 +55,8 @@ from sbmig.build.log_parser import BUILD_EXTENSION_RE
 from sbmig.core.config import Config
 from sbmig.core.models import (FLOW_FULL, FLOW_REMEDIATION, GAV, RUN_FLOWS, BlockedItem, BuildError, BuildResult,
                                CaseType, DecisionKind, ErrorKind, IterationRecord, LLMUsage, MigrationPlan, Phase,
-                               PhaseResult, PlanStep, ProjectProfile, RunReport, StepKind, utcnow)
+                               PhaseResult, PlanStep, ProjectProfile, RunReport, StepKind, asked_model_name,
+                               merge_model_names, real_model_name, served_beside, utcnow)
 from sbmig.core.stage import stage
 from sbmig.core.workspace import Workspace, logs_dir
 from sbmig.triage.blocked import TRANSFER_CAUSE_PATTERN
@@ -244,8 +245,10 @@ class _BudgetedLLM:
     An LLM client whose calls are charged to the run's `LoopBudget` (v2: the structure review goes through the same
     budget as the fix loop; per-model usage lands in `sink` for the cost table)."""
 
-    def __init__(self, inner: Any, budget: LoopBudget, sink: Optional[dict[str, LLMUsage]] = None):
+    def __init__(self, inner: Any, budget: LoopBudget, sink: Optional[dict[str, LLMUsage]] = None,
+                 default_model: Optional[str] = None):
         self._inner, self._budget, self._sink = inner, budget, sink
+        self._default_model = default_model
 
     def complete(self, *args: Any, **kwargs: Any) -> Any:
         """LLM을 한 번 호출한다.
@@ -253,9 +256,12 @@ class _BudgetedLLM:
         self._budget.charge_llm(1)
         res = self._inner.complete(*args, **kwargs)
         if self._sink is not None:          # per-model usage for the cost table (recipe model calls)
-            model = str(getattr(res, "model", "") or kwargs.get("model") or "")
+            # 이름은 요청한 모델이고, 응답이 알려 준 모델은 served로 남긴다
+            model = asked_model_name(getattr(res, "model", ""), kwargs.get("model"), getattr(self._inner, "model", ""),
+                                     self._default_model)
             u = LLMUsage(model=model, calls=1, input_tokens=int(getattr(res, "input_tokens", 0) or 0),
-                         output_tokens=int(getattr(res, "output_tokens", 0) or 0))
+                         output_tokens=int(getattr(res, "output_tokens", 0) or 0),
+                         served=served_beside(model, list(getattr(res, "served_models", None) or [])))
             self._sink[model] = self._sink.get(model, LLMUsage(model=model)).add(u)
         return res
 
@@ -2824,7 +2830,8 @@ class Orchestrator:
         llm, why = None, ""
         if self.budget.llm_allowed():
             try:
-                llm = _BudgetedLLM(self.llm_client(), self.budget, sink=self._review_usage)
+                llm = _BudgetedLLM(self.llm_client(), self.budget, sink=self._review_usage,
+                                   default_model=self.cfg.llm.model)
             except Exception as e:  # noqa: BLE001 - no LLM: the reviewer says "skipped"
                 why = f"no LLM client: {type(e).__name__}: {e}"
                 log.info("structure review: %s", why)
@@ -3098,8 +3105,9 @@ class Orchestrator:
         if self._review_usage or u is None or not u.calls:
             return
         self.budget.charge_llm(u.calls)
-        key = u.model or self.cfg.llm.model or "?"
-        self._review_usage[key] = self._review_usage.get(key, LLMUsage(model=key)).add(u)
+        key = asked_model_name(u.model, self.cfg.llm.model)
+        self._review_usage[key] = self._review_usage.get(key, LLMUsage(model=key)).add(
+            u.model_copy(update={"model": key}))
 
     def _follow_moves(self, step: PlanStep, pre: str, sha: str) -> None:
         """재구성이 옮긴 파일(``git diff -M``의 이름 변경)을 차단 목록에 알린다.
@@ -3990,8 +3998,10 @@ class Orchestrator:
         def acc(u: Optional[LLMUsage], fallback: str) -> None:
             if u is None or not (u.calls or u.input_tokens or u.output_tokens):
                 return
-            key = (u.model or fallback or "?").strip()
-            by[key] = by.get(key, LLMUsage(model=key)).add(u.model_copy(update={"model": key}))
+            # 행 이름은 요청한 모델이다. 비었거나 `unknown` 같은 값이면 시도의 모델과 설정의 모델 순으로 쓴다
+            key = asked_model_name(u.model, fallback, self.cfg.llm.model)
+            by[key] = by.get(key, LLMUsage(model=key)).add(
+                u.model_copy(update={"model": key, "served": served_beside(key, u.served)}))
         for pr in report.phases:
             for a in pr.attempts:
                 acc(a.llm_usage, a.model or self.cfg.llm.model)
@@ -4112,8 +4122,15 @@ class Orchestrator:
         plan_usage = getattr(getattr(self, "plan", None), "llm_usage", None)
         if plan_usage is not None and plan_usage.calls:
             usage = usage.add(plan_usage)          # plan advisor (recipe model) calls
-        report.llm_usage = usage
         report.llm_usage_by_model = self._usage_by_model(report, plan_usage)
+        if usage.calls or usage.input_tokens or usage.output_tokens:
+            # 합계에도 요청한 이름을 둔다. 모든 호출이 실패해 행이 없는 실행도 이름 없이 남지 않게 하기 위해서다
+            first = next((a.model for pr in report.phases for a in pr.attempts if real_model_name(a.model)), "")
+            rows = report.llm_usage_by_model
+            usage = usage.model_copy(update={
+                "model": asked_model_name(usage.model, rows[0].model if rows else "", first, self.cfg.llm.model),
+                "served": merge_model_names(*(r.served for r in rows))})
+        report.llm_usage = usage
         try:
             from sbmig.report.cost import compute_llm_cost
             report.llm_cost = compute_llm_cost(report.llm_usage_by_model, self.cfg)

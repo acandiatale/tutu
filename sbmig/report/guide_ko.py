@@ -46,6 +46,7 @@ from .markdown import (
     blocked_rows,
     bundled_jars_lines,
     cost_lines,
+    model_cell,
     flag_help,
     framework_lines,
     intake_notice_lines,
@@ -541,7 +542,8 @@ def _pointer(line: str, r: RunReport) -> Optional[str]:
                 "필요」를 봐 주세요.")
     m = _REVIEW_MORE.match(line)
     if m:
-        return f"구조 점검에서 나온 문제가 {m.group(1)}건 더 있습니다. `report.json`의 `structure_review`에서 볼 수 있습니다."
+        return (f"구조 점검에서 나온 문제가 {m.group(1)}건 더 있습니다. `migration-report.json`의 "
+                "`structure_review`에서 볼 수 있습니다.")
     return None
 
 
@@ -971,7 +973,7 @@ def reference_lines(r: RunReport) -> list[str]:
     elif r.llm_usage.calls:
         u = r.llm_usage
         blocks += _details("LLM 사용량과 비용", [f"- LLM 호출 {u.calls}회, 입력 토큰 {u.input_tokens:,}, 출력 토큰 "
-                                                f"{u.output_tokens:,}" + (f" (`{u.model}`)" if u.model else "")])
+                                                f"{u.output_tokens:,}" + (f" ({model_cell(u)})" if u.model else "")])
     o = r.outputs or {}
     seen: dict[str, list[str]] = {}
     for key, label in OUTPUT_KO:

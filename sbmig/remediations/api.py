@@ -10,7 +10,8 @@
 The `/api/remediations` router (contract: API.md). Error mapping: IntakeRejected → 400, NotReady → 503,
 StateConflict / NotAvailable → 409, unknown id → 404, bad id → 400. A 409 carries `message_ko` when the service gave
 one (the refused resume of a state saved in `AWAITING_APPROVAL` by an earlier version: the approval step, with its
-`proposals` / `approvals` routes, was removed).
+`proposals` / `approvals` routes, was removed). `GET …/files/{name}?download=1` attaches any file; report.md /
+report.json are then named remediation-report.md / remediation-report.json (v2.1z-bg).
 """
 from __future__ import annotations
 
@@ -33,6 +34,8 @@ _SAFE_DETAILS = ("missing", "status", "mode", "message_ko")
 _MEDIA = {".md": "text/markdown; charset=utf-8", ".json": "application/json", ".zip": "application/zip",
           ".jsonl": "application/x-ndjson", ".log": "text/plain; charset=utf-8", ".patch": "text/plain; charset=utf-8"}
 _ATTACH = (".zip", ".jsonl", ".patch")
+# 사람이 내려받을 때 쓰는 이름이다. 작업 폴더 안의 파일 이름과 주소는 그대로 둔다
+DOWNLOAD_NAMES = {"report.md": "remediation-report.md", "report.json": "remediation-report.json"}
 
 
 def error_response(exc: BaseException) -> JSONResponse:
@@ -174,7 +177,7 @@ def create_router(manager: RemediationManager, max_upload_bytes: int | None = No
             return error_response(e)
 
     @r.get("/{rid}/files/{name}")
-    async def files(rid: str, name: str) -> Response:
+    async def files(rid: str, name: str, download: str | None = None) -> Response:
         try:
             path = await _call(manager.file_path, rid, name)
         except Exception as e:  # noqa: BLE001
@@ -182,9 +185,11 @@ def create_router(manager: RemediationManager, max_upload_bytes: int | None = No
         if path is None:
             return JSONResponse({"error": f"{name} not found", "code": "not_found"}, status_code=404)
         ext = path.suffix.lower()
-        attach = ext in _ATTACH
+        # ?download=1이면 어떤 파일이든 첨부 파일로 보낸다
+        attach = ext in _ATTACH or download is not None
         return FileResponse(path, media_type=_MEDIA.get(ext, "application/octet-stream"),
-                            headers={"Cache-Control": "no-store"}, filename=name if attach else None,
+                            headers={"Cache-Control": "no-store"},
+                            filename=DOWNLOAD_NAMES.get(name, name) if attach else None,
                             content_disposition_type="attachment" if attach else "inline")
 
     @r.delete("/{rid}", status_code=204)

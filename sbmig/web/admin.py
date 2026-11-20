@@ -56,6 +56,8 @@ from starlette.concurrency import run_in_threadpool
 from starlette.responses import StreamingResponse
 from starlette.types import Receive, Scope, Send
 
+from sbmig.core.models import merge_model_names, real_model_name
+
 from .runs import FLOW_REMEDIATION, RUN_ID_RE, SOURCE_ZIP
 
 log = logging.getLogger("sbmig.web.admin")
@@ -98,6 +100,10 @@ ZIP_GATE = threading.Lock()
 
 # sbmig.log에서 LLM 호출 한 번마다 남는 줄이다(sbmig.fix.company / sbmig.fix.client)
 LLM_CALL_LINE = re.compile(rb"llm call provider=\S+ model=(\S*) in=(\d+) out=(\d+)")
+# 줄 끝의 응답 모델 목록이다(served=a,b). 이 값이 없는 예전 줄도 위 식으로 그대로 읽는다
+LLM_SERVED = re.compile(rb" served=(\S+)\s*$")
+# 회사 게이트웨이 클라이언트가 요청마다 남기는 줄의 params.role이다. 예전 줄의 이름을 되살릴 때만 쓴다
+LLM_ATTEMPT_ROLE = re.compile(rb"llm call provider=\S+ role=\S+ model=\S* params\.role=(\S+) attempt ")
 LLM_JOURNAL_EVENTS = ("llm_script", "llm_verify_guide")
 _RUN_SLUG = re.compile(r"^(.+)-\d{8}-\d{6}-[0-9a-f]+$")
 _EXIT_RESULT = {0: "ok", 2: "incomplete", 3: "aborted"}
@@ -302,53 +308,102 @@ def _parse_time(v: Any) -> datetime | None:
     return t if t.tzinfo else t.replace(tzinfo=timezone.utc)
 
 
-def _usage_from_report(rep: dict[str, Any]) -> tuple[dict[str, int], list[dict[str, Any]], float | None, str | None]:
+def _model_key(name: Any) -> str:
+    # 실제 모델 이름이면 그대로, 예전 실행의 `unknown` / `?` / 빈 이름이면 ""(이름 없음)를 반환한다
+    return real_model_name(name if isinstance(name, str) else "")
+
+
+def _new_row(model: str) -> dict[str, Any]:
+    return {"model": model, "calls": 0, "input_tokens": 0, "output_tokens": 0, "served": []}
+
+
+def _add_usage(rows: dict[str, dict[str, Any]], model: Any, calls: Any, inp: Any, outp: Any,
+               served: Any = None) -> None:
+    # 같은 이름의 행에 더한다. 응답이 알려 준 모델 이름은 순서를 지키며 합친다
+    key = _model_key(model)
+    r = rows.setdefault(key, _new_row(key))
+    r["calls"] += _int(calls)
+    r["input_tokens"] += _int(inp)
+    r["output_tokens"] += _int(outp)
+    if isinstance(served, list):
+        r["served"] = merge_model_names(r["served"], served)
+
+
+def model_row(r: dict[str, Any], **extra: Any) -> dict[str, Any]:
+    """모델 행을 API 형태로 만든다. served는 알 때만, unnamed는 예전 실행의 이름 없는 행에만 넣는다.
+
+    One `by_model` entry: `model` (the asked name; "" for runs written before v2.1z-bg whose name was `unknown` / `?` /
+    empty), the token counts, then `served` only when known and `unnamed: true` only for the "" row."""
+    out = {"model": r["model"], "calls": r["calls"], "input_tokens": r["input_tokens"],
+           "output_tokens": r["output_tokens"], **extra}
+    if r.get("served"):
+        out["served"] = list(r["served"])
+    if not r["model"]:
+        out["unnamed"] = True
+    return out
+
+
+def _usage_from_report(rep: dict[str, Any], run_dir: Path | None = None) \
+        -> tuple[dict[str, int], list[dict[str, Any]], float | None, str | None]:
     # 보고서의 합계, 모델별 사용량, 비용, 통화를 읽는다. 값이 이상해도 예외를 던지지 않는다
+    # 이름 없는 행(예전 실행)은 sbmig.log가 호출마다 role을 알려 주고 수가 꼭 맞을 때만 그 이름으로 바꾼다
     total = rep.get("llm_usage") if isinstance(rep.get("llm_usage"), dict) else {}
     rows: dict[str, dict[str, Any]] = {}
     for u in rep.get("llm_usage_by_model") or []:
         if not isinstance(u, dict):
             continue
-        model = str(u.get("model") or "?")
-        r = rows.setdefault(model, {"model": model, "calls": 0, "input_tokens": 0, "output_tokens": 0})
-        for k in ("calls", "input_tokens", "output_tokens"):
-            r[k] += _int(u.get(k))
+        _add_usage(rows, u.get("model"), u.get("calls"), u.get("input_tokens"), u.get("output_tokens"),
+                   u.get("served"))
     sums = {k: sum(r[k] for r in rows.values()) for k in ("calls", "input_tokens", "output_tokens")}
     usage = {k: _int(total.get(k)) or sums[k] for k in ("calls", "input_tokens", "output_tokens")}
     if not rows and any(usage.values()):
-        model = str(total.get("model") or "?")
-        rows[model] = {"model": model, **usage}
+        _add_usage(rows, total.get("model"), usage["calls"], usage["input_tokens"], usage["output_tokens"],
+                   total.get("served"))
     cost = rep.get("llm_cost") if isinstance(rep.get("llm_cost"), dict) else None
-    model_cost: dict[str, float] = {}
+    model_cost: dict[str, float | None] = {}
     run_cost: float | None = None
     currency: str | None = None
     if cost is not None:
         for m in cost.get("by_model") or []:
-            if isinstance(m, dict) and isinstance(m.get("cost"), (int, float)):
-                model_cost[str(m.get("model") or "?")] = float(m["cost"])
+            if not isinstance(m, dict):
+                continue
+            key = _model_key(m.get("model"))
+            c = float(m["cost"]) if isinstance(m.get("cost"), (int, float)) else None
+            # 이름 없는 행 여러 개가 합쳐지면 비용도 더한다. 하나라도 없으면 비용을 모르는 것으로 둔다
+            if key in model_cost:
+                prev = model_cost[key]
+                model_cost[key] = None if prev is None or c is None else prev + c
+            else:
+                model_cost[key] = c
         if not cost.get("unpriced_models") and not cost.get("usage_missing") \
                 and isinstance(cost.get("total"), (int, float)):
             run_cost = float(cost["total"])
             currency = _str(cost.get("currency"))
+    if "" in rows and run_dir is not None:
+        named = _names_from_old_log(run_dir, rows[""])
+        if named:
+            del rows[""]
+            model_cost.pop("", None)
+            for r in named.values():
+                _add_usage(rows, r["model"], r["calls"], r["input_tokens"], r["output_tokens"])
     by_model = []
     for r in rows.values():
         c = model_cost.get(r["model"])
         if c is None and run_cost is not None and not (r["input_tokens"] or r["output_tokens"]):
             c = 0.0
-        by_model.append({**r, "total_tokens": r["input_tokens"] + r["output_tokens"], "cost": c})
+        by_model.append(model_row(r, total_tokens=r["input_tokens"] + r["output_tokens"], cost=c))
     return usage, by_model, run_cost, currency
 
 
-def usage_from_log(run_dir: Path) -> dict[str, dict[str, int]]:
-    """보고서가 없는 실행의 LLM 사용량을 sbmig.log의 ``llm call`` 줄에서 모델별로 모은다.
-    큰 로그도 한 줄씩 읽어 메모리를 쓰지 않는다.
-
-    Per-model usage from the `llm call provider=… model=… in=… out=…` lines (one per answered call, written by the
-    built-in LLM clients), read line by line."""
-    out: dict[str, dict[str, int]] = {}
+def _scan_log(run_dir: Path) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]], int]:
+    # sbmig.log의 호출 줄을 읽어 (모델별 행, 예전 줄을 role로 되살린 행, role을 알 수 없는 예전 줄 수)를 반환한다
+    rows: dict[str, dict[str, Any]] = {}
+    recovered: dict[str, dict[str, Any]] = {}
+    orphans = 0
     p = safe_file(run_dir, "sbmig.log")
     if p is None:
-        return out
+        return rows, recovered, orphans
+    pending: str | None = None                       # 바로 앞 요청 줄의 params.role
     try:
         with open(p, "rb") as fh:
             for line in fh:
@@ -356,25 +411,69 @@ def usage_from_log(run_dir: Path) -> dict[str, dict[str, int]]:
                     continue
                 m = LLM_CALL_LINE.search(line)
                 if not m:
+                    a = LLM_ATTEMPT_ROLE.search(line)
+                    if a:
+                        pending = _model_key(a.group(1).decode("utf-8", "replace")) or None
                     continue
-                model = m.group(1).decode("utf-8", "replace") or "?"
-                r = out.setdefault(model, {"calls": 0, "input_tokens": 0, "output_tokens": 0})
-                r["calls"] += 1
-                r["input_tokens"] += int(m.group(2))
-                r["output_tokens"] += int(m.group(3))
+                model = m.group(1).decode("utf-8", "replace")
+                served_m = LLM_SERVED.search(line)
+                served = served_m.group(1).decode("utf-8", "replace").split(",") if served_m else None
+                _add_usage(rows, model, 1, m.group(2), m.group(3), served)
+                if not _model_key(model):
+                    if pending:
+                        _add_usage(recovered, pending, 1, m.group(2), m.group(3))
+                    else:
+                        orphans += 1
+                pending = None
     except OSError:
         pass
+    return rows, recovered, orphans
+
+
+def _names_from_old_log(run_dir: Path, unnamed: dict[str, Any]) -> dict[str, dict[str, Any]] | None:
+    # 예전 실행의 이름 없는 사용량을 sbmig.log의 요청 줄(params.role)로 나눈다. 확실할 때만 돌려준다:
+    # 이름 없는 응답 줄마다 앞에 role이 있고, 그 합계가 보고서의 이름 없는 행과 호출, 토큰까지 같아야 한다
+    _, recovered, orphans = _scan_log(run_dir)
+    if orphans or not recovered:
+        return None
+    for k in ("calls", "input_tokens", "output_tokens"):
+        if sum(r[k] for r in recovered.values()) != unnamed[k]:
+            return None
+    return recovered
+
+
+def usage_from_log(run_dir: Path) -> dict[str, dict[str, Any]]:
+    """보고서가 없는 실행의 LLM 사용량을 sbmig.log의 ``llm call`` 줄에서 모델별로 모은다.
+    큰 로그도 한 줄씩 읽어 메모리를 쓰지 않는다. 예전 줄의 이름 없는 모델은 앞 요청 줄의 role로 되살린다.
+
+    Per-model usage from the `llm call provider=… model=… in=… out=…` lines (one per answered call, written by the
+    built-in LLM clients), read line by line; ` served=a,b` at the end of a newer line goes to `served`. A line written
+    before v2.1z-bg that names a placeholder (`model=unknown`) is counted under the `params.role` of the request line
+    before it when every such line has one; otherwise those calls stay under "" (unnamed)."""
+    rows, recovered, orphans = _scan_log(run_dir)
+    if "" in rows and recovered and not orphans:
+        del rows[""]
+        for r in recovered.values():
+            _add_usage(rows, r["model"], r["calls"], r["input_tokens"], r["output_tokens"])
+    return {k: _plain(r) for k, r in rows.items()}
+
+
+def _plain(r: dict[str, Any]) -> dict[str, Any]:
+    out = {"calls": r["calls"], "input_tokens": r["input_tokens"], "output_tokens": r["output_tokens"]}
+    if r.get("served"):
+        out["served"] = list(r["served"])
     return out
 
 
-def usage_from_journal(run_dir: Path) -> dict[str, dict[str, int]]:
+def usage_from_journal(run_dir: Path) -> dict[str, dict[str, Any]]:
     """sbmig.log에 호출 줄이 없을 때 journal.jsonl의 수정 루프 LLM 이벤트에서 모델별 사용량을 모은다.
 
-    Fallback: the fix loop's `llm_script` / `llm_verify_guide` journal events (calls + tokens per event)."""
-    out: dict[str, dict[str, int]] = {}
+    Fallback: the fix loop's `llm_script` / `llm_verify_guide` journal events (calls + tokens per event; `served`
+    when the event carries it)."""
+    rows: dict[str, dict[str, Any]] = {}
     p = safe_file(run_dir, "journal.jsonl")
     if p is None:
-        return out
+        return {}
     try:
         with open(p, "rb") as fh:
             for line in fh:
@@ -390,14 +489,10 @@ def usage_from_journal(run_dir: Path) -> dict[str, dict[str, int]]:
                 calls = _int(ev.get("calls"))
                 if not (calls or tok):
                     continue
-                model = str(ev.get("model") or "?")
-                r = out.setdefault(model, {"calls": 0, "input_tokens": 0, "output_tokens": 0})
-                r["calls"] += calls
-                r["input_tokens"] += _int(tok.get("input"))
-                r["output_tokens"] += _int(tok.get("output"))
+                _add_usage(rows, ev.get("model"), calls, tok.get("input"), tok.get("output"), ev.get("served"))
     except OSError:
         pass
-    return out
+    return {k: _plain(r) for k, r in rows.items()}
 
 
 def _result_word(exit_code: Any, rep: dict[str, Any] | None) -> str | None:
@@ -558,11 +653,11 @@ def run_usage(run_dir: Path, status: dict[str, Any] | None = None, live: bool = 
     cost: float | None = None
     currency: str | None = None
     if rep is not None:
-        usage, by_model, cost, currency = _usage_from_report(rep)
+        usage, by_model, cost, currency = _usage_from_report(rep, run_dir)
         known = True
     else:
         found = usage_from_log(run_dir) or usage_from_journal(run_dir)
-        by_model = [{"model": m, **u, "total_tokens": u["input_tokens"] + u["output_tokens"], "cost": None}
+        by_model = [model_row({"model": m, **u}, total_tokens=u["input_tokens"] + u["output_tokens"], cost=None)
                     for m, u in sorted(found.items())]
         usage = {k: sum(r[k] for r in by_model) for k in ("calls", "input_tokens", "output_tokens")}
         known = bool(found)
@@ -637,8 +732,9 @@ def collect_usage(out_root: Path, status_of: Callable[[str], dict[str, Any]] | N
         p["_times"].append(r["_t"])
         p["run_list"].append(r)
         for m in r["by_model"]:
-            agg = models.setdefault(m["model"], {"model": m["model"], **zero})
+            agg = models.setdefault(m["model"], {"model": m["model"], **zero, "served": []})
             _add(agg, m)
+            agg["served"] = sorted(merge_model_names(agg["served"], m.get("served") or []), key=str.lower)
             model_costs.setdefault(m["model"], []).append(m["cost"])
     currencies = {r["_currency"] for r in runs if r["_currency"]}
     total_cost = _sum_cost(r["cost"] for r in runs) if runs else None
@@ -665,7 +761,8 @@ def collect_usage(out_root: Path, status_of: Callable[[str], dict[str, Any]] | N
     totals["projects"] = len(project_rows)
     by_model = []
     for name, m in models.items():
-        by_model.append({**m, "cost": _sum_cost(model_costs[name]) if len(currencies) <= 1 else None})
+        by_model.append(model_row(m, total_tokens=m["total_tokens"],
+                                  cost=_sum_cost(model_costs[name]) if len(currencies) <= 1 else None))
     by_model.sort(key=lambda m: (-m["total_tokens"], m["model"]))
     return {"generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "out_root": str(out_root),
