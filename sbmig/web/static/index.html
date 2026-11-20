@@ -754,6 +754,18 @@
       <div class="downloads" id="remed-dl"></div>
       <!-- 상태별 동작: 업로드 확인 대기는 두 가지 중 선택, 중지는 이어서 진행 -->
       <div class="act" id="remed-act"></div>
+      <!-- 조치 결과 보고서 미리보기: 조치의 파일 목록에 report.md가 있을 때만 표시한다. '조치 결과 보고서' 버튼으로 받는 파일과 같은 글이다 -->
+      <details class="preview" id="rem-preview" hidden>
+        <summary>조치 결과 보고서 미리보기</summary>
+        <div class="rvbar">
+          <div class="rvseg" data-rv="rem" role="group" aria-label="조치 결과 보고서 보기 방식">
+            <button type="button" data-mode="view" aria-pressed="true">보기</button><button type="button" data-mode="raw" aria-pressed="false">원문</button>
+          </div>
+          <button class="btn quiet" id="rem-report-big" type="button" aria-haspopup="dialog" aria-controls="rv-dialog">크게 보기</button>
+        </div>
+        <div class="mdv rvpane" id="rem-report-view"></div>
+        <pre class="report" id="rem-report" hidden></pre>
+      </details>
     </div>
     <!-- 코드 변경: 상태에 code_diff가 있을 때만 표시한다. 대화상자를 열기 전에는 아무것도 받아 오지 않는다 -->
     <div class="cdblock" id="cdblock" hidden>
@@ -764,11 +776,12 @@
       </div>
       <p class="cdlead">변환 전 프로젝트와 비교해 바뀐 파일을 옮긴 뒤의 위치 기준으로 보여 줍니다.</p>
     </div>
-    <!-- 보고서 미리보기: 실행이 끝나 보고서를 받으면 표시한다. Markdown을 그린 화면과 원문을 바꿔 볼 수 있다 -->
+    <!-- 보고서 미리보기: 실행이 끝나 보고서를 받으면 표시한다. Markdown을 그린 화면과 원문을 바꿔 볼 수 있다.
+         전체 진행이면 마이그레이션 보고서다. 취약점 해결 실행이면 조치 결과 보고서가 생기기 전까지만 실행 보고서를 보이고, 생기면 숨긴다 -->
     <details class="preview" id="preview" hidden>
-      <summary>보고서 미리보기</summary>
+      <summary id="preview-label">보고서 미리보기</summary>
       <div class="rvbar">
-        <div class="rvseg" role="group" aria-label="보고서 보기 방식">
+        <div class="rvseg" data-rv="mig" role="group" aria-label="보고서 보기 방식">
           <button type="button" data-mode="view" aria-pressed="true">보기</button><button type="button" data-mode="raw" aria-pressed="false">원문</button>
         </div>
         <button class="btn quiet" id="report-big" type="button" aria-haspopup="dialog" aria-controls="rv-dialog">크게 보기</button>
@@ -805,7 +818,7 @@
       <h2 id="rv-title">보고서</h2>
       <p class="cdm-name" id="rv-name"></p>
     </div>
-    <div class="rvseg" role="group" aria-label="보고서 보기 방식">
+    <div class="rvseg" data-rv="dlg" role="group" aria-label="보고서 보기 방식">
       <button type="button" data-mode="view" aria-pressed="true">보기</button><button type="button" data-mode="raw" aria-pressed="false">원문</button>
     </div>
     <a class="btn quiet rv-dl" id="rv-dl">받기 <span class="sub" id="rv-dlname"></span></a>
@@ -1184,8 +1197,10 @@
     if (st.upload || st.project) setRunName(st.project, st.upload);
     // 진행 방식이 정해지면 레일을 그에 맞게 그린다. 이미 그린 진행을 지우지 않도록 엔진 단계가 아직 오지 않았을 때만 한다
     if (st.flow === FLOW_REM || st.flow === FLOW_FULL) {
+      const flowChanged = runFlow !== st.flow;
       runFlow = st.flow;
       if (railFlow !== runFlow && !engineSeen()) resetRail(runFlow);
+      if (flowChanged) renderPreview();             // 미리보기 제목과 내용이 진행 방식을 따른다
     }
     // 줄인 범위로 실행한 실행이면 서버가 보고서나 저널에서 찾은 framework 값으로 안내를 보여 준다
     if (st.framework && typeof st.framework === 'object' && st.framework.scope === 'jdk-jakarta') setFramework(fwFrom(st.framework, fwInfo));
@@ -1707,13 +1722,8 @@
     };
     const failed = !!(st.delivery && st.delivery.build_ok === false);
     link('report.md', '조치 결과 보고서', solo ? 'big' : 'quiet');
-    if (files.includes('report.md')) {
-      // 내려받지 않고 화면에서 바로 읽는다. 열 때 받아 온다
-      const view = el('button', 'btn quiet' + (solo ? ' big' : ''), '보고서 보기'); view.type = 'button'; view.id = 'remed-view';
-      view.setAttribute('aria-haspopup', 'dialog'); view.setAttribute('aria-controls', 'rv-dialog');
-      view.addEventListener('click', () => openRemReport(runId, files));
-      dl.appendChild(view);
-    }
+    // 화면에서 바로 읽는 것은 아래 '조치 결과 보고서 미리보기'다. 보고서가 다시 쓰였을 때만 받아 온다
+    remPreviewSync(runId, st, files);
     const sameFailure = remUnconfirmed(st);
     // 바꾼 버전이 없는 원본 ZIP은 빌드로 확인할 변경이 없으므로 표시를 붙이지 않는다
     const applied = Number(c.proposals_applied || 0) > 0;
@@ -3062,37 +3072,60 @@
     host.replaceChildren(MdView.render(MdView.parse(text), document, { resolve }));
     host.dataset.src = text;
   }
-  // 보기와 원문 전환 버튼. 두 버튼 묶음(미리보기, 대화상자)이 같은 값을 쓴다
-  let rvMode = 'view';
-  function setRvMode(mode) {
-    rvMode = mode === 'raw' ? 'raw' : 'view';
-    for (const b of document.querySelectorAll('.rvseg button')) b.setAttribute('aria-pressed', String(b.dataset.mode === rvMode));
-    $('report-view').hidden = rvMode === 'raw'; $('report').hidden = rvMode !== 'raw';
-    $('rv-view').hidden = rvMode === 'raw'; $('rv-raw').hidden = rvMode !== 'raw';
+  // 보기와 원문 전환 버튼. 미리보기마다 값을 따로 두고, 대화상자는 그것을 연 미리보기의 값을 함께 쓴다
+  const rvModes = { mig: 'view', rem: 'view' };
+  function setRvMode(group, mode) {
+    if (group === 'dlg') group = rv.dlg || 'mig';
+    if (group in rvModes) rvModes[group] = mode === 'raw' ? 'raw' : 'view';
+    paintRvMode();
   }
-  for (const b of document.querySelectorAll('.rvseg button')) b.addEventListener('click', () => setRvMode(b.dataset.mode));
+  function paintRvMode() {
+    const dlgMode = rvModes[rv.dlg || 'mig'];
+    for (const seg of document.querySelectorAll('.rvseg')) {
+      const m = seg.dataset.rv === 'dlg' ? dlgMode : rvModes[seg.dataset.rv];
+      for (const b of seg.querySelectorAll('button')) b.setAttribute('aria-pressed', String(b.dataset.mode === m));
+    }
+    $('report-view').hidden = rvModes.mig === 'raw'; $('report').hidden = rvModes.mig !== 'raw';
+    $('rem-report-view').hidden = rvModes.rem === 'raw'; $('rem-report').hidden = rvModes.rem !== 'raw';
+    $('rv-view').hidden = dlgMode === 'raw'; $('rv-raw').hidden = dlgMode !== 'raw';
+  }
+  for (const seg of document.querySelectorAll('.rvseg')) {
+    for (const b of seg.querySelectorAll('button')) b.addEventListener('click', () => setRvMode(seg.dataset.rv, b.dataset.mode));
+  }
   // 내려받기 이름. 실행 폴더 안의 파일 이름은 그대로 두고 사람이 받는 이름만 바꾼다
   const MIG_DL = { 'report.md': 'migration-report.md', 'report.json': 'migration-report.json' };
   const REM_DL = { 'report.md': 'remediation-report.md', 'report.json': 'remediation-report.json' };
-  // 이관 보고서: 실행이 끝나면 report 이벤트로 받은 원문을 결과 카드의 미리보기에 그린다
-  const rv = { text: '', files: [], opener: null };
+  // 실행 보고서: 실행이 끝나면 report 이벤트로 받은 원문이다. 전체 진행이면 마이그레이션 보고서다.
+  // rv.dlg는 대화상자를 연 미리보기('mig' 또는 'rem')다. 그 미리보기의 글이 바뀌면 열린 대화상자도 같은 글로 바꾼다
+  const rv = { text: '', files: [], opener: null, dlg: '' };
   function runFileLink(p) { return rv.files.includes(p) && current ? fileUrl(p) : null; }
   function setReportText(text) {
     rv.text = String(text || '');
-    $('report').textContent = rv.text;
-    if (rv.text) mdInto($('report-view'), rv.text, runFileLink);
+    renderPreview();
+  }
+  // 결과 카드 아래쪽 미리보기. 취약점 해결 실행은 조치 결과 보고서 미리보기가 생기면 이 미리보기를 숨긴다(두 개를 함께 보이지 않는다)
+  function mainPreviewText() { return runFlow === FLOW_REM && remPreviewShown() ? '' : rv.text; }
+  function renderPreview() {
+    const text = mainPreviewText();
+    $('preview-label').textContent = runFlow === FLOW_REM ? '보고서 미리보기' : '마이그레이션 보고서 미리보기';
+    $('report').textContent = text;
+    if (text) mdInto($('report-view'), text, runFileLink);
     else { $('report-view').replaceChildren(); delete $('report-view').dataset.src; }
-    $('preview').hidden = !rv.text;
+    $('preview').hidden = !text;
+    if (rv.dlg === 'mig' && $('rv-dialog').open) {
+      if (!text) closeReport(); else if ($('rv-raw').textContent !== text) openMigrationReport();
+    }
   }
   // 대화상자 머리에 쓸 이름. 프로젝트명(없으면 올린 파일 이름), 그것도 없으면 실행 id다
   function reportName() {
     const n = $('runname'), first = n.firstChild;
     return (!n.hidden && first && first.nodeType === 3 ? first.textContent : '') || $('runid').textContent || '';
   }
-  // 큰 대화상자로 연다. src = {title, name, text, resolve, href, dl}
+  // 큰 대화상자로 연다. src = {title, name, text, resolve, href, dl, from}. from은 대화상자를 연 미리보기다
   function openReport(src) {
     const dlg = $('rv-dialog');
     if (!dlg.open) rv.opener = document.activeElement;      // 열려 있으면 닫지 않고 내용만 바꾼다
+    rv.dlg = src.from || 'mig';
     $('rv-title').textContent = src.title;
     $('rv-name').textContent = src.name || '';
     $('rv-raw').textContent = src.text;
@@ -3101,33 +3134,73 @@
     const a = $('rv-dl');
     if (src.href) { a.href = src.href; a.setAttribute('download', src.dl); a.hidden = false; } else { a.removeAttribute('href'); a.hidden = true; }
     $('rv-dlname').textContent = src.dl || '';
-    setRvMode(rvMode);
+    paintRvMode();
     document.documentElement.classList.add('cdm-lock');
     if (!dlg.open) dlg.showModal();
     $('rv-body').scrollTop = 0;
   }
   function openMigrationReport() {
-    if (!rv.text || !current) return;
+    const text = mainPreviewText();
+    if (!text || !current) return;
     openReport({ title: runFlow === FLOW_REM ? '실행 보고서' : '마이그레이션 보고서', name: reportName(),
-                 text: rv.text, resolve: runFileLink,
+                 text, resolve: runFileLink, from: 'mig',
                  href: rv.files.includes('report.md') ? fileUrl('report.md', true) : '', dl: MIG_DL['report.md'] });
   }
-  // 취약점 조치 보고서는 열 때 받아 온다
-  async function openRemReport(runId, files) {
+  // 조치 결과 보고서 미리보기: GET /api/remediations/<id>/files/report.md의 글을 그대로 보인다('조치 결과 보고서' 버튼으로 받는 파일과 같다).
+  // 상태의 updated가 바뀔 때만 다시 받는다(보고서 노드는 보고서를 쓴 뒤 상태를 저장한다). 이어서 진행 중이면 끝날 때 다시 쓰이므로
+  // 보이는 글이 있으면 기다린다. 실패하면 보이는 글을 그대로 두고 다음 상태 변화에 다시 받는다. 다른 실행으로 옮긴 뒤 온 응답은 버린다
+  const rp = { run: null, text: '', files: [], key: '', failed: '', busy: '', seq: 0 };
+  function remPreviewReset() {
+    rp.run = null; rp.text = ''; rp.files = []; rp.key = ''; rp.failed = ''; rp.busy = ''; rp.seq++;
+    renderRemPreview();
+  }
+  function remPreviewShown() { return !!current && rp.run === current && !!rp.text; }
+  function remFileLink(runId, files) { return (p) => (files.includes(p) ? remUrl(runId, '/files/' + encodeURIComponent(p)) : null); }
+  async function remPreviewSync(runId, st, files) {
+    if (!files.includes('report.md')) return;            // 아직 보고서가 없다. 취약점 해결 실행은 실행 보고서를 그대로 보인다
+    if (rp.run !== runId) { remPreviewReset(); rp.run = runId; }
+    if (rp.text && remActive(st)) return;
+    const key = 'u' + String(st.updated ?? '');
+    if (key === rp.key || key === rp.failed || key === rp.busy) return;
+    const seq = ++rp.seq; rp.busy = key;
     let text = null;
     try { const r = await fetch(remUrl(runId, '/files/report.md')); if (r.ok) text = await r.text(); } catch (e) {}
-    if (current !== runId) return;
-    if (text == null) { toast('조치 결과 보고서를 불러오지 못했습니다. 잠시 뒤 다시 시도해 주세요.', true); return; }
-    const resolve = (p) => (files.includes(p) ? remUrl(runId, '/files/' + encodeURIComponent(p)) : null);
-    openReport({ title: '취약점 조치 보고서', name: reportName(), text, resolve,
+    if (seq !== rp.seq) return;                          // 그 뒤에 보낸 요청이 있거나 다른 실행을 선택했다
+    rp.busy = '';
+    if (current !== runId || rp.run !== runId) return;
+    if (text == null) { rp.failed = key; return; }
+    rp.key = key; rp.failed = ''; rp.files = files.slice();
+    const first = !rp.text;
+    rp.text = text;
+    // 취약점 해결 실행에서 펼쳐 둔 실행 보고서가 조치 결과 보고서로 바뀌면 바뀐 미리보기도 펼친 채로 보인다
+    if (first && runFlow === FLOW_REM && $('preview').open && !$('preview').hidden) $('rem-preview').open = true;
+    renderRemPreview();
+    renderPreview();
+  }
+  function renderRemPreview() {
+    const text = remPreviewShown() ? rp.text : '';
+    $('rem-report').textContent = text;
+    if (text) mdInto($('rem-report-view'), text, remFileLink(rp.run, rp.files));
+    else { $('rem-report-view').replaceChildren(); delete $('rem-report-view').dataset.src; }
+    $('rem-preview').hidden = !text;
+    if (rv.dlg === 'rem' && $('rv-dialog').open) {
+      if (!text) closeReport(); else if ($('rv-raw').textContent !== text) openRemReport();
+    }
+  }
+  // 미리보기에 보인 조치 결과 보고서를 크게 연다(받아 둔 글을 쓰므로 미리보기와 같은 글이다)
+  function openRemReport() {
+    if (!remPreviewShown()) return;
+    const runId = rp.run;
+    openReport({ title: '취약점 조치 보고서', name: reportName(), text: rp.text, resolve: remFileLink(runId, rp.files), from: 'rem',
                  href: remUrl(runId, '/files/report.md?download=1'), dl: REM_DL['report.md'] });
   }
   function closeReport() { const dlg = $('rv-dialog'); if (dlg.open) dlg.close(); }
   $('report-big').addEventListener('click', openMigrationReport);
+  $('rem-report-big').addEventListener('click', openRemReport);
   $('rv-close').addEventListener('click', closeReport);
   $('rv-dialog').addEventListener('close', () => {
     if ($('rv-dialog').open) return;                 // 닫고 바로 다시 연 경우 늦게 온 close 이벤트는 무시한다
-    $('rv-view').replaceChildren(); delete $('rv-view').dataset.src; $('rv-raw').textContent = '';
+    $('rv-view').replaceChildren(); delete $('rv-view').dataset.src; $('rv-raw').textContent = ''; rv.dlg = '';
     document.documentElement.classList.remove('cdm-lock');
     const back = rv.opener; rv.opener = null;
     if (back && back.isConnected && typeof back.focus === 'function') back.focus();
@@ -3155,7 +3228,7 @@
     logBuf = []; logTotal = 0; logDropped = 0; renderLog();
     $('runcard').hidden = false; $('resultcard').hidden = true; hideRemediation(); hideCodeDiff();
     $('runid').textContent = runId; $('summary').textContent = ''; setRunName(projectHint || '', nameHint || '');
-    $('timeline').innerHTML = ''; $('log').replaceChildren(); closeReport(); rv.files = []; setReportText(''); $('logfull').hidden = true;
+    $('timeline').innerHTML = ''; $('log').replaceChildren(); closeReport(); rv.files = []; if (rp.run !== runId) remPreviewReset(); setReportText(''); $('logfull').hidden = true;
     setTitle('', resume ? '다시 연결하는 중…' : '연결하는 중…', false); statusKey = '';
     $('stop').disabled = true;                         // 이전 실행의 상태가 남지 않도록 이 실행의 status가 오기 전에는 비활성화한다
     resetRail(runFlow); setFramework(null); runRem = null; lastRunSt = null; remLlm = null;

@@ -208,7 +208,8 @@ def test_dialog_and_toggle_in_the_page():
     assert ".mdv .mdv-pre { margin: 10px 0; padding: 10px 12px; overflow-x: auto;" in STYLE
     assert "src.addEventListener('report', (e) => { if (mine()) setReportText(JSON.parse(e.data)); });" in SCRIPT
     # the raw text goes in as text only
-    assert "$('report').textContent = rv.text;" in SCRIPT and "$('rv-raw').textContent = src.text;" in SCRIPT
+    assert "$('report').textContent = text;" in SCRIPT and "$('rem-report').textContent = text;" in SCRIPT
+    assert "$('rv-raw').textContent = src.text;" in SCRIPT
 
 
 def test_download_names_on_the_page():
@@ -218,5 +219,6 @@ def test_download_names_on_the_page():
     assert "a.setAttribute('download', MIG_DL[name] || name);" in SCRIPT
     assert "a.href = remUrl(runId, '/files/' + name + (REM_DL[name] ? '?download=1' : '')); a.setAttribute('download', shown);" \
         in SCRIPT
-    assert "view.addEventListener('click', () => openRemReport(runId, files));" in SCRIPT
+    # the remediation report is read in its own preview; its 「크게 보기」 opens the dialog (no separate 보고서 보기 button)
+    assert "$('rem-report-big').addEventListener('click', openRemReport);" in SCRIPT
     assert "href: remUrl(runId, '/files/report.md?download=1'), dl: REM_DL['report.md']" in SCRIPT
