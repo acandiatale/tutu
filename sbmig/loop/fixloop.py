@@ -117,6 +117,7 @@ from sbmig.errors.cases import OUT_OF_SCOPE, SCOPE_FULL, SCOPE_REDUCED
 from .blocked_registry import (BlockedRegistry, attribute, compose_suggestion, is_in_house, is_javax_api_artifact,
                                sanitize_errors)
 from .budget import LoopBudget
+from .callee import takes_keyword
 from .components import LazyFixer, ScriptFixerMissing, profile_summary
 from .entries import CaseScripts, RunErrors, script_path
 from .notes import (answer_notes, fallback_guide, log_major_upgrades, note_line, operator_changes, pom_changed,
@@ -487,6 +488,13 @@ PRE_TRY_APPLY_FAILURES = VERSION_TRY_APPLY_FAILURES   # … the same cap for eve
 # v2.1z-ak: the "Scope of this run" section's cap; the head of the guard's sentence (FixAttempt.apply_errors)
 SCOPE_FACTS_MAX_CHARS = 1200
 FRAMEWORK_GUARD_PREFIX = "framework project:"
+# 프레임워크 검사를 끝내지 못해 시도를 거부할 때 LLM과 저널에 남기는 이유 문장
+# The reason a reduced run's framework guard gives when its check raised: same form as its findings, no exception text.
+FRAMEWORK_GUARD_INCOMPLETE = (
+    f"{FRAMEWORK_GUARD_PREFIX} the check of the attempt's poms could not be completed — nothing of it was kept. "
+    "This is a framework project: every <parent> and the framework artifact's declaration and version must stay "
+    "exactly as they are; fix the code instead, or answer <blocked> naming the framework artifact when only its "
+    "owner can fix it")
 
 
 @dataclass(frozen=True)
@@ -1430,15 +1438,18 @@ class BuildFixLoop:
         assert last is not None
         # 끝까지 결과를 판단할 수 없었던 시도도 마지막에 한 번 KB 실적으로 기록한다
         self._credit_scripts(pr, [a for a in pr.attempts if a.outcome == "inconclusive"])
+        # 대체 빌드로 통과했는지는 메모 문구가 아니라 대체 빌드의 결과로 판단한다
+        # Whether a fallback passed this phase is the fallback's own answer, not a substring of a note.
+        fell_back = False
         if not pr.build_ok and not self.dry_run and not self.aborted:
-            self._maybe_skip_test_compile(pr, phase, goal, target, last)
+            fell_back = self._maybe_skip_test_compile(pr, phase, goal, target, last)
         if not pr.build_ok and not self.dry_run and not self.aborted:
-            self._maybe_skip_tests(pr, phase, goal, target, last)
+            fell_back = self._maybe_skip_tests(pr, phase, goal, target, last) or fell_back
         self.last_build = last
         # 도움이 되지 않은 케이스의 마지막 시도는 다음 시도 전처럼 루프 끝에서도 되돌려 결과물에 남기지 않는다
         if not pr.build_ok and not self.dry_run and not self.aborted:
             self.end_rollbacks = self._rollback_unhelpful(pr, phase, build_no)
-        if pr.build_ok and not self.test_compile_skipped_in(pr) and not self.tests_skipped_in(pr):
+        if pr.build_ok and not fell_back:
             pr.remaining_errors = []
         elif not pr.remaining_errors:
             pr.remaining_errors = list(last.errors)
@@ -1962,9 +1973,12 @@ class BuildFixLoop:
         before = _status_paths(self.ws)
         with self._busy_with(f"mvn {goal} ({label})"):
             if skip_tests:
-                try:
+                # skip_tests를 받지 않는 이전 빌드 실행기에는 -DskipTests 인자로 넘긴다. 빌드를 두 번 실행하지 않도록 호출 전에 판단한다
+                # An older runner without the `skip_tests` option gets -DskipTests as an argument; decided from the
+                # signature before the one call, so a TypeError raised inside the build never starts a second build.
+                if takes_keyword(self.build_runner.run, "skip_tests"):
                     res = self.build_runner.run(goal, **kw, skip_tests=True)
-                except TypeError:  # an older runner without the `skip_tests` option: pass -DskipTests as an argument
+                else:
                     kw["extra_args"] = [*extra, "-DskipTests"]
                     res = self.build_runner.run(goal, **kw)
             else:
@@ -4937,15 +4951,18 @@ class BuildFixLoop:
         relativePath). A removed or changed framework declaration, a framework declaration added at a version the
         project never used, and any changed / added / removed `<parent>` make the sentence the caller records with
         `_fail` (the working tree is restored, the next ask sees it among the previous attempts). sbmig's own
-        pre-tries are not checked (they never touch these by construction). Never raises: a pom that does not parse
-        is left to the build."""
+        pre-tries are not checked (they never touch these by construction). A pom that does not parse (before or
+        after the attempt) is left to the build: no finding for it. Fails closed: any other exception inside the
+        check rejects the attempt with `FRAMEWORK_GUARD_INCOMPLETE` (no exception text of the project in it, one
+        WARNING line with the exception type). Never raises."""
         if not self._reduced_scope() or att.source in PRE_TRY_SOURCES:
             return ""
         try:
             return self._framework_guard_unsafe(pre, reported)
-        except Exception as e:  # noqa: BLE001 - the guard never breaks an attempt
-            log.debug("framework guard for %s skipped: %s: %s", att.id, type(e).__name__, e)
-            return ""
+        except Exception as e:  # noqa: BLE001 - a check that could not finish rejects the attempt
+            # 검사를 끝내지 못했으면 시도를 받아들이지 않는다. 프로젝트의 예외 문구는 이유 문장에 넣지 않는다
+            log.warning("적용 취소 (%s): 프레임워크 검사를 끝내지 못함 (%s)", att.id, type(e).__name__)
+            return FRAMEWORK_GUARD_INCOMPLETE
 
     def _framework_javax_block(self, c: ErrorCluster) -> Any:
         """javax 케이스의 라이브러리가 프레임워크 아티팩트 자신이면 ``external_javax_api`` 차단 후보를 반환한다.
@@ -4986,7 +5003,8 @@ class BuildFixLoop:
             return False
         self._fail(att, why)
         self._out_of_scope.add(id(att))
-        log.warning("적용 취소 (%s): 프레임워크 프로젝트에서 바꾸면 안 되는 것을 바꿈 — %s", name, _first_sentence(why, 300))
+        if why != FRAMEWORK_GUARD_INCOMPLETE:            # 검사를 끝내지 못한 경우는 _framework_guard가 이미 한 줄 남겼다
+            log.warning("적용 취소 (%s): 프레임워크 프로젝트에서 바꾸면 안 되는 것을 바꿈 — %s", name, _first_sentence(why, 300))
         self.ws.journal({"event": "framework_guard", "attempt": att.id, "case": att.script_case_id, "reason": why})
         return True
 
@@ -5021,7 +5039,7 @@ class BuildFixLoop:
         return True
 
     def _framework_guard_unsafe(self, pre: str, reported: list[str]) -> str:
-        from sbmig.restructure.pom_editor import PomEditor
+        from sbmig.restructure.pom_editor import PomEditError, PomEditor
         try:
             changed = list(self.ws.changed_files_since(pre)) if pre else []
         except Exception:  # noqa: BLE001 - a stand-in workspace without git
@@ -5039,8 +5057,19 @@ class BuildFixLoop:
         except Exception:  # noqa: BLE001 - a stand-in workspace: the touched poms only
             every = []
         every = list(dict.fromkeys([*poms, *every]))
-        eds0 = _parse_poms({p: self.ws.file_at(pre, p) if pre else None for p in every}, PomEditor)
-        eds1 = _parse_poms({p: self.ws.read(p) if self.ws.exists(p) else None for p in every}, PomEditor)
+        # 읽지 못하거나 파싱하지 못하는 pom은 시도 전 텍스트든 시도 뒤 텍스트든 빌드에 맡긴다(검사 결과 없음)
+        # A pom that cannot be read (OSError: mode 000, a directory named pom.xml) is left to the build like one that
+        # does not parse, before the attempt and after it; any other exception fails the check closed.
+        def _text(read: Callable[[], Optional[str]]) -> Optional[str]:
+            try:
+                return read()
+            except OSError:
+                return None
+
+        eds0 = _parse_poms({p: _text(lambda p=p: self.ws.file_at(pre, p)) if pre else None for p in every},
+                           PomEditor, PomEditError)
+        eds1 = _parse_poms({p: _text(lambda p=p: self.ws.read(p) if self.ws.exists(p) else None) for p in every},
+                           PomEditor, PomEditError)
         for p in poms:
             if p not in eds0:
                 continue                                 # a new pom: nothing to keep in it
@@ -6351,17 +6380,17 @@ class BuildFixLoop:
 
     # ------------------------------------------------------------------ fallback
     def _maybe_skip_test_compile(self, pr: PhaseResult, phase: Phase, goal: str, target: Optional[str],
-                                 last: BuildResult) -> None:
+                                 last: BuildResult) -> bool:
         """남은 오류가 모두 테스트 컴파일 오류면 ``-Dmaven.test.skip=true``로 다시 빌드하는 대체 빌드를 실행한다.
         통과하면 단계를 통과로 보고 플래그 ``test-compile-skipped``를 남기며,
         테스트 오류는 담당 팀이 처리할 후속 조치로 남는다.
         기본 설정(``build.skip_test_compile``)은 처음부터 테스트를 컴파일하지 않으므로 보통은 해당하지 않는다."""
         if not self.cfg.build.allow_skip_test_compile_fallback:
-            return
+            return False
         if not any(g in goal.split() for g in TEST_COMPILING_GOALS):
-            return
+            return False
         if not last.errors or any(e.kind != ErrorKind.TEST_COMPILE for e in last.errors):
-            return
+            return False
         self.ws.journal({"event": "test_compile_fallback", "phase": phase.value, "test_errors": len(last.errors)})
         res = self._build(goal, target, f"{phase.value}-skip-tests", phase, pr.iterations + 1, skip_test_compile=True)
         pr.iterations += 1
@@ -6370,7 +6399,7 @@ class BuildFixLoop:
                                                     signatures=res.signature_multiset(), build_log=res.log_path))
         if not res.ok:
             pr.notes.append("test-compile fallback (-Dmaven.test.skip=true) also failed")
-            return
+            return False
         pr.build_ok = True
         self.test_compile_skipped = True
         self.test_compile_skipped_targets.add(_target_key(target))
@@ -6382,9 +6411,10 @@ class BuildFixLoop:
             where = f"{e.file}:{e.line}" if e.file else (e.module or "?")
             self._followup(f"test sources do not compile (build passes only with -Dmaven.test.skip=true): "
                            f"{where} {e.message}")
+        return True
 
     def _maybe_skip_tests(self, pr: PhaseResult, phase: Phase, goal: str, target: Optional[str],
-                          last: BuildResult) -> None:
+                          last: BuildResult) -> bool:
         """메인 코드는 빌드되고 테스트 실행 실패만 남았으면 ``-DskipTests``로 다시 빌드하는 대체 빌드를
         실행한다. 이런 실패는 대개 외부 설정이나 빌드 시점에 접근할 수 없는 인프라 때문이다.
         통과하면 플래그 ``tests-skipped``를 남기고, 실패한 테스트마다 미해결 후속 조치를 남긴다.
@@ -6393,11 +6423,11 @@ class BuildFixLoop:
         externalized setting or infrastructure not reachable at build time. Rebuild with -DskipTests; on success the
         phase passes with flag `tests-skipped` and every failing test as a follow-up (and unresolved at finalize)."""
         if not getattr(self.cfg.build, "allow_skip_tests_fallback", False):
-            return
+            return False
         if not any(g in goal.split() for g in TEST_RUNNING_GOALS):
-            return
+            return False
         if not last.errors or any(e.kind != ErrorKind.TEST_FAILURE for e in last.errors):
-            return
+            return False
         self.ws.journal({"event": "tests_fallback", "phase": phase.value, "failing": len(last.errors)})
         res = self._build(goal, target, f"{phase.value}-skip-tests-run", phase, pr.iterations + 1, skip_tests=True)
         pr.iterations += 1
@@ -6406,7 +6436,7 @@ class BuildFixLoop:
                                                     signatures=res.signature_multiset(), build_log=res.log_path))
         if not res.ok:
             pr.notes.append("tests fallback (-DskipTests) also failed")
-            return
+            return False
         pr.build_ok = True
         self.tests_skipped = True
         self.tests_skipped_targets.add(_target_key(target))
@@ -6419,6 +6449,7 @@ class BuildFixLoop:
             self._followup(f"test fails at runtime (packaged with -DskipTests): {who} — {e.message} — likely an "
                            "externalized setting (see Handover 'Properties to set') or infrastructure not reachable "
                            "at build time")
+        return True
 
     def _flag(self, flag: str) -> None:
         if flag not in self.flags:
@@ -6476,15 +6507,19 @@ _PROP_REF_RE = re.compile(r"\$\{([^}]+)\}")
 _CHAIN_DEPTH = 12                                     # project parent chain levels followed for the framework guard
 
 
-def _parse_poms(texts: dict[str, Optional[str]], editor: Any) -> dict[str, Any]:
-    """{경로: pom 텍스트}를 {경로: PomEditor}로 바꾼다. 없거나 읽지 못한 pom은 빠진다."""
+def _parse_poms(texts: dict[str, Optional[str]], editor: Any, unparsable: type[BaseException]) -> dict[str, Any]:
+    """{경로: pom 텍스트}를 {경로: PomEditor}로 바꾼다. 없거나 파싱하지 못한 pom은 빠진다.
+    파싱 오류(``unparsable``)만 건너뛰고 다른 예외는 호출한 쪽으로 던진다.
+
+    Only the editor's own "does not parse" error (`unparsable`, PomEditError: undecodable bytes, malformed XML,
+    a root that is not <project>) leaves a pom out; any other exception travels to the caller."""
     out: dict[str, Any] = {}
     for p, text in texts.items():
         if text is None:
             continue
         try:
             out[p] = editor.from_string(text, p)
-        except Exception:  # noqa: BLE001 - an unparsable pom is left to the build
+        except unparsable:                               # a pom that does not parse is left to the build
             continue
     return out
 

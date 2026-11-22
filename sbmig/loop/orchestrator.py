@@ -63,6 +63,7 @@ from sbmig.triage.blocked import TRANSFER_CAUSE_PATTERN
 
 from .blocked_registry import BlockedRegistry, default_locator
 from .budget import LoopBudget
+from .callee import takes_keyword
 from .components import LazyFixer, LazyScriptRunner, MissingComponentError, NullKnowledgeBase, lazy_attr
 from .entries import REVIEW_L2, CaseScripts, RunErrors
 from .fixloop import NOTES_LOGGED, BuildFixLoop, _restore_build_byproducts, _status_paths, refine_build
@@ -2283,10 +2284,12 @@ class Orchestrator:
         from .fixloop import build_target_args
         module, reactor_args = build_target_args(self.profile, step.target)
         kwargs = dict(dry_run=self._dry_run, label=step.id)
-        try:
+        # extra_args를 받지 않는 실행기는 예전 방식으로 호출한다. Maven을 두 번 실행하지 않도록 호출 전에 판단한다
+        # A runner without `extra_args` (fakes / older implementations) gets the old call; decided from the signature
+        # before the one call, so a TypeError raised inside the run is not answered by a second Maven run.
+        if takes_keyword(runner.run, "extra_args"):
             return runner.run(list(step.recipes), module=module, extra_args=reactor_args, **kwargs)
-        except TypeError:                      # a runner without `extra_args` (fakes / older implementations)
-            return runner.run(list(step.recipes), module=step.target, **kwargs)
+        return runner.run(list(step.recipes), module=step.target, **kwargs)
 
     def _unresolved_versions(self, res: Any) -> dict[str, list[str]]:
         """성공한 rewrite가 바꾼 pom에 남긴, 해석되지 않은 버전 문자열(``4.0.x``, ``latest.release`` 등)을
@@ -3464,12 +3467,13 @@ class Orchestrator:
         def _run_final() -> BuildResult:
             skip_tests, skip_run = _skip_flags()
             if skip_run:
-                try:
+                # skip_tests를 받지 않는 이전 빌드 실행기에는 -DskipTests 인자로 넘긴다. 호출 전에 판단해 빌드는 한 번만 실행한다
+                # An older runner without the `skip_tests` option: decided from the signature before the one call.
+                if takes_keyword(self.build_runner.run, "skip_tests"):
                     return self.build_runner.run(goal, module=module, label=label, skip_test_compile=False,
                                                  skip_tests=True, **kw)
-                except TypeError:  # an older runner without the `skip_tests` option
-                    kw["extra_args"] = [*extra, "-DskipTests"]
-                    return self.build_runner.run(goal, module=module, label=label, skip_test_compile=False, **kw)
+                return self.build_runner.run(goal, module=module, label=label, skip_test_compile=False,
+                                             **{**kw, "extra_args": [*extra, "-DskipTests"]})
             return self.build_runner.run(goal, module=module, label=label, skip_test_compile=skip_tests, **kw)
 
         def _final_build() -> BuildResult:
