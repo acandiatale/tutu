@@ -2829,140 +2829,250 @@
     }
 
     // ---- 줄 안의 문법
-    // 같은 길이의 백틱이 닫는 위치를 찾는다. 없으면 -1이다
-    function closeTicks(s, from, n) {
-      let j = from;
-      while (j < s.length) {
-        if (s[j] !== '`') { j++; continue; }
-        let k = j; while (s[k] === '`') k++;
-        if (k - j === n) return j;
-        j = k;
-      }
-      return -1;
+    // 닫는 백틱, 닫는 강조 기호, 링크의 ]와 )를 찾을 때마다 글을 다시 훑으면 닫히지 않은 기호가 많은 글에서 시간이
+    // 글 길이의 제곱으로 는다. 그래서 글마다 찾기 표를 처음 필요할 때 한 번 만들고 답은 표에서 읽는다.
+    // 표의 답은 글을 앞에서부터 직접 훑어 찾던 답과 같다
+    const SPACE = /\s/;
+    const TRAIL = /[.,;:!?'"*_~]/;
+    const URL_STOP = /[\s<>`]/;
+    // 오름차순 목록에서 from 이상인 첫 값. 없으면 -1이다
+    function firstFrom(list, from) {
+      let lo = 0, hi = list.length;
+      while (lo < hi) { const mid = (lo + hi) >> 1; if (list[mid] < from) lo = mid + 1; else hi = mid; }
+      return lo < list.length ? list[lo] : -1;
     }
-    // 강조 기호의 닫는 위치를 찾는다. 코드와 백슬래시로 막은 글자는 건너뛴다
-    function closeEmph(s, from, c, n) {
-      let j = from;
-      while (j < s.length) {
-        const ch = s[j];
-        if (ch === '\\') { j += 2; continue; }
-        if (ch === '`') {
-          let k = j; while (s[k] === '`') k++;
-          const e = closeTicks(s, k, k - j);
-          j = e < 0 ? k : e + (k - j);
-          continue;
+    // 글 하나의 찾기 표. 자리는 모두 이 글 안의 자리다
+    function scanner(s) {
+      const L = s.length, memo = new Map(), links = new Map();
+      const once = (key, make) => { let v = memo.get(key); if (v === undefined) { v = make(); memo.set(key, v); } return v; };
+      // 자리 j부터 같은 글자 ch가 이어지는 구간의 끝
+      const runEnd = (ch) => once('r' + ch, () => {
+        const a = new Int32Array(L + 1); a[L] = L;
+        for (let j = L - 1; j >= 0; j--) a[j] = s[j] === ch ? a[j + 1] : j;
+        return a;
+      });
+      const sp = (k) => (k < L ? runEnd(' ')[k] : k);
+      // 자리 p 바로 앞에서 끝나는, test를 만족하는 글자 묶음의 시작 자리
+      const backRun = (key, test) => once('b' + key, () => {
+        const a = new Int32Array(L + 1);
+        for (let p = 0; p < L; p++) a[p + 1] = test(s[p]) ? a[p] : p + 1;
+        return a;
+      });
+      // 자리 p 앞에 글자 ch가 몇 번 나왔는지
+      const count = (ch) => once('c' + ch, () => {
+        const a = new Int32Array(L + 1);
+        for (let p = 0; p < L; p++) a[p + 1] = a[p] + (s[p] === ch ? 1 : 0);
+        return a;
+      });
+      // 자리 j 이후 글자 ch가 처음 나오는 자리(indexOf와 같다)
+      const nextOf = (ch) => once('n' + ch, () => {
+        const a = new Int32Array(L + 2).fill(-1);
+        for (let j = L - 1; j >= 0; j--) a[j] = s[j] === ch ? j : a[j + 1];
+        return a;
+      });
+      // 길이별 백틱 묶음의 시작 자리
+      const tickRuns = () => once('ticks', () => {
+        const m = new Map(), te = runEnd('`');
+        for (let j = 0; j < L;) {
+          if (s[j] !== '`') { j++; continue; }
+          const n = te[j] - j;
+          if (!m.has(n)) m.set(n, []);
+          m.get(n).push(j);
+          j = te[j];
         }
-        if (ch === c) {
-          let k = j; while (s[k] === c) k++;
-          const after = s[k] || ' ';
-          if (k - j === n && j > from && !/\s/.test(s[j - 1]) && (c === '*' || !WORD.test(after))) return j;
-          j = k; continue;
-        }
-        j++;
+        return m;
+      });
+      // from 뒤에서 길이가 정확히 n인 백틱 묶음이 시작하는 자리. 없으면 -1이다(from은 백틱 묶음의 중간이 아니다)
+      function ticks(from, n) { const list = tickRuns().get(n); return list ? firstFrom(list, from) : -1; }
+      // 자리 j의 백틱에서 시작하는 코드를 건너뛴 다음 자리. 닫히지 않으면 백틱만 건너뛴다
+      function skipCode(j) {
+        const k = runEnd('`')[j], e = ticks(k, k - j);
+        return e < 0 ? k : e + (k - j);
       }
-      return -1;
+      // 강조 기호 c가 n개인 묶음을 닫는 자리. 코드와 백슬래시로 막은 글자는 건너뛴다
+      const emphT = (c, n) => once('e' + c + n, () => {
+        const a = new Int32Array(L + 2).fill(-1), ce = runEnd(c);
+        for (let j = L - 1; j >= 0; j--) {
+          const ch = s[j];
+          if (ch === '\\') a[j] = a[j + 2];
+          else if (ch === '`') a[j] = a[skipCode(j)];
+          else if (ch === c) {
+            const k = ce[j];
+            a[j] = k - j === n && !SPACE.test(s[j - 1]) && (c === '*' || !WORD.test(s[k] || ' ')) ? j : a[k];
+          } else a[j] = a[j + 1];
+        }
+        return a;
+      });
+      // [ 다음 자리에서 시작해 짝이 맞는 ]의 자리
+      const bracketT = () => once('br', () => {
+        const a = new Int32Array(L + 2).fill(-1);
+        for (let j = L - 1; j >= 0; j--) {
+          const ch = s[j];
+          if (ch === '\\') a[j] = a[j + 2];
+          else if (ch === '`') a[j] = a[skipCode(j)];
+          else if (ch === ']') a[j] = j;
+          else if (ch === '[') a[j] = a[j + 1] < 0 ? -1 : a[a[j + 1] + 1];
+          else a[j] = a[j + 1];
+        }
+        return a;
+      });
+      // 링크 주소가 끝나는 자리: 공백, 짝이 없는 ), 글의 끝
+      const hrefT = () => once('href', () => {
+        const a = new Int32Array(L + 3);
+        for (let j = L; j < L + 3; j++) a[j] = j;
+        for (let j = L - 1; j >= 0; j--) {
+          const ch = s[j];
+          if (SPACE.test(ch) || ch === ')') a[j] = j;
+          else if (ch === '\\') a[j] = a[j + 2];
+          else if (ch === '(') { const q = a[j + 1]; a[j] = q < L && s[q] === ')' ? a[q + 1] : q; }
+          else a[j] = a[j + 1];
+        }
+        return a;
+      });
+      // [글자](주소) 를 읽는다. 맞지 않으면 null이다
+      function readLink(i) {
+        const j = bracketT()[i + 1];
+        if (j < 0 || s[j + 1] !== '(') return null;
+        let k = sp(j + 2), href = '';
+        if (s[k] === '<') {
+          const e = nextOf('>')[k], nl = nextOf('\n')[k + 1];
+          if (e < 0 || (nl >= 0 && nl < e)) return null;
+          href = s.slice(k + 1, e); k = e + 1;
+        } else {
+          const st = k;
+          k = hrefT()[k];
+          href = s.slice(st, k);
+        }
+        k = sp(k);
+        if (s[k] === '"' || s[k] === "'") { const e = nextOf(s[k])[k + 1]; if (e < 0) return null; k = sp(e + 1); }
+        if (s[k] !== ')') return null;
+        return { start: i + 1, close: j, href: href.replace(/\\([!-/:-@[-`{-~])/g, '$1'), end: k + 1 };
+      }
+      return {
+        ticks,
+        emph: (from, c, n) => emphT(c, n)[from],
+        link(i) { if (!links.has(i)) links.set(i, readLink(i)); return links.get(i); },
+        codeEnd: (from) => firstFrom(once('code', () => {
+          const a = [];
+          for (let p = s.indexOf('</code>'); p >= 0; p = s.indexOf('</code>', p + 7)) a.push(p);
+          return a;
+        }), from),
+        // 자리 i의 http(s) 주소가 끝나는 자리. 글이 hi에서 끝난 것으로 보고, 주소가 아니면 -1이다
+        autolink(i, hi) {
+          const pm = /^https?:\/\//i.exec(s.slice(i, Math.min(i + 8, hi)));
+          if (!pm) return -1;
+          const st = i + pm[0].length;
+          const stop = Math.min(once('url', () => {
+            const a = new Int32Array(L + 1); a[L] = L;
+            for (let j = L - 1; j >= 0; j--) a[j] = URL_STOP.test(s[j]) ? j : a[j + 1];
+            return a;
+          })[st], hi);
+          if (stop <= st) return -1;
+          // 끝에 붙은 문장 부호를 떼고, 여는 괄호보다 많은 닫는 괄호를 끝에서 뗀다
+          let end = backRun('t', (ch) => TRAIL.test(ch))[stop];
+          const opens = count('(')[end] - count('(')[i], closes = count(')')[end] - count(')')[i];
+          const tail = end - Math.max(backRun('p', (ch) => ch === ')')[end], i);
+          end -= Math.min(tail, Math.max(0, closes - opens));
+          return end > st && s[st] !== '/' ? end : -1;
+        },
+      };
     }
-    // [글자](주소) 를 읽는다. 맞지 않으면 null이다
-    function linkAt(s, i) {
-      let j = i + 1, depth = 1;
-      while (j < s.length) {
-        const ch = s[j];
-        if (ch === '\\') { j += 2; continue; }
-        if (ch === '`') { let k = j; while (s[k] === '`') k++; const e = closeTicks(s, k, k - j); j = e < 0 ? k : e + (k - j); continue; }
-        if (ch === '[') depth++;
-        else if (ch === ']' && --depth === 0) break;
-        j++;
-      }
-      if (j >= s.length || s[j + 1] !== '(') return null;
-      const label = s.slice(i + 1, j);
-      let k = j + 2;
-      while (s[k] === ' ') k++;
-      let href = '';
-      if (s[k] === '<') {
-        const e = s.indexOf('>', k);
-        if (e < 0 || s.slice(k + 1, e).includes('\n')) return null;
-        href = s.slice(k + 1, e); k = e + 1;
-      } else {
-        let p = 0; const st = k;
-        while (k < s.length && !/\s/.test(s[k])) {
-          if (s[k] === '\\') { k += 2; continue; }
-          if (s[k] === '(') p++;
-          else if (s[k] === ')') { if (p === 0) break; p--; }
-          k++;
-        }
-        href = s.slice(st, k);
-      }
-      while (s[k] === ' ') k++;
-      if (s[k] === '"' || s[k] === "'") { const e = s.indexOf(s[k], k + 1); if (e < 0) return null; k = e + 1; while (s[k] === ' ') k++; }
-      if (s[k] !== ')') return null;
-      return { label, href: href.replace(/\\([!-/:-@[-`{-~])/g, '$1'), end: k + 1 };
+    // 글 하나를 읽는 동안 쓰는 찾기 도구. 강조와 링크의 안쪽 글은 바깥 글의 조각이라 바깥 글의 표를 함께 쓴다.
+    // 바깥 표의 답이 조각 안에서 끝나면 조각만 훑어도 같은 답이 나오므로 그대로 쓰고, 아니면 조각의 표를 따로 만든다
+    function reader(s, base, off) {
+      const top = !base, T = base || scanner(s), o = off || 0, hi = o + s.length;
+      let own = top ? T : null;
+      const mine = () => own || (own = scanner(s));
+      return {
+        s,
+        sub: (a, b) => reader(s.slice(a, b), T, o + a),
+        ticks(from, n) { const e = T.ticks(from + o, n); return e < 0 || e >= hi ? -1 : e - o; },
+        emph(from, c, n) {
+          const e = T.emph(from + o, c, n);
+          if (e >= 0 && e + n <= hi) return e - o;
+          return top ? -1 : mine().emph(from, c, n);
+        },
+        link(i) {
+          const l = T.link(i + o);
+          if (l && l.end <= hi) return { start: l.start - o, close: l.close - o, href: l.href, end: l.end - o };
+          return top ? null : mine().link(i);
+        },
+        codeEnd(from) { const p = T.codeEnd(from + o); return p < 0 || p + 7 > hi ? -1 : p - o; },
+        autolink(i) { const e = T.autolink(i + o, hi); return e < 0 ? -1 : e - o; },
+      };
     }
-    function inline(s, opt, inLink) {
-      const out = [];
-      let buf = '';
-      const flush = () => { if (buf) { out.push({ t: 'text', v: buf }); buf = ''; } };
+    function inline(s, opt, inLink) { return inlineIn(reader(s), opt, inLink); }
+    function inlineIn(r, opt, inLink) {
+      const s = r.s, out = [];
+      // 아직 글자 노드로 내보내지 않은 글자 조각들
+      let buf = [];
+      const flush = () => { if (buf.length) { out.push({ t: 'text', v: buf.join('') }); buf = []; } };
       let i = 0;
       while (i < s.length) {
         const c = s[i];
         if (c === '\\' && i + 1 < s.length) {
           if (s[i + 1] === '\n') { flush(); out.push({ t: 'br' }); i += 2; continue; }
-          if (PUNCT.test(s[i + 1])) { buf += s[i + 1]; i += 2; continue; }
+          if (PUNCT.test(s[i + 1])) { buf.push(s[i + 1]); i += 2; continue; }
         }
         if (c === '\n') {
-          const hard = / {2,}$/.test(buf);
-          buf = buf.replace(/ +$/, '');
-          if (hard) { flush(); out.push({ t: 'br' }); } else buf += '\n';
+          // 줄 끝의 공백을 지운다. 두 칸 이상이었으면 줄바꿈이다
+          let spaces = 0;
+          while (buf.length) {
+            const last = buf[buf.length - 1];
+            let t = last.length;
+            while (t > 0 && last[t - 1] === ' ') t--;
+            spaces += last.length - t;
+            if (t > 0) { buf[buf.length - 1] = last.slice(0, t); break; }
+            buf.pop();
+          }
+          if (spaces >= 2) { flush(); out.push({ t: 'br' }); } else buf.push('\n');
           i++; continue;
         }
         if (c === '`') {
           let n = 1; while (s[i + n] === '`') n++;
-          const e = closeTicks(s, i + n, n);
-          if (e < 0) { buf += s.slice(i, i + n); i += n; continue; }
+          const e = r.ticks(i + n, n);
+          if (e < 0) { buf.push(s.slice(i, i + n)); i += n; continue; }
           let v = s.slice(i + n, e).replace(/\n/g, ' ');
           if (v.length > 2 && v[0] === ' ' && v[v.length - 1] === ' ' && /\S/.test(v)) v = v.slice(1, -1);
           flush(); out.push({ t: 'code', v }); i = e + n; continue;
         }
         // <details>의 제목에서만 <code>를 받는다
         if (opt.summary && s.startsWith('<code>', i)) {
-          const e = s.indexOf('</code>', i + 6);
+          const e = r.codeEnd(i + 6);
           if (e >= 0) { flush(); out.push({ t: 'code', v: s.slice(i + 6, e) }); i = e + 7; continue; }
         }
         if (c === '!' && s[i + 1] === '[') {
           // 그림은 불러오지 않고 설명 글자만 보여 준다
-          const l = linkAt(s, i + 1);
-          if (l) { flush(); out.push(...inline(l.label, opt, true)); i = l.end; continue; }
+          const l = r.link(i + 1);
+          if (l) { flush(); out.push(...inlineIn(r.sub(l.start, l.close), opt, true)); i = l.end; continue; }
         }
         if (c === '[' && !inLink) {
-          const l = linkAt(s, i);
-          if (l) { flush(); out.push({ t: 'link', href: l.href, c: inline(l.label, opt, true) }); i = l.end; continue; }
+          const l = r.link(i);
+          if (l) { flush(); out.push({ t: 'link', href: l.href, c: inlineIn(r.sub(l.start, l.close), opt, true) }); i = l.end; continue; }
         }
         if (c === '<' && !inLink) {
           const m = /^<(https?:\/\/[^\s<>]+)>/i.exec(s.slice(i));
           if (m) { flush(); out.push({ t: 'link', href: m[1], c: [{ t: 'text', v: m[1] }] }); i += m[0].length; continue; }
         }
         if ((c === 'h' || c === 'H') && !inLink && (i === 0 || !/[A-Za-z0-9]/.test(s[i - 1]))) {
-          const m = /^https?:\/\/[^\s<>`]+/i.exec(s.slice(i));
-          if (m) {
-            let u = m[0].replace(/[.,;:!?'"*_~]+$/, '');
-            while (u.endsWith(')') && (u.match(/\(/g) || []).length < (u.match(/\)/g) || []).length) u = u.slice(0, -1);
-            if (/^https?:\/\/[^/]/i.test(u)) { flush(); out.push({ t: 'link', href: u, c: [{ t: 'text', v: u }] }); i += u.length; continue; }
-          }
+          const e = r.autolink(i);
+          if (e >= 0) { const u = s.slice(i, e); flush(); out.push({ t: 'link', href: u, c: [{ t: 'text', v: u }] }); i = e; continue; }
         }
         if (c === '*' || c === '_') {
           let n = 1; while (s[i + n] === c) n++;
           const before = i > 0 ? s[i - 1] : ' ', next = s[i + n] || ' ';
           if (n <= 3 && !/\s/.test(next) && (c === '*' || !WORD.test(before))) {
-            const e = closeEmph(s, i + n, c, n);
+            const e = r.emph(i + n, c, n);
             if (e >= 0) {
-              const kids = inline(s.slice(i + n, e), opt, inLink);
+              const kids = inlineIn(r.sub(i + n, e), opt, inLink);
               flush();
               out.push(n === 1 ? { t: 'em', c: kids } : n === 2 ? { t: 'strong', c: kids } : { t: 'strong', c: [{ t: 'em', c: kids }] });
               i = e + n; continue;
             }
           }
-          buf += s.slice(i, i + n); i += n; continue;
+          buf.push(s.slice(i, i + n)); i += n; continue;
         }
-        buf += c; i++;
+        buf.push(c); i++;
       }
       flush();
       return out;
@@ -3410,10 +3520,18 @@
     }
   }
   $('refresh').addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); fetchRuns(); });
+  // 지난 실행 목록을 RUNS_POLL_MS마다 다시 읽는다. 탭이 숨겨져 있는 동안은 읽지 않고, 탭이 다시 보이면 바로 한 번 읽은 뒤
+  // 같은 주기를 이어 간다. 열어 둔 실행의 스트림과 다른 타이머는 건드리지 않는다
+  const RUNS_POLL_MS = 15000;
+  function startRunsPoll(doc) {
+    const tick = () => { if (!doc.hidden) loadRuns(); };
+    doc.addEventListener('visibilitychange', tick);
+    return setInterval(tick, RUNS_POLL_MS);
+  }
 
   // ---------------------------------------------------------------- 시작
   new MutationObserver(toneRailNote).observe($('railnote'), { childList: true, characterData: true, subtree: true });
-  resetRail(FLOW_FULL); syncFlow(); loadConfigs(); loadRuns(); setInterval(loadRuns, 15000);
+  resetRail(FLOW_FULL); syncFlow(); loadConfigs(); loadRuns(); startRunsPoll(document);
   if (location.hash.length > 1) attach(decodeURIComponent(location.hash.slice(1)));   // #<run id>는 공유할 수 있는 주소다
 })();
 </script>
