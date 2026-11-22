@@ -911,6 +911,13 @@ review", fix attempts as `script:<case>:v<N>`; `ko`, the company setting: the re
   note now reaches the admin page's project / overall / model sums, and a loop killed before its first journal line is
   a known zero). Contract and as-coded notes: `docs/INTERFACES.md` "v2.1z-bj",
   "v2.1z-bk", "v2.1z-bl", "v2.1z-bm", "v2.1z-bn", "v2.1z-bo", "v2.1z-bp", "v2.1z-bq".
+- **The safe sweep (2026-11-22, v2.1z-br)**: small defects, unused code, repeated reads, what enters the image
+  (`docs/INTERFACES.md` "v2.1z-br" is the list a reviewer checks it against). Two things to keep: (1) `GET /api/runs` has a
+  per-row net: an unexpected error while one row is built logs one WARNING (`run list: the row of run <id> could not be
+  built …`) and lists that run as unreadable, so one damaged run folder never makes the list answer 500 (the single-run
+  status has no net on purpose); (2) the retry-on-`TypeError` shims around builder calls are gone:
+  `sbmig/loop/callee.py::takes_keyword` decides from the callee's signature, once, whether to pass a newer keyword, so a
+  `TypeError` raised inside a build is never answered by a second build. Use it for any new optional keyword.
 - **Company convention (2026-10-20): agents run on LangGraph under uvicorn.** `loop.engine: graph` (default) drives
   the phases from a LangGraph `StateGraph` (`sbmig/graph/`, nodes intake → analyze → plan → phase×N → finalize;
   `inline` is the old loop, reports are identical by test); the web UI is FastAPI (`uvicorn sbmig.web.app:app` or

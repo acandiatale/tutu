@@ -14,18 +14,18 @@ type: `sbmig/core/models.py`, `sbmig/core/interfaces.py`, `sbmig/core/config.py`
 | run directory & workspace | Base "Run directory and workspace"; v2.1z-h (`ignored_dirs`) |
 | intake / analyze | Base "Intake and analyze", "Externalized configuration"; v2.1j (Ant), v2.1k + v2.1z "Review follow-ups" (rootless trees), v2.1z-c (hollow reactor), v2.1z-d (ADF), v2.1z-h (stray poms), v2.1z-i (bundled jars), v2.1z-z (build extensions); v2.1z-aj (Ant refused by default); v2.1z-ak (framework projects: detection, scope); v2.1z-aw (framework projects: conversion only, the framework's name) |
 | plan | v2 "Plan (L)"; v2.1o (1) (`plan.compile_after_rewrite`); v2.1u … v2.1y / v2.1w (recipe sets); v2.1z-ak (the reduced plan `jdk-jakarta`) |
-| transform (OpenRewrite) | Base "Plan, transform"; v2.1l "Recipes"; v2.1o (Framework 7); v2.1w |
+| transform (OpenRewrite) | Base "Plan, transform"; v2.1l "Recipes"; v2.1o (Framework 7); v2.1w; v2.1z-br (`openrewrite.fail_on_dry_run_results` removed) |
 | restructure & layout | Base "Restructure and the company layout"; v2.1g, v2.1h (JSP jakarta), v2.1l / v2.1s (version pins), v2.1m (resource filtering), v2.1n (optional triggers), v2.1o / v2.1p / v2.1t (parent-chain facts, BOM imports), v2.1q (embedded Tomcat), v2.1x (legacy Spring context), v2.1z-j (bundled jars), v2.1z-k, v2.1z-l |
 | structure review | v2 "Structure review (R)"; v2.1u … v2.1y (review prompt, invariant check, unsupported issues); v2.1z-h (review guard) |
-| verify & script fix loop | Base "Fix-loop invariants"; v2 "Script fix loop (L)", "Script contract (S)", "As built (step 1)"; v2.1d (versions, operator checks), v2.1l / v2.1m pre-tries, v2.1r (file locks), v2.1y (declines, idempotency), v2.1z (ladder caps, case keys), v2.1z-e (jakarta discovery), v2.1z-i, v2.1z-n, v2.1z-y, v2.1z-z, v2.1z-aa; v2.1z-ak (reduced run: as-is chain facts, framework guard); v2.1z-av (stop around the final build, the last unhelpful try rolled back, `repository_unreachable`, cut answers, managed versions per parent); v2.1z-bo (stop request and time budget checked before every LLM request, `llm_ask_skipped`); v2.1z-bp (the remediation's 60 s loop minimum checked by the graph only) |
+| verify & script fix loop | Base "Fix-loop invariants"; v2 "Script fix loop (L)", "Script contract (S)", "As built (step 1)"; v2.1d (versions, operator checks), v2.1l / v2.1m pre-tries, v2.1r (file locks), v2.1y (declines, idempotency), v2.1z (ladder caps, case keys), v2.1z-e (jakarta discovery), v2.1z-i, v2.1z-n, v2.1z-y, v2.1z-z, v2.1z-aa; v2.1z-ak (reduced run: as-is chain facts, framework guard); v2.1z-av (stop around the final build, the last unhelpful try rolled back, `repository_unreachable`, cut answers, managed versions per parent); v2.1z-bo (stop request and time budget checked before every LLM request, `llm_ask_skipped`); v2.1z-bp (the remediation's 60 s loop minimum checked by the graph only); v2.1z-br (the framework guard rejects an attempt it cannot check, a builder keyword decided by the callee's signature: `sbmig/loop/callee.py`) |
 | cases & KB | v2 intro + "Script KB (K)"; Base "KB plumbing"; v2.1e (learning records), v2.1f (probable fixers), v2.1z (masked case keys), v2.1z-ae / v2.1z-af (several pods on one KB), v2.1z-ai (rule versions, member-symbol keys, re-sign, exact-key guard) |
 | LLM gateway | Base "LLM client tier and adapter seams"; v2.1z-m (agent gateway, token exchange), v2.1z-n, v2.1z-o, v2.1z-p (case thread), v2.1z-q, v2.1z-x, v2.1z-af (busy wait, auth retries) |
 | report & result line | Base "Report and the result line", "Advisories and the Handover"; v2 "As built (step 1)" (`review=`); v2.1d (`major=`); remediations (`remediation=`); v2.1z-ak (`scope=`, the framework block); v2.1z-bl (`llm=` includes the remediation's fix-loop calls) |
 | fleet | Base "Fleet" |
-| web app | Base "Graph engine", "Web app"; v2.1z-w (page, server-chosen configs), v2.1z-ae (queue / slots on the page), v2.1z-af (page re-attach), v2.1z-aj (run flows, page header); v2.1z-ak (framework label, skipped stages); v2.1z-ao (admin page `/admin`: token usage per project, log ZIPs); v2.1z-au (the code-change view: artifact `codediff/`, `/api/runs/{id}/codediff`, the page block); v2.1z-av (cross-site requests refused, the free-space floor for uploads, unpacking limits); v2.1z-bg (report view); v2.1z-bl (two report previews, 고급 설정 and the other-files list gone, LLM counts); v2.1z-bm (the hidden controls are not sent); v2.1z-bo (admin page: 「일부 알 수 없음」 / cost 「알 수 없음」 for unknown remediation usage, `remediation_llm_usage_unknown`); v2.1z-bp (the run cost = the priced rows with 「일부 알 수 없음」, 「알 수 없음」 only when nothing is priced) |
+| web app | Base "Graph engine", "Web app"; v2.1z-w (page, server-chosen configs), v2.1z-ae (queue / slots on the page), v2.1z-af (page re-attach), v2.1z-aj (run flows, page header); v2.1z-ak (framework label, skipped stages); v2.1z-ao (admin page `/admin`: token usage per project, log ZIPs); v2.1z-au (the code-change view: artifact `codediff/`, `/api/runs/{id}/codediff`, the page block); v2.1z-av (cross-site requests refused, the free-space floor for uploads, unpacking limits); v2.1z-bg (report view); v2.1z-bl (two report previews, 고급 설정 and the other-files list gone, LLM counts); v2.1z-bm (the hidden controls are not sent); v2.1z-bo (admin page: 「일부 알 수 없음」 / cost 「알 수 없음」 for unknown remediation usage, `remediation_llm_usage_unknown`); v2.1z-bp (the run cost = the priced rows with 「일부 알 수 없음」, 「알 수 없음」 only when nothing is priced); v2.1z-br (`GET /api/runs` never answers 500 because of one run, no list refresh while the tab is hidden, no `run_dir` in the status JSON, the report view linear in a line's length) |
 | Job mode (Main / Worker, slots, env pins) | v2.1z-z "k8s Job dispatch mode", v2.1z-ab (kubeconfig, template ConfigMap), v2.1z-ac (Main ↔ Worker contract), v2.1z-ad (end confirmation, ownership, env pins, write-time redaction), v2.1z-ae (parallel slots), v2.1z-af, v2.1z-aq (a build pod that does not start: stop, the reason notice); v2.1z-av (the build identity, pins taken at Job creation, the resume attempt) |
-| deploy | v2.1z-s (build hooks), v2.1z-t (one Job per request), v2.1z-u, deploy (baked config, container paths), v2.1z-ad "Shipped mode" |
-| remediations | remediations; v2.1z-ak (in-house group `framework`); v2.1z-am (case-insensitive matching, per-module in-house split, module sources, variant overrides, 들어온 경로); v2.1z-an (override proposals in module poms, the owners' choice); v2.1z-ar (no approval unless switched on); v2.1z-av (fixed = gone from the rescan, the planner's new residual groups, `remediation.log` for every run); v2.1z-bi part B, v2.1z-bj, v2.1z-bk (the fix loop on a failed candidate: work copy, overlay, build-side sync, one `fix.patch`); v2.1z-bl (fix-loop LLM usage, titles with the entered project); v2.1z-bm (the complete-apply proof `expected.json`, the sync by table before commit / freeze, a candidate that cannot be put back, `stop requested` runs again, leftover loops settled); v2.1z-bn (one delivery swap + `recover_delivery`, the no-delivery sentences, usage after an exception, the exec bit in `expected.json` schema 2, the pending report, the scan source `original/scan-source.zip`); v2.1z-bo (the swap rolled forward + `DeliveryRecordNotWritten`, no re-upload after a kill and the table of mid-node saves, `repair_final` by every entry and by the web service in every mode, unknown usage, report = state message, the round's call total, a stop during the build fix); v2.1z-bp (`FixResult.ended_round`: the loop is not skipped on resume, an own row for calls without tokens, strict journal reading, the budget outcome saved and stamped, 「알려진 것만」, the report-not-written note dropped on repair, the bounded repair memory) |
+| deploy | v2.1z-s (build hooks), v2.1z-t (one Job per request), v2.1z-u, deploy (baked config, container paths), v2.1z-ad "Shipped mode"; v2.1z-br (what the image build context leaves out in both layouts, `config/default.yml` lists every settable key) |
+| remediations | remediations; v2.1z-ak (in-house group `framework`); v2.1z-am (case-insensitive matching, per-module in-house split, module sources, variant overrides, 들어온 경로); v2.1z-an (override proposals in module poms, the owners' choice); v2.1z-ar (no approval unless switched on); v2.1z-av (fixed = gone from the rescan, the planner's new residual groups, `remediation.log` for every run); v2.1z-bi part B, v2.1z-bj, v2.1z-bk (the fix loop on a failed candidate: work copy, overlay, build-side sync, one `fix.patch`); v2.1z-bl (fix-loop LLM usage, titles with the entered project); v2.1z-bm (the complete-apply proof `expected.json`, the sync by table before commit / freeze, a candidate that cannot be put back, `stop requested` runs again, leftover loops settled); v2.1z-bn (one delivery swap + `recover_delivery`, the no-delivery sentences, usage after an exception, the exec bit in `expected.json` schema 2, the pending report, the scan source `original/scan-source.zip`); v2.1z-bo (the swap rolled forward + `DeliveryRecordNotWritten`, no re-upload after a kill and the table of mid-node saves, `repair_final` by every entry and by the web service in every mode, unknown usage, report = state message, the round's call total, a stop during the build fix); v2.1z-bp (`FixResult.ended_round`: the loop is not skipped on resume, an own row for calls without tokens, strict journal reading, the budget outcome saved and stamped, 「알려진 것만」, the report-not-written note dropped on repair, the bounded repair memory); v2.1z-br (unused code removed, `compare_trees` reads only what an attempt changed, `freeze_delivery` hashes while it writes) |
 
 ## Base contracts (in force; written before v2)
 
@@ -7114,3 +7114,90 @@ a stop request). With `fix_loop_max_minutes: 1` the loop starts; a garbage journ
 usage unknown and the report says 「알려진 것만」. (The "deleted journal" scenario of that pass showed "unknown";
 after this section's first rule it is a known zero.)
 
+
+## v2.1z-br — the safe sweep: three small defects, dead code, repeated reads, what enters the image
+
+**Why.** A read-only review of the whole tool listed a few small defects that are older than the remediation work
+and a set of changes that alter nothing a run, a report or a reader depends on. This section is the list a reviewer
+checks the round against: whatever a commit of this round changes beyond it is a defect of the round. Existing
+tests stay as they are; an assertion is changed only where an item of "Changes with a visible effect" says so, and
+a test is removed only when it covered nothing but removed code.
+
+**Changes with a visible effect.**
+1. `GET /api/runs` never answers 500 because of one run. A `report.json` that is valid JSON but not an object
+   (`[]`, `null`, a number, a string) is treated exactly like one that cannot be read or parsed: the row is listed
+   from the run's other files, without the fields that come from the report. The same holds for the single-run
+   status. A report field that should be a list and is not (`blocked`, `unresolved`, `error_entries`,
+   `manual_followups`, `flags`) counts as absent, and a journal line that is JSON but not an object is skipped
+   like a line that does not parse. As the last net, an unexpected error while one row of the list is built is
+   logged as one warning with the run id and the exception type, and that run is listed like a run whose files
+   cannot be read: the other rows are not affected. The net holds for a folder the server cannot enter as well
+   (its state is then `unknown`); an entry of the output folder that cannot even be examined (a stale handle) is
+   left out of the list. The single-run status has no net: an unexpected error there stays visible. Nothing else
+   about a row changes.
+2. The framework guard of a reduced run (`BuildFixLoop._framework_guard`) fails closed. The documented case stays:
+   a pom that cannot be read (an `OSError` from reading it) or does not parse is left to the build (handled where
+   the pom is read, answer "" for that pom, before the attempt and after it). Any other exception
+   inside the check rejects the attempt like a guard finding: the sentence names that the check could not be
+   completed (no exception text of the project in it), the working tree is restored by the caller as for every
+   guard finding, and one warning line is logged with the exception type. sbmig's own pre-tries and full-scope runs
+   are still not checked.
+3. A `TypeError` raised while a build is running is no longer answered by starting the build a second time. The
+   three call sites that retried a call without a keyword after `TypeError` decide from the callee's signature
+   before the call, once; an exception from the build itself travels as any other exception does today.
+   `sbmig/loop/callee.py::takes_keyword` is the rule: a callee that takes `**kwargs` counts as accepting the
+   keyword, an override that only forwards `**kwargs` to a base method of the same name is decided by the base,
+   and a signature that cannot be read counts as accepting. Every builder and runner the tool ships gets the call
+   it got before. A component injected through `sbmig.api.migrate(components=…)` that hides a runner without the
+   keyword behind `**kwargs` now sees the `TypeError` instead of a second call.
+4. The inline part of the page's report view (`MdView`) takes time linear in the length of a line. The rendered
+   nodes for every report the tool writes are unchanged. A crafted line of about 195 KB that took a minute is
+   rendered in well under ten seconds (the test's bound; the expected time is milliseconds). One family is not
+   linear, as before: labels of images or links nested inside each other cost the nesting depth times the length
+   (a few seconds at 2,500 levels), and past about 3,000 levels the browser's stack ends the rendering of that
+   report, also as before. No report the tool writes nests them.
+5. The run list's 15-second refresh does not fetch while the tab is hidden (`document.hidden`). When the tab
+   becomes visible one refresh runs at once and the interval goes on. The stream of an open run is not touched.
+6. The status JSON no longer carries `run_dir`: no page reads it. Server-side code that needs the folder keeps
+   using the run manager. `out_dir` in `GET /api/configs` stays: the page reads it.
+7. Fewer files enter the image build context: `agent-doc/`, `CLAUDE.md`, `scripts/handbook/`, test and tool caches
+   (`__pycache__` at any depth, `.pytest_cache`, `.ruff_cache`, `.mypy_cache`, coverage files), `out/`. The same
+   holds for the layout where the tool sits under `src/migration-agent` and `deploy/` at the repository root:
+   `deploy/docker/root.dockerignore.example` carries the same exclusions at any depth, and a repository that
+   copied an older example keeps building as before until it copies the new one. The Dockerfile is not changed:
+   its two `COPY` lines for `deploy/` serve the two layouts. Every path the Dockerfile copies is still present
+   after either ignore file (a test reads the files and checks it). The files under the application folder of the
+   image are the same as before except those named here.
+
+**Changes without a visible effect.**
+- Removed from `sbmig/remediations/`: the flag `rerun_ok` (it decided nothing), `_Holder.nothing_changed`,
+  `intake.restore_missing`, `models.versions_of`, `planner._root_entries`, the constants `SUMMARY_CHECKS`,
+  `STATUSES`, `AUTO_ORIGINS`, `_DECISION_KO`, `UNCONFIRMED_STATUS_KO`, the `sync_tree` fallback and the branch of
+  `_fix_tree_hash` for a tree without a table. Each one is removed only after a search of `sbmig/`, `tests/`,
+  `scripts/` and `deploy/` shows no reader other than tests of the removed code itself; one that has a reader stays.
+- `openrewrite.fail_on_dry_run_results` leaves the config model (no code reads it). A config file that still sets
+  it loads with every other value applied, and the loader names it among the removed keys with its usual sentence
+  for a removed key instead of the warning for a misspelled one.
+- `fixer.compare_trees` checks `by_attempt` before it reads file bytes: a path no attempt changed is not read at
+  all. The result is the same for every tree the graph hands it; where such a path could not be read, or was
+  absent from the original tree, the comparison raised before and now goes on. `intake.freeze_delivery` hashes
+  each file while it is written into the ZIP instead of hashing the tree again afterwards: the ZIP bytes, its
+  sha256 and its size are identical, and `tree_hash` is the hash of the bytes that went into the ZIP (it differed
+  from that only when a file changed while the ZIP was being written).
+- The loop reads "tests were skipped" from the typed state instead of a substring of a note.
+- `RunManager.status` reads `control/request.json` and `web-status.json` once per call.
+- Maps that only grow (`RunManager._fw_scans`, the admin page's `_failures`) drop entries that are expired or can
+  be computed again. `resumes` stays: the answer for a finished resume carries fields its file does not hold.
+  `_run_locks` is not touched: dropping a lock that is in use is a defect and the map costs nothing.
+- `config/default.yml` lists every key of the config model that a person may set, at the model's default value,
+  with a Korean comment for the person deciding the value; a test compares the file with the model defaults.
+  `deploy/ENV.md` names every environment variable the manifests set.
+
+**Left out on purpose.** A hard link for the delivered original (two trees would share file contents; it belongs
+with the measurements of disk use on the cluster). The pip layer of the image (the build at the company cannot be
+tried here). The KB credit read from note text (it needs a typed failure, a structural change). Bounding
+`_run_locks`.
+
+**Pinned, not changed.** One test records what the remediation does today when the raised version cannot be
+resolved and the candidate build fails before compilation: whether the fix loop is called and how many LLM
+requests it makes. It changes no behaviour; the numbers decide a later round.

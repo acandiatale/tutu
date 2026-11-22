@@ -1,14 +1,14 @@
 # 배포와 운영
 
-> 다루는 것: 실제 운영: 회사의 운영 방식(웹 UI에 zip 업로드), PC·Linux 설치, 컨테이너 이미지와 쿠버네티스 두 모양, 일괄 실행(fleet), PC 사이의 KB 옮기기, 디스크 정리, 로그 파일, 문제를 보고할 때 보낼 줄.
-> 언제 읽나: sbmig를 새 PC / 서버 / 클러스터에 올릴 때, 운영 중 무엇을 보고 무엇을 보내야 할지 모를 때.
+> 다루는 것: 회사의 운영 방식(웹 UI에 zip 업로드), PC·Linux 설치, 컨테이너 이미지와 쿠버네티스 두 모양, 일괄 실행(fleet), PC 사이의 KB 옮기기, 디스크 정리, 로그 파일, 문제를 보고할 때 보낼 줄.
+> 언제 읽나: sbmig를 새 PC / 서버 / 클러스터에 올릴 때, 운영 중 무엇을 보고 보내야 할지 모를 때.
 > 함께 읽을 파일: [../deploy/README.md](../deploy/README.md), [07](07-config-and-knowledge.md), [03](03-run-debug-and-logs.md), [10](10-open-items-and-history.md)
 
 ## 1. 회사가 sbmig를 쓰는 방식
 
 운영 모델은 웹 UI다: 담당자가 자기 프로젝트를 zip으로 올리면 떠 있는 웹 앱(`sbmig serve`)이 이관을 돌린다.
 
-흐름: 브라우저가 zip을 올림 → `sbmig serve`(FastAPI + uvicorn, 워커 1: 실행 큐가 프로세스 안; 실행마다 작업 스레드 하나와 LangGraph 그래프 intake → … → finalize) → SSE로
+흐름: 브라우저가 zip을 올림 → `sbmig serve`(FastAPI + uvicorn, 워커 1, 실행 큐는 프로세스 안; 실행마다 스레드 하나와 LangGraph 그래프) → SSE로
 node / journal / log / report 이벤트 → 보고서, result.zip, errors.md, sbmig.log … 내려받기.
 
 - 화면(머리 `panacea-remediating-oss`, 임시): 진행 방식 전체 진행(기본, 이관 후 조치) / 취약점 해결(조치만, [11](11-remediations.md)) → 프로젝트명(필수, 안내 「6자리 체인코드가 포함된 레포지토리 이름으로 작성해 주세요.」, `runs.PROJECT_RE`: 영문·숫자·`_`·`-` 30자; 어기면 400) + zip →
@@ -65,14 +65,14 @@ PowerShell: `.venv\Scripts\Activate.ps1`(막히면 `Set-ExecutionPolicy -Scope P
 체크아웃 + venv + `sbmig serve`를 systemd로 돌린다(저장소에 유닛 파일은 없다). 모양: `[Service]`에 `WorkingDirectory=<체크아웃>`,
 `EnvironmentFile=<체크아웃>/.env`, `ExecStart=<체크아웃>/.venv/bin/python -m sbmig.cli serve --host 0.0.0.0 --port 8765 --out /var/sbmig/out`, `Restart=on-failure`.
 
-wheel만 설치(site-packages)해서는 동작하지 않는다. `sbmig/core/config.py`는 레포 루트를 자기 위치에서 잡고(`PACKAGE_ROOT` = `sbmig/`의 부모)
-`config/`, `knowledge/`는 `sbmig/` 옆에 있어야 한다(wheel에 없음). 체크아웃 위에서 `pip install -e` 또는 `PYTHONPATH`로 돌린다(컨테이너도). `kb.dir`은 재배포에 사라지지 않을 절대 경로로.
+wheel만 설치(site-packages)해서는 동작하지 않는다: `config/`, `knowledge/`가 `sbmig/` 옆에 있어야 한다(`PACKAGE_ROOT` = `sbmig/`의 부모, wheel에 없음). 체크아웃 위에서 `pip install -e` 또는 `PYTHONPATH`로 돌린다(컨테이너도). `kb.dir`은 재배포에 사라지지 않을 절대 경로로.
 
 ## 4. 컨테이너 이미지
 
 `deploy/docker/Dockerfile`: 이미지 하나, Python 3.11 + JDK 21 + Maven + git + curl + 앱 코드. 코드는 `/app`, `PYTHONPATH=/app`
-(같은 이유로 site-packages 설치 안 함), 의존성은 `deploy/docker/pip-deps.py`가 `pyproject.toml`에서 읽는다(목록을 두 곳에 두지 않으려고).
-`JAVA_HOME`은 `/opt/java21` 심볼릭 링크라 amd64 / arm64 어디서든 맞다. UID 1000, 작업 공간 `/workspace`.
+(같은 이유로 site-packages 설치 안 함), 의존성은 `deploy/docker/pip-deps.py`가 `pyproject.toml`에서 읽는다.
+`JAVA_HOME`은 `/opt/java21` 심볼릭 링크라 amd64 / arm64 어디서든 맞다. UID 1000, 작업 공간 `/workspace`. 문서·`scripts/handbook/`·캐시·`out/`은 넣지 않는다(`.dockerignore`; 회사 레포 구조는
+`deploy/docker/root.dockerignore.example`을 다시 복사해야 적용).
 
 ```bash
 docker build -f deploy/docker/Dockerfile -t <registry>/sbmig:<tag> .
@@ -138,8 +138,8 @@ Job은 자리 번호(`SBMIG_JOB_SLOT`)를 받고 2번부터 Maven 저장소 `rep
 (`/app/deploy/k8s/81-web-job.template.yaml`; 대안은 ConfigMap 마운트 + `SBMIG_JOB_TEMPLATE`)이고, Main은 시작할 때 틀(`CHANGE_ME`
 남은 값 없음(주석 제외), 컨테이너 하나, envFrom 없음, 비밀 env는 valueFrom(`SBMIG_<섹션>__<키>`는 비밀 아님), `/data` 마운트 하나)과 권한을
 검증해 어긋나면 뜨지 않는다. 켜는 순서는 `deploy/README.md` §3 "켜는 법".
-개발 PC: `k8s-job`인데 클러스터 밖이면 `local-job`(`sbmig/web/localjob.py`, 파드 자리에 로컬 서브프로세스 `sbmig run --run-id …`; `--mode local-job`
-으로 직접 고를 수도 있다)으로 내려간다. 로컬 Worker에는 틀의 env 중 실행별 값(`RUN_ENV`)만 넘기고 나머지는 PC의 셸·`.env`가 정한다.
+개발 PC: `k8s-job`인데 클러스터 밖이면 `local-job`(`sbmig/web/localjob.py`, 파드 자리에 로컬 서브프로세스 `sbmig run --run-id …`; `--mode local-job`로도)으로
+내려간다. 로컬 Worker에는 틀의 env 중 실행별 값(`RUN_ENV`)만 넘기고 나머지는 PC의 셸·`.env`가 정한다.
 
 조각:
 
@@ -182,7 +182,7 @@ Job 모드가 지키는 넷(코드: `sbmig/web/runs.py`, `sbmig/web/worker.py`, 
    정제가 걸린 in-process 실행과 결과 없이 끝난 Job)만 보고서·`logs/`에 닿는다(`.json`은 문자열 값 안만, `.jsonl`은 줄마다: 키·숫자·모양은 그대로).
    그래서 끝나기 전에는 `LIVE_FILES`(`sbmig.log`, `journal.jsonl`)만 내주고 나머지는 HTTP 409(`file_withheld`). 남은 한계는 [10](10-open-items-and-history.md).
 
-다음: 클러스터 실측, 외부 접수 API(`docs/v2/API-MIGRATIONS-KO.md`). Main ↔ Job 파드의 파일·id·종료 코드·멈춤·복구 약속: `docs/v2/JOB-RUN-STATE-CONTRACT-KO.md`.
+남은 일: [10](10-open-items-and-history.md). Main ↔ Job 파드의 파일·id·종료 코드·멈춤·복구 약속: `docs/v2/JOB-RUN-STATE-CONTRACT-KO.md`.
 
 `run-job.sh` 종료 코드: 보고서가 나왔으면 0(sbmig 0 / 2), sbmig 중단(exit 3)이면 3, 결과를 못 내보냈으면 4. `SBMIG_FAIL_JOB_ON_BUILD_FAIL=1`이면 빌드 실패를 2로.
 
@@ -203,13 +203,13 @@ Job 모드가 지키는 넷(코드: `sbmig/web/runs.py`, `sbmig/web/worker.py`, 
 | `sbmig fleet status <out>` | 진행 표(실행 중에도). `--attention`은 사람이 볼 프로젝트만 주의 코드별로 |
 
 남는 것(`<out>/fleet/`): `state.json`, `summary.md` / `summary.csv`(UTF-8 BOM, `attention` 열) / `summary.json`, `learning.md`(KB가 배운 것),
-`fleet-config.json`, `sbmig.log`(프로젝트마다 `SBMIG-RESULT`). 프로젝트마다 실행 디렉토리 `out/<fleet-id>-<NNN>-<name>/`. 코드는 `sbmig/fleet/`(`runner.py`, `manifest.py`, `preflight.py`, `cleanup.py`, `summary.py`).
+`fleet-config.json`, `sbmig.log`(프로젝트마다 `SBMIG-RESULT`). 프로젝트마다 실행 디렉토리 `out/<fleet-id>-<NNN>-<name>/`. 코드는 `sbmig/fleet/`.
 
 인프라 보호: 첫 프로젝트 전 사전 점검(`fleet.preflight`: disk / maven / java / settings / repository / llm, `preflight: <check> ok|FAIL|skip`);
 인프라 이유로 끝난 프로젝트는 `pending`으로 되돌리고, `fleet.infra_failure_limit`(3)번 연속이면 `fleet.infra_retry_minutes`(15) 기다렸다 다시 점검,
 `fleet.infra_max_waits`(4)번 뒤 멈춘다(다시 실행하면 이어감). 프로젝트 전 여유 공간 `fleet.min_free_gb`(웹 업로드의 하한이기도 하다), 끝난 뒤 정리
 `fleet.cleanup`(`build-output` = `target/` 삭제, `workspace` = 프로젝트 복사본도, `none`). 명령줄·매니페스트의 값은 `SBMIG_<섹션>__<키>` 환경 값보다
-이긴다(바꿀 때마다 INFO `… given explicitly replaces <변수> from the environment`).
+이긴다([07](07-config-and-knowledge.md)).
 종료 코드: 0 전부 성공, 2 일부 미완, 3 중단(`--stop-on-abort` 또는 인프라).
 
 ## 7. KB 운영 (PC 사이 옮기기)
@@ -222,7 +222,7 @@ KB는 `kb.dir` 아래 파일뿐이다: `errors.jsonl`, `cases.md`, `cases/<case_
 | `sbmig kb import <zip>` | 가져오기(기본은 합치기, `--replace`는 통째 교체하고 예전 KB를 `.bak-*`로). 스크립트는 들어온 파일 이름과 상관없이 케이스 폴더의 `fix_v<N>.py`로 쓴다 |
 | `sbmig kb validate` | 파일 점검(문제 있으면 exit 1) |
 | `sbmig kb stats` | 항목·케이스·상태별 스크립트 버전 수 |
-| `sbmig kb reindex` | `errors.jsonl` 로부터 케이스 수치·실행 기록을 다시 셈(`git pull` 뒤 한 번 권장) |
+| `sbmig kb reindex` | `errors.jsonl` 로부터 케이스 수치·실행 기록을 다시 셈(`git pull` 뒤 권장) |
 | `sbmig kb cases list` / `sbmig kb cases show <case_id>` | 케이스와 저장 스크립트(계보·실행 기록). `retire` / `activate` / `pin` / `unpin`은 사람의 결정 |
 
 모든 `sbmig kb` 명령은 `--kb-dir`로 `kb.dir`을 덮어쓴다.
@@ -230,8 +230,8 @@ KB는 `kb.dir` 아래 파일뿐이다: `errors.jsonl`, `cases.md`, `cases/<case_
 ## 8. 디스크 정리 `sbmig clean`
 
 끝난 실행의 프로젝트 복사본, 웹 UI 업로드 zip, 남은 `.part` 업로드, LLM 기록(`llm-*.json`)을 지운다. 실행·대기 중인 실행과 그 업로드는 건드리지 않는다
-(업로드 이름의 실행 id `<프로젝트명>-YYYYMMDD-HHMMSS-<hex>`로 짝짓는다; `--keep-failed`면 실패한 실행의 업로드도 남김). 손으로만 돈다. 실행 폴더, `source.zip`, `result.zip`은 지우지 않는다.
-옵션: `--out`(웹이면 `out/web`), `--fleet`, `--older-than <일>`, `--keep-failed`, `--dry-run`(먼저 이것으로), `--records`.
+(업로드 이름의 실행 id `<프로젝트명>-YYYYMMDD-HHMMSS-<hex>`로 짝짓는다). 손으로만 돈다. 실행 폴더, `source.zip`, `result.zip`은 지우지 않는다.
+옵션: `--out`(웹이면 `out/web`), `--fleet`, `--older-than <일>`, `--keep-failed`(실패한 실행의 업로드도 남김), `--dry-run`(먼저 이것으로), `--records`.
 
 ## 9. 로그 파일
 
@@ -262,6 +262,7 @@ KB는 `kb.dir` 아래 파일뿐이다: `errors.jsonl`, `cases.md`, `cases/<case_
 | `run aborted: ZIP refused: …`(exit 3) | 저널 `intake_refused`, 걸린 `intake.*` 키가 문장에 있다(§1) |
 | 업로드가 HTTP 507 | 출력 볼륨 여유 < `fleet.min_free_gb` → 정리(§8) 또는 볼륨 확장 |
 | HTTP 403 `cross-site request refused: …` | 다른 사이트의 페이지가 보낸 요청(§1) |
+| 웹 파드 WARNING `run list: the row of run <id> could not be built (…)` | 그 실행만 파일을 못 읽은 실행으로 보인다(다른 행은 그대로). 그 폴더의 `report.json`·저널을 본다 |
 
 ## 확인하는 법
 

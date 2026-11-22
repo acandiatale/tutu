@@ -8,7 +8,7 @@
 
 사내 프레임워크 아티팩트(`framework.artifacts`)를 의존성으로 가진 프로젝트는 회사 레이아웃과 Spring Boot 4로 옮기지 않는다.
 JDK 21과 javax에서 jakarta로의 변환만 하고, 빌드를 한 번 해서 결과를 알리고, 변환한 트리를 내려준다. 빌드 오류는 고치지 않는다.
-사내 프레임워크와 사내 라이브러리가 얽힌 오류는 LLM이 풀기 어렵고 담당자가 손대야 하는 경우가 많기 때문이다. 취약점 조치는 빌드가
+사내 프레임워크·라이브러리가 얽힌 오류는 LLM이 풀기 어렵고 담당자가 손대야 할 때가 많아서다. 취약점 조치는 빌드가
 통과해도 실패해도 이어서 돈다(오픈소스 라이브러리 검사라서. `remediation.after_failed_build`, 8절). 이 범위를 `jdk-jakarta`라고 부른다.
 
 | 하는 일 | 하지 않는 일 |
@@ -130,12 +130,13 @@ profile·속성 선언)는 `direct`로 적고, 더 깊은 노드는 `transitive`
   쓰지 않는다. 순서는 부모가 관리하면 버전 없음, 아니면 as-is 버전, 아니면 허용될 때 저장소의 최신 릴리스.
 - 프레임워크 버전은 sbmig가 쓰거나 바꾸거나 지우지 않는다. 프레임워크 키는 보호 키라서 사전 시도도 건드리지 않는다
   (`sbmig-version`은 버전을 박지 않고, `sbmig-jakarta`는 다른 라인으로 바꾸지 않는다). `sbmig-parent`는 돌지 않는다.
-- 가드(`_framework_guard`): LLM의 스크립트나 편집이 프레임워크 아티팩트 선언을 지우거나 버전을 바꾸거나, 프로젝트가 쓰지 않던 버전으로
-  더하거나, 어떤 pom의 `<parent>`를 바꾸면 커밋하지 않고 되돌린다. 버전의 `${…}`는 프로젝트 안 부모 체인으로 풀어 앞뒤를 비교하므로 다른 pom
-  (루트)의 속성으로 바꾼 것, 프레임워크에 맞는 import가 쓰는 속성을 바꾼 것도 같다(g:a가 패턴에 맞지 않는 BOM import는 알아보지 못한다). 실패 문장은 `framework project:`로 시작하고 다음 요청의 이전 시도에
-  보인다. WARNING `적용 취소 (…): 프레임워크 프로젝트에서 바꾸면 안 되는 것을 바꿈 — …`, 저널 `framework_guard {attempt, case, reason}`.
+- 가드(`_framework_guard`): 스크립트나 편집이 프레임워크 아티팩트 선언을 지우거나 버전을 바꾸거나, 쓰지 않던 버전으로 더하거나, 어떤 pom의
+  `<parent>`를 바꾸면 커밋하지 않고 되돌린다. 버전의 `${…}`는 프로젝트 안 부모 체인으로 풀어 비교하므로 다른 pom(루트)의 속성이나 프레임워크에
+  맞는 import가 쓰는 속성을 바꾼 것도 같다(g:a가 패턴에 맞지 않는 BOM import는 알아보지 못한다). 검사를 끝내지 못한 시도도 되돌린다. 읽지 못하거나
+  파싱되지 않는 pom만 검사에서 빼고 빌드에 맡긴다. 실패 문장은 `framework project:`로 시작하고 다음 요청의 이전 시도에 보인다. WARNING
+  `적용 취소 (…): 프레임워크 프로젝트에서 바꾸면 안 되는 것을 바꿈 — …`(끝내지 못했으면 `… 프레임워크 검사를 끝내지 못함 (<예외>)`), 저널 `framework_guard {attempt, case, reason}`.
 - javax 기준 프레임워크: javax 케이스의 라이브러리가 프레임워크 아티팩트 자신이면 사전 시도·LLM 없이 바로 `external_javax_api`로
-  차단한다. 제안 문장은 그 아티팩트를 이름으로 적고 담당자가 jakarta 빌드를 내야 한다고 말한다. 로그 `프레임워크 아티팩트가 javax 로 컴파일됨: <g:a> …`.
+  차단한다. 제안 문장은 그 아티팩트 이름과, 담당자가 jakarta 빌드를 내야 한다는 것을 적는다. 로그 `프레임워크 아티팩트가 javax 로 컴파일됨: <g:a> …`.
   프레임워크를 거쳐서만 들어오는 javax 라이브러리는 마무리 때 최종 의존성 트리로 경로를 채운 뒤 같은 제안으로 바뀐다(`framework_via_suggestions`).
 - 프롬프트: 시스템 프롬프트(`sbmig/fix/prompts/script_system_v1.md`)가 줄인 범위용 소개와 규칙을 쓰고, 사용자 프롬프트에는
   "Project after the restructure" 대신 "Scope of this run" 절(`FixContext.scope_facts`)이 들어간다. 프레임워크 근거마다 "버전을 바꾸지
@@ -162,7 +163,7 @@ profile·속성 선언)는 `direct`로 적고, 더 깊은 노드는 `transitive`
 
 ## 7. 진단
 
-물어볼 줄(회사 PC에서는 파일 대신 이 줄들을 묻는다):
+물어볼 줄(회사 PC에서는 파일 대신 이 줄을 묻는다):
 
 1. `SBMIG-RESULT` 줄의 `scope=` 유무와 `attn=`.
 2. `sbmig.log`의 INFO `분석: 사내 프레임워크 프로젝트 (…) - JDK와 jakarta만 적용`(또는 `- 설정에 따라 전체 이관`).
@@ -183,7 +184,7 @@ profile·속성 선언)는 `direct`로 적고, 더 깊은 노드는 `transitive`
 | 서블릿 API가 WAR에 들어갔다 | 저널 `scopes_restored`가 없으면 `layout.legacy_context.restore_asis_scopes`가 꺼져 있거나 as-is가 `provided`가 아니었다 |
 | (루프를 켰을 때) 시도가 계속 되돌려진다 | 저널 `framework_guard`의 `reason`. LLM이 프레임워크 선언, 그 버전을 정하는 속성(루트 pom의 것 포함), `<parent>`를 건드렸다 |
 
-간접 검사 비용: 앞의 세 곳에서 못 찾은 모든 프로젝트가 분석 단계에서 `dependency:tree`를 한 번 더 돈다. 문제면 `framework.transitive: off`.
+간접 검사 비용: 앞의 세 곳에서 못 찾은 프로젝트마다 분석에서 `dependency:tree`를 한 번 더 돈다. 문제면 `framework.transitive: off`.
 
 ## 8. 취약점 조치에서
 
@@ -193,8 +194,8 @@ profile·속성 선언)는 `direct`로 적고, 더 깊은 노드는 `transitive`
 
 빌드가 실패한 줄인 실행도 수정 루프를 돌았든 아니든 조치로 이어진다(`remediation.after_failed_build: framework`, 기본; `never`면 통과한 실행만).
 이관 보고서의 조치 절 첫 문장은 루프가 돌았으면 「빌드 오류 자동 수정을 거쳤지만 마이그레이션 빌드는 통과하지 않았습니다. …」다.
-기준 빌드가 실패한 조치에서는 후보의 빌드 오류 수정([11](11-remediations.md) 2절)이 돌지 않는다. 버전을 바꿨으면 `INCOMPLETE`, 첫 사유 `baseline_build_failed`(빌드로 확인한 변경이 아니므로)이고,
-요청자는 빌드 오류를 고친 뒤 바뀐 버전으로 한 번 빌드한다. 바꾼 것이 없거나 수정본이 빌드되면 보통 조치처럼 끝난다(`baseline_build_failed` 없음). 수정본에
+기준 빌드가 실패한 조치에서는 후보의 빌드 오류 수정([11](11-remediations.md) 2절)이 돌지 않는다. 버전을 바꿨으면 `INCOMPLETE`, 첫 사유 `baseline_build_failed`이고,
+요청자는 빌드 오류를 고친 뒤 바뀐 버전으로 빌드한다. 바꾼 것이 없거나 수정본이 빌드되면 보통 조치처럼 끝난다(`baseline_build_failed` 없음). 수정본에
 새 빌드 오류가 생기면 `FAILED`. 규칙과 기록은 [11](11-remediations.md) 1.1.
 
 화면: 사유가 `baseline_build_failed` 하나뿐인 `INCOMPLETE`는 「일부만 조치됨」 대신 「조치함 · 빌드 미확인」(조치 상태; 「지난 실행」에는
