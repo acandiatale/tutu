@@ -16,20 +16,20 @@ node / journal / log / report 이벤트 → 보고서, result.zip, errors.md, sb
   설정 파일은 서버가 정한다: `sbmig serve --config <이름>`(여러 번) 또는 `SBMIG_WEB_CONFIGS=a.yml,b.yml`, 없으면 `config/artifacts.yml` →
   `artifacts.local-e2e.yml` 중 있는 것(`GET /api/configs`의 `default`). 고급 설정(숨김, 그 값은 안 보냄)과 그 밖의 파일 목록은 화면에 없다(파일은 관리자 페이지).
   시작은 파일과 맞는 이름이 있어야 눌린다. 실행 폴더 `<프로젝트명>-YYYYmmdd-HHMMSS-<hex 6>`(`ls /data/out | grep <프로젝트명>`; 예전 이름도 그대로),
-  실행 카드·「지난 실행」은 프로젝트명 먼저. 접수 거절(Ant, 풀기 한도를 넘은 ZIP 등)은 사유를 문장으로
-  보임. 「지난 실행」은 최근 3일(`GET /api/runs?days=`; 대기·실행 중, 조치 대기, 열어 둔 실행 `keep`은 늘 보임; 「이전 실행 보기」로 전체,
+  실행 카드·「지난 실행」은 프로젝트명 먼저. 접수 거절(Ant, 풀기 한도를 넘은 ZIP 등)은 사유를
+  문장으로. 「지난 실행」은 최근 3일(`GET /api/runs?days=`; 대기·실행 중, 조치 대기, 열어 둔 실행 `keep`은 늘 보임; 「이전 실행 보기」로 전체,
   지우지 않음). 멈춘 실행(`user_stop`)·처리 불가는 주황, 실행 오류만 빨강. 화면은 `sbmig/web/static/index.html` 한 파일(폰트·CDN 없음).
-- 웹 파드가 직접 돌리면 한 번에 하나, Job 모드는 동시에 `SBMIG_JOB_MAX_PARALLEL` 건(기본 1, 매니페스트 3). 넘는 zip은 `queued`로 기다리고 화면에 순번이 보인다.
-- 중지는 그래프 노드 사이에서만 먹힌다. 계획한 최종 빌드가 모두 끝난 뒤 닿은 요청은 무시한다([02](02-flow-and-nodes.md) 11절).
+- 웹 파드가 직접 돌리면 한 번에 하나, Job 모드는 동시에 `SBMIG_JOB_MAX_PARALLEL` 건(기본 1, 매니페스트 3). 넘는 zip은 `queued`, 화면에 순번.
+- 중지는 그래프 노드 사이에서만. 계획한 최종 빌드가 모두 끝난 뒤 온 요청은 무시([02](02-flow-and-nodes.md) 11절).
 - 접근 제어: 기본 배포는 `SBMIG_WEB_OPEN=1`(`--open`)로 토큰 없이 받는다(시작 때 경고).
   `SBMIG_WEB_TOKEN`(`--token`)이 있으면 모든 요청에 요구하고(open보다 우선), `http://<host>:8765/?token=<토큰>`로 한 번 열면 HttpOnly 쿠키가 남는다.
-  둘 다 없으면 루프백만 받고 `--host 0.0.0.0`이면 뜨지 않는다. 다른 사이트의 요청은 거절: GET / HEAD / OPTIONS가 아닌 요청에
+  둘 다 없으면 루프백만, `--host 0.0.0.0`이면 안 뜬다. 다른 사이트의 요청은 거절: GET / HEAD / OPTIONS가 아닌 요청에
   `Sec-Fetch-Site: cross-site`가 있거나 `Origin` 호스트가 `Host` / `X-Forwarded-Host`와 다르면(`Origin: null` 포함) 토큰 검사보다 먼저 403
-  `cross-site request refused: …`(모든 경로). 두 헤더 없는 curl과 이 화면은 통과.
+  `cross-site request refused: …`(모든 경로). 두 헤더 없는 curl·이 화면은 통과.
 - 업로드 상한: `--max-upload-mb`, 기본 `$SBMIG_MAX_UPLOAD_MB` 또는 512 MB(이미지 1024, 명령줄에 없어 ConfigMap 값이 먹음), 0 = 없음. 본문을
   받기 전 출력 볼륨 여유가 `fleet.min_free_gb`(5 GB)보다 적으면 HTTP 507(화면 「서버의 저장 공간이 부족해 …」, 0 = 안 봄). 실행 폴더는 저절로
-  안 지워진다(§8). ZIP 풀기 한도 `intake.max_unpacked_mb`(4096), `intake.max_entry_mb`(1024), `intake.max_compression_ratio`(200, 1 MiB 이상
-  풀리는 파일마다; 0 = 없음)를 목차로, 풀면서 다시 본다. 넘으면 아무것도 풀지 않고 `run aborted: ZIP refused: …`(exit 3, 저널 `intake_refused`,
+  안 지움(§8). ZIP 풀기 한도 `intake.max_unpacked_mb`(4096), `intake.max_entry_mb`(1024), `intake.max_compression_ratio`(200, 1 MiB 이상
+  풀리는 파일마다; 0 = 없음)를 목차로, 풀면서 다시 본다. 넘으면 하나도 안 풀고 `run aborted: ZIP refused: …`(exit 3, 저널 `intake_refused`,
   Maven·LLM 없음; 웹 파드가 직접 돌리면 HTTP 400).
 - 관리자 페이지 `/admin`(링크 없음): 내장 비밀번호(`SBMIG_ADMIN_PASSWORD`로 교체)로 프로젝트명별(예전 실행은 파일 이름별) LLM 토큰 사용량(조치 수정 루프 몫 포함, 실행마다 「조치 N회 포함」; 일부를 모르면 `usage_partly_unknown`, 각 행에 「일부 알 수 없음」, 비용 = 가격 아는 행의 합(없으면 「알 수 없음」); 모델 이름: [05](05-llm-gateway-and-prompts.md) 9.1)·로그 ZIP·올린 원본. 열린 모드에서도 이것만 막힌다(실행별 결과 파일은 열린 API). `sbmig/web/admin.py`, `deploy/README.md` §2.
 - `sbmig serve`가 곧 uvicorn이다. 종료 시 `--graceful-timeout`(5초) 뒤 SSE를 닫고 Maven /
@@ -42,11 +42,11 @@ CLI 명령(`sbmig run`, `sbmig fleet`, `sbmig kb …`)은 개발·시험·진단
 | 항목 | 요구 |
 |---|---|
 | Python | 3.10 이상, `uv` 또는 `pip` |
-| JDK | 21. `build.java_home`(회사 yml에서 `"${JAVA21_HOME:-}"`) 또는 `--java-home`. `mvn -v`가 `build.require_java_major`(21)와 다르면 사전 점검이 중단 |
-| Maven | 3.9.x. Windows는 `mvn.cmd`를 PATH로 찾는다. 못 찾으면 `build.mvn`에 전체 경로 |
-| Nexus | `config/settings.nexus.example.xml` 복사 → 그룹 URL → `build.settings_file`(catch-all 미러). 같은 Nexus를 `build.repository_url`에도 |
+| JDK | 21. `build.java_home`(회사 yml에서 `"${JAVA21_HOME:-}"`) 또는 `--java-home`. `mvn -v`가 `build.require_java_major`(21)와 다르면 사전 점검 중단 |
+| Maven | 3.9.x. Windows는 `mvn.cmd`를 PATH에서, 못 찾으면 `build.mvn`에 전체 경로 |
+| Nexus | `config/settings.nexus.example.xml` 복사, 그룹 URL, `build.settings_file`(catch-all 미러). 같은 Nexus를 `build.repository_url`에도 |
 | LLM | `.env`(`.env.example` 복사): 게이트웨이 URL, 키 / 앱 토큰, 모델(역할) 이름 |
-| git | 시도마다 스냅샷·되돌리기·diff에 쓴다 |
+| git | 시도마다 스냅샷·되돌리기·diff |
 
 ```bash
 uv venv && source .venv/bin/activate && uv pip install -e ".[dev]"
@@ -81,9 +81,9 @@ docker run --rm <registry>/sbmig:<tag> python -m sbmig.cli --help
 
 회사 클러스터의 값은 매니페스트에 있다(`deploy/README.md` §1, §3): namespace `agent`, 스토리지 클래스 `nfs-csi`(RWX), 이미지는 인프라팀
 레지스트리. PC에서 `deploy/docker/save-image.sh <tag>`가 `linux/amd64`로 빌드해 `out/images/sbmig-<tag>.tar`로 저장하고, 인프라팀이
-`docker load` → `docker tag` → `docker push` 한 전체 이름을 `40-deployment.yaml`과 `81-web-job.template.yaml`의 `image:`에 같은 값으로 넣는다
-(`imagePullPolicy: Always`라 같은 태그도 반영된다; pull 인증은 `imagePullSecrets`). 바꾼 뒤 할 일: 이미지만 → 빌드·push, 웹 파드 재시작(빌드 파드는
-뜰 때 받는다); 20 → apply, 재시작; 40 → apply; 81(이미지에 들어가니 빌드하는 체크아웃에서 채운다) → 이미지 빌드·push, 재시작. push와 재시작 사이에 올린 실행은 거절된다(§5 ②). 빌드 식별값 `sbmig version` = `0.1.0+<12자>`(`sbmig/**/*.py`,
+`docker load`, `docker tag`, `docker push` 한 전체 이름을 `40-deployment.yaml`과 `81-web-job.template.yaml`의 `image:`에 같은 값으로 넣는다
+(`imagePullPolicy: Always`라 같은 태그도 반영; pull 인증은 `imagePullSecrets`). 바꾼 뒤 할 일: 이미지만이면 빌드·push, 웹 파드 재시작(빌드 파드는
+뜰 때 받는다); 20은 apply, 재시작; 40은 apply; 81(이미지에 들어가니 빌드할 체크아웃에서 채움)은 이미지 빌드·push, 재시작. push와 재시작 사이에 올린 실행은 거절(§5 ②). 빌드 식별값 `sbmig version` = `0.1.0+<12자>`(`sbmig/**/*.py`,
 `config/*.yml`, `knowledge/**`의 지문, 빌드 인자 없음); 빌드 파드 쪽은 저널 `worker_started`의 `sbmig_version`. 레지스트리를 못 쓰면 tar를 노드마다 적재하고(containerd는
 `ctr -n k8s.io images import`, k3s는 `k3s ctr images import`, docker는 `docker load`) 이미지를 `sbmig:<tag>` + `imagePullPolicy: Never`로 바꾼다;
 노드 하나에만 적재했으면 Deployment와 Job 틀의 `nodeSelector: {kubernetes.io/hostname: <node>}`를 푼다(이미지가 없는 노드에서는 `ErrImageNeverPull`).
@@ -93,7 +93,7 @@ docker run --rm <registry>/sbmig:<tag> python -m sbmig.cli --help
 `SBMIG_BUILD__SETTINGS_FILE=/data/.m2/settings.xml`, `SBMIG_BUILD__JAVA_HOME=/opt/java21`, `SBMIG_BUILD__MVN=mvn`, `SBMIG_BUILD__LOCAL_REPO=/data/.m2/repository`,
 `SBMIG_SCRIPT__PYTHON=null`, 웹 파드의 `SBMIG_LLM__RECORD_DIR=${LLM_RECORD_DIR:-}`(`tests/deploy/test_manifests.py`가 세 매니페스트에서 지킨다).
 설정을 바꾸려면 이미지를 다시 만든다(숫자 손잡이는 `sbmig-env`). 이미지 밖: ConfigMap `deploy/k8s/20-configmap.yaml`(`sbmig-config` = settings.xml 원본,
-`/data/.m2`로 한 번 복사; `sbmig-env` = 환경 변수), Secret 견본 `deploy/k8s/30-secret.example.yaml`(→ `deploy/k8s/30-secret.yaml`, git-ignore): `sbmig-llm`
+`/data/.m2`로 한 번 복사; `sbmig-env` = 환경 변수), Secret 견본 `deploy/k8s/30-secret.example.yaml`(사본 `deploy/k8s/30-secret.yaml`, git-ignore): `sbmig-llm`
 (= PC의 `.env` + `SBMIG_WEB_TOKEN`), `sbmig-git`. 자원: OpenRewrite `openrewrite.jvm_args`(`-Xmx4g`) 때문에 메모리 6~8 GiB, CPU 2~4.
 
 ## 5. 쿠버네티스의 두 모양
@@ -167,8 +167,8 @@ Job 모드가 지키는 넷(코드: `sbmig/web/runs.py`, `sbmig/web/worker.py`, 
    `SBMIG_KB__DIR` ↔ `SBMIG_KB_DIR` → 값 sha256 앞 16자; `is_secret_name` 이름(`LLM_TOKEN_URL` 포함), `ENV_PIN_SKIP`, 프록시 변수는 빠짐)와
    `env_pin_policy`를 적는다. 정책 = 웹 파드의 `SBMIG_JOB_ENV_PIN`(시작 때 한 번): `refuse`(k8s-job 기본) / `warn` / `off`(local-job 기본). Worker는
    `verify_request` 뒤 자기 환경으로 다시 계산해 `compare_env_pins`(`differs` / `main_only` / `worker_only`, 이름만)를 보고, 실행별 값(`SBMIG_CONFIG`의
-   파일, `SBMIG_STOP_AFTER`, `SBMIG_LLM_PROVIDER`)을 `request.json`과 맞춘다. `refuse` → exit 3, 저널 `worker_refused`, `job-status.json`의 `error`에
-   키 이름과 재시작 안내; `warn` → 저널 `worker_env_differs`, Worker의 값으로 돈다. `env_pins`가 없으면(옛 Main, `off`) 보지 않는다.
+   파일, `SBMIG_STOP_AFTER`, `SBMIG_LLM_PROVIDER`)을 `request.json`과 맞춘다. `refuse`면 exit 3, 저널 `worker_refused`, `job-status.json`의 `error`에
+   키 이름과 재시작 안내; `warn`이면 저널 `worker_env_differs`, Worker의 값으로 돈다. `env_pins`가 없으면(옛 Main, `off`) 보지 않는다.
    구별: digest 거절은 zip sha256 또는 `config <name> differs between the web pod and the build pod` / `sbmig version differs: web pod <v>, build pod <v>`
    + `the web pod and the build pod run different images: …`(화면 「웹 파드와 빌드 파드가 서로 다른 이미지로 …」), 환경 거절은 변수 이름과 `SBMIG_JOB_ENV_PIN`을
    말한다. 재시작 전부터 줄에 있던 실행, 옛 이미지 실행의 조치 재개는 지금 두 파드가 같으면 돈다. 운영 규칙은 §4.
@@ -186,7 +186,7 @@ Job 모드가 지키는 넷(코드: `sbmig/web/runs.py`, `sbmig/web/worker.py`, 
 
 `run-job.sh` 종료 코드: 보고서가 나왔으면 0(sbmig 0 / 2), sbmig 중단(exit 3)이면 3, 결과를 못 내보냈으면 4. `SBMIG_FAIL_JOB_ON_BUILD_FAIL=1`이면 빌드 실패를 2로.
 
-인프라와 정할 것: 네트워크(빌드 노드 → 웹 파드·LLM 게이트웨이·Nexus·git), 결과 보관 기간, 소스 저장소 브랜치 push 여부.
+인프라와 정할 것: 네트워크(빌드 노드에서 웹 파드·LLM 게이트웨이·Nexus·git), 결과 보관 기간, 소스 저장소 브랜치 push 여부.
 
 `build.setup_command` / `build.teardown_command`는 실행 전후 한 번씩 도는 일반 훅이다(두 모양 모두 비움).
 
@@ -257,12 +257,13 @@ KB는 `kb.dir` 아래 파일뿐이다: `errors.jsonl`, `cases.md`, `cases/<case_
 
 | 보이는 것 | 볼 곳과 할 일 |
 |---|---|
-| 「웹 파드와 빌드 파드가 서로 다른 이미지로 …」 | 저널 `worker_refused`. push 뒤 웹 파드 재시작이 빠졌다 → 재시작, 다시 올림(§4) |
-| 웹 파드 로그 `MIGRATION_TEMPLATE_INVALID: … CHANGE_ME` | 이미지의 81이 비었다 → 채워 빌드·push, 재시작(§4) |
+| 「웹 파드와 빌드 파드가 서로 다른 이미지로 …」 | 저널 `worker_refused`. push 뒤 웹 파드 재시작이 빠짐: 재시작, 다시 올림(§4) |
+| 웹 파드 로그 `MIGRATION_TEMPLATE_INVALID: … CHANGE_ME` | 이미지의 81이 비었다: 채워 빌드·push, 재시작(§4) |
 | `run aborted: ZIP refused: …`(exit 3) | 저널 `intake_refused`, 걸린 `intake.*` 키가 문장에 있다(§1) |
-| 업로드가 HTTP 507 | 출력 볼륨 여유 < `fleet.min_free_gb` → 정리(§8) 또는 볼륨 확장 |
+| 업로드가 HTTP 507 | 출력 볼륨 여유 < `fleet.min_free_gb`: 정리(§8) 또는 볼륨 확장 |
 | HTTP 403 `cross-site request refused: …` | 다른 사이트의 페이지가 보낸 요청(§1) |
-| 웹 파드 WARNING `run list: the row of run <id> could not be built (…)` | 그 실행만 파일을 못 읽은 실행으로 보인다(다른 행은 그대로). 그 폴더의 `report.json`·저널을 본다 |
+| 웹 파드 WARNING `run list: the row of run <id> could not be built (…)` | 그 실행만 파일을 못 읽은 실행으로 보임(다른 행은 그대로). 그 폴더의 `report.json`·저널을 본다 |
+| 실행 상태·관리자 사용량의 숫자가 null | 그 실행 `report.json`의 NaN·무한대(500 대신 null, `sbmig/web/jsonsafe.py`) |
 
 ## 확인하는 법
 

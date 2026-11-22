@@ -1283,3 +1283,18 @@ nothing a run, a report or a reader depends on. Contract (the list a reviewer ch
 | Checked | unit tests (full suite 7,387 passed) and two independent reviews on a developer Mac; the image build tried locally in both repository layouts | — | done |
 | Left out on purpose | a hard link for the delivered original (with the disk measurements on the cluster); the image's pip layer (the company build cannot be tried here); the KB credit read from note text (needs a typed failure); bounding `_run_locks` | — | open |
 | Not checked | the company cluster (needs a new image), a company repository with the new ignore example | — | open |
+
+## Status — 2026-11-22, answers that carry a file's content never fail on a non-finite number; `intake.sync_tree` removed (v2.1z-bs)
+
+Two small leftovers of v2.1z-br; a third item was implemented and withdrawn in review. Contract: `docs/INTERFACES.md`
+"v2.1z-bs". Commits `67ad5bf`, `0a45d0a`.
+
+| Item | What | Verification | State |
+|---|---|---|---|
+| Non-finite numbers | `GET /api/runs/{id}`, the answer of `POST /api/runs`, the code-change routes, the admin usage answer and the `status` event of the run's event stream send a `NaN` / `Infinity` / `-Infinity` read from a run file as `null` (before: a 500, or the bare word `NaN` in the event that a browser cannot parse); `sbmig/web/jsonsafe.py` is the one place; a payload without such a value is sent with the same bytes as before | `tests/web/test_v21zbs_server_status.py` | done |
+| `status()` reads once | `RunManager.status` reads `report.json` once per call | same file | done |
+| `intake.sync_tree` | removed with its interface entry, its fake and the tests that covered only it (nothing called it); what they proved about the code it shared with `sync_tree_table` is tested on `sync_tree_table` | `tests/remediations/test_intake_build_output.py` | done |
+| Loop skip withdrawn | skipping the remediation's fix loop when every parsed error of the failed candidate build is one only a pom or the repository can fix was implemented, reviewed and taken out: a repository that fails for a moment is parsed as a resolution error, so the skip also dropped the loop's first rebuild, which then passes and ends the round as fixed; and the recorded decision survived a resume that builds the candidate again, so the report explained one build's failure with another build's errors. The loop starts exactly as before and the pin of v2.1z-br stays; what a later round must keep true is the contract paragraph "Not changed" | `tests/remediations/test_v21zbr_pins.py` | withdrawn |
+| v2.1z-br with real Maven | verified today on a developer Mac with the fake LLM: the integration-marked tests gave 72 passed and 7 skipped on both `61ff9a0` and its parent `c1ebe82` with JDK 21 (with `JAVA_HOME` unset one test fails on both, because Maven then runs on Java 25); real migration runs of the `pure-java` fixture and of a variant with a failing unit test, and four real remediation scenarios (snakeyaml 1.33 to 2.0, the candidate fails to compile: good fix, bad fix, tests compiled, tests compiled and run) launched the same Maven processes with identical command lines on both commits, every build ran once, and both `skip_tests` call sites were reached and sent `-DskipTests` as before. Not covered: a runner without the keyword (none is shipped), the company cluster | real Maven, fake LLM | done |
+| Checked | unit tests (full suite 7,413 passed) on a developer Mac | — | done |
+| Not checked | the company cluster | — | open |

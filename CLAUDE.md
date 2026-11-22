@@ -918,6 +918,8 @@ review", fix attempts as `script:<case>:v<N>`; `ko`, the company setting: the re
   status has no net on purpose); (2) the retry-on-`TypeError` shims around builder calls are gone:
   `sbmig/loop/callee.py::takes_keyword` decides from the callee's signature, once, whether to pass a newer keyword, so a
   `TypeError` raised inside a build is never answered by a second build. Use it for any new optional keyword.
+  **Same day, v2.1z-bs:** `sbmig/web/jsonsafe.py` is the place for answers and events that carry a file's content
+  (a `NaN` / `Infinity` in a run file goes out as `null`, never as a 500 or a bare `NaN`).
 - **Company convention (2026-10-20): agents run on LangGraph under uvicorn.** `loop.engine: graph` (default) drives
   the phases from a LangGraph `StateGraph` (`sbmig/graph/`, nodes intake → analyze → plan → phase×N → finalize;
   `inline` is the old loop, reports are identical by test); the web UI is FastAPI (`uvicorn sbmig.web.app:app` or

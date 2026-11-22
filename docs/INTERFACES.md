@@ -22,10 +22,10 @@ type: `sbmig/core/models.py`, `sbmig/core/interfaces.py`, `sbmig/core/config.py`
 | LLM gateway | Base "LLM client tier and adapter seams"; v2.1z-m (agent gateway, token exchange), v2.1z-n, v2.1z-o, v2.1z-p (case thread), v2.1z-q, v2.1z-x, v2.1z-af (busy wait, auth retries) |
 | report & result line | Base "Report and the result line", "Advisories and the Handover"; v2 "As built (step 1)" (`review=`); v2.1d (`major=`); remediations (`remediation=`); v2.1z-ak (`scope=`, the framework block); v2.1z-bl (`llm=` includes the remediation's fix-loop calls) |
 | fleet | Base "Fleet" |
-| web app | Base "Graph engine", "Web app"; v2.1z-w (page, server-chosen configs), v2.1z-ae (queue / slots on the page), v2.1z-af (page re-attach), v2.1z-aj (run flows, page header); v2.1z-ak (framework label, skipped stages); v2.1z-ao (admin page `/admin`: token usage per project, log ZIPs); v2.1z-au (the code-change view: artifact `codediff/`, `/api/runs/{id}/codediff`, the page block); v2.1z-av (cross-site requests refused, the free-space floor for uploads, unpacking limits); v2.1z-bg (report view); v2.1z-bl (two report previews, 고급 설정 and the other-files list gone, LLM counts); v2.1z-bm (the hidden controls are not sent); v2.1z-bo (admin page: 「일부 알 수 없음」 / cost 「알 수 없음」 for unknown remediation usage, `remediation_llm_usage_unknown`); v2.1z-bp (the run cost = the priced rows with 「일부 알 수 없음」, 「알 수 없음」 only when nothing is priced); v2.1z-br (`GET /api/runs` never answers 500 because of one run, no list refresh while the tab is hidden, no `run_dir` in the status JSON, the report view linear in a line's length) |
+| web app | Base "Graph engine", "Web app"; v2.1z-w (page, server-chosen configs), v2.1z-ae (queue / slots on the page), v2.1z-af (page re-attach), v2.1z-aj (run flows, page header); v2.1z-ak (framework label, skipped stages); v2.1z-ao (admin page `/admin`: token usage per project, log ZIPs); v2.1z-au (the code-change view: artifact `codediff/`, `/api/runs/{id}/codediff`, the page block); v2.1z-av (cross-site requests refused, the free-space floor for uploads, unpacking limits); v2.1z-bg (report view); v2.1z-bl (two report previews, 고급 설정 and the other-files list gone, LLM counts); v2.1z-bm (the hidden controls are not sent); v2.1z-bo (admin page: 「일부 알 수 없음」 / cost 「알 수 없음」 for unknown remediation usage, `remediation_llm_usage_unknown`); v2.1z-bp (the run cost = the priced rows with 「일부 알 수 없음」, 「알 수 없음」 only when nothing is priced); v2.1z-br (`GET /api/runs` never answers 500 because of one run, no list refresh while the tab is hidden, no `run_dir` in the status JSON, the report view linear in a line's length); v2.1z-bs (a non-finite number in a run file is sent as `null` by the single-run status, the upload answer, the code-change routes, the admin usage and the event stream's `status` event: `sbmig/web/jsonsafe.py`; `status()` reads `report.json` once) |
 | Job mode (Main / Worker, slots, env pins) | v2.1z-z "k8s Job dispatch mode", v2.1z-ab (kubeconfig, template ConfigMap), v2.1z-ac (Main ↔ Worker contract), v2.1z-ad (end confirmation, ownership, env pins, write-time redaction), v2.1z-ae (parallel slots), v2.1z-af, v2.1z-aq (a build pod that does not start: stop, the reason notice); v2.1z-av (the build identity, pins taken at Job creation, the resume attempt) |
 | deploy | v2.1z-s (build hooks), v2.1z-t (one Job per request), v2.1z-u, deploy (baked config, container paths), v2.1z-ad "Shipped mode"; v2.1z-br (what the image build context leaves out in both layouts, `config/default.yml` lists every settable key) |
-| remediations | remediations; v2.1z-ak (in-house group `framework`); v2.1z-am (case-insensitive matching, per-module in-house split, module sources, variant overrides, 들어온 경로); v2.1z-an (override proposals in module poms, the owners' choice); v2.1z-ar (no approval unless switched on); v2.1z-av (fixed = gone from the rescan, the planner's new residual groups, `remediation.log` for every run); v2.1z-bi part B, v2.1z-bj, v2.1z-bk (the fix loop on a failed candidate: work copy, overlay, build-side sync, one `fix.patch`); v2.1z-bl (fix-loop LLM usage, titles with the entered project); v2.1z-bm (the complete-apply proof `expected.json`, the sync by table before commit / freeze, a candidate that cannot be put back, `stop requested` runs again, leftover loops settled); v2.1z-bn (one delivery swap + `recover_delivery`, the no-delivery sentences, usage after an exception, the exec bit in `expected.json` schema 2, the pending report, the scan source `original/scan-source.zip`); v2.1z-bo (the swap rolled forward + `DeliveryRecordNotWritten`, no re-upload after a kill and the table of mid-node saves, `repair_final` by every entry and by the web service in every mode, unknown usage, report = state message, the round's call total, a stop during the build fix); v2.1z-bp (`FixResult.ended_round`: the loop is not skipped on resume, an own row for calls without tokens, strict journal reading, the budget outcome saved and stamped, 「알려진 것만」, the report-not-written note dropped on repair, the bounded repair memory); v2.1z-br (unused code removed, `compare_trees` reads only what an attempt changed, `freeze_delivery` hashes while it writes) |
+| remediations | remediations; v2.1z-ak (in-house group `framework`); v2.1z-am (case-insensitive matching, per-module in-house split, module sources, variant overrides, 들어온 경로); v2.1z-an (override proposals in module poms, the owners' choice); v2.1z-ar (no approval unless switched on); v2.1z-av (fixed = gone from the rescan, the planner's new residual groups, `remediation.log` for every run); v2.1z-bi part B, v2.1z-bj, v2.1z-bk (the fix loop on a failed candidate: work copy, overlay, build-side sync, one `fix.patch`); v2.1z-bl (fix-loop LLM usage, titles with the entered project); v2.1z-bm (the complete-apply proof `expected.json`, the sync by table before commit / freeze, a candidate that cannot be put back, `stop requested` runs again, leftover loops settled); v2.1z-bn (one delivery swap + `recover_delivery`, the no-delivery sentences, usage after an exception, the exec bit in `expected.json` schema 2, the pending report, the scan source `original/scan-source.zip`); v2.1z-bo (the swap rolled forward + `DeliveryRecordNotWritten`, no re-upload after a kill and the table of mid-node saves, `repair_final` by every entry and by the web service in every mode, unknown usage, report = state message, the round's call total, a stop during the build fix); v2.1z-bp (`FixResult.ended_round`: the loop is not skipped on resume, an own row for calls without tokens, strict journal reading, the budget outcome saved and stamped, 「알려진 것만」, the report-not-written note dropped on repair, the bounded repair memory); v2.1z-br (unused code removed, `compare_trees` reads only what an attempt changed, `freeze_delivery` hashes while it writes); v2.1z-bs (`intake.sync_tree` removed; the fix loop still starts for a failure only a pom can fix: "Not changed") |
 
 ## Base contracts (in force; written before v2)
 
@@ -7201,3 +7201,39 @@ tried here). The KB credit read from note text (it needs a typed failure, a stru
 **Pinned, not changed.** One test records what the remediation does today when the raised version cannot be
 resolved and the candidate build fails before compilation: whether the fix loop is called and how many LLM
 requests it makes. It changes no behaviour; the numbers decide a later round.
+
+## v2.1z-bs — answers that carry a file's content never fail on a non-finite number; `intake.sync_tree` removed
+
+**Why.** Two small leftovers of v2.1z-br. A third item was implemented and taken out again in review; what the
+review found is kept below because it is the specification of a later round.
+
+**Rules.**
+1. `GET /api/runs/{id}` does not answer 500 for a `report.json` that holds a non-finite number (`NaN`,
+   `Infinity`, `-Infinity`): it is sent as `null`, as the run list already sends it. The same holds for the other
+   answers that carry a file's content: the answer of `POST /api/runs`, the code-change routes, the admin page's
+   usage answer (a non-finite cost in one report made it fail), and the `status` event of the run's event stream
+   (it sent the bare word `NaN`, which a browser cannot parse). `sbmig/web/jsonsafe.py` is the one place. For a
+   payload without such a value the bytes sent are the ones sent before, and no extra pass over the payload is
+   made.
+2. `RunManager.status` reads `report.json` once per call.
+3. `intake.sync_tree` is removed with its entry in the interface, its fake and the tests that covered only it:
+   nothing calls it. `sync_tree_table` is unchanged, and what those tests proved about the code the two shared
+   (a path the table does not list: sizes compared before bytes, an absent expected file left alone, the exec bit
+   taken from the expected file, a second call changing nothing, no temporary file left) is tested on
+   `sync_tree_table`.
+
+**Not changed: the fix loop still starts for a failure only a pom can fix.** The pin of v2.1z-br stays
+(`tests/remediations/test_v21zbr_pins.py`: the loop is started once, 2 LLM requests, 3 builds, FAILED
+`candidate_build_failed`). A first version of this round skipped the loop whenever every parsed error of the failed
+candidate build had one of the kinds `dependency_resolution`, `parent_resolution`, `plugin_resolution`,
+`pom_invalid`. A review reproduced two defects of that rule, and it was withdrawn:
+- The loop's first step is to build again, and a build that passes then ends the round as fixed without an LLM
+  request (`retry_passed`). A repository that fails for a moment (a 502 from a proxy, a connect timeout, any
+  "Could not transfer artifact") is parsed as `dependency_resolution`, so the skip turned a run that passes on the
+  second build into a failed one.
+- The recorded decision survived a resume although the resume builds the candidate again: the report then
+  explained the failure of one build with the errors of another.
+A later round that wants to save those requests has to keep three things true: the candidate is built once more
+without an LLM request before giving up, and a pass ends the round as `retry_passed` does today; the decision is
+taken from the log of that second build and only when every parsed error is of the four kinds; no decision is
+carried across a rebuild.
