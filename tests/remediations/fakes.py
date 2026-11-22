@@ -67,7 +67,7 @@ def file_sha(p: Path) -> str:
 
 # ---------------------------------------------------------------------------- intake (real, tiny)
 class FakeIntakeFns:
-    """Real tiny `manifest_paths` / `tree_hash` / `copy_tree` / `freeze_delivery`; the real `sync_tree` /
+    """Real tiny `manifest_paths` / `tree_hash` / `copy_tree` / `freeze_delivery`; the real
     `sync_tree_table`; scripted `check_boundary`."""
 
     def __init__(self, boundary: list[BoundaryFinding] | None = None,
@@ -99,14 +99,9 @@ class FakeIntakeFns:
                 d.parent.mkdir(parents=True, exist_ok=True)
                 d.write_bytes(s.read_bytes())
 
-    def sync_tree(self, tree: Path, expected: Callable[[str], Path], paths: list[str]) -> tuple[list[str], list[str]]:
-        # the real function, looked up at call time so a test can monkeypatch `intake.sync_tree`
-        from sbmig.remediations import intake as intake_mod
-        self.calls.append("sync_tree")
-        return intake_mod.sync_tree(tree, expected, paths)
-
     def sync_tree_table(self, tree: Path, expected: Callable[[str], Path], table: dict[str, tuple[int, str]],
                         paths: list[str]) -> tuple[list[str], list[str]]:
+        # the real function, looked up at call time so a test can monkeypatch `intake.sync_tree_table`
         from sbmig.remediations import intake as intake_mod
         self.calls.append("sync_tree_table")
         return intake_mod.sync_tree_table(tree, expected, table, paths)

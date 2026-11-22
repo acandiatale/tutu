@@ -1419,7 +1419,7 @@ def _verify(h: _Holder, r: int, cand: Path, proposals: list[Proposal]) -> list[s
 class CandidateNotRestored(Exception):
     """빌드 뒤 수정본의 manifest 경로 일부를 기대하는 바이트로 되돌리지 못했을 때 그래프 안에서 던지는 예외.
 
-    Raised by `_sync_candidate` when `sync_tree` / `sync_tree_table` could not put every path back; `_build` turns
+    Raised by `_sync_candidate` when `sync_tree_table` could not put every path back; `_build` turns
     it into FAILED `internal_error` (`CANDIDATE_NOT_RESTORED`) without committing or delivering the candidate."""
 
     def __init__(self, round: int, failed: list[tuple[str, str, str]]):

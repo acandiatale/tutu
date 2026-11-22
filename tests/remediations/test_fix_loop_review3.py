@@ -279,7 +279,7 @@ def test_a_failed_sync_in_round_two_keeps_the_verified_round_one_delivery(tmp_pa
     assert _events(rec, "earlier_delivery_kept")
 
 
-def test_sync_tree_tries_every_path_and_reports_what_it_put_back(tmp_path, monkeypatch):
+def test_sync_tree_table_tries_every_path_and_reports_what_it_put_back(tmp_path, monkeypatch):
     acc, cand = tmp_path / "acc", tmp_path / "cand"
     for d in (acc, cand):
         d.mkdir()
@@ -289,14 +289,14 @@ def test_sync_tree_tries_every_path_and_reports_what_it_put_back(tmp_path, monke
     (cand / "c.txt").unlink()
     _unwritable(monkeypatch, "a.txt")
     with pytest.raises(intake_mod.SyncFailed) as e:
-        intake_mod.sync_tree(cand, lambda rel: acc / rel, ["a.txt", "b.txt", "c.txt"])
+        intake_mod.sync_tree_table(cand, lambda rel: acc / rel, intake_mod.file_table(acc, ["a.txt", "b.txt", "c.txt"]),
+                                   ["a.txt", "b.txt", "c.txt"])
     assert e.value.failed == [("a.txt", "PermissionError", "")] and isinstance(e.value, RemediationError)
     assert e.value.changed == ["b.txt"] and e.value.missing == ["c.txt"]
     assert (cand / "b.txt").read_bytes() == b"orig" and (cand / "c.txt").read_bytes() == b"orig"
 
 
-@pytest.mark.parametrize("fn", ["sync_tree", "sync_tree_table"])
-def test_a_read_only_file_in_a_read_only_folder_is_put_back(tmp_path, fn):
+def test_a_read_only_file_in_a_read_only_folder_is_put_back(tmp_path):
     acc, cand = tmp_path / "acc", tmp_path / "cand"
     (acc / "d").mkdir(parents=True)
     (cand / "d").mkdir(parents=True)
@@ -306,11 +306,8 @@ def test_a_read_only_file_in_a_read_only_folder_is_put_back(tmp_path, fn):
     os.chmod(cand / "d" / "x.txt", 0o444)
     os.chmod(cand / "d", 0o555)
     try:
-        if fn == "sync_tree":
-            res = intake_mod.sync_tree(cand, lambda rel: acc / rel, ["d/x.txt", "d/y.txt"])
-        else:
-            table = intake_mod.file_table(acc, ["d/x.txt", "d/y.txt"])
-            res = intake_mod.sync_tree_table(cand, lambda rel: acc / rel, table, ["d/x.txt", "d/y.txt"])
+        table = intake_mod.file_table(acc, ["d/x.txt", "d/y.txt"])
+        res = intake_mod.sync_tree_table(cand, lambda rel: acc / rel, table, ["d/x.txt", "d/y.txt"])
     finally:
         os.chmod(cand / "d", 0o755)
     assert res == (["d/y.txt"], ["d/x.txt"])

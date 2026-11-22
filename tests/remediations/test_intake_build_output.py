@@ -197,10 +197,9 @@ def test_candidate_build_failure_with_build_output_ends_candidate_build_failed(t
 
 
 def test_the_cleaning_runner_reproduces_the_company_failure(tmp_path, monkeypatch):
-    """Without the intake rule AND without the after-build synchronisation (`sync_tree` / `sync_tree_table`, which
-    replaced the direct `restore_missing` call in v2.1z-bk) the same run ends `internal_error` (proves the graph test above can fail)."""
+    """Without the intake rule AND without the after-build synchronisation (`sync_tree_table`, which replaced the
+    direct `restore_missing` call in v2.1z-bk) the same run ends `internal_error` (proves the graph test above can fail)."""
     monkeypatch.setattr(intake, "build_output_paths", lambda files: [])
-    monkeypatch.setattr(intake, "sync_tree", lambda tree, expected, paths: ([], []))
     monkeypatch.setattr(intake, "sync_tree_table", lambda tree, expected, table, paths: ([], []))
     env = _start_with_build_output(tmp_path)
     out = env.run()
@@ -210,7 +209,7 @@ def test_the_cleaning_runner_reproduces_the_company_failure(tmp_path, monkeypatc
 
 def test_restore_missing_is_the_second_net_when_build_output_was_listed(tmp_path, monkeypatch):
     """v2.1z-bj: with build output in the manifest (the intake rule off), the files `mvn clean` removed are copied back
-    from accepted/ after the build (`sync_tree` since v2.1z-bk), so the run still ends `candidate_build_failed` with a frozen delivery."""
+    from accepted/ after the build (`sync_tree_table` since v2.1z-bk), so the run still ends `candidate_build_failed` with a frozen delivery."""
     monkeypatch.setattr(intake, "build_output_paths", lambda files: [])
     env = _start_with_build_output(tmp_path)
     out = env.run()
@@ -270,72 +269,110 @@ def _tree(root: Path, files: dict[str, bytes]) -> Path:
     return root
 
 
-# ---------------------------------------------------------------------------- v2.1z-bk: sync_tree
-def test_sync_tree_restores_missing_and_overwrites_changed_files_from_the_expected_ones(tmp_path):
-    acc = _tree(tmp_path / "accepted", {"pom.xml": b"<project>old</project>", "src/A.java": b"class A {}",
-                                         "src/B.java": b"class B {}", "mvnw": b"#!/bin/sh\n", "README": b"same"})
-    (acc / "mvnw").chmod(0o755)
-    applied = _tree(tmp_path / "applied", {"pom.xml": b"<project>new</project>"})
-    cand = _tree(tmp_path / "cand", {"pom.xml": b"<project>sorted by the build</project>",
-                                     "src/A.java": b"class A {} // reformatted", "src/B.java": b"class X {}",
-                                     "README": b"same"})
-    calls = []
-
-    def expected(rel):
-        calls.append(rel)
-        return applied / rel if (applied / rel).is_file() else acc / rel
-    paths = ["pom.xml", "src/A.java", "src/B.java", "mvnw", "README", "gone/everywhere.txt"]
-    missing, changed = intake.sync_tree(cand, expected, paths)
-    assert missing == ["mvnw"] and changed == ["pom.xml", "src/A.java", "src/B.java"]
-    assert (cand / "pom.xml").read_bytes() == b"<project>new</project>"         # the applied bytes, not accepted
-    assert (cand / "src/A.java").read_bytes() == b"class A {}"
-    assert (cand / "src/B.java").read_bytes() == b"class B {}"                   # same size, other bytes
-    assert (cand / "mvnw").stat().st_mode & 0o111 and not (cand / "src/A.java").stat().st_mode & 0o111
-    assert not (cand / "gone").exists()                                           # no expected file: left alone
-    assert sorted(calls) == sorted(paths)
-    assert not [p for p in cand.rglob(".*sync-tmp")]
-    assert intake.sync_tree(cand, expected, paths) == ([], [])                   # idempotent
-
-
-def test_sync_tree_compares_sizes_before_reading_bytes(tmp_path, monkeypatch):
-    acc = _tree(tmp_path / "accepted", {"a.txt": b"x" * 10, "b.txt": b"y" * 10})
-    cand = _tree(tmp_path / "cand", {"a.txt": b"x" * 11, "b.txt": b"y" * 10})
-    opened = []
-    real_open = open
-
-    def spy(path, *a, **k):
-        opened.append(Path(path).name)
-        return real_open(path, *a, **k)
-    monkeypatch.setattr("builtins.open", spy)
-    missing, changed = intake.sync_tree(cand, lambda rel: acc / rel, ["a.txt", "b.txt"])
-    assert (missing, changed) == ([], ["a.txt"])
-    # a.txt differs in size: read once to copy it; b.txt has the same size: read on both sides to compare
-    assert opened.count("b.txt") == 2
-
-
-def test_sync_tree_refuses_symlinks_on_either_side(tmp_path):
+# ---------------------------------------------------------------------------- v2.1z-bk: sync_tree_table refusals
+# (v2.1z-bs: `sync_tree` was removed; the refusals it shared with `sync_tree_table` are pinned on the table form)
+def test_sync_tree_table_refuses_symlinks_on_either_side(tmp_path):
     from sbmig.remediations.models import RemediationError
     outside = tmp_path / "outside"
     outside.mkdir()
     acc = _tree(tmp_path / "accepted", {"a.txt": b"orig", "b.txt": b"orig"})
+    table = intake.file_table(acc, ["a.txt", "b.txt"])
     cand = _tree(tmp_path / "cand", {"b.txt": b"orig"})
     (cand / "a.txt").symlink_to(outside / "x")
     with pytest.raises(RemediationError) as e:
-        intake.sync_tree(cand, lambda rel: acc / rel, ["a.txt"])
+        intake.sync_tree_table(cand, lambda rel: acc / rel, table, ["a.txt"])
     assert e.value.code == "symlink" and not (outside / "x").exists()
     (acc / "b.txt").unlink()
     (acc / "b.txt").symlink_to(outside / "secret")
     (outside / "secret").write_bytes(b"secret")
+    (cand / "b.txt").write_bytes(b"built")                    # differs from the row: the expected file is opened
     with pytest.raises(RemediationError) as e:
-        intake.sync_tree(cand, lambda rel: acc / rel, ["b.txt"])
-    assert e.value.code == "symlink" and (cand / "b.txt").read_bytes() == b"orig"
+        intake.sync_tree_table(cand, lambda rel: acc / rel, table, ["b.txt"])
+    assert e.value.code == "symlink" and (cand / "b.txt").read_bytes() == b"built"
 
 
-def test_sync_tree_refuses_unsafe_paths(tmp_path):
+def test_sync_tree_table_refuses_unsafe_paths(tmp_path):
     from sbmig.remediations.models import RemediationError
     acc = _tree(tmp_path / "accepted", {"a.txt": b"x"})
     cand = tmp_path / "cand"
     cand.mkdir()
     for bad in ("../a.txt", "/etc/passwd", "a/"):
         with pytest.raises(RemediationError):
-            intake.sync_tree(cand, lambda rel: acc / rel, [bad])
+            intake.sync_tree_table(cand, lambda rel: acc / rel, {}, [bad])
+
+
+# ---------------------------------------------------------------------------- v2.1z-bs: a path the table does not list
+# What the removed `sync_tree` tests proved about the code it shared with `sync_tree_table` (the `row is None` branch):
+# every call below passes a table without rows, so every path takes that branch.
+def _unlisted_case(tmp_path):
+    acc = _tree(tmp_path / "accepted", {"pom.xml": b"<project>old</project>", "src/A.java": b"class A {}",
+                                         "src/B.java": b"class B {}", "mvnw": b"#!/bin/sh\n", "run.sh": b"#!/bin/sh\n",
+                                         "README": b"same"})
+    (acc / "mvnw").chmod(0o755)
+    (acc / "run.sh").chmod(0o755)
+    applied = _tree(tmp_path / "applied", {"pom.xml": b"<project>new</project>"})
+    cand = _tree(tmp_path / "cand", {"pom.xml": b"<project>sorted by the build</project>",
+                                     "src/A.java": b"class A {} // reformatted", "src/B.java": b"class X {}",
+                                     "run.sh": b"#!/bin/sh\n", "README": b"same", "only-here.txt": b"kept"})
+    (cand / "run.sh").chmod(0o644)                     # same bytes, the build dropped the exec bit
+    calls: list[str] = []
+
+    def expected(rel):
+        calls.append(rel)
+        return applied / rel if (applied / rel).is_file() else acc / rel
+    paths = ["pom.xml", "src/A.java", "src/B.java", "mvnw", "run.sh", "README", "only-here.txt", "gone/everywhere.txt"]
+    return acc, cand, expected, paths, calls
+
+
+def test_sync_tree_table_puts_back_an_unlisted_path_from_its_expected_file(tmp_path):
+    _acc, cand, expected, paths, calls = _unlisted_case(tmp_path)
+    missing, changed = intake.sync_tree_table(cand, expected, {}, paths)
+    assert missing == ["mvnw"] and changed == ["pom.xml", "run.sh", "src/A.java", "src/B.java"]
+    assert (cand / "pom.xml").read_bytes() == b"<project>new</project>"         # the applied bytes, not accepted
+    assert (cand / "src/A.java").read_bytes() == b"class A {}"
+    assert (cand / "src/B.java").read_bytes() == b"class B {}"                   # same size, other bytes
+    assert sorted(calls) == sorted(paths)
+    assert not list(cand.rglob(".*sync-tmp"))                                     # no temporary file left
+
+
+def test_sync_tree_table_leaves_an_unlisted_path_without_expected_file_alone(tmp_path):
+    _acc, cand, expected, _paths, _calls = _unlisted_case(tmp_path)
+    assert intake.sync_tree_table(cand, expected, {}, ["only-here.txt", "gone/everywhere.txt"]) == ([], [])
+    assert (cand / "only-here.txt").read_bytes() == b"kept"                      # present in the tree only: untouched
+    assert not (cand / "gone").exists()                                           # absent on both sides: not created
+
+
+def test_sync_tree_table_takes_the_exec_bit_of_an_unlisted_path_from_its_expected_file(tmp_path):
+    import stat
+    _acc, cand, expected, paths, _calls = _unlisted_case(tmp_path)
+    intake.sync_tree_table(cand, expected, {}, paths)
+    mode = {p: stat.S_IMODE((cand / p).stat().st_mode) for p in ("mvnw", "run.sh", "src/A.java", "README")}
+    assert mode == {"mvnw": 0o755, "run.sh": 0o755, "src/A.java": 0o644, "README": 0o644}
+
+
+def test_sync_tree_table_on_unlisted_paths_is_idempotent(tmp_path):
+    _acc, cand, expected, paths, _calls = _unlisted_case(tmp_path)
+    intake.sync_tree_table(cand, expected, {}, paths)
+    before = {p.relative_to(cand).as_posix(): (p.read_bytes(), p.stat().st_mode) for p in cand.rglob("*") if p.is_file()}
+    assert intake.sync_tree_table(cand, expected, {}, paths) == ([], [])
+    after = {p.relative_to(cand).as_posix(): (p.read_bytes(), p.stat().st_mode) for p in cand.rglob("*") if p.is_file()}
+    assert after == before and not list(cand.rglob(".*sync-tmp"))
+
+
+def test_sync_tree_table_compares_sizes_of_an_unlisted_path_before_reading_bytes(tmp_path, monkeypatch):
+    acc = _tree(tmp_path / "accepted", {"a.txt": b"x" * 10, "b.txt": b"y" * 10})
+    cand = _tree(tmp_path / "cand", {"a.txt": b"x" * 11, "b.txt": b"y" * 10})
+    opened: list[str] = []
+    real_open = open
+
+    def spy(path, *a, **k):
+        opened.append(Path(path).parent.name + "/" + Path(path).name)
+        return real_open(path, *a, **k)
+    monkeypatch.setattr("builtins.open", spy)
+    missing, changed = intake.sync_tree_table(cand, lambda rel: acc / rel, {}, ["a.txt", "b.txt"])
+    assert (missing, changed) == ([], ["a.txt"])
+    # a.txt differs in size: the candidate's bytes are never read, the expected file is read once to copy it;
+    # b.txt has the same size: read on both sides to compare
+    assert opened.count("cand/a.txt") == 0 and opened.count("accepted/a.txt") == 1
+    assert opened.count("cand/b.txt") == 1 and opened.count("accepted/b.txt") == 1
+    assert (cand / "a.txt").read_bytes() == b"x" * 10

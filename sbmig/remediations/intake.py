@@ -490,7 +490,7 @@ def _same_bytes(a: Path, b: Path, size_a: int) -> bool:
 class SyncFailed(RemediationError):
     """manifest 경로 일부를 기대하는 바이트로 되돌리지 못했을 때 던지는 오류. 되돌린 경로와 실패한 경로를 함께 담는다.
 
-    Raised by `sync_tree` / `sync_tree_table` after EVERY path was tried: `missing` / `changed` = what was put back,
+    Raised by `sync_tree_table` after EVERY path was tried: `missing` / `changed` = what was put back,
     `failed` = `[(path, error type name, error code)]` in path order. `code` is the first failure's code (a
     `RemediationError`'s own code, e.g. `symlink`, else `sync_failed`)."""
 
@@ -639,53 +639,6 @@ def _mode_differs(tree: Path, rel: str, exec_bit: bool, perm_fixed: bool) -> boo
     return perm_fixed or _is_exec(os.lstat(tree / rel).st_mode) != exec_bit
 
 
-def sync_tree(tree: Path, expected: Any, paths: list[str]) -> tuple[list[str], list[str]]:
-    """``tree``의 manifest 파일을 기대하는 바이트(``expected(path)``가 가리키는 파일)와 맞춘다.
-    없는 파일은 되살리고 바이트가 다른 파일은 덮어쓰며, (되살린 경로, 덮어쓴 경로)를 정렬해서 반환한다.
-    되돌리지 못한 경로가 있어도 모든 경로를 시도한 뒤 ``SyncFailed``를 던진다.
-
-    Bring every path of `paths` in `tree` to the bytes of the file `expected(path)` names (normally `accepted/<p>`,
-    `rounds/<r>/applied/<p>` or the fix loop's `fixed/<p>`): a path missing in `tree` is copied back, a path whose
-    bytes differ is overwritten (size first, then bytes; no hashing). The exec bit comes from the expected file. A
-    path whose expected file does not exist is left alone. Symlinks on either side are refused (code `symlink`),
-    never followed or created; a directory where a file belongs is `special_file`. Every
-    path is tried; a write refused for permissions is tried once more after the folders on its path and the file got
-    the owner's write bit. A candidate file with the right bytes whose executable bit differs from the expected file,
-    or that had to be made readable first (a build left it `chmod 000`), gets the canonical mode back (0755 / 0644) and
-    counts as changed. Any path that could not be put back → `SyncFailed` (with what was put back) after the last
-    path. Returns `(missing, changed)`, both sorted. `sync_tree_table` is the same with a recorded size + sha256 +
-    exec-bit table instead of reading the expected files."""
-    tree = Path(tree)
-    missing: list[str] = []
-    changed: list[str] = []
-    failed: list[tuple[str, str, str]] = []
-    for raw in sorted(set(paths)):
-        rel = raw
-        try:
-            rel = _safe_rel(raw)
-            src = Path(expected(rel))
-            st_src = _source_stat(src, rel)
-            if st_src is None:
-                continue                          # 기대하는 파일이 없으면 판단할 수 없으므로 손대지 않는다
-            st_dst = _target_stat(tree, rel)
-            want_exec = _is_exec(st_src.st_mode)
-            if st_dst is not None:
-                same, fixed = _readable(tree, rel, lambda: _same_bytes(tree / rel, src, st_dst.st_size))
-                if same:
-                    # 바이트는 같아도 빌드가 실행 비트나 읽기 권한을 바꿨으면 되돌린다
-                    if _mode_differs(tree, rel, want_exec, fixed):
-                        _put_mode_back(tree, rel, want_exec)
-                        changed.append(rel)
-                    continue
-            _write_back(tree, rel, src, _canonical_mode(want_exec))
-            (changed if st_dst is not None else missing).append(rel)
-        except Exception as e:  # noqa: BLE001 - 모든 경로를 시도한 뒤 한꺼번에 알린다
-            failed.append(_failure(rel, e))
-    if failed:
-        raise SyncFailed(missing, changed, failed)
-    return missing, changed
-
-
 NOT_REGULAR = "NOT_REGULAR"
 
 
@@ -723,14 +676,19 @@ def sync_tree_table(tree: Path, expected: Any, table: dict[str, tuple],
     """``tree``의 manifest 파일을 기록된 (크기, sha256) 표와 비교해 다른 파일만 기대하는 파일에서 되돌린다.
     트리의 각 파일은 많아야 한 번 읽고, 같은 파일의 기대하는 파일은 열지 않는다.
 
-    `sync_tree` against a recorded table (`rounds/<r>/expected.json`, plus the fix's files): each path of `tree` is
-    compared by size, then by its sha256 (so each candidate file is read at most once), and only a missing or
-    differing path opens `expected(path)` and is overwritten; the copied bytes must hash to the recorded sha256 (else
-    code `expected_changed`). A row `(size, sha256, exec)` also names the executable bit: a file with the right bytes
-    and another bit (or one a build left unreadable, made readable once to hash it) gets the canonical mode back and
-    counts as changed; a row without the bit takes it from the expected file. A path the table does not list falls
-    back to `sync_tree`'s byte comparison. Same refusals, permission retry, `SyncFailed` after every path, and return
-    value as `sync_tree`."""
+    Bring every path of `paths` in `tree` to the bytes of the file `expected(path)` names (normally `accepted/<p>`,
+    `rounds/<r>/applied/<p>` or the fix loop's `fixed/<p>`), against a recorded table (`rounds/<r>/expected.json`,
+    plus the fix's files): each path of `tree` is compared by size, then by its sha256 (so each candidate file is read
+    at most once), and only a missing or differing path opens `expected(path)` and is overwritten; the copied bytes
+    must hash to the recorded sha256 (else code `expected_changed`). A row `(size, sha256, exec)` also names the
+    executable bit: a file with the right bytes and another bit (or one a build left unreadable, made readable once to
+    hash it) gets the canonical mode back (0755 / 0644) and counts as changed; a row without the bit takes it from the
+    expected file. A path the table does not list is compared byte for byte with its expected file (size first), and
+    left alone when that file does not exist. Symlinks on either side are refused (code `symlink`), never followed or
+    created; a directory where a file belongs is `special_file`. Every path is tried; a write refused for permissions
+    is tried once more after the folders on its path and the file got the owner's write bit. Any path that could not
+    be put back → `SyncFailed` (with what was put back) after the last path. Returns `(missing, changed)`, both
+    sorted. (v2.1z-bs: the byte-only `sync_tree` beside it was removed; nothing called it.)"""
     tree = Path(tree)
     missing: list[str] = []
     changed: list[str] = []

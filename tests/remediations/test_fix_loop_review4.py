@@ -400,28 +400,16 @@ def test_exec_bit_changed_by_a_build_is_put_back_and_reported(tmp_path):
         assert (zf.getinfo("src/a.txt").external_attr >> 16) & 0o777 == 0o644
 
 
-def test_exec_bit_put_back_by_the_byte_sync_too(tmp_path):
-    tree, exp, paths = _tree_pair(tmp_path)
-    os.chmod(exp / "src" / "a.txt", 0o755)                  # the expected file is executable
-    missing, changed = intake_mod.sync_tree(tree, lambda r: exp / r, paths)
-    assert (missing, changed) == ([], ["src/a.txt"]) and _mode(tree / "src" / "a.txt") == 0o755
-    assert intake_mod.sync_tree(tree, lambda r: exp / r, paths) == ([], [])
-
-
 @NO_ROOT
-@pytest.mark.parametrize("fn", ["sync_tree", "sync_tree_table"])
 @pytest.mark.parametrize("same", [True, False])
-def test_an_unreadable_file_is_made_readable_once_and_put_back(tmp_path, fn, same):
+def test_an_unreadable_file_is_made_readable_once_and_put_back(tmp_path, same):
     tree, exp, paths = _tree_pair(tmp_path)
     f = tree / "src" / "a.txt"
     if not same:
         f.write_bytes(b"HELLO\n")                           # same size, other bytes
     os.chmod(f, 0)
     try:
-        if fn == "sync_tree":
-            res = intake_mod.sync_tree(tree, lambda r: exp / r, paths)
-        else:
-            res = intake_mod.sync_tree_table(tree, lambda r: exp / r, intake_mod.file_table(exp, paths), paths)
+        res = intake_mod.sync_tree_table(tree, lambda r: exp / r, intake_mod.file_table(exp, paths), paths)
         assert res == ([], ["src/a.txt"])
         assert f.read_bytes() == b"hello\n" and _mode(f) == 0o644
     finally:
