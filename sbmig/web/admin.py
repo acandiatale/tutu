@@ -199,6 +199,9 @@ class AdminAuth:
         """로그인 실패를 기록하고 창 안의 실패 횟수를 반환한다."""
         now = self.clock()
         with self._lock:
+            # 창이 지난 실패만 남은 다른 주소는 지운다. 다시 물어도 창 안의 실패만 세므로 답은 같다
+            for other in [a for a, ts in self._failures.items() if a != addr and not any(now - t < FAIL_WINDOW_S for t in ts)]:
+                del self._failures[other]
             times = self._recent(addr, now)
             times.append(now)
             self._failures[addr] = times

@@ -581,13 +581,41 @@ def _abort_reason_ko(reason: str) -> str | None:
     return None
 
 
-def _recorded_project(rd: Path) -> str | None:
+class _RunRecords:
+    """상태 응답 한 번 동안 request.json과 web-status.json을 처음 필요할 때 한 번씩만 읽어 두는 클래스.
+
+    One status answer's view of `control/request.json` and `web-status.json`: each file is read at most once, on first
+    use, and every later question of the same answer gets that same content (`RunManager.status` used to open
+    request.json three times and web-status.json four times per call)."""
+
+    _UNREAD = object()
+
+    def __init__(self, rd: Path) -> None:
+        self.rd = rd
+        self._request: Any = self._UNREAD
+        self._web: Any = self._UNREAD
+
+    @property
+    def request(self) -> RequestRecord | None:
+        if self._request is self._UNREAD:
+            self._request = RequestRecord.read(self.rd)
+        return self._request
+
+    @property
+    def web(self) -> dict[str, Any] | None:
+        if self._web is self._UNREAD:
+            self._web = _read_web_status(self.rd)
+        return self._web
+
+
+def _recorded_project(rd: Path, records: _RunRecords | None = None) -> str | None:
     # 메모리에 없는 실행의 프로젝트명을 request.json(Job 모드), web-status.json(in-process),
     # journal 첫 줄들의 web_run(끝나기 전에 서버가 내려간 in-process 실행) 순으로 찾는다
-    rec = RequestRecord.read(rd)
+    records = records or _RunRecords(rd)
+    rec = records.request
     if rec is not None:
         return rec.project if isinstance(rec.project, str) and rec.project else None
-    web = _read_web_status(rd)
+    web = records.web
     if web is not None and "project" in web:
         val = web.get("project")
         return val if isinstance(val, str) and val else None
@@ -609,15 +637,13 @@ def _recorded_project(rd: Path) -> str | None:
     return None
 
 
-def _recorded_upload(rd: Path) -> str | None:
+def _recorded_upload(rd: Path, records: _RunRecords | None = None) -> str | None:
     # 메모리에 없는 실행의 원래 파일 이름을 request.json(Job 모드), web-status.json(in-process) 순으로 찾는다
-    rec = RequestRecord.read(rd)
+    records = records or _RunRecords(rd)
+    rec = records.request
     if rec is not None:
         return rec.upload_name or rec.upload or None
-    try:
-        data = json.loads((rd / WEB_STATUS_FILE).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
+    data = records.web
     up = data.get("upload") if isinstance(data, dict) else None
     return up if isinstance(up, str) and up else None
 
@@ -691,35 +717,46 @@ def run_llm_calls(run_dir: Path, report: dict[str, Any]) -> dict[str, Any]:
     return {"llm_calls": total, "remediation_llm_calls": rem, "remediation_llm_usage_unknown": unknown}
 
 
+def _report_list(report: dict[str, Any], key: str) -> list[Any]:
+    """보고서의 목록 항목을 반환한다. 없거나 목록이 아니면 빈 목록을 반환한다.
+
+    A list field of report.json; a missing field or one of another type counts as absent (`[]`)."""
+    val = report.get(key)
+    return val if isinstance(val, list) else []
+
+
 def _abort_reason(report: dict[str, Any]) -> str | None:
     # 엔진이 실행을 중단한 사유를 찾는다.
     # Orchestrator._abort가 manual_followups에 "run aborted: <사유>"로 남기며, 첫 줄이 첫 사유다
-    followups = [item for item in report.get("manual_followups") or [] if isinstance(item, str)]
+    followups = [item for item in _report_list(report, "manual_followups") if isinstance(item, str)]
     for item in followups:
         if item.startswith("run aborted: "):
             return item[len("run aborted: "):].strip() or None
     # 수정 루프가 HTTP 저장소 차단으로 멈춘 실행은 "run aborted:" 줄 없이 인수인계 문장만 남기므로 그 문장을 사유로 쓴다
     from sbmig.report.handover import HTTP_BLOCKED_FLAG, HTTP_BLOCKED_PREFIX
-    if HTTP_BLOCKED_FLAG in (report.get("flags") or []):
+    if HTTP_BLOCKED_FLAG in _report_list(report, "flags"):
         for item in followups:
             if item.startswith(HTTP_BLOCKED_PREFIX):
                 return item.strip() or None
     return None
 
 
-def _recorded_flow(rd: Path) -> str:
+def _recorded_flow(rd: Path, records: _RunRecords | None = None) -> str:
     # 메모리에 없는 실행의 실행 방식을 request.json(Job 모드), web-status.json(in-process),
     # report.json(엔진) 순으로 찾고, 없으면 full로 본다
-    rec = RequestRecord.read(rd)
+    records = records or _RunRecords(rd)
+    rec = records.request
     if rec is not None:
         return rec.flow or FLOW_FULL
-    for name in (WEB_STATUS_FILE, "report.json"):
-        try:
-            data = json.loads((rd / name).read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            continue
-        if isinstance(data, dict) and data.get("flow") in RUN_FLOWS:
-            return data["flow"]
+    web = records.web
+    if isinstance(web, dict) and web.get("flow") in RUN_FLOWS:
+        return web["flow"]
+    try:
+        data = json.loads((rd / "report.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return FLOW_FULL
+    if isinstance(data, dict) and data.get("flow") in RUN_FLOWS:
+        return data["flow"]
     return FLOW_FULL
 
 
@@ -2491,15 +2528,18 @@ class RunManager:
         process's line; `slot` for a Job run that holds or held one."""
         run = self.runs.get(run_id)
         rd = self.run_dir(run_id)
-        info: dict[str, Any] = {"run_id": run_id, "run_dir": str(rd), "exists": rd.is_dir() or run is not None,
+        # request.json과 web-status.json은 이 응답에서 한 번씩만 읽는다
+        records = _RunRecords(rd)
+        # 실행 폴더 경로는 화면이 쓰지 않으므로 보내지 않는다. 서버 코드는 run_dir()로 찾는다
+        info: dict[str, Any] = {"run_id": run_id, "exists": rd.is_dir() or run is not None,
                                 "mode": self.effective_mode, "parallel": self.parallel(),
                                 # 실행 방식이며 화면의 단계 표시, 결과 칸, 지난 실행 목록이 이 값을 따른다
-                                "flow": (run.flow or FLOW_FULL) if run is not None else _recorded_flow(rd),
+                                "flow": (run.flow or FLOW_FULL) if run is not None else _recorded_flow(rd, records),
                                 # 사용자가 올린 파일 이름 그대로다.
                                 # 화면이 실행을 이 이름으로 보여 주며, 이전 in-process 실행에는 없을 수 있다
-                                "upload": (run.upload if run is not None else None) or _recorded_upload(rd)}
+                                "upload": (run.upload if run is not None else None) or _recorded_upload(rd, records)}
         # 업로드할 때 입력한 프로젝트명이며, 이전 실행에는 이 키가 없고 화면은 파일 이름을 쓴다
-        project = (run.project if run is not None else None) or _recorded_project(rd)
+        project = (run.project if run is not None else None) or _recorded_project(rd, records)
         if project:
             info["project"] = project
         control: ControlState | None = None
@@ -2529,7 +2569,7 @@ class RunManager:
                 info["error"] = run.error
         else:   # evicted, or a run of an earlier server process: only the directory is known
             control = ControlState.read(rd) if rd.is_dir() else None     # v2.1z-ac: Main's control state speaks first
-            saved = _read_web_status(rd) or _read_job_status(rd)      # the pod's job-status.json also ends a run
+            saved = records.web or _read_job_status(rd)      # the pod's job-status.json also ends a run
             if control is not None:
                 info["attempt"] = control.attempt
                 info["control"] = control.state
@@ -2562,7 +2602,7 @@ class RunManager:
                     info["job"] = {"name": job.get("job"), "phase": None, "pod": None}
                     info["node"] = job.get("last_node")
                 else:
-                    info["state"] = "finished" if (rd / "report.json").is_file() else ("unknown" if rd.is_dir() else "missing")
+                    info["state"] = _folder_state(rd)
                 info["exit_code"] = None
         # 파드가 시작하기 전에 중지해 Job을 지운 실행은 화면에 그 사실을 한 줄로 보여 준다
         if str(info.get("error") or "").startswith(STOP_BEFORE_START_ERROR):
@@ -2580,12 +2620,16 @@ class RunManager:
         if rep.is_file():
             try:
                 data = json.loads(rep.read_text(encoding="utf-8"))
+                # 객체가 아닌 JSON은 읽지 못한 보고서와 같게 본다. 관리자 화면의 _read_json과 같은 규칙이다
+                if not isinstance(data, dict):
+                    raise ValueError("report.json is not a JSON object")
                 # 사내 프레임워크 프로젝트의 줄인 범위는 보고서의 profile.framework가 먼저다
                 framework = _framework_from_report(data)
-                from_report = isinstance(data, dict)
+                from_report = True
                 info["success"] = data.get("success")
-                info["blocked"] = len(data.get("blocked") or [])
-                info["unresolved"] = len(data.get("unresolved") or [])
+                # 목록이 아닌 값은 없는 것으로 본다
+                info["blocked"] = len(_report_list(data, "blocked"))
+                info["unresolved"] = len(_report_list(data, "unresolved"))
                 info.update(run_llm_calls(rd, data))
                 # 실행 중단 사유(접수 거절 등)와 조치의 짧은 요약이 로그 탭에
                 # 묻히지 않도록 화면 결과 칸에 문장으로 보여 준다
@@ -2605,11 +2649,15 @@ class RunManager:
                     if isinstance(rsum.get("reasons"), list):
                         info["remediation"]["reasons"] = [str(x) for x in rsum["reasons"]][:10]
                 from sbmig.report.result_line import entry_counts
-                info["open"], info["resolved"] = entry_counts(data.get("error_entries") or [])   # v2.1 error list
+                info["open"], info["resolved"] = entry_counts(_report_list(data, "error_entries"))   # v2.1 error list
             except (OSError, ValueError):
                 pass
+        if from_report:
+            # 보고서가 있으면 저널을 읽은 기록은 더 쓰지 않는다. 보고서가 다시 없어지면 저널을 처음부터 읽어 같은 값을 얻는다
+            with self._fw_lock:
+                self._fw_scans.pop(run_id, None)
         # 보고서가 아직 없으면 저널의 framework_project / plan 이벤트에서 찾는다. 다른 실행에는 이 키가 없다
-        if not from_report and info.get("flow") != FLOW_REMEDIATION:
+        elif info.get("flow") != FLOW_REMEDIATION:
             try:
                 framework = self._journal_framework(run_id, rd)
             except Exception:  # noqa: BLE001 - 상태 응답은 프레임워크 정보 때문에 실패하면 안 된다
@@ -2651,6 +2699,24 @@ class RunManager:
         running, waiting = self._turns.counts()
         return {"slots": self.max_parallel, "running": running, "waiting": waiting}
 
+    def _unreadable_row(self, run_id: str) -> dict[str, Any]:
+        """파일을 하나도 읽지 못한 실행의 목록 줄을 반환한다. status()가 그런 폴더에 내는 기본 항목과 같다.
+
+        The list row of a run none of whose files can be read: the keys `status()` gives such a folder (`flow` full,
+        no upload, no exit code, the state by `_folder_state`). Used by `list_runs` when building one row failed. Never
+        raises for a file system error: a folder the server cannot enter (mode 000, another uid on NFS) is `unknown`."""
+        rd = self.run_dir(run_id)
+        try:
+            exists = rd.is_dir()
+        except OSError:
+            exists = True                      # 목록에 올라온 폴더다
+        try:
+            state = _folder_state(rd)
+        except OSError:                        # 들어갈 수 없는 폴더는 상태를 알 수 없다
+            state = "unknown"
+        return {"run_id": run_id, "exists": exists or run_id in self.runs, "mode": self.effective_mode,
+                "flow": FLOW_FULL, "upload": None, "state": state, "exit_code": None}
+
     def list_runs(self) -> list[dict[str, Any]]:
         """메모리와 출력 폴더에 있는 모든 실행의 상태를 최신순으로 반환한다(``_``로 시작하는 폴더는 제외).
         ``parallel``은 라우트가 한 번만 붙이고, ``queue`` / ``slot``은 알 수 있는 경우에만 담는다.
@@ -2658,10 +2724,20 @@ class RunManager:
         Every run's status, newest first; `parallel` is left to the route (once), `queue` / `slot` stay when known."""
         ids = set(self.runs)
         if self.out_dir.is_dir():
-            ids |= {p.name for p in self.out_dir.iterdir() if p.is_dir() and not p.name.startswith("_")}
+            ids |= {p.name for p in self.out_dir.iterdir() if not p.name.startswith("_") and _is_dir(p)}
+        # 폴더도 메모리도 없는 실행의 저널 읽기 기록은 지운다. 다시 물으면 저널을 처음부터 읽는다
+        with self._fw_lock:
+            for rid in [k for k in self._fw_scans if k not in ids]:
+                del self._fw_scans[rid]
         rows = []
         for rid in ids:
-            st = self.status(rid)
+            try:
+                st = self.status(rid)
+            except Exception as e:  # noqa: BLE001 - 실행 하나 때문에 목록 전체가 실패하면 안 된다
+                # 파일을 읽지 못한 실행처럼 싣는다. 응답과 경고에는 예외 문장을 넣지 않는다
+                log.warning("run list: the row of run %s could not be built (%s); listed as unreadable",
+                            rid, type(e).__name__)
+                st = self._unreadable_row(rid)
             st.pop("parallel", None)
             run = self.runs.get(rid)
             try:
@@ -2838,6 +2914,8 @@ def _journal_job(rd: Path) -> dict[str, Any] | None:
                     ev = json.loads(line)
                 except ValueError:
                     continue
+                if not isinstance(ev, dict):    # 객체가 아닌 줄은 읽지 못한 줄처럼 건너뛴다
+                    continue
                 if ev.get("event") == "job_created":
                     created = ev
                 elif ev.get("event") == "graph_node_end":
@@ -2852,6 +2930,19 @@ def _journal_job(rd: Path) -> dict[str, Any] | None:
         return {"job": created.get("job"), "last_node": last_node}
     except (OSError, ValueError, TypeError):
         return None
+
+
+def _is_dir(p: Path) -> bool:
+    # 확인하지 못한 항목은 실행 폴더로 보지 않는다(NFS에서 지워진 폴더의 ESTALE 등)
+    try:
+        return p.is_dir()
+    except OSError:
+        return False
+
+
+def _folder_state(rd: Path) -> str:
+    # 상태 파일이 없는 실행의 상태를 보고서와 폴더 유무로 정한다
+    return "finished" if (rd / "report.json").is_file() else ("unknown" if rd.is_dir() else "missing")
 
 
 def _read_job_status(rd: Path) -> dict[str, Any] | None:

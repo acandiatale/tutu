@@ -63,7 +63,7 @@ def test_flow_defaults_to_full_and_is_reported(client: TestClient):
     assert _manager(client).runs[rid].flow == "full"
     (row,) = client.get("/api/runs").json()["runs"]
     assert row["flow"] == "full"
-    lines = [json.loads(ln) for ln in (Path(st["run_dir"]) / "journal.jsonl").read_text(encoding="utf-8").splitlines()]
+    lines = [json.loads(ln) for ln in (_manager(client).run_dir(rid) / "journal.jsonl").read_text(encoding="utf-8").splitlines()]
     assert next(e for e in lines if e["event"] == "web_run")["flow"] == "full"
 
 
