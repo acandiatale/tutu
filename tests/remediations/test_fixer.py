@@ -248,6 +248,81 @@ def test_compare_trees(tmp_path):
     assert compare_trees(a, b, loops, editable)[1] == f"{BAR} must not be deleted"
 
 
+def _compare_bytes_first(tree, work, loops, editable, attempted=None):
+    """`compare_trees` as it was before v2.1z-br: the bytes were compared before `by_attempt` was looked at."""
+    # Where this reference and `compare_trees` part ways on purpose (docs/INTERFACES.md "v2.1z-br"): a path no attempt
+    # changed that is unreadable in the work copy, or absent from the original tree, raised here (`PermissionError` /
+    # `FileNotFoundError`); `compare_trees` skips it. The differential test below covers neither case; the two tests
+    # after it pin the new result.
+    changed = []
+    for p in loops:
+        a, b = Path(tree) / p, Path(work) / p
+        if b.is_symlink():
+            return changed, fixer_mod._not_editable_reason(p)
+        by_attempt = attempted is None or p in attempted
+        if not b.is_file():
+            if by_attempt:
+                return changed, f"{p} must not be deleted"
+            continue
+        if p == fixer_mod.GITIGNORE:
+            continue
+        if a.stat().st_size == b.stat().st_size and a.read_bytes() == b.read_bytes():
+            continue
+        if not by_attempt:
+            continue
+        if p not in editable:
+            return changed, fixer_mod._not_editable_reason(p)
+        changed.append(p)
+    return sorted(changed), None
+
+
+@pytest.mark.parametrize("attempted", [None, set(), {FOO}, {BAR}, {FOO, "mvnw"}, {FOO, BAR, "mvnw", "pom.xml"}])
+@pytest.mark.parametrize("work_edit", ["none", "foo", "foo+mvnw", "bar-gone", "mvnw+pom", "gitignore"])
+def test_compare_trees_reads_no_bytes_of_a_path_no_attempt_changed(tmp_path, monkeypatch, attempted, work_edit):
+    """v2.1z-br: `by_attempt` is looked at before any byte is read. Same result as the bytes-first order for every
+    combination; a path outside `attempted` is never read."""
+    files = {**FILES, "mvnw": "sh\n"}
+    a = make_tree(tmp_path / "a", b"x\n", files=files)
+    edits = {"foo": {FOO: "class Foo { ok }\n"}, "foo+mvnw": {FOO: "class Foo { ok }\n", "mvnw": "changed\n"},
+             "mvnw+pom": {"mvnw": "changed!\n", "pom.xml": "<project/>\n"}}.get(work_edit, {})
+    b = make_tree(tmp_path / "b", b"x\ntarget/\n" if work_edit == "gitignore" else b"x\n", files={**files, **edits})
+    if work_edit == "bar-gone":
+        (b / BAR).unlink()
+    loops = sorted([*MANIFEST, ".gitignore", "mvnw"])
+    editable = {FOO, BAR}
+    want = _compare_bytes_first(a, b, loops, editable, attempted)
+    read: list[str] = []
+    real = Path.read_bytes
+    monkeypatch.setattr(Path, "read_bytes", lambda self: read.append(self.name) or real(self))
+    assert compare_trees(a, b, loops, editable, attempted) == want
+    if attempted is not None:
+        names = {Path(p).name for p in attempted}
+        assert set(read) <= names, (read, attempted)
+
+
+@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root reads a file with mode 000")
+def test_compare_trees_skips_a_path_no_attempt_changed_that_is_unreadable_in_the_work_copy(tmp_path):
+    """v2.1z-br: the bytes-first order raised `PermissionError` here; the path is now skipped, the comparison goes on."""
+    a = make_tree(tmp_path / "a", files={FOO: "class Foo { broken }\n", BAR: "class Bar {}\n"})
+    b = make_tree(tmp_path / "b", files={FOO: "class Foo { ok }\n", BAR: "class Bar {}\n"})
+    os.chmod(b / BAR, 0)
+    try:
+        with pytest.raises(PermissionError):
+            _compare_bytes_first(a, b, [BAR, FOO], {FOO, BAR}, {FOO})
+        assert compare_trees(a, b, [BAR, FOO], {FOO, BAR}, {FOO}) == ([FOO], None)
+    finally:
+        os.chmod(b / BAR, 0o644)
+
+
+def test_compare_trees_skips_a_path_no_attempt_changed_that_is_absent_from_the_original_tree(tmp_path):
+    """v2.1z-br: the bytes-first order raised `FileNotFoundError` here; the path is now skipped, the comparison goes on."""
+    a = make_tree(tmp_path / "a", files={FOO: "class Foo { broken }\n"})
+    b = make_tree(tmp_path / "b", files={FOO: "class Foo { ok }\n", BAR: "class Bar {}\n"})
+    with pytest.raises(FileNotFoundError):
+        _compare_bytes_first(a, b, [BAR, FOO], {FOO, BAR}, {FOO})
+    assert compare_trees(a, b, [BAR, FOO], {FOO, BAR}, {FOO}) == ([FOO], None)
+
+
 @pytest.mark.parametrize("script, reason", [
     (write_script({"pom.xml": "<project/>\n", FOO: "class Foo { ok }\n"}), "pom.xml must not be edited: pom.xml"),
     (write_script({"src/main/java/com/x/New.java": "class New {}\n", FOO: "class Foo { ok }\n"}),

@@ -35,7 +35,6 @@ INTERRUPTED = "INTERRUPTED"              # 실행 중에 서버가 내려갔다.
 SUCCEEDED = "SUCCEEDED"                  # 성공 조건을 모두 만족했다(evaluate 참고)
 INCOMPLETE = "INCOMPLETE"                # 끝났지만 성공은 아니다. 남은 취약점, 직접 확인, 미완료 검사 등
 FAILED = "FAILED"                        # 조치 전 빌드 실패, 수정본 빌드 실패, 검증 실패 등
-STATUSES = (QUEUED, RUNNING, AWAITING_CONFIRMATION, STOPPED, INTERRUPTED, SUCCEEDED, INCOMPLETE, FAILED)
 TERMINAL = (SUCCEEDED, INCOMPLETE, FAILED)                       # 더 이상 진행하지 않는 상태
 RESUMABLE = (AWAITING_CONFIRMATION, STOPPED, INTERRUPTED)
 ACTIVE = (QUEUED, RUNNING)
@@ -369,10 +368,6 @@ class ResolvedModel(Record):
     roots: list[str] = field(default_factory=list)
     _nested = {"modules": ModuleResolution}
 
-    def versions_of(self, ga: str) -> set[str]:
-        """이 g:a가 모든 모듈에서 해석된 버전들을 집합으로 반환한다."""
-        return {d.version for m in self.modules for d in m.dependencies if d.ga == ga}
-
 
 @dataclass
 class PackagedLib(Record):
@@ -407,7 +402,6 @@ O_TRANSITIVE = "transitive"                   # 프로젝트에 선언 없이 �
 O_PLUGIN = "plugin"                           # 빌드 플러그인이나 그 의존성이라 자동으로 바꾸지 않는다
 O_VENDORED = "vendored"                       # 트리에 들어 있는 파일(jar, js 등)이라 자동으로 바꾸지 않는다
 O_UNMAPPED = "unmapped"                       # Maven 해석 결과와 연결하지 못해 자동으로 바꾸지 않는다
-AUTO_ORIGINS = (O_DIRECT_LITERAL, O_DIRECT_PROPERTY, O_OWN_MANAGEMENT, O_PARENT_MANAGED, O_BOM_MANAGED, O_TRANSITIVE)
 MANUAL_ORIGINS = (O_PLUGIN, O_VENDORED, O_UNMAPPED)
 
 

@@ -262,68 +262,12 @@ def test_accept_keeps_src_target_files_and_the_note_names_only_real_output(tmp_p
     assert res.notes == ["build output left out: 1 file(s) under target"]
 
 
-# ---------------------------------------------------------------------------- restore_missing
+# ---------------------------------------------------------------------------- helpers
 def _tree(root: Path, files: dict[str, bytes]) -> Path:
     for rel, data in files.items():
         (root / rel).parent.mkdir(parents=True, exist_ok=True)
         (root / rel).write_bytes(data)
     return root
-
-
-def test_restore_missing_copies_back_only_what_is_gone(tmp_path):
-    src = _tree(tmp_path / "accepted", {"pom.xml": POM, "app/src/A.java": b"class A {}", "mvnw": b"#!/bin/sh\n",
-                                         "app/res/data.bin": b"\x00\x01"})
-    (src / "mvnw").chmod(0o755)
-    cand = _tree(tmp_path / "cand", {"pom.xml": b"<project>changed</project>"})
-    paths = ["pom.xml", "app/src/A.java", "mvnw", "app/res/data.bin", "gone/everywhere.txt"]
-    assert intake.restore_missing(cand, src, paths) == ["app/res/data.bin", "app/src/A.java", "mvnw"]
-    assert (cand / "pom.xml").read_bytes() == b"<project>changed</project>"      # an existing path is never touched
-    assert (cand / "app/src/A.java").read_bytes() == b"class A {}"
-    assert (cand / "app/res/data.bin").read_bytes() == b"\x00\x01"
-    assert (cand / "mvnw").stat().st_mode & 0o111
-    assert not (cand / "app/src/A.java").stat().st_mode & 0o111
-    assert not (cand / "gone").exists()                                           # missing in both: skipped
-    assert intake.restore_missing(cand, src, paths) == []                         # idempotent
-
-
-def test_restore_missing_never_follows_or_creates_symlinks(tmp_path):
-    from sbmig.remediations.models import RemediationError
-    outside = tmp_path / "outside"
-    outside.mkdir()
-    src = _tree(tmp_path / "accepted", {"a/B.java": b"class B {}", "c/D.java": b"class D {}"})
-    cand = tmp_path / "cand"
-    cand.mkdir()
-    (cand / "a").symlink_to(outside, target_is_directory=True)        # a link on the candidate side
-    with pytest.raises(RemediationError) as e:
-        intake.restore_missing(cand, src, ["a/B.java"])
-    assert e.value.code == "symlink" and not any(outside.iterdir())
-    (src / "c/D.java").unlink()
-    (src / "c/D.java").symlink_to(outside / "x")                      # a link on the source side
-    (outside / "x").write_bytes(b"secret")
-    cand2 = tmp_path / "cand2"
-    cand2.mkdir()
-    with pytest.raises(RemediationError) as e:
-        intake.restore_missing(cand2, src, ["c/D.java"])
-    assert e.value.code == "symlink" and not (cand2 / "c/D.java").exists()
-
-
-def test_restore_missing_leaves_an_existing_link_alone(tmp_path):
-    src = _tree(tmp_path / "accepted", {"a.txt": b"orig"})
-    cand = tmp_path / "cand"
-    cand.mkdir()
-    (cand / "a.txt").symlink_to(tmp_path / "nowhere")                 # dangling: lstat sees it, so it exists
-    assert intake.restore_missing(cand, src, ["a.txt"]) == []
-    assert (cand / "a.txt").is_symlink()
-
-
-def test_restore_missing_refuses_unsafe_paths(tmp_path):
-    from sbmig.remediations.models import RemediationError
-    src = _tree(tmp_path / "accepted", {"a.txt": b"x"})
-    cand = tmp_path / "cand"
-    cand.mkdir()
-    for bad in ("../a.txt", "/etc/passwd", "a/"):
-        with pytest.raises(RemediationError):
-            intake.restore_missing(cand, src, [bad])
 
 
 # ---------------------------------------------------------------------------- v2.1z-bk: sync_tree

@@ -166,7 +166,10 @@ def compare_trees(tree: Path, work: Path, loops: list[str], editable: set[str],
     missing loop path, a symlink, or a difference in a non-editable path other than the root `.gitignore` (git_init
     writes sbmig's lines into it) is a violation. v2.1z-bk: with `attempted` (the paths the work copy's history
     records as changed by an attempt since the base commit) a difference or a missing file outside that set is a build
-    leftover and ignored; only a symlink is a violation wherever it is."""
+    leftover and ignored; only a symlink is a violation wherever it is. Such a path is skipped before its bytes are
+    read: the result is the same as comparing first, except that a path no attempt changed which is unreadable in
+    the work copy or absent from `tree` no longer raises (`PermissionError` / `FileNotFoundError`, which
+    `run_fix_loop` turned into a not-fixed result); it is skipped and the comparison goes on."""
     changed: list[str] = []
     for p in loops:
         a, b = Path(tree) / p, Path(work) / p
@@ -177,12 +180,10 @@ def compare_trees(tree: Path, work: Path, loops: list[str], editable: set[str],
             if by_attempt:
                 return changed, f"{p} must not be deleted"
             continue
-        if p == GITIGNORE:
-            continue
+        if p == GITIGNORE or not by_attempt:
+            continue                                  # 시도가 바꾸지 않은 경로의 차이는 빌드가 남긴 것이므로 읽지 않는다
         if a.stat().st_size == b.stat().st_size and a.read_bytes() == b.read_bytes():
             continue
-        if not by_attempt:
-            continue                                  # 빌드가 남긴 차이다. 시도의 수정으로 보지 않는다
         if p not in editable:
             return changed, _not_editable_reason(p)
         changed.append(p)

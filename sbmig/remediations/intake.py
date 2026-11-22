@@ -474,44 +474,6 @@ def _real_dirs_to(base: Path, rel: str) -> Path:
     return cur
 
 
-def restore_missing(tree: Path, source: Path, paths: list[str]) -> list[str]:
-    """``paths`` 가운데 ``tree``에 없는 파일을 ``source``에서 복사해 되살리고, 되살린 경로를 정렬해서 반환한다.
-    이미 있는 경로는 덮어쓰지 않고, 양쪽 모두 없는 경로는 건너뛴다. 권한은 실행 비트만 옮기고 링크는 따라가지 않는다.
-
-    Copy back from `source` (normally `accepted/`) every path of `paths` that no longer exists in `tree` (lstat),
-    bytes and exec bit only; returns the restored paths, sorted. A path that exists in `tree` in any form is never
-    touched; a path missing in both is skipped and not returned. Symlinks on either side are refused like
-    `copy_tree` (`RemediationError(code="symlink")`), never followed or created."""
-    tree, source = Path(tree), Path(source)
-    restored: list[str] = []
-    for rel in sorted(set(paths)):
-        rel = _safe_rel(rel)
-        target = tree / rel
-        try:
-            os.lstat(target)
-            continue                          # 링크든 폴더든 무엇이 있으면 손대지 않는다
-        except FileNotFoundError:
-            pass
-        except NotADirectoryError:
-            raise RemediationError(f"not a directory on the path of {_safe_display(rel)}", code="special_file") from None
-        try:
-            src_file = _no_symlink_on_path(source, rel)
-        except RemediationError as e:
-            if e.code == "missing_file":
-                continue
-            raise
-        parent = _real_dirs_to(tree, rel)
-        out = parent / rel.split("/")[-1]
-        mode = 0o755 if os.lstat(src_file).st_mode & 0o111 else 0o644
-        nofollow = getattr(os, "O_NOFOLLOW", 0)
-        fd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_EXCL | nofollow | getattr(os, "O_BINARY", 0), 0o600)
-        with os.fdopen(fd, "wb") as dst, open(src_file, "rb") as fh:
-            shutil.copyfileobj(fh, dst, _CHUNK)
-        os.chmod(out, mode)
-        restored.append(rel)
-    return restored
-
-
 def _same_bytes(a: Path, b: Path, size_a: int) -> bool:
     """두 파일의 크기를 먼저 비교하고, 같을 때만 바이트를 조금씩 읽어 비교한다."""
     if os.lstat(b).st_size != size_a:
@@ -683,10 +645,10 @@ def sync_tree(tree: Path, expected: Any, paths: list[str]) -> tuple[list[str], l
     되돌리지 못한 경로가 있어도 모든 경로를 시도한 뒤 ``SyncFailed``를 던진다.
 
     Bring every path of `paths` in `tree` to the bytes of the file `expected(path)` names (normally `accepted/<p>`,
-    `rounds/<r>/applied/<p>` or the fix loop's `fixed/<p>`): a path missing in `tree` is copied back (as
-    `restore_missing` did), a path whose bytes differ is overwritten (size first, then bytes; no hashing). The exec bit
-    comes from the expected file. A path whose expected file does not exist is left alone. Symlinks on either side are
-    refused (code `symlink`), never followed or created; a directory where a file belongs is `special_file`. Every
+    `rounds/<r>/applied/<p>` or the fix loop's `fixed/<p>`): a path missing in `tree` is copied back, a path whose
+    bytes differ is overwritten (size first, then bytes; no hashing). The exec bit comes from the expected file. A
+    path whose expected file does not exist is left alone. Symlinks on either side are refused (code `symlink`),
+    never followed or created; a directory where a file belongs is `special_file`. Every
     path is tried; a write refused for permissions is tried once more after the folders on its path and the file got
     the owner's write bit. A candidate file with the right bytes whose executable bit differs from the expected file,
     or that had to be made readable first (a build left it `chmod 000`), gets the canonical mode back (0755 / 0644) and
@@ -846,12 +808,15 @@ def freeze_delivery(tree: Path, out_zip: Path, round: int, paths: list[str]) -> 
     경로를 정렬하고 시각(1980-01-01), 권한(0644, 실행 파일은 0755), 압축 방식(deflate)을 고정한다.
     같은 트리면 항상 같은 바이트(같은 sha256)가 나오며, 이 바이트를 그대로 IVAS에 다시 올린다.
 
-    Deterministic delivery ZIP of exactly `paths`, written atomically; same tree → same bytes."""
+    Deterministic delivery ZIP of exactly `paths`, written atomically; same tree → same bytes. The `tree_hash` of the
+    result is computed from the bytes written into the ZIP (each file is read once; the same rows as `tree_hash`,
+    since every path was checked to be a regular file)."""
     tree, out_zip = Path(tree), Path(out_zip)
     rels = [_safe_rel(p) for p in sorted(set(paths))]
     out_zip.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(prefix=f".{out_zip.name}.", dir=str(out_zip.parent))
     os.close(fd)
+    shas: dict[str, str] = {}
     try:
         with zipfile.ZipFile(tmp, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
             for rel in rels:
@@ -862,8 +827,16 @@ def freeze_delivery(tree: Path, out_zip: Path, round: int, paths: list[str]) -> 
                 info.create_system = 3
                 info.external_attr = (stat.S_IFREG | (0o755 if st.st_mode & 0o111 else 0o644)) << 16
                 info.file_size = st.st_size
+                h = hashlib.sha256()
                 with open(source, "rb") as f, zf.open(info, "w", force_zip64=st.st_size > 0x7FFFFFFF) as out:
-                    shutil.copyfileobj(f, out, _CHUNK)
+                    # copyfileobj와 같은 크기로 읽고 쓰면서 해시도 함께 계산한다. 트리를 다시 읽지 않기 위해서다
+                    while True:
+                        buf = f.read(_CHUNK)
+                        if not buf:
+                            break
+                        h.update(buf)
+                        out.write(buf)
+                shas[rel] = h.hexdigest()
         # Windows의 fsync(_commit)는 읽기 전용 핸들을 EBADF로 거부하므로 쓰기 가능한 핸들로 연다
         # a writable handle: Windows' fsync refuses a read-only descriptor with EBADF ("r+b" never truncates)
         with open(tmp, "r+b") as f:
@@ -880,7 +853,7 @@ def freeze_delivery(tree: Path, out_zip: Path, round: int, paths: list[str]) -> 
     except ValueError:
         rel_path = out_zip.name
     info = DeliveryInfo(path=rel_path, sha256=sha256_file(out_zip), size=out_zip.stat().st_size, files=len(rels),
-                        tree_hash=tree_hash(tree, rels), round=round)
+                        tree_hash=sha256_text(canonical_json([[p, shas[p]] for p in sorted(shas)])), round=round)
     log.info("delivery frozen: round=%d files=%d sha256=%s", round, info.files, info.sha256)
     return info
 

@@ -430,11 +430,6 @@ class _Holder:
         return bool(st.baseline_tolerated and st.baseline_build is not None and not st.baseline_build.ok)
 
     @property
-    def nothing_changed(self) -> bool:
-        """확정한 라운드에 적용한 제안이 하나도 없는지 확인한다. 이때 결과 ZIP은 원본이다."""
-        return not any(rs.committed and rs.applied for rs in self.state.rounds)
-
-    @property
     def nothing_unconfirmed(self) -> bool:
         """확정한 라운드 가운데 빌드로 확인하지 못한 변경이 하나도 없는지 확인한다.
         바꾼 버전이 없거나, 버전을 바꾼 수정본의 빌드가 모두 통과했을 때 True다."""
@@ -1712,9 +1707,10 @@ def _sync_candidate(h: _Holder, r: int, cand: Path, *, with_fix: bool = True,
 
     With `rounds/<r>/expected.json` (always there for a vouched candidate): `intake.sync_tree_table` against that
     table (+ the fix's files), so each candidate file is read at most once and an expected file is opened only for a
-    path that differs; without it `intake.sync_tree` (byte comparison). A missing path is restored, a differing path
-    overwritten. With `record` (after a build, before committing, before freezing a failed candidate) the paths go
-    into `RoundState.build_changed` (sorted union) and the journal gets `build_side_changes` (`round`, `missing`,
+    path that differs; a missing or unreadable table (never the case for a vouched candidate: every caller builds or
+    freezes only after `vouch_problem` or `_write_expected`) counts as a path that could not be put back. A missing
+    path is restored, a differing path overwritten. With `record` (after a build, before committing, before freezing
+    a failed candidate) the paths go into `RoundState.build_changed` (sorted union) and the journal gets `build_side_changes` (`round`, `missing`,
     `changed` counts, the first 5 changed `paths`; `missing_paths` too) and, for restored files,
     `manifest_files_restored`. Every path is tried; when any could not be put back the paths that were are still
     recorded, the journal gets `candidate_sync_failed` (`round`, `count`, `paths` = first 5, `errors` = their error
@@ -1723,12 +1719,12 @@ def _sync_candidate(h: _Holder, r: int, cand: Path, *, with_fix: bool = True,
     rs = h.round_state(r)
     failed: list[tuple[str, str, str]] = []
     table = _expected_table(h, r, with_fix=with_fix)
-    by_table = getattr(h.c.intake, "sync_tree_table", None)
     try:
-        if table is not None and callable(by_table):
-            missing, changed = by_table(cand, _expected(h, r, with_fix=with_fix), table, h.paths_list)
-        else:
-            missing, changed = h.c.intake.sync_tree(cand, _expected(h, r, with_fix=with_fix), h.paths_list)
+        if table is None:
+            # 완성 표시가 있는 수정본에는 표가 늘 있다. 없으면 맞췄다고 할 수 없으므로 되돌리지 못한 것으로 본다
+            raise FileNotFoundError(f"the expected table of round {r} is missing")
+        missing, changed = h.c.intake.sync_tree_table(cand, _expected(h, r, with_fix=with_fix), table,
+                                                      h.paths_list)
         missing, changed = list(missing or []), list(changed or [])
     except SyncFailed as e:
         missing, changed, failed = list(e.missing), list(e.changed), list(e.failed)
@@ -1752,7 +1748,7 @@ def _sync_candidate(h: _Holder, r: int, cand: Path, *, with_fix: bool = True,
     return missing, changed
 
 
-def _run_build(h: _Holder, r: int, cand: Path, *, rerun_ok: bool = False) -> tuple[Any | None, str | None]:
+def _run_build(h: _Holder, r: int, cand: Path) -> tuple[Any | None, str | None]:
     """수정본을 빌드하고, 실패하면 빌드 오류 수정 루프와 확인 빌드까지 실행한다.
     라운드를 이어 갈 빌드 결과와 None, 또는 끝낼 때 None과 다음 노드를 반환한다.
 
@@ -1769,8 +1765,8 @@ def _run_build(h: _Holder, r: int, cand: Path, *, rerun_ok: bool = False) -> tup
     failed stays the round's verdict, as in the uninterrupted run). A round whose last discarded fix ended the round
     (`FixResult.ended_round`: a fix the loop had just returned that could not be applied) does not run the loop again
     at the node's entry (a kill right after the discard's state save
-    re-enters here; the uninterrupted run ended the round as not fixed) — `rerun_ok` (the call right after a stored
-    fix of an earlier entry was found not usable on this one) allows it."""
+    re-enters here; the uninterrupted run ended the round as not fixed). The calls right after a stored fix of an
+    earlier entry was found not usable on this one discard it with `ended_round` False, so the loop may run again."""
     rs = h.round_state(r)
     _settle_leftover_loop(h, r)
     fix = rs.fix
@@ -1788,8 +1784,7 @@ def _run_build(h: _Holder, r: int, cand: Path, *, rerun_ok: bool = False) -> tup
     outcome = _package(h, r, cand, h.paths.build_log(r))
     if outcome.ok or _baseline_errors_only(h, r, outcome, cand):
         return outcome, None
-    unusable = (not rerun_ok and fix is None and bool(rs.fix_discarded)
-                and rs.fix_discarded[-1].ended_round)
+    unusable = fix is None and bool(rs.fix_discarded) and rs.fix_discarded[-1].ended_round
     if fix is None and not unusable and _fix_wanted(h, r):
         _run_fix(h, r, outcome, cand)
     if rs.fix is None or not rs.fix.fixed:
@@ -2036,21 +2031,15 @@ def _fix_tree_hash(h: _Holder, r: int, fix: FixResult) -> str:
 
     v2.1z-bk: the hash of the candidate's manifest paths with the fix's bytes substituted, computed and saved together
     with `rs.fix` (the candidate is not touched for it). Same rows as `intake.tree_hash`; "" when it cannot be made.
-    Computed from `rounds/<r>/expected.json` plus the fix's files (no read of the tree); only without that table is
-    the candidate hashed."""
-    from .intake import _file_sha, table_hash
-    from .models import canonical_json, sha256_text
+    Computed from `rounds/<r>/expected.json` plus the fix's files (no read of the tree); "" without that table (both
+    callers run only after a build of a vouched candidate, which has it)."""
+    from .intake import table_hash
     try:
         table = _expected_table(h, r, with_fix=False)
-        if table is not None:
-            # 기대하는 표에 고친 파일의 값을 넣어 계산하므로 트리를 읽지 않는다
-            return table_hash(_with_rows(table, _fix_rows(h, fix)), h.paths_list)
-        cand = h.paths.candidate(r)
-        prefix = _prefix(h)
-        root = h.paths.root / fix.fixed_dir
-        subst = {prefix + str(x).strip("/"): root / str(x).strip("/") for x in fix.changed}
-        pairs = [[rel, _file_sha(subst.get(rel, cand / rel))] for rel in sorted(set(h.paths_list))]
-        return sha256_text(canonical_json(pairs))
+        if table is None:
+            return ""
+        # 기대하는 표에 고친 파일의 값을 넣어 계산하므로 트리를 읽지 않는다
+        return table_hash(_with_rows(table, _fix_rows(h, fix)), h.paths_list)
     except Exception:  # noqa: BLE001 - 해시를 만들 수 없으면 재개할 때 다시 계산한다
         log.debug("fix tree hash not computed", exc_info=True)
         return ""
@@ -2180,7 +2169,7 @@ def _confirm_fix(h: _Holder, r: int, cand: Path, *, fresh: bool) -> tuple[Any | 
                 suffix = f"automatic build fix: {R_FIX_UNUSABLE}"
                 h.state.message = f"{h.state.message} | {suffix}" if h.state.message else suffix
                 return None, nxt
-            return _run_build(h, r, cand, rerun_ok=True)
+            return _run_build(h, r, cand)
         if not fresh:
             # 중간에 끝난 빌드가 남긴 변경을 되돌린 뒤 같은 수정본에 만든 고침인지 해시로 확인한다
             _sync_candidate(h, r, cand)
@@ -2190,7 +2179,7 @@ def _confirm_fix(h: _Holder, r: int, cand: Path, *, fresh: bool) -> tuple[Any | 
                             "was made for", r)
                 _discard_fix(h, r, R_FIX_UNUSABLE)
                 _sync_candidate(h, r, cand, record=False)
-                return _run_build(h, r, cand, rerun_ok=True)
+                return _run_build(h, r, cand)
             if not fix.tree_hash and th:
                 fix.tree_hash = th
                 h.save()

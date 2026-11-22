@@ -753,11 +753,6 @@ def _pom_entries(pp: Any, pf: Any, ga: str, variant: str = "") -> list[tuple[Any
     return out
 
 
-def _root_entries(pp: Any, ga: str, variant: str = "") -> list[tuple[Any, str]]:
-    """루트 pom에서 이 관리 키의 기존 ``<dependencyManagement>`` 항목을 찾는다."""
-    return _pom_entries(pp, pp.poms.get("."), ga, variant)
-
-
 def _declared_with_version(pp: Any, mdir: str, ga: str, variant: str) -> str:
     """모듈과 그 부모 체인에 이 관리 키의 의존성이 버전과 함께 선언되어 있으면 "<pom> (<버전>)"을, 없으면 빈 문자열을 반환한다.
     선언된 버전은 ``<dependencyManagement>``보다 우선하므로 override 항목이 바꾸지 못한다."""

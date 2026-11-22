@@ -379,6 +379,85 @@ def test_freeze_delivery_deterministic(tmp_path):
     assert d3.sha256 == d1.sha256
 
 
+def _two_pass_freeze(tree: Path, out_zip: Path, round_: int, paths: list[str]) -> tuple[bytes, str]:
+    """The ZIP bytes and tree hash as `freeze_delivery` made them before v2.1z-br: copyfileobj into the ZIP, then
+    `tree_hash` of the tree in a second pass."""
+    import shutil
+    rels = [intake._safe_rel(p) for p in sorted(set(paths))]
+    with zipfile.ZipFile(out_zip, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
+        for rel in rels:
+            source = intake._no_symlink_on_path(tree, rel)
+            st = os.lstat(source)
+            info = zipfile.ZipInfo(rel, date_time=intake.FIXED_DATE)
+            info.compress_type = zipfile.ZIP_DEFLATED
+            info.create_system = 3
+            info.external_attr = (stat.S_IFREG | (0o755 if st.st_mode & 0o111 else 0o644)) << 16
+            info.file_size = st.st_size
+            with open(source, "rb") as f, zf.open(info, "w", force_zip64=st.st_size > 0x7FFFFFFF) as out:
+                shutil.copyfileobj(f, out, intake._CHUNK)
+    return out_zip.read_bytes(), intake.tree_hash(tree, rels)
+
+
+def test_freeze_delivery_hashes_the_tree_once_and_matches_the_two_pass_result(tmp_path, monkeypatch):
+    """v2.1z-br: the tree hash comes from the bytes written into the ZIP; the ZIP bytes, the sha256, the size and the
+    tree hash are those of the two-pass version, and no file of the tree is hashed a second time."""
+    acc, paths = _accepted(tmp_path)
+    big = os.urandom(intake._CHUNK * 2 + 123)                       # more than one read of the copy loop
+    (acc / "lib").mkdir()
+    (acc / "lib" / "data.bin").write_bytes(big)
+    (acc / "empty.txt").write_bytes(b"")
+    os.chmod(acc / "mvnw", 0o755)
+    paths = sorted([*paths, "lib/data.bin", "empty.txt"])
+    want_zip, want_hash = _two_pass_freeze(acc, tmp_path / "old.zip", 3, paths)
+    direct = intake.tree_hash(acc, paths)
+    want_sha = intake.sha256_file(tmp_path / "old.zip")
+    hashed: list[str] = []
+    real_sha, real_file_sha = intake.sha256_file, intake._file_sha
+    monkeypatch.setattr(intake, "sha256_file", lambda p, *a, **k: hashed.append(str(p)) or real_sha(p, *a, **k))
+    monkeypatch.setattr(intake, "_file_sha", lambda p: hashed.append(str(p)) or real_file_sha(p))
+    rp = RunPaths(tmp_path / "run")
+    d = intake.freeze_delivery(acc, rp.delivery_zip, 3, list(reversed(paths)))
+    assert rp.delivery_zip.read_bytes() == want_zip
+    assert d.tree_hash == want_hash == direct
+    assert d.sha256 == want_sha and d.size == len(want_zip) and d.files == len(paths)
+    assert hashed == [str(rp.delivery_zip)]                          # only the finished ZIP; the tree once, while zipped
+
+
+def test_freeze_delivery_tree_hash_is_of_the_zipped_bytes_when_a_file_changes_meanwhile(tmp_path, monkeypatch):
+    """v2.1z-br: a file that changes on disk after its ZIP entry was written. The two-pass version hashed the tree
+    afterwards (the later bytes); `tree_hash` is now the hash of the bytes in the ZIP. The ZIP itself is unchanged."""
+    acc = tmp_path / "tree"
+    acc.mkdir()
+    (acc / "a.txt").write_bytes(b"original")
+    (acc / "b.txt").write_bytes(b"b")
+    paths = ["a.txt", "b.txt"]
+    want_zip, _ = _two_pass_freeze(acc, tmp_path / "old.zip", 1, paths)
+    zipped_hash = intake.tree_hash(acc, paths)                       # the tree as it is zipped
+    real_open = zipfile.ZipFile.open
+
+    def opener(self, name, mode="r", *a, **k):
+        f = real_open(self, name, mode, *a, **k)
+        if mode == "w" and getattr(name, "filename", name) == "a.txt":
+            close = f.close
+
+            def close_then_change():
+                close()
+                (acc / "a.txt").write_bytes(b"CHANGED-LATER")       # after a.txt was read into the ZIP
+            f.close = close_then_change
+        return f
+
+    monkeypatch.setattr(zipfile.ZipFile, "open", opener)
+    out = tmp_path / "run" / "delivery" / "result.zip"
+    d = intake.freeze_delivery(acc, out, 1, paths)
+    monkeypatch.undo()
+    assert (acc / "a.txt").read_bytes() == b"CHANGED-LATER"           # the race happened
+    assert out.read_bytes() == want_zip
+    with zipfile.ZipFile(out) as zf:
+        assert zf.read("a.txt") == b"original"
+    assert d.tree_hash == zipped_hash
+    assert d.tree_hash != intake.tree_hash(acc, paths)                # what the two-pass version reported
+
+
 @pytest.fixture
 def windows_fsync(monkeypatch):
     """Windows' rule for `os.fsync` (`_commit`): a descriptor opened read-only is refused with EBADF. POSIX accepts

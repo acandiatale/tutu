@@ -80,7 +80,6 @@ ACTION_MEANINGS: dict[str, str] = {
 }
 # 기본값이 비어 있으므로 모든 조치 구분 코드를 조치 대상으로 본다. 기존 사내 구현도 PC, IG를 거르지 않는다
 DEFAULT_IGNORE_ACTIONS: tuple[str, ...] = ()
-SUMMARY_CHECKS = ("exact", "nonzero")
 
 # report 모드에서 저장한 검사의 파일 부분을 다 읽지 못했을 때 count 모드가 쓰는 미완료 사유
 R_FILE_UNREAD = "file_components_unread"

@@ -158,7 +158,6 @@ _TOLERATED_KO = (("이 프로젝트는 조치 전에도 빌드되지 않았습�
                   "프로젝트 담당자와 프레임워크 담당자가 고쳐 주세요."))
 _TOLERATED_BUILD_STEP = ("**바꾼 버전으로 한 번 빌드하기** — 빌드 오류를 고친 뒤 결과 ZIP(`delivery/result.zip`)의 pom.xml 버전을 "
                          "그대로 두고 한 번 빌드해 주세요. 빌드가 통과해야 바꾼 버전을 그대로 쓸 수 있습니다.")
-_DECISION_KO = DECISION_KO          # 다른 곳에서 이전 이름으로 import해도 깨지지 않게 남겨 둔다
 # 빌드 설정 점검에서 읽을 수 없는 pom 때문에 멈췄을 때의 결과 줄 설명과 할 일
 _POM_REFUSED_WHAT = "pom 파일을 읽지 못해 작업을 중단했습니다."
 _POM_REFUSED_STEP = ("**pom 파일 고치기** — 위에 적힌 pom 파일을 열어 문법 오류나 파일 권한을 확인하고, Maven으로 빌드되는 "
@@ -309,9 +308,8 @@ def build_unconfirmed(summary: Mapping[str, Any] | None) -> bool:
                 and isinstance(reasons, list) and reasons == ["baseline_build_failed"])
 
 
-# 조치하지 못한 것은 없고 빌드로 확인만 하지 못한 실행의 결과 문장과 상태 이름이다(build_unconfirmed)
+# 조치하지 못한 것은 없고 빌드로 확인만 하지 못한 실행의 결과 문장이다(build_unconfirmed)
 UNCONFIRMED_VERDICT_KO = "조치했지만 빌드로 확인하지 못했습니다"
-UNCONFIRMED_STATUS_KO = "조치함 · 빌드 미확인"
 # 바꾼 버전이 없어 빌드로 확인할 것이 없는 실행(조치 전 빌드 실패를 받아들인 실행)의 한 문장이다
 NOTHING_TO_CONFIRM_KO = "이 프로젝트는 조치 전에도 빌드되지 않았지만, 바꾼 라이브러리 버전이 없어 빌드로 확인할 것은 없습니다."
 
