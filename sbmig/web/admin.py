@@ -58,6 +58,7 @@ from starlette.types import Receive, Scope, Send
 
 from sbmig.core.models import merge_model_names, real_model_name
 
+from .jsonsafe import FiniteJSONResponse
 from .runs import FLOW_REMEDIATION, RUN_ID_RE, SOURCE_ZIP
 
 log = logging.getLogger("sbmig.web.admin")
@@ -1283,7 +1284,8 @@ def create_admin_router(manager: Any, auth: AdminAuth, remediations: Any = None)
         if not logged_in(request):
             return denied()
         data = collect_usage(manager.out_dir, manager.status, list(getattr(manager, "runs", {}) or {}))
-        return JSONResponse(data, headers={"Cache-Control": "no-store"})
+        # 보고서의 NaN이나 무한대 비용은 null로 보낸다
+        return FiniteJSONResponse(data, headers={"Cache-Control": "no-store"})
 
     @router.get("/logs.zip")
     async def all_logs(request: Request):

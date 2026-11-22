@@ -582,11 +582,12 @@ def _abort_reason_ko(reason: str) -> str | None:
 
 
 class _RunRecords:
-    """상태 응답 한 번 동안 request.json과 web-status.json을 처음 필요할 때 한 번씩만 읽어 두는 클래스.
+    """상태 응답 한 번 동안 request.json, web-status.json, report.json을 처음 필요할 때 한 번씩만 읽어 두는 클래스.
 
-    One status answer's view of `control/request.json` and `web-status.json`: each file is read at most once, on first
-    use, and every later question of the same answer gets that same content (`RunManager.status` used to open
-    request.json three times and web-status.json four times per call)."""
+    One status answer's view of `control/request.json`, `web-status.json` and `report.json`: each file is read at most
+    once, on first use, and every later question of the same answer gets that same content (`RunManager.status` used
+    to open request.json three times and web-status.json four times per call, and report.json twice for a run
+    without a request record)."""
 
     _UNREAD = object()
 
@@ -594,6 +595,22 @@ class _RunRecords:
         self.rd = rd
         self._request: Any = self._UNREAD
         self._web: Any = self._UNREAD
+        self._report: Any = self._UNREAD
+
+    @property
+    def report(self) -> dict[str, Any] | None:
+        # 없거나 읽지 못했거나 객체가 아닌 보고서는 모두 None이다.
+        # 폴더에 들어갈 수 없어 is_file이 던진 예외는 기억해 두고 물을 때마다 같은 예외를 던진다
+        # The OSError of is_file (a folder the server cannot enter) is kept and raised again on every question, as
+        # the two separate reads did: `_recorded_flow` catches it, `status` lets it reach the list's net.
+        if self._report is self._UNREAD:
+            try:
+                self._report = _read_report(self.rd)
+            except OSError as e:
+                self._report = e
+        if isinstance(self._report, OSError):
+            raise self._report
+        return self._report
 
     @property
     def request(self) -> RequestRecord | None:
@@ -606,6 +623,21 @@ class _RunRecords:
         if self._web is self._UNREAD:
             self._web = _read_web_status(self.rd)
         return self._web
+
+
+def _read_report(rd: Path) -> dict[str, Any] | None:
+    """report.json을 읽어 객체이면 반환한다. 파일이 없거나 읽거나 해석하지 못했거나 객체가 아니면 None을 반환한다.
+
+    The parsed `report.json` when it is a JSON object; None when it is missing, cannot be read or parsed, or is
+    valid JSON of another type (all treated alike since v2.1z-br)."""
+    rep = rd / "report.json"
+    if not rep.is_file():          # 들어갈 수 없는 폴더의 OSError는 그대로 던진다
+        return None
+    try:
+        data = json.loads(rep.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
 
 
 def _recorded_project(rd: Path, records: _RunRecords | None = None) -> str | None:
@@ -752,10 +784,10 @@ def _recorded_flow(rd: Path, records: _RunRecords | None = None) -> str:
     if isinstance(web, dict) and web.get("flow") in RUN_FLOWS:
         return web["flow"]
     try:
-        data = json.loads((rd / "report.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        data = records.report
+    except OSError:
         return FLOW_FULL
-    if isinstance(data, dict) and data.get("flow") in RUN_FLOWS:
+    if data is not None and data.get("flow") in RUN_FLOWS:
         return data["flow"]
     return FLOW_FULL
 
@@ -2614,15 +2646,12 @@ class RunManager:
         rjob = self.remediation_job(run_id)
         if rjob is not None:
             info["remediation_job"] = rjob
-        rep = rd / "report.json"
         framework: dict[str, Any] | None = None
         from_report = False
-        if rep.is_file():
+        # 보고서는 실행 방식을 찾을 때 이미 읽었으면 그 내용을 쓴다. 객체가 아닌 JSON은 읽지 못한 보고서와 같다
+        data = records.report
+        if data is not None:
             try:
-                data = json.loads(rep.read_text(encoding="utf-8"))
-                # 객체가 아닌 JSON은 읽지 못한 보고서와 같게 본다. 관리자 화면의 _read_json과 같은 규칙이다
-                if not isinstance(data, dict):
-                    raise ValueError("report.json is not a JSON object")
                 # 사내 프레임워크 프로젝트의 줄인 범위는 보고서의 profile.framework가 먼저다
                 framework = _framework_from_report(data)
                 from_report = True

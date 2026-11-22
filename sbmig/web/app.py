@@ -86,7 +86,6 @@ from __future__ import annotations
 
 import hashlib
 import ipaddress
-import json
 import logging
 import os
 import re
@@ -108,6 +107,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from sbmig.core.config import PACKAGE_ROOT, load_dotenv_files
 
+from .jsonsafe import FiniteJSONResponse, finite_dumps
 from .runs import DOWNLOAD_NAMES, RUN_ID_RE, SERVED_FILES, ProjectNameError, RunManager, check_flow, check_project
 
 log = logging.getLogger("sbmig.web")
@@ -440,8 +440,9 @@ def _check_id(run_id: str) -> str:
 
 def _sse(event: str, data: Any) -> bytes:
     """SSE 이벤트 하나(``event:`` + ``data:`` JSON + 빈 줄)를 바이트로 만든다.
-    한글을 그대로 내보내기 위해 ``ensure_ascii=False``를 쓴다."""
-    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False, default=str)}\n\n".encode()
+    한글을 그대로 내보내기 위해 ``ensure_ascii=False``를 쓴다.
+    실행 파일에서 읽은 NaN이나 무한대는 브라우저가 읽을 수 있도록 null로 쓴다."""
+    return f"event: {event}\ndata: {finite_dumps(data, ensure_ascii=False, default=str)}\n\n".encode()
 
 
 async def _stream(events: Iterator[tuple[str, Any]]) -> AsyncIterator[bytes]:
@@ -643,14 +644,15 @@ def create_app(out_dir: Path, repo_root: Path = PACKAGE_ROOT, max_upload_mb: int
                                               llm_provider or None, flow, project)
             except (ValueError, OSError, zipfile.BadZipFile) as e:
                 return JSONResponse({"error": str(e)}, status_code=400)
-            return JSONResponse({"run_id": rid, "status": mgr.status(rid)}, status_code=202)
+            return FiniteJSONResponse({"run_id": rid, "status": mgr.status(rid)}, status_code=202)
         finally:
             tmp.unlink(missing_ok=True)        # gone already when start_file moved it under its run id
 
     @app.get("/api/runs/{run_id}")
     def status(run_id: str) -> JSONResponse:
         st = mgr.status(_check_id(run_id))
-        return JSONResponse(st, status_code=200 if st["exists"] else 404)
+        # report.json의 NaN이나 무한대는 실행 목록처럼 null로 보낸다
+        return FiniteJSONResponse(st, status_code=200 if st["exists"] else 404)
 
     @app.get("/api/runs/{run_id}/events")
     def events(run_id: str):

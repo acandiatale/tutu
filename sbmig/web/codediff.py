@@ -40,6 +40,8 @@ from typing import Any
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
+from .jsonsafe import FiniteJSONResponse
+
 log = logging.getLogger("sbmig.web.codediff")
 
 VERSION = 1
@@ -530,7 +532,7 @@ def create_codediff_router(mgr: Any) -> APIRouter:
         index, fail = index_of(rd)
         if fail is not None:
             return fail
-        return JSONResponse(index, headers=NOSTORE)
+        return FiniteJSONResponse(index, headers=NOSTORE)
 
     @router.get("/api/runs/{run_id}/codediff/files/{n}")
     def codediff_file(run_id: str, n: str) -> JSONResponse:
@@ -544,7 +546,7 @@ def create_codediff_router(mgr: Any) -> APIRouter:
         detail = file_detail(rd, index, k) if k is not None else None
         if detail is None:
             return err(404, "no such file in the code diff")
-        return JSONResponse(detail, headers=NOSTORE)
+        return FiniteJSONResponse(detail, headers=NOSTORE)
 
     @router.get("/api/runs/{run_id}/codediff/files/{n}/lines")
     def codediff_lines(run_id: str, n: str, start: str | None = None, end: str | None = None) -> JSONResponse:
@@ -563,7 +565,7 @@ def create_codediff_router(mgr: Any) -> APIRouter:
         if entry is None:
             return err(404, "no such file in the code diff")
         try:
-            return JSONResponse(read_lines(rd, index, entry, a, b), headers=NOSTORE)
+            return FiniteJSONResponse(read_lines(rd, index, entry, a, b), headers=NOSTORE)
         except CodeDiffUnavailable as e:
             return err(404, "lines not available", e.reason)
 
