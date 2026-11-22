@@ -435,8 +435,6 @@ class OpenRewriteConfig(BaseModel):
     # v2.1z-ag: the as-is version of a company parent g:a is not in the repository — align (set the configured version,
     # rewrite once more; the fix loop's `sbmig-parent` pre-try), continue (no recipes, go on), abort (the old behaviour)
     unresolvable_asis_parent: Literal["align", "continue", "abort"] = "align"
-    # 코드에서 읽지 않는 키
-    fail_on_dry_run_results: bool = False
     plugin_goal: str = "run"                            # run | dryRun
 
 
@@ -1511,7 +1509,8 @@ def _read_yaml(path: Path, sink: Optional[list[str]] = None) -> dict:
 
 # the keys _warn_removed_keys explains — _warn_unknown_keys does not report them a second time
 _REMOVED_KEYS = frozenset({"fix.mode", "fix.edits_max_asks_per_case", "build.pom_repositories",
-                           "remediation.require_approval", "remediation.always_approve"})
+                           "remediation.require_approval", "remediation.always_approve",
+                           "openrewrite.fail_on_dry_run_results"})
 
 
 def _section_model(annotation: Any) -> Optional[type[BaseModel]]:
@@ -1654,6 +1653,19 @@ def _warn_removed_keys(data: dict) -> list[str]:
             continue
         out.append(f"config: {where}remediation.{key}{shown} is ignored: the approval step of the vulnerability "
                    "remediation was removed (every proposal is applied without waiting) — remove it")
+    # `openrewrite.fail_on_dry_run_results`는 어떤 코드도 읽지 않아 없앴다. yml이나 환경 변수에 남아 있어도 무시하고 알린다
+    env_rw = _env_override_dict().get("openrewrite")
+    env_rw = env_rw if isinstance(env_rw, dict) else {}
+    yml_rw = data.get("openrewrite") if isinstance(data.get("openrewrite"), dict) else {}
+    if "fail_on_dry_run_results" in env_rw:
+        where, shown = "env override SBMIG_*__*: ", ""
+    elif "fail_on_dry_run_results" in yml_rw:
+        where, shown = "", f"={yml_rw['fail_on_dry_run_results']!r}"
+    else:
+        where = shown = None
+    if where is not None:
+        out.append(f"config: {where}openrewrite.fail_on_dry_run_results{shown} is ignored: no code read it, so the key "
+                   "was removed — remove it")
     script = data.get("script") if isinstance(data.get("script"), dict) else {}
     if "max_augments_per_case" in script and "max_llm_tries_per_case" not in script:
         out.append(f"config: script.max_augments_per_case={script['max_augments_per_case']!r} counts augment steps only since "

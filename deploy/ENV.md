@@ -53,6 +53,7 @@
 | `SBMIG_JOB_MAX_PARALLEL` | `3` (매니페스트 값) / `1` (변수가 없을 때) | 동시에 도는 빌드 파드(Job) 수. 넘는 업로드는 올린 순서대로 `queued` 로 기다리고 화면에 대기 순번이 보인다. 자리(1 · 2 · 3)마다 Maven 로컬 저장소를 따로 쓴다(`/data/.m2` 안의 `repository`, `repository-slot2`, `repository-slot3`). 웹 파드가 시작할 때 읽는다(바꾸면 재시작). `in-process` 모드는 언제나 1. 1 이상의 정수가 아니면 경고를 찍고 1. 81 틀에는 줄이 필요 없다(README §3 "동시에 여러 건") |
 | `SBMIG_JOB_SLOT` | (웹 파드가 Job 마다 넣는다) | 그 Job 의 자리 번호(1 부터). 손으로 넣지 않는다 — Worker 가 2 번 자리부터 `SBMIG_BUILD__LOCAL_REPO` 를 그 자리의 저장소로 바꿔 `sbmig run` 에 넘긴다(저널 `worker_slot`) |
 | `SBMIG_FLOW` | (웹 파드가 Job 마다 넣는다) | 그 실행의 진행 방식 `full`(전체 진행) / `remediation`(취약점 해결). 손으로 넣지 않는다 — 화면에서 고른 값이 `request.json` 에 고정되고 Worker 가 대조한 뒤 `sbmig run --flow` 로 넘긴다. 81 틀에 줄이 필요 없다 |
+| `SBMIG_SOURCE_ZIP` / `SBMIG_OUT` / `SBMIG_RUN_ID` / `SBMIG_CONFIG` / `SBMIG_JOB_ATTEMPT` / `SBMIG_WORKER_ACTION` / `SBMIG_STOP_AFTER` / `SBMIG_LLM_PROVIDER` | (웹 파드가 Job 마다 넣는다) | 그 실행의 업로드 파일 위치, 출력 폴더, 실행 ID, 설정 파일(`/app/config/<이름>`), 이 Job 이 맡은 시도 번호. `SBMIG_WORKER_ACTION` 은 이관이 아닌 일을 맡길 때만 들어간다(취약점 조치를 새 파드에서 이어 갈 때 `remediation-resume`). `SBMIG_STOP_AFTER` / `SBMIG_LLM_PROVIDER` 는 실행을 시작한 요청에 멈출 단계(`stop_after`)나 LLM 방식(`llm_provider`)이 들어 있었을 때만 들어간다. 81 틀의 주석에는 이름만 있고, 값은 웹 파드가 Job 을 만들면서 채워 넣는다. 손으로 넣지 않는다. 비밀이 아니다 |
 | `SBMIG_JOB_POLL_S` | `2` | Job 상태 조회 간격(초) |
 | `SBMIG_JOB_STOP_GRACE_S` | `2700` | 멈춤 요청(stop.request) 뒤 Job 을 지우기까지 기다리는 시간(초) — Maven 빌드 + OpenRewrite 한 번보다 길게. 파드가 아직 시작하지 않았으면(`ContainerCreating` 등) 기다리지 않고 바로 지운다 |
 | `SBMIG_JOB_PENDING_NOTICE_S` | `300` | 빌드 파드가 이 초 동안 시작하지 못하면 웹 파드가 이유(컨테이너 대기 이유, 스케줄 실패, 파드 Events)를 찾아 화면의 파드 단계 아래에 알리고 로그 WARNING · 저널 `job_pod_pending` 에 남긴다. 정상 파드도 볼륨 마운트 · 이미지 받기에 3분 넘게 걸릴 수 있어 기본이 5분이다. `0` = 알리지 않는다. 알림만 하며 실행을 끝내거나 Job 을 지우지 않는다. 웹 파드만 읽는다(81 틀 · 대조 대상 아님, 바꾸면 재시작). 매니페스트에 없으면 기본값 |
@@ -171,3 +172,22 @@ kubectl -n agent logs deploy/sbmig | grep -E "config: |sbmig web UI ready|open t
 kubectl -n agent exec deploy/sbmig -- ls /app/config/artifacts.yml                               # 회사 설정이 이미지에 들어 있는지
 kubectl -n agent exec deploy/sbmig -- python -m sbmig.cli llm-probe                              # 게이트웨이 토큰 교환 … HTTP 200
 ```
+
+## 9. git 으로 받는 요청별 빌드 Job(80 틀)의 값
+
+`80-build-job.template.yaml` 의 `env` 에 직접 적힌 값이다. 요청마다 Agent(`submit-job.sh`)가 넘긴 `SBMIG_*` 값만 바꿔 넣고(보통 소스 주소와
+브랜치), 나머지는 틀에 적힌 값을 그대로 쓴다.
+`run-job.sh` 가 읽는다. 모두 비밀이 아니므로 틀에 둔다. git 토큰은 여기 적지 않고 Secret `sbmig-git` 의 `GIT_TOKEN` 으로 받는다(§4). 주소에
+`user:token@` 을 넣지 않는다.
+
+| 변수 | 틀의 값 | 뜻 |
+|---|---|---|
+| `SBMIG_SOURCE_GIT_URL` | `CHANGE_ME_https://<git 호스트>/<group>/<project>.git` | 이관할 프로젝트의 저장소. 요청마다 바뀐다 |
+| `SBMIG_SOURCE_GIT_REF` | `main` | 받을 브랜치나 태그. 비우면 저장소의 기본 브랜치 |
+| `SBMIG_SOURCE_ZIP_URL` | (주석) | git 대신 zip 을 내려받을 때의 주소. `run-job.sh` 는 `SBMIG_SOURCE_GIT_URL` 이 있으면 git 으로 먼저 받는데, 틀에는 그 줄이 늘 들어 있다. zip 으로 받으려면 이 줄의 주석을 풀고 `SBMIG_SOURCE_GIT_URL` 줄을 지운다 |
+| `SBMIG_RESULT_BRANCH_PREFIX` | `sbmig/` | 이관된 프로젝트를 소스 저장소에 올릴 때 쓰는 브랜치 이름의 앞부분. 브랜치 이름은 `<앞부분><실행 ID>` 가 된다. 소스를 git 으로 받았을 때만 쓴다 |
+| `SBMIG_RESULT_GIT_URL` | 빈 값(`""`) | 보고서와 로그를 모아 둘 저장소. 실행마다 실행 ID 를 이름으로 한 브랜치에 올린다. 비워 두면 `RESULT_PUSH_CMD` 가 있을 때 그 명령을 실행하고, 그것도 없으면 `report.md` 앞부분을 파드 로그에 출력한다. 이때는 파드 로그가 유일한 사본이다 |
+| `SBMIG_KB_GIT_URL` | `CHANGE_ME_https://<git 호스트>/<group>/sbmig-kb.git` | 파일 KB 를 담는 저장소. 실행 전에 받고 끝나면 push 한다. 비우면 그 실행에서 배운 것이 남지 않는다. 동시에 두 Job 이 push 하면 충돌하므로 이 모델은 한 번에 하나씩 돌린다 |
+| `SBMIG_CONFIG` | `/app/config/artifacts.yml` | `sbmig run` 에 넘길 설정 파일. 이미지에 구운 회사 파일이며, 여러 개면 빈칸으로 나눈다 |
+| `SBMIG_FAIL_JOB_ON_BUILD_FAIL` | `0` | `1` 이면 마지막 빌드가 실패한 실행도 Job 을 실패(종료 코드 2)로 끝낸다. `0` 이면 빌드가 실패해도 결과를 올리다 실패하지 않은 한 Job 은 성공으로 끝난다. 81 틀에도 같은 줄이 있다(Worker 가 읽는다) |
+| `GIT_AUTHOR_NAME` / `GIT_AUTHOR_EMAIL` / `GIT_COMMITTER_NAME` / `GIT_COMMITTER_EMAIL` | `sbmig` / `sbmig@company.example` | 이 Job 이 만드는 커밋에 작성자로 남는 이름과 메일. git 서버에 커밋 작성자로 쓸 이름이나 메일이 정해져 있으면 그 값으로 바꾼다 |
