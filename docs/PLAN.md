@@ -1328,3 +1328,14 @@ Contract: `docs/INTERFACES.md` "v2.1z-bu".
 | Open | what kept the company module's spring-web below 7.0 (asked of the user); a deterministic repair of the transitive-Jackson shape | — | open |
 | Checked | unit tests (full suite 7,474 passed) on a developer Mac | — | done |
 | Not checked | a real LLM with the new note, the company project | — | open |
+
+## Status — 2026-11-23, Jackson 3 exceptions in catch clauses (v2.1z-bv)
+
+The user's local rerun of the same company project on `2a13d5c` was blocked as `oscillation` on exceptions after the
+move to Jackson 3. Contract: `docs/INTERFACES.md` "v2.1z-bv".
+
+| Item | What | Verification | State |
+|---|---|---|---|
+| Note | `jackson-2-3.md` Rule A: a catch with its own handling is kept; `exception JacksonException has already been caught` → move the Jackson block above the broader `RuntimeException` / `Exception` catch, delete neither, no multi-catch; `IOException is never thrown` around Jackson 3 calls → catch `JacksonException` instead, or drop the dead block when one exists; both messages in "Typical errors"; keyword for the `has already been caught` message of the four Jackson 3 exception classes | `tests/fix/test_v21zbv_jackson_catch.py`; messages and hierarchy checked with `javac` / `javap` on jackson 3.1.8 | done |
+| Checked | unit tests (full suite 7,479 passed) on a developer Mac | — | done |
+| Not checked | a real LLM with the new note, the company project | — | open |

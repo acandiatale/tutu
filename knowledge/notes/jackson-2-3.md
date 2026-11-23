@@ -10,6 +10,7 @@ keywords:
   - "spring-boot-jackson2|jackson-databind"
   - "Jackson2(Json|Smile|Cbor)(Decoder|Encoder)"
   - "jackson2(Json|Smile)(Decoder|Encoder)|JacksonJson(Decoder|Encoder)|CodecConfigurer|configureHttpMessageCodecs|ExchangeStrategies"
+  - "exception (JacksonException|DatabindException|StreamReadException|StreamWriteException) has already been caught"
 cases: []
 phases: [spring]
 ---
@@ -30,12 +31,21 @@ phases: [spring]
 - Typical errors: `cannot access ObjectMapper … class file for com.fasterxml.jackson.databind.ObjectMapper not found`
   (a Jackson 2 class used without Jackson 2 databind); `package com.fasterxml.jackson.databind does not exist` (a file
   left on Jackson 2); `tools.jackson.databind.ObjectMapper cannot be converted to com.fasterxml.jackson.databind.ObjectMapper`
-  (a Jackson 3 mapper passed to a Jackson 2 class: MVC converter / view or WebFlux codec, Rule A).
+  (a Jackson 3 mapper passed to a Jackson 2 class: MVC converter / view or WebFlux codec, Rule A);
+  `exception JacksonException has already been caught` and `exception IOException is never thrown in body of
+  corresponding try statement` (catch clauses after the move to the unchecked `JacksonException`, Rule A).
 
 ## Rule A — the module is on Jackson 3: finish the move in the failing file
 The module's pom or its other files use `tools.jackson`: change the failing file's imports to `tools.jackson.*` and
-- `JsonProcessingException` / `JsonMappingException` → `tools.jackson.core.JacksonException` (unchecked: drop a
-  `throws` / `catch` that only existed for it, keep public signatures otherwise);
+- `JsonProcessingException` / `JsonMappingException` → `tools.jackson.core.JacksonException` (unchecked, extends
+  `RuntimeException`; `DatabindException` is its subclass): a `throws` clause that only existed for the checked
+  Jackson 2 exception may go, keep public signatures otherwise; a `catch` with its own handling is kept, never dropped:
+  - `exception JacksonException has already been caught` (or another Jackson exception): move that catch block,
+    unchanged, above the broader `catch (RuntimeException …)` / `catch (Exception …)` of the same try; delete neither
+    block; never a multi-catch with `RuntimeException` / `Exception` (does not compile);
+  - `exception IOException is never thrown in body of corresponding try statement` where the try's only I/O source
+    was a Jackson call: change that catch's type to `JacksonException`, keep its body; when the same try already
+    catches `JacksonException`, remove the dead `IOException` block;
 - `MappingJackson2HttpMessageConverter` → `org.springframework.http.converter.json.JacksonJsonHttpMessageConverter`,
   `MappingJackson2JsonView` → `org.springframework.web.servlet.view.json.JacksonJsonView` (XML twins:
   `JacksonXmlHttpMessageConverter`, `JacksonXmlView`). The twins take `tools.jackson.databind.json.JsonMapper` (or its

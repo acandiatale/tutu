@@ -7351,3 +7351,27 @@ Not changed in this round: the conversion. A deterministic repair of the transit
 `tools.jackson.core:jackson-databind`, version-less, to a module whose sources the recipe moved to `tools.jackson`
 when it has no Jackson 3 of its own) is a candidate for a later round; in the company run the LLM's attempt added
 the dependency in one try, so this shape was not what blocked the run.
+
+## v2.1z-bv — Jackson 3 exceptions in catch clauses (fix note)
+
+**Why.** The user's local rerun of the same company project (2026-11-23, `2a13d5c`) was blocked as `oscillation` on
+exceptions: the LLM's analysis named `tools.jackson.core.JacksonException` and its subclass `DatabindException` as
+runtime exceptions caught after an earlier `catch (RuntimeException …)`. The note's Rule A said only "unchecked: drop
+a `throws` / `catch` that only existed for it", which does not say what to do when a broader catch comes first, and
+"drop" loses the specific handling.
+
+**Facts (checked with `javap` / `javac` on jackson-core / jackson-databind 3.1.8, JDK 21).**
+- `tools.jackson.core.JacksonException extends RuntimeException`; `tools.jackson.databind.DatabindException extends
+  JacksonException`.
+- `ObjectMapper.readValue(String, Class)` and `writeValueAsString(Object)` declare `throws JacksonException` only.
+- A `catch (JacksonException e)` after `catch (RuntimeException e)` in the same try: `exception JacksonException has
+  already been caught`. A `catch (java.io.IOException e)` whose try only calls Jackson 3: `exception IOException is
+  never thrown in body of corresponding try statement`.
+
+**Rule.** The note's Rule A gains: on `has already been caught` for a Jackson exception, move that catch block,
+unchanged, above the broader `catch (RuntimeException …)` / `catch (Exception …)` of the same try (keeps the
+specific handling; delete neither block; never a multi-catch with `RuntimeException` / `Exception`, which does not
+compile). On `IOException is never thrown` where the try's only I/O source was a Jackson call: change that catch's
+type to `JacksonException` and keep its body; when the same try already catches `JacksonException`, remove the dead
+`IOException` block. Keywords select the note for these two messages when they name a Jackson exception or come with
+Jackson imports.
