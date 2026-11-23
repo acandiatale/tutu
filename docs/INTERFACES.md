@@ -7375,3 +7375,9 @@ compile). On `IOException is never thrown` where the try's only I/O source was a
 type to `JacksonException` and keep its body; when the same try already catches `JacksonException`, remove the dead
 `IOException` block. Keywords select the note for these two messages when they name a Jackson exception or come with
 Jackson imports.
+
+**v2.1z-bu, later the same day.** The user's local rerun of the same project on `2a13d5c` got past the WebFlux module
+(the next block was v2.1z-bv's catch clauses). Between the cluster run's `ed0ed61` and `2a13d5c` the conversion code is
+unchanged (only the result ZIP names and the note), so the spring-web below 7.0 in the cluster run most likely came
+from one of that run's fix attempts that edited the module's pom, not from the conversion. Not confirmed (the PC and
+the cluster use different settings); no conversion change is planned for it.
