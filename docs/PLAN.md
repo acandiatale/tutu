@@ -1314,3 +1314,17 @@ The user: "변환된 프로젝트 받기랑 결과 ZIP 받기도 프로젝트 �
 | Review | one independent review against the contract: no break found; a flaky byte comparison in a new test and the status-message wording were fixed | — | done |
 | Checked | unit tests (full suite 7,468 passed) on a developer Mac | — | done |
 | Not checked | a real browser on the company PC, Job mode on the cluster | — | open |
+
+## Status — 2026-11-23, Jackson 3 WebFlux codecs in the fix notes (v2.1z-bu)
+
+A company run ended with a WebFlux module unfixed, blocked as `oscillation`. Read from the run and reproduced here.
+Contract: `docs/INTERFACES.md` "v2.1z-bu".
+
+| Item | What | Verification | State |
+|---|---|---|---|
+| Cause in the run | the recipe moved the module's code to Jackson 3 and left Spring's codec classes on Jackson 2; that module's spring-web was older than 7.0 (`cannot find symbol class JacksonJsonDecoder`), so the LLM went between `Jackson2JsonDecoder` and `JacksonJsonDecoder`, neither of which can work there | the user's log lines; `javap` on spring-web 6.1 / 6.2 / 7.0 | read |
+| Note | `knowledge/notes/jackson-2-3.md` Rule A: the WebFlux codecs (`JacksonJsonDecoder` / `JacksonJsonEncoder`, Smile, CBOR) take `JsonMapper`; register with `jacksonJsonDecoder` / `jacksonJsonEncoder`; never back to Jackson 2; `cannot find symbol class JacksonJsonDecoder` means an older spring-web: remove the pin. Keywords for the codec names in the note and `index.yml` | `tests/fix/test_v21zbu_jackson_codecs.py` | done |
+| Reproduction | real Maven, nine shapes: Jackson 3 goes missing only in a module that gets Jackson 2 through a non-Jackson library (the recipe rewrites declared Jackson artifacts only); every shape had spring-web 7.0.x | `out/scratch/webflux-jackson/` | done |
+| Open | what kept the company module's spring-web below 7.0 (asked of the user); a deterministic repair of the transitive-Jackson shape | — | open |
+| Checked | unit tests (full suite 7,474 passed) on a developer Mac | — | done |
+| Not checked | a real LLM with the new note, the company project | — | open |

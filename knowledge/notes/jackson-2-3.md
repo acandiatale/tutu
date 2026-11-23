@@ -8,6 +8,8 @@ keywords:
   - "JsonProcessingException|JsonMappingException|JacksonException"
   - "ObjectMapper|JsonMapper"
   - "spring-boot-jackson2|jackson-databind"
+  - "Jackson2(Json|Smile|Cbor)(Decoder|Encoder)"
+  - "jackson2(Json|Smile)(Decoder|Encoder)|JacksonJson(Decoder|Encoder)|CodecConfigurer|configureHttpMessageCodecs|ExchangeStrategies"
 cases: []
 phases: [spring]
 ---
@@ -27,7 +29,8 @@ phases: [spring]
   `com.fasterxml.jackson.databind.ObjectMapper` and need Jackson 2 databind on the classpath.
 - Typical errors: `cannot access ObjectMapper … class file for com.fasterxml.jackson.databind.ObjectMapper not found`
   (a Jackson 2 class used without Jackson 2 databind); `package com.fasterxml.jackson.databind does not exist` (a file
-  left on Jackson 2); `tools.jackson.databind.ObjectMapper cannot be converted to com.fasterxml.jackson.databind.ObjectMapper`.
+  left on Jackson 2); `tools.jackson.databind.ObjectMapper cannot be converted to com.fasterxml.jackson.databind.ObjectMapper`
+  (a Jackson 3 mapper passed to a Jackson 2 class: MVC converter / view or WebFlux codec, Rule A).
 
 ## Rule A — the module is on Jackson 3: finish the move in the failing file
 The module's pom or its other files use `tools.jackson`: change the failing file's imports to `tools.jackson.*` and
@@ -38,9 +41,25 @@ The module's pom or its other files use `tools.jackson`: change the failing file
   `JacksonXmlHttpMessageConverter`, `JacksonXmlView`). The twins take `tools.jackson.databind.json.JsonMapper` (or its
   `Builder`), not `ObjectMapper`; they have no `setObjectMapper` — configure the mapper first and pass it to the
   constructor; `getMapper()` replaces `getObjectMapper()`;
+- WebFlux codecs: `org.springframework.http.codec.json.Jackson2JsonDecoder` → `JacksonJsonDecoder`,
+  `Jackson2JsonEncoder` → `JacksonJsonEncoder` (same package; Smile twins
+  `org.springframework.http.codec.smile.JacksonSmileDecoder` / `JacksonSmileEncoder`, CBOR twins
+  `org.springframework.http.codec.cbor.JacksonCborDecoder` / `JacksonCborEncoder`). The JSON codecs take
+  `tools.jackson.databind.json.JsonMapper` or `JsonMapper.Builder` (optionally `MimeType...`), not `ObjectMapper`:
+  inject the mapper as `JsonMapper` (Boot 4.1 auto-configures that bean) or build it with `JsonMapper.builder()…build()`.
+  Register with `defaultCodecs().jacksonJsonDecoder(…)` / `jacksonJsonEncoder(…)` (the deprecated
+  `jackson2JsonDecoder` / `jackson2JsonEncoder` still compile and delegate; renaming them is optional).
+  `tools.jackson.databind.ObjectMapper cannot be converted to com.fasterxml.jackson.databind.ObjectMapper` at a codec
+  constructor is this case: never move the file, the mapper or the module back to Jackson 2 for it, and never remove
+  a Jackson 3 dependency from a pom to make it compile. `cannot find symbol … class JacksonJsonDecoder` (or
+  `JacksonJsonEncoder`) with `location: package org.springframework.http.codec.json` means the module's spring-web is
+  older than 7.0: an as-is pin (explicit `<version>` on a Spring artifact, a Spring version property, an imported older
+  Spring / Boot BOM) overrides the target Boot BOM there. Remove the pin so the BOM manages Spring (versions left
+  `null`); never go back to `Jackson2JsonDecoder` or Jackson 2 for it;
 - `Jackson2ObjectMapperBuilder` / `Jackson2ObjectMapperFactoryBean` → `JsonMapper.builder()…build()` (Spring has no
   Jackson 3 version of its builder);
-- a mapper bean handed to the twins must be declared as `JsonMapper` (`(JsonMapper) mapper` only when it is one).
+- a mapper bean handed to the twins or the codecs must be declared as `JsonMapper` (`(JsonMapper) mapper` only when it
+  is one).
 This finishes the recipe's work; it is not a library swap. Never revert the module to Jackson 2.
 
 ## Rule B — a library needs Jackson 2 types

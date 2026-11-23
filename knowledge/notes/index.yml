@@ -192,6 +192,8 @@ notes:
   - JsonProcessingException|JsonMappingException|JacksonException
   - ObjectMapper|JsonMapper
   - spring-boot-jackson2|jackson-databind
+  - Jackson2(Json|Smile|Cbor)(Decoder|Encoder)
+  - jackson2(Json|Smile)(Decoder|Encoder)|JacksonJson(Decoder|Encoder)|CodecConfigurer|configureHttpMessageCodecs|ExchangeStrategies
   cases: []
   phases:
   - spring

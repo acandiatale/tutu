@@ -7279,3 +7279,75 @@ called `result.zip`, so two downloads could not be told apart in a Downloads fol
 
 **Not changed.** Files in the run folder keep their names (`result.zip`, `delivery/result.zip`): the web, the admin
 page, the code-change view, cleanup and older runs read them. The admin page's log ZIPs. `result-verified.zip`.
+
+## v2.1z-bu — Jackson 3 WebFlux codecs in the fix notes; does the conversion leave a WebFlux module without Jackson 3?
+
+**Why.** A company run (2026-11-23) ended with a WebFlux module unfixed: the fix loop alternated between error sets
+and was blocked as `oscillation`. Read from the run: the module's code used Jackson 3 (`tools.jackson`) while its
+codec configuration still built `Jackson2JsonDecoder` / `Jackson2JsonEncoder`
+(`tools.jackson.databind.ObjectMapper cannot be converted to com.fasterxml.jackson.databind.ObjectMapper` in builds 5
+and 8); build 4 showed `package tools.jackson.databind does not exist` (and `tools.jackson.databind.json`,
+`tools.jackson.core.type`) after an attempt that edited a pom and was scored `improved`. No attempt was reverted.
+`knowledge/` holds no rule for the Spring 7 Jackson 3 codecs (the note `jackson-2-3.md` covers the MVC converters
+only), and the recipes (rewrite-spring 6.37.0) do not migrate Spring's codec classes.
+
+**Facts (checked on spring-web 7.0.10 and spring-boot-jackson 4.1.0 with `javap`, and the Boot 4.1.0 starter pom).**
+- `org.springframework.http.codec.json.JacksonJsonDecoder` / `JacksonJsonEncoder` (Jackson 3) have constructors
+  `()`, `(JsonMapper)`, `(JsonMapper.Builder)`, each also with `MimeType...`; the type is
+  `tools.jackson.databind.json.JsonMapper`, not `tools.jackson.databind.ObjectMapper`.
+- `Jackson2JsonDecoder` / `Jackson2JsonEncoder` remain (deprecated) and take `com.fasterxml.jackson.databind.ObjectMapper`.
+- `CodecConfigurer.DefaultCodecs.jacksonJsonDecoder(Decoder<?>)` / `jacksonJsonEncoder(Encoder<?>)` are the
+  registration methods; the deprecated `jackson2JsonDecoder` / `jackson2JsonEncoder` still compile and call them.
+- Smile / CBOR twins: `org.springframework.http.codec.smile.JacksonSmileDecoder` / `JacksonSmileEncoder`,
+  `org.springframework.http.codec.cbor.JacksonCborDecoder` / `JacksonCborEncoder`.
+- Boot 4.1 auto-configures a `JsonMapper` bean (`JacksonAutoConfiguration.jacksonJsonMapper`);
+  `spring-boot-starter-webflux` 4.1.0 depends on `spring-boot-starter-jackson` (Jackson 3).
+
+**Rules.**
+1. The note `knowledge/notes/jackson-2-3.md`, Rule A ("the module is on Jackson 3: finish the move"), gains the
+   WebFlux codecs: `Jackson2JsonDecoder` → `JacksonJsonDecoder`, `Jackson2JsonEncoder` → `JacksonJsonEncoder` (Smile,
+   CBOR alike); the codec takes `JsonMapper`, so the mapper handed to it is declared / injected as `JsonMapper`
+   (Boot provides that bean) or built with `JsonMapper.builder()…build()`; register with
+   `defaultCodecs().jacksonJsonDecoder(…)` / `jacksonJsonEncoder(…)`. The error
+   `tools.jackson.databind.ObjectMapper cannot be converted to com.fasterxml.jackson.databind.ObjectMapper` at a codec
+   is this case: never move the module, the file or the mapper back to Jackson 2 for it, and never remove a Jackson 3
+   dependency from a pom to make it compile. The note's keywords (front-matter and `knowledge/notes/index.yml`, kept
+   in sync) select it for the codec class names and the `jackson2Json…` registration names.
+2. A local reproduction with real Maven answers the open question: does the conversion (OpenRewrite + restructure,
+   before any fix attempt) leave a WebFlux module whose code imports `tools.jackson` without Jackson 3 on its
+   classpath? Shapes: a Boot 2 multi-module project whose WebFlux module uses `spring-boot-starter-webflux`, one that
+   uses `spring-webflux` with an explicit `jackson-databind`, and one where Jackson 2 arrives only transitively. The
+   answer decides whether a conversion change is needed; it is recorded below when known.
+
+**Found later the same day (company run).** Build 6 failed with `cannot find symbol` / `class JacksonJsonDecoder` /
+`location: package org.springframework.http.codec.json` in the module's WebClient configuration: the LLM had moved to
+the Jackson 3 codec, and the class does not exist on that module's classpath. spring-web 6.1.21 and 6.2.12 have no
+`JacksonJsonDecoder`, 7.0.8 / 7.0.10 have it (checked on the jars), so that module's spring-web was older than 7.0
+after the conversion: an as-is pin kept Spring below the target BOM there while the recipe had moved the code to
+Jackson 3. The oscillation was the LLM going between the two codec classes, neither of which can work in that state.
+Rule 1 therefore also tells the LLM that this `cannot find symbol` means an older spring-web and that the fix is to
+remove the pin (the BOM manages Spring), never to go back to Jackson 2. Which pom construct kept the old version (an
+explicit version, a property, an imported BOM, a parent the conversion did not replace) is asked of the user and
+tested in the reproduction (Rule 2).
+
+**Reproduction result (Rule 2, real Maven 3.9.10, JDK 21, local-e2e stand-ins; `out/scratch/webflux-jackson/`).**
+Boot 2.7.18 reactors with a WebFlux module holding the codec configuration, a WebClient factory and a class using
+`ObjectMapper` / `JsonMapper` / `TypeReference`. The recipe (`UpgradeJackson_2_3` under `UpgradeSpringFramework_7_0`,
+rewrite-jackson 1.28.4) moves the imports to `tools.jackson.*` in every shape and never touches Spring's codec classes.
+- Jackson 3 is on the module's classpath after the conversion when the module declares `spring-boot-starter-webflux`,
+  a `jackson-databind` (with or without an explicit version or a version property: the recipe changes the groupId and
+  drops the version), or gets `spring-boot-starter-json` through another module or the root pom. The first build then
+  shows only the codec mismatch (`tools.jackson.databind.ObjectMapper cannot be converted to
+  com.fasterxml.jackson.databind.ObjectMapper`).
+- Jackson 3 is missing when the module declares no Jackson artifact and no Boot starter and gets Jackson 2 only
+  through a non-Jackson library (`jjwt-jackson` stood in): `UpgradeJackson_2_3_Dependencies` rewrites only declared
+  Jackson artifacts. The first build then shows `package tools.jackson.databind does not exist` (and
+  `tools.jackson.core.type`, `tools.jackson.databind.json`) at the same positions as the company's build 4. Adding a
+  version-less `tools.jackson.core:jackson-databind` to that module turns it into the codec mismatch. sbmig's
+  restructure neither causes nor repairs this.
+- spring-web on the module was 7.0.x in every shape, so `JacksonJsonDecoder` resolves there; the company's older
+  spring-web comes from something the stand-ins do not have (asked of the user).
+Not changed in this round: the conversion. A deterministic repair of the transitive-Jackson shape (add
+`tools.jackson.core:jackson-databind`, version-less, to a module whose sources the recipe moved to `tools.jackson`
+when it has no Jackson 3 of its own) is a candidate for a later round; in the company run the LLM's attempt added
+the dependency in one try, so this shape was not what blocked the run.
