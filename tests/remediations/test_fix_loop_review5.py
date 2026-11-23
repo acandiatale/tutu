@@ -112,7 +112,7 @@ def test_disk_full_writing_delivery_json_after_the_swap_rolls_forward_and_says_s
     assert _marker(paths).exists() and read_json(paths.delivery_json)["round"] == 1
     assert any(e.get("event") == "delivery_record_not_written" for e in rec.events)
     ko = i18n.ko_text(out.message)
-    assert "결과 ZIP(delivery/result.zip)은 이제 라운드 2의 결과입니다." in ko and "delivery/delivery.json" in ko
+    assert "결과 ZIP은 이제 라운드 2의 결과입니다." in ko and "delivery/delivery.json" in ko
     # the next entry (a final state) completes the record
     graph.run_remediation(_saved(rec), paths, make_cfg(), make_components(), save=Recorder().save,
                           journal=Recorder().journal, stop=lambda: False)
@@ -629,11 +629,11 @@ def test_the_round_zero_step_says_checked_not_rechecked(tmp_path):
     out, _ = run(state, paths, make_components(scan=FakeScanner({"baseline": [scan_result()]})))
     assert out.status == SUCCEEDED and out.delivery.round == 0
     md = paths.report_md.read_text(encoding="utf-8")
-    assert "**결과 ZIP 받기** — 검사를 마친 `delivery/result.zip`" in md
-    assert "재검사를 마친 `delivery/result.zip`" not in md
+    assert "**결과 ZIP 받기** — 검사를 마친 결과 ZIP을 받아 사용해 주세요." in md
+    assert "재검사를 마친 결과 ZIP을 받아" not in md
     st2, p2 = make_run(tmp_path / "two")
     out2, _ = run(st2, p2, one_fix_components(maven=FakeMaven(outcomes=[True, True])))
-    assert out2.status == SUCCEEDED and "재검사를 마친 `delivery/result.zip`" in p2.report_md.read_text(encoding="utf-8")
+    assert out2.status == SUCCEEDED and "재검사를 마친 결과 ZIP을" in p2.report_md.read_text(encoding="utf-8")
 
 
 # ------------------------------------------------------------------------------------------------ 11. disk

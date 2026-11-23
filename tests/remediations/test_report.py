@@ -58,7 +58,7 @@ def test_succeeded_report(tmp_path):
     assert "저장소 nexus.invalid" in md and "repository:nexus.invalid" not in md
     assert "## 조치 완료 — 1건" in md and "| `example:lib` | 1.0 → 1.1 | `pom.xml` " in md
     assert f"sha256 `{out.delivery.sha256}`" in md
-    assert "재검사한 파일과 일치" in md and "결과 파일: `delivery/result.zip` — 빌드 성공, 재검사 완료" in md
+    assert "재검사한 파일과 일치" in md and "결과 파일: 결과 ZIP — 빌드 성공, 재검사 완료" in md
     assert "## 변경하지 않은 것" in md and "`SUCCEEDED`" in md
     data = json.loads(paths.report_json.read_text(encoding="utf-8"))
     assert data["schema"] == report.REPORT_SCHEMA and data["state"]["status"] == SUCCEEDED
@@ -340,7 +340,7 @@ def test_section_order_and_result_line(tmp_path):
     glance = _section(md, "요약")
     assert "| 사내 라이브러리 담당자 요청 | 3건 | 3개 |" in glance and "| 직접 확인 필요 | 4건 | 4개 |" in glance
     assert "| 조치 후 남은 취약점 | 7건 | - |" in glance and "| 승인 대기 |" not in glance
-    assert "결과 파일: `delivery/result.zip` — 빌드 성공, 재검사 완료" in glance
+    assert "결과 파일: 결과 ZIP — 빌드 성공, 재검사 완료" in glance
     assert "| 🔴 심각 | 9.0 이상 | 1건 | 1건 |" in glance and "| 🟠 높음 | 7.0 이상 | 6건 | 6건 |" in glance
     assert "| 낮음·점수 없음 | 4.0 미만 | 1건 | 0건 |" in glance and "제외" not in glance
     steps = _section(md, "해야 할 일")

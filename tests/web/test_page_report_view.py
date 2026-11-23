@@ -216,7 +216,9 @@ def test_download_names_on_the_page():
     assert "const MIG_DL = { 'report.md': 'migration-report.md', 'report.json': 'migration-report.json' };" in SCRIPT
     assert "const REM_DL = { 'report.md': 'remediation-report.md', 'report.json': 'remediation-report.json' };" in SCRIPT
     assert '<span>보고서 받기 <span class="sub">migration-report.md</span></span>' in PAGE
-    assert "a.setAttribute('download', MIG_DL[name] || name);" in SCRIPT
+    # the report button takes its name from MIG_DL, the ZIP button the status's zip_name (v2.1z-bt)
+    assert "set('dl-report', 'report.md', MIG_DL['report.md']); set('dl-zip', 'result.zip', zipName);" in SCRIPT
+    assert "if (has) { a.href = fileUrl(name, true); a.setAttribute('download', shown); }" in SCRIPT
     assert "a.href = remUrl(runId, '/files/' + name + (REM_DL[name] ? '?download=1' : '')); a.setAttribute('download', shown);" \
         in SCRIPT
     # the remediation report is read in its own preview; its 「크게 보기」 opens the dialog (no separate 보고서 보기 button)

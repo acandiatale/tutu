@@ -2550,6 +2550,15 @@ class RunManager:
             control = ControlState.read(rd) if rd.is_dir() else None
         return self._final_pass_pending(run, control)
 
+    def project_name(self, run_id: str) -> str | None:
+        """업로드할 때 입력한 프로젝트명을 반환한다. status()와 같은 값이며 없으면 None이다.
+
+        The project name entered at upload, the value `status()` reports: the run in memory, else the run folder
+        (`control/request.json`, `web-status.json`, the journal's `web_run` line). None when none carries one.
+        Used by the files route for the name `result.zip` is received under (v2.1z-bt)."""
+        run = self.runs.get(run_id)
+        return (run.project if run is not None else None) or _recorded_project(self.run_dir(run_id))
+
     def status(self, run_id: str) -> dict[str, Any]:
         """실행 상태를 dict로 반환한다. 메모리에 있으면 queued / running / finished를, 없으면
         web-status.json, report.json, 폴더 유무 순으로 확인해 finished / unknown / missing을 정한다.
@@ -2574,6 +2583,8 @@ class RunManager:
         project = (run.project if run is not None else None) or _recorded_project(rd, records)
         if project:
             info["project"] = project
+        # 변환된 프로젝트 ZIP을 받을 때의 이름이며 ZIP이 아직 없어도 담는다. 화면은 이 값을 그대로 보여 준다
+        info["zip_name"] = contract.zip_download_name(run_id, "migration", project)
         control: ControlState | None = None
         if run is not None:
             info["state"] = self._mem_state(run)
@@ -2732,8 +2743,9 @@ class RunManager:
         """파일을 하나도 읽지 못한 실행의 목록 줄을 반환한다. status()가 그런 폴더에 내는 기본 항목과 같다.
 
         The list row of a run none of whose files can be read: the keys `status()` gives such a folder (`flow` full,
-        no upload, no exit code, the state by `_folder_state`). Used by `list_runs` when building one row failed. Never
-        raises for a file system error: a folder the server cannot enter (mode 000, another uid on NFS) is `unknown`."""
+        no upload, no exit code, `zip_name` from the run id, the state by `_folder_state`). Used by `list_runs` when
+        building one row failed. Never raises for a file system error: a folder the server cannot enter (mode 000,
+        another uid on NFS) is `unknown`."""
         rd = self.run_dir(run_id)
         try:
             exists = rd.is_dir()
@@ -2744,7 +2756,8 @@ class RunManager:
         except OSError:                        # 들어갈 수 없는 폴더는 상태를 알 수 없다
             state = "unknown"
         return {"run_id": run_id, "exists": exists or run_id in self.runs, "mode": self.effective_mode,
-                "flow": FLOW_FULL, "upload": None, "state": state, "exit_code": None}
+                "flow": FLOW_FULL, "upload": None, "zip_name": contract.zip_download_name(run_id, "migration"),
+                "state": state, "exit_code": None}
 
     def list_runs(self) -> list[dict[str, Any]]:
         """메모리와 출력 폴더에 있는 모든 실행의 상태를 최신순으로 반환한다(``_``로 시작하는 폴더는 제외).

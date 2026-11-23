@@ -232,7 +232,7 @@ SAMPLES: list[tuple[str, str, list[str]]] = [
      "the verified delivery of an earlier round is kept as delivery/result-r1-verified.zip"),
      ["p-2-1", "p-2-2", "rounds/2/build.log", "delivery/result-r1-verified.zip"]),
     ("discarded", ("round 2 candidate discarded; delivery/result.zip is the verified state of round 1, without the failed "
-     "change"), ["2", "1", "delivery/result.zip"]),
+     "change"), ["라운드 2", "결과 ZIP은 라운드 1에서 검증한"]),
     ("delivery_missing", "the delivery ZIP is missing", []),
     ("delivery_changed", "the delivery ZIP changed after it was frozen", []),
     ("chain_budget", ("the chained remediation used its time budget of 90 minute(s) in this pod; resume continues from the "

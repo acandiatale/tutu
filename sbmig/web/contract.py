@@ -427,6 +427,29 @@ class RequestRecord:
             return None
 
 
+# 결과 ZIP을 내려받을 때의 이름 끝이다. 이관 결과는 migration, 취약점 조치 결과는 remediation이다
+ZIP_KINDS = ("migration", "remediation")
+# 내려받는 이름 앞부분에 쓸 수 있는 값이다. 업로드 때 검사한 프로젝트명과 실행 id가 모두 여기에 맞는다
+_ZIP_BASE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$")
+
+
+def zip_download_name(run_id: str, kind: str, project: str | None = None) -> str:
+    """결과 ZIP을 사람이 내려받을 때 쓰는 이름 ``<프로젝트명>-<kind>.zip``을 반환한다. 파일을 읽지 않는다.
+    프로젝트명을 쓸 수 없으면 실행 id를 쓰고, 둘 다 쓸 수 없으면 ``result.zip``을 반환한다.
+
+    The name a person receives a result ZIP under (v2.1z-bt): `<project>-migration.zip` for the migration's
+    `result.zip`, `<project>-remediation.zip` for the remediation's `delivery/result.zip`. `project` is the name entered
+    at upload (the caller reads it; this function does no I/O); when it is missing or not a safe file-name part, the
+    run id (a chained remediation's id is the migration run id, a standalone one its own id) stands in; when neither
+    fits, `result.zip`. Files in the run folder keep their names. `kind` must be one of `ZIP_KINDS` (ValueError)."""
+    if kind not in ZIP_KINDS:
+        raise ValueError(f"unknown result kind: {kind!r}")
+    for base in (project, run_id):
+        if isinstance(base, str) and _ZIP_BASE_RE.match(base):
+            return f"{base}-{kind}.zip"
+    return "result.zip"
+
+
 # 웹 실행 id의 모양(<프로젝트명>-YYYYMMDD-HHMMSS-<hex>)이다. sbmig.web.admin._RUN_SLUG와 같은 식이다
 RUN_SLUG = re.compile(r"^(.+)-\d{8}-\d{6}-[0-9a-f]+$")
 _JOURNAL_HEAD_LINES = 50                    # web_run 줄을 찾을 때 읽는 journal 앞부분 줄 수

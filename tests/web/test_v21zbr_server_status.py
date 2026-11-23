@@ -50,7 +50,8 @@ def _healthy(client: TestClient, rid: str) -> Path:
 
 
 def _comparable(row: dict) -> dict:
-    return {k: v for k, v in row.items() if k not in ("run_id", "started", "upload")}
+    # zip_name is built from the run id when the run has no project (v2.1z-bt)
+    return {k: v for k, v in row.items() if k not in ("run_id", "started", "upload", "zip_name")}
 
 
 @pytest.mark.parametrize("text", NON_OBJECTS)
@@ -266,7 +267,7 @@ def test_one_row_that_cannot_be_built_is_listed_as_unreadable(client, monkeypatc
     started = rows["bad"].pop("started")
     assert isinstance(started, float) and started > 0
     assert rows["bad"] == {"run_id": "bad", "exists": True, "mode": mgr.effective_mode, "flow": "full", "upload": None,
-                           "state": "finished", "exit_code": None}
+                           "zip_name": "bad-migration.zip", "state": "finished", "exit_code": None}
     warnings = [rec for rec in caplog.records if rec.levelname == "WARNING" and "bad" in rec.getMessage()]
     assert len(warnings) == 1
     assert "KeyError" in warnings[0].getMessage() and "secret-from-a-project-file" not in warnings[0].getMessage()
@@ -340,7 +341,8 @@ def test_a_run_folder_the_server_cannot_enter_is_listed_as_unknown(client, caplo
         assert isinstance(started, (int, float))
         mgr = client.app.state.manager
         assert rows["locked"] == {"run_id": "locked", "exists": True, "mode": mgr.effective_mode, "flow": "full",
-                                  "upload": None, "state": "unknown", "exit_code": None}
+                                  "upload": None, "zip_name": "locked-migration.zip", "state": "unknown",
+                                  "exit_code": None}
         warnings = [rec for rec in caplog.records if rec.levelname == "WARNING" and "locked" in rec.getMessage()]
         assert len(warnings) == 1 and "PermissionError" in warnings[0].getMessage()
     finally:

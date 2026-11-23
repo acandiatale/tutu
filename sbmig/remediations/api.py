@@ -11,7 +11,8 @@ The `/api/remediations` router (contract: API.md). Error mapping: IntakeRejected
 StateConflict / NotAvailable → 409, unknown id → 404, bad id → 400. A 409 carries `message_ko` when the service gave
 one (the refused resume of a state saved in `AWAITING_APPROVAL` by an earlier version: the approval step, with its
 `proposals` / `approvals` routes, was removed). `GET …/files/{name}?download=1` attaches any file; report.md /
-report.json are then named remediation-report.md / remediation-report.json (v2.1z-bg).
+report.json are then named remediation-report.md / remediation-report.json (v2.1z-bg). `result.zip` is attached as
+`<project>-remediation.zip` (`RemediationManager.zip_name`, v2.1z-bt); every other file keeps its name.
 """
 from __future__ import annotations
 
@@ -187,9 +188,16 @@ def create_router(manager: RemediationManager, max_upload_bytes: int | None = No
         ext = path.suffix.lower()
         # ?download=1이면 어떤 파일이든 첨부 파일로 보낸다
         attach = ext in _ATTACH or download is not None
+        filename = DOWNLOAD_NAMES.get(name, name) if attach else None
+        if attach and name == "result.zip":
+            # 결과 ZIP은 프로젝트명으로 받는다. 이름을 정하지 못하면 result.zip 그대로 보낸다
+            try:
+                filename = await _call(manager.zip_name, rid)
+            except Exception:  # 보여 주는 이름이므로 정하지 못해도 내려받기는 실패하지 않는다
+                log.debug("remediation %s: download name of result.zip not computed", rid, exc_info=True)
         return FileResponse(path, media_type=_MEDIA.get(ext, "application/octet-stream"),
                             headers={"Cache-Control": "no-store"},
-                            filename=DOWNLOAD_NAMES.get(name, name) if attach else None,
+                            filename=filename,
                             content_disposition_type="attachment" if attach else "inline")
 
     @r.delete("/{rid}", status_code=204)

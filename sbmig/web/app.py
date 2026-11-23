@@ -34,13 +34,15 @@ Routes:
          value → 400; `stop_after` with `flow=remediation` → 400
     GET  /api/runs/{id}                  status ("framework": {name, scope, fix_loop} for a run in the reduced
                                          scope jdk-jakarta, from report.json or the journal; v2.1z-aw; "project" when the
-                                         upload carried one, absent for older runs)
+                                         upload carried one, absent for older runs; "zip_name", the name result.zip is
+                                         received under, always, v2.1z-bt)
     GET  /api/runs/{id}/events           SSE: status | node | error | journal | log | report | ping | end
     POST /api/runs/{id}/stop             stop after the current graph node
     GET  /api/runs/{id}/files/{name}     report.md | report.json | result.zip | sbmig.log | journal.jsonl |
                                          changes.patch | plan.json | profile.json | errors.md | errors.jsonl;
                                          `?download=1` attaches; report.md / report.json are then named
-                                         migration-report.md / migration-report.json (v2.1z-bg)
+                                         migration-report.md / migration-report.json (v2.1z-bg); result.zip is
+                                         received as <project>-migration.zip (`contract.zip_download_name`, v2.1z-bt)
     GET  /api/runs/{id}/codediff         the code-change view (v2.1z-au, `sbmig.web.codediff`): the stored
                                          codediff/index.json; 404 {"error": "code diff not available"} without it,
                                          409 while the run's final redaction pass is pending
@@ -107,6 +109,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from sbmig.core.config import PACKAGE_ROOT, load_dotenv_files
 
+from .contract import zip_download_name
 from .jsonsafe import FiniteJSONResponse, finite_dumps
 from .runs import DOWNLOAD_NAMES, RUN_ID_RE, SERVED_FILES, ProjectNameError, RunManager, check_flow, check_project
 
@@ -682,8 +685,11 @@ def create_app(out_dir: Path, repo_root: Path = PACKAGE_ROOT, max_upload_mb: int
         if not path.is_file():
             return JSONResponse({"error": f"{name} not found"}, status_code=404)
         attach = download is not None or name.endswith((".zip", ".csv", ".jsonl"))
+        # 변환된 프로젝트 ZIP은 <프로젝트명>-migration.zip으로 받게 한다. 실행 폴더 안의 이름은 그대로다
+        shown = (zip_download_name(rid, "migration", mgr.project_name(rid)) if name == "result.zip"
+                 else DOWNLOAD_NAMES.get(name, name))
         return FileResponse(path, media_type=SERVED_FILES[name], headers={"Cache-Control": "no-store"},
-                            filename=DOWNLOAD_NAMES.get(name, name) if attach else None,
+                            filename=shown if attach else None,
                             content_disposition_type="attachment" if attach else "inline")
 
     @app.exception_handler(HTTPException)

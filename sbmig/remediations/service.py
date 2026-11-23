@@ -415,6 +415,30 @@ class RemediationManager:
         이관 뒤 이어서 실행한 조치면 이관 실행 폴더 안의 경로다. / The run paths of a validated id."""
         return self._locate(rid)[0]
 
+    def zip_name(self, rid: str) -> str:
+        """결과 ZIP을 내려받을 때 쓰는 이름 ``<프로젝트명>-remediation.zip``을 반환한다.
+        이관 실행 폴더에 입력한 프로젝트명이 없거나 단독 조치면 ID를 쓴다.
+
+        The name `delivery/result.zip` is received under (v2.1z-bt): `contract.zip_download_name(rid, "remediation",
+        project)`. A chained or remediation-flow run (its id is the migration run id) reads the project entered at
+        upload from the migration run folder (`contract.entered_project`); a standalone remediation has none, so its id
+        stands in. A bad id raises `BadRemediationId` as everywhere here; reading the project never fails (any error
+        leaves it out)."""
+        paths, chained = self._locate(rid)
+        return self._zip_name(rid, paths, chained)
+
+    @staticmethod
+    def _zip_name(rid: str, paths: RunPaths, chained: bool) -> str:
+        # sbmig.web 패키지는 웹 앱 전체를 불러오므로 모듈 맨 위가 아니라 여기서 import한다
+        from sbmig.web import contract
+        project = None
+        if chained:
+            try:
+                project = contract.entered_project(paths.root.parent)
+            except Exception:  # 보여 주는 이름이므로 읽지 못해도 요청은 실패하지 않는다
+                log.debug("remediation %s: entered project name not read", rid, exc_info=True)
+        return contract.zip_download_name(rid, "remediation", project)
+
     def _new_id(self) -> str:
         while True:
             rid = f"r{time.strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(6)}"
@@ -1067,6 +1091,8 @@ class RemediationManager:
                       "files": f"{base}/files/"},
             "kind": KIND_CHAINED if chained else KIND_STANDALONE, "mode": self.mode,
             "resume": self._resume_info(rid, st, chained, shown),
+            # 화면의 「결과 ZIP 받기」가 브라우저가 저장할 이름을 그대로 보여 주도록 넣는다
+            "zip_name": self._zip_name(rid, paths, chained),
         }
         if chained:
             out["run_id"] = rid

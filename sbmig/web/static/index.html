@@ -736,7 +736,7 @@
       </a>
       <a class="btn big quiet" id="dl-zip" aria-disabled="true">
         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M2 4.5h12v9H2z"/><path d="M2 4.5l1.5-2.5h9L14 4.5M8 7v4m0 0-2-2m2 2 2-2"/></svg>
-        <span>변환된 프로젝트 받기 <span class="sub">result.zip</span></span>
+        <span>변환된 프로젝트 받기 <span class="sub" id="dl-zip-name"></span></span>
       </a>
     </div>
     <div class="otherfiles" id="otherfiles"></div>
@@ -1556,12 +1556,15 @@
     if (llm != null) chips.push(`<span class="chip" id="llmchip">LLM 호출 ${llm}회</span>`);
     $('counts').innerHTML = chips.join('');
     // 보고서는 사람이 받는 이름(migration-report.md)으로 내려받게 한다. 서버도 같은 이름을 보낸다
-    const set = (id, name) => {
+    // 변환된 프로젝트 ZIP은 서버가 상태에 담아 보낸 이름(프로젝트명-migration.zip)을 그대로 쓴다
+    const zipName = zipNameOf(st);
+    setText('dl-zip-name', zipName);
+    const set = (id, name, shown) => {
       const a = $(id), has = files.includes(name);
       a.setAttribute('aria-disabled', String(!has));
-      if (has) { a.href = fileUrl(name, true); a.setAttribute('download', MIG_DL[name] || name); } else { a.removeAttribute('href'); a.removeAttribute('download'); }
+      if (has) { a.href = fileUrl(name, true); a.setAttribute('download', shown); } else { a.removeAttribute('href'); a.removeAttribute('download'); }
     };
-    set('dl-report', 'report.md'); set('dl-zip', 'result.zip');
+    set('dl-report', 'report.md', MIG_DL['report.md']); set('dl-zip', 'result.zip', zipName);
     rv.files = files.slice();
     // 로그와 저널 같은 그 밖의 파일은 관리자 페이지에서 받는다. 여기에는 결과 ZIP이 없을 때의 안내만 둔다
     $('otherfiles').textContent = '';
@@ -1720,9 +1723,11 @@
     const files = Array.isArray(st.files) ? st.files : [], dl = $('remed-dl');
     dl.replaceChildren();
     // 보고서는 사람이 받는 이름(remediation-report.md)으로 내려받게 한다(?download=1이면 서버도 같은 이름을 보낸다)
+    // 결과 ZIP은 조치 상태의 zip_name(프로젝트명-remediation.zip)으로 받는다. 검증된 이전 라운드 ZIP과 fix.patch는 이름 그대로다
+    const shownName = (name) => REM_DL[name] || (name === 'result.zip' ? zipNameOf(st) : name);
     const link = (name, text, cls, badge, badgeCls) => {
       if (!files.includes(name)) return;
-      const a = el('a', 'btn ' + cls), shown = REM_DL[name] || name;
+      const a = el('a', 'btn ' + cls), shown = shownName(name);
       a.href = remUrl(runId, '/files/' + name + (REM_DL[name] ? '?download=1' : '')); a.setAttribute('download', shown);
       const lab = el('span', null, text + ' '); lab.appendChild(el('span', 'sub', shown)); a.appendChild(lab);
       if (badge) a.appendChild(el('span', 'badge ' + (badgeCls || 'bad'), badge));
@@ -1878,7 +1883,7 @@
     const TREE_OPEN_ALL = 150;    // 목록의 파일이 이보다 적으면 트리의 폴더를 모두 펼쳐 둔다
     const CACHE_MAX = 200;        // 받아 둔 파일 변경 내용을 이 개수까지 기억해 필터를 바꿔도 다시 받지 않는다
     const KINDS = [['all', '전체'], ['modified', '수정'], ['added', '추가'], ['deleted', '삭제'], ['moved', '이동']];
-    const NOT_SHOWN = '변환된 프로젝트(result.zip)나 changes.patch에서 확인해 주세요.';
+    const NOT_SHOWN = '변환된 프로젝트 ZIP에서 확인해 주세요.';
     // 정적 파일은 확장자로 정한다: 브라우저에 그대로 보내는 스크립트와 스타일, HTML, 이미지, 글꼴, 미디어, 압축 파일, 문서, 소스맵이다.
     // 목록에 없는 확장자는 내용이 중요할 수 있으므로 정적 파일로 보지 않는다(JSP, Java, XML, properties, YAML, SQL, 빌드 파일 등)
     const STATIC_EXT = new Set(['js', 'mjs', 'cjs', 'css', 'scss', 'sass', 'less', 'map', 'html', 'htm',
@@ -3213,6 +3218,11 @@
   // 내려받기 이름. 실행 폴더 안의 파일 이름은 그대로 두고 사람이 받는 이름만 바꾼다
   const MIG_DL = { 'report.md': 'migration-report.md', 'report.json': 'migration-report.json' };
   const REM_DL = { 'report.md': 'remediation-report.md', 'report.json': 'remediation-report.json' };
+  // 결과 ZIP을 받을 때의 이름은 서버가 상태에 담아 보낸 zip_name이다. 이 값이 없는 이전 서버의 상태면 result.zip으로 둔다
+  function zipNameOf(st) {
+    const n = st && typeof st.zip_name === 'string' ? st.zip_name.trim() : '';
+    return n || 'result.zip';
+  }
   // 실행 보고서: 실행이 끝나면 report 이벤트로 받은 원문이다. 전체 진행이면 마이그레이션 보고서다.
   // rv.dlg는 대화상자를 연 미리보기('mig' 또는 'rem')다. 그 미리보기의 글이 바뀌면 열린 대화상자도 같은 글로 바꾼다
   const rv = { text: '', files: [], opener: null, dlg: '' };

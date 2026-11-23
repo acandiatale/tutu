@@ -227,7 +227,9 @@ def test_files_whitelist(tmp_path, base_cfg):
     assert r.status_code == 200 and r.headers["content-disposition"] == 'attachment; filename="remediation-report.md"'
     r = c.get(f"/api/remediations/{rid}/files/report.json?download=1")
     assert r.headers["content-disposition"] == 'attachment; filename="remediation-report.json"'
-    assert 'filename="result.zip"' in c.get(f"/api/remediations/{rid}/files/result.zip").headers["content-disposition"]
+    # v2.1z-bt: a standalone remediation has no project name, so its id stands in
+    r = c.get(f"/api/remediations/{rid}/files/result.zip")
+    assert r.headers["content-disposition"] == f'attachment; filename="{rid}-remediation.zip"'
 
 
 # ---------------------------------------------------------------------------- the real web app

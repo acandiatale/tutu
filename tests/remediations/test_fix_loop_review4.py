@@ -103,7 +103,7 @@ def test_a_failed_freeze_of_the_failed_candidate_keeps_the_verified_delivery(tmp
     _no_swap_left(paths)
     md = paths.report_md.read_text(encoding="utf-8")
     assert "`delivery/result.zip`" in _result_line(md) and "빌드 성공" in _result_line(md)
-    assert "라운드 2의 결과 ZIP을 쓰지 못했습니다(OSError). 결과 ZIP(delivery/result.zip)은 라운드 1의 결과 그대로입니다." in md
+    assert "라운드 2의 결과 ZIP을 쓰지 못했습니다(OSError). 결과 ZIP은 라운드 1의 결과 그대로입니다." in md
     assert next(e for e in rec.events if e.get("event") == "delivery_not_written")["kept_round"] == 1
 
 

@@ -147,16 +147,16 @@ _REASON_KO: dict[str, tuple[str, str]] = {
 _FAILED_INCLUDED_KO = ("버전을 바꾼 수정본이 빌드에 실패했습니다.",
                        "**빌드 오류 확인하기** — 빌드에 실패한 결과 ZIP은 배포하지 말고, `rounds/<n>/build.log` 파일과 "
                        "`rounds/<n>/candidate.patch` 파일을 확인해 빌드 오류를 고치거나 올릴 버전을 다시 정해 주세요.")
-_SUCCEEDED_STEP = "**결과 ZIP 받기** — 재검사를 마친 `delivery/result.zip` 파일을 받아 사용해 주세요."
+_SUCCEEDED_STEP = "**결과 ZIP 받기** — 재검사를 마친 결과 ZIP을 받아 사용해 주세요."
 # 바꾼 것이 없어 원본을 그대로 낸 결과 ZIP(라운드 0)은 조치 전 검사만 거쳤다
-_SUCCEEDED_STEP_ROUND0 = "**결과 ZIP 받기** — 검사를 마친 `delivery/result.zip` 파일을 받아 사용해 주세요."
+_SUCCEEDED_STEP_ROUND0 = "**결과 ZIP 받기** — 검사를 마친 결과 ZIP을 받아 사용해 주세요."
 # 조치 전 빌드 실패를 받아들인 실행(state.baseline_tolerated)의 baseline_build_failed 문장과 할 일
 _TOLERATED_KO = (("이 프로젝트는 조치 전에도 빌드되지 않았습니다. 남은 빌드 오류는 프로젝트 담당자와 "
                   "프레임워크 담당자가 고쳐야 합니다. 취약점 검사는 오픈소스 "
                   "라이브러리를 보는 것이므로 빌드와 상관없이 진행했습니다."),
                  ("**빌드 오류 고치기** — 이관 보고서(`migration-report.md`)의 「변환 뒤 남은 빌드 오류」에 정리된 오류를 "
                   "프로젝트 담당자와 프레임워크 담당자가 고쳐 주세요."))
-_TOLERATED_BUILD_STEP = ("**바꾼 버전으로 한 번 빌드하기** — 빌드 오류를 고친 뒤 결과 ZIP(`delivery/result.zip`)의 pom.xml 버전을 "
+_TOLERATED_BUILD_STEP = ("**바꾼 버전으로 한 번 빌드하기** — 빌드 오류를 고친 뒤 결과 ZIP의 pom.xml 버전을 "
                          "그대로 두고 한 번 빌드해 주세요. 빌드가 통과해야 바꾼 버전을 그대로 쓸 수 있습니다.")
 # 빌드 설정 점검에서 읽을 수 없는 pom 때문에 멈췄을 때의 결과 줄 설명과 할 일
 _POM_REFUSED_WHAT = "pom 파일을 읽지 못해 작업을 중단했습니다."
@@ -1646,7 +1646,8 @@ def _delivery_text(state: RemediationState, final: ScanResult | None) -> str:
     d = state.delivery
     if d is None:
         return "없음 — 원본은 `original/source.zip`에 그대로 있습니다."
-    head = f"`{_md_cell(d.path)}` — "
+    # 담당자는 프로젝트명으로 받은 ZIP만 보므로 작업 폴더 안의 경로 대신 결과 ZIP이라고 쓴다
+    head = "결과 ZIP — "
     if d.build_tolerated:
         what = "원본 그대로, 빌드되지 않음" if d.round == 0 else "빌드로 확인하지 못함(조치 전과 같은 빌드 오류)"
         return head + what + ", " + ("재검사 완료" if d.scanned and _delivery_matches(state, final) else "재검사하지 않음")
@@ -1669,7 +1670,7 @@ def _failed_delivery_block(L: list[str], state: RemediationState, paths: RunPath
     ids = ", ".join(rs.applied) if rs and rs.applied else "-"
     blog = (rs.build.log if rs and rs.build and rs.build.log else f"rounds/{d.round}/build.log")
     L.append(">")
-    L.append(f"> **주의:** 결과 ZIP(`{d.path}`)에는 라운드 {d.round}에서 빌드에 실패한 수정본(제안 {ids})이 들어 있고, "
+    L.append(f"> **주의:** 결과 ZIP에는 라운드 {d.round}에서 빌드에 실패한 수정본(제안 {ids})이 들어 있고, "
              f"재검사는 하지 않았습니다. 빌드 로그는 `{blog}`에 있습니다. 이 ZIP을 그대로 배포하지 마세요.")
     L.append("> 원본은 `original/source.zip`에 그대로 보관합니다(내려받기 이름 source.zip).")
     kept = _verified_kept(paths)

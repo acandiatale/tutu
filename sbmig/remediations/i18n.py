@@ -1100,14 +1100,14 @@ RULES: list[_Rule] = [
        r"|(?P<none>no result ZIP exists; the original is preserved as original/source\.zip))",
        lambda g: (f"라운드 {g['r']}의 결과 ZIP을 쓰지 못했습니다({g['t']})."
                   + (" 결과 ZIP은 없고, 원본은 original/source.zip에 그대로 보관합니다." if g.get("none") else
-                     " 결과 ZIP(delivery/result.zip)은 바꾼 것이 없는 이전 결과 그대로입니다." if g.get("k") == "0" else
-                     f" 결과 ZIP(delivery/result.zip)은 라운드 {g.get('k')}의 결과 그대로입니다.")
+                     " 결과 ZIP은 바꾼 것이 없는 이전 결과 그대로입니다." if g.get("k") == "0" else
+                     f" 결과 ZIP은 라운드 {g.get('k')}의 결과 그대로입니다.")
                   + (f" {_raw(g['e'])}" if g.get("e") else ""))),
     _r("delivery_record_not_written",
        r"delivery/result\.zip is now the result ZIP of round (?P<r>\d+), but (?P<what>.+?) could not be written "
        r"\((?P<t>[A-Za-z_][\w.]*): (?P<e>.*)\); the record is completed the next time this run is opened",
-       lambda g: (("결과 ZIP(delivery/result.zip)은 이제 바꾼 것이 없는 결과입니다." if g["r"] == "0" else
-                   f"결과 ZIP(delivery/result.zip)은 이제 라운드 {g['r']}의 결과입니다.")
+       lambda g: (("결과 ZIP은 이제 바꾼 것이 없는 결과입니다." if g["r"] == "0" else
+                   f"결과 ZIP은 이제 라운드 {g['r']}의 결과입니다.")
                   + f" 다만 기록 파일({g['what'].replace(' and ', ', ')})을 쓰지 못했습니다({g['t']}). 이 실행을 다음에 열 때 "
                   "기록을 마저 맞춥니다." + (f" {_raw(g['e'])}" if g.get("e") else ""))),
     _r("scan_incomplete", r"(?P<w>baseline|final) scan incomplete: (?P<r>.+)",
@@ -1135,7 +1135,7 @@ RULES: list[_Rule] = [
        r"\(proposals: (?P<ids>.*?); build log (?P<log>\S+)\); it was not rescanned; the original is preserved as "
        r"original/source\.zip(?:; the verified delivery of an earlier round is kept as (?P<kept>\S+)"
        r"|; the scanned delivery of an earlier round \(its build was not confirmed\) is kept as (?P<scanned>\S+))?",
-       lambda g: (f"결과 ZIP(delivery/result.zip)에는 수정본 빌드에 실패한 라운드 {g['r']}의 변경이 들어 있습니다(제안 "
+       lambda g: (f"결과 ZIP에는 수정본 빌드에 실패한 라운드 {g['r']}의 변경이 들어 있습니다(제안 "
                   f"{g['ids']}, 빌드 로그 {g['log']}). 이 ZIP은 재검사하지 않았습니다. 원본은 original/source.zip에 "
                   "그대로 보관합니다."
                   + (f" 이전 라운드에서 검증한 결과 ZIP은 {g['kept']}에 있습니다." if g.get("kept") else "")
@@ -1144,7 +1144,7 @@ RULES: list[_Rule] = [
     _r("discarded",
        r"round (?P<r>\d+) candidate discarded; delivery/result\.zip is the verified state of round (?P<k>\d+), "
        r"without the failed change",
-       lambda g: (f"라운드 {g['r']}의 수정본은 버렸습니다. 결과 ZIP(delivery/result.zip)은 라운드 {g['k']}에서 검증한 "
+       lambda g: (f"라운드 {g['r']}의 수정본은 버렸습니다. 결과 ZIP은 라운드 {g['k']}에서 검증한 "
                   "상태이며, 실패한 변경은 들어 있지 않습니다.")),
     _r("delivery_missing", r"the delivery ZIP is missing", lambda g: "결과 ZIP이 없습니다."),
     _r("delivery_changed", r"the delivery ZIP changed after it was frozen",
