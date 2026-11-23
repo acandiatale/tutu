@@ -1298,3 +1298,19 @@ Two small leftovers of v2.1z-br; a third item was implemented and withdrawn in r
 | v2.1z-br with real Maven | verified today on a developer Mac with the fake LLM: the integration-marked tests gave 72 passed and 7 skipped on both `61ff9a0` and its parent `c1ebe82` with JDK 21 (with `JAVA_HOME` unset one test fails on both, because Maven then runs on Java 25); real migration runs of the `pure-java` fixture and of a variant with a failing unit test, and four real remediation scenarios (snakeyaml 1.33 to 2.0, the candidate fails to compile: good fix, bad fix, tests compiled, tests compiled and run) launched the same Maven processes with identical command lines on both commits, every build ran once, and both `skip_tests` call sites were reached and sent `-DskipTests` as before. Not covered: a runner without the keyword (none is shipped), the company cluster | real Maven, fake LLM | done |
 | Checked | unit tests (full suite 7,413 passed) on a developer Mac | — | done |
 | Not checked | the company cluster | — | open |
+
+## Status — 2026-11-23, result ZIPs received under the project name (v2.1z-bt)
+
+The user: "변환된 프로젝트 받기랑 결과 ZIP 받기도 프로젝트 명으로 다운 받을 수 있도록 하자! 둘다 result.zip은 좀 아닌거 같아!
+프로젝트명-migration.zip, 프로젝트명-remediation.zip으로!" Contract: `docs/INTERFACES.md` "v2.1z-bt".
+
+| Item | What | Verification | State |
+|---|---|---|---|
+| One rule | `contract.zip_download_name(run_id, kind, project)`: `<project>-migration.zip` / `<project>-remediation.zip`, the run id when no usable project name was entered, `result.zip` only when neither fits | `tests/web/test_zip_download_name.py` | done |
+| Migration download | `GET /api/runs/{id}/files/result.zip` attaches as `<project>-migration.zip` (project from memory, `request.json`, `web-status.json` or the journal's `web_run` line); every other file keeps its name; the status, the run list rows and the event stream carry `zip_name` without an extra file read | `tests/web/test_v21zbt_zip_names.py` | done |
+| Remediation download | `GET /api/remediations/{id}/files/result.zip` attaches as `<project>-remediation.zip` (chained and remediation-flow runs: the migration run's entered project; standalone: its id); the status carries `zip_name`; `result-verified.zip`, the reports and the rest keep their names | `tests/remediations/test_v21zbt_zip_names.py` | done |
+| Page | 「변환된 프로젝트 받기」 and 「결과 ZIP 받기」 show and save the status's `zip_name`; the code-change view's sentence no longer names `result.zip` (nor `changes.patch`, which a page user cannot get) | `tests/web/test_v21zbt_zip_names.py`, page tests | done |
+| Remediation wording | the report's steps, its summary line and its failed-delivery warning, and the Korean status messages shown on the page and in 「상세:」, say 「결과 ZIP」 instead of the run-folder path `delivery/result.zip`; the collapsed processing record keeps the path | `tests/remediations/test_v21zbt_zip_names.py`, `test_report.py`, `test_i18n.py` | done |
+| Review | one independent review against the contract: no break found; a flaky byte comparison in a new test and the status-message wording were fixed | — | done |
+| Checked | unit tests (full suite 7,468 passed) on a developer Mac | — | done |
+| Not checked | a real browser on the company PC, Job mode on the cluster | — | open |

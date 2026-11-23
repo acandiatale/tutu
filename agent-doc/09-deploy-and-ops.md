@@ -9,10 +9,10 @@
 운영 모델은 웹 UI다: 담당자가 자기 프로젝트를 zip으로 올리면 떠 있는 웹 앱(`sbmig serve`)이 이관을 돌린다.
 
 흐름: 브라우저가 zip을 올림 → `sbmig serve`(FastAPI + uvicorn, 워커 1, 실행 큐는 프로세스 안; 실행마다 스레드 하나와 LangGraph 그래프) → SSE로
-node / journal / log / report 이벤트 → 보고서, result.zip, errors.md, sbmig.log … 내려받기.
+node / journal / log / report 이벤트 → 보고서와 결과 ZIP 내려받기.
 
 - 화면(머리 `panacea-remediating-oss`, 임시): 진행 방식 전체 진행(기본, 이관 후 조치) / 취약점 해결(조치만, [11](11-remediations.md)) → 프로젝트명(필수, 안내 「6자리 체인코드가 포함된 레포지토리 이름으로 작성해 주세요.」, `runs.PROJECT_RE`: 영문·숫자·`_`·`-` 30자; 어기면 400) + zip →
-  `마이그레이션 시작`(또는 `취약점 조치 시작`) → 단계 레일과 진행 기록 / 로그 탭(마지막 1,500줄) → `보고서 받기(migration-report.md)` / `변환된 프로젝트 받기(result.zip)`. 미리보기는 따로 둘: 결과 카드 끝 「마이그레이션 보고서 미리보기」, 조치 칸 안 「조치 결과 보고서 미리보기」(`remediation/report.md` 그대로, [01](01-repo-map.md)).
+  `마이그레이션 시작`(또는 `취약점 조치 시작`) → 단계 레일과 진행 기록 / 로그 탭(마지막 1,500줄) → `보고서 받기(migration-report.md)` / `변환된 프로젝트 받기(<프로젝트명>-migration.zip)`. 미리보기는 따로 둘: 결과 카드 끝 「마이그레이션 보고서 미리보기」, 조치 칸 안 「조치 결과 보고서 미리보기」(`remediation/report.md` 그대로, [01](01-repo-map.md)).
   설정 파일은 서버가 정한다: `sbmig serve --config <이름>`(여러 번) 또는 `SBMIG_WEB_CONFIGS=a.yml,b.yml`, 없으면 `config/artifacts.yml` →
   `artifacts.local-e2e.yml` 중 있는 것(`GET /api/configs`의 `default`). 고급 설정(숨김, 그 값은 안 보냄)과 그 밖의 파일 목록은 화면에 없다(파일은 관리자 페이지).
   시작은 파일과 맞는 이름이 있어야 눌린다. 실행 폴더 `<프로젝트명>-YYYYmmdd-HHMMSS-<hex 6>`(`ls /data/out | grep <프로젝트명>`; 예전 이름도 그대로),

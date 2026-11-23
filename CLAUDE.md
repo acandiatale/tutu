@@ -818,6 +818,9 @@ review", fix attempts as `script:<case>:v<N>`; `ko`, the company setting: the re
   never pass report text to `innerHTML`, it comes from project files and build output. Downloads are named
   `migration-report.*` / `remediation-report.*` (`runs.DOWNLOAD_NAMES`, the remediation files route's `?download=1`);
   files in the run directory keep `report.md` / `report.json` (the web, admin, cleanup and old runs depend on them).
+  The result ZIPs too since v2.1z-bt (2026-11-23, the user: "둘다 result.zip은 좀 아닌거 같아"): `<project>-migration.zip`
+  and `<project>-remediation.zip` (`contract.zip_download_name`, the run id when no project was entered; `zip_name` in
+  both statuses is what the page shows); the files in the run folder stay `result.zip` / `delivery/result.zip`.
   `LLMResponse.model` / `LLMUsage.model` = the name ASKED with (the role on the agent gateway); the gateway's real model
   names go to `served` (log line ` served=…` after `finish=`). `llm.pricing` is looked up by the asked name first, then
   the served names. Old rows named `unknown` / `?` / empty show as 「이름 없음」. Contract: `docs/INTERFACES.md` "v2.1z-bg".

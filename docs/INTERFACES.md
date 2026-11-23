@@ -22,7 +22,7 @@ type: `sbmig/core/models.py`, `sbmig/core/interfaces.py`, `sbmig/core/config.py`
 | LLM gateway | Base "LLM client tier and adapter seams"; v2.1z-m (agent gateway, token exchange), v2.1z-n, v2.1z-o, v2.1z-p (case thread), v2.1z-q, v2.1z-x, v2.1z-af (busy wait, auth retries) |
 | report & result line | Base "Report and the result line", "Advisories and the Handover"; v2 "As built (step 1)" (`review=`); v2.1d (`major=`); remediations (`remediation=`); v2.1z-ak (`scope=`, the framework block); v2.1z-bl (`llm=` includes the remediation's fix-loop calls) |
 | fleet | Base "Fleet" |
-| web app | Base "Graph engine", "Web app"; v2.1z-w (page, server-chosen configs), v2.1z-ae (queue / slots on the page), v2.1z-af (page re-attach), v2.1z-aj (run flows, page header); v2.1z-ak (framework label, skipped stages); v2.1z-ao (admin page `/admin`: token usage per project, log ZIPs); v2.1z-au (the code-change view: artifact `codediff/`, `/api/runs/{id}/codediff`, the page block); v2.1z-av (cross-site requests refused, the free-space floor for uploads, unpacking limits); v2.1z-bg (report view); v2.1z-bl (two report previews, 고급 설정 and the other-files list gone, LLM counts); v2.1z-bm (the hidden controls are not sent); v2.1z-bo (admin page: 「일부 알 수 없음」 / cost 「알 수 없음」 for unknown remediation usage, `remediation_llm_usage_unknown`); v2.1z-bp (the run cost = the priced rows with 「일부 알 수 없음」, 「알 수 없음」 only when nothing is priced); v2.1z-br (`GET /api/runs` never answers 500 because of one run, no list refresh while the tab is hidden, no `run_dir` in the status JSON, the report view linear in a line's length); v2.1z-bs (a non-finite number in a run file is sent as `null` by the single-run status, the upload answer, the code-change routes, the admin usage and the event stream's `status` event: `sbmig/web/jsonsafe.py`; `status()` reads `report.json` once) |
+| web app | Base "Graph engine", "Web app"; v2.1z-w (page, server-chosen configs), v2.1z-ae (queue / slots on the page), v2.1z-af (page re-attach), v2.1z-aj (run flows, page header); v2.1z-ak (framework label, skipped stages); v2.1z-ao (admin page `/admin`: token usage per project, log ZIPs); v2.1z-au (the code-change view: artifact `codediff/`, `/api/runs/{id}/codediff`, the page block); v2.1z-av (cross-site requests refused, the free-space floor for uploads, unpacking limits); v2.1z-bg (report view); v2.1z-bl (two report previews, 고급 설정 and the other-files list gone, LLM counts); v2.1z-bm (the hidden controls are not sent); v2.1z-bo (admin page: 「일부 알 수 없음」 / cost 「알 수 없음」 for unknown remediation usage, `remediation_llm_usage_unknown`); v2.1z-bp (the run cost = the priced rows with 「일부 알 수 없음」, 「알 수 없음」 only when nothing is priced); v2.1z-br (`GET /api/runs` never answers 500 because of one run, no list refresh while the tab is hidden, no `run_dir` in the status JSON, the report view linear in a line's length); v2.1z-bs (a non-finite number in a run file is sent as `null` by the single-run status, the upload answer, the code-change routes, the admin usage and the event stream's `status` event: `sbmig/web/jsonsafe.py`; `status()` reads `report.json` once); v2.1z-bt (result ZIPs received as `<project>-migration.zip` / `<project>-remediation.zip`: `contract.zip_download_name`, `zip_name` in both statuses) |
 | Job mode (Main / Worker, slots, env pins) | v2.1z-z "k8s Job dispatch mode", v2.1z-ab (kubeconfig, template ConfigMap), v2.1z-ac (Main ↔ Worker contract), v2.1z-ad (end confirmation, ownership, env pins, write-time redaction), v2.1z-ae (parallel slots), v2.1z-af, v2.1z-aq (a build pod that does not start: stop, the reason notice); v2.1z-av (the build identity, pins taken at Job creation, the resume attempt) |
 | deploy | v2.1z-s (build hooks), v2.1z-t (one Job per request), v2.1z-u, deploy (baked config, container paths), v2.1z-ad "Shipped mode"; v2.1z-br (what the image build context leaves out in both layouts, `config/default.yml` lists every settable key) |
 | remediations | remediations; v2.1z-ak (in-house group `framework`); v2.1z-am (case-insensitive matching, per-module in-house split, module sources, variant overrides, 들어온 경로); v2.1z-an (override proposals in module poms, the owners' choice); v2.1z-ar (no approval unless switched on); v2.1z-av (fixed = gone from the rescan, the planner's new residual groups, `remediation.log` for every run); v2.1z-bi part B, v2.1z-bj, v2.1z-bk (the fix loop on a failed candidate: work copy, overlay, build-side sync, one `fix.patch`); v2.1z-bl (fix-loop LLM usage, titles with the entered project); v2.1z-bm (the complete-apply proof `expected.json`, the sync by table before commit / freeze, a candidate that cannot be put back, `stop requested` runs again, leftover loops settled); v2.1z-bn (one delivery swap + `recover_delivery`, the no-delivery sentences, usage after an exception, the exec bit in `expected.json` schema 2, the pending report, the scan source `original/scan-source.zip`); v2.1z-bo (the swap rolled forward + `DeliveryRecordNotWritten`, no re-upload after a kill and the table of mid-node saves, `repair_final` by every entry and by the web service in every mode, unknown usage, report = state message, the round's call total, a stop during the build fix); v2.1z-bp (`FixResult.ended_round`: the loop is not skipped on resume, an own row for calls without tokens, strict journal reading, the budget outcome saved and stamped, 「알려진 것만」, the report-not-written note dropped on repair, the bounded repair memory); v2.1z-br (unused code removed, `compare_trees` reads only what an attempt changed, `freeze_delivery` hashes while it writes); v2.1z-bs (`intake.sync_tree` removed; the fix loop still starts for a failure only a pom can fix: "Not changed") |
@@ -2807,7 +2807,7 @@ comment in `deploy/` is Korean (the company's reviewers do not want English comm
   finalize, lit by `node` events; Korean labels, the node name underneath) and two tabs: 진행 기록 (journal rows, last 400 kept in the
   DOM) and 로그 (the `log` / `console` events go into a ring buffer of 20,000 lines; at most the last 1,500 are rendered, once per
   animation frame, only while the tab is visible; DEBUG hidden by default; the full file through the `sbmig.log` link) → the result card
-  once `status.state == finished`: `보고서 받기` (report.md, received as `migration-report.md` since v2.1z-bg) and `변환된 프로젝트 받기` (result.zip) as download buttons (disabled when the
+  once `status.state == finished`: `보고서 받기` (report.md, received as `migration-report.md` since v2.1z-bg) and `변환된 프로젝트 받기` (result.zip, received as `<project>-migration.zip` since v2.1z-bt) as download buttons (disabled when the
   file is absent), the other served files as small links, the report under 보고서 미리보기 (rendered as Markdown since v2.1z-bg) → 지난 실행 (collapsed list; `#<run id>`
   still re-attaches). 고급 설정 (collapsed) holds the config checkboxes, the LLM provider (`fake`) and stop_after — developer options.
   Element ids the tests look for: `drop`, `zip`, `start`, `stop`, `rail`, `timeline`, `log`, `dl-report`, `dl-zip`, `adv`.
@@ -7237,3 +7237,45 @@ A later round that wants to save those requests has to keep three things true: t
 without an LLM request before giving up, and a pass ends the round as `retry_passed` does today; the decision is
 taken from the log of that second build and only when every parsed error is of the four kinds; no decision is
 carried across a rebuild.
+
+## v2.1z-bt — result ZIPs are received under the project name
+
+**Why.** The user, 2026-11-23: "변환된 프로젝트 받기랑 결과 ZIP 받기도 프로젝트 명으로 다운 받을 수 있도록 하자! 둘다
+result.zip은 좀 아닌거 같아! 프로젝트명-migration.zip, 프로젝트명-remediation.zip으로!" Both buttons handed out a file
+called `result.zip`, so two downloads could not be told apart in a Downloads folder.
+
+**Rules.**
+1. One rule, `sbmig.web.contract.zip_download_name(run_id, kind, project=None)` (no I/O): `<project>-migration.zip`
+   for the migration's `result.zip`, `<project>-remediation.zip` for the remediation's `delivery/result.zip`.
+   `project` is the name entered at upload. When it is missing or not a safe file-name part
+   (`^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$`), the run id stands in (a CLI run, a run uploaded before v2.1z-be, a
+   standalone remediation: its own id; a chained or remediation-flow remediation: the migration run id). When neither
+   fits, `result.zip`. No slug is cut out of the run id.
+2. `GET /api/runs/{id}/files/result.zip` sends `Content-Disposition: attachment; filename="<project>-migration.zip"`.
+   The project is the one the run's status reports (in memory, else `control/request.json`, `web-status.json`, the
+   journal's `web_run` line). Every other file of that route keeps its name (`report.md` / `report.json` as
+   `migration-report.*`, the rest unchanged).
+3. `GET /api/remediations/{id}/files/result.zip` sends `filename="<project>-remediation.zip"`. For a chained or
+   remediation-flow run the project is `contract.entered_project(<migration run dir>)`; a standalone remediation has
+   none and uses its id. `result-verified.zip`, the reports and every other file keep their names.
+4. The statuses carry the name so the page shows exactly what the browser will save: `GET /api/runs/{id}` (and every
+   status the run list and the event stream send) gets `zip_name` (the migration name, present whether or not the ZIP
+   exists yet); `GET /api/remediations/{id}` gets `zip_name` (the remediation name). The migration status computes it from the project it
+   already has, so the run list reads no extra file; the remediation status of a chained run reads the migration run's
+   `control/request.json` (and, in-process, the journal's first lines) once per call, a failed read leaving the run id.
+   The list rows carry the migration name only.
+5. Page: the migration button 「변환된 프로젝트 받기」 shows `zip_name` as its small file name and uses it as the
+   `download` attribute; the remediation button 「결과 ZIP 받기」 does the same with the remediation status's
+   `zip_name`. A status without the key falls back to `result.zip`. The code-change view's sentence that pointed at
+   「변환된 프로젝트(result.zip)」 names the ZIP without the old file name.
+6. The remediation report no longer tells the reader to take `delivery/result.zip` (a path inside the run folder the
+   reader never sees): the steps read 「**결과 ZIP 받기** — 재검사를 마친 결과 ZIP을 받아 사용해 주세요.」, round 0
+   「검사를 마친 결과 ZIP」, and the tolerated-build step 「결과 ZIP의 pom.xml 버전을 그대로 두고」; the summary's delivery line says 「결과 파일: 결과 ZIP — …」 and the
+   failed-delivery warning 「결과 ZIP에는 …」. The Korean of the status messages a person sees on the page and in the report's 「상세:」 line
+   (`sbmig/remediations/i18n.py`: a failed candidate delivered anyway, a discarded round, a delivery that could not be
+   written or recorded) says 「결과 ZIP」 without the parenthetical `(delivery/result.zip)`. The collapsed processing
+   record keeps `delivery/result.zip`, and the Korean migration report's collapsed 「참고」 block keeps `result.zip`
+   (both name the files in the run folder for operators).
+
+**Not changed.** Files in the run folder keep their names (`result.zip`, `delivery/result.zip`): the web, the admin
+page, the code-change view, cleanup and older runs read them. The admin page's log ZIPs. `result-verified.zip`.
