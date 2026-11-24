@@ -15,9 +15,9 @@ type: `sbmig/core/models.py`, `sbmig/core/interfaces.py`, `sbmig/core/config.py`
 | intake / analyze | Base "Intake and analyze", "Externalized configuration"; v2.1j (Ant), v2.1k + v2.1z "Review follow-ups" (rootless trees), v2.1z-c (hollow reactor), v2.1z-d (ADF), v2.1z-h (stray poms), v2.1z-i (bundled jars), v2.1z-z (build extensions); v2.1z-aj (Ant refused by default); v2.1z-ak (framework projects: detection, scope); v2.1z-aw (framework projects: conversion only, the framework's name) |
 | plan | v2 "Plan (L)"; v2.1o (1) (`plan.compile_after_rewrite`); v2.1u … v2.1y / v2.1w (recipe sets); v2.1z-ak (the reduced plan `jdk-jakarta`) |
 | transform (OpenRewrite) | Base "Plan, transform"; v2.1l "Recipes"; v2.1o (Framework 7); v2.1w; v2.1z-br (`openrewrite.fail_on_dry_run_results` removed) |
-| restructure & layout | Base "Restructure and the company layout"; v2.1g, v2.1h (JSP jakarta), v2.1l / v2.1s (version pins), v2.1m (resource filtering), v2.1n (optional triggers), v2.1o / v2.1p / v2.1t (parent-chain facts, BOM imports), v2.1q (embedded Tomcat), v2.1x (legacy Spring context), v2.1z-j (bundled jars), v2.1z-k, v2.1z-l |
+| restructure & layout | Base "Restructure and the company layout"; v2.1g, v2.1h (JSP jakarta), v2.1l / v2.1s (version pins), v2.1m (resource filtering), v2.1n (optional triggers), v2.1o / v2.1p / v2.1t (parent-chain facts, BOM imports), v2.1q (embedded Tomcat), v2.1x (legacy Spring context), v2.1z-j (bundled jars), v2.1z-k, v2.1z-l; v2.1z-cc (annotation processor paths without a version) |
 | structure review | v2 "Structure review (R)"; v2.1u … v2.1y (review prompt, invariant check, unsupported issues); v2.1z-h (review guard) |
-| verify & script fix loop | Base "Fix-loop invariants"; v2 "Script fix loop (L)", "Script contract (S)", "As built (step 1)"; v2.1d (versions, operator checks), v2.1l / v2.1m pre-tries, v2.1r (file locks), v2.1y (declines, idempotency), v2.1z (ladder caps, case keys), v2.1z-e (jakarta discovery), v2.1z-i, v2.1z-n, v2.1z-y, v2.1z-z, v2.1z-aa; v2.1z-ak (reduced run: as-is chain facts, framework guard); v2.1z-av (stop around the final build, the last unhelpful try rolled back, `repository_unreachable`, cut answers, managed versions per parent); v2.1z-bo (stop request and time budget checked before every LLM request, `llm_ask_skipped`); v2.1z-bp (the remediation's 60 s loop minimum checked by the graph only); v2.1z-br (the framework guard rejects an attempt it cannot check, a builder keyword decided by the callee's signature: `sbmig/loop/callee.py`) |
+| verify & script fix loop | Base "Fix-loop invariants"; v2 "Script fix loop (L)", "Script contract (S)", "As built (step 1)"; v2.1d (versions, operator checks), v2.1l / v2.1m pre-tries, v2.1r (file locks), v2.1y (declines, idempotency), v2.1z (ladder caps, case keys), v2.1z-e (jakarta discovery), v2.1z-i, v2.1z-n, v2.1z-y, v2.1z-z, v2.1z-aa; v2.1z-ak (reduced run: as-is chain facts, framework guard); v2.1z-av (stop around the final build, the last unhelpful try rolled back, `repository_unreachable`, cut answers, managed versions per parent); v2.1z-bo (stop request and time budget checked before every LLM request, `llm_ask_skipped`); v2.1z-bp (the remediation's 60 s loop minimum checked by the graph only); v2.1z-br (the framework guard rejects an attempt it cannot check, a builder keyword decided by the callee's signature: `sbmig/loop/callee.py`); v2.1z-by (the earlier fix in the prompt), v2.1z-bz (trade-back), v2.1z-cb (an error's place: file, else module) |
 | cases & KB | v2 intro + "Script KB (K)"; Base "KB plumbing"; v2.1e (learning records), v2.1f (probable fixers), v2.1z (masked case keys), v2.1z-ae / v2.1z-af (several pods on one KB), v2.1z-ai (rule versions, member-symbol keys, re-sign, exact-key guard); v2.1z-ca (a version that took part in a round trip: credit `round_trip`, never reused on its own) |
 | LLM gateway | Base "LLM client tier and adapter seams"; v2.1z-m (agent gateway, token exchange), v2.1z-n, v2.1z-o, v2.1z-p (case thread), v2.1z-q, v2.1z-x, v2.1z-af (busy wait, auth retries) |
 | report & result line | Base "Report and the result line", "Advisories and the Handover"; v2 "As built (step 1)" (`review=`); v2.1d (`major=`); remediations (`remediation=`); v2.1z-ak (`scope=`, the framework block); v2.1z-bl (`llm=` includes the remediation's fix-loop calls) |
@@ -7744,18 +7744,26 @@ attempt A of another case:
   but it does set the mark: the mark is about reuse, and a full run may reuse a `jdk-jakarta` version.
 - **Reuse.** `CaseStore.best`, `sbmig.triage.scripts.stored_best` and `stored_next` never select a version whose
   `round_trip` is true, exactly as for `non_idempotent`. `latest` (the base of an augment) is unchanged.
-- **The mark goes away** when the version is credited with a success of its own scope that did not come from a
-  reuse: an LLM answer whose code is the stored code (`add_script` returns the existing version). The loop says
+- **The mark goes away** when the version is credited with a success that did not come from a reuse, whatever the
+  scope of the run (the counts stay own-scope; `add_script` finds a version by its code across scopes, so a mark
+  that only a success of the version's own scope could clear would never clear for runs of the other scope): an
+  LLM answer whose code is the stored code (`add_script` returns the existing version). The loop says
   which it was (`credit(..., reused=True)` for an attempt whose `script_mode` is `reuse`); a success of a reuse
   counts as a success and leaves the mark (another pod may have planned the reuse before the mark was set). And
   when a person runs `sbmig kb cases activate <case> <version>`.
 - `scripts_text` shows ` round-trip` after the status (as ` non-idempotent`), so the "KB 탐색" log line of a case
   whose only versions are marked reads `케이스는 있으나 쓸 스크립트 없음 (v1 unverified round-trip 0/1)`. A KB import
-  merges the mark like `non_idempotent` (true on either side stays true), and for a version that is marked after the
-  merge the counts, `projects` and status are recounted from the merged run records of its own scope instead of
-  taking the larger count (an export made before the round trip would bring the taken-back success back).
-  When both sides hold a record of the same try and the imported one is `round_trip` while the local one is a
-  success, the imported record replaces the local one (the other side had taken that success back).
+  merges the mark like `non_idempotent` (true on either side stays true). The merge of the counts stays "the larger
+  count of the two sides", corrected by the take-backs the merge can see: for every try that one side records as
+  `round_trip` and the other as a success of the version's own scope, the side that still counts that success
+  loses it (and gains the failure) before the larger counts are taken; the project of such a run leaves
+  `projects` unless another kept own-scope success run names it, and `proven` goes back to `unverified` unless
+  `_resolved_elsewhere` still holds (`retired` stays). The `round_trip` record replaces the success record of
+  that try in the merged history. Both records of such a pair are of the version's own scope (a `round_trip` of
+  the other scope never takes a success back, as in `credit`); when the success record names no project, the
+  project of the `round_trip` record is the one that leaves. Without such a try the merge is what it was before. (Counting again from the
+  run records was tried and withdrawn: the history is capped at `errors.script_runs`, so it dropped the successes
+  of a widely reused version.)
   `sbmig kb cases show` names the marks `round-trip` and `non-idempotent` on a version's line.
 
 **The loop.** `BuildFixLoop._round_trips` (attempt → reason, cleared at the start of `_run`) is filled by
@@ -7800,13 +7808,163 @@ earlier run stay counted) and the second run reuses neither.
 **Review.** One independent round with reproductions (`out/scratch/round-trip-review/`) found three paths that
 broke the sentence above: a version of the other scope was not marked, a success of a reuse cleared the mark, and
 a `kb import` of an earlier export brought the taken-back success back. The rules for the other scope, `reused`
-and the import in "The store" are their fixes. The fixes were not reviewed again.
+and the import in "The store" are their fixes. A verification of those fixes (`out/scratch/round-trip-verify/`)
+confirmed the first two and found that the first form of the import fix (a recount from the run records) dropped
+counts the capped history no longer held, and that a mark set from a run of the other scope could not be cleared
+by an LLM answer in that scope: the import rule and the clearing rule above are the result.
 
 **Limits.**
 - A KB written before this section may hold such pairs as successes. They are marked the first time a run replays
   them and the verdict is reached (that run still makes the round trip once); `sbmig kb cases retire`, or a new KB
   folder, avoids that replay.
 - An undo that rewrites the lines instead of restoring them gives no verdict (v2.1z-bz) and so no mark.
+- A `kb import` of an export made while a version was marked brings the mark back after a later success had
+  cleared it (true on either side stays true): one more LLM ask clears it again.
 - A build pod on an older image does not honour the mark: it reuses such a version, and a success it credits
   does not clear the mark. It keeps the field when it rewrites the `case.json` (unknown fields of a script
   version survive a re-save).
+
+## v2.1z-cb — the same error in another module is another error (stall, oscillation, scoring, the error list)
+
+**Why.** A company run on a multi-module project (2026-11-24, read from the journal and `errors.md`). Maven stops at
+the first failing module, so a module-level error shows in one module per build. Here it was maven-compiler-plugin's
+`Resolution of annotationProcessorPath dependencies failed: Cannot find version for annotation processor path
+'<g>:<a>.jar'`, once per module whose pom lists a processor path without a version. The loop fixed the pom of module
+1 (build 3), other errors followed, the same message showed for module 2 (build 6) and was fixed, other errors
+followed, it showed for module 3 (build 9). Three poms, real progress, and the run ended there blocked as
+OSCILLATION, because:
+1. the stall and oscillation checks compared `BuildResult.signature_multiset()`: counts per L1 signature, in which
+   the module name is masked. Build 6 "equalled" build 3 and build 9 "equalled" build 6: two oscillations,
+   `loop.oscillation_limit` reached, every case the phase had worked on that was still present was blocked;
+2. `_pair` gave every error without a file the place `''`, so the scoring could not tell the error of module 1
+   from the one of module 2 either (had the two builds followed each other directly, the fix of module 1 would have
+   read as "its target is still there");
+3. the error list matched the occurrence in module 2 to the entry of module 1 (key: case, file, line, message) and
+   recorded "reappeared".
+
+**The rule.** The place of an error is its file. For an error without a file it is its module
+(`BuildError.module`), written `@<module>`; an error with neither keeps the place `''`. The loop compares errors by
+(place, signature) everywhere:
+- `_pair`, and with it the scoring: what is left of an attempt's targets, what is new, `introduced`, the resolved
+  pairs of the trade-back rule;
+- the stall and oscillation checks: the multiset compared between builds is the count per (place, signature), not
+  per signature. The same kind of error in another file or another module is not the same error set.
+  `IterationRecord.signatures` (the report) stays `signature_multiset()`;
+- the error list: `_match` pairs a file-less error only with an entry of the same module (the exact key and the
+  "line moved" step); an occurrence in another module is a new entry carrying its module.
+
+**Not changed.** Errors that have a file (their place was the file already). Case ids and the L1 / L2 signatures: the
+module stays masked there, the KB reuses a case across modules and projects. The ladder per case (see "Open").
+
+**What a reader can rely on.** Fixing a module-level error in one module and meeting the same message for the next
+module is progress: it is no stall and no oscillation, the first fix is not scored as if its target were still
+there, and the error list shows one entry per module.
+
+**As coded.** `_place(e)` in `sbmig/loop/fixloop.py` (the normalised file, else `@<module>`, else `''`); `_pair`
+returns `(_place(e), signature)` and every comparison goes through it (`_new_in_files` stays about the files an
+attempt touched). The stall / oscillation value is `Counter(_pair(e) for e in build.errors)`. In the error list
+`_same_module` guards the first two steps of `_match` (an entry or error without a module matches as before; the
+third step, a file the restructure moved, concerns errors with a file), and the check for the same error twice in
+one build in `add_build` carries the module too, so two modules failing in one build are two entries.
+
+**Checked.** Real Maven 3.9.10 / JDK 21 on a three-module project whose modules each list a processor path without
+a version (`out/scratch/module-place/`), scripted LLM. The parsed error is `kind compile, file None, module m1`
+(then `m2`, `m3`); its L1 signature holds no module name. With answers that differ per module the run fixes the
+three poms one after the other, the journal has no `stall` and no `oscillation` event, the list has one entry per
+module, and the build passes. Before the change the unit test of the same sequence gave two oscillation events,
+and the direct case (module 1 fixed, the next build shows module 2) scored the fix `no_change` and rolled it back.
+
+**Open (closed by "v2.1z-cd").** The ladder still read the occurrence in the next module as the same case going
+on: with answers whose code is the same for every module, the real-Maven run ended blocked `repeated_failure`,
+every augment refused as "identical to the version it should extend, which did not fix the case".
+
+## v2.1z-cc — an annotation processor path without a version gets one in the restructure
+
+**Why.** The same company run as "v2.1z-cb". The module poms list Lombok under maven-compiler-plugin's
+`<annotationProcessorPaths>` without a `<version>`; the as-is parent's dependency management used to supply it.
+After the parent swap the target chain does not manage `org.projectlombok:lombok`. The version step of the
+restructure ("v2.1l") writes a version into the `<dependencies>` entry, but a processor `<path>` is not a
+dependency and stayed empty, so maven-compiler-plugin stopped every module in turn with `Resolution of
+annotationProcessorPath dependencies failed: Cannot find version for annotation processor path '<g>:<a>.jar'. The
+version needs to be either provided directly in the plugin configuration or via dependency management.` Each module
+cost the fix loop an LLM ask and two builds.
+
+**The rule.** In every restructure mode that runs the version step, right after the dependency versions are settled
+(`_drop_managed_versions`): for every project pom and every `<path>` under a maven-compiler-plugin
+`<annotationProcessorPaths>` (build plugins and plugin management; `PomEditor.artifact_refs()` section
+`annotationProcessorPath`) that names a groupId and an artifactId, has no `<version>` and no `${…}` in its
+coordinates, the first of these that applies:
+1. **managed: left as it is.** The g:a has a managed version in this pom's own chain inside the project (a
+   `<dependencyManagement>` entry with a version in the pom or a project ancestor) or in the company parent chain
+   this pom inherits (its managed versions, imported BOMs included): maven-compiler-plugin takes the version from
+   the dependency management.
+2. **the pom's own dependency.** This pom's `<dependencies>` entry of the same g:a (same classifier and type) has a
+   version now: the path gets the same text (a literal or a `${property}`), so the processor and the library stay
+   on one version.
+3. **what the dependency step would write here.** The target Boot BOM's version when the chain does not manage the
+   g:a, unless the as-is build resolved a newer one; else the version the as-is build resolved for this module
+   (`_asis_version`).
+4. **the project's other poms.** Other project poms declare exactly one literal version for that g:a (a dependency,
+   a managed dependency, a processor path): that version.
+5. **unknown: left as it is**, with one note naming the path and the pom. The build reports it and the fix loop
+   takes it from there.
+Never the repository's newest release: an empty path version does not break the effective-pom capture, so nothing
+forces a guess. Steps 3 and 4 are skipped for a path with a `<classifier>` or a `<type>` other than `jar` (the
+captures key g:a only). Not touched: a path that has a version; the keys the dependency step protects (parents,
+role parents, mandatory / optional / removed in-house artifacts, the project's own modules).
+
+**Recorded.** Each version written is a line of `RestructureResult.versions_pinned`
+(`<g:a>: <version> ← <source> (annotationProcessorPaths, <pom>)`), so the report and the review material list it
+with the dependency pins; one restructure note with the count.
+
+**Not changed.** Runs without a restructure (a framework run keeps its parent, so its management still covers the
+path). Paths with a version, also when it differs from the dependency's (the structure review reports that). The
+fix loop's handling of the message when it still appears.
+
+**What a reader can rely on.** After the restructure no project pom has a version-less annotation processor path
+for which the pom's own dependency, the dependency step's sources or the project's other poms name one version
+while the pom's dependency management names none.
+
+## v2.1z-cd — a case that shows up at a new place starts with the script that resolved it elsewhere in this run
+
+**Why.** The run of "v2.1z-cb" again. The tries of a case were counted per case and run, wherever its errors were:
+when the same module-level error showed for module 2 after module 1 was fixed, the ladder read it as "the case is
+still not resolved" and asked the LLM to augment the last script. The right step was to run, for the new module,
+the script that had just resolved the case in the other one. The real-Maven reproduction
+(`out/scratch/module-place/`, answers with the same code for every module) ended blocked `repeated_failure` after 37
+LLM calls, every augment refused as "identical to the version it should extend, which did not fix the case",
+although that version had resolved its module and was scored `improved`.
+
+**Places.** The places of a set of errors are their `_place` values ("v2.1z-cb": the file, else `@<module>`, else
+`''`; files through the registry's canonical-file mapping, so a file the restructure moved is one place). An earlier
+attempt of the case was made **here** when one of the places of the errors it targeted (`cluster_errors`) is a place
+of the case's errors in the current build, and **elsewhere** otherwise.
+
+**The rule.**
+1. **The ladder counts the tries made here.** `BuildFixLoop._previous(cluster)` with `ladder=True` (what
+   `plan_script_step` reads through `TriageContext.previous_attempts`: the versions already run, the LLM tries, the
+   augments, the stored versions used, the edit tries, the declines) holds the attempts made here only. With
+   nothing made here the case is on the first rung again. The caps `script.max_llm_tries_per_case`,
+   `script.max_augments_per_case`, `script.max_edit_tries_per_case`, `script.max_declines_per_case` and
+   `script.reuse_versions` therefore hold per case, run and set of places. The prompt's "Previous attempts on this
+   case" (`ladder=False`) keeps every attempt of the case, wherever it was made, with its outcome.
+2. **First rung at a new place: what resolved the case elsewhere in this run.** When no attempt was made here and an
+   attempt made elsewhere ended `improved` or `build_ok` by RUNNING a stored version (version > 0, the script ran:
+   not an answer applied as edits), the step is a reuse of that version (the newest such attempt), ahead of the
+   KB's own choice (`best`): no LLM call, source `kb-script`, the rationale and the "KB 탐색" log line say that the
+   version resolved the case at `<place>` in this run. Not when `script.reuse` is off, the version is `retired`,
+   `non_idempotent` or `round_trip`, or its code is gone. That reuse counts as the stored-version step of the new
+   place (`script.reuse_versions`). If it does not help there, the ladder goes on as after any reuse that did not
+   help (it is an attempt made here now): augment, then new.
+3. **Identical code is refused only for the places it ran on.** The check "the LLM answered with v<N> again
+   (identical code), which already ran in this run" looks at the attempts made here only: an answer whose code is a
+   version that ran elsewhere runs.
+
+**Not changed.** A case whose errors are at a place an earlier attempt targeted: every step as before. The
+rollback of a case's previous try, the scoring, the blocks, the KB credit (a rerun is credited like any reuse, with
+`reused`). A script that changes nothing at the new place ends `apply_failed` without a build, as any script that
+changes nothing, and the ladder goes on in the same round.
+
+**What a reader can rely on.** A fix script that resolved a case in one module or file is run again, without an LLM
+call, when the same case shows at another place in the same run; tries that were made for other places do not use up
+the tries of the place at hand.
