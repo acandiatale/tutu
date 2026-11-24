@@ -773,7 +773,9 @@ class LLMFixer:
     # 게이트웨이 세션이 system 프롬프트와 이전 턴을 기억하므로 보강 턴에는 바뀐 것(기준 스크립트의 결과,
     # 남은 오류와 소스, pom과 버전 정보)만 보낸다
     # 기준 코드, 규칙, 힌트, 노트는 이미 세션에 있다
-    THREAD_TURN_KEYS = ("base_result", "errors", "file_index", "files", "related_files", "pom", "library_hints")
+    # 다른 케이스의 시도가 남긴 오류와 다시 나타난 오류를 알리는 절은 이번 요청에서 새로 생긴 사실이므로 함께 보낸다
+    THREAD_TURN_KEYS = ("base_result", "errors", "earlier_fix", "file_index", "files", "related_files", "pom",
+                        "library_hints", "resolved_before")
 
     def _thread_on(self) -> bool:
         """``llm.case_thread``가 켜져 있는지 확인한다.

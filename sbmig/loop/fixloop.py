@@ -536,6 +536,17 @@ BUNDLED_TRUSTED_SOURCES = ("pom_properties", "sha1_lookup", "name_table")   # ja
 # v2.1v (B-H1): the line for a library the new chain / the target Boot BOM manages — no repository list, no verdict
 API_CHANGED_TAIL = " — the API changed, fix the code and leave the version"
 OTHER_ERRORS_CHARS = 4000                             # FixContext.other_errors_summary, cut at a line boundary (E-L9)
+# 다른 케이스의 시도가 남긴 오류를 받은 케이스의 프롬프트 절 상한이다. 절은 줄이지 않으므로 여기서 길이를 맞춘다
+# v2.1z-by: FixContext.earlier_fix ("Earlier fix these errors come from"), never truncated by the packer: the whole
+# section within EARLIER_FIX_CHARS (about a tenth of the default 60,000-char budget, like OTHER_ERRORS_CHARS: enough for
+# two attempts with three error lines and 40 diff lines each); diff lines of the CURRENT case's files only
+EARLIER_FIX_CHARS = 6000
+EARLIER_FIX_ATTEMPTS = 2                              # attempts described per prompt
+EARLIER_FIX_ERROR_LINES = 3                           # error lines of the attempt's own case
+EARLIER_FIX_DIFF_LINES = 40                           # +/- / @@ lines per attempt over this case's files
+EARLIER_FIX_FILES = 4                                 # files of this case whose diff is shown per attempt
+EARLIER_FIX_LINE_CHARS = 200                          # one diff line (minified sources)
+EARLIER_FIX_OTHER_FILES = 6                           # other files of the commit named in one line
 # v2.1y (E-M1): an answer with neither edits nor a script (or with <blocked>) is "declined" — a blocker outside the
 # project; after script.max_declines_per_case of them the case is BLOCKED needs_owner, its same-cause siblings too
 DECLINED_NOTE = "declined: "                          # FixAttempt.notes prefix of a declined answer
@@ -2154,13 +2165,22 @@ class BuildFixLoop:
                     p.attempt.notes.append("not reverted: later commits that improved things depend on it")
         # 남은 시도가 수정한 파일에 새로 생긴 오류는 그 시도와 연결해,
         # 그 오류 케이스의 프롬프트에 "introduced by script:<case>:v<N>"으로 알린다
+        # 이 빌드에 없는 오류의 기록은 지워서, 오류가 사라졌다가 다른 시도 때문에 다시 생기면 그 시도를 가리키게 한다
+        # 같은 평가 안에서는 앞선 대기 시도가 그 오류를 차지한다
+        present = {_pair(e) for e in build.errors} if not build.ok else set()
+        for k in [k for k in self._introduced if k not in present]:
+            del self._introduced[k]
         if not build.ok:
+            claimed: set[tuple[str, str]] = set()
             for p in pending:
                 a = p.attempt
                 if a.outcome == "reverted" or not a.applied:
                     continue
                 for e in _new_in_files(build.errors, _touched(a), prev_count):
-                    self._introduced.setdefault(_pair(e), a)
+                    k = _pair(e)
+                    if k not in claimed:
+                        claimed.add(k)
+                        self._introduced[k] = a
         for p in pending:
             self.ws.journal({"event": "attempt_scored", "phase": pr.phase.value, "attempt": p.attempt.id,
                              "cluster": p.attempt.cluster_id, "outcome": p.attempt.outcome,
@@ -3188,7 +3208,9 @@ class BuildFixLoop:
         there is none (transport failure, configuration error, a fixer without propose_script — the reason is on the
         attempt)."""
         # 앞 시도가 만든 오류라면 새 스크립트보다 그 스크립트를 보강하는 편이 낫기 때문에 그 스크립트를 먼저 알린다
-        hints = [*self._match_hints.get(c.id, []), *self._introduced_hints(c), *self._sibling_hints(c)]
+        # 그 시도가 트리에 남아 있고 diff를 읽을 수 있으면 힌트 한 줄 대신 그 시도를 설명하는 절을 넣는다
+        earlier, described = self._earlier_fix_context(c, att)
+        hints = [*self._match_hints.get(c.id, []), *self._introduced_hints(c, skip=described), *self._sibling_hints(c)]
         other = cut_lines("\n".join(v for k, v in st.others.items() if k != c.id), OTHER_ERRORS_CHARS)
         self._mark(f"advisory hints for {c.id}")
         adv_hints, att.advisory_ids = self._advisory_hints(c)
@@ -3216,6 +3238,10 @@ class BuildFixLoop:
         self._mark(f"library hints for {c.id}")
         lib_hints = self._library_hints(c)
         previous = self._previous(c, ladder=False)
+        # 오류를 없앴던 이 케이스의 시도는 그 오류(파일과 서명)가 다시 나타났을 때만 따로 보여 준다
+        # 빌드가 더 진행해 처음 보는 파일의 같은 케이스는 다시 나타난 것이 아니다
+        now = {_pair(e) for e in c.errors}
+        back = [a for a in previous if a.outcome in SCRIPT_KEEP and any(_pair(e) in now for e in a.cluster_errors)]
         ctx = FixContext(phase=st.phase, iteration=st.iteration, stall_level=st.stall_level,
                          profile_summary=self._summary(), plan_notes=self.plan_notes, kb_hints=hints,
                          advisory_hints=adv_hints, previous_attempts=previous, other_errors_summary=other,
@@ -3223,7 +3249,8 @@ class BuildFixLoop:
                          script_mode=mode, case_id=step.case_id, signature_generic=sig,
                          script_base=base if mode == "augment" else None, library_hints=lib_hints,
                          layout_facts=self._layout_facts(),
-                         scope="jdk-jakarta" if self._reduced_scope() else "full", scope_facts=self._scope_facts())
+                         scope="jdk-jakarta" if self._reduced_scope() else "full", scope_facts=self._scope_facts(),
+                         earlier_fix=earlier, resolved_before=back)
         self._mark(f"fixer.propose_script for {c.id} ({mode}: prompt packing + LLM call)")
         try:
             proposal = self.fixer.propose_script(self.ws, c, ctx)
@@ -3301,20 +3328,32 @@ class BuildFixLoop:
         except Exception:  # noqa: BLE001
             return ""
 
-    def _introduced_hints(self, c: ErrorCluster) -> list[str]:
-        """이 케이스의 오류가 앞 라운드에 적용된 시도가 수정한 파일에서 처음 나타났으면, 그 시도를 알려 주는
-        힌트 한 줄을 만든다. 해당하지 않으면 빈 목록을 반환한다.
-        힌트는 ``introduced by script:<case>:v<N>``으로 시작하고, edits 시도면 그 시도 이름만 쓴다.
+    def _introduced_attempts(self, c: ErrorCluster) -> list[FixAttempt]:
+        """이 케이스의 오류를 처음 남긴 다른 케이스의 시도를 오류 순서대로 최대 두 개 반환한다.
 
-        The kb hint naming the earlier applied try whose touched files first showed this case's errors (`_score`
-        records them): `introduced by script:<case>:v<N> (attempt <id>) — prefer augmenting that script`."""
+        The applied tries of OTHER cases whose touched files first showed this case's errors (`_score` records them in
+        `_introduced`), in error order, at most `EARLIER_FIX_ATTEMPTS`."""
         seen: list[FixAttempt] = []
         for e in c.errors:
             a = self._introduced.get(_pair(e))
-            if a is not None and a not in seen and (a.script_case_id or a.cluster_id) != (c.case_id or c.id):
+            if a is not None and a not in seen and not _same_case(a, c):
                 seen.append(a)
+        return seen[:EARLIER_FIX_ATTEMPTS]
+
+    def _introduced_hints(self, c: ErrorCluster, skip: Iterable[int] = ()) -> list[str]:
+        """이 케이스의 오류가 앞 라운드에 적용된 시도가 수정한 파일에서 처음 나타났으면, 그 시도를 알려 주는
+        힌트 한 줄을 만든다. 해당하지 않으면 빈 목록을 반환한다.
+        힌트는 ``introduced by script:<case>:v<N>``으로 시작하고, edits 시도면 그 시도 이름만 쓴다.
+        `skip`에 있는 시도는 따로 절을 만들었으므로 힌트를 만들지 않는다.
+
+        The kb hint naming the earlier applied try whose touched files first showed this case's errors (`_score`
+        records them): `introduced by script:<case>:v<N> (attempt <id>) — prefer augmenting that script`. v2.1z-by:
+        no hint for an attempt in `skip` (ids of the attempts the "Earlier fix" section describes)."""
+        skipped = set(skip)
         out: list[str] = []
-        for a in seen[:2]:
+        for a in self._introduced_attempts(c):
+            if id(a) in skipped:
+                continue
             if a.script_version and a.script_case_id and not a.edits_applied:
                 out.append(f"introduced by script:{a.script_case_id}:v{a.script_version} (attempt {a.id}) — prefer "
                            "augmenting that script")
@@ -3322,6 +3361,94 @@ class BuildFixLoop:
                 out.append(f"introduced by {self._attempt_name(a)} "
                            f"(attempt {a.id}) — its change is in the tree; fix what it left, do not undo it")
         return out
+
+    def _still_in_tree(self, a: FixAttempt) -> bool:
+        """시도가 적용되어 커밋됐고 아직 되돌리지 않았으며 커밋 범위를 알면 True를 반환한다.
+
+        Applied, committed with a known commit range (`base_commit`..`commit`), not reverted, not rolled back."""
+        return bool(a.applied and a.commit and a.base_commit) \
+            and a.outcome not in ("reverted", "pending", "apply_failed", "blocked") \
+            and id(a) not in self._rolled_back and not any(ROLLED_BACK_NOTE in n for n in a.notes)
+
+    def _earlier_fix_context(self, c: ErrorCluster, att: FixAttempt) -> tuple[str, set[int]]:
+        """이 케이스의 오류를 남긴 다른 케이스의 시도를 설명하는 절의 본문과 설명한 시도의 id() 집합을 반환한다.
+        트리에 없는 시도나 diff를 읽지 못한 시도는 빼고, 그런 시도에는 예전 힌트 한 줄이 남는다. 예외를 던지지 않는다.
+
+        v2.1z-by: the body of the section "Earlier fix these errors come from (it is in the tree)" (`FixContext.
+        earlier_fix`, capped at EARLIER_FIX_CHARS) and the ids of the attempts it describes. Only an attempt that resolved
+        its own case (`SCRIPT_KEEP`) is described; one kept without resolving it (regressed behind a later commit,
+        partial, inconclusive) keeps the hint, as does an attempt not in the tree,
+        without a commit range, whose diff does not read (git, decoding) or whose diff has no line in this case's files is
+        left to the old one-line hint (`_introduced_hints`); every problem is logged at DEBUG, nothing raises. Journal
+        `earlier_fix_context` when a section is built."""
+        try:
+            from sbmig.fix.context import earlier_fix_text
+            case_files = {_norm_path(e.file) for e in c.errors if e.file}
+            fixes, described, ids = [], set(), []
+            for a in self._introduced_attempts(c):
+                # 자기 케이스를 해결하지 못한 시도는 되돌리면 안 되는 수정이 아니므로 힌트 한 줄만 남긴다
+                if a.outcome not in SCRIPT_KEEP or not self._still_in_tree(a):
+                    continue
+                try:
+                    fx = self._earlier_fix(a, case_files)
+                except Exception as e:  # noqa: BLE001 - a git / decoding problem: the old hint line stays
+                    log.debug("earlier fix of %s for %s unavailable: %s: %s", a.id, c.id, type(e).__name__, e)
+                    continue
+                if fx is None:
+                    continue
+                fixes.append(fx)
+                described.add(id(a))
+                ids.append(a.id)
+            if not fixes:
+                return "", set()
+            text = earlier_fix_text(fixes, EARLIER_FIX_CHARS)
+            self.ws.journal({"event": "earlier_fix_context", "case": c.case_id or c.id, "attempt": att.id,
+                             "described": ids, "chars": len(text)})
+            return text, described
+        except Exception as e:  # noqa: BLE001 - the section never breaks a fix attempt
+            log.debug("earlier fix context for %s unavailable: %s: %s", c.id, type(e).__name__, e)
+            return "", set()
+
+    def _earlier_fix(self, a: FixAttempt, case_files: set[str]) -> Any:
+        """시도의 커밋에서 이 케이스 파일의 diff 줄과 다른 파일 이름을 읽어 ``EarlierFix``를 반환한다.
+        이 케이스 파일에 바뀐 줄이 없으면 None을 반환하고, git이나 디코딩 문제는 예외를 던진다.
+
+        The `EarlierFix` of one attempt: its error lines, the +/- / @@ lines of `git diff base..commit` for the files of
+        the CURRENT case (decoded strictly with the workspace's encoding candidates; ValueError when none fits), the
+        other files of the commit named only. None when no line of this case's files changed."""
+        from sbmig.fix.context import EarlierFix, dedupe_errors, format_error_line
+        res = self.ws._git("diff", "--name-only", "-z", "--no-renames", a.base_commit, a.commit,  # noqa: SLF001
+                           check=False)
+        if res.returncode != 0:
+            raise RuntimeError(f"git diff --name-only failed: {(res.stderr or '').strip()[:200]}")
+        changed = [p for p in (res.stdout or "").split("\0") if p]
+        mine = [p for p in changed if _norm_path(p) in case_files]
+        shown = mine[:EARLIER_FIX_FILES]
+        diffs: list[tuple[str, list[str], int]] = []
+        left = EARLIER_FIX_DIFF_LINES
+        for rel in shown:
+            raw = self.ws._git_bytes("diff", "--no-color", "--no-renames", a.base_commit, a.commit,  # noqa: SLF001
+                                     "--", rel, check=False)
+            if raw.returncode != 0:
+                raise RuntimeError(f"git diff of {rel} failed")
+            lines = _diff_change_lines(_decode_strict(raw.stdout or b"", self.ws.encoding_candidates))
+            take = lines[:max(left, 0)]
+            left -= len(take)
+            if lines:
+                diffs.append((_norm_path(rel), take, len(lines) - len(take)))
+        if not any(ls for _p, ls, _m in diffs):
+            return None
+        rest = [_norm_path(p) for p in mine if p not in shown]
+        others = [_norm_path(p) for p in changed if p not in mine]
+        other_names = others[:EARLIER_FIX_OTHER_FILES] + \
+            ([f"… {len(others) - EARLIER_FIX_OTHER_FILES} more"] if len(others) > EARLIER_FIX_OTHER_FILES else [])
+        case_names = rest[:EARLIER_FIX_OTHER_FILES] + \
+            ([f"… {len(rest) - EARLIER_FIX_OTHER_FILES} more"] if len(rest) > EARLIER_FIX_OTHER_FILES else [])
+        errs = dedupe_errors(list(a.cluster_errors))
+        return EarlierFix(attempt_id=a.id, name=self._attempt_name(a),
+                          error_lines=[format_error_line(e) for e in errs[:EARLIER_FIX_ERROR_LINES]],
+                          more_errors=max(0, len(errs) - EARLIER_FIX_ERROR_LINES), diffs=diffs,
+                          other_files=other_names, case_files=case_names)
 
     def _store_script(self, att: FixAttempt, c: ErrorCluster, step: Any, ans: Any, code: str, *,
                       check_duplicate: bool = True) -> bool:
@@ -6805,6 +6932,38 @@ def _change_line(a: FixAttempt) -> str:
         files = [c.new_path or c.path for c in a.changes]
         return f"changed {len(files)} file(s): {', '.join(files[:4])}" + (" …" if len(files) > 4 else "")
     return _first_sentence(a.analysis or "", 160) or "-"
+
+
+def _same_case(a: FixAttempt, c: ErrorCluster) -> bool:
+    """시도가 이 케이스의 시도면 True를 반환한다. 케이스 id가 없는 사전 시도는 클러스터 id로 비교한다."""
+    if a.cluster_id and a.cluster_id == c.id:
+        return True
+    return bool(a.script_case_id) and a.script_case_id == (c.case_id or c.id)
+
+
+def _decode_strict(data: bytes, encodings: Iterable[str]) -> str:
+    """바이트를 후보 인코딩으로 차례로 엄격하게 디코딩한다. 맞는 인코딩이 없으면 ValueError를 던진다."""
+    for enc in [*encodings, "utf-8"]:
+        try:
+            return data.decode(enc)
+        except (UnicodeDecodeError, LookupError):
+            continue
+    raise ValueError("the diff decodes with none of the encoding candidates")
+
+
+def _diff_change_lines(text: str) -> list[str]:
+    """unified diff에서 머리말을 빼고 @@ 줄과 +/- 줄만 남겨 한 줄씩 EARLIER_FIX_LINE_CHARS자로 자른다."""
+    out: list[str] = []
+    in_hunk = False
+    for ln in text.replace("\r\n", "\n").split("\n"):
+        if ln.startswith("@@"):
+            in_hunk = True
+        elif not in_hunk or not ln.startswith(("+", "-")):
+            if ln.startswith("diff --git "):
+                in_hunk = False
+            continue
+        out.append(ln if len(ln) <= EARLIER_FIX_LINE_CHARS else ln[:EARLIER_FIX_LINE_CHARS - 1] + "…")
+    return out
 
 
 def _norm_path(p: str) -> str:

@@ -7519,3 +7519,63 @@ not removed; the code is never ported to another type for it. A keyword selects 
 **Not changed, not checked.** No code. Why the oscillation could happen at all (a fix that trades one missing symbol
 for another is scored as improved) is the subject of the next rounds. Other Boot modules whose classes may have been
 renamed were not surveyed. Not run with a real LLM.
+
+## v2.1z-by — what a case is told about the earlier fix its errors come from
+
+**Why.** Three company runs ended blocked as an oscillation (WebFlux codecs, catch clauses, Redis connection
+details). The notes of v2.1z-bu to v2.1z-bx give the answers for those; this round is about the loop itself. Read in
+the code: when a kept attempt A (case X) leaves a new error Y in a file it touched, case Y's prompt gets one hint
+line, `introduced by script:<case>:v<N> (attempt <id>) — prefer augmenting that script` (or, for an edits attempt,
+`… its change is in the tree; fix what it left, do not undo it`). It does not say which errors A was fixing nor what A
+changed, and X is no longer in the build, so "Other error cases in this build" does not show it either: the shortest
+change that makes Y disappear is to undo A, and nothing in the prompt says that this brings X back. When X is back
+after such an undo, case X's prompt lists A, whose outcome reads `improved`, under the title "Previous attempts on
+this case (they did NOT resolve it — do not repeat them)".
+
+**Behaviour.**
+- A case whose errors appeared in a file that a kept attempt of ANOTHER case touched gets a prompt section of its
+  own, directly after its errors and never truncated (`BuildFixLoop._introduced`: `_score` records, for an error that
+  is new in a file an applied attempt touched, the latest such attempt, and forgets the entry when a build no longer
+  shows that error, so an entry never outlives the error it explains):
+  "Earlier fix these errors come from (it is in the tree)". Per such attempt, at most two, it holds: the attempt (id
+  and name), the errors it was fixing (at most three lines in the prompt's error-line format), what it changed in
+  the files of this case (the lines of its commit's diff, capped), and the sentences that undoing that change brings
+  those errors back, that the answer must leave both sets of errors resolved, and that a fix which went the wrong
+  way is replaced in this answer by one that leaves neither. The section as a whole is capped (constant in
+  `sbmig/loop/fixloop.py`); what does not fit is left out line by line, the sentences last.
+- The section is built only for an attempt that resolved its own case (`improved` / `build_ok`), is still in the
+  tree (applied, committed, not reverted, not rolled back) and whose commit range is known. An attempt that was kept
+  although it did not resolve its case (`regressed` behind a later commit, `partial`, `inconclusive`) is not "a fix
+  that must not be undone": it keeps the old one-line hint, as does one whose diff does not read. A hint line and a
+  section for the same attempt never appear together.
+- An earlier attempt of the case itself that had made its errors disappear (`improved` / `build_ok`) AND whose
+  errors are among the case's errors again (the same file and signature) is no longer listed under "they did NOT
+  resolve it". It gets a section of its own, "These errors were resolved before and are back", which says that a
+  later change brought them back and that repeating that attempt alone may be undone again. Every other attempt
+  stays under the old title, also an `improved` one whose errors are not back (the same case reported in a file
+  the build had not reached before).
+- System prompt rule 13 says both: attempts listed as not having resolved the case did not work, do something
+  different; where the prompt names an earlier fix the errors come from, or says the errors were resolved before and
+  are back, the answer must leave both sets of errors resolved and never simply undo the other change (the one case
+  in which an answer changes more than its own case's errors need).
+- Journal event `earlier_fix_context` (case, attempt asked for, the attempts described, characters) when a section
+  is built.
+- `FixContext` gains the optional fields the packer needs (empty by default: a tier-2 fixer that ignores them
+  behaves as before). The reduced-scope prompt (framework projects) gets the same sections.
+
+**Not changed.** Scoring, rollback, the KB credit, stall / oscillation detection and its limits, the selection of
+notes. A fix that undoes another one is still scored `improved` when its own errors disappear: that is the next
+round. The prompt of a case that has neither an earlier fix to describe nor an attempt whose resolved errors are
+back is byte-identical to before, apart from rule 13.
+
+**As coded.** `FixContext.earlier_fix` (the section body, built and capped by the loop: `BuildFixLoop.
+_earlier_fix_context`, `sbmig.fix.context.earlier_fix_text`, constants `EARLIER_FIX_*` in `sbmig/loop/fixloop.py`:
+6,000 characters, two attempts, three error lines, 40 diff lines per attempt, only `@@` / `+` / `-` lines) and
+`FixContext.resolved_before` (the case's `improved` / `build_ok` attempts; `previous_attempts` stays complete for a
+tier-2 fixer). Sections `earlier_fix` (order 1.1, directly after the errors, not truncatable) and `resolved_before`
+(5.9, before `previous_attempts`; truncated after it). Over the cap the section loses diff lines first, then the
+line naming the commit's other files, then error lines; the head lines and the sentences stay. An attempt whose
+commit changed no line in the case's files keeps the one-line hint. A continued gateway session
+(`llm.case_thread`) sends both sections in its turn (`LLMFixer.THREAD_TURN_KEYS`).
+
+**Not checked.** Whether a real LLM then finds a fix that leaves both sets resolved.

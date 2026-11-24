@@ -116,10 +116,10 @@ token_url=… app_token_env=… escalation_model=…` ③ `request payload: …`
 ### 7.1 수정 프롬프트의 사실 절 (`sbmig/fix/context.py` `ContextPacker.pack_script`, 대략 이 순서)
 
 `Case`(머리말: as-is 프로필, 목표, 케이스) → `Project after the restructure`(재구성 사실, 자르지 않음: boot / back / front 모듈과 부모·패키징, 생성한
-파일, 사내 아티팩트 규칙 — `sbmig/loop/layout_facts.py`) → `Errors of this case (N)` → 보강이면 `Script to extend (…)` + `What … did in this project` →
+파일, 사내 아티팩트 규칙 — `sbmig/loop/layout_facts.py`) → `Errors of this case (N)` → 다른 케이스의 남아 있는 수정이 이 오류를 남겼으면 `Earlier fix these errors come from (it is in the tree)`(그 수정이 고치던 오류, 이 케이스 파일의 diff, 되돌리지 말라는 문장. 자르지 않음, 저널 `earlier_fix_context`) → 보강이면 `Script to extend (…)` + `What … did in this project` →
 `POM (<path>)` 발췌(parent / properties / dependencyManagement / dependencies / build) → `Related project types named in the errors` → `Reference files`
 (병합에서 빠진 사본, 읽기 전용) → `Dependency versions (what the repository has; policy: same major first, see rule 14)` → `Library migration guidance
-(what to migrate TO)`(권고) → `Module merge notes` → `Knowledge-base hints (similar cases)` → `Previous attempts on this case (they did NOT resolve it — do not
+(what to migrate TO)`(권고) → `Module merge notes` → `Knowledge-base hints (similar cases)` → `These errors were resolved before and are back`(오류를 없앴던 이 케이스의 시도) → `Previous attempts on this case (they did NOT resolve it — do not
 repeat them)` → `Other error cases in this build` → `Plan notes`(transform / restructure / warning / msa / followup 으로 시작하는 줄만) → `Migration note: <제목>`
 (최대 4개) → `Files with errors (N)` → `Source (exact text around the error lines; …)`. 예산은 `llm.max_context_chars`(60000); 넘치면 선택 절부터 줄이고
 "Context was shortened" 를 붙인다. LLM 이 `<need_files>` / `<need_grep>` 로 더 달라면 `llm.max_context_rounds`(2)번까지 내준다(요청 파일은 줄 수와 글자 수로 자르고 `llm.max_context_chars` 를 지킨다;

@@ -101,7 +101,10 @@ The orchestrator keeps a change when the case's errors disappear and rolls it ba
     rewritten imports in this project are not reusable by another project, so write them as `<edits>` (`op: write`
     for new files, `replace` for imports, `pom` for the dependency) and NO `<script>`; the attempt is recorded in the
     report and the case history as edits.
-13. Earlier attempts listed in the prompt did not work. Do something different.
+13. Attempts listed under "Previous attempts on this case" did not resolve it: do something different. Where the
+    prompt names an earlier fix these errors come from, or says these errors were resolved before and are back, two
+    sets of errors depend on each other: your answer must leave both sets resolved and must never simply undo the
+    other change. This is the one case in which your answer may change more than its own case's errors need.
 14. Dependency versions (메이저를 올리지 않는다). Never change a dependency's MAJOR version and never swap a library
     for another on your own (porting what rule 10 names is not "on your own"). The "Dependency versions" facts are
     authoritative, in this order: {% if scope == "jdk-jakarta" %}`parent chain: manages g:a at v` (the project's own parent){% else %}`new parent chain: manages g:a at v`, then `target Boot BOM: manages g:a at v`{% endif %} →

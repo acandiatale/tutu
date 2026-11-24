@@ -381,6 +381,14 @@ class FixContext(BaseModel):
     # after the restructure" (the framework artifacts and their versions, what must not be changed).
     scope: Literal["full", "jdk-jakarta"] = "full"
     scope_facts: list[str] = Field(default_factory=list)
+    # 이 케이스의 오류를 남긴 다른 케이스의 시도를 설명하는 절의 본문이다. 수정 루프가 만들고 해당 시도가 없으면 빈 문자열이다
+    # v2.1z-by: the body of the section "Earlier fix these errors come from (it is in the tree)", built and capped by the
+    # fix loop (`sbmig.fix.context.earlier_fix_text`); "" = no such section (the packer renders it verbatim, never cut)
+    earlier_fix: str = ""
+    # 이 케이스의 이전 시도 중 오류를 없앴던 시도다. 패커는 이 시도를 "did NOT resolve it" 절에서 빼고 따로 보여 준다
+    # v2.1z-by: attempts of THIS case (also in `previous_attempts`, which stays complete for tier-2 fixers) that had made
+    # its errors disappear (improved / build_ok): the section "These errors were resolved before and are back"
+    resolved_before: list[FixAttempt] = Field(default_factory=list)
 
     # edits 모드가 없어진 뒤에도 `ctx.fix_mode`를 읽는 2단계 플러그인이 깨지지 않게 남긴 읽기 전용 값. 직렬화나
     # 프롬프트에는 나오지 않는다 / v2.1z compatibility for tier-2 plugins written against v2.1i: read-only, never

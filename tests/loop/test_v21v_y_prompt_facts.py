@@ -325,8 +325,9 @@ def test_a_case_introduced_by_a_kept_script_names_it(cfg, ws):
     pr = make_loop(cfg, ws, fixer, build=build, kb=kb).run(Phase.VERIFY, "package", 4)
     assert pr.ok and len(fixer.contexts) == 2
     first = pr.attempts[0]
-    assert f"introduced by script:{case_of(l2a)}:v{first.script_version} (attempt {first.id}) — prefer augmenting " \
-           "that script" in fixer.contexts[1].kb_hints
+    # v2.1z-by: the kept script is in the tree with a known commit range → the "Earlier fix" section replaces the hint
+    assert fixer.contexts[1].earlier_fix.startswith(f"Attempt {first.id} (")
+    assert not any(h.startswith("introduced by") for h in fixer.contexts[1].kb_hints)
     assert not any(h.startswith("introduced by") for h in fixer.contexts[0].kb_hints)
 
 

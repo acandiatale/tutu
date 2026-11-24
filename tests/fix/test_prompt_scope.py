@@ -17,7 +17,7 @@ from .test_fix_script_context import big_java, case, errs_for, sctx
 F = "app/src/main/java/a/D0.java"
 # sha256 of the full-scope system prompt as rendered by `load_script_prompts("v1")` before the reduced-scope variant was
 # added (TargetConfig defaults, no extra imports). Change it only when the full prompt is changed on purpose.
-FULL_SYSTEM_SHA256 = "5432dc7b1d9a6c288831dce4e2b0a8e87778df7b9017986bf29366caccd2ae17"
+FULL_SYSTEM_SHA256 = "8a6d4b4b33875339d4e1f6288ccd4cfb1b59c7d4dea7002b9298e31b42bb4d0a"
 SCOPE_FACTS = ["this run: Java 21 and javax.* to jakarta.* only",
                "framework artifact com.example.fw:example-fw-core 1.2.0 (direct: pom.xml) — never change its version, "
                "never remove or replace it"]

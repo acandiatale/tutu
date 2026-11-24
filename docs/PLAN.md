@@ -1368,3 +1368,18 @@ the serializers of v2.1z-bw. Contract: `docs/INTERFACES.md` "v2.1z-bx".
 | Note | `boot4-packages.md`: the Redis renames, Kafka (moved only), the JPA / Hibernate auto-configuration classes; "a moved name that is not found was renamed, not removed: never port the code to another type"; a keyword for the old and new names | `tests/fix/test_v21zbx_boot_redis_names.py` | done |
 | Checked | unit tests (full suite 7,527 passed) on a developer Mac | — | done |
 | Not checked | a real LLM with the note, the company project; other Boot modules with renamed classes | — | open |
+
+## Status — 2026-11-24, what a case is told about the earlier fix its errors come from (v2.1z-by)
+
+The first half of handling oscillation in the loop itself (the user: for something called an agent, solving the
+oscillation is the better way; "일단 진동이슈부터 해결"). Contract: `docs/INTERFACES.md` "v2.1z-by".
+
+| Item | What | Verification | State |
+|---|---|---|---|
+| Read in the code | case Y, left behind by a kept fix of case X, got one hint line naming that attempt: not what it was fixing, not what it changed; X is no longer in the build, so nothing told the model that undoing the fix brings X back. When X was back, its own `improved` attempt was listed under "they did NOT resolve it" | `sbmig/loop/fixloop.py`, `sbmig/fix/context.py` | read |
+| Prompt | section "Earlier fix these errors come from (it is in the tree)" directly after the case's errors, never truncated: the attempt, the errors it was fixing, its diff lines in this case's files, "undoing it brings them back, leave both sets resolved"; only for an attempt that resolved its own case and is still in the tree, else the old hint line. Section "These errors were resolved before and are back" for the case's own attempt whose errors (file and signature) returned. Rule 13 says both | `tests/loop/test_v21zby_earlier_fix_context.py`, `tests/fix/test_prompt_scope.py` | done |
+| Bookkeeping | `_introduced` names the latest attempt that brought an error into a file and forgets an error that is no longer in a build; a zero-LLM pre-try of the same case is not "another case" | same test file | done |
+| Review | one independent review with failing scratch tests: an attempt that had NOT resolved its case was described as a fix not to undo; "resolved before and are back" was said for the same case in a file the build had not reached; a stale entry named the wrong attempt; a test that could not fail; the split by object identity. All fixed and ported as regression tests | `out/scratch/earlier-fix-review/` | done |
+| Checked | unit tests (full suite 7,554 passed) on a developer Mac | — | done |
+| Not checked | whether a real LLM then finds a fix that leaves both sets resolved; the fixes of the review were not reviewed again | — | open |
+| Not done | scoring: a fix that undoes another one is still `improved` when its own errors disappear (next round) | — | open |

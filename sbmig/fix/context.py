@@ -336,7 +336,8 @@ SCRIPT_MAX_POMS = 4
 SCRIPT_BASE_MAX_LINES = 60           # log / remaining / introduced lines of an augment base
 # 오류 이름으로 고른 노트가 남도록 다른 케이스와 Plan notes를 노트보다 먼저 줄인다
 # v2.1v: the other cases and the plan notes go before the notes (the note that names the error symbol survives)
-SCRIPT_TRUNCATE_ORDER = ("other_errors", "plan_notes", "notes", "previous_attempts", "kb_hints", "reference_files",
+SCRIPT_TRUNCATE_ORDER = ("other_errors", "plan_notes", "notes", "previous_attempts", "resolved_before", "kb_hints",
+                         "reference_files",
                          "advisory_hints", "reference_notes", "library_hints", "related_files", "files", "pom",
                          "base_result")
 ATTEMPT_ANALYSIS_CHARS = 300         # an earlier attempt's analysis in the script prompt (shortened at a word, "…")
@@ -401,6 +402,129 @@ def summarize_script_attempt(a: FixAttempt) -> str:
     for ie in a.introduced_errors[:5]:
         lines.append(f"    introduced: {format_error_line(ie, 200)[2:]}")
     return "\n".join(lines)
+
+
+# 다른 케이스의 시도가 남긴 오류를 받은 케이스에 그 시도를 설명하는 절과, 해결됐다가 다시 나타난 오류를 알리는 절이다
+# v2.1z-by (docs/INTERFACES.md "v2.1z-by"): the two sections of a case whose errors come from another case's kept fix,
+# or whose own earlier fix was undone by a later change
+EARLIER_FIX_TITLE = "Earlier fix these errors come from (it is in the tree)"
+RESOLVED_BEFORE_TITLE = "These errors were resolved before and are back"
+RESOLVED_BEFORE_LEAD = ("An earlier attempt on this case made these errors disappear and was kept; a later change "
+                        "brought them back. Repeating that attempt alone may be undone again: find what brought the "
+                        "errors back and leave both that change's errors and these errors resolved.")
+
+
+def earlier_fix_sentences(n: int) -> list[str]:
+    """그 수정을 되돌리면 그 오류가 돌아온다는 문장들을 반환한다. 설명한 시도 수에 맞춰 단수와 복수를 고른다.
+
+    The closing sentences of the "Earlier fix" section (singular / plural by the number of attempts described)."""
+    if n > 1:
+        return ["Undoing those changes brings the errors they fixed back.",
+                "Your answer must leave both sets of errors resolved: the errors those attempts fixed and the errors "
+                "of this case.",
+                "If one of those fixes went the wrong way, replace it in this answer with a change that leaves neither "
+                "set of errors."]
+    return ["Undoing that change brings the errors it fixed back.",
+            "Your answer must leave both sets of errors resolved: the errors that attempt fixed and the errors of "
+            "this case.",
+            "If that fix went the wrong way, replace it in this answer with a change that leaves neither set of "
+            "errors."]
+
+
+@dataclass
+class EarlierFix:
+    """이 케이스의 오류를 남긴 다른 케이스의 시도를 프롬프트에 보여 줄 내용으로 담는 클래스.
+
+    One kept attempt of another case whose change left this case's errors: its id and name, the error lines it was
+    fixing (`format_error_line`), its diff lines per file of this case as (path, lines, lines not shown), the other
+    files its commit changed (named only) and the files of this case it changed beyond the shown ones (named only)."""
+    attempt_id: str
+    name: str
+    error_lines: list[str] = field(default_factory=list)
+    more_errors: int = 0
+    diffs: list[tuple[str, list[str], int]] = field(default_factory=list)
+    other_files: list[str] = field(default_factory=list)
+    case_files: list[str] = field(default_factory=list)      # files of this case beyond the shown ones (named only)
+
+
+def diff_fence(body: str) -> str:
+    """본문에 있는 가장 긴 백틱 연속보다 긴 코드 펜스를 반환한다. 최소 길이는 3이다.
+
+    A backtick fence longer than any backtick run in `body` (at least three), so a diff line never closes it."""
+    longest = max((len(m.group(0)) for m in re.finditer(r"`+", body or "")), default=0)
+    return "`" * max(3, longest + 1)
+
+
+def earlier_fix_text(fixes: Sequence[EarlierFix], max_chars: int) -> str:
+    """이전 수정을 설명하는 절의 본문을 `max_chars`자 안으로 만든다. 시도가 없으면 빈 문자열을 반환한다.
+    넘치면 diff 줄, 다른 파일 줄, 오류 줄 순으로 한 줄씩 빼고 마지막 문장들은 남긴다.
+
+    The body of the "Earlier fix these errors come from" section within `max_chars`: per attempt a head line, the
+    error lines it was fixing, a fenced `diff` block per file of this case, the files of this case whose diff is not
+    shown, the other files of its commit; then the closing sentences. Over the cap, lines are left out one by one: diff
+    lines first (last attempt, last file, last line first; counted in that file's "not shown" line), then the file-name
+    lines, then the error lines; the head
+    lines and the sentences always stay."""
+    if not fixes:
+        return ""
+    work = [EarlierFix(f.attempt_id, f.name, list(f.error_lines), f.more_errors,
+                       [(p, list(ls), more) for p, ls, more in f.diffs], list(f.other_files), list(f.case_files))
+            for f in fixes]
+    sentences = earlier_fix_sentences(len(work))
+    dropped = 0
+
+    def render() -> str:
+        out: list[str] = []
+        for f in work:
+            out.append(f"Attempt {f.attempt_id} ({f.name}) fixed these errors of another case and is kept in the tree:")
+            out.extend(f.error_lines)
+            if f.more_errors:
+                out.append(f"… {f.more_errors} more error(s) of that case")
+            for path, lines, more in f.diffs:
+                if lines:
+                    body = "\n".join(lines)
+                    fence = diff_fence(body)
+                    out.append(f"What it changed in {path}:")
+                    out.append(f"{fence}diff\n{body}\n{fence}")
+                if more:
+                    out.append(f"… {more} more changed line(s) in {path} not shown")
+            if f.case_files:
+                out.append("It also changed these files of this case (diff not shown): " + ", ".join(f.case_files))
+            if f.other_files:
+                out.append("It also changed (not shown): " + ", ".join(f.other_files))
+        if dropped:
+            out.append(f"(… {dropped} line(s) left out to fit)")
+        out.extend(sentences)
+        return "\n".join(out)
+
+    def drop_one() -> bool:
+        nonlocal dropped
+        for f in reversed(work):
+            for i in range(len(f.diffs) - 1, -1, -1):
+                path, lines, more = f.diffs[i]
+                if lines:
+                    f.diffs[i] = (path, lines[:-1], more + 1)
+                    return True
+        for f in reversed(work):
+            if f.other_files:
+                f.other_files = []
+                dropped += 1
+                return True
+            if f.case_files:
+                f.case_files = []
+                dropped += 1
+                return True
+        for f in reversed(work):
+            if f.error_lines:
+                f.error_lines.pop()
+                f.more_errors += 1
+                return True
+        return False
+
+    text = render()
+    while len(text) > max_chars and drop_one():
+        text = render()
+    return text
 
 
 def shorten(text: str, width: int) -> str:
@@ -730,6 +854,10 @@ class ContextPacker:
             err_lines.append(f"… {len(errors) - len(err_lines)} more error(s) — the script gets all of them in p.errors")
         secs.append(_Section("errors", f"Errors of this case ({len(errors)})", "\n".join(err_lines), 1,
                              truncatable=False))
+        # 다른 케이스의 시도가 남긴 오류면 그 시도를 오류 목록 바로 뒤에 둔다. 수정 루프가 길이를 이미 맞췄으므로 줄이지 않는다
+        earlier = (getattr(ctx, "earlier_fix", "") or "").strip()
+        if earlier:
+            secs.append(_Section("earlier_fix", EARLIER_FIX_TITLE, earlier, 1.1, truncatable=False))
 
         # 보강 답은 이 스크립트를 대체하는 완전한 새 스크립트여야 하므로 본문을 줄이지 않는다
         # augment: the script to extend (never truncated) and what it did here
@@ -774,10 +902,19 @@ class ContextPacker:
         if ctx.kb_hints:
             secs.append(_Section("kb_hints", "Knowledge-base hints (similar cases)",
                                  "\n".join(f"- {h}" for h in ctx.kb_hints), 5))
-        if ctx.previous_attempts:
+        # 오류를 없앴던 시도는 "did NOT resolve it" 절이 아니라 다시 나타난 오류의 절에 둔다
+        back = list(getattr(ctx, "resolved_before", None) or [])
+        # 복사한 FixContext에서도 같은 시도로 보도록 객체가 아니라 시도 id로 비교한다
+        back_ids = {a.id for a in back}
+        not_resolved = [a for a in ctx.previous_attempts if a.id not in back_ids]
+        if back:
+            secs.append(_Section("resolved_before", RESOLVED_BEFORE_TITLE,
+                                 RESOLVED_BEFORE_LEAD + "\n" + "\n".join(summarize_script_attempt(a) for a in back),
+                                 5.9))
+        if not_resolved:
             secs.append(_Section("previous_attempts",
                                  "Previous attempts on this case (they did NOT resolve it — do not repeat them)",
-                                 "\n".join(summarize_script_attempt(a) for a in ctx.previous_attempts), 6))
+                                 "\n".join(summarize_script_attempt(a) for a in not_resolved), 6))
         if ctx.other_errors_summary:
             secs.append(_Section("other_errors", "Other error cases in this build (for awareness; fix only this case)",
                                  ctx.other_errors_summary.strip(), 7))
