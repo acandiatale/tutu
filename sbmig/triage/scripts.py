@@ -318,12 +318,15 @@ def resolved_elsewhere(store: Any, case_id: str, elsewhere: Iterable[FixAttempt]
 
 
 def plan_script_step(cluster: ErrorCluster, previous: Iterable[FixAttempt], store: Any, cfg: Any,
-                     scope: Optional[str] = None, elsewhere: Iterable[FixAttempt] = ()) -> ScriptStep:
+                     scope: Optional[str] = None, elsewhere: Iterable[FixAttempt] = (),
+                     llm_total: Optional[int] = None) -> ScriptStep:
     """케이스의 다음 단계를 정한다. 순서는 모듈 docstring에 있다.
     ``previous``는 이 실행에서 같은 케이스에 대해 결과가 나온 시도 목록이다. 저장된 스크립트는 이번 실행에서
     아직 실행하지 않은 버전만 재사용하고, best가 이미 실패했으면 ``script.reuse_versions``개까지 다음 저장
     버전(``stored_next``)을 쓴다.
     ``elsewhere``는 다른 위치에서 이 케이스를 해결한 시도다. 여기서 한 시도가 없으면 그 버전을 먼저 다시 실행한다.
+    ``llm_total``은 모든 위치에서 이 케이스에 한 LLM 요청 수다. ``script.max_llm_tries_per_case``의 두 배에 도달하면
+    LLM을 호출할 단계 대신 차단한다. None이면 알 수 없으므로 제한하지 않는다.
 
     The case's next step (see the module doc). `previous` = this run's scored tries on the same case (the loop
     passes `_previous(cluster)`: no pending ones, no cooled-down transport failures). v2.1z: `llm_used` counts new +
@@ -333,7 +336,10 @@ def plan_script_step(cluster: ErrorCluster, previous: Iterable[FixAttempt], stor
     the other scope runs per case and run (`stored_next`). v2.1z-cd: the fix loop passes the attempts made HERE (at
     the places of the case's errors now) as `previous` and the case's attempts made at other places whose run of a
     stored version resolved them as `elsewhere`; with nothing made here, the newest of those versions runs again
-    first (a `reuse` step, ahead of the store's `best`; `resolved_elsewhere`), unless `script.reuse` is off."""
+    first (a `reuse` step, ahead of the store's `best`; `resolved_elsewhere`), unless `script.reuse` is off.
+    `llm_total` = the case's LLM asks in this run over EVERY place (None = unknown: no bound): a step that would ask
+    the LLM is replaced by the used-up-cap block (mode None → `repeated_failure`) once it reaches twice
+    `script.max_llm_tries_per_case` (rule 4); a rerun or a stored reuse costs no ask and still runs."""
     sc = getattr(cfg, "script", None)
     previous = list(previous)
     reuse_on = bool(getattr(sc, "reuse", True))
@@ -399,6 +405,16 @@ def plan_script_step(cluster: ErrorCluster, previous: Iterable[FixAttempt], stor
                 return step
 
     # 2./3. the LLM: the total cap first (new + augment)
+    # 모든 위치를 합친 LLM 요청이 케이스 한도의 두 배에 도달하면 위치가 바뀌어도 더 묻지 않는다
+    # rule 4: the bound across places (asks switched off, max_llm 0, keep their own line below)
+    bound = 2 * max_llm
+    if max_llm > 0 and llm_total is not None and int(llm_total) >= bound:
+        step.why = (f"{int(llm_total)} LLM tr{'y' if int(llm_total) == 1 else 'ies'} over every place did not resolve "
+                    f"case {case_id} (bound across places: 2 × script.max_llm_tries_per_case {max_llm} = {bound}; "
+                    f"{llm_used} at this place)")
+        step.kb_line = (f"KB 탐색: {stored_part} → 위치 전체 한도 도달 (전체 LLM {int(llm_total)}회, 한도 {bound}회 = "
+                        f"케이스 한도 {max_llm}회의 2배) → blocked")
+        return step
     if llm_used >= max_llm:
         if max_llm == 0:
             # 한도 0은 이 케이스에 LLM을 호출하지 않는 설정이므로 해결에 실패한 것으로 읽히지 않게 따로 기록한다

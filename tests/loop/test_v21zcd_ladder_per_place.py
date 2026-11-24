@@ -12,7 +12,7 @@ from sbmig.core.models import BlockReason, Phase
 
 from .fakes import FakeFixer, FakeKB, bad_build, journal_events, ok_build, script
 from .test_v21v_y_prompt_facts import make_loop
-from .test_v21zcb_module_place import FIXED, file_err, pom, real_run_build, src, start
+from .test_v21zcb_module_place import FIXED, file_err, mod_err, pom, real_run_build, src, start
 
 # the same code for every module: it fixes the pom of the module each targeted error is in
 GENERIC = script("for e in p.errors:\n    if e['module'] and not e['file']:\n"
@@ -208,3 +208,86 @@ def test_reuse_off_the_same_code_at_a_new_place_is_refused_as_identical_to_its_b
     assert not pr.build_ok and [b.reason for b in pr.blocked] == [BlockReason.REPEATED_FAILURE]
     m2 = [a for a in pr.attempts if a.cluster_errors[0].module == "m2"]
     assert m2 and m2[0].apply_errors == ["the augmented script is identical to its base v1 — not run again"]
+
+
+# ------------------------------------------------------------------------------------------------ rule 4
+def ring(k: int) -> str:
+    return f"m1/src/R{k}.java"
+
+
+def test_a_case_cycling_through_five_places_is_blocked_at_twice_the_cap(cfg, ws):
+    """The reviewer's ring: each answer resolves R<k> and breaks R<k+1 mod 5>, every answer different; the cycle
+    is longer than loop.oscillation_window. The asks of the case over every place stop at 2 × the cap."""
+    cfg.script.max_llm_tries_per_case = 3
+    n = 5
+    ws.write(ring(0), "class R { broken }\n")
+    for k in range(1, n):
+        ws.write(ring(k), "class R { GOOD }\n")
+    ws.commit("as-is")
+    body = ("import re\nfor e in p.errors:\n    f = e['file']\n    k = int(re.search(r'R(\\d+)', f).group(1))\n"
+            "    p.write(f, 'class R { GOOD }')\n"
+            f"    p.write('m1/src/R%d.java' % ((k + 1) % {n}), 'class R {{ broken }}')\n")
+
+    class Distinct(Answers):
+        def propose_script(self, ws, cluster, ctx):
+            self.contexts.append(ctx)
+            self.asked.append((ctx.script_mode, cluster.errors[0].module, cluster.errors[0].file))
+            return script(f"p.log('answer {len(self.asked)}')\n" + body)
+
+    def build(w, call):
+        for k in range(n):
+            if "broken" in w.read(ring(k)):
+                return bad_build(file_err(ring(k), "m1"))
+        return ok_build()
+
+    fixer = Distinct(GENERIC)
+    pr = make_loop(cfg, ws, fixer, build=build, kb=FakeKB()).run(Phase.VERIFY, "package", 50)
+    assert len(fixer.asked) == 6, (fixer.asked, pr.iterations)
+    assert [b.reason for b in pr.blocked] == [BlockReason.REPEATED_FAILURE]
+    dec = [e for e in events(ws, "decision") if e.get("kind") == "blocked"]
+    assert dec and "6 LLM tries" in dec[-1]["rationale"] and "= 6" in dec[-1]["rationale"]
+    assert pr.iterations < 50
+
+
+def test_identical_answers_over_three_modules_stay_one_ask_with_a_cap_of_one(cfg, ws):
+    cfg.script.max_llm_tries_per_case = 1
+    start(ws, broken=())
+    fixer = Answers(GENERIC)
+    pr = make_loop(cfg, ws, fixer, build=real_run_build, kb=FakeKB()).run(Phase.VERIFY, "package", 10)
+    assert fixer.asked == [("new", "m1", None)]
+    assert [a.source for a in pr.attempts] == ["llm-new", "kb-script", "kb-script"] and pr.build_ok
+
+
+def test_one_new_ask_at_each_of_four_places_within_the_bound_is_not_blocked(cfg, ws):
+    """Cap 2 → bound 4: each module needs its own answer (the rerun of the previous one changes nothing)."""
+    cfg.script.max_llm_tries_per_case = 2
+    mods = ("m1", "m2", "m3", "m4")
+    start(ws, modules=mods, broken=())
+
+    def build(w, call):
+        for m in mods:
+            if "without version" in w.read(pom(m)):
+                return bad_build(mod_err(m))
+        return ok_build()
+
+    fixer = Answers(*(only(m) for m in mods))
+    pr = make_loop(cfg, ws, fixer, build=build, kb=FakeKB()).run(Phase.VERIFY, "package", 20)
+    assert pr.build_ok and not pr.blocked
+    assert [m for _mode, m, _f in fixer.asked] == list(mods)
+
+
+# ------------------------------------------------------------------------------------------------ round trips
+def test_an_attempt_of_a_round_trip_is_no_rerun_candidate_although_the_store_does_not_mark_it(cfg, ws):
+    start(ws, modules=("m1", "m2"), broken=())
+    kb = FakeKB()
+    loop = make_loop(cfg, ws, Answers(GENERIC), build=real_run_build, kb=kb)
+    pr = loop.run(Phase.VERIFY, "package", 1)                       # one build: m1's attempt, scored next build
+    a = pr.attempts[0]
+    a.outcome = "improved"
+    from sbmig.triage import cluster_cases
+    [c2] = cluster_cases([mod_err("m2")], None)
+    c2 = c2.model_copy(update={"id": a.cluster_id})
+    assert loop._resolved_elsewhere(c2) == [a]
+    loop._round_trips[id(a)] = "round trip: put back the lines …"
+    assert not any(getattr(s, "round_trip", False) for s in kb.cases.scripts(a.script_case_id))
+    assert loop._resolved_elsewhere(c2) == []

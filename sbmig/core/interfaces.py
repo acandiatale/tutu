@@ -332,6 +332,8 @@ class TriageContext(BaseModel):
     # v2.1z-cd: the case's attempts made at OTHER places whose run of a stored version resolved them (the fix loop
     # fills it; `previous_attempts` then holds the attempts made here only); empty = nothing to rerun
     resolved_elsewhere: list[FixAttempt] = Field(default_factory=list)
+    # v2.1z-cd rule 4: the case's LLM asks in this run over every place (None = unknown: no bound across places)
+    llm_asks_total: Optional[int] = None
     llm_calls_used: int = 0
     llm_calls_budget: int = 60
 

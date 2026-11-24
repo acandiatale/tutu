@@ -2503,7 +2503,8 @@ class BuildFixLoop:
         트리아지에서 예외가 나도 루프가 멈추지 않도록 ESCALATE를 반환한다."""
         ctx = TriageContext(phase=phase, iteration=iteration, stall_level=stall_level,
                             previous_attempts=self._previous(cluster),
-                            resolved_elsewhere=self._resolved_elsewhere(cluster), llm_calls_used=self.budget.llm_calls,
+                            resolved_elsewhere=self._resolved_elsewhere(cluster),
+                            llm_asks_total=self._llm_asks_total(cluster), llm_calls_used=self.budget.llm_calls,
                             llm_calls_budget=self.budget.max_llm_calls)
         try:
             return self.triager.decide(cluster, match, ctx, self.profile)
@@ -2541,15 +2542,28 @@ class BuildFixLoop:
 
     def _resolved_elsewhere(self, cluster: ErrorCluster) -> list[FixAttempt]:
         """다른 위치에서 저장 버전을 실행해 이 케이스를 해결한 이번 실행의 시도를 순서대로 반환한다.
-        edits로 적용해 스크립트가 실행되지 않은 시도와 저장되지 않은 v0는 넣지 않는다.
+        edits로 적용해 스크립트가 실행되지 않은 시도, 저장되지 않은 v0, 이번 실행에서 왕복에 참여한 시도는 넣지 않는다.
 
         The case's attempts made at OTHER places that ended `improved` / `build_ok` by running a stored version
         (version > 0, `_script_ran`: not an answer applied as edits), oldest first: the candidates of the ladder's
-        first rung at a new place (`TriageContext.resolved_elsewhere`, INTERFACES "v2.1z-cd" rule 2)."""
+        first rung at a new place (`TriageContext.resolved_elsewhere`, INTERFACES "v2.1z-cd" rule 2). An attempt the
+        loop recorded in `_round_trips` is none, also when its `round_trip` credit did not reach the store."""
         return [a for a in _same_cluster(cluster, self.history, self.blocked.canonical_file)
                 if a.id not in self._cooled_attempts and a.decision.kind == DecisionKind.SCRIPT
                 and a.outcome in ("improved", "build_ok") and int(a.script_version or 0) > 0
-                and self._script_ran.get(id(a)) and not self._made_here(cluster, a)]
+                and self._script_ran.get(id(a)) and id(a) not in self._round_trips
+                and not self._made_here(cluster, a)]
+
+    def _llm_asks_total(self, cluster: ErrorCluster) -> int:
+        """이번 실행에서 모든 위치를 합쳐 이 케이스에 한 LLM 요청 수를 센다. 재실행과 저장 스크립트 재사용은 세지 않는다.
+
+        The case's LLM asks (new + augment) in this run over EVERY place: the attempts `_previous(ladder=True)` would
+        count if every place were here (scored, not cooled down, no pre-try), the bound of rule 4 (INTERFACES
+        "v2.1z-cd"). Reuses and reruns ask nothing and are not counted."""
+        from sbmig.triage.scripts import LLM_MODES
+        return sum(1 for a in _same_cluster(cluster, self.history, self.blocked.canonical_file)
+                   if a.id not in self._cooled_attempts and a.outcome != "pending" and a.source not in PRE_TRY_SOURCES
+                   and a.decision.kind == DecisionKind.SCRIPT and a.script_mode in LLM_MODES)
 
     def _sibling_hints(self, cluster: ErrorCluster, limit: int = 3) -> list[str]:
         """이 실행에서 다른 파일이나 범위의 같은 오류를 어떻게 고쳤는지, 또는 무엇이 실패했는지 찾는다.
@@ -2690,7 +2704,7 @@ class BuildFixLoop:
         if step is None:
             from sbmig.triage.scripts import plan_script_step
             step = plan_script_step(c, self._previous(c), self.cases if self.cases.active else None, self.cfg,
-                                    elsewhere=self._resolved_elsewhere(c))
+                                    elsewhere=self._resolved_elsewhere(c), llm_total=self._llm_asks_total(c))
         return step
 
     def _deferral(self, st: "_Round", c: ErrorCluster, step: Any) -> tuple[list[str], str]:

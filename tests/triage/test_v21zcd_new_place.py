@@ -205,3 +205,54 @@ def test_the_rerun_is_the_stored_version_step_of_the_new_place_and_a_failed_one_
     rerun = att("reuse", 1, "apply_failed", mod_err("m2"))
     nxt = plan_script_step(c, [rerun], store, cfg, elsewhere=good)
     assert nxt.mode == "augment" and nxt.base_attempt is rerun
+
+
+# ------------------------------------------------------------------------------------------------ rule 4
+def test_the_bound_across_places_blocks_a_step_that_would_ask_the_llm(store, cfg):
+    cfg.script.max_llm_tries_per_case = 3
+    seed(store, 1)
+    c = cluster(mod_err("m6"))
+    below = plan_script_step(c, [], None, cfg, llm_total=5)
+    assert below.mode == "new" and below == plan_script_step(c, [], None, cfg)
+    for total in (6, 7):
+        st = plan_script_step(c, [], None, cfg, llm_total=total)
+        assert st.mode is None and not st.needs_llm
+        assert f"{total} LLM tr" in st.why and "2 × script.max_llm_tries_per_case 3 = 6" in st.why
+        assert st.kb_line.endswith("→ blocked") and f"전체 LLM {total}회" in st.kb_line and "6회" in st.kb_line
+    # unknown total (a plugin triager): no bound
+    assert plan_script_step(c, [], None, cfg, llm_total=None).mode == "new"
+
+
+def test_the_bound_does_not_stop_a_rerun_or_a_stored_reuse(store, cfg):
+    cfg.script.max_llm_tries_per_case = 3
+    seed(store, 1)
+    c = cluster(mod_err("m6"))
+    good = [att("new", 1, "improved", mod_err("m5"))]
+    st = plan_script_step(c, [], store, cfg, elsewhere=good, llm_total=40)
+    assert (st.mode, st.version) == ("reuse", 1) and "this run's v1" in st.why
+    st = plan_script_step(c, [], store, cfg, llm_total=40)          # the store's best, no LLM call
+    assert (st.mode, st.version) == ("reuse", 1)
+    # once the rerun was made here and failed, the next step would ask: blocked
+    rerun = att("reuse", 1, "no_change", mod_err("m6"))
+    st = plan_script_step(c, [rerun], store, cfg, elsewhere=good, llm_total=6)
+    assert st.mode is None and "6 LLM tries" in st.why
+
+
+def test_the_bound_with_asks_switched_off_changes_nothing(store, cfg):
+    cfg.script.max_llm_tries_per_case = 0
+    c = cluster(mod_err("m2"))
+    for total in (None, 0, 5):
+        st = plan_script_step(c, [], None, cfg, llm_total=total)
+        assert st == plan_script_step(c, [], None, cfg) and "max_llm_tries_per_case 0" in st.why
+
+
+def test_the_triager_gets_the_total_through_the_context(store, cfg):
+    cfg.script.max_llm_tries_per_case = 2
+    tr = Triager(cfg)
+    c = cluster(mod_err("m3"))
+    ctx = TriageContext(phase=Phase.VERIFY, iteration=9, previous_attempts=[], llm_asks_total=4)
+    d = tr.decide(c, None, ctx, make_profile())
+    assert d.kind == DecisionKind.BLOCKED and "repeated_failure" in d.rationale and "4 LLM tries" in d.rationale
+    ctx = TriageContext(phase=Phase.VERIFY, iteration=9, previous_attempts=[], llm_asks_total=3)
+    assert tr.decide(c, None, ctx, make_profile()).kind == DecisionKind.SCRIPT
+    assert TriageContext(phase=Phase.VERIFY, iteration=1).llm_asks_total is None

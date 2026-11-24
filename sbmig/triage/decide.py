@@ -323,7 +323,9 @@ class DecisionEngine:
         #    LLM budget / availability stops it
         # 다른 위치에서 이 케이스를 해결한 이번 실행의 버전은 루프가 넘긴다. 플러그인 컨텍스트에는 없을 수 있다
         elsewhere = list(getattr(ctx, "resolved_elsewhere", None) or [])
-        step = plan_script_step(cluster, prev, self.cases, self.cfg, elsewhere=elsewhere)
+        # 모든 위치를 합친 LLM 요청 수다. 루프가 넘기지 않으면 None이라 제한하지 않는다
+        total = getattr(ctx, "llm_asks_total", None)
+        step = plan_script_step(cluster, prev, self.cases, self.cfg, elsewhere=elsewhere, llm_total=total)
         self.script_steps[cluster.id] = step          # also for a BLOCKED decision: its KB search line (the log)
         if not step.case_id:
             return TriageDecision(cluster_id=cluster.id, kind=DecisionKind.ESCALATE,
