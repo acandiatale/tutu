@@ -576,6 +576,12 @@ class LoopConfig(BaseModel):
     # 창(window)은 비교 범위라서 넓히면 더 빨리 잡힌다. 느슨하게 하려면 이 값을 올린다
     # v2.1z-f: how many repeated A↔B toggles block the involved cases (was hard-coded 2); raise it to persist longer
     oscillation_limit: int = 2
+    # 다른 케이스가 고친 줄을 그대로 되돌려 그 오류를 다시 낸 시도를 어떻게 다룰지 정한다.
+    # observe는 판정만 기록하고, revert는 악화로 보고 되돌리며, off는 판정하지 않는다
+    # v2.1z-bz trade-back: `observe` (default) = the verdict is journaled (`trade_back`, "mode": "observe") and a note
+    # added, nothing else changes; `revert` = the attempt is `regressed` (reverted, counted per ordered pair of cases,
+    # the case blocked `oscillation` at `oscillation_limit`); `off` = no verdict computed, the scoring of before
+    trade_back: Literal["observe", "revert", "off"] = "observe"
     # 차단 사유별로 허용할 LLM 스크립트 시도 수다.
     # 0이면 바로 차단하고, 저장된 스크립트는 이 값과 관계없이 재사용한다
     # 사내 부모를 찾지 못하는 것은 settings / Nexus 문제라 코드로 고칠 수 없으므로 0이다
@@ -599,6 +605,18 @@ class LoopConfig(BaseModel):
                                              # made-up dependency an LLM added masked every compile error)
                                              # except (2026-11-05) the LATER-stage errors a fixed pom problem had hidden —
                                              # every target gone + new structural kinds all of a later stage = uncovered
+
+    @field_validator("trade_back", mode="before")
+    @classmethod
+    def _trade_back_word(cls, v: Any) -> Any:
+        """YAML이 불리언으로 읽은 off / on도 받는다. false는 off, true는 revert다(켜면 되돌린다는 뜻으로 읽는다).
+
+        YAML 1.1 reads a bare `off` as False: False → "off", True → "revert"; strings are lower-cased."""
+        if isinstance(v, bool):
+            return "revert" if v else "off"
+        if isinstance(v, str):
+            return v.strip().lower()
+        return v
 
 
 BUILTIN_LLM_PROVIDERS = ("company", "openai_compatible", "anthropic", "fake")

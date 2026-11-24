@@ -195,7 +195,9 @@ def test_earlier_fix_text_drops_diff_lines_then_names_then_errors_and_fences_bac
 # ------------------------------------------------------------------------- (4) resolved before and back
 def test_an_improved_attempt_of_the_case_is_listed_as_resolved_before_in_an_oscillation(cfg, ws):
     """X fixed (leaves Y) → Y fixed by undoing X's change (X back) → X's prompt: the earlier fix (Y's attempt) and
-    X's own improved attempt under "resolved before and are back", not under "did NOT resolve it"."""
+    X's own improved attempt under "resolved before and are back", not under "did NOT resolve it".
+    v2.1z-bz: the undo is a trade-back (reverted) by default; this test pins the prompt of the round trip itself."""
+    cfg.loop.trade_back = "off"
     start(ws)
     fixer = CapturingFixer(scripts=[write_script({FOO: "class Foo { half }\n"}),
                                     write_script({FOO: "class Foo { broken }\n"}),
@@ -430,7 +432,9 @@ def test_the_same_case_in_a_file_the_build_had_not_reached_is_not_called_back(cf
 
 def test_an_error_that_went_and_came_back_names_the_attempt_that_brought_it_back(cfg, ws):
     """A (case X) leaves Y in Foo; Y1 fixes Y and leaves Z in Bar; C (case Z) brings Y back in Foo. Y's next prompt
-    names C, not A: the entry of A was forgotten when the build no longer showed Y."""
+    names C, not A: the entry of A was forgotten when the build no longer showed Y.
+    v2.1z-bz: C bringing Y back is a trade-back (reverted) by default; this test pins the old scoring's prompt."""
+    cfg.loop.trade_back = "off"
     ws.write(FOO, "class Foo { xbroken }\n")
     ws.write(BAR, "class Bar { }\n")
     ws.commit("as-is")

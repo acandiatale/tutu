@@ -85,12 +85,12 @@
   (`loop.blocked_policy.repository_unreachable` 0)로 **저장본 재사용보다 먼저** 차단한다: 네트워크가 돌아와 재빌드가 통과해도 어떤 스크립트에도 실적을 주지 않는다.
   `sbmig-bundled` 도 저장소가 답하지 않으면 jar 를 붙이지도, 없다고 하지도 않는다.
 - **정체 / 진동**: 오류 집합이 직전 빌드와 같으면 `stall`, 더 이전 빌드(`loop.oscillation_window` 4 개 안)와 같으면 `oscillation`. 둘 다 정체
-  단계를 올리고, 정체 단계가 `loop.stall_limit`(2) 이상이면 더 센 모델을 쓴다. 진동이 `loop.oscillation_limit`(2)번이면 관련 케이스를 `oscillation` 으로 차단.
+  단계를 올리고, `loop.stall_limit`(2) 이상이면 더 센 모델을 쓴다. 진동이 `loop.oscillation_limit`(2)번이면 관련 케이스를 `oscillation` 으로 차단.
 - **더 센 모델**(`llm.escalation_model`): 정체 단계가 `loop.stall_limit` 이상일 때, 그리고 케이스의 **세 번째** LLM 요청부터(보강이든 신규든).
 - 개선되지 않은 시도(`improved` / `build_ok` 가 아님)는 그 케이스의 다음 시도 **전에** 되돌린다(HEAD 면 reset, 아니면 `git revert`). 되돌린 시도의
   결과와 이유는 다음 요청의 "Previous attempts" 절로 간다.
 - **루프가 끝날 때**(한도·예산·정체·멈춤·차단) 케이스마다 마지막으로 적용한 시도가 `no_change` / `inconclusive` 면 최종 빌드 전에 되돌린다
-  (`BuildFixLoop._rollback_unhelpful`, 저널 `script_rollback` `where: "loop end"`, 시도 메모 "rolled back before the final build (it did not help)").
+  (`BuildFixLoop._rollback_unhelpful`, 저널 `script_rollback` `where: "loop end"`).
   도움이 안 된 시도는 결과물에 들어가지 않는다. `partial` 은 케이스가 차단으로 끝나지 않았어도 남긴다.
 
 ## 5. LLM 없는 사전 시도 (`_pre_tries`, 이 순서로 처음 맞는 것 하나)
@@ -132,7 +132,7 @@ LLM 이 적용한 시도도 커밋 전에 `_fill_versions` 가 버전 없는 의
 | `improved` | 대상 오류가 **전부** 사라지고 빌드가 그 오류를 보고하는 단계까지 감("안 보임 ≠ 해결") | 유지, KB 성공 |
 | `partial` | 일부만 사라짐, 손댄 파일에 새 오류 없음 | 사라진 항목은 해결 처리, 다음 시도 전에 되돌림(사전 시도의 partial 은 유지), KB 실패도 성공도 아님 |
 | `no_change` | 그대로 | 되돌림, KB 실패 |
-| `regressed` | 손댄 파일에 새 오류, 오류 수가 `loop.regression_ratio`(1.5)배 초과, 또는 pom 수정 뒤 구조적 오류(`loop.structural_regression_kinds`)·더 이른 단계 오류 | `loop.revert_on_regression` 이면 되돌림 → `reverted` |
+| `regressed` | 손댄 파일에 새 오류, 오류 수 `loop.regression_ratio`(1.5)배 초과, pom 수정 뒤 구조적 오류(`loop.structural_regression_kinds`)·더 이른 단계 오류, 남의 수정을 되돌려 오류를 되살림(`loop.trade_back` 이 `revert` 일 때) | `loop.revert_on_regression` 이면 되돌림 → `reverted` |
 | `inconclusive` | 빌드가 말해 주지 못함(타임아웃, 파싱된 오류 없음, 원인과 무관한 이른 단계에서 멈춤) | KB 실적 없음, 시도로는 셈 |
 | `apply_failed` | 스크립트·편집이 적용되지 않음(수정 플러그인이 제안을 돌려주지 않은 것 포함: `LLM fixer returned no script proposal (<type>)`) | 커밋 안 된 변경 버림. 실행은 계속 |
 

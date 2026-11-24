@@ -102,7 +102,7 @@ def test_every_tuning_key_of_sbmig_env_reaches_the_job_pod():
     """The Worker template has no envFrom: a key added to sbmig-env does nothing for a Job pod until the template lists it."""
     keys = set(FORWARDED.findall(_env_doc_text())) - WEB_ONLY
     assert {"LLM_BASE_URL", "LLM_MODEL", "NO_PROXY", "SBMIG_SCRIPT__MAX_LLM_TRIES_PER_CASE", "SBMIG_BUILD__REPOSITORY_URL",
-            "SBMIG_LOOP__PHASES__VERIFY__MAX_ITERATIONS"} <= keys
+            "SBMIG_LOOP__PHASES__VERIFY__MAX_ITERATIONS", "SBMIG_LOOP__STALL_LIMIT", "SBMIG_LOOP__TRADE_BACK"} <= keys
     refs = {}
     for e in _container(WEB_JOB)["env"]:
         ref = (e.get("valueFrom") or {}).get("configMapKeyRef")
@@ -449,15 +449,23 @@ def test_a_configmap_value_changed_after_the_web_pod_started_differs(all_on: boo
     assert _compare(_main_env(cm), _worker_env(edited)) == {**NO_DIFF, "differs": [key]}
 
 
-def test_a_key_switched_on_after_the_web_pod_started_is_worker_only():
+@pytest.mark.parametrize(("key", "value"), [("SBMIG_LOOP__STALL_LIMIT", "3"), ("SBMIG_LOOP__TRADE_BACK", "revert")])
+def test_a_key_switched_on_after_the_web_pod_started_is_worker_only(key: str, value: str):
     cm = _configmap(False)
-    assert "SBMIG_LOOP__STALL_LIMIT" not in cm
-    edited = {**cm, "SBMIG_LOOP__STALL_LIMIT": "3"}
-    assert _compare(_main_env(cm), _worker_env(edited)) == {**NO_DIFF, "worker_only": ["SBMIG_LOOP__STALL_LIMIT"]}
+    assert key not in cm
+    edited = {**cm, key: value}
+    assert _compare(_main_env(cm), _worker_env(edited)) == {**NO_DIFF, "worker_only": [key]}
+
+
+def test_trade_back_is_a_commented_loop_override_with_its_default():
+    """loop.trade_back meets real runs in `observe` first: the ConfigMap documents that value, in group 3, switched off."""
+    assert "SBMIG_LOOP__TRADE_BACK" not in _sbmig_env_data()
+    assert _commented_keys()["SBMIG_LOOP__TRADE_BACK"] == ("3", "observe")
+    assert _commented_keys()["SBMIG_LOOP__STALL_LIMIT"][0] == "3"
 
 
 @pytest.mark.parametrize(("all_on", "key"), [(False, "LLM_ESCALATION_MODEL"), (True, "SBMIG_SCRIPT__MAX_LLM_TRIES_PER_CASE"),
-                                             (True, "LLM_RECIPE_MODEL")])
+                                             (True, "LLM_RECIPE_MODEL"), (True, "SBMIG_LOOP__TRADE_BACK")])
 def test_a_key_the_job_template_does_not_forward_is_main_only(all_on: bool, key: str):
     """A key added to sbmig-env without its configMapKeyRef line in 81 (or a web pod still running an image with the old 81)."""
     cm = _configmap(all_on)

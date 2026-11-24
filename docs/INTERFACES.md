@@ -7579,3 +7579,116 @@ commit changed no line in the case's files keeps the one-line hint. A continued 
 (`llm.case_thread`) sends both sections in its turn (`LLMFixer.THREAD_TURN_KEYS`).
 
 **Not checked.** Whether a real LLM then finds a fix that leaves both sets resolved.
+
+## v2.1z-bz — a fix that undoes an earlier kept fix and brings its errors back (trade-back)
+
+**Why.** `_score` calls an attempt `regressed` only when its own targeted errors are NOT resolved. An attempt whose
+targets disappear is `improved` even when a new error appears in the file it touched. So when attempt A (case X)
+leaves error Y, and attempt B (case Y) removes Y by undoing A, both are `improved`: the loop rewards the round trip,
+both scripts are credited to the KB as successes, and the run ends only when the build-level oscillation check sees
+the whole error set repeat (`loop.oscillation_limit`). This is what happened in three company runs.
+
+**What counts as a trade-back.** An attempt B whose own targeted errors are gone, and an earlier attempt A of
+ANOTHER case that was scored `improved` in this run of the loop and is still in the tree, when ALL of these hold for
+one error E that A had resolved (a (file, signature) pair with the line the build before A reported it on):
+1. **E is back**: the build after B shows that pair in that file, new compared with the previous build (the
+   occurrence rule `_new_in_files` uses today; errors that a rollback of the case's own previous try brought back
+   are baseline, as today);
+2. **A had changed E's line**: a hunk of A's diff in that file covers the line E was reported on (the hunk's old-side
+   range);
+3. **B reversed that hunk**: ONE hunk of B's own diff removes every line that hunk of A had added and puts back
+   every line it had removed (lines compared without surrounding whitespace; blank lines and lines without a letter
+   or digit do not count; a hunk without any countable line is never reversed);
+4. **E is reported where B put the lines back**: the build after B reports the pair on one of the lines that hunk
+   of B added back (for a hunk of A that only added lines: at the position where B deleted them). The hunk's
+   new-side range as a whole is not enough: `-U0` joins adjacent changes into one hunk, so a hunk can hold a
+   restored line and the error on another line of it.
+An error without a line, a diff that cannot be read (git, decoding) or a build that cannot tell gives no verdict.
+
+Why this narrow. Three review rounds each found a legitimate run that a wider form of the rule turned from a
+successful build into a blocked case, all reproduced: the pair alone (a correct fix that causes a NEW error of the
+same kind elsewhere in the file has the same pair; a previous build that had stopped at an earlier module says
+nothing about who brought an error back); any line in common (a common line such as `return null;`, an edit of a
+line A had added); a whole hunk anywhere in the file (javac reports flow errors such as `exception … is never
+thrown` only when no attribution error such as `cannot find symbol` comes first: A can make an error of its case
+disappear by hiding it, and the correct fix B, restoring an import that A had removed, makes it visible again far
+from that hunk). The four conditions say: B put back the very lines the error was on, and the error is on them
+again. An undo that rewrites those lines instead of restoring them is not seen: the build-level oscillation check
+stays for it. The rule prefers missing an undo to reverting a legitimate fix.
+
+**Modes (`loop.trade_back`).**
+- `observe` (default): the verdict is computed and recorded, nothing else changes. The attempt keeps the outcome it
+  had (`improved`), gets a note that it would have been a trade-back, and the journal gets the event `trade_back`
+  with `"mode": "observe"` (attempt, its case, the attempt and case whose fix was undone, the error, the count for
+  this ordered pair of cases, whether the count has reached `loop.oscillation_limit`). No revert, no block, the KB
+  credit as before. This is how the rule meets real runs first: what it would have done can be read from the
+  journal before it is allowed to act.
+- `revert`: the attempt is `regressed` with `introduced_errors` = the errors that are back and a note naming the
+  attempt whose fix it undid; it goes through the existing handling of a regressed attempt (the reverted tree is
+  rebuilt, the stored script is credited as a failure, the case's next try sees the attempt with its `introduced:`
+  lines). It is reverted also when a later commit of the same round was kept (`git revert` of its commit, as for a
+  structural regression). A revert that fails is a note, and then only that note. Trade-backs are counted per
+  ordered pair of cases (the case that undid, the case whose fix was undone; a zero-LLM pre-try and the LLM tries of
+  one case are the same case); when the count reaches `loop.oscillation_limit` (2), the case that keeps undoing is
+  blocked with `BlockReason.OSCILLATION` at the next clustering of a build that still shows it; the evidence names
+  both cases and the attempt whose fix was undone. With `loop.revert_on_regression: false` the attempt is scored
+  `regressed` and counted, and stays in the tree like every other regression then.
+- `off`: no verdict is computed: the scoring, the journal and the git calls of before, byte for byte.
+
+**State.** What the rule remembers (resolved pairs with their lines, counts, cases waiting for the block) belongs to
+one `run` of the loop: it is cleared when a `run` starts, so nothing carries over to another phase, another MSA
+service or another target of the remediation.
+
+**Deployment.** `SBMIG_LOOP__TRADE_BACK` is an optional key of ConfigMap `sbmig-env` like the other loop overrides:
+a commented line with the three values in `20-configmap.yaml`, an optional `configMapKeyRef` line in
+`81-web-job.template.yaml`, a row in `deploy/README.md`.
+
+**Not changed.** With `observe` and with `off`: every verdict, revert, rollback, block and KB credit. In every mode:
+the first trade (A leaves Y while resolving X) is `improved`, and so is every fix that causes a follow-up error
+without undoing another fix; scoring of attempts whose targets are not resolved, `partial`, `inconclusive` (an
+attempt the build could not judge is not checked by this rule either), structural regressions, the rollback before
+a case's next try, the caps per case, the build-level oscillation check.
+
+**What a reader can rely on.** With `revert`, an attempt that put back the lines a kept fix of another case had
+changed, so that the error that fix had resolved is on those lines again, is not credited as a success, and is not
+left in the tree unless its revert failed (noted on the attempt) or `loop.revert_on_regression` is off. With the
+default nothing is reverted or blocked because of this rule.
+
+**As coded.** `BuildFixLoop._resolved_by` ((file, signature) → the `improved` attempt that resolved it) and
+`_resolved_lines` (the lines that attempt's own errors were reported on), `_trade_backs` (count per ordered pair of
+case keys; `_case_key` drops the `case:` prefix), `_trade_back_blocks` (cases waiting for the block): all cleared at
+the start of `_run`. `_trade_back_mode` reads the setting (an unknown value is `observe`; YAML's bare `off` / `on`
+map to `off` / `revert`). In `_score` the check sits in the branch that says `improved`, so it only ever concerns
+that verdict: `_trade_back_of` takes the candidates of condition 1 from `new_in_touched` and reads, for those only
+and once per (range, file), `git diff -U0 --no-renames` of the file for A's range (`base_commit..commit`) and for
+the scored attempt's own range (`pre_sha..post_sha`, after any rollback of its case's previous try) through
+`_diff_sides` (strict decoding with the workspace's encoding candidates; an unreadable diff of one file leaves the
+other files of the attempt judged). `_diff_hunks` returns one `_DiffHunk` per `@@` with both ranges, the stripped
+countable lines of each side and the new-side line number of every added line; `_covers(start, length, line)` is
+`start <= line < start + length`, and for a length of 0 the single position `start` (git's "after line l");
+`_reverses(g, h)` compares ONE hunk of the attempt with one hunk of A; `_put_back_at` is condition 4.
+`_settle_trade_backs` runs after the reverts (count, journal `trade_back` with `mode`, `count`, `limit`,
+`at_limit`, `outcome`; in `revert` also the WARNING log line and the block queue; it forgets resolvers no longer in
+the tree and records this build's resolvers); `_apply_trade_back_blocks` runs in `_run` right after the clustering.
+In `revert` the attempt not at HEAD is undone by the `git revert` path of structural regressions (`"trade_back":
+true` on that `revert` event). The block's suggestion is the existing oscillation sentence; the evidence is on the
+blocked item. In `observe` the attempt carries the note `trade-back observed (loop.trade_back: observe, scored as
+before): …`, which also shows in the run's `errors.md`.
+
+**Checked.** Real Maven 3.9.10 / JDK 21 on a small project with a scripted LLM that fixes X leaving Y, fixes Y by
+restoring the old lines, then fixes Y properly (`out/scratch/trade-back/`, git-ignored), once per mode: `revert`
+reverts the undo (journal `trade_back`, credited as a failure) and ends BUILD SUCCESS with 4 LLM calls; `observe`
+and `off` give the same builds, outcomes and result (both fixes `improved`, the same answers repeat, BLOCKED
+`repeated_failure` after 37 LLM calls), `observe` with one `trade_back` event more. The loop, report, core and
+remediation test folders pass with each of the three values in the environment.
+
+**Review.** Two independent rounds on the rule, each with reproductions: the first found three legitimate runs
+broken by the pair alone and state carried over between runs; the second one more (the hidden flow error) and the
+pooling of the attempt's hunks. The four conditions and the per-run state are their result. The last form of the
+rule (conditions 2 and 4, the three modes) was not reviewed again by an independent reader: that is one reason why
+`observe`, not `revert`, is the default.
+
+**Not checked.** A real LLM; the company projects; multi-module and MSA projects with real Maven; the remediation's
+fix loop and framework runs with the loop on (both use `BuildFixLoop`); how often a real undo restores the old lines
+exactly (when it does not, this rule does not see it); errors that javac reports on another line than the one a fix
+changed.

@@ -88,6 +88,7 @@ spec:
             - {name: SBMIG_LOOP__PHASES__VERIFY__MAX_ITERATIONS, valueFrom: {configMapKeyRef: {name: sbmig-env, key: SBMIG_LOOP__PHASES__VERIFY__MAX_ITERATIONS, optional: true}}}
             - {name: SBMIG_LOOP__MAX_TOTAL_MINUTES, valueFrom: {configMapKeyRef: {name: sbmig-env, key: SBMIG_LOOP__MAX_TOTAL_MINUTES, optional: true}}}
             - {name: SBMIG_LOOP__MAX_LLM_CALLS, valueFrom: {configMapKeyRef: {name: sbmig-env, key: SBMIG_LOOP__MAX_LLM_CALLS, optional: true}}}
+            - {name: SBMIG_LOOP__TRADE_BACK, valueFrom: {configMapKeyRef: {name: sbmig-env, key: SBMIG_LOOP__TRADE_BACK, optional: true}}}
             - {name: SBMIG_LLM__CASE_THREAD, valueFrom: {configMapKeyRef: {name: sbmig-env, key: SBMIG_LLM__CASE_THREAD, optional: true}}}
             - {name: SBMIG_LLM__TIMEOUT_SECONDS, valueFrom: {configMapKeyRef: {name: sbmig-env, key: SBMIG_LLM__TIMEOUT_SECONDS, optional: true}}}
             - {name: SBMIG_LLM__MAX_OUTPUT_TOKENS, valueFrom: {configMapKeyRef: {name: sbmig-env, key: SBMIG_LLM__MAX_OUTPUT_TOKENS, optional: true}}}

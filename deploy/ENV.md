@@ -102,6 +102,7 @@
 | `SBMIG_LOOP__PHASES__VERIFY__MAX_ITERATIONS` | `50` | 빌드-수정 라운드 상한 |
 | `SBMIG_LOOP__MAX_TOTAL_MINUTES` | `240` | 실행 하나의 시간 상한(분) |
 | `SBMIG_LOOP__MAX_LLM_CALLS` | `0` | 프로젝트당 LLM 총 호출. `0` 없음, `-1` 저장 스크립트만 |
+| `SBMIG_LOOP__TRADE_BACK` | `observe` | 다른 케이스의 수정을 되돌리는 수정. `observe` 저널에만 남기고 동작은 그대로, `revert` 되돌리고 반복되면(`loop.oscillation_limit`) 그 케이스를 막음, `off` 보지 않음 |
 | `SBMIG_LLM__CASE_THREAD` | `false` | 케이스 스레드(게이트웨이 세션 이어 쓰기). 첫 측정 실행 뒤 `true` |
 | `SBMIG_LLM__TIMEOUT_SECONDS` | `180` | 게이트웨이 응답 대기 |
 | `SBMIG_LLM__MAX_OUTPUT_TOKENS` | `8000` | 응답 길이 상한 |

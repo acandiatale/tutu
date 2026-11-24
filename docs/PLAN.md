@@ -1383,3 +1383,19 @@ oscillation is the better way; "일단 진동이슈부터 해결"). Contract: `d
 | Checked | unit tests (full suite 7,554 passed) on a developer Mac | — | done |
 | Not checked | whether a real LLM then finds a fix that leaves both sets resolved; the fixes of the review were not reviewed again | — | open |
 | Not done | scoring: a fix that undoes another one is still `improved` when its own errors disappear (next round) | — | open |
+
+## Status — 2026-11-24, a fix that undoes another case's fix: the trade-back rule, observed first (v2.1z-bz)
+
+The second half of handling oscillation in the loop itself. Contract: `docs/INTERFACES.md` "v2.1z-bz".
+
+| Item | What | Verification | State |
+|---|---|---|---|
+| Read in the code | `_score` says `regressed` only when an attempt's own errors remain; a fix that makes its errors disappear by undoing another case's fix is `improved`, both scripts are credited as successes, and the run ends at the build-level oscillation check | `sbmig/loop/fixloop.py` | read |
+| Rule | a trade-back needs all four: an error that an earlier kept fix of another case had resolved is back; that fix had changed the error's line; one hunk of the attempt's own diff puts those lines back; the error is reported on them again. An error without a line, an unreadable diff or a build that cannot tell gives no verdict | `tests/loop/test_v21zbz_trade_back.py` (53 tests) | done |
+| Modes | `loop.trade_back`: `observe` (default) records the verdict in the journal (`trade_back`, `mode: observe`) and on the attempt, and changes nothing else; `revert` scores the attempt `regressed`, reverts it, credits the script as a failure and blocks the case that keeps undoing at `loop.oscillation_limit`; `off` computes nothing. State is per run of the loop | same test file; the loop, report, core and remediation test folders pass with each value in the environment | done |
+| Deployment | `SBMIG_LOOP__TRADE_BACK` as an optional key of `sbmig-env` (commented in 20), its line in the 81 template, rows in `deploy/README.md` and `deploy/ENV.md` | `tests/deploy/test_manifests.py` | done |
+| Real Maven | a small project with a scripted LLM (fix X leaving Y, fix Y by restoring the old lines, fix Y properly): `revert` ends BUILD SUCCESS with 4 LLM calls; `observe` and `off` end BLOCKED after 37, `observe` with the `trade_back` event | `out/scratch/trade-back/run.sh` (run by the implementer and again by the PM) | done |
+| Review | two independent rounds with reproductions. The first: the (file, signature) pair alone reverted a correct fix that caused a new error of the same kind, blamed an attempt after a build that had stopped early, and carried a queued block into the next run. The second: javac hides flow errors behind attribution errors, so a correct fix that restored an import was reverted; the attempt's hunks were pooled. The rule was narrowed each time | `out/scratch/trade-back-review/`, `out/scratch/trade-back-review2/` | done |
+| Why `observe` is the default | each review found a legitimate run that the rule, as it then stood, turned into a blocked case; its last form was not reviewed again. What the rule would do is read from real runs' journals first | — | decided by the PM, told to the user |
+| Checked | unit tests (full suite 7,610 passed) on a developer Mac | — | done |
+| Not checked | a real LLM, the company projects, multi-module and MSA projects with real Maven, the remediation's loop and framework runs, how often a real undo restores the old lines exactly | — | open |

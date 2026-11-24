@@ -96,7 +96,7 @@ from collections.abc import Iterable
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
-from typing import Any, Callable, Optional
+from typing import Any, Callable, NamedTuple, Optional
 
 from sbmig.core.config import Config
 from sbmig.core.interfaces import FixContext, TriageContext
@@ -1095,6 +1095,14 @@ class BuildFixLoop:
         self._layout_cache: Optional[tuple[int, list[str]]] = None
         # v2.1v (E-L9): (file, signature) of an error that first appeared in the files of an applied try → that try
         self._introduced: dict[tuple[str, str], FixAttempt] = {}
+        # 개선으로 평가된 시도가 없앤 (파일, 서명)과 그 시도다. 다른 케이스의 시도가 그 오류를 되살리면 악화로 본다
+        # v2.1z-bz: (file, signature) → the `improved` attempt that resolved it (trade-back rule, `loop.trade_back`);
+        # trade-backs counted per (case that brought errors back, case that had resolved them); the cases to block
+        # with OSCILLATION once that count reaches `loop.oscillation_limit` (case key → (attempt, evidence))
+        self._resolved_by: dict[tuple[str, str], FixAttempt] = {}
+        self._resolved_lines: dict[tuple[str, str], frozenset[int]] = {}   # the lines the build before it showed
+        self._trade_backs: Counter = Counter()
+        self._trade_back_blocks: dict[str, tuple[FixAttempt, str]] = {}
         # v2.1y (E-M1): attempt → the blocker sentence of its declined answer; the cases BLOCKED needs_owner
         # (case id, files, artifact keys, sentence) — their same-cause siblings are blocked without an LLM call
         self._declines: dict[int, str] = {}
@@ -1278,6 +1286,10 @@ class BuildFixLoop:
         self._phase_items = []
         self.left_on_stop, self.last_build, self.end_rollbacks = False, None, 0
         self._ask_halt = ""
+        # trade-back 기록은 이번 run에만 속한다. 같은 루프 객체로 다른 서비스나 대상을 고칠 때 넘어가지 않게 비운다
+        # v2.1z-bz "State": resolved pairs, counts and queued blocks belong to one run (the orchestrator runs one
+        # verify loop per MSA service, the remediation one per target, on the same BuildFixLoop)
+        self._resolved_by, self._resolved_lines, self._trade_backs, self._trade_back_blocks = {}, {}, Counter(), {}
         self._cur_phase = phase
         self._target = target
         self._mark(f"loop start ({goal})")
@@ -1384,6 +1396,8 @@ class BuildFixLoop:
                                     f"#{oscillations}) — treated as a stall")
                 window = (window + [multiset])[-max(2, self.cfg.loop.oscillation_window):]
                 clusters = self._cluster(build.errors, target)
+                # 다른 케이스가 해결한 오류를 한도만큼 되살린 케이스는 여기서 OSCILLATION으로 차단한다
+                self._apply_trade_back_blocks(pr, phase, build_no, clusters)
                 if fix_rounds >= max_iterations:
                     log.info("build %d: %d error(s) in %d case(s) — max fix rounds (%d) used up; the loop ends here "
                              "and the final build carries the rest (reported as unresolved)", build_no,
@@ -2022,7 +2036,13 @@ class BuildFixLoop:
         errors in a touched file (by (file, signature) occurrences), the ×regression_ratio rule, or — after a pom
         edit — a new structural error kind / new errors of an earlier stage that hide the targeted ones (reverted);
         `inconclusive` = the build cannot tell (timed out, failed without parsed errors, stopped at an earlier stage
-        this attempt did not cause): no KB credit, scored again on a revert rebuild."""
+        this attempt did not cause): no KB credit, scored again on a revert rebuild.
+
+        v2.1z-bz trade-back (`loop.trade_back: revert`, the default): an attempt that would be `improved` is
+        `regressed` when a touched file shows again (new against `prev` + `restored`) an error that an earlier
+        `improved` attempt of ANOTHER case had resolved and that is still in the tree (`_resolved_by`); it is reverted
+        like a structural regression (also behind a later kept commit, `git revert`), counted per pair of cases and
+        journaled (`trade_back`, `_settle_trade_backs`). `off` = the scoring of before."""
         if not pending:
             return False
         real = [e for e in build.errors if not _synthetic(e)]
@@ -2041,6 +2061,11 @@ class BuildFixLoop:
         # a timed-out build, or a failed one without a single parsed error, says nothing about any attempt
         blind = not build.ok and (bool(build.timed_out) or not real)
         structural: set[str] = set()
+        tb_mode = self._trade_back_mode()
+        trade_on = tb_mode != "off"
+        observed: dict[str, list[tuple[BuildError, FixAttempt]]] = {}  # observe: what would have been a trade-back
+        traded: dict[str, list[tuple[BuildError, FixAttempt]]] = {}   # attempt id → (error back, its resolver)
+        unrevertable: set[str] = set()     # trade-backs whose git revert failed (the failure note is their only note)
         left_of: dict[int, tuple[int, int]] = {}
         for p in pending:
             a = p.attempt
@@ -2116,7 +2141,27 @@ class BuildFixLoop:
                        else f"errors {before} → {total} (> ×{ratio})")
                 a.notes.append(f"regressed: {why}")
             elif a.cluster_resolved:
-                a.outcome = "improved"
+                # 대상 오류는 사라졌지만 다른 케이스의 시도가 해결해 둔 오류를 수정한 파일에 되살렸으면 악화로 본다
+                # v2.1z-bz trade-back: its targets are gone, but a touched file shows again what an earlier kept
+                # attempt of ANOTHER case had resolved → regressed (reverted below, also behind a later kept commit)
+                # 그 시도의 변경을 이 시도가 되돌린 경우만이다(diff 줄 비교). 같은 종류의 새 후속 오류는 해당하지 않는다
+                back = self._trade_back_of(a, p, new_in_touched) if trade_on else []
+                names = ", ".join(dict.fromkeys(f"attempt {r.id} (case {_case_key(r)})" for _e, r in back))
+                files = ", ".join(dict.fromkeys(_pair(e)[0] for e, _r in back))
+                if back and tb_mode == "revert":
+                    a.outcome = "regressed"
+                    a.introduced_errors = sanitize_errors([e for e, _r in back], 10)
+                    a.notes.append(f"regressed: trade-back — this attempt put back the lines {names} had changed in "
+                                   f"{files} and {len(back)} error(s) it had resolved are on them again "
+                                   "(loop.trade_back)")
+                    traded[a.id] = back
+                else:
+                    a.outcome = "improved"
+                    if back:                       # observe: the verdict is recorded, the scoring stays as it was
+                        a.notes.append(f"trade-back observed (loop.trade_back: observe, scored as before): this attempt "
+                                       f"put back the lines {names} had changed in {files} and {len(back)} error(s) "
+                                       "it had resolved are on them again")
+                        observed[a.id] = back
             elif 0 < left < targeted:
                 a.outcome = "partial"
                 a.notes.append(f"partial: {targeted - left} of {targeted} targeted error(s) gone, {left} remain")
@@ -2143,26 +2188,37 @@ class BuildFixLoop:
                     p.attempt.notes.append(f"reverted to {group[0].pre_sha[:10]}")
                 self.ws.journal({"event": "revert", "phase": pr.phase.value, "to": group[0].pre_sha,
                                  "commit": sha, "attempts": [p.attempt.id for p in group]})
-            # structural regressions are reverted even when later commits of the round depend on them (git revert)
+            # structural regressions are reverted even when later commits of the round depend on them (git revert);
+            # v2.1z-bz: so is a trade-back (kept in the tree it keeps the other case's errors alive)
             for p in pending:
                 a = p.attempt
-                if a.outcome != "regressed" or a.id not in structural:
+                if a.outcome != "regressed" or (a.id not in structural and a.id not in traded):
                     continue
+                what = "structural" if a.id in structural else "trade-back"
                 group = [q for q in pending if q.post_sha == p.post_sha]
                 res = self.ws._git("revert", "--no-edit", p.post_sha, check=False)   # noqa: SLF001
                 if res.returncode != 0:
                     self.ws._git("revert", "--abort", check=False)                      # noqa: SLF001
-                    a.notes.append(f"structural revert of {p.post_sha[:10]} failed: {(res.stderr or '').strip()[:200]}")
+                    a.notes.append(f"{what} revert of {p.post_sha[:10]} failed: {(res.stderr or '').strip()[:200]}")
+                    if what != "structural":
+                        unrevertable.add(a.id)     # its note says why it stays; nothing "depends on it"
                     continue
                 reverted = True
                 for q in group:
                     q.attempt.outcome = "reverted"
-                    q.attempt.notes.append(f"reverted commit {p.post_sha[:10]} (git revert: structural regression)")
-                self.ws.journal({"event": "revert", "phase": pr.phase.value, "commit": p.post_sha, "mode": "git-revert",
-                                 "structural": new_struct, "attempts": [q.attempt.id for q in group]})
+                    q.attempt.notes.append(f"reverted commit {p.post_sha[:10]} (git revert: "
+                                           + ("structural regression)" if what == "structural" else "trade-back)"))
+                ev = {"event": "revert", "phase": pr.phase.value, "commit": p.post_sha, "mode": "git-revert",
+                      "structural": new_struct if what == "structural" else [],
+                      "attempts": [q.attempt.id for q in group]}
+                if what != "structural":
+                    ev["trade_back"] = True
+                self.ws.journal(ev)
             for p in pending:
-                if p.attempt.outcome == "regressed":
+                if p.attempt.outcome == "regressed" and p.attempt.id not in unrevertable:
                     p.attempt.notes.append("not reverted: later commits that improved things depend on it")
+        if trade_on:
+            self._settle_trade_backs(pr, pending, traded, build, prev_count, observed=observed)
         # 남은 시도가 수정한 파일에 새로 생긴 오류는 그 시도와 연결해,
         # 그 오류 케이스의 프롬프트에 "introduced by script:<case>:v<N>"으로 알린다
         # 이 빌드에 없는 오류의 기록은 지워서, 오류가 사라졌다가 다른 시도 때문에 다시 생기면 그 시도를 가리키게 한다
@@ -2186,6 +2242,181 @@ class BuildFixLoop:
                              "cluster": p.attempt.cluster_id, "outcome": p.attempt.outcome,
                              "cluster_resolved": p.attempt.cluster_resolved, "errors_after": total})
         return reverted
+
+    # ------------------------------------------------------------------ v2.1z-bz: trade-back
+    def _trade_back_mode(self) -> str:
+        """``loop.trade_back`` 값(observe / revert / off)을 반환한다. 알 수 없는 값은 observe로 본다.
+
+        `loop.trade_back`: `observe` (default: verdict journaled, nothing else changes), `revert`, `off`; anything
+        unexpected is `observe`."""
+        try:
+            v = str(getattr(self.cfg.loop, "trade_back", "observe") or "observe").strip().lower()
+        except Exception:  # noqa: BLE001 - a strange setting means the default
+            return "observe"
+        return v if v in ("observe", "revert", "off") else "observe"
+
+    def _trade_back_of(self, a: FixAttempt, p: _Pending,
+                       new_in_touched: list[BuildError]) -> list[tuple[BuildError, FixAttempt]]:
+        """다른 케이스의 시도 R이 해결한 오류 E가 다시 나타났고, 이 시도가 E의 줄을 바꾼 R의 hunk를 hunk 하나로 되돌렸으며,
+        E가 되돌린 그 줄에 다시 보고되면 (E, R)을 돌려준다. 줄이 없는 오류나 읽지 못한 diff는 판정하지 않는다.
+
+        v2.1z-bz, the four conditions of the contract for one error E of `new_in_touched`:
+        1. E is back: E's (file, signature) pair was resolved by an earlier `improved` attempt R of ANOTHER case that is
+           still in the tree (`_resolved_by`), and E is new in `a`'s touched files (`_new_in_files`: a rollback's
+           `restored` errors are baseline);
+        2. a hunk H of R's `-U0` diff in that file (`R.base_commit..R.commit`) covers, on its OLD side, a line the build
+           before R reported the pair on (`_resolved_lines`; `_covers`);
+        3. ONE hunk G of `a`'s own diff (`p.pre_sha..p.post_sha`) reverses H (`_reverses`);
+        4. E (as reported by this build) is where G put H's lines back (`_put_back_at`: on one of the lines G added
+           back that H had removed; for a pure addition H, G's new-side position).
+        E without a line, a pair without a remembered line: no verdict for E. A diff that cannot be read: no verdict for
+        the errors of that file (logged); the other files of the attempt are still judged. Each (range, file) is read
+        once, only for errors that pass condition 1."""
+        try:
+            cands: list[tuple[BuildError, FixAttempt, frozenset[int]]] = []
+            for e in new_in_touched:
+                k = _pair(e)
+                r = self._resolved_by.get(k)
+                if r is None or r is a or _same_attempt_case(a, r) or not self._still_in_tree(r):
+                    continue
+                lines = self._resolved_lines.get(k) or frozenset()
+                if e.line is None or not lines or not k[0]:
+                    continue                                    # an error without a line: no verdict
+                cands.append((e, r, lines))
+        except Exception as ex:  # noqa: BLE001 - bookkeeping never breaks the scoring
+            log.warning("trade-back check for %s failed (scored as before): %s: %s", a.id, type(ex).__name__, ex)
+            return []
+        if not cands:
+            return []
+        hunks: dict[tuple[str, str, str], Optional[list[_DiffHunk]]] = {}
+
+        def of(base: Optional[str], head: Optional[str], rel: str) -> list[_DiffHunk]:
+            k = (base or "", head or "", rel)
+            if k not in hunks:
+                try:
+                    if not base or not head:
+                        raise ValueError("commit range unknown")
+                    hunks[k] = self._diff_sides(base, head, rel)
+                except Exception as ex:  # noqa: BLE001 - an unreadable diff gives no verdict for that file
+                    hunks[k] = None
+                    log.warning("trade-back check for %s: diff of %s unreadable, no trade-back verdict for that file "
+                                "(scored as before): %s: %s", a.id, rel, type(ex).__name__, ex)
+            got = hunks[k]
+            if got is None:
+                raise LookupError(rel)
+            return got
+
+        out: list[tuple[BuildError, FixAttempt]] = []
+        for e, r, lines in cands:
+            rel = _pair(e)[0]
+            try:
+                theirs, mine = of(r.base_commit, r.commit, rel), of(p.pre_sha, p.post_sha, rel)
+            except LookupError:
+                continue
+            line = int(e.line or 0)
+            if any(any(_covers(h.old_start, h.old_len, ln) for ln in lines)
+                   and any(_reverses(g, h) and _put_back_at(g, h, line) for g in mine)
+                   for h in theirs):
+                out.append((e, r))
+        return out
+
+    def _diff_sides(self, base: str, head: str, rel: str) -> list[_DiffHunk]:
+        """``base..head`` 사이 한 파일의 diff를 hunk 목록(범위와 추가된 줄, 지운 줄)으로 반환한다. git이나 디코딩에 실패하면
+        예외를 던진다.
+
+        The hunks of `git diff -U0 base head -- rel` (`_diff_hunks`: ranges + countable added / removed lines), decoded
+        strictly with the workspace's encoding candidates. Raises on a git failure (missing commit, …) or when no
+        candidate decodes the diff."""
+        raw = self.ws._git_bytes("diff", "--no-color", "--no-renames", "-U0", base, head,  # noqa: SLF001
+                                 "--", rel, check=False)
+        if raw.returncode != 0:
+            raise RuntimeError(f"git diff {base[:10]}..{head[:10]} -- {rel} failed: "
+                               f"{(raw.stderr or b'').decode('utf-8', 'replace').strip()[:200]}")
+        return _diff_hunks(_decode_strict(raw.stdout or b"", self.ws.encoding_candidates))
+
+    def _settle_trade_backs(self, pr: PhaseResult, pending: list[_Pending],
+                            traded: dict[str, list[tuple[BuildError, FixAttempt]]], build: BuildResult,
+                            prev_count: Counter, *,
+                            observed: Optional[dict[str, list[tuple[BuildError, FixAttempt]]]] = None) -> None:
+        """되돌리기가 끝난 뒤 trade-back을 케이스 쌍마다 세어 저널에 남기고, 한도에 이르면 그 케이스를 차단 대기에 넣는다.
+        이어서 트리에 없는 시도의 해결 기록을 지우고 이번에 개선된 시도가 없앤 오류를 기록한다. 예외를 던지지 않는다.
+
+        After the reverts: count each trade-back per (case that brought the errors back, case that had resolved them),
+        journal `trade_back`, and once the count reaches `loop.oscillation_limit` queue the first case for an
+        OSCILLATION block (`_apply_trade_back_blocks`, at the next clustering). Then forget the resolutions of attempts
+        no longer in the tree and remember what this build's `improved` attempts resolved: their targeted (file,
+        signature) pairs that the previous build had and this one has not, with the lines that build showed them on.
+        `observed` (mode observe): counted and journaled the same way (`"mode": "observe"`, `at_limit`), never queued
+        for a block. Never raises."""
+        try:
+            limit = max(1, int(getattr(self.cfg.loop, "oscillation_limit", 2) or 2))
+            observed = observed or {}
+            for p in pending:
+                a = p.attempt
+                mode = "revert" if a.id in traded else "observe"
+                back = traded.get(a.id) or observed.get(a.id)
+                if not back:
+                    continue
+                by_case: dict[str, list[tuple[BuildError, FixAttempt]]] = {}
+                for e, r in back:
+                    by_case.setdefault(_case_key(r), []).append((e, r))
+                mine = _case_key(a)
+                for rc, items in by_case.items():
+                    key = (mine, rc)
+                    self._trade_backs[key] += 1
+                    n = self._trade_backs[key]
+                    resolvers = list(dict.fromkeys(r.id for _e, r in items))
+                    self.ws.journal({"event": "trade_back", "phase": pr.phase.value, "attempt": a.id, "case": mine,
+                                     "resolved_by": resolvers, "resolved_case": rc,
+                                     "errors": [_first_sentence(fmt_error(e), 200) for e, _r in items][:10],
+                                     "count": n, "limit": limit, "outcome": a.outcome, "mode": mode,
+                                     "at_limit": n >= limit})
+                    log.warning("trade-back(%s): %s (case %s)이(가) case %s의 %s이(가) 바꾼 줄을 되돌려 오류 %d건이 다시 "
+                                "나타났다 → %s (%d/%d)", mode, a.id, mine, rc, ", ".join(resolvers), len(items),
+                                a.outcome, n, limit)
+                    if mode == "revert" and n >= limit and mine not in self._trade_back_blocks:
+                        why = (f"trade-back: attempts of case {mine} undid the fix of case {rc} (attempt "
+                               f"{resolvers[-1]}) and brought back the errors it had resolved {n} time(s) "
+                               f"(loop.oscillation_limit {limit})")
+                        self._trade_back_blocks[mine] = (a, why)
+            for k in [k for k, r in self._resolved_by.items() if not self._still_in_tree(r)]:
+                del self._resolved_by[k]
+                self._resolved_lines.pop(k, None)
+            if build.ok:
+                return
+            cur = Counter(_pair(e) for e in build.errors)
+            for p in pending:
+                a = p.attempt
+                if a.outcome != "improved" or not a.applied:
+                    continue
+                for e in a.cluster_errors:
+                    k = _pair(e)
+                    if prev_count[k] > 0 and cur[k] == 0:
+                        self._resolved_by[k] = a
+                        self._resolved_lines[k] = frozenset(int(x.line) for x in a.cluster_errors
+                                                            if _pair(x) == k and x.line)
+        except Exception as ex:  # noqa: BLE001 - bookkeeping never breaks the scoring
+            log.warning("trade-back bookkeeping failed: %s: %s", type(ex).__name__, ex)
+
+    def _apply_trade_back_blocks(self, pr: PhaseResult, phase: Phase, iteration: int,
+                                 clusters: list[ErrorCluster]) -> None:
+        """trade-back 한도에 이른 케이스가 이 빌드에 있으면 OSCILLATION으로 차단한다. 예외를 던지지 않는다.
+
+        Block the cases queued by `_settle_trade_backs` (OSCILLATION, the evidence naming both cases and the kept
+        attempt) when this build's clusters contain them; a case not in this build stays queued. Never raises."""
+        if not self._trade_back_blocks:
+            return
+        try:
+            for key, (a, why) in list(self._trade_back_blocks.items()):
+                hit = [c for c in clusters if _same_case(a, c)]
+                if not hit:
+                    continue
+                for c in hit:
+                    self._block_simple(phase, iteration, c, BlockReason.OSCILLATION, why)
+                del self._trade_back_blocks[key]
+                pr.notes.append(f"build {iteration}: case {key} blocked (oscillation) — {why}")
+        except Exception as ex:  # noqa: BLE001
+            log.warning("trade-back block failed: %s: %s", type(ex).__name__, ex)
 
     @staticmethod
     def _uncovered_stage(a: FixAttempt, left_targeted: tuple[int, int], real: list[BuildError],
@@ -6939,6 +7170,103 @@ def _same_case(a: FixAttempt, c: ErrorCluster) -> bool:
     if a.cluster_id and a.cluster_id == c.id:
         return True
     return bool(a.script_case_id) and a.script_case_id == (c.case_id or c.id)
+
+
+def _case_key(a: FixAttempt) -> str:
+    """시도의 케이스 id를 반환한다. 케이스 id가 없으면(사전 시도) 클러스터 id에서 ``case:``를 뗀 값을 쓴다."""
+    k = a.script_case_id or a.cluster_id or ""
+    return k.removeprefix("case:")
+
+
+def _same_attempt_case(a: FixAttempt, b: FixAttempt) -> bool:
+    """두 시도가 같은 케이스의 시도면 True를 반환한다(클러스터 id나 케이스 id가 같다)."""
+    if a.cluster_id and a.cluster_id == b.cluster_id:
+        return True
+    return bool(_case_key(a)) and _case_key(a) == _case_key(b)
+
+
+class _DiffHunk(NamedTuple):
+    """``-U0`` diff의 hunk 하나(이전 쪽과 새 쪽 범위, 셀 수 있는 추가 줄과 지운 줄)를 담는다."""
+    old_start: int
+    old_len: int
+    new_start: int
+    new_len: int
+    added: frozenset[str]
+    removed: frozenset[str]
+    added_at: tuple[tuple[int, str], ...] = ()     # (new-side line number, stripped text) of each countable + line
+
+
+_HUNK_HEAD = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
+
+
+def _diff_hunks(text: str) -> list[_DiffHunk]:
+    """unified diff를 hunk 목록으로 나눈다. 줄은 앞뒤 공백을 떼고, 빈 줄과 글자나 숫자가 없는 줄은 뺀다.
+
+    v2.1z-bz: one `_DiffHunk` per `@@ -l[,n] +l[,n] @@` (a missing count is 1, git's convention); the headers
+    (`diff --git` / `---` / `+++`) before a hunk are skipped; each +/- line stripped of surrounding whitespace and
+    counted only when it has a letter or a digit (`}` / `);` / blank do not); duplicates collapse (sets)."""
+    out: list[_DiffHunk] = []
+    cur: Optional[list[Any]] = None             # old_start, old_len, new_start, new_len, added, removed, added_at, next
+
+    def close() -> None:
+        if cur is not None:
+            out.append(_DiffHunk(cur[0], cur[1], cur[2], cur[3], frozenset(cur[4]), frozenset(cur[5]), tuple(cur[6])))
+
+    for ln in text.replace("\r\n", "\n").split("\n"):
+        if ln.startswith("diff --git"):
+            close()
+            cur = None
+            continue
+        m = _HUNK_HEAD.match(ln)
+        if m:
+            close()
+            new_start = int(m[3])
+            cur = [int(m[1]), int(m[2]) if m[2] is not None else 1, new_start,
+                   int(m[4]) if m[4] is not None else 1, set(), set(), [], new_start]
+            continue
+        if cur is None or ln[:1] not in ("+", "-"):
+            continue
+        body = ln[1:].strip()
+        countable = any(ch.isalnum() for ch in body)
+        if ln[0] == "+":
+            if countable:
+                cur[4].add(body)
+                cur[6].append((cur[7], body))
+            cur[7] += 1
+        elif countable:
+            cur[5].add(body)
+    close()
+    return out
+
+
+def _covers(start: int, length: int, line: int) -> bool:
+    """hunk 한쪽 범위가 그 줄을 덮으면 True를 반환한다. 길이가 0이면(순수 삽입이나 삭제) 시작 줄 하나로 본다.
+
+    `start..start+length-1`; for `length == 0` git's `-l,0` / `+l,0` names the line AFTER which lines were inserted
+    (old side) or removed (new side), 0 = before the first line: that single position `l` is the range."""
+    if length > 0:
+        return start <= line < start + length
+    return line == start
+
+
+def _put_back_at(g: _DiffHunk, h: _DiffHunk, line: int) -> bool:
+    """g가 h를 되돌린 자리에 그 줄이 있으면 True를 반환한다. h가 지운 줄이 있으면 g가 되살린 그 줄들의 위치, 없으면 g의 범위다.
+
+    Condition 4: where `g` put `h`'s lines back. When `h` removed countable lines, `line` must be the new-side number of
+    one of the lines `g` added back that `h` had removed (`added_at`): `-U0` joins adjacent changes into one hunk, so
+    "inside g's new-side range" alone would also cover a rewritten line next to a restored one. When `h` removed
+    nothing (a pure addition that `g` deletes), `g`'s new-side position (`_covers`)."""
+    if h.removed:
+        return any(n == line for n, t in g.added_at if t in h.removed)
+    return _covers(g.new_start, g.new_len, line)
+
+
+def _reverses(g: _DiffHunk, h: _DiffHunk) -> bool:
+    """hunk g가 hunk h를 통째로 되돌리면 True를 반환한다. h가 추가한 줄을 모두 지우고 지운 줄을 모두 되살린 경우다.
+
+    `g` removes every countable line `h` added and adds back every countable line `h` removed; a hunk `h` without a
+    countable line is never reversed."""
+    return bool(h.added or h.removed) and h.added <= g.removed and h.removed <= g.added
 
 
 def _decode_strict(data: bytes, encodings: Iterable[str]) -> str:
