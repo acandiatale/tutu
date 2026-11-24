@@ -30,6 +30,7 @@ import os
 import re
 from pathlib import Path, PurePosixPath
 
+from . import fsops
 from .matching import same_ga, same_version
 from .models import (
     E_INSERT,
@@ -737,7 +738,7 @@ def _write_bytes(path: Path, data: bytes) -> None:
         f.flush()
         os.fsync(f.fileno())
     os.chmod(tmp, mode & 0o7777)
-    os.replace(tmp, path)
+    fsops.replace(tmp, path)
 
 
 # ----------------------------------------------------------------------------------------------------

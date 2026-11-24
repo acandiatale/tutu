@@ -39,6 +39,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
+from . import fsops
 from . import graph as graph_mod
 from .interfaces import Components, Journal, StopCheck
 from .models import (
@@ -265,6 +266,7 @@ class RunClaim:
         다른 프로세스가 그 사이에 새로 만든 점유였으면 제자리에 되돌린다."""
         aside = self.path.with_name(f"{CLAIM_NAME}.stale.{uuid.uuid4().hex[:8]}")
         try:
+            # 오래됐다는 판단은 바로 앞에서 한 것이어야 하므로 거부돼도 기다리지 않는다
             os.rename(self.path, aside)
         except FileNotFoundError:
             return                           # another taker moved it first
@@ -442,16 +444,15 @@ def _try_claim(paths: RunPaths, jr: Journal, purpose: str, attempt: Any = None) 
 
 def _clear_root(root: Path) -> None:
     """상태 파일 없이 남은 조치 폴더의 내용을 지운다. 이 프로세스의 점유 파일은 남긴다."""
-    import shutil
     root.mkdir(parents=True, exist_ok=True)
     for child in root.iterdir():
         # 점유 파일과 지금 열어 둔 remediation.log는 남긴다. 로그에는 앞선 시도의 줄도 이어서 남는다
         if child.name in (CLAIM_NAME, "remediation.log"):
             continue
         if child.is_dir() and not child.is_symlink():
-            shutil.rmtree(child)
+            fsops.rmtree(child)
         else:
-            child.unlink()
+            fsops.unlink(child)
 
 
 def _resume_attempt(run_dir: Path) -> Any:
@@ -541,7 +542,7 @@ def source_zip(project_dir: Path | str, out_zip: Path | str, *, exclude_dirs: It
                     if not chunk:
                         break
                     dst.write(chunk)
-    os.replace(tmp, out)
+    fsops.replace(tmp, out)
     if skipped:
         log.warning("remediation source ZIP: %d symlink(s) left out (%s)", len(skipped), ", ".join(skipped[:5]))
         if journal is not None:

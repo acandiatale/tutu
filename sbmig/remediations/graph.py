@@ -48,6 +48,7 @@ from langgraph.graph import END, START, StateGraph
 
 from sbmig.core import scrub as _scrub
 
+from . import fsops
 from .inhouse import inhouse_keys
 from .interfaces import Components, Journal, StopCheck
 from .inventory import is_file_residual
@@ -186,9 +187,9 @@ def scrub_message(text: str, root: Path | None = None, limit: int = 2000) -> str
 
 def _safe_rmtree(p: Path) -> None:
     if p.is_symlink() or p.is_file():
-        p.unlink()
+        fsops.unlink(p)
     elif p.exists():
-        shutil.rmtree(p)
+        fsops.rmtree(p)
 
 
 def _unlink_quiet(p: Path) -> None:
@@ -206,7 +207,7 @@ def _copy_atomic(src: Path, dst: Path) -> None:
         # Windows의 fsync는 읽기 전용 핸들을 거부하므로 쓰기 가능한 핸들로 연다
         with open(tmp, "r+b") as f:
             os.fsync(f.fileno())
-        os.replace(tmp, dst)
+        fsops.replace(tmp, dst)
     except BaseException:
         _unlink_quiet(tmp)
         raise
@@ -657,7 +658,7 @@ class _Holder:
                 vinfo = DeliveryInfo.from_dict(d.to_dict())
                 vinfo.path, vinfo.scanned = kept, True
                 write_json_atomic(vz.with_suffix(".json"), vinfo.to_dict())
-            os.replace(nz, p.delivery_zip)
+            fsops.replace(nz, p.delivery_zip)
         except ScanSourceChanged:
             # 검사용 ZIP과 다른 바이트를 결과 ZIP으로 두지 않는다. 쓰기 실패가 아니므로 그대로 던진다(zip_hash_mismatch)
             for f in reversed(made):
@@ -1300,8 +1301,8 @@ def _commit(h: _Holder, cand: Path) -> None:
     _safe_rmtree(new)
     _safe_rmtree(old)
     h.c.intake.copy_tree(cand, new, h.paths_list)
-    os.replace(acc, old)
-    os.replace(new, acc)
+    fsops.replace(acc, old)
+    fsops.replace(new, acc)
     _safe_rmtree(old)
 
 
@@ -1311,9 +1312,9 @@ def _recover_accepted(paths: RunPaths) -> None:
     new, old = acc.with_name(acc.name + ".new"), acc.with_name(acc.name + ".old")
     if not acc.exists():
         if new.exists() and old.exists():
-            os.replace(new, acc)            # the new tree was complete (copied before the first rename)
+            fsops.replace(new, acc)            # the new tree was complete (copied before the first rename)
         elif old.exists():
-            os.replace(old, acc)
+            fsops.replace(old, acc)
     if acc.exists():
         _safe_rmtree(new)
         _safe_rmtree(old)
@@ -1915,7 +1916,7 @@ def _settle_old_loop(h: _Holder, r: int, work: Path, *, remove_recorded: bool = 
         h.journal({"event": "remediation_fix_interrupted", "round": r, "folder": h.rel(dst),
                    "llm_calls": res.llm_calls, "reason": res.reason})
     try:
-        os.replace(work, dst)
+        fsops.replace(work, dst)
     except OSError as e:
         log.warning("remediation round %s: the interrupted fix loop folder was not renamed: %s", r, e)
         try:
@@ -2081,7 +2082,7 @@ def _copy_over(src: Path, dst: Path) -> None:
     tmp = dst.with_name(f".{dst.name}.fix-tmp")
     tmp.write_bytes(data)
     os.chmod(tmp, os.lstat(dst).st_mode & 0o777)
-    os.replace(tmp, dst)
+    fsops.replace(tmp, dst)
 
 
 def _overlay_fix(h: _Holder, r: int) -> bool:

@@ -199,21 +199,21 @@ false면 모듈은 잔여). 그 pom에 관리 항목이 이미 있으면: 최상
 
 ## 6. 진단 순서
 
-실행 폴더는 1.1(`/data/out/<run id>/remediation/`). 조치가 없으면 이관 저널의 `remediation_skipped`.
+실행 폴더는 1.1. 조치가 없으면 이관 저널의 `remediation_skipped`.
 
-1. `state.json`: `status`, `reason`, `reasons`, `message`, `node`(마지막), `next_node`(재개 지점), `round`, `pending_upload` /
-   `pending_receipt`(검사 중 멈춘 자리), `boundary`(경계 검사), `residuals`, `scan_source_sha256`.
+1. `state.json`: `status`, `reason`, `reasons`, `message`, `node`, `next_node`(재개 지점), `round`, `pending_upload` /
+   `pending_receipt`(검사 중 멈춘 자리), `boundary`, `residuals`, `scan_source_sha256`.
 2. `journal.jsonl`: `scan_receipt`, `scan_resume`, `upload_uncertain`, `scan_stopped`, `scan_done`,
    `ivas_upload`, `ivas_status`, `ivas_pages`, `ivas_scan_done`, `plan_written`, `plan_reused`, `plan_stale`, `policy_hash_differs`,
    `round_committed`, `next_round`, `maven_project_config`, `ivas_action_unknown`, `remediation_budget`, `remediation_fix_loop`, `remediation_fix_discarded`, `remediation_fix_interrupted`, `build_side_changes`, `candidate_rebuilt`, `candidate_sync_failed`, `candidate_not_restored`, `failed_candidate_delivered`, `verified_delivery_kept`, `earlier_delivery_kept`, `delivery_not_written`, `delivery_record_not_written`, `delivery_recovered`, `baseline_scan_reused`, `scan_source_made`, `report_rewritten`, `remediation_report_repair`, `remediation_final_repair`.
-   결과 ZIP의 정체는 `delivery/delivery.json`의 `build_ok`·`build_tolerated`·`scanned`.
-3. remediation.log: 로그(비밀 없음, 모든 조치). Maven 원문은 `baseline/build.log`, `rounds/<n>/build.log`(대상이 여럿이면 `build-<대상>.log`).
-4. `scans/<label>.json`: 검사 하나: `complete`, `incomplete_reasons`(`analysis_failed`, `analysis_timeout`, `page_missing`, `total_mismatch`,
+   결과 ZIP은 `delivery/delivery.json`의 `build_ok`·`build_tolerated`·`scanned`.
+3. remediation.log: 로그(비밀 없음). Maven 원문은 `baseline/build.log`, `rounds/<n>/build.log`(대상이 여럿이면 `build-<대상>.log`).
+4. `scans/<label>.json`: `complete`, `incomplete_reasons`(`analysis_failed`, `analysis_timeout`, `page_missing`, `total_mismatch`,
    `duplicate_result`, `summary_mismatch`, `unsupported_sw`, `zip_hash_mismatch`, `id_mismatch`, `http_error`, `stop_requested`, `count`일 때 `file_components_unread`), `file_complete`, `findings`, `counts`, `notes`.
 5. `rounds/<n>/`: `before.json`(해석 결과), `inventory.json`(항목별 `origin`, `location`, `reason`), `plan.json`(제안·잔여), `apply.json`
    (적용·건너뜀), `candidate.patch`, `resolved.json`(후보 해석 결과), `applied/`, `expected.json`, `candidate.ready.json`, 수정 루프면 `fixloop/`(`journal.jsonl`, `logs/`, `fixed/`), `build-fixed.log`, `fix.patch`.
 
-자주 보는 경우: matchedfiles의 `scan_incomplete … http_error, page_missing`→옛 주소의 404, 새로 돌린다. 메시지에 `automatic build fix:`→수정 루프가 못 고침(`rounds/<r>/fixloop/journal.jsonl`). `internal_error` `… could not be put back …`→`candidate_sync_failed`의 경로·오류, `rounds/<r>/candidate/` 권한 확인 후 다시 올림. `… could not be written`→디스크·권한, `result.zip`은 문장의 라운드 것(`is now …`면 다음에 열 때 맞춤). `zip_hash_mismatch` `the scan source ZIP …`→다시 올림. 이관 빌드가 실패했는데 조치가 돌았다→사내 프레임워크 실행이면 정상(1.1, 끄려면 `never`). `not_ready`→readiness의 `missing`(`remediation.trusted_projects`, IVAS 세 값, JDK 21, Maven, settings.xml, 승인된 저장소 호스트). `execution_boundary_refused` →
+자주 보는 경우: matchedfiles의 `scan_incomplete … http_error, page_missing`→옛 주소의 404, 새로 돌린다. `automatic build fix:`→수정 루프가 못 고침(`rounds/<r>/fixloop/journal.jsonl`). `internal_error` `… could not be put back …`→`candidate_sync_failed`의 경로·오류, `rounds/<r>/candidate/` 권한 확인 후 다시. `… could not be written`→디스크·권한, `result.zip`은 문장의 라운드 것(`is now …`면 다음에 열 때 맞춤). `zip_hash_mismatch` `the scan source ZIP …`→다시 올림. Windows `WinError 5`→다른 프로그램(백신, 편집기)이 파일을 열고 있다. 60초 기다린 뒤 실패: 닫고 다시. 이관 빌드가 실패했는데 조치가 돌았다→사내 프레임워크 실행이면 정상(1.1, 끄려면 `never`). `not_ready`→readiness의 `missing`(`remediation.trusted_projects`, IVAS 세 값, JDK 21, Maven, settings.xml, 승인된 저장소 호스트). `execution_boundary_refused` →
 `state.boundary`의 `code`(`project_maven_config`, `maven_extensions`, `maven_wrapper`, `symlink`, `foreign_repository`,
 `foreign_plugin_repository`, `unparsable_pom`). `manual_review`만 남음→`inventory.json`의 `origin`이 `plugin`/`vendored`/`unmapped` 이거나,
 `transitive` / 부모·BOM 관리인데 override를 막은 사실이 잔여의 `detail`에(남은 classifier, 루트 pom 비상속·없음, 직접 선언 버전, 넣을 줄

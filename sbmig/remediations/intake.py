@@ -35,6 +35,7 @@ from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import urlsplit
 
+from . import fsops
 from .models import (BoundaryFinding, DeliveryInfo, IntakeLimits, IntakeRejected, IntakeResult, ManifestEntry,
                      RemediationError, RunPaths, StateConflict, canonical_json, read_json, sha256_file, sha256_text,
                      write_json_atomic)
@@ -350,7 +351,7 @@ def accept_zip(zip_path: Path, run_dir: Path, limits: IntakeLimits, *,
             os.close(fd)
             created.append(Path(tmp))
             shutil.copyfile(zip_path, tmp)
-            os.replace(tmp, paths.original_zip)
+            fsops.replace(tmp, paths.original_zip)
             created.remove(Path(tmp))
             created.append(paths.original_zip)
         os.chmod(paths.original_zip, stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)
@@ -373,13 +374,13 @@ def accept_zip(zip_path: Path, run_dir: Path, limits: IntakeLimits, *,
                 if not files:
                     raise _reject("the ZIP has only build output (target/ beside a pom.xml)", "empty")
             if partial.exists():
-                shutil.rmtree(partial)
+                fsops.rmtree(partial)
             created.append(partial)
             entries = _extract(zf, files, dirs, partial, limits)
 
         created.append(paths.manifest)
         write_json_atomic(paths.manifest, {"schema": 1, "zip_sha256": zip_sha, "entries": [e.to_dict() for e in entries]})
-        os.replace(partial, paths.accepted)
+        fsops.replace(partial, paths.accepted)
         created.remove(partial)
     except BaseException:
         for p in reversed(created):
@@ -557,7 +558,7 @@ def _write_back(tree: Path, rel: str, src: Path, mode: int, want_sha: str | None
                     raise RemediationError(f"the expected file of {_safe_display(rel)} is not the recorded one",
                                            code="expected_changed")
                 os.chmod(tmp, mode)
-                os.replace(tmp, out)
+                fsops.replace(tmp, out)
             except BaseException:
                 try:
                     os.unlink(tmp)
@@ -565,8 +566,9 @@ def _write_back(tree: Path, rel: str, src: Path, mode: int, want_sha: str | None
                     pass
                 raise
             return
-        except PermissionError:
-            if attempt:
+        except PermissionError as e:
+            # 기다리다 포기한 거부는 권한 문제가 아니므로 쓸 수 있게 바꿔 다시 시도하지 않는다
+            if attempt or fsops.waited_out(e):
                 raise
             _make_writable_on_path(tree, rel)
 
@@ -693,52 +695,54 @@ def sync_tree_table(tree: Path, expected: Any, table: dict[str, tuple],
     missing: list[str] = []
     changed: list[str] = []
     failed: list[tuple[str, str, str]] = []
-    for raw in sorted(set(paths)):
-        rel = raw
-        try:
-            rel = _safe_rel(raw)
-            row = table.get(rel)
-            src = Path(expected(rel))
-            st_dst = _target_stat(tree, rel)
-            if row is None:
-                st_src = _source_stat(src, rel)
-                if st_src is None:
-                    continue
-                want_exec = _is_exec(st_src.st_mode)
-                if st_dst is not None:
-                    same, fixed = _readable(tree, rel, lambda: _same_bytes(tree / rel, src, st_dst.st_size))
-                    if same:
-                        if _mode_differs(tree, rel, want_exec, fixed):
-                            _put_mode_back(tree, rel, want_exec)
-                            changed.append(rel)
+    # 붙잡힌 파일이 여럿이어도 끝까지 기다리는 것은 처음 한 번뿐이다
+    with fsops.one_wait():
+        for raw in sorted(set(paths)):
+            rel = raw
+            try:
+                rel = _safe_rel(raw)
+                row = table.get(rel)
+                src = Path(expected(rel))
+                st_dst = _target_stat(tree, rel)
+                if row is None:
+                    st_src = _source_stat(src, rel)
+                    if st_src is None:
                         continue
-                _write_back(tree, rel, src, _canonical_mode(want_exec))
-            else:
-                size, sha = int(row[0]), str(row[1])
-                exec_bit = row[2] if len(row) > 2 and isinstance(row[2], bool) else None
-                if st_dst is not None and st_dst.st_size == size:
-                    got, fixed = _readable(tree, rel, lambda: sha256_file(tree / rel))
-                    if got == sha:
-                        if exec_bit is None:
-                            st_src = _source_stat(src, rel)
-                            exec_bit = _is_exec(st_src.st_mode) if st_src is not None else _is_exec(st_dst.st_mode)
-                        # 바이트는 같아도 빌드가 실행 비트나 읽기 권한을 바꿨으면 되돌린다
-                        if _mode_differs(tree, rel, exec_bit, fixed):
-                            _put_mode_back(tree, rel, exec_bit)
-                            changed.append(rel)
-                        continue
-                st_src = _source_stat(src, rel)
-                if st_src is None:
-                    raise FileNotFoundError(f"the expected file of {_safe_display(rel)} is missing")
-                if exec_bit is None:
-                    exec_bit = _is_exec(st_src.st_mode)
-                _write_back(tree, rel, src, _canonical_mode(exec_bit), want_sha=sha)
-            (changed if st_dst is not None else missing).append(rel)
-        except Exception as e:  # noqa: BLE001 - 모든 경로를 시도한 뒤 한꺼번에 알린다
-            failed.append(_failure(rel, e))
-    if failed:
-        raise SyncFailed(missing, changed, failed)
-    return missing, changed
+                    want_exec = _is_exec(st_src.st_mode)
+                    if st_dst is not None:
+                        same, fixed = _readable(tree, rel, lambda: _same_bytes(tree / rel, src, st_dst.st_size))
+                        if same:
+                            if _mode_differs(tree, rel, want_exec, fixed):
+                                _put_mode_back(tree, rel, want_exec)
+                                changed.append(rel)
+                            continue
+                    _write_back(tree, rel, src, _canonical_mode(want_exec))
+                else:
+                    size, sha = int(row[0]), str(row[1])
+                    exec_bit = row[2] if len(row) > 2 and isinstance(row[2], bool) else None
+                    if st_dst is not None and st_dst.st_size == size:
+                        got, fixed = _readable(tree, rel, lambda: sha256_file(tree / rel))
+                        if got == sha:
+                            if exec_bit is None:
+                                st_src = _source_stat(src, rel)
+                                exec_bit = _is_exec(st_src.st_mode) if st_src is not None else _is_exec(st_dst.st_mode)
+                            # 바이트는 같아도 빌드가 실행 비트나 읽기 권한을 바꿨으면 되돌린다
+                            if _mode_differs(tree, rel, exec_bit, fixed):
+                                _put_mode_back(tree, rel, exec_bit)
+                                changed.append(rel)
+                            continue
+                    st_src = _source_stat(src, rel)
+                    if st_src is None:
+                        raise FileNotFoundError(f"the expected file of {_safe_display(rel)} is missing")
+                    if exec_bit is None:
+                        exec_bit = _is_exec(st_src.st_mode)
+                    _write_back(tree, rel, src, _canonical_mode(exec_bit), want_sha=sha)
+                (changed if st_dst is not None else missing).append(rel)
+            except Exception as e:  # noqa: BLE001 - 모든 경로를 시도한 뒤 한꺼번에 알린다
+                failed.append(_failure(rel, e))
+        if failed:
+            raise SyncFailed(missing, changed, failed)
+        return missing, changed
 
 
 def copy_tree(src: Path, dst: Path, paths: list[str]) -> None:
@@ -799,7 +803,7 @@ def freeze_delivery(tree: Path, out_zip: Path, round: int, paths: list[str]) -> 
         # a writable handle: Windows' fsync refuses a read-only descriptor with EBADF ("r+b" never truncates)
         with open(tmp, "r+b") as f:
             os.fsync(f.fileno())
-        os.replace(tmp, out_zip)
+        fsops.replace(tmp, out_zip)
     except BaseException:
         try:
             os.unlink(tmp)

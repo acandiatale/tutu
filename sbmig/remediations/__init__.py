@@ -5,6 +5,7 @@
 패키지 구성:
 models.py 공통 자료형, 상태, 오류, 해시 규칙. 다른 파일은 모두 이 정의를 따른다
 interfaces.py 바꿔 넣을 수 있는 Protocol: IVAS 클라이언트, Maven 게이트웨이, 버전 출처, Components
+fsops.py 이름 바꾸기와 삭제. Windows에서 다른 프로그램이 파일을 열고 있으면 기다렸다가 다시 시도한다
 intake.py ZIP 검사, 원본 보관, manifest, 작업 트리, 실행 환경 검사, 결과 ZIP 확정
 ivas.py IVAS HTTP 클라이언트, 검사 절차, 검사 결과가 빠짐없는지 확인
 maven.py package 빌드, dependency:tree와 패키징 결과 읽기

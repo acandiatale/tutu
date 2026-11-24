@@ -29,7 +29,7 @@ from typing import Any
 
 from sbmig.core import scrub as _scrub
 
-from . import i18n
+from . import fsops, i18n
 from .inhouse import FRAMEWORK_GROUP
 from .matching import finding_key, ga_key
 from .i18n import (
@@ -583,7 +583,7 @@ def write_fix_patch(state: RemediationState, paths: RunPaths) -> Path | None:
         f.write(b"".join(parts))
         f.flush()
         os.fsync(f.fileno())
-    os.replace(tmp, target)
+    fsops.replace(tmp, target)
     return target
 
 
@@ -2190,7 +2190,7 @@ def write_report(state: RemediationState, paths: RunPaths, *, ignore_actions: It
                            severity=severity, inhouse=inhouse, file_components=file_components)
     tmp = paths.report_md.with_name(paths.report_md.name + ".tmp")
     tmp.write_text(text, encoding="utf-8")
-    tmp.replace(paths.report_md)
+    fsops.replace(tmp, paths.report_md)
 
 
 def summary(state: RemediationState) -> dict[str, Any]:

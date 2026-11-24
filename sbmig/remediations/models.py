@@ -830,6 +830,8 @@ def write_json_atomic(path: Path, data: Any) -> None:
     state.json이 반쯤 쓰인 채로 남지 않게 하기 위해서다."""
     import os
     import tempfile
+
+    from . import fsops
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", dir=str(path.parent))
     try:
@@ -837,7 +839,7 @@ def write_json_atomic(path: Path, data: Any) -> None:
             json.dump(data, f, ensure_ascii=False, indent=2, sort_keys=True)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp, path)
+        fsops.replace(tmp, path)
     except BaseException:
         try:
             os.unlink(tmp)

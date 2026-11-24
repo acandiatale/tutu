@@ -1478,3 +1478,25 @@ same code for every module) ended blocked `repeated_failure` after 37 LLM calls.
 | Review | one independent round on copies of the commit and its parent (`out/scratch/ladder-review/`): no path that runs a wrong script (reruns go through the same script runner and guards, another MSA target's attempts are no candidates, a `non_idempotent` version is never rerun). Found and fixed: a case cycling through five places (more than `loop.oscillation_window`) used 45 LLM calls where the parent commit blocked after 20 (the bound across places: the same ring now ends blocked after exactly twice the cap); a rerun candidate was checked against the store's `round_trip` mark only (an attempt the loop recorded in `_round_trips` is no candidate either). The fixes were not reviewed again | — | done |
 | Limits | with `script.reuse: false` there is no rerun; a rerun that changes nothing at the new place is credited `apply_failed`; the caps hold per set of places, so a case can use more LLM calls in total than `script.max_llm_tries_per_case`, up to the bound across places; a script that resolves one place and breaks a new one every time is rerun without an LLM call until the rounds end (builds only); an answer applied as edits leaves no rerun candidate | — | known |
 | Not checked | a real LLM, the company projects | — | open |
+
+## Status — 2026-11-24, a rename or a removal that Windows refuses while another program has a file open is waited for (v2.1z-ce)
+
+The company PC run of the evening (Windows, local web run, on the head of v2.1z-cd): the migration ended BUILD
+SUCCESS, 101 entries in the error list, 100 resolved. The module-level annotation processor case of v2.1z-cb was
+resolved in four modules by reruns of one stored script, without an LLM call, so v2.1z-cb and v2.1z-cd hold on a
+company project; the step of v2.1z-cc did not keep that error out of the first build there (the reason is in a log
+line not yet read). The chained remediation then ended `FAILED internal_error` 27 seconds after its start:
+`PermissionError: [WinError 5]` at the rename of `remediation/.accepted.partial` to `accepted`. The same rename had
+passed on that PC on 2026-11-12 with the same code. Contract: `docs/INTERFACES.md` "v2.1z-ce".
+
+| Item | What | Verification | State |
+|---|---|---|---|
+| `fsops` | `sbmig/remediations/fsops.py`: `replace`, `rename`, `unlink`, `rmtree` wait for Windows errors 5 and 32 (`rmtree` also 145) for up to 60 s, pauses from 0.05 s doubling to 2 s; a read-only entry is made writable and removed; anything else is raised at once, so Linux is unchanged | `tests/remediations/test_v21zce_fsops.py` | done |
+| Call sites | every rename, replace and tree removal of `sbmig/remediations/` goes through it (the intake's rename first); left alone: the stale-claim takeover, the cleanup that ignores errors, the service's job-folder removal; a syntax-tree test keeps new bare forms out | same file | done |
+| Callers that go on | an exception raised after a full wait is marked (`fsops.waited_out`): `intake._write_back` does not repair and try again for it; inside `fsops.one_wait()` (`intake.sync_tree_table`, `fixer._remove_leftovers`) later refusals wait 2 s after one give-up | same file | done |
+| Log lines | `remediation: <op> of <name> refused (WinError <n>) … waiting up to <s> s`, `… went through after <t> s (<k> tries)`, WARNING `… still refused after <t> s …`; the RUNBOOK symptom table and `agent-doc/11` name them | — | done |
+| Review | three rounds by one independent reviewer, every finding reproduced first: a double wait in `_write_back` (120 s per held file), a claim takeover acting on an old judgment, a process-wide give-up memory that took the wait from unrelated calls, three full waits at the end of a fix loop, test gaps; Linux compared call by call on Python 3.12 and 3.13 (450 cases, no difference) | `out/scratch/fsops-review/` | done |
+| Checked | full suite 7,807 passed on a developer Mac | — | done |
+| Limits | a program that keeps a file open for more than 60 s still fails the step; a refusal that can never go away and reports error 5 is waited for too; a stop request is not looked at while a call waits | — | known |
+| Not checked | Windows itself (the tests raise the Windows errors from patched calls); Python 3.10, 3.11, 3.14; which program held the file on the company PC | — | open |
+

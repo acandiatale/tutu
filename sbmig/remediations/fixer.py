@@ -15,12 +15,13 @@ bytes are stored durably in `fixloop/fixed/` and the graph overlays them. Paths 
 from __future__ import annotations
 
 import logging
-import shutil
+import shutil  # noqa: F401 - 테스트가 이 모듈을 거쳐 shutil.rmtree를 바꿔 넣는다
 import time
 from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Any
 
+from . import fsops
 from .models import BuildOutcome, FixResult, FixUsage, Proposal
 
 log = logging.getLogger("sbmig.remediations.fixer")
@@ -231,13 +232,21 @@ def unified_patch(tree: Path, work: Path, changed: list[str],
     return "".join(out)
 
 
+def _remove_leftovers(work: Path, unused: list[Path]) -> None:
+    """루프가 끝난 뒤 쓰지 않는 결과 파일과 작업 복사본을 지운다. 붙잡힌 것이 여럿이어도 끝까지 기다리는 것은 한 번뿐이다."""
+    with fsops.one_wait():
+        for leftover in unused:
+            _rmtree_quiet(leftover, leftover.name)
+        _rmtree_quiet(work, "the work copy")
+
+
 def _rmtree_quiet(p: Path, what: str) -> None:
     """폴더를 지운다. 지우지 못하면 WARNING으로 기록하고 오류로 보지 않는다."""
     try:
         if p.is_symlink() or p.is_file():
-            p.unlink()
+            fsops.unlink(p)
         elif p.exists():
-            shutil.rmtree(p)
+            fsops.rmtree(p)
     except OSError as e:
         log.warning("remediation fix loop: %s not removed: %s", what, e)
 
@@ -644,7 +653,7 @@ def run_fix_loop(cfg: Any, tree: Path, work_dir: Path, *, run_id: str, targets: 
         work_dir.mkdir(parents=True, exist_ok=True)
         for old in (work, fixed_root):
             if old.exists() or old.is_symlink():
-                shutil.rmtree(old) if old.is_dir() and not old.is_symlink() else old.unlink()
+                fsops.rmtree(old) if old.is_dir() and not old.is_symlink() else fsops.unlink(old)
         if patch_file.exists():
             patch_file.unlink()
         # 수정본은 읽기만 한다. 루프(git, 스크립트, 빌드)는 모두 이 작업 복사본에서 실행한다
@@ -759,10 +768,7 @@ def run_fix_loop(cfg: Any, tree: Path, work_dir: Path, *, run_id: str, targets: 
                 log.debug("fix loop usage not counted", exc_info=True)
                 res.usage, res.currency, res.usage_unknown = [], "", True
                 _set_totals(res)
-    if not res.fixed or not res.changed:
-        for leftover in (patch_file, fixed_root):
-            _rmtree_quiet(leftover, leftover.name)
-    _rmtree_quiet(work, "the work copy")
+    _remove_leftovers(work, [] if res.fixed and res.changed else [patch_file, fixed_root])
     log.info("remediation fix loop: fixed=%s iterations=%d attempts=%d llm_calls=%d changed=%d%s%s", res.fixed,
              res.iterations, res.attempts, res.llm_calls, len(res.changed), " retry passed" if res.retry_passed else "",
              f" ({res.reason})" if res.reason else "")

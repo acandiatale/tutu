@@ -25,7 +25,7 @@ type: `sbmig/core/models.py`, `sbmig/core/interfaces.py`, `sbmig/core/config.py`
 | web app | Base "Graph engine", "Web app"; v2.1z-w (page, server-chosen configs), v2.1z-ae (queue / slots on the page), v2.1z-af (page re-attach), v2.1z-aj (run flows, page header); v2.1z-ak (framework label, skipped stages); v2.1z-ao (admin page `/admin`: token usage per project, log ZIPs); v2.1z-au (the code-change view: artifact `codediff/`, `/api/runs/{id}/codediff`, the page block); v2.1z-av (cross-site requests refused, the free-space floor for uploads, unpacking limits); v2.1z-bg (report view); v2.1z-bl (two report previews, 고급 설정 and the other-files list gone, LLM counts); v2.1z-bm (the hidden controls are not sent); v2.1z-bo (admin page: 「일부 알 수 없음」 / cost 「알 수 없음」 for unknown remediation usage, `remediation_llm_usage_unknown`); v2.1z-bp (the run cost = the priced rows with 「일부 알 수 없음」, 「알 수 없음」 only when nothing is priced); v2.1z-br (`GET /api/runs` never answers 500 because of one run, no list refresh while the tab is hidden, no `run_dir` in the status JSON, the report view linear in a line's length); v2.1z-bs (a non-finite number in a run file is sent as `null` by the single-run status, the upload answer, the code-change routes, the admin usage and the event stream's `status` event: `sbmig/web/jsonsafe.py`; `status()` reads `report.json` once); v2.1z-bt (result ZIPs received as `<project>-migration.zip` / `<project>-remediation.zip`: `contract.zip_download_name`, `zip_name` in both statuses) |
 | Job mode (Main / Worker, slots, env pins) | v2.1z-z "k8s Job dispatch mode", v2.1z-ab (kubeconfig, template ConfigMap), v2.1z-ac (Main ↔ Worker contract), v2.1z-ad (end confirmation, ownership, env pins, write-time redaction), v2.1z-ae (parallel slots), v2.1z-af, v2.1z-aq (a build pod that does not start: stop, the reason notice); v2.1z-av (the build identity, pins taken at Job creation, the resume attempt) |
 | deploy | v2.1z-s (build hooks), v2.1z-t (one Job per request), v2.1z-u, deploy (baked config, container paths), v2.1z-ad "Shipped mode"; v2.1z-br (what the image build context leaves out in both layouts, `config/default.yml` lists every settable key) |
-| remediations | remediations; v2.1z-ak (in-house group `framework`); v2.1z-am (case-insensitive matching, per-module in-house split, module sources, variant overrides, 들어온 경로); v2.1z-an (override proposals in module poms, the owners' choice); v2.1z-ar (no approval unless switched on); v2.1z-av (fixed = gone from the rescan, the planner's new residual groups, `remediation.log` for every run); v2.1z-bi part B, v2.1z-bj, v2.1z-bk (the fix loop on a failed candidate: work copy, overlay, build-side sync, one `fix.patch`); v2.1z-bl (fix-loop LLM usage, titles with the entered project); v2.1z-bm (the complete-apply proof `expected.json`, the sync by table before commit / freeze, a candidate that cannot be put back, `stop requested` runs again, leftover loops settled); v2.1z-bn (one delivery swap + `recover_delivery`, the no-delivery sentences, usage after an exception, the exec bit in `expected.json` schema 2, the pending report, the scan source `original/scan-source.zip`); v2.1z-bo (the swap rolled forward + `DeliveryRecordNotWritten`, no re-upload after a kill and the table of mid-node saves, `repair_final` by every entry and by the web service in every mode, unknown usage, report = state message, the round's call total, a stop during the build fix); v2.1z-bp (`FixResult.ended_round`: the loop is not skipped on resume, an own row for calls without tokens, strict journal reading, the budget outcome saved and stamped, 「알려진 것만」, the report-not-written note dropped on repair, the bounded repair memory); v2.1z-br (unused code removed, `compare_trees` reads only what an attempt changed, `freeze_delivery` hashes while it writes); v2.1z-bs (`intake.sync_tree` removed; the fix loop still starts for a failure only a pom can fix: "Not changed") |
+| remediations | remediations; v2.1z-ak (in-house group `framework`); v2.1z-am (case-insensitive matching, per-module in-house split, module sources, variant overrides, 들어온 경로); v2.1z-an (override proposals in module poms, the owners' choice); v2.1z-ar (no approval unless switched on); v2.1z-av (fixed = gone from the rescan, the planner's new residual groups, `remediation.log` for every run); v2.1z-bi part B, v2.1z-bj, v2.1z-bk (the fix loop on a failed candidate: work copy, overlay, build-side sync, one `fix.patch`); v2.1z-bl (fix-loop LLM usage, titles with the entered project); v2.1z-bm (the complete-apply proof `expected.json`, the sync by table before commit / freeze, a candidate that cannot be put back, `stop requested` runs again, leftover loops settled); v2.1z-bn (one delivery swap + `recover_delivery`, the no-delivery sentences, usage after an exception, the exec bit in `expected.json` schema 2, the pending report, the scan source `original/scan-source.zip`); v2.1z-bo (the swap rolled forward + `DeliveryRecordNotWritten`, no re-upload after a kill and the table of mid-node saves, `repair_final` by every entry and by the web service in every mode, unknown usage, report = state message, the round's call total, a stop during the build fix); v2.1z-bp (`FixResult.ended_round`: the loop is not skipped on resume, an own row for calls without tokens, strict journal reading, the budget outcome saved and stamped, 「알려진 것만」, the report-not-written note dropped on repair, the bounded repair memory); v2.1z-br (unused code removed, `compare_trees` reads only what an attempt changed, `freeze_delivery` hashes while it writes); v2.1z-bs (`intake.sync_tree` removed; the fix loop still starts for a failure only a pom can fix: "Not changed"); v2.1z-ce (`fsops`: a rename or removal Windows refuses while another program has a file open is waited for) |
 
 ## Base contracts (in force; written before v2)
 
@@ -8065,3 +8065,116 @@ case with errors in many files. Found: a case cycling through five places, more 
 was no longer stopped by the per-case cap (45 LLM calls where the parent commit blocked after 20): rule 4. And a
 rerun candidate was checked against the store's `round_trip` mark only: an attempt the loop itself recorded as
 part of a round trip (`_round_trips`) is no candidate either, also when that credit did not reach the store.
+
+## v2.1z-ce — a rename or a removal that Windows refuses while another program has a file open is waited for
+
+**Why.** A company PC run of 2026-11-24 (Windows, local web run): the migration ended BUILD SUCCESS and the chained
+remediation ended `FAILED internal_error` 27 seconds after its start, with `PermissionError: [WinError 5]` at the
+last step of the intake, the rename of `remediation/.accepted.partial` to `remediation/accepted`
+(`intake.accept_zip`). The same rename had passed on that PC on 2026-11-12 and the code of the step had not changed
+since, so the refusal depends on timing. Windows refuses to rename a directory while a file inside it is open in
+another process, and to replace or delete a file another process has open without the delete-share flag. A virus
+scanner, an indexer or an editor that has the folder open opens freshly written files for a moment, and the intake
+had just written every file of the project. Nothing in this process holds a file of the tree at that point
+(`_extract` closes each file it writes). Which program held the file is not known.
+
+**The rule.** New module `sbmig/remediations/fsops.py` (standard library only, imported by the other modules of the
+package, never the other way round):
+
+| function | is |
+|---|---|
+| `replace(src, dst)` | `os.replace` |
+| `rename(src, dst)` | `os.rename` |
+| `unlink(path)` | `os.unlink` |
+| `rmtree(path)` | `shutil.rmtree` |
+
+1. **Waiting.** When the call raises an `OSError` whose `winerror` is 5 (access denied) or 32 (sharing violation),
+   it is made again: after 0.05 s, the pause doubling up to 2 s, until the wait limit has passed since the first
+   refusal (`fsops.HOLD_WAIT_S`, 60 s; the last pause is cut to the time that is left). Then the last exception is
+   raised, the same object with one mark: `fsops.waited_out(exc)` is True for it. Not waited for: a `replace` whose
+   destination is a read-only file. Windows refuses that every time, and the caller that expects it
+   (`intake._write_back`) makes the file writable and tries again at once, as before.
+2. **A caller that repairs and tries again does not do so after a wait.** `intake._write_back` catches
+   `PermissionError`, makes the path writable and writes once more. For an exception with the mark it raises at
+   once: the refusal was not a permission, and the wait has been spent.
+3. **A holder that lasts is not waited for once per file, inside one batch.** `fsops.one_wait()` is a context
+   manager: inside it, once a call has waited out its limit, every later refusal is waited for
+   `fsops.SHORT_WAIT_S` (2 s) at most. Outside it every call has the full 60 s, whatever happened before: the
+   memory belongs to the block (a context variable), never to the process, so a give-up in one place (a run that
+   failed, a removal whose failure is only logged) takes nothing from another call, another run or another thread.
+   Two users, both of which go on after a refusal: `intake.sync_tree_table`, which tries every path before it
+   fails (with n held paths it waits about 60 + 2(n − 1) s), and `fixer._remove_leftovers`, the removals at the
+   end of a fix loop whose failure is only logged (the unused patch, the unused fixed files, the work copy).
+4. **Everything else is raised at once.** An exception without such a `winerror` is not waited for: on POSIX no
+   `OSError` carries one, so on Linux (the cluster) the four functions behave exactly as the calls they stand for,
+   without any pause.
+5. **Removals (`rmtree`, `unlink`).**
+   - Read-only entries: Windows does not delete a read-only file, and `original/source.zip` is read-only. On
+     `winerror` 5 from removing one entry, the entry is made writable (`os.chmod(p, stat.S_IWRITE)`) and that one
+     removal is made again, before the waiting applies. Only for that `winerror`: POSIX is unchanged.
+   - `rmtree` also waits for `winerror` 145 (directory not empty) from the removal of a directory. Where a deleted
+     file keeps its name until the last program closes it (a holder that opened it with delete sharing on a file
+     system without POSIX delete semantics: FAT, a network share, older Windows), the directory is refused for
+     that moment. On current NTFS the name goes at once and this wait is not needed. A directory another process
+     keeps writing into is retried for the whole wait, each try removing what that process wrote in the meantime,
+     and then fails with the 145. The other three functions do not wait for 145.
+   - On a later try a path that no longer exists is success. On the first try a missing path raises as
+     `shutil.rmtree` does.
+6. **Log lines** (logger `sbmig.remediations.fsops`, so they reach `sbmig.log` and `remediation/remediation.log`).
+   `<name>` is the last component of the path (the source of a `replace` / `rename`), never the full path; `<s>` is
+   the wait limit of that call (60, or 2 after a give-up inside `one_wait()`):
+   - at the first refusal, INFO: `remediation: <op> of <name> refused (WinError <n>): another program has a file
+     open there; waiting up to <s> s`
+   - when it goes through after waiting, INFO: `remediation: <op> of <name> went through after <t> s (<k> tries)`
+   - when the time is up, WARNING: `remediation: <op> of <name> still refused after <t> s (<k> tries, WinError
+     <n>): a virus scanner, an indexer or an editor that has the run folder open keeps a file open there`
+7. **Call sites.** Every `os.replace`, `os.rename` and `shutil.rmtree` in `sbmig/remediations/` goes through
+   `fsops` (also the report's `Path.replace`, both branches of the removal of an old work copy before the fix loop
+   starts, and `fixer._rmtree_quiet`, whose failure is still only logged), and so do the removals of
+   `graph._safe_rmtree` and `chain._clear_root` (their `unlink` branch too). Left as they are:
+   - `chain.RunClaim._take_over` keeps a bare `os.rename`: a takeover acts on a judgment of staleness made just
+     before it, and a rename that had waited could move aside a claim another process made in the meantime. A
+     refusal there fails at once, as before.
+   - `shutil.rmtree(…, ignore_errors=True)` in `intake._make_writable_and_remove` and the service's removal of a
+     job folder (it has its own make-writable handler).
+
+   A test reads the package's syntax trees and keeps new bare forms out: any use of `os.replace`, `os.rename`,
+   `os.renames`, `shutil.rmtree`, `shutil.move` (called, assigned or imported by name) and a method call
+   `.replace(x)` / `.rename(x)` with one argument (the `Path` forms; `str.replace` takes two), outside `fsops.py`
+   and the three sites above.
+
+**Not changed.** What a refusal that lasts means: the step fails as before (`FAILED internal_error` with the
+`PermissionError` text at the intake; `_recover_accepted` after a commit that got through one of its two renames).
+No copy in place of the rename. Single-file `unlink` calls outside the helpers named in rule 7 (among them
+`graph.discard_delivery`, which fails at once where the swap that installs a delivery waits). The migration's own
+`sbmig.errors.common.atomic_write_bytes` (six tries within about 1.5 s) and the web package.
+
+**Limits.**
+- A program that keeps a file open for more than 60 s still fails the step.
+- A refusal that reports `winerror` 5 and can never go away (a folder's access rights, a process of a killed run
+  whose working directory is inside the tree) is waited for like a holder: 60 s per call.
+- While a call waits, neither a stop request nor the time budget is looked at. At the end of a fix loop
+  (`fixer._remove_leftovers`) a holder that lasts delays the answer to a stop by about a minute.
+- From Python 3.13 on `os.chmod` follows a symbolic link on Windows, so a read-only link refused on removal has its
+  target made writable. The intake refuses links, so the trees of a run hold none of their own.
+- Nothing here was run on Windows: the tests raise the Windows error from the patched call, and what Windows
+  reports in each case is taken from its documentation and from CPython's source.
+
+**Checked.** `tests/remediations/test_v21zce_fsops.py` (42 tests; the Windows errors are raised from the patched
+`os` calls, a fake clock stands for the waiting). Full suite 7,807 passed on a developer Mac.
+
+**Review.** Three rounds by one independent reviewer, each finding reproduced by a scratch test
+(`out/scratch/fsops-review/`). Linux: 450 cases comparing each function with the call it stands for (exception
+type, errno, file names, the tree left on disk; missing paths, links, read-only folders, `str` / `Path` / `bytes`)
+on Python 3.12 and 3.13, no difference and no pause. Found and changed:
+- round 1: `intake._write_back` waited twice for one held file and the sync multiplied it (600 s for five held
+  paths): rules 2 and 3. A stale-claim takeover that had waited could remove a claim another process made in the
+  meantime: `_take_over` keeps the bare rename (rule 7). Tests that missed four changed versions of the module, a
+  guard that did not see the `Path.replace` form, and a fake clock on which the loop could not end: the tests of
+  today and the end rule of the loop (the sum of the pauses counts as time waited).
+- round 2: the first form of rule 3 remembered a give-up for the whole process for 300 s, so a retry of a failed
+  run, or the delivery swap after a removal that had only been logged, got 2 s: the memory now belongs to a block.
+- round 3: the removals at the end of a fix loop waited in full three times: `fixer._remove_leftovers` is a block.
+
+Accepted without a test: the check that a block's state is used only by the thread that opened it (on the
+installed Pythons a new thread starts with an empty context).
