@@ -1022,6 +1022,30 @@ class PomEditor:
                 add("annotationProcessorPath", path)
         return out
 
+    def annotation_processor_paths(self) -> list[tuple[Any, Any]]:
+        """maven-compiler-plugin의 ``<annotationProcessorPaths>`` 항목을 (요소, 프로필 요소 | None) 목록으로 반환한다.
+        build와 pluginManagement, 각 프로필의 build, 플러그인과 execution의 configuration을 모두 본다.
+
+        Every item under maven-compiler-plugin's `<annotationProcessorPaths>`: `<build>` and each `<profile>`'s
+        `<build>`, plugins and plugin management, the plugin's own and each execution's `<configuration>`; paired with
+        the profile element (None outside a profile). Other plugins' configurations are not Maven's processor paths."""
+        out: list[tuple[Any, Any]] = []
+        scopes = [(self._root, None)] + [(p, p) for p in self.children(self.child(self._root, "profiles"), "profile")]
+        for base, prof in scopes:
+            build = self.child(base, "build")
+            for plugins in (self.child(build, "plugins"), self.find_in(build, "pluginManagement/plugins")
+                            if build is not None else None):
+                for pl in self.children(plugins, "plugin"):
+                    if self.plugin_key(pl) != f"{DEFAULT_PLUGIN_GROUP}:maven-compiler-plugin":
+                        continue
+                    confs = [self.child(pl, "configuration")]
+                    confs += [self.child(ex, "configuration")
+                              for ex in self.children(self.child(pl, "executions"), "execution")]
+                    for conf in confs:
+                        for el in self.children(self.child(conf, "annotationProcessorPaths")):
+                            out.append((el, prof))
+        return out
+
     def find_in(self, el: Any, path: str) -> Any:
         """임의 요소 ``el`` 아래에서 슬래시 경로의 요소를 찾는다. 없으면 None을 반환한다."""
         for part in [p for p in path.split("/") if p]:

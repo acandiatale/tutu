@@ -3193,6 +3193,7 @@ class Orchestrator:
             "the final build ran on it, so BUILD SUCCESS here does not mean the migration is complete")
 
     _MANAGED_POM_RE = re.compile(r"\(([^()]*pom\.xml)\)\s*$")
+    _PROCESSOR_PATH_RE = re.compile(r"\(annotationProcessorPaths, (?P<pom>[^()]*pom\.xml)\)\s*$")
     _RECIPE_DROPPED_RE = re.compile(r"^(?P<key>\S+) (?P<explicit>\S+) \(as-is (?P<asis>[^,]+), managed "
                                     r"(?P<managed>[^,]+), (?P<pom>[^()]+)\)\s*$")
     _OPTIONAL_ADDED_RE = re.compile(r"^(?P<key>\S+) → (?P<pom>.+?) \(for (?P<matched>[^()]*)\)\s*$")
@@ -3242,6 +3243,16 @@ class Orchestrator:
         # v2.1l: "g:a: <v> ← as-is <source> (<pom>)" → 'version carried over from the as-is build: g:a <v>';
         # "g:a: <v> ← repository newest release (…) (<pom>)" → 'version chosen from the repository: g:a <v>'
         for d in list(getattr(res, "versions_pinned", None) or []):
+            # annotationProcessorPaths에 써 넣은 버전은 "(annotationProcessorPaths, <pom>)"으로 끝나고 출처가 여러 가지라 따로 적는다
+            # v2.1z-cc: "g:a: <v> ← <source> (annotationProcessorPaths, <pom>)" → 'annotation processor path version
+            # written: g:a <v> (<source>)'
+            pm = self._PROCESSOR_PATH_RE.search(str(d))
+            if pm:
+                key, _, rest = str(d)[:pm.start()].strip().partition(": ")
+                ver, _, how = rest.partition(" ← ")
+                items.append((pm.group("pom").strip(),
+                              f"annotation processor path version written: {key} {ver.strip()} ({how.strip()})"))
+                continue
             m = self._MANAGED_POM_RE.search(str(d))
             head = str(d)[:m.start()].strip() if m else str(d)
             key, _, rest = head.partition(": ")

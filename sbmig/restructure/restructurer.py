@@ -309,6 +309,8 @@ class _Ctx:
     chain_facts: Any = None
     chain_facts_loaded: bool = False
     managed_source: str = ""
+    # _drop_managed_versions가 pom마다 본 새 부모 체인의 관리 버전이고, 정보를 얻지 못했으면 None이다
+    drop_managed_of: dict[str, dict[str, str]] | None = None
     # v2.1t: artifacts.parent_manages_spring_boot resolved once per restructure (auto → from the chain facts)
     manages_boot: bool | None = None
     # v2.1o: the as-is intake capture (`params["asis_effective"]()`), read once per restructure; None = unusable
@@ -711,6 +713,7 @@ class Restructurer(LegacyContextMixin):
             self._non_filtered_extensions(c)
             self._pin_asis_versions(c)
             self._drop_managed_versions(c)
+            self._processor_path_versions(c)
             self._drop_bom_property_overrides(c)
             self._drop_orphan_version_properties(c)      # v2.1z-k: as-is spellings the name rules miss
             self._wire_bundled_jars(c, layout=True)
@@ -772,6 +775,7 @@ class Restructurer(LegacyContextMixin):
         self._non_filtered_extensions(c)
         self._pin_asis_versions(c)
         self._drop_managed_versions(c)
+        self._processor_path_versions(c)
         self._drop_bom_property_overrides(c)
         self._drop_orphan_version_properties(c)      # v2.1z-k: as-is spellings the name rules miss
         self._wire_bundled_jars(c, layout=True)
@@ -4669,6 +4673,29 @@ class Restructurer(LegacyContextMixin):
             return v, src
         return None
 
+    def _dependency_step_version(self, data: dict[str, Any] | None, mkey: str | None, mod: dict[str, Any] | None,
+                                 key: str, chain_own: set[str] | dict[str, str], boot_managed: dict[str, str],
+                                 boot_source: str) -> tuple[str, str, str] | None:
+        """의존성 버전 단계가 이 pom의 g:a에 넣을 버전을 (버전, 출처 문구, 종류)로 반환한다.
+        부모 체인이 관리하지 않으면 대상 Boot BOM 버전을 쓰되 as-is가 더 새 버전이면 as-is 버전을 쓴다.
+        종류는 'asis' | 'boot-bom'이고, 둘 다 모르면 None이다. 저장소 단계는 여기서 보지 않는다.
+
+        The version the dependency step writes for g:a in this pom: the target Boot BOM's when the pom's company
+        parent does not manage it itself (`chain_own`), unless the as-is build resolved a newer one; else the as-is
+        version (`_asis_version`; `data` None = no as-is capture). (version, source text, 'asis' | 'boot-bom') or
+        None; the repository step is the caller's."""
+        found = self._asis_version(data, mkey, mod, key) if data is not None else None
+        # 새 부모 체인이 관리하지 않으면 as-is보다 대상 Boot BOM의 버전을 먼저 쓰되, as-is가 더 새 버전이면 내리지 않는다
+        # 체인이 관리하는 의존성은 as-is 버전을 넣고 drop 단계가 다시 비운다
+        bv = boot_managed.get(key) if key not in chain_own else None
+        if bv:
+            newer = found is not None and (compare_versions(found[0], bv) or 0) > 0
+            if not newer:
+                return bv, boot_source, "boot-bom"
+        if found is None:
+            return None
+        return found[0], f"as-is {found[1]}", "asis"
+
     def _non_filtered_extensions(self, c: _Ctx) -> None:
         """모듈 pom이 정해진 뒤, 필터링되는 리소스 아래 바이너리 파일의 확장자를
         maven-resources-plugin(webResources면 maven-war-plugin)의 ``<nonFilteredFileExtensions>``에 넣는다.
@@ -4781,16 +4808,9 @@ class Restructurer(LegacyContextMixin):
                     continue
                 if (g.type or "jar") != "jar" or g.classifier:
                     continue
-                found = self._asis_version(data, mkey, mod, g.key)
-                kind = "asis"
-                # 2단계: 새 부모 체인이 관리하지 않으면 as-is보다 대상 Boot BOM의 버전을 먼저 쓰되, as-is가
-                # 더 새 버전이면 내리지 않는다
-                # 체인이 관리하는 의존성은 as-is 버전을 넣고 drop 단계가 다시 비운다
-                bv = boot_managed.get(g.key) if g.key not in chain_own else None
-                if bv:
-                    newer = found is not None and (compare_versions(found[0], bv) or 0) > 0
-                    if not newer:
-                        found, kind = (bv, boot_source), "boot-bom"
+                step = self._dependency_step_version(data, mkey, mod, g.key, chain_own, boot_managed, boot_source)
+                found: tuple[str, str] | None = (step[0], step[1]) if step is not None else None
+                kind = step[2] if step is not None else "asis"
                 if found is None:
                     # 3단계(저장소): 버전이 하나라도 비면 재구성 뒤 effective pom 캡처가 모델 검증에서
                     # 실패해 제대로 넣은 버전까지 모두 되돌려진다
@@ -4801,13 +4821,12 @@ class Restructurer(LegacyContextMixin):
                             c.asis_unknown.append((p, g.key))
                         continue
                     found, kind = (rel, REPO_PIN_SOURCE), "repository"
-                v, src = found
+                v, how = found
                 if p not in c.asis_before:
                     # 새 체인이 관리해 버전을 다시 비우면 pom이 원래 바이트로 돌아오므로, 바뀐 파일 목록에서
                     # 뺄 수 있게 원래 내용을 저장해 둔다
                     c.asis_before[p] = (c.ws.abs(p).read_bytes(), p in c.changed)
                 ed.set_ref_version(el, v)
-                how = f"as-is {src}" if kind == "asis" else src
                 c.asis_pins[(p, g.key)] = (v, f"{g.key}: {v} ← {how} ({p})", kind)
         for ed in eds.values():
             c.save(ed)
@@ -5002,6 +5021,7 @@ class Restructurer(LegacyContextMixin):
         the skip note and the undo)."""
         mode = c.cfg.layout.drop_managed_versions
         pins = c.asis_pins
+        c.drop_managed_of = None
         # off여도 이번 패스가 넣은 버전은 새 체인이 관리하는지 확인해야 하므로, 넣은 것이 없을 때만 캡처를 건너뛴다
         # 버전 모름만 남았다면 그 빈 버전 때문에 Maven 캡처는 어차피 실패한다
         if mode == "off" and not pins:
@@ -5146,7 +5166,156 @@ class Restructurer(LegacyContextMixin):
         if kept_pin_newer:
             c.note("carried-over version newer than the parent-managed one kept: "
                    f"{', '.join(kept_pin_newer[:5])}{' …' if len(kept_pin_newer) > 5 else ''}")
+        c.drop_managed_of = managed_of
         self._settle_asis_versions(c, managed_of, unpinned)
+
+    # ================================================================== annotation processor paths
+    def _processor_path_versions(self, c: _Ctx) -> None:
+        """maven-compiler-plugin의 annotation processor path 중 버전이 없는 것에 버전을 넣는다.
+        의존성 버전이 정해진 뒤(``_drop_managed_versions`` 다음) 호출하며, 관리되는 g:a는 그대로 두고
+        이 pom의 의존성, 의존성 단계가 넣을 버전, 다른 프로젝트 pom의 버전 하나 순으로 정한다.
+        정하지 못하면 노트 한 줄을 남기고, 넣은 버전은 ``versions_pinned``에 기록한다.
+
+        docs/INTERFACES.md "v2.1z-cc": maven-compiler-plugin resolves a version-less `<path>` only from dependency
+        management, so after the parent swap every module stopped with `Cannot find version for annotation processor
+        path`. For each such path (build / plugin management / profiles / executions; protected and own-module keys
+        and `${…}` coordinates skipped) the first that applies: (1) managed — the pom's or a project ancestor's
+        `<dependencyManagement>` entry with a version, or the new chain's managed versions for THIS pom (what
+        `_drop_managed_versions` saw: the effective pom's module, else the per-parent facts) → left; (2) this pom's
+        dependency of the same g:a / classifier / type with a version → the same text; (3) what the dependency step
+        writes (`_dependency_step_version`); (4) the other project poms' one literal version; (5) left + one note.
+        Steps 3 and 4 need a plain jar path, and need the new chain's managed versions: without the effective pom
+        and without parent chain facts it is unknown whether the chain manages the g:a, so only step 2 writes.
+        Never the repository's newest release. Lines in `versions_pinned`, one summary note, journal
+        `versions_pinned` with `section: annotationProcessorPaths`. Never fails the restructure."""
+        eds: dict[str, PomEditor] = {}
+        for p in self._project_poms(c):
+            try:
+                eds[p] = PomEditor(c.ws.abs(p))
+            except PomEditError:
+                continue
+        protected = self._protected_keys(c)
+        own = self._own_keys(eds)
+        todo: list[tuple[str, Any, Any, str, str, str]] = []
+        for p, ed in eds.items():
+            for el, prof in ed.annotation_processor_paths():
+                g, a = ed.text_of(el, "groupId") or "", ed.text_of(el, "artifactId") or ""
+                if not g or not a or ed.text_of(el, "version") or "${" in g + a:
+                    continue
+                key = f"{g}:{a}"
+                if key in protected or key in own:
+                    continue
+                todo.append((p, el, prof, key, ed.text_of(el, "classifier") or "", ed.text_of(el, "type") or "jar"))
+        if not todo:
+            return
+        managed_of = c.drop_managed_of
+        if managed_of is None:
+            # 관리 버전 정리가 캡처를 하지 않았거나 얻지 못했으면 사내 부모 체인 정보로 대신 판단한다
+            fb = self._fallback_capture(c)
+            if fb is not None:
+                fb_data, per_pom, _why = fb
+                merged: dict[str, str] = dict(fb_data.get("managed") or {})
+                managed_of = {p: (per_pom[p] if per_pom is not None and p in per_pom else merged) for p in eds}
+        # 4단계 후보는 이번 단계가 쓰기 전의 선언으로 정해 pom 순서에 따라 답이 바뀌지 않게 한다
+        declared: dict[str, dict[str, set[str]]] = {}
+        for q, q_ed in eds.items():
+            refs = [q_ed.gav_of(e) for e in [*q_ed.dependency_elements(False), *q_ed.dependency_elements(True)]]
+            for d in refs:
+                if d.version and (d.type or "jar") == "jar" and not d.classifier and (d.scope or "") != "import":
+                    declared.setdefault(d.key, {}).setdefault(q, set()).add(d.version)
+            for el, _prof in q_ed.annotation_processor_paths():
+                v = q_ed.text_of(el, "version")
+                if v and (q_ed.text_of(el, "type") or "jar") == "jar" and not q_ed.text_of(el, "classifier"):
+                    k = f"{q_ed.text_of(el, 'groupId') or ''}:{q_ed.text_of(el, 'artifactId') or ''}"
+                    declared.setdefault(k, {}).setdefault(q, set()).add(v)
+        data = self._asis_capture(c)
+        by_module: dict[str, Any] = (data or {}).get("by_module") or {}
+        boot = self._boot_bom_facts(c)
+        boot_managed: dict[str, str] = dict(getattr(boot, "managed", None) or {}) if boot is not None else {}
+        boot_source = f"Boot {getattr(boot, 'version', '') or '?'} BOM (not managed by the parent chain)"
+        local_of: dict[str, set[tuple[str, str, str]]] = {}
+        written: list[tuple[str, str, str, str]] = []
+        unknown: list[str] = []
+        for p, el, prof, key, cls, typ in todo:
+            ed = eds[p]
+            label = key + (f" (classifier {cls})" if cls else "") + (f" (type {typ})" if typ != "jar" else "")
+            plain = not cls and typ == "jar"
+            if p not in local_of:
+                # 이 pom과 프로젝트 안 조상의 dependencyManagement 중 버전이 있는 항목이다
+                local: set[tuple[str, str, str]] = set()
+                for q in self._chain(c, p):
+                    q_ed = eds.get(q)
+                    if q_ed is None:
+                        try:
+                            q_ed = PomEditor(c.ws.abs(q))
+                        except PomEditError:
+                            continue
+                    local |= {(d.key, d.classifier or "", d.type or "jar")
+                              for d in q_ed.managed_dependencies() if d.version}
+                local_of[p] = local
+            local = set(local_of[p])
+            if prof is not None:
+                local |= {(d.key, d.classifier or "", d.type or "jar")
+                          for d in (ed.gav_of(e) for e in ed.children(ed.find_in(prof, "dependencyManagement/dependencies"),
+                                                                        "dependency")) if d.version}
+            # 1단계: Maven이 dependencyManagement에서 버전을 찾으므로 그대로 둔다
+            if (key, cls, typ) in local or (managed_of is not None and (managed_of.get(p) or {}).get(key)):
+                continue
+            # 2단계: 같은 pom의 같은 의존성 버전을 그대로 써서 processor와 라이브러리 버전을 맞춘다
+            dep_els = ed.children(ed.child(prof, "dependencies"), "dependency") if prof is not None else []
+            dep_els += ed.dependency_elements(False)
+            own_v = next((d.version for d in (ed.gav_of(e) for e in dep_els)
+                          if d.key == key and d.version and (d.classifier or "") == cls and (d.type or "jar") == typ),
+                         None)
+            found: tuple[str, str] | None = (own_v, "the pom's own dependency") if own_v else None
+            why = ""
+            if found is None and not plain:
+                why = "the pom declares no dependency of the same classifier / type with a version"
+            elif found is None and managed_of is None:
+                why = ("the managed versions of the new parent chain are unknown (no effective pom, no parent chain "
+                       "facts)")
+            elif found is None:
+                mkey, mod = self._capture_module(by_module, ed) if data is not None else (None, None)
+                chain_own = set(self._parent_managed(c, ed, p, own=True))
+                step = self._dependency_step_version(data, mkey, mod, key, chain_own, boot_managed, boot_source)
+                if step is not None:
+                    found = (step[0], step[1])
+                else:
+                    others = {q: vs for q, vs in (declared.get(key) or {}).items() if q != p}
+                    vals = sorted({v for vs in others.values() for v in vs})
+                    lits = [v for v in vals if "${" not in v]
+                    props = [v for v in vals if "${" in v]
+                    if len(lits) > 1:
+                        why = f"the project's other poms declare more than one version ({', '.join(lits)})"
+                    elif props:
+                        why = f"the project's other poms declare it only through a property ({', '.join(props)})"
+                    elif lits:
+                        found = (lits[0], f"the project's other poms ({', '.join(sorted(others))})")
+                    else:
+                        why = "no project pom, as-is build or Boot BOM names one; the build reports it"
+            if found is None:
+                unknown.append(f"{label} ({p})")
+                c.note(f"annotation processor path {label} in {p} left without a version: {why}")
+                continue
+            v, src = found
+            ed.set_ref_version(el, v)
+            entry = f"{key}: {v} ← {src} (annotationProcessorPaths, {p})"
+            written.append((p, key, v, entry))
+            if entry not in c.result.versions_pinned:
+                c.result.versions_pinned.append(entry)
+        for ed in eds.values():
+            c.save(ed)
+        if written:
+            named = [f"{k} {v} ({p})" for p, k, v, _e in written]
+            c.note(f"{len(written)} annotation processor path version(s) written: "
+                   + ", ".join(named[:5]) + (" …" if len(named) > 5 else ""))
+        if not written and not unknown:
+            return
+        try:
+            c.ws.journal({"event": "versions_pinned", "section": "annotationProcessorPaths",
+                          "pinned": [e for _p, _k, _v, e in written], "unknown": unknown})
+        except OSError as e:  # pragma: no cover - the journal is bookkeeping, never a reason to fail
+            log.debug("processor path versions journal skipped: %s", e)
 
     # ================================================================== v2.1t: the parent chain decides / names
     def _manages_boot(self, c: _Ctx) -> bool:
@@ -5730,6 +5899,7 @@ class Restructurer(LegacyContextMixin):
         self._non_filtered_extensions(c)
         self._pin_asis_versions(c)
         self._drop_managed_versions(c)
+        self._processor_path_versions(c)
         self._drop_bom_property_overrides(c)
         self._drop_orphan_version_properties(c)      # v2.1z-k: as-is spellings the name rules miss
         self._wire_bundled_jars(c, layout=False)
@@ -6093,6 +6263,7 @@ class Restructurer(LegacyContextMixin):
         self._non_filtered_extensions(c)
         self._pin_asis_versions(c)
         self._drop_managed_versions(c)
+        self._processor_path_versions(c)
         self._drop_bom_property_overrides(c)
         self._drop_orphan_version_properties(c)      # v2.1z-k: as-is spellings the name rules miss
         self._wire_bundled_jars(c, layout=False)
