@@ -16,6 +16,7 @@ from .test_v21zbz_trade_back import (
     CX,
     CY,
     FOO,
+    L2X,
     ByCase,
     _run_undo,
     _second_ws,
@@ -202,6 +203,27 @@ def test_observe_with_the_real_store_marks_both_and_a_second_run_reuses_neither(
     assert pr2.attempts
     assert not [x.id for x in pr2.attempts if x.script_mode == "reuse" and x.script_case_id in (CX, CY)]
 
+
+
+def test_a_full_runs_llm_answer_with_the_code_of_a_marked_jdk_jakarta_version_clears_the_mark(cfg, ws, tmp_path):
+    """best skips the marked version, the LLM answers with its code, add_script returns that version across scopes:
+    the success of that full run clears the mark (the counts stay jdk-jakarta only)."""
+    from sbmig.errors import CaseStore
+    from sbmig.errors.cases import ROUND_TRIP
+    start(ws)
+    store = CaseStore(tmp_path / "kb", cfg)
+    code = write_script({FOO: "class Foo { ok }\n"}).code.rstrip("\n")
+    store.add_script(CX, L2X, code, run_id="r0", project="p0", scope="jdk-jakarta")
+    store.credit(CX, 1, ROUND_TRIP, project="p9", run_id="r9", round=1, n=1, reason="round trip: x", scope="full")
+    assert store.find(CX).scripts[0].round_trip and store.best(CX, "full") is None
+    pr = make_loop(cfg, ws, ByCase({CX: [{FOO: "class Foo { ok }\n"}]}), build=build_foo,
+                   kb=_RealKB(store)).run(Phase.VERIFY, "package", 3)
+    a = pr.attempts[0]
+    assert (a.script_mode, a.script_version) == ("new", 1) and a.outcome in ("improved", "build_ok")
+    s = store.find(CX).scripts[0]
+    assert (s.version, s.scope, s.round_trip) == (1, "jdk-jakarta", False)
+    assert (s.successes, s.failures, s.projects) == (0, 0, [])
+    assert [r.scope for r in s.runs][-1] == "full"
 
 # ------------------------------------------------------------------------------------------- unit level (_score)
 def _ready(loop, att, case: str, rnd: int = 1, n: int = 1, *, credited: str | None = None, ran: bool = True):

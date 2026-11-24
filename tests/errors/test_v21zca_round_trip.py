@@ -2,7 +2,8 @@
 
 A stored version that took part in a round trip (two cases undid each other's fix) is credited ``round_trip`` (a
 failure), a success it got for that same try is taken back, and the version carries the mark ``round_trip`` that
-keeps ``best`` from selecting it until a later success of its own scope or ``activate`` clears it.
+keeps ``best`` from selecting it until a later success that was not a reuse (in either scope) or ``activate``
+clears it. A ``kb import`` takes the larger counts, corrected by the take-backs the merge can see.
 """
 from __future__ import annotations
 
@@ -205,12 +206,41 @@ def test_best_never_selects_a_marked_version_and_falls_through(store):
 def test_a_later_success_of_its_own_scope_clears_the_mark(store, caplog):
     store.add_script(CID, L2, CODE1, run_id="r1", project="p1", scope="full")
     store.credit(CID, 1, ROUND_TRIP, project="p1", run_id="r1", round=1, n=1, reason=WHY)
-    store.credit(CID, 1, "improved", project="p2", run_id="r2", round=1, n=1, scope="jdk-jakarta")   # other scope
-    assert v(store, 1).round_trip and store.best(CID) is None
+    store.credit(CID, 1, "improved", project="p2", run_id="r2", round=1, n=1, scope="jdk-jakarta", reused=True)
+    assert v(store, 1).round_trip and store.best(CID) is None   # a reuse of the other scope leaves it too
     with caplog.at_level(logging.INFO, logger="sbmig"):
         store.credit(CID, 1, "improved", project="p2", run_id="r3", round=1, n=1)
     assert not v(store, 1).round_trip and store.best(CID)[0].version == 1
     assert sum("round-trip mark cleared" in r.getMessage() for r in caplog.records) == 1
+
+
+@pytest.mark.parametrize("vscope,run_scope", [("jdk-jakarta", "full"), ("full", "jdk-jakarta")])
+def test_a_success_of_the_other_scope_that_was_not_a_reuse_clears_the_mark(store, caplog, vscope, run_scope):
+    """add_script finds a version by its code across scopes: an LLM answer of the other scope with the stored code
+    runs this version; its success clears the mark, the counts stay own-scope only."""
+    store.add_script(CID, L2, CODE1, run_id="r0", project="maker", scope=vscope)
+    store.credit(CID, 1, "no_change", project="p1", run_id="r1", round=1, n=1, scope=vscope, reason="nc")
+    store.credit(CID, 1, ROUND_TRIP, project="p2", run_id="r2", round=1, n=1, scope=run_scope, reason=WHY)
+    assert store.add_script(CID, L2, CODE1, run_id="r3", project="p3", scope=run_scope).version == 1
+    before = v(store, 1)
+    with caplog.at_level(logging.INFO, logger="sbmig"):
+        store.credit(CID, 1, "improved", project="p3", run_id="r3", round=1, n=1, scope=run_scope)
+    got = v(store, 1)
+    assert not got.round_trip
+    assert (got.successes, got.failures, got.projects, got.status, got.last_result) == \
+        (before.successes, before.failures, before.projects, before.status, before.last_result) == \
+        (0, 1, [], "unverified", "no_change")
+    assert [(r.run_id, r.result, r.scope) for r in got.runs][-1] == ("r3", "improved", run_scope)
+    assert sum("round-trip mark cleared" in r.getMessage() for r in caplog.records) == 1
+
+
+@pytest.mark.parametrize("run_scope", ["", "jdk-jakarta"])
+def test_a_failure_in_either_scope_never_clears_the_mark(store, run_scope):
+    store.add_script(CID, L2, CODE1, run_id="r0", project="maker")
+    store.credit(CID, 1, ROUND_TRIP, project="p1", run_id="r1", round=1, n=1, reason=WHY)
+    store.credit(CID, 1, "no_change", project="p2", run_id="r2", round=1, n=1, scope=run_scope, reason="nc")
+    store.credit(CID, 1, "partial", project="p2", run_id="r3", round=1, n=1, scope=run_scope)
+    assert v(store, 1).round_trip
 
 
 def test_activate_clears_the_mark(store):
@@ -325,7 +355,9 @@ def test_an_earlier_kb_importing_the_later_export_takes_the_success_back_too(sto
     assert [(r.run_id, r.n, r.result) for r in got.runs] == [("r1", 1, ROUND_TRIP)]
 
 
-def test_a_marked_version_recounts_own_scope_runs_only_and_keeps_other_successes(store, tmp_path, cfg):
+def test_a_marked_version_without_a_shared_try_merges_by_the_larger_counts(store, tmp_path, cfg):
+    """No try is round_trip on one side and a success on the other: the larger counts, as for any version (the
+    withdrawn recount from the runs read 2 successes here)."""
     store.add_script(CID, L2, CODE1, run_id="r0", project="p0")
     store.credit(CID, 1, "improved", project="a", run_id="r1", round=1, n=1)
     store.credit(CID, 1, "improved", project="fw", run_id="r5", round=1, n=1, scope="jdk-jakarta")   # other scope
@@ -335,7 +367,7 @@ def test_a_marked_version_recounts_own_scope_runs_only_and_keeps_other_successes
     other.credit(CID, 1, "improved", project="c", run_id="r3", round=1, n=1)
     store.merge_from(other)
     got = v(store, 1)
-    assert (got.round_trip, got.successes, got.failures, got.status) == (True, 2, 1, "proven")
+    assert (got.round_trip, got.successes, got.failures, got.status) == (True, 1, 1, "proven")
     assert sorted(got.projects) == ["a", "c"]
 
 
@@ -358,3 +390,183 @@ def test_an_unmarked_version_still_merges_by_the_larger_counts(store, tmp_path, 
     store.merge_from(other)
     got = v(store, 1)
     assert (got.successes, got.failures, got.projects, got.status, got.round_trip) == (3, 2, ["x"], "proven", False)
+
+
+# ---------------------------------------------------------------- kb import: the larger counts, corrected by the take-backs
+def _snap(s: CaseScript):
+    return (s.successes, s.failures, list(s.projects), s.status, s.round_trip)
+
+
+def _copy(store: CaseStore, tmp_path: Path, cfg, name: str) -> CaseStore:
+    other = CaseStore(tmp_path / name, cfg)
+    other.merge_from(store)
+    return other
+
+
+def test_import_keeps_the_counts_a_capped_history_no_longer_holds(tmp_path, cfg):
+    cfg.errors.script_runs = 3
+    store = CaseStore(tmp_path / "kb", cfg)
+    store.add_script(CID, L2, CODE1, run_id="r0", project="maker")
+    for i in range(1, 6):
+        store.credit(CID, 1, "improved", project=f"p{i}", run_id=f"r{i}", round=1, n=1)
+    store.credit(CID, 1, ROUND_TRIP, project="maker", run_id="r6", round=1, n=1, reason=WHY)
+    store.credit(CID, 1, "no_change", project="maker", run_id="r7", round=1, n=1, reason="nc")
+    store.credit(CID, 1, "no_change", project="maker", run_id="r8", round=1, n=1, reason="nc")
+    before = _snap(v(store, 1))
+    assert before == (5, 3, ["p1", "p2", "p3", "p4", "p5"], "proven", True)
+    assert [r.result for r in v(store, 1).runs] == [ROUND_TRIP, "no_change", "no_change"]   # successes capped away
+    store.merge_from(_copy(store, tmp_path, cfg, "kb-exp"))
+    assert _snap(v(store, 1)) == before
+
+
+def test_import_keeps_counts_that_predate_run_records(store, tmp_path, cfg):
+    store.add_script(CID, L2, CODE1, run_id="r0", project="maker")
+    case, extra = store._read(CID)
+    case.scripts[0].successes, case.scripts[0].projects, case.scripts[0].status = 4, ["a", "b"], "proven"
+    store._save(case, extra)
+    store.credit(CID, 1, ROUND_TRIP, project="c", run_id="r9", round=1, n=1, reason=WHY)
+    before = _snap(v(store, 1))
+    assert before == (4, 1, ["a", "b"], "proven", True)
+    store.merge_from(_copy(store, tmp_path, cfg, "kb-exp"))
+    assert _snap(v(store, 1)) == before
+
+
+def test_reimporting_a_kbs_own_export_changes_nothing(store, tmp_path, cfg):
+    store.add_script(CID, L2, CODE1, run_id="r0", project="p0")
+    store.credit(CID, 1, "improved", project="p1", run_id="r1", round=1, n=1)
+    store.credit(CID, 1, "improved", project="p2", run_id="r2", round=1, n=1)
+    store.credit(CID, 1, ROUND_TRIP, project="p2", run_id="r2", round=1, n=1, reason=WHY)
+    store.credit(CID, 1, "no_change", project="p3", run_id="r3", round=1, n=0, reason="nc")
+    before = v(store, 1).model_dump(exclude={"runs"}), [(r.run_id, r.n, r.result) for r in v(store, 1).runs]
+    exp = _copy(store, tmp_path, cfg, "kb-exp")
+    for _ in range(2):
+        store.merge_from(exp)
+        after = v(store, 1).model_dump(exclude={"runs"}), [(r.run_id, r.n, r.result) for r in v(store, 1).runs]
+        assert after == before
+
+
+@pytest.mark.parametrize("local_marked", [True, False])
+def test_the_take_back_holds_in_both_directions(store, tmp_path, cfg, local_marked):
+    """One side took the success of try r2 back (round trip), the other still counts it; both have more history."""
+    store.add_script(CID, L2, CODE1, run_id="r0", project="p0")
+    store.credit(CID, 1, "improved", project="p1", run_id="r1", round=1, n=1)
+    store.credit(CID, 1, "improved", project="p2", run_id="r2", round=1, n=1)
+    unmarked = _copy(store, tmp_path, cfg, "kb-unmarked")
+    unmarked.credit(CID, 1, "improved", project="p4", run_id="r4", round=1, n=1)      # 3 successes there
+    store.credit(CID, 1, ROUND_TRIP, project="p2", run_id="r2", round=1, n=1, reason=WHY)
+    store.credit(CID, 1, "no_change", project="p3", run_id="r3", round=1, n=1, reason="nc")   # 1 / 2 here
+    assert _snap(v(store, 1)) == (1, 2, ["p1"], "proven", True)
+    assert _snap(v(unmarked, 1)) == (3, 0, ["p1", "p2", "p4"], "proven", False)
+    dst, src = (store, unmarked) if local_marked else (unmarked, store)
+    dst.merge_from(src)
+    got = v(dst, 1)
+    # successes max(1, 3 - 1) = 2, failures max(2, 0 + 1) = 2
+    assert _snap(got) == (2, 2, ["p1", "p4"], "proven", True)
+    assert {(r.run_id, r.result) for r in got.runs} == {("r1", "improved"), ("r2", ROUND_TRIP), ("r3", "no_change"),
+                                                       ("r4", "improved")}
+
+
+@pytest.mark.parametrize("local_marked", [True, False])
+def test_a_merge_take_back_drops_the_project_and_proven(store, tmp_path, cfg, local_marked):
+    store.add_script(CID, L2, CODE1, run_id="r0", project="p0")
+    store.credit(CID, 1, "improved", project="p1", run_id="r1", round=1, n=1)
+    store.credit(CID, 1, "improved", project="p0", run_id="r5", round=1, n=1)         # the maker's own project
+    unmarked = _copy(store, tmp_path, cfg, "kb-unmarked")
+    store.credit(CID, 1, ROUND_TRIP, project="p1", run_id="r1", round=1, n=1, reason=WHY)
+    assert _snap(v(store, 1)) == (1, 1, ["p0"], "unverified", True)
+    dst, src = (store, unmarked) if local_marked else (unmarked, store)
+    dst.merge_from(src)
+    assert _snap(v(dst, 1)) == (1, 1, ["p0"], "unverified", True)
+
+
+def test_a_merge_take_back_keeps_a_project_another_kept_success_run_names(store, tmp_path, cfg):
+    store.add_script(CID, L2, CODE1, run_id="r0", project="p0")
+    store.credit(CID, 1, "improved", project="p1", run_id="r1", round=1, n=1)
+    store.credit(CID, 1, "improved", project="p1", run_id="r2", round=1, n=1)
+    unmarked = _copy(store, tmp_path, cfg, "kb-unmarked")
+    store.credit(CID, 1, ROUND_TRIP, project="p1", run_id="r2", round=1, n=1, reason=WHY)
+    unmarked.merge_from(store)
+    assert _snap(v(unmarked, 1)) == (1, 1, ["p1"], "proven", True)
+
+
+def test_a_merge_take_back_leaves_retired(store, tmp_path, cfg):
+    earlier = _proven_then_exported(store, tmp_path, cfg)
+    store.credit(CID, 1, ROUND_TRIP, project="p1", run_id="r1", round=1, n=1, reason=WHY)
+    earlier.retire(CID, 1)
+    earlier.merge_from(store)
+    assert _snap(v(earlier, 1)) == (0, 1, [], "retired", True)
+
+
+def test_activate_then_import_of_an_earlier_export_keeps_the_success_taken_back(store, tmp_path, cfg):
+    earlier = _proven_then_exported(store, tmp_path, cfg)
+    store.credit(CID, 1, ROUND_TRIP, project="p1", run_id="r1", round=1, n=1, reason=WHY)
+    store.activate(CID, 1)
+    assert _snap(v(store, 1)) == (0, 1, [], "unverified", False)
+    store.merge_from(earlier)
+    got = v(store, 1)
+    assert _snap(got) == (0, 1, [], "unverified", False)
+    assert [(r.run_id, r.result) for r in got.runs] == [("r1", ROUND_TRIP)]
+
+
+def test_a_round_trip_of_the_other_scope_takes_nothing_back_on_merge(store, tmp_path, cfg):
+    store.add_script(CID, L2, CODE1, run_id="r0", project="p0", scope="jdk-jakarta")
+    store.credit(CID, 1, "improved", project="p1", run_id="r1", round=1, n=1, scope="jdk-jakarta")
+    store.credit(CID, 1, "improved", project="p2", run_id="r2", round=1, n=1, scope="full")   # not counted
+    exp = _copy(store, tmp_path, cfg, "kb-exp")
+    store.credit(CID, 1, ROUND_TRIP, project="p2", run_id="r2", round=1, n=1, scope="full", reason=WHY)
+    before = _snap(v(store, 1))
+    assert before == (1, 0, ["p1"], "proven", True)
+    store.merge_from(exp)
+    exp.merge_from(store)
+    assert _snap(v(store, 1)) == before
+    assert _snap(v(exp, 1)) == before
+
+
+def _unmarked_scenarios(work: Path, cfg):
+    """Merges without a round_trip anywhere (the verifier's compare_merge scenarios)."""
+    c3 = "def fix(p):\n    p.log('v3')\n"
+    def mk(name, runs=None):
+        if runs:
+            c = cfg.model_copy(deep=True)
+            c.errors.script_runs = runs
+            return CaseStore(work / name, c)
+        return CaseStore(work / name, cfg)
+    a, b = mk("s1a"), mk("s1b")
+    for st in (a, b):
+        st.add_script(CID, L2, CODE1, run_id="r0", project="p0")
+    a.credit(CID, 1, "improved", project="p1", run_id="r1", round=1, n=1)
+    a.credit(CID, 1, "no_change", project="p2", run_id="r2", round=1, n=0, reason="x")
+    b.credit(CID, 1, "improved", project="p3", run_id="r3", round=1, n=2)
+    b.credit(CID, 1, "no_change", project="p1", run_id="r1", round=1, n=1, reason="y")   # same try as a's success
+    b.credit(CID, 1, "regressed", project="p4", run_id="r4", round=2, n=1, reason="z")
+    b.add_script(CID, L2, CODE2, run_id="r3", project="p3", parent=1, reason="aug")
+    b.credit(CID, 2, "build_ok", project="p5", run_id="r5", round=1, n=1)
+    a.merge_from(b)
+    yield a
+    b.merge_from(a)
+    yield b
+    a, b = mk("s2a", 3), mk("s2b", 3)
+    for st in (a, b):
+        st.add_script(CID, L2, c3, run_id="r0", project="p0", scope="jdk-jakarta")
+    for i in range(5):
+        a.credit(CID, 1, "improved", project=f"pa{i}", run_id=f"ra{i}", round=1, n=1, scope="jdk-jakarta")
+        b.credit(CID, 1, "improved", project=f"pb{i}", run_id=f"rb{i}", round=1, n=1,
+                 scope="full" if i % 2 else "jdk-jakarta")
+    a.merge_from(b)
+    yield a
+
+
+def test_a_merge_without_a_round_trip_is_the_merge_of_before(tmp_path, cfg):
+    """The values the merge of commit 8a618d7 (before round_trip existed) gives for the same scenarios."""
+    got = [[(s.version, s.successes, s.failures, sorted(s.projects), s.status,
+             [(r.run_id, r.n, r.result) for r in s.runs]) for s in st.find(CID).scripts]
+           for st in _unmarked_scenarios(tmp_path, cfg)]
+    v2 = (2, 1, 0, ["p5"], "proven", [("r5", 1, "build_ok")])
+    assert got == [
+        [(1, 1, 2, ["p1", "p3"], "proven",
+          [("r1", 1, "improved"), ("r2", 0, "no_change"), ("r3", 2, "improved"), ("r4", 1, "regressed")]), v2],
+        [(1, 1, 2, ["p1", "p3"], "proven",
+          [("r2", 0, "no_change"), ("r3", 2, "improved"), ("r1", 1, "no_change"), ("r4", 1, "regressed")]), v2],
+        [(1, 5, 0, ["pa0", "pa1", "pa2", "pa3", "pa4", "pb0", "pb2", "pb4"], "proven",
+          [("rb3", 1, "improved"), ("ra4", 1, "improved"), ("rb4", 1, "improved")])],
+    ]

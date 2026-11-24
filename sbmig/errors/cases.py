@@ -328,8 +328,7 @@ def _recount_from_runs(s: CaseScript) -> None:
 
     successes / failures / projects / status of a version recounted from its kept own-scope runs (retired stays
     retired). Approximate when the runs were capped at ``errors.script_runs``. Used for a version split across
-    cases (:meth:`CaseStore._recount_versions`) and, v2.1z-ca, for a version marked ``round_trip`` after a
-    ``kb import`` merge (taking the larger count would bring a taken-back success back)."""
+    cases (:meth:`CaseStore._recount_versions`)."""
     s.successes = sum(1 for r in s.runs if r.result in SUCCESS_RESULTS and own_run(s, r))
     s.failures = sum(1 for r in s.runs if r.result in FAILURE_RESULTS and own_run(s, r))
     s.projects = list(dict.fromkeys(r.project for r in s.runs if r.result in SUCCESS_RESULTS and r.project
@@ -979,7 +978,7 @@ class CaseStore:
         - improved / build_ok: 성공 수를 1 늘리고, 그 버전을 만든 프로젝트가 아니면 proven으로 바꾼다
         - no_change / regressed / reverted / apply_failed / blocked / round_trip: 실패 수를 1 늘린다
         - round_trip은 실행 범위와 관계없이 버전에 표시를 남기고, 같은 시도의 성공 기록이 있으면 그 성공을 되돌린다
-        - 표시된 버전이 같은 범위에서 다시 성공하면 표시를 지운다. 재사용(``reused``)의 성공은 지우지 않는다
+        - 표시된 버전이 실행 범위와 관계없이 다시 성공하면 표시를 지운다. 재사용(``reused``)의 성공은 지우지 않는다
         - partial / inconclusive는 ``last_result``만 바꾸고, pending은 무시한다
         - 실행 범위(``scope``)가 버전의 범위와 다르면 실행 기록에만 남기고 성공, 실패 수와 상태는 바꾸지 않는다
         - 케이스나 버전이 없으면 재서명으로 옮겨 간 케이스에서 같은 코드(``code``)의 버전을 찾아 기록한다
@@ -1007,9 +1006,11 @@ class CaseStore:
         back first: ``successes`` −1 (never below 0), the project leaves ``projects`` unless another kept own-scope
         success run names it, ``proven`` → ``unverified`` unless :func:`_resolved_elsewhere` still holds (retired
         stays). A try already recorded as an own-scope failure (``round_trip`` included) is not counted a second
-        time. No other result changes what an earlier credit of the same try counted. A success of the version's
-        own scope clears the mark unless ``reused`` (the loop ran the stored version without an LLM answer; another
-        pod may have planned that reuse before the mark was set): it still counts as a success. A ``round_trip``
+        time. No other result changes what an earlier credit of the same try counted. A success clears the mark
+        unless ``reused`` (the loop ran the stored version without an LLM answer; another pod may have planned that
+        reuse before the mark was set): it still counts as a success. The clearing holds whatever the scope of the
+        run (``add_script`` finds a version by its code across scopes, so a mark only an own-scope success could
+        clear would never clear for runs of the other scope); the counts stay own-scope only. A ``round_trip``
         run of the other scope: ``runs[]`` only for the counts and the status, but it sets the mark (the mark is
         about reuse, and a full run may reuse a ``jdk-jakarta`` version)."""
         if not result or result == "pending" or case_id in self._foreign:
@@ -1055,12 +1056,12 @@ class CaseStore:
             # 왕복 표시는 재사용에 관한 것이라 다른 범위의 실행에서도 남긴다
             if result == ROUND_TRIP:
                 s.round_trip = True
+            # 같은 코드의 LLM 답은 범위가 달라도 이 버전에 기록되므로 범위와 관계없이 지우고, 재사용의 성공은 표시 전에 계획됐을 수 있어 지우지 않는다
+            if result in SUCCESS_RESULTS and s.round_trip and not reused:
+                s.round_trip = False
+                log.info("cases/%s/fix_v%d.py: round-trip mark cleared (a success that was not a reuse%s)", case_id,
+                         s.version, "" if own else f", {run_scope} run")
             if own and result in SUCCESS_RESULTS:
-                # 재사용의 성공은 표시 전에 계획됐을 수 있어 표시를 지우지 않는다
-                if s.round_trip and not reused:
-                    s.round_trip = False
-                    log.info("cases/%s/fix_v%d.py: round-trip mark cleared (a success of its own scope)", case_id,
-                             s.version)
                 s.successes += 1
                 if project and project not in s.projects:
                     s.projects.append(project)
@@ -2753,9 +2754,13 @@ class CaseStore:
 
         Merge another KB (an unpacked export): errors.jsonl lines with new ids, case folders the local KB does
         not have (copied whole), scripts of known cases by their code (same code → counters max / projects union;
-        other code → the next local version), then :meth:`recount`. Idempotent. v2.1z-ca: a merged version that is
-        marked ``round_trip`` afterwards gets its counters, projects and status recounted from the merged runs of its
-        own scope instead of the larger counts (an export made before the round trip held the success)."""
+        other code → the next local version), then :meth:`recount`. Idempotent. v2.1z-ca: the larger counts are
+        corrected by the take-backs the merge can see. For every try (run_id, round, n; n non-zero) that one side
+        records as ``round_trip`` and the other as an own-scope success, the side that still counts the success loses
+        it (successes −1, not below 0) and gains the failure before the larger counts are taken; the project of that
+        run leaves ``projects`` unless another kept own-scope success run names it, and ``proven`` goes back to
+        ``unverified`` unless :func:`_resolved_elsewhere` still holds (retired stays). Without such a try the merge
+        is unchanged. (A recount from the runs was withdrawn: the history is capped at ``errors.script_runs``.)"""
         from sbmig.kb.jsonl import append_lines
 
         counters = {"errors_added": 0, "cases_added": 0, "scripts_added": 0, "scripts_merged": 0}
@@ -2814,14 +2819,15 @@ class CaseStore:
                     have = by_sha.get(_sha(code))
                     if have is not None:
                         local[s.version] = have.version
-                        have.successes, have.failures = max(have.successes, s.successes), max(have.failures, s.failures)
+                        kl, kt, gone = self._merge_runs(have, s, local)
+                        # 한쪽이 왕복으로 되돌린 성공은 큰 수를 고르기 전에 아직 세고 있는 쪽에서 실패로 바꾼다
+                        have.successes = max(0, max(have.successes - kl, s.successes - kt))
+                        have.failures = max(have.failures + kl, s.failures + kt)
                         have.projects += [p for p in s.projects if p not in have.projects]
                         if s.status == "proven" and have.status == "unverified":
                             have.status = "proven"
-                        self._merge_runs(have, s, local)
-                        if have.round_trip:
-                            # 왕복 전에 내보낸 KB의 큰 수를 가져오면 되돌린 성공이 다시 살아나므로 실행 기록으로 다시 센다
-                            _recount_from_runs(have)
+                        if kl or kt:
+                            self._took_back_on_merge(have, gone)
                         counters["scripts_merged"] += 1
                         continue
                     # add_script와 같은 규칙으로, 목록에 없는 fix_v*.py 번호도 피한다
@@ -2849,18 +2855,39 @@ class CaseStore:
             self._recount_locked(skip=self.skipped_cases())
         return counters
 
-    def _merge_runs(self, have: CaseScript, theirs: CaseScript, local: dict[int, int]) -> None:
+    def _merge_runs(self, have: CaseScript, theirs: CaseScript, local: dict[int, int]
+                    ) -> tuple[int, int, list[str]]:
         """두 KB에 같은 스크립트가 있을 때 실행 기록을 합친다. 계보와 이유는 이쪽에 없을 때만 가져온다.
+        한쪽은 round_trip, 다른 쪽은 성공으로 기록한 시도의 수를 쪽마다 세어 되돌린 성공의 프로젝트와 함께 반환한다.
 
         The same script in both KBs: the union of their runs (same record once), lineage / reasons when ours has
-        none. v2.1z-ca: when both hold the same try (run_id, round, n) and theirs is ``round_trip`` while ours is a
-        success, theirs replaces ours (``credit`` took that success back on their side)."""
+        none. v2.1z-ca: a try (run_id, round, n; n non-zero) that one side records as ``round_trip`` and the other as
+        a success of the version's own scope keeps the ``round_trip`` record, in both directions (``credit`` took
+        that success back on that side). Returns (tries whose success only ours still counts, tries whose success
+        only theirs still counts, the projects of those taken-back runs) for :meth:`merge_from`."""
         def ident(r: ScriptRun) -> tuple:
             return _run_key(r) or (r.run_id, r.round, r.n, r.result, _ts(r.at))
+
+        def pair(ok: ScriptRun, trip: ScriptRun) -> bool:
+            return _run_key(ok) is not None and ok.result in SUCCESS_RESULTS and own_run(have, ok) \
+                and trip.result == ROUND_TRIP
+
         mine = {ident(r): r for r in have.runs}
+        kl = kt = 0
+        gone: list[str] = []
         # 같은 시도는 round_trip 기록이 성공 기록을 대신한다. credit에서 되돌린 성공을 가져오지 않기 위해서다
-        trips = {ident(r): r for r in theirs.runs
-                 if r.result == ROUND_TRIP and ident(r) in mine and mine[ident(r)].result in SUCCESS_RESULTS}
+        trips: dict[tuple, ScriptRun] = {}
+        for r in theirs.runs:
+            ours = mine.get(ident(r))
+            if ours is None:
+                continue
+            if pair(ours, r):
+                trips[ident(r)] = r
+                kl += 1
+                gone.append(ours.project or r.project)
+            elif pair(r, ours):
+                kt += 1
+                gone.append(r.project or ours.project)
         runs = [trips.get(ident(r), r) for r in have.runs] + [r for r in theirs.runs if ident(r) not in mine]
         have.runs = self._cap_runs(sorted(runs, key=lambda r: (_ts(r.at), r.round, r.n)))
         if have.parent is None and theirs.parent and local.get(theirs.parent):
@@ -2871,6 +2898,20 @@ class CaseStore:
         have.non_idempotent = bool(have.non_idempotent or theirs.non_idempotent)
         # 왕복 표시도 어느 쪽이든 있으면 남긴다
         have.round_trip = bool(have.round_trip or theirs.round_trip)
+        return kl, kt, gone
+
+    @staticmethod
+    def _took_back_on_merge(have: CaseScript, gone: Iterable[str]) -> None:
+        """합치면서 되돌린 성공의 프로젝트를 빼고 proven을 다시 판단한다. retired는 그대로 둔다.
+
+        After a merge that took successes back: each taken-back run's project leaves ``projects`` unless another
+        kept own-scope success run names it; ``proven`` → ``unverified`` unless :func:`_resolved_elsewhere` holds."""
+        for p in dict.fromkeys(x for x in gone if x):
+            if p in have.projects and not any(r.result in SUCCESS_RESULTS and r.project == p and own_run(have, r)
+                                              for r in have.runs):
+                have.projects.remove(p)
+        if have.status == "proven" and not _resolved_elsewhere(have):
+            have.status = "unverified"
 
 
 # --------------------------------------------------------------------------- re-sign helpers
