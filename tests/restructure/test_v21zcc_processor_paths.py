@@ -435,3 +435,106 @@ def test_layout_mode_writes_the_path_of_the_split_module(tmp_path: Path, ccfg: C
     res2 = Restructurer().apply(ws, _legacy_profile(ws), ccfg, mode="layout",
                                 params={"asis_effective": _legacy_asis, "effective_pom": lambda: _after()})
     assert res2.ok and res2.changed_files == [] and proc_lines(res2) == []
+
+
+# ------------------------------------------------------------------------------- review round (P1, P2, P6, P7)
+IMPORT_BOM = ("    <dependencyManagement>\n        <dependencies>\n            <dependency>\n"
+              "                <groupId>com.acme.platform</groupId>\n                <artifactId>acme-bom</artifactId>\n"
+              "                <version>2.0.0</version>\n                <type>pom</type>\n"
+              "                <scope>import</scope>\n            </dependency>\n        </dependencies>\n"
+              "    </dependencyManagement>\n")
+
+
+def _chain_facts(monkeypatch) -> None:
+    """Parent chain facts that manage nothing of interest (the fallback source of the managed versions)."""
+    facts = parent_chain.ParentChainFacts(roots=[COMPJ], managed={"x:y": "1"}, properties={}, sources=["t"], poms=1)
+    monkeypatch.setattr(parent_chain, "load_parent_chain_facts", lambda cfg: facts)
+
+
+def test_p7_an_imported_bom_without_the_effective_pom_is_maybe_managed(tmp_path: Path, ccfg: Config,
+                                                                       monkeypatch) -> None:
+    """Without the effective pom the step cannot see what the BOM the module imports manages: no version from steps
+    2 to 4 (the old as-is version would override what Maven takes from the BOM), one note."""
+    _chain_facts(monkeypatch)
+    fs = files(core=child("shop-core", dep("org.projectlombok", "lombok", "1.18.36", scope="provided"),
+                          build=compiler(ga(LOMBOK)), head=IMPORT_BOM),
+               api=child("shop-api", build=compiler(ga(LOMBOK))))
+    ws, res, params = run(tmp_path, ccfg, fs, capture=asis({LOMBOK: "1.18.20"}), after=None)
+    assert paths_of(ws, CORE) == {LOMBOK: None}                 # not even the own dependency (step 2)
+    assert paths_of(ws, API) == {LOMBOK: "1.18.20"}             # no import there: step 3 as before
+    assert proc_lines(res) == [f"{LOMBOK}: 1.18.20 ← as-is managed by {BOOT2_PARENT} ({SEC}, {API})"]
+    assert (f"annotation processor path {LOMBOK} in {CORE} left without a version: it may be managed by the BOM "
+            f"com.acme.platform:acme-bom imported in {CORE} (no effective pom of the new parent chain to tell)") \
+        in res.notes
+    assert _events(ws)[0]["unknown"] == [f"{LOMBOK} ({CORE})"]
+    again(ws, ccfg, params)
+
+
+def test_p7_a_profiles_dependency_management_without_the_effective_pom(tmp_path: Path, ccfg: Config,
+                                                                       monkeypatch) -> None:
+    _chain_facts(monkeypatch)
+    prof = ("    <profiles>\n        <profile>\n            <id>pinned</id>\n"
+            "            <dependencyManagement>\n                <dependencies>\n"
+            + dep("org.projectlombok", "lombok", "1.18.42").replace("        <", "                    <")
+            + "                </dependencies>\n            </dependencyManagement>\n"
+            "        </profile>\n    </profiles>\n")
+    fs = files(core=child("shop-core", build=compiler(ga(LOMBOK)), tail=prof))
+    ws, res, _ = run(tmp_path, ccfg, fs, capture=asis({LOMBOK: "1.18.20"}), after=None)
+    assert paths_of(ws, CORE) == {LOMBOK: None}
+    assert proc_lines(res) == []
+    assert (f"annotation processor path {LOMBOK} in {CORE} left without a version: it may be managed by the "
+            f"<dependencyManagement> of profile pinned in {CORE} (no effective pom of the new parent chain to tell)") \
+        in res.notes
+
+
+def test_p7_with_the_effective_pom_an_import_changes_nothing(tmp_path: Path, ccfg: Config) -> None:
+    """The effective pom includes what the imported BOM manages: step 1 is exact, the import is no reason to stop."""
+    fs = files(core=child("shop-core", build=compiler(ga(LOMBOK)), head=IMPORT_BOM))
+    ws, res, _ = run(tmp_path, ccfg, fs, capture=asis({LOMBOK: "1.18.30"}))
+    assert paths_of(ws, CORE) == {LOMBOK: "1.18.30"}
+    assert not any("may be managed" in n for n in res.notes)
+
+
+def test_p6_a_repository_guess_is_named_and_not_declared(tmp_path: Path, ccfg: Config, monkeypatch) -> None:
+    """No as-is version, no Boot BOM: the dependency step takes the repository's newest release. The path of the same
+    pom follows the dependency but says where the version came from; another pom does not take it as declared."""
+    _chain_facts(monkeypatch)
+    monkeypatch.setattr(Restructurer, "_repository_release", lambda self, c, g, a: "9.9.9")
+    fs = files(core=child("shop-core", dep("org.mapstruct", "mapstruct-processor", scope="provided"),
+                          build=compiler(ga(MSP))),
+               api=child("shop-api", build=compiler(ga(MSP))))
+    ws, res, _ = run(tmp_path, ccfg, fs, capture=asis({LOMBOK: "1.18.30"}))
+    assert {d.key: d.version for d in PomEditor(ws.root / CORE).dependencies()}[MSP] == "9.9.9"
+    assert paths_of(ws, CORE) == {MSP: "9.9.9"}
+    assert paths_of(ws, API) == {MSP: None}
+    assert proc_lines(res) == [f"{MSP}: 9.9.9 ← the pom's own dependency (repository newest release) ({SEC}, {CORE})"]
+    assert (f"annotation processor path {MSP} in {API} left without a version: no project pom, as-is build or Boot "
+            "BOM names one; the build reports it") in res.notes
+
+
+def test_p1_a_classifier_path_is_not_managed_by_the_plain_ga(tmp_path: Path, ccfg: Config) -> None:
+    cls = "                            <classifier>x</classifier>\n"
+    fs = files(core=child("shop-core", dep("org.projectlombok", "lombok", "1.18.36", scope="provided",
+                                           extra="            <classifier>x</classifier>\n"),
+                          build=compiler(ga(LOMBOK, extra=cls))))
+    after = {"managed": {LOMBOK: "1.18.42"}, "by_module": {"com.acme:shop-core": {"managed": {LOMBOK: "1.18.42"}}}}
+    ws, res, _ = run(tmp_path, ccfg, fs, capture=asis({LOMBOK: "1.18.30"}), after=after)
+    assert paths_of(ws, CORE) == {LOMBOK: "1.18.36"}
+    assert proc_lines(res) == [f"{LOMBOK}: 1.18.36 ← the pom's own dependency ({SEC}, {CORE})"]
+
+
+def test_p2_without_an_as_is_capture_no_boot_bom_version(tmp_path: Path, ccfg: Config, monkeypatch) -> None:
+    """The dependency step writes nothing without an as-is capture; neither does step 3."""
+    _boot_facts(monkeypatch, {LOMBOK: "1.18.42"})
+    fs = files(core=child("shop-core", dep("org.projectlombok", "lombok", scope="provided"),
+                          build=compiler(ga(LOMBOK))))
+    ws = make_ws(tmp_path, fs, "p2")
+    params = {"asis_effective": lambda: None,
+              "effective_pom": lambda: {"managed": {"org.springframework:spring-core": "7.0.1"}, "by_module": {}}}
+    res = Restructurer().apply(ws, _inventory(ws, _profile(ws)), ccfg, mode="boot_pom", params=params)
+    assert res.ok, res.error
+    assert {d.key: d.version for d in PomEditor(ws.root / CORE).dependencies()}[LOMBOK] is None
+    assert paths_of(ws, CORE) == {LOMBOK: None}
+    assert proc_lines(res) == []
+    assert (f"annotation processor path {LOMBOK} in {CORE} left without a version: no project pom, as-is build or "
+            "Boot BOM names one; the build reports it") in res.notes

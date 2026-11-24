@@ -7907,15 +7907,30 @@ coordinates, the first of these that applies:
 1. **managed: left as it is.** The g:a has a managed version in this pom's own chain inside the project (a
    `<dependencyManagement>` entry with a version in the pom or a project ancestor) or in the company parent chain
    this pom inherits (its managed versions, imported BOMs included): maven-compiler-plugin takes the version from
-   the dependency management.
+   the dependency management. The managed versions are keyed by g:a, so this holds for a plain jar path only; a
+   path with a classifier or another type is "managed" only through an entry of the project's own chain with the
+   same classifier and type.
+   **Maybe managed: left as it is, with a note.** When the effective pom of the new chain is not available (only
+   the parent chain facts are), the step cannot see what a BOM imported inside the project (a `<scope>import`
+   entry in the pom or a project ancestor) or a `<dependencyManagement>` inside a profile manages. A pom with
+   either gets no version from steps 2 to 4: writing one could override the version Maven would have taken from
+   that management (measured: a Lombok path left empty builds through an imported BOM; the same path with the
+   as-is 1.18.12 written fails on JDK 21). The profiles of project ancestors count like their imports. One import
+   is not such a reason: the `spring-boot-dependencies` import of a pom whose Boot BOM versions the parent chain
+   facts already hold (the import the restructure itself writes when no parent manages Boot).
+   `_drop_managed_versions` records whether its managed map is the effective pom's (`c.drop_managed_exact`).
 2. **the pom's own dependency.** This pom's `<dependencies>` entry of the same g:a (same classifier and type) has a
    version now: the path gets the same text (a literal or a `${property}`), so the processor and the library stay
-   on one version.
+   on one version. When that version is one the dependency step took from the repository's newest release in this
+   run, the line says so (`the pom's own dependency (repository newest release)`): the dependency's follow-up
+   asks the owners to confirm it.
 3. **what the dependency step would write here.** The target Boot BOM's version when the chain does not manage the
    g:a, unless the as-is build resolved a newer one; else the version the as-is build resolved for this module
-   (`_asis_version`).
+   (`_asis_version`). Without an as-is capture the dependency step writes nothing, and neither does this step.
 4. **the project's other poms.** Other project poms declare exactly one literal version for that g:a (a dependency,
-   a managed dependency, a processor path): that version.
+   a managed dependency, a processor path): that version. A version the dependency step took from the
+   repository's newest release in this run does not count as declared (one written by an earlier run of the tool
+   is an ordinary declared version by then).
 5. **unknown: left as it is**, with one note naming the path and the pom. The build reports it and the fix loop
    takes it from there.
 Never the repository's newest release: an empty path version does not break the effective-pom capture, so nothing
@@ -7924,8 +7939,11 @@ captures key g:a only). Not touched: a path that has a version; the keys the dep
 role parents, mandatory / optional / removed in-house artifacts, the project's own modules).
 
 **Recorded.** Each version written is a line of `RestructureResult.versions_pinned`
-(`<g:a>: <version> ← <source> (annotationProcessorPaths, <pom>)`), so the report and the review material list it
-with the dependency pins; one restructure note with the count.
+(`<g:a>: <version> ← <source> (annotationProcessorPaths, <pom>)`), a row of the error list (`annotation processor
+path version written: <g:a> <version> (<source>)`, on that pom), one restructure note with the count, and one
+journal event `versions_pinned` with `"section": "annotationProcessorPaths"`. The structure review's material
+lists the lines with the dependency pins. The requester's Korean report shows the change in the pom's diff; its
+check list of carried-over versions is built from the poms' `<dependencies>` and does not name processor paths.
 
 **Not changed.** Runs without a restructure (a framework run keeps its parent, so its management still covers the
 path). Paths with a version, also when it differs from the dependency's (the structure review reports that). The
@@ -7933,7 +7951,24 @@ fix loop's handling of the message when it still appears.
 
 **What a reader can rely on.** After the restructure no project pom has a version-less annotation processor path
 for which the pom's own dependency, the dependency step's sources or the project's other poms name one version
-while the pom's dependency management names none.
+while the pom's dependency management is known and names none. And the step never writes a version into a path
+that Maven would have resolved from the dependency management.
+
+**Limits.**
+- maven-compiler-plugin resolves a version-less path from the dependency management from 3.12.0 on (measured:
+  3.8.1 and 3.11.0 fail on any path without a version, 3.13 / 3.14 resolve it from the pom's own management, an
+  imported BOM and an active-by-default profile). Under an older plugin a "managed" path that this step leaves
+  empty still fails; the fix loop takes it from there.
+- Inserting the version into a `<path>` written on one line reformats that element.
+- A pom path that contains parentheses is not recognised by the error-list row parser (as for the dependency
+  pins): the row lands on the root pom.
+
+**Review.** One independent round on a copy of the commit (`out/scratch/processor-path-review/`, sbmig probes and
+real Maven): the refactoring of the dependency step's version choice is behaviour-preserving (72-case
+differential), MS949 / CRLF poms are edited byte-true, a `${property}` copied by step 2 survives the version
+cleanup, the four call sites are right. Found and fixed: an imported BOM not seen without the effective pom (the
+"maybe managed" rule), a repository-guessed version reaching paths through steps 2 and 4, a classifier path
+left empty because the plain g:a was managed, a Boot BOM version written without an as-is capture.
 
 ## v2.1z-cd — a case that shows up at a new place starts with the script that resolved it elsewhere in this run
 

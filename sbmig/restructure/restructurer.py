@@ -311,6 +311,8 @@ class _Ctx:
     managed_source: str = ""
     # _drop_managed_versions가 pom마다 본 새 부모 체인의 관리 버전이고, 정보를 얻지 못했으면 None이다
     drop_managed_of: dict[str, dict[str, str]] | None = None
+    # 그 관리 버전이 새 체인의 effective pom에서 온 것이면 참이다(부모 체인 정보로 대신 정했으면 거짓)
+    drop_managed_exact: bool = False
     # v2.1t: artifacts.parent_manages_spring_boot resolved once per restructure (auto → from the chain facts)
     manages_boot: bool | None = None
     # v2.1o: the as-is intake capture (`params["asis_effective"]()`), read once per restructure; None = unusable
@@ -5021,7 +5023,8 @@ class Restructurer(LegacyContextMixin):
         the skip note and the undo)."""
         mode = c.cfg.layout.drop_managed_versions
         pins = c.asis_pins
-        c.drop_managed_of = None
+        c.drop_managed_of, c.drop_managed_exact = None, False
+        exact = False
         # off여도 이번 패스가 넣은 버전은 새 체인이 관리하는지 확인해야 하므로, 넣은 것이 없을 때만 캡처를 건너뛴다
         # 버전 모름만 남았다면 그 빈 버전 때문에 Maven 캡처는 어차피 실패한다
         if mode == "off" and not pins:
@@ -5052,6 +5055,7 @@ class Restructurer(LegacyContextMixin):
             c.note(f"managed-version source: {why}; the effective pom of the new parent chain is unavailable")
         else:
             c.managed_source = "effective pom"
+            exact = True
             c.note("managed-version source: effective pom of the new parent chain")
         protected = self._protected_keys(c)
         merged_managed: dict[str, str] = data.get("managed") or {}
@@ -5166,7 +5170,7 @@ class Restructurer(LegacyContextMixin):
         if kept_pin_newer:
             c.note("carried-over version newer than the parent-managed one kept: "
                    f"{', '.join(kept_pin_newer[:5])}{' …' if len(kept_pin_newer) > 5 else ''}")
-        c.drop_managed_of = managed_of
+        c.drop_managed_of, c.drop_managed_exact = managed_of, exact
         self._settle_asis_versions(c, managed_of, unpinned)
 
     # ================================================================== annotation processor paths
@@ -5184,10 +5188,19 @@ class Restructurer(LegacyContextMixin):
         `_drop_managed_versions` saw: the effective pom's module, else the per-parent facts) → left; (2) this pom's
         dependency of the same g:a / classifier / type with a version → the same text; (3) what the dependency step
         writes (`_dependency_step_version`); (4) the other project poms' one literal version; (5) left + one note.
-        Steps 3 and 4 need a plain jar path, and need the new chain's managed versions: without the effective pom
-        and without parent chain facts it is unknown whether the chain manages the g:a, so only step 2 writes.
-        Never the repository's newest release. Lines in `versions_pinned`, one summary note, journal
-        `versions_pinned` with `section: annotationProcessorPaths`. Never fails the restructure."""
+        The new chain's managed versions are keyed by g:a, so they make a plain jar path "managed" only; a path with a
+        classifier or another type is managed only through an own-chain entry of the same classifier and type.
+        Maybe managed: when those versions are not the effective pom's (`c.drop_managed_exact` false: parent chain
+        facts, or nothing), a pom whose chain imports a BOM or carries a `<dependencyManagement>` in a profile gets
+        nothing from steps 2 to 4 (that management is invisible here, and a written version would override it), one
+        note per path; the Boot BOM import the facts already account for is not such a reason. Steps 3 and 4 need a
+        plain jar path, and need the new chain's managed versions: without the effective pom and without parent
+        chain facts it is unknown whether the chain manages the g:a, so only step 2 writes. Step 3 needs the as-is
+        capture (the dependency step writes nothing without it). A version the dependency step took from the
+        repository's newest release in this run (`c.asis_pins` kind `repository`) is named as such by step 2 and does
+        not count as declared for step 4. Never the repository's newest release. Lines in `versions_pinned`, one
+        summary note, journal `versions_pinned` with `section: annotationProcessorPaths`. Never fails the
+        restructure."""
         eds: dict[str, PomEditor] = {}
         for p in self._project_poms(c):
             try:
@@ -5209,6 +5222,7 @@ class Restructurer(LegacyContextMixin):
         if not todo:
             return
         managed_of = c.drop_managed_of
+        exact = managed_of is not None and c.drop_managed_exact
         if managed_of is None:
             # 관리 버전 정리가 캡처를 하지 않았거나 얻지 못했으면 사내 부모 체인 정보로 대신 판단한다
             fb = self._fallback_capture(c)
@@ -5216,11 +5230,57 @@ class Restructurer(LegacyContextMixin):
                 fb_data, per_pom, _why = fb
                 merged: dict[str, str] = dict(fb_data.get("managed") or {})
                 managed_of = {p: (per_pom[p] if per_pom is not None and p in per_pom else merged) for p in eds}
+        def repo_guess(q: str, key: str, version: str | None) -> bool:
+            # 의존성 단계가 이번 실행에서 저장소 최신 릴리스로 넣은 버전인지 확인한다
+            pin = c.asis_pins.get((q, key))
+            return pin is not None and pin[2] == "repository" and pin[0] == version
+
+        # 대신 정한 관리 버전에 들어 있는 Boot BOM import는 무엇을 관리하는지 알고 있으므로 이유로 보지 않는다
+        known_boot: set[str] = set()
+        if not exact and not self._manages_boot(c):
+            bf = self._boot_bom_facts(c)
+            if bf is not None and not getattr(bf, "empty", True):
+                known_boot = self._bom_importers(c)
+        maybe_of: dict[str, str | None] = {}
+
+        def maybe_managed(p: str) -> str | None:
+            # effective pom 없이는 보이지 않는 관리(프로젝트 안 BOM import, 프로필의 dependencyManagement)를 찾는다
+            if p in maybe_of:
+                return maybe_of[p]
+            why: str | None = None
+            for q in self._chain(c, p):
+                q_ed = eds.get(q)
+                if q_ed is None:
+                    try:
+                        q_ed = PomEditor(c.ws.abs(q))
+                    except PomEditError:
+                        continue
+                for d in q_ed.managed_dependencies():
+                    if (d.scope or "") != "import":
+                        continue
+                    if d.key == f"{BOOT_GROUP}:spring-boot-dependencies" and p in known_boot:
+                        continue
+                    why = f"the BOM {d.key} imported in {q}"
+                    break
+                if why is None:
+                    for pr in q_ed.children(q_ed.find("profiles"), "profile"):
+                        if q_ed.children(q_ed.find_in(pr, "dependencyManagement/dependencies"), "dependency"):
+                            why = (f"the <dependencyManagement> of profile {q_ed.text_of(pr, 'id') or '?'} "
+                                   f"in {q}")
+                            break
+                if why is not None:
+                    break
+            maybe_of[p] = why
+            return why
+
         # 4단계 후보는 이번 단계가 쓰기 전의 선언으로 정해 pom 순서에 따라 답이 바뀌지 않게 한다
+        # 의존성 단계가 저장소에서 고른 버전은 선언된 버전이 아니므로 뺀다
         declared: dict[str, dict[str, set[str]]] = {}
         for q, q_ed in eds.items():
             refs = [q_ed.gav_of(e) for e in [*q_ed.dependency_elements(False), *q_ed.dependency_elements(True)]]
             for d in refs:
+                if repo_guess(q, d.key, d.version):
+                    continue
                 if d.version and (d.type or "jar") == "jar" and not d.classifier and (d.scope or "") != "import":
                     declared.setdefault(d.key, {}).setdefault(q, set()).add(d.version)
             for el, _prof in q_ed.annotation_processor_paths():
@@ -5259,7 +5319,14 @@ class Restructurer(LegacyContextMixin):
                           for d in (ed.gav_of(e) for e in ed.children(ed.find_in(prof, "dependencyManagement/dependencies"),
                                                                         "dependency")) if d.version}
             # 1단계: Maven이 dependencyManagement에서 버전을 찾으므로 그대로 둔다
-            if (key, cls, typ) in local or (managed_of is not None and (managed_of.get(p) or {}).get(key)):
+            # 새 체인의 관리 버전은 g:a 기준이라 classifier나 다른 type이 없는 path에만 쓴다
+            if (key, cls, typ) in local or (plain and managed_of is not None and (managed_of.get(p) or {}).get(key)):
+                continue
+            maybe = None if exact else maybe_managed(p)
+            if maybe is not None:
+                unknown.append(f"{label} ({p})")
+                c.note(f"annotation processor path {label} in {p} left without a version: it may be managed by "
+                       f"{maybe} (no effective pom of the new parent chain to tell)")
                 continue
             # 2단계: 같은 pom의 같은 의존성 버전을 그대로 써서 processor와 라이브러리 버전을 맞춘다
             dep_els = ed.children(ed.child(prof, "dependencies"), "dependency") if prof is not None else []
@@ -5267,7 +5334,9 @@ class Restructurer(LegacyContextMixin):
             own_v = next((d.version for d in (ed.gav_of(e) for e in dep_els)
                           if d.key == key and d.version and (d.classifier or "") == cls and (d.type or "jar") == typ),
                          None)
-            found: tuple[str, str] | None = (own_v, "the pom's own dependency") if own_v else None
+            own_src = ("the pom's own dependency (repository newest release)" if repo_guess(p, key, own_v)
+                       else "the pom's own dependency")
+            found: tuple[str, str] | None = (own_v, own_src) if own_v else None
             why = ""
             if found is None and not plain:
                 why = "the pom declares no dependency of the same classifier / type with a version"
@@ -5277,7 +5346,9 @@ class Restructurer(LegacyContextMixin):
             elif found is None:
                 mkey, mod = self._capture_module(by_module, ed) if data is not None else (None, None)
                 chain_own = set(self._parent_managed(c, ed, p, own=True))
-                step = self._dependency_step_version(data, mkey, mod, key, chain_own, boot_managed, boot_source)
+                # as-is 캡처가 없으면 의존성 단계는 아무것도 넣지 않으므로 3단계도 건너뛴다
+                step = (self._dependency_step_version(data, mkey, mod, key, chain_own, boot_managed, boot_source)
+                        if data is not None else None)
                 if step is not None:
                     found = (step[0], step[1])
                 else:
