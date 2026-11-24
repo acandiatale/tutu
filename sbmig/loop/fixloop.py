@@ -1303,8 +1303,8 @@ class BuildFixLoop:
                          "first_build": first_build.log_path if first_build is not None else None})
         prev_build: Optional[BuildResult] = None
         prev_restored: list[BuildError] = []     # errors the previous round's rollbacks brought back (its baseline)
-        prev_multiset: Optional[dict[str, int]] = None
-        window: list[dict[str, int]] = []        # error multisets of the previous builds (oscillation detection)
+        prev_multiset: Optional[Counter] = None
+        window: list[Counter] = []               # (place, signature) counts of the previous builds (oscillation)
         oscillations = 0
         stall_level = 0
         pending: list[_Pending] = []
@@ -1384,7 +1384,8 @@ class BuildFixLoop:
                     break
                 # 정체는 오류 집합이 직전 빌드와 같은 경우, 진동은 그보다 이전 빌드와 같은 경우다
                 # 정체가 쌓이면 상위 모델로 바꾸고, 진동이 2번 일어나면 관련 케이스를 OSCILLATION으로 차단한다
-                multiset = build.signature_multiset()
+                # 다른 파일이나 다른 모듈의 같은 오류는 다른 오류이므로 (위치, 서명)별 횟수로 비교한다
+                multiset = Counter(_pair(e) for e in build.errors)
                 stalled = prev_multiset is not None and multiset == prev_multiset
                 oscillating = (not stalled) and any(m == multiset for m in window[:-1])
                 stall_level = stall_level + 1 if (stalled or oscillating) else 0
@@ -7103,13 +7104,25 @@ def _synthetic(e: BuildError) -> bool:
     return e.kind == ErrorKind.UNKNOWN and not e.file and (e.message or "").startswith(_SYNTHETIC_PREFIXES)
 
 
-def _pair(e: BuildError) -> tuple[str, str]:
-    """시도 결과 평가에 쓰는 (파일, 서명) 쌍을 반환한다.
-    L1 서명에는 파일이 없어 두 파일의 같은 오류가 같은 서명이 되므로, 파일과 짝지어 횟수로 비교한다.
+def _place(e: BuildError) -> str:
+    """오류의 위치를 반환한다. 파일이 있으면 정규화한 파일, 없고 모듈이 있으면 ``@<module>``, 둘 다 없으면 ''이다.
 
-    (file, signature) of an error — file '' for module / artifact errors. L1 signatures carry no file: the same
-    renamed method in two files is one signature, so scoring compares these pairs (with their occurrence counts)."""
-    return (_norm_path(e.file) if e.file else ""), (e.signature or f"{e.kind.value}|{e.message}")
+    The place of an error: its normalised file; else `@<module>` when `BuildError.module` is set; else ''. Maven
+    stops at the first failing module, so a module-level error (no file) shows in one module per build: the module
+    tells the occurrence of module 2 from the one of module 1 (INTERFACES "v2.1z-cb")."""
+    if e.file:
+        return _norm_path(e.file)
+    return f"@{e.module}" if e.module else ""
+
+
+def _pair(e: BuildError) -> tuple[str, str]:
+    """시도 결과 평가와 정체, 진동 판단에 쓰는 (위치, 서명) 쌍을 반환한다.
+    L1 서명에는 파일과 모듈이 없어 다른 곳의 같은 오류가 같은 서명이 되므로, 위치와 짝지어 횟수로 비교한다.
+
+    (place, signature) of an error (`_place`: the file, else `@<module>`, else ''). L1 signatures carry no file and
+    mask the module: the same renamed method in two files, or the same plugin error in two modules, is one
+    signature, so scoring and the stall / oscillation checks compare these pairs (with their occurrence counts)."""
+    return _place(e), (e.signature or f"{e.kind.value}|{e.message}")
 
 
 def _touched(a: FixAttempt) -> set[str]:
@@ -7169,9 +7182,9 @@ def _visible_in(errors: list[BuildError], build: BuildResult, real: list[BuildEr
 
 
 def _new_errors(errors: list[BuildError], prev: Counter) -> list[BuildError]:
-    """직전 빌드보다 늘어난 (파일, 서명) 오류를 새 오류로 반환한다.
+    """직전 빌드보다 늘어난 (위치, 서명) 오류를 새 오류로 반환한다.
 
-    The occurrences of (file, signature) beyond what the previous build had."""
+    The occurrences of (place, signature) (`_pair`) beyond what the previous build had."""
     seen: Counter = Counter()
     out: list[BuildError] = []
     for e in errors:
@@ -7203,7 +7216,8 @@ def _target_key(target: Optional[str]) -> str:
 def _gone(errors: list[BuildError], build: BuildResult) -> list[BuildError]:
     """``errors`` 중 이 빌드에 더 이상 없는 오류를 반환한다. 시도가 없앤 오류이며, 되돌리면 다시 나타난다.
 
-    The occurrences of `errors` (by (file, signature)) that `build` no longer has — what an attempt removed."""
+    The occurrences of `errors` (by (place, signature), `_pair`) that `build` no longer has — what an attempt
+    removed."""
     cur = Counter(_pair(e) for e in build.errors)
     seen: Counter = Counter()
     out: list[BuildError] = []

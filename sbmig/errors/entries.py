@@ -30,7 +30,9 @@ Matching a reported error to an entry: same (case, file, line, message) first; t
 the nearest line (an edit above the error moved it — the entry keeps its id and takes the new line); then, for
 entries seen at ``compile`` (before the restructure moved the sources), the same (case, message) in a file whose
 path ends with the entry's path or shares its ``src/…`` tail (``src/main/java/A.java`` → ``demo-back/src/main/java/
-A.java``) — the entry takes the new file / module. An entry reported again after it was resolved is reopened (note
+A.java``) — the entry takes the new file / module. An error without a file pairs, in the first two steps, only with
+an entry of its own module (an entry or error without a module matches as before): the same module-level message in
+the next module is a new entry carrying that module. An entry reported again after it was resolved is reopened (note
 ``reappeared in …``). Synthetic stand-ins (``mvn exited with code …``, ``build timed out``) never become entries.
 
 An open entry missing from a failed build is only resolved when that build could have shown it (round 10 "not
@@ -348,6 +350,18 @@ class _Build:
         return st is not None and self.reached >= st
 
 
+
+def _same_module(c: "ErrorEntry", x: BuildError) -> bool:
+    """파일 없는 오류가 이 항목과 같은 모듈의 오류인지 판단한다. 어느 한쪽에 모듈이 없으면 예전처럼 같다고 본다.
+
+    A file-less error matches only an entry of the same module (INTERFACES "v2.1z-cb": Maven stops at the first
+    failing module, so the same module-level message shows for module 2 after module 1 was fixed: another error, a
+    new entry). An error with a file is placed by its file (always True here); an entry or error without a module
+    matches as before, so older data keeps working."""
+    if x.file or posix(c.file):
+        return True
+    return not c.module or not x.module or c.module == x.module
+
 class ErrorList:
     """실행 하나의 오류 목록을 관리하는 클래스.
     실행에서는 ``ErrorList.for_workspace(ws, cfg, project)``로 만든다.
@@ -442,7 +456,8 @@ class ErrorList:
         항목, 재구성으로 옮겨진 파일의 항목 순서로 찾는다.
         (짝지은 쌍, 짝이 없는 오류)를 반환하고, 짝이 없는 오류만 새 항목이 된다.
 
-        (matched (entry, error) pairs, unmatched errors) — exact, nearest line, moved file (see the module doc)."""
+        (matched (entry, error) pairs, unmatched errors) — exact, nearest line, moved file (see the module doc). A
+        file-less error pairs only with an entry of its module in the first two steps (`_same_module`)."""
         cands = [e for e in self.entries if e.id in self._from_build]
         keyed = [(case_id_of(x), posix(x.file), x.line or 0, self._message(x), x) for x in errors]
         used: set[str] = set()
@@ -452,7 +467,7 @@ class ErrorList:
         for c in cands:
             exact.setdefault((c.case_id, posix(c.file), c.line or 0, c.message), []).append(c)
         for k in keyed:
-            hit = next((c for c in exact.get(k[:4], []) if c.id not in used), None)
+            hit = next((c for c in exact.get(k[:4], []) if c.id not in used and _same_module(c, k[4])), None)
             if hit is not None:
                 used.add(hit.id)
                 pairs.append((hit, k[4]))
@@ -461,7 +476,7 @@ class ErrorList:
         rest2 = []
         for cid, f, line, msg, x in rest:                 # same file, the line moved
             opts = [c for c in cands if c.id not in used and c.case_id == cid and posix(c.file) == f
-                    and c.message == msg]
+                    and c.message == msg and _same_module(c, x)]
             if opts:
                 hit = min(opts, key=lambda c: abs((c.line or 0) - line))
                 used.add(hit.id)
@@ -506,9 +521,12 @@ class ErrorList:
                                                                             if entry.resolved else ""))
                 entry.status, entry.resolved, entry.script = "open", "", ""
         new: list[ErrorEntry] = []
-        taken = {(x.case_id, posix(x.file), x.line or 0, x.message) for x, _ in pairs}
+        # 파일 없는 오류는 모듈마다 다른 오류이므로 같은 빌드 안의 중복을 셀 때 모듈도 키에 넣는다
+        taken = {(x.case_id, posix(x.file), x.line or 0, x.message, "" if x.file else (err.module or ""))
+                 for x, err in pairs}
         for err in unmatched:
-            k = (case_id_of(err), posix(err.file), err.line or 0, self._message(err))
+            k = (case_id_of(err), posix(err.file), err.line or 0, self._message(err),
+                 "" if err.file else (err.module or ""))
             if k in taken:
                 continue                                  # the same error twice in one build: one entry
             taken.add(k)
