@@ -35,7 +35,16 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable, Optional
 
 from sbmig.core.config import Config
-from sbmig.core.models import BlockReason, DecisionKind, ErrorCluster, FixAttempt, KBMatch, ProjectProfile, TriageDecision
+from sbmig.core.models import (
+    BlockReason,
+    BuildError,
+    DecisionKind,
+    ErrorCluster,
+    FixAttempt,
+    KBMatch,
+    ProjectProfile,
+    TriageDecision,
+)
 
 from .blocked import BlockedCandidate, classify_blocked, classify_transfer, note_text
 from .cluster import FILE_KINDS, RESOLUTION_KINDS, cluster_label
@@ -88,6 +97,34 @@ def same_cluster(cluster: ErrorCluster, attempt: FixAttempt,
     if not files & a_files:
         return False
     return bool(set(cluster.signatures) & set(attempt.cluster_signatures))
+
+
+def error_place(e: BuildError, canon: Optional[Callable[[Optional[str]], str]] = None) -> str:
+    """오류의 위치를 반환한다. 파일이 있으면 ``canon``으로 옮긴 현재 경로, 없고 모듈이 있으면 ``@<module>``, 둘 다 없으면 ''이다.
+
+    The place of an error for the ladder: the file (through `canon`, the registry's mapping of moved files), else
+    `@<module>`, else '' (the fix loop's `_place`, INTERFACES "v2.1z-cb")."""
+    if e.file:
+        return (canon or _posix)(e.file)
+    return f"@{e.module}" if e.module else ""
+
+
+def error_places(errors: Iterable[BuildError], canon: Optional[Callable[[Optional[str]], str]] = None) -> set[str]:
+    """오류들의 위치 집합을 반환한다. 위치가 없는 오류('')는 넣지 않는다."""
+    return {p for p in (error_place(e, canon) for e in errors) if p}
+
+
+def made_here(cluster: ErrorCluster, attempt: FixAttempt,
+              canon: Optional[Callable[[Optional[str]], str]] = None) -> bool:
+    """케이스의 이전 시도가 지금 오류가 있는 위치에서 한 시도인지 확인한다.
+    시도가 겨냥한 오류의 위치 중 하나가 지금 오류의 위치면 여기서 한 시도다. 위치를 알 수 없는 쪽이 있으면 여기서 한 시도로 본다.
+
+    Was `attempt` made HERE (INTERFACES "v2.1z-cd")? One of the places of the errors it targeted
+    (`cluster_errors`) is a place of the case's errors now. An attempt without targeted errors, or whose errors
+    have no place, counts as made here, and so does every attempt when the case's errors have no place."""
+    mine = error_places(cluster.errors, canon)
+    theirs = error_places(attempt.cluster_errors, canon)
+    return not mine or not theirs or bool(mine & theirs)
 
 
 def same_cluster_attempts(cluster: ErrorCluster, attempts: Iterable[FixAttempt],
@@ -284,7 +321,9 @@ class DecisionEngine:
         #   시도한다. 프로젝트를 많이 처리할수록 LLM 호출을 줄여 주는 핵심 경로다
         # 1. the script ladder: a proven stored version first — no LLM call, so neither the blocked policy nor the
         #    LLM budget / availability stops it
-        step = plan_script_step(cluster, prev, self.cases, self.cfg)
+        # 다른 위치에서 이 케이스를 해결한 이번 실행의 버전은 루프가 넘긴다. 플러그인 컨텍스트에는 없을 수 있다
+        elsewhere = list(getattr(ctx, "resolved_elsewhere", None) or [])
+        step = plan_script_step(cluster, prev, self.cases, self.cfg, elsewhere=elsewhere)
         self.script_steps[cluster.id] = step          # also for a BLOCKED decision: its KB search line (the log)
         if not step.case_id:
             return TriageDecision(cluster_id=cluster.id, kind=DecisionKind.ESCALATE,

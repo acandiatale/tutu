@@ -7874,6 +7874,16 @@ three poms one after the other, the journal has no `stall` and no `oscillation` 
 module, and the build passes. Before the change the unit test of the same sequence gave two oscillation events,
 and the direct case (module 1 fixed, the next build shows module 2) scored the fix `no_change` and rolled it back.
 
+**Review.** One independent round on a copy of the commit (`out/scratch/module-place-review/`): the stall and
+oscillation checks lost nothing that costs LLM calls (50 rounds per sequence, old against new: an error that
+alternates between two places is now blocked as OSCILLATION after 3 calls where it used to run to the cap of 20;
+an error that never repeats a place ends at the same cap in both). One defect, older for errors with a file and
+now reachable for module-level ones: after a case's previous try was rolled back, `_rollback_previous` added to
+the next try's baseline every targeted error absent from the build, also those the build could not show (it had
+stopped at an earlier module). Identical builds then read "1 of 2 gone": `partial`, and a `partial` try is kept
+at the end of the loop, so a change that broke an earlier module stayed in the tree. Fixed: only errors the build
+could have shown (`_visible_in`) count as restored.
+
 **Open (closed by "v2.1z-cd").** The ladder still read the occurrence in the next module as the same case going
 on: with answers whose code is the same for every module, the real-Maven run ended blocked `repeated_failure`,
 every augment refused as "identical to the version it should extend, which did not fix the case".
@@ -7968,3 +7978,32 @@ changes nothing, and the ladder goes on in the same round.
 **What a reader can rely on.** A fix script that resolved a case in one module or file is run again, without an LLM
 call, when the same case shows at another place in the same run; tries that were made for other places do not use up
 the tries of the place at hand.
+
+**As coded.** `sbmig.triage.decide`: `error_place`, `error_places`, `made_here(cluster, attempt, canon)` (an
+attempt without placed errors, or a case whose errors have no place, counts as made here).
+`BuildFixLoop._previous(ladder=True)` keeps the attempts made here; `_resolved_elsewhere(cluster)` lists the
+candidates of rule 2 and travels as `TriageContext.resolved_elsewhere` (optional, empty by default: a plugin
+triager is unaffected) and as `plan_script_step(..., elsewhere=)`; `sbmig.triage.scripts.resolved_elsewhere`
+reads the version and its code from the store and gives up (no older candidate is tried) when the store says
+`retired`, `non_idempotent`, `round_trip` or the code is gone. Scoped to here: the ladder (`_decide`,
+`_script_step`), the identical-code check with its journal field `duplicate_of`, the decline count
+(`_decline_count(case, c)`), and the LLM-failure count of `loop.blocked_policy` (it reads `previous_attempts`).
+Whole case as before: `_rollback_previous`, the evidence count of a block, `_block_oscillation`, the script
+history, `_sibling_hints`, the prompt history. The log line: `KB 탐색: 이번 실행의 v<N> (<attempt>, <place>에서
+해결) → <place>에 다시 실행`.
+
+**Checked.** Real Maven 3.9.10 / JDK 21, the three-module project of "v2.1z-cb" with a scripted LLM
+(`out/scratch/ladder-per-place/`). Answers with the same code for every module: module 1 by the LLM, modules 2
+and 3 by reruns (`kb-script`), also for the file-level case of each module; the run ends `build=ok` with 3 LLM
+calls (the structure review and one per case), where it had ended blocked `repeated_failure` after 37. Answers
+that differ per module: the same sequence, 3 calls instead of 6.
+
+**Limits.**
+- With `script.reuse: false` there is no rerun: the first step at a new place is an augment whose base is the
+  stored version, and an answer with the same code is refused as before this section.
+- A rerun that changes nothing at the new place is credited to the version as `apply_failed` (a reuse), as any
+  stored script that changes nothing on a project.
+- The caps hold per set of places, so a case that keeps showing at new places can use more LLM calls in total
+  than `script.max_llm_tries_per_case`; the run's rounds (`loop.phases.verify.max_iterations`) and time bound it.
+- An answer applied as edits leaves a stored script that never ran: it is not a rerun candidate; the new place
+  then starts with the KB's own choice.

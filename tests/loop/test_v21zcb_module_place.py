@@ -106,7 +106,11 @@ def test_the_real_runs_sequence_is_progress_not_oscillation(cfg, ws):
     assert pr.build_ok and pr.iterations == 6
     assert fixer.asked == [("m1", None), ("m1", src("m1")), ("m2", None), ("m2", src("m2")), ("m3", None)]
     outcomes = [a.outcome for a in pr.attempts]
-    assert outcomes == ["improved"] * 4 + ["build_ok"]
+    # v2.1z-cd: at m2 / m3 the version that resolved the case in the module before runs first (no LLM call); it
+    # fixes that module's pom only, so it changes nothing here (apply_failed, no build) and the augment follows
+    assert outcomes == ["improved", "improved", "apply_failed", "improved", "apply_failed", "improved",
+                        "apply_failed", "build_ok"]
+    assert [a.source for a in pr.attempts if a.outcome == "apply_failed"] == ["kb-script"] * 3
     assert all(FIXED == ws.read(pom(m)) for m in ("m1", "m2", "m3"))
 
 
@@ -120,7 +124,8 @@ def test_the_fix_of_one_module_is_improved_when_the_next_module_shows_the_same_m
     assert first.cluster_resolved is True
     assert ws.read(pom("m1")) == FIXED                              # kept, not rolled back
     assert not events(ws, "stall") and not events(ws, "oscillation")
-    assert pr.build_ok and [a.outcome for a in pr.attempts] == ["improved", "build_ok"]
+    # v2.1z-cd: m1's v1 runs first at m2 and changes nothing there (apply_failed, no build)
+    assert pr.build_ok and [a.outcome for a in pr.attempts] == ["improved", "apply_failed", "build_ok"]
 
 
 # ------------------------------------------------------------------------------------------------ real toggles
@@ -188,6 +193,8 @@ def test_the_same_signature_in_two_files_in_alternating_builds_is_no_oscillation
     pr = loop.run(Phase.VERIFY, "package", 10)
     assert not events(ws, "oscillation") and not events(ws, "stall")
     assert not pr.blocked and pr.build_ok
-    assert [a.outcome for a in pr.attempts] == ["improved"] * 3 + ["build_ok"]
+    # v2.1z-cd: in F2 / F4 the version that fixed the case in F1 / F3 runs first and changes nothing there
+    assert [a.outcome for a in pr.attempts] == ["improved", "improved", "apply_failed", "improved", "apply_failed",
+                                                "build_ok"]
     # the report keeps the per-signature view
     assert [r.signatures for r in pr.iteration_records][:4] == [{"sig-S": 1}, {"sig-T": 1}, {"sig-S": 1}, {"sig-T": 1}]

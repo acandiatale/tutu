@@ -2502,7 +2502,8 @@ class BuildFixLoop:
         차단 정책(``loop.blocked_policy``), 시도 한도, 고정된 케이스는 트리아지가 판단한다.
         트리아지에서 예외가 나도 루프가 멈추지 않도록 ESCALATE를 반환한다."""
         ctx = TriageContext(phase=phase, iteration=iteration, stall_level=stall_level,
-                            previous_attempts=self._previous(cluster), llm_calls_used=self.budget.llm_calls,
+                            previous_attempts=self._previous(cluster),
+                            resolved_elsewhere=self._resolved_elsewhere(cluster), llm_calls_used=self.budget.llm_calls,
                             llm_calls_budget=self.budget.max_llm_calls)
         try:
             return self.triager.decide(cluster, match, ctx, self.profile)
@@ -2518,14 +2519,37 @@ class BuildFixLoop:
         쿨다운 때문에 케이스의 시도 한도가 줄면 안 되기 때문이다.
         sbmig 사전 시도는 ``ladder=True``일 때 빠져 LLM 시도 한도를 쓰지 않고, 프롬프트에 보여 줄 이전
         시도(``ladder=False``)에는 들어간다.
+        ``ladder=True``면 지금 오류가 있는 위치에서 한 시도만 남긴다. 다른 위치의 시도는 프롬프트 이력에만 들어간다.
 
         Earlier SCORED attempts on THIS cluster (round 10: not other files that share an L1 signature, not this
         round's pending ones), without the transport failures that triggered the LLM cool-down (L5): the cool-down
         round must not count against the case's limits. v2.1l / v2.1m: the zero-LLM pre-tries (`PRE_TRY_SOURCES`) are not
-        ladder steps (`ladder=True`: left out, they never use up an LLM try); the prompt's history keeps them."""
+        ladder steps (`ladder=True`: left out, they never use up an LLM try); the prompt's history keeps them.
+        v2.1z-cd: `ladder=True` keeps the attempts made HERE only (`made_here`: one of the places of the errors an
+        attempt targeted is a place of the case's errors now), so the caps hold per case, run and set of places;
+        `ladder=False` (the prompt's "Previous attempts on this case") keeps every place."""
         return [a for a in _same_cluster(cluster, self.history, self.blocked.canonical_file)
                 if a.id not in self._cooled_attempts and a.outcome != "pending"
-                and not (ladder and a.source in PRE_TRY_SOURCES)]
+                and not (ladder and (a.source in PRE_TRY_SOURCES or not self._made_here(cluster, a)))]
+
+    def _made_here(self, cluster: ErrorCluster, a: FixAttempt) -> bool:
+        """시도가 지금 케이스 오류가 있는 위치에서 한 시도인지 확인한다. 옮겨진 파일은 현재 경로로 비교한다.
+
+        `sbmig.triage.decide.made_here` with the registry's mapping of moved files (INTERFACES "v2.1z-cd")."""
+        from sbmig.triage.decide import made_here
+        return made_here(cluster, a, self.blocked.canonical_file)
+
+    def _resolved_elsewhere(self, cluster: ErrorCluster) -> list[FixAttempt]:
+        """다른 위치에서 저장 버전을 실행해 이 케이스를 해결한 이번 실행의 시도를 순서대로 반환한다.
+        edits로 적용해 스크립트가 실행되지 않은 시도와 저장되지 않은 v0는 넣지 않는다.
+
+        The case's attempts made at OTHER places that ended `improved` / `build_ok` by running a stored version
+        (version > 0, `_script_ran`: not an answer applied as edits), oldest first: the candidates of the ladder's
+        first rung at a new place (`TriageContext.resolved_elsewhere`, INTERFACES "v2.1z-cd" rule 2)."""
+        return [a for a in _same_cluster(cluster, self.history, self.blocked.canonical_file)
+                if a.id not in self._cooled_attempts and a.decision.kind == DecisionKind.SCRIPT
+                and a.outcome in ("improved", "build_ok") and int(a.script_version or 0) > 0
+                and self._script_ran.get(id(a)) and not self._made_here(cluster, a)]
 
     def _sibling_hints(self, cluster: ErrorCluster, limit: int = 3) -> list[str]:
         """이 실행에서 다른 파일이나 범위의 같은 오류를 어떻게 고쳤는지, 또는 무엇이 실패했는지 찾는다.
@@ -2665,7 +2689,8 @@ class BuildFixLoop:
                 step = None
         if step is None:
             from sbmig.triage.scripts import plan_script_step
-            step = plan_script_step(c, self._previous(c), self.cases if self.cases.active else None, self.cfg)
+            step = plan_script_step(c, self._previous(c), self.cases if self.cases.active else None, self.cfg,
+                                    elsewhere=self._resolved_elsewhere(c))
         return step
 
     def _deferral(self, st: "_Round", c: ErrorCluster, step: Any) -> tuple[list[str], str]:
@@ -3092,12 +3117,17 @@ class BuildFixLoop:
             return " ".join(why.split())
         return _first_sentence(analysis, 300)
 
-    def _decline_count(self, case_id: str) -> int:
-        """이 실행에서 케이스가 거절된 횟수를 실행 이력의 시도 메모 ``declined: …``로 센다."""
+    def _decline_count(self, case_id: str, c: Optional[ErrorCluster] = None) -> int:
+        """이 실행에서 케이스가 거절된 횟수를 실행 이력의 시도 메모 ``declined: …``로 센다.
+        ``c``가 있으면 지금 오류가 있는 위치에서 받은 거절만 센다.
+
+        The case's declined answers in this run (note `declined: …`); with `c`, those made at the places of its
+        errors now (INTERFACES "v2.1z-cd": `script.max_declines_per_case` holds per set of places)."""
         if not case_id:
             return 0
         return sum(1 for a in self.history if a.script_case_id == case_id
-                   and any(n.startswith(DECLINED_NOTE) for n in a.notes))
+                   and any(n.startswith(DECLINED_NOTE) for n in a.notes)
+                   and (c is None or self._made_here(c, a)))
 
     def _decline(self, att: FixAttempt, c: ErrorCluster, ans: Any, reason: str, *, ignored: bool = False) -> None:
         """거절된 답을 기록한다.
@@ -3107,7 +3137,7 @@ class BuildFixLoop:
         A declined answer (`<blocked>` or analysis only): outcome `blocked`, note `declined: <reason>`, journal
         `declined`; BLOCKED needs_owner follows in `_after_decline` once the attempt is recorded. Nothing applied."""
         case = att.script_case_id or c.case_id or c.id
-        n = self._decline_count(case) + 1
+        n = self._decline_count(case, c) + 1
         limit = max(1, self._declines_allowed())
         att.outcome = "blocked"
         att.notes.append(DECLINED_NOTE + _first_sentence(reason, 400))
@@ -3135,7 +3165,7 @@ class BuildFixLoop:
         if reason is None:
             return
         case = att.script_case_id or c.case_id or c.id
-        if self._decline_count(case) < max(1, self._declines_allowed()):
+        if self._decline_count(case, c) < max(1, self._declines_allowed()):
             return
         self._block_needs_owner(st, c, reason)
 
@@ -3383,7 +3413,9 @@ class BuildFixLoop:
             return a, [], (f"the previous attempt {a.id} could not be rolled back ({type(e).__name__}): this "
                            "version ran on top of it"), False
         # 그 시도가 없앴던 오류는 시도의 대상 오류 중 이번 빌드에 없는 것이며, 다음 시도 결과 평가의 기준선에 더한다
-        restored = _gone(a.cluster_errors, st.build)
+        # 이번 빌드가 보여 줄 수 없었던 오류(앞 모듈에서 멈춘 빌드)는 되살아난 것으로 세지 않는다
+        real_now = [e for e in st.build.errors if not _synthetic(e)]
+        restored = [e for e in _gone(a.cluster_errors, st.build) if _visible_in([e], st.build, real_now)]
         st.restored += restored
         self.ws.journal({"event": "script_rollback", "phase": st.phase.value, "iteration": st.iteration,
                          "attempt": a.id, "case": a.script_case_id, "version": a.script_version,
@@ -3491,7 +3523,7 @@ class BuildFixLoop:
         mode = step.mode if base is not None or step.mode == "new" else "new"
         if step.mode == "augment" and base is None:
             att.notes.append("augment without a usable base → asking for a new fix")
-        elif mode == "augment" and self._decline_count(step.case_id):
+        elif mode == "augment" and self._decline_count(step.case_id, c):
             # 거절한 케이스에는 보강을 요청하지 않는다.
             # script.max_declines_per_case가 1보다 클 때만 여기에 온다
             mode, base = "new", None
@@ -3762,9 +3794,10 @@ class BuildFixLoop:
         # 저장 로그는 저장소가 직접 남기므로(stage kb) 여기서는 DEBUG 한 줄만 남긴다
         log.debug("stored as v%d (%s) → %s", att.script_version, getattr(cs, "status", "unverified"),
                   script_path(step.case_id, cs))
+        # 같은 코드를 거부하는 기준은 여기서 한 시도뿐이다. 다른 위치에서 실행한 버전은 이 위치에서 다시 실행한다
         ran = next((a for a in _same_cluster(c, self.history, self.blocked.canonical_file)
                     if a.decision.kind == DecisionKind.SCRIPT and a.script_version == att.script_version
-                    and att.script_version and a.script_result is not None), None)
+                    and att.script_version and a.script_result is not None and self._made_here(c, a)), None)
         self.ws.journal({"event": "script_stored", "case": step.case_id, "version": att.script_version,
                          "mode": att.script_mode, "source": att.source, "attempt": att.id,
                          "status": getattr(cs, "status", ""), "duplicate_of": ran.id if ran is not None else None})

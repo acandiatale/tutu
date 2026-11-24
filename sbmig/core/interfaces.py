@@ -324,11 +324,14 @@ class BuildRunnerLike(Protocol):
 # ---------------------------------------------------------------------------
 class TriageContext(BaseModel):
     """빌드 오류를 어떻게 처리할지 정할 때 쓰는 정보를 담는 데이터 클래스.
-    단계, 라운드, 진척 없음 수준, 같은 서명의 이전 시도, LLM 호출 사용량을 담는다."""
+    단계, 라운드, 진척 없음 수준, 같은 서명의 이전 시도, 다른 위치에서 해결한 시도, LLM 호출 사용량을 담는다."""
     phase: Phase
     iteration: int
     stall_level: int = 0
     previous_attempts: list[FixAttempt] = Field(default_factory=list)   # attempts on same cluster signatures
+    # v2.1z-cd: the case's attempts made at OTHER places whose run of a stored version resolved them (the fix loop
+    # fills it; `previous_attempts` then holds the attempts made here only); empty = nothing to rerun
+    resolved_elsewhere: list[FixAttempt] = Field(default_factory=list)
     llm_calls_used: int = 0
     llm_calls_budget: int = 60
 

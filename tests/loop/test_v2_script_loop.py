@@ -256,8 +256,11 @@ def test_improved_attempt_is_kept_when_the_case_shows_up_again(cfg, ws):
     fixer = FakeFixer(script_fn=lambda w, c, ctx: write_script({e.file: FIXED for e in c.errors}))
     pr = make_loop(cfg, ws, build, fixer).run(Phase.VERIFY, "package", 4)
     assert pr.ok
-    first, second = pr.attempts
+    # v2.1z-cd: Baz is a new place, so v1 (which fixed Foo / Bar) runs there first; it writes Foo / Bar only and
+    # changes nothing (apply_failed, no build), then the augment of that rerun
+    first, rerun, second = pr.attempts
     assert first.outcome == "improved" and not any(n.startswith("rolled back") for n in first.notes)
+    assert (rerun.source, rerun.script_version, rerun.outcome) == ("kb-script", 1, "apply_failed")
     assert second.script_mode == "augment" and second.script_parent == 1 and ws.read(FOO) == FIXED
 
 
