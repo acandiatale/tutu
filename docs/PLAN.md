@@ -1356,3 +1356,15 @@ company projects use Kafka and Redis a lot, and that a run of 2026-11-23 had osc
 | Checked | unit tests (full suite 7,522 passed) on a developer Mac | — | done |
 | Not checked | a real LLM with the new notes; the company projects; Maven's wording of these errors (the survey used `javac`); the full recipe chain of a run; run-time behaviour beyond the serializer and mapper runs | — | open |
 | Not done | no code change: scoring, what a case's prompt says about another case's attempt, a deterministic repair of the recipe's wrong rewrites, the case identity of messages that need different rules | — | open |
+
+## Status — 2026-11-24, Boot 4 renamed the Redis auto-configuration classes (v2.1z-bx)
+
+The Redis oscillation of the run of 2026-11-23, as the user read it out, was about `RedisConnectionDetails`, not about
+the serializers of v2.1z-bw. Contract: `docs/INTERFACES.md` "v2.1z-bx".
+
+| Item | What | Verification | State |
+|---|---|---|---|
+| Cause | Boot 4 moved `RedisConnectionDetails` / `RedisProperties` to `org.springframework.boot.data.redis.autoconfigure` and renamed them `DataRedis…`; the note's "moved to `<tech>.autoconfigure`" gave a name that does not exist, the LLM took it for removed and ported the code to a type whose old name is gone too | the user's lines; jar listings and `javap` of Boot 3.3.13 and 4.1.0 | read |
+| Note | `boot4-packages.md`: the Redis renames, Kafka (moved only), the JPA / Hibernate auto-configuration classes; "a moved name that is not found was renamed, not removed: never port the code to another type"; a keyword for the old and new names | `tests/fix/test_v21zbx_boot_redis_names.py` | done |
+| Checked | unit tests (full suite 7,527 passed) on a developer Mac | — | done |
+| Not checked | a real LLM with the note, the company project; other Boot modules with renamed classes | — | open |

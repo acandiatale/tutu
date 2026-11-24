@@ -118,6 +118,7 @@ notes:
   - RestTemplateBuilder|RestTemplateCustomizer|RestClientCustomizer
   - EntityScan|EnvironmentPostProcessor|BootstrapRegistry|HttpMessageConverters|DataSourceProperties|DataSourceBuilder
   - MockBean|SpyBean
+  - Redis(ConnectionDetails|Properties|(Reactive|Repositories)?AutoConfiguration)|KafkaProperties|KafkaConnectionDetails|JpaRepositoriesAutoConfiguration|JpaProperties|HibernateProperties
   cases: []
   phases:
   - spring

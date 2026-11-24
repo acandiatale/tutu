@@ -10,6 +10,7 @@ keywords:
   - "RestTemplateBuilder|RestTemplateCustomizer|RestClientCustomizer"
   - "EntityScan|EnvironmentPostProcessor|BootstrapRegistry|HttpMessageConverters|DataSourceProperties|DataSourceBuilder"
   - "MockBean|SpyBean"
+  - "Redis(ConnectionDetails|Properties|(Reactive|Repositories)?AutoConfiguration)|KafkaProperties|KafkaConnectionDetails|JpaRepositoriesAutoConfiguration|JpaProperties|HibernateProperties"
 cases: []
 phases: [spring, restructure]
 ---
@@ -46,7 +47,22 @@ import (list below); when its module is not on the classpath, add the module's s
 - `autoconfigure.http.HttpMessageConverters` → `org.springframework.boot.http.converter.autoconfigure` (deprecated →
   `ServerHttpMessageConvertersCustomizer` / `ClientHttpMessageConvertersCustomizer` beans)
 - Auto-configuration classes moved from `org.springframework.boot.autoconfigure.<tech>` to
-  `org.springframework.boot.<tech>.autoconfigure` (e.g. `…boot.webmvc.autoconfigure.WebMvcAutoConfiguration`).
+  `org.springframework.boot.<tech>.autoconfigure` (e.g. `…boot.webmvc.autoconfigure.WebMvcAutoConfiguration`). Some
+  were also RENAMED on the way (next lines): a moved name that is not found in the new package was renamed, not
+  removed. Never port the code to another type for it.
+- Redis: `autoconfigure.data.redis` → `org.springframework.boot.data.redis.autoconfigure` (spring-boot-data-redis,
+  starter `spring-boot-starter-data-redis`), with a `Data` prefix: `RedisConnectionDetails` →
+  `DataRedisConnectionDetails` (`getStandalone()` / `getSentinel()` / `getCluster()` as before), `RedisProperties` →
+  `DataRedisProperties`, `Redis[Reactive|Repositories]AutoConfiguration` →
+  `DataRedis[Reactive|Repositories]AutoConfiguration`; `LettuceClientConfigurationBuilderCustomizer`,
+  `JedisClientConfigurationBuilderCustomizer`, `ClientResourcesBuilderCustomizer` keep their names.
+- Kafka: `autoconfigure.kafka` → `org.springframework.boot.kafka.autoconfigure` (spring-boot-kafka), names unchanged
+  (`KafkaProperties`, `KafkaConnectionDetails`, `ConcurrentKafkaListenerContainerFactoryConfigurer`, the consumer /
+  producer factory customizers).
+- JPA: `autoconfigure.data.jpa.JpaRepositoriesAutoConfiguration` →
+  `org.springframework.boot.data.jpa.autoconfigure.DataJpaRepositoriesAutoConfiguration`;
+  `autoconfigure.orm.jpa.JpaProperties` → `org.springframework.boot.jpa.autoconfigure`; `HibernateJpaAutoConfiguration`,
+  `HibernateProperties`, `HibernatePropertiesCustomizer` → `org.springframework.boot.hibernate.autoconfigure`.
 - Unchanged: `ServletRegistrationBean`, `FilterRegistrationBean`, `ServletListenerRegistrationBean`,
   `DelegatingFilterProxyRegistrationBean`, `ServletContextInitializer` (`org.springframework.boot.web.servlet`),
   `SpringBootServletInitializer` (`…web.servlet.support`), `@SpringBootApplication`, `@ConfigurationProperties`,

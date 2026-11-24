@@ -7490,3 +7490,32 @@ the recipe's wrong rewrites and no change to what the prompt says about another 
 **Not checked.** A real LLM with the new notes; how any of this behaves at run time; the wording of these errors
 inside Maven's output (the survey used `javac` directly); the full recipe chain of a run (the survey ran
 `UpgradeJackson_2_3` alone).
+
+## v2.1z-bx — Boot 4 renamed the Redis auto-configuration classes (fix note)
+
+**Why.** The user read out the Redis oscillation of the run of 2026-11-23: the LLM's analysis said that
+`RedisConfig` used `RedisConnectionDetails` "under the name moved to the Boot 4 location" and that the type was not
+on the Boot 4.1 classpath, then ported the code to `RedisProperties` with a `MIGRATION-TODO`, and the loop was blocked
+as an oscillation. So this was not the serializer case of v2.1z-bw. The note `boot4-packages.md` said only that
+auto-configuration classes moved from `org.springframework.boot.autoconfigure.<tech>` to
+`org.springframework.boot.<tech>.autoconfigure`: for Redis that rule produces a name that does not exist.
+
+**Facts (`javap` / jar listings, spring-boot-autoconfigure 3.3.13 against spring-boot-data-redis, spring-boot-kafka,
+spring-boot-data-jpa, spring-boot-jpa and spring-boot-hibernate 4.1.0).**
+- `org.springframework.boot.autoconfigure.data.redis.RedisConnectionDetails` is
+  `org.springframework.boot.data.redis.autoconfigure.DataRedisConnectionDetails` (`getStandalone()`, `getSentinel()`,
+  `getCluster()` still there); `RedisProperties` is `DataRedisProperties`; `RedisAutoConfiguration`,
+  `RedisReactiveAutoConfiguration`, `RedisRepositoriesAutoConfiguration` got the same `Data` prefix. The Lettuce /
+  Jedis / client-resources customizers kept their names.
+- Kafka's classes (`KafkaProperties`, `KafkaConnectionDetails`, the listener container factory configurer, the
+  factory customizers) only moved to `org.springframework.boot.kafka.autoconfigure`.
+- `autoconfigure.data.jpa.JpaRepositoriesAutoConfiguration` is `…boot.data.jpa.autoconfigure.DataJpaRepositoriesAutoConfiguration`;
+  `JpaProperties` is in `…boot.jpa.autoconfigure`; `HibernateJpaAutoConfiguration`, `HibernateProperties`,
+  `HibernatePropertiesCustomizer` are in `…boot.hibernate.autoconfigure`.
+
+**Rule.** `boot4-packages.md` lists these and says: a moved name that is not found in the new package was renamed,
+not removed; the code is never ported to another type for it. A keyword selects the note for the old and new names.
+
+**Not changed, not checked.** No code. Why the oscillation could happen at all (a fix that trades one missing symbol
+for another is scored as improved) is the subject of the next rounds. Other Boot modules whose classes may have been
+renamed were not surveyed. Not run with a real LLM.
