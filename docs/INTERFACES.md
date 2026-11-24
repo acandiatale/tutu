@@ -18,7 +18,7 @@ type: `sbmig/core/models.py`, `sbmig/core/interfaces.py`, `sbmig/core/config.py`
 | restructure & layout | Base "Restructure and the company layout"; v2.1g, v2.1h (JSP jakarta), v2.1l / v2.1s (version pins), v2.1m (resource filtering), v2.1n (optional triggers), v2.1o / v2.1p / v2.1t (parent-chain facts, BOM imports), v2.1q (embedded Tomcat), v2.1x (legacy Spring context), v2.1z-j (bundled jars), v2.1z-k, v2.1z-l |
 | structure review | v2 "Structure review (R)"; v2.1u … v2.1y (review prompt, invariant check, unsupported issues); v2.1z-h (review guard) |
 | verify & script fix loop | Base "Fix-loop invariants"; v2 "Script fix loop (L)", "Script contract (S)", "As built (step 1)"; v2.1d (versions, operator checks), v2.1l / v2.1m pre-tries, v2.1r (file locks), v2.1y (declines, idempotency), v2.1z (ladder caps, case keys), v2.1z-e (jakarta discovery), v2.1z-i, v2.1z-n, v2.1z-y, v2.1z-z, v2.1z-aa; v2.1z-ak (reduced run: as-is chain facts, framework guard); v2.1z-av (stop around the final build, the last unhelpful try rolled back, `repository_unreachable`, cut answers, managed versions per parent); v2.1z-bo (stop request and time budget checked before every LLM request, `llm_ask_skipped`); v2.1z-bp (the remediation's 60 s loop minimum checked by the graph only); v2.1z-br (the framework guard rejects an attempt it cannot check, a builder keyword decided by the callee's signature: `sbmig/loop/callee.py`) |
-| cases & KB | v2 intro + "Script KB (K)"; Base "KB plumbing"; v2.1e (learning records), v2.1f (probable fixers), v2.1z (masked case keys), v2.1z-ae / v2.1z-af (several pods on one KB), v2.1z-ai (rule versions, member-symbol keys, re-sign, exact-key guard) |
+| cases & KB | v2 intro + "Script KB (K)"; Base "KB plumbing"; v2.1e (learning records), v2.1f (probable fixers), v2.1z (masked case keys), v2.1z-ae / v2.1z-af (several pods on one KB), v2.1z-ai (rule versions, member-symbol keys, re-sign, exact-key guard); v2.1z-ca (a version that took part in a round trip: credit `round_trip`, never reused on its own) |
 | LLM gateway | Base "LLM client tier and adapter seams"; v2.1z-m (agent gateway, token exchange), v2.1z-n, v2.1z-o, v2.1z-p (case thread), v2.1z-q, v2.1z-x, v2.1z-af (busy wait, auth retries) |
 | report & result line | Base "Report and the result line", "Advisories and the Handover"; v2 "As built (step 1)" (`review=`); v2.1d (`major=`); remediations (`remediation=`); v2.1z-ak (`scope=`, the framework block); v2.1z-bl (`llm=` includes the remediation's fix-loop calls) |
 | fleet | Base "Fleet" |
@@ -7685,10 +7685,128 @@ remediation test folders pass with each of the three values in the environment.
 **Review.** Two independent rounds on the rule, each with reproductions: the first found three legitimate runs
 broken by the pair alone and state carried over between runs; the second one more (the hidden flow error) and the
 pooling of the attempt's hunks. The four conditions and the per-run state are their result. The last form of the
-rule (conditions 2 and 4, the three modes) was not reviewed again by an independent reader: that is one reason why
-`observe`, not `revert`, is the default.
+rule (conditions 2 and 4, the three modes) was then reviewed by a third independent reader, with reproductions on the
+fakes and on real Maven (`out/scratch/trade-back-review3/`). Result: **`revert` is not fit to be the default.** The
+four conditions prove that B put A's lines back; they cannot tell which of the two fixes was right, and `revert`
+always keeps A. When A was the wrong fix (it deleted a method to make its own error disappear, which left an error
+in another file), the correct fix B restores that method, meets all four conditions, is reverted, and its case is
+blocked as OSCILLATION at the second try: `off` and `observe` end BUILD SUCCESS in that run (case X is asked again
+and answers properly), `revert` ends blocked with A's deletion in the tree, or, when B's case then deletes the
+caller, with a green build that lost code. The case of B gets no section about the earlier fix there, because its
+errors are in a file A did not touch. No other false verdict was found (whenever all four conditions hold, the
+error is on text restored verbatim), `off` is the old behaviour line for line, and `observe` adds the journal event
+and a note only (plus the KB credit of "v2.1z-ca"). Also found, recall only: the lines remembered for A
+(`_resolved_lines`) come from the build before A, which still had the rolled-back previous try of A's case in the
+tree, while A's diff starts after that rollback; when the rollback shifts the lines, a real undo gives no verdict.
+And the count per pair of cases spans files: two trade-backs in two unrelated files block the case everywhere.
 
 **Not checked.** A real LLM; the company projects; multi-module and MSA projects with real Maven; the remediation's
 fix loop and framework runs with the loop on (both use `BuildFixLoop`); how often a real undo restores the old lines
 exactly (when it does not, this rule does not see it); errors that javac reports on another line than the one a fix
 changed.
+
+## v2.1z-ca — a stored script that took part in a round trip is not a success and is not reused on its own
+
+**Why.** Reproduced with real Maven 3.9.10 / JDK 21 (`out/scratch/kb-replay/`, the KB that the `observe` run of
+`out/scratch/trade-back/` left): after a run in which two cases undid each other, both stored versions read
+`successes 1, failures 0`. A second run of the same project on that KB reuses both without an LLM call
+(`"source": "kb-script"`), repeats the round trip and credits both once more. The fix notes and the prompt section
+about the earlier fix are only read when the LLM is asked, so on such a KB they never reach the case. Reuse does not
+even need a success: `CaseStore.best` picks the newest version that is not `retired` and not `non_idempotent`.
+
+**The rule.** It acts on the verdict of "v2.1z-bz" (the four conditions; `loop.trade_back: observe` or `revert`;
+with `off` there is no verdict and nothing of this section happens). For an attempt B with that verdict against an
+attempt A of another case:
+- **B.** When B ran a stored version and that run decided its outcome (the condition `_credit_script` uses), the
+  version is credited for this try with the result `round_trip`, never with `improved`. In `revert` the attempt is
+  reverted as before; its credit is `round_trip` too (it was `reverted`).
+- **A.** When B stays in the tree after the scoring (its outcome is not `reverted`: mode `observe`, a revert that
+  failed, `loop.revert_on_regression: false`) the errors A had resolved are in the build again: when A ran a stored
+  version the same way, the credit A got for its try at the earlier build is replaced by `round_trip`. When B was
+  reverted, A is left as it is: its fix is in the tree.
+- One attempt is credited `round_trip` at most once per try. Unstored scripts (v0), answers applied as edits, a dry
+  run and a run without a KB are untouched, as for every credit.
+
+**The store (`CaseStore.credit`, result `round_trip`).**
+- `round_trip` is a failure result (`FAILURE_RESULTS`): `failures` +1, `last_failure` = the reason, `last_result`.
+- It sets `CaseScript.round_trip = True` (new field, default false; a `case.json` without it reads as false).
+- When the same try (`run_id`, `round`, `n`) is already recorded on that version with a success result of the
+  version's own scope, that success is taken back before the failure is counted: `successes` −1 (never below 0),
+  the project leaves `projects` unless another kept success run of the version's own scope names it, and a `proven`
+  version goes back to `unverified` unless `_resolved_elsewhere` still holds (`retired` stays `retired`). The run
+  record of the try is replaced (the existing rule of `_add_run`). Only `round_trip` takes a success back: no other
+  result changes what an earlier credit of the same try counted.
+  The project that leaves is the one of the run taken back (the credit's own project when that run names none);
+  "another kept success run" means one still in `runs[]` (the history is capped at `errors.script_runs`).
+- When the same try is already recorded on that version as a failure of its own scope (`round_trip` included),
+  the record is replaced and nothing more is counted: one try counts as one failure.
+- A run of the other scope (v2.1z-ap) is kept in `runs[]` without a count or a status change, as for every result,
+  but it does set the mark: the mark is about reuse, and a full run may reuse a `jdk-jakarta` version.
+- **Reuse.** `CaseStore.best`, `sbmig.triage.scripts.stored_best` and `stored_next` never select a version whose
+  `round_trip` is true, exactly as for `non_idempotent`. `latest` (the base of an augment) is unchanged.
+- **The mark goes away** when the version is credited with a success of its own scope that did not come from a
+  reuse: an LLM answer whose code is the stored code (`add_script` returns the existing version). The loop says
+  which it was (`credit(..., reused=True)` for an attempt whose `script_mode` is `reuse`); a success of a reuse
+  counts as a success and leaves the mark (another pod may have planned the reuse before the mark was set). And
+  when a person runs `sbmig kb cases activate <case> <version>`.
+- `scripts_text` shows ` round-trip` after the status (as ` non-idempotent`), so the "KB 탐색" log line of a case
+  whose only versions are marked reads `케이스는 있으나 쓸 스크립트 없음 (v1 unverified round-trip 0/1)`. A KB import
+  merges the mark like `non_idempotent` (true on either side stays true), and for a version that is marked after the
+  merge the counts, `projects` and status are recounted from the merged run records of its own scope instead of
+  taking the larger count (an export made before the round trip would bring the taken-back success back).
+  When both sides hold a record of the same try and the imported one is `round_trip` while the local one is a
+  success, the imported record replaces the local one (the other side had taken that success back).
+  `sbmig kb cases show` names the marks `round-trip` and `non-idempotent` on a version's line.
+
+**The loop.** `BuildFixLoop._round_trips` (attempt → reason, cleared at the start of `_run`) is filled by
+`_settle_trade_backs` for every verdict. `_credit_script` credits an attempt found there with `round_trip` and that
+reason instead of its outcome, and does so once more for an attempt that was already credited with another result
+(the resolver A); the journal event is the existing `script_credit` with `"credited": "round_trip"` and the reason.
+Reasons, one line each:
+`round trip: put back the lines attempt <A> (case <case of A>) had changed in <file>; the error(s) it had resolved came back`
+(B) and
+`round trip: the error(s) this version resolved came back when attempt <B> (case <case of B>) put back the lines it had changed in <file>`
+(A). Each attempt gets the note `stored v<N> credited as round_trip: not reused without an LLM answer`. The
+attempts' outcomes, the reverts, the counts per pair of cases, the blocks and the error list are those of
+"v2.1z-bz": this section changes KB credit only.
+`_record_round_trip` does the recording per verdict. When B undid the fixes of several attempts, B's reason names
+the first of them and every one of them gets its own reason and credit. The first reason recorded for an attempt
+stays (an attempt can be B in one verdict and A in a later one). A resolver that was never credited before simply
+gets its one `round_trip` credit. A failure of this bookkeeping is a WARNING and never reaches the scoring.
+
+**`observe`, restated.** The run itself behaves as without the rule (no revert, no block). The KB credit of the two
+versions is the one thing a verdict changes there.
+
+**Not changed.** Without a verdict: every credit, every reuse decision. `loop.trade_back: off`: byte for byte as
+before. A `non_idempotent` or `retired` version, the ranking of the versions that may be reused (scope, proven,
+version), `script.reuse_versions`, the ladder caps.
+
+**What a reader can rely on.** After a run in which the rule saw one case undo another's fix, neither stored
+version involved counts that try as a success, and neither is run on a later project without the LLM being asked.
+
+**Why both versions.** The rule cannot tell which of the two fixes was right (review in "v2.1z-bz"): A may be the
+wrong one (it deleted code to silence its error) and B the correct restore. Marking costs a wrongly marked version
+one LLM ask on a later project, after which a success clears the mark; reusing the wrong one repeats the damage
+without anyone being asked.
+
+**Checked.** Real Maven 3.9.10 / JDK 21, the project and scripted LLM of `out/scratch/trade-back/`, two runs in a
+row on one KB with the default `observe` (`out/scratch/round-trip-kb/`): after run 1 both versions read
+`successes 0, failures 1, round_trip true`; run 2 has no `kb-script` attempt for the two cases, asks the LLM for
+both, and ends with both marked again (the scripted LLM repeats its answers, so the run still ends blocked).
+Before the change the second run reused both without an LLM call (`out/scratch/kb-replay/`). On that older KB
+(both versions `successes 1`) the first run with the change replays both once, marks them (the old successes of the
+earlier run stay counted) and the second run reuses neither.
+
+**Review.** One independent round with reproductions (`out/scratch/round-trip-review/`) found three paths that
+broke the sentence above: a version of the other scope was not marked, a success of a reuse cleared the mark, and
+a `kb import` of an earlier export brought the taken-back success back. The rules for the other scope, `reused`
+and the import in "The store" are their fixes. The fixes were not reviewed again.
+
+**Limits.**
+- A KB written before this section may hold such pairs as successes. They are marked the first time a run replays
+  them and the verdict is reached (that run still makes the round trip once); `sbmig kb cases retire`, or a new KB
+  folder, avoids that replay.
+- An undo that rewrites the lines instead of restoring them gives no verdict (v2.1z-bz) and so no mark.
+- A build pod on an older image does not honour the mark: it reuses such a version, and a success it credits
+  does not clear the mark. It keeps the field when it rewrites the `case.json` (unknown fields of a script
+  version survive a re-save).

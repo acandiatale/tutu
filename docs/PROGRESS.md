@@ -98,6 +98,7 @@
 - [x] LLM 이 거절한 케이스는 1회 뒤 BLOCKED(`needs_owner`), 다만 sbmig 가 대체 방법을 아는 라이브러리(Spring Mobile 등)는 거절을 받지 않고 다시 묻는다 (v2.1z-aa)
 - [x] EOL 라이브러리를 프로젝트 코드로 대체하는 일은 스크립트가 아니라 직접 편집 답으로 받고 4회로 제한한다
 - [x] A↔B 를 오가는 진동은 `loop.oscillation_limit` 로 막는다
+- [x] 한 케이스의 수정이 다른 케이스가 고쳐 둔 줄을 되돌려 그 오류를 되살리면, 거기에 쓰인 저장 스크립트는 그 시도를 성공이 아닌 `round_trip`(실패)으로 기록하고 LLM 없이 다시 쓰지 않는다. 기본값 `loop.trade_back: observe` 에서도 KB 실적만 바뀌고 실행은 그대로다. 같은 코드의 LLM 답이 다시 성공하거나 `sbmig kb cases activate` 로 풀린다 (v2.1z-ca)
 - [x] javax 라이브러리는 sbmig 가 직접 저장소 집합(설정 미러, Central 등)에서 jakarta 빌드를 찾고, `sbmig repo-probe` 로 무엇을 물었는지 보여 준다
 - [x] 여러 빌드 파드가 한 KB 폴더에 동시에 써도 깨지지 않게 잠금과 "없을 때만 만들기"로 보강했다
 - [x] 실행 사이에 KB 를 보는 명령: `sbmig kb cases list` / `show`, `sbmig kb reindex`

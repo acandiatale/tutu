@@ -415,7 +415,8 @@ class CaseScripts(_Guarded):
         성공, 실패 횟수와 프로젝트, 실행 기록(ScriptRun)을 남기며, KB가 없으면 False를 반환한다.
 
         Credit a run of a stored version. `optional` (v2.1e ScriptRun fields: reason, round, n, errors_before,
-        errors_left, errors_new, files) is dropped when the store does not take it."""
+        errors_left, errors_new, files; v2.1z-ap scope, code; v2.1z-ca reused) is dropped when the store does not
+        take it."""
         if not self.active:
             return False
         self._call("credit", case_id, version, result, project=project, run_id=run_id, optional=dict(optional))

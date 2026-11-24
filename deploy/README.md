@@ -308,7 +308,7 @@ Secret 의 `SBMIG_WEB_TOKEN` 을 채운다 — 그때는 `http://<host>:8765/?to
 | `SBMIG_LOOP__PHASES__VERIFY__MAX_ITERATIONS` | ConfigMap(선택) | `50` | 빌드-수정 라운드 상한 |
 | `SBMIG_LOOP__MAX_TOTAL_MINUTES` | ConfigMap(선택) | `240` | 실행 하나의 시간 상한 |
 | `SBMIG_LOOP__MAX_LLM_CALLS` | ConfigMap(선택) | `0` | 프로젝트당 LLM 총 호출 상한(0 없음, -1 저장 스크립트만) |
-| `SBMIG_LOOP__TRADE_BACK` | ConfigMap(선택) | `observe` | 다른 케이스의 수정을 되돌리는 수정을 어떻게 다루나. `observe` 저널에만 남기고 동작은 그대로, `revert` 되돌리고 반복되면(`loop.oscillation_limit`) 그 케이스를 막음, `off` 보지 않음 |
+| `SBMIG_LOOP__TRADE_BACK` | ConfigMap(선택) | `observe` | 다른 케이스의 수정을 되돌리는 수정을 어떻게 다루나. `observe` 저널에 남기고 실행은 그대로 두되 KB의 두 저장 스크립트는 `round_trip`으로 표시해 LLM 없이 재사용하지 않음, `revert` 되돌리고 반복되면(`loop.oscillation_limit`) 그 케이스를 막음(먼저 한 수정이 틀렸어도 그쪽을 남김), `off` 보지 않음 |
 | `SBMIG_LLM__CASE_THREAD` | ConfigMap(선택) | `false` | 세션 이어 쓰기 — 첫 측정 실행 뒤 `true` |
 | `SBMIG_LLM__TIMEOUT_SECONDS` / `MAX_OUTPUT_TOKENS` / `TEMPERATURE` | ConfigMap(선택) | `180` / `8000` / `0.0` | 게이트웨이 특성에 맞출 때 |
 | `SBMIG_BUILD__TIMEOUT_MINUTES` | ConfigMap(선택) | `30` | 큰 프로젝트의 `mvn clean package` 가 잘릴 때 |

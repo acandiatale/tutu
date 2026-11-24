@@ -173,6 +173,7 @@ NO_ROLLBACK = frozenset({"improved", "build_ok", "reverted", "pending", "apply_f
 SCRIPT_BASE_LOG = 50                 # ScriptBase.log lines (augment prompt)
 SCRIPT_HISTORY = 10                  # ScriptBase.history lines
 FIXER_WITHOUT_SCRIPTS_FLAG = "fixer-without-scripts"
+ROUND_TRIP = "round_trip"            # v2.1z-ca: the KB result of a stored version that took part in a round trip
 # 이 메모가 붙은 시도는 최종 트리에 없으므로 운영자 확인 목록에서도 뺀다
 ROLLED_BACK_NOTE = "rolled back before "   # the note on a try the next try of its case rolled back (not in the tree)
 try:    # one definition each, shared with the error list: the runner's stand-in errors of a crashed build and the
@@ -1103,6 +1104,9 @@ class BuildFixLoop:
         self._resolved_lines: dict[tuple[str, str], frozenset[int]] = {}   # the lines the build before it showed
         self._trade_backs: Counter = Counter()
         self._trade_back_blocks: dict[str, tuple[FixAttempt, str]] = {}
+        # 왕복에 참여한 시도와 그 이유다. 저장된 버전의 실적을 round_trip으로 기록한다
+        # v2.1z-ca: attempt (id()) → reason; its stored version is credited `round_trip` (`_credit_script`)
+        self._round_trips: dict[int, str] = {}
         # v2.1y (E-M1): attempt → the blocker sentence of its declined answer; the cases BLOCKED needs_owner
         # (case id, files, artifact keys, sentence) — their same-cause siblings are blocked without an LLM call
         self._declines: dict[int, str] = {}
@@ -1290,6 +1294,7 @@ class BuildFixLoop:
         # v2.1z-bz "State": resolved pairs, counts and queued blocks belong to one run (the orchestrator runs one
         # verify loop per MSA service, the remediation one per target, on the same BuildFixLoop)
         self._resolved_by, self._resolved_lines, self._trade_backs, self._trade_back_blocks = {}, {}, Counter(), {}
+        self._round_trips = {}
         self._cur_phase = phase
         self._target = target
         self._mark(f"loop start ({goal})")
@@ -2038,7 +2043,7 @@ class BuildFixLoop:
         `inconclusive` = the build cannot tell (timed out, failed without parsed errors, stopped at an earlier stage
         this attempt did not cause): no KB credit, scored again on a revert rebuild.
 
-        v2.1z-bz trade-back (`loop.trade_back: revert`, the default): an attempt that would be `improved` is
+        v2.1z-bz trade-back (`loop.trade_back: revert`; the default is `observe`): an attempt that would be `improved` is
         `regressed` when a touched file shows again (new against `prev` + `restored`) an error that an earlier
         `improved` attempt of ANOTHER case had resolved and that is still in the tree (`_resolved_by`); it is reverted
         like a structural regression (also behind a later kept commit, `git revert`), counted per pair of cases and
@@ -2357,6 +2362,7 @@ class BuildFixLoop:
                 back = traded.get(a.id) or observed.get(a.id)
                 if not back:
                     continue
+                self._record_round_trip(a, back)
                 by_case: dict[str, list[tuple[BuildError, FixAttempt]]] = {}
                 for e, r in back:
                     by_case.setdefault(_case_key(r), []).append((e, r))
@@ -2397,6 +2403,38 @@ class BuildFixLoop:
                                                             if _pair(x) == k and x.line)
         except Exception as ex:  # noqa: BLE001 - bookkeeping never breaks the scoring
             log.warning("trade-back bookkeeping failed: %s: %s", type(ex).__name__, ex)
+
+    def _record_round_trip(self, b: FixAttempt, back: list[tuple[BuildError, FixAttempt]]) -> None:
+        """trade-back 판정을 받은 시도 B를 ``_round_trips``에 기록한다. B가 트리에 남으면 B가 되살린 오류를 해결했던
+        시도 A도 기록하고 바로 다시 실적을 기록한다. 예외를 던지지 않는다.
+
+        One verdict (contract "v2.1z-ca", **The loop.**): B → `_round_trips` with the B reason (it is credited
+        `round_trip` by `_credit_script` when `_after_scoring` reaches it). When B stays in the tree (its outcome is
+        not `reverted`) each resolver A → `_round_trips` with the A reason and is credited again right away: A was
+        credited at an earlier build and is not among this round's scored attempts. A reverted B leaves A alone. The
+        first reason recorded for an attempt stays. Never raises."""
+        try:
+            by_r: dict[int, tuple[FixAttempt, list[str]]] = {}
+            for e, r in back:
+                files = by_r.setdefault(id(r), (r, []))[1]
+                rel = _pair(e)[0]
+                if rel and rel not in files:
+                    files.append(rel)
+            if not by_r:
+                return
+            first, files = next(iter(by_r.values()))
+            self._round_trips.setdefault(
+                id(b), f"round trip: put back the lines attempt {first.id} (case {_case_key(first)}) had changed in "
+                       f"{_files_named(files)}; the error(s) it had resolved came back")
+            if b.outcome == "reverted":
+                return                                  # A의 수정은 트리에 남아 있으므로 A의 실적은 그대로 둔다
+            for r, rfiles in by_r.values():
+                self._round_trips.setdefault(
+                    id(r), f"round trip: the error(s) this version resolved came back when attempt {b.id} (case "
+                           f"{_case_key(b)}) put back the lines it had changed in {_files_named(rfiles)}")
+                self._credit_script(r)
+        except Exception as ex:  # noqa: BLE001 - bookkeeping never breaks the scoring
+            log.warning("round-trip credit bookkeeping for %s failed: %s: %s", b.id, type(ex).__name__, ex)
 
     def _apply_trade_back_blocks(self, pr: PhaseResult, phase: Phase, iteration: int,
                                  clusters: list[ErrorCluster]) -> None:
@@ -6403,21 +6441,34 @@ class BuildFixLoop:
         edits와 함께 저장만 된 스크립트는 실행되지 않았으므로 기록하지 않는다.
         실행 정보(라운드, 시도 번호, 실패 이유, 오류 수, 파일)도 함께 남긴다.
         저장되지 않은 v0, 드라이런, KB 없음이면 아무것도 하지 않는다.
+        ``_round_trips``에 있는 시도는 그 이유와 함께 round_trip으로 한 번 기록하고 메모를 남긴다.
+        재사용(``reuse``) 시도는 ``reused=True``를 함께 넘긴다.
 
         `kb.cases.credit(case, version, result)` once per try and final outcome (an inconclusive one is credited
         again when a revert rebuild scores it) — only for a stored script whose RUN decided the outcome (a script
-        stored next to applied edits never ran: no credit). Unstored (v0) scripts / dry run / no KB → nothing."""
+        stored next to applied edits never ran: no credit). Unstored (v0) scripts / dry run / no KB → nothing.
+        v2.1z-ca: an attempt in `_round_trips` is credited `round_trip` with that reason instead of its outcome, also
+        when it was already credited with another result (the resolver A; same round / n, so the store finds the
+        earlier record), once; it gets the note `stored v<N> credited as round_trip: …` and its FixTry is synced.
+        An attempt whose `script_mode` is `reuse` passes `reused=True` (its success leaves the `round_trip` mark)."""
         if self.dry_run or att.decision.kind != DecisionKind.SCRIPT or not att.script_version \
                 or not att.script_case_id or att.outcome == "pending" or not self._script_ran.get(id(att)):
             return
         done = self._credited.get(id(att))
-        if done is not None and done != "inconclusive":
+        trip = self._round_trips.get(id(att))
+        # 왕복에 참여한 시도는 이미 다른 결과로 기록됐어도 round_trip으로 한 번 더 기록한다
+        if trip is not None and done == ROUND_TRIP:
+            return
+        if trip is None and done is not None and done != "inconclusive":
             return
         if not self.cases.active:
             return
         # v2.1e: the run's record beside the counts — the try (round, n), why it failed, error counts, files
         _cid, n, rnd = self._tries.get(id(att), (att.script_case_id, 0, 0))
-        reason = "" if att.outcome in ("improved", "build_ok") else self._run_reason(att)
+        if trip is not None:
+            reason = trip
+        else:
+            reason = "" if att.outcome in ("improved", "build_ok") else self._run_reason(att)
         run = {"reason": reason, "round": int(rnd or 0), "n": int(n or 0), "errors_before": att.errors_before,
                "errors_left": att.errors_after, "errors_new": len(att.introduced_errors),
                "files": list(dict.fromkeys(ch.new_path or ch.path for ch in att.changes))}
@@ -6427,16 +6478,26 @@ class BuildFixLoop:
         # version of this run's own scope); the run's scope and the code that ran go along (a moved case id is
         # resolved by the code)
         result = OUT_OF_SCOPE if id(att) in self._out_of_scope and att.outcome == "apply_failed" else att.outcome
+        if trip is not None:
+            result = ROUND_TRIP                     # v2.1z-ca: the round trip is not a success of this try
         run["scope"] = self._run_scope()
         run["code"] = att.script_code or ""
+        # LLM 없이 재사용한 버전의 성공은 왕복 표시를 지우지 않는다. 표시 전에 계획된 재사용일 수 있다
+        if att.script_mode == "reuse":
+            run["reused"] = True
         # the adapter (sbmig.loop.entries.CaseScripts) drops the v2.1e keywords an older store does not take
         if not self.cases.credit(att.script_case_id, att.script_version, result, project=self._project(),
                                  run_id=self.ws.run_id, **run):
             return
-        self._credited[id(att)] = att.outcome
+        self._credited[id(att)] = ROUND_TRIP if trip is not None else att.outcome
         self.ws.journal({"event": "script_credit", "case": att.script_case_id, "version": att.script_version,
                          "attempt": att.id, "outcome": att.outcome, "reason": reason,
                          **({"credited": result} if result != att.outcome else {})})
+        if trip is not None:
+            note = f"stored v{att.script_version} credited as round_trip: not reused without an LLM answer"
+            if note not in att.notes:
+                att.notes.append(note)
+            self._sync_try(att)
 
     def _run_reason(self, att: FixAttempt) -> str:
         """평가된 시도가 케이스를 해결하지 못한 이유 한 줄(ScriptRun.reason, 보강 버전의
@@ -7176,6 +7237,15 @@ def _case_key(a: FixAttempt) -> str:
     """시도의 케이스 id를 반환한다. 케이스 id가 없으면(사전 시도) 클러스터 id에서 ``case:``를 뗀 값을 쓴다."""
     k = a.script_case_id or a.cluster_id or ""
     return k.removeprefix("case:")
+
+
+def _files_named(files: list[str]) -> str:
+    """파일 목록의 첫 파일을 반환한다. 더 있으면 ``(+N more)``를 붙인다.
+
+    The first file of the list, with `(+N more)` when there are others."""
+    if not files:
+        return "?"
+    return files[0] + (f" (+{len(files) - 1} more)" if len(files) > 1 else "")
 
 
 def _same_attempt_case(a: FixAttempt, b: FixAttempt) -> bool:

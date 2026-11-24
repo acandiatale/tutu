@@ -311,7 +311,7 @@ flowchart TD
 
 LLM 답: `<analysis>`(원인) `<solution>`(해결) `<edits>`(바로 적용할 편집, JSON) `<script>`(`def fix(p)`, 다른 프로젝트에서도 쓸 재사용 스크립트) 또는 `<no_script>`(이유).
 스크립트는 정적 검사(허용 import 만, `open`/`exec`/`eval` 금지) → `python -I` 자식 프로세스 → 도우미 API `p`(프로젝트 폴더 안 파일 읽기·쓰기, pom 편집기, `p.errors`) → 시간 제한·프로세스 트리 종료로 돕니다.
-`ok` 직후 한 번 더 돌려 또 바뀌면 재사용하지 않습니다(`non_idempotent`). API 전체: `agent-doc/04-cases-scripts-kb.md` §7.
+`ok` 직후 한 번 더 돌려 또 바뀌면 재사용하지 않습니다(`non_idempotent`). 다른 케이스의 수정을 되돌려 그 오류를 되살리는 왕복에 쓰인 스크립트도 LLM 없이는 재사용하지 않습니다(`round_trip`). API 전체: `agent-doc/04-cases-scripts-kb.md` §7.
 
 ## 6. 지식베이스
 

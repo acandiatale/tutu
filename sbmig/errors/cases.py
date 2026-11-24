@@ -28,7 +28,9 @@ Layout under the KB directory (``kb.dir``, default ``kb-v2/``)::
 Scripts: ``unverified`` when stored → ``proven`` once a reuse resolved the case in a project other than the one
 that created it → ``retired`` by a person (``sbmig kb cases retire``; never selected). :meth:`CaseStore.best` =
 the newest proven version, else the newest unverified one; v2.1y: a version the loop found ``non_idempotent``
-(:meth:`CaseStore.mark_non_idempotent`: a second run right after ``ok`` changed the tree again) is never selected. A script whose code holds a secret value is stored
+(:meth:`CaseStore.mark_non_idempotent`: a second run right after ``ok`` changed the tree again) is never selected;
+v2.1z-ca: nor is a version credited ``round_trip`` (it took part in two cases undoing each other's fix) until a
+success of its own scope that was not a reuse, or ``activate``, clears the mark. A script whose code holds a secret value is stored
 masked and retired at once (the masked code is not the code that ran; a secret never lands in the KB).
 
 Scopes (v2.1z-ap): a version records the scope of the run that wrote it (``full`` / ``jdk-jakarta``; ``""`` =
@@ -97,7 +99,10 @@ CASES_MD = "cases.md"
 KB_MARKER = "kb.json"             # {"sig": <rule version the KB was re-signed to>, "resigned_at": <iso>}
 RESIGN_PENDING = "resign-pending.json"   # the folder clean-up a re-sign still owes (written before errors.jsonl)
 SUCCESS_RESULTS = frozenset({"improved", "build_ok"})
-FAILURE_RESULTS = frozenset({"no_change", "regressed", "reverted", "apply_failed", "blocked"})
+# 다른 케이스와 서로의 수정을 되돌린 시도의 결과. 실패로 세고, 같은 시도의 성공 기록은 되돌린다
+# v2.1z-ca: the try took part in a round trip with another case (docs/INTERFACES.md "v2.1z-ca")
+ROUND_TRIP = "round_trip"
+FAILURE_RESULTS = frozenset({"no_change", "regressed", "reverted", "apply_failed", "blocked", ROUND_TRIP})
 # 범위를 줄인 실행의 프레임워크 검사가 되돌린 다른 범위 버전의 실행. 그 버전의 실패로 세지 않는다
 # v2.1z-ap: a run of a version of the OTHER scope that the framework guard rolled back (it touched what a reduced run
 # must not touch) — not a failure of the version, neither a success: in runs[] only. On a version of the run's own
@@ -218,10 +223,12 @@ def scripts_text(case: CaseInfo, *, failures: bool = False) -> str:
 
     ``v1 proven 3/0, v2 unverified 0/1`` (successes / failures); ``failures`` (cases.md, v2.1e) adds each
     version's last failure: ``v1 proven 3/0; v2 unverified 0/1 — no_change: 3 of 3 targeted error(s) remained``.
-    v2.1z-ap: a version written by a reduced-scope run says so (``v2 jdk-jakarta proven 1/0``); full ones stay bare."""
+    v2.1z-ap: a version written by a reduced-scope run says so (``v2 jdk-jakarta proven 1/0``); full ones stay bare.
+    v2.1z-ca: a version marked ``round_trip`` reads ``v1 unverified round-trip 0/1``."""
     def one(s: CaseScript) -> str:
         sc = "" if scope_of(s.scope) == SCOPE_FULL else f" {scope_of(s.scope)}"
-        t = f"v{s.version}{sc} {s.status}{' non-idempotent' if s.non_idempotent else ''} {s.successes}/{s.failures}"
+        marks = (" non-idempotent" if s.non_idempotent else "") + (" round-trip" if s.round_trip else "")
+        t = f"v{s.version}{sc} {s.status}{marks} {s.successes}/{s.failures}"
         return t + (f" — {_short(s.last_failure, 80)}" if failures and s.last_failure else "")
     return ("; " if failures else ", ").join(one(s) for s in case.scripts) or "-"
 
@@ -314,6 +321,21 @@ def _resolved_elsewhere(s: CaseScript) -> bool:
                             for r in s.runs):
         return True
     return len({p for p in s.projects if p}) > 1
+
+
+def _recount_from_runs(s: CaseScript) -> None:
+    """버전의 성공, 실패 수와 프로젝트, 상태를 자기 범위의 실행 기록으로 다시 센다. retired는 그대로 둔다.
+
+    successes / failures / projects / status of a version recounted from its kept own-scope runs (retired stays
+    retired). Approximate when the runs were capped at ``errors.script_runs``. Used for a version split across
+    cases (:meth:`CaseStore._recount_versions`) and, v2.1z-ca, for a version marked ``round_trip`` after a
+    ``kb import`` merge (taking the larger count would bring a taken-back success back)."""
+    s.successes = sum(1 for r in s.runs if r.result in SUCCESS_RESULTS and own_run(s, r))
+    s.failures = sum(1 for r in s.runs if r.result in FAILURE_RESULTS and own_run(s, r))
+    s.projects = list(dict.fromkeys(r.project for r in s.runs if r.result in SUCCESS_RESULTS and r.project
+                                    and own_run(s, r)))
+    if s.status != "retired":
+        s.status = "proven" if _resolved_elsewhere(s) else "unverified"
 
 
 def _unknown(obj: Any, fields: Any) -> dict[str, Any]:
@@ -712,20 +734,22 @@ class CaseStore:
     def best(self, case_id: str, scope: str = "") -> Optional[tuple[CaseScript, str]]:
         """먼저 실행할 스크립트를 고른다.
         묻는 실행과 범위가 같은 버전을 먼저 보고, 그 안에서 최신 proven, 최신 unverified 순으로 반환한다.
-        retired, 비멱등(``non_idempotent``), 파일이 없는 버전은 고르지 않는다.
+        retired, 비멱등(``non_idempotent``), 왕복(``round_trip``), 파일이 없는 버전은 고르지 않는다.
         고를 것이 없으면 None을 반환한다.
 
         The script to run first: rank = (same scope as ``scope``, proven, version), newest first — v2.1z-ap: a
         version of the asking run's scope always comes before one of the other scope (``""`` = ``full`` on both
-        sides). Retired never, nor a version marked ``non_idempotent`` (v2.1y: a second run changed the tree again),
-        nor one whose file is missing. None = nothing stored (also for a case id held by another signature,
+        sides). Retired never, nor a version marked ``non_idempotent`` (v2.1y: a second run changed the tree again)
+        or ``round_trip`` (v2.1z-ca: it took part in a round trip), nor one whose file is missing. None = nothing stored (also for a case id held by another signature,
         :meth:`same_case`)."""
         if case_id in self._foreign:
             return None
         want = scope_of(scope)
         # 두 번째 실행에서 또 파일을 바꾸는 스크립트는 다음 프로젝트를 반쯤 고친
         # 채로 망가뜨리므로 기록만 남기고 재사용하지 않는다
-        ranked = sorted((s for s in self.scripts(case_id) if s.status != "retired" and not s.non_idempotent),
+        # 다른 케이스와 서로의 수정을 되돌린 버전도 LLM 없이 다시 실행하면 같은 왕복을 되풀이한다
+        ranked = sorted((s for s in self.scripts(case_id)
+                         if s.status != "retired" and not s.non_idempotent and not s.round_trip),
                         key=lambda s: (scope_of(s.scope) == want, s.status == "proven", s.version), reverse=True)
         for s in ranked:
             code = self.code(case_id, s.version)
@@ -950,10 +974,12 @@ class CaseStore:
     def credit(self, case_id: str, version: int, result: str, project: str = "", run_id: str = "", *,
                reason: str = "", round: int = 0, n: int = 0, errors_before: int | None = None,
                errors_left: int | None = None, errors_new: int | None = None, files: Iterable[Any] = (),
-               scope: str = "", code: str = "") -> Optional[CaseScript]:
+               scope: str = "", code: str = "", reused: bool = False) -> Optional[CaseScript]:
         """버전 N을 실행한 결과를 그 버전에 기록한다.
         - improved / build_ok: 성공 수를 1 늘리고, 그 버전을 만든 프로젝트가 아니면 proven으로 바꾼다
-        - no_change / regressed / reverted / apply_failed / blocked: 실패 수를 1 늘린다
+        - no_change / regressed / reverted / apply_failed / blocked / round_trip: 실패 수를 1 늘린다
+        - round_trip은 실행 범위와 관계없이 버전에 표시를 남기고, 같은 시도의 성공 기록이 있으면 그 성공을 되돌린다
+        - 표시된 버전이 같은 범위에서 다시 성공하면 표시를 지운다. 재사용(``reused``)의 성공은 지우지 않는다
         - partial / inconclusive는 ``last_result``만 바꾸고, pending은 무시한다
         - 실행 범위(``scope``)가 버전의 범위와 다르면 실행 기록에만 남기고 성공, 실패 수와 상태는 바꾸지 않는다
         - 케이스나 버전이 없으면 재서명으로 옮겨 간 케이스에서 같은 코드(``code``)의 버전을 찾아 기록한다
@@ -974,7 +1000,18 @@ class CaseStore:
         apply_failed / blocked → failures +1; anything else (partial, inconclusive) only sets ``last_result``;
         pending is ignored. v2.1e: every credit appends a ``ScriptRun`` (round / try ``n``, the reason in words,
         error counts, files; the same run_id + round + n replaces the earlier record; ``errors.script_runs`` kept)
-        and a failure sets ``last_failure``."""
+        and a failure sets ``last_failure``.
+
+        v2.1z-ca: ``round_trip`` (a failure) sets ``CaseScript.round_trip``. When the version already holds a run of
+        the same try (run_id, round, n; n non-zero) with a success result of its own scope, that success is taken
+        back first: ``successes`` −1 (never below 0), the project leaves ``projects`` unless another kept own-scope
+        success run names it, ``proven`` → ``unverified`` unless :func:`_resolved_elsewhere` still holds (retired
+        stays). A try already recorded as an own-scope failure (``round_trip`` included) is not counted a second
+        time. No other result changes what an earlier credit of the same try counted. A success of the version's
+        own scope clears the mark unless ``reused`` (the loop ran the stored version without an LLM answer; another
+        pod may have planned that reuse before the mark was set): it still counts as a success. A ``round_trip``
+        run of the other scope: ``runs[]`` only for the counts and the status, but it sets the mark (the mark is
+        about reuse, and a full run may reuse a ``jdk-jakarta`` version)."""
         if not result or result == "pending" or case_id in self._foreign:
             return None
         why = self._reason(reason)
@@ -1002,7 +1039,28 @@ class CaseStore:
             # 다른 범위의 실행은 실행 기록에만 남기고 성공, 실패 수와 상태는 그 버전 범위의 실행으로만 센다
             if own:
                 s.last_result = result
+            prev = None
+            if own and result == ROUND_TRIP and n:
+                key = (run_id or "", int(round or 0), int(n))
+                prev = next((r for r in s.runs if _run_key(r) == key and own_run(s, r)), None)
+            took_back = prev is not None and prev.result in SUCCESS_RESULTS
+            if took_back:
+                # 같은 시도가 앞서 성공으로 기록됐으면 그 성공을 되돌린 뒤 실패로 센다
+                s.successes = max(0, s.successes - 1)
+                gone = prev.project or project
+                if gone and gone in s.projects and not any(
+                        r is not prev and r.result in SUCCESS_RESULTS and r.project == gone and own_run(s, r)
+                        for r in s.runs):
+                    s.projects.remove(gone)
+            # 왕복 표시는 재사용에 관한 것이라 다른 범위의 실행에서도 남긴다
+            if result == ROUND_TRIP:
+                s.round_trip = True
             if own and result in SUCCESS_RESULTS:
+                # 재사용의 성공은 표시 전에 계획됐을 수 있어 표시를 지우지 않는다
+                if s.round_trip and not reused:
+                    s.round_trip = False
+                    log.info("cases/%s/fix_v%d.py: round-trip mark cleared (a success of its own scope)", case_id,
+                             s.version)
                 s.successes += 1
                 if project and project not in s.projects:
                     s.projects.append(project)
@@ -1014,12 +1072,19 @@ class CaseStore:
                     s.status = "proven"
                     log.info("cases/%s/fix_v%d.py: proven (resolved the case in %s)", case_id, s.version, project)
             elif own and result in FAILURE_RESULTS:
-                s.failures += 1
+                # 같은 시도를 이미 실패로 센 왕복 기록은 두 번 세지 않는다
+                if not (prev is not None and prev.result in FAILURE_RESULTS):
+                    s.failures += 1
                 s.last_failure = why or result
             self._add_run(s, ScriptRun(run_id=run_id or "", project=project or "", round=int(round or 0),
                                        n=int(n or 0), result=result, reason=why, errors_before=errors_before,
                                        errors_left=errors_left, errors_new=errors_new, files=self._run_files(files),
                                        scope=(scope or "").strip()))
+            if took_back:
+                if s.status == "proven" and not _resolved_elsewhere(s):
+                    s.status = "unverified"
+                log.info("cases/%s/fix_v%d.py: the %s of run %s r%d try %d taken back (round trip), %s", case_id,
+                         s.version, prev.result, run_id or "-", int(round or 0), int(n), s.status)
             case.updated_at = utcnow()
             self._save(case, extra)
             log.info("cases/%s/fix_v%d.py: %s (성공 %d / 실패 %d)%s%s", case_id, s.version, result, s.successes,
@@ -1100,7 +1165,10 @@ class CaseStore:
 
     def _set_status(self, case_id: str, version: int, retire: bool) -> CaseScript:
         """retire와 activate의 공통 처리를 한다.
-        잠금 안에서 상태를 바꾸고 cases.md를 다시 쓰며, 버전이 없으면 KeyError를 던진다."""
+        잠금 안에서 상태를 바꾸고 cases.md를 다시 쓰며, 버전이 없으면 KeyError를 던진다.
+        activate는 왕복 표시(``round_trip``)도 지운다.
+
+        Shared by retire / activate; activate also clears the ``round_trip`` mark (v2.1z-ca)."""
         with stage("kb"), self.lock():
             hit = self._read(case_id)
             if hit is None:
@@ -1113,6 +1181,10 @@ class CaseStore:
                 s.status = "retired"
             else:
                 s.status = "proven" if _resolved_elsewhere(s) else "unverified"
+                # 사람이 다시 켠 버전은 왕복 표시도 지운다
+                if s.round_trip:
+                    s.round_trip = False
+                    log.info("cases/%s/fix_v%d.py: round-trip mark cleared (activate)", case_id, s.version)
             case.updated_at = utcnow()
             self._save(case, extra)
             log.info("cases/%s/fix_v%d.py: %s", case_id, s.version, s.status)
@@ -1125,9 +1197,10 @@ class CaseStore:
 
     def activate(self, case_id: str, version: int) -> CaseScript:
         """retire를 취소한다.
-        다른 프로젝트에서 케이스를 해결한 적이 있으면 proven으로, 아니면 unverified로 되돌린다.
+        다른 프로젝트에서 케이스를 해결한 적이 있으면 proven으로, 아니면 unverified로 되돌리고 왕복 표시를 지운다.
 
-        Undo a retire: proven when it resolved the case in another project, else unverified."""
+        Undo a retire: proven when it resolved the case in another project, else unverified; the ``round_trip``
+        mark is cleared (v2.1z-ca)."""
         return self._set_status(case_id, version, False)
 
     def describe(self, case_id: str, scope: str = "") -> str:
@@ -2402,12 +2475,7 @@ class CaseStore:
             mine = keys.get(s.version, set())
             s.runs = [r for r in s.runs if _run_key(r) in mine]
             self._rebuild_runs(CaseInfo(case_id=case.case_id, scripts=[s]), entries)
-            s.successes = sum(1 for r in s.runs if r.result in SUCCESS_RESULTS and own_run(s, r))
-            s.failures = sum(1 for r in s.runs if r.result in FAILURE_RESULTS and own_run(s, r))
-            s.projects = list(dict.fromkeys(r.project for r in s.runs if r.result in SUCCESS_RESULTS and r.project
-                                            and own_run(s, r)))
-            if s.status != "retired":
-                s.status = "proven" if _resolved_elsewhere(s) else "unverified"
+            _recount_from_runs(s)
 
     def _resign_entries(self, entries: dict[int, ErrorEntry], eplan: Any, skipped: set[int],
                         ctx: "_ResignCtx", v: int) -> dict[int, dict[str, Any]]:
@@ -2685,7 +2753,9 @@ class CaseStore:
 
         Merge another KB (an unpacked export): errors.jsonl lines with new ids, case folders the local KB does
         not have (copied whole), scripts of known cases by their code (same code → counters max / projects union;
-        other code → the next local version), then :meth:`recount`. Idempotent."""
+        other code → the next local version), then :meth:`recount`. Idempotent. v2.1z-ca: a merged version that is
+        marked ``round_trip`` afterwards gets its counters, projects and status recounted from the merged runs of its
+        own scope instead of the larger counts (an export made before the round trip held the success)."""
         from sbmig.kb.jsonl import append_lines
 
         counters = {"errors_added": 0, "cases_added": 0, "scripts_added": 0, "scripts_merged": 0}
@@ -2749,6 +2819,9 @@ class CaseStore:
                         if s.status == "proven" and have.status == "unverified":
                             have.status = "proven"
                         self._merge_runs(have, s, local)
+                        if have.round_trip:
+                            # 왕복 전에 내보낸 KB의 큰 수를 가져오면 되돌린 성공이 다시 살아나므로 실행 기록으로 다시 센다
+                            _recount_from_runs(have)
                         counters["scripts_merged"] += 1
                         continue
                     # add_script와 같은 규칙으로, 목록에 없는 fix_v*.py 번호도 피한다
@@ -2780,11 +2853,15 @@ class CaseStore:
         """두 KB에 같은 스크립트가 있을 때 실행 기록을 합친다. 계보와 이유는 이쪽에 없을 때만 가져온다.
 
         The same script in both KBs: the union of their runs (same record once), lineage / reasons when ours has
-        none."""
+        none. v2.1z-ca: when both hold the same try (run_id, round, n) and theirs is ``round_trip`` while ours is a
+        success, theirs replaces ours (``credit`` took that success back on their side)."""
         def ident(r: ScriptRun) -> tuple:
             return _run_key(r) or (r.run_id, r.round, r.n, r.result, _ts(r.at))
-        seen = {ident(r) for r in have.runs}
-        runs = have.runs + [r for r in theirs.runs if ident(r) not in seen]
+        mine = {ident(r): r for r in have.runs}
+        # 같은 시도는 round_trip 기록이 성공 기록을 대신한다. credit에서 되돌린 성공을 가져오지 않기 위해서다
+        trips = {ident(r): r for r in theirs.runs
+                 if r.result == ROUND_TRIP and ident(r) in mine and mine[ident(r)].result in SUCCESS_RESULTS}
+        runs = [trips.get(ident(r), r) for r in have.runs] + [r for r in theirs.runs if ident(r) not in mine]
         have.runs = self._cap_runs(sorted(runs, key=lambda r: (_ts(r.at), r.round, r.n)))
         if have.parent is None and theirs.parent and local.get(theirs.parent):
             have.parent = local[theirs.parent]
@@ -2792,6 +2869,8 @@ class CaseStore:
         have.last_failure = have.last_failure or theirs.last_failure
         # 어느 쪽이든 비멱등이었으면 합친 KB에서도 재사용하지 않는다
         have.non_idempotent = bool(have.non_idempotent or theirs.non_idempotent)
+        # 왕복 표시도 어느 쪽이든 있으면 남긴다
+        have.round_trip = bool(have.round_trip or theirs.round_trip)
 
 
 # --------------------------------------------------------------------------- re-sign helpers

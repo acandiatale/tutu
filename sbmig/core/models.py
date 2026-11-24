@@ -1435,6 +1435,12 @@ class CaseScript(BaseModel):
     # ok로 끝난 직후 다시 실행했을 때 또 파일을 바꾼 스크립트(비멱등).
     # 기록은 남기지만 재사용 대상에서는 뺀다
     non_idempotent: bool = False
+    # 다른 케이스와 서로의 수정을 되돌린 시도에 쓰인 버전. LLM 없이 혼자 재사용하지 않는다.
+    # 재사용이 아닌 같은 범위의 성공으로 다시 기록되거나 activate하면 지운다
+    # v2.1z-ca: the version took part in a round trip (two cases undid each other's fix; set by a run of either
+    # scope); never reused on its own until a later own-scope success that was not a reuse, or
+    # `sbmig kb cases activate`, clears it.
+    round_trip: bool = False
     # 이 스크립트를 만든 실행의 이관 범위(full / jdk-jakarta). 빈 값은 범위를 기록하기 전의 스크립트이며 full로 본다.
     # 재사용할 버전을 고를 때 같은 범위의 것을 먼저 쓴다
     # v2.1z-ap: the scope of the run that wrote this version ("" = written before scopes were recorded = full).

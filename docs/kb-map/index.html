@@ -367,7 +367,7 @@ stateDiagram-v2
   retired --> proven : kb cases activate (해결한 적 있으면)
 </pre>
   </div>
-  <p>재사용 순서: proven 최신 → unverified 최신. retired 와 <code>non_idempotent</code>(두 번 돌렸더니 또 바뀐 스크립트)는 고르지 않습니다.</p>
+  <p>재사용 순서: proven 최신 → unverified 최신. retired, <code>non_idempotent</code>(두 번 돌렸더니 또 바뀐 스크립트), <code>round_trip</code>(한 케이스의 수정이 다른 케이스의 수정을 되돌려 그 오류가 다시 나온 왕복에 쓰인 스크립트)은 LLM 없이 고르지 않습니다. <code>round_trip</code> 표시는 같은 코드의 LLM 답이 다시 성공하거나 <code>kb cases activate</code>를 하면 풀립니다.</p>
 </section>
 
 <section id="fields">
@@ -452,6 +452,7 @@ stateDiagram-v2
         <tr><td><code>parent</code>, <code>reason</code></td><td>보강 원본 버전, 원본이 왜 보강됐는지</td></tr>
         <tr><td><code>runs[]</code></td><td>실행 기록(최신이 끝, <code>errors.script_runs</code> 개까지): <code>run_id</code>, <code>project</code>, <code>round</code>, <code>n</code>, <code>result</code>, <code>reason</code>, <code>errors_before</code>, <code>errors_left</code>, <code>errors_new</code>, <code>files</code>, <code>at</code></td></tr>
         <tr><td><code>non_idempotent</code></td><td>두 번째 실행에서 또 바꾼 스크립트 — 기록만, 재사용 안 함</td></tr>
+        <tr><td><code>round_trip</code></td><td>한 케이스의 수정이 다른 케이스의 수정을 되돌려 그 오류가 다시 나온 왕복에 쓰인 버전(되돌린 쪽, 되돌린 수정이 트리에 남았으면 되돌려진 쪽도). 그 시도는 <code>round_trip</code>(실패)으로 기록하고 같은 시도의 성공은 빼며, LLM 없이 재사용하지 않음</td></tr>
       </tbody>
     </table></div></div>
   </details>

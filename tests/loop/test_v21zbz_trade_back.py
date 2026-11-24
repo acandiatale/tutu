@@ -162,7 +162,7 @@ def test_the_undo_is_regressed_reverted_shown_and_credited_as_a_failure(cfg, ws)
     # KB: the undo is a failure, A stays a success
     credits = {(c, v): r for c, v, r, _p in kb.cases.credits}
     assert credits[(CX, a.script_version)] == "improved"
-    assert credits[(CY, b.script_version)] == "reverted"
+    assert credits[(CY, b.script_version)] == "round_trip"             # v2.1z-ca: was `reverted`
     assert not any(c == CX and r != "improved" for c, _v, r, _p in kb.cases.credits)
     assert kb.cases.find(CY).scripts[0].failures == 1
     # the revert of the HEAD commit, the trade-back event
@@ -886,12 +886,14 @@ def _run_undo(cfg, ws, mode: str):
     return pr, kb, seen
 
 
-def _journal_shape(ws) -> list[tuple]:
-    """The journal without times / commit ids, and without the `trade_back` events."""
+def _journal_shape(ws, *, credits: bool = True) -> list[tuple]:
+    """The journal without times / commit ids, and without the `trade_back` events (and, with `credits=False`,
+    without the `script_credit` events: v2.1z-ca changes those in observe)."""
     keep = ("event", "attempt", "outcome", "case", "version", "reason", "count", "iteration", "errors", "ok",
             "cluster", "attempts")
+    drop = {"trade_back"} | (set() if credits else {"script_credit"})
     return [tuple((k, json_safe(e.get(k))) for k in keep if k in e) for e in journal_events(ws)
-            if e.get("event") != "trade_back"]
+            if e.get("event") not in drop]
 
 
 def json_safe(v):
@@ -911,7 +913,8 @@ def _second_ws(tmp_path):
 
 def test_observe_records_the_undo_and_changes_nothing_else(cfg, ws, tmp_path):
     """observe: B stays `improved` with a note, the journal gets `trade_back` (mode observe, count, at_limit); the
-    builds, outcomes, KB credits and every other journal line are those of `off`."""
+    builds, outcomes and every other journal line are those of `off`; the KB credits too, except the `round_trip`
+    credits of v2.1z-ca."""
     pr_o, kb_o, seen_o = _run_undo(cfg, ws, "observe")
     ws_off = _second_ws(tmp_path)
     pr_f, kb_f, seen_f = _run_undo(cfg, ws_off, "off")
@@ -924,9 +927,14 @@ def test_observe_records_the_undo_and_changes_nothing_else(cfg, ws, tmp_path):
     assert not events(ws_off, "trade_back")
     assert [(a.id, a.outcome) for a in pr_o.attempts] == [(a.id, a.outcome) for a in pr_f.attempts]
     assert seen_o == seen_f and pr_o.ok == pr_f.ok and pr_o.iterations == pr_f.iterations
-    assert [c[:3] for c in kb_o.cases.credits] == [c[:3] for c in kb_f.cases.credits]
-    assert [r["reason"] for r in kb_o.cases.credit_runs] == [r["reason"] for r in kb_f.cases.credit_runs]
-    assert _journal_shape(ws) == _journal_shape(ws_off)
+    # v2.1z-ca: the KB credit is the one thing the verdict changes in observe (B and A credited `round_trip`,
+    # tests/loop/test_v21zca_round_trip_credit.py); without those credits and their journal lines all is as in `off`
+    a = pr_o.attempts[0]
+    trip = {(a.script_case_id, a.script_version), (b.script_case_id, b.script_version)}
+    assert {c[:2] for c in kb_o.cases.credits if c[2] == "round_trip"} == trip
+    assert ([c[:3] for c in kb_o.cases.credits if c[2] != "round_trip"]
+            == [c[:3] for c in kb_f.cases.credits if c[:3] != (CY, b.script_version, "improved")])
+    assert _journal_shape(ws, credits=False) == _journal_shape(ws_off, credits=False)
     assert not loop_blocks(pr_o)
 
 

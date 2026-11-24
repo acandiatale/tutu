@@ -326,12 +326,12 @@ class FakeCaseStore:
         return sc
 
     def credit(self, case_id, version, result, project="", run_id="", *, reason="", round=0, n=0,
-               errors_before=None, errors_left=None, errors_new=None, files=()):
+               errors_before=None, errors_left=None, errors_new=None, files=(), reused=False):
         self.credits.append((case_id, version, result, project))
         self.credit_runs.append({"case": case_id, "version": version, "result": result, "project": project,
                                  "run_id": run_id, "reason": reason, "round": round, "n": n,
                                  "errors_before": errors_before, "errors_left": errors_left,
-                                 "errors_new": errors_new, "files": list(files)})
+                                 "errors_new": errors_new, "files": list(files), "reused": reused})
         sc = next((x for x in self.scripts(case_id) if x.version == version), None)
         if sc is None:
             return None
@@ -341,7 +341,7 @@ class FakeCaseStore:
                 sc.projects.append(project)
             if project and project != sc.project and sc.status == "unverified":
                 sc.status = "proven"
-        elif result in ("no_change", "regressed", "reverted", "apply_failed"):
+        elif result in ("no_change", "regressed", "reverted", "apply_failed", "round_trip"):
             sc.failures += 1
             sc.last_failure = reason or result
         sc.last_result = result

@@ -225,7 +225,7 @@ stateDiagram-v2
   retired --> proven : kb cases activate (해결한 적 있으면)
 ```
 
-재사용 순서: proven 최신 → unverified 최신. retired 와 `non_idempotent`(두 번 돌렸더니 또 바뀐 스크립트)는 고르지 않습니다.
+재사용 순서: proven 최신 → unverified 최신. retired, `non_idempotent`(두 번 돌렸더니 또 바뀐 스크립트), `round_trip`(한 케이스의 수정이 다른 케이스의 수정을 되돌려 그 오류가 다시 나온 왕복에 쓰인 스크립트)은 LLM 없이 고르지 않습니다. `round_trip` 표시는 같은 코드의 LLM 답이 다시 성공하거나 `kb cases activate`를 하면 풀립니다.
 
 <a id="fields"></a>
 
@@ -299,6 +299,7 @@ stateDiagram-v2
 | `parent`, `reason` | 보강 원본 버전, 원본이 왜 보강됐는지 |
 | `runs[]` | 실행 기록(최신이 끝, `errors.script_runs` 개까지): `run_id`, `project`, `round`, `n`, `result`, `reason`, `errors_before`, `errors_left`, `errors_new`, `files`, `at` |
 | `non_idempotent` | 두 번째 실행에서 또 바꾼 스크립트 — 기록만, 재사용 안 함 |
+| `round_trip` | 한 케이스의 수정이 다른 케이스의 수정을 되돌려 그 오류가 다시 나온 왕복에 쓰인 버전(되돌린 쪽, 되돌린 수정이 트리에 남았으면 되돌려진 쪽도). 그 시도는 `round_trip`(실패)으로 기록하고 같은 시도의 성공은 빼며, LLM 없이 재사용하지 않음 |
 
 ### cases.md — 사람이 보는 표
 

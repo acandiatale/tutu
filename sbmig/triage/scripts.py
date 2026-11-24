@@ -133,12 +133,14 @@ def stored_best(store: Any, case_id: str, scope: Optional[str] = None) -> Option
     """KB 저장소의 ``best(case_id)``에서 (CaseScript, 코드)를 가져온다.
     저장된 스크립트가 없거나, 코드가 비었거나, 사람이 끈 retired 버전이거나, 저장소 오류면 None을 반환한다.
     ``scope``가 있으면 같은 범위의 버전을 먼저 고른다.
+    비멱등이나 왕복(``round_trip``)으로 표시된 버전이면 다음 저장 버전을 쓴다.
 
     (CaseScript, code) from `store.best(case_id)` (a `CaseScripts` adapter or E1's `CaseStore`); None = nothing
     stored or the store failed (logged). v2.1y: a `non_idempotent` best (a store that does not skip it) → the next
     stored version (`stored_next`). v2.1z-ap: with `scope` (the asking run's) and a `best` answer (None stays None:
     nothing usable, or a case id held by another signature), the order is `stored_next`'s (same scope, proven,
-    version) over the case's scripts; a store that cannot list them keeps `best`'s answer."""
+    version) over the case's scripts; a store that cannot list them keeps `best`'s answer. v2.1z-ca: a best marked
+    `round_trip` (it took part in a round trip with another case) is skipped like a `non_idempotent` one."""
     fn = getattr(store, "best", None) if store is not None else None
     if not callable(fn) or not case_id:
         return None
@@ -162,9 +164,9 @@ def stored_best(store: Any, case_id: str, scope: Optional[str] = None) -> Option
         ranked = stored_next(store, case_id, (), scope=scope)
         if ranked is not None:
             return ranked
-    # 여러 번 실행하면 결과가 달라지는 버전은 재사용하지 않고 다음 저장 버전을 쓴다.
+    # 여러 번 실행하면 결과가 달라지는 버전과 다른 케이스와 서로 되돌린 버전은 재사용하지 않고 다음 저장 버전을 쓴다.
     # CaseStore.best는 이미 건너뛰지만 다른 저장소 구현에 대비한다
-    if getattr(meta, "non_idempotent", False):
+    if getattr(meta, "non_idempotent", False) or getattr(meta, "round_trip", False):
         return stored_next(store, case_id, ())
     return meta, code
 
@@ -192,11 +194,12 @@ def stored_next(store: Any, case_id: str, skip: Iterable[int], scope: Optional[s
                 ) -> tuple[Any, str] | None:
     """이번 실행에서 이미 실행한 버전(``skip``)을 뺀 다음 저장 버전 (CaseScript, 코드)를 반환한다.
     남은 것이 없으면 None을 반환한다.
-    순서는 ``best``와 같이 proven 최신, unverified 최신 순이며 retired, 비멱등, 빈 코드 버전은 건너뛴다.
+    순서는 ``best``와 같이 proven 최신, unverified 최신 순이며 retired, 비멱등, 왕복, 빈 코드 버전은 건너뛴다.
     ``scope``가 있으면 같은 범위의 버전을 모두 먼저 보고, 다른 범위의 버전은 실행마다 하나까지만 고른다.
 
     The next stored version not in `skip` (the versions this run already ran), in `best`'s order: proven newest,
-    then unverified newest; retired ones, `non_idempotent` ones (v2.1y) and versions without code never. None =
+    then unverified newest; retired ones, `non_idempotent` ones (v2.1y), `round_trip` ones (v2.1z-ca) and versions
+    without code never. None =
     nothing left (A14). v2.1z-ap: with `scope` (the asking run's), rank = (same scope, proven, version): every
     version of the run's scope comes first, and a version of the other scope is picked only when none of the run's
     scope is left and no other-scope version is in `skip` yet (one per case and run, within `script.reuse_versions`).
@@ -210,6 +213,7 @@ def stored_next(store: Any, case_id: str, skip: Iterable[int], scope: Optional[s
                                            and _scope(getattr(s, "scope", "")) != want for s in scripts)
     ranked = sorted((s for s in scripts
                      if getattr(s, "status", "") != "retired" and not getattr(s, "non_idempotent", False)
+                     and not getattr(s, "round_trip", False)
                      and int(getattr(s, "version", 0) or 0) not in done
                      and not (other_tried and _scope(getattr(s, "scope", "")) != want)),
                     key=lambda s: (want is None or _scope(getattr(s, "scope", "")) == want,

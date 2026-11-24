@@ -292,7 +292,9 @@ def cases_show_cmd(ctx: typer.Context, key: str = typer.Argument(..., metavar="C
     if case.last_solution:
         typer.echo(f"  last 해결: {case.last_solution}")
     for s in sorted(case.scripts, key=lambda s: s.version):
-        typer.echo(f"  script v{s.version} ({s.file}) {s.status}, scope {scope_of(s.scope)}"
+        # 재사용에서 빠지는 표시는 상태 뒤에 scripts_text와 같은 이름으로 보여 준다
+        marks = (" non-idempotent" if s.non_idempotent else "") + (" round-trip" if s.round_trip else "")
+        typer.echo(f"  script v{s.version} ({s.file}) {s.status}{marks}, scope {scope_of(s.scope)}"
                    + ("" if s.scope else " (not recorded)") + f", {s.source}, successes {s.successes} / failures "
                    f"{s.failures}, projects {', '.join(s.projects) or '-'}, made by {s.project or '-'} "
                    f"{s.created_by or ''}".rstrip() + (f", last {s.last_result}" if s.last_result else ""))
