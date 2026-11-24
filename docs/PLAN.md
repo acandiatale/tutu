@@ -1419,3 +1419,62 @@ second run on that KB reused both without an LLM call and made the round trip ag
 | Review of the rule | a third independent review of the trade-back rule (`out/scratch/trade-back-review3/`, fakes and real Maven): `revert` is not fit to be the default (it always keeps the earlier fix; when that one was wrong, the correct restore is reverted and blocked). `observe` stays the default; recorded in `docs/INTERFACES.md` "v2.1z-bz" | — | done |
 | Limits | a KB written before this change may hold such pairs as successes: they are marked the first time a run replays them and reaches the verdict (that run still makes the round trip once; `sbmig kb cases retire` or a new KB folder avoids it); an undo that rewrites the lines instead of restoring them gives no verdict and so no mark; a build pod on an older image does not honour the mark (it reuses such a version) but keeps the field when it rewrites the `case.json` | — | known |
 | Not checked | a real LLM, the company projects, the company KB that already holds such pairs | — | open |
+
+## Status — 2026-11-24, the same error in another module is another error (v2.1z-cb)
+
+A company run on a multi-module company project ended blocked as oscillation after nine builds while it was fixing
+the same maven-compiler-plugin error (`Cannot find version for annotation processor path
+'org.projectlombok:lombok.jar'`) one module per build: Maven stops at the first failing module, the error has no
+file, and the stall / oscillation checks, the scoring and the error list could not tell module 1's error from
+module 2's. Contract: `docs/INTERFACES.md` "v2.1z-cb".
+
+| Item | What | Verification | State |
+|---|---|---|---|
+| Place | the place of an error is its file, else `@<module>` for an error without a file, else `''` (`_place` in `sbmig/loop/fixloop.py`) | `tests/loop/test_v21zcb_module_place.py` | done |
+| Scoring | `_pair` returns (place, signature): what is left of an attempt's targets, what is new, `introduced`, the resolved pairs of the trade-back rule | same test file | done |
+| Stall / oscillation | the multiset compared between builds is the count per (place, signature); the same kind of error in another file or module is another error set. `IterationRecord.signatures` (the report) stays `signature_multiset()` | same test file | done |
+| Error list | `_match` pairs a file-less error only with an entry of the same module; an occurrence in another module is a new entry carrying its module; two modules failing in one build are two entries | `tests/errors/test_v21zcb_module_entries.py` | done |
+| Not changed | errors with a file; case ids and L1 / L2 signatures (the module stays masked, the KB reuses a case across modules and projects) | — | — |
+| Checked | real Maven 3.9.10 / JDK 21, a three-module project whose modules each list a processor path without a version, scripted LLM (`out/scratch/module-place/`): with answers that differ per module the three poms are fixed one after the other, no `stall` and no `oscillation` event, one list entry per module, the build passes. Before the change the unit test of the same sequence gave two oscillation events, and the direct case scored the first fix `no_change` and rolled it back | — | done |
+| Review | one independent round on a copy of the commit (`out/scratch/module-place-review/`): the checks lost nothing that costs LLM calls (50 rounds per sequence: an error alternating between two places is blocked as OSCILLATION after 3 calls where it ran to the cap of 20; an error that never repeats a place ends at the same cap in both). One defect, older for errors with a file and now reachable: after a rollback the next try's baseline counted every targeted error absent from the build as restored, also those the build could not show, so identical builds read `partial` and the change stayed. Fixed: only errors the build could have shown (`_visible_in`) count as restored | `tests/loop/test_v21zcb_restored_visible.py` | done |
+| Left open | the ladder still read the occurrence in the next module as the same case going on: closed by v2.1z-cd | — | closed |
+| Not checked | a real LLM, the company projects | — | open |
+
+## Status — 2026-11-24, an annotation processor path without a version gets one in the restructure (v2.1z-cc)
+
+The cause of the error in v2.1z-cb: the module poms list Lombok under maven-compiler-plugin's
+`<annotationProcessorPaths>` without a `<version>`, the as-is parent's dependency management supplied it, and the
+target chain does not manage `org.projectlombok:lombok`. The version step wrote the `<dependencies>` entry, the
+processor `<path>` stayed empty, and every module cost the fix loop an LLM ask and two builds. Contract:
+`docs/INTERFACES.md` "v2.1z-cc".
+
+| Item | What | Verification | State |
+|---|---|---|---|
+| Rule | in every restructure mode that runs the version step, right after `_drop_managed_versions`: each `<path>` under a maven-compiler-plugin `<annotationProcessorPaths>` (build plugins and plugin management) with groupId and artifactId, no `<version>` and no `${…}` gets the first that applies: (1) managed in the pom's own chain inside the project or the company parent chain: left; (2) the pom's own dependency of the same g:a, classifier and type: the same text; (3) what the dependency step would write; (4) the one literal version of the project's other poms; (5) left with a note naming the path and the pom. Never the repository's newest release; steps 3 and 4 skipped for a classifier or a non-jar type; protected keys untouched | `tests/restructure/test_v21zcc_processor_paths.py` | done |
+| Recorded | each version written is a line of `RestructureResult.versions_pinned` (`<g:a>: <version> ← <source> (annotationProcessorPaths, <pom>)`), one restructure note with the count, journal `versions_pinned` with `"section": "annotationProcessorPaths"`, error-list rows `annotation processor path version written: <g:a> <v> (<source>)` | `tests/loop/test_v21zcc_processor_path_rows.py` | done |
+| Not changed | runs without a restructure (a framework run keeps its parent); paths with a version, also when it differs from the dependency's; the fix loop's handling of the message when it still appears | — | — |
+| Maybe managed | without the effective pom of the new chain, a pom whose chain imports a BOM inside the project or has a `<dependencyManagement>` in a profile gets no version from steps 2 to 4 (one note per path): writing one could override what Maven would have resolved from that management | `tests/restructure/test_v21zcc_processor_paths.py` | done |
+| Checked | 27 unit tests; real Maven 3.9.10 / JDK 21 with the real pipeline on a three-module project whose as-is parent managed the path's artifact (`out/scratch/processor-paths/`): with the step switched off the first builds stop with the message for one module after the other, with it three versions are written and the run ends `build=ok` | — | done |
+| Review | one independent round on a copy of the commit (`out/scratch/processor-path-review/`, sbmig probes and real Maven): the refactoring of the dependency step's version choice is behaviour-preserving (72-case differential), MS949 / CRLF poms are edited byte-true. Found and fixed: an imported BOM not seen without the effective pom (measured: a Lombok path left empty builds through the BOM, the same path with the as-is 1.18.12 written fails on JDK 21), a repository-guessed version reaching paths, a classifier path left empty because the plain g:a was managed, a Boot BOM version written without an as-is capture. The fixes were not reviewed again | — | done |
+| Limits | maven-compiler-plugin resolves a version-less path from the dependency management from 3.12.0 on: under an older plugin a managed path that the step leaves empty still fails; the requester's Korean report shows a written version only in the pom's diff | — | — |
+| Not checked | a real LLM, the company projects, `msa_pom` mode by a test, the e2e fixtures (none has a version-less path) | — | open |
+
+## Status — 2026-11-24, a case that shows up at a new place starts with the script that resolved it elsewhere in this run (v2.1z-cd)
+
+The rest of the run of v2.1z-cb: the tries of a case were counted per case and run, wherever its errors were, so the
+same module-level error in module 2 read as "the case is still not resolved" and the LLM was asked to augment the
+script that had just resolved module 1. The real-Maven reproduction (`out/scratch/module-place/`, answers with the
+same code for every module) ended blocked `repeated_failure` after 37 LLM calls. Contract: `docs/INTERFACES.md`
+"v2.1z-cd".
+
+| Item | What | Verification | State |
+|---|---|---|---|
+| Places | an earlier attempt of the case was made here when one of the places of the errors it targeted is a place of the case's errors in the current build, elsewhere otherwise (files through the registry's canonical-file mapping) | `tests/triage/test_v21zcd_new_place.py` | done |
+| Ladder | `BuildFixLoop._previous(ladder=True)` holds the attempts made here only, so `script.max_llm_tries_per_case`, `max_augments_per_case`, `max_edit_tries_per_case`, `max_declines_per_case` and `reuse_versions` hold per case, run and set of places; the prompt's "Previous attempts on this case" keeps every attempt | `tests/loop/test_v21zcd_ladder_per_place.py` | done |
+| First rung at a new place | with nothing made here, the stored version whose run resolved the case elsewhere in this run (`improved` / `build_ok`, the script ran) runs again first: a reuse, no LLM call, source `kb-script`, log line `KB 탐색: 이번 실행의 v<N> (<attempt>, <place>에서 해결) → <place>에 다시 실행`; not with `script.reuse: false`, a `retired` / `non_idempotent` / `round_trip` version or missing code. It counts as the stored-version step of the new place; if it does not help, augment, then new | same test files | done |
+| Identical code | "the LLM answered with v<N> again (identical code)" is refused only for the places it ran on | same test files | done |
+| Checked | real Maven 3.9.10 / JDK 21, the three-module project of v2.1z-cb, scripted LLM (`out/scratch/ladder-per-place/`): answers with the same code for every module end `build=ok` with 3 LLM calls (the structure review and one per case) where the run had ended blocked after 37; answers that differ per module: 3 calls instead of 6; full suite 7,764 passed on a developer Mac (after v2.1z-cd and the review fixes of the day) | — | done |
+| Bound across places | the LLM asks of a case in one run, over every place, are capped at twice `script.max_llm_tries_per_case` (40 with the default): then the case is blocked `repeated_failure` whatever place it shows at; reruns are not LLM asks and do not count | `tests/triage/test_v21zcd_new_place.py`, `tests/loop/test_v21zcd_ladder_per_place.py` | done |
+| Review | one independent round on copies of the commit and its parent (`out/scratch/ladder-review/`): no path that runs a wrong script (reruns go through the same script runner and guards, another MSA target's attempts are no candidates, a `non_idempotent` version is never rerun). Found and fixed: a case cycling through five places (more than `loop.oscillation_window`) used 45 LLM calls where the parent commit blocked after 20 (the bound across places: the same ring now ends blocked after exactly twice the cap); a rerun candidate was checked against the store's `round_trip` mark only (an attempt the loop recorded in `_round_trips` is no candidate either). The fixes were not reviewed again | — | done |
+| Limits | with `script.reuse: false` there is no rerun; a rerun that changes nothing at the new place is credited `apply_failed`; the caps hold per set of places, so a case can use more LLM calls in total than `script.max_llm_tries_per_case`, up to the bound across places; a script that resolves one place and breaks a new one every time is rerun without an LLM call until the rounds end (builds only); an answer applied as edits leaves no rerun candidate | — | known |
+| Not checked | a real LLM, the company projects | — | open |

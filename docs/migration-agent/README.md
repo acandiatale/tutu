@@ -179,7 +179,7 @@ Boot 4 상위 레시피는 Springfox 를 springdoc 으로, `spring-cloud-starter
 ### 4.5 restructure
 
 `Restructurer.apply` 가 모드별 작업(디렉터리 이동, 루트 → aggregator, 부모 교체, 필수·선택 아티팩트, boot 모듈과 Application 생성, web.xml 등록)을 하고, 모든 pom 을 정리합니다:
-필터링되는 바이너리의 `nonFilteredFileExtensions` → as-is 버전 이어 적기 → 부모 체인이 관리하는 버전 지우기 → 체인을 덮는 버전 속성 지우기 → 참조 없는 버전 속성 지우기 → 동봉 jar 연결 → JSP javax → jakarta.
+필터링되는 바이너리의 `nonFilteredFileExtensions` → as-is 버전 이어 적기 → 부모 체인이 관리하는 버전 지우기 → 버전 없는 annotation processor path에 버전 넣기 → 체인을 덮는 버전 속성 지우기 → 참조 없는 버전 속성 지우기 → 동봉 jar 연결 → JSP javax → jakarta.
 실패하면 트리를 단계 전 커밋으로 되돌리고(저널 `restructure_reset`) `restructure-failed`(나머지 재구성은 건너뛰고 빌드는 돎, 성공 아님). 규칙은 §8.
 
 ### 4.6 structure review
@@ -259,6 +259,7 @@ flowchart TD
 - 루프가 끝나면 케이스마다 마지막으로 적용한 시도가 `no_change` / `inconclusive` 일 때 최종 빌드 전에 되돌립니다(저널 `script_rollback` 의 `where: "loop end"`). 도움이 안 된 시도는 결과물에 넣지 않습니다. `partial` 은 남깁니다.
 - 순서: parent → pom → 의존성 → 플러그인 해석 → … → 컴파일(리액터 순서) 순, 같은 순위면 `package does not exist` 같은 근본 원인 먼저.
 - 정체(같은 오류 집합)·진동(이전 빌드로 돌아감)이 반복되면 더 센 모델(`llm.escalation_model`)로, 계속되면 `oscillation` 으로 차단.
+- 오류는 위치(파일, 파일이 없으면 모듈)와 서명으로 비교합니다. Maven은 처음 실패한 모듈에서 멈추므로 모듈 단위 오류는 빌드마다 한 모듈씩 나오는데, 한 모듈에서 고친 뒤 다음 모듈에 같은 문구가 나오면 정체도 진동도 아닌 진전으로 보고, 채점도 앞의 수정을 실패로 보지 않으며, 오류 목록(`errors.md`)에는 모듈마다 항목이 하나씩 생깁니다.
 
 ### 5.2 케이스당 사다리
 
@@ -290,7 +291,8 @@ flowchart TD
 | `sbmig-jakarta` | javax 라이브러리이고 저장소에서 jakarta 빌드를 확인 | 의존성 선언 교체(상위 메이저면 보고서 「운영자 확인」에 ⚠) |
 | `sbmig-bundled` | 잃은 패키지를 트리 안 동봉 jar 가 제공 | 좌표가 저장소에 있으면 의존성, 없으면 `lib/` + `system` 스코프. 저장소가 답하지 않으면 붙이지도, 없다고 하지도 않음 |
 
-- 한도: 케이스마다 실행당 LLM 요청 20회(`script.max_llm_tries_per_case`), 그중 보강 15회(`script.max_augments_per_case`), 직접 수정 4회(`script.max_edit_tries_per_case`), 거절 1회(`script.max_declines_per_case`). 세 번째 요청부터 더 센 모델.
+- 사다리와 한도는 지금 오류가 난 위치에서 한 시도만 셉니다. 케이스가 새 위치에 나오면, 이번 실행의 다른 위치에서 그 케이스를 해결한 저장 스크립트를 LLM 없이 먼저 다시 실행합니다(로그 `KB 탐색: 이번 실행의 v<N> (<시도>, <위치>에서 해결) → <위치>에 다시 실행`). 같은 코드의 LLM 답은 그 코드가 실행된 위치에서만 거절합니다.
+- 한도: 케이스마다 실행·위치 집합당 LLM 요청 20회(`script.max_llm_tries_per_case`, 모든 위치를 합치면 그 2배까지), 그중 보강 15회(`script.max_augments_per_case`), 직접 수정 4회(`script.max_edit_tries_per_case`), 거절 1회(`script.max_declines_per_case`). 세 번째 요청부터 더 센 모델.
 - 거절이 sbmig 가 확인한 사실(저장소에 jakarta 빌드가 있음, 동봉 jar 가 그 패키지를 줌, 프로젝트 코드로 대체하는 노트가 있음)과 모순이면 받지 않고 사실과 함께 다시 묻습니다.
 - "프로젝트 밖" 원인(외부 javax API, 없는 아티팩트, 맞지 않는 플러그인)은 `loop.blocked_policy` 가 정한 횟수만 시도합니다.
 - 저장소가 답하지 않은 해결 오류(시간 초과, 연결 거부, 5xx 등)는 "없음" 이 아니라 `repository_unreachable` 입니다. LLM 에 묻지 않고(`loop.blocked_policy.repository_unreachable: 0`) 저장 스크립트 재사용보다 먼저 정해, 네트워크가 돌아와 빌드가 통과해도 어떤 스크립트에도 실적을 주지 않습니다.
@@ -368,7 +370,7 @@ flowchart TD
 - 모듈이 하나인 Spring Boot 앱(루트 pom 이 곧 앱)은 `layout.boot_single_module: split`(기본)이면 다른 프로젝트처럼 세 모듈로 나눕니다(단계 `restructure.apply`): `{name}-boot` 에는 `@SpringBootApplication` 클래스와 Boot 설정(`layout.boot_resources_glob`)만, 나머지 소스와 의존성은 back 모듈, 정적 파일(`static`, `public`, `resources`, `META-INF/resources`, `src/main/webapp`)·JSP·템플릿은 Boot 가 jar 에서 찾는 자리에 둔 front 모듈로 가서 URL 과 뷰 이름이 그대로입니다. 모듈이 여럿인 Boot 프로젝트와 MSA 는 디렉토리를 그대로 둡니다. `wrap` 은 통째로 `{name}-boot` 하나에 넣습니다. 규칙: `agent-doc/14-boot-single-module-split.md`.
 
 - 루트 pom 은 사내 `base-parent`(`artifacts.parent`)를 상속하는 aggregator 이고, 필수 아티팩트 2개는 모든 루트 pom 에(`artifacts.mandatory_target: root`), 선택 아티팩트는 이미 쓸 때만 맞추거나 `when_present` 트리거로 추가합니다. `{name}` = 루트 artifactId.
-- 버전: as-is 부모가 관리하던 버전은 as-is effective pom 에서 이어 적고(Handover ⚠), 새 부모 체인이 관리하는 버전은 지우고, 체인을 덮는 as-is 버전 속성은 지웁니다. 체인 사실은 effective-pom 캡처, 실패하면 저장소의 회사 부모 pom 에서 읽고, 관리 버전은 회사 부모마다 따로 둬 pom 마다 자기 부모의 것으로 판단합니다(루트 → base-parent, 모듈 → 역할 부모). pom 이 아닌 텍스트 파일(필터링 리소스 등)이 `${이름}` / `@이름@` 으로 쓰는 속성은 지우지 않습니다.
+- 버전: as-is 부모가 관리하던 버전은 as-is effective pom 에서 이어 적고(Handover ⚠), 새 부모 체인이 관리하는 버전은 지우고, 체인을 덮는 as-is 버전 속성은 지웁니다. maven-compiler-plugin `<annotationProcessorPaths>`의 버전 없는 `<path>`는 관리되면 그대로 두고, 아니면 같은 pom의 의존성 버전, 버전 없는 의존성에 넣는 규칙의 버전(목표 Boot BOM, as-is 빌드), 다른 프로젝트 pom의 버전 하나 순으로 채우며, 모르면 비워 두고 메모를 남깁니다(`versions_pinned`, 저널의 `"section": "annotationProcessorPaths"`). 체인 사실은 effective-pom 캡처, 실패하면 저장소의 회사 부모 pom 에서 읽고, 관리 버전은 회사 부모마다 따로 둬 pom 마다 자기 부모의 것으로 판단합니다(루트 → base-parent, 모듈 → 역할 부모). pom 이 아닌 텍스트 파일(필터링 리소스 등)이 `${이름}` / `@이름@` 으로 쓰는 속성은 지우지 않습니다.
 - 동봉 jar(WEB-INF/lib 의 벤더 jar): 첫 빌드 전에 연결합니다(`layout.wire_bundled_jars`) — 좌표를 저장소가 주면 의존성, 아니면 `lib/` + `system`. 저장소가 답하지 않으면 그 jar 는 건드리지 않습니다("repository unreadable"). 목표 체인이 관리하는 g:a 의 옛 jar 는 붙이지 않습니다.
 - 예전 레이아웃(`module/boot-jar` + `module/comp-jar`)은 `layout.*` 로 남아 있습니다. 규칙 하나하나: `agent-doc/06-company-rules-restructure.md`.
 

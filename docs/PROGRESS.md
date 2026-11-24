@@ -98,6 +98,8 @@
 - [x] LLM 이 거절한 케이스는 1회 뒤 BLOCKED(`needs_owner`), 다만 sbmig 가 대체 방법을 아는 라이브러리(Spring Mobile 등)는 거절을 받지 않고 다시 묻는다 (v2.1z-aa)
 - [x] EOL 라이브러리를 프로젝트 코드로 대체하는 일은 스크립트가 아니라 직접 편집 답으로 받고 4회로 제한한다
 - [x] A↔B 를 오가는 진동은 `loop.oscillation_limit` 로 막는다
+- [x] 오류는 위치(파일, 파일이 없으면 모듈)와 서명으로 비교한다. 모듈 단위 오류를 한 모듈에서 고친 뒤 다음 모듈에 같은 문구가 나오면 정체·진동이 아니라 진전이고, 오류 목록에도 모듈마다 항목이 하나씩 생긴다 (v2.1z-cb)
+- [x] 케이스의 시도 횟수는 지금 오류가 난 위치에서 한 시도만 센다. 새 위치에 나온 케이스는 이번 실행의 다른 위치에서 해결한 저장 스크립트를 LLM 없이 먼저 다시 실행하고(`KB 탐색: 이번 실행의 v<N> …`), 같은 코드의 답은 그 코드가 실행된 위치에서만 거절한다 (v2.1z-cd)
 - [x] 한 케이스의 수정이 다른 케이스가 고쳐 둔 줄을 되돌려 그 오류를 되살리면, 거기에 쓰인 저장 스크립트는 그 시도를 성공이 아닌 `round_trip`(실패)으로 기록하고 LLM 없이 다시 쓰지 않는다. 기본값 `loop.trade_back: observe` 에서도 KB 실적만 바뀌고 실행은 그대로다. 같은 코드의 LLM 답이 다시 성공하거나 `sbmig kb cases activate` 로 풀린다 (v2.1z-ca)
 - [x] javax 라이브러리는 sbmig 가 직접 저장소 집합(설정 미러, Central 등)에서 jakarta 빌드를 찾고, `sbmig repo-probe` 로 무엇을 물었는지 보여 준다
 - [x] 여러 빌드 파드가 한 KB 폴더에 동시에 써도 깨지지 않게 잠금과 "없을 때만 만들기"로 보강했다
@@ -124,6 +126,7 @@
 - [x] BOM import 와 사내 버전은 체인의 속성(`${spring-boot.version}` 등)을 가리킨다 (v2.1t)
 - [x] LLM 은 스스로 메이저 버전을 올리거나 라이브러리를 바꾸지 않는다, 메이저 변경은 막지 않되 운영자 확인 항목으로 적는다 (v2.1d)
 - [x] 체인을 덮어쓰는 as-is 버전 속성, 참조 없는 버전 속성, Boot BOM 을 가리는 as-is 관리 항목을 지운다 (v2.1z-k, v2.1z-l)
+- [x] maven-compiler-plugin `<annotationProcessorPaths>`의 버전 없는 `<path>`에 재구성이 버전을 넣는다. 관리되면 그대로 두고, 아니면 같은 pom의 의존성 버전, 의존성 단계가 넣을 버전, 다른 프로젝트 pom의 버전 하나 순으로 정하고, 모르면 비워 두고 메모를 남긴다(`versions_pinned`) (v2.1z-cc)
 - [x] 목표 라인에 없는 옛 Spring 아티팩트(spring-dao 등)는 버전을 박지 않고 지운다
 - [x] JSP · 태그 파일 안의 javax EE 이름을 jakarta 로 바꾼다(태그 라이브러리 URI 는 그대로) (v2.1h)
 - [x] 필터링되는 리소스의 바이너리 확장자를 maven-resources-plugin `nonFilteredFileExtensions` 에 적는다 (v2.1m)

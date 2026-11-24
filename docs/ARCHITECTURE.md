@@ -110,7 +110,7 @@ build shows; every attempt is a commit; nothing that did not help is delivered (
 at loop end, `script_rollback` with `where: "loop end"`); after the loop the final `mvn clean package` runs again — except
 when the loop was left on a stop request and the tree is unchanged since its last build, which then stands as the final build.
 A resolution error with a network cause is blocked `repository_unreachable` (no LLM, before stored-script reuse). Budgets:
-`loop.max_llm_calls`, `loop.max_total_minutes`, the per-case caps in `script.*`. The ladder, the caps, the scoring outcomes and
+`loop.max_llm_calls`, `loop.max_total_minutes`, the caps in `script.*` (per case, run and set of places). The ladder, the caps, the scoring outcomes and
 the blocked policies are in `docs/ERROR-HANDLING.md`.
 
 ## 4. Triage
@@ -258,7 +258,9 @@ is added when a matching dependency is declared (`replaces: true` removes the ma
 **Pom cleanup** (every mode, in this order): `nonFilteredFileExtensions` for binary files under filtered resources
 (`resources_filtering.py`) → as-is managed versions pinned from `logs/effective-depmgmt.json` (`versions_pinned`, ⚠ in the
 report's dependency versions) → explicit versions the new parent chain manages dropped (`layout.drop_managed_versions: gte`;
-`managed_versions_dropped`) → version properties that override the chain dropped (`layout.drop_bom_property_overrides`) →
+`managed_versions_dropped`) → a version written into each version-less `<path>` of maven-compiler-plugin's
+`<annotationProcessorPaths>` (managed: left; else the pom's own dependency, the dependency step's version, the one literal
+version of the project's other poms; else left with a note; `versions_pinned`) → version properties that override the chain dropped (`layout.drop_bom_property_overrides`) →
 orphan version properties dropped → bundled jars wired (`layout.wire_bundled_jars`, `bundled_jars.py`: known coordinates the
 repository has → dependency, else copied to `<module>/lib/` with `system` scope; superseded / container-API / unreferenced jars
 untouched) → JSP / tag files renamed javax → jakarta (`layout.jsp_jakarta_rename`). The managed versions come from

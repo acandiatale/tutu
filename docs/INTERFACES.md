@@ -7954,6 +7954,14 @@ for which the pom's own dependency, the dependency step's sources or the project
 while the pom's dependency management is known and names none. And the step never writes a version into a path
 that Maven would have resolved from the dependency management.
 
+**Checked.** Real Maven 3.9.10 / JDK 21 with the real pipeline (`out/scratch/processor-paths/`): a three-module
+Boot project whose as-is parent managed the artifact of a version-less processor path in every module. With the
+step switched off the first builds stop with the message for one module after the other (`build=FAIL`); with the
+step the journal lists three written versions (two from the as-is build, one from the pom's own dependency), no
+build shows the message, and the run ends `build=ok`. The artifact was commons-text, not a real processor: Maven
+resolves the path's version the same way whatever jar it names, and the stand-in parents of the local setup
+manage Lombok.
+
 **Limits.**
 - maven-compiler-plugin resolves a version-less path from the dependency management from 3.12.0 on (measured:
   3.8.1 and 3.11.0 fail on any path without a version, 3.13 / 3.14 resolve it from the pom's own management, an
@@ -8004,6 +8012,10 @@ of the case's errors in the current build, and **elsewhere** otherwise.
 3. **Identical code is refused only for the places it ran on.** The check "the LLM answered with v<N> again
    (identical code), which already ran in this run" looks at the attempts made here only: an answer whose code is a
    version that ran elsewhere runs.
+4. **A bound across places.** The LLM asks of a case in one run, counted over every place, are capped at twice
+   `script.max_llm_tries_per_case` (40 with the default). A case that has used them is blocked
+   `repeated_failure` at its next step, whatever place it shows at; the rationale and the "KB 탐색" line name the
+   total and both numbers. Reruns of rule 2 are not LLM asks and do not count.
 
 **Not changed.** A case whose errors are at a place an earlier attempt targeted: every step as before. The
 rollback of a case's previous try, the scoring, the blocks, the KB credit (a rerun is credited like any reuse, with
@@ -8038,7 +8050,18 @@ that differ per module: the same sequence, 3 calls instead of 6.
   stored version, and an answer with the same code is refused as before this section.
 - A rerun that changes nothing at the new place is credited to the version as `apply_failed` (a reuse), as any
   stored script that changes nothing on a project.
-- The caps hold per set of places, so a case that keeps showing at new places can use more LLM calls in total
-  than `script.max_llm_tries_per_case`; the run's rounds (`loop.phases.verify.max_iterations`) and time bound it.
+- The caps hold per set of places, so a case can use more LLM calls in total than
+  `script.max_llm_tries_per_case`, up to the bound of rule 4.
+- A script that resolves one place and breaks a new one every time is rerun (rule 2) without an LLM call until
+  the rounds end (`loop.phases.verify.max_iterations`): builds only, and each rerun is credited to the version
+  as a success of that one project.
 - An answer applied as edits leaves a stored script that never ran: it is not a rerun candidate; the new place
   then starts with the KB's own choice.
+
+**Review.** One independent round on copies of the commit and its parent (`out/scratch/ladder-review/`): no path
+that runs a wrong script (reruns go through the same script runner, guards included; another MSA target's attempts
+are no candidates; a `non_idempotent` version is never rerun), and the count of tries made here is right for a
+case with errors in many files. Found: a case cycling through five places, more than `loop.oscillation_window`,
+was no longer stopped by the per-case cap (45 LLM calls where the parent commit blocked after 20): rule 4. And a
+rerun candidate was checked against the store's `round_trip` mark only: an attempt the loop itself recorded as
+part of a round trip (`_round_trips`) is no candidate either, also when that credit did not reach the store.

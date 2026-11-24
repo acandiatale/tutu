@@ -57,10 +57,20 @@ duplicate reactor listings.
 
 ## 3. The script ladder (`sbmig/triage/scripts.py`)
 
-Per case and run, in order:
+Per case, run and set of places, in order. The place of an error is its file, else `@<module>` for an error without a
+file. The ladder counts only the attempts made **here**: an earlier attempt of the case is made here when one of the places
+of the errors it targeted is a place of the case's errors in the current build. With nothing made here the case is on the
+first rung again, so every cap below holds per case, run and set of places (the LLM asks of a case over all places are capped
+at twice `script.max_llm_tries_per_case`); the prompt's "Previous attempts on this case"
+keeps every attempt, wherever it was made.
 
 1. **Reuse** (`kb-script`, no LLM): the best stored version from `kb-v2/cases/<case_id>/` (newest proven, else newest unverified;
-   retired and non-idempotent excluded), up to `script.reuse_versions` (1). `script.reuse: false` skips it.
+   retired, non-idempotent and round-trip versions excluded), up to `script.reuse_versions` (1). `script.reuse: false` skips it.
+   At a new place, when an attempt made elsewhere in this run ended `improved` or `build_ok` by running a stored version (not
+   an answer applied as edits), that version (the newest such attempt) runs again first, ahead of the KB's own choice, and
+   counts as the stored-version step of the new place; log line `KB 탐색: 이번 실행의 v<N> (<attempt>, <place>에서 해결) →
+   <place>에 다시 실행`. Not when `script.reuse` is off, the version is retired, non-idempotent or round-trip, or its code is
+   gone.
 2. **Augment** (`llm-augment`): the LLM extends this run's last script for the case into a complete new script, asked on the
    reverted tree; up to `script.max_augments_per_case` (15).
 3. **New** (`llm-new`): when there is nothing to augment or augments are used up. `<edits>` apply at once; the `<script>` is
@@ -70,6 +80,8 @@ Per case and run, in order:
 Other rules:
 
 * If one half of an answer fails (edits do not apply, script errors, no change) the other half of the same answer is tried.
+* An answer whose code is a version that already ran in this run is refused (identical code) only when it ran on the places at
+  hand; code that ran elsewhere runs.
 * Direct edits only (`<no_script>` + `<edits>`, `llm-edit`) — project-specific changes such as replacing an EOL library by
   project code — are never stored; capped by `script.max_edit_tries_per_case` (4).
 * A decline (`<blocked>`, or an answer with neither edits nor script) blocks after `script.max_declines_per_case` (1) with the
@@ -78,7 +90,9 @@ Other rules:
   `knowledge/notes` note carries `replacement: true` is rejected and asked again with the facts (edits inside it still apply).
 * `llm.escalation_model` is used from the case's third ask and when the loop stalls (the same error set as the previous build;
   `loop.stall_limit`). Error sets toggling within `loop.oscillation_window` builds `loop.oscillation_limit` times block the cases
-  involved as `oscillation`.
+  involved as `oscillation`. An error set is the count per (place, signature): the same kind of error in another file or another
+  module is another error set, so fixing a module-level error in one module and meeting the same message for the next module is
+  progress, not a stall.
 * A pinned case (`sbmig kb cases pin <case_id> block[:REASON]`) is blocked without a try.
 * A resolution error with a network cause is blocked `repository_unreachable` (§5) before stored-script reuse, so a rebuild
   that passes because the network came back credits no script.
@@ -103,6 +117,11 @@ Only the next build judges an attempt (`BuildFixLoop._score`; outcomes `AttemptO
 | `regressed` | new errors in touched files, error count above `loop.regression_ratio` (1.5) ×, or structural errors (`loop.structural_regression_kinds`) after a pom edit — a pom fix that only uncovers the next build stage is not a regression | reverted (`loop.revert_on_regression`) → `reverted` |
 | `inconclusive` | the build could not tell (timeout, no parsed error, stopped at an unrelated earlier stage) | no KB credit, counts as tried; rolled back at loop end when it is the case's last try |
 | `apply_failed` | the script or edits did not apply | uncommitted changes discarded |
+
+Errors are matched by (place, signature) here too: a fix of a module-level error is not scored as if its target were still
+there when the same message shows for the next module. After a case's previous try was rolled back, only errors the build
+could have shown count as restored. The error list (`errors.md`) pairs an error without a file only with an entry of the same
+module, so a module-level error gets one entry per module.
 
 Credit goes to the stored script version (`case.json`: successes, failures, projects, runs); a script becomes `proven` when it
 fixes the case on a project other than the one that made it.

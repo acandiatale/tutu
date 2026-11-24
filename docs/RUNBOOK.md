@@ -475,7 +475,7 @@ on a PC — are missing; the report names what is missing). `--stop-after` is re
 | `loop.phases.verify.max_iterations` | 50 | fix-loop rounds (one round = one build) |
 | `loop.max_llm_calls`, `loop.max_total_minutes` | 0 (no cap) / 240 | budgets per run |
 | `loop.stall_limit` | 2 | the same error set N times → escalation model |
-| `script.max_llm_tries_per_case` / `script.max_augments_per_case` | 20 / 15 | LLM asks per case and run; then BLOCKED `repeated_failure` |
+| `script.max_llm_tries_per_case` / `script.max_augments_per_case` | 20 / 15 | LLM asks per case, run and set of places the case shows at (over all places: twice the first number); then BLOCKED `repeated_failure` |
 | `script.max_declines_per_case` | 1 | an LLM decline → BLOCKED `needs_owner` |
 | `script.max_edit_tries_per_case` | 4 | `<no_script>` + edits answers per case |
 | `loop.blocked_policy.<reason>` | 0–2 | script attempts before a case of that reason is blocked (`repository_unreachable`: 0) |
