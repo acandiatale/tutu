@@ -71,9 +71,14 @@ The orchestrator keeps a change when the case's errors disappear and rolls it ba
    `javax.naming`, `javax.net`, `javax.security.auth`, `javax.xml.parsers` / `javax.xml.transform` stay), the target
    Boot line's relocated packages (see the Migration notes), Spring Security lambda DSL with `SecurityFilterChain`
    beans, `HttpStatusCode` where the Spring API now returns it.
-   Jackson (the Jackson 2 → 3 Migration note, `jackson-2-3.md`): a module on Jackson 3 → finish the file's move to
-   `tools.jackson.*` and never undo the recipe; a library or module still on Jackson 2 → keep that file on 2 with
-   `jackson-databind` `"version": null`. Never add `spring-boot-jackson2` to a converted project;
+   Jackson (the Jackson 2 → 3 Migration note, `jackson-2-3.md`): code on `tools.jackson.*` is never moved back to
+   `com.fasterxml.jackson.*` (never undo the recipe). A Spring / Boot class that has a Jackson 3 counterpart, or
+   Jackson 3's own API → finish the move (Rule A). A library with no Jackson 3 class → add
+   `com.fasterxml.jackson.core:jackson-databind` (`"version": null`) and write the Jackson 2 types it needs fully
+   qualified (Rule B). A module where no file and no pom uses `tools.jackson` → that dependency and the Jackson 2
+   modules its files import, imports unchanged (Rule C).
+   `package tools.jackson.… does not exist` → add `tools.jackson.core:jackson-databind` (`"version": null`).
+   Never add `spring-boot-jackson2` to a converted project;
    `com.fasterxml.jackson.annotation.*` never changes.
 {%- endif %}
 9. When a runtime concern remains after a compile fix (semantics changed, configuration no longer applied), the

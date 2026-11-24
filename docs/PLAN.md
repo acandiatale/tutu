@@ -1339,3 +1339,20 @@ move to Jackson 3. Contract: `docs/INTERFACES.md` "v2.1z-bv".
 | Note | `jackson-2-3.md` Rule A: a catch with its own handling is kept; `exception JacksonException has already been caught` → move the Jackson block above the broader `RuntimeException` / `Exception` catch, delete neither, no multi-catch; `IOException is never thrown` around Jackson 3 calls → catch `JacksonException` instead, or drop the dead block when one exists; both messages in "Typical errors"; keyword for the `has already been caught` message of the four Jackson 3 exception classes | `tests/fix/test_v21zbv_jackson_catch.py`; messages and hierarchy checked with `javac` / `javap` on jackson 3.1.8 | done |
 | Checked | unit tests (full suite 7,479 passed) on a developer Mac | — | done |
 | Not checked | a real LLM with the new note, the company project | — | open |
+
+## Status — 2026-11-24, Jackson 2 → 3 in the fix notes: one direction, Redis, Kafka, Jackson's own API (v2.1z-bw)
+
+After the two oscillations of v2.1z-bu / v2.1z-bv the user asked which other libraries can go the same way, said the
+company projects use Kafka and Redis a lot, and that a run of 2026-11-23 had oscillated on Redis too. Contract:
+`docs/INTERFACES.md` "v2.1z-bw".
+
+| Item | What | Verification | State |
+|---|---|---|---|
+| Survey | what `UpgradeJackson_2_3` and the Spring recipes leave: Jackson's own API, the Spring portfolio, third-party libraries; 141 compiler errors collected. The note `jackson-2-3.md` was already selected for 113 of them: the gap was its content | jars, `javap`, recipe yml, `javac` on Jackson 3.1.4 / Boot 4.1.0 under `out/scratch/jackson-libs/` (git-ignored); the real selector | done |
+| Rule | `jackson-2-3.md` "Which rule applies" and system prompt rule 8: code on `tools.jackson` is never moved back, a missing line is added as a dependency; the rule is chosen by the class the failing call talks to (Rule C module, Spring class, Jackson 3's own API, another library); Rule B no longer moves a file back (fully qualified Jackson 2 types at the library's boundary); `class file … not found` no longer reads as "add Jackson 2"; `package tools.jackson.… does not exist` adds Jackson 3 | `tests/fix/test_v21zbw_jackson_rules.py`, `test_v21u_prompts.py`, `test_prompt_scope.py` | done |
+| Redis, Kafka | Rule A of `jackson-2-3.md` carries the Spring Data Redis and Spring Kafka counterparts itself (three of the five Redis messages name no Redis class, so only that note reaches their prompt); `jackson-3-spring.md` (new): Redis and Kafka in full, one line per other Spring module | `tests/fix/test_v21zbw_jackson_spring.py` (every Redis message reaches a note that names the counterpart) | done |
+| Jackson's own API | `jackson-3-api.md` (new): the immutable mapper, default typing, moved and removed features, the built-in modules, custom serializers / deserializers, the recipe's rewrites that do not exist in 3.1 | `tests/fix/test_v21zbw_jackson_api.py` | done |
+| Review | four independent rounds with their own compiles (JDK 21) and runs on Jackson 2.21.4 / 3.1.4 and spring-data-redis 4.1.0: replacements that compiled and changed the output or the stored data format; loops and dead ends of the rule text with a stand-in in-house jar; facts; keywords. What they found and what was changed: the contract's "Review" and "Not covered" paragraphs | reviewers' reproductions under `out/scratch/jackson-libs/review-*` | done |
+| Checked | unit tests (full suite 7,522 passed) on a developer Mac | — | done |
+| Not checked | a real LLM with the new notes; the company projects; Maven's wording of these errors (the survey used `javac`); the full recipe chain of a run; run-time behaviour beyond the serializer and mapper runs | — | open |
+| Not done | no code change: scoring, what a case's prompt says about another case's attempt, a deterministic repair of the recipe's wrong rewrites, the case identity of messages that need different rules | — | open |

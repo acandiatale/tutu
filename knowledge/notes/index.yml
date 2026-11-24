@@ -199,6 +199,30 @@ notes:
   phases:
   - spring
   always: false
+- file: jackson-3-api.md
+  title: 'Jackson 3 API: what the recipe leaves in code that uses Jackson itself'
+  keywords:
+  - of type (ObjectMapper|JsonMapper)\b
+  - method (configure|enable|disable)\((SerializationFeature|DeserializationFeature|MapperFeature)\b
+  - method (registerModules?|findAndRegisterModules|setSerializationInclusion|setDefaultPropertyInclusion|setPropertyNamingStrategy|getSerializerProvider|useDefaultPrettyPrinter)\(
+  - 'location: class (SerializationFeature|MapperFeature)\b'
+  - method visibility\(PropertyAccessor
+  - JavaTimeModule|Jdk8Module|ParameterNamesModule|tools\.jackson\.module\.paramnames|jackson-datatype-(jsr310|jdk8)|jackson-module-parameter-names
+  - defaultSerialize(Field|Value|Null)\b|setNullValueSerializer
+  - writeObjectProperty|writeObjectField
+  - \bObjectCodec\b
+  - \bDefaultTyping\b|LaissezFaireSubTypeValidator|(activate|enable)DefaultTyping
+  - cannot override \w+\([^)]*(JsonGenerator|JsonParser|SerializationContext|DeserializationContext)
+  - JacksonException cannot be converted to IOException
+  - constructor (DatabindException|JsonMappingException)
+  - BeanSerializerModifier|addDeserializationProblemHandler|setMixInAnnotations
+  - PropertyNamingStrateg(y|ies) cannot be converted to PropertyNamingStrateg(y|ies)
+  - tools\.jackson\.core\.(JsonGenerator|JsonParser)\b
+  - tools\.jackson\.databind\.(SerializationContext|DeserializationContext|ValueSerializer|ValueDeserializer|KeyDeserializer|JacksonModule|ser\.|deser\.|module\.)
+  cases: []
+  phases:
+  - spring
+  always: false
 - file: spring-security-7.md
   title: Spring Security 5 -> 6 -> 7
   keywords:
@@ -431,5 +455,23 @@ notes:
     - "org\\.springframework\\.dao\\.support\\.DaoSupport|SqlMapClientDaoSupport|HibernateDaoSupport"
     - "dependency\\.version.*org\\.springframework:spring-"
   cases: [spring_legacy, servlet_tomcat, spring_boot, msa]
+  phases: [spring]
+  always: false
+- file: jackson-3-spring.md
+  title: "Jackson 3 counterparts in the Spring portfolio (Redis, Kafka, AMQP, messaging, Batch, ...)"
+  keywords:
+    - "org\\.springframework\\.kafka\\.support\\.serializer\\.(Jackson)?Json"
+    - "JacksonJson(Serializer|Deserializer|Serde)\\b|\\bJsonSerde\\b"
+    - "(kafka\\.support|amqp\\.support\\.converter)\\.JacksonUtils|JacksonMapperUtils|enhancedObjectMapper"
+    - "(Default)?Jackson2?JavaTypeMapper"
+    - "JsonKafkaHeaderMapper|DefaultKafkaHeaderMapper"
+    - "cannot infer type arguments for Jackson2?Json\\w*<>"
+    - "JacksonJsonMessageConverter|Jackson2(Json|Xml)MessageConverter|MappingJackson2MessageConverter"
+    - "(Generic)?Jackson2?JsonRedisSerializer|Jackson2?HashMapper"
+    - "JacksonJsonObject(Reader|Marshaller)|Jackson2?ExecutionContextStringSerializer"
+    - "Jackson2?Json(ObjectMapper|MessageParser)\\b|Jackson2SockJsMessageCodec"
+    - "(MappingJackson2|Jackson)(Xml|Smile|Cbor|Yaml)HttpMessageConverter"
+    - "Jackson2HalModule|GraphQlJackson2Module|configureJacksonObjectMapper|RepositoryRestConfigurer"
+  cases: []
   phases: [spring]
   always: false

@@ -87,9 +87,14 @@ def test_rules_8_10_and_the_blocked_line(name):
     flat = " ".join(raw.split())
     assert "the target Boot line's relocated packages (see the Migration notes)" in flat
     assert "Jackson (the Jackson 2 → 3 Migration note, `jackson-2-3.md`)" in flat
-    assert "a module on Jackson 3 → finish the file's move to `tools.jackson.*` and never undo the recipe" in flat
-    assert ("a library or module still on Jackson 2 → keep that file on 2 with `jackson-databind` "
-            '`"version": null`') in flat
+    assert ("code on `tools.jackson.*` is never moved back to `com.fasterxml.jackson.*` (never undo the recipe)"
+            in flat)
+    assert ("A Spring / Boot class that has a Jackson 3 counterpart, or Jackson 3's own API → finish the move "
+            "(Rule A)") in flat
+    assert ("A library with no Jackson 3 class → add `com.fasterxml.jackson.core:jackson-databind` "
+            '(`"version": null`) and write the Jackson 2 types it needs fully qualified (Rule B)') in flat
+    assert ("A module where no file and no pom uses `tools.jackson` → that dependency and the Jackson 2 modules "
+            "its files import, imports unchanged (Rule C)") in flat
     assert "Never add `spring-boot-jackson2` to a converted project" in flat
     assert "or a Migration note's `fix-loop:` section asks for it" in flat
     assert 'that is not "replacing a library on your own" (rule 14)' in flat

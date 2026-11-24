@@ -7381,3 +7381,112 @@ Jackson imports.
 unchanged (only the result ZIP names and the note), so the spring-web below 7.0 in the cluster run most likely came
 from one of that run's fix attempts that edited the module's pom, not from the conversion. Not confirmed (the PC and
 the cluster use different settings); no conversion change is planned for it.
+
+## v2.1z-bw — Jackson 2 → 3 in the fix notes: one direction, which rule applies, Jackson's own API, Redis, Kafka and the Spring twins
+
+**Why.** The two oscillations of v2.1z-bu / v2.1z-bv came from the note: Rule A ("the module is on Jackson 3") and
+Rule B ("a signature naming `com.fasterxml.jackson.databind.*`") both matched one file, or no rule matched. A survey
+of what else the recipes leave (evidence under `out/scratch/jackson-libs/`, git-ignored: jars, `javap`, the recipe
+yml, `javac` output of a real `UpgradeJackson_2_3` run on Jackson 3.1.4 / Boot 4.1.0) found the same shape in
+Jackson's own API and across the Spring portfolio. Measured with the real selector on the 141 compiler errors of that
+survey: the note `jackson-2-3.md` was already selected for 113 of them, so the gap was what the note says, not when
+it is selected. The user: Kafka and Redis are used a lot in the company projects, and a run of 2026-11-23 oscillated
+on Redis too; the other libraries have not been seen yet.
+
+**Which rule applies (note `jackson-2-3.md`, system prompt rule 8).** Three things hold under every rule, and they
+are what makes the choice converge: code on `tools.jackson` is never moved back to `com.fasterxml.jackson` (one
+direction only); a missing line is added as a dependency, never avoided by moving code; a type written fully
+qualified as `com.fasterxml.jackson.…` in a file on `tools.jackson` marks the boundary to a Jackson 2 only library
+and stays. The rule is chosen by the class the failing call talks to, never by the message alone:
+0. no file and no pom of the module uses `tools.jackson`: Rule C, whatever the class;
+1. a Spring Framework / Spring Boot / Spring portfolio class (`org.springframework.*`): Rule A. The modules the
+   notes name each have a Jackson 3 counterpart on the target line; a Spring class no note names (Spring Cloud was
+   not surveyed) is judged like another library (3);
+2. Jackson 3's own API (a call on a `tools.jackson` object): Rule A;
+3. another library: Rule A when a class of it that takes Jackson 3 types is on the classpath (a note, the error's
+   candidate list or the class name shows it); otherwise Rule B. The library's artifact is never swapped for another
+   to get a Jackson 3 class.
+Rule B adds Jackson 2 databind and never moves a file back: a file the recipe left on Jackson 2 stays as it is; a
+file on Jackson 3 keeps its imports and names the Jackson 2 types the library takes, returns or declares fully
+qualified; a call on such a Jackson 2 object follows Jackson 2 (its checked exceptions are caught or declared, Rule A
+does not apply to it); a variable of the file that a Jackson 3 call also uses is never retyped and nothing is cast
+between the lines: the library gets its own Jackson 2 object and trees cross as text; a mapper the library itself
+hands out stays, together with the Spring Jackson 2 class it feeds (the one exception to "use the counterpart").
+Rule C brings the Jackson 2 module artifacts its files import. `package tools.jackson.… does not exist` /
+`class file for tools.jackson.… not found` means Jackson 3 is missing from the module (the shape of v2.1z-bu): the
+Jackson 3 databind artifact is added.
+`cannot access ObjectMapper … class file for com.fasterxml.jackson.databind.ObjectMapper not found` means "a class
+compiled against Jackson 2 is used and Jackson 2 databind is not on the classpath": the note no longer reads it as
+"add Jackson 2", it sends the reader through the choice first. Several of these messages name no Spring class
+(`cannot access ObjectMapper`, `cannot access JavaType`, `cannot access TypeReference`, `… cannot be converted to
+com.fasterxml.jackson.databind.ObjectMapper`), so only `jackson-2-3.md` reaches their prompt: its Rule A therefore
+carries the answers for the modules the company uses (MVC converters, WebFlux codecs, Spring Data Redis, Spring
+Kafka) itself. The text of v2.1z-bu (WebFlux codecs) and v2.1z-bv (catch clauses) stays as it is: a company rerun
+passed with it.
+
+**New notes.** Both are ordinary keyword-selected notes (`cases: []`, `phases: [spring]`, at most 160 lines, index
+entry and front matter in sync). Every class, method and message in them comes from the evidence folder (a `javap`
+listing, a snippet that compiles, a stored `javac` message); what could not be confirmed there is left out.
+- `jackson-3-api.md`: what the recipe leaves in code that uses Jackson itself. The mapper is immutable (setters and
+  `registerModule` on an existing mapper are gone: `rebuild()` / `JsonMapper.builder()`), features that moved or
+  were removed, the modules that are built into databind 3 (`JavaTimeModule`, `Jdk8Module`,
+  `ParameterNamesModule`: never re-add the Jackson 2 artifacts), custom serializers and deserializers (`throws
+  IOException` on overrides and on the helpers they call, the `SerializationContext` and generator renames,
+  `ObjectCodec`), default typing (`ObjectMapper.DefaultTyping`, the validator that is no longer public), and the
+  rewrites the recipe itself gets wrong (a method or type name that does not exist in 3.1).
+- `jackson-3-spring.md`: the Jackson 3 counterparts in the Spring portfolio. Spring Data Redis (the recipe renames
+  none of its classes: both serializers, the builder, the missing setter and no-arg constructor, default typing) and
+  Spring Kafka (the serializer, deserializer and serde classes the recipe renames, and what it leaves: the mapper
+  helper, the type mapper interface, the mapper type the constructors take, the `cannot infer type arguments for
+  …<>` message) in full, then one line per other module that has a counterpart. Boot's own support types stay in `boot4-packages.md`, Spring Security's modules in
+  `spring-security-7.md`, MVC converters and WebFlux codecs in `jackson-2-3.md`.
+
+**Selection.** At most four notes reach a prompt, ranked by the number of the note's keywords that match (three
+points in the error text, one in the imports / pom), and a note is left out whole from the lowest rank when the
+prompt is over its budget. So `jackson-2-3.md` keeps its size (it is the first-ranked note for most Jackson errors and
+carries the rule), and each new note has keywords for the symbols of its own errors.
+
+**Review.** Three independent reviews against the jars, with their own compiles (JDK 21) and, for the API note,
+runs on Jackson 2.21.4 and 3.1.4. Fixed from them:
+- replacements that compiled and changed the output: property inclusion needs value and content inclusion together;
+  `AUTO_DETECT_CREATORS` also needs the scalar-constructor visibility; `writePOJOProperty` on a generator made from a
+  bare factory throws; a `rebuild()` copy does not configure the shared Spring bean; a Jackson exception is wrapped
+  so that callers still catch the same type;
+- loops the rule text itself produced, each reproduced with a stand-in jar compiled against Jackson 2: "once per
+  file" with "keep that file on Jackson 2" on a file that also uses a Spring Jackson 3 class; a file moved back to
+  Jackson 2 whose next error (a checked Jackson 2 exception) was then sent to Rule A; one declaration feeding a
+  Jackson 3 class and a Jackson 2 only library. They are why Rule B no longer moves a file back at all;
+- dead ends: no text added Jackson 3 to a module that lacks it; a library with a separate Jackson 3 artifact had no
+  rule; Rule C had no place in the choice; Kafka's and Redis' Jackson 2 classes give messages that name no Spring
+  class, so their answers were not in the prompt;
+- facts: the Kafka type mapper interface the recipe does not rename; Kafka's Jackson 2 serializers do not compile
+  without Jackson 2 for their common constructors; AMQP's `JacksonUtils` has no counterpart;
+- keywords that matched other libraries' output (`getFactory(`, `getProcessor(`, an unqualified `JacksonUtils`, any
+  `Jackson…<>` diamond);
+- from the third round, after the rule was rebuilt around the two invariants (its Redis, Kafka, in-house jar,
+  missing Jackson 3 and Rule C walks all reached a clean compile): fixes that compiled and were wrong at run time.
+  Default typing must keep every argument (without `JsonTypeInfo.As.PROPERTY` the stored JSON no longer reads);
+  `new GenericJackson2JsonRedisSerializer()` becomes `RedisSerializer.json()`, never a bare builder (it reads stored
+  entries as maps); "delete `JavaTimeModule`" applies to Jackson 3 code only, a file that stays on Jackson 2 gets the
+  Jackson 2 module artifact; a mapper that an in-house factory hands out is not replaced;
+- from the fourth round, a check of those corrections (four of six held; the Redis walk still reached a clean
+  compile): rule 8 said "that dependency only" for Rule C; with the Jackson 3 Redis class already in place nothing
+  said to put the Jackson 2 class back for an in-house mapper; a Jackson 3 call that receives an argument fixed to a
+  Jackson 2 type was sent to Rule A, where reverting the type made its own error disappear. Hence the third
+  invariant: a type written fully qualified as `com.fasterxml.jackson.…` in a file on `tools.jackson` stays. These
+  last three corrections were checked by compile states the reviewers had produced, not by a further review round.
+
+**Not covered.** A project class that extends a Jackson 2 base class of an in-house jar and is registered in a
+Jackson 3 module has no sentence (it needs a Jackson 3 twin of that class). Several of these situations share one
+error case id although they need different rules (`cannot access ObjectMapper` for Redis, Kafka and an in-house
+factory; both directions of the `ObjectMapper` conversion message; `cannot access JavaType` with Jackson 2 missing
+and with Jackson 3 missing; `JavaTimeModule` on either line), so a stored
+script of one can be reused for another: the case identity rules are not changed here.
+
+**Not changed.** No code: selection, scoring, the fix loop and the recipes are as before. No deterministic repair of
+the recipe's wrong rewrites and no change to what the prompt says about another case's attempt (both reviewed on
+2026-11-24, not built). Third-party libraries beyond the examples of rule 3 have no section.
+
+**Not checked.** A real LLM with the new notes; how any of this behaves at run time; the wording of these errors
+inside Maven's output (the survey used `javac` directly); the full recipe chain of a run (the survey ran
+`UpgradeJackson_2_3` alone).

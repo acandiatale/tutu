@@ -97,7 +97,8 @@ def test_rule_a_names_the_jackson3_codecs_and_forbids_going_back():
     # the typical-errors list keeps one bullet for the message and points at Rule A for the codec case
     facts = re.sub(r"\s+", " ", body.split("## Rule A", 1)[0])
     assert facts.count("cannot be converted to com.fasterxml.jackson.databind.ObjectMapper") == 1
-    assert "WebFlux codec, Rule A" in facts
+    # the entry names the Spring classes that are Rule A (the codec among them) and leaves other classes to the choice
+    assert "a WebFlux codec, a Redis serializer or a Kafka class is Rule A" in facts
 
 
 def test_codec_keywords_match_the_codec_names():
