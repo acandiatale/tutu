@@ -15,6 +15,8 @@
 #   사내 PyPI 미러가 없으면 공개 호스트 둘을 믿게 한다 — 호스트 여러 개는 빈칸으로:
 #   --build-arg "PIP_TRUSTED_HOST=pypi.org files.pythonhosted.org"
 #   프록시로 나가는 망이면 --build-arg HTTP_PROXY=… HTTPS_PROXY=… NO_PROXY=… (docker 가 빌드 중에만 쓴다)
+#   JDK(Amazon Corretto 21)를 사내 미러에서 받으려면 --build-arg CORRETTO_BASE_URL=<미러 주소>, HTTPS 검사 망에서 인증서 오류가 나면
+#   --build-arg CORRETTO_TLS_VERIFY=0 을 준다. 자세한 내용은 아래 CORRETTO_ 인자의 설명에 있다.
 ARG PYTHON_IMAGE=python:3.11-slim-trixie
 FROM ${PYTHON_IMAGE}
 
@@ -24,13 +26,48 @@ ARG PIP_TRUSTED_HOST=
 # 컨텍스트 안에서 sbmig 체크아웃(pyproject.toml, sbmig/, config/, knowledge/)과 deploy/ 가 있는 곳 — 우리 레포는 둘 다 루트(. / deploy)
 ARG APP_DIR=.
 ARG DEPLOY_DIR=deploy
+# JDK 는 Amazon Corretto 21 을 버전을 정해 받는다. Debian 의 openjdk 패키지는 빌드하는 날 apt 미러에 있는 빌드가 들어와서
+# 어떤 빌드인지 이 파일에 남지 않는다. 21.0.13.1.2 는 Java4Shell(CVE-2026-114938)이 고쳐진 Corretto 빌드다.
+# 받는 파일은 <CORRETTO_BASE_URL>/<CORRETTO_VERSION>/java-21-amazon-corretto-jdk_<CORRETTO_VERSION>-1_<amd64|arm64>.deb 이다.
+# 설치하기 전에 SHA-256 을 아래 값과 비교하고 다르면 빌드를 멈춘다. 값은 GitHub corretto/corretto-21 의 해당 버전 릴리스 페이지에
+# 있다. 버전을 바꿀 때는 CORRETTO_VERSION 과 두 체크섬을 함께 바꾼다.
+# 폐쇄망에서 빌드하는 방법은 셋이다.
+#   1. 기본 주소 그대로 프록시로 나간다(HTTPS_PROXY 를 빌드 인자로 준다).
+#   2. 사내 미러에 같은 <버전>/<파일> 배치로 올려 두고 CORRETTO_BASE_URL 에 그 주소를 준다. http 주소의 미러를 프록시로 거쳐야 하면
+#      소문자 http_proxy 를 준다(curl 은 대문자 HTTP_PROXY 를 읽지 않는다). 프록시를 거치지 않을 미러는 NO_PROXY 에 넣는다.
+#   3. HTTPS 를 검사하는 망에서 인증서 오류가 나면 CORRETTO_TLS_VERIFY=0 을 준다. 인증서는 확인하지 않지만 체크섬은 그대로 확인한다.
+ARG CORRETTO_VERSION=21.0.13.1.2
+ARG CORRETTO_BASE_URL=https://corretto.aws/downloads/resources
+ARG CORRETTO_SHA256_AMD64=c365469853d9296728bb19e629225fef04b45e595e3467d8a0778450367381e0
+ARG CORRETTO_SHA256_ARM64=d251fb09557ccf7992d36b810a96df859531821679d21d0ab1eddc2b8e8c1ba0
+ARG CORRETTO_TLS_VERIFY=1
 
+# Corretto 를 maven 보다 먼저 설치한다. Corretto 패키지가 java7-runtime-headless 를 제공하므로 maven 이 Debian 의 OpenJDK 를 끌어오지 않는다.
+# 끝에서 openjdk 패키지가 설치되어 있거나 java -version 이 정한 빌드가 아니면 빌드를 멈춘다.
+# /opt/java21 은 Corretto 의 설치 경로를 가리킨다(amd64, arm64 모두 같은 경로). JAVA_HOME 은 여기를 가리킨다.
 RUN if [ -n "$APT_MIRROR" ]; then sed -i "s|http://deb.debian.org|${APT_MIRROR%/}|g" /etc/apt/sources.list.d/debian.sources; fi \
-    && apt-get update && apt-get install -y --no-install-recommends \
-        openjdk-21-jdk-headless maven git ca-certificates unzip curl \
+    && apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \
+    && arch="$(dpkg --print-architecture)" \
+    && case "$arch" in \
+        amd64) sha_arg=CORRETTO_SHA256_AMD64; sha_want="$CORRETTO_SHA256_AMD64" ;; \
+        arm64) sha_arg=CORRETTO_SHA256_ARM64; sha_want="$CORRETTO_SHA256_ARM64" ;; \
+        *) echo "ERROR: unsupported architecture '$arch' for Amazon Corretto (amd64 and arm64 only); build with --platform linux/amd64 or linux/arm64." >&2; exit 1 ;; \
+       esac \
+    && deb="java-21-amazon-corretto-jdk_${CORRETTO_VERSION}-1_${arch}.deb" \
+    && tls_opt="" && if [ "$CORRETTO_TLS_VERIFY" = "0" ]; then tls_opt="--insecure"; fi \
+    && curl -fSL --no-progress-meter --retry 3 $tls_opt -o "/tmp/$deb" "${CORRETTO_BASE_URL%/}/${CORRETTO_VERSION}/$deb" \
+    && sha_got="$(sha256sum "/tmp/$deb" | cut -d ' ' -f 1)" \
+    && if [ "$sha_got" != "$sha_want" ]; then echo "ERROR: SHA-256 mismatch for $deb: expected $sha_want, got $sha_got. Check $sha_arg (and CORRETTO_VERSION / CORRETTO_BASE_URL)." >&2; exit 1; fi \
+    && apt-get install -y --no-install-recommends "/tmp/$deb" \
+    && rm -f "/tmp/$deb" \
+    && apt-get install -y --no-install-recommends maven git unzip \
+    && openjdk_pkgs="$(dpkg-query -W -f '${db:Status-Status} ${Package}\n' 'openjdk-*' 2>/dev/null | awk '$1 == "installed" { print $2 }')" \
+    && if [ -n "$openjdk_pkgs" ]; then echo "ERROR: a Debian OpenJDK package was installed: $(echo $openjdk_pkgs). The image must carry Amazon Corretto only; check what depends on it (apt-cache rdepends) and CORRETTO_VERSION." >&2; exit 1; fi \
+    && java_version="$(java -version 2>&1)" \
+    && if ! printf '%s\n' "$java_version" | grep -qF "$CORRETTO_VERSION"; then echo "ERROR: java -version does not show Corretto $CORRETTO_VERSION: $(printf '%s' "$java_version" | tr '\n' ' '). Check CORRETTO_VERSION." >&2; exit 1; fi \
     && rm -rf /var/lib/apt/lists/* \
-    # /opt/java21 → 이 아키텍처의 JDK (amd64 / arm64 경로가 다르다); JAVA_HOME 은 여기를 가리킨다
-    && ln -s "$(dirname "$(dirname "$(readlink -f "$(command -v javac)")")")" /opt/java21
+    && test -x /usr/lib/jvm/java-21-amazon-corretto/bin/javac \
+    && ln -s /usr/lib/jvm/java-21-amazon-corretto /opt/java21
 
 # sbmig 은 JAVA21_HOME / JAVA_HOME 을 읽는다 (설정 build.java_home 이 있으면 그것이 우선)
 ENV JAVA_HOME=/opt/java21 \

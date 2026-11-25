@@ -5,7 +5,7 @@
 
 | 파일 | 역할 |
 |---|---|
-| `docker/Dockerfile` | **이미지 하나**: Python 3.11 + JDK 21 + Maven + git + 앱 코드. 웹 UI 에이전트와 요청별 Job 모두 이 이미지를 쓴다 |
+| `docker/Dockerfile` | **이미지 하나**: Python 3.11 + JDK 21(Amazon Corretto, 버전 고정) + Maven + git + 앱 코드. 웹 UI 에이전트와 요청별 Job 모두 이 이미지를 쓴다 |
 | `docker/pip-deps.py` | 이미지가 설치할 의존성을 `pyproject.toml` 에서 읽는다(목록을 두 곳에 두지 않기 위해) |
 | `docker/run-job.sh` | 요청별 Job 파드의 진입 스크립트: 소스 → KB → `sbmig run` → 결과 push → 종료 코드 |
 | `k8s/10-storage.yaml` | PVC 하나: `/data`(웹 UI 에이전트의 업로드·실행·KB·LLM 기록, Maven 로컬 저장소 `/data/.m2`) |
@@ -60,7 +60,10 @@ docker build --build-arg APP_DIR=src/migration-agent --build-arg DEPLOY_DIR=depl
 | 인자 | 예 | 뜻 |
 |---|---|---|
 | `PYTHON_IMAGE` | `<harbor>/<proxy project>/library/python:3.11-slim-trixie` | 베이스 이미지를 사내 Harbor 의 Docker Hub 프록시에서 |
-| `APT_MIRROR` | `https://nexus.company/repository` | `deb.debian.org` 대신 쓸 주소(뒤에 `/debian`, `/debian-security` 가 붙는다 — JDK 21·Maven·git 을 apt 로 받는다) |
+| `APT_MIRROR` | `https://nexus.company/repository` | `deb.debian.org` 대신 쓸 주소(뒤에 `/debian`, `/debian-security` 가 붙는다 — Maven·git 을 apt 로 받는다. JDK 는 아래 `CORRETTO_BASE_URL`) |
+| `CORRETTO_BASE_URL` | `https://nexus.company/repository/corretto` | JDK 파일을 받을 주소. 기본은 `https://corretto.aws/downloads/resources`. 미러는 `<버전>/<파일>` 배치를 그대로 둔다 |
+| `CORRETTO_TLS_VERIFY` | `0` | `0` 이면 JDK 를 받을 때 서버 인증서를 확인하지 않는다(HTTPS 를 검사하는 망). 체크섬은 그대로 확인한다. 기본 `1` |
+| `CORRETTO_VERSION` / `CORRETTO_SHA256_AMD64` / `CORRETTO_SHA256_ARM64` | `21.0.13.1.2` / 릴리스 페이지의 SHA-256 | JDK 빌드와 그 두 체크섬. 셋을 함께 바꾼다 |
 | `PIP_INDEX_URL` / `PIP_TRUSTED_HOST` | `https://nexus.company/repository/pypi/simple` / `nexus.company` | PyPI 대신 사내 미러. `PIP_TRUSTED_HOST` 는 인증서를 검증하지 않을 호스트 — 여러 개면 빈칸으로 나눈다 |
 | `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` | 회사 프록시 | 프록시로만 나가는 망 — 빌드 중에만 쓰인다 |
 
@@ -68,6 +71,8 @@ docker build --build-arg APP_DIR=src/migration-agent --build-arg DEPLOY_DIR=depl
 **PC 의 pip 는 받는데 빌드의 `pip install` 만 `SSLError` 로 멈출 때**: 회사망이 HTTPS 를 중간에서 검사하고, 그 검사용 인증서가 PC 의 인증서
 저장소에는 있지만 컨테이너 안에는 없는 것이다. 사내 PyPI 미러가 있으면 위 두 인자로 그쪽을 쓰고, 없으면 공개 호스트 둘을 믿게 한다(빌드 중의 pip 에만 적용):
 `docker build --build-arg "PIP_TRUSTED_HOST=pypi.org files.pythonhosted.org" …`. PC 가 쓰는 주소는 `pip config list` 로 본다.
+
+**JDK 는 Amazon Corretto 21 을 버전을 정해 받는다**(지금 `21.0.13.1.2`, Java4Shell CVE-2026-114938 이 고쳐진 빌드). 빌드가 `corretto.aws` 에서 `.deb` 파일을 받고, SHA-256 이 Dockerfile 의 값과 같을 때만 설치한다. 밖으로 못 나가는 망이면 사내 미러에 `<버전>/java-21-amazon-corretto-jdk_<버전>-1_<amd64|arm64>.deb` 배치로 올리고 `--build-arg CORRETTO_BASE_URL=<미러 주소>` 를 준다. 받다가 인증서 오류로 멈추면 회사망이 HTTPS 를 검사하는 것이다. `--build-arg CORRETTO_TLS_VERIFY=0` 을 주면 인증서는 확인하지 않고 받는다. 체크섬은 그대로 확인하므로 다른 파일이 들어오지 않는다. 새 Corretto 빌드로 올릴 때는 GitHub `corretto/corretto-21` 의 그 버전 릴리스 페이지에서 두 체크섬(amd64, arm64 `.deb`)을 옮겨 `CORRETTO_VERSION`, `CORRETTO_SHA256_AMD64`, `CORRETTO_SHA256_ARM64` 를 함께 바꾼다(Dockerfile 의 기본값 또는 빌드 인자).
 
 셸 스크립트(`run-job.sh`)는 `.gitattributes` 가 LF 로 고정하고 Dockerfile 이 한 번 더 LF 로 되돌리므로 Windows 체크아웃에서 빌드해도 된다.
 
