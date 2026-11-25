@@ -4,8 +4,16 @@ evaluate -> report 순서다. 취약점이 남았고 라운드 한도 안이면 
 진입점은 ``run_remediation``이다. 재개하면 ``state.next_node``부터 다시 실행한다.
 - 노드 경계마다 state를 저장한다
 - 조치 전 빌드가 실패하면 검사와 계획으로 넘어가지 않는다. ``state.baseline_tolerated``인 실행만 예외다
-- 결과를 모르는 IVAS 업로드는 다시 올리지 않는다
-- 수정본은 따로 복사한 트리에서 빌드하고, 결과 ZIP과 같은 바이트를 재검사한다
+- 그런 실행은 수정본 빌드에 새 오류가 없을 때만 라운드를 확정하고, SUCCEEDED로 끝내지 않는다
+- 결과를 모르는 IVAS 업로드는 다시 올리지 않는다. 원격 분석을 취소된 것으로 기록하지도 않는다
+- 수정본은 따로 복사한 트리에서 빌드하고, 검증한 뒤에만 accepted/에 확정한다
+- 재검사는 결과 ZIP과 같은 바이트로 한다. SUCCEEDED는 evaluate의 조건을 모두 만족할 때만 정한다
+- 수정본 빌드가 실패하면 ``failed_candidate: include``(기본값)일 때 실패한 트리를 결과 ZIP으로 내고 FAILED로 끝낸다
+- 버전 문자열 밖의 변경이 있거나 의존성 결과가 계획과 다른 수정본은 설정과 상관없이 내보내지 않는다
+- 수정 루프가 고친 내용은 ``_overlay_fix``로만 수정본에 반영한다
+- 수정본을 빌드할 때마다 manifest 파일을 accepted/, 적용한 제안, 보고한 수정 내용의 바이트로 되돌린다
+- 결과 ZIP은 delivery/에 임시 이름으로 만든 뒤 result.zip과 바꾸고, 그다음에 state에 기록한다
+- 업로드에서 빌드 산출물을 뺐으면 조치 전 검사와 바꾼 것이 없는 결과 ZIP에는 ``original/scan-source.zip``을 쓴다
 
 Rules the flow keeps:
 - The state is saved at every node boundary.

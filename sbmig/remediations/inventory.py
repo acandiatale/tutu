@@ -1,11 +1,17 @@
 """IVAS가 찾은 취약점을 Maven이 실제로 고른 의존성(``ResolvedModel``)과 pom의 버전 문자열 위치에 연결하는 모듈.
 그래프의 ``inventory`` 노드가 호출하고, planner가 결과 ``Inventory``로 변경을 제안한다.
-- 모듈마다 버전을 어디서 정하는지(직접 선언, property, dependencyManagement, 부모, BOM, 간접)를 찾는다
+- 모듈마다 버전의 출처를 정한다. 직접 쓴 버전은 ``direct_literal``, 프로젝트 property면 ``direct_property``다
+- 외부 부모의 property면 ``parent_managed``다. ``direct_property``의 위치는 property를 정의한 줄이다
+- 선언에 버전이 없고 프로젝트 pom의 dependencyManagement에 있으면 ``own_management``다(import 제외)
+- 선언도 관리 항목도 없이 다른 의존성을 거쳐 들어왔으면 ``transitive``이고, ``via``에 그 경로를 둔다
+- 프로젝트에 버전이 없으면 BOM 하나뿐일 때 ``bom_managed``, 외부 부모뿐일 때 ``parent_managed``다. 둘 다면 출처 불명이다
+- 선언한 버전이 Maven이 고른 버전과 다르면 고쳐도 소용없으므로 ``unmapped``다
 - ``PomLocation``은 pom을 다시 읽어 그 줄에 그 문자열이 있는지 확인한 뒤에만 만든다
-- 고칠 수 있는 항목은 (g:a, 버전)의 위치마다 하나다. 다른 모듈은 가장 많은 모듈을 다루는 항목에 합친다
+- 고칠 수 있는 항목은 (g:a, 버전)의 위치마다 하나다. ``unmapped``는 문제를 숨기지 않도록 합치지 않는다
+- 나머지 모듈은 가장 많은 모듈을 다루는 항목의 ``also_modules``에 넣는다. 검증에서 실패로 치지 않고 다음 라운드에서 계획한다
 - 사내 아티팩트를 거쳐 들어온 모듈은 묶기 전에 따로 나눈다
-- IVAS와 Maven 표기는 ``matching``으로 비교하므로 버전의 대소문자만 다르면 같은 라이브러리로 본다
-- 의존성 결과에 없는 라이브러리는 ``plugin`` -> ``vendored`` -> ``unmapped`` 순으로 분류한다
+- IVAS와 Maven 표기는 ``matching``으로 비교한다. 버전의 대소문자만 다르면 같은 라이브러리다
+- 의존성 결과에 없는 라이브러리는 ``plugin`` -> ``vendored`` -> ``unmapped`` 순으로 분류한다. 파일 컴포넌트는 항상 ``vendored``다
 
 Origin per module, in this order: 1. a version on the declaration in the module's or an in-project parent's
 `<dependencies>`: `direct_literal`; a

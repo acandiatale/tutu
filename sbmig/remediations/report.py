@@ -2,8 +2,14 @@
 그래프의 ``report`` 노드가 끝 상태에서 ``write_report``를 호출하고, API 목록은 ``summary``를 쓴다.
 - 비밀 값, 토큰, 서버 절대 경로는 넣지 않는다. 경로는 실행 폴더 기준 상대 경로로 쓴다
 - 입력이 같으면 결과도 같도록 현재 시각을 넣지 않고 정렬 순서를 고정한다
+- report.md는 결과 블록, 요약, 해야 할 일, 조치 완료, 빌드 오류 수정 순서로 시작한다
+- 그 뒤는 사내 라이브러리, 직접 확인, 제외 항목, 프로젝트 파일, 변경하지 않은 것, 처리 기록 순서다. 빈 절은 쓰지 않는다
 - 상태와 사유 코드는 접힌 처리 기록에만 쓰고, 영어 문장은 ``i18n.ko_display``로 바꿔 보여 준다
-- ``ignore_actions`` 항목과 report 모드의 파일 컴포넌트는 따로 싣고 취약점 개수에 넣지 않는다
+- report.json에는 저장된 영어 문장과 코드를 그대로 쓴다
+- ``inhouse_artifact`` 항목은 사내 아티팩트별로 묶고 ``remediation.inhouse_message``를 붙인다
+- 사내 라이브러리와 직접 확인 표 아래에는 모듈마다 라이브러리가 들어온 경로를 쓴다
+- ``ignore_actions`` 항목은 제외 항목 절에만 싣고 취약점 개수에 넣지 않는다
+- ``file_components: report``면 파일 컴포넌트는 프로젝트 파일 절에만 싣고 취약점 개수에 넣지 않는다
 
 Remediation report: `report.json` (the state, the scan summaries, per-round plan summaries; English sentences
 and codes as stored) and `report.md` (Korean, for the project owners). Deterministic for the same input; no

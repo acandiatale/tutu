@@ -1,8 +1,14 @@
 """회사 취약점 점검 도구 IVAS의 HTTP 클라이언트와 검사 절차를 담은 모듈.
-검사는 업로드 -> 상태 조회 -> 요약 -> 모든 페이지 조회 -> 빠진 결과 확인 순서로 진행한다.
+검사 순서는 업로드 -> 상태 조회 -> 요약 -> 모든 페이지 조회 -> 빠진 결과 확인이다.
+회사가 알려 준 API만 쓰고, 모르는 것은 추측하지 않고 미완료로 남긴다.
 - 업로드는 자동으로 다시 하지 않는다. 전송 여부가 애매하면 ``IvasUploadUncertain``을 던지고 사람 확인을 기다린다
-- 결과가 하나라도 빠졌으면 ``complete=False``이고, 취약점이 0건이어도 0건으로 보지 않는다
-- 파일 컴포넌트를 읽지 못한 것은 기본 설정에서 메모로만 남긴다
+- 타임아웃, 연결 끊김, 5xx, ID 없는 2xx가 애매한 경우다. 보내기 전 실패와 분명한 4xx 거절만 ``IvasError``다
+- 빠진 페이지, 바뀐 전체 개수, 중복 행, 요약과 다른 개수, SW 범주, HTTP 오류가 하나라도 있으면 ``complete=False``다
+- ``complete=False``면 ``findings``가 비어 있어도 0건으로 보지 않는다
+- ``ivas_summary_check: exact``면 ``components.total``이 모든 페이지의 라이브러리 행 수(중복 제거 전)와 같아야 한다
+- ``file_components: report``(기본값)면 파일 컴포넌트를 못 읽어도 메모만 남기고 ``file_complete``에 표시한다
+- 파일 컴포넌트 ID에는 ``|``가 있을 수 있어서 경로 조각 하나로 인코딩해서 보낸다
+- 조치 구분 코드의 뜻은 ``ACTION_MEANINGS``에만 둔다. 빈 코드와 모르는 코드는 조치 대상이다
 - 토큰과 비밀번호는 로그, 예외 메시지, repr에 넣지 않는다. TLS 검증은 끄지 않는다
 
 IVAS HTTP client and scan procedure. Only the HTTP contract the company gave is used: `POST /session`

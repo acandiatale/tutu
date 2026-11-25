@@ -2,7 +2,13 @@
 - in-process 모드에서만 작업 스레드로 조치를 실행한다. 한 번에 하나씩 접수 순서대로 실행한다
 - Job 모드에서는 아무것도 실행하지 않고, 단독 업로드와 재개 요청은 ``NotAvailable``(HTTP 409)로 거절한다
 - 재개는 사람이 요청할 때만 한다. 서버가 재시작되면 QUEUED / RUNNING이던 조치는 INTERRUPTED가 된다
-- 이관 뒤 이어서 실행한 조치(``<out>/<이관 실행 id>/remediation/``)도 같은 API로 보여 준다
+- 이관 뒤 이어서 실행한 조치(``<out>/<이관 실행 id>/remediation/``)도 같은 API로 보여 준다. 삭제는 거절한다
+- Job 모드에서 그 조치를 재개하면 확인 응답을 state.json에 먼저 기록하고, 새 빌드 파드는 ``RunManager``가 만든다
+- 이관은 끝났는데 QUEUED / RUNNING으로 남은 조치는 파일을 고치지 않고 INTERRUPTED(``stale: true``)로 보여 준다
+- 단독 업로드와 in-process 재개는 ``<build.local_repo>-remediation`` 저장소를 쓴다. 이관 뒤 조치는 이관의 저장소를 쓴다
+- 작업 폴더의 상태를 바꿀 때는 ``RunClaim``으로 점유한다. 다른 프로세스가 점유 중이면 아무것도 바꾸지 않는다
+- 진행하던 쪽이 없어진 끝 상태는 결과 ZIP 기록과 보고서만 맞추고, 상태와 사유와 메시지는 그대로 둔다
+- 이전 버전이 AWAITING_APPROVAL로 저장한 조치는 끝난 작업으로 보여 주고 재개를 거절한다
 - 상태는 ``state.json`` 파일에서 읽는다(DB 없음)
 
 The remediation job manager: worker threads of this process (one remediation at a time), `state.json` per
@@ -16,7 +22,9 @@ resumed automatically). File-based only.
   INTERRUPTED (`stale: true`) without touching its files.
 - Local repository: a standalone upload and an in-process resume use `<build.local_repo>-remediation`, never
   the migration builds' repository; a chained resume keeps the repository of its migration.
-- The web pod never takes `claim.json`.
+- The service takes the run claim (`RunClaim(purpose="service")`) whenever it changes a run folder itself: to run
+  a job, to repair a final state whose owner is gone, to write a pending report at startup. It does not take it to
+  read; a claim another process holds means nothing is changed.
 - A state an earlier version saved in `AWAITING_APPROVAL` (the approval step was removed) is served as it is,
   is neither active nor resumable, and a resume of it is refused (`StateConflict`, HTTP 409) with
   `LEGACY_APPROVAL_MESSAGE` and the Korean `message_ko`.
