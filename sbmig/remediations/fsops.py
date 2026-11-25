@@ -1,7 +1,8 @@
-"""조치 폴더의 이름 바꾸기와 삭제를 맡는 모듈. 표준 라이브러리만 쓴다.
-Windows에서 다른 프로그램(백신, 색인, 편집기)이 안의 파일을 잠깐 열고 있어 거부되면 정해진 시간 동안 기다렸다가 다시 시도한다.
-그 밖의 오류는 바로 던지므로 Linux에서는 ``os``, ``shutil``의 호출과 똑같이 동작한다.
-Windows에서는 Restart Manager로 파일을 열고 있는 프로그램을 찾아 거부 로그에 이름을 기록한다.
+"""취약점 조치에서 파일과 폴더를 옮기고 지우는 함수를 모은 모듈.
+Windows에서 백신, 색인 서비스, 편집기가 파일을 잠깐 열고 있어 호출이 거부되면 60초까지 다시 시도한다.
+- 그 밖의 오류는 바로 던지므로 Linux에서는 ``os``, ``shutil`` 호출과 똑같이 동작한다
+- 끝내 거부되면 Restart Manager로 파일을 열고 있는 프로그램을 찾아 경고 로그에 이름을 남긴다
+- ``models.py``가 이 모듈을 import하므로 표준 라이브러리만 쓴다
 
 Renames, replaces and removals of the remediation package. On Windows a call refused with `winerror` 5 (access
 denied) or 32 (sharing violation) because another program briefly holds a file open is made again: after 0.05 s,
@@ -11,10 +12,10 @@ one call has waited out its limit, later refusals of that block are waited for `
 that lasts is not waited for once per file). The memory belongs to the block (a context variable, bound to the
 thread that opened it), never to the process: outside a block every call has the full limit, whatever happened
 before. `rmtree` also waits for `winerror` 145 (directory not empty). Any other exception is raised at once, so on
-POSIX (no `OSError` carries `winerror`) the four functions behave exactly as the calls they stand for. Removals make a read-only entry writable once on `winerror` 5
-(Windows does not delete a read-only file). Standard library only: `models.py` imports this module, so nothing from
-`sbmig.remediations` may be imported here. Functions are looked up on `os` / `shutil` at call time (tests patch
-them there). Contract: `docs/INTERFACES.md` "v2.1z-ce".
+POSIX (no `OSError` carries `winerror`) the four functions behave exactly as the calls they stand for. Removals
+make a read-only entry writable once on `winerror` 5 (Windows does not delete a read-only file). Standard library
+only: `models.py` imports this module, so nothing from `sbmig.remediations` may be imported here. Functions are
+looked up on `os` / `shutil` at call time (tests patch them there). Contract: `docs/INTERFACES.md` "v2.1z-ce".
 
 Who holds the file (contract "v2.1z-cf"): `holders(paths)` names the programs that have one of the files open, through
 the Windows Restart Manager (`rstrtmgr.dll` via `ctypes`, loaded only on Windows; off Windows it finds nothing). A
@@ -55,7 +56,7 @@ HOLDERS_SHOWN = 8
 _DONE_S = 1e-3
 _MARK = "sbmig_waited_out"
 
-# one_wait 블록의 상태다. 블록 밖에서는 None이고, 블록을 연 스레드에서만 쓴다
+# one_wait 블록의 상태. 블록 밖에서는 None이고 블록을 연 스레드에서만 쓴다
 _batch: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar("sbmig_fsops_batch", default=None)
 
 # 테스트가 실제로 기다리지 않도록 바꿔 넣을 수 있게 둔다
@@ -71,9 +72,9 @@ def _held(exc: BaseException, codes: tuple[int, ...]) -> bool:
 
 def waited_out(exc: BaseException) -> bool:
     """기다릴 수 있는 시간을 다 쓰고 던진 예외면 True를 반환한다.
+    이런 예외를 받은 호출자는 다시 시도하지 말고 바로 던져야 한다.
 
-    True for the exception a call raised after its wait limit had passed (contract rule 1): a caller that repairs
-    and tries again raises such an exception at once."""
+    Contract rule 1 of "v2.1z-ce": a caller that repairs and tries again raises such an exception at once."""
     return bool(getattr(exc, _MARK, False))
 
 
@@ -89,12 +90,12 @@ def _wait_limit() -> float:
 
 @contextmanager
 def one_wait() -> Iterator[None]:
-    """블록 안에서 한 호출이 기다리다 포기하면 그 뒤의 거부는 ``SHORT_WAIT_S``만 기다린다. 블록 밖에는 영향이 없다.
+    """여러 호출을 묶어 끝까지 기다리는 일이 한 번만 생기게 한다.
+    블록 안에서 한 호출이 기다리다 포기하면 그 뒤의 거부는 ``SHORT_WAIT_S``까지만 기다린다.
+    블록을 연 스레드에만 적용되고 블록 밖에는 영향이 없다.
 
-    A batch of calls that waits in full only once: inside the block, after one call has waited out its limit, every
-    later refusal is waited for `SHORT_WAIT_S` at most. The state lives in a context variable bound to the thread
-    that opened the block; a nested block starts with the full limit, and the outer state comes back on exit (also
-    when the block is left by an exception)."""
+    The state lives in a context variable bound to the thread that opened the block; a nested block starts with the
+    full limit, and the outer state comes back on exit (also when the block is left by an exception)."""
     token = _batch.set({"gave_up": False, "thread": threading.get_ident()})
     try:
         yield
@@ -118,7 +119,7 @@ def _read_only_file(path: Any) -> bool:
     return stat.S_ISREG(st.st_mode) and not st.st_mode & stat.S_IWRITE
 
 
-# ---------------------------------------------------------------------------- who holds the file (Windows)
+# ---------------------------------------------------------------------------- 파일을 열고 있는 프로그램 찾기 (Windows)
 _WINDOWS = sys.platform == "win32"
 _ERROR_MORE_DATA = 234
 _RM_LIST_TRIES = 4
@@ -128,7 +129,7 @@ _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 _IMAGE_NAME_CHARS = 1024
 _RM_TYPES: Any = None
 _RM_TYPES_LOCK = threading.Lock()
-# 끝나지 않은 찾기가 있으면 시작 시각을 둔다. 찾기는 프로세스에서 하나만 실행한다
+# 찾기는 프로세스당 하나만 실행하므로 끝나지 않은 찾기의 시작 시각을 둔다
 _PENDING_LOCK = threading.Lock()
 _pending: dict[str, float] | None = None
 
@@ -139,8 +140,9 @@ def _base(s: str) -> str:
 
 
 def _files(paths: Any) -> list[str]:
-    """Regular files to register: a file as given, a directory as the regular files under it (`os.walk` order),
-    missing paths left out, at most `HOLDERS_MAX_FILES` over all paths."""
+    """Restart Manager에 등록할 일반 파일 목록을 만든다. 디렉토리는 그 아래 파일로 펼친다.
+
+    `os.walk` order, missing paths left out, at most `HOLDERS_MAX_FILES` over all paths."""
     out: list[str] = []
     seen: set[str] = set()
     cap = HOLDERS_MAX_FILES
@@ -170,7 +172,8 @@ def _files(paths: Any) -> list[str]:
 
 
 def _rm_types() -> Any:
-    """The `ctypes` types of the Restart Manager calls, built on first use (nothing is loaded at import time).
+    """Restart Manager 호출에 쓰는 ``ctypes`` 타입을 처음 쓸 때 만든다. import할 때는 아무것도 읽지 않는다.
+
     Windows sizes: DWORD / UINT / ULONG 32 bits, BOOL an int, FILETIME two DWORDs (alignment 4), so that
     `RM_UNIQUE_PROCESS` is 12 bytes and `RM_PROCESS_INFO` 668."""
     global _RM_TYPES
@@ -211,7 +214,7 @@ def _build_rm_types() -> Any:
 
 
 def _declare(rm: Any, k32: Any) -> None:
-    """Sets `argtypes` / `restype` of every function `_rm_holders` calls."""
+    """``_rm_holders``가 호출하는 함수마다 ``argtypes``와 ``restype``을 선언한다."""
     t = _rm_types()
     P = t.ctypes.POINTER
     rm.RmStartSession.argtypes = [P(t.DWORD), t.DWORD, P(t.WCHAR)]
@@ -232,7 +235,7 @@ def _declare(rm: Any, k32: Any) -> None:
 
 
 def _load_windows() -> tuple[Any, Any]:
-    """`rstrtmgr.dll` and `kernel32.dll` with their signatures declared (Windows only)."""
+    """Windows에서 ``rstrtmgr.dll``과 ``kernel32.dll``을 읽고 함수 시그니처를 선언한다."""
     import ctypes
     rm = ctypes.WinDLL("rstrtmgr", use_last_error=True)      # type: ignore[attr-defined]
     k32 = ctypes.WinDLL("kernel32", use_last_error=True)     # type: ignore[attr-defined]
@@ -266,8 +269,10 @@ def _entry(app: str, exe: str, pid: int, own: int) -> str:
 
 
 def _rm_holders(files: list[str], rm: Any, k32: Any) -> tuple[list[str], str | None]:
-    """The Restart Manager's answer for `files`: (names, None), or ([], the reason) on any failure. `rm` / `k32` are
-    the two libraries (a fake in the tests). Never raises, never logs."""
+    """Restart Manager로 ``files``를 열고 있는 프로그램 이름을 찾는다.
+    실패하면 빈 목록과 사유를 반환한다. 예외를 던지지 않고 로그도 남기지 않는다.
+
+    Returns (names, None) or ([], reason). `rm` / `k32` are the two libraries (a fake in the tests)."""
     try:
         t = _rm_types()
         ct = t.ctypes
@@ -290,7 +295,7 @@ def _rm_holders(files: list[str], rm: Any, k32: Any) -> tuple[list[str], str | N
                     break
                 if rc != _ERROR_MORE_DATA:
                     return [], f"RmGetList answered {rc}"
-                # 두 호출 사이에 프로그램이 늘 수 있어 조금 넉넉히 잡는다
+                # 두 호출 사이에 프로그램이 늘 수 있으므로 조금 넉넉히 잡는다
                 infos = (t.RM_PROCESS_INFO * (max(needed.value, len(infos)) + 4))()
             else:
                 return [], f"RmGetList answered {_ERROR_MORE_DATA} {_RM_LIST_TRIES} times"
@@ -308,13 +313,13 @@ def _rm_holders(files: list[str], rm: Any, k32: Any) -> tuple[list[str], str | N
             return out, None
         finally:
             rm.RmEndSession(handle.value)
-    # 찾기는 로그를 돕는 일이라 어떤 실패도 단계를 막지 않는다
+    # 프로그램 찾기는 로그에 쓰려는 것이므로 어떤 실패도 예외로 던지지 않는다
     except Exception as e:  # noqa: BLE001
         return [], f"{type(e).__name__} {getattr(e, 'winerror', '') or ''}".strip()
 
 
 def _restart_manager(files: list[str]) -> tuple[list[str], str | None]:
-    """The default `_lookup`: nothing off Windows (no library is loaded), else the Restart Manager."""
+    """기본 ``_lookup``이다. Windows에서만 Restart Manager로 찾고, 다른 OS에서는 빈 결과를 반환한다."""
     if not _WINDOWS:
         return [], None
     try:
@@ -324,12 +329,15 @@ def _restart_manager(files: list[str]) -> tuple[list[str], str | None]:
     return _rm_holders(files, rm, k32)
 
 
-# 테스트가 바꿔 넣을 수 있게 호출할 때 찾는다
+# 테스트가 바꿔 넣을 수 있도록 호출할 때마다 이 이름으로 찾는다
 _lookup: Callable[[list[str]], tuple[list[str], str | None]] = _restart_manager
 
 
 def _find(paths: Any) -> tuple[list[str], str | None, int]:
-    """(names, reason for a DEBUG line or None, number of files looked at). Never raises, never logs."""
+    """``paths``를 열고 있는 프로그램을 찾아 이름, 실패 사유, 살펴본 파일 수를 반환한다.
+    예외를 던지지 않고 로그도 남기지 않는다.
+
+    The reason is for a DEBUG line; None when the lookup worked."""
     try:
         files = _files(paths)
         if not files:
@@ -341,7 +349,7 @@ def _find(paths: Any) -> tuple[list[str], str | None, int]:
 
 
 def _claim() -> tuple[dict[str, float] | None, str | None]:
-    """Takes the process's one lookup: (record, None), or (None, the reason) while an earlier one has not returned."""
+    """프로세스에 하나뿐인 찾기 차례를 잡는다. 앞선 찾기가 아직 끝나지 않았으면 None과 사유를 반환한다."""
     global _pending
     with _PENDING_LOCK:
         if _pending is not None:
@@ -358,12 +366,13 @@ def _release(record: dict[str, float]) -> None:
 
 
 def holders(paths: Any) -> list[str]:
-    """주어진 파일을 열고 있는 프로그램을 반환한다. Windows가 아니거나 찾지 못하면 빈 목록을 반환한다.
+    """``paths``를 열고 있는 프로그램 이름 목록을 반환한다.
+    Windows가 아니거나 찾지 못하면 빈 목록을 반환하고, 예외를 던지지 않는다.
 
-    The programs that have one of `paths` open, one string each: `<application name> [<executable>] (pid <n>)`, with
-    `, this process` in the pid part for `os.getpid()`; base names only, never a path. A single `str` / `bytes` /
-    `os.PathLike` is a list of one. A directory stands for the regular files under it (at most `HOLDERS_MAX_FILES`
-    over all paths), a missing path is left out. Windows only (Restart Manager); elsewhere `[]`. Runs in the calling
+    One string per program: `<application name> [<executable>] (pid <n>)`, with `, this process` in the pid part
+    for `os.getpid()`; base names only, never a path. A single `str` / `bytes` / `os.PathLike` is a list of one.
+    A directory stands for the regular files under it (at most `HOLDERS_MAX_FILES` over all paths), a missing path
+    is left out. Windows only (Restart Manager); elsewhere `[]`. Runs in the calling
     thread and counts as the process's one lookup. Never raises: a failure is `[]` and one DEBUG line."""
     names: list[str] = []
     reason: str | None = None
@@ -387,8 +396,10 @@ def holders(paths: Any) -> list[str]:
 
 
 def _look(paths: tuple[Any, ...], wait: float) -> tuple[list[str], str | None, int] | None:
-    """One `_find` in a daemon thread, waited for `wait` s at most; None when it has not returned by then. The helper
-    thread clears the process's record when it ends; the starter clears it only when the thread never started."""
+    """``_find``를 데몬 스레드에서 실행하고 ``wait``초까지 기다린다. 그때까지 끝나지 않으면 None을 반환한다.
+
+    The helper thread clears the process's record when it ends; the starter clears it only when the thread never
+    started."""
     record, reason = _claim()
     if record is None:
         return [], reason, 0
@@ -424,7 +435,10 @@ def _names_text(names: list[str]) -> str:
 def _waiting(op: str, path: Any, call: Callable[[int], _T], final: Callable[[], bool] | None = None,
              codes: tuple[int, ...] = HOLD_WINERRORS, look: tuple[Any, ...] | None = None) -> _T:
     """``call``을 실행하고, 다른 프로그램이 파일을 열고 있어 거부되면 정해진 시간 동안 다시 시도한다.
-    ``final``이 True를 반환하면 기다려도 풀리지 않는 거부이므로 바로 던진다."""
+    ``final``이 True를 반환하면 기다려도 풀리지 않는 거부이므로 바로 던진다.
+
+    ``call`` gets the try number (1 first). ``look``: the paths whose holders are looked up on give-up (default
+    ``path``). On give-up the last exception is marked for `waited_out` and the block's ``gave_up`` is set."""
     try:
         return call(1)
     except OSError as e:
@@ -440,12 +454,12 @@ def _waiting(op: str, path: Any, call: Callable[[int], _T], final: Callable[[], 
     log.info("remediation: %s of %s refused (WinError %s): another program has a file open there; waiting up to %g s",
              op, name, last.winerror, limit)  # type: ignore[attr-defined]
     while True:
-        # 시계 값이 커서 짧은 쉼이 시계에 더해지지 않아도 끝나도록 쉰 시간의 합도 함께 센다
+        # 시계 값이 커서 짧게 쉰 시간이 시계에 반영되지 않아도 끝나도록 쉰 시간의 합도 함께 센다
         waited = max(_now() - start, slept)
         left = limit - waited
         if left <= _DONE_S:
             b = _own_batch()
-            # 블록 안에서 한 번 포기한 뒤에는 이미 붙잡은 프로그램을 기록했으므로 찾지 않는다
+            # 블록 안에서 한 번 포기했으면 파일을 잡고 있는 프로그램은 이미 기록했으므로 다시 찾지 않는다
             skip = b is not None and b["gave_up"]
             got = None if skip else _look((path,) if look is None else look, HOLDERS_WAIT_S)
             if got is not None and got[0]:
@@ -490,23 +504,21 @@ def replace(src: Any, dst: Any) -> None:
     """``os.replace``를 실행한다. 다른 프로그램이 파일을 열고 있어 거부되면 기다렸다가 다시 시도한다.
     ``dst``가 읽기 전용 파일이면 기다리지 않고 바로 던진다.
 
-    `os.replace(src, dst)`, waited for while Windows refuses it with `winerror` 5 / 32. Not waited for when `dst`
-    is a read-only file: Windows refuses to replace that for good, and the caller that expects it
-    (`intake._write_back`) makes it writable and tries again."""
+    Waits on `winerror` 5 / 32. A read-only `dst` is not waited for: Windows refuses to replace that for good, and
+    the caller that expects it (`intake._write_back`) makes it writable and tries again."""
     _waiting("replace", src, lambda _n: os.replace(src, dst), lambda: _read_only_file(dst), look=(src, dst))
 
 
 def rename(src: Any, dst: Any) -> None:
-    """``os.rename``을 실행한다. 다른 프로그램이 파일을 열고 있어 거부되면 기다렸다가 다시 시도한다.
-
-    `os.rename(src, dst)`, waited for while Windows refuses it with `winerror` 5 / 32."""
+    """``os.rename``을 실행한다. 다른 프로그램이 파일을 열고 있어 거부되면 기다렸다가 다시 시도한다."""
     _waiting("rename", src, lambda _n: os.rename(src, dst), look=(src, dst))
 
 
 def unlink(path: Any) -> None:
-    """``os.unlink``를 실행한다. 읽기 전용이라 거부되면 쓸 수 있게 바꾼 뒤 한 번 더 지우고, 열려 있으면 기다린다.
+    """``os.unlink``를 실행한다.
+    읽기 전용 파일이면 쓰기 권한을 준 뒤 한 번 더 지운다. 다른 프로그램이 열고 있으면 기다렸다가 다시 시도한다.
 
-    `os.unlink(path)`; on `winerror` 5 the file is made writable and removed once more before the wait applies."""
+    On `winerror` 5 the chmod and second unlink come first; the wait applies only when that fails too."""
     def call(_n: int) -> None:
         try:
             os.unlink(path)
@@ -523,7 +535,7 @@ def _is_removal(func: Any) -> bool:
 
 
 def _writable_again(func: Any, p: Any, exc: BaseException) -> None:
-    # 읽기 전용 항목만 쓸 수 있게 바꾸고 그 항목을 한 번 더 지운다. 다시 실패하면 그 예외를 그대로 던진다
+    # 읽기 전용이라 거부된 삭제만 쓰기 권한을 주고 한 번 더 지운다. 다시 실패하면 그 예외를 그대로 던진다
     if not (_is_removal(func) and getattr(exc, "winerror", None) == 5):
         raise exc
     os.chmod(p, stat.S_IWRITE)
@@ -538,10 +550,11 @@ def _rmtree_once(path: Any) -> None:
 
 
 def rmtree(path: Any) -> None:
-    """``shutil.rmtree``를 실행한다. 읽기 전용 항목은 쓸 수 있게 바꿔 지우고, 열려 있는 파일이 있으면 기다렸다가 남은 것을 다시 지운다.
+    """``shutil.rmtree``를 실행한다.
+    읽기 전용 항목은 쓰기 권한을 준 뒤 지운다. 열려 있는 파일이 있으면 기다렸다가 남은 것을 다시 지운다.
 
-    `shutil.rmtree(path)`; a read-only entry refused with `winerror` 5 is made writable and removed once more, and a
-    removal refused with `winerror` 5 / 32 / 145 as a whole is waited for and made again on what is left. A path that no
+    A read-only entry refused with `winerror` 5 is made writable and removed once more; a removal refused with
+    `winerror` 5 / 32 / 145 as a whole is waited for and made again on what is left. A path that no
     longer exists on a later try is success; on the first try the call raises as `shutil.rmtree` does."""
     def call(n: int) -> None:
         if n > 1 and not os.path.lexists(path):

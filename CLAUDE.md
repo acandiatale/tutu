@@ -363,17 +363,25 @@ review", fix attempts as `script:<case>:v<N>`; `ko`, the company setting: the re
   judgment: a scratch run that timed out or was stopped is never started again before looking at what it wrote, and
   every brief still says so.
 - **Korean handover comments (2026-10-28, the business team's request; rewritten 2026-11-12 after the same team said
-  the Korean "너무 ai티 난다")**: every module under `sbmig/` starts its docstring with a Korean block and every public
-  top-level class / function has Korean first in its docstring, the English original kept unchanged after it. The Korean
-  is written like a Korean developer's own comment — SHORT (module 2–6 lines, function 1 line, inline 1 line = the
-  reason), "~한다." endings, particles attached (`KB에`), identifiers verbatim, and never an em dash, arrow, bold,
-  version tag (`v2.1…`), date, review / round label or the story of how a bug was found; that history belongs to the
-  English part (the working record) and the commit message. Verbs 호출한다 / 실행한다 / 기록한다 / 예외를 던진다, not
-  부른다 / 돈다 / 적는다 / 올린다. Convention, glossary and examples: `docs/v2/CODE-COMMENTS-KO.md`;
+  the Korean "너무 ai티 난다"; tightened 2026-11-25 after reviewers called the comments 지저분하다)**: every module
+  under `sbmig/` starts its docstring with a Korean block and every public top-level class / function has Korean first in
+  its docstring; a blank line; then, only where it helps, an English part. **The reviewers read only the Korean** (the
+  user: "한글만 읽으실거라"), so the Korean is what must be clean: written like a Korean developer's own comment, the
+  first line says what the function does, then the few short lines a reader needs (what comes back when something is
+  missing, what is raised, the condition that changes the behaviour; "1줄 고집 안해도 돼 … 알아야 할 정보는 들어있어야지"),
+  never a long-winded paragraph; "~한다." endings, particles attached (`KB에`), identifiers verbatim, and never an em
+  dash, arrow, bold, version tag (`v2.1…`), date, review / round label or the story of how a bug was found. Inline
+  comments are Korean, one line, the reason; no English twin of a Korean comment; section banners carry a short Korean
+  title. **The English part is the working note for whoever changes the code** ("영어는 너가 작업에 유리한 방향으로"):
+  rules, invariants, failure behaviour, couplings, measured tool facts and the contract pointer
+  (`docs/INTERFACES.md "v2.1z-…"`) stay there; history, dates and restatements of the Korean go (they belong to the
+  commit message and `docs/INTERFACES.md`). Verbs 호출한다 / 실행한다 / 기록한다 / 예외를 던진다, not 부른다 / 돈다 /
+  적는다 / 올린다. Convention, glossary and examples: `docs/v2/CODE-COMMENTS-KO.md`;
   `tests/docs/test_korean_comments.py` fails for a new module or public definition without Korean and for a Korean
-  comment line with one of those tells (English lines are not checked). The page's comments and `config/*.yml` comments
-  follow the same wording; `deploy/` comments were left as they are (the company keeps hand-filled copies of the
-  manifests). Prompt `.md` files, tests and `coding/` stay English.
+  comment line with one of those tells (English lines are not checked). A comment-only change is proved by comparing
+  the syntax tree without docstrings with HEAD's. The page's comments and `config/*.yml` comments follow the same
+  wording; `deploy/` comments were left as they are (the company keeps hand-filled copies of the manifests). Prompt
+  `.md` files, tests and `coding/` stay English.
 - e2e needs **JDK 21** (`JAVA21_HOME`), Maven and network to Maven Central: `scripts/e2e.sh` → `out/e2e/summary.md`
   (`--only boot2,msa` for a subset; the reuse scenario needs pure-java before java6-legacy — `kb.after` in
   `expected.json`); KB demo `scripts/demo-kb/run.sh` (run 2 reuses run 1's script); fleet `scripts/fleet-demo.sh`.

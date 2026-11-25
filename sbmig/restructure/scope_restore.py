@@ -1,12 +1,10 @@
 """레시피가 바꾼 as-is ``provided`` scope를 되돌리는 모듈.
-OpenRewrite의 jakarta 레시피는 ``javax.servlet-api`` provided를 ``jakarta.servlet-api`` compile로 바꾸므로,
-as-is에서 provided였던 의존성(또는 그 jakarta 후속 좌표)을 다시 provided로 돌린다.
-- 재구성(``LegacyContextMixin._lc_restore_scopes``)과 축소 범위 실행의 오케스트레이터가 호출한다
-- 스위치 ``layout.legacy_context.restore_asis_scopes``가 꺼져 있으면 pom은 고치지 않고 인수인계 문장만 만든다
+OpenRewrite의 jakarta 레시피가 ``javax.servlet-api`` provided를 ``jakarta.servlet-api`` compile로 바꾸므로,
+as-is에서 provided였던 의존성과 그 jakarta 후속 좌표를 다시 provided로 되돌린다.
+- 재구성(``LegacyContextMixin._lc_restore_scopes``)은 작업 끝에, 축소 범위 실행은 ``transform.rewrite``마다 호출한다
+- 이미 provided인 의존성은 건드리지 않으므로 여러 번 호출해도 결과가 같다
 
-The as-is `provided` scope restore (E-M6), callable with or without the restructure context: the restructure calls it
-after the mode's work, a reduced run (scope jdk-jakarta) after each `transform.rewrite`. Idempotent: a dependency that is
-`provided` again is left alone.
+Works without the restructure context: a reduced run (scope jdk-jakarta) has none and calls it from the orchestrator.
 """
 from __future__ import annotations
 
@@ -21,21 +19,20 @@ _KEEP_SCOPES = ("provided", "test", "system", "import")
 
 @dataclass
 class ScopeRestore:
-    """scope 복원 결과를 담는 데이터 클래스. 되돌린 항목, 인수인계 문장, 저장한 pom 경로를 담는다.
+    """scope를 되돌린 항목, 인수인계 문장, 저장한 pom 경로를 담는 클래스.
 
-    `restored`: "g:a: <old> → provided (as-is scope, <pom>)" entries; `followups`: the switch-off sentences;
-    `changed`: workspace-relative poms written."""
+    ``restored``: "g:a: <old> → provided (as-is scope, <pom>)" entries; ``followups``: the switch-off sentences;
+    ``changed``: workspace-relative poms written."""
     restored: list[str] = field(default_factory=list)
     followups: list[str] = field(default_factory=list)
     changed: list[str] = field(default_factory=list)
 
 
 def asis_provided_keys(poms: Iterable[Any], successors: Mapping[str, str]) -> dict[str, str]:
-    """as-is pom에서 provided로 선언된 g:a(와 jakarta 후속 g:a)를 선언한 pom 경로와 함께 반환한다.
-    다른 as-is pom이 compile / runtime으로 선언한 g:a는 뺀다.
+    """as-is pom에서 provided로 선언된 g:a와 그 jakarta 후속 g:a를 선언한 pom 경로와 함께 반환한다.
+    다른 as-is pom이 compile이나 runtime으로 선언한 g:a는 그쪽 scope를 따르므로 뺀다.
 
-    g:a (and its `scope_successors` key) → the as-is pom that declared it `provided`; a key another as-is pom declares
-    compile / runtime is dropped (that pom's scope wins)."""
+    ``successors`` maps an as-is g:a to its jakarta g:a (``scope_successors``); both keys get the same pom."""
     provided: dict[str, str] = {}
     elsewhere: set[str] = set()
     for p in poms:
@@ -53,12 +50,11 @@ def asis_provided_keys(poms: Iterable[Any], successors: Mapping[str, str]) -> di
 
 def restore_asis_scopes(ws: Any, asis_poms: Iterable[Any], pom_paths: Iterable[str], successors: Mapping[str, str],
                         *, on: bool = True) -> ScopeRestore:
-    """``pom_paths``의 pom에서 as-is provided였던 의존성이 compile / runtime이면 provided로 되돌린다.
+    """``pom_paths``의 pom에서 as-is provided였는데 지금 compile이나 runtime인 의존성을 provided로 되돌린다.
     ``on``이 False면 pom은 고치지 않고 인수인계 문장만 만든다. 읽을 수 없는 pom은 건너뛴다.
 
-    Set `<scope>provided</scope>` on every dependency of `pom_paths` whose g:a was `provided` in the as-is poms
-    (`asis_provided_keys`) and is compile / runtime now; `on=False` → follow-up sentences only. Raises OSError /
-    PomEditError only from a save."""
+    Scopes in ``_KEEP_SCOPES`` (provided / test / system / import) are never touched. Raises OSError / PomEditError
+    only from a save."""
     out = ScopeRestore()
     provided = asis_provided_keys(asis_poms, successors)
     if not provided:
@@ -90,10 +86,9 @@ def restore_asis_scopes(ws: Any, asis_poms: Iterable[Any], pom_paths: Iterable[s
 
 
 def project_pom_paths(ws: Any, base: str = "") -> list[str]:
-    """루트 pom을 먼저, 그다음 ``base`` 아래 프로젝트 pom을 모두 반환한다. src/ 아래 pom은 테스트 데이터라서 뺀다.
+    """루트 pom을 먼저 두고 ``base`` 아래의 다른 프로젝트 pom을 이어서 반환한다. ``src/`` 아래 pom은 뺀다.
 
-    Root pom first (`<base>/pom.xml`), then every other project pom below `base`; poms under src/ are skipped (the
-    same list as `Restructurer._project_poms`)."""
+    The same list as ``Restructurer._project_poms``; poms under src/ are test data."""
     base = base.strip("/")
     root = f"{base}/pom.xml" if base else "pom.xml"
     poms = [p for p in ws.pom_files() if "/src/" not in f"/{p}" and (not base or p.startswith(base + "/")) and p != root]
@@ -103,7 +98,7 @@ def project_pom_paths(ws: Any, base: str = "") -> list[str]:
 def scope_note(entries: Iterable[str]) -> str:
     """되돌린 scope 항목으로 단계 메모 한 줄을 만든다.
 
-    The note both flows write: `as-is provided scopes restored after the recipes: <entries>`."""
+    The one note text of both flows: ``legacy_apply`` (restructure) and ``Orchestrator`` (reduced run) call it."""
     return SCOPE_NOTE_PREFIX + "; ".join(entries)
 
 
