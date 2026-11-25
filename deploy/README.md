@@ -183,6 +183,14 @@ Secret 의 `SBMIG_WEB_TOKEN` 을 채운다 — 그때는 `http://<host>:8765/?to
 * **Maven `settings.xml`**: 데이터 볼륨의 일반 파일 `/data/.m2/settings.xml`(원본은 ConfigMap `sbmig-config`, 한 번 복사한다. Nexus 미러, §3 "Maven 설정과 로컬 저장소"). 이미지의 Maven 3.9 도 `http://` 저장소를
   막는 기본 미러 `maven-default-http-blocker` 를 갖고 있다 — Nexus 주소가 `http://` 면 차단 미러의 `<mirrorOf>` 에 `,!<저장소 ID>` 를 붙여 그 저장소를 예외로 빼거나(회사 settings.xml 이 쓰는 방식 — 쓰는 저장소 ID 를 모두 적는다),
   Nexus 미러에 `<blocked>false</blocked>` 를 둔다(아니면 실행이 `attn=infra:http-blocked` 로 멈춘다).
+  **미러를 적는 규칙**: `<mirrorOf>` 는 `*`, `external:*`, 저장소 id 나열, `!id` 로만 쓰고, 정확한 id 미러는 `*` 미러보다 앞에 둔다.
+  `external:http:*` 와 `<blocked>` 는 쓰지 않는 편이 안전하다. 자동 변환(OpenRewrite)은 Maven 과 같은 settings 를 읽지만 미러를 제 코드로
+  해석하는데, `external:http:*` 는 아무 저장소에도 맞지 않는 것으로 읽고(원래 저장소 주소로 직접 나간다) `<blocked>` 는 무시하며, 겹치는 미러는
+  파일에 먼저 적힌 것을 고른다. 그래서 빌드는 되는데 변환만 `Unable to download POM` 으로 실패할 수 있다. 폐쇄망에서는 저장소 그룹 하나에
+  `<mirrorOf>*</mirrorOf>` 미러 하나를 두는 것이 가장 단순하다. 그렇게 쓰지 못한 settings 는 sbmig 가 맞춰 준다: 변환을 실행할 때만, Maven 은 고르지
+  못하고 OpenRewrite 만 알아보는 미러(`<mirrorOf>sbmig:<저장소 id></mirrorOf>`)를 맨 앞에 더한 사본을 넘긴다(`openrewrite.translate_settings`, 기본 켬;
+  사본은 파드의 임시 폴더에 만들고 실행이 끝나면 지운다; 저널 `rewrite_settings`). 맞춰 주지 못하는 것: 의존성 pom 이나 프로젝트 밖 부모 pom 이 선언한
+  저장소, 속성 · 파일 · OS 로 켜지는 settings 프로파일의 저장소, Central 미러가 없어 Central 로 나가는 요청(닿지 않으면 pom 하나에 1분쯤 걸린다).
   미러의 `<url>` 은 허용 목록이 아니라 **대신 물어볼 주소**다: `maven-default-http-blocker` 를 실제 주소(릴리스 저장소 등)로 재정의한
   settings 에서는 `mirrorOf` 가 덮는 `http://` 저장소 요청이 전부 그 주소 하나로 간다 — 막히지는 않지만, `<repositories>` 에 적은
   다른 저장소(스냅샷 · public)는 한 번도 묻지 않아 거기에만 있는 아티팩트를 "못 찾는다". 그 저장소들의 ID 를 `,!<저장소 ID>` 로 빼야
@@ -248,9 +256,15 @@ Secret 의 `SBMIG_WEB_TOKEN` 을 채운다 — 그때는 `http://<host>:8765/?to
   호출 칸 아래에 「일부 알 수 없음」, 비용 칸에는 가격을 아는 행의 합계와 그 아래 같은 표시가 붙고, 아는 행이 하나도 없을 때만 비용이 「알 수 없음」이다.
   그런 실행이 들어간 프로젝트 합계, 전체 합계, 모델 행에도 같은 표시가 붙는다(숫자는 아는 만큼의 합계다).
 * **로그 ZIP**: `전체 로그 받기` = 모든 실행의 `sbmig.log`, `journal.jsonl`, `control/request.json`, (조치가 돈 실행은) `remediation/remediation.log`
-  를 `<실행 id>/<파일>` 로 담은 `sbmig-logs-YYYYMMDD-HHMMSS.zip`. 실행 하나만 받는 버튼도 있다. 원본 LLM 기록, `result.zip` / `source.zip`,
-  Maven 빌드 로그(`logs/`), `report.md` 는 넣지 않는다(보고서는 메인 화면의 파일 링크). `remediation.log` 는 그 실행의 조치를 아직 쓰는
+  를 `<실행 id>/<파일>` 로 담은 `sbmig-logs-YYYYMMDD-HHMMSS.zip`. 이 묶음에는 원본 LLM 기록, `result.zip` / `source.zip`,
+  Maven 빌드 로그(`logs/`), `report.md` 를 넣지 않는다. `remediation.log` 는 그 실행의 조치를 아직 쓰는
   곳이 있으면(이관 실행이 마지막 마스킹 전이거나, 조치 재개 Job 이 대기·실행 중이면) 빠진다 — 마지막 마스킹 전의 로그를 내보내지 않기 위해서다.
+* **실행 하나의 「로그와 보고서」**: 실행 줄의 버튼은 그 실행을 분석하는 데 필요한 파일을 함께 준다. 위 네 파일에 더해 `logs/` 아래의
+  Maven · OpenRewrite 출력과 의존성 트리, `errors.md` / `errors.jsonl`, `report.md` / `report.json`, 상태 파일(`job-status.json` 등), 취약점 조치의
+  상태 · 저널 · 보고서 · 검사 요약 · 빌드 출력이 들어간다. 프로젝트 소스(`project/`, 조치의 작업 트리), ZIP · jar, 소스 diff(`*.patch`),
+  LLM 요청 · 응답 기록은 넣지 않는다. 추가 파일은 ZIP 에 담을 때 웹 파드가 아는 비밀 값과 URL 의 계정 정보를 한 번 더 가린다. 실행이 아직 끝나지
+  않았으면 추가 파일은 빠지고, 빠진 파일과 이유는 ZIP 안의 `SKIPPED.txt` 에 있다(끝난 뒤 다시 받으면 들어온다). 한 실행에 2,000 개, 합계 2 GiB 까지이고
+  넘으면 `logs/` 의 번호가 낮은 파일부터 뺀다.
 * **ZIP 이 빌드를 방해하지 않게 하는 한도**: ZIP 은 웹 파드 **컨테이너 안의 임시 폴더**(`/tmp`, `tempfile.gettempdir()`)에 만들어 내려보낸 뒤
   지운다 — 실행 폴더와 Maven 저장소가 있는 공유 볼륨 `/data` 에는 쓰지 않는다(예전의 `/data/out/_admin/` 은 웹 파드가 시작할 때 남은 ZIP 만
   지우고 더는 쓰지 않는다). 한 번에 하나만 만든다: 다른 ZIP 을 만들거나 내려보내는 중이면 409 이고 화면은 "다른 로그 ZIP을 만드는 중입니다"

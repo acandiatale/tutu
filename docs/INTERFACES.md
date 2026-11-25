@@ -14,7 +14,7 @@ type: `sbmig/core/models.py`, `sbmig/core/interfaces.py`, `sbmig/core/config.py`
 | run directory & workspace | Base "Run directory and workspace"; v2.1z-h (`ignored_dirs`) |
 | intake / analyze | Base "Intake and analyze", "Externalized configuration"; v2.1j (Ant), v2.1k + v2.1z "Review follow-ups" (rootless trees), v2.1z-c (hollow reactor), v2.1z-d (ADF), v2.1z-h (stray poms), v2.1z-i (bundled jars), v2.1z-z (build extensions); v2.1z-aj (Ant refused by default); v2.1z-ak (framework projects: detection, scope); v2.1z-aw (framework projects: conversion only, the framework's name) |
 | plan | v2 "Plan (L)"; v2.1o (1) (`plan.compile_after_rewrite`); v2.1u … v2.1y / v2.1w (recipe sets); v2.1z-ak (the reduced plan `jdk-jakarta`) |
-| transform (OpenRewrite) | Base "Plan, transform"; v2.1l "Recipes"; v2.1o (Framework 7); v2.1w; v2.1z-br (`openrewrite.fail_on_dry_run_results` removed) |
+| transform (OpenRewrite) | Base "Plan, transform"; v2.1l "Recipes"; v2.1o (Framework 7); v2.1w; v2.1z-br (`openrewrite.fail_on_dry_run_results` removed); v2.1z-ci (OpenRewrite reads mirrors differently from Maven: a translated settings copy for its call, the failed pom named, no retry for a warning) |
 | restructure & layout | Base "Restructure and the company layout"; v2.1g, v2.1h (JSP jakarta), v2.1l / v2.1s (version pins), v2.1m (resource filtering), v2.1n (optional triggers), v2.1o / v2.1p / v2.1t (parent-chain facts, BOM imports), v2.1q (embedded Tomcat), v2.1x (legacy Spring context), v2.1z-j (bundled jars), v2.1z-k, v2.1z-l; v2.1z-cc (annotation processor paths without a version) |
 | structure review | v2 "Structure review (R)"; v2.1u … v2.1y (review prompt, invariant check, unsupported issues); v2.1z-h (review guard) |
 | verify & script fix loop | Base "Fix-loop invariants"; v2 "Script fix loop (L)", "Script contract (S)", "As built (step 1)"; v2.1d (versions, operator checks), v2.1l / v2.1m pre-tries, v2.1r (file locks), v2.1y (declines, idempotency), v2.1z (ladder caps, case keys), v2.1z-e (jakarta discovery), v2.1z-i, v2.1z-n, v2.1z-y, v2.1z-z, v2.1z-aa; v2.1z-ak (reduced run: as-is chain facts, framework guard); v2.1z-av (stop around the final build, the last unhelpful try rolled back, `repository_unreachable`, cut answers, managed versions per parent); v2.1z-bo (stop request and time budget checked before every LLM request, `llm_ask_skipped`); v2.1z-bp (the remediation's 60 s loop minimum checked by the graph only); v2.1z-br (the framework guard rejects an attempt it cannot check, a builder keyword decided by the callee's signature: `sbmig/loop/callee.py`); v2.1z-by (the earlier fix in the prompt), v2.1z-bz (trade-back), v2.1z-cb (an error's place: file, else module) |
@@ -22,7 +22,7 @@ type: `sbmig/core/models.py`, `sbmig/core/interfaces.py`, `sbmig/core/config.py`
 | LLM gateway | Base "LLM client tier and adapter seams"; v2.1z-m (agent gateway, token exchange), v2.1z-n, v2.1z-o, v2.1z-p (case thread), v2.1z-q, v2.1z-x, v2.1z-af (busy wait, auth retries) |
 | report & result line | Base "Report and the result line", "Advisories and the Handover"; v2 "As built (step 1)" (`review=`); v2.1d (`major=`); remediations (`remediation=`); v2.1z-ak (`scope=`, the framework block); v2.1z-bl (`llm=` includes the remediation's fix-loop calls) |
 | fleet | Base "Fleet" |
-| web app | Base "Graph engine", "Web app"; v2.1z-w (page, server-chosen configs), v2.1z-ae (queue / slots on the page), v2.1z-af (page re-attach), v2.1z-aj (run flows, page header); v2.1z-ak (framework label, skipped stages); v2.1z-ao (admin page `/admin`: token usage per project, log ZIPs); v2.1z-au (the code-change view: artifact `codediff/`, `/api/runs/{id}/codediff`, the page block); v2.1z-av (cross-site requests refused, the free-space floor for uploads, unpacking limits); v2.1z-bg (report view); v2.1z-bl (two report previews, 고급 설정 and the other-files list gone, LLM counts); v2.1z-bm (the hidden controls are not sent); v2.1z-bo (admin page: 「일부 알 수 없음」 / cost 「알 수 없음」 for unknown remediation usage, `remediation_llm_usage_unknown`); v2.1z-bp (the run cost = the priced rows with 「일부 알 수 없음」, 「알 수 없음」 only when nothing is priced); v2.1z-br (`GET /api/runs` never answers 500 because of one run, no list refresh while the tab is hidden, no `run_dir` in the status JSON, the report view linear in a line's length); v2.1z-bs (a non-finite number in a run file is sent as `null` by the single-run status, the upload answer, the code-change routes, the admin usage and the event stream's `status` event: `sbmig/web/jsonsafe.py`; `status()` reads `report.json` once); v2.1z-bt (result ZIPs received as `<project>-migration.zip` / `<project>-remediation.zip`: `contract.zip_download_name`, `zip_name` in both statuses) |
+| web app | Base "Graph engine", "Web app"; v2.1z-w (page, server-chosen configs), v2.1z-ae (queue / slots on the page), v2.1z-af (page re-attach), v2.1z-aj (run flows, page header); v2.1z-ak (framework label, skipped stages); v2.1z-ao (admin page `/admin`: token usage per project, log ZIPs); v2.1z-au (the code-change view: artifact `codediff/`, `/api/runs/{id}/codediff`, the page block); v2.1z-av (cross-site requests refused, the free-space floor for uploads, unpacking limits); v2.1z-bg (report view); v2.1z-bl (two report previews, 고급 설정 and the other-files list gone, LLM counts); v2.1z-bm (the hidden controls are not sent); v2.1z-bo (admin page: 「일부 알 수 없음」 / cost 「알 수 없음」 for unknown remediation usage, `remediation_llm_usage_unknown`); v2.1z-bp (the run cost = the priced rows with 「일부 알 수 없음」, 「알 수 없음」 only when nothing is priced); v2.1z-br (`GET /api/runs` never answers 500 because of one run, no list refresh while the tab is hidden, no `run_dir` in the status JSON, the report view linear in a line's length); v2.1z-bs (a non-finite number in a run file is sent as `null` by the single-run status, the upload answer, the code-change routes, the admin usage and the event stream's `status` event: `sbmig/web/jsonsafe.py`; `status()` reads `report.json` once); v2.1z-bt (result ZIPs received as `<project>-migration.zip` / `<project>-remediation.zip`: `contract.zip_download_name`, `zip_name` in both statuses); v2.1z-ch (the admin page's log ZIP of one run carries `logs/`, the reports, the error list and the state files) |
 | Job mode (Main / Worker, slots, env pins) | v2.1z-z "k8s Job dispatch mode", v2.1z-ab (kubeconfig, template ConfigMap), v2.1z-ac (Main ↔ Worker contract), v2.1z-ad (end confirmation, ownership, env pins, write-time redaction), v2.1z-ae (parallel slots), v2.1z-af, v2.1z-aq (a build pod that does not start: stop, the reason notice); v2.1z-av (the build identity, pins taken at Job creation, the resume attempt) |
 | deploy | v2.1z-s (build hooks), v2.1z-t (one Job per request), v2.1z-u, deploy (baked config, container paths), v2.1z-ad "Shipped mode"; v2.1z-br (what the image build context leaves out in both layouts, `config/default.yml` lists every settable key); v2.1z-cg (the image's JDK: Amazon Corretto 21 at a pinned version, checksum checked) |
 | remediations | remediations; v2.1z-ak (in-house group `framework`); v2.1z-am (case-insensitive matching, per-module in-house split, module sources, variant overrides, 들어온 경로); v2.1z-an (override proposals in module poms, the owners' choice); v2.1z-ar (no approval unless switched on); v2.1z-av (fixed = gone from the rescan, the planner's new residual groups, `remediation.log` for every run); v2.1z-bi part B, v2.1z-bj, v2.1z-bk (the fix loop on a failed candidate: work copy, overlay, build-side sync, one `fix.patch`); v2.1z-bl (fix-loop LLM usage, titles with the entered project); v2.1z-bm (the complete-apply proof `expected.json`, the sync by table before commit / freeze, a candidate that cannot be put back, `stop requested` runs again, leftover loops settled); v2.1z-bn (one delivery swap + `recover_delivery`, the no-delivery sentences, usage after an exception, the exec bit in `expected.json` schema 2, the pending report, the scan source `original/scan-source.zip`); v2.1z-bo (the swap rolled forward + `DeliveryRecordNotWritten`, no re-upload after a kill and the table of mid-node saves, `repair_final` by every entry and by the web service in every mode, unknown usage, report = state message, the round's call total, a stop during the build fix); v2.1z-bp (`FixResult.ended_round`: the loop is not skipped on resume, an own row for calls without tokens, strict journal reading, the budget outcome saved and stamped, 「알려진 것만」, the report-not-written note dropped on repair, the bounded repair memory); v2.1z-br (unused code removed, `compare_trees` reads only what an attempt changed, `freeze_delivery` hashes while it writes); v2.1z-bs (`intake.sync_tree` removed; the fix loop still starts for a failure only a pom can fix: "Not changed"); v2.1z-ce (`fsops`: a rename or removal Windows refuses while another program has a file open is waited for); v2.1z-cf (a refusal that lasts names the programs that have the file open; a test that fails when this process holds a path it renames) |
@@ -8350,3 +8350,172 @@ operator rule for an image change stands: build, push, restart the web pod.
 **Not checked.** A build through a proxy or on a network that inspects HTTPS; the company's registry and cluster;
 the three stop messages whose condition never held here (another architecture, an OpenJDK package found,
 `java -version` not the pinned build).
+
+## v2.1z-ch — the admin page's log ZIP of one run carries the run's diagnostic files
+
+**Why.** The user on 2026-11-25, reading a failed cluster run: "관리자 로그 다운로드 너무 한정적으로만 받아진다..
+분석에 필요한게 많이 비어있네". The ZIP held `sbmig.log`, `journal.jsonl`, `control/request.json` and the
+remediation's log. The name of the pom an OpenRewrite run could not read was in `logs/NNN-rewrite-run.log`, which
+could only be reached with `kubectl exec` and a hand-typed `grep` on a console without copy and paste.
+
+**The rule** (`sbmig/web/admin.py`, `sbmig/web/static/admin.html`).
+
+1. **Which download.** `GET /admin/api/runs/{id}/logs.zip` and `…/logs/check` (one run). The archive of every run
+   (`GET /admin/api/logs.zip`, `…/logs/check`) is unchanged: it would outgrow its size limit.
+2. **What is added**, beside the four members of v2.1z-ao, each at its path in the run folder (only files with a
+   text suffix the end-of-run redaction pass rewrites: `.md .json .jsonl .log .txt .yml`):
+   - the files under `logs/` (the output of each Maven and OpenRewrite call, the dependency trees, the captured
+     facts, the recipe files);
+   - at the top of the run folder: `errors.md`, `errors.jsonl`, `report.md`, `report.json`, `plan.json`,
+     `profile.json`, `job-status.json`, `web-status.json`, `remediation-job-status.json`, `job-local.log`,
+     `worker-paths.yml`;
+   - of the remediation: `state.json`, `journal.jsonl`, `report.md`, `report.json`, `claim.json`,
+     `delivery/delivery.json`, `scans/*.json`, `baseline/build.log`, a round's `*.json`, `build.log`,
+     `build-fixed.log`, the dependency trees of `work-before/` and `work-after/`, and a fix loop's `loop.json`,
+     `journal.jsonl` and `logs/`.
+   The principle decides a file not named here: a text file that says what the run did is in; a copy of the
+   project is out. `control/state.json` and `control/remediation-resume.json` are NOT added: the end-of-run pass
+   does not rewrite `control/` (rule 4).
+3. **Never in the archive:** `project/`, `codediff/`, `merge-conflicts/`, `target/`, `llm-records/`, any tree of
+   the remediation (`original/`, `accepted/`, `baseline/tree/`, a round's `candidate/` and `applied/`, a fix
+   loop's `tree/` and `fixed/`), any hidden file or folder (`.git` among them), any `*.zip`, `*.jar`, `*.class`,
+   `*.xml`, every `*.patch` / `*.diff` (diffs of source), and LLM request / response records (`llm-<n>.json`,
+   `logs/review-input.md`). Excluded folders are never entered. The uploaded ZIP keeps its own download
+   (v2.1z-bb).
+4. **Redaction.** No byte leaves through this archive unredacted, and the archive does not rely on the
+   end-of-run pass having run or succeeded (that pass skips a file it cannot rewrite, stops at an exception, and
+   nothing records its outcome; a run folder without a readable control state never had one).
+   - **Every added member is redacted while it is copied,** with the secret values of the web process's
+     environment (every spelling of `expand_values`) and URL userinfo, which is masked also when no secret
+     value is set. A member of at most `admin.RUN_WHOLE_REDACT_BYTES` (8 MiB) is redacted as a whole with the
+     functions the end-of-run pass uses (`redact_text`; `redact_json_text` for `.json` and for each line of a
+     `.jsonl`, so a value behind a JSON escape and every line of a multi-line value are masked as the pass
+     masks them). A larger member is redacted line by line through `redact.Redactor`, as the write-time hook
+     does; there a line shorter than `redact.MIN_LINE_LEN` that belongs to a multi-line value is not
+     recognised. The three always-in members (`sbmig.log`, `journal.jsonl`, `control/request.json`) are copied
+     as before.
+   - A member is cut at the size it had when planned; when the file holds more by the time it is read, its
+     last, possibly incomplete line is not written.
+   - A member the redaction cannot handle is left out with its reason, never a failed archive: the redaction
+     raised (a `.json` nested too deep), a line over `admin.RUN_LINE_LIMIT` (1 MiB) in a member redacted line by
+     line, or a run of letters and digits longer than `admin.RUN_TOKEN_LIMIT` (4,096): the userinfo pattern of
+     `redact.py` takes time quadratic in the length of such a run (0.4 s for 16,000 characters).
+   - A member that cannot be redacted line by line is not added and is named in `SKIPPED.txt`: a file the pass
+     takes for binary (a NUL byte in its first 8 KiB, `not a text file`) and a suffix outside the pass's list.
+   - The added members are still left out while the run's end-of-run pass is pending or a remediation resume is
+     active (`not redacted yet: …`): such a file may still be written.
+   - Known limit, as before this increment: a secret the run obtained while it ran (a gateway token, an IVAS
+     token) is not among the web process's values; it is masked only where the run's own output hooks wrote it.
+5. **Limits.** Those of v2.1z-ap stand (one archive at a time, the local temp folder, the free-space floor, a
+   file over 512 MiB named in `SKIPPED.txt`, each member copied up to the size it had when planned). New:
+   - at most `admin.RUN_ZIP_MAX_FILES` members per run (2,000), counting only files that can go in;
+   - the 2 GiB total: where the one-run archive would pass it, members are left out until it fits (never the
+     three always-in ones), instead of the 413 the archive of all runs answers;
+   - the order in which members are left out, for both caps: the numbered files directly under `logs/`, lowest
+     number first, then the other files under `logs/`, then the rest from the end;
+   - planning opens no file and lists at most `admin.RUN_ZIP_SCAN_LIMIT` folder entries (20,000) of which `logs/`
+     may use at most half, so the remediation's files are always reached; every folder that was not listed
+     completely gets a line in `SKIPPED.txt`, a folder that could not be read among them;
+   - links are never followed. A member must be a regular file with one name (a hard link, `st_nlink` > 1, is
+     refused) inside the run folder, and the file opened for copying must be the file that was planned (same
+     device and inode): a folder or file swapped after planning is refused and named in `SKIPPED.txt`;
+   - a file name that cannot be written into the archive (not UTF-8) is left out and named, never a failed
+     archive; the names of rule 3 are matched without regard to case.
+6. **The page.** The button of one run says what it gives (logs, reports and state files of that run, no source);
+   the reasons of `SKIPPED.txt` are English, the page's sentences Korean.
+
+**Not changed.** The usage table, the login, the archive of all runs, the download of the uploaded ZIP.
+
+**Left as it is.**
+- Past the `logs/` half of the listing budget (more than 10,000 entries there), which files are listed follows
+  the file system's order, not their numbers: keeping the newest would mean listing the whole folder.
+- The quadratic userinfo pattern itself (`redact._URL_USERINFO`): the end-of-run pass and the write-time hook meet
+  it on a line that holds such a run. Found while this archive was built; not changed here.
+- The always-in members are left out, with their line in `SKIPPED.txt`, when the end-of-run pass replaces them
+  between planning and copying (a narrow race; asking again gives the file).
+
+## v2.1z-ci — OpenRewrite gets a settings file it reads the way Maven does
+
+**Why.** A cluster run of 2026-11-25: `transform.rewrite` failed twice with `Failed to parse or resolve the Maven
+POM file or one of its dependencies; We can not reliably continue without this information.` while `mvn clean
+package` of the same tree, with the same `-s`, passed; the operator had changed the mirrors that day. Measured the
+same evening with the plugin sbmig runs (rewrite-maven-plugin 6.46.1, rewrite-maven 8.89.0, Maven 3.9.10; scratch
+`out/scratch/rewrite-settings/`):
+- OpenRewrite takes Maven's own settings (the session's merge of `-s` and `-gs`; no parameter names another file)
+  but downloads poms with its own code and applies the mirrors itself, and differently: a `mirrorOf` containing
+  `external:http:*` matches nothing (it asks the ORIGINAL repository URL), `<blocked>` is ignored (it downloads
+  from the blocked mirror's URL), and of two matching mirrors it takes the first in file order where Maven takes the
+  exact id. `*`, `external:*`, explicit ids and `!id` behave as in Maven.
+- A pom in the local repository counts for OpenRewrite only when a non-empty `<a>-<v>.jar` lies beside it, so a
+  dependency used with a classifier always goes remote. With the settings shape the company uses (the blocker id
+  redefined as `external:http:*`, plus a `central` mirror) and an original repository that is not reachable, that
+  ends `Unable to download POM: <g>:<a>:<v>. Tried repositories:` although Maven builds through the mirror.
+- The warning `Failed to download <g>:<a>:<v> from <pom>. Attempted URIs:` is printed on passing runs too. A
+  repository OpenRewrite could not reach is not in "Tried repositories": only `[WARNING] Failed to access maven
+  repository <url> due to: …` names it.
+Which pom failed on the cluster is not known yet.
+
+**The rule** (`sbmig/rewrite/`).
+
+1. **A copy for the OpenRewrite call that only ADDS mirrors Maven cannot match.** When `build.settings_file` is
+   set and `openrewrite.translate_settings` is true (default), every call of `OpenRewriteRunner` passes
+   `-s <copy>`; every other Maven call of sbmig keeps the original. The same `-s` is read by Maven itself inside
+   that call (the forked lifecycle of `rewrite:run` resolves the project's dependencies), so the copy must not
+   change Maven's behaviour in any case, known or not. It therefore moves and edits nothing: it inserts, at the
+   front of `<mirrors>`, one **shadow mirror** per repository id whose mirror OpenRewrite would choose
+   differently from Maven:
+   `<mirror><id>(new)</id><mirrorOf>sbmig:<repository id></mirrorOf><url>(the url of the mirror Maven selects for
+   that repository; the repository's own url when Maven selects none)</url></mirror>`,
+   and a `<server>` with the new id copied from the selected mirror's `<server>` when it has one.
+   - Maven compares each `mirrorOf` token with the repository id as a whole, so `sbmig:<id>` matches no repository
+     and the shadow is inert there, whatever else the project or its dependencies declare; the one exception is a
+     repository whose own id begins `sbmig:`, and a project that has one gets no copy at all.
+   - OpenRewrite (`MavenRepositoryMirror`: everything up to the first `:` is dropped, the rest is the id list,
+     the mirror applies to non-local repositories only, the first matching mirror in file order wins) reads it as
+     "repository `<id>` goes to this url", before any other mirror.
+   - A later OpenRewrite that reads `mirrorOf` as Maven does would find the shadows inert too: then its own choice
+     is Maven's already.
+2. **What a shadow is made for.** The known repositories are those of the settings' active profiles (user and
+   global; `activeProfiles` and `activeByDefault`), of the project's poms including their `<profiles>` (each
+   (id, url) pair; a `${…}` in a url filled from the properties of the pom and of its parents inside the project,
+   an unfilled one kept as written) and `central`. For each, Maven's choice is
+   computed by Maven's rule (an exact id first, then the patterns in file order; `*`, `external:*`,
+   `external:http:*`, `!id`; the user file's mirrors, then the global file's) and OpenRewrite's by its rule. A
+   shadow is written when they differ and Maven's choice is not a blocked mirror. No shadow, and one journal
+   reason per id, when: the id or a mirror's `id` / `mirrorOf` holds a `${…}`; two known repositories share the
+   id and Maven sends them to different places; the repository is local (`localhost`, `127.0.0.1`, `file:`),
+   which a shadow cannot reach; its url is unfilled and Maven's choice would depend on it. Blocked mirrors are
+   not imitated: where Maven refuses a repository the run fails in Maven either way.
+3. **The copy holds what the original holds** (credentials of `<servers>` among them), so it is written with mode
+   0600 into a private temporary folder of the process, never into the run folder, and removed when the call
+   returns, also on an exception. The original text is kept byte for byte; only the inserted elements are new. A
+   settings file that cannot be parsed, or any error while reading, computing or writing: the original file is
+   passed and the journal says why. A translation never fails a run.
+4. **Records.** Journal `rewrite_settings {translated: bool, shadows: [{repository, mirror}], skipped: [{repository,
+   reason}], reason}` once per run (ids only, never a url or a credential); one INFO line. Nothing when the file
+   needs no shadow.
+5. **A failed recipe run says which pom.** When the plugin's output has `Unable to download POM: <g>:<a>:<v>`, the
+   run's error text (and so the `transform.rewrite: the automatic conversion failed …` line of `sbmig.log`, the
+   journal and the report's first hand-over line) carries, in this order: the repositories of the `Failed to
+   access maven repository` warnings as "not reachable" (with the reason), the coordinates of at most three poms
+   and a count of the rest, and the distinct tried repositories with their answers (`<host and path>: HTTP
+   <code>`, userinfo stripped), each named once. That line is cut at 300 characters, so what an operator needs
+   first comes first; the full text is in the journal's `rewrite` event.
+6. **The download retry does not start for a warning.** `openrewrite.download_retry` (wait, run again) is for a
+   transfer problem: a 429 / 5xx answer, a reset, a timeout, a host name that did not resolve, `Could not transfer
+   artifact`. The bare words `Failed to download` no longer start it (OpenRewrite prints them on passing runs).
+   An `Unable to download POM` starts it only when something points at a transfer problem: a tried repository
+   whose answer is not `HTTP 4xx` (a 429 counts as a problem), or a `Failed to access maven repository` warning
+   whose reason is a timeout, a reset or an unknown host (the pom may be on that repository). All tried
+   repositories answering 404 and unreachable ones only refusing the connection: no retry.
+
+**Not covered, and said so in the operator text:** repositories declared in the poms of dependencies or in a
+parent pom outside the project (the company parent): OpenRewrite asks their own url unless their id has a shadow,
+and a repository of a dependency that reuses a shadowed id with another url is sent to the shadow's url by
+OpenRewrite (never by Maven); local repositories; a
+settings profile activated by a property, a file or the OS (OpenRewrite does not see it); what Central costs when
+it is not reachable and not mirrored (about a minute per pom that falls through to it).
+
+**The rule for operators** (`deploy/README.md`): mirrors as `*`, `external:*`, explicit ids or `!id` only; an
+exact-id mirror before a `*` mirror; no `external:http:*`, no `<blocked>`. One `*` mirror at the repository group
+is the simplest form for a closed network.

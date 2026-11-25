@@ -1532,3 +1532,40 @@ version. The change log of Corretto 21 lists the CVE under `21.0.13.1.2` (2026-1
 | Closed network | `CORRETTO_BASE_URL` for an internal mirror with the `<version>/<file>` layout; `CORRETTO_TLS_VERIFY=0` for a network that inspects HTTPS (the checksum is still compared) | the mirror build; the switch only against the public address | done |
 | Operator text | `deploy/README.md`: the argument table and one paragraph (which JDK, the mirror, the certificate error, moving to a newer build) | read | done |
 | Not checked | a proxy, HTTPS inspection, the company's registry and cluster | — | open |
+
+## Status — 2026-11-25, the admin page's log ZIP of one run carries the run's diagnostic files (v2.1z-ch)
+
+The user, reading a failed cluster run: the admin download was too thin for analysis; the name of the pom an
+OpenRewrite run could not read was in `logs/`, reachable only with kubectl. Contract: `docs/INTERFACES.md` "v2.1z-ch".
+
+| Item | What | Verification | State |
+|---|---|---|---|
+| Members | `GET /admin/api/runs/{id}/logs.zip`: the text files under `logs/`, `errors.md` / `errors.jsonl`, the reports, the status files, the remediation's state, journal, reports, scans and build output; never `project/`, the remediation's trees, ZIPs, jars, patches, hidden files, LLM records; the archive of all runs is unchanged byte for byte | `tests/web/test_v21zch_admin_run_logs.py`; both archives built from one fixture with HEAD's code and the new code | done |
+| Redaction | every added member is redacted while it is copied (a member up to 8 MiB as a whole with the end-of-run pass's own functions, a larger one line by line), and left out with its reason in `SKIPPED.txt` when that is not possible; added members stay out while the run's pass is pending | the two ways the pass can fail, a folder without a control state, a secret split across reads, URL userinfo with no secret set | done |
+| Files | planning opens no file; a member is a regular file with one name inside the run folder and must be the planned file when copied (device and inode); cut at its planned size | a folder swapped for a link, a hard link, a FIFO, growth during the copy | done |
+| Caps | 2,000 members, 2 GiB (members left out in a stated order instead of a 413), 20,000 listed entries with half for `logs/`; every folder not listed gets a line | cap tests; 200 MiB log in 4 s, 2,000 files of 1 MiB in 42 s on a laptop | done |
+| Review | three rounds by one independent reviewer: 7 findings, 3, none; every finding reproduced | — | done |
+| Found on the way | the userinfo pattern of `redact.py` is quadratic on a long run of letters and digits (0.4 s for 16,000 characters); the archive leaves such a member out, the pattern itself is unchanged | measured | open |
+| Not checked | the cluster, NFS, Windows, real 500 MiB logs | — | open |
+
+## Status — 2026-11-25, OpenRewrite gets a settings file it reads the way Maven does (v2.1z-ci)
+
+A cluster run (a framework project): `transform.rewrite` failed twice with `Failed to parse or resolve the Maven POM
+file or one of its dependencies` while `mvn clean package` of the same tree passed; the mirrors of the settings had
+been changed that day. A first diagnosis (jars uploaded without a pom) was wrong and was caught by reproducing
+before coding: OpenRewrite tolerates such a library, and the `Failed to download` lines of the log are printed on
+passing runs too. Measured instead: OpenRewrite applies the settings mirrors with its own code and differently
+from Maven. Which pom failed on the cluster is not confirmed yet. Contract: `docs/INTERFACES.md` "v2.1z-ci".
+
+| Item | What | Verification | State |
+|---|---|---|---|
+| Measurement | rewrite-maven-plugin 6.46.1: `external:http:*` matches nothing (the original url is asked), `<blocked>` is ignored, the first matching mirror in file order wins; a pom in the local repository counts only with its jar beside it; `Unable to download POM` is the fatal line | real runs against local servers with access logs (`out/scratch/rewrite-settings/`) | done |
+| Shadow mirrors | the OpenRewrite call gets `-s <copy>`: the original text plus, at the front of `<mirrors>`, one `<mirrorOf>sbmig:<id></mirrorOf>` mirror per repository id whose mirror OpenRewrite would choose differently, with the url (and a `<server>` copy) of Maven's choice; `openrewrite.translate_settings`, default true | property tests (1,782 Maven cases, 330 OpenRewrite cases); an integration test with the real plugin | done |
+| Maven unaffected | a shadow matches no repository in Maven; nothing existing is moved or edited | real Maven 3.9.10: identical exit codes, requests, auth headers and warnings for original and copy in every compared shape | done |
+| Secrets | the copy (it holds the `<servers>`) is written 0600 into a private temporary folder and removed when the call returns; any error passes the original file | tests of modes, removal, failure paths | done |
+| Failure text | `not reachable: <repository> (<reason>); Unable to download POM: <g>:<a>:<v>; tried <repository>: HTTP <code>` in `sbmig.log`, the journal and the first hand-over line | real logs as fixtures | done |
+| Retry | `openrewrite.download_retry` starts for a transfer problem only (429 / 5xx, reset, timeout, unknown host), never for OpenRewrite's download warnings or a 404 | the real-log table | done |
+| Review | six rounds by one independent reviewer; the first design (moving exact-id mirrors, expanding `external:http:*` to an id list) changed Maven's own choice in edge cases (reproduced with real Maven) and was replaced by the shadows; later rounds closed the property filling (a url written as `${…}` is filled only when nothing can outrank the pom) | every finding reproduced | done |
+| Operator text | the rule for mirrors (`*`, `external:*`, explicit ids, `!id`; no `external:http:*`, no `<blocked>`) in `deploy/README.md`; RUNBOOK symptom row | read | done |
+| Not covered | repositories declared in poms of dependencies or in a parent outside the project; settings profiles activated by a property, a file or the OS; Central without a mirror when it is not reachable | — | known |
+| Not checked | the company cluster and its settings; Windows; a plugin newer than 6.46.1 (the integration test fails when its parsing changes) | — | open |

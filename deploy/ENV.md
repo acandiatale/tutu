@@ -111,6 +111,7 @@
 | `SBMIG_BUILD__REPOSITORY_URL` | 구운 `artifacts.yml` 값 | 클러스터에서 쓸 Nexus 그룹 URL 이 PC 와 다를 때 |
 | `SBMIG_BUILD__REPOSITORY_TIMEOUT_SECONDS` | `10` | sbmig 의 Nexus 조회(메타데이터 / pom) 대기 |
 | `SBMIG_OPENREWRITE__TIMEOUT_MINUTES` | `40` | 레시피 실행 상한 |
+| `SBMIG_OPENREWRITE__TRANSLATE_SETTINGS` | `true` | 자동 변환을 실행할 때 OpenRewrite 가 Maven 과 같은 미러를 고르도록 settings 사본을 넘긴다. `false` 면 원본 그대로 넘긴다 |
 | `SBMIG_OPENREWRITE__JVM_ARGS` | `'["-Xmx4g"]'` | 레시피 Maven 의 힙. 파드 memory limit 보다 2 GiB 이상 작게 |
 | `SBMIG_INTAKE__ADF_POLICY` | `stop` | ADF(JDeveloper) 프로젝트: `stop` 변환 불가로 끝 / `warn` 경고만 |
 | `SBMIG_LAYOUT__WIRE_BUNDLED_JARS` | `true` | WEB-INF/lib 의 선언 없는 jar 를 재구성 때 연결 |

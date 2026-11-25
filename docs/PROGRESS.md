@@ -160,6 +160,7 @@
 - [x] 접수에서 거절된 실행은 그 사유를 문장으로 보여 준다
 - [x] 이미지 하나(Python + JDK 21 + Maven), Windows 체크아웃 · 폐쇄망(APT 미러, pip 신뢰 호스트)에서도 빌드
 - [x] 이미지의 JDK 는 버전을 정한 Amazon Corretto 21 이다(지금 `21.0.13.1.2`, Java4Shell CVE-2026-114938 이 고쳐진 빌드). 파일을 직접 받아 SHA-256 을 확인한 뒤 설치하고, Debian 의 OpenJDK 는 이미지에 넣지 않는다. 사내 미러 주소와 HTTPS 검사 망용 인자가 있다. arm64 · amd64 이미지를 실제로 빌드해 확인했고, 회사 망에서는 아직 빌드하지 않았다 (v2.1z-cg)
+- [x] 관리자 화면의 실행별 「로그와 보고서」 ZIP 은 그 실행의 Maven · OpenRewrite 출력(`logs/`), 오류 목록, 보고서, 상태 파일, 취약점 조치의 상태와 빌드 출력까지 담는다. 소스와 ZIP, LLM 기록은 넣지 않고, 담을 때 비밀 값을 한 번 더 가린다. 전체 실행 묶음은 그대로다 (v2.1z-ch)
 - [x] 회사 `artifacts.yml` 을 이미지에 굽고, 컨테이너 경로는 매니페스트의 환경 변수로 덮는다
 - [x] 회사 클러스터 값: namespace `agent`, `nfs-csi` ReadWriteMany, kubeconfig Secret 방식, Job 모드를 켠 채로 내보낸다
 - [x] Job 모드: 업로드마다 빌드 Job 하나, 공유 볼륨의 실행 폴더, 웹 파드가 진행을 읽어 화면에 보낸다
@@ -268,6 +269,8 @@
 - [x] IVAS 계정 값은 Secret 에서만, 로그 · 보고서에서 가린다
 - [x] `/api/remediations` API(상태 · 재개 · 멈춤 · 파일)
 - [x] Windows 에서 다른 프로그램(백신, 색인, 폴더를 열어 둔 편집기)이 파일을 열고 있어 이름 바꾸기 · 삭제가 거부되면 60초까지 기다렸다 다시 시도한다(`sbmig/remediations/fsops.py`). Linux 동작은 그대로다. 회사 PC 에서 접수 마지막 단계가 `WinError 5` 로 끝난 실행에서 나온 것이고, Windows 에서 돌려 보지는 못했다
+- [x] 자동 변환(OpenRewrite)은 Maven 과 같은 settings 를 읽지만 미러를 다르게 해석한다(`external:http:*` 를 모르고 `<blocked>` 를 무시한다). 변환을 실행할 때만 OpenRewrite 가 Maven 과 같은 저장소로 가도록 미러를 더한 settings 사본을 넘긴다. Maven 자신의 동작은 바뀌지 않는다(실제 Maven 으로 원본과 사본의 요청이 같은 것을 확인). 회사 클러스터에서는 아직 돌려 보지 못했다 (v2.1z-ci)
+- [x] 변환이 pom 을 받지 못해 실패하면 `sbmig.log` 한 줄에 어떤 pom 인지, 닿지 않은 저장소와 404 로 답한 저장소가 나온다. OpenRewrite 가 통과하는 실행에서도 찍는 경고만으로는 더 이상 30초 기다렸다 다시 돌리지 않는다 (v2.1z-ci)
 - [x] 60초를 기다려도 풀리지 않으면 로그의 `still refused` 줄에 그 파일을 열고 있는 프로그램 이름과 pid 를 적는다(Windows Restart Manager). sbmig 자신이면 `this process` 라고 적고, 찾지 못한 경우와 찾기 자체가 실패한 경우를 다른 문구로 구분한다. 회사 PC 에서 2회차 결과 ZIP 이 1회차 `result.zip` 을 덮어쓰지 못한 실행에서 나온 것이다. Windows 호출부는 Windows 에서 돌려 보지 못했다 (v2.1z-cf)
 - [x] 이 프로세스가 이름을 바꾸거나 지우려는 경로를 스스로 열어 둔 채면 실패하는 테스트가 있다(2회차까지 가는 조치, 접수, 수정 루프, 재개, IVAS 업로드). 맥과 리눅스는 열린 파일도 덮어쓰게 해 주어서 그런 실수가 테스트에 드러나지 않던 것을 메운다 (v2.1z-cf)
 - [ ] 플러그인 · 벤더 포함 · 출처 불명 항목의 자동 조치 — 수동 검토로 남김
