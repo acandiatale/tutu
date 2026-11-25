@@ -1,18 +1,10 @@
-"""모든 `sbmig.*` 로그 줄에 `[intake]`, `[fix r3 7a52b1cea8]` 같은 단계 태그를 붙인다.
-수정 루프에서는 라운드와 케이스 ID다.
+"""모든 `sbmig.*` 로그 줄에 `[intake]`, `[fix r3 7a52b1cea8]` 같은 단계 태그를 붙이는 모듈.
+수정 루프에서는 라운드와 케이스 ID가 태그다. 단계 밖이면 `-`다.
 진입점은 `with stage(...)`, set_stage / reset_stage(그래프 노드), install_stage_filter, stage_formatter다.
 단계는 ContextVar라서 LangGraph 실행 스레드에서도 유지되고 웹 서버의 동시 실행끼리 섞이지 않는다.
 
-The pipeline stage a log line belongs to (v2.1, 2026-10-27: "로그가 추적이 안 된다").
-
-Every `sbmig.*` log record carries `record.stage` — the innermost :func:`stage` context of the thread that logs
-(`intake`, `analyze`, `plan`, `rewrite`, `compile`, `restructure`, `review`, `build`, `fix r3`,
-`fix r3 7a52b1cea8` = round + case, `kb`, `report`, `fleet`; `-` outside any stage) — and the file / console
-formatters print it in brackets: `10:14:00 INFO  [fix r1 7a52b1cea8] KB 탐색: 저장된 스크립트 없음 …`.
-
-The context is a :class:`contextvars.ContextVar`, so a LangGraph executor thread that copies the context keeps the
-run's stage, and the web server's concurrent runs never see each other's. :func:`install_stage_filter` adds the filter
-once to the `sbmig` logger; records from other loggers get `-`.
+Stage names: `intake`, `analyze`, `plan`, `rewrite`, `compile`, `restructure`, `review`, `build`, `fix r3`,
+`fix r3 <case>`, `kb`, `report`, `fleet`. Output: `10:14:00 INFO  [fix r1 7a52b1cea8] KB 탐색: ...`.
 """
 from __future__ import annotations
 
@@ -37,9 +29,7 @@ def current_stage() -> str:
 
 def set_stage(name: str) -> contextvars.Token[str]:
     """with 블록 없이 단계에 들어간다(그래프 노드에서 쓴다).
-    단계를 나올 때는 반환된 토큰으로 reset_stage를 호출한다.
-
-    Enter a stage without a `with` block (graph nodes); reset with :func:`reset_stage`."""
+    단계를 나올 때는 반환된 토큰으로 reset_stage를 호출한다."""
     return _STAGE.set(name or "-")
 
 
@@ -50,9 +40,7 @@ def reset_stage(token: contextvars.Token[str]) -> None:
 
 @contextlib.contextmanager
 def stage(name: str) -> Iterator[None]:
-    """블록 안에서 기록되는 모든 로그 줄에 단계 태그를 붙인다. 중첩하면 블록을 나올 때 바깥 단계로 돌아간다.
-
-    `with stage("fix r3 7a52b1cea8"): …` — every log line inside is tagged; nesting restores the outer stage."""
+    """블록 안에서 기록되는 모든 로그 줄에 단계 태그를 붙인다. 중첩하면 블록을 나올 때 바깥 단계로 돌아간다."""
     token = _STAGE.set(name or "-")
     try:
         yield
@@ -62,10 +50,7 @@ def stage(name: str) -> Iterator[None]:
 
 class StageFilter(logging.Filter):
     """로그 레코드에 `record.stage`를 채우는 필터 클래스. 레코드를 걸러 내지는 않는다.
-    로거 필터는 그 로거의 레코드만 보므로 포매터에서도 단계를 채운다.
-
-    Sets `record.stage` (never filters anything). A logger-level filter only sees records created on that logger
-    (not those propagated from `sbmig.loop` & co), so the formatter below fills the field as well."""
+    로거 필터는 그 로거에서 만든 레코드만 보고 하위 로거에서 올라온 레코드는 못 보므로 포매터에서도 단계를 채운다."""
 
     def filter(self, record: logging.LogRecord) -> bool:
         """레코드에 stage가 없으면 현재 단계를 넣고 항상 True를 반환한다."""
@@ -75,9 +60,7 @@ class StageFilter(logging.Filter):
 
 
 class StageFormatter(logging.Formatter):
-    """로그 형식에 `%(stage)s`를 쓸 수 있게 하는 포매터 클래스. 어느 로거의 레코드든 현재 단계를 받는다.
-
-    A formatter whose format string may use `%(stage)s`: records from any logger get the current stage."""
+    """로그 형식에 `%(stage)s`를 쓸 수 있게 하는 포매터 클래스. 어느 로거의 레코드든 현재 단계를 받는다."""
 
     def format(self, record: logging.LogRecord) -> str:
         """레코드에 stage를 채워 포맷하고, 완성된 줄을 출력 마스킹 훅(`sbmig.core.scrub`)에 통과시킨다."""

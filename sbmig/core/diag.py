@@ -4,16 +4,10 @@
 진입점은 install_thread_dump_signal, dump_threads, watch_dump_trigger다.
 진단이 실패해도 실행은 멈추지 않는다.
 
-Operator diagnostics (round 9c): every thread's stack on demand — the answer to "is it stuck?" when neither the LLM
-/ Maven heartbeats nor the fix-loop watchdog say anything.
-
-* POSIX: `kill -USR1 <pid>`; Windows: Ctrl+Break in the console (`SIGBREAK`, round 10) → `out/threads-<ts>.txt`.
-* Everywhere (Windows too, also under `sbmig serve`): create a file named `dump-threads` (or `dump-threads.txt`, what
-  Explorer makes of it with hidden extensions) in the run directory or in the directory sbmig was started from →
-  within TRIGGER_POLL_S the dump is written next to it and the trigger file is removed.
-* The web endpoint `GET /api/threads`, and the fix-loop watchdog writes one by itself after WATCHDOG_DUMP_S of silence.
-
-
+* Signal dumps go to `out/threads-<ts>.txt`.
+* `dump-threads.txt` is what Explorer makes of the name with hidden extensions. Within TRIGGER_POLL_S the dump
+  is written next to the trigger file and the trigger is removed.
+* The fix-loop watchdog writes one by itself after WATCHDOG_DUMP_S of silence.
 """
 from __future__ import annotations
 
@@ -31,12 +25,12 @@ log = logging.getLogger("sbmig.diag")
 
 TRIGGER_NAMES: tuple[str, ...] = ("dump-threads", "dump-threads.txt")
 TRIGGER_POLL_S = 2.0
-MAX_WATCHED_RUN_DIRS = 8            # a fleet registers one run dir per project; only the latest ones matter
+MAX_WATCHED_RUN_DIRS = 8            # 플릿은 프로젝트마다 실행 디렉토리를 등록하므로 최근 것만 감시한다
 
 _WATCH_LOCK = threading.Lock()
-_FIXED_DIRS: list[Path] = []                                            # cwd at install time, the signal's out_dir
+_FIXED_DIRS: list[Path] = []                                            # 설치할 때의 cwd와 시그널의 out_dir
 _RUN_DIRS: "collections.deque[Path]" = collections.deque(maxlen=MAX_WATCHED_RUN_DIRS)
-_STUCK: dict[Path, int] = {}       # trigger files that could not be removed → their mtime (never re-fire on it)
+_STUCK: dict[Path, int] = {}       # 지우지 못한 트리거 파일별 mtime. 같은 mtime으로는 다시 덤프하지 않는다
 _WATCHER: Optional[threading.Thread] = None
 _STOP = threading.Event()
 
@@ -45,18 +39,15 @@ def thread_dump_text() -> str:
     """모든 스레드의 현재 스택을 하나의 텍스트로 만들어 반환한다."""
     names = {t.ident: t.name for t in threading.enumerate()}
     parts = [f"# sbmig thread dump {time.strftime('%Y-%m-%d %H:%M:%S')} pid={os.getpid()} platform={sys.platform}"]
-    for tid, frame in sys._current_frames().items():  # noqa: SLF001 - the documented way to get other threads' frames
+    for tid, frame in sys._current_frames().items():  # noqa: SLF001 - 다른 스레드 프레임을 얻는 공식 방법이다
         parts.append(f"\n--- thread {names.get(tid, '?')} ({tid}) ---")
         parts.append("".join(traceback.format_stack(frame)))
     return "\n".join(parts)
 
 
 def dump_threads(out_dir: Optional[Path] = None) -> Optional[Path]:
-    """스레드 덤프를 `<out_dir>/threads-<ts>.txt`에 기록하고 그 경로를 로그에 남긴다.
-    파일에 기록할 수 없으면 stderr로 출력하고 None을 반환한다.
-
-    Write the dump to `<out_dir>/threads-<ts>.txt` (default `out/`) and log where; None when it cannot write
-    (the text then goes to stderr)."""
+    """스레드 덤프를 `<out_dir>/threads-<ts>.txt`(기본 `out/`)에 기록하고 그 경로를 로그에 남긴다.
+    파일에 기록할 수 없으면 stderr로 출력하고 None을 반환한다."""
     text = thread_dump_text()
     try:
         d = Path(out_dir) if out_dir else Path("out")
@@ -70,14 +61,13 @@ def dump_threads(out_dir: Optional[Path] = None) -> Optional[Path]:
     return p
 
 
-# ---------------------------------------------------------------------------------------------- file trigger
+# ---------------------------------------------------------------------------------------------- 트리거 파일
 def watch_dump_trigger(*dirs: Path | str) -> None:
     """실행 디렉토리를 `dump-threads` 파일 감시 대상에 추가한다. 최근 MAX_WATCHED_RUN_DIRS개만 유지한다.
     감시 스레드는 CLI와 serve가 따로 시작하므로 이 함수만으로는 스레드가 생기지 않는다.
 
-    Also look for a `dump-threads` file in these run directories (latest MAX_WATCHED_RUN_DIRS kept). Only
-    registers: the polling thread runs once `install_thread_dump_signal()` / `start_dump_trigger_watcher()` started it
-    (the CLI and `sbmig serve` do; library use and tests stay thread-free)."""
+    The thread starts in `install_thread_dump_signal()` / `start_dump_trigger_watcher()`; library use and
+    tests stay thread-free."""
     with _WATCH_LOCK:
         for d in dirs:
             if d:
@@ -100,10 +90,7 @@ def watched_dirs() -> list[Path]:
 def check_dump_triggers(dirs: Optional[list[Path]] = None) -> list[Path]:
     """감시 디렉토리에서 트리거 파일을 찾아 지우고 그 디렉토리에 스레드 덤프를 기록한다.
     기록한 덤프 파일 목록을 반환한다.
-    편집기에 열려 있어 지울 수 없는 트리거 파일은 한 번만 덤프를 만든다.
-
-    One poll: for every trigger file found, remove it and write a thread dump into its directory. Returns the dump
-    files written. A trigger that cannot be removed (open in an editor) fires once, not every poll."""
+    편집기에 열려 있어 지울 수 없는 트리거 파일은 한 번만 덤프를 만든다."""
     written: list[Path] = []
     for d in (dirs if dirs is not None else watched_dirs()):
         for name in TRIGGER_NAMES:
@@ -132,15 +119,13 @@ def _watch_loop(interval: float, stop: threading.Event) -> None:
     while not stop.wait(interval):
         try:
             check_dump_triggers()
-        except Exception:                    # pragma: no cover - diagnostics never take the process down
+        except Exception:                    # pragma: no cover - 진단 때문에 프로세스가 죽으면 안 된다
             log.debug("dump-threads trigger check failed", exc_info=True)
 
 
 def start_dump_trigger_watcher(*dirs: Path | str, interval: float = TRIGGER_POLL_S) -> bool:
     """트리거 파일 감시 데몬 스레드를 한 번만 시작한다. 호출 후 감시 스레드가 실행 중이면 True를 반환한다.
-
-    Start (once) the daemon thread that polls the watched directories (`dirs` + registered run dirs). True when
-    the watcher runs after the call."""
+    ``dirs``는 고정 감시 디렉토리로 추가하고, 등록된 실행 디렉토리도 함께 감시한다."""
     global _WATCHER
     with _WATCH_LOCK:
         for d in dirs:
@@ -153,16 +138,14 @@ def start_dump_trigger_watcher(*dirs: Path | str, interval: float = TRIGGER_POLL
             _WATCHER = threading.Thread(target=_watch_loop, args=(interval, _STOP), name="sbmig-dump-trigger",
                                         daemon=True)
             _WATCHER.start()
-        except RuntimeError:                 # pragma: no cover - interpreter shutting down
+        except RuntimeError:                 # pragma: no cover - 인터프리터가 종료 중인 경우
             _WATCHER = None
             return False
     return True
 
 
 def stop_dump_trigger_watcher(timeout: float = 5.0) -> None:
-    """감시 스레드를 멈춘다. 테스트에서 쓰며, 다음 start 호출은 스레드를 새로 시작한다.
-
-    Stop the polling thread (tests; a later `start_dump_trigger_watcher` starts a new one)."""
+    """감시 스레드를 멈춘다. 테스트에서 쓰며, 다음 start 호출은 스레드를 새로 시작한다."""
     global _WATCHER
     _STOP.set()
     w, _WATCHER = _WATCHER, None
@@ -170,12 +153,10 @@ def stop_dump_trigger_watcher(timeout: float = 5.0) -> None:
         w.join(timeout)
 
 
-# ---------------------------------------------------------------------------------------------- signals
+# ---------------------------------------------------------------------------------------------- 시그널
 def _signal_name() -> Optional[str]:
     """덤프 요청에 쓸 시그널 이름을 반환한다.
-    POSIX는 SIGUSR1, Windows는 SIGBREAK이고 둘 다 없으면 None을 반환한다.
-
-    SIGUSR1 on POSIX, SIGBREAK (Ctrl+Break) on Windows; None when neither exists."""
+    POSIX는 SIGUSR1, Windows는 SIGBREAK(Ctrl+Break)이고 둘 다 없으면 None을 반환한다."""
     import signal
 
     if hasattr(signal, "SIGUSR1"):
@@ -189,10 +170,7 @@ def install_thread_dump_signal(out_dir: Optional[Path] = None) -> bool:
     """시그널과 트리거 파일로 스레드 덤프를 요청할 수 있게 연결한다. 예외를 던지지 않는다.
     시그널 핸들러는 메인 스레드에서만 등록할 수 있으므로 다른 스레드에서는
     False를 반환하고, 트리거 파일 감시는 그래도 시작한다.
-
-    `kill -USR1 <pid>` (POSIX) / Ctrl+Break (Windows `SIGBREAK`) → dump_threads(out_dir); plus the `dump-threads`
-    file trigger for the current directory, `out_dir` and every workspace run dir. The signal handler needs the main
-    thread (returns False elsewhere — the file trigger still starts); never raises.
+    트리거 파일은 현재 디렉토리, ``out_dir``, 모든 작업 공간의 실행 디렉토리에서 찾는다.
 
     Windows: the handler runs when the main thread next executes Python code, i.e. after the current Maven wait slot
     (≤ 60 s heartbeat); the file trigger answers within TRIGGER_POLL_S. Maven / git children have their own hidden
@@ -201,7 +179,7 @@ def install_thread_dump_signal(out_dir: Optional[Path] = None) -> bool:
 
     try:
         start_dump_trigger_watcher(Path.cwd(), *([out_dir] if out_dir else []))
-    except OSError:                          # pragma: no cover - cwd deleted
+    except OSError:                          # pragma: no cover - cwd가 지워진 경우
         pass
     name = _signal_name()
     if name is None or threading.current_thread() is not threading.main_thread():

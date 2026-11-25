@@ -3,11 +3,9 @@
 commit / revert_to를 쓴다.
 - 파일은 감지한 인코딩으로 읽고 같은 인코딩으로 쓴다. 소스를 UTF-8로 바꾸지 않는다
 - git은 대화형으로 실행하지 않는다. 프롬프트, 훅, 서명을 끄고 타임아웃을 건다
-- 실행 디렉토리에는 아래 영어 목록에 있는 파일만 남긴다
+- 실행 디렉토리에는 아래 목록에 있는 파일만 남긴다
 
-Workspace: the migrated project copy + run output directory + git snapshots + journal.
-
-Layout of one run (v2.1, docs/v2/PLAN-v2.1.md §3.5 — nothing else is kept):
+Layout of one run (nothing else is kept):
     <out_dir>/<run_id>/
         project/            ← working copy (git repo; one commit per step/attempt)
         logs/               ← every Maven / OpenRewrite / deptree / classpath / effective-pom log (NNN-<label>.log)
@@ -19,8 +17,6 @@ Layout of one run (v2.1, docs/v2/PLAN-v2.1.md §3.5 — nothing else is kept):
         sbmig.log           ← DEBUG log, `[stage]` per line
         profile.json, plan.json, report.json, report.md, changes.patch, result.zip (the migrated project)
     (+ merge-conflicts/ when a multi-module merge dropped differing copies, web-status.json for web runs)
-
-
 """
 from __future__ import annotations
 
@@ -52,21 +48,17 @@ log = logging.getLogger("sbmig.core.workspace")
 STOP_REQUEST_FILE = "stop.request"
 STOP_REQUEST_REASON = "stopped by user (stop.request) — the final `mvn clean package` did not run"
 
-GIT_TIMEOUT_S = 600.0      # one workspace git command (add / commit / status / reset)
-# Windows의 긴 경로, 전역 autocrlf, 한글 파일 이름 이스케이프, 다른 계정
-# 소유 디렉토리 문제를 막기 위해 git 설정을 호출마다 넘긴다
-# per-call git config (round 10, Windows): fleet run dirs exceed 260 chars; a global `core.autocrlf=true` rewrote
-# `.sh` files with CRLF on `revert_to`; `core.quotepath` printed Korean names as "\355\225\234…" in name lists; a
-# run dir owned by another account ("dubious ownership") made every git call fail
+GIT_TIMEOUT_S = 600.0      # 작업 공간 git 명령 하나의 타임아웃(초)
+# 호출마다 넘기는 git 설정. 플릿 실행 경로가 260자를 넘는 문제, 전역 autocrlf가 되돌릴 때 `.sh`를 CRLF로 바꾸는 문제,
+# 한글 파일 이름이 8진수로 이스케이프되는 문제, 다른 계정 소유 디렉토리에서 모든 호출이 실패하는 문제를 막는다
 GIT_CONFIG: tuple[str, ...] = ("commit.gpgsign=false", "tag.gpgsign=false", "core.longpaths=true",
                                "core.autocrlf=false", "core.quotepath=false", "safe.directory=*",
-                               # a run's repository is short-lived: no background repack after a commit (NFS volume)
+                               # 실행 저장소는 잠깐 쓰고 버리므로 커밋 뒤 백그라운드 repack을 끈다(NFS 볼륨)
                                "maintenance.auto=false", "gc.auto=0")
-# 프로젝트의 .gitattributes보다 우선하므로, reset --hard가 줄바꿈, LFS, 인코딩을 변환하지 않게 한다
-# .git/info/attributes (beats every .gitattributes of the project): no EOL / filter / encoding conversion, ever —
-# a project's `* text=auto` / `eol=crlf` / LFS `filter=lfs` would otherwise rewrite files on `git reset --hard`
+# .git/info/attributes에 넣는 값. 프로젝트의 .gitattributes보다 우선하므로 reset --hard가 줄바꿈, LFS, 인코딩을
+# 변환하지 않는다
 GIT_INFO_ATTRIBUTES = "* -text -eol -filter -ident -working-tree-encoding\n"
-# build-generated files outside target/ (B8): ignored unless the as-is tree already has them (then they stay tracked)
+# target/ 밖에 빌드가 만드는 파일. as-is 트리에 이미 있으면 추적을 유지하고, 없으면 무시한다
 GENERATED_IGNORES: tuple[str, ...] = (".flattened-pom.xml", "**/src/main/generated/", "**/src/test/generated/",
                                       ".apt_generated/", ".apt_generated_tests/")
 _CREATE_NO_WINDOW = 0x08000000
@@ -77,20 +69,17 @@ def _on_windows() -> bool:
 
 
 def _child_creationflags() -> int:
-    """Windows에서 자식 프로세스에 숨은 콘솔을 따로 붙이는 생성 플래그를 반환한다.
-    운영자가 누른 Ctrl+Break, Ctrl+C가 빌드에 직접 전달되지 않게 하기 위해서다.
+    """Windows에서 자식 프로세스에 숨은 콘솔을 따로 붙이는 생성 플래그를 반환한다. 다른 OS에서는 0이다.
+    운영자가 누른 Ctrl+Break, Ctrl+C가 git, cmd.exe, java에 직접 전달되지 않게 하기 위해서다.
 
-    Windows: children get their own (hidden) console, so the operator's Ctrl+Break (thread dump, `sbmig.core.diag`)
-    and Ctrl+C never reach git / cmd.exe / java directly — sbmig decides what to kill."""
+    Ctrl+Break is the thread dump of `sbmig.core.diag`; sbmig decides what to kill."""
     return getattr(subprocess, "CREATE_NO_WINDOW", _CREATE_NO_WINDOW) if _on_windows() else 0
 
 
 def _as_text(x) -> str:
     """subprocess 출력을 문자열로 바꾼다.
-    바이트는 항상 UTF-8로 디코딩하고, 디코딩할 수 없는 바이트는 대체 문자로 바꾼다.
-
-    subprocess output → str: bytes are UTF-8 with replacement characters (never the console code page),
-    None (a reader thread that died) is empty."""
+    바이트는 콘솔 코드 페이지가 아니라 항상 UTF-8로 디코딩하고, 디코딩할 수 없는 바이트는 대체 문자로 바꾼다.
+    None(읽기 스레드가 죽은 경우)은 빈 문자열이다."""
     if x is None:
         return ""
     return x.decode("utf-8", errors="replace") if isinstance(x, (bytes, bytearray)) else str(x)
@@ -105,13 +94,11 @@ _UTF8_BOM = b"\xef\xbb\xbf"
 _ZIP_UTF8_FLAG = 0x800
 
 # 플릿은 파일을 약 150만 개 다루므로 인코딩 감지 캐시의 크기를 제한한다
-ENCODING_CACHE_MAX = 20_000     # entries (~8 MB); the fleet touches ~1.5 M files, an unbounded dict grew ~40 MB/100k
+ENCODING_CACHE_MAX = 20_000     # 항목 수. 약 8MB
 
 
 class _LRU:
-    """여러 스레드에서 함께 쓸 수 있는 작은 LRU 맵 클래스. 인코딩 캐시는 플릿의 모든 작업 공간이 공유한다.
-
-    A small thread-safe LRU map (OrderedDict); the encoding cache is shared by every workspace of a fleet."""
+    """여러 스레드에서 함께 쓸 수 있는 작은 LRU 맵 클래스. 인코딩 캐시는 플릿의 모든 작업 공간이 공유한다."""
 
     def __init__(self, maxsize: int):
         self.maxsize = maxsize
@@ -140,7 +127,7 @@ class _LRU:
             self._d.clear()
 
 
-# (resolved path) -> (mtime_ns, size, candidates, encoding)
+# 절대 경로별 (mtime_ns, size, candidates, encoding)
 _ENCODING_CACHE = _LRU(ENCODING_CACHE_MAX)
 
 
@@ -163,21 +150,19 @@ def _sniff_bytes(data: bytes, candidates: tuple[str, ...]) -> str:
         return "utf-8-sig"
     for enc in candidates:
         try:
-            data.decode(enc)                 # strict
+            data.decode(enc)                 # 엄격하게 디코딩한다
         except (UnicodeDecodeError, LookupError):
             continue
         return enc
-    return "utf-8"                           # nothing decodes strictly → utf-8 (read with errors="replace")
+    return "utf-8"                           # 맞는 후보가 없으면 utf-8. 읽을 때 errors="replace"를 쓴다
 
 
 def detect_encoding(path: str | Path, candidates: Optional[list[str] | tuple[str, ...]] = None) -> str:
     """텍스트 파일의 인코딩을 감지한다.
     BOM이 있으면 utf-8-sig, 없으면 전체를 오류 없이 디코딩할 수 있는 첫 후보를 반환한다.
-    결과는 경로, 수정 시각, 크기로 캐시하며, 없는 파일이나 ASCII 파일이면 utf-8을 반환한다.
+    결과는 경로, 수정 시각, 크기로 캐시한다. 없는 파일, 빈 파일, ASCII 파일이면 utf-8을 반환한다.
 
-    Encoding of a text file: UTF-8 BOM → "utf-8-sig"; else the first candidate that decodes the whole file
-    strictly (default utf-8 → cp949 → euc-kr → shift_jis → latin-1). Cached per path + mtime + size.
-    Pure ASCII / empty / missing files → "utf-8"."""
+    Default candidates: utf-8, cp949, euc-kr, shift_jis, latin-1."""
     cands = tuple(candidates) if candidates else DEFAULT_ENCODING_CANDIDATES
     p = Path(path)
     try:
@@ -209,8 +194,7 @@ def _java_unicode_escape(text: str, enc: str) -> str:
     """대상 인코딩에 없는 문자를 Java `\\uXXXX` 이스케이프로 바꾼다.
     cp949 소스를 cp949 그대로 저장하기 위해 쓴다.
 
-    Replace characters the target encoding cannot represent by Java \\uXXXX escapes (valid anywhere in a
-    .java source, including comments and string literals)."""
+    \\uXXXX is valid anywhere in a .java source, comments and string literals included."""
     out: list[str] = []
     for ch in text:
         try:
@@ -224,9 +208,9 @@ def _java_unicode_escape(text: str, enc: str) -> str:
 
 def fix_zip_name(info: zipfile.ZipInfo) -> str:
     """zip 항목의 파일 이름을 복원한다. 한국어 Windows의 zip 도구가 cp949로 기록한 이름을 다시 디코딩한다.
+    UTF-8 플래그가 없는 이름만 utf-8, cp949 순으로 다시 읽고, 둘 다 안 되면 원래 이름을 반환한다.
 
-    Entry name with legacy (non-UTF-8-flagged) names re-decoded: Python decodes them as cp437, Korean Windows
-    zip tools wrote cp949 (sometimes raw UTF-8 without the flag). Falls back to the name as decoded."""
+    Python decodes unflagged names as cp437; some tools wrote raw UTF-8 without the flag."""
     name = info.filename
     if info.flag_bits & _ZIP_UTF8_FLAG:
         return name
@@ -245,25 +229,20 @@ def fix_zip_name(info: zipfile.ZipInfo) -> str:
 
 
 def posix_rel(p: str | PurePath) -> str:
-    """경로를 OS와 관계없이 슬래시(/)를 쓰는 상대 경로 문자열로 바꾼다.
-
-    A relative path with forward slashes on every OS (`str(WindowsPath)` has backslashes, every consumer compares
-    with "/")."""
+    """경로를 OS와 관계없이 슬래시(/)를 쓰는 상대 경로 문자열로 바꾼다. 경로를 비교하는 쪽이 모두 "/"를 쓴다."""
     return p.as_posix() if isinstance(p, PurePath) else str(p).replace(os.sep, "/")
 
 
 def _relative_posix(p: PurePath, root: PurePath) -> Optional[str]:
     """root 기준의 posix 상대 경로를 반환한다.
-    root 아래가 아니면 None을 반환하고, Windows에서는 대소문자를 구분하지 않는다.
-
-    `p` relative to `root` as a POSIX string; None when it is not below `root` (Windows: case-insensitive)."""
+    root 아래가 아니면 None을 반환하고, Windows에서는 대소문자를 구분하지 않는다."""
     try:
         return p.relative_to(root).as_posix()
     except ValueError:
         return None
 
 
-_MAVEN_OUTPUT_MARKERS = ("maven-status", "maven-archiver")      # Maven's own bookkeeping inside target/
+_MAVEN_OUTPUT_MARKERS = ("maven-status", "maven-archiver")      # Maven이 target/ 안에 만드는 기록 디렉토리
 
 
 def _is_output_target(parent: Path, parent_parts: tuple[str, ...] | list[str], has_pom: Optional[bool] = None) -> bool:
@@ -271,8 +250,7 @@ def _is_output_target(parent: Path, parent_parts: tuple[str, ...] | list[str], h
     패키지 이름이 target인 소스를 지우지 않기 위해 쓴다.
     src 아래면 산출물이 아니고, 옆에 pom.xml이 있거나 안에 Maven이 만든 기록 디렉토리가 있으면 산출물로 본다.
 
-    Does `parent/target` hold Maven build output? Never below a `src` directory; otherwise when a pom.xml sits
-    beside it — or Maven's bookkeeping dirs are inside it (a module whose pom the restructure moved away)."""
+    The bookkeeping-dir rule covers a module whose pom the restructure moved away."""
     if "src" in parent_parts:
         return False
     if has_pom is None:
@@ -284,11 +262,8 @@ def is_build_output_path(rel: str | PurePath, root: Optional[str | Path] = None)
     """프로젝트 상대 경로가 Maven 빌드 산출물 target/ 안에 있는지 확인한다.
     `com/x/target/` 같은 소스 패키지는 산출물로 보지 않는다.
 
-    Is the project-relative `rel` a Maven build-output directory (or inside one)? A path component `target`
-    counts only when no `src` component comes before it and — with `root` given — its parent directory holds a
-    pom.xml (or the dir has Maven's `maven-status/` / `maven-archiver/`). A package `com/x/target/` (under src/, or
-    without a pom.xml beside it) is source: the old rule (`"target" in parts`) dropped it silently from the run copy,
-    the KB scans and result.zip (round 10)."""
+    A `target` component counts only when no `src` comes before it and, with `root` given, its parent holds a
+    pom.xml (or the dir has `maven-status/` / `maven-archiver/`)."""
     parts = [x for x in str(rel).replace("\\", "/").split("/") if x not in ("", ".")]
     for i, part in enumerate(parts):
         if part == "src":
@@ -303,9 +278,7 @@ _INTAKE_PATTERNS = shutil.ignore_patterns(".git", ".idea", "*.iml", ".DS_Store",
 
 def _intake_ignore(base: Path):
     """접수에서 프로젝트를 복사할 때(copytree) 뺄 파일을 고르는 ignore 함수를 만든다.
-    IDE / VCS 파일은 어디서나 빼고 `target`은 빌드 산출물일 때만 뺀다.
-
-    copytree `ignore`: IDE / VCS noise everywhere, `target` only where it is build output (B4)."""
+    IDE / VCS 파일은 어디서나 빼고 `target`은 빌드 산출물일 때만 뺀다."""
     base = Path(base)
 
     def ignore(dirpath: str, names: list[str]) -> set[str]:
@@ -324,7 +297,7 @@ def _intake_ignore(base: Path):
 
 
 def new_run_id(prefix: str = "run") -> str:
-    """`run-YYYYmmdd-HHMMSS-xxxxxx` 형식의 새 실행 ID를 만든다."""
+    """`<prefix>-YYYYmmdd-HHMMSS-xxxxxx` 형식의 새 실행 ID를 만든다. 기본 접두어는 run이다."""
     return f"{prefix}-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
 
 
@@ -335,17 +308,15 @@ _LIES = "the ZIP's directory understates its sizes"
 
 
 class ZipRefused(ValueError):
-    """올린 ZIP이 풀기 한도를 넘어 접수를 거절할 때 던지는 예외. 메시지가 보고서와 화면에 나가는 사유 문장이다.
-
-    An uploaded ZIP over an unpacking limit; the message is the reason sentence of the refusal."""
+    """올린 ZIP이 풀기 한도를 넘어 접수를 거절할 때 던지는 예외. 메시지가 보고서와 화면에 나가는 사유 문장이다."""
 
 
 class ZipLimits(BaseModel):
     """올린 ZIP을 풀 때의 한도(바이트, 배수)를 담는 클래스. 0이면 그 한도는 없다.
+    전체 크기, 항목 하나의 크기, 항목 하나의 압축률을 보고 압축률은 `RATIO_MIN_BYTES` 이상 풀리는 항목만 본다.
 
-    Limits of unpacking an uploaded ZIP (0 = none): the whole tree, one entry, and one entry's unpacked / packed size
-    (judged from `RATIO_MIN_BYTES` unpacked on), the meanings of `intake.max_unpacked_mb` / `max_entry_mb` /
-    `max_compression_ratio` and of the remediation intake's limits."""
+    Same meaning as `intake.max_unpacked_mb` / `max_entry_mb` / `max_compression_ratio` and the remediation
+    intake's limits."""
     max_unpacked_bytes: int = 0
     max_entry_bytes: int = 0
     max_compression_ratio: int = 0
@@ -402,11 +373,7 @@ def _safe_extract(zf: zipfile.ZipFile, dest: Path, limits: ZipLimits | None = No
     """zip을 안전하게 푼다.
     파일 이름을 복원(fix_zip_name)하고, 대상 디렉토리 밖으로 나가는 항목(zip slip)은 거부한다.
     ``limits``가 있으면 쓰기 전에 ZIP 디렉토리의 크기로, 푸는 동안 실제로 쓴 바이트로 한도를 확인하고 넘으면
-    ``ZipRefused``를 던진다. 이미 쓴 파일은 호출한 쪽이 지운다.
-
-    Unpack safely (zip slip blocked). With `limits` (review 2026-11-18, W3) the directory's sizes are judged before
-    anything is written and the bytes really written while unpacking (the directory can lie); `ZipRefused` names the
-    limit — the caller removes what was written."""
+    ``ZipRefused``를 던진다. 이미 쓴 파일은 호출한 쪽이 지운다."""
     dest = dest.resolve()
     plan: list[tuple[zipfile.ZipInfo, Path, str]] = []
     for member in zf.infolist():
@@ -455,11 +422,8 @@ _ROOT_BUILD_FILES = ("pom.xml", "build.gradle", "build.gradle.kts", "settings.gr
 
 
 def _detect_project_root(extracted: Path) -> Path:
-    """압축을 푼 디렉토리에서 프로젝트 루트를 찾는다. 최상위 폴더가 하나뿐이면 그 안으로 들어가고, 맨 위에
-    빌드 파일이 있으면 멈춰서 접수가 실제 빌드 도구를 판단하게 한다.
-
-    If the archive has a single top-level folder (and no build file at top), descend into it. Gradle / Ant
-    build files stop the descent too, so intake rejects them naming the real tool (catalog S4)."""
+    """압축을 푼 디렉토리에서 프로젝트 루트를 찾는다. 최상위 폴더가 하나뿐이면 그 안으로 들어간다.
+    맨 위에 빌드 파일이 있으면 멈춘다. Gradle, Ant 파일에서도 멈추므로 접수가 실제 빌드 도구 이름으로 거절할 수 있다."""
     entries = [p for p in extracted.iterdir() if not p.name.startswith("__MACOSX") and p.name != ".DS_Store"]
     if any((extracted / n).exists() for n in _ROOT_BUILD_FILES):
         return extracted
@@ -469,13 +433,11 @@ def _detect_project_root(extracted: Path) -> Path:
 
 
 RUN_DIR_FILES = ("errors.jsonl", "errors.md", "report.md", "report.json", "sbmig.log", "changes.patch",
-                 "journal.jsonl", "plan.json", "profile.json", "result.zip")   # + logs/, project/ (PLAN-v2.1 §3.5)
+                 "journal.jsonl", "plan.json", "profile.json", "result.zip")   # 그 밖에 logs/, project/가 있다
 
 
 def logs_dir(ws: Any) -> Path:
-    """작업 공간(또는 run_dir만 가진 대체 객체)의 `<run dir>/logs` 경로를 반환한다.
-
-    `<run dir>/logs` of a Workspace — or of a stand-in that only has `run_dir` (tests, views)."""
+    """작업 공간(또는 테스트, 화면처럼 run_dir만 가진 대체 객체)의 `<run dir>/logs` 경로를 반환한다."""
     d = getattr(ws, "logs_dir", None)
     return Path(d) if d is not None else Path(ws.run_dir) / "logs"
 
@@ -491,25 +453,25 @@ class Workspace:
         self.logs_dir = self.run_dir / "logs"
         self.logs_dir.mkdir(parents=True, exist_ok=True)
         self.journal_path = self.run_dir / "journal.jsonl"
-        self.stop_request_path = self.run_dir / STOP_REQUEST_FILE     # 2026-11-05: the web's stop request to a run in another process
+        # 다른 프로세스에서 실행 중인 경우 웹이 이 파일로 중단을 요청한다
+        self.stop_request_path = self.run_dir / STOP_REQUEST_FILE
         self._log_counter = 0
         self.git_branch = f"sbmig/{run_id}"
         self._git_ready = False
         self.encoding_candidates: tuple[str, ...] = DEFAULT_ENCODING_CANDIDATES
-        self._read_encodings: dict[str, str] = {}      # resolved path → encoding it was last read/written with
+        self._read_encodings: dict[str, str] = {}      # 절대 경로별로 마지막에 읽거나 쓴 인코딩
         # 접수에서 찾은, IDE 출력이나 백업 폴더(boot/bin 등)에 남은 pom 복사본 폴더.
         # walk / glob이 target/처럼 건너뛴다
-        # v2.1z-h: project-relative directories every scan prunes like build output (stray pom copies found at intake)
         self.ignored_dirs: set[str] = set()
         # 올린 zip이 풀기 한도를 넘어 접수에서 거절한 사유. None이면 정상 접수다
         self.intake_refusal: Optional[str] = None
-        try:                                           # `dump-threads` file in the run dir → thread dump (diag)
+        try:                                           # `dump-threads` 파일이 생기면 스레드 덤프를 남긴다
             from sbmig.core.diag import watch_dump_trigger
             watch_dump_trigger(self.run_dir)
         except Exception:  # noqa: BLE001  # pragma: no cover - diagnostics never break a run
             log.debug("dump-threads trigger not registered for %s", self.run_dir, exc_info=True)
 
-    # ------------------------------------------------------------------ factory
+    # ------------------------------------------------------------------ 생성
     @classmethod
     def from_input(cls, src: str | Path, out_dir: str | Path, run_id: Optional[str] = None,
                    limits: ZipLimits | None = None) -> "Workspace":
@@ -517,10 +479,9 @@ class Workspace:
         접수 단계에서 호출한다. zip이 풀기 한도(``limits``, None이면 ``intake`` 기본값)를 넘으면 아무것도 남기지 않고
         빈 project 폴더와 ``intake_refusal``(사유 문장)을 가진 Workspace를 반환한다.
 
-        Copy a directory or extract a zip into <out_dir>/<run_id>/project and return a Workspace. A zip over an
-        unpacking limit (`limits`, None = the `intake` defaults) leaves nothing unpacked: the Workspace has an empty
-        project folder and `intake_refusal` set to the reason sentence (journal `intake_refused`); the caller ends the
-        run like an intake refusal."""
+        Raises FileExistsError when the project folder exists, ValueError for an input that is neither a
+        directory nor a zip. A refusal journals `intake_refused`; the caller ends the run like an intake
+        refusal."""
         src = Path(src).resolve()
         run_id = run_id or new_run_id()
         run_dir = Path(out_dir).resolve() / run_id
@@ -558,17 +519,14 @@ class Workspace:
         ws.journal({"event": "intake", "source": str(src), "project_dir": str(project_dir)})
         return ws
 
-    # ------------------------------------------------------------------ files
+    # ------------------------------------------------------------------ 파일
     def abs(self, rel: str | Path) -> Path:
         """프로젝트 상대 경로를 절대 경로로 바꾼다. 절대 경로는 그대로 반환한다."""
         p = Path(rel)
         return p if p.is_absolute() else self.root / p
 
     def rel(self, path: str | Path) -> str:
-        """경로를 '/'를 쓰는 프로젝트 상대 경로로 바꾼다. 프로젝트 밖 경로는 절대 경로로 반환한다.
-
-        Project-relative path with forward slashes on every OS (round 10: `str(Path)` gave backslashes on Windows
-        while every consumer compares with "/"). A path outside the project comes back absolute (also "/")."""
+        """경로를 '/'를 쓰는 프로젝트 상대 경로로 바꾼다. 프로젝트 밖 경로는 '/'를 쓰는 절대 경로로 반환한다."""
         p = Path(path)
         if not p.is_absolute():
             return p.as_posix()
@@ -576,33 +534,26 @@ class Workspace:
         return rel if rel is not None else p.as_posix()
 
     def is_build_output(self, rel: str | Path) -> bool:
-        """경로가 이 프로젝트의 Maven 빌드 산출물 target/이거나 그 안에 있는지 확인한다.
-
-        `rel` is (inside) a Maven build-output `target/` of this project (see `is_build_output_path`)."""
+        """경로가 이 프로젝트의 Maven 빌드 산출물 target/이거나 그 안에 있는지 확인한다(`is_build_output_path`)."""
         return is_build_output_path(self.rel(rel), self.root)
 
     def exists(self, rel: str | Path) -> bool:
         """프로젝트 안에 그 경로가 있는지 확인한다."""
         return self.abs(rel).exists()
 
-    # -- encodings (catalog E1): every file is read and written back in its own detected encoding
+    # -- 인코딩: 파일마다 감지한 인코딩으로 읽고 같은 인코딩으로 다시 쓴다
     def set_encoding_candidates(self, candidates: Optional[list[str] | tuple[str, ...]]) -> None:
-        """인코딩 감지에 쓸 후보 순서(cfg.build.encoding_candidates)를 정한다. 비어 있으면 기본값을 쓴다.
-
-        Candidate encodings tried in order (cfg.build.encoding_candidates). Empty/None → defaults."""
+        """인코딩 감지에 쓸 후보 순서(cfg.build.encoding_candidates)를 정한다. 비어 있으면 기본값을 쓴다."""
         self.encoding_candidates = tuple(candidates) if candidates else DEFAULT_ENCODING_CANDIDATES
 
     def encoding_of(self, rel: str | Path) -> str:
-        """기존 파일의 인코딩을 감지해 반환한다. BOM이 있으면 utf-8-sig, 파일이 없으면 utf-8을 반환한다.
-
-        Detected encoding of an existing file ("utf-8-sig" when it has a UTF-8 BOM); "utf-8" when missing."""
+        """기존 파일의 인코딩을 감지해 반환한다. BOM이 있으면 utf-8-sig, 파일이 없으면 utf-8을 반환한다."""
         return detect_encoding(self.abs(rel), self.encoding_candidates)
 
     def read(self, rel: str | Path, encoding: Optional[str] = None) -> str:
         """파일을 감지한 인코딩으로 읽는다.
-        줄바꿈은 그대로 두고, write가 같은 인코딩으로 쓰도록 인코딩을 기억해 둔다.
-
-        Text of a file decoded with `encoding` (None → detected). Newlines are returned untouched (\\r\\n kept)."""
+        ``encoding``이 None이면 감지한 인코딩을 쓴다. 줄바꿈(\\r\\n 포함)은 그대로 두고, write가 같은 인코딩으로
+        쓰도록 인코딩을 기억해 둔다."""
         p = self.abs(rel)
         enc = encoding or detect_encoding(p, self.encoding_candidates)
         with open(p, "r", encoding=enc, errors="replace", newline="") as fh:
@@ -614,9 +565,7 @@ class Workspace:
         """텍스트를 파일의 원래 인코딩으로 쓴다. BOM은 유지하고 새 파일은 utf-8로 쓴다.
         그 인코딩에 없는 문자가 있으면 .java 파일은 \\uXXXX로 바꾸고, 다른 파일은 UTF-8로 저장하면서 경고 로그를 남긴다.
 
-        Write `text` (newlines untouched). encoding None → the encoding the file was read with / is detected as
-        (UTF-8 BOM kept); new files → utf-8. Characters the legacy encoding cannot hold become \\uXXXX escapes in
-        .java files; other files are then re-encoded as UTF-8 (logged)."""
+        encoding None = the encoding the file was read with, else the detected one. Newlines are untouched."""
         p = self.abs(rel)
         p.parent.mkdir(parents=True, exist_ok=True)
         key = str(p.resolve())
@@ -627,7 +576,7 @@ class Workspace:
                 if enc == "utf-8" and self._read_encodings.get(key) not in (None, "utf-8"):
                     # 지금은 ASCII뿐이지만 cp949로 읽었던 파일이다.
                     # 나중에 한글이 들어올 수 있으므로 원래 인코딩을 유지한다
-                    enc = self._read_encodings[key]       # e.g. ascii-only now, but read as cp949 before
+                    enc = self._read_encodings[key]
             else:
                 enc = self._read_encodings.get(key, "utf-8")
         try:
@@ -661,9 +610,7 @@ class Workspace:
         shutil.move(str(src), str(dst))
 
     def is_ignored(self, rel: str) -> bool:
-        """``rel``이 접수에서 무시하기로 한 폴더(``ignored_dirs``) 안에 있는지 확인한다.
-
-        Is `rel` inside a directory the intake decided to ignore (`ignored_dirs`: stray pom copies)?"""
+        """``rel``이 접수에서 무시하기로 한 폴더(``ignored_dirs``, 남은 pom 복사본) 안에 있는지 확인한다."""
         r = str(rel).replace("\\", "/").strip("/")
         return any(r == d or r.startswith(d + "/") for d in self.ignored_dirs if d)
 
@@ -671,9 +618,7 @@ class Workspace:
         """프로젝트 디렉토리를 os.walk로 순회한다.
         .git, Maven 빌드 산출물, ``ignored_dirs``에는 들어가지 않는다.
 
-        os.walk over the project: (rel dir with "/" — "" for the root, dir names, file names). `.git`, Maven
-        build output (`target` beside a pom.xml or with `maven-status/` inside, never below src/) and the intake's
-        `ignored_dirs` (v2.1z-h) are pruned, so their contents are never listed."""
+        Yields (rel dir with "/", "" for the root; dir names; file names)."""
         root = str(self.root)
         for dirpath, dirnames, filenames in os.walk(root):
             rel_dir = os.path.relpath(dirpath, root)
@@ -686,10 +631,7 @@ class Workspace:
 
     def glob(self, pattern: str) -> list[str]:
         """이름이 패턴에 맞는 파일과 디렉토리의 프로젝트 상대 경로 목록을 반환한다.
-        .git과 빌드 산출물은 제외한다.
-
-        Project-relative paths (POSIX) of files and directories whose *name* matches `pattern` (like
-        `rglob(pattern)`), outside `.git` and build output."""
+        .git, 빌드 산출물, ``ignored_dirs``는 제외한다. 패턴에 '/'가 있으면 rglob으로 경로 전체를 맞춘다."""
         if "/" in pattern or "\\" in pattern:
             return sorted(r for r in (self.rel(p) for p in self.root.rglob(pattern))
                           if ".git" not in r.split("/") and not is_build_output_path(r, self.root)
@@ -709,7 +651,7 @@ class Workspace:
         """프로젝트의 모든 pom.xml 경로를 반환한다."""
         return [p for p in self.glob("pom.xml")]
 
-    # ------------------------------------------------------------------ logs / journal
+    # ------------------------------------------------------------------ 로그, 저널
     def new_log_path(self, label: str, ext: str = "log") -> Path:
         """실행 안에서 번호가 하나씩 늘어나는 로그 파일 경로 `logs/NNN-<label>.<ext>`를 만든다."""
         self._log_counter += 1
@@ -717,9 +659,7 @@ class Workspace:
         return self.logs_dir / f"{self._log_counter:03d}-{safe}.{ext}"
 
     def stop_requested(self) -> bool:
-        """실행 폴더에 ``stop.request``(Job 모드의 중단 요청)가 있는지 확인한다. 예외를 던지지 않는다.
-
-        Is the run directory's `stop.request` present (the Job-mode stop request)? Never raises."""
+        """실행 폴더에 ``stop.request``(Job 모드의 중단 요청)가 있는지 확인한다. 예외를 던지지 않는다."""
         try:
             return self.stop_request_path.is_file()
         except OSError:
@@ -746,20 +686,14 @@ class Workspace:
         p.write_text(model.model_dump_json(indent=2), encoding="utf-8")
         return p
 
-    # ------------------------------------------------------------------ git snapshots
+    # ------------------------------------------------------------------ git 스냅샷
     def _git(self, *args: str, check: bool = True, env: Optional[dict[str, str]] = None,
              input: Optional[bytes] = None) -> subprocess.CompletedProcess:
         """작업 공간에서 git 명령을 실행한다. stdin을 닫고 프롬프트, 서명, 훅을 끄고 타임아웃을 건다.
         출력은 콘솔 코드 페이지가 아니라 UTF-8로 디코딩한다.
-
-        Workspace git: never interactive. The user's global git config may ask for a GPG passphrase
-        (`commit.gpgsign`), run hooks or call a credential manager — in a service process on Windows that waits
-        forever, which is what a run "stuck after llm_fix" looked like (round 9c). So: stdin closed, prompts off,
-        signing / hooks disabled per call, and a hard timeout (`GIT_TIMEOUT_S`).
-        Output is decoded as UTF-8 with replacement characters, never with the console code page: git emits UTF-8
-        (and raw file bytes in diffs), and a `text=True` cp949 decode on Windows died inside subprocess's reader
-        thread, which left `stdout=None` ("could not write changes.patch: data must be str, not NoneType",
-        2026-10-21 company run). `_git_bytes` keeps the raw bytes (patch files)."""
+ A global git config may ask for a GPG passphrase, run hooks or call a credential manager; in a Windows
+service process that waits forever. A `text=True` cp949 decode on Windows dies inside subprocess's reader
+        thread and leaves `stdout=None`. `_git_bytes` keeps the raw bytes (patch files)."""
         cp = self._git_bytes(*args, check=check, env=env, input=input)
         return subprocess.CompletedProcess(cp.args, cp.returncode, _as_text(cp.stdout), _as_text(cp.stderr))
 
@@ -772,7 +706,7 @@ class Workspace:
         return env
 
     def _git_cmd(self, args: Iterable[str]) -> list[str]:
-        no_hooks = str(self.run_dir / "no-hooks")                       # a dir that does not exist = no hooks
+        no_hooks = str(self.run_dir / "no-hooks")                       # 없는 디렉토리를 지정해 훅을 끈다
         cmd = ["git"]
         for kv in (*GIT_CONFIG, f"core.hooksPath={no_hooks}"):
             cmd += ["-c", kv]
@@ -781,10 +715,10 @@ class Workspace:
     def _git_bytes(self, *args: str, check: bool = True, env: Optional[dict[str, str]] = None,
                    input: Optional[bytes] = None, stdout: Any = None) -> subprocess.CompletedProcess:
         """git 명령을 실행하고 출력을 바이트 그대로 반환한다(패치 파일용).
-        프롬프트와 편집기를 막고 작성자를 sbmig로 고정한다.
-
-        Optional: `env` (extra variables over the fixed ones), `input` (bytes for stdin, else stdin is closed),
-        `stdout` (a binary file object: git's output goes straight there and `cp.stdout` is empty)."""
+        프롬프트와 편집기를 막고 작성자를 sbmig로 고정한다. 타임아웃이나 check 실패면 GitError를 던진다.
+        - ``env``: 고정 값 위에 덧붙일 환경 변수
+        - ``input``: stdin으로 보낼 바이트. 없으면 stdin을 닫는다
+        - ``stdout``: 바이너리 파일 객체를 주면 출력이 바로 그 파일로 가고 ``cp.stdout``은 비어 있다"""
         cmd = self._git_cmd(args)
         io_kw: dict[str, Any] = {"stderr": subprocess.PIPE,
                                  "stdout": stdout if stdout is not None else subprocess.PIPE}
@@ -806,9 +740,7 @@ class Workspace:
 
     def git_init(self) -> str:
         """프로젝트를 git 저장소(브랜치 sbmig/<run_id>)로 만들고 .gitignore와 속성 파일을 맞춘 뒤 as-is
-        상태를 첫 커밋으로 남긴다.
-
-        Ensure the project dir is a git repo on branch sbmig/<run_id>, with everything committed."""
+        상태를 첫 커밋으로 남긴다. 그 커밋의 sha를 반환한다."""
         if not (self.root / ".git").exists():
             self._git("init", "-q")
             self._git("checkout", "-q", "-b", self.git_branch)
@@ -833,13 +765,11 @@ class Workspace:
         """git_init이 루트 .gitignore에 넣을 줄 목록을 반환한다.
         target/은 pom 옆에 있는 빌드 산출물만 무시한다.
         빌드가 만드는 파일(.flattened-pom.xml 등)도 무시해야 바뀐 파일이 없는지 정확히 판단할 수 있다.
+        단, as-is 트리에 이미 있는 생성 파일은 무시하지 않는다.
 
-        The lines git_init makes sure the root .gitignore has. `target/` is build output only where a pom.xml sits
-        beside it: `!**/src/**/target/` keeps packages such as `src/main/java/com/x/target/`, and every other
-        `target` dir of the as-is tree that is not build output gets its own `!/<dir>/target/` (B4); the `…/**` twins
-        re-include the files too when the project's own .gitignore says `**/target/**`. Generated files outside
-        target/ (`.flattened-pom.xml`, `src/main/generated/` …) are ignored unless the as-is tree has them (B8: they
-        made `is_dirty()` true after a build, so "no file changed" was never detected)."""
+        `!**/src/**/target/` keeps packages such as `src/main/java/com/x/target/`; every other as-is
+        `target` dir that is not build output gets its own `!/<dir>/target/`. The `.../**` twins re-include
+        the files when the project's own .gitignore says `**/target/**`."""
         keep_targets: list[str] = []
         seen_generated: set[str] = set()
         for rel_dir, dirnames, filenames in self.walk():
@@ -860,9 +790,7 @@ class Workspace:
 
     def _clean_excludes(self) -> list[str]:
         """`git clean`에 넘길 제외 인자를 만든다.
-        빌드 산출물은 남기고, 소스인 target 디렉토리는 다른 파일처럼 정리한다.
-
-        `git clean` arguments: build output stays, `target` dirs that are sources are cleaned like any other."""
+        빌드 산출물은 남기고, 소스인 target 디렉토리는 다른 파일처럼 정리한다."""
         out = ["-e", "target/", "-e", "!**/src/**/target/"]
         try:
             text = (self.root / ".gitignore").read_text(encoding="utf-8", errors="replace")
@@ -877,10 +805,10 @@ class Workspace:
     def commit(self, message: str, allow_empty: bool = False, *, paths: Optional[Iterable[str]] = None) -> str:
         """작업 트리를 커밋한다. paths가 없으면 무시된 jar까지 전부, 있으면 그 경로만 커밋한다.
         LLM 시도는 스크립트가 보고한 파일만 커밋하므로 빌드가 lib/에 복사한 jar가 섞이지 않는다.
+        커밋할 것이 없으면 지금 HEAD를 반환한다. 반환값은 HEAD의 sha다.
 
-        Commit the working tree (`paths` None: everything, incl. ignored jars the as-is tree keeps) or ONLY the
-        given root-relative paths (v2.1b, 2026-10-27: an LLM attempt stages what its script / edits reported — a
-        module jar the build copied into `lib/` must not ride along into the attempt and its `files`)."""
+        `paths` outside the project (absolute or with "..") are dropped. Raises GitError when git commit fails
+        for another reason than "nothing to commit"."""
         if not self._git_ready:
             self.git_init()
         if paths is None:
@@ -888,17 +816,18 @@ class Workspace:
             self._force_add_ignored_jars()
         else:
             wanted = [p for p in dict.fromkeys(str(x).replace("\\", "/").strip("/") for x in paths)
-                      if p and not Path(p).is_absolute() and ".." not in p.split("/")]   # inside the project only
+                      if p and not Path(p).is_absolute() and ".." not in p.split("/")]   # 프로젝트 안의 경로만
             if not wanted and not allow_empty:
                 return self.head()
             # Windows 명령줄 길이 제한 때문에 200개씩 add하고, 실패하면 경로를 하나씩 다시 시도한다
-            for i in range(0, len(wanted), 200):          # -f: a path the script changed on purpose, even if ignored
+            # -f는 스크립트가 일부러 바꾼 경로라면 무시 대상이어도 넣기 위해서다
+            for i in range(0, len(wanted), 200):
                 chunk = wanted[i:i + 200]
                 if self._git("add", "-A", "-f", "--", *chunk, check=False).returncode != 0:
-                    for one in chunk:                     # one bad pathspec must not drop the others
+                    for one in chunk:                     # 잘못된 경로 하나 때문에 나머지를 놓치지 않게 한다
                         self._git("add", "-A", "-f", "--", one, check=False)
             if not allow_empty and self._git("diff", "--cached", "--quiet", check=False).returncode == 0:
-                return self.head()                        # the reported files are back as they were: nothing staged
+                return self.head()                        # 보고한 파일이 원래대로 돌아가 올릴 것이 없다
         args = ["commit", "-q", "-m", message]
         if allow_empty:
             args.append("--allow-empty")
@@ -910,11 +839,7 @@ class Workspace:
 
     def _force_add_ignored_jars(self) -> None:
         """프로젝트가 `*.jar` / `lib/`를 무시하더라도 빌드 산출물 밖의 jar는 강제로 add한다.
-        빠지면 changes.patch와 되돌리기에서 jar를 잃기 때문이다.
-
-        A project .gitignore saying `*.jar` / `lib/` kept legacy WEB-INF/lib and systemPath jars out of every
-        snapshot: changes.patch missed them and revert_to could not bring back one a step had moved (round 10). Jars
-        outside build output are force-added; nothing else the project ignores is (logs, node_modules, local env)."""
+        빠지면 changes.patch와 되돌리기에서 jar를 잃기 때문이다. jar 말고 무시된 파일(로그, node_modules 등)은 넣지 않는다."""
         cp = self._git("ls-files", "-z", "--others", "--ignored", "--exclude-standard", check=False)
         jars = [f for f in (cp.stdout or "").split("\0")
                 if f.lower().endswith(".jar") and "node_modules/" not in f and not is_build_output_path(f, self.root)]
@@ -926,9 +851,7 @@ class Workspace:
         return self._git("rev-parse", "HEAD").stdout.strip()
 
     def status_paths(self) -> set[str]:
-        """`git status`가 보고하는 경로(수정, 삭제, 미추적 파일)를 반환한다. 무시된 파일은 제외한다.
-
-        Root-relative posix paths `git status` reports (modified / deleted / untracked; ignored files excluded)."""
+        """`git status`가 보고하는 경로(수정, 삭제, 미추적 파일)를 루트 기준 posix 경로로 반환한다. 무시된 파일은 제외한다."""
         out = self._git("status", "--porcelain", "-z", "--untracked-files=all", check=False).stdout or ""
         paths: set[str] = set()
         items = out.split("\0")
@@ -937,7 +860,7 @@ class Workspace:
             item = items[i]
             if len(item) > 3:
                 paths.add(item[3:].replace("\\", "/"))
-                if item[0] in "RC":                      # a rename / copy carries the old name in the next item
+                if item[0] in "RC":                      # 이름 변경이나 복사는 다음 항목에 이전 이름이 온다
                     i += 1
             i += 1
         return paths
@@ -946,17 +869,14 @@ class Workspace:
         """빌드가 target/ 밖에 만든 파일을 정리해 다음 시도의 커밋과 diff에 섞이지 않게 한다.
         예외를 던지지 않는다.
         빌드 전 status_paths와 비교해 새로 바뀐 추적 파일은 되돌리고, 미추적 파일은 .git/info/exclude에 넣는다.
+        정리한 경로 목록을 반환한다.
 
-        v2.1b (company run, 2026-10-27): a build writes files OUTSIDE `target/` too — a module jar copied into
-        `lib/` by maven-dependency-plugin, generated sources, a rewritten `.flattened-pom.xml` — and `git add -A`
-        in the next commit (an LLM attempt, the restructure) then carried them along: the attempt's `files` named
-        `xxx-swing/lib/xxx-swing-1.0-SNAPSHOT.jar`, its diff held a jar, the review refused to run on a dirty tree.
-        Called right after a build with the `status_paths()` taken before it: every path that became dirty DURING the
-        build is a build product — a tracked one is checked out again, an untracked one is excluded through
-        `.git/info/exclude`. Returns the paths handled. Never raises."""
+        Examples of such products: a module jar maven-dependency-plugin copied into `lib/`, generated
+        sources, a rewritten `.flattened-pom.xml`. Call right after a build with the `status_paths()` taken
+        before it."""
         try:
             after = self.status_paths()
-        except Exception:  # noqa: BLE001 - git trouble: the next commit behaves as before
+        except Exception:  # noqa: BLE001 - git 문제면 정리 없이 넘어간다
             return []
         new = sorted(p for p in after - set(before) if p and not is_build_output_path(p, self.root))
         if not new:
@@ -989,9 +909,7 @@ class Workspace:
         return bool(self._git("status", "--porcelain").stdout.strip())
 
     def revert_to(self, sha: str) -> None:
-        """작업 디렉토리를 지정한 커밋 상태로 강제로 되돌리고 남은 파일을 정리한다.
-
-        Hard reset the working copy to a previous snapshot (used on regressions)."""
+        """작업 디렉토리를 지정한 커밋 상태로 강제로 되돌리고 남은 파일을 정리한다. 빌드 산출물은 남긴다."""
         self._git("reset", "-q", "--hard", sha)
         self._git("clean", "-qfd", *self._clean_excludes())
 
@@ -1011,35 +929,26 @@ class Workspace:
         return self._git(*args).stdout
 
     def diff_bytes(self, from_sha: str, to_sha: Optional[str] = None) -> bytes:
-        """`git diff` 결과를 원본 바이트로 반환한다. 그래서 MS949 소스는 패치에서도 MS949로 남는다.
-
-        `git diff` as emitted: file content bytes untouched (an MS949 source stays MS949 in the patch)."""
+        """`git diff` 결과를 원본 바이트로 반환한다. 그래서 MS949 소스는 패치에서도 MS949로 남는다."""
         args = ["diff", "--no-color", from_sha] + ([to_sha] if to_sha else [])
         return _as_bytes(self._git_bytes(*args).stdout)
 
     def changed_files_since(self, sha: str) -> list[str]:
         """sha 이후 바뀐 파일과 미추적 파일 목록을 반환한다.
-        NUL로 구분해 받으므로 한글 이름도 그대로 나온다.
-
-        Files changed since `sha` (committed or not) plus untracked ones; NUL-separated name lists, so Korean and
-        other non-ASCII names come back as they are (never `"\\355\\225…"`)."""
+        커밋 여부와 관계없이 본다. NUL로 구분해 받으므로 한글 이름도 이스케이프 없이 그대로 나온다."""
         out = self._git("diff", "--name-only", "-z", sha).stdout
         untracked = self._git("ls-files", "--others", "--exclude-standard", "-z").stdout
         return sorted({f for f in (out + "\0" + untracked).split("\0") if f.strip()})
 
     def changed_between(self, from_sha: str, to_sha: str) -> list[str]:
-        """두 커밋 사이에 달라진 파일 목록(posix 경로, git 출력 순서)을 반환한다.
-
-        Files that differ between two commits (POSIX paths, non-ASCII names verbatim), in git's order."""
+        """두 커밋 사이에 달라진 파일 목록(posix 경로, git 출력 순서)을 반환한다. 한글 이름도 그대로 나온다."""
         out = self._git("diff", "--name-only", "-z", from_sha, to_sha).stdout
         return [f for f in out.split("\0") if f.strip()]
 
     def numstat_since(self, sha: str) -> list[tuple[str, str, Optional[int], Optional[int]]]:
         """커밋 sha와 지금 작업 트리 사이에 달라진 추적 파일마다 (경로, 상태, 추가 줄, 삭제 줄)을 반환한다.
         상태는 M / A / D 중 하나이고 이름 변경은 삭제와 추가로 나눈다. 바이너리 파일은 줄 수가 None이다.
-
-        (path, status M|A|D, added, removed) per tracked file that differs between `sha` and the working tree
-        (`--no-renames`: a rename is a delete + an add; added / removed None for a binary file). Raises GitError."""
+        git이 실패하면 GitError를 던진다."""
         names = self._git("diff", "--name-status", "--no-renames", "-z", sha).stdout.split("\0")
         status: dict[str, str] = {}
         for i in range(0, len(names) - 1, 2):
@@ -1055,21 +964,16 @@ class Workspace:
         return out
 
     def diff_file_bytes(self, sha: str, rel: str) -> bytes:
-        """커밋 sha와 지금 작업 트리 사이의 파일 하나의 diff를 원본 바이트로 반환한다.
-
-        `git diff <sha> -- <rel>` as raw bytes (the file's own encoding kept). Raises GitError."""
+        """커밋 sha와 지금 작업 트리 사이의 파일 하나의 diff를 원본 바이트로 반환한다. 실패하면 GitError를 던진다."""
         return _as_bytes(self._git_bytes("diff", "--no-color", "--no-renames", sha, "--", rel).stdout)
 
     def file_at(self, sha: str, rel: str) -> Optional[str]:
         """커밋 sha 시점의 파일 내용을 반환한다(`git show <sha>:<path>`).
-        파일이 없거나 git이 실패하면 None을 반환하고 예외를 던지지 않는다.
-
-        v2.1d: the text of a project-relative (posix) file at commit `sha` (`git show <sha>:<path>`), decoded as
-        UTF-8 with replacement characters; None when the path did not exist there or git fails. Never raises."""
+        UTF-8로 디코딩하고, 파일이 없거나 git이 실패하면 None을 반환한다. 예외를 던지지 않는다."""
         path = str(rel).replace("\\", "/").lstrip("/").removeprefix("./")
         try:
             cp = self._git("show", f"{sha}:{path}", check=False)
-        except Exception:  # noqa: BLE001 - GitError (timeout) / OSError: unknown
+        except Exception:  # noqa: BLE001 - 타임아웃 GitError나 OSError면 알 수 없음으로 본다
             return None
         if cp.returncode != 0:
             return None
@@ -1079,12 +983,12 @@ class Workspace:
         """as-is 상태를 저장한 첫 커밋의 sha를 반환한다."""
         return self._git("rev-list", "--max-parents=0", "HEAD").stdout.strip().splitlines()[-1]
 
-    # ------------------------------------------------------------------ tree objects (code-change view)
+    # ------------------------------------------------------------------ tree 객체(코드 변경 화면용)
     def _git_dir(self) -> Path:
         d = self.root / ".git"
         if d.is_dir():
             return d
-        out = self._git("rev-parse", "--absolute-git-dir").stdout.strip()   # a worktree / `gitdir:` file
+        out = self._git("rev-parse", "--absolute-git-dir").stdout.strip()   # worktree나 `gitdir:` 파일인 경우
         return Path(out)
 
     def _temp_index(self) -> Path:
@@ -1100,13 +1004,12 @@ class Workspace:
 
     def snapshot_tree(self) -> str:
         """작업 트리 전체를 tree 객체로 저장하고 sha를 반환한다. 임시 index를 쓰므로 HEAD와 실제 index는 그대로다.
-        커밋할 때처럼 무시된 jar도 넣는다.
+        커밋할 때처럼 무시된 jar도 넣으므로 지금 `commit()`이 만들 tree와 같다. 실패하면 GitError를 던진다.
 
-        The working tree as a tree object, written through a TEMPORARY index: `.git/index` is copied WITH its mtime
-        (unchanged files are not hashed again; a fresh mtime on the copy would defeat git's racy-clean check and a
-        same-size edit made in the index's second would be taken as unchanged), `GIT_INDEX_FILE` points at the copy, `git add -A`, the ignored jars outside build output
-        force-added exactly like `commit()` does, `git write-tree`. HEAD and the real index stay byte-identical (the
-        object store gains the new blobs). The tree is therefore what `commit()` would commit now. Raises GitError."""
+        Steps: copy `.git/index` WITH its mtime (a fresh mtime would defeat git's racy-clean check, and a
+        same-size edit in the index's second would pass as unchanged), `GIT_INDEX_FILE` = the copy, `git
+        add -A`, force-add the ignored jars outside build output, `git write-tree`. The object store gains
+        the new blobs."""
         tmp = self._temp_index()
         try:
             real = self._git_dir() / "index"
@@ -1120,7 +1023,7 @@ class Workspace:
                     if f.lower().endswith(".jar") and "node_modules/" not in f and not is_build_output_path(f, self.root)]
             if jars:
                 self._git("add", "-f", "--pathspec-from-file=-", "--pathspec-file-nul", check=False,
-                          env={**env, "GIT_LITERAL_PATHSPECS": "1"},         # a `[` in a jar name is no glob
+                          env={**env, "GIT_LITERAL_PATHSPECS": "1"},         # jar 이름의 `[`를 glob으로 보지 않는다
                           input="\0".join(jars).encode("utf-8"))
             return self._git("write-tree", env=env).stdout.strip()
         finally:
@@ -1128,9 +1031,7 @@ class Workspace:
 
     def tree_entries(self, treeish: str) -> dict[str, tuple[str, str]]:
         """tree 안의 일반 파일(모드 100644, 100755)마다 경로와 (모드, sha)를 반환한다.
-
-        `{path: (mode, sha)}` of the regular files (100644 / 100755) of `treeish`, recursively (`git ls-tree -r -z`,
-        paths verbatim: no C quoting). Symlinks and submodules are left out. Raises GitError."""
+        하위 디렉토리까지 보고 심볼릭 링크와 서브모듈은 뺀다. 실패하면 GitError를 던진다."""
         out = self._git_bytes("ls-tree", "-r", "-z", "--full-tree", treeish).stdout or b""
         entries: dict[str, tuple[str, str]] = {}
         for rec in out.split(b"\0"):
@@ -1144,11 +1045,8 @@ class Workspace:
         return entries
 
     def make_tree(self, entries: Iterable[tuple[str, str, str]]) -> str:
-        """(모드, sha, 경로) 목록으로 tree 객체를 만들고 sha를 반환한다. 임시 index를 쓴다.
-
-        A tree object holding the given `(mode, sha, path)` blobs, built through a temporary index
-        (`git update-index -z --index-info`, `git write-tree`); no entries = the empty tree. The blobs must exist.
-        Raises GitError (a path that is a file and a directory at once, an unknown blob)."""
+        """(모드, sha, 경로) 목록으로 tree 객체를 만들고 sha를 반환한다. 임시 index를 쓰고, 목록이 비면 빈 tree다.
+        blob은 이미 있어야 한다. 파일이면서 디렉토리인 경로나 없는 blob이면 GitError를 던진다."""
         tmp = self._temp_index()
         try:
             env = {"GIT_INDEX_FILE": str(tmp)}
@@ -1161,9 +1059,11 @@ class Workspace:
             self._drop_index(tmp)
 
     def _cat_blobs(self, shas: Iterable[str], limit: int) -> Iterator[tuple[str, Optional[bytes], int]]:
-        """Blob contents through ONE `git cat-file --batch`: yields `(sha, bytes, size)` in the order asked, bytes
-        None for a blob over `limit` bytes (read and dropped) or a missing object (size -1). Streams: one blob in
-        memory at a time; a writer thread feeds the requests so neither pipe can fill up. Raises GitError."""
+        """`git cat-file --batch` 한 번으로 blob 내용을 요청한 순서대로 `(sha, bytes, size)`로 낸다.
+        `limit`보다 큰 blob은 읽고 버려 bytes가 None이고, 없는 객체는 size가 -1이다.
+
+        One blob in memory at a time; a writer thread feeds the requests so neither pipe can fill up. Raises
+        GitError."""
         wanted = list(shas)
         if not wanted:
             return
@@ -1207,7 +1107,7 @@ class Workspace:
                             raise GitError(f"git cat-file --batch: short read in {self.root}")
                         left -= len(chunk)
                     data = None
-                out.read(1)                                      # the LF after the content
+                out.read(1)                                      # 내용 뒤의 줄바꿈
                 yield sha, data, size
         finally:
             timer.cancel()
@@ -1220,7 +1120,7 @@ class Workspace:
             proc.wait()
             writer.join(timeout=5)
 
-    # ------------------------------------------------------------------ outputs
+    # ------------------------------------------------------------------ 결과물
     def write_patch(self, name: str = "changes.patch") -> Path:
         """as-is 상태부터 지금까지의 전체 변경을 changes.patch로 기록한다."""
         p = self.run_dir / name
@@ -1231,7 +1131,7 @@ class Workspace:
         """이관된 프로젝트를 result.zip으로 묶는다. .git과 빌드 산출물은 제외한다."""
         out = self.run_dir / name
         with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zf:
-            for rel_dir, _dirs, filenames in self.walk():           # .git and build output pruned (B4)
+            for rel_dir, _dirs, filenames in self.walk():           # walk가 .git과 빌드 산출물을 뺀다
                 for fname in sorted(filenames):
                     rel = f"{rel_dir}/{fname}" if rel_dir else fname
                     zf.write(self.root / rel, f"{self.root.name}/{rel}")

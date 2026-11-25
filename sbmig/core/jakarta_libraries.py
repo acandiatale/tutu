@@ -6,21 +6,10 @@ depchanges.apply_table의 승인 표시에 쓰인다.
 - 회사 항목은 key나 old_keys가 같은 배포 항목을 대신한다. `allow_major: true`면 메이저 버전 변경을 허용한다
 - 회사 파일은 수정 시각이 바뀌면 다시 읽고, 깨진 파일은 한 번 경고한 뒤 무시한다
 
-Third-party libraries with a known jakarta.* release (knowledge/libraries/jakarta_libraries.yml).
-
-Used by `compose_suggestion` for X1 blocked items (the library behind a javax API jar), by the report's javax API
-inventory and, since v2.1d (2026-10-27, docs/INTERFACES.md "v2.1d"), by the dependency version policy: the fix prompt
-lists the table entry of a case's library ("Dependency versions", `library_hint_line`) and `sbmig.build.depchanges.
-apply_table` marks a major upgrade a person's entry allows.
-
-Two files, one schema: the shipped table (knowledge, redeployed with sbmig; `source="shipped"`) and the people's
-table `<kb dir>/libraries.yml` (`libraries.company_file`; `source="company"`, see
-knowledge/libraries/libraries.company.example.yml) that operators edit between runs without a redeploy. A company
-entry whose key (or one of its `old_keys`) names a shipped entry replaces it; `allow_major: true` lets the LLM cross
-the major line to `version`. The company file is read again whenever its mtime changes (a fleet of 500 projects runs
-in one process); a broken company file is logged once and ignored — the shipped table still applies.
-
-
+Users: `compose_suggestion` (blocked items), the report's javax API inventory, the fix prompt's "Dependency
+versions" (`library_hint_line`), `sbmig.build.depchanges.apply_table` (docs/INTERFACES.md "v2.1d").
+Company file: `libraries.company_file`, example knowledge/libraries/libraries.company.example.yml; operators
+edit it between runs without a redeploy (a fleet of 500 projects runs in one process, hence the mtime reload).
 """
 from __future__ import annotations
 
@@ -42,24 +31,22 @@ DEFAULT_COMPANY_FILE = "libraries.yml"
 class JakartaLibrary(BaseModel):
     """라이브러리 표 항목 하나를 담는 데이터 클래스. 좌표, 첫 jakarta 릴리스, 올릴 버전, classifier, 최소
     Java 버전, 메모, 메이저 변경 허용 여부, 출처를 담는다."""
-    key: str                                  # groupId:artifactId (current coordinates)
-    old_keys: list[str] = Field(default_factory=list)   # earlier coordinates (e.g. ch.simas.qlrm:qlrm) → relocated to key
-    jakarta_since: str                        # first jakarta.* release
-    version: str                              # release the handler sets (>= jakarta_since)
-    classifier: Optional[str] = None          # jakarta flavour published as a classifier jar (Ehcache 3: `jakarta`);
-                                              # the handler sets it on the bumped / relocated declaration
-    # jakarta 빌드가 다른 좌표로 나온 라이브러리의 새 좌표.
+    key: str                                  # 현재 좌표 groupId:artifactId
+    old_keys: list[str] = Field(default_factory=list)   # key로 옮겨 간 이전 좌표. 예: ch.simas.qlrm:qlrm
+    jakarta_since: str                        # 첫 jakarta.* 릴리스
+    version: str                              # 올릴 버전. jakarta_since 이상
+    # jakarta 빌드를 classifier jar로 배포하는 경우의 classifier(Ehcache 3은 `jakarta`).
+    # 버전을 올리거나 좌표를 옮긴 선언에 함께 넣는다
+    classifier: Optional[str] = None
+    # jakarta 빌드가 다른 좌표로 나온 라이브러리의 새 좌표(`grid8`에서 `grid9`, `-jakarta` artifactId 등).
     # 사전 시도 `sbmig-jakarta`가 저장소에서 최신 릴리스를 확인한 뒤 의존성을 바꿔 넣는다
-    # v2.1z-e: the coordinates of the jakarta build when they differ from `key` (a vendor's `grid8` → `grid9` line or a
-    # `-jakarta` artifactId); the `sbmig-jakarta` pre-try verifies the newest release there and swaps the declaration
     jakarta_key: Optional[str] = None
     requires_java: Optional[int] = None
     note: str = ""
     docs: list[str] = Field(default_factory=list)
-    # v2.1d (2026-10-27): a person's entry may allow what the policy forbids by default
-    allow_major: bool = False                 # the LLM may move to `version` even when it crosses the major line
-    source: Literal["shipped", "company"] = "shipped"   # shipped = knowledge/libraries/jakarta_libraries.yml;
-                                              # company = <kb>/libraries.yml (people edit it; no redeploy)
+    allow_major: bool = False                 # True면 메이저를 넘어도 LLM이 `version`으로 올릴 수 있다
+    # shipped는 knowledge/libraries/jakarta_libraries.yml, company는 사람이 고치는 <kb>/libraries.yml이다
+    source: Literal["shipped", "company"] = "shipped"
 
     @property
     def group_id(self) -> str:
@@ -73,9 +60,7 @@ class JakartaLibrary(BaseModel):
 
     @property
     def all_keys(self) -> list[str]:
-        """현재 좌표와 이전 좌표(`groupId:artifactId`) 목록을 반환한다.
-
-        Current + earlier coordinates (`groupId:artifactId`)."""
+        """현재 좌표와 이전 좌표(`groupId:artifactId`) 목록을 반환한다."""
         return [self.key, *self.old_keys]
 
 
@@ -94,10 +79,7 @@ def _load_company(path: str, mtime_ns: int, size: int) -> tuple[JakartaLibrary, 
     """회사 표 파일을 읽어 항목 목록을 반환한다. (mtime_ns, size)는 캐시 키이므로 파일을 고치면 다시 읽는다.
     예외를 던지지 않는다.
     읽을 수 없는 파일은 경고 후 빈 목록을 반환하고, 검증에 실패한 항목은 경고 후 그 항목만 건너뛴다.
-
-    The people's table at `path`; (mtime_ns, size) are only the cache key, so an edited file is read again.
-    Never raises: a file that does not parse → warning (once per file version) and (); an entry that does not
-    validate → warning and the entry is skipped (the others still count)."""
+    경고는 파일 버전마다 한 번만 나온다."""
     try:
         doc = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, yaml.YAMLError) as e:
@@ -119,12 +101,11 @@ def _load_company(path: str, mtime_ns: int, size: int) -> tuple[JakartaLibrary, 
             continue
         data = {**raw, "source": "company"}
         if data.get("version") is not None and not data.get("jakarta_since"):
-            # 승인용 항목은 jakarta_since를 생략할 수 있다.
-            # YAML의 `version: 2.6`은 float이므로 문자열로 바꾼다
-            data["jakarta_since"] = data["version"]            # an approval entry may omit it: `version` is jakarta
+            # 승인용 항목은 jakarta_since를 생략할 수 있고 이때 `version`을 jakarta 버전으로 본다
+            data["jakarta_since"] = data["version"]
         for k in ("version", "jakarta_since"):
             if data.get(k) is not None and not isinstance(data[k], str):
-                data[k] = str(data[k])                         # `version: 2.6` in YAML is a float
+                data[k] = str(data[k])                         # YAML의 `version: 2.6`은 float이므로 문자열로 바꾼다
         try:
             lib = JakartaLibrary.model_validate(data)
         except ValidationError as e:
@@ -161,10 +142,9 @@ def _company_entries(company_path: Optional[str | Path]) -> tuple[JakartaLibrary
 def merge_tables(shipped: tuple[JakartaLibrary, ...] | list[JakartaLibrary],
                  company: tuple[JakartaLibrary, ...] | list[JakartaLibrary]) -> tuple[JakartaLibrary, ...]:
     """배포 표와 회사 표를 하나로 합친다. 배포 표 순서를 유지하고, 회사 항목은 key나 old_keys가 겹치는 배포
-    항목 자리에 넣으며 겹치는 것이 없으면 뒤에 붙인다.
+    항목 자리에 넣는다. 겹치는 것이 없으면 뒤에 붙인다.
 
-    Shipped entries in their order, a company entry in the place of the shipped one it names (its key or one of
-    its old_keys among the shipped entry's all_keys); company entries naming nothing shipped are appended."""
+    A company entry overlapping several shipped entries takes the first one's place and drops the others."""
     out: list[Optional[JakartaLibrary]] = list(shipped)
     for c in company:
         names = set(c.all_keys)
@@ -180,10 +160,8 @@ def merge_tables(shipped: tuple[JakartaLibrary, ...] | list[JakartaLibrary],
 
 def jakarta_libraries(path: Optional[str | Path] = None,
                       company_path: Optional[str | Path] = None) -> tuple[JakartaLibrary, ...]:
-    """배포 표에 회사 표(있으면)를 합친 라이브러리 목록을 반환한다.
-
-    The shipped table (`path`, default knowledge/libraries/jakarta_libraries.yml) merged with the people's table
-    `company_path` when it is given and exists (see `merge_tables`)."""
+    """배포 표(``path``, 기본 knowledge/libraries/jakarta_libraries.yml)에 회사 표를 합친 라이브러리 목록을 반환한다.
+    ``company_path``가 없거나 파일이 없으면 배포 표만 반환한다."""
     shipped = _load(str(path or JAKARTA_LIBRARIES_FILE))
     company = _company_entries(company_path)
     return merge_tables(shipped, company) if company else shipped
@@ -191,9 +169,7 @@ def jakarta_libraries(path: Optional[str | Path] = None,
 
 def jakarta_library_for(key: Optional[str], path: Optional[str | Path] = None,
                         company_path: Optional[str | Path] = None) -> Optional[JakartaLibrary]:
-    """현재 좌표나 이전 좌표가 key인 표 항목을 찾는다. 표에 없는 라이브러리면 None을 반환한다.
-
-    The table entry whose current or earlier coordinates equal `key` (None when the library is unknown)."""
+    """현재 좌표나 이전 좌표가 key인 표 항목을 찾는다. 표에 없는 라이브러리면 None을 반환한다."""
     if not key:
         return None
     return next((lib for lib in jakarta_libraries(path, company_path) if key in lib.all_keys), None)
@@ -201,9 +177,7 @@ def jakarta_library_for(key: Optional[str], path: Optional[str | Path] = None,
 
 def company_libraries_file(cfg: Any) -> Path:
     """회사 표 파일의 경로를 반환한다.
-    기본은 `<kb dir>/<libraries.company_file>`이고 절대 경로를 설정하면 그 경로를 쓴다.
-
-    `<kb dir>/<libraries.company_file>` (default `kb-v2/libraries.yml`); an absolute `company_file` wins."""
+    기본은 `<kb dir>/<libraries.company_file>`(`kb-v2/libraries.yml`)이고 절대 경로를 설정하면 그 경로를 쓴다."""
     libs = getattr(cfg, "libraries", None)
     name = getattr(libs, "company_file", None) or DEFAULT_COMPANY_FILE
     p = Path(str(name)).expanduser()
@@ -219,9 +193,7 @@ _SENTENCE_RE = re.compile(r"^(.+?[.!?])(?=\s|$)", re.DOTALL)
 
 def first_sentence(text: str, limit: int = 300) -> str:
     """메모의 첫 문장을 한 줄로 반환한다.
-    `2.6.0` 같은 버전 번호의 점에서는 끊지 않고, limit자를 넘으면 자른다.
-
-    The note's first sentence on one line (version dots like `2.6.0` never end it), capped at `limit` chars."""
+    `2.6.0` 같은 버전 번호의 점에서는 끊지 않고, limit자를 넘으면 자른다."""
     t = " ".join((text or "").split())
     if not t:
         return ""
@@ -234,9 +206,8 @@ def library_hint_line(entry: JakartaLibrary, current: Optional[str] = None) -> s
     """수정 프롬프트의 "Dependency versions" 섹션에 넣을, 표가 그 라이브러리에 대해 아는 내용을 영어 한 줄로 만든다.
     프롬프트 한 줄 때문에 수정이 실패하면 안 되므로 예외를 던지지 않는다.
 
-    ONE English line for the prompt section "Dependency versions" — what the table says about the library, e.g.
-    `opensymphony:sitemesh: approved — raise to 2.6.0 (jakarta since 2.6.0, requires Java 17; SiteMesh 2 got …;
-    source: shipped table)`. Never raises."""
+    e.g. `opensymphony:sitemesh: approved — raise to 2.6.0 (jakarta since 2.6.0, requires Java 17; SiteMesh
+    2 got ...; source: shipped table)`."""
     try:
         from sbmig.build.depchanges import major_of
         from sbmig.build.repo_versions import parse_version
@@ -252,8 +223,6 @@ def library_hint_line(entry: JakartaLibrary, current: Optional[str] = None) -> s
         elif crosses:
             # "approved"는 사람이 허용한 allow_major나 같은 메이저 안의 버전에만 쓴다.
             # 메이저를 넘는 버전은 정보로만 알리고, 바꿀지는 프롬프트 규칙 14가 정한다
-            # "approved" is reserved for a person's allow_major or a same-major pin: a cross-major table version is a
-            # fact (the known jakarta release), not an approval — rule 14 decides whether the move is allowed
             head = (f"{entry.key}: the table knows the jakarta release {entry.version} (crosses {cm}.x → {vm}.x — "
                     f"use it only if the repository has no same-major jakarta build, then port what that major "
                     f"changes and write <verify>)")
@@ -271,6 +240,6 @@ def library_hint_line(entry: JakartaLibrary, current: Optional[str] = None) -> s
             tail.append(note.rstrip("."))
         tail.append(f"source: {entry.source} table")
         return f"{head} ({'; '.join(tail)})"
-    except Exception as e:  # noqa: BLE001 - a prompt line never breaks a fix
+    except Exception as e:  # noqa: BLE001 - 프롬프트 한 줄 때문에 수정이 실패하면 안 된다
         log.debug("library_hint_line(%s): %s", getattr(entry, "key", "?"), e)
         return f"{getattr(entry, 'key', '?')}: table version {getattr(entry, 'version', '?')}"

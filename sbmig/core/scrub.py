@@ -3,14 +3,9 @@
 - 실행 중에 로그를 읽는 쪽(파드 로그, 웹 로그 탭)도 원래 값을 보지 못하도록 기록하는 시점에 마스킹한다
 - 마스킹 함수가 예외를 던지면 원문 대신 `WITHHELD`를 기록한다
 - 무엇이 비밀 값인지는 `sbmig.web.contract`가 판단한다. core가 web을 import하지 않도록 여기에는 훅만 둔다
-- 실행 중에 생긴 비밀 값은 `note_secret`으로 등록한다
+- 실행 중에 생긴 비밀 값(교환한 액세스 토큰 등)은 `note_secret`으로 등록한다
 
-A process-wide hook every log line and journal line passes through just before it is written (review 2026-11-10: a
-pass over the files after the run leaves the live readers — the pod log, the web UI's log tab — with the raw values).
-A no-op until an entry point installs a scrubber (`SBMIG_REDACT_OUTPUT=1` → `sbmig.web.redact.install_output_redaction`).
-Fail closed: a scrubber that raises yields `WITHHELD`, never the raw text. Which values are secret is not decided here
-(`sbmig.web.contract` owns the env-name rule); secrets born during a run (an exchanged access token) arrive through
-`note_secret`.
+Installer: `sbmig.web.redact.install_output_redaction`.
 """
 from __future__ import annotations
 
@@ -33,32 +28,26 @@ _lock = threading.Lock()
 
 def redaction_requested(environ: Mapping[str, str] | None = None) -> bool:
     """환경 변수 `SBMIG_REDACT_OUTPUT`이 `1`인지 확인한다.
-    environ을 주지 않으면 현재 프로세스의 환경을 본다.
-
-    Is `SBMIG_REDACT_OUTPUT=1` set (in `environ`, default this process's environment)?"""
+    environ을 주지 않으면 현재 프로세스의 환경을 본다."""
     env = os.environ if environ is None else environ
     return (env.get(REDACT_OUTPUT_ENV) or "").strip() == "1"
 
 
 def set_output_scrubber(fn: Callable[[str], str] | None, on_refresh: Callable[[], None] | None = None) -> None:
     """마스킹 함수를 등록하고, None을 주면 해제한다.
-    `on_refresh`는 비밀 값 목록이 바뀌었을 수 있을 때 호출된다.
-
-    Install the scrubber (None removes it); `on_refresh` runs whenever the set of secrets may have changed."""
+    `on_refresh`는 비밀 값 목록이 바뀌었을 수 있을 때 호출된다."""
     global _scrubber, _on_refresh
     _scrubber, _on_refresh = fn, (on_refresh if fn is not None else None)
 
 
 def output_scrubbing() -> bool:
-    """마스킹 함수가 등록되어 있는지 반환한다. / Is a scrubber installed?"""
+    """마스킹 함수가 등록되어 있는지 반환한다."""
     return _scrubber is not None
 
 
 def scrub(text: str) -> str:
     """문자열 하나를 마스킹해서 반환한다. 예외를 던지지 않는다.
-    마스킹 함수가 없으면 문자열을 그대로, 마스킹 함수가 예외를 던지면 `WITHHELD`를 반환한다.
-
-    Scrub one string: unchanged without a scrubber, `WITHHELD` when the scrubber raises. Never raises."""
+    마스킹 함수가 없으면 문자열을 그대로, 마스킹 함수가 예외를 던지면 `WITHHELD`를 반환한다."""
     fn = _scrubber
     if fn is None:
         return text
@@ -71,10 +60,9 @@ def scrub(text: str) -> str:
 def scrub_json(obj: Any) -> Any:
     """JSON 값 안의 모든 문자열(키 포함)을 마스킹한 복사본을 반환한다.
     직렬화한 줄을 통째로 바꾸면 JSON이 깨질 수 있으므로 값 단위로 처리한다.
-    마스킹 함수가 예외를 던지면 값 전체를 정해진 형태로 바꾼다.
+    마스킹 함수가 없으면 받은 객체를 그대로 반환하고, 마스킹 함수가 예외를 던지면 값 전체를 정해진 형태로 바꾼다.
 
-    A copy of a JSON value with every string (keys included) scrubbed; the object itself when no scrubber is installed.
-    A scrubber that raises yields one fixed shape for the whole value (`{"event": "output_withheld", …}` for a dict)."""
+    The fixed shape for a dict is `{"event": "output_withheld", "message": WITHHELD}`."""
     fn = _scrubber
     if fn is None:
         return obj
@@ -99,9 +87,7 @@ def _scrub_json(obj: Any, fn: Callable[[str], str]) -> Any:
 
 
 def format_exception_scrubbed(exc_type: Any, exc: Any, tb: Any) -> str:
-    """예외 하나의 traceback 텍스트를 마스킹해서 반환한다. 지역 변수 값은 넣지 않는다.
-
-    The standard traceback text of one exception, scrubbed (no locals, no wrapping)."""
+    """예외 하나의 표준 traceback 텍스트를 마스킹해서 반환한다. 지역 변수 값은 넣지 않는다."""
     try:
         text = "".join(traceback.format_exception(exc_type, exc, tb))
     except Exception:  # noqa: BLE001, 예외 객체의 __str__에서 다시 예외가 날 수 있다
@@ -114,8 +100,8 @@ def install_scrubbed_excepthooks() -> None:
     기본 훅과 Typer의 rich traceback은 예외 텍스트를 그대로 stderr에 출력하기 때문이다.
     진입점이 마스킹 함수를 등록한 뒤에 호출한다.
 
-    Route uncaught-exception tracebacks (main thread and other threads) through the scrubber: the default hooks (and
-    Typer's rich traceback, which prints locals) write the exception text raw to stderr."""
+    Typer's rich traceback also prints locals. KeyboardInterrupt keeps the default hook; SystemExit in a
+    thread is silent."""
     def _hook(exc_type: Any, exc: Any, tb: Any) -> None:
         if exc_type is not None and issubclass(exc_type, KeyboardInterrupt):
             sys.__excepthook__(exc_type, exc, tb)
@@ -137,9 +123,7 @@ def install_scrubbed_excepthooks() -> None:
 
 def refresh_secrets() -> None:
     """비밀 값 목록이 바뀌었을 수 있다고 마스킹 함수에 알린다.
-    `.env`를 읽었거나 새 토큰을 받았을 때 호출한다. 예외를 던지지 않는다.
-
-    Tell the scrubber its secrets may have changed (a `.env` was just read, a token was just issued). Never raises."""
+    `.env`를 읽었거나 새 토큰을 받았을 때 호출한다. 예외를 던지지 않는다."""
     fn = _on_refresh
     if fn is None:
         return
@@ -150,9 +134,8 @@ def refresh_secrets() -> None:
 
 
 def note_secret(value: Any) -> None:
-    """실행 중에 생긴 비밀 값을 마스킹 대상으로 등록한다. 빈 값이나 문자열이 아닌 값은 무시한다.
-
-    Register a secret born during the run (not in the environment: an exchanged access token)."""
+    """실행 중에 생긴, 환경 변수에 없는 비밀 값을 마스킹 대상으로 등록한다.
+    빈 값과 문자열이 아닌 값은 무시한다."""
     if not isinstance(value, str) or not value.strip():
         return
     with _lock:
@@ -163,6 +146,6 @@ def note_secret(value: Any) -> None:
 
 
 def noted_secrets() -> list[str]:
-    """`note_secret`으로 등록된 값 목록을 반환한다. / The values registered through `note_secret`."""
+    """`note_secret`으로 등록된 값 목록을 정렬해서 반환한다."""
     with _lock:
         return sorted(_noted)
