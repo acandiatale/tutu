@@ -1569,3 +1569,21 @@ from Maven. Which pom failed on the cluster is not confirmed yet. Contract: `doc
 | Operator text | the rule for mirrors (`*`, `external:*`, explicit ids, `!id`; no `external:http:*`, no `<blocked>`) in `deploy/README.md`; RUNBOOK symptom row | read | done |
 | Not covered | repositories declared in poms of dependencies or in a parent outside the project; settings profiles activated by a property, a file or the OS; Central without a mirror when it is not reachable | — | known |
 | Not checked | the company cluster and its settings; Windows; a plugin newer than 6.46.1 (the integration test fails when its parsing changes) | — | open |
+
+## Status — 2026-11-25, the comments of `sbmig/` rewritten for readers of Korean
+
+Reviewers at the company called the comments cluttered. They read only the Korean; the English part is the working
+note for whoever changes the code. The rule: `docs/v2/CODE-COMMENTS-KO.md` (the Korean part first and written as a
+Korean developer writes by hand; the first line says what the thing does, then the few lines a reader needs; rules a
+maintainer must keep stay in the Korean as short list lines; inline comments Korean, one line, no English twin; no
+version tag, date or review story in a Korean line; the English part keeps rules, invariants, couplings and the
+contract pointer and loses history).
+
+| Item | What | Verification | State |
+|---|---|---|---|
+| Sweep | every module under `sbmig/` (180 files): docstrings and comments rewritten by workers with a Korean-developer persona, a pilot of five files first | per file `scripts/check_comments_only.py` (the syntax tree without docstrings equals the commit before) | done |
+| Code unchanged | of the 180 files, 177 have a syntax tree identical to the commit before the sweep; the three that differ are the files of the two feature increments of the same day (`web/admin.py`, `rewrite/runner.py`, `core/config.py`) | one whole-tree comparison at the end; full suite 10,199 passed | done |
+| Size | `sbmig/` 113,164 lines to 108,612; docstring lines 20,776 to 15,647; comment lines 7,826 to 6,916; English-only docstring lines 7,568 to 4,289; Korean lines carrying a version tag or a date 45 to 0 | counted by script | done |
+| Left alone | docstrings shown to people at run time (the help texts of the CLI commands: `sbmig --help` prints the same text) and every string literal (prompts, report text, the helper API table the LLM sees) | compared output | done |
+| Corrected on the way | Korean or English notes that said something the code does not do (a dozen places: where an underscore is put, what is returned when nothing is found, the order in which settings sources are merged, "sources are never modified" in the remediation, which store implements an interface) now say what the code does | read against the code by each worker | done |
+| Not done | the comments of the page (HTML / JS), of `config/*.yml` and of `deploy/`; whether the reviewers accept the result | — | open |
