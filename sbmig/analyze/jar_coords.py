@@ -1,22 +1,20 @@
 """Ant 프로젝트의 lib 폴더에 있는 jar 하나에 맞는 Maven 좌표를 찾는 모듈.
-접수 단계에서 :func:`sbmig.analyze.ant.synthesize_pom`이 jar마다 :func:`resolve_jar`를 호출하고, 소스가 그
-jar의 패키지를 쓰는지 :func:`mark_used`로 확인한다.
-좌표는 다음 순서로 찾는다: jar 안의 ``pom.properties`` -> 이름 표(``knowledge/libraries/jar_names.yml``과 회사 표
-``<kb>/jar_names.yml``) -> ``intake.jar_lookup``이 켜져 있으면 sha1로 저장소 조회 -> MANIFEST는 메모로만 남긴다.
-- 예외를 던지지 않는다. 좌표를 못 찾으면 source를 unknown으로 두고 메모를 남긴다
-- 조회가 두 번 연속 실패하면 그 실행에서는 더 조회하지 않는다
-- 테스트가 ``RepositoryLookup``을 오프라인 가짜 구현으로 바꾸므로 이 클래스는 호출할 때마다 모듈에서 찾는다
+접수 단계에서 :func:`sbmig.analyze.ant.synthesize_pom`이 jar마다 :func:`resolve_jar`를 호출한다.
+소스가 그 jar의 패키지를 쓰는지는 :func:`mark_used`로 확인한다.
+좌표는 아래 순서로 찾는다.
+- jar 안의 ``pom.properties``
+- 이름 표. ``knowledge/libraries/jar_names.yml``에 회사 표 ``<kb>/jar_names.yml``을 합친 것이다
+- ``intake.jar_lookup``이 켜져 있으면 sha1로 저장소를 조회한다
+- MANIFEST는 메모로만 남긴다
+예외를 던지지 않는다. 좌표를 못 찾으면 source를 unknown으로 두고 메모를 남긴다.
+조회가 두 번 연속 실패하면 그 실행에서는 더 조회하지 않는다.
+테스트가 ``RepositoryLookup``을 가짜 구현으로 바꾸므로 이 클래스는 호출할 때마다 모듈에서 찾는다.
 
-Jar → Maven coordinates for the Ant pom synthesis (v2.1j, docs/INTERFACES.md "v2.1j").
-
-`resolve_jar(path, data_or_file, cfg, lookup=None)` walks the ladder: ① the jar's own
-`META-INF/maven/<g>/<a>/pom.properties`, ② the stem table (shipped `knowledge/libraries/jar_names.yml` + the
-company rows `<kb>/jar_names.yml`, version from the file name), ③ when `intake.jar_lookup`, a sha1 lookup in the
-repository `sbmig.build.repo_versions.RepositoryLookup` picks (`build.repository_url` → settings mirror → Central),
-④ the MANIFEST (`Implementation-Title` / `Bundle-SymbolicName`) only as a note. `jar_packages` lists the top-level
-packages of the jar's classes; `mark_used` sets `used` from the package references of the sources (Java imports
-and qualified names, JSP page imports, class names in XML / properties). Servlet / JSP / EL APIs get scope
-`provided`. Never raises.
+Contract: docs/INTERFACES.md "v2.1j". The stem table gives g:a; the version comes from the file name.
+The sha1 lookup uses the repository `sbmig.build.repo_versions.RepositoryLookup` picks
+(`build.repository_url` → settings mirror → Central). MANIFEST keys used for the note:
+`Implementation-Title` / `Bundle-SymbolicName`. `mark_used` reads Java imports and qualified names, JSP page
+imports, class names in XML / properties. Servlet / JSP / EL APIs get scope `provided`.
 
 Sha1 lookup assumptions: a `build.repository_url` / mirror of the form `<base>/repository/<name>/` is a Nexus 3 —
 `GET <base>/service/rest/v1/search/assets?sha1=<hex>` (any other URL is used as the Nexus base as it is; Nexus 2 /
@@ -47,55 +45,51 @@ from .webapp_inventory import JAR_NAMES_FILE, SKIP_DIRS, jar_names
 log = logging.getLogger("sbmig.analyze.jar_coords")
 
 DEFAULT_MAX_JAR_BYTES = 64 * 1024 * 1024
-MAX_PACKAGES = 40                       # JarCoordinate.packages cap (display; the used check keeps them all)
-MAX_REF_FILE_BYTES = 1_000_000           # a text file bigger than this is not scanned for references
-LOOKUP_FAILURE_LIMIT = 2                 # sha1 lookups failing in a row → no more lookups in this run
+MAX_PACKAGES = 40                       # 화면용 JarCoordinate.packages 상한. 사용 여부 검사는 전부 본다
+MAX_REF_FILE_BYTES = 1_000_000           # 이보다 큰 텍스트 파일은 참조 검사를 건너뛴다
+LOOKUP_FAILURE_LIMIT = 2                 # sha1 조회가 연속으로 이만큼 실패하면 이 실행에서는 더 조회하지 않는다
 CENTRAL_HOSTS = ("repo1.maven.org", "repo.maven.apache.org", "central.maven.org")
 CENTRAL_SEARCH = "https://search.maven.org/solrsearch/select?q=1:%22{sha1}%22&rows=1&wt=json"
 NEXUS_SEARCH = "{base}service/rest/v1/search/assets?sha1={sha1}"
 
 # Tomcat이 제공하는 API는 WAR에 넣으면 안 되므로 provided로 둔다.
 # JSTL은 Tomcat이 제공하지 않아 WAR에 포함해야 하므로 여기 없다
-# container APIs Tomcat supplies → `provided` (JSTL is NOT one: Tomcat does not ship it, the WAR must carry it)
 PROVIDED_KEYS = frozenset({
     "javax.servlet:servlet-api", "javax.servlet:javax.servlet-api", "jakarta.servlet:jakarta.servlet-api",
     "javax.servlet.jsp:jsp-api", "javax.servlet.jsp:javax.servlet.jsp-api", "jakarta.servlet.jsp:jakarta.servlet.jsp-api",
     "javax.el:el-api", "javax.el:javax.el-api", "jakarta.el:jakarta.el-api",
     "javax.websocket:javax.websocket-api", "jakarta.websocket:jakarta.websocket-api",
 })
-PROVIDED_GROUP_PREFIXES = ("org.apache.tomcat",)          # tomcat-servlet-api, tomcat-jsp-api, catalina, jasper, …
-# packages of the container APIs (an unknown jar holding only these is a servlet / JSP / EL API copy)
+# tomcat-servlet-api, tomcat-jsp-api, catalina, jasper 등
+PROVIDED_GROUP_PREFIXES = ("org.apache.tomcat",)
+# 컨테이너 API 패키지. 이것만 든 모르는 jar는 서블릿, JSP, EL API의 복사본으로 본다
 CONTAINER_PACKAGES = ("javax.servlet", "javax.el", "javax.websocket", "jakarta.servlet", "jakarta.el",
                       "jakarta.websocket")
 JSTL_PACKAGES = ("javax.servlet.jsp.jstl", "jakarta.servlet.jsp.jstl")
 # 파일 이름에서 버전 뒤에 붙어도 버전의 일부로 보는 단어.
-# 다른 단어가 붙으면 그 위치는 버전의 시작이 아니다(예:
-# log4j-1.2-api-2.17.1 → stem log4j-1.2-api)
-# words that may follow a version in a file name (anything else means the version starts at a later boundary)
+# 다른 단어가 붙으면 그 위치는 버전의 시작이 아니다. 예: log4j-1.2-api-2.17.1의 stem은 log4j-1.2-api
 VERSION_WORDS = frozenset({
     "snapshot", "release", "final", "ga", "sp", "rc", "cr", "alpha", "beta", "milestone", "bin", "jre", "jdk",
     "java", "android", "incubating", "dev", "nightly", "ea", "pre", "preview", "redhat", "jboss", "osgi", "bundle",
     "patch", "hotfix", "fix", "sec", "jakarta", "javax", "all", "full", "nodeps", "shaded", "lite",
 })
-# import 없이 쓰이는 jar를 알아보는 표식.
-# 태그 라이브러리, ServiceLoader, Spring XML 네임스페이스, web-fragment가 해당한다
-# plug-in markers: jars used without any import (taglibs, ServiceLoader, Spring XML namespaces, web fragments)
+# import 없이 쓰이는 jar를 알아보는 표식. 태그 라이브러리, ServiceLoader, Spring XML 네임스페이스, web-fragment
 PLUGIN_MARKERS = (("META-INF/services/", "META-INF/services"), ("META-INF/spring.handlers", "spring.handlers"),
                   ("META-INF/web-fragment.xml", "web-fragment.xml"))
 REF_TEXT_EXT = frozenset({".jsp", ".jspf", ".jspx", ".tag", ".tagx", ".xml", ".properties", ".tld"})
 
 _BOUNDARY_RE = re.compile(r"[-_](?=\d)")
 _WORD_RE = re.compile(r"[A-Za-z]{2,}")
-_DATE_SUFFIX_RE = re.compile(r"^(\d[\w.]*?)-\d{8}$")          # poi-3.9-20121203 → 3.9
-# package part of a qualified name: `org.apache.commons.lang` in `import org.apache.commons.lang.StringUtils;`,
-# `com.acme.util` in `class="com.acme.util.X"`, `java.util` in `import java.util.*` (lowercase segments, then a
-# class name or `*`)
+_DATE_SUFFIX_RE = re.compile(r"^(\d[\w.]*?)-\d{8}$")          # poi-3.9-20121203의 버전은 3.9
+# 정규화된 이름의 패키지 부분. 소문자 조각 뒤에 클래스 이름이나 `*`가 오는 형태다
+# 예: `import org.apache.commons.lang.StringUtils;`의 `org.apache.commons.lang`
+# `class="com.acme.util.X"`의 `com.acme.util`
 _REF_RE = re.compile(r"(?<![\w$.])([a-z_][\w$]*(?:\.[a-z_][\w$]*)+)\.(?:[A-Z][\w$]*|\*)")
 
 JarData = bytes | bytearray | str | Path
 
 
-# ------------------------------------------------------------------------------------------------ file names
+# ------------------------------------------------------------------------------------------------ 파일 이름
 def _bare(filename: str) -> str:
     """경로와 ``.jar``를 뗀 파일 이름을 반환한다."""
     name = posixpath.basename(str(filename).replace("\\", "/"))
@@ -110,15 +104,14 @@ def _clean_version(ver: str) -> str:
 
 
 def _version_ok(between: str) -> bool:
-    """두 경계 사이 문자열에 버전 단어가 아닌 단어가 없으면 True를 반환한다(``1.2-api``는 False)."""
+    """두 경계 사이 문자열에 버전 단어가 아닌 단어가 없으면 True를 반환한다. ``1.2-api``는 False다."""
     return all(w.lower() in VERSION_WORDS for w in _WORD_RE.findall(between))
 
 
 def stem_and_version(filename: str) -> tuple[str, str]:
     """jar 파일 이름을 (stem, 버전)으로 나눈다. 이름에 버전이 없으면 버전은 빈 문자열이다.
-    예: ``commons-lang-2.6.jar``는 (commons-lang, 2.6), ``log4j-1.2-api-2.17.1.jar``는 (log4j-1.2-api, 2.17.1)이다.
-
-    (stem, version) of a jar file name; version "" when the name carries none."""
+    ``commons-lang-2.6.jar``는 (commons-lang, 2.6)이 된다.
+    ``log4j-1.2-api-2.17.1.jar``는 (log4j-1.2-api, 2.17.1)이 된다."""
     bare = _bare(filename)
     bounds = [m.start() for m in _BOUNDARY_RE.finditer(bare)]
     for i, b in enumerate(bounds):
@@ -132,11 +125,9 @@ def stem_and_version(filename: str) -> tuple[str, str]:
 
 
 def _table_hit(filename: str, table: dict[str, tuple[str, str]]) -> tuple[str, str, str] | None:
-    """이름 표에서 파일 이름에 맞는 (groupId:artifactId, 버전, stem)을 찾는다.
+    """이름 표에서 파일 이름에 맞는 (groupId:artifactId, 버전, stem)을 찾는다. 없으면 None을 반환한다.
     파일 이름 전체를 먼저 찾고, 없으면 나머지가 버전처럼 보이는 가장 긴 stem을 쓴다.
-
-    Table hit for a file name: the whole bare name first, then the longest known stem whose remainder is a
-    version (`log4j-1.2-api-2.17.1` is not `log4j`)."""
+    그래서 ``log4j-1.2-api-2.17.1``은 ``log4j``로 보지 않는다."""
     bare = _bare(filename)
     hit = table.get(bare.lower())
     if hit:
@@ -149,7 +140,7 @@ def _table_hit(filename: str, table: dict[str, tuple[str, str]]) -> tuple[str, s
     return None
 
 
-# ------------------------------------------------------------------------------------------------ name tables
+# ------------------------------------------------------------------------------------------------ 이름 표
 @lru_cache(maxsize=8)
 def _company_rows(path: str, mtime_ns: int, size: int) -> dict[str, tuple[str, str]]:
     """회사 이름 표를 읽는다. (mtime_ns, size)를 캐시 키로 쓰므로 파일을 고치면 다시 읽는다."""
@@ -157,10 +148,8 @@ def _company_rows(path: str, mtime_ns: int, size: int) -> dict[str, tuple[str, s
 
 
 def company_jar_names_file(cfg: Any) -> Path | None:
-    """회사 jar 이름 표의 경로(``<kb dir>/<intake.company_jar_names_file>``)를 반환한다.
-    설정이 없으면 None을 반환한다.
-
-    `<kb dir>/<intake.company_jar_names_file>` (an absolute path wins); None without a config."""
+    """회사 jar 이름 표의 경로 ``<kb dir>/<intake.company_jar_names_file>``을 반환한다.
+    설정 값이 절대 경로면 그대로 쓴다. 설정이 없으면 None을 반환한다."""
     intake = getattr(cfg, "intake", None)
     name = getattr(intake, "company_jar_names_file", None) if intake is not None else None
     if not name:
@@ -171,16 +160,13 @@ def company_jar_names_file(cfg: Any) -> Path | None:
     kb = getattr(cfg, "kb_dir", None)
     try:
         kb = kb() if callable(kb) else kb
-    except Exception:  # noqa: BLE001 - a config without kb: no company table
+    except Exception:  # noqa: BLE001 - kb 설정이 없으면 회사 표도 없다
         kb = None
     return Path(kb) / p if kb else None
 
 
 def jar_name_table(cfg: Any = None) -> dict[str, tuple[str, str]]:
-    """배포된 이름 표에 회사 표(``<kb>/jar_names.yml``)를 합친 표를 반환한다.
-    같은 stem이면 회사 표의 행을 쓴다.
-
-    The shipped stem table merged with the company rows (`<kb>/jar_names.yml`, same format; a company row wins)."""
+    """배포된 이름 표에 회사 표(``<kb>/jar_names.yml``)를 합친 표를 반환한다. 같은 stem이면 회사 표의 행을 쓴다."""
     intake = getattr(cfg, "intake", None) if cfg is not None else None
     shipped_name = getattr(intake, "jar_names_file", None) if intake is not None else None
     shipped_path = JAR_NAMES_FILE
@@ -199,15 +185,15 @@ def jar_name_table(cfg: Any = None) -> dict[str, tuple[str, str]]:
     return table
 
 
-# ------------------------------------------------------------------------------------------------ jar contents
+# ------------------------------------------------------------------------------------------------ jar 내용
 @dataclass
 class JarScan:
-    """jar 내부를 검사한 결과를 담는 데이터 클래스.
-    pom.properties 좌표, 패키지, MANIFEST 항목, 플러그인 표식, 오류를 담는다."""
+    """jar 내부를 검사한 결과를 담는 클래스. pom.properties 좌표, 패키지, MANIFEST 항목, 플러그인 표식, 오류를 담는다."""
     pom_properties: list[tuple[str, str, str]] = field(default_factory=list)
-    packages: set[str] = field(default_factory=set)        # every package holding a class
+    packages: set[str] = field(default_factory=set)        # 클래스가 있는 모든 패키지
     manifest: dict[str, str] = field(default_factory=dict)
-    markers: list[str] = field(default_factory=list)       # tld / META-INF/services / spring.handlers / web-fragment
+    # tld, META-INF/services, spring.handlers, web-fragment 표식
+    markers: list[str] = field(default_factory=list)
     scanned: bool = False
     error: str = ""
 
@@ -244,9 +230,7 @@ def _parse_manifest(text: str) -> dict[str, str]:
 
 def scan_jar(data: bytes) -> JarScan:
     """jar 바이트를 열어 pom.properties 좌표, 클래스의 패키지, MANIFEST, 플러그인 표식을 모은다.
-    예외를 던지지 않는다. zip이 깨졌으면 ``error``만 채운다.
-
-    Scan the jar bytes: pom.properties coordinates, class packages, manifest, plug-in markers; never raises."""
+    예외를 던지지 않는다. zip이 깨졌으면 ``error``만 채운다."""
     js = JarScan()
     try:
         zf = zipfile.ZipFile(io.BytesIO(data))
@@ -300,9 +284,7 @@ def scan_jar(data: bytes) -> JarScan:
 
 
 def top_packages(packages: Iterable[str]) -> list[str]:
-    """패키지 집합에서 상위 패키지가 집합에 없는 것만 골라 정렬해서 반환한다.
-
-    The packages whose ancestors are not in the set (sorted)."""
+    """패키지 집합에서 상위 패키지가 집합에 없는 것만 골라 정렬해서 반환한다."""
     out: list[str] = []
     for p in sorted(set(packages)):
         if not any(p == q or p.startswith(q + ".") for q in out):
@@ -311,16 +293,12 @@ def top_packages(packages: Iterable[str]) -> list[str]:
 
 
 def jar_packages(data: bytes) -> list[str]:
-    """jar 클래스의 최상위 패키지 목록(예: ``org.apache.commons.lang``)을 반환한다.
-
-    Top-level packages of the jar's classes (e.g. `org.apache.commons.lang`)."""
+    """jar 클래스의 최상위 패키지 목록을 반환한다. 예: ``org.apache.commons.lang``"""
     return top_packages(scan_jar(bytes(data)).packages)
 
 
 def is_container_api(packages: Iterable[str]) -> bool:
-    """패키지가 모두 서블릿, JSP, EL, WebSocket API이면 True를 반환한다. JSTL 패키지가 있으면 False다.
-
-    True when every package is a container API (servlet / JSP / EL / WebSocket); JSTL is not one."""
+    """패키지가 모두 서블릿, JSP, EL, WebSocket API이면 True를 반환한다. JSTL 패키지가 있으면 False다."""
     pk = [p for p in packages if p]
     if not pk:
         return False
@@ -330,17 +308,15 @@ def is_container_api(packages: Iterable[str]) -> bool:
 
 
 def provided_scope(group_id: str, artifact_id: str) -> bool:
-    """Tomcat이 제공하는 API의 좌표이면 True를 반환한다(scope provided). JSTL은 해당하지 않는다."""
+    """Tomcat이 제공하는 API의 좌표라서 scope를 provided로 둘 때 True를 반환한다. JSTL은 제외한다."""
     key = f"{group_id}:{artifact_id}"
     return key in PROVIDED_KEYS or any(group_id == g or group_id.startswith(g + ".") for g in PROVIDED_GROUP_PREFIXES)
 
 
-# ------------------------------------------------------------------------------------------------ sha1 lookup
+# ------------------------------------------------------------------------------------------------ sha1 조회
 def nexus_base(url: str) -> str:
-    """저장소 URL에서 Nexus 기본 URL을 구한다(``<base>/repository/<name>/``은 ``<base>/``).
-    다른 형식의 URL은 그대로 반환한다.
-
-    Nexus base of a repository URL (`<base>/repository/<name>/` → `<base>/`); any other URL unchanged."""
+    """저장소 URL에서 Nexus 기본 URL을 구한다. ``<base>/repository/<name>/``이면 ``<base>/``를 반환한다.
+    다른 형식의 URL은 그대로 반환한다."""
     u = (url or "").strip()
     u = u if u.endswith("/") else u + "/"
     m = re.match(r"^(.*?/)repository/[^/]+/(?:.*)?$", u)
@@ -357,10 +333,7 @@ def is_central(url: str) -> bool:
 
 
 def sha1_search_url(repo_url: str, sha1: str) -> str:
-    """저장소에 맞는 sha1 조회 URL을 만든다.
-    Central이면 search.maven.org, 아니면 Nexus 3 search assets API를 쓴다.
-
-    The sha1 search URL for a repository base: Central → search.maven.org, else Nexus 3 search assets."""
+    """저장소에 맞는 sha1 조회 URL을 만든다. Central이면 search.maven.org, 아니면 Nexus 3 search assets API를 쓴다."""
     if is_central(repo_url):
         return CENTRAL_SEARCH.format(sha1=sha1)
     return NEXUS_SEARCH.format(base=nexus_base(repo_url), sha1=sha1)
@@ -379,10 +352,7 @@ def _coords_from_path(path: str) -> tuple[str, str, str] | None:
 
 def parse_nexus_assets(text: str) -> tuple[str, str, str] | None:
     """Nexus 3 검색 응답에서 classifier가 없는 첫 jar의 (g, a, v)를 반환한다.
-    해당 jar가 없으면 None을 반환하고, JSON이 아니면 ValueError를 던진다.
-
-    First classifier-less jar asset of a Nexus 3 search answer → (g, a, v); None when none; ValueError when the
-    text is not JSON."""
+    그런 jar가 없으면 None을 반환한다. JSON이 아니면 ValueError를 던진다."""
     doc = json.loads(text)
     for it in (doc.get("items") or []) if isinstance(doc, dict) else []:
         if not isinstance(it, dict):
@@ -405,7 +375,7 @@ def parse_nexus_assets(text: str) -> tuple[str, str, str] | None:
 
 def parse_central_search(text: str) -> tuple[str, str, str] | None:
     """search.maven.org 검색 응답의 첫 문서에서 (g, a, v)를 반환한다.
-    없으면 None을 반환하고, JSON이 아니면 ValueError를 던진다."""
+    없으면 None을 반환한다. JSON이 아니면 ValueError를 던진다."""
     doc = json.loads(text)
     docs = ((doc.get("response") or {}).get("docs") or []) if isinstance(doc, dict) else []
     for d in docs:
@@ -417,12 +387,9 @@ def parse_central_search(text: str) -> tuple[str, str, str] | None:
 class Sha1Lookup:
     """sha1로 저장소에서 Maven 좌표를 조회하는 클래스.
     저장소 URL, 자격 증명, HTTP 요청은 ``RepositoryLookup``의 것을 쓴다.
-    ``LOOKUP_FAILURE_LIMIT``번 연속 실패하면 더 조회하지 않는다.
-    예외를 던지지 않고, 못 찾으면 None과 이유(``note``)를 남긴다.
+    ``LOOKUP_FAILURE_LIMIT``번 연속 실패하면 더 조회하지 않는다. 예외는 던지지 않는다.
 
-    sha1 → coordinates through the repository `RepositoryLookup` picks (its base URL, credentials and urllib GET).
-    `find(sha1)` → (g, a, v) or None, `note` says why nothing was found. Two failures in a row → no more lookups.
-    `fetch(url, credentials, timeout) -> text | None` and `repo` can be injected (tests)."""
+    Tests inject `fetch(url, credentials, timeout) -> text | None` and `repo`."""
 
     def __init__(self, cfg: Any, *, fetch: Any = None, repo: Any = None) -> None:
         self.cfg = cfg
@@ -438,14 +405,14 @@ class Sha1Lookup:
         self.timeout = float(getattr(build, "repository_timeout_seconds", 10) or 10)
 
     def _repository(self) -> Any:
-        """``RepositoryLookup`` 인스턴스를 반환한다.
-        테스트의 가짜 구현이 적용되도록 호출할 때마다 모듈에서 찾는다."""
+        """``RepositoryLookup`` 인스턴스를 반환한다. 만들지 못하면 None을 반환한다.
+        테스트의 가짜 구현이 적용되도록 클래스를 모듈에서 찾는다."""
         if not self._repo_done:
             self._repo_done = True
             try:
                 from sbmig.build import repo_versions
                 self._repo = repo_versions.RepositoryLookup(self.cfg)
-            except Exception as e:  # noqa: BLE001 - no lookup, never an error
+            except Exception as e:  # noqa: BLE001 - 조회를 못 할 뿐 오류로 보지 않는다
                 log.debug("sha1 lookup: RepositoryLookup unavailable: %s", e)
                 self._repo = None
         return self._repo
@@ -460,7 +427,7 @@ class Sha1Lookup:
             return None
 
     def _get(self, url: str) -> tuple[str | None, str]:
-        """GET 요청을 한 번 보내고 (텍스트, 오류)를 반환한다."""
+        """GET 요청을 한 번 보내고 (텍스트, 오류)를 반환한다. 실패하면 텍스트는 None이다."""
         repo = self._repository()
         fetch = self._fetch_fn or getattr(repo, "_urllib_fetch", None)
         if fetch is None:
@@ -468,7 +435,7 @@ class Sha1Lookup:
         creds = getattr(repo, "_creds", None)
         try:
             text = fetch(url, creds, self.timeout)
-        except Exception as e:  # noqa: BLE001 - an injected fetch never breaks the synthesis
+        except Exception as e:  # noqa: BLE001 - 주입한 fetch가 실패해도 pom 생성은 계속한다
             return None, (f"timeout after {self.timeout:.0f}s" if isinstance(e, TimeoutError)
                           else f"{type(e).__name__}: {e}")[:160]
         if text:
@@ -476,11 +443,8 @@ class Sha1Lookup:
         return None, str(getattr(repo, "_last_error", "") or "no answer")
 
     def find(self, sha1: str) -> tuple[str, str, str] | None:
-        """sha1에 해당하는 jar의 (groupId, artifactId, version)을 반환한다.
-        못 찾으면 None을 반환하고 ``note``에 이유를 남긴다.
-        같은 sha1은 한 번만 조회한다.
-
-        (g, a, v) of the jar with this sha1, or None (`note` says why)."""
+        """sha1이 같은 jar의 (groupId, artifactId, version)을 반환한다.
+        못 찾으면 None을 반환하고 ``note``에 이유를 남긴다. 같은 sha1은 한 번만 조회한다."""
         self.note = ""
         if not sha1:
             self.note = "no sha1"
@@ -502,7 +466,7 @@ class Sha1Lookup:
         hit: tuple[str, str, str] | None = None
         failed = ""
         if text is None:
-            # 404는 해당 검색 API가 없는 저장소(Nexus 2, Artifactory)라는 뜻이므로 실패로 센다.
+            # 404는 검색 API가 없는 저장소(Nexus 2, Artifactory)라는 뜻이므로 실패로 센다.
             # Central과 Nexus 3는 결과가 없으면 빈 목록을 준다
             failed = f"sha1 lookup {url} failed ({err})"
         else:
@@ -526,7 +490,7 @@ class Sha1Lookup:
         return hit
 
 
-# ------------------------------------------------------------------------------------------------ resolve
+# ------------------------------------------------------------------------------------------------ 좌표 찾기
 def _read(data: JarData, limit: int) -> tuple[bytes | None, str, int, str]:
     """jar 내용을 읽어 (바이트, sha1, 크기, 오류)를 반환한다. 파일이 너무 크면 바이트는 None이다."""
     if isinstance(data, (bytes, bytearray)):
@@ -546,7 +510,7 @@ def _read(data: JarData, limit: int) -> tuple[bytes | None, str, int, str]:
 
 
 def _pick_pom_properties(found: list[tuple[str, str, str]], stem: str) -> tuple[str, str, str] | None:
-    """pom.properties가 여러 개인 jar(셰이드 jar)에서 파일 이름에 맞는 좌표 하나를 고른다."""
+    """pom.properties가 여러 개인 셰이드 jar에서 파일 이름에 맞는 좌표 하나를 고른다. 고르지 못하면 None을 반환한다."""
     if not found:
         return None
     s = stem.lower()
@@ -562,9 +526,9 @@ def _pick_pom_properties(found: list[tuple[str, str, str]], stem: str) -> tuple[
 def resolve_jar_scan(path: str, data: JarData, cfg: Any = None, lookup: Any = None, *,
                      table: dict[str, tuple[str, str]] | None = None) -> tuple[JarCoordinate, JarScan]:
     """:func:`resolve_jar`와 같은 일을 하고, jar를 검사한 :class:`JarScan`도 함께 반환한다.
-    ``table``은 미리 합친 이름 표로, jar마다 다시 읽지 않기 위해 넘긴다.
+    ``table``은 미리 합친 이름 표다. jar마다 표를 다시 읽지 않도록 넘긴다.
 
-    `resolve_jar` plus the `JarScan` (full package set, plug-in markers) the synthesis needs."""
+    The synthesis needs the JarScan for the full package set and the plug-in markers."""
     intake = getattr(cfg, "intake", None) if cfg is not None else None
     limit = int(getattr(intake, "max_jar_bytes_scan", DEFAULT_MAX_JAR_BYTES) or DEFAULT_MAX_JAR_BYTES)
     body, sha1, size, err = _read(data, limit)
@@ -632,19 +596,17 @@ def resolve_jar_scan(path: str, data: JarData, cfg: Any = None, lookup: Any = No
 
 def resolve_jar(path: str, data: JarData, cfg: Any = None, lookup: Any = None) -> JarCoordinate:
     """jar 하나의 Maven 좌표를 찾아 반환한다. 예외를 던지지 않는다.
-    ``data``는 jar 바이트나 파일 경로이고, ``lookup``이 None이면 새
-    :class:`Sha1Lookup`을 만들고 False면 조회하지 않는다.
-    jar가 많으면 조회기 하나를 만들어 넘겨야 연속 실패 제한이 실행 전체에 적용된다.
-
-    Maven coordinates of one jar (ladder of docs/INTERFACES.md "v2.1j"). Never raises."""
+    ``data``는 jar 바이트나 파일 경로다.
+    ``lookup``이 None이면 새 :class:`Sha1Lookup`을 만들고, False면 조회하지 않는다.
+    jar가 많으면 조회기 하나를 만들어 넘긴다. 그래야 연속 실패 제한이 실행 전체에 적용된다."""
     try:
         return resolve_jar_scan(path, data, cfg, lookup)[0]
-    except Exception as e:  # one bad jar must not stop the synthesis (logged with the traceback)
+    except Exception as e:  # jar 하나 때문에 pom 생성이 멈추면 안 된다
         log.debug("resolve_jar(%s): %s", path, e, exc_info=True)
         return JarCoordinate(path=path, note=f"could not be resolved ({type(e).__name__}: {e})"[:200])
 
 
-# ------------------------------------------------------------------------------------------------ used check
+# ------------------------------------------------------------------------------------------------ 사용 여부
 def _iter_files(root: Path, d: str, exts: frozenset[str]) -> Iterable[Path]:
     """``root/d`` 아래에서 확장자가 ``exts``인 파일을 순회한다. 건너뛸 디렉토리는 제외한다."""
     base = root / d if d else root
@@ -661,10 +623,7 @@ def _iter_files(root: Path, d: str, exts: frozenset[str]) -> Iterable[Path]:
 
 def references(ws: Any, dirs: Iterable[str], exts: Iterable[str] = (".java",)) -> set[str]:
     """``dirs`` 아래 파일들이 이름으로 가리키는 패키지 집합을 반환한다.
-    Java import와 정규화된 이름, JSP page import, XML과 properties에 쓰인 클래스 이름을 본다.
-
-    Packages the files below `dirs` name: Java imports and qualified names, JSP page imports, class names in XML
-    / properties (lowercase segments followed by a class name or `*`)."""
+    Java import와 정규화된 이름, JSP page import, XML과 properties에 쓰인 클래스 이름을 본다."""
     root = Path(ws.root)
     cands = tuple(getattr(ws, "encoding_candidates", None) or ())
     out: set[str] = set()
@@ -688,7 +647,7 @@ def references(ws: Any, dirs: Iterable[str], exts: Iterable[str] = (".java",)) -
 
 
 def _closure(refs: Iterable[str]) -> set[str]:
-    """각 패키지와 그 상위 패키지를 모두 담은 집합을 반환한다(``a.b.c``는 a, a.b, a.b.c)."""
+    """각 패키지와 그 상위 패키지를 모두 담은 집합을 반환한다. ``a.b.c``는 a, a.b, a.b.c가 된다."""
     out: set[str] = set()
     for r in refs:
         parts = r.split(".")
@@ -699,9 +658,7 @@ def _closure(refs: Iterable[str]) -> set[str]:
 
 def apply_used(jars: Iterable[JarCoordinate], refs: Iterable[str]) -> None:
     """참조된 패키지 ``refs``로 jar마다 ``used``를 정한다. 패키지를 모르는 jar는 None으로 둔다.
-
-    `used` = one of the jar's top-level packages is referenced (directly or as the parent of a reference); jars
-    without known packages stay None."""
+    jar의 최상위 패키지가 직접 참조되거나 참조의 상위 패키지이면 사용 중이다."""
     closure = _closure(refs)
     for j in jars:
         if j.packages:
@@ -711,10 +668,7 @@ def apply_used(jars: Iterable[JarCoordinate], refs: Iterable[str]) -> None:
 def mark_used(jars: list[JarCoordinate], source_roots: Iterable[str], ws: Any, *,
               extra_dirs: Iterable[str] = ()) -> list[JarCoordinate]:
     """소스 루트의 Java 파일과 ``extra_dirs``의 JSP, XML, properties 파일을 보고 jar마다 ``used``를 채운다.
-    받은 목록을 그대로 반환한다.
-
-    Set `used` on every jar from the Java sources of `source_roots` and the JSP / XML / properties files of
-    `extra_dirs` (web root, resource dirs). Returns the same list."""
+    ``extra_dirs``는 웹 루트와 리소스 디렉토리다. 받은 목록을 그대로 반환한다."""
     refs = references(ws, list(source_roots), (".java",))
     extra = [d for d in extra_dirs if d is not None]
     if extra:

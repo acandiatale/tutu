@@ -1,13 +1,13 @@
-"""사내 프레임워크 아티팩트를 쓰는 프로젝트를 찾는 모듈.
-찾으면 이관 범위를 JDK 21과 jakarta로 줄이고(``jdk-jakarta``), 재구성과 구조 검토는 하지 않는다.
+"""사내 프레임워크 아티팩트를 쓰는 프로젝트를 찾는 모듈. 분석 단계에서 호출한다.
+찾으면 이관 범위를 JDK 21과 jakarta로 줄인다(``jdk-jakarta``). 재구성과 구조 검토는 하지 않는다.
 - ``detect_framework``: 프로젝트 pom 선언, 부모 pom에서 상속한 의존성(as-is effective pom), 트리의 jar를 검사한다
 - ``transitive_evidence``: 다른 라이브러리가 가져오는지 ``mvn dependency:tree``로 한 번 확인한다
 - ``decide_scope``: 찾은 근거와 ``framework.*`` 설정으로 실행 범위를 정한다
-- 분석 단계에서 호출하며 예외를 던지지 않는다. 확인하지 못한 곳은 ``unchecked``에 남긴다
+- 예외를 던지지 않는다. 확인하지 못한 곳은 ``unchecked``에 남긴다
 
-Framework projects (v2.1z-ak). A project that depends on an in-house framework artifact (`framework.artifacts`
-patterns) runs in the reduced scope `jdk-jakarta`: Java 21 + jakarta recipes, the verify build with the fix loop, the
-chained remediation; no restructure, no structure review, parents and the framework version kept.
+Reduced scope `jdk-jakarta`: Java 21 + jakarta recipes, the verify build (the fix loop only with
+`framework.fix_loop: true`), the chained remediation; parents and the framework version kept.
+Contract: docs/INTERFACES.md "v2.1z-ak".
 
 Evidence sources, in this order: `direct` (a project pom's `<dependencies>`; a `<dependencyManagement>` entry alone is
 no evidence), `parent` (a module's effective `<dependencies>` in the as-is capture `logs/effective-depmgmt.json` lists
@@ -35,7 +35,7 @@ def _fw(cfg: Any) -> Any:
 
 
 def _add(out: list[FrameworkEvidence], seen: set[tuple[str, str, str]], ev: FrameworkEvidence) -> None:
-    """같은 (출처, 아티팩트, 위치)가 이미 있으면 넣지 않는다."""
+    """근거를 목록에 넣는다. 같은 (출처, 아티팩트, 위치)가 이미 있으면 넣지 않는다."""
     k = (ev.source, ev.artifact, ev.where)
     if k not in seen:
         seen.add(k)
@@ -68,9 +68,9 @@ def detect_framework(ws: Any, cfg: Any, poms: list, bundled_jars: list,
                      effective: Optional[dict] = None) -> Optional[FrameworkUse]:
     """프로젝트 pom, 부모 pom 상속, 트리의 jar에서 사내 프레임워크 아티팩트를 찾는다.
     ``framework.artifacts``가 비어 있으면 None을 반환한다. Maven은 실행하지 않고 예외를 던지지 않는다.
+    읽지 못한 출처는 ``unchecked``에 ``"<출처>: <이유>"``로 남긴다.
 
-    Static detection (no Maven). `effective` = the as-is depmgmt dict (tests); None reads the run's capture. A
-    source that cannot be read goes to `unchecked` as `"<source>: <why>"`."""
+    `effective` = the as-is depmgmt dict (tests); None reads the run's capture."""
     fw = _fw(cfg)
     if fw is None or not fw.enabled:
         return None
@@ -90,10 +90,10 @@ def detect_framework(ws: Any, cfg: Any, poms: list, bundled_jars: list,
                 if fw.matches(d.group_id, d.artifact_id):
                     _add(evidence, seen, FrameworkEvidence(source="direct", artifact=d.key,
                                                            version=_clean_version(d.version), where=p.path))
-    except Exception as e:  # noqa: BLE001 - detection never fails the analysis
+    except Exception as e:  # noqa: BLE001 - 이 검사 때문에 분석이 실패하면 안 된다
         use.unchecked.append(f"direct: {type(e).__name__}: {e}")
 
-    # parent: effective <dependencies>에 있지만 어떤 프로젝트 pom도 선언하지 않았으면 프로젝트 밖 부모 pom에서 상속한 것이다
+    # parent: effective <dependencies>에 있는데 어느 프로젝트 pom도 선언하지 않았으면 프로젝트 밖 부모에서 상속한 것이다
     try:
         data = effective if effective is not None else _load_capture(ws)
         if _capture_missing(data):
@@ -157,7 +157,8 @@ def _reach(profile: Any, start: str) -> set[str]:
 
 
 def _tree_targets(ws: Any, profile: Any) -> Optional[list[tuple[Optional[str], bool]]]:
-    """트리를 구할 대상(모듈 디렉토리, 단독 실행 여부)을 정한다. 루트 pom이 없으면 None을 반환한다."""
+    """``dependency:tree``를 실행할 대상(모듈 디렉토리, 단독 실행 여부) 목록을 정한다. 루트 pom이 없으면 None을 반환한다.
+    MSA에서 루트 집계 pom이 모든 서비스를 묶지 않으면 서비스마다 따로 실행한다."""
     services = list(getattr(profile, "services", None) or [])
     rp = getattr(profile, "root_pom", None)
     case = getattr(getattr(profile, "case_type", None), "value", "")
@@ -179,10 +180,10 @@ def transitive_evidence(ws: Any, cfg: Any, profile: Any) -> tuple[list[Framework
     """``mvn dependency:tree``로 다른 라이브러리가 프레임워크 아티팩트를 가져오는지 확인한다.
     트리를 읽었으면 ``(근거, None)``을, 읽지 못했으면 ``([], 이유)``를 반환한다. 예외를 던지지 않는다.
 
-    One `dependency:tree -Dincludes=<framework patterns>` per target (the root reactor, or each service root of an MSA
-    without a covering root aggregator). A matching node at depth 1 is reported as `direct` (a profile or property
-    the static parse missed), deeper nodes as `transitive` with `via` = the g:a:v path from the module's own
-    dependency down to the framework artifact."""
+    One `dependency:tree -Dincludes=<framework patterns>` per target. A matching node at depth 1 is
+    reported as `direct` (a profile or property the static parse missed), deeper nodes as `transitive` with
+    `via` = the g:a:v path from the module's own dependency down to the framework artifact. Some targets
+    failing still returns the evidence found, with the joined reasons."""
     try:
         fw = _fw(cfg)
         if fw is None or not fw.enabled:
@@ -220,7 +221,7 @@ def transitive_evidence(ws: Any, cfg: Any, profile: Any) -> tuple[list[Framework
         if not read:
             return [], "; ".join(whys) or "dependency:tree failed"
         return evidence, ("; ".join(whys) if whys else None)
-    except Exception as e:  # noqa: BLE001 - never fails the run
+    except Exception as e:  # noqa: BLE001 - 이 확인 때문에 실행이 실패하면 안 된다
         log.warning("framework transitive check: %s: %s", type(e).__name__, e)
         return [], f"{type(e).__name__}: {e}"
 
@@ -248,11 +249,14 @@ def _summary(evidence: list[FrameworkEvidence]) -> str:
 
 
 def decide_scope(use: Optional[FrameworkUse], cfg: Any) -> Optional[FrameworkUse]:
-    """찾은 근거와 ``framework.scope`` / ``framework.transitive`` 설정으로 실행 범위를 정한다. 여러 번 호출해도 결과가 같다.
+    """찾은 근거와 ``framework.scope``, ``framework.transitive`` 설정으로 실행 범위를 정한다.
+    ``use``가 None이면 None을 반환한다. 여러 번 호출해도 결과가 같다.
+    - ``framework.scope``가 ``jdk-jakarta``이고 적용되는 근거가 있으면 ``jdk-jakarta``다
+    - transitive 근거는 ``framework.transitive=apply``일 때만 적용된다
+    - 그 밖에는 ``full``이다
 
-    `jdk-jakarta` when `framework.scope` is `jdk-jakarta` and some evidence applies (direct / parent / bundled, or
-    transitive with `framework.transitive=apply`); `full` otherwise. `reason` = one English sentence. None stays
-    None."""
+    `reason` = one English sentence; `framework_followup` reads `framework.scope=full` /
+    `framework.transitive=` back out of it."""
     if use is None:
         return None
     fw = _fw(cfg)
@@ -277,7 +281,7 @@ def decide_scope(use: Optional[FrameworkUse], cfg: Any) -> Optional[FrameworkUse
 def summary_text(use: FrameworkUse) -> str:
     """찾은 프레임워크 아티팩트를 영어 한 줄로 요약한다. 계획 노트와 로그에 쓴다.
 
-    Short English: `com.example.fw:example-fw-core 1.2.0 (direct: pom.xml)`, `… and N more` for several entries."""
+    `com.example.fw:example-fw-core 1.2.0 (direct: pom.xml)`, `… and N more` for several entries."""
     return _summary(list(use.evidence))
 
 
@@ -287,7 +291,7 @@ def _dir_of(path: str) -> str:
 
 
 def _ko_one(e: FrameworkEvidence) -> str:
-    """근거 하나를 보고서용 한국어로 쓴다. 값 뒤에는 받침과 관계없는 조사만 붙인다."""
+    """근거 하나를 보고서용 한국어 문구로 만든다. 값 뒤에는 받침과 관계없는 조사만 붙인다."""
     if e.source == "bundled" and e.artifact.count(":") != 1:
         return f"{e.artifact}, {_dir_of(e.where)}에 jar로 포함"
     head = e.artifact + (f" {e.version}" if e.version else "")
@@ -310,10 +314,8 @@ NO_FIX_LOOP_NOTE = "not tried: framework project — build errors are not fixed 
 
 
 def no_fix_loop_followup(errors: int) -> str:
-    """수정 루프 없이 빌드가 실패한 프레임워크 프로젝트의 인수인계 첫 줄(영어)을 만든다.
-
-    v2.1z-aw: the hand-over line of a framework project whose single build failed (`framework.fix_loop: false`);
-    `errors` = the errors that build left (0 = the build failed without a parsed error)."""
+    """수정 루프 없이 빌드가 실패한 프레임워크 프로젝트의 인수인계 첫 줄을 영어로 만든다.
+    ``errors``는 빌드가 남긴 오류 수다. 0이면 오류를 파싱하지 못한 실패로 보고 빌드 로그를 보라고 쓴다."""
     if errors > 0:
         return f"{NO_FIX_LOOP_PREFIX} — {errors} error(s) remain after the JDK 21 + jakarta conversion; see the error list"
     return f"{NO_FIX_LOOP_PREFIX} — the build failed after the JDK 21 + jakarta conversion; see the build log"
@@ -321,9 +323,7 @@ def no_fix_loop_followup(errors: int) -> str:
 
 def framework_followup(use: FrameworkUse) -> str:
     """보고서 인수인계 섹션에 넣을 한국어 한 줄을 만든다. 찾은 근거가 없으면 빈 문자열을 반환한다.
-
-    The Korean Handover line: what was found and what the run did. Several evidence entries name the first and add
-    `외 N곳`; particles after a data value never depend on its last sound."""
+    근거가 여럿이면 첫 근거만 쓰고 ``외 N곳``을 붙인다. 값 뒤에는 받침과 관계없는 조사만 붙인다."""
     if not use.evidence:
         return ""
     if use.reduced:

@@ -1,22 +1,13 @@
-"""pom이 없는 Tomcat 웹앱 트리(풀어 놓은 WAR)를 읽어 무엇이 들어 있는지 정리하는 모듈.
-아무것도 바꾸지 않는다.
-pom이 없는 트리는 접수에서 거부하므로, 담당 팀에 보낼 거부 안내에 이 트리의 내용을 설명하기 위해 쓴다.
-CLI ``sbmig inventory <dir>``가 :func:`scan_webapp_tree`를 호출하고 ``sbmig.report.inventory``가 보고서로
-만든다. 이관 실행 흐름에는 포함되지 않는다.
+"""pom이 없는 Tomcat 웹앱 트리(풀어 놓은 WAR)에 무엇이 들어 있는지 정리하는 모듈. 아무것도 바꾸지 않는다.
+pom이 없는 트리는 접수에서 거부한다. 담당 팀에 보낼 거부 안내에 트리 내용을 설명하기 위해 쓴다.
+CLI ``sbmig inventory <dir>``가 :func:`scan_webapp_tree`를 호출하고 ``sbmig.report.inventory``가 보고서로 만든다.
+이관 실행 흐름에는 포함되지 않는다. jar 이름 표(:func:`jar_names`)는 Ant pom 생성도 쓴다.
 - web.xml, JNDI 이름, JSP와 정적 파일 수, jar 좌표 추정, class 파일의 Java 버전, 소스 루트, 중복 클래스,
   웹앱 루트별 Maven 모듈 제안을 모은다
 - 파일 하나가 깨져도 경고만 남기고 예외를 던지지 않는다
 
-Read-only inventory of a Tomcat webapp tree WITHOUT a pom (`sbmig inventory`, 2026-10-23).
-
-Classic exploded WARs: JSPs, Java sources somewhere (often `WEB-INF/src`), `WEB-INF/lib` jars (plus `*.jar.old`
-backups), `WEB-INF/classes`. `scan_webapp_tree(root)` collects file-system facts only — web.xml spec / servlets /
-frameworks, JNDI names, JSP / static counts, jar coordinates guessed from the file name
-(`knowledge/libraries/jar_names.yml`), class-file Java levels, source roots (where `package a.b;` matches the
-path), duplicate classes — and proposes one Maven module per webapp root. Nothing is changed; a bad single file is
-a warning, never an exception. The pom synthesis of the next round consumes the `WebappInventory`.
-
-
+Typical tree: JSPs, Java sources somewhere (often `WEB-INF/src`), `WEB-INF/lib` jars (plus `*.jar.old`
+backups), `WEB-INF/classes`. Source roots = where `package a.b;` matches the path.
 """
 from __future__ import annotations
 
@@ -59,7 +50,6 @@ _RES_REF_RE = re.compile(r"<(?:res-ref-name|resource-env-ref-name)>\s*([^<]+?)\s
 _JSP_JAVAX_IMPORT_RE = re.compile(r"<%@\s*page\b[^%]*\bimport\s*=\s*[\"'][^\"']*\bjavax\.", re.S)
 
 # import 접두어로 프레임워크를 분류한다. 한 파일이 여러 분류에 동시에 셀 수 있다
-# framework categories of the imports (first matching prefixes win nothing: a file can count for several)
 FRAMEWORK_IMPORTS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("spring", ("org.springframework.",)),
     ("struts1", ("org.apache.struts.",)),
@@ -74,13 +64,11 @@ JDK_INTERNAL_PREFIXES = ("sun.", "com.sun.")
 CLASS_MAJOR_JAVA = {45: "1.1", 46: "1.2", 47: "1.3", 48: "1.4", 49: "1.5", 50: "1.6", 51: "1.7", 52: "1.8"}
 
 
-# ------------------------------------------------------------------------------------------------ jar names table
+# ------------------------------------------------------------------------------------------------ jar 이름 표
 @lru_cache(maxsize=4)
 def jar_names(path: Optional[str] = None) -> dict[str, tuple[str, str]]:
-    """jar 이름 표(``knowledge/libraries/jar_names.yml``)를 ``{소문자 stem: (groupId:artifactId, 메모)}``로
-    읽는다. 읽지 못하면 빈 딕셔너리를 반환한다.
-
-    `knowledge/libraries/jar_names.yml` → {stem.lower(): (groupId:artifactId, note)}; {} when unreadable."""
+    """jar 이름 표(``knowledge/libraries/jar_names.yml``)를 ``{소문자 stem: (groupId:artifactId, 메모)}``로 읽는다.
+    읽지 못하면 빈 딕셔너리를 반환한다."""
     p = Path(path) if path else JAR_NAMES_FILE
     try:
         data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
@@ -95,10 +83,8 @@ def jar_names(path: Optional[str] = None) -> dict[str, tuple[str, str]]:
 
 
 def _jar_base(name: str) -> Optional[str]:
-    """jar 파일 이름을 반환한다.
-    백업 파일 ``x-1.0.jar.old``는 ``x-1.0.jar``로 바꾸고, jar가 아니면 None을 반환한다.
-
-    `x-1.0.jar` → `x-1.0.jar`; a backup `x-1.0.jar.old` → `x-1.0.jar`; anything else None."""
+    """jar 파일 이름을 반환한다. 백업 파일 ``x-1.0.jar.old``는 ``x-1.0.jar``로 바꾼다.
+    jar가 아니면 None을 반환한다."""
     low = name.lower()
     if low.endswith(".jar"):
         return name
@@ -108,19 +94,18 @@ def _jar_base(name: str) -> Optional[str]:
 
 def guess_jar(name: str) -> tuple[Optional[str], Optional[str], str]:
     """jar 파일 이름에서 (추정 좌표, 추정 버전, stem)을 구한다.
-    표가 아는 가장 긴 stem을 쓰고, 모르는 이름은 정규식으로 이름과 버전을
-    나누거나 ``.jar``를 뗀 이름 전체를 stem으로 쓴다.
+    표가 아는 가장 긴 stem을 쓴다. 모르는 이름은 정규식으로 이름과 버전을 나눈다.
+    그것도 안 되면 ``.jar``를 뗀 이름 전체를 stem으로 쓴다.
 
-    (artifact_guess, version_guess, stem) of a jar file name. The longest stem the table knows wins (`commons-
-    lang3-3.1.jar` → commons-lang3 / 3.1, `ojdbc6.jar` → ojdbc6 / None); unknown names fall back to the regex split
-    (`acme-util-1.2.jar` → acme-util / 1.2) or to the whole name without `.jar`."""
+    `commons-lang3-3.1.jar` → commons-lang3 / 3.1, `ojdbc6.jar` → ojdbc6 / None,
+    `acme-util-1.2.jar` (unknown) → acme-util / 1.2."""
     base = _jar_base(name) or name
     bare = base[:-4] if base.lower().endswith(".jar") else base
     table = jar_names()
     hit = table.get(bare.lower())
     if hit:
         return hit[0], None, bare
-    for m in reversed(list(_SPLIT_RE.finditer(bare))):          # longest stem first
+    for m in reversed(list(_SPLIT_RE.finditer(bare))):          # 가장 긴 stem부터 본다
         stem, ver = bare[:m.start()], bare[m.end():]
         hit = table.get(stem.lower())
         if hit:
@@ -132,23 +117,21 @@ def guess_jar(name: str) -> tuple[Optional[str], Optional[str], str]:
 
 
 def jar_note(jar: JarInfo) -> str:
-    """jar에 대한 이름 표의 메모를 반환한다. 메모가 없으면 빈 문자열을 반환한다.
-
-    The table note for a jar ("" when none) — the writer's `note` column."""
+    """jar에 대한 이름 표의 메모를 반환한다. 메모가 없으면 빈 문자열을 반환한다."""
     _, _, stem = guess_jar(jar.name)
     hit = jar_names().get(stem.lower())
     return hit[1] if hit else ""
 
 
 def java_level(major: Optional[int]) -> Optional[str]:
-    """class 파일의 major 버전을 Java 버전으로 바꾼다(52는 1.8, 53 이상은 major - 44).
+    """class 파일의 major 버전을 Java 버전으로 바꾼다. 52는 1.8, 53 이상은 major - 44가 된다.
     모르는 값이면 None을 반환한다."""
     if not major:
         return None
     return CLASS_MAJOR_JAVA.get(major) or (str(major - 44) if major > 52 else None)
 
 
-# ------------------------------------------------------------------------------------------------ helpers
+# ------------------------------------------------------------------------------------------------ 보조 함수
 def _under(rel: str, d: str) -> bool:
     return d == "" or rel == d or rel.startswith(d + "/")
 
@@ -158,7 +141,7 @@ def _join(d: str, *parts: str) -> str:
 
 
 def _read_text(p: Path, limit: int, warnings: list[str], rel: str) -> str:
-    """파일 앞부분(``limit`` 바이트)을 utf-8, cp949, latin-1 순으로 디코딩한다.
+    """파일 앞부분 ``limit`` 바이트를 utf-8, cp949, latin-1 순으로 디코딩한다.
     읽지 못하면 경고를 남기고 빈 문자열을 반환한다."""
     try:
         data = p.read_bytes()[:limit]
@@ -199,10 +182,7 @@ def _sample(items, n: int) -> list[str]:
 
 
 def _walk(root: Path) -> tuple[list[str], set[str]]:
-    """루트 아래의 모든 파일(상대 경로)과 디렉토리를 반환한다.
-    ``SKIP_DIRS``(.git, target, node_modules 등)는 건너뛴다.
-
-    All files (root-relative posix) and all directories, skipping SKIP_DIRS."""
+    """루트 아래의 모든 파일(상대 경로)과 디렉토리를 반환한다. ``SKIP_DIRS``(.git, target, node_modules 등)는 건너뛴다."""
     files: list[str] = []
     dirs: set[str] = {""}
     for cur, dnames, fnames in os.walk(root):
@@ -216,10 +196,10 @@ def _walk(root: Path) -> tuple[list[str], set[str]]:
     return files, dirs
 
 
-# ------------------------------------------------------------------------------------------------ webapp roots
+# ------------------------------------------------------------------------------------------------ 웹앱 루트
 def _scan_web_xml(root: Path, wr: WebappRoot, warnings: list[str]) -> None:
-    """web.xml을 정규식으로 검사해 스펙, 서블릿 / 필터 / 리스너 / taglib 수, 프레임워크, JNDI 참조를 모은다.
-    완전한 파싱(:mod:`sbmig.analyze.webxml`)이 아니라 목록을 만들기 위한 대략적인 값이다."""
+    """web.xml을 정규식으로 검사해 스펙, 서블릿, 필터, 리스너, taglib 수, 프레임워크, JNDI 참조를 모은다.
+    :mod:`sbmig.analyze.webxml`의 완전한 파싱이 아니라 목록용 대략적인 값이다."""
     if not wr.web_xml:
         return
     text = _XML_COMMENT_RE.sub("", _read_text(root / wr.web_xml, MAX_XML_BYTES, warnings, wr.web_xml))
@@ -254,8 +234,8 @@ def _scan_web_xml(root: Path, wr: WebappRoot, warnings: list[str]) -> None:
 
 
 def _scan_lib(root: Path, wr: WebappRoot, lib_files: list[str], warnings: list[str]) -> None:
-    """``WEB-INF/lib``의 jar마다 크기, sha1, 추정 좌표를 기록한다.
-    ``*.jar.old`` 백업은 무시 표시를 하고, Tomcat이 둘 다 로드하므로 같은 라이브러리가 여러 버전이면 경고한다."""
+    """``WEB-INF/lib``의 jar마다 크기, sha1, 추정 좌표를 기록한다. ``*.jar.old`` 백업은 무시 표시를 한다.
+    같은 라이브러리가 여러 버전이면 Tomcat이 모두 로드하므로 경고를 남긴다."""
     lib = _join(wr.dir, "WEB-INF", "lib")
     by_stem: dict[str, list[str]] = defaultdict(list)
     for rel in lib_files:
@@ -289,10 +269,8 @@ def _scan_lib(root: Path, wr: WebappRoot, lib_files: list[str], warnings: list[s
 
 
 def _scan_classes(root: Path, wr: WebappRoot, class_files: list[str]) -> dict[str, str]:
-    """``WEB-INF/classes``의 class 파일 Java 버전(최소, 최대)을 기록하고 ``{바깥 클래스 FQCN: 경로}``를
-    반환한다. 소스 없는 클래스를 찾는 데 쓴다.
-
-    Class-file majors of WEB-INF/classes; returns {outer FQCN: rel path}."""
+    """``WEB-INF/classes``의 class 파일 Java 버전(최소, 최대)을 기록하고 ``{바깥 클래스 FQCN: 경로}``를 반환한다.
+    반환값은 소스 없는 클래스를 찾는 데 쓴다."""
     base = _join(wr.dir, "WEB-INF", "classes") + "/"
     majors: list[int] = []
     fqcns: dict[str, str] = {}
@@ -311,9 +289,10 @@ def _scan_classes(root: Path, wr: WebappRoot, class_files: list[str]) -> dict[st
     return fqcns
 
 
-# ------------------------------------------------------------------------------------------------ sources
+# ------------------------------------------------------------------------------------------------ 소스 루트
 def _source_root_of(rel: str, package: str) -> tuple[str, bool]:
-    """``package a.b;`` 선언이 디렉토리와 맞으면 (소스 루트, True)를, 맞지 않으면 (자기 디렉토리, False)를 반환한다."""
+    """``package a.b;`` 선언이 디렉토리와 맞으면 (소스 루트, True)를 반환한다.
+    맞지 않으면 (파일이 있는 디렉토리, False)를 반환한다."""
     d = posixpath.dirname(rel)
     if not package:
         return d, True
@@ -326,9 +305,7 @@ def _source_root_of(rel: str, package: str) -> tuple[str, bool]:
 
 
 def _inside(d: str, webapp_dirs: list[str]) -> Optional[str]:
-    """``d``를 포함하는 가장 깊은 웹앱 루트를 반환한다. 없으면 None을 반환한다.
-
-    The deepest webapp root dir `d` lies under (or None)."""
+    """``d``를 포함하는 가장 깊은 웹앱 루트를 반환한다. 없으면 None을 반환한다."""
     best: Optional[str] = None
     for w in webapp_dirs:
         if _under(d, w) and (best is None or len(w) > len(best)):
@@ -336,34 +313,29 @@ def _inside(d: str, webapp_dirs: list[str]) -> Optional[str]:
     return best
 
 
-# ------------------------------------------------------------------------------------------------ main entry
+# ------------------------------------------------------------------------------------------------ 진입점
 def scan_webapp_tree(root: Path, *, max_sample: int = 8, name: Optional[str] = None) -> WebappInventory:
-    """pom 없는 웹앱 트리를 읽어 ``WebappInventory``를 반환한다. 파일을 바꾸지 않는다.
-    ``name``은 zip을 임시 폴더에 풀었을 때 루트 폴더 이름 대신 쓸 이름이다.
-
-    Inventory of a pom-less webapp tree (read only). See the module docstring. `name` replaces the root's
-    basename in the proposals (a zip extracted to a temp dir)."""
+    """pom 없는 웹앱 트리를 읽어 ``WebappInventory``를 반환한다. 파일은 바꾸지 않는다.
+    ``name``은 모듈 제안에서 루트 폴더 이름 대신 쓸 이름이다. zip을 임시 폴더에 풀었을 때 넘긴다."""
     root = Path(root).resolve()
     inv = WebappInventory(root=str(root))
     warnings = inv.warnings
     files, dirs = _walk(root)
 
-    # 1. build files
+    # 1. 빌드 파일
     inv.build_files = [f for f in files if posixpath.basename(f) in BUILD_FILE_NAMES]
     for f in inv.build_files:
         if posixpath.basename(f) == "pom.xml":
             warnings.append(f"this tree has a pom at {f}: use `sbmig run` for that module")
 
-    # WEB-INF를 자식으로 가진 디렉토리가 웹앱 루트다.
-    # 백업 복사본처럼 WEB-INF 안에 다시 있는 WEB-INF는 제외한다
-    # 2. webapp roots: directories with a WEB-INF child (WEB-INF nested inside another WEB-INF does not count)
+    # 2. 웹앱 루트: WEB-INF를 자식으로 가진 디렉토리. 백업 복사본처럼 WEB-INF 안에 다시 있는 WEB-INF는 제외한다
     webapp_dirs = sorted(posixpath.dirname(d) if "/" in d else "" for d in dirs
                          if posixpath.basename(d) == "WEB-INF" and "WEB-INF" not in d.split("/")[:-1])
     if not webapp_dirs:
         warnings.append("no WEB-INF directory anywhere: this is not an exploded webapp")
     roots: list[WebappRoot] = []
     class_fqcns: dict[str, dict[str, str]] = {}
-    jsp_javax_by_dir: dict[str, int] = {}               # JSPs with `<%@ page import="javax.…" %>` → proposal notes
+    jsp_javax_by_dir: dict[str, int] = {}               # javax를 import하는 JSP 수. 모듈 제안 메모에 쓴다
     for wd in webapp_dirs:
         wr = WebappRoot(dir=wd)
         web_inf = _join(wd, "WEB-INF")
@@ -380,7 +352,7 @@ def scan_webapp_tree(root: Path, *, max_sample: int = 8, name: Optional[str] = N
             warnings.append(f"{web_inf} has no web.xml (Servlet 3 annotations only, or an incomplete copy)")
         try:
             _scan_web_xml(root, wr, warnings)
-        except Exception as e:  # noqa: BLE001 — one bad web.xml must not stop the inventory
+        except Exception as e:  # noqa: BLE001 - web.xml 하나 때문에 목록 작성이 멈추면 안 된다
             warnings.append(f"{wx}: could not be read ({e})")
         ctx = _join(wd, "META-INF", "context.xml")
         if ctx in files:
@@ -424,7 +396,7 @@ def scan_webapp_tree(root: Path, *, max_sample: int = 8, name: Optional[str] = N
         roots.append(wr)
     inv.webapp_roots = roots
 
-    # 3. source roots
+    # 3. 소스 루트
     groups: dict[str, list[tuple[str, object, str, bool]]] = defaultdict(list)
     no_package: list[str] = []
     mismatched: list[str] = []
@@ -491,20 +463,20 @@ def scan_webapp_tree(root: Path, *, max_sample: int = 8, name: Optional[str] = N
     dups = sorted(f for f, rs in fqcn_roots.items() if len(rs) > 1)
     inv.duplicate_classes, inv.duplicate_classes_sample = len(dups), dups[:max_sample]
 
-    # classes without source
+    # 소스가 없는 클래스
     for wr in roots:
         missing = sorted(f for f in class_fqcns.get(wr.dir, {}) if f not in fqcn_roots)
         wr.classes_without_source, wr.classes_without_source_sample = len(missing), missing[:max_sample]
 
-    # 4. proposals
+    # 4. 모듈 제안
     inv.proposals = _proposals(name or root.name, inv, max_sample, jsp_javax_by_dir)
-    # 읽기 전용 inventory 도구도 ADF 프로젝트를 알아보도록 ADF이면 규모 요약을 함께 담는다 / the ADF sizing for the census helper
+    # inventory 도구도 ADF 프로젝트를 알아보도록 ADF이면 규모 요약을 함께 담는다
     try:
         from .adf import detect_adf
         _adf = detect_adf(root)
         if _adf.present:
             inv.adf = _adf.summary()
-    except Exception:  # noqa: BLE001 - a sizing never fails the inventory
+    except Exception:  # noqa: BLE001 - 규모 요약 때문에 목록 작성이 실패하면 안 된다
         pass
     return inv
 
@@ -512,7 +484,7 @@ def scan_webapp_tree(root: Path, *, max_sample: int = 8, name: Optional[str] = N
 def _proposals(root_name: str, inv: WebappInventory, max_sample: int,
                jsp_javax_by_dir: dict[str, int]) -> list[ModuleProposal]:
     """웹앱 루트마다 Maven 모듈 하나를 제안한다. 루트 없이 소스만 있으면 jar 모듈 하나를 제안한다.
-    참고용 제안일 뿐이며 pom을 만들지는 않는다."""
+    참고용 제안이다. pom은 만들지 않는다."""
     roots, sroots = inv.webapp_roots, inv.source_roots
     majors = [wr.class_major_max for wr in roots if wr.class_major_max]
     overall = java_level(max(majors)) if majors else None
@@ -566,7 +538,7 @@ def _proposals(root_name: str, inv: WebappInventory, max_sample: int,
 
 def _source_notes(mp: ModuleProposal, sroots: list[SourceRoot]) -> None:
     """소스 루트에서 나온 메모를 제안에 추가한다.
-    UTF-8이 아닌 인코딩과 sun.* / com.sun.* 같은 JDK 내부 API import가 해당한다."""
+    UTF-8이 아닌 인코딩과 sun.*, com.sun.* 같은 JDK 내부 API import를 알린다."""
     encs = sorted({s.encoding for s in sroots if s.encoding not in ("utf-8", "ascii")})
     for enc in encs:
         label = "MS949" if enc.lower().replace("-", "_") in ("cp949", "ms949", "euc_kr") else enc

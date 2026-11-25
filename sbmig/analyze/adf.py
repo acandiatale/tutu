@@ -1,22 +1,21 @@
 """Oracle ADF(JDeveloper) 프로젝트인지 판단하고 규모를 기록하는 모듈.
 ADF는 변환 대상이 아니므로 확실한 ADF 프로젝트만 가려낸다.
 분석 단계가 ``detect_adf``를 호출하고, 근거가 있으면 ``ProjectProfile.adf``에 ``AdfSummary``를 남긴다.
-- 서로 다른 계열의 근거가 둘 이상(``is_adf``)이면 "ADF 프로젝트라 변환이 불가능합니다"로
-  중단한다(``intake.adf_policy: stop``, exit 3, 플래그 ``adf-project``)
+- 서로 다른 계열의 근거가 둘 이상(``is_adf``)이면 "ADF 프로젝트라 변환이 불가능합니다"로 중단한다
+  (``intake.adf_policy: stop``, exit 3, 플래그 ``adf-project``)
 - 근거가 한 계열뿐이면 플래그 ``adf-traces``와 인수인계 메모만 남기고 계속한다
-- 근거 계열은 A ``bc4j`` XML, B ``oracle.jbo.`` / ``oracle.adf.`` / ``oracle.binding.`` import, C ADF Model
-  바인딩 파일, D ADF Faces 페이지와 task flow다
+- 근거 계열은 네 가지다. A ``bc4j`` XML, B ``oracle.jbo.``, ``oracle.adf.``, ``oracle.binding.`` import,
+  C ADF Model 바인딩 파일, D ADF Faces 페이지와 task flow
 - 폴더 이름은 보지 않는다. ``.jpr``과 ``adf-config.xml``은 참고(``hints``)로만 쓰고 근거로 보지 않는다
-- 파일을 읽기만 하고 jar는 열지 않으며, 예외를 던지지 않는다
+- 파일을 읽기만 한다. jar는 열지 않고 예외를 던지지 않는다
 
-Oracle ADF (JDeveloper) detection and sizing (v2.1z-d, 2026-11-02; business decision: ADF projects are NOT converted — the
-run ends with "ADF 프로젝트라 변환이 불가능합니다", nothing else is planned). `detect_adf(ws)` walks the tree once and collects an
-`AdfInventory` over four independent evidence families — A `bc4j` (BC4J XML in the `http://xmlns.oracle.com/bc4j` namespace),
+Contract: `v2.1z-d`. `detect_adf(ws)` walks the tree once and collects an `AdfInventory` over four
+independent evidence families — A `bc4j` (BC4J XML in the `http://xmlns.oracle.com/bc4j` namespace),
 B `java` (imports of `oracle.jbo.` / `oracle.adf.` / `oracle.binding.`), C `model` (`adfm.xml`, `DataBindings.cpx`,
 `*PageDef.xml`), D `faces` (`jspx` / `jsff` carrying the `http://xmlns.oracle.com/adf/faces` namespace, `adfc-config.xml`,
 bounded `*-flow.xml` in the `http://xmlns.oracle.com/adf/controller` namespace) — plus counts (entities + distinct
 `DBObjectName` tables, view objects, application modules, page definitions, task flows + views, ADF pages, java total / on ADF)
-and the same per top-level directory. **`is_adf` = at least two families present** (no false positives: a `.jpr` technology name,
+and the same per top-level directory. `is_adf` = at least two families present (no false positives: a `.jpr` technology name,
 `adf-config.xml` or a single family alone never rejects); exactly one family = `traces` (soft flag `adf-traces`, the run goes
 on). `target/`, VCS / IDE metadata directories are ignored; archives are never opened. Evidence paths (capped) go into the
 journal event and the report so a person can audit the decision. Pure reads; never raises.
@@ -41,19 +40,19 @@ ADF_MESSAGE_KO = "ADF 프로젝트라 변환이 불가능합니다"
 TRACES_MESSAGE_KO = "ADF 흔적: 변환은 계속하되 확인 필요"
 ADF_PREFIX = "ADF project (Oracle JDeveloper / ADF): conversion is not possible —"
 TRACES_PREFIX = "ADF traces"
-FAMILIES = ("bc4j", "java", "model", "faces")        # A, B, C, D — the order of every listing
+FAMILIES = ("bc4j", "java", "model", "faces")        # A, B, C, D. 모든 목록이 이 순서를 따른다
 BC4J_NS = "http://xmlns.oracle.com/bc4j"
-FACES_NS = "http://xmlns.oracle.com/adf/faces"       # also matches …/adf/faces/rich
+FACES_NS = "http://xmlns.oracle.com/adf/faces"       # …/adf/faces/rich도 이 문자열로 찾는다
 CONTROLLER_NS = "http://xmlns.oracle.com/adf/controller"
 BC4J_ROOTS = frozenset({"Entity", "ViewObject", "AppModule", "Association", "ViewLink"})
 ADF_IMPORT_RE = re.compile(r"^\s*import\s+(?:static\s+)?oracle\.(?:adf|jbo|binding)\.", re.MULTILINE)
-# .jpr에 있는 ADF 기술 키는 근거가 아니라 참고로만 쓴다 / named in a project file: a hint, never evidence
+# .jpr에 있는 ADF 기술 키는 근거가 아니라 참고로만 쓴다
 JPR_ADF_RE = re.compile(r"ADF_FACES|ADFbc|ADF_PAGE_FLOW|ADFm\b|ADF_BINDING|oracle\.adf\.|TECHNOLOGY_SCOPE_ADF", re.IGNORECASE)
 PAGE_EXT = (".jspx", ".jsff")
 _PRUNE = frozenset({".git", ".svn", ".hg", ".idea", ".settings", "node_modules", "__pycache__", "target"})
 _MAX_FILES = 200_000
-_HEAD_BYTES = 8192              # the root element / namespaces sit at the top of an XML or page file
-_JAVA_HEAD_LINES = 120          # imports sit at the top of a java file
+_HEAD_BYTES = 8192              # 루트 요소와 네임스페이스는 XML, 페이지 파일 앞부분에 있다
+_JAVA_HEAD_LINES = 120          # import는 java 파일 앞부분에 있다
 _MAX_XML_BYTES = 2 * 1024 * 1024
 _CAP_TABLES = 50
 _CAP_PER_FAMILY = 8
@@ -67,10 +66,8 @@ def _empty_counts() -> dict[str, int]:
 
 @dataclass
 class AdfInventory:
-    """ADF 판단 결과를 담는 데이터 클래스.
-    계열별 근거 경로, 참고 경로, 종류별 개수, 테이블 목록, 최상위 폴더별 개수를 담는다.
-
-    evidence paths per family, hint paths, counts per kind, the distinct tables, per-top-level-directory counts."""
+    """ADF 판단 결과를 담는 클래스.
+    계열별 근거 경로, 참고 경로, 종류별 개수, 테이블 목록, 최상위 폴더별 개수를 담는다."""
     families: dict[str, list[str]] = field(default_factory=lambda: {f: [] for f in FAMILIES})
     hints: list[str] = field(default_factory=list)
     entities: int = 0
@@ -95,26 +92,21 @@ class AdfInventory:
 
     @property
     def is_adf(self) -> bool:
-        """확실한 ADF 프로젝트인지 확인한다.
-        잘못 판단하지 않도록 서로 다른 계열의 근거가 둘 이상이어야 한다.
-
-        At least two different evidence families — only then the run is rejected."""
+        """확실한 ADF 프로젝트이면 True를 반환한다. 오판하지 않도록 서로 다른 계열의 근거가 둘 이상이어야 한다."""
         return len(self.present) >= 2
 
     @property
     def traces(self) -> bool:
-        """근거가 한 계열뿐인지 확인한다. 이 경우 플래그 ``adf-traces``만 남기고 변환은 계속한다."""
+        """근거가 한 계열뿐이면 True를 반환한다. 이때는 플래그 ``adf-traces``만 남기고 변환은 계속한다."""
         return len(self.present) == 1
 
     @property
     def evidence_total(self) -> int:
-        """모든 근거 계열의 근거 파일 수를 합한 값."""
+        """모든 계열의 근거 파일 수를 합해 반환한다."""
         return sum(len(v) for v in self.families.values())
 
     def summary(self) -> AdfSummary:
-        """프로필과 inventory에 저장할 요약(``AdfSummary``)을 만든다. 목록은 상한 개수까지만 넣는다.
-
-        The capped pydantic summary stored on the profile / inventory."""
+        """프로필과 inventory에 저장할 요약(``AdfSummary``)을 만든다. 목록은 상한 개수까지만 넣는다."""
         return AdfSummary(
             is_adf=self.is_adf, traces=self.traces, families=self.present,
             evidence={f: list(v[:_CAP_PER_FAMILY]) for f, v in self.families.items() if v},
@@ -126,18 +118,18 @@ class AdfInventory:
             tables_total=len(self.tables), by_dir={d: dict(c) for d, c in self.by_dir.items()})
 
 
-# ---------------------------------------------------------------------------------------------------- text
+# ---------------------------------------------------------------------------------------------------- 문구
 def counts_text(s: AdfSummary) -> str:
-    """규모를 간결한 영어 문구로 만든다.
+    """규모를 짧은 영어 문구로 만든다.
     예: ``1 entities / 1 tables, 1 view objects, 1 application modules, 1 page definitions, 1 task
-    flows, 2 pages, 2 of 3 java files on ADF``."""
+    flows, 2 pages, 2 of 3 java files on ADF``"""
     return (f"{s.entities} entities / {s.tables_total} tables, {s.view_objects} view objects, {s.app_modules} application "
             f"modules, {s.page_defs} page definitions, {s.task_flows} task flows, {s.pages} pages, {s.java_adf} of "
             f"{s.java_total} java files on ADF")
 
 
 def _evidence_text(s: AdfSummary, per_family: int = 2) -> str:
-    """계열별 근거 경로를 몇 개씩 보여 주는 문구를 만든다. 예: ``bc4j: a.xml, b.xml; java: C.java``"""
+    """계열별 근거 경로를 ``per_family``개씩 보여 주는 문구를 만든다. 예: ``bc4j: a.xml, b.xml; java: C.java``"""
     parts = []
     for f in FAMILIES:
         paths = (s.evidence or {}).get(f) or []
@@ -148,31 +140,26 @@ def _evidence_text(s: AdfSummary, per_family: int = 2) -> str:
 
 
 def adf_followup(s: AdfSummary, policy: str = "stop") -> str:
-    """변환할 수 없을 때 인수인계 첫 줄(영어)을 만든다. ``sbmig.report.i18n.PATTERNS``가 한국어로 바꾼다.
-
-    The Handover's first line for a rejected ADF project (English; rendered in Korean by `i18n.PATTERNS`)."""
+    """변환할 수 없는 ADF 프로젝트의 인수인계 첫 줄을 영어로 만든다.
+    ``sbmig.report.i18n.PATTERNS``가 한국어로 바꾸므로 문장을 바꾸면 패턴도 함께 고친다."""
     tail = "" if policy == "stop" else " — intake.adf_policy: continue (report only, the run goes on; not recommended)"
     return (f"{ADF_PREFIX} {ADF_MESSAGE_KO} (evidence: {', '.join(s.families)}; {counts_text(s)}){tail}")
 
 
 def traces_followup(s: AdfSummary) -> str:
-    """ADF 흔적만 있을 때 인수인계 메모(영어)를 만든다. 근거 계열, 근거 경로, 규모를 담는다.
-
-    The Handover note for ADF traces (one family only): the family and its evidence, the compact counts."""
+    """ADF 흔적만 있을 때 인수인계 메모를 영어로 만든다. 근거 계열, 근거 경로, 규모를 담는다."""
     fam = s.families[0] if s.families else "?"
     return (f"{TRACES_PREFIX} (one evidence family only — {fam}: {', '.join((s.evidence or {}).get(fam, [])[:3])}) — "
             f"the conversion goes on but needs a check: {TRACES_MESSAGE_KO} ({counts_text(s)})")
 
 
 def adf_abort_reason(policy: str = "stop") -> str:
-    """``_abort``에 넘길 짧은 중단 사유(``run aborted: …`` 줄)를 반환한다."""
+    """``_abort``에 넘길 짧은 중단 사유를 반환한다. ``run aborted: …`` 줄에 들어간다."""
     return f"ADF project — conversion is not possible ({ADF_MESSAGE_KO}; intake.adf_policy: {policy})"
 
 
 def adf_sizing_lines(s: AdfSummary) -> list[str]:
-    """콘솔과 inventory에 쓸 영어 요약 줄을 만든다. 판단 결과, 규모, 계열별 근거를 담는다.
-
-    Plain English sizing lines for the console / inventory.md: verdict, counts, evidence per family."""
+    """콘솔과 inventory.md에 쓸 영어 요약 줄을 만든다. 판단 결과, 규모, 계열별 근거를 담는다."""
     verdict = ("ADF project — conversion is not possible" if s.is_adf else
                "ADF traces (one evidence family) — not rejected, check needed" if s.traces else "no ADF evidence")
     out = [f"ADF: {verdict}; families: {', '.join(s.families) or '-'}; {counts_text(s)}"]
@@ -186,7 +173,7 @@ def adf_sizing_lines(s: AdfSummary) -> list[str]:
     return out
 
 
-# ---------------------------------------------------------------------------------------------------- file probes
+# ---------------------------------------------------------------------------------------------------- 파일 검사
 def _read_head(path: Path, nbytes: int) -> str:
     try:
         with open(path, "rb") as fh:
@@ -196,9 +183,8 @@ def _read_head(path: Path, nbytes: int) -> str:
 
 
 def _xml_root_tag(head: str) -> tuple[str, str]:
-    """XML 앞부분에서 루트 요소 이름과 시작 태그의 속성 문자열을 읽는다. XML 선언, 주석, DOCTYPE은 건너뛴다.
-
-    (root element local name, its attribute text) from the file head; ("", "") when there is none."""
+    """XML 앞부분에서 루트 요소 이름과 시작 태그의 속성 문자열을 읽는다. 없으면 ("", "")를 반환한다.
+    XML 선언, 주석, DOCTYPE은 건너뛴다."""
     if not head:
         return "", ""
     text = re.sub(r"<\?.*?\?>", "", head, flags=re.DOTALL)
@@ -238,26 +224,24 @@ def _java_uses_adf(path: Path) -> bool:
 
 
 def _root_dir(ws: Any) -> Path:
-    """프로젝트 루트 경로를 반환한다. ``ws``가 경로면 그대로, Workspace / PathView면 ``.root``를 쓴다.
-    ``PurePath.root``('/')를 프로젝트 루트로 잘못 잡지 않기 위해서다."""
+    """프로젝트 루트 경로를 반환한다. ``ws``가 경로면 그대로, Workspace나 PathView면 ``.root``를 쓴다.
+    경로를 먼저 보는 것은 ``PurePath.root``('/')를 프로젝트 루트로 잘못 잡지 않기 위해서다."""
     if isinstance(ws, (str, PurePath)):
         return Path(ws)
     return Path(getattr(ws, "root", ws))
 
 
-# ---------------------------------------------------------------------------------------------------- the walk
+# ---------------------------------------------------------------------------------------------------- 트리 순회
 def detect_adf(ws: Any) -> AdfInventory:
     """프로젝트 트리를 한 번 순회하며 네 계열의 근거와 개수를 모은다.
-    예외를 던지지 않고, 실패는 ``error``에 남긴다.
-
-    Walk the tree once and collect the evidence families and counts. Never raises (`error` notes a failure)."""
+    예외를 던지지 않는다. 실패하면 ``error``에 이유를 남긴다."""
     inv = AdfInventory()
     try:
         root = _root_dir(ws)
         if not root.is_dir():
             return inv
         seen = 0
-        is_ignored = getattr(ws, "is_ignored", None)        # v2.1z-h: stray pom copies are not evidence
+        is_ignored = getattr(ws, "is_ignored", None)        # 접수가 무시한 모듈 복사본 폴더는 근거로 보지 않는다
         for dirpath, dirnames, filenames in os.walk(root):
             rel_dir = posixpath.normpath(os.path.relpath(dirpath, root).replace("\\", "/"))
             rel_dir = "" if rel_dir == "." else rel_dir
@@ -281,7 +265,7 @@ def detect_adf(ws: Any) -> AdfInventory:
                         counts["java_adf"] += 1
                         inv.families["java"].append(rel)
                 elif low.endswith(PAGE_EXT):
-                    if FACES_NS in _read_head(path, _HEAD_BYTES):      # a plain JSPX is not ADF Faces
+                    if FACES_NS in _read_head(path, _HEAD_BYTES):      # 일반 JSPX는 ADF Faces가 아니다
                         inv.pages += 1
                         counts["pages"] += 1
                         inv.families["faces"].append(rel)
@@ -327,7 +311,7 @@ def detect_adf(ws: Any) -> AdfInventory:
         for d in list(inv.by_dir):
             if not any(inv.by_dir[d].values()):
                 del inv.by_dir[d]
-    except Exception as e:  # noqa: BLE001 - the detector must never stop the run
+    except Exception as e:  # noqa: BLE001 - 이 검사 때문에 실행이 멈추면 안 된다
         log.warning("ADF detection failed: %s: %s", type(e).__name__, e)
         inv.error = f"{type(e).__name__}: {e}"
     return inv

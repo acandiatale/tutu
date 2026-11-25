@@ -1,22 +1,13 @@
-"""분석 단계에서 주의할 점을 찾아 기록하는 모듈. 실행을 막지 않고 ``profile.warnings``와
-``LibraryUsage``에만 남기며, 보고서, 구조 검토, 수정 프롬프트가 이것을 읽는다.
-``analyze_project``가 호출하고, 재구성도 :func:`resolve_system_path`를 쓴다.
-- :func:`system_dependencies` / :func:`system_dep_findings`: system scope jar를 사내 Nexus로 옮기라고 안내한다
-- :func:`language_findings`: Kotlin / Groovy / Scala와 소스 생성 플러그인을 찾는다
-- :func:`java_level_findings`: Java 1.6 / 1.7 프로젝트도 거부하지 않고 ``UpgradeToJava21``과 수정 루프에 맡긴다
-- :func:`encoding_findings`: ``sourceEncoding`` 선언 없이 cp949 / euc-kr로 저장된 소스를 찾는다
-모두 파일을 읽기만 하고 예외를 던지지 않는다.
+"""분석 단계에서 주의할 점을 찾아 기록하는 모듈. ``analyze_project``가 호출한다.
+실행을 막지 않고 ``profile.warnings``와 ``LibraryUsage``에만 남긴다. 보고서, 구조 검토, 수정 프롬프트가 이것을 읽는다.
+재구성도 :func:`resolve_system_path`를 쓴다.
+- :func:`system_dependencies`, :func:`system_dep_findings`: system scope jar를 사내 Nexus로 옮기라고 안내한다
+- :func:`language_findings`: Kotlin, Groovy, Scala 소스와 소스 생성 플러그인을 찾는다
+- :func:`java_level_findings`: Java 1.7 이하 프로젝트도 거부하지 않고 ``UpgradeToJava21``과 수정 루프에 맡긴다
+- :func:`encoding_findings`: ``sourceEncoding`` 선언 없이 cp949, euc-kr로 저장된 소스를 찾는다
+모두 파일을 읽기만 한다. 읽지 못하는 파일이 있어도 예외를 던지지 않는다.
 
-Edge-case detection for the analyzer (ERROR-HANDLING.md E7, S3–S6, X6).
-
-* `system`-scoped dependencies (`<scope>system</scope>` + `<systemPath>`) → resolved path + existence;
-* unsupported JVM languages (Kotlin / Groovy / Scala) and source-generator plugins (protobuf, jaxb2, openapi, querydsl);
-* very old `maven.compiler.source` levels (1.5 / 1.6 / 1.7) and Java version normalization;
-* legacy (non UTF-8) source encodings when the project does not declare `project.build.sourceEncoding`.
-
-Everything here is read-only and never raises on unreadable files.
-
-
+Background: docs/ERROR-HANDLING.md E7, S3–S6, X6.
 """
 from __future__ import annotations
 
@@ -43,11 +34,11 @@ from .pom_parser import (
 
 CODEGEN_PLUGINS = ("protobuf-maven-plugin", "jaxb2-maven-plugin", "openapi-generator-maven-plugin",
                    "maven-jaxb2-plugin", "querydsl-maven-plugin",
-                   # round 10: WSDL → Java generators (SOAP clients of 2013–2020 Korean enterprise code)
+                   # WSDL에서 Java 코드를 만드는 SOAP 클라이언트 생성기
                    "cxf-codegen-plugin", "jaxws-maven-plugin")
-# 플러그인별 안내 문구로, 경고 끝에 붙는다.
-# cxf 문구에 나오는 "handler jakarta-library-floor"는 지금은 없는 핸들러 이름이다
-# plugin-specific advice, keyed by "groupId:artifactId" (or artifactId); versions verified on Maven Central 2026-10-26
+# 플러그인별 안내 문구. "groupId:artifactId"가 키이고 경고 끝에 붙는다
+# The cxf text names "handler jakarta-library-floor", which no longer exists.
+# Versions checked on Maven Central.
 CODEGEN_HINTS = {
     "org.apache.cxf:cxf-codegen-plugin": (
         "CXF 3.x generates javax.xml.ws / javax.jws code; 4.x generates jakarta.* — keep cxf-codegen-plugin on the same "
@@ -65,51 +56,45 @@ CODEGEN_HINTS = {
 LANGUAGES = (("kotlin", "*.kt", "Kotlin"), ("groovy", "*.groovy", "Groovy"), ("scala", "*.scala", "Scala"))
 LANGUAGE_PLUGINS = {"kotlin": ("kotlin-maven-plugin",), "groovy": ("gmavenplus-plugin", "gmaven-plugin"),
                     "scala": ("scala-maven-plugin", "maven-scala-plugin")}
-# 인코딩 후보를 이 순서로 엄격하게 디코딩해 본다.
-# ASCII만 있는 파일은 utf-8로 보고, 그다음이 한국 레거시 코드에 많은 cp949다
+# 이 순서로 엄격하게 디코딩해 본다. ASCII만 있으면 utf-8이 되고, 그다음이 한국 레거시 코드에 많은 cp949다
 ENCODING_CANDIDATES = ("utf-8", "cp949", "euc-kr")
 _BASEDIR_RE = re.compile(r"\$\{(?:project\.)?basedir\}")
-# 최상위 pom 디렉토리. sbmig는 항상 프로젝트 루트에서 mvn을 실행하므로 프로젝트 루트와 같다.
+# 최상위 pom 디렉토리. sbmig는 항상 프로젝트 루트에서 mvn을 실행하므로 프로젝트 루트와 같다
 # Ant용 pom을 만들 때 system jar 경로에 쓴다
 _TOPDIR_RE = re.compile(r"\$\{maven\.multiModuleProjectDirectory\}")
 
 
 # ---------------------------------------------------------------------------
-# system-scoped dependencies (E7)
+# system scope 의존성
 # ---------------------------------------------------------------------------
 @dataclass
 class SystemDep:
-    """``<scope>system</scope>`` 의존성 하나를 담는 데이터 클래스.
+    """``<scope>system</scope>`` 의존성 하나를 담는 클래스.
     선언한 pom, 좌표, 원래 ``<systemPath>``, 해석한 경로, 프로젝트 안에 있는지, 파일이 있는지를 담는다."""
-    pom: str                    # declaring pom (relative)
+    pom: str                    # 선언한 pom의 상대 경로
     group_id: str
     artifact_id: str
     version: Optional[str]
-    system_path: str            # raw <systemPath>
-    resolved: Optional[str]     # project-relative posix path, absolute path, or None when unresolvable
-    inside: bool                # resolved path lies inside the project root
+    system_path: str            # pom에 쓰인 그대로의 <systemPath>
+    resolved: Optional[str]     # 프로젝트 기준 상대 경로나 절대 경로. 해석하지 못하면 None
+    inside: bool                # 해석한 경로가 프로젝트 안이면 True
     exists: bool
 
     @property
     def key(self) -> str:
-        """``groupId:artifactId`` 형식의 좌표 키."""
+        """``groupId:artifactId`` 형식의 좌표 키를 반환한다."""
         return f"{self.group_id}:{self.artifact_id}"
 
 
 def resolve_system_path(raw: str, declaring_dir: str, props: Optional[dict[str, str]] = None,
                         root: Optional[Path] = None) -> tuple[Optional[str], bool]:
     """``declaring_dir``의 pom이 선언한 ``<systemPath>``를 해석해 (경로, 프로젝트 안에 있는지)를 반환한다.
-    속성을 치환하지 못하면 (None, False)를 반환한다.
-    ``${basedir}`` / ``${project.basedir}``는 프로젝트 루트가 아니라 선언한 pom의 디렉토리이고,
-    ``${maven.multiModuleProjectDirectory}``는 프로젝트 루트다.
-
-    Resolve a `<systemPath>` declared by a pom in `declaring_dir` (project-relative, '' = root).
-
-    Returns (path, inside): a project-relative posix path when the jar lies inside the project, the absolute path
-    (inside=False) when it points elsewhere, or (None, False) when a property cannot be resolved."""
+    프로젝트 안이면 상대 경로를, 밖이면 절대 경로를 반환한다. 속성을 치환하지 못하면 (None, False)를 반환한다.
+    ``${basedir}``와 ``${project.basedir}``는 프로젝트 루트가 아니라 선언한 pom의 디렉토리다.
+    ``${maven.multiModuleProjectDirectory}``는 프로젝트 루트다."""
     value = (raw or "").strip()
     rel_base = declaring_dir or "."
-    # 다른 속성을 치환하는 interpolate가 basedir를 루트 같은 엉뚱한 값으로 바꾸지 않도록 먼저 표식으로 바꿔 둔다
+    # interpolate가 basedir를 루트 같은 엉뚱한 값으로 바꾸지 않도록 먼저 표식으로 바꿔 둔다
     value = _BASEDIR_RE.sub(lambda _m: "\0BASEDIR\0", value)
     value = _TOPDIR_RE.sub(lambda _m: "\0TOPDIR\0", value)
     value = interpolate(value, dict(props or {})) or ""
@@ -137,8 +122,7 @@ def resolve_system_path(raw: str, declaring_dir: str, props: Optional[dict[str, 
 
 
 def _dep_elements(root: ET.Element) -> Iterable[ET.Element]:
-    """pom의 모든 ``<dependency>`` 요소를 반환한다.
-    dependencies, dependencyManagement, profile 안의 요소까지 포함한다."""
+    """pom의 모든 ``<dependency>`` 요소를 반환한다. dependencies, dependencyManagement, profile 안의 것을 포함한다."""
     yield from _children(_child(root, "dependencies"), "dependency")
     dm = _child(root, "dependencyManagement")
     yield from _children(_child(dm, "dependencies"), "dependency")
@@ -148,12 +132,12 @@ def _dep_elements(root: ET.Element) -> Iterable[ET.Element]:
 
 def system_dependencies(ws: WorkspaceView, poms: list[PomInfo]) -> list[SystemDep]:
     """모든 pom의 system scope 의존성을 찾아 경로를 해석하고 파일이 있는지 확인한다.
-    속성은 저장소 안의 부모 체인에서 모으고, 읽을 수 없는 pom은 건너뛴다."""
+    속성은 저장소 안의 부모 체인에서 모은다. 읽을 수 없는 pom은 건너뛴다."""
     root = Path(ws.root)
     out: list[SystemDep] = []
     for p in poms:
-        # pom_parser와 같은 방식으로 읽는다.
-        # EUC-KR / MS949 인코딩 선언을 떼지 않으면 expat의 ValueError로 분석 전체가 실패한다
+        # pom_parser와 같은 방식으로 읽는다
+        # EUC-KR, MS949 인코딩 선언을 떼지 않으면 expat의 ValueError로 분석 전체가 실패한다
         try:
             tree = ET.fromstring(xml_without_declaration(read_pom_text(ws, p.path)).encode("utf-8"))
         except (ET.ParseError, OSError, ValueError, LookupError):
@@ -161,7 +145,7 @@ def system_dependencies(ws: WorkspaceView, poms: list[PomInfo]) -> list[SystemDe
         props: dict[str, str] = {}
         chain: list[PomInfo] = []
         cur: Optional[PomInfo] = p
-        while cur is not None and cur not in chain:   # in-repo parent chain (best effort, default relativePath)
+        while cur is not None and cur not in chain:   # 저장소 안 부모 체인. artifactId로만 대략 찾는다
             chain.append(cur)
             nxt = None
             if cur.parent_in_repo and cur.parent is not None:
@@ -187,8 +171,8 @@ def system_dependencies(ws: WorkspaceView, poms: list[PomInfo]) -> list[SystemDe
 
 
 def system_dep_findings(deps: list[SystemDep]) -> tuple[list[str], Optional[LibraryUsage]]:
-    """system scope 의존성마다 사내 Nexus에 올려 일반 의존성으로 바꾸라는 경고 한 줄을 만들고,
-    ``system-scope-jars`` LibraryUsage와 함께 반환한다. 의존성이 없으면 ([], None)을 반환한다."""
+    """system scope 의존성마다 사내 Nexus에 올려 일반 의존성으로 바꾸라는 경고를 한 줄씩 만든다.
+    경고와 ``system-scope-jars`` LibraryUsage를 함께 반환한다. 의존성이 없으면 ([], None)을 반환한다."""
     warnings: list[str] = []
     evidence: list[str] = []
     for d in deps:
@@ -211,21 +195,20 @@ def system_dep_findings(deps: list[SystemDep]) -> tuple[list[str], Optional[Libr
 
 
 # ---------------------------------------------------------------------------
-# languages / generators (X6)
+# 다른 JVM 언어와 소스 생성기
 # ---------------------------------------------------------------------------
 def _files(ws: WorkspaceView, pattern: str) -> list[str]:
-    """``pattern``에 맞는 파일의 posix 경로 목록을 반환한다.
-    빌드 출력 등은 제외하고, 실패하면 빈 목록을 반환한다."""
+    """``pattern``에 맞는 파일의 posix 경로 목록을 반환한다. 빌드 출력 등은 뺀다. 실패하면 빈 목록을 반환한다."""
     try:
         return [f.replace("\\", "/") for f in ws.glob(pattern) if not is_skipped_path(f.replace("\\", "/"))]
-    except Exception:  # pragma: no cover - defensive
+    except Exception:  # pragma: no cover - 검색 실패는 파일이 없는 것으로 본다
         return []
 
 
 def language_findings(ws: WorkspaceView, poms: list[PomInfo]) -> tuple[list[str], list[LibraryUsage]]:
     """Java가 아닌 JVM 언어와 소스 생성 플러그인을 찾아 경고와 LibraryUsage로 남긴다.
     sbmig는 Java 코드만 고친다.
-    생성 코드는 생성기가 jakarta / Java 21용 코드를 만들어야 하므로 플러그인 버전은 사람이 확인해야 한다."""
+    생성 코드는 생성기가 jakarta, Java 21용 코드를 만들어야 하므로 플러그인 버전은 사람이 확인해야 한다."""
     warnings: list[str] = []
     libs: list[LibraryUsage] = []
     plugin_ids = {pl.artifact_id: p.path for p in poms for pl in p.plugins}
@@ -258,12 +241,11 @@ def language_findings(ws: WorkspaceView, poms: list[PomInfo]) -> tuple[list[str]
 
 
 # ---------------------------------------------------------------------------
-# java version (S-legacy levels)
+# Java 버전
 # ---------------------------------------------------------------------------
 def normalize_java_version(v: Optional[str]) -> Optional[str]:
     """Java 버전 표기를 통일한다. 7 이하는 1.x 표기로 바꾸고 그 밖의 값은 그대로 둔다.
-
-    '1.7' / '7' / '1.7.0' → '1.7' (levels ≤ 7 use the 1.x spelling); other values unchanged."""
+    ``1.7``, ``7``, ``1.7.0``은 모두 ``1.7``이 된다."""
     if not v:
         return v
     m = re.fullmatch(r"\s*(?:1\.)?([0-9]+)(?:\.[0-9]+)*\s*", v)
@@ -276,14 +258,14 @@ def normalize_java_version(v: Optional[str]) -> Optional[str]:
 
 
 def legacy_java_level(v: Optional[str]) -> bool:
-    """JDK 21이 컴파일하지 못하는 소스 수준(1.1 ~ 1.7)인지 확인한다."""
+    """JDK 21이 컴파일하지 못하는 소스 수준(1.1부터 1.7까지)이면 True를 반환한다."""
     n = normalize_java_version(v)
     return n in ("1.1", "1.2", "1.3", "1.4", "1.5", "1.6", "1.7")
 
 
 def java_level_findings(poms: list[PomInfo]) -> list[str]:
     """Java 1.7 이하를 선언한 pom마다 경고를 한 줄씩 만든다.
-    거부하지 않고 ``UpgradeToJava21``과 수정 루프가 컴파일 오류를 고친다."""
+    실행은 거부하지 않는다. ``UpgradeToJava21``과 수정 루프가 컴파일 오류를 고친다."""
     out: list[str] = []
     for p in poms:
         if legacy_java_level(p.java_version):
@@ -296,13 +278,11 @@ def java_level_findings(poms: list[PomInfo]) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# encoding (E1)
+# 소스 인코딩
 # ---------------------------------------------------------------------------
 def detect_encoding(data: bytes, candidates: Iterable[str] = ENCODING_CANDIDATES) -> Optional[str]:
     """후보 인코딩으로 순서대로 엄격하게 디코딩해 처음 성공한 인코딩을 반환한다.
-    BOM이 있으면 ``utf-8-sig``를, 모두 실패하면 None을 반환한다.
-
-    Strict decode attempts in order; None when no candidate decodes the bytes."""
+    BOM이 있으면 ``utf-8-sig``를 반환한다. 모두 실패하면 None을 반환한다."""
     if data.startswith(b"\xef\xbb\xbf"):
         return "utf-8-sig"
     for enc in candidates:
@@ -315,9 +295,8 @@ def detect_encoding(data: bytes, candidates: Iterable[str] = ENCODING_CANDIDATES
 
 
 def declared_source_encoding(poms: list[PomInfo]) -> Optional[str]:
-    """pom이 선언한 소스 인코딩을 반환한다.
-    ``project.build.sourceEncoding``을 먼저 보고, 없으면 maven-compiler-plugin의 ``<encoding>``을 본다.
-    둘 다 없으면 None이다."""
+    """pom이 선언한 소스 인코딩을 반환한다. 선언이 없으면 None을 반환한다.
+    ``project.build.sourceEncoding``을 먼저 보고, 없으면 maven-compiler-plugin의 ``<encoding>``을 본다."""
     for p in poms:
         v = p.properties.get("project.build.sourceEncoding")
         if v:
@@ -333,8 +312,9 @@ def declared_source_encoding(poms: list[PomInfo]) -> Optional[str]:
 def encoding_findings(ws: WorkspaceView, poms: list[PomInfo],
                       java_files: Optional[list[str]] = None) -> tuple[list[str], Optional[LibraryUsage]]:
     """``sourceEncoding`` 선언 없이 UTF-8이 아닌 자바 소스가 있으면 경고와 ``legacy-encoding`` LibraryUsage를 남긴다.
-    JDK 21은 기본 인코딩이 UTF-8이어서 cp949 소스를 빌드 오류 없이 깨진 문자열로 컴파일하기 때문이다.
-    경고 문구의 ``convert-utf8``은 지금은 없는 핸들러 이름이다."""
+    JDK 21은 기본 인코딩이 UTF-8이라 cp949 소스의 한글이 빌드 오류 없이 깨진 채 컴파일된다.
+
+    The warning text names `convert-utf8`, a handler that no longer exists."""
     # 인코딩 선언이 있으면 javac가 그 인코딩으로 읽으므로 파일을 열어 보지 않는다
     if declared_source_encoding(poms):
         return [], None
