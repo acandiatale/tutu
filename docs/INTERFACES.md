@@ -24,8 +24,8 @@ type: `sbmig/core/models.py`, `sbmig/core/interfaces.py`, `sbmig/core/config.py`
 | fleet | Base "Fleet" |
 | web app | Base "Graph engine", "Web app"; v2.1z-w (page, server-chosen configs), v2.1z-ae (queue / slots on the page), v2.1z-af (page re-attach), v2.1z-aj (run flows, page header); v2.1z-ak (framework label, skipped stages); v2.1z-ao (admin page `/admin`: token usage per project, log ZIPs); v2.1z-au (the code-change view: artifact `codediff/`, `/api/runs/{id}/codediff`, the page block); v2.1z-av (cross-site requests refused, the free-space floor for uploads, unpacking limits); v2.1z-bg (report view); v2.1z-bl (two report previews, 고급 설정 and the other-files list gone, LLM counts); v2.1z-bm (the hidden controls are not sent); v2.1z-bo (admin page: 「일부 알 수 없음」 / cost 「알 수 없음」 for unknown remediation usage, `remediation_llm_usage_unknown`); v2.1z-bp (the run cost = the priced rows with 「일부 알 수 없음」, 「알 수 없음」 only when nothing is priced); v2.1z-br (`GET /api/runs` never answers 500 because of one run, no list refresh while the tab is hidden, no `run_dir` in the status JSON, the report view linear in a line's length); v2.1z-bs (a non-finite number in a run file is sent as `null` by the single-run status, the upload answer, the code-change routes, the admin usage and the event stream's `status` event: `sbmig/web/jsonsafe.py`; `status()` reads `report.json` once); v2.1z-bt (result ZIPs received as `<project>-migration.zip` / `<project>-remediation.zip`: `contract.zip_download_name`, `zip_name` in both statuses) |
 | Job mode (Main / Worker, slots, env pins) | v2.1z-z "k8s Job dispatch mode", v2.1z-ab (kubeconfig, template ConfigMap), v2.1z-ac (Main ↔ Worker contract), v2.1z-ad (end confirmation, ownership, env pins, write-time redaction), v2.1z-ae (parallel slots), v2.1z-af, v2.1z-aq (a build pod that does not start: stop, the reason notice); v2.1z-av (the build identity, pins taken at Job creation, the resume attempt) |
-| deploy | v2.1z-s (build hooks), v2.1z-t (one Job per request), v2.1z-u, deploy (baked config, container paths), v2.1z-ad "Shipped mode"; v2.1z-br (what the image build context leaves out in both layouts, `config/default.yml` lists every settable key) |
-| remediations | remediations; v2.1z-ak (in-house group `framework`); v2.1z-am (case-insensitive matching, per-module in-house split, module sources, variant overrides, 들어온 경로); v2.1z-an (override proposals in module poms, the owners' choice); v2.1z-ar (no approval unless switched on); v2.1z-av (fixed = gone from the rescan, the planner's new residual groups, `remediation.log` for every run); v2.1z-bi part B, v2.1z-bj, v2.1z-bk (the fix loop on a failed candidate: work copy, overlay, build-side sync, one `fix.patch`); v2.1z-bl (fix-loop LLM usage, titles with the entered project); v2.1z-bm (the complete-apply proof `expected.json`, the sync by table before commit / freeze, a candidate that cannot be put back, `stop requested` runs again, leftover loops settled); v2.1z-bn (one delivery swap + `recover_delivery`, the no-delivery sentences, usage after an exception, the exec bit in `expected.json` schema 2, the pending report, the scan source `original/scan-source.zip`); v2.1z-bo (the swap rolled forward + `DeliveryRecordNotWritten`, no re-upload after a kill and the table of mid-node saves, `repair_final` by every entry and by the web service in every mode, unknown usage, report = state message, the round's call total, a stop during the build fix); v2.1z-bp (`FixResult.ended_round`: the loop is not skipped on resume, an own row for calls without tokens, strict journal reading, the budget outcome saved and stamped, 「알려진 것만」, the report-not-written note dropped on repair, the bounded repair memory); v2.1z-br (unused code removed, `compare_trees` reads only what an attempt changed, `freeze_delivery` hashes while it writes); v2.1z-bs (`intake.sync_tree` removed; the fix loop still starts for a failure only a pom can fix: "Not changed"); v2.1z-ce (`fsops`: a rename or removal Windows refuses while another program has a file open is waited for) |
+| deploy | v2.1z-s (build hooks), v2.1z-t (one Job per request), v2.1z-u, deploy (baked config, container paths), v2.1z-ad "Shipped mode"; v2.1z-br (what the image build context leaves out in both layouts, `config/default.yml` lists every settable key); v2.1z-cg (the image's JDK: Amazon Corretto 21 at a pinned version, checksum checked) |
+| remediations | remediations; v2.1z-ak (in-house group `framework`); v2.1z-am (case-insensitive matching, per-module in-house split, module sources, variant overrides, 들어온 경로); v2.1z-an (override proposals in module poms, the owners' choice); v2.1z-ar (no approval unless switched on); v2.1z-av (fixed = gone from the rescan, the planner's new residual groups, `remediation.log` for every run); v2.1z-bi part B, v2.1z-bj, v2.1z-bk (the fix loop on a failed candidate: work copy, overlay, build-side sync, one `fix.patch`); v2.1z-bl (fix-loop LLM usage, titles with the entered project); v2.1z-bm (the complete-apply proof `expected.json`, the sync by table before commit / freeze, a candidate that cannot be put back, `stop requested` runs again, leftover loops settled); v2.1z-bn (one delivery swap + `recover_delivery`, the no-delivery sentences, usage after an exception, the exec bit in `expected.json` schema 2, the pending report, the scan source `original/scan-source.zip`); v2.1z-bo (the swap rolled forward + `DeliveryRecordNotWritten`, no re-upload after a kill and the table of mid-node saves, `repair_final` by every entry and by the web service in every mode, unknown usage, report = state message, the round's call total, a stop during the build fix); v2.1z-bp (`FixResult.ended_round`: the loop is not skipped on resume, an own row for calls without tokens, strict journal reading, the budget outcome saved and stamped, 「알려진 것만」, the report-not-written note dropped on repair, the bounded repair memory); v2.1z-br (unused code removed, `compare_trees` reads only what an attempt changed, `freeze_delivery` hashes while it writes); v2.1z-bs (`intake.sync_tree` removed; the fix loop still starts for a failure only a pom can fix: "Not changed"); v2.1z-ce (`fsops`: a rename or removal Windows refuses while another program has a file open is waited for); v2.1z-cf (a refusal that lasts names the programs that have the file open; a test that fails when this process holds a path it renames) |
 
 ## Base contracts (in force; written before v2)
 
@@ -8178,3 +8178,175 @@ on Python 3.12 and 3.13, no difference and no pause. Found and changed:
 
 Accepted without a test: the check that a block's state is used only by the thread that opened it (on the
 installed Pythons a new thread starts with an empty context).
+
+## v2.1z-cf — a refusal that lasts names the programs that have the file open
+
+**Why.** A company PC run of 2026-11-25 (Windows, local web run, the fix of v2.1z-ce in place): the intake's rename
+passed, the remediation reached its second round, and the swap that installs a delivery (`graph._Holder.install_delivery`)
+failed at `fsops.replace(delivery/.result.next.zip, delivery/result.zip)`: refused for the whole 60 s, 36 tries,
+`WinError 5`. The destination was the result ZIP of round 1, so some program had that file open for more than a
+minute. The log line could only guess ("a virus scanner, an indexer or an editor"). Two things are not known: which
+program it was, and whether it was this process. Between the two swaps this package reads that file for the rescan
+(the upload `ivas.upload`, `models.sha256_file`) and both close it, by reading the code (`graph._copy_atomic` reads
+it too, but only when the earlier verified ZIP is kept, which was not the case in that run); no test here can
+notice a handle of our own, because POSIX lets an open file be replaced. A first round never meets the case: there
+is no `result.zip` to replace yet.
+
+**The rule.**
+
+1. **`fsops.holders(paths) -> list[str]`.** The programs that have one of the given files open, one string each:
+   `<application name> [<executable's base name>] (pid <n>)`, with `, this process` inside the brackets of the pid
+   part when `<n>` is `os.getpid()` (`python.exe (pid 4312, this process)` when the two names are the same or one is
+   missing). Windows only: the Restart Manager (`rstrtmgr.dll`: `RmStartSession`, `RmRegisterResources`,
+   `RmGetList`, `RmEndSession`) through `ctypes`, standard library only, no administrator right needed. The
+   executable's name is asked for with `QueryFullProcessImageNameW` and left out when the process cannot be opened.
+   Only base names are returned, never a path: a name that looks like a path (a backslash, a drive prefix, a
+   leading slash, or a slash and no blank) is cut to its last component. Off Windows it returns `[]` without loading anything. It never raises:
+   any failure is `[]` and one DEBUG line with the reason. A single path (`str`, `bytes`, `os.PathLike`) is taken as a list of one. Directories are not registered (the Restart Manager takes
+   files): for a directory the regular files under it are taken, in `os.walk` order, at most
+   `fsops.HOLDERS_MAX_FILES` (500) over all given paths.
+2. **One lookup, when the time is up; never while the call is retried.** While `fsops._waiting` retries, nothing
+   is looked up: a lookup of a directory lists it, and on Windows a listing in progress is itself a handle under
+   the directory the call is trying to rename. When the time is up the lookup runs in a daemon thread and the
+   call waits for it `fsops.HOLDERS_WAIT_S` (5 s) at most. No lookup is started inside a `one_wait()` block after
+   a give-up (the calls that wait `SHORT_WAIT_S`): the first give-up of the block has named the holder, so a
+   block with n held paths waits about 60 + 2(n − 1) s as before, plus 5 s at most once. No lookup is started
+   either while an earlier lookup of this process has not returned: that is a failed lookup with the reason
+   `a lookup started <t> s ago has not returned`. A thread that cannot be started is a failed lookup, never an
+   exception of the call (an interrupt or an exit request is not caught). Nothing is logged from the helper
+   thread (the web's per-run log is filtered by thread): the calling thread writes every line.
+3. **Which files are looked at.** `replace` and `rename`: the source and the destination; `unlink`: the path;
+   `rmtree`: the path. A path that does not exist is left out.
+4. **Log lines** (the beginnings are those of v2.1z-ce, so `Select-String "refused|went through"` finds them as
+   before):
+   - first refusal, INFO: unchanged.
+   - went through, INFO: unchanged (a call that goes through looks nothing up).
+   - time is up, WARNING, when the lookup found programs:
+     `remediation: <op> of <name> still refused after <t> s (<k> tries, WinError <n>): open in <names>`
+   - time is up, the lookup ran and found nothing: the sentence of v2.1z-ce, then ` (no program found with the <f>
+     file(s) looked at open)`.
+   - time is up, the lookup failed (a call of the Restart Manager answered an error, the library could not be
+     loaded, the thread could not be started, an earlier lookup has not returned): the sentence of v2.1z-ce, then
+     ` (the lookup of the holding program failed: <reason>)`. `<reason>` is a function name with its return code,
+     an exception's type name or the sentence of rule 2, never a path. A failed lookup is never worded as "no
+     program found".
+   - time is up, the lookup did not return in time: ` (the lookup of the holding program did not return in <s> s)`.
+   - time is up inside a `one_wait()` block after a give-up (no lookup was started): the sentence of v2.1z-ce alone.
+   `<names>` is at most eight entries joined by `, `, then ` and <m> more`.
+5. **Nothing else changes.** The waiting, the exception raised, `waited_out`, `one_wait` and every caller are those
+   of v2.1z-ce. The failure text that reaches the state, the report and the page does not carry the names.
+6. **A test that stands for Windows' rule on POSIX** (`tests/remediations/`, test code only). A fixture makes every
+   `os.replace`, `os.rename`, `os.unlink` and `shutil.rmtree` that `fsops` makes fail the test when this process has
+   a descriptor open on the source, on the destination, or on a file under a directory being renamed or removed
+   (descriptors read from `/proc/self/fd` on Linux, with `fcntl.F_GETPATH` on macOS). The flow tests that reach a
+   second round and the delivery swap run under it. What it cannot see: a child process (Maven), another process
+   (the web pod reading a run folder), a memory mapping.
+
+**Limits.**
+- The Restart Manager reports programs that have a handle on a registered file. A process whose working directory
+  is inside the tree, a kernel component (a scanner's file system filter) and a file that is only memory-mapped may
+  not be reported; "no program found" is then itself the clue.
+- The `ctypes` part runs only on Windows and was not run there before the push: the tests drive it through
+  callbacks with the documented signatures. A mistake there shows as `the lookup of the holding program failed:
+  <reason>` in the WARNING, never as a failed step.
+- A lookup that never returns (a call of the Restart Manager that blocks) ends the lookups of that process: every
+  later give-up says how long ago it started. Restarting the process brings them back.
+- A lookup of a directory stops after 500 files, but lists every folder it passes through until then (a tree of
+  20,000 empty folders took 1.2 s on a developer Mac). When the listing takes longer than the 5 s (a slow share, a
+  huge tree with few files), it may still run while the caller goes on to the next path.
+- Two calls whose time is up at the same moment: one looks up, the other logs that a lookup started 0 s ago has
+  not returned.
+- Rule 5 of v2.1z-ce's limits stands: a holder that lasts still fails the step.
+
+**Checked.** `tests/remediations/test_v21zcf_holders.py`: the Restart Manager calls are driven through `ctypes`
+callbacks built from the documented signatures (so every argument goes through the declared `argtypes`), the
+structure sizes and offsets, the five endings of the WARNING, a lookup that never returns followed by later calls,
+a thread that cannot be started, an interrupt at thread start, and a refused directory rename retried under the
+guard of rule 6 with nothing of ours open under it. `tests/remediations/test_v21zcf_own_handles.py` (rule 6): two
+rounds with round 2 replacing round 1's `result.zip` (also with the verified ZIP kept), one round from intake to
+report, the remediation-only flow, `accept_zip`, the fix loop on a failed candidate, a resume after round 1 and
+after a killed fix loop, and `IvasHttpClient.upload` after success and after each of its error paths: no
+descriptor of this process on any path it replaces, renames or removes. The guard is proved on a reader that
+never closes (it names `install_delivery`'s replace of `result.zip`).
+
+**Review.** Four rounds by one independent reviewer, every finding reproduced first
+(`out/scratch/fsops-holders-review/`). The Windows calls were compared with Microsoft's documentation function by
+function (signatures, constants, the structure layout, in / out meanings): no difference found.
+- round 1: a failed lookup was worded "no program found"; inside a block every give-up started a lookup and
+  waited for it; a thread that could not be started broke the retries; a single path made `holders()` raise; the
+  fake library never applied the declared argument types.
+- round 2: one lookup that never returned ended all later ones under a false sentence; the lookup started at the
+  first refusal listed the directory the call was retrying to rename, which on Windows is a handle under it (our
+  own lookup could cause the refusals it reported): the design was cut down to one lookup when the time is up;
+  an interrupt at thread start was swallowed; a forward-slash path as an application name was logged in full.
+- round 3: nothing in the production code. The guard of rule 6 counted the descriptors of the test run's own disk
+  watch (the walk of `scripts/bounded.py`), which made a guard test fail at random: the walk and the guard's
+  reading now exclude each other (`bounded.WALK_LOCK`).
+- round 4, on that lock: nothing. The walls still stop a run (the temp cap with exit 125, the time cap with 124),
+  the watch is delayed by milliseconds at most, the guard still reports a descriptor of our own, and the three
+  test files passed 15 runs in a row.
+
+**Not checked.** Windows itself: the `ctypes` part has never run there. Whether a caller without administrator
+rights is told about a handle held by a service of the system account (a virus scanner), paths over 260
+characters, a network share, a subst drive.
+
+
+## v2.1z-cg — the image's JDK is Amazon Corretto 21 at a pinned version
+
+**Why.** Relayed by the user on 2026-11-25: the image must carry a named JDK 21 build in which Java4Shell is fixed,
+fetched directly at that version. Java4Shell is CVE-2026-114938 (an out-of-bounds write in HotSpot's Base64
+intrinsic). The change log of Amazon Corretto 21 lists it under `21.0.13.1.2` (released 2026-11-17) and not under
+the builds before it. Until now the image installed Debian's `openjdk-21-jdk-headless`: which build that is depends
+on the state of the apt mirror on the day of the build (today the candidate in trixie is `21.0.13.1+2-1~deb13u1`,
+the same upstream level), and nothing in the Dockerfile says it.
+
+**The rule** (`deploy/docker/Dockerfile`).
+
+| build argument | default | is |
+|---|---|---|
+| `CORRETTO_VERSION` | `21.0.13.1.2` | the Corretto 21 build |
+| `CORRETTO_BASE_URL` | `https://corretto.aws/downloads/resources` | where it is fetched from; an internal mirror keeps the layout below |
+| `CORRETTO_SHA256_AMD64` | `c365469853d9296728bb19e629225fef04b45e595e3467d8a0778450367381e0` | SHA-256 of the amd64 package |
+| `CORRETTO_SHA256_ARM64` | `d251fb09557ccf7992d36b810a96df859531821679d21d0ab1eddc2b8e8c1ba0` | SHA-256 of the arm64 package |
+| `CORRETTO_TLS_VERIFY` | `1` | `0` = the download does not check the server's certificate (a network that inspects HTTPS); the checksum is checked either way |
+
+1. The file is `<CORRETTO_BASE_URL>/<CORRETTO_VERSION>/java-21-amazon-corretto-jdk_<CORRETTO_VERSION>-1_<arch>.deb`,
+   `<arch>` from `dpkg --print-architecture` (`amd64`, `arm64`; any other stops the build).
+2. Its SHA-256 is compared with the argument of that architecture before anything is installed; a difference stops
+   the build. A build that changes `CORRETTO_VERSION` must give the two checksums of that version (from the
+   release page of `corretto/corretto-21`), otherwise it stops here.
+3. The package is installed with apt from the local file BEFORE `maven`. It provides `java7-runtime-headless`, which
+   Debian's `maven` accepts in place of `default-jre-headless`, so no OpenJDK package of Debian enters the image.
+   The same `RUN` fails when a package named `openjdk-*` is installed at its end, and when `java -version` does not
+   print `CORRETTO_VERSION`.
+4. `/opt/java21` is a link to `/usr/lib/jvm/java-21-amazon-corretto` (the same path on both architectures);
+   `JAVA_HOME` / `JAVA21_HOME` stay `/opt/java21`. Maven, git, unzip and curl come from Debian as before.
+5. Messages of the build are English (a Windows console), comments Korean.
+
+**Not changed.** No manifest, no environment variable, no setting (`build.java_home` still wins when set). The
+operator rule for an image change stands: build, push, restart the web pod.
+
+**Notes.**
+- Corretto reads its own certificate store (`lib/security/cacerts`), not Debian's. A company CA added to the image
+  with `update-ca-certificates` reaches curl and git, not Java; it has to be imported with `keytool`. The image adds
+  no CA today.
+- The values of the table were taken from the release page of `21.0.13.1.2` and checked by downloading both
+  packages on 2026-11-25. Per the reports of the disclosure only x86-64 processors with AVX-512 VBMI are exposed,
+  and `-XX:-UseBASE64Intrinsics` is the stopgap for a JVM that cannot be replaced; neither was checked here.
+
+**Checked** (Docker 29 on a developer Mac, 2026-11-25; logs under `out/scratch/corretto-cg/`).
+- arm64, default arguments, from the public address: built; apt installed `java-21-amazon-corretto-jdk` and
+  `java-common` and, with `maven`, no Java package of Debian. In the image `java -version` prints
+  `Corretto-21.0.13.1.2 (build 21.0.13.1+2-LTS)`, `mvn -version` Maven 3.9.9 on that runtime, `dpkg -l` one Java
+  package, `/opt/java21` the Corretto folder, and `python -m sbmig.cli version` starts.
+- amd64 under emulation: built, the same lines.
+- A mirror (`CORRETTO_BASE_URL` at a local HTTP server with the `<version>/<file>` layout): built.
+- A wrong checksum: the build stops before anything is unpacked, with the message naming the argument.
+- `CORRETTO_TLS_VERIFY=0` against the public address: built (the switch is wired; a network that inspects HTTPS
+  was not available).
+- `tests/deploy/test_v21zcg_image_jdk.py` (8 tests) reads the Dockerfile and holds the arguments, their defaults
+  and the order of the steps.
+
+**Not checked.** A build through a proxy or on a network that inspects HTTPS; the company's registry and cluster;
+the three stop messages whose condition never held here (another architecture, an OpenJDK package found,
+`java -version` not the pinned build).

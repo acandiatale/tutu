@@ -1500,3 +1500,35 @@ passed on that PC on 2026-11-12 with the same code. Contract: `docs/INTERFACES.m
 | Limits | a program that keeps a file open for more than 60 s still fails the step; a refusal that can never go away and reports error 5 is waited for too; a stop request is not looked at while a call waits | — | known |
 | Not checked | Windows itself (the tests raise the Windows errors from patched calls); Python 3.10, 3.11, 3.14; which program held the file on the company PC | — | open |
 
+
+## Status — 2026-11-25, a refusal that lasts names the programs that have the file open (v2.1z-cf)
+
+The company PC retest of v2.1z-ce (Windows, local web run): the intake's rename passed, the remediation reached its
+second round and failed in `freeze_delivery`: `replace of .result.next.zip still refused after 60.0 s (36 tries,
+WinError 5)`, the destination being round 1's `delivery/result.zip`. Minutes later the file could be renamed by
+hand, so the holder lasted more than a minute and not for good. Which program it was is not known. Contract:
+`docs/INTERFACES.md` "v2.1z-cf".
+
+| Item | What | Verification | State |
+|---|---|---|---|
+| Holder names | `fsops.holders(paths)`: the programs that have a file open, through the Windows Restart Manager (`ctypes`, standard library); `this process` marked; base names only | `tests/remediations/test_v21zcf_holders.py` (callbacks with the documented signatures, structure layout) | done |
+| When | one lookup, when the 60 s are up, in a daemon thread waited 5 s at most; none while the call is retried, none inside a `one_wait()` block after a give-up, none while an earlier one has not returned | fake clock and real clock tests | done |
+| Log line | WARNING `… still refused after <t> s (…): open in <names>`; when nothing is found, the lookup failed or did not return, the old sentence with the reason in brackets; the "refused" and "went through" lines are unchanged | exact-text tests; RUNBOOK symptom row | done |
+| Own descriptors | a test guard that fails when this process holds a descriptor on a path it replaces, renames or removes (POSIX never notices): two-round delivery swap, intake, fix loop, resume, the IVAS upload | `tests/remediations/test_v21zcf_own_handles.py`, proved on a reader that never closes | done: nothing of ours is held |
+| Review | four rounds by one independent reviewer; round 2 led to the cut to one lookup (a lookup during the retries was itself a handle under the directory); round 3 found nothing in the production code and a guard test that failed at random (the test run's disk watch); round 4 found nothing | every finding reproduced | done |
+| Checked | full suite 7,915 passed on a developer Mac | — | done |
+| Not done | the delivery still replaces `result.zip` in place: a holder that lasts still fails the round on Windows (on Linux an open file can be replaced). Whether to deliver under per-round names is decided when the holder is known | — | open |
+| Not checked | Windows itself (the `ctypes` part never ran there); which program held the file | — | open |
+
+## Status — 2026-11-25, the image's JDK is Amazon Corretto 21 at a pinned version (v2.1z-cg)
+
+Relayed by the user: a named JDK 21 build in which Java4Shell (CVE-2026-114938) is fixed, fetched directly at that
+version. The change log of Corretto 21 lists the CVE under `21.0.13.1.2` (2026-11-17). Contract:
+`docs/INTERFACES.md` "v2.1z-cg".
+
+| Item | What | Verification | State |
+|---|---|---|---|
+| Dockerfile | Debian's `openjdk-21-jdk-headless` is gone; the Corretto package of `CORRETTO_VERSION` is downloaded from `CORRETTO_BASE_URL`, its SHA-256 compared with the argument of the architecture, installed before `maven`; the build stops on a wrong checksum, on an OpenJDK package of Debian in the image, and when `java -version` is not the pinned build; `/opt/java21` links to the Corretto folder | real builds for arm64 and amd64 (emulated), a local mirror, a wrong checksum; `tests/deploy/test_v21zcg_image_jdk.py` | done |
+| Closed network | `CORRETTO_BASE_URL` for an internal mirror with the `<version>/<file>` layout; `CORRETTO_TLS_VERIFY=0` for a network that inspects HTTPS (the checksum is still compared) | the mirror build; the switch only against the public address | done |
+| Operator text | `deploy/README.md`: the argument table and one paragraph (which JDK, the mirror, the certificate error, moving to a newer build) | read | done |
+| Not checked | a proxy, HTTPS inspection, the company's registry and cluster | — | open |
