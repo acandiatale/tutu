@@ -23,7 +23,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-# ---------------------------------------------------------------------------- 이름표 / labels
+# ---------------------------------------------------------------------------- 코드별 한국어 이름
 ORIGIN_KO: dict[str, str] = {
     "transitive": "간접 의존성", "direct_literal": "직접 의존성 (pom에 버전 표기)",
     "direct_property": "직접 의존성 (property로 버전 지정)", "own_management": "프로젝트의 dependencyManagement",
@@ -108,10 +108,7 @@ SEVERITY_NONE_KO = "낮음·점수 없음"
 
 def severity_thresholds(value: Any = None) -> tuple[float, float, float]:
     """빨강, 주황, 노랑 위험도의 하한 점수를 반환한다. None이면 ``RemediationConfig`` 기본값을 쓴다.
-    순서가 뒤집히거나 음수여도 큰 값부터 정렬해 쓰고 예외를 던지지 않는다.
-    읽을 수 없는 값이면 기본값을 쓴다.
-
-    The (red, orange, yellow) lower bounds; None = the config defaults; sorted descending, never raises."""
+    순서가 뒤집혀 있어도 큰 값부터 정렬해서 쓴다. 숫자로 읽을 수 없거나 세 개가 아니면 기본값을 쓴다."""
     from sbmig.core.config import RemediationConfig
     d = RemediationConfig()
     default = (float(d.severity_red), float(d.severity_orange), float(d.severity_yellow))
@@ -128,9 +125,7 @@ def severity_thresholds(value: Any = None) -> tuple[float, float, float]:
 
 def severity_of(score: float | None, thresholds: tuple[float, float, float]) -> tuple[str, str, str]:
     """점수를 (수준 키, 표시, 이름)으로 바꾼다.
-    점수가 경계값 이상이면 그 수준이고, 노랑 경계보다 낮거나 점수가 없으면 ``("none", "", "")``를 반환한다.
-
-    Score → (level key, mark, Korean name); below yellow or no score → ("none", "", "")."""
+    점수가 경계값 이상이면 그 수준이고, 노랑 경계보다 낮거나 점수가 없으면 ``("none", "", "")``를 반환한다."""
     if score is not None:
         try:
             sc = round(float(score), 1)      # 보고서에 보이는 소수 한 자리로 정한다. 8.96은 9.0이라 빨강이다
@@ -144,18 +139,14 @@ def severity_of(score: float | None, thresholds: tuple[float, float, float]) -> 
 
 
 def label(table: dict[str, str], code: Any) -> str:
-    """표에서 코드에 해당하는 한국어 이름을 찾아 반환한다. 모르는 코드와 빈 값은 그대로 반환한다.
-
-    The Korean label of `code` in `table`; unknown codes are returned as they are."""
+    """표에서 코드의 한국어 이름을 찾아 반환한다. 모르는 코드는 그대로, None은 빈 문자열로 반환한다."""
     s = "" if code is None else str(code)
     return table.get(s, s)
 
 
 def evidence_ko(evidence: str) -> str:
     """제안 근거 문자열을 한국어로 바꾼다.
-    "policy:pins"는 서버 정책에 지정한 버전, "repository:<호스트>"는 저장소 <호스트>로 표시한다.
-
-    The Korean form of a proposal's evidence text."""
+    "policy:pins"는 서버 정책에 지정한 버전, "repository:<호스트>"는 저장소 <호스트>로 표시한다."""
     s = str(evidence or "")
     if s == "policy:pins":
         return "서버 정책에 지정한 버전"
@@ -257,9 +248,7 @@ _POM_WHY: tuple[tuple[re.Pattern, Callable[[re.Match], str]], ...] = (
 
 
 def pom_why_ko(reason: str) -> str | None:
-    """pom을 읽지 못한 이유(apply.PomReadError, xml_reason)의 한국어를 반환한다. 모르는 문장이면 None을 반환한다.
-
-    Korean for a pom read reason (open failure, encoding, XML syntax); None when the sentence is not one of them."""
+    """pom을 읽지 못한 이유(apply.PomReadError, xml_reason)를 한국어로 반환한다. 모르는 문장이면 None을 반환한다."""
     for rx, ko in _POM_WHY:
         m = rx.fullmatch((reason or "").strip())
         if m:
@@ -268,7 +257,7 @@ def pom_why_ko(reason: str) -> str | None:
 
 
 def _unreadable(e: str, head: str) -> str:
-    """"cannot read <경로>: <이유>"를 "<head>. <경로>: <이유>."로 바꾸고, 모르는 이유면 예전처럼 괄호에 넣는다."""
+    """"cannot read <경로>: <이유>"를 "<head>. <경로>: <이유>."로 바꾼다. 모르는 이유면 원문을 괄호에 넣는다."""
     m = re.fullmatch(r"cannot read (?P<p>\S+): (?P<w>.+)", e)
     why = pom_why_ko(m["w"]) if m else pom_why_ko(e)
     if m and why:
@@ -315,7 +304,7 @@ def _scan_reasons(x: str) -> str:
     return ", ".join(label(SCAN_REASON_KO, c.strip()) for c in (x or "").split(",") if c.strip())
 
 
-# ---------------------------------------------------------------------------- 규칙표 / rules
+# ---------------------------------------------------------------------------- 번역 규칙
 # 변수 부분이 "; "를 포함하지 않게 한다. ``.+``를 쓰면 뒤에 이어 붙은 다른 문장까지 잡히기 때문이다
 _A = r"(?:(?!; ).)+?"
 
@@ -532,9 +521,9 @@ _FIX_REASONS: tuple[tuple[re.Pattern[str], Callable[[dict[str, str]], str], str]
 
 def fix_reason_ko(reason: str | None) -> tuple[str, str]:
     """빌드 오류 자동 수정이 실패한 이유를 (괄호 안에 넣을 짧은 한국어, 원문 표시)로 바꾼다.
-    원문 표시는 오류 내용처럼 번역하지 않는 부분이 있을 때만 "원문: `…`"이고, 모르는 이유는 짧은 한국어 없이 원문만 반환한다.
+    원문 표시는 번역하지 않는 부분이 있을 때만 채운다. 모르는 이유면 ("", 원문 표시)를 반환한다.
 
-    (short Korean phrase, "원문: `…`" or "") for a `FixResult.reason`; an unknown reason gives ("", its raw text)."""
+    Rules are tried in `_FIX_REASONS` order (first full match wins)."""
     s = str(reason or "").strip()
     for rx, ko, raw in _FIX_REASONS:
         m = rx.fullmatch(s)
@@ -545,19 +534,19 @@ def fix_reason_ko(reason: str | None) -> tuple[str, str]:
 
 
 def fix_failed_ko(reason: str | None) -> str:
-    """빌드 오류 자동 수정을 시도했지만 고치지 못했을 때 보여 줄 문장을 만든다. 보고서와 상태 메시지가 같은 문장을 쓴다.
-
-    The Korean line for a fix loop that did not fix the build, with the reason through `fix_reason_ko`."""
+    """빌드 오류 자동 수정을 시도했지만 고치지 못했을 때 보여 줄 문장을 만든다.
+    보고서와 상태 메시지가 같은 문장을 쓴다."""
     ko, raw = fix_reason_ko(reason)
     head = f"빌드 오류 자동 수정을 시도했지만 고치지 못했습니다({ko})." if ko else "빌드 오류 자동 수정을 시도했지만 고치지 못했습니다."
     return head + " 시도한 소스 수정은 결과에 넣지 않았습니다." + (f" {raw}" if raw else "")
 
 
 def fix_no_attempt_ko(reason: str | None) -> str:
-    """빌드 오류 자동 수정 루프가 시작했지만 소스 수정을 한 번도 시도하지 못했을 때 보여 줄 문장을 만든다.
+    """수정 루프는 시작했지만 소스 수정을 한 번도 시도하지 못했을 때 보여 줄 문장을 만든다.
+    시도한 수정이 있었다고 쓰지 않는다.
 
-    The Korean line for a loop that ran but made no attempt (`FixResult.attempts == 0`: LLM unavailable, an error
-    while copying, out of time before the first attempt); it never speaks of tried source changes."""
+    Used when `FixResult.attempts == 0` (LLM unavailable, an error while copying, out of time before the first
+    attempt)."""
     ko, raw = fix_reason_ko(reason)
     why = ko or raw or "이유 모름"
     return f"빌드 오류 자동 수정을 하지 못했습니다({why})." + (f" {raw}" if ko and raw else "")
@@ -568,9 +557,9 @@ _NOT_STARTED_REASONS: dict[str, str] = {"stop requested": "중지 요청", "time
 
 
 def fix_not_started_reason_ko(reason: str | None) -> str:
-    """빌드 오류 자동 수정을 시작하지 않은 이유를 괄호 안에 넣을 짧은 한국어로 바꾼다. 모르는 이유는 원문 표시를 반환한다.
+    """수정 루프를 시작하지 않은 이유를 괄호 안에 넣을 짧은 한국어로 바꾼다. 모르는 이유는 원문 표시를 반환한다.
 
-    The short Korean reason for a loop that never started (`attempted: false`); an unknown reason gives its raw text."""
+    For `FixResult.attempted == False`."""
     s = str(reason or "").strip()
     if s in _NOT_STARTED_REASONS:
         return _NOT_STARTED_REASONS[s]
@@ -579,9 +568,7 @@ def fix_not_started_reason_ko(reason: str | None) -> str:
 
 
 def fix_not_started_ko(reason: str | None) -> str:
-    """빌드 오류 자동 수정을 시작하지 않았을 때 보여 줄 문장을 만든다. 소스를 되돌렸다고 쓰지 않는다.
-
-    The Korean line for a fix loop that never started; it never says the sources were reverted."""
+    """빌드 오류 자동 수정을 시작하지 않았을 때 보여 줄 문장을 만든다. 소스를 되돌렸다고 쓰지 않는다."""
     return f"빌드 오류 자동 수정은 시작하지 않았습니다({fix_not_started_reason_ko(reason)})."
 
 
@@ -766,7 +753,7 @@ RULES: list[_Rule] = [
     # 내부 이유(apply.EditError)는 도구 내부 문장이므로 원문으로 둔다
     _r("not_applied", r"proposal (?P<pid>\S+) not applied: (?P<why>.+)",
        lambda g: f"제안({g['pid']})을 적용하지 못했습니다. {_raw(g['why'])}", "not_applied"),
-    # ---- planner: 제안 메모 / plan notes
+    # ---- planner: 제안 메모
     _r("prop_governs", r"property \$\{(?P<p>[^}]*)\} may govern other artifacts",
        lambda g: f"property ${{{g['p']}}}에서 다른 라이브러리의 버전도 지정할 수 있습니다."),
     _r("also_resolved_edit",
@@ -1212,9 +1199,9 @@ RULES: list[_Rule] = [
        lambda g: fix_failed_ko(g["r"])),
     _r("auto_fix_error", r"automatic build fix: (?P<r>error: .+)", lambda g: fix_failed_ko(g["r"])),
     _r("auto_fix_other", r"automatic build fix: (?P<r>.+)", lambda g: fix_failed_ko(g["r"])),
-    # 루프는 시작했지만 시도가 하나도 없었을 때(attempts가 0) 붙는 꼬리다. 시도한 수정이 있었다고 쓰지 않는다
+    # 루프는 시작했지만 시도가 하나도 없을 때(attempts가 0) 붙는 문장이다
     _r("auto_fix_no_attempt", r"automatic build fix made no attempt: (?P<r>.+)", lambda g: fix_no_attempt_ko(g["r"])),
-    # 수정 루프를 시작하지 않았을 때(attempted가 false) 붙는 꼬리다. 시도했다고 쓰지 않는다
+    # 수정 루프를 시작하지 않았을 때(attempted가 false) 붙는 문장이다
     _r("auto_fix_not_started_stop", r"automatic build fix not started: (?P<r>stop requested)",
        lambda g: fix_not_started_ko(g["r"])),
     _r("auto_fix_not_started_time", r"automatic build fix not started: (?P<r>time budget used up)",
@@ -1304,9 +1291,9 @@ def _join(pieces: list[tuple[str, _Rule | None, str]]) -> str:
 def ko_text(text: Any) -> Any:
     """조치 코드가 만든 영어 문장을 한국어로 바꾼다.
     " | "와 "; "로 이어진 문장은 조각마다 바꾸고 규칙에 없는 조각은 그대로 둔다.
-    문자열이 아니면 그대로 반환한다.
+    문자열이 아니거나 빈 값이면 그대로 반환한다.
 
-    Translate a sentence the remediation code produced into Korean, piece by piece; unknown pieces stay unchanged."""
+    Within a " | " part, `_pieces` tries the longest "; "-joined run first, so a rule that spans "; " wins."""
     if not isinstance(text, str) or not text:
         return text
     return " | ".join(_join(_pieces(part)) for part in text.split(" | "))
@@ -1317,7 +1304,7 @@ def ko_display(text: Any) -> str:
     ``ko_text``처럼 조각마다 바꾸고, 규칙에 없는 조각은 "원문: `…`"으로 감싸서 뒤에 붙인다.
     빈 값이면 빈 문자열을 반환한다.
 
-    Korean for the report: like `ko_text`, but pieces no rule knows are shown once as "원문: `…`" after the Korean."""
+    All unknown pieces are joined into ONE "원문: `…`" at the end (cut to 500 characters by `_raw`)."""
     ko, raw = split_known(text)
     out = " ".join(ko)
     if raw:
@@ -1326,9 +1313,7 @@ def ko_display(text: Any) -> str:
 
 
 def split_known(text: Any) -> tuple[list[str], list[str]]:
-    """문장을 " | "와 "; "로 나눠 (규칙에 있는 조각의 한국어 목록, 규칙에 없는 조각의 원문 목록)을 반환한다.
-
-    (Korean of the known pieces, raw text of the unknown pieces)."""
+    """문장을 " | "와 "; "로 나눠 (규칙에 있는 조각의 한국어 목록, 규칙에 없는 조각의 원문 목록)을 반환한다."""
     ko: list[str] = []
     raw: list[str] = []
     if not isinstance(text, str):
@@ -1343,21 +1328,16 @@ def split_known(text: Any) -> tuple[list[str], list[str]]:
 
 
 def rule_keys(text: Any) -> list[str]:
-    """문장의 각 조각에 맞은 규칙 키를 순서대로 반환한다. 규칙에 없는 조각은 뺀다.
-
-    The rule keys the pieces of `text` matched."""
+    """문장의 각 조각에 맞은 규칙 키를 순서대로 반환한다. 규칙에 없는 조각은 뺀다."""
     if not isinstance(text, str) or not text:
         return []
     return [r.key for part in text.split(" | ") for _c, r, _k in _pieces(part) if r is not None]
 
 
 def detail_group(text: str) -> tuple[str, str]:
-    """조치하지 못한 항목의 설명 한 줄을 (묶음 키, 행마다 다른 값이 없는 한국어 설명 한 문장)으로 바꾼다.
-    모든 조각이 알려진 규칙이면 키는 규칙 묶음 이름을 "+"로 이은 것이고,
-    아니면 원문이 키가 되고 설명은 ``ko_display(원문)``이다.
-
-    A residual detail → (stable group key, one Korean explanation without the per-row variables); the raw text is the
-    key when any piece is unknown."""
+    """조치하지 못한 항목의 설명 한 줄을 (묶음 키, 묶음 설명)으로 바꾼다.
+    모든 조각이 묶음이 있는 규칙에 맞으면 키는 묶음 이름을 "+"로 이은 것이고 설명은 ``GROUPS``의 문장이다.
+    하나라도 모르는 조각이 있으면 원문이 키가 되고 설명은 ``ko_display(원문)``이다."""
     text = str(text or "")
     if not text:
         return "", ""
@@ -1369,10 +1349,8 @@ def detail_group(text: str) -> tuple[str, str]:
 
 
 def group_meta(key: str) -> tuple[str, bool]:
-    """묶음 키에 해당하는 (짧은 제목, 메모 칸 필요 여부)를 반환한다.
-    모르는 키는 행마다 같은 원문이므로 ("", False)를 반환한다.
-
-    Group key → (short title, whether rows need a memo column)."""
+    """묶음 키의 (짧은 제목, 메모 칸 필요 여부)를 반환한다.
+    ``GROUPS``에 없는 이름이 하나라도 섞인 키면 ("", False)를 반환한다."""
     keys = [k for k in (key or "").split("+") if k in GROUPS]
     if not keys or len(keys) != len((key or "").split("+")):
         return "", False
@@ -1381,9 +1359,7 @@ def group_meta(key: str) -> tuple[str, bool]:
 
 def variant_label(detail: str) -> str:
     """설명에 들어 있는 jar가 아닌 형식이나 classifier 표시를 꺼낸다. 예: "linux-x86_64", "test-jar, tests".
-    없으면 빈 문자열을 반환한다.
-
-    The type / classifier variant a residual detail names, shown after the coordinates ("" when none)."""
+    없으면 빈 문자열을 반환한다. 보고서는 이 값을 좌표 옆에 쓴다."""
     found: list[str] = []
     text = str(detail or "")
     keys = re.findall(r"type/classifier variant \(([^()]*)\)", text)
@@ -1401,9 +1377,7 @@ def variant_label(detail: str) -> str:
 
 def row_memo(detail: str) -> str:
     """표의 내용 칸에 쓸 한국어 설명을 만든다.
-    변종 사유는 라이브러리 칸에 따로 쓰므로 빼고 나머지 조각만 남긴다.
-
-    The memo cell of a residual row (variant facts left out: they are shown next to the coordinates)."""
+    변종 정보는 ``variant_label``로 좌표 옆에 따로 쓰므로 빼고 나머지 조각만 남긴다."""
     text = str(detail or "")
     if not text:
         return ""
@@ -1427,10 +1401,8 @@ def row_memo(detail: str) -> str:
 
 
 def inhouse_gas(detail: str) -> list[str]:
-    """사내 아티팩트 설명 문장에서 g:a 목록을 읽어 반환하고, 해당하지 않으면 빈 목록을 반환한다.
-    ``inhouse`` 필드가 없는 이전 상태 파일을 읽을 때 쓴다.
-
-    The in-house g:a's named by an in-house residual detail (for state files without `Residual.inhouse`)."""
+    """사내 아티팩트 설명 문장에서 g:a 목록을 읽어 반환한다. 사내 아티팩트 설명이 아니면 빈 목록을 반환한다.
+    ``Residual.inhouse`` 필드가 없는 이전 상태 파일을 읽을 때 쓴다."""
     for _c, r, _k in _pieces(str(detail or "")):
         if r is None:
             continue

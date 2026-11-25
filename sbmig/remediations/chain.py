@@ -1,25 +1,22 @@
 """이관이 BUILD SUCCESS로 끝난 뒤 같은 빌드 파드에서 취약점 조치를 이어서 실행하는 모듈.
 이관 그래프의 ``remediation`` 노드가 ``run_after_migration``을 호출하고, 이관 없이 조치만 하는 실행(``--flow
 remediation``)은 ``run_only``를 호출한다.
-- 조치 결과는 이관의 성공 여부, 종료 코드, 보고서 결과를 바꾸지 않으며 예외도 밖으로 던지지 않는다
+- 조치 결과는 이관의 성공 여부, 종료 코드, 보고서 결과를 바꾸지 않는다. 예외도 밖으로 던지지 않는다
 - 실행 폴더는 ``<이관 실행 폴더>/remediation/``이고 작업 id는 이관 실행 id와 같다
 - 이관이 끝난 프로젝트 트리를 ZIP으로 묶어 ``intake.accept_zip``에 넣는다.
   ``remediation.trusted_projects``는 확인하지 않는다
 - Maven 로컬 저장소는 이관과 같은 것을 쓴다
-- 빌드 파드는 사람을 기다리지 않는다. AWAITING_CONFIRMATION 상태를 저장하고 끝나며,
+- 빌드 파드는 사람을 기다리지 않는다. AWAITING_CONFIRMATION 상태를 저장하고 끝난다.
   재개할 때는 새 빌드 파드가 ``resume``을 호출한다
 - 이전 버전이 AWAITING_APPROVAL로 저장한 조치는 재개하지 않고 ``StateConflict``를 던진다
 - ``remediation.chain_budget_minutes``를 넘기면 STOPPED(사유 ``chain_budget``)로 멈추고 나중에 재개할 수 있다
 - ``run_only``는 준비가 안 됐으면 상태를 만들지 않고 ``RemediationNotReady``를 던진다
-- 상태를 진행시키는 동안 ``claim.json``으로 조치 폴더를 점유하며, 다른 프로세스가 점유 중이면 아무것도 바꾸지 않는다
+- 상태를 진행시키는 동안 ``claim.json``으로 조치 폴더를 점유한다. 다른 프로세스가 점유 중이면 아무것도 바꾸지 않는다
 
-Chained remediation: runs in the build pod after a migration that ended in BUILD SUCCESS. The migration graph's
-`remediation` node calls `run_after_migration`; the remediation graph stays a separate feature. Its outcome never changes
-the migration's verdict and no exception leaves this module's entry points. `run_only` is the entry point of the
-`remediation` run flow (no migration): same files, state id and driver; the only exception it raises is
-`RemediationNotReady` (no state was created). Whatever drives the state (the chained first run, `run_only`, `resume`,
-the in-process service's worker) holds the run claim `claim.json` (`RunClaim`) for the time it drives; a second process
-that finds a fresh claim refuses without touching anything.
+The remediation graph stays a separate feature; this module only drives it from the migration side. `run_only`
+shares files, state id and driver with the chained run. Whatever drives the state (the chained first run,
+`run_only`, `resume`, the in-process service's worker) holds the run claim `claim.json` (`RunClaim`) for the
+time it drives; a second process that finds a fresh claim refuses without touching anything.
 """
 from __future__ import annotations
 
@@ -68,19 +65,18 @@ EXCLUDED_DIRS = (".git", ".sbmig")
 _MAVEN_OUTPUT_MARKERS = ("maven-status", "maven-archiver")
 # remediation.log 한 줄의 형식이다. 단독 업로드의 service.LOG_FORMAT과 같다
 LOG_FORMAT = "%(asctime)s %(levelname)-7s %(name)s: %(message)s"
-# 조치를 실행하는 컨텍스트 표시. LangGraph가 노드를 다른 스레드에서 실행해도 컨텍스트를 복사하므로 그 줄도 파일에 들어간다
+# 조치를 실행하는 컨텍스트 표시. LangGraph가 노드를 다른 스레드에서 실행해도 컨텍스트를 복사하므로
+# 그 스레드의 줄도 remediation.log에 들어간다
 _REM_LOG: contextvars.ContextVar[object | None] = contextvars.ContextVar("sbmig_remediation_log", default=None)
 
 
 def chain_paths(run_dir: Path | str) -> RunPaths:
-    """이관 실행 폴더 안에 있는 조치 실행 폴더 ``<run_dir>/remediation``의 경로들을 반환한다.
-
-    The `RunPaths` of the chained remediation inside a migration run directory."""
+    """이관 실행 폴더 안에 있는 조치 실행 폴더 ``<run_dir>/remediation``의 경로들을 반환한다."""
     return RunPaths(Path(run_dir) / CHAIN_DIR)
 
 
 def _web_project(run_dir: Path, run_id: str, *, from_run_id: bool) -> str | None:
-    # 보고서 제목에 쓸, 웹에서 올릴 때 입력한 프로젝트명을 실행 폴더에서 찾는다. 보여 주는 데만 쓰므로 실패하면 None이다
+    # 웹에서 올릴 때 입력한 프로젝트명을 보고서 제목용으로 찾는다. 보여 주는 데만 쓰므로 실패하면 None이다
     # from_run_id가 True면 입력한 이름이 없을 때 웹 실행 id의 앞부분을 쓴다
     try:
         from sbmig.web import contract
@@ -94,9 +90,7 @@ def _web_project(run_dir: Path, run_id: str, *, from_run_id: bool) -> str | None
 
 def load_state(run_dir: Path | str) -> RemediationState | None:
     """이관에 이어 실행한 조치의 ``state.json``을 읽어 반환한다.
-    파일이 없거나 읽을 수 없으면 None을 반환하고 예외를 던지지 않는다.
-
-    The chained remediation's state, or None."""
+    파일이 없거나 읽을 수 없으면 None을 반환하고 예외를 던지지 않는다."""
     try:
         data = read_json(chain_paths(run_dir).state)
         return RemediationState.from_dict(data) if isinstance(data, dict) else None
@@ -105,7 +99,7 @@ def load_state(run_dir: Path | str) -> RemediationState | None:
         return None
 
 
-# ---------------------------------------------------------------------------- 실행 폴더 점유 / run claim
+# ---------------------------------------------------------------------------- 실행 폴더 점유
 # 상태를 진행시키는 프로세스는 조치 폴더 하나에 하나뿐이어야 한다.
 # 웹 파드의 조회는 점유하지 않고 claim_info로 확인만 한다
 CLAIM_NAME = "claim.json"
@@ -116,9 +110,7 @@ CLAIM_EVENT_TAKEN = "remediation_claim_taken_over"
 
 
 def claim_path(root: Path | str) -> Path:
-    """조치 폴더의 점유 파일 ``<root>/claim.json`` 경로를 반환한다.
-
-    The claim file of one remediation directory."""
+    """조치 폴더의 점유 파일 ``<root>/claim.json`` 경로를 반환한다."""
     return Path(root) / CLAIM_NAME
 
 
@@ -132,9 +124,9 @@ def _read_claim(path: Path) -> dict[str, Any] | None:
 
 def _fs_now(root: Path) -> float:
     """조치 폴더가 있는 파일 시스템의 현재 시각을 잰다. 실패하면 이 호스트의 시각을 반환한다.
-    NFS에서는 서버가 mtime을 기록하므로 파드 사이의 시계 차이가 점유 판단에 끼어들지 않는다.
+    NFS에서는 서버가 mtime을 기록하므로 파드 사이의 시계 차이가 점유 판단에 영향을 주지 않는다.
 
-    Now on the claim's file system clock (a probe file's mtime, removed at once); this host's clock on failure."""
+    Measured as the mtime of a probe file that is removed at once."""
     probe = Path(root) / f".claim.probe.{os.getpid()}.{uuid.uuid4().hex[:8]}"
     made = False
     try:
@@ -175,10 +167,10 @@ def _holder_text(info: dict[str, Any] | None) -> str:
 
 def claim_info(root: Path | str) -> dict[str, Any] | None:
     """지금 조치 폴더를 점유한 프로세스 정보를 반환한다. 점유가 없거나 오래되어 넘겨받을 수 있으면 None이다.
-    읽기만 하며 점유 파일을 만들거나 지우지 않는다.
+    읽기만 하고 점유 파일을 만들거나 지우지 않는다. 웹 파드는 이 함수로 확인만 한다.
 
-    The live holder of a remediation directory (pid, host, attempt, started, purpose), or None when there is no claim
-    or it is stale. Read-only: the web pod's readers use this; they never take the claim."""
+    Fields: pid, host, attempt, started, purpose (and token). An unreadable but fresh file gives
+    {"pid": "?", "host": "?"}."""
     root = Path(root)
     path = claim_path(root)
     try:
@@ -192,9 +184,7 @@ def claim_info(root: Path | str) -> dict[str, Any] | None:
 
 
 def claim_refusal(info: dict[str, Any] | None) -> str:
-    """점유 때문에 거절할 때 쓰는 영어 문장을 만든다.
-
-    The refusal sentence that names the holder."""
+    """점유 때문에 거절할 때 쓰는 영어 문장을 만든다. 문장에 점유한 프로세스가 들어간다."""
     return f"{CLAIM_HELD}: {_holder_text(info)}"
 
 
@@ -202,15 +192,15 @@ class RunClaim:
     """조치 폴더 하나를 상태를 진행시키는 프로세스 하나만 쓰도록 점유하는 클래스.
     ``acquire``가 ``claim.json``을 배타적으로 만들고, ``with`` 블록이 끝나면 어떤 경로로 끝나든 지운다.
 
-    One driver per remediation directory: `claim.json` created with ``O_CREAT | O_EXCL`` holding pid, host, attempt,
-    start time, purpose and a token. A fresh claim of anyone else → `StateConflict` (nothing touched). A stale claim (the
-    holder's pid gone on this host, or not refreshed for `CLAIM_STALE_SECONDS` on the file system's clock — a pod that
-    was OOM-killed never releases it) is moved aside, checked to be the one judged, removed and journaled
-    (`remediation_claim_taken_over`, the old holder named). While held, a daemon thread refreshes the mtime every
-    `CLAIM_REFRESH_SECONDS` (so a long Maven build or IVAS wait never makes it look stale). Leaving the `with` block
-    stops the thread, restores the SIGTERM handler and removes the file when it still holds our token. In the main
-    thread a default SIGTERM handler is replaced by one that raises `SystemExit` for the time of the block, so a
-    SIGTERM still runs the release."""
+    `claim.json` is created with ``O_CREAT | O_EXCL`` and holds pid, host, attempt, start time, purpose and a
+    token. A fresh claim of anyone else -> `StateConflict` (nothing touched). A stale claim (the holder's pid
+    gone on this host, or not refreshed for `CLAIM_STALE_SECONDS` on the file system's clock: an OOM-killed
+    pod never releases it) is moved aside, checked to be the one judged, removed and journaled
+    (`remediation_claim_taken_over`). While held, a daemon thread refreshes the mtime every
+    `CLAIM_REFRESH_SECONDS` (a long Maven build or IVAS wait never makes it look stale). Leaving the `with`
+    block stops the thread, restores the SIGTERM handler and removes the file when it still holds our token.
+    In the main thread a default SIGTERM handler is replaced by one that raises `SystemExit` for the time of
+    the block, so a SIGTERM still runs the release."""
 
     def __init__(self, root: Path | str, *, purpose: str, attempt: Any = None, journal: Journal | None = None):
         self.root = Path(root)
@@ -227,8 +217,7 @@ class RunClaim:
 
     def acquire(self) -> RunClaim:
         """점유 파일을 만든다. 다른 프로세스가 살아 있는 점유를 가졌으면 아무것도 바꾸지 않고 ``StateConflict``를 던진다.
-
-        Take the claim; `StateConflict` naming the holder when a fresh claim of another process exists."""
+        오래된 점유는 넘겨받는다."""
         self.root.mkdir(parents=True, exist_ok=True)
         info: dict[str, Any] | None = None
         for _ in range(5):
@@ -269,12 +258,12 @@ class RunClaim:
             # 오래됐다는 판단은 바로 앞에서 한 것이어야 하므로 거부돼도 기다리지 않는다
             os.rename(self.path, aside)
         except FileNotFoundError:
-            return                           # another taker moved it first
+            return                           # 다른 프로세스가 먼저 넘겨받았다
         try:
             st = os.stat(aside)
             if (st.st_ino, st.st_mtime_ns) != (judged.st_ino, judged.st_mtime_ns):
                 try:
-                    os.link(aside, self.path)      # exclusive: never replaces a claim made in between
+                    os.link(aside, self.path)      # 그 사이 새로 생긴 점유 파일은 덮어쓰지 않는다
                 except OSError:
                     log.warning("remediation claim %s: a claim moved aside by mistake could not be put back", self.path)
                 return
@@ -293,8 +282,7 @@ class RunClaim:
 
     def refresh(self) -> bool:
         """점유 파일이 아직 이 프로세스의 것이면 mtime을 지금으로 갱신한다.
-
-        Touch the claim while it still holds our token; False when it is not ours any more."""
+        이 프로세스의 점유가 아니거나 갱신에 실패하면 False를 반환한다."""
         info = _read_claim(self.path)
         if not info or info.get("token") != self.token:
             if not self._lost_said:
@@ -313,9 +301,7 @@ class RunClaim:
             self.refresh()
 
     def release(self) -> None:
-        """갱신 스레드를 멈추고, 점유 파일이 아직 이 프로세스의 것이면 지운다.
-
-        Stop the keep-alive and remove the claim when it still holds our token."""
+        """갱신 스레드를 멈추고, 점유 파일이 아직 이 프로세스의 것이면 지운다."""
         self._stop.set()
         if self._thread is not None and self._thread is not threading.current_thread():
             self._thread.join(timeout=5)
@@ -367,14 +353,12 @@ class _LogFilter(logging.Filter):
 @contextmanager
 def remediation_log(paths: RunPaths) -> Iterator[logging.Handler | None]:
     """조치를 실행하는 동안 ``remediation/remediation.log``에 sbmig 로그를 DEBUG까지 덧붙인다.
-    같은 파일의 핸들러가 이미 있으면 새로 달지 않고 None을 넘기며, 끝나면 단 핸들러를 떼고 닫는다.
+    같은 파일의 핸들러가 이미 있거나 파일을 열 수 없으면 새로 달지 않고 None을 넘긴다.
+    블록이 끝나면 여기서 단 핸들러를 떼고 닫는다.
 
-    Append the sbmig log (DEBUG) of this remediation to `remediation/remediation.log` while the block runs: the
-    chained run, the remediation-only run and a resume get the file the standalone run has. Lines pass the same
-    scrubbing as the service's handler (`graph.scrub_message`: secret env values, URL userinfo, the run dir's absolute
-    path, then the process-wide output scrubber); only this thread and threads running in its context write to it.
-    A handler for the same file already on the `sbmig` logger (the in-process service's) is reused, never doubled; the
-    handler added here is removed in `finally`. A file that cannot be opened yields None (the run goes on)."""
+    Lines pass the same scrubbing as the service's handler (`graph.scrub_message`: secret env values, URL
+    userinfo, the run dir's absolute path, then the process-wide output scrubber); only this thread and
+    threads running in its context write to it. The existing handler reused is the in-process service's."""
     target = os.path.abspath(paths.log)
     root = logging.getLogger("sbmig")
     if any(isinstance(h, logging.FileHandler) and os.path.abspath(h.baseFilename) == target for h in root.handlers):
@@ -410,8 +394,8 @@ def remediation_log(paths: RunPaths) -> Iterator[logging.Handler | None]:
 
 
 def _sigterm_to_exit() -> Callable[[], None]:
-    """메인 스레드의 SIGTERM 처리가 기본값이면 ``SystemExit``를 던지는 처리로 잠시 바꾸고, 되돌리는 함수를 반환한다.
-    점유 해제가 ``finally``에서 실행되게 하기 위해서다."""
+    """메인 스레드의 SIGTERM 처리가 기본값이면 ``SystemExit``를 던지는 처리로 잠시 바꾼다.
+    SIGTERM을 받아도 점유 해제가 ``finally``에서 실행되게 하기 위해서다. 원래대로 되돌리는 함수를 반환한다."""
     try:
         if threading.current_thread() is not threading.main_thread():
             return lambda: None
@@ -471,9 +455,7 @@ def _problem(text: Any) -> str:
 def readiness(cfg: Any, components: Components | None) -> list[str]:
     """취약점 조치를 시작할 수 없게 하는 문제 목록을 반환한다. 빈 목록이면 시작할 수 있다.
     빠진 IVAS 환경 변수 이름과 Maven / JDK / settings.xml 문제만 담고 값은 넣지 않는다.
-    ``components``가 None이면 운영 구현으로 확인한다.
-
-    Problems that prevent a chained remediation (IVAS env names + Maven readiness; never values; no trusted_projects)."""
+    ``components``가 None이면 운영 구현으로 확인한다. ``trusted_projects``는 확인하지 않는다."""
     from . import ivas as ivas_mod
     problems = [_problem(p) for p in ivas_mod.readiness(ivas_mod.ivas_settings(cfg))]
     try:
@@ -495,13 +477,10 @@ def _is_build_output(dirpath: Path, rel_parts: tuple[str, ...], filenames: Itera
 
 def source_zip(project_dir: Path | str, out_zip: Path | str, *, exclude_dirs: Iterable[str] = (),
                journal: Journal | None = None) -> None:
-    """이관이 끝난 프로젝트 트리를 ZIP으로 묶는다. 일반 파일만 이름 순으로 넣고 시각과 권한을 고정해서 매번
-    같은 바이트가 나오게 하며, 루트 pom.xml은 ZIP 최상위에 둔다.
-    ``.git/``, ``.sbmig/``, pom.xml 옆의 ``target/``, ``exclude_dirs``는 뺀다.
-    심볼릭 링크는 접수에서 거부되므로 넣지 않고 저널에 ``remediation_symlink_skipped``를 남긴다.
-
-    A deterministic ZIP of the migrated project (regular files only; `.git`, `.sbmig`, Maven `target/` output and
-    `exclude_dirs` left out; symlinks skipped and journaled); the root pom.xml sits at the ZIP root."""
+    """이관이 끝난 프로젝트 트리를 ZIP으로 묶는다. 루트 pom.xml은 ZIP 최상위에 둔다.
+    일반 파일만 이름 순으로 넣고 시각과 권한을 고정하므로 같은 트리면 같은 바이트가 나온다.
+    ``.git/``, ``.sbmig/``, Maven 빌드 산출물 ``target/``, ``exclude_dirs``는 뺀다.
+    심볼릭 링크는 접수에서 거부되므로 넣지 않고 저널에 ``remediation_symlink_skipped``를 남긴다."""
     root = Path(project_dir)
     out = Path(out_zip)
     ignored = {str(d).replace("\\", "/").strip("/") for d in exclude_dirs if str(d).strip("/")}
@@ -575,11 +554,9 @@ def _safe_stop(stop: StopCheck | None) -> StopCheck:
 
 
 class _Budget:
-    """이번 호출의 시간 한도(분 단위, 0 이하면 한도 없음)를 관리하는 클래스.
-    ``wrap(stop)``은 실제 중지 요청이 있거나 한도를 넘으면 참을 반환하는 중지 확인 함수를 만든다.
-    한도를 처음 넘을 때 저널 ``remediation_budget``을 한 번 기록한다.
-
-    The wall-time budget of one chained invocation; `wrap(stop)` also turns true once it is used up."""
+    """이번 호출의 시간 한도를 관리하는 클래스. 단위는 분이고 0 이하면 한도가 없다.
+    ``wrap(stop)``은 중지 요청이 있거나 한도를 넘으면 True를 반환하는 중지 확인 함수를 만든다.
+    한도를 처음 넘을 때 저널 ``remediation_budget``을 한 번 기록한다."""
 
     def __init__(self, cfg: Any, jr: Journal):
         rem = getattr(cfg, "remediation", None)
@@ -622,12 +599,11 @@ class _Budget:
 def _budget_outcome(paths: RunPaths, state: RemediationState, budget: _Budget, real_stop: StopCheck,
                     jr: Journal | None = None, cfg: Any = None) -> RemediationState:
     """시간 한도 때문에 STOPPED가 된 상태의 사유를 ``chain_budget``으로 바꿔 저장한다.
-    실제 중지 요청이 있었으면 사유를 그대로 둔다.
-    화면에서 시간 한도로 멈췄으며 재개하면 이어서 진행한다고 안내하기 위해서다.
+    실제 중지 요청이 있었으면 사유를 그대로 둔다. 화면에 재개하면 이어서 진행한다고 안내하기 위해서다.
 
-    Like `_baseline_outcome` (v2.1z-bo): the new reason and message get a new `updated` stamp, the state is saved and
-    the report is written again once (`_report_again`); a kill in between leaves a pending report, repaired on the
-    next entry or by the web service."""
+    Like `_baseline_outcome`: the new reason and message get a new `updated` stamp, the state is saved and the
+    report is written again once (`_report_again`); a kill in between leaves a pending report, repaired on the
+    next entry or by the web service (`docs/INTERFACES.md "v2.1z-bo"`)."""
     from .models import R_STOP_REQUESTED, STOPPED
     if state.status != STOPPED or state.reason != R_STOP_REQUESTED or real_stop() or not budget.over():
         return state
@@ -646,8 +622,8 @@ def _budget_outcome(paths: RunPaths, state: RemediationState, budget: _Budget, r
 def _report_again(paths: RunPaths, state: RemediationState, jr: Journal, cfg: Any) -> None:
     """바뀐 메시지에 시각을 새로 찍어 저장하고 보고서를 한 번 다시 쓴다. 쓰지 못하면 다음 진입 때 다시 쓴다.
 
-    New `updated` (the report becomes pending, `graph.report_pending`), save, then `graph.write_pending_report` once
-    when `cfg` is given; a failure is a warning (the pending report is repaired later)."""
+    The new `updated` makes the report pending (`graph.report_pending`); `graph.write_pending_report` runs
+    only when `cfg` is given, and a failure there is a WARNING."""
     state.updated = time.time()
     _try_save(paths, state)
     if cfg is not None:
@@ -696,9 +672,7 @@ def _error(paths: RunPaths, jr: Journal, e: BaseException, run_id: str,
 def clean_targets(targets: Iterable[str] | None) -> list[str]:
     """이관의 최종 빌드 대상 폴더 목록을 조치 상태에 넣을 형태로 정리한다.
     프로젝트 기준 상대 경로로 순서를 유지하고, 중복, 빈 값, 프로젝트 밖 경로는 뺀다.
-    루트 하나뿐이면 빈 목록을 반환하며, 이때 조치는 루트에서 한 번 빌드한다.
-
-    The migration's final-build target directories as stored in the state; [] when that is the root alone."""
+    루트 하나뿐이면 빈 목록을 반환한다. 이때 조치는 루트에서 한 번 빌드한다."""
     from .inventory import normalize_roots
     roots = normalize_roots([str(t) for t in (targets or []) if t is not None])
     return [] if roots == ["."] else roots
@@ -706,13 +680,12 @@ def clean_targets(targets: Iterable[str] | None) -> list[str]:
 
 def _baseline_outcome(paths: RunPaths, state: RemediationState, jr: Journal, excluded: Iterable[str],
                       cfg: Any = None) -> RemediationState:
-    """같은 트리로 이관의 최종 빌드는 통과했는데 조치 전 빌드가 실패했으면 그 사실을 메시지 앞에 분명히 쓴다.
-    같은 Maven 설정이라는 것, 비교할 두 로그, 조치가 빌드한 트리에서 빠진 것(.git / .sbmig / target 산출물 /
-    접수에서 제외한 폴더)을 담고 저널 ``remediation_baseline_differs``를 남긴다. 이관 결과는 바꾸지 않는다.
+    """같은 트리로 이관의 최종 빌드는 통과했는데 조치 전 빌드가 실패했으면 그 사실을 메시지 앞에 쓴다.
+    메시지에는 같은 Maven 설정이라는 것, 비교할 두 로그, 조치가 빌드한 복사본에서 빠진 것을 넣는다.
+    저널 ``remediation_baseline_differs``를 남긴다. 이관 결과는 바꾸지 않는다.
 
-    v2.1z-bo: the report and the state carry the same message. The new message gets a new `updated` stamp, which
-    makes the report pending (`graph.report_pending`), and the report is written again once (`write_pending_report`,
-    with `cfg`); a kill in between is repaired on the next entry like any pending report."""
+    The report and the state carry the same message; `_report_again` writes the report once more (a kill in
+    between is repaired on the next entry like any pending report)."""
     from .models import R_BASELINE_BUILD_FAILED
     # 이관의 최종 빌드가 실패한 트리(baseline_tolerated)에는 이 안내가 맞지 않는다
     if (state.status != FAILED or state.reason != R_BASELINE_BUILD_FAILED or state.baseline_tolerated
@@ -755,15 +728,13 @@ def run_after_migration(run_dir: Path | str, project_dir: Path | str, cfg: Any, 
                         exclude_dirs: Iterable[str] = (), build_targets: Iterable[str] = (),
                         baseline_may_fail: bool = False) -> RemediationState | None:
     """빌드에 성공한 이관 뒤에 취약점 조치를 한 번 실행하고 마지막 상태를 반환한다. 예외를 던지지 않는다.
-    ``baseline_may_fail``이 True면 이관의 최종 빌드가 실패한 트리이며, 조치 전 빌드가 실패해도 조치를 이어 간다.
-    - None을 반환하면 건너뛴 것이다. 기능이 꺼져 있으면 조용히 건너뛰고, 준비가 안 됐으면 저널
-      ``remediation_skipped``와 WARNING 한 줄을 남긴다. 조치 상태가 이미 있으면 새로 시작하지 않고 저널
-      ``remediation_exists``를 남긴 뒤 그 상태를 반환한다
+    ``baseline_may_fail``이 True면 이관의 최종 빌드가 실패한 트리이고, 조치 전 빌드가 실패해도 조치를 이어 간다.
+    - 기능이 꺼져 있거나 준비가 안 됐으면 None을 반환한다. 준비가 안 됐을 때는 저널
+      ``remediation_skipped``와 WARNING 한 줄을 남긴다
+    - 조치 상태가 이미 있으면 새로 시작하지 않는다. 저널 ``remediation_exists``를 남기고 그 상태를 반환한다
+    - 다른 프로세스가 점유 중이면 아무것도 바꾸지 않고 지금 상태를 반환한다
     - 접수에서 거부되면 FAILED(사유는 거부 코드), 다른 예외면 FAILED internal_error로 저장한다
-    - ``build_targets``는 이관의 최종 빌드 대상이며 조치도 같은 대상을 같은 방식으로 빌드한다
-
-    One remediation after a successful migration. None = skipped (disabled / not ready); an existing chained state is
-    returned untouched; otherwise the final state. Never raises."""
+    - ``build_targets``는 이관의 최종 빌드 대상이다. 조치도 같은 대상을 빌드한다"""
     paths = chain_paths(run_dir)
     jr = _scoped(journal)
     state: RemediationState | None = None
@@ -776,7 +747,7 @@ def run_after_migration(run_dir: Path | str, project_dir: Path | str, cfg: Any, 
         if existing is not None:
             jr({"event": "remediation_exists", "remediation": existing.id, "status": existing.status})
             log.info("chained remediation %s already exists (%s) — not started again", existing.id, existing.status)
-            # 보고서 노드 도중에 끝난 조치면 보고서만 쓴다
+            # 보고서 노드 도중에 끝난 조치면 보고서만 다시 쓴다
             return _repair_report(paths, run_dir, existing, cfg, jr, "chained")
         comps = components
         if comps is None:
@@ -805,9 +776,9 @@ def run_after_migration(run_dir: Path | str, project_dir: Path | str, cfg: Any, 
                 return _start(paths, Path(project_dir), cfg, comps, run_id=run_id, jr=jr, stop=budget.wrap(real_stop),
                               exclude_dirs=exclude_dirs, budget=budget, real_stop=real_stop, build_targets=build_targets,
                               baseline_may_fail=baseline_may_fail)
-            except Exception as e:  # noqa: BLE001 — the migration's verdict must never depend on the remediation
+            except Exception as e:  # noqa: BLE001 - 조치 결과가 이관 결과에 영향을 주면 안 된다
                 return _error(paths, jr, e, run_id, state)
-    except Exception as e:  # noqa: BLE001 — the migration's verdict must never depend on the remediation
+    except Exception as e:  # noqa: BLE001 - 조치 결과가 이관 결과에 영향을 주면 안 된다
         return _error(paths, jr, e, run_id, state)
 
 
@@ -856,9 +827,8 @@ def _start(paths: RunPaths, project_dir: Path, cfg: Any, comps: Components, *, r
 
 class RemediationNotReady(Exception):
     """조치만 하는 실행(``run_only``)을 시작할 수 없을 때 던지는 예외.
-    빠진 IVAS 환경 변수 이름과 Maven 준비 문제를 담고 값은 넣지 않으며, 이때 상태는 만들어지지 않는다.
-
-    The remediation-only run cannot start (`missing` = problem sentences, names only); no state was created."""
+    ``missing``에 빠진 IVAS 환경 변수 이름과 Maven 준비 문제를 담는다. 값은 넣지 않는다.
+    이 예외가 나면 상태 파일은 만들어지지 않은 것이다."""
 
     def __init__(self, missing: Iterable[str]):
         self.missing = [str(m) for m in missing]
@@ -868,9 +838,7 @@ class RemediationNotReady(Exception):
 def zip_targets(zip_path: Path | str, targets: Iterable[str]) -> list[str]:
     """프로젝트 루트 기준의 빌드 대상 폴더를 ZIP 최상위 기준 경로로 바꾼다.
     ZIP이 프로젝트를 폴더로 감쌌으면 모든 대상에 맞는 가장 짧은 앞부분을 붙인다.
-    맞추지 못하거나 ZIP을 읽을 수 없으면 그대로 반환하며, 그 경우 ``accept_zip``이 ``no_pom``으로 거부한다.
-
-    Re-root project-relative build targets onto the ZIP root (a wrapping folder is prefixed); unchanged when nothing fits."""
+    맞추지 못하거나 ZIP을 읽을 수 없으면 그대로 반환한다. 그 경우 ``accept_zip``이 ``no_pom``으로 거부한다."""
     tl = [str(t).strip("/") for t in targets if str(t).strip("/") not in ("", ".")]
     if not tl:
         return []
@@ -892,15 +860,13 @@ def zip_targets(zip_path: Path | str, targets: Iterable[str]) -> list[str]:
 def run_only(run_dir: Path | str, source: Path | str, cfg: Any, *, run_id: str, journal: Journal | None,
              stop: StopCheck | None, components: Components | None = None,
              build_targets: Iterable[str] = ()) -> RemediationState:
-    """이관 없이 취약점 조치만 한 번 실행한다(실행 방식 ``remediation``). ``source``가 ZIP 파일이면 그
-    바이트를 그대로, 디렉토리면 ``source_zip``으로 묶어서 ``accept_zip``에 넣는다.
-    - 준비가 안 됐으면 저널 ``remediation_skipped``를 남기고 상태를 만들지 않은 채 ``RemediationNotReady``를
-      던진다. 던지는 예외는 이것뿐이다
-    - 조치 상태가 이미 있으면 그대로 반환하고, 그 밖에는 이관에 이어 실행하는 조치와 같은 규칙으로 실행한다
-    - ZIP이 폴더로 감싸여 있으면 ``build_targets``를 ``zip_targets``로 바꾼다
-
-    One remediation without a migration. Raises only `RemediationNotReady` (nothing created); an existing state is
-    returned untouched; otherwise the final state (intake rejection → FAILED, other errors → FAILED internal_error)."""
+    """이관 없이 취약점 조치만 한 번 실행한다(실행 방식 ``remediation``).
+    ``source``가 ZIP 파일이면 그 바이트를 그대로, 디렉토리면 ``source_zip``으로 묶어서 ``accept_zip``에 넣는다.
+    - 준비가 안 됐으면 저널 ``remediation_skipped``를 남기고 ``RemediationNotReady``를 던진다.
+      상태는 만들지 않는다. 던지는 예외는 이것뿐이다
+    - 조치 상태가 이미 있으면 그대로 반환한다. 그 밖에는 이관에 이어 실행하는 조치와 같은 규칙으로 실행한다
+    - 다른 프로세스가 점유 중이면 저장하지 않은 FAILED 상태를 반환한다
+    - ZIP이 폴더로 감싸여 있으면 ``build_targets``를 ``zip_targets``로 바꾼다"""
     paths = chain_paths(run_dir)
     jr = _scoped(journal)
     try:
@@ -909,7 +875,7 @@ def run_only(run_dir: Path | str, source: Path | str, cfg: Any, *, run_id: str, 
         if existing is not None:
             jr({"event": "remediation_exists", "remediation": existing.id, "status": existing.status})
             log.info("vulnerability remediation %s already exists (%s) — not started again", existing.id, existing.status)
-            # 보고서 노드 도중에 끝난 조치면 보고서만 쓴다
+            # 보고서 노드 도중에 끝난 조치면 보고서만 다시 쓴다
             return _repair_report(paths, run_dir, existing, cfg, jr, "remediation-only")
         comps = components
         if comps is None:
@@ -937,11 +903,11 @@ def run_only(run_dir: Path | str, source: Path | str, cfg: Any, *, run_id: str, 
                     return existing
                 return _start_only(paths, Path(source), cfg, comps, run_id=run_id, jr=jr, stop=budget.wrap(real_stop),
                                    budget=budget, real_stop=real_stop, build_targets=build_targets)
-            except Exception as e:  # noqa: BLE001 — a saved FAILED state, never a traceback out of here
+            except Exception as e:  # noqa: BLE001 - 예외를 밖으로 던지지 않고 FAILED 상태로 저장한다
                 return _error(paths, jr, e, run_id, load_state(run_dir))
     except RemediationNotReady:
         raise
-    except Exception as e:  # noqa: BLE001 — a saved FAILED state, never a traceback out of here
+    except Exception as e:  # noqa: BLE001 - 예외를 밖으로 던지지 않고 FAILED 상태로 저장한다
         return _error(paths, jr, e, run_id, load_state(run_dir))
 
 
@@ -952,7 +918,7 @@ def _start_only(paths: RunPaths, source: Path, cfg: Any, comps: Components, *, r
     from . import planner as planner_mod
     from .models import IntakeRejected
     # 상태 파일 없이 남은 폴더는 접수 중에 중단된 이전 시도다.
-    # IVAS에 보낸 기록은 상태가 생긴 뒤에만 있으므로 지워도 된다. 점유 파일은 남긴다
+    # IVAS에 보낸 기록은 상태가 생긴 뒤에만 있으므로 지우고 다시 시작한다. 점유 파일은 남긴다
     _clear_root(paths.root)
     policy = planner_mod.policy_hash(cfg)
     jr({"event": "remediation_start", "remediation": run_id, "flow": "remediation"})
@@ -994,18 +960,17 @@ def _run_flow(run_dir: Path) -> str:
     try:
         data = read_json(Path(run_dir) / "report.json")
         return str(data.get("flow") or "full") if isinstance(data, dict) else "full"
-    except Exception:  # noqa: BLE001 — an unreadable report means "the chained case", as before
+    except Exception:  # noqa: BLE001 - 읽을 수 없으면 이관에 이어 실행한 경우로 본다
         return "full"
 
 
 def _repair_report(paths: RunPaths, run_dir: Path | str, state: RemediationState, cfg: Any, jr: Journal,
                    purpose: str) -> RemediationState:
-    """보고서 노드 도중에 끝난 조치면 폴더를 점유한 뒤 보고서만 쓰고 상태를 반환한다. 쓸 것이 없으면 그대로 반환한다.
+    """보고서 노드나 결과 ZIP 교체 도중에 끝난 조치를 폴더를 점유한 뒤 마저 정리하고 상태를 반환한다.
+    정리할 것이 없거나 다른 프로세스가 점유 중이면 상태를 그대로 반환한다.
 
-    A state whose report node was killed (`graph.report_pending`) gets its report (and the combined `fix.patch`)
-    written under the run claim; another process holding the claim → the state as it is. v2.1z-bo: a final state
-    whose result ZIP swap was left half done (`graph.delivery_swap_pending`) is repaired first
-    (`graph.repair_final`: `recover_delivery`, then the pending report)."""
+    `graph.final_repair_needed` decides; `graph.repair_final` runs `recover_delivery` (a half-done ZIP swap,
+    `graph.delivery_swap_pending`) first, then the pending report (and the combined `fix.patch`)."""
     if not graph_mod.final_repair_needed(paths, state):
         return state
     claim = _try_claim(paths, jr, purpose)
@@ -1016,7 +981,7 @@ def _repair_report(paths: RunPaths, run_dir: Path | str, state: RemediationState
             st = load_state(run_dir) or state
             graph_mod.repair_final(st, paths, cfg, save=_saver(paths), journal=jr)
             return st
-        except Exception as e:  # noqa: BLE001 — a report that cannot be written leaves the state as it is
+        except Exception as e:  # noqa: BLE001 - 보고서를 쓰지 못해도 상태는 그대로 둔다
             log.warning("chained remediation %s: the report was not written: %s", state.id,
                         graph_mod.scrub_message(f"{type(e).__name__}: {e}", paths.root))
             return load_state(run_dir) or state
@@ -1028,7 +993,7 @@ def _drive(paths: RunPaths, state: RemediationState, cfg: Any, comps: Components
     save = _saver(paths)
     try:
         state = graph_mod.run_remediation(state, paths, cfg, comps, save=save, journal=jr, stop=stop)
-    except Exception as e:  # noqa: BLE001 — run_remediation turns node errors into FAILED; this guards the rest
+    except Exception as e:  # noqa: BLE001 - 노드 오류는 run_remediation이 FAILED로 바꾸고, 여기서는 나머지를 막는다
         return _error(paths, jr, e, state.id, state)
     if chained:                              # 이관 없이 실행한 조치에는 이관의 최종 빌드가 통과했다는 정보가 없다
         state = _baseline_outcome(paths, state, jr, excluded, cfg)
@@ -1040,18 +1005,13 @@ def _drive(paths: RunPaths, state: RemediationState, cfg: Any, comps: Components
 
 def resume(run_dir: Path | str, cfg: Any, *, journal: Journal | None, stop: StopCheck | None,
            components: Components | None = None) -> RemediationState:
-    """이관에 이어 실행한 취약점 조치를 재개한다.
-    새 빌드 파드의 Worker가 remediation-resume 작업으로 호출한다.
-    재개할 수 없는 상태면 ``StateConflict``를 던지고, 아니면 ``stop_requested``를 지우고 ``next_node``부터
-    그래프를 실행한다. 시간 한도는 이 호출부터 다시 잰다.
+    """이관에 이어 실행한 취약점 조치를 재개한다. 새 빌드 파드의 Worker가 remediation-resume 작업으로 호출한다.
+    재개할 수 없는 상태거나 다른 프로세스가 점유 중이면 ``StateConflict``를 던진다.
+    재개하면 ``stop_requested``를 지우고 ``next_node``부터 그래프를 실행한다. 시간 한도는 이 호출부터 다시 잰다.
+    보고서나 결과 ZIP 정리가 남은 끝난 조치는 거절하지 않고 정리만 한 뒤 상태를 반환한다.
 
-    Continue a RESUMABLE chained remediation (`StateConflict` otherwise; for a state an earlier version saved in
-    `AWAITING_APPROVAL` the conflict says that the approval step was removed, `graph.approval_removed`). The run claim
-    (`RunClaim`) is taken first:
-    a fresh claim of another process → `StateConflict` ("another process is already working on this run: …") with
-    nothing touched; the state is read again under the claim. A final state whose report node was killed
-    (`graph.report_pending`) or whose result ZIP swap was left half done (`graph.delivery_swap_pending`) is not
-    refused: it is repaired under the claim (`graph.repair_final`) and the state returned."""
+    A state saved in the removed `AWAITING_APPROVAL` raises the conflict `graph.approval_removed` gives. The
+    state is read again under the claim before it is driven."""
     paths = chain_paths(run_dir)
     jr = _scoped(journal)
     state = load_state(run_dir)
@@ -1086,21 +1046,21 @@ def resume(run_dir: Path | str, cfg: Any, *, journal: Journal | None, stop: Stop
             real_stop = _safe_stop(stop)
             return _drive(paths, state, cfg, comps, jr=jr, stop=budget.wrap(real_stop), budget=budget,
                           real_stop=real_stop, chained=_run_flow(Path(run_dir)) != "remediation")
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:  # noqa: BLE001 - 예외를 밖으로 던지지 않고 FAILED 상태로 저장한다
             return _error(paths, jr, e, state.id, state)
 
 
 def summary(state: RemediationState | None, run_dir: Path | str, *, skipped: dict[str, Any] | None = None) -> dict[str, Any]:
     """이관 보고서(``RunReport.remediation``)에 넣을 짧은 JSON 요약을 만든다.
-    status(건너뛰었으면 "skipped"), reason, reasons, counts, 짧은 message, 결과 파일 경로, 결과 ZIP의
-    build_ok / scanned를 담고, 조치 전 빌드를 실행했으면 ``baseline_build_ok``도 담는다.
-    조치 전 빌드 실패를 받아들인 실행이면 ``baseline_tolerated: true``와 ``delivery.build_tolerated: true``를 담는다.
+    status(건너뛰었으면 "skipped"), reason, reasons, counts, 짧은 message, 결과 파일 경로, 결과 ZIP 정보를 담는다.
+    조치 전 빌드를 실행했으면 ``baseline_build_ok``를 담는다.
+    조치 전 빌드 실패를 받아들인 실행이면 ``baseline_tolerated``와 ``delivery.build_tolerated``를 True로 담는다.
 
-    A small JSON-able digest for the migration report. `fix_llm_calls` (only when > 0) = the LLM calls of the build fix
-    loop over every round (`fixer.fix_usage`), read by the `SBMIG-RESULT … llm=` line; readers of the run folder count
-    the remediation from `remediation/state.json` instead (`fixer.run_fix_usage`), never from this digest.
-    `fix_usage_unknown: true` (only then) = a part of that usage is unknown (`fix_usage()["usage_unknown"]`), so
-    `fix_llm_calls` counts only the known calls."""
+    `fix_llm_calls` (only when > 0) = the LLM calls of the build fix loop over every round
+    (`fixer.fix_usage`), read by the `SBMIG-RESULT … llm=` line; readers of the run folder count the
+    remediation from `remediation/state.json` instead (`fixer.run_fix_usage`), never from this digest.
+    `fix_usage_unknown: true` (only then) = a part of that usage is unknown, so `fix_llm_calls` counts only
+    the known calls."""
     if state is None:
         out: dict[str, Any] = {"status": "skipped", "dir": CHAIN_DIR}
         out.update({k: v for k, v in (skipped or {}).items() if k in ("reason", "missing")})
@@ -1135,7 +1095,6 @@ def summary(state: RemediationState | None, run_dir: Path | str, *, skipped: dic
         # 수정 루프의 사용량 일부를 알 수 없다. fix_llm_calls는 아는 만큼의 수다
         out["fix_usage_unknown"] = True
     if state.baseline_build is not None:
-        # 실행 방식이 remediation일 때 결과 줄의 build= 값.
-        # 업로드한 그대로의 빌드가 실행되고 통과했는지를 나타낸다
+        # 실행 방식이 remediation일 때 결과 줄의 build= 값이다. 업로드한 그대로의 빌드가 통과했는지 나타낸다
         out["baseline_build_ok"] = bool(state.baseline_build.ok)
     return out

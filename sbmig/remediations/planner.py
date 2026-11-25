@@ -5,23 +5,17 @@
   IVAS 패치 버전은 힌트일 뿐 근거가 아니다
 - 같은 메이저에서 가장 낮은 버전을 먼저 고르고, 없으면 ``allow_major``일 때만 더 높은 메이저를 고른다
 - 부모 / BOM 버전은 서버가 그 부모 / BOM을 ``pins``로 지정했을 때만 바꾼다
-- 간접 의존성과 pin이 없는 부모 / BOM 관리 버전은 루트 pom의 ``<dependencyManagement>``에 override 항목을
-  넣는다
+- 간접 의존성과 pin이 없는 부모 / BOM 관리 버전은 ``<dependencyManagement>``에 override 항목을 넣는다.
+  루트 pom을 상속하지 않는 모듈은 그 모듈의 pom에 넣는다
 - 사내 아티팩트 자체와 사내 아티팩트를 거쳐 들어온 항목은 제안하지 않는다(``inhouse_artifact``)
 - classifier나 jar가 아닌 형식으로 해석된 의존성은 같은 형식과 classifier를 적은 override 항목으로 고친다
 
-Planning for the remediation feature: proposals + residuals from the inventory, and the hashes that bind a proposal to
-the current tree and policy. Every proposal is applied (decision `auto`); the approval step was removed. A target
-version comes only from `policy.pins` or a version the approved repository lists (IVAS patched versions are hints,
-never evidence). A parent / BOM version text changes only when the server pins that parent / BOM. Transitive items and parent / BOM managed versions without such a pin get a
-managed-version override entry in the root pom (user decision 2026-11-11). The risk flags (major, parent, bom,
-managed_override) describe a change for the report; they decide nothing. A library that is an in-house
-artifact, or an item the inventory marks as reached through an in-house artifact (the inventory splits an item by
-module, so such an item is in-house for every one of its modules), is an `inhouse_artifact` residual (its owner
-publishes the fix). An override entry carries the resolved dependency's `<type>` / `<classifier>` (Maven's management
-key is g:a:type:classifier): one entry, and one proposal, per variant of the g:a that resolves at the vulnerable
-version. Every comparison of an IVAS-reported version with a Maven / repository one goes through
-`matching.same_version` (case-insensitive, Maven's rule).
+Every proposal is applied (decision `auto`). The risk flags (major, parent, bom, managed_override) describe a
+change for the report; they decide nothing. The inventory splits an item by module, so an item marked as
+reached through an in-house artifact is in-house for every one of its modules (its owner publishes the fix).
+Maven's management key is g:a:type:classifier: one override entry, and one proposal, per variant of the g:a
+that resolves at the vulnerable version, per target pom. Every comparison of an IVAS-reported version with a
+Maven / repository one goes through `matching.same_version` (case-insensitive, Maven's rule).
 """
 from __future__ import annotations
 
@@ -80,7 +74,6 @@ from .models import (
 
 log = logging.getLogger("sbmig.remediations.planner")
 
-# ``planner.R_…``로 import하는 코드가 있으므로 R_POLICY_DENIED 등 models의 사유 코드를 다시 내보낸다
 EVIDENCE_PINS = "policy:pins"
 # override 제안의 note에 항상 넣는 문장이다.
 # 넣은 항목은 이후 부모, BOM, 직접 의존성을 올려도 바뀌지 않는다는 경고다
@@ -104,15 +97,14 @@ def _policy_dict(policy: Any) -> dict[str, Any]:
 
 
 def policy_hash(cfg: Any) -> str:
-    """서버 정책의 해시를 계산한다. ``remediation.policy``, ``failed_candidate``, ``ignore_actions``,
-    사내 아티팩트 설정, 프레임워크 패턴을 포함한다.
-    제안 내용을 바꾸는 값이 하나라도 바뀌면 해시가 바뀌고, 그 라운드의 계획을 다시 만든다.
+    """제안 내용을 바꾸는 서버 설정의 해시를 계산한다.
+    ``remediation.policy``, ``failed_candidate``, ``ignore_actions``, 사내 아티팩트 키, 프레임워크 패턴이 들어간다.
+    해시가 바뀌면 재개한 실행은 그 라운드의 계획을 다시 만든다.
 
-    Hash of everything that changes what is proposed (incl. `ignore_actions` and the sorted in-house g:a keys). The
-    removed approval settings are no longer part of it, so every hash an earlier version stored differs from today's:
-    a resumed run plans its current round again at the `plan` node (`graph._plan`). The framework patterns (group `framework` listed and `framework.artifacts` not empty) are an
-    extra field `inhouse_framework`, left out when there are none, so a configuration without patterns hashes exactly
-    as before the group existed (the group names themselves were never hashed, only the resolved keys)."""
+    A stored hash that differs makes `graph._plan` plan the current round again. Optional fields are added
+    only when they differ from the default (`inhouse_framework` when patterns exist, `module_overrides` only
+    when false), so configurations without them keep their hash. Group names are never hashed, only the
+    resolved keys."""
     from .ivas import ignore_set
     rem = _rem(cfg)
     keys = inhouse_keys(cfg)
@@ -122,11 +114,11 @@ def policy_hash(cfg: Any) -> str:
         "ignore_actions": sorted(ignore_set(getattr(rem, "ignore_actions", None))),
         "inhouse": sorted(keys),
     }
-    # 패턴이 없을 때는 넣지 않아야 framework 그룹이 생기기 전의 설정과 해시가 같다
+    # 패턴이 없으면 넣지 않아 기존 설정의 해시가 그대로 유지된다
     patterns = sorted(getattr(keys, "patterns", ()) or ())
     if patterns:
         data["inhouse_framework"] = patterns
-    # 모듈 pom 제안을 끈 설정만 해시에 넣는다. 기본 설정은 이 값이 생기기 전의 해시를 그대로 유지한다
+    # 모듈 pom 제안을 끈 경우에만 넣어 기본 설정의 해시가 바뀌지 않게 한다
     if not bool(getattr(rem, "module_overrides", True)):
         data["module_overrides"] = False
     return sha256_text(canonical_json(data))
@@ -134,15 +126,13 @@ def policy_hash(cfg: Any) -> str:
 
 # ---------------------------------------------------------------------------------------------------- 버전 출처
 class RepositoryVersionSource:
-    """저장소에서 버전 목록과 버전의 근거를 조회하는 클래스(``RepositoryLookup``을 감싼
-    ``interfaces.VersionSource`` 구현).
-    근거는 버전 목록을 준 URL의 호스트("repository:<host>")이고, 그 호스트가 승인된 저장소일 때만 인정한다.
+    """저장소에서 버전 목록과 버전의 근거를 조회하는 클래스.
+    근거는 버전 목록을 준 저장소의 호스트이고, 승인된 호스트일 때만 인정한다.
     로컬 저장소에만 있는 버전은 근거가 되지 않는다.
-    승인된 호스트는 ``allowed_hosts``, ``remediation.allowed_repository_hosts``, 서버 settings.xml의 호스트
-    순으로 정한다. 테스트는 ``lookup``에 가짜 구현을 넣는다.
 
-    VersionSource over `RepositoryLookup`; evidence names only the host of the URL that listed the versions, and only
-    when that host is an approved repository host. A version known only from the local repository is no evidence."""
+    `interfaces.VersionSource` over `RepositoryLookup`. Approved hosts: the `allowed_hosts` argument (a list
+    or a callable) if given, else `ServerMaven(cfg).allowed_hosts()` (`remediation.allowed_repository_hosts` +
+    the hosts of the server settings.xml). Tests inject a fake `lookup`."""
 
     def __init__(self, cfg: Any, *, project_root: Path | None = None, lookup: Any = None,
                  allowed_hosts: Any = None):
@@ -155,7 +145,7 @@ class RepositoryVersionSource:
     @property
     def lookup(self) -> Any:
         """저장소 조회 객체를 처음 쓸 때 만들어 반환한다.
-        테스트가 오프라인용 가짜로 바꿔 넣을 수 있도록 모듈 속성으로 찾는다."""
+        테스트가 가짜 구현으로 바꿀 수 있도록 ``RepositoryLookup``은 만드는 시점에 모듈 속성으로 찾는다."""
         if self._lookup is None:
             from sbmig.build import repo_versions as rv
             self._lookup = rv.RepositoryLookup(self.cfg, project_root=self.project_root)
@@ -163,9 +153,7 @@ class RepositoryVersionSource:
 
     def allowed_hosts(self) -> set[str]:
         """승인된 저장소 호스트(소문자)를 반환한다.
-        정할 수 없으면 빈 집합을 반환하므로 어떤 저장소도 근거가 되지 않는다.
-
-        The approved repository hosts (lower case); empty when they cannot be determined."""
+        정할 수 없으면 빈 집합을 반환하므로 어떤 저장소도 근거가 되지 않는다. 결과는 처음 한 번만 계산한다."""
         if self._allowed is None:
             src = self._allowed_src
             hosts: list[str] = []
@@ -185,9 +173,7 @@ class RepositoryVersionSource:
 
     def versions(self, group_id: str, artifact_id: str) -> list[str]:
         """저장소에 있는 버전 목록을 중복 없이 ``parse_version`` 오름차순으로 반환한다.
-        조회에 실패하면 빈 목록을 반환한다.
-
-        Versions the repository lists, ascending."""
+        조회에 실패하면 빈 목록을 반환한다."""
         try:
             got = list(self.lookup.versions(group_id, artifact_id) or [])
         except Exception as e:  # noqa: BLE001 - an unreadable repository is "no evidence", never a crash
@@ -197,9 +183,9 @@ class RepositoryVersionSource:
 
     def evidence(self, group_id: str, artifact_id: str, version: str) -> str:
         """``version``의 근거 "repository:<host>"를 반환한다.
-        승인된 호스트에 그 버전이 있을 때만 반환하고, 아니면 빈 문자열을 반환한다.
+        승인된 호스트가 그 버전을 목록에 줬을 때만 반환하고, 아니면 빈 문자열을 반환한다.
 
-        Evidence for `version`; "" unless an approved host listed it."""
+        The answering URL is read from `lookup._answered[(g, a)]`."""
         if version not in self.versions(group_id, artifact_id):
             return ""
         answered = getattr(self.lookup, "_answered", {}) or {}
@@ -226,15 +212,14 @@ def _major(v: str) -> int | None:
     return first[1] if first and first[0] == 2 else None
 
 
-# 첫 숫자가 이보다 크면 날짜로 매긴 옛 빌드(20030203.000550)로 보고 메이저 번호로 쓰지 않는다
+# 첫 숫자가 이보다 크면 날짜로 번호를 매긴 빌드(20030203.000550)로 보고 메이저 번호로 쓰지 않는다
 _DATE_MAJOR = 9999
 
 
 def _dated(v: str) -> bool:
-    """첫 숫자가 날짜(8자리 등 9999보다 큰 수)인 버전인지 확인한다. 예: commons-io의 "20030203.000550".
+    """첫 숫자가 9999보다 큰 날짜형 버전인지 확인한다. 예: commons-io의 "20030203.000550".
 
-    A version whose first number is a date (more than 9999, e.g. eight digits): an old build numbered by date, never
-    an upgrade of a normal version and never comparable with a normal hint."""
+    Such a version is never an upgrade of a normal version and never comparable with a normal hint."""
     m = _major(v)
     return m is not None and m > _DATE_MAJOR
 
@@ -275,7 +260,7 @@ def _read_line(project: Path, loc: PomLocation) -> str | None:
 
 
 def _stale(project: Path, loc: PomLocation) -> str:
-    """그 줄에 ``loc.text``가 정확히 한 번 있지 않으면 위치가 낡은 것으로 보고 이유 한 줄을 반환한다.
+    """pom 위치가 아직 유효한지 확인한다. 그 줄에 ``loc.text``가 정확히 한 번 있지 않으면 이유 한 줄을 반환한다.
     문제가 없으면 빈 문자열을 반환한다."""
     line = _read_line(project, loc)
     if line is None:
@@ -299,7 +284,8 @@ class _Change:
     risks: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
     origin: str = ""
-    modules: list[str] = field(default_factory=list)          # 이 값이 버전을 정하는 모듈. 비어 있으면 from 버전이던 모든 모듈
+    # 이 값이 버전을 정하는 모듈. 비어 있으면 from 버전이던 모든 모듈이다
+    modules: list[str] = field(default_factory=list)
     also_modules: list[str] = field(default_factory=list)     # 같은 버전이 다른 경로로 해석된 모듈
     # 이 변경이 조치하지 못한 항목이 될 때 보고서에 보여 줄 경로와 사내 아티팩트다. plan_round가 채운다
     via: list[str] = field(default_factory=list)
@@ -344,7 +330,7 @@ def _variant_sources(item: InventoryItem, variant: str | None) -> list[ModuleSou
 def _residual(item: InventoryItem, reason: str, detail: str, *, variant: str | None = None,
               modules: list[str] | None = None) -> Residual:
     # 사내 아티팩트 g:a는 inhouse_artifact 항목에만 남긴다. 다른 사유의 항목은 프로젝트가 고칠 몫이다
-    # modules를 주면 그 모듈(한 pom이 다루는 모듈)만의 항목이다
+    # modules를 주면 그 모듈(pom 하나가 다루는 모듈)만의 항목으로 만든다
     mods = sorted(set(item.modules or [])) if modules is None else sorted(set(modules))
     srcs = _variant_sources(item, variant)
     if modules is not None:
@@ -366,12 +352,12 @@ def _change_residual(c: _Change, reason: str, detail: str) -> Residual:
 
 def _inhouse_residual(item: InventoryItem) -> Residual | None:
     """항목이 사내 아티팩트 자체이거나 사내 아티팩트를 거쳐 들어왔으면 ``inhouse_artifact`` 항목을 반환한다.
+    직접 선언이나 프로젝트의 dependencyManagement 항목은 g:a가 사내 아티팩트일 때만 사내 항목이 된다.
+    사내 항목이 아니면 None을 반환한다.
 
-    The in-house rule: the item IS an in-house artifact, or the inventory marked it as reached through one. The
-    inventory splits an item by module (an item never mixes in-house and project modules), so `inhouse` non-empty
-    means every module of the item gets it through an in-house artifact; the residual names the item's modules. The
-    origin guard stays as a defence: a direct / own-management item is the project's own declaration and is never
-    hidden as in-house unless its g:a is an in-house artifact."""
+    The inventory splits an item by module (an item never mixes in-house and project modules), so `inhouse`
+    non-empty means every module of the item gets it through an in-house artifact. The origin guard is a
+    defence: a direct / own-management item is the project's own declaration."""
     if not item.inhouse:
         return None
     if item.ga in item.inhouse:
@@ -407,18 +393,17 @@ def _fixes(v: str, alternatives: list[str]) -> bool:
 
 def _choose_target(item: InventoryItem, policy: Any, source: Any, current: str) -> tuple[str, str, str, list[str]]:
     """새 버전을 고르고 (버전, 근거, 사유 코드, 메모)를 반환한다.
-    버전이 빈 문자열이면 고르지 못한 것이고 사유와 설명이 메모에 있다.
+    버전이 빈 문자열이면 고르지 못한 것이고, 사유 코드와 설명이 함께 온다.
     1. ``policy.pins``에 있으면 그 버전을 쓴다
     2. 없으면 승인된 저장소의 버전 중 IVAS 힌트를 모두 만족하는 가장 낮은 버전을 고른다.
-      같은 메이저를 먼저 찾고, ``allow_major``일 때만 더 높은 메이저를 찾는다
-    발견 항목끼리는 모두 만족해야 하고(AND), 한 항목 안의 여러 버전은 major.minor 라인별 대안이다(OR). 예를
-    들어 현재 2.12.3에 힌트가 "2.12.7.1, 2.13.4.2"면 2.12.7.1 이상인 2.12.x 중 가장 낮은 버전을, 없으면
-    2.13.4.2 이상에서 고른다. 범위처럼 버전이 아닌 힌트가 있으면 고르지 않는다(``no_candidate_version``).
+       같은 메이저를 먼저 찾고, ``allow_major``일 때만 힌트가 가리키는 더 높은 메이저를 찾는다
+    예: 현재 2.12.3, 힌트 "2.12.7.1, 2.13.4.2"면 2.12.7.1 이상인 2.12.x를 먼저, 없으면 2.13.4.2 이상을 고른다.
 
-    Choose the target: a policy pin, else the lowest repository version (same major first) satisfying every finding's
-    hint. Different findings AND together; several versions inside one finding's hint are per-line alternatives (OR):
-    the highest alternative or above, or ≥ another alternative on that alternative's major.minor line. A hint that is
-    not a plain version (a range) makes the item a `no_candidate_version` residual naming the raw hint."""
+    Hints: different findings AND together; the versions inside one finding's hint are per-line alternatives
+    (OR): the highest alternative or above, or >= another alternative on that alternative's major.minor line
+    (`_fixes`). Residuals: a non-plain hint (a range), a date-stamped current version against normal hints, no
+    hint and no pin -> `no_candidate_version`; a current version that already meets every hint ->
+    `manual_review` (ask IVAS)."""
     g, a = _ga_parts(item.ga)
     deny_versions = set((policy.deny_versions or {}).get(item.ga, []) or [])
     pin = (policy.pins or {}).get(item.ga)
@@ -429,7 +414,7 @@ def _choose_target(item: InventoryItem, policy: Any, source: Any, current: str) 
         if pin in deny_versions:
             return "", "", R_NO_CANDIDATE_VERSION, [f"policy pin {pin} is also listed in policy.deny_versions"]
         if _major(pin) != _major(current) and not policy.allow_major:
-            # allow_major가 false면 서버 pin이라도 메이저 변경은 제안하지 않는다
+            # allow_major가 false면 서버 pin이어도 메이저 변경은 제안하지 않는다
             return "", "", R_NO_CANDIDATE_VERSION, [f"policy pin {pin} is a major change and policy.allow_major is false"]
         notes = []
         unmet = [", ".join(alts) for alts in groups
@@ -448,12 +433,12 @@ def _choose_target(item: InventoryItem, policy: Any, source: Any, current: str) 
     shown = "; ".join(", ".join(alts) for alts in groups)
     cur_dated = _dated(current)
     if cur_dated and not any(_dated(h) for alts in groups for h in alts):
-        # 날짜로 매긴 옛 빌드는 숫자로는 어떤 힌트보다 높아 보이므로 비교하지 않고 사람이 정하도록 남긴다
+        # 날짜형 버전은 숫자로는 어떤 힌트보다 높아 보이므로 비교하지 않고 사람이 정하도록 남긴다
         return "", "", R_NO_CANDIDATE_VERSION, [
             f"the current version {current} is date-stamped and cannot be compared with the IVAS patched hint "
             f"{shown}; not chosen automatically"]
     if all(_fixes(current, alts) for alts in groups):
-        # 현재 버전이 이미 힌트를 만족하면 올릴 근거가 없다. 라운드마다 올리지 않도록 검사 쪽 확인을 요청하는 항목으로 남긴다
+        # 현재 버전이 이미 힌트를 만족하면 올릴 근거가 없다. 라운드마다 올리지 않도록 IVAS 확인 요청 항목으로 남긴다
         return "", "", R_MANUAL_REVIEW, [
             f"IVAS still reports {current} although it meets the patched hint {shown}: ask the IVAS team to check "
             "the finding"]
@@ -462,7 +447,7 @@ def _choose_target(item: InventoryItem, policy: Any, source: Any, current: str) 
     cands: list[str] = []
     for v in listed:
         if not _newer(v, current):
-            continue                                     # ≤ current: not an upgrade (not worth listing as excluded)
+            continue                                     # 현재 이하 버전은 제외 목록에도 넣지 않는다
         if _dated(v) and not cur_dated:
             excluded.append(f"{v} (date-stamped)")
         elif v in deny_versions:
@@ -510,10 +495,7 @@ _VERSION_HOLDERS = ("dependency", "plugin", "extension")
 
 def _property_users(pp: Any, loc: PomLocation) -> list[tuple[str, str, Any]]:
     """``loc``이 가리키는 property 정의를 버전으로 쓰는 (g:a, 버전 문자열, pom) 목록을 반환한다.
-    같은 이름을 다시 정의한 pom의 사용처는 다른 값이므로 뺀다.
-
-    Every dependency / plugin / extension whose `<version>` uses the property defined at `loc`, in every project pom
-    whose own chain resolves the name to that same definition (a pom redefining it uses another value)."""
+    dependency, plugin, extension의 ``<version>``만 센다. 같은 이름을 다시 정의한 pom의 사용처는 다른 값이므로 뺀다."""
     home = next((pf for pf in pp.poms.values() if pf.ok and pf.rel == loc.pom), None)
     defn = home.props.get(loc.property) if home is not None else None
     if defn is None:
@@ -542,11 +524,11 @@ def _property_users(pp: Any, loc: PomLocation) -> list[tuple[str, str, Any]]:
 
 
 def _shared_property_problem(poms: _Poms, loc: PomLocation, ga: str, target: str, policy: Any, source: Any) -> str:
-    """property를 다른 아티팩트도 쓰는데 그중 하나라도 ``target`` 버전이 없으면 이유 한 줄을, 아니면 빈 문자열을 반환한다.
-    버전 근거는 첫 아티팩트와 같은 곳(서버 정책의 pin, 승인된 저장소)에서 찾는다.
+    """버전 property를 함께 쓰는 다른 아티팩트에 ``target`` 버전이 있는지 확인한다.
+    하나라도 없으면 이유 한 줄을, 모두 있거나 쓰는 곳이 하나뿐이면 빈 문자열을 반환한다.
 
-    A version property shared by several artifacts is changed only when the target exists for every one of them
-    (a policy pin naming that version, or the same version source's listing with evidence). One user = ""."""
+    "Exists" = a policy pin naming that version, or the same version source's listing with evidence. An
+    unreadable pom model returns "" (the check is skipped, with a WARNING)."""
     if not loc.property:
         return ""
     try:
@@ -582,7 +564,8 @@ def _shared_property_problem(poms: _Poms, loc: PomLocation, ga: str, target: str
 
 def _change_for(project: Path, item: InventoryItem, policy: Any, source: Any, poms: _Poms, *,
                 parents: frozenset[str] = frozenset(), module_overrides: bool = True) -> list[_Change | Residual]:
-    """인벤토리 항목 하나를 변경과 조치하지 못한 항목의 목록으로 바꾼다. override는 대상 pom과 형식 / classifier마다 하나다."""
+    """인벤토리 항목 하나를 변경과 조치하지 못한 항목의 목록으로 바꾼다.
+    override는 대상 pom과 형식 / classifier마다 하나씩 만든다."""
     got = _change_for_one(project, item, policy, source, poms, parents=parents, module_overrides=module_overrides)
     return got if isinstance(got, list) else [got]
 
@@ -594,13 +577,12 @@ def _change_for_one(project: Path, item: InventoryItem, policy: Any, source: Any
         return _residual(item, R_MANUAL_REVIEW, item.reason or f"{item.origin}: not changed automatically")
     if _denied(item.ga, policy.deny):
         return _residual(item, R_POLICY_DENIED, f"{item.ga} matches policy.deny")
-    # 사내 아티팩트의 pom은 담당자만 고칠 수 있고, 프로젝트에 override를
-    # 넣으면 담당자의 수정과 어긋나므로 제안하지 않는다
+    # 사내 아티팩트는 담당자만 고칠 수 있고, 프로젝트에 override를 넣으면 담당자의 수정과 어긋나므로 제안하지 않는다
     inhouse = _inhouse_residual(item)
     if inhouse is not None:
         if (inhouse.reason == R_INHOUSE_ARTIFACT and item.ga not in item.inhouse
                 and item.origin in (O_PARENT_MANAGED, O_BOM_MANAGED) and set(item.inhouse) <= parents):
-            # 회사 부모가 관리하는 버전이라도 서버 정책이 그 부모를 pin했으면 부모 버전 제안을 낸다
+            # 회사 부모가 관리하는 버전이라도 서버 정책이 그 부모를 pin했으면 부모 버전을 제안한다
             # pin이 없을 때만 사내 아티팩트 항목으로 남긴다
             got = _managed_change(project, item, policy)
             if got is not None:
@@ -641,8 +623,8 @@ def _change_for_one(project: Path, item: InventoryItem, policy: Any, source: Any
         notes.append(f"property ${{{prop}}} may govern other artifacts")
     governed, also = _scope(item)
     if also:
-        # 같은 g:a:version이 다른 경로로 해석된 모듈에는 이 수정이 적용되지 않을 수 있다.
-        # 검증은 실패로 치지 않고 다음 라운드에서 다시 계획한다
+        # 같은 g:a:version을 다른 경로로 가져오는 모듈에는 이 수정이 적용되지 않을 수 있다.
+        # 검증에서 실패로 치지 않고 다음 라운드에서 다시 계획한다
         notes.append(f"also resolved in {', '.join(also)} through another origin; this edit may not govern them — "
                      f"whatever stays at {current} is planned in the next round")
     risks = [RISK_MAJOR] if _major(target) != _major(current) else []
@@ -654,9 +636,9 @@ def _change_for_one(project: Path, item: InventoryItem, policy: Any, source: Any
 
 def _managed_change(project: Path, item: InventoryItem, policy: Any) -> _Change | Residual | None:
     """부모 / BOM이 관리하는 항목을 처리한다.
-    서버가 그 부모 / BOM을 pin했으면 버전 변경 제안이나 조치하지 못한 항목을 반환한다.
+    서버가 그 부모 / BOM을 pin했으면 부모 / BOM 버전 변경이나 조치하지 못한 항목을 반환한다.
     pin이 없으면 None을 반환하고 호출한 쪽이 override로 처리한다.
-    어느 부모 버전이 취약점을 고치는지는 서버 pin 말고는 근거가 없기 때문이다."""
+    어느 부모 버전이 취약점을 고치는지는 서버 pin 말고는 근거가 없다."""
     kind_word = "parent" if item.origin == O_PARENT_MANAGED else "BOM"
     mloc = item.manager_location
     parts = item.manager.split(":") if item.manager else []
@@ -742,8 +724,8 @@ def _same_key(pp: Any, pom: Any, dep: Any, ga: str, variant: str) -> bool:
 
 def _pom_entries(pp: Any, pf: Any, ga: str, variant: str = "") -> list[tuple[Any, str]]:
     """pom의 ``<dependencyManagement>``에서 이 관리 키(g:a, 형식, classifier)의 항목 중 import가 아닌 것을 찾는다.
-    각 항목의 위치는 최상위면 빈 문자열, 프로필이면 "profile <id>"다.
-    일반 jar의 항목은 classifier가 붙은 의존성을 관리하지 않으므로 그 classifier의 항목으로 세지 않는다."""
+    (항목, 위치) 목록을 반환하고, 위치는 최상위면 빈 문자열, 프로필이면 "profile <id>"다.
+    일반 jar 항목은 classifier가 붙은 의존성을 관리하지 않으므로 형식과 classifier까지 같아야 센다."""
     out = []
     for dep, where in _inv._deps(pf, management=True):
         if _inv._text(_inv._kid(dep, "scope")) == "import":
@@ -754,8 +736,9 @@ def _pom_entries(pp: Any, pf: Any, ga: str, variant: str = "") -> list[tuple[Any
 
 
 def _declared_with_version(pp: Any, mdir: str, ga: str, variant: str) -> str:
-    """모듈과 그 부모 체인에 이 관리 키의 의존성이 버전과 함께 선언되어 있으면 "<pom> (<버전>)"을, 없으면 빈 문자열을 반환한다.
-    선언된 버전은 ``<dependencyManagement>``보다 우선하므로 override 항목이 바꾸지 못한다."""
+    """모듈과 그 부모 체인에서 이 관리 키의 의존성을 버전과 함께 선언했는지 확인한다.
+    선언이 있으면 "<pom> (<버전>)"을, 없으면 빈 문자열을 반환한다. 처음 찾은 선언에 버전이 없으면 빈 문자열이다.
+    선언된 버전은 ``<dependencyManagement>``보다 우선하므로 override 항목으로는 바뀌지 않는다."""
     mod = pp.poms.get(mdir)
     if mod is None:
         return ""
@@ -770,7 +753,7 @@ def _declared_with_version(pp: Any, mdir: str, ga: str, variant: str) -> str:
 
 
 def _pom_words(pp: Any, pf: Any) -> str:
-    # 루트 pom은 예전 문장 그대로 "the root pom.xml"로 쓰고, 모듈 pom은 프로젝트 기준 경로로 쓴다
+    # i18n 규칙이 "the root pom.xml"을 알아보므로 루트 pom은 이 문구로, 모듈 pom은 프로젝트 기준 경로로 쓴다
     return "the root pom.xml" if pf is pp.poms.get(".") else pf.rel
 
 
@@ -778,7 +761,7 @@ def _key_modules(item: InventoryItem, variant: str, scope: list[str]) -> list[st
     """이 관리 키로 해석된 모듈 중 ``scope`` 안의 모듈을 반환한다."""
     mods = _variant_modules(item, variant) if item.variants else sorted(set(item.modules))
     if not item.modules:
-        return mods                    # 모듈을 모르는 항목(예전 인벤토리)은 범위를 좁히지 않는다
+        return mods                    # 모듈을 모르는 항목(이전 인벤토리)은 범위를 좁히지 않는다
     return sorted(set(mods) & set(scope))
 
 
@@ -791,8 +774,8 @@ def _scoped_sources(item: InventoryItem, variant: str | None, modules: list[str]
 def _existing_entry_change(project: Path, item: InventoryItem, policy: Any, source: Any, pp: Any,
                            entries: list[tuple[Any, str]], variant: str = "", *, pf: Any = None,
                            scope: list[str] | None = None) -> _Change | Residual:
-    """pom이 이미 이 관리 키를 관리할 때 항목을 하나 더 넣지 않고 기존 항목으로 처리한다.
-    최상위 항목의 버전 값이 해석된 버전과 같으면 그 값을 바꾸는 제안을, 아니면 조치하지 못한 항목을 반환한다.
+    """pom에 이 관리 키의 항목이 이미 있을 때 항목을 더 넣지 않고 기존 항목의 버전을 고친다.
+    최상위 항목 하나뿐이고 버전 값이 해석된 버전과 같으면 변경을, 아니면 조치하지 못한 항목을 반환한다.
 
     `pf` is the pom holding the entries (default: the root pom); `scope` the modules that pom's entry governs
     (default: every module of the item)."""
@@ -849,12 +832,12 @@ def _override_note(item: InventoryItem, target: str, where: str = "the root pom.
 
 
 def _override_keys(item: InventoryItem) -> list[str] | None:
-    """override 항목을 넣을 관리 키 목록("" = 일반 jar, 그 밖은 "<type>/<classifier>")을 반환한다.
+    """override 항목을 넣을 관리 키 목록을 반환한다. 일반 jar는 "", 그 밖은 "<type>/<classifier>"다.
     인벤토리가 변종 표시만 남기고 형식 / classifier를 알려 주지 않았으면 None을 반환한다.
 
     One key per variant in `item.variants`, plus the plain jar when a module resolves it (a module source without a
-    variant, or "jar/" among its variants) or when the item has no variants at all. None when the reason carries the
-    inventory's variant mark but `variants` is empty (an inventory written before variants were recorded)."""
+    variant, or "jar/" among its variants) or when the item has no variants at all. None = the reason carries
+    `inventory.VARIANT_MARK` but `variants` is empty (an older inventory)."""
     variants = sorted(dict.fromkeys(v for v in item.variants or [] if v and v != "jar/"))
     if not variants:
         if _inv.VARIANT_MARK in (item.reason or ""):
@@ -866,7 +849,7 @@ def _override_keys(item: InventoryItem) -> list[str] | None:
 
 @dataclass
 class _Target:
-    """override 항목을 넣을 pom 하나와 그 항목이 닿는 모듈들이다."""
+    """override 항목을 넣을 pom 하나와 그 항목이 적용되는 모듈을 담는 클래스."""
     pf: Any
     modules: list[str]
 
@@ -874,7 +857,7 @@ class _Target:
 def _module_targets(pp: Any, root: Any, item: InventoryItem
                     ) -> tuple[list[str], list[_Target], list[str]]:
     """항목의 모듈을 (루트 pom을 상속하는 모듈, 루트 밖 모듈의 대상 pom 목록, pom을 읽지 못한 모듈)로 나눈다.
-    루트 밖 모듈이 같은 항목의 다른 루트 밖 모듈을 프로젝트 안에서 상속하면 가장 가까운 그 모듈의 pom에 함께 묶는다.
+    루트 밖 모듈이 같은 항목의 다른 루트 밖 모듈을 상속하면, 가장 가까운 그 모듈의 pom에 함께 묶는다.
 
     A module outside the root's reach whose in-project chain holds another outside module of the item is governed
     by the nearest such module's pom (an entry there is inherited); every other outside module gets its own pom."""
@@ -900,15 +883,15 @@ def _module_targets(pp: Any, root: Any, item: InventoryItem
 def _override_change(project: Path, item: InventoryItem, policy: Any, source: Any, poms: _Poms, *,
                      module_overrides: bool = True) -> list[_Change | Residual]:
     """간접 의존성과 부모 / BOM 관리 버전을 override 항목으로 고친다.
-    루트 pom을 상속하는 모듈은 루트 pom에, 상속하지 않는 모듈은 그 모듈의 pom에 넣고(``module_overrides``),
-    대상 pom과 형식 / classifier마다 변경 하나를 만든다. 막히는 조건은 그 pom의 모듈만 조치하지 못한 항목으로 남긴다.
+    루트 pom을 상속하는 모듈은 루트 pom에, 상속하지 않는 모듈은 그 모듈의 pom에 넣는다(``module_overrides``).
+    대상 pom과 형식 / classifier마다 변경을 하나씩 만든다. 막힌 경우는 그 pom의 모듈만 조치하지 못한 항목이 된다.
 
-    Per target pom (the root pom for the modules inheriting from it; with `module_overrides`, the module's own pom
-    for every module outside the root's reach, see `_module_targets`) and per management key (`_override_keys`):
-    an existing entry for the key in that pom → its version text; a version declared on the dependency in the
-    module's in-project chain → residual; else one inserted entry. The target version is chosen once per item.
-    With `module_overrides` false, a module outside the root's reach leaves today's residual "module(s) … do not
-    inherit from the root pom.xml" (the plan is the one made before module poms were a target)."""
+    Per target pom (`_module_targets`) and per management key (`_override_keys`): an existing entry for the
+    key in that pom -> its version text (`_existing_entry_change`); a version declared on the dependency in
+    the module's in-project chain -> residual; else one inserted entry. The target version is chosen once per
+    item. With `module_overrides` false only the root pom is a target; when an insert is needed and a module
+    is outside the root's reach, the item is the residual "module(s) … do not inherit from the root
+    pom.xml"."""
     kind_word = "transitive dependency" if item.origin == O_TRANSITIVE else "managed version"
     keys = _override_keys(item)
     if keys is None:
@@ -932,7 +915,7 @@ def _override_change(project: Path, item: InventoryItem, policy: Any, source: An
     inside, module_targets, unreadable = _module_targets(pp, root, item)
     all_modules = sorted(set(item.modules or []))
     if not module_overrides or not (module_targets or unreadable):
-        # 루트 pom 하나만 대상이다. 루트 밖 모듈이 있으면 예전처럼 기존 항목만 쓰고 나머지는 남긴다
+        # 루트 pom 하나만 대상이다. 루트 밖 모듈이 있으면 기존 항목만 고치고 새 항목은 넣지 않는다
         targets = [_Target(root, all_modules)]
         outside = sorted(set(unreadable) | {m for tg in module_targets for m in tg.modules})
     else:
@@ -999,7 +982,8 @@ def _override_change(project: Path, item: InventoryItem, policy: Any, source: An
 
 
 def _merge(group: list[_Change], project: Path | None = None) -> _Change:
-    """같은 pom 줄을 고치는 변경들을 하나로 합친다. 발견 항목 ID는 합치고, 목표 버전은 가장 높은 것을 쓴다."""
+    """같은 pom 줄을 고치는 변경이나 같은 관리 키의 override를 하나로 합친다.
+    발견 항목 ID는 합치고, 목표 버전은 가장 높은 것을 쓴다. override면 위치를 다시 찾는다."""
     first = group[0]
     if len(group) == 1:
         return first
@@ -1023,7 +1007,7 @@ def _merge(group: list[_Change], project: Path | None = None) -> _Change:
         edit = _apply.locate_override(Path(project or "."), g, a, best.to_version, t, c, pom=first.edit.pom)
     else:
         edit = TextEdit(pom=first.edit.pom, line=first.edit.line, old=first.edit.old, new=best.to_version)
-    # 버전을 정하는 모듈은 모두 합치고, 그중 하나라도 정하는 모듈은 also에서 뺀다
+    # 버전을 정하는 모듈은 모두 합치고, 어느 변경에서든 버전을 정하는 모듈은 also에서 뺀다
     # 범위가 빈 변경이 하나라도 있으면 어느 모듈에 적용되는지 모르므로 합친 제안도 범위를 비워 둔다
     if all(c.modules for c in group):
         governed = sorted({m for c in group for m in c.modules})
@@ -1050,8 +1034,9 @@ def _governed_sources(change: _Change) -> list[ModuleSource]:
 
 
 def _was_ineffective(c: _Change, to_version: str, rejected: set[tuple[str, ...]]) -> bool:
-    """이 실행의 앞 라운드에서 효과가 없어 뺀 override 항목인지 확인한다. 버전은 대소문자를 구분하지 않는다.
-    키는 (g:a, 버전, 형식 / classifier, pom)이며 그 pom에 넣는 override 항목에만 해당한다."""
+    """이 실행의 앞 라운드에서 효과가 없어 뺀 override 항목인지 확인한다.
+    키는 (g:a, 버전, 형식 / classifier, pom)이고 그 pom에 넣는 override 항목만 맞춰 본다.
+    g:a와 버전은 대소문자를 구분하지 않는다."""
     for r in rejected:
         if len(r) < 4 or not same_ga(r[0], c.ga) or not same_version(r[1], to_version) or r[2] != c.variant:
             continue
@@ -1062,20 +1047,18 @@ def _was_ineffective(c: _Change, to_version: str, rejected: set[tuple[str, ...]]
 
 def plan_round(project: Path, inventory: Inventory, cfg: Any, source: Any, *, round: int, source_tree_hash: str,
                rejected: set[tuple[str, ...]] | None = None) -> RoundPlan:
-    """라운드 하나의 계획을 만든다(``interfaces.PlanFn``). 항목마다 제안이나 조치하지 못한 항목을 만들고,
-    같은 pom 줄은 합친 뒤 diff와 해시를 붙인다. 제안은 모두 ``auto``다.
-    입력이 같으면 결과도 항상 같고, 제안 ID는 ``p-<round>-<n>``이다.
+    """라운드 하나의 계획을 만든다(``interfaces.PlanFn``).
+    항목마다 제안이나 조치하지 못한 항목을 만들고, 같은 pom 줄은 합친 뒤 diff와 해시를 붙인다.
+    제안은 모두 ``auto``이고 ID는 ``p-<round>-<n>``이다. 입력이 같으면 결과도 같다.
+    인벤토리가 불완전하면 아무것도 제안하지 않고 모든 항목을 ``inventory_incomplete``로 남긴다.
 
-    One round's plan: proposals + residuals, merged per pom line, with diff and hashes; deterministic; every proposal
-    has decision `auto`. `rejected` holds (g:a, to_version, variant, pom) for an override entry the graph dropped as
-    ineffective in this run (variant = `apply.override_variant`, "" for a plain jar); shorter keys match nothing.
-    g:a and version compare case-insensitively."""
+    `rejected` holds (g:a, to_version, variant, pom) for an override entry the graph dropped as ineffective in
+    this run (variant = `apply.override_variant`, "" for a plain jar); shorter keys match nothing."""
     project = Path(project)
     rem = _rem(cfg)
     policy = rem.policy
     phash = policy_hash(cfg)
-    # 회사 부모(parents 그룹)의 g:a다.
-    # 부모가 관리하는 버전은 서버 pin이 있으면 부모 버전 제안을 먼저 검토한다
+    # 회사 부모(parents 그룹)의 g:a. 이 부모가 관리하는 버전은 서버 pin이 있으면 부모 버전 제안을 먼저 검토한다
     parents = frozenset(k for k, grp in inhouse_keys(cfg).items() if grp == "parents")
     rejected = set(rejected or set())
     # 루트 pom을 상속하지 않는 모듈에는 그 모듈의 pom에 override 항목을 제안한다(설정에 없으면 켠 것으로 본다)
@@ -1101,9 +1084,8 @@ def plan_round(project: Path, inventory: Inventory, cfg: Any, source: Any, *, ro
                 got.sources = list(item.sources or [])
             got.reported_version = item.reported_version or ""
             changes.append(got)
-    # 같은 pom 줄의 replace끼리, 같은 g:a의 override끼리 합친다. override 위치는 모두 원래 파일 기준이고
-    # apply가 제안 ID 순서로 한 번에 넣는다
-    # 같은 g:a라도 형식 / classifier가 다르면 관리 키가 달라 따로 적용하는 제안이 된다
+    # 같은 pom 줄의 replace끼리, 같은 pom과 관리 키의 override끼리 합친다
+    # override 위치는 모두 원래 파일 기준이고 apply가 제안 ID 순서로 한 번에 넣는다
     groups: dict[tuple[str, int, str, str], list[_Change]] = {}
     for c in changes:
         key = (c.edit.pom, 0, c.ga, c.variant) if c.edit.op == E_INSERT else (c.edit.pom, c.edit.line, "", "")
@@ -1151,5 +1133,5 @@ def plan_round(project: Path, inventory: Inventory, cfg: Any, source: Any, *, ro
     return plan
 
 
-# 재개할 때 낡은 계획을 쓰지 않도록, 그래프가 계획 없이도 정책 해시를 계산할 수 있게 함수에 붙여 둔다
+# 재개할 때 지난 계획을 그대로 쓰지 않도록, 그래프가 계획 없이도 정책 해시를 계산할 수 있게 붙여 둔다
 plan_round.policy_hash = policy_hash   # type: ignore[attr-defined]
