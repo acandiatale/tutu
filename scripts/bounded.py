@@ -128,34 +128,41 @@ def free_mb(path) -> int:
     return int(_disk_usage(_existing(Path(path))).free // MIB)
 
 
+# Held by `tree_mb` for the whole walk (see there).
+WALK_LOCK = threading.Lock()
+
+
 def tree_mb(path, *, stop_above_mb: int | None = None) -> int:
     """Sum of ``st_size`` of the regular files under ``path`` in MiB, rounded up.
 
     Symlinks are not followed; files and folders that vanish during the walk are skipped. With ``stop_above_mb`` the
     walk may stop as soon as the sum is above it (the returned value is then above it, not the full total).
     """
-    limit = None if stop_above_mb is None else stop_above_mb * MIB
-    total = 0
-    stack = [os.fspath(path)]
-    while stack:
-        top = stack.pop()
-        try:
-            it = os.scandir(top)
-        except OSError:
-            continue
-        with it:
-            for entry in it:
-                try:
-                    st = entry.stat(follow_symlinks=False)
-                except OSError:
-                    continue
-                if stat.S_ISDIR(st.st_mode):
-                    stack.append(entry.path)
-                elif stat.S_ISREG(st.st_mode):
-                    total += st.st_size
-                    if limit is not None and total > limit:
-                        return (total + MIB - 1) // MIB
-    return (total + MIB - 1) // MIB
+    # Held for the whole walk, so no scandir of this walk is open outside the lock: a test that compares this
+    # process's open descriptors with its own paths (tests/remediations/own_handles.py) takes it while it reads them.
+    with WALK_LOCK:
+        limit = None if stop_above_mb is None else stop_above_mb * MIB
+        total = 0
+        stack = [os.fspath(path)]
+        while stack:
+            top = stack.pop()
+            try:
+                it = os.scandir(top)
+            except OSError:
+                continue
+            with it:
+                for entry in it:
+                    try:
+                        st = entry.stat(follow_symlinks=False)
+                    except OSError:
+                        continue
+                    if stat.S_ISDIR(st.st_mode):
+                        stack.append(entry.path)
+                    elif stat.S_ISREG(st.st_mode):
+                        total += st.st_size
+                        if limit is not None and total > limit:
+                            return (total + MIB - 1) // MIB
+        return (total + MIB - 1) // MIB
 
 
 class DiskWatch:

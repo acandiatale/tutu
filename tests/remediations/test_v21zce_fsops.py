@@ -143,7 +143,8 @@ def test_refused_longer_than_the_wait_raises_the_last_exception(tmp_path, clock,
     assert sum(p) == pytest.approx(fsops.HOLD_WAIT_S) and sum(p) <= fsops.HOLD_WAIT_S + 1e-9
     warn = messages(caplog, logging.WARNING)
     assert warn == [(f"remediation: replace of held still refused after 60.0 s ({len(raised)} tries, WinError 5): a "
-                     "virus scanner, an indexer or an editor that has the run folder open keeps a file open there")]
+                     "virus scanner, an indexer or an editor that has the run folder open keeps a file open there "
+                     "(no program found with the 1 file(s) looked at open)")]      # v2.1z-cf rule 4, POSIX finds none
     assert len(raised) == len(p) + 1
     monkeypatch.setattr(os, "replace", real)
     assert src.exists()

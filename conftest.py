@@ -33,6 +33,8 @@ _spec = importlib.util.spec_from_file_location(
     "_repo_bounded", Path(__file__).resolve().parent / "scripts" / "bounded.py")
 _bounded = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_bounded)
+# registered so that test code reaches the SAME module (its WALK_LOCK guards the disk watch's walk)
+sys.modules["_repo_bounded"] = _bounded
 
 _state: dict = {"stop": None, "header": "bounded: not configured", "git": "git: not found on PATH",
                 "git_dir": None}
