@@ -1,19 +1,17 @@
 """취약점 조치 HTTP API(``/api/remediations…``)를 제공하는 모듈.
-웹 앱의 ``create_app``이 :func:`create_router`를 포함하므로 같은 프로세스와 같은 TokenGuard를 쓴다.
-- 업로드 파일은 메모리에 올리지 않고 임시 파일로 쓰며, 받는 도중 크기
-  상한(``remediation.max_upload_mb``)과 ZIP 서명(PK)을 확인한다
+웹 앱의 ``create_app``이 :func:`create_router`를 붙이므로 같은 프로세스와 TokenGuard를 쓴다.
+- 업로드는 임시 파일로 받으면서 크기 상한(``remediation.max_upload_mb``)과 ZIP 서명을 확인한다
 - ZIP 검사와 상태 파일 읽기는 이벤트 루프를 막지 않도록 스레드풀에서 실행한다
-- 오류 응답은 항상 ``{"error", "code", …}`` 형태이고, 비밀 값과 서버 절대 경로는 넣지 않는다
-- Job 모드의 웹 파드는 취약점 조치를 직접 실행하지 않는다. 단독 업로드는 본문을 받기 전에 409 ``not_available``을
-  반환하고, 이관에 이어 실행된 조치는 같은 경로로 조회한다. 재개는 새 빌드 파드가 진행한다
+- 오류 응답은 ``{"error", "code", …}`` 형태이고 비밀 값과 서버 절대 경로는 넣지 않는다
+- Job 모드에서는 단독 업로드를 본문을 받기 전에 409 ``not_available``로 거절한다
 
-The `/api/remediations` router (contract: API.md). Error mapping: IntakeRejected → 400, NotReady → 503,
-StateConflict / NotAvailable → 409, unknown id → 404, bad id → 400. A 409 carries `message_ko` when the service gave
-one (the refused resume of a state saved in `AWAITING_APPROVAL` by an earlier version: the approval step, with its
-`proposals` / `approvals` routes, was removed). `GET …/files/{name}?download=1` attaches any file; report.md /
-report.json are then named remediation-report.md / remediation-report.json (v2.1z-bg). `result.zip` is attached as
-`<project>-remediation.zip` (`RemediationManager.zip_name`, v2.1z-bt); every other file keeps its name.
-"""
+The `/api/remediations` router (contract: API.md). In Job mode a remediation chained after a migration is read
+through the same routes; a resume runs in a new build pod. Error mapping: IntakeRejected → 400, NotReady →
+503, StateConflict / NotAvailable → 409, unknown id → 404, bad id → 400. A 409 carries `message_ko` when the
+service gave one (the refused resume of a state saved in `AWAITING_APPROVAL`). `GET …/files/{name}?download=1`
+attaches any file; report.md / report.json are then named remediation-report.md / remediation-report.json.
+`result.zip` is attached as `<project>-remediation.zip` (`RemediationManager.zip_name`, v2.1z-bt); every other
+file keeps its name."""
 from __future__ import annotations
 
 import json
@@ -35,14 +33,12 @@ _SAFE_DETAILS = ("missing", "status", "mode", "message_ko")
 _MEDIA = {".md": "text/markdown; charset=utf-8", ".json": "application/json", ".zip": "application/zip",
           ".jsonl": "application/x-ndjson", ".log": "text/plain; charset=utf-8", ".patch": "text/plain; charset=utf-8"}
 _ATTACH = (".zip", ".jsonl", ".patch")
-# 사람이 내려받을 때 쓰는 이름이다. 작업 폴더 안의 파일 이름과 주소는 그대로 둔다
+# 내려받을 때 쓰는 이름. 작업 폴더 안의 파일 이름과 주소는 그대로 둔다
 DOWNLOAD_NAMES = {"report.md": "remediation-report.md", "report.json": "remediation-report.json"}
 
 
 def error_response(exc: BaseException) -> JSONResponse:
-    """예외를 ``{"error", "code", …}`` 형태의 HTTP 응답으로 바꾼다. 세부 항목은 공개해도 되는 것만 넣는다.
-
-    Map an exception of this feature to its HTTP response (contract error shape)."""
+    """예외를 ``{"error", "code", …}`` 형태의 HTTP 응답으로 바꾼다. 세부 항목은 공개해도 되는 것만 넣는다."""
     if isinstance(exc, (BadRemediationId,)):
         status = 400
     elif isinstance(exc, UnknownRemediation):
@@ -85,9 +81,7 @@ async def _json_body(request: Request) -> dict[str, Any]:
 
 def create_router(manager: RemediationManager, max_upload_bytes: int | None = None) -> APIRouter:
     """``/api/remediations`` 라우터를 만든다.
-    ``max_upload_bytes``가 None이면 ``remediation.max_upload_mb``를 쓰고, 0이면 크기 제한이 없다.
-
-    Build the router; the upload limit defaults to the manager's `remediation.max_upload_mb` (0 = no limit)."""
+    ``max_upload_bytes``가 None이면 ``remediation.max_upload_mb``를 쓴다. 0이면 크기 제한이 없다."""
     limit = manager.max_upload_bytes() if max_upload_bytes is None else int(max_upload_bytes)
     r = APIRouter(prefix="/api/remediations")
 
@@ -97,12 +91,12 @@ def create_router(manager: RemediationManager, max_upload_bytes: int | None = No
 
     @r.post("", status_code=202)
     async def submit(request: Request, name: str = "project.zip", configs: str | None = None) -> JSONResponse:
-        if manager.job_mode:          # Job 모드는 조치를 빌드 파드에서 실행하므로 큰 본문을 받기 전에 거절한다
+        if manager.job_mode:          # Job 모드는 빌드 파드에서 조치하므로 큰 본문을 받기 전에 거절한다
             return error_response(NotAvailable(manager.readiness()[0], mode=manager.mode))
         length = request.headers.get("content-length")
         if limit and length and length.isdigit() and int(length) > limit:
             return too_large()
-        # 본문이 1 GiB에 가까울 수 있으므로 임시 파일로 쓰고, 받는 도중 크기 상한과 ZIP 서명을 확인한다
+        # 본문이 1 GiB에 가까울 수 있으므로 임시 파일로 받으면서 크기 상한과 ZIP 서명을 확인한다
         tmp = manager.incoming_path()
         size, head = 0, b""
         try:
@@ -125,7 +119,7 @@ def create_router(manager: RemediationManager, max_upload_bytes: int | None = No
             cfgs = None if configs is None else [c for c in configs.split(",") if c]
             try:
                 st = await _call(manager.submit, tmp, name, cfgs)
-            except Exception as e:  # noqa: BLE001 — mapped to the contract's error shape
+            except Exception as e:  # noqa: BLE001 - 정해진 오류 응답 형태로 바꾼다
                 return error_response(e)
             return JSONResponse({"id": st.id, "status": st.status, "url": f"/api/remediations/{st.id}"},
                                 status_code=202)
@@ -139,7 +133,7 @@ def create_router(manager: RemediationManager, max_upload_bytes: int | None = No
         except Exception as e:  # noqa: BLE001
             return error_response(e)
 
-    # /{id}보다 먼저 선언해야 readiness가 ID로 해석되지 않는다
+    # /{rid}보다 먼저 선언해야 readiness가 ID로 해석되지 않는다
     @r.get("/readiness")
     async def readiness() -> JSONResponse:
         return JSONResponse(await _call(manager.readiness_info))
@@ -193,7 +187,7 @@ def create_router(manager: RemediationManager, max_upload_bytes: int | None = No
             # 결과 ZIP은 프로젝트명으로 받는다. 이름을 정하지 못하면 result.zip 그대로 보낸다
             try:
                 filename = await _call(manager.zip_name, rid)
-            except Exception:  # 보여 주는 이름이므로 정하지 못해도 내려받기는 실패하지 않는다
+            except Exception:  # 표시용 이름이므로 정하지 못해도 내려받기는 실패시키지 않는다
                 log.debug("remediation %s: download name of result.zip not computed", rid, exc_info=True)
         return FileResponse(path, media_type=_MEDIA.get(ext, "application/octet-stream"),
                             headers={"Cache-Control": "no-store"},

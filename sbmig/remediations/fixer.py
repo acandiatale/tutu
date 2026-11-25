@@ -1,17 +1,16 @@
-"""취약점 조치에서 버전을 올린 수정본의 빌드가 실패했을 때 이관의 수정 루프(``BuildFixLoop``)로 소스를 고치는 모듈.
-수정본은 읽기만 하고, 루프는 ``rounds/<r>/fixloop/tree/``에 만든 작업 복사본에서 실행한다. 고친 파일은 바이트를 비교해
-찾고 새 바이트를 ``fixloop/fixed/``에 남기며, 수정본에 덮어쓰는 일은 그래프가 한다.
-- pom, 숨김 경로, 실행 스크립트, 바이너리 묶음의 수정과 파일 추가, 삭제는 ``edit_guard``가 시도마다 거절하고 끝에서 한 번 더 확인한다
-- KB의 저장된 스크립트는 쓰지 않고 이 루프에서 배운 것도 KB에 기록하지 않는다(``NullKnowledgeBase``)
-- 루프의 저널과 로그는 ``rounds/<r>/fixloop/``에 남고 실행 전체의 저널에는 쓰지 않는다
+"""버전을 올린 수정본의 빌드가 실패했을 때 이관의 수정 루프(``BuildFixLoop``)로 소스를 고치는 모듈.
+루프는 ``rounds/<r>/fixloop/tree/``의 작업 복사본에서 실행하고 수정본은 읽기만 한다.
+고친 파일은 바이트 비교로 찾아 ``fixloop/fixed/``에 남기고, 수정본에 덮어쓰는 일은 그래프가 한다.
+- pom, 숨김 경로, 실행 스크립트, 바이너리 파일의 수정과 파일 추가, 삭제는 ``edit_guard``가 거절한다
+- KB의 스크립트를 쓰지 않고, 이 루프의 결과도 KB에 기록하지 않는다
+- 루프의 저널과 로그는 ``rounds/<r>/fixloop/``에만 남긴다
 - 빌드가 바꾼 추적 파일은 빌드마다 되돌리고, 시도가 커밋한 경로만 고친 파일로 본다
 
-The build fix loop on a failed remediation candidate (docs/INTERFACES.md "v2.1z-bi" part B, amended by "v2.1z-bj"
-and "v2.1z-bk"):
-`run_fix_loop` and the `Fixer` the graph reaches through `Components.fixer` (`RemediationFixer`). The candidate tree is
-never written: the loop runs in a work copy of the loop paths, changed files are found by byte comparison, the fixed
-bytes are stored durably in `fixloop/fixed/` and the graph overlays them. Paths are relative to the project root.
-"""
+`run_fix_loop` and the `Fixer` the graph reaches through `Components.fixer` (`RemediationFixer`). The
+candidate tree is never written: the loop runs in a work copy of the loop paths, changed files are found by
+byte comparison, the fixed bytes are stored durably in `fixloop/fixed/` and the graph overlays them. Paths are
+relative to the project root. Contract: `docs/INTERFACES.md` "v2.1z-bi" part B (amended by "v2.1z-bj",
+"v2.1z-bk")."""
 from __future__ import annotations
 
 import logging
@@ -37,9 +36,7 @@ R_LLM = "llm unavailable"
 
 
 def plan_notes(applied: list[Proposal]) -> list[str]:
-    """수정 루프의 프롬프트에 넣을 영어 안내 문단을 만든다. 올린 라이브러리 버전과 지켜야 할 규칙을 적는다.
-
-    The one English paragraph the fix prompt gets (`plan_notes`): the raised versions and the rules of this loop."""
+    """수정 루프 프롬프트에 넣을 영어 안내 문단을 만든다. 올린 버전과 지켜야 할 규칙이 들어간다."""
     bumps = "; ".join(f"{p.ga} {p.from_version} -> {p.to_version}" for p in applied) or "(none recorded)"
     return [("The build broke after a vulnerability remediation raised these library versions: " + bumps + ". "
              "Fix the project's source code so that it compiles against the new versions. "
@@ -56,20 +53,21 @@ def _norm(p: str) -> str:
 
 
 def loop_paths(manifest_paths: Iterable[str]) -> list[str]:
-    """작업 복사본에 넣을 경로(``.git`` 경로 조각이 없는 manifest 경로)를 정렬해 반환한다.
+    """작업 복사본에 넣을 경로를 정렬해서 반환한다. 경로 중간에 ``.git``이 있는 manifest 경로는 뺀다.
 
-    The *loop paths*: the manifest paths (project-relative) without a `.git` path segment (a ZIP may carry the
-    project's own `.git/` or a nested checkout; git inside the work copy must see one repository only)."""
+    A ZIP may carry the project's own `.git/` or a nested checkout; git inside the work copy must see one
+    repository only."""
     out = {_norm(p) for p in manifest_paths}
     return sorted(p for p in out if p and ".git" not in p.split("/"))
 
 
 def maven_pom_paths(project: Path, targets: Iterable[str] = ()) -> set[str]:
-    """Maven이 이 빌드에서 읽는 pom 가운데 이름이 ``pom.xml``이 아닌 파일의 경로를 모은다. 예외를 던지지 않는다.
+    """Maven이 이 빌드에서 읽는 pom 가운데 이름이 ``pom.xml``이 아닌 파일의 경로를 모은다.
+    예외를 던지지 않고, 읽지 못하면 빈 집합을 반환한다.
 
-    Poms Maven reads for this build under another name: read with the inventory's pom reader (`ProjectPoms`, the
-    reactor from the build targets) — a `<relativePath>` or `<module>` naming an `.xml` file other than `pom.xml`, and
-    a build target that is a file. Project-relative paths; empty when nothing can be read."""
+    Read with the inventory's pom reader (`ProjectPoms`, the reactor from the build targets): a
+    `<relativePath>` or `<module>` naming an `.xml` file other than `pom.xml`, and a build target that is a
+    file."""
     out: set[str] = set()
     try:
         import posixpath
@@ -104,9 +102,9 @@ def maven_pom_paths(project: Path, targets: Iterable[str] = ()) -> set[str]:
 
 
 def is_editable(path: str, other_poms: set[str] | frozenset[str] = frozenset()) -> bool:
-    """루프가 바꿔도 되는 경로인지 확인한다. pom, 숨김 경로, 실행 스크립트, 바이너리 묶음은 바꾸면 안 된다.
+    """루프가 바꿔도 되는 경로면 True를 반환한다. pom, 숨김 경로, 실행 스크립트, 바이너리 파일은 안 된다.
 
-    Rule 2 of v2.1z-bj without the loop-path part: not a `pom.xml`, not a pom under another name, no segment
+    Rule 2 of `v2.1z-bj` without the loop-path part: not a `pom.xml`, not a pom under another name, no segment
     starting with `.`, not `mvnw` / `mvnw.cmd` / a shell or batch script, not a jar / war / ear / class / zip file."""
     p = _norm(path)
     parts = p.split("/")
@@ -123,7 +121,7 @@ def _not_editable_reason(p: str) -> str:
 
 
 def check_paths(root: Path, touched: list[str], loops: set[str], editable: set[str]) -> str | None:
-    """바뀐 경로 목록을 규칙에 비춰 보고, 어긴 경로가 있으면 그 경로를 적은 영어 사유를 반환한다. 없으면 None이다.
+    """바뀐 경로가 규칙을 어기면 그 경로를 담은 영어 사유를 반환한다. 어긴 경로가 없으면 None을 반환한다.
 
     The edit guard's rules: a deleted path, a path that is not editable (`pom.xml must not be edited: <p>` for a
     pom.xml, `<p> must not be edited` otherwise), a path that is no loop path (`<p> is not a file of the uploaded
@@ -147,9 +145,7 @@ def check_paths(root: Path, touched: list[str], loops: set[str], editable: set[s
 
 
 def make_edit_guard(loops: Iterable[str], editable: Iterable[str]) -> Callable[[Any, str, list[str]], str | None]:
-    """``BuildFixLoop``의 ``edit_guard``로 넘길 함수를 만든다. 시도가 바꾼 경로를 ``check_paths``로 확인한다.
-
-    The loop's `edit_guard(ws, pre_head, touched_paths)` over `check_paths`."""
+    """``BuildFixLoop``의 ``edit_guard``로 넘길 함수를 만든다. 시도가 바꾼 경로를 ``check_paths``로 확인한다."""
     lp = {_norm(p) for p in loops}
     ed = {_norm(p) for p in editable}
 
@@ -160,17 +156,16 @@ def make_edit_guard(loops: Iterable[str], editable: Iterable[str]) -> Callable[[
 
 def compare_trees(tree: Path, work: Path, loops: list[str], editable: set[str],
                   attempted: set[str] | None = None) -> tuple[list[str], str | None]:
-    """원래 트리와 작업 복사본의 바이트를 비교해 바뀐 편집 가능 경로와 첫 위반 사유를 반환한다.
-    ``attempted``를 주면 시도가 바꾼 것으로 기록된 경로만 보고, 나머지 차이는 빌드가 남긴 것으로 보고 넘어간다.
+    """원래 트리와 작업 복사본의 바이트를 비교해서 (바뀐 경로, 첫 위반 사유)를 반환한다.
+    ``attempted``를 주면 시도가 바꾼 경로만 본다. 나머지 차이는 빌드가 남긴 것으로 보고 넘어간다.
 
     Rule 3: bytes of every loop path in `tree` against the work copy. An editable path that differs is changed; a
     missing loop path, a symlink, or a difference in a non-editable path other than the root `.gitignore` (git_init
-    writes sbmig's lines into it) is a violation. v2.1z-bk: with `attempted` (the paths the work copy's history
+    writes sbmig's lines into it) is a violation. With `attempted` (the paths the work copy's history
     records as changed by an attempt since the base commit) a difference or a missing file outside that set is a build
     leftover and ignored; only a symlink is a violation wherever it is. Such a path is skipped before its bytes are
-    read: the result is the same as comparing first, except that a path no attempt changed which is unreadable in
-    the work copy or absent from `tree` no longer raises (`PermissionError` / `FileNotFoundError`, which
-    `run_fix_loop` turned into a not-fixed result); it is skipped and the comparison goes on."""
+    read, so a path no attempt changed that is unreadable in the work copy or absent from `tree` never
+    raises."""
     changed: list[str] = []
     for p in loops:
         a, b = Path(tree) / p, Path(work) / p
@@ -182,7 +177,7 @@ def compare_trees(tree: Path, work: Path, loops: list[str], editable: set[str],
                 return changed, f"{p} must not be deleted"
             continue
         if p == GITIGNORE or not by_attempt:
-            continue                                  # 시도가 바꾸지 않은 경로의 차이는 빌드가 남긴 것이므로 읽지 않는다
+            continue                                  # 시도가 바꾸지 않은 경로의 차이는 빌드가 남긴 것이다
         if a.stat().st_size == b.stat().st_size and a.read_bytes() == b.read_bytes():
             continue
         if p not in editable:
@@ -191,12 +186,13 @@ def compare_trees(tree: Path, work: Path, loops: list[str], editable: set[str],
     return sorted(changed), None
 
 
-# 패치에 보여 줄 때 시도하는 인코딩이다. pom 인코딩 보정(``restructure.pom_charset``)과 같은 순서다
+# 패치를 보여 줄 때 시도하는 인코딩. ``restructure.pom_charset``과 같은 순서다
 _PATCH_CODECS = (("utf-8", "UTF-8"), ("cp949", "MS949"))
 
 
 def _decode_pair(a: bytes, b: bytes) -> tuple[str, str, str] | None:
-    """두 바이트 판을 같은 인코딩(UTF-8, 그다음 cp949)으로 풀고 (옛 글, 새 글, 인코딩 이름)을 반환한다. 둘 다 안 되면 None이다."""
+    """두 바이트를 같은 인코딩으로 풀어서 (이전 내용, 새 내용, 인코딩 이름)을 반환한다.
+    UTF-8, cp949 순서로 시도하고 둘 다 안 되면 None을 반환한다."""
     for codec, name in _PATCH_CODECS:
         try:
             return a.decode(codec), b.decode(codec), name
@@ -207,10 +203,9 @@ def _decode_pair(a: bytes, b: bytes) -> tuple[str, str, str] | None:
 
 def unified_patch(tree: Path, work: Path, changed: list[str],
                   new_bytes: Callable[[str], bytes] | None = None) -> str:
-    """바뀐 파일의 두 바이트 판으로 통합 diff를 만든다. UTF-8이 아니면 cp949로 풀어 UTF-8로 적고 맨 앞에 그 사실을 한 줄 남긴다.
-    두 인코딩 모두로 풀리지 않는 파일만 ``Binary files differ``로 적는다.
+    """바뀐 파일들의 unified diff를 만든다. 두 인코딩 모두로 풀리지 않는 파일은 ``Binary files differ``로 쓴다.
 
-    `a/<path>` → `b/<path>`, project-relative, made with `difflib` from the two byte versions. v2.1z-bk: decoded with
+    `a/<path>` → `b/<path>`, project-relative, made with `difflib` from the two byte versions, decoded with
     the pom-charset order (UTF-8, then cp949); a file shown through cp949 gets a first line
     `# <path>: shown as UTF-8, the file is MS949`; only bytes that decode under neither are `Binary files differ`.
     `new_bytes(path)` gives the new version (default: the file under `work`)."""
@@ -233,7 +228,8 @@ def unified_patch(tree: Path, work: Path, changed: list[str],
 
 
 def _remove_leftovers(work: Path, unused: list[Path]) -> None:
-    """루프가 끝난 뒤 쓰지 않는 결과 파일과 작업 복사본을 지운다. 붙잡힌 것이 여럿이어도 끝까지 기다리는 것은 한 번뿐이다."""
+    """루프가 끝난 뒤 쓰지 않는 결과 파일과 작업 복사본을 지운다.
+    다른 프로그램이 잡고 있는 파일이 여럿이어도 끝까지 기다리는 것은 한 번뿐이다."""
     with fsops.one_wait():
         for leftover in unused:
             _rmtree_quiet(leftover, leftover.name)
@@ -241,7 +237,7 @@ def _remove_leftovers(work: Path, unused: list[Path]) -> None:
 
 
 def _rmtree_quiet(p: Path, what: str) -> None:
-    """폴더를 지운다. 지우지 못하면 WARNING으로 기록하고 오류로 보지 않는다."""
+    """파일이나 폴더를 지운다. 지우지 못하면 WARNING만 기록하고 넘어간다."""
     try:
         if p.is_symlink() or p.is_file():
             fsops.unlink(p)
@@ -252,7 +248,8 @@ def _rmtree_quiet(p: Path, what: str) -> None:
 
 
 def _untracked_entries(ws: Any) -> set[str]:
-    """작업 복사본에서 git이 추적하지 않는 항목(무시된 것 포함, 폴더는 한 줄로)을 반환한다. 읽지 못하면 빈 집합이다."""
+    """작업 복사본에서 git이 추적하지 않는 항목을 반환한다. 무시된 항목도 넣고 폴더는 한 항목으로 센다.
+    읽지 못하면 빈 집합을 반환한다."""
     try:
         cp = ws._git("ls-files", "--others", "--directory", "-z", check=False)
         return {x.replace("\\", "/") for x in (cp.stdout or "").split("\0") if x}
@@ -261,10 +258,10 @@ def _untracked_entries(ws: Any) -> set[str]:
 
 
 class _DeadlineRunner:
-    """빌드마다 시간 한도를 마감까지 남은 시간과 ``remediation.build_timeout_minutes`` 가운데 짧은 쪽으로 맞추는 래퍼.
-    빌드가 끝나면 빌드 전에 깨끗했던 추적 파일 가운데 빌드가 바꾸거나 지운 것을 되돌리고, 빌드가 새로 만든 항목을 기록한다.
+    """빌드마다 시간 한도를 남은 시간과 ``remediation.build_timeout_minutes`` 중 짧은 쪽으로 맞추는 래퍼 클래스.
+    빌드가 바꾸거나 지운 추적 파일은 되돌리고, 빌드가 새로 만든 항목은 기록해 둔다.
 
-    v2.1z-bk: after each build every tracked file the build modified or deleted that was clean before it is checked
+    After each build every tracked file the build modified or deleted that was clean before it is checked
     out again (`Workspace.restore_build_byproducts`, the rule `BuildFixLoop._build` applies too), so an attempt is
     never blamed for or credited with the build's own edits; the untracked entries the build created (ignored ones
     included, `git ls-files --others --directory`) are collected in `created` for the end check."""
@@ -331,7 +328,8 @@ def _created_by_build(p: str, created: set[str]) -> bool:
 
 
 def _usage(results: list[Any], budget_calls: int, cfg: Any = None) -> tuple[int, int, int, list[str], list[FixUsage], str]:
-    """루프 결과의 시도들에서 LLM 사용량을 모델별로 모으고 합계, 요청한 모델 이름, 모델별 행, 통화를 반환한다.
+    """루프의 시도들에서 LLM 사용량을 모델별로 모은다.
+    (호출 수, 입력 토큰, 출력 토큰, 모델 이름, 모델별 행, 통화)를 반환한다.
 
     Per-model usage of the loop's attempts, summed the way the orchestrator sums the migration's
     (`Orchestrator._usage_by_model`): the row name is `asked_model_name(usage.model, attempt.model, llm.model)`,
@@ -368,21 +366,21 @@ def _usage(results: list[Any], budget_calls: int, cfg: Any = None) -> tuple[int,
                       input_tokens=int(u.input_tokens or 0), output_tokens=int(u.output_tokens or 0),
                       cost=costs.get(u.model)) for u in rows]
     if extra > 0:
-        # 예산이 센 호출 가운데 시도에 사용량이 없는 호출은 토큰 수를 모른다. 따로 한 행으로 두고 비용을 매기지 않는다
+        # 시도에 사용량이 없는 호출은 토큰 수를 모르므로 따로 한 행으로 두고 비용을 매기지 않는다
         usage.append(FixUsage(model=asked_model_name(default), calls=extra, cost=None, tokens_unknown=True))
     return (sum(r.calls for r in usage), sum(r.input_tokens for r in usage), sum(r.output_tokens for r in usage),
             list(dict.fromkeys(r.model for r in usage)), usage, currency)
 
 
 def fix_usage_rows(fixes: Iterable[Any]) -> list[dict[str, Any]]:
-    """여러 라운드의 수정 루프 결과(``FixResult`` 또는 그 dict)를 모델별 사용량 행으로 합친다.
-    모델별 행이 없는 예전 결과는 합계를 첫 모델 이름의 행 하나로 만들고 비용은 모르는 것으로 둔다.
+    """여러 라운드의 수정 루프 결과(``FixResult`` 또는 dict)를 모델별 사용량 행으로 합친다.
+    모델별 행이 없는 이전 결과는 합계를 한 행으로 만들고 비용은 모르는 것으로 둔다.
 
     Per-model rows `{model, served, calls, input_tokens, output_tokens, cost, currency}` of several rounds' fix loops
     (rounds that were not fixed count too), plus `tokens_unknown: true` on the row of calls whose tokens are unknown
-    (kept apart from the known row of the same name, never priced). `cost` is None when any part of the row has calls or tokens and no price;
-    `currency` is "" when no part was priced. A FixResult written before `usage` existed becomes one row of its totals
-    named `asked_model_name(*models)`, unpriced."""
+    (kept apart from the known row of the same name, never priced). `cost` is None when any part of the row
+    has calls or tokens and no price; `currency` is "" when no part was priced. A FixResult written before
+    `usage` existed becomes one row of its totals named `asked_model_name(*models)`, unpriced."""
     from sbmig.core.models import asked_model_name, merge_model_names
     rows: dict[str, dict[str, Any]] = {}
 
@@ -390,12 +388,12 @@ def fix_usage_rows(fixes: Iterable[Any]) -> list[dict[str, Any]]:
             unknown: bool = False) -> None:
         if not (calls or inp or out):
             return
-        # 토큰 수를 모르는 호출은 같은 이름이어도 따로 한 행으로 둔다(아는 행의 토큰과 비용은 그대로 둔다)
+        # 토큰 수를 모르는 호출은 같은 이름이어도 따로 한 행으로 둔다. 아는 행의 토큰과 비용은 그대로 둔다
         r = rows.setdefault(f"{model.lower()}\0{int(unknown)}", {"model": model, "served": [], "calls": 0,
                                                                 "input_tokens": 0, "output_tokens": 0, "cost": 0.0,
                                                                 "currency": ""})
         if unknown:
-            r["tokens_unknown"] = True          # 토큰 수를 모르는 호출이 들어 있다. 이 키는 그때만 둔다
+            r["tokens_unknown"] = True          # 이 키는 토큰 수를 모르는 호출이 있을 때만 둔다
             cost = None                         # 토큰 수를 모르는 행에는 비용을 매기지 않는다
         r["served"] = [n for n in merge_model_names(r["served"], served) if n.lower() != model.lower()]
         r["calls"] += calls
@@ -427,8 +425,8 @@ def fix_usage_rows(fixes: Iterable[Any]) -> list[dict[str, Any]]:
 
 
 def fix_usage(state: Any) -> dict[str, Any]:
-    """조치 상태(``RemediationState`` 또는 state.json의 dict)에서 모든 라운드의 수정 루프 LLM 사용량을 모은다.
-    결과 줄, 실행 상태, 관리자 페이지가 이 함수 하나로 조치의 호출 수를 센다.
+    """조치 상태(``RemediationState`` 또는 dict)에서 모든 라운드의 수정 루프 LLM 사용량을 모은다.
+    결과 줄, 실행 상태 API, 관리자 페이지가 모두 이 함수로 호출 수를 센다. 예외를 던지지 않는다.
 
     The remediation's fix-loop usage over every round of a state (`rounds[].fix` and every discarded fix in
     `rounds[].fix_discarded`, fixed or not): `{calls, input_tokens, output_tokens, by_model, calls_unknown,
@@ -465,9 +463,10 @@ R_USAGE_UNKNOWN = " (usage unknown)"
 
 
 def interrupted_result(folder: Path, cfg: Any = None) -> FixResult:
-    """중간에 끝난 수정 루프의 폴더에서 LLM 사용량을 되살려 버린 결과 하나를 만든다. 읽지 못하면 사용량 0으로 두고 사유 끝에 표시한다.
+    """중간에 끝난 수정 루프의 폴더에서 LLM 사용량을 읽어서 버린 결과 하나를 만든다.
+    사용량을 다 읽지 못하면 사유 끝에 ``(usage unknown)``을 붙인다.
 
-    v2.1z-bk: a loop killed mid-way left `fixloop/` (renamed by the graph). Its usage is read from the loop's own
+    A loop killed mid-way left `fixloop/` (renamed by the graph). Its usage is read from the loop's own
     `journal.jsonl` (the `llm_script` / `llm_verify_guide` events, with the admin page's reader in its strict mode
     `sbmig.web.admin.journal_usage_checked`; the loop writes no `sbmig.log` of its own) and priced like `_usage`. A
     folder without `journal.jsonl` (with or without `loop.json`: no LLM call was made): zero, known. A journal that
@@ -481,7 +480,8 @@ def interrupted_result(folder: Path, cfg: Any = None) -> FixResult:
 
 
 def usage_from_folder(res: FixResult, folder: Path, cfg: Any = None) -> bool:
-    """수정 루프 폴더의 저널에서 읽은 사용량을 결과에 넣는다. 다 읽지 못하면 ``usage_unknown``을 켜고 False를 반환한다.
+    """수정 루프 폴더의 저널에서 읽은 사용량을 결과에 넣는다.
+    다 읽지 못하면 ``usage_unknown``을 켜고 False를 반환한다.
 
     `journal_usage(folder, cfg)` into `res.usage` / `res.currency` and the totals; a journal that could not be read
     completely keeps what was read with `res.usage_unknown = True` (unknown, never an exact number) and returns
@@ -504,7 +504,8 @@ def _set_totals(res: FixResult) -> None:
 
 
 def journal_usage(folder: Path, cfg: Any = None) -> tuple[list[FixUsage], str, bool] | None:
-    """수정 루프 폴더의 ``journal.jsonl``에서 모델별 LLM 사용량 행, 통화, 끝까지 읽었는지를 반환한다. 읽지 못하면 None이다.
+    """수정 루프 폴더의 ``journal.jsonl``에서 (모델별 사용량, 통화, 끝까지 읽었는지)를 반환한다.
+    저널은 있는데 열 수 없으면 None을 반환한다.
 
     The usage the loop journaled (`llm_script` / `llm_verify_guide` events, read with the admin page's reader in its
     strict mode, `sbmig.web.admin.journal_usage_checked`), priced like `_usage`: `(rows, currency, known)`.
@@ -551,8 +552,8 @@ def journal_usage(folder: Path, cfg: Any = None) -> tuple[list[FixUsage], str, b
 
 
 def _usage_after_error(work_dir: Path, budget_calls: int, cfg: Any) -> tuple[list[FixUsage], str]:
-    """루프 밖으로 예외가 나왔을 때의 LLM 사용량을 루프의 저널에서 읽는다. 저널이 센 것보다 많은 호출과 저널을 읽지 못한 경우의
-    호출은 토큰을 모르는 것으로 두고 비용을 매기지 않는다.
+    """루프 밖으로 예외가 나왔을 때 루프의 저널에서 LLM 사용량을 읽는다.
+    저널에 없는 호출은 토큰 수를 모르는 것으로 두고 비용을 매기지 않는다.
 
     Usage of a loop an exception escaped from: the loop's own journal (`journal_usage`, the reader of
     `interrupted_result`); calls the budget counted beyond the journal's (or all of them when the journal cannot be
@@ -564,7 +565,7 @@ def _usage_after_error(work_dir: Path, budget_calls: int, cfg: Any) -> tuple[lis
     extra = int(budget_calls or 0) - sum(u.calls for u in rows)
     if extra > 0:
         from sbmig.core.models import asked_model_name
-        # 토큰 수를 모르는 호출은 따로 한 행으로 두고 비용을 매기지 않는다. 같은 이름의 행은 토큰과 비용을 그대로 둔다
+        # 토큰 수를 모르는 호출은 따로 한 행으로 두고 비용을 매기지 않는다
         rows = [*rows, FixUsage(model=asked_model_name(default), calls=extra, cost=None, tokens_unknown=True)]
         if not any(u.cost is not None for u in rows):
             currency = ""
@@ -572,9 +573,8 @@ def _usage_after_error(work_dir: Path, budget_calls: int, cfg: Any) -> tuple[lis
 
 
 def run_fix_usage(run_dir: Path | str) -> dict[str, Any]:
-    """실행 폴더의 ``remediation/state.json``을 읽어 ``fix_usage``를 반환한다. 파일이 없거나 읽을 수 없으면 0이다.
-
-    `fix_usage` of `<run dir>/remediation/state.json` (zero when missing or unreadable)."""
+    """실행 폴더의 ``remediation/state.json``을 읽어서 ``fix_usage``를 반환한다.
+    파일이 없거나 읽을 수 없으면 모든 값이 0이다."""
     import json
 
     from .models import RunPaths
@@ -593,7 +593,7 @@ def run_fix_loop(cfg: Any, tree: Path, work_dir: Path, *, run_id: str, targets: 
                  llm_fixer: Any = None, script_runner: Any = None, edit_applier: Any = None,
                  profile: Any = None) -> FixResult:
     """수정본의 프로젝트 루트 ``tree``를 복사한 작업 폴더에서 빌드 오류 수정 루프를 실행하고 결과를 반환한다.
-    ``tree``는 읽기만 하고, 고친 파일의 새 바이트는 ``work_dir/fixed/``에 둔다. 운영 중 실패는 예외 대신 결과로 반환한다.
+    ``tree``는 읽기만 하고, 고친 파일은 ``work_dir/fixed/``에 둔다. 루프 안의 실패는 예외 대신 결과로 반환한다.
 
     `tree` = the project root inside the candidate (never written); `work_dir` = `rounds/<r>/fixloop/` (the loop's
     journal and logs, the work copy `tree/`, the fixed bytes `fixed/`); `targets` = the remediation's build targets
@@ -695,9 +695,9 @@ def run_fix_loop(cfg: Any, tree: Path, work_dir: Path, *, run_id: str, targets: 
         loop = BuildFixLoop(cfg, ws, runner, Triager(cfg), fixer, NullKnowledgeBase(), profile,
                             plan_notes=plan_notes(applied), budget=budget, script_runner=scripts,
                             edit_guard=make_edit_guard(loops, editable), **kw)
-        # 루프 전에 있던 파일이다. 끝에서 시도가 만든 파일을 찾을 때 뺀다(sbmig의 .gitignore, 분석이 남긴 파일)
+        # 루프 전에 있던 파일. 끝에서 시도가 만든 파일을 찾을 때 뺀다(sbmig의 .gitignore, 분석이 남긴 파일)
         initial = _walk_files(work)
-        # 첫 LLM 요청(loop.run) 전에 저널 첫 줄을 쓴다. 저널이 없으면 호출도 없었다는 journal_usage의 전제다
+        # journal_usage는 저널이 없으면 호출도 없었다고 보므로 첫 LLM 요청 전에 저널 첫 줄을 쓴다
         ws.journal({"event": "remediation_fix_loop_start", "targets": list(targets) or [""],
                     "first_build_log": getattr(first_outcome, "log", "") if first_outcome is not None else "",
                     "max_iterations": int(cfg.remediation.fix_loop_max_iterations),
@@ -733,7 +733,7 @@ def run_fix_loop(cfg: Any, tree: Path, work_dir: Path, *, run_id: str, targets: 
                 if journal is not None:
                     journal({"event": "remediation_fix_rejected", "reason": scrub(violation)})
             elif not changed:
-                # 루프의 첫 빌드가 바꾼 것 없이 통과했다. 처음 빌드 실패는 일시적이었다
+                # 바꾼 것 없이 루프의 첫 빌드가 통과했다. 처음 빌드 실패는 일시적이었다
                 res.fixed, res.retry_passed, res.reason = True, True, ""
             else:
                 for p in changed:
@@ -744,7 +744,7 @@ def run_fix_loop(cfg: Any, tree: Path, work_dir: Path, *, run_id: str, targets: 
                 patch_file.write_text(unified_patch(tree, work, changed), encoding="utf-8")
                 res.fixed, res.changed, res.reason = True, changed, ""
                 res.patch, res.fixed_dir = str(patch_file), str(fixed_root)
-        # 마감이 지난 것을 중지 요청보다 먼저 본다. 실행 시간 한도의 중지 함수도 그때 참이 되기 때문이다
+        # 시간 한도가 지나면 중지 함수도 참이 되므로 마감을 중지 요청보다 먼저 확인한다
         elif out_of_time() or loop.budget.time_exceeded():
             res.reason = R_TIME
         elif stopped():
@@ -755,12 +755,12 @@ def run_fix_loop(cfg: Any, tree: Path, work_dir: Path, *, run_id: str, targets: 
             res.reason = R_LLM
         else:
             res.reason = f"not fixed: {res.remaining} error(s) left"
-    except Exception as e:  # noqa: BLE001 - 수정 루프 안의 실패는 결과로 돌려준다. 수정본은 건드리지 않았다
+    except Exception as e:  # noqa: BLE001 - 루프 안의 실패는 결과로 돌려준다. 수정본은 건드리지 않았다
         log.warning("remediation fix loop failed: %s: %s", type(e).__name__, e, exc_info=True)
         res.reason = scrub(f"error: {type(e).__name__}: {e}")
         res.fixed, res.changed, res.patch, res.fixed_dir, res.retry_passed = False, [], "", "", False
         if loop is not None and not res.llm_calls:
-            # 시도 결과를 받지 못했으므로 루프가 저널에 남긴 사용량을 읽는다. 모르는 토큰에는 비용을 매기지 않는다
+            # 시도 결과를 받지 못했으므로 루프가 저널에 남긴 사용량을 읽는다
             try:
                 res.usage, res.currency = _usage_after_error(work_dir, loop.budget.llm_calls, cfg)
                 _set_totals(res)
@@ -776,9 +776,7 @@ def run_fix_loop(cfg: Any, tree: Path, work_dir: Path, *, run_id: str, targets: 
 
 
 class RemediationFixer:
-    """그래프가 ``Components.fixer``로 호출하는 실제 구현. ``run_fix_loop``를 그대로 호출한다.
-
-    The real `Fixer`: delegates to `run_fix_loop` with the real parts."""
+    """그래프가 ``Components.fixer``로 호출하는 실제 구현 클래스. ``run_fix_loop``를 그대로 호출한다."""
 
     def run(self, cfg: Any, tree: Path, work_dir: Path, *, run_id: str, targets: list[str], applied: list[Proposal],
             manifest_paths: list[str], first_outcome: BuildOutcome | None, stop: Callable[[], bool],

@@ -1,26 +1,20 @@
-"""취약점 조치에서 서버의 Maven으로 빌드와 의존성 조회를 실행하는 모듈(``ServerMaven``,
-``interfaces.MavenGateway`` 구현).
-그래프의 ``baseline_build`` / ``build`` 노드가 package 빌드를, ``inventory``와 검증 단계가
-``resolve``(dependency:tree)와 ``packaged``(빌드 결과물 안의 jar 목록)를 호출한다. 명령은 이관과 같은
-``sbmig.build.mvn`` 함수로 만든다.
-- 항상 서버에 설치된 Maven(``build.mvn``)만 쓴다.
-  ``build.mvn``이 프로젝트의 wrapper를 가리키면 준비되지 않은 것으로 본다
-- 서버 settings.xml(``build.settings_file``)이 반드시 있어야 하고 ``-s``로 절대 경로를 넘긴다.
-  Maven 설치본의 전역 settings도 ``-gs``로 넘겨 프로젝트가 지정한 settings를 무시한다
-- ``build.extra_args``에 TLS 검증을 끄는 옵션이나 다른 ``-s`` / ``-f``가 있으면 빌드하지 않는다
+"""취약점 조치에서 서버의 Maven으로 빌드와 의존성 조회를 실행하는 모듈(``ServerMaven``).
+그래프의 빌드 노드가 package 빌드를, ``inventory``와 검증 단계가 ``resolve``와 ``packaged``를 호출한다.
+명령은 이관과 같은 ``sbmig.build.mvn`` 함수로 만든다.
+- 서버에 설치된 Maven만 쓴다. ``build.mvn``이 wrapper를 가리키면 준비되지 않은 것으로 본다
+- 서버 settings.xml이 반드시 있어야 한다. 프로젝트가 지정한 settings는 무시한다
+- ``build.extra_args``에 TLS 검증을 끄는 옵션이나 다른 ``-s``, ``-f``가 있으면 빌드하지 않는다
 - 모든 명령에 ``-Dmaven.test.skip=true``를 붙인다
-- 이관과 같이 Maven이 프로젝트의 ``.mvn/`` 폴더를 읽지 않게 하고(``build.ignore_project_mvn``), maven.config의
-  ``-D`` / ``-P``만 명령줄로 넘긴다. 빌드할 때마다 저널 ``maven_project_config``를 남기고, ``refuse``이면 접수
-  단계에서 거절한다
+- 이관처럼 프로젝트의 ``.mvn/`` 폴더는 읽지 않고, maven.config의 ``-D``, ``-P``만 명령줄로 넘긴다
 
-Server-managed Maven for the remediation flow: package builds, `dependency:tree` resolution and the jars inside the
-built war / executable jar. Never the project's wrapper, always the server settings.xml, tests never run, insecure TLS
-flags stripped. The project's `.mvn/` is out of the way like in the migration (`build.ignore_project_mvn`: the
-empty `MAVEN_BASEDIR` of `sbmig.build.mvn.mvn_env`, the `-D` / `-P` of its maven.config carried over by
-`with_project_mvn`, insecure TLS properties never); every build journals `maven_project_config` (`read` false), and
-`remediation.project_maven_config: refuse` makes the intake refuse it. With the switch off Maven reads the folder and
-every build logs a warning.
-"""
+Server-managed Maven for the remediation flow (`interfaces.MavenGateway`): package builds, `dependency:tree`
+resolution and the jars inside the built war / executable jar. Never the project's wrapper, always the server
+settings.xml (`-s` absolute, plus `-gs` of the Maven installation), tests never run, insecure TLS flags
+stripped. The project's `.mvn/` is out of the way like in the migration (`build.ignore_project_mvn`: the empty
+`MAVEN_BASEDIR` of `sbmig.build.mvn.mvn_env`, the `-D` / `-P` of its maven.config carried over by
+`with_project_mvn`, insecure TLS properties never); every build journals `maven_project_config` (`read`
+false), and `remediation.project_maven_config: refuse` makes the intake refuse it. With the switch off Maven
+reads the folder and every build logs a warning."""
 from __future__ import annotations
 
 import io
@@ -41,7 +35,7 @@ from sbmig.build.mvn import (ProcessResult, base_command, ignore_project_mvn, ma
 from sbmig.build.repo_versions import is_blocking_mirror, read_settings
 
 from .interfaces import Journal, StopCheck
-from .inventory import ProjectPoms, _kid, _kids, _text  # 같은 패키지의 lxml pom 모델과 보조 함수
+from .inventory import ProjectPoms, _kid, _kids, _text  # 같은 패키지의 pom 모델과 보조 함수
 from .models import BuildOutcome, ModuleResolution, PackagedLib, ResolvedDep, ResolvedModel
 
 log = logging.getLogger("sbmig.remediations.maven")
@@ -51,10 +45,10 @@ MavenProbe = Callable[[Any], "tuple[bool, str]"]    # maven_available과 같은 
 
 TEST_SKIP = "-Dmaven.test.skip=true"
 RESOLVE_TIMEOUT_S = 30 * 60
-MAX_NESTED_JAR_BYTES = 64 * 1024 * 1024           # 산출물 안 jar 하나를 메모리로 읽는 한도
+MAX_NESTED_JAR_BYTES = 64 * 1024 * 1024           # 결과물 안의 jar 하나를 메모리로 읽는 한도
 MAX_SUMMARY_ERRORS = 12
 SUMMARY_TAIL = 6
-# 의존성 조회를 위해 package를 다시 실행할 때 끄는 옵션들이다. 테스트 건너뛰기도 포함한다
+# 의존성 조회를 위해 package를 다시 실행할 때 끄는 옵션들
 PACKAGE_SKIPS = ("-Dmaven.main.skip=true", TEST_SKIP, "-Dspring-boot.repackage.skip=true", "-Denforcer.skip=true",
                  "-Dmaven.javadoc.skip=true", "-Dmaven.source.skip=true", "-Dgpg.skip=true",
                  "-DfailOnMissingWebXml=false")
@@ -76,10 +70,10 @@ def _scrub(text: str) -> str:
 
 
 def strip_unsafe_args(args: list[str]) -> tuple[list[str], list[str]]:
-    """``build.extra_args``에서 TLS 검증을 끄는 속성과 ``-s`` / ``--settings`` / ``-f`` / ``--file`` 인자를
-    빼고 (남은 인자, 뺀 인자)를 반환한다.
+    """``build.extra_args``에서 TLS 검증을 끄는 속성과 settings, pom을 바꾸는 인자를 빼고
+    (남은 인자, 뺀 인자)를 반환한다.
 
-    Drop insecure-TLS properties and settings / pom overrides from the configured extra args."""
+    Settings / pom overrides: `-s` / `--settings` / `-f` / `--file` (with their value)."""
     kept: list[str] = []
     dropped: list[str] = []
     skip_next = False
@@ -100,16 +94,12 @@ def strip_unsafe_args(args: list[str]) -> tuple[list[str], list[str]]:
 
 
 def unsafe_build_args(cfg: Any) -> list[str]:
-    """``build.extra_args`` 중 취약점 조치가 쓸 수 없는 인자의 이름 목록을 반환한다.
-    ``-D…=값``의 값은 빼고 이름만 담는다.
+    """``build.extra_args`` 중 취약점 조치가 쓸 수 없는 인자의 이름 목록을 반환한다. 값은 넣지 않는다.
     하나라도 있으면 준비 문제로 보고 빌드를 거절한다.
-    조용히 빼고 빌드하면 "artifact not found" 같은 엉뚱한 실패가 나기 때문이다.
-
-    Arguments the migration's Maven command carries but the remediation never passes (insecure TLS / settings / pom
-    overrides in `build.extra_args`); names only (values of `-D…=` dropped)."""
+    말없이 빼고 빌드하면 "artifact not found" 같은 엉뚱한 실패가 나기 때문이다."""
     try:
         _kept, dropped = strip_unsafe_args([str(a) for a in (cfg.build.extra_args or [])])
-    except Exception:                                    # noqa: BLE001 - an unreadable config is checked elsewhere
+    except Exception:                                    # noqa: BLE001 - 읽을 수 없는 설정은 다른 곳에서 확인한다
         return []
     names: list[str] = []
     for a in dropped:
@@ -128,9 +118,7 @@ def _unsafe_problem(names: list[str]) -> str:
 
 def summarize(text: str, project: Path | None = None) -> str:
     """빌드 로그를 요약한다.
-    서로 다른 ``[ERROR]`` 줄 최대 12개와 마지막 6줄을 담고, 프로젝트 절대 경로와 URL 속 계정 정보는 지운다.
-
-    A few lines of the build log: distinct [ERROR] lines + the tail; project path and URL credentials removed."""
+    서로 다른 ``[ERROR]`` 줄 최대 12개와 마지막 6줄을 담는다. 프로젝트 절대 경로와 URL의 계정 정보는 지운다."""
     lines = [ln.rstrip() for ln in (text or "").splitlines() if ln.strip() and not ln.startswith("# ")]
     errs: list[str] = []
     for ln in lines:
@@ -146,16 +134,14 @@ def summarize(text: str, project: Path | None = None) -> str:
 
 
 def _http_blocker_line(text: str, cfg: Any) -> str:
-    """로그에 Maven의 HTTP 차단 미러가 보이면 이관의 인수인계와 같은 안내 문장(``http_blocked_followup``)을
-    반환하고, 아니면 빈 문자열을 반환한다.
-
-    The migration's Handover wording for Maven's HTTP blocker when the log shows one, else ""."""
+    """로그에 Maven의 HTTP 차단 미러가 보이면 이관의 인수인계와 같은 안내 문장을 반환한다.
+    보이지 않으면 빈 문자열을 반환한다."""
     hit = http_blocker_hit(text or "")
     return http_blocked_followup(hit, cfg) if hit is not None else ""
 
 
 def _with_http_blocker(summary: str, text: str, cfg: Any) -> str:
-    """HTTP 차단 안내 문장이 있으면 요약 맨 앞에 붙인다. 조치 메시지가 이 요약을 그대로 보여 주기 때문이다."""
+    """HTTP 차단 안내 문장이 있으면 요약 맨 앞에 붙인다. 조치 메시지가 이 요약을 그대로 보여 준다."""
     line = _http_blocker_line(text, cfg)
     return f"{line}\n{summary}".strip() if line else summary
 
@@ -165,15 +151,13 @@ def _java_major_of(version: str) -> int | None:
     if not m:
         return None
     major = int(m.group(1))
-    if major == 1 and m.group(2):                       # 1.8.0 → 8
+    if major == 1 and m.group(2):                       # 1.8.0은 8로 본다
         major = int(m.group(2))
     return major
 
 
 def java_home_major(home: str | None) -> int | None:
-    """JDK 홈의 ``release`` 파일에서 Java 메이저 버전을 읽는다. 파일이 없거나 읽지 못하면 None을 반환한다.
-
-    Major version from `<java_home>/release`; None when absent."""
+    """JDK 홈의 ``release`` 파일에서 Java 메이저 버전을 읽는다. 파일이 없거나 읽지 못하면 None을 반환한다."""
     if _blank(home):
         return None
     try:
@@ -185,20 +169,16 @@ def java_home_major(home: str | None) -> int | None:
 
 
 def build_env(cfg: Any) -> dict[str, str]:
-    """``mvn_env``에서 서버 비밀 변수(``IVAS_*`` / ``LLM_*``)를 뺀 빌드 환경 변수를 만든다.
+    """``mvn_env``에서 서버 비밀 변수(``IVAS_*``, ``LLM_*``)를 뺀 빌드 환경 변수를 만든다.
     프로젝트의 빌드 플러그인이 환경 변수를 로그에 남기면 보고서까지 전달되기 때문이다.
-    settings.xml이 ``${env.…}``로 읽는 저장소 계정 변수는 그대로 둔다.
-
-    The build environment without this server's own secrets (`IVAS_*`, `LLM_*`): project plugins are foreign code."""
+    settings.xml이 ``${env.…}``로 읽는 저장소 계정 변수는 그대로 둔다."""
     env = mvn_env(cfg)
     return {k: v for k, v in env.items() if not k.upper().startswith(_SERVER_SECRET_PREFIXES)}
 
 
 class ServerMaven:
     """서버의 Maven으로 빌드와 의존성 조회를 실행하는 클래스.
-    ``runner``와 ``maven_probe``를 주입할 수 있어서 테스트는 가짜 구현을 넣는다.
-
-    The server-managed Maven gateway. `runner` / `maven_probe` are injectable (tests never start a real mvn)."""
+    테스트는 ``runner``와 ``maven_probe``에 가짜 구현을 넣는다."""
 
     def __init__(self, cfg: Any, runner: Runner | None = None, *, maven_probe: MavenProbe | None = None,
                  journal: Journal | None = None):
@@ -206,14 +186,11 @@ class ServerMaven:
         self.runner: Runner = runner or run_logged
         self.maven_probe: MavenProbe = maven_probe or maven_available
         self.journal = journal
-        self.last_log: Path | None = None               # 마지막으로 실행한 Maven 명령의 로그 경로다
+        self.last_log: Path | None = None               # 마지막으로 실행한 Maven 명령의 로그 경로
 
-    # ------------------------------------------------------------------ readiness / hosts
+    # ------------------------------------------------------------------ 준비 상태와 저장소 호스트
     def readiness(self) -> list[str]:
-        """빌드를 막는 문제 목록을 반환한다.
-        빈 목록이면 빌드할 준비가 된 것이고, 목록에 비밀 값은 넣지 않는다.
-
-        Problems that prevent a build (empty = ready); no secret values."""
+        """빌드를 막는 문제 목록을 반환한다. 빈 목록이면 빌드할 수 있다. 목록에 비밀 값은 넣지 않는다."""
         problems: list[str] = []
         b = self.cfg.build
         exe = Path(str(b.mvn or "mvn")).name.lower()
@@ -222,7 +199,7 @@ class ServerMaven:
         ok, info = False, ""
         try:
             ok, info = self.maven_probe(self.cfg)
-        except Exception as exc:                        # noqa: BLE001 - a probe failure is a readiness problem
+        except Exception as exc:                        # noqa: BLE001 - 확인 실패도 준비 문제로 본다
             info = f"{type(exc).__name__}"
         if not ok:
             problems.append(f"Maven not available ({_scrub(str(info))[:200]})")
@@ -254,10 +231,9 @@ class ServerMaven:
         return problems
 
     def allowed_hosts(self) -> list[str]:
-        """승인된 저장소 호스트 목록을 반환한다. ``remediation.allowed_repository_hosts``가 없으면 서버
-        settings.xml의 미러와 저장소 호스트를 쓰고, 차단 미러는 제외한다.
-
-        Approved repository hosts (configured list, else the hosts of the server settings' mirrors / repositories)."""
+        """승인된 저장소 호스트 목록을 반환한다.
+        ``remediation.allowed_repository_hosts``가 없으면 서버 settings.xml의 미러와 저장소 호스트를 쓴다.
+        차단 미러는 뺀다."""
         configured = [str(h).strip().lower() for h in (self.cfg.remediation.allowed_repository_hosts or []) if str(h).strip()]
         if configured:
             return sorted(set(configured))
@@ -277,7 +253,7 @@ class ServerMaven:
                 hosts.add(h.lower())
         return sorted(hosts)
 
-    # ------------------------------------------------------------------ command
+    # ------------------------------------------------------------------ 명령 만들기와 실행
     def _command(self, goals: list[str]) -> tuple[list[str] | None, str]:
         """실행할 Maven 명령을 만들어 (명령, 문제)를 반환한다.
         문제가 있으면 명령은 None이고 실행하지 않는다."""
@@ -289,25 +265,25 @@ class ServerMaven:
         exe, extra, rest = base[0], base[1:1 + n], base[1 + n:]
         if Path(exe).name.lower().startswith("mvnw"):
             return None, "build.mvn points at a Maven wrapper (mvnw); refused"
-        # 이관과 다른 명령으로 빌드하지 않도록, 빼야 할 인자가 있으면 조용히 빼지 않고 거절한다
+        # 이관과 다른 명령으로 빌드하지 않도록 빼야 할 인자가 있으면 말없이 빼지 않고 거절한다
         unsafe = unsafe_build_args(self.cfg)
         if unsafe:
             return None, _unsafe_problem(unsafe)
         rest = [a for a in rest if not _INSECURE_RE.match(a)]
-        # resolve가 이 위치를 기준으로 goal을 끼워 넣으므로 테스트 건너뛰기는 항상 맨 끝에 한 번만 둔다
+        # resolve가 마지막 인자 앞에 goal을 끼워 넣으므로 테스트 건너뛰기는 맨 끝에 한 번만 둔다
         cmd = [a for a in [exe, *extra, *rest, *goals] if a != TEST_SKIP] + [TEST_SKIP]
         return cmd, ""
 
     def _with_project_mvn(self, cmd: list[str], cwd: Path, project: Path) -> list[str]:
-        """이관과 같이 프로젝트 ``maven.config``의 ``-D`` / ``-P``와 프로젝트 루트를 명령에 넣는다.
-        TLS 검증을 약하게 하는 속성은 프로젝트에서 왔어도 넣지 않는다."""
+        """이관처럼 프로젝트 ``maven.config``의 ``-D``, ``-P``와 프로젝트 루트를 명령에 넣는다.
+        TLS 검증을 약하게 하는 속성은 넣지 않는다."""
         out = with_project_mvn(self.cfg, cmd, Path(cwd), top=Path(project))
         return [a for a in out if not _INSECURE_RE.match(a)]
 
     def _check_project_mvn(self, project: Path) -> None:
-        """프로젝트에 ``.mvn`` 설정 파일이 있으면 로그와 저널을 남긴다.
+        """프로젝트에 ``.mvn`` 설정 파일이 있으면 로그와 저널 ``maven_project_config``를 남긴다.
         Maven처럼 상위 폴더로 올라가며 ``.mvn``이 있는 첫 폴더를 찾는다.
-        ``build.ignore_project_mvn``이면 Maven이 읽지 않으므로 INFO, 아니면 WARNING으로 남긴다."""
+        ``build.ignore_project_mvn``이 켜져 있으면 Maven이 읽지 않으므로 INFO, 아니면 WARNING으로 남긴다."""
         cur = Path(project).resolve()
         for d in [cur, *cur.parents]:
             mvn_dir = d / ".mvn"
@@ -328,42 +304,41 @@ class ServerMaven:
                             self.journal({"event": "maven_project_config", "files": found, "where": where,
                                           "policy": getattr(self.cfg.remediation, "project_maven_config", ""),
                                           "read": read})
-                        except Exception:       # noqa: BLE001 - journal is best effort
+                        except Exception:       # noqa: BLE001 - 저널 기록이 실패해도 계속한다
                             pass
                 return
         return
 
     def _run(self, cmd: list[str], project: Path, log_path: Path, timeout_s: float) -> ProcessResult:
-        # 이관의 빌드 로그와 비교할 수 있도록 조치에서 실행한 명령과 폴더도 로그에 남긴다
+        # 이관의 빌드 로그와 비교할 수 있도록 실행한 명령과 폴더를 로그에 남긴다
         log.info("remediation mvn %s (cwd=%s)", " ".join(cmd[1:]), Path(project).as_posix())
         return self.runner(cmd, cwd=Path(project), env=build_env(self.cfg), log_path=Path(log_path), timeout_s=timeout_s)
 
     def _may_force_update(self, cmd: list[str]) -> bool:
-        """``-U``를 붙여 다시 실행해도 되는지 판단한다. 이관의 ``MavenRunner``와 같은 규칙으로, 온라인일 때
-        한 번만 허용한다(``build.retry_negative_cache``, 기본값 켬)."""
+        """``-U``를 붙여 다시 실행해도 되면 True를 반환한다.
+        이관의 ``MavenRunner``와 같은 규칙이다. ``build.retry_negative_cache``가 켜져 있고 온라인일 때만 허용한다."""
         if not getattr(self.cfg.build, "retry_negative_cache", True):
             return False
         return not any(a in ("-U", "--update-snapshots", "-o", "--offline") for a in cmd)
 
     def _run_with_update_retry(self, cmd: list[str], cwd: Path, log_path: Path, timeout_s: float) -> ProcessResult:
-        """로컬 저장소에 캐시된 다운로드 실패(``*.lastUpdated``) 때문에 빌드가 실패하면 ``-U``를 붙여 한 번
-        더 실행하고 두 번째 결과를 반환한다.
-        이관의 ``MavenRunner.run``과 같은 규칙이며, 재시도하면 저널 ``remediation_negative_cache_retry``를 남긴다."""
+        """명령을 실행하고, 캐시된 다운로드 실패(``*.lastUpdated``)로 실패하면 ``-U``를 붙여 한 번 더 실행한다.
+        이관의 ``MavenRunner.run``과 같은 규칙이다. 다시 실행하면 저널 ``remediation_negative_cache_retry``를 남긴다.
+        pom이 없는 라이브러리 때문에 실패하면 그보다 먼저 최소 pom을 두고 다시 실행한다."""
         from sbmig.build.pomless import memo_for, round_log_path, run_with_stubs
         from sbmig.build.runner import negative_cache_hits
-        # 저장소에 pom이 없는 라이브러리 때문에 실패하면 -U보다 먼저 최소 pom을 두고 같은 명령을 다시 실행한다
         last = [Path(log_path)]
 
         def run(k: int) -> ProcessResult:
             last[0] = round_log_path(Path(log_path), k)
             return self._run(cmd, cwd, last[0], timeout_s)
         pr = run_with_stubs(self.cfg, run, journal=self.journal, memo=memo_for(self), project_root=Path(cwd))
-        # 기준 빌드 비교가 결과의 로그 파일을 읽으므로 마지막으로 실행한 로그 경로를 남긴다
+        # 조치 전 빌드와 비교할 때 로그 파일을 읽으므로 마지막으로 실행한 로그 경로를 남긴다
         self.last_log = last[0]
         ok = pr.exit_code == 0 and not pr.timed_out and "BUILD SUCCESS" in (pr.text or "")
         if ok or pr.timed_out or not self._may_force_update(cmd):
             return pr
-        if http_blocker_hit(pr.text or "") is not None:      # v2.1z-ah: Maven's HTTP blocker — -U cannot change it
+        if http_blocker_hit(pr.text or "") is not None:      # HTTP 차단 미러는 -U로 바뀌지 않는다
             return pr
         hits = negative_cache_hits(pr.text or "")
         if not hits:
@@ -373,20 +348,18 @@ class ServerMaven:
             try:
                 self.journal({"event": "remediation_negative_cache_retry", "artifacts": hits[:10],
                               "first_log": Path(log_path).as_posix()})
-            except Exception:                           # journal is best effort
+            except Exception:                           # 저널 기록이 실패해도 계속한다
                 log.debug("negative-cache journal line not written", exc_info=True)
         lp = Path(log_path)
         self.last_log = lp
         return self._run([*cmd[:-1], "-U", cmd[-1]], cwd, lp.with_name(f"{lp.stem}-U{lp.suffix}"), timeout_s)
 
-    # ------------------------------------------------------------------ build targets
+    # ------------------------------------------------------------------ 빌드 대상
     def target_runs(self, project: Path, targets: list[str] | None) -> list[tuple[str, Path, list[str]]]:
-        """빌드 대상마다 (대상, 작업 폴더, 추가 인자)를 반환한다.
-        이관의 ``fixloop.build_target_args``와 같은 규칙이다.
-        대상이 없으면 루트에서 한 번 실행하고, 대상이 루트 pom의 ``<modules>``에 있으면 루트에서
-        ``-pl <대상> -am``으로, 아니면 그 폴더 안에서 실행한다.
-
-        (target, cwd, extra args) per build target, decided like the migration's `build_target_args`."""
+        """빌드 대상마다 (대상, 작업 폴더, 추가 인자)를 반환한다. 이관의 ``fixloop.build_target_args``와 같은 규칙이다.
+        - 대상이 없으면 루트에서 한 번 실행한다
+        - 대상이 루트 pom의 ``<modules>``에 있으면 루트에서 ``-pl <대상> -am``으로 실행한다
+        - 그 밖의 대상은 그 폴더 안에서 실행한다"""
         project = Path(project)
         from .inventory import normalize_roots, parse_pom_file
         roots = normalize_roots(targets)
@@ -404,17 +377,14 @@ class ServerMaven:
                 out.append((t, project / t, []))
         return out
 
-    # ------------------------------------------------------------------ package
+    # ------------------------------------------------------------------ package 빌드
     def package(self, project: Path, log_path: Path, stop: StopCheck | None = None,
                 targets: list[str] | None = None) -> BuildOutcome:
-        """빌드 대상마다 ``mvn clean package -Dmaven.test.skip=true``를 실행한다.
-        모두 성공해야 ``ok``이고 첫 실패에서 멈추며, 예외를 던지지 않는다.
+        """빌드 대상마다 ``mvn clean package -Dmaven.test.skip=true``를 실행한다. 예외를 던지지 않는다.
+        - 모두 성공해야 ``ok``이고 첫 실패에서 멈춘다
         - 종료 코드가 0이고 로그에 BUILD SUCCESS가 있을 때만 성공으로 본다
-        - ``stop``은 시작하기 전에만 확인하고 빌드 도중에는 중단하지 않는다
-        - 대상이 여럿이면 로그를 ``<이름>-<대상>.log``로 나눠 남기고, 결과의 ``log``는 실패한 대상의 로그,
-          실패가 없으면 마지막 로그다
-
-        One package build per build target (the migration's targets; the root when none); never raises."""
+        - ``stop``은 시작 전에만 확인하고 빌드 도중에는 중단하지 않는다
+        - 대상이 여럿이면 로그를 ``<이름>-<대상>.log``로 나눈다. 결과의 ``log``는 실패한 대상이나 마지막 대상의 로그다"""
         log_str = Path(log_path).as_posix()
         if stop is not None and stop():
             return BuildOutcome(ok=False, log=log_str, summary="stop requested before the build started")
@@ -435,7 +405,7 @@ class ServerMaven:
                 self.last_log = lp
                 pr = self._run_with_update_retry(cmd, cwd, lp, timeout_s)
                 lp = Path(self.last_log)
-            except Exception as exc:                    # noqa: BLE001 - the gateway never raises for a build
+            except Exception as exc:                    # noqa: BLE001 - 빌드 실패는 예외 대신 결과로 반환한다
                 log.warning("remediation build could not run: %s", type(exc).__name__)
                 return BuildOutcome(ok=False, log=lp.as_posix(), summary=f"build could not run: {type(exc).__name__}",
                                     seconds=round(total + time.monotonic() - t0, 3))
@@ -458,15 +428,14 @@ class ServerMaven:
         assert out is not None
         return out
 
-    # ------------------------------------------------------------------ resolve
+    # ------------------------------------------------------------------ 의존성 조회
     def resolve(self, project: Path, work: Path, targets: list[str] | None = None) -> ResolvedModel:
         """모듈마다 Maven이 실제로 고른 의존성과 pom에 선언된 플러그인을 조회한다.
         ``dependency:tree``를 ``target_runs`` 규칙대로 대상마다 실행한다.
-        트리를 얻지 못한 모듈이 있으면 ``complete=False``로 두고 그 모듈 이름을 남긴다.
-        캐시된 다운로드 실패는 ``-U``로 한 번 재시도한다.
+        트리를 얻지 못한 모듈이 있으면 ``complete=False``로 두고 ``notes``에 모듈 이름을 남긴다.
 
-        Resolved dependencies per module (one `dependency:tree` run per build target, the root when none) + declared
-        plugins. A module without a tree makes the model incomplete (named in `notes`)."""
+        When `dependency:tree` alone fails in a multi-module reactor it is run again with `package` and
+        `PACKAGE_SKIPS`, so sibling modules resolve from the reactor."""
         project, work = Path(project), Path(work)
         work.mkdir(parents=True, exist_ok=True)
         model = ResolvedModel(complete=True)
@@ -510,7 +479,7 @@ class ServerMaven:
                         ok = True
                         break
                     last_text = pr.text or ""
-                    if http_blocker_hit(last_text) is not None:     # v2.1z-ah: a package run would be refused the same way
+                    if http_blocker_hit(last_text) is not None:     # package로 다시 실행해도 똑같이 막힌다
                         break
                     if len(mods) == 1:          # 형제 모듈이 없으면 package를 함께 실행해도 결과가 같다
                         break
@@ -550,13 +519,11 @@ class ServerMaven:
             model.notes.append("plugin versions are declared in the poms, not resolved")
         return model
 
-    # ------------------------------------------------------------------ packaged
+    # ------------------------------------------------------------------ 결과물 안의 jar
     def packaged(self, project: Path, targets: list[str] | None = None) -> list[PackagedLib]:
-        """모듈의 war나 실행 jar 안에 들어 있는 ``WEB-INF/lib`` / ``BOOT-INF/lib``의 jar 목록을 반환한다.
+        """모듈의 war나 실행 jar 안에 있는 ``WEB-INF/lib``, ``BOOT-INF/lib``의 jar 목록을 반환한다.
         g:a와 버전은 안쪽 jar의 ``pom.properties``에서만 읽고 파일 이름으로 추측하지 않는다.
-        ``targets``는 ``package``와 같은 빌드 대상이다.
-
-        Jars inside the built war / executable jar of every module; coordinates from pom.properties only."""
+        ``targets``는 ``package``와 같은 빌드 대상이다."""
         project = Path(project)
         from .inventory import normalize_roots
         roots = normalize_roots(targets)
@@ -598,19 +565,16 @@ def _failure_point(text: str, root: Path) -> tuple[list[tuple[str, ...]], dict[t
 
 
 def build_errors(text: str, root: Path | str) -> int:
-    """실패한 빌드 로그에서 Maven 로그 파서가 읽은 오류 수를 반환한다.
+    """실패한 빌드 로그에서 Maven 로그 파서가 읽은 서로 다른 오류 수를 반환한다.
 
-    The number of distinct errors `sbmig.build.log_parser` reads in a failed build's log (an unparsed failure counts
-    as the one UNKNOWN error the parser makes)."""
+    An unparsed failure counts as the one UNKNOWN error the parser makes."""
     return len(_failure_point(text or "", Path(root))[0])
 
 
 def compare_with_baseline(baseline: BuildOutcome, baseline_text: str, baseline_root: Path | str,
                           candidate: BuildOutcome, candidate_text: str, candidate_root: Path | str) -> dict[str, Any]:
     """실패한 수정본 빌드가 조치 전 빌드에 있던 오류로만 실패했는지 비교한 결과를 반환한다. 예외를 던지지 않는다.
-    ``same``이 True면 새 오류가 보이지 않은 것이며, 바꾼 버전으로 컴파일된다는 뜻은 아니다.
-
-    Whether a failed candidate build failed only with errors the failed baseline build already had.
+    ``same``이 True면 새 오류가 보이지 않았다는 뜻이다. 바꾼 버전으로 컴파일된다는 뜻은 아니다.
 
     What is compared: both logs are parsed by the migration's Maven log parser (`parse_maven_log`, paths made
     relative to each tree's project root, so the two tree locations do not matter) and every error becomes the key
@@ -663,20 +627,20 @@ def compare_with_baseline(baseline: BuildOutcome, baseline_text: str, baseline_r
         return out
 
 
-# ---------------------------------------------------------------------------- 도우미
+# ---------------------------------------------------------------------------- 보조 함수
 def _gav(node: TreeNode) -> str:
     return f"{node.gav.group_id}:{node.gav.artifact_id}:{node.gav.version or ''}"
 
 
 def _tree_deps(root: TreeNode) -> list[ResolvedDep]:
-    """모듈의 의존성 트리를 실제로 선택된 의존성 목록으로 바꾼다.
-    생략된 노드와 충돌 노드는 제외하고, ``path``에는 모듈에서 그 의존성까지 거치는 g:a:v 경로를 담는다."""
+    """모듈의 의존성 트리를 실제로 선택된 의존성 목록으로 바꾼다. 생략된 노드는 뺀다.
+    ``path``에는 모듈에서 그 의존성까지 거치는 g:a:v 경로를 담는다."""
     out: list[ResolvedDep] = []
 
     def visit(node: TreeNode, chain: list[str]) -> None:
         for c in node.children:
             if c.omitted:
-                continue                         # 다른 경로로 이미 들어온 같은 jar이므로 선택된 의존성으로 세지 않는다
+                continue                         # 다른 경로로 이미 들어온 jar이므로 세지 않는다
             out.append(ResolvedDep(group_id=c.gav.group_id, artifact_id=c.gav.artifact_id, version=c.gav.version or "",
                                    scope=c.scope or c.gav.scope or "compile", type=c.gav.type or "jar",
                                    classifier=c.gav.classifier or "", direct=not chain, path=list(chain)))
@@ -687,9 +651,8 @@ def _tree_deps(root: TreeNode) -> list[ResolvedDep]:
 
 
 def _declared_plugins(pp: ProjectPoms, pf: Any) -> list[ResolvedDep]:
-    """pom에 선언된 빌드 플러그인과 그 플러그인의 ``<dependencies>``를 모은다.
-    프로필과 ``<pluginManagement>``도 포함한다.
-    버전은 Maven이 해석한 결과가 아니라 선언된 값이며, 프로젝트 속성으로 풀 수 있으면 푼 값을 쓴다."""
+    """pom에 선언된 빌드 플러그인과 그 플러그인의 ``<dependencies>``를 모은다. 프로필과 ``<pluginManagement>``도 본다.
+    버전은 Maven이 해석한 값이 아니라 선언된 값이다. 프로젝트 속성으로 풀 수 있으면 푼 값을 쓴다."""
     out: list[ResolvedDep] = []
     seen: set[tuple[str, str, str, str]] = set()
     builds = [_kid(pf.root, "build")]
@@ -760,8 +723,8 @@ def _libs_in(art: Path, rel: str) -> list[PackagedLib]:
 
 
 def _coords_of(data: bytes, file_name: str) -> tuple[str, str]:
-    """안쪽 jar의 pom.properties에서 (g:a, 버전)을 읽는다. 여러 개 있으면 파일 이름이
-    ``<artifactId>-<version>``으로 시작하는 것을 고르고, 고르지 못하면 빈 값을 반환한다."""
+    """안쪽 jar의 pom.properties에서 (g:a, 버전)을 읽는다.
+    여러 개 있으면 파일 이름이 ``<artifactId>-<version>``으로 시작하는 것을 고른다. 고르지 못하면 빈 값을 반환한다."""
     with zipfile.ZipFile(io.BytesIO(data)) as inner:
         cands: list[tuple[str, str]] = []
         for n in inner.namelist():

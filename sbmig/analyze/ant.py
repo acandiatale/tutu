@@ -1,30 +1,26 @@
 """Ant 프로젝트(build.xml만 있고 pom.xml이 없는 프로젝트)에 pom.xml을 만들어 주는 모듈.
-기본적으로 꺼져 있어 Ant 프로젝트는 접수에서 ``intake.ant_message``로 거부된다.
-나중에 다시 켤 수 있도록 코드는 남겨 둔다.
-``intake.ant_to_maven: true``면 접수의 ``_check_build_tool``이 :func:`synthesize_pom`을 호출하고, 성공하면
-커밋한 뒤 일반 Maven 프로젝트처럼 진행한다.
-- 진입점은 :func:`describe_ant`(읽기 전용, :class:`AntProject` 반환)와
-  :func:`synthesize_pom`(``<root>/pom.xml``만 기록하고 build.xml은 그대로 둠)이다
+기본값은 꺼져 있어서 Ant 프로젝트는 접수에서 ``intake.ant_message``로 거부된다. 다시 켤 수 있도록 코드는 남겨 둔다.
+``intake.ant_to_maven: true``면 접수의 ``_check_build_tool``이 :func:`synthesize_pom`을 호출한다.
+- :func:`describe_ant`는 build.xml과 폴더를 읽기만 하고, :func:`synthesize_pom`은 ``<root>/pom.xml``만 쓴다
 - pom으로 옮기지 못한 build.xml 작업은 ``build_xml_notes``에 한 줄씩 남긴다
-- 좌표를 모르는 jar는 소스에서 쓰이면 system scope(``intake.unknown_jar``)로 넣고, 쓰이지 않으면 뺀다.
-  컨테이너 API는 provided로 넣는다
+- 좌표를 모르는 jar는 소스에서 쓰이면 system scope로 넣고 안 쓰이면 뺀다. 컨테이너 API는 provided로 넣는다
 - Java 버전은 ``intake.min_java_source``까지 올리지만 ``<release>``는 쓰지 않는다
 
-Ant → Maven at intake (v2.1j, docs/INTERFACES.md "v2.1j"), used only with `intake.ant_to_maven: true` — by default an
-Ant project is refused at intake with `intake.ant_message`.
+Ant → Maven at intake (docs/INTERFACES.md "v2.1j"), used only with `intake.ant_to_maven: true`. On success the
+intake commits the pom and the run goes on as a Maven project; build.xml stays as it is.
 
-`describe_ant(ws)` reads build.xml with its properties resolved (`<property name value|location>`, `<property file>`,
-an unreferenced `build.properties` as fallback, `${basedir}`, nested `${a.b}`; `<property environment>` ignored;
-unresolved references stay as they are + a warning), the `<javac>` tasks (srcdir lists, nested `<src>`, destdir,
-source / target / encoding, classpath attribute / classpathref / nested `<classpath>` with pathelement / fileset /
-refid → `<path id>`), the `<war>` / `<jar>` tasks (destfile, webxml, `<lib>`, `<classes>`, `<fileset>`), the
-`<copy>` tasks (into the classes dir = resources), version hints, and the directories: source roots confirmed by
-`package a.b;`, the web root (the `<war webxml>` WEB-INF parent, else a directory holding WEB-INF/web.xml outside
-build output), lib dirs (classpath filesets, WEB-INF/lib, a root lib/). `synthesize_pom(ws, cfg)` resolves every
-jar (`sbmig.analyze.jar_coords`) and writes `<root>/pom.xml` (UTF-8, 2-space indent); the only other files it writes
-is nothing else: unknown-but-used jars stay where they are, declared with systemPath
-`${maven.multiModuleProjectDirectory}/<as-is path>` (the restructure copies them into the module when it splits the project).
-"""
+`describe_ant(ws)` reads build.xml with its properties resolved (`<property name value|location>`, `<property
+file>`, an unreferenced `build.properties` as fallback, `${basedir}`, nested `${a.b}`; `<property
+environment>` ignored; unresolved references stay as they are + a warning), the `<javac>` tasks (srcdir lists,
+nested `<src>`, destdir, source / target / encoding, classpath attribute / classpathref / nested `<classpath>`
+with pathelement / fileset / refid → `<path id>`), the `<war>` / `<jar>` tasks (destfile, webxml, `<lib>`,
+`<classes>`, `<fileset>`), the `<copy>` tasks (into the classes dir = resources), version hints, and the
+directories: source roots confirmed by `package a.b;`, the web root (the `<war webxml>` WEB-INF parent, else a
+directory holding WEB-INF/web.xml outside build output), lib dirs (classpath filesets, WEB-INF/lib, a root
+lib/). `synthesize_pom(ws, cfg)` resolves every jar (`sbmig.analyze.jar_coords`) and writes `<root>/pom.xml`
+(UTF-8, 2-space indent) and nothing else: unknown-but-used jars (`intake.unknown_jar`) stay where they are,
+declared with systemPath `${maven.multiModuleProjectDirectory}/<as-is path>` (the restructure copies them into
+the module when it splits the project)."""
 from __future__ import annotations
 
 import json
@@ -62,15 +58,12 @@ from .webapp_inventory import _source_root_of, _walk
 
 log = logging.getLogger("sbmig.analyze.ant")
 
-# 생성한 pom은 재구성 전까지 부모가 없고, Maven 3.8 이하의 기본 maven-war-plugin 2.2는 JDK 16 이상에서
-# 실패하므로 버전을 고정한다. 컴파일러 플러그인은 maven.compiler.* 속성으로 충분하다
-# the synthesized pom has no parent until the restructure: Maven ≤ 3.8 binds maven-war-plugin 2.2, which fails on
-# JDK 16+ → pinned (3.4.0 = what Maven 3.9 binds). No compiler plugin: the maven.compiler.* properties are enough.
+# 만든 pom은 재구성 전까지 부모가 없다. Maven 3.8 이하가 쓰는 war 플러그인 2.2는 JDK 16 이상에서 실패하므로
+# Maven 3.9와 같은 3.4.0으로 고정한다. 컴파일러 플러그인은 maven.compiler.* 속성으로 충분하다
 WAR_PLUGIN = ("org.apache.maven.plugins", "maven-war-plugin", "3.4.0")
 BUILD_HELPER_PLUGIN = ("org.codehaus.mojo", "build-helper-maven-plugin", "3.6.1")
-# 좌표를 모르는 jar의 system scope 경로는 as-is 위치를 최상위 pom 디렉토리 기준으로 가리킨다
+# 좌표를 모르는 jar의 system scope 경로는 최상위 pom 폴더 기준의 as-is 위치다
 # 여기서는 복사하지 않고, 재구성이 모듈로 옮길 때 복사한다
-# unknown-but-used jars: as-is path from the top-level pom directory, no copy
 SYSTEM_LIB_DIR = "lib"
 SYSTEM_PATH_BASE = "${maven.multiModuleProjectDirectory}"
 POM_NS = ('xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"\n'
@@ -97,7 +90,7 @@ JAVA_CHARSET = {"utf-8": "UTF-8", "utf-8-sig": "UTF-8", "utf_8": "UTF-8", "ascii
                 "ms949": "MS949", "euc-kr": "EUC-KR", "euc_kr": "EUC-KR", "shift_jis": "Shift_JIS",
                 "latin-1": "ISO-8859-1", "latin_1": "ISO-8859-1", "iso8859-1": "ISO-8859-1"}
 # 소스가 쓰지만 프로젝트의 어떤 jar도 제공하지 않는 컨테이너 API는 provided로 추가한다
-# container APIs the sources use that no project jar provides (Ant compiled against ${tomcat.home}/lib) → provided
+# Ant는 보통 ${tomcat.home}/lib에 대고 컴파일했기 때문이다
 IMPLIED_APIS = (
     ("javax.servlet", ("javax.servlet", "javax.servlet.http"), "javax.servlet", "javax.servlet-api", "3.1.0",
      frozenset({"javax.servlet:servlet-api", "javax.servlet:javax.servlet-api", "org.apache.tomcat:servlet-api",
@@ -117,13 +110,13 @@ _SPLIT_LIST_RE = re.compile(r"[;,]")
 _PATTERN_SPLIT_RE = re.compile(r"[,\s]+")
 
 
-# ------------------------------------------------------------------------------------------------ model
+# ------------------------------------------------------------------------------------------------ 데이터 모델
 @dataclass
 class ClasspathEntry:
     """클래스패스 항목 하나를 담는 데이터 클래스.
     jar 파일, 클래스 디렉토리, fileset, 프로젝트 밖이나 해석하지 못한 경로(outside) 중 하나다."""
     kind: str                                  # jar | dir | fileset | outside
-    path: str                                  # repo-relative ("" = root); the raw text for `outside`
+    path: str                                  # 저장소 기준 경로(""은 루트). outside면 원래 문자열
     includes: list[str] = field(default_factory=list)
     excludes: list[str] = field(default_factory=list)
 
@@ -179,31 +172,29 @@ class ResourceDir:
 
 @dataclass
 class AntProject:
-    """build.xml과 폴더 구조를 읽은 결과를 담는 데이터 클래스(읽기 전용).
-    ``error``가 있으면 pom을 만들 수 없다. 경로는 모두 저장소 기준 posix 상대 경로다.
-
-    What build.xml and the directories say (read only). `error` set → no synthesis possible."""
+    """build.xml과 폴더 구조를 읽은 결과를 담는 데이터 클래스.
+    ``error``가 있으면 pom을 만들 수 없다. 경로는 모두 저장소 기준 posix 상대 경로다."""
     build_file: str = ""
     error: str | None = None
     name: str = ""
     basedir: str = ""
     default_target: str = ""
-    properties: dict[str, str] = field(default_factory=dict)      # resolved values
+    properties: dict[str, str] = field(default_factory=dict)      # 참조를 푼 값
     targets: list[str] = field(default_factory=list)
     javac: list[AntJavac] = field(default_factory=list)
     archives: list[AntArchive] = field(default_factory=list)
     copies: list[AntCopy] = field(default_factory=list)
     version: str = ""
-    java_source: str = ""                      # as build.xml says (max over the main javac tasks), "" = not set
+    java_source: str = ""                      # build.xml의 값(main javac 작업 중 가장 높은 값). 없으면 ""
     java_target: str = ""
-    encoding: str = ""                         # javac encoding (resolved), "" = not set
-    source_encoding: str = ""                  # detected from the sources (Java charset name)
+    encoding: str = ""                         # javac의 encoding 값. 없으면 ""
+    source_encoding: str = ""                  # 소스에서 감지한 인코딩(Java charset 이름)
     source_roots: list[str] = field(default_factory=list)
-    source_files: dict[str, int] = field(default_factory=dict)     # source root → .java count
+    source_files: dict[str, int] = field(default_factory=dict)     # 소스 루트별 .java 파일 수
     test_roots: list[str] = field(default_factory=list)
     resources: list[ResourceDir] = field(default_factory=list)
     web_root: str | None = None
-    web_xml: str | None = None              # web.xml path when the war plugin must be told (not <web root>/WEB-INF)
+    web_xml: str | None = None              # web.xml이 <web root>/WEB-INF에 없어서 war 플러그인에 알려야 할 때의 경로
     has_web_xml: bool = False
     jsp_count: int = 0
     lib_dirs: list[str] = field(default_factory=list)
@@ -220,7 +211,7 @@ class AntProject:
         return [a for a in self.archives if a.kind == "war"]
 
 
-# ------------------------------------------------------------------------------------------------ helpers
+# ------------------------------------------------------------------------------------------------ 보조 함수
 def _local(tag: Any) -> str:
     """네임스페이스를 뗀 태그 이름을 반환한다. 주석과 처리 지시문이면 빈 문자열을 반환한다."""
     if not isinstance(tag, str):
@@ -229,7 +220,7 @@ def _local(tag: Any) -> str:
 
 
 def _under(rel: str, d: str) -> bool:
-    """``rel``이 디렉토리 ``d``이거나 그 아래에 있는지 확인한다. ``d``가 빈 문자열이면 루트를 뜻한다."""
+    """``rel``이 폴더 ``d``이거나 그 아래에 있으면 True를 반환한다. ``d``가 빈 문자열이면 루트다."""
     return d == "" or rel == d or rel.startswith(d + "/")
 
 
@@ -257,9 +248,7 @@ def _ant_regex(pattern: str) -> re.Pattern[str]:
 
 
 def ant_match(patterns: list[str], rel: str) -> bool:
-    """Ant 패턴 중 하나라도 일치하는지 확인한다. ``rel``은 fileset 디렉토리 기준 상대 경로다.
-
-    True when one of the Ant patterns matches `rel` (relative to the fileset dir)."""
+    """Ant 패턴 중 하나라도 ``rel``과 일치하면 True를 반환한다. ``rel``은 fileset 폴더 기준 경로다."""
     return any(_ant_regex(p).match(rel) for p in patterns if p)
 
 
@@ -269,9 +258,7 @@ def _split_patterns(value: str | None) -> list[str]:
 
 
 def split_path_list(value: str) -> list[str]:
-    """Ant 경로 목록 문자열을 경로별로 나눈다. Windows 드라이브 문자 뒤의 콜론은 구분자로 보지 않는다.
-
-    Split an Ant path list on `;`, `,` and `:` (a drive letter colon stays)."""
+    """Ant 경로 목록 문자열을 ``;``, ``,``, ``:``로 나눈다. Windows 드라이브 문자 뒤의 콜론은 구분자로 보지 않는다."""
     out: list[str] = []
     for part in _SPLIT_LIST_RE.split(value or ""):
         merged: list[str] = []
@@ -285,9 +272,7 @@ def split_path_list(value: str) -> list[str]:
 
 
 def parse_properties_text(text: str) -> dict[str, str]:
-    """Java ``.properties`` 텍스트를 dict로 읽는다. Ant처럼 같은 키는 처음 정의한 값이 우선한다.
-
-    Java .properties text → dict (first definition of a key wins, like Ant)."""
+    """Java ``.properties`` 텍스트를 dict로 읽는다. Ant처럼 같은 키는 처음 정의한 값이 우선한다."""
     logical: list[str] = []
     buf = ""
     for raw in text.splitlines():
@@ -335,7 +320,7 @@ def _unescape(s: str) -> str:
 
 
 def _decode(data: bytes) -> str:
-    """바이트를 utf-8 -> cp949 -> latin-1 순서로 시도해 텍스트로 디코딩한다."""
+    """바이트를 utf-8, cp949, latin-1 순서로 시도해서 문자열로 바꾼다."""
     for enc in ("utf-8", "cp949"):
         try:
             return data.decode(enc)
@@ -345,7 +330,7 @@ def _decode(data: bytes) -> str:
 
 
 def _parse_build_xml(data: bytes) -> tuple[ET.Element | None, str]:
-    """build.xml 바이트를 선언된 인코딩으로 디코딩해 (루트 요소, 메모)로 파싱한다.
+    """build.xml 바이트를 선언된 인코딩으로 읽어서 (루트 요소, 메모)를 반환한다.
     XML 엔티티 때문에 실패하면 DOCTYPE과 엔티티 참조를 지우고 다시 파싱한 뒤 메모를 남긴다.
     그래도 실패하면 (None, 오류)를 반환한다."""
     text = data.decode(pom_encoding(data), errors="replace")
@@ -367,7 +352,7 @@ def _parse_build_xml(data: bytes) -> tuple[ET.Element | None, str]:
 
 def _folder_name(ws: Any) -> str:
     """프로젝트 폴더 이름을 반환한다.
-    실행 작업공간의 루트는 항상 ``<run>/project``이므로 저널의 접수 기록을 먼저 본다."""
+    실행 작업 폴더의 루트는 항상 ``<run>/project``이므로 저널의 접수 기록에서 원래 이름을 먼저 찾는다."""
     root = Path(ws.root)
     jp = getattr(ws, "journal_path", None)
     if root.name == "project" and jp:
@@ -383,10 +368,8 @@ def _folder_name(ws: Any) -> str:
 
 
 def maven_artifact_id(name: str, fallback: str = "app") -> str:
-    """이름을 artifactId로 쓸 수 있게 다듬는다.
-    허용되지 않는 문자는 ``-``로 바꾸고, 결과가 비면 ``fallback``을 반환한다.
-
-    A string usable as artifactId (`[A-Za-z0-9_.-]`, other runs → `-`); `fallback` when nothing is left."""
+    """이름을 artifactId로 쓸 수 있게 다듬는다. ``[A-Za-z0-9_.-]`` 밖의 문자는 ``-``로 바꾼다.
+    결과가 비면 ``fallback``을 반환한다."""
     s = re.sub(r"[^A-Za-z0-9_.\-]+", "-", (name or "").strip()).strip("-.")
     return s or fallback
 
@@ -409,15 +392,15 @@ def java_level_text(n: int) -> str:
 
 
 def _is_test_name(text: str) -> bool:
-    """타깃 이름이나 경로에 test라는 단어가 있는지 확인한다. ``latest``는 해당하지 않는다."""
+    """타깃 이름이나 경로에 test라는 단어가 있으면 True를 반환한다. ``latest``는 해당하지 않는다."""
     toks = [t for t in re.split(r"[^a-z0-9]+", (text or "").lower()) if t]
     return any(t in TEST_TOKENS or t.startswith("test") for t in toks)
 
 
-# ------------------------------------------------------------------------------------------------ reader
+# ----------------------------------------------------------------------------------------------- build.xml 읽기
 class _AntReader:
     """build.xml 하나를 읽는 동안의 상태를 담는 클래스.
-    속성 표(처음 정의가 우선), id가 붙은 요소, 기준 디렉토리, 해석하지 못한 속성 이름을 관리한다."""
+    속성 값, id가 붙은 요소, 기준 폴더, 풀지 못한 속성 이름을 관리한다."""
 
     def __init__(self, root: Path, build_file: str, project: ET.Element, files: list[str], dirs: set[str]):
         self.root = root
@@ -445,14 +428,14 @@ class _AntReader:
             base = bf_dir
         self.base = base
         name = (project.get("name") or "").strip()
-        # basedir는 "."로 두고, 경로 속성은 기준 디렉토리와 이어 붙여 정규화한다
+        # basedir는 "."로 두고, 경로 속성은 기준 폴더와 이어 붙여 정규화한다
         self.props.update({"basedir": ".", "ant.project.name": name, "ant.file": posixpath.basename(build_file)})
         for el in project.iter():
             i = el.get("id") if isinstance(el.tag, str) else None
             if i and i not in self.ids:
                 self.ids[i] = el
 
-    # -------------------------------------------------------------- properties
+    # -------------------------------------------------------------- 속성
     def expand(self, text: str | None, _stack: tuple[str, ...] = ()) -> str:
         """``${name}``을 속성 값으로 재귀적으로 치환한다. 모르는 이름은 그대로 두고 개수를 센다."""
         if not text or "${" not in text:
@@ -513,7 +496,7 @@ class _AntReader:
 
     def load_properties(self) -> None:
         """속성을 정의 순서대로 읽는다.
-        최상위 ``<property>`` -> 타깃 안의 ``<property>`` -> 참조되지 않은 루트 ``build.properties`` 순서다."""
+        최상위 ``<property>``, 타깃 안의 ``<property>``, 참조되지 않은 루트 ``build.properties`` 순서다."""
         for el in self.project:
             self._property_like(el)
         for t in self.project:
@@ -530,9 +513,9 @@ class _AntReader:
         elif tag == "loadproperties" and el.get("srcfile"):
             self.load_file(el.get("srcfile") or "", (el.get("prefix") or "").strip().rstrip("."))
 
-    # -------------------------------------------------------------- paths
+    # -------------------------------------------------------------- 경로
     def rel(self, value: str | None) -> tuple[str | None, str]:
-        """속성을 치환한 경로를 (프로젝트 기준 posix 상대 경로, "") 또는 (None, 사유)로 반환한다."""
+        """속성을 치환한 경로를 (프로젝트 기준 posix 상대 경로, "")로 반환한다. 쓸 수 없으면 (None, 사유)다."""
         v = self.expand(value).strip().replace("\\", "/")
         if not v:
             return None, "empty"
@@ -561,8 +544,7 @@ class _AntReader:
         return ClasspathEntry("dir", rel)
 
     def fileset(self, el: ET.Element, seen: tuple[str, ...] = ()) -> list[ClasspathEntry]:
-        """fileset 계열 요소에서 dir(또는 file)과 includes / excludes를 읽는다.
-        ``refid``가 있으면 참조한 요소를 읽는다."""
+        """fileset 계열 요소에서 dir이나 file과 includes, excludes를 읽는다. ``refid``가 있으면 참조한 요소를 읽는다."""
         refid = el.get("refid")
         if refid:
             if refid in seen or refid not in self.ids:
@@ -586,8 +568,8 @@ class _AntReader:
         return [ClasspathEntry("fileset", rel, inc, exc)]
 
     def classpath(self, el: ET.Element, seen: tuple[str, ...] = ()) -> list[ClasspathEntry]:
-        """``<classpath>`` / ``<path>`` / ``<src>`` 계열 요소의 항목 목록을 반환한다.
-        중첩된 path는 재귀로 읽되 순환은 끊고, dirset은 뺀다."""
+        """``<classpath>``, ``<path>``, ``<src>`` 계열 요소의 항목 목록을 반환한다.
+        중첩된 path는 재귀로 읽고 순환 참조는 끊는다. dirset은 뺀다."""
         out: list[ClasspathEntry] = []
         refid = el.get("refid")
         if refid:
@@ -616,7 +598,7 @@ class _AntReader:
                 out += self.classpath(c, seen)
         return out
 
-    # -------------------------------------------------------------- tasks
+    # -------------------------------------------------------------- 작업
     def walk(self, el: ET.Element, target_name: str = "",
              parent: str = "") -> Iterator[tuple[ET.Element, str, str]]:
         """작업 요소를 (요소, 타깃 이름, 부모 태그)로 순회한다.
@@ -636,18 +618,17 @@ class _AntReader:
                 yield from self.walk(c, target_name, tag)
 
     def note(self, text: str) -> None:
-        """pom으로 옮기지 못한 build.xml 항목을 메모 한 줄로 남긴다.
-        중복 없이 최대 ``MAX_NOTES``개까지 남긴다."""
+        """pom으로 옮기지 못한 build.xml 항목을 메모 한 줄로 남긴다. 같은 메모는 한 번만 남긴다."""
         if text not in self.notes:
             self.notes.append(text)
 
     def where(self, target_name: str) -> str:
-        """메모 앞에 붙일 머리말을 만든다. 예: ``build.xml target `war`: ``"""
+        """메모 앞에 붙일 위치 문구를 만든다. 예: ``build.xml target `war```"""
         return f"{self.build_file} target `{target_name}`" if target_name else f"{self.build_file} (top level)"
 
 
 def _javac(r: _AntReader, el: ET.Element, tname: str) -> AntJavac:
-    """``<javac>`` 요소 하나를 읽는다. includes / excludes는 pom으로 옮기지 않고 메모로 남긴다."""
+    """``<javac>`` 요소 하나를 읽는다. includes, excludes는 pom으로 옮기지 않고 메모로 남긴다."""
     j = AntJavac(target_name=tname)
     raws = split_path_list(r.expand(el.get("srcdir"))) if el.get("srcdir") else []
     for c in el:
@@ -690,7 +671,7 @@ def _javac(r: _AntReader, el: ET.Element, tname: str) -> AntJavac:
 
 
 def _archive(r: _AntReader, el: ET.Element, tag: str, tname: str) -> AntArchive:
-    """``<war>`` / ``<jar>`` / ``<ear>`` 요소 하나에서 결과 파일, webxml, 내용과 lib 디렉토리, Main-Class를 읽는다."""
+    """``<war>``, ``<jar>``, ``<ear>`` 요소 하나에서 결과 파일, webxml, 내용 폴더, lib 폴더, Main-Class를 읽는다."""
     a = AntArchive(kind=tag, target_name=tname)
     raw = el.get("destfile") or el.get("warfile") or el.get("jarfile") or el.get("earfile") or ""
     a.raw_destfile = r.expand(raw)
@@ -725,7 +706,7 @@ def _archive(r: _AntReader, el: ET.Element, tag: str, tname: str) -> AntArchive:
 
 
 def _copy(r: _AntReader, el: ET.Element, tag: str, tname: str) -> AntCopy:
-    """``<copy>`` / ``<move>`` / ``<sync>`` 요소 하나에서 대상 디렉토리, 원본, 필터링 여부를 읽는다."""
+    """``<copy>``, ``<move>``, ``<sync>`` 요소 하나에서 대상 폴더, 원본, 필터링 여부를 읽는다."""
     raw = el.get("todir") or ""
     if not raw and el.get("tofile"):
         raw = posixpath.dirname(r.expand(el.get("tofile")).replace("\\", "/")) or "."
@@ -743,7 +724,7 @@ def _copy(r: _AntReader, el: ET.Element, tag: str, tname: str) -> AntCopy:
 
 
 def _read_tasks(r: _AntReader, ap: AntProject) -> None:
-    """모든 작업을 순회해 javac / war / jar / copy 작업을 모으고, pom으로 옮기지 못하는 작업은 메모로 남긴다."""
+    """모든 작업을 순회해서 javac, war, jar, copy 작업을 모은다. pom으로 옮기지 못하는 작업은 메모로 남긴다."""
     taskdefs: list[str] = []
     for el, tname, _parent in r.walk(r.project):
         tag = _local(el.tag)
@@ -774,7 +755,7 @@ def _read_tasks(r: _AntReader, ap: AntProject) -> None:
             if CODEGEN_TARGET_RE.search(tgt):
                 r.note(f"{w}: <antcall target=\"{tgt}\"> — looks like code generation; not translated")
         elif tag == "subant":
-            # fileset과 pathelement는 classpath()가 읽으므로, dirset과 buildpath 속성만 여기서 읽는다
+            # fileset과 pathelement는 classpath()가 읽으므로 dirset과 buildpath 속성만 여기서 읽는다
             found = [e.path for e in r.classpath(el)]
             found += [x.path for c in el if _local(c.tag) == "dirset" for x in r.fileset(c)]
             found += [r.expand(p) for p in split_path_list(r.expand(el.get("buildpath")))]
@@ -802,10 +783,10 @@ def _read_tasks(r: _AntReader, ap: AntProject) -> None:
                "not translated")
 
 
-# ------------------------------------------------------------------------------------------------ directories
+# ------------------------------------------------------------------------------------------------ 폴더 구조
 def _output_dirs(r: _AntReader, ap: AntProject) -> list[str]:
-    """빌드 산출물 디렉토리 목록을 반환한다.
-    javac destdir, war / jar 결과 파일의 디렉토리, 루트의 관례적인 이름(build, dist, out 등)이 대상이다."""
+    """빌드 산출물 폴더 목록을 반환한다.
+    javac destdir, war와 jar 결과 파일의 폴더, 루트의 흔한 이름(build, dist, out 등)이 대상이다."""
     out: list[str] = []
     for j in ap.javac:
         if j.destdir:
@@ -822,13 +803,13 @@ def _output_dirs(r: _AntReader, ap: AntProject) -> list[str]:
 
 
 def _web_root(r: _AntReader, ap: AntProject) -> None:
-    """웹 루트 디렉토리를 정한다. ``<war webxml>``의 위치, war 내용 디렉토리, ``WEB-INF/web.xml``이 있는
-    디렉토리 순서로 찾고, 후보가 여럿이면 경고를 남긴다."""
+    """웹 루트 폴더를 정한다. 후보가 여럿이면 경고를 남긴다.
+    ``<war webxml>``의 위치, war 내용 폴더, ``WEB-INF/web.xml``이 있는 폴더 순서로 찾는다."""
     outputs = ap.output_dirs
     cands: list[str] = []
 
     def staged(d: str) -> list[str]:
-        # 산출물 아래의 스테이징 디렉토리면 그곳으로 copy한 원본 디렉토리를 쓴다
+        # 산출물 아래의 스테이징 폴더면 그곳으로 copy한 원본 폴더를 쓴다
         if not any(_under(d, o) for o in outputs):
             return [d]
         return [e.path for c in ap.copies if c.todir is not None and _under(c.todir, d)
@@ -882,10 +863,9 @@ def _join(d: str, rel: str) -> str:
 
 
 def _jars(r: _AntReader, ap: AntProject) -> None:
-    """pom에 선언할 jar와 lib 디렉토리를 모은다.
-    WEB-INF/lib, javac classpath, war의 ``<lib>``, 루트 ``lib/``에서 찾는다.
-    산출물 아래에 있는 jar는 classpath가 직접 가리킬 때만 넣는다.
-    프로젝트 밖이나 해석하지 못한 classpath는 경고를 남긴다."""
+    """pom에 선언할 jar와 lib 폴더를 모은다. WEB-INF/lib, javac classpath, war의 ``<lib>``, 루트 ``lib/``에서 찾는다.
+    산출물 아래의 jar는 classpath가 직접 가리킬 때만 넣는다.
+    프로젝트 밖이거나 풀지 못한 classpath는 경고를 남긴다."""
     outputs = ap.output_dirs
     own = {a.destfile for a in ap.archives if a.destfile}
     jars: dict[str, None] = {}
@@ -942,10 +922,9 @@ def _jars(r: _AntReader, ap: AntProject) -> None:
 
 
 def _sources(r: _AntReader, ap: AntProject, cands: tuple[str, ...]) -> None:
-    """``package a.b;`` 선언으로 소스 루트를 확인한다.
-    javac srcdir에 .java가 있으면 그 아래만, 없으면 트리 전체를 본다.
-    test 이름의 루트는 무시하고, 두 번 컴파일되지 않도록 다른 루트 안에 있는 루트는 뺀다.
-    소스 인코딩도 여기서 센다."""
+    """``package a.b;`` 선언으로 소스 루트를 확인한다. 소스 인코딩도 여기서 센다.
+    javac srcdir에 .java가 있으면 그 아래만 보고, 없으면 트리 전체를 본다.
+    test 이름의 루트는 무시하고, 두 번 컴파일되지 않도록 다른 루트 안에 있는 루트는 뺀다."""
     outputs = ap.output_dirs
     main_src = _uniq([d for j in ap.javac if not j.test for d in j.srcdirs])
     test_src = _uniq([d for j in ap.javac if j.test for d in j.srcdirs])
@@ -1035,9 +1014,8 @@ def _sources(r: _AntReader, ap: AntProject, cands: tuple[str, ...]) -> None:
 
 
 def _resources(r: _AntReader, ap: AntProject) -> None:
-    """pom ``<resources>`` 목록을 만든다. .java가 아닌 파일이 있는 소스 루트, 클래스 디렉토리로 copy하는
-    fileset, ``src/main/resources``가 대상이다.
-    산출물 밖으로 copy하는 작업과 필터링 copy는 메모로 남긴다."""
+    """pom ``<resources>`` 목록을 만든다. 산출물 밖으로 copy하는 작업과 필터링 copy는 메모로 남긴다.
+    .java가 아닌 파일이 있는 소스 루트, 클래스 폴더로 copy하는 fileset, ``src/main/resources``가 대상이다."""
     outputs = ap.output_dirs
     classes_dirs = [j.destdir for j in ap.javac if j.destdir and not j.test]
     res: dict[str, ResourceDir] = {}
@@ -1063,7 +1041,7 @@ def _resources(r: _AntReader, ap: AntProject) -> None:
                 r.note(f"{w}: <{c.task}> into the classes directory with token filtering — values are not "
                        "substituted by Maven")
         elif any(_under(c.todir, o) for o in outputs):
-            continue                                       # staging for the archive (web content, dist)
+            continue                                       # war나 dist를 만들려고 산출물 아래에 모으는 copy다
         else:
             r.note(f"{w}: <{c.task} todir=\"{c.todir or '.'}\"> — copies into the source tree; not translated")
     smr = _join(r.base, "src/main/resources")
@@ -1073,7 +1051,7 @@ def _resources(r: _AntReader, ap: AntProject) -> None:
 
 
 def _misc_notes(r: _AntReader, ap: AntProject) -> None:
-    """결과물이 여럿이거나 ear가 있거나 jar에 Main-Class가 있는 경우 같은 기타 메모를 남긴다."""
+    """결과물이 여럿인 경우, ear가 있는 경우, jar에 Main-Class가 있는 경우에 메모를 남긴다."""
     outs = [a for a in ap.archives if a.kind in ("war", "jar", "ear")]
     if len(outs) > 1:
         r.note(f"{r.build_file} makes {len(outs)} archives ("
@@ -1087,10 +1065,10 @@ def _misc_notes(r: _AntReader, ap: AntProject) -> None:
 
 
 def describe_ant(ws: Any) -> AntProject:
-    """build.xml과 폴더를 읽어 :class:`AntProject`를 만든다.
-    예외를 던지지 않고, 문제는 ``error`` / ``warnings``에 남긴다.
+    """build.xml과 폴더를 읽어서 :class:`AntProject`를 만든다.
+    예외를 던지지 않고 문제는 ``error``, ``warnings``에 남긴다.
 
-    Read build.xml (root, else the shallowest) and the directories into an `AntProject`. Never raises."""
+    The build.xml read is the root one, else the shallowest."""
     ap = AntProject()
     root = Path(ws.root)
     bf = find_ant_build_file(ws)
@@ -1154,7 +1132,7 @@ def describe_ant(ws: Any) -> AntProject:
     return ap
 
 
-# ------------------------------------------------------------------------------------------------ pom
+# ------------------------------------------------------------------------------------------------ pom 만들기
 @dataclass
 class _Dep:
     """pom에 넣을 의존성 하나를 담는 데이터 클래스. system scope면 systemPath와 사유 주석도 담는다."""
@@ -1176,10 +1154,8 @@ def render_pom(*, group_id: str, artifact_id: str, version: str, packaging: str,
                java_source: str, java_target: str, encoding: str, source_dirs: list[str],
                resources: list[ResourceDir], web_root: str | None, web_xml: str | None, has_web_xml: bool,
                war_excludes: list[str], final_name: str, deps: list[_Dep]) -> str:
-    """생성할 pom의 텍스트를 만든다.
-    소스 루트가 여럿이면 첫 번째를 sourceDirectory로, 나머지는 build-helper ``add-source``로 넣는다.
-
-    The synthesized pom text (UTF-8 declaration, 2-space indent)."""
+    """만들 pom의 텍스트를 반환한다. UTF-8 선언에 2칸 들여쓰기다.
+    소스 루트가 여럿이면 첫 번째를 sourceDirectory로, 나머지는 build-helper ``add-source``로 넣는다."""
     out: list[str] = []
 
     def add(depth: int, text: str) -> None:
@@ -1292,18 +1268,14 @@ def render_pom(*, group_id: str, artifact_id: str, version: str, packaging: str,
 
 
 def _system_jar_path(jc: JarCoordinate) -> str:
-    """좌표를 모르는 jar의 system scope 경로를 만든다.
-    jar를 복사하지 않고 as-is 위치를 최상위 pom 디렉토리 기준으로 가리킨다.
-    재구성이 의존성을 모듈로 옮길 때 jar를 모듈 ``lib/``로 복사하므로, 여기서도 복사하면 같은 jar가 두 번 남는다.
-
-    The systemPath of an unknown-but-used jar: its as-is path from the top-level pom directory, no copy — the
-    restructure copies the jar into the module's `lib/` itself when it moves the dependency."""
+    """좌표를 모르는 jar의 system scope 경로를 만든다. 최상위 pom 폴더 기준의 as-is 위치를 그대로 쓴다.
+    재구성이 의존성을 모듈로 옮길 때 jar를 ``lib/``로 복사하므로, 여기서도 복사하면 같은 jar가 두 번 남는다."""
     return jc.path
 
 
 def _final_name(ap: AntProject, packaging: str) -> str:
-    """확장자를 뺀 결과 파일 이름을 반환한다.
-    Tomcat 컨텍스트 경로를 유지하기 위해 쓰며, 결과물이 하나이고 속성이 모두 치환됐을 때만 반환한다."""
+    """확장자를 뺀 결과 파일 이름을 반환한다. Tomcat 컨텍스트 경로를 그대로 두기 위해 쓴다.
+    결과물이 하나이고 속성이 모두 풀렸을 때만 이름을 반환하고, 아니면 빈 문자열을 반환한다."""
     outs = [a for a in ap.archives if a.kind == packaging and a.raw_destfile]
     if len(outs) != 1:
         return ""
@@ -1313,7 +1285,7 @@ def _final_name(ap: AntProject, packaging: str) -> str:
 
 
 def _covered(api: tuple, declared: list[tuple[str, set[str]]]) -> bool:
-    """선언한 의존성 중 하나가 그 컨테이너 API를 제공하는지 확인한다."""
+    """선언한 의존성 중 하나가 그 컨테이너 API를 제공하면 True를 반환한다."""
     ref, pkgs, _g, _a, _v, keys = api
 
     def provides(p: str) -> bool:
@@ -1326,16 +1298,13 @@ def _covered(api: tuple, declared: list[tuple[str, set[str]]]) -> bool:
 
 
 def synthesize_pom(ws: Any, cfg: Any, *, lookup: Any = None) -> PomSynthesis:
-    """Ant 프로젝트에 ``<root>/pom.xml``을 만들어 기록한다. 커밋은 오케스트레이터가 한다.
+    """Ant 프로젝트에 ``<root>/pom.xml``을 만들어 쓴다. 커밋은 오케스트레이터가 한다. 예외를 던지지 않는다.
     build.xml이 없거나, pom.xml이 이미 있거나, 소스 루트가 없으면 ``ok=False``와 ``error``를 반환한다.
-    예외를 던지지 않는다.
 
-    Write `<root>/pom.xml` for an Ant project (that file only — no copies; each unknown-but-used jar is listed in
-    `warnings`). `ok=False` + `error` when build.xml is missing / unreadable, a pom.xml exists, or no source root is
-    found."""
+    Writes that file only, no copies; each unknown-but-used jar is listed in `warnings`."""
     try:
         return _synthesize(ws, cfg, lookup)
-    except Exception as e:  # the intake turns ok=False into the old rejection, never a crash (logged)
+    except Exception as e:  # 접수가 ok=False를 거부로 처리하므로 실행이 죽지 않는다
         log.exception("pom synthesis failed")
         return PomSynthesis(ok=False, error=f"pom synthesis failed: {type(e).__name__}: {e}")
 
@@ -1357,7 +1326,7 @@ def _synthesize(ws: Any, cfg: Any, lookup: Any) -> PomSynthesis:
         res.error = f"no Java source root found ({where}: no .java file outside build output / test dirs)"
         return res
 
-    # --- coordinates / levels
+    # --- 좌표와 Java 버전
     res.group_id = str(getattr(intake, "synth_group_id", "") or "com.company.migrated")
     res.artifact_id = maven_artifact_id(ap.name or _folder_name(ws), maven_artifact_id(_folder_name(ws)))
     res.version = ap.version or str(getattr(intake, "synth_version", "") or "1.0.0-SNAPSHOT")
@@ -1377,7 +1346,7 @@ def _synthesize(ws: Any, cfg: Any, lookup: Any) -> PomSynthesis:
     res.java_source = java_level_text(src_n)
     res.encoding = ap.encoding or ap.source_encoding or "UTF-8"
 
-    # --- jars: ① pom.properties ② name table ③ sha1 lookup (④ manifest note)
+    # --- jar 좌표: pom.properties, jar 이름 표, sha1 조회 순서
     table = jar_name_table(cfg)
     lk: Any = lookup
     if lk is None:
@@ -1386,12 +1355,12 @@ def _synthesize(ws: Any, cfg: Any, lookup: Any) -> PomSynthesis:
     for rel in ap.jar_files:
         try:
             scanned.append(resolve_jar_scan(rel, root / rel, cfg, lk, table=table))
-        except Exception as e:  # noqa: BLE001 - one bad jar never stops the synthesis
+        except Exception as e:  # noqa: BLE001 - jar 하나가 잘못돼도 pom 생성을 멈추지 않는다
             scanned.append((JarCoordinate(path=rel, note=f"could not be resolved ({type(e).__name__}: {e})"[:200]),
                             JarScan()))
     jars = [jc for jc, _ in scanned]
 
-    # --- used: Java sources (imports / qualified names) + JSP / XML / properties of the web root and resources
+    # --- 사용 여부: Java 소스의 import와 웹 루트, 리소스의 JSP, XML, properties
     java_refs = references(ws, ap.source_roots, (".java",))
     extra = _uniq(([ap.web_root] if ap.web_root is not None else []) + [r.dir for r in ap.resources])
     all_refs = java_refs | (references(ws, extra, REF_TEXT_EXT) if extra else set())
@@ -1399,9 +1368,9 @@ def _synthesize(ws: Any, cfg: Any, lookup: Any) -> PomSynthesis:
     for jc, js in scanned:
         plug = [m for m in js.markers if not m.startswith("taglib") or ap.jsp_count]
         if plug and jc.used is not True:
-            jc.used = True                       # used without an import: taglib / ServiceLoader / Spring namespace
+            jc.used = True                       # taglib, ServiceLoader, Spring namespace는 import 없이 쓰인다
 
-    # --- dependencies
+    # --- 의존성
     unknown_policy = str(getattr(intake, "unknown_jar", "system") or "system")
     regular: dict[str, _Dep] = {}
     regular_scan: dict[str, JarScan] = {}
@@ -1471,12 +1440,11 @@ def _synthesize(ws: Any, cfg: Any, lookup: Any) -> PomSynthesis:
         v = file_version or jc.version or "0"
         system.append(_Dep(g, a, v, "system", system_path=SYSTEM_PATH_BASE + "/" + lib_rel, comment=comment,
                            path=jc.path))
-        # 인수인계의 install-file 명령과 pom의 system 항목이 같은 좌표여야 사람이 나중에 교체할 수 있으므로
-        # jar 표의 좌표를 그대로 쓴다
+        # 인수인계의 install-file 명령과 pom의 system 항목이 같은 좌표여야 나중에 교체할 수 있으므로 같은 값을 쓴다
         jc.group_id, jc.artifact_id, jc.version, jc.scope = g, a, v, "system"
         jc.note = "; ".join(x for x in (jc.note, f"declared with system scope as {g}:{a}:{v} ({lib_rel})") if x)
 
-    # --- container APIs the Java sources use and no declared jar provides (Ant compiled against Tomcat's lib)
+    # --- 소스가 쓰지만 선언한 jar가 제공하지 않는 컨테이너 API
     declared = [(k, regular_scan[k].packages) for k in regular] + [
         (f"{d.group_id}:{d.artifact_id}", next((js.packages for jc, js in scanned if jc.path == d.path), set()))
         for d in system]

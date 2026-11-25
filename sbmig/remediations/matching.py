@@ -2,10 +2,8 @@
 Maven은 버전의 한정자를 대소문자 구분 없이 비교하므로 ``2.2.0.release``와 ``2.2.0.RELEASE``는 같은 버전이다.
 대소문자와 앞뒤 공백만 무시하고 그 밖의 정규화는 하지 않는다. ``2.2.0``과 ``2.2.0.RELEASE``는 다른 버전이다.
 
-Shared comparison of an IVAS-reported (g:a, version) with a Maven-resolved one. Maven compares version qualifiers
-case-insensitively, so case (``str.casefold``) and surrounding whitespace are ignored; nothing else is normalised.
-Callers match an exact g:a first and fall back to ``same_ga`` only when no exact g:a exists (Maven's g:a itself is
-case-sensitive)."""
+Keys use ``str.casefold``. Callers match an exact g:a first and fall back to ``same_ga`` only when no exact
+g:a exists (Maven's g:a itself is case-sensitive)."""
 from __future__ import annotations
 
 
@@ -30,7 +28,8 @@ def same_ga(a: str | None, b: str | None) -> bool:
 
 
 def finding_key(kind: str | None, cve: str | None, identifier: str | None) -> str:
-    """같은 취약점인지 가리는 키를 반환한다. 종류, 취약점 ID, 대소문자를 무시한 식별자이고 버전은 넣지 않는다.
+    """같은 취약점인지 가리는 키를 반환한다. 종류, 취약점 ID, 식별자로 만들고 버전은 넣지 않는다.
+    식별자의 대소문자는 무시한다.
 
     The identity of "the same finding" for counting what was fixed: kind, finding id and the case-folded identifier,
     no version. A finding a complete final scan still reports for the library at any version (or in another spelling

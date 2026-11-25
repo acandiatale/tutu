@@ -1,20 +1,18 @@
 """취약한 라이브러리가 사내 아티팩트에서 온 것인지 판단하는 모듈.
-회사 artifacts yml(``cfg.artifacts``)에서 사내 라이브러리 g:a 목록을 만들고, 의존 경로에 그 아티팩트가
-있는지 확인한다. 그래프의 ``inventory`` 노드가 ``inhouse_keys``로 목록을 만들어
-``inventory.build_inventory``에 넘기며, 이 목록은 정책 해시에도 들어간다.
-- 취약한 라이브러리가 사내 아티팩트 자체이거나 그것을 통해 들어왔으면 프로젝트에서 고치지 않는다.
-  그 아티팩트의 담당자가 pom을 고쳐 새 버전을 내야 반영되기 때문이다
-- 사내로 볼 그룹은 ``remediation.inhouse_groups``(``mandatory`` / ``optional`` / ``parents`` / ``framework``)로
-  정하고, 비어 있으면 이 판단을 하지 않는다
-- ``framework`` 그룹은 ``framework.artifacts``의 패턴으로 판단하므로 목록에 g:a가 들어가지 않는다
+회사 artifacts yml(``cfg.artifacts``)로 사내 아티팩트 g:a 목록을 만들고, 의존 경로에 그 아티팩트가 있는지 본다.
+그래프의 ``inventory`` 노드가 ``inhouse_keys``로 목록을 만들어 넘기며, 이 목록은 정책 해시에도 들어간다.
+- 사내 아티팩트 자체이거나 그것을 거쳐 들어온 라이브러리는 프로젝트에서 고치지 않는다.
+  그 아티팩트 담당자가 새 버전을 내야 반영되기 때문이다
+- 사내로 볼 그룹은 ``remediation.inhouse_groups``로 정한다. 비어 있으면 이 판단을 하지 않는다
+- ``framework`` 그룹은 g:a 대신 ``framework.artifacts``의 패턴으로 판단한다
 
 In-house artifacts for the remediation: the g:a table from the company artifacts yml (groups named by
-`remediation.inhouse_groups`, aliases included) and the check whether a dependency path goes through one of them.
-A vulnerable library brought in by an in-house artifact (or that is one) is left to that artifact's owner.
-Group `framework` = the in-house framework artifacts of `framework.artifacts`: patterns (artifactId, groupId:artifactId,
-`*` globs), not exact keys. `inhouse_keys` returns an `InhouseKeys` mapping: the exact keys of the yml groups as dict
-entries plus the framework patterns, which its `in` / `get` / `group_of` understand; iterating it yields only the exact
-keys, so callers that list or hash the keys see what they saw before (the policy hash adds the patterns separately).
+`remediation.inhouse_groups`, aliases included) and the check whether a dependency path goes through one of
+them. Groups: `mandatory` / `optional` / `parents` / `framework`. Group `framework` = the in-house framework
+artifacts of `framework.artifacts`: patterns (artifactId, groupId:artifactId, `*` globs), not exact keys.
+`inhouse_keys` returns an `InhouseKeys` mapping: the exact keys of the yml groups as dict entries plus the
+framework patterns, which its `in` / `get` / `group_of` understand; iterating it yields only the exact keys,
+so callers that list or hash the keys see what they saw before (the policy hash adds the patterns separately).
 """
 from __future__ import annotations
 
@@ -30,8 +28,7 @@ _PARENT_FIELDS = ("parent", "boot_parent", "comp_parent")
 
 
 def _ga(text: Any) -> str:
-    """"g:a" 또는 "g:a:v…" 문자열에서 앞의 두 부분("g:a")만 잘라서 반환한다.
-    형식이 맞지 않으면 빈 문자열을 반환한다."""
+    """"g:a"나 "g:a:v…" 문자열에서 앞의 "g:a"만 잘라서 반환한다. 형식이 맞지 않으면 빈 문자열을 반환한다."""
     parts = [x.strip() for x in str(text or "").split(":")]
     if len(parts) < 2 or not parts[0] or not parts[1]:
         return ""
@@ -57,7 +54,7 @@ def _group_specs(arts: Any, group: str) -> Iterable[Any]:
 
 
 class InhouseKeys(dict):
-    """사내 아티팩트 목록 ``{"g:a": 그룹 이름}``에 프레임워크 패턴을 더한 클래스.
+    """사내 아티팩트 목록 ``{"g:a": 그룹 이름}``에 프레임워크 패턴을 더한 dict 클래스.
     ``in``, ``get``, ``group_of``는 목록에 없는 g:a도 패턴에 맞으면 ``framework`` 그룹으로 본다.
 
     A `{"g:a": group}` dict plus the framework patterns. Membership / `get` / `group_of` fall back to the patterns
@@ -95,13 +92,13 @@ class InhouseKeys(dict):
         raise KeyError(key)
 
     def get(self, key: Any, default: Any = None) -> Any:
-        """정확한 g:a의 그룹을, 없으면 패턴에 맞을 때 ``framework``를 반환한다."""
+        """g:a가 목록에 있으면 그 그룹을, 패턴에 맞으면 ``framework``를, 둘 다 아니면 ``default``를 반환한다."""
         if dict.__contains__(self, key):
             return dict.__getitem__(self, key)
         return FRAMEWORK_GROUP if self._matches(key) else default
 
     def group_of(self, key: Any) -> str | None:
-        """g:a(또는 g:a:v)가 속한 사내 그룹 이름을 반환한다. 사내 아티팩트가 아니면 None을 반환한다."""
+        """g:a나 g:a:v가 속한 사내 그룹 이름을 반환한다. 사내 아티팩트가 아니면 None을 반환한다."""
         return self.get(_ga(key) or key)
 
 
@@ -117,10 +114,8 @@ def _matcher(patterns: tuple[str, ...]) -> Any:
 
 
 def framework_patterns(cfg: Any) -> list[str]:
-    """``inhouse_groups``에 ``framework``가 있을 때 ``framework.artifacts``의 패턴 목록을 반환한다.
-    그룹이 없거나 패턴이 비어 있으면 빈 목록을 반환하고 예외를 던지지 않는다.
-
-    The framework patterns when `framework` is listed in `remediation.inhouse_groups`; [] otherwise (never raises)."""
+    """``inhouse_groups``에 ``framework``가 있으면 ``framework.artifacts``의 패턴 목록을 반환한다.
+    그룹이 없거나 패턴이 비어 있으면 빈 목록을 반환한다. 예외를 던지지 않는다."""
     try:
         rem = getattr(cfg, "remediation", None)
         groups = getattr(rem, "inhouse_groups", None) if rem is not None else None
@@ -137,12 +132,9 @@ def framework_patterns(cfg: Any) -> list[str]:
 
 
 def inhouse_keys(cfg: Any) -> InhouseKeys:
-    """사내 아티팩트 목록 ``{"g:a": 그룹 이름}``을 만든다.
-    ``remediation.inhouse_groups``에 있는 그룹만 담고 별칭도 포함한다.
-    같은 g:a가 두 그룹에 있으면 먼저 나온 그룹을 쓰고, 모르는 그룹 이름은 경고를 남기고 건너뛴다.
-    이 판단 때문에 조치가 멈추면 안 되므로 설정이 없거나 잘못되면 빈 목록을 반환하고 예외를 던지지 않는다.
-
-    ``framework`` 그룹은 g:a를 담지 않고 ``framework.artifacts`` 패턴으로 판단한다(``InhouseKeys``).
+    """사내 아티팩트 목록 ``{"g:a": 그룹 이름}``을 만든다. ``remediation.inhouse_groups``의 그룹만 담고 별칭도 넣는다.
+    같은 g:a가 두 그룹에 있으면 먼저 나온 그룹을 쓴다. 모르는 그룹 이름은 경고를 남기고 건너뛴다.
+    설정이 없거나 잘못되면 빈 목록을 반환한다. 이 판단 때문에 조치가 멈추면 안 되므로 예외를 던지지 않는다.
 
     "g:a" → group label for the groups named in `remediation.inhouse_groups` (aliases included; first group wins).
     Group `framework` adds the `framework.artifacts` patterns instead of keys (an exact key of another group wins over
@@ -176,9 +168,8 @@ def inhouse_keys(cfg: Any) -> InhouseKeys:
 
 
 def inhouse_on_path(dep_ga: str, path: Iterable[str] | None, keys: Mapping[str, str] | None) -> list[str]:
-    """의존성 ``dep_ga`` 자신과 그것을 끌어온 경로(``ResolvedDep.path``)에서 사내 아티팩트인 g:a 목록을 반환한다.
-    경로 순서대로(모듈 쪽 먼저, 자신은 맨 끝) 중복 없이 담는다.
-    직접 의존성은 경로가 비어 있으므로 자신이 사내 아티팩트일 때만 ``[자신]``을 반환한다.
+    """의존성 ``dep_ga``와 그것을 끌어온 경로(``ResolvedDep.path``)에서 사내 아티팩트인 g:a 목록을 반환한다.
+    모듈 쪽부터 경로 순서대로 중복 없이 담고, 의존성 자신은 맨 끝에 둔다.
 
     The in-house g:a's among the elements of `path` and `dep_ga` itself (first two colon parts compared), in path
     order (module side first, the dependency last), unique."""
