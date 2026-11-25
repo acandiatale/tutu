@@ -1,29 +1,20 @@
-"""``mvn dependency:tree``로 어떤 jar를 어떤 의존성이 classpath에 가져오는지 찾는 모듈.
+"""``mvn dependency:tree``로 어떤 의존성이 어떤 jar를 classpath에 가져오는지 찾는 모듈.
 javax API jar를 가져오는 라이브러리를 찾는 데 쓴다.
-``sbmig.build.classpath``는 오류에 나온 타입의 jar까지만 알지만, 아직 javax를 쓰는 라이브러리는 트리 경로에서 드러난다.
+``sbmig.build.classpath``는 오류에 나온 타입의 jar까지만 안다. 아직 javax를 쓰는 라이브러리는 트리 경로에서 드러난다.
 최종 빌드 뒤 오케스트레이터가 ``javax_api_inventory``를 호출한다(``report.javax_api_inventory``).
-- 진입점: ``dependency_tree``(``logs/deptree-<모듈>.txt``에 캐시, pom이 바뀌면 다시 구함), ``parse_tree`` /
-  ``paths_to``, ``javax_api_inventory``
+- ``dependency_tree``: 결과를 ``logs/deptree-<모듈>.txt``에 캐시하고 pom이 바뀌면 다시 구한다
+- ``parse_tree`` / ``paths_to``: 플러그인 출력을 노드로 읽고 원하는 노드까지의 경로를 찾는다
+- ``javax_api_inventory``: 모듈마다 남은 javax EE API jar와 그것을 가져오는 직접 의존성을 찾는다
 - Maven이나 파일 읽기가 실패해도 예외를 던지지 않는다. 빈 목록을 반환하고 로그와 저널 ``deptree``에 남긴다
 
-`mvn dependency:tree` → who drags a jar onto the classpath (catalog X1 / X1b, 2026-10-22).
-
-The X1 attribution (``sbmig.build.classpath``) maps the class a javac error names to its jar. For a bare
+``sbmig.build.classpath`` maps the class a javac error names to its jar. For a bare
 ``incompatible types: jakarta.persistence.Query cannot be converted to javax.persistence.Query`` that is the *type's*
 jar (``javax.persistence:javax.persistence-api:2.2``), not the library that still uses javax (``org.qlrm:qlrm:2.1.1``).
 The dependency tree knows: ``mvn dependency:tree -Dincludes=javax.persistence:*`` prints the path root → qlrm → API.
 
-* ``dependency_tree(ws, cfg, module, includes)`` → parsed trees (one root per reactor module that printed one),
-  cached as ``<run_dir>/logs/deptree-<module>.txt`` and invalidated when the module's (or root) pom changes.
-  ``dependency_tree_status`` returns ``(roots, why)`` so a caller can tell "Maven failed" from "nothing matched".
-* ``parse_tree(text)`` / ``paths_to(roots, predicate)`` → the plugin's text output as ``TreeNode``s / root→node paths.
-* ``javax_api_inventory(ws, cfg, profile)`` → every javax EE API jar still on a module's classpath after the
-  migration, with the direct dependency that brings it (``JavaxApiJar``; report section "javax API jars still on the
-  classpath", ``BlockedItem.via``).
-
-Nothing here raises for Maven / IO failures: a failed run gives ``[]`` (logged + journal ``deptree``).
-
-
+``dependency_tree`` gives one root per reactor module that printed a tree. ``dependency_tree_status`` returns
+``(roots, why)`` so a caller can tell "Maven failed" from "nothing matched". ``javax_api_inventory`` feeds the
+report section "javax API jars still on the classpath" and ``BlockedItem.via``.
 """
 from __future__ import annotations
 
@@ -51,9 +42,8 @@ log = logging.getLogger("sbmig.build.deptree")
 DEPTREE_TIMEOUT_S = 10 * 60
 DEPENDENCY_PLUGIN = "org.apache.maven.plugins:maven-dependency-plugin:3.8.1"
 
-# jakarta.*-api 1.x / 2.x는 좌표만 새것이고 패키지는 javax.*이므로 javax EE API의 ``-Dincludes`` 패턴에 함께 넣는다
-# `-Dincludes` patterns (groupId:artifactId:type:version globs) of the javax EE APIs. The jakarta.*-api 1.x / 2.x (and
-# servlet 4 / el 3) releases are the Jakarta EE 8 re-publications: new coordinates, still the javax.* namespace.
+# javax EE API의 ``-Dincludes`` 패턴(groupId:artifactId:type:version glob)
+# jakarta.*-api 1.x / 2.x와 servlet 4, el 3은 좌표만 새것이고 패키지는 javax.*이므로 함께 넣는다
 JAVAX_API_PATTERNS: tuple[str, ...] = (
     "javax.persistence:*", "org.hibernate.javax.persistence:*", "javax.servlet:*", "javax.validation:*",
     "javax.annotation:*", "javax.inject:*", "javax.transaction:*", "javax.xml.bind:*", "javax.ws.rs:*",
@@ -77,9 +67,9 @@ class TreeNode:
     scope: Optional[str] = None
     depth: int = 0
     children: list["TreeNode"] = field(default_factory=list)
-    note: str = ""                       # "(omitted for duplicate)", "(version managed from 2.0)", "(optional)" …
+    note: str = ""                       # 예: "(omitted for duplicate)", "(version managed from 2.0)"
     root: bool = False
-    text: str = ""                       # the coordinates as printed (g:a:type[:classifier]:version[:scope])
+    text: str = ""                       # 출력된 좌표 그대로 (g:a:type[:classifier]:version[:scope])
 
     @property
     def omitted(self) -> bool:
@@ -94,18 +84,19 @@ class TreeNode:
 
 
 # ---------------------------------------------------------------------------
-# parser
+# 트리 파싱
 # ---------------------------------------------------------------------------
 # 가지 줄은 들여쓰기 3칸이 깊이 1이다
 _BRANCH_RE = re.compile(r"^(?P<indent>(?:[| ] {2})*)(?:\+- |\\- )(?P<node>.+)$")
 
 
 def _parse_node(raw: str, depth: int) -> Optional[TreeNode]:
-    """노드 텍스트를 TreeNode로 파싱한다.
-    루트와 자식의 좌표 형식이 다른 점과 verbose 출력의 생략 괄호도 처리하며, 읽지 못하면 None을 반환한다."""
+    """노드 텍스트를 TreeNode로 파싱한다. 읽지 못하면 None을 반환한다.
+    루트와 자식은 좌표 형식이 다르다. verbose 출력의 생략 괄호도 처리한다."""
     s = raw.strip()
     note = ""
-    if s.startswith("(") and s.endswith(")"):              # verbose: "(g:a:jar:1.0:compile - omitted for duplicate)"
+    # verbose 출력의 예: "(g:a:jar:1.0:compile - omitted for duplicate)"
+    if s.startswith("(") and s.endswith(")"):
         inner = s[1:-1]
         coords, _, rest = inner.partition(" - ")
         s, note = coords.strip(), f"({rest.strip()})" if rest else ""
@@ -117,14 +108,14 @@ def _parse_node(raw: str, depth: int) -> Optional[TreeNode]:
     parts = s.split(":")
     scope: Optional[str] = None
     classifier: Optional[str] = None
-    if depth == 0:                                         # root: g:a:packaging[:classifier]:version
+    if depth == 0:                                         # 루트: g:a:packaging[:classifier]:version
         if len(parts) == 4:
             g, a, typ, v = parts
         elif len(parts) == 5:
             g, a, typ, classifier, v = parts
         else:
             return None
-    else:                                                  # child: g:a:type[:classifier]:version[:scope]
+    else:                                                  # 자식: g:a:type[:classifier]:version[:scope]
         if len(parts) == 6:
             g, a, typ, classifier, v, scope = parts
         elif len(parts) == 5:
@@ -142,16 +133,14 @@ def _parse_node(raw: str, depth: int) -> Optional[TreeNode]:
 
 def parse_tree(text: str) -> list[TreeNode]:
     """``dependency:tree`` 출력 텍스트를 루트 노드 목록으로 파싱한다.
-    읽지 못하는 줄은 건너뛰고, [INFO] / [WARNING] 접두어가 있어도 읽는다.
-
-    Text output of `dependency:tree` (one or more appended trees) → root nodes. Unparseable lines are skipped."""
+    여러 트리가 이어 붙은 출력도 읽는다. 읽지 못하는 줄은 건너뛰고, [INFO] / [WARNING] 접두어가 있어도 읽는다."""
     roots: list[TreeNode] = []
     stack: list[TreeNode] = []
     for line in (text or "").replace("\r\n", "\n").replace("\r", "\n").split("\n"):
         line = line.rstrip()
         if not line.strip():
             continue
-        line = re.sub(r"^\[(?:INFO|WARNING)\]\s?", "", line)     # tolerate console-captured trees
+        line = re.sub(r"^\[(?:INFO|WARNING)\]\s?", "", line)     # 콘솔 출력을 저장한 트리도 읽는다
         m = _BRANCH_RE.match(line)
         if m:
             depth = len(m.group("indent")) // 3 + 1
@@ -176,9 +165,7 @@ def parse_tree(text: str) -> list[TreeNode]:
 
 
 def paths_to(roots: Iterable[TreeNode], predicate: Callable[[TreeNode], bool]) -> list[list[TreeNode]]:
-    """``predicate``에 맞는 노드까지의 경로를 모두 반환한다. 루트 노드 자신은 비교 대상에서 뺀다.
-
-    Every root → … → node path whose last node matches `predicate` (roots themselves are never matched)."""
+    """루트에서 ``predicate``에 맞는 노드까지의 경로를 모두 반환한다. 루트 노드 자신은 비교 대상에서 뺀다."""
     out: list[list[TreeNode]] = []
 
     def visit(node: TreeNode, path: list[TreeNode]) -> None:
@@ -194,13 +181,11 @@ def paths_to(roots: Iterable[TreeNode], predicate: Callable[[TreeNode], bool]) -
 
 
 # ---------------------------------------------------------------------------
-# includes patterns
+# includes 패턴
 # ---------------------------------------------------------------------------
 def matches_pattern(gav: GAV, pattern: str) -> bool:
     """좌표가 플러그인 ``groupId:artifactId:type:version`` glob 패턴에 맞는지 반환한다.
-    패턴의 뒤쪽 부분이 없으면 어떤 값이든 맞는다.
-
-    The plugin's `groupId:artifactId:type:version` glob (missing trailing segments = any)."""
+    패턴의 뒤쪽 부분이 없으면 어떤 값이든 맞는다."""
     segs = pattern.split(":")
     vals = [gav.group_id, gav.artifact_id, gav.type or "jar", gav.version or ""]
     return all(fnmatch.fnmatchcase(v, p or "*") for v, p in zip(vals, segs))
@@ -212,7 +197,7 @@ def is_javax_api(gav: Optional[GAV]) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# running the plugin
+# 플러그인 실행
 # ---------------------------------------------------------------------------
 def _includes_suffix(includes: list[str]) -> str:
     if not includes:
@@ -227,9 +212,9 @@ def _run_tree(ws: Workspace, cfg: Config, mdir: str, name: str, out_file: Path, 
     ``standalone``이면 루트 reactor 없이 ``-f <dir>/pom.xml``로 그 pom만 실행한다."""
     cmd = base_command(cfg)
     if mdir and standalone:
-        cmd += ["-f", f"{mdir}/pom.xml"]     # a service root outside every root reactor
+        cmd += ["-f", f"{mdir}/pom.xml"]     # 루트 reactor에 속하지 않은 서비스 루트
     elif mdir:
-        cmd += ["-pl", mdir, "-am"]          # upstream reactor modules print (append) their trees too
+        cmd += ["-pl", mdir, "-am"]          # 상위 reactor 모듈의 트리도 같은 파일에 이어 붙는다
     if package:
         cmd += ["package", *_PACKAGE_SKIPS]
     cmd += [f"{DEPENDENCY_PLUGIN}:tree", f"-DoutputFile={out_file}", "-DappendOutput=true"]
@@ -247,23 +232,18 @@ def dependency_tree(ws: Workspace, cfg: Config, module: Optional[str] = None,
                     includes: Iterable[str] = ()) -> list[TreeNode]:
     """``module``의 의존성 트리를 구한다. None이면 루트를 보고, 루트가 aggregator이면 reactor 전체를 본다.
     캐시와 package 재시도 방식은 classpath 조회와 같다.
-    예외를 던지지 않으며, 실패하면 빈 목록을 반환한다.
-
-    Parsed `dependency:tree` of `module` (dir path or artifactId; None = the root project, i.e. the whole reactor
-    of an aggregator). Never raises; [] on failure."""
+    예외를 던지지 않고, 실패하면 빈 목록을 반환한다."""
     return dependency_tree_status(ws, cfg, module, includes)[0]
 
 
 def dependency_tree_status(ws: Workspace, cfg: Config, module: Optional[str] = None,
                            includes: Iterable[str] = (), *,
                            standalone: bool = False) -> tuple[list[TreeNode], Optional[str]]:
-    """``dependency_tree``와 같지만 트리를 읽지 못한 이유도 함께 반환한다.
-    읽었으면 ``(트리, None)``을, Maven이 실패했으면 ``([], 이유)``를 반환한다. 예외를 던지지 않는다.
-    ``standalone``이면 루트 reactor 밖의 pom을 ``-f``로 실행한다.
+    """``dependency_tree``와 같지만 트리를 읽지 못한 이유도 함께 반환한다. 예외를 던지지 않는다.
+    읽었으면 ``(트리, None)``을, Maven이 실패했거나 모듈을 모르면 ``([], 이유)``를 반환한다.
+    ``standalone``이면 루트 reactor 밖의 pom을 ``-pl <dir> -am`` 대신 ``-f``로 실행한다.
 
-    Like `dependency_tree`, plus why nothing was read: `(roots, None)` when the plugin ran (roots may hold no
-    matching node), `([], "<why>")` when Maven failed or the module is unknown. `standalone` runs the module's pom
-    with `-f` (a service root no root reactor covers) instead of `-pl <dir> -am`."""
+    `(roots, None)` may hold no matching node: the plugin ran and nothing matched."""
     incl = [i for i in (includes or ()) if i]
     mdir: Optional[str] = None
     try:
@@ -271,7 +251,7 @@ def dependency_tree_status(ws: Workspace, cfg: Config, module: Optional[str] = N
         if mdir is None:
             log.info("deptree: unknown module %r", module)
             return [], f"unknown module {module}"
-        out_dir = logs_dir(ws)                       # v2.1: logs/deptree-<module>.txt (+ .meta.json), no deptree/
+        out_dir = logs_dir(ws)
         out_dir.mkdir(parents=True, exist_ok=True)
         name = (_safe(mdir.replace("/", "__")) if mdir else "root") + ("-f" if standalone and mdir else "") \
             + _includes_suffix(incl)
@@ -289,7 +269,7 @@ def dependency_tree_status(ws: Workspace, cfg: Config, module: Optional[str] = N
         pr, log_path = _run_tree(ws, cfg, mdir, name, out_file, incl, package=False, standalone=sa)
         has_modules = _pom_has_modules(ws, f"{mdir}/pom.xml") if sa else _has_modules(ws)
         if (pr.exit_code != 0 or not out_file.is_file()) and has_modules:
-            # reactor siblings not resolvable without a package in the same session → package (everything skipped)
+            # reactor 형제 모듈은 같은 세션에서 package돼야 해석되므로 빈 jar package와 함께 다시 실행한다
             out_file.unlink(missing_ok=True)
             pr, log_path = _run_tree(ws, cfg, mdir, name, out_file, incl, package=True, standalone=sa)
         if pr.exit_code != 0 or not out_file.is_file():
@@ -304,7 +284,7 @@ def dependency_tree_status(ws: Workspace, cfg: Config, module: Optional[str] = N
         ws.journal({"event": "deptree", "module": mdir or None, "ok": True, "includes": incl,
                     "log": str(log_path), "roots": len(roots)})
         return roots, None
-    except Exception as exc:                 # never break the caller (report inventory is best effort)
+    except Exception as exc:                 # 보고서용 부가 정보라 호출한 쪽을 멈추지 않는다
         log.warning("deptree(%s): %s: %s", module, type(exc).__name__, exc)
         return [], f"{type(exc).__name__}: {exc}"
 
@@ -317,7 +297,7 @@ def _pom_has_modules(ws: Workspace, rel: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# javax API inventory
+# 남은 javax API jar 찾기
 # ---------------------------------------------------------------------------
 def _local(tag: str) -> str:
     return tag.rsplit("}", 1)[-1]
@@ -325,9 +305,7 @@ def _local(tag: str) -> str:
 
 def _pom_key(ws: Workspace, rel: str) -> Optional[str]:
     """pom의 ``groupId:artifactId``를 반환한다.
-    groupId가 없으면 ``<parent>``에서 가져오고, 읽지 못하면 None을 반환한다.
-
-    `groupId:artifactId` of a pom (groupId inherited from <parent> when absent)."""
+    groupId가 없으면 ``<parent>``에서 가져온다. 읽지 못하면 None을 반환한다."""
     try:
         root = ET.fromstring(ws.read(rel))
     except Exception:
@@ -349,9 +327,7 @@ def _pom_key(ws: Workspace, rel: str) -> Optional[str]:
 
 def module_dirs(ws: Workspace) -> list[str]:
     """프로젝트에서 pom이 있는 모든 디렉토리를 반환한다.
-    루트(빈 문자열)가 먼저 오고, ``src/`` 아래 pom은 뺀다.
-
-    Project-relative directories of every project pom ("" = root first), `src/` poms excluded."""
+    루트(빈 문자열)가 먼저 오고, ``src/`` 아래 pom은 뺀다."""
     out: list[str] = []
     for rel in ws.pom_files():
         if "/src/" in f"/{rel}":
@@ -369,12 +345,11 @@ def _scope_of(node: TreeNode) -> Optional[str]:
 
 def javax_api_inventory(ws: Workspace, cfg: Config, profile: Any = None) -> list[JavaxApiJar]:
     """모듈별 classpath에 있는 javax EE API jar와 그것을 가져오는 직접 의존성(``via``)을 찾는다.
-    예외를 던지지 않는다.
     루트에서 먼저 실행하고, 트리가 나오지 않은 모듈만 ``-pl <dir> -am``으로 따로 실행한다.
+    예외를 던지지 않고, 실패하면 빈 목록을 반환한다.
 
-    javax EE API jars on the resolved classpath of each module, with the direct (non-reactor) dependency that
-    drags each in. The root project is run first (on an aggregator that prints every reactor module's tree);
-    modules whose tree did not show up get their own `-pl <dir> -am` run. Never raises; [] on failure."""
+    `via` is the first non-reactor node on the path; test-scope paths count only when no other path exists;
+    one entry per (API jar, via), the shortest path first."""
     try:
         dirs = module_dirs(ws)
         key_to_dir: dict[str, str] = {}
@@ -385,7 +360,7 @@ def javax_api_inventory(ws: Workspace, cfg: Config, profile: Any = None) -> list
                 key_to_dir.setdefault(k, d)
                 aid_to_dir.setdefault(k.split(":", 1)[1], d)
 
-        trees: list[tuple[str, TreeNode]] = []          # (module dir, root)
+        trees: list[tuple[str, TreeNode]] = []          # (모듈 디렉토리, 루트)
         covered: set[str] = set()
 
         def collect(roots: list[TreeNode]) -> None:
@@ -411,13 +386,13 @@ def javax_api_inventory(ws: Workspace, cfg: Config, profile: Any = None) -> list
             for p in (non_test or paths):
                 leaf = p[-1]
                 rest = p[1:-1]
-                via_node = next((n for n in rest if n.gav.key not in reactor), None)   # skip reactor siblings
+                via_node = next((n for n in rest if n.gav.key not in reactor), None)   # reactor 형제는 건너뛴다
                 found.append((len(p), JavaxApiJar(
                     artifact=leaf.gav, module=d or None, scope=_scope_of(leaf),
                     path=[n.text or n.gav.coordinates for n in p],
                     via=via_node.gav if via_node is not None else None,
                     declared=not rest)))
-        found.sort(key=lambda t: t[0])                   # the module that declares the library first
+        found.sort(key=lambda t: t[0])                   # 라이브러리를 선언한 모듈이 먼저 오도록 짧은 경로 순
         out: list[JavaxApiJar] = []
         seen: set[tuple[str, str]] = set()
         for _, j in found:

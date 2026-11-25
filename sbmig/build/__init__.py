@@ -6,17 +6,13 @@ BuildError 목록으로 바꾼다. L2 서명 하나가 케이스 하나다.
 - 빌드 실패는 예외가 아니라 BuildResult로 반환한다
 - 테스트는 항상 건너뛴다(``build.skip_test_compile``)
 
-sbmig.build — Maven runner, log parser and error signatures (workstream C).
-
 Public API (docs/INTERFACES.md):
     MavenRunner(ws, cfg).run(goal, *, module=None, extra_args=(), label="", skip_test_compile=False,
-                             skip_tests=False) -> BuildResult   # skip_tests → -DskipTests (tests-skipped fallback)
+                             skip_tests=False) -> BuildResult   # skip_tests adds -DskipTests
     parse_maven_log(text, project_root) -> list[BuildError]          (signatures filled)
     signature_for(error) -> (L1, L2)
     normalize_message(msg) -> str
     maven_available(cfg) -> (ok, version string)                     (preflight)
-
-
 """
 from .log_parser import parse_maven_log, parse_reactor_summary, strip_ansi
 from .mvn import (base_command, local_repo_path, maven_available, mvn_env, repository_notes, run_logged,

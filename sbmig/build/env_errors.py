@@ -1,29 +1,20 @@
-"""프로젝트가 아니라 빌드 환경 때문에 생긴 실패를 빌드 로그에서 찾아내는 모듈.
-- Windows의 ``target/`` 파일 잠금을 찾는다.
+"""프로젝트가 아니라 빌드 환경 때문에 생긴 실패를 빌드 로그에서 찾는 모듈. 예외를 던지지 않는다.
+- Windows의 ``target/`` 파일 잠금을 찾는다(``file_lock_hit``).
   백신, 인덱서, IDE, 남아 있는 java 프로세스가 방금 쓴 jar를 잡고 있는 경우다
-- ``MavenRunner.run``의 재시도(``build.file_lock_retries``), 트리아지의 ``file_lock`` 차단, ``error_stage``
-  판단이 ``file_lock_hit``을 쓴다
-- 패턴은 ``knowledge/config/build_env_errors.yml``의 ``file_lock:``
-  목록에서 읽고, 파일이 없거나 비어 있으면 내장 목록을 쓴다
+- ``MavenRunner.run``의 재시도(``build.file_lock_retries``), 트리아지의 ``file_lock`` 차단, ``error_stage``가
+  ``file_lock_hit``을 쓴다
+- 잠금 패턴은 ``knowledge/config/build_env_errors.yml``의 ``file_lock:`` 목록에서 읽는다.
+  파일이 없거나 비어 있으면 내장 목록을 쓴다
 - Maven의 HTTP 저장소 차단도 찾는다(``http_blocker_hit``). ``Blocked mirror for repositories`` 문구나
-  ``http://0.0.0.0`` 주소가 있어야 차단으로 보며, ``maven-default-http-blocker`` id만으로는 차단이 아니다
-- HTTP 차단은 sbmig가 고칠 수 없는 환경 문제이므로 실행을 ``aborted:http-blocked``로 중단하고 settings 수정
+  ``http://0.0.0.0`` 주소가 있어야 차단으로 본다. ``maven-default-http-blocker`` id만으로는 차단이 아니다
+- HTTP 차단은 sbmig가 고칠 수 없는 환경 문제다. 실행을 ``aborted:http-blocked``로 중단하고 settings 수정
   방법을 안내한다. 사전 점검은 ``active_http_blockers``로 경고만 한다
-- 예외를 던지지 않는다
 
-Build-environment errors (v2.1r, docs/INTERFACES.md "v2.1r"): failures caused by the build machine, not the project —
-for now Windows file locks on the build output (`target/`): an antivirus / indexer / IDE / a lingering JVM holding a
-freshly written jar. `file_lock_hit` tells whether a log text shows one (and which path); the regexes come from
-`knowledge/config/build_env_errors.yml` (`file_lock:`), the built-in `BUILTIN_FILE_LOCK` when that file is missing,
-unreadable or empty. Never raises.
-
-v2.1z-ah: Maven's HTTP repository blocker (Maven >= 3.8.1, mirror `maven-default-http-blocker` in
-`<maven home>/conf/settings.xml`, or any mirror with `<blocked>true</blocked>`): `http_blocker_hit` needs evidence of a
-block — Maven's `Blocked mirror for repositories: [...]` text (the blocked repositories are read from it, credentials
-removed) or the built-in blocker's pseudo address `http://0.0.0.0`; the id `maven-default-http-blocker` alone is not
-evidence (a settings file may redefine it as an ordinary mirror). `http_blocked_reason` /
-`http_blocked_followup` say what to change in the Maven settings, `active_http_blockers` checks the settings files and
-the poms before any build (preflight warning only)."""
+Contracts: docs/INTERFACES.md "v2.1r" (file locks), "v2.1z-ah" (HTTP blocker).
+Maven >= 3.8.1 ships the mirror `maven-default-http-blocker` in `<maven home>/conf/settings.xml`; any mirror
+with `<blocked>true</blocked>` blocks too. A settings file may redefine that id as an ordinary mirror with a
+real URL, so Maven names it in plain resolution failures; only the phrase or the pseudo address is
+evidence."""
 from __future__ import annotations
 
 import logging
@@ -38,7 +29,7 @@ import yaml
 log = logging.getLogger("sbmig.build.env_errors")
 
 ENV_ERRORS_FILE = "knowledge/config/build_env_errors.yml"
-# the same entries as knowledge/config/build_env_errors.yml (the fallback when that file is missing)
+# knowledge/config/build_env_errors.yml과 같은 목록. 그 파일을 쓸 수 없을 때 쓴다
 BUILTIN_FILE_LOCK: tuple[str, ...] = (
     r"java\.nio\.file\.(?:FileSystemException|AccessDeniedException|FileAlreadyExistsException)\b[^\n]*[\\/]target[\\/]",
     r"다른 프로세스가 파일을 사용 중",
@@ -47,7 +38,7 @@ BUILTIN_FILE_LOCK: tuple[str, ...] = (
     r"Unable to delete[^\n]*target",
     r"Failed to delete[^\n]*[\\/]target[\\/]",
 )
-# a path with a `target` directory in it (Windows `C:\…\target\…` or posix); stops at whitespace and `:` after the drive
+# `target` 디렉토리가 들어 있는 경로. Windows와 posix 경로 모두 읽고, 드라이브 뒤의 공백이나 `:`에서 끊는다
 _TARGET_PATH_RE = re.compile(r"(?:[A-Za-z]:)?[^\s:;'\"<>|]*[\\/]target(?:[\\/][^\s:;'\"<>|]*)?")
 
 _CACHE: dict[str, list[re.Pattern[str]]] = {}
@@ -57,7 +48,7 @@ def _rules_path(cfg: Any) -> Path:
     if cfg is not None and hasattr(cfg, "resolve_path"):
         try:
             return Path(cfg.resolve_path(ENV_ERRORS_FILE))
-        except Exception as e:  # noqa: BLE001 - a broken config falls back to the package copy
+        except Exception as e:  # noqa: BLE001 - 설정이 깨졌으면 패키지 안의 파일을 쓴다
             log.debug("build_env_errors path: %s", e)
     from sbmig.core.config import PACKAGE_ROOT
     return PACKAGE_ROOT / ENV_ERRORS_FILE
@@ -75,10 +66,7 @@ def _compile(raw: list[Any], where: str) -> list[re.Pattern[str]]:
 
 def file_lock_patterns(cfg: Any = None) -> list[re.Pattern[str]]:
     """파일 잠금을 찾는 정규식 목록을 반환한다.
-    잘못된 정규식은 경고하고 건너뛰며, 파일이 없거나 비어 있으면 내장 목록을 쓴다. 파일 경로별로 캐시한다.
-
-    The file-lock regexes: the `file_lock:` list of `knowledge/config/build_env_errors.yml` (bad regexes are logged and
-    skipped), else `BUILTIN_FILE_LOCK`. Cached per file path."""
+    잘못된 정규식은 경고하고 건너뛴다. 파일이 없거나 비어 있으면 내장 목록을 쓴다. 파일 경로별로 캐시한다."""
     path = _rules_path(cfg)
     key = str(path)
     if key in _CACHE:
@@ -105,10 +93,9 @@ def clear_cache() -> None:
 
 def file_lock_hit(text: str, cfg: Any = None) -> str | None:
     """로그에서 파일 잠금이 보이면 잠긴 경로를, 아니면 None을 반환한다.
-    경로를 찾지 못하면 ``?``를 반환하고, 예외를 던지지 않는다.
+    잠금이 보이는 줄에 경로가 없으면 ``?``를 반환한다. 예외를 던지지 않는다.
 
-    The locked path when `text` shows a Windows file lock (the first path with a `target` directory on the matching
-    line, `?` when the line names none), None when no file-lock pattern matches. Never raises."""
+    The path is the first one with a `target` directory on the matching line."""
     if not text:
         return None
     try:
@@ -121,39 +108,36 @@ def file_lock_hit(text: str, cfg: Any = None) -> str | None:
             line = text[start:end if end >= 0 else len(text)]
             p = _TARGET_PATH_RE.search(line)
             return p.group(0).rstrip(".,)") if p else "?"
-    except Exception as e:  # noqa: BLE001 - a matcher problem means "not a file lock", never a failed build step
+    except Exception as e:  # noqa: BLE001 - 검사가 실패하면 잠금이 아닌 것으로 본다
         log.debug("file lock check failed: %s: %s", type(e).__name__, e)
     return None
 
 
-# ---------------------------------------------------------------------------------------------- v2.1z-ah: HTTP blocker
-HTTP_BLOCKER_ID = "maven-default-http-blocker"     # the mirror id Maven >= 3.8.1 ships in <maven home>/conf/settings.xml
+# ---------------------------------------------------------------------------------------------- HTTP 저장소 차단
+HTTP_BLOCKER_ID = "maven-default-http-blocker"     # Maven 3.8.1 이상이 전역 settings에 넣어 두는 미러 id
 HTTP_BLOCKED_FLAG = "aborted:http-blocked"
 HTTP_BLOCKED_KIND = "http-blocked"                 # `infra:http-blocked`
-# the Handover line starts with this (sbmig/report/handover.py keeps the same string — the report does not import build)
+# 인수인계 문장의 시작. 보고서는 build를 import하지 않으므로 sbmig/report/handover.py에 같은 문자열이 있다
 HTTP_BLOCKED_PREFIX = "Maven (3.8.1+) refuses the HTTP repositor"
-# Maven 3.8 / 3.9: `Could not transfer artifact g:a:pom:v from/to maven-default-http-blocker (http://0.0.0.0/): Blocked
+# Maven 3.8 / 3.9가 출력하는 차단 문장 예
+# `Could not transfer artifact g:a:pom:v from/to maven-default-http-blocker (http://0.0.0.0/): Blocked
 # mirror for repositories: [id (http://host/path, default, releases+snapshots), id2 (…, default, snapshots)]`
 _BLOCKED_LIST_RE = re.compile(r"(?:from/to (?P<mid>[^\s()]+) \((?P<murl>[^()\s]*)\): )?"
                               r"Blocked mirror for repositories: \[(?P<list>[^\]\r\n]*)\]")
 _BLOCKED_ENTRY_RE = re.compile(r"(?P<id>[^\s,()\[\]]+) \((?P<url>[^,()\s]+)(?:,[^()]*)?\)")
-# Maven's built-in blocker points at the pseudo address http://0.0.0.0/. 빌드 로그 전체를 검사하므로 앱이
-# 출력한 `http://0.0.0.0:8080` 같은 줄은 차단으로 보지 않도록 Maven의 문장 형태만 본다:
-# `from/to <id> (http://0.0.0.0/)`, `in <id> (http://0.0.0.0/)`, `was not found in | failed to transfer from http://0.0.0.0/
-# during a previous attempt` (the whole build log is searched, so only Maven's own message shapes count)
+# Maven 기본 차단 미러는 가짜 주소 http://0.0.0.0/을 가리킨다. 빌드 로그 전체를 검사하므로 앱이 출력한
+# `http://0.0.0.0:8080` 같은 줄을 차단으로 보지 않도록 Maven의 문장 형태만 본다
 _BLOCKER_URL_RE = re.compile(r"(?:from/to|\bin) [^\s()]+ \(https?://0\.0\.0\.0/?\)"
                              r"|(?:was not found in|failed to transfer from) https?://0\.0\.0\.0/? during a previous attempt")
-# the mirror id next to that pseudo address: `from/to <id> (http://0.0.0.0/)`, `in <id> (http://0.0.0.0/)`
+# 가짜 주소 옆의 미러 id
 _BLOCKER_URL_ID_RE = re.compile(r"(?:from/to|\bin) (?P<mid>[^\s()]+) \(https?://0\.0\.0\.0/?\)")
-# the cached-failure form: `was not found in http://0.0.0.0/ … until the update interval of <id> has elapsed`
+# 캐시된 실패 문장의 미러 id: `... until the update interval of <id> has elapsed`
 _CACHED_ID_RE = re.compile(r"update interval of (?P<mid>[^\s()]+) has elapsed")
 
 
 @dataclass(frozen=True)
 class BlockedRepository:
-    """Maven이 차단 미러 때문에 거부한 저장소 하나의 id와, 자격 증명을 뺀 URL을 담는 클래스.
-
-    One repository Maven refused through a blocked mirror (id, URL without credentials)."""
+    """Maven이 차단 미러 때문에 거부한 저장소 하나의 id와 자격 증명을 뺀 URL을 담는 클래스."""
     id: str
     url: str
 
@@ -161,10 +145,7 @@ class BlockedRepository:
 @dataclass
 class HttpBlockerHit:
     """로그에서 읽은 HTTP 차단 정보를 담는 클래스.
-    차단 미러 id와 거부된 저장소 목록을 담으며, 로그에 저장소 이름이 없으면 목록은 비어 있다.
-
-    Maven's HTTP blocker as a log shows it: the blocking mirror's id and the refused repositories (empty when the log
-    names none)."""
+    차단 미러 id와 거부된 저장소 목록을 담는다. 로그에 저장소 이름이 없으면 목록은 비어 있다."""
     mirror_id: str = HTTP_BLOCKER_ID
     repositories: list[BlockedRepository] = field(default_factory=list)
 
@@ -186,9 +167,7 @@ class HttpBlockerHit:
 
 
 def strip_userinfo(url: str) -> str:
-    """로그, 보고서, 저널에 자격 증명이 남지 않도록 URL에서 ``user:password@`` 부분을 지운다.
-
-    The URL without its `user:password@` part (never echo credentials)."""
+    """로그, 보고서, 저널에 자격 증명이 남지 않도록 URL에서 ``user:password@`` 부분을 지운다."""
     u = (url or "").strip()
     try:
         sp = urlsplit(u)
@@ -196,22 +175,19 @@ def strip_userinfo(url: str) -> str:
             host = sp.netloc.rsplit("@", 1)[-1]
             return urlunsplit((sp.scheme, host, sp.path, sp.query, sp.fragment))
         return u
-    except Exception:  # noqa: BLE001 - a URL that does not parse: drop everything up to the last @
+    except Exception:  # noqa: BLE001 - 파싱되지 않는 URL은 마지막 @까지 지운다
         return re.sub(r"//[^/@\s]*@", "//", u)
 
 
 def http_blocker_hit(text: str) -> HttpBlockerHit | None:
-    """Maven이 실제로 저장소를 막았다는 증거가 있을 때만 차단 미러와 거부된 저장소를 반환하고, 아니면 None을
-    반환한다. 예외를 던지지 않는다.
-    회사 settings는 ``maven-default-http-blocker`` id를 실제 Nexus를 가리키는 일반 미러로 다시 정의하므로,
-    평범한 아티팩트 누락에도 그 id가 나오기 때문이다.
+    """Maven이 실제로 저장소를 막았다는 증거가 있을 때만 차단 미러와 거부된 저장소를 반환한다.
+    증거가 없으면 None을 반환한다. 예외를 던지지 않는다.
+    회사 settings는 ``maven-default-http-blocker`` id를 실제 Nexus를 가리키는 일반 미러로 다시 정의한다.
+    그래서 평범한 아티팩트 누락에도 그 id가 나오므로 id만으로는 차단으로 보지 않는다.
 
-    The blocker Maven reported, only with evidence that Maven actually blocked: the phrase `Blocked mirror for repositories:
-    [...]` (any mirror id), or the built-in blocker's pseudo address `http://0.0.0.0` (the transfer / cached-failure forms
-    without the phrase). The bare id `maven-default-http-blocker` is not evidence: a settings file may redefine that id as
-    an ordinary mirror with a real URL, and Maven names it in every plain resolution failure. Returns the mirror id and the
-    refused repositories of every occurrence (deduplicated by id, credentials removed); None when the text shows no block.
-    Never raises."""
+    Evidence: the phrase `Blocked mirror for repositories: [...]` (any mirror id), or the pseudo address
+    `http://0.0.0.0` in Maven's transfer / cached-failure forms. Repositories of every occurrence,
+    deduplicated by id, credentials removed."""
     if not text:
         return None
     try:
@@ -239,7 +215,7 @@ def http_blocker_hit(text: str) -> HttpBlockerHit | None:
                     break
         hit.mirror_id = mid or HTTP_BLOCKER_ID
         return hit
-    except Exception as e:  # noqa: BLE001 - a matcher problem means "no blocker", never a failed step
+    except Exception as e:  # noqa: BLE001 - 검사가 실패하면 차단이 아닌 것으로 본다
         log.debug("http blocker check failed: %s: %s", type(e).__name__, e)
         return None
 
@@ -281,23 +257,18 @@ def _blocker_origin(cfg: Any, mirror_id: str) -> str:
 
 
 def http_blocked_reason(hit: HttpBlockerHit) -> str:
-    """Maven이 HTTP 저장소를 차단 미러로 거부했다는 문장을 만든다. 중단 사유와 조치 요약이 같은 문장을 쓴다.
-
-    One sentence: Maven (3.8.1+) refuses the HTTP repository through the blocked mirror — the project and sbmig are not the
-    cause (the abort reason and the remediation summary use the same words)."""
+    """Maven이 HTTP 저장소를 차단 미러로 거부했다는 문장을 만든다. 중단 사유와 조치 요약이 같은 문장을 쓴다."""
     plural = "ies" if len(hit.repositories) > 1 else "y"
     return (f"{HTTP_BLOCKED_PREFIX}{plural} {hit.repositories_text()} via the blocked mirror `{hit.mirror_id}` — "
             "not a project or sbmig problem")
 
 
 def http_blocked_followup(hit: HttpBlockerHit, cfg: Any = None) -> str:
-    """인수인계에 넣을 한 줄을 만든다. 이유와 고칠 방법(https URL로 바꾸기, 차단 미러의 mirrorOf에
-    ``,!<저장소 ID>`` 추가)과 차단 미러를 정의한 파일을 담는다.
-    한국어 문구는 ``sbmig/report/i18n.py``의 PATTERNS에 있으므로 함께 바꿔야 한다.
+    """인수인계에 넣을 한 줄을 만든다. 이유, 고칠 방법, 차단 미러를 정의한 파일을 담는다.
+    고칠 방법은 https URL로 바꾸기, 차단 미러 mirrorOf에 ``,!<저장소 ID>`` 추가, 차단하지 않는 미러 추가다.
+    한국어 문구가 ``sbmig/report/i18n.py``의 PATTERNS에 있으므로 함께 바꿔야 한다.
 
-    The Handover line: the reason, what to change (a) an https URL, (b) in the settings file Maven uses exempt the
-    repository from the blocking mirror (`,!<id>` in its mirrorOf — the company's own way), or add a mirror for the repository with `<blocked>false</blocked>`, and
-    where the blocker comes from. Korean in `sbmig/report/i18n.py` PATTERNS (change both)."""
+    `,!<id>` in the mirrorOf is the company's own fix."""
     user, origin = _user_settings(cfg)
     return (f"{http_blocked_reason(hit)}. Fix the Maven settings: (a) an https URL, or (b) in {user} ({origin}) exempt "
             f"{hit.ids_text()} from mirror `{hit.mirror_id}` (append `,!<repository id>` to its `<mirrorOf>`), or add a mirror "
@@ -307,10 +278,7 @@ def http_blocked_followup(hit: HttpBlockerHit, cfg: Any = None) -> str:
 @dataclass(frozen=True)
 class ActiveBlocker:
     """사전 점검에서 찾은 활성 차단 하나를 담는 클래스.
-    저장소, 그 저장소를 가리는 차단 미러, 미러를 정의한 파일을 담는다.
-
-    A repository the effective Maven settings send to a blocked mirror: repository id / URL / where declared, the mirror id
-    and the settings file that defines it."""
+    저장소 id와 URL, 선언한 곳, 그 저장소를 가리는 차단 미러, 미러를 정의한 settings 파일을 담는다."""
     repo_id: str
     url: str
     declared: str
@@ -321,9 +289,7 @@ class ActiveBlocker:
 def _select_mirror(mirrors: list[tuple[str, str, bool, str]], repo_id: str, repo_url: str
                    ) -> tuple[str, str, bool, str] | None:
     """Maven의 규칙대로 저장소에 적용될 미러를 고른다.
-    mirrorOf가 저장소 id와 정확히 같은 미러를 먼저 고르고, 없으면 순서대로 처음 패턴이 맞는 미러를 고른다.
-
-    Maven's mirror selection: a mirror whose mirrorOf equals the repository id exactly wins, else the first pattern match."""
+    mirrorOf가 저장소 id와 정확히 같은 미러를 먼저 고르고, 없으면 순서대로 처음 패턴이 맞는 미러를 고른다."""
     from .repo_versions import mirror_covers
     exact = next((m for m in mirrors if m[1].strip() == repo_id), None)
     if exact is not None:
@@ -334,12 +300,10 @@ def _select_mirror(mirrors: list[tuple[str, str, bool, str]], repo_id: str, repo
 def active_http_blockers(cfg: Any, project_root: Path | None = None) -> list[ActiveBlocker]:
     """Maven이 실제로 쓸 settings에서 차단 미러에 가려지는 ``http://`` 저장소 목록을 반환한다.
     사전 점검에서 쓰며, 예외를 던지지 않는다.
-    미러 병합과 선택은 Maven과 같은 규칙을 쓰고, 읽지 못한 파일은 빼고 판단한다.
+    미러 병합과 선택은 Maven과 같은 규칙을 쓴다. 읽지 못한 파일은 빼고 판단한다.
 
-    The `http://` repositories (settings active-profile repositories / pluginRepositories, the project poms' repositories)
-    that the effective Maven settings route to a blocked mirror: mirrors merged like Maven (user entries first, a global
-    mirror whose id the user settings redefine is dropped), selected like Maven (exact id first, then the first pattern
-    match). Never raises."""
+    Repositories checked: settings active-profile repositories / pluginRepositories and the project poms'.
+    Merge: user entries first, a global mirror whose id the user settings redefine is dropped."""
     out: list[ActiveBlocker] = []
     try:
         from .repo_versions import is_blocking_mirror, pom_repositories, read_settings
@@ -348,7 +312,7 @@ def active_http_blockers(cfg: Any, project_root: Path | None = None) -> list[Act
         g = _global_settings(cfg)
         if g is not None and (not user.exists() or g.resolve() != user.resolve()):
             files.append(g)
-        mirrors: list[tuple[str, str, bool, str]] = []      # (id, mirrorOf, blocked, origin) — merged like Maven
+        mirrors: list[tuple[str, str, bool, str]] = []      # (id, mirrorOf, blocked, origin)
         repos: list[tuple[str, str, str]] = []               # (id, url, declared)
         ids: set[str] = set()
         for f in files:
@@ -357,7 +321,7 @@ def active_http_blockers(cfg: Any, project_root: Path | None = None) -> list[Act
                 continue
             for mid, url, mo, _c in d.mirrors:
                 if mid and mid in ids:
-                    continue                                  # the user settings redefined this id (Maven's merge)
+                    continue                                  # 사용자 settings가 같은 id를 다시 정의했다
                 ids.add(mid)
                 mirrors.append((mid, mo, is_blocking_mirror(url, mid in d.blocked), str(f)))
             for rid, url, _c in [*d.repos, *getattr(d, "plugin_repos", [])]:
@@ -372,7 +336,7 @@ def active_http_blockers(cfg: Any, project_root: Path | None = None) -> list[Act
             sel = _select_mirror(mirrors, rid, url)
             if sel is not None and sel[2]:
                 out.append(ActiveBlocker(rid, strip_userinfo(url), declared, sel[0], sel[3]))
-    except Exception as e:  # noqa: BLE001 - a preflight check never fails a run
+    except Exception as e:  # noqa: BLE001 - 사전 점검 때문에 실행이 실패하지 않게 한다
         log.debug("http blocker preflight failed: %s: %s", type(e).__name__, e)
     return out
 

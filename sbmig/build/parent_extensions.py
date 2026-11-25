@@ -1,15 +1,12 @@
 """첫 Maven 호출 전에 사내 부모 체인의 build extension을 받을 수 있는지 점검하는 모듈.
 상속된 확장은 자식 pom에서 뺄 수 없고, 하나라도 받지 못하면 OpenRewrite를 포함한 모든 Maven 호출이
 ``Unresolveable build extension``으로 실패한다.
-- 확장마다 로컬 저장소나 원격 저장소에서 pom을 읽을 수 있는지 확인한다
-- 원격에서는 읽히는데 로컬에 오래된 ``*.lastUpdated`` 표식만 있으면 그 폴더의 표식만 지운다.
-  ``~/.m2`` 전체는 건드리지 않는다
+- 확장마다 로컬 저장소나 원격 저장소에서 pom을 읽을 수 있는지 확인한다. 확장 pom의 ``<parent>`` 체인도 확인한다
+- 읽히는 확장은 그 아티팩트 폴더의 오래된 ``*.lastUpdated`` 표식만 지운다. ``~/.m2`` 전체는 건드리지 않는다
 - 어디서도 읽지 못하면 경고, 플래그, 인수인계로 운영자에게 알린다.
-  해당 확장을 Nexus에 올리거나 부모 pom에서 빼야 한다
-
-Pre-check of the configured parent chain's build extensions before the first Maven call: readable from the local
-repository / the repository set? Stale `*.lastUpdated` markers of an extension the repository does serve are deleted
-(that artifact folder only); an extension nobody can serve is reported (warning, flag, Handover line). Never raises."""
+  그 확장을 Nexus에 올리거나 부모 pom에서 빼야 한다
+- 예외를 던지지 않는다
+"""
 from __future__ import annotations
 
 import logging
@@ -19,7 +16,9 @@ from typing import Any
 
 from .boot_bom import PomReader, local_repository, make_resolver, parse_pom, pom_builtins
 
-MAX_ANCESTORS = 8      # the extension pom's <parent> chain Maven must also read (wagon-webdav → wagon-providers → wagon → maven-parent → apache)
+# Maven이 함께 읽어야 하는 확장 pom의 <parent> 체인 깊이 상한
+# 예: wagon-webdav -> wagon-providers -> wagon -> maven-parent -> apache
+MAX_ANCESTORS = 8
 
 log = logging.getLogger("sbmig.build.parent_extensions")
 
@@ -33,7 +32,7 @@ class ExtensionCheck:
     readable: bool
     where: str
     markers_removed: list[str] = field(default_factory=list)
-    ancestors: list[str] = field(default_factory=list)          # the extension pom's <parent> chain that was read
+    ancestors: list[str] = field(default_factory=list)          # 읽은 확장 pom의 <parent> 체인
 
     def line(self) -> str:
         """로그와 저널에 남길 한 줄 요약을 만든다."""
@@ -50,11 +49,8 @@ def _split(coord: str) -> tuple[str, str, str] | None:
 
 def check_parent_build_extensions(cfg: Any, facts: Any = None, *, clear_markers: bool = True) -> list[ExtensionCheck]:
     """부모 체인이 선언한 build extension을 하나씩 점검해 결과 목록을 반환한다.
-    ``clear_markers``가 참이면 원격에서 읽히는 확장의 로컬 표식을 지운다.
-    체인을 읽지 못했거나 확장이 없으면 빈 목록을 반환하고, 예외를 던지지 않는다.
-
-    One `ExtensionCheck` per build extension the parent chain declares; stale local markers of a repository-served
-    extension are deleted when `clear_markers`. [] when the chain was not read or declares none. Never raises."""
+    ``clear_markers``가 참이면 읽히는 확장의 로컬 표식을 지운다.
+    체인을 읽지 못했거나 확장이 없으면 빈 목록을 반환한다. 예외를 던지지 않는다."""
     out: list[ExtensionCheck] = []
     try:
         if facts is None:
@@ -64,8 +60,7 @@ def check_parent_build_extensions(cfg: Any, facts: Any = None, *, clear_markers:
         if not exts:
             return out
         local = local_repository(cfg)
-        # every extension may need its whole <parent> chain (wagon-webdav → providers → wagon → maven-parent → apache); a shared
-        # ancestor is read once (memo) — the old limit of 8 made the second extension "NOT readable — skipped (more than 8 poms)"
+        # 확장마다 <parent> 체인 전체가 필요할 수 있으므로 읽기 상한을 확장 수에 맞춘다. 공통 조상은 한 번만 읽는다
         reader = PomReader(cfg, local, limit=len(exts) * (MAX_ANCESTORS + 1) + 2)
         memo: dict[tuple[str, str, str], tuple[str | None, str]] = {}
 
@@ -84,15 +79,14 @@ def check_parent_build_extensions(cfg: Any, facts: Any = None, *, clear_markers:
             text, where = read(g, a, v)
             check = ExtensionCheck(coord, declared, bool(text), where)
             if text and clear_markers and local is not None:
-                # readable locally or from the repository: the folder is Maven's → a stale `.jar.lastUpdated` beside a present pom
-                # would still make Maven refuse the jar for a day, so the markers go in both cases
+                # pom이 있어도 옆에 오래된 `.jar.lastUpdated`가 남으면 Maven이 하루 동안 jar를 거부하므로
+                # 로컬에서 읽었든 원격에서 읽었든 표식을 지운다
                 check.markers_removed = _remove_stale_markers(local.joinpath(*g.split("."), a, v))
             if text:
-                # Maven reads the extension's <parent> chain too ("or one of its dependencies could not be resolved"): a 2007 pom's
-                # ancestors (wagon-providers, wagon, maven-parent, apache) must be served as well — follow them and name the first gap
+                # Maven은 확장 pom의 <parent> 체인도 읽으므로 조상까지 따라가서 처음 읽지 못한 것을 알린다
                 _check_ancestors(read, text, check, local, clear_markers)
             out.append(check)
-    except Exception as e:  # noqa: BLE001 - a pre-check never stops the intake; Maven reports the problem as before
+    except Exception as e:  # noqa: BLE001 - 사전 점검이 접수를 멈추지 않는다. 문제는 Maven이 알린다
         log.warning("parent build extension check failed: %s: %s", type(e).__name__, e)
     return out
 

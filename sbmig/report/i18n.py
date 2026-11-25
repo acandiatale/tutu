@@ -1,19 +1,15 @@
 """report.md의 문장을 한국어로 바꾸는 번역 표와 도우미 함수를 담은 모듈(``report.language: en | ko``).
 markdown.py와 guide_ko.py가 report.md를 만들 때 ``tr``과 ``tr_line``으로 문장을 번역한다. report.json은 영어 그대로 둔다.
+웹 화면도 중단 사유를 ``tr_line``으로 번역한다.
 - ``tr``: 영어 원문을 키로 번역을 찾고, 없으면 영어를 그대로 반환한다
 - ``tr_line``: 저장된 영어 줄 전체를 ``PATTERNS`` 정규식으로 맞춰 번역한다
 - 키가 영어 원문이므로 영어 문장을 바꾸면 이 표의 키나 패턴도 함께 바꿔야 한다. 그러지 않으면 영어로 출력된다
 - 한국어는 요청한 담당자에게 쓰는 합니다체 문장으로 쓰고, 식별자, 경로, 명령, 캡처한 값은 그대로 둔다
 - Maven / javac 메시지와 LLM이 쓴 자유 문장은 번역하지 않는다
 
-report.md languages (`report.language: en | ko`). Dependency-free string table + helpers.
-
-`tr(lang, text, **fmt)` — `text` is the English source string (it is also the table key, `{name}` placeholders
-filled by `str.format`); a missing translation falls back to the English text, so `en` output never changes.
-`tr_line(lang, line)` — lines stored in report.json (from-here items, follow-ups, blocked suggestions, abort reasons,
-handover notes) stay English in the data; for `ko` the renderer maps the known templates through `PATTERNS`.
-Identifiers, paths, Maven / javac messages and free-text notes from the loop are never translated. The Korean is
-workplace Korean for the person who asked for the migration (INTERFACES "v2.1z-as", wording).
+No dependencies. `tr` fills `{name}` placeholders with `str.format`; `en` output never changes. Stored lines
+(from-here items, follow-ups, blocked suggestions, abort reasons, handover notes) stay English in the data.
+Wording contract: docs/INTERFACES.md "v2.1z-as".
 """
 from __future__ import annotations
 
@@ -24,7 +20,7 @@ LANGUAGES = ("en", "ko")
 
 # 영어 원문을 키로 한 한국어 번역 표. 키는 tr(...) 호출에 쓴 영어 문자열과 정확히 같아야 한다
 STRINGS: dict[str, dict[str, str]] = {"ko": {
-    # ---- section titles
+    # ---- 섹션 제목
     "Blocked — needs human / library action": "진행하지 않은 항목",
     "Handover — what we replaced, what is yours": "전환 내용과 확인할 사항",
     "Properties to set before running": "실행 전에 설정할 프로퍼티",
@@ -56,7 +52,7 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
     "### Versions replaced": "### 바꾼 버전",
     "### Libraries needing your attention": "### 확인이 필요한 라이브러리",
     "### From here on, your team": "### 담당 팀에서 확인할 사항",
-    # ---- v2.1d operator checks (major upgrades / library replacements)
+    # ---- 운영자 확인. 메이저 업그레이드와 라이브러리 교체
     "### Operator checks ({n} major upgrades)": "### 운영자 확인 필요 (메이저 업그레이드 {n}건)",
     "The build passes, but these changes cross a major version line or replace a library: check the runtime "
     "behaviour (configuration, registrations, renamed packages) before you ship.":
@@ -71,7 +67,7 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
     "guide source: LLM": "안내 작성: LLM",
     "guide source: sbmig (synthesized)": "안내 작성: sbmig 자동 생성",
     "⚠ major ({n}, see Operator checks)": "⚠ 메이저 버전 변경 {n}건 (「운영자 확인 필요」 참고)",
-    # ---- header table
+    # ---- 머리 표
     "✅ BUILD SUCCESS": "✅ 빌드 성공",
     "❌ NOT BUILDING": "❌ 빌드 실패",
     "| **Result** | {ok} (final `mvn clean package`) |": "| **결과** | {ok} (최종 `mvn clean package`) |",
@@ -94,7 +90,7 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
     "| To-be | {versions} |": "| 전환 후 | {versions} |",
     "{m}m {s}s": "{m}분 {s}초",
     "{secs}s": "{secs}초",
-    # ---- blocked
+    # ---- 차단 항목
     "{n} item(s) — ": "{n}건 — ",
     " (class `{owner}`)": " (클래스 `{owner}`)",
     "class `{owner}`": "클래스 `{owner}`",
@@ -106,7 +102,7 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
         "손대지 않았습니다. 나머지 전환은 그대로 진행했습니다.",
     "<details><summary><code>{id}</code> — {n} error(s)</summary>":
         "<details><summary><code>{id}</code> 관련 오류 {n}건</summary>",
-    # ---- unresolved
+    # ---- 해결하지 못한 오류
     "None. The final build passed.": "없습니다. 최종 빌드가 통과했습니다.",
     "None. No structured errors were captured; check the last build log.":
         "정리된 오류가 없습니다. 마지막 빌드 로그를 확인해 주세요.",
@@ -118,7 +114,7 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
     " — symbol: `{symbol}`": " — 심볼: `{symbol}`",
     " — location: {location}": " — 위치: {location}",
     "Last build log: `{path}`": "마지막 빌드 로그: `{path}`",
-    # ---- v2 structure review (sbmig.review)
+    # ---- 구조 검토(sbmig.review)
     "Structure review": "구조 점검",
     "Vulnerability remediation": "취약점 조치",
     "Chained after the migration's BUILD SUCCESS (remediation.after_migration); it does not change the migration result "
@@ -198,7 +194,7 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
     "- no fix for the critical issue(s): they are handed over":
         "- 심각한 문제를 고치지 못해 「확인해 주세요」에 넣었습니다.",
     "- note: {note}": "- 메모: {note}",
-    # ---- v2.1 error list + fixes by case
+    # ---- 오류 목록과 케이스별 수정
     "Error list": "오류 목록",
     "Fixes by case": "오류 유형별 수정",
     "compile — `mvn compile` after OpenRewrite": "compile — OpenRewrite 뒤 `mvn compile`",
@@ -224,11 +220,11 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
     "whole change set in `changes.patch`.":
         "저장한 스크립트는 KB(`<kb>/cases/<case>/fix_vN.py`)에 있습니다. 수정할 때마다의 diff는 `errors.md`에, 전체 변경은 "
         "`changes.patch`에 있습니다.",
-    # ---- what we changed
+    # ---- 바꾼 내용
     "Plan steps executed:": "실행한 계획 단계:",
     "OpenRewrite runs:": "OpenRewrite 실행:",
     "| phase | recipes | changed files | ok |": "| 단계 | 레시피 | 변경 파일 | 성공 |",
-    # v2.1h (A5): the JSP javax → jakarta rename of the restructure
+    # 재구성이 JSP의 javax 이름을 jakarta로 바꾼 줄
     "JSP javax → jakarta: {files}, {refs}": "JSP javax → jakarta: {files}, {refs}",
     "{n} file": "파일 {n}개",
     "{n} files": "파일 {n}개",
@@ -238,7 +234,7 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
     "JSPs":
         " — 구조 재구성에서 JSP / 태그 파일(page import, useBean, 스크립틀릿)의 이름을 바꿨습니다. OpenRewrite는 JSP를 "
         "읽지 않습니다.",
-    # v2.1j: the intake's pom synthesis for an Ant project ("What we changed" + the Handover block)
+    # 접수에서 Ant 프로젝트의 pom을 합성한 줄. "What we changed"와 인수인계 블록에 쓴다
     "pom.xml synthesized from build.xml ({n} jars: {a} pom.properties, {b} table, {c} lookup, {d} unknown)":
         "build.xml로 pom.xml 생성 (jar {n}개: pom.properties {a}, 이름표 {b}, 저장소 조회 {c}, 미확인 {d})",
     "### Ant project: pom.xml synthesized": "### Ant 프로젝트의 pom.xml 생성",
@@ -274,9 +270,9 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
     "Synthesis warnings:": "pom 생성 경고:",
     "yes": "예",
     "no: {error}": "아니오: {error}",
-    # ---- notes
+    # ---- 메모
     "- plan: {note}": "- 계획: {note}",
-    # ---- handover
+    # ---- 인수인계
     "No version changes and no library advisories recorded for this run.":
         "이번 실행에서 바뀐 버전과 라이브러리 권고가 없습니다.",
     "- parent: {before} → {after}": "- 부모 pom: {before} → {after}",
@@ -303,7 +299,7 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
         "**모듈 병합에서 겹친 파일** (`<modules>` 순서에서 첫 모듈의 파일을 남김)",
     "Nothing beyond the usual review — the migrated project builds with the versions above.":
         "평소 검토 외에 따로 확인할 사항은 없습니다. 전환한 프로젝트는 위 버전으로 빌드됩니다.",
-    # handover reasons (VersionChange.reason constants of handover.py)
+    # 인수인계 버전 변경 이유(handover.py의 VersionChange.reason 상수)
     "carried over (no longer managed)": "새 부모 pom에 버전이 없어 기존 버전을 유지",
     "parent swap": "부모 pom 교체",
     "optional bump": "사내 선택 아티팩트 버전 맞춤",
@@ -331,7 +327,7 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
         "`errors.jsonl`에 있습니다): {counts}. 그 밖에 sbmig가 고친 pom {m}건이 있습니다.",
     "verified": "빌드로 확인",
     "not verified yet": "아직 확인 전",
-    # properties (round 8)
+    # 실행 전에 넣어야 하는 외부 설정
     "key": "키",
     "before migration": "변경 전 설정 위치",
     "referenced at": "참조 위치",
@@ -343,7 +339,7 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
         "주었습니다). 처음 기동하기 전에 각 값을 설정해 주세요.",
     "How to supply them:": "값을 넣는 방법:",
     "Packaged placeholders: {files} (grep `__SET_ME__`)": "임시 값을 넣어 둔 파일: {files} (`__SET_ME__`로 검색해 주세요)",
-    # ---- flag help (FLAG_HELP / FLAG_PREFIX_HELP values of markdown.py)
+    # ---- 플래그 설명(markdown.py의 FLAG_HELP / FLAG_PREFIX_HELP 값)
     "`mvn -v` reported another Java version than `build.require_java_major`: set build.java_home / JAVA_HOME to a "
     "JDK 21 and run again":
         "`mvn -v`가 알려 준 Java 버전이 `build.require_java_major`와 다릅니다. build.java_home 또는 JAVA_HOME을 JDK 21로 "
@@ -390,8 +386,7 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
     "restructure replaced the parent and the fix loop did the rest (see the Handover)":
         "기존 부모 pom이 저장소에 없어 OpenRewrite를 실행하지 못했습니다. 레시피로 바뀐 코드는 없고, 구조 재구성에서 "
         "부모 pom을 바꾼 뒤 나머지는 빌드 오류 수정 단계에서 처리했습니다. 「확인해 주세요」를 봐 주세요.",
-    # 빈 reactor, reactor 밖 소스, stray-pom-ignored 플래그 설명.
-    # sbmig/report/markdown.py를 바꾸면 함께 바꾼다
+    # 빈 reactor, reactor 밖 소스, stray-pom-ignored 플래그 설명. sbmig/report/markdown.py를 바꾸면 함께 바꾼다
     "a pom.xml with the same coordinates as a module that no pom lists (a stray copy in an IDE output / backup folder such as "
     "`boot/bin/pom.xml`): ignored at intake — not built, not migrated, not shown to the structure review; see Manual follow-ups":
         "어느 pom도 모듈로 나열하지 않는데 다른 모듈과 좌표가 같은 pom.xml이 있어 접수 단계에서 무시했습니다(IDE 출력이나 "
@@ -575,7 +570,7 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
     "the classpath\"): the direct dependencies that drag them in are compiled against javax and need Jakarta builds":
         "전환 뒤에도 javax EE API jar가 클래스패스에 남아 있습니다(「클래스패스에 남은 javax API jar」 참고). 이 jar를 "
         "가져오는 직접 의존성이 javax 기준으로 컴파일되어 있어 Jakarta 빌드가 필요합니다.",
-    # ---- javax API jars still on the classpath (X1b, 2026-10-22)
+    # ---- classpath에 남은 javax API jar
     "javax API jars still on the classpath": "클래스패스에 남은 javax API jar",
     "| javax API jars | {n} |": "| javax API jar | {n}개 |",
     " ← declared in the pom": " ← pom에 직접 선언",
@@ -630,7 +625,7 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
         "--stop-after 옵션에 따라 이 단계 뒤에서 실행을 멈췄습니다.",
     "the run stopped early (see Blocked / follow-ups)":
         "실행이 중간에 멈췄습니다(「진행하지 않은 항목」과 「확인해 주세요」 참고).",
-    # ---- inventory.md (`sbmig inventory`, sbmig/report/inventory.py)
+    # ---- inventory.md(`sbmig inventory`, sbmig/report/inventory.py)
     "# Webapp inventory — {name}": "# 웹앱 인벤토리 — {name}",
     "Read-only scan of a directory without a pom (scanned {at}). Nothing was changed.":
         "pom이 없는 폴더를 읽기만 하고 살펴봤습니다({at}). 아무것도 바꾸지 않았습니다.",
@@ -721,7 +716,7 @@ def _api_subject(m: "re.Match[str]") -> str:
 
 
 def _mvn_holds_ko(text: str) -> str:
-    """``.mvn`` 폴더에 든 것을 적은 영어 목록에서 설명 낱말만 한국어로 바꾼다. 옵션과 파일 이름은 그대로 둔다."""
+    """``.mvn`` 폴더에 든 것을 기록한 영어 목록에서 설명 단어만 한국어로 바꾼다. 옵션과 파일 이름은 그대로 둔다."""
     out = text
     for en, ko in (("other files: ", "그 밖의 파일: "), ("maven.config: empty", "maven.config: 비어 있음"),
                    ("extensions.xml: no extension", "extensions.xml: 확장 없음")):
@@ -762,9 +757,8 @@ def _aggregator_ko(m: "re.Match[str]") -> str:
 
 
 # report.json에 영어로 저장된 줄(인수인계 할 일, 후속 조치, 차단 항목의 조치 문구, 중단 사유)을 한국어로 바꾸는 패턴.
-# 영어 문장을 바꾸면 패턴도 함께 바꿔야 하며, 맞지 않으면 영어 그대로 출력된다
-# Stored English lines → Korean, matched against the whole line. Unknown lines (free text from the LLM, advisory text
-# from the knowledge YAML, config values) stay as they are.
+# 줄 전체로 맞춘다. 영어 문장을 바꾸면 패턴도 함께 바꿔야 한다. 맞지 않으면 영어 그대로 출력된다
+# LLM이 쓴 문장, 지식 YAML의 권고 문장, 설정 값처럼 모르는 줄은 그대로 둔다
 # pom 인코딩 수정 한 건의 영어 표현(sbmig.restructure.pom_charset.PomCharsetFix._what)
 _POM_CHARSET = (r"(?:declared (?P<d>\S+)|no declaration), saved as (?P<a>\S+): "
                 r"(?:declaration set to (?P<t>\S+)|saved again as UTF-8)$")
@@ -873,10 +867,10 @@ PATTERNS: dict[str, list[tuple[re.Pattern[str], Union[str, Callable[[re.Match[st
      r"scope를 변경 전과 같은 provided로 되돌렸습니다(\g<k>, 레시피 뒤에는 \g<o>)"),
     (r"^source encoding written: (?:(?P<p>\S+): )?project\.build\.sourceEncoding=(?P<v>[^\s(]+)(?: \(.*\))?$",
      r"소스 인코딩을 pom에 기록했습니다(project.build.sourceEncoding=\g<v>)"),
-    # 변환 전에 sbmig가 맞춘 pom의 글자 인코딩(오류 목록 항목, sbmig.restructure.pom_charset.PomCharsetFix.note)
+    # 변환 전에 sbmig가 맞춘 pom의 문자 인코딩(오류 목록 항목, sbmig.restructure.pom_charset.PomCharsetFix.note)
     (r"^pom encoding corrected: " + _POM_CHARSET,
      lambda m: f"pom의 글자 인코딩을 바로잡았습니다({_pom_charset_ko(m)})"),
-    # 변환 전에 pom의 글자 인코딩을 맞췄다는 인수인계 줄(sbmig.restructure.pom_charset.handover_line)
+    # 변환 전에 pom의 문자 인코딩을 맞췄다는 인수인계 줄(sbmig.restructure.pom_charset.handover_line)
     (r"^pom encodings corrected before the automatic conversion: (?P<r>.+?) — each pom's XML declaration named another "
      r"encoding than the one its Korean text was saved in, which OpenRewrite cannot read; the Korean text itself is "
      r"unchanged$",
@@ -895,8 +889,8 @@ PATTERNS: dict[str, list[tuple[re.Pattern[str], Union[str, Callable[[re.Match[st
      r"fixes the tests \(`mvn test-compile`\) before relying on CI$",
      r"테스트 소스는 컴파일도 실행도 하지 않았습니다(build.skip_test_compile: true). CI에 맡기기 전에 담당 팀이 테스트를 "
      r"컴파일하고 고쳐 주세요(`mvn test-compile`)."),
-    # 사내 프레임워크 프로젝트의 차단 표 조치 문구(sbmig/loop/fixloop.py의 _framework_parent_abort,
-    # framework_owner_suggestion). 영어 문장을 바꾸면 함께 바꾼다
+    # 사내 프레임워크 프로젝트의 차단 표 조치 문구. 영어 문장을 바꾸면 함께 바꾼다
+    # (sbmig/loop/fixloop.py의 _framework_parent_abort, framework_owner_suggestion)
     (r"^parent `(?P<c>[^`]+)` is not resolvable with settings `(?P<s>[^`]+)`: this is a framework project "
      r"\((?P<fw>.+?)\) and keeps its own parent — .*nothing in the project can replace it$",
      r"부모 pom을 저장소에서 받지 못했습니다(`\g<c>`, settings `\g<s>`). 사내 프레임워크 프로젝트(\g<fw>)는 부모 pom을 "
@@ -938,8 +932,8 @@ PATTERNS: dict[str, list[tuple[re.Pattern[str], Union[str, Callable[[re.Match[st
     (r"^Ant build file (?P<f>\S+) found and no pom\.xml: the remediation flow builds the project as uploaded and "
      r"needs a Maven project$",
      r"Ant 빌드 파일(\g<f>)만 있고 pom.xml은 없습니다. 취약점 조치는 올린 프로젝트를 그대로 빌드하므로 Maven 프로젝트여야 합니다."),
-    # v2.1z-e: jakarta build discovery — the search record / the unmatched owner class on a blocked item
-    # (sbmig.loop.fixloop JAKARTA_SEARCH_PREFIX / UNMAPPED_PREFIX; the dynamic record inside stays as written)
+    # 차단 항목에 붙는 jakarta 빌드 검색 기록과 찾지 못한 소유 클래스. 안의 검색 기록 자체는 그대로 둔다
+    # (sbmig.loop.fixloop의 JAKARTA_SEARCH_PREFIX / UNMAPPED_PREFIX)
     ((r"^repository search for a jakarta build of (?P<key>\S+): (?P<rest>.*?) — verified build\(s\): (?P<found>.+)$"),
      r"저장소에서 \g<key> 라이브러리의 jakarta 빌드를 찾았습니다: \g<found> (조회 내역: \g<rest>)"),
     ((r"^repository search for a jakarta build of (?P<key>\S+): (?P<rest>.*?) — none verified$"),
@@ -954,7 +948,7 @@ PATTERNS: dict[str, list[tuple[re.Pattern[str], Union[str, Callable[[re.Match[st
     # 차단 항목에 붙는 EOL 권고(fixloop._with_eol_advisory). 제목과 대체 라이브러리는 권고표의 값 그대로다
     (r"^EOL: (?P<t>.+?)(?: — replacement: (?P<r>.+))?$",
      lambda m: "지원 종료(EOL): " + m.group("t") + (f". 대체 라이브러리: {m.group('r')}" if m.group("r") else "")),
-    # v2.1z-d: the ADF first line (rejected; policy stop / continue) and the traces note
+    # ADF 프로젝트의 인수인계 첫 줄(중단 또는 계속 정책)과 ADF 흔적 메모
     ((r"^ADF project \(Oracle JDeveloper / ADF\): conversion is not possible — ADF 프로젝트라 변환이 불가능합니다 "
       r"\(evidence: (?P<fams>[^;]+); (?P<e>\d+) entities / (?P<t>\d+) tables, (?P<v>\d+) view objects, "
       r"(?P<a>\d+) application modules, (?P<pd>\d+) page definitions, (?P<f>\d+) task flows, (?P<p>\d+) pages, "
@@ -1020,7 +1014,7 @@ PATTERNS: dict[str, list[tuple[re.Pattern[str], Union[str, Callable[[re.Match[st
      lambda m: ("Maven(3.8.1 이상)이 HTTP 저장소 " + m.group("r") + " 접근을 차단 미러 `" + m.group("m") + "`에서 막았습니다. "
                 "프로젝트나 sbmig 문제가 아닙니다."
                 + (" Maven settings를 고쳐 주세요(「확인해 주세요」 참고)." if m.group("abort") else ""))),
-    # 사내 부모의 기존 버전이 없을 때와 레시피 없이 계속할 때의 줄.
+    # 사내 부모의 기존 버전이 없을 때와 레시피 없이 계속할 때의 줄
     # sbmig/loop/orchestrator.py와 fixloop.py를 바꾸면 함께 바꾼다
     ((r"^as-is parent `(?P<o>[^`]+)` is not in the repository: sbmig set the configured `(?P<t>[^`]+)` \((?P<s>[\w.]+)\) in "
       r"(?P<p>.+?) before the recipes — the recipes ran on the target parent's classpath, not the as-is one \(code that only "
@@ -1038,8 +1032,8 @@ PATTERNS: dict[str, list[tuple[re.Pattern[str], Union[str, Callable[[re.Match[st
      (r"변경 전 부모 pom(`\g<o>`)이 저장소에 없어 OpenRewrite를 실행하지 못했습니다. 레시피로 바뀐 코드는 없고, 구조 "
       r"재구성에서 부모 pom을 바꾼 뒤 나머지는 빌드 오류 수정 단계에서 처리했습니다(그 부모 pom이 저장소에 있어야 한다면 "
       r"저장소와 settings를 확인해 주세요).")),
-    # 프로젝트에 포함된 jar를 pom에 추가했다는 줄.
-    # sbmig/restructure/system_jars.py의 bundled_jar_followup을 바꾸면 함께 바꾼다. 수정 루프가 앞에 ⚠를 붙일 수 있다
+    # 프로젝트에 포함된 jar를 pom에 추가했다는 줄. 수정 루프가 앞에 ⚠를 붙일 수 있다
+    # sbmig/restructure/system_jars.py의 bundled_jar_followup을 바꾸면 함께 바꾼다
     ((r"^(?P<w>⚠ ?)?bundled jar `(?P<n>[^`]+)` \(Maven coordinates unknown — no pom\.properties, not in the jar name table\) "
       r"wired into `(?P<p>[^`]+)` as a system dependency `(?P<c>[^`]+)` — wired by sbmig so the build sees the classes the "
       r"as-is IDE build saw; publish the jar to Nexus \((?P<cmd>`[^`]+`)\) and replace the system dependency with the real "
@@ -1144,7 +1138,7 @@ PATTERNS: dict[str, list[tuple[re.Pattern[str], Union[str, Callable[[re.Match[st
     (r"^as-is effective dependencyManagement unavailable — versions the as-is parent managed are shown as '-'$",
      r"변경 전 effective dependencyManagement를 얻지 못했습니다. 기존 부모 pom이 지정하던 버전은 '-'로 표시했습니다."),
     (r"^handover unavailable: (?P<x>.+)$", r"전환 내용을 정리하지 못했습니다: \g<x>"),
-    # v2 structure review follow-ups (handover.review_followups)
+    # 구조 검토의 후속 조치(handover.review_followups)
     ((r"^structure review fix \(edits / script\) changed (?P<n>\d+) file\(s\) for (?P<k>\d+) critical issue\(s\): "
       r"(?P<files>.+) \(commit (?P<c>[^)]+)\) — check these pom changes$"),
      r"구조 점검에서 심각한 문제 \g<k>건을 고치면서 파일 \g<n>개를 바꿨습니다: \g<files> (커밋 \g<c>). 이 pom 변경을 확인해 "
@@ -1165,7 +1159,7 @@ PATTERNS: dict[str, list[tuple[re.Pattern[str], Union[str, Callable[[re.Match[st
      lambda m: (f"OpenAI 공개 가격({m.group('d')} 기준"
                 + (", developers.openai.com 모델 페이지). 사내 게이트웨이의 실제 청구 금액은 다를 수 있습니다"
                    if m.group("tail") else ")"))),
-    # v2.1h (A5): JSPs whose javax EE names were not renamed (handover.jsp_javax_item)
+    # javax EE 이름을 바꾸지 못한 JSP의 줄(handover.jsp_javax_item)
     ((r"^JSP javax references remain \((?P<n>\d+) files?\) — rename the javax EE names in page imports / scriptlets "
       r"/ useBean to jakarta\.\* \(the build passes, Tomcat 10\+ fails at runtime\); `layout\.jsp_jakarta_rename` is "
       r"off$"),
@@ -1217,7 +1211,7 @@ PATTERNS: dict[str, list[tuple[re.Pattern[str], Union[str, Callable[[re.Match[st
     # LLM이 쓴 문장 자체는 번역하지 않는다
     (r"^same cause as (?P<c>\w+): (?P<s>.+) — 소유팀 결정 필요$",
      r"앞의 오류(\g<c>)와 원인이 같습니다. \g<s> — 담당 팀의 결정이 필요합니다."),
-    # LLM이 쓴 원인 문장 뒤에 붙는 꼬리(fixloop NEEDS_OWNER_KO). 문장 자체는 그대로 둔다
+    # LLM이 쓴 원인 문장 뒤에 붙는 뒷부분(fixloop NEEDS_OWNER_KO). 문장 자체는 그대로 둔다
     (r"^(?!same cause as |the LLM named a blocker )(?P<s>.+?) — 소유팀 결정 필요$", r"\g<s> — 담당 팀의 결정이 필요합니다."),
     ((r"^the LLM named a blocker outside the project \(a library without a jakarta build, a framework to replace, an "
       r"artifact the repository lacks\) — 소유팀 결정 필요$"),
@@ -1293,7 +1287,8 @@ PATTERNS: dict[str, list[tuple[re.Pattern[str], Union[str, Callable[[re.Match[st
                    else f"이 가운데 `{m.group('tail')}` 옵션은 명령줄로 넘겨 빌드에 반영했습니다.")
                 + f" 폴더는 올리신 그대로 돌려드립니다. 이 폴더로 직접 빌드하기 전에 JDK {m.group('n')}과 사용하는 Maven "
                 "버전에 맞는지 확인해 주세요.")),
-    # 저장소에 pom 없이 jar만 있는 라이브러리를 최소 pom으로 빌드했다는 안내다. 이번 실행과 앞선 실행 어느 쪽이 만들었든 맞는 문장이다
+    # 저장소에 pom 없이 jar만 있는 라이브러리를 최소 pom으로 빌드했다는 안내다.
+# 최소 pom을 이번 실행이 만들었든 앞선 실행이 만들었든 맞는 문장이다
     ((r"^libraries with a jar but no pom in the repository: (?P<libs>.+?) — the build used a minimal pom that sbmig "
       r"wrote for each into the server's local Maven repository; Maven therefore does not know what these libraries "
       r"themselves depend on \(declare anything they need in the project\), and the lasting fix is that the library's "
@@ -1437,8 +1432,7 @@ PATTERNS: dict[str, list[tuple[re.Pattern[str], Union[str, Callable[[re.Match[st
       r"가져오는 라이브러리에 Jakarta 빌드가 필요합니다: \g<libs>")),
 )]}
 
-# tr이 채우는 값 가운데 저장된 영어 줄이어서 tr_line으로 한 번 더 번역할 자리
-# Fields of a `tr` template whose value is itself a stored English line (a config value / a review note).
+# tr이 채우는 값 가운데 저장된 영어 줄(설정 값, 검토 메모)이어서 tr_line으로 한 번 더 번역할 자리
 _LINE_FIELDS: dict[str, tuple[str, ...]] = {
     "Prices: {note}.": ("note",),
     "skipped ({note})": ("note",),
@@ -1447,9 +1441,7 @@ _LINE_FIELDS: dict[str, tuple[str, ...]] = {
 
 
 def normalize(lang: object) -> str:
-    """언어 코드를 지원하는 값으로 정리한다. None이나 오타 같은 다른 값이면 "en"을 반환한다.
-
-    A supported language code; anything else (None, typo) → "en"."""
+    """언어 코드를 지원하는 값으로 정리한다. None이나 오타 같은 다른 값이면 "en"을 반환한다."""
     s = str(lang or "en").strip().lower()
     return s if s in LANGUAGES else "en"
 
@@ -1457,8 +1449,7 @@ def normalize(lang: object) -> str:
 def tr(lang: str, text: str, **fmt: object) -> str:
     """영어 원문 ``text``를 ``lang`` 언어로 번역하고, ``fmt``가 있으면 ``str.format``으로 채운다.
     번역이 없으면 영어를 그대로 쓰므로 ``en`` 출력은 바뀌지 않는다.
-
-    Translation of `text` for `lang` (English fallback), formatted with `fmt` when given."""
+    ``_LINE_FIELDS``에 있는 값은 채우기 전에 ``tr_line``으로 번역한다."""
     s = text
     if lang != "en":
         s = STRINGS.get(lang, {}).get(text) or text
@@ -1471,10 +1462,8 @@ def tr(lang: str, text: str, **fmt: object) -> str:
 def tr_line(lang: str, line: str) -> str:
     """저장된 영어 줄 하나를 ``PATTERNS``의 첫 번째로 맞는 패턴으로 번역한다.
     ``en``이거나 맞는 패턴이 없으면 그대로 반환한다.
-
-    A stored English line (see `PATTERNS`) in `lang`; unchanged for `en` and for lines no pattern knows. A stored abort
-    follow-up `run aborted: <reason>` gets a translated head and its reason translated on its own; the bare reason (the
-    journal `abort` event) translates directly."""
+    - ``run aborted: <사유>`` 줄은 앞부분과 사유를 따로 번역한다. 저널 ``abort``의 사유만 오면 바로 번역한다
+    - 맞는 패턴이 없으면 ``_TAIL_SEPARATORS``로 앞 문장과 뒷부분을 나눠 따로 번역한다"""
     if lang == "en":
         return line
     # 후속 조치로 저장된 중단 사유("run aborted: <사유>")는 앞부분과 사유를 따로 번역한다
@@ -1485,8 +1474,7 @@ def tr_line(lang: str, line: str) -> str:
         if m:
             # 값에 따라 문장 모양이 달라지는 규칙(선택 그룹, 경로 구분자 변환)은 함수로 둔다
             return m.expand(tmpl) if isinstance(tmpl, str) else tmpl(m)
-    # v2.1z-e: a blocked item's suggestion may carry the search record / the unmatched owner class / the EOL advisory as
-    # a tail ("…; repository search for a jakarta build of g:a: …") — translate head and tail on their own
+    # 차단 항목의 조치 문구 뒤에 검색 기록, 찾지 못한 소유 클래스, EOL 권고가 붙을 수 있으므로 나눠서 번역한다
     for sep in _TAIL_SEPARATORS:
         if sep in line:
             head, tail = line.split(sep, 1)
