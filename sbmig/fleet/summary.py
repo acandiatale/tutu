@@ -6,17 +6,13 @@
   이유(``attention``)와 입력 경로 열이 있다
 - 파일은 하나씩 따로 쓰므로 엑셀이 열어 둔 ``summary.csv``는 경고만 남기고 건너뛴다
 
-Fleet summaries, rewritten after every project: ``fleet/summary.md``, ``summary.csv``,
-``summary.json`` (= state) and ``fleet/learning.md`` (the KB cases these projects met, with their stored scripts).
+``summary.json`` is the state itself. ``attention`` codes come from :mod:`sbmig.report.result_line`
+(``;``-separated, most important first); ``summary.md`` groups "Needs attention" by the first code.
 
-Round 10: ``summary.csv`` is UTF-8 with BOM (Excel opens Korean paths correctly) and carries the ``attention`` codes
-(:mod:`sbmig.report.result_line`: why a human has to look, ``;``-separated, most important first) and the ``input``
-path; ``summary.md`` gets a "Needs attention" section grouped by the first code. Each file is written on its own:
-a ``summary.csv`` locked by Excel is skipped with a warning and the others are still written.
-
-v2.1: per project the error-list counts ``open`` / ``resolved`` / ``blocked`` (``FleetProjectResult.error_counts``,
-the statuses of ``RunReport.error_entries``; a state written before v2.1 falls back to ``unresolved`` / ``blocked``);
-``learning.md`` lists the cases of ``<kb>/cases/*/case.json`` (CaseInfo) with their script versions."""
+Per project the error-list counts ``open`` / ``resolved`` / ``blocked`` come from
+``FleetProjectResult.error_counts`` (statuses of ``RunReport.error_entries``); an older state without them
+falls back to ``unresolved`` / ``blocked``. ``learning.md`` lists the cases of ``<kb>/cases/*/case.json``
+(CaseInfo) with their script versions."""
 
 from __future__ import annotations
 
@@ -54,16 +50,13 @@ COLUMNS = [
     "input",
 ]
 # 화면과 summary.md 표는 짧게 보여 주려고 일부 열을 빼고 attention만 붙인다
-TABLE_COLUMNS = COLUMNS[:13] + ["attention"]     # summary.md / `fleet status` (error and input are listed apart)
-ATTENTION_GROUP_LIMIT = 50                       # `fleet status --attention`: projects printed per code
+TABLE_COLUMNS = COLUMNS[:13] + ["attention"]     # error와 input은 표 아래에 따로 나열한다
+ATTENTION_GROUP_LIMIT = 50                       # `fleet status --attention`에서 코드마다 보여 줄 프로젝트 수
 
 
 def error_columns(p: FleetProjectResult) -> tuple[int, int, int]:
     """프로젝트 오류 목록의 (열림, 해결, 차단) 개수를 반환한다.
-    개수가 없는 상태(이전 형식, 보고서 없이 끝난 실행)면 ``unresolved`` / ``blocked`` 필드로 대신한다.
-
-    (open, resolved, blocked) of a project's error list; without counts (a pre-v2.1 state, a run that never
-    reported) the old `unresolved` / `blocked` fields."""
+    개수가 없는 상태(이전 형식, 보고서 없이 끝난 실행)면 ``unresolved`` / ``blocked`` 필드로 대신한다."""
     counts = dict(getattr(p, "error_counts", None) or {})
     if not counts:
         return p.unresolved, 0, p.blocked
@@ -107,8 +100,7 @@ def attention_groups(state: FleetState) -> dict[str, list[FleetProjectResult]]:
     코드는 중요한 것부터 나열한다(infra, skipped, crash, aborted, blocked, unresolved, 그 밖의 플래그).
     ``unresolved:<n>``은 개수를 떼고 ``unresolved``로 묶는다.
 
-    First attention code → projects (in state order); the code order is that of the first occurrence after
-    sorting by importance (infra first, tests-not-compiled last)."""
+    Projects keep state order inside a group; flag codes rank by their position in ``ATTENTION_FLAGS``."""
     from sbmig.report.result_line import ATTENTION_FLAGS
 
     def rank(code: str) -> int:
@@ -128,9 +120,7 @@ def attention_groups(state: FleetState) -> dict[str, list[FleetProjectResult]]:
 
 def render_attention(state: FleetState, limit: int = ATTENTION_GROUP_LIMIT) -> list[str]:
     """``fleet status --attention`` 출력을 만든다.
-    사람이 봐야 할 프로젝트만 첫 주의 코드별로 코드마다 ``limit``개까지 보여 준다.
-
-    `fleet status --attention`: only the projects that need a human, grouped by their first attention code."""
+    사람이 봐야 할 프로젝트만 첫 주의 코드별로 묶고, 코드마다 ``limit``개까지 보여 준다."""
     groups = attention_groups(state)
     n = sum(len(v) for v in groups.values())
     lines = [f"fleet {state.fleet_id}: {n} of {len(state.projects)} project(s) need attention"]
@@ -233,7 +223,7 @@ def advisory_rows(state: FleetState) -> list[dict[str, Any]]:
     """권고 ID별로 만난 프로젝트 수와 결과(교체됨, 아직 있음, 모름) 개수를 센다.
     많이 만난 권고부터 반환한다.
 
-    advisory id → projects / replaced / still-present (from FleetProjectResult.advisories "id:outcome")."""
+    Input: ``FleetProjectResult.advisories`` entries ``"id:outcome"``."""
     agg: dict[str, dict[str, Any]] = {}
     for p in state.projects:
         for entry in p.advisories:
@@ -290,7 +280,7 @@ def _md_cell(v: Any, limit: int = 160) -> str:
 
 
 def _scripts_cell(c: CaseInfo) -> str:
-    """저장된 스크립트 버전별 상태와 성공 / 실패 횟수를 한 칸 문자열로 만든다.
+    """저장된 스크립트 버전별 상태와 성공 / 실패 횟수를 표 한 칸에 들어갈 문자열로 만든다.
 
     ``v1 proven 3/0, v2 unverified 0/1`` (successes / failures)."""
     return ", ".join(f"v{s.version} {s.status} {s.successes}/{s.failures}" for s in c.scripts) or "-"
@@ -301,13 +291,13 @@ def read_cases(kb: Any = None, kb_dir: Optional[Path] = None) -> list[tuple[Case
     KB 객체가 없으면 ``<kb_dir>/cases/*/case.json``을 직접 읽는다.
     일괄 실행이 멈추지 않도록 깨진 파일은 건너뛴다.
 
-    (CaseInfo, extra keys such as "pin") of every case, most widespread first: through the KB's case store
-    (`kb.cases.cases()`), else straight from `<kb_dir>/cases/*/case.json`; damaged files are skipped."""
+    Extra keys = everything outside ``CaseInfo.model_fields`` (e.g. ``pin``).
+    With a KB: ``kb.cases.cases()``."""
     store = getattr(kb, "cases", None) if kb is not None else None
     if store is not None and callable(getattr(store, "cases", None)):
         try:
             return list(store.cases())
-        except Exception as e:  # pragma: no cover - the learning report must not fail on it
+        except Exception as e:  # pragma: no cover - learning.md 때문에 실패하지 않는다
             log.warning("fleet: kb cases unreadable: %s: %s", type(e).__name__, e)
             return []
     out: list[tuple[CaseInfo, dict[str, Any]]] = []
@@ -319,20 +309,18 @@ def read_cases(kb: Any = None, kb_dir: Optional[Path] = None) -> list[tuple[Case
             data = json.loads(f.read_text(encoding="utf-8"))
             case = CaseInfo.model_validate({k: v for k, v in data.items() if k in CaseInfo.model_fields})
             out.append((case, {k: v for k, v in data.items() if k not in CaseInfo.model_fields}))
-        except Exception as e:  # noqa: BLE001 - one damaged case never costs the report
+        except Exception as e:  # noqa: BLE001 - 깨진 케이스 하나 때문에 보고서를 버리지 않는다
             log.warning("fleet: %s skipped: %s: %s", f, type(e).__name__, e)
     out.sort(key=lambda h: (-len(h[0].projects), -h[0].seen, h[0].case_id))
     return out
 
 
 # 요약은 프로젝트마다 다시 쓰므로 끝난 실행의 errors.jsonl을 매번 읽지 않도록 mtime으로 캐시한다
-_RUN_CASES: dict[str, tuple[float, frozenset[str]]] = {}     # errors.jsonl path → (mtime, case ids): read once
+_RUN_CASES: dict[str, tuple[float, frozenset[str]]] = {}     # errors.jsonl 경로별 (mtime, 케이스 ID)
 
 
 def _run_case_ids(run_dir: Optional[str]) -> frozenset[str]:
-    """실행 하나의 ``<run dir>/errors.jsonl``에 나온 케이스 ID를 반환한다. 결과는 mtime 기준으로 캐시한다.
-
-    Case ids of a run's `<run dir>/errors.jsonl` (cached by mtime; a summary is rewritten after every project)."""
+    """실행 하나의 ``<run dir>/errors.jsonl``에 나온 케이스 ID를 반환한다. 결과는 mtime 기준으로 캐시한다."""
     if not run_dir:
         return frozenset()
     f = Path(run_dir) / "errors.jsonl"
@@ -360,11 +348,9 @@ def _run_case_ids(run_dir: Optional[str]) -> frozenset[str]:
 
 def fleet_case_projects(state: FleetState, cases: list[tuple[CaseInfo, dict[str, Any]]]) -> dict[str, list[str]]:
     """케이스 ID마다 이번 일괄 실행에서 그 케이스를 만난 프로젝트를 모아 반환한다.
-    각 실행의 errors.jsonl에 케이스 자체의 프로젝트 목록(CaseInfo.projects, 보통 일괄 실행의 프로젝트 이름과
-    같다)을 더한다.
+    각 실행의 errors.jsonl에서 모으고, 케이스의 ``CaseInfo.projects``에 있는 이번 프로젝트 이름도 더한다.
 
-    case id → this fleet's projects that met it: from each project's run errors.jsonl, plus the case's own
-    project list (CaseInfo.projects holds the profile name, usually the fleet name too)."""
+    ``CaseInfo.projects`` holds the profile name, usually the fleet's project name too."""
     out: dict[str, list[str]] = {}
     for p in state.projects:
         for cid in _run_case_ids(p.out_dir):
@@ -378,12 +364,9 @@ def fleet_case_projects(state: FleetState, cases: list[tuple[CaseInfo, dict[str,
 
 
 def render_learning(state: FleetState, kb: Any = None, kb_dir: Optional[Path] = None) -> str:
-    """``learning.md``를 만든다. 오류 목록 개수 다음에 이번 프로젝트들이 만난 KB 케이스(모르면 KB 전체)를 많이 만난
-    순으로 ``TOP_CASES``개까지 보여 주고, 케이스마다 저장된 스크립트의 상태와 성공 / 실패 횟수를 붙인다.
-
-    ``learning.md``: this fleet's error-list counts, then the KB cases its projects met (most projects first;
-    the whole KB when none is known) with projects / seen / resolved and every stored script version (status
-    successes/failures)."""
+    """``learning.md``를 만든다.
+    오류 목록 개수 다음에 이번 프로젝트들이 만난 KB 케이스를 많이 만난 순으로 ``TOP_CASES``개까지 보여 준다.
+    만난 케이스를 모르면 KB 전체를 보여 준다. 케이스마다 저장된 스크립트의 상태와 성공 / 실패 횟수를 붙인다."""
     ps = state.projects
     t = totals(state)
     lines = [f"# Fleet {state.fleet_id} — cases and fix scripts", "", "## This fleet", "",
@@ -401,8 +384,8 @@ def render_learning(state: FleetState, kb: Any = None, kb_dir: Optional[Path] = 
     lines += [f"{len(cases)} case(s) in the KB, {sum(1 for c, _ in cases if c.case_id in met)} met by this fleet's "
               f"projects; {len(scripts)} script version(s) (proven {by['proven']}, unverified {by['unverified']}, "
               f"retired {by['retired']}).", ""]
-    shown = [h for h in cases if h[0].case_id in met] or cases           # this fleet's cases, else the whole KB
-    shown.sort(key=lambda h: -len(met.get(h[0].case_id, [])))           # stable: KB order (most widespread) next
+    shown = [h for h in cases if h[0].case_id in met] or cases
+    shown.sort(key=lambda h: -len(met.get(h[0].case_id, [])))           # 안정 정렬이라 같은 수면 KB 순서를 따른다
     lines += ["| case | name | this fleet | KB projects | seen / resolved | scripts (status ok/failed) | pin |",
               "|---|---|---|---|---|---|---|"]
     for c, extra in shown[:TOP_CASES]:
@@ -421,10 +404,8 @@ def write_summaries(
 ) -> dict[str, Path]:
     """요약 파일을 하나씩 따로 쓰고 쓴 파일만 반환한다.
     엑셀이 열어 둔 파일(PermissionError)은 경고 후 건너뛰고 나머지는 쓴다.
-    learning.md는 ``fleet.summary_formats``와 관계없이 항상 쓴다.
-
-    Write every summary file on its own; returns the ones written (a file Excel holds open is skipped)."""
-    from sbmig.kb.store import atomic_write          # tmp file + os.replace, retried while Windows holds the file
+    learning.md는 ``fleet.summary_formats``와 관계없이 항상 쓴다."""
+    from sbmig.kb.store import atomic_write          # Windows가 파일을 잡고 있으면 교체를 다시 시도한다
 
     if state is None:
         return {}
@@ -435,7 +416,8 @@ def write_summaries(
     if "md" in formats:
         jobs.append(("md", "summary.md", lambda: render_summary_md(state)))
     if "csv" in formats:
-        jobs.append(("csv", "summary.csv", lambda: "\ufeff" + render_csv(state)))     # UTF-8 BOM for Excel
+        # 엑셀이 한글을 바로 읽도록 UTF-8 BOM을 붙인다
+        jobs.append(("csv", "summary.csv", lambda: "\ufeff" + render_csv(state)))
     if "json" in formats:
         jobs.append(("json", "summary.json", lambda: state.model_dump_json(indent=2) + "\n"))
     kb_dir = cfg.resolve_path(cfg.kb.dir) if cfg is not None else None
@@ -447,7 +429,7 @@ def write_summaries(
         except PermissionError as e:
             log.warning("fleet: %s not written (open in Excel or another program?): %s", path, e)
             continue
-        except Exception as e:  # one summary must never cost the others
+        except Exception as e:  # 파일 하나가 실패해도 나머지는 쓴다
             log.warning("fleet: %s not written: %s: %s", path, type(e).__name__, e)
             continue
         out[key] = path

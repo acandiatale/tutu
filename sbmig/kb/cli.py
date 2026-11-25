@@ -4,9 +4,8 @@
 - 데이터는 모두 ``FileKnowledgeBase``와 ``CaseStore``를 거쳐 읽고, 쓰기는 KB 잠금 안에서 한다
 - 문제 있는 스크립트는 ``cases retire``로 끄고, 사람이 처리할 케이스는 ``cases pin <id> block:<이유>``로 고정한다
 
-`sbmig kb …` (v2.1, docs/v2/PLAN-v2.1.md §3.4): the error list of every run (`errors list | show`), the cases and
-their fix scripts (`cases list | show | retire | activate | pin | unpin`), plus stats / validate / export / import /
-reindex of the whole KB."""
+Commands: `errors list | show`, `cases list | show | retire | activate | pin | unpin`, and stats / validate /
+export / import / reindex of the whole KB."""
 from __future__ import annotations
 
 import json
@@ -35,9 +34,7 @@ kb_cli.add_typer(cases_cli, name="cases")
 
 def _load_cfg(configs: list[Path]) -> Config:
     """KB 명령용 설정을 읽는다.
-    KB 명령에는 회사 artifacts 설정이 필요 없으므로, 없으면 플레이스홀더로 채워 검증 오류를 피한다.
-
-    KB commands do not need the company artifacts section; use a placeholder when no config provides it."""
+    KB 명령에는 회사 artifacts 설정이 필요 없으므로, 없으면 플레이스홀더로 채워 검증 오류를 피한다."""
     try:
         return load_config(*configs)
     except ValidationError as e:
@@ -48,9 +45,7 @@ def _load_cfg(configs: list[Path]) -> Config:
 
 def _kb(ctx: typer.Context) -> FileKnowledgeBase:
     """명령이 사용할 FileKnowledgeBase를 반환한다.
-    상위 CLI가 ctx.obj에 넣은 cfg / kb를 쓰고, 없으면 --config / --kb-dir로 만든다.
-
-    The parent CLI may pre-populate ctx.obj["cfg"] (a loaded Config) or ctx.obj["kb"]."""
+    상위 CLI가 ``ctx.obj``에 넣은 ``cfg`` / ``kb``를 쓰고, 없으면 --config / --kb-dir로 만든다."""
     obj = ctx.ensure_object(dict)
     if "kb" not in obj:
         cfg: Config = obj.get("cfg") or _load_cfg(obj.get("configs") or [])
@@ -77,8 +72,8 @@ def _main(
         obj["kb_dir"] = kb_dir
 
 
-# --------------------------------------------------------------------------- whole KB
-RESIGN_LINES = 50                 # moved cases listed by `kb reindex` before "… N more"
+# --------------------------------------------------------------------------- KB 전체
+RESIGN_LINES = 50                 # `kb reindex`가 "… N more" 전에 보여 줄 옮긴 케이스 수
 
 
 @kb_cli.command("reindex")
@@ -160,7 +155,7 @@ def import_cmd(ctx: typer.Context, src: Path = typer.Argument(..., metavar="IN.z
     typer.echo(", ".join(f"{k} {v}" for k, v in counters.items()))
 
 
-# --------------------------------------------------------------------------- errors
+# --------------------------------------------------------------------------- 오류 항목
 @errors_cli.command("list")
 def errors_list_cmd(
     ctx: typer.Context,
@@ -203,16 +198,15 @@ def errors_show_cmd(ctx: typer.Context, entry: str = typer.Argument(..., metavar
         typer.echo(ln)
 
 
-# --------------------------------------------------------------------------- cases
+# --------------------------------------------------------------------------- 케이스
 def _case_id(store: CaseStore, key: str, *, versioned: bool = False) -> str:
     """케이스 ID나 4자 이상의 ID 앞부분을 받아 전체 케이스 ID로 바꾼다.
     맞는 케이스가 없거나 여럿이면 exit 1로 끝난다.
-    폴더가 없는 ID가 어떤 케이스의 ``aliases``에 있으면 그 케이스를 반환한다.
+    폴더가 없는 ID가 어떤 케이스의 ``aliases``에 있으면 그 케이스를 반환한다. 실제 폴더가 alias보다 우선한다.
+    ``versioned``면(retire / activate) alias로 찾은 케이스는 거부한다.
 
-    A case id or a unique prefix of 4+ characters; an id (or prefix) that names no folder but is in a case's
-    ``aliases`` (moved there by a re-sign) resolves to that case (``case <old> is now <new>`` on stderr). A real
-    folder always wins over an alias. ``versioned`` (retire / activate take a version number): an alias is refused —
-    a merge may have renumbered the moved scripts."""
+    An alias was moved there by a re-sign; a merge may have renumbered the moved scripts. Prints
+    ``case <old> is now <new>`` on stderr."""
     ids = store.case_ids()
     if key in ids:
         return key
@@ -232,9 +226,7 @@ def _case_id(store: CaseStore, key: str, *, versioned: bool = False) -> str:
 
 
 def _alias_target(store: CaseStore, key: str, quiet: bool = False) -> str:
-    """``key``를 aliases에 가진 케이스를 찾는다. 없거나 여럿이면 빈 문자열을 반환한다.
-
-    The one case whose ``aliases`` hold ``key`` (an id or a 4+ character prefix); "" when none or several."""
+    """``key``(ID나 4자 이상의 앞부분)를 aliases에 가진 케이스를 찾는다. 없거나 여럿이면 빈 문자열을 반환한다."""
     found: dict[str, str] = {}
     for c, _ in store.cases():
         for a in c.aliases:
@@ -298,7 +290,7 @@ def cases_show_cmd(ctx: typer.Context, key: str = typer.Argument(..., metavar="C
                    + ("" if s.scope else " (not recorded)") + f", {s.source}, successes {s.successes} / failures "
                    f"{s.failures}, projects {', '.join(s.projects) or '-'}, made by {s.project or '-'} "
                    f"{s.created_by or ''}".rstrip() + (f", last {s.last_result}" if s.last_result else ""))
-        # v2.1e: lineage, why it was made, why it failed, every run
+        # 어느 버전에서 나왔는지, 만든 이유, 실패 이유, 모든 실행 기록
         typer.echo(f"    parent: {f'v{s.parent}' if s.parent else '- (written new)'}")
         if s.reason:
             typer.echo(f"    reason: {s.reason}")
@@ -355,9 +347,7 @@ def cases_activate_cmd(ctx: typer.Context, key: str = typer.Argument(..., metava
 def _pin_target(store: CaseStore, key: str, create: bool) -> str:
     """``cases pin``이 고정할 케이스 ID를 정한다. ``--create``면 KB에 아직 없는 10자리 ID도 받는다.
     오타로 새 케이스 폴더가 생기지 않도록 모르는 ID면 exit 1로 끝난다.
-
-    The case ``cases pin`` pins: a known case (exact id or a unique prefix of 4+ characters); with ``create`` a
-    10-character id the KB has not seen yet (set_pin makes its case.json). Anything else exits 1."""
+    알려진 케이스는 정확한 ID, 4자 이상의 유일한 앞부분, alias로 찾는다."""
     ids = store.case_ids()
     if key in ids:
         return key
@@ -366,7 +356,7 @@ def _pin_target(store: CaseStore, key: str, create: bool) -> str:
         return hits[0]
     if len(hits) > 1:
         _fail(f"{key} matches {len(hits)} cases: " + ", ".join(hits[:10]))
-    found = _alias_target(store, key)                 # an old id a re-sign moved: the case it is now
+    found = _alias_target(store, key)                 # 재서명으로 옮겨진 이전 ID면 지금 케이스로 바꾼다
     if found:
         return found
     if not create:

@@ -7,34 +7,29 @@ Maven 로그 원문, 메시지, diff, 스크립트 로그와 코드, 구조 검�
 - 회사 추가 규칙은 ``kb.redact_file``에서 읽어 기본 규칙에 더한다
 - 마스킹 실패로 실행이 멈추면 안 되므로 예외를 던지지 않는다
 
-Secret masking for everything the KB stores (round 10, 2026-10-26): raw Maven text, messages, diffs, fix-script
-logs and code, structure reviews.
-
 Only VALUES are masked (``***``), and only where the context says they are secrets:
 
-* ``key = value`` / ``key: value`` (properties, yaml, env, ``-Dkey=value``, log text) when the key's LAST word is a
-  secret word (``password``, ``passwd``, ``pwd``, ``pw``, ``pass``, ``secret``, ``token``, ``credential(s)``,
-  ``authorization``, ``api key``, ``private key``, …; words are split at ``.`` ``_`` ``-`` and camelCase, so
-  ``spring.datasource.password``, ``db.pw``, ``userPw``, ``DB_PASSWORD`` are secrets and ``API_KEY_HEADER``,
-  ``tokenCount``, ``password.encoder`` are not); at a line start the value runs to the end of the line, elsewhere
-  to the next blank / quote / ``&`` / ``;``;
+* ``key = value`` / ``key: value`` (properties, yaml, env, ``-Dkey=value``, log text) when the key's LAST word
+  is a secret word (``password``, ``passwd``, ``pwd``, ``pw``, ``pass``, ``secret``, ``token``,
+  ``credential(s)``, ``authorization``, ``api key``, ``private key``, …; words are split at ``.`` ``_`` ``-``
+  and camelCase, so ``spring.datasource.password``, ``db.pw``, ``userPw``, ``DB_PASSWORD`` are secrets and
+  ``API_KEY_HEADER``, ``tokenCount``, ``password.encoder`` are not); at a line start the value runs to the end
+  of the line, elsewhere to the next blank / quote / ``&`` / ``;``;
 * a Java / XML-attribute / JS string literal assigned to such a name (``String password = "x";``,
-  ``password="x"``) — never a non-literal expression (``String token = helper.clientIp();``), never a comparison
-  (``secret == null``, ``token != x``), never ``for (String token : tokens)`` / ternaries;
-* XML ``<password>…</password>``, ``<property name="password" value="…"/>``, ``<param-name>…password</param-name>
-  <param-value>…</param-value>``; JSON / JS ``"password": "…"``;
+  ``password="x"``) — never a non-literal expression (``String token = helper.clientIp();``), never a
+  comparison (``secret == null``, ``token != x``), never ``for (String token : tokens)`` / ternaries;
+* XML ``<password>…</password>``, ``<property name="password" value="…"/>``,
+  ``<param-name>…password</param-name> <param-value>…</param-value>``; JSON / JS ``"password": "…"``;
 * URL user info (``https://user:pass@host``), JDBC ``jdbc:oracle:thin:user/pass@…`` and ``;password=…`` /
-  ``?password=…`` / ``&password=…`` parameters; ``Authorization: …`` headers and ``Bearer`` / ``Basic`` tokens;
-  PEM private keys.
+  ``?password=…`` / ``&password=…`` parameters; ``Authorization: …`` headers and ``Bearer`` / ``Basic``
+  tokens; PEM private keys.
 
-Placeholders (``${…}``, ``#{…}``, ``@…@``, ``__SET_ME__``, ``<…>``, ``***``) are left as they are. Company additions
-(extra key words, whole key names, free patterns, allowed keys) come from ``kb.redact_file``
+Placeholders (``${…}``, ``#{…}``, ``@…@``, ``__SET_ME__``, ``<…>``, ``***``) are left as they are. Company
+additions (extra key words, whole key names, free patterns, allowed keys) come from ``kb.redact_file``
 (``knowledge/kb/redact.yml``, invariant 2) and are added to the built-ins.
 
-:func:`redact` masks a text; :meth:`Redactor.spans` gives the masked spans (the change classifier drops replace
-pairs that touch one); :meth:`Redactor.redact_ex` also returns the masked values. Pure, never raises.
-
-
+:func:`redact` masks a text; :meth:`Redactor.spans` gives the masked spans (the change classifier drops
+replace pairs that touch one); :meth:`Redactor.redact_ex` also returns the masked values. Pure, never raises.
 """
 from __future__ import annotations
 
@@ -50,12 +45,12 @@ MASK = "***"
 DEFAULT_RULES_FILE = "knowledge/kb/redact.yml"
 
 # 키의 마지막 단어로 판단하므로 password.encoder, tokenCount처럼 비밀 단어가 앞에 있으면 설정 이름으로 본다
-# the LAST word of a key that makes its value a secret (and two-word endings)
 SECRET_WORDS = frozenset({
     "password", "passwd", "passphrase", "passcode", "pwd", "pw", "pass", "secret", "secrets", "token",
     "credential", "credentials", "authorization", "apikey", "privatekey", "secretkey", "accesskey", "authkey",
     "clientsecret", "sessionkey",
 })
+# 마지막 두 단어로 비밀 키를 판단하는 조합
 SECRET_PAIRS = frozenset({
     ("api", "key"), ("private", "key"), ("secret", "key"), ("access", "key"), ("auth", "key"), ("signing", "key"),
     ("encryption", "key"), ("session", "key"), ("master", "key"), ("client", "secret"),
@@ -66,14 +61,14 @@ _WORD_RE = re.compile(r"[A-Z]+(?![a-z])|[A-Z]?[a-z]+|\d+")
 _PLACEHOLDER_RE = re.compile(
     r"^(?:\$\{[^{}]*\}|#\{[^{}]*\}|@[\w.\-]+@|%[\w.\-]+%|__[A-Z_]+__|\*+|<[^<>]*>|\{\{[^{}]*\}\}|null|none|"
     r"\$[A-Za-z_]\w*|\$\([^()]*\))$", re.IGNORECASE)
-_LINE_START_RE = re.compile(r"^[+\- ]?[ \t]*(?:-[ \t]+)?$")       # diff prefix, indentation, a yaml list marker
+_LINE_START_RE = re.compile(r"^[+\- ]?[ \t]*(?:-[ \t]+)?$")       # diff 접두어, 들여쓰기, yaml 목록 표시
 _LINE_COMMENT_RE = re.compile(r"\s+//.*$")
 _YAML_COMMENT_RE = re.compile(r"\s+#.*$")
 _CODE_CHARS_RE = re.compile(r"[\w$.()\[\]\s+\-*/%<>=!&|?:,\"']+")
 _CALLISH_RE = re.compile(r"^(?:new\s+)?[A-Za-z_$][\w$.]*\s*(?:<[^<>]*>)?\s*\(.*\)[\w$.()\s]*$")
 _TOKENISH_RE = re.compile(r"[0-9=+/_~\-]|\.(?=.)")
 
-# ---- the built-in contexts (each yields the span of the VALUE to mask)
+# ---- 기본 문맥 규칙. 모두 가릴 값의 구간을 v 그룹으로 낸다
 _PEM_RE = re.compile(r"-----BEGIN ([A-Z0-9 ]*?)PRIVATE KEY-----(?P<v>.+?)(?:-----END \1PRIVATE KEY-----|\Z)", re.S)
 _URL_USERINFO_RE = re.compile(r"\b[a-zA-Z][a-zA-Z0-9+.\-]*://[^\s/:@'\"<>]+:(?P<v>[^\s/@'\"<>]+)@")
 _JDBC_ORACLE_RE = re.compile(r"(?i)\bjdbc:oracle:[a-z]+:@?[^\s/@'\"<>:]+/(?P<v>[^\s@'\"<>]+)@")
@@ -89,14 +84,14 @@ _XML_NV_RE = re.compile(
 _XML_PARAM_RE = re.compile(
     r"<(?P<t1>param-name|name|key)>\s*(?P<k>[\w.\-]+)\s*</(?P=t1)>[\s+\-]*?<(?P<t2>param-value|value)>"
     r"(?P<v>[^<>]*)</(?P=t2)>")
-# the same value again right after it: a diff shows a changed `<param-value>` twice (the - and the + line)
+# diff에서는 바뀐 `<param-value>`가 - 줄과 + 줄에 두 번 나오므로 바로 뒤의 값도 찾는다
 _XML_PARAM_NEXT_RE = re.compile(r"[\s+\-]*?<(?P<t2>param-value|value)>(?P<v>[^<>]*)</(?P=t2)>")
 _JSON_RE = re.compile(
     r"""(?P<q>["'])(?P<k>[\w.\-]+)(?P=q)\s*:\s*(?P<q2>["'])(?P<v>(?:\\.|(?!(?P=q2))[^\\\n])*)(?P=q2)""")
 _ASSIGN_LIT_RE = re.compile(
     r"""(?:(?<=^-)|(?<![\w.$\-]))(?P<k>[A-Za-z_$][\w.$\-]*)[ \t]*=(?!=)[ \t]*(?P<q>["'])"""
     r"""(?P<v>(?:\\.|(?!(?P=q))[^\\\n])*)(?P=q)""", re.MULTILINE)
-# a key starts after a non-key character, after `-D` (system properties) or after the `-` of a removed diff line
+# 키는 키 문자가 아닌 문자 뒤, `-D`(시스템 속성) 뒤, diff 삭제 줄의 `-` 뒤에서 시작한다
 _ASSIGN_RE = re.compile(
     r"(?:(?<=-D)|(?<=^-)|(?<![\w.$\-]))(?P<k>[A-Za-z_$][\w.$\-]*)(?P<sp>[ \t]*)"
     r"(?P<sep>(?<![=!<>:+\-*/%&|^])[=:](?![=:]))[ \t]*", re.MULTILINE)
@@ -104,10 +99,8 @@ _MID_VALUE_RE = re.compile(r"[^\s\"'<>&;,(){}\[\]]+")
 
 
 def key_words(key: str) -> list[str]:
-    """키를 ``.`` ``_`` ``-``와 camelCase 경계에서 단어로 나눈다. 끝에 붙은 숫자 단어는 버린다.
-
-    ``spring.datasource.password`` → [spring, datasource, password]; ``userPw`` → [user, pw]; trailing
-    number words dropped (``PASSWORD2`` → [password])."""
+    """키를 ``.`` ``_`` ``-``와 camelCase 경계에서 소문자 단어로 나눈다. 끝에 붙은 숫자 단어는 버린다.
+    예: ``userPw``는 [user, pw], ``PASSWORD2``는 [password]다."""
     words: list[str] = []
     for part in _WORD_SPLIT_RE.split(key or ""):
         words += [w.lower() for w in _WORD_RE.findall(part)]
@@ -121,20 +114,18 @@ class _Extra:
     """회사 추가 규칙(redact.yml)의 비밀 단어, 키 패턴, 자유 패턴, 허용 키를 담는 클래스."""
 
     words: frozenset = frozenset()
-    key_patterns: list = field(default_factory=list)       # compiled, full match, case-insensitive
-    patterns: list = field(default_factory=list)           # (name, compiled)
+    key_patterns: list = field(default_factory=list)       # 컴파일한 정규식. 대소문자 무시, 전체 일치
+    patterns: list = field(default_factory=list)           # (이름, 컴파일한 정규식)
     allow: frozenset = frozenset()
 
 
 class Redactor:
-    """기본 규칙과 회사 추가 규칙(:func:`load_rules`)으로 비밀 값을 찾아 가리는 클래스.
-
-    Built-in rules + company additions (:func:`load_rules`)."""
+    """기본 규칙과 회사 추가 규칙(:func:`load_rules`)으로 비밀 값을 찾아 가리는 클래스."""
 
     def __init__(self, extra: Optional[_Extra] = None):
         self.extra = extra or _Extra()
 
-    # ------------------------------------------------------------------ keys
+    # ------------------------------------------------------------------ 키 판단
     def is_secret_key(self, key: str) -> bool:
         """이 키의 값이 비밀인지 확인한다.
         허용 키는 비밀이 아니고, 회사 키 패턴에 맞으면 비밀이며, 그 밖에는 마지막 한두 단어로 판단한다."""
@@ -151,18 +142,16 @@ class Redactor:
             return True
         return len(words) >= 2 and (words[-2], last) in SECRET_PAIRS
 
-    # ------------------------------------------------------------------ spans
+    # ------------------------------------------------------------------ 구간
     def spans(self, text: Optional[str]) -> list[tuple[int, int]]:
-        """``text``에서 가릴 값의 구간 목록을 반환한다. 겹치는 구간은 합치고 정렬한다.
-
-        Merged, sorted spans of ``text`` to mask (values only)."""
+        """``text``에서 가릴 값의 구간 목록을 반환한다. 겹치는 구간은 합치고 정렬한다."""
         if not text:
             return []
         try:
             out: list[tuple[int, int]] = []
             self._collect(text, out)
             return _merge(out)
-        except Exception as e:  # pragma: no cover - masking must never break a run
+        except Exception as e:  # pragma: no cover - 마스킹 때문에 실행을 멈추지 않는다
             # 비밀 값이 새는 것보다 덜 보이는 편이 나으므로, 규칙이 고장 나면 비밀 단어가 보이는 텍스트는 통째로 가린다
             log.debug("redaction failed: %s: %s", type(e).__name__, e)
             return [(0, len(text))] if any(w in text.lower() for w in ("password", "secret", "token")) else []
@@ -220,29 +209,26 @@ class Redactor:
     def _assign_value(text: str, m: re.Match) -> Optional[tuple[int, int]]:
         """따옴표 없는 ``key = value`` / ``key: value``에서 값의 구간을 찾는다.
         코드, 빈 값, 플레이스홀더면 None을 반환한다.
-        코드까지 가리면 diff를 읽을 수 없기 때문이다.
-
-        The value span of an unquoted ``key = value`` / ``key: value``, None when it is code / empty / a
-        placeholder."""
+        코드까지 가리면 diff를 읽을 수 없기 때문이다."""
         sep, sp = m.group("sep"), m.group("sp")
         if sep == ":" and sp:
-            return None                                  # `for (String token : tokens)`, `cond ? token : x`
+            return None                                  # `for (String t : tokens)`, `c ? token : x` 같은 코드
         start = m.end()
         eol = text.find("\n", start)
         eol = len(text) if eol < 0 else eol
         after = text[start:eol].rstrip("\r")
         if not after.strip() or after[:1] in "\"'":
-            return None                                  # nothing / a literal (the literal rule masks it)
+            return None                                  # 값이 없거나 문자열 리터럴이다. 리터럴은 다른 규칙이 가린다
         line_start = text.rfind("\n", 0, m.start("k")) + 1
         at_line_start = bool(_LINE_START_RE.match(text[line_start:m.start("k")]))
         mv = _MID_VALUE_RE.match(after)
         if mv is None:
             return None
         nxt = after[mv.end():mv.end() + 1]
-        if nxt in ("\"", "'"):                         # `"…password=abc"`: inside a string literal
+        if nxt in ("\"", "'"):                         # `"…password=abc"`처럼 문자열 리터럴 안이다
             v_end = start + mv.end()
         elif _code_rhs(after):
-            return None                                  # `token = helper.clientIp();`, `password = other;`
+            return None                                  # `token = helper.clientIp();` 같은 코드
         elif at_line_start:
             body = _YAML_COMMENT_RE.sub("", after) if sep == ":" else after
             v_end = start + len(body.rstrip())
@@ -253,12 +239,10 @@ class Redactor:
             return None
         return start, v_end
 
-    # ------------------------------------------------------------------ masking
+    # ------------------------------------------------------------------ 마스킹
     def redact_ex(self, text: Optional[str]) -> tuple[Optional[str], list[str]]:
-        """텍스트를 마스킹하고 (가린 텍스트, 가린 값 목록)을 반환한다.
-        ``None``이 들어오면 ``None``을 돌려준다.
-
-        (masked text, the masked values in order). ``None`` stays ``None``."""
+        """텍스트를 마스킹하고 (가린 텍스트, 가린 값 목록)을 반환한다. 가린 값은 나온 순서다.
+        ``None``이 들어오면 ``None``을 반환한다."""
         if text is None:
             return None, []
         spans = self.spans(text)
@@ -281,9 +265,7 @@ class Redactor:
 
 
 def _code_rhs(after: str) -> bool:
-    """``key = …``의 오른쪽이 설정값이 아니라 코드처럼 보이는지 확인한다.
-
-    The right-hand side of `key = …` reads like code (a Java / JS statement), not a configured value."""
+    """``key = …``의 오른쪽이 설정값이 아니라 Java / JS 코드처럼 보이는지 확인한다."""
     r = _LINE_COMMENT_RE.sub("", after).strip()
     if not r:
         return True
@@ -310,7 +292,7 @@ def overlaps(spans: Iterable[tuple[int, int]], start: int, end: int) -> bool:
     return any(s < end and start < e for s, e in spans)
 
 
-# --------------------------------------------------------------------------- company rules (yml)
+# --------------------------------------------------------------------------- 회사 추가 규칙(yml)
 _CACHE: dict[str, tuple[Any, Redactor]] = {}
 _DEFAULT = Redactor()
 
@@ -324,11 +306,11 @@ def _rules_path(cfg: Any = None) -> Optional[Path]:
         if cfg is not None and rel:
             return Path(cfg.resolve_path(rel))
         if cfg is not None and kbc is not None and rel == "":
-            return None                                   # explicitly switched off
+            return None
         from sbmig.core.config import PACKAGE_ROOT
 
         return PACKAGE_ROOT / DEFAULT_RULES_FILE
-    except Exception:  # pragma: no cover - a stand-in cfg
+    except Exception:  # pragma: no cover - 대역 cfg
         return None
 
 
@@ -336,7 +318,8 @@ def load_rules(path: Optional[Path]) -> _Extra:
     """redact yml에서 회사 추가 규칙을 읽는다.
     파일이 없거나 읽지 못하면 빈 규칙을 반환하고, 잘못된 정규식은 경고를 남기고 건너뛴다.
 
-    The company additions of a redact yml (missing / unreadable file → none; a bad regex is skipped)."""
+    Keys: ``key_words``, ``key_patterns``, ``patterns`` (str or {name, regex}; a ``value`` group masks only
+    it), ``allow_keys``."""
     if path is None or not Path(path).is_file():
         return _Extra()
     try:
@@ -375,9 +358,7 @@ def load_rules(path: Optional[Path]) -> _Extra:
 
 def get_redactor(cfg: Any = None) -> Redactor:
     """``cfg``에 맞는 마스킹 객체를 반환한다.
-    규칙 파일의 수정 시각과 크기로 캐시하므로 파일을 고치면 재시작 없이 반영된다.
-
-    The redactor for ``cfg`` (built-ins + its ``kb.redact_file``), cached by the file's stamp."""
+    규칙 파일의 수정 시각과 크기로 캐시하므로 파일을 고치면 재시작 없이 반영된다."""
     path = _rules_path(cfg)
     if path is None:
         return _DEFAULT
@@ -396,9 +377,7 @@ def get_redactor(cfg: Any = None) -> Redactor:
 
 
 def redact(text: Optional[str], cfg: Any = None) -> Optional[str]:
-    """``text``의 비밀 값을 가린다. ``None``이 들어오면 ``None``을 돌려준다.
-
-    Mask the secret values in ``text`` (see the module doc); ``None`` stays ``None``."""
+    """``text``의 비밀 값을 가린다. ``None``이 들어오면 ``None``을 반환한다."""
     if not text:
         return text
     return get_redactor(cfg).redact(text)

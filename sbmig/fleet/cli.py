@@ -5,9 +5,7 @@
 - 명령 함수의 docstring이 ``--help`` 문구가 되므로 첫 줄은 운영자가 보는 명령 요약이다
 - typer가 대괄호를 rich 마크업으로 읽어 없애므로 명령 docstring에는 대괄호를 쓰지 않는다
 - ``run``은 매니페스트, 설정, 덮어쓴 값을 ``fleet/fleet-config.json``에
-  남기고 ``resume``은 그것을 읽어 같은 조건으로 이어서 실행한다
-
-`sbmig fleet …` — one agent, many projects, strictly sequential, KB fed between projects."""
+  남기고 ``resume``은 그것을 읽어 같은 조건으로 이어서 실행한다"""
 
 from __future__ import annotations
 
@@ -23,7 +21,7 @@ fleet_cli = typer.Typer(
 )
 
 # ``fleet resume``이 읽는 파일. 마지막 ``run``의 매니페스트, 설정 경로, 덮어쓴 값을 담는다
-RUN_CONFIG = "fleet-config.json"  # <out>/fleet/fleet-config.json: configs + overrides of the last `run`
+RUN_CONFIG = "fleet-config.json"
 
 
 def _overrides(
@@ -81,11 +79,9 @@ def _run(manifest: Path, out: Path, configs: list[Path], overrides: dict, dry_ru
 
             from sbmig.cli import attach_file_log
             # 프로젝트 수백 개의 DEBUG 로그는 한 파일에 담을 수 없으므로 일괄 실행 로그는 INFO만 남긴다.
-            # 프로젝트별 DEBUG는 각 실행 폴더의 sbmig.log에 남는다
-            # INFO for the whole fleet (500 projects of DEBUG would not fit); each project logs DEBUG into its own
-            # <run dir>/sbmig.log (FleetRunner attaches and detaches it per project)
+            # 프로젝트별 DEBUG는 FleetRunner가 각 실행 폴더의 sbmig.log에 붙였다 뗀다
             fleet_log = attach_file_log(Path(runner.fleet_dir) / "sbmig.log", level=logging.INFO)
-        except Exception:  # pragma: no cover - logging must never stop a fleet
+        except Exception:  # pragma: no cover
             # 권한 문제나 잠긴 파일로 로그 파일을 연결하지 못해도 일괄 실행은 멈추지 않는다
             pass
     try:
@@ -120,7 +116,7 @@ def _run_fleet(runner, saved: Path, manifest: Path, configs: list[Path], overrid
         )
     try:
         state = runner.run()
-    except Exception as e:  # manifest errors etc.
+    except Exception as e:  # 매니페스트 오류 등
         typer.secho(f"fleet failed: {type(e).__name__}: {e}", fg=typer.colors.RED, err=True)
         return 1
     if dry_run:
@@ -135,7 +131,7 @@ def _run_fleet(runner, saved: Path, manifest: Path, configs: list[Path], overrid
     typer.echo("")
     typer.echo(f"summary: {runner.fleet_dir / 'summary.md'}   learning: {runner.fleet_dir / 'learning.md'}")
     # 운영자가 옮겨 적는 줄이므로 인프라 문제로 멈췄으면 ``fleet stopped: …`` 줄을 화면 맨 끝에 한 번 더 출력한다
-    if runner.stopped_on_infra:          # the reason once more, as the last line on the screen
+    if runner.stopped_on_infra:
         typer.echo(next((n for n in reversed(state.notes) if n.startswith("fleet stopped: ")), ""))
     return runner.exit_code
 
@@ -202,9 +198,8 @@ def resume_cmd(
         typer.secho(f"no fleet state in {out}", fg=typer.colors.RED, err=True)
         raise typer.Exit(1)
     prev = json.loads(saved.read_text(encoding="utf-8")) if saved.exists() else {}
-    # 예전 fleet-config.json에 남은 제거된 스위치(no_kb, overrides.fix.mode 등)를 조용히 무시하면 남은 프로젝트가 다른
-    # 설정으로 실행되는 줄 모르므로, 한 줄 알리고 덮어쓰기에서 뺀다 / the removed v2.1i switches in an older
-    # fleet-config.json are dropped with one visible line (the remaining projects run with the KB and the script ladder)
+    # 이전 fleet-config.json에 남은 제거된 스위치(no_kb, overrides.fix.mode 등)는 덮어쓰기에서 빼고,
+    # 남은 프로젝트가 다른 설정으로 실행된다는 것을 운영자가 알도록 한 줄 알린다
     dropped = ["no_kb"] if prev.get("no_kb") else []
     fix_ov = (prev.get("overrides") or {}).get("fix") or {}
     dropped += [f"overrides.fix.{k}" for k in ("mode", "edits_max_asks_per_case") if k in fix_ov]

@@ -6,7 +6,7 @@
   ``sbmig.fleet.preflight``, ``sbmig.fleet.cleanup``
 - 동시에 실행하면 앞 프로젝트가 KB에 남긴 결과를 다음 프로젝트가 보지 못하므로 병렬로 실행하지 않는다
 
-sbmig.fleet — one agent, N projects, strictly sequential, one shared KB (see docs/FLEET.md).
+Operator doc: docs/FLEET.md.
 
 Public API:
     load_manifest(path) -> list[FleetProject]
@@ -15,10 +15,8 @@ Public API:
     write_summaries(state, fleet_dir, cfg, kb)
     fleet_cli                       typer sub-app, mounted by sbmig/cli.py as `sbmig fleet`
     sbmig.fleet.preflight           run_preflight(cfg, out_dir, echo=) -> [Check]  (Java / Maven / settings /
-                                    repository / LLM / disk, round 10)
+                                    repository / LLM / disk)
     sbmig.fleet.cleanup             cleanup_run(run_dir, mode), plan_clean(...) / execute(items)  (`sbmig clean`)
-
-
 """
 
 from .manifest import FleetProject, ManifestError, load_manifest
@@ -37,7 +35,7 @@ __all__ = [
 
 
 def __getattr__(name: str):
-    """``import sbmig.fleet``이 typer와 CLI 모듈까지 불러오지 않도록 ``fleet_cli``만 필요할 때 import한다."""
+    """``import sbmig.fleet``이 typer와 CLI 모듈까지 읽지 않도록 ``fleet_cli``는 필요할 때 import한다."""
     if name == "fleet_cli":
         from .cli import fleet_cli
 

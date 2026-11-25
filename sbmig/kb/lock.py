@@ -11,58 +11,48 @@
 - 오래된 잠금은 ``.lock.breaker``를 잡은 프로세스 하나만 해제한다
 - 오래 걸리는 작업은 :func:`keep_alive`로 mtime을 갱신해 잠금이 오래된 것으로 보이지 않게 한다
 
-Cross-process KB lock ``<kb>/.lock`` (round 10, 2026-10-26).
+Every KB write (append, index save, case / recipe / catalog file, views, audit) runs inside :func:`kb_lock`:
 
-The web server, a fleet and ``sbmig kb …`` commands may share one KB. Every KB write (append, index save, case /
-recipe / catalog file, views, audit) runs inside :func:`kb_lock`:
-
-* the lock is a file created with ``O_CREAT | O_EXCL`` holding ``{pid, host, at, token, cmd}`` — works on Windows
-  and POSIX, local disks and shares;
+* the lock is a file created with ``O_CREAT | O_EXCL`` holding ``{pid, host, at, token, cmd}``; works on
+  Windows and POSIX, local disks and shares;
 * re-entrant within a process (one ``threading.RLock`` per KB directory; only the outermost holder creates /
-  removes the file), so nested writes (``credit_recipe`` → ``promote``) never deadlock;
-* a lock is stale — and broken, with a warning — when it is older than ``kb.lock_timeout_seconds`` or its pid is
-  gone (same host); otherwise a writer waits with backoff up to the timeout, then logs a warning and goes on WITHOUT
-  the lock (a run is never failed over it);
-* release removes the file only when it still holds our token;
-* v2.1z-ae (up to three build pods share one KB on NFS): a lock's age is measured on the KB file system's clock — the
-  lock's mtime is stamped by the NFS server, so a waiter writes a probe file beside the lock
-  (``.lock.probe.<pid>.<random>``, removed at once), reads its mtime and keeps the offset to its own clock (per KB
-  directory, refreshed at most every 60 s, only when a waiter needs an age — an uncontended acquire costs nothing
-  extra); a failing probe keeps the old comparison (this host's clock). A lock that turns stale right at the
-  waiter's deadline (the lock of a pod killed inside its section, seen from its first moment) is waited for until
-  it does, at most ``_EDGE`` seconds more, instead of going on without it.
-* review fixes (2026-11-10):
+  removes the file), so nested writes (``credit_recipe`` -> ``promote``) never deadlock;
+* a lock is stale, and broken with a warning, when it is older than ``kb.lock_timeout_seconds`` or its pid is
+  gone (same host); otherwise a writer waits with backoff up to the timeout, then logs a warning and goes on
+  WITHOUT the lock (a run is never failed over it);
+* age on the KB file system's clock: on NFS the server stamps the lock's mtime, so a waiter writes a probe
+  file beside the lock (``.lock.probe.<pid>.<random>``, removed at once), reads its mtime and keeps the offset
+  to its own clock (per KB directory, refreshed at most every 60 s, only when a waiter needs an age; an
+  uncontended acquire costs nothing extra); a failing probe keeps this host's clock; a probe that took longer
+  than ``_PROBE_MAX`` (an NFS stall) is discarded and the previous offset kept. A lock that turns stale right
+  at the waiter's deadline (a pod killed inside its section) is waited for until it does, at most ``_EDGE``
+  seconds more;
+* breaking a stale lock is serialized by a second exclusive file ``.lock.breaker`` (pid / host / token,
+  removed in ``finally``): only its holder re-reads the lock, judges it again, moves it aside, checks that the
+  file moved is the one judged (same inode + mtime + token) and puts a wrongly moved lock back with
+  ``os.link`` (exclusive, never a replace). A breaker file of another host expires after ``min(_BREAKER_STALE,
+  max(timeout, 2))`` seconds on the file system's clock; one of this host expires exactly when its pid is dead
+  (a live one never expires by age); a waiter that cannot get the breaker keeps waiting within its deadline;
+* a stale lock that cannot be moved (EACCES / EPERM, a sharing violation) is waited for with the normal
+  backoff and deadline, never a busy loop;
+* release removes the file only when it reads with our token (an empty / garbled file may be a new owner
+  between its create and its payload write);
+* a holder keeps a long section alive with :func:`keep_alive` (``os.utime`` of the lock while it still holds
+  our token, at most every ``_KEEPALIVE_EVERY`` s): ``kb reindex``, import, export and the case.json
+  confirmation wait;
+* a non-positive timeout means the default (300 s) with one WARNING (0 would make every lock instantly stale).
 
-  - breaking a stale lock is serialized by a second exclusive file ``.lock.breaker`` (pid / host / token, removed in
-    ``finally``): only its holder re-reads the lock, judges it again, moves it aside, checks that the file moved is
-    the one judged (same inode + mtime + token) and puts a wrongly moved lock back with ``os.link`` (exclusive —
-    never a replace).
-    A breaker file of another host expires after ``min(_BREAKER_STALE, max(timeout, 2))`` seconds on the file
-    system's clock; one of this host expires exactly when its pid is dead (a live one is never expired by age); a
-    waiter that cannot get the breaker keeps waiting within its deadline;
-  - a stale lock that cannot be moved (EACCES / EPERM, a sharing violation) is waited for with the normal backoff
-    and deadline — never a busy loop;
-  - release removes the file only when it reads with our token (an empty / garbled file may be a new owner between
-    its create and its payload write);
-  - a holder keeps a long section alive with :func:`keep_alive` (``os.utime`` of the lock while it still holds our
-    token, at most every ``_KEEPALIVE_EVERY`` s): ``kb reindex``, import, export and the case.json confirmation wait;
-  - a non-positive timeout means the default (300 s) with one WARNING (0 made every lock instantly stale);
-  - a clock probe that took longer than ``_PROBE_MAX`` (an NFS stall) is discarded, the previous offset is kept.
-
-  What remains, honestly: (a) the breaker file itself is broken by rename-aside without a third level — two waiters
-  that both judge a crashed breaker stale at the same moment can both proceed; each still re-reads, re-judges and
-  inode-checks the lock, so a double holder then needs that AND a release + new create inside the microseconds
-  between their rename and check; (b) the put-back ``os.link`` fails when a third writer created a lock in the
-  microseconds between our rename and our link — then the moved lock's owner and the new one overlap once (a WARNING
-  says so); (c) a holder frozen past the timeout (lock broken, retaken) that wakes and releases between its token
-  read and its unlink removes the new owner's lock — :func:`keep_alive` makes this need a freeze, not a long section;
-  (d) an EMPTY lock (no token) replaced in the window by another empty one that got the same inode number AND the
-  same mtime (a file system with coarse timestamps) is taken for the judged one.
-  On NFS all of this rests on exclusive create / rename / link being decided by the server (they are, NFSv3 / v4).
-
-Keep the locked sections short: never call the LLM or Maven inside one.
-
-
+Known gaps: (a) the breaker file itself is broken by rename-aside without a third level: two waiters that both
+judge a crashed breaker stale at the same moment can both proceed; each still re-reads, re-judges and
+inode-checks the lock, so a double holder then needs that AND a release + new create inside the microseconds
+between their rename and check; (b) the put-back ``os.link`` fails when a third writer created a lock in the
+microseconds between our rename and our link: the moved lock's owner and the new one then overlap once (a
+WARNING says so); (c) a holder frozen past the timeout (lock broken, retaken) that wakes and releases between
+its token read and its unlink removes the new owner's lock; :func:`keep_alive` makes this need a freeze, not a
+long section; (d) an EMPTY lock (no token) replaced in the window by another empty one with the same inode
+number AND the same mtime (coarse timestamps) is taken for the judged one. On NFS all of this rests on
+exclusive create / rename / link being decided by the server (they are, NFSv3 / v4). Contract:
+``docs/INTERFACES.md "v2.1z-af"``.
 """
 from __future__ import annotations
 
@@ -83,16 +73,16 @@ from sbmig.core.models import utcnow
 log = logging.getLogger("sbmig.kb")
 
 LOCK_NAME = ".lock"
-PROBE_PREFIX = LOCK_NAME + ".probe."   # ``.lock.probe.<pid>.<random>`` — never the lock, never a KB data name
+PROBE_PREFIX = LOCK_NAME + ".probe."   # 시계 측정용 파일 ``.lock.probe.<pid>.<random>``. KB 데이터 이름과 겹치지 않는다
 DEFAULT_TIMEOUT = 300.0
 _MAX_DELAY = 1.0
-_PROBE_EVERY = 60.0                    # the file system clock offset is measured again at most this often (s)
-_SKEW_NOTE = 2.0                       # an offset larger than this is said once (INFO)
-_EDGE = 2.0                            # a lock turning stale within this many seconds of the deadline is waited for
-BREAKER_NAME = LOCK_NAME + ".breaker"  # only the holder of this exclusive file may break a stale ``.lock``
-_BREAKER_STALE = 30.0                  # a breaker file older than this (fs clock; capped by max(timeout, 2)) expired
-_KEEPALIVE_EVERY = 10.0                # keep_alive touches the lock at most this often (s; timeout / 4 when shorter)
-_PROBE_MAX = 1.0                       # a clock probe that took longer than this (s) is discarded (an NFS stall)
+_PROBE_EVERY = 60.0                    # 파일 시스템 시계 차이를 다시 측정하는 최소 간격(초)
+_SKEW_NOTE = 2.0                       # 시계 차이가 이보다 크면 INFO로 한 번 알린다
+_EDGE = 2.0                            # 마감 직후 이 초 안에 오래된 잠금이 되면 조금 더 기다린다
+BREAKER_NAME = LOCK_NAME + ".breaker"  # 이 파일을 잡은 프로세스만 오래된 ``.lock``을 해제한다
+_BREAKER_STALE = 30.0                  # breaker 파일 만료 시간(파일 시스템 시계, max(timeout, 2)를 넘지 않는다)
+_KEEPALIVE_EVERY = 10.0                # keep_alive가 잠금을 갱신하는 최소 간격(초). timeout / 4가 더 짧으면 그것
+_PROBE_MAX = 1.0                       # 이보다 오래 걸린 시계 측정은 NFS 지연으로 보고 버린다(초)
 # 테스트에서 이 파드의 시계만 어긋나게 바꿀 수 있도록 이 이름으로 읽는다
 _now = time.time
 
@@ -107,13 +97,13 @@ class _State:
         self.token: Optional[str] = None
         # 파일 시스템 시계와 이 호스트 시계의 차이(초)이며, 기다리는 스레드만 RLock을 잡은 채 측정한다
         self.fs_offset: Optional[float] = None
-        self.fs_offset_at = 0.0                           # time.monotonic() of the measurement
-        self.skew_said: Optional[float] = None            # the offset the INFO line last reported
-        self.timeout = DEFAULT_TIMEOUT                    # the timeout the current holder took the lock with
-        self.alive_at = 0.0                               # time.monotonic() of the last keep_alive touch
-        self.lost_said = False                            # keep_alive said "not ours any more" for this holding
-        self.timeout_said = False                         # the non-positive timeout WARNING was given
-        self.unmovable_said = False                       # the "stale but cannot be moved" WARNING was given
+        self.fs_offset_at = 0.0                           # 측정한 시점의 time.monotonic()
+        self.skew_said: Optional[float] = None            # INFO로 마지막에 알린 시계 차이
+        self.timeout = DEFAULT_TIMEOUT                    # 지금 잡은 쪽이 쓴 timeout
+        self.alive_at = 0.0                               # 마지막 keep_alive 갱신 시점의 time.monotonic()
+        self.lost_said = False                            # 이번 보유 중 "잠금을 잃었다"를 이미 알렸는지
+        self.timeout_said = False                         # 0 이하 timeout 경고를 이미 했는지
+        self.unmovable_said = False                       # "오래됐지만 옮길 수 없다" 경고를 이미 했는지
 
 
 _STATES: dict[str, _State] = {}
@@ -145,9 +135,7 @@ def _read(path: Path) -> Optional[dict[str, Any]]:
 
 def pid_alive(pid: int) -> bool:
     """이 호스트에서 ``pid`` 프로세스가 살아 있는지 확인한다.
-    알 수 없으면 True를 반환하고, 그런 잠금은 경과 시간으로만 해제한다.
-
-    Is process ``pid`` running on this host? Unknown → True (only the age breaks such a lock)."""
+    알 수 없으면 True를 반환하고, 그런 잠금은 경과 시간으로만 해제한다."""
     try:
         pid = int(pid)
     except (TypeError, ValueError):
@@ -165,7 +153,7 @@ def pid_alive(pid: int) -> bool:
             kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)       # type: ignore[attr-defined]
             handle = kernel32.OpenProcess(0x1000, False, pid)               # PROCESS_QUERY_LIMITED_INFORMATION
             if not handle:
-                return ctypes.get_last_error() == 5                          # ERROR_ACCESS_DENIED → it exists
+                return ctypes.get_last_error() == 5                          # ERROR_ACCESS_DENIED면 존재한다
             try:
                 code = ctypes.c_ulong()
                 if kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
@@ -173,12 +161,12 @@ def pid_alive(pid: int) -> bool:
                 return True
             finally:
                 kernel32.CloseHandle(handle)
-        os.kill(pid, 0)                                   # POSIX only: on Windows signal 0 would be CTRL_C_EVENT
+        os.kill(pid, 0)
     except ProcessLookupError:
         return False
     except PermissionError:
         return True
-    except Exception:  # noqa: BLE001 - unknown: assume alive
+    except Exception:  # noqa: BLE001 - 모르면 살아 있다고 본다
         return True
     return True
 
@@ -195,9 +183,7 @@ def _probe_offset(root: Path) -> Optional[float]:
     잠금 옆에 측정용 파일을 만들어 mtime을 비교하고 바로 지운다.
     실패하면 0.0을, 측정이 ``_PROBE_MAX``초보다 오래 걸렸으면 값을 믿을 수 없으므로 None을 반환한다.
 
-    File system clock minus this host's clock, from the mtime of a probe file written beside the lock (removed at
-    once); 0.0 when the probe fails; None when the probe itself took longer than ``_PROBE_MAX`` (an NFS stall would
-    bias the offset by up to half of it — discarded)."""
+    A slow probe would bias the offset by up to half of its duration."""
     probe = Path(root) / f"{PROBE_PREFIX}{os.getpid()}.{uuid.uuid4().hex[:8]}"
     made = False
     try:
@@ -206,7 +192,7 @@ def _probe_offset(root: Path) -> Optional[float]:
         fd = os.open(str(probe), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
         made = True
         try:
-            os.write(fd, b"p")                            # a write: the server stamps the mtime with its clock
+            os.write(fd, b"p")                            # 쓰기를 해야 서버가 자기 시계로 mtime을 기록한다
         finally:
             os.close(fd)
         after = _now()
@@ -229,10 +215,7 @@ def _probe_offset(root: Path) -> Optional[float]:
 
 def _fs_offset(root: Path) -> float:
     """KB 디렉토리별로 저장해 둔 시계 차이를 반환한다. 최대 ``_PROBE_EVERY``초마다 다시 측정한다.
-    차이가 ``_SKEW_NOTE``초보다 크면 INFO 로그를 한 줄 남긴다. 잠금을 기다리는 쪽만 호출한다.
-
-    The cached file system clock offset of ``root`` (measured again at most every ``_PROBE_EVERY`` s); only a
-    waiter asks for it."""
+    차이가 ``_SKEW_NOTE``초보다 크면 INFO 로그를 한 줄 남긴다. 잠금을 기다리는 쪽만 호출한다."""
     st = _state(root)
     mono = time.monotonic()
     if st.fs_offset is not None and mono - st.fs_offset_at < _PROBE_EVERY:
@@ -252,18 +235,14 @@ def _fs_offset(root: Path) -> float:
 def _judge(path: Path, info: Optional[dict[str, Any]], timeout: float) -> tuple[bool, Optional[float]]:
     """잠금을 해제해도 되는지 판단하고 (해제 가능 여부, 오래된 잠금이 되기까지 남은 초 또는 None)을 반환한다.
     같은 호스트에서 pid가 죽은 잠금은 바로 해제 대상이다.
-    그 밖에는 파일 시스템 시계 기준 경과 시간을 timeout과 비교한다.
-
-    (stale?, seconds until it turns stale by age or None). A same-host lock of a dead pid is stale without an age;
-    otherwise the age is measured on the file system's clock against ``timeout`` (``max(timeout, 5)`` for an empty /
-    garbled lock)."""
+    그 밖에는 파일 시스템 시계 기준 경과 시간을 timeout과 비교한다. 비었거나 깨진 잠금은 max(timeout, 5초)다."""
     try:
         mtime = path.stat().st_mtime
     except OSError:
-        return False, None                                # gone already: the next O_EXCL wins
+        return False, None                                # 이미 없으면 다음 O_EXCL이 이긴다
     if info is not None and info.get("host") == socket.gethostname() and not pid_alive(info.get("pid", 0)):
         return True, None
-    # empty / garbled: a crash between create and write (or read right in between) — a longer limit
+    # 비었거나 깨진 잠금은 만든 직후 쓰기 전일 수 있으므로 기준을 늘린다
     limit = max(timeout, 5.0) if info is None else timeout
     age = _now() + _fs_offset(path.parent) - mtime
     return age > limit, limit - age
@@ -291,8 +270,7 @@ def _put_back(aside: Path, path: Path) -> bool:
     ``os.link``를 쓰고, 하드 링크를 쓸 수 없으면 ``os.rename``을 쓴다.
     되돌렸으면 True를 반환한다.
 
-    Put a wrongly moved file back, exclusively only (``os.link`` fails when the name exists — never a replace; on
-    Windows without hard links ``os.rename``, which fails on an existing target). True when it is back."""
+    Both fail when the name already exists, so a lock created meanwhile is never replaced."""
     try:
         os.link(str(aside), str(path))
     except FileExistsError:
@@ -301,7 +279,7 @@ def _put_back(aside: Path, path: Path) -> bool:
         if os.name != "nt":
             return False
         try:
-            os.rename(str(aside), str(path))              # Windows: rename never overwrites
+            os.rename(str(aside), str(path))              # Windows의 rename은 덮어쓰지 않는다
             return True
         except OSError:
             return False
@@ -317,15 +295,13 @@ def _remove_judged(path: Path, ident: tuple[int, int, int], token: Optional[str]
     다른 이름으로 옮겨 같은 파일인지 확인한 뒤 지우고, 다른 파일이면 :func:`_put_back`으로 되돌린다.
     결과로 removed / gone / changed / failed 중 하나를 반환한다.
 
-    Remove exactly the judged file: move it aside, check the moved file is the judged one (same device, inode and
-    mtime; the same token when the judged one had one), unlink it; another file moved by mistake is put back
-    exclusively. → removed / gone / changed / failed."""
+    Same file = same device, inode and mtime, and the same token when the judged one had one."""
     aside = path.with_name(f"{path.name}.stale-{os.getpid()}-{uuid.uuid4().hex[:8]}")
     try:
         os.replace(str(path), str(aside))
     except FileNotFoundError:
         return "gone"
-    except OSError as e:                                  # EACCES / EPERM / a Windows sharing violation
+    except OSError as e:                                  # EACCES / EPERM / Windows 공유 위반
         log.debug("kb lock %s: not moved aside (%s)", path, e)
         return "failed"
     if _ident(aside) != ident or (token is not None and (_read(aside) or {}).get("token") != token):
@@ -357,10 +333,8 @@ def _take_breaker(root: Path, timeout: float) -> Optional[str]:
     잡으면 우리 토큰을, 다른 프로세스가 해제하는 중이면 None을 반환한다.
     기존 breaker 파일은 같은 호스트면 pid가 죽었을 때만, 다른 호스트면 일정 시간이 지났을 때만 지우고 한 번 더 시도한다.
 
-    Take the right to break (``.lock.breaker``, O_EXCL). An existing one is removed only when it is dead: this host's
-    by its pid (a live one is never expired by age), another host's when older than ``min(_BREAKER_STALE,
-    max(timeout, 2))`` s on the file system's clock; then one more try. Our token, or None (somebody else is
-    breaking: wait)."""
+    Another host's breaker expires after ``min(_BREAKER_STALE, max(timeout, 2))`` s on the file system's
+    clock."""
     bpath = Path(root) / BREAKER_NAME
     token = uuid.uuid4().hex
     for _ in range(2):
@@ -369,7 +343,7 @@ def _take_breaker(root: Path, timeout: float) -> Optional[str]:
         except (FileExistsError, PermissionError):
             ident, binfo = _ident(bpath), _read(bpath)
             if ident is None:
-                continue                                  # released just now: try again
+                continue                                  # 방금 풀렸으므로 다시 시도한다
             if binfo is not None and binfo.get("host") == socket.gethostname():
                 # 같은 호스트면 pid로 정확히 알 수 있으므로 살아 있는 breaker는 경과 시간과 관계없이 기다린다
                 stale = not pid_alive(binfo.get("pid", 0))
@@ -389,7 +363,7 @@ def _take_breaker(root: Path, timeout: float) -> Optional[str]:
         except OSError as e:
             log.debug("kb lock %s: breaker not written (%s)", bpath, e)
             try:
-                os.unlink(str(bpath))                     # ours: we just created it exclusively
+                os.unlink(str(bpath))                     # 방금 O_EXCL로 만든 우리 파일이다
             except OSError:
                 pass
             return None
@@ -414,10 +388,7 @@ def _break(path: Path, info: Optional[dict[str, Any]], timeout: float = DEFAULT_
     해제했거나 이미 없으면 True를 반환한다.
     False면 호출하는 쪽이 마감 시간을 확인하고 잠시 쉰 뒤 다시 확인한다.
 
-    Break a stale lock — only as the holder of ``.lock.breaker``: re-read the lock, check it is the judged one (token,
-    inode), judge it again, then move it aside and remove it (:func:`_remove_judged`). True when broken or already
-    gone (create again now); False otherwise (another breaker at work, the lock changed, the rename refused) — the
-    caller then checks its deadline and sleeps as for a live lock, never spins."""
+    False = another breaker at work, the lock changed, or the rename was refused; the caller never spins."""
     root = path.parent
     btok = _take_breaker(root, timeout)
     if btok is None:
@@ -425,10 +396,10 @@ def _break(path: Path, info: Optional[dict[str, Any]], timeout: float = DEFAULT_
     try:
         ident = _ident(path)
         if ident is None:
-            return True                                   # released meanwhile: the next O_EXCL wins
+            return True                                   # 그사이 풀렸으므로 다음 O_EXCL이 이긴다
         now_info = _read(path)
         if (now_info or {}).get("token") != (info or {}).get("token"):
-            return False                                  # changed since the judgement: judge again next round
+            return False                                  # 판단한 뒤 바뀌었으므로 다음 차례에 다시 판단한다
         stale, _ = _judge(path, now_info, timeout)
         if not stale or _ident(path) != ident:
             return False
@@ -465,7 +436,7 @@ def _acquire(root: Path, timeout: float) -> Optional[str]:
     while True:
         try:
             fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
-        except (FileExistsError, PermissionError):        # Windows: a lock being deleted reads as PermissionError
+        except (FileExistsError, PermissionError):
             # Windows에서는 지워지는 중인 잠금 파일이 PermissionError로 보이므로 잡혀 있는 것으로 보고 다시 시도한다
             info = _read(path)
             stale, until = _judge(path, info, timeout)
@@ -502,7 +473,7 @@ def _acquire(root: Path, timeout: float) -> Optional[str]:
             log.warning("kb lock %s: could not write the owner (%s) — the lock is dropped, going on without it",
                         path, e)
             try:
-                os.unlink(str(path))                      # ours: we created it exclusively a moment ago
+                os.unlink(str(path))                      # 방금 O_EXCL로 만든 우리 파일이다
             except OSError:
                 pass
             return None
@@ -512,10 +483,7 @@ def _acquire(root: Path, timeout: float) -> Optional[str]:
 def _release(root: Path, token: str) -> None:
     """잠금 파일이 우리 토큰으로 읽힐 때만 지운다.
     비었거나 깨진 파일은 방금 생성된 새 잠금일 수 있으므로 건드리지 않는다.
-    잠깐 읽히지 않는 경우를 위해 몇 번 다시 읽는다.
-
-    Remove the file only when it reads with our token; an empty / garbled file may be a new owner between its create
-    and its payload write and is left alone (read again briefly first)."""
+    잠깐 읽히지 않는 경우를 위해 몇 번 다시 읽는다."""
     path = lock_path(root)
     info = _read(path)
     for _ in range(3):
@@ -539,12 +507,10 @@ def keep_alive(root: Path | str, *, force: bool = False) -> bool:
     """잠금 파일에 아직 우리 토큰이 있으면 mtime을 갱신해 다른 프로세스가 해제하지 않게 한다.
     잠금을 잡은 쪽이 오래 걸리는 작업 중에 호출한다.
     자주 호출해도 되며 실제 갱신은 ``min(_KEEPALIVE_EVERY, timeout / 4)``초에 한 번이다.
-    잠금이 없으면 False를 반환한다.
+    잡고 있지 않거나, 아직 갱신할 때가 아니거나, 이미 우리 잠금이 아니면 False를 반환한다.
+    ``force``면 간격과 관계없이 바로 갱신한다.
 
-    Called by the holder inside a long section: touch the lock file (``os.utime``; the server's time on NFS) while it
-    still holds our token, so nobody breaks it as stale. Cheap to call often — it touches at most every
-    ``min(_KEEPALIVE_EVERY, timeout / 4)`` s (``force``: now). False when nothing was touched (not held, too soon,
-    not ours any more)."""
+    ``os.utime`` stamps the server's time on NFS."""
     root = Path(root)
     st = _state(root)
     tok = st.token
@@ -592,10 +558,7 @@ def _timeout_of(root: Path, timeout: Optional[float]) -> float:
 @contextmanager
 def kb_lock(root: Path | str, timeout: Optional[float] = None) -> Iterator[bool]:
     """KB에 쓰는 동안 ``<root>/.lock`` 잠금을 잡는다. 잡았으면 True, 못 잡고 진행하면 False를 yield한다.
-    같은 프로세스 안에서는 다시 잡을 수 있다. ``timeout``이 0 이하면 기본값을 쓴다.
-
-    Hold ``<root>/.lock`` for a KB write. Yields True when the lock is held (False: going on without it). A
-    non-positive ``timeout`` means the default (one WARNING)."""
+    같은 프로세스 안에서는 다시 잡을 수 있다. ``timeout``이 0 이하면 기본값을 쓴다."""
     root = Path(root)
     t = _timeout_of(root, timeout)
     st = _state(root)
@@ -622,8 +585,6 @@ def kb_lock(root: Path | str, timeout: Optional[float] = None) -> Iterator[bool]
 
 
 def holding(root: Path | str) -> bool:
-    """이 스레드가 ``root``의 잠금을 잡고 있는지 확인한다. 테스트에서 쓴다.
-
-    This thread holds the lock of ``root`` (tests / assertions)."""
+    """이 스레드가 ``root``의 잠금을 잡고 있는지 확인한다. 테스트에서 쓴다."""
     st = _state(Path(root))
     return st.depth > 0 and st.token is not None

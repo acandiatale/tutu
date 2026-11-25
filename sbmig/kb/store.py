@@ -6,25 +6,20 @@
 - ``export_zip`` / ``import_zip``: KB 전체를 내보내고 가져온다
 실행 중에는 예외를 밖으로 던지지 않는다.
 KB는 파일로만 관리한다(DB 사용 금지).
-
-The file KB facade (v2.1, docs/v2/PLAN-v2.1.md §3.4) — what the orchestrator (``self.kb``), the fleet and the web
-server hold. Everything lives in :class:`sbmig.errors.cases.CaseStore`; this class adds the cluster lookup
-(``match``), the export / import of the whole KB and the never-raise wrappers a run needs.
-
-Layout under ``cfg.kb_dir`` (``kb.dir``, default ``kb-v2/``): ``errors.jsonl``, ``cases.md``,
-``cases/<case_id>/case.json`` + ``fix_v<N>.py``, ``.lock``. Nothing else is read or written (the round-10 / v2
-catalog, views, audit, quarantine, reviews, fix_attempts, scripts/*/meta.json and index.json are gone; an old KB
-directory is simply not looked at).
-
 재서명은 이전 서명 규칙으로 기록된 항목을 현재 케이스 ID로 옮기는 작업이다.
 - ``reindex``는 재서명을 먼저 하고 다시 집계한다
 - 프로세스의 첫 ``match``와 ``record_run`` 직후에도 필요하면 자동으로 실행한다.
   실패해도 WARNING만 남기고 실행은 계속한다
 
-Re-sign (v2.1z-ai): ``reindex`` re-signs first (:meth:`FileKnowledgeBase.resign`), then recounts. Automatically too,
-never failing a run: on the first ``match`` of a process per KB directory (``kb.json`` missing / older while the KB
-has records) and after a ``record_run`` that leaves a line signed by older rules. ``match`` leaves out a stored case
-whose L2 is not the L2 of the cluster's errors (the exact-key guard, :meth:`CaseStore.same_case`).
+Layout under ``cfg.kb_dir`` (``kb.dir``, default ``kb-v2/``): ``errors.jsonl``, ``cases.md``,
+``cases/<case_id>/case.json`` + ``fix_v<N>.py``, ``.lock``. Nothing else is read or written (older KB files
+such as catalog, views, audit, quarantine, reviews, fix_attempts, scripts/*/meta.json, index.json are never
+looked at).
+
+Automatic re-sign: on the first ``match`` of a process per KB directory (``kb.json`` missing / older while the
+KB has records) and after a ``record_run`` that leaves a line signed by older rules. ``match`` leaves out a
+stored case whose L2 is not the L2 of the cluster's errors (the exact-key guard, :meth:`CaseStore.same_case`).
+Contract: ``docs/INTERFACES.md "v2.1z-ai"``.
 """
 from __future__ import annotations
 
@@ -57,12 +52,10 @@ SOURCE_LABELS = {SCOPE_FULL: "full-migration", SCOPE_REDUCED: "jdk-jakarta (redu
 
 
 def run_scope(profile: Any) -> str:
-    """실행의 이관 범위를 반환한다. 프레임워크 프로젝트면 jdk-jakarta, 아니면 full이다.
-
-    The scope of a run: ``jdk-jakarta`` when ``profile.reduced_scope``, else ``full`` (also without a profile)."""
+    """실행의 이관 범위를 반환한다. ``profile.reduced_scope``면 jdk-jakarta, 아니면(프로필이 없어도) full이다."""
     try:
         return SCOPE_REDUCED if profile is not None and getattr(profile, "reduced_scope", False) is True else SCOPE_FULL
-    except Exception:  # noqa: BLE001 - a foreign profile object
+    except Exception:  # noqa: BLE001 - 다른 형식의 프로필 객체
         return SCOPE_FULL
 
 
@@ -71,16 +64,13 @@ _FIRST_MATCH_CHECKED: set[str] = set()
 
 
 class FileKnowledgeBase:
-    """KB 디렉토리 하나를 읽고 쓰는 클래스. 실제 데이터는 ``cases``(CaseStore)가 관리한다.
-
-    ``kb.cases`` (the CaseStore), ``match``, ``record_run``, ``reindex``, ``stats``, ``validate``,
-    ``export_zip`` / ``import_zip``, ``lock``."""
+    """KB 디렉토리 하나를 읽고 쓰는 클래스. 실제 데이터는 ``cases``(CaseStore)가 관리한다."""
 
     def __init__(self, cfg: Config, kb_dir: Optional[Path] = None):
         self.cfg = cfg
         self.root = Path(kb_dir) if kb_dir else cfg.kb_dir
         self._cases: Optional[CaseStore] = None
-        self.last_resign: Optional[ResignReport] = None   # v2.1z-ai: the last re-sign's report (`sbmig kb reindex`)
+        self.last_resign: Optional[ResignReport] = None   # 마지막 재서명 보고. `sbmig kb reindex`가 출력한다
 
     @property
     def lock_timeout(self) -> float:
@@ -90,17 +80,13 @@ class FileKnowledgeBase:
 
     def lock(self):
         """프로세스 간에 KB를 동시에 수정하지 않도록 잠금(``<kb>/.lock``)을 건다.
-        같은 프로세스 안에서는 다시 잡을 수 있다.
-
-        The cross-process KB lock (``<kb>/.lock``, re-entrant)."""
+        같은 프로세스 안에서는 다시 잡을 수 있다."""
         return kb_lock(self.root, self.lock_timeout)
 
     @property
     def script_runs(self) -> int:
         """저장된 스크립트 버전마다 남길 실행 기록 수의 상한을 반환한다.
-        설정 ``errors.script_runs``를 따르고 0이면 제한이 없다.
-
-        ``errors.script_runs``: ScriptRun records kept per stored script version (v2.1e; 0 = no cap)."""
+        설정 ``errors.script_runs``를 따르고 0이면 제한이 없다. 값이 잘못되면 30을 쓴다."""
         try:
             return max(0, int(getattr(getattr(self.cfg, "errors", None), "script_runs", 30)))
         except (TypeError, ValueError):
@@ -114,7 +100,7 @@ class FileKnowledgeBase:
                                     script_runs=self.script_runs)
         return self._cases
 
-    # ------------------------------------------------------------------ the fix loop
+    # ------------------------------------------------------------------ 수정 루프
     def match(self, cluster: ErrorCluster, ws: Any = None, profile: Any = None) -> KBMatch:
         """빌드 오류 묶음에 맞는 저장된 수정 스크립트를 찾는다. 수정 루프가 라운드마다 호출한다.
         쓸 만한 스크립트가 있으면 CaseHit를, 사람이 ``block``으로 고정한 케이스면 그 고정 정보를 반환하고,
@@ -122,15 +108,11 @@ class FileKnowledgeBase:
         모르는 케이스면 빈 결과를 반환한다.
         KB 조회가 실패해도 수정 루프는 계속돼야 하므로 예외를 던지지 않는다.
 
-        What the KB has for the cluster's case(s): a CaseHit per case with a usable stored script (action
-        ``script`` with the version :meth:`CaseStore.best` picks; status active = proven, candidate = unverified) or
-        a person's ``block`` pin (``pinned``; the triage obeys it), and hint lines (the case's last solution). Empty
-        for an unknown case. Never raises.
-
-        v2.1z-ap: the run's scope comes from ``profile.reduced_scope`` (``jdk-jakarta``, else ``full``): the CaseHit
-        names ``best(case_id, scope)``, and a last solution written by a run of the other scope is labelled in its
-        hint line (``last solution [from a full-migration run] — …``) — kept, not dropped: most javax → jakarta
-        solutions hold in both scopes, and the label tells the LLM what it may not take over."""
+        CaseHit status: active = proven, candidate = unverified; the version is
+        ``CaseStore.best(case_id, scope)`` with the scope of :func:`run_scope`. A last solution written by a
+        run of the other scope is kept but labelled (``last solution [from a full-migration run] — …``): most
+        javax -> jakarta solutions hold in both scopes, and the label tells the LLM what it may not take over.
+        Contract: ``docs/INTERFACES.md "v2.1z-ap"``."""
         out = KBMatch()
         scope = run_scope(profile)
         self._first_match_check()
@@ -175,15 +157,13 @@ class FileKnowledgeBase:
                                              action=CaseAction(kind="script", script_version=s.version),
                                              errors=errs, hints=out.hints[-1:] if case.last_solution else []))
             out.hints = out.hints[:MAX_MATCH_HINTS]
-        except Exception as e:  # noqa: BLE001 - a KB lookup never breaks the loop
+        except Exception as e:  # noqa: BLE001 - KB 조회 실패로 수정 루프를 멈추지 않는다
             log.warning("kb.match failed for %s: %s: %s", getattr(cluster, "id", "?"), type(e).__name__, e)
         return out
 
     def record_run(self, entries: Iterable[ErrorEntry]) -> int:
         """실행이 끝난 오류 목록을 :meth:`CaseStore.record_run`으로 KB에 기록한다.
-        KB 문제로 보고서 작성이 멈추면 안 되므로 실패하면 경고를 남기고 0을 반환한다.
-
-        The run's finished error list into the KB (:meth:`CaseStore.record_run`). Never raises (0 + a warning)."""
+        KB 문제로 보고서 작성이 멈추면 안 되므로 실패하면 경고를 남기고 0을 반환한다."""
         try:
             n = self.cases.record_run(entries)
         except Exception as e:  # noqa: BLE001
@@ -194,7 +174,7 @@ class FileKnowledgeBase:
             if getattr(self.cases, "older_lines", 0):
                 log.info("kb: %d line(s) of %s signed by older rules — re-signing", self.cases.older_lines, KB_ERRORS)
                 self._resign(dry_run=False, recount=True, retry=False)
-        except Exception as e:  # noqa: BLE001 - the run's record stands
+        except Exception as e:  # noqa: BLE001 - 실행 기록은 이미 남았다
             log.warning("kb re-sign after record_run failed: %s: %s", type(e).__name__, e)
         return n
 
@@ -204,15 +184,13 @@ class FileKnowledgeBase:
         예외를 던지지 않고, 실패하면 WARNING 한 줄과 ``error``가 든 빈 보고를 반환한다.
         보고는 ``last_resign``에도 남는다.
 
-        Re-sign (:meth:`CaseStore.resign`); ``dry_run`` reports what would move and writes nothing. Never raises: a
-        failure is one WARNING and an empty report with ``error``. The report is kept in ``last_resign``. An explicit
-        call retries the cases the last re-sign skipped; the automatic triggers do not."""
+        An explicit call retries the cases the last re-sign skipped; the automatic triggers do not."""
         return self._resign(dry_run=dry_run, recount=True, retry=True)
 
     def _resign(self, dry_run: bool, recount: bool, retry: bool) -> ResignReport:
         try:
             rep = self.cases.resign(dry_run=dry_run, recount=recount, retry_skipped=retry)
-        except Exception as e:  # noqa: BLE001 - a re-sign never fails a run
+        except Exception as e:  # noqa: BLE001 - 재서명 실패로 실행을 실패시키지 않는다
             log.warning("kb re-sign failed: %s: %s — the KB stays as it is", type(e).__name__, e)
             rep = ResignReport(version=current_version(), dry_run=dry_run, error=f"{type(e).__name__}: {e}")
         self.last_resign = rep
@@ -220,11 +198,8 @@ class FileKnowledgeBase:
 
     def _first_match_check(self) -> None:
         """이 프로세스에서 KB 디렉토리를 처음 조회할 때 재서명이 필요한지 확인한다.
-        ``kb.json``이 현재 버전이 아니고 기록이 있으면 한 번 재서명한다.
-        예외를 던지지 않는다.
-
-        The first ``match`` of a process for this KB directory: re-sign once when ``kb.json`` is missing / older
-        and the KB has records; later calls do not look again. Never raises."""
+        ``kb.json``이 없거나 이전 버전이고 기록이 있으면 한 번 재서명한다. 이후 호출은 다시 확인하지 않는다.
+        예외를 던지지 않는다."""
         key = os.path.abspath(str(self.root))
         if key in _FIRST_MATCH_CHECKED:
             return
@@ -235,24 +210,19 @@ class FileKnowledgeBase:
             log.info("kb: %s was not re-signed to the current signature rules (v%d) — re-signing once", self.root,
                      current_version())
             self._resign(dry_run=False, recount=True, retry=False)
-        except Exception as e:  # noqa: BLE001 - the lookup goes on with the KB as it is
+        except Exception as e:  # noqa: BLE001 - KB를 그대로 두고 조회를 계속한다
             log.warning("kb re-sign on first lookup failed: %s: %s", type(e).__name__, e)
 
     def reindex(self) -> int:
         """``sbmig kb reindex``를 처리한다.
-        ``errors.jsonl``로 모든 케이스를 다시 집계하고 ``cases.md``를 다시 쓴다.
+        재서명을 먼저 하고, ``errors.jsonl``로 모든 케이스를 다시 집계한 뒤 ``cases.md``를 다시 쓴다.
         케이스 수를 반환하고, KB가 없으면 만들지 않고 0을 반환한다. 예외를 던지지 않는다.
 
-        v2.1z-ai: re-signs first (:meth:`resign`, its report in ``last_resign``).
-
-        Recount every case from ``errors.jsonl`` and rewrite ``cases.md`` (v2.1e: also every stored script's run
-        history, augment lineage and last failure, and the as-is / to-be hunks of entries stored without them —
-        :meth:`CaseStore.recount`). Returns the number of cases (0 for a KB that does not exist yet — nothing is
-        created). Never raises."""
+        :meth:`CaseStore.recount` also rebuilds every stored script's run history, augment lineage and last
+        failure, and the as-is / to-be hunks of entries stored without them."""
         if not self.root.exists():
             return 0
-        # v2.1z-ai: records of older rules to their current ids (the skipped cases retried); a case it still cannot
-        # read is not recounted (no fresh case.json over a damaged one)
+        # 재서명이 읽지 못한 케이스는 다시 집계하지 않는다. 깨진 case.json 위에 새 파일을 쓰지 않기 위해서다
         rep = self._resign(dry_run=False, recount=False, retry=True)
         try:
             return self.cases.recount(skip=rep.unreadable)
@@ -269,22 +239,20 @@ class FileKnowledgeBase:
         깨진 case.json, 스크립트 파일 같은 문제를 최대 ``limit``개까지 문장으로 반환한다."""
         return self.cases.validate(limit)
 
-    # ------------------------------------------------------------------ transfer
+    # ------------------------------------------------------------------ 내보내기와 가져오기
     def export_zip(self, path: str | Path) -> Path:
-        """``sbmig kb export``를 처리하며, 잠금을 잡은 채 KB를 zip 파일 하나로 내보낸다.
-        임시 파일에 쓴 뒤 rename하므로 반쯤 쓴 zip이 남지 않는다.
-
-        Zip ``cases/``, ``errors.jsonl`` and ``cases.md`` (paths relative to the KB root) under the KB lock."""
+        """``sbmig kb export``를 처리한다. 잠금을 잡은 채 ``cases/``, ``errors.jsonl``, ``cases.md``를 zip 하나로 내보낸다.
+        임시 파일에 쓴 뒤 rename하므로 반쯤 쓴 zip이 남지 않는다."""
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_name(path.name + ".tmp")
         # 잠금을 잡으면 KB 디렉토리가 생기므로 그 전에 원래 있었는지 기억하고, 없던 KB는 빈 zip으로 내보낸다
-        existed = self.root.exists()                      # (taking the lock creates the directory)
+        existed = self.root.exists()
         with self.lock():
             with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zf:
                 if existed:
                     for p in sorted(self.root.rglob("*")):
-                        keep_alive(self.root)              # a big KB over NFS: keep the lock fresh (throttled)
+                        keep_alive(self.root)              # NFS의 큰 KB는 오래 걸리므로 잠금을 갱신한다
                         if p.is_dir() or p.name.startswith(".") or p.suffix == ".tmp":
                             continue
                         rel = p.relative_to(self.root)
@@ -299,10 +267,8 @@ class FileKnowledgeBase:
           같은 zip을 두 번 넣어도 변화가 없다
         - ``merge=False``: 통째로 교체하고 기존 KB는 ``<kb>.bak-<시각>``으로 남긴다
 
-        Import an exported KB. ``merge`` (default): new error lines, unknown cases, scripts of known cases by their
-        code (:meth:`CaseStore.merge_from`; importing the same zip twice changes nothing). ``merge=False``: the KB is
-        replaced — built in a sibling temp dir and swapped in by rename, the old one kept as
-        ``<kb>.bak-<timestamp>``. Returns counters."""
+        Merge = :meth:`CaseStore.merge_from` (scripts of known cases matched by their code). Replace builds
+        the KB in a sibling temp dir and swaps it in by rename."""
         if not merge:
             return self._import_replace(path)
         with self.lock():
@@ -337,12 +303,12 @@ class FileKnowledgeBase:
                 counters = self._import_into(FileKnowledgeBase(self.cfg, kb_dir=build_dir), path)
                 old = self.root
                 # 레포가 추적하는 .gitkeep이 새 KB에도 있어야 git status가 깨끗하게 유지된다
-                for keep in (old.rglob(".gitkeep") if old.exists() else []):   # the repo's tracked layout files
+                for keep in (old.rglob(".gitkeep") if old.exists() else []):
                     dst = build_dir / keep.relative_to(old)
                     dst.parent.mkdir(parents=True, exist_ok=True)
                     if not dst.exists():
                         shutil.copyfile(keep, dst)
-                for stray in build_dir.glob(LOCK_NAME + "*"):                  # the temp KB's own lock
+                for stray in build_dir.glob(LOCK_NAME + "*"):                  # 임시 KB가 만든 자기 잠금
                     stray.unlink(missing_ok=True)
                 backup = None
                 if old.exists():
@@ -355,12 +321,12 @@ class FileKnowledgeBase:
                 try:
                     os.replace(build_dir, old)
                 except OSError as e:
-                    if backup is not None:                # put the previous KB back where it was
+                    if backup is not None:                # 기존 KB를 원래 위치로 되돌린다
                         self._restore_backup(old, backup, stamp, e)
                     raise
                 if backup is not None:
                     # 우리 잠금 파일이 기존 KB와 함께 .bak로 옮겨졌으므로 거기서 지운다
-                    (backup / LOCK_NAME).unlink(missing_ok=True)    # our lock moved with the old KB
+                    (backup / LOCK_NAME).unlink(missing_ok=True)
                     counters["backup"] = str(backup)
                     log.info("kb import --replace: the previous KB is kept in %s", backup)
             except BaseException:
@@ -373,11 +339,9 @@ class FileKnowledgeBase:
     def _restore_backup(old: Path, backup: Path, stamp: str, cause: OSError) -> None:
         """교체 가져오기의 두 번째 rename이 실패했을 때 기존 KB를 원래 위치로 되돌린다.
         그 사이 다른 파드가 만든 빈 ``<kb>``는 ``<kb>.intruder-<시각>``으로 치운다.
-        결과 위치는 ERROR 로그 한 줄로 남긴다.
+        결과 위치는 ERROR 로그 한 줄로 남긴다. 되돌리지 못하면 손으로 옮길 위치도 그 줄에 남긴다.
 
-        The second rename of ``import --replace`` failed: a pod may have re-created an empty ``<kb>`` meanwhile (its
-        lock / an atomic write makes the parents) — move that folder to ``<kb>.intruder-<stamp>`` and put the previous
-        KB back; one ERROR line says exactly where everything is (and what to move by hand if even that fails)."""
+        A pod re-creates ``<kb>`` when its lock or an atomic write makes the parent directories."""
         intruder: Optional[Path] = None
         if old.exists():
             intruder = old.parent / f"{old.name}.intruder-{stamp}"

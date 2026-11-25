@@ -1,8 +1,6 @@
 """버전 문자열의 숫자 부분을 숫자로 비교하는 모듈(1.18.24 < 1.18.30, 2.7.18.RELEASE == 2.7.18).
 권고의 버전 하한 판단 등에서 사용한다.
-``${...}`` 참조나 숫자로 시작하지 않는 버전은 None이므로 그 처리는 호출하는 쪽이 정한다.
-
-Tiny semver-ish version comparison: 1.18.24 < 1.18.30, 3.8.1 < 3.13.0, 2.7.18.RELEASE == 2.7.18."""
+``${...}`` 참조나 숫자로 시작하지 않는 버전은 None이므로 그 처리는 호출하는 쪽이 정한다."""
 from __future__ import annotations
 
 import re
@@ -15,9 +13,9 @@ _QUALIFIER_ORDER = {"alpha": -4, "a": -4, "beta": -3, "b": -3, "milestone": -2, 
 
 def parse_version(v: Optional[str]) -> Optional[tuple[tuple[int, ...], int]]:
     """버전 문자열을 (숫자 부분 튜플, 수식어 순위)로 바꾼다.
-    비었거나 ``${...}``이거나 숫자가 아니면 None을 반환한다.
+    비었거나 ``${...}``이거나 숫자가 아니면 None을 반환한다. 예: ``1.18.24``는 ``((1, 18, 24), 0)``이다.
 
-    ('1.18.24') -> ((1, 18, 24), 0). Returns None for empty/unresolved (`${...}`) or non-numeric versions."""
+    An unknown qualifier ranks as GA (0)."""
     if not v or "${" in v:
         return None
     v = v.strip()
@@ -34,9 +32,7 @@ def parse_version(v: Optional[str]) -> Optional[tuple[tuple[int, ...], int]]:
 
 def compare_versions(a: Optional[str], b: Optional[str]) -> Optional[int]:
     """두 버전을 비교해 -1 / 0 / 1을 반환한다.
-    짧은 쪽은 0으로 채워 비교하고(3.1 == 3.1.0) 한쪽이라도 읽지 못하면 None을 반환한다.
-
-    -1 / 0 / 1, or None when either side cannot be parsed."""
+    짧은 쪽은 0으로 채워 비교한다(3.1 == 3.1.0). 한쪽이라도 읽지 못하면 None을 반환한다."""
     pa, pb = parse_version(a), parse_version(b)
     if pa is None or pb is None:
         return None

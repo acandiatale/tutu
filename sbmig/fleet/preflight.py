@@ -6,11 +6,7 @@
 - 설정 오류(Maven 없음, Java 버전 불일치, 키 거부 등)는 기다려도 풀리지 않으므로 러너가 바로 중단한다
 - 저장소 점검은 Maven과 마찬가지로 셸의 프록시 환경 변수를 사용하지 않는다
 
-Fleet preflight (round 10): is the infrastructure there before the next ~500 projects start?
-
-Checked once before the first project (``fleet.preflight``) and again whenever the fleet resumes after an
-infrastructure pause (``fleet.infra_*``, see :mod:`sbmig.fleet.runner`). One short ASCII line per check, so the
-operator can retype the failing one:
+One short ASCII line per check, so the operator can retype the failing one:
 
     preflight: disk       ok   212.4 GB free on D:\\sbmig\\out (min 5)
     preflight: maven      ok   Apache Maven 3.9.9 (…)
@@ -19,17 +15,15 @@ operator can retype the failing one:
     preflight: repository ok   http://nexus.local/repository/public/ HTTP 200
     preflight: llm        ok   gpt-6-luna HTTP 200 1.3s
 
-Each failure names the infrastructure kind (``disk | maven | jdk | repository | llm``, the ``infra:<kind>`` flags
-of the runs) and whether it can go away by itself (``transient``: an outage, a full disk) or is a configuration
-error the fleet should not wait for (no Maven, Java 17, settings file missing, LLM key missing / rejected).
+The kind is the ``infra:<kind>`` flag of the runs. ``transient``: an outage, a full disk; not transient: no
+Maven, Java 17, settings file missing, LLM key missing / rejected.
 
-The repository check is one GET to the settings.xml mirror URL the way Maven would go: no environment proxies (Maven
-ignores HTTP_PROXY; a ``<proxy>`` of the settings is used), any HTTP answer below 500 counts as reachable (401 / 404
-included), and a TLS handshake Python cannot verify still means the server is up (Maven trusts the JDK truststore,
-Python does not know the company CA). The LLM check is ``sbmig.fix.company.probe_llm`` — the call `sbmig llm-probe`
-makes — skipped for the fake provider and for ``loop.max_llm_calls: -1`` (v2.1: 0 means no limit, -1 no LLM call).
-
-
+The repository check is one GET to the settings.xml mirror URL the way Maven would go: no environment proxies
+(Maven ignores HTTP_PROXY; a ``<proxy>`` of the settings is used), any HTTP answer below 500 counts as
+reachable (401 / 404 included), and a TLS handshake Python cannot verify still means the server is up (Maven
+trusts the JDK truststore, Python does not know the company CA). The LLM check is
+``sbmig.fix.company.probe_llm`` (the ``sbmig llm-probe`` call), skipped for the fake provider and for
+``loop.max_llm_calls: -1`` (0 means no limit).
 """
 from __future__ import annotations
 
@@ -61,8 +55,8 @@ class Check:
     name: str                              # disk | maven | java | settings | repository | llm
     ok: bool
     detail: str = ""
-    kind: str = ""                         # infra kind when not ok: disk | maven | jdk | repository | llm
-    transient: bool = False                # may recover by itself (outage) — else a configuration error
+    kind: str = ""                         # 실패했을 때의 인프라 종류: disk | maven | jdk | repository | llm
+    transient: bool = False                # 장애처럼 저절로 풀릴 수 있으면 True, 설정 오류면 False
     skipped: bool = False
     data: dict[str, Any] = field(default_factory=dict)
 
@@ -90,9 +84,7 @@ def _existing(path: Path) -> Path:
 def check_disk(path: str | Path, min_free_gb: float) -> Check:
     """``path``(일괄 실행의 ``--out``)가 있는 드라이브의 여유 공간이 ``fleet.min_free_gb`` 이상인지 점검한다.
     설정값이 0이면 점검하지 않는다.
-    공간 부족은 파일을 지우면 풀리므로 ``transient``이고, 공간을 잴 수 없으면 건너뛴다.
-
-    Free space on the drive of `path` (the fleet's --out) against `fleet.min_free_gb` (0 = no check)."""
+    공간 부족은 파일을 지우면 풀리므로 ``transient``이고, 공간을 잴 수 없으면 건너뛴다."""
     if not min_free_gb or min_free_gb <= 0:
         return Check("disk", True, "no check (fleet.min_free_gb: 0)", skipped=True)
     try:
@@ -119,12 +111,12 @@ def check_maven_java(cfg: Config, maven: Optional[Callable[[Config], Any]] = Non
     ``build.require_java_major``와 같은지 점검한다.
     두 실패 모두 설정 오류이므로 ``transient``가 아니다.
 
-    `mvn -v` once: Maven runnable (`build.mvn`, `build.java_home`), Java major = `build.require_java_major`."""
+    Maven is ``build.mvn`` with ``build.java_home``. ``build.require_java_major`` 0 skips the Java check."""
     if maven is None:
         from sbmig.build.mvn import maven_available as maven
     try:
         res = maven(cfg)
-    except Exception as e:  # noqa: BLE001 - the check reports, never raises
+    except Exception as e:  # noqa: BLE001 - 점검은 결과로 알리고 예외를 던지지 않는다
         res = (False, f"{type(e).__name__}: {e}")
     ok, detail = (bool(res[0]), str(res[1] or "")) if isinstance(res, tuple) else (bool(res), "")
     if not ok:
@@ -161,8 +153,9 @@ def _child(e: ET.Element, name: str) -> str:
 
 def read_settings(path: Path) -> dict[str, Any]:
     """settings.xml에서 미러(``id``, ``mirrorOf``, ``url``)와 활성화된 프록시를 읽는다.
+    URL이 없는 미러와 host가 없는 프록시는 뺀다.
 
-    Mirrors (`id`, `mirrorOf`, `url`) and active proxies (`protocol`, `host`, `port`, `nonProxyHosts`)."""
+    Proxy keys: ``protocol`` (default http), ``host``, ``port``, ``nonProxyHosts``."""
     root = ET.parse(path).getroot()
     mirrors = [{"id": _child(m, "id"), "mirrorOf": _child(m, "mirrorOf"), "url": _child(m, "url")}
                for m in _find_all(root, "mirror")]
@@ -184,14 +177,12 @@ def _catch_all(mirrors: list[dict]) -> Optional[dict]:
 def check_settings(cfg: Config) -> Check:
     """``build.settings_file``이 있고 읽히는지 점검하고, 빌드가 거치는 미러를 알려 준다(RUNBOOK §0.1).
     설정되지 않았거나 ``${…}``가 치환되지 않았으면 건너뛴다.
-    파일이 없거나 깨졌으면 설정 오류(kind ``repository``)로 본다.
-
-    `build.settings_file` exists and parses; names the catch-all mirror the builds go through (RUNBOOK §0.1)."""
+    파일이 없거나 깨졌으면 설정 오류(kind ``repository``)로 본다."""
     sf = (cfg.build.settings_file or "").strip()
     if not sf or (sf.startswith("${") and sf.endswith("}")):
         return Check("settings", True, "build.settings_file not set (Maven's own settings; the poms' repositories "
                                        "are contacted directly)", skipped=True)
-    path = Path(sf).expanduser().absolute()            # the path Maven gets (`-s`, sbmig.build.mvn.base_command)
+    path = Path(sf).expanduser().absolute()            # Maven이 `-s`로 받는 경로와 같다(sbmig.build.mvn.base_command)
     if not path.is_file():
         return Check("settings", False, f"build.settings_file not found: {path}", kind="repository")
     try:
@@ -225,7 +216,7 @@ def _http_get(url: str, proxies: dict[str, str], timeout: float) -> int:
     import requests
 
     with requests.Session() as s:
-        s.trust_env = False                       # like Maven: HTTP_PROXY / NO_PROXY of the shell are not used
+        s.trust_env = False
         resp = s.get(url, proxies=proxies or None, timeout=timeout, allow_redirects=False, stream=True)
         try:
             return resp.status_code
@@ -239,9 +230,7 @@ def check_repository(settings: Check, *, http_get: Optional[Callable[[str, dict,
     Nexus 장애면 빌드를 실패시키는 대신 일괄 실행을 기다리게 한다.
     500 미만 응답(401, 404 포함)은 살아 있다고 본다.
     사내 CA를 파이썬이 몰라 TLS 검증이 실패해도 서버가 응답했으므로 살아 있다고 본다.
-    연결 실패와 5xx는 ``transient``로 본다.
-
-    One GET to the mirror URL of the settings (a Nexus outage stops the fleet instead of failing 3 builds)."""
+    연결 실패와 5xx는 ``transient``로 본다."""
     mirror = settings.data.get("mirror") if settings.ok else None
     url = (mirror or {}).get("url", "")
     if not url or not url.lower().startswith(("http://", "https://")):
@@ -249,10 +238,10 @@ def check_repository(settings: Check, *, http_get: Optional[Callable[[str, dict,
     get = http_get or _http_get
     try:
         status = get(url, _proxies_for(url, settings.data.get("proxies") or []), timeout)
-    except Exception as e:  # noqa: BLE001 - classify below
+    except Exception as e:  # noqa: BLE001 - 아래에서 종류를 나눈다
         from sbmig.fix.company import transport_cause
         name = type(e).__name__
-        if "SSL" in name or "Certificate" in name:     # the server answered the TLS handshake: it is up
+        if "SSL" in name or "Certificate" in name:     # TLS 핸드셰이크에 응답했으면 서버는 살아 있다
             return Check("repository", True, f"{url} answered (TLS certificate not verifiable by Python: "
                                              f"{ascii_safe(transport_cause(e), 80)})")
         return Check("repository", False, f"{url} unreachable: cause={transport_cause(e)}", kind="repository",
@@ -266,18 +255,17 @@ def check_llm(cfg: Config, probe: Optional[Callable[[Config], Any]] = None) -> C
     """작은 LLM 호출을 한 번 보내 점검한다(``sbmig llm-probe``와 같은 요청).
     가짜 LLM(``fake``)이거나 ``loop.max_llm_calls: -1``이면 건너뛴다.
     키나 모델 거부는 설정 오류, 게이트웨이 장애는 ``transient``로 본다.
-
-    One tiny LLM call (`probe_llm`, the `sbmig llm-probe` request) unless no LLM is used."""
+    probe가 예외를 던지면 ``transient`` 실패로 기록한다."""
     provider = str(cfg.llm.provider)
     if provider in ("fake",):
         return Check("llm", True, f"not checked (llm.provider {provider})", skipped=True)
-    if int(getattr(cfg.loop, "max_llm_calls", 0) or 0) < 0:          # -1 = no LLM call at all
+    if int(getattr(cfg.loop, "max_llm_calls", 0) or 0) < 0:          # -1이면 LLM을 호출하지 않는다
         return Check("llm", True, "not checked (loop.max_llm_calls -1: no LLM calls)", skipped=True)
     if probe is None:
         from sbmig.fix.company import probe_llm as probe
     try:
         res = probe(cfg)
-    except Exception as e:  # noqa: BLE001 - a probe must never stop the fleet by raising
+    except Exception as e:  # noqa: BLE001 - probe 예외로 일괄 실행을 멈추지 않는다
         return Check("llm", False, f"probe failed: {type(e).__name__}: {e}", kind="llm", transient=True)
     if res.ok:
         return Check("llm", True, f"{res.model} HTTP {res.status if res.status is not None else '-'} "
@@ -291,9 +279,7 @@ def run_preflight(cfg: Config, out_dir: str | Path, *, echo: Optional[Echo] = No
                   http_get: Optional[Callable[[str, dict, float], int]] = None) -> list[Check]:
     """모든 점검을 disk, maven, java, settings, repository, llm 순서로 실행한다.
     하나가 실패해도 끝까지 실행한다.
-    ``echo``가 있으면 줄이 나올 때마다 전달하고, 없으면 로그에만 기록한다.
-
-    Every check in order (disk, maven, java, settings, repository, llm); `echo` gets each line as it is known."""
+    ``echo``가 있으면 줄이 나올 때마다 전달하고, 없으면 로그에만 기록한다."""
     checks: list[Check] = []
 
     def add(c: Check) -> None:

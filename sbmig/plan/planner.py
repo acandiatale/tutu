@@ -13,60 +13,59 @@ LLM은 사용하지 않는다.
 - 권고는 계획 노트 한 줄씩 남길 뿐 레시피가 되지 않는다
 - 사내 프레임워크 프로젝트(``jdk-jakarta`` 범위)는 Java 21과 jakarta 변환, JSP 이름 변경, 검증 빌드만 계획한다
 
-Rule-based migration planner (no LLM), v2 (flow-v2): ProjectProfile + Config → MigrationPlan.
-
 Step ids (non-MSA): transform.rewrite, transform.compile, restructure.apply | restructure.boot_pom |
-restructure.pom_only, restructure.review, verify.build. The only build before verify.build is v2.1's one compile
-(recorded, never fixed); verify.build's fix loop (`loop.phases.verify`) fixes the errors.
+restructure.pom_only, restructure.review, verify.build. The only build before verify.build is the optional
+compile (recorded, never fixed); verify.build's fix loop (`loop.phases.verify`) fixes the errors.
 
-* `transform.rewrite` (StepKind.OPENREWRITE, Phase.TRANSFORM): ONE OpenRewrite run on the as-is classpath. Recipes,
-  in this order: `openrewrite.recipes.jdk21`; `jakarta` (spring_legacy and servlet_tomcat always, pure_java only with
-  Java EE javax imports, never spring_boot — the Boot umbrella migrates jakarta itself) followed in the same bucket by
-  `servlet_jakarta_10` (v2.1w: every servlet_tomcat project, pure_java with `javax.servlet` imports, spring_legacy only
-  when the framework set is empty — UpgradeSpringFramework_7_0 already includes it); `spring_framework_7` (every
-  spring_legacy project since v2.1o) / `spring_security_7` (spring_legacy; the 6_0 … 6_5 → 7_0 chain since v2.1l,
-  planned only when the analyzer found `spring-security`) / `spring_batch_6` and `hibernate_7` (v2.1w, spring_legacy
-  with the analyzer's `spring-batch` / `hibernate` library — `hibernate` is the native ORM rule, a JPA-only project
-  has `jpa` only); `spring_boot_4` (spring_boot; the umbrella covers Batch, Hibernate and the Servlet removals);
-  `junit5` (junit4 detected) — empty by default; `extra.<case>` + `extra.all`. OpenRewrite recipes only: no project,
-  library or KB recipes (business decision, PLAN-v2 §2). `hystrix_resilience4j` (v2.1z-at): every case whose plan has
-  the transform step, when the analyzer found `hystrix`, right after the jakarta bucket and before the Framework /
-  Security / … / Boot sets (the starter swap sees the as-is Spring Cloud BOM); one plan note. The composite is a
-  declarative recipe of this repository (`knowledge/recipes/base/hystrix-to-resilience4j.yml`, catalog `file`).
-* `transform.compile` (StepKind.BUILD, Phase.TRANSFORM, `mvn clean compile`, v2.1 — "OpenRewrite 를 다 돌린 뒤
-  compile 을 한 번"): every error goes on the run's error list (seen `compile`), nothing is fixed. Planned whenever the
-  project has java sources (also when no recipe applied). MSA: one at the root aggregator, else
-  `transform.compile@<x>` per target (like verify).
-* Restructure (unchanged from v1, round 9c routing): `case_type == spring_boot` with `layout.boot_as_is ==
-  "in-place"` (default) plans `restructure.boot_pom` (StepKind.MSA_POM, params {"mode": "boot_pom", "boot_modules"})
-  — directories kept, poms only; `boot_as_is == "layout"` and every non-Boot case plan `restructure.apply`
-  (StepKind.RESTRUCTURE, params {"mode": "layout", "starter"}: `{name}-boot` / `{name}-back` / `{name}-front`).
-  A single-module Boot app (the root pom lists no modules) under `in-place` is split the same way when
-  `layout.boot_single_module` is `split` (the default, v2.1z-bf): `restructure.apply` with `"boot_single": True`, which
-  adds the Boot placements in the restructure; `wrap` keeps `restructure.boot_pom` (wrapped into `{name}-boot`).
-  The in-house optional artifacts are bumped inside the restructure step; v2 never plans `spring.optional_bump`.
-* `restructure.review` (StepKind.REVIEW, Phase.RESTRUCTURE, params {"restructure_step": <id>}): the LLM structure
-  review of poms / dependencies / modules right after the restructure (business rule, PLAN-v2 §1.4); omitted with a
-  note when `review.enabled` is false.
+* `transform.rewrite` (StepKind.OPENREWRITE, Phase.TRANSFORM): ONE OpenRewrite run on the as-is classpath.
+  Recipes, in this order: `openrewrite.recipes.jdk21`; `jakarta` (spring_legacy and servlet_tomcat always,
+  pure_java only with Java EE javax imports, never spring_boot: the Boot umbrella migrates jakarta itself)
+  followed in the same bucket by `servlet_jakarta_10` (every servlet_tomcat project, pure_java with
+  `javax.servlet` imports, spring_legacy only when the framework set is empty: UpgradeSpringFramework_7_0
+  already includes it); `spring_framework_7` (every spring_legacy project) / `spring_security_7`
+  (spring_legacy, the 6_0 … 6_5, 7_0 chain, only when the analyzer found `spring-security`) / `spring_batch_6`
+  and `hibernate_7` (spring_legacy with the analyzer's `spring-batch` / `hibernate` library; `hibernate` is
+  the native ORM rule, a JPA-only project has `jpa` only); `spring_boot_4` (spring_boot; the umbrella covers
+  Batch, Hibernate and the Servlet removals); `junit5` (junit4 detected, empty by default); `extra.<case>` +
+  `extra.all`. OpenRewrite recipes only: no project, library or KB recipes (PLAN-v2 §2).
+  `hystrix_resilience4j`: every case whose plan has the transform step, when the analyzer found `hystrix`,
+  right after the jakarta bucket and before the Framework / Security / … / Boot sets (the starter swap sees
+  the as-is Spring Cloud BOM); one plan note. The composite is a declarative recipe of this repository
+  (`knowledge/recipes/base/hystrix-to-resilience4j.yml`, catalog `file`).
+* `transform.compile` (StepKind.BUILD, Phase.TRANSFORM, `mvn clean compile`, only with
+  `plan.compile_after_rewrite`): every error goes on the run's error list (seen `compile`), nothing is fixed.
+  Planned whenever the project has java sources (also when no recipe applied). MSA: one at the root
+  aggregator, else `transform.compile@<x>` per target (like verify).
+* Restructure: `case_type == spring_boot` with `layout.boot_as_is == "in-place"` (default) plans
+  `restructure.boot_pom` (StepKind.MSA_POM, params {"mode": "boot_pom", "boot_modules"}): directories kept,
+  poms only; `boot_as_is == "layout"` and every non-Boot case plan `restructure.apply` (StepKind.RESTRUCTURE,
+  params {"mode": "layout", "starter"}: `{name}-boot` / `{name}-back` / `{name}-front`). A single-module Boot
+  app (the root pom lists no modules) under `in-place` is split the same way when `layout.boot_single_module`
+  is `split` (the default): `restructure.apply` with `"boot_single": True`; `wrap` keeps
+  `restructure.boot_pom` (wrapped into `{name}-boot`). The in-house optional artifacts are bumped inside the
+  restructure step; `spring.optional_bump` is never planned.
+* `restructure.review` (StepKind.REVIEW, Phase.RESTRUCTURE, params {"restructure_step": <id>}): the LLM
+  structure review right after the restructure; omitted with a note when `review.enabled` is false.
 * `verify.build` (StepKind.BUILD, Phase.VERIFY, `mvn clean package`).
-* MSA: `transform.rewrite@<x>` per target (params `service`, target = its directory) — shared **library roots
-  first** (dependency / reactor order; never the Boot set), then the services with their own sub-case; then
-  `restructure.msa_pom` (params `services`, `parent_policy`, `boot_modules`, `library_roots`), `restructure.review`
-  and `verify.build` (or `verify.build@<x>` per target when there is no root aggregator). With
-  `layout.msa_parent_policy == "top-aggregator"` and a root aggregator whose reactor covers every target, one
-  un-suffixed `transform.rewrite` at the repo root runs the union of the sub-case recipes instead.
-* No java sources (pom-only, S3): no transform step; `restructure.pom_only` (StepKind.MSA_POM, mode msa_pom) or
+* MSA: `transform.rewrite@<x>` per target (params `service`, target = its directory): shared library roots
+  first (dependency / reactor order; never the Boot set), then the services with their own sub-case; then
+  `restructure.msa_pom` (params `services`, `parent_policy`, `boot_modules`, `library_roots`),
+  `restructure.review` and `verify.build` (or `verify.build@<x>` per target when there is no root aggregator).
+  With `layout.msa_parent_policy == "top-aggregator"` and a root aggregator whose reactor covers every target,
+  one un-suffixed `transform.rewrite` at the repo root runs the union of the sub-case recipes instead.
+* No java sources (pom-only): no transform step; `restructure.pom_only` (StepKind.MSA_POM, mode msa_pom) or
   `restructure.msa_pom`, the review and verify.
-* `profile.build_tool != "maven"` (S4): zero steps and a note (the orchestrator aborts).
-* `loop.phases.{jdk21,spring,restructure}.enabled` (v1 intermediate loops) are ignored and noted when set.
+* `profile.build_tool != "maven"`: zero steps and a note (the orchestrator aborts).
+* `loop.phases.{jdk21,spring,restructure}.enabled` (the old intermediate loops) are ignored and noted when
+  set.
 * Library advisories (`build_plan(..., advisories=findings)`, sbmig.advisory) are guide-only: one plan note
-  `advisory: <id> → guide (LLM hints + Handover)` each; the fix loop gets their hints, the handover their follow-ups.
-* Framework projects (`profile.reduced_scope`, v2.1z-ak): `MigrationPlan.scope = "jdk-jakarta"` and only
-  `transform.rewrite[@svc]` (jdk21 + jakarta sets), `transform.jsp_jakarta` (StepKind.RESTRUCTURE, Phase.TRANSFORM,
-  params {"mode": "jsp_jakarta"}) and `verify.build[@svc]`; never a restructure, the review or `transform.compile`.
-  The first note starts `scope: jdk-jakarta — framework project (…)`. A full-scope plan is unchanged.
-
-
+  `advisory: <id> → guide (LLM hints + Handover)` each; the fix loop gets their hints, the handover their
+  follow-ups.
+* Framework projects (`profile.reduced_scope`): `MigrationPlan.scope = "jdk-jakarta"` and only
+  `transform.rewrite[@svc]` (jdk21 + jakarta sets), `transform.jsp_jakarta` (StepKind.RESTRUCTURE,
+  Phase.TRANSFORM, params {"mode": "jsp_jakarta"}) and `verify.build[@svc]`; never a restructure, the review
+  or `transform.compile`. The first note starts `scope: jdk-jakarta — framework project (…)`. A full-scope
+  plan is unchanged. Contract: `docs/INTERFACES.md "v2.1z-ak"`.
 """
 from __future__ import annotations
 
@@ -82,14 +81,14 @@ from .catalog import GATES, default_catalog, prefix_artifact
 
 log = logging.getLogger("sbmig.plan")
 
-# javax packages that are Java EE (→ jakarta); JDK packages like javax.swing/sql/crypto/naming/net are excluded
+# jakarta로 옮길 Java EE javax 패키지. javax.swing/sql/crypto/naming/net 같은 JDK 패키지는 넣지 않는다
 EE_JAVAX = ("javax.servlet", "javax.persistence", "javax.xml.bind", "javax.validation", "javax.inject",
             "javax.ws", "javax.jms", "javax.mail", "javax.ejb", "javax.faces", "javax.websocket", "javax.el",
             "javax.json", "javax.batch", "javax.enterprise", "javax.activation", "javax.resource",
             "javax.transaction", "javax.interceptor", "javax.decorator", "javax.jws", "javax.xml.ws",
             "javax.security.enterprise")
-# javax.annotation is shared with JSR-305 (@Nullable) and the JDK (javax.annotation.processing): count it as EE
-# only when the analyzer confirmed EE usage (library "javax-annotation").
+# javax.annotation은 JSR-305(@Nullable), JDK(javax.annotation.processing)와 겹치므로
+# 분석기가 EE 사용(라이브러리 "javax-annotation")을 확인했을 때만 EE로 센다
 
 TRANSFORM = "transform.rewrite"
 REVIEW = "restructure.review"
@@ -98,10 +97,7 @@ V1_LOOP_PHASES = ("jdk21", "spring", "restructure")
 # 변환 1회의 레시피 묶음과 실행 순서.
 # Servlet 6 제거 레시피는 jakarta.servlet 타입에 적용되므로 javax에서 jakarta로 바꾼 다음에 실행한다
 # Hystrix 전환은 as-is Spring Cloud BOM이 pom에 남아 있을 때 starter를 바꾸도록 Boot / Framework 세트보다 먼저 실행한다
-# recipe buckets of one transform run, in run order (labels for the step title). v2.1w: Java 21 → jakarta (+ the
-# Servlet 6 removals, which match jakarta.servlet types and so run after the javax → jakarta rename) → Framework 7 →
-# Security chain → Batch 6 → Hibernate 7.1 → Boot 4 (Boot projects only; never together with the legacy sets) →
-# JUnit 5 → extra
+# Boot 세트는 Boot 프로젝트에만 들어가고 레거시 세트와 함께 들어가지 않는다. 두 번째 값은 단계 제목에 쓴다
 _BUCKETS: tuple[tuple[str, str], ...] = (
     ("jdk21", "Java 21"), ("jakarta", "jakarta"), ("hystrix", "Hystrix → Resilience4j"),
     ("framework", "Spring Framework 7"),
@@ -111,16 +107,12 @@ _BUCKETS: tuple[tuple[str, str], ...] = (
 
 
 def artifact_for(recipe_id: str, cfg: Optional[Config] = None) -> Optional[str]:
-    """레시피 id의 jar를 반환한다. 카탈로그를 먼저 보고 없으면 id 접두어로 추정한다.
-
-    Recipe jar for a builtin id: the recipe catalog first, then the id-prefix fallback."""
+    """레시피 id의 jar를 반환한다. 카탈로그를 먼저 보고 없으면 id 접두어로 추정한다."""
     return default_catalog(cfg).artifact_for(recipe_id)
 
 
 def recipe_ref(recipe_id: str, cfg: Config) -> RecipeRef:
-    """레시피 id를 OpenRewrite 레시피 참조(RecipeRef)로 바꾼다. jar는 카탈로그나 id 접두어에서 정한다.
-
-    A recipe id → RecipeRef of an OpenRewrite recipe (artifact from the catalog / id prefix)."""
+    """레시피 id를 OpenRewrite 레시피 참조(RecipeRef)로 바꾼다. jar는 :func:`artifact_for`로 정한다."""
     return RecipeRef(id=recipe_id, source="builtin", artifact=artifact_for(recipe_id, cfg))
 
 
@@ -143,13 +135,11 @@ def _shorts(ids: list[str]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# per-case transform recipes
+# 케이스별 변환 레시피
 # ---------------------------------------------------------------------------
 class _Facts:
     """레시피 규칙에 필요한 프로필 정보(케이스 타입, 라이브러리, javax import)를 담는 클래스.
-    MSA는 서비스마다 따로 만든다.
-
-    The few profile facts the recipe rules need; for MSA computed per service."""
+    MSA는 서비스마다 따로 만든다."""
 
     def __init__(self, case: CaseType, libs: set[str], javax: dict[str, int]):
         self.case = case
@@ -164,8 +154,7 @@ def _chain(ids: list[str]) -> str:
 
 
 # 분석기가 찾은 라이브러리별로 spring_legacy에 더할 조건부 세트.
-# ``hibernate``는 네이티브 Hibernate ORM을 쓸 때만 해당하며 JPA API만 쓰는 프로젝트는 받지 않는다
-# v2.1w (decision 7, like the Security chain): analyzer library → conditional set for spring_legacy.
+# ``hibernate``는 네이티브 Hibernate ORM을 쓸 때만 붙는다. JPA API만 쓰는 프로젝트는 받지 않는다
 _LEGACY_LIBRARY_SETS: tuple[tuple[str, str, str, str], ...] = (
     ("spring-security", "security", "spring_security_7", "Spring Security"),
     ("spring-batch", "batch", "spring_batch_6", "Spring Batch 6"),
@@ -183,12 +172,8 @@ def _case_buckets(facts: _Facts, cfg: Config, notes: list[str], label: str = "")
       Hibernate 7.1 세트를 넣는다
     - 판단 근거는 ``notes``에 남긴다. 실행 순서는 ``_BUCKETS``를 따른다
 
-    Recipe ids per bucket for one transform run. Run order (``_BUCKETS``): Java 21 → jakarta (+ the Servlet 6
-    removals) → framework → security → batch → hibernate → boot → junit5 → extra. v2.1w: ``servlet_jakarta_10`` for
-    every servlet_tomcat project, for pure_java with ``javax.servlet`` imports, and for spring_legacy only when the
-    Framework 7 set (which already includes it) is empty; ``spring_batch_6`` / ``hibernate_7`` for spring_legacy when
-    the analyzer found ``spring-batch`` / ``hibernate`` (native Hibernate ORM — a JPA-only project has ``jpa`` only).
-    Boot projects get none of them: the Boot 4 umbrella runs all three."""
+    The Framework 7 set already includes the Servlet 6 removals. Boot projects get none of the legacy sets:
+    the Boot 4 umbrella runs all three."""
     rs = cfg.openrewrite.recipes
     out: dict[str, list[str]] = {k: [] for k, _ in _BUCKETS}
     where = f" [{label}]" if label else ""
@@ -283,17 +268,15 @@ def _union(parts: list[dict[str, list[str]]]) -> dict[str, list[str]]:
 
 
 def transform_recipes(facts: _Facts, cfg: Config, notes: list[str], label: str = "") -> list[RecipeRef]:
-    """케이스의 변환 1회 레시피를 jdk21 세트부터 RecipeRef 목록으로 반환한다.
-
-    The case's recipes of one transform run (jdk21 set first), as RecipeRefs."""
+    """케이스의 변환 1회 레시피를 jdk21 세트부터 RecipeRef 목록으로 반환한다."""
     return [recipe_ref(i, cfg) for i in _flatten(_case_buckets(facts, cfg, notes, label))]
 
 
-spring_recipes = transform_recipes          # v1 name (sbmig.plan exports both)
+spring_recipes = transform_recipes          # 이전 이름. sbmig.plan이 둘 다 내보낸다
 
 
 # ---------------------------------------------------------------------------
-# step factories
+# 단계 생성
 # ---------------------------------------------------------------------------
 def _sfx(svc: Optional[str]) -> str:
     """MSA 서비스별 단계 id 접미어 ``@<서비스>``를 만든다."""
@@ -306,8 +289,6 @@ def _transform_step(facts: _Facts, cfg: Config, notes: list[str], *, svc: Option
     """케이스의 모든 레시피를 as-is classpath 위에서 한 번에 실행하는 ``transform.rewrite[@svc]`` 단계를 만든다.
     타입 정보가 남아 있을 때 실행하기 위해 재구성 전에는 빌드하지 않는다.
     적용할 레시피가 없으면 노트만 남기고 None을 반환한다.
-
-    `transform.rewrite[@svc]` — every recipe of the case in one run, or None when no recipe applies.
 
     `buckets` overrides the per-case recipes (MSA single root run: union of the targets' buckets)."""
     label = svc or ""
@@ -353,10 +334,7 @@ COMPILE = "transform.compile"
 
 def _no_compile_note(notes: list[str]) -> None:
     """재구성 전에는 빌드하지 않는다는 계획 노트 한 줄을 만든다.
-    ``plan.compile_after_rewrite: true``면 ``transform.compile`` 단계가 대신 들어간다.
-
-    v2.1o default: no build before the restructure — one plan note (`plan.compile_after_rewrite: true` plans the
-    v2.1 `transform.compile` step instead)."""
+    ``plan.compile_after_rewrite: true``면 ``transform.compile`` 단계가 대신 들어간다. 같은 노트는 한 번만 넣는다."""
     note = ("compile: no build before the restructure (plan.compile_after_rewrite=false, v2.1o) — the error list starts "
             "with the restructure's pom corrections and the first verify build")
     if note not in notes:
@@ -366,7 +344,7 @@ def _no_compile_note(notes: list[str]) -> None:
 def _compile(notes: list[str], target: Optional[str] = None, svc: Optional[str] = None,
              note: bool = True) -> PlanStep:
     """OpenRewrite 뒤에 ``mvn clean compile``을 한 번 실행하는 ``transform.compile`` 단계를 만든다.
-    모든 오류를 오류 목록에 ``seen=compile``로 기록할 뿐 고치지 않으며 빌드 게이트가 아니다."""
+    오류는 오류 목록에 ``seen=compile``로 기록만 하고 고치지 않는다. 빌드 게이트가 아니다."""
     if note:
         notes.append("compile: one mvn clean compile after OpenRewrite → every error on the error list (seen "
                      "compile), no fixing (v2.1)")
@@ -387,10 +365,8 @@ def _verify(target: Optional[str] = None, svc: Optional[str] = None) -> PlanStep
 
 def _service_libs(profile: ProjectProfile, svc: ServiceInfo) -> set[str]:
     """MSA 서비스 하나의 라이브러리를 구한다.
-    프로필은 import를 서비스별로 나누지 않으므로 서비스 pom의 근거에 import로만 알려진 저장소 전체 라이브러리를 더한다.
-
-    Libraries of one MSA service: pom evidence from the service's own poms, plus repo-wide libraries known
-    only from imports (imports are not attributed per service in the profile)."""
+    서비스 pom에서 찾은 라이브러리에 import로만 알려진 저장소 전체 라이브러리를 더한다.
+    프로필은 import를 서비스별로 나누지 않기 때문이다."""
     from sbmig.analyze.libraries import detect_libraries
 
     sub = [p for p in profile.poms if p.path in set(svc.poms)]
@@ -438,9 +414,7 @@ def _aggregator_covers(profile: ProjectProfile, targets: list[ServiceInfo]) -> b
 def _order_libraries(profile: ProjectProfile, libs: list[ServiceInfo]) -> list[ServiceInfo]:
     """공유 라이브러리 루트를 의존 순서로 정렬한다.
     다른 라이브러리가 쓰는 것이 먼저 오고, 같거나 순환하면 reactor 순서를 따른다.
-    서비스가 이관된 라이브러리를 보도록 라이브러리를 서비스보다 먼저 변환한다.
-
-    Libraries in dependency order (a library another library depends on comes first), ties by reactor order."""
+    서비스가 이관된 라이브러리를 보도록 라이브러리를 서비스보다 먼저 변환한다."""
     from sbmig.analyze.pom_parser import module_order
 
     order = {p: i for i, p in enumerate(module_order(profile.poms))}
@@ -453,7 +427,7 @@ def _order_libraries(profile: ProjectProfile, libs: list[ServiceInfo]) -> list[S
     while remaining:
         ready = [s for s in remaining
                  if not any(o.name != s.name and needs[s.name] & produced[o.name] for o in remaining)]
-        nxt = ready[0] if ready else remaining[0]          # cycle → reactor order
+        nxt = ready[0] if ready else remaining[0]          # 순환이면 reactor 순서를 따른다
         out.append(nxt)
         remaining.remove(nxt)
     return out
@@ -538,10 +512,9 @@ def _msa_steps(profile: ProjectProfile, cfg: Config, notes: list[str]) -> list[P
 
 
 def boot_single_split(profile: Optional[ProjectProfile], cfg: Config) -> bool:
-    """모듈이 하나인 Spring Boot 앱을 Boot가 아닌 프로젝트처럼 나눌지 확인한다.
-
-    True when a single-module Spring Boot app (`layout.boot_as_is: in-place`, the root pom lists no modules) is split
-    into the company's modules (`layout.boot_single_module: split`) instead of being wrapped into `{name}-boot`."""
+    """모듈이 하나인 Spring Boot 앱을 ``{name}-boot``로 감싸지 않고 회사 모듈로 나눌지 확인한다.
+    ``layout.boot_as_is``가 ``in-place``, ``layout.boot_single_module``이 ``split``이고
+    루트 pom에 모듈이 없을 때 True를 반환한다."""
     if profile is None or profile.case_type != CaseType.SPRING_BOOT:
         return False
     lay = cfg.layout
@@ -562,7 +535,7 @@ def _single_steps(profile: ProjectProfile, cfg: Config, notes: list[str]) -> lis
     libs = {lib.name for lib in profile.libraries}
     facts = _Facts(case if case != CaseType.MSA else CaseType.SPRING_BOOT, libs, profile.source.javax_imports)
     if profile.source.java_files == 0 and profile.poms:
-        # S3: pom-only aggregator / BOM / parent → pom edits only (parent, mandatory, optional, cleanup) + verify
+        # aggregator, BOM, 부모 pom만 있는 프로젝트는 pom만 고치고(부모, 필수, 선택, 정리) 검증 빌드를 한다
         notes.append("no java sources → no transform step; restructure is limited to pom edits (no module split, "
                      "no Application)")
         steps.append(PlanStep(
@@ -583,7 +556,7 @@ def _single_steps(profile: ProjectProfile, cfg: Config, notes: list[str]) -> lis
         _no_compile_note(notes)
     boot_split = boot_single_split(profile, cfg)
     if case == CaseType.SPRING_BOOT and cfg.layout.boot_as_is == "in-place" and not boot_split:
-        # round 9c company rule: a Boot as-is project keeps its directories; only the poms change
+        # 회사 규칙: Boot as-is 프로젝트는 디렉토리를 그대로 두고 pom만 고친다
         steps.append(PlanStep(
             id="restructure.boot_pom", kind=StepKind.MSA_POM, phase=Phase.RESTRUCTURE,
             title="Boot as-is: parents / mandatory / optional in place (directories kept)",
@@ -636,7 +609,7 @@ def _single_steps(profile: ProjectProfile, cfg: Config, notes: list[str]) -> lis
         src_ = profile.source
         if cfg.layout.web_xml_registrations == "generate" and \
                 (src_.web_xml_servlets or src_.web_xml_filters or src_.web_xml_listeners):
-            # 2026-10-23: the restructure generates WebXmlRegistrations (sbmig.restructure.webxml_registrations)
+            # 재구성이 WebXmlRegistrations를 만든다(sbmig.restructure.webxml_registrations)
             notes.append(f"restructure: web.xml ({src_.web_xml_spec or 'spec unknown'}: {src_.web_xml_servlets} "
                          f"servlet(s), {src_.web_xml_filters} filter(s), {src_.web_xml_listeners} listener(s)) → "
                          "generated WebXmlRegistrations in the boot module")
@@ -652,10 +625,8 @@ def _single_steps(profile: ProjectProfile, cfg: Config, notes: list[str]) -> lis
 
 def _settings_notes(cfg: Config, notes: list[str], optional: bool = True) -> None:
     """무시하는 루프 설정과 선택 아티팩트에 대한 노트를 만든다.
-    설정과 관계없이 같은 흐름을 계획하며 선택 아티팩트는 재구성 단계에서 버전을 올린다.
-
-    Notes for loop settings v2 ignores and for the optional artifacts; v2 plans the same flow whatever they say.
-    `optional=False` (the jdk-jakarta scope, no restructure) leaves the optional-artifact note out."""
+    계획 흐름은 이 설정과 관계없이 같다. 선택 아티팩트는 재구성 단계에서 버전을 올린다.
+    ``optional``이 False면(jdk-jakarta 범위, 재구성 없음) 선택 아티팩트 노트는 넣지 않는다."""
     on = [k for k in V1_LOOP_PHASES if (pc := cfg.loop.phases.get(k)) is not None and pc.enabled]
     if on:
         notes.append(f"v2: no intermediate build-fix loops (loop.phases.{{{','.join(on)}}}.enabled=true ignored)")
@@ -677,8 +648,7 @@ def build_plan(profile: ProjectProfile, cfg: Config, kb: Any = None,
     ``advisories``는 계획 노트 한 줄씩이 될 뿐 레시피가 되지 않는다.
     Maven 프로젝트가 아니면 단계 없이 노트만 남기고 오케스트레이터가 실행을 중단한다.
 
-    Rule-based v2 plan. `kb` is accepted for the seam but not used (no KB recipes in v2). `advisories` =
-    `sbmig.advisory.evaluate_advisories` findings (guide-only: one plan note each, never a recipe)."""
+    `advisories` = `sbmig.advisory.evaluate_advisories` findings."""
     notes: list[str] = []
     steps: list[PlanStep] = []
     case = profile.case_type
@@ -715,21 +685,19 @@ def build_plan(profile: ProjectProfile, cfg: Config, kb: Any = None,
 
 # ---------------------------------------------------------------------------
 # 사내 프레임워크 프로젝트의 축소 계획(jdk-jakarta). 변환과 검증 빌드만 있고 재구성과 구조 검토는 없다
-# reduced plan of a framework project (scope jdk-jakarta, v2.1z-ak)
 # ---------------------------------------------------------------------------
 JSP_JAKARTA = "transform.jsp_jakarta"
 
 
 def _scope_note(profile: ProjectProfile) -> str:
-    """축소 계획의 첫 노트를 만든다. 무엇을 실행하고 무엇을 하지 않는지 적는다."""
+    """축소 계획의 첫 노트를 만든다. 무엇을 실행하고 무엇을 하지 않는지 담는다."""
     from sbmig.analyze.framework import summary_text
     fw = summary_text(profile.framework) if profile.framework is not None else "-"
     return (f"scope: jdk-jakarta — framework project ({fw}): Java 21 + jakarta recipes, then the verify build with "
             "the fix loop; no restructure, no structure review, the parent poms and the framework version are kept")
 
 
-# 축소 계획에서 레시피 세트 이름이 들어갈 묶음. 전체 계획과 같은 묶음을 쓴다
-# reduced plan: `framework.recipe_sets` name → the bucket the full plan uses for that set
+# 축소 계획에서 `framework.recipe_sets`의 세트 이름이 들어갈 묶음. 전체 계획과 같은 묶음을 쓴다
 _REDUCED_SET_BUCKET: dict[str, str] = {
     "jdk21": "jdk21", "jakarta": "jakarta", "servlet_jakarta_10": "jakarta", "spring_framework_7": "framework",
     "spring_security_7": "security", "spring_batch_6": "batch", "hibernate_7": "hibernate", "spring_boot_4": "boot",
@@ -738,15 +706,11 @@ _REDUCED_SET_BUCKET: dict[str, str] = {
 
 
 def _reduced_buckets(facts: _Facts, cfg: Config, notes: list[str], label: str = "") -> dict[str, list[str]]:
-    """축소 계획의 레시피 묶음을 ``framework.recipe_sets``에 적힌 세트로 정한다.
+    """축소 계획의 레시피 묶음을 ``framework.recipe_sets``에 있는 세트로 정한다. 기본은 jdk21과 jakarta다.
     - jakarta 세트는 EE javax import가 없는 pure_java / unknown에는 넣지 않는다
     - servlet_jakarta_10 세트는 jakarta 세트가 들어갈 때만 jakarta 뒤에 넣는다
-    - 나머지 세트는 적혀 있으면 넣는다. extra는 쓰지 않는다
-
-    jdk-jakarta scope: the sets named by `framework.recipe_sets` (default jdk21 + jakarta). `jakarta` keeps its rule
-    (not for pure_java / unknown without Java EE javax imports); `servlet_jakarta_10` only together with the jakarta
-    set, after its ids in the `jakarta` bucket; every other listed set goes unconditionally into the bucket the full
-    plan uses for it. `extra` is never used. The note names the sets planned and the listed sets left out."""
+    - 나머지 세트는 목록에 있으면 조건 없이 넣는다. extra는 쓰지 않는다
+    - 노트에는 넣은 세트와 목록에 있지만 뺀 세트를 남긴다"""
     rs = cfg.openrewrite.recipes
     out: dict[str, list[str]] = {k: [] for k, _ in _BUCKETS}
     where = f" [{label}]" if label else ""
@@ -816,9 +780,9 @@ def _reduced_steps(profile: ProjectProfile, cfg: Config, notes: list[str]) -> li
     """사내 프레임워크 프로젝트의 단계를 만든다. ``transform.rewrite`` -> ``transform.jsp_jakarta`` ->
     ``verify.build`` 순서이고 재구성, 구조 검토, ``transform.compile``은 넣지 않는다.
 
-    jdk-jakarta scope: `transform.rewrite[@svc]` (Java 21 + jakarta), `transform.jsp_jakarta` (JSPs, one step for the
-    whole tree), `verify.build[@svc]`. MSA: per target (library roots first) or one root run when the root aggregator
-    covers every target; verify at the root when the root pom aggregates, else per target."""
+    `transform.jsp_jakarta` is one step for the whole tree. MSA: per target (library roots first) or one root
+    run when the root aggregator covers every target; verify at the root when the root pom aggregates, else
+    per target."""
     from sbmig.analyze.classifier import is_library_root
 
     steps: list[PlanStep] = []
@@ -888,32 +852,26 @@ def _reduced_steps(profile: ProjectProfile, cfg: Config, notes: list[str]) -> li
 
 # ---------------------------------------------------------------------------
 # 선택 기능인 LLM 계획 조언자(``plan.advisor: llm``, 기본은 꺼짐). 레시피를 더하기만 하고 빼지 않는다
-# optional LLM plan advisor (plan.advisor: llm)
 # ---------------------------------------------------------------------------
-# The advisor whitelist / coverage / gates are derived from the recipe catalog (knowledge/recipes/catalog.yml,
-# see sbmig/plan/catalog.py and docs/RECIPES.md). Module-level snapshots of the repo catalog, taken at import time;
-# `advise_plan(cfg=...)` re-reads `cfg.recipe_catalog_file`. v2: `advise_plan` narrows the whitelist to the recipes
-# of the configured sets + extras (`v2_recipe_scope`); the constants stay the catalog's full advisor view.
+# 아래 상수는 import 시점에 저장소 카탈로그(knowledge/recipes/catalog.yml)에서 만든 기본값이다
+# `advise_plan(cfg=...)`은 `cfg.recipe_catalog_file`을 다시 읽고 허용 목록을 `v2_recipe_scope` 범위로 좁힌다
 _DEFAULT_CATALOG = default_catalog()
 
-# Recipes the advisor may ADD (ids verified against docs.openrewrite.org / our recipe sets; never removes anything).
+# 조언자가 더할 수 있는 레시피
 ADVISOR_CATALOG: dict[str, str] = _DEFAULT_CATALOG.advisor_catalog()
 
-# What the planned composites already include (so the advisor is told, and duplicates are filtered deterministically).
+# 계획된 묶음 레시피가 이미 포함하는 레시피. 조언자에게 알려 주고 중복 제안을 걸러 낸다
 ADVISOR_COVERAGE: dict[str, list[str]] = _DEFAULT_CATALOG.coverage()
 
-# Profile facts a suggestion must be backed by — a small model sometimes suggests recipes "just in case".
+# 작은 모델이 "혹시 몰라" 제안하는 레시피를 막기 위해 제안마다 프로필 근거를 요구한다
 ADVISOR_GATES: dict[str, Any] = _DEFAULT_CATALOG.gates()
 
-_has_javax_ee = GATES["has_javax_ee"]          # backwards-compatible alias
+_has_javax_ee = GATES["has_javax_ee"]          # 이전 이름
 
 
 def v2_recipe_scope(cfg: Optional[Config] = None) -> set[str]:
     """실행할 수 있는 레시피 id 전부(설정 세트와 extra)를 반환한다.
-    조언자의 허용 목록을 이 범위로 좁히기 위해 사용한다.
-
-    Every recipe id v2 may run: the configured sets (jdk21, jakarta, servlet_jakarta_10, spring_boot_4, framework,
-    the conditional security / batch / hibernate / hystrix sets and junit5) plus every `extra` list."""
+    조언자의 허용 목록을 이 범위로 좁히기 위해 사용한다."""
     rs = cfg.openrewrite.recipes if cfg is not None else RecipeSetConfig()
     ids = {*rs.jdk21, *rs.jakarta, *rs.servlet_jakarta_10, *rs.spring_boot_4, *rs.spring_framework_7,
            *rs.spring_security_7, *rs.spring_batch_6, *rs.hibernate_7, *rs.hystrix_resilience4j, *rs.junit5}
@@ -923,18 +881,14 @@ def v2_recipe_scope(cfg: Optional[Config] = None) -> set[str]:
 
 
 def advisor_whitelist(cfg: Optional[Config] = None) -> dict[str, str]:
-    """실행 범위 안에서 조언자가 더할 수 있는 카탈로그 레시피를 카탈로그 순서로 반환한다.
-
-    The advisor-eligible catalog recipes inside the v2 scope (catalog order)."""
+    """실행 범위 안에서 조언자가 더할 수 있는 카탈로그 레시피를 카탈로그 순서로 반환한다."""
     cat = default_catalog(cfg) if cfg is not None else _DEFAULT_CATALOG
     scope = v2_recipe_scope(cfg)
     return {rid: desc for rid, desc in (cat.advisor_catalog() or ADVISOR_CATALOG).items() if rid in scope}
 
 
 def _covered_by(planned: set[str], coverage: Optional[dict[str, list[str]]] = None) -> dict[str, str]:
-    """레시피 id마다 그것을 이미 포함하는 계획된 묶음 레시피를 반환한다.
-
-    recipe id → the planned composite that already includes it."""
+    """레시피 id마다 그것을 이미 포함하는 계획된 묶음 레시피를 반환한다."""
     out: dict[str, str] = {}
     for comp, inner in (ADVISOR_COVERAGE if coverage is None else coverage).items():
         if comp in planned:
@@ -1010,12 +964,8 @@ def advise_plan(plan: MigrationPlan, profile: ProjectProfile, llm: Any = None,
     모르는 id, 이미 계획된 id, 게이트가 뒷받침하지 않는 제안, 깨진 답은 노트만 남기고 무시한다.
     계획 단계가 멈추지 않도록 예외를 던지지 않는다.
 
-    Optional LLM review of the rule-based plan (`cfg.plan.advisor == "llm"`, model `cfg.llm.recipe_model`).
-
-    The advisor is additive only: it may add whitelisted recipes to the transform step(s) and record concerns in
-    `plan.notes`; unknown ids, already-planned ids and malformed answers are ignored (noted). The whitelist is
-    `catalog` when given, else the advisor-eligible catalog recipes inside the v2 scope (`advisor_whitelist`).
-    Never raises."""
+    The whitelist is `catalog` when given, else `advisor_whitelist(cfg)`.
+    A jdk-jakarta plan is never changed."""
     if llm is None or (cfg is not None and cfg.plan.advisor == "none"):
         return plan
     if plan.scope == "jdk-jakarta":
@@ -1037,7 +987,7 @@ def advise_plan(plan: MigrationPlan, profile: ProjectProfile, llm: Any = None,
                                                  "from a fixed catalog. Answer with JSON only."),
              ChatMessage(role="user", content=_advisor_prompt(plan, profile, catalog, coverage))],
             model=model, max_tokens=1200, temperature=0.0, role="plan_advisor", metadata={"profile": profile.name})
-    except Exception as e:  # advisor must never break planning
+    except Exception as e:  # 조언자 실패로 계획을 멈추지 않는다
         plan.notes.append(f"advisor: LLM call failed ({type(e).__name__}: {e}); plan unchanged")
         return plan
     from sbmig.core.models import LLMUsage, asked_model_name, served_beside
@@ -1048,7 +998,7 @@ def advise_plan(plan: MigrationPlan, profile: ProjectProfile, llm: Any = None,
                                                      output_tokens=int(resp.output_tokens or 0),
                                                      served=served_beside(used, list(
                                                          getattr(resp, "served_models", None) or []))))
-    except Exception:  # pragma: no cover - bookkeeping only
+    except Exception:  # pragma: no cover - 사용량 기록일 뿐이다
         pass
     adds, concerns, err = _parse_advice(getattr(resp, "content", "") or "")
     plan.notes.append(f"advisor[{used}]: {resp.input_tokens}+{resp.output_tokens} tokens, "

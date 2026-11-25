@@ -3,11 +3,7 @@
 - ``build_plan``(planner.py), ``default_catalog`` / ``RecipeCatalog``(catalog.py), ``recipes_cli``(``sbmig
   recipes``), 버전 비교(versions.py)
 - 레시피 id는 ``knowledge/recipes/catalog.yml``에서만 관리한다
-
-sbmig.plan — the rule-based v2 MigrationPlan (transform → restructure → structure review → verify) and the recipe
-catalog (`knowledge/recipes/catalog.yml`).
-
-`recipes_cli` (typer sub-app, mounted by sbmig/cli.py as `sbmig recipes`) is imported lazily."""
+- ``recipes_cli``는 필요할 때 import한다"""
 from typing import Any
 
 from .catalog import GATES, CatalogEntry, RecipeCatalog, default_catalog

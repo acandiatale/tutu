@@ -5,20 +5,8 @@
 - ``parse_record`` / ``line_ids``는 깨진 줄 뒤에 붙은 온전한 레코드를 살려서 읽는다
 - 덧붙일 때는 호출하는 쪽이 KB 잠금(:mod:`sbmig.kb.lock`)을 잡는다
 
-Append-only jsonl files of the KB (round 10, 2026-10-26; v2.1: only ``<kb>/errors.jsonl`` is left).
-
-A process killed half-way through a write (or a full disk) leaves a last line without its newline; the next append
-would glue its first record onto it. So:
-
-* :func:`append_lines` repairs the tail first (:func:`repair_tail`: a torn last line is moved to
-  ``<file>.corrupt`` — appended, with a warning — a complete record that only lacks its newline gets one), then
-  writes the batch with one ``write``, ``flush`` and ``os.fsync``;
-* :func:`parse_record` reads one line; a torn record with a whole one glued to it gives the whole one back;
-* :func:`line_ids` — the id(s) a stored line really holds (dedupe on append / import).
-
-File-based on purpose (invariant 3). Callers hold the KB lock (:mod:`sbmig.kb.lock`) around appends.
-
-
+A full disk leaves a torn last line too; without the repair the next append would glue its first record onto
+it. :func:`line_ids` gives the id(s) a stored line really holds (dedupe on append / import).
 """
 from __future__ import annotations
 
@@ -47,7 +35,7 @@ def _fsync(fh: Any) -> None:
     fh.flush()
     try:
         os.fsync(fh.fileno())
-    except OSError:  # pragma: no cover - a file system without fsync
+    except OSError:  # pragma: no cover - fsync를 지원하지 않는 파일 시스템
         pass
 
 
@@ -63,9 +51,7 @@ def repair_tail(path: Path) -> bool:
     깨진 마지막 줄은 ``.corrupt``로 옮기고, 줄바꿈만 빠진 온전한 레코드에는 줄바꿈을 붙인다.
     파일을 고쳤으면 True를 반환한다. 예외를 던지지 않는다.
 
-    Make ``path`` end with a newline. A torn last line goes to ``<file>.corrupt`` (appended) and is cut off; a
-    whole record that only lacks its newline keeps its place. Returns True when the file was changed. Never
-    raises."""
+    The torn line is appended to ``<file>.corrupt`` and cut off with a warning."""
     path = Path(path)
     try:
         size = path.stat().st_size
@@ -111,9 +97,7 @@ def repair_tail(path: Path) -> bool:
 
 def append_lines(path: Path, lines: Iterable[str]) -> int:
     """레코드를 한 줄씩 파일에 덧붙인다. 파일 끝을 먼저 고친 뒤 모든 줄을 write 한 번으로 쓰고 fsync한다.
-    중간에 죽어도 망가지는 것은 마지막 줄뿐이고, 다음 덧붙이기에서 고친다.
-
-    Append one record per line (``\\n`` added), after :func:`repair_tail`; one write + fsync per batch."""
+    중간에 죽어도 망가지는 것은 마지막 줄뿐이고, 다음 덧붙이기에서 고친다. 덧붙인 줄 수를 반환한다."""
     batch = [ln.rstrip("\n") for ln in lines if ln]
     if not batch:
         return 0
@@ -129,9 +113,7 @@ def append_lines(path: Path, lines: Iterable[str]) -> int:
 
 def parse_record(line: str, model: Any) -> Optional[Any]:
     """한 줄을 ``model``로 파싱한다.
-    실패하면 깨진 레코드 뒤에 붙은 온전한 레코드를, 그것도 없으면 None을 반환한다.
-
-    ``model.model_validate_json(line)``, else the whole record glued after a torn one, else None."""
+    실패하면 깨진 레코드 뒤에 붙은 온전한 레코드를, 그것도 없으면 None을 반환한다."""
     line = (line or "").strip()
     if not line:
         return None
@@ -150,9 +132,7 @@ def parse_record(line: str, model: Any) -> Optional[Any]:
 
 def fast_id(line: str) -> Optional[str]:
     """온전한 레코드 한 줄에서 JSON 파싱 없이 정규식으로 ID를 뽑는다.
-    큰 파일의 중복 검사에 쓰고, 실제 파싱이 필요한 줄이면 None을 반환한다.
-
-    The id of a whole, single record line without parsing it (None when the line needs a real parse)."""
+    큰 파일의 중복 검사에 쓰고, 실제 파싱이 필요한 줄이면 None을 반환한다."""
     s = line.rstrip()
     if not s.endswith("}") or s.count(ID_HEAD) != 1:
         return None
@@ -167,9 +147,7 @@ def fast_id(line: str) -> Optional[str]:
 
 def line_ids(line: str) -> list[str]:
     """저장된 한 줄에 실제로 들어 있는 레코드 ID 목록을 반환한다.
-    깨진 줄이면 뒤에 붙은 온전한 레코드의 ID를 반환한다.
-
-    Ids a stored line really holds: its own when it parses, the glued whole record's after a torn one."""
+    깨진 줄이면 뒤에 붙은 온전한 레코드의 ID를 반환한다."""
     fid = fast_id(line)
     if fid is not None:
         return [fid]

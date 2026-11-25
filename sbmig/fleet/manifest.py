@@ -8,28 +8,18 @@
 - 이름이 바뀌어도 다른 프로젝트의 성공을 물려받지 않도록 일괄 실행
   상태는 입력 경로(:func:`input_key`)로 프로젝트를 찾는다
 
-Fleet manifests: which projects to migrate, in which order, with which per-project config.
-
 Accepted forms (``load_manifest(path)``):
 
-* a **directory**: every ``*.zip`` and every subdirectory with a ``pom.xml`` at its top or one level down
-  (sorted by name) — the rule :func:`_validate` applies to any input (2026-10-28, A7: a folder whose only pom
-  sat one level down was dropped without a word); a subdirectory with no pom at either level is not a project
-  and is left out with a warning naming it, so nothing disappears silently
+* a directory: every ``*.zip`` and every subdirectory with a ``pom.xml`` at its top or one level down (sorted
+  by name; the same :func:`has_pom` rule :func:`_validate` applies); a subdirectory without one is left out
+  with a warning naming it
 * a ``.txt`` file: one path per line, ``#`` comments, blank lines ignored
 * a ``.yml``/``.yaml`` file: ``projects: [{name, input, configs: [...], overrides: {...}, tags: [...]}]``
 * a ``.csv`` file: header ``name,input,tags`` (tags separated by ``;`` or spaces)
 
-Relative paths are resolved against the manifest file's directory. Missing inputs do not raise: the project is
-returned with ``error`` set and the runner marks it ``skipped``.
-
-Round 10 (Windows operators): manifest files are read whatever the editor saved — UTF-8 with or without BOM (Excel
-"CSV UTF-8"), UTF-16 (PowerShell 5.1 ``>``), else cp949. Project names are ASCII (run ids, directory names): a name
-with non-ASCII characters (``주문관리-v2``) becomes its ASCII slug plus a short hash of the input path
-(``v2-1a2b3c``, ``project-4d5e6f``), and a name that collides with an earlier one gets the hash too, so two Korean
-folder names never share a name. The fleet state is keyed by the input path (:func:`input_key`), not by the name.
-
-
+Encodings: UTF-8 with or without BOM (Excel "CSV UTF-8"), UTF-16 (PowerShell 5.1 ``>``), else cp949.
+A non-ASCII name (``주문관리-v2``) becomes its ASCII slug plus a short hash of the input path (``v2-1a2b3c``,
+``project-4d5e6f``); a name that collides with an earlier one gets the hash too.
 """
 
 from __future__ import annotations
@@ -55,11 +45,11 @@ class FleetProject:
     이름(ASCII), 절대 입력 경로, 프로젝트별 설정, 덮어쓴 값, 태그를 담는다.
     입력을 쓸 수 없으면 ``error``를 채우고, 러너는 실행하지 않고 ``skipped``로 둔다."""
     name: str
-    input: str  # resolved path (absolute) of the project dir / zip
+    input: str  # 프로젝트 폴더나 zip의 절대 경로
     configs: list[str] = field(default_factory=list)
     overrides: dict[str, Any] = field(default_factory=dict)
     tags: list[str] = field(default_factory=list)
-    error: Optional[str] = None  # set when the input does not exist / is not usable
+    error: Optional[str] = None  # 입력이 없거나 쓸 수 없을 때 채운다
 
     @property
     def ok(self) -> bool:
@@ -78,9 +68,7 @@ HASH_CHARS = 6
 
 def safe_name(name: str) -> str:
     """실행 ID와 폴더명에 쓸 수 있는 이름(ASCII 영문, 숫자, ``._-``)으로 바꾼다.
-    남는 문자가 없으면 ``project``를 반환한다.
-
-    A name usable in run ids / directory names (ASCII letters, digits, `._-`)."""
+    남는 문자가 없으면 ``project``를 반환한다."""
     n = _NAME_RE.sub("-", name).strip("-.")
     return n or "project"
 
@@ -89,8 +77,7 @@ def input_key(path: str | Path) -> str:
     """일괄 실행 상태에서 프로젝트를 구분하는 키로, 입력 경로를 절대 경로로 정규화해서 반환한다.
     Windows에서는 대소문자도 통일한다.
 
-    The identity of a project in the fleet state: its input path, absolute and normalized (case-folded where the
-    file system is, i.e. on Windows). Older state files stored the same resolved path, so they match unchanged."""
+    Older state files stored the same resolved path, so they match unchanged."""
     p = str(path or "").strip()
     if not p:
         return ""
@@ -114,10 +101,7 @@ def name_with_hash(name: str, path: str | Path) -> str:
 def read_text_any(path: str | Path) -> str:
     """텍스트 파일을 편집기가 저장한 인코딩과 상관없이 읽는다.
     UTF-8(BOM 유무), UTF-16, 그 밖에는 cp949로 읽는다.
-    UnicodeDecodeError를 던지지 않는다.
-
-    A text file whatever the editor saved: UTF-8 (with or without BOM), UTF-16 (BOM, or the NUL pattern of BOM-less
-    UTF-16LE), else cp949 (Korean Windows) — never a UnicodeDecodeError for a manifest."""
+    UnicodeDecodeError를 던지지 않는다."""
     data = Path(path).read_bytes()
     # PowerShell 5.1의 ``>``는 UTF-16LE로 저장하므로 BOM이 있거나, BOM이
     # 없어도 둘째와 넷째 바이트가 NUL이면 UTF-16으로 읽는다
@@ -146,10 +130,9 @@ def _resolve(base: Path, p: str) -> Path:
 
 def has_pom(d: Path) -> bool:
     """``pom.xml``이 맨 위나 한 단계 아래(``*/pom.xml``)에 있어 Maven 프로젝트로 보이는지 확인한다.
-    디렉토리 매니페스트(:func:`_from_dir`)와 입력 검사(:func:`_validate`)가 같은 규칙을 쓰도록 이 함수를 함께 쓴다.
+    디렉토리 매니페스트(:func:`_from_dir`)와 입력 검사(:func:`_validate`)가 이 함수를 함께 쓴다.
 
-    A pom.xml at the top of ``d`` or one level down — the one rule the directory manifest and
-    :func:`_validate` share (intake turns sibling poms into an aggregator)."""
+    One level down is enough because intake turns sibling poms into an aggregator."""
     return (d / "pom.xml").is_file() or any(q.is_file() for q in d.glob("*/pom.xml"))
 
 
@@ -171,12 +154,10 @@ def _validate(proj: FleetProject) -> FleetProject:
 
 
 def _dedupe_names(projects: list[FleetProject]) -> list[FleetProject]:
-    """이름을 겹치지 않는 ASCII로 정리한다. slug로 바꾸면서 문자를 잃거나 앞 이름과 겹치면 입력 경로 해시를
-    붙이고, 같은 입력이 두 번이면 번호를 붙인다.
+    """이름을 겹치지 않는 ASCII로 정리한다.
+    slug로 바꾸면서 문자를 잃거나 앞 이름과 겹치면 입력 경로 해시를 붙이고, 같은 입력이 두 번이면 번호를 붙인다.
 
-    ASCII names, unique: a name that loses characters to the slug (non-ASCII) or collides with an earlier one gets
-    the hash of its input path (stable when the manifest is reordered or a folder is added); the same input listed
-    twice keeps a numbered suffix."""
+    The path hash stays the same when the manifest is reordered or a folder is added."""
     taken: set[str] = set()
     for p in projects:
         base = safe_name(p.name)

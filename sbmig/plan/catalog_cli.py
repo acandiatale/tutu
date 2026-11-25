@@ -6,7 +6,7 @@
 - ``sets``는 케이스별로 계획기가 고를 변환 레시피를 보여 준다
 - typer는 명령 함수의 docstring을 ``--help`` 화면으로 쓰므로 한국어 첫 줄이 명령 목록의 요약이 된다
 
-`sbmig recipes …` — typer sub-app over the recipe catalog (knowledge/recipes/catalog.yml). See docs/RECIPES.md."""
+Operator doc: docs/RECIPES.md."""
 from __future__ import annotations
 
 import json
@@ -27,10 +27,8 @@ ArtifactOpt = typer.Option(None, "--artifact", help="with --jars: g:a to resolve
 
 
 def _load(configs: Optional[List[Path]], catalog: Optional[Path] = None):
-    """설정을 읽는다. 레시피 명령에는 사내 아티팩트 설정이 필요 없으므로, 어느 설정에도 없으면 검증 오류가
-    나지 않게 플레이스홀더 parent로 채운다.
-
-    Recipe commands do not need the company artifacts section; use a placeholder when no config provides it."""
+    """설정을 읽는다.
+    레시피 명령에는 사내 아티팩트 설정이 필요 없으므로, 어느 설정에도 없으면 플레이스홀더 parent로 채운다."""
     from pydantic import ValidationError
 
     from sbmig.core.config import load_config

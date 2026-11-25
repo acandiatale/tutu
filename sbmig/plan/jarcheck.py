@@ -7,25 +7,21 @@
 3. 카탈로그 항목마다 선언한 jar(found_in)와 classpath 포함 여부를 판단한다
 Maven 실패는 예외가 아니라 보고서의 문제 줄이 된다.
 
-Jar-checked recipe catalog: does every `origin: openrewrite` catalog id really live where the catalog says?
+`RecipeCatalog.check(cfg)` is offline and trusts the `artifact` / `provided_by` fields; `check_jars` verifies
+them against the real recipe jars at the configured `openrewrite.recipe_bom_version`:
 
-`RecipeCatalog.check(cfg)` is offline: it trusts the `artifact` / `provided_by` fields. `check_jars` verifies them
-against the real recipe jars at the configured `openrewrite.recipe_bom_version`:
-
-1. every configured `openrewrite.recipe_artifacts` entry (plus any distinct `provided_by`) is resolved once to its
-   transitive runtime classpath with Maven (`dependency:build-classpath` on a generated pom that imports the recipe
-   BOM, written under `work_dir/<group>__<artifact>/`);
-2. every jar on those classpaths is scanned once: `META-INF/rewrite/*.yml` recipe declarations (`name:` of each
-   `type: specs.openrewrite.org/v1beta/recipe` document) and `.class` entries (imperative recipes);
+1. every configured `openrewrite.recipe_artifacts` entry (plus any distinct `provided_by`) is resolved once to
+   its transitive runtime classpath with Maven (`dependency:build-classpath` on a generated pom that imports
+   the recipe BOM, written under `work_dir/<group>__<artifact>/`);
+2. every jar on those classpaths is scanned once: `META-INF/rewrite/*.yml` recipe declarations (`name:` of
+   each `type: specs.openrewrite.org/v1beta/recipe` document) and `.class` entries (imperative recipes);
 3. per catalog entry: the jar that declares the id (`found_in`), whether `artifact` is on the classpath of the
    configured artifact that is supposed to bring it, and for `provided_by` whether `artifact` is on the
-   `provided_by` artifact's own transitive classpath. Core entries (`artifact: null`, `org.openrewrite.java.*`,
-   `org.openrewrite.maven.*` …) are searched in the union of all classpaths.
+   `provided_by` artifact's own transitive classpath. Core entries (`artifact: null`,
+   `org.openrewrite.java.*`, `org.openrewrite.maven.*` …) are searched in the union of all classpaths.
 
-Maven failures never raise: the report names the artifact that did not resolve and its log file.
-`sbmig recipes check --jars` is the CLI (docs/RECIPES.md). Needs Maven + network (or a warm local repository).
-
-
+The report names an artifact that did not resolve and its log file. Without network a warm local repository is
+enough. Operator doc: docs/RECIPES.md.
 """
 from __future__ import annotations
 
@@ -52,7 +48,7 @@ DEFAULT_WORK_DIR = "out/recipes-check"
 
 Resolver = Callable[[str, str], list[Path]]
 
-# Tests (and embedding code) may replace this with a fake `fn(ga, version) -> list[Path]`; None = Maven.
+# 테스트는 가짜 `fn(ga, version) -> list[Path]`로 바꿔 끼운다. None이면 Maven을 쓴다
 DEFAULT_RESOLVER: Resolver | None = None
 
 
@@ -63,10 +59,10 @@ class JarCheckRow(BaseModel):
     origin: str = "openrewrite"
     artifact: str | None = None
     provided_by: str | None = None
-    version: str = ""                              # version of `artifact` ("" if unknown / core)
-    found_in: str = ""                             # "g:a:v" (or jar name) of the jar declaring the id; "" = not found
-    artifact_on_classpath: bool | None = None   # None: core entry, or the owning classpath did not resolve
-    provided_by_ok: bool | None = None          # None: no provided_by
+    version: str = ""                              # `artifact`의 버전. 모르거나 core면 ""
+    found_in: str = ""                             # id를 선언한 jar의 "g:a:v"(또는 jar 이름). 못 찾으면 ""
+    artifact_on_classpath: bool | None = None   # core 항목이거나 소유 classpath를 못 구했으면 None
+    provided_by_ok: bool | None = None          # provided_by가 없으면 None
     problems: list[str] = Field(default_factory=list)
 
 
@@ -75,11 +71,11 @@ class JarCheckReport(BaseModel):
     항목별 행, 문제, 아티팩트별 classpath와 버전, BOM 버전, 작업 디렉토리, Maven 로그 경로를 담는다."""
     rows: list[JarCheckRow] = Field(default_factory=list)
     problems: list[str] = Field(default_factory=list)
-    classpaths: dict[str, list[str]] = Field(default_factory=dict)     # configured g:a → jar basenames
-    artifact_versions: dict[str, str] = Field(default_factory=dict)    # g:a → version (configured + resolved)
+    classpaths: dict[str, list[str]] = Field(default_factory=dict)     # 설정한 g:a별 jar 파일 이름
+    artifact_versions: dict[str, str] = Field(default_factory=dict)    # g:a별 버전(설정값과 확인된 값)
     bom_version: str = ""
     work_dir: str = ""
-    log_paths: dict[str, str] = Field(default_factory=dict)            # g:a → build-classpath log
+    log_paths: dict[str, str] = Field(default_factory=dict)            # g:a별 build-classpath 로그
 
     @property
     def ok(self) -> bool:
@@ -98,7 +94,7 @@ class JarCheckReport(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Maven: one generated pom per artifact → dependency:build-classpath
+# Maven: 아티팩트마다 검사용 pom을 만들고 dependency:build-classpath를 실행한다
 # ---------------------------------------------------------------------------
 def artifact_dir(work_dir: Path, ga: str) -> Path:
     """아티팩트별 작업 디렉토리 ``<work_dir>/<group>__<artifact>``를 반환한다.
@@ -110,7 +106,7 @@ def _pom_xml(cfg: Config, ga: str, version: str) -> str:
     """레시피 BOM을 import하고 아티팩트 하나만 의존하는 검사용 pom을 만든다.
     버전이 빈 문자열이면 BOM이 버전을 정한다."""
     g, a = ga.split(":", 1)
-    ver = f"\n      <version>{escape(version)}</version>" if version else ""   # "" → managed by the BOM import
+    ver = f"\n      <version>{escape(version)}</version>" if version else ""
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <!-- generated by sbmig (recipes check, jar mode); safe to delete -->
 <project xmlns="http://maven.apache.org/POM/4.0.0">
@@ -148,10 +144,7 @@ def resolve_classpath(cfg: Config, artifact_ga: str, version: str, *, work_dir: 
                       mvn_env: dict[str, str] | None = None, timeout_s: float = 600) -> list[Path]:
     """레시피 BOM을 import한 상태에서 ``artifact_ga[:version]``의 전이 runtime classpath(jar 목록)를 구한다.
     실패하면 빈 리스트를 반환하고 로그는 ``artifact_dir(work_dir, ga)/build-classpath.log``에 남는다.
-    Maven 문제로 예외를 던지지 않는다.
-
-    Transitive runtime classpath (jars) of `artifact_ga[:version]`, the recipe BOM imported. [] on any failure
-    (the log is `artifact_dir(work_dir, ga)/build-classpath.log`). Never raises for Maven problems."""
+    Maven 문제로 예외를 던지지 않는다."""
     from sbmig.build.classpath import _parse_classpath
     from sbmig.build.mvn import base_command, run_logged
     from sbmig.build.mvn import mvn_env as _mvn_env
@@ -176,7 +169,7 @@ def resolve_classpath(cfg: Config, artifact_ga: str, version: str, *, work_dir: 
 
 
 # ---------------------------------------------------------------------------
-# jar scanning (cached per path)
+# jar 검사(경로별 캐시)
 # ---------------------------------------------------------------------------
 _DOC_SPLIT = re.compile(r"^---[ \t]*$", re.MULTILINE)
 _TOP_KEY = re.compile(r"^(type|name)[ \t]*:[ \t]*(['\"]?)([^'\"#\s]+)\2[ \t]*(?:#.*)?$", re.MULTILINE)
@@ -184,10 +177,7 @@ _TOP_KEY = re.compile(r"^(type|name)[ \t]*:[ \t]*(['\"]?)([^'\"#\s]+)\2[ \t]*(?:
 
 def _yaml_recipe_names(text: str) -> set[str]:
     """META-INF/rewrite yml에 있는 모든 레시피 문서의 ``name:``을 읽는다.
-    PyYAML로 읽히지 않는 파일은 ``---`` 문서마다 최상위 ``type:`` / ``name:`` 줄을 찾아 대신 읽는다.
-
-    `name:` of every recipe document in a META-INF/rewrite yml. Uses yaml.safe_load_all; a file PyYAML cannot
-    parse falls back to a top-level `type:` / `name:` line scan per `---` document."""
+    PyYAML로 읽히지 않는 파일은 ``---`` 문서마다 최상위 ``type:`` / ``name:`` 줄을 찾아 대신 읽는다."""
     names: set[str] = set()
     try:
         for doc in yaml.safe_load_all(text):
@@ -221,9 +211,7 @@ _SCAN_CACHE: dict[tuple[str, float, int], _JarIndex] = {}
 
 def scan_jar(jar: Path) -> _JarIndex:
     """jar 하나를 검사해 색인을 만든다.
-    (경로, 수정 시각, 크기)로 캐시하며, 열지 못하면 경고를 남기고 빈 색인을 반환한다.
-
-    Recipe names declared in `META-INF/rewrite/*.yml` + every zip entry name (for `.class` lookups)."""
+    (경로, 수정 시각, 크기)로 캐시한다. 열지 못하면 경고를 남기고 빈 색인을 반환한다."""
     p = Path(jar)
     try:
         st = p.stat()
@@ -249,7 +237,7 @@ def scan_jar(jar: Path) -> _JarIndex:
 
 
 # ---------------------------------------------------------------------------
-# the check
+# 검사
 # ---------------------------------------------------------------------------
 def _gav(jar: Path, repo: Path) -> str | None:
     """로컬 저장소 경로에서 jar의 ``g:a:v``를 읽는다. 읽지 못하면 None을 반환한다."""
@@ -274,7 +262,7 @@ def _versions(cfg: Config, wanted: list[str], work_dir: Path, problems: list[str
                                                 cache_path=work_dir / "artifact-versions.json", work_dir=work_dir)
     except RecipeArtifactError as e:
         problems.append(f"recipe artifact versions: {e} (resolving with the BOM-managed version instead)")
-    except Exception as e:  # noqa: BLE001  # pragma: no cover - the check must report, not crash
+    except Exception as e:  # noqa: BLE001  # pragma: no cover - 검사는 멈추지 않고 문제로 보고한다
         problems.append(f"recipe artifact versions: {type(e).__name__}: {e}")
     overrides = dict(cfg.openrewrite.recipe_artifact_versions or {})
     return {a: overrides.get(a, "") for a in wanted}
@@ -284,9 +272,7 @@ def check_jars(catalog: RecipeCatalog, cfg: Config, *, work_dir: Path | None = N
                artifacts: Iterable[str] | None = None, resolver: Resolver | None = None) -> JarCheckReport:
     """모든 ``origin: openrewrite`` 카탈로그 항목을 실제 레시피 jar로 확인한다.
     단계는 모듈 docstring에 있다.
-    ``resolver``를 주면 Maven 대신 그것을 쓴다(테스트용). core 항목은 모든 classpath를 합친 곳에서 찾는다.
-
-    Verify every `origin: openrewrite` catalog entry against the real recipe jars (see module doc)."""
+    ``resolver``를 주면 Maven 대신 그것을 쓴다(테스트용). core 항목은 모든 classpath를 합친 곳에서 찾는다."""
     from sbmig.build.mvn import local_repo_path
 
     wd = (Path(work_dir) if work_dir is not None else cfg.resolve_path(DEFAULT_WORK_DIR)).resolve()
@@ -314,7 +300,7 @@ def check_jars(catalog: RecipeCatalog, cfg: Config, *, work_dir: Path | None = N
 
     repo = local_repo_path(cfg)
     cps: dict[str, list[Path]] = {}
-    cp_gavs: dict[str, dict[str, str]] = {}          # configured g:a → {g:a → g:a:v} on its classpath
+    cp_gavs: dict[str, dict[str, str]] = {}          # 설정한 g:a별로 그 classpath의 {g:a: g:a:v}
     gav_of: dict[Path, str] = {}
     for ga in wanted:
         jars = list(resolve(ga, versions.get(ga, "")) or [])
@@ -329,7 +315,7 @@ def check_jars(catalog: RecipeCatalog, cfg: Config, *, work_dir: Path | None = N
                         f"no classpath{where}")
     union = list(dict.fromkeys(j for jars in cps.values() for j in jars))
     all_gavs = {_ga(gav_of[j]): gav_of[j] for j in union}
-    for e in entries:                                # transitive catalog artifacts (rewrite-java-dependencies …)
+    for e in entries:                                # 전이로 들어온 카탈로그 아티팩트(rewrite-java-dependencies 등)
         gav = all_gavs.get(e.artifact or "", "")
         if gav.count(":") >= 2:
             report.artifact_versions.setdefault(_ga(gav), gav.split(":")[2])
