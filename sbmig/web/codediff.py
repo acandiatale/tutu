@@ -1,12 +1,11 @@
 """이관 결과의 코드 변경 화면에 쓸 데이터를 실행 폴더의 ``codediff/``와 ``result.zip``에서 읽어 내주는 모듈.
 웹 파드는 git과 diff를 실행하지 않고, 빌드 파드가 기록한 ``index.json``, ``patch.bin``, ``summary.json``만 읽는다.
+- 앞뒤 줄을 더 보여 줄 때는 ``result.zip``에서 최종 파일을 읽는다
 - 손상된 산출물은 500이 아니라 짧은 이유를 담은 404로 응답하고, 같은 이유는 WARNING으로 한 번만 남긴다
-- 파싱한 index와 ZIP 항목 목록은 작은 LRU에 두며, 요청 사이에 파일 핸들을 열어 두지 않는다
-진입점은 :func:`create_codediff_router`, :func:`load_index`, :func:`parse_hunks`, :func:`read_lines`이다.
+- 마지막 마스킹 전인 실행은 409로 응답한다
+- 파싱한 index와 ZIP 항목 목록은 작은 LRU에 두고, 요청 사이에 파일 핸들을 열어 두지 않는다
 
-Web side of the code-change view (contract: docs/INTERFACES.md "v2.1z-au"). The build pod writes
-`<run dir>/codediff/` (`index.json`, `summary.json`, `patch.bin`); this module serves it and, for more context lines,
-reads the FINAL file out of `<run dir>/result.zip`. Routes (plain `def`: they run in the thread pool):
+Contract: docs/INTERFACES.md "v2.1z-au". Routes (plain `def`: they run in the thread pool):
 
     GET /api/runs/{id}/codediff                         the stored index.json
     GET /api/runs/{id}/codediff/files/{n}               one entry + its parsed hunks, no_newline, expandable
@@ -17,9 +16,9 @@ Errors: 400 bad run id / non-numeric start or end; 404 unknown run, `{"error": "
 unreadable or another `version`), `n` outside the list, a file whose lines cannot be read (with `reason`); 409 while the
 run's final redaction pass is pending. Every read error is a 404 with a short reason, logged once at WARNING.
 
-Line ranges (`lines`): non-numeric `start` / `end` → 400; numbers are clamped (start < 1 → 1, end past the file → the
-last line, a span over `MAX_LINES_PER_CALL` is cut); the response's `end` is always `start + len(lines) - 1`, so an
-empty answer has `end == start - 1`.
+Line ranges (`lines`): non-numeric `start` / `end` -> 400; numbers are clamped (start < 1 -> 1, end past the
+file -> the last line, a span over `MAX_LINES_PER_CALL` is cut); the response's `end` is always
+`start + len(lines) - 1`, so an empty answer has `end == start - 1`.
 
 Caches (bounded, thread-safe, no file handle kept open): the parsed index per index.json (path + mtime + size + inode,
 `INDEX_CACHE` entries) and the member sizes of each result.zip (same key, `ZIP_CACHE` entries)."""
@@ -50,13 +49,13 @@ INDEX_FILE = "index.json"
 SUMMARY_FILE = "summary.json"
 PATCH_FILE = "patch.bin"
 RESULT_ZIP = "result.zip"
-MAX_TEXT = 5_000                     # characters per shown line; longer lines end with "…"
-MAX_LINES_PER_CALL = 5_000           # lines per `lines` call
-DEFAULT_SPAN = 200                   # `lines` without `end`: start … start + 199
-MAX_MEMBER_BYTES = 32 * 1024 * 1024  # a final file larger than this (uncompressed) is not read for context
-MAX_INDEX_BYTES = 256 * 1024 * 1024  # an index.json past this is not parsed (20,000 entries are a few MiB)
-MAX_SUMMARY_BYTES = 1024 * 1024      # summary.json is small; anything bigger is not what the writer wrote
-MAX_HUNK_BYTES = 8 * 1024 * 1024     # one file's range in patch.bin (the writer cuts at 1 MiB)
+MAX_TEXT = 5_000                     # 화면에 보일 한 줄의 최대 문자 수. 넘으면 "…"로 자른다
+MAX_LINES_PER_CALL = 5_000           # `lines` 호출 한 번에 내주는 최대 줄 수
+DEFAULT_SPAN = 200                   # `lines`에 end가 없으면 start부터 200줄을 내준다
+MAX_MEMBER_BYTES = 32 * 1024 * 1024  # 압축을 푼 크기가 이보다 큰 최종 파일은 앞뒤 줄을 읽지 않는다
+MAX_INDEX_BYTES = 256 * 1024 * 1024  # 이보다 큰 index.json은 파싱하지 않는다. 2만 항목이 몇 MiB다
+MAX_SUMMARY_BYTES = 1024 * 1024      # summary.json은 작으므로 이보다 크면 빌드 파드가 쓴 파일이 아니다
+MAX_HUNK_BYTES = 8 * 1024 * 1024     # patch.bin 안 파일 하나의 범위 한도. 빌드 파드는 1 MiB에서 자른다
 INDEX_CACHE = 4
 ZIP_CACHE = 8
 UNAVAILABLE = "code diff not available"
@@ -65,9 +64,7 @@ _HEADER = re.compile(rb"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@ ?(.*)$")
 
 
 class CodeDiffUnavailable(Exception):
-    """코드 변경 산출물이나 그 일부를 읽을 수 없을 때 던지는 예외. ``reason``에 짧은 이유를 담는다.
-
-    The artifact (or one part of it) cannot be served; `reason` is the short text the 404 carries."""
+    """코드 변경 산출물이나 그 일부를 읽을 수 없을 때 던지는 예외 클래스. ``reason``에 404에 담을 짧은 이유가 있다."""
 
     def __init__(self, reason: str):
         super().__init__(reason)
@@ -108,9 +105,7 @@ _warned_lock = threading.Lock()
 
 
 def clear_caches() -> None:
-    """파싱한 index와 ZIP 항목 목록 캐시를 비운다.
-
-    Drop the cached indices and ZIP member lists (tests; nothing else needs it: the keys carry mtime and size)."""
+    """파싱한 index와 ZIP 항목 목록 캐시를 비운다. 테스트에서만 쓴다. 키에 mtime과 크기가 있어 따로 비울 일이 없다."""
     _index_cache.clear()
     _zip_cache.clear()
     with _warned_lock:
@@ -133,19 +128,15 @@ def _stamp(st: os.stat_result) -> tuple[int, int, int]:
 
 
 def artifact_dir(run_dir: Path) -> Path:
-    """실행 폴더 안의 코드 변경 산출물 폴더 경로를 반환한다.
-
-    `<run dir>/codediff`."""
+    """실행 폴더 안의 코드 변경 산출물 폴더 ``<run dir>/codediff`` 경로를 반환한다."""
     return Path(run_dir) / ARTIFACT_DIR
 
 
 def load_index(run_dir: Path) -> dict[str, Any]:
-    """실행 폴더의 ``codediff/index.json``을 읽어 반환한다. 없거나 깨졌거나 ``version``이 1이 아니면
-    ``CodeDiffUnavailable``을 던진다. 같은 파일은 캐시에서 꺼내므로 반환값을 바꾸면 안 된다.
+    """실행 폴더의 ``codediff/index.json``을 읽어 반환한다. 같은 파일은 캐시에서 꺼내므로 반환값을 바꾸면 안 된다.
+    없거나, 깨졌거나, ``files`` 목록이 없거나, ``version``이 1이 아니면 ``CodeDiffUnavailable``을 던진다.
 
-    The parsed `index.json` (cached per path + mtime + size + inode; the caller must not mutate it). Raises
-    `CodeDiffUnavailable` when it is missing, unreadable, not a JSON object with a `files` list, or of another
-    `version` than 1."""
+    Cache key: path + mtime + size + inode."""
     path = artifact_dir(run_dir) / INDEX_FILE
     try:
         with open(path, "rb") as f:
@@ -179,11 +170,8 @@ def load_index(run_dir: Path) -> dict[str, Any]:
 
 
 def read_summary(run_dir: Path) -> dict[str, Any] | None:
-    """``codediff/summary.json``의 ``summary`` 객체를 반환한다. 산출물이 없거나 파일이 깨졌으면 None을 반환하고
-    예외를 던지지 않는다.
-
-    The `summary` object of `codediff/summary.json`, or None (no artifact, no index.json beside it, unreadable,
-    another `version`, no `summary` object). Never raises; small read, for `RunManager.status()`."""
+    """``codediff/summary.json``의 ``summary`` 객체를 반환한다. ``RunManager.status()``가 쓴다.
+    산출물이나 옆의 index.json이 없거나, 깨졌거나, 다른 ``version``이면 None을 반환하고 예외를 던지지 않는다."""
     d = artifact_dir(run_dir)
     path = d / SUMMARY_FILE
     try:
@@ -238,16 +226,15 @@ def _split_lines(data: bytes) -> list[bytes]:
 
 
 def parse_hunks(data: bytes, encoding: Any = "utf-8") -> tuple[list[dict[str, Any]], dict[str, bool]]:
-    """파일 하나의 unified hunk 바이트를 hunk 목록과 ``no_newline``으로 바꿔 반환한다. 형식이 맞지 않으면
-    ``ValueError``를 던진다.
+    """파일 하나의 unified hunk 바이트를 hunk 목록과 ``no_newline``으로 바꿔 반환한다.
+    바이트가 ``@@ ``로 시작하지 않거나 모르는 종류의 줄이 있으면 ``ValueError``를 던진다.
 
     Parse one file's unified hunks (from its first `@@` line to the end of its range): the bytes are split at `\\n`,
     each line decoded with `encoding` (unknown name → utf-8, `errors="replace"`), one trailing `\\r` dropped, cut at
     `MAX_TEXT` characters with `…`. A header `@@ -a[,b] +c[,d] @@ <section>` (a missing count = 1); body lines by their
     first byte (`' '` context, `'+'`, `'-'`; an empty line counts as an empty context line); `\\ No newline at end of
     file` belongs to the line before it and sets `no_newline.old` / `.new` (after a context line both). Old / new line
-    numbers are counted from the header; a number is None on the side a line does not exist. Raises ValueError when the
-    bytes do not start with `@@ ` or hold a line of another kind."""
+    numbers are counted from the header; a number is None on the side a line does not exist."""
     decode = _decoder(encoding)
     hunks: list[dict[str, Any]] = []
     no_newline = {"old": False, "new": False}
@@ -299,11 +286,8 @@ def parse_hunks(data: bytes, encoding: Any = "utf-8") -> tuple[list[dict[str, An
 
 
 def read_patch(run_dir: Path, entry: dict[str, Any]) -> bytes | None:
-    """항목의 ``patch`` 범위를 ``patch.bin``에서 읽어 반환한다. 범위가 없으면 None을 반환하고, 범위가 잘못되었거나
-    파일을 읽을 수 없으면 ``CodeDiffUnavailable``을 던진다.
-
-    The bytes of `entry["patch"]` (`[offset, length]`) out of `patch.bin`; None when the entry has no range
-    (`omitted`). Raises CodeDiffUnavailable for a malformed range, one past the end of the file, or a read error."""
+    """항목의 ``patch`` 범위(``[offset, length]``)를 ``patch.bin``에서 읽어 반환한다. 범위가 없으면 None을 반환한다.
+    범위가 잘못되었거나, 파일 끝을 넘거나, 읽을 수 없으면 ``CodeDiffUnavailable``을 던진다."""
     rng = entry.get("patch")
     if rng is None:
         return None
@@ -345,11 +329,8 @@ def _safe_rel(p: Any, allow_empty: bool = False) -> str | None:
 
 
 def member_name(index: dict[str, Any], entry: dict[str, Any]) -> str | None:
-    """항목의 최종 파일이 ``result.zip`` 안에서 가지는 이름(``<zip_root>/<path>``)을 반환한다. 경로가 안전하지
-    않으면 None을 반환한다.
-
-    The member `<zip_root>/<path>` of result.zip for this entry, or None when `zip_root` or `path` is absolute,
-    has a `..` component or is not a string."""
+    """항목의 최종 파일이 ``result.zip`` 안에서 가지는 이름 ``<zip_root>/<path>``를 반환한다.
+    경로가 절대 경로이거나, ``..``가 있거나, 문자열이 아니면 None을 반환한다."""
     root = _safe_rel(index.get("zip_root", ""), allow_empty=True)
     path = _safe_rel(entry.get("path"))
     if root is None or path is None:
@@ -398,17 +379,13 @@ def _line_source_problem(run_dir: Path, index: dict[str, Any], entry: dict[str, 
 
 
 def is_expandable(run_dir: Path, index: dict[str, Any], entry: dict[str, Any]) -> bool:
-    """항목의 최종 파일을 ``result.zip``에서 읽을 수 있는지 확인한다. ZIP 항목은 풀지 않는다.
-
-    Can the final file be read from result.zip (not deleted, not binary, a safe path, the member present and at
-    most `MAX_MEMBER_BYTES`)? Reads only the (cached) central directory, never decompresses."""
+    """항목의 최종 파일을 ``result.zip``에서 읽을 수 있는지 확인한다. 캐시한 중앙 디렉터리만 보고 압축은 풀지 않는다.
+    삭제된 파일, 바이너리, 안전하지 않은 경로, ZIP에 없는 파일, ``MAX_MEMBER_BYTES``보다 큰 파일은 읽을 수 없다."""
     return _line_source_problem(run_dir, index, entry)[0] is None
 
 
 def file_entry(index: dict[str, Any], n: int) -> dict[str, Any] | None:
-    """index의 ``n``번째 파일 항목을 반환한다. 범위 밖이거나 객체가 아니면 None을 반환한다.
-
-    The `n`-th entry of `files` (the id is the position), or None."""
+    """index의 ``n``번째 파일 항목을 반환한다. 항목 id는 위치다. 범위 밖이거나 객체가 아니면 None을 반환한다."""
     files = index.get("files") or []
     if n < 0 or n >= len(files) or not isinstance(files[n], dict):
         return None
@@ -416,12 +393,9 @@ def file_entry(index: dict[str, Any], n: int) -> dict[str, Any] | None:
 
 
 def file_detail(run_dir: Path, index: dict[str, Any], n: int) -> dict[str, Any] | None:
-    """파일 하나의 항목과 파싱한 hunk, ``no_newline``, ``expandable``을 반환한다. ``n``이 범위 밖이면 None을
-    반환한다. hunk를 읽을 수 없으면 빈 목록과 ``omitted: "unreadable"``을 담는다.
-
-    One file's entry plus its parsed hunks (contract shape). An entry without a patch range answers empty `hunks`
-    with its own `omitted`; a range that cannot be read or parsed answers empty `hunks` with `omitted: "unreadable"`
-    (logged once). None when `n` is outside the list."""
+    """파일 하나의 항목과 파싱한 hunk, ``no_newline``, ``expandable``을 반환한다. ``n``이 범위 밖이면 None을 반환한다.
+    patch 범위가 없으면 빈 hunk와 항목의 ``omitted``를 그대로 담는다.
+    hunk를 읽을 수 없으면 빈 목록과 ``omitted: "unreadable"``을 담고 WARNING을 한 번 남긴다."""
     entry = file_entry(index, n)
     if entry is None:
         return None
@@ -452,13 +426,11 @@ def _parse_int(value: str | None, name: str) -> int | None:
 
 def read_lines(run_dir: Path, index: dict[str, Any], entry: dict[str, Any], start: int | None = None,
                end: int | None = None) -> dict[str, Any]:
-    """최종 파일의 ``start``부터 ``end``까지 줄을 ``result.zip``에서 읽어 반환한다. 범위는 파일에 맞게 줄이고
-    한 번에 ``MAX_LINES_PER_CALL``줄까지만 읽는다. 읽을 수 없으면 ``CodeDiffUnavailable``을 던진다.
+    """최종 파일의 ``start``부터 ``end``까지 줄을 ``result.zip``에서 읽어 ``{start, end, total, lines}``로 반환한다.
+    범위는 파일에 맞게 줄이고 한 번에 ``MAX_LINES_PER_CALL``줄까지만 읽는다. 읽을 수 없으면 ``CodeDiffUnavailable``을 던진다.
 
-    Lines `start … end` (1-based, inclusive; defaults 1 and start + 199) of the final file, member
-    `<zip_root>/<path>` of result.zip: `{start, end, total, lines}`. Clamped to the file, at most `MAX_LINES_PER_CALL`
-    lines; the returned `end` is `start + len(lines) - 1`. Decoded like the hunks. Raises CodeDiffUnavailable for a
-    deleted or binary entry, an unsafe path, a missing ZIP or member, a member over `MAX_MEMBER_BYTES`, a read error."""
+    1-based, inclusive; defaults 1 and start + 199; the returned `end` is `start + len(lines) - 1`. Decoded
+    like the hunks."""
     problem, member = _line_source_problem(run_dir, index, entry)
     if problem is not None:
         raise CodeDiffUnavailable(problem)
@@ -492,7 +464,6 @@ def read_lines(run_dir: Path, index: dict[str, Any], entry: dict[str, Any], star
 def create_codediff_router(mgr: Any) -> APIRouter:
     """코드 변경 화면의 API 라우터를 만든다. ``mgr``는 실행 폴더와 마스킹 대기 여부를 알려 주는 ``RunManager``다.
 
-    The three `/api/runs/{id}/codediff…` routes over `mgr` (a `RunManager`: `runs`, `run_dir`, `file_withheld`).
     Run ids go through app.py's `_check_id` (imported here, when app.py is already loaded)."""
     from .app import _check_id
 

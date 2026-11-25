@@ -1,88 +1,82 @@
 """프로젝트 zip을 받아 이관을 실행하고 진행 상황을 SSE로 보여 주는 FastAPI 웹 앱 모듈.
-``sbmig serve`` 또는 ``uvicorn sbmig.web.app:app``으로 띄우며, 라우트는 요청을
-:class:`~sbmig.web.runs.RunManager`에 넘긴다. 실행마다 작업 스레드 하나에서 ``stream_graph``를 실행한다.
-진입점은 :func:`create_app`, :class:`TokenGuard`, ``_stream``이다.
+``sbmig serve`` 또는 ``uvicorn sbmig.web.app:app``으로 띄운다. 라우트는 요청을 :class:`~sbmig.web.runs.RunManager`에 넘긴다.
 - SSE 생성기는 스레드풀 스레드에서 기다리므로 이벤트 루프를 막지 않는다(스레드 한도 256)
-- ``result.zip``에는 회사 소스가 들어 있으므로, 토큰이 설정되어 있으면 모든 요청에 토큰을 요구하고 없으면
-  같은 PC(루프백)의 요청만 받는다
-
-FastAPI web app: upload a project zip, run the migration in-process, watch it live over SSE.
+- ``result.zip``에 회사 소스가 들어 있으므로 토큰이 있으면 모든 요청에 토큰을 요구한다
+- 토큰이 없으면 같은 PC(루프백)의 요청만 받는다. 열린 모드(``SBMIG_WEB_OPEN=1``)면 사내망 전체를 받는다
+- 모든 모드에서 다른 사이트의 페이지가 보낸 상태 변경 요청은 403으로 거부한다
+- 같은 PC의 리버스 프록시 뒤에서는 모든 클라이언트가 루프백으로 보이므로 토큰을 켜야 한다
 
     uvicorn sbmig.web.app:app --port 8765          (env SBMIG_WEB_OUT, SBMIG_WEB_REPO_ROOT)
     sbmig serve --port 8765                         (same app, via uvicorn.run)
 
 Routes:
     GET  /                               the page (static/index.html); /static/* = sbmig/web/static
-    GET  /api/configs                    config/*.yml names ("configs") and the server's default choice ("default":
-                                         `sbmig serve --config` / $SBMIG_WEB_CONFIGS, else artifacts.yml /
-                                         artifacts.local-e2e.yml when present) — the page runs with the default and
-                                         shows the full list only under "고급 설정"; "max_parallel" = how many
-                                         migrations run at a time (v2.1z-ae: Job modes, else 1); "framework" =
-                                         {configured, name, fix_loop} of those configs (v2.1z-aw)
-    GET  /api/runs[?days=N][&keep=<id>]  known runs (newest first) with status ("runs"; a waiting run carries "queue",
-                                         a Job run its "slot") and "parallel": {slots, running, waiting}; `days` = only
-                                         runs started in the last N × 24 h (0 / omitted = all; not a non-negative
-                                         integer → 400), queued / running runs, a remediation waiting for an IVAS check,
-                                         queued, running or resumed, and `keep` always listed; "days" and "hidden" (left out) beside "runs"
-    POST /api/runs?name=<file.zip>&project=<name>[&configs=a.yml,b.yml][&stop_after=…][&llm_provider=…][&flow=full|remediation]
-         body = the zip bytes                                       → 202 {"run_id", "status"}
-         `project` (v2.1z-be) is required and must match `runs.PROJECT_RE` (letters, digits, `_`, `-`, 1–30, first a
-         letter or digit; not trimmed) → else 400 {"error", "message_ko"} before any body byte is read; the run id is
-         `<project>-YYYYmmdd-HHMMSS-<hex 6>`.
-         `configs` omitted = the server default; `configs=` (empty) = default.yml only; `flow` (v2.1z-aj) omitted =
-         `full` (migration, then the chained remediation), `remediation` = remediation only (no migration), another
-         value → 400; `stop_after` with `flow=remediation` → 400
+    GET  /api/configs                    config/*.yml names ("configs") and the server's default choice
+                                         ("default": `sbmig serve --config` / $SBMIG_WEB_CONFIGS, else
+                                         artifacts.yml / artifacts.local-e2e.yml when present); "max_parallel"
+                                         = how many migrations run at a time (Job modes, else 1); "framework"
+                                         = {configured, name, fix_loop, remediation_always} of those configs
+    GET  /api/runs[?days=N][&keep=<id>]  known runs (newest first) with status ("runs"; a waiting run carries
+                                         "queue", a Job run its "slot") and "parallel": {slots, running,
+                                         waiting}; `days` = only runs started in the last N x 24 h (0 /
+                                         omitted = all; not a non-negative integer -> 400); queued / running
+                                         runs, a remediation waiting for an IVAS check, queued, running or
+                                         resumed, and `keep` are always listed; "days" and "hidden" (left
+                                         out) beside "runs"
+    POST /api/runs?name=<file.zip>&project=<name>[&configs=a.yml,b.yml][&stop_after=...][&llm_provider=...]
+                  [&flow=full|remediation]
+         body = the zip bytes                                       -> 202 {"run_id", "status"}
+         `project` is required and must match `runs.PROJECT_RE` (letters, digits, `_`, `-`, 1-30, first a
+         letter or digit; not trimmed), else 400 {"error", "message_ko"} before any body byte is read; the run
+         id is `<project>-YYYYmmdd-HHMMSS-<hex 6>`.
+         `configs` omitted = the server default; `configs=` (empty) = default.yml only; `flow` omitted =
+         `full` (migration, then the chained remediation), `remediation` = remediation only, another value
+         -> 400; `stop_after` with `flow=remediation` -> 400
     GET  /api/runs/{id}                  status ("framework": {name, scope, fix_loop} for a run in the reduced
-                                         scope jdk-jakarta, from report.json or the journal; v2.1z-aw; "project" when the
-                                         upload carried one, absent for older runs; "zip_name", the name result.zip is
-                                         received under, always, v2.1z-bt)
+                                         scope jdk-jakarta, from report.json or the journal; "project" when
+                                         the upload carried one; "zip_name", the name result.zip is received
+                                         under)
     GET  /api/runs/{id}/events           SSE: status | node | error | journal | log | report | ping | end
     POST /api/runs/{id}/stop             stop after the current graph node
     GET  /api/runs/{id}/files/{name}     report.md | report.json | result.zip | sbmig.log | journal.jsonl |
                                          changes.patch | plan.json | profile.json | errors.md | errors.jsonl;
                                          `?download=1` attaches; report.md / report.json are then named
-                                         migration-report.md / migration-report.json (v2.1z-bg); result.zip is
-                                         received as <project>-migration.zip (`contract.zip_download_name`, v2.1z-bt)
-    GET  /api/runs/{id}/codediff         the code-change view (v2.1z-au, `sbmig.web.codediff`): the stored
-                                         codediff/index.json; 404 {"error": "code diff not available"} without it,
-                                         409 while the run's final redaction pass is pending
+                                         migration-report.md / migration-report.json; result.zip is received
+                                         as <project>-migration.zip (`contract.zip_download_name`)
+    GET  /api/runs/{id}/codediff         the code-change view (`sbmig.web.codediff`): the stored
+                                         codediff/index.json; 404 {"error": "code diff not available"} without
+                                         it, 409 while the run's final redaction pass is pending
     GET  /api/runs/{id}/codediff/files/{n}
                                          one file's entry + parsed hunks, no_newline, expandable
     GET  /api/runs/{id}/codediff/files/{n}/lines?start=&end=
-                                         lines of the FINAL file read from result.zip (1-based, inclusive, clamped,
-                                         at most 5,000 per call)
-    /api/remediations…                   vulnerability remediation (separate LangGraph flow; in-process: worker threads
-                                         of this process, one at a time; Job modes: runs in the build pod after a
-                                         successful migration, or after a framework project's failed build when its
-                                         fix loop is off (v2.1z-aw), chained ones read here by run id):
+                                         lines of the FINAL file read from result.zip (1-based, inclusive,
+                                         clamped, at most 5,000 per call)
+    /api/remediations...                 vulnerability remediation (separate LangGraph flow; in-process:
+                                         worker threads of this process, one at a time; Job modes: runs in
+                                         the build pod after the migration, chained ones read here by run id):
                                          POST (zip body) / GET list / GET readiness /
                                          GET {id} / result / resume / stop /
-                                         GET files/{name} / DELETE {id} — `sbmig.remediations.api` (contract API.md)
+                                         GET files/{name} / DELETE {id}: `sbmig.remediations.api`
+                                         (contract API.md)
     GET  /admin                          the admin page (static/admin.html; 404 text when the file is missing)
-    /admin/api/…                         admin login / session / usage per project / log ZIPs — `sbmig.web.admin`
-                                         (its own password + cookie `sbmig_admin`, behind the site token guard)
+    /admin/api/...                       admin login / session / usage per project / log ZIPs:
+                                         `sbmig.web.admin` (its own password + cookie `sbmig_admin`, behind
+                                         the site token guard)
 
-Runs execute in worker threads of this process (see `sbmig.web.runs`); the SSE generator blocks on the run's events
-in a threadpool thread, never on the event loop.
-
-Access (round 10): the page hands out company source code (`result.zip`) and runs Maven on uploaded poms, so
-* with a token (`create_app(token=…)`, `$SBMIG_WEB_TOKEN`, `sbmig serve --token`) every request needs it:
-  `Authorization: Bearer <token>`, or the HttpOnly cookie a `?token=<token>` request sets once (the page is then
-  reloaded without the token in the address bar; SameSite=Strict, so other sites cannot use it);
-* without a token only loopback clients (127.0.0.1 / ::1, and since 2026-10-28 the IPv4-mapped
-  ::ffff:127.0.0.1 a socket bound to `::` reports, A11) are served — a LAN client gets 403 with the hint, even
-  when plain `uvicorn … --host 0.0.0.0` was started without one (`sbmig serve` refuses to start like that).
-  Trap: behind a reverse proxy on this machine every client looks like loopback — set a token there.
-* **open mode (2026-11-05, the user: "사내망에서만 쓸 페이지야")**: `create_app(open_network=True)`, `sbmig serve --open` or
-  `SBMIG_WEB_OPEN=1` serves every client without a token — the company runs the page on its intranet only, so the
-  token (one URL per owner, a 7-day cookie) was a cost without a threat model; the server logs ONE warning at start.
-  A configured token still wins (open mode changes nothing when a token is set).
-* in every mode a state-changing request (not GET / HEAD / OPTIONS) that carries an `Origin` of another host or
-  `Sec-Fetch-Site: cross-site` is refused with 403 (W1, review 2026-11-18: a page of another site could otherwise
-  upload a ZIP, stop a run or resume a remediation through an employee's browser); clients that send neither header
-  (curl, scripts) are unaffected.
-
-
+Access:
+* with a token (`create_app(token=...)`, `$SBMIG_WEB_TOKEN`, `sbmig serve --token`) every request needs it:
+  `Authorization: Bearer <token>`, or the HttpOnly cookie a `?token=<token>` request sets once (the page is
+  then reloaded without the token in the address bar; SameSite=Strict, so other sites cannot use it);
+* without a token only loopback clients (127.0.0.1 / ::1, and the IPv4-mapped ::ffff:127.0.0.1 a socket
+  bound to `::` reports) are served; a LAN client gets 403 with the hint, even when plain
+  `uvicorn ... --host 0.0.0.0` was started without one (`sbmig serve` refuses to start like that);
+* open mode: `create_app(open_network=True)`, `sbmig serve --open` or `SBMIG_WEB_OPEN=1` serves every
+  client without a token (the company runs the page on its intranet only); the server logs ONE warning at
+  start. A configured token still wins;
+* in every mode a state-changing request (not GET / HEAD / OPTIONS) that carries an `Origin` of another host
+  or `Sec-Fetch-Site: cross-site` is refused with 403 (a page of another site could otherwise upload a ZIP,
+  stop a run or resume a remediation through an employee's browser); clients that send neither header (curl,
+  scripts) are unaffected.
 """
 from __future__ import annotations
 
@@ -117,42 +111,35 @@ log = logging.getLogger("sbmig.web")
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 DEFAULT_MAX_UPLOAD_MB = 512
-MAX_UPLOAD = DEFAULT_MAX_UPLOAD_MB * 1024 * 1024      # default upload limit in bytes (see resolve_max_upload)
+MAX_UPLOAD = DEFAULT_MAX_UPLOAD_MB * 1024 * 1024      # 기본 업로드 한도(바이트). resolve_max_upload 참고
 MAX_UPLOAD_ENV = "SBMIG_MAX_UPLOAD_MB"
-THREAD_POOL_SIZE = 256             # anyio worker threads: each open SSE stream (browser tab) holds one for the run
+THREAD_POOL_SIZE = 256             # anyio 작업 스레드 수. 열린 SSE 스트림(브라우저 탭)마다 하나씩 잡는다
 _END = object()
 TOKEN_ENV = "SBMIG_WEB_TOKEN"
-OPEN_ENV = "SBMIG_WEB_OPEN"              # "1" / "true": serve every client without a token (trusted intranet only)
-CONFIGS_ENV = "SBMIG_WEB_CONFIGS"   # comma-separated config/*.yml names every upload runs with (sbmig serve --config)
+OPEN_ENV = "SBMIG_WEB_OPEN"              # "1"이나 "true"면 토큰 없이 모든 클라이언트를 받는다. 사내망 전용
+CONFIGS_ENV = "SBMIG_WEB_CONFIGS"   # 모든 업로드가 쓰는 config/*.yml 이름을 쉼표로 나열한다(sbmig serve --config)
 TOKEN_COOKIE = "sbmig_token"
-COOKIE_MAX_AGE_S = 7 * 24 * 3600   # the browser keeps access for a week (the token itself never leaves the server)
+COOKIE_MAX_AGE_S = 7 * 24 * 3600   # 브라우저가 일주일 동안 접근을 유지한다. 토큰 자체는 서버 밖으로 나가지 않는다
 _LOOPBACK_NAMES = {"localhost", "localhost.localdomain", "ip6-localhost"}
-ADMIN_PAGE = "admin.html"          # GET /admin (v2.1z-ao): the admin page, static/admin.html
-# 사이트 토큰 검사에서 페이지로 다루는 주소다. ?token= 뒤 이동과 안내 HTML이 이 주소에만 적용된다
+ADMIN_PAGE = "admin.html"          # GET /admin이 보여 주는 관리자 페이지(static/admin.html)
+# 사이트 토큰 검사에서 페이지로 다루는 주소. ?token= 뒤 이동과 안내 HTML은 이 주소에만 적용된다
 PAGE_PATHS = ("/", "/index.html", "/admin")
 
 
 def _ip_is_loopback(addr: str) -> bool:
-    """IP 주소 문자열이 루프백 주소인지 확인한다.
-    127.0.0.0/8, ::1, IPv4를 담은 IPv6 주소 ``::ffff:127.x.x.x``를 루프백으로 본다.
-    Python 3.13 이전의 ``ipaddress``는 ``::ffff:127.0.0.1``을 루프백으로 보지 않으므로 ``ipv4_mapped``로
-    풀어서 확인한다. 주소 형식이 아니면 ValueError를 던진다.
+    """IP 주소 문자열이 루프백인지 확인한다. 127.0.0.0/8, ::1, ``::ffff:127.x.x.x``를 루프백으로 본다.
+    주소 형식이 아니면 ValueError를 던진다.
 
-    Loopback including the IPv4-mapped form (`::ffff:127.0.0.0/8`): a dual-stack socket bound to `::`
-    reports an IPv4 browser on this machine as `::ffff:127.0.0.1`, which `ipaddress` before Python 3.13 does
-    not call loopback (A11). ValueError when `addr` is not an IP address."""
+    A dual-stack socket bound to `::` reports an IPv4 browser on this machine as `::ffff:127.0.0.1`, which
+    `ipaddress` before Python 3.13 does not call loopback; hence `ipv4_mapped`."""
     ip = ipaddress.ip_address(addr)
     mapped = getattr(ip, "ipv4_mapped", None)
     return (mapped if mapped is not None else ip).is_loopback
 
 
 def is_loopback_host(host: str | None) -> bool:
-    """이 PC에서만 접근할 수 있는 주소인지 확인한다(127.0.0.0/8, ::1, ``::ffff:127.0.0.0/8``,
-    ``localhost``). ``0.0.0.0``, ``::``, 사내망 주소는 해당하지 않는다.
-    ``sbmig serve``가 토큰 없이 외부에 열리지 않게 막을 때 쓴다.
-
-    127.0.0.0/8, ::1, `localhost` — an address only this machine can reach. `0.0.0.0` / `::` / a LAN address
-    are not."""
+    """이 PC에서만 접근할 수 있는 주소인지 확인한다. 127.0.0.0/8, ::1, ``::ffff:127.0.0.0/8``, ``localhost``가 그렇다.
+    ``0.0.0.0``, ``::``, 사내망 주소는 아니다. ``sbmig serve``가 토큰 없이 외부에 열리지 않게 막을 때 쓴다."""
     h = (host or "").strip().strip("[]").lower()
     if h in _LOOPBACK_NAMES:
         return True
@@ -163,12 +150,8 @@ def is_loopback_host(host: str | None) -> bool:
 
 
 def _remote_client(scope: Scope) -> bool:
-    """요청한 클라이언트가 루프백이 아닌 IP에서 왔는지 확인한다.
-    IP가 없는 경우(유닉스 소켓, 테스트 클라이언트)는 로컬로 본다.
-    같은 PC의 리버스 프록시 뒤에서는 모든 클라이언트가 루프백으로 보이므로 이때는 토큰을 켜야 한다.
-
-    A client with a non-loopback IP address (a unix socket / the test client have no IP: local). Behind a
-    reverse proxy on this machine every client looks like loopback — set a token there."""
+    """요청한 클라이언트가 루프백이 아닌 IP에서 왔는지 확인한다. IP가 없으면(유닉스 소켓, 테스트) 로컬로 본다.
+    같은 PC의 리버스 프록시 뒤에서는 모든 클라이언트가 루프백으로 보이므로 이때는 토큰을 켜야 한다."""
     client = scope.get("client")
     host = client[0] if client else None
     try:
@@ -178,24 +161,23 @@ def _remote_client(scope: Scope) -> bool:
 
 
 def open_network_requested(value: str | None = None) -> bool:
-    """``SBMIG_WEB_OPEN``(또는 넘긴 값)이 참(1 / true / yes / on)인지 확인한다.
-    참이면 사내망 전용으로 보고 토큰 없이 모든 클라이언트를 받는다.
-
-    Is `SBMIG_WEB_OPEN` (or `value`) truthy — 1 / true / yes / on: serve every client without a token (intranet only)."""
+    """``SBMIG_WEB_OPEN``(또는 넘긴 값)이 1, true, yes, on 중 하나인지 확인한다.
+    참이면 사내망 전용으로 보고 토큰 없이 모든 클라이언트를 받는다."""
     v = (os.environ.get(OPEN_ENV, "") if value is None else value).strip().lower()
     return v in ("1", "true", "yes", "on")
 
 
-# 상태를 바꾸지 않는 메서드다. 이 밖의 요청만 다른 사이트에서 왔는지 검사한다
+# 상태를 바꾸지 않는 메서드. 이 밖의 요청만 다른 사이트에서 왔는지 검사한다
 SAFE_METHODS = ("GET", "HEAD", "OPTIONS")
-ALLOWED_ORIGINS_ENV = "SBMIG_WEB_ALLOWED_ORIGINS"   # extra hosts whose pages may send state-changing requests ("*" = no check)
+# 상태 변경 요청을 보내도 되는 다른 호스트 목록. "*"면 검사하지 않는다
+ALLOWED_ORIGINS_ENV = "SBMIG_WEB_ALLOWED_ORIGINS"
 CROSS_SITE_MESSAGE = ("cross-site request refused: a page of another web site cannot start, stop or change a run "
                       "(Origin / Sec-Fetch-Site)")
 _DEFAULT_PORTS = {"http": 80, "https": 443}
 
 
 def _split_host(value: str, scheme: str | None = None) -> tuple[str, int | None]:
-    """``host[:port]`` 값을 소문자 호스트 이름과 포트로 나눈다. 포트가 없으면 ``scheme``의 기본 포트, 그것도 없으면 None이다."""
+    """``host[:port]`` 값을 소문자 호스트 이름과 포트로 나눈다. 포트가 없으면 ``scheme``의 기본 포트를, 그것도 없으면 None을 쓴다."""
     v = value.strip().lower()
     host, port = v, None
     if v.startswith("["):                        # IPv6 리터럴은 대괄호 뒤의 콜론만 포트로 본다
@@ -214,13 +196,10 @@ def _split_host(value: str, scheme: str | None = None) -> tuple[str, int | None]
 
 def _same_host(origin: str, headers) -> bool:
     """``Origin`` 값이 요청의 자기 호스트(``Host``, 프록시가 남긴 ``X-Forwarded-Host``)를 가리키는지 확인한다.
-    호스트 값에 포트가 적혀 있을 때만 포트도 비교한다(TLS를 앞단에서 끝내면 브라우저는 https, 앱은 http로 본다).
-
-    Does the `Origin` name this request's own host (`Host`, or a proxy's `X-Forwarded-Host`)? The port is compared only
-    when the host value spells one: with TLS ended at an ingress the browser says https while the app sees http."""
+    호스트 값에 포트가 있을 때만 포트도 비교한다. 앞단에서 TLS를 끝내면 브라우저는 https, 앱은 http로 보기 때문이다."""
     scheme, sep, rest = origin.strip().partition("://")
     if not sep or not rest or "/" in rest:
-        return False                               # "null" (sandboxed frame, file://) or a malformed value
+        return False                               # "null"(샌드박스 프레임, file://)이거나 잘못된 값
     o_host, o_port = _split_host(rest, scheme)
     candidates = [headers.get("host", "")]
     fwd = headers.get("x-forwarded-host", "")
@@ -236,14 +215,11 @@ def _same_host(origin: str, headers) -> bool:
 
 
 def cross_site_request(scope: Scope) -> bool:
-    """상태를 바꾸는 요청(GET / HEAD / OPTIONS 밖)이 다른 사이트의 페이지에서 왔는지 확인한다.
-    ``Origin``의 호스트가 자기 호스트가 아니거나 ``Sec-Fetch-Site: cross-site``이면 참이다. 둘 다 없는 클라이언트(curl,
-    운영 스크립트)는 지금처럼 받는다.
-
-    A state-changing request (not GET / HEAD / OPTIONS) sent by a page of another site: an `Origin` whose host is not
-    ours, or `Sec-Fetch-Site: cross-site`. A client that sends neither header (curl, scripts) is not cross-site (W1).
-    `Sec-Fetch-Site: same-origin` (the browser's own statement, a page cannot set it) is accepted without comparing hosts,
-    so a proxy that rewrites `Host` cannot lock the page out; hosts in `SBMIG_WEB_ALLOWED_ORIGINS` are accepted too."""
+    """상태를 바꾸는 요청(GET, HEAD, OPTIONS 밖)이 다른 사이트의 페이지에서 왔는지 확인한다.
+    - ``Origin``의 호스트가 자기 호스트가 아니거나 ``Sec-Fetch-Site: cross-site``이면 참이다
+    - 두 헤더가 다 없는 클라이언트(curl, 운영 스크립트)는 받는다
+    - ``Sec-Fetch-Site: same-origin``은 호스트를 비교하지 않고 받는다. 페이지가 바꿀 수 없는 브라우저 값이다
+    - ``SBMIG_WEB_ALLOWED_ORIGINS``의 호스트도 받는다"""
     if scope["type"] != "http" or scope.get("method", "GET").upper() in SAFE_METHODS:
         return False
     allowed = _allowed_origin_hosts()
@@ -263,18 +239,18 @@ def cross_site_request(scope: Scope) -> bool:
 
 
 def _origin_host(origin: str) -> str:
-    """``Origin`` 값에서 ``host`` 또는 ``host:port``를 소문자로 꺼낸다. 형식이 맞지 않으면 빈 문자열이다."""
+    """``Origin`` 값에서 ``host``나 ``host:port``를 소문자로 꺼낸다. 형식이 맞지 않으면 빈 문자열을 반환한다."""
     _scheme, sep, rest = origin.strip().lower().partition("://")
     return rest if sep and rest and "/" not in rest else ""
 
 
 def _allowed_origin_hosts() -> set[str]:
     """``SBMIG_WEB_ALLOWED_ORIGINS``에 적힌 호스트 집합을 반환한다. 다른 호스트의 화면에서 이 API를 써야 할 때만 쓴다.
+    요청마다 웹 파드의 환경 변수를 다시 읽는다.
 
-    Hosts (`host` or `host:port`, comma-separated; a full origin `https://host` is accepted too) whose pages may send
-    state-changing requests although they are not this request's own host: a portal on another host, or a proxy that
-    rewrites `Host` without leaving `X-Forwarded-Host` on a plain-http page (where browsers send no `Sec-Fetch-Site`).
-    `*` switches the cross-site check off. Read at every request: the web pod's environment, never a Job's."""
+    Comma-separated `host` / `host:port` (a full origin `https://host` is accepted too): a portal on another
+    host, or a proxy that rewrites `Host` without `X-Forwarded-Host` on a plain-http page (browsers send no
+    `Sec-Fetch-Site` there). `*` switches the cross-site check off."""
     out: set[str] = set()
     for item in os.environ.get(ALLOWED_ORIGINS_ENV, "").split(","):
         v = item.strip().lower()
@@ -290,29 +266,26 @@ def _cookie_value(token: str) -> str:
 
 
 class TokenGuard:
-    """웹 요청의 접근을 제어하는 미들웨어 클래스.
-    응답 본문을 감싸지 않도록 순수 ASGI로 작성해 SSE 스트림이 그대로 지나간다.
-    토큰이 설정되어 있으면 모든 요청에 토큰을 요구하고, 없으면 루프백 클라이언트만 받는다.
-
-    ASGI middleware (pure ASGI: SSE streams pass through untouched). See the module docstring."""
+    """웹 요청의 접근을 제어하는 미들웨어 클래스. 규칙은 모듈 docstring에 있다.
+    응답 본문을 감싸지 않도록 순수 ASGI로 작성해서 SSE 스트림이 그대로 지나간다."""
 
     def __init__(self, app: ASGIApp, token: str | None = None, open_network: bool = False):
         self.app = app
         self.token = token or None
         self.cookie = _cookie_value(token) if token else ""
-        self.open_network = bool(open_network)      # 토큰이 없을 때만 쓰이며 참이면 원격 클라이언트도 받는다
+        self.open_network = bool(open_network)      # 토큰이 없을 때만 쓴다. 참이면 원격 클라이언트도 받는다
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        """요청 하나의 접근 권한을 검사한다.
-        - 토큰이 없으면 원격 클라이언트에 403을 반환한다
-        - 토큰이 있으면 Bearer 헤더나 쿠키가 맞을 때 통과시킨다. ``?token=``이 맞으면 쿠키를 설정하고, 페이지는 토큰을
-          뺀 주소로 303 이동시키며 API는 응답에 Set-Cookie를 붙인다. 그 밖에는 401을 반환한다
-        lifespan처럼 http / websocket이 아닌 요청은 그대로 넘긴다."""
+        """요청 하나의 접근 권한을 검사한다. lifespan처럼 http, websocket이 아닌 요청은 그대로 넘긴다.
+        - 다른 사이트에서 온 상태 변경 요청은 토큰과 상관없이 403을 반환한다
+        - 토큰이 없으면 열린 모드가 아닐 때 원격 클라이언트에 403을 반환한다
+        - 토큰이 있으면 Bearer 헤더나 쿠키가 맞을 때 통과시키고, 아니면 401을 반환한다
+        - ``?token=``이 맞으면 쿠키를 설정한다. 페이지는 토큰을 뺀 주소로 303 이동하고, API는 Set-Cookie를 붙인다"""
         if scope["type"] not in ("http", "websocket"):
             await self.app(scope, receive, send)
             return
         req = Request(scope)
-        # 다른 사이트의 페이지가 직원 브라우저로 업로드, 중지, 조치 재개를 보내지 못하게 토큰과 열린 모드보다 먼저 거부한다
+        # 다른 사이트의 페이지가 직원 브라우저로 업로드, 중지, 조치 재개를 보내지 못하게 토큰 검사보다 먼저 거부한다
         if cross_site_request(scope):
             await self._deny(scope, receive, send, req, 403, CROSS_SITE_MESSAGE)
             return
@@ -337,7 +310,7 @@ class TokenGuard:
             query = urlencode([(k, v) for k, v in req.query_params.multi_items() if k != "token"])
             if req.method == "GET" and req.url.path in PAGE_PATHS:
                 resp = RedirectResponse(req.url.path + (f"?{query}" if query else ""), status_code=303)
-            else:          # an API call with ?token= works once and leaves the cookie for the next ones
+            else:          # ?token=을 붙인 API 호출은 한 번 통과하고 다음 호출을 위한 쿠키를 남긴다
                 resp = None
             set_cookie = {"key": TOKEN_COOKIE, "value": self.cookie, "httponly": True, "samesite": "strict",
                           "path": "/", "max_age": COOKIE_MAX_AGE_S}
@@ -363,8 +336,7 @@ class TokenGuard:
 
     @staticmethod
     async def _deny(scope: Scope, receive: Receive, send: Send, req: Request, status: int, message: str) -> None:
-        """거부 응답을 보낸다.
-        웹소켓은 1008로 닫고, 페이지 요청에는 안내 HTML을, API에는 JSON ``{"error": …}``를 반환한다."""
+        """거부 응답을 보낸다. 웹소켓은 1008로 닫고, 페이지에는 안내 HTML을, API에는 JSON ``{"error": …}``를 보낸다."""
         if scope["type"] == "websocket":
             await send({"type": "websocket.close", "code": 1008})
             return
@@ -380,11 +352,7 @@ class TokenGuard:
 def resolve_max_upload(max_upload_mb: int | None = None) -> int:
     """업로드 크기 상한(바이트)을 정한다.
     인자(``sbmig serve --max-upload-mb``), ``$SBMIG_MAX_UPLOAD_MB``, 기본값 512 MB 순으로 정한다.
-    0이면 상한이 없고, 음수나 숫자가 아닌 값은 경고를 남기고 기본값을 쓴다.
-
-    Upload limit in bytes: the argument (`sbmig serve --max-upload-mb`), else `$SBMIG_MAX_UPLOAD_MB`, else 512 MB.
-    0 = no limit — the operator lifts the cap for one oversized project (a 980 MB zip, 2026-10-23) without touching
-    the code; a negative or unreadable value falls back to the default and is logged."""
+    0이면 상한이 없다. 음수나 숫자가 아닌 값은 경고를 남기고 기본값을 쓴다."""
     source = "--max-upload-mb"
     if max_upload_mb is None:
         raw = os.environ.get(MAX_UPLOAD_ENV, "").strip()
@@ -412,14 +380,12 @@ def describe_max_upload(max_upload: int) -> str:
 
 def _ensure_console_logging() -> None:
     """sbmig 로그가 콘솔에 INFO 수준으로 출력되도록 콘솔 핸들러를 붙인다.
-    ``uvicorn sbmig.web.app:app``으로 바로 띄우면 sbmig 로거가 설정되지 않기 때문이다.
-
-    Under plain `uvicorn sbmig.web.app:app` nobody configured the sbmig logger: show INFO on the console."""
+    ``uvicorn sbmig.web.app:app``으로 바로 띄우면 sbmig 로거를 설정하는 곳이 없기 때문이다."""
     from sbmig.cli import harden_console_streams, install_redaction_if_requested
 
-    harden_console_streams()                 # a cp949 console must not turn every em dash into "--- Logging error ---"
-    # SBMIG_REDACT_OUTPUT=1이면 로그와 저널의 비밀 값을 기록할 때 마스킹해야 하므로 uvicorn으로 바로 띄운
-    # 경우에도 여기서 설치하고, 설치하지 못하면 서버를 띄우지 않는다
+    harden_console_streams()                 # cp949 콘솔에서 줄표 하나 때문에 "Logging error"가 나지 않게 한다
+    # SBMIG_REDACT_OUTPUT=1이면 기록할 때 마스킹해야 하므로 uvicorn으로 바로 띄운 경우에도 여기서 설치한다.
+    # 설치하지 못하면 서버를 띄우지 않는다
     install_redaction_if_requested()
     root = logging.getLogger("sbmig")
     if not any(not isinstance(h, logging.FileHandler) for h in root.handlers):
@@ -435,7 +401,7 @@ def _ensure_console_logging() -> None:
 
 def _check_id(run_id: str) -> str:
     """URL의 실행 ID가 ``RUN_ID_RE`` 형식인지 검사하고 그대로 반환한다.
-    ``..`` 등으로 출력 폴더 밖을 가리키지 못하도록 형식이 틀리면 400 오류를 낸다."""
+    ``..`` 등으로 출력 폴더 밖을 가리키지 못하도록 형식이 틀리면 HTTPException(400)을 던진다."""
     if not RUN_ID_RE.match(run_id):
         raise HTTPException(400, "bad run id")
     return run_id
@@ -443,18 +409,13 @@ def _check_id(run_id: str) -> str:
 
 def _sse(event: str, data: Any) -> bytes:
     """SSE 이벤트 하나(``event:`` + ``data:`` JSON + 빈 줄)를 바이트로 만든다.
-    한글을 그대로 내보내기 위해 ``ensure_ascii=False``를 쓴다.
-    실행 파일에서 읽은 NaN이나 무한대는 브라우저가 읽을 수 있도록 null로 쓴다."""
+    한글을 그대로 내보내려고 ``ensure_ascii=False``를 쓰고, NaN이나 무한대는 브라우저가 읽도록 null로 쓴다."""
     return f"event: {event}\ndata: {finite_dumps(data, ensure_ascii=False, default=str)}\n\n".encode()
 
 
 async def _stream(events: Iterator[tuple[str, Any]]) -> AsyncIterator[bytes]:
-    """블로킹되는 ``RunManager.events`` 생성기를 비동기 생성기로 감싼다.
-    이벤트 루프를 막지 않도록 ``next()``를 작업 스레드에서 실행한다.
-    브라우저 연결이 끊기면 생성기를 닫는다.
-    이때 ``next()``가 실행 중이면 바로 닫지 못하고, 그 스레드는 다음 이벤트가 올 때 끝난다.
-
-    Async wrapper over the blocking `RunManager.events` generator: each `next()` runs in a worker thread."""
+    """블로킹되는 ``RunManager.events`` 생성기를 비동기 생성기로 감싼다. ``next()``는 작업 스레드에서 실행한다.
+    브라우저 연결이 끊기면 생성기를 닫는다. 이때 ``next()``가 실행 중이면 그 스레드는 다음 이벤트가 올 때 끝난다."""
     try:
         while True:
             item = await anyio.to_thread.run_sync(next, events, _END)
@@ -466,7 +427,7 @@ async def _stream(events: Iterator[tuple[str, Any]]) -> AsyncIterator[bytes]:
         if callable(close):
             try:
                 close()
-            except ValueError:      # "generator already executing": the thread still runs next(); it ends on its own
+            except ValueError:      # "generator already executing"이면 스레드가 next()를 실행 중이고 곧 스스로 끝난다
                 pass
 
 
@@ -474,28 +435,22 @@ def create_app(out_dir: Path, repo_root: Path = PACKAGE_ROOT, max_upload_mb: int
                token: str | None = None, default_configs: list[str] | None = None,
                open_network: bool | None = None, mode: str | None = None, job_client: Any = None,
                max_parallel: int | None = None) -> FastAPI:
-    """웹 앱을 만든다. 실행 관리자, 업로드 상한, 토큰(인자 또는 ``$SBMIG_WEB_TOKEN``), 기본 설정 파일(인자
-    또는 ``$SBMIG_WEB_CONFIGS``), 라우트, 정적 파일, 시작과 종료 처리를 구성한다.
-    토큰이 있으면 모든 요청에 토큰을 요구하고, 없으면 루프백 클라이언트만 받는다. ``open_network``(인자 또는
-    ``$SBMIG_WEB_OPEN``)가 참이면 토큰 없이 모든 클라이언트를 받고, 시작할 때 경고를 남긴다.
-
-    `token` (else `$SBMIG_WEB_TOKEN`): required on every request; without one only loopback clients are served,
-    unless `open_network` (else `$SBMIG_WEB_OPEN`): every client, no token, one WARNING at start (intranet only).
-    `default_configs` (else `$SBMIG_WEB_CONFIGS`): the config names every upload runs with unless the request
-    names its own (`RunManager.default_configs`). `max_parallel` (else `$SBMIG_JOB_MAX_PARALLEL`): migrations at a
-    time in the Job modes (`RunManager.max_parallel`; in-process always 1)."""
-    load_dotenv_files()        # server-start variables (SBMIG_MAX_UPLOAD_MB) may live in .env too; the shell wins
+    """웹 앱을 만든다. 실행 관리자, 업로드 상한, 토큰, 라우트, 정적 파일, 시작과 종료 처리를 구성한다.
+    - 인자가 None이면 환경 변수를 쓴다. ``token``은 ``SBMIG_WEB_TOKEN``, ``open_network``는 ``SBMIG_WEB_OPEN``이다
+    - ``default_configs``는 ``SBMIG_WEB_CONFIGS``, ``max_parallel``은 ``SBMIG_JOB_MAX_PARALLEL``이다
+    - 토큰 없이 열린 모드로 시작하면 WARNING을 한 번 남긴다"""
+    load_dotenv_files()        # 서버 시작 변수(SBMIG_MAX_UPLOAD_MB 등)는 .env에 있어도 된다. 셸 값이 우선한다
     if default_configs is None:
         default_configs = [c.strip() for c in os.environ.get(CONFIGS_ENV, "").split(",") if c.strip()]
     mgr = RunManager(Path(out_dir), Path(repo_root), default_configs=default_configs, mode=mode, job_client=job_client,
                      max_parallel=max_parallel)
-    # 취약점 조치는 이관과 같은 기본 설정을 쓴다. in-process 모드에서만 이 프로세스의 작업 스레드로
-    # 실행하고, Job 모드에서는 빌드 파드가 실행한 결과를 보여 주고 재개 요청만 받는다
+    # 취약점 조치는 이관과 같은 기본 설정을 쓴다. in-process에서만 이 프로세스의 작업 스레드로 실행하고,
+    # Job 모드에서는 빌드 파드가 실행한 결과를 보여 주고 재개 요청만 받는다
     from sbmig.remediations.api import create_router as create_remediation_router
     from sbmig.remediations.service import RemediationManager
     rem_mgr = RemediationManager(Path(out_dir), Path(repo_root), default_configs=mgr.default_configs,
                                  mode=mgr.effective_mode, run_manager=mgr)
-    max_upload = resolve_max_upload(max_upload_mb)       # bytes; 0 = unlimited
+    max_upload = resolve_max_upload(max_upload_mb)       # 바이트, 0이면 상한 없음
     token = (token if token is not None else os.environ.get(TOKEN_ENV, "")).strip() or None
     open_network = open_network_requested() if open_network is None else bool(open_network)
     if token:
@@ -505,12 +460,12 @@ def create_app(out_dir: Path, repo_root: Path = PACKAGE_ROOT, max_upload_mb: int
     else:
         access = "no token: loopback clients only"
 
-    # SSE 스트림마다 스레드를 하나 쓰므로 시작할 때 스레드 한도를 늘린다. 종료할 때는 실행 중이거나 대기
-    # 중인 이관에 중지를 요청하고 남은 Maven / OpenRewrite 프로세스를 강제 종료한다
+    # SSE 스트림마다 스레드를 하나 쓰므로 시작할 때 스레드 한도를 늘린다.
+    # 종료할 때는 이관에 중지를 요청하고 남은 Maven, OpenRewrite 프로세스를 강제 종료한다
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         _ensure_console_logging()
-        limiter = anyio.to_thread.current_default_thread_limiter()   # every SSE stream holds one of these threads
+        limiter = anyio.to_thread.current_default_thread_limiter()   # SSE 스트림마다 이 스레드를 하나 잡는다
         limiter.total_tokens = max(limiter.total_tokens, THREAD_POOL_SIZE)
         log.info("sbmig web UI ready (runs under %s, configs from %s/config, default configs %s, upload limit %s, %s, mode %s%s)",
                  mgr.out_dir, mgr.repo_root, ",".join(mgr.default_configs()) or "- (default.yml only)",
@@ -521,7 +476,8 @@ def create_app(out_dir: Path, repo_root: Path = PACKAGE_ROOT, max_upload_mb: int
                         "result.zip (company source) and upload poms whose plugins Maven runs here — trusted intranet only",
                         OPEN_ENV)
         yield
-        log.info("remediations shut down: %s", rem_mgr.shutdown())     # 뒤의 RunManager.shutdown이 남은 Maven을 종료하므로 그 전에 먼저 정리한다
+        # 뒤의 RunManager.shutdown이 남은 Maven을 종료하므로 조치를 먼저 정리한다
+        log.info("remediations shut down: %s", rem_mgr.shutdown())
         info = mgr.shutdown()
         log.info("sbmig web UI shut down: %s", info)
 
@@ -560,7 +516,7 @@ def create_app(out_dir: Path, repo_root: Path = PACKAGE_ROOT, max_upload_mb: int
     @app.get("/api/configs")
     def configs() -> dict:
         return {"configs": mgr.configs(), "default": mgr.default_configs(), "repo_root": str(mgr.repo_root),
-                "out_dir": str(mgr.out_dir), "max_upload_mb": max_upload // (1024 * 1024),      # 0 = no limit
+                "out_dir": str(mgr.out_dir), "max_upload_mb": max_upload // (1024 * 1024),      # 0이면 상한 없음
                 "max_parallel": mgr.max_parallel,
                 # 기본 설정이 사내 프레임워크를 지정하면 화면이 업로드 전에 줄인 범위를 알린다
                 "framework": mgr.framework_info()}
@@ -568,7 +524,7 @@ def create_app(out_dir: Path, repo_root: Path = PACKAGE_ROOT, max_upload_mb: int
     # 화면이 슬롯 부족 알림과 대기 순번을 표시할 수 있도록 실행 목록과 함께 동시 실행 현황을 반환한다
     @app.get("/api/runs")
     def runs(days: str | None = None, keep: str | None = None) -> Any:
-        # 최근 며칠 안의 실행만 보낸다. 음이 아닌 정수만 받고 0이나 생략은 전체다
+        # 최근 며칠 안의 실행만 보낸다. 음이 아닌 정수만 받고, 0이나 생략이면 전체를 보낸다
         n = 0
         if days is not None:
             if not re.fullmatch(r"\d{1,6}", days):
@@ -580,10 +536,8 @@ def create_app(out_dir: Path, repo_root: Path = PACKAGE_ROOT, max_upload_mb: int
 
     @app.get("/api/threads", response_class=PlainTextResponse)
     def threads() -> str:
-        """모든 스레드의 스택을 문자열로 반환한다.
-        Windows에는 SIGUSR1이 없으므로 멈춘 위치를 확인할 때 쓰며, <out>/threads-<ts>.txt 파일에도 기록한다.
-
-        Every thread's stack (round 9c, operators on Windows: no SIGUSR1) — also written to <out>/threads-<ts>.txt."""
+        """모든 스레드의 스택을 문자열로 반환하고 ``<out>/threads-<ts>.txt``에도 기록한다.
+        Windows에는 SIGUSR1이 없으므로 멈춘 위치를 확인할 때 쓴다."""
         from sbmig.core.diag import dump_threads, thread_dump_text
         p = dump_threads(mgr.out_dir)
         return (f"# written to {p}\n" if p else "") + thread_dump_text()
@@ -614,11 +568,8 @@ def create_app(out_dir: Path, repo_root: Path = PACKAGE_ROOT, max_upload_mb: int
         if no_space:
             log.warning("upload refused: %s", no_space)
             return JSONResponse({"error": no_space}, status_code=507)
-        # 본문을 메모리에 올리지 않도록 ``_uploads/.incoming-*.part``에 스트리밍으로 기록하면서 조각마다
-        # 크기 상한과 zip 서명(PK)을 확인한다. 거부된 업로드 파일은 마지막에 지운다
-        # The body is streamed to <out>/_uploads/.incoming-*.part and checked on the way: a project zip close to a
-        # gigabyte must not sit in memory (twice) before it is even validated. The limit and the zip signature are
-        # enforced per chunk; the run manager moves the file into place, a rejected upload is deleted below.
+        # 1 GB 가까운 zip을 메모리에 올리지 않도록 ``_uploads/.incoming-*.part``에 스트리밍으로 기록하면서
+        # 조각마다 크기 상한과 zip 서명(PK)을 확인한다. 거부된 업로드 파일은 마지막에 지운다
         tmp = mgr.incoming_path()
         size, head = 0, b""
         try:
@@ -640,8 +591,7 @@ def create_app(out_dir: Path, repo_root: Path = PACKAGE_ROOT, max_upload_mb: int
                 return JSONResponse({"error": "body is not a zip file"}, status_code=400)
             # configs를 주지 않으면 서버 기본값을, 빈 값을 주면 default.yml만 쓴다
             cfgs = mgr.default_configs() if configs is None else [c for c in configs.split(",") if c]
-            # 설정 읽기, zip 풀기, 오케스트레이터 생성은 블로킹 작업이므로
-            # 스레드풀에서 실행하고, 잘못된 요청에는 400을 반환한다
+            # 설정 읽기, zip 풀기, 오케스트레이터 생성은 블로킹 작업이라 스레드풀에서 실행한다. 잘못된 요청은 400이다
             try:
                 rid = await run_in_threadpool(mgr.start_file, tmp, name, cfgs, stop_after or None,
                                               llm_provider or None, flow, project)
@@ -649,7 +599,7 @@ def create_app(out_dir: Path, repo_root: Path = PACKAGE_ROOT, max_upload_mb: int
                 return JSONResponse({"error": str(e)}, status_code=400)
             return FiniteJSONResponse({"run_id": rid, "status": mgr.status(rid)}, status_code=202)
         finally:
-            tmp.unlink(missing_ok=True)        # gone already when start_file moved it under its run id
+            tmp.unlink(missing_ok=True)        # start_file이 실행 id 아래로 옮겼으면 이미 없다
 
     @app.get("/api/runs/{run_id}")
     def status(run_id: str) -> JSONResponse:
@@ -672,11 +622,10 @@ def create_app(out_dir: Path, repo_root: Path = PACKAGE_ROOT, max_upload_mb: int
 
     @app.get("/api/runs/{run_id}/files/{name}")
     def files(run_id: str, name: str, download: str | None = None):
-        # 경로 조작을 막기 위해 SERVED_FILES에 있는 이름만 내려주고, zip / csv / jsonl은 첨부 파일로 내려준다
+        # 경로 조작을 막으려고 SERVED_FILES에 있는 이름만 내려주고, zip, csv, jsonl은 첨부 파일로 내려준다
         if name not in SERVED_FILES:
             return JSONResponse({"error": "unknown file"}, status_code=404)
-        # 마지막 마스킹 단계가 남은 실행은 기록할 때 이미 마스킹되는 sbmig.log와 journal.jsonl만 내주고,
-        # 보고서와 오류 목록은 실행이 끝난 뒤에 내준다
+        # 마지막 마스킹이 남은 실행은 기록할 때 마스킹되는 sbmig.log와 journal.jsonl만 내주고 나머지는 409로 막는다
         rid = _check_id(run_id)
         if mgr.file_withheld(rid, name):
             return JSONResponse({"error": f"{name} is available once the run has finished (its outputs are redacted "
@@ -700,21 +649,18 @@ def create_app(out_dir: Path, repo_root: Path = PACKAGE_ROOT, max_upload_mb: int
 
 
 # ``uvicorn sbmig.web.app:app``이 쓰는 앱 객체는 처음 접근할 때 만든다(PEP 562 ``__getattr__``).
-# ``sbmig serve``는 자기 인자로 create_app을 따로 호출하는데, import할 때 기본 경로로 앱을 만들면 그 앱의
-# 시작 검증이 먼저 실패하기 때문이다
+# ``sbmig serve``는 자기 인자로 create_app을 호출하므로, import 때 기본 경로로 앱을 만들면 시작 검증이 먼저 실패한다
 _module_app: FastAPI | None = None
 
 
 def __getattr__(name: str) -> Any:
     """모듈 속성 ``sbmig.web.app.app``을 요청받으면 uvicorn용 앱을 처음 한 번 만들어 반환한다.
-    다른 이름은 AttributeError를 던진다.
-
-    Lazy module attribute `app` for plain `uvicorn sbmig.web.app:app`; built on first access, never at import."""
+    다른 이름은 AttributeError를 던진다."""
     global _module_app
     if name != "app":
         raise AttributeError(name)
     if _module_app is None:
-        load_dotenv_files()        # plain `uvicorn sbmig.web.app:app`: SBMIG_WEB_OUT / SBMIG_WEB_REPO_ROOT from .env as well
+        load_dotenv_files()        # uvicorn으로 바로 띄울 때도 SBMIG_WEB_OUT, SBMIG_WEB_REPO_ROOT를 .env에서 읽는다
         _module_app = create_app(Path(os.environ.get("SBMIG_WEB_OUT", "out/web")),
                                  Path(os.environ.get("SBMIG_WEB_REPO_ROOT", str(PACKAGE_ROOT))))
     return _module_app

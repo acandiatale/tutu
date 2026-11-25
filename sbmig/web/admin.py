@@ -1,11 +1,12 @@
 """관리자 페이지의 서버 쪽 모듈. 비밀번호 로그인, 프로젝트별 LLM 토큰 사용량 집계, 로그 ZIP과 올린 원본 내려받기를 맡는다.
 사용량과 로그는 요청할 때마다 출력 폴더의 실행 폴더를 디스크에서 다시 읽는다.
-비밀번호는 솔트를 넣은 PBKDF2 해시로만 코드에 두고, ``SBMIG_ADMIN_PASSWORD``가 있으면 그 값을 쓴다.
-세션은 이 프로세스의 메모리에만 있으므로 웹 파드를 다시 띄우면 모두 로그아웃된다.
-진입점은 :func:`create_admin_router`, :class:`AdminAuth`, :func:`collect_usage`, :func:`build_logs_zip`이다.
+- 비밀번호는 솔트를 넣은 PBKDF2 해시로만 코드에 둔다. ``SBMIG_ADMIN_PASSWORD``가 있으면 그 값을 쓴다
+- 세션은 이 프로세스의 메모리에만 있으므로 웹 파드를 다시 띄우면 모두 로그아웃된다
+- 한 주소에서 10분 안에 5번 실패하면 429로 막는다. 사이트 토큰 검사는 그 앞에서 그대로 적용된다
+- 로그 ZIP은 한 번에 하나만, 웹 파드의 로컬 임시 폴더에 만든다. 공유 볼륨에는 만들지 않는다
+- 조치가 아직 쓰고 있을 수 있는 ``remediation/remediation.log``는 ZIP에 넣지 않는다
 
-The admin page's server side (v2.1z-ao, the user 2026-11-17: token usage per project so far, behind a fixed password,
-and a download of all logs). Routes (all under /admin; `GET /admin` itself, the static page, is served by app.py):
+Routes (all under /admin; `GET /admin` itself, the static page, is served by app.py):
 
     POST /admin/api/login              {"password": "…"} → 200 + cookie `sbmig_admin` | 401 bad_password | 429
     POST /admin/api/logout             forget the session, clear the cookie
@@ -15,23 +16,24 @@ and a download of all logs). Routes (all under /admin; `GET /admin` itself, the 
                                        every run, `<run id>/<file>`, deflated, built in a local temp file and streamed
                                        | 409 busy | 413 too_large | 507 no_space
     GET  /admin/api/logs/check         the same checks without building: {"ok": true, "bytes", "runs", "skipped"}
-    GET  /admin/api/runs/{id}/logs.zip one run, with its diagnostic files too (v2.1z-ch: `logs/`, reports, error
+    GET  /admin/api/runs/{id}/logs.zip one run, with its diagnostic files too (`logs/`, reports, error
                                        lists, status files, the remediation's text files; `plan_run_logs_zip`)
                                        (+ /runs/{id}/logs/check, which may undercount the files the copy
                                        leaves out: it reads no file)
-    GET  /admin/api/runs/{id}/source   the ZIP the person uploaded for that run, streamed unchanged (v2.1z-bb) | 400 bad
+    GET  /admin/api/runs/{id}/source   the ZIP the person uploaded for that run, streamed unchanged | 400 bad
                                        run id | 404 unknown run | 404 source not available (+ /runs/{id}/source/check)
 
-Log ZIP limits (v2.1z-ap, the three-pods review): one archive at a time per process (`ZIP_GATE`, held until the temp file
-is deleted), the temp file in the pod's local temp dir (never the shared volume), a free-space floor there, a total cap,
-files over a per-file limit listed in `SKIPPED.txt`, each member copied only up to the size it had when planned, and
-`remediation/remediation.log` left out while anything may still write that run's remediation.
+Log ZIP limits: one archive at a time per process (`ZIP_GATE`, held until the temp file is deleted), the
+temp file in the pod's local temp dir (never the shared volume), a free-space floor there, a total cap,
+files over a per-file limit listed in `SKIPPED.txt`, each member copied only up to the size it had when
+planned, and `remediation/remediation.log` left out while anything may still write that run's
+remediation.
 
 The password is built in as a salted PBKDF2-HMAC-SHA256 hash (`ADMIN_PASSWORD_PBKDF2`; the plain text never enters the
 repository); a non-empty `SBMIG_ADMIN_PASSWORD` (web pod, from the Secret) replaces it. Sessions are random tokens in
 this process's memory (12 hours); failed logins wait `fail_delay_s` and an address with `FAIL_LIMIT` failures inside
 `FAIL_WINDOW_S` gets 429 until the oldest of them leaves the window (behind a Kubernetes Service every client may share
-one address: then the limit is global). The site token guard (`TokenGuard`) still applies in front of all of this."""
+one address: then the limit is global). Contract: docs/INTERFACES.md "v2.1z-ao"."""
 from __future__ import annotations
 
 import asyncio
@@ -71,7 +73,7 @@ from .runs import FLOW_REMEDIATION, RUN_ID_RE, SOURCE_ZIP
 log = logging.getLogger("sbmig.web.admin")
 
 ADMIN_PASSWORD_ENV = "SBMIG_ADMIN_PASSWORD"
-# 회사가 정한 비밀번호의 해시다. 원문은 저장소 어디에도 두지 않는다
+# 회사가 정한 비밀번호의 해시. 원문은 저장소 어디에도 두지 않는다
 ADMIN_PASSWORD_PBKDF2 = {            # PBKDF2-HMAC-SHA256
     "iterations": 200_000,
     "salt_hex": "bfadb8a1a0a6a71e0571005ea6840ae3",
@@ -86,32 +88,33 @@ FAIL_DELAY_S = 1.0
 MAX_PASSWORD_CHARS = 1024
 MAX_SESSIONS = 1000
 
-# 전체 실행 ZIP에 넣는 파일이다. 실행 하나의 ZIP은 여기에 진단 파일을 더한다(plan_run_logs_zip)
+# 전체 실행 ZIP에 넣는 파일. 실행 하나의 ZIP은 여기에 진단 파일을 더한다(plan_run_logs_zip)
 LOG_MEMBERS = ("sbmig.log", "journal.jsonl", "control/request.json", "remediation/remediation.log")
 # 기록할 때 마스킹되지 않으므로 그 실행의 조치를 쓰는 곳이 하나도 없을 때만 넣는다
 FINAL_PASS_MEMBERS = ("remediation/remediation.log",)
-LEGACY_TMP_DIR = "_admin"            # 예전 임시 폴더(<out root>/_admin)다. 시작할 때 남은 ZIP만 지우고 더는 쓰지 않는다
+LEGACY_TMP_DIR = "_admin"            # 이전 임시 폴더(<out root>/_admin). 시작할 때 남은 ZIP만 지우고 쓰지 않는다
 ZIP_TMP_PREFIX = "sbmig-logs-"
 ZIP_TMP_SUFFIX = ".zip"
 ZIP_TMP_NAME = re.compile(r"^sbmig-logs-[A-Za-z0-9_-]+\.zip$")
-ZIP_TOTAL_LIMIT = 2 * 1024 ** 3      # 압축 전 합계 한도다. 전체 실행 ZIP은 413으로 거절하고 실행 하나의 ZIP은 정한 순서대로 뺀다
-ZIP_FILE_LIMIT = 512 * 1024 ** 2     # 이보다 큰 파일 하나는 넣지 않고 SKIPPED.txt에 적는다
+# 압축 전 합계 한도. 전체 실행 ZIP은 413으로 거절하고, 실행 하나의 ZIP은 정한 순서대로 파일을 뺀다
+ZIP_TOTAL_LIMIT = 2 * 1024 ** 3
+ZIP_FILE_LIMIT = 512 * 1024 ** 2     # 이보다 큰 파일은 넣지 않고 SKIPPED.txt에 기록한다
 ZIP_FREE_FLOOR = 1024 ** 3           # 임시 폴더에 최악의 경우를 쓰고도 이만큼은 남아야 한다
 ZIP_CHUNK = 64 * 1024
-UPLOADS_DIR = "_uploads"             # in-process 모드가 올린 ZIP을 두는 출력 폴더 아래 폴더다(RunManager.start_file)
-REMEDIATION_ORIGINAL = "remediation/original/source.zip"   # 조치만 하는 실행이 올린 ZIP을 그대로 복사해 둔 곳이다
-CHAIN_STATE = "remediation/state.json"                    # 조치의 상태 파일이다. 빌드 오류 수정 루프의 사용량을 여기서 읽는다
+UPLOADS_DIR = "_uploads"             # in-process 모드가 올린 ZIP을 두는 폴더(RunManager.start_file)
+REMEDIATION_ORIGINAL = "remediation/original/source.zip"   # 조치만 하는 실행이 올린 ZIP을 그대로 복사해 둔 곳
+CHAIN_STATE = "remediation/state.json"                    # 조치의 상태 파일. 수정 루프의 사용량을 여기서 읽는다
 SOURCE_ERROR = "source not available"
 EMPTY_README = "No run under this output root has a log file yet.\n"
 SKIPPED_NAME = "SKIPPED.txt"
 # 한 프로세스에서 ZIP은 한 번에 하나만 만든다. 내려받기가 끝나 임시 파일을 지울 때까지 잡고 있다
 ZIP_GATE = threading.Lock()
 
-# sbmig.log에서 LLM 호출 한 번마다 남는 줄이다(sbmig.fix.company / sbmig.fix.client)
+# sbmig.log에서 LLM 호출 한 번마다 남는 줄(sbmig.fix.company, sbmig.fix.client)
 LLM_CALL_LINE = re.compile(rb"llm call provider=\S+ model=(\S*) in=(\d+) out=(\d+)")
-# 줄 끝의 응답 모델 목록이다(served=a,b). 이 값이 없는 예전 줄도 위 식으로 그대로 읽는다
+# 줄 끝의 응답 모델 목록(served=a,b). 이 값이 없는 이전 줄도 위 식으로 읽는다
 LLM_SERVED = re.compile(rb" served=(\S+)\s*$")
-# 회사 게이트웨이 클라이언트가 요청마다 남기는 줄의 params.role이다. 예전 줄의 이름을 되살릴 때만 쓴다
+# 회사 게이트웨이 클라이언트가 요청마다 남기는 줄의 params.role. 이전 줄의 모델 이름을 찾을 때만 쓴다
 LLM_ATTEMPT_ROLE = re.compile(rb"llm call provider=\S+ role=\S+ model=\S* params\.role=(\S+) attempt ")
 LLM_JOURNAL_EVENTS = ("llm_script", "llm_verify_guide")
 _RUN_SLUG = re.compile(r"^(.+)-\d{8}-\d{6}-[0-9a-f]+$")
@@ -123,8 +126,7 @@ _EXIT_RESULT = {0: "ok", 2: "incomplete", 3: "aborted"}
 # ---------------------------------------------------------------------------
 def password_matches(given: str) -> bool:
     """입력한 비밀번호가 맞는지 확인한다. ``SBMIG_ADMIN_PASSWORD``가 있으면 그 값과, 없으면 내장 해시와 비교한다.
-
-    `SBMIG_ADMIN_PASSWORD` (non-empty) replaces the built-in hash; compared with `hmac.compare_digest` either way."""
+    비어 있거나 너무 긴 입력은 False다. 어느 쪽이든 ``hmac.compare_digest``로 비교한다."""
     if not isinstance(given, str) or not given or len(given) > MAX_PASSWORD_CHARS:
         return False
     override = os.environ.get(ADMIN_PASSWORD_ENV, "")
@@ -142,11 +144,8 @@ def password_matches(given: str) -> bool:
 
 
 class AdminAuth:
-    """관리자 세션과 로그인 실패 횟수를 이 프로세스의 메모리에 두는 클래스.
-    테스트는 ``clock``과 ``fail_delay_s``를 바꿀 수 있다.
-
-    Sessions (random token → expiry) and login failures (address → times), in memory, per process. `clock` (monotonic
-    seconds) and `fail_delay_s` are attributes so tests can drive them."""
+    """관리자 세션(토큰과 만료 시각)과 주소별 로그인 실패 시각을 이 프로세스의 메모리에 두는 클래스.
+    테스트는 ``clock``(monotonic 초)과 ``fail_delay_s``를 바꿀 수 있다."""
 
     def __init__(self, clock: Callable[[], float] = time.monotonic, fail_delay_s: float = FAIL_DELAY_S):
         self.clock = clock
@@ -204,10 +203,10 @@ class AdminAuth:
             return max(1.0, FAIL_WINDOW_S - (now - times[-FAIL_LIMIT]))
 
     def failed(self, addr: str) -> int:
-        """로그인 실패를 기록하고 창 안의 실패 횟수를 반환한다."""
+        """로그인 실패를 기록하고 ``FAIL_WINDOW_S`` 안의 실패 횟수를 반환한다."""
         now = self.clock()
         with self._lock:
-            # 창이 지난 실패만 남은 다른 주소는 지운다. 다시 물어도 창 안의 실패만 세므로 답은 같다
+            # 기간이 지난 실패만 남은 다른 주소는 지운다. 기간 안의 실패만 세므로 결과는 같다
             for other in [a for a, ts in self._failures.items() if a != addr and not any(now - t < FAIL_WINDOW_S for t in ts)]:
                 del self._failures[other]
             times = self._recent(addr, now)
@@ -235,9 +234,7 @@ def _set_cookie(request: Request, resp: JSONResponse, token: str) -> None:
 # 실행 폴더 읽기
 # ---------------------------------------------------------------------------
 def safe_file(run_dir: Path, rel: str) -> Path | None:
-    """실행 폴더 안의 파일 경로를 반환한다. 경로의 어느 부분이라도 심볼릭 링크이거나 일반 파일이 아니면 None이다.
-
-    `run_dir/rel` when every component is a real (non-symlink) entry and the last one a regular file, else None."""
+    """실행 폴더 안의 파일 경로를 반환한다. 경로의 어느 부분이라도 심볼릭 링크이거나 일반 파일이 아니면 None을 반환한다."""
     p = run_dir
     try:
         for part in rel.split("/"):
@@ -251,9 +248,7 @@ def safe_file(run_dir: Path, rel: str) -> Path | None:
 
 def iter_run_dirs(out_root: Path) -> Iterator[Path]:
     """출력 폴더 바로 아래의 실행 폴더 후보를 이름순으로 내보낸다.
-    심볼릭 링크, 폴더가 아닌 항목, ``_``나 ``.``로 시작하는 이름, 실행 id 형식이 아닌 이름은 건너뛴다.
-
-    Candidate run folders directly under the output root: real directories (never a symlink) whose name is a run id."""
+    심볼릭 링크, 폴더가 아닌 항목, ``_``나 ``.``로 시작하는 이름, 실행 id 형식이 아닌 이름은 건너뛴다."""
     try:
         entries = sorted(os.scandir(out_root), key=lambda e: e.name)
     except OSError:
@@ -269,7 +264,7 @@ def iter_run_dirs(out_root: Path) -> Iterator[Path]:
 
 
 def _read_json(run_dir: Path, rel: str) -> tuple[dict[str, Any] | None, bool]:
-    # (내용, 깨짐 여부)를 반환한다. 파일이 없으면 (None, False)다
+    # (내용, 깨짐 여부)를 반환한다. 파일이 없으면 (None, False)를 반환한다
     p = safe_file(run_dir, rel)
     if p is None:
         return None, False
@@ -293,10 +288,7 @@ def _str(v: Any) -> str | None:
 
 def project_of(upload: str | None, project_name: str | None, run_id: str, entered: str | None = None) -> str:
     """실행의 프로젝트 이름을 정한다. 업로드할 때 입력한 프로젝트명, 올린 파일 이름에서 확장자를 뺀 값,
-    보고서의 프로젝트 이름, 실행 id의 앞부분 순이다.
-
-    The project name entered at upload (v2.1z-be), else the uploaded file name without its extension, else the report's
-    project name, else the run id's first part."""
+    보고서의 프로젝트 이름, 실행 id의 앞부분 순으로 처음 있는 값을 쓴다."""
     if entered and entered.strip():
         return entered.strip()
     if upload:
@@ -321,7 +313,7 @@ def _parse_time(v: Any) -> datetime | None:
 
 
 def _model_key(name: Any) -> str:
-    # 실제 모델 이름이면 그대로, 예전 실행의 `unknown` / `?` / 빈 이름이면 ""(이름 없음)를 반환한다
+    # 실제 모델 이름이면 그대로, 이전 실행의 `unknown`, `?`, 빈 이름이면 ""(이름 없음)를 반환한다
     return real_model_name(name if isinstance(name, str) else "")
 
 
@@ -342,10 +334,9 @@ def _add_usage(rows: dict[str, dict[str, Any]], model: Any, calls: Any, inp: Any
 
 
 def model_row(r: dict[str, Any], **extra: Any) -> dict[str, Any]:
-    """모델 행을 API 형태로 만든다. served는 알 때만, unnamed는 예전 실행의 이름 없는 행에만 넣는다.
+    """모델 행 하나를 API의 ``by_model`` 형태로 만든다. ``served``는 알 때만, ``unnamed``는 이름 없는 행에만 넣는다.
 
-    One `by_model` entry: `model` (the asked name; "" for runs written before v2.1z-bg whose name was `unknown` / `?` /
-    empty), the token counts, then `served` only when known and `unnamed: true` only for the "" row."""
+    `model` is the asked name; "" for older runs whose name was `unknown` / `?` / empty."""
     out = {"model": r["model"], "calls": r["calls"], "input_tokens": r["input_tokens"],
            "output_tokens": r["output_tokens"], **extra}
     if r.get("served"):
@@ -357,8 +348,8 @@ def model_row(r: dict[str, Any], **extra: Any) -> dict[str, Any]:
 
 def _usage_from_report(rep: dict[str, Any], run_dir: Path | None = None) \
         -> tuple[dict[str, int], list[dict[str, Any]], float | None, str | None]:
-    # 보고서의 합계, 모델별 사용량, 비용, 통화를 읽는다. 값이 이상해도 예외를 던지지 않는다
-    # 이름 없는 행(예전 실행)은 sbmig.log가 호출마다 role을 알려 주고 수가 꼭 맞을 때만 그 이름으로 바꾼다
+    # 보고서의 합계, 모델별 사용량, 비용, 통화를 읽는다. 값이 이상해도 예외를 던지지 않는다.
+    # 이름 없는 행(이전 실행)은 sbmig.log가 호출마다 role을 알려 주고 수가 꼭 맞을 때만 그 이름으로 바꾼다
     total = rep.get("llm_usage") if isinstance(rep.get("llm_usage"), dict) else {}
     rows: dict[str, dict[str, Any]] = {}
     for u in rep.get("llm_usage_by_model") or []:
@@ -381,7 +372,7 @@ def _usage_from_report(rep: dict[str, Any], run_dir: Path | None = None) \
                 continue
             key = _model_key(m.get("model"))
             c = float(m["cost"]) if isinstance(m.get("cost"), (int, float)) else None
-            # 이름 없는 행 여러 개가 합쳐지면 비용도 더한다. 하나라도 없으면 비용을 모르는 것으로 둔다
+            # 이름 없는 행 여러 개가 합쳐지면 비용도 더한다. 하나라도 없으면 비용은 모르는 값으로 둔다
             if key in model_cost:
                 prev = model_cost[key]
                 model_cost[key] = None if prev is None or c is None else prev + c
@@ -408,7 +399,7 @@ def _usage_from_report(rep: dict[str, Any], run_dir: Path | None = None) \
 
 
 def _scan_log(run_dir: Path) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]], int]:
-    # sbmig.log의 호출 줄을 읽어 (모델별 행, 예전 줄을 role로 되살린 행, role을 알 수 없는 예전 줄 수)를 반환한다
+    # sbmig.log의 호출 줄을 읽어 (모델별 행, 이전 줄을 role 이름으로 찾은 행, role을 알 수 없는 이전 줄 수)를 반환한다
     rows: dict[str, dict[str, Any]] = {}
     recovered: dict[str, dict[str, Any]] = {}
     orphans = 0
@@ -443,7 +434,7 @@ def _scan_log(run_dir: Path) -> tuple[dict[str, dict[str, Any]], dict[str, dict[
 
 
 def _names_from_old_log(run_dir: Path, unnamed: dict[str, Any]) -> dict[str, dict[str, Any]] | None:
-    # 예전 실행의 이름 없는 사용량을 sbmig.log의 요청 줄(params.role)로 나눈다. 확실할 때만 돌려준다:
+    # 이전 실행의 이름 없는 사용량을 sbmig.log의 요청 줄(params.role)로 나눈다. 확실할 때만 반환한다.
     # 이름 없는 응답 줄마다 앞에 role이 있고, 그 합계가 보고서의 이름 없는 행과 호출, 토큰까지 같아야 한다
     _, recovered, orphans = _scan_log(run_dir)
     if orphans or not recovered:
@@ -456,12 +447,11 @@ def _names_from_old_log(run_dir: Path, unnamed: dict[str, Any]) -> dict[str, dic
 
 def usage_from_log(run_dir: Path) -> dict[str, dict[str, Any]]:
     """보고서가 없는 실행의 LLM 사용량을 sbmig.log의 ``llm call`` 줄에서 모델별로 모은다.
-    큰 로그도 한 줄씩 읽어 메모리를 쓰지 않는다. 예전 줄의 이름 없는 모델은 앞 요청 줄의 role로 되살린다.
+    큰 로그도 한 줄씩 읽는다. 이전 줄의 이름 없는 모델은 모든 줄에 앞 요청 줄의 role이 있을 때만 그 이름으로 센다.
 
-    Per-model usage from the `llm call provider=… model=… in=… out=…` lines (one per answered call, written by the
-    built-in LLM clients), read line by line; ` served=a,b` at the end of a newer line goes to `served`. A line written
-    before v2.1z-bg that names a placeholder (`model=unknown`) is counted under the `params.role` of the request line
-    before it when every such line has one; otherwise those calls stay under "" (unnamed)."""
+    Line shape: `llm call provider=... model=... in=... out=...` (one per answered call); ` served=a,b`
+    at the end of a newer line goes to `served`. Without a role for every placeholder line the calls stay
+    under "" (unnamed)."""
     rows, recovered, orphans = _scan_log(run_dir)
     if "" in rows and recovered and not orphans:
         del rows[""]
@@ -479,19 +469,15 @@ def _plain(r: dict[str, Any]) -> dict[str, Any]:
 
 def usage_from_journal(run_dir: Path) -> dict[str, dict[str, Any]]:
     """sbmig.log에 호출 줄이 없을 때 journal.jsonl의 수정 루프 LLM 이벤트에서 모델별 사용량을 모은다.
-
-    Fallback: the fix loop's `llm_script` / `llm_verify_guide` journal events (calls + tokens per event; `served`
-    when the event carries it). Lines that cannot be parsed are skipped."""
+    대상 이벤트는 ``llm_script``, ``llm_verify_guide``이고, 읽지 못한 줄은 건너뛴다."""
     return journal_usage_checked(run_dir)[0]
 
 
 def journal_usage_checked(run_dir: Path, strict: bool = False) -> tuple[dict[str, dict[str, Any]], bool]:
-    """journal.jsonl의 수정 루프 LLM 사용량과 저널을 끝까지 읽었는지를 함께 반환한다.
-
-    `(rows, complete)`: the rows of `usage_from_journal`; `complete` is False when the file could not be read to the
-    end or a line it parsed is not a JSON object (a line cut off by a kill, garbage). Without `strict` only the lines
-    that mention an LLM event are parsed; `strict` parses every non-blank line. The rows that were read are returned
-    either way. A missing journal is `({}, True)`."""
+    """journal.jsonl의 수정 루프 LLM 사용량과 저널을 끝까지 읽었는지를 ``(rows, complete)``로 반환한다.
+    - 파일을 끝까지 읽지 못했거나 파싱한 줄이 JSON 객체가 아니면 ``complete``가 False다. 읽은 행은 그래도 반환한다
+    - ``strict``가 아니면 LLM 이벤트가 들어 있는 줄만 파싱하고, ``strict``면 빈 줄이 아닌 모든 줄을 파싱한다
+    - 저널이 없으면 ``({}, True)``를 반환한다"""
     rows: dict[str, dict[str, Any]] = {}
     complete = True
     p = safe_file(run_dir, "journal.jsonl")
@@ -523,7 +509,7 @@ def journal_usage_checked(run_dir: Path, strict: bool = False) -> tuple[dict[str
 
 
 def _result_word(exit_code: Any, rep: dict[str, Any] | None) -> str | None:
-    # 결과 줄과 같은 낱말을 쓴다(exit 0 ok, 2 incomplete, 3 aborted)
+    # 결과 줄과 같은 단어를 쓴다. exit 0은 ok, 2는 incomplete, 3은 aborted다
     if isinstance(exit_code, int) and not isinstance(exit_code, bool):
         return _EXIT_RESULT.get(exit_code, f"exit {exit_code}")
     if rep is None:
@@ -549,7 +535,7 @@ def _scope_of(rep: dict[str, Any] | None) -> str | None:
 
 
 def recorded_upload_name(run_dir: Path) -> str | None:
-    """실행 기록(request.json, web-status.json)에서 사람이 올린 파일 이름을 찾는다. 없으면 None이다."""
+    """실행 기록(request.json, web-status.json)에서 사람이 올린 파일 이름을 찾는다. 없으면 None을 반환한다."""
     req, _ = _read_json(run_dir, "control/request.json")
     web, _ = _read_json(run_dir, "web-status.json")
     return _str((req or {}).get("upload_name")) or _str((req or {}).get("upload")) or _str((web or {}).get("upload"))
@@ -566,7 +552,7 @@ def _recorded_flow(run_dir: Path) -> str | None:
 
 
 def _upload_file_name(run_id: str, upload: str | None) -> str | None:
-    # in-process 모드가 _uploads 아래에 저장한 이름(<실행 id>-<정리한 원래 이름>)을 RunManager.start_file과 같은 규칙으로 만든다
+    # in-process 모드가 _uploads에 저장한 이름(<실행 id>-<정리한 원래 이름>)을 RunManager.start_file과 같은 규칙으로 만든다
     if not upload:
         return None
     base = re.split(r"[\\/]", upload)[-1]
@@ -575,15 +561,11 @@ def _upload_file_name(run_id: str, upload: str | None) -> str | None:
 
 
 def find_source(run_dir: Path, upload: str | None = None, live_zip: Path | None = None) -> Path | None:
-    """실행에 사람이 올린 원본 ZIP의 경로를 찾는다. 출력 폴더 밖이나 심볼릭 링크를 거치는 경로는 고르지 않는다.
-    Job 모드의 실행 폴더 source.zip, in-process 모드의 _uploads 파일, 조치만 하는 실행의 원본 복사본 순으로 찾는다.
-
-    The uploaded ZIP of a run, or None. Order: (1) `<run dir>/source.zip` (the Job modes keep the upload there and pin its
-    sha256 in request.json); (2) the in-process upload `<out root>/_uploads/<run id>-<cleaned name>` (`live_zip` = the
-    manager's own `Run.zip_path` when the run is in memory, else the name rebuilt from the recorded upload name, else the
-    only `<run id>-*` file there); (3) for a remediation-only run, the copy its intake made of the uploaded bytes
-    (`remediation/original/source.zip`). A full run's `remediation/original/` holds the migrated tree, not the upload,
-    so it is never used. Every path is checked component by component (`safe_file`): no symlink, regular file."""
+    """실행에 사람이 올린 원본 ZIP의 경로를 찾는다. 없으면 None을 반환한다. 심볼릭 링크를 거치는 경로는 고르지 않는다.
+    - Job 모드의 ``<run dir>/source.zip``을 먼저 본다
+    - 다음은 in-process의 ``_uploads/<실행 id>-<이름>``이다. ``live_zip``, 기록된 이름, 하나뿐인 ``<실행 id>-*`` 순으로 찾는다
+    - 마지막으로 조치만 하는 실행의 ``remediation/original/source.zip``을 본다
+    - 전체 실행의 ``remediation/original/``은 이관한 트리라 원본이 아니므로 쓰지 않는다"""
     run_dir = Path(run_dir)
     hit = safe_file(run_dir, SOURCE_ZIP)
     if hit is not None:
@@ -620,15 +602,14 @@ def source_info(run_dir: Path, upload: str | None = None) -> tuple[bool, int | N
     try:
         p = find_source(run_dir, upload)
         return (True, p.stat().st_size) if p is not None else (False, None)
-    except Exception:  # 행 하나 때문에 목록이 실패하지 않게 한다
+    except Exception:  # 행 하나 때문에 목록이 실패하면 안 된다
         log.debug("admin usage: source of %s not readable", run_dir, exc_info=True)
         return False, None
 
 
 def source_download_name(run_id: str, upload: str | None) -> str:
     """내려받을 원본의 파일 이름을 만든다. 원래 이름을 알면 ``<실행 id>-<원래 이름>``, 모르면 ``<실행 id>-source.zip``이다.
-
-    `<run id>-<upload name>` (path parts and control characters removed) or `<run id>-source.zip`."""
+    원래 이름에서 경로와 제어 문자는 뺀다."""
     base = re.split(r"[\\/]", str(upload or ""))[-1]
     base = "".join(ch for ch in base if ch >= " " and ch != "\x7f").strip()
     return f"{run_id}-{base}" if base else f"{run_id}-source.zip"
@@ -650,14 +631,12 @@ def has_logs(run_dir: Path) -> bool:
 
 def run_usage(run_dir: Path, status: dict[str, Any] | None = None, live: bool = False) -> dict[str, Any] | None:
     """실행 폴더 하나의 사용량 행을 만든다. 실행 폴더가 아니면 None을 반환한다.
-    ``status``는 ``RunManager.status``의 결과이며 상태 낱말과 종료 코드를 여기서 가져온다.
+    - ``status``는 ``RunManager.status``의 결과이고, 상태 단어, 종료 코드, 올린 이름을 여기서 가져온다
+    - ``live``는 메모리에 있는 실행이라는 뜻이다. in-process 실행에는 request.json이 없다
+    - 사용량과 비용에는 취약점 조치의 수정 루프 호출도 들어간다. 그 몫은 ``remediation_calls``에 있다
 
-    One run's row of the usage answer, None for a folder that is not a run. `status` = `RunManager.status(run_id)`
-    (state word, exit code, upload); `live` = the manager holds this run in memory (an in-process run has no
-    request.json). Usage and cost include the remediation's build-fix-loop calls (`add_remediation_usage`);
-    `remediation_calls` (only when > 0) says how many of `calls` they are; `usage_partly_unknown: true` (only then)
-    = a part of the remediation's usage is unknown; `cost` is then the sum of the priced rows, or None when no row
-    with calls is priced."""
+    `usage_partly_unknown: true` (only then) = a part of the remediation's usage is unknown; `cost` is
+    then the sum of the priced rows, or None when no row with calls is priced."""
     rid = run_dir.name
     req, req_bad = _read_json(run_dir, "control/request.json")
     rep, rep_bad = _read_json(run_dir, "report.json")
@@ -703,7 +682,7 @@ def run_usage(run_dir: Path, status: dict[str, Any] | None = None, live: bool = 
             "flow": flow, "scope": _scope_of(rep), "status": state, "result": _result_word(exit_code, rep),
             **usage, "total_tokens": usage["input_tokens"] + usage["output_tokens"], "cost": cost,
             **({"remediation_calls": rem_calls} if rem_calls else {}),
-            # 취약점 조치의 빌드 오류 수정 루프 사용량 일부를 알 수 없다. 화면은 호출 칸과 비용 칸에 그렇게 쓴다
+            # 조치 수정 루프의 사용량 일부를 알 수 없으면 화면이 호출 칸과 비용 칸에 그렇게 표시한다
             **({"usage_partly_unknown": True} if rem_unknown else {}),
             "by_model": sorted(by_model, key=lambda r: (-r["total_tokens"], r["model"])),
             "usage_known": known, "partial": bool(req_bad or rep_bad), "has_logs": has_logs(run_dir),
@@ -713,27 +692,30 @@ def run_usage(run_dir: Path, status: dict[str, Any] | None = None, live: bool = 
 def add_remediation_usage(run_dir: Path, usage: dict[str, int], by_model: list[dict[str, Any]], cost: float | None,
                           currency: str | None) \
         -> tuple[dict[str, int], list[dict[str, Any]], float | None, str | None, int]:
-    """이관 보고서의 사용량에 취약점 조치의 빌드 오류 수정 루프가 쓴 사용량을 모델별로 더한다.
-    조치 몫은 ``remediation/state.json``에서 읽으며, 단가를 모르는 조치 행이 있으면 실행 비용은 모르는 것으로 둔다.
+    """이관 보고서의 사용량에 취약점 조치의 수정 루프가 쓴 사용량을 모델별로 더한다. 보고서 파일은 바꾸지 않는다.
+    조치 몫은 ``remediation/state.json``에서 읽는다. 단가를 모르는 조치 행이 있으면 실행 비용은 모르는 값으로 둔다.
+    조치가 호출하지 않았으면 받은 값을 그대로 반환한다.
 
-    Add the remediation's fix-loop usage of every round (`fixer.fix_usage` over `remediation/state.json`, read through
-    `safe_file`) to the migration report's usage: rows of the same asked name are merged (calls / tokens added, `served`
-    merged, cost = the sum or None when either side is unknown), other models get rows of their own. The run's cost
-    stays known only when every remediation row is priced in the report's currency (a migration without calls counts
-    0). A remediation whose usage is partly unknown (`fix_usage()["usage_unknown"]`, v2.1z-bo): the calls whose
-    tokens are unknown (`by_model[].tokens_unknown`) add their calls to the row of their name and nothing to any cost,
-    and that row gets `usage_partly_unknown: true` (its cost, when a number, is the priced part only); the run's cost is the sum of the priced rows when at least one row with calls is priced (the reader marks it
-    `usage_partly_unknown`), else None (nothing known: unknown, never a number). Returns (usage, by_model, cost,
-    currency, remediation calls); unchanged when the remediation made no call. The report itself is never rewritten. The log fallback for runs without a report already holds these calls (the fix
-    loop's `llm call` lines are in sbmig.log), so it is not combined with this."""
+    Rules:
+    - rows of the same asked name are merged (calls / tokens added, `served` merged, cost = the sum or
+      None when either side is unknown); other models get rows of their own;
+    - the run's cost stays known only when every remediation row is priced in the report's currency (a
+      migration without calls counts 0);
+    - partly unknown usage (`fix_usage()["usage_unknown"]`): calls whose tokens are unknown
+      (`by_model[].tokens_unknown`) add their calls to the row of their name and nothing to any cost, and
+      that row gets `usage_partly_unknown: true`; the run's cost is the sum of the priced rows when at
+      least one row with calls is priced, else None (never a number for nothing known).
+    Returns (usage, by_model, cost, currency, remediation calls). The log fallback for runs without a
+    report already holds these calls (the fix loop's `llm call` lines are in sbmig.log), so it is never
+    combined with this."""
     data, _ = _read_json(run_dir, CHAIN_STATE)
     if data is None:
         return usage, by_model, cost, currency, 0
     from sbmig.remediations.fixer import fix_usage
     fx = fix_usage(data)
-    priced = cost is not None and any(_int(r.get("calls")) for r in by_model)   # 비용을 아는 이관 행이 있다
+    priced = cost is not None and any(_int(r.get("calls")) for r in by_model)   # 비용을 아는 이관 행이 있는지
     if fx.get("usage_unknown") and not (fx["calls"] or fx["input_tokens"] or fx["output_tokens"]):
-        # 사용량을 하나도 읽지 못한 루프만 있다. 숫자는 그대로 두고 비용은 아는 행이 있을 때만 그 합계로 둔다
+        # 사용량을 하나도 읽지 못한 루프만 있으면 숫자는 그대로 두고 비용은 아는 행이 있을 때만 남긴다
         return usage, by_model, cost if priced else None, currency, 0
     if not (fx["calls"] or fx["input_tokens"] or fx["output_tokens"]):
         return usage, by_model, cost, currency, 0
@@ -782,9 +764,7 @@ def add_remediation_usage(run_dir: Path, usage: dict[str, int], by_model: list[d
 
 def remediation_usage_unknown(run_dir: Path) -> bool:
     """실행 폴더의 취약점 조치 사용량 일부를 알 수 없는지 확인한다(``fixer.fix_usage``의 ``usage_unknown``).
-
-    True when `remediation/state.json` records a fix loop whose usage could not be read or calls without token
-    counts; False when there is no such state or it cannot be read."""
+    사용량을 읽지 못한 루프나 토큰 수가 없는 호출이 있으면 True다. 상태 파일이 없거나 읽지 못하면 False다."""
     data, _ = _read_json(run_dir, CHAIN_STATE)
     if data is None:
         return False
@@ -793,7 +773,7 @@ def remediation_usage_unknown(run_dir: Path) -> bool:
 
 
 def _sum_cost(costs: Iterable[float | None]) -> float | None:
-    # 하나라도 가격이 없으면 합계를 내지 않는다(일부만 더한 합계는 오해를 부른다)
+    # 하나라도 가격이 없으면 합계를 내지 않는다. 일부만 더한 합계는 오해를 부른다
     total = 0.0
     for c in costs:
         if c is None:
@@ -809,13 +789,14 @@ def _add(into: dict[str, Any], row: dict[str, Any]) -> None:
 
 def collect_usage(out_root: Path, status_of: Callable[[str], dict[str, Any]] | None = None,
                   live_ids: Iterable[str] = ()) -> dict[str, Any]:
-    """출력 폴더의 모든 실행을 읽어 프로젝트별 사용량을 계약 형태로 반환한다.
-    읽지 못한 파일은 요청을 실패시키지 않고 그 실행에 ``partial``을 표시한다.
+    """출력 폴더의 모든 실행을 지금 디스크에서 읽어 ``GET /admin/api/usage`` 응답을 만든다.
+    읽지 못한 파일이 있어도 요청은 실패하지 않고 그 실행에 ``partial``을 표시한다.
+    ``status_of``는 ``RunManager.status``이고, ``live_ids``는 메모리에 있는 실행이다.
 
-    The `GET /admin/api/usage` answer, read from disk now. `status_of(run_id)` = `RunManager.status` (optional);
-    `live_ids` = runs the manager holds in memory. A project row, the `totals` and a `by_model` row that sum a run
-    with `usage_partly_unknown` (for a model row: a run row of that model that received calls without token counts)
-    carry `usage_partly_unknown: true` (left out when false): their numbers, the cost included, are the known part."""
+    A project row, the `totals` and a `by_model` row that sum a run with `usage_partly_unknown` (for a
+    model row: a run row of that model that received calls without token counts) carry
+    `usage_partly_unknown: true` (left out when false): their numbers, the cost included, are the known
+    part."""
     out_root = Path(out_root)
     live = set(live_ids)
     runs: list[dict[str, Any]] = []
@@ -824,11 +805,11 @@ def collect_usage(out_root: Path, status_of: Callable[[str], dict[str, Any]] | N
         if status_of is not None:
             try:
                 st = status_of(rd.name)
-            except Exception:  # 상태를 못 읽어도 사용량은 보여 준다
+            except Exception:  # 상태를 읽지 못해도 사용량은 보여 준다
                 log.debug("admin usage: status of %s failed", rd.name, exc_info=True)
         try:
             row = run_usage(rd, st, rd.name in live)
-        except Exception:  # 실행 하나 때문에 페이지 전체가 실패하지 않게 한다
+        except Exception:  # 실행 하나 때문에 페이지 전체가 실패하면 안 된다
             log.warning("admin usage: run folder %s could not be read", rd.name, exc_info=True)
             row = {"run_id": rd.name, "project": project_of(None, None, rd.name), "accepted_at": None,
                    "_t": datetime.fromtimestamp(0, timezone.utc), "_currency": None, "flow": "full", "scope": None,
@@ -865,7 +846,7 @@ def collect_usage(out_root: Path, status_of: Callable[[str], dict[str, Any]] | N
     total_cost = _sum_cost(r["cost"] for r in runs) if runs else None
     if len(currencies) > 1:                          # 통화가 섞이면 더하지 않는다
         total_cost = None
-    # 가격이 매겨진 실행이 모두 같은 통화면 합계가 없어도 통화를 알려 준다(행마다 비용을 보이기 위해)
+    # 가격이 매겨진 실행이 모두 같은 통화면 합계가 없어도 통화를 알려 준다. 행마다 비용을 보여 주기 위해서다
     currency = next(iter(currencies)) if len(currencies) == 1 else None
 
     project_rows = []
@@ -882,7 +863,7 @@ def collect_usage(out_root: Path, status_of: Callable[[str], dict[str, Any]] | N
         project_rows.append({**{k: p[k] for k in ("project", "runs", "calls", "input_tokens", "output_tokens",
                                                    "total_tokens", "cost", "unpriced_runs", "first_run_at",
                                                    "last_run_at", "run_list")},
-                             # 사용량 일부를 알 수 없는 실행이 들어 있다. 비용은 아는 만큼의 합계다
+                             # 사용량 일부를 알 수 없는 실행이 들어 있으면 표시한다. 비용은 아는 만큼의 합계다
                              **({"usage_partly_unknown": True} if p["_unknown"] else {})})
     project_rows.sort(key=lambda p: (-p["total_tokens"], p["project"]))
     totals["projects"] = len(project_rows)
@@ -906,13 +887,15 @@ def collect_usage(out_root: Path, status_of: Callable[[str], dict[str, Any]] | N
 # 로그 ZIP
 # ---------------------------------------------------------------------------
 def run_log_files(run_dir: Path, final_pass_pending: bool = False) -> list[tuple[str, Path]]:
-    """실행 하나의 ZIP 항목 (ZIP 안 경로, 파일)을 반환한다. 조치를 아직 쓰는 곳이 있으면 remediation.log는 넣지 않는다.
+    """실행 하나의 ZIP 항목 (ZIP 안 경로, 파일)을 반환한다.
+    ``final_pass_pending``이면 마지막 마스킹 전이므로 remediation.log는 넣지 않는다.
 
-    The (archive name, file) pairs of one run. Why each member is safe to ship: `sbmig.log` and `journal.jsonl` are
-    redacted line by line as they are written when `SBMIG_REDACT_OUTPUT=1` (the Job modes; the same rule as the run's
-    file route, `LIVE_FILES`); `control/request.json` is written once, atomically, by Main at intake and holds only
-    names, digests and the sbmig version (no secret). `remediation/remediation.log` is redacted only by the final pass,
-    so `final_pass_pending` (the migration run before its final pass, or an active remediation resume) leaves it out."""
+    Why each member is safe to ship: `sbmig.log` and `journal.jsonl` are redacted line by line as they are
+    written when `SBMIG_REDACT_OUTPUT=1` (the Job modes; the same rule as the run's file route,
+    `LIVE_FILES`); `control/request.json` is written once by Main at intake and holds only names, digests
+    and the sbmig version (no secret). `remediation/remediation.log` is redacted only by the final pass,
+    so `final_pass_pending` (the migration run before its final pass, or an active remediation resume)
+    leaves it out."""
     out = []
     for rel in LOG_MEMBERS:
         if final_pass_pending and rel in FINAL_PASS_MEMBERS:
@@ -924,20 +907,14 @@ def run_log_files(run_dir: Path, final_pass_pending: bool = False) -> list[tuple
 
 
 def zip_tmp_dir() -> Path:
-    """ZIP 임시 파일을 둘 폴더를 반환한다. 파드의 로컬 임시 폴더이며 공유 볼륨(/data)이 아니다.
-
-    The pod's local temp dir (`tempfile.gettempdir()`), never the shared output volume: an archive must not be able to
-    fill the volume the runs and Maven's repository live on. There is no fallback to the output root."""
+    """ZIP 임시 파일을 둘 폴더를 반환한다. 파드의 로컬 임시 폴더이고 공유 볼륨(/data)이 아니다.
+    ZIP 때문에 실행 폴더와 Maven 저장소가 있는 볼륨이 차면 안 되므로 출력 폴더로 대신하지 않는다."""
     return Path(tempfile.gettempdir())
 
 
 def remove_legacy_tmp(out_root: Path) -> int:
-    """예전 임시 폴더 ``<out root>/_admin``에 남은 ZIP 임시 파일을 지우고 지운 개수를 반환한다.
-    이름이 ZIP 임시 파일 형식인 일반 파일만 지우고, 폴더는 비었을 때만 지운다.
-
-    Once at startup: the archive temp files an earlier version left in `<out root>/_admin/` (names matching
-    `ZIP_TMP_NAME`, regular files, never through a symlink); nothing else is touched; the folder itself goes only when it
-    is empty afterwards."""
+    """시작할 때 이전 임시 폴더 ``<out root>/_admin``에 남은 ZIP 임시 파일을 지우고 지운 개수를 반환한다.
+    이름이 ``ZIP_TMP_NAME``에 맞는 일반 파일만 지우고 링크는 따라가지 않는다. 폴더는 비었을 때만 지운다."""
     d = Path(out_root) / LEGACY_TMP_DIR
     removed = 0
     try:
@@ -962,18 +939,15 @@ def remove_legacy_tmp(out_root: Path) -> int:
 
 
 class ZipPlan:
-    """ZIP에 넣을 항목과 크기를 미리 정리한 계획. 만들기 전에 크기 한도와 남은 공간을 이것으로 확인한다.
-    실행 하나의 계획은 뺀 파일과 그 이유(``left_out``)를 함께 담고, 복사할 때 실행 폴더 밖을 가리키는 항목은 넣지 않는다.
-    ``text_checked``에 있는 항목은 복사할 때 줄마다 마스킹하고, ``identity``로 계획한 파일인지 다시 확인한다.
+    """ZIP에 넣을 항목과 크기를 미리 정리한 계획 클래스. 만들기 전에 크기 한도와 남은 공간을 이것으로 확인한다.
+    실행 하나의 계획은 뺀 파일과 이유(``left_out``)를 함께 담고, 복사할 때 실행 폴더 밖을 가리키는 항목은 넣지 않는다.
+    ``text_checked`` 항목은 복사할 때 줄마다 마스킹하고, ``identity``로 계획한 파일인지 다시 확인한다.
 
-    The members of one archive with the size each had when planned (the bound of its copy), the files skipped for
-    `ZIP_FILE_LIMIT`, the uncompressed total and the number of runs with a member. The plan of one run
-    (`plan_run_logs_zip`) also has `left_out` = (archive name, English reason) of every file it leaves out (then
-    `skipped` stays empty and `SKIPPED.txt` lists the reasons), `root` = the run folder: at copy time a member that
-    is a link or resolves outside it is not copied, `identity` = arc -> (`st_dev`, `st_ino`) from the planning
-    `lstat` (the opened file must match it), and `text_checked` = the archive names of the members redacted line
-    by line while copied (every member but `sbmig.log`, `journal.jsonl` and `control/request.json`). See
-    `write_logs_zip`. The archive of all runs leaves all four empty, as before."""
+    `members` = (arc, path, size when planned: the bound of its copy); `skipped` = files over
+    `ZIP_FILE_LIMIT`. Per-run plans: `left_out` = (arc, English reason) (then `skipped` stays empty and
+    `SKIPPED.txt` lists the reasons), `root` = the run folder, `identity` = arc -> (`st_dev`, `st_ino`) from
+    the planning `lstat`, `text_checked` = every member but `sbmig.log`, `journal.jsonl` and
+    `control/request.json`. The archive of all runs leaves those four empty. See `write_logs_zip`."""
 
     def __init__(self) -> None:
         self.members: list[tuple[str, Path, int]] = []
@@ -986,21 +960,17 @@ class ZipPlan:
         self.runs = 0
 
     def skipped_count(self) -> int:
-        """``SKIPPED.txt``에 적힐 파일 수를 반환한다."""
+        """``SKIPPED.txt``에 기록될 파일 수를 반환한다."""
         return len(self.skipped) + len(self.left_out)
 
     def worst_case(self) -> int:
-        """압축이 전혀 안 될 때의 ZIP 크기 추정값을 반환한다.
-
-        Upper estimate of the archive: the members stored plus deflate's block overhead, headers and the extra members."""
+        """압축이 전혀 안 될 때의 ZIP 크기 추정값을 반환한다. deflate 블록, 헤더, 추가 항목의 여유를 더한다."""
         return self.total + self.total // 1000 + 1024 * (len(self.members) + 2) + 64 * 1024
 
 
 def plan_logs_zip(run_dirs: Iterable[Path], withheld: Callable[[str], bool] | None = None) -> ZipPlan:
-    """실행 폴더들에서 ZIP에 넣을 파일과 각 크기를 모은다. ``ZIP_FILE_LIMIT``보다 큰 파일은 건너뛴 목록에 둔다.
-
-    `withheld(run_id)` = something may still write that run's remediation (its log is then left out). A run without a log
-    file (only `control/request.json`) is left out."""
+    """실행 폴더들에서 전체 ZIP에 넣을 파일과 각 크기를 모은다. ``ZIP_FILE_LIMIT``보다 큰 파일은 건너뛴 목록에 둔다.
+    ``withheld(run_id)``가 참인 실행은 remediation.log를 빼고, 로그가 하나도 없는 실행은 넣지 않는다."""
     plan = ZipPlan()
     for rd in run_dirs:
         pending = bool(withheld(rd.name)) if withheld is not None else False
@@ -1023,21 +993,22 @@ def plan_logs_zip(run_dirs: Iterable[Path], withheld: Callable[[str], bool] | No
     return plan
 
 
-# 실행 하나의 ZIP에 더 넣는 진단 파일이다. 마지막 마스킹이 다시 쓰는 텍스트 확장자만 넣는다(redact.TEXT_SUFFIXES)
-RUN_ZIP_MAX_FILES = 2000             # 실행 하나의 ZIP에 넣는 파일 수 한도다. 넘으면 logs/의 번호가 낮은 파일부터 뺀다
-RUN_ZIP_SCAN_LIMIT = 20000           # 계획할 때 보는 폴더 항목 수 한도다. logs/는 그 절반까지만 쓴다
-RUN_LINE_LIMIT = 1024 * 1024         # 줄 단위로 마스킹하는 줄 길이 한도다. 더 긴 줄이 있는 파일은 넣지 않는다
+# 실행 하나의 ZIP에 더 넣는 진단 파일. 마지막 마스킹이 다시 쓰는 텍스트 확장자만 넣는다(redact.TEXT_SUFFIXES)
+RUN_ZIP_MAX_FILES = 2000             # 실행 하나의 ZIP에 넣는 파일 수 한도. 넘으면 logs/의 번호가 낮은 파일부터 뺀다
+RUN_ZIP_SCAN_LIMIT = 20000           # 계획할 때 보는 폴더 항목 수 한도. logs/는 그 절반까지만 쓴다
+RUN_LINE_LIMIT = 1024 * 1024         # 줄 단위로 마스킹하는 줄 길이 한도. 더 긴 줄이 있는 파일은 넣지 않는다
 RUN_WHOLE_REDACT_BYTES = 8 * 1024 * 1024   # 이 크기 이하의 파일은 마지막 마스킹처럼 통째로 마스킹한다
-# URL 사용자 정보를 찾는 redact의 정규식은 영문자와 숫자가 길게 이어지면 제곱으로 느려진다. 더 긴 덩어리가 있는 파일은 넣지 않는다
+# URL 사용자 정보를 찾는 redact의 정규식은 영문자와 숫자가 길게 이어지면 제곱으로 느려진다.
+# 이보다 긴 덩어리가 있는 파일은 넣지 않는다
 RUN_TOKEN_LIMIT = 4096
 _TOKEN_RUN = re.compile(rb"[A-Za-z0-9+.\-]+")
 RUN_LIVE_MEMBERS = ("sbmig.log", "journal.jsonl")          # 기록할 때 마스킹되므로 언제나 넣는다
-RUN_REQUEST = "control/request.json"                       # 접수 때 한 번 쓰고 이름과 해시만 담으므로 지금처럼 언제나 넣는다
+RUN_REQUEST = "control/request.json"                       # 접수 때 한 번 쓰고 이름과 해시만 담으므로 언제나 넣는다
 RUN_TEXT_SUFFIXES = TEXT_SUFFIXES
-# 링크를 따라가지 않고, 이름이 같은 폴더는 내려가지 않는다. 프로젝트 사본, 빌드 산출물, LLM 원문 기록이다
+# 이 이름의 폴더로는 내려가지 않는다. 프로젝트 복사본, 빌드 산출물, LLM 원문 기록이다
 RUN_PRUNE_DIRS = frozenset({"accepted", "original", "candidate", "applied", "fixed", "tree", "target", "project",
                             "codediff", "merge-conflicts", "llm-records"})
-# LLM에 보낸 요청 원문이다(구조 검토의 user 프롬프트, llm.record_dir의 기록). 대소문자는 가리지 않는다
+# LLM에 보낸 요청 원문(구조 검토의 user 프롬프트, llm.record_dir의 기록). 대소문자는 가리지 않는다
 RUN_LLM_RECORD = re.compile(r"^(?:review-input\.md|llm-\d+\.json)$", re.IGNORECASE)
 _LOG_NUMBER = re.compile(r"^(\d+)-")
 REASON_PENDING = "not redacted yet: the run's end-of-run redaction pass is not over or a remediation resume is active"
@@ -1046,17 +1017,17 @@ REASON_REPLACED = "not the file that was planned (it was replaced after planning
 REASON_NAME = "the file name is not UTF-8"
 # 마지막 마스킹(redact.redact_file)이 바이너리로 보고 건너뛰는 기준과 같다. 앞 8 KiB에 NUL 바이트가 있으면 바이너리다
 BINARY_HEAD_BYTES = 8192
-# 계획이 폴더를 읽을 때 쓰는 함수다. 테스트가 이 모듈의 계획이 읽는 폴더만 셀 수 있도록 이름을 따로 둔다
+# 계획이 폴더를 읽을 때 쓰는 함수. 테스트가 이 모듈이 읽는 폴더만 셀 수 있도록 이름을 따로 둔다
 _scandir = os.scandir
 
 
 def _binary_head(head: bytes) -> bool:
-    # redact.redact_file과 같은 판정이다. 바뀌면 test_v21zch_admin_run_logs의 일치 테스트가 실패한다
+    # redact.redact_file과 같은 기준이다. 어긋나면 test_v21zch_admin_run_logs의 일치 테스트가 실패한다
     return b"\x00" in head[:BINARY_HEAD_BYTES]
 
 
 class _LeftOut(Exception):
-    # 복사할 때 넣지 않기로 한 항목이다. 이유는 SKIPPED.txt에 그대로 적는다
+    # 복사할 때 넣지 않기로 한 항목. 이유는 SKIPPED.txt에 그대로 기록한다
     def __init__(self, reason: str) -> None:
         super().__init__(reason)
         self.reason = reason
@@ -1112,12 +1083,12 @@ def _text_name(name: str) -> bool:
 
 
 def _pruned(name: str) -> bool:
-    # 숨은 폴더와 프로젝트 사본, 산출물 폴더는 들어가지 않는다(대소문자는 가리지 않는다)
+    # 숨은 폴더, 프로젝트 복사본, 산출물 폴더로는 내려가지 않는다. 대소문자는 가리지 않는다
     return name.startswith(".") or name.lower() in RUN_PRUNE_DIRS
 
 
 class _Scan:
-    # 폴더 항목 방문 수를 센다. 한도에 닿아 다 읽지 못한 폴더와 읽을 수 없는 폴더는 이유와 함께 stopped에 적는다
+    # 폴더 항목 방문 수를 센다. 한도에 닿아 다 읽지 못한 폴더와 읽을 수 없는 폴더는 이유와 함께 stopped에 기록한다
     def __init__(self, limit: int) -> None:
         self.left = limit
         self.stopped: list[tuple[str, str]] = []
@@ -1128,7 +1099,7 @@ class _Scan:
 
         out: list[os.DirEntry] = []
         if spent():
-            self.stopped.append((rel, _reason_scan(rel)))     # 한도가 남지 않아 읽지 않은 폴더다
+            self.stopped.append((rel, _reason_scan(rel)))     # 한도가 남지 않아 읽지 않은 폴더
             return out
         try:
             with _scandir(d) as it:
@@ -1171,8 +1142,9 @@ def _walk_text(run_dir: Path, top: str, scan: _Scan, part: list[int] | None = No
 
 def run_diagnostic_files(run_dir: Path, scan_limit: int | None = None) -> tuple[list[str], list[tuple[str, str]]]:
     """실행 하나의 ZIP에 넣을 수 있는 파일의 실행 폴더 기준 경로와, 다 읽지 못한 폴더와 그 이유를 반환한다.
-    파일은 읽지 않고, 링크는 따라가지 않으며, 프로젝트 사본과 결과 ZIP, diff, LLM 원문 기록은 넣지 않는다.
-    폴더 항목은 ``RUN_ZIP_SCAN_LIMIT``까지 읽고, logs/는 그 절반까지만 읽는다.
+    - 파일은 열지 않고 링크는 따라가지 않는다
+    - 프로젝트 복사본, 결과 ZIP, diff, LLM 원문 기록은 넣지 않는다
+    - 폴더 항목은 ``RUN_ZIP_SCAN_LIMIT``까지 읽고, logs/는 그 절반까지만 써서 remediation/까지 꼭 읽게 한다
 
     The candidate members of one run (run-folder-relative, forward slashes), in this order: `sbmig.log`,
     `journal.jsonl`, `control/request.json`, `remediation/remediation.log`; the other text files at the top of the
@@ -1211,7 +1183,7 @@ def run_diagnostic_files(run_dir: Path, scan_limit: int | None = None) -> tuple[
 
 
 def _drop_order(rels: list[str], keep: set[str]) -> list[str]:
-    # 한도를 넘을 때 뺄 순서다. logs/ 바로 아래의 번호가 낮은 파일, 번호 없는 logs/ 파일, 나머지의 뒤쪽 순이다
+    # 한도를 넘을 때 뺄 순서. logs/ 바로 아래의 번호가 낮은 파일, 번호 없는 logs/ 파일, 나머지의 뒤쪽 순이다
     numbered, plain, rest = [], [], []
     for rel in rels:
         if rel in keep:
@@ -1229,15 +1201,15 @@ def _drop_order(rels: list[str], keep: set[str]) -> list[str]:
 
 def plan_run_logs_zip(run_dir: Path, withheld: Callable[[str], bool] | None = None) -> ZipPlan:
     """실행 하나의 ZIP 계획을 만든다. 로그 네 가지에 더해 logs/, 보고서, 오류 목록, 상태 파일, 조치의 진단 파일을 넣는다.
-    마지막 마스킹 전이거나 조치 재개가 진행 중이면 기록할 때 마스킹되는 두 로그와 request.json만 넣는다.
-    파일 수와 전체 크기 한도를 넘으면 정한 순서대로 빼고, 하드 링크와 UTF-8이 아닌 이름은 넣지 않는다.
-    뺀 파일은 모두 이유와 함께 ``left_out``에 둔다. 파일은 읽지 않고 크기는 ``lstat``으로만 구한다.
+    - 마지막 마스킹 전이거나 조치 재개가 진행 중이면 기록할 때 마스킹되는 두 로그와 request.json만 넣는다
+    - 파일 수와 전체 크기 한도를 넘으면 정한 순서대로 빼고, 하드 링크와 UTF-8이 아닌 이름은 넣지 않는다
+    - 뺀 파일은 모두 이유와 함께 ``left_out``에 둔다. 파일은 열지 않고 크기는 ``lstat``으로만 구한다
 
     The per-run archive (`GET /admin/api/runs/{id}/logs.zip` and its check). Members: `run_diagnostic_files`. While
     `withheld(run_id)` (the remediation API's rule: the migration's end-of-run redaction pass is still to come, or a
     remediation resume is active) only `sbmig.log`, `journal.jsonl` and `control/request.json` are members and every
     other candidate is named with `REASON_PENDING`. A run without `sbmig.log`, `journal.jsonl` and
-    `remediation/remediation.log` gives an empty plan (the README archive), as before. Per candidate: a name that is
+    `remediation/remediation.log` gives an empty plan (the README archive). Per candidate: a name that is
     not UTF-8, a hard link (`st_nlink` > 1) and a file over `ZIP_FILE_LIMIT` are named; one that vanished or is no
     regular file is left out quietly. Then, in the drop order (`_drop_order`: the numbered files directly under
     `logs/` lowest first, the other `logs/` files, the rest from the end; never the three always-in files): over
@@ -1250,7 +1222,7 @@ def plan_run_logs_zip(run_dir: Path, withheld: Callable[[str], bool] | None = No
     plan.root = run_dir
     rid = run_dir.name
     if not any(safe_file(run_dir, rel) is not None for rel in (*RUN_LIVE_MEMBERS, *FINAL_PASS_MEMBERS)):
-        return plan                                   # 로그가 없는 실행은 지금처럼 README만 준다
+        return plan                                   # 로그가 없는 실행은 README만 준다
     pending = bool(withheld(rid)) if withheld is not None else False
     rels, stopped = run_diagnostic_files(run_dir)
     always = {*RUN_LIVE_MEMBERS, RUN_REQUEST}
@@ -1276,7 +1248,7 @@ def plan_run_logs_zip(run_dir: Path, withheld: Callable[[str], bool] | None = No
             plan.left_out.append((arc, _reason_large(st.st_size)))
             continue
         eligible[rel] = (arc, st.st_size, (st.st_dev, st.st_ino))
-    # 파일 수 한도와 전체 크기 한도는 실제로 넣을 수 있는 파일에만 센다. 빼는 순서는 둘 다 같다
+    # 파일 수 한도와 전체 크기 한도는 실제로 넣을 수 있는 파일만 센다. 빼는 순서는 둘 다 같다
     order = _drop_order(list(eligible), always)
     dropped: dict[str, str] = {}
     over = len(eligible) - RUN_ZIP_MAX_FILES
@@ -1317,9 +1289,8 @@ def _inside(root: Path, path: Path) -> bool:
 
 def check_logs_zip(plan: ZipPlan, tmp_dir: Path | None = None) -> tuple[int, dict[str, Any]] | None:
     """계획대로 ZIP을 만들어도 되는지 확인한다. 안 되면 (HTTP 상태, 오류 본문)을, 되면 None을 반환한다.
-
-    413 `too_large` when the uncompressed total is over `ZIP_TOTAL_LIMIT`; 507 `no_space` when the temp dir's free space
-    minus the worst-case archive would fall below `ZIP_FREE_FLOOR` (`needed_bytes` = worst case + floor)."""
+    - 압축 전 합계가 ``ZIP_TOTAL_LIMIT``를 넘으면 413 ``too_large``다
+    - 임시 폴더의 여유 공간에서 최악의 ZIP 크기를 빼면 ``ZIP_FREE_FLOOR``보다 작을 때 507 ``no_space``다"""
     if plan.total > ZIP_TOTAL_LIMIT:
         return 413, {"error": "too_large", "bytes": plan.total, "limit_bytes": ZIP_TOTAL_LIMIT}
     tmp_dir = tmp_dir or zip_tmp_dir()
@@ -1334,12 +1305,12 @@ def check_logs_zip(plan: ZipPlan, tmp_dir: Path | None = None) -> tuple[int, dic
 
 
 def _copy_bounded(zf: zipfile.ZipFile, arc: str, path: Path, limit: int) -> None:
-    # 계획할 때의 크기까지만 읽는다. 그 사이 늘어난 줄은 넣지 않는다(계속 쓰이는 로그가 ZIP을 키우지 못한다)
+    # 계획할 때의 크기까지만 읽는다. 계속 쓰이는 로그가 ZIP을 키우지 못하도록 그 사이 늘어난 부분은 넣지 않는다
     with open(path, "rb") as src:
         limit = min(limit, os.fstat(src.fileno()).st_size)
         info = zipfile.ZipInfo.from_file(path, arc)
         info.compress_type = zipfile.ZIP_DEFLATED
-        info.file_size = limit                        # zip64 판단에 쓰고 실제 값은 zipfile이 다시 적는다
+        info.file_size = limit                        # zip64 판단에 쓰고 실제 값은 zipfile이 다시 기록한다
         with zf.open(info, "w") as dst:
             left = limit
             while left > 0:
@@ -1375,12 +1346,12 @@ def _zip_info(arc: str, st: os.stat_result, size: int) -> zipfile.ZipInfo:
     info = zipfile.ZipInfo(arc, stamp if stamp[0] >= 1980 else (1980, 1, 1, 0, 0, 0))
     info.external_attr = (st.st_mode & 0xFFFF) << 16
     info.compress_type = zipfile.ZIP_DEFLATED
-    info.file_size = size                             # zip64 판단에 쓰고 실제 값은 zipfile이 다시 적는다
+    info.file_size = size                             # zip64 판단에 쓰고 실제 값은 zipfile이 다시 기록한다
     return info
 
 
 def _check_head(src) -> None:
-    # 앞 8 KiB에 NUL이 있으면 마지막 마스킹처럼 바이너리로 보고 넣지 않는다(계획 크기와 상관없이 본다)
+    # 앞 8 KiB에 NUL이 있으면 마지막 마스킹처럼 바이너리로 보고 넣지 않는다. 계획 크기와 상관없이 본다
     if _binary_head(src.read(BINARY_HEAD_BYTES)):
         raise _LeftOut(REASON_NOT_TEXT)
     src.seek(0)
@@ -1461,8 +1432,8 @@ def _copy_redacted(src, dst, limit: int, line: Callable[[bytes], bytes]) -> None
 
 
 def _redact_whole_text(name: str, text: str, values: list[str]) -> str:
-    # 마지막 마스킹(redact._redact_structured)과 같은 선택이다. .json은 파일 전체를, .jsonl은 줄마다 JSON 문자열 안에서
-    # 바꾸고, JSON으로 읽히지 않으면 텍스트로 바꾼다. 바뀌면 일치 테스트가 실패한다
+    # 마지막 마스킹(redact._redact_structured)과 같은 규칙이다. .json은 파일 전체를, .jsonl은 줄마다 JSON 문자열
+    # 안에서 바꾸고, JSON으로 읽히지 않으면 텍스트로 바꾼다. 어긋나면 일치 테스트가 실패한다
     suffix = os.path.splitext(name)[1].lower()
     if suffix == ".json":
         new = redact.redact_json_text(text, values)
@@ -1489,7 +1460,7 @@ def _redact_whole(name: str, data: bytes, values: list[str]) -> bytes:
 
 
 class _Masker:
-    # ZIP 하나를 만드는 동안 쓰는 비밀 값과 줄 단위 마스킹 함수다. 값은 한 번만 읽는다
+    # ZIP 하나를 만드는 동안 쓰는 비밀 값과 줄 단위 마스킹 함수. 값은 한 번만 읽는다
     def __init__(self) -> None:
         self.values = list(redact.live_secret_values())
         self.line = redact.Redactor(lambda: self.values).line
@@ -1528,18 +1499,19 @@ def _copy_member(zf: zipfile.ZipFile, arc: str, path: Path, limit: int, ident: t
 
 
 def _skipped_name(arc: str) -> str:
-    # SKIPPED.txt에 적을 이름이다. UTF-8로 쓸 수 없는 글자는 \x.. 표기로 바꾼다
+    # SKIPPED.txt에 기록할 이름. UTF-8로 쓸 수 없는 문자는 \x.. 표기로 바꾼다
     return arc.encode("utf-8", "backslashreplace").decode("utf-8")
 
 
 def write_logs_zip(plan: ZipPlan, tmp_dir: Path | None = None) -> Path:
     """계획대로 deflate ZIP 임시 파일을 만들고 그 경로를 반환한다. 파일을 지우는 것은 호출한 쪽이다.
-    실행 하나의 계획이면 더한 항목을 복사하면서 마스킹한다. 작은 파일은 통째로, 큰 파일은 줄마다 마스킹한다.
-    넣지 못한 파일은 이유와 함께 ``SKIPPED.txt``에 적는다.
+    - 실행 하나의 계획이면 더한 항목을 복사하면서 마스킹한다. 작은 파일은 통째로, 큰 파일은 줄마다 마스킹한다
+    - 마스킹할 수 없는 항목은 원문 그대로 넣지 않고 뺀다
+    - 넣지 못한 파일은 이유와 함께 ``SKIPPED.txt``에 기록한다. 넣은 것이 없으면 ``README.txt``만 넣는다
 
     Each member is copied in chunks up to its planned size; `SKIPPED.txt` lists the files over `ZIP_FILE_LIMIT`
-    (`<arc>\t<bytes>`), or for the plan of one run every left-out file with its reason (`<arc>\t<reason>`);
-    `README.txt` alone when nothing was taken. The archive of all runs (`plan.root` None) is built exactly as before.
+    (`<arc>\t<bytes>`), or for the plan of one run every left-out file with its reason (`<arc>\t<reason>`).
+    The archive of all runs (`plan.root` None) copies bytes unchanged.
 
     One run (`plan.root` set), per member: the path must still pass `_inside` (no link, resolving inside the run
     folder); it is opened with `O_NOFOLLOW | O_NONBLOCK` and `fstat` must give a regular file with one name and the
@@ -1575,7 +1547,7 @@ def write_logs_zip(plan: ZipPlan, tmp_dir: Path | None = None) -> Path:
         with os.fdopen(fd, "wb") as fh, zipfile.ZipFile(fh, "w", compression=zipfile.ZIP_DEFLATED,
                                                          allowZip64=True) as zf:
             count = 0
-            late: list[tuple[str, str]] = []          # 복사하면서 정한 이유다. SKIPPED.txt는 항목 뒤에 쓰므로 함께 적힌다
+            late: list[tuple[str, str]] = []          # 복사하면서 정한 이유. SKIPPED.txt는 항목 뒤에 쓰므로 함께 기록된다
             for arc, p, size in plan.members:
                 try:
                     if plan.root is None:
@@ -1612,7 +1584,7 @@ def write_logs_zip(plan: ZipPlan, tmp_dir: Path | None = None) -> Path:
 
 
 class ZipRefused(Exception):
-    """ZIP을 만들지 않기로 했을 때 던지는 예외. HTTP 상태와 오류 본문을 담는다."""
+    """ZIP을 만들지 않기로 했을 때 던지는 예외 클래스. HTTP 상태와 오류 본문을 담는다."""
 
     def __init__(self, status: int, body: dict[str, Any]):
         super().__init__(body.get("error"))
@@ -1623,8 +1595,7 @@ class ZipRefused(Exception):
 def build_logs_zip(run_dirs: Iterable[Path], withheld: Callable[[str], bool] | None = None,
                    tmp_dir: Path | None = None) -> Path:
     """계획, 확인, 만들기를 한 번에 하고 ZIP 임시 파일 경로를 반환한다. 한도에 걸리면 ``ZipRefused``를 던진다.
-
-    `plan_logs_zip` + `check_logs_zip` + `write_logs_zip`; the caller holds `ZIP_GATE` and deletes the file."""
+    호출하는 쪽이 ``ZIP_GATE``를 잡고 있어야 하고, 파일도 호출하는 쪽이 지운다."""
     plan = plan_logs_zip(run_dirs, withheld)
     refusal = check_logs_zip(plan, tmp_dir)
     if refusal is not None:
@@ -1633,10 +1604,8 @@ def build_logs_zip(run_dirs: Iterable[Path], withheld: Callable[[str], bool] | N
 
 
 class TempFileResponse(StreamingResponse):
-    """임시 파일을 조각으로 내보내고, 응답이 끝나거나 연결이 끊겨도 파일을 지우는 응답 클래스.
-    ``on_close``가 있으면 파일을 지운 뒤 한 번 호출한다.
-
-    Streams a temp file and deletes it on every path (finished, client gone, error), then calls `on_close` once."""
+    """임시 파일을 조각으로 내보내고, 응답이 끝나거나 연결이 끊기거나 오류가 나도 파일을 지우는 응답 클래스.
+    ``on_close``가 있으면 파일을 지운 뒤 한 번 호출한다."""
 
     def __init__(self, path: Path, filename: str, media_type: str = "application/zip",
                  on_close: Callable[[], None] | None = None):
@@ -1675,10 +1644,8 @@ class TempFileResponse(StreamingResponse):
 
 
 class SourceFileResponse(StreamingResponse):
-    """올린 원본 ZIP을 조각으로 내보내는 응답 클래스. 파일을 통째로 읽지 않고, 연 시점의 크기까지만 보낸다.
-
-    Streams a file chunk by chunk (`ZIP_CHUNK`), never more than the size it had when the response was made (the
-    `Content-Length` it announced); the file is left in place."""
+    """올린 원본 ZIP을 조각으로 내보내는 응답 클래스. 파일은 지우지 않는다.
+    통째로 읽지 않고, 알린 ``Content-Length``인 응답을 만든 시점의 크기까지만 보낸다."""
 
     def __init__(self, path: Path, filename: str, size: int, media_type: str = "application/zip"):
         self.path = Path(path)
@@ -1702,12 +1669,12 @@ class SourceFileResponse(StreamingResponse):
 # 라우트
 # ---------------------------------------------------------------------------
 def remediation_rule(remediations: Any) -> Callable[[str], bool]:
-    """remediation.log를 ZIP에서 뺄지 정하는 함수를 반환한다. 조치 API가 쓰는 규칙(``RemediationManager._withheld``)을 그대로 쓴다.
+    """remediation.log를 ZIP에서 뺄지 정하는 함수를 반환한다. 조치 API의 규칙(``RemediationManager._withheld``)을 쓴다.
     규칙을 찾지 못하거나 확인에 실패하면 빼는 쪽을 고른다.
 
-    The remediation API's own rule object: withheld while the migration run's final pass is still to come OR a
-    remediation resume of the run is queued / creating / running (in memory, or recovered from
-    `control/remediation-resume.json` after a web-pod restart). No rule reachable, or an error: withhold."""
+    The rule: withheld while the migration run's final pass is still to come OR a remediation resume of the
+    run is queued / creating / running (in memory, or recovered from `control/remediation-resume.json` after
+    a restart)."""
     rule = getattr(remediations, "_withheld", None) if remediations is not None else None
 
     def withheld(run_id: str) -> bool:
@@ -1715,7 +1682,7 @@ def remediation_rule(remediations: Any) -> Callable[[str], bool]:
             return True
         try:
             return bool(rule(run_id))
-        except Exception:  # 모르면 안전한 쪽(넣지 않음)을 고른다
+        except Exception:  # 모르면 안전한 쪽인 넣지 않음을 고른다
             log.debug("admin logs zip: withheld(%s) failed", run_id, exc_info=True)
             return True
     return withheld
@@ -1723,11 +1690,7 @@ def remediation_rule(remediations: Any) -> Callable[[str], bool]:
 
 def create_admin_router(manager: Any, auth: AdminAuth, remediations: Any = None) -> APIRouter:
     """관리자 API 라우터를 만든다. ``manager``는 출력 폴더와 실행 상태를 알려 주는 ``RunManager``다.
-    ``remediations``가 없으면 요청마다 ``app.state.remediations``를 쓴다. 만들 때 예전 임시 폴더를 한 번 정리한다.
-
-    The `/admin/api/*` routes over `manager` (a `RunManager`: `out_dir`, `status`, `runs`) and the remediation service
-    (`RemediationManager`, for the remediation.log rule; default `request.app.state.remediations`). Removes the
-    leftovers of `<out root>/_admin/` once."""
+    ``remediations``가 없으면 요청마다 ``app.state.remediations``를 쓴다. 만들 때 이전 임시 폴더를 한 번 정리한다."""
     router = APIRouter(prefix="/admin/api", include_in_schema=False)
     try:
         remove_legacy_tmp(Path(manager.out_dir))
@@ -1769,7 +1732,7 @@ def create_admin_router(manager: Any, auth: AdminAuth, remediations: Any = None)
                                      "skipped": plan.skipped_count()}, headers=nostore)
             path = await run_in_threadpool(write_logs_zip, plan, tmp)
             resp = TempFileResponse(path, filename, on_close=ZIP_GATE.release)
-            release = False                           # 응답이 파일을 지운 뒤 놓는다
+            release = False                           # 잠금은 응답이 파일을 지운 뒤 푼다
             return resp
         finally:
             if release:
@@ -1852,10 +1815,10 @@ def create_admin_router(manager: Any, auth: AdminAuth, remediations: Any = None)
     async def run_logs_check(request: Request, run_id: str):
         """실행 하나의 ZIP을 만들지 않고 확인만 한다. 파일을 읽지 않으므로 복사할 때 빠질 파일은 세지 못한다.
 
-        The checks of the one-run archive without building it. It reads no file, so `skipped` and `bytes` do not
-        know what the copy refuses: a binary head (`not a text file`), a run over `RUN_TOKEN_LIMIT`, a line over
-        `RUN_LINE_LIMIT` (large members), a redaction that raised, a file swapped after planning, a vanished one. `skipped` may be lower and `bytes` higher than in the archive by
-        exactly those files, and `bytes` is the size READ, before redaction changes it."""
+        What the copy refuses (binary head, a run over `RUN_TOKEN_LIMIT`, a line over `RUN_LINE_LIMIT`, a
+        redaction that raised, a file swapped after planning, a vanished one) is unknown here: `skipped` may
+        be lower and `bytes` higher than in the archive by exactly those files; `bytes` is the size READ,
+        before redaction."""
         return await one_run(request, run_id, True)
 
     def locate_source(run_id: str) -> tuple[int, dict[str, Any]] | tuple[Path, str, int]:
