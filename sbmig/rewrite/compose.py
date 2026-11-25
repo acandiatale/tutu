@@ -6,16 +6,8 @@
 - 호출자가 준 ``extra_files``의 선언형 레시피는 ``{{SPRING_BOOT_VERSION}}`` 등을 채워 앞에 붙인다
 - 카탈로그가 ``file``을 지정한 레시피(Hystrix 전환)는 실행기가 그 파일을 ``extra_files``로 넘긴다
 
-Compose the run-specific ``rewrite.yml``.
-
-One composite recipe ``com.company.migrate.Run`` whose ``recipeList`` is the requested recipe ids in order; only that
-composite is activated, so ordering is deterministic. Declarative recipe files a caller passes (``extra_files``, a
-``RecipeRef.file``) are concatenated in front of it after templating ``{{SPRING_BOOT_VERSION}}``,
-``{{JAVA_VERSION}}``, ``{{SPRING_FRAMEWORK_VERSION}}``. A planned run is the composite plus the declarative files the
-recipe catalog names for the planned ids (`file`, v2.1z-at: the Hystrix composite); the runner passes those as
-``extra_files``. No KB recipe files.
-
-
+Placeholders: ``{{SPRING_BOOT_VERSION}}``, ``{{JAVA_VERSION}}``, ``{{SPRING_FRAMEWORK_VERSION}}``
+(``template_values``). No KB recipe files.
 """
 from __future__ import annotations
 
@@ -39,10 +31,7 @@ _PLACEHOLDER_RE = re.compile(r"\{\{\s*([A-Z0-9_]+)\s*\}\}")
 
 class RecipeCompositionError(ValueError):
     """자기 파일을 지정한 레시피가 합성된 어느 파일에도 정의되어 있지 않을 때 던지는 예외.
-    지금 코드는 던지지 않으며 공개 API 호환을 위해 남겨 둔다.
-
-    A requested recipe that names its own file (`RecipeRef.file`) is not defined in any composed file (a
-    programming / config error)."""
+    지금 코드는 던지지 않으며 공개 API 호환을 위해 남겨 둔다."""
 
     def __init__(self, missing: Sequence[str], searched: Sequence[str]):
         self.missing = list(missing)
@@ -74,9 +63,7 @@ def render_template(text: str, values: dict[str, str], *, source: str = "") -> s
 
 
 def split_documents(text: str) -> list[str]:
-    """여러 문서로 된 YAML을 ``---`` 줄로 나눈다. 주석만 있거나 빈 조각은 버린다.
-
-    Split a multi-document YAML text on ``---`` lines, dropping comment-only/empty chunks."""
+    """여러 문서로 된 YAML을 ``---`` 줄로 나눈다. 주석만 있거나 빈 조각은 버린다."""
     out = []
     for chunk in _DOC_SEP_RE.split(text):
         body = "\n".join(ln for ln in chunk.splitlines() if ln.strip() and not ln.lstrip().startswith("#"))
@@ -86,9 +73,7 @@ def split_documents(text: str) -> list[str]:
 
 
 def recipe_documents(text: str) -> dict[str, dict]:
-    """텍스트 안의 모든 ``specs.openrewrite.org/v1beta/recipe`` 문서를 이름별로 파싱해 반환한다.
-
-    name → parsed document for every ``specs.openrewrite.org/v1beta/recipe`` document in ``text``."""
+    """텍스트 안의 모든 ``specs.openrewrite.org/v1beta/recipe`` 문서를 이름별로 파싱해 반환한다."""
     out: dict[str, dict] = {}
     for doc in yaml.safe_load_all(text):
         if isinstance(doc, dict) and doc.get("type") == RECIPE_TYPE and doc.get("name"):
@@ -98,8 +83,7 @@ def recipe_documents(text: str) -> dict[str, dict]:
 
 def recipe_list_ids(doc: dict) -> list[str]:
     """선언형 레시피의 ``recipeList``가 가리키는 레시피 id 목록을 반환한다.
-
-    Recipe ids referenced by a declarative recipe's ``recipeList`` (string items or single-key mappings)."""
+    항목은 문자열이거나 키가 하나인 mapping이다."""
     ids: list[str] = []
     for item in doc.get("recipeList") or []:
         if isinstance(item, str):
@@ -111,9 +95,7 @@ def recipe_list_ids(doc: dict) -> list[str]:
 
 def _source_files(extra_files: Iterable[Path], recipes: Sequence[RecipeRef]) -> list[Path]:
     """합성 파일에 넣을 선언형 레시피 파일을 중복 없이 반환한다.
-    계획은 레시피 id만 쓰므로 호출자가 준 ``extra_files``만 담는다.
-
-    Declarative recipe files to inline (v2 plans name OpenRewrite recipes only; `extra_files` stays for callers)."""
+    계획은 레시피 id만 쓰므로 호출자가 준 ``extra_files``만 담는다. ``recipes``는 쓰지 않는다."""
     files: list[Path] = [Path(p) for p in extra_files]
     seen: set[str] = set()
     out = []
@@ -131,14 +113,10 @@ def compose_rewrite_yaml(recipes: Sequence[RecipeRef], *, extra_files: Iterable[
     """rewrite.yml 전체 텍스트를 만든다.
     머리 주석, ``extra_files``의 레시피 문서, 마지막에 합성 레시피 순서다.
     합성 id와 같은 이름의 문서는 무시하고 같은 이름이 두 번 나오면 경고를 남기고 뒤의 것을 쓴다.
-    ``extra_files``의 파일이 없으면 FileNotFoundError, YAML이 깨졌으면 ValueError를 던진다.
-
-    Return the full rewrite.yml text. Raises ``RecipeCompositionError`` when a recipe with its own `file` is not
-    defined there (nor in another composed file) and ``FileNotFoundError`` for a given (extra / RecipeRef.file) file
-    that does not exist."""
+    ``extra_files``의 파일이 없으면 FileNotFoundError, YAML이 깨졌으면 ValueError를 던진다."""
     values = template_values(target)
     files = _source_files([Path(p) for p in extra_files], recipes)
-    by_name: dict[str, tuple[str, str]] = {}           # name → (doc text, source)
+    by_name: dict[str, tuple[str, str]] = {}           # 이름별 (문서 텍스트, 출처 파일)
     other_docs: list[tuple[str, str]] = []
     for f in files:
         if not f.exists():

@@ -7,16 +7,11 @@
 - 변경은 커밋하지 않으며, 커밋과 되돌리기는 호출자가 한다
 - 자식 환경에서 KEY / TOKEN / SECRET / ``LLM_*`` 같은 변수를 빼고 실행하며, 예외를 던지지 않는다
 
-ScriptRunner (ScriptRunnerLike): static check, then one `python -I` process per fix script.
-
-`run` writes the code and a JSON payload into a fresh temp directory (never inside the project), starts
-`<python> -I -X utf8 sbmig/script/harness.py <payload>` with that directory as cwd in its own process group, waits at
-most `timeout_s` (default `script.timeout_seconds`) and kills the whole tree after it (`taskkill /T /F` on Windows,
-the process group elsewhere — the same kill as Maven's, `sbmig.build.mvn`). The child's result JSON becomes a
-`ScriptRunResult`; a killed or crashed child still reports the files it changed and its log from the journal it
-flushes line by line. Changes stay uncommitted in the working tree: the caller commits or restores. Never raises.
-
-
+Command: `<python> -I -X utf8 sbmig/script/harness.py <payload>` in its own process group, cwd = a
+fresh temp directory holding the code and the JSON payload. After `timeout_s` (default
+`script.timeout_seconds`) the whole tree is killed (`taskkill /T /F` on Windows, the process group
+elsewhere: the same kill as `sbmig.build.mvn`). The child's result JSON becomes a `ScriptRunResult`;
+without one, the journal it flushes line by line gives the changed files and the log.
 """
 from __future__ import annotations
 
@@ -43,21 +38,18 @@ from .check import ALLOWED_IMPORTS, check_script
 log = logging.getLogger("sbmig.script")
 
 HARNESS = Path(__file__).resolve().with_name("harness.py")
-SBMIG_ROOT = Path(__file__).resolve().parents[2]          # the directory that holds the `sbmig` package
+SBMIG_ROOT = Path(__file__).resolve().parents[2]          # `sbmig` 패키지가 들어 있는 폴더
 STDERR_TAIL_CHARS = 2000
 IS_WINDOWS = os.name == "nt"
 _CREATE_NO_WINDOW = 0x08000000
 # 스크립트는 환경 변수를 읽을 수 없지만 키는 아예 넘기지 않기 위해 이 변수들을 뺀다
-# never handed to the script process (it cannot read the environment anyway; this keeps keys out of reach)
 _SECRET_ENV_RE = re.compile(r"(KEY|TOKEN|SECRET|PASSW|CREDENTIAL|AUTH)|^LLM_", re.IGNORECASE)
 
 
 def _popen_kwargs() -> dict[str, Any]:
     """프로세스 트리 전체를 종료할 수 있도록 별도 프로세스 그룹으로 실행하는 인자를 만든다.
-    Windows에서는 숨은 콘솔을 붙이므로 운영자의 Ctrl+C가 자식에게 전달되지 않는다.
-
-    Own process group so the whole tree can be killed: POSIX a new session; Windows a new process group with
-    its own hidden console (the operator's Ctrl+C / Ctrl+Break never reach it; `taskkill /T /F` kills it)."""
+    POSIX는 새 세션으로 실행한다. Windows는 새 프로세스 그룹과 숨은 콘솔을 붙이므로 운영자의 Ctrl+C가
+    자식에게 전달되지 않고, 종료는 `taskkill /T /F`로 한다."""
     if IS_WINDOWS:
         flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x200) | getattr(subprocess, "CREATE_NO_WINDOW",
                                                                                    _CREATE_NO_WINDOW)
@@ -68,16 +60,14 @@ def _popen_kwargs() -> dict[str, Any]:
 def _child_env() -> dict[str, str]:
     """자식 프로세스의 환경 변수를 만든다. 비밀 값처럼 보이는 변수를 빼고 UTF-8을 강제한다."""
     env = {k: v for k, v in os.environ.items() if not _SECRET_ENV_RE.search(k)}
-    env["PYTHONIOENCODING"] = "utf-8"         # ignored under -I; `-X utf8` and the harness's reconfigure decide
+    env["PYTHONIOENCODING"] = "utf-8"         # -I에서는 무시되고 `-X utf8`과 하네스의 reconfigure가 정한다
     env["PYTHONUTF8"] = "1"
     return env
 
 
 def _error_dict(e: Any) -> dict[str, Any]:
     """``p.errors``에 넣을 오류 항목 하나를 JSON으로 넘길 수 있는 dict로 만든다.
-    의존성 해석 오류에는 ``artifact``를 더한다.
-
-    p.errors entry: the contract's keys (+ `artifact` "g:a[:v]" for resolution errors)."""
+    의존성 해석 오류에는 ``artifact``("g:a[:v]")를 더한다."""
     if isinstance(e, dict):
         return json.loads(json.dumps(e, default=str))
     if isinstance(e, BuildError):
@@ -99,9 +89,7 @@ def _rel_posix(paths: Iterable[Any]) -> list[str]:
 
 
 def _cap_log(lines: list[str], dropped: int, cap: int) -> list[str]:
-    """로그를 최대 ``cap``줄로 자른다. 버린 줄이 있으면 마지막 줄에 그 개수를 남긴다.
-
-    At most `cap` lines; when lines were dropped the last kept one says how many."""
+    """로그를 최대 ``cap``줄로 자른다. 버린 줄이 있으면 마지막 줄에 그 개수를 남긴다."""
     cap = max(1, cap)
     lines = [str(x) for x in lines]
     extra = max(0, len(lines) - cap) + max(0, dropped)
@@ -113,8 +101,7 @@ def _cap_log(lines: list[str], dropped: int, cap: int) -> list[str]:
 
 def _read_journal(path: Path) -> tuple[list[str], list[str]]:
     """시간 초과로 종료되거나 비정상 종료된 자식이 저널에 남긴 (로그 줄, 바뀐 파일)을 읽어 반환한다.
-
-    (log lines, changed files) a killed / crashed child flushed before it died."""
+    저널을 읽을 수 없으면 빈 목록 두 개를 반환한다."""
     logs: list[str] = []
     changed: list[str] = []
     try:
@@ -124,7 +111,7 @@ def _read_journal(path: Path) -> tuple[list[str], list[str]]:
     for line in text.splitlines():
         try:
             ev = json.loads(line)
-        except ValueError:                        # the last line of a killed process may be torn
+        except ValueError:                        # 강제 종료된 프로세스의 마지막 줄은 잘려 있을 수 있다
             continue
         if "log" in ev:
             logs.append(str(ev["log"]))
@@ -137,9 +124,9 @@ class ScriptRunner:
     """작업 공간에서 LLM 수정 스크립트를 실행하는 클래스.
     ``check``는 정적 검사만 하고, ``run``은 검사를 통과하면 별도 프로세스에서 실행한다.
 
-    Runs LLM fix scripts against a workspace (docs/INTERFACES.md "Script contract (S)")."""
+    Contract: docs/INTERFACES.md "Script contract (S)"."""
 
-    label = "fix script"              # the log line's subject (`apply_edits` runs its synthesized script as "edits")
+    label = "fix script"              # 로그 줄의 주어. `apply_edits`는 "edits"로 바꿔 쓴다
 
     def __init__(self, cfg: Config):
         self.cfg = cfg
@@ -163,7 +150,7 @@ class ScriptRunner:
                                          error=f"rejected by the static check: {problems[0]}{more}")
             else:
                 result = self._execute(ws, code, list(errors or ()), timeout_s)
-        except Exception as exc:  # never raises: an internal failure is the run's result
+        except Exception as exc:  # 내부 오류도 예외 대신 실행 결과로 반환한다
             log.debug("fix script runner failed", exc_info=True)
             result = ScriptRunResult(status="error", error=f"sbmig script runner failed: {type(exc).__name__}: {exc}")
         result.duration_s = round(time.monotonic() - t0, 3)
@@ -172,12 +159,12 @@ class ScriptRunner:
                  len(result.changed_files), f" — {first}" if first else "")
         return result
 
-    # ------------------------------------------------------------------ internals
+    # ------------------------------------------------------------------ 내부 함수
     def _execute(self, ws: Workspace, code: str, errors: list[Any], timeout_s: Optional[int]) -> ScriptRunResult:
         """코드와 payload를 새 임시 디렉토리에 쓰고 하네스를 실행해 결과를 모은다.
         임시 디렉토리는 항상 지운다."""
         s = self.cfg.script
-        limit = timeout_s or s.timeout_seconds                # 0 / None → the config value; config 0 = no limit
+        limit = timeout_s or s.timeout_seconds                # 0이나 None이면 설정값을 쓰고, 설정값 0은 제한 없음
         timeout = float(limit) if limit else None
         python = s.python or sys.executable
         if not python:
@@ -206,15 +193,13 @@ class ScriptRunner:
 
     def _spawn(self, cmd: list[str], cwd: Path, timeout: Optional[float]) -> tuple[Optional[int], bool, str]:
         """자식 프로세스를 실행하고 끝날 때까지 기다려 (종료 코드, 시간 초과 여부, 출력 뒷부분)을 반환한다.
-        시간 초과이면 트리 전체를 종료한다.
-
-        (exit code, timed out, stderr+stdout tail)."""
+        시간 초과이면 트리 전체를 종료한다. 출력은 stderr 뒤에 stdout을 붙인 뒷부분이다."""
         try:
             proc = subprocess.Popen(cmd, cwd=str(cwd), env=_child_env(), stdin=subprocess.DEVNULL,
                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, **_popen_kwargs())
         except (OSError, ValueError) as exc:
             return None, False, f"cannot start {cmd[0]!r}: {exc}"
-        _register(proc)                       # the web shutdown / interpreter exit kills it too
+        _register(proc)                       # 웹 서버 종료나 인터프리터 종료 때도 함께 종료되게 등록한다
         timed_out = False
         try:
             try:
@@ -226,10 +211,10 @@ class ScriptRunner:
                 _kill_group(proc)
                 try:
                     out, err = proc.communicate(timeout=10)
-                except (subprocess.TimeoutExpired, ValueError, OSError):   # pragma: no cover - pipes held open
+                except (subprocess.TimeoutExpired, ValueError, OSError):   # pragma: no cover - 파이프가 안 닫힌 경우
                     out, err = b"", b""
         # 기다리는 중에 Ctrl+C 등으로 중단돼도 자식 프로세스가 남지 않게 한다
-        except BaseException:                 # Ctrl+C in the waiting thread: never leave the child behind
+        except BaseException:
             _kill_group(proc)
             raise
         finally:
@@ -257,7 +242,7 @@ class ScriptRunner:
         if timed_out:
             error = f"timed out after {timeout or 0:.0f}s (process tree killed)"
             status = "timeout"
-        elif exit_code is None:                   # the interpreter did not start
+        elif exit_code is None:                   # 인터프리터가 시작되지 않았다
             error, status = stderr.strip() or "the script process could not be started", "error"
         else:
             tail = stderr.strip()

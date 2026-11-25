@@ -6,14 +6,10 @@
 - 레시피 id는 ``knowledge/recipes/catalog.yml``에서 관리하고 여기서는 받은 id를 그대로 쓴다
 - 레시피 BOM은 3.37.0으로 고정한다. 3.38.0은 Maven Central에서 버전이 맞지 않는다
 
-sbmig.rewrite — OpenRewrite (rewrite-maven-plugin) runner (workstream C).
-
 Public API (docs/INTERFACES.md):
     OpenRewriteRunner(ws, cfg, kb=None).run(recipes, *, extra_recipe_files=(), module=None, dry_run=False, label="")
     compose_rewrite_yaml(recipes, *, extra_files=(), target=None) -> str
     resolve_recipe_artifact_versions(cfg, mvn_env, *, artifacts=None, cache_path=None, work_dir=None) -> {"g:a": v}
-
-
 """
 from .compose import COMPOSITE_RECIPE_ID, RecipeCompositionError, compose_rewrite_yaml, recipe_documents
 from .runner import OpenRewriteRunner, recipe_artifact_for

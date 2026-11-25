@@ -5,13 +5,7 @@
   import된 BOM은 로컬에 있을 때만 낮은 우선순위로 합친다
 - BOM은 3.37.0으로 고정한다. 3.38.0은 Central에 아직 없는 버전을 가리켜 모든 실행이 실패한다
 
-Resolve recipe artifact versions (``g:a`` → version) from ``rewrite-recipe-bom`` (or config overrides).
-
-The BOM pom is fetched into the local repository with ``maven-dependency-plugin:get`` when missing and parsed
-directly (``<dependencyManagement>``; ``${...}`` interpolated from its ``<properties>``). Imported BOMs are merged
-(lower precedence) when they are available locally.
-
-
+``${...}`` in the BOM is interpolated from its own ``<properties>`` and ``project.*`` / ``pom.*``.
 """
 from __future__ import annotations
 
@@ -35,9 +29,7 @@ DEPENDENCY_PLUGIN = "org.apache.maven.plugins:maven-dependency-plugin:3.8.1"
 
 class RecipeArtifactError(RuntimeError):
     """BOM을 받지 못했고 개별 지정도 없어 레시피 아티팩트 버전을 정할 수 없을 때 던지는 예외.
-    러너는 이를 변환 실패로 기록하고 실행을 계속한다.
-
-    Recipe artifact versions could not be determined (BOM unavailable and no override)."""
+    러너는 이를 변환 실패로 기록하고 실행을 계속한다."""
 
 
 def pom_path(local_repo: Path, group: str, artifact: str, version: str) -> Path:
@@ -68,9 +60,7 @@ def _interp(value: str, props: Mapping[str, str]) -> str:
 
 def parse_bom_versions(path: Path, *, local_repo: Path | None = None, _depth: int = 0) -> dict[str, str]:
     """BOM pom의 관리 버전을 {"g:a": 버전}으로 읽는다.
-    import된 BOM은 로컬에 있으면 3단계까지 따라가 합치고 직접 선언한 값을 우선한다.
-
-    Managed versions of a BOM pom file: {"g:a": "version"}; imported BOMs merged when present locally."""
+    import된 BOM은 로컬에 있으면 3단계까지 따라가 합치고 직접 선언한 값을 우선한다."""
     root = _strip_ns(ET.parse(str(path)).getroot())
     props: dict[str, str] = {}
     for tag in ("version", "groupId", "artifactId"):
@@ -112,12 +102,8 @@ def ensure_bom(cfg: Config, mvn_env: Mapping[str, str], *, work_dir: Path | None
     종료 코드가 아니라 파일이 있는지로 판단한다.
     깨진 프로젝트 pom.xml에 영향을 받지 않도록 프로젝트 밖(``work_dir``)에서 실행한다.
 
-    Make sure the recipe BOM pom is in the local repository; returns its path or raises RecipeArtifactError.
-
-    ``dependency:get`` may exit non-zero although the BOM pom itself was downloaded (e.g. one of its *imported*
-    BOMs is missing upstream) — the file's presence is what counts.
-
-
+    ``dependency:get`` may exit non-zero although the BOM pom itself was downloaded (e.g. one of its imported
+    BOMs is missing upstream).
     """
     version = version or cfg.openrewrite.recipe_bom_version
     path = bom_pom_path(cfg, version)
@@ -126,11 +112,11 @@ def ensure_bom(cfg: Config, mvn_env: Mapping[str, str], *, work_dir: Path | None
     cmd = base_command(cfg) + [f"{DEPENDENCY_PLUGIN}:get",
                                f"-Dartifact={BOM_GROUP}:{BOM_ARTIFACT}:{version}:pom", "-Dtransitive=false"]
     cwd = Path(work_dir) if work_dir else Path.cwd()
-    cwd.mkdir(parents=True, exist_ok=True)                 # never inside the project: a broken pom.xml would fail it
+    cwd.mkdir(parents=True, exist_ok=True)
     log.info("fetching %s:%s:%s", BOM_GROUP, BOM_ARTIFACT, version)
     try:
         cp = subprocess.run(cmd, cwd=str(cwd), env=dict(mvn_env), capture_output=True, timeout=timeout_s,
-                            stdin=subprocess.DEVNULL, encoding="utf-8", errors="replace")   # never the console code page
+                            stdin=subprocess.DEVNULL, encoding="utf-8", errors="replace")   # 콘솔 코드페이지를 쓰지 않는다
         output = cp.stdout + cp.stderr
     except (FileNotFoundError, PermissionError, subprocess.TimeoutExpired) as exc:
         output = str(exc)
@@ -145,15 +131,10 @@ def resolve_recipe_artifact_versions(cfg: Config, mvn_env: Mapping[str, str], *,
                                      cache_path: Path | None = None,
                                      work_dir: Path | None = None) -> dict[str, str]:
     """``artifacts``(기본 ``openrewrite.recipe_artifacts``)의 버전을 {"g:a": 버전}으로 반환한다.
-    ``openrewrite.recipe_artifact_versions`` 개별 지정을 BOM 관리 버전보다 우선한다. BOM에서 읽은 버전은
-    ``cache_path``에 캐시하고, 버전이 없는 아티팩트가 있으면 RecipeArtifactError를 던진다.
+    ``openrewrite.recipe_artifact_versions`` 개별 지정을 BOM 관리 버전보다 우선한다.
+    BOM에서 읽은 버전은 ``cache_path``에 캐시하고, 버전이 없는 아티팩트가 있으면 RecipeArtifactError를 던진다.
 
-    {"g:a": version} for ``artifacts`` (default: ``cfg.openrewrite.recipe_artifacts``).
-
-    Precedence: ``cfg.openrewrite.recipe_artifact_versions`` override → BOM-managed version. Results are cached in
-    ``cache_path`` (keyed by BOM version + overrides). Raises RecipeArtifactError if an artifact has no version.
-
-
+    The cache is reused only when its ``bom_version`` matches and it holds every wanted artifact.
     """
     wanted = list(dict.fromkeys(artifacts if artifacts is not None else cfg.openrewrite.recipe_artifacts))
     overrides = dict(cfg.openrewrite.recipe_artifact_versions or {})

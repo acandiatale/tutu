@@ -6,22 +6,12 @@
 - LLM 코드는 최소한의 builtins와 검사를 거치는 ``__import__``로 실행하며, sbmig 자체는 import할 수 없다
 - 결과 JSON은 원자적으로 쓰고, 로그와 바뀐 파일은 저널에 줄마다 flush하므로 시간 초과로 종료돼도 남는다
 
-The fix-script process. Run as a FILE, never imported by the parent:
-
-    <python> -I -X utf8 .../sbmig/script/harness.py <payload.json>
-
-`-I` (isolated) ignores PYTHON* variables, the user site and the current directory, so nothing in the temp cwd or
-the environment is imported by accident; the sbmig source root the parent passes in the payload is put on sys.path
-explicitly (after the whitelisted stdlib modules are loaded, so the root can never shadow them). The LLM code then
-runs with a small builtins dict and a guarded `__import__` (the same rule as the static check — sbmig itself is not
-importable from the script) against the helper `p` (sbmig.script.api.FixHelper).
+The sbmig root goes on sys.path only after the whitelisted stdlib modules (`preload`) are loaded. The
+guarded `__import__` applies the same rule as the static check (`sbmig.script.check.import_allowed`).
 
 Payload (JSON, UTF-8): root, code_path, result_path, journal_path, errors, encoding_candidates, log_lines,
-extra_imports, preload, sbmig_root. Result (JSON, UTF-8, written atomically): status ok | error, error, changed_files,
-log, log_dropped. The journal (one JSON line per log line / changed file, flushed at once) is what a killed process
-still leaves behind. A guard against mistakes, not a sandbox (see sbmig.script.check).
-
-
+extra_imports, preload, sbmig_root. Result (JSON, UTF-8, written atomically): status ok | error, error,
+changed_files, log, log_dropped. The journal has one JSON line per log line / changed file, flushed at once.
 """
 from __future__ import annotations
 
@@ -32,7 +22,7 @@ import sys
 import traceback
 import types
 
-SCRIPT_FILENAME = "fix_script.py"         # the code's filename in tracebacks (only its frames are reported)
+SCRIPT_FILENAME = "fix_script.py"         # traceback에 쓰는 스크립트 파일 이름, 이 이름의 프레임만 보고한다
 MAX_TRACE_FRAMES = 8
 EXIT_HARNESS_FAILED = 3
 
@@ -40,7 +30,7 @@ SAFE_BUILTIN_NAMES: tuple[str, ...] = (
     "abs", "all", "any", "bool", "bytes", "chr", "dict", "divmod", "enumerate", "filter", "float", "frozenset",
     "hash", "int", "isinstance", "issubclass", "iter", "len", "list", "map", "max", "min", "next", "ord", "range",
     "repr", "reversed", "round", "set", "slice", "sorted", "str", "sum", "tuple", "zip",
-    "object", "staticmethod", "classmethod", "property", "__build_class__",          # small helper classes
+    "object", "staticmethod", "classmethod", "property", "__build_class__",          # 작은 보조 클래스용
     "True", "False", "None",
     "Exception", "ArithmeticError", "AssertionError", "AttributeError", "FileExistsError", "FileNotFoundError",
     "ImportError", "IndexError", "IsADirectoryError", "KeyError", "LookupError", "NameError", "NotImplementedError",
@@ -60,9 +50,7 @@ def safe_builtins(print_fn, import_fn) -> dict:
 
 def guarded_import(allowed, extra_imports):
     """스크립트에서 쓸 ``__import__``를 만든다.
-    ``allowed(name, fromlist, extra)``가 허용한 모듈만 import하고 상대 import는 막는다.
-
-    `__import__` for the script: only what `allowed(name, fromlist, extra)` accepts, no relative imports."""
+    ``allowed(name, fromlist, extra)``가 허용한 모듈만 import하고 상대 import는 막는다."""
     real_import = builtins.__import__
 
     def _import(name, globals=None, locals=None, fromlist=(), level=0):
@@ -77,8 +65,7 @@ def guarded_import(allowed, extra_imports):
 
 def describe(exc: BaseException, code: str) -> str:
     """예외를 한 줄 요약과 스크립트 자신의 프레임으로 설명한다. 도우미와 하네스의 프레임은 뺀다.
-
-    'KeyError: 'x' (line 7)' + the script's own frames (helper / harness frames are left out)."""
+    예: "KeyError: 'x' (line 7)" 뒤에 "script traceback:" 줄들."""
     lines = code.splitlines()
     msg = str(exc)
     head = f"{type(exc).__name__}: {msg}" if msg else type(exc).__name__
@@ -105,7 +92,7 @@ def write_result(path: str, result: dict) -> None:
 
 def run(payload: dict) -> dict:
     """payload 하나를 실행해 결과 dict를 반환한다. 스크립트에서 난 예외는 모두 status error로 반환한다."""
-    for name in payload.get("preload") or ():            # whitelisted stdlib first: the root cannot shadow them
+    for name in payload.get("preload") or ():            # 허용 모듈을 먼저 로드해야 루트의 같은 이름 파일에 가려지지 않는다
         try:
             __import__(name)
         except ImportError:
@@ -126,15 +113,15 @@ def run(payload: dict) -> dict:
         compiled = compile(code, SCRIPT_FILENAME, "exec", dont_inherit=True)
         importer = guarded_import(import_allowed, tuple(payload.get("extra_imports") or ()))
         scope = {"__builtins__": safe_builtins(helper._print, importer), "__name__": "__sbmig_fix__"}
-        exec(compiled, scope)                            # noqa: S102  # checked by sbmig.script.check first
+        exec(compiled, scope)                            # noqa: S102  # sbmig.script.check가 먼저 검사했다
         fix = scope.get("fix")
         if not callable(fix):
             raise TypeError("the script defines no callable 'fix'")
         out = fix(helper)
-        if isinstance(out, types.GeneratorType):         # `yield` inside fix: run it to the end
+        if isinstance(out, types.GeneratorType):         # fix 안에 `yield`가 있으면 끝까지 실행한다
             for _ in out:
                 pass
-    except BaseException as exc:                         # noqa: BLE001  # every failure is the script's result
+    except BaseException as exc:                         # noqa: BLE001  # 어떤 실패든 스크립트 결과로 보고한다
         result.update(status="error", error=describe(exc, code))
     # 거부된 경로는 다음 시도가 알아야 할 스크립트 버그이므로 스크립트가 PathRefused를 잡았더라도 실패로 처리한다
     if result["status"] == "ok" and helper._refusals:
@@ -151,7 +138,7 @@ def main(argv: list[str]) -> int:
     for stream in (sys.stdout, sys.stderr):
         try:
             stream.reconfigure(encoding="utf-8", errors="replace")
-        except (AttributeError, ValueError):             # pragma: no cover - replaced / detached streams
+        except (AttributeError, ValueError):             # pragma: no cover - 스트림이 바뀌었거나 분리된 경우
             pass
     if len(argv) != 2:
         print("usage: python -I harness.py <payload.json>", file=sys.stderr)
@@ -160,7 +147,7 @@ def main(argv: list[str]) -> int:
         with open(argv[1], encoding="utf-8") as fh:
             payload = json.load(fh)
         write_result(payload["result_path"], run(payload))
-    except BaseException:                                # noqa: BLE001  # the parent reports the stderr tail
+    except BaseException:                                # noqa: BLE001  # 부모가 stderr 뒷부분을 보고한다
         traceback.print_exc(file=sys.stderr)
         return EXIT_HARNESS_FAILED
     return 0

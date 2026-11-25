@@ -8,35 +8,29 @@ LLM은 ``where`` / ``change``를 쓰고, sbmig는 적용된 diff에서 줄 범�
 - 줄 번호는 추가와 수정이면 새 파일, 삭제이면 이전 파일 기준이다
 - 잘린 diff는 읽을 수 있는 데까지 읽고, 이상한 입력에도 예외를 던지지 않는다
 
-Edit notes (v2.1b, 2026-10-27): every modification of a try described for the business team — "edit 란에 llm 이
-이렇게 xxx 를 xxx 하게 수정합니다". The LLM writes `where` / `change` (each `<edits>` item's `desc`, the `<changes>`
-list for a script, `EditNote(source="llm")`); sbmig adds `lines` from the applied unified diff and, for every file the
-diff touched that the LLM did not describe, a note generated from the diff itself (`source="diff"`), so the record
-never shows a bare diff.
+The LLM writes `where` / `change` (each `<edits>` item's `desc`, the `<changes>` list for a
+script, `EditNote(source="llm")`); sbmig adds `lines` from the applied unified diff and, for every
+file the diff touched that the LLM did not describe, a note from the diff itself (`source="diff"`).
 
-    answer_notes(changes, edits)          the LLM's notes of one answer: the `<changes>` list first, then each edit's
-                                          `desc` for a path the list did not describe (the fix / review parsers)
-    notes_from_diff(diff_text)            one note per file of a unified diff: `lines` "+42–47" added, "~12" changed
-                                          (a run with both - and +), "-3" removed; `change` "pom.xml 42–47행 추가
-                                          (6줄)" / "Foo.java 12행 수정" / "… 삭제"; new / deleted / renamed / binary
-    merge_notes(llm_notes, diff_text)     the LLM's notes with `lines` from the diff (matched by path — a short path by
-                                          its case-insensitive basename when that is unambiguous), plus the diff's
-                                          notes for files the LLM did not mention; never empty when the diff touched
-                                          a file
-    hunks_from_diff(diff_text)            v2.1e: path → `EditHunk` per change run (as-is `before` / to-be `after`, the
-                                          run's text exactly as in the diff without the `+` / `-`, LF line ends)
-    attach_hunks(notes, diff_text)        v2.1e: copies of `notes`, a note without hunks gets its file's hunks (the
-                                          reindex backfill of records written before v2.1e)
+* answer_notes(changes, edits): the `<changes>` list first, then each edit's `desc` for a path the
+  list did not describe (the fix / review parsers).
+* notes_from_diff(diff_text): one note per file; `lines` "+42–47" added, "~12" changed (a run with
+  both - and +), "-3" removed; `change` "pom.xml 42–47행 추가 (6줄)" / "Foo.java 12행 수정" /
+  "… 삭제"; new / deleted / renamed / binary files.
+* merge_notes(llm_notes, diff_text): the LLM's notes with `lines` from the diff (matched by path, a
+  short path by its case-insensitive basename when unambiguous), plus the diff's notes for files the
+  LLM did not mention; never empty when the diff touched a file.
+* hunks_from_diff(diff_text): path -> `EditHunk` per change run (as-is `before` / to-be `after`, the
+  run's text as in the diff without `+` / `-`, LF line ends).
+* attach_hunks(notes, diff_text): copies of `notes`; a note without hunks gets its file's hunks
+  (reindex backfill of older records).
 
-v2.1e (2026-10-27, "as-is 코드와 to-be 코드도"): every note made or matched here carries `hunks` — ALL the hunks of its
-file in diff order (the diff is the truth, also for a note whose `where` names one place); `max_lines` (the call
-sites pass `errors.snippet_lines`, 0 = whole) keeps that many lines per side, adds a last line `… (+N lines)` and sets
-`truncated`. A new file = one hunk per run with `before == ""`, a deletion `after == ""`, a binary / mode-only change
-none.
+Hunks: every note made or matched here carries ALL the hunks of its file in diff order. `max_lines`
+(callers pass `errors.snippet_lines`, 0 = whole) keeps that many lines per side, adds a last line
+`… (+N lines)` and sets `truncated`. A new file = one hunk per run with `before == ""`, a deletion
+`after == ""`, a binary / mode-only change none.
 
-Line numbers: additions and changes count in the new file, removals in the old file (where the lines were). A diff
-cut short (`errors.diff_chars`) is read as far as it goes; the run it cut ends with a line `… (diff cut:
-errors.diff_chars)`. Never raises on odd input.
+A diff cut short (`errors.diff_chars`) is read as far as it goes; the run it cut ends with DIFF_CUT_LINE.
 """
 from __future__ import annotations
 
@@ -48,10 +42,10 @@ from typing import Any, Optional
 
 from sbmig.core.models import EditHunk, EditNote
 
-MAX_RUNS_SHOWN = 8                  # change runs listed per file in `lines` / `change` (then "… +N")
+MAX_RUNS_SHOWN = 8                  # 파일당 `lines` / `change`에 보여 줄 변경 구간 수, 넘으면 "… +N"
 WHERE_CHARS = 300
 CHANGE_CHARS = 600
-DIFF_CUT_LINE = "… (diff cut: errors.diff_chars)"   # the last line of a hunk whose diff text stops inside it
+DIFF_CUT_LINE = "… (diff cut: errors.diff_chars)"   # diff가 중간에 잘린 변경 조각의 마지막 줄
 
 _HUNK_RE = re.compile(r"^@@+ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 _GIT_HEADER_RE = re.compile(r'^diff --git (?:"?a/)(.*?)"? (?:"?b/)(.*?)"?$')
@@ -60,12 +54,8 @@ _SIMPLE_ESC = {"n": "\n", "t": "\t", '"': '"', "\\": "\\", "a": "\a", "b": "\b",
 
 
 def describe_language(cfg: Any) -> str:
-    """프롬프트에서 요구할 변경 설명의 언어를 정한다. ``report.language``가 ``ko``이면 한국어, 아니면
-    프로젝트 주석의 언어를 따르고 판단하기 어려우면 한국어로 한다.
-
-    The language of the change descriptions (`desc`, `<changes>`) as the prompts name it: Korean when
-    `report.language` is `ko`; otherwise the language of the project's code comments, Korean when unsure (the business
-    team reads the record)."""
+    """프롬프트에서 요구할 변경 설명(`desc`, `<changes>`)의 언어를 정한다.
+    ``report.language``가 ``ko``이면 한국어, 아니면 프로젝트 주석의 언어를 따르고 판단하기 어려우면 한국어로 한다."""
     lang = str(getattr(getattr(cfg, "report", None), "language", "") or "").lower()
     if lang == "ko":
         return "Korean (한국어)"
@@ -74,9 +64,7 @@ def describe_language(cfg: Any) -> str:
 
 
 def one_line(text: Any, limit: int = CHANGE_CHARS) -> str:
-    """``text``의 연속된 공백을 한 칸으로 줄여 최대 ``limit``자의 한 줄로 만든다.
-
-    `text` as one line (every whitespace run, newlines included, collapsed to one space), capped at `limit`."""
+    """``text``의 줄바꿈과 연속된 공백을 한 칸으로 줄여 최대 ``limit``자의 한 줄로 만든다."""
     s = " ".join(str(text if text is not None else "").split())
     return s if len(s) <= limit else s[: limit - 1] + "…"
 
@@ -93,9 +81,7 @@ def same_path(a: str, b: str) -> bool:
     대소문자와 구분자를 무시하고, 폴더를 포함한 짧은 경로가 긴 경로의 뒷부분과 같아도 같은 파일로 본다.
     폴더 없이 ``pom.xml``만 있으면 어느 파일인지 모호하므로 뒷부분 일치로 보지 않는다.
 
-    Two paths name the same file: equal ignoring case and `./` / `\\`, or the shorter one — with at least one
-    folder — is a trailing part of the other (`comp-jar/pom.xml` vs `module/comp-jar/pom.xml`; a bare `pom.xml` is
-    NOT the same as `module/comp-jar/pom.xml`: basenames are matched only where they are unambiguous)."""
+    `comp-jar/pom.xml` matches `module/comp-jar/pom.xml`; a bare `pom.xml` does not."""
     x, y = _norm(a).lower(), _norm(b).lower()
     if not x or not y:
         return False
@@ -110,14 +96,11 @@ def _base(path: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# the LLM's notes of one answer
+# 답변 하나의 LLM 수정 기록
 # ---------------------------------------------------------------------------
 def answer_notes(changes: Iterable[EditNote], edits: Iterable[Any]) -> list[EditNote]:
     """답변 하나에서 LLM이 쓴 수정 기록을 모은다.
-    ``<changes>`` 목록을 먼저 두고, 목록에 없는 경로의 편집은 ``desc``로 기록을 하나씩 더한다.
-
-    The LLM's notes of one answer: the `<changes>` list as given, then one note per edit with a `desc`
-    (`EditNote(path, change=desc)`) for a path the `<changes>` list did not already describe. Order kept."""
+    ``<changes>`` 목록을 먼저 두고, 목록에 없는 경로의 편집은 ``desc``로 기록을 하나씩 더한다. 순서는 유지한다."""
     out = [x for x in (_as_note(n) for n in changes or ()) if x is not None]
     edits = list(edits or ())
     described = [n.path for n in out if n.path]
@@ -131,7 +114,7 @@ def answer_notes(changes: Iterable[EditNote], edits: Iterable[Any]) -> list[Edit
                                       and edit_bases.count(_base(path)) == 1) for d in described):
             continue
         if any(n.path == path and n.change == desc for n in out):
-            continue                                       # the same edit twice
+            continue                                       # 같은 편집이 두 번 온 경우
         out.append(EditNote(path=path, change=desc, source="llm"))
     return out
 
@@ -162,7 +145,7 @@ def _pick(item: dict, keys: Sequence[str]) -> str:
 
 
 def _clean_path(raw: str) -> str:
-    """The note's path as written, cleaned like an edit path (`./`, `\\`, quotes, a "(new file)" tail)."""
+    """기록의 경로를 편집 경로처럼 정리한다. `./`, `\\`, 따옴표, 끝의 "(new file)" 같은 괄호를 뺀다."""
     p = one_line(raw, 400).strip("`'\"* ")
     p = re.sub(r"\s+\(.*\)$", "", p).replace("\\", "/")
     while p.startswith("./"):
@@ -174,8 +157,7 @@ def note_from_text(text: str) -> Optional[EditNote]:
     """JSON 대신 글머리표로 온 한 줄을 수정 기록 하나로 만든다.
     경로가 문장의 주어로만 쓰였으면 문장 전체를 설명으로 둔다.
 
-    One "path: what" / "path — what" / "path 의 … 수정합니다" line (a bullet list instead of JSON) → a note; the
-    sentence is kept whole when the path is only its subject."""
+    Forms: "path: what", "path — what", "path 의 … 수정합니다"."""
     line = one_line(text)
     if not line:
         return None
@@ -189,11 +171,10 @@ def note_from_text(text: str) -> Optional[EditNote]:
 
 def notes_from_json(obj: Any) -> tuple[list[EditNote], list[str]]:
     """파싱한 ``<changes>`` JSON을 (기록 목록, 문제 목록)으로 바꾼다.
-    텍스트가 없는 항목은 건너뛰고, 거부하는 항목은 없다.
+    텍스트가 없는 항목은 문제로 기록하고 건너뛴다. 기록은 설명일 뿐이므로 거부하는 항목은 없다.
 
-    The parsed `<changes>` JSON — a list of `{"path", "where", "change"}` (also `file` / `location` / `desc` …
-    spellings, a `{"changes": [...]}` wrapper, one object, or plain strings) → (notes, problems). Items without any
-    text are skipped with a problem; nothing is refused (the notes only describe)."""
+    Accepted: a list of `{"path", "where", "change"}` (also `file` / `location` / `desc` … spellings), a
+    `{"changes": [...]}` wrapper, one object, or plain strings."""
     if isinstance(obj, dict):
         obj = obj["changes"] if isinstance(obj.get("changes"), list) else [obj]
     if obj is None:
@@ -229,21 +210,21 @@ def notes_from_json(obj: Any) -> tuple[list[EditNote], list[str]]:
 
 
 # ---------------------------------------------------------------------------
-# unified diff → notes
+# unified diff로 수정 기록 만들기
 # ---------------------------------------------------------------------------
 @dataclass
 class _FileDiff:
     """diff에 나온 파일 하나의 경로, 상태, 변경 구간, 수정 전후 텍스트를 담는 클래스."""
 
-    path: str = ""                        # the file as it is after the change (the old path for a deletion)
+    path: str = ""                        # 변경 후 경로, 삭제면 이전 경로
     old_path: str = ""
     new_file: bool = False
     deleted: bool = False
     renamed_from: str = ""
     binary: bool = False
     mode_only: bool = False
-    runs: list[tuple[str, int, int]] = field(default_factory=list)   # (kind "+" | "~" | "-", first line, count)
-    # v2.1e, one per run: (removed lines = as-is, added lines = to-be, the diff text stopped inside the run)
+    runs: list[tuple[str, int, int]] = field(default_factory=list)   # (종류 "+" | "~" | "-", 첫 줄, 줄 수)
+    # 변경 구간마다 (삭제된 줄 = as-is, 추가된 줄 = to-be, diff가 구간 중간에서 잘렸는지)
     texts: list[tuple[list[str], list[str], bool]] = field(default_factory=list)
     hunks: int = 0
     added: int = 0
@@ -258,7 +239,7 @@ def _unquote(raw: str) -> str:
     """git이 출력한 경로를 원래 문자열로 복원한다.
     한글 파일 이름처럼 따옴표와 8진 이스케이프로 나온 경로도 처리한다.
 
-    A git path as printed: `"a/\\355\\225\\234.java"` (core.quotepath) or a plain one with a trailing tab."""
+    Quoted form from core.quotepath: `"a/\\355\\225\\234.java"`; a plain path may carry a trailing tab."""
     s = raw.rstrip("\t\r\n ")
     if len(s) >= 2 and s[0] == '"' and s[-1] == '"':
         body = s[1:-1]
@@ -279,13 +260,13 @@ def _unquote(raw: str) -> str:
                 data += ch.encode("utf-8")
                 i += 1
             s = data.decode("utf-8", errors="replace")
-        except Exception:  # noqa: BLE001 - keep the text as printed
+        except Exception:  # noqa: BLE001 - 복원하지 못하면 출력된 그대로 둔다
             s = body
     return s
 
 
 def _side(raw: str, prefix: str) -> str:
-    """`a/x/y.java` → `x/y.java`; `/dev/null` → ""."""
+    """diff 헤더 경로에서 `a/` 같은 앞부분을 뺀다. `/dev/null`이면 빈 문자열을 반환한다."""
     s = _unquote(raw)
     if s == "/dev/null":
         return ""
@@ -293,12 +274,9 @@ def _side(raw: str, prefix: str) -> str:
 
 
 def _parse_diff(diff_text: str) -> list[_FileDiff]:
-    """unified diff를 파일과 변경 구간으로 나눈다. 변경 구간은 헤더에 표시된 줄 수를 다 읽으면 끝나므로
-    ``-- a/x``로 시작하는 삭제 줄을 파일 헤더로 잘못 읽지 않는다.
-    줄 수를 다 읽기 전에 헤더가 나오면 잘린 diff로 보고 표시를 남긴다.
-
-    The files of a unified diff with their change runs. A hunk ends when its line counts are used up, so a removed
-    line that reads "-- a/x" is never taken for a file header."""
+    """unified diff를 파일과 변경 구간으로 나눈다.
+    변경 구간은 헤더에 표시된 줄 수를 다 읽으면 끝나므로 ``-- a/x``로 시작하는 삭제 줄을 파일 헤더로 읽지 않는다.
+    줄 수를 다 읽기 전에 헤더가 나오면 잘린 diff로 보고 표시를 남긴다."""
     files: list[_FileDiff] = []
     cur: Optional[_FileDiff] = None
     old_ln = new_ln = old_left = new_left = 0
@@ -351,7 +329,7 @@ def _parse_diff(diff_text: str) -> list[_FileDiff]:
                     old_ln, old_left = old_ln + 1, old_left - 1
                     cur.removed += 1
                 continue
-            old_left = new_left = 0                                  # a header line: the hunk was cut short
+            old_left = new_left = 0                                  # 줄 수를 다 읽기 전에 헤더가 나왔으므로 잘린 구간이다
             cut_short = True
         close_run(cut_short)
         if line.startswith("\\"):
@@ -363,7 +341,7 @@ def _parse_diff(diff_text: str) -> list[_FileDiff]:
                 f.old_path, f.path = _unquote(m.group(1)), _unquote(m.group(2))
             continue
         if line.startswith("--- "):
-            if cur is None or cur.hunks:                             # a plain diff: `--- a/x` opens the next file
+            if cur is None or cur.hunks:                             # git 헤더 없는 diff는 `--- a/x`가 다음 파일의 시작이다
                 new_file()
             assert cur is not None
             old = _side(line[4:], "a/")
@@ -430,9 +408,7 @@ def _run_text(kind: str, first: int, count: int) -> str:
 
 def _clip(lines: list[str], max_lines: int) -> tuple[list[str], bool]:
     """줄 목록을 최대 ``max_lines``줄로 자르고, 잘렸으면 남은 줄 수를 알리는 줄을 끝에 붙인다.
-    (줄 목록, 잘림 여부)를 반환한다.
-
-    At most `max_lines` lines (0 = all) and a last line `… (+N lines)` for the rest; (lines, cut?)."""
+    (줄 목록, 잘림 여부)를 반환한다. ``max_lines``가 0이면 자르지 않는다."""
     if max_lines > 0 and len(lines) > max_lines:
         return lines[:max_lines] + [f"… (+{len(lines) - max_lines} lines)"], True
     return list(lines), False
@@ -449,14 +425,13 @@ def _hunks_of(f: _FileDiff, max_lines: int = 0) -> list[EditHunk]:
     """``f``의 변경 구간마다 ``EditHunk``를 하나씩 diff 순서로 만든다.
     ``max_lines``가 0보다 크면 수정 전후 텍스트를 자르고 ``truncated``로 표시한다.
 
-    One `EditHunk` per change run of `f` (diff order): `lines` spelled like the note's (`~12`, `+42–47`, `-3`),
-    `before` = the removed lines, `after` = the added lines, joined by LF (no trailing newline); `max_lines` > 0 cuts
-    each side (`truncated`)."""
+    `lines` is spelled like the note's (`~12`, `+42–47`, `-3`); `before` / `after` are joined by LF, no
+    trailing newline."""
     out: list[EditHunk] = []
     for (kind, first, count), (rm, add, cut) in zip(f.runs, f.texts):
         before, cut_b = _clip(rm, max_lines)
         after, cut_a = _clip(add, max_lines)
-        if cut:                                             # the diff text stopped inside this run
+        if cut:                                             # diff가 이 구간 중간에서 끊겼다
             (after if add else before).append(DIFF_CUT_LINE)
         out.append(EditHunk(lines=f"{kind}{_span(first, count)}", before="\n".join(before), after="\n".join(after),
                             truncated=cut_b or cut_a))
@@ -492,44 +467,37 @@ def _note_for(f: _FileDiff, max_lines: int = 0) -> EditNote:
 
 def notes_from_diff(diff_text: str, *, max_lines: int = 0) -> list[EditNote]:
     """unified diff의 파일마다 변경 조각을 담은 ``EditNote(source="diff")``를 하나씩 만든다.
-    diff가 비어 있으면 빈 목록을 반환한다.
-
-    One `EditNote(source="diff")` per file of a unified (git) diff, in diff order, each with its `hunks` (v2.1e,
-    `max_lines` lines per side, 0 = whole) — see the module docstring. "" / no file → []."""
+    diff가 비어 있거나 읽을 수 없으면 빈 목록을 반환한다. ``max_lines``는 한쪽당 줄 수이고 0이면 전체다."""
     try:
         limit = _limit(max_lines)
         return [_note_for(f, limit) for f in _parse_diff(diff_text or "")]
-    except Exception:  # noqa: BLE001 - a note generator must never break a try's record
+    except Exception:  # noqa: BLE001 - 기록 생성 실패로 시도 기록이 깨지면 안 된다
         return []
 
 
 def hunks_from_diff(diff_text: str, *, max_lines: int = 0) -> dict[str, list[EditHunk]]:
     """unified diff의 변경 구간별 수정 전후 텍스트를 파일 경로별로 모아 반환한다. 예외를 던지지 않는다.
-    바이너리 파일이나 권한만 바뀐 파일은 빈 목록이다.
+    바이너리 파일이나 권한만 바뀐 파일은 빈 목록이다. 읽을 수 없는 diff면 빈 dict를 반환한다.
 
-    v2.1e: the as-is / to-be text of every change run of a unified (git) diff, keyed by the file's path as the
-    notes name it (the "after" path; the old path for a deletion; a rename by its new path), in diff order. A binary
-    / mode-only file maps to []; `max_lines` > 0 keeps that many lines per side (`truncated`). Never raises ({} for
-    "" / an unreadable diff)."""
+    Key = the path as the notes name it: the "after" path, the old path for a deletion, the new path for a
+    rename."""
     out: dict[str, list[EditHunk]] = {}
     try:
         limit = _limit(max_lines)
         for f in _parse_diff(diff_text or ""):
             out.setdefault(f.path, []).extend(_hunks_of(f, limit))
-    except Exception:  # noqa: BLE001, S110 - the record keeps what was read
+    except Exception:  # noqa: BLE001, S110 - 읽은 데까지는 기록에 남긴다
         pass
     return out
 
 
 # ---------------------------------------------------------------------------
-# merge
+# LLM 기록과 diff 합치기
 # ---------------------------------------------------------------------------
 def _match(note_path: str, files: Sequence[_FileDiff]) -> Optional[int]:
     """LLM 기록이 가리키는 diff 파일의 번호를 찾는다.
     정확한 일치, 뒷부분 일치, 파일 이름 순으로 찾고, 각 단계에서 후보가 하나일 때만 고른다.
-
-    Index of the diff file an LLM note names: exact (case-insensitive) first, then a trailing-part match, then the
-    case-insensitive basename — each only when exactly one file fits."""
+    대소문자는 구분하지 않는다. 찾지 못하거나 모호하면 None을 반환한다."""
     want = _norm(note_path).lower()
     if not want:
         return None
@@ -543,7 +511,7 @@ def _match(note_path: str, files: Sequence[_FileDiff]) -> Optional[int]:
             exact = [i for i in hits if _norm(files[i].path).lower() == want]
             if len(exact) == 1:
                 return exact[0]
-            return None                                     # ambiguous ("pom.xml" with three changed poms)
+            return None                                     # 바뀐 pom이 셋인데 "pom.xml"만 쓴 경우처럼 모호하다
     return None
 
 
@@ -566,13 +534,10 @@ def _copies(hunks: Sequence[EditHunk]) -> list[EditHunk]:
 def merge_notes(llm_notes: Iterable[EditNote], diff_text: str, *, max_lines: int = 0) -> list[EditNote]:
     """시도 하나의 수정 기록을 만든다. LLM 기록의 복사본에 diff의 ``lines``와 그 파일의 변경 조각을 붙이고,
     어느 기록에도 없는 파일은 diff로 만든 기록을 뒤에 더한다.
-    diff에 바뀐 파일이 있으면 결과는 비어 있지 않다.
+    diff에 바뀐 파일이 있으면 결과는 비어 있지 않다. diff가 없으면 LLM 기록을 그대로 반환한다.
 
-    The record's notes of one try: the LLM's notes (copies) with `lines` and (v2.1e) ALL the `hunks` of their file
-    from the diff — matched by path; a short path is matched by its basename when only one changed file has it, and
-    then takes the diff's full path; two notes on one file both get its hunks — followed by the diff's own notes for
-    every changed file no LLM note named. Never empty when the diff touched a file; without a diff the LLM's notes
-    come back as they are. `max_lines` as in `notes_from_diff`."""
+    A short path matched by its basename takes the diff's full path; two notes on one file both get its hunks.
+    `max_lines` as in `notes_from_diff`."""
     llm = [x for x in (_as_note(n) for n in llm_notes or ()) if x is not None]
     try:
         files = _parse_diff(diff_text or "")
@@ -611,13 +576,8 @@ def merge_notes(llm_notes: Iterable[EditNote], diff_text: str, *, max_lines: int
 def attach_hunks(notes: Iterable[Any], diff_text: str, *, max_lines: int = 0) -> list[EditNote]:
     """변경 조각이 없는 이전 기록을 재색인할 때 ``diff_text``에서 그 파일의 조각을 찾아 붙인다.
     파일을 찾는 방식은 ``merge_notes``와 같다.
-    조각이 이미 있는 기록이나 diff에 없는 파일은 그대로 두고, 예외를 던지지 않는다.
-
-    v2.1e (the reindex backfill of records written before hunks existed): copies of `notes` in order, where a note
-    WITHOUT hunks gets all the hunks of its file in `diff_text` (path matched like `merge_notes`: exact, a trailing
-    part, the basename when unique); a note that has hunks, a note whose file the diff does not show, and an item
-    that is no note come back as they are. `max_lines` as in `notes_from_diff`. Never raises: an empty / unreadable
-    diff returns the notes unchanged."""
+    조각이 이미 있는 기록, diff에 없는 파일, 기록이 아닌 항목은 그대로 둔다. 예외를 던지지 않는다.
+    diff가 비었거나 읽을 수 없으면 입력을 그대로 반환한다."""
     items = list(notes or ())
     try:
         files = _parse_diff(diff_text) if diff_text else []
@@ -642,7 +602,7 @@ def attach_hunks(notes: Iterable[Any], diff_text: str, *, max_lines: int = 0) ->
                 cache[i] = _hunks_of(files[i], limit)
             out.append(n.model_copy(update={"hunks": _copies(cache[i])}))
         return out
-    except Exception:  # noqa: BLE001 - a backfill never loses a record
+    except Exception:  # noqa: BLE001 - 보충하다 실패해도 기록은 잃지 않는다
         return items
 
 

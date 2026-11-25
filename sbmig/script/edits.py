@@ -7,27 +7,25 @@
 - 적용은 원자적이지 않으므로 결과가 ``ok``가 아니면 호출자가 git으로 트리를 되돌린다
 - pom 편집은 ``POM_CALLS``에 있는 편집기 호출만 받는다
 
-Direct edits (v2.1, docs/v2/PLAN-v2.1.md §3.6): the LLM's `<edits>` JSON list applied by sbmig — "LLM 이 직접 수정".
-
-The gateway has no tool calling, so the LLM states its changes as data (`Edit`: replace / write / create / delete /
-move / pom) and sbmig applies them through the SAME helper API and guard as a fix script: `edits_script(edits)`
-synthesizes a `def fix(p)` with every text embedded as a literal (`repr`), and `apply_edits` runs it through
-`ScriptRunner.run` (static check, separate `python -I` process, path guard, encoding / line-end keeping) → the same
-`ScriptRunResult` (changed_files, log, error).
+Spec: docs/v2/PLAN-v2.1.md §3.6. Ops: replace / write / create / delete / move / pom.
+`edits_script(edits)` embeds every text as a literal (`repr`); `apply_edits` runs it through
+`ScriptRunner.run` (static check, separate `python -I` process, path guard, encoding / line-end keeping)
+and returns the same `ScriptRunResult`.
 
 Failure rules (the loop rolls back and asks again):
-- invalid edits (unknown op, a path outside the project, a missing field, a pom call the editor does not have) are
-  refused before anything runs: status `rejected`, `problems` = one line per finding;
-- a `replace` whose `old` text is not in the file fails the run: `error` = "edit 2: text not found in a/B.java" (an
-  `old` that is gone while its `new` text is already there counts as applied); create over a different existing file,
-  move of a missing source / onto an existing target and a missing pom fail the same way;
-- the run is NOT atomic: edits before the failing one are already on disk (`changed_files` lists them). The caller
-  restores the tree (git) on any status other than `ok` — exactly as for a failed fix script.
+- invalid edits (unknown op, a path outside the project, a missing field, a pom call the editor does not have)
+  are refused before anything runs: status `rejected`, `problems` = one line per finding;
+- a `replace` whose `old` text is not in the file fails the run: `error` = "edit 2: text not found in
+  a/B.java" (an `old` that is gone while its `new` text is already there counts as applied); create over a
+  different existing file, move of a missing source / onto an existing target and a missing pom fail the same
+  way;
+- the run is NOT atomic: edits before the failing one are already on disk (`changed_files` lists them). The
+  caller restores the tree (git) on any status other than `ok`.
 
-Pom edits name the editor calls of `p.pom(path)` (`POM_CALLS`, a whitelist): `{"op": "pom", "path": "pom.xml",
-"add_dependency": {"group_id": "g", "artifact_id": "a", "version": null}}`; argument names may be the Maven spelling
-(`groupId`), the snake spelling (`group_id`) or the editor's (`g`); a `"g:a[:v]"` string or a positional list works too;
-several calls of one name go in a list of objects. A call name outside the whitelist is refused.
+Pom edits name the editor calls of `p.pom(path)` (`POM_CALLS`, a whitelist):
+`{"op": "pom", "path": "pom.xml", "add_dependency": {"group_id": "g", "artifact_id": "a", "version": null}}`;
+argument names may be the Maven spelling (`groupId`), the snake spelling (`group_id`) or the editor's (`g`); a
+`"g:a[:v]"` string or a positional list works too; several calls of one name go in a list of objects.
 """
 from __future__ import annotations
 
@@ -44,9 +42,8 @@ log = logging.getLogger("sbmig.script.edits")
 
 EDIT_OPS: tuple[str, ...] = ("replace", "write", "create", "delete", "move", "pom")
 
-# 편집에서 호출할 수 있는 p.pom(path) 변경 메서드 목록이며, 여기 없는 이름은 거부한다
-# p.pom(path) mutators an edit may call: name → ((editor parameter, required), …). Read-only calls (text,
-# dependencies, has_dependency, get_property) and save() (implicit) are not edits.
+# 편집에서 호출할 수 있는 p.pom(path) 변경 메서드와 (인자 이름, 필수 여부) 목록. 여기 없는 이름은 거부한다
+# 읽기 전용 호출과 save()는 편집이 아니므로 넣지 않는다
 POM_CALLS: dict[str, tuple[tuple[str, bool], ...]] = {
     "add_dependency": (("g", True), ("a", True), ("version", False), ("scope", False), ("type", False),
                        ("classifier", False)),
@@ -60,7 +57,7 @@ POM_CALLS: dict[str, tuple[tuple[str, bool], ...]] = {
     "remove_property": (("key", True),),
     "set_plugin_version": (("g", True), ("a", True), ("version", True)),
 }
-# the names the prompt teaches (`group_id`, …) → the editor's parameter
+# 프롬프트에서 가르치는 인자 이름(`group_id` 등)을 편집기 인자 이름으로 바꾸는 표
 _ARG_ALIASES: dict[str, str] = {
     "g": "g", "groupid": "g", "group": "g",
     "a": "a", "artifactid": "a", "artifact": "a",
@@ -73,13 +70,13 @@ _ARG_ALIASES: dict[str, str] = {
     "key": "key", "name": "key", "property": "key", "prop": "key",
     "value": "value",
 }
-# the editor's parameter → the name shown to the LLM in problems
+# 문제 메시지에서 LLM에 보여 줄 인자 이름
 _ARG_SHOWN = {"g": "group_id", "a": "artifact_id", "ex_g": "exclusion_group_id", "ex_a": "exclusion_artifact_id",
               "key": "name"}
-# keys of an edit object that are not pom calls (everything else on a pom edit is a call name)
+# pom 호출이 아닌 편집 객체 키. pom 편집에서 이 밖의 키는 모두 호출 이름으로 본다
 _ITEM_KEYS = {"op", "action", "path", "file", "pom", "comment", "note", "why", "reason", "description", "explanation",
               "old", "new", "count", "content", "text", "to", "desc", "summary", "change", "where", "location"}
-# the edit's description for the business team (v2.1b, `Edit.desc`): the first of these keys that holds text
+# 현업용 편집 설명(`Edit.desc`)은 이 키 중 텍스트가 있는 첫 값을 쓴다
 _DESC_KEYS = ("desc", "description", "summary", "change", "explanation", "comment", "note", "why", "reason")
 _WHERE_KEYS = ("where", "location")
 DESC_CHARS = 500
@@ -93,13 +90,11 @@ MAX_PROBLEMS = 20
 
 
 # ---------------------------------------------------------------------------
-# validation
+# 편집 검사
 # ---------------------------------------------------------------------------
 def _norm_path(raw: Any) -> tuple[str, str]:
     """편집 경로를 검사해 (프로젝트 기준 posix 경로, 문제)를 반환한다.
-    프로젝트 밖이나 ``.git/`` 아래 경로이면 실행 전에 거부한다.
-
-    (posix path relative to the project, problem)."""
+    절대 경로, 프로젝트 밖, ``.git/`` 아래 경로이면 문제를 채워 실행 전에 거부한다."""
     if not isinstance(raw, str):
         return "", f"path must be a string, got {type(raw).__name__}"
     s = raw.strip().strip("`'\"").strip().replace("\\", "/")
@@ -125,9 +120,7 @@ def _arg_key(name: str) -> str:
 
 def _scalar(v: Any) -> tuple[Optional[str], bool]:
     """값을 편집기가 받는 형태로 바꿔 (값, 성공 여부)를 반환한다.
-    None은 그대로 두고 bool은 "true" / "false"로 바꾼다.
-
-    (value as the editor takes it, ok). None stays None (null = managed by the parent / no value)."""
+    None은 부모 관리나 값 없음을 뜻하므로 그대로 두고 bool은 "true" / "false"로 바꾼다."""
     if v is None:
         return None, True
     if isinstance(v, bool):
@@ -139,11 +132,8 @@ def _scalar(v: Any) -> tuple[Optional[str], bool]:
 
 def pom_call_args(call: str, spec: Any) -> tuple[list[dict[str, Optional[str]]], list[str]]:
     """LLM이 준 인자를 ``call`` 호출의 키워드 인자 목록으로 바꿔 ([kwargs …], 문제 목록)을 반환한다.
-    객체, 객체 목록, 위치 인자 목록, ``"g:a[:v]"`` 문자열을 모두 받는다.
-
-    The keyword arguments of one (or several) `p.pom(...)` calls of `call` from the LLM's spec: an object
-    (`{"group_id": …}`), a list of objects (several calls), a positional list (`["g", "a", "1.0"]`) or a
-    `"g:a[:v]"` string. Returns ([kwargs …], problems)."""
+    객체, 객체 목록(호출 여러 번), 위치 인자 목록, ``"g:a[:v]"`` 문자열을 모두 받는다.
+    문제가 하나라도 있으면 kwargs 목록은 비어 있다."""
     params = POM_CALLS.get(call)
     if params is None:
         return [], [f"unknown pom call {call!r} (allowed: {', '.join(POM_CALLS)})"]
@@ -194,12 +184,13 @@ def pom_call_args(call: str, spec: Any) -> tuple[list[dict[str, Optional[str]]],
             continue
         kwargs[k] = val
     if call == "set_dependency_version":
-        kwargs.setdefault("version", None)                # null / absent = drop <version> (the parent manages it)
+        kwargs.setdefault("version", None)                # 값이 없으면 부모가 관리하도록 <version>을 지운다
     for name, required in params:
         if not required:
             continue
         v = kwargs.get(name)
-        empty_ok = name == "value" or (call == "set_plugin_version" and name == "g")   # "" = org.apache.maven.plugins
+        # set_plugin_version의 g가 빈 문자열이면 org.apache.maven.plugins로 본다
+        empty_ok = name == "value" or (call == "set_plugin_version" and name == "g")
         if name not in kwargs or v is None or (v == "" and not empty_ok):
             problems.append(f"{call}: {_ARG_SHOWN.get(name, name)!r} is missing")
     return ([kwargs] if not problems else []), problems
@@ -207,10 +198,9 @@ def pom_call_args(call: str, spec: Any) -> tuple[list[dict[str, Optional[str]]],
 
 def pom_calls(spec: dict[str, Any]) -> tuple[list[tuple[str, dict[str, Optional[str]]]], list[str]]:
     """pom 편집의 ``pom`` dict를 순서대로 (호출 이름, kwargs) 목록으로 바꾼다.
-    허용 목록에 없는 호출 이름은 거부하고 ``save``는 무시한다.
+    허용 목록(``POM_CALLS``)에 없는 호출 이름은 거부하고 ``save``는 무시한다.
 
-    Ordered (call, kwargs) of a pom edit's `pom` dict (`{"add_dependency": {…}, "set_property": {…}}`; also
-    `{"call": "add_dependency", "args": {…}}`). Unknown call names are refused (whitelist `POM_CALLS`)."""
+    Shapes: `{"add_dependency": {…}, "set_property": {…}}` or `{"call": "add_dependency", "args": {…}}`."""
     if not isinstance(spec, dict):
         return [], ["pom: the editor calls must be an object"]
     items = list(spec.items())
@@ -222,7 +212,7 @@ def pom_calls(spec: dict[str, Any]) -> tuple[list[tuple[str, dict[str, Optional[
     for call, args in items:
         name = str(call).strip()
         if name == "save":
-            continue                                      # implicit
+            continue                                      # save는 적용할 때 자동으로 호출한다
         got, probs = pom_call_args(name, args)
         problems += probs
         out += [(name, kw) for kw in got]
@@ -232,9 +222,7 @@ def pom_calls(spec: dict[str, Any]) -> tuple[list[tuple[str, dict[str, Optional[
 
 
 def edit_problems(edits: Sequence[Edit]) -> list[str]:
-    """편집을 적용할 수 없는 이유를 한 줄씩 반환한다. 빈 목록이면 문제가 없다.
-
-    Why these edits cannot be applied, one line each ("edit 2: unknown pom call 'add_plugin' …"). [] = fine."""
+    """편집을 적용할 수 없는 이유를 "edit 2: …" 형식으로 한 줄씩 반환한다. 빈 목록이면 문제가 없다."""
     problems: list[str] = []
     for n, e in enumerate(edits, 1):
         for p in _one_edit_problems(e):
@@ -246,7 +234,7 @@ def edit_problems(edits: Sequence[Edit]) -> list[str]:
 
 def _one_edit_problems(e: Edit) -> list[str]:
     """편집 하나를 검사해 문제 목록을 반환한다. op, 경로, replace의 old, move의 목적지, pom 호출을 확인한다."""
-    if e.op not in EDIT_OPS:                              # a model_construct()ed Edit can carry anything
+    if e.op not in EDIT_OPS:                              # model_construct()로 만든 Edit는 아무 값이나 가질 수 있다
         return [f"unknown op {e.op!r} (allowed: {', '.join(EDIT_OPS)})"]
     _, why = _norm_path(e.path)
     out = [why] if why else []
@@ -283,10 +271,7 @@ def _one_line(v: Any, limit: int = DESC_CHARS) -> str:
 
 def edit_desc(item: dict[str, Any]) -> str:
     """편집 객체에서 LLM이 쓴 한 줄 설명을 만든다. 따로 준 ``where``가 설명에 없으면 앞에 붙인다.
-    이 설명은 현업이 읽는 수정 기록에 들어간다.
-
-    The LLM's one-line description of an edit object (`desc`; also `description` / `summary` / `change` /
-    `comment` …), with a separate `where` folded in front when the sentence does not already name it."""
+    이 설명은 현업이 읽는 수정 기록에 들어간다. 설명 키는 ``desc`` 말고 ``description``, ``summary`` 등도 받는다."""
     desc = next((t for t in (_one_line(item.get(k)) for k in _DESC_KEYS) if t), "")
     where = next((t for t in (_one_line(item.get(k), 200) for k in _WHERE_KEYS) if t), "")
     if where and where not in desc:
@@ -298,8 +283,7 @@ def edit_from_item(item: Any) -> tuple[Optional[Edit], list[str]]:
     """LLM JSON의 편집 객체 하나를 (``Edit``, 문제 목록)으로 바꾼다.
     키 이름은 조금 달라도 받아 주고, pom 편집의 나머지 키는 편집기 호출로 해석한다.
 
-    One edit object of the LLM's JSON → (`Edit`, problems). Lenient about key spellings (`file` for `path`,
-    `search` / `replace` for `old` / `new`, `dst` for `to`); a pom edit's extra keys are its editor calls."""
+    Accepted spellings: `file` for `path`, `search` / `replace` for `old` / `new`, `dst` for `to`, …"""
     if not isinstance(item, dict):
         return None, [f"an edit must be an object, got {type(item).__name__}"]
     op = str(item.get("op") or item.get("action") or "").strip().lower()
@@ -367,10 +351,8 @@ def edit_from_item(item: Any) -> tuple[Optional[Edit], list[str]]:
 
 def edits_from_json(obj: Any) -> tuple[list[Edit], list[str]]:
     """파싱한 ``<edits>`` JSON을 ([Edit …], 문제 목록)으로 바꾼다.
-    문제가 하나라도 있으면 목록 전체를 거부한다.
-
-    The parsed `<edits>` JSON (a list; also `{"edits": [...]}` or one edit object) → ([Edit …], problems).
-    Any problem refuses the whole list (edits are applied all together or not at all)."""
+    편집은 모두 적용하거나 하나도 적용하지 않으므로 문제가 하나라도 있으면 목록 전체를 거부한다.
+    목록 말고 ``{"edits": [...]}``나 편집 객체 하나도 받는다."""
     if isinstance(obj, dict):
         obj = obj["edits"] if isinstance(obj.get("edits"), list) else [obj]
     if obj is None:
@@ -390,10 +372,9 @@ def edits_from_json(obj: Any) -> tuple[list[Edit], list[str]]:
 
 
 # ---------------------------------------------------------------------------
-# synthesis
+# 편집으로 스크립트 만들기
 # ---------------------------------------------------------------------------
-# 편집으로 만드는 스크립트의 앞부분으로, 편집은 fix(p) 안에서 순서대로
-# 실행되고 실패하면 EditFailed로 "edit N: …"을 던진다
+# 만든 스크립트의 앞부분. 편집은 fix(p) 안에서 순서대로 실행되고 실패하면 EditFailed로 "edit N: …"을 던진다
 _PREAMBLE = '''\
 # sbmig v2.1: the LLM's <edits> applied directly (generated by sbmig.script.edits — {n} edit(s))
 
@@ -497,10 +478,7 @@ def _edit_body(n: int, e: Edit) -> list[str]:
 
 def desc_comment(desc: str, indent: str = "    ", width: int = 116) -> list[str]:
     """편집 설명을 스크립트의 주석 줄로 만든다.
-    공백과 줄바꿈을 한 칸으로 바꾸므로 설명이 주석 밖으로 나가 코드가 되지 않는다.
-
-    The edit's description as comment line(s) of the synthesized script (one sentence, wrapped at `width`; every
-    whitespace run incl. line breaks is one space, so the text can never end the comment)."""
+    공백과 줄바꿈을 한 칸으로 바꾸므로 설명이 주석 밖으로 나가 코드가 되지 않는다. ``width``에서 줄을 나눈다."""
     text = _one_line(desc or "")
     if not text:
         return []
@@ -510,12 +488,10 @@ def desc_comment(desc: str, indent: str = "    ", width: int = 116) -> list[str]
 
 def edits_script(edits: Sequence[Edit]) -> str:
     """``edits``를 도우미 API로 순서대로 적용하는 ``def fix(p)`` 코드를 만든다.
-    편집이 잘못됐으면 ValueError를 던진다.
+    편집이 잘못됐으면 ``edit_problems``의 문제를 담은 ValueError를 던진다.
+    편집마다 ``desc``를 블록 위 주석으로 넣으므로 저장된 스크립트를 수정 기록처럼 읽을 수 있다.
 
-    The `def fix(p)` that applies `edits` in order through the helper API (texts embedded with `repr`; each edit's
-    `desc` as a comment above its block, so the stored script reads like the record). Raises
-    ValueError with the problems when an edit is invalid (`edit_problems`). The code passes `check_script`; it is
-    what `apply_edits` runs and what the loop may keep with the try for traceability."""
+    The code passes `check_script`; the loop may keep it with the try for traceability."""
     edits = list(edits)
     problems = edit_problems(edits)
     if problems:
@@ -537,9 +513,8 @@ def edit_error(error: str) -> str:
     """실패한 편집 실행의 오류에서 예외 이름과 traceback을 빼고 첫 줄만 반환한다.
     시간 초과 같은 다른 오류는 그대로 반환한다.
 
-    The runner's error of a failed edits run → its first line without the exception name / script traceback:
-    "EditFailed: edit 2: text not found in pom.xml (line 23)\\nscript traceback: …" → "edit 2: text not found in
-    pom.xml". Other errors (timeout, the process failed) are kept as they are."""
+    "EditFailed: edit 2: text not found in pom.xml (line 23)\\nscript traceback: …" becomes
+    "edit 2: text not found in pom.xml"."""
     first = (error or "").strip().splitlines()[0] if (error or "").strip() else ""
     m = _EDIT_FAILED_RE.match(first)
     return m.group(1) if m else (error or "")
@@ -547,9 +522,7 @@ def edit_error(error: str) -> str:
 
 def summarize_edits(edits: Sequence[Edit]) -> str:
     """로그와 기록에 쓸 편집별 요약을 만든다. 설명이 있으면 뒤에 붙인다.
-
-    One part per edit for logs and notes: "replace pom.xml", "pom a/pom.xml add_dependency", … followed by the
-    LLM's description when the edit has one ("pom a/pom.xml add_dependency — a/pom.xml 의 <dependencies> 에 …")."""
+    예: "replace pom.xml", "pom a/pom.xml add_dependency — 설명"."""
     out = []
     for e in edits:
         if e.op == "pom":
@@ -567,14 +540,11 @@ def summarize_edits(edits: Sequence[Edit]) -> str:
 def apply_edits(ws: Any, edits: Sequence[Edit], *, cfg: Any, errors: Iterable[Any] = (), runner: Any = None,
                 timeout_s: Optional[int] = None) -> ScriptRunResult:
     """LLM의 편집을 작업 공간에 적용하고 ``ScriptRunResult``를 반환한다. 예외를 던지지 않는다.
-    코드 길이 제한은 두지 않는다.
     커밋하지 않고 원자적이지도 않으므로 결과가 ``ok``가 아니면 호출자가 트리를 되돌린다.
+    잘못된 편집은 실행하지 않고 ``rejected``를 반환한다.
 
-    Apply the LLM's edits to the workspace: validate (`edit_problems` → status `rejected`), synthesize the script
-    (`edits_script`) and run it through `runner` (default: `ScriptRunner(cfg)` without the `script.max_code_chars`
-    cap — the code is sbmig's own, a `write` may carry a whole file). Same `ScriptRunResult` as a fix script;
-    `error` of a failed edit is "edit N: …" (`edit_error`). Changes stay uncommitted; NOT atomic — on any status but
-    `ok` the caller restores the tree. Never raises."""
+    Default runner: `ScriptRunner(cfg)` without the `script.max_code_chars` cap (the code is sbmig's own, a
+    `write` may carry a whole file). `error` of a failed edit is "edit N: …" (`edit_error`)."""
     edits = list(edits or ())
     try:
         problems = edit_problems(edits)
@@ -591,7 +561,7 @@ def apply_edits(ws: Any, edits: Sequence[Edit], *, cfg: Any, errors: Iterable[An
             runner = ScriptRunner(cfg.model_copy(update={"script": script_cfg}))
             runner.label = "edits"
         res = runner.run(ws, code, errors=list(errors or ()), timeout_s=timeout_s)
-    except Exception as exc:  # noqa: BLE001 - never raises: an internal failure is the result
+    except Exception as exc:  # noqa: BLE001 - 내부 오류도 예외 대신 결과로 반환한다
         log.debug("apply_edits failed", exc_info=True)
         return ScriptRunResult(status="error", error=f"sbmig could not apply the edits: {type(exc).__name__}: {exc}")
     if res.status != "ok" and res.error:

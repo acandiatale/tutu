@@ -6,17 +6,12 @@
 - ``open``, ``exec`` 같은 내장 이름과 ``_``로 시작하는 속성은 쓸 수 없다
 - 실수를 막는 장치일 뿐이며, 실제 한계는 sbmig를 실행하는 계정의 권한이다
 
-Static check of an LLM fix script before it runs (docs/v2/PLAN-v2.md §3.2, docs/INTERFACES.md "Script contract").
-
-The script must define a module-level `def fix(p)`; it may import only a small whitelist of pure-text stdlib modules
-and must not name the builtins that reach files, processes or other code (`open`, `exec`, `eval`, …). Any attribute
-whose name starts with `_` is refused: that covers dunders (`__class__`, `__globals__`, …) and the helper's private
-state (`p._root`). The same import rule guards `__import__` at run time (`sbmig.script.harness`).
-
-This is a guard against a script that reaches outside the project by mistake, not a sandbox against a hostile author:
-Python-level checks can be worked around; the account running sbmig is the real limit.
-
-
+Spec: docs/v2/PLAN-v2.md §3.2, docs/INTERFACES.md "Script contract".
+* Refused builtins are the ones that reach files, processes or other code (`open`, `exec`, `eval`, …).
+* Any attribute starting with `_` is refused: dunders (`__class__`, `__globals__`, …) and the helper's
+  private state (`p._root`).
+* The same import rule guards `__import__` at run time (`sbmig.script.harness`).
+* Python-level checks can be worked around; the account running sbmig is the real limit.
 """
 from __future__ import annotations
 
@@ -26,16 +21,15 @@ from collections.abc import Iterable
 # 파일, 네트워크, 프로세스에 접근할 수 없는 텍스트 처리 모듈만 허용한다
 ALLOWED_IMPORTS: tuple[str, ...] = ("re", "json", "textwrap", "fnmatch", "posixpath", "itertools", "collections",
                                     "functools", "string", "math")
-# refused even when a company config lists them in script.extra_allowed_imports
+# 회사 설정의 script.extra_allowed_imports에 있어도 거부하는 모듈
 REFUSED_MODULES: tuple[str, ...] = ("os", "sys", "subprocess", "socket", "pathlib", "importlib", "shutil", "ctypes",
                                     "threading", "multiprocessing", "builtins", "io")
 REFUSED_NAMES: tuple[str, ...] = ("open", "exec", "eval", "compile", "__import__", "globals", "locals", "vars",
                                   "getattr", "setattr", "delattr", "input", "breakpoint", "help", "memoryview")
-# 허용 모듈이 내부에서 import한 모듈로 빠져나가지 않도록(``posixpath.os.system`` 등) 그 속성 이름을 막는다
-# attribute names refused besides `_…`: an allowed module's own imports (`posixpath.os`, `json.codecs`) and `.open`
+# 허용 모듈이 내부에서 import한 모듈로 빠져나가지 않도록(``posixpath.os``, ``json.codecs`` 등) 속성 이름을 막는다
 REFUSED_ATTRIBUTES: frozenset[str] = frozenset(REFUSED_MODULES) | {"codecs", "open"}
 DEFAULT_MAX_CODE_CHARS = 30000
-MAX_PROBLEMS = 20                       # findings listed per script; the rest is counted
+MAX_PROBLEMS = 20                       # 스크립트당 보여 줄 문제 수, 나머지는 개수만 센다
 
 _HINTS = {"open": " (use p.read / p.write / p.create)", "exec": "", "eval": "", "getattr": " (use plain attributes)"}
 
@@ -45,9 +39,8 @@ def module_allowed(name: str, extra_imports: Iterable[str] = ()) -> bool:
     기본 허용 목록은 최상위 모듈 이름으로 비교하고, ``script.extra_allowed_imports`` 항목은 그 모듈과 하위
     모듈만 허용한다. 거부 모듈은 설정과 상관없이 거부한다.
 
-    May a fix script import `name` (dotted)? Built-in whitelist: by top-level module (`collections.abc` is fine).
-    `script.extra_allowed_imports` entries allow themselves and their submodules (`xml.etree.ElementTree` does not
-    open all of `xml`). A refused module stays refused whatever the config says."""
+    `collections.abc` is fine (top-level `collections`); an extra `xml.etree.ElementTree` does not open all of
+    `xml`."""
     if not name or name.startswith("."):
         return False
     top = name.split(".", 1)[0]
@@ -62,8 +55,7 @@ def import_allowed(name: str, fromlist: Iterable[str] = (), extra_imports: Itera
     """``import name`` 또는 ``from name import a, b`` 문이 허용되는지 반환한다.
     모듈 자체가 허용되거나 ``name.a``가 모두 허용되면 참이다.
 
-    `import name` / `from name import a, b`: the module itself is allowed, or every `name.a` is (an extra entry
-    `xml.etree.ElementTree` allows `from xml.etree import ElementTree`)."""
+    An extra entry `xml.etree.ElementTree` allows `from xml.etree import ElementTree`."""
     if module_allowed(name, extra_imports):
         return True
     names = [f for f in (fromlist or ()) if f and f != "*"]
@@ -94,10 +86,7 @@ def _fix_signature_problem(fn: ast.FunctionDef) -> str | None:
 def check_script(code: str, *, extra_imports: Iterable[str] = (), max_chars: int = DEFAULT_MAX_CODE_CHARS
                  ) -> list[str]:
     """``code``를 실행할 수 없는 이유 목록을 반환한다. 빈 목록이면 실행해도 되며, 예외를 던지지 않는다.
-    각 문장은 LLM에 그대로 보낼 수 있게 작성한다.
-
-    Problems that keep `code` from running, one line each ("line 3: import of 'os' is not allowed").
-    Empty list = allowed. Never raises."""
+    각 문장은 LLM에 그대로 보낼 수 있게 쓴다. 예: `line 3: import of 'os' is not allowed`."""
     if not isinstance(code, str):
         return [f"the script is not text ({type(code).__name__})"]
     if not code.strip():
@@ -107,10 +96,10 @@ def check_script(code: str, *, extra_imports: Iterable[str] = (), max_chars: int
     try:
         # ast.parse만으로는 'return' outside function 같은 컴파일 단계 오류를 잡지 못하므로 compile까지 실행한다
         tree = ast.parse(code, filename="fix_script.py")
-        compile(tree, "fix_script.py", "exec", dont_inherit=True)    # compiler-stage errors ('return' outside…)
+        compile(tree, "fix_script.py", "exec", dont_inherit=True)
     except SyntaxError as exc:
         return [f"line {exc.lineno}: syntax error: {exc.msg}" if exc.lineno else f"syntax error: {exc.msg}"]
-    except (ValueError, RecursionError, MemoryError) as exc:     # NUL bytes / absurd nesting
+    except (ValueError, RecursionError, MemoryError) as exc:     # NUL 바이트나 지나치게 깊은 중첩
         return [f"the script cannot be parsed: {type(exc).__name__}: {exc}"]
     extra = tuple(extra_imports or ())
     problems: list[str] = []
@@ -152,7 +141,7 @@ def check_script(code: str, *, extra_imports: Iterable[str] = (), max_chars: int
     if not fixes:
         add("no module-level 'def fix(p)' found")
     else:
-        fn = fixes[-1]                                   # the last definition is the one that runs
+        fn = fixes[-1]                                   # 실제로 실행되는 것은 마지막 정의다
         if isinstance(fn, ast.AsyncFunctionDef):
             add(f"line {fn.lineno}: 'fix' must be a plain function, not 'async def'")
         else:

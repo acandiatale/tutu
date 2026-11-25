@@ -2,10 +2,8 @@
 - 오케스트레이터가 중단하지 않고 이어 가는 변환 실패에 플래그 ``rewrite-failed``와 이 줄을 남긴다
 - 원인 문장에서 비밀 값과 서버 경로를 지운다
 
-The words of a failed OpenRewrite run that did not abort the run (INTERFACES "v2.1z-ay"): the flag, the hand-over
-line naming the recipe sets that were not applied, and the reason cleaned of secrets (URL credentials, the
-registered secrets of `sbmig.core.scrub`) and of absolute paths (the project / run folders become relative, any
-other absolute path keeps its file name only).
+Contract: docs/INTERFACES.md "v2.1z-ay". Secrets = URL credentials and the registered secrets of
+`sbmig.core.scrub`; the project / run folders become relative, any other absolute path keeps its file name.
 """
 from __future__ import annotations
 
