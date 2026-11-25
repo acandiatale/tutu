@@ -1,16 +1,12 @@
 """권고 대상 라이브러리를 최종 트리에서 다시 찾아 권고마다 결과(outcome)를 정하는 모듈.
-최종 빌드 뒤 마무리 단계가 ``verify_advisories``를 호출하고, 인수인계 섹션이 결과에 따라 문장을
-고른다(replaced는 확인 요청, still-present는 담당팀 후속 작업).
+최종 빌드 뒤 마무리 단계가 ``verify_advisories``를 호출한다.
+인수인계 섹션은 결과에 따라 문장을 고른다. replaced는 확인 요청, still-present는 담당팀 후속 작업이다.
 다시 검사하지 못하면 unknown으로 두고 예외를 던지지 않는다.
-
-Finalize: re-detect the advised libraries on the FINAL tree and set each finding's outcome.
 
 replaced      — library (and its as-is artifacts) no longer detected, or still detected but at/above the entry's
                 `resolved_min_version` (release-train bumps)
 still-present — still declared / imported; the owning team gets the follow-up
 unknown       — re-scan impossible (any exception; a note says why)
-
-
 """
 from __future__ import annotations
 
@@ -27,21 +23,21 @@ log = logging.getLogger("sbmig.advisory")
 
 def _entries(cfg: Config) -> dict[str, LibraryAdvisory]:
     """id별 권고 항목을 반환한다.
-    카탈로그를 읽지 못하면 빈 dict를 반환하고 검증은 권고 결과 자체의 데이터로만 한다."""
+    카탈로그를 읽지 못하면 빈 dict를 반환한다. 이때 검증은 권고 결과에 담긴 정보로만 한다."""
     try:
         from .catalog import load_advisories
 
         return {e.id: e for e in load_advisories(cfg).entries}
-    except Exception as e:  # pragma: no cover - verification degrades to the finding's own data
+    except Exception as e:  # pragma: no cover - 권고 결과에 담긴 정보로만 검증한다
         log.info("advisory catalog unavailable for verification: %s", e)
         return {}
 
 
 def _verify_one(f: AdvisoryFinding, libs: dict[str, LibraryUsage], gavs: list,
                 entry: Optional[LibraryAdvisory]) -> None:
-    """권고 하나의 결과를 정하고 판단 근거를 notes에 남긴다.
-    라이브러리와 아티팩트가 더 보이지 않거나, 보여도
-    ``resolved_min_version`` 이상이면 replaced, 그 밖은 still-present다."""
+    """권고 하나의 결과를 정하고 근거를 notes에 남긴다.
+    라이브러리와 아티팩트가 더 이상 보이지 않거나, 보여도 ``resolved_min_version`` 이상이면 replaced다.
+    그 밖은 still-present다."""
     lib = libs.get(f.library)
     patterns = list(entry.artifacts) if entry is not None and entry.artifacts else []
     patterns += [k for k in f.artifacts if k not in patterns]
@@ -66,10 +62,7 @@ def _verify_one(f: AdvisoryFinding, libs: dict[str, LibraryUsage], gavs: list,
 
 def verify_advisories(findings: list[AdvisoryFinding], view: Any, cfg: Config) -> list[AdvisoryFinding]:
     """``view``(Workspace 또는 PathView)를 다시 검사해 모든 권고의 ``outcome``을 정한다.
-    받은 리스트를 고쳐서 반환하며 예외를 던지지 않는다.
-
-    Set `outcome` on every finding from a re-scan of `view` (Workspace or PathView). Returns the same list
-    (mutated). Never raises."""
+    받은 리스트를 직접 고쳐서 그대로 반환한다. 예외를 던지지 않는다."""
     if not findings:
         return findings
     try:
@@ -93,7 +86,7 @@ def verify_advisories(findings: list[AdvisoryFinding], view: Any, cfg: Config) -
     for f in findings:
         try:
             _verify_one(f, libs, gavs, entries.get(f.advisory_id))
-        except Exception as e:  # pragma: no cover - defensive, per finding
+        except Exception as e:  # pragma: no cover - 권고 하나의 실패가 나머지를 막지 않게 한다
             f.outcome = "unknown"
             f.notes.append(f"verify: {type(e).__name__}: {e}")
     return findings

@@ -1,9 +1,7 @@
-"""권고 파일(knowledge/libraries/advisories.yml과 ``advisories.extra_files``)을 보여 주고 검사하는
-``sbmig advisories …`` 명령(list | show | check) 모듈.
-이관 실행과 무관한 읽기 전용 도구이며 항목 상태는 guide 또는 off뿐이다.
-typer는 명령 함수의 docstring을 ``--help`` 화면으로 쓰므로 한국어 첫 줄이 명령 목록의 요약이 된다.
-
-`sbmig advisories …` — typer sub-app over knowledge/libraries/advisories.yml (+ advisories.extra_files).
+"""권고 파일을 보여 주고 검사하는 ``sbmig advisories`` 명령(list | show | check) 모듈.
+대상은 knowledge/libraries/advisories.yml과 ``advisories.extra_files``다.
+- 이관 실행과 상관없는 읽기 전용 도구다. 항목 상태는 guide 또는 off뿐이다
+- typer가 명령 함수의 docstring을 ``--help`` 화면에 쓰므로 명령 함수의 docstring은 도움말 문구다
 
 See docs/ADVISORIES.md."""
 from __future__ import annotations
@@ -22,22 +20,20 @@ ConfigOpt = typer.Option(None, "--config", "-c", help="extra config yml (repeata
 
 def _load(configs: Optional[List[Path]]):
     """``sbmig recipes``와 같은 규칙으로 설정을 읽는다. 사내 좌표는 플레이스홀더를 허용한다."""
-    from sbmig.plan.catalog_cli import _load as load_cfg     # same placeholder-artifacts convention
+    from sbmig.plan.catalog_cli import _load as load_cfg     # 플레이스홀더 좌표 규칙을 recipes 명령과 맞춘다
 
     return load_cfg(configs)
 
 
 def _state(entry: Any, cfg: Any) -> str:
     """항목 상태를 반환한다.
-    ``advisories.policy_overrides``로 꺼졌으면 "off", 아니면 "guide"(LLM 힌트와 인수인계)다.
-
-    "off" when `advisories.policy_overrides` switches the entry off, else "guide" (LLM hints + Handover)."""
+    ``advisories.policy_overrides``로 꺼졌으면 "off", 아니면 "guide"(LLM 힌트와 인수인계)를 반환한다."""
     from .evaluate import switched_off
 
     return "off" if switched_off(entry, cfg) else "guide"
 
 
-_DROPPED_FIELDS = ("policy", "recipes")      # still on the core model; guide-only advisories do not use them
+_DROPPED_FIELDS = ("policy", "recipes")      # 모델에는 남아 있지만 안내 전용 권고는 쓰지 않는 필드
 
 
 def _row(entry: Any, cfg: Any) -> dict[str, Any]:

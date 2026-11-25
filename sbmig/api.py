@@ -1,17 +1,11 @@
-"""사내 코드나 에이전트 프레임워크에서 sbmig를 호출하는 프로그램용 진입점 ``migrate(...)`` 모듈(docs/ADAPTERS.md).
+"""사내 코드나 에이전트 프레임워크에서 sbmig를 호출할 때 쓰는 진입점 ``migrate(...)`` 모듈(docs/ADAPTERS.md).
 `sbmig run`과 같은 파이프라인을 실행한다.
 - 회사 쪽 통합이 의존하므로 `sbmig.api.migrate(...)`의 시그니처는 바꾸지 않는다
 - import는 함수 안에서 필요할 때 하므로 `import sbmig.api`는 가볍다
 
-Programmatic entry point: run sbmig from your own code / agent framework (docs/ADAPTERS.md).
-
     from sbmig.api import migrate, exit_code
     report = migrate("path/to/project", configs=["config/artifacts.yml"], llm=MyGatewayAdapter())
     print(report.success, exit_code(report))
-
-Imports are lazy (like the CLI) so `import sbmig.api` is cheap.
-
-
 """
 from __future__ import annotations
 
@@ -22,13 +16,10 @@ if TYPE_CHECKING:  # pragma: no cover
     from sbmig.core.interfaces import KnowledgeBaseLike, LLMAdapterLike, LLMClientLike, ScriptFixerLike
     from sbmig.core.models import RunReport
 
-# `kb=False`면 KB를 읽지도 쓰지도 않는 NullKnowledgeBase를 쓴다.
-# 실행 디렉토리의 errors.jsonl / errors.md는 그대로 쓴다
-# `kb=False` here: the knowledge base is neither read nor fed — the KB object is a
-# NullKnowledgeBase (no stored fix script is reused, nothing is recorded); the run's own errors.jsonl / errors.md are
-# still written to the run dir. v2.1 has no KB switches left in the config, so nothing is overridden.
+# `kb=False`일 때 덧붙이는 kb 설정. 설정에 KB 스위치가 없어 비어 있고, KB는 NullKnowledgeBase로 끈다
+# 이때 저장 스크립트를 재사용하지 않고 KB에 기록하지도 않는다. 실행 디렉토리의 errors.jsonl / errors.md는 그대로 쓴다
 NO_KB_OVERRIDES: dict = {}
-_NO_KB_OVERRIDES = NO_KB_OVERRIDES          # the pre-round-10 name
+_NO_KB_OVERRIDES = NO_KB_OVERRIDES          # 이전 이름으로 import하는 코드를 위해 남겨 둔다
 
 
 def _merge(base: dict, extra: Mapping) -> dict:
@@ -58,12 +49,11 @@ def migrate(
     components: Optional[Mapping[str, Any]] = None,
     flow: str = "full",
 ) -> "RunReport":
-    """프로젝트 하나(디렉토리 또는 zip)를 `sbmig run`과 같은 파이프라인으로 끝까지 이관하고 RunReport를
-    반환한다. ``flow="remediation"``이면 이관 없이 취약점 조치만 한다.
-    llm에는 회사 게이트웨이 어댑터(LLMAdapterLike)나 클라이언트를, fixer에는 사내 수정기(propose_script)를
-    줄 수 있다. CLI 종료 코드는 exit_code(report)로 얻는다.
-
-    Migrate one project (directory or zip) end to end — same pipeline as `sbmig run`.
+    """프로젝트 하나(디렉토리 또는 zip)를 `sbmig run`과 같은 파이프라인으로 끝까지 이관하고 RunReport를 반환한다.
+    - ``flow="remediation"``이면 이관 없이 취약점 조치만 한다
+    - ``llm``에는 회사 게이트웨이 어댑터나 클라이언트를, ``fixer``에는 사내 수정기(propose_script)를 줄 수 있다
+    - ``stop_after``나 ``flow`` 값이 잘못되었으면 ValueError를 던진다
+    - CLI 종료 코드는 ``exit_code(report)``로 얻는다
 
     llm        an LLMClientLike (message-based) or an LLMAdapterLike (`complete(request)`, wrapped in
                AdapterClient automatically). None → built from config (`llm.provider`, incl. plugins).
@@ -71,17 +61,16 @@ def migrate(
     fixer      a fixer with `propose_script(ws, cluster, ctx) -> ScriptProposal` (ScriptFixerLike) replacing
                LLMFixer (takes precedence over `fix.plugin`).
     kb         None/True → the file knowledge base; False → no KB (a NullKnowledgeBase); an object → used as is.
-    stop_after intake|analyze|plan|transform|restructure (v2; jdk21|spring are v1 phases).
+    stop_after intake|analyze|plan|transform|restructure.
     components advanced: extra Orchestrator collaborators (build_runner, rewrite_runner, restructurer, …).
     flow       "full" (default: the migration) | "remediation" (no migration: the vulnerability remediation of the
-               project as uploaded; not with stop_after / dry_run — ValueError).
-    Returns the RunReport; `exit_code(report)` maps it to the CLI exit code (0 / 2 / 3)."""
+               project as uploaded; not with stop_after / dry_run — ValueError)."""
     from sbmig.core.config import load_config
     from sbmig.core.workspace import Workspace
     from sbmig.loop import NullKnowledgeBase, Orchestrator, check_flow, parse_stop_after
 
-    phase = parse_stop_after(stop_after)        # ValueError names the accepted values
-    flow = check_flow(flow, phase, dry_run)     # ValueError: unknown flow / remediation with stop_after or dry_run
+    phase = parse_stop_after(stop_after)        # 잘못된 값이면 허용 값을 담은 ValueError를 던진다
+    flow = check_flow(flow, phase, dry_run)     # 모르는 flow, stop_after나 dry_run과 함께 준 remediation은 ValueError
     ov: dict = dict(overrides or {})
     if kb is False:
         ov = _merge(ov, {"kb": NO_KB_OVERRIDES})
@@ -112,9 +101,7 @@ def migrate(
 
 def exit_code(report: "RunReport") -> int:
     """RunReport를 CLI 종료 코드로 바꾼다.
-    0은 최종 빌드 성공에 차단 없음, 2는 차단이나 미해결 오류가 남은 채 끝남, 3은 중단이다.
-
-    0 = final build green and nothing blocked, 2 = finished with blocked/unresolved errors, 3 = aborted."""
+    0은 최종 빌드가 성공하고 차단이 없을 때, 2는 차단되었거나 해결하지 못한 오류가 남았을 때, 3은 중단이다."""
     from sbmig.cli import run_exit_code
 
     return run_exit_code(report)

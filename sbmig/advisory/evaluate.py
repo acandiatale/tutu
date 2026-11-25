@@ -1,17 +1,11 @@
-"""분석 뒤 프로젝트에 해당하는 권고를 찾고 인수인계의 후속 작업 문장을 만드는 모듈.
-분석 단계가 ``evaluate_advisories``를 호출하고 결과는 프로필과 보고서의 권고가 된다.
-결과(outcome)는 마무리 단계의 ``verify_advisories``가 정할 때까지 "unknown"이다.
+"""프로젝트에 맞는 권고를 찾고 인수인계에 넣을 후속 작업 문장을 만드는 모듈.
+- ``evaluate_advisories``: 분석 단계가 호출한다. 결과는 프로필과 보고서의 권고가 된다
+- ``followups_for``: 권고마다 후속 작업 문장을 하나씩 만든다
 - 권고는 안내만 하고 레시피를 더하지 않는다
-- ``advisories.policy_overrides``의 ``{id: off}``로 항목을 끌 수 있으며 그 밖의 값은 효과가 없다
+- 결과(outcome)는 마무리 단계의 ``verify_advisories``가 정할 때까지 "unknown"이다
+- ``advisories.policy_overrides``에서 ``{id: off}``로 항목을 끌 수 있다. 다른 값은 효과가 없다
 
-Advisory evaluation (after analyze) and the handover follow-up sentences. Advisories are guide-only: they never
-add a recipe; the fix loop gets their hints (`sbmig.advisory.hints`), the Handover their follow-ups.
-
-* `evaluate_advisories(profile, cfg)` — which advisories match this project (`advisories.policy_overrides
-  {id: off}` switches an entry off).
-* `followups_for(findings)` — one "from here on, your team …" sentence per finding, not-replaced first.
-
-
+The fix loop gets the findings' hints through `sbmig.advisory.hints`, the Handover their follow-ups.
 """
 from __future__ import annotations
 
@@ -31,10 +25,10 @@ _POM_EVIDENCE = ("pom:", "pom-managed:", "pom-parent:")
 
 
 # ---------------------------------------------------------------------------
-# matching helpers
+# 매칭 도구
 # ---------------------------------------------------------------------------
 def _concrete(v: Optional[str]) -> Optional[str]:
-    """``${...}`` 참조가 아닌 실제 버전만 반환한다. 아니면 None을 반환한다."""
+    """``${...}`` 참조가 아닌 실제 버전이면 그대로 반환하고, 아니면 None을 반환한다."""
     return v if v and "${" not in v else None
 
 
@@ -46,9 +40,7 @@ def gav_matches(pattern: str, g: GAV) -> bool:
 
 
 def pom_gavs(poms: Iterable[Any]) -> list[GAV]:
-    """모든 pom의 의존성, dependencyManagement, parent 좌표를 이 순서로 모은다. 권고를 매칭할 때 사용한다.
-
-    Dependencies, dependencyManagement entries and parents of every pom (in that order)."""
+    """모든 pom의 의존성, dependencyManagement, parent 좌표를 이 순서로 모은다. 권고를 매칭할 때 쓴다."""
     deps: list[GAV] = []
     managed: list[GAV] = []
     parents: list[GAV] = []
@@ -83,10 +75,7 @@ def _evidence_keys(evidence: Iterable[str]) -> list[str]:
 
 def below(version: Optional[str], bound: str) -> bool:
     """``version``이 ``bound``보다 낮은지 확인한다.
-    권고를 놓치는 것보다 한 번 더 안내하는 편이 나으므로 모르거나 읽지
-    못하는 버전(릴리스 트레인 이름 등)은 낮은 것으로 본다.
-
-    True when `version` < `bound`; unknown / unparsable versions (release-train names) count as below."""
+    권고를 놓치는 것보다 한 번 더 안내하는 편이 나으므로, 없거나 읽지 못하는 버전(릴리스 트레인 이름 등)은 낮은 것으로 본다."""
     from sbmig.plan.versions import version_lt
 
     r = version_lt(version, bound)
@@ -99,19 +88,16 @@ def _sort_key(f: AdvisoryFinding) -> tuple[int, str]:
 
 
 # ---------------------------------------------------------------------------
-# evaluate
+# 권고 평가
 # ---------------------------------------------------------------------------
 def switched_off(entry: LibraryAdvisory, cfg: Config) -> bool:
-    """``advisories.policy_overrides``가 이 항목을 "off"로 껐는지 확인한다.
-    다른 값은 아무것도 바꾸지 않는다.
-
-    True when `advisories.policy_overrides` sets the entry to "off" (any other value changes nothing)."""
+    """``advisories.policy_overrides``에서 이 항목이 "off"로 꺼져 있는지 확인한다. 다른 값은 아무것도 바꾸지 않는다."""
     return (cfg.advisories.policy_overrides or {}).get(entry.id) == "off"
 
 
 def _match(entry: LibraryAdvisory, profile: ProjectProfile, gavs: list[GAV]) -> Optional[dict[str, Any]]:
-    """권고 하나가 이 프로젝트에 맞는지 분석기가 찾은 라이브러리 이름이나 pom 좌표 패턴으로 확인한다.
-    맞으면 라이브러리, 근거, 아티팩트 키, 감지된 버전을 반환하고 아니면 None을 반환한다."""
+    """분석기가 찾은 라이브러리 이름이나 pom 좌표 패턴으로 권고 하나가 이 프로젝트에 맞는지 확인한다.
+    맞으면 라이브러리, 근거, 아티팩트 키, 감지된 버전을 담은 dict를 반환하고, 아니면 None을 반환한다."""
     lib = next((u for u in profile.libraries if entry.library and u.name == entry.library), None)
     hits = artifact_hits(entry.artifacts, gavs) if entry.artifacts else []
     if lib is None and not hits:
@@ -133,19 +119,19 @@ def _match(entry: LibraryAdvisory, profile: ProjectProfile, gavs: list[GAV]) -> 
 
 def evaluate_advisories(profile: ProjectProfile, cfg: Config,
                         catalog: Optional[AdvisoryCatalog] = None) -> list[AdvisoryFinding]:
-    """이 프로젝트의 권고 결과를 만든다.
-    안내 전용(``policy="guide"``)이며 결과는 ``verify_advisories`` 전까지 "unknown"이다.
-    케이스 타입(applies_to), 버전 하한(applies_when_version_below), off 설정을 차례로 확인한다.
+    """이 프로젝트에 맞는 권고 목록을 만든다. 상태 순서(eol부터), 같으면 id 순서로 정렬한다.
+    - 권고가 꺼져 있거나 카탈로그가 비어 있으면 빈 목록을 반환한다
+    - 케이스 타입(``applies_to``), 버전 상한(``applies_when_version_below``), off 설정을 차례로 확인한다
+    - 결과는 안내 전용(``policy="guide"``)이고 outcome은 "unknown"이다
 
-    Advisory findings for this project (guide-only, outcome "unknown" until `verify_advisories`)."""
+    Bundled jars (``profile.bundled_jars``, no pom declares them) are matched like declared dependencies."""
     if not cfg.advisories.enabled:
         return []
     cat = catalog if catalog is not None else load_advisories(cfg)
     if not len(cat):
         return []
     gavs = pom_gavs(profile.poms)
-    # v2.1z-k: a library that reached the project as a jar in WEB-INF/lib (no pom declares it) is still that library —
-    # its advisory (EOL, no jakarta build) must reach the Handover and the fix prompt like a declared one
+    # WEB-INF/lib 등에 jar로만 들어온 라이브러리도 권고가 인수인계와 수정 프롬프트에 전달되도록 좌표에 넣는다
     for j in getattr(profile, "bundled_jars", None) or []:
         if getattr(j, "group_id", "") and getattr(j, "artifact_id", ""):
             gavs.append(GAV(group_id=j.group_id, artifact_id=j.artifact_id, version=j.version or None))
@@ -178,7 +164,7 @@ def evaluate_advisories(profile: ProjectProfile, cfg: Config,
 
 
 # ---------------------------------------------------------------------------
-# follow-ups ("from here on, your team …")
+# 후속 작업 문장
 # ---------------------------------------------------------------------------
 def _replacement_hint(f: AdvisoryFinding) -> str:
     """후속 작업 문장 끝에 붙일 `` (replacement: …)``를 만든다."""
@@ -188,11 +174,10 @@ def _replacement_hint(f: AdvisoryFinding) -> str:
 
 
 def followups_for(findings: Optional[list[AdvisoryFinding]]) -> list[str]:
-    """권고마다 실행할 수 있는 후속 작업 문장을 하나씩 만든다.
-    교체되지 않은 것(still-present / unknown)이 먼저, 교체되어 확인만 하면 되는 것이 나중이다.
-    인수인계의 "이제부터 할 일"은 이 문장들과 겹치는 수동 후속 작업을 걸러 낸다.
+    """권고마다 후속 작업 문장을 하나씩 만든다. 같은 문장은 한 번만 넣는다.
+    교체되지 않은 권고(still-present / unknown)를 먼저 쓰고, 교체되어 확인만 하면 되는 권고를 뒤에 쓴다.
 
-    One actionable sentence per finding: not replaced (still-present / unknown) first, then replaced-but-verify."""
+    The Handover's manual follow-ups drop the items these sentences already cover."""
     out: list[str] = []
     items = list(findings or [])
     pending = [f for f in items if f.outcome != "replaced"]

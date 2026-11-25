@@ -1,11 +1,8 @@
-"""지금 고치는 오류 클러스터에 맞는 권고를 찾아 수정 프롬프트용 짧은 안내
-줄(``FixContext.advisory_hints``)로 만드는 모듈.
+"""지금 고치는 오류에 맞는 권고를 찾아 수정 프롬프트에 넣을 짧은 안내 줄(``FixContext.advisory_hints``)로 만드는 모듈.
 수정 루프가 케이스마다 LLM 프롬프트를 만들 때 ``hints_for``를 호출한다.
-- 오류가 권고 라이브러리의 패키지, as-is 아티팩트, 대체 아티팩트를 언급하면 힌트 한 줄과 노트 파일 발췌를 더할 뿐이다
-- 참조된 노트 파일만 읽고 예외를 던지지 않는다. 문제가 있으면 그 권고의 힌트만 빠진다
-
-Advisory-guided LLM fixes (round 6): which library advisories apply to the error cluster being fixed, as short
-"what to migrate TO" guidance lines for the fixer prompt (`FixContext.advisory_hints`).
+- 오류가 권고 라이브러리의 패키지, as-is 아티팩트, 대체 아티팩트를 언급하면 그 권고가 맞는 것으로 본다
+- 맞는 권고마다 힌트 한 줄을 만들고, 권고에 노트 파일이 있으면 그 발췌를 붙인다
+- 노트 파일만 읽고 예외를 던지지 않는다. 문제가 생기면 그 권고의 힌트만 빠진다
 
     hints_for(errors, findings, profile=None, *, notes_root=None) -> (hints, advisory_ids)
 
@@ -21,10 +18,6 @@ One hint per matched finding (order of `findings`):
 (`notes: knowledge/notes/<file>.md`, carried on the finding as "see <path>"), an excerpt of that note's section:
 a `## fix-loop: <library>` heading wins (convention for loop guidance written for this purpose), otherwise the
 first heading that mentions the library (≤ NOTE_EXCERPT_MAX chars).
-
-Pure function: reads only the referenced note files, never raises (problems → no hint for that finding).
-
-
 """
 from __future__ import annotations
 
@@ -41,20 +34,18 @@ log = logging.getLogger("sbmig.advisory.hints")
 
 HINT_MAX = 500
 NOTE_EXCERPT_MAX = 600
-RAW_MAX = 4000                      # per error: enough for the javac block, bounded for big dependency dumps
+RAW_MAX = 4000                      # javac 오류 블록은 담고, 큰 의존성 출력은 잘리도록 오류당 길이를 제한한다
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.*?)\s*#*\s*$")
 
 
 # ---------------------------------------------------------------------------
-# library rules
+# 라이브러리 규칙
 # ---------------------------------------------------------------------------
 @cache
 def library_packages(library: str) -> tuple[str, ...]:
     """라이브러리의 import 패키지 접두어(``LibraryRule.imports``)를 반환한다.
-    모르는 이름이면 빈 튜플을 반환한다.
-
-    Import package prefixes of a library (`LibraryRule.imports`), () for an unknown name."""
+    모르는 이름이면 빈 튜플을 반환한다."""
     try:
         from sbmig.analyze.libraries import LIBRARY_RULES
     except Exception as e:  # noqa: BLE001  # pragma: no cover - analyze is ours
@@ -89,7 +80,6 @@ def _replacement_keys(replacement: Optional[str]) -> list[str]:
     r = replacement.strip()
     out = [r] if ":" in r else []
     aid = r.split(":")[1] if ":" in r else r
-    # an artifactId alone is matched only when it is distinctive (contains a dash, e.g. "...-resilience4j")
     if aid and "-" in aid:
         out.append(aid)
     return out
@@ -111,7 +101,7 @@ def _matches(f: AdvisoryFinding, text: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# hint text
+# 힌트 문구
 # ---------------------------------------------------------------------------
 def _cut(text: str, limit: int) -> str:
     """공백을 정리하고 ``limit``자로 자른다. 가능하면 문장 끝(". ")에서 자르고, 아니면 …을 붙인다."""
@@ -146,12 +136,11 @@ def _resolve(path: str, notes_root: Optional[Path]) -> Optional[Path]:
 
 
 def note_section(text: str, library: str) -> tuple[str, str]:
-    """노트에서 ``library``에 해당하는 절을 (제목, 본문)으로 반환한다.
-    ``## fix-loop: <library>`` 절을 우선하고, 없으면 그 라이브러리 이름이 들어간 첫 소제목을 쓴다.
+    """노트에서 ``library``의 절을 (제목, 본문)으로 반환한다.
+    ``## fix-loop: <library>`` 절을 먼저 찾고, 없으면 라이브러리 이름이 들어간 첫 소제목을 쓴다.
     둘 다 없으면 ("", "")를 반환한다.
 
-    (heading, body) of the section to excerpt for `library`: `## fix-loop: <library>` first, else the first
-    heading that mentions the library as a word; ("", "") when none."""
+    The name must appear as a whole word; a level-1 heading is never picked by name."""
     lines = text.replace("\r\n", "\n").split("\n")
     heads = [(i, len(m.group(1)), m.group(2)) for i, ln in enumerate(lines) if (m := _HEADING_RE.match(ln))]
     lib = re.escape(library)
@@ -175,7 +164,7 @@ def _note_excerpt(f: AdvisoryFinding, notes_root: Optional[Path]) -> str:
                 continue
             from sbmig.fix.context import strip_front_matter
             title, body = note_section(strip_front_matter(p.read_text(encoding="utf-8")), f.library)
-        except Exception as e:  # noqa: BLE001 — unreadable note → hint without excerpt
+        except Exception as e:  # noqa: BLE001 노트를 읽지 못하면 발췌 없이 힌트만 쓴다
             log.debug("advisory %s: note %s unreadable: %s", f.advisory_id, rel, e)
             continue
         if body:
@@ -184,8 +173,8 @@ def _note_excerpt(f: AdvisoryFinding, notes_root: Optional[Path]) -> str:
 
 
 def hint_text(f: AdvisoryFinding, notes_root: Optional[Path] = None) -> str:
-    """권고 하나의 힌트 줄 ``<라이브러리> (<상태>): replace with <대체품> (<버전>).
-    <후속 작업>``을 HINT_MAX자까지 만들고 노트 발췌를 붙인다."""
+    """권고 하나의 힌트 줄을 만든다. 본문은 HINT_MAX자까지 자르고 노트 발췌를 뒤에 붙인다.
+    형식은 ``<라이브러리> (<상태>): replace with <대체품> (<버전>). <후속 작업>``이다."""
     head = f"{f.library} ({f.status})"
     if f.replacement:
         head += f": replace with {f.replacement}"
@@ -198,16 +187,15 @@ def hint_text(f: AdvisoryFinding, notes_root: Optional[Path] = None) -> str:
 
 
 # ---------------------------------------------------------------------------
-# public
+# 공개 함수
 # ---------------------------------------------------------------------------
 def hints_for(errors: Iterable[BuildError], findings: Optional[Iterable[AdvisoryFinding]], profile: Any = None, *,
               notes_root: Optional[Path] = None) -> tuple[list[str], list[str]]:
     """이 오류들에 맞는 권고의 (힌트 줄 목록, 권고 id 목록)을 ``findings`` 순서로 반환한다.
-    예외를 던지지 않는다.
+    예외를 던지지 않는다. 문제가 생기면 그 권고만 빠지거나 빈 목록을 반환한다.
 
-    (hints, advisory ids) for the findings that match these errors, in `findings` order. `profile` is accepted
-    for the contract (not needed today); `notes_root` = base directory of the advisories' `notes` paths (the
-    config's repo root; defaults to this checkout). Never raises."""
+    `profile` is accepted for the contract and unused; `notes_root` = base directory of the advisories'
+    `notes` paths (the config's repo root; defaults to this checkout)."""
     hints: list[str] = []
     ids: list[str] = []
     try:
@@ -223,9 +211,9 @@ def hints_for(errors: Iterable[BuildError], findings: Optional[Iterable[Advisory
                     continue
                 hints.append(hint_text(f, notes_root))
                 ids.append(f.advisory_id)
-            except Exception as e:  # noqa: BLE001 — one broken finding never hides the others
+            except Exception as e:  # noqa: BLE001 권고 하나가 깨져도 나머지 힌트는 그대로 만든다
                 log.debug("advisory hint for %s failed: %s", getattr(f, "advisory_id", "?"), e)
-    except Exception as e:  # noqa: BLE001  # pragma: no cover - defensive: never break the loop
+    except Exception as e:  # noqa: BLE001  # pragma: no cover - 힌트 때문에 수정 루프가 멈추지 않게 한다
         log.warning("advisory hints failed: %s", e)
         return [], []
     return hints, ids
