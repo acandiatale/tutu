@@ -4,8 +4,7 @@
 - ``DecisionEngine``: 재사용 -> 보강 -> 신규 순서로 시도를 정하고 차단 정책을 적용한다
 - ``classify_blocked``: 코드로 고칠 수 없는 오류를 가려낸다
 
-sbmig.triage — error clustering (v2: by case), the decision engine (v2: fix-script ladder), blocked
-classification."""
+Error clustering by case, the decision engine (fix-script ladder), blocked classification."""
 from .blocked import BlockedCandidate, classify_blocked, extract_owner, is_project_class
 from .cluster import (BASE_PRIORITY, CASE_PREFIX, CAUSE_RANK, RESOLUTION_KINDS, case_id_of, cause_rank, cluster_cases,
                       cluster_errors, cluster_id, cluster_label, error_class, is_coarse_l2, l2_case_id,

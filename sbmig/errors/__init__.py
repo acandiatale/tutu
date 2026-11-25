@@ -5,16 +5,17 @@
 - ``CaseStore``: KB의 케이스 폴더를 관리한다. 바깥에서는 파사드 ``sbmig.kb.FileKnowledgeBase``로 쓴다
 - ``case_id_for`` / ``case_id_of``: 케이스 ID(L2 서명의 sha1 앞 10자리)를 만든다
 - ``entry_id``: 항목 ID(sha1 앞 12자리)를 만든다
+- ``CaseStore.resign``: 이전 서명 규칙의 기록을 현재 규칙의 케이스 ID로 옮긴다
 KB는 파일로만 관리한다(DB 사용 금지).
 
-sbmig.errors — the v2.1 error list and knowledge base (docs/v2/PLAN-v2.1.md §3.3 – §3.5).
+Spec: docs/v2/PLAN-v2.1.md §3.3 – §3.5.
 
     ErrorList(run_dir, run_id, project=, cfg=, roots=)   one run: <run dir>/errors.jsonl + errors.md
     ErrorList.for_workspace(ws, cfg, project)            the same for a Workspace (roots stripped from texts)
     CaseStore(kb_dir, cfg)                               the KB: <kb>/errors.jsonl, cases.md, cases/<id>/case.json +
                                                          fix_v<N>.py (sbmig.kb.FileKnowledgeBase is its facade)
     case_id_for(l2) / case_id_of(error) / entry_id(…)    the ids (sha1(l2)[:10]; sha1(run|case|file|line|msg)[:12])
-    CaseStore.resign(dry_run=False) -> ResignReport      v2.1z-ai: records of older signature rules → current case ids
+    CaseStore.resign(dry_run=False) -> ResignReport      records of older signature rules → current case ids
                                                          (sbmig.errors.resign holds the pure parts)
     CaseKeyMismatch                                      the stored case holds another L2 (exact-key guard; an OSError)
 

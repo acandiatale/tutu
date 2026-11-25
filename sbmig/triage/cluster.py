@@ -1,20 +1,19 @@
 """한 빌드의 오류를 케이스(L2 서명) 단위로 묶고 근본 원인이 앞에 오도록 정렬하는 모듈.
 수정 루프가 빌드마다 ``Triager.cluster``를 통해 ``cluster_cases``를 호출한다. 오류 목록, KB 케이스, 시도
 결과 평가가 같은 키를 보도록 루프와 오케스트레이터는 빌드 직후 ``refine_signatures``를 먼저 적용한다.
-- ``case_id_of`` / ``l2_case_id``: 케이스 ID는 sha1(L2)[:10]이고 KB 폴더 ``cases/<case_id>/``의 이름이 된다
-- ``refine_signature``: ``build`` / ``other`` 같은 포괄적인 컴파일 L2를 오류 원문 줄로 세분화한다.
-  그대로 두면 무관한 실패가 한 케이스가 되어 저장된 스크립트가 엉뚱한 문제에 재사용된다
-- ``cause_rank``: 라이브러리 하나가 빠지면 결과 케이스가 여러 개 생기므로
-  원인 케이스를 먼저 고치고 나머지는 재빌드를 기다리게 한다
+- ``case_id_of`` / ``l2_case_id``: 케이스 ID는 ``sha1(L2)[:10]``이고 KB 폴더 ``cases/<case_id>/``의 이름이 된다
+- 케이스 ID 계산식은 ``sbmig.errors.common``과 같아야 한다. 다르면 클러스터와 오류 목록의 케이스가 어긋난다
+- ``refine_signature``: ``build`` / ``other`` 같은 포괄적인 컴파일 L2를 오류 원문 줄로 세분화한다
+- 세분화하지 않으면 무관한 실패가 한 케이스가 되어 저장된 스크립트가 엉뚱한 문제에 재사용된다
+- ``cause_rank``: 라이브러리 하나가 빠지면 결과 케이스가 여러 개 생기므로 원인 케이스를 먼저 고친다
 
 Error clustering (ARCHITECTURE §4).
 
-v2 (flow-v2, docs/INTERFACES.md "Script fix loop (L)"): the fix loop works on **cases** — `cluster_cases` groups the
-errors of a build by their L2 signature (`signature_generic`) ACROSS files, so one fix script fixes the same cause in
-every file (v1 asked the LLM once per file). The case id is ``sha1(signature_generic)[:10]``
-(v2.1: the error list's `ErrorEntry.case_id` and ``<kb>/cases/<case_id>/``); an error without an L2
-gets ``sha1(kind|file|L1)[:10]``. A case cluster has ``id = "case:<case_id>"``, ``case_id``, ``file = None`` and the
-common module (None when the case spans modules).
+docs/INTERFACES.md "Script fix loop (L)": the fix loop works on **cases** — `cluster_cases` groups the errors
+of a build by their L2 signature (`signature_generic`) ACROSS files, so one fix script fixes the same cause in
+every file. The case id is ``sha1(signature_generic)[:10]`` (the error list's `ErrorEntry.case_id` and
+``<kb>/cases/<case_id>/``); an error without an L2 gets ``sha1(kind|file|L1)[:10]``. A case cluster has ``id =
+"case:<case_id>"``, ``case_id``, ``file = None`` and the common module (None when the case spans modules).
 
 **Refined L2 for catch-all compile signatures** (`refine_signature`, applied to every error before it is grouped —
 and by the fix loop / orchestrator right after each build, so the error list, the KB cases, the scoring and
@@ -34,7 +33,7 @@ that said no more than the coarse L2 (L1 == L2, the file-less summaries) gets th
 (file, L1) tells two such failures apart. No meaningful line → the L2 stays as it was. Refining is idempotent (the
 key is computed from ``raw``, never from the current L2). Every other L2 keeps `case_id_for` as is.
 
-v1 clusters (`cluster_errors`, still used by callers outside the fix loop) are keyed by
+Legacy clusters (`cluster_errors`, used only by callers outside the fix loop) are keyed by
 * ``(kind, file)``          for COMPILE / TEST_COMPILE (falls back to the module when the file is unknown)
 * ``(kind, artifact.key)``  for DEPENDENCY / PLUGIN / PARENT resolution and POM_INVALID with an artifact
 * ``(kind, module)``        otherwise
@@ -42,15 +41,13 @@ v1 clusters (`cluster_errors`, still used by callers outside the fix loop) are k
 Priorities (both, lower = handled first): PARENT_RESOLUTION 10, POM_INVALID 15, DEPENDENCY_RESOLUTION 20,
 PLUGIN_RESOLUTION 25, ENFORCER 30, REWRITE 35, COMPILE 50 + reactor index, TEST_COMPILE 80 + reactor index,
 PLUGIN_EXECUTION 90, TEST_FAILURE 95, UNKNOWN 99. Unknown modules get +40; a case takes the lowest priority of its
-errors (its earliest reactor module). v1 ties: error count desc, then id.
+errors (its earliest reactor module). Legacy ties: error count desc, then id.
 
-v2 cases of the same priority are ordered **root causes first** by their javac error class (`CAUSE_RANK`, below):
-a missing package / class file before the symbols it hides, an import before its body usages, the symbols before
-the type mismatches and overrides they cause (2026-10-26 probe: one missing `jakarta.xml.bind-api` gave 10 cases in
-2 files; the fix loop defers the consequences — `BuildFixLoop._deferral` — so the cause's script is asked for first).
-Then error count (desc), then id.
-
-
+Cases of the same priority are ordered **root causes first** by their javac error class (`CAUSE_RANK`, below):
+a missing package / class file before the symbols it hides, an import before its body usages, the symbols
+before the type mismatches and overrides they cause (one missing `jakarta.xml.bind-api` gives about 10 cases
+in 2 files; the fix loop defers the consequences — `BuildFixLoop._deferral` — so the cause's script is asked
+for first). Then error count (desc), then id.
 """
 from __future__ import annotations
 
@@ -79,7 +76,7 @@ UNKNOWN_MODULE_OFFSET = 40
 ARTIFACT_KINDS = frozenset({ErrorKind.DEPENDENCY_RESOLUTION, ErrorKind.PLUGIN_RESOLUTION,
                             ErrorKind.PARENT_RESOLUTION})
 FILE_KINDS = frozenset({ErrorKind.COMPILE, ErrorKind.TEST_COMPILE})
-# resolution-type clusters mask compile clusters of the same module (they usually vanish once the pom is fixed)
+# 해결 오류가 있으면 같은 모듈의 컴파일 오류는 가려진다. pom을 고치면 대개 사라진다
 RESOLUTION_KINDS = frozenset({ErrorKind.PARENT_RESOLUTION, ErrorKind.POM_INVALID,
                               ErrorKind.DEPENDENCY_RESOLUTION, ErrorKind.PLUGIN_RESOLUTION})
 
@@ -103,9 +100,7 @@ def cluster_id(kind: ErrorKind, key: str) -> str:
 def module_index(profile: Optional[ProjectProfile], module: Optional[str], file: Optional[str] = None) -> Optional[int]:
     """모듈의 reactor 순번(``profile.poms`` 안의 위치)을 반환한다.
     모듈 이름으로 찾지 못하면 파일을 포함하는 가장 깊은 pom 디렉토리로 찾는다.
-    앞 모듈의 컴파일 오류를 먼저 고치기 위해 사용한다.
-
-    Reactor index of a module: position in `profile.poms` (analyzer keeps reactor order)."""
+    앞 모듈의 컴파일 오류를 먼저 고치기 위해 사용한다. 분석기가 ``profile.poms``를 reactor 순서로 둔다."""
     if profile is None or not profile.poms:
         return None
     if module:
@@ -114,7 +109,7 @@ def module_index(profile: Optional[ProjectProfile], module: Optional[str], file:
             if module in (p.artifact_id, d, posixpath.basename(d)):
                 return i
     if file:
-        best: Optional[tuple[int, int]] = None      # (dir length, index): deepest pom dir containing the file
+        best: Optional[tuple[int, int]] = None      # 파일을 포함하는 가장 깊은 pom 디렉토리의 (길이, 순번)
         for i, p in enumerate(profile.poms):
             d = posixpath.dirname(p.path)
             if d == "" or file == d or file.startswith(d + "/"):
@@ -162,8 +157,8 @@ def cluster_errors(errors: list[BuildError], profile: Optional[ProjectProfile] =
 def cluster_label(c: ErrorCluster) -> str:
     """로그용 짧은 이름을 만든다. 케이스는 ``compile case <id> <L2 뒷부분> (N in M file(s))`` 형식이다.
 
-    Short human label: 'compile src/main/java/Foo.java (3)'; a case: 'compile case abc1234567
-    cannot_find_symbol|clientIp (7 in 4 files)'."""
+    'compile src/main/java/Foo.java (3)'; a case: 'compile case abc1234567 cannot_find_symbol|clientIp (7 in 4
+    files)'."""
     if c.case_id:
         sig = next((e.signature_generic for e in c.errors if e.signature_generic), "") or ""
         sig = sig.split("|", 1)[1] if "|" in sig else sig
@@ -174,7 +169,7 @@ def cluster_label(c: ErrorCluster) -> str:
 
 
 # ---------------------------------------------------------------------------------------------------------------------
-# v2: cases (one L2 signature across files)
+# 케이스: 파일에 관계없이 L2 서명 하나
 # ---------------------------------------------------------------------------------------------------------------------
 CASE_PREFIX = "case:"
 
@@ -192,8 +187,7 @@ def l2_case_id(signature_generic: Optional[str]) -> str:
     ``ErrorEntry.case_id``와 KB 폴더 ``<kb>/cases/<case_id>/``가 이 값을
     쓰므로 계산 방식을 바꾸면 쌓아 둔 KB와 매칭되지 않는다.
 
-    The case id of an L2 signature: ``sha1(signature_generic)[:10]`` ("" without one) — the contract of
-    `ErrorEntry.case_id` and ``<kb>/cases/<case_id>/`` (v2.1, docs/v2/PLAN-v2.1.md §3.3)."""
+    Contract: docs/v2/PLAN-v2.1.md §3.3; the same formula as sbmig.errors.common.case_id_for."""
     if not signature_generic:
         return ""
     return hashlib.sha1(signature_generic.encode("utf-8")).hexdigest()[:10]
@@ -202,8 +196,8 @@ def l2_case_id(signature_generic: Optional[str]) -> str:
 def case_id_of(e: BuildError) -> str:
     """오류 하나의 케이스 ID를 반환한다. L2가 있으면 그 ID를, 없으면 ``sha1(kind|file|L1)[:10]``을 쓴다.
 
-    The case of one error: its L2 id, or — no L2 — ``sha1(kind|file|L1)[:10]`` (file = posix path, '' for none;
-    L1 = the signature, else ``kind|message``)."""
+    file = posix path, '' for none; L1 = the signature, else ``kind|message``. Must equal
+    sbmig.errors.common.case_id_of."""
     cid = l2_case_id(e.signature_generic)
     if cid:
         return cid
@@ -212,17 +206,14 @@ def case_id_of(e: BuildError) -> str:
 
 
 def case_files(c: ErrorCluster) -> list[str]:
-    """클러스터 오류들의 파일 목록을 중복 없이 오류 순서대로 반환한다.
-
-    The distinct files of a cluster's errors (posix, in error order)."""
+    """클러스터 오류들의 파일 목록을 posix 경로로, 중복 없이 오류 순서대로 반환한다."""
     return list(dict.fromkeys(_posix(e.file) for e in c.errors if e.file))
 
 
 # 앞쪽 원인이 고쳐지면 뒤쪽 오류는 대개 사라지므로 없는 패키지나 클래스,
 # import 줄, 심볼, 타입 불일치, override 순서로 고친다
-# v2 root-cause order of compile cases (lower = earlier; the error class is the 2nd segment of the L2 signature,
-# `sbmig.build.signatures.classify_javac` for an error without one). A `cannot_find_symbol` whose location is a
-# package is an import line (`import a.b.Gone;`): it goes before the body usages of the same symbol.
+# 오류 종류는 L2의 두 번째 칸이고, 없으면 sbmig.build.signatures.classify_javac로 정한다.
+# location이 패키지인 cannot_find_symbol은 import 줄이므로 같은 심볼의 본문 사용보다 먼저 고친다
 CAUSE_RANK: dict[str, int] = {
     "package_does_not_exist": 0,
     "cannot_access": 1, "class_not_found_in_package": 1,
@@ -231,16 +222,13 @@ CAUSE_RANK: dict[str, int] = {
     "incompatible_types": 4, "cannot_be_applied": 4, "no_suitable_method": 4,
     "method_does_not_override": 5, "does_not_override_abstract": 5, "not_abstract_and_does_not_override": 5,
 }
-OTHER_CAUSE_RANK = 6                   # everything else (illegal_start, has_private_access, deprecated_removed, …)
+OTHER_CAUSE_RANK = 6                   # 그 밖의 모든 종류(illegal_start, has_private_access, deprecated_removed 등)
 
 
 def error_class(e: BuildError) -> str:
     """컴파일 오류의 javac 오류 종류(L2의 두 번째 칸, 없으면 메시지로 분류)를 반환한다.
     import 줄의 ``cannot_find_symbol``은 ``cannot_find_symbol@import``로 따로 센다.
-    컴파일 계열이 아니면 빈 문자열을 반환한다.
-
-    The javac error class of a compile error (`cannot_find_symbol`, …; `cannot_find_symbol@import` for an import
-    line); "" for other kinds."""
+    컴파일 계열이 아니면 빈 문자열을 반환한다."""
     if e.kind not in FILE_KINDS:
         return ""
     parts = (e.signature_generic or "").split("|")
@@ -258,17 +246,14 @@ def error_class(e: BuildError) -> str:
 
 def cause_rank(c: ErrorCluster) -> int:
     """케이스에서 가장 원인에 가까운 오류를 기준으로 근본 원인 순위를 반환한다.
-    컴파일 계열이 아니면 기본 우선순위가 이미 앞에 두므로 0을 반환한다.
-
-    Root-cause rank of a case (`CAUSE_RANK`; its most causal error). 0 for non-compile kinds — their priority
-    (`BASE_PRIORITY`) already puts them first."""
+    컴파일 계열이 아니면 기본 우선순위가 이미 앞에 두므로 0을 반환한다."""
     if c.kind not in FILE_KINDS:
         return 0
     return min((CAUSE_RANK.get(error_class(e), OTHER_CAUSE_RANK) for e in c.errors), default=OTHER_CAUSE_RANK)
 
 
 # ---------------------------------------------------------------------------------------------------------------------
-# v2: refined L2 for catch-all compile signatures (module docstring)
+# 포괄적인 컴파일 L2 세분화. 규칙은 모듈 docstring에 있다
 # ---------------------------------------------------------------------------------------------------------------------
 COARSE_CLASSES = frozenset({"build", "other"})
 REFINED_MAX_CHARS = 120
@@ -286,9 +271,7 @@ _BARE_JAVAC = frozenset({"cannot find symbol", "method does not override or impl
 
 
 def is_coarse_l2(e: BuildError) -> bool:
-    """포괄적인 컴파일 L2인지 확인한다. 종류가 ``build`` / ``other``이거나 세 번째 칸이 비었으면 True다.
-
-    A catch-all compile L2 (class ``build`` / ``other``, or no key segment) — see the module docstring."""
+    """포괄적인 컴파일 L2인지 확인한다. 종류가 ``build`` / ``other``이거나 세 번째 칸이 비었으면 True를 반환한다."""
     if e.kind not in FILE_KINDS or not e.signature_generic:
         return False
     parts = e.signature_generic.split("|")
@@ -309,9 +292,7 @@ def _normalize_line(text: str, module: Optional[str]) -> str:
 
 def refined_key_line(e: BuildError) -> str:
     """``e.raw``에서 처음 나오는 의미 있는 줄을 정규화해 반환한다.
-    Maven 머리말, 요약 문구, 잡음 줄은 제외하고 해당하는 줄이 없으면 빈 문자열을 반환한다.
-
-    The first meaningful, non-generic line of `e.raw`, normalized (module docstring); "" when there is none."""
+    Maven 머리말, 요약 문구, 잡음 줄은 제외한다. 그런 줄이 없으면 빈 문자열을 반환한다."""
     for line in (e.raw or "").splitlines():
         text = _SUMMARY_RE.sub("", _WRAPPER_RE.sub("", _LEVEL_RE.sub("", line).strip())).strip()
         if not text or _NOISE_RE.match(text):
@@ -327,9 +308,7 @@ def refined_key_line(e: BuildError) -> str:
 def refine_signature(e: BuildError) -> BuildError:
     """포괄적인 컴파일 L2에 세분화 키를 붙인다(제자리 수정).
     키를 현재 L2가 아니라 ``raw``에서 계산하므로 여러 번 호출해도 결과가 같다.
-    L1이 L2와 같았으면 시도 결과 평가가 두 실패를 구분하도록 L1도 바꾼다.
-
-    Give a catch-all compile L2 its refined key (in place; the module docstring has the rule). Idempotent."""
+    L1이 L2와 같았으면 시도 결과 평가가 두 실패를 구분하도록 L1도 바꾼다."""
     if not is_coarse_l2(e):
         return e
     line = refined_key_line(e)
@@ -339,15 +318,13 @@ def refine_signature(e: BuildError) -> BuildError:
     refined = "|".join((e.kind.value, parts[1] if len(parts) > 1 and parts[1] else "other", line))
     if refined != e.signature_generic:
         if not e.signature or e.signature == e.signature_generic:
-            e.signature = refined                   # an L1 that said no more than the coarse L2
+            e.signature = refined                   # 포괄 L2와 같은 내용뿐인 L1도 바꾼다
         e.signature_generic = refined
     return e
 
 
 def refine_signatures(errors: Iterable[BuildError]) -> list[BuildError]:
-    """모든 오류에 ``refine_signature``를 적용하고 리스트로 반환한다.
-
-    `refine_signature` for every error (in place); returns them as a list."""
+    """모든 오류에 ``refine_signature``를 제자리에서 적용하고 리스트로 반환한다."""
     out = list(errors or [])
     for e in out:
         refine_signature(e)
@@ -362,10 +339,7 @@ def cluster_cases(errors: list[BuildError], profile: Optional[ProjectProfile] = 
     ``case_id``는 그대로 둔다.
     정렬 순서: 우선순위 -> 근본 원인 -> 오류 수 -> id.
 
-    v2 clusters: one per case (L2) across files. `scope` (a targeted loop's build target, MSA services) is appended
-    to the id (``case:<id>@<scope>``) so two services' attempts on the same case never count against each other —
-    `case_id` stays the plain case id (the script store key). Catch-all compile L2s are refined first
-    (`refine_signature`)."""
+    `scope` = a targeted loop's build target. Catch-all compile L2s are refined first (`refine_signature`)."""
     groups: dict[str, list[BuildError]] = {}
     for e in refine_signatures(errors):
         groups.setdefault(case_id_of(e), []).append(e)
@@ -383,5 +357,5 @@ def cluster_cases(errors: list[BuildError], profile: Optional[ProjectProfile] = 
         prio = min(priority_for(e.kind, profile, e.module, e.file) for e in errs)
         out.append(ErrorCluster(id=f"{CASE_PREFIX}{cid}{suffix}", kind=first.kind, file=None, module=module,
                                 errors=errs, signatures=sigs, priority=prio, case_id=cid))
-    out.sort(key=lambda c: (c.priority, cause_rank(c), -len(c.errors), c.id))     # root causes first
+    out.sort(key=lambda c: (c.priority, cause_rank(c), -len(c.errors), c.id))     # 근본 원인이 먼저 온다
     return out

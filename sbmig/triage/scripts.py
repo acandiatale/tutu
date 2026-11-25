@@ -1,51 +1,52 @@
 """케이스가 이번 실행에서 다음에 받을 수정 단계를 정하는 모듈.
-단계는 재사용 -> 보강 -> 신규 순서이고 한도에 도달하면 차단한다.
-``DecisionEngine.decide``가 ``plan_script_step``을 호출해 SCRIPT / BLOCKED를 정하고, 수정 루프가 돌려받은
-``ScriptStep``을 실행한다. 재사용은 저장된 스크립트를 LLM 없이 실행하는 것이다.
-- 케이스당 한 실행에서 저장된 스크립트는 ``script.reuse_versions``개, LLM 요청은
-  ``script.max_llm_tries_per_case``번까지이고 그중 보강은 ``script.max_augments_per_case``번까지다. 보강을
-  다 쓰면 신규 작성을 요청한다
-- LLM 요청을 다 쓰면 ``repeated_failure``로 차단되어 인수인계로 간다
+단계는 재사용 -> 보강 -> 신규 순서이고 한도에 도달하면 차단한다. 재사용은 저장된 스크립트를 LLM 없이 실행하는 것이다.
+``DecisionEngine.decide``가 ``plan_script_step``을 호출해 SCRIPT / BLOCKED를 정하고, 수정 루프가 반환된
+``ScriptStep``을 실행한다.
+- 케이스당 한 실행에서 저장된 스크립트는 ``script.reuse_versions``개까지 재사용한다
+- LLM 요청은 ``script.max_llm_tries_per_case``번까지이고 그중 보강은 ``script.max_augments_per_case``번까지다
+- 보강을 다 쓰면 신규 작성을 요청하고, LLM 요청을 다 쓰면 ``repeated_failure``로 차단되어 인수인계로 간다
+- 스크립트 없이 직접 수정만 한 답은 ``script.max_edit_tries_per_case``번까지만 요청한다
+- 모든 위치를 합친 LLM 요청이 ``script.max_llm_tries_per_case``의 두 배에 도달해도 차단한다
+- 시도 횟수는 지금 오류가 있는 위치에서 한 시도로 센다
+- 여기서 한 시도가 없고 다른 위치에서 이 케이스를 해결한 이번 실행의 버전이 있으면 그 버전을 가장 먼저 다시 실행한다
+- 실행 범위를 알면 같은 범위의 저장 버전을 먼저 고르고, 다른 범위 버전은 실행마다 하나까지만 쓴다
 - ``kb_line``은 KB 탐색 결과 로그 줄이다. 처음 보는 프로젝트가 KB 적중처럼 읽히지 않게 쓴다
 - KB 저장소 문제는 로그만 남기고 저장된 스크립트가 없는 것으로 처리하므로 루프를 멈추지 않는다
-- 시도 횟수는 지금 오류가 있는 위치에서 한 시도로 센다. 여기서 한 시도가 없고 다른 위치에서 이 케이스를 해결한 이번
-  실행의 버전이 있으면 그 버전을 가장 먼저 다시 실행한다
 
-v2.1 fix ladder (docs/v2/PLAN-v2.1.md §3.1): what a case gets next in this run.
+Fix ladder (docs/v2/PLAN-v2.1.md §3.1): what a case gets next in this run.
 
-Per case and run, in this order (v2.1z-cd: "per case and run" = per case, run and set of places; the fix loop
-passes the attempts made at the places of the case's errors now, and when none was made there the stored version
-whose run resolved the case at another place in this run runs first, `resolved_elsewhere`):
+Per case and run, in this order ("per case and run" = per case, run and set of places, docs/INTERFACES.md
+"v2.1z-cd"; the fix loop passes the attempts made at the places of the case's errors now, and when none was
+made there the stored version whose run resolved the case at another place in this run runs first,
+`resolved_elsewhere`):
 
 1. **KB search → stored script** (`reuse`, source `kb-script`) — the store's best version (`kb.cases.best(case_id)`:
-   proven newest, else unverified newest) that did not run in this run yet: its code runs again, no LLM call. At most
-   `script.reuse_versions` stored versions per case and run (default 1). With more than 1, a stored version that
-   FAILED here (every reuse of this run failed: no_change / regressed / reverted / apply_failed / inconclusive) is
-   followed by the next one in the same order — proven newest first, then unverified newest; retired never
-   (`stored_next`, over `find(case_id).scripts` + `code(case_id, v)`). A reuse that helped (improved / partial) goes
-   to the LLM augment instead: extending what worked beats starting over from an older version. v2.1z-ap: with the
-   run's scope known (`full` / `jdk-jakarta`, the fix loop's `CaseScripts.run_scope`), the order is (same scope,
-   proven, version): the run's own scope first, at most one version of the other scope per case and run.
+   proven newest, else unverified newest) that did not run in this run yet: its code runs again, no LLM call.
+   At most `script.reuse_versions` stored versions per case and run (default 1). With more than 1, a stored
+   version that FAILED here (every reuse of this run failed: no_change / regressed / reverted / apply_failed /
+   inconclusive) is followed by the next one in the same order — proven newest first, then unverified newest;
+   retired never (`stored_next`, over `find(case_id).scripts` + `code(case_id, v)`). A reuse that helped
+   (improved / partial) goes to the LLM augment instead: extending what worked beats starting over from an
+   older version. With the run's scope known (`full` / `jdk-jakarta`, the fix loop's `CaseScripts.run_scope`),
+   the order is (same scope, proven, version): the run's own scope first, at most one version of the other
+   scope per case and run.
 2. **LLM augment** (`augment`) — there is a script to extend and `script.max_augments_per_case` (15) augment steps
-   are not used up: this run's last try of the case that had code (a stored version that failed here, or an LLM
-   script), else — reuse switched off — the stored version. The prompt gets the
-   script and what it did; the answer is a new version (source `llm-augment`) or, when the LLM says the fix cannot be
-   a script (`no_script_reason`), edits applied directly (`llm-edit`).
+   are not used up: this run's last try of the case that had code (a stored version that failed here, or an
+   LLM script), else — reuse switched off — the stored version. The prompt gets the script and what it did;
+   the answer is a new version (source `llm-augment`) or, when the LLM says the fix cannot be a script
+   (`no_script_reason`), edits applied directly (`llm-edit`).
 3. **LLM new** (`new`) — nothing to extend, or the augments are used up (a fresh start): the LLM answers with
-   원인 · 해결 · edits · script (source `llm-new`, or
-   `llm-edit` without a script).
+   원인 · 해결 · edits · script (source `llm-new`, or `llm-edit` without a script).
 4. `script.max_llm_tries_per_case` (20) LLM asks (new + augment) used → nothing left: the decision engine BLOCKS the
-   case (`repeated_failure`). Both caps are plain: `max_augments_per_case: 0` never augments, `max_llm_tries_per_case:
-   0` never asks the LLM for the case (v2.1z, 2026-11-02; before, one counter `max_augments_per_case` (3) counted new
-   + augment together).
+   case (`repeated_failure`). Both caps are plain: `max_augments_per_case: 0` never augments,
+   `max_llm_tries_per_case: 0` never asks the LLM for the case.
 
 `ScriptStep.kb_line` is the KB search RESULT the loop logs for the case ("KB 탐색: 저장된 스크립트 없음 (처음 보는
 케이스) → LLM 에 새 수정 요청", "KB 탐색: 저장된 스크립트 v2 (proven, 성공 3 / 실패 0, 프로젝트 2) → 실행"; the phrase
-is the store's `describe`): a first project must never read as a KB hit (company feedback 7).
+is the store's `describe`).
 
 Pure bookkeeping over the case's earlier attempts in this run (`FixAttempt.script_*`) and the case store (`kb.cases`,
-None = no KB): the decision engine calls it to decide SCRIPT vs BLOCKED, the fix loop executes the step it returns. A
-store problem is logged and treated as "nothing stored" — it never stops the loop.
+None = no KB).
 """
 from __future__ import annotations
 
@@ -57,8 +58,8 @@ from sbmig.core.models import DecisionKind, ErrorCluster, FixAttempt
 
 log = logging.getLogger("sbmig.triage")
 
-LLM_MODES = ("new", "augment")              # script modes that ask the LLM (reuse runs a stored version)
-SCOPE_FULL = "full"                         # a stored version's scope "" (written before scopes) counts as full
+LLM_MODES = ("new", "augment")              # LLM을 호출하는 단계. 재사용은 저장된 버전을 실행한다
+SCOPE_FULL = "full"                         # 범위가 빈 저장 버전은 범위를 기록하기 전의 것이므로 full로 본다
 # 차단 정책의 LLM 실패 횟수와 다음 저장 버전으로 넘어갈지 판단할 때 실패로 보는 결과. decide.py도 사용한다
 FAILED_OUTCOMES = frozenset({"no_change", "regressed", "reverted", "apply_failed", "inconclusive"})
 
@@ -66,23 +67,21 @@ FAILED_OUTCOMES = frozenset({"no_change", "regressed", "reverted", "apply_failed
 @dataclass
 class ScriptStep:
     """케이스의 다음 단계를 담는 데이터 클래스.
-    ``mode``가 None이면 케이스별 한도에 도달해 BLOCKED로 처리한다.
-
-    The next step of a case. `mode` None = the per-case limits are reached (→ BLOCKED)."""
+    ``mode``가 None이면 케이스별 한도에 도달해 BLOCKED로 처리한다."""
     case_id: str
     mode: Optional[str] = None                      # reuse | augment | new | None
-    version: int = 0                                # reuse: the stored version to run; augment from the store: base
-    code: str = ""                                  # reuse: its code; augment from the store: the base code
-    meta: Any = None                                # reuse / augment from the store: the stored CaseScript
-    base_attempt: Optional[FixAttempt] = None       # augment: this run's try it extends
-    llm_used: int = 0                               # LLM asks already made for the case in this run (new + augment)
-    llm_limit: int = 0                              # the case's LLM ask cap (script.max_llm_tries_per_case)
-    stored_used: int = 0                            # stored versions already run for the case in this run
-    augments_used: int = 0                          # augment requests already made (escalation model from the 2nd)
-    augment_limit: int = 0                          # the case's augment cap (script.max_augments_per_case)
-    why: str = ""                                   # rationale (decision text, English)
-    kb_line: str = ""                               # "KB 탐색: …" — the KB search result for the log
-    kb_found: str = ""                              # what the KB search found ("저장된 스크립트 없음", "저장본 v2 (…)")
+    version: int = 0                                # 재사용할 저장 버전, 저장본을 보강하면 그 바탕 버전
+    code: str = ""                                  # 그 버전의 코드
+    meta: Any = None                                # 그 버전의 CaseScript
+    base_attempt: Optional[FixAttempt] = None       # 보강이 이어받는 이번 실행의 시도
+    llm_used: int = 0                               # 이번 실행에서 이 케이스에 한 LLM 요청 수(신규 + 보강)
+    llm_limit: int = 0                              # 케이스의 LLM 요청 한도(script.max_llm_tries_per_case)
+    stored_used: int = 0                            # 이번 실행에서 이미 실행한 저장 버전 수
+    augments_used: int = 0                          # 이미 한 보강 요청 수. 두 번째부터 상위 모델을 쓴다
+    augment_limit: int = 0                          # 케이스의 보강 한도(script.max_augments_per_case)
+    why: str = ""                                   # 결정 근거 문장(영어)
+    kb_line: str = ""                               # 로그에 남길 "KB 탐색: …" 줄
+    kb_found: str = ""                              # KB 탐색이 찾은 것("저장된 스크립트 없음", "저장본 v2 (…)")
 
     @property
     def needs_llm(self) -> bool:
@@ -91,9 +90,7 @@ class ScriptStep:
 
     @property
     def base_version(self) -> int:
-        """보강이 이어받는 버전을 반환한다. 0은 이번 실행에서 만들어 아직 저장하지 않은 스크립트다.
-
-        The version an augment extends (0 = an unstored script of this run)."""
+        """보강이 이어받는 버전을 반환한다. 0은 이번 실행에서 만들어 아직 저장하지 않은 스크립트다."""
         if self.base_attempt is not None:
             return int(self.base_attempt.script_version or 0)
         return int(getattr(self.meta, "version", 0) or 0) if self.meta is not None else 0
@@ -120,9 +117,10 @@ def _scope(value: Any) -> str:
 
 def asking_scope(store: Any, scope: Optional[str] = None) -> Optional[str]:
     """재사용할 버전을 고를 실행의 이관 범위를 반환한다. 알 수 없으면 None을 반환한다.
+    ``scope``가 없으면 저장소의 ``run_scope``를 쓴다.
 
-    The asking run's scope: `scope` when given, else the store's `run_scope` (the fix loop sets it on its
-    `CaseScripts` adapter: a string or a callable returning one); None = not known (the store's own `best` order)."""
+    `run_scope` is set by the fix loop on its `CaseScripts` adapter: a string or a callable returning one.
+    None = the store's own `best` order."""
     if isinstance(scope, str):
         return _scope(scope)
     rs = getattr(store, "run_scope", None) if store is not None else None
@@ -139,12 +137,9 @@ def stored_best(store: Any, case_id: str, scope: Optional[str] = None) -> Option
     ``scope``가 있으면 같은 범위의 버전을 먼저 고른다.
     비멱등이나 왕복(``round_trip``)으로 표시된 버전이면 다음 저장 버전을 쓴다.
 
-    (CaseScript, code) from `store.best(case_id)` (a `CaseScripts` adapter or E1's `CaseStore`); None = nothing
-    stored or the store failed (logged). v2.1y: a `non_idempotent` best (a store that does not skip it) → the next
-    stored version (`stored_next`). v2.1z-ap: with `scope` (the asking run's) and a `best` answer (None stays None:
+    `store` = a `CaseScripts` adapter or a `CaseStore`. With `scope` and a `best` answer (None stays None:
     nothing usable, or a case id held by another signature), the order is `stored_next`'s (same scope, proven,
-    version) over the case's scripts; a store that cannot list them keeps `best`'s answer. v2.1z-ca: a best marked
-    `round_trip` (it took part in a round trip with another case) is skipped like a `non_idempotent` one."""
+    version); a store that cannot list the scripts keeps `best`'s answer."""
     fn = getattr(store, "best", None) if store is not None else None
     if not callable(fn) or not case_id:
         return None
@@ -177,10 +172,7 @@ def stored_best(store: Any, case_id: str, scope: Optional[str] = None) -> Option
 
 def _stored_scripts(store: Any, case_id: str) -> list[Any]:
     """케이스의 저장된 스크립트 메타 목록을 반환한다.
-    ``find(case_id).scripts``가 없으면 ``scripts(case_id)``를 쓰고, 읽지 못하면 빈 리스트를 반환한다.
-
-    The case's stored CaseScripts: `find(case_id).scripts` (CaseStore and the loop's CaseScripts adapter alike),
-    else `scripts(case_id)`; [] when the store cannot say (logged)."""
+    ``find(case_id).scripts``가 없으면 ``scripts(case_id)``를 쓰고, 읽지 못하면 빈 리스트를 반환한다."""
     try:
         find = getattr(store, "find", None)
         if callable(find):
@@ -201,13 +193,9 @@ def stored_next(store: Any, case_id: str, skip: Iterable[int], scope: Optional[s
     순서는 ``best``와 같이 proven 최신, unverified 최신 순이며 retired, 비멱등, 왕복, 빈 코드 버전은 건너뛴다.
     ``scope``가 있으면 같은 범위의 버전을 모두 먼저 보고, 다른 범위의 버전은 실행마다 하나까지만 고른다.
 
-    The next stored version not in `skip` (the versions this run already ran), in `best`'s order: proven newest,
-    then unverified newest; retired ones, `non_idempotent` ones (v2.1y), `round_trip` ones (v2.1z-ca) and versions
-    without code never. None =
-    nothing left (A14). v2.1z-ap: with `scope` (the asking run's), rank = (same scope, proven, version): every
-    version of the run's scope comes first, and a version of the other scope is picked only when none of the run's
-    scope is left and no other-scope version is in `skip` yet (one per case and run, within `script.reuse_versions`).
-    A version's `scope` "" counts as `full`."""
+    With `scope`, rank = (same scope, proven, version); a version of the other scope is picked only when none
+    of the run's scope is left and no other-scope version is in `skip` yet (one per case and run, within
+    `script.reuse_versions`). A version's `scope` "" counts as `full`."""
     if store is None or not case_id:
         return None
     done = {int(v) for v in skip}
@@ -243,10 +231,7 @@ NOTHING_STORED = "저장된 스크립트 없음 (처음 보는 케이스)"
 
 def describe_stored(meta: Any, scope: Optional[str] = None) -> str:
     """저장된 스크립트 설명 구절(``저장된 스크립트 v2 (proven, 성공 3 / 실패 0, 프로젝트 2)``)을 만든다.
-    ``scope``와 범위가 다른 버전이면 그 범위를 붙인다.
-
-    '저장된 스크립트 v2 (proven, 성공 3 / 실패 0, 프로젝트 2)' — the phrase of `CaseStore.describe`; v2.1z-ap: a
-    version of another scope than `scope` ends with `, 다른 범위: full`."""
+    ``scope``와 범위가 다른 버전이면 ``, 다른 범위: full``처럼 그 범위를 붙인다. ``CaseStore.describe``와 같은 구절이다."""
     own = _scope(getattr(meta, "scope", ""))
     other = f", 다른 범위: {own}" if scope is not None and own != _scope(scope) else ""
     return (f"저장된 스크립트 v{getattr(meta, 'version', '?')} ({getattr(meta, 'status', '?')}, 성공 "
@@ -256,11 +241,8 @@ def describe_stored(meta: Any, scope: Optional[str] = None) -> str:
 
 def kb_found(store: Any, case_id: str, best: Optional[tuple[Any, str]], scope: Optional[str] = None) -> str:
     """KB 탐색이 찾은 것을 한 구절로 만든다. 저장소에 ``describe(case_id)``가 있으면 그것을 쓴다.
-    실행 범위를 알고 고른 버전이 있으면 그 버전으로 직접 만든다.
-
-    What the KB search found, one phrase: the store's own `describe(case_id)` when it has one, else built here.
-    v2.1z-ap: with the asking run's `scope` and a chosen version that has a recorded scope, the phrase names THAT
-    version (the store's `describe` ranks without the scope)."""
+    실행 범위를 알고 고른 버전에 범위가 기록돼 있으면 그 버전으로 직접 만든다.
+    저장소의 ``describe``는 범위 없이 순위를 매기기 때문이다."""
     sc = getattr(best[0], "scope", "") if best is not None else ""
     if scope is not None and isinstance(sc, str) and sc.strip():
         return describe_stored(best[0], scope)
@@ -288,10 +270,8 @@ def resolved_elsewhere(store: Any, case_id: str, elsewhere: Iterable[FixAttempt]
     """다른 위치에서 저장 버전을 실행해 케이스를 해결한 가장 최근 시도와 그 버전의 (메타, 코드)를 반환한다.
     저장소에서 그 버전이 retired, 비멱등, 왕복으로 표시됐거나 코드가 없으면 None을 반환한다.
 
-    The newest attempt of `elsewhere` (the case's attempts made at other places) that ended `improved` /
-    `build_ok` by RUNNING a stored version (version > 0, a script result, no edits applied), with that version's
-    (CaseScript, code) read from the store. None when there is none, or when the store says the version is
-    `retired`, `non_idempotent` or `round_trip`, or its code is gone (INTERFACES "v2.1z-cd" rule 2)."""
+    "Resolved by running a stored version" = outcome improved / build_ok, version > 0, a script result, no
+    edits applied (docs/INTERFACES.md "v2.1z-cd" rule 2)."""
     if store is None or not case_id:
         return None
     ok = [a for a in elsewhere
@@ -328,18 +308,11 @@ def plan_script_step(cluster: ErrorCluster, previous: Iterable[FixAttempt], stor
     ``llm_total``은 모든 위치에서 이 케이스에 한 LLM 요청 수다. ``script.max_llm_tries_per_case``의 두 배에 도달하면
     LLM을 호출할 단계 대신 차단한다. None이면 알 수 없으므로 제한하지 않는다.
 
-    The case's next step (see the module doc). `previous` = this run's scored tries on the same case (the loop
-    passes `_previous(cluster)`: no pending ones, no cooled-down transport failures). v2.1z: `llm_used` counts new +
-    augment against `script.max_llm_tries_per_case`, `augments_used` the augments against `script.max_augments_per_case`.
-    v2.1z-ap: `scope` = the asking run's scope (`full` / `jdk-jakarta`; None = the store's `run_scope`, which the fix
-    loop sets on its adapter): stored versions are ranked (same scope, proven, version) and at most one version of
-    the other scope runs per case and run (`stored_next`). v2.1z-cd: the fix loop passes the attempts made HERE (at
-    the places of the case's errors now) as `previous` and the case's attempts made at other places whose run of a
-    stored version resolved them as `elsewhere`; with nothing made here, the newest of those versions runs again
-    first (a `reuse` step, ahead of the store's `best`; `resolved_elsewhere`), unless `script.reuse` is off.
-    `llm_total` = the case's LLM asks in this run over EVERY place (None = unknown: no bound): a step that would ask
-    the LLM is replaced by the used-up-cap block (mode None → `repeated_failure`) once it reaches twice
-    `script.max_llm_tries_per_case` (rule 4); a rerun or a stored reuse costs no ask and still runs."""
+    The loop passes `_previous(cluster)` as `previous`: no pending ones, no cooled-down transport failures.
+    `llm_used` counts new + augment against `script.max_llm_tries_per_case`, `augments_used` the augments
+    against `script.max_augments_per_case`. `scope` None = the store's `run_scope`. The `elsewhere` rerun is
+    skipped when `script.reuse` is off. The `llm_total` bound blocks only a step that would ask the LLM (mode
+    None → `repeated_failure`); a rerun or a stored reuse costs no ask and still runs."""
     sc = getattr(cfg, "script", None)
     previous = list(previous)
     reuse_on = bool(getattr(sc, "reuse", True))
@@ -347,7 +320,7 @@ def plan_script_step(cluster: ErrorCluster, previous: Iterable[FixAttempt], stor
     max_llm = max(0, int(getattr(sc, "max_llm_tries_per_case", 20)))
     max_aug = max(0, int(getattr(sc, "max_augments_per_case", 15)))
     case_id = cluster_case_id(cluster)
-    tried = [a for a in script_attempts(previous) if a.outcome != "pending"]     # pending proves nothing yet
+    tried = [a for a in script_attempts(previous) if a.outcome != "pending"]     # pending은 아직 결과가 없다
     tried_versions = {int(a.script_version) for a in tried if a.script_version}
     llm_used = sum(1 for a in tried if a.script_mode in LLM_MODES)
     stored_used = sum(1 for a in tried if a.script_mode == "reuse")
@@ -363,7 +336,6 @@ def plan_script_step(cluster: ErrorCluster, previous: Iterable[FixAttempt], stor
     stored_part = stored_text + (f" — 이번 실행에서 v{failed_here[-1].script_version} 실패" if failed_here else "")
 
     # 0. 여기서 한 시도가 없으면 다른 위치에서 이 케이스를 해결한 이번 실행의 버전을 LLM 없이 다시 실행한다
-    # 0. nothing made here: the version whose run resolved the case at another place in this run runs again
     prev_all = [a for a in previous if a.outcome != "pending"]
     if reuse_on and not prev_all and elsewhere:
         got = resolved_elsewhere(store, case_id, elsewhere)
@@ -377,7 +349,7 @@ def plan_script_step(cluster: ErrorCluster, previous: Iterable[FixAttempt], stor
             step.kb_line = f"KB 탐색: 이번 실행의 v{v} ({a.id}, {there}에서 해결) → {here}에 다시 실행"
             return step
 
-    # 1. the stored script: a version not run in this run yet (no LLM call)
+    # 1. 이번 실행에서 아직 실행하지 않은 저장 버전을 LLM 없이 실행한다
     if reuse_on and best is not None and stored_used < reuse_n:
         meta, code = best
         v = int(getattr(meta, "version", 0) or 0)
@@ -404,9 +376,9 @@ def plan_script_step(cluster: ErrorCluster, previous: Iterable[FixAttempt], stor
                                 f"({stored_used + 1}/{reuse_n})")
                 return step
 
-    # 2./3. the LLM: the total cap first (new + augment)
-    # 모든 위치를 합친 LLM 요청이 케이스 한도의 두 배에 도달하면 위치가 바뀌어도 더 묻지 않는다
-    # rule 4: the bound across places (asks switched off, max_llm 0, keep their own line below)
+    # 2, 3. LLM 단계. 먼저 신규와 보강을 합친 한도를 본다
+    # 모든 위치를 합친 LLM 요청이 케이스 한도의 두 배에 도달하면 위치가 바뀌어도 더 요청하지 않는다
+    # max_llm 0은 아래에서 따로 기록한다
     bound = 2 * max_llm
     if max_llm > 0 and llm_total is not None and int(llm_total) >= bound:
         step.why = (f"{int(llm_total)} LLM tr{'y' if int(llm_total) == 1 else 'ies'} over every place did not resolve "
@@ -427,9 +399,8 @@ def plan_script_step(cluster: ErrorCluster, previous: Iterable[FixAttempt], stor
         step.kb_line = (f"KB 탐색: {stored_part} → 한도 도달 (저장본 {len(failed_here)} + LLM {llm_used}회) → "
                         "blocked")
         return step
-    # v2.1z-n: a case the LLM fixes by DIRECT EDITS (<no_script> + <edits>: project code — an EOL-library replacement, a class
-    # rewritten by hand; nothing another project could reuse) gets script.max_edit_tries_per_case asks, not the script ladder:
-    # every edit attempt is a fresh ask that already carries the previous ones, and the company run burned 20 asks that way
+    # LLM이 스크립트 없이 직접 수정(<no_script> + <edits>)만 하는 케이스는 다른 프로젝트가 재사용할 것이 없다.
+    # 매번 이전 시도를 담은 새 요청이므로 script.max_edit_tries_per_case번까지만 요청한다
     max_edit = max(0, int(getattr(sc, "max_edit_tries_per_case", 4) or 0))
     llm_tried = [a for a in tried if a.script_mode in LLM_MODES]
     edit_tries = [a for a in llm_tried if not (getattr(a, "script_code", "") or "").strip()
@@ -454,7 +425,7 @@ def plan_script_step(cluster: ErrorCluster, previous: Iterable[FixAttempt], stor
         base = (f"v{base_att.script_version}" if base_att.script_version else "이번 실행의 스크립트")
         step.kb_line = f"KB 탐색: {stored_part} → LLM 보강 요청 ({nth}, {aug_nth}, {base} 기준)"
         return step
-    if base_att is None and best is not None and can_augment:   # reuse switched off: extend the stored version
+    if base_att is None and best is not None and can_augment:   # 재사용이 꺼져 있으면 저장 버전을 보강한다
         step.mode, step.meta, step.code = "augment", best[0], best[1]
         step.version = int(getattr(best[0], "version", 0) or 0)
         step.why = (f"augment {nth} (augment {augments_used + 1}/{max_aug}) of case {case_id}: extend stored "
