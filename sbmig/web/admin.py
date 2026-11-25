@@ -15,7 +15,10 @@ and a download of all logs). Routes (all under /admin; `GET /admin` itself, the 
                                        every run, `<run id>/<file>`, deflated, built in a local temp file and streamed
                                        | 409 busy | 413 too_large | 507 no_space
     GET  /admin/api/logs/check         the same checks without building: {"ok": true, "bytes", "runs", "skipped"}
-    GET  /admin/api/runs/{id}/logs.zip the same for one run (+ /runs/{id}/logs/check)
+    GET  /admin/api/runs/{id}/logs.zip one run, with its diagnostic files too (v2.1z-ch: `logs/`, reports, error
+                                       lists, status files, the remediation's text files; `plan_run_logs_zip`)
+                                       (+ /runs/{id}/logs/check, which may undercount the files the copy
+                                       leaves out: it reads no file)
     GET  /admin/api/runs/{id}/source   the ZIP the person uploaded for that run, streamed unchanged (v2.1z-bb) | 400 bad
                                        run id | 404 unknown run | 404 source not available (+ /runs/{id}/source/check)
 
@@ -40,6 +43,7 @@ import os
 import re
 import secrets
 import shutil
+import stat
 import tempfile
 import threading
 import time
@@ -56,9 +60,12 @@ from starlette.concurrency import run_in_threadpool
 from starlette.responses import StreamingResponse
 from starlette.types import Receive, Scope, Send
 
+from sbmig.core import scrub
 from sbmig.core.models import merge_model_names, real_model_name
 
+from . import redact
 from .jsonsafe import FiniteJSONResponse
+from .redact import REMEDIATION_DIR, TEXT_SUFFIXES
 from .runs import FLOW_REMEDIATION, RUN_ID_RE, SOURCE_ZIP
 
 log = logging.getLogger("sbmig.web.admin")
@@ -79,7 +86,7 @@ FAIL_DELAY_S = 1.0
 MAX_PASSWORD_CHARS = 1024
 MAX_SESSIONS = 1000
 
-# 로그 ZIP에 넣는 파일이다. 원본 LLM 기록, result.zip, Maven 빌드 로그, report.md는 넣지 않는다
+# 전체 실행 ZIP에 넣는 파일이다. 실행 하나의 ZIP은 여기에 진단 파일을 더한다(plan_run_logs_zip)
 LOG_MEMBERS = ("sbmig.log", "journal.jsonl", "control/request.json", "remediation/remediation.log")
 # 기록할 때 마스킹되지 않으므로 그 실행의 조치를 쓰는 곳이 하나도 없을 때만 넣는다
 FINAL_PASS_MEMBERS = ("remediation/remediation.log",)
@@ -87,7 +94,7 @@ LEGACY_TMP_DIR = "_admin"            # 예전 임시 폴더(<out root>/_admin)�
 ZIP_TMP_PREFIX = "sbmig-logs-"
 ZIP_TMP_SUFFIX = ".zip"
 ZIP_TMP_NAME = re.compile(r"^sbmig-logs-[A-Za-z0-9_-]+\.zip$")
-ZIP_TOTAL_LIMIT = 2 * 1024 ** 3      # 압축 전 합계가 이보다 크면 413으로 거절한다
+ZIP_TOTAL_LIMIT = 2 * 1024 ** 3      # 압축 전 합계 한도다. 전체 실행 ZIP은 413으로 거절하고 실행 하나의 ZIP은 정한 순서대로 뺀다
 ZIP_FILE_LIMIT = 512 * 1024 ** 2     # 이보다 큰 파일 하나는 넣지 않고 SKIPPED.txt에 적는다
 ZIP_FREE_FLOOR = 1024 ** 3           # 임시 폴더에 최악의 경우를 쓰고도 이만큼은 남아야 한다
 ZIP_CHUNK = 64 * 1024
@@ -956,15 +963,31 @@ def remove_legacy_tmp(out_root: Path) -> int:
 
 class ZipPlan:
     """ZIP에 넣을 항목과 크기를 미리 정리한 계획. 만들기 전에 크기 한도와 남은 공간을 이것으로 확인한다.
+    실행 하나의 계획은 뺀 파일과 그 이유(``left_out``)를 함께 담고, 복사할 때 실행 폴더 밖을 가리키는 항목은 넣지 않는다.
+    ``text_checked``에 있는 항목은 복사할 때 줄마다 마스킹하고, ``identity``로 계획한 파일인지 다시 확인한다.
 
     The members of one archive with the size each had when planned (the bound of its copy), the files skipped for
-    `ZIP_FILE_LIMIT`, the uncompressed total and the number of runs with a member."""
+    `ZIP_FILE_LIMIT`, the uncompressed total and the number of runs with a member. The plan of one run
+    (`plan_run_logs_zip`) also has `left_out` = (archive name, English reason) of every file it leaves out (then
+    `skipped` stays empty and `SKIPPED.txt` lists the reasons), `root` = the run folder: at copy time a member that
+    is a link or resolves outside it is not copied, `identity` = arc -> (`st_dev`, `st_ino`) from the planning
+    `lstat` (the opened file must match it), and `text_checked` = the archive names of the members redacted line
+    by line while copied (every member but `sbmig.log`, `journal.jsonl` and `control/request.json`). See
+    `write_logs_zip`. The archive of all runs leaves all four empty, as before."""
 
     def __init__(self) -> None:
         self.members: list[tuple[str, Path, int]] = []
         self.skipped: list[tuple[str, int]] = []
+        self.left_out: list[tuple[str, str]] = []
+        self.root: Path | None = None
+        self.text_checked: set[str] = set()
+        self.identity: dict[str, tuple[int, int]] = {}
         self.total = 0
         self.runs = 0
+
+    def skipped_count(self) -> int:
+        """``SKIPPED.txt``에 적힐 파일 수를 반환한다."""
+        return len(self.skipped) + len(self.left_out)
 
     def worst_case(self) -> int:
         """압축이 전혀 안 될 때의 ZIP 크기 추정값을 반환한다.
@@ -998,6 +1021,298 @@ def plan_logs_zip(run_dirs: Iterable[Path], withheld: Callable[[str], bool] | No
             took = True
         plan.runs += took
     return plan
+
+
+# 실행 하나의 ZIP에 더 넣는 진단 파일이다. 마지막 마스킹이 다시 쓰는 텍스트 확장자만 넣는다(redact.TEXT_SUFFIXES)
+RUN_ZIP_MAX_FILES = 2000             # 실행 하나의 ZIP에 넣는 파일 수 한도다. 넘으면 logs/의 번호가 낮은 파일부터 뺀다
+RUN_ZIP_SCAN_LIMIT = 20000           # 계획할 때 보는 폴더 항목 수 한도다. logs/는 그 절반까지만 쓴다
+RUN_LINE_LIMIT = 1024 * 1024         # 줄 단위로 마스킹하는 줄 길이 한도다. 더 긴 줄이 있는 파일은 넣지 않는다
+RUN_WHOLE_REDACT_BYTES = 8 * 1024 * 1024   # 이 크기 이하의 파일은 마지막 마스킹처럼 통째로 마스킹한다
+# URL 사용자 정보를 찾는 redact의 정규식은 영문자와 숫자가 길게 이어지면 제곱으로 느려진다. 더 긴 덩어리가 있는 파일은 넣지 않는다
+RUN_TOKEN_LIMIT = 4096
+_TOKEN_RUN = re.compile(rb"[A-Za-z0-9+.\-]+")
+RUN_LIVE_MEMBERS = ("sbmig.log", "journal.jsonl")          # 기록할 때 마스킹되므로 언제나 넣는다
+RUN_REQUEST = "control/request.json"                       # 접수 때 한 번 쓰고 이름과 해시만 담으므로 지금처럼 언제나 넣는다
+RUN_TEXT_SUFFIXES = TEXT_SUFFIXES
+# 링크를 따라가지 않고, 이름이 같은 폴더는 내려가지 않는다. 프로젝트 사본, 빌드 산출물, LLM 원문 기록이다
+RUN_PRUNE_DIRS = frozenset({"accepted", "original", "candidate", "applied", "fixed", "tree", "target", "project",
+                            "codediff", "merge-conflicts", "llm-records"})
+# LLM에 보낸 요청 원문이다(구조 검토의 user 프롬프트, llm.record_dir의 기록). 대소문자는 가리지 않는다
+RUN_LLM_RECORD = re.compile(r"^(?:review-input\.md|llm-\d+\.json)$", re.IGNORECASE)
+_LOG_NUMBER = re.compile(r"^(\d+)-")
+REASON_PENDING = "not redacted yet: the run's end-of-run redaction pass is not over or a remediation resume is active"
+REASON_NOT_TEXT = "not a text file"
+REASON_REPLACED = "not the file that was planned (it was replaced after planning)"
+REASON_NAME = "the file name is not UTF-8"
+# 마지막 마스킹(redact.redact_file)이 바이너리로 보고 건너뛰는 기준과 같다. 앞 8 KiB에 NUL 바이트가 있으면 바이너리다
+BINARY_HEAD_BYTES = 8192
+# 계획이 폴더를 읽을 때 쓰는 함수다. 테스트가 이 모듈의 계획이 읽는 폴더만 셀 수 있도록 이름을 따로 둔다
+_scandir = os.scandir
+
+
+def _binary_head(head: bytes) -> bool:
+    # redact.redact_file과 같은 판정이다. 바뀌면 test_v21zch_admin_run_logs의 일치 테스트가 실패한다
+    return b"\x00" in head[:BINARY_HEAD_BYTES]
+
+
+class _LeftOut(Exception):
+    # 복사할 때 넣지 않기로 한 항목이다. 이유는 SKIPPED.txt에 그대로 적는다
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
+def _reason_large(size: int) -> str:
+    return f"too large ({size} bytes; the limit is {ZIP_FILE_LIMIT} bytes)"
+
+
+def _reason_cap() -> str:
+    return f"over the per-run file limit ({RUN_ZIP_MAX_FILES} files)"
+
+
+def _reason_total() -> str:
+    return f"over the archive's total size limit ({ZIP_TOTAL_LIMIT} bytes)"
+
+
+def _reason_links(n: int) -> str:
+    return f"a hard link (the file has {n} names)"
+
+
+def _reason_long() -> str:
+    return f"a line longer than {RUN_LINE_LIMIT} bytes; it cannot be redacted line by line"
+
+
+def _reason_token() -> str:
+    return (f"holds a run of more than {RUN_TOKEN_LIMIT} letters and digits; "
+            "redacting it would take too long")
+
+
+def _reason_scan(where: str) -> str:
+    return (f"the listing of {where} is not complete (at most {RUN_ZIP_SCAN_LIMIT} folder entries are listed, "
+            f"{RUN_ZIP_SCAN_LIMIT // 2} of them under logs/); files here may be missing")
+
+
+def _reason_unreadable(e: OSError) -> str:
+    return f"could not be read ({type(e).__name__})"
+
+
+def _utf8_name(arc: str) -> bool:
+    try:
+        arc.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
+def _text_name(name: str) -> bool:
+    # 숨은 파일, 마스킹하지 않는 확장자, LLM 원문 기록은 넣지 않는다
+    if name.startswith(".") or RUN_LLM_RECORD.match(name):
+        return False
+    return os.path.splitext(name)[1].lower() in RUN_TEXT_SUFFIXES
+
+
+def _pruned(name: str) -> bool:
+    # 숨은 폴더와 프로젝트 사본, 산출물 폴더는 들어가지 않는다(대소문자는 가리지 않는다)
+    return name.startswith(".") or name.lower() in RUN_PRUNE_DIRS
+
+
+class _Scan:
+    # 폴더 항목 방문 수를 센다. 한도에 닿아 다 읽지 못한 폴더와 읽을 수 없는 폴더는 이유와 함께 stopped에 적는다
+    def __init__(self, limit: int) -> None:
+        self.left = limit
+        self.stopped: list[tuple[str, str]] = []
+
+    def entries(self, d: str, rel: str, part: list[int] | None = None) -> list[os.DirEntry]:
+        def spent() -> bool:
+            return self.left <= 0 or (part is not None and part[0] <= 0)
+
+        out: list[os.DirEntry] = []
+        if spent():
+            self.stopped.append((rel, _reason_scan(rel)))     # 한도가 남지 않아 읽지 않은 폴더다
+            return out
+        try:
+            with _scandir(d) as it:
+                for e in it:
+                    if spent():
+                        self.stopped.append((rel, _reason_scan(rel)))
+                        break
+                    self.left -= 1
+                    if part is not None:
+                        part[0] -= 1
+                    out.append(e)
+        except OSError as e:
+            self.stopped.append((rel, _reason_unreadable(e)))
+            return []
+        return sorted(out, key=lambda e: e.name)
+
+
+def _walk_text(run_dir: Path, top: str, scan: _Scan, part: list[int] | None = None) -> list[str]:
+    # run_dir/top 아래의 텍스트 파일을 실행 폴더 기준 경로로 반환한다.
+    # 링크는 따라가지 않고 RUN_PRUNE_DIRS와 숨은 폴더로는 내려가지 않는다
+    out: list[str] = []
+    stack = [top]
+    while stack:
+        rel = stack.pop()
+        subdirs = []
+        for e in scan.entries(os.path.join(str(run_dir), *rel.split("/")), rel, part):
+            try:
+                if e.is_symlink():
+                    continue
+                if e.is_dir(follow_symlinks=False):
+                    if not _pruned(e.name):
+                        subdirs.append(f"{rel}/{e.name}")
+                elif e.is_file(follow_symlinks=False) and _text_name(e.name):
+                    out.append(f"{rel}/{e.name}")
+            except OSError:
+                continue
+        stack.extend(reversed(subdirs))
+    return out
+
+
+def run_diagnostic_files(run_dir: Path, scan_limit: int | None = None) -> tuple[list[str], list[tuple[str, str]]]:
+    """실행 하나의 ZIP에 넣을 수 있는 파일의 실행 폴더 기준 경로와, 다 읽지 못한 폴더와 그 이유를 반환한다.
+    파일은 읽지 않고, 링크는 따라가지 않으며, 프로젝트 사본과 결과 ZIP, diff, LLM 원문 기록은 넣지 않는다.
+    폴더 항목은 ``RUN_ZIP_SCAN_LIMIT``까지 읽고, logs/는 그 절반까지만 읽는다.
+
+    The candidate members of one run (run-folder-relative, forward slashes), in this order: `sbmig.log`,
+    `journal.jsonl`, `control/request.json`, `remediation/remediation.log`; the other text files at the top of the
+    run folder; every text file under `logs/`; the text files under `remediation/` outside its project trees
+    (`accepted/`, `original/`, `baseline/tree/`, a round's `candidate/` / `applied/`, a fix loop's `tree/` /
+    `fixed/`). A text file = a suffix of `redact.TEXT_SUFFIXES` (what the end-of-run pass rewrites; `.patch` is left
+    out on purpose: diffs of source), not hidden, not an LLM request record (`review-input.md`, `llm-<n>.json`);
+    names and pruned folders compare without regard to case. `control/` holds nothing else that is shipped.
+    Nothing is opened; entries are listed with `admin._scandir` and never followed through a link. Budget: at most
+    `scan_limit` (`RUN_ZIP_SCAN_LIMIT`) entries in all, of which `logs/` may use half, so `remediation/` is always
+    reached. The second value lists (folder, English reason) for every folder not listed completely: the one
+    where a budget ran out, each folder known (pushed for a visit) but not listed after that, and each folder
+    whose listing raised `OSError` (`could not be read (<error type>)`)."""
+    run_dir = Path(run_dir)
+    limit = RUN_ZIP_SCAN_LIMIT if scan_limit is None else scan_limit
+    scan = _Scan(limit)
+    fixed = [*RUN_LIVE_MEMBERS, RUN_REQUEST, *FINAL_PASS_MEMBERS]
+    out = [rel for rel in fixed if safe_file(run_dir, rel) is not None]
+    tops = scan.entries(str(run_dir), ".")
+    walk: list[str] = []
+    for e in tops:
+        try:
+            if e.is_symlink():
+                continue
+            if e.is_file(follow_symlinks=False):
+                if e.name not in fixed and _text_name(e.name):
+                    out.append(e.name)
+            elif e.is_dir(follow_symlinks=False) and e.name in ("logs", REMEDIATION_DIR):
+                walk.append(e.name)
+        except OSError:
+            continue
+    for name in sorted(walk):
+        part = [limit // 2] if name == "logs" else None
+        out += [rel for rel in _walk_text(run_dir, name, scan, part) if rel not in fixed]
+    return out, scan.stopped
+
+
+def _drop_order(rels: list[str], keep: set[str]) -> list[str]:
+    # 한도를 넘을 때 뺄 순서다. logs/ 바로 아래의 번호가 낮은 파일, 번호 없는 logs/ 파일, 나머지의 뒤쪽 순이다
+    numbered, plain, rest = [], [], []
+    for rel in rels:
+        if rel in keep:
+            continue
+        if rel.startswith("logs/"):
+            m = _LOG_NUMBER.match(rel[5:]) if "/" not in rel[5:] else None
+            if m:
+                numbered.append((int(m.group(1)), rel))
+            else:
+                plain.append(rel)
+        else:
+            rest.append(rel)
+    return [r for _, r in sorted(numbered)] + sorted(plain) + list(reversed(rest))
+
+
+def plan_run_logs_zip(run_dir: Path, withheld: Callable[[str], bool] | None = None) -> ZipPlan:
+    """실행 하나의 ZIP 계획을 만든다. 로그 네 가지에 더해 logs/, 보고서, 오류 목록, 상태 파일, 조치의 진단 파일을 넣는다.
+    마지막 마스킹 전이거나 조치 재개가 진행 중이면 기록할 때 마스킹되는 두 로그와 request.json만 넣는다.
+    파일 수와 전체 크기 한도를 넘으면 정한 순서대로 빼고, 하드 링크와 UTF-8이 아닌 이름은 넣지 않는다.
+    뺀 파일은 모두 이유와 함께 ``left_out``에 둔다. 파일은 읽지 않고 크기는 ``lstat``으로만 구한다.
+
+    The per-run archive (`GET /admin/api/runs/{id}/logs.zip` and its check). Members: `run_diagnostic_files`. While
+    `withheld(run_id)` (the remediation API's rule: the migration's end-of-run redaction pass is still to come, or a
+    remediation resume is active) only `sbmig.log`, `journal.jsonl` and `control/request.json` are members and every
+    other candidate is named with `REASON_PENDING`. A run without `sbmig.log`, `journal.jsonl` and
+    `remediation/remediation.log` gives an empty plan (the README archive), as before. Per candidate: a name that is
+    not UTF-8, a hard link (`st_nlink` > 1) and a file over `ZIP_FILE_LIMIT` are named; one that vanished or is no
+    regular file is left out quietly. Then, in the drop order (`_drop_order`: the numbered files directly under
+    `logs/` lowest first, the other `logs/` files, the rest from the end; never the three always-in files): over
+    `RUN_ZIP_MAX_FILES` members, then over `ZIP_TOTAL_LIMIT` bytes (so `check_logs_zip` answers 413 only when the
+    always-in files alone are too big). `plan.identity[arc]` = (`st_dev`, `st_ino`) of the planned file, checked
+    after opening it for the copy. What the copy itself refuses (binary head, a line over `RUN_LINE_LIMIT`, a file
+    swapped after planning) is decided then, so the plan and the check do not count those."""
+    run_dir = Path(run_dir)
+    plan = ZipPlan()
+    plan.root = run_dir
+    rid = run_dir.name
+    if not any(safe_file(run_dir, rel) is not None for rel in (*RUN_LIVE_MEMBERS, *FINAL_PASS_MEMBERS)):
+        return plan                                   # 로그가 없는 실행은 지금처럼 README만 준다
+    pending = bool(withheld(rid)) if withheld is not None else False
+    rels, stopped = run_diagnostic_files(run_dir)
+    always = {*RUN_LIVE_MEMBERS, RUN_REQUEST}
+    eligible: dict[str, tuple[str, int, tuple[int, int]]] = {}
+    for rel in rels:
+        arc = f"{rid}/{rel}"
+        if pending and rel not in always:
+            plan.left_out.append((arc, REASON_PENDING))
+            continue
+        if not _utf8_name(arc):
+            plan.left_out.append((arc, REASON_NAME))
+            continue
+        try:
+            st = os.lstat(os.path.join(str(run_dir), *rel.split("/")))
+        except OSError:
+            continue
+        if not stat.S_ISREG(st.st_mode):
+            continue
+        if st.st_nlink > 1:
+            plan.left_out.append((arc, _reason_links(st.st_nlink)))
+            continue
+        if st.st_size > ZIP_FILE_LIMIT:
+            plan.left_out.append((arc, _reason_large(st.st_size)))
+            continue
+        eligible[rel] = (arc, st.st_size, (st.st_dev, st.st_ino))
+    # 파일 수 한도와 전체 크기 한도는 실제로 넣을 수 있는 파일에만 센다. 빼는 순서는 둘 다 같다
+    order = _drop_order(list(eligible), always)
+    dropped: dict[str, str] = {}
+    over = len(eligible) - RUN_ZIP_MAX_FILES
+    for rel in order[:max(over, 0)]:
+        dropped[rel] = _reason_cap()
+    total = sum(size for rel, (_, size, _) in eligible.items() if rel not in dropped)
+    for rel in order:
+        if total <= ZIP_TOTAL_LIMIT:
+            break
+        if rel not in dropped:
+            dropped[rel] = _reason_total()
+            total -= eligible[rel][1]
+    for rel, (arc, size, ident) in eligible.items():
+        if rel in dropped:
+            plan.left_out.append((arc, dropped[rel]))
+            continue
+        plan.members.append((arc, run_dir / rel, size))
+        plan.total += size
+        plan.identity[arc] = ident
+        if rel not in always:
+            plan.text_checked.add(arc)
+    for where, why in stopped:
+        plan.left_out.append((f"{rid}/{where}/" if where != "." else f"{rid}/", why))
+    plan.runs = 1 if plan.members else 0
+    return plan
+
+
+def _inside(root: Path, path: Path) -> bool:
+    # 복사하기 직전에 다시 확인한다. 링크이거나 실행 폴더 밖으로 풀리는 경로는 넣지 않는다
+    try:
+        if os.path.islink(path):
+            return False
+        real_root = os.path.realpath(root)
+        return os.path.commonpath([real_root, os.path.realpath(path)]) == real_root
+    except (OSError, ValueError):
+        return False
 
 
 def check_logs_zip(plan: ZipPlan, tmp_dir: Path | None = None) -> tuple[int, dict[str, Any]] | None:
@@ -1035,30 +1350,260 @@ def _copy_bounded(zf: zipfile.ZipFile, arc: str, path: Path, limit: int) -> None
                 left -= len(chunk)
 
 
+def _open_planned(path: Path, ident: tuple[int, int] | None):
+    # 계획한 파일을 링크를 따라가지 않고 연다. 일반 파일이 아니거나, 계획한 파일(장치, inode)이 아니거나,
+    # 이름이 둘 이상인 파일이면 닫고 _LeftOut을 던진다
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    src = os.fdopen(os.open(path, flags), "rb")
+    try:
+        st = os.fstat(src.fileno())
+        if not stat.S_ISREG(st.st_mode):
+            raise OSError("not a regular file any more")
+        if ident is not None and (st.st_dev, st.st_ino) != tuple(ident):
+            raise _LeftOut(REASON_REPLACED)
+        if st.st_nlink > 1:
+            raise _LeftOut(_reason_links(st.st_nlink))
+    except BaseException:
+        src.close()
+        raise
+    return src, st
+
+
+def _zip_info(arc: str, st: os.stat_result, size: int) -> zipfile.ZipInfo:
+    # ZipInfo.from_file과 같은 값을 열린 파일의 fstat으로 만든다(경로를 다시 찾지 않는다)
+    stamp = time.localtime(st.st_mtime)[:6]
+    info = zipfile.ZipInfo(arc, stamp if stamp[0] >= 1980 else (1980, 1, 1, 0, 0, 0))
+    info.external_attr = (st.st_mode & 0xFFFF) << 16
+    info.compress_type = zipfile.ZIP_DEFLATED
+    info.file_size = size                             # zip64 판단에 쓰고 실제 값은 zipfile이 다시 적는다
+    return info
+
+
+def _check_head(src) -> None:
+    # 앞 8 KiB에 NUL이 있으면 마지막 마스킹처럼 바이너리로 보고 넣지 않는다(계획 크기와 상관없이 본다)
+    if _binary_head(src.read(BINARY_HEAD_BYTES)):
+        raise _LeftOut(REASON_NOT_TEXT)
+    src.seek(0)
+
+
+def _token_runs(chunk: bytes, carry: int) -> int:
+    # 조각 안에서 영문자와 숫자가 이어진 가장 긴 길이를 본다. 한도를 넘으면 _LeftOut을 던지고, 조각 끝에서
+    # 이어지는 길이(다음 조각에 더할 값)를 반환한다. 정규식은 덩어리마다 한 번만 맞추므로 선형이다
+    end = 0
+    for m in _TOKEN_RUN.finditer(chunk):
+        n = m.end() - m.start() + (carry if m.start() == 0 else 0)
+        if n > RUN_TOKEN_LIMIT:
+            raise _LeftOut(_reason_token())
+        end = n if m.end() == len(chunk) else 0
+    return end if chunk else carry
+
+
+def _scan_lines(src, limit: int) -> None:
+    # 읽을 범위에 RUN_LINE_LIMIT보다 긴 줄이나 RUN_TOKEN_LIMIT보다 긴 영문자, 숫자 덩어리가 있으면
+    # _LeftOut을 던진다. 메모리는 조각 하나만 쓴다
+    run, left, carry = 0, limit, 0
+    while left > 0:
+        chunk = src.read(min(ZIP_CHUNK, left))
+        if not chunk:
+            break
+        left -= len(chunk)
+        carry = _token_runs(chunk, carry)
+        pos = 0
+        while True:
+            nl = chunk.find(b"\n", pos)
+            if nl < 0:
+                run += len(chunk) - pos
+                break
+            if run + nl - pos > RUN_LINE_LIMIT:
+                raise _LeftOut(_reason_long())
+            run, pos = 0, nl + 1
+        if run > RUN_LINE_LIMIT:
+            raise _LeftOut(_reason_long())
+    src.seek(0)
+
+
+def _grew(src) -> bool:
+    # 계획 크기까지 읽은 뒤 한 바이트를 더 읽어 본다. 나오면 파일이 그 사이 늘어난 것이다
+    return bool(src.read(1))
+
+
+def _copy_redacted(src, dst, limit: int, line: Callable[[bytes], bytes]) -> None:
+    # 계획 크기까지 읽은 바이트를 줄마다 마스킹해 쓴다. 미리 본 뒤 파일이 바뀌어 긴 줄이 나오면 그 줄은 버리고
+    # 원문 대신 표시 한 줄을 쓴다. 파일이 그 사이 늘어났으면 잘렸을 수 있는 마지막 줄은 넣지 않는다
+    buf = bytearray()
+    left = limit
+    skipping = False
+    while left > 0:
+        chunk = src.read(min(ZIP_CHUNK, left))
+        if not chunk:
+            break
+        left -= len(chunk)
+        buf += chunk
+        start = 0
+        while True:
+            nl = buf.find(b"\n", start)
+            if nl < 0:
+                break
+            if skipping:
+                skipping = False
+            else:
+                dst.write(line(bytes(buf[start:nl + 1])))
+            start = nl + 1
+        del buf[:start]
+        if len(buf) > RUN_LINE_LIMIT:
+            if not skipping:
+                dst.write((scrub.WITHHELD + "\n").encode("utf-8"))
+            skipping = True
+            buf.clear()
+    cut = left == 0 and _grew(src)
+    if buf and not skipping and not cut:
+        dst.write(line(bytes(buf)))
+
+
+def _redact_whole_text(name: str, text: str, values: list[str]) -> str:
+    # 마지막 마스킹(redact._redact_structured)과 같은 선택이다. .json은 파일 전체를, .jsonl은 줄마다 JSON 문자열 안에서
+    # 바꾸고, JSON으로 읽히지 않으면 텍스트로 바꾼다. 바뀌면 일치 테스트가 실패한다
+    suffix = os.path.splitext(name)[1].lower()
+    if suffix == ".json":
+        new = redact.redact_json_text(text, values)
+        return redact.redact_text(text, values) if new is None else new
+    if suffix == ".jsonl":
+        parts: list[str] = []
+        for row in text.splitlines(keepends=True):
+            body = row.rstrip("\r\n")
+            end = row[len(body):]
+            new = redact.redact_json_text(body, values) if body.strip() else body
+            parts.append((redact.redact_text(body, values) if new is None else new) + end)
+        return "".join(parts)
+    return redact.redact_text(text, values)
+
+
+def _redact_whole(name: str, data: bytes, values: list[str]) -> bytes:
+    # 파일 하나를 통째로 마지막 마스킹과 같은 방법으로 바꾼다. 바뀐 것이 없으면 받은 바이트를 그대로 반환한다
+    text = data.decode("utf-8", errors="replace")
+    try:
+        new = _redact_whole_text(name, text, values)
+    except Exception as e:  # noqa: BLE001 - 마스킹하지 못한 파일은 원문 대신 넣지 않는다
+        raise _LeftOut(f"cannot be redacted ({type(e).__name__})") from None
+    return data if new == text else new.encode("utf-8", errors="replace")
+
+
+class _Masker:
+    # ZIP 하나를 만드는 동안 쓰는 비밀 값과 줄 단위 마스킹 함수다. 값은 한 번만 읽는다
+    def __init__(self) -> None:
+        self.values = list(redact.live_secret_values())
+        self.line = redact.Redactor(lambda: self.values).line
+
+
+def _copy_member(zf: zipfile.ZipFile, arc: str, path: Path, limit: int, ident: tuple[int, int] | None,
+                 masker: _Masker | None) -> None:
+    # 실행 하나의 ZIP 항목 하나를 복사한다. masker가 None이면 바이트 그대로 쓴다.
+    # 아니면 RUN_WHOLE_REDACT_BYTES 이하는 파일 전체를, 그보다 큰 파일은 줄마다 마스킹해서 쓴다
+    src, st = _open_planned(path, ident)
+    with src:
+        size = min(limit, st.st_size)
+        if masker is not None:
+            _check_head(src)
+            if size <= RUN_WHOLE_REDACT_BYTES:
+                data = src.read(size)
+                if len(data) == size and _grew(src):
+                    data = data[:data.rfind(b"\n") + 1]      # 잘렸을 수 있는 마지막 줄은 넣지 않는다
+                _token_runs(data, 0)
+                out = _redact_whole(arc, data, masker.values)
+                with zf.open(_zip_info(arc, st, len(out)), "w") as dst:
+                    dst.write(out)
+                return
+            _scan_lines(src, size)
+        with zf.open(_zip_info(arc, st, size), "w") as dst:
+            if masker is not None:
+                _copy_redacted(src, dst, size, masker.line)
+                return
+            left = size
+            while left > 0:
+                chunk = src.read(min(ZIP_CHUNK, left))
+                if not chunk:
+                    break                             # 그 사이 줄어든 파일은 있는 만큼만 넣는다
+                dst.write(chunk)
+                left -= len(chunk)
+
+
+def _skipped_name(arc: str) -> str:
+    # SKIPPED.txt에 적을 이름이다. UTF-8로 쓸 수 없는 글자는 \x.. 표기로 바꾼다
+    return arc.encode("utf-8", "backslashreplace").decode("utf-8")
+
+
 def write_logs_zip(plan: ZipPlan, tmp_dir: Path | None = None) -> Path:
     """계획대로 deflate ZIP 임시 파일을 만들고 그 경로를 반환한다. 파일을 지우는 것은 호출한 쪽이다.
+    실행 하나의 계획이면 더한 항목을 복사하면서 마스킹한다. 작은 파일은 통째로, 큰 파일은 줄마다 마스킹한다.
+    넣지 못한 파일은 이유와 함께 ``SKIPPED.txt``에 적는다.
 
-    Each member is copied in chunks up to its planned size; `SKIPPED.txt` lists the files over `ZIP_FILE_LIMIT`;
-    `README.txt` alone when nothing was taken."""
+    Each member is copied in chunks up to its planned size; `SKIPPED.txt` lists the files over `ZIP_FILE_LIMIT`
+    (`<arc>\t<bytes>`), or for the plan of one run every left-out file with its reason (`<arc>\t<reason>`);
+    `README.txt` alone when nothing was taken. The archive of all runs (`plan.root` None) is built exactly as before.
+
+    One run (`plan.root` set), per member: the path must still pass `_inside` (no link, resolving inside the run
+    folder); it is opened with `O_NOFOLLOW | O_NONBLOCK` and `fstat` must give a regular file with one name and the
+    (device, inode) of `plan.identity` (`REASON_REPLACED` / a hard-link line otherwise: a folder or file swapped after
+    planning). The three always-in files are then copied byte for byte. Every member of `plan.text_checked` is
+    redacted with the values `redact.live_secret_values()` gives once for this archive (`_Masker`); URL userinfo is
+    masked even with no value set. It is left out, never copied raw, when its first `BINARY_HEAD_BYTES` hold a NUL
+    (`not a text file`), when it holds a run of more than `RUN_TOKEN_LIMIT` letters and digits (the userinfo regex
+    of `redact` is quadratic in such a run: 16,000 characters took 0.4 s, 1 MiB would take about 25 minutes), or
+    when its redaction raises (`cannot be redacted (<type>)`, e.g. the RecursionError of a deeply nested `.json`).
+    - Up to `RUN_WHOLE_REDACT_BYTES`: the planned bytes are read whole and redacted as the end-of-run pass would
+      (`_redact_whole_text` mirrors the private `redact._redact_structured`: `redact_json_text` for `.json` and per
+      `.jsonl` line, `redact_text` otherwise; an agreement test compares it with `redact.redact_file`). Unchanged
+      text keeps its bytes. No line-length rule here: the whole text is redacted at once.
+    - Larger: line by line through `redact.Redactor` after `_scan_lines` (a line over `RUN_LINE_LIMIT` = left out;
+      one that grew past it after the look is replaced by `scrub.WITHHELD`). A short line of a multi-line value
+      and a value behind a JSON `\\u` escape are not recognised there (rule 4 says so).
+    The planned size bounds the bytes READ; then one more byte is read (`_grew`) and, when the file holds more, the
+    last line (possibly cut) is not written. No `_Masker` (its source raised): every such member is left out. A
+    name that is not UTF-8 is left out and named with `\\x..` escapes. The late reasons go into `SKIPPED.txt`,
+    written after the members."""
     tmp_dir = tmp_dir or zip_tmp_dir()
     fd, name = tempfile.mkstemp(prefix=ZIP_TMP_PREFIX, suffix=ZIP_TMP_SUFFIX, dir=str(tmp_dir))
     path = Path(name)
+    masker: _Masker | None = None
+    no_redactor = ""
+    if plan.root is not None and plan.text_checked:
+        try:
+            masker = _Masker()
+        except Exception as e:  # noqa: BLE001 - 마스킹할 수 없으면 더한 항목은 하나도 넣지 않는다
+            no_redactor = f"cannot be redacted now ({type(e).__name__})"
     try:
         with os.fdopen(fd, "wb") as fh, zipfile.ZipFile(fh, "w", compression=zipfile.ZIP_DEFLATED,
                                                          allowZip64=True) as zf:
             count = 0
+            late: list[tuple[str, str]] = []          # 복사하면서 정한 이유다. SKIPPED.txt는 항목 뒤에 쓰므로 함께 적힌다
             for arc, p, size in plan.members:
                 try:
-                    _copy_bounded(zf, arc, p, size)
+                    if plan.root is None:
+                        _copy_bounded(zf, arc, p, size)
+                    else:
+                        if not _utf8_name(arc):
+                            raise _LeftOut(REASON_NAME)
+                        if arc in plan.text_checked and masker is None:
+                            raise _LeftOut(no_redactor or REASON_PENDING)
+                        if not _inside(plan.root, p):
+                            raise OSError("not a file inside the run folder any more")
+                        _copy_member(zf, arc, p, size, plan.identity.get(arc),
+                                     masker if arc in plan.text_checked else None)
                     count += 1
+                except _LeftOut as e:
+                    late.append((arc, e.reason))
                 except OSError as e:
-                    log.warning("admin logs zip: %s skipped: %s", arc, e)
+                    log.warning("admin logs zip: %r skipped: %s", arc, e)
             if plan.skipped:
                 lines = [(f"Files larger than {ZIP_FILE_LIMIT} bytes are left out of this archive; "
                           "download them from the server directly."), ""]
                 lines += [f"{arc}\t{size}" for arc, size in plan.skipped]
                 zf.writestr(SKIPPED_NAME, "\n".join(lines) + "\n")
-            if count == 0 and not plan.skipped:
+            if plan.left_out or late:
+                lines = ["These files of the run are left out of this archive; the reason is beside each name.", ""]
+                lines += [f"{_skipped_name(arc)}\t{reason}" for arc, reason in (*plan.left_out, *late)]
+                zf.writestr(SKIPPED_NAME, "\n".join(lines) + "\n")
+            if count == 0 and not plan.skipped and not plan.left_out and not late:
                 zf.writestr("README.txt", EMPTY_README)
     except BaseException:
         path.unlink(missing_ok=True)
@@ -1203,21 +1748,25 @@ def create_admin_router(manager: Any, auth: AdminAuth, remediations: Any = None)
         # 경로는 클라이언트 문자열로 만들지 않고 출력 폴더의 실제 실행 폴더 목록에서 고른다
         return next((d for d in iter_run_dirs(Path(manager.out_dir)) if d.name == run_id), None)
 
-    async def logs_zip(request: Request, dirs: list[Path], filename: str, check_only: bool):
+    async def logs_zip(request: Request, dirs: list[Path], filename: str, check_only: bool, one: bool = False):
         nostore = {"Cache-Control": "no-store"}
         if not ZIP_GATE.acquire(blocking=False):
             return JSONResponse({"error": "busy"}, status_code=409, headers=nostore)
         release = True
         try:
             tmp = zip_tmp_dir()
-            plan = await run_in_threadpool(plan_logs_zip, dirs, withheld_for(request))
+            # 실행 하나의 ZIP은 진단 파일까지 넣는다. 전체 실행의 ZIP은 크기 한도 때문에 로그 네 가지만 넣는다
+            if one:
+                plan = await run_in_threadpool(plan_run_logs_zip, dirs[0], withheld_for(request))
+            else:
+                plan = await run_in_threadpool(plan_logs_zip, dirs, withheld_for(request))
             refusal = await run_in_threadpool(check_logs_zip, plan, tmp)
             if refusal is not None:
                 log.warning("admin logs zip refused: %s", refusal[1])
                 return JSONResponse(refusal[1], status_code=refusal[0], headers=nostore)
             if check_only:
                 return JSONResponse({"ok": True, "bytes": plan.total, "runs": plan.runs,
-                                     "skipped": len(plan.skipped)}, headers=nostore)
+                                     "skipped": plan.skipped_count()}, headers=nostore)
             path = await run_in_threadpool(write_logs_zip, plan, tmp)
             resp = TempFileResponse(path, filename, on_close=ZIP_GATE.release)
             release = False                           # 응답이 파일을 지운 뒤 놓는다
@@ -1240,7 +1789,7 @@ def create_admin_router(manager: Any, auth: AdminAuth, remediations: Any = None)
         hit = await run_in_threadpool(find_run, run_id)
         if hit is None:
             return JSONResponse({"error": "unknown run"}, status_code=404)
-        return await logs_zip(request, [hit], f"sbmig-logs-{hit.name}.zip", check_only)
+        return await logs_zip(request, [hit], f"sbmig-logs-{hit.name}.zip", check_only, one=True)
 
     @router.post("/login")
     async def login(request: Request) -> JSONResponse:
@@ -1301,6 +1850,12 @@ def create_admin_router(manager: Any, auth: AdminAuth, remediations: Any = None)
 
     @router.get("/runs/{run_id}/logs/check")
     async def run_logs_check(request: Request, run_id: str):
+        """실행 하나의 ZIP을 만들지 않고 확인만 한다. 파일을 읽지 않으므로 복사할 때 빠질 파일은 세지 못한다.
+
+        The checks of the one-run archive without building it. It reads no file, so `skipped` and `bytes` do not
+        know what the copy refuses: a binary head (`not a text file`), a run over `RUN_TOKEN_LIMIT`, a line over
+        `RUN_LINE_LIMIT` (large members), a redaction that raised, a file swapped after planning, a vanished one. `skipped` may be lower and `bytes` higher than in the archive by
+        exactly those files, and `bytes` is the size READ, before redaction changes it."""
         return await one_run(request, run_id, True)
 
     def locate_source(run_id: str) -> tuple[int, dict[str, Any]] | tuple[Path, str, int]:

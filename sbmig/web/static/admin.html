@@ -621,7 +621,7 @@
         ? '<td class="num unknown" colspan="4" title="이 실행의 토큰 사용량은 아직 알 수 없습니다">집계 전</td>'
         : callsCell(r) + numCell(r.input_tokens) + numCell(r.output_tokens) + numCell(r.total_tokens, 'total');
       const log = r.has_logs === false ? '<span class="dash" title="이 실행에는 로그 파일이 없습니다">없음</span>'
-        : `<a href="${API}/runs/${encodeURIComponent(id)}/logs.zip" data-zip="run" title="${esc(id)} 로그 ZIP">로그</a>`;
+        : `<a href="${API}/runs/${encodeURIComponent(id)}/logs.zip" data-zip="run" title="${esc(id)} 실행의 로그, 보고서, 상태 파일을 ZIP으로 받습니다. 소스는 들어 있지 않습니다.">로그와 보고서</a>`;
       // 사람이 올린 원본 ZIP. 서버에 파일이 없으면 같은 자리에 흐린 글자와 이유를 둔다
       const src = r.has_source === true
         ? `<a href="${API}/runs/${encodeURIComponent(id)}/source" data-src="1" title="${esc(id)}에 올린 원본 ZIP">원본 받기</a>` +
@@ -733,11 +733,13 @@
     if (pre.expired) { expired(); return; }
     if (!pre.ok) { zipNote(pre.msg, true); return; }
     const skip = pre.skipped ? ` 너무 큰 로그 파일 ${fmtInt(pre.skipped)}개는 빼고 받습니다. 목록은 ZIP 안의 SKIPPED.txt에 있습니다.` : '';
+    // 실행 하나의 ZIP은 크기 말고도 파일 수 한도와 마지막 마스킹 전이라는 이유로 파일을 뺀다
+    const runSkip = pre.skipped ? `이 실행의 파일 ${fmtInt(pre.skipped)}개는 빼고 받습니다. 뺀 파일과 이유는 ZIP 안의 SKIPPED.txt에 있습니다.` : '';
     if (kind === 'all') {
       const n = int(data && data.totals && data.totals.runs);
       zipNote(`전체 로그 ZIP을 만들고 있습니다${n ? `(실행 ${fmtInt(n)}건)` : ''}. 실행이 많으면 다운로드가 시작될 때까지 시간이 걸립니다.${skip}`);
     } else {
-      zipNote(skip.trim());
+      zipNote(runSkip);
     }
     window.location.assign(href);
   });

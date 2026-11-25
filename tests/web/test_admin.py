@@ -136,6 +136,11 @@ def _shop_runs(out: Path) -> None:
     _w(rd / "journal.jsonl", '{"event": "intake"}\n')
 
 
+# the files of SHOP1 that only the archive of one run carries (v2.1z-ch)
+SHOP1_DIAGNOSTICS = ("report.json", "job-status.json", "report.md", "logs/build-1.log", "remediation/journal.jsonl",
+                     "errors.md", "job-local.log")
+
+
 def _all_runs(out: Path, outside: Path) -> None:
     _shop_runs(out)
     rd = out / BILL1                                   # unpriced, no log file
@@ -546,11 +551,13 @@ def test_one_run_zip_and_bad_ids(tmp_path, repo):
     r = c.get(f"/admin/api/runs/{SHOP1}/logs.zip")
     assert r.headers["content-disposition"] == f'attachment; filename="sbmig-logs-{SHOP1}.zip"'
     files = _zip(r)
-    assert sorted(files) == sorted(f"{SHOP1}/{m}" for m in admin.LOG_MEMBERS)
+    # v2.1z-ch: one run's archive also carries its diagnostic files (logs/, reports, error lists, status files, the
+    # remediation's text files); never result.zip / source.zip or an LLM record
+    assert sorted(files) == sorted(f"{SHOP1}/{m}" for m in (*admin.LOG_MEMBERS, *SHOP1_DIAGNOSTICS))
     for name, data in files.items():
         assert data == (out / name).read_bytes()
     assert sorted(_zip(c.get(f"/admin/api/runs/{LEGACY}/logs.zip"))) == sorted(
-        f"{LEGACY}/{m}" for m in ("sbmig.log", "journal.jsonl", "control/request.json"))
+        f"{LEGACY}/{m}" for m in ("sbmig.log", "journal.jsonl", "control/request.json", "report.json"))
     # a run without any log file: a valid ZIP that says so
     assert _zip(c.get(f"/admin/api/runs/{BILL1}/logs.zip")) == {"README.txt": admin.EMPTY_README.encode()}
     # (a raw ".." segment is normalized away by the HTTP client itself, so it is sent encoded)
@@ -830,7 +837,8 @@ def test_preflight_routes_need_the_login_and_answer_the_contract_shape(tmp_path,
     total = sum((out / n).stat().st_size for n in _zip(c.get("/admin/api/logs.zip")))
     assert body["bytes"] == total
     one = c.get(f"/admin/api/runs/{SHOP1}/logs/check").json()
-    assert one == {"ok": True, "bytes": sum((out / SHOP1 / m).stat().st_size for m in admin.LOG_MEMBERS),
+    assert one == {"ok": True, "bytes": sum((out / SHOP1 / m).stat().st_size
+                                            for m in (*admin.LOG_MEMBERS, *SHOP1_DIAGNOSTICS)),
                    "runs": 1, "skipped": 0}
     assert c.get(f"/admin/api/runs/{BILL1}/logs/check").json() == {"ok": True, "bytes": 0, "runs": 0, "skipped": 0}
     for bad in ("%2e%2e", "evil-20261106-100000-ffff", "_uploads"):
