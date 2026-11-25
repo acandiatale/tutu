@@ -6,11 +6,7 @@
   저장된 스크립트는 재사용하고, LLM이 필요한 케이스는 ``budget_exhausted``로 차단한다
 - ``loop.max_total_minutes``를 넘으면 수정 루프는 멈추지만 최종 빌드는 반드시 실행한다
 
-Run-wide budgets shared by every build-fix loop of a run.
-
-v2.1 (2026-10-27): `loop.max_llm_calls: 0` = no limit on LLM calls (the default); > 0 = a hard cap per project;
--1 = no LLM call at all (the fleet passes it when `fleet.max_llm_calls_total` is used up — stored scripts are still
-reused, every step that needs the LLM is blocked `budget_exhausted` "LLM budget exhausted (fleet)")."""
+The fleet's -1 blocks every step that needs the LLM as `budget_exhausted` "LLM budget exhausted (fleet)"."""
 from __future__ import annotations
 
 import time
@@ -21,7 +17,7 @@ from typing import Callable, Optional
 @dataclass
 class LoopBudget:
     """실행 한 번의 LLM 호출 수와 경과 시간을 세는 클래스."""
-    max_llm_calls: int = 0                  # 0 = unlimited, > 0 = cap, -1 = no LLM call (fleet budget used up)
+    max_llm_calls: int = 0                  # 0은 무제한, 양수는 상한, -1은 LLM 호출 없음(플릿 예산 소진)
     max_minutes: float = 180.0
     clock: Callable[[], float] = time.monotonic
     llm_calls: int = 0
@@ -42,17 +38,12 @@ class LoopBudget:
     # LLM ---------------------------------------------------------------
     @property
     def llm_limited(self) -> bool:
-        """LLM 호출 수에 상한(``loop.max_llm_calls`` > 0)이 있는지 반환한다.
-
-        True when a hard cap is configured (`loop.max_llm_calls` > 0)."""
+        """LLM 호출 수에 상한이 있는지 반환한다. ``loop.max_llm_calls``가 양수면 True다."""
         return self.max_llm_calls > 0
 
     @property
     def llm_off(self) -> bool:
-        """이 프로젝트에서 LLM 호출이 꺼져 있는지(``loop.max_llm_calls``가 -1) 반환한다.
-        플릿 전체 총량을 다 쓰면 -1이 된다.
-
-        `loop.max_llm_calls` = -1: no LLM call in this project (the fleet's total is used up)."""
+        """이 프로젝트에서 LLM 호출이 꺼져 있는지 반환한다. 플릿 전체 총량을 다 써서 ``loop.max_llm_calls``가 -1이면 True다."""
         return self.max_llm_calls < 0
 
     def llm_allowed(self) -> bool:
@@ -63,16 +54,13 @@ class LoopBudget:
         return not self.llm_limited or self.llm_calls < self.max_llm_calls
 
     def llm_exhausted(self) -> bool:
-        """LLM 예산을 다 썼는지 반환한다. 호출이 꺼졌거나 상한에 도달하면 참이며, 마무리 단계에서
-        ``llm-budget-exhausted`` 플래그를 붙이는 근거가 된다."""
+        """LLM 예산을 다 썼는지 반환한다. 호출이 꺼졌거나 상한에 도달하면 참이다.
+        마무리 단계가 이 값으로 ``llm-budget-exhausted`` 플래그를 붙인다."""
         return self.llm_off or (self.llm_limited and self.llm_calls >= self.max_llm_calls)
 
     def llm_text(self) -> str:
         """차단 사유 "LLM budget exhausted (…)"의 괄호 안에 들어갈 문구를 만든다.
-        '12/100 calls', '12 calls (no limit)', 'fleet'(LLM 호출 꺼짐) 중 하나를 반환한다.
-
-        '12/100 calls', '12 calls (no limit)' or 'fleet' (no LLM call at all) — the text of
-        "LLM budget exhausted (…)"."""
+        '12/100 calls', '12 calls (no limit)', 'fleet'(LLM 호출 꺼짐) 중 하나를 반환한다."""
         if self.llm_off:
             return "fleet"
         return (f"{self.llm_calls}/{self.max_llm_calls} calls" if self.llm_limited
@@ -82,16 +70,15 @@ class LoopBudget:
         """LLM 호출 수를 더한다. 실패한 호출도 호출한 것이므로 세고, 음수는 0으로 본다."""
         self.llm_calls += max(0, calls)
 
-    # time ----------------------------------------------------------------
+    # 시간 ----------------------------------------------------------------
     def elapsed(self) -> float:
         """예산이 시작된 뒤 지난 시간(초)을 반환한다."""
         return self.clock() - (self.started_at or 0.0)
 
     def time_left(self) -> float:
         """실행 시간 예산에서 남은 초를 반환한다. 예산을 넘으면 음수다.
-        LLM 쿨다운이 이 값보다 길면 기다리지 않는다.
+        LLM 쿨다운이 이 값보다 길면 기다리지 않는다."""
 
-        Seconds left of the run's wall-clock budget (negative once exceeded)."""
         return self.max_minutes * 60.0 - self.elapsed()
 
     def time_exceeded(self) -> bool:

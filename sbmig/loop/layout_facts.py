@@ -1,14 +1,13 @@
 """재구성 뒤 프로젝트가 어떻게 바뀌었는지 수정 프롬프트의 "Project after the restructure" 절로 정리하는 모듈.
-프롬프트 앞부분은 분석 시점의 프로젝트 정보만 보여 주므로, Boot 애플리케이션으로 바꾼 것, 모듈 구성, 생성한
-파일, 사내 아티팩트 규칙을 LLM에 따로 알려 준다.
+프롬프트 앞부분은 분석 시점의 프로젝트 정보만 보여 주므로 Boot 애플리케이션 전환, 모듈 구성, 생성한 파일,
+사내 아티팩트 규칙을 LLM에 따로 알려 준다.
 수정 루프가 LLM 요청마다 ``BuildFixLoop.restructure_results``로 줄을 만들어 ``FixContext.layout_facts``에 넣는다.
-- 모든 값은 재구성 결과와 ``cfg.artifacts`` / ``cfg.layout``에서 가져오고, 코드에 좌표나 버전을 직접 쓰지 않는다
-- 전체는 약 1,500자이며, 넘치면 우선순위가 낮은 줄부터 뺀다
+- 모든 값은 재구성 결과와 ``cfg.artifacts`` / ``cfg.layout``에서 가져온다. 코드에 좌표나 버전을 직접 쓰지 않는다
+- 전체는 약 1,500자이고, 넘치면 우선순위가 낮은 줄부터 뺀다
 - Boot as-is 프로젝트와 MSA처럼 pom만 바꾸는 모드에서는 부모, 필수 아티팩트, BOM 줄만 넣는다
 - 예외를 던지지 않는다
 
-v2.1v (docs/INTERFACES.md "v2.1v — the facts reach the LLM"): the lines of `FixContext.layout_facts` built from the
-run's `RestructureResult`s and the configuration. Each line appears only when its value exists:
+docs/INTERFACES.md "v2.1v". Each line appears only when its value exists:
 
 * `converted by sbmig: <case> → Spring Boot application (company layout)` (a Boot as-is project split by
   `layout.boot_as_is: layout`: `restructured by sbmig: …`);
@@ -32,14 +31,15 @@ from typing import Any
 
 log = logging.getLogger("sbmig.loop")
 
-LAYOUT_FACTS_CHARS = 1500            # the whole section (the packer never truncates it): ~1,200 asked; a real
-                                     # company layout (front paths, two mandatory g:a) needs ~1,300 for the lists
-LIST_ITEMS = 4                       # items per list line (`XML not imported: …`, `scopes restored: …`)
-ITEM_CHARS = 140                     # one item of such a list
-PARENTS_SET_MAX = 6                  # `parents set: …` entries
+# 절 전체의 문자 수 상한. 프롬프트 패커는 이 절을 자르지 않는다
+# 실제 회사 레이아웃(front 경로, 필수 g:a 두 개)에서 목록까지 약 1,300자가 필요하다
+LAYOUT_FACTS_CHARS = 1500
+LIST_ITEMS = 4                       # 목록 줄(`XML not imported: …` 등) 하나에 넣는 항목 수
+ITEM_CHARS = 140                     # 그 목록 항목 하나의 최대 문자 수
+PARENTS_SET_MAX = 6                  # `parents set: …`에 넣는 항목 수
 BOM_IMPORTS_MAX = 3
 CONVERSION_FACTS_MAX = 6
-POM_ONLY_MODES = frozenset({"boot_pom", "msa_pom"})   # Boot as-is / MSA: directories kept, poms only
+POM_ONLY_MODES = frozenset({"boot_pom", "msa_pom"})   # Boot as-is와 MSA는 디렉토리를 두고 pom만 바꾼다
 BOOT_CASES = frozenset({"spring_boot", "msa"})
 JAVA_ROOT = "/src/main/java/"
 LEGACY_DIR = "legacy-config/"
@@ -51,9 +51,9 @@ def _short(text: Any, limit: int = ITEM_CHARS) -> str:
 
 
 def _items(values: Iterable[Any], cap: int = LIST_ITEMS) -> str:
-    """목록 값을 앞의 ``cap``개(각 ``ITEM_CHARS``자까지)와 남은 개수로 줄인 문자열을 만든다.
+    """목록 값을 앞의 ``cap``개와 남은 개수로 줄인 문자열을 만든다. 항목마다 ``ITEM_CHARS``자까지 남긴다.
 
-    The first `cap` items (each capped) joined with "; ", plus "(+N more)"."""
+    Joined with "; ", plus "(+N more)"."""
     vals = [_short(v) for v in values if str(v or "").strip()]
     text = "; ".join(vals[:cap])
     return text + (f" (+{len(vals) - cap} more)" if len(vals) > cap else "")
@@ -61,8 +61,7 @@ def _items(values: Iterable[Any], cap: int = LIST_ITEMS) -> str:
 
 def spec_gav(spec: Any) -> str:
     """설정의 아티팩트 정보(ArtifactSpec)를 ``g:a:v`` 문자열로 만든다. 버전이 없으면 ``g:a``를 반환한다.
-
-    `g:a:v` of a configured ArtifactSpec (`g:a` without a version); "" for None."""
+    None이거나 group, artifact가 비어 있으면 빈 문자열을 반환한다."""
     if spec is None:
         return ""
     g, a, v = (str(getattr(spec, k, "") or "") for k in ("group_id", "artifact_id", "version"))
@@ -92,14 +91,14 @@ def _mode_of(res: Any, mode: str | None) -> str:
 
 
 def _fqcn(rel: str) -> str:
-    """``<module>/src/main/java/com/x/App.java`` → ``com.x.App``."""
+    """``<module>/src/main/java/com/x/App.java`` 경로를 ``com.x.App`` 같은 FQCN으로 바꾼다."""
     tail = ("/" + rel).split(JAVA_ROOT, 1)[1]
     return tail[: -len(".java")].replace("/", ".")
 
 
 def _generated_line(res: Any, cfg: Any) -> str:
-    """생성한 파일을 설명하는 줄을 만든다. Application 클래스 FQCN, ``legacy-config/``에 복사한 XML
-    설정(@ImportResource 목록), 그 밖의 생성 클래스 순서로 쓴다."""
+    """생성한 파일을 설명하는 줄을 만든다. 생성한 파일이 없으면 빈 문자열을 반환한다.
+    Application 클래스 FQCN, ``legacy-config/``에 복사한 XML 설정, 그 밖의 생성 클래스 순서로 쓴다."""
     gen = [str(f) for f in (getattr(res, "generated_files", None) or [])]
     java = [_fqcn(f) for f in gen if f.endswith(".java") and JAVA_ROOT in "/" + f]
     app_name = str(getattr(getattr(cfg, "layout", None), "application_class_name", "") or "")
@@ -165,7 +164,7 @@ def _layout_lines(res: Any, cfg: Any, case: str, read_artifact_id: Callable[[str
         if read_artifact_id is not None:
             try:
                 aid = str(read_artifact_id(f"{boot}/pom.xml") or "")
-            except Exception as e:  # noqa: BLE001 - a fact line never breaks a fix
+            except Exception as e:  # noqa: BLE001 - 정보 한 줄 때문에 수정을 망치지 않는다
                 log.debug("artifactId of %s unavailable: %s", boot, e)
         if aid:
             bits.append(f"artifactId {aid}")
@@ -233,9 +232,9 @@ def _conversion_lines(res: Any) -> list[tuple[int, str]]:
 
 def _fit(lines: list[tuple[int, str]], budget: int) -> list[str]:
     """우선순위가 높은 줄부터 문자 수 예산 안에 담아 원래 순서대로 반환한다.
-    넘치는 줄은 남은 공간이 넉넉하면 잘라서(… 표시) 넣고, 아니면 뺀다.
+    넘치는 줄은 남은 공간이 80자를 넘으면 잘라서 넣고, 아니면 뺀다.
 
-    Keep the most important lines (lowest priority number first) within `budget` characters, in display order."""
+    Lowest priority number = most important."""
     keep: dict[int, str] = {}
     used = 0
     for i in sorted(range(len(lines)), key=lambda k: (lines[k][0], k)):
@@ -253,13 +252,11 @@ def layout_fact_lines(results: Iterable[Any], cfg: Any, *, modes: list[str | Non
                       case: str = "", read_artifact_id: Callable[[str], str] | None = None,
                       budget: int = LAYOUT_FACTS_CHARS) -> list[str]:
     """재구성 결과로 "Project after the restructure" 절의 줄 목록을 만든다.
-    쓸 수 있는 결과가 없으면 빈 목록을 반환하고, 예외를 던지지 않는다.
-    ``modes``는 결과별 재구성 모드, ``case``는 as-is 프로젝트 종류,
-    ``read_artifact_id``는 모듈 pom의 artifactId를 읽는 함수다.
+    쓸 수 있는 결과가 없으면 빈 목록을 반환한다. 예외를 던지지 않는다.
+    ``modes``는 결과별 재구성 모드, ``case``는 as-is 프로젝트 종류, ``read_artifact_id``는 모듈 pom의 artifactId를 읽는 함수다.
 
-    The `FixContext.layout_facts` lines for the run's restructure results (docs/INTERFACES.md v2.1v). `modes` gives
-    each result's restructure mode (`layout` / `boot_pom` / `msa_pom`; inferred when missing); pom-only results give
-    the company-artifact / BOM / parents lines only. [] without a usable result. Never raises."""
+    A missing mode is inferred (`_mode_of`); pom-only results give the company-artifact / BOM / parents lines
+    only."""
     try:
         res_list = [r for r in (results or []) if r is not None and getattr(r, "ok", True)]
         if not res_list:
@@ -286,6 +283,7 @@ def layout_fact_lines(results: Iterable[Any], cfg: Any, *, modes: list[str | Non
                 seen.add(text)
                 uniq.append((prio, text))
         return _fit(uniq, budget)
-    except Exception as e:  # noqa: BLE001 - a fact section never breaks a fix attempt
+    except Exception as e:  # noqa: BLE001 - 정보 절 때문에 수정 시도를 망치지 않는다
+
         log.debug("layout facts unavailable: %s: %s", type(e).__name__, e)
         return []

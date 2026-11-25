@@ -1,31 +1,23 @@
-"""더 이상 수정을 시도하지 않기로 한 오류(BLOCKED)를 관리하는 모듈.
-고칠 수 없는 오류에 시간을 쓰지 않되 보고서에서 숨기지도 않기 위해 둔다.
-오케스트레이터가 실행마다 차단 목록을 하나 만들어 모든 ``BuildFixLoop``에 전달한다.
-- 한 번 차단된 오류는 다시 시도하지 않고, 보고서의 "Blocked"와 인수인계 섹션에 조치 방법과 함께 남긴다
-- 차단 사유는 반복 실패(``script.max_llm_tries_per_case`` 소진), 차단 정책(``loop.blocked_policy``), LLM
-  사용 불가, 예산 소진, 사내 parent를 찾을 수 없음, 같은 오류 사이를 오가는 수정 등이다
-- 오류는 (L1 서명, 프로젝트 기준 전체 경로)로 구분한다.
-  MSA 서비스끼리 상대 경로가 같은 파일을 섞지 않기 위해서다
-- 재구성으로 파일 위치가 바뀌어도 ``note_moves``로 같은 오류로 인식한다
+"""더 이상 수정을 시도하지 않기로 한 오류(차단)를 관리하는 모듈.
+고칠 수 없는 오류에 시간을 쓰지 않되 보고서에서 숨기지도 않으려고 둔다.
+오케스트레이터가 실행마다 차단 목록을 하나 만들어 모든 ``BuildFixLoop``에 넘긴다.
+- 한 번 차단된 오류는 다시 시도하지 않고 보고서의 "Blocked"와 인수인계 섹션에 조치 방법과 함께 남긴다
+- 차단 사유는 반복 실패, 차단 정책(``loop.blocked_policy``), LLM 사용 불가, 예산 소진, 사내 parent 없음 등이다
+- 오류는 (L1 서명, 프로젝트 기준 전체 경로)로 구분한다. MSA 서비스끼리 상대 경로가 같은 파일을 섞지 않기 위해서다
+- 재구성으로 파일 위치가 바뀌어도 ``note_moves``로 같은 오류로 알아본다
 - ``compose_suggestion``이 조치 문구를 만들고, 최종 빌드 뒤 ``fill_via``가 javax API jar를 끌어오는
-  라이브러리 정보를 채워 문구를 다시 만든다
+  라이브러리를 채워 문구를 다시 만든다
 
-Run-wide registry of blocked clusters (docs/ERROR-HANDLING.md: "never loop on what we cannot fix, never hide it").
+docs/ERROR-HANDLING.md: "never loop on what we cannot fix, never hide it".
 
-The orchestrator owns one registry per run and hands it to every BuildFixLoop, so a cluster blocked in the spring
-phase is skipped in restructure/verify too. Keys are (L1 signature, file) — the file as the full project-relative
-posix path for compile errors ('' for module / artifact errors). Round 10: the full path keeps MSA services apart
-(svc-a's `SwaggerConfig.java` block never covers svc-b's file with the same relative path — services keep their
-directories); the restructure move (`src/…` → `{name}-back/src/…`, `module/comp-jar/src/…`, merged modules) is
-followed through :meth:`BlockedRegistry.note_moves`, which the orchestrator calls with the step's git renames, so a
-file blocked before the move stays blocked after it (:meth:`canonical_file` maps an old path to its new one).
+Keys are (L1 signature, file): the full project-relative posix path for compile errors, '' for module /
+artifact errors. The full path keeps MSA services apart (services keep their directories). Restructure moves
+(`src/…` -> `{name}-back/src/…`, `module/comp-jar/src/…`, merged modules) are followed through `note_moves`,
+which the orchestrator calls with the step's git renames; `canonical_file` maps an old path to its new one.
 
-``BlockedItem.suggestion`` is composed by :func:`compose_suggestion` from the reason, the attributed artifact
-(``sbmig.build.classpath`` — optional, lazily imported) and ``cfg.artifacts.optional``. After the final build,
-:func:`fill_via` adds the library that drags a javax API jar in (``BlockedItem.via`` / ``via_direct``, from the
-``sbmig.build.deptree`` inventory) and recomposes the suggestion (the suggestion ladder, docs/ERROR-HANDLING.md §5 X1).
-
-
+`BlockedItem.suggestion` comes from the reason, the attributed artifact (`sbmig.build.classpath`, optional,
+lazily imported) and `cfg.artifacts.optional`. `fill_via` adds `BlockedItem.via` / `via_direct` from the
+`sbmig.build.deptree` inventory and recomposes it (docs/ERROR-HANDLING.md §5).
 """
 from __future__ import annotations
 
@@ -42,14 +34,13 @@ log = logging.getLogger("sbmig.loop")
 FILE_KINDS = (ErrorKind.COMPILE, ErrorKind.TEST_COMPILE)
 MAX_ERRORS = 10
 MAX_RAW = 2000
-MAX_MOVE_HOPS = 8                    # a file moved by several restructure steps (wrap, then split) — chain cap
+MAX_MOVE_HOPS = 8                    # 여러 재구성 단계로 옮겨진 파일을 따라가는 최대 횟수
 
 
 def normalize_file(path: Optional[str]) -> Optional[str]:
     """파일 경로에서 ``src/`` 이후 부분만 잘라서 반환한다.
 
-    'module/comp-jar/src/main/java/a/B.java' → 'src/main/java/a/B.java' (the `src/…` suffix). No longer the
-    registry key (round 10: full paths + `note_moves`); kept for callers that want the suffix."""
+    Not the registry key (that is the full path + `note_moves`); kept for callers that want the suffix."""
     if not path:
         return path
     p = path.replace("\\", "/")
@@ -58,9 +49,7 @@ def normalize_file(path: Optional[str]) -> Optional[str]:
 
 
 def posix_path(path: Optional[str]) -> str:
-    """경로 구분자를 '/'로 통일하고 앞의 './'를 제거한다. 값이 없으면 빈 문자열을 반환한다.
-
-    Project-relative posix form of a path ('' for none): backslashes → '/', no leading './'."""
+    """경로 구분자를 '/'로 통일하고 앞의 './'를 제거한다. 값이 없으면 빈 문자열을 반환한다."""
     p = (path or "").replace("\\", "/")
     while p.startswith("./"):
         p = p[2:]
@@ -70,8 +59,7 @@ def posix_path(path: Optional[str]) -> str:
 def error_key(e: BuildError) -> str:
     """차단 목록에서 오류를 구분하는 키 문자열을 만든다. 컴파일 오류는 서명 뒤에 ``@<파일>``을 붙인다.
 
-    String form of an error's registry key (signature, plus `@<file>` for compile errors) — full path, no move
-    mapping; `BlockedRegistry.key` is the move-aware tuple the registry itself uses."""
+    No move mapping; `BlockedRegistry.key` is the move-aware tuple the registry itself uses."""
     sig = e.signature or f"{e.kind.value}|{e.message}"
     if e.kind in FILE_KINDS and e.file:
         return f"{sig}@{posix_path(e.file)}"
@@ -88,23 +76,21 @@ def sanitize_errors(errors: Iterable[BuildError], limit: int = MAX_ERRORS) -> li
     return out
 
 
-Key = tuple[str, str]                # (L1 signature, file or '')
+Key = tuple[str, str]                # (L1 서명, 파일 경로 또는 '')
 
 
 class BlockedRegistry:
     """실행 한 번 동안 차단된 오류를 모아 두는 클래스.
-    같은 사유로 차단된 같은 오류는 한 항목으로 합치므로, 단계가 바뀌어도 항목 id(``blk-<해시>``)가 유지된다."""
+    같은 사유로 차단된 같은 오류는 한 항목으로 합치므로 단계가 바뀌어도 항목 id(``blk-<해시>``)가 유지된다."""
     def __init__(self) -> None:
         self._items: dict[str, BlockedItem] = {}
         self._by_key: dict[Key, str] = {}
-        self._moves: dict[str, str] = {}             # old project path → new one (restructure renames, round 10)
+        self._moves: dict[str, str] = {}             # 재구성이 옮긴 파일의 이전 경로와 새 경로
 
-    # -- keys / moves --------------------------------------------------------
+    # -- 키와 파일 이동 --------------------------------------------------------
     def canonical_file(self, path: Optional[str]) -> str:
-        """재구성 단계에서 위치가 바뀐 파일의 현재 경로를 찾는다.
-        여러 번 옮겨졌으면 최대 ``MAX_MOVE_HOPS``번까지 따라간다.
-
-        The current path of a file the run may have moved: posix form, then the restructure renames (chained)."""
+        """재구성 단계에서 위치가 바뀐 파일의 현재 경로를 반환한다.
+        여러 번 옮겨졌으면 최대 ``MAX_MOVE_HOPS``번까지 따라간다."""
         p = posix_path(path)
         for _ in range(MAX_MOVE_HOPS):
             nxt = self._moves.get(p)
@@ -122,12 +108,9 @@ class BlockedRegistry:
         return sig, ""
 
     def note_moves(self, moves: dict[str, str]) -> int:
-        """재구성 단계가 옮긴 파일에 맞춰 차단 키를 새 경로로 바꾸고, 바꾼 키 수를 반환한다.
-        옮기기 전에 차단된 파일은 옮긴 뒤에도 차단된 상태로 남는다.
-        MSA / boot_pom 실행은 디렉토리를 옮기지 않으므로 바꿀 것이 없다.
-
-        Files moved by a restructure step (`old → new`, project-relative): blocked keys follow them. Returns how
-        many keys were re-keyed. MSA / boot_pom runs keep their directories → nothing to note."""
+        """재구성 단계가 옮긴 파일에 맞춰 차단 키를 새 경로로 바꾸고 바꾼 키 수를 반환한다.
+        옮기기 전에 차단된 파일은 옮긴 뒤에도 차단 상태로 남는다.
+        MSA나 boot_pom 실행은 디렉토리를 옮기지 않으므로 바꿀 것이 없다."""
         clean = {posix_path(a): posix_path(b) for a, b in (moves or {}).items() if a and b and a != b}
         if not clean:
             return 0
@@ -143,7 +126,7 @@ class BlockedRegistry:
                 moved += 1
         return moved
 
-    # -- queries -------------------------------------------------------------
+    # -- 조회 -------------------------------------------------------------
     def __len__(self) -> int:
         return len(self._items)
 
@@ -155,7 +138,7 @@ class BlockedRegistry:
         return list(self._items.values())
 
     def get(self, item_id: str) -> Optional[BlockedItem]:
-        """id로 차단 항목을 찾는다."""
+        """id로 차단 항목을 찾는다. 없으면 None을 반환한다."""
         return self._items.get(item_id)
 
     def item_for_error(self, e: BuildError) -> Optional[BlockedItem]:
@@ -170,9 +153,7 @@ class BlockedRegistry:
 
     def partition(self, cluster: ErrorCluster) -> tuple[list[BuildError], list[BuildError]]:
         """클러스터의 오류를 (이미 차단된 오류, 아직 처리할 오류)로 나눈다.
-        일부만 차단된 케이스는 나머지 오류만 계속 고친다.
-
-        (errors already blocked, errors still to work on)."""
+        일부만 차단된 케이스는 나머지 오류만 계속 고친다."""
         blocked, rest = [], []
         for e in cluster.errors:
             (blocked if self.is_blocked_error(e) else rest).append(e)
@@ -180,9 +161,7 @@ class BlockedRegistry:
 
     def covering(self, cluster: ErrorCluster) -> Optional[BlockedItem]:
         """클러스터의 오류가 모두 차단돼 있으면 첫 차단 항목을 반환한다.
-        하나라도 차단되지 않았으면 None을 반환한다.
-
-        The (first) item blocking this cluster when *every* error of it is blocked, else None."""
+        하나라도 차단되지 않았으면 None을 반환한다."""
         if not cluster.errors:
             return None
         items = [self.item_for_error(e) for e in cluster.errors]
@@ -190,7 +169,7 @@ class BlockedRegistry:
             return None
         return items[0]
 
-    # -- mutation ------------------------------------------------------------
+    # -- 변경 ------------------------------------------------------------
     def block(self, cluster: ErrorCluster, reason: BlockReason, phase: Phase, *,
               errors: Optional[list[BuildError]] = None, iteration: int = 0, attempts: int = 0,
               required_type: Optional[str] = None, found_type: Optional[str] = None,
@@ -198,11 +177,10 @@ class BlockedRegistry:
               notes: Optional[list[str]] = None) -> tuple[BlockedItem, bool]:
         """클러스터의 오류 전체나 일부를 차단하고 (항목, 새로 만들었는지)를 반환한다.
         같은 사유의 기존 항목이 이 오류 중 하나를 이미 갖고 있으면 그 항목에 합친다.
-        그래서 라이브러리 문제 하나는 보고서에 한 줄로 나오고, 단계가 바뀌어도 id가 유지된다.
-        id는 사유와 키들을 sha1로 해시한 값의 앞 10자리다.
+        그래서 라이브러리 문제 하나는 보고서에 한 줄로 나오고 단계가 바뀌어도 id가 유지된다.
 
-        Register (part of) a cluster as blocked. Returns (item, created). Errors already known to an item of the
-        same reason are merged into it (one row per library problem, stable id across phases)."""
+        id = `blk-` + sha1(reason + sorted keys)[:10]."""
+
         errs = list(errors if errors is not None else cluster.errors) or list(cluster.errors)
         keys = [self.key(e) for e in errs]
         existing = next((self._items[self._by_key[k]] for k in keys if k in self._by_key
@@ -253,14 +231,14 @@ class BlockedRegistry:
 
 
 # ---------------------------------------------------------------------------------------------------------------------
-# attribution (owner class → jar → GAV) — sbmig.build.classpath is optional (workstream G1)
+# 원인 라이브러리 찾기(소유 클래스 -> jar -> GAV). sbmig.build.classpath는 없어도 된다
 # ---------------------------------------------------------------------------------------------------------------------
 def default_locator() -> Any:
     """클래스 이름으로 jar, GAV, 모듈을 찾는 기본 locator(``sbmig.build.classpath``)를 반환한다.
     모듈이 없거나 깨졌으면 None을 반환하고, 원인 라이브러리를 찾지 않고 진행한다."""
     try:
         return importlib.import_module("sbmig.build.classpath")
-    except Exception as e:  # not there yet / broken → attribution simply stays empty
+    except Exception as e:  # 모듈이 없거나 깨졌으면 원인 라이브러리를 비워 둔다
         log.debug("sbmig.build.classpath unavailable: %s", e)
         return None
 
@@ -271,7 +249,7 @@ def attribute(locator: Any, ws, cfg, owner_class: Optional[str], errors: list[Bu
     소유 클래스가 프로젝트 안에 있으면 외부 라이브러리 문제가 아니므로 아티팩트는 비워 둔다.
     찾다가 실패해도 예외를 던지지 않고 메모 한 줄을 남긴다.
 
-    Return (artifact, owner_class, notes) using `locator.locate_class` / `locator.locate_type_owner`."""
+    Uses `locator.locate_class`, else `locator.locate_type_owner` on the first three errors."""
     notes: list[str] = []
     if locator is None:
         return None, owner_class, notes
@@ -300,12 +278,10 @@ def attribute(locator: Any, ws, cfg, owner_class: Optional[str], errors: list[Bu
 
 
 # ---------------------------------------------------------------------------------------------------------------------
-# via: the library that drags a javax API jar in (sbmig.build.deptree inventory, 2026-10-22)
+# javax API jar를 끌어오는 라이브러리(via) 찾기. sbmig.build.deptree 목록을 쓴다
 # ---------------------------------------------------------------------------------------------------------------------
-# javax 패키지를 그 패키지를 담은 API 아티팩트로 연결한다
-# jar를 찾지 못해도 오류가 요구하는 타입으로 어느 API인지 알 수 있도록 둔다
-# javax package → the API artifact that ships it (when the attribution found no jar, the required type still says
-# which API the library expects); the other groups of the same API family count as the same jar
+# javax 패키지와 그 패키지를 담은 API 아티팩트. jar를 못 찾아도 오류가 요구하는 타입으로 어느 API인지 알 수 있다
+# 같은 API 계열의 다른 group은 _API_FAMILY_GROUPS에 두고 같은 jar로 본다
 JAVAX_PACKAGE_ARTIFACTS: dict[str, str] = {
     "javax.persistence": "javax.persistence:javax.persistence-api",
     "javax.servlet": "javax.servlet:javax.servlet-api",
@@ -337,11 +313,8 @@ _VIA_REASONS = (BlockReason.EXTERNAL_JAVAX_API, BlockReason.EXTERNAL_API_INCOMPA
 
 def is_javax_api_artifact(gav: Optional[GAV]) -> bool:
     """javax EE API jar인지 반환한다.
-    ``javax.*`` 같은 그룹이거나, 이름만 jakarta인 Jakarta EE 8 재배포본이면 참이다.
-    ``jakarta.*:*-api`` 1.x / 2.x, servlet 4.x, el 3.x는 패키지가 여전히 javax이므로 javax API로 본다.
-
-    A javax EE API jar: group `javax.*` / `org.hibernate.javax.persistence` / `com.sun.mail`, or a Jakarta EE 8
-    re-publication (`jakarta.*:*-api` 1.x / 2.x — servlet 4.x, el 3.x — still the javax namespace)."""
+    ``javax.*``, ``org.hibernate.javax.persistence``, ``com.sun.mail`` group이거나 이름만 jakarta인 재배포본이면 참이다.
+    ``jakarta.*:*-api`` 1.x와 2.x, servlet 4.x, el 3.x는 패키지가 여전히 javax이므로 javax API로 본다."""
     if gav is None:
         return False
     g = gav.group_id
@@ -390,20 +363,18 @@ def _jar_rank(jar: Any) -> int:
             from sbmig.core.jakarta_libraries import jakarta_library_for
             if jakarta_library_for(via.key) is not None:
                 return 0
-        except Exception:  # pragma: no cover - knowledge table unreadable
+        except Exception:  # pragma: no cover - 지식 테이블을 읽지 못한 경우
             pass
         return 1
     return 2 if getattr(jar, "declared", False) else 3
 
 
 def match_javax_jar(item: BlockedItem, inventory: Iterable[Any]) -> Any:
-    """javax API나 호환되지 않는 외부 API 때문에 차단된 항목(X1 / X2)에 맞는 javax jar를 찾는다.
-    없으면 None을 반환한다.
-    항목의 아티팩트를 먼저 보고, 없으면 오류에 나온 javax 패키지의 API 아티팩트로 찾는다.
-    같은 모듈의 jar를 우선한다.
+    """javax API나 호환되지 않는 외부 API 때문에 차단된 항목에 맞는 javax jar를 목록에서 찾는다. 없으면 None을 반환한다.
+    항목의 아티팩트를 먼저 보고, 없으면 오류에 나온 javax 패키지의 API 아티팩트로 찾는다. 같은 모듈의 jar를 우선한다.
 
-    The inventory entry (`JavaxApiJar`) for a blocked X1 / X2 item, or None. The item's artifact first (same
-    key), else the API artifact of the javax package the error names; the item's module preferred."""
+    Returns a `JavaxApiJar`; ties ranked by `_jar_rank` (known jakarta library via, any via, declared,
+    rest)."""
     jars = list(inventory or [])
     if not jars:
         return None
@@ -432,12 +403,11 @@ def match_javax_jar(item: BlockedItem, inventory: Iterable[Any]) -> Any:
 
 
 def fill_via(items: Iterable[BlockedItem], inventory: Iterable[Any], cfg=None) -> int:
-    """최종 빌드 뒤 ``mvn dependency:tree`` 결과로, X1 / X2 항목의 javax jar를 끌어오는 직접
-    의존성(``via``)을 채우고 조치 문구를 다시 만든다. 바뀐 항목 수를 반환한다.
-    javax API jar를 추가하라고 안내하는 대신 그 라이브러리를 jakarta 버전으로 바꾸라고 안내하기 위해서다.
+    """최종 빌드 뒤 ``mvn dependency:tree`` 결과로 javax 차단 항목에 javax jar를 끌어오는 직접 의존성(``via``)을 채운다.
+    조치 문구도 다시 만들고 바뀐 항목 수를 반환한다.
+    javax API jar를 추가하라는 대신 그 라이브러리를 jakarta 버전으로 바꾸라고 안내하기 위해서다.
 
-    Set `via` / `via_direct` on X1 / X2 items whose artifact is None or a javax API jar (the library that drags
-    the jar in, from the `dependency:tree` inventory) and recompose their suggestion. Returns the items changed."""
+    Only items of `_VIA_REASONS` whose artifact is None or a javax API jar."""
     inv = list(inventory or [])
     changed = 0
     for item in items:
@@ -478,9 +448,7 @@ def _in_house_groups(cfg) -> list[str]:
 
 def is_in_house(gav: Optional[GAV], cfg) -> bool:
     """사내 아티팩트인지 반환한다.
-    설정된 parent, 필수, 선택, 역할 parent 아티팩트의 group이거나 그 하위 group이면 참이다.
-
-    Group equal to / under the configured parent's group, or any mandatory / optional / role-parent group."""
+    설정된 parent, 필수, 선택, 역할 parent 아티팩트의 group이거나 그 하위 group이면 참이다."""
     if gav is None:
         return False
     g = gav.group_id
@@ -507,13 +475,11 @@ def _api_jar_text(item: BlockedItem, jar: Any) -> str:
 
 
 def _via_suggestion(item: BlockedItem, cfg, jar: Any = None) -> str:
-    """의존성 트리에서 javax jar를 끌어오는 경로를 찾은 항목의 조치 문구를 만든다.
-    해당하지 않으면 빈 문자열을 반환한다.
-    - 표에 있는 라이브러리는 jakarta 버전으로 바꾸고, 좌표가 바뀌었으면 좌표도 바꾸라고 안내한다
-    - 사내 아티팩트는 사내 jakarta 빌드가 필요하다고, 그 밖의 라이브러리는 업그레이드나 교체가 필요하다고 안내한다
-    - pom에 직접 선언된 javax jar는 삭제하라고 안내한다
-
-    Suggestion ladder (1)–(4) for an item whose javax API jar was traced in the dependency tree; "" otherwise."""
+    """의존성 트리에서 javax jar를 끌어오는 경로를 찾은 항목의 조치 문구를 만든다. 경로가 없으면 빈 문자열을 반환한다.
+    1. 표에 있는 라이브러리는 jakarta 버전으로 올리라고 한다. 좌표가 바뀌었으면 좌표도 바꾸라고 한다
+    2. 사내 아티팩트는 사내 jakarta 빌드가 필요하다고 한다
+    3. 그 밖의 라이브러리는 업그레이드나 교체가 필요하다고 한다
+    4. pom에 직접 선언된 javax jar는 삭제하라고 한다"""
     via = item.via_direct
     declared = bool(getattr(jar, "declared", False)) if jar is not None else (
         via is None and len(item.via) == 2)
@@ -526,9 +492,9 @@ def _via_suggestion(item: BlockedItem, cfg, jar: Any = None) -> str:
         try:
             from sbmig.core.jakarta_libraries import jakarta_library_for
             lib = jakarta_library_for(via.key)
-        except Exception as e:  # pragma: no cover - knowledge table unreadable
+        except Exception as e:  # pragma: no cover - 지식 테이블을 읽지 못한 경우
             log.debug("jakarta_libraries unavailable: %s", e)
-        if lib is not None and via.key != lib.key:                                           # (1) relocated
+        if lib is not None and via.key != lib.key:                                           # (1) 좌표 변경
             java = f", requires Java {lib.requires_java}" if lib.requires_java else ""
             return (f"`{via.coordinates}` is `{lib.key}` under its earlier coordinates → `{lib.key}:{lib.version}` "
                     f"(jakarta.* since {lib.jakarta_since}{java}): relocate the declaration (it drags in `{api}`, "
@@ -555,7 +521,7 @@ def _via_suggestion(item: BlockedItem, cfg, jar: Any = None) -> str:
 
 
 # ---------------------------------------------------------------------------------------------------------------------
-# suggestion text
+# 조치 문구
 # ---------------------------------------------------------------------------------------------------------------------
 def _optional_spec(cfg, artifact: Optional[GAV]):
     if cfg is None or artifact is None:
@@ -570,12 +536,9 @@ _REACTOR_COORDS_RE = re.compile(r"Project '(?P<c>[^'\s]+)' is duplicated in the 
 
 
 def reactor_duplicate_suggestion(item: BlockedItem) -> str:
-    """``reactor_duplicate`` 차단 항목의 조치 문구를 만든다.
-    중복된 프로젝트 좌표와 ``<module>`` 목록을 하나로 정리하라는 안내다.
-    안쪽 집계 pom의 중복은 접수 단계가 이미 지우므로, 여기 오는 것은 접수가 지우지 못한 경우다.
-    이 문장은 report/i18n.py ``PATTERNS``가 한국어로 바꾸므로 고칠 때 함께 고친다.
-
-    Suggestion for a project reached twice through the reactor's `<module>` lists (Korean: i18n `PATTERNS`)."""
+    """``reactor_duplicate`` 차단 항목의 조치 문구를 만든다. 중복된 좌표의 ``<module>`` 목록을 하나로 정리하라는 안내다.
+    안쪽 aggregator pom의 중복은 접수 단계가 이미 지우므로 여기 오는 것은 접수가 지우지 못한 경우다.
+    ``sbmig/report/i18n.py``의 ``PATTERNS``가 이 문장을 한국어로 바꾸므로 고칠 때 함께 고친다."""
     coords = item.artifact.coordinates if item.artifact is not None else None
     if coords is None:
         m = next((m for m in (_REACTOR_COORDS_RE.search(f"{e.message}\n{e.raw or ''}") for e in item.errors) if m),
@@ -587,7 +550,7 @@ def reactor_duplicate_suggestion(item: BlockedItem) -> str:
             f"with the same coordinates, or a profile); fix the poms by hand, the LLM is not asked")
 
 
-# 이 문장은 report/i18n.py ``PATTERNS``가 한국어로 바꾸므로 고칠 때 함께 고친다
+# sbmig/report/i18n.py의 PATTERNS가 이 문장을 한국어로 바꾸므로 고칠 때 함께 고친다
 FILE_LOCK_SUGGESTION = ("the build output (target/) was locked by another process: exclude the project's target/ "
                         "from the antivirus real-time scan, close any IDE / Explorer window / leftover java process "
                         "holding it, then run again; the LLM is not asked")
@@ -596,9 +559,10 @@ FILE_LOCK_SUGGESTION = ("the build output (target/) was locked by another proces
 def compose_suggestion(item: BlockedItem, cfg=None, *, settings_file: Optional[str] = None,
                        repositories: Optional[list[str]] = None, extra: str = "", javax_jar: Any = None) -> str:
     """차단 항목의 조치 문구를 만든다. 보고서의 "Blocked"와 인수인계 섹션에 사람이 할 다음 일로 나간다.
-    문구는 사유마다 다르다. 예를 들어 없는 아티팩트는 Nexus 프록시 설정이나 좌표 수정을 안내하고 LLM이
-    버전을 지어내게 하지 않는다. reactor 중복은 ``<module>`` 목록을 직접 정리하게 하고, 파일 잠금은 백신
-    예외 등록과 프로세스 정리 뒤 다시 실행하게 한다."""
+    문구는 사유마다 다르다. 예를 들어 없는 아티팩트는 Nexus 프록시나 좌표 수정을 안내하고 LLM이 버전을 지어내게 하지 않는다.
+
+    The javax reasons try `_via_suggestion` first (after `fill_via`), then the optional-artifact /
+    attributed-jar texts."""
     r = item.reason
     a = item.artifact
     if r in (BlockReason.EXTERNAL_JAVAX_API, BlockReason.EXTERNAL_API_INCOMPATIBLE):
@@ -616,8 +580,7 @@ def compose_suggestion(item: BlockedItem, cfg=None, *, settings_file: Optional[s
         if a is not None:
             owner = f" (class `{item.owner_class}`)" if item.owner_class else ""
             if is_javax_api_artifact(a):
-                # X1 attributed the *type's* jar (the error line names no library callee): say how to find the
-                # library behind it instead of "upgrade the javax API jar to a Jakarta build" (2026-10-22)
+                # 찾은 jar가 타입의 API jar라서 그 jar를 올리라고 하지 않고 뒤에 있는 라이브러리를 찾는 방법을 안내한다
                 return (f"`{a.coordinates}`{owner} {what}; the javac error only names the javax type; run "
                         f"`mvn dependency:tree -Dincludes={a.key}` in the module to find the library that still "
                         f"uses it, then upgrade that library to a Jakarta release or replace it")
@@ -674,8 +637,8 @@ def compose_suggestion(item: BlockedItem, cfg=None, *, settings_file: Optional[s
     if r == BlockReason.OSCILLATION:
         return "fixes kept toggling between the same error sets; needs a human (see the fix attempts)"
     if r == BlockReason.NEEDS_OWNER:
-        # 보통은 수정 루프가 LLM이 준 차단 사유 문장(BlockedCandidate.suggestion)을 넣으므로, 그 문장이 없을
-        # 때만 이 문구를 쓴다
+        # 보통은 수정 루프가 LLM이 준 차단 사유 문장을 넣으므로 그 문장이 없을 때만 이 문구를 쓴다
+
         return ("the LLM named a blocker outside the project (a library without a jakarta build, a framework to "
                 "replace, an artifact the repository lacks) — 소유팀 결정 필요")
     return "needs a human"
