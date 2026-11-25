@@ -1,23 +1,18 @@
-"""분석 단계의 실제 처리를 하는 모듈.
-pom 구조, 소스 스캔, 라이브러리 탐지, 프로젝트 유형 분류 결과를 합쳐 ProjectProfile을 만든다.
+"""pom 구조, 소스 스캔, 라이브러리 탐지, 프로젝트 유형 분류 결과를 합쳐 ProjectProfile을 만드는 모듈.
 오케스트레이터의 ``step_analyze``가 호출하고, 결과인 ``profile.json``은 이후 단계와 보고서가 모두 읽는다.
-- 진입점은 :func:`analyze_project`(실행 작업공간)와 :func:`analyze_path` + :class:`PathView`(폴더를 그대로 분석)다
+- 진입점은 실행 작업공간을 받는 :func:`analyze_project`와 폴더를 그 자리에서 읽는 :func:`analyze_path`다
 - 특이 사항이 있어도 실행을 막지 않고 ``profile.warnings``와 ``LibraryUsage``에만 남긴다
 - MSA 프로젝트는 ``profile.services``에 배포 서비스를 먼저, 공유 라이브러리 루트(``main_classes == []``)를 뒤에 넣는다
 
-`analyze_project(ws, cfg) -> ProjectProfile`: pom graph + source scan + libraries + classification.
-
 Edge cases (docs/ERROR-HANDLING.md) surface as `profile.warnings` plus `LibraryUsage` entries:
-`system-scope-jars` (E7), `kotlin` / `groovy` / `scala` / `codegen:<plugin artifactId>` (X6), `legacy-encoding` (E1),
-pom-only projects (S3), Gradle / Ant (S4: `warnings[0]` explains, `build_tool != "maven"`), Java ≤ 1.7 levels.
+`system-scope-jars`, `kotlin` / `groovy` / `scala` / `codegen:<plugin artifactId>`, `legacy-encoding`,
+pom-only projects, Gradle / Ant (`warnings[0]` explains, `build_tool != "maven"`), Java <= 1.7 levels.
 
-MSA library-root convention (S1): `profile.services` lists the deployables **and** the shared library roots
+MSA library-root convention: `profile.services` lists the deployables **and** the shared library roots
 (in-repo modules outside every service without spring-boot-maven-plugin / @SpringBootApplication, e.g. `common/`).
 A library root is a `ServiceInfo` with `main_classes == []` and `spring_boot_version is None`, `name` = its
 directory name, `case_type` PURE_JAVA or SPRING_LEGACY (never SPRING_BOOT). Library entries come after the
 deployables; use `sbmig.analyze.is_library_root(svc, profile)` / `library_services(profile)` to tell them apart.
-
-
 """
 from __future__ import annotations
 
@@ -45,12 +40,11 @@ log = logging.getLogger("sbmig.analyze")
 
 class PathView:
     """폴더를 복사하지 않고 읽기만 하는 Workspace 대용 클래스. ``analyze_path``가 쓴다.
-
-    Read-only Workspace-like view over a directory (no copy, no git, no run dir)."""
+    git과 실행 폴더는 없다."""
 
     def __init__(self, root: str | Path):
         self.root = Path(root).resolve()
-        self.ignored_dirs: set[str] = set()      # v2.1z-h: like Workspace.ignored_dirs (stray pom copies)
+        self.ignored_dirs: set[str] = set()      # Workspace.ignored_dirs와 같다. 떠도는 pom 복사본 폴더
 
     def is_ignored(self, rel: str) -> bool:
         """``rel``이 무시할 폴더(``ignored_dirs``) 안에 있는지 확인한다."""
@@ -84,7 +78,7 @@ class PathView:
         ``.git``과 pom 옆의 ``target/``은 빼지만, ``target``이라는 이름의 자바 패키지는 남긴다."""
         return sorted(r for r in (self.rel(p) for p in self.root.rglob(pattern)
                                   if ".git" not in p.relative_to(self.root).parts
-                                  and not is_build_output_path(p.relative_to(self.root), self.root))  # a `target` package stays
+                                  and not is_build_output_path(p.relative_to(self.root), self.root))
                       if not self.is_ignored(r))
 
     def java_files(self) -> list[str]:
@@ -140,8 +134,7 @@ def analyze_project(ws: WorkspaceView, cfg: Config) -> ProjectProfile:
     source = scan.stats()
     libraries = detect_libraries(poms, scan)
 
-    # build tool (S4): the explanation must be warnings[0] — the orchestrator aborts on build_tool != "maven"
-    # (it already rejects non-Maven builds at intake with the same detection; this is the fallback)
+    # 오케스트레이터가 build_tool을 보고 중단하므로 이유는 warnings[0]에 둔다. 접수 단계 검사의 대체 경로다
     det = detect_build_tool(ws)
     build_tool = det.tool
     if det.tool != "maven":
@@ -184,7 +177,7 @@ def analyze_project(ws: WorkspaceView, cfg: Config) -> ProjectProfile:
         root_pom = roots[0] if len(roots) == 1 else None
     name = root_pom.artifact_id if root_pom else root.name
 
-    # round 9c: boot modules by the company naming rule (layout.boot_module_pattern), confirmed by their pom
+    # 회사 이름 규칙(layout.boot_module_pattern)으로 boot 모듈을 찾고 pom으로 확인한다
     boot_modules, bm_warn, bm_reasons = boot_module_findings(
         poms, root_pom, scan, cfg.layout.boot_module_pattern,
         [s for s in services if s.kind == "service"] if case == CaseType.MSA else ())
@@ -224,33 +217,31 @@ def analyze_project(ws: WorkspaceView, cfg: Config) -> ProjectProfile:
                                                     root_pom.artifact_id if root_pom else root.name),
     )
     # ADF 근거가 하나라도 있으면 요약을 프로필에 남긴다. 두 계열 이상이면 오케스트레이터가 실행을 중단한다
-    # v2.1z-d: ADF detection; the verdict + sizing go on the profile whenever an evidence family is present
     try:
         from .adf import detect_adf
         adf = detect_adf(ws)
         if adf.present:
             profile.adf = adf.summary()
-    except Exception as e:  # noqa: BLE001 - the analyzer must never fail on a sizing
+    except Exception as e:  # noqa: BLE001
         log.warning("ADF detection skipped: %s: %s", type(e).__name__, e)
     # 트리에 있지만 어떤 pom도 선언하지 않은 jar를 프로필에 기록한다. 이 검사로 분석이 실패하지는 않는다
-    # v2.1z-i: bundled jars (in the tree, declared by no pom); a profile fact, never fails the analysis
     if getattr(getattr(cfg, "intake", None), "bundled_jars", True):
         try:
             from .bundled_jars import scan_bundled_jars
             profile.bundled_jars = scan_bundled_jars(ws, cfg, poms)
-        except Exception as e:  # noqa: BLE001 - the analyzer must never fail on the bundled-jar scan
+        except Exception as e:  # noqa: BLE001
             log.warning("bundled-jar scan skipped: %s: %s", type(e).__name__, e)
     # 사내 프레임워크 아티팩트를 쓰면 이관 범위를 JDK와 jakarta로 줄인다. 설정이 비어 있으면 None으로 둔다
-    # v2.1z-ak: framework projects (static sources only; the orchestrator adds the dependency:tree check)
+    # 여기서는 파일만 본다. dependency:tree 확인은 오케스트레이터가 더한다
     try:
         from .framework import decide_scope, detect_framework
         profile.framework = decide_scope(detect_framework(ws, cfg, poms, profile.bundled_jars), cfg)
-    except Exception as e:  # noqa: BLE001 - the analyzer must never fail on the framework check
+    except Exception as e:  # noqa: BLE001
         log.warning("framework check skipped: %s: %s", type(e).__name__, e)
     if cfg.externalized.enabled:
-        # round 8: settings the code reads that only the external container supplied (JNDI, context-param, -D …)
+        # 외장 컨테이너만 주던 설정(JNDI, context-param, -D 등)을 코드가 읽는지 찾는다
         rules = load_rules(cfg.resolve_path(cfg.externalized.rules_file))
-        # round 9: MSA → per-service inventory over the deployables (library roots are not services)
+        # MSA는 배포 서비스마다 따로 찾는다. 라이브러리 루트는 서비스가 아니다
         deployable = [s for s in services if s.kind == "service"] if case == CaseType.MSA else None
         profile.properties = scan_properties(ws, poms, scan, rules, cfg, services=deployable or None)
     log.info("analyzed %s: case=%s confidence=%.2f poms=%d java=%d", name, case.value, confidence,
@@ -259,7 +250,5 @@ def analyze_project(ws: WorkspaceView, cfg: Config) -> ProjectProfile:
 
 
 def analyze_path(path: str | Path, cfg: Config) -> ProjectProfile:
-    """폴더를 실행 작업공간에 복사하지 않고 그 자리에서 읽기 전용으로 분석한다.
-
-    Analyze a directory in place (no copy into a run workspace)."""
+    """폴더를 실행 작업공간에 복사하지 않고 그 자리에서 읽기 전용으로 분석한다."""
     return analyze_project(PathView(path), cfg)

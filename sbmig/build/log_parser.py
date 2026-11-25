@@ -1,14 +1,12 @@
 """Maven 빌드 로그를 읽어 ``BuildError`` 목록으로 바꾸는 모듈.
 ``MavenRunner``가 빌드가 실패할 때마다 ``parse_maven_log``를 호출하고, OpenRewrite 실패 메시지를 정리할 때도
-쓴다. L1 / L2 서명은 ``signatures.fill_signatures``가 채운다.
-- 로그를 줄 단위로 한 번만 읽으며 현재 모듈과 goal을 따라가고, javac 오류, 의존성 / parent / 플러그인 해결
-  실패, enforcer 위반, 잘못된 pom을 오류로 만든다
+쓴다. L1, L2 서명은 ``signatures.fill_signatures``가 채운다.
+- 로그를 줄 단위로 한 번만 읽으면서 현재 모듈과 goal을 따라간다
+- javac 오류, 의존성, parent, 플러그인 해결 실패, enforcer 위반, 잘못된 pom을 오류로 만든다
 - 실패한 빌드에서 빈 목록을 반환하지 않는다. 해석하지 못하면 UNKNOWN 오류 하나를 만든다
 - PC가 달라도 서명이 같도록 경로는 프로젝트 기준 상대경로로 바꾸고 메시지 속 루트 경로는 지운다
 - javac는 구문 오류가 있으면 타입 오류를 보여 주지 않고 reactor는 첫 실패 뒤 모듈을 건너뛴다.
   그래서 수정 루프는 라운드마다 다시 빌드하고 로그를 다시 파싱한다
-
-Maven log → structured ``BuildError`` list.
 
 A single pass, line-oriented state machine. It understands (Maven 3.6 … 3.9 output, ``-B`` batch mode):
 
@@ -24,8 +22,6 @@ A single pass, line-oriented state machine. It understands (Maven 3.6 … 3.9 ou
 
 Everything that is not understood but makes the build fail ends up as one ``UNKNOWN`` error so the caller never
 gets an empty list for a failed build.
-
-
 """
 from __future__ import annotations
 
@@ -74,19 +70,17 @@ _RULE_RE = re.compile(r"^Rule (?P<n>\d+): (?P<rule>\S+?) failed with message:?\s
 # Maven 메시지 예: `Unresolveable build extension: Plugin org.apache.maven.wagon:wagon-webdav:jar:1.0-beta-2 or one of its
 # dependencies could not be resolved: Failed to read artifact descriptor …`
 # build extension을 받지 못하면 어떤 goal도 실행되지 않으므로 좌표를 읽어 확장마다 케이스를 만든다
-# Maven 3 prints `Plugin.getId()` = g:a:v (no type) here; the `:jar:` form appears only in the "Failed to read artifact descriptor for
-# g:a:jar:v" tail — the optional type group accepts both; Maven 4 spells it "Unresolvable" (review 2026-11-05)
+# Maven 3은 여기서 g:a:v를 출력하고 :jar:는 뒷부분에만 나오므로 타입은 선택 항목이다. Maven 4는 "Unresolvable"로 쓴다
 _BUILD_EXT_RE = re.compile(r"Unresolv(?:e)?able build extension: Plugin (?P<g>[\w.\-]+):(?P<a>[\w.\-]+):"
                            r"(?:(?P<t>jar|maven-plugin|pom|bundle):)?(?P<v>[\w.\-]+) or one of its dependencies could not be resolved")
-BUILD_EXTENSION_RE = _BUILD_EXT_RE      # public name for the orchestrator's OpenRewrite-failure check
+BUILD_EXTENSION_RE = _BUILD_EXT_RE      # 오케스트레이터가 OpenRewrite 실패를 확인할 때 쓰는 공개 이름
 _POM_PROBLEMS_RE = re.compile(r"Some problems were encountered while processing the POMs")
 _PROJECT_PROBLEMS_RE = re.compile(
     r"^\s*The project (?P<gav>\S*) \((?P<path>[^)]*)\) has \d+ errors?")
 _MISSING_VERSION_RE = re.compile(r"'(?P<field>[\w.]+\.version)' for (?P<coords>[\w.\-]+:[\w.\-]+)(?::[\w.\-]+)* is missing")
 _NON_PARSEABLE_RE = re.compile(r"Non-parseable POM (?P<path>.+?\.xml|[^:]+):\s*(?P<msg>.*)$")
 # pom 문제 뒤에 붙는 위치 정보. 상속된 문제면 부모 pom 경로가 붙고, 고쳐야 할 파일은 그 pom이다
-# the location Maven appends to a POM problem: `@ line N, column M` (the project's own pom) or, for an inherited
-# problem, `@ <parent g:a:v>, <parent pom path>, line N, column M` — the file to fix is that path
+# `@ line N, column M` 또는 `@ <parent g:a:v>, <parent pom path>, line N, column M`
 _POM_LOCATION_RE = re.compile(r"\s@\s+(?:(?P<gav>[\w.\-]+:[\w.\-]+:[\w.\-]+(?::[\w.\-]+)*),\s+)?"
                               r"(?:(?P<path>[^,]+?\.(?:xml|pom)),\s+)?line (?P<line>\d+)(?:, column (?P<col>\d+))?\s*$")
 _PARENT_RE = re.compile(r"Non-resolvable parent POM(?: for (?P<child>[\w.\-]+:[\w.\-]+:[\w.\-]+))?")
@@ -111,10 +105,10 @@ _BARE_FAILURE_RE = re.compile(r"(?:Compilation failure:?\s*)+")
 
 
 def _cause_line(lines: list[str]) -> str:
-    """'Failed to execute goal … Compilation failure' 블록에서 요약 문구와 Maven 안내 문구가 아닌 첫 줄을 반환한다.
+    """컴파일러 플러그인의 실패 블록에서 goal 줄, 요약 문구, Maven 안내 문구가 아닌 첫 줄을 반환한다.
+    그런 줄이 없으면 빈 문자열을 반환한다.
 
-    Review P8: the first line of a compiler plugin's failed-goal block that is neither the goal line, the
-    `Compilation failure` summary nor Maven boilerplate (`warnings found and -Werror specified` …); "" when none."""
+    Typical hit: `warnings found and -Werror specified`."""
     for ln in lines:
         body = ln.strip()
         if not body or body.startswith("Failed to execute goal") or _is_boilerplate(body):
@@ -133,8 +127,7 @@ def strip_ansi(text: str) -> str:
 
 def plugin_short_name(artifact_id: str) -> str:
     """플러그인 artifactId를 ``compiler:compile``에 쓰는 짧은 이름으로 바꾼다.
-
-    maven-compiler-plugin → compiler, kotlin-maven-plugin → kotlin, compiler → compiler."""
+    예를 들어 ``maven-compiler-plugin``과 ``kotlin-maven-plugin``은 ``compiler``, ``kotlin``이 된다."""
     m = re.match(r"^maven-(.+)-plugin$", artifact_id)
     if m:
         return m.group(1)
@@ -147,7 +140,7 @@ def plugin_short_name(artifact_id: str) -> str:
 def parse_coords(coords: str) -> GAV:
     """Maven 좌표 문자열을 GAV로 바꾼다. ``:``로 나눈 항목 수에 따라 각 항목의 의미를 정한다.
 
-    Maven coordinates g:a[:type[:classifier]]:version → GAV."""
+    Accepted: g:a, g:a:v, g:a:type:v, g:a:type:classifier:v."""
     parts = coords.strip().split(":")
     if len(parts) == 2:
         return GAV(group_id=parts[0], artifact_id=parts[1])
@@ -183,7 +176,7 @@ def _is_boilerplate(body: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# path handling
+# 경로 정리
 # ---------------------------------------------------------------------------
 def _root_prefixes(project_root: Path | str | None) -> list[str]:
     """로그에서 지울 프로젝트 루트 경로의 여러 표기를 긴 것부터 반환한다.
@@ -196,7 +189,7 @@ def _root_prefixes(project_root: Path | str | None) -> list[str]:
         cands.add(_clean_path(str(Path(project_root).resolve())).rstrip("/"))
     except OSError:
         pass
-    for c in sorted(cands):                              # copy: the set grows inside the loop
+    for c in sorted(cands):                              # 반복 중에 집합이 늘어나므로 정렬한 복사본으로 순회한다
         if c.startswith("/private/"):
             cands.add(c[len("/private"):])
         elif c.startswith(("/tmp/", "/var/")):
@@ -211,10 +204,9 @@ def _clean_path(path: str) -> str:
     """로그의 경로를 슬래시를 쓰고 스킴이 없는 형태로 정리한다.
     Windows의 ``/C:/…``와 ``file:///C:/…``는 ``C:/…``로 바꾼다.
 
-    One path as Maven / javac / kotlinc print it → forward slashes, no ``file:`` scheme, and a Windows drive path
-    without the URI-style leading slash. On Windows the in-process javac (plexus ``toUri().getPath()``) prints
-    ``/C:/work/proj/src/…``; kotlinc and some plugins print ``file:///C:/…`` or ``file:/C:/…`` (percent-encoded).
-    All become ``C:/work/proj/src/…`` — a leading ``/C:/`` made ``ws.abs`` build ``C:\\C:\\…`` (round 10)."""
+    On Windows the in-process javac (plexus ``toUri().getPath()``) prints ``/C:/work/proj/src/…``; kotlinc and
+    some plugins print ``file:///C:/…`` or ``file:/C:/…`` (percent-encoded). A leading ``/C:/`` would make
+    ``ws.abs`` build ``C:\\C:\\…``."""
     p = path.strip().replace("\\", "/")
     if p[:5].lower() == "file:":
         p = unquote(p[5:])
@@ -231,10 +223,7 @@ def _is_drive_path(p: str) -> bool:
 
 def _relativize(path: str, prefixes: list[str]) -> str:
     """``path``를 처음 일치하는 프로젝트 루트 기준 상대경로로 바꾼다.
-    일치하는 루트가 없으면 정리만 한 경로를 반환한다. Windows 경로는 대소문자를 무시하고 비교한다.
-
-    ``path`` relative to the first matching project-root prefix (POSIX separators), else the cleaned path.
-    Windows prefixes (``C:/…``) compare case-insensitively: ``c:/work`` / ``C:/Work`` name the same directory."""
+    일치하는 루트가 없으면 정리만 한 경로를 반환한다. Windows 경로는 대소문자를 무시하고 비교한다."""
     p = _clean_path(path)
     for pre in prefixes:
         fold = _is_drive_path(pre)
@@ -251,11 +240,11 @@ def _scrub_regex(prefixes: tuple[str, ...]) -> re.Pattern[str] | None:
     """프로젝트 루트 경로의 모든 표기를 한 번에 지우는 정규식을 만든다.
     PC마다 다른 절대경로를 지워야 서명이 같아진다.
 
-    One alternation for every project-root prefix in every spelling a log uses: ``/work/proj/``,
+    Spellings covered: ``/work/proj/``,
     ``file:///work/proj/``, ``C:/work/proj/``, ``C:\\work\\proj\\``, ``/C:/work/proj/``, ``file:///c:/…`` (Windows
     prefixes case-insensitively)."""
     alts: list[str] = []
-    for pre in prefixes:                                # longest first (`_root_prefixes` sorts them)
+    for pre in prefixes:                                # `_root_prefixes`가 긴 것부터 정렬해 둔다
         if not pre:
             continue
         body = "".join(r"[/\\]" if ch == "/" else re.escape(ch) for ch in pre)
@@ -272,7 +261,7 @@ def _scrub(text: str, prefixes: list[str]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# parser
+# 파서
 # ---------------------------------------------------------------------------
 @dataclass
 class _Block:
@@ -282,7 +271,7 @@ class _Block:
     raw: list[str] = field(default_factory=list)
     module: str | None = None
     goal: str | None = None
-    plugin: str | None = None      # short name (compiler, enforcer, surefire...)
+    plugin: str | None = None      # 짧은 이름. compiler, enforcer, surefire 등
     coords: str | None = None
     msg: str = ""
     pom_file: str | None = None
@@ -311,9 +300,9 @@ class _Parser:
         self._results_section: str | None = None
         self.meaningful_errors: list[str] = []
 
-    # ------------------------------------------------------------- helpers
+    # ------------------------------------------------------------- 보조 함수
     def _add(self, err: BuildError) -> BuildError:
-        # PC마다 다른 경로가 L1 / L2 서명에 섞이지 않도록 서명을 만들기 전에 루트 경로를 지운다
+        # PC마다 다른 경로가 L1, L2 서명에 섞이지 않도록 서명을 만들기 전에 루트 경로를 지운다
         err.raw = _scrub(err.raw, self.prefixes)
         err.message = _scrub(err.message, self.prefixes).strip()
         fill_signatures(err)
@@ -323,7 +312,7 @@ class _Parser:
     def _rel(self, p: str) -> str:
         return _relativize(p, self.prefixes)
 
-    # ------------------------------------------------------------- main loop
+    # ------------------------------------------------------------- 줄 단위 처리
     def feed(self, lines: Iterable[str]) -> None:
         """로그 줄을 하나씩 처리하고, 끝나면 열려 있는 블록을 닫는다."""
         for original in lines:
@@ -334,9 +323,11 @@ class _Parser:
 
     def _line(self, line: str, level: str | None, body: str) -> None:
         """로그 한 줄을 처리한다. 아래 순서가 중요하다.
-        직전 javac 오류에 이어지는 줄 -> INFO 줄의 모듈 / goal 정보, WARNING의 enforcer 규칙 -> ERROR의
-        javac 오류와 surefire 결과 -> 그 밖의 블록 처리"""
-        # 1) javac continuation lines (prefixed or not)
+        1. 직전 javac 오류에 이어지는 줄
+        2. INFO 줄의 모듈, goal 정보와 WARNING 줄의 enforcer 규칙
+        3. ERROR 줄의 javac 오류와 surefire 결과
+        4. 그 밖의 오류 블록"""
+        # 1) 레벨이 붙었든 안 붙었든 javac 오류에 이어지는 줄
         if self._last_javac is not None and level in (None, "ERROR"):
             m = _CONT_RE.match(body)
             if m:
@@ -360,7 +351,7 @@ class _Parser:
             if not _is_boilerplate(body) and not body.startswith("COMPILATION ERROR"):
                 self.meaningful_errors.append(body.strip())
 
-        # 2) context lines
+        # 2) 모듈, goal 정보 줄
         if level == "INFO" or level is None and self._block is None:
             if level == "INFO":
                 self._context(body)
@@ -381,7 +372,7 @@ class _Parser:
                 return
             return
 
-        # 3) javac / kotlin diagnostics
+        # 3) javac, kotlinc 오류
         if level == "ERROR":
             stripped = body.strip()
             m = _JAVAC_RE.match(stripped)
@@ -395,12 +386,12 @@ class _Parser:
             if self._results(level, body):
                 return
 
-        # 4) block handling
+        # 4) 오류 블록
         self._blocks(line, level, body)
 
     def _context(self, body: str) -> None:
         """INFO 줄을 보고 현재 모듈과 goal을 갱신한다.
-        'Building' 줄의 이름은 '< g:a >' 머리줄이 없을 때만 쓴다."""
+        'Building' 줄의 이름은 '< g:a >' 헤더 줄이 없을 때만 쓴다."""
         m = _HEADER_RE.match(body)
         if m:
             self._pending_artifact = m.group("a")
@@ -420,9 +411,7 @@ class _Parser:
 
     def _results(self, level: str | None, body: str) -> bool:
         """surefire 'Results:' 구간에서 실패한 테스트를 모은다.
-        테스트를 건너뛰고 빌드하므로 보통은 비어 있다.
-
-        Track surefire's 'Results:' section; collect failing test entries."""
+        테스트를 건너뛰고 빌드하므로 보통은 비어 있다. 이 줄을 처리했으면 True를 반환한다."""
         b = body.strip()
         if level == "INFO" and b == "Results:":
             self._in_results = True
@@ -444,11 +433,9 @@ class _Parser:
             return level == "ERROR"
         return False
 
-    # ------------------------------------------------------------- javac
+    # ------------------------------------------------------------- javac 오류
     def _kind_for(self, file: str, goal: str | None) -> ErrorKind:
         # Windows javac 경로는 역슬래시를 쓰므로 먼저 바꿔야 src/test 아래 오류가 TEST_COMPILE로 분류된다
-        # Windows javac paths come with backslashes (D:\work\x\src\test\java\…): normalise before the path test, or
-        # a test-source error is filed as COMPILE and the test-compile fallback (L7) / `scope test` never apply
         path = "/" + (file or "").replace("\\", "/")
         if (goal or "").endswith("testCompile") or (goal or "").endswith("test-compile") \
                 or "/src/test/" in path or "/src/it/" in path:
@@ -463,20 +450,20 @@ class _Parser:
     def _record_javac(self, file: str, line_no: int, col: int | None, msg: str, raw: str) -> None:
         """javac 오류를 기록한다.
         같은 오류가 두 번 출력되므로 (파일, 줄, 열, 메시지)가 같으면 하나로 합친다.
-        두 번째 출력의 이어지는 줄은 ``_Shadow``가 받아 첫 오류에 비어 있는 symbol / location만 채운다.
-        서명은 ``finish``에서 채운다."""
+        두 번째 출력의 이어지는 줄은 ``_Shadow``가 받아 첫 오류에 비어 있는 symbol, location만 채운다.
+        이어지는 줄을 다 받아야 하므로 서명은 ``finish``에서 채운다."""
         msg = re.sub(r"^error:\s*", "", msg.strip())
         rel = self._rel(file)
         module, goal = self._goal_module()
         key = (rel, line_no, col, msg)
         existing = self._javac.get(key)
         if existing is not None:
-            self._last_javac = _Shadow(existing)           # merge continuations into the first occurrence
+            self._last_javac = _Shadow(existing)           # 이어지는 줄을 처음 오류에 합친다
             return
         kind = self._kind_for(rel, goal)
         err = BuildError(kind=kind, message=msg, file=rel, line=line_no, column=col, module=module,
                          goal=goal or ("compiler:testCompile" if kind == ErrorKind.TEST_COMPILE else None), raw=raw)
-        self.errors.append(err)                             # signatures filled at the end (continuations pending)
+        self.errors.append(err)                             # 이어지는 줄이 남았으므로 서명은 끝에서 채운다
         self._javac[key] = err
         self._last_javac = err
 
@@ -489,7 +476,7 @@ class _Parser:
         col = m.group("col") or m.group("col2")
         self._record_javac(m.group("file"), int(ln), int(col) if col else None, m.group("msg"), line)
 
-    # ------------------------------------------------------------- blocks
+    # ------------------------------------------------------------- 오류 블록
     def _blocks(self, line: str, level: str | None, body: str) -> None:
         """오류 블록을 열고, 줄을 이어 붙이고, 닫는다.
         'Failed to execute goal'을 가장 먼저 보고, pom 문제, 플러그인 해결, 의존성 해결, enforcer 순으로
@@ -523,8 +510,8 @@ class _Parser:
                 self._block = _Block(kind="project", module=module, pom_file=self._rel(m.group("path")), raw=[line])
                 return
             if self._block is None or self._block.kind not in ("failed_goal",):
-                # a "Plugin … or one of its dependencies could not be resolved" line INSIDE a pom / project block is a build-extension
-                # problem of that project (Maven 3 prints it type-less there) — not a plugin resolution block of its own
+                # pom, project 블록 안의 "Plugin … could not be resolved" 줄은 그 프로젝트의 build extension 문제다
+                # 따로 플러그인 해결 블록을 열지 않는다
                 if _PLUGIN_RES_RE.search(b) and not (self._block and self._block.kind in ("pom", "project")):
                     self._close_block()
                     self._block = _Block(kind="plugin_res", module=self.module, goal=self.goal, lines=[b], raw=[line])
@@ -554,7 +541,7 @@ class _Parser:
             if _HELP_SUFFIX_RE.search(b) and self._block.kind not in ("pom", "project"):
                 self._close_block()
             return
-        # level None: unprefixed continuation (legacy enforcer messages, " @ " markers, stack traces)
+        # 레벨이 없는 이어지는 줄. 이전 enforcer 메시지, " @ " 위치 표시, 스택 트레이스 등
         if self._block is not None and b and b != "@":
             if self._block.kind in ("rule", "failed_goal", "dep", "plugin_res"):
                 if b.startswith("at ") or b.startswith("Caused by"):
@@ -569,7 +556,7 @@ class _Parser:
         handler = getattr(self, f"_finish_{blk.kind}")
         handler(blk)
 
-    # ------------------------------------------------------------- finishers
+    # ------------------------------------------------------------- 블록을 오류로 만들기
     def _finish_pom(self, blk: _Block) -> None:
         for b, raw in zip(blk.lines, blk.raw[1:] or blk.raw):
             self._pom_line(b, raw, module=None, pom_file=None)
@@ -585,7 +572,7 @@ class _Parser:
         if not msg or msg == "@" or _is_boilerplate(msg):
             return
         key = _scrub(msg, self.prefixes)
-        # 위치 정보에 경로가 있으면 그 pom을, 없으면 해당 프로젝트의 pom을 쓴다
+        # 위치 정보에 경로가 있으면 그 pom을, 없으면 그 프로젝트의 pom을 쓴다
         pom_file, line_no, col_no = self._pom_location(msg, pom_file)
         m_ext = _BUILD_EXT_RE.search(msg)
         if m_ext:
@@ -601,7 +588,7 @@ class _Parser:
             if line_no and not existing.line:
                 existing.line, existing.column = line_no, col_no
             if m_ext and len(msg) > len(existing.message):
-                existing.message = msg                      # the project block carries the reason (401 / 404 / timeout)
+                existing.message = msg                      # 프로젝트 블록 쪽에 401, 404, 타임아웃 같은 이유가 있다
             return
         if m_ext:
             art = GAV(group_id=m_ext.group("g"), artifact_id=m_ext.group("a"), version=m_ext.group("v"))
@@ -646,9 +633,7 @@ class _Parser:
     def _pom_location(self, msg: str, pom_file: str | None) -> tuple[str | None, int | None, int | None]:
         """pom 문제 메시지 뒤의 위치 정보에서 (파일, 줄, 열)을 읽는다.
         위치 정보가 없으면 (pom_file, None, None)을 반환한다.
-
-        (file, line, column) from the message's location tail: the path in the tail (an inherited problem names the
-        parent pom) relativised, else the project's own pom; no tail → (pom_file, None, None)."""
+        상속된 문제는 위치 정보에 부모 pom 경로가 있으므로 그 경로를 상대경로로 바꿔 반환한다."""
         m = _POM_LOCATION_RE.search(msg)
         if not m:
             return pom_file, None, None
@@ -757,8 +742,10 @@ class _Parser:
 
     def _finish_failed_goal(self, blk: _Block) -> None:
         """'Failed to execute goal' 블록을 오류로 만든다.
-        해결 실패는 해당 처리 함수로 넘기고, 컴파일러 플러그인 실패는 javac 오류가 이미 있으면 버린다. 애노테이션
-        프로세서 실패에는 ``annotation-processor:`` 접두어를 붙이고, 그 밖은 PLUGIN_EXECUTION으로 분류한다."""
+        - 의존성, 플러그인 해결 실패는 그 처리 함수로 넘긴다
+        - 컴파일러 플러그인 실패는 javac 오류가 이미 있으면 버린다
+        - 애노테이션 프로세서 실패에는 ``annotation-processor:`` 접두어를 붙인다
+        - enforcer, surefire, failsafe가 아닌 나머지는 PLUGIN_EXECUTION으로 분류한다"""
         text = "\n".join(blk.lines)
         raw = "\n".join(blk.raw)
         if _DEP_START_RE.search(text) or "The following artifacts could not be resolved" in text:
@@ -830,10 +817,9 @@ class _Parser:
 
 
 # ---------------------------------------------------------------------------
-# symbols javac does not print (round 10: the L2 signature is the case-catalog key)
+# javac가 출력하지 않는 symbol 보충
 # ---------------------------------------------------------------------------
-# javac가 이름을 출력하지 않는 오류는 소스 줄에서 symbol을 읽는다.
-# 그러지 않으면 이런 오류가 모두 한 케이스로 묶인다
+# javac가 이름을 출력하지 않는 오류는 소스 줄에서 symbol을 읽는다. 그러지 않으면 이런 오류가 모두 한 케이스로 묶인다
 MAX_SOURCE_BYTES = 2_000_000
 _OVERRIDE_RE = re.compile(r"@\s*(?:java\.lang\.)?Override\b")
 _ANNOTATION_RE = re.compile(r"@\s*[\w$.]+\s*")
@@ -846,8 +832,7 @@ _NOT_A_NAME = frozenset({"if", "for", "while", "switch", "catch", "synchronized"
 
 class _SourceLines:
     """파싱 한 번 동안 소스 파일의 줄을 캐시하는 클래스. UTF-8, cp949, latin-1 순서로 디코딩을 시도한다.
-
-    Lines of project sources, read once per parse (UTF-8, else MS949, else latin-1 — identifiers are ASCII)."""
+    식별자는 ASCII라 latin-1로 읽어도 이름을 찾는 데는 문제없다."""
 
     def __init__(self, root: Path | None):
         self.root = root
@@ -880,10 +865,8 @@ class _SourceLines:
 
 
 def _overriding_method(lines: list[str], line_no: int, col: int | None) -> str:
-    """(줄, 열) 위치의 ``@Override``가 붙은 메서드 이름을 찾는다. 주석과 문자열은 먼저 지우고 찾는다.
-
-    Name of the method an ``@Override`` at (line, col) annotates: the annotations after it (with their arguments)
-    are skipped, the first ``name(`` of the declaration header is the method."""
+    """(줄, 열) 위치의 ``@Override``가 붙은 메서드 이름을 찾는다. 못 찾으면 빈 문자열을 반환한다.
+    주석과 문자열을 먼저 지우고, 뒤따르는 애노테이션을 인자까지 건너뛴 뒤 선언의 첫 ``name(``을 이름으로 본다."""
     if not (1 <= line_no <= len(lines)):
         return ""
     first = lines[line_no - 1]
@@ -901,7 +884,7 @@ def _overriding_method(lines: list[str], line_no: int, col: int | None) -> str:
         if not m:
             return ""
         i = m.end()
-        if i < n and text[i] == "(":                    # @RequestMapping(value = "/x", method = GET)
+        if i < n and text[i] == "(":                    # @RequestMapping(value = "/x", method = GET) 같은 인자
             depth = 0
             while i < n:
                 if text[i] == "(":
@@ -919,12 +902,10 @@ def _overriding_method(lines: list[str], line_no: int, col: int | None) -> str:
 
 def _symbol_from_source(err: BuildError, sources: _SourceLines) -> None:
     """이름을 출력하지 않는 javac 오류의 ``symbol``을 소스 줄에서 찾아 채운다.
-    소스를 읽지 못하면 아무것도 하지 않는다.
+    소스를 읽지 못하면 아무것도 하지 않는다. 그러면 L2 서명은 오류 종류만 남는다.
 
-    ``method does not override …`` and ``static import only from classes and interfaces`` never name what they are
-    about; without it every such error in the fleet shared one L2 (= one catalog case). Fills ``symbol`` from the
-    reported source line: ``method <name>`` of the annotated declaration, ``class <qualifier>`` of the static import.
-    Nothing when the source cannot be read (the L2 then stays the bare class)."""
+    Covers ``method does not override …`` (symbol ``method <name>`` of the annotated declaration) and ``static
+    import only from classes and interfaces`` (symbol ``class <qualifier>`` of the static import)."""
     cls = classify_javac(err.message)
     if cls not in ("method_does_not_override", "static_import_only") or not err.line:
         return
@@ -943,9 +924,7 @@ def _symbol_from_source(err: BuildError, sources: _SourceLines) -> None:
 
 
 class _Shadow:
-    """두 번째로 출력된 같은 javac 오류의 이어지는 줄을 받아, 원래 오류에 비어 있는 symbol / location만 채우는 클래스.
-
-    Continuation sink for a duplicate javac error: fills missing symbol/location of the original only."""
+    """두 번째로 출력된 같은 javac 오류의 이어지는 줄을 받아 원래 오류의 빈 symbol, location만 채우는 클래스."""
 
     def __init__(self, target: BuildError):
         self._t = target
@@ -971,7 +950,7 @@ class _Shadow:
         return ""
 
     @raw.setter
-    def raw(self, v: str) -> None:                      # the original already carries its raw block
+    def raw(self, v: str) -> None:                      # 원래 오류가 원문 블록을 이미 갖고 있으므로 버린다
         pass
 
 
@@ -993,12 +972,12 @@ _PARENT_HINT_RE = re.compile(r"(?i)\bparent\b")
 
 
 def parent_coordinates_in(text: str) -> list[GAV]:
-    """Maven 메시지에서 해석하지 못한 parent pom 좌표를 나온 순서대로 중복 없이 반환한다.
+    """Maven 메시지에서 해석하지 못한 parent pom 좌표(g:a:v)를 나온 순서대로 중복 없이 반환한다.
+    ``Non-resolvable parent POM`` 문구가 없으면 parent를 언급한 텍스트의 pom 타입 좌표만 본다.
     예외를 던지지 않는다.
 
-    The coordinates (g:a:v, in order, de-duplicated) of the parent poms Maven could not resolve: the four message shapes
-    after `Non-resolvable parent POM for …:`, with or without the relativePath tail; without that head, only pom-typed
-    coordinates of a text that mentions a parent. Never raises."""
+    With the head: the first artifact of each `Non-resolvable parent POM for …:` chunk (the four message
+    shapes, with or without the relativePath tail)."""
     out: list[GAV] = []
     try:
         text = text or ""
@@ -1018,25 +997,22 @@ def parent_coordinates_in(text: str) -> list[GAV]:
                 g = GAV(group_id=a.group_id, artifact_id=a.artifact_id, version=a.version)
                 if all(o.coordinates != g.coordinates for o in out):
                     out.append(g)
-    except Exception:  # noqa: BLE001 - a parser helper never raises
+    except Exception:  # noqa: BLE001
         return out
     return out
 
 
 # ---------------------------------------------------------------------------
-# public API
+# 공개 함수
 # ---------------------------------------------------------------------------
 _POM_SKIP_DIRS = frozenset({"target", ".git", ".svn", ".hg", "node_modules", ".idea", ".sbmig", "out", "build"})
 _POM_WALK_LIMIT = 2000
 
 
 def reactor_artifact_ids_from_poms(root: Path | str | None) -> list[str]:
-    """프로젝트 트리의 pom.xml들이 선언한 artifactId 목록을 반환한다.
+    """프로젝트 트리의 pom.xml들이 선언한 자기 artifactId 목록을 반환한다. ``<parent>``의 것은 넣지 않는다.
     서명에서 ``<module>``로 가릴 이름을 찾는 데 쓰며 예외를 던지지 않는다.
-    로그에는 reactor가 도달한 모듈만 나오므로, 빌드마다 같은 결과를 얻으려면 트리에서 읽어야 한다.
-
-    Every artifactId the project's pom.xml files declare (the pom's own, not its `<parent>`), for the `<module>` masking
-    registry; read from the tree because a fail-fast reactor log names only the modules it reached. Never raises."""
+    로그에는 reactor가 도달한 모듈만 나오므로, 빌드마다 같은 결과를 얻으려면 트리에서 읽어야 한다."""
     if not root:
         return []
     base = Path(root)
@@ -1066,7 +1042,7 @@ def reactor_artifact_ids_from_poms(root: Path | str | None) -> list[str]:
                     if child.tag.rsplit("}", 1)[-1] == "artifactId" and (child.text or "").strip():
                         out.append(child.text.strip())
                         break
-            except Exception:  # noqa: BLE001 - a broken pom is the build's problem, not the parser's
+            except Exception:  # noqa: BLE001 - 깨진 pom은 빌드가 알려 준다
                 continue
     except Exception:  # noqa: BLE001
         return sorted(set(out))
@@ -1077,10 +1053,8 @@ def parse_maven_log(text: str, project_root: Path | str | None = None, *,
                     known_modules: Iterable[str] = ()) -> list[BuildError]:
     """Maven 로그 전체를 서명까지 채운 오류 목록으로 바꾼다. 이상한 입력에도 예외를 던지지 않는다.
 
-    Parse a full Maven log into structured errors (signatures filled). Never raises on odd input."""
-    # reactor 순서가 바뀌어도 L2 서명에서 같은 이름을 <module>로 가리도록 호출자가 아는 artifactId까지 모두 등록한다
-    # the caller's reactor artifactIds (the whole pom tree) join the log's own, so the masking does not depend on how
-    # far a fail-fast reactor got; still replaced per parse
+    `set_reactor_modules` is process-global and replaced on every parse."""
+    # reactor가 어디까지 진행했든 같은 이름을 <module>로 가리도록 호출자가 아는 artifactId까지 모두 등록한다
     set_reactor_modules([*known_modules, *reactor_artifact_ids(text)])
     parser = _Parser(project_root)
     parser.feed(text.splitlines())
@@ -1089,10 +1063,8 @@ def parse_maven_log(text: str, project_root: Path | str | None = None, *,
 
 def reactor_artifact_ids(text: str) -> list[str]:
     """로그에 나온 reactor 모듈 artifactId를 나온 순서대로 중복 없이 반환한다.
-    'Building' 줄의 이름은 표시 이름일 수 있어 쓰지 않는다.
-
-    Every reactor artifactId the log shows, in order of appearance: ``< g:a >`` headers, ``@ <artifactId>`` mojo
-    markers and ``on project <artifactId>`` failure lines (the ``Building <name>`` display name is not certain)."""
+    ``< g:a >`` 헤더, ``@ <artifactId>`` goal 줄, ``on project <artifactId>`` 실패 줄을 읽는다.
+    'Building' 줄의 이름은 표시 이름일 수 있어 쓰지 않는다."""
     seen: dict[str, None] = {}
     for raw in (text or "").splitlines():
         level, body = _split_level(strip_ansi(raw))
@@ -1114,15 +1086,9 @@ _REACTOR_LINE_RE = re.compile(r"^(?P<name>\S.*?)\s+(?:\.+\s*)?(?P<status>SUCCESS
 
 
 def parse_reactor_summary(text: str) -> tuple[list[str], str | None]:
-    """(성공한 모듈 목록, 실패한 모듈)을 반환한다.
+    """(SUCCESS로 끝난 모듈 목록, 실패한 모듈)을 반환한다.
     다중 모듈은 Reactor Summary를, 단일 모듈은 'Building' 줄을 읽는다.
-
-    (modules_built, failed_module) — artifactIds where known (from the ``< g:a >`` headers), else names.
-
-    Uses the Reactor Summary for multi-module builds; for single-module builds the ``Building <name>`` lines.
-    ``modules_built`` lists modules that finished with SUCCESS.
-
-
+    ``< g:a >`` 헤더로 artifactId를 알 수 있으면 artifactId를, 아니면 표시 이름을 쓴다.
     """
     names: dict[str, str] = {}
     building: list[str] = []

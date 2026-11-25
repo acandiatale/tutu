@@ -1,13 +1,11 @@
-"""규칙 표(``LIBRARY_RULES``)로 프로젝트가 쓰는 라이브러리를 찾아 ``LibraryUsage`` 목록(이름, 버전, 근거)을 만드는 모듈.
+"""규칙 표(``LIBRARY_RULES``)로 프로젝트가 쓰는 라이브러리를 찾아 ``LibraryUsage`` 목록을 만드는 모듈.
 분석기가 프로필의 ``libraries``를 만들 때 호출하고, MSA는 서비스마다 다시 호출한다.
-- 계획, 권고(``knowledge/libraries/advisories.yml``의 ``library`` 키), 수정 스크립트 프롬프트가 이 이름을
-  읽는다. 규칙 이름을 바꾸면 권고가 적용되지 않으므로 바꾸지 않는다
+- 계획, 권고(``knowledge/libraries/advisories.yml``의 ``library`` 키), 수정 스크립트 프롬프트가 이 이름을 읽는다.
+  규칙 이름을 바꾸면 권고가 적용되지 않으므로 바꾸지 않는다
 - 규칙을 추가할 때는 advisories.yml의 ``library``와 이름을 맞춘다
 - 근거 문자열은 ``pom:``, ``pom-managed:``, ``pom-parent:``, ``import:``, ``file:`` 중 하나로 시작한다
 
-Table-driven library detection → `LibraryUsage` list.
-
-The library *names* are a contract (planner, triage handlers, notes selection and KB tags rely on them):
+The library *names* are a contract (planner, notes selection, advisories and KB tags rely on them):
 lombok, mapstruct, querydsl, spring-security, spring-data-jpa, spring-data-redis, spring-kafka, spring-batch,
 spring-cloud, hibernate, mybatis, jpa, springdoc, springfox, feign, jackson, junit4, junit5, mockito,
 testcontainers, log4j2, logback, javax-servlet, jakarta-servlet, jsp, jaxb, javax-annotation, validation,
@@ -16,15 +14,16 @@ spring-retry, elasticsearch, mongodb,
 plus the library-advisory rules (knowledge/libraries/advisories.yml, docs/ADVISORIES.md): sleuth, hystrix, ribbon,
 zuul, netflix-feign, spring-cloud-bom, swagger-v1, spring-security-oauth2-legacy, log4j1, commons-lang2, httpclient4,
 jdk-removed-apis (imports of JDK-internal / removed packages: sun.misc, sun.security, com.sun.image, javax.activation;
-JAXB `javax.xml.bind` stays on the `jaxb` rule), ibatis2 (iBATIS 2: `com.ibatis` / `org.springframework.orm.ibatis`
-imports, `org.apache.ibatis:ibatis-*` artifacts; `mybatis` = MyBatis 3 only), hibernate-commons-annotations
-(`org.hibernate.annotations.common.*` imports / the HCANN artifact — gone from Hibernate ORM 7),
-and the 2026-10-22 era-library rules (advisories of the same name unless noted): hibernate-template (Spring's
-`org.springframework.orm.hibernate3|4|5` imports; import-only — spring-orm itself is too broad), commons-fileupload,
-jackson1, tiles, velocity, axis1 (`org.apache.axis` / `javax.xml.rpc`; not `org.apache.axis2`), commons-httpclient3,
-commons-collections3 (not `collections4`), ehcache2, json-lib, jjwt (advisory jjwt-legacy, < 0.10), poi (advisory
-poi-legacy, < 5.0), struts2 (< 7.0), egovframe, dbcp1 (advisory commons-dbcp1; not `dbcp2`), querydsl-hibernate-native
-(`com.querydsl.jpa.hibernate.*` imports only).
+JAXB `javax.xml.bind` stays on the `jaxb` rule), jdk-generified-apis, ibatis2 (iBATIS 2: `com.ibatis` /
+`org.springframework.orm.ibatis` imports, `org.apache.ibatis:ibatis-*` artifacts; `mybatis` = MyBatis 3 only),
+hibernate-commons-annotations (`org.hibernate.annotations.common.*` imports / the HCANN artifact, gone from
+Hibernate ORM 7), and the era-library rules (advisories of the same name unless noted): hibernate-template
+(Spring's `org.springframework.orm.hibernate3|4|5` imports; import-only, spring-orm itself is too broad),
+commons-fileupload, jackson1, tiles, velocity, axis1 (`org.apache.axis` / `javax.xml.rpc`; not
+`org.apache.axis2`), commons-httpclient3, commons-collections3 (not `collections4`), ehcache2, json-lib, jjwt
+(advisory jjwt-legacy, < 0.10),
+poi (advisory poi-legacy, < 5.0), struts2 (< 7.0), egovframe, dbcp1 (advisory commons-dbcp1; not `dbcp2`),
+querydsl-hibernate-native (`com.querydsl.jpa.hibernate.*` imports only).
 
 Edge-case names added by the analyzer (not table-driven, see `sbmig.analyze.edges`): system-scope-jars, kotlin,
 groovy, scala, codegen:<plugin artifactId> (protobuf-maven-plugin, jaxb2-maven-plugin, openapi-generator-maven-plugin,
@@ -32,8 +31,6 @@ maven-jaxb2-plugin, querydsl-maven-plugin), legacy-encoding (evidence = detected
 
 Evidence strings: `pom:<g>:<a>[:<v>]`, `pom-managed:<g>:<a>[:<v>]` (dependencyManagement entry, rules with
 `managed`), `pom-parent:<g>:<a>[:<v>]` (parent coordinates, rules with `parents`), `import:<prefix>`, `file:<what>`.
-
-
 """
 from __future__ import annotations
 
@@ -52,15 +49,15 @@ _SC = "org.springframework.cloud"
 
 @dataclass(frozen=True)
 class LibraryRule:
-    """라이브러리 탐지 규칙 하나를 담는 데이터 클래스.
-    이름과 근거로 볼 의존성, import, JSP, 설정 파일, 관리 의존성, 부모 패턴을 담는다."""
+    """라이브러리 탐지 규칙 하나를 담는 클래스.
+    근거로 볼 의존성, import, JSP, 설정 파일, dependencyManagement, 부모 패턴을 담는다."""
     name: str
-    deps: tuple[str, ...] = ()        # "group:artifact-glob" (fnmatch on both parts)
-    imports: tuple[str, ...] = ()     # import prefixes (matched on segment boundary)
-    jsp: bool = False                 # *.jsp files count as evidence
-    config: tuple[str, ...] = ()      # config file basename globs
-    managed: tuple[str, ...] = ()     # dependencyManagement "group:artifact-glob" patterns (BOM imports …)
-    parents: tuple[str, ...] = ()     # parent "group:artifact-glob" patterns
+    deps: tuple[str, ...] = ()        # "group:artifact-glob", 양쪽 모두 fnmatch로 비교한다
+    imports: tuple[str, ...] = ()     # import 접두어, 패키지 경계에서만 비교한다
+    jsp: bool = False                 # True면 *.jsp 파일도 근거로 본다
+    config: tuple[str, ...] = ()      # 설정 파일 이름 glob
+    managed: tuple[str, ...] = ()     # dependencyManagement 패턴, BOM import 등
+    parents: tuple[str, ...] = ()     # 부모 pom 패턴
 
 
 # 규칙 표. 이 순서대로 결과가 나온다. import 접두어는 패키지 경계에서만 비교하므로 짧은 접두어도 안전하다
@@ -137,9 +134,7 @@ LIBRARY_RULES: tuple[LibraryRule, ...] = (
     LibraryRule("mongodb", ("org.mongodb:*", "org.springframework.data:spring-data-mongodb",
                             f"{_B}:spring-boot-starter-data-mongodb*"),
                 ("com.mongodb", "org.springframework.data.mongodb")),
-    # 여기부터는 Boot 4 BOM이 관리하지 않거나 EOL인 라이브러리의 권고용 규칙이다.
-    # 안내만 하고 차단하지 않는다
-    # ---- library advisories (EOL / no longer managed by the Boot 4 BOM; knowledge/libraries/advisories.yml)
+    # ---- 권고용 규칙: EOL이거나 Boot 4 BOM이 관리하지 않는 라이브러리. 안내만 하고 차단하지 않는다
     LibraryRule("sleuth", (f"{_SC}:spring-cloud-starter-sleuth", f"{_SC}:spring-cloud-sleuth-*"),
                 ("org.springframework.cloud.sleuth",)),
     LibraryRule("hystrix", (f"{_SC}:spring-cloud-starter-netflix-hystrix*", f"{_SC}:spring-cloud-starter-hystrix*",
@@ -165,32 +160,24 @@ LIBRARY_RULES: tuple[LibraryRule, ...] = (
     LibraryRule("httpclient4", ("org.apache.httpcomponents:httpclient", "org.apache.httpcomponents:httpmime",
                                 "org.apache.httpcomponents:fluent-hc"),
                 ("org.apache.http.client", "org.apache.http.impl.client", "org.apache.http.HttpResponse")),
-    # JDK-internal / removed-from-the-JDK packages (pre-Java-8 code; advisory jdk-removed-apis). Import-only.
+    # JDK 내부 패키지나 JDK에서 빠진 패키지. import만 본다
     LibraryRule("jdk-removed-apis", (), ("sun.misc", "sun.security", "com.sun.image", "javax.activation")),
-    # JDK 9 generified javax.swing.tree (DefaultMutableTreeNode.children() → Enumeration<TreeNode>): pre-Java-9 code
-    # stops compiling on javac 21 with "inference variable T has incompatible equality constraints" (advisory
-    # jdk-generified-apis, round 9c). Import-only.
+    # JDK 9에서 javax.swing.tree가 제네릭으로 바뀌어 이전 코드가 javac 21에서 추론 오류를 낸다. import만 본다
+    # javac 21: "inference variable T has incompatible equality constraints"
     LibraryRule("jdk-generified-apis", (), ("javax.swing.tree",)),
-    # iBATIS 2는 코드로 고칠 수 없는 경우가 많으므로 감지해서 인수인계에 올린다
-    # iBATIS 2 (round 9; advisory ibatis2): Spring 4.0 removed org.springframework.orm.ibatis. Distinct from `mybatis`
-    # (MyBatis 3 = org.mybatis:* artifacts, org.apache.ibatis.* imports); iBATIS 2 = com.ibatis.* imports and the
-    # org.apache.ibatis:ibatis-* artifacts. Pom + imports only: Spring XML bean classes (SqlMapClientFactoryBean)
-    # are not scanned — the ScanResult keeps XML paths, not their content.
+    # iBATIS 2는 코드로 고칠 수 없는 경우가 많으므로 감지해서 인수인계에 남긴다
+    # MyBatis 3과 달리 com.ibatis import와 ibatis-* 아티팩트로 본다. 스캔 결과에 XML 내용이 없어 빈 설정은 보지 않는다
     LibraryRule("ibatis2", ("org.apache.ibatis:ibatis-sqlmap", "org.apache.ibatis:ibatis-core",
                             "org.apache.ibatis:ibatis*", "ibatis:ibatis*", "com.ibatis:*"),
                 ("com.ibatis", "org.springframework.orm.ibatis")),
-    # Hibernate Commons Annotations (2026-10-22, company run; advisory hibernate-commons-annotations): hibernate-core
-    # 3.x–6.x pulled it in transitively, so `org.hibernate.annotations.common.*` imports (LoggerFactory / Log, XClass …)
-    # compiled without a pom entry; Hibernate ORM 7 (Boot 4) dropped it → "package … does not exist". The generic
-    # `hibernate` rule still fires on the same import (org.hibernate.annotations); this one names the lost jar.
+    # hibernate-core 6.x까지 따라오던 jar라 pom 없이 컴파일됐지만 Hibernate ORM 7에서 빠져 패키지 없음 오류가 난다
+    # 같은 import로 `hibernate` 규칙도 맞는다. 이 규칙은 빠진 jar 이름을 알려 주기 위한 것이다
     LibraryRule("hibernate-commons-annotations", ("org.hibernate.common:hibernate-commons-annotations",
                                                   "org.hibernate:hibernate-commons-annotations"),
                 ("org.hibernate.annotations.common",)),
-    # ---- 2026-10-22 era libraries (out/research/era-libraries-*.yml → advisories.yml, knowledge/notes/era-libraries.md).
-    # Import prefixes match on a segment boundary, so `org.apache.commons.collections` never matches `collections4`,
-    # `org.apache.commons.dbcp` never `dbcp2`, `org.apache.axis` never `org.apache.axis2`, `org.apache.commons.fileupload`
-    # never `fileupload2`. Spring 7 removed HibernateTemplate / HibernateDaoSupport / orm.hibernate5 (import-only rule:
-    # org.springframework:spring-orm is in every JPA project).
+    # ---- 오래된 라이브러리 규칙: advisories.yml과 knowledge/notes/era-libraries.md에 같은 이름의 권고가 있다
+    # import는 패키지 경계로 비교하므로 collections는 collections4에, dbcp는 dbcp2에, axis는 axis2에 맞지 않는다
+    # spring-orm은 JPA 프로젝트마다 있으므로 hibernate-template은 import만 본다. Spring 7에서 HibernateTemplate이 빠졌다
     LibraryRule("hibernate-template", (), ("org.springframework.orm.hibernate3", "org.springframework.orm.hibernate4",
                                            "org.springframework.orm.hibernate5")),
     LibraryRule("commons-fileupload", ("commons-fileupload:commons-fileupload",),
@@ -215,8 +202,7 @@ LIBRARY_RULES: tuple[LibraryRule, ...] = (
                 ("org.apache.struts2", "com.opensymphony.xwork2")),
     LibraryRule("egovframe", ("egovframework.rte:*", "org.egovframe.rte:*"), ("egovframework.rte", "org.egovframe.rte")),
     LibraryRule("dbcp1", ("commons-dbcp:commons-dbcp",), ("org.apache.commons.dbcp",)),
-    # QueryDSL's Hibernate-native API does not link against Hibernate 6/7 (advisory querydsl-hibernate-native); plain
-    # JPAQueryFactory users stay on the Boot-managed com.querydsl line, so this rule is import-only.
+    # QueryDSL의 Hibernate 전용 API는 Hibernate 6, 7과 맞지 않는다. 일반 JPAQueryFactory는 문제없으므로 import만 본다
     LibraryRule("querydsl-hibernate-native", (), ("com.querydsl.jpa.hibernate",)),
 )
 
@@ -242,10 +228,9 @@ def _concrete(v: Optional[str]) -> Optional[str]:
 
 def detect_libraries(poms: Iterable[PomInfo], scan: Optional[ScanResult] = None,
                      imports: Optional[Counter] = None) -> list[LibraryUsage]:
-    """규칙마다 pom 의존성, dependencyManagement, 부모, import, JSP, 설정 파일에서 근거를 모아 근거가 있는
-    규칙만 ``LibraryUsage``로 반환한다.
+    """pom, import, JSP, 설정 파일에서 규칙마다 근거를 모아 근거가 있는 라이브러리만 ``LibraryUsage``로 반환한다.
     버전은 처음 맞은 의존성의 버전이고, 없으면 dependencyManagement의 버전이다.
-    ``scan`` 없이 호출하면 pom 근거만 본다."""
+    ``scan``과 ``imports``가 모두 없으면 pom 근거만 본다."""
     poms = list(poms)
     deps = [d for p in poms for d in p.dependencies]
     managed = [d for p in poms for d in p.dependency_management]
@@ -256,7 +241,7 @@ def detect_libraries(poms: Iterable[PomInfo], scan: Optional[ScanResult] = None,
     for rule in LIBRARY_RULES:
         evidence: list[str] = []
         version: Optional[str] = None
-        # dependencies: the first rule pattern that matches (in rule order) decides the version
+        # 규칙 패턴 순서대로 처음 맞은 의존성의 버전을 쓴다
         for pattern in rule.deps:
             for d in deps:
                 if _dep_matches(pattern, d):

@@ -6,11 +6,9 @@ Wagon 전송 확장은 ``mvn deploy``에만 쓰이지만 Maven은 어떤 goal보
 - 목록에 없는 확장은 빌드에 쓰일 수 있으므로 그대로 두고 기록만 한다
 - 지울 좌표는 코드가 아니라 목록 파일에 둔다
 
-Remove deploy-transport build extensions at intake: Wagon providers in `<build><extensions>` only teach `mvn deploy` a URL
-scheme, yet Maven resolves every extension while building the project model — before any goal, OpenRewrite included —
-so an unresolvable one stops the whole run. The intake removes the extensions matched by the knowledge list
-(`intake.build_extensions_file`) from every pom (profiles included) before the first Maven call; unlisted extensions take
-part in the build and are only recorded."""
+Maven resolves every `<build><extensions>` entry while building the project model, before any goal
+(OpenRewrite included), so an unresolvable Wagon provider stops the whole run although only `mvn deploy`
+uses it."""
 from __future__ import annotations
 
 import fnmatch
@@ -28,10 +26,8 @@ log = logging.getLogger("sbmig.analyze.build_extensions")
 
 @dataclass(frozen=True)
 class DeployTransport:
-    """목록 파일의 한 줄을 담는 데이터 클래스.
-    groupId는 정확히 일치해야 하고, artifactId는 셸 글롭 패턴으로 비교한다.
-
-    One knowledge row: exact groupId, artifactId as a shell glob."""
+    """목록 파일의 한 줄을 담는 클래스.
+    groupId는 정확히 일치해야 하고, artifactId는 셸 glob 패턴으로 비교한다."""
     group: str
     artifact: str = "*"
     note: str = ""
@@ -42,7 +38,7 @@ class DeployTransport:
 
 @dataclass
 class RemovedExtension:
-    """지운 확장 하나를 담는 데이터 클래스. pom 상대 경로, 좌표, 프로필 id를 담는다."""
+    """지운 확장 하나의 pom 상대 경로, 좌표, 프로필 id를 담는 클래스."""
     pom: str
     coordinates: str
     profile: str | None = None
@@ -53,7 +49,7 @@ class RemovedExtension:
 
 @dataclass
 class StripResult:
-    """제거 결과를 담는 데이터 클래스. 지운 확장과, 목록에 없어 그대로 둔 확장을 담는다."""
+    """지운 확장, 목록에 없어 그대로 둔 확장, 저장한 pom을 담는 클래스."""
     removed: list[RemovedExtension] = field(default_factory=list)
     kept: list[tuple[str, str]] = field(default_factory=list)
     poms_changed: list[str] = field(default_factory=list)
@@ -61,9 +57,7 @@ class StripResult:
 
 def load_deploy_transports(cfg: Any) -> list[DeployTransport]:
     """``intake.build_extensions_file``에서 ``deploy_transports`` 목록을 읽는다.
-    파일이 없거나 깨졌으면 경고를 한 번 남기고 빈 목록을 반환하므로, 접수는 아무것도 지우지 않는다.
-
-    The `deploy_transports` rows of `intake.build_extensions_file`; a missing / broken file → one warning and []."""
+    파일이 없거나 깨졌으면 경고를 한 번 남기고 빈 목록을 반환한다. 이때 접수는 아무것도 지우지 않는다."""
     rel = getattr(getattr(cfg, "intake", None), "build_extensions_file", "") or ""
     if not rel:
         return []
@@ -83,12 +77,9 @@ def load_deploy_transports(cfg: Any) -> list[DeployTransport]:
 
 
 def strip_deploy_extensions(ws: Any, cfg: Any, table: list[DeployTransport] | None = None) -> StripResult:
-    """모든 pom의 ``build/extensions``와 ``profiles/*/build/extensions``에서 목록에 있는 확장을 지우고, 비게
-    된 ``<extensions>``도 지운다.
-    목록에 없는 확장은 ``kept``에 기록만 한다. 예외를 던지지 않고, 깨진 pom은 건너뛴다.
-
-    Remove the listed extensions from every pom's `build/extensions` and `profiles/*/build/extensions`, drop an emptied
-    `<extensions>`, save; unlisted extensions are recorded in `kept`. Never raises (a broken pom is skipped)."""
+    """모든 pom의 ``build/extensions``와 ``profiles/*/build/extensions``에서 목록에 있는 확장을 지운다.
+    지워서 빈 ``<extensions>``도 지운다. 목록에 없는 확장은 ``kept``에 기록만 한다.
+    예외를 던지지 않고, 읽을 수 없는 pom은 건너뛴다."""
     from sbmig.restructure.pom_editor import PomEditor
 
     res = StripResult()
@@ -112,8 +103,7 @@ def strip_deploy_extensions(ws: Any, cfg: Any, table: list[DeployTransport] | No
                     continue
                 removed_here = 0
                 for ext in list(ed.children(exts, "extension")):
-                    # `${…}` resolved with THIS pom's properties — the match uses the resolved value (a property defined in a
-                    # parent pom stays literal and the extension is kept: the loop's note handles it)
+                    # `${…}`는 이 pom의 속성으로만 푼다. 부모 pom의 속성이면 그대로 남아 확장도 남고, 수정 루프의 노트가 처리한다
                     g = ed.resolve(ed.text_of(ext, "groupId")) or ""
                     a = ed.resolve(ed.text_of(ext, "artifactId")) or ""
                     v = ed.resolve(ed.text_of(ext, "version")) or ""
@@ -124,12 +114,13 @@ def strip_deploy_extensions(ws: Any, cfg: Any, table: list[DeployTransport] | No
                         res.removed.append(RemovedExtension(pom=rel, coordinates=coords, profile=profile))
                     else:
                         res.kept.append((rel, coords))
-                if removed_here:                  # an as-is empty <extensions/> is not ours to rewrite (it would ride into the next commit)
+                # 원래부터 비어 있던 <extensions/>까지 고치면 다음 커밋에 섞이므로 지운 경우에만 정리한다
+                if removed_here:
                     ed.remove_if_empty(exts)
             if ed.changed:
                 ed.save()
                 res.poms_changed.append(rel)
-        except Exception as e:  # noqa: BLE001 - one unreadable pom must not stop the intake; Maven will report it
+        except Exception as e:  # noqa: BLE001 - 읽지 못한 pom은 Maven이 알려 준다
             log.warning("build extensions: %s skipped (%s: %s)", rel, type(e).__name__, e)
     return res
 
@@ -144,7 +135,7 @@ def commit_message(res: StripResult) -> str:
 
 
 def followups(res: StripResult) -> list[str]:
-    """지운 확장마다 영어로 된 인수인계 줄을 하나씩 만든다. 다른 후속 조치와 같은 말투로 쓴다."""
+    """지운 확장마다 인수인계 문장을 하나씩 만든다. 다른 후속 조치처럼 영어로 쓴다."""
     return [f"build extension {r.coordinates} was removed from {r.where()}: it is a deploy transport (WebDAV / SSH / FTP) "
             f"the old <distributionManagement> needed for `mvn deploy`; packaging never used it and the company parent "
             f"supplies the deploy target — if a team still deploys over that protocol, it must re-add the extension there"

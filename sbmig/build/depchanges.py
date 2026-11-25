@@ -1,19 +1,16 @@
 """시도나 구조 검토 커밋이 pom에서 실제로 바꾼 의존성 좌표를 찾아내는 모듈.
 의존성 버전 정책이 지켜졌는지 확인하는 장치다.
 LLM에게 메이저 업그레이드를 금지해도 실제로는 바뀔 수 있으므로, 빌드는 막지 않고 운영자에게 확인할 내용을 알린다.
-- 수정 루프의 각 시도 뒤와 구조 검토 커밋 뒤에 ``changes_in_commit``을 호출한다. major / replaced 변경은
-  ``major_upgrades``와 운영자 확인 사항이 되어 인수인계 맨 위와 ``SBMIG-RESULT … major=N``에 나온다
+- 수정 루프의 각 시도 뒤와 구조 검토 커밋 뒤에 ``changes_in_commit``을 호출한다
+- major, replaced 변경은 ``major_upgrades``와 운영자 확인 사항이 되어 인수인계 맨 위와 ``SBMIG-RESULT … major=N``에 나온다
 - 메이저 숫자가 바뀌면 ``major``, 라이브러리가 빠지고 대체 라이브러리가 들어오면 ``replaced``, 그 밖은
-  ``minor`` / ``added`` / ``removed``로 분류한다
+  ``minor``, ``added``, ``removed``로 분류한다
 - 이 결과로 무언가를 막거나 되돌리지는 않는다. 보고할 때 되돌려진 시도의 변경은 ``still_applied``로 뺀다
 - 텍스트만 받고 예외를 던지지 않는다. 파싱되지 않는 pom이면 빈 목록을 반환한다
 
-v2.1d dependency version policy — what a fix changed in the poms (docs/INTERFACES.md "v2.1d").
-
-Why: in a company run the LLM replaced SiteMesh 2 (`opensymphony:sitemesh:2.4.2`) with `org.sitemesh:sitemesh:3.2.1`
-and ported the filter; the build passed, the runtime was never verified. The user: never a major upgrade on the LLM's
-own, and when one happened anyway, tell the operator what to check — without blocking the build. The prompt carries
-the policy; this module is the read-back guard that notices what really changed.
+docs/INTERFACES.md "v2.1d". The prompt carries the policy (no major upgrade on the LLM's own); this module is
+the read-back guard that notices what really changed, e.g. SiteMesh 2 (`opensymphony:sitemesh:2.4.2`) replaced
+by `org.sitemesh:sitemesh:3.2.1`.
 
 `dependency_changes(before, after, path)` reads two versions of ONE pom and lists every coordinate change as
 `DependencyChange` (dependencies, dependencyManagement, plugins, pluginManagement, `<parent>`): kind `major` when the
@@ -26,8 +23,6 @@ possible. Pure text in, never raises (a pom that does not parse → []).
 libraries)` marks the changes a person's table entry allows; `still_applied(ws, change)` says whether the final tree
 still carries it (a rolled-back try is not reported); `synthesized_guide(changes, lang)` is the operator guide sbmig
 writes when the LLM gave no `<verify>`.
-
-
 """
 from __future__ import annotations
 
@@ -43,7 +38,7 @@ from sbmig.core.models import DependencyChange
 log = logging.getLogger("sbmig.build.depchanges")
 
 SECTIONS = ("dependencies", "dependencyManagement", "plugins", "pluginManagement", "parent")
-# 메이저 버전은 최대 3자의 접두 문자 뒤에 나오는 첫 숫자이며, ${…}는 major_of가 따로 None으로 처리한다
+# 메이저 버전은 최대 3자의 접두 문자 뒤에 나오는 첫 숫자다. ${…}는 major_of가 따로 None으로 처리한다
 _MAJOR_RE = re.compile(r"^\D{0,3}?(\d+)")
 _PROP_RE = re.compile(r"\$\{([^}]+)\}")
 _WORD_SPLIT_RE = re.compile(r"[-._]")
@@ -54,8 +49,7 @@ def major_of(version: Optional[str]) -> Optional[int]:
     """Maven 버전의 메이저 숫자를 반환한다.
     ``${x}``, 빈 값, None, ``RELEASE``, ``LATEST``는 비교할 수 없으므로 None을 반환한다.
 
-    Leading number of a Maven version (`2.4.2` → 2, `3.3.0-RC1` → 3, `v2.1` → 2; `${x}` / "" / None / `RELEASE`
-    / `LATEST` → None)."""
+    `2.4.2` is 2, `3.3.0-RC1` is 3, `v2.1` is 2."""
     if version is None:
         return None
     v = str(version).strip()
@@ -66,18 +60,18 @@ def major_of(version: Optional[str]) -> Optional[int]:
         return None
     try:
         return int(m.group(1))
-    except ValueError:  # pragma: no cover - the regex only matches digits
+    except ValueError:  # pragma: no cover - 정규식이 숫자만 잡는다
         return None
 
 
 # ---------------------------------------------------------------------------------------------------------------------
-# reading one pom
+# pom 하나 읽기
 # ---------------------------------------------------------------------------------------------------------------------
 @dataclass
 class _Coord:
     group_id: str
     artifact_id: str
-    version: Optional[str]           # property-resolved where possible; raw `${…}` when not; None = no <version>
+    version: Optional[str]           # 속성을 풀 수 있으면 푼 값, 못 풀면 `${…}` 그대로, <version>이 없으면 None
     classifier: Optional[str] = None
 
     @property
@@ -94,8 +88,8 @@ def _resolver(ed: Any):
     풀지 못하는 값은 그대로 둔다.
     버전을 속성으로만 바꾼 시도도 잡아내기 위해 속성을 푼다.
 
-    `${prop}` → the pom's own `<properties>` (nested references followed a few levels), `${project.version}` /
-    `${pom.version}` → the pom's version (or its parent's); what cannot be resolved stays as written."""
+    Nested references are followed up to five levels; `${project.version}` / `${pom.version}` is the pom's
+    version or its parent's."""
     props = ed.properties()
     own = ed.effective_version() or ""
     builtins = {"project.version": own, "pom.version": own, "version": own,
@@ -144,21 +138,19 @@ def _coords(ed: Any) -> dict[str, list[_Coord]]:
 
 def _parse(text: str, path: str) -> Any:
     """텍스트를 PomEditor로 파싱한다.
-    비어 있거나 pom이 아니면 None을 반환하므로 새로 생긴 pom이나 지운 pom은 비교하지 않는다.
-
-    PomEditor of `text`, None when it is empty / not a pom."""
+    비어 있거나 pom이 아니면 None을 반환하므로 새로 생긴 pom이나 지운 pom은 비교하지 않는다."""
     if not text or not text.strip():
         return None
     from sbmig.restructure.pom_editor import PomEditor
     try:
         return PomEditor(path or "pom.xml", text=text)
-    except Exception as e:  # noqa: BLE001 - PomEditError, encoding trouble: no changes from this pom
+    except Exception as e:  # noqa: BLE001 - PomEditError, 인코딩 문제
         log.debug("depchanges: %s does not parse: %s", path, e)
         return None
 
 
 # ---------------------------------------------------------------------------------------------------------------------
-# diffing two texts
+# 두 텍스트 비교
 # ---------------------------------------------------------------------------------------------------------------------
 def _version_kind(before: Optional[str], after: Optional[str]) -> str:
     mb, ma = major_of(before), major_of(after)
@@ -173,8 +165,8 @@ def _contains_word(longer: str, shorter: str) -> bool:
     """짧은 문자열이 긴 문자열의 접두어이거나 단어 단위로 들어 있는지 반환한다.
     4자 미만이면 정확히 같을 때만 참이다.
 
-    `shorter` is a prefix of `longer` or a whole word run inside it (`sitemesh` in `spring-boot-starter-sitemesh`,
-    `spring-boot-starter-web` → `spring-boot-starter-webmvc`). Very short ids (< 4 chars) only match exactly."""
+    Examples: `sitemesh` in `spring-boot-starter-sitemesh`; `spring-boot-starter-web` in
+    `spring-boot-starter-webmvc`."""
     lo, sh = longer.lower(), shorter.lower()
     if len(sh) < 4 or lo == sh:
         return lo == sh
@@ -187,10 +179,8 @@ def _contains_word(longer: str, shorter: str) -> bool:
 
 def _pair_rank(old: _Coord, new: _Coord) -> Optional[int]:
     """빠진 ``old``를 새 ``new``가 대신한다고 볼 수 있는 정도를 반환한다.
-    0은 같은 artifactId, 1은 단어 포함, 2는 이전 artifactId가 새
-    groupId의 마지막 부분인 경우이며, 관계가 없으면 None이다.
-
-    How well `new` stands in for `old` (lower = better), None = unrelated."""
+    0은 같은 artifactId, 1은 단어 포함, 2는 이전 artifactId가 새 groupId의 마지막 부분인 경우다.
+    작을수록 더 가깝고, 관계가 없으면 None을 반환한다."""
     oa, na = old.artifact_id.lower(), new.artifact_id.lower()
     if oa == na:
         return 0
@@ -208,8 +198,9 @@ def _note_for(c: _Coord) -> str:
 
 def _section_changes(section: str, before: list[_Coord], after: list[_Coord], path: str) -> list[DependencyChange]:
     """한 구역의 변경 전후 좌표를 비교한다.
-    같은 (g, a, classifier)의 버전 변경은 major / minor로 나누고, classifier만 바뀐 것도 버전 변경으로 본다.
-    남은 빠진 항목과 들어온 항목은 ``_pair_rank``로 짝지어 replaced로 묶고, 나머지는 removed / added로 둔다."""
+    - 같은 (g, a, classifier)의 버전 변경은 major, minor로 나눈다. classifier만 바뀐 것도 버전 변경으로 본다
+    - 남은 빠진 항목과 들어온 항목은 ``_pair_rank``로 짝지어 replaced로 묶고, 나머지는 removed, added로 둔다
+    - parent는 하나뿐이므로 g:a가 바뀌면 replaced다"""
     out: list[DependencyChange] = []
     b_by: dict[tuple, _Coord] = {}
     for c in before:
@@ -218,7 +209,7 @@ def _section_changes(section: str, before: list[_Coord], after: list[_Coord], pa
     for c in after:
         a_by.setdefault(c.ident, c)
 
-    if section == "parent":                               # at most one parent: a changed g:a is a replacement
+    if section == "parent":                               # parent는 하나뿐이므로 g:a가 바뀌면 교체다
         ob, oa = next(iter(b_by.values()), None), next(iter(a_by.values()), None)
         if ob and oa:
             if ob.key != oa.key:
@@ -244,7 +235,7 @@ def _section_changes(section: str, before: list[_Coord], after: list[_Coord], pa
                                         note=_note_for(oa)))
     added = [oa for ident, oa in a_by.items() if ident not in b_by]
 
-    # the same g:a with another classifier (ehcache → ehcache:jakarta) is a version / classifier change
+    # 같은 g:a에 classifier만 다르면(ehcache와 ehcache:jakarta) 버전, classifier 변경으로 본다
     for ob in list(removed):
         twin = next((oa for oa in added if oa.key == ob.key), None)
         if twin is None:
@@ -256,7 +247,7 @@ def _section_changes(section: str, before: list[_Coord], after: list[_Coord], pa
                                     section=section,
                                     note=f"classifier {ob.classifier or 'none'} → {twin.classifier or 'none'}"))
 
-    # removed + added that stand in for each other → replaced (best match first; each pairing consumes both)
+    # 서로 대신하는 빠진 항목과 들어온 항목을 replaced로 묶는다. 가장 가까운 짝부터, 한 번 짝지은 항목은 다시 쓰지 않는다
     pairs: list[tuple[int, int, int]] = []
     for i, ob in enumerate(removed):
         for j, oa in enumerate(added):
@@ -286,9 +277,7 @@ def _section_changes(section: str, before: list[_Coord], after: list[_Coord], pa
 def dependency_changes(before: str, after: str, path: str) -> list[DependencyChange]:
     """pom 하나의 변경 전후 텍스트를 비교해 좌표 변경 목록을 반환한다.
     예외를 던지지 않으며, 한쪽이 비었거나 파싱되지 않으면 빈 목록을 반환한다.
-
-    Coordinate changes between two texts of the pom at `path` (project-relative posix). Never raises; a side
-    that is empty or does not parse → []."""
+    ``path``는 프로젝트 기준 상대경로이고 결과에 그대로 들어간다."""
     try:
         path = (path or "pom.xml").replace("\\", "/")
         eb, ea = _parse(before, path), _parse(after, path)
@@ -306,10 +295,7 @@ def dependency_changes(before: str, after: str, path: str) -> list[DependencyCha
 
 def changes_in_commit(ws: Any, pre: str, sha: str) -> list[DependencyChange]:
     """두 커밋 사이에 바뀐 모든 ``pom.xml``에 ``dependency_changes``를 적용한다.
-    git 조회가 실패하면 빈 목록을 반환하고, 예외를 던지지 않는다.
-
-    `dependency_changes` over every pom.xml changed between commits `pre` and `sha` (`ws.file_at(sha, path)`).
-    Never raises; [] when git cannot tell."""
+    git 조회가 실패하면 빈 목록을 반환하고, 예외를 던지지 않는다."""
     try:
         if not pre or not sha or pre == sha:
             return []
@@ -318,7 +304,7 @@ def changes_in_commit(ws: Any, pre: str, sha: str) -> list[DependencyChange]:
         else:
             cp = ws._git("diff", "--name-only", pre, sha, check=False)
             files = [f for f in (cp.stdout or "").splitlines() if f.strip()]
-    except Exception as e:  # noqa: BLE001 - git trouble: nothing to report
+    except Exception as e:  # noqa: BLE001
         log.debug("changes_in_commit(%s..%s): %s", pre, sha, e)
         return []
     out: list[DependencyChange] = []
@@ -339,12 +325,12 @@ def changes_in_commit(ws: Any, pre: str, sha: str) -> list[DependencyChange]:
 def _file_at(ws: Any, sha: str, rel: str) -> Optional[str]:
     if hasattr(ws, "file_at"):
         return ws.file_at(sha, rel)
-    cp = ws._git("show", f"{sha}:{rel}", check=False)                  # pragma: no cover - older workspaces
+    cp = ws._git("show", f"{sha}:{rel}", check=False)                  # pragma: no cover - 이전 작업공간
     return cp.stdout if cp.returncode == 0 else None
 
 
 # ---------------------------------------------------------------------------------------------------------------------
-# the people's table
+# 사람이 관리하는 라이브러리 표
 # ---------------------------------------------------------------------------------------------------------------------
 def _entry_for(libraries: list[Any], key: Optional[str]) -> Optional[Any]:
     if not key:
@@ -358,18 +344,17 @@ def _first_sentence(text: str) -> str:
 
 
 def apply_table(changes: Iterable[DependencyChange], libraries: Iterable[Any]) -> None:
-    """라이브러리 표(``JakartaLibrary``)가 허락한 변경에 ``approved`` / ``note``를 표시한다.
-    예외를 던지지 않는다.
+    """라이브러리 표(``JakartaLibrary``)가 허락한 변경에 ``approved``, ``note``를 표시한다. 예외를 던지지 않는다.
     항목에 ``allow_major``가 있거나, 같은 메이저 안에서 항목의 ``version``이 ``after``와 같을 때만 승인한다.
     메이저를 건너는 표의 버전은 참고 정보일 뿐 승인이 아니므로 note만 달고 운영자 확인 항목으로 남긴다.
 
-    Set `approved` / `note` on the changes a table entry (`JakartaLibrary`) allows:
-    * `allow_major` on the entry of `key` or `replaced_by` — a person allowed the move to the entry's `version`
+    Approval rules:
+    * `allow_major` on the entry of `key` or `replaced_by`: a person allowed the move to the entry's `version`
       (the change must land on that major line, or carry no version);
     * the entry's `version` == `after` for the library the entry describes (`key`'s own entry, or for a `replaced`
       change an entry whose coordinates cover both `key` and `replaced_by`, i.e. a relocation the table knows).
     Otherwise a `major` / `replaced` change whose OLD library has a same-major table release gets the note
-    `the table offers a same-major jakarta release: <version>`. Never raises."""
+    `the table offers a same-major jakarta release: <version>`."""
     try:
         libs = list(libraries or [])
         for ch in changes:
@@ -393,10 +378,8 @@ def _apply_one(ch: DependencyChange, libs: list[Any]) -> None:
         on_line = ch.after is None or ch.after == version or (
             major_of(ch.after) is not None and major_of(ch.after) == major_of(version))
         covers = target_key in keys and (ch.kind != "replaced" or ch.key in keys)
-        # 표의 고정 버전은 같은 메이저 안에서만 승인으로 보고, 메이저를 건너는 이동은 사람이 지정한
-        # allow_major가 있을 때만 승인한다
-        # a pin (`version` == after) approves only inside the major line: a cross-major move is approved by a person's
-        # `allow_major` alone — the shipped table's cross-major versions are facts, not approvals (rule 14)
+        # 표의 고정 버전은 같은 메이저 안에서만 승인으로 본다. 메이저를 건너는 이동은 사람이 지정한 allow_major가 있어야 한다
+        # 기본 표의 메이저를 건너는 버전은 정보일 뿐 승인이 아니다(프롬프트 규칙 14)
         same_line = major_of(ch.before) is None or major_of(ch.after) is None or \
             major_of(ch.before) == major_of(ch.after)
         pinned = covers and version is not None and version == ch.after
@@ -416,13 +399,13 @@ def _apply_one(ch: DependencyChange, libs: list[Any]) -> None:
 
 
 # ---------------------------------------------------------------------------------------------------------------------
-# the final tree
+# 최종 트리 확인
 # ---------------------------------------------------------------------------------------------------------------------
 def _read(ws: Any, rel: str) -> Optional[str]:
     if hasattr(ws, "read"):
         try:
             return ws.read(rel)
-        except Exception as e:  # noqa: BLE001 - missing / unreadable: try the plain file below
+        except Exception as e:  # noqa: BLE001 - 아래에서 파일을 직접 읽어 본다
             log.debug("still_applied: ws.read(%s): %s", rel, e)
     if hasattr(ws, "abs"):
         try:
@@ -434,10 +417,9 @@ def _read(ws: Any, rel: str) -> Optional[str]:
 
 def still_applied(ws: Any, change: DependencyChange) -> bool:
     """최종 작업 트리의 pom에 그 변경이 아직 남아 있는지 반환한다.
-    보고할 때 되돌려진 시도를 빼는 데 쓰며, 읽지 못하면 False를 반환한다.
+    보고할 때 되돌려진 시도를 빼는 데 쓴다. 읽지 못하면 False를 반환하고 예외를 던지지 않는다.
 
-    Does the working tree's pom at `change.path` still carry the change (the `after` version of `key` /
-    `replaced_by`)? Used at report time to drop rolled-back tries. Never raises (unreadable → False)."""
+    "Still there" = `key` (or `replaced_by`) at the `after` version; a removal = the key is gone."""
     try:
         text = _read(ws, change.path)
         ed = _parse(text or "", change.path)
@@ -464,7 +446,7 @@ def still_applied(ws: Any, change: DependencyChange) -> bool:
 
 
 # ---------------------------------------------------------------------------------------------------------------------
-# the operator guide sbmig writes itself
+# sbmig가 직접 쓰는 운영자 확인 사항
 # ---------------------------------------------------------------------------------------------------------------------
 def _cap(line: str) -> str:
     return line if len(line) <= GUIDE_LINE_MAX else line[: GUIDE_LINE_MAX - 1].rstrip() + "…"
@@ -478,12 +460,11 @@ def _majors(ch: DependencyChange) -> str:
 def synthesized_guide(changes: Iterable[DependencyChange], lang: str = "ko") -> str:
     """LLM이 ``<verify>``를 주지 않았을 때 sbmig가 대신 운영자 확인 사항을 만든다.
     메이저 업그레이드나 라이브러리 교체마다 한 블록을 만든다.
-    ``lang``이 ko로 시작하면 한국어로, 아니면 영어로 쓰며, 확인할 것이 없으면 빈 문자열을 반환한다.
+    ``lang``이 ko로 시작하면 한국어로, 아니면 영어로 쓴다. 확인할 것이 없으면 빈 문자열을 반환한다.
 
-    The 운영자 확인 사항 sbmig writes when the LLM gave none: one block per major upgrade / replaced library (the
-    rest is ignored) — the coordinates and the major line crossed, then the generic checks (configuration files /
-    registrations / renamed packages / runtime) and, when a person's table approved it, that note. Korean when
-    `lang` starts with "ko", else English; every line ≤ 160 chars; "" when no change needs the operator."""
+    A block: the coordinates and the major line crossed, then the generic checks (configuration files /
+    registrations / renamed packages / runtime) and, when a person's table approved it, that note. Every line
+    is capped at GUIDE_LINE_MAX (160) characters."""
     try:
         ko = (lang or "ko").lower().startswith("ko")
         blocks: list[str] = []

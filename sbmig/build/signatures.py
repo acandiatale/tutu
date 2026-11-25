@@ -1,4 +1,4 @@
-"""빌드 오류의 서명(L1 / L2)을 만드는 모듈.
+"""빌드 오류의 서명(L1, L2)을 만드는 모듈.
 같은 오류는 PC, 실행, 프로젝트가 달라도 같은 문자열이 되고, L2 하나가 케이스 하나다.
 로그 파서가 오류마다 ``fill_signatures``를 호출한다.
 수정 루프는 L2로 오류를 케이스로 묶고 KB에서 찾는다(case_id는 sha1(L2)의 앞 10자리).
@@ -8,13 +8,13 @@
 - 절대경로, 줄 번호, 모듈 이름, 프로젝트 소유 위치는 서명에 넣지 않는다. 서명은 BuildError만으로 결정된다
 - 규칙을 바꾸면 KB의 기존 케이스와 매칭이 끊긴다. 규칙 버전은 ``SIGNATURE_VERSION``이다
 
-Error signatures (ARCHITECTURE §5).
+ARCHITECTURE §5.
 
 * **L1** (specific): stable across machines and runs of the *same* problem, e.g.
   ``compile|cannot_find_symbol|class WebSecurityConfigurerAdapter|package org.springframework.security.config...``
 * **L2** (generic): groups the same *kind* of problem across projects, e.g.
   ``compile|cannot_find_symbol|WebSecurityConfigurerAdapter``. L2 is the case-catalog key (one case per L2, a hit
-  applies the case's action), so it must not merge different problems (round 10): package errors keep the whole
+  applies the case's action), so it must not merge different problems: package errors keep the whole
   package (``…|javax.xml.bind`` ≠ ``…|javax.xml.ws``), ``method_does_not_override`` / ``static_import_only`` carry the
   method / class the log parser read from the source line, ``illegal_start`` the javac phrase, ``plugin_execution``
   the plugin goal plus the normalized cause (``plugin_execution|war:war|error assembling war: webxml attribute is
@@ -30,8 +30,6 @@ Error signatures (ARCHITECTURE §5).
 
 Rules: no absolute paths, no line numbers, no module names, no project-owned locations. Everything here is a pure
 function of the ``BuildError`` so the same error always yields the same signature.
-
-
 """
 from __future__ import annotations
 
@@ -40,13 +38,10 @@ from collections.abc import Iterable
 
 from sbmig.core.models import BuildError, ErrorKind
 
-# 서명 규칙 버전. L2가 달라지는 규칙 변경마다 1씩 올리고, 바뀐 오류 분류를 ``SIGNATURE_CHANGES``에 넣는다.
-# KB 재서명은 그 분류만 다시 계산한다
+# 서명 규칙 버전. L2가 달라지는 규칙 변경마다 1씩 올리고, 바뀐 오류 분류를 ``SIGNATURE_CHANGES``에 넣는다
+# KB 재서명은 그 분류만 다시 계산하고 나머지는 버전만 찍는다. 600자 원문으로 전부 다시 계산하면 규칙이 그대로인 케이스도 흔들린다
 # 1은 버전을 매기기 전 규칙이고, 2는 멤버 심볼에 라이브러리 타입을 붙이는 규칙이다
-# The signature rule version. Raise it with every rule change that alters an L2 `signature_for` produces and list
-# the error classes (2nd L2 segment, prefixed by nothing: the class name alone) the change touches in
-# SIGNATURE_CHANGES: the KB re-sign recomputes ONLY stored records of those classes signed by an older version and
-# merely stamps the rest (recomputing every L2 from a 600-character raw would disturb cases whose rule never changed).
+# SIGNATURE_CHANGES keys: the class name alone (2nd L2 segment).
 SIGNATURE_VERSION = 2
 SIGNATURE_CHANGES: dict[int, frozenset[str]] = {
     2: frozenset({"cannot_find_symbol", "no_suitable_method"}),
@@ -55,10 +50,7 @@ SIGNATURE_CHANGES: dict[int, frozenset[str]] = {
 
 def classes_changed_since(version: int) -> frozenset[str]:
     """``version`` 규칙으로 서명된 기록 중 지금 규칙에서 L2가 달라질 수 있는 오류 분류를 반환한다.
-    0과 1은 같은 규칙으로 보고, 현재 버전 이상이면 빈 집합을 반환한다.
-
-    The error classes (2nd L2 segment) whose L2 may differ between rule `version` and the current rules
-    (0 and 1 are the same rules); empty for the current version or a newer one."""
+    0과 1은 같은 규칙으로 보고, 현재 버전 이상이면 빈 집합을 반환한다. 분류는 L2의 두 번째 항목이다."""
     v = max(int(version or 0), 1)
     out: set[str] = set()
     for changed_in, classes in SIGNATURE_CHANGES.items():
@@ -69,12 +61,10 @@ def classes_changed_since(version: int) -> frozenset[str]:
 
 MAX_MESSAGE_CHARS = 160
 GENERIC_WORDS = 6
-CAUSE_WORDS = 10           # plugin_execution L2: words of the normalized cause after the plugin goal
+CAUSE_WORDS = 10           # plugin_execution L2에서 플러그인 goal 뒤에 남길 원인 단어 수
 
-# 라이브러리 소유 패키지. 이 접두어의 위치와 타입은 서명에 남기고, 프로젝트 패키지는 L1에서 '*'로 가린다.
+# 라이브러리 소유 패키지. 이 접두어의 위치와 타입은 서명에 남기고, 프로젝트 패키지는 L1에서 '*'로 가린다
 # 사내 groupId는 ``register_external_prefixes``로 더한다
-# Locations / types in these namespaces are library-owned and therefore meaningful across projects. Anything else
-# (the project's own packages) is replaced by "*" in L1 so the same library problem matches in another project.
 EXTERNAL_PACKAGE_PREFIXES: tuple[str, ...] = (
     "java.", "javax.", "jakarta.", "jdk.", "sun.", "com.sun.", "kotlin.", "scala.", "groovy.",
     "org.springframework.", "org.apache.", "org.hibernate.", "org.junit.", "org.mockito.", "org.slf4j.",
@@ -88,8 +78,8 @@ EXTERNAL_PACKAGE_PREFIXES: tuple[str, ...] = (
     "lombok.", "feign.", "net.sf.", "net.bytebuddy.", "ch.qos.", "freemarker.", "redis.", "okhttp3.", "retrofit2.",
 )
 
-# javac 메시지 첫 줄을 일정한 분류 이름으로 바꾼다. 먼저 일치한 것이 우선하므로 순서가 중요하다(예
-# 'is not abstract and does not override' 가 'does not override abstract' 보다 먼저).
+# javac 메시지 첫 줄을 일정한 분류 이름으로 바꾼다. 먼저 일치한 것이 우선하므로 순서가 중요하다
+# 예를 들어 'is not abstract and does not override'가 'does not override abstract'보다 먼저 와야 한다
 _JAVAC_CLASSES: list[tuple[str, re.Pattern[str]]] = [
     ("package_does_not_exist", re.compile(r"\bpackage \S+ does not exist")),
     ("cannot_find_symbol", re.compile(r"\bcannot find symbol")),
@@ -116,9 +106,7 @@ _JAVAC_CLASSES: list[tuple[str, re.Pattern[str]]] = [
 _URL_RE = re.compile(r"\b(?:https?|file|ftp)://\S+")
 _WINPATH_RE = re.compile(r"\b[A-Za-z]:\\[^\s:;,'\"()\[\]]+")
 # Windows Maven은 리소스 경로를 상대 경로로 출력하므로 가리지 않으면 폰트, 데이터 파일마다 케이스가 따로 생긴다
-# a RELATIVE Windows path (`src\main\resources\static\fonts\a.otf`): Maven on Windows prints resource paths this
-# way, and an unmasked file name made every font / data file its own case (company run 2026-10-27: the KB never
-# matched the second font although the first was fixed)
+# 예: src\main\resources\static\fonts\a.otf
 _RELWINPATH_RE = re.compile(r"(?<![\w.])(?:[\w.\-@$+~]+\\){1,}[\w.\-@$+~]+")
 _EXCEPTION_RE = re.compile(r"\b([A-Z][A-Za-z0-9]*(?:Exception|Error|Throwable))\b")
 _PATH_RE = re.compile(r"(?<![\w.])(?:\.{0,2}/)?(?:[\w.\-@$+~]+/){2,}[\w.\-@$+~]+/?")
@@ -136,13 +124,8 @@ _WS_RE = re.compile(r"\s+")
 def normalize_message(msg: str, *, module: str | None = None, lower: bool = True,
                       max_chars: int = MAX_MESSAGE_CHARS) -> str:
     """메시지에서 PC와 실행마다 달라지는 부분을 지운다.
+    URL, 경로, 위치, 버전, 숫자, 모듈 이름을 지우고 공백을 정리해 ``max_chars``까지 자른다. 기본은 소문자로 바꾼다.
     버전을 먼저 ``<v>``로 바꿔야 숫자를 처리할 때 쪼개지지 않으므로 처리 순서가 중요하다.
-
-    Strip everything machine/run specific from a message: urls, paths, positions, versions, numbers, module name.
-
-    The result is lowercased (by default), whitespace-collapsed and truncated to ``max_chars``.
-
-
     """
     s = msg or ""
     s = _HELP_RE.sub("", s)
@@ -154,7 +137,7 @@ def normalize_message(msg: str, *, module: str | None = None, lower: bool = True
     s = _ABS_PATH_RE.sub("<path>", s)
     s = _PATH_RE.sub(lambda m: "<path>" if "/" in m.group(0) else m.group(0), s)
     s = _HEX_RE.sub("<hex>", s)
-    # 모듈 이름은 프로젝트마다 다르므로 <module>로 바꾼다.
+    # 모듈 이름은 프로젝트마다 다르므로 <module>로 바꾼다
     # 오류가 난 모듈뿐 아니라 이번 로그의 reactor artifactId를 모두 가린다
     s = _mask_modules(s, module)
     s = re.sub(r"\bon project [\w.\-]+", "on project <module>", s)
@@ -168,11 +151,8 @@ def normalize_message(msg: str, *, module: str | None = None, lower: bool = True
     return s[:max_chars].rstrip()
 
 
-# 가리지 않는 모듈 이름.
-# Maven / javac 문장에 흔한 단어여서 가리면 서로 다른 문제가 한 케이스로 합쳐질 수 있다.
-# 짧은 이름도 같은 이유로 가리지 않는다
-# Module names never masked: they are ordinary words of Maven / javac text, so masking them would merge or
-# split cases on wording rather than on project identity. Names shorter than MIN_MODULE_NAME_CHARS are skipped too.
+# 가리지 않는 모듈 이름. Maven, javac 문장에 흔한 단어여서 가리면 서로 다른 문제가 한 케이스로 합쳐질 수 있다
+# MIN_MODULE_NAME_CHARS보다 짧은 이름도 같은 이유로 가리지 않는다
 MODULE_NAME_STOPLIST: frozenset[str] = frozenset({
     "web", "app", "api", "core", "common", "test", "tests", "main", "build", "parent", "module", "project",
     "resources", "compile", "jar", "war", "pom", "plugin", "source", "target", "class", "error", "file", "java",
@@ -181,7 +161,7 @@ MODULE_NAME_STOPLIST: frozenset[str] = frozenset({
 })
 MIN_MODULE_NAME_CHARS = 3
 
-# 이번 파싱의 reactor artifactId(프로세스 전역).
+# 이번 파싱의 reactor artifactId. 프로세스 전역 값이다
 # 다음 프로젝트에서 앞 프로젝트의 이름을 가리지 않도록 파싱마다 교체한다
 _REACTOR_MODULES: frozenset[str] = frozenset()
 _MASK_CACHE: dict[tuple[str, ...], re.Pattern[str] | None] = {}
@@ -189,18 +169,13 @@ _MASK_CACHE: dict[tuple[str, ...], re.Pattern[str] | None] = {}
 
 def set_reactor_modules(names: Iterable[str]) -> None:
     """이번 빌드 로그의 reactor artifactId 목록을 등록한다.
-    누적하지 않고 교체하며, 빈 목록이면 등록을 해제한다.
-
-    Replace (never accumulate) the process-wide set of reactor artifactIds masked as ``<module>``; the log parser
-    calls it at the start of every parse, so a fleet's next project never sees the previous project's names."""
+    누적하지 않고 교체하며, 빈 목록이면 등록을 해제한다. 로그 파서가 파싱을 시작할 때마다 호출한다."""
     global _REACTOR_MODULES
     _REACTOR_MODULES = frozenset(n.strip() for n in (names or ()) if n and n.strip())
 
 
 def reactor_modules() -> frozenset[str]:
-    """마지막 ``set_reactor_modules`` 호출로 등록된 reactor artifactId를 반환한다.
-
-    The reactor artifactIds registered by the last ``set_reactor_modules`` call."""
+    """마지막 ``set_reactor_modules`` 호출로 등록된 reactor artifactId를 반환한다."""
     return _REACTOR_MODULES
 
 
@@ -209,13 +184,9 @@ _ARTIFACT_LIKE_RE = re.compile(r"[-_.\d]|[A-Z]")
 
 def _maskable(name: str) -> bool:
     """등록된 모듈 이름을 메시지에서 가려도 되는지 확인한다.
-    3자 이상이고, 제외 목록에 없고, artifactId처럼 생겨야 한다.
+    3자 이상이고, 제외 목록에 없고, 구분자나 숫자, 대문자가 있어 artifactId처럼 생겨야 한다.
     ``user``, ``config`` 같은 소문자 한 단어는 메시지의 일반 단어와 겹치므로 가리지 않는다.
-    오류가 난 모듈의 이름은 항상 가린다.
-
-    A registry name is masked only when it looks like an artifactId (a separator, a digit or an uppercase letter) and
-    is neither short nor stoplisted; a plain lowercase word (`user`, `config`) would mask ordinary message words. The
-    error's OWN module is always masked, as before v2.1z."""
+    오류가 난 모듈 자신의 이름은 이 규칙과 상관없이 항상 가린다."""
     return (len(name) >= MIN_MODULE_NAME_CHARS and name not in MODULE_NAME_STOPLIST
             and bool(_ARTIFACT_LIKE_RE.search(name)))
 
@@ -223,7 +194,7 @@ def _maskable(name: str) -> bool:
 def _mask_modules(s: str, module: str | None) -> str:
     names = {n for n in _REACTOR_MODULES if _maskable(n)}
     if module and module.strip():
-        names.add(module.strip())                 # the error's own module: always, whatever its name (pre-v2.1z rule)
+        names.add(module.strip())                 # 오류가 난 모듈 자신은 이름과 상관없이 항상 가린다
     if not names:
         return s
     # 'pricing-core-comp'가 'pricing-core'보다 먼저 일치해야 하므로 긴 이름부터 정렬한다
@@ -238,10 +209,7 @@ def _mask_modules(s: str, module: str | None) -> str:
 
 
 def classify_javac(msg: str) -> str:
-    """javac / kotlinc 오류 첫 줄을 일정한 분류 이름으로 바꾼다.
-    일치하는 분류가 없으면 ``other``를 반환한다.
-
-    Map a javac (or kotlinc) diagnostic first line to a stable message class."""
+    """javac, kotlinc 오류 첫 줄을 일정한 분류 이름으로 바꾼다. 일치하는 분류가 없으면 ``other``를 반환한다."""
     m = (msg or "").strip()
     for name, rx in _JAVAC_CLASSES:
         if rx.search(m):
@@ -252,11 +220,11 @@ def classify_javac(msg: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# helpers
+# 보조 함수
 # ---------------------------------------------------------------------------
 def _simple(name: str) -> str:
     name = name.strip().rstrip(";,.:")
-    name = re.sub(r"<.*>$", "", name)                           # generics
+    name = re.sub(r"<.*>$", "", name)                           # 제네릭 인자를 뗀다
     return name.rsplit(".", 1)[-1] if "." in name and not name.endswith(")") else name
 
 
@@ -265,9 +233,7 @@ _EXTRA_EXTERNAL_PREFIXES: set[str] = set()
 
 def register_external_prefixes(prefixes) -> None:
     """사내 groupId 같은 패키지 접두어를 라이브러리 코드로 등록해 L1에서 가리지 않게 한다.
-    프로세스 전역 설정이고 ``MavenRunner``를 만들 때 등록된다.
-
-    Treat additional package prefixes (e.g. in-house library group ids) as library code in signatures."""
+    프로세스 전역 설정이고 ``MavenRunner``를 만들 때 등록된다."""
     for p in prefixes:
         p = (p or "").strip()
         if p:
@@ -275,9 +241,7 @@ def register_external_prefixes(prefixes) -> None:
 
 
 def external_prefixes_from_config(cfg) -> list[str]:
-    """``build.external_package_prefixes``와 사내 부모 / 필수 / 선택 아티팩트의 groupId를 모아 반환한다.
-
-    Explicit cfg.build.external_package_prefixes + group ids of the in-house parent/mandatory/optional artifacts."""
+    """``build.external_package_prefixes``와 사내 부모, 필수, 선택 아티팩트의 groupId를 모아 반환한다."""
     out: list[str] = list(getattr(cfg.build, "external_package_prefixes", []) or [])
     arts = cfg.artifacts
     for spec in [arts.parent, *arts.mandatory, *arts.optional]:
@@ -291,7 +255,7 @@ def _is_external(fqcn: str) -> bool:
 
 
 def _norm_symbol(symbol: str | None) -> str:
-    """'class Foo' / 'method bar(int,java.lang.String)' / 'variable x' → collapsed, kept verbatim (case kept)."""
+    """'class Foo', 'method bar(int,java.lang.String)' 같은 심볼의 공백만 정리한다. 대소문자는 그대로 둔다."""
     if not symbol:
         return ""
     return _WS_RE.sub(" ", symbol).strip()
@@ -300,7 +264,8 @@ def _norm_symbol(symbol: str | None) -> str:
 def _symbol_name(symbol: str | None) -> str:
     """symbol에서 L2 키로 쓸 이름만 뽑는다. FQCN은 단순 이름으로 바꾼다.
 
-    'class WebSecurityConfigurerAdapter' → 'WebSecurityConfigurerAdapter'; 'method bar(int)' → 'bar'."""
+    예를 들어 ``class WebSecurityConfigurerAdapter``는 ``WebSecurityConfigurerAdapter``,
+    ``method bar(int)``는 ``bar``가 된다."""
     if not symbol:
         return ""
     s = _norm_symbol(symbol)
@@ -317,12 +282,9 @@ def _symbol_name(symbol: str | None) -> str:
 def _norm_location(location: str | None) -> str:
     """location을 정규화한다. 라이브러리 위치는 그대로 두고 프로젝트 소유 위치는 '*'로 바꾼다.
 
-    Keep library locations, mask project-owned ones.
-
-    'package org.springframework.security.config' → kept; 'class com.example.sec.SecurityConfig' → 'class *';
-    'variable http of type org.springframework...HttpSecurity' → 'variable of type org.springframework...HttpSecurity'.
-
-
+    'package org.springframework.security.config': kept; 'class com.example.sec.SecurityConfig': 'class *';
+    'variable http of type org.springframework...HttpSecurity':
+    'variable of type org.springframework...HttpSecurity'.
     """
     if not location:
         return ""
@@ -340,8 +302,6 @@ def _norm_location(location: str | None) -> str:
 
 # 멤버 심볼의 kind 단어. 이것으로 시작하지 않으면 클래스 같은 심볼이므로, import 줄과 사용처가 한 케이스가
 # 되도록 위치를 키에 넣지 않는다
-# The kind words of a MEMBER symbol; anything else (class / interface / enum / record / annotation / package / type /
-# no kind word) is class-like and keeps its rules-1 key whatever the location.
 _MEMBER_KINDS = ("method ", "variable ", "constructor ", "static ")
 _LOC_VAR_TYPE_RE = re.compile(r"^variable \S+ of type (.+)$")
 _LOC_TYPE_RE = re.compile(r"^(?:class|interface|enum|record|@interface)\s+(.+)$")
@@ -354,13 +314,10 @@ _CANDIDATE_RE = re.compile(
 
 def _bare_type(text: str) -> str:
     """위치의 타입 문자열에서 타입 인자와 배열 괄호를 뗀 한정 이름을 반환한다.
-    한정 이름이 아니면 빈 문자열을 반환한다.
-
-    The qualified name of a location type with every type argument (nested ones, ones with spaces / commas) and
-    array brackets removed; "" when what is left is not a qualified name (a type variable, ``capture#1 of ?``)."""
+    중첩된 타입 인자도 뗀다. 남은 것이 한정 이름이 아니면(타입 변수, ``capture#1 of ?``) 빈 문자열을 반환한다."""
     t = text.strip()
     prev = None
-    while prev != t:                                            # innermost <…> first, until none is left
+    while prev != t:                                            # 안쪽 <…>부터 하나도 남지 않을 때까지 뗀다
         prev, t = t, re.sub(r"<[^<>]*>", "", t)
     t = re.sub(r"\s*\[\s*\]", "", t).replace("...", "").strip()
     return t if _QUALIFIED_TYPE_RE.match(t) else ""
@@ -368,10 +325,9 @@ def _bare_type(text: str) -> str:
 
 def _library_owner(location: str | None) -> str:
     """location이 가리키는 라이브러리 소유 타입의 한정 이름을 반환한다.
-    프로젝트 소유 타입이나 패키지이거나 위치가 없으면 빈 문자열을 반환한다.
+    프로젝트 소유 타입이나 패키지, 타입 변수이거나 위치가 없으면 빈 문자열을 반환한다.
 
-    The library-owned type a javac `location:` names (``variable x of type T`` or ``class … T``, `_is_external`),
-    else "" (project-owned, a package, a type variable, no location)."""
+    Location shapes read: ``variable x of type T`` and ``class … T``; library-owned = `_is_external`."""
     if not location:
         return ""
     loc = _WS_RE.sub(" ", location).strip()
@@ -384,10 +340,7 @@ def _library_owner(location: str | None) -> str:
 
 def _candidate_owner(raw: str, name: str) -> str:
     """no_suitable_method 오류의 후보 줄에서 처음 나오는 라이브러리 소유 타입을 반환한다.
-    후보의 메서드 이름이 'found for' 뒤의 이름과 같을 때만 쓰고, 없으면 빈 문자열을 반환한다.
-
-    The owner type of the first `… is not applicable` candidate line of `raw` whose owner is library-owned and whose
-    method / constructor name is the one javac printed after ``found for``; "" when there is none."""
+    후보의 메서드 이름이 'found for' 뒤의 이름과 같을 때만 쓰고, 없으면 빈 문자열을 반환한다."""
     if not raw or not name:
         return ""
     for m in _CANDIDATE_RE.finditer(raw):
@@ -403,9 +356,7 @@ def _first_words(text: str, n: int = GENERIC_WORDS) -> str:
 
 def _javac_key(cls: str, msg: str, err: BuildError) -> str:
     """symbol 줄이 없는 javac 오류의 L2 키를 만든다.
-    분류마다 메시지에서 핵심 이름 하나를 뽑고, 없으면 정규화한 메시지의 앞 단어를 쓴다.
-
-    Main identifier for the L2 signature of non-symbol javac classes."""
+    분류마다 메시지에서 핵심 이름 하나를 뽑고, 없으면 정규화한 메시지의 앞 단어를 쓴다."""
     def grab(rx: str, fmt=lambda m: _simple(m.group(1))) -> str:
         m = re.search(rx, msg)
         return fmt(m) if m else ""
@@ -439,8 +390,7 @@ def _javac_key(cls: str, msg: str, err: BuildError) -> str:
         return grab(r"(\S+) cannot be converted to (\S+)",
                     lambda m: f"{_simple(m.group(1))}->{_simple(m.group(2))}")
     if cls in ("method_does_not_override", "static_import_only"):
-        # javac names neither the method nor the imported class; the log parser reads them from the source line
-        # into `symbol` ("method getErrorPath", "class org.junit.Assert") — without it the kind has no key
+        # javac가 메서드나 import한 클래스 이름을 출력하지 않으므로 로그 파서가 소스 줄에서 읽어 둔 symbol을 쓴다
         return _symbol_name(err.symbol)
     if cls == "illegal_start":
         return _first_words(normalize_message(msg, module=err.module), 8)    # "illegal start of type", "';' expected"
@@ -451,14 +401,11 @@ _FQCN_RE = re.compile(r"\b[a-z_][\w]*(?:\.[a-z_][\w]*)*\.[A-Z][\w$]*(?:\.[A-Z][\
 
 
 def _mask_project_types(text: str) -> str:
-    """외부 접두어로 시작하지 않는 FQCN(프로젝트 소유 타입)을 '*'로 바꾼다.
-
-    Replace fully qualified names outside EXTERNAL_PACKAGE_PREFIXES by '*' (project-owned types)."""
+    """라이브러리 접두어로 시작하지 않는 FQCN, 곧 프로젝트 소유 타입을 '*'로 바꾼다."""
     return _FQCN_RE.sub(lambda m: m.group(0) if _is_external(m.group(0)) else "*", text)
 
 
-# "Failed to execute goal g:a:v:goal (id) on project x: <cause>" — the parser already cuts this prefix off, a message
-# built elsewhere (or a hand-made BuildError) may still carry it
+# 파서가 이미 떼지만 다른 곳에서 만든 메시지에는 "Failed to execute goal … on project x:" 접두어가 남아 있을 수 있다
 _FAILED_GOAL_PREFIX_RE = re.compile(
     r"^\s*Failed to execute goal (?:(?P<coords>[\w.\-]+:[\w.\-]+:[\w.\-]+:[\w.\-]+)(?: \([^)]*\))? )?"
     r"on project [\w.\-]+\s*:?\s*", re.IGNORECASE)
@@ -468,7 +415,7 @@ _PARENS_RE = re.compile(r"\s*(?:\([^()]*\)|\[[^\[\]]*\])")
 
 
 def _plugin_goal(coords: str) -> str:
-    """g:maven-war-plugin:3.4.0:war → war:war (the short form the parser stores in BuildError.goal)."""
+    """플러그인 좌표를 파서가 ``BuildError.goal``에 쓰는 짧은 형태로 바꾼다. 예: ``g:maven-war-plugin:3.4.0:war``는 ``war:war``"""
     parts = coords.split(":")
     if len(parts) < 4:
         return ""
@@ -482,9 +429,8 @@ def _plugin_execution_key(err: BuildError) -> str:
     감싸는 접두어를 떼고 경로, 버전, 숫자를 가린 원인의 앞 단어를 쓴다.
     원인에 예외 클래스가 있으면 그 예외 이름과 뒤의 3단어를 쓴다.
 
-    ``<goal>|<cause>`` for a plugin execution failure: the plugin goal (``war:war``) and the first CAUSE_WORDS
-    words of the cause, wrapper prefixes and parentheticals removed, paths / versions / numbers / project types
-    masked. ``webxml attribute is required`` and ``could not copy webapp sources`` no longer share a case."""
+    Otherwise the first CAUSE_WORDS words of the cause; parentheticals removed, project types masked, so
+    ``webxml attribute is required`` and ``could not copy webapp sources`` are separate cases."""
     msg = err.message or ""
     goal = err.goal or ""
     while True:
@@ -499,8 +445,6 @@ def _plugin_execution_key(err: BuildError) -> str:
     exc = _EXCEPTION_RE.search(cause)
     if exc:
         # 어느 파일에서 났든 예외 클래스가 곧 케이스이고, 실패 종류를 구분하는 뒤의 몇 단어만 더한다
-        # the exception class is the case ("MalformedInputException: Input length = 1" from any file, any path),
-        # plus the few words after it that tell the kind of failure apart
         tail = _first_words(cause[exc.end():].lstrip(" :"), 3).rstrip(" :;,.=-")
         return _join(goal, (exc.group(1) + (" " + tail if tail else "")).lower())
     cause = _first_words(cause.lower(), CAUSE_WORDS).rstrip(" :;,.=-")
@@ -512,7 +456,7 @@ def _join(*parts: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# public
+# 서명 만들기
 # ---------------------------------------------------------------------------
 def _compile_signature(err: BuildError) -> tuple[str, str]:
     """컴파일 오류의 (L1, L2)를 만든다.
@@ -532,19 +476,17 @@ def _compile_signature(err: BuildError) -> tuple[str, str]:
     cls = classify_javac(msg)
     if cls == "package_does_not_exist":
         # javax.xml.bind와 javax.xml.ws는 고치는 방법이 다르므로 패키지 전체를 키로 쓴다
-        # the whole package: javax.xml.bind and javax.xml.ws (or two in-house packages under kr.co.acme) are different
-        # problems with different fixes — the old 3-segment L2 made them one catalog case
         m = re.search(r"package (\S+) does not exist", msg)
         pkg = m.group(1) if m else normalize_message(msg)
         return _join(prefix, cls, pkg), _join(prefix, cls, pkg)
     if cls == "cannot_find_symbol":
         sym = _norm_symbol(err.symbol)
-        if not sym:                                             # kotlin "Unresolved reference: Foo" / 'Foo'
+        if not sym:                                             # kotlin의 "Unresolved reference: Foo" 형태
             m = re.search(r"unresolved reference:?\s*'?([\w.]+)'?", msg, re.IGNORECASE)
             sym = m.group(1) if m else ""
         name = _symbol_name(sym) or sym
         l1 = _join(prefix, cls, sym, _norm_location(err.location))
-        # 라이브러리 타입의 멤버 심볼은 타입까지 키에 넣는다.
+        # 라이브러리 타입의 멤버 심볼은 타입까지 키에 넣는다
         # 클래스 같은 심볼은 import 줄과 사용처가 한 케이스가 되도록 이름만 쓴다
         if err.symbol and name and sym.startswith(_MEMBER_KINDS):
             owner = _library_owner(err.location)
@@ -559,9 +501,7 @@ def _compile_signature(err: BuildError) -> tuple[str, str]:
 
 def signature_for(err: BuildError) -> tuple[str, str]:
     """오류 하나의 (L1, L2) 서명을 만든다. 같은 입력에는 항상 같은 결과를 반환한다.
-    해결 실패 오류는 좌표로 만들고 버전은 L1에만 넣으므로, 버전이 달라도 같은 케이스가 된다.
-
-    Return (L1 specific, L2 generic) signatures for one error. Pure and deterministic."""
+    해결 실패 오류는 좌표로 만들고 버전은 L1에만 넣으므로, 버전이 달라도 같은 케이스가 된다."""
     kind = err.kind
     prefix = kind.value
     if kind in (ErrorKind.COMPILE, ErrorKind.TEST_COMPILE):
@@ -586,6 +526,6 @@ def signature_for(err: BuildError) -> tuple[str, str]:
 
 
 def fill_signatures(err: BuildError) -> BuildError:
-    """``signature_for``의 결과를 오류의 ``signature`` / ``signature_generic``에 채우고 그 오류를 반환한다."""
+    """``signature_for``의 결과를 오류의 ``signature``, ``signature_generic``에 채우고 그 오류를 반환한다."""
     err.signature, err.signature_generic = signature_for(err)
     return err

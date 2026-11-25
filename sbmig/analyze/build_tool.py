@@ -6,15 +6,11 @@
   ``intake.ant_to_maven: true``일 때만 pom.xml을 만든다
 - pom이 하나라도 있으면 함께 있는 Gradle / Ant 파일은 무시한다
 
-Build-tool detection (catalog S4): only Maven projects are migrated. An Ant project is refused at intake with
-`intake.ant_message` (`ANT_REASON` is the technical description); with `intake.ant_to_maven: true` the intake
-synthesizes a pom.xml from `ant_build_file` instead.
-
-`detect_build_tool(ws)` is cheap (root checks first, then recursive globs that skip `.git` / `target`) so the
-orchestrator can run it at intake, before the effective-pom capture, and the analyzer reuses it for
-`ProjectProfile.build_tool` (+ `warnings[0]` when the tool is not Maven).
-
-
+`ANT_REASON` is the technical description; the operator-facing refusal is `intake.ant_message`. With
+`intake.ant_to_maven: true` the intake synthesizes a pom.xml from `ant_build_file` instead.
+`detect_build_tool(ws)` is cheap (root checks first, then recursive globs that skip `.git` / `target`) so it
+runs at intake before the effective-pom capture; the analyzer reuses it (+ `warnings[0]` when the tool is not
+Maven).
 """
 from __future__ import annotations
 
@@ -38,12 +34,12 @@ NONE_REASON = ("no pom.xml found (no supported build tool): only Maven projects 
 
 @dataclass(frozen=True)
 class BuildToolDetection:
-    """빌드 도구 판별 결과를 담는 데이터 클래스.
-    ``tool``(maven / gradle / ant / none)과 설명 ``reason``을 담는다.
-    ant면 ``ant_build_file``에 사용할 build.xml의 상대 경로가 들어간다."""
+    """빌드 도구 판별 결과를 담는 클래스.
+    ``tool``은 maven, gradle, ant, none 중 하나이고 ``reason``은 그 설명이다.
+    ant면 ``ant_build_file``에 쓸 build.xml의 상대 경로가 들어간다."""
     tool: BuildTool
     reason: str = ""
-    ant_build_file: str = ""                 # v2.1j: repo-relative build.xml when tool is ant (else "")
+    ant_build_file: str = ""                 # ant일 때만 채운다. 아니면 빈 문자열
 
     @property
     def ok(self) -> bool:
@@ -61,10 +57,9 @@ def _has_any(ws: Any, names: tuple[str, ...]) -> bool:
 
 
 def find_ant_build_file(ws: Any) -> str:
-    """Ant 빌드 파일 경로를 찾는다. 루트의 ``build.xml``이 없으면 가장 얕은 ``build.xml``(같은 깊이면
-    이름순)을 고르고, 없으면 빈 문자열을 반환한다.
-
-    The Ant build file: the root `build.xml`, else the shallowest one outside skipped paths; "" when none."""
+    """Ant 빌드 파일 경로를 찾는다.
+    루트의 ``build.xml``이 없으면 가장 얕은 ``build.xml``을 고르고, 같은 깊이면 이름순이다.
+    하나도 없으면 빈 문자열을 반환한다."""
     exists = getattr(ws, "exists", None)
     if callable(exists) and exists("build.xml"):
         return "build.xml"
@@ -74,12 +69,10 @@ def find_ant_build_file(ws: Any) -> str:
 
 def detect_build_tool(ws: Any) -> BuildToolDetection:
     """빌드 도구를 판별한다.
-    pom.xml이 어디든 하나라도 있으면 ``maven``을, 아니면 gradle / ant / none과 거부 사유를 반환한다.
-
-    `maven` when any pom.xml exists (root or below); else gradle / ant / none with an explanation."""
+    pom.xml이 어디든 하나라도 있으면 ``maven``을 반환한다. 없으면 gradle, ant, none 중 하나와 거부 사유를 반환한다."""
     gradle = _has_any(ws, GRADLE_FILES)
     ant = _has_any(ws, ANT_FILES)
-    # pom이 있으면 Maven으로 본다. 함께 있는 Gradle / Ant 파일은 무시하고 reason에 "ignored"만 남긴다
+    # pom이 있으면 Maven으로 본다. 함께 있는 Gradle, Ant 파일은 무시하고 reason에 "ignored"만 남긴다
     if _has_any(ws, ("pom.xml",)):
         ignored = []
         if gradle:

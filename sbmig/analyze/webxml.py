@@ -6,8 +6,6 @@
 - 버전과 상관없이 요소를 로컬 이름으로만 비교한다
 - 폐쇄망이고 XXE를 막아야 하므로 외부 DTD를 내려받지 않는다. 깨진 파일은 lxml 복구 파서로 한 번 더 읽는다
 
-web.xml → `WebXmlModel` (2026-10-23).
-
 Namespace-agnostic (DTD 2.2 / 2.3 without a namespace, `java.sun.com` 2.4 / 2.5, `xmlns.jcp.org` 3.x / 4.0,
 `jakarta.ee` 5.0 / 6.x): every element is matched by its local name. The external DTD of a 2.2 / 2.3 descriptor is
 never fetched (lxml: `load_dtd=False`, `no_network=True`, entities not resolved); a malformed file is re-read with
@@ -16,8 +14,6 @@ lxml's recovering parser and, if even that gives no `<web-app>`, a model with a 
 
 Used by `sbmig.analyze.source_scanner` (counts in `SourceStats.web_xml_*`) and by the restructure, which renders
 `WebXmlRegistrations` from the model (`layout.web_xml_registrations`).
-
-
 """
 from __future__ import annotations
 
@@ -97,7 +93,6 @@ def _params(el: Any, warnings: list[str], where: str) -> dict[str, str]:
 def _parse_root(text: str, warnings: list[str]) -> Any:
     """루트 요소를 반환한다. 엄격한 파서가 실패하면 복구 파서로 읽고, 그래도 안 되면 None을 반환한다."""
     # 인코딩 선언이 UTF-8 바이트와 어긋나 파싱이 깨지지 않도록 디코딩된 텍스트에서 XML 선언을 뗀다
-    # the text is already decoded: drop the XML declaration so its `encoding=` cannot contradict the UTF-8 bytes
     data = xml_without_declaration(text).encode("utf-8")
     strict = etree.XMLParser(load_dtd=False, no_network=True, resolve_entities=False, remove_comments=True,
                              huge_tree=False)
@@ -105,7 +100,7 @@ def _parse_root(text: str, warnings: list[str]) -> Any:
         return etree.fromstring(data, strict)
     except etree.XMLSyntaxError as e:
         warnings.append(f"web.xml is not well-formed ({e}); parsed leniently")
-    except ValueError as e:  # pragma: no cover - encoding declaration oddities
+    except ValueError as e:  # pragma: no cover - 인코딩 선언이 이상한 경우
         warnings.append(f"web.xml could not be parsed strictly ({e}); parsed leniently")
     lenient = etree.XMLParser(load_dtd=False, no_network=True, resolve_entities=False, remove_comments=True,
                               recover=True)
@@ -132,13 +127,11 @@ def _spec(root: Any, text: str) -> Optional[str]:
 
 
 def parse_web_xml(text: str, path: str) -> WebXmlModel:
-    """web.xml 하나를 파싱한다. ``path``는 기록용이다.
-    잘못된 파일 하나로 분석과 재구성이 멈추면 안 되므로 예외를 던지지 않고 문제는 ``WebXmlModel.warnings``에 남긴다.
-
-    Parse a web.xml (`path` is only recorded). Never raises; problems land in `WebXmlModel.warnings`."""
+    """web.xml 하나를 파싱한다. ``path``는 모델에 기록만 한다.
+    잘못된 파일 하나로 분석과 재구성이 멈추면 안 되므로 예외를 던지지 않고 문제는 ``WebXmlModel.warnings``에 남긴다."""
     try:
         return _parse(text or "", path)
-    except Exception as e:  # noqa: BLE001 — a bad descriptor must never stop the analysis / restructure
+    except Exception as e:  # noqa: BLE001
         log.warning("web.xml %s: %s", path, e)
         return WebXmlModel(path=path, warnings=[f"web.xml could not be parsed: {type(e).__name__}: {e}"])
 
@@ -158,7 +151,7 @@ def _parse(text: str, path: str) -> WebXmlModel:
         return model
     model.display_name = _text(root, "display-name")
 
-    # servlets + mappings (merged by name, several <url-pattern> per mapping and several mappings)
+    # 서블릿과 매핑을 이름으로 합친다. 매핑 하나에 url-pattern이 여러 개일 수도, 매핑이 여러 개일 수도 있다
     servlets: dict[str, WebXmlServlet] = {}
     for s in _kids(root, "servlet"):
         name = _text(s, "servlet-name")
@@ -171,7 +164,7 @@ def _parse(text: str, path: str) -> WebXmlModel:
         if los is not None:
             sv.load_on_startup = _int(los, f"servlet {name} load-on-startup", warnings)
         elif _kids(s, "load-on-startup"):
-            sv.load_on_startup = 0          # empty element: "load at any time during startup"
+            sv.load_on_startup = 0          # 빈 요소는 시작 중 아무 때나 로드한다는 뜻이다
         sv.async_supported = (_text(s, "async-supported") or "").lower() == "true"
         for mp in _kids(s, "multipart-config"):
             sv.multipart_location = _text(mp, "location") or ""
@@ -197,9 +190,8 @@ def _parse(text: str, path: str) -> WebXmlModel:
                 servlets[name].url_patterns.append(p)
     model.servlets = list(servlets.values())
 
-    # 서블릿 컨테이너는 <filter-mapping>이 처음 나온 순서로 필터 체인을 만드므로, Boot 등록도 이 순서를
-    # 지켜야 인코딩 필터와 보안 필터가 뒤바뀌지 않는다
-    # filters + mappings; order = index of the filter's first <filter-mapping> (the chain order)
+    # 컨테이너는 <filter-mapping>이 처음 나온 순서로 필터 체인을 만든다
+    # Boot 등록도 이 순서를 지켜야 인코딩 필터와 보안 필터가 뒤바뀌지 않는다
     filters: dict[str, WebXmlFilter] = {}
     for f in _kids(root, "filter"):
         name = _text(f, "filter-name")

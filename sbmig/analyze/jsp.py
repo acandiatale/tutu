@@ -6,11 +6,8 @@ Tomcat 10 이상에서 실행 시 실패할 수 있다.
 - javax에서 jakarta로 바꿀 패키지 표는 이 모듈 옆의 ``jakarta_packages.yml``이다
 - HTML, EL ``${…}``, taglib uri, JSP 주석, include는 자바 참조가 아니므로 영역에 넣지 않는다
 
-JSP / tag-file code regions (pure, dependency-free) — used by the source scanner (`SourceStats.jsp_javax_files`),
-with the javax → jakarta package table `jakarta_packages.yml` next to this module.
-
-JSPs are compiled by the servlet container at runtime, never by the Maven build, and OpenRewrite does not parse them
-(`openrewrite.exclusions` lists `**/*.jsp`). The only places where a JSP names Java types are:
+Pure, dependency-free. OpenRewrite does not parse JSPs (`openrewrite.exclusions` lists `**/*.jsp`). The only
+places where a JSP names Java types are:
 
 * the `import` attribute of `<%@ page … %>` / `<%@ tag … %>` and of the XML forms `<jsp:directive.page …/>` /
   `<jsp:directive.tag …/>` (comma-separated list of names),
@@ -20,8 +17,6 @@ JSPs are compiled by the servlet container at runtime, never by the Maven build,
 
 Everything else (HTML, EL `${…}`, taglib `uri` values, `<%-- … --%>` comments, include directives) is never a Java
 reference. `jsp_code_spans` returns exactly these regions as `(start, end, kind)` with kind `import` | `code` | `bean`.
-
-
 """
 from __future__ import annotations
 
@@ -35,18 +30,18 @@ import yaml
 JSP_SUFFIXES = (".jsp", ".jspf", ".jspx", ".tag", ".tagx")
 JSP_GLOBS = tuple(f"*{s}" for s in JSP_SUFFIXES)
 
-# one left-to-right pass; a JSP comment is consumed whole so nothing inside it is ever a span
+# 왼쪽부터 한 번에 읽는다. JSP 주석은 통째로 건너뛰므로 그 안은 영역이 되지 않는다
 _JSP_RE = re.compile(
-    r"<%--[\s\S]*?--%>"                                                            # JSP comment (skipped)
-    r"|<%@(?P<dir>[\s\S]*?)%>"                                                      # directive
-    r"|<%[!=]?(?P<code>[\s\S]*?)%>"                                                 # scriptlet / expression / decl.
-    r"|<jsp:directive\.(?P<xdir>page|tag)\b(?P<xattrs>[^>]*)>"                     # XML directive
+    r"<%--[\s\S]*?--%>"                                                            # JSP 주석, 건너뛴다
+    r"|<%@(?P<dir>[\s\S]*?)%>"                                                      # 지시자
+    r"|<%[!=]?(?P<code>[\s\S]*?)%>"                                                 # 스크립틀릿, 식, 선언
+    r"|<jsp:directive\.(?P<xdir>page|tag)\b(?P<xattrs>[^>]*)>"                     # XML 지시자
     r"|<jsp:(?P<xtag>scriptlet|expression|declaration)\s*>(?P<xcode>[\s\S]*?)</jsp:(?P=xtag)\s*>"
     r"|<jsp:useBean\b(?P<bean>[^>]*)>")
 _DIRECTIVE_KIND_RE = re.compile(r"\s*(?:page|tag)\b")
 _IMPORT_ATTR_RE = re.compile(r"""\bimport\s*=\s*(?:"([^"]*)"|'([^']*)')""")
 _BEAN_ATTR_RE = re.compile(r"""\b(?:class|type)\s*=\s*(?:"([^"]*)"|'([^']*)')""")
-# Java comments (group 1) | string / text-block / char literals (group 2) — masked before scanning code spans
+# 코드 영역을 검사하기 전에 가릴 자바 주석(그룹 1)과 문자열, 텍스트 블록, 문자 리터럴(그룹 2)
 _JAVA_LIT_RE = re.compile(r'(//[^\n]*|/\*[\s\S]*?\*/)|("""[\s\S]*?"""|"(?:\\.|[^"\\\n])*"|\'(?:\\.|[^\'\\\n])*\')')
 _JAVAX_TOKEN_RE = re.compile(r"(?<![\w$.])javax(?:\.[A-Za-z_$][\w$]*)+(?:\.\*)?")
 
@@ -62,12 +57,11 @@ def _attr_spans(attrs: str, base: int, rx: re.Pattern, kind: str) -> list[tuple[
 
 
 def jsp_code_spans(text: str) -> list[tuple[int, int, str]]:
-    """JSP와 태그 파일에서 자바 타입을 이름으로 쓰는 영역을 파일 순서대로 반환한다.
-    각 항목은 ``(시작, 끝, kind)``이고 kind는 ``import``(page / tag 지시자의 import 속성) |
-    ``code``(스크립틀릿, 식, 선언)
-    | ``bean`` (useBean class / type).
-
-    Regions of a JSP / tag file that name Java types, in file order: `(start, end, kind)`."""
+    """JSP와 태그 파일에서 자바 타입 이름이 나오는 영역을 파일 순서대로 반환한다.
+    각 항목은 ``(시작, 끝, kind)``다. kind는 아래 중 하나다.
+    - ``import``: page, tag 지시자의 import 속성
+    - ``code``: 스크립틀릿, 식, 선언
+    - ``bean``: useBean의 class, type 속성"""
     spans: list[tuple[int, int, str]] = []
     for m in _JSP_RE.finditer(text):
         if m.group("dir") is not None:
@@ -90,7 +84,7 @@ def is_jsp_path(rel: str) -> bool:
 
 
 # ---------------------------------------------------------------------------------------------------------------------
-# detection (the analyzer side)
+# 분석기에서 쓰는 javax 이름 탐지
 # ---------------------------------------------------------------------------------------------------------------------
 _JAKARTA_TABLE = Path(__file__).resolve().with_name("jakarta_packages.yml")
 
@@ -98,9 +92,7 @@ _JAKARTA_TABLE = Path(__file__).resolve().with_name("jakarta_packages.yml")
 @lru_cache(maxsize=1)
 def jakarta_rules() -> tuple[tuple[str, bool], ...]:
     """javax에서 jakarta로 바꿀 패키지 표를 (원래 패키지, 하위 포함 여부) 목록으로 반환한다.
-    한 번만 읽어 캐시한다. 파일이 없으면 빈 목록을 반환한다.
-
-    (from-package, recursive) of the javax → jakarta package table (`jakarta_packages.yml` next to this module)."""
+    한 번만 읽어 캐시한다. 파일이 없으면 빈 목록을 반환한다."""
     try:
         doc = yaml.safe_load(_JAKARTA_TABLE.read_text(encoding="utf-8")) or {}
     except OSError:
@@ -110,10 +102,7 @@ def jakarta_rules() -> tuple[tuple[str, bool], ...]:
 
 def javax_ee_token(token: str, rules: Iterable[tuple[str, bool]]) -> bool:
     """``token``(예: ``javax.servlet.http.Cookie``)이 표에 있는 javax EE 이름인지 확인한다.
-    가장 긴 접두어 규칙을 따르고, 하위를 포함하지 않는 규칙은 ``*``나 대문자로 시작하는 클래스 이름만 받는다.
-
-    `token` (e.g. `javax.servlet.http.Cookie`) is a javax EE name of the table: the longest prefix decides,
-    non-recursive rules take only `*` / an upper-case class name."""
+    가장 긴 접두어 규칙을 따르고, 하위를 포함하지 않는 규칙은 ``*``나 대문자로 시작하는 클래스 이름만 받는다."""
     by_from = dict(rules)
     parts = token.split(".")
     for i in range(len(parts) - 1, 1, -1):
@@ -127,9 +116,7 @@ def javax_ee_token(token: str, rules: Iterable[tuple[str, bool]]) -> bool:
 
 def jsp_javax_refs(text: str, rules: Optional[Iterable[tuple[str, bool]]] = None) -> list[str]:
     """JSP의 코드 영역 안에서 표에 있는 javax 이름 목록을 반환한다.
-    스크립틀릿 안의 문자열과 주석은 제외한다.
-
-    Table javax.* names inside the code regions of a JSP (Java literals / comments in scriptlets excluded)."""
+    스크립틀릿 안의 문자열과 주석은 제외한다."""
     rules = tuple(rules) if rules is not None else jakarta_rules()
     out: list[str] = []
     for s, e, kind in jsp_code_spans(text):
