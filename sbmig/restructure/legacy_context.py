@@ -1,21 +1,15 @@
-"""Boot로 바뀌는 legacy Spring 컨텍스트(XML 설정, web.xml)를 분석하고 고치는 순수 함수 모듈.
-파일 읽기와 쓰기는 restructurer가 한다.
-Spring Framework / servlet 프로젝트를 Boot 앱으로 바꾸면 빌드는 통과해도 기동할 때 깨지는 것들이 있다. 빈
-덮어쓰기와 순환 참조 금지, JNDI 없음, WEB-INF가 classpath가 아님, 기본 서블릿 미등록,
-CommonsMultipartResolver 삭제처럼 Boot의 기본값이 as-is와 다르기 때문이다.
-빌드도 LLM도 기동 단계는 확인하지 못하므로 재구성이 직접 처리한다.
-- ``Restructurer._generate_application``이 web.xml ``contextConfigLocation``으로 진입 XML을
-  고르고(:func:`entry_locations`, :func:`resolve_location`) ``legacy-config/``에 복사한 파일을 이 모듈의
-  함수로 고친다. as-is 원본은 고치지 않는다
-- 클래스, 요소 이름과 Boot 속성 이름은 ``knowledge/config/legacy_context_rules.yml``에 있고, 스위치는
-  ``layout.legacy_context.*``다
+"""legacy Spring 컨텍스트(XML 설정, web.xml)를 읽고 고치는 순수 함수 모듈. 파일 입출력은 restructurer가 한다.
+Spring Framework나 servlet 프로젝트를 Boot로 바꾸면 빌드는 되어도 기동할 때 깨지는 것이 있다.
+Boot의 기본값이 as-is와 달라서다. 빈 덮어쓰기 금지, JNDI 없음, WEB-INF가 classpath가 아님 같은 것이다.
+빌드도 LLM도 기동은 확인하지 못하므로 재구성이 직접 처리한다.
+- 진입 XML은 web.xml ``contextConfigLocation``으로 고른다(:func:`entry_locations`, :func:`resolve_location`)
+- ``legacy-config/``에 복사한 파일만 고치고 as-is 원본은 고치지 않는다
+- 클래스, 요소, Boot 속성 이름은 ``knowledge/config/legacy_context_rules.yml``에 있다
+- 스위치는 ``layout.legacy_context.*``다
 
-The legacy Spring context at conversion time (v2.1x, docs/INTERFACES.md "v2.1x"). Pure helpers used by the
-restructurer: which XML files the Boot context imports (web.xml `contextConfigLocation`, `<import>` graph), and the
-text edits applied to the sbmig-owned `legacy-config/` copies (never to an as-is file). Element / class names and the
-Boot property names come from `knowledge/config/legacy_context_rules.yml`.
-
-
+Contract: docs/INTERFACES.md "v2.1x". Callers: `legacy_apply.LegacyContextMixin`
+(`Restructurer._generate_application` and friends). Text edits work on the raw text (regex tag scanner, no
+parser) so bytes, comments and indentation of the copies stay as they were.
 """
 from __future__ import annotations
 
@@ -33,19 +27,17 @@ RULES_FILE = "knowledge/config/legacy_context_rules.yml"
 TODO_MARK = "MIGRATION-TODO (sbmig)"
 
 _COMMENT_RE = re.compile(r"<!--.*?-->|<!\[CDATA\[.*?\]\]>", re.S)
-# a start / end / empty tag (attribute values may hold '>' inside quotes)
+# 시작, 끝, 빈 태그. 따옴표 안의 속성 값에 '>'가 있어도 된다
 _TAG_RE = re.compile(r"<(/?)([A-Za-z_][\w:.-]*)((?:\s+[^\s=/>]+(?:\s*=\s*(?:\"[^\"]*\"|'[^']*'))?)*)\s*(/?)>", re.S)
 _ATTR_RE = re.compile(r"([^\s=/>]+)\s*=\s*(\"[^\"]*\"|'[^']*')", re.S)
 
 
-# ---------------------------------------------------------------------------------------------------------- rules
+# ------------------------------------------------------------------------------------------------------- 규칙 표
 @dataclass
 class LegacyContextRules:
-    """``legacy_context_rules.yml`` 파일 하나의 내용을 담는 데이터 클래스(필드 이름이 YAML 키).
-    파일이 없거나 깨져도 빈 기본값을 쓰므로 재구성은 멈추지 않는다.
-
-    `knowledge/config/legacy_context_rules.yml` (field names = YAML keys); a missing / broken file gives empty
-    defaults (never raises)."""
+    """``legacy_context_rules.yml``의 내용을 담는 클래스. 필드 이름이 YAML 키다.
+    파일이 없거나 깨지면 빈 기본값을 쓰고, 재구성은 멈추지 않는다.
+    """
     listeners: list[str] = field(default_factory=list)
     root_default: str = ""
     dispatcher_servlets: list[str] = field(default_factory=list)
@@ -85,9 +77,7 @@ def _strs(v: Any) -> list[str]:
 
 def load_rules(path: Path) -> LegacyContextRules:
     """규칙 YAML을 :class:`LegacyContextRules`로 읽는다.
-    파일이 없거나 깨지면 경고를 남기고 빈 규칙을 반환하며, 이때는 아무것도 감지하지 않는다.
-
-    Load the rules table; a missing / broken file is logged and yields empty rules (nothing is detected)."""
+    파일이 없거나 깨지면 경고를 남기고 빈 규칙을 반환한다. 이때는 아무것도 감지하지 않는다."""
     try:
         raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     except (OSError, yaml.YAMLError) as e:
@@ -129,20 +119,16 @@ def load_rules(path: Path) -> LegacyContextRules:
     )
 
 
-# ---------------------------------------------------------------------------------------------------------- paths
+# --------------------------------------------------------------------------------------------------------- 경로
 def split_locations(value: str) -> list[str]:
-    """``contextConfigLocation`` 값 하나를 위치 목록으로 나눈다.
-    Spring의 ``CONFIG_LOCATION_DELIMITERS``처럼 쉼표, 세미콜론, 공백으로 구분한다.
-
-    A `contextConfigLocation` value → its locations (comma / semicolon / whitespace separated, like Spring)."""
+    """``contextConfigLocation`` 값을 위치 목록으로 나눈다.
+    Spring의 ``CONFIG_LOCATION_DELIMITERS``처럼 쉼표, 세미콜론, 공백으로 구분한다."""
     return [x for x in re.split(r"[,;\s]+", value or "") if x]
 
 
 def ant_match(pattern: str, path: str) -> bool:
     """경로가 Spring AntPathMatcher 방식의 패턴과 맞는지 반환한다.
-    별표 하나는 한 경로 단계 안, 별표 둘은 여러 단계, ``?``는 한 문자에 맞는다.
-
-    Ant-style match (`*` within a segment, `**` across segments, `?` one character)."""
+    ``*``는 한 단계 안, ``**``는 여러 단계, ``?``는 한 문자에 맞는다."""
     out: list[str] = []
     i = 0
     pat = pattern.lstrip("/")
@@ -166,10 +152,8 @@ def ant_match(pattern: str, path: str) -> bool:
 
 
 def classpath_rel(path: str) -> Optional[str]:
-    """as-is 파일의 classpath 기준 경로(``…/src/main/resources/`` 또는 ``…/WEB-INF/classes/`` 뒤)를
-    반환한다. classpath 리소스가 아니면 None을 반환한다.
-
-    The classpath-relative path of an as-is file (after `src/main/resources/` or `WEB-INF/classes/`), else None."""
+    """as-is 파일의 classpath 기준 경로를 반환한다. classpath 리소스가 아니면 None을 반환한다.
+    ``src/main/resources/``나 ``WEB-INF/classes/`` 뒤의 경로다."""
     p = "/" + path.replace("\\", "/")
     for marker in ("/src/main/resources/", "/WEB-INF/classes/"):
         i = p.find(marker)
@@ -179,10 +163,8 @@ def classpath_rel(path: str) -> Optional[str]:
 
 
 def web_rel(path: str, web_dirs: Iterable[str] = ()) -> Optional[str]:
-    """as-is 파일의 웹 루트 기준 경로(``WEB-INF/…`` 형태)를 반환한다.
-    웹 루트는 pom의 web 디렉토리이며, 모르면 ``/WEB-INF/``부터 잘라낸다.
-
-    The web-root-relative path of an as-is file (e.g. `WEB-INF/spring/x.xml`), else None."""
+    """as-is 파일의 웹 루트 기준 경로(``WEB-INF/spring/x.xml`` 같은 형태)를 반환한다.
+    ``web_dirs``에 맞는 것이 없으면 ``/WEB-INF/``부터 자르고, 그것도 없으면 None을 반환한다."""
     p = path.replace("\\", "/")
     for d in sorted({d.strip("/") for d in web_dirs if d}, key=len, reverse=True):
         if d and p.startswith(d + "/"):
@@ -197,14 +179,12 @@ def is_test_path(path: str) -> bool:
 
 
 def resolve_location(loc: str, candidates: Iterable[str], web_dirs: Iterable[str] = ()) -> tuple[list[str], str]:
-    """위치 문자열 하나(``classpath:`` / ``classpath*:`` / ``/WEB-INF/…`` /
-    상대 웹 경로, Ant 패턴 포함)를 as-is 파일로 해석한다.
-    (파일 목록, 해석하지 못한 이유)를 반환하며, 해석했으면 이유는 빈 문자열이다.
-    ``${…}`` / ``file:`` / URL은 해석하지 않는다.
+    """위치 문자열 하나를 as-is 파일로 해석해 (파일 목록, 해석하지 못한 이유)를 반환한다.
+    ``classpath:``, ``/WEB-INF/…``, 상대 웹 경로, Ant 패턴을 다룬다. 해석했으면 이유는 빈 문자열이다.
+    ``${…}``, ``file:``, URL은 해석하지 않는다.
 
-    Resolve one location against the as-is files `candidates` → (files, why-not). `classpath:` / `classpath*:`
-    match the classpath-relative path, other locations the web-root-relative one; `${…}`, `file:` and URLs are not
-    resolved (why-not says so)."""
+    `classpath:` / `classpath*:` match the classpath-relative path of `candidates`, other locations the
+    web-root-relative one."""
     loc = loc.strip()
     if not loc:
         return [], "empty"
@@ -224,14 +204,10 @@ def resolve_location(loc: str, candidates: Iterable[str], web_dirs: Iterable[str
 
 
 def entry_locations(model: Any, rules: LegacyContextRules) -> list[tuple[str, list[str]]]:
-    """web.xml 모델에서 (역할, 위치 목록)을 뽑는다.
-    루트 컨텍스트는 context-param ``contextConfigLocation``을, 없으면 ContextLoaderListener 기본값을 쓴다.
-    DispatcherServlet마다 init-param을, 없으면 ``/WEB-INF/<name>-servlet.xml``을 쓴다.
-    ``contextClass``가 어노테이션 컨텍스트면 값이 클래스 이름이므로 뺀다.
-
-    (role, locations) of the contexts web.xml declares: the root context (context-param `contextConfigLocation`, else
-    the ContextLoaderListener default) and every DispatcherServlet (its init-param, else `/WEB-INF/<name>-servlet.xml`).
-    An annotation-based `contextClass` names Java classes, not XML files → skipped."""
+    """web.xml이 선언한 컨텍스트마다 (역할, 위치 목록)을 반환한다.
+    - 루트 컨텍스트: context-param ``contextConfigLocation``, 없으면 ContextLoaderListener 기본값
+    - DispatcherServlet: init-param, 없으면 ``/WEB-INF/<name>-servlet.xml``
+    - ``contextClass``가 어노테이션 컨텍스트면 값이 Java 클래스라 뺀다"""
     out: list[tuple[str, list[str]]] = []
 
     def annotation(cls: Optional[str]) -> bool:
@@ -257,9 +233,9 @@ def entry_locations(model: Any, rules: LegacyContextRules) -> list[tuple[str, li
     return out
 
 
-# ---------------------------------------------------------------------------------------------------------- XML text
+# ---------------------------------------------------------------------------------------------------- XML 텍스트
 def comment_spans(text: str) -> list[tuple[int, int]]:
-    """XML 주석과 CDATA 구간을 찾아 반환한다. 그 안의 태그는 무시해야 하기 때문이다."""
+    """XML 주석과 CDATA 구간 목록을 반환한다. 그 안의 태그는 무시해야 하기 때문이다."""
     return [(m.start(), m.end()) for m in _COMMENT_RE.finditer(text)]
 
 
@@ -269,13 +245,12 @@ def _in(spans: list[tuple[int, int]], pos: int) -> bool:
 
 @dataclass
 class Element:
-    """XML 요소 하나의 위치와 속성을 담는 데이터 클래스.
-    바이트, 주석, 들여쓰기를 그대로 두기 위해 파서 없이 정규식으로 찾는다.
-
-    One element found by the tag scanner: its span in the text, qualified / local name and attributes."""
+    """XML 요소 하나의 텍스트 위치, 이름, 속성을 담는 클래스.
+    바이트, 주석, 들여쓰기를 그대로 두려고 파서 없이 정규식으로 찾는다.
+    """
     start: int
-    end: int                      # end of the whole element (after `/>` or the matching end tag)
-    tag_end: int                  # end of the start tag
+    end: int                      # 요소 전체의 끝. `/>` 또는 짝이 맞는 끝 태그 뒤
+    tag_end: int                  # 시작 태그의 끝
     qname: str
     local: str
     attrs: dict[str, str]
@@ -291,11 +266,8 @@ def _attrs(raw: str) -> dict[str, str]:
 
 
 def elements(text: str, local_names: Iterable[str] = ()) -> list[Element]:
-    """주석 밖에서 로컬 이름이 ``local_names`` 중 하나인 요소(비어 있으면 모든 요소)를 문서 순서로 반환한다.
-    요소의 끝 위치는 같은 이름의 중첩을 세어 찾는다.
-
-    Elements outside comments whose local name is one of `local_names` (all when empty), in document order; the end
-    is found by counting nested elements of the same qualified name."""
+    """주석 밖에서 로컬 이름이 ``local_names`` 중 하나인 요소를 문서 순서로 반환한다.
+    ``local_names``가 비어 있으면 모든 요소를 반환한다. 끝 위치는 같은 이름의 중첩을 세어 찾는다."""
     want = set(local_names)
     spans = comment_spans(text)
     tags = [m for m in _TAG_RE.finditer(text) if not _in(spans, m.start())]
@@ -333,10 +305,8 @@ def beans_of_class(text: str, classes: Iterable[str]) -> list[Element]:
 
 
 def bean_ids(text: str) -> list[str]:
-    """주석 밖에서 ``id="…"``를 가진 요소의 id 목록을 반환한다. 빈과 네임스페이스
-    요소(``<jee:jndi-lookup>``, ``<util:properties>`` 등)를 포함하며, 같은 파일 안의 중복은 한 번만 넣는다.
-
-    The `id` attributes of the elements outside comments (beans and namespace elements), once per file."""
+    """주석 밖에서 ``id``를 가진 요소의 id 목록을 반환한다. 같은 파일 안의 중복은 한 번만 넣는다.
+    빈뿐 아니라 ``<jee:jndi-lookup>``, ``<util:properties>`` 같은 네임스페이스 요소도 본다."""
     seen: list[str] = []
     for e in elements(text):
         v = e.attrs.get("id", "").strip()
@@ -351,8 +321,8 @@ def import_resources(text: str) -> list[str]:
 
 
 def bean_property(text: str, el: Element, name: str) -> Optional[str]:
-    """빈 요소에서 이름이 ``name``인 속성 값을 찾는다. ``<property name="x" value="…"/>``,
-    ``<property name="x"><value>…</value></property>``, ``p:x="…"``를 보고, 없으면 None을 반환한다."""
+    """빈 요소에서 이름이 ``name``인 property 값을 반환한다. 없으면 None을 반환한다.
+    ``<property value=…>``, ``<property><value>``, ``p:x=…`` 세 가지 표기를 본다."""
     if f"p:{name}" in el.attrs:
         return el.attrs[f"p:{name}"].strip()
     for p in elements(el.body(text), ("property",)):
@@ -372,14 +342,13 @@ def line_start(text: str, pos: int) -> int:
 
 
 def newline(text: str) -> str:
-    """파일이 쓰는 줄바꿈 문자를 반환한다. CRLF를 쓰는 파일이면 CRLF를 반환한다."""
+    """파일이 쓰는 줄바꿈 문자를 반환한다. CRLF가 있으면 CRLF다."""
     return "\r\n" if "\r\n" in text else "\n"
 
 
 def insert_comment_above(text: str, el: Element, comment: str) -> tuple[str, bool]:
-    """요소 바로 위 줄에 같은 들여쓰기로 ``<!-- comment -->``를 넣는다. 같은 주석이 이미 있으면 그대로 둔다.
-
-    Insert `<!-- comment -->` on its own line right above `el` (same indentation); idempotent."""
+    """요소 바로 위 줄에 같은 들여쓰기로 ``<!-- comment -->``를 넣는다.
+    같은 주석이 이미 있으면 그대로 둔다. (새 텍스트, 넣었는지)를 반환한다."""
     ls = line_start(text, el.start)
     before = text[ls:el.start]
     nl = newline(text)
@@ -393,7 +362,7 @@ def insert_comment_above(text: str, el: Element, comment: str) -> tuple[str, boo
 
 
 def remove_element(text: str, el: Element, comment: str) -> str:
-    """요소를 지우고 그 위치에 같은 들여쓰기로 ``<!-- comment -->`` 한 줄을 남긴다."""
+    """요소를 지우고 그 자리에 ``<!-- comment -->``를 남긴다."""
     return text[:el.start] + f"<!-- {comment} -->" + text[el.end:]
 
 
@@ -403,26 +372,22 @@ def xml_encoding(data: bytes) -> Optional[str]:
     return m.group(1).decode("ascii", "replace") if m else None
 
 
-# ---------------------------------------------------------------------------------------------------------- locations
+# ---------------------------------------------------------------------------------------------------- 프로퍼티 위치
 _WEBINF_RE = re.compile(r"(?<![\w:/.\-])(/?WEB-INF/[^\s\"'<>,;]+)")
 _PROFILE_LOC_RE = re.compile(r"(classpath\*?:[^\s\"'<>,;]*\$\{[^}]+\}[^\s\"'<>,;]*)")
 
 
 def placeholder_elements(text: str, rules: LegacyContextRules) -> list[Element]:
-    """프로퍼티 파일 위치를 가진 요소(``<context:property-placeholder>``, ``<util:properties>`` 등과
-    PropertyPlaceholderConfigurer 계열 빈)를 반환한다.
-
-    Elements that name property-file locations (placeholder namespace elements and configurer beans)."""
+    """프로퍼티 파일 위치를 가진 요소를 문서 순서로 반환한다.
+    ``<context:property-placeholder>`` 같은 네임스페이스 요소와 PropertyPlaceholderConfigurer 계열 빈이다."""
     out = [e for e in elements(text, rules.placeholder_elements)]
     out += beans_of_class(text, rules.placeholder_classes)
     return sorted(out, key=lambda e: e.start)
 
 
 def location_values(text: str, el: Element) -> list[tuple[int, int, str]]:
-    """요소 안의 위치 문자열을 (시작, 끝, 값) 목록으로 반환한다.
-    ``location`` 속성 값과 빈의 ``location`` / ``locations`` 값을 본다.
-
-    (start, end, value) of the location strings inside `el` (absolute offsets in `text`)."""
+    """요소 안의 위치 문자열을 (시작, 끝, 값) 목록으로 반환한다. 위치는 ``text`` 전체 기준이다.
+    ``location`` 속성과 빈의 ``location`` / ``locations`` property를 본다."""
     chunk = text[el.start:el.end]
     out: list[tuple[int, int, str]] = []
     for m in re.finditer(r"""(?:\blocation|p:locations?)\s*=\s*(["'])(.*?)\1""", chunk, re.S):
@@ -443,11 +408,9 @@ def location_values(text: str, el: Element) -> list[tuple[int, int, str]]:
 
 def rewrite_webinf_locations(text: str, rules: LegacyContextRules,
                              target: Callable[[str], Optional[str]]) -> tuple[str, list[tuple[str, str]]]:
-    """복사한 XML의 프로퍼티 위치 중 ``/WEB-INF/x`` / ``WEB-INF/x``를 ``target(x)``의 결과(보통
-    ``classpath:asis-webinf/x``)로 바꾼다. 결과가 None이면 그대로 둔다.
-    (새 텍스트, [(이전 값, 새 값)])을 반환한다. ``${…}``가 들어간 위치는 건드리지 않는다.
-
-    Rewrite `/WEB-INF/x` property locations of the placeholder elements to `target(x)` (None = leave it)."""
+    """프로퍼티 위치의 ``/WEB-INF/x``를 ``target(x)``의 결과로 바꾼다. 보통 ``classpath:asis-webinf/x``다.
+    ``target``이 None을 반환하거나 ``${…}``가 들어간 위치는 그대로 둔다.
+    (새 텍스트, [(이전 값, 새 값)])을 반환한다."""
     edits: list[tuple[int, int, str]] = []
     done: list[tuple[str, str]] = []
     for el in placeholder_elements(text, rules):
@@ -467,9 +430,7 @@ def rewrite_webinf_locations(text: str, rules: LegacyContextRules,
 
 
 def profile_locations(text: str, rules: LegacyContextRules) -> list[str]:
-    """복사한 XML의 프로퍼티 위치 중 ``${…}``가 들어간 ``classpath:`` 위치를 반환한다.
-
-    `classpath:` property locations holding a `${…}` placeholder (D7)."""
+    """프로퍼티 위치 중 ``${…}``가 들어간 ``classpath:`` 위치 목록을 반환한다."""
     out: list[str] = []
     for el in placeholder_elements(text, rules):
         for _a, _b, val in location_values(text, el):
@@ -489,7 +450,7 @@ def placeholder_keys(loc: str) -> list[tuple[str, Optional[str]]]:
 
 def glob_of(loc: str) -> str:
     """위치의 플레이스홀더를 ``*``로 바꾼 glob을 반환한다.
-    예를 들어 ``classpath:config-${env}.properties``는 ``classpath*:config-*.properties``가 된다."""
+    ``classpath:config-${env}.properties``는 ``classpath*:config-*.properties``가 된다."""
     rest = loc.split(":", 1)[1] if ":" in loc else loc
     return "classpath*:" + re.sub(r"\$\{[^}]*\}", "*", rest)
 
@@ -508,12 +469,10 @@ def replace_value(text: str, old: str, new: str, rules: LegacyContextRules) -> s
     return text
 
 
-# ---------------------------------------------------------------------------------------------------------- views
+# ---------------------------------------------------------------------------------------------------------- 뷰
 def view_prefixes(text: str, rules: LegacyContextRules) -> list[tuple[int, int, str]]:
-    """복사한 XML에서 JSP view prefix(InternalResourceViewResolver 빈의 ``prefix`` 속성, ``p:prefix``,
-    ``<mvc:jsp prefix>``)를 찾아 (시작, 끝, 값) 목록으로 반환한다.
-
-    (start, end, value) of the JSP view prefixes in a copy."""
+    """JSP view prefix를 (시작, 끝, 값) 목록으로 반환한다.
+    ViewResolver 빈의 ``prefix`` property, ``p:prefix``, ``<mvc:jsp prefix>``를 본다."""
     out: list[tuple[int, int, str]] = []
     for el in beans_of_class(text, rules.view_resolver_classes):
         chunk = text[el.start:el.end]
@@ -545,22 +504,20 @@ def resource_handlers(text: str, rules: LegacyContextRules) -> list[Element]:
 
 def has_element(text: str, local_names: Iterable[str], ns_hint: str = "") -> bool:
     """주석 밖에 그 로컬 이름의 요소가 있는지 반환한다.
-    ``ns_hint``가 주어지면 그 문자열도 파일에 있어야 참이다."""
+    ``ns_hint``를 주면 그 문자열도 파일에 있어야 True다."""
     if ns_hint and ns_hint not in text:
         return False
     return bool(elements(text, local_names))
 
 
 def multipart_limits(text: str, el: Element, rules: LegacyContextRules) -> list[tuple[str, str, str]]:
-    """CommonsMultipartResolver 빈의 업로드 한도를 (Boot 키, 값, 빈 속성 이름) 목록으로 반환한다.
-    바이트 수는 KB / MB 문자열로 바꾼다.
-
-    The limits of a CommonsMultipartResolver bean → (Boot key, DataSize value, bean property)."""
+    """CommonsMultipartResolver 빈의 업로드 한도를 (Boot 키, 값, 빈 property 이름) 목록으로 반환한다.
+    바이트 수는 KB, MB 문자열로 바꾼다."""
     from .webxml_registrations import data_size
 
     out: list[tuple[str, str, str]] = []
     keys_done: set[str] = set()
-    # maxUploadSizePerFile이 있으면 파일 하나의 한도로 그 값을 먼저 쓴다
+    # maxUploadSizePerFile이 있으면 파일 하나의 한도로 먼저 쓴다
     order = sorted(rules.multipart_properties.items(), key=lambda kv: 0 if kv[0].endswith("PerFile") else 1)
     for prop, keys in order:
         v = bean_property(text, el, prop)

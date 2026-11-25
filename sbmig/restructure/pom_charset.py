@@ -1,17 +1,17 @@
-"""XML 선언과 실제 바이트의 인코딩이 다른 pom을 첫 OpenRewrite 실행 전에 일치시키는 모듈.
+"""XML 선언과 실제 바이트의 인코딩이 다른 pom을 첫 OpenRewrite 실행 전에 맞추는 모듈.
 OpenRewrite는 그런 pom을 읽지 못해 변환 전체가 실패하고, EUC-KR 범위를 벗어난 한글은 다시 쓸 때 깨뜨린다.
-- 두 흐름 모두 오케스트레이터의 ``transform.rewrite`` 단계가 레시피 실행 전에 호출한다
+- 두 흐름 모두 ``transform.rewrite`` 단계가 레시피 실행 전에 호출한다
 - 바이트가 EUC-KR이면 선언만 ``EUC-KR``로 바꾸고, 그 밖이면 파일을 UTF-8로 다시 저장한다
-- 엄격한 XML 파서가 그대로 읽고 OpenRewrite가 손상하지 않는 pom은 건드리지 않는다
+- 엄격한 XML 파서가 읽고 OpenRewrite가 손상하지 않는 pom은 건드리지 않는다
+- 선언을 뺀 한글 내용은 전후가 같아야 하고, 쓰기 전에 확인한다
 
-The pom-encoding correction (INTERFACES "v2.1z-ay"). Measured with rewrite-maven-plugin 6.46.1 (table in
-tests/restructure/test_pom_charset.py): the plugin refuses a pom whose bytes are not UTF-8 when the declaration says
-UTF-8 or nothing ("Failed to parse pom: Invalid UTF-8 middle byte"), and it writes a non-UTF-8 pom back byte for
-byte only while every byte stays in EUC-KR's range; cp949 extension hangul (lead bytes 0x81-0xA0) become U+FFFD even
-under a truthful CP949 / MS949 / x-windows-949 declaration. lxml refuses the names MS949 and x-windows-949. So:
-bytes that decode as strict EUC-KR keep their bytes and get the declaration `EUC-KR` (Maven, OpenRewrite and lxml
-all read that name); anything else is saved again as UTF-8 with the declaration `UTF-8`. The Korean text (the file
-without its declaration) is identical before and after; the result is checked before it is written.
+Contract: docs/INTERFACES.md "v2.1z-ay". Measured with rewrite-maven-plugin 6.46.1 (table in
+tests/restructure/test_pom_charset.py):
+* the plugin refuses a pom whose bytes are not UTF-8 when the declaration says UTF-8 or nothing
+  ("Failed to parse pom: Invalid UTF-8 middle byte");
+* it writes a non-UTF-8 pom back byte for byte only while every byte stays in EUC-KR's range; cp949 extension
+  hangul (lead bytes 0x81-0xA0) become U+FFFD even under a truthful CP949 / MS949 / x-windows-949 declaration;
+* lxml refuses the names MS949 and x-windows-949. `EUC-KR` is a name Maven, OpenRewrite and lxml all read.
 """
 from __future__ import annotations
 
@@ -36,11 +36,11 @@ _VERSION_ATTR_RE = re.compile(rb"\bversion\s*=\s*([\"'])[^\"']*\1")
 
 @dataclass
 class PomCharsetFix:
-    """pom 하나의 인코딩 수정 내용을 담는 데이터 클래스.
+    """pom 하나의 인코딩 수정 내용을 담는 클래스.
 
-    One correction: `declared` (the declaration's name or "none"), `actual` (EUC-KR / MS949 / UTF-8 / …: what the
-    bytes are), `how` ("declaration" = only the declaration changed, "utf-8" = saved again as UTF-8), `target` (the
-    encoding the file declares afterwards) and the new bytes."""
+    `declared`: the declaration's name or "none". `actual`: what the bytes are (EUC-KR / MS949 / UTF-8 / …).
+    `how`: "declaration" = only the declaration changed, "utf-8" = saved again as UTF-8.
+    `target`: the encoding the file declares afterwards. `data`: the new bytes."""
     pom: str
     declared: str
     actual: str
@@ -52,6 +52,7 @@ class PomCharsetFix:
         """인수인계 줄에 넣을 이 pom의 설명을 반환한다.
 
         "`<pom>` (declared X | no declaration, saved as Y: declaration set to Z | saved again as UTF-8)"."""
+
         return f"`{self.pom}` ({self._what()})"
 
     def _what(self) -> str:
@@ -60,15 +61,13 @@ class PomCharsetFix:
         return f"{said}, saved as {self.actual}: {done}"
 
     def note(self) -> str:
-        """오류 목록 항목과 단계 메모에 쓸 한 줄을 반환한다.
-
-        The error-list / phase-note text: `pom encoding corrected: declared X, saved as Y: …`."""
+        """오류 목록 항목과 단계 메모에 쓸 한 줄을 반환한다. ``pom encoding corrected:``로 시작한다."""
         return NOTE_PREFIX + self._what()
 
 
 @dataclass
 class PomCharsetResult:
-    """인코딩 수정 단계의 결과를 담는 데이터 클래스. 고친 pom 목록을 담는다."""
+    """인코딩 수정 단계에서 고친 pom 목록을 담는 클래스."""
     fixes: list[PomCharsetFix] = field(default_factory=list)
 
     def entries(self) -> list[dict[str, str]]:
@@ -114,12 +113,12 @@ def _with_declaration(data: bytes, name: str) -> bytes:
 
 
 def diagnose(data: bytes) -> PomCharsetFix | None:
-    """pom 바이트가 선언과 맞지 않으면 고친 바이트를 담은 PomCharsetFix를, 고칠 필요가 없거나 고칠 수 없으면 None을 반환한다.
-    잘못된 XML이나 어떤 후보로도 디코딩되지 않는 파일은 건드리지 않는다.
+    """pom 바이트가 선언과 맞지 않으면 고친 바이트를 담은 PomCharsetFix를 반환한다.
+    고칠 필요가 없거나 고칠 수 없으면 None을 반환한다.
+    BOM이 있는 파일, 잘못된 XML, 어떤 후보로도 디코딩되지 않는 파일은 건드리지 않는다.
 
-    The decision for one pom's bytes (the `pom` field stays empty). None for a pom that a strict XML reader reads under
-    its own declaration and that OpenRewrite writes back intact (UTF-8, or Korean-family bytes within EUC-KR), for a
-    BOM file, for XML that is not well-formed and for bytes no candidate decodes."""
+    The `pom` field stays empty (the caller sets it). No fix is needed when a strict XML reader reads the pom
+    under its own declaration and OpenRewrite writes it back intact (UTF-8, or Korean bytes within EUC-KR)."""
     if data.startswith((b"\xef\xbb\xbf", b"\xff\xfe", b"\xfe\xff")):
         return None
     m = _DECL_RE.match(data)
@@ -155,14 +154,13 @@ def diagnose(data: bytes) -> PomCharsetFix | None:
 
 
 def project_poms(ws: Any) -> list[str]:
-    """Maven이 읽는 프로젝트 pom 경로를 반환한다. src/ 아래 pom은 테스트 데이터라서 뺀다."""
+    """Maven이 읽는 프로젝트 pom 경로를 반환한다. ``src/`` 아래 pom은 테스트 데이터라서 뺀다."""
     return [p for p in ws.pom_files() if "/src/" not in f"/{p}"]
 
 
 def correct_pom_encodings(ws: Any, *, write: bool = True) -> PomCharsetResult:
-    """프로젝트 pom마다 ``diagnose``를 실행하고 ``write``가 True면 고친 바이트를 쓴다. 읽지 못한 파일은 건너뛴다.
-
-    Every project pom (`project_poms`) through `diagnose`; `write=False` (dry run) reports without writing."""
+    """프로젝트 pom마다 ``diagnose``를 실행하고 고친 바이트를 쓴다. 읽지 못한 파일은 건너뛴다.
+    ``write``가 False면 쓰지 않고 결과만 반환한다."""
     out = PomCharsetResult()
     for rel in project_poms(ws):
         try:

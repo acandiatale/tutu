@@ -1,26 +1,18 @@
-"""서식, 주석, 줄 끝, 인코딩을 유지하면서 pom.xml을 고치는 편집기(lxml 기반) 모듈.
-``PomEditorLike`` 인터페이스를 구현한다.
-재구성의 모든 pom 수정, 수정 스크립트 helper API의 ``p.pom(path)``, pom 변경
-비교(sbmig/build/depchanges.py)에서 쓴다.
-``PomEditor(path)``로 읽고 조회, 수정 메서드를 호출한 뒤 ``save()``로 저장한다.
-- 수정 메서드(``@_mutator``)는 문서가 실제로 바뀌었을 때만 True를 반환하므로, 같은 호출을 두 번 하면 두 번째는 False다
-- 사람이 직접 고친 것처럼 diff를 최소로 만든다.
-  XML 선언, 루트 앞 주석, 파일 끝부분은 바이트 그대로 두고, 들여쓰기는 파일에서 찾은 단위를 쓴다
-- 새 섹션은 Maven 관례 순서(``PROJECT_ORDER`` 등)에 맞춰 넣는다. 기본 POM 네임스페이스가 있든 없든 동작한다
+"""서식, 주석, 줄 끝, 인코딩을 그대로 두고 pom.xml을 고치는 모듈.
+재구성의 pom 수정, 수정 스크립트 API의 ``p.pom(path)``, pom 변경 비교에서 이 편집기를 쓴다.
+``PomEditor(path)``로 읽고, 조회나 수정 메서드를 호출한 뒤 ``save()``로 저장한다.
+- 수정 메서드는 문서가 실제로 바뀐 경우에만 True를 반환한다
+- XML 선언, 루트 앞 주석, 파일 끝부분은 바이트 그대로 둔다
+- 새 요소는 파일의 들여쓰기 단위로, Maven 관례 순서에 맞춰 넣는다
 
-Formatting/comment-preserving pom.xml editor (lxml based). Implements ``PomEditorLike``.
-
-Design notes
-------------
-* The document is parsed with lxml keeping comments, CDATA and whitespace. On output we keep the original
-  prolog (XML declaration, comments/doctype before the root) and epilog byte-for-byte, and we restore the
-  original root start tag (lxml would normalise its line breaks between attributes).
-* Inserted elements are indented with the indent unit detected from the file (default 4 spaces, tabs supported);
-  new top-level sections are placed following the conventional Maven element order.
-* Every mutator returns True iff the serialised document changed, so calling it twice returns False the 2nd time.
-* Works with poms in the default POM namespace and with poms without a namespace.
-
-
+lxml based, implements ``PomEditorLike``; also used by sbmig/build/depchanges.py.
+* Parsed keeping comments, CDATA and whitespace. Prolog (declaration, comments / doctype before the root) and
+  epilog are kept byte for byte; the original root start tag is restored (lxml normalises the line breaks
+  between its attributes).
+* Indent unit detected from the file (default 4 spaces, tabs supported); top-level sections follow
+  ``PROJECT_ORDER`` and the other ``*_ORDER`` lists.
+* Every ``@_mutator`` returns True iff the serialised document changed (a repeated call returns False).
+* Works with and without the default POM namespace.
 """
 from __future__ import annotations
 
@@ -72,18 +64,16 @@ T = TypeVar("T")
 
 
 class PomEditError(Exception):
-    """깨졌거나 지원하지 않는 pom(읽기 실패, 디코딩 실패, XML 오류, 루트가 <project>가 아님)일 때 던지는
-    예외 클래스. 재구성은 이 예외를 잡아 ok=False로 보고한다.
-
-    Raised for malformed / unsupported pom files."""
+    """pom을 읽을 수 없을 때 던지는 예외 클래스.
+    읽기나 디코딩 실패, 잘못된 XML, 루트가 ``<project>``가 아닌 경우다. 재구성은 이 예외를 잡아 ok=False로 보고한다.
+    """
 
 
 @dataclass
 class ArtifactRef:
-    """pom 안에서 groupId / artifactId / version을 가진 요소 하나(의존성, dependencyManagement, 플러그인 의존성,
-    annotationProcessorPath)를 담는 데이터 클래스. 선택 사내 아티팩트의 버전을 올릴 때 이 목록을 순회한다.
-
-    An element carrying groupId/artifactId/version somewhere in the pom (for version bumps)."""
+    """pom 안에서 groupId, artifactId, version을 가진 요소 하나를 담는 클래스.
+    선택 사내 아티팩트의 버전을 올릴 때 이 목록을 순회한다.
+    """
     section: str                 # dependencies | dependencyManagement | plugin-dependency | annotationProcessorPath
     element: Any                 # lxml element
     group_id: str
@@ -98,9 +88,8 @@ class ArtifactRef:
 
 def property_ref(value: str | None) -> str | None:
     """값 전체가 ``${이름}`` 하나면 그 속성 이름을 반환한다.
-    아니면 None을 반환하며, ``1.0-${x}``처럼 섞인 값도 None이다.
-
-    '${foo.version}' -> 'foo.version', else None."""
+    그 밖의 값은 None을 반환한다. ``1.0-${x}``처럼 섞인 값도 None이다.
+    """
     if not value:
         return None
     m = _PROP_REF_RE.match(value.strip())
@@ -116,10 +105,10 @@ def _local(node: Any) -> str:
 
 
 def _mutator(fn: Callable[..., Any]) -> Callable[..., bool]:
-    """수정 메서드에 붙이는 데코레이터. 호출 전후의 직렬화 결과를 비교해 실제로 바뀌었을 때만 True를
-    반환하게 하며, 호출하는 쪽은 이 값으로 바뀐 경우에만 메모를 남긴다.
+    """수정 메서드에 붙이는 데코레이터. 문서가 실제로 바뀌었을 때만 True를 반환하게 한다.
+    호출하는 쪽은 이 값을 보고 바뀐 경우에만 메모를 남긴다.
 
-    Wrap a mutating method: returns True iff the serialised document changed."""
+    Compares the serialised root before and after the call."""
     def wrapper(self: PomEditor, *args: Any, **kwargs: Any) -> bool:
         before = etree.tostring(self._root)
         fn(self, *args, **kwargs)
@@ -131,24 +120,22 @@ def _mutator(fn: Callable[..., Any]) -> Callable[..., bool]:
 
 class PomEditor:
     """pom.xml 하나를 그 자리에서 고치는 클래스.
-    ``PomEditor(path)``가 파일을 읽고 ``save()``가 다시 쓰며, ``text=``로 문자열에서 만들 수도 있다.
-
-    Edit one pom.xml in place. ``PomEditor(path)`` reads the file; ``save()`` writes it back."""
+    ``PomEditor(path)``가 파일을 읽고 ``save()``가 다시 쓴다. ``text=``를 주면 문자열에서 만든다.
+    """
 
     def __init__(self, path: str | Path, text: str | None = None):
         """편집기를 만든다. ``text``가 없으면 ``path``의 파일을 읽고, 있으면 주어진 문자열을 쓴다.
         읽지 못하면 PomEditError를 던진다."""
         self.path = Path(path)
         if text is not None:
-            # 문자열로 받은 pom도 XML 선언의 encoding으로 다시 바이트로 만들어,
-            # 파일에서 읽은 것과 같은 경로(_load)로 파싱한다
+            # 파일에서 읽은 pom과 같은 경로로 파싱하려고 선언된 encoding으로 다시 바이트를 만든다
             m = _ENC_RE.match(text.encode("ascii", "replace"))
-            # Java 인코딩 이름(x-windows-949)과 한글 계열 이름(EUC-KR / MS949는 cp949)도 파이썬 코덱 이름으로 바꾼다
+            # x-windows-949, MS949 같은 Java 이름도 파이썬 코덱 이름으로 바꾼다
             declared = (xml_codec(m.group(1).decode()) if m else None) or "utf-8"
             try:
                 raw = text.encode(declared)
             except (UnicodeEncodeError, LookupError):
-                # 선언 인코딩이 담지 못하는 글자는 문자 참조로 바꾸면 주석 / CDATA 내용이 바뀌므로 UTF-8로 읽는다
+                # 문자 참조로 바꾸면 주석과 CDATA 내용이 바뀌므로 UTF-8로 인코딩한다
                 raw = text.encode("utf-8")
         else:
             try:
@@ -159,26 +146,23 @@ class PomEditor:
 
     @classmethod
     def from_string(cls, text: str, path: str | Path = "pom.xml") -> PomEditor:
-        """문자열 pom으로 편집기를 만든다.
-        파일에 쓰기 전 검사와 비교에 쓰며, ``path``는 저장 위치와 메시지에 쓰는 이름일 뿐이다."""
+        """문자열 pom으로 편집기를 만든다. 파일에 쓰기 전에 검사하거나 비교할 때 쓴다.
+        ``path``는 저장 위치와 메시지에만 쓰인다."""
         return cls(path, text=text)
 
-    # ------------------------------------------------------------------ load / serialise
+    # ------------------------------------------------------------------ 읽기 / 직렬화
     def _load(self, raw: bytes) -> None:
-        """바이트를 lxml 트리로 읽는다. BOM, XML 선언의 encoding, 줄 끝(CRLF), 루트 앞뒤의 텍스트, 원래 루트
-        시작 태그를 기억해 두어, 저장할 때 바꾸지 않은 부분을 바이트 그대로 남긴다."""
-        # Windows 편집기로 저장된 pom이 그대로 남도록 UTF-8 BOM은 떼어 두었다가 save 때 다시 붙인다
+        """바이트를 lxml 트리로 읽는다.
+        BOM, 선언된 encoding, 줄 끝, 루트 앞뒤 텍스트, 루트 시작 태그를 기억해 두고 저장할 때 그대로 쓴다."""
+        # Windows 편집기로 저장한 pom을 그대로 두려고 BOM을 떼어 두었다가 저장할 때 다시 붙인다
         self._bom = raw.startswith(b"\xef\xbb\xbf")
         if self._bom:
             raw = raw[3:]
         m = _ENC_RE.match(raw)
         self.encoding = m.group(1).decode() if m else "utf-8"       # the declared name, as written
-        # MS949 / x-windows-949는 lxml과 파이썬이 모르고, EUC-KR 선언에 cp949 확장 한글이나 UTF-8 선언에
-        # cp949 바이트가 있으면 엄격 디코딩이 실패하므로 선언된 이름으로 바로 디코딩하지 않는다
-        # 분석기와 같은 규칙(pom_encoding)으로 디코딩하고, 저장은 선언이 가리키는 계열(xml_codec)로 한다.
-        # 선언이 없거나 모르는 이름이면 디코딩에 쓴 코덱으로 저장한다
-        # Decode like the analyzer (`pom_encoding`), save in the declared family (`xml_codec`; the codec read with when
-        # there is no / an unknown declaration; UTF-8 when the file has a UTF-8 BOM).
+        # 선언과 실제 바이트가 다른 pom이 있어서 선언 이름으로 바로 디코딩하지 않는다
+        # Decode like the analyzer (`pom_encoding`: MS949 names, cp949 bytes under EUC-KR / UTF-8
+        # declarations); save in the declared family (`xml_codec`), else the codec read with; BOM = UTF-8.
         codec = pom_encoding(raw)
         try:
             text = raw.decode(codec)
@@ -186,17 +170,14 @@ class PomEditor:
             raise PomEditError(f"{self.path}: cannot decode as {codec} (declared {self.encoding}): {e}") from e
         self.codec = "utf-8" if self._bom else (xml_codec(m.group(1).decode()) if m else None) or codec
         self._read_codec = "utf-8" if codec == "utf-8-sig" else codec
-        # 줄 끝 때문에 git diff가 파일 전체 변경이 되지 않도록 CRLF 파일은
-        # 내부에서 LF로 다루고 저장할 때 CRLF로 되돌린다
+        # diff가 파일 전체로 번지지 않도록 CRLF는 안에서 LF로 다루고 저장할 때 되돌린다
         self.newline = "\r\n" if "\r\n" in text else "\n"
         text = text.replace("\r\n", "\n")
-        # diff를 최소로 하려고 공백, 주석, CDATA를 모두 유지하고, DOCTYPE으로 외부 파일이나 네트워크를 읽지
-        # 않도록 resolve_entities=False / no_network=True를 쓴다
+        # 공백, 주석, CDATA를 모두 유지한다. DOCTYPE으로 외부 파일이나 네트워크를 읽지 않게 막는다
         parser = etree.XMLParser(remove_blank_text=False, strip_cdata=False, resolve_entities=False,
                                  remove_comments=False, remove_pis=False, huge_tree=True, no_network=True)
         try:
-            # 선언을 뗀 텍스트를 UTF-8 바이트로 파싱하므로 선언의 encoding이 실제 바이트와 어긋나거나 lxml이
-            # 모르는 이름이어도 된다. 원래 선언 줄은 앞부분 텍스트에 남아 그대로 저장된다
+            # 선언을 떼고 파싱하므로 lxml이 모르는 encoding 이름이어도 된다. 선언 줄은 앞부분 텍스트로 남는다
             root = etree.fromstring(xml_without_declaration(text).encode("utf-8"), parser)
         except etree.XMLSyntaxError as e:
             raise PomEditError(f"{self.path}: malformed XML: {e}") from e
@@ -204,8 +185,7 @@ class PomEditor:
             raise PomEditError(f"{self.path}: root element is not <project>")
         self._root = root
         self._ns = etree.QName(root).namespace
-        # lxml은 루트 시작 태그의 속성 사이 줄바꿈을 정규화하므로, 원래 시작 태그 문자열과 앞뒤 텍스트를
-        # 보관했다가 to_string에서 되돌린다
+        # lxml이 루트 시작 태그의 줄바꿈을 정규화하므로 원래 문자열을 보관했다가 to_string에서 되돌린다
         pm = _PROLOG_RE.match(text)
         pos = pm.end() if pm else 0
         sm = _START_TAG_RE.match(text, pos)
@@ -222,10 +202,9 @@ class PomEditor:
         self._original = self.to_string()
 
     def _detect_indent(self) -> str:
-        """파일의 들여쓰기 단위(탭 또는 공백 n개)를 찾아 반환한다.
-        새로 넣는 요소가 주변과 같은 들여쓰기를 갖게 하기 위해서이며, 찾지 못하면 공백 4개를 쓴다.
+        """파일의 들여쓰기 단위(탭 또는 공백 n개)를 반환한다. 찾지 못하면 공백 4개를 반환한다.
 
-        Indent unit from the whitespace before the first child of <project> (fallback: deeper levels)."""
+        Taken from the whitespace before the first child of <project>, deeper levels as fallback."""
         candidates: list[str] = []
         for node in self._root.iter():
             if not _is_el(node) or len(node) == 0:
@@ -244,8 +223,8 @@ class PomEditor:
         return candidates[0] if candidates else "    "
 
     def to_string(self) -> str:
-        """현재 문서를 문자열로 만든다.
-        보관해 둔 앞부분 텍스트, 원래 루트 시작 태그, 본문, 뒷부분 텍스트를 원래 줄 끝 문자로 잇는다."""
+        """현재 문서를 원래 줄 끝 문자로 직렬화해 반환한다.
+        보관해 둔 앞부분, 원래 루트 시작 태그, 본문, 뒷부분을 잇는다."""
         body = etree.tostring(self._root, encoding="unicode", with_tail=False)
         if self._start_tag and not self._self_closing:
             gt = body.find(">")
@@ -257,9 +236,8 @@ class PomEditor:
         return out
 
     def save(self, path: str | Path | None = None) -> None:
-        """문서를 원래 인코딩과 BOM으로 저장한다.
-        인코딩은 XML 선언이 가리키는 계열(``self.codec``)이며 선언 줄은 그대로 둔다.
-        ``path``를 주면 그 위치에 쓰며, 원래 파일에 쓴 경우에만 변경 여부의 기준을 갱신한다."""
+        """문서를 원래 인코딩과 BOM으로 저장한다. 선언 줄은 그대로 둔다.
+        ``path``를 주면 그 위치에 쓴다. 원래 파일에 쓴 경우에만 ``changed``의 기준을 갱신한다."""
         target = Path(path) if path else self.path
         target.parent.mkdir(parents=True, exist_ok=True)
         data = self._encoded(self.to_string())
@@ -268,12 +246,11 @@ class PomEditor:
             self._original = self.to_string()
 
     def _encoded(self, text: str) -> bytes:
-        """저장할 바이트를 만든다. 선언 계열(``self.codec``)이 내용을 담지 못하면 읽을 때 쓴 인코딩으로 쓴다.
-        문자 참조(``&#...;``)는 주석과 CDATA 안에서는 글자가 아니므로 내용이 바뀌기 때문이다.
+        """저장할 바이트를 만든다. 선언된 인코딩이 내용을 담지 못하면 읽을 때 쓴 인코딩으로 만든다.
 
-        Review P6: the declared family when it holds every character; else the codec the file was read with (a pom
-        declaring ISO-8859-1 that holds UTF-8 Korean stays UTF-8, as it was); character references only when neither
-        can hold the text (they change the text of comments and CDATA)."""
+        Order: the declared family (``self.codec``); else the codec read with (a pom declaring ISO-8859-1 that
+        holds UTF-8 Korean stays UTF-8); character references only when neither can hold the text (they change
+        the text of comments and CDATA)."""
         try:
             return text.encode(self.codec)
         except (UnicodeEncodeError, LookupError):
@@ -285,27 +262,23 @@ class PomEditor:
 
     @property
     def changed(self) -> bool:
-        """읽은 뒤나 마지막 저장 뒤에 문서가 바뀌었는지 반환한다.
-
-        True if the document differs from what was loaded / last saved."""
+        """읽은 뒤나 마지막 저장 뒤에 문서가 바뀌었는지 반환한다."""
         return self.to_string() != self._original
 
     def clone_to(self, path: str | Path) -> PomEditor:
-        """현재 내용을 ``path``에 쓰고, 새로 쓴 파일의 편집기를 반환한다.
-
-        Write the current content to `path` and return an editor for the copy."""
+        """현재 내용을 ``path``에 쓰고, 새로 쓴 파일의 편집기를 반환한다."""
         self.save(path)
         return PomEditor(path)
 
-    # ------------------------------------------------------------------ low level helpers
+    # ------------------------------------------------------------------ 저수준 도우미
     @property
     def root(self) -> Any:
-        """lxml 루트 요소(<project>)."""
+        """lxml 루트 요소(``<project>``)를 반환한다."""
         return self._root
 
     @property
     def namespace(self) -> str | None:
-        """루트의 XML 네임스페이스를 반환한다. 기본 POM 네임스페이스이거나 None이다."""
+        """루트의 XML 네임스페이스를 반환한다. 네임스페이스가 없으면 None이다."""
         return self._ns
 
     def q(self, name: str) -> str:
@@ -336,7 +309,7 @@ class PomEditor:
 
     @staticmethod
     def children(el: Any, name: str | None = None) -> list[Any]:
-        """``el``의 자식 요소 목록을 반환한다. ``name``을 주면 그 이름의 요소만 반환하고, 주석 노드는 뺀다."""
+        """``el``의 자식 요소 목록을 반환한다. 주석 노드는 빼고, ``name``을 주면 그 이름만 반환한다."""
         if el is None:
             return []
         return [c for c in el if _is_el(c) and (name is None or _local(c) == name)]
@@ -356,10 +329,8 @@ class PomEditor:
         return _local(el)
 
     def find(self, path: str) -> Any:
-        """<project> 아래 슬래시 경로(예: ``build/pluginManagement/plugins``)의 요소를 찾는다.
-        없으면 None을 반환한다.
-
-        Element at a slash path of local names below <project>, e.g. 'build/pluginManagement/plugins'."""
+        """``<project>`` 아래 ``build/pluginManagement/plugins`` 같은 경로의 요소를 반환한다.
+        없으면 None을 반환한다."""
         el = self._root
         for part in [p for p in path.split("/") if p]:
             el = self.child(el, part)
@@ -368,9 +339,7 @@ class PomEditor:
         return el
 
     def ensure_path(self, path: str) -> Any:
-        """``find``처럼 경로의 요소를 찾되, 없는 요소는 Maven 관례 순서 위치에 만들면서 내려간다.
-
-        Like find() but creates missing elements (placed in conventional Maven order)."""
+        """``find``처럼 경로의 요소를 반환한다. 없는 요소는 Maven 관례 순서 위치에 만든다."""
         el = self._root
         for part in [p for p in path.split("/") if p]:
             nxt = self.child(el, part)
@@ -383,24 +352,21 @@ class PomEditor:
         return _ORDERS.get(_local(parent), [])
 
     def _sep_like(self, ref: Any, depth: int) -> str:
-        """``ref`` 뒤에 새 요소를 넣을 때 쓸 구분 공백(줄바꿈 1~2개와 들여쓰기)을 반환한다.
-        빈 줄로 섹션을 나눈 파일이면 그 모양을 따른다.
-
-        Separator (newlines + indent) to use after `ref` for an element at `depth`."""
+        """``ref`` 뒤에 새 요소를 넣을 때 쓸 줄바꿈과 들여쓰기를 반환한다.
+        빈 줄로 섹션을 나눈 파일이면 그 모양을 따른다."""
         tail = ref.tail or ""
         n = tail.count("\n") if not tail.strip() else 1
         n = max(1, min(2, n))
-        if ref.getnext() is None:      # ref is last: its tail is the closing indent → look at previous separator
+        # 마지막 자식의 tail은 닫는 태그의 들여쓰기이므로 앞 형제의 구분을 본다
+        if ref.getnext() is None:
             prev = ref.getprevious()
             pt = (prev.tail or "") if prev is not None else ""
             n = max(1, min(2, pt.count("\n"))) if prev is not None and not pt.strip() else 1
         return "\n" * n + self.indent_unit * depth
 
     def _insert_after(self, ref: Any, new: Any) -> None:
-        """떼어 낸 ``new``를 ``ref`` 바로 뒤에 넣고 뒤쪽 공백(tail)을 ``ref``에 맞춘다.
-        마지막 자식이면 닫는 태그의 들여쓰기를 넘겨받는다.
-
-        Insert detached `new` right after `ref`, giving it ref's separator style."""
+        """떼어 낸 ``new``를 ``ref`` 바로 뒤에 넣고 공백을 ``ref``에 맞춘다.
+        ``ref``가 마지막 자식이면 닫는 태그의 들여쓰기를 넘겨받는다."""
         parent = ref.getparent()
         depth = self._depth(ref)
         sep = self._sep_like(ref, depth)
@@ -412,7 +378,7 @@ class PomEditor:
         parent.insert(parent.index(ref) + 1, new)
 
     def _insert_first(self, parent: Any, new: Any) -> None:
-        """``new``를 ``parent``의 첫 자식으로 넣고, 여는 태그 뒤 공백과 ``new``의 tail을 들여쓰기에 맞춘다."""
+        """``new``를 ``parent``의 첫 자식으로 넣고 앞뒤 공백을 들여쓰기에 맞춘다."""
         depth = self._depth(parent) + 1
         if len(parent) == 0:
             new.tail = self._ind(depth - 1)
@@ -430,11 +396,10 @@ class PomEditor:
             self._insert_first(parent, new)
 
     def _position_new(self, parent: Any, el: Any, order: list[str] | None = None) -> None:
-        """새 요소를 관례 순서(``order``)에 맞는 위치로 옮긴다.
-        순서상 앞서는 형제 중 마지막 것 뒤에 두고, 순서에 없는 이름은 맨 뒤에 둔다.
+        """새 요소를 ``order``의 관례 순서에 맞는 위치로 옮긴다.
+        순서상 앞서는 형제 중 마지막 것 뒤에 둔다. 순서에 없는 이름은 맨 뒤에 둔다.
 
-        `el` (created with SubElement, or detached) goes to its conventional position; whitespace is fixed.
-        Known names go after the last sibling that precedes them in `order`; unknown names go last."""
+        `el` may be freshly created with SubElement or detached; whitespace is fixed."""
         if el.getparent() is parent:
             parent.remove(el)
         order = order if order is not None else self._order_for(parent)
@@ -468,10 +433,7 @@ class PomEditor:
         return el
 
     def reindent(self, el: Any) -> None:
-        """새로 만들거나 복사한 요소 안의 공백을 이 파일의 들여쓰기로 다시 맞춘다.
-        다른 pom에서 복사한 요소도 정렬된다.
-
-        Normalise whitespace inside `el` (an element we created or copied) to the file's indentation."""
+        """새로 만들거나 다른 pom에서 복사한 요소 안의 공백을 이 파일의 들여쓰기로 맞춘다."""
         depth = self._depth(el)
         kids = list(el)
         if not kids:
@@ -487,9 +449,7 @@ class PomEditor:
                 self.reindent(c)
 
     def remove_node(self, el: Any) -> None:
-        """요소나 주석을 지우고, 빈 줄이나 어긋난 닫는 태그가 남지 않게 주변 들여쓰기를 정리한다.
-
-        Remove an element (or comment) and keep the surrounding indentation tidy."""
+        """요소나 주석을 지운다. 빈 줄이나 어긋난 닫는 태그가 남지 않게 주변 공백도 정리한다."""
         parent = el.getparent()
         if parent is None:
             return
@@ -509,8 +469,8 @@ class PomEditor:
             self.remove_node(el)
 
     def _set_child_text(self, parent: Any, name: str, value: str | None) -> None:
-        """텍스트 자식 ``name``의 값을 설정한다. None이면 삭제하고, 없으면 관례 순서 위치에 추가한다.
-        값이 이미 같으면 손대지 않으므로 수정 메서드가 변경 없음을 정확히 반환할 수 있다."""
+        """텍스트 자식 ``name``의 값을 설정한다. None이면 지우고, 없으면 관례 순서 위치에 추가한다.
+        값이 이미 같으면 손대지 않는다. 그래야 수정 메서드가 변경 없음을 정확히 반환한다."""
         c = self.child(parent, name)
         if value is None:
             if c is not None:
@@ -524,26 +484,22 @@ class PomEditor:
             c.text = value
 
     def set_child_text(self, parent: Any, name: str, value: str | None) -> None:
-        """임의 요소의 텍스트 자식 ``name``을 설정하는 공개 저수준 helper다.
-        None이면 삭제하고, 없으면 관례 순서 위치에 추가한다.
-
-        Public low-level helper: set/remove the text child `name` of an arbitrary element (ordered insert)."""
+        """임의 요소의 텍스트 자식 ``name``을 설정한다. None이면 지우고, 없으면 관례 순서 위치에 추가한다."""
         self._set_child_text(parent, name, value)
 
     def remove_if_empty(self, el: Any) -> None:
-        """자식, 텍스트, 주석이 모두 없는 요소면 지운다.
-        빈 <dependencies/> 같은 껍데기를 남기지 않기 위해서다."""
+        """자식, 텍스트, 주석이 모두 없는 요소를 지운다. 빈 ``<dependencies/>``가 남지 않게 할 때 쓴다."""
         self._remove_if_empty(el)
 
     def _build_value(self, parent: Any, name: str, value: Any) -> Any:
-        """Append <name> with a value built from str/bool/int/dict/list to `parent` (no positioning)."""
+        """``parent`` 끝에 ``<name>`` 요소를 만들고 값을 채운다. 순서 위치는 맞추지 않는다."""
         el = etree.SubElement(parent, self.q(name))
         self._fill(el, name, value)
         return el
 
     def _fill(self, el: Any, name: str, value: Any) -> None:
-        """파이썬 값을 하위 요소로 만든다. bool은 true/false, dict는 자식 요소, list는 단수형 이름의 반복
-        요소가 된다(``goals``의 항목은 ``goal``)."""
+        """파이썬 값을 하위 요소로 만든다.
+        bool은 true/false, dict는 자식 요소, list는 단수형 이름의 반복 요소가 된다. ``goals``의 항목은 ``goal``이다."""
         if value is None:
             return
         if isinstance(value, bool):
@@ -564,11 +520,7 @@ class PomEditor:
 
     def copy_into(self, parent: Any, src: Any, *, ordered: bool = False) -> Any:
         """요소나 주석 ``src``를 깊은 복사해 ``parent``의 마지막 자식으로 넣고 들여쓰기를 맞춘다.
-        ``ordered``면 관례 순서 위치에 넣는다.
-        다른 pom이나 다른 네임스페이스의 요소도 복사할 수 있다.
-
-        Deep-copy element/comment `src` (possibly from another pom, other namespace) as last child of `parent`
-        (or at its conventional position when `ordered`)."""
+        ``ordered``면 관례 순서 위치에 넣는다. 다른 pom이나 다른 네임스페이스의 요소도 된다."""
         new = self._copy_node(parent, src)
         if ordered and _is_el(new):
             self._position_new(parent, new)
@@ -580,8 +532,7 @@ class PomEditor:
         return new
 
     def _copy_node(self, parent: Any, src: Any) -> Any:
-        """요소를 재귀적으로 복사하면서 네임스페이스를 이 문서의 것으로 바꾼다.
-        네임스페이스가 없는 pom과 있는 pom 사이에서 복사할 때 쓴다."""
+        """요소를 재귀적으로 복사하면서 네임스페이스를 이 문서의 것으로 바꾼다."""
         if not _is_el(src):
             node = copy.copy(src)
             node.tail = None
@@ -596,7 +547,7 @@ class PomEditor:
             n.tail = c.tail
         return el
 
-    # ------------------------------------------------------------------ coordinates
+    # ------------------------------------------------------------------ 좌표
     def artifact_id(self) -> str | None:
         """이 pom 자신의 artifactId를 반환한다. 부모의 것은 보지 않는다."""
         return self.text_of(self._root, "artifactId")
@@ -610,29 +561,27 @@ class PomEditor:
         return self.text_of(self._root, "version")
 
     def effective_group_id(self) -> str | None:
-        """Maven 상속 규칙대로 groupId를, 없으면 <parent>의 groupId를 반환한다."""
+        """groupId를 반환한다. 직접 선언이 없으면 ``<parent>``의 groupId를 반환한다."""
         g = self.group_id()
         p = self.get_parent()
         return g or (p.group_id if p else None)
 
     def effective_version(self) -> str | None:
-        """version을, 없으면 <parent>의 version을 반환한다."""
+        """version을 반환한다. 직접 선언이 없으면 ``<parent>``의 version을 반환한다."""
         v = self.version()
         p = self.get_parent()
         return v or (p.version if p else None)
 
     @_mutator
     def set_coordinate(self, name: str, value: str | None) -> None:
-        """이 pom 자신의 groupId / artifactId / version / name / description을 설정한다. None이면 지운다.
-
-        Set/remove the project's own groupId / artifactId / version / name / description."""
+        """이 pom 자신의 groupId, artifactId, version, name, description 중 하나를 설정한다. None이면 지운다."""
         self._set_child_text(self._root, name, value)
 
     def packaging(self) -> str:
         """<packaging> 값을 반환한다. 없으면 Maven 기본값인 jar를 반환한다."""
         return self.text_of(self._root, "packaging") or "jar"
 
-    # ------------------------------------------------------------------ parent
+    # ------------------------------------------------------------------ 부모 pom
     def get_parent(self) -> GAV | None:
         """<parent>의 GAV를 반환한다. 없으면 None을 반환한다."""
         p = self.child(self._root, "parent")
@@ -642,18 +591,17 @@ class PomEditor:
                    version=self.text_of(p, "version") or None)
 
     def parent_relative_path(self) -> str | None:
-        """<parent><relativePath> 값을 반환한다. 요소가 없으면 None(Maven 기본값 ../pom.xml), 빈
-        <relativePath/>면 빈 문자열(저장소에서만 찾음)을 반환한다.
-
-        None = element absent (Maven default ../pom.xml); '' = <relativePath/>."""
+        """``<parent><relativePath>`` 값을 반환한다.
+        요소가 없으면 None을 반환한다. Maven 기본값 ``../pom.xml``이 적용되는 경우다.
+        빈 ``<relativePath/>``면 빈 문자열을 반환한다. 저장소에서만 찾는 경우다."""
         p = self.child(self._root, "parent")
         return self.text_of(p, "relativePath") if p is not None else None
 
     @_mutator
     def set_parent(self, gav: GAV, relative_path: str | None = None) -> None:
-        """<parent>를 ``gav``로 설정하고, 없으면 새로 만든다.
-        ``relative_path``가 None이나 빈 문자열이면 빈 <relativePath/>를 쓴다.
-        사내 부모 pom은 Nexus에서 받으므로 Maven이 ../pom.xml을 먼저 찾지 않게 하기 위해서다."""
+        """``<parent>``를 ``gav``로 설정한다. 없으면 새로 만든다.
+        ``relative_path``가 None이나 빈 문자열이면 빈 ``<relativePath/>``를 쓴다.
+        사내 부모 pom은 Nexus에서 받으므로 Maven이 ``../pom.xml``을 먼저 찾지 않게 하려는 것이다."""
         p = self.child(self._root, "parent")
         if p is None:
             p = self._insert_ordered(self._root, "parent")
@@ -661,7 +609,6 @@ class PomEditor:
         self._set_child_text(p, "artifactId", gav.artifact_id)
         self._set_child_text(p, "version", gav.version)
         rp = self.child(p, "relativePath")
-        # None이나 빈 문자열이면 사내 부모 pom을 디렉토리가 아니라 저장소에서 받도록 빈 <relativePath/>를 쓴다
         if relative_path is None or relative_path == "":
             if rp is None:
                 self._insert_ordered(p, "relativePath")
@@ -674,10 +621,8 @@ class PomEditor:
 
     @_mutator
     def set_parent_relative_path(self, relative_path: str | None) -> None:
-        """기존 <parent>의 <relativePath>만 바꾼다.
-        빈 문자열이면 빈 <relativePath/>를 쓰고, None이면 요소를 지우며, 부모가 없으면 아무것도 하지 않는다.
-
-        Only change <relativePath> of an existing parent ('' → <relativePath/>, None → remove element)."""
+        """기존 ``<parent>``의 ``<relativePath>``만 바꾼다. 부모가 없으면 아무것도 하지 않는다.
+        빈 문자열이면 빈 ``<relativePath/>``를 쓰고, None이면 요소를 지운다."""
         p = self.child(self._root, "parent")
         if p is None:
             return
@@ -694,10 +639,7 @@ class PomEditor:
 
     @_mutator
     def set_parent_version(self, version: str) -> None:
-        """기존 <parent>의 <version> 값만 바꾼다.
-        groupId, artifactId, relativePath는 그대로 두며, 부모가 없으면 아무것도 하지 않는다.
-
-        Only change the <version> text of an existing <parent> (nothing else; no parent → no change)."""
+        """기존 ``<parent>``의 ``<version>``만 바꾼다. 부모가 없으면 아무것도 하지 않는다."""
         p = self.child(self._root, "parent")
         if p is None:
             return
@@ -712,22 +654,20 @@ class PomEditor:
 
     @_mutator
     def set_packaging(self, packaging: str) -> None:
-        """<packaging>을 설정한다. jar는 기본값이므로 요소가 없으면 추가하지 않는다."""
+        """``<packaging>``을 설정한다. jar는 Maven 기본값이라 요소가 없던 pom에는 추가하지 않는다."""
         cur = self.child(self._root, "packaging")
-        # jar는 Maven 기본값이므로 diff를 줄이려고 <packaging>이 없던 pom에는 추가하지 않는다
         if cur is None and packaging == "jar":
             return
         self._set_child_text(self._root, "packaging", packaging)
 
-    # ------------------------------------------------------------------ modules
+    # ------------------------------------------------------------------ 모듈
     def modules(self) -> list[str]:
         """<modules>의 <module> 값 목록을 선언 순서대로 반환한다."""
         return [(m.text or "").strip() for m in self.children(self.child(self._root, "modules"), "module")]
 
     @_mutator
     def set_modules(self, modules: list[str]) -> None:
-        """<modules>를 주어진 목록으로 통째로 바꾼다.
-        빈 목록이면 <modules>를 지우고, 내용이 같으면 바꾸지 않는다."""
+        """``<modules>``를 주어진 목록으로 통째로 바꾼다. 빈 목록이면 ``<modules>``를 지운다."""
         if self.modules() == list(modules):
             return
         mods = self.child(self._root, "modules")
@@ -754,7 +694,7 @@ class PomEditor:
             mods = self._insert_ordered(self._root, "modules")
         self._append_new(mods, "module").text = module
 
-    # ------------------------------------------------------------------ properties
+    # ------------------------------------------------------------------ 속성
     def properties(self) -> dict[str, str]:
         """<properties>를 {이름: 값} dict로 반환한다."""
         return {_local(c): (c.text or "").strip() for c in self.children(self.child(self._root, "properties"))}
@@ -789,10 +729,8 @@ class PomEditor:
                 self.remove_node(c)
 
     def resolve(self, value: str | None) -> str | None:
-        """``${prop}``을 이 pom의 속성과 project.version / groupId / artifactId로 한 단계만 해석한다.
-        해석하지 못한 것은 그대로 둔다.
-
-        Resolve ${prop} references against this pom's properties (single level, best effort)."""
+        """``${prop}``을 이 pom의 속성과 ``project.version`` 등으로 한 단계만 치환한다.
+        치환하지 못한 참조는 그대로 둔다."""
         if value is None:
             return None
         props = self.properties()
@@ -804,9 +742,9 @@ class PomEditor:
             return props.get(k, builtins.get(k, m.group(0)))
         return re.sub(r"\$\{([^}]+)\}", repl, value)
 
-    # ------------------------------------------------------------------ dependencies
+    # ------------------------------------------------------------------ 의존성
     def _deps_container(self, managed: bool, create: bool = False) -> Any:
-        """<dependencies> 또는 <dependencyManagement><dependencies> 컨테이너 요소를 반환한다.
+        """``<dependencies>``나 ``<dependencyManagement><dependencies>`` 요소를 반환한다.
         ``create``면 없을 때 관례 위치에 만든다."""
         if managed:
             dm = self.find("dependencyManagement/dependencies")
@@ -819,8 +757,7 @@ class PomEditor:
         return d
 
     def dependency_elements(self, managed: bool = False) -> list[Any]:
-        """<dependencies>의 <dependency> 요소 목록을 반환한다.
-        ``managed``면 <dependencyManagement><dependencies>를 본다."""
+        """``<dependency>`` 요소 목록을 반환한다. ``managed``면 dependencyManagement 쪽을 본다."""
         return self.children(self._deps_container(managed), "dependency")
 
     def _gav_of(self, el: Any) -> GAV:
@@ -831,7 +768,7 @@ class PomEditor:
                    optional=opt)
 
     def gav_of(self, el: Any) -> GAV:
-        """<dependency> 요소에서 version, scope, type, classifier, optional까지 담은 GAV를 만든다."""
+        """``<dependency>`` 요소에서 scope, type, classifier, optional까지 담은 GAV를 만든다."""
         return self._gav_of(el)
 
     def _find_deps(self, group_id: str, artifact_id: str, managed: bool) -> list[Any]:
@@ -843,7 +780,7 @@ class PomEditor:
         return [self._gav_of(e) for e in self.dependency_elements(False)]
 
     def managed_dependencies(self) -> list[GAV]:
-        """<dependencyManagement>의 GAV 목록(BOM import 포함)을 반환한다."""
+        """dependencyManagement의 GAV 목록을 반환한다. BOM import도 들어 있다."""
         return [self._gav_of(e) for e in self.dependency_elements(True)]
 
     def has_dependency(self, group_id: str, artifact_id: str) -> bool:
@@ -851,11 +788,11 @@ class PomEditor:
         return bool(self._find_deps(group_id, artifact_id, False))
 
     def has_managed_dependency(self, group_id: str, artifact_id: str) -> bool:
-        """<dependencyManagement>에 이 g:a가 있는지 반환한다."""
+        """dependencyManagement에 이 g:a가 있는지 반환한다."""
         return bool(self._find_deps(group_id, artifact_id, True))
 
     def _write_dep(self, el: Any, gav: GAV) -> None:
-        """기존 <dependency> 요소에 GAV를 덮어쓴다. 값이 있는 항목만 쓰고, 값이 없는 항목은 지우지 않는다."""
+        """기존 ``<dependency>`` 요소에 GAV를 덮어쓴다. 값이 있는 항목만 쓰고 없는 항목은 지우지 않는다."""
         self._set_child_text(el, "groupId", gav.group_id)
         self._set_child_text(el, "artifactId", gav.artifact_id)
         if gav.version:
@@ -872,7 +809,7 @@ class PomEditor:
     def _add_dep(self, gav: GAV, managed: bool, if_absent: bool, first: bool = False) -> None:
         """의존성을 추가한다.
         이미 있으면 ``if_absent``일 때 그대로 두고, 아니면 그 선언을 ``gav``로 덮어쓴다.
-        ``first``면 맨 앞에 넣는다. BOM import를 다른 관리 항목보다 앞에 두기 위해서다."""
+        ``first``면 맨 앞에 넣는다. BOM import를 다른 관리 항목보다 앞에 둘 때 쓴다."""
         existing = self._find_deps(gav.group_id, gav.artifact_id, managed)
         if existing:
             if if_absent:
@@ -905,16 +842,14 @@ class PomEditor:
 
     @_mutator
     def add_managed_dependency(self, gav: GAV, if_absent: bool = True, first: bool = False) -> None:
-        """<dependencyManagement>에 의존성을 추가한다.
-        BOM import는 GAV(type='pom', scope='import')로 넘기며 ``first``면 맨 위에 넣는다.
-        여러 BOM이 같은 g:a를 관리하면 먼저 선언된 BOM이 이기므로 순서가 중요하다.
-
-        Add to <dependencyManagement>; BOM imports: GAV(type='pom', scope='import'). `first` puts it on top."""
+        """dependencyManagement에 의존성을 추가한다. ``first``면 맨 위에 넣는다.
+        BOM import는 ``GAV(type='pom', scope='import')``로 넘긴다.
+        여러 BOM이 같은 g:a를 관리하면 먼저 선언된 BOM이 이기므로 순서가 중요하다."""
         self._add_dep(gav, managed=True, if_absent=if_absent, first=first)
 
     @_mutator
     def remove_dependency(self, group_id: str, artifact_id: str) -> None:
-        """직접 의존성에서 이 g:a를 모두 지우고, 비게 된 <dependencies>도 지운다."""
+        """직접 의존성에서 이 g:a를 모두 지운다. 비게 된 ``<dependencies>``도 지운다."""
         cont = self._deps_container(False)
         for e in self._find_deps(group_id, artifact_id, False):
             self.remove_node(e)
@@ -922,14 +857,14 @@ class PomEditor:
 
     @_mutator
     def remove_all_dependencies(self) -> None:
-        """<dependencies>를 통째로 지운다. 루트 pom을 aggregator로 만들 때 쓴다."""
+        """``<dependencies>``를 통째로 지운다. 루트 pom을 aggregator로 만들 때 쓴다."""
         cont = self._deps_container(False)
         if cont is not None:
             self.remove_node(cont)
 
     @_mutator
     def remove_managed_dependency(self, group_id: str, artifact_id: str) -> None:
-        """<dependencyManagement>에서 이 g:a를 지우고, 비게 된 컨테이너 요소도 지운다."""
+        """dependencyManagement에서 이 g:a를 지운다. 비게 된 상위 요소도 지운다."""
         cont = self._deps_container(True)
         for e in self._find_deps(group_id, artifact_id, True):
             self.remove_node(e)
@@ -938,10 +873,8 @@ class PomEditor:
         self._remove_if_empty(dm)
 
     def _set_version_el(self, el: Any, version: str | None) -> None:
-        """의존성 같은 요소의 버전을 설정한다. 버전이 이 pom의 ``${prop}``을 가리키면 속성 값을 고친다.
-        그러면 같은 속성을 쓰는 다른 선언도 함께 맞춰지고 pom의 모양이 유지된다.
-
-        Set the version of a dependency-like element, going through a locally defined ${prop}."""
+        """의존성 같은 요소의 버전을 설정한다.
+        버전이 이 pom에 정의된 ``${prop}``을 가리키면 속성 값을 고친다. 같은 속성을 쓰는 선언도 함께 바뀐다."""
         cur = self.text_of(el, "version")
         if version is None:
             self._set_child_text(el, "version", None)
@@ -955,10 +888,7 @@ class PomEditor:
     @_mutator
     def set_dependency_version(self, group_id: str, artifact_id: str, version: str | None) -> None:
         """직접 의존성과 관리 의존성에서 이 g:a의 버전을 바꾼다.
-        None이면 직접 의존성의 <version>을 지우고 이 pom의 관리 항목도 빼서, 부모가 버전을 관리하게 한다.
-
-        Direct + managed. version=None removes <version> from direct deps and drops the local managed entry
-        (the version is then managed by the parent)."""
+        None이면 직접 의존성의 ``<version>``과 이 pom의 관리 항목을 지워 부모가 버전을 관리하게 한다."""
         for e in self._find_deps(group_id, artifact_id, False):
             self._set_version_el(e, version)
         if version is None:
@@ -973,18 +903,18 @@ class PomEditor:
     @_mutator
     def replace_dependency(self, old_group: str, old_artifact: str, new: GAV) -> None:
         """g:a를 그 자리에서 새 좌표로 바꾼다.
-        직접 의존성과 관리 의존성 모두 바꾸며 scope와 exclusions는 유지한다.
-        새 좌표가 이미 선언돼 있으면 같은 의존성이 두 번 선언되지 않도록 기존 선언만 지운다.
+        직접 의존성과 관리 의존성을 모두 바꾸고, scope와 exclusions는 유지한다.
+        새 좌표가 이미 선언돼 있으면 기존 선언만 지운다.
 
-        Rename g:a in place (direct + managed); keeps scope/exclusions; sets version/scope/type when given."""
+        version / scope / type / classifier of `new` are written only when set."""
         for managed in (False, True):
             olds = self._find_deps(old_group, old_artifact, managed)
             if not olds:
                 continue
             if (old_group, old_artifact) != (new.group_id, new.artifact_id) and \
                     self._find_deps(new.group_id, new.artifact_id, managed):
-                # 이름만 바꾸면 같은 g:a가 두 번 선언되어 Maven 경고와 버전 충돌이 생기므로 기존 선언을 지운다
-                for e in olds:                 # target already declared → drop the old one
+                # 이름만 바꾸면 같은 g:a가 두 번 선언되어 버전 충돌이 생기므로 기존 선언을 지운다
+                for e in olds:
                     self.remove_node(e)
                 continue
             for e in olds:
@@ -999,12 +929,11 @@ class PomEditor:
                 if new.classifier:
                     self._set_child_text(e, "classifier", new.classifier)
 
-    # ------------------------------------------------------------------ generic artifact references
+    # ------------------------------------------------------------------ 아티팩트 참조
     def artifact_refs(self) -> list[ArtifactRef]:
-        """GAV를 가진 모든 위치(의존성, 관리 의존성, 플러그인 의존성, annotationProcessorPaths)를 반환한다.
-        선택 사내 아티팩트는 어디에 선언돼 있든 버전을 올려야 하기 때문이다.
-
-        All groupId/artifactId/version carriers: deps, managed deps, plugin deps, annotationProcessorPaths."""
+        """GAV를 가진 모든 요소를 반환한다.
+        의존성, 관리 의존성, 플러그인 의존성, annotationProcessorPaths를 본다.
+        선택 사내 아티팩트는 어디에 선언돼 있든 버전을 올려야 하기 때문이다."""
         out: list[ArtifactRef] = []
 
         def add(section: str, el: Any) -> None:
@@ -1023,12 +952,11 @@ class PomEditor:
         return out
 
     def annotation_processor_paths(self) -> list[tuple[Any, Any]]:
-        """maven-compiler-plugin의 ``<annotationProcessorPaths>`` 항목을 (요소, 프로필 요소 | None) 목록으로 반환한다.
-        build와 pluginManagement, 각 프로필의 build, 플러그인과 execution의 configuration을 모두 본다.
+        """maven-compiler-plugin의 ``<annotationProcessorPaths>`` 항목을 모두 반환한다.
+        각 항목은 (요소, 프로필 요소) 쌍이다. 프로필 밖이면 프로필 요소는 None이다.
 
-        Every item under maven-compiler-plugin's `<annotationProcessorPaths>`: `<build>` and each `<profile>`'s
-        `<build>`, plugins and plugin management, the plugin's own and each execution's `<configuration>`; paired with
-        the profile element (None outside a profile). Other plugins' configurations are not Maven's processor paths."""
+        Looks at `<build>` and each `<profile>`'s `<build>`, plugins and plugin management, the plugin's
+        own and each execution's `<configuration>`. Other plugins' configurations are not processor paths."""
         out: list[tuple[Any, Any]] = []
         scopes = [(self._root, None)] + [(p, p) for p in self.children(self.child(self._root, "profiles"), "profile")]
         for base, prof in scopes:
@@ -1056,33 +984,26 @@ class PomEditor:
 
     @_mutator
     def set_ref_version(self, el: Any, version: str | None) -> None:
-        """의존성 같은 요소에 버전 문자열을 그대로 쓴다.
-        None이면 <version>을 지우며, 속성 참조는 따라가지 않는다.
-
-        Literal version on a dependency-like element (None removes <version>)."""
+        """의존성 같은 요소에 버전 문자열을 그대로 쓴다. None이면 ``<version>``을 지운다.
+        속성 참조는 따라가지 않는다."""
         self._set_child_text(el, "version", version)
 
     @_mutator
     def remove_version(self, el: Any) -> None:
-        """의존성 같은 요소의 <version>만 지워 부모 체인이나 dependencyManagement가 버전을 관리하게 한다.
-        그 버전이 가리키던 속성은 그대로 둔다.
-
-        Drop the `<version>` child of a dependency-like element (the version is then managed by the parent
-        chain / dependencyManagement). Properties the version referenced are left alone."""
+        """의존성 같은 요소의 ``<version>``만 지워 부모 체인이나 dependencyManagement가 버전을 정하게 한다.
+        그 버전이 가리키던 속성은 그대로 둔다."""
         self._set_child_text(el, "version", None)
 
     @_mutator
     def rename_ref(self, el: Any, group_id: str, artifact_id: str) -> None:
-        """의존성 같은 요소의 groupId / artifactId를 바꾼다. 별칭 좌표를 정식 좌표로 바꿀 때 쓴다."""
+        """의존성 같은 요소의 groupId와 artifactId를 바꾼다. 별칭 좌표를 정식 좌표로 바꿀 때 쓴다."""
         self._set_child_text(el, "groupId", group_id)
         self._set_child_text(el, "artifactId", artifact_id)
 
-    # ------------------------------------------------------------------ plugins
+    # ------------------------------------------------------------------ 플러그인
     def plugin_elements(self, where: str = "build") -> list[Any]:
-        """<plugin> 요소 목록을 반환한다.
-        ``build``는 <build><plugins>를, ``management``는 pluginManagement를, ``all``은 둘 다 본다.
-
-        where: build | management | all"""
+        """``<plugin>`` 요소 목록을 반환한다.
+        ``where``가 ``build``면 ``<build><plugins>``, ``management``면 pluginManagement, ``all``이면 둘 다 본다."""
         out: list[Any] = []
         if where in ("build", "all"):
             out += self.children(self.find("build/plugins"), "plugin")
@@ -1111,7 +1032,7 @@ class PomEditor:
                           configuration=_to_value(conf) if conf is not None and len(conf) else {})
 
     def plugins(self) -> list[PluginInfo]:
-        """<build><plugins>의 PluginInfo 목록을 반환한다. configuration은 dict로 담는다."""
+        """``<build><plugins>``의 PluginInfo 목록을 반환한다. configuration은 dict로 담는다."""
         return [self._plugin_info(p) for p in self.plugin_elements("build")]
 
     def managed_plugins(self) -> list[PluginInfo]:
@@ -1119,18 +1040,18 @@ class PomEditor:
         return [self._plugin_info(p) for p in self.plugin_elements("management")]
 
     def has_plugin(self, group_id: str, artifact_id: str, where: str = "build") -> bool:
-        """이 g:a 플러그인이 있는지 반환한다. 기본으로는 <build><plugins>만 본다."""
+        """이 g:a 플러그인이 있는지 반환한다. 기본으로는 ``<build><plugins>``만 본다."""
         return bool(self._find_plugins(group_id, artifact_id, where))
 
     @_mutator
     def add_plugin(self, plugin: PluginInfo, if_absent: bool = True,
                    executions: list[dict[str, Any]] | None = None) -> None:
-        """<build><plugins>에 플러그인을 추가한다.
-        이미 있으면 ``if_absent``일 때 그대로 두고, 아니면 버전(다를 때만)과 configuration을 바꾼다.
+        """``<build><plugins>``에 플러그인을 추가한다.
+        이미 있으면 ``if_absent``일 때 그대로 두고, 아니면 버전과 configuration을 바꾼다.
         설정이 같으면 손대지 않으므로 두 번 호출해도 문서가 바뀌지 않는다.
 
-        Add to <build><plugins>. `configuration` dict → nested elements; `executions` e.g.
-        [{"goals": ["repackage"]}] → <executions><execution><goals><goal>repackage</goal>…"""
+        `configuration` dict becomes nested elements; `executions` e.g. [{"goals": ["repackage"]}] becomes
+        <executions><execution><goals><goal>repackage</goal>…"""
         existing = self._find_plugins(plugin.group_id, plugin.artifact_id, "build")
         if existing:
             if if_absent:
@@ -1140,7 +1061,7 @@ class PomEditor:
                 self._set_child_text(el, "version", plugin.version)
             if plugin.configuration:
                 old = self.child(el, "configuration")
-                # 같은 호출을 다시 해도 문서가 바뀌지 않도록 기존 설정과 같으면 그대로 둔다
+                # 같은 호출을 다시 해도 문서가 바뀌지 않게 설정이 같으면 그대로 둔다
                 if old is None or _to_value(old) != _stringify(plugin.configuration):
                     if old is not None:
                         self.remove_node(old)
@@ -1173,7 +1094,7 @@ class PomEditor:
 
     @_mutator
     def remove_plugin(self, group_id: str, artifact_id: str) -> None:
-        """build와 pluginManagement에서 이 플러그인을 지우고, 비게 된 <plugins> / <pluginManagement> / <build>도 지운다."""
+        """build와 pluginManagement에서 이 플러그인을 지운다. 비게 된 상위 요소도 지운다."""
         for p in self._find_plugins(group_id, artifact_id, "all"):
             parent = p.getparent()
             self.remove_node(p)
@@ -1183,9 +1104,7 @@ class PomEditor:
 
     @_mutator
     def remove_build_plugins_except(self, keys: Iterable[str]) -> None:
-        """<build><plugins>에서 ``keys``에 없는 플러그인을 모두 지운다. pluginManagement는 그대로 둔다.
-
-        Remove every <build><plugins> plugin whose g:a is not in `keys` (pluginManagement untouched)."""
+        """``<build><plugins>``에서 ``keys``에 없는 플러그인을 모두 지운다. pluginManagement는 그대로 둔다."""
         keep = set(keys)
         for p in self.plugin_elements("build"):
             if self.plugin_key(p) not in keep:
@@ -1196,9 +1115,7 @@ class PomEditor:
 
     @_mutator
     def remove_element(self, path: str) -> None:
-        """<project> 아래 슬래시 경로의 요소(예: ``build/finalName``)를 지우고, 그 때문에 비게 된 부모 요소도 지운다.
-
-        Remove the element at slash path below <project> (e.g. 'build/finalName'); drops an emptied parent."""
+        """``build/finalName`` 같은 경로의 요소를 지운다. 그 때문에 비게 된 부모 요소도 지운다."""
         el = self.find(path)
         if el is not None:
             parent = el.getparent()
@@ -1207,10 +1124,10 @@ class PomEditor:
                 self._remove_if_empty(parent)
 
 
-# ---------------------------------------------------------------------- module helpers
+# ---------------------------------------------------------------------- 모듈 도우미
 def _singular(name: str) -> str:
-    """목록 요소 이름의 단수형을 반환한다(예: ``goals``는 ``goal``, ``dependencies``는 ``dependency``).
-    모르는 이름이면 ``item``을 반환한다."""
+    """목록 요소 이름의 단수형을 반환한다. ``goals``는 ``goal``, ``dependencies``는 ``dependency``다.
+    복수형이 아니면 ``item``을 반환한다."""
     if name.endswith("ies"):
         return name[:-3] + "y"
     if name.endswith(("ses", "xes")):
@@ -1222,8 +1139,7 @@ def _singular(name: str) -> str:
 
 def _to_value(el: Any) -> Any:
     """요소를 파이썬 값(텍스트, dict, list)으로 바꾼다.
-    같은 이름의 자식만 반복되면 list가 된다(``<goals><goal>``).
-    ``add_plugin``이 기존 configuration과 새 설정을 비교할 때 쓴다."""
+    같은 이름의 자식만 반복되면 list가 된다. ``add_plugin``이 기존 configuration과 비교할 때 쓴다."""
     kids = [c for c in el if _is_el(c)]
     if not kids:
         return (el.text or "").strip()
@@ -1234,7 +1150,8 @@ def _to_value(el: Any) -> Any:
     for c in kids:
         k = _local(c)
         v = _to_value(c)
-        if k in out:                                       # mixed repeated names → keep a list
+        # 다른 이름과 섞여 반복되는 이름은 list로 모은다
+        if k in out:
             out[k] = (out[k] if isinstance(out[k], list) else [out[k]]) + [v]
         else:
             out[k] = v
@@ -1242,7 +1159,7 @@ def _to_value(el: Any) -> Any:
 
 
 def _stringify(value: Any) -> Any:
-    """설정 dict의 값을 XML 텍스트 형태(문자열, bool은 true/false)로 바꾼다.
+    """설정 dict의 값을 XML 텍스트 형태로 바꾼다. bool은 true/false가 된다.
     ``_to_value`` 결과와 같은 모양으로 비교하기 위해서다."""
     if isinstance(value, bool):
         return "true" if value else "false"

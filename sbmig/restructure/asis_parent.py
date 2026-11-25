@@ -1,21 +1,16 @@
-"""프로젝트가 쓰는 사내 부모 pom의 as-is 버전이 저장소에 없을 때 이를 처리하는 모듈.
-프로젝트가 이미 사내 부모(``artifacts.parent`` / ``boot_parent`` / ``comp_parent``의 g:a 또는 별칭)를 쓰는데
-그 버전이 Nexus에 없어도, 설정된 버전을 받을 수 있으면 실행을 멈추지 않게 한다.
-변환이 as-is pom에서 실패했을 때(``Orchestrator._step_rewrite``)와 수정 루프의 사전 시도
-``sbmig-parent``에서 쓴다.
-- ``classify_parent_misses``: Maven 메시지에서 찾지 못한 부모마다 configured / asis-version / foreign으로 분류한다
-- ``align_asis_parent``: 그 부모를 쓰는 pom의 ``<parent>``를 설정 버전으로 바꾼다.
-  PomEditor로 서식을 유지한다
-- 설정 버전 자체를 찾지 못한 경우(configured)는 그대로 중단한다. 버전은 추정하지 않고 설정 값만 쓴다
+"""사내 부모 pom의 as-is 버전이 저장소에 없을 때 설정된 버전으로 맞추는 모듈.
+프로젝트가 이미 사내 부모 g:a나 별칭을 쓰는데 그 버전이 Nexus에 없어도, 설정 버전을 받을 수 있으면 계속 진행한다.
+as-is pom에서 변환이 실패했을 때와 수정 루프의 사전 시도 ``sbmig-parent``에서 호출된다.
+- ``classify_parent_misses``: 찾지 못한 부모를 configured, asis-version, foreign으로 나눈다
+- ``align_asis_parent``: 그 부모를 쓰는 pom의 ``<parent>``를 설정 버전으로 바꾼다
+- 설정 버전 자체가 없으면(configured) 중단한다. 버전은 추정하지 않고 설정 값만 쓴다
 - 예외를 던지지 않는다
 
-An as-is version of the company parent that the repository does not have (v2.1z-ag, docs/INTERFACES.md). A project that
-already inherits a configured in-house parent g:a (or an alias) at another version the repository lacks used to abort the
-run as "configured parent not resolvable" although the configured version resolves. `classify_parent_misses` tells the
-three kinds apart from Maven's text; `align_asis_parent` sets the configured version in every pom whose `<parent>` is that
-g:a at that version (text-preserving `PomEditor` edits). A `${prop}` parent version defined in a project pom and used
-for nothing but parent versions is aligned at the property; otherwise (defined outside the project, or used elsewhere
-too) the `<version>` literal is written. Never raises."""
+Contract: docs/INTERFACES.md "v2.1z-ag". Config keys: `artifacts.parent` / `boot_parent` / `comp_parent`.
+Caller of the rewrite path: `Orchestrator._step_rewrite`. Edits go through `PomEditor` (formatting kept).
+A `${prop}` parent version defined in a project pom and used for nothing but parent versions is aligned at the
+property; otherwise (defined outside the project, or used elsewhere too) the `<version>` literal is
+written."""
 from __future__ import annotations
 
 import logging
@@ -34,10 +29,10 @@ SPEC_NAMES = ("parent", "boot_parent", "comp_parent")
 
 @dataclass
 class ParentMiss:
-    """Maven이 찾지 못한 부모 pom 하나와 그 종류를 담는 데이터 클래스.
+    """Maven이 찾지 못한 부모 pom 하나와 그 종류를 담는 클래스.
 
-    One parent Maven could not resolve: `gav` as Maven (or the poms on disk) named it, `kind`, and for a company parent
-    the configured coordinates (`target`) and the config key that holds them (`spec_name`, e.g. `artifacts.parent`)."""
+    `gav` as Maven (or the poms on disk) named it. For a company parent: `target` = the configured
+    coordinates, `spec_name` = the config key that holds them (e.g. `artifacts.parent`)."""
     gav: GAV
     kind: MissKind
     target: GAV | None = None
@@ -51,10 +46,9 @@ class ParentMiss:
 
 @dataclass
 class AlignResult:
-    """``align_asis_parent``의 결과를 담는 데이터 클래스.
-    바꾼 pom 목록과, 속성 값을 바꿔 맞춘 pom(``{pom: 속성 이름}``)을 담는다.
-
-    The poms changed and the ones aligned at a property (`{pom: property}`)."""
+    """``align_asis_parent``의 결과를 담는 클래스.
+    바꾼 pom 목록과, 속성 값을 바꿔 맞춘 pom의 ``{pom: 속성 이름}``을 담는다.
+    """
     poms: list[str] = field(default_factory=list)
     properties: dict[str, str] = field(default_factory=dict)
 
@@ -65,10 +59,8 @@ def _specs(cfg: Any) -> list[tuple[str, Any]]:
 
 
 def matching_spec(cfg: Any, key: str) -> tuple[str | None, Any]:
-    """g:a 키에 맞는 첫 사내 부모 설정을 (이름, spec)으로 반환한다.
-    루트 부모를 먼저 보고, 없으면 (None, None)을 반환한다.
-
-    The first configured parent whose key or alias is `key` (root parent first), with its config name."""
+    """g:a나 별칭이 ``key``인 첫 사내 부모 설정을 (설정 이름, spec)으로 반환한다.
+    루트 부모를 먼저 본다. 없으면 (None, None)을 반환한다."""
     for name, s in _specs(cfg):
         if key == s.key or key in (s.aliases or []):
             return name, s
@@ -81,17 +73,15 @@ def _tree_properties(ws: Any) -> dict[str, dict[str, str]]:
     for rel in ws.pom_files():
         try:
             out[rel] = PomEditor(ws.root / rel).properties()
-        except Exception as e:  # noqa: BLE001 - a broken pom is just not a source of facts
+        except Exception as e:  # noqa: BLE001 - 깨진 pom은 정보에서 뺄 뿐이다
             log.debug("properties of %s unreadable: %s", rel, e)
     return out
 
 
 def declared_parents(ws: Any) -> list[tuple[str, GAV, str | None]]:
-    """트리의 pom마다 (경로, 버전을 해석한 <parent> 좌표, 버전이 ``${속성}``이면 그 속성 이름)을 반환한다.
-    부모가 없는 pom은 뺀다.
-
-    (pom, its `<parent>` with the version resolved against the pom's own properties then any project pom's, the property
-    name when the version is `${prop}`) for every pom that declares a parent."""
+    """부모를 선언한 pom마다 (경로, ``<parent>`` 좌표, 버전 속성 이름)을 반환한다.
+    버전이 ``${속성}``이면 그 pom의 속성, 다른 프로젝트 pom의 속성 순으로 값을 찾는다.
+    속성이 아니면 속성 이름은 None이다."""
     from .pom_editor import PomEditor
     props = _tree_properties(ws)
     out: list[tuple[str, GAV, str | None]] = []
@@ -116,12 +106,12 @@ def declared_parents(ws: Any) -> list[tuple[str, GAV, str | None]]:
 
 def classify_gav(gav: GAV, cfg: Any, ws: Any = None) -> ParentMiss:
     """찾지 못한 부모 하나가 어떤 종류인지 정한다.
-    - configured: 사내 부모 g:a이고 버전이 설정 버전과 같다(버전을 모르면 디스크의 pom이 설정 버전을 선언한 경우)
-    - asis-version: 사내 부모 g:a나 별칭인데 버전이 다르다. foreign: 사내 부모가 아니다
-    설정 버전이 비어 있으면 비교할 수 없으므로 configured로 보고 중단한다.
+    - configured: 사내 부모 g:a이고 버전이 설정 버전과 같다. 설정 좌표 자체가 없으니 중단한다
+    - asis-version: 사내 부모 g:a나 별칭인데 버전이 다르다
+    - foreign: 사내 부모가 아니다
+    설정 버전이 비어 있으면 비교할 수 없으므로 configured로 본다.
 
-    configured = the configured coordinates themselves are missing (abort); asis-version = a company parent g:a (or an
-    alias) at another version; foreign = not a company parent. A configured parent without a version is `configured`."""
+    When Maven's text names no version, the versions the poms on disk declare decide."""
     name, spec = matching_spec(cfg, gav.key)
     if spec is None:
         return ParentMiss(gav=gav, kind="foreign")
@@ -144,10 +134,10 @@ def classify_gav(gav: GAV, cfg: Any, ws: Any = None) -> ParentMiss:
 
 
 def classify_parent_misses(text: str, cfg: Any, ws: Any = None) -> list[ParentMiss]:
-    """Maven 메시지(OpenRewrite 실패, 빌드 로그)에서 찾지 못한 부모마다 ``ParentMiss``를 만든다.
-    없으면 빈 목록을 반환하며, 예외를 던지지 않는다.
+    """Maven 출력에서 찾지 못한 부모마다 ``ParentMiss``를 만들어 반환한다.
+    없으면 빈 목록을 반환한다. 예외를 던지지 않는다.
 
-    One `ParentMiss` per unresolvable parent named in Maven's text (`sbmig.build.log_parser.parent_coordinates_in`)."""
+    Parent names come from `sbmig.build.log_parser.parent_coordinates_in`."""
     try:
         from sbmig.build.log_parser import parent_coordinates_in
         return [classify_gav(g, cfg, ws) for g in parent_coordinates_in(text or "")]
@@ -157,15 +147,12 @@ def classify_parent_misses(text: str, cfg: Any, ws: Any = None) -> list[ParentMi
 
 
 def align_asis_parent(ws: Any, miss: ParentMiss) -> AlignResult:
-    """``miss``(asis-version)의 부모를 쓰는 pom을 모두 설정된 부모로 맞춘다.
-    g:a가 같으면 ``<version>``만, 별칭이면 groupId, artifactId, version을 모두 바꾼다.
-    버전이 ``${속성}``이고 그 속성이 프로젝트 pom에 정의돼 부모 버전에만 쓰이면 속성 값을 바꾸고, 아니면
-    ``<version>`` 값을 직접 바꾼다.
-    예외를 던지지 않으며, 고치지 못한 pom은 DEBUG 로그로 남긴다.
+    """asis-version인 ``miss``의 부모를 쓰는 pom을 모두 설정된 부모로 맞춘다.
+    g:a가 같으면 ``<version>``만 바꾸고, 별칭이면 groupId, artifactId, version을 모두 바꾼다.
+    버전 속성이 프로젝트 pom에 정의돼 부모 버전에만 쓰이면 속성 값을 바꾸고, 아니면 ``<version>``을 바꾼다.
+    예외를 던지지 않는다. 실패하면 WARNING을 남기고 그때까지의 결과를 반환한다.
 
-    Align every pom whose `<parent>` is `miss.gav` (g:a at that version) to `miss.target`: the version only for the same
-    g:a, all three coordinates for an alias (relativePath untouched). A `${prop}` version defined in a project pom and
-    referenced only by parent versions is aligned at the property; else the literal is written. Never raises."""
+    relativePath is left untouched."""
     from .pom_editor import PomEditor
     out = AlignResult()
     if miss.kind != "asis-version" or miss.target is None or not miss.target.version:
@@ -173,7 +160,7 @@ def align_asis_parent(ws: Any, miss: ParentMiss) -> AlignResult:
     old, new = miss.gav.version, miss.target.version
     alias = miss.gav.key != miss.target.key
     try:
-        # an unresolved `${prop}` (defined outside the poms: .mvn/maven.config, -D) is the version Maven named
+        # pom 밖(.mvn/maven.config, -D)에서 정의돼 풀리지 않은 ${prop}도 Maven이 말한 버전으로 본다
         hits = [(rel, prop) for rel, g, prop in declared_parents(ws)
                 if g.key == miss.gav.key and (g.version == old or (prop and g.version == "${" + prop + "}"))]
         if not hits:
@@ -217,16 +204,14 @@ def align_asis_parent(ws: Any, miss: ParentMiss) -> AlignResult:
                 ed.save()
                 if rel not in out.poms:
                     out.poms.append(rel)
-    except Exception as e:  # noqa: BLE001 - an alignment that fails leaves the old path (note + continue / abort)
+    except Exception as e:  # noqa: BLE001 - 맞추지 못하면 호출하는 쪽이 원래 경로(메모 후 계속 또는 중단)로 간다
         log.warning("as-is parent alignment %s → %s failed: %s: %s", miss.coordinates, new, type(e).__name__, e)
     return out
 
 
 def aligned_followup(miss: ParentMiss, poms: list[str]) -> str:
-    """변환 단계에서 as-is 부모 버전을 맞췄다는 인수인계 문구를 만든다.
-    레시피가 목표 부모의 classpath로 실행됐다는 사실도 담는다.
-
-    The Handover line of an alignment before the recipes (they ran on the target parent's classpath)."""
+    """레시피 실행 전에 as-is 부모 버전을 맞췄다는 인수인계 문장을 만든다.
+    레시피가 목표 부모의 classpath로 실행됐다는 내용도 담는다."""
     target = miss.target.coordinates if miss.target else "?"
     return (f"as-is parent `{miss.coordinates}` is not in the repository: sbmig set the configured `{target}` "
             f"({miss.spec_name}) in {', '.join(poms)} before the recipes — the recipes ran on the target parent's classpath, "
@@ -234,18 +219,14 @@ def aligned_followup(miss: ParentMiss, poms: list[str]) -> str:
 
 
 def loop_aligned_followup(miss: ParentMiss, poms: list[str]) -> str:
-    """수정 루프의 ``sbmig-parent``가 as-is 부모 버전을 맞췄다는 인수인계 문구를 만든다.
-
-    The Handover line of the fix loop's `sbmig-parent` alignment."""
+    """수정 루프의 ``sbmig-parent``가 as-is 부모 버전을 맞췄다는 인수인계 문장을 만든다."""
     target = miss.target.coordinates if miss.target else "?"
     return (f"as-is parent `{miss.coordinates}` is not in the repository: sbmig set the configured `{target}` "
             f"({miss.spec_name}) in {', '.join(poms)} (fix loop, sbmig-parent)")
 
 
 def skipped_followup(miss: ParentMiss) -> str:
-    """as-is 부모가 저장소에 없어 레시피가 실행되지 않았다는 인수인계 문구를 만든다.
-
-    The Handover line of a rewrite that did not run because the as-is parent is not in the repository."""
+    """as-is 부모가 저장소에 없어 레시피가 실행되지 않았다는 인수인계 문장을 만든다."""
     return (f"OpenRewrite did not run: the as-is parent `{miss.coordinates}` is not in the repository — no recipe changed "
             "the code; the restructure replaced the parent and the fix loop did the rest (check the repository / settings "
             "if that parent should be there)")

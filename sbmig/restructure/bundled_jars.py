@@ -1,21 +1,16 @@
-"""어느 pom도 선언하지 않은 트리 안의 jar(``profile.bundled_jars``)를 재구성
-단계에서 첫 빌드 전에 대상 모듈 pom에 연결하는 모듈.
-JDBC 드라이버, sitemesh 필터, taglib 구현처럼 컴파일 오류를 내지 않는
-런타임 전용 jar도 as-is WAR처럼 패키징되게 하기 위해서다.
+"""어느 pom도 선언하지 않은 트리 안의 jar를 재구성에서 첫 빌드 전에 모듈 pom에 연결하는 모듈.
+JDBC 드라이버, 필터, taglib처럼 컴파일 오류를 내지 않는 런타임 전용 jar도 as-is WAR처럼 패키징하려는 것이다.
 jar마다 아래 결과 중 하나를 정한다.
-- ``superseded``(목표 부모 체인이나 Boot BOM이 관리), ``container``(Tomcat이 제공하는 서블릿 / JSP API): 손대지 않는다
-- ``unused``: 어디서도 참조하지 않으므로 선언하지 않고 인수인계에 이름만 남긴다.
-  ``declared``: 대상 pom이 이미 선언했다
-- ``compile``: 좌표를 알고 저장소에 있다.
-  ``system``: 그렇지 않으므로 ``<module>/lib``에 복사하고 system scope로 선언한다
-- ``skip``: ``intake.unknown_jar: skip``이거나 연결 중 오류가 났다
-결정(``plan_bundled_jars``)은 파일을 바꾸지 않고, 쓰기(``apply_bundled_jars``)는
-``system_jars.wire_bundled_jar``를 거친다.
+- ``superseded``: 목표 부모 체인이나 Boot BOM이 관리한다. 손대지 않는다
+- ``container``: Tomcat이 제공하는 서블릿, JSP API다. 손대지 않는다
+- ``unused``: 어디서도 참조하지 않는다. 선언하지 않고 인수인계에 이름만 남긴다
+- ``declared``: 대상 pom이 이미 선언했다
+- ``compile``: 좌표를 알고 저장소에 있다
+- ``system``: 그 밖의 경우다. ``<module>/lib``에 복사하고 system scope로 선언한다
+- ``skip``: ``intake.unknown_jar: skip``이거나 저장소를 읽지 못했거나 연결 중 오류가 났다
 
-Bundled jars wired at the restructure (v2.1z-j): every `profile.bundled_jars` entry gets one verdict
-(`superseded | container | unused | declared | compile | system | skip`, with the reason) from the pure planner;
-`apply_bundled_jars` writes the `compile` / `system` ones through `wire_bundled_jar` and never raises past a per-jar
-WARNING (a failed jar becomes a `skip` item carrying the error)."""
+Contract: docs/INTERFACES.md "v2.1z-j". `plan_bundled_jars` is pure; `apply_bundled_jars` writes through
+`system_jars.wire_bundled_jar` and never raises past a per-jar WARNING (a failed jar becomes `skip`)."""
 from __future__ import annotations
 
 import logging
@@ -35,18 +30,16 @@ __all__ = ["TRUSTED_SOURCES", "VERDICTS", "BundledItem", "BundledPlan", "apply_b
 log = logging.getLogger(__name__)
 
 VERDICTS = ("superseded", "container", "unused", "declared", "compile", "system", "skip")
-# 저장소에 조회할 만한 좌표 출처이며 수정 루프의 BUNDLED_TRUSTED_SOURCES와 같다.
+# 저장소에 조회할 만한 좌표 출처. 수정 루프의 BUNDLED_TRUSTED_SOURCES와 같아야 한다.
 # manifest로 추정한 좌표는 믿지 않는다
 TRUSTED_SOURCES = ("pom_properties", "sha1_lookup", "name_table")
 
 
 @dataclass
 class BundledItem:
-    """jar 하나에 대한 결정을 담는 데이터 클래스.
-    as-is 경로, 재구성 뒤 경로, 결과 값, 사유를 담고, 연결되면 ``wired``가 된다.
-
-    One jar's verdict: the as-is jar, its current (post-move) path, the verdict word, the reason; `wired` once
-    applied."""
+    """jar 하나의 결과를 담는 클래스.
+    as-is jar, 재구성 뒤 경로, 결과 값, 사유를 담는다. 연결하면 ``wired``가 채워진다.
+    """
     jar: JarCoordinate
     verdict: str
     why: str
@@ -58,10 +51,9 @@ class BundledItem:
 
 @dataclass
 class BundledPlan:
-    """``plan_bundled_jars``의 결과를 담는 데이터 클래스. jar마다 ``BundledItem``이 하나씩 있다.
-    ``wired()`` / ``skipped()``는 ``RestructureResult.jars_wired`` / ``jars_skipped`` 형태의 dict 목록을 반환한다.
-
-    The planner's outcome; `wired()` / `skipped()` give the `RestructureResult.jars_wired` / `jars_skipped` shapes."""
+    """``plan_bundled_jars``의 결과를 담는 클래스. jar마다 ``BundledItem``이 하나씩 있다.
+    ``wired()``와 ``skipped()``는 ``RestructureResult.jars_wired`` / ``jars_skipped`` 형태로 반환한다.
+    """
     items: list[BundledItem] = field(default_factory=list)
 
     def by_verdict(self, *verdicts: str) -> list[BundledItem]:
@@ -69,8 +61,8 @@ class BundledPlan:
         return [i for i in self.items if i.verdict in verdicts]
 
     def wired(self) -> list[dict[str, Any]]:
-        """연결된 jar마다 ``{path, pom, coordinates, scope, placeholder, boot_poms}`` dict를 만들어
-        반환한다. path는 as-is 경로다."""
+        """연결된 jar마다 ``{path, pom, coordinates, scope, placeholder, boot_poms}``를 반환한다.
+        path는 as-is 경로다."""
         out: list[dict[str, Any]] = []
         for i in self.items:
             w = i.wired
@@ -82,17 +74,14 @@ class BundledPlan:
         return out
 
     def skipped(self) -> list[dict[str, Any]]:
-        """연결하지 않은 jar마다 ``{path, why}`` dict를 만들어 반환한다. ``why``는 결과 값으로 시작한다."""
+        """연결하지 않은 jar마다 ``{path, why}``를 반환한다. ``why``는 결과 값으로 시작한다."""
         return [{"path": i.jar.path, "why": i.why} for i in self.items if i.wired is None]
 
 
 def repository_has_fn(lookup: Any) -> Callable[[str, str, str], bool]:
-    """``RepositoryLookup``으로 저장소에 g:a:v가 정확히 있는지 확인하는 함수를 만든다.
-    ``pom_text(g, a, v)``가 있으면 True, 없으면 ``v in versions(g, a)``로 판단한다.
-    조회기가 없거나 예외가 나면 False가 되어 그 jar는 system scope로 연결된다.
-
-    "Does the repository have exactly g:a:v": `pom_text` truthy, else `v in versions(g, a)`; no lookup / any
-    exception → False."""
+    """저장소에 g:a:v가 정확히 있는지 확인하는 함수를 만든다.
+    ``pom_text(g, a, v)``가 있으면 True, 없으면 ``versions(g, a)``에 v가 있는지로 정한다.
+    조회기가 없거나 예외가 나면 False다. 그러면 그 jar는 system scope로 연결된다."""
     def _has(g: str, a: str, v: str) -> bool:
         if lookup is None:
             return False
@@ -100,20 +89,20 @@ def repository_has_fn(lookup: Any) -> Callable[[str, str, str], bool]:
             if lookup.pom_text(g, a, v):
                 return True
             return v in list(lookup.versions(g, a) or [])
-        except Exception as e:  # noqa: BLE001 - an unreadable repository counts as "not there"
+        except Exception as e:  # noqa: BLE001 - 읽지 못한 저장소는 없는 것으로 본다
             log.debug("repository check %s:%s:%s: %s: %s", g, a, v, type(e).__name__, e)
             return False
     return _has
 
 
 def repository_state_fn(lookup: Any) -> Callable[[str, str, str], tuple[str, str]]:
-    """저장소에 g:a:v가 있는지 ``present`` / ``absent`` / ``unreadable``로 답하는 함수를 만든다.
-    원격 저장소가 응답하지 않아 찾지 못한 것은 없다고 하지 않고 ``unreadable``과 사유를 반환한다.
+    """저장소에 g:a:v가 있는지 (상태, 사유)로 답하는 함수를 만든다. 상태는 present, absent, unreadable이다.
+    원격 저장소가 응답하지 않아 찾지 못했으면 없다고 하지 않고 unreadable과 사유를 반환한다.
 
-    Review T3: "does the repository have exactly g:a:v" in three answers — `("present", "")` (the pom of g:a:v, else
-    the version in the metadata, remote or local), `("absent", "")` (asked and not there, or no lookup configured, as
-    before), `("unreadable", <reason>)` (nothing found while no remote answered: `lookup.remote_failures(g, a)`'s
-    sentence, or the exception of the lookup). A caller must not treat `unreadable` as "not in the repository"."""
+    present: the pom of g:a:v, else the version in the metadata (remote or local).
+    absent: asked and not there, or no lookup configured.
+    unreadable: nothing found while no remote answered (`lookup.remote_failures(g, a)`'s sentence) or the
+    lookup raised. A caller must not treat `unreadable` as "not in the repository"."""
     def _state(g: str, a: str, v: str) -> tuple[str, str]:
         if lookup is None:
             return "absent", ""
@@ -123,7 +112,7 @@ def repository_state_fn(lookup: Any) -> Callable[[str, str, str], tuple[str, str
             if v in list(lookup.versions(g, a) or []):
                 return "present", ""
             failures = lookup.remote_failures(g, a) if hasattr(lookup, "remote_failures") else ""
-        except Exception as e:  # noqa: BLE001 - a lookup that failed is no answer
+        except Exception as e:  # noqa: BLE001 - 조회가 실패하면 답을 모르는 것이다
             log.debug("repository check %s:%s:%s: %s: %s", g, a, v, type(e).__name__, e)
             return "unreadable", f"{type(e).__name__}: {e}"[:300]
         return ("unreadable", str(failures)) if failures else ("absent", "")
@@ -131,10 +120,8 @@ def repository_state_fn(lookup: Any) -> Callable[[str, str, str], tuple[str, str
 
 
 def unused_jar_followup(name: str) -> str:
-    """참조가 없어 선언하지 않은 동봉 jar에 대한 인수인계 문구를 만든다.
-    i18n PATTERNS가 번역하므로 고칠 때 함께 고친다.
-
-    The Handover line for a bundled jar nothing references (not declared)."""
+    """참조가 없어 선언하지 않은 jar의 인수인계 문장을 만든다.
+    한국어 보고서는 i18n PATTERNS로 번역하므로 문장을 바꾸면 그쪽도 함께 고친다."""
     return (f"bundled jar `{name}` is referenced by no source / JSP / XML / properties file — not declared (add it by "
             "hand if a runtime needs it)")
 
@@ -162,32 +149,30 @@ def plan_bundled_jars(ws: Any, cfg: Any, jars: Iterable[JarCoordinate], *, modul
                       repository: Callable[[str, str, str], Any] | None = None,
                       source_roots: Iterable[str] = (), extra_dirs: Iterable[str] = (),
                       current: dict[str, str] | None = None, managed_known: bool = True) -> BundledPlan:
-    """jar마다 결과를 하나 정한다. 아래 순서로 처음 맞는 규칙을 쓰며 파일은 바꾸지 않는다.
-    관리되는 g:a면 superseded, 컨테이너 API면 container, 참조가 없으면 unused, 대상 pom이 이미 선언했으면
-    declared, 믿을 만한 좌표가 저장소에 있으면 compile, 그 밖에는 system이다.
-    참조 여부는 ``source_roots``의 Java와 ``extra_dirs``의 JSP / XML / properties로 다시 확인한다.
+    """jar마다 결과를 하나 정한다. 파일은 바꾸지 않는다.
+    참조 여부는 ``source_roots``의 Java와 ``extra_dirs``의 JSP, XML, properties로 다시 확인한다.
     sha1이 같은 두 번째 jar는 첫 jar의 결과를 따른다.
 
-    Pure classification (first rule wins): managed g:a → superseded; container API copy → container; nothing
-    references it → unused; the target pom declares the g:a → declared; trusted full coordinates the repository has →
-    compile; else system (`intake.unknown_jar: skip` → skip). A second jar with the same sha1 follows the first.
-    `managed_known=False` (the target chain's facts could not be read, so nothing could be called superseded): a jar
-    with KNOWN coordinates is not wired blind — `skip`; an unknown-coordinate jar still goes system (integrator, 2026-11-04:
-    an old spring-webmvc must never slip through as compile / system when Nexus was unreadable)."""
+    First rule wins: managed g:a -> superseded; container API copy -> container; nothing references it ->
+    unused; the target pom declares the g:a -> declared; `managed_known=False` and known coordinates -> skip;
+    trusted full coordinates the repository has -> compile; repository unreadable -> skip;
+    `intake.unknown_jar: skip` -> skip; else system.
+    `managed_known=False` means the target chain's facts could not be read: a jar with known coordinates
+    (an old spring-webmvc) must not be wired blind; an unknown-coordinate jar still goes system."""
     from sbmig.analyze.jar_coords import mark_used
 
     managed = set(managed_keys or ())
     boots = list(dict.fromkeys(boot_poms or ()))
     cur = dict(current or {})
     policy = getattr(getattr(cfg, "intake", None), "unknown_jar", "system") if cfg is not None else "system"
-    # 분석 결과의 JarCoordinate는 그대로 두고, 깊은 복제본으로 재구성 뒤의 소스와 웹 루트 기준 used를 다시 계산한다
+    # 분석 결과는 그대로 두고, 깊은 복사본으로 재구성 뒤 위치 기준의 used를 다시 계산한다
     copies = [j.model_copy(deep=True) for j in jars]
     roots = [d for d in source_roots if d is not None]
     extra = [d for d in extra_dirs if d is not None]
     if roots or extra:
         try:
             mark_used(copies, roots, ws, extra_dirs=extra)
-        except Exception as e:  # noqa: BLE001 - a failed reference scan keeps the analyzer's `used`
+        except Exception as e:  # noqa: BLE001 - 검사가 실패하면 분석기의 used를 그대로 쓴다
             log.warning("bundled jars: reference scan failed: %s: %s", type(e).__name__, e)
     plan = BundledPlan()
     first_by_sha: dict[str, BundledItem] = {}
@@ -222,17 +207,17 @@ def plan_bundled_jars(ws: Any, cfg: Any, jars: Iterable[JarCoordinate], *, modul
             if j.source in TRUSTED_SOURCES and g and a and ver and repository is not None:
                 try:
                     answer = repository(g, a, ver)
-                    # repository_state_fn은 (상태, 사유)를 주고, bool을 주는 호출자도 있다
+                    # repository_state_fn은 (상태, 사유)를 반환하고, bool을 반환하는 함수도 받는다
                     if isinstance(answer, tuple):
                         has = answer[0] == "present"
                         unreadable = (answer[1] or "no reason given") if answer[0] == "unreadable" else ""
                     else:
                         has = bool(answer)
-                except Exception as e:  # noqa: BLE001 - "not there" on any failure
+                except Exception as e:  # noqa: BLE001 - 실패하면 저장소에 없는 것으로 본다
                     log.debug("repository check %s:%s:%s failed: %s", g, a, ver, e)
                     has = False
             if unreadable:
-                # 저장소가 응답하지 않은 것을 "저장소에 없음"으로 보고 Nexus 등록을 요청하면 안 되므로 그대로 둔다
+                # 응답이 없었을 뿐인데 없다고 보고 Nexus 등록을 요청하면 안 되므로 연결하지 않는다
                 item.verdict, item.why = "skip", (f"skip: repository unreadable — {g}:{a}:{ver} could not be looked up "
                                                   f"({unreadable}); not wired and not called missing — run again when "
                                                   "the repository answers")
@@ -248,12 +233,9 @@ def plan_bundled_jars(ws: Any, cfg: Any, jars: Iterable[JarCoordinate], *, modul
 
 
 def apply_bundled_jars(ws: Any, cfg: Any, plan: BundledPlan, *, project_group: str = "") -> list[WiredJar]:
-    """``compile`` / ``system`` 항목을 ``wire_bundled_jar``로 pom에 쓴다. 커밋은 하지 않는다.
-    jar 하나가 실패하면 WARNING 한 줄을 남기고 그 항목을 ``skip``(사유는 오류 내용)으로 바꾼 뒤 다음 jar로
-    넘어간다. 예외를 던지지 않는다.
-
-    Write the `compile` / `system` items through `wire_bundled_jar`; a failing jar becomes `skip` with the error
-    (one WARNING), never raises. Never commits."""
+    """``compile``과 ``system`` 항목을 ``wire_bundled_jar``로 pom에 쓴다. 커밋은 하지 않는다.
+    jar 하나가 실패하면 WARNING을 남기고 그 항목을 ``skip``으로 바꾼 뒤 다음 jar로 넘어간다.
+    예외를 던지지 않는다."""
     out: list[WiredJar] = []
     for item in plan.items:
         if item.verdict not in ("compile", "system"):
@@ -263,12 +245,12 @@ def apply_bundled_jars(ws: Any, cfg: Any, plan: BundledPlan, *, project_group: s
             w = wire_bundled_jar(ws, cfg, module_pom=item.module_pom, jar=jar,
                                  repository_has=item.verdict == "compile", boot_poms=list(item.boot_poms),
                                  project_group=project_group)
-        except Exception as e:  # noqa: BLE001 - one jar never fails the restructure
+        except Exception as e:  # noqa: BLE001 - jar 하나 때문에 재구성을 실패시키지 않는다
             log.warning("bundled jar %s not wired into %s: %s: %s", item.jar.path, item.module_pom,
                         type(e).__name__, e)
             item.verdict, item.why = "skip", f"skip: wiring failed: {type(e).__name__}: {e}"[:300]
             continue
-        # wire_bundled_jar는 같은 g:a가 이미 있으면 아무것도 쓰지 않고 "already declared"만 남긴다
+        # 같은 g:a가 이미 있으면 wire_bundled_jar는 아무것도 쓰지 않고 "already declared"만 남긴다
         if any(n.startswith(f"{w.key} already declared") for n in w.notes):
             item.verdict, item.why = "declared", f"declared: {w.key} is already declared in {w.module_pom}"
             continue

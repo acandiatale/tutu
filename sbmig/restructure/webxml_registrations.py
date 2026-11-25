@@ -1,39 +1,25 @@
-"""web.xml의 servlet, filter, listener 선언을 Boot 등록 클래스 ``WebXmlRegistrations``로 옮길 계획을 만드는
-모듈(``layout.web_xml_registrations: generate``).
-Servlet 3 이전 프로젝트를 Boot로 바꾸면 web.xml의 매핑이 모두 사라진다.
-내장 Tomcat은 web.xml을 읽지 않고, 회사 Boot WAR에도 web.xml이 들어가지 않기 때문이다.
-재구성 단계의 ``Restructurer._web_xml_registrations``가 ``plan_registrations``를 호출하고,
-``templates/WebXmlRegistrations.java.j2``로 boot 모듈에 클래스를 만든다.
+"""web.xml의 servlet, filter, listener 선언을 Boot 등록 클래스 ``WebXmlRegistrations``로 옮길 계획을 만드는 모듈.
+내장 Tomcat은 web.xml을 읽지 않으므로 Servlet 3 이전 프로젝트는 Boot로 바꾸면 매핑이 모두 사라진다.
+``Restructurer._web_xml_registrations``가 ``plan_registrations``를 호출하고 템플릿으로 클래스를 만든다.
 - 순수 함수만 둔다. 파일 읽기와 쓰기는 restructurer가 한다
-- 빈으로 옮길 수 없는 것(jsp-file servlet, welcome-file, MIME, security-constraint 등)은 후속 작업으로 남긴다
-- 같은 것을 두 번 등록하지 않는다. Boot가 대신하는 클래스는 ``knowledge/config/web_xml_rules.yml``의 skip
-  표로 빼고, ``@WebServlet`` 등이 붙은 클래스는 ``@ServletComponentScan``이 있으면 스캔에 맡긴다
+- jsp-file servlet, welcome-file, MIME, security-constraint처럼 빈으로 옮길 수 없는 것은 인수인계로 남긴다
+- Boot가 대신하는 클래스는 ``web_xml_rules.yml``의 skip 표로 뺀다. ``requires:`` 조건이 맞을 때만 뺀다
+- 건너뛴 선언의 init-param은 Boot 속성으로 옮긴다
+- ``@WebServlet`` 등이 붙은 클래스는 ``@ServletComponentScan``에 맡겨 두 번 등록하지 않는다
 
-web.xml → `WebXmlRegistrations` (2026-10-23, `layout.web_xml_registrations: generate`).
+Switch `layout.web_xml_registrations: generate`. Renders `templates/WebXmlRegistrations.java.j2`:
+`ServletRegistrationBean` / `FilterRegistrationBean` / `ServletListenerRegistrationBean` beans plus one
+`ErrorPageRegistrar`, from the parsed `WebXmlModel` (`sbmig.analyze.webxml`). The skip table is
+`knowledge/config/web_xml_rules.yml` (company specifics stay in YAML). Annotated classes are left to
+`@ServletComponentScan` only when the generated Application carries it.
 
-Pre-Servlet-3 projects (web.xml 2.2 / 2.3 / 2.4, no `@WebServlet`) lose every servlet / filter / listener mapping
-when they become a Spring Boot application: embedded Tomcat never reads web.xml and the company's Boot WAR does not
-package it. `plan_registrations` turns the parsed `WebXmlModel` (`sbmig.analyze.webxml`) into the render context of
-`templates/WebXmlRegistrations.java.j2` — `ServletRegistrationBean` / `FilterRegistrationBean` /
-`ServletListenerRegistrationBean` beans plus one `ErrorPageRegistrar` — and the follow-ups for what has no bean
-(jsp-file servlets, welcome files, MIME mappings, security constraints, …). Pure: the restructurer does the I/O.
-
-Classes in the skip table (`knowledge/config/web_xml_rules.yml`, invariant 2) are left to Spring Boot; classes the
-project annotates with `@WebServlet` / `@WebFilter` / `@WebListener` are left to `@ServletComponentScan` (when the
-generated Application carries it), so nothing is registered twice.
-
-Boot 4.1 types used (verified with `javap` against spring-boot-4.1.0.jar, 2026-10-23):
+Boot 4.1 types used (checked with `javap` against spring-boot-4.1.0.jar):
 `org.springframework.boot.web.servlet.{ServletRegistrationBean, FilterRegistrationBean,
 ServletListenerRegistrationBean}`, `org.springframework.boot.web.error.{ErrorPage, ErrorPageRegistrar}`
 (`ErrorPage(HttpStatus, String)`, `ErrorPage(Class<? extends Throwable>, String)`, `ErrorPage(String)`),
 `AbstractFilterRegistrationBean.setDispatcherTypes(jakarta.servlet.DispatcherType, jakarta.servlet.DispatcherType...)`,
 `ServletRegistrationBean.setMultipartConfig(jakarta.servlet.MultipartConfigElement)`,
-`DelegatingFilterProxyRegistrationBean(String, ServletRegistrationBean<?>...)` (v2.1x, spring-boot-4.1.0.jar).
-
-건너뛴 선언의 init-param은 Boot 속성(``RegistrationPlan.properties``)으로 옮긴다.
-표의 ``requires:`` 조건이 맞을 때만 건너뛴다.
-
-
+`DelegatingFilterProxyRegistrationBean(String, ServletRegistrationBean<?>...)`.
 """
 from __future__ import annotations
 
@@ -51,8 +37,7 @@ log = logging.getLogger("sbmig.restructure")
 
 RULES_FILE = "knowledge/config/web_xml_rules.yml"
 CLASS_NAME = "WebXmlRegistrations"
-# ErrorPage(HttpStatus, …) needs HttpStatus.valueOf(code), which throws for codes Spring does not know: only the
-# common error statuses are generated, others become a follow-up
+# HttpStatus.valueOf는 Spring이 모르는 코드에 예외를 던지므로 흔한 오류 코드만 만들고 나머지는 인수인계로 남긴다
 ERROR_STATUS_CODES = frozenset({400, 401, 402, 403, 404, 405, 406, 407, 408, 409, 410, 411, 412, 413, 414, 415, 416,
                                 417, 422, 423, 424, 426, 428, 429, 431, 451, 500, 501, 502, 503, 504, 505, 507,
                                 508, 511})
@@ -67,17 +52,16 @@ _JAVA_KEYWORDS = {"abstract", "assert", "boolean", "break", "byte", "case", "cat
 
 @dataclass
 class SkipRule:
-    """web_xml_rules.yml의 skip 규칙 한 건을 담는 데이터 클래스.
-    등록하지 않을 클래스(FQCN), 이유, 대신 설정할 Boot 속성, 건너뛸 조건(``requires``), 조건이 맞지 않을
-    때의 처리(``otherwise``: register / proxy / followup)를 담는다.
+    """``web_xml_rules.yml``의 skip 규칙 한 건을 담는 클래스.
+    등록하지 않을 클래스, 이유, 대신 쓸 Boot 속성, 건너뛸 조건, 조건이 맞지 않을 때의 처리를 담는다.
 
-    One skip row of web_xml_rules.yml; v2.1x adds `properties` / `set` (Boot properties written from the as-is
-    declaration), `requires` (the skip applies only when every condition holds) and `otherwise`."""
+    `properties` / `set` are Boot properties written from the as-is declaration; the skip applies only when
+    every `requires` condition holds, else `otherwise` (register / proxy / followup)."""
     cls: str
     reason: str
     property: Optional[str] = None
-    properties: dict[str, str] = field(default_factory=dict)       # init-param name → Boot key
-    set: dict[str, str] = field(default_factory=dict)              # Boot key → value (written when skipped)
+    properties: dict[str, str] = field(default_factory=dict)       # init-param 이름: Boot 키
+    set: dict[str, str] = field(default_factory=dict)              # Boot 키: 값. 건너뛸 때 기록한다
     requires: dict[str, list[str]] = field(default_factory=dict)   # filter_name / libraries / artifacts
     otherwise: str = "register"                                    # register | proxy | followup
     register_requires: dict[str, list[str]] = field(default_factory=dict)
@@ -86,62 +70,54 @@ class SkipRule:
 
 @dataclass
 class RegistrationFacts:
-    """skip 규칙의 ``requires:`` 조건을 확인하는 데 필요한 프로젝트 정보를 담는 데이터 클래스.
-    분석기가 찾은 라이브러리 이름과 원래 pom이 선언한 g:a를 담는다.
-
-    Project facts the `requires:` conditions are checked against (analyzer library names, the g:a keys the as-is
-    poms declare) and the v2.1x switches (`filter_properties`; the multipart-config key table)."""
+    """skip 규칙의 ``requires:`` 조건을 확인할 프로젝트 정보를 담는 클래스.
+    분석기가 찾은 라이브러리 이름, as-is pom이 선언한 g:a, 관련 스위치를 담는다."""
     libraries: set[str] = field(default_factory=set)
     artifacts: set[str] = field(default_factory=set)
     filter_properties: bool = True
-    multipart_keys: dict[str, str] = field(default_factory=dict)   # location / max_file_size / … → Boot key
+    multipart_keys: dict[str, str] = field(default_factory=dict)   # location, max_file_size 등: Boot 키
 
 
 @dataclass
 class ClassInfo:
-    """web.xml에 나온 클래스를 프로젝트 소스에서 찾은 결과를 담는 데이터 클래스.
-    파일 경로, @Web* 어노테이션, HttpServlet 직접 상속 여부를 담는다.
+    """web.xml에 나온 클래스를 프로젝트 소스에서 찾은 결과를 담는 클래스.
+    파일 경로, ``@WebServlet`` 등의 어노테이션 여부, HttpServlet 직접 상속 여부를 담는다.
 
-    What the project sources say about a class named in web.xml (None from the lookup = not in the project)."""
+    The lookup returns None for a class that is not in the project."""
     path: str
-    annotated: bool = False          # @WebServlet / @WebFilter / @WebListener on it
-    http_servlet: bool = False       # `extends HttpServlet` directly
+    annotated: bool = False
+    http_servlet: bool = False
 
 
 @dataclass
 class RegistrationPlan:
-    """``plan_registrations``의 결과를 담는 데이터 클래스.
-    템플릿에 넘길 servlet, filter, listener, error page 목록과 건너뛴 선언,
-    스캔에 맡긴 선언, 후속 작업, session-timeout을 담는다."""
+    """``plan_registrations``의 결과를 담는 클래스.
+    템플릿에 넘길 servlet, filter, listener, error page와 건너뛴 선언, 인수인계 문장을 담는다."""
     servlets: list[dict[str, Any]] = field(default_factory=list)
     filters: list[dict[str, Any]] = field(default_factory=list)
     listeners: list[dict[str, Any]] = field(default_factory=list)
     error_pages: list[str] = field(default_factory=list)
     skipped: list[dict[str, str]] = field(default_factory=list)        # {kind, name, cls, reason, property}
-    # v2.1x D4: (Boot key, as-is value, comment) of skipped declarations — the restructure appends them to the boot
-    # application.properties (keys already configured there are left alone)
+    # 건너뛴 선언의 (Boot 키, as-is 값, 주석). 재구성이 boot application.properties에 덧붙인다
     properties: list[tuple[str, str, str]] = field(default_factory=list)
-    # v2.1x D11: (filter-name, target bean) of DelegatingFilterProxy declarations registered as
-    # DelegatingFilterProxyRegistrationBean (a non-security target)
+    # DelegatingFilterProxyRegistrationBean으로 등록한 (filter-name, 대상 빈). Security가 아닌 대상이다
     proxies: list[tuple[str, str]] = field(default_factory=list)
-    dispatcher_mappings: list[tuple[str, list[str]]] = field(default_factory=list)   # (servlet, non-/ patterns)
-    annotated: list[str] = field(default_factory=list)                 # FQCNs left to @ServletComponentScan
+    dispatcher_mappings: list[tuple[str, list[str]]] = field(default_factory=list)   # (servlet, / 외의 패턴)
+    annotated: list[str] = field(default_factory=list)                 # @ServletComponentScan에 맡긴 FQCN
     jsp_file_servlets: list[str] = field(default_factory=list)         # "name → /path.jsp"
-    notes: list[str] = field(default_factory=list)                     # also rendered into the class javadoc
+    notes: list[str] = field(default_factory=list)                     # 클래스 javadoc에도 들어간다
     followups: list[str] = field(default_factory=list)
     session_timeout: Optional[int] = None
 
     @property
     def has_beans(self) -> bool:
-        """등록할 빈이 하나라도 있는지 확인한다. 없으면 WebXmlRegistrations 클래스를 만들지 않는다."""
+        """등록할 빈이 하나라도 있는지 반환한다. 없으면 클래스를 만들지 않는다."""
         return bool(self.servlets or self.filters or self.listeners or self.error_pages)
 
 
 def load_skip_rules(path: Path) -> dict[str, SkipRule]:
-    """skip 규칙 YAML을 읽어 {FQCN: SkipRule} 사전으로 반환한다.
-    파일이 없거나 깨져 있으면 경고 로그만 남기고 빈 사전을 반환하므로, 모든 선언이 등록 대상이 될 뿐 재구성은 계속된다.
-
-    `knowledge/config/web_xml_rules.yml` → {FQCN: rule}. Missing / broken file → {} (logged, never raises)."""
+    """skip 규칙 YAML을 읽어 {FQCN: SkipRule}로 반환한다.
+    파일이 없거나 깨져 있으면 경고 로그를 남기고 빈 사전을 반환한다. 이때는 모든 선언을 등록한다."""
     try:
         raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     except (OSError, yaml.YAMLError) as e:
@@ -171,11 +147,11 @@ def load_skip_rules(path: Path) -> dict[str, SkipRule]:
 
 
 def conditions_hold(conds: dict[str, list[str]], facts: Optional[RegistrationFacts], names: list[str]) -> bool:
-    """``requires:`` 조건이 모두 맞는지 확인한다. 조건이 없으면 True를 반환한다.
+    """``requires:`` 조건이 모두 맞는지 반환한다. 조건이 없으면 True다.
     ``names``에는 filter-name과 init-param ``targetBeanName`` 값을 넘긴다.
 
-    Do all `requires:` conditions hold (no condition = true)? `filter_name`: one of `names` is listed; `libraries`:
-    the analyzer found one of them; `artifacts`: an as-is pom declares one of them. Unknown keys never hold."""
+    `filter_name`: one of `names` is listed; `libraries`: the analyzer found one of them; `artifacts`: an
+    as-is pom declares one of them. Unknown keys never hold."""
     for key, values in conds.items():
         if key == "filter_name":
             ok = any(n in values for n in names if n)
@@ -191,12 +167,8 @@ def conditions_hold(conds: dict[str, list[str]], facts: Optional[RegistrationFac
 
 
 def data_size(value: Optional[int | str]) -> Optional[str]:
-    """바이트 수를 Boot DataSize 문자열로 바꾼다.
-    1048576은 ``1MB``, 512000은 ``500KB``, 나머지는 ``<n>B``가 되고 -1은 그대로 둔다.
-    숫자가 아닌 값(``${upload.max}``)은 그대로 반환한다.
-
-    Bytes → a Spring Boot DataSize string (`1MB`, `500KB`, `123B`; `-1` = unlimited kept); a non-number (a
-    placeholder) is returned unchanged (Boot reads a bare number as bytes)."""
+    """바이트 수를 Boot DataSize 문자열로 바꾼다. 1048576은 ``1MB``, 512000은 ``500KB``가 된다.
+    -1은 무제한이라 그대로 둔다. ``${upload.max}``처럼 숫자가 아닌 값은 그대로 반환한다."""
     if value is None:
         return None
     text = str(value).strip()
@@ -213,10 +185,8 @@ def data_size(value: Optional[int | str]) -> Optional[str]:
 
 
 def java_string(value: str) -> str:
-    """값을 Java 문자열 리터럴로 바꾼다. 소스 인코딩(MS949 / UTF-8)과 상관없이 같은 값으로 컴파일되도록
-    ASCII 밖의 문자는 유니코드 이스케이프로 바꾼다.
-
-    A Java string literal (ASCII only: everything else as \\uXXXX, so the source encoding does not matter)."""
+    """값을 Java 문자열 리터럴로 바꾼다.
+    소스 인코딩과 상관없이 같은 값으로 컴파일되도록 ASCII 밖의 문자는 ``\\uXXXX``로 바꾼다."""
     out = ['"']
     for ch in value:
         o = ord(ch)
@@ -242,20 +212,16 @@ def java_string(value: str) -> str:
 
 
 def doc_text(value: str) -> str:
-    """javadoc 주석 안에 넣어도 안전한 텍스트로 바꾼다. web.xml의 이름이 주석을 닫거나 javadoc 태그로 읽히지
-    않도록 ``*/``, ``@``, 중괄호, ASCII 밖 문자를 HTML 엔티티로 바꾼다.
-
-    Text safe inside a javadoc comment."""
+    """javadoc 안에 넣어도 안전한 텍스트로 바꾼다.
+    주석이 닫히거나 태그로 읽히지 않게 ``*/``, ``@``, 중괄호, ASCII 밖 문자를 HTML 엔티티로 바꾼다."""
     value = value.replace("\u2192", "->").replace("*/", "*&#47;").replace("@", "&#64;")
     value = value.replace("{", "&#123;").replace("}", "&#125;")
     return "".join(ch if 0x20 <= ord(ch) < 0x7F else " " if ch in "\r\n\t" else f"&#{ord(ch)};" for ch in value)
 
 
 def source_name(fqcn: str) -> Optional[str]:
-    """web.xml의 FQCN을 Java 소스 표기로 바꾼다(``a.B$C``는 ``a.B.C``).
-    클래스 이름이 될 수 없으면 None을 반환하고, 호출하는 쪽이 수동 등록을 후속 작업으로 남긴다.
-
-    The FQCN as written in Java source (`a.B$C` → `a.B.C`); None when it is not a valid class name."""
+    """web.xml의 FQCN을 Java 소스 표기로 바꾼다. ``a.B$C``는 ``a.B.C``가 된다.
+    클래스 이름이 될 수 없으면 None을 반환한다. 이때 호출하는 쪽이 수동 등록을 인수인계로 남긴다."""
     fqcn = (fqcn or "").strip()
     if not _FQCN_RE.match(fqcn):
         return None
@@ -266,8 +232,8 @@ def source_name(fqcn: str) -> Optional[str]:
 
 
 def _bean_name(raw: str, suffix: str, used: set[str]) -> str:
-    """web.xml의 이름으로 다른 것과 겹치지 않는 @Bean 메서드 이름을 만든다.
-    camelCase로 바꿔 접미사를 붙이고, 숫자로 시작하는 이름과 예약어를 피하며, 이미 쓰인 이름이면 2, 3 등을 붙인다."""
+    """web.xml의 이름으로 겹치지 않는 @Bean 메서드 이름을 만든다.
+    camelCase로 바꾸고 접미사를 붙인다. 숫자 시작과 예약어를 피하고, 이미 쓰인 이름이면 2, 3을 붙인다."""
     words = [w for w in re.split(r"[^A-Za-z0-9]+", raw) if w]
     base = (words[0][:1].lower() + words[0][1:] + "".join(w[:1].upper() + w[1:] for w in words[1:])) if words else "x"
     if base[0].isdigit():
@@ -289,13 +255,10 @@ def _jakarta(fqcn: str) -> str:
 
 
 def dispatcher_mapping_followup(name: str, patterns: list[str]) -> str:
-    """Boot가 대신하는 DispatcherServlet에 ``/`` 외의 매핑이 있었을 때 인수인계 문장을 만든다.
-    ``*.do`` 같은 확장자 매핑은 Boot의 ``/``가 그대로 받지만, ``.do`` 없이 호출하던 URL은 Spring 6부터 접미사 매칭이
-    없어 맞지 않는다. ``/app/*`` 같은 경로 접두어는 ``spring.mvc.servlet.path``로 옮기라고 안내한다.
-
-    The Handover sentence for a non-`/` mapping of the DispatcherServlet Spring Boot replaces (v2.1x D12). A suffix
-    mapping (`*.do`) keeps reaching Boot's DispatcherServlet on `/`; a path prefix (`/app/*`) maps to
-    `spring.mvc.servlet.path`."""
+    """Boot가 대신하는 DispatcherServlet에 ``/`` 외의 매핑이 있었으면 인수인계 문장을 만든다.
+    - ``*.do`` 같은 확장자 매핑은 Boot의 ``/``가 그대로 받는다
+    - Spring 6부터 접미사 매칭이 없어 ``.do`` 없이 호출하던 URL은 맞지 않는다
+    - ``/app/*`` 같은 경로 접두어는 ``spring.mvc.servlet.path``로 옮기라고 안내한다"""
     shown = ", ".join(patterns)
     suffix = [p for p in patterns if p.startswith("*.")]
     prefix = [p for p in patterns if p.startswith("/") and p.endswith("/*") and len(p) > 2]
@@ -318,27 +281,24 @@ def plan_registrations(model: WebXmlModel, *, rules: dict[str, SkipRule],
                        lookup: Callable[[str], Optional[ClassInfo]], component_scan: bool,
                        web_path: Callable[[str], str] = lambda p: p, war: bool = False,
                        facts: Optional[RegistrationFacts] = None) -> RegistrationPlan:
-    """web.xml 모델 하나로 등록 계획을 만든다.
-    선언마다 skip 표에 있는 클래스는 Boot에 맡기고(속성 설정이 필요하면 후속 작업으로 남긴다), @Web*이
-    붙었고 ``component_scan``이면 @ServletComponentScan에 맡기며, 나머지만 Registration 빈으로 만든다.
-    ``lookup``은 프로젝트 소스에서 클래스를 찾는 함수이고, ``web_path``는
-    JSP를 front 모듈로 옮긴 뒤의 웹 경로를 구하는 함수다.
-    ``facts``로 ``requires:`` 조건을 확인하고, 건너뛴 선언의 init-param은 ``plan.properties``로 돌려준다.
+    """web.xml 모델 하나로 등록 계획을 만든다. 선언마다 아래 순서로 정한다.
+    - skip 표에 있는 클래스는 Boot에 맡긴다. 설정이 필요하면 Boot 속성이나 인수인계로 남긴다
+    - ``@Web*``이 붙었고 ``component_scan``이면 @ServletComponentScan에 맡긴다
+    - 나머지만 Registration 빈으로 만든다
 
-    The render context + follow-ups for `model`. `lookup(fqcn)` finds a class in the project sources;
-    `component_scan` = the Application carries @ServletComponentScan (annotated classes are left to it);
-    `web_path` maps an as-is web path (JSP location) to where it lives after the front-module move. v2.1x: `facts`
-    decides the rows' `requires:` (a DelegatingFilterProxy that is not the security chain becomes a
-    DelegatingFilterProxyRegistrationBean) and enables `plan.properties` (init-params of skipped declarations →
-    Boot keys)."""
+    `lookup(fqcn)` finds a class in the project sources; `component_scan` = the Application carries
+    @ServletComponentScan; `web_path` maps an as-is web path (JSP location) to its place after the
+    front-module move. `facts` decides the rows' `requires:` (a DelegatingFilterProxy that is not the security
+    chain becomes a DelegatingFilterProxyRegistrationBean) and enables `plan.properties` (init-params of
+    skipped declarations as Boot keys)."""
     plan = RegistrationPlan()
     src = model.path
     props_on = facts is None or facts.filter_properties
-    # 다른 빈이 같은 이름을 쓰지 않도록 템플릿에 있는 ErrorPageRegistrar 빈의 메서드 이름을 미리 예약한다
+    # 템플릿의 ErrorPageRegistrar 빈 이름과 겹치지 않게 미리 예약한다
     used: set[str] = {"webXmlErrorPages"}
     skipped_servlets: set[str] = set()
     registered_servlets: set[str] = set()
-    forced: dict[str, str] = {}             # filter-name → "register" | "proxy" (requires: not met)
+    forced: dict[str, str] = {}             # requires 조건이 맞지 않은 filter-name: register 또는 proxy
 
     def skip(kind: str, name: str, cls: str, params: Optional[dict[str, str]] = None, quiet: bool = False) -> bool:
         rule = rules.get(cls)
@@ -346,8 +306,8 @@ def plan_registrations(model: WebXmlModel, *, rules: dict[str, SkipRule],
             return False
         params = params or {}
         if rule.requires and not conditions_hold(rule.requires, facts, [name, params.get("targetBeanName", "")]):
-            # 표의 건너뛸 사유가 이 선언에는 맞지 않는 경우다.
-            # 보안용이 아닌 DelegatingFilterProxy나 Boot JPA가 없을 때의 OEMIV가 여기에 해당한다
+            # 건너뛸 사유가 이 선언에는 맞지 않는다. 보안용이 아닌 DelegatingFilterProxy,
+            # Boot JPA가 없을 때의 OpenEntityManagerInViewFilter가 그렇다
             action = rule.otherwise
             if action == "register" and rule.register_requires and \
                     not conditions_hold(rule.register_requires, facts, [name]):
@@ -363,7 +323,7 @@ def plan_registrations(model: WebXmlModel, *, rules: dict[str, SkipRule],
             return True
         plan.skipped.append({"kind": kind, "name": name, "cls": cls, "reason": rule.reason,
                              "property": rule.property or ""})
-        # 운영자가 직접 옮기지 않아도 똑같이 동작하도록 건너뛴 선언의 원래 값을 Boot 속성으로 옮긴다
+        # 손으로 옮기지 않아도 똑같이 동작하도록 건너뛴 선언의 값을 Boot 속성으로 옮긴다
         written: list[str] = []
         if props_on:
             for pname, key in rule.properties.items():
@@ -376,7 +336,7 @@ def plan_registrations(model: WebXmlModel, *, rules: dict[str, SkipRule],
         if written:
             plan.notes.append(f"{kind} {name} ({cls}) not registered in {CLASS_NAME}: {rule.reason}; written to the boot "
                               f"application.properties: {', '.join(written)}")
-        # a skipped class with a Boot property to set is the owners' job (follow-up); one Boot simply provides is a note
+        # 설정할 Boot 속성이 있으면 담당 팀 일이라 인수인계로, Boot가 그냥 대신하면 노트로 남긴다
         elif rule.property and (rule.properties or rule.set) and not props_on:
             plan.followups.append(f"web.xml {kind} {name} ({cls}) not registered in {CLASS_NAME}: {rule.reason} "
                                   f"(property: {rule.property}; layout.legacy_context.filter_properties: false)")
@@ -395,7 +355,7 @@ def plan_registrations(model: WebXmlModel, *, rules: dict[str, SkipRule],
         return False
 
     for s in model.servlets:
-        # <jsp-file> servlet은 등록할 클래스가 없으므로 옮겨진 JSP 경로와 함께 컨트롤러 매핑을 후속 작업으로 남긴다
+        # <jsp-file> servlet은 등록할 클래스가 없으므로 옮겨진 JSP 경로와 함께 인수인계로 남긴다
         if s.jsp_file and not s.servlet_class:
             target = web_path(s.jsp_file)
             plan.jsp_file_servlets.append(f"{s.name} → {target}")
@@ -404,20 +364,17 @@ def plan_registrations(model: WebXmlModel, *, rules: dict[str, SkipRule],
             continue
         if not s.servlet_class:
             continue
-        # 매핑이 Boot의 /와 같거나 없으면 속성 안내가 필요 없고, 다른
-        # 매핑이면 아래 매핑 안내가 대신하므로 노트로만 남긴다
+        # 매핑이 없거나 /면 안내가 필요 없고, 다른 매핑이면 아래 매핑 안내가 대신하므로 조용히 건너뛴다
         rule_ = rules.get(s.servlet_class)
         quiet = s.url_patterns in ([], ["/"]) or (rule_ is not None and rule_.cls.endswith("DispatcherServlet"))
         if skip("servlet", s.name, s.servlet_class, s.init_params, quiet=quiet):
             skipped_servlets.add(s.name)
-            # 원래 DispatcherServlet을 Boot의 것으로 대신하면 매핑이 /가 되므로, 다른 매핑이었으면 URL이
-            # 바뀐다는 후속 작업을 남긴다
+            # Boot의 DispatcherServlet은 /에 매핑되므로 다른 매핑이었으면 URL이 바뀐다고 남긴다
             dispatcher = rules[s.servlet_class].cls.endswith("DispatcherServlet")
             if dispatcher and s.url_patterns and s.url_patterns != ["/"]:
                 plan.dispatcher_mappings.append((s.name, list(s.url_patterns)))
                 plan.followups.append(dispatcher_mapping_followup(s.name, s.url_patterns))
-            # Boot가 대신하는 DispatcherServlet의 <multipart-config>는 사라지므로
-            # spring.servlet.multipart.*로 옮긴다
+            # 대신한 DispatcherServlet의 <multipart-config>는 사라지므로 spring.servlet.multipart.*로 옮긴다
             if dispatcher and s.multipart_location is not None:
                 keys = (facts.multipart_keys if facts is not None else {}) or {}
                 vals = {"location": s.multipart_location or None,
@@ -447,8 +404,7 @@ def plan_registrations(model: WebXmlModel, *, rules: dict[str, SkipRule],
         if info is None:
             plan.notes.append(f"servlet {s.name}: {s.servlet_class} is not a project class (library servlet); "
                               "it compiles only when that library (jakarta build) is on the classpath")
-        # 매핑 없는 servlet도 load-on-startup 용도일 수 있으므로 등록한다.
-        # alwaysMapUrl=false라서 /*에 매핑되지는 않는다
+        # 매핑 없는 servlet도 load-on-startup 용도일 수 있어 등록한다. alwaysMapUrl=false라 /*에는 매핑되지 않는다
         if not s.url_patterns:
             plan.notes.append(f"servlet {s.name} has no servlet-mapping in web.xml; registered without URL mappings "
                               "(alwaysMapUrl=false, so Boot does not map it to /*)")
@@ -485,20 +441,18 @@ def plan_registrations(model: WebXmlModel, *, rules: dict[str, SkipRule],
         if info is None and forced.get(f.name) != "proxy":
             plan.notes.append(f"filter {f.name}: {f.filter_class} is not a project class (library filter); "
                               "it compiles only when that library (jakarta build) is on the classpath")
-        # filter-mapping이 없는 filter는 원래도 호출된 적이 없으므로, 등록하면 오히려 동작이 바뀌어 건너뛴다
+        # filter-mapping이 없는 filter는 원래도 호출되지 않았으므로 등록하지 않는다
         if not f.order:
             plan.notes.append(f"filter {f.name} has no filter-mapping in web.xml (never invoked there); not registered")
             continue
         for sn in f.servlet_names:
-            # servlet 이름으로 매핑된 filter는 그 servlet을 Boot가 대신하면
-            # 이름이 dispatcherServlet으로 바뀌어 매핑이 끊긴다
+            # Boot가 대신한 servlet은 이름이 dispatcherServlet으로 바뀌어 servlet 이름 매핑이 끊긴다
             if sn in skipped_servlets:
                 plan.followups.append(f"web.xml filter {f.name} is mapped to servlet {sn}, which Spring Boot replaces "
                                       "(its DispatcherServlet is named dispatcherServlet) — check the filter mapping")
             elif sn not in registered_servlets and sn != "*":
                 plan.notes.append(f"filter {f.name} names servlet {sn}, which is not registered by {CLASS_NAME}")
-        # 보안 체인이 아닌 DelegatingFilterProxy는 대상 빈에 위임하는 Boot
-        # 등록 빈으로 만들고, 원래 매핑과 순서는 유지한다
+        # 보안 체인이 아닌 DelegatingFilterProxy는 대상 빈에 위임하는 등록 빈으로 만든다. 매핑과 순서는 유지한다
         proxy = None
         params = dict(f.init_params)
         if forced.get(f.name) == "proxy":
@@ -533,15 +487,13 @@ def plan_registrations(model: WebXmlModel, *, rules: dict[str, SkipRule],
     for ep in model.error_pages:
         loc = java_string(web_path(ep.location))
         if ep.error_code is not None:
-            # HttpStatus.valueOf는 모르는 코드에서 예외를 던져 앱 기동이 실패하므로 알려진 코드만 생성하고
-            # 나머지는 후속 작업으로 남긴다
+            # 모르는 코드면 HttpStatus.valueOf가 예외를 던져 기동이 실패하므로 알려진 코드만 만든다
             if ep.error_code not in ERROR_STATUS_CODES:
                 plan.followups.append(f"web.xml error-page {ep.error_code} → {ep.location}: status not generated "
                                       "(unknown to HttpStatus.valueOf) — register it in an ErrorPageRegistrar")
                 continue
             plan.error_pages.append(f"new ErrorPage(org.springframework.http.HttpStatus.valueOf({ep.error_code}), {loc})")
         elif ep.exception_type:
-            # exception-type의 javax.servlet / javax.el 이름은 jakarta 이름으로 바꾼다
             cls = source_name(_jakarta(ep.exception_type))
             if cls is None:
                 plan.followups.append(f"web.xml error-page {ep.exception_type!r} → {ep.location}: not a valid class "
@@ -553,7 +505,7 @@ def plan_registrations(model: WebXmlModel, *, rules: dict[str, SkipRule],
 
     if model.session_timeout_minutes is not None:
         plan.session_timeout = model.session_timeout_minutes
-    if any(w.strip("/") != "index.html" for w in model.welcome_files):   # index.html alone: Boot serves it
+    if any(w.strip("/") != "index.html" for w in model.welcome_files):   # index.html은 Boot가 제공한다
         plan.followups.append(f"web.xml welcome-file-list ({', '.join(model.welcome_files)}): Spring Boot serves a "
                               "static index.html only; for a JSP welcome page add a view controller / redirect for /")
     if model.mime_mappings:
@@ -574,7 +526,7 @@ def plan_registrations(model: WebXmlModel, *, rules: dict[str, SkipRule],
         plan.notes.append("web.xml is <distributable/>: session replication is configured in the container")
     for w in model.warnings:
         plan.notes.append(f"web.xml parse warning: {w}")
-    # 외부 Tomcat에 배포하는 WAR는 server.servlet.*를 읽지 않으므로 session-timeout을 Tomcat 설정에도 넣어야 한다
+    # 외부 Tomcat에 배포한 WAR는 server.servlet.*를 읽지 않으므로 Tomcat 설정에도 넣으라고 안내한다
     if plan.session_timeout is not None and war:
         plan.followups.append(f"session-timeout {plan.session_timeout} min (web.xml) is written as "
                               "server.servlet.session.timeout, which applies when the WAR runs with java -jar (embedded "
