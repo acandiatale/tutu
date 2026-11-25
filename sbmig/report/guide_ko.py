@@ -1,12 +1,12 @@
-"""한국어 report.md를 만드는 모듈. 마이그레이션을 요청한 담당자에게 무엇을 바꿨고 무엇을 확인해야 하는지 알려 주는 안내서다.
+"""한국어 report.md를 만드는 모듈. 이관을 요청한 담당자에게 무엇을 바꿨고 무엇을 확인해야 하는지 알려 주는 안내서다.
 영어 보고서를 줄마다 번역하지 않고 이 모듈에서 한국어 문장을 직접 쓴다.
-보고서에 영어로 저장된 줄(인수인계 할 일, 후속 조치, 플래그 설명)과 특수 절의 문장은 ``i18n``의 번역을 그대로 쓴다.
+영어로 저장된 줄(인수인계 할 일, 후속 조치, 플래그 설명)과 특수 절의 문장은 ``i18n``의 번역을 쓴다.
 절 순서: 제목, Ant 안내, 머리 표, 사내 프레임워크, 안내 문장, 전환 내용, 확인해 주세요, 코드 수정 내역,
 해결하지 못한 오류, 진행하지 않은 항목, 특수 절, 참고. 내용이 없는 절은 넣지 않는다.
+새 절을 추가하면 영어 보고서(markdown.py)에도 같이 추가해야 한다.
 
-The Korean report.md (`report.language: ko`): a guide for the person who asked for the migration, written in Korean
-here rather than translated line by line (INTERFACES "v2.1z-as"). Stored English lines (hand-over items, follow-ups,
-flag explanations) and the special sections keep going through `i18n`. Never raises on missing optional data."""
+Rendered when `report.language: ko`; `en` stays in markdown.py byte for byte (`tests/report/golden/`).
+Never raises on missing optional data. Contract: INTERFACES "v2.1z-as"."""
 from __future__ import annotations
 
 import re
@@ -131,7 +131,7 @@ OUTPUT_KO = (("zip", "결과 ZIP"), ("diff", "전체 변경"), ("errors_md", "�
              ("project_dir", "변환한 프로젝트"))
 
 
-# ---------------------------------------------------------------------------------------------------------- helpers
+# ------------------------------------------------------------------------------------------------------ 보조 함수
 def _code(text: object) -> str:
     """식별자 하나를 백틱으로 감싼다. 값 안의 백틱은 지운다."""
     return f"`{str(text).replace('`', '')}`"
@@ -160,7 +160,7 @@ def _ant_refused(r: RunReport) -> bool:
 
 
 def _fw_who(r: RunReport) -> str:
-    """프레임워크 프로젝트를 이름과 함께 부른다. 이름이 없으면 사내 프레임워크 프로젝트다."""
+    """보고서에서 프레임워크 프로젝트를 가리킬 말을 만든다. 이름이 없으면 "사내 프레임워크 프로젝트"를 반환한다."""
     name = str(getattr(getattr(getattr(r, "profile", None), "framework", None), "name", "") or "").strip()
     return f"{name} 프레임워크 프로젝트" if name else "사내 프레임워크 프로젝트"
 
@@ -192,7 +192,7 @@ def _fence(text: str) -> str:
     return "`" * max(3, longest + 1)
 
 
-# ---------------------------------------------------------------------------------------------------------- head
+# ------------------------------------------------------------------------------------------------------- 머리 표
 def _to_be_ko(r: RunReport) -> Optional[str]:
     """머리 표의 전환 후 칸을 만든다. 인수인계 데이터가 없으면 None을 반환한다."""
     if _to_be(r) is None:
@@ -287,7 +287,7 @@ def purpose_lines(r: RunReport) -> list[str]:
                 "확인하셔야 하는지 순서대로 적었습니다.", ""]
 
 
-# ---------------------------------------------------------------------------------------------------------- 전환 내용
+# ------------------------------------------------------------------------------------------------------ 전환 내용
 def _reason_ko(reason: str) -> str:
     """버전 변경 줄의 이유 코드를 비고 문장으로 바꾼다. 모르는 코드는 기존 번역을 쓴다."""
     reason = str(reason or "")
@@ -324,7 +324,7 @@ def _after_cell(c: VersionChange) -> str:
 
 
 def _dep_item(item: str) -> Optional[str]:
-    """추가 / 제거 목록의 한 항목(``g:a[:v] (tag)``)을 백틱과 한국어 꼬리표로 바꾼다. 부모 pom은 위 표에 있으므로 뺀다."""
+    """추가 / 제거 목록의 한 항목(``g:a[:v] (tag)``)을 백틱과 한국어 설명으로 바꾼다. 부모 pom은 위 표에 있으므로 뺀다."""
     s = str(item or "").strip()
     if not s or s.startswith("parent "):
         return None
@@ -395,7 +395,7 @@ def conversion_lines(r: RunReport) -> list[str]:
     return L
 
 
-# ---------------------------------------------------------------------------------------------------------- 확인해 주세요
+# ---------------------------------------------------------------------------------------------------- 확인해 주세요
 def _replacement_text(f: AdvisoryFinding) -> str:
     """대체 라이브러리를 보여 줄 말을 만든다. 한국어 문장이 있으면 그것을 쓰고, 좌표면 백틱으로 감싼다."""
     if (f.replacement_ko or "").strip():
@@ -417,7 +417,7 @@ def _sentence(text: str) -> str:
 
 
 def _path_tail(path: str) -> str:
-    """파일 경로에서 패키지 꼬리를 뗀다. Java 소스 루트 뒤의 경로이고, 없으면 마지막 두 단계다."""
+    """파일 경로에서 패키지 경로 뒷부분을 구한다. Java 소스 루트 뒤의 경로이고, 소스 루트가 없으면 마지막 두 단계다."""
     p = str(path or "").replace("\\", "/").strip("/")
     for root in ("src/main/java/", "src/test/java/", "src/main/resources/", "src/test/resources/"):
         i = p.rfind(root)
@@ -428,7 +428,7 @@ def _path_tail(path: str) -> str:
 
 def current_path(path: str, changed: Iterable[str]) -> str:
     """LLM이 고친 파일의 경로를 지금 경로로 바꾼다.
-    코드 수정 내역에 없는 경로이고 파일 이름과 패키지 꼬리가 같은 경로가 하나뿐이면 그 경로를 쓴다."""
+    코드 수정 내역에 없는 경로이고 파일 이름과 패키지 경로 뒷부분이 같은 경로가 하나뿐이면 그 경로를 쓴다."""
     paths = [str(c) for c in changed]
     if path in paths:
         return path
@@ -515,12 +515,13 @@ def _adv_followups(findings: list[AdvisoryFinding]) -> set[str]:
     try:
         from sbmig.advisory import followups_for
         return {_norm(x) for x in (followups_for(findings) or [])}
-    except Exception:  # pragma: no cover - advisory package half-built
+    except Exception:  # pragma: no cover - 권고 패키지를 쓸 수 없어도 계속 진행한다
         return set()
 
 
 def _pointer(line: str, r: RunReport) -> Optional[str]:
-    """다른 절을 가리키는 영어 줄을 한국어 항목으로 바꾼다. 해당하지 않으면 None, 버릴 줄이면 빈 문자열을 반환한다."""
+    """다른 절을 가리키는 영어 줄을 한국어 항목으로 바꾼다.
+    그런 줄이 아니면 None을, 버릴 줄이면 빈 문자열을 반환한다."""
     if _CAP_LINE.match(line):
         return ""
     m = _BLOCKED_PTR.match(line)
@@ -575,7 +576,7 @@ _LEADS = ((re.compile(r"^test sources (were neither compiled nor run|do not comp
 
 def _review_item(line: str, r: RunReport) -> Optional[str]:
     """구조 점검의 주의 사항 줄을 한국어 항목으로 만든다.
-    점검 결과에 같은 이슈가 있으면 저장된 문제와 힌트 전문을 쓴다. 해당하지 않으면 None을 반환한다."""
+    점검 결과에 같은 이슈가 있으면 저장된 문제와 힌트 전문을 쓴다. 주의 사항 줄이 아니면 None을 반환한다."""
     for prefix, lead in _REVIEW_LINES:
         if not line.startswith(prefix):
             continue
@@ -703,7 +704,7 @@ def check_lines(r: RunReport) -> list[str]:
     return L
 
 
-# ---------------------------------------------------------------------------------------------------------- 코드 수정 내역
+# --------------------------------------------------------------------------------------------------- 코드 수정 내역
 def recipe_words(recipes: Iterable[str]) -> list[str]:
     """OpenRewrite 레시피 id 목록을 사람이 읽는 말로 바꾼다. 같은 말은 한 번만 쓴다."""
     out: list[str] = []
@@ -833,7 +834,7 @@ def code_change_lines(r: RunReport) -> list[str]:
     return L
 
 
-# ---------------------------------------------------------------------------------------------------------- 오류 / 진행하지 않은 항목
+# -------------------------------------------------------------------------------------------- 오류 / 진행하지 않은 항목
 def open_errors(r: RunReport) -> list[tuple[str, str, str]]:
     """최종 빌드에 남은 오류를 (파일, 줄, 메시지)로 반환한다. 오류 목록이 없으면 마지막 빌드의 미해결 오류를 쓴다."""
     entries = entries_of(r)
@@ -899,7 +900,7 @@ def blocked_lines(r: RunReport) -> list[str]:
 
 
 def special_lines(r: RunReport, cfg: Any = None) -> list[str]:
-    """해당하는 실행에만 붙는 특수 절을 정해진 순서로 모은다.
+    """조건에 맞는 실행에만 붙는 특수 절을 정해진 순서로 모은다.
     운영자 확인, pom 합성, ADF, 포함된 jar, javax API jar, 외부 설정 값, 취약점 조치 순이다."""
     L: list[str] = []
     L += _promote(operator_check_lines(r, LANG))
@@ -914,7 +915,7 @@ def special_lines(r: RunReport, cfg: Any = None) -> list[str]:
     return L
 
 
-# ---------------------------------------------------------------------------------------------------------- 참고
+# --------------------------------------------------------------------------------------------------------- 참고
 def _review_ko(r: RunReport) -> Optional[str]:
     rv = r.structure_review
     if rv is None:
@@ -1000,11 +1001,11 @@ def reference_lines(r: RunReport) -> list[str]:
     return ["## 참고", ""] + blocks
 
 
-# ---------------------------------------------------------------------------------------------------------- entry
+# -------------------------------------------------------------------------------------------------------- 진입점
 def render_guide_ko(report: RunReport, cfg: Any = None) -> str:
     """한국어 안내서 report.md 전체를 만든다. 선택 데이터가 없어도 예외를 던지지 않는다.
 
-    The Korean guide (INTERFACES "v2.1z-as"); `cfg` only feeds the javax / Ant sections."""
+    `cfg` only feeds the javax / Ant sections."""
     r = report
     L = [f"# 마이그레이션 보고서 — {r.project_name}", ""]
     L += intake_notice_lines(r, LANG)

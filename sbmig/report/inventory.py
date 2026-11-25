@@ -1,16 +1,11 @@
-"""``sbmig inventory`` 명령의 결과 파일인 inventory.md(``report.language``에 따라 en 또는 ko)와
-inventory.json을 만드는 모듈.
-이관 실행과 무관한 읽기 전용 명령이다. pom이 없는 트리는 접수에서 거부하므로 담당 팀에 보낼 안내를 위해 그
+"""``sbmig inventory`` 명령의 결과 파일 inventory.md와 inventory.json을 만드는 모듈.
+inventory.md는 ``report.language``에 따라 en이나 ko로 만들고, inventory.json은 언어와 관계없다.
+이관과 별개인 읽기 전용 명령이다. pom이 없는 트리는 접수에서 거부하므로, 담당 팀에 보낼 안내용으로
 트리를 설명만 하고 아무것도 바꾸지 않는다.
 - 진입점: ``render_inventory``(markdown 본문), ``write_inventory``(두 파일 쓰기)
 - 모든 문장은 ``tr(lang, "…")``을 거친다. 한국어 표는 i18n.py에 있고 테스트가 누락을 잡는다
 
-`sbmig inventory` outputs: inventory.md (en | ko via `report.language`) + inventory.json (language independent).
-
-Every text literal goes through `tr(lang, "…")` (Korean table in `i18n.py`, drift-tested); identifiers, paths,
-jar names, coordinates and the analyzer's notes / warnings stay as they are.
-
-
+Identifiers, paths, jar names, coordinates and the analyzer's notes / warnings stay untranslated.
 """
 from __future__ import annotations
 
@@ -177,9 +172,7 @@ def render_inventory(inv: WebappInventory, language: str = "en") -> str:
 def write_inventory(inv: WebappInventory, out_dir: str | Path, cfg=None, *,
                     language: Optional[str] = None) -> dict[str, str]:
     """``out_dir``에 inventory.md와 inventory.json을 쓰고 두 경로를 반환한다.
-    경로는 ``inv.outputs``에도 저장한다.
-
-    Write inventory.md + inventory.json into `out_dir`; returns (and stores in `inv.outputs`) their paths."""
+    경로는 ``inv.outputs``에도 저장한다."""
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     lang = normalize(language if language is not None else getattr(getattr(cfg, "report", None), "language", "en"))

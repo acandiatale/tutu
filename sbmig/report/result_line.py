@@ -9,67 +9,51 @@
 - 운영자 보고 양식과 플릿 집계가 이 형식을 그대로 읽으므로 필드 순서와 이름을 바꾸지 않는다.
   새 필드는 끝에, 값이 있을 때만 붙인다
 
-One-line results and attention codes (round 10, operators retype them from a cp949 console).
+Format:
 
     SBMIG-RESULT run=<id> exit=<n> build=<ok|FAIL> unresolved=<n> blocked=<n> open=<n> resolved=<n> llm=<calls>
                  attn=<codes>[ review=<v>][ major=<n>][ scope=jdk-jakarta][ flow=remediation]
                  [ remediation=<STATUS|skipped>]
 
-`llm=` (v2.1z-bi follow-up) = the migration's calls + the remediation's build-fix-loop calls of every round
-(`report_llm_calls`), in the chained run and in the remediation-only flow.
-v2: ` review=<ok|issues|skipped|failed>` is appended when the run has a structure review (`report.structure_review`;
-fleet lines and runs without a review keep the round-10 format).
-v2.1: `open=` / `resolved=` count the run's error list (`report.error_entries`): open = status open or unresolved
-(finalize turns open into unresolved), resolved = status resolved (pom-verify / note / blocked in neither; blocked
-items are `blocked=`). Present whenever the line is made from a report or a fleet result, absent on a crash line.
-2026-11-11: ` remediation=<STATUS|skipped>` is appended when a vulnerability remediation was chained after the
-migration's BUILD SUCCESS (`report.remediation`: SUCCEEDED / INCOMPLETE / FAILED / AWAITING_CONFIRMATION / …) or the switch
-`remediation.after_migration` was on and the chain was skipped (not ready, stop request, inline engine). It never changes
-`exit=` / `build=` / `attn=`. v2.1z-aw: a conversion-only framework run whose build failed is chained too, so the token
-also stands beside `exit=2 build=FAIL`.
-v2.1z-aj: ` flow=remediation` (just before `remediation=`) marks a run of the `remediation` flow (no migration; `exit=` 0 =
-SUCCEEDED, 2 = any other saved status, 3 = not started). Its `build=` says what was built, not whether the remediation
-succeeded (`remediation_build_ok`): `ok` when the baseline build of the project as uploaded ran and passed
-(`report.remediation["baseline_build_ok"]` is true), neither `reason` nor `reasons` names `baseline_build_failed` /
-`candidate_build_failed`, and no delivery says `build_ok: false`; `FAIL` otherwise — not started (`remediation=skipped`,
-no summary, an intake refusal), stopped / rejected before the baseline build ran, or a build that failed. So an
-INCOMPLETE / AWAITING_CONFIRMATION / STOPPED-after-baseline run or a FAILED `resolution_mismatch` after a passed build prints
-`build=ok` with `exit=2`. A `full` run never prints `flow=` and its line is the one it always was.
-v2.1z-ak: ` scope=jdk-jakarta` (after `major=`, before `flow=` / `remediation=`) marks a framework project's reduced run
-(`report.plan.scope`, else `report.profile.reduced_scope` when the run ended before the plan): Java 21 + jakarta recipes,
-verify build + fix loop, chained remediation; no restructure, no structure review. A full-scope run never prints it.
-v2.1d: ` major=<n>` is appended when the run made n > 0 major upgrades / library replacements that are still in the
-final tree (`report.operator_checks`, Handover "운영자 확인 필요"); the build passed, the runtime needs a look.
+Optional fields:
+- `review=<ok|issues|skipped|failed>`: only when the run has a structure review (`report.structure_review`);
+  fleet lines and runs without a review have none.
+- `open=` / `resolved=` count `report.error_entries`: open = status open or unresolved (finalize turns open
+  into unresolved), resolved = status resolved (pom-verify / note / blocked in neither; blocked items are
+  `blocked=`). Present whenever the line is made from a report or a fleet result, absent on a crash line.
+- `major=<n>`: n > 0 major upgrades / library replacements still in the final tree (`report.operator_checks`,
+  Handover "운영자 확인 필요"); the build passed, the runtime needs a look.
+- `scope=jdk-jakarta` (after `major=`, before `flow=` / `remediation=`): a framework project's reduced run
+  (`report.plan.scope`, else `report.profile.reduced_scope` when the run ended before the plan).
+- `flow=remediation` (just before `remediation=`): a run of the `remediation` flow (no migration; `exit=` 0 =
+  SUCCEEDED, 2 = any other saved status, 3 = not started). Its `build=` says what was built, not whether the
+  remediation succeeded (`remediation_build_ok`). So an INCOMPLETE / AWAITING_CONFIRMATION /
+  STOPPED-after-baseline run or a FAILED `resolution_mismatch` after a passed build prints `build=ok` with
+  `exit=2`. A `full` run never prints `flow=`.
+- `remediation=<STATUS|skipped>`: a remediation was chained after the migration (`report.remediation`:
+  SUCCEEDED / INCOMPLETE / FAILED / AWAITING_CONFIRMATION / …) or `remediation.after_migration` was on and the
+  chain was skipped (not ready, stop request, inline engine). It never changes `exit=` / `build=` / `attn=`. A
+  conversion-only framework run whose build failed is chained too, so it can stand beside `exit=2 build=FAIL`.
+- `llm=` = the migration's calls + the remediation's build-fix-loop calls of every round (`report_llm_calls`).
 
-`sbmig run` prints (and logs) it at the end, the fleet prints one per project. `attn` is a comma list of short codes
-that say why a human has to look (`-` = nothing): the same codes fill the fleet's `summary.csv` `attention` column
-and `sbmig fleet status --attention` groups the projects by the first (most important) one. Everything is ASCII.
-
-Codes, most important first:
+`attn` is a comma list of short codes that say why a human has to look (`-` = nothing): the same codes fill
+the fleet's `summary.csv` `attention` column and `sbmig fleet status --attention` groups the projects by the
+first (most important) one. Codes, most important first:
 
     infra:<kind>          the run ended for an infrastructure reason (llm | maven | jdk | repository | disk |
-                          file-lock | …): flags `infra:<kind>` (+ the older `llm-unavailable`, `llm-config-error`,
-                          `mvn-not-found`, `jdk-not-21`; v2.1r: a `file_lock` BLOCKED item → `infra:file-lock`, a
-                          Windows file lock on target/; v2.1z-ah: `infra:http-blocked` — Maven's HTTP repository
-                          blocker refused a repository, flag `aborted:http-blocked`); a green run (exit 0) never gets it
+                          file-lock | http-blocked | …): flags `infra:<kind>` plus the older `llm-unavailable`,
+                          `llm-config-error`, `mvn-not-found`, `jdk-not-21`; a `file_lock` BLOCKED item (Windows
+                          lock on target/) gives `infra:file-lock`; a green run (exit 0) never gets it
     skipped:<why>         fleet only: not migrated (`skipped:gradle`, `skipped:input`)
     crash                 the run raised (fleet `error: crash: …`, CLI traceback)
     aborted[:<reason>]    exit 3 (`aborted:parent-not-found`, `aborted:http-blocked`, stopped by the user, …)
-    owner-decision        v2.1y: a `needs_owner` BLOCKED item — the LLM named a blocker outside the project (a library
+    owner-decision        a `needs_owner` BLOCKED item: the LLM named a blocker outside the project (a library
                           without a jakarta build, a framework to replace, a missing artifact); the owning team
-                          decides (소유팀 결정 필요). Followed by `blocked:needs_owner`
+                          decides. Followed by `blocked:needs_owner`
     blocked:<reason>      one per distinct BlockReason (`blocked:external_javax_api`)
     unresolved:<n>        errors left after the final build
-    rewrite-failed (자동 변환이 실패해 레시피가 적용되지 않음),
-    restructure-failed, llm-budget-exhausted, time-budget-exhausted, javax-api-on-classpath, tests-skipped,
-test-compile-skipped, tests-not-compiled, major-upgrade (운영자 확인 필요),
-jar-coordinates-unknown (Ant 합성 pom에 좌표를 모르는 jar가 있음),
-parent-chain-no-boot-bom (사내 부모 체인이 Boot BOM을 import하지 않음),
-hollow-reactor (reactor가 컴파일하는 소스가 없어 모듈 밖의 소스가 이관되지 않음),
-    remediation:not-ready (조치만 하는 실행이 IVAS 설정이나 Maven이 준비되지 않아 시작하지 못함)   the flags of the same name
+    <flag>                the flags of `ATTENTION_FLAGS`, under their own name
     incomplete            exit 2 with none of the above
-
-
 """
 from __future__ import annotations
 
@@ -78,32 +62,31 @@ from typing import Any, Iterable, Optional
 
 LEGACY_INFRA_FLAGS = {"llm-unavailable": "llm", "llm-config-error": "llm", "mvn-not-found": "maven",
                       "jdk-not-21": "jdk"}
-ATTENTION_FLAGS = ("rewrite-failed",                   # v2.1z-ay: the automatic conversion (OpenRewrite) failed
+# 주의 코드로 그대로 쓰는 플래그
+ATTENTION_FLAGS = ("rewrite-failed",                   # 자동 변환(OpenRewrite)이 실패했다
                    "restructure-failed", "llm-budget-exhausted", "time-budget-exhausted", "javax-api-on-classpath",
                    "tests-skipped", "test-compile-skipped", "tests-not-compiled", "major-upgrade",
                    "jar-coordinates-unknown", "parent-chain-no-boot-bom",
-                   "hollow-reactor",                 # v2.1z-c: the reactor compiles nothing — sources were not migrated
-                   "adf-project",                    # v2.1z-d: Oracle ADF application — not a target of this flow
-                   "remediation:not-ready")          # v2.1z-aj: a remediation-only run could not start (IVAS / Maven)
+                   "hollow-reactor",                 # reactor가 컴파일하는 소스가 없어 소스가 이관되지 않았다
+                   "adf-project",                    # 변환 대상이 아닌 Oracle ADF 프로젝트다
+                   "remediation:not-ready")          # 조치만 하는 실행이 IVAS나 Maven 문제로 시작하지 못했다
 INFRA_PREFIX = "infra:"
-FILE_LOCK_REASON = "file_lock"          # BlockReason.FILE_LOCK (v2.1r)
-FILE_LOCK_KIND = "file-lock"            # its infra kind: `infra:file-lock`
-NEEDS_OWNER_REASON = "needs_owner"      # BlockReason.NEEDS_OWNER (v2.1y)
-OWNER_DECISION = "owner-decision"       # its code: the owning team decides (소유팀 결정 필요)
+FILE_LOCK_REASON = "file_lock"          # BlockReason.FILE_LOCK
+FILE_LOCK_KIND = "file-lock"            # 이 사유의 주의 코드는 `infra:file-lock`이다
+NEEDS_OWNER_REASON = "needs_owner"      # BlockReason.NEEDS_OWNER
+OWNER_DECISION = "owner-decision"       # 담당 팀의 결정이 필요한 실행의 주의 코드
 _NON_ASCII_RE = re.compile(r"[^\x21-\x7e]+")
 
 
 def _ascii_token(v: Any) -> str:
-    # 토큰 하나가 공백으로 쪼개지지 않도록 cp949 콘솔에서 깨지거나 손으로
-    # 칠 수 없는 문자(한글, 공백 포함)는 "?"로 바꾼다
+    # cp949 콘솔에서 깨지거나 손으로 칠 수 없는 문자(한글, 공백 포함)는 "?"로 바꾼다.
+    # 공백도 바꾸므로 토큰 하나가 둘로 쪼개지지 않는다
     return _NON_ASCII_RE.sub("?", str(v)) or "-"
 
 
 def infra_kind(flags: Iterable[str]) -> Optional[str]:
     """인프라 원인 종류(``llm``, ``maven``, ``jdk``, ``repository`` 등)를 반환한다.
-    ``infra:<kind>`` 플래그 중 첫 번째를 쓰고, 없으면 이전 형식의 플래그(``llm-unavailable`` 등)에서 찾는다.
-
-    `llm` / `maven` / `jdk` / `repository` / … from `infra:<kind>` flags (first wins), else from the older flags."""
+    ``infra:<kind>`` 플래그 중 첫 번째를 쓰고, 없으면 이전 형식의 플래그(``llm-unavailable`` 등)에서 찾는다."""
     flags = list(flags or [])
     for f in flags:
         if f.startswith(INFRA_PREFIX) and len(f) > len(INFRA_PREFIX):
@@ -117,9 +100,7 @@ def infra_kind(flags: Iterable[str]) -> Optional[str]:
 def attention_codes(*, flags: Iterable[str] = (), exit_code: Optional[int] = None, status: Optional[str] = None,
                     error: Optional[str] = None, blocked_reasons: Iterable[str] = (), unresolved: int = 0) -> list[str]:
     """실행 하나의 주의 코드를 중요한 것부터 중복 없이 반환한다.
-    ``fleet status --attention``이 첫 코드로 프로젝트를 묶으므로 순서가 중요하다.
-
-    The attention codes of one run (see the module docstring), most important first, no duplicates."""
+    ``fleet status --attention``이 첫 코드로 프로젝트를 묶으므로 순서가 중요하다. 순서는 모듈 docstring에 있다."""
     flags = list(flags or [])
     err = (error or "").strip()
     codes: list[str] = []
@@ -161,9 +142,7 @@ def attention_codes(*, flags: Iterable[str] = (), exit_code: Optional[int] = Non
 
 
 def report_attention(report: Any, exit_code: Optional[int]) -> list[str]:
-    """실행 보고서(RunReport)의 주의 코드를 반환한다.
-
-    `attention_codes` of a `RunReport`."""
+    """실행 보고서(RunReport)의 주의 코드를 반환한다."""
     return attention_codes(flags=getattr(report, "flags", []) or [], exit_code=exit_code,
                            blocked_reasons=[b.reason.value for b in getattr(report, "blocked", []) or []],
                            unresolved=len(getattr(report, "unresolved", []) or []))
@@ -173,8 +152,8 @@ def result_attention(r: Any) -> list[str]:
     """플릿 프로젝트 결과(FleetProjectResult)의 주의 코드를 반환한다.
     아직 실행되지 않은 프로젝트는 볼 필요가 없으므로 빈 목록을 반환한다.
 
-    `attention_codes` of a `FleetProjectResult` (`summary.csv` attention, `fleet status --attention`); a project
-    that has not run yet (pending without an infra error, running) needs nobody."""
+    "Not run yet" = pending without an infra error, or running. Feeds `summary.csv` attention and
+    `fleet status --attention`."""
     if r.status == "running" or (r.status == "pending" and not (r.error or "").startswith(INFRA_PREFIX)):
         return []
     if r.status == "success":
@@ -189,12 +168,10 @@ def result_line(run_id: Any, exit_code: Any, build_ok: bool, *, unresolved: int 
                 open_errors: Optional[int] = None, resolved_errors: Optional[int] = None, major: int = 0,
                 remediation: Optional[str] = None, flow: Optional[str] = None, scope: Optional[str] = None) -> str:
     """``SBMIG-RESULT`` 한 줄을 조립한다.
-    이전 형식을 읽는 쪽이 깨지지 않도록 ``open=``, ``resolved=``, ``review=``, ``major=``, ``remediation=``은 값이 있을
-    때만 붙인다. ``flow=``는 실행 방식이 ``full``이 아닐 때만 ``remediation=`` 바로 앞에 붙인다.
-    ``scope=``는 범위가 ``full``이 아닐 때만 ``major=`` 뒤에 붙인다.
-
-    Assemble one `SBMIG-RESULT` line; optional fields appear only when they have a value (`flow=` only for a flow other
-    than `full`, `scope=` only for a scope other than `full`)."""
+    - 이전 형식을 읽는 쪽이 깨지지 않도록 ``open=``, ``resolved=``, ``review=``, ``major=``, ``remediation=``은
+      값이 있을 때만 붙인다
+    - ``scope=``는 범위가 ``full``이 아닐 때만 ``major=`` 뒤에 붙인다
+    - ``flow=``는 실행 방식이 ``full``이 아닐 때만 ``remediation=`` 바로 앞에 붙인다"""
     codes = ",".join(attention) or "-"
     errs = ""
     if open_errors is not None or resolved_errors is not None:
@@ -212,9 +189,7 @@ OPEN_STATUSES = ("open", "unresolved")
 
 
 def entry_counts(entries: Iterable[Any]) -> tuple[int, int]:
-    """오류 목록의 (열린 수, 해결 수)를 반환한다. ErrorEntry 객체와 플릿이 JSON에서 읽은 dict를 모두 받는다.
-
-    (open, resolved) of an error list (`ErrorEntry` objects or their dicts)."""
+    """오류 목록의 (열린 수, 해결 수)를 반환한다. ErrorEntry 객체와 플릿이 JSON에서 읽은 dict를 모두 받는다."""
     o = r = 0
     for e in entries or ():
         st = e.get("status") if isinstance(e, dict) else getattr(e, "status", None)
@@ -224,9 +199,7 @@ def entry_counts(entries: Iterable[Any]) -> tuple[int, int]:
 
 
 def counts_open_resolved(counts: Optional[dict]) -> tuple[int, int]:
-    """상태별 개수 dict(``FleetProjectResult.error_counts``)에서 (열린 수, 해결 수)를 반환한다.
-
-    (open, resolved) from a status → count dict (`FleetProjectResult.error_counts`)."""
+    """상태별 개수 dict(``FleetProjectResult.error_counts``)에서 (열린 수, 해결 수)를 반환한다."""
     c = counts or {}
     return sum(int(c.get(s, 0) or 0) for s in OPEN_STATUSES), int(c.get("resolved", 0) or 0)
 
@@ -235,8 +208,7 @@ def report_exit_code(report: Any) -> int:
     """보고서로 ``sbmig run``의 종료 코드를 정한다.
     중단이나 거부(``aborted[:…]``, ``mvn-not-found``)는 3, 빌드가 성공하고 차단이 없으면 0, 그 밖은 2다.
 
-    The `sbmig run` exit code of a report: 3 aborted (flag `aborted[:…]` / `mvn-not-found`), 0 green with nothing
-    blocked, else 2 (`sbmig.cli.run_exit_code` is this function)."""
+    `sbmig.cli.run_exit_code` is this function."""
     flags = list(getattr(report, "flags", []) or [])
     if any(f == "aborted" or f.startswith("aborted:") or f == "mvn-not-found" for f in flags):
         return 3
@@ -248,10 +220,7 @@ def report_exit_code(report: Any) -> int:
 def report_result_line(report: Any, exit_code: Optional[int] = None, run_id: Optional[str] = None) -> str:
     """끝난 ``sbmig run``의 ``SBMIG-RESULT …`` 줄을 만든다.
     ``run_id``를 주면 보고서의 값 대신 쓰고, ``exit_code`` 기본값은 ``report_exit_code``의 결과다.
-    ``major=``는 최종 트리에 남은 메이저 업그레이드 수다.
-
-    The `SBMIG-RESULT …` line of a finished `sbmig run` (`run_id` overrides the report's; `exit_code` defaults
-    to `report_exit_code(report)`)."""
+    ``major=``는 최종 트리에 남은 메이저 업그레이드 수다."""
     code = report_exit_code(report) if exit_code is None else exit_code
     o, r = entry_counts(getattr(report, "error_entries", None) or [])
     flow = getattr(report, "flow", None)
@@ -270,11 +239,11 @@ def report_result_line(report: Any, exit_code: Optional[int] = None, run_id: Opt
 
 
 def report_llm_calls(report: Any) -> int:
-    """``llm=`` 값을 반환한다. 이관의 LLM 호출 수에 이어서 실행한 조치의 빌드 오류 수정 루프가 호출한 수를 더한다.
+    """``llm=`` 값을 반환한다. 이관의 LLM 호출 수에 취약점 조치의 빌드 오류 수정 루프가 호출한 수를 더한다.
 
-    `llm=`: the migration's calls (`report.llm_usage.calls`) plus the remediation's fix-loop calls over every round
-    (`report.remediation["fix_llm_calls"]`, filled by `chain.summary`), for the chained run and the remediation-only
-    flow alike. Each call is counted once: the migration's `llm_usage` never holds the remediation's calls."""
+    Sources: `report.llm_usage.calls` + `report.remediation["fix_llm_calls"]` (every round, filled by
+    `chain.summary`), for the chained run and the remediation-only flow alike. Each call is counted once: the
+    migration's `llm_usage` never holds the remediation's calls."""
     own = _count(getattr(getattr(report, "llm_usage", None), "calls", 0))
     rem = getattr(report, "remediation", None)
     return own + (_count(rem.get("fix_llm_calls")) if isinstance(rem, dict) else 0)
@@ -289,10 +258,10 @@ REWRITE_FAILED = "rewrite-failed"
 
 
 def conversion_only_failed(report: Any) -> bool:
-    """변환만 하는 실행(프레임워크 프로젝트)에서 자동 변환이 실패했는지 확인한다. 중단된 실행은 해당하지 않는다.
+    """변환만 하는 실행(프레임워크 프로젝트)에서 자동 변환이 실패했는지 확인한다. 중단된 실행은 False다.
+    True인 실행은 빌드가 통과해도 성공이 아니다.
 
-    v2.1z-ay: a reduced run (scope jdk-jakarta) flagged `rewrite-failed` and not aborted: not a success even when its
-    build passed (`Orchestrator.build_succeeded`); the renderers and the `build=` token read it."""
+    Read by `Orchestrator.build_succeeded`, the renderers and the `build=` token."""
     flags = list(getattr(report, "flags", []) or [])
     if REWRITE_FAILED not in flags or any(f == "aborted" or f.startswith("aborted:") for f in flags):
         return False
@@ -300,11 +269,8 @@ def conversion_only_failed(report: Any) -> bool:
 
 
 def run_scope(report: Any) -> Optional[str]:
-    """실행 범위를 반환한다. 사내 프레임워크 프로젝트로 JDK와 jakarta만 적용한 실행이면 ``jdk-jakarta``, 그 밖은 None이다.
-    계획이 있으면 계획의 범위를 쓰고, 계획 전에 끝난 실행은 프로필의 검사 결과를 쓴다.
-
-    `jdk-jakarta` for a framework project's reduced run (`report.plan.scope`, else `report.profile.reduced_scope` when
-    the run ended before the plan), None otherwise."""
+    """실행 범위를 반환한다. JDK와 jakarta만 적용한 사내 프레임워크 실행이면 ``jdk-jakarta``, 그 밖은 None이다.
+    계획이 있으면 계획의 범위를 쓰고, 계획 전에 끝난 실행은 프로필의 검사 결과를 쓴다."""
     plan = getattr(report, "plan", None)
     if plan is not None:
         return REDUCED_SCOPE if getattr(plan, "scope", "full") == REDUCED_SCOPE else None
@@ -314,9 +280,7 @@ def run_scope(report: Any) -> Optional[str]:
 
 def remediation_token(report: Any) -> Optional[str]:
     """``remediation=`` 값을 반환한다.
-    이어서 실행한 조치의 상태(SUCCEEDED 등)나 "skipped"이고, 조치 요약이 없으면 None을 반환한다.
-
-    The `remediation=` value of a report (`report.remediation["status"]`), None without a chained remediation."""
+    이어서 실행한 조치의 상태(SUCCEEDED 등)나 "skipped"이고, 조치 요약이 없으면 None을 반환한다."""
     rem = getattr(report, "remediation", None)
     if not isinstance(rem, dict):
         return None
@@ -328,12 +292,11 @@ BUILD_FAILED_REASONS = ("baseline_build_failed", "candidate_build_failed")
 
 
 def remediation_build_ok(report: Any) -> bool:
-    """취약점 조치만 하는 실행의 ``build=`` 값을 정한다. 업로드한 그대로의 조치 전 빌드가 통과했고, 빌드
-    실패 사유가 없고, 결과 ZIP이 build_ok=false가 아니면 True다.
-    시작하지 않았거나 조치 전 빌드 전에 멈춘 실행은 False다. 조치의 성공 여부(종료 코드)와는 별개다.
-
-    `build=` of a remediation-flow line: the baseline build ran and passed, no build-failure reason, no delivery with
-    `build_ok: false`. Independent of the remediation's verdict (the exit code)."""
+    """취약점 조치만 하는 실행의 ``build=`` 값을 정한다. 아래를 모두 만족하면 True다.
+    - 업로드한 그대로의 조치 전 빌드가 통과했다
+    - 사유에 빌드 실패(``BUILD_FAILED_REASONS``)가 없다
+    - 결과 ZIP이 ``build_ok: false``가 아니다
+    시작하지 않았거나 조치 전 빌드 전에 멈춘 실행은 False다. 조치의 성공 여부(종료 코드)와는 별개다."""
     rem = getattr(report, "remediation", None)
     if not isinstance(rem, dict) or str(rem.get("status") or "") in ("", "skipped"):
         return False

@@ -5,10 +5,8 @@ resolved 개수)가 호출한다.
 - 렌더링과 번역은 여기서 하지 않는다
 - 이전 KB 레코드나 플러그인 결과처럼 빈 목록이나 필드가 빠진 항목이 와도 예외를 던지지 않는다
 
-The run's error list (`RunReport.error_entries`, v2.1) as the report needs it: counts, `seen` groups, the tries cell,
-diff +/- per file and one row per case ("Fixes by case", with the kept tries' 수정 notes — v2.1b `FixTry.edits`).
-Pure data — rendering (and translation) is in markdown.py / writer.py; everything here tolerates an empty list and
-entries with missing fields."""
+Output: counts, `seen` groups, the tries cell, diff +/- per file and one row per case ("Fixes by case",
+with the kept tries' edit notes from `FixTry.edits`)."""
 from __future__ import annotations
 
 import re
@@ -19,9 +17,11 @@ from typing import Any, Iterable, Optional
 from sbmig.errors.common import note_text
 
 STATUS_ORDER = ("unresolved", "open", "blocked", "pom-verify", "resolved", "note")
-OPEN_STATUSES = ("open", "unresolved")         # SBMIG-RESULT `open=` (finalize turns open into unresolved)
+# SBMIG-RESULT의 `open=`에 세는 상태. 마무리 단계에서 open은 unresolved로 바뀐다
+OPEN_STATUSES = ("open", "unresolved")
 SEEN_ORDER = ("compile", "transform", "restructure", "review", "build")
-KEPT_RESULTS_EXCLUDED = ("regressed", "reverted", "apply_failed")   # rolled back / never applied: not in the tree
+# 되돌렸거나 적용되지 않아 트리에 남지 않은 시도의 결과
+KEPT_RESULTS_EXCLUDED = ("regressed", "reverted", "apply_failed")
 _FIX_ROUND_RE = re.compile(r"^fix r(\d+)\b")
 _RESOLVED_TRY_RE = re.compile(r"^r(\d+) try (\d+)$")
 _GIT_HEADER_RE = re.compile(r"^diff --git a/(.+?) b/(.+)$")
@@ -33,9 +33,7 @@ def entries_of(report: Any) -> list[Any]:
 
 
 def status_counts(entries: Iterable[Any]) -> "OrderedDict[str, int]":
-    """상태별 개수를 ``STATUS_ORDER`` 순서로 반환한다. 모르는 상태는 뒤에 알파벳순으로 붙이고 0인 것은 뺀다.
-
-    status → count in `STATUS_ORDER` (unknown statuses after it, alphabetically); zero counts left out."""
+    """상태별 개수를 ``STATUS_ORDER`` 순서로 반환한다. 모르는 상태는 뒤에 알파벳순으로 붙이고 0인 것은 뺀다."""
     c = Counter(str(getattr(e, "status", "") or "open") for e in entries)
     keys = [s for s in STATUS_ORDER if c.get(s)] + sorted(k for k in c if k not in STATUS_ORDER and c[k])
     return OrderedDict((k, c[k]) for k in keys)
@@ -53,15 +51,13 @@ def resolved_count(entries: Iterable[Any]) -> int:
 
 def counts_text(counts: "OrderedDict[str, int] | dict[str, int]") -> str:
     """``"resolved 23, unresolved 2"`` 형태의 개수 문자열을 만든다.
-    상태 이름은 식별자이므로 영어 그대로 쓴다.
-
-    "resolved 23, unresolved 2" (ASCII; the statuses are identifiers and stay English in every language)."""
+    상태 이름은 식별자이므로 어느 언어 보고서에서도 영어 그대로 쓴다."""
     return ", ".join(f"{k} {v}" for k, v in counts.items() if v)
 
 
 def seen_rank(seen: str) -> tuple[int, int, str]:
     """오류가 처음 나온 단계(``seen``)의 정렬 키를 반환한다.
-    순서는 compile, transform, restructure, review, build, fix r1, r2 … 그 밖이다.
+    순서는 compile, transform, restructure, review, build, fix r1, r2 …, 나머지 순이다.
     r10이 r2 앞에 오지 않도록 ``fix rN``은 라운드 번호를 숫자로 비교한다."""
     s = (seen or "").strip()
     if s in SEEN_ORDER:
@@ -73,10 +69,7 @@ def seen_rank(seen: str) -> tuple[int, int, str]:
 
 
 def ordered(entries: Iterable[Any]) -> list[Any]:
-    """오류를 ``seen`` 단계 순서로 정렬한다. 같은 단계 안에서는 원래 순서를 유지한다.
-
-    The entries in pipeline order of `seen` (compile → restructure → review → build → fix r1, r2, …, then anything
-    else); list order inside a group."""
+    """오류를 ``seen`` 단계 순서(``seen_rank``)로 정렬한다. 같은 단계 안에서는 원래 순서를 유지한다."""
     es = list(entries)
     return [e for _, e in sorted(enumerate(es), key=lambda ie: (seen_rank(str(getattr(ie[1], "seen", "") or "-")),
                                                                  ie[0]))]
@@ -84,10 +77,7 @@ def ordered(entries: Iterable[Any]) -> list[Any]:
 
 def seen_groups(entries: Iterable[Any]) -> "OrderedDict[str, list[tuple[int, Any]]]":
     """오류를 ``seen`` 단계별로 묶어 ``{seen: [(번호, 오류)]}``를 반환한다.
-    번호는 정렬 순서대로 1부터 매긴다.
-
-    `seen` → [(#, entry)] in pipeline order (see `ordered`); # numbers the entries 1… in that order, so the
-    report's error list reads top to bottom."""
+    번호는 정렬 순서대로 1부터 매겨 보고서의 오류 목록이 위에서 아래로 이어지게 한다."""
     groups: "OrderedDict[str, list[tuple[int, Any]]]" = OrderedDict()
     for i, e in enumerate(ordered(entries), 1):
         groups.setdefault(str(getattr(e, "seen", "") or "-"), []).append((i, e))
@@ -95,10 +85,8 @@ def seen_groups(entries: Iterable[Any]) -> "OrderedDict[str, list[tuple[int, Any
 
 
 def try_text(t: Any) -> str:
-    """시도 하나를 ``번호 출처 [v버전] [edits] 결과`` 형태의 문자열로 만든다(예:
-    ``2 kb-script v2 build_ok``).
-
-    `1 llm-new edits improved`, `2 kb-script v2 build_ok`."""
+    """시도 하나를 ``번호 출처 [v버전] [edits] 결과`` 형태의 문자열로 만든다.
+    예: ``1 llm-new edits improved``, ``2 kb-script v2 build_ok``"""
     parts = [str(getattr(t, "n", "") or "?"), str(getattr(t, "source", "") or "?")]
     if getattr(t, "script_version", 0):
         parts.append(f"v{t.script_version}")
@@ -115,8 +103,7 @@ def tries_text(tries: Iterable[Any]) -> str:
 
 def where(e: Any) -> str:
     """오류 위치를 ``파일:줄``로 반환한다. 파일이 없으면 모듈을, 둘 다 없으면 빈 문자열을 반환한다.
-
-    `file:line`, else the module, else "" (pom-verify / note entries may have neither)."""
+    pom-verify나 note 항목은 둘 다 없을 수 있다."""
     f = getattr(e, "file", None)
     if f:
         line = getattr(e, "line", None)
@@ -126,20 +113,17 @@ def where(e: Any) -> str:
 
 def entry_text(e: Any) -> str:
     """오류 내용을 반환한다. 메시지가 없으면 note를 반환한다.
-
-    The message, else the note (pom-verify: what the restructure did; note entries: the warning)."""
+    pom-verify 항목의 note는 재구성이 한 일이고, note 항목의 note는 경고 내용이다."""
     return str(getattr(e, "message", "") or getattr(e, "note", "") or "")
 
 
-# ---------------------------------------------------------------------------- diffs
+# ---------------------------------------------------------------------------- diff 통계
 def diff_stats(diff: str, files: Iterable[str] = ()) -> "OrderedDict[str, list[int]]":
     """unified diff에서 파일별 [추가, 삭제] 줄 수를 센다.
     파일 헤더가 없는 diff는 ``files``에 파일이 하나뿐일 때만 그 파일 것으로 본다.
     diff가 잘려서 보이지 않는 파일은 [0, 0]으로 둔다.
 
-    file → [added, removed] lines of a unified diff (`git diff` headers or bare `---` / `+++` pairs). A diff
-    without file headers is credited to the only file of `files`; listed files the diff does not mention get
-    [0, 0] (they changed, the capped diff just does not show it)."""
+    Headers: `git diff` headers or bare `---` / `+++` pairs."""
     out: "OrderedDict[str, list[int]]" = OrderedDict()
     cur: Optional[str] = None
     in_hunk = False
@@ -194,8 +178,7 @@ def stats_text(stats: "OrderedDict[str, list[int]]", limit: int = 6, code: bool 
     """파일별 +/- 줄 수를 한 문자열로 만든다. 앞 ``limit``개만 쓰고 나머지는 "(+N more)"로 줄인다.
     회사 Windows 콘솔(cp949)은 유니코드 마이너스를 출력하지 못하므로 콘솔은 ``code=False, minus="-"``로 호출한다.
 
-    "`pom.xml` (+6 −0), `A.java` (+1 −1) (+2 more)"; a file whose capped diff shows nothing has no counts.
-    The console passes `code=False, minus="-"` (cp949 consoles)."""
+    "`pom.xml` (+6 −0), `A.java` (+1 −1) (+2 more)"; a file whose capped diff shows nothing has no counts."""
     q = "`" if code else ""
     items = []
     for f, (a, r) in list(stats.items())[:limit]:
@@ -207,32 +190,30 @@ def stats_text(stats: "OrderedDict[str, list[int]]", limit: int = 6, code: bool 
 
 def kept(t: Any) -> bool:
     """시도의 변경이 실제로 적용되어 지금 작업 트리에 남아 있는지 확인한다.
-    되돌린 시도의 diff는 세지 않는다.
-
-    The try's changes are still in the tree (not rolled back, actually applied)."""
+    되돌렸거나 적용하지 못한 시도는 False다."""
     return getattr(t, "applied", "none") != "none" and getattr(t, "result", "") not in KEPT_RESULTS_EXCLUDED
 
 
-# ---------------------------------------------------------------------------- fixes by case
+# ---------------------------------------------------------------------------- 케이스별 수정
 @dataclass
 class CaseRow:
     """"Fixes by case" 표의 한 줄, 즉 케이스 하나의 정보를 담는 데이터 클래스.
     오류 수, 해결 수, 시도, 원인과 해결 방법, 남은 변경, 저장된 스크립트 경로, 메이저 업그레이드 수를 담는다."""
     case_id: str
-    name: str = ""                                 # the first entry's message
+    name: str = ""                                 # 첫 오류의 메시지
     entries: int = 0
     resolved: int = 0
     open: int = 0
-    tries: list[Any] = field(default_factory=list)   # distinct tries of the case (first seen order)
+    tries: list[Any] = field(default_factory=list)   # 케이스의 시도. 중복을 빼고 처음 나온 순서다
     analysis: str = ""                             # 결과를 정한 시도의 원인
     solution: str = ""                             # 해결 방법
     no_script_reason: str = ""
     changes: "OrderedDict[str, list[int]]" = field(default_factory=OrderedDict)
     edits: list[Any] = field(default_factory=list)   # 트리에 남은 시도의 수정 기록
-    script: str = ""                               # cases/<id>/fix_vN.py (resolving script, else the newest stored)
+    script: str = ""                               # cases/<id>/fix_vN.py. 해결한 스크립트, 없으면 최신 버전
     script_version: int = 0
     seen: str = ""
-    major_upgrades: int = 0                        # v2.1d: major upgrades / replacements of the deciding try
+    major_upgrades: int = 0                        # 결과를 정한 시도의 메이저 업그레이드와 교체 수
 
 
 def _try_key(t: Any) -> tuple:
@@ -242,8 +223,8 @@ def _try_key(t: Any) -> tuple:
 
 def _deciding_try(tries: list[Any], resolved_marks: list[str]) -> Optional[Any]:
     """케이스의 결과를 정한 시도를 반환한다. 보고서의 원인과 해결 방법 칸이 이 시도에서 나온다.
-    오류의 ``resolved`` 표시(``r3 try 1``)가 가리키는 시도, 원인과 해결
-    글이 있는 마지막 시도, 마지막 시도 순으로 고른다."""
+    오류의 ``resolved`` 표시(``r3 try 1``)가 가리키는 시도, 원인과 해결 글이 있는 마지막 시도,
+    마지막 시도 순으로 고른다."""
     for mark in resolved_marks:
         m = _RESOLVED_TRY_RE.match(mark or "")
         if m:
@@ -257,10 +238,8 @@ def _deciding_try(tries: list[Any], resolved_marks: list[str]) -> Optional[Any]:
 
 def case_rows(entries: Iterable[Any]) -> list[CaseRow]:
     """시도가 있었거나 해결된 케이스마다 한 줄을 오류 목록 순서로 만든다.
-    한 시도가 케이스의 모든 오류에 똑같이 기록되므로 중복을 빼고, 변경 통계와 수정 기록은 트리에 남은 시도만 센다.
-
-    One row per case that was worked on (has tries) or resolved, in the error list's order (`ordered`). Tries are
-    shared by the case's entries (one try fixes the whole case) and de-duplicated."""
+    시도 하나가 케이스의 모든 오류에 똑같이 기록되므로 중복을 뺀다.
+    변경 통계와 수정 기록은 트리에 남은 시도만 센다."""
     rows: "OrderedDict[str, CaseRow]" = OrderedDict()
     marks: dict[str, list[str]] = {}
     scripts: dict[str, list[str]] = {}
@@ -312,10 +291,7 @@ def case_rows(entries: Iterable[Any]) -> list[CaseRow]:
 
 def kept_notes(tries: Iterable[Any]) -> list[Any]:
     """트리에 남은 시도들의 수정 기록(``FixTry.edits``)을 처음 나온 순서로 반환한다.
-    같은 (경로, 줄, 내용)은 한 번만 넣는다.
-
-    The 수정 notes (`FixTry.edits`) of the tries whose changes are still in the tree, first-seen order, the same
-    note (path, lines, change) once."""
+    같은 (경로, 줄, 내용)은 한 번만 넣는다."""
     out: list[Any] = []
     seen: set[tuple[str, str, str]] = set()
     for t in tries:
@@ -334,7 +310,7 @@ def notes_text(notes: Iterable[Any], limit: int = 8, sep: str = "; ") -> str:
     """수정 기록마다 경로, 줄, 내용을 한 줄로 이어 붙인다.
     앞 ``limit``개만 쓰고 나머지는 "(+N more)"로 줄인다.
 
-    `path lines — change` per note (`sbmig.errors.common.note_text`), `limit` of them, then "(+N more)"."""
+    Each note through `sbmig.errors.common.note_text`."""
     ns = list(notes)
     items = [note_text(n) for n in ns[:limit]]
     if len(ns) > limit:
@@ -343,18 +319,14 @@ def notes_text(notes: Iterable[Any], limit: int = 8, sep: str = "; ") -> str:
 
 
 def review_entries(entries: Iterable[Any]) -> list[Any]:
-    """구조 검토가 만들었거나 고친 오류를 반환한다(``seen=review``이거나 ``source=review`` 시도가 있는 것).
-
-    Entries the structure review produced or fixed (seen=review, or a try with source=review)."""
+    """구조 검토가 만들었거나 고친 오류를 반환한다(``seen=review``이거나 ``source=review`` 시도가 있는 것)."""
     return [e for e in entries if getattr(e, "seen", "") == "review"
             or any(getattr(t, "source", "") == "review" for t in getattr(e, "tries", None) or [])]
 
 
 def review_changes(entries: Iterable[Any]) -> "OrderedDict[str, list[int]]":
     """구조 검토의 시도 중 트리에 남은 것의 파일별 [+, -] 줄 수를 반환한다.
-    보고서 "Structure review"의 변경 줄에 쓴다.
-
-    file → [+, −] of the review's own kept tries."""
+    보고서 "Structure review"의 변경 줄에 쓴다."""
     seen: set[tuple] = set()
     stats = []
     for e in review_entries(entries):

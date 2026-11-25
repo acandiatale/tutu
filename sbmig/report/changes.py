@@ -3,11 +3,11 @@
 - 여러 시도가 같은 파일을 고쳐도 한 건이고, 되돌린 변경은 나오지 않는다
 - 빌드 산출물, 바이너리, .git 아래 파일은 넣지 않는다
 - 텍스트는 errors.md와 같은 방식으로 마스킹한다
+- 파일 설명은 트리에 남은 시도의 LLM 수정 기록에서, 수정 이유는 케이스의 원인 분석에서 가져온다
 - git이 실패해도 예외를 던지지 않고 빈 목록으로 둔다
 
-The net change of every file between the commit right after the automatic conversion (OpenRewrite, restructure)
-and the final tree, one `CodeChange` per file, for the Korean report's "코드 수정 내역" (`RunReport.code_changes`).
-Notes come from the kept tries' LLM-written `EditNote`s, reasons from the cases' `analysis`."""
+Base = the commit right after the automatic conversion (OpenRewrite, restructure). Notes = the kept tries'
+LLM-written `EditNote`s, reasons = the last kept try's `analysis` per (file, case)."""
 from __future__ import annotations
 
 import logging
@@ -19,10 +19,10 @@ from sbmig.report.errors import diff_stats, entries_of, kept
 
 log = logging.getLogger(__name__)
 
-DIFF_FILES = 30            # diff text kept for the first N files of the order
-DIFF_LINES = 80            # diff lines kept per file (truncated beyond)
-MAX_FILES = 500            # files listed at most (code_changes_total counts all)
-REASON_CHARS = 300         # a reason is cut at a sentence boundary near this length
+DIFF_FILES = 30            # 정렬 순서로 앞 N개 파일만 diff 본문을 남긴다
+DIFF_LINES = 80            # 파일 하나에 남기는 diff 줄 수. 넘치면 자른다
+MAX_FILES = 500            # 목록에 넣는 최대 파일 수. code_changes_total은 전체를 센다
+REASON_CHARS = 300         # 수정 이유는 이 길이 근처의 문장 경계에서 자른다
 
 _STATUS = {"M": "modified", "A": "added", "D": "deleted"}
 _SENTENCE_END = re.compile(r"(?<=[.!?。])\s+")
@@ -49,7 +49,7 @@ def _excluded(ws: Any, path: str) -> bool:
             return True
         is_ignored = getattr(ws, "is_ignored", None)
         return bool(is_ignored and is_ignored(path))
-    except Exception:  # noqa: BLE001 - an odd path is simply listed
+    except Exception:  # noqa: BLE001 - 판단할 수 없는 경로는 목록에 그대로 넣는다
         return False
 
 
@@ -69,9 +69,7 @@ def _decode(ws: Any, path: str, data: bytes) -> str:
 
 
 def hunks_only(diff: str) -> list[str]:
-    """unified diff에서 파일 헤더(diff --git, index, ---, +++)를 빼고 @@ 줄부터의 내용만 반환한다.
-
-    The lines of a one-file unified diff from the first `@@` on (git headers dropped)."""
+    """파일 하나의 unified diff에서 헤더(diff --git, index, ---, +++)를 빼고 첫 @@ 줄부터 반환한다."""
     # splitlines는 \f, \x1c 같은 문자에서도 줄을 나누므로 \n으로만 나눈다
     lines = [ln.removesuffix("\r") for ln in (diff or "").split("\n")]
     if lines and lines[-1] == "":
@@ -84,9 +82,7 @@ def hunks_only(diff: str) -> list[str]:
 
 def first_sentences(text: str, limit: int = REASON_CHARS) -> str:
     """텍스트를 앞 문장들만 남겨 ``limit``자 안쪽에서 문장 경계로 자른다.
-    첫 문장이 이미 길면 그 문장을 ``limit``자에서 자른다.
-
-    The first sentence(s) of `text` within about `limit` characters, cut at a sentence boundary."""
+    첫 문장이 이미 길면 그 문장을 ``limit``자에서 자른다."""
     t = " ".join((text or "").split())
     if len(t) <= limit:
         return t
@@ -135,7 +131,7 @@ def _try_files(t: Any) -> set[str]:
 def _notes_and_reasons(report: Any, clean: Any) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
     notes: dict[str, list[str]] = {}
     reasons: dict[str, list[str]] = {}
-    case_reason: dict[tuple[str, str], str] = {}        # (path, case) → the last kept try's analysis
+    case_reason: dict[tuple[str, str], str] = {}        # (경로, 케이스)마다 트리에 남은 마지막 시도의 원인 분석
     for cid, t in _kept_tries(report):
         for n in getattr(t, "edits", None) or []:
             if getattr(n, "source", "llm") != "llm":
@@ -159,7 +155,7 @@ def _cleaner(ws: Any, cfg: Any) -> Any:
     try:
         from sbmig.errors.common import Cleaner
         return Cleaner(cfg, (ws.root, ws.run_dir))
-    except Exception as e:  # noqa: BLE001 - no cleaner: nothing is stored rather than unmasked text
+    except Exception as e:  # noqa: BLE001 - 마스킹할 수 없으면 원문을 남기지 않고 아무것도 저장하지 않는다
         log.warning("code changes: text cleaner unavailable: %s", e)
         return None
 
@@ -169,9 +165,7 @@ def collect_code_changes(ws: Any, report: Any, base_sha: Optional[str], cfg: Any
     ``code_changes_base``를 채운다. base가 없으면 빈 목록으로 두고, git이 실패하면 WARNING 한 줄을 남긴다.
     예외를 던지지 않는다.
 
-    Fill `report.code_changes`, `code_changes_total`, `code_changes_base` from the net diff `base_sha` → the final
-    working tree. Statuses: `git diff --no-renames`, so a moved file is the old path `deleted` + the new path
-    `added`. Never raises: no base or a git failure leaves the list empty (one WARNING for the failure)."""
+    Statuses come from `git diff --no-renames`: a moved file is the old path `deleted` + the new path `added`."""
     report.code_changes = []
     report.code_changes_total = 0
     report.code_changes_base = ""
@@ -179,7 +173,7 @@ def collect_code_changes(ws: Any, report: Any, base_sha: Optional[str], cfg: Any
         return
     try:
         rows = ws.numstat_since(base_sha)
-    except Exception as e:  # noqa: BLE001 - the report goes out without the list
+    except Exception as e:  # noqa: BLE001 - 목록 없이 보고서를 만든다
         log.warning("code changes not collected (git diff from %s failed): %s", str(base_sha)[:10], e)
         return
     clean = _cleaner(ws, cfg)
@@ -192,7 +186,7 @@ def collect_code_changes(ws: Any, report: Any, base_sha: Optional[str], cfg: Any
                    key=lambda x: _order_key(x[0]))
     try:
         notes, reasons = _notes_and_reasons(report, clean)
-    except Exception as e:  # noqa: BLE001 - the list without notes is still useful
+    except Exception as e:  # noqa: BLE001 - 설명이 없어도 목록은 쓸모가 있다
         log.warning("code changes: notes / reasons not read: %s", e)
         notes, reasons = {}, {}
     out: list[CodeChange] = []
@@ -204,7 +198,7 @@ def collect_code_changes(ws: Any, report: Any, base_sha: Optional[str], cfg: Any
                 if len(lines) > DIFF_LINES:
                     lines, truncated = lines[:DIFF_LINES], True
                 diff = clean("\n".join(lines)) if lines else ""
-            except Exception as e:  # noqa: BLE001 - this file goes without its diff
+            except Exception as e:  # noqa: BLE001 - 이 파일만 diff 없이 넣는다
                 log.debug("code changes: diff of %s not read: %s", path, e)
                 diff, truncated = "", False
         out.append(CodeChange(path=clean(path) or path, status=_STATUS.get(st, "modified"),  # type: ignore[arg-type]

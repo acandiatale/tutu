@@ -1,17 +1,21 @@
 """웹 화면의 「코드 변경」에 쓰는 기록을 실행 폴더의 codediff/에 남기는 모듈.
 최종 트리의 파일마다 원래 파일(origin)을 찾아 최종 경로 기준으로 비교한다. 위치가 바뀐 파일은 원래 경로도 남긴다.
-- git의 이름 변경 감지는 쓰지 않고 origin은 이 모듈이 정한다
-- git 프로세스 수는 파일 수와 관계없이 일정하다
-- index.json을 마지막에 써서 patch.bin 없이 index.json만 보이는 일이 없게 한다
+origin은 아래 순서로 정한다. git의 이름 변경 감지는 쓰지 않는다.
+- 같은 경로의 as-is 파일
+- 이름과 내용이 같고 원래 경로가 최종 트리에 없는 파일
+- 이름이 같고 최종 파일의 줄을 절반 이상 가진 파일
+- 셋 다 없으면 새로 추가한 파일이다
+마지막 커밋에 없는 파일은 빌드가 남긴 것이라 넣지 않는다. git 프로세스 수는 파일 수와 관계없이 일정하다.
+index.json을 마지막에 써서 patch.bin 없이 index.json만 보이는 일이 없게 한다.
 마무리 단계에서 Orchestrator._finalize_code_diff가 호출한다.
 
 The build side of the code-change view (docs/INTERFACES.md "v2.1z-au"): `<run dir>/codediff/` with `patch.bin`,
 `summary.json` and `index.json`. Every regular file of the final tree (the working tree at finalize, through a
-temporary index, limited to the paths the last commit has: a file neither committed nor ignored is a leftover of the
-final build — a shade plugin's `dependency-reduced-pom.xml`, `node/`, `node_modules/`, a jar copied beside the
-sources — never a change of the migration, which commits every stage; uncommitted changes to committed files stay,
-journal `code_diff.untracked_left_out` counts what was left out) is compared AT ITS FINAL PATH with its origin, the
-as-is file (first commit) it came from:
+temporary index, limited to the paths the last commit has: a file neither committed nor ignored is a leftover of
+the final build, e.g. a shade plugin's `dependency-reduced-pom.xml`, `node/`, `node_modules/`, a jar copied beside
+the sources, never a change of the migration, which commits every stage; uncommitted changes to committed files
+stay, journal `code_diff.untracked_left_out` counts what was left out) is compared AT ITS FINAL PATH with its
+origin, the as-is file (first commit) it came from:
 1. the as-is file at the same path;
 2. same name + identical bytes, its own path gone from the final tree (longest shared trailing path, then the
    smallest path);
@@ -43,23 +47,23 @@ log = logging.getLogger("sbmig.report.codediff")
 
 VERSION = 1
 DIR_NAME = "codediff"
-MAX_FILES = 20_000                  # entries in index.json; files_total = the number before the cut
-SIMILARITY = 0.5                    # rule 3: share of the final file's lines that must occur in the candidate
-SIMILAR_TRIES = 5                   # rule 3: candidates tried per final file
-MAX_FILE_PATCH = 1 << 20            # one file's hunks over this: omitted "too_large"
-MAX_PATCH_TOTAL = 64 << 20          # patch.bin never grows past this: omitted "cap"
+MAX_FILES = 20_000                  # index.json 항목 수 상한. files_total은 자르기 전 개수다
+SIMILARITY = 0.5                    # 규칙 3: 후보 파일에 있어야 하는 최종 파일 줄의 비율
+SIMILAR_TRIES = 5                   # 규칙 3: 최종 파일 하나에 비교해 보는 후보 수
+MAX_FILE_PATCH = 1 << 20            # 파일 하나의 hunk가 이보다 크면 omitted "too_large"
+MAX_PATCH_TOTAL = 64 << 20          # patch.bin 전체 상한. 넘치면 omitted "cap"
 MAX_MOVE_GROUPS = 200
-CONTENT_LIMIT = 8 << 20             # blobs read for rule 3 / a deleted file's encoding; larger ones are not read
-BINARY_SNIFF = 8000                 # git's own rule: a NUL byte in the first 8000 bytes = binary
+CONTENT_LIMIT = 8 << 20             # 규칙 3 비교와 삭제 파일 인코딩 판단에 읽는 blob 크기 상한
+BINARY_SNIFF = 8000                 # git과 같은 규칙: 앞 8000바이트에 NUL이 있으면 바이너리
 
 _DIFF_FLAGS = ("--no-color", "--no-ext-diff", "--no-textconv", "--no-renames", "--histogram", "--no-relative")
-# a user's `diff.suppressBlankEmpty=true` would print an empty context line without its leading space
+# 사용자 설정 `diff.suppressBlankEmpty=true`면 빈 문맥 줄이 앞 공백 없이 나와 hunk 해석이 틀어진다
 _DIFF_ENV = {"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "diff.suppressBlankEmpty", "GIT_CONFIG_VALUE_0": "false"}
 
 Entries = dict[str, tuple[str, str]]        # path -> (mode, sha)
 
 
-# ------------------------------------------------------------------------------------------ origins
+# ------------------------------------------------------------------------------------------ 원래 파일 찾기
 def _parts(path: str) -> list[str]:
     return path.split("/")
 
@@ -78,8 +82,10 @@ def _shared_tail(a: list[str], b: list[str]) -> int:
 
 
 def _pair_by_tail(finals: list[str], olds: list[str], taken: set[str], origins: dict[str, str]) -> None:
-    """Rule 2 within one (file name, blob) group: best-first by the longest shared trailing path, then the final
-    path, then the smallest as-is path (the same result as sorting every pair, without building the pairs)."""
+    """(파일 이름, blob)이 같은 그룹 하나에 규칙 2를 적용한다. 경로 뒷부분이 가장 길게 겹치는 짝부터 정한다.
+
+    Ties: the final path, then the smallest as-is path (the same result as sorting every pair, without
+    building the pairs)."""
     free_f = sorted(f for f in finals if f not in origins)
     free_o = sorted(o for o in olds if o not in taken)
     if not free_f or not free_o:
@@ -91,7 +97,7 @@ def _pair_by_tail(finals: list[str], olds: list[str], taken: set[str], origins: 
         by_tail: dict[tuple[str, ...], list[str]] = {}
         for o in free_o:
             if o not in taken and len(op[o]) >= k:
-                by_tail.setdefault(tuple(op[o][-k:]), []).append(o)       # free_o is sorted: smallest first
+                by_tail.setdefault(tuple(op[o][-k:]), []).append(o)       # free_o가 정렬돼 있어 작은 경로부터 들어간다
         if not by_tail:
             continue
         for f in free_f:
@@ -113,10 +119,8 @@ def _lines(data: bytes) -> Counter:
 
 
 def similarity(final: bytes, candidate: bytes) -> float:
-    """최종 파일의 빈 줄이 아닌 줄 중에서 후보 파일에도 있는 줄의 비율을 반환한다. 바이너리면 0이다.
-
-    Share of the final file's non-blank lines (multiset, whitespace-trimmed) that occur in `candidate`; 0.0 for an
-    empty or binary file."""
+    """최종 파일의 빈 줄이 아닌 줄 중에서 후보 파일에도 있는 줄의 비율을 반환한다.
+    줄 앞뒤 공백은 무시하고 같은 줄은 개수까지 맞춰 센다. 빈 파일이나 바이너리면 0을 반환한다."""
     if _is_binary(final) or _is_binary(candidate):
         return 0.0
     fl = _lines(final)
@@ -137,12 +141,12 @@ def compute_origins(asis: Entries, final: Entries,
     for the blobs rule 3 compares and the deleted files' encodings need."""
     origins: dict[str, str] = {}
     taken: set[str] = set()
-    for f in final:                                         # rule 1
+    for f in final:                                         # 규칙 1: 같은 경로
         if f in asis:
             origins[f] = f
             taken.add(f)
     gone = [a for a in asis if a not in final]
-    # rule 2: same file name and identical bytes
+    # 규칙 2: 이름과 내용이 같은 파일
     groups_o: dict[tuple[str, str], list[str]] = {}
     for a in gone:
         groups_o.setdefault((_base(a), asis[a][1]), []).append(a)
@@ -154,7 +158,7 @@ def compute_origins(asis: Entries, final: Entries,
                 groups_f.setdefault(key, []).append(f)
     for key in sorted(groups_f):
         _pair_by_tail(groups_f[key], groups_o[key], taken, origins)
-    # rule 3: same file name, similar content
+    # 규칙 3: 이름이 같고 내용이 비슷한 파일
     left = sorted(a for a in gone if a not in taken)
     by_name: dict[str, list[str]] = {}
     for a in left:
@@ -203,14 +207,14 @@ def move_groups(pairs: Iterable[tuple[str, str]]) -> list[dict[str, Any]]:
     return [{"from": f, "to": t, "files": c} for (f, t), c in sorted(n.items(), key=lambda x: (-x[1], x[0]))]
 
 
-# ------------------------------------------------------------------------------------------ diffs
+# ------------------------------------------------------------------------------------------ diff 계산
 class _Diff:
-    """One `git diff` of two trees: numstat by path and the hunk range of every section in its raw output."""
+    """두 트리의 `git diff` 한 번의 결과를 담는 클래스. 경로별 numstat과 원본 출력 안의 hunk 범위를 가진다."""
 
     def __init__(self, raw: Path):
         self.raw = raw
         self.stat: dict[str, tuple[Optional[int], Optional[int]]] = {}
-        self.ranges: dict[str, Optional[tuple[int, int]]] = {}     # path -> (start, length) of its hunks, None
+        self.ranges: dict[str, Optional[tuple[int, int]]] = {}     # 경로 -> hunk의 (시작, 길이). hunk가 없으면 None
         self.ok = True
 
 
@@ -229,7 +233,9 @@ def _numstat(blob: bytes) -> list[tuple[str, Optional[int], Optional[int]]]:
 
 
 def _scan(raw: Path) -> list[tuple[Optional[int], int, int, int]]:
-    """Sections of a patch file: (offset of the first `@@ ` line or None, end offset, '+' lines, '-' lines)."""
+    """patch 파일을 diff 섹션 단위로 나눠 반환한다.
+
+    Per section: (offset of the first `@@ ` line or None, end offset, '+' lines, '-' lines)."""
     sections: list[list] = []
     cur: Optional[list] = None
     off = 0
@@ -277,7 +283,7 @@ def _run_diff(ws: Any, a: str, b: str, context: int, raw: Path) -> _Diff:
     return d
 
 
-# ------------------------------------------------------------------------------------------ the artifact
+# ------------------------------------------------------------------------------------------ 기록 쓰기
 def _json_path(p: str) -> str:
     return p.encode("utf-8", errors="surrogateescape").decode("utf-8", errors="replace")
 
@@ -320,12 +326,12 @@ def _remove_artifact(out: Path) -> None:
 
 def write_code_diff(ws: Any, cfg: Any, *, run_id: Optional[str] = None) -> Optional[dict[str, Any]]:
     """실행 폴더에 codediff/(patch.bin, summary.json, index.json)를 쓰고 summary를 반환한다.
-    꺼져 있거나 git 저장소가 없으면 쓰지 않고 None을 반환한다. 실패하면 쓰던 파일을 지우고 예외를 던진다.
+    - ``report.code_diff``가 꺼져 있거나 git 저장소가 없거나 바뀐 파일이 없으면 쓰지 않고 None을 반환한다
+    - 실패하면 쓰던 폴더를 지우고 예외를 다시 던진다
+    - 두 경우 모두 저널에 ``code_diff_skipped``와 이유를 남긴다
 
-    Write `<run dir>/codediff/` and return its summary. `report.code_diff` false, no `<project>/.git`, or a run that
-    changed no file (refused or aborted at intake; only build leftovers): nothing is written, a record an earlier
-    attempt left in the same run folder is removed, journal `code_diff_skipped` with the reason, None. Any failure
-    removes the folder, journals `code_diff_skipped` with the error and re-raises (the caller logs one warning).
+    On skip, a record an earlier attempt left in the same run folder is removed too. "No file changed"
+    covers a run refused or aborted at intake (only build leftovers). The caller logs one warning on a raise.
     Journal `code_diff` on success."""
     rc = cfg.report
     out = ws.run_dir / DIR_NAME
@@ -352,7 +358,7 @@ def write_code_diff(ws: Any, cfg: Any, *, run_id: Optional[str] = None) -> Optio
         _remove_artifact(out)
         try:
             ws.journal({"event": "code_diff_skipped", "reason": f"failed: {e}"[:500]})
-        except Exception:  # noqa: BLE001 - the journal must not hide the original error
+        except Exception:  # noqa: BLE001 - 저널 기록 실패가 원래 예외를 가리지 않게 한다
             pass
         raise
     finally:
@@ -378,7 +384,7 @@ def _build(ws: Any, cfg: Any, out: Path, raws: list[Path], run_id: str, t0: floa
     origins, deleted, deleted_enc = compute_origins(
         asis, final, lambda shas: ws._cat_blobs(shas, CONTENT_LIMIT), tuple(ws.encoding_candidates))
 
-    # one diff for every final file at its final path, one for the deletions
+    # 최종 경로 기준 diff 한 번, 삭제된 파일 diff 한 번만 실행한다
     base_tree = ws.make_tree((final[f][0], asis[origins[f]][1], f) for f in sorted(origins))
     new_tree = ws.make_tree((final[f][0], final[f][1], f) for f in sorted(final))
     d1 = _run_diff(ws, base_tree, new_tree, context, raws[0])
@@ -391,7 +397,7 @@ def _build(ws: Any, cfg: Any, out: Path, raws: list[Path], run_id: str, t0: floa
     for f in sorted(final):
         a = origins.get(f)
         if a == f and asis[a][1] == final[f][1]:
-            continue                                        # unchanged (a mode-only change included)
+            continue                                        # 바뀌지 않은 파일. 권한만 바뀐 경우도 포함한다
         e: dict[str, Any] = {"path": f, "old_path": None, "changed": True}
         if a is None:
             e["status"] = "added"
@@ -409,7 +415,7 @@ def _build(ws: Any, cfg: Any, out: Path, raws: list[Path], run_id: str, t0: floa
         return None                                         # 바뀐 파일이 없으면 기록하지 않는다
     for e in entries:
         d: Optional[_Diff] = e["_diff"]
-        if d is None:                                       # moved only: nothing to diff
+        if d is None:                                       # 위치만 옮긴 파일이라 diff가 없다
             e["binary"] = _file_is_binary(ws, e["path"])
             e["added"] = e["removed"] = 0
             continue
@@ -432,11 +438,11 @@ def _build(ws: Any, cfg: Any, out: Path, raws: list[Path], run_id: str, t0: floa
         "binary": sum(1 for e in entries if e["binary"]),
     }
     files_total = len(entries)
-    if files_total > MAX_FILES:                             # changed files before moved-only ones
+    if files_total > MAX_FILES:                             # 내용이 바뀐 파일을 위치만 옮긴 파일보다 먼저 남긴다
         entries = sorted(sorted(entries, key=lambda e: (not e["changed"], e["path"]))[:MAX_FILES],
                          key=lambda e: e["path"])
 
-    # patch.bin: the kept hunk ranges, in id order
+    # patch.bin에는 남긴 hunk 범위를 id 순서로 이어 붙인다
     patch_path = out / "patch.bin"
     tmp_patch = out / "patch.bin.tmp"
     total = 0
@@ -456,7 +462,7 @@ def _build(ws: Any, cfg: Any, out: Path, raws: list[Path], run_id: str, t0: floa
                     e["omitted"] = "unavailable"
                     continue
                 rng = d.ranges.get(e["path"])
-                if rng is None:                             # no hunk: an empty file added or deleted
+                if rng is None:                             # 빈 파일을 추가하거나 지운 경우라 hunk가 없다
                     continue
                 start, length = rng
                 if length > MAX_FILE_PATCH:
@@ -492,7 +498,8 @@ def _build(ws: Any, cfg: Any, out: Path, raws: list[Path], run_id: str, t0: floa
     index = {**head, "files": files, "files_total": files_total}
     summary_doc = {**head, "files_total": files_total}
     _write_atomic(out / "summary.json", json.dumps(summary_doc, ensure_ascii=False, indent=1).encode("utf-8"))
-    _write_atomic(out / "index.json", json.dumps(index, ensure_ascii=False, indent=1).encode("utf-8"))   # last
+    # index.json은 마지막에 쓴다
+    _write_atomic(out / "index.json", json.dumps(index, ensure_ascii=False, indent=1).encode("utf-8"))
     seconds = round(time.monotonic() - t0, 2)
     event = {"event": "code_diff", "files": summary_counts["files"], "moved": summary_counts["moved"],
              "added_lines": summary_counts["added_lines"], "removed_lines": summary_counts["removed_lines"],

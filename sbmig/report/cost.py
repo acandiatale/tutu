@@ -1,16 +1,12 @@
 """실행 한 번의 LLM 비용을 모델별 토큰 사용량과 ``llm.pricing``의 단가로 계산하는 모듈.
 보고서 단계에서 writer.py가 ``compute_llm_cost``를 호출해 report.md의 "LLM usage and cost"를 채운다.
 - 회사 고유값은 코드에 두지 않으므로 단가는 설정에서만 읽는다
-- 단가가 없는 모델은 추정하지 않고 "unpriced"로 따로 표시하며 합계에서 뺀다
-
-Per-run LLM cost (2026-10-22, the user: "프로젝트당 API 가격"): usage per model × `llm.pricing` list prices.
+- 단가가 없는 모델은 추정하지 않는다. "unpriced"로 따로 표시하고 합계에서 뺀다
 
     compute_llm_cost(by_model, cfg) -> LLMCost
     price_for(model, pricing) -> (key, ModelPrice | None)
     price_for_usage(usage, pricing) -> (key, ModelPrice | None)   asked name first, then the served names
-
-Pure functions; prices come from the config (company specifics never live in code). A model without a price is
-listed as unpriced and left out of the total, never guessed."""
+"""
 from __future__ import annotations
 
 from typing import Any, Optional
@@ -20,10 +16,9 @@ from sbmig.core.models import LLMCost, LLMUsage, ModelCost, asked_model_name, re
 
 def price_for(model: str, pricing: dict[str, Any]) -> tuple[str, Optional[Any]]:
     """``model``에 맞는 ``llm.pricing`` 항목을 찾아 반환한다. 찾지 못하면 ``("", None)``을 반환한다.
-    날짜가 붙은 모델 id도 기본 이름의 단가를 쓰도록, 같은 id가 없으면 id에 포함되는 가장 긴 키를 쓴다.
+    같은 id가 없으면 id에 포함되는 가장 긴 키를 쓴다. 날짜가 붙은 모델 id도 기본 이름의 단가를 쓰기 위해서다.
 
-    The `llm.pricing` entry for `model`: exact id first, else the longest key that is a prefix of the id or is
-    contained in it (case-insensitive) — `gpt-5.6-terra-2026-08-01` → `gpt-5.6-terra`."""
+    Case-insensitive; e.g. `gpt-5.6-terra-2026-08-01` matches the key `gpt-5.6-terra`."""
     m = (model or "").strip().lower()
     if not m or not pricing:
         return "", None
@@ -40,9 +35,8 @@ def price_for(model: str, pricing: dict[str, Any]) -> tuple[str, Optional[Any]]:
 def price_for_usage(u: LLMUsage, pricing: dict[str, Any]) -> tuple[str, Optional[Any]]:
     """사용량 행의 단가를 찾는다. 요청한 이름으로 먼저 찾고, 없으면 응답이 알려 준 모델 이름을 순서대로 찾는다.
 
-    The price of a usage row: by the asked name (`u.model`, e.g. an agent-gateway role) first, then by each served
-    name in the order the answers reported them; the first match wins. A price table keyed by real model names keeps
-    working as long as the gateway reports them."""
+    The asked name (`u.model`) may be an agent-gateway role; a price table keyed by real model names keeps
+    working as long as the gateway reports them in `served`."""
     for name in [u.model, *(u.served or [])]:
         if not real_model_name(name):
             continue
